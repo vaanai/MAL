@@ -929,10 +929,10 @@ def test_holdout_lock_and_started_line_precede_the_result_column(tmp_path, monke
     seen = []
     real = r3.load_markets
 
-    def spy(markets_root, split, with_outcomes, with_expiration=False):
+    def spy(markets_root, split, with_outcomes, with_expiration=False, **kw):
         seen.append((with_outcomes, (out / "HOLDOUT.lock").exists(),
                      [x["status"] for x in _ledger_lines(tmp_path)]))
-        return real(markets_root, split, with_outcomes, with_expiration)
+        return real(markets_root, split, with_outcomes, with_expiration, **kw)
     monkeypatch.setattr(r3, "load_markets", spy)
     run_dev(w, out, split="holdout")
     pre = [x for x in seen if not x[0]]          # preflight: no result column, no lock yet
@@ -1002,3 +1002,140 @@ def test_price_outside_unit_interval_still_refuses(tmp_path):
     write_trades(w.s1, [{**tr("KXBTC15M-M1-15", "2026-10-05T10:12:30Z", 0.5, "no"), "no_price": 95.0}], "part-c")
     with pytest.raises(r3.Refusal, match="outside"):
         run_dev(w, tmp_path / "out")
+
+
+# ----------------------------------------------- round 3: costless refusals before the lock, HOLDOUT SPENT
+def _state(tmp_path, out):
+    return [x["status"] for x in _ledger_lines(tmp_path)], (tmp_path / out / "HOLDOUT.lock").exists()
+
+
+def test_rss_limit_without_a_2x_margin_is_refused_before_the_lock(tmp_path):
+    w = holdout_world(tmp_path)
+    for limit in (1, 20):
+        with pytest.raises(r3.Refusal, match="2x margin"):
+            r3.run("holdout", [str(w.s1), str(w.s2)], str(w.markets), str(w.tmp / "candles"),
+                   str(tmp_path / "hout"), False, max_rss_mb=limit)
+        assert _state(tmp_path, "hout") == ([], False)                   # no ledger line, no lock
+    # a sane limit passes the preflight and the run goes through
+    assert r3.run("holdout", [str(w.s1), str(w.s2)], str(w.markets), str(w.tmp / "candles"),
+                  str(tmp_path / "hout"), False, max_rss_mb=100_000)["main"]["n_contracts"] == 1
+
+
+def test_cli_requires_explicit_max_rss_mb_for_a_holdout_run(tmp_path, capsys):
+    w = holdout_world(tmp_path)
+    base = ["run", "--split", "holdout", "--trades-stores", str(w.s1), str(w.s2), "--markets-root", str(w.markets),
+            "--candles-dir", str(w.tmp / "candles"), "--out", str(tmp_path / "hout")]
+    assert r3.main(base) == 2
+    assert "--max-rss-mb is required" in capsys.readouterr().err
+    assert _state(tmp_path, "hout") == ([], False)
+    assert r3.main(base + ["--max-rss-mb", "1"]) == 2                       # too small: costless refusal
+    assert "2x margin" in capsys.readouterr().err and _state(tmp_path, "hout") == ([], False)
+    assert r3.main(base + ["--max-rss-mb", "100000"]) == 0
+
+
+def test_a_refusal_after_the_lock_says_holdout_spent(tmp_path, monkeypatch, capsys):
+    w = holdout_world(tmp_path)
+    base = ["run", "--split", "holdout", "--trades-stores", str(w.s1), str(w.s2), "--markets-root", str(w.markets),
+            "--candles-dir", str(w.tmp / "candles"), "--out", str(tmp_path / "hout"), "--max-rss-mb", "100000"]
+
+    def refuse(self, stores):
+        raise r3.Refusal("peak RSS 99999 MB exceeds --max-rss-mb 100000")
+    with monkeypatch.context() as mp:
+        mp.setattr(r3.TradeScan, "scan", refuse)
+        assert r3.main(base) == 2
+    err = capsys.readouterr().err
+    assert "REFUSED: HOLDOUT SPENT" in err and "peak RSS" in err
+    lines = _ledger_lines(tmp_path)
+    assert [x["status"] for x in lines] == ["started", "aborted"]
+    assert lines[-1]["holdout_spent"] is True and "peak RSS" in lines[-1]["error"]
+    assert (tmp_path / "hout" / "HOLDOUT.lock").exists()
+    # a non-Refusal exception after the lock is announced on stderr too
+    with monkeypatch.context() as mp:
+        mp.setattr(r3.TradeScan, "scan", lambda self, stores: (_ for _ in ()).throw(RuntimeError("boom")))
+        w2 = holdout_world(tmp_path / "second") if (tmp_path / "second").mkdir() is None else None
+        (tmp_path / "ledger" / "R3_RUNS.jsonl").unlink()
+        with pytest.raises(RuntimeError):
+            r3.run("holdout", [str(w2.s1)], str(w2.markets), str(w2.tmp / "candles"), str(tmp_path / "h2"), False)
+    assert "HOLDOUT SPENT" in capsys.readouterr().err
+    # a dev abort is not a spent holdout
+    with monkeypatch.context() as mp:
+        mp.setattr(r3.TradeScan, "scan", lambda self, stores: (_ for _ in ()).throw(RuntimeError("boom")))
+        d = build_world(tmp_path / "dev")if (tmp_path / "dev").mkdir() is None else None
+        with pytest.raises(RuntimeError):
+            run_dev(d, tmp_path / "dout")
+    assert _ledger_lines(tmp_path)[-1]["holdout_spent"] is False and "HOLDOUT SPENT" not in capsys.readouterr().err
+
+
+def test_preflight_refuses_a_ticker_both_in_and_out_of_the_split(tmp_path):
+    import datetime as _dt
+    import pyarrow.compute as pc
+    w = holdout_world(tmp_path)
+    f = next(Path(w.markets).rglob("*.parquet"))
+    t = pq.read_table(f)
+    i = t.schema.get_field_index("close_time")
+    moved = pc.add(t.column("close_time"), pa.scalar(_dt.timedelta(days=30)))
+    pq.write_table(t.set_column(i, t.schema.field(i), moved), f.with_name("zz-moved.parquet"))
+    with pytest.raises(r3.Refusal, match="both in and out of the split"):
+        run_dev(w, tmp_path / "hout", split="holdout")
+    assert _state(tmp_path, "hout") == ([], False)
+
+
+def test_preflight_refuses_markets_files_missing_columns_needed_after_the_lock(tmp_path):
+    w = holdout_world(tmp_path)
+    files = list(Path(w.markets).rglob("*.parquet"))
+    for f in files:
+        pq.write_table(pq.read_table(f).drop(["result"]), f)
+    with pytest.raises(r3.Refusal, match="result"):
+        run_dev(w, tmp_path / "hout", split="holdout")
+    assert _state(tmp_path, "hout") == ([], False)
+    # count-only never reads result, so it is not refused for it
+    res = r3.run("holdout", [str(w.s1), str(w.s2)], str(w.markets), str(w.tmp / "candles"), str(tmp_path / "o"),
+                 True, allow_holdout_count_only=True)
+    assert res["n_markets"] == 1
+    # another column the post-lock path needs
+    w2 = holdout_world(tmp_path / "b") if (tmp_path / "b").mkdir() is None else None
+    for f in Path(w2.markets).rglob("*.parquet"):
+        pq.write_table(pq.read_table(f).drop(["floor_strike"]), f)
+    with pytest.raises(r3.Refusal, match="floor_strike"):
+        r3.run("holdout", [str(w2.s1)], str(w2.markets), str(w2.tmp / "candles"), str(tmp_path / "hout2"), False)
+    assert not (tmp_path / "hout2" / "HOLDOUT.lock").exists()
+
+
+def test_missing_or_unwritable_ledger_directory_is_a_preflight_refusal(tmp_path, monkeypatch):
+    w = holdout_world(tmp_path)
+    monkeypatch.setenv("MAL_R3_LEDGER", str(tmp_path / "nodir" / "R3_RUNS.jsonl"))
+    args = ([str(w.s1), str(w.s2)], str(w.markets), str(w.tmp / "candles"))
+    with pytest.raises(r3.Refusal, match="wrong host"):
+        r3.run("holdout", *args, str(tmp_path / "hout"), False, max_rss_mb=100_000)
+    with pytest.raises(r3.Refusal, match="wrong host"):
+        r3.run("holdout", *args, str(tmp_path / "ho2"), True, allow_holdout_count_only=True)
+    assert not (tmp_path / "hout" / "HOLDOUT.lock").exists() and not (tmp_path / "hout").exists()
+    if os.geteuid() != 0:
+        ro = tmp_path / "ro"
+        ro.mkdir()
+        monkeypatch.setenv("MAL_R3_LEDGER", str(ro / "R3_RUNS.jsonl"))
+        ro.chmod(0o500)
+        try:
+            with pytest.raises(r3.Refusal, match="not writable"):
+                r3.run("holdout", *args, str(tmp_path / "hout"), False, max_rss_mb=100_000)
+        finally:
+            ro.chmod(0o700)
+        assert not (tmp_path / "hout" / "HOLDOUT.lock").exists()
+
+
+def test_null_is_block_trade_is_a_counted_exclusion_not_a_book_print(tmp_path):
+    w = build_world(tmp_path)
+    extra = [{**tr("KXBTC15M-M1-15", "2026-10-05T10:13:50Z", 0.90, "no", tid="nb1"), "is_block_trade": None},
+             {**tr("KXBTC15M-M3-15", "2026-10-06T11:11:00Z", 0.50, "yes", tid="nb2"), "is_block_trade": None}]
+    write_trades(w.s1, extra, "part-nullblock")
+    s = run_dev(w, tmp_path / "out")
+    assert s["trade_rows"]["null_is_block_trade_excluded"] == 2
+    assert s["main"]["n_contracts"] == 7                    # the 10:13:50 print (0.90 <= bid) did not fill
+    m3 = [f for f in pq.read_table(tmp_path / "out" / "r3_dev_fills.parquet").to_pylist()
+          if f["ticker"] == "KXBTC15M-M3-15"]
+    assert m3[0]["last_print_micro"] == 990_000             # the null-block 0.50 print is not the last print
+
+
+def test_module_docstring_names_the_fit_c_record_not_proxy_model_out():
+    assert "d858ca866b0953cca94a8f67f28994380638b09fbed4fa69c0bbd043b02f11bc" in r3.__doc__
+    assert "fit_c_dev.json" in r3.__doc__ and "development-only fits in hunt18 proxy_model_out.json" not in r3.__doc__

@@ -19,8 +19,9 @@ Source of truth: hunt18 DECLARE.md (frozen 2026-10-17T23:00:18Z), kalshi-crypto/
     bootstrap CI90 (1,000 draws, seed 1); ex-top-3; ex-best-day; with 3 added worst losses; maker cell with
     15% unfilled; per series and per day.
 
-c and e are the development-only fits in hunt18 proxy_model_out.json (FROZEN_C, FROZEN_E_BPS below).  The
-fee functions are tools/kalshi_fees.py.  The tool computes numbers only: the lab promotion gate is applied
+c and e are the development-only fits of `fit-c --split dev` (FROZEN_C, FROZEN_E_BPS below), recorded in hunt18
+kalshi-crypto/fit_c_dev/fit_c_dev.json (sha256 d858ca866b0953cca94a8f67f28994380638b09fbed4fa69c0bbd043b02f11bc);
+they replace the earlier proxy_model_out.json c, which used four fit instants.  The fee functions are tools/kalshi_fees.py.  The tool computes numbers only: the lab promotion gate is applied
 by the manager, not here.
 
 Data discipline.  Markets are filtered to the requested split BEFORE any trade file is opened; trade rows are
@@ -350,7 +351,12 @@ def _ts_us(col) -> np.ndarray:
     return v * mul // div if (mul != 1 or div != 1) else v
 
 
-def load_markets(markets_root: str, split: str, with_outcomes: bool, with_expiration: bool = False):
+MARKET_COLS_PHASE1 = {"ticker", "series_ticker", "event_ticker", "open_time", "close_time"}
+MARKET_COLS_PHASE2 = {"floor_strike", "fetched_at", "raw_json"}
+
+
+def load_markets(markets_root: str, split: str, with_outcomes: bool, with_expiration: bool = False,
+                 info: dict = None):
     """Markets of the universe whose close_time UTC date is in the split.  Phase 1 reads ids and times only;
     phase 2 (strike, raw_json, and the result only if with_outcomes) is read for in-split rows only."""
     lo, hi = SPLITS[split]
@@ -364,6 +370,8 @@ def load_markets(markets_root: str, split: str, with_outcomes: bool, with_expira
             names = pf.schema_arrow.names
             if any(n.lower().startswith("mve") for n in names):
                 raise Refusal(f"mve_* column in {f}")
+            if MARKET_COLS_PHASE1 - set(names):
+                raise Refusal(f"markets file {f} lacks columns {sorted(MARKET_COLS_PHASE1 - set(names))}")
             t1 = pf.read(columns=["ticker", "series_ticker", "event_ticker", "open_time", "close_time"])
             tick = t1.column("ticker").to_pylist()
             if any(t.startswith("KXMVE") for t in tick):
@@ -379,6 +387,12 @@ def load_markets(markets_root: str, split: str, with_outcomes: bool, with_expira
                     out_of_split.add(tick[i])
             if not sel:
                 continue
+            need2 = MARKET_COLS_PHASE2 | ({"result"} if with_outcomes else set()) \
+                | ({"expiration_value"} if with_expiration else set())
+            if need2 - set(names):
+                raise Refusal(f"markets file {f} lacks columns {sorted(need2 - set(names))}")
+            if info is not None:                                  # footer names of every file holding in-split rows
+                info.setdefault("in_split_files", []).append((str(f), list(names)))
             cols2 = (["floor_strike", "fetched_at", "raw_json"] + (["result"] if with_outcomes else [])
                      + (["expiration_value"] if with_expiration else []))
             t2 = pf.read(columns=cols2).take(pa.array(sel))      # in-split rows only reach Python
@@ -687,6 +701,9 @@ class TradeScan:
                 g[0] += 1
                 g[1] += abs(y * 100 - round(y * 100)) > 1e-6
                 g[2] += abs(y * 1000 - round(y * 1000)) > 1e-6
+            if blk[j] is None:                      # unknown is not "not a block trade": counted exclusion
+                self.c["null_is_block_trade_excluded"] += 1
+                continue
             if blk[j]:
                 self.c["block_trades_excluded"] += 1
                 continue
@@ -777,10 +794,20 @@ def ledger_lines(path: str):
     return out
 
 
-def ledger_append(path: str, split: str, mode: str, status: str, out_dir: str):
+def check_ledger_writable(path: str):
+    """The ledger directory must exist on this host (a run on the wrong host must not see an empty ledger as
+    free) and be writable, so that 'started' can be written after the lock."""
+    d = os.path.dirname(os.path.abspath(path))
+    if not os.path.isdir(d):
+        raise Refusal(f"ledger directory {d} does not exist on this host (wrong host?)")
+    if not os.access(d, os.W_OK | os.X_OK) or (os.path.exists(path) and not os.access(path, os.W_OK)):
+        raise Refusal(f"ledger {path} is not writable")
+
+
+def ledger_append(path: str, split: str, mode: str, status: str, out_dir: str, extra: dict = None):
     rec = {"ts": _now(), "split": split, "mode": mode, "status": status, "git_sha": git_sha(),
            "tool_sha256": sha256_file(__file__), "out": str(out_dir), "tick_rounding": "ceil_to_tick",
-           "frozen_c": FROZEN_C, "frozen_e_bps": FROZEN_E_BPS}
+           "frozen_c": FROZEN_C, "frozen_e_bps": FROZEN_E_BPS, **(extra or {})}
     with open(path, "a") as fh:
         fh.write(json.dumps(rec, sort_keys=True) + "\n")
         fh.flush()
@@ -807,7 +834,7 @@ def check_holdout_count_only_free(ledger: str):
             raise Refusal(f"holdout count-only already taken (ledger {ledger}: {rec})")
 
 
-def preflight(split, stores, markets_root, candles_dir):
+def preflight(split, stores, markets_root, candles_dir, max_rss_mb=None, need_result=True):
     """Everything that can be checked without a trade row or a result: a failure here must cost nothing (no lock,
     no ledger line).  Stores must exist and hold universe parquet; the candle files must exist; the split must
     have markets with model inputs."""
@@ -824,12 +851,25 @@ def preflight(split, stores, markets_root, candles_dir):
     for _series, (_asset, prod) in SERIES.items():
         if not (cdir / f"cb_{prod}.json").is_file():
             raise Refusal(f"candle file missing: {cdir / f'cb_{prod}.json'}")
-    markets, _excl, _oos = load_markets(markets_root, split, with_outcomes=False)       # no result column
+    info = {}
+    markets, _excl, oos = load_markets(markets_root, split, with_outcomes=False, info=info)   # no result column
     if not markets:
         raise Refusal(f"split {split} has 0 markets in {markets_root}")
+    both = oos & {m.ticker for m in markets}
+    if both:                                    # TradeScan would raise on this after the lock
+        raise Refusal(f"{len(both)} ticker(s) are both in and out of the split, e.g. {sorted(both)[:3]}")
+    need = MARKET_COLS_PHASE2 | ({"result"} if need_result else set())
+    for f, names in info.get("in_split_files", []):
+        if need - set(names):
+            raise Refusal(f"markets file {f} lacks columns {sorted(need - set(names))} needed after the lock")
     _sig, skip = compute_signals(markets, load_candles(candles_dir))
     if skip.get("no_model_inputs", 0) == len(markets):
         raise Refusal("no market of the split has model inputs: the candle files do not cover it")
+    if max_rss_mb is not None:                  # the limit must leave a 2x margin over what is already held
+        peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+        if peak >= 0.5 * max_rss_mb:
+            raise Refusal(f"peak RSS after preflight is {peak:.0f} MB; --max-rss-mb {max_rss_mb} leaves less "
+                          f"than a 2x margin (need >= {2 * peak:.0f})")
     return len(markets)
 
 
@@ -866,13 +906,15 @@ def run(split, trades_stores, markets_root, candles_dir, out_dir, count_only=Fal
     if split not in SPLITS:
         raise Refusal(f"unknown split {split}")
     ledger = ledger_path()
+    check_ledger_writable(ledger)                                # missing directory = wrong host: no stray lock
     if split == "holdout" and count_only and not allow_holdout_count_only:
         raise Refusal("--count-only on the holdout needs --allow-holdout-count-only (reads ids only)")
     if split == "holdout" and count_only:
         check_holdout_count_only_free(ledger)
     if split == "holdout" and not count_only:
         check_holdout_free(out_dir, ledger)                      # a repeat run does nothing at all
-    preflight(split, trades_stores, markets_root, candles_dir)   # refusals here leave no lock and no ledger line
+    preflight(split, trades_stores, markets_root, candles_dir, max_rss_mb=max_rss_mb,
+              need_result=not count_only)                        # refusals here leave no lock and no ledger line
     mode = "count_only" if count_only else "run"
     os.makedirs(out_dir, exist_ok=True)
     if split == "holdout" and not count_only:
@@ -894,8 +936,15 @@ def run(split, trades_stores, markets_root, candles_dir, out_dir, count_only=Fal
         else:
             res = _full_run(split, markets, excl, signals, sig_skip, by_ticker, out_of_split, candles,
                             trades_stores, out_dir, max_rss_mb, meta)
-    except BaseException:
-        ledger_append(ledger, split, mode, "aborted", out_dir)
+    except BaseException as e:
+        spent = split == "holdout" and not count_only            # the lock is taken: this holdout is spent
+        ledger_append(ledger, split, mode, "aborted", out_dir,
+                      {"error": f"{type(e).__name__}: {str(e)[:300]}", "holdout_spent": spent})
+        if spent:
+            msg = f"HOLDOUT SPENT (lock taken, ledger 'aborted'): {type(e).__name__}: {e}"
+            if isinstance(e, Refusal):
+                raise Refusal(msg) from e
+            print(msg, file=sys.stderr)
         raise
     ledger_append(ledger, split, mode, "finished", out_dir)
     return res
@@ -1092,7 +1141,9 @@ def main(argv=None):
     r.add_argument("--out", required=True)
     r.add_argument("--count-only", action="store_true")
     r.add_argument("--allow-holdout-count-only", action="store_true")
-    r.add_argument("--max-rss-mb", type=int, default=MAX_RSS_MB_DEFAULT)
+    r.add_argument("--max-rss-mb", type=int, default=None,
+                   help=f"RSS guard (default {MAX_RSS_MB_DEFAULT}); REQUIRED for a holdout run: an abort on it "
+                        "after the lock spends the holdout; size it from the dev peak_rss_mb with >= 2x margin")
     f = sub.add_parser("fit-c", help="re-derive c and e per asset on the development split only")
     f.add_argument("--split", required=True, choices=sorted(SPLITS))
     f.add_argument("--markets-root", required=True)
@@ -1109,9 +1160,13 @@ def main(argv=None):
             b = "n/a" if r["brier"] is None else f"{r['brier']:.6f}"
             print(f"{asset} c={r['c']} brier={b} n_rows={r['n_rows']} e_bps={r['e_bps']}")
         return 0
+    if a.split == "holdout" and not a.count_only and a.max_rss_mb is None:
+        print("REFUSED: --max-rss-mb is required for a holdout run (an RSS abort after the lock spends the "
+              "holdout; size it from the dev run's peak_rss_mb with at least 2x margin)", file=sys.stderr)
+        return 2
     try:
         res = run(a.split, a.trades_stores, a.markets_root, a.candles_dir, a.out, a.count_only,
-                  a.allow_holdout_count_only, a.max_rss_mb)
+                  a.allow_holdout_count_only, a.max_rss_mb or MAX_RSS_MB_DEFAULT)
     except Refusal as e:
         print(f"REFUSED: {e}", file=sys.stderr)
         return 2
