@@ -114,6 +114,12 @@ def git_show(repo: Path, sha: str, path: str) -> str | None:
     return r.stdout.decode("utf-8") if r.returncode == 0 else None
 
 
+def git_file_sha256(repo: Path, sha: str, path: str) -> str | None:
+    """sha256 of the file's bytes at `sha` (what `git show <sha>:<path> | sha256sum` prints)."""
+    r = subprocess.run(["git", "-C", str(repo), "show", f"{sha}:{path}"], capture_output=True)
+    return hashlib.sha256(r.stdout).hexdigest() if r.returncode == 0 else None
+
+
 @contextlib.contextmanager
 def worktree(repo: Path, sha: str, workdir: str | None = None) -> Iterator[Path]:
     """A detached temp worktree at `sha`, removed on exit."""
@@ -577,7 +583,8 @@ def check_a(repo: Path, sha: str, ref_sha: str, strict_pricing: bool = False) ->
     missing_listed = sorted(f"{p}:{n}" for p, n in LISTED_KEYS if (p, n) not in cs.compared and (p, n) not in cs.boundary or (p, n) not in cr.compared and (p, n) not in cr.boundary)
     unresolved = sorted(cs.unresolved | cr.unresolved)
     ok = not differs and not unresolved and not missing_listed
-    return {"verdict": "PASS" if ok else "FAIL", "sha": sha, "ref_sha": ref_sha, "strict_pricing": strict_pricing, "listed_names": len(LISTED_KEYS), "compared_names": len(rows),
+    files = {p: {"sha256_at_sha": git_file_sha256(repo, sha, p), "sha256_at_ref": git_file_sha256(repo, ref_sha, p)} for p in KIT_FILES}
+    return {"verdict": "PASS" if ok else "FAIL", "sha": sha, "ref_sha": ref_sha, "strict_pricing": strict_pricing, "listed_names": len(LISTED_KEYS), "compared_names": len(rows), "kit_files": files,
             "unlisted_transitive_names": [f"{r['file']}:{r['name']}" for r in rows if not r["listed"]], "differing": differs, "unresolved_references": unresolved,
             "listed_names_missing": missing_listed, "boundary_not_compared": boundary, "compared": rows}
 
