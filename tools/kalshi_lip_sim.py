@@ -38,7 +38,6 @@ import math
 import os
 import re
 import resource
-import subprocess
 import sys
 from collections import OrderedDict, defaultdict
 from datetime import datetime, timedelta, timezone
@@ -61,6 +60,7 @@ except ImportError:  # pragma: no cover
 FREEZE_ISO = "2026-10-19T03:33:16Z"
 DECLARE_SHA256 = "977fa41c78517cad11359121030c81555d9700aa0f66204afc7bc9333f0af796"
 CONDITIONS_SHA256 = "35ee7e652d470d03ae5ea0de7274c2da0caf8ab518baa4afa4dadeafc3dee63b"
+CONDITIONS2_SHA256 = "a34bc6df87f823ea09a10164ac295f82f969e75928522df6ed9471647513d117"
 
 US = 1_000_000
 BP = 10_000                      # basis points of a dollar; one cent = 100 bp
@@ -739,7 +739,7 @@ def chain_digest(out):
     return kp.chain_head(out)
 
 
-def check_registry(root, entries):
+def check_registry(root, entries, pin=None):
     """DECLARE 2.1: a recorder run counts only if its series list and start were appended to
     ``obrec-REGISTRY-<suffix>.md`` (next to the run dir) BEFORE its first row.  Returns a list of problems."""
     root = Path(root)
@@ -750,6 +750,10 @@ def check_registry(root, entries):
         return [f"registry file {reg.name} missing"]
     text = reg.read_text()
     problems = []
+    if pin is not None:
+        got = hashlib.sha256(reg.read_bytes()).hexdigest()
+        if got != pin:
+            problems.append(f"{reg.name} sha256 {got} does not match the pinned {pin}")
     runs = read_sealed(root, entries, "orderbook_runs", columns=("run_id", "event", "series_json")).to_pylist()
     for r in runs:
         if r["event"] != "run_start":
@@ -764,7 +768,7 @@ def check_registry(root, entries):
         if len(t):
             m = pc.min(t).as_py()
             first = m if first is None or m < first else first
-    if first is not None and reg.stat().st_mtime * US > first.timestamp() * US:
+    if pin is None and first is not None and reg.stat().st_mtime * US > first.timestamp() * US:
         problems.append(f"{reg.name} was modified after the first row of {name}")
     return problems
 
@@ -842,6 +846,9 @@ class BookSource:
             is_yes = np.array(pc.equal(lv["side"], "yes").fill_null(False).to_numpy(zero_copy_only=False))[keep]
             price = np.rint(lv["price"].fill_null(float("nan")).to_numpy(zero_copy_only=False) * BP)
             price = np.where(np.isnan(price), -1, price).astype(np.int64)[keep]
+            ok_side = np.array(pc.is_in(lv["side"], value_set=pa.array(["yes", "no"])).fill_null(False)
+                               .to_numpy(zero_copy_only=False))[keep]
+            price = np.where(ok_side, price, -1)          # a side other than yes/no drops its snapshot (counted)
             size = lv["size"].fill_null(0.0).to_numpy(zero_copy_only=False)[keep]
             if len(ts):
                 o = np.lexsort((-price, ~is_yes, ts, codes))
@@ -1030,10 +1037,14 @@ class MetaIndex:
         if root is None:
             return
         root = Path(root)
-        for p in sorted(list(root.rglob("*.json")) + list(root.rglob("*.jsonl"))):
+        # captures only: meta-<stamp>.json[l] in this directory (not recursive); anything else is ignored
+        for p in sorted(list(root.glob("meta-*.json")) + list(root.glob("meta-*.jsonl"))):
             self.files.append((str(p.relative_to(root)), kp.sha256_file(p)))
-            txt = p.read_text()
-            objs = [json.loads(ln) for ln in txt.splitlines() if ln.strip()] if p.suffix == ".jsonl" else [json.loads(txt)]
+            try:
+                txt = p.read_text()
+                objs = [json.loads(ln) for ln in txt.splitlines() if ln.strip()] if p.suffix == ".jsonl" else [json.loads(txt)]
+            except (ValueError, OSError) as e:
+                raise InputError(f"metadata capture {p.name} is unreadable: {type(e).__name__}: {e}")
             for o in objs:
                 self._add(o, p, asof_us)
 
@@ -1308,6 +1319,8 @@ class Cfg:
         self.declare = self.conditions = None
         self.book = None
         self.stress = True
+        self.registry_pins = {}   # recorder dir name -> sha256 of its registry file (then mtime is not consulted)
+        self.conditions2 = None
         self.__dict__.update(kw)
         if self.imax is None:
             self.imax = 2 * self.size
@@ -1323,11 +1336,14 @@ def load_inputs(cfg):
     inp = {"sources": [], "hashes": {}, "unsealed": {}}
     for b in cfg.books:
         src = BookSource(b, cfg.freeze_us, cfg.strict_runs)
-        probs = check_registry(b, src.entries)
+        pins = getattr(cfg, "registry_pins", None) or {}
+        probs = check_registry(b, src.entries, pins.get(src.name))
         if probs:
             raise InputError(f"recorder registry check failed for {b}: {probs}")
         inp["sources"].append(src)
         inp["hashes"][f"books:{src.name}"] = kp.chain_head(b)
+        regf = Path(b).parent / f"obrec-REGISTRY-{src.name[len('obrec-'):]}.md"
+        inp["hashes"][f"registry:{src.name}"] = hashlib.sha256(regf.read_bytes()).hexdigest() if regf.exists() else None
         inp["unsealed"][src.name] = len(src.unsealed)
     inp["programs"] = read_programs(cfg.programs, cfg.strict_runs)
     inp["hashes"]["programs"] = inp["programs"].chain
@@ -1459,7 +1475,10 @@ def process_unit(u, cfg, inp, tw, trades_map, results, tainted=frozenset()):
     u.day_e = us_to_date(u.e_us)
     u.day = u.day_e if daily else us_to_date(min(u.e_us, u.close_us) if u.close_us else u.e_us)
     res = results.get(u.ticker) if results else None
-    u.event = (res or {}).get("event") or (u.ticker.rsplit("-", 1)[0] if "-" in u.ticker else u.ticker)
+    u.event = u.ticker.rsplit("-", 1)[0] if "-" in u.ticker else u.ticker      # one rule for every unit
+    other = [e for e in ((res or {}).get("event"), (meta or {}).get("event")) if e and e != u.event]
+    if other:
+        rec["event_disagree"] = other[0]
     src, snaps, info = choose_source(cands, u.quote_start_us, u.e_eff_us, cfg.force_source)
     rec["snap_info"] = info
     if reason is None and tw is not None and (u.ticker in tainted or not covers(tw.get(u.ticker), u.quote_start_us, u.e_eff_us)):
@@ -1865,7 +1884,7 @@ def run_sim(cfg):
     out = Path(cfg.out) if cfg.out else None
     if out and not cfg.dry_run:
         out.mkdir(parents=True, exist_ok=True)
-    gate = {"freeze": FREEZE_ISO, "declare_sha256": DECLARE_SHA256, "conditions_sha256": CONDITIONS_SHA256,
+    gate = {"freeze": FREEZE_ISO, "declare_sha256": DECLARE_SHA256, "conditions_sha256": CONDITIONS_SHA256, "conditions2_sha256": CONDITIONS2_SHA256,
             "book": cfg.book, "size": cfg.size, "i_max": cfg.imax, "deciding": cfg.book == "A",
             "git_sha": kp.git_sha(), "sim_md5": file_md5(__file__),
             "tests_md5": file_md5(Path(__file__).with_name("test_kalshi_lip_sim.py")),
@@ -1881,6 +1900,7 @@ def run_sim(cfg):
                 (out / "table.txt").write_text(format_table(dict(gate, read_instant=None)) + "\n")
             return gate
     inp = load_inputs(cfg)
+    mem.check("load_inputs")
     units, early = classify_programs(inp, cfg)
     tw = trades_windows(cfg.trades, cfg.data_us) if cfg.trades else None
     results, trades_map, in_lines, tainted = {}, {}, [], set()
@@ -1890,11 +1910,13 @@ def run_sim(cfg):
             results, rl, rskip = read_results(cfg.markets, tickers, cfg.data_us)
             in_lines += rl
             gate["results_files_after_R_skipped"] = rskip
+            mem.check("read_results")
         if units:
             trades_map, tskip, tl, tainted = load_trades(cfg.trades, tickers, cfg.freeze_us,
                                                 max(u.e_us for u in units) + HORIZON_S * US, cfg.data_us)
             in_lines += tl
             gate["trades_files_after_R_skipped"] = tskip
+            mem.check("load_trades")
     records = []
     for u in units:
         records.append(process_unit(u, cfg, inp, tw, trades_map, results, tainted))
@@ -1945,22 +1967,24 @@ def run_sim(cfg):
         if r.get("sub"):
             sub[r["sub"]] += 1
     gate["exclusions_sub"] = dict(sorted(sub.items()))
+    dis = [[r["u"].event, r["event_disagree"]] for r in records if r.get("event_disagree")]
+    gate["event_disagreements"] = {"count": len(dis), "examples": dis[:20],
+                                   "note": "events are ticker-derived for every unit; a split event would inflate G2 and narrow G4"}
     gate["exclusion_share"] = exclusion_share(records, early, results, R_eval)
     gate["kill"] = kill_checks(all_rows["U0"], cfg.size, midnights(cfg.freeze_us, R_eval)) if R_eval else {}
     gate["coverage"] = coverage(inp, cfg, R_eval) if R_eval else {}
-    ws = []
-    for r in records:
-        if r["status"] == "opened":
-            ws += r["cores"]["U0"]["w_quoted_us"] or []
-    by_src = defaultdict(list)
+    by_src, gaps_by = defaultdict(list), defaultdict(list)
     for r in records:
         if r["status"] == "opened":
             by_src[r["u"].source] += r["cores"]["U0"]["w_quoted_us"] or []
-    gate["w_above_2x_median_gap"] = {
-        s: {"n_w": len(v), "n_above": sum(1 for x in v if x > 2 * med)}
-        for s, v in sorted(by_src.items())
-        for med in [float(np.median([g for r in records if r["status"] == "opened" and r["u"].source == s
-                                     for g in (r.get("structural") or {}).get("gaps", [])] or [CAP_US]))]}
+            gaps_by[r["u"].source] += (r.get("structural") or {}).get("gaps", [])
+    gate["w_above_2x_median_gap"] = {}
+    for src_name, v in sorted(by_src.items()):
+        g_ = gaps_by[src_name]
+        med = float(np.median(g_)) if g_ else float(CAP_US)
+        gate["w_above_2x_median_gap"][src_name] = {
+            "n_w": len(v), "n_above": sum(1 for x in v if x > 2 * med), "n_gaps": len(g_),
+            "n_gaps_above": sum(1 for x in g_ if x > 2 * med), "median_gap_s": med / US}
     nd = []
     if gate["coverage"].get("not_decidable"):
         nd.append("recorder/poller coverage < 70% on two consecutive days")
@@ -2053,6 +2077,9 @@ def build_parser():
     p.add_argument("--units-evidence", help="file citing the public source (URL + date) that verifies the units")
     p.add_argument("--declare", help="DECLARE-FORWARD.md (sha256 pinned)")
     p.add_argument("--conditions", help="DECLARE-FORWARD-CONDITIONS.md (sha256 pinned)")
+    p.add_argument("--conditions2", help="DECLARE-FORWARD-CONDITIONS-2.md (sha256 pinned)")
+    p.add_argument("--registry-sha256", action="append", default=[], metavar="NAME=HEX",
+                   help="sha256 of obrec-REGISTRY-<run>.md for recorder dir NAME (e.g. obrec-1019d=...); then mtime is not used")
     return p
 
 
@@ -2065,6 +2092,7 @@ def main(argv=None):
         try:
             _verify_pin(a.declare, DECLARE_SHA256, "declare")
             _verify_pin(a.conditions, CONDITIONS_SHA256, "conditions")
+            _verify_pin(a.conditions2, CONDITIONS2_SHA256, "conditions2")
         except InputError as e:
             print(f"refused: {e}", file=sys.stderr)
             return 2
@@ -2082,10 +2110,11 @@ def main(argv=None):
               out=a.out, size=a.size, imax=a.imax, read_us=None if not a.read_instant else iso_to_us(a.read_instant),
               asof_us=None if not a.asof else iso_to_us(a.asof), scan=a.scan, dry_run=a.dry_run,
               strict_runs=a.strict_runs, force_source=a.force_source, mem_cap_mb=a.mem_cap_mb,
-              debug_snaps=a.debug_snaps, units_evidence=a.units_evidence, stress=not a.no_stress)
+              debug_snaps=a.debug_snaps, units_evidence=a.units_evidence, stress=not a.no_stress,
+              registry_pins=dict(x.split("=", 1) for x in a.registry_sha256))
     try:
         res = run_sim(cfg)
-    except (InputError, kp.SealError, MemoryError) as e:
+    except (InputError, kp.SealError, MemoryError, ValueError, KeyError, OSError) as e:
         print(f"refused: {type(e).__name__}: {e}", file=sys.stderr)
         return 4
     if cfg.dry_run:

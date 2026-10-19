@@ -637,7 +637,7 @@ class World:
     def add_meta(self, name_stamp, markets):
         d = self.tmp / "meta"
         d.mkdir(exist_ok=True)
-        (d / f"markets-{name_stamp}.json").write_text(json.dumps({"markets": markets, "cursor": ""}))
+        (d / f"meta-{name_stamp}.json").write_text(json.dumps({"markets": markets, "cursor": ""}))
         self.meta = str(d)
 
     def add_trades(self, rows, done, since="2026-10-19T03:33:16Z", until="2026-10-20T00:00:00Z", name="trades",
@@ -1004,9 +1004,9 @@ def test_program_that_drops_out_stops_rewarding_at_the_last_listing_plus_900s(tm
 def test_metadata_earliest_capture_before_quoting_never_substituted(tmp_path):
     d = tmp_path / "meta"
     d.mkdir()
-    (d / "m-20261019T100000Z.json").write_text(json.dumps({"markets": [
+    (d / "meta-20261019T100000Z.json").write_text(json.dumps({"markets": [
         {"ticker": GAS_A, "event_ticker": "EV", "close_time": "2026-10-19T14:00:00Z", "expected_expiration_time": "2026-10-19T14:30:00Z"}]}))
-    (d / "m-20261019T110000Z.json").write_text(json.dumps({"fetched_at": "2026-10-19T11:00:00Z", "response": {"markets": [
+    (d / "meta-20261019T110000Z.json").write_text(json.dumps({"fetched_at": "2026-10-19T11:00:00Z", "response": {"markets": [
         {"ticker": GAS_A, "event_ticker": "EV", "close_time": "2026-10-19T13:00:00Z", "expected_expiration_time": "2026-10-19T13:30:00Z"},
         {"ticker": GAS_B, "event_ticker": "EV2", "close_time": "2026-10-19T13:00:00Z"}]}}))
     m = sim.MetaIndex(d)
@@ -1016,10 +1016,10 @@ def test_metadata_earliest_capture_before_quoting_never_substituted(tmp_path):
     assert m.usable(GAS_B, at("2026-10-19T10:30:00Z")) is None                       # first capture (11:00) is after
     assert m.usable(GAS_B, first_quote)["close"] == at("2026-10-19T13:00:00Z")
     assert len(m.files) == 2 and all(len(h) == 64 for _n, h in m.files)
-    (d / "no-stamp.json").write_text(json.dumps({"markets": []}))
+    (d / "meta-nostamp.json").write_text(json.dumps({"markets": []}))
     with pytest.raises(sim.InputError, match="no fetched_at"):
         sim.MetaIndex(d)
-    (d / "no-stamp.json").write_text(json.dumps({"fetched_at": "2026-10-19T09:00:00Z", "markets": [{"ticker": "KXMVE-1"}]}))
+    (d / "meta-nostamp.json").write_text(json.dumps({"fetched_at": "2026-10-19T09:00:00Z", "markets": [{"ticker": "KXMVE-1"}]}))
     assert sim.MetaIndex(d).mve == 1
 
 
@@ -1512,3 +1512,92 @@ def test_c2_1_units_quoting_before_the_first_capture_keep_excl_no_meta_with_a_su
     assert u["pW2"]["sub_status"] == "no_capture_for_market"
     assert g["exclusions_sub"] == {"no_capture_for_market": 1, "pre_first_capture": 1}
     assert g["exclusion_share"]["excluded_would_open"] == 2 and g["exclusion_share"]["not_decidable"]   # they stay in the 10% rule
+
+
+# ------------------------------------------------------------------ review round 1: non-blocking items
+def test_n_meta_reader_takes_only_meta_stamp_json_and_refuses_a_corrupt_capture_cleanly(tmp_path):
+    d = tmp_path / "meta"
+    d.mkdir()
+    (d / "meta-20261019T100000Z.json").write_text(json.dumps({"markets": [{"ticker": "A-1", "close_time": E_}]}))
+    (d / "captures.log").write_text("not json\n")
+    (d / "notes.json").write_text("{this is not a capture")                 # other files in the dir are ignored
+    sub = d / "old"
+    sub.mkdir()
+    (sub / "meta-20261019T090000Z.json").write_text(json.dumps({"markets": [{"ticker": "A-1", "close_time": S0}]}))
+    m = sim.MetaIndex(d)
+    assert m.usable("A-1", at("2026-10-19T12:05:30Z"))["close"] == at(E_) and len(m.files) == 1     # not recursive
+    (d / "meta-20261019T110000Z.json").write_text('{"markets": [')            # half-written capture
+    with pytest.raises(sim.InputError, match="meta-20261019T110000Z.json"):
+        sim.MetaIndex(d)
+
+
+def test_n_main_exits_cleanly_on_corrupt_inputs_and_a_torn_manifest_line_is_tolerated(tmp_path, capsys):
+    w = basic_world(tmp_path)
+    (Path(w.meta) / "meta-20261019T110000Z.json").write_text("{broken")
+    rc = sim.main(["--freeze", sim.FREEZE_ISO, "--dry-run", "--books", *w.books, "--programs", w.lip, "--meta", w.meta,
+                   "--trades", str(w.kal), "--series", str(w.kal)])
+    assert rc == 4 and "refused" in capsys.readouterr().err
+    mf = w.kal / "manifest.jsonl"
+    good = mf.read_text()
+    mf.write_text(good + '{"type":"file","path":"trades/series=KXAAAGASDNY/da')    # an append in progress: last line only
+    assert sim.FileManifest(w.kal).files
+    mf.write_text('{"type":"file","path":"x\n' + good)                            # a bad line elsewhere is refused
+    with pytest.raises(sim.InputError, match="not JSON"):
+        sim.FileManifest(w.kal)
+
+
+def test_n_a_side_other_than_yes_or_no_drops_the_snapshot(tmp_path):
+    post = ticks("2026-10-19T12:05:30Z", "2026-10-19T12:08:30Z", 60)
+    st = kp.Store(tmp_path / "obrec-1019c", "orderbook-snap", {})
+    ob, sn = book_run({GAS_A: post})
+    ob[0]["side"] = "bid"
+    paths = [p for p in st.write_partitioned("orderbook", ob, "p", "ts") if p]
+    paths += [p for p in st.write_partitioned("orderbook_snaps", sn, "p", "ts") if p]
+    kp.seal_parts(tmp_path / "obrec-1019c", "2026-10-19T12", paths)
+    got, bad = sim.BookSource(tmp_path / "obrec-1019c").window_snaps(GAS_A, at("2026-10-19T00:00:00Z"), at("2026-10-20T00:00:00Z"))
+    assert bad == 1 and len(got) == len(post) - 1
+
+
+def test_n_registry_can_be_pinned_by_sha256_and_a_touched_file_still_passes(tmp_path):
+    w = World(tmp_path)
+    d = w.add_run("obrec-1019c", {GAS_A: ticks("2026-10-19T12:05:30Z", "2026-10-19T12:10:30Z", 60)}, ["KXAAAGASDNY"])
+    ents, _ = sim.sealed_entries(d)
+    reg = tmp_path / "obrec-REGISTRY-1019c.md"
+    os.utime(reg, (2_000_000_000, 2_000_000_000))                                 # touched after the first row
+    assert "modified after" in sim.check_registry(d, ents)[0]
+    pin = hashlib.sha256(reg.read_bytes()).hexdigest()
+    assert sim.check_registry(d, ents, pin=pin) == []                              # the pinned content is what counts
+    assert "sha256" in sim.check_registry(d, ents, pin="0" * 64)[0]
+    reg.write_text("KXAAAGASDNY changed\n")
+    assert "sha256" in sim.check_registry(d, ents, pin=pin)[0]
+
+
+def test_n_force_source_end_to_end_and_event_cluster_is_ticker_derived(tmp_path, covered):
+    w = basic_world(tmp_path)
+    w.add_run("obrec-1019d", {GAS_A: ticks("2026-10-19T12:05:40Z", "2026-10-19T15:30:00Z", 45)}, ["KXAAAGASDNY"])
+    w.add_markets([(GAS_A, "A-DIFFERENT-EVENT", "yes", 1.0, "2026-10-19T15:00:00Z", "2026-10-20T04:41:00Z")])
+    src = {}
+    for name, kw in (("auto", {}), ("forced", {"force_source": "obrec-1019c"})):
+        g = sim.run_sim(w.cfg(out=str(tmp_path / name), **kw))
+        src[name] = {r["unit_id"]: r["source"] for r in pq.read_table(tmp_path / name / "units.parquet").to_pylist() if r["cell"] == "U0"}
+    assert src["auto"] == {"pA": "obrec-1019d", "pB": "obrec-1019c"} and src["forced"] == {"pA": "obrec-1019c", "pB": "obrec-1019c"}
+    ev = {r["unit_id"]: r["event"] for r in pq.read_table(tmp_path / "auto" / "units.parquet").to_pylist() if r["cell"] == "U0"}
+    assert ev["pA"] == "KXAAAGASDNY-26OCT19"                                        # derived, not the settled table's value
+    assert g["event_disagreements"]["count"] == 1 and g["event_disagreements"]["examples"][0][1] == "A-DIFFERENT-EVENT"
+
+
+def test_n_memory_is_checked_after_the_one_shot_loads(tmp_path):
+    w = basic_world(tmp_path)
+    with pytest.raises(MemoryError, match="load_inputs"):
+        sim.run_sim(w.cfg(out=str(tmp_path / "o"), mem_cap_mb=1.0))
+
+
+def test_n_w_report_counts_raw_gaps_above_twice_the_median_and_conditions2_pin_is_required(tmp_path, covered):
+    w = basic_world(tmp_path)
+    g = sim.run_sim(w.cfg(out=str(tmp_path / "o")))
+    r = g["w_above_2x_median_gap"]["obrec-1019c"]
+    assert set(r) == {"n_w", "n_above", "n_gaps", "n_gaps_above", "median_gap_s"} and r["n_gaps_above"] == 0 and r["median_gap_s"] == 60.0
+    assert sim.CONDITIONS2_SHA256.startswith("a34bc6df")
+    assert g["conditions2_sha256"] == sim.CONDITIONS2_SHA256
+    assert sim.main(["--freeze", sim.FREEZE_ISO, "--books", "x", "--programs", "y", "--declare", __file__,
+                     "--conditions", __file__, "--out", str(tmp_path)]) == 2
