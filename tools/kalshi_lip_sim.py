@@ -623,8 +623,10 @@ def evaluate_gate(rows, *, boot=True):
     for r in rows:
         day_sum[r["day"]] += r["net"]
     pos = [d for d in days_full if day_sum[d] > 0]
-    g["G3"] = {"pass": len(days_full) >= 5 and 2 * len(pos) > len(days_full), "days_full": len(days_full),
-               "positive_days": len(pos), "need_days": 5, "day_sums": {d: round(day_sum[d], 6) for d in sorted(day_sum)}}
+    pos_all = [d for d in day_sum if day_sum[d] > 0]
+    g["G3"] = {"pass": len(days_full) >= 5 and 2 * len(pos) > len(days_full) and 2 * len(pos_all) > len(day_sum),
+               "days_full": len(days_full), "positive_days": len(pos), "need_days": 5,
+               "all_days": len(day_sum), "positive_all_days": len(pos_all), "day_sums": {d: round(day_sum[d], 6) for d in sorted(day_sum)}}
     if boot and n:
         b4 = cluster_bootstrap(*_cluster_arrays(rows, key_event))
         b4b = cluster_bootstrap(*_cluster_arrays(rows, key_gas_day))
@@ -1660,9 +1662,12 @@ def coverage(inp, cfg, R_us):
     return out
 
 
-def exclusion_share(records, early_excl):
-    """CONDITIONS 17: excl_no_trades + excl_no_meta units with a structurally quotable book over the units
-    that would otherwise be opened."""
+def exclusion_share(records, early_excl=(), results=None, R_us=None):
+    """CONDITIONS 17 / CONDITIONS-2 item 7: excl_no_trades + excl_no_meta units with a structurally quotable book
+    over the units that would otherwise be opened.  With a read instant, numerator and denominator are cut the
+    same way as the population: only units settled or worst-case at R (by ``resolution_at`` on the unit itself)."""
+    if R_us is not None:
+        records = [r for r in records if resolution_at(r["u"], results or {}, R_us)[0] != "young"]
     opened = sum(1 for r in records if r["status"] == "opened")
     ex = sum(1 for r in records if r["status"] in ("excl_no_trades", "excl_no_meta")
              and r.get("structural") and r["structural"]["quotable"] > 0)
@@ -1928,7 +1933,7 @@ def run_sim(cfg):
         if r["status"] != "opened":
             ex[r["status"]] += 1
     gate["exclusions"] = dict(sorted(ex.items()))
-    gate["exclusion_share"] = exclusion_share(records, early)
+    gate["exclusion_share"] = exclusion_share(records, early, results, R_eval)
     gate["kill"] = kill_checks(all_rows["U0"], cfg.size, midnights(cfg.freeze_us, R_eval)) if R_eval else {}
     gate["coverage"] = coverage(inp, cfg, R_eval) if R_eval else {}
     ws = []

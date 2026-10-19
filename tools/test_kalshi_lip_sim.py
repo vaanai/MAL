@@ -1460,3 +1460,39 @@ def test_b4_prints_fill_through_e_eff_plus_l_while_reward_stays_clipped_at_e_eff
     u2 = mk_unit(e=100.0)
     r2 = run(u2, [bsnap(99, **GOOD)], [trade(101.5, "x", 0.48, 5, "no"), trade(102.5, "y", 0.48, 5, "no")])
     assert [f[0] for f in r2.fills] == ["x"] and r2.acc[0]["c"] == 0.0 and r2.quoted_us == 0 and r2.n_snaps_quoted == 1
+
+
+def test_b5_g3_also_needs_a_strict_majority_of_positive_days_over_all_days_with_an_opened_unit():
+    rows = []
+    for i, (d, x) in enumerate([("2026-10-24", 1.0), ("2026-10-25", 1.0), ("2026-10-26", 1.0), ("2026-10-27", -1.0),
+                                ("2026-10-28", -1.0)]):
+        rows.append(row(i, day=d, net=x))
+    g = sim.evaluate_gate(rows)["G3"]
+    assert g["pass"] and g["days_full"] == 5 and g["positive_days"] == 3        # majority over the full-unit days
+    stubs = [row(10 + i, day=f"2026-10-{29 + i}", net=-1.0, full=False) for i in range(3)]   # days with stub units only
+    g = sim.evaluate_gate(rows + stubs)["G3"]
+    assert g["days_full"] == 5 and g["positive_days"] == 3
+    assert g["all_days"] == 8 and g["positive_all_days"] == 3 and g["pass"] is False      # 3 of 8 is not a majority
+    ok = sim.evaluate_gate(rows + [row(20, day="2026-10-29", net=-1.0, full=False)])["G3"]
+    assert ok["all_days"] == 6 and ok["pass"] is False                                    # 3 of 6 is not strict
+    assert sim.evaluate_gate(rows + [row(21, day="2026-10-29", net=1.0, full=False)])["G3"]["pass"]
+
+
+def test_b6_exclusion_share_is_cut_at_r_so_units_live_at_r_enter_neither_side():
+    def rec(i, status, quot, settled):
+        u = mk_unit(e=1000.0, uid=f"s{i}")
+        u.ticker = f"T-{i}"
+        return {"u": u, "status": status, "structural": {"quotable": quot}}, (f"T-{i}", settled)
+    pairs = [rec(i, "opened", 5, True) for i in range(20)] + [rec(100 + i, "excl_no_trades", 5, False) for i in range(5)]
+    records = [p[0] for p in pairs]
+    e = records[0]["u"].e_us
+    R = e + 3600 * US
+    results = {t: {"value": 1.0, "settled_us": e + sec(60), "result": "yes", "event": "E"} for (t, ok) in (p[1] for p in pairs) if ok}
+    mech = sim.exclusion_share(records, [])                                   # uncut: 5 / 25 = 20%
+    assert mech["share"] == pytest.approx(0.2) and mech["not_decidable"]
+    cut = sim.exclusion_share(records, [], results, R)
+    assert cut["excluded_would_open"] == 0 and cut["opened_or_would"] == 20 and not cut["not_decidable"]
+    # the same excluded units once they are worst-case at R (48 h past max(E, X)) DO count
+    R2 = e + sec(86_400) + 48 * 3600 * US
+    late = sim.exclusion_share(records, [], results, R2)
+    assert late["excluded_would_open"] == 5 and late["not_decidable"]
