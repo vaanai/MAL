@@ -25,12 +25,23 @@ START_MS = T0 * 1000 - 5_000
 V1, V2 = "h5v1-boostfloor-a1", "h5v2-boostclock-a1"
 
 
+SPS_SPAN_S = 300.0  # the detector's sps window in a live run; the synthetic engine runs on a fixed sps (sps_fn) and writes null, which the executor's parser refuses (DEC-031 Amendment 1)
+
+
+def live_like(recs):
+    """The engine's trigger records, made parser-accepted the way a live detector's are: a real sps window span (the engine's fixed-sps test mode writes null)."""
+    for r in recs:
+        if r.get("type") == "trigger" and r.get("sps_span_s") is None:
+            r["sps_span_s"] = SPS_SPAN_S
+    return recs
+
+
 def records(n=1, start_ms=START_MS, mutate=None, sha=SHA, **start_kw):
-    """The fresh-forward engine's records for n synthetic pools, behind a start record."""
+    """The fresh-forward engine's records for n synthetic pools, behind a start record. Triggers are live-like (accepted by the executor's parser) unless `mutate` changes that."""
     eng, out = fresh_engine(start_ms)
     run_pools(eng, *[pool_tape(f"Pool{i:04d}", 1000 + 5000 * i, T0 + 1600 * i, filler=True) for i in range(n)])
     start = {"type": "start", "t_ms": start_ms, "start_ms": start_ms, "code_sha": sha, "fresh_forward": "ARENA", "dirty": False, **start_kw}
-    recs = [start] + out
+    recs = [start] + live_like(out)
     if mutate:
         mutate(recs)
     return recs
