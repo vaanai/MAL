@@ -170,7 +170,7 @@ class Rig:
     """Everything the stub runner owns, wired to a scratch root, a mock RPC and the replay clock."""
 
     def __init__(self, tape_dir: Path, scratch: Path, *, state_start_ms: int, clock_start_ms: int, holders: bool, feed_delay_slots: int = 2,
-                 timing: bool = True, evict_idle_min: int | None = None, bound_memory: bool = True) -> None:
+                 timing: bool = True, evict_idle_min: int | None = None, bound_memory: bool = True, shadow: bool = False, engine_prune: bool = False) -> None:
         os.environ.setdefault("MAL_ARENA_TEST", "1")  # scratch registry only: register_bot's test overrides
         from tools import hv4_prefetch as P
         from tools import hv4_runner as R
@@ -200,6 +200,64 @@ class Rig:
         self.run = R.Runner(cfg, self.state, engine, model, self.source, guard)
         self.run.register_all(str(scratch / "bots.json"), now_ms=clock_start_ms - 61 * MIN_MS, verify_sha=False)
         self.engine = engine
+        self.diffs: dict[tuple, tuple] = {}
+        self.shadow: Any = None  # a second, never-pruned engine fed the same rows: the reference for the print-level comparison
+        self.engine_pruned = 0
+        if shadow:
+            self.shadow = ArenaEngine(scratch / "ledger-shadow", scratch / "bots-shadow.json", cfg=R.stack_config(feed_delay_slots=feed_delay_slots), sps_fn=lambda: 0.4)
+        if shadow or engine_prune:
+            orig, nxt = engine.on_row, [0]
+
+            def on_row(row: Any) -> Any:
+                if self.shadow is not None:
+                    self.shadow.on_row(row)
+                out = orig(row)
+                t = row.get("t_recv_ms")
+                if engine_prune and isinstance(t, int) and t >= nxt[0]:  # EXPERIMENT: what #744 at 8ee39dc did, every 5 minutes of tape time
+                    nxt[0] = t - t % R_HOUSEKEEP + R_HOUSEKEEP
+                    self.engine_pruned += engine.prune()
+                return out
+
+            engine.on_row = on_row
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------- print-level comparison
+def compare_engines(primary: Any, shadow: Any, diffs: dict[tuple, tuple]) -> dict[str, Any]:
+    """For every pool the primary engine holds and every print it still holds there, compare (slot, v, vsrc) with the same print (matched by order key) in the
+    never-pruned shadow engine. A pool whose held keys are not a suffix of the shadow's counts as `pools_not_suffix`. Differing prints are added to `diffs`
+    (key: (pool, order key); value: (primary triple, shadow triple)), so repeated samples count a print once."""
+    held = n_diff = pools_diff = not_suffix = last_v = mint = 0
+    for k, h in primary.pools.items():
+        g = shadow.pools.get(k)
+        m = len(h.slot)
+        held += m
+        if g is None:
+            not_suffix += 1
+            continue
+        off = len(g.slot) - m
+        if off < 0 or g.keys[off:] != h.keys:
+            not_suffix += 1
+            continue
+        if h.last_v_row != g.last_v_row:
+            last_v += 1
+        if h.mint != g.mint:
+            mint += 1
+        if h.slot == g.slot[off:] and h.v == g.v[off:] and h.vsrc == g.vsrc[off:]:
+            continue
+        pools_diff += 1
+        for i in range(m):
+            a, b = (h.slot[i], h.v[i], h.vsrc[i]), (g.slot[off + i], g.v[off + i], g.vsrc[off + i])
+            if a != b:
+                n_diff += 1
+                diffs.setdefault((k, h.keys[i]), (a, b))
+    return {"pools_held": len(primary.pools), "prints_held": held, "prints_differing": n_diff, "pools_with_a_differing_print": pools_diff,
+            "pools_not_suffix": not_suffix, "pools_last_v_row_differs": last_v, "pools_mint_differs": mint}
+
+
+def summarize_diffs(diffs: dict[tuple, tuple]) -> dict[str, Any]:
+    """Distinct differing prints over the whole run, by (primary vsrc, shadow vsrc), and how many pools they sit in."""
+    by = collections.Counter(f"{a[2]}<-{b[2]}" for a, b in diffs.values())
+    return {"distinct_differing_prints": len(diffs), "distinct_pools": len({k[0] for k in diffs}), "by_vsrc_primary_from_shadow": dict(by)}
 
 
 # ---------------------------------------------------------------------------------------------------------------------------------- what-if (never used by the runner)
@@ -285,6 +343,10 @@ def sample(rig: Rig, T: int, wall0: float, extra: dict[str, Any]) -> dict[str, A
     c["prefetch.pools[*].mints"] =sum(len(p.mints) for p in rig.prefetch.pools.values())
     c["prefetch.pools[*].holders"] = sum(len(p.holders) for p in rig.prefetch.pools.values())
     row.update(c)
+    if rig.shadow is not None:
+        cmp = compare_engines(rig.engine, rig.shadow, rig.diffs)
+        row.update({f"cmp.{k}": v for k, v in cmp.items()})
+        row["cmp.distinct_differing_prints"] = len(rig.diffs)
     row["mock_calls"] = sum(rig.rpc_mock.calls.values())
     row["gc_objects"] = len(gc.get_objects())
     row.update(extra)
@@ -407,6 +469,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--evict-idle-min", type=int, default=None, help="ArenaState evict_idle_min (default: the state's own default)")
     ap.add_argument("--no-timing", action="store_true")
     ap.add_argument("--whatif-trim-slots", type=int, default=0, help="EXPERIMENT: also trim each quiet-of-positions engine pool history to the last N slots (see whatif_trim)")
+    ap.add_argument("--compare-engine", action="store_true", help="feed a second, never-pruned engine and compare (slot, v, vsrc) of every print the primary holds at each sample")
+    ap.add_argument("--engine-prune", action="store_true", help="EXPERIMENT: call ArenaEngine.prune() every 5 tape minutes, as #744 at 8ee39dc did (the exposure measurement)")
     ap.add_argument("--no-bound-memory", action="store_true", help="RunnerConfig.bound_memory off: the 2026-10-19 behaviour (for the before curve and the md5 proof)")
     a = ap.parse_args(argv)
 
@@ -426,7 +490,7 @@ def main(argv: list[str] | None = None) -> int:
 
         tracemalloc.start(1)
     rig = Rig(tape, scratch, state_start_ms=state_start, clock_start_ms=t_from, holders=a.holders == "on", timing=not a.no_timing, evict_idle_min=a.evict_idle_min,
-              bound_memory=not a.no_bound_memory)
+              bound_memory=not a.no_bound_memory, shadow=a.compare_engine, engine_prune=a.engine_prune)
     rows = replay(rig, t_from, t_to, sample_ms=a.sample_min * MIN_MS, tracemalloc_top=a.tracemalloc, whatif_keep_slots=a.whatif_trim_slots)
     if a.out:
         write_tsv(rows, Path(a.out))
@@ -434,6 +498,9 @@ def main(argv: list[str] | None = None) -> int:
             Path(str(a.out) + ".tracemalloc.json").write_text(json.dumps([{"sim": r["sim"], "top": r.get("tm_top"), "growth": r.get("tm_growth"), "total_mb": r.get("tm_total_mb")} for r in rows], indent=1))
     if a.md_out:
         write_md(rows, Path(a.md_out), f"HV4 stub replay memory, {a.hours}", " ".join(argv if argv is not None else sys.argv[1:]))
+    if rig.shadow is not None:
+        print(json.dumps({"engine_compare_final": {k[4:]: v for k, v in rows[-1].items() if k.startswith("cmp.")}, "engine_compare_distinct": summarize_diffs(rig.diffs),
+                          "engine_pools_pruned_by_experiment": rig.engine_pruned}))
     print(json.dumps({"done": True, "decision_log_md5": rig.run.log.md5(), "ledger_digest": ledger_digest(scratch / "ledger"), "ledger_digest_no_mint": ledger_digest(scratch / "ledger", ("mint",)), "mock_calls": dict(rig.rpc_mock.calls), "prefetch": rig.prefetch.stats(), "counters": rig.run.counters, "peak_rss_mb": max(r["rss_mb"] for r in rows) if rows else None}))
     return 0
 
