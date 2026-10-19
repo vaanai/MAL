@@ -215,7 +215,7 @@ def sim_is_lip_f1():
 
 
 def verify_lip_texts(texts_dir):
-    """Check the six inherited LIP-F1 texts against their PINS-1 sha256.  -> ({file name: sha256}, VERIFY-1 path)."""
+    """Check the eight inherited LIP-F1 texts (the six rule texts, PINS-1 and PINS-2) against their PINS-1 sha256.  -> ({file name: sha256}, VERIFY-1 path)."""
     if not texts_dir:
         raise F2Refusal("--lip-texts-dir is required")
     d = Path(texts_dir)
@@ -703,6 +703,11 @@ def run_f2(cfg, variant, ctx):
     """Run the frozen simulator for one F2 variant.  Returns the simulator's gate dict with the F2 labels merged in; the
     files in cfg.out carry the same labels (gate.json, table.txt, the parquet metadata and the marker)."""
     check_sim_pin()
+    # the frozen declaration is re-read here, so no caller can run without it: its sha256, its freeze instant and its
+    # F2 TOOL MD5 line (this file's md5) must all hold (QP R4)
+    _sha, declared_freeze = load_f2_declaration(ctx.get("declare_path"), ctx.get("declare_sha256"))
+    if declared_freeze != ctx.get("freeze_iso"):
+        raise F2Refusal(f"the run's freeze {ctx.get('freeze_iso')} is not the declared cohort freeze {declared_freeze}")
     check_cfg(cfg, variant, sim.iso_to_us(ctx["freeze_iso"]))
     if not cfg.dry_run:
         # the two process gates are checked again here, so no caller can reach the simulator without them
@@ -779,7 +784,7 @@ def build_parser():
     p.add_argument("--f2-declare-sha256", required=True, help="sha256 of DECLARE-F2.md, as recorded in the F2 pins record")
     p.add_argument("--freeze", required=True, help="must equal the cohort freeze instant in DECLARE-F2.md")
     p.add_argument("--lip-texts-dir", default=DEFAULT_LIP_TEXTS_DIR,
-                   help="directory holding the six inherited LIP-F1 texts (checked against DECLARE-FORWARD-PINS-1)")
+                   help="directory holding the eight inherited LIP-F1 texts (the six rule texts, PINS-1 and PINS-2), checked against DECLARE-FORWARD-PINS-1")
     p.add_argument("--lip-f1-gate", help="LIP-F1's DECIDING gate.json (required unless --dry-run)")
     p.add_argument("--bookc-done", help="Book C's gate.json, read at LIP-F1's R (required unless --dry-run)")
     p.add_argument("--out", help="output directory, one per variant (required unless --dry-run)")
@@ -816,7 +821,7 @@ def prepare(a):
         raise F2Refusal(f"--freeze: {e}")
     if given != sim.iso_to_us(freeze_iso):
         raise F2Refusal(f"--freeze must be the cohort freeze {freeze_iso}")
-    ctx = {"freeze_iso": freeze_iso, "declare_sha256": declare_sha, "texts": texts}
+    ctx = {"freeze_iso": freeze_iso, "declare_sha256": declare_sha, "declare_path": a.f2_declare, "texts": texts}
     if a.dry_run:
         if a.read_instant or a.scan or a.asof or a.out or a.debug_snaps:
             raise F2Refusal("--dry-run takes no --read-instant / --scan / --asof / --out / --debug-snaps")

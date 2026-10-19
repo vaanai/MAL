@@ -136,8 +136,14 @@ def f2_world(tmp, monkeypatch, **kw):
     return w
 
 
-def ctx_for(texts_dir, gates, freeze=F2_FREEZE):
-    return {"freeze_iso": freeze, "declare_sha256": "ab" * 32, "texts": {f.name: sha(f) for f in Path(texts_dir).iterdir()},
+def ctx_for(texts_dir, gates, freeze=F2_FREEZE, md5=None):
+    """The run context ``prepare`` builds, with a synthetic DECLARE-F2.md (carrying this tool's md5 unless ``md5`` is given)."""
+    d = Path(texts_dir).parent / "ctx-decl"
+    d.mkdir(exist_ok=True)
+    p = d / "DECLARE-F2.md"
+    p.write_text(decl_text(freeze, md5))
+    return {"freeze_iso": freeze, "declare_sha256": sha(p), "declare_path": str(p),
+            "texts": {f.name: sha(f) for f in Path(texts_dir).iterdir()},
             "lip_f1_gate": {"path": gates["lip"]}, "bookc_done": {"path": gates["bookc"]}}
 
 
@@ -1364,3 +1370,29 @@ def test_r10_a_failed_rerun_restores_the_marker_it_rewrote(tmp_path, monkeypatch
     with pytest.raises(f2.F2Refusal, match="synthetic crash"):
         f2.run_f2(f2_cfg(w, tmp_path / "out"), "A", ctx)
     assert (tmp_path / "out" / f2.MARKER).read_bytes() == marker and md5_dir(tmp_path / "out") == kept
+
+
+# ============================== reviewer nits: run_f2 re-reads the declaration (R4 line), "eight" texts
+def test_run_f2_itself_refuses_without_the_declaration_its_pin_its_freeze_and_its_tool_md5(tmp_path, monkeypatch, covered, texts, gates):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    good = ctx_for(texts, gates)
+    monkeypatch.setattr(sim, "run_sim", lambda cfg: pytest.fail("the simulator ran"))
+    bad = {"no declaration path": {k: v for k, v in good.items() if k != "declare_path"},
+           "a wrong declaration pin": dict(good, declare_sha256="0" * 64),
+           "another tool's md5": ctx_for(texts, gates, md5="0" * 32),
+           "another freeze": dict(good, freeze_iso="2026-10-19T12:00:00Z")}
+    for name, ctx in bad.items():
+        with pytest.raises(f2.F2Refusal):
+            f2.run_f2(f2_cfg(w, tmp_path / "out"), "A", ctx)
+        dry = f2.make_cfg(None, freeze_us=st.at(F2_FREEZE), books=w.books, programs=w.lip, dry_run=True)
+        with pytest.raises(f2.F2Refusal):
+            f2.run_f2(dry, None, ctx)
+        assert not (tmp_path / "out").exists(), name
+    with pytest.raises(f2.F2Refusal, match="pins F2 TOOL MD5"):
+        f2.run_f2(f2_cfg(w, tmp_path / "out"), "A", bad["another tool's md5"])
+
+
+def test_the_help_and_docstring_say_eight_texts():
+    helptext = " ".join(f2.build_parser().format_help().split())
+    assert "eight inherited" in helptext and "six inherited" not in helptext
+    assert "eight inherited" in f2.verify_lip_texts.__doc__ and len(f2.LIP_F1_TEXTS) == 8
