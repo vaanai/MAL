@@ -1600,3 +1600,418 @@ def exclusion_share(records, early_excl):
     den = opened + ex
     return {"opened_or_would": den, "excluded_would_open": ex, "share": (ex / den) if den else 0.0,
             "not_decidable": bool(den and ex / den > EXCL_SHARE_LIMIT)}
+
+
+# ====================================================================================== outputs
+VERIFY1_SHA256 = "8ce3e30f88bebd784e87f450bb846b11df334cdfb5f7e94cbad68aa1bc8b8bb3"
+_F, _S, _I, _B = pa.float64(), pa.string(), pa.int64(), pa.bool_()
+UNITS_SCHEMA = pa.schema([
+    ("unit_id", _S), ("cell", _S), ("ticker", _S), ("event", _S), ("series", _S), ("status", _S),
+    ("resolution", _S), ("source", _S), ("S0", _S), ("E", _S), ("E_eff", _S), ("P", _F), ("T", _F), ("DF", _F),
+    ("n_param_sets", _I), ("first_poll_ts", _S), ("unit_day", _S), ("day_E", _S), ("gas", _B),
+    ("quoted_s", _F), ("n_snaps_window", _I), ("n_snaps_quoted", _I), ("full", _B),
+    ("reward_central", _F), ("reward_lower", _F), ("reward_upper", _F), ("reward_after_floor", _F),
+    ("reward_r2", _F), ("reward_r4", _F), ("reward_unc", _F), ("reward_xw", _F),
+    ("fees_cent", _F), ("fees_micro", _F), ("settle_pnl", _F), ("net", _F), ("net_lower", _F),
+    ("net_nofloor", _F), ("net_dayfloor", _F), ("net_r2", _F), ("net_r4", _F), ("net_unc", _F), ("net_xw", _F),
+    ("worst_u", _F), ("collateral_peak", _F), ("fills_YES", _F), ("fills_NO", _F), ("n_fills", _I),
+    ("dropped_fills", _I), ("fee_assumed", _B), ("drift_flag", _B), ("blind_gaps", _I), ("blind_s", _F),
+])
+FILLS_SCHEMA = pa.schema([
+    ("unit_id", _S), ("trade_id", _S), ("side", _S), ("price", _F), ("qty", _F), ("ts", _S), ("cell", _S),
+    ("markout_5m", _F), ("markout_60m", _F), ("mark_source_5m", _S), ("mark_source_60m", _S)])
+DAYS_SCHEMA = pa.schema([("cell", _S), ("unit_day", _S), ("n_units", _I), ("sum_net", _F), ("positive", _B)])
+SNAPS_SCHEMA = pa.schema([("unit_id", _S), ("cell", _S), ("ts", _S), ("decision", _S), ("b_yes", _F),
+                          ("b_no", _F), ("s_yes", _F), ("s_no", _F)])
+
+
+def write_table(path, rows, schema):
+    cols = {f.name: [r.get(f.name) for r in rows] for f in schema}
+    pq.write_table(pa.table(cols, schema=schema), path, compression="snappy")
+
+
+def _iso_or_none(us):
+    return None if us is None else us_to_iso(us)
+
+
+def unit_row(rec, cell, scored, core):
+    u = rec["u"]
+    r = {"unit_id": u.unit_id, "cell": cell, "ticker": u.ticker, "event": getattr(u, "event", None),
+         "series": u.series, "status": rec["status"], "resolution": scored.get("resolution") if scored else None,
+         "source": getattr(u, "source", None), "S0": _iso_or_none(u.s0_us), "E": _iso_or_none(u.e_us),
+         "E_eff": _iso_or_none(getattr(u, "e_eff_us", None)) if getattr(u, "psets", None) else None,
+         "first_poll_ts": _iso_or_none(u.first_poll_us), "unit_day": getattr(u, "day", None),
+         "day_E": getattr(u, "day_e", None), "gas": bool(u.gas), "n_param_sets": len(u.psets),
+         "drift_flag": bool(u.drift)}
+    if u.psets:
+        r.update({"P": u.psets[0][0], "T": u.psets[0][1], "DF": u.psets[0][2]})
+    if core is not None:
+        rw = core["rew"]
+        fl = core["fills"]
+        r.update({"quoted_s": core["quoted_s"], "n_snaps_window": core["n_window"], "n_snaps_quoted": core["n_quoted"],
+                  "full": core["quoted_s"] >= FULL_UNIT_S, "reward_central": rw["c"], "reward_lower": rw["lower"],
+                  "reward_upper": rw["upper"], "reward_r2": rw.get("r2"), "reward_r4": rw.get("r4"),
+                  "reward_unc": rw.get("unc"), "reward_xw": rw.get("xw"), "fees_cent": core["fees_cent"],
+                  "fees_micro": core["fees_micro"], "collateral_peak": core["collateral"],
+                  "fills_YES": core["fills_yes"], "fills_NO": core["fills_no"], "n_fills": len(fl),
+                  "dropped_fills": core["dropped"], "fee_assumed": core["fee_assumed"],
+                  "blind_gaps": core["blind_gaps"], "blind_s": core["blind_s"]})
+    if scored:
+        r.update({"reward_after_floor": scored["reward_after_floor"], "settle_pnl": scored["settle"],
+                  "net": scored["net"], "net_lower": scored["net_lower"], "net_nofloor": scored["net_nofloor"],
+                  "net_dayfloor": scored.get("net_dayfloor"), "net_r2": scored.get("net_r2"),
+                  "net_r4": scored.get("net_r4"), "net_unc": scored.get("net_unc"), "net_xw": scored.get("net_xw"),
+                  "worst_u": scored["worst_u"]})
+    return r
+
+
+def check_units_evidence(path):
+    """CONDITIONS 11: the units of period_reward / target_size_fp must be verified against a public Kalshi
+    source (URL and fetch date) BEFORE the first computation.  The evidence file must exist and contain a URL
+    and the word VERIFIED; its sha256 is recorded.  Without it the read is NOT_DECIDABLE."""
+    if not path or not Path(path).exists():
+        return {"ok": False, "reason": "no --units-evidence file"}
+    txt = Path(path).read_text()
+    sha = kp.sha256_file(Path(path))
+    ok = "https://" in txt and "VERIFIED" in txt
+    return {"ok": ok, "sha256": sha, "pinned_verify1": sha == VERIFY1_SHA256,
+            "reason": None if ok else "evidence file lacks a URL and the word VERIFIED"}
+
+
+def _verify_pin(path, want, label):
+    if not path:
+        raise InputError(f"--{label} is required (sha256 pin {want[:8]}...)")
+    got = kp.sha256_file(Path(path))
+    if got != want:
+        raise InputError(f"{label} sha256 {got} does not match the pinned {want}")
+    return got
+
+
+def read_candidates():
+    d = datetime.strptime(READ_FROM_ISO, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    end = iso_to_us(NOT_DECIDABLE_ISO)
+    out = []
+    while int(d.timestamp() * US) <= end:
+        out.append(int(d.timestamp() * US))
+        d += timedelta(days=1)
+    return out
+
+
+def midnights(lo_us, hi_us):
+    d = datetime.fromtimestamp(lo_us / US, tz=timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    out = []
+    while int(d.timestamp() * US) <= hi_us:
+        t = int(d.timestamp() * US)
+        if t > lo_us:
+            out.append(t)
+        d += timedelta(days=1)
+    return out
+
+
+def file_md5(p):
+    try:
+        return hashlib.md5(Path(p).read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def structure_report(cfg, inp, early, records):
+    cnt = defaultdict(int)
+    for u in early:
+        cnt[u.status] += 1
+    for r in records:
+        cnt[r["status"]] += 1
+    so = [r for r in records if r["status"] == "opened"]
+    gaps_by_src = defaultdict(list)
+    used = defaultdict(int)
+    for r in records:
+        st = r.get("structural")
+        if st and r["u"].source:
+            gaps_by_src[r["u"].source] += st["gaps"]
+            used[r["u"].source] += 1
+    return {
+        "mode": "dry_run", "note": "structure counts only; no reward, fill, markout or P&L computed; no trades parquet or result opened",
+        "freeze": FREEZE_ISO, "book": cfg.book, "size": cfg.size, "i_max": cfg.imax,
+        "programs_admitted_series": len(inp["programs"].by_id),
+        "program_rows_not_in_ok_polls": inp["programs"].n_rows_not_ok,
+        "units_by_status": dict(sorted(cnt.items())),
+        "structurally_opened_units": len(so),
+        "events": len({r["u"].event for r in so}),
+        "unit_days": len({r["u"].day for r in so}),
+        "snapshots_in_window": sum(r["structural"]["snaps_window"] for r in so),
+        "snapshots_quotable_zero_inventory": sum(r["structural"]["quotable"] for r in so),
+        "carry_forward_gaps": {"gaps_over_cap": sum(r["structural"]["blind_gaps"] for r in so),
+                               "blind_seconds": round(sum(r["structural"]["blind_s"] for r in so), 1),
+                               "cap_s": CAP_US / US},
+        "median_gap_s_by_source": {k: round(float(np.median(v)) / US, 3) for k, v in sorted(gaps_by_src.items()) if v},
+        "units_by_source": dict(sorted(used.items())),
+        "inconsistent_snapshots": {s.name: s.stats["inconsistent"] for s in inp["sources"]},
+        "rows_before_freeze_ignored": {s.name: s.stats["rows_before_freeze_ignored"] for s in inp["sources"]},
+        "unsealed_parts_excluded": inp["unsealed"],
+        "meta_captures": inp["meta"].n_captures, "meta_markets": len(inp["meta"].first),
+        "exclusion_share": exclusion_share(records, early),
+    }
+
+
+def format_table(g):
+    lines = [f"LIP-F1 formula screen | Book {g['book']} S={g['size']:g} I_max={g['i_max']:g} | R={g.get('read_instant')} | "
+             f"verdict={g['verdict']} | deciding={g['deciding']}",
+             "(a pass is a 'formula screen passed', never a positive book; Option A credited rewards + the owner are needed)",
+             f"{'cell':5} {'units':>5} {'full':>5} {'evts':>5} {'days':>4} {'total$':>10} {'mean$':>9} {'p05$':>9} "
+             "G1 G2 G3 G4 G4b G5 G6 G7 ALL"]
+    for c, cg in g["cells"].items():
+        if not cg["gate"]["n_units"]:
+            lines.append(f"{c:5} {0:>5}")
+            continue
+        gt = cg["gate"]
+        p05 = gt["G4"]["p05"]
+        flags = " ".join(f"{'Y' if gt[k]['pass'] else 'n':>{len(k) if k == 'G4b' else 2}}"
+                         for k in ("G1", "G2", "G3", "G4", "G4b", "G5", "G6", "G7"))
+        lines.append(f"{c:5} {gt['n_units']:>5} {gt['n_full']:>5} {gt['G2']['events_full']:>5} {gt['G3']['days_full']:>4} "
+                     f"{gt['total_net']:>10.2f} {gt['mean_net']:>9.4f} {('n/a' if p05 is None else format(p05, '.4f')):>9} "
+                     f"{flags} {'Y' if gt['all_pass'] else 'n'}")
+    lines.append(f"population: {g['population']}")
+    lines.append(f"exclusions: {g['exclusions']}  excluded-share: {g['exclusion_share']['share']:.3f}")
+    if g.get("nd_reasons"):
+        lines.append(f"NOT_DECIDABLE because: {g['nd_reasons']}")
+    lines.append("gas share has about one independent draw per day (G4b clusters gas by date(E)).")
+    return "\n".join(lines)
+
+
+def run_sim(cfg):
+    """Run the whole simulation; returns the gate dict (or the dry-run structure report)."""
+    mem = MemCap(cfg.mem_cap_mb)
+    out = Path(cfg.out) if cfg.out else None
+    if out and not cfg.dry_run:
+        out.mkdir(parents=True, exist_ok=True)
+    gate = {"freeze": FREEZE_ISO, "declare_sha256": DECLARE_SHA256, "conditions_sha256": CONDITIONS_SHA256,
+            "book": cfg.book, "size": cfg.size, "i_max": cfg.imax, "deciding": cfg.book == "A",
+            "git_sha": kp.git_sha(), "sim_md5": file_md5(__file__),
+            "tests_md5": file_md5(Path(__file__).with_name("test_kalshi_lip_sim.py")),
+            "spec_notes": SPEC_NOTES, "wording": "formula screen only (Option C): never a positive book"}
+    if not cfg.dry_run:
+        ev = check_units_evidence(cfg.units_evidence)
+        gate["units_evidence"] = ev
+        if not ev["ok"]:
+            gate.update({"verdict": "NOT_DECIDABLE", "nd_reasons": ["units of period_reward / target_size_fp not verified"],
+                         "cells": {}, "population": {}, "exclusions": {}, "exclusion_share": {"share": 0.0}})
+            if out:
+                (out / "gate.json").write_text(json.dumps(gate, sort_keys=True, indent=1) + "\n")
+                (out / "table.txt").write_text(format_table(dict(gate, read_instant=None)) + "\n")
+            return gate
+    inp = load_inputs(cfg)
+    units, early = classify_programs(inp, cfg)
+    tw = trades_windows(cfg.trades) if cfg.trades else None
+    results, trades_map, in_lines = {}, {}, []
+    if not cfg.dry_run:
+        tickers = sorted({u.ticker for u in units})
+        if cfg.markets:
+            results, rl, rskip = read_results(cfg.markets, tickers, cfg.data_us)
+            in_lines += rl
+            gate["results_files_after_R_skipped"] = rskip
+        if units:
+            trades_map, tskip, tl = load_trades(cfg.trades, tickers, cfg.freeze_us,
+                                                max(u.e_us for u in units) + HORIZON_S * US, cfg.data_us)
+            in_lines += tl
+            gate["trades_files_after_R_skipped"] = tskip
+    records = []
+    for u in units:
+        records.append(process_unit(u, cfg, inp, tw, trades_map, results))
+        mem.check(u.unit_id)
+    if cfg.dry_run:
+        return structure_report(cfg, inp, early, records)
+    gate["inputs"] = dict(inp["hashes"], stores=hashlib.sha256("\n".join(sorted(in_lines)).encode()).hexdigest())
+    gate["peak_rss_mb"] = round(mem.peak, 1)
+    # ---- the read instant
+    if cfg.scan:
+        cands = [r for r in read_candidates() if cfg.asof_us is None or r <= cfg.asof_us]
+        chosen = None
+        for R in cands:
+            if all(evaluate_gate(population_rows(records, results, c, R)[0], boot=False)["counts_met"] for c in CELLS):
+                chosen = R
+                break
+        R_eval = chosen if chosen is not None else (cands[-1] if cands else cfg.asof_us)
+        gate["scan"] = {"candidates": [us_to_iso(r) for r in cands], "counts_met_at": _iso_or_none(chosen)}
+    else:
+        chosen, R_eval = cfg.read_us, cfg.read_us
+    gate["read_instant"] = _iso_or_none(R_eval)
+    cells, all_rows = {}, {}
+    pop = {}
+    for c in CELLS:
+        rows, cnt = population_rows(records, results, c, R_eval)
+        all_rows[c], pop[c] = rows, cnt
+        gt = evaluate_gate(rows)
+        cells[c] = {"gate": gt,
+                    "stress": {k: summarize_variant(rows, "net_" + k) for k in ("r2", "r4", "unc", "xw", "nofloor", "dayfloor")},
+                    "capacity": capacity(rows), "markouts": markout_summary(records, c)}
+        cells[c]["stress"]["central"] = summarize_variant(rows, "net")
+        cells[c]["stress"]["xw_minus_central_mean"] = (
+            None if not rows else round(cells[c]["stress"]["xw"]["mean"] - cells[c]["stress"]["central"]["mean"], 6))
+    gate["cells"] = cells
+    gate["population"] = pop
+    ex = defaultdict(int)
+    for u in early:
+        ex[u.status] += 1
+    for r in records:
+        if r["status"] != "opened":
+            ex[r["status"]] += 1
+    gate["exclusions"] = dict(sorted(ex.items()))
+    gate["exclusion_share"] = exclusion_share(records, early)
+    gate["kill"] = kill_checks(all_rows["U0"], cfg.size, midnights(cfg.freeze_us, R_eval)) if R_eval else {}
+    gate["coverage"] = coverage(inp, cfg, R_eval) if R_eval else {}
+    ws = []
+    for r in records:
+        if r["status"] == "opened":
+            ws += r["cores"]["U0"]["w_quoted_us"] or []
+    by_src = defaultdict(list)
+    for r in records:
+        if r["status"] == "opened":
+            by_src[r["u"].source] += r["cores"]["U0"]["w_quoted_us"] or []
+    gate["w_above_2x_median_gap"] = {
+        s: {"n_w": len(v), "n_above": sum(1 for x in v if x > 2 * med)}
+        for s, v in sorted(by_src.items())
+        for med in [float(np.median([g for r in records if r["status"] == "opened" and r["u"].source == s
+                                     for g in (r.get("structural") or {}).get("gaps", [])] or [CAP_US]))]}
+    nd = []
+    if gate["coverage"].get("not_decidable"):
+        nd.append("recorder/poller coverage < 70% on two consecutive days")
+    if gate["exclusion_share"]["not_decidable"]:
+        nd.append("excluded units (no trades / no metadata) exceed 10% of the units that would otherwise be opened")
+    gate["nd_reasons"] = nd
+    cm = all(cells[c]["gate"]["counts_met"] for c in CELLS)
+    ap = all(cells[c]["gate"]["all_pass"] for c in CELLS)
+    if nd:
+        verdict = "NOT_DECIDABLE"
+    elif cfg.scan:
+        if chosen is not None:
+            verdict = "FORMULA_SCREEN_PASSED" if ap else "FAIL"
+        else:
+            verdict = ("NOT_DECIDABLE" if cfg.asof_us is not None and cfg.asof_us >= iso_to_us(NOT_DECIDABLE_ISO)
+                       else "PENDING")
+    else:
+        verdict = ("FORMULA_SCREEN_PASSED" if ap else "FAIL") if cm else "COUNTS_NOT_MET"
+    gate["verdict"] = verdict if cfg.book == "A" else "REPORT_ONLY_" + verdict
+    # ---- files
+    if out:
+        urows, frows, drows, srows = [], [], [], []
+        scored_by = {c: {r["unit_id"]: r for r in all_rows[c]} for c in CELLS}
+        for u in early:
+            urows.append(unit_row({"u": u, "status": u.status}, "", None, None))
+        for rec in records:
+            u = rec["u"]
+            if rec["status"] not in ("opened", "not_opened"):
+                urows.append(unit_row(rec, "", None, None))
+                continue
+            for c in CELLS:
+                core = rec["cores"][c]
+                sc = scored_by[c].get(u.unit_id)
+                if sc is not None:
+                    sc = dict(sc, reward_after_floor=sc["reward_after_floor"], resolution=sc["resolution"])
+                    sc["settle"] = sc["settle"]
+                elif rec["status"] == "opened":
+                    sc = {"resolution": "young", "reward_after_floor": None, "settle": None, "net": None,
+                          "net_lower": None, "net_nofloor": None, "worst_u": None}
+                urows.append(unit_row(rec, c, sc, core))
+                for f, mk in zip(core["fills"], core["markouts"]):
+                    frows.append({"unit_id": u.unit_id, "trade_id": f[0], "side": f[1], "price": f[2] / BP, "qty": f[3],
+                                  "ts": us_to_iso(f[4]), "cell": c, "markout_5m": mk[0], "mark_source_5m": mk[1],
+                                  "markout_60m": mk[2], "mark_source_60m": mk[3]})
+                for (ts, why, q) in core["decisions"]:
+                    srows.append({"unit_id": u.unit_id, "cell": c, "ts": us_to_iso(ts), "decision": why,
+                                  "b_yes": None if q is None else q[0] / BP, "b_no": None if q is None else q[1] / BP,
+                                  "s_yes": None if q is None else q[2], "s_no": None if q is None else q[3]})
+        for c in CELLS:
+            ds = defaultdict(lambda: [0, 0.0])
+            for r in all_rows[c]:
+                ds[r["day"]][0] += 1
+                ds[r["day"]][1] += r["net"]
+            for d in sorted(ds):
+                drows.append({"cell": c, "unit_day": d, "n_units": ds[d][0], "sum_net": round(ds[d][1], 6),
+                              "positive": ds[d][1] > 0})
+        # day-floor net into the unit rows
+        dfl = {c: {r["unit_id"]: r["net_dayfloor"] for r in all_rows[c]} for c in CELLS}
+        for r in urows:
+            if r["cell"] in dfl:
+                r["net_dayfloor"] = dfl[r["cell"]].get(r["unit_id"])
+        urows.sort(key=lambda r: (r["unit_id"], r["cell"]))
+        frows.sort(key=lambda r: (r["unit_id"], r["cell"], r["ts"], r["trade_id"]))
+        write_table(out / "units.parquet", urows, UNITS_SCHEMA)
+        write_table(out / "fills.parquet", frows, FILLS_SCHEMA)
+        write_table(out / "days.parquet", drows, DAYS_SCHEMA)
+        if cfg.debug_snaps:
+            write_table(out / "snaps.parquet", srows, SNAPS_SCHEMA)
+        (out / "gate.json").write_text(json.dumps(gate, sort_keys=True, indent=1, default=str) + "\n")
+        (out / "table.txt").write_text(format_table(gate) + "\n")
+    return gate
+
+
+# ============================================================================================= CLI
+def build_parser():
+    p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    p.add_argument("--freeze", required=True, help=f"must equal {FREEZE_ISO}")
+    p.add_argument("--size", type=float, default=25.0, help="S contracts per side (25 = Book A, 100 = Book B)")
+    p.add_argument("--imax", type=float, default=None, help="max net inventory (default 2 x S)")
+    p.add_argument("--out", help="output directory")
+    p.add_argument("--books", nargs="+", default=[], help="obrec dir(s); list obrec-1019c first")
+    p.add_argument("--programs", help="lipsnap dir")
+    p.add_argument("--meta", help="market metadata capture dir")
+    p.add_argument("--trades", help="kalshi root with trades/ and _checkpoints/")
+    p.add_argument("--markets", help="kalshi root with markets/ (settled)")
+    p.add_argument("--series", help="kalshi root with series/")
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--read-instant", help="the read instant R (ISO); data written after it is not read")
+    g.add_argument("--scan", action="store_true", help="find the first 00:00Z >= 2026-10-24 where G1-G3 counts are met")
+    p.add_argument("--asof", help="--scan: the latest candidate read instant (ISO)")
+    p.add_argument("--dry-run", action="store_true", help="print structure counts only")
+    p.add_argument("--strict-runs", action="store_true", help="refuse any run without run_end complete=true (read_verified)")
+    p.add_argument("--force-source", help="use only this recorder dir name (sensitivity: obrec-1019c for gas)")
+    p.add_argument("--mem-cap-mb", type=float, default=1500.0)
+    p.add_argument("--debug-snaps", action="store_true")
+    p.add_argument("--no-stress", action="store_true")
+    p.add_argument("--units-evidence", help="file citing the public source (URL + date) that verifies the units")
+    p.add_argument("--declare", help="DECLARE-FORWARD.md (sha256 pinned)")
+    p.add_argument("--conditions", help="DECLARE-FORWARD-CONDITIONS.md (sha256 pinned)")
+    return p
+
+
+def main(argv=None):
+    a = build_parser().parse_args(argv)
+    if iso_to_us(a.freeze) != FREEZE_US:
+        print(f"refused: --freeze must be {FREEZE_ISO}", file=sys.stderr)
+        return 2
+    if not a.dry_run:
+        try:
+            _verify_pin(a.declare, DECLARE_SHA256, "declare")
+            _verify_pin(a.conditions, CONDITIONS_SHA256, "conditions")
+        except InputError as e:
+            print(f"refused: {e}", file=sys.stderr)
+            return 2
+        for need in ("out", "trades", "markets", "series", "programs"):
+            if not getattr(a, need):
+                print(f"refused: --{need} is required without --dry-run", file=sys.stderr)
+                return 2
+        if not (a.read_instant or a.scan):
+            print("refused: give --read-instant R or --scan [--asof T]", file=sys.stderr)
+            return 2
+    if not a.books or not a.programs:
+        print("refused: --books and --programs are required", file=sys.stderr)
+        return 2
+    cfg = Cfg(books=a.books, programs=a.programs, meta=a.meta, trades=a.trades, markets=a.markets, series=a.series,
+              out=a.out, size=a.size, imax=a.imax, read_us=None if not a.read_instant else iso_to_us(a.read_instant),
+              asof_us=None if not a.asof else iso_to_us(a.asof), scan=a.scan, dry_run=a.dry_run,
+              strict_runs=a.strict_runs, force_source=a.force_source, mem_cap_mb=a.mem_cap_mb,
+              debug_snaps=a.debug_snaps, units_evidence=a.units_evidence, stress=not a.no_stress)
+    try:
+        res = run_sim(cfg)
+    except (InputError, kp.SealError, MemoryError) as e:
+        print(f"refused: {type(e).__name__}: {e}", file=sys.stderr)
+        return 4
+    if cfg.dry_run:
+        print(json.dumps(res, sort_keys=True, indent=1, default=str))
+    else:
+        print(format_table(res))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
