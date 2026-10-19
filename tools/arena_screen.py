@@ -28,8 +28,13 @@ PRICING (the engine's own functions, imported, never copied: tools.arena_stack.m
   prints. A fill lands on the END-bound state of the first print at slot >= landing + 1. Where no such print exists within GRACE_SLOTS (10,000) the state is derived from the
   last print, as the engine does; an attempt whose derived state would need slots past the end of its block is EXCLUDED and counted (block edge).
   BOOTSTRAP: UTC-date clustered, 1,000 draws, seed 1, 5th percentile of the pooled mean SOL per trade.
-KILL (any, deciding leg 1.9 s / 0.25 SOL / total / rent 0): mean, total ex-top-3 or total ex-best-day <= 0 under EITHER fail model, or fewer than 3 blocks positive (a block is
-  positive when its total is > 0 under BOTH fail models). `thin` (< --min-attempts-per-day, default 20) is reported beside it, not a kill.
+KILL (hunt23 RULES.md Amendment 1; deciding leg 1.9 s / 0.25 SOL / rent 0): any of the FOUR sub-cells {flat, pressure} x {sc, total} with mean, total ex-top-3 or total
+  ex-best-day <= 0; fewer than 3 blocks positive (a block is positive when its total is > 0 under ALL FOUR sub-cells); (b) mean <= 0 on explore-0814 ALONE or on the three September
+  blocks POOLED (one period) under any sub-cell; (c) the in-sample gate pooled over all blocks on all four sub-cells: CI90 lower bound <= 0, or no majority of UTC dates positive.
+  A cell that is not killed is a SCREEN SURVIVOR only: worst-in-slot (R7) is NOT measured by this kit (PROVISIONAL), at most one survivor per rule group is picked by the rule author's
+  declared statistic, and nothing here is a profit claim. `thin` (< --min-attempts-per-day, default 20) is reported beside it, not a kill.
+  SEAL (Amendment 1, 3): a pool younger than 360 s at the decision (counted from the pool's first print in the same block; state.first_seen) is REFUSED and counted
+  (refused_pool_age_lt_360s). It is mandatory and not a parameter.
 
 DATA GUARDS (before anything is read): block paths only under /data/mal/clean-view/{explore-0814, oracle-insample-2026-09-22_25, fast-pool-2026-09-18T23_2026-09-22T00,
   oracle-live-2026-09-25_27}; /data/mal/arena/tape closed hours (tape-<hour>.jsonl.zst) ONLY with --count-only (structure counts, never a price after a decision); every other path
@@ -91,6 +96,15 @@ FAILS = ("flat", "press")
 GRACE = P.GRACE_SLOTS
 RETAIN_EXTRA_S = 5400.0  # a pool's rows are kept this long past the hold: GRACE_SLOTS at up to 0.54 s per slot, plus margin
 MIN_HOLD_S = 3.0
+MIN_POOL_AGE_S = 360  # Amendment 1, 3: EXP-024 Look-2 seal on the Am.2 V-range universe
+SEPTEMBER_BLOCKS = ("oracle-insample-2026-09-22_25", "fast-pool-2026-09-18T23_2026-09-22T00", "oracle-live-2026-09-25_27")
+SUB_CELLS = tuple((rule, fail) for rule in STRAND_RULES for fail in FAILS)  # the four deciding sub-cells (tools/arena_score.py)
+GROUPS = ("explore-0814", "september")
+
+
+def block_group(name: str) -> str | None:
+    root = name.split("/")[0]
+    return "explore-0814" if root == "explore-0814" else "september" if root in SEPTEMBER_BLOCKS else None
 EXIT_REASONS = ("time", "tp", "sl", "trail")
 
 
@@ -145,6 +159,7 @@ class RunState:
     gap_before: bool = False
     hour_index: int = 0
     scratch: dict = field(default_factory=dict)
+    first_seen: dict = field(default_factory=dict)  # pool -> block_time (s) of its first print in THIS block, updated before every triggers() call
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ guards
@@ -525,23 +540,44 @@ def stat(lam: np.ndarray, day: np.ndarray, blk: np.ndarray, blocks: Sequence[str
             "ci_lo_pct": lo / stake_sol * 100, "total": tot, "ex_top3": tot - top3, "ex_best_day": tot - best, "top_day_share": (best / tot if tot > 0 else None), "per_block": pb}
 
 
-def kill_verdict(deciding: dict[str, dict | None], blocks: Sequence[str], min_blocks_positive: int = 3) -> tuple[bool, list[str]]:
-    """deciding: {'flat': stat, 'press': stat} at 1.9 s, 0.25 SOL, rule total, rent 0."""
+def gate_row(s: dict | None) -> dict | None:
+    """The pooled in-sample gate columns of one sub-cell (the promotion gate's own tests, in-sample): CI90 lower bound, majority of dates, ex-top-3, ex-best-day."""
+    if s is None:
+        return None
+    return {"mean_pct": s["mean_pct"], "ci_lo_pct": s["ci_lo_pct"], "ci_lo_gt0": bool(s["ci_lo"] > 0), "days": s["days"], "pos_days": s["pos_days"],
+            "majority_dates": bool(2 * s["pos_days"] > s["days"]), "ex_top3": s["ex_top3"], "ex_best_day": s["ex_best_day"]}
+
+
+def kill_verdict(subs: dict, blocks: Sequence[str], groups: dict | None = None, min_blocks_positive: int = 3) -> tuple[bool, list[str]]:
+    """Amendment 1. subs: {(strand rule, fail): stat} at 1.9 s / 0.25 SOL / rent 0, pooled over all blocks; groups: {(group, rule, fail): stat | None} for explore-0814 alone and the
+    September blocks pooled. Returns (kill, reasons)."""
     why = []
-    for fail in FAILS:
-        s = deciding.get(fail)
+    for key in SUB_CELLS:
+        s, tag = subs.get(key), "/".join(key)
         if s is None:
-            why.append(f"{fail}: no trips")
+            why.append(f"{tag}: no trips")
             continue
         for k in ("mean", "ex_top3", "ex_best_day"):
             if not s[k] > 0:
-                why.append(f"{fail}.{k}<=0")
+                why.append(f"{tag}.{k}<=0")
+        g = gate_row(s)
+        if not g["ci_lo_gt0"]:
+            why.append(f"{tag}.gate.ci_lo<=0")
+        if not g["majority_dates"]:
+            why.append(f"{tag}.gate.no_majority_of_dates_positive")
     npos = 0
     for nm in blocks:
-        ok = all(deciding.get(f) is not None and deciding[f]["per_block"][nm]["n"] > 0 and deciding[f]["per_block"][nm]["total"] > 0 for f in FAILS)
-        npos += bool(ok)
+        npos += bool(all(subs.get(k) is not None and subs[k]["per_block"][nm]["n"] > 0 and subs[k]["per_block"][nm]["total"] > 0 for k in SUB_CELLS))
     if npos < min_blocks_positive:
         why.append(f"blocks_positive {npos}/{len(blocks)} < {min_blocks_positive}")
+    for grp in GROUPS:
+        for key in SUB_CELLS:
+            g = (groups or {}).get((grp, *key))
+            if g is None:
+                why.append(f"{grp}: not measured (no trips in this group)")
+                break
+            if not g["mean"] > 0:
+                why.append(f"{grp}.{'/'.join(key)}.mean<=0")
     return bool(why), why
 
 
@@ -572,7 +608,7 @@ class Screen:
         self.t_load = self.t_rule = self.t_price = 0.0
 
     # --- trigger validation
-    def _validate(self, hr: HourRows, tr: Any) -> tuple[int, str, int, ExitSpec] | None:
+    def _validate(self, hr: HourRows, tr: Any, state: RunState) -> tuple[int, str, int, ExitSpec] | None:
         c = self.counters
         pool, slot, spec = tr
         c["triggers_raw"] += 1
@@ -588,6 +624,10 @@ class Screen:
         j = int(np.searchsorted(hr.sl[a:b], slot, "right")) - 1
         if j < 0:
             c["refused_no_print_at_or_before_decision"] += 1
+            return None
+        first = state.first_seen.get(pool)
+        if first is None or int(hr.bt[a + j]) - first < MIN_POOL_AGE_S:
+            c["refused_pool_age_lt_360s"] += 1
             return None
         v = float(hr.v[a + j])
         if not math.isfinite(v):
@@ -630,11 +670,14 @@ class Screen:
                     t0 = time.time()
                     continue
             state.prev, state.hour_index = prev, hr.idx
+            for i, nm in enumerate(hr.pools.tolist()):
+                if nm not in state.first_seen:
+                    state.first_seen[nm] = int(hr.bt[hr.ptr[i]])
             t1 = time.time()
             raw = list(rule.triggers(hr, state))
             self.t_rule += time.time() - t1
             state.gap_before = False
-            good = [v for v in (self._validate(hr, t) for t in raw) if v is not None]
+            good = [v for v in (self._validate(hr, t, state) for t in raw) if v is not None]
             good.sort(key=lambda g: (g[0], g[1], g[2]))
             day = hr.T // 86400
             self.days.add(day)
@@ -760,13 +803,17 @@ class Screen:
         r: dict[str, Any] = {"attempts": n, "pools": int(len(np.unique(st["pool"]))), "exits": {EXIT_REASONS[k]: int((st["why"] == k).sum()) for k in range(4)},
                              "attempts_per_day": n / ndays, "days_in_run": ndays}
         r["thin"] = bool(self.min_per_day and n / ndays < self.min_per_day)
-        stats, legsum, press_c = {}, {}, {}
+        stats, legsum, press_c, groups = {}, {}, {}, {}
+        gmask = {g: np.array([block_group(names[b]) == g for b in range(len(names))])[st["blk"]] for g in GROUPS}
         for lat in LATS:
             for rule in STRAND_RULES:
                 for rent, tag in ((RENT_DECIDING, "rent0"), (RENT_CHARGED, "rentC")):
                     L = legs(st, STAKE_SOL * 1e9, lat, rule, self.cfg[rent])
                     for fail in FAILS:
                         stats[f"{lat}|{rule}|{tag}|{fail}"] = stat(L[fail], day, st["blk"], names)
+                        if lat == LAT_DECIDING and tag == "rent0":
+                            for g, m in gmask.items():
+                                groups[f"{g}|{rule}|{fail}"] = stat(L[fail][m], day[m], st["blk"][m], names) if m.any() else None
                     if tag == "rent0":
                         legsum[f"{lat}|{rule}"] = {"fills": int(L["filled"].sum()), "strands": int(L["strand"].sum()), "nofail_mean_pct": float(L["pnl"].mean() / (STAKE_SOL * 1e9) * 100)}
                         press_c[f"{lat}|{rule}"] = L["c"]
@@ -779,9 +826,11 @@ class Screen:
             fl = legs(st, STAKE_SOL * 1e9, lat, "total", self.cfg[RENT_DECIDING])["filled"]
             fee = F.fee_ppm(st["Qe"][lat], st["Be"][lat])
             imp[str(lat)] = {str(s): (float(np.mean(s * 1e9 * (1 - fee[fl] / 1e6) / st["Qe"][lat][fl])) if fl.any() else None) for s in (STAKE_SOL, STAKE_BIG)}
-        r.update(stats=stats, legs=legsum, press_intercept=press_c, stake_1_0_total_rent0_1p9=big, impact=imp)
-        dec = {f: stats[f"{LAT_DECIDING}|total|rent0|{f}"] for f in FAILS}
-        r["kill"], r["kill_reasons"] = kill_verdict(dec, names)
+        r.update(stats=stats, legs=legsum, press_intercept=press_c, stake_1_0_total_rent0_1p9=big, impact=imp, groups=groups)
+        subs = {(rule, fail): stats[f"{LAT_DECIDING}|{rule}|rent0|{fail}"] for rule, fail in SUB_CELLS}
+        r["gate"] = {f"{rule}|{fail}": gate_row(v) for (rule, fail), v in subs.items()}
+        r["kill"], r["kill_reasons"] = kill_verdict(subs, names, {(g.split("|")[0], *g.split("|")[1:]): v for g, v in groups.items()})
+        r["worst_in_slot"] = "not measured: PROVISIONAL (QP R7)"
         return r
 
 
@@ -838,28 +887,44 @@ def _f(x: Any, p: int = 2) -> str:
 
 def table_md(res: dict, blocks: list[str], meta: dict) -> str:
     L = [f"# arena_screen TABLE ({meta['rule']}): IN-SAMPLE exploration screen, not evidence, no profit claim", "",
-         "Deciding leg: 1.9 s, 0.25 SOL, strand rule total, rent 0 (DEC-031 Am.2 universe enforced), feed delay 7. Blocks: " + "; ".join(f"B{i + 1}={b}" for i, b in enumerate(blocks)) + ".", "",
-         "| cell | att | fills | days(+) | flat mean% | flat CIlo% | flat tot | ex3 | exbest | press mean% | press CIlo% | press tot | ex3 | exbest | block mean% flat/press | impact .25/1.0 % | 1.0 SOL flat/press mean% | flags |",
-         "|" + "---|" * 18]
+         "Deciding leg: 1.9 s, 0.25 SOL, rent 0 (DEC-031 Am.2 universe enforced), pool age >= 360 s enforced, feed delay 7. KILL (hunt23 Amendment 1) is evaluated on all four sub-cells "
+         "{flat, pressure} x {sc, total}. Blocks: " + "; ".join(f"B{i + 1}={b}" for i, b in enumerate(blocks)) + ".", "",
+         "## 1. Strand rule total (deciding), pooled over all blocks", "",
+         "| cell | att | fills | days(+) | flat mean% | flat CIlo% | flat tot | ex3 | exbest | press mean% | press CIlo% | press tot | ex3 | exbest | explore-0814 alone flat/press mean% | September pooled flat/press mean% | block mean% flat/press | impact .25/1.0 % | 1.0 SOL flat/press mean% | flags |",
+         "|" + "---|" * 20]
+    gm = lambda r, g, rule, fail: _f((r["groups"].get(f"{g}|{rule}|{fail}") or {}).get("mean_pct"))  # noqa: E731
     for nm, r in res.items():
         if r["attempts"] == 0:
-            L.append(f"| {nm} | 0 |" + " |" * 15 + " KILL (no attempts) |")
+            L.append(f"| {nm} | 0 |" + " |" * 17 + " KILL (no attempts) |")
             continue
         a, b = r["stats"]["1.9|total|rent0|flat"], r["stats"]["1.9|total|rent0|press"]
         pb = " ".join(f"B{i + 1}:{_f(a['per_block'][bn]['mean_pct'])}/{_f(b['per_block'][bn]['mean_pct'])}" for i, bn in enumerate(blocks))
         big = r["stake_1_0_total_rent0_1p9"]
         im = r["impact"]["1.9"]
-        flags = ("KILL " if r["kill"] else "survives-screen ") + ("THIN " if r["thin"] else "")
+        flags = ("KILL " if r["kill"] else "screen-survivor (worst-in-slot not measured: PROVISIONAL) ") + ("THIN " if r["thin"] else "")
         L.append(f"| {nm} | {r['attempts']} | {r['legs']['1.9|total']['fills']} | {a['days']}({a['pos_days']}) | {_f(a['mean_pct'])} | {_f(a['ci_lo_pct'])} | {_f(a['total'], 3)} | {_f(a['ex_top3'], 3)} | "
-                 f"{_f(a['ex_best_day'], 3)} | {_f(b['mean_pct'])} | {_f(b['ci_lo_pct'])} | {_f(b['total'], 3)} | {_f(b['ex_top3'], 3)} | {_f(b['ex_best_day'], 3)} | {pb} | "
+                 f"{_f(a['ex_best_day'], 3)} | {_f(b['mean_pct'])} | {_f(b['ci_lo_pct'])} | {_f(b['total'], 3)} | {_f(b['ex_top3'], 3)} | {_f(b['ex_best_day'], 3)} | "
+                 f"{gm(r, 'explore-0814', 'total', 'flat')}/{gm(r, 'explore-0814', 'total', 'press')} | {gm(r, 'september', 'total', 'flat')}/{gm(r, 'september', 'total', 'press')} | {pb} | "
                  f"{_f(100 * im['0.25'], 3)}/{_f(100 * im['1.0'], 3)} | {_f(big['flat']['mean_pct'])}/{_f(big['press']['mean_pct'])} | {flags.strip()} |")
-    L += ["", "## Reported legs (not deciding): flat mean% / press mean%, total SOL", "",
-          "| cell | 1.3 s total rent0 | 1.9 s sc rent0 | 1.9 s total rent-charged | 1.3 s sc rent0 | strands 1.9 total | KILL reasons |", "|---|---|---|---|---|---|---|"]
+    L += ["", "## 2. The four deciding sub-cells with the pooled in-sample gate columns", "",
+          "Each entry: mean% / CI90 LB% / dates(+) majority? / ex-top-3 SOL / ex-best-day SOL. Explore-alone and September-pooled entries: mean%.", "",
+          "| cell | " + " | ".join(f"{rule}/{fail}" for rule, fail in SUB_CELLS) + " |", "|---|" + "---|" * len(SUB_CELLS)]
+    for nm, r in res.items():
+        if r["attempts"] == 0:
+            continue
+        cols = []
+        for rule, fail in SUB_CELLS:
+            g = r["gate"][f"{rule}|{fail}"]
+            cols.append(f"{_f(g['mean_pct'])} / {_f(g['ci_lo_pct'])} / {g['pos_days']}/{g['days']} {'maj' if g['majority_dates'] else 'no-maj'} / {_f(g['ex_top3'], 3)} / {_f(g['ex_best_day'], 3)} "
+                        f"[expl {gm(r, 'explore-0814', rule, fail)}, sept {gm(r, 'september', rule, fail)}]")
+        L.append(f"| {nm} | " + " | ".join(cols) + " |")
+    L += ["", "## 3. Reported legs (not deciding): mean% (total SOL), flat / press", "",
+          "| cell | 1.3 s total rent0 | 1.9 s total rent-charged | 1.3 s sc rent0 | strands 1.9 total | KILL reasons |", "|---|---|---|---|---|---|"]
     for nm, r in res.items():
         if r["attempts"] == 0:
             continue
         g = lambda k: f"{_f(r['stats'][k]['mean_pct'])} ({_f(r['stats'][k]['total'], 3)})"  # noqa: E731
-        L.append(f"| {nm} | {g('1.3|total|rent0|flat')} / {g('1.3|total|rent0|press')} | {g('1.9|sc|rent0|flat')} / {g('1.9|sc|rent0|press')} | {g('1.9|total|rentC|flat')} / "
+        L.append(f"| {nm} | {g('1.3|total|rent0|flat')} / {g('1.3|total|rent0|press')} | {g('1.9|total|rentC|flat')} / "
                  f"{g('1.9|total|rentC|press')} | {g('1.3|sc|rent0|flat')} / {g('1.3|sc|rent0|press')} | {r['legs']['1.9|total']['strands']} | {'; '.join(r['kill_reasons']) or '-'} |")
     return "\n".join(L) + "\n"
 

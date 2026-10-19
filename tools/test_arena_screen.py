@@ -262,7 +262,7 @@ def own_slots(rows, key, h, lo, hi):
 def script_for(rows) -> list[tuple[str, int, S.ExitSpec]]:
     sp = [S.ExitSpec(120), S.ExitSpec(120, tp=1.02, sl=0.98), S.ExitSpec(150, trail=0.985), S.ExitSpec(60, tp=1.01)]
     out = []
-    for key, h, lo, hi, step in (("A", 0, 300, 8000, 400), ("B", 0, 400, 8000, 700), ("A", 1, 300, 8000, 900), ("D", 0, 300, 1700, 150), ("L", 0, 300, 1700, 150), ("B", 1, 500, 6000, 1100)):
+    for key, h, lo, hi, step in (("A", 0, 1000, 8000, 400), ("B", 0, 1000, 8000, 700), ("A", 1, 300, 8000, 900), ("D", 0, 1000, 1700, 150), ("L", 0, 1000, 1700, 150), ("B", 1, 500, 6000, 1100)):
         sl_ = own_slots(rows, key, h, lo, hi)
         for i, s in enumerate(sl_[:: max(1, len(sl_) // max(1, (hi - lo) // step))]):
             out.append((POOLS[key], s, sp[i % len(sp)]))
@@ -370,8 +370,8 @@ def test_kit_classes_derived_late_and_block_edge_match_the_engine(tape, tmp_path
 # ------------------------------------------------------------------------------------------------------------------------------ 4. universe refusal
 def test_universe_refusals_are_counted_and_nothing_outside_is_priced(tape):
     rows, files = tape
-    ok = own_slots(rows, "A", 0, 300, 800)[0]
-    c_slot = own_slots(rows, "C", 0, 300, 800)[0]
+    ok = own_slots(rows, "A", 0, 1000, 1500)[0]
+    c_slot = own_slots(rows, "C", 0, 1000, 1500)[0]
     n_row = next(r for r in rows if r["pool"] == POOLS["N"])
     script = [(POOLS["A"], ok, S.ExitSpec(120)), (POOLS["C"], c_slot, S.ExitSpec(120)), (POOLS["N"], n_row["slot"], S.ExitSpec(120)), ("NoSuchPool" + "1" * 33, ok, S.ExitSpec(120)),
               (POOLS["A"], ok, S.ExitSpec(1.0)), (POOLS["A"], SLOT0 - 5 + 0, S.ExitSpec(120)), (POOLS["A"], ok, S.ExitSpec(120, cell="nope"))]
@@ -388,7 +388,7 @@ def test_universe_refusals_are_counted_and_nothing_outside_is_priced(tape):
 
 def test_unknown_v_is_refused(tape):
     rows, files = tape
-    slot = own_slots(rows, "A", 0, 300, 800)[0]
+    slot = own_slots(rows, "A", 0, 1000, 1500)[0]
     vm = {POOLS[k]: float(v) for k, v in V_OF.items() if k != "A"}  # no V for A
     scr = run_kit(files, [(POOLS["A"], slot, S.ExitSpec(120))], count_only=True, vmap=vm)
     assert scr.counters["refused_v_unknown"] == 1 and not sum(scr.cnt[0].values())
@@ -403,7 +403,7 @@ def test_decision_before_the_pools_first_print_is_refused(tape):
 
 def test_count_only_counts_per_day_and_the_overlap_bound(tape):
     rows, files = tape
-    sl_ = own_slots(rows, "A", 0, 300, 3000)
+    sl_ = own_slots(rows, "A", 0, 1000, 3000)
     script = [(POOLS["A"], sl_[0], S.ExitSpec(120)), (POOLS["A"], sl_[1], S.ExitSpec(120)), (POOLS["A"], sl_[-1], S.ExitSpec(120))]
     scr = run_kit(files, script, count_only=True)
     res = scr.results()["c"]
@@ -436,7 +436,7 @@ def test_causal_probe_catches_a_look_ahead_rule(tape):
 
 def test_overlap_rule_and_thin_flag_in_a_priced_run(tape):
     rows, files = tape
-    sl_ = own_slots(rows, "A", 0, 300, 3000)
+    sl_ = own_slots(rows, "A", 0, 1000, 3000)
     scr = run_kit(files, [(POOLS["A"], sl_[0], S.ExitSpec(120)), (POOLS["A"], sl_[1], S.ExitSpec(120))], min_per_day=20.0)
     assert scr.counters["overlap_dropped"] == 1
     r = scr.results()["c"]
@@ -477,33 +477,142 @@ def test_stat_matches_the_reference_bootstrap_and_exclusions():
     assert s["n"] == 400 and s["days"] == len(days) and sum(v["n"] for v in s["per_block"].values()) == 400
 
 
-def mk(mean=1.0, ex3=1.0, exbest=1.0, blocks=(1, 1, 1, 1)):
-    return {"mean": mean, "ex_top3": ex3, "ex_best_day": exbest, "per_block": {f"b{i}": {"n": 5, "total": t} for i, t in enumerate(blocks)}}
+def mk(mean=1.0, ex3=1.0, exbest=1.0, blocks=(1, 1, 1, 1), ci=1.0, pos=8, days=10):
+    return {"mean": mean, "mean_pct": mean * 400, "ex_top3": ex3, "ex_best_day": exbest, "ci_lo": ci, "ci_lo_pct": ci * 400, "pos_days": pos, "days": days,
+            "per_block": {f"b{i}": {"n": 5, "total": t} for i, t in enumerate(blocks)}}
 
 
 NAMES = ["b0", "b1", "b2", "b3"]
+GOOD = {k: mk() for k in S.SUB_CELLS}
+GGOOD = {(g, *k): mk() for g in S.GROUPS for k in S.SUB_CELLS}
 
 
-def test_kill_logic():
-    k, why = S.kill_verdict({"flat": mk(), "press": mk()}, NAMES)
-    assert not k and not why  # survives the screen: it is NOT a profit claim
-    for field in ("mean", "ex_top3", "ex_best_day"):
-        for bad_model in S.FAILS:
-            d = {"flat": mk(), "press": mk()}
-            d[bad_model] = mk(**{{"mean": "mean", "ex_top3": "ex3", "ex_best_day": "exbest"}[field]: 0.0})
-            k, why = S.kill_verdict(d, NAMES)
-            assert k and any(f"{bad_model}.{field}<=0" in w for w in why)
-    d = {"flat": mk(mean=-1), "press": mk()}
-    assert S.kill_verdict(d, NAMES)[0]
-    assert S.kill_verdict({"flat": mk(blocks=(1, 1, 1, -1)), "press": mk(blocks=(1, 1, 1, -1))}, NAMES)[0] is False  # 3 of 4 is enough
-    k, why = S.kill_verdict({"flat": mk(blocks=(1, 1, -1, -1)), "press": mk(blocks=(1, 1, -1, -1))}, NAMES)
-    assert k and "blocks_positive 2/4 < 3" in why[0]
-    k, why = S.kill_verdict({"flat": mk(), "press": mk(blocks=(1, 1, 1, -1))}, NAMES)  # a block must be positive under BOTH fail models
-    assert not k
-    k, why = S.kill_verdict({"flat": mk(), "press": mk(blocks=(1, 1, -1, -1))}, NAMES)
-    assert k and "blocks_positive 2/4" in why[0]
-    assert S.kill_verdict({"flat": None, "press": None}, NAMES)[0]
-    assert S.kill_verdict({"flat": mk(), "press": mk()}, NAMES[:2])[0]  # fewer than 3 blocks priced can never pass
+def verdict(subs=None, groups=None, names=NAMES):
+    return S.kill_verdict({**GOOD, **(subs or {})}, names, {**GGOOD, **(groups or {})})
+
+
+def test_kill_logic_all_four_sub_cells():
+    k, why = verdict()
+    assert not k and not why  # a screen survivor: NOT a profit claim
+    assert len(S.SUB_CELLS) == 4 and set(S.SUB_CELLS) == {("total", "flat"), ("total", "press"), ("sc", "flat"), ("sc", "press")}
+    for key in S.SUB_CELLS:  # any ONE of the four sub-cells kills, on each of the three tests
+        for field, kw in (("mean", "mean"), ("ex_top3", "ex3"), ("ex_best_day", "exbest")):
+            k, why = verdict({key: mk(**{kw: 0.0})})
+            assert k and any(f"{'/'.join(key)}.{field}<=0" in w for w in why), (key, field)
+            k, why = verdict({key: mk(**{kw: -1e-9})})
+            assert k
+    assert verdict({("sc", "press"): None})[0] and verdict({("total", "flat"): None})[0]
+    assert S.kill_verdict({}, NAMES, GGOOD)[0]  # nothing priced
+
+
+def test_kill_logic_blocks_positive_under_all_four_sub_cells():
+    three = (1, 1, 1, -1)
+    assert verdict({k: mk(blocks=three) for k in S.SUB_CELLS})[0] is False  # 3 of 4 blocks is enough
+    k, why = verdict({k: mk(blocks=(1, 1, -1, -1)) for k in S.SUB_CELLS})
+    assert k and any("blocks_positive 2/4 < 3" in w for w in why)
+    k, why = verdict({("sc", "press"): mk(blocks=(1, 1, -1, -1))})  # one sub-cell positive in only 2 blocks: the block does not count
+    assert k and any("blocks_positive 2/4 < 3" in w for w in why)
+    k, why = verdict({("sc", "press"): mk(blocks=(1, 1, 1, -1)), ("total", "flat"): mk(blocks=(-1, 1, 1, 1))})  # a different block fails in each: only 2 blocks pass all four
+    assert k and any("blocks_positive 2/4" in w for w in why)
+    assert verdict(names=NAMES[:2])[0]  # fewer than 3 blocks priced can never pass
+    zero = {k: mk(blocks=(1, 1, 1, 1)) for k in S.SUB_CELLS}
+    zero[("total", "flat")]["per_block"]["b3"]["n"] = 0
+    assert verdict(zero)[0] is False  # 3 blocks still pass
+
+
+def test_kill_logic_explore_alone_and_september_pooled_means():
+    for grp in S.GROUPS:
+        for key in S.SUB_CELLS:
+            k, why = verdict(groups={(grp, *key): mk(mean=0.0)})
+            assert k and any(f"{grp}.{'/'.join(key)}.mean<=0" in w for w in why)
+    k, why = S.kill_verdict(GOOD, NAMES, {k: v for k, v in GGOOD.items() if k[0] != "september"})
+    assert k and any("september: not measured" in w for w in why)
+    k, why = S.kill_verdict(GOOD, NAMES, None)
+    assert k and sum("not measured" in w for w in why) == 2
+    assert S.block_group("explore-0814") == S.block_group("explore-0814/w3") == "explore-0814"
+    assert {S.block_group(b) for b in S.SEPTEMBER_BLOCKS} == {"september"} and S.block_group("synthetic") is None and S.block_group("arena-tape") is None
+
+
+def test_kill_logic_pooled_in_sample_gate_columns():
+    for key in S.SUB_CELLS:
+        k, why = verdict({key: mk(ci=-0.001)})
+        assert k and any(f"{'/'.join(key)}.gate.ci_lo<=0" in w for w in why)
+        k, why = verdict({key: mk(pos=5, days=10)})  # exactly half is not a majority
+        assert k and any("gate.no_majority_of_dates_positive" in w for w in why)
+        assert verdict({key: mk(pos=6, days=10)})[0] is False
+    g = S.gate_row(mk(ci=0.5, pos=3, days=5))
+    assert g["ci_lo_gt0"] and g["majority_dates"] and S.gate_row(None) is None
+
+
+def pool_age_script(rows):
+    """Two decisions on one pool at the same hour: one inside its first 360 s (block time), one past it."""
+    sl_ = own_slots(rows, "A", 0, 0, 2000)
+    bt = {r["slot"]: r["block_time"] for r in rows if r["pool"] == POOLS["A"]}
+    first = bt[min(bt)]
+    young = [s for s in sl_ if bt[s] - first < S.MIN_POOL_AGE_S][-1]
+    edge = [s for s in sl_ if bt[s] - first >= S.MIN_POOL_AGE_S][0]
+    return young, edge, bt[edge] - first
+
+
+def test_pool_age_under_360s_is_refused_and_counted(tape):
+    rows, files = tape
+    young, old, age = pool_age_script(rows)
+    assert 360 <= age < 370
+    scr = run_kit(files, [(POOLS["A"], young, S.ExitSpec(120)), (POOLS["A"], old, S.ExitSpec(120))], count_only=True)
+    assert scr.counters["refused_pool_age_lt_360s"] == 1 and sum(scr.cnt[0].values()) == 1
+    scr2 = run_kit(files, [(POOLS["A"], young, S.ExitSpec(120)), (POOLS["A"], old, S.ExitSpec(120))])  # the priced run refuses it too
+    assert scr2.counters["refused_pool_age_lt_360s"] == 1 and len(scr2.acc[0][0]["sd"]) == 1 and int(scr2.acc[0][0]["sd"][0]) == old
+
+
+def test_pool_age_counts_from_the_first_print_in_the_block_not_the_hour(tape):
+    rows, files = tape
+    # a decision in hour 1 on a pool first printed in hour 0 is old; the same slot is young when hour 0 is not part of the run
+    s1 = own_slots(rows, "A", 1, 100, 300)[0]
+    assert run_kit(files, [(POOLS["A"], s1, S.ExitSpec(120))], count_only=True).counters["refused_pool_age_lt_360s"] == 0
+    scr = run_kit(files[1:], [(POOLS["A"], s1, S.ExitSpec(120))], count_only=True)
+    assert scr.counters["refused_pool_age_lt_360s"] == 1
+
+
+def test_rule_can_read_first_seen_in_state(tape):
+    rows, files = tape
+    seen = {}
+
+    class Peek:
+        name = "peek"
+
+        def cells(self):
+            return ["c"]
+
+        def triggers(self, hour, state):
+            seen.update({k: v for k, v in state.first_seen.items() if k == POOLS["A"]})
+            return []
+
+    run_kit_rule = S.Screen(Peek(), count_only=True)
+    run_kit_rule.run_block(0, "synthetic", S.iter_hours(files[:1], "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
+    assert seen[POOLS["A"]] == min(r["block_time"] for r in rows if r["pool"] == POOLS["A"])
+
+
+def test_priced_results_carry_the_four_sub_cells_groups_and_gate_columns(tape):
+    rows, files = tape
+    r = run_kit(files, script_for(rows)).results()["c"]
+    assert set(r["gate"]) == {"total|flat", "total|press", "sc|flat", "sc|press"} and r["worst_in_slot"].startswith("not measured: PROVISIONAL")
+    assert all(g["ci_lo_pct"] is not None and "majority_dates" in g for g in r["gate"].values())
+    # the synthetic block is neither explore-0814 nor a September block: (b) cannot be shown, so it is not a survivor
+    assert all(v is None for v in r["groups"].values()) and any("not measured" in w for w in r["kill_reasons"])
+    assert r["kill"] is True
+
+
+def test_groups_are_computed_for_named_blocks(tape, tmp_path):
+    rows, files = tape
+    scr = S.Screen(ScriptRule(script_for(rows)))
+    vm = S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])
+    scr.run_block(0, "explore-0814", S.iter_hours(files, "explore-0814", "backfill", vm))
+    r = scr.results()["c"]
+    assert all(r["groups"][f"explore-0814|{rule}|{fail}"]["n"] == r["attempts"] for rule, fail in S.SUB_CELLS)
+    assert r["groups"]["explore-0814|total|flat"]["mean"] == r["stats"]["1.9|total|rent0|flat"]["mean"]
+    assert all(r["groups"][f"september|{rule}|{fail}"] is None for rule, fail in S.SUB_CELLS)
+    md = S.table_md(scr.results(), scr.blocks, {"rule": "script"})
+    assert "explore-0814 alone" in md and "September pooled" in md and "sc/press" in md and "no profit claim" in md
 
 
 def test_a_losing_synthetic_book_is_killed_and_ex_best_day_is_zero_on_one_day(tape):
