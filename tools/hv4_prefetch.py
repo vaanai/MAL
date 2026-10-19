@@ -26,6 +26,10 @@ calls in any rolling hour (1,500 = 36k a day); the cold tier may use at most COL
 
 from __future__ import annotations
 
+import json
+import logging
+import os
+import tempfile
 import threading
 import time
 from collections import deque
@@ -34,12 +38,16 @@ from typing import Any, Callable, Iterable, Mapping
 
 from tools import hv4_cards as C
 
+log = logging.getLogger("hv4_prefetch")
+
 MIN_MS = 60_000
 HOT_HOLDERS_REFRESH_MS = 4 * MIN_MS  # under the card's 5 min holders limit, with slack for a cycle
 MINT_REFRESH_MS = 10 * MIN_MS  # under the card's 15 min mint limit (C.CHAIN_MINT_MAX_AGE_MS)
 HOT_LINGER_MS = 15 * MIN_MS  # a pool stays hot for three scans after it was last tagged, boarded or top by volume
 DROP_AFTER_MS = 30 * MIN_MS  # a pool that has not passed the filters for this long leaves the store
-RETRY_AFTER_MS = 60_000  # after a failed read of a kind, wait this long before trying that kind again
+RETRY_AFTER_MS = 60_000  # after a failed read of a kind, wait this long before trying that kind again; doubles with each failure in a row, up to RETRY_MAX_MS
+RETRY_MAX_MS = 16 * MIN_MS
+SPEND_SCHEMA = "hv4_prefetch.spend.v1"
 HOURLY_BUDGET = 1_500
 COLD_SHARE = 0.6
 CYCLE_S = 5.0
@@ -59,6 +67,7 @@ class _Pool:
     mayhems: deque = field(default_factory=lambda: deque(maxlen=KEEP))  # (is_mayhem, as_of_ms), known flags only
     holders: deque = field(default_factory=lambda: deque(maxlen=KEEP))  # Holders, ok only
     next_try_ms: dict = field(default_factory=lambda: {"mint": 0, "holders": 0})
+    fails: dict = field(default_factory=lambda: {"mint": 0, "holders": 0})
 
 
 def _slot_ok(stamp_slot: Any, slot: Any) -> bool:
@@ -71,18 +80,21 @@ class ChainPrefetcher:
     mint_facts / mayhem_flag / largest_holders methods). `compose(mf, mh_flag, holders)` builds the card's chain dict (HV4ChainSource.compose)."""
 
     def __init__(self, chain: Any, compose: Callable[[Any, Any, Any], dict], *, clock: Callable[[], int] | None = None, holders: bool | None = None,
-                 hourly_budget: int = HOURLY_BUDGET) -> None:
+                 hourly_budget: int = HOURLY_BUDGET, spend_path: str | os.PathLike | None = None) -> None:
         self.chain, self.compose = chain, compose
         self.clock = clock or (lambda: time.time_ns() // 1_000_000)
         provider = getattr(getattr(chain, "rpc", None), "provider", None)
         self.holders_on = (provider != "public") if holders is None else holders  # the public endpoint refuses getTokenLargestAccounts: do not spend calls on it
         self.hourly_budget = hourly_budget
         self.pools: dict[str, _Pool] = {}
-        self._spent: deque[tuple[int, int]] = deque()  # (ms, calls) in the last hour
+        self._spent: deque[list[int]] = deque()  # [minute bucket ms, calls] in the last hour
+        self.spend_path = spend_path
         self._lock = threading.RLock()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self.stats_: dict[str, int] = {}
+        if spend_path is not None:
+            self._load_spend()
 
     # -- bookkeeping
     def _n(self, k: str, n: int = 1) -> None:
@@ -93,12 +105,78 @@ class ChainPrefetcher:
             self._spent.popleft()
         return sum(n for _, n in self._spent)
 
-    def _calls_today(self) -> int | None:
+    def _calls_total(self) -> int | None:
+        """The counter's CUMULATIVE call count for this process. Not calls_today(): that is per UTC day and falls back to 0 at 00:00Z, so a refresh that
+        straddles midnight would book a negative spend and open the budget for the next hour."""
         c = getattr(self.chain, "counter", None)
+        for name in ("calls",):
+            v = getattr(c, name, None)
+            if isinstance(v, int) and not isinstance(v, bool):
+                return v
         try:
             return int(c.calls_today()) if c is not None else None
         except Exception:  # noqa: BLE001
             return None
+
+    def _book(self, now: int, used: int) -> None:
+        """Add `used` calls to the rolling hour (minute buckets, so the persisted file stays small) and save."""
+        used = max(0, int(used))
+        b = now - now % MIN_MS
+        with self._lock:
+            if self._spent and self._spent[-1][0] == b:
+                self._spent[-1][1] += used
+            else:
+                self._spent.append([b, used])
+            self._save_spend()
+
+    def _load_spend(self) -> None:
+        """Restore the rolling-hour spend after a restart. A missing file is a fresh start; a corrupt one is treated as a fully spent hour (fail closed)."""
+        try:
+            text = open(self.spend_path, encoding="utf-8").read()
+        except FileNotFoundError:
+            return
+        except OSError:
+            text = ""
+        now = self.clock()
+        try:
+            doc = json.loads(text)
+            if not isinstance(doc, dict) or doc.get("schema") != SPEND_SCHEMA:
+                raise ValueError("schema")
+            rows = [[int(a), int(b)] for a, b in doc["spent"]]
+            if any(b < 0 for _, b in rows):
+                raise ValueError("negative")
+        except (ValueError, KeyError, TypeError):
+            log.warning("hv4_prefetch spend state unreadable: treating the hour as fully spent")
+            self._n("spend_state_reset")
+            self._spent.append([now - now % MIN_MS, self.hourly_budget])
+            return
+        self._spent.extend(r for r in sorted(rows) if r[0] > now - 60 * MIN_MS)
+
+    def _save_spend(self) -> None:
+        """Atomic write: temp file in the same directory, fsync, rename. Called with the lock held. A failed write is counted, never raised."""
+        if self.spend_path is None:
+            return
+        from pathlib import Path
+
+        path = Path(self.spend_path)
+        tmp = None
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".hv4-prefetch-spend.", suffix=".tmp")
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump({"schema": SPEND_SCHEMA, "spent": [list(r) for r in self._spent]}, f, sort_keys=True)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+            tmp = None
+        except OSError:
+            self._n("spend_write_errors")
+        finally:
+            if tmp is not None:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
 
     # -- the runner's side
     def watch(self, items: Iterable[tuple[str, str | None]], hot: Iterable[str], now_ms: int) -> None:
@@ -174,16 +252,21 @@ class ChainPrefetcher:
                 p = self.pools.get(pool)
             if p is None:
                 continue
-            before = self._calls_today()
+            before = self._calls_total()
             self._refresh(p, now, need_mint, need_hold)
-            after = self._calls_today()
-            used = (after - before) if (before is not None and after is not None) else est
-            with self._lock:
-                self._spent.append((now, used))
+            after = self._calls_total()
+            used = max(0, after - before) if (before is not None and after is not None) else est
+            self._book(now, used)
             made += used
         self._n("passes")
         self._n("calls", made)
         return made
+
+    @staticmethod
+    def _backoff(p: _Pool, kind: str, now: int) -> None:
+        """60 s after the first failure of a kind, doubling with each failure in a row, up to 16 min: a pool that never answers does not keep a place in the queue."""
+        p.fails[kind] += 1
+        p.next_try_ms[kind] = now + min(RETRY_MAX_MS, RETRY_AFTER_MS * 2 ** (p.fails[kind] - 1))
 
     def _refresh(self, p: _Pool, now: int, need_mint: bool, need_hold: bool) -> None:
         mf = p.mints[-1] if p.mints else None
@@ -192,10 +275,11 @@ class ChainPrefetcher:
             if getattr(got, "ok", False) and got.as_of_ms is not None and got.as_of_slot is not None:
                 with self._lock:
                     p.mints.append(got)
+                p.fails["mint"] = 0
                 mf = got
                 self._n("mint_refreshed")
             else:
-                p.next_try_ms["mint"] = now + RETRY_AFTER_MS
+                self._backoff(p, "mint", now)
                 self._n("mint_errors")
         if mf is None:
             return
@@ -212,9 +296,10 @@ class ChainPrefetcher:
             if getattr(hd, "ok", False) and hd.as_of_ms is not None:
                 with self._lock:
                     p.holders.append(hd)
+                p.fails["holders"] = 0
                 self._n("holders_refreshed")
             else:
-                p.next_try_ms["holders"] = now + RETRY_AFTER_MS
+                self._backoff(p, "holders", now)
                 self._n("holders_errors")
 
     # -- thread

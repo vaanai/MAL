@@ -311,6 +311,22 @@ class HV4ChainSource:
         return self.compose(mf, mh, hd)
 
 
+CHAIN_CREDITS_FILE = "chain-credits.json"  # <root>/: the chain client's per-UTC-day call counts (the 40k/day cap survives a restart)
+CHAIN_SPEND_FILE = "chain-prefetch-spend.json"  # <root>/: the prefetcher's rolling-hour spend (the 1,500/hour bound survives a restart)
+
+
+def live_chain_source(root: str | os.PathLike, env: Mapping[str, str] | None = None) -> HV4ChainSource:
+    """The live chain source: HV4Chain on the RPC that MAL_HV4_RPC names (public or helius; anything else raises at start), with its daily call counts and the
+    prefetcher's hourly spend kept in files under the runner root, so a restart (or a crash loop) does not reset either bound. The prefetch thread is
+    NOT started here; main() starts it."""
+    from tools.hv4_chain import HV4Chain, RpcClient, RpcConfig
+    from tools.hv4_prefetch import ChainPrefetcher
+
+    base = Path(root)
+    chain = HV4Chain(RpcClient(RpcConfig.from_env(env), state_path=base / CHAIN_CREDITS_FILE))
+    return HV4ChainSource(chain, prefetch=ChainPrefetcher(chain, HV4ChainSource.compose, spend_path=base / CHAIN_SPEND_FILE))
+
+
 def holder_cover(snap: Mapping[str, Any]) -> bool | None:
     """The coverage flag of the tape's holder_count: True when the tape saw the pool from its creation with no data-loss gap since; False when it
     did not; None when that cannot be told. Never anything but a bool or None."""
@@ -1515,10 +1531,7 @@ def main(argv: list[str] | None = None) -> int:
     state = ArenaState(a.tape_dir)
     engine = ArenaEngine(a.ledger_root, a.registry, cfg=stack_config(feed_delay_slots=a.feed_delay_slots))
     cfg = RunnerConfig(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True)
-    from tools.hv4_prefetch import ChainPrefetcher
-
-    chain_src = HV4ChainSource()
-    chain_src.prefetch = ChainPrefetcher(chain_src.chain, HV4ChainSource.compose)  # facts are fetched off the scan path, stamped before the scan instant
+    chain_src = live_chain_source(a.root)  # facts are fetched off the scan path, stamped before the scan instant; the call bounds are persisted under the root
     chain_src.prefetch.start()
     run = Runner(cfg, state, engine, model, chain_src, guard, h5=None, binding=head_binding(), version_source=review_version_source(a.root, a.frozen_sha))
     if a.register:

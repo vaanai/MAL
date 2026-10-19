@@ -40,6 +40,7 @@ case "$MODE" in run|register|stub) ;; *) echo "hv4-runner-job: HV4_MODE must be 
 
 # --- chain rpc ---
 if [ "$MODE" = "run" ]; then MAL_HV4_RPC="${MAL_HV4_RPC:-helius}"; else MAL_HV4_RPC="${MAL_HV4_RPC:-public}"; fi
+case "$MAL_HV4_RPC" in public|helius) ;; *) echo "hv4-runner-job: MAL_HV4_RPC must be public or helius" >&2; exit 2;; esac  # never echo the value
 export MAL_HV4_RPC
 # --- end chain rpc ---
 

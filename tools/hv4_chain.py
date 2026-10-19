@@ -627,9 +627,13 @@ class RpcConfig:
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None, env_files: Sequence[Path] | None = None) -> "RpcConfig":
-        """Public unless MAL_HV4_RPC=helius."""
+        """Public unless MAL_HV4_RPC=helius. Only "public" or "helius" (any case) is accepted; anything else raises ChainError at start, and the value is
+        never put in the message (a mistyped selector can be a pasted URL or key)."""
         env = os.environ if env is None else env
-        if (env.get("MAL_HV4_RPC") or "public").strip().lower() == "helius":
+        sel = (env.get("MAL_HV4_RPC") or "public").strip().lower()
+        if sel not in ("public", "helius"):
+            raise ChainError("MAL_HV4_RPC must be public or helius")
+        if sel == "helius":
             return cls.helius(env, env_files)
         return cls.public()
 

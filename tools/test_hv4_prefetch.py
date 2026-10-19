@@ -4,6 +4,7 @@ The chain is a fake with the three HV4Chain methods the refresher uses, stamping
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import types
@@ -43,7 +44,15 @@ class FakeChain:
     def __init__(self, clock: Clock, *, provider: str = "helius", slot: int = SLOT, fail: tuple[str, ...] = ()) -> None:
         self.clock, self.calls, self.log, self.slot, self.fail = clock, 0, [], slot, set(fail)
         self.rpc = types.SimpleNamespace(provider=provider)
-        self.counter = types.SimpleNamespace(calls_today=lambda: self.calls)
+        owner = self
+
+        class Counter:  # the two reads CreditCounter has: the cumulative count and the per-UTC-day count
+            calls = property(lambda self: owner.calls)
+
+            def calls_today(self):
+                return owner.calls
+
+        self.counter = Counter()
         self._mh: set[str] = set()
         self.holder_max_age: list[float] = []
 
@@ -339,3 +348,115 @@ def test_the_job_script_uses_helius_in_run_mode_public_in_stub_and_honours_an_ex
     assert rpc_for("stub", {}) == "public" and rpc_for("register", {}) == "public"
     assert rpc_for("run", {"MAL_HV4_RPC": "public"}) == "public"
     assert rpc_for("stub", {"MAL_HV4_RPC": "helius"}) == "helius"
+
+
+def test_a_stray_rpc_selector_refuses_at_start_in_the_script_and_in_python_and_is_never_echoed():
+    stray = "https://mainnet.example/?api-key=SECRETISH123"
+    text = JOB.read_text()
+    snippet = text[text.index("# --- chain rpc ---"):text.index("# --- end chain rpc ---")]
+    out = subprocess.run(["sh", "-c", f"MODE=run\n{snippet}\nprintf started"], capture_output=True, text=True,
+                         env={"PATH": "/usr/bin:/bin", "MAL_HV4_RPC": stray}, timeout=30)
+    assert out.returncode == 2 and "started" not in out.stdout and stray not in out.stdout + out.stderr and "api-key" not in out.stdout + out.stderr
+    with pytest.raises(H.ChainError) as e:
+        H.RpcConfig.from_env({"MAL_HV4_RPC": stray})
+    assert stray not in str(e.value) and "api-key" not in str(e.value)
+    assert H.RpcConfig.from_env({}).provider == "public" and H.RpcConfig.from_env({"MAL_HV4_RPC": " Public "}).provider == "public"
+
+
+# ----------------------------------------------------------------------------------------------------------------------- the budget across UTC midnight and restarts
+MIDNIGHT = 1_792_454_400_000  # 2026-10-20T00:00:00Z
+
+
+class DayChain(FakeChain):
+    """A FakeChain on the REAL CreditCounter (per-UTC-day counts), whose mint read straddles 00:00Z."""
+
+    def __init__(self, clock: Clock, counter: H.CreditCounter) -> None:
+        super().__init__(clock)
+        self.counter = counter
+
+    def mint_facts(self, mint, force=False):
+        self.clock.ms += 1500
+        self.counter.record_call("getAccountInfo")
+        return super().mint_facts(mint, force)
+
+    def mayhem_flag(self, mint, *, tape_is_mayhem=None, pool=None, verify=False):
+        self.counter.record_call("getAccountInfo")
+        return super().mayhem_flag(mint, tape_is_mayhem=tape_is_mayhem, pool=pool, verify=verify)
+
+    def largest_holders(self, mint, **kw):
+        self.counter.record_call("getTokenLargestAccounts")
+        return super().largest_holders(mint, **kw)
+
+
+def test_a_refresh_that_straddles_utc_midnight_books_its_real_calls_not_a_negative_number():
+    clock = Clock(MIDNIGHT - 1000)
+    ctr = H.CreditCounter("helius", now_ms=clock)
+    for _ in range(1200):  # calls already made today
+        ctr.record_call("getAccountInfo")
+    chain = DayChain(clock, ctr)
+    pf = P.ChainPrefetcher(chain, R.HV4ChainSource.compose, clock=clock)
+    pf.watch([(POOL, MINT)], [POOL], clock.ms)
+    before_day = ctr.calls_today()
+    made = pf.run_once(clock.ms)
+    assert ctr.calls_today() < before_day  # the day rolled inside the refresh: the per-day count fell back (this is what broke the old delta)
+    assert made == 3 and pf._spent_last_hour(clock.ms) == 3  # mint + Mayhem + holders, not -1197
+    assert all(n >= 0 for _, n in pf._spent)
+    # and the bound still binds in the hour after midnight
+    pf.hourly_budget = 5
+    for k in range(6):
+        pf.watch([(f"P{k:043d}", f"m{k:043d}")], [], clock.ms)
+    pf.run_once(clock.ms)
+    assert pf._spent_last_hour(clock.ms) <= 5 and pf.stats()["budget_deferred"] > 0
+
+
+def test_a_counter_that_goes_backwards_is_clamped_at_zero():
+    clock = Clock(T)
+    chain = FakeChain(clock)
+    box = {"n": 100}
+
+    class Flaky:  # a cumulative count that falls between the two reads (a reset): never a negative spend
+        @property
+        def calls(self):
+            box["n"] -= 50
+            return box["n"]
+
+    chain.counter = Flaky()
+    pf = P.ChainPrefetcher(chain, R.HV4ChainSource.compose, clock=clock)
+    pf.watch([(POOL, MINT)], [], clock.ms)
+    assert pf.run_once(clock.ms) == 0 and pf._spent_last_hour(clock.ms) == 0
+
+
+def test_the_hourly_spend_survives_a_restart_and_a_corrupt_file_counts_as_a_spent_hour(tmp_path):
+    path = tmp_path / "spend.json"
+    clock = Clock(T)
+    a = P.ChainPrefetcher(FakeChain(clock), R.HV4ChainSource.compose, clock=clock, hourly_budget=6, spend_path=path)
+    a.watch([(f"P{k:043d}", f"m{k:043d}") for k in range(5)], [], clock.ms)
+    a.run_once()
+    assert a._spent_last_hour(clock.ms) == 6 and a.chain.calls == 6  # three new pools at 2 calls (mint, Mayhem); the other two wait for the next hour
+    assert [f.name for f in tmp_path.iterdir()] == ["spend.json"]  # atomic: no temp file left behind
+    clock.ms += 30 * MIN
+    b = P.ChainPrefetcher(FakeChain(clock), R.HV4ChainSource.compose, clock=clock, hourly_budget=6, spend_path=path)  # the restarted process
+    assert b._spent_last_hour(clock.ms) == 6  # not reset to 0: a crash loop cannot spend 6 an hour for ever
+    b.watch([("Z" * 44, "z" * 44)], [], clock.ms)
+    b.run_once()
+    assert b.chain.calls == 0 and b.stats()["budget_deferred"] == 1
+    clock.ms += 31 * MIN  # an hour after the first spend: it has aged out of the window
+    c = P.ChainPrefetcher(FakeChain(clock), R.HV4ChainSource.compose, clock=clock, hourly_budget=6, spend_path=path)
+    assert c._spent_last_hour(clock.ms) == 0
+    path.write_text("{not json")
+    d = P.ChainPrefetcher(FakeChain(clock), R.HV4ChainSource.compose, clock=clock, hourly_budget=6, spend_path=path)
+    assert d._spent_last_hour(clock.ms) == 6 and d.stats()["spend_state_reset"] == 1  # fail closed
+
+
+def test_the_live_chain_source_keeps_both_bounds_in_files_under_the_runner_root(tmp_path):
+    env = {"MAL_HV4_RPC": "public"}
+    a = R.live_chain_source(tmp_path, env)
+    for _ in range(7):
+        a.chain.rpc.counter.record_call("getAccountInfo")
+    a.prefetch._book(T, 4)
+    assert sorted(f.name for f in tmp_path.iterdir()) == [R.CHAIN_CREDITS_FILE, R.CHAIN_SPEND_FILE]
+    assert json.loads((tmp_path / R.CHAIN_SPEND_FILE).read_text())["spent"] == [[T - T % MIN, 4]]
+    b = R.live_chain_source(tmp_path, env)  # the restart: the day's call count is back, so the 40k/day cap is not reset
+    assert sum(b.chain.rpc.counter.by_day.values()) == 7 and b.chain.rpc.counter.calls_today() == 7
+    with pytest.raises(H.ChainError):
+        R.live_chain_source(tmp_path, {"MAL_HV4_RPC": "nope"})
