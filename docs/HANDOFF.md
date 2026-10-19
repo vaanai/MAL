@@ -55,7 +55,7 @@ Where this update and sections 0 to 5 below disagree, this update wins. The stal
   - After any cancel of #1036, confirm with `ps` that no walk-2 process is alive before the successor writes (2026-10-17 triple-writer lesson).
   - The session cron at 2026-10-29T12:17Z stays only as a check.
 
-**DEC-031 Amendment 2 (written 2026-10-19T17:27:15Z; quant-proof R1, `/data/mal/hunt-1008/push-1016/hunt21/QP-RULING-1019-cohort2.md`):** arena deciding rent is 0 per filled non-strand trip for books whose clock and registration are both after its merge; H5 books keep 2,039,280; HV4 is covered only if registered with T0 after the merge and `hv4_runner.py` passes `rent=0` explicitly (a code change, not in the amendment's PR).
+**DEC-031 Amendment 2 (written 2026-10-19T17:27:15Z, revised 2026-10-19T17:40:45Z; quant-proof R1, pinned at `ARTIFACTS/lab/qp-ruling-1019-cohort2.md`):** arena deciding rent is 0 on every trip whose leg state is `filled` for books whose clock and registration are both after its merge; H5 books keep 2,039,280. HV4 is covered only if, before its registration, its host passes `rent=0` explicitly and `hv4_cards.filters` enforces the canonical pool filter (WSOL quote and V in [17.5e9, 17.7e9]; today PumpSwap and WSOL only). Both are code changes, not in the amendment's PR. Coverage is tied to HV4's registered clock_start_ms (T0 = first 00:00Z after a clean 24 h stub and registration, expected 2026-10-22T00:00Z).
 
 Read this first, then LAB_STATE "Now", CONSTITUTION, and DEC-031. The previous HANDOFF (10-12..10-17, H5 canary, seal window) is archived at `ARTIFACTS/lab/handoff-archive-2026-10-18.md`. Its section 6, "Rules that bite", still applies. No book has cleared the promotion gate. Paper only.
 
