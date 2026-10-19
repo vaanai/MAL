@@ -455,6 +455,9 @@ STATE_SCHEMA = "hv4_chain.state.v1"
 STATE_KEEP_DAYS = 8
 
 
+MINUTE_KEEP = 24 * 60  # minutes of per-minute counts kept in memory (a day: a closed-hour row is written within minutes of the hour ending)
+
+
 class CreditCounter:
     """Calls (every attempt sent), Helius credits (calls x weight, 0 on a public endpoint), errors and cache hits, per method and UTC day.
 
@@ -477,6 +480,9 @@ class CreditCounter:
         self.credits_by_day: dict[str, int] = {}
         self.state_path = Path(state_path) if state_path else None
         self.state_write_errors = 0
+        # Per-minute call and credit counts of THIS process (minute start ms -> [calls, credits]); the last MINUTE_KEEP minutes. Read by the observability rows
+        # (tools/hv4_obs: the exact closed-hour and rolling-hour call counts of shakedown check 5) and by the v2 prefetch budget. Never persisted, never a decision input.
+        self._minutes: dict[int, list[int]] = {}
         if self.state_path is not None:
             self._load_state()
 
@@ -541,11 +547,29 @@ class CreditCounter:
             self.by_method[method] = self.by_method.get(method, 0) + 1
             day = _utc_day(self._now_ms())
             self.by_day[day] = self.by_day.get(day, 0) + 1
+            w = 0
             if self.provider == "helius":
                 w = HELIUS_CREDITS.get(method, HELIUS_DEFAULT_CREDITS)
                 self.credits += w
                 self.credits_by_day[day] = self.credits_by_day.get(day, 0) + w
+            now = int(self._now_ms())
+            m = self._minutes.setdefault(now - now % 60_000, [0, 0])
+            m[0] += 1
+            m[1] += w
+            if len(self._minutes) > MINUTE_KEEP:
+                for k in sorted(self._minutes)[:-MINUTE_KEEP]:
+                    del self._minutes[k]
             self._save_state()
+
+    def minute_counts(self, start_ms: int, end_ms: int) -> list[list[int]]:
+        """[[minute_start_ms, calls, credits], ...] for every whole minute in [start_ms, end_ms), zeros included, from this process's own record of every attempt sent."""
+        with self._lock:
+            return [[t, *self._minutes.get(t, (0, 0))] for t in range(start_ms - start_ms % 60_000, end_ms, 60_000) if t >= start_ms - start_ms % 60_000]
+
+    def calls_between(self, start_ms: int, end_ms: int) -> int:
+        """Calls this process sent in the minutes whose start lies in [start_ms, end_ms)."""
+        with self._lock:
+            return sum(v[0] for t, v in self._minutes.items() if start_ms <= t < end_ms)
 
     def record_error(self) -> None:
         with self._lock:
