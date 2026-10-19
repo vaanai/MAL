@@ -625,7 +625,7 @@ def test_job_script_refuses_dirty_wrong_sha_xtrace_and_missing_env(tiny_repo):
     assert p.returncode == 2 and "xtrace" in p.stderr
     for missing in ("ARENA_RULES_FROZEN_SHA", "ARENA_RULES_CLOCK_START_MS", "ARENA_RULES"):
         env = {"PATH": os.environ["PATH"], "HOME": str(tiny_repo), "ARENA_RULES_REPO": str(tiny_repo), "PYTHON": "echo", "ARENA_RULES": BOT, "ARENA_RULES_CLOCK_START_MS": "1",
-               "ARENA_RULES_FROZEN_SHA": "abc"}
+               "ARENA_RULES_FROZEN_SHA": "abcdef1"}
         env.pop(missing)
         assert subprocess.run(["sh", str(SCRIPT)], capture_output=True, text=True, env=env, cwd=str(tiny_repo)).returncode != 0
     assert _job(tiny_repo, {"ARENA_RULES_MODE": "bogus"}).returncode == 2
@@ -641,3 +641,12 @@ def test_job_script_requires_the_checkout_and_has_no_home_default(tiny_repo, tmp
     p = subprocess.run(["sh", str(SCRIPT)], capture_output=True, text=True, env=env, cwd=str(tmp_path))
     assert p.returncode != 0 and "ARENA_RULES_REPO" in p.stderr and p.stdout == ""  # it did not fall back to $HOME/MAL
     assert subprocess.run(["sh", str(SCRIPT)], capture_output=True, text=True, env={**env, "ARENA_RULES_REPO": str(home / "MAL")}, cwd=str(tmp_path)).returncode == 0
+
+
+def test_job_script_requires_a_lowercase_hex_sha_of_at_least_seven_characters(tiny_repo):
+    head = _git(tiny_repo, "rev-parse", "HEAD")
+    for bad in ("abc", "abcdef", head[:6], "ABCDEF1234", head.upper(), "xyz12345", "abcdef1 ", "abcdef1;x"):
+        p = _job(tiny_repo, {"ARENA_RULES_FROZEN_SHA": bad})
+        assert p.returncode == 2 and "ARENA_RULES_FROZEN_SHA" in p.stderr, bad
+    assert _job(tiny_repo, {"ARENA_RULES_FROZEN_SHA": head[:7]}).returncode == 0  # 7 characters of the real head are enough
+    assert _job(tiny_repo, {"ARENA_RULES_FROZEN_SHA": head}).returncode == 0

@@ -36,6 +36,8 @@ DELAY="${ARENA_RULES_FEED_DELAY_SLOTS:-7}"
 case "$MODE" in run|register|replay) ;; *) echo "arena-rules-job: ARENA_RULES_MODE must be run, register or replay" >&2; exit 2;; esac
 case "$ARENA_RULES_CLOCK_START_MS" in ''|*[!0-9]*) echo "arena-rules-job: ARENA_RULES_CLOCK_START_MS must be whole milliseconds" >&2; exit 2;; esac
 case "$DELAY" in ''|*[!0-9]*) echo "arena-rules-job: ARENA_RULES_FEED_DELAY_SLOTS must be a whole number of slots" >&2; exit 2;; esac
+case "$ARENA_RULES_FROZEN_SHA" in ''|*[!0-9a-f]*) echo "arena-rules-job: ARENA_RULES_FROZEN_SHA must be lowercase hex (a commit id)" >&2; exit 2;; esac
+if [ "${#ARENA_RULES_FROZEN_SHA}" -lt 7 ]; then echo "arena-rules-job: ARENA_RULES_FROZEN_SHA must be at least 7 hex characters" >&2; exit 2; fi
 if [ "$MODE" = "replay" ]; then
   : "${ARENA_RULES_FROM_MS:?replay needs ARENA_RULES_FROM_MS}"
   : "${ARENA_RULES_TO_MS:?replay needs ARENA_RULES_TO_MS}"
