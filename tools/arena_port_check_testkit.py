@@ -69,7 +69,8 @@ _SERIAL = itertools.count()
 class ToyPort(Rule):
     """The hand-written streaming twin of ToyKit. Pure: what it needs comes from the state (events, V, first print) and the log (positions, attempt keys).
     Injections: `skip_pools` (a dropped pool), `cooldown_blind` (only 'one open position per pool', no cooldown after the exit), `age_blind` (no 360 s pool-age refusal),
-    `nondeterministic` (a process-wide counter in the entry meta), `no_hold_meta` (the port forgets to declare hold_s)."""
+    `nondeterministic` (a process-wide counter in the entry meta), `no_hold_meta` (the port forgets to declare hold_s),
+    `raise_in_on_row` (a port bug), `tp` / `sl` / `trail` / `event_exit` (declared exit fields; the toy never exits on them)."""
 
     deciding_stake = 0.25
     model_ids: tuple[str, ...] = ()
@@ -77,7 +78,9 @@ class ToyPort(Rule):
     universe = "pumpswap_wsol"
 
     def __init__(self, every: int = 20, hold_s: float = 60.0, cooldown_s: float = 60.0, cell: str = "toy", bot_id: str = "toy-port", skip_pools: tuple[str, ...] = (),
-                 cooldown_blind: bool = False, age_blind: bool = False, nondeterministic: bool = False, no_hold_meta: bool = False, raise_in_on_row: bool = False) -> None:
+                 cooldown_blind: bool = False, age_blind: bool = False, nondeterministic: bool = False, no_hold_meta: bool = False, raise_in_on_row: bool = False,
+                 tp: float | None = None, sl: float | None = None, trail: float | None = None, event_exit: bool = False) -> None:
+        self.tp, self.sl, self.trail, self.event_exit = tp, sl, trail, event_exit
         self.every, self.hold_s, self.cooldown_s, self.cell, self.bot_id = int(every), float(hold_s), float(cooldown_s), cell, bot_id
         self.skip_pools, self.cooldown_blind, self.age_blind = tuple(skip_pools), cooldown_blind, age_blind
         self.nondeterministic, self.no_hold_meta, self.raise_in_on_row = nondeterministic, no_hold_meta, raise_in_on_row
@@ -105,7 +108,7 @@ class ToyPort(Rule):
             last = max((int(k.split("|")[1]) for k in ctx.attempted if k.startswith(pid + "|")), default=None)
             if last is not None and t < last + int((self.hold_s + self.cooldown_s) * 1000):
                 return []
-        meta: dict[str, Any] = {"cell": self.cell, "tp": None, "sl": None, "trail": None}
+        meta: dict[str, Any] = {"cell": self.cell, "tp": self.tp, "sl": self.sl, "trail": self.trail, "event_exit": self.event_exit}
         if not self.no_hold_meta:
             meta["hold_s"] = self.hold_s
         if self.nondeterministic:
