@@ -1214,3 +1214,79 @@ def test_r4_the_tool_refuses_to_run_unless_the_declaration_pins_its_own_md5(tmp_
     (tmp_path / "edited_tool.py").write_text(Path(f2.sim.__file__).read_text()[:100])
     with pytest.raises(f2.F2Refusal, match="pins F2 TOOL MD5"):
         f2.load_f2_declaration(str(decl), sha(decl))
+
+
+# ===================================== reviewer: the simulator writes to staging; --out only ever holds F2-labelled files
+def _labels_in(d):
+    """(file name, 'LIP-F1 formula screen | Book' present) for every file under d."""
+    out = []
+    for f in sorted(Path(d).rglob("*")):
+        if f.is_file():
+            out.append((f.relative_to(d).as_posix(), b"LIP-F1 formula screen | Book" in f.read_bytes()))
+    return out
+
+
+def test_the_simulator_writes_to_staging_and_out_only_ever_holds_relabelled_files(tmp_path, monkeypatch, covered, texts, gates):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    out = tmp_path / "out"
+    real_table, seen = f2.f2_table, {}
+
+    def spy_table(gate):
+        seen["out_at_relabel"] = sorted(p.name for p in out.iterdir())
+        seen["staged"] = sorted(p.name for p in (out / f2.STAGING).iterdir())
+        seen["sim_label_in_staging"] = "LIP-F1 formula screen | Book A" in (out / f2.STAGING / "table.txt").read_text()
+        return real_table(gate)
+    monkeypatch.setattr(f2, "f2_table", spy_table)
+    f2.run_f2(f2_cfg(w, out), "A", ctx_for(texts, gates))
+    # at the moment of the relabel --out held the marker and the staging directory only
+    assert seen["out_at_relabel"] == sorted([f2.MARKER, f2.STAGING])
+    assert seen["sim_label_in_staging"] is True                                   # the simulator's own labels live in staging
+    assert "units.parquet" in seen["staged"] and "gate.json" in seen["staged"]
+    # afterwards: no staging directory, the five files and the marker, none with the simulator's header
+    assert sorted(p.name for p in out.iterdir()) == sorted(["units.parquet", "fills.parquet", "days.parquet", "gate.json", "table.txt", f2.MARKER])
+    assert not any(flag for _n, flag in _labels_in(out)) and json.loads((out / "gate.json").read_text())["book"] == "F2-A"
+
+
+@pytest.mark.parametrize("where", ["table", "parquet", "verdict"])
+def test_a_crash_while_relabelling_leaves_no_simulator_labelled_file_in_out(tmp_path, monkeypatch, covered, texts, gates, where):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    boom = lambda *a, **k: (_ for _ in ()).throw(f2.F2Refusal("synthetic crash in the relabel"))
+    # a good earlier run of the same variant, to show that a later crash leaves it untouched
+    f2.run_f2(f2_cfg(w, tmp_path / "again"), "A", ctx_for(texts, gates))
+    before = md5_dir(tmp_path / "again")
+    target = {"table": "f2_table", "parquet": "_stamp_parquet", "verdict": "final_verdict"}[where]
+    monkeypatch.setattr(f2, target, boom)
+    with pytest.raises(f2.F2Refusal, match="synthetic crash"):
+        f2.run_f2(f2_cfg(w, tmp_path / "fresh"), "A", ctx_for(texts, gates))
+    assert not (tmp_path / "fresh").exists()                                     # nothing left at all
+    (tmp_path / "pre").mkdir()
+    with pytest.raises(f2.F2Refusal, match="synthetic crash"):
+        f2.run_f2(f2_cfg(w, tmp_path / "pre"), "A", ctx_for(texts, gates))
+    assert list((tmp_path / "pre").iterdir()) == [] and f2.sim_is_lip_f1()
+    with pytest.raises(f2.F2Refusal, match="synthetic crash"):
+        f2.run_f2(f2_cfg(w, tmp_path / "again"), "A", ctx_for(texts, gates))
+    assert md5_dir(tmp_path / "again") == before and not any(f for _n, f in _labels_in(tmp_path / "again"))
+
+
+def test_a_stale_staging_directory_from_a_killed_run_is_cleared_and_never_read(tmp_path, monkeypatch, covered, texts, gates):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    stale = tmp_path / "out" / f2.STAGING
+    stale.mkdir(parents=True)
+    (stale / "gate.json").write_text(json.dumps({"book": "A", "verdict": "FORMULA_SCREEN_PASSED"}))
+    (stale / "junk.txt").write_text("x")
+    f2.run_f2(f2_cfg(w, tmp_path / "out", "B"), "B", ctx_for(texts, gates))
+    assert not stale.exists()
+    assert json.loads((tmp_path / "out" / "gate.json").read_text())["verdict"] == "COUNTS_NOT_MET"
+    assert not any(flag for _n, flag in _labels_in(tmp_path / "out"))
+
+
+def test_the_cfg_out_is_restored_after_a_run_and_after_a_simulator_error(tmp_path, monkeypatch, covered, texts, gates):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    cfg = f2_cfg(w, tmp_path / "out")
+    f2.run_f2(cfg, "A", ctx_for(texts, gates))
+    assert cfg.out == str(tmp_path / "out")
+    cfg2 = f2_cfg(w, tmp_path / "out2")
+    monkeypatch.setattr(sim, "run_sim", lambda c: (_ for _ in ()).throw(sim.InputError("synthetic")))
+    with pytest.raises(sim.InputError):
+        f2.run_f2(cfg2, "A", ctx_for(texts, gates))
+    assert cfg2.out == str(tmp_path / "out2") and not (tmp_path / "out2").exists()

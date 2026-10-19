@@ -45,7 +45,9 @@ Process rules this tool enforces (QP L1; the full text is in DECLARE-F2.md):
   * ``--dry-run`` prints loader counts ONLY (units by status and source, snapshot consistency, unsealed parts, metadata
     counts, store states).  It never applies the F2 rule and never prints a quote, share, pause, cap, fill, reward or
     P&L count;
-  * every output is relabelled F2-A / F2-B and goes only to its own ``--out`` with a marker file.
+  * every output is relabelled F2-A / F2-B and goes only to its own ``--out`` with a marker file.  The simulator writes
+    into a staging directory inside ``--out``; the files are renamed into place only after the relabel succeeded, so a
+    crash never leaves a LIP-F1-labelled file in an F2 ``--out``.
 """
 from __future__ import annotations
 
@@ -53,7 +55,9 @@ import argparse
 import contextlib
 import hashlib
 import json
+import os
 import re
+import shutil
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -105,6 +109,7 @@ ADJ_PCT = 5.0 / M_GATED                                         # the deciding p
 READ_FROM_ISO = "2026-10-26T00:00:00Z"
 NOT_DECIDABLE_ISO = "2026-11-02T00:00:00Z"
 MARKER = "LIP-F2-VARIANT.json"
+STAGING = ".f2-staging"                                        # the simulator writes here; files move to --out once relabelled
 BOOKC_START_MARKER = "BOOK-C-REPORT-ONLY.json"                 # written at the START of a Book C run: not a done marker
 SIM_OUTPUT_FILES = ("units.parquet", "fills.parquet", "days.parquet", "gate.json", "table.txt", "snaps.parquet")
 FINAL_LIP_F1_VERDICTS = ("FORMULA_SCREEN_PASSED", "FAIL", "DEAD_AS_FROZEN")
@@ -697,13 +702,42 @@ def run_f2(cfg, variant, ctx):
     lab = labels(variant, ctx)
     check_out(out, variant, [cfg.books, cfg.programs, cfg.meta, cfg.trades, cfg.markets, cfg.series])
     fresh_dir, had_marker = not out.exists(), (out / MARKER).exists()
+    stage, orig_out = out / STAGING, cfg.out
     try:
+        shutil.rmtree(stage, ignore_errors=True)       # leftovers of a killed run: simulator-labelled, never read
         with f2_cohort(ctx["freeze_iso"], variant):
             out.mkdir(parents=True, exist_ok=True)
             (out / MARKER).write_text(_dump(dict(lab, files=list(SIM_OUTPUT_FILES))))
-            res = sim.run_sim(cfg)
+            stage.mkdir()
+            cfg.out = str(stage)                       # the simulator writes its LIP-F1-labelled files here, never into --out
+            try:
+                res = sim.run_sim(cfg)
+            finally:
+                cfg.out = orig_out
+        # ---- relabel every output inside the staging directory (outside the patch: the simulator is LIP-F1's again)
+        res["verdict_simulator"] = res.get("verdict")
+        res.update(lab)
+        res["verdict"] = final_verdict(res)
+        res["f2_statement_read"] = read_statement(res, ctx)
+        g = stage / "gate.json"
+        if g.exists():
+            gate = json.loads(g.read_text())
+            gate.update(lab)
+            gate["verdict_simulator"] = gate.get("verdict")
+            gate["verdict"] = final_verdict(gate)
+            gate["f2_statement_read"] = read_statement(gate, ctx)
+            g.write_text(_dump(gate))
+        (stage / "table.txt").write_text(f2_table(res))
+        _stamp_parquet(stage, lab)
+        # ---- only now do the files enter --out, each already carrying the F2 labels
+        for f in SIM_OUTPUT_FILES:
+            if (stage / f).exists():
+                os.replace(stage / f, out / f)
+        shutil.rmtree(stage, ignore_errors=True)
     except BaseException:
-        # a refused / failed run leaves no marker-only directory behind (files the simulator wrote stay, labelled by the marker)
+        # a refused / failed run leaves no simulator-labelled file in --out and no marker-only directory behind
+        cfg.out = orig_out
+        shutil.rmtree(stage, ignore_errors=True)
         if not any((out / f).exists() for f in SIM_OUTPUT_FILES):
             if not had_marker:
                 (out / MARKER).unlink(missing_ok=True)
@@ -711,21 +745,6 @@ def run_f2(cfg, variant, ctx):
                 with contextlib.suppress(OSError):
                     out.rmdir()
         raise
-    # ---- relabel every output (outside the patch: the simulator is LIP-F1's again)
-    res["verdict_simulator"] = res.get("verdict")
-    res.update(lab)
-    res["verdict"] = final_verdict(res)
-    res["f2_statement_read"] = read_statement(res, ctx)
-    g = out / "gate.json"
-    if g.exists():
-        gate = json.loads(g.read_text())
-        gate.update(lab)
-        gate["verdict_simulator"] = gate.get("verdict")
-        gate["verdict"] = final_verdict(gate)
-        gate["f2_statement_read"] = read_statement(gate, ctx)
-        g.write_text(_dump(gate))
-    (out / "table.txt").write_text(f2_table(res))
-    _stamp_parquet(out, lab)
     return res
 
 
