@@ -42,6 +42,10 @@ KILL (hunt23 RULES.md Amendment 1; deciding leg 1.9 s / 0.25 SOL / rent 0): any 
   nothing is printed for it and an event cell stays PROVISIONAL-BLOCKED.
   A cell that is not killed is a SCREEN SURVIVOR only: at most one survivor per rule group is picked by the rule author's
   declared statistic, and nothing here is a profit claim. `thin` (< --min-attempts-per-day, default 20) is reported beside it, not a kill.
+  SCREEN P (EXP-028, REPORT ONLY; QP ruling on PR #756 comment 6276924696 item 4): a new key `screen_p` per cell (TABLE section 5), computed after the verdict and never read by it. For each
+  of the four sub-cells at the deciding cell (1.9 s, 0.25 SOL, rent 0, END leg, pooled over the four blocks) it resamples the per-attempt SOL vector stat() hands to arena_stack.boot_lo, B draws
+  (default 10,000, --screen-p-draws up to 1,000,000), seed 1, a fresh default_rng(1) per sub-cell: p_pct = (1 + #{m_b <= 0}) / (1 + B), p_null = (1 + #{m_b - xbar >= xbar}) / (1 + B),
+  sub-cell p = their max, cell p = the max over the four; the date-cluster p is reported beside it with the same tails around the pooled ratio. It REFUSES any declared stake other than 0.25 SOL.
   SEAL (Amendment 1, 3): a pool younger than 360 s at the decision (counted from the pool's first print in the same block; state.first_seen holds EARLIER hours only) is REFUSED and counted
   (refused_pool_age_lt_360s). It is mandatory and not a parameter.
 
@@ -885,6 +889,142 @@ AUTHOR_NOTES = (
 )
 
 
+# ------------------------------------------------------------------------------------------------------------------------------ screen p (EXP-028, REPORT-ONLY)
+# QP ruling on PR #756 (comment 6276924696, item 4), amended by the coordinator for B (QP on #754, comment 6276929107, item 1). It is IN the kit because the p must be computed on exactly
+# the per-attempt vectors the kill used, which exist only in memory here. It adds keys only: it never kills a cell and never rescues one (it is computed after the verdict is final and
+# nothing reads it), and every pre-existing results.json and TABLE field is byte-identical with and without it (tested). It is a Monte Carlo p of an in-sample screen, not evidence.
+SCREEN_P_B = 10_000  # default number of draws
+SCREEN_P_B_MIN, SCREEN_P_B_MAX = F.BOOT_DRAWS, 1_000_000  # >= 1,000 (so the first 1,000 draws can be checked against arena_stack.boot_lo), <= 1,000,000 (a Holm bar below 1/10001)
+SCREEN_P_SEED = F.BOOT_SEED  # 1, and a FRESH numpy.random.default_rng(seed) per sub-cell and per date-cluster resampler
+SCREEN_P_SOURCE = "QP ruling, vaanai/MAL PR #756 comment 6276924696 item 4 (B parameter: PR #754 comment 6276929107 item 1)"
+SCREEN_P_DEFINITION = (
+    "H0: mean SOL per attempt <= 0, one-sided. x_s = the per-attempt SOL vector stat() passes to arena_stack.boot_lo (deciding cell 1.9 s / 0.25 SOL / rent 0 / END leg, pooled over the "
+    "four canonical blocks after block-edge exclusions, guarded reverts included), xbar = mean(x_s). Draws b = 1..B: m_b = x_s[rng.integers(0, n, n)].mean(), rng = default_rng(seed) fresh per "
+    "sub-cell. p_pct = (1 + #{m_b <= 0}) / (1 + B); p_null = (1 + #{m_b - xbar >= xbar}) / (1 + B); sub-cell p = max(p_pct, p_null); cell p = max over the four sub-cells "
+    "{total, sc} x {flat, press}. Date-cluster p: the kit's date resampler (boot_lo(dsum, dn): resample UTC dates, r_b = dsum[ix].sum() / max(1, dn[ix].sum())), same B and seed, "
+    "the same two tails around the pooled ratio rhat, same max rules. A cell with n = 0, a non-finite attempt, or fewer than 2 attempts (2 dates for the cluster) has p None, which is not a pass.")
+
+
+def screen_p_check(stake_sol: float, draws: int) -> int:
+    """Refuse (Refused) a stake other than 0.25 SOL (the kit decides at STAKE_SOL; EXP-028 item 2 says the stake in DECLARE) and a B outside [1,000, 1,000,000]. Returns B."""
+    if isinstance(stake_sol, bool) or stake_sol != STAKE_SOL:
+        raise Refused(f"screen_p_stake_refused: screen p is defined at {STAKE_SOL} SOL only (the kit's deciding stake), not {stake_sol!r}")
+    if isinstance(draws, bool) or not isinstance(draws, (int, np.integer)) or not SCREEN_P_B_MIN <= draws <= SCREEN_P_B_MAX:
+        raise Refused(f"screen_p_draws_refused: B must be an integer in [{SCREEN_P_B_MIN}, {SCREEN_P_B_MAX}], not {draws!r}")
+    return int(draws)
+
+
+def _boot_means(x: np.ndarray, B: int, seed: int = SCREEN_P_SEED) -> np.ndarray:
+    """m_b = x[rng.integers(0, n, n)].mean() for b = 1..B from a fresh default_rng(seed): arena_stack.boot_lo's own loop, so m[:1000] reproduces its bound bit for bit."""
+    rng = np.random.default_rng(seed)
+    n = len(x)
+    m = np.empty(B)
+    for b in range(B):
+        m[b] = x[rng.integers(0, n, n)].mean()
+    return m
+
+
+def _cluster_ratios(dsum: np.ndarray, dn: np.ndarray, B: int, seed: int = SCREEN_P_SEED) -> np.ndarray:
+    """r_b of the kit's own date-cluster resampler (boot_lo(dsum, dn)'s loop) for b = 1..B: resample the k UTC dates, pooled mean SOL per trade."""
+    k = len(dsum)
+    rng = np.random.default_rng(seed)
+    r = np.empty(B)
+    for b in range(B):
+        ix = rng.integers(0, k, k)
+        r[b] = dsum[ix].sum() / max(1, dn[ix].sum())
+    return r
+
+
+def _tails(draws: np.ndarray, centre: float, B: int) -> dict:
+    """The two one-sided tails around `centre` (xbar, or the pooled ratio rhat): the percentile share #{d <= 0} and the recentred null-imposed share #{d - centre >= centre}, each with the
+    +1 Monte Carlo correction (never 0), and their max. Counts and p are reported unrounded."""
+    c_pct, c_null = int((draws <= 0).sum()), int(((draws - centre) >= centre).sum())
+    p_pct, p_null = (1 + c_pct) / (1 + B), (1 + c_null) / (1 + B)
+    return {"tail_count_pct": c_pct, "tail_count_null": c_null, "p_pct": p_pct, "p_null": p_null, "p": max(p_pct, p_null)}
+
+
+def screen_p_sub(lam: np.ndarray, day: np.ndarray, *, B: int = SCREEN_P_B, seed: int = SCREEN_P_SEED, stake_sol: float = STAKE_SOL, ci_lo_trade: float | None = None,
+                 ci_lo_date: float | None = None) -> dict:
+    """Screen p of ONE sub-cell. lam: the per-attempt pnl in lamports exactly as stat() receives it; day: its UTC day. x = lam / 1e9 and (dsum, dn) are built exactly as stat() builds the
+    vectors it hands to arena_stack.boot_lo and to boot_lo(dsum, dn). ci_lo_trade / ci_lo_date (stat's own bounds) are optional: with them the result records that the first 1,000
+    draws reproduce the bounds the kill used."""
+    B = screen_p_check(stake_sol, B)
+    x = np.asarray(lam, float) / 1e9
+    out: dict[str, Any] = {"n": int(len(x)), "B": B, "seed": int(seed), "xbar": None, "tail_count_pct": None, "tail_count_null": None, "p_pct": None, "p_null": None, "p": None,
+                           "ci90_lo_first1000": None, "ci90_lo_first1000_equals_stat": None, "none_reason": None, "date_cluster": None}
+    dc: dict[str, Any] = {"k_dates": 0, "B": B, "seed": int(seed), "rhat": None, "tail_count_pct": None, "tail_count_null": None, "p_pct": None, "p_null": None, "p": None,
+                          "ci90_lo_first1000": None, "ci90_lo_first1000_equals_stat": None, "none_reason": None}
+    out["date_cluster"] = dc
+    if len(x) == 0:
+        out["none_reason"] = dc["none_reason"] = "n = 0: no p (not a pass)"
+        return out
+    if not np.isfinite(x).all():
+        out["none_reason"] = dc["none_reason"] = f"{int((~np.isfinite(x)).sum())} non-finite attempt(s): no p (not a pass)"
+        return out
+    out["xbar"] = xbar = float(x.mean())
+    if len(x) < 2:
+        out["none_reason"] = "n < 2: a resample is constant, no p (not a pass)"
+    else:
+        m = _boot_means(x, B, seed)
+        out.update(_tails(m, xbar, B))
+        out["ci90_lo_first1000"] = lo = float(np.percentile(m[:SCREEN_P_B_MIN], F.BOOT_PCT))
+        out["ci90_lo_first1000_equals_stat"] = None if ci_lo_trade is None else bool(lo == ci_lo_trade)
+    days, inv = np.unique(np.asarray(day), return_inverse=True)
+    dsum, dn = np.bincount(inv, weights=x), np.bincount(inv).astype(float)
+    dc["k_dates"] = int(len(days))
+    dc["rhat"] = rhat = float(dsum.sum() / max(1, dn.sum()))
+    if len(days) < 2:
+        dc["none_reason"] = "fewer than 2 UTC dates: a date resample is constant, no p (not a pass)"
+        return out
+    r = _cluster_ratios(dsum, dn, B, seed)
+    dc.update(_tails(r, rhat, B))
+    dc["ci90_lo_first1000"] = lo = float(np.percentile(r[:SCREEN_P_B_MIN], F.BOOT_PCT))
+    dc["ci90_lo_first1000_equals_stat"] = None if ci_lo_date is None else bool(lo == ci_lo_date)
+    return out
+
+
+def _max_p(ps: Sequence[float | None]) -> float | None:
+    return None if (not ps or any(p is None for p in ps)) else max(ps)
+
+
+def screen_p_cell(st: dict | None, cfg: P.StackConfig, stats: dict | None = None, *, B: int = SCREEN_P_B, seed: int = SCREEN_P_SEED, stake_sol: float = STAKE_SOL) -> dict:
+    """Screen p of a cell: the four sub-cells at the deciding cell (1.9 s, 0.25 SOL, cfg.rent = 0, END leg) on the pooled trips `st`, re-priced by the kit's own legs() (the same call, the
+    same trips and the same per-cell pressure refit that stat() was fed). stats: the cell's stat() dict, to record that the first 1,000 draws reproduce its bounds. cell p = the max over
+    the four sub-cells (an intersection-union test), None unless all four have a p; the same for the date-cluster p. REPORT ONLY: nothing reads these numbers."""
+    B = screen_p_check(stake_sol, B)
+    subs: dict[str, dict] = {}
+    n = 0 if st is None else len(st["ref"])
+    day = st["T"] // 86400 if n else np.empty(0, np.int64)
+    for rule in STRAND_RULES:
+        L = legs(st, STAKE_SOL * 1e9, LAT_DECIDING, rule, cfg) if n else None
+        for fail in FAILS:
+            s_ = (stats or {}).get(f"{LAT_DECIDING}|{rule}|rent0|{fail}")
+            subs[f"{rule}|{fail}"] = screen_p_sub(L[fail] if n else np.empty(0), day, B=B, seed=seed, stake_sol=stake_sol,
+                                                  ci_lo_trade=None if s_ is None else s_["ci_lo_trade"], ci_lo_date=None if s_ is None else s_["ci_lo"])
+    return {"report_only": True, "source": SCREEN_P_SOURCE, "B": B, "seed": int(seed), "stake_sol": STAKE_SOL, "leg": "1.9 s / 0.25 SOL / rent 0 / END, pooled over the four blocks",
+            "sub_cells": subs, "cell_p": _max_p([v["p"] for v in subs.values()]), "cell_p_date_cluster": _max_p([v["date_cluster"]["p"] for v in subs.values()])}
+
+
+def screen_p_md(res: dict) -> list[str]:
+    """TABLE section 5 (appended; nothing above it changes): the screen p per cell, unrounded."""
+    head = " | ".join(f"{rule}/{fail} trade-level: n, xbar, tails pct/null, p_pct, p_null, p | {rule}/{fail} date-cluster: k, rhat, tails pct/null, p" for rule, fail in SUB_CELLS)
+    L = ["", "## 5. Screen p (EXP-028, REPORT ONLY: it never kills or rescues a cell)", "", SCREEN_P_DEFINITION, "",
+         "Source: " + SCREEN_P_SOURCE + ". Unrounded. `None` = no p (n = 0, a non-finite attempt, or too few attempts / dates) and is not a pass. In-sample, no profit claim.", "",
+         f"| cell | B | seed | cell p | cell p date-cluster | {head} |", "|---|---|---|---|---|" + "---|" * (2 * len(SUB_CELLS))]
+    for nm, r in res.items():
+        sp = r.get("screen_p")
+        if sp is None:
+            continue
+        cols = []
+        for rule, fail in SUB_CELLS:
+            c = sp["sub_cells"][f"{rule}|{fail}"]
+            d = c["date_cluster"]
+            cols += [f"{c['n']}, {c['xbar']!r}, {c['tail_count_pct']}/{c['tail_count_null']}, {c['p_pct']!r}, {c['p_null']!r}, **{c['p']!r}**",
+                     f"{d['k_dates']}, {d['rhat']!r}, {d['tail_count_pct']}/{d['tail_count_null']}, **{d['p']!r}**"]
+        L.append(f"| {nm} | {sp['B']} | {sp['seed']} | **{sp['cell_p']!r}** | {sp['cell_p_date_cluster']!r} | " + " | ".join(cols) + " |")
+    return L
+
+
 # ------------------------------------------------------------------------------------------------------------------------------ the screen
 @dataclass
 class _Store:
@@ -894,8 +1034,10 @@ class _Store:
 
 
 class Screen:
-    def __init__(self, rule: Any, *, count_only: bool = False, min_attempts_per_day: float = 20.0) -> None:
+    def __init__(self, rule: Any, *, count_only: bool = False, min_attempts_per_day: float = 20.0, screen_p: bool = True, screen_p_draws: int = SCREEN_P_B,
+                 declared_stake_sol: float = STAKE_SOL) -> None:
         self.rule, self.count_only, self.min_per_day = rule, count_only, float(min_attempts_per_day)
+        self.screen_p, self.screen_p_B = bool(screen_p), (screen_p_check(declared_stake_sol, screen_p_draws) if screen_p else int(screen_p_draws))  # Refused before anything is read
         raw = list(rule.cells())
         self.cells = [Cell(str(c)) if isinstance(c, str) else Cell(str(c.name), float(getattr(c, "cooldown_s", 60.0)), bool(getattr(c, "event_triggered", True))) for c in raw]
         if not self.cells or len({c.name for c in self.cells}) != len(self.cells):
@@ -1128,8 +1270,11 @@ class Screen:
     def _cell_result(self, ci: int, names: list[str], ndays: int) -> dict:
         parts = self.acc[ci]
         if not parts:
-            return {"attempts": 0, "kill": True, "kill_reasons": ["no attempts"], "thin": None, "excluded_block_edge": int(self.excl_cell[ci]), "event_triggered": self.cells[ci].event_triggered,
-                    "registration": "KILLED"}
+            r0 = {"attempts": 0, "kill": True, "kill_reasons": ["no attempts"], "thin": None, "excluded_block_edge": int(self.excl_cell[ci]), "event_triggered": self.cells[ci].event_triggered,
+                  "registration": "KILLED"}
+            if self.screen_p:
+                r0["screen_p"] = screen_p_cell(None, self.cfg[RENT_DECIDING], None, B=self.screen_p_B)  # n = 0: p None, not a pass
+            return r0
         st = _cat(parts)
         n = len(st["ref"])
         day = st["T"] // 86400
@@ -1179,6 +1324,8 @@ class Screen:
                     r["kill_reasons"].append("worst-in-slot (lower of the worst-in-slot and no-guard-rescue legs) mean <= 0 in " + ", ".join("/".join(k) for k in bad))
         r["event_triggered"], r["worst_in_slot"] = cell.event_triggered, wis
         r["registration"] = registration_status(cell.event_triggered, r["kill"], wis["measured"])
+        if self.screen_p:  # REPORT ONLY, after the verdict and the registration status are final: a new key, nothing reads it
+            r["screen_p"] = screen_p_cell(st, self.cfg[RENT_DECIDING], stats, B=self.screen_p_B)
         return r
 
 
@@ -1296,6 +1443,8 @@ def table_md(res: dict, blocks: list[str], meta: dict) -> str:
         nonpos = [f"{rule}/{fail}" for rule, fail in SUB_CELLS if not w["sub_cells"][f"{rule}|{fail}"]["lower"]["mean_sol"] > 0]
         fl = w["diag"]["guard_flips"]
         L.append(f"| {nm} | {kind} | " + " | ".join(cols) + f" | {', '.join(nonpos) or '-'} | {fl['sc']}/{fl['total']} |")
+    if any("screen_p" in r for r in res.values()):  # appended only: every line above is the same with and without screen p
+        L += screen_p_md(res)
     return "\n".join(L) + "\n"
 
 
@@ -1315,6 +1464,8 @@ def counts_md(res: dict, meta: dict) -> str:
 
 
 def run(args: argparse.Namespace) -> dict:
+    if not getattr(args, "no_screen_p", False):  # the DECLARE stake and B are checked before anything is listed, read or written
+        screen_p_check(getattr(args, "declared_stake_sol", STAKE_SOL), getattr(args, "screen_p_draws", SCREEN_P_B))
     out = check_out_dir(args.out)
     if args.hours and not args.count_only:
         raise Refused("hours_subset_refused_when_pricing: --hours is for --count-only; a priced screen runs every hour of the four blocks (a subset is not a screen of record)")
@@ -1337,7 +1488,8 @@ def run(args: argparse.Namespace) -> dict:
     check_loaded_modules(before)
     vmap = VMap(vpaths) if vpaths else None
     Path(out).mkdir(parents=True, exist_ok=True)
-    scr = Screen(rule, count_only=args.count_only, min_attempts_per_day=args.min_attempts_per_day)
+    scr = Screen(rule, count_only=args.count_only, min_attempts_per_day=args.min_attempts_per_day, screen_p=not getattr(args, "no_screen_p", False),
+                 screen_p_draws=getattr(args, "screen_p_draws", SCREEN_P_B), declared_stake_sol=getattr(args, "declared_stake_sol", STAKE_SOL))
     t0 = time.time()
     names = []
     for bi, (b, kind, files) in enumerate(specs):
@@ -1355,6 +1507,7 @@ def run(args: argparse.Namespace) -> dict:
             "counters": dict(scr.counters), "wall_s": wall, "rows_pumpswap_per_s": scr.counters["rows_pumpswap"] / wall if wall else None, "rows_kept_per_s": scr.rows / wall if wall else None,
             "seconds": {"load_wait": scr.t_load, "rule": scr.t_rule, "price": scr.t_price}, "stack": scr.cfg[RENT_DECIDING].as_dict(), "workers": args.workers,
             "written_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    meta["screen_p"] = {"enabled": bool(scr.screen_p and not args.count_only), "report_only": True, "B": scr.screen_p_B, "seed": SCREEN_P_SEED, "stake_sol": STAKE_SOL, "source": SCREEN_P_SOURCE}
     doc = {"meta": meta, "cells": cells}
     name = "counts" if args.count_only else "results"
     Path(out, f"{name}.json").write_text(json.dumps(doc, indent=1, default=float))
@@ -1373,6 +1526,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--workers", type=int, default=1, help="hour loader processes (<= 2 on mal-fast-0)")
     ap.add_argument("--min-attempts-per-day", type=float, default=20.0)
     ap.add_argument("--vmap", nargs="*", help="V map JSON files, first non-null wins (default pool_v_0814, pool_v_0909)")
+    ap.add_argument("--screen-p-draws", type=int, default=SCREEN_P_B, help=f"B for the EXP-028 screen p (report only), {SCREEN_P_B_MIN}..{SCREEN_P_B_MAX}; seed 1, a fresh rng per sub-cell")
+    ap.add_argument("--declared-stake-sol", type=float, default=STAKE_SOL, help="the stake in the DECLARE; the screen p is defined at 0.25 SOL only and a priced run REFUSES any other")
+    ap.add_argument("--no-screen-p", action="store_true", help="do not compute the screen p (the results are otherwise byte-identical)")
     args = ap.parse_args(argv)
     try:
         doc = run(args)
