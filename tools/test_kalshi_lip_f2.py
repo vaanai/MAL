@@ -61,8 +61,13 @@ def covered(monkeypatch):
 
 
 # ============================================================================================ fixtures
-def decl_text(freeze=F2_FREEZE):
-    return (f"COHORT FREEZE INSTANT = {freeze} (output of `date -u` run by the one stamping command that wrote this file)\n"
+def tool_md5():
+    return hashlib.md5(Path(f2.__file__).read_bytes()).hexdigest()
+
+
+def decl_text(freeze=F2_FREEZE, md5=None):
+    return (f"COHORT FREEZE INSTANT = {freeze} (output of `date -u +%Y-%m-%dT%H:%M:%SZ` run by the one stamping command)\n"
+            f"F2 TOOL MD5 = {tool_md5() if md5 is None else md5}\n"
             "# DECLARE-F2 (synthetic test copy of the lines the parser reads)\n"
             "F2-A SIDE-CAP and F2-B INV25 are the two gated variants.\n")
 
@@ -186,7 +191,9 @@ def test_inherited_pins_agree_with_the_simulator_pins1_and_pins2():
         "declare": sim.DECLARE_SHA256, "conditions": sim.CONDITIONS_SHA256, "conditions2": sim.CONDITIONS2_SHA256,
         "verify1": sim.VERIFY1_SHA256,
         "process1": "4cc45c27317560ecf2a08d5d65b73c9f02afd32deb0488ad3ce63f9f62de78f8",
-        "process2": "cf635192e8105632790a0cf5081f662aa8f346fb720391ed3fe9e8573419ddb0"}
+        "process2": "cf635192e8105632790a0cf5081f662aa8f346fb720391ed3fe9e8573419ddb0",
+        "pins1": "f313b36d62388ca82bbbd4b1a8fe2a67417ad8d5fbd8b12a43dd59ed4c8659e8",
+        "pins2": "f7f78198631b4d0e2925bbc1436be605f23b982f492f1b3208fc37fb54cf66ab"}
     assert f2.REGISTRY_PINS == {
         "obrec-1019c": "d6affcff6abcdd5dce07af8d786ad6e33828c0b4a762d7cd85627ab80371da3a",
         "obrec-1019d": "3984c1c68bf0d51f52d06226771fd08f8ae33a174dcd14a646cd9221e86e5236"}
@@ -206,7 +213,7 @@ def test_the_real_inherited_texts_match_pins1():
 
 def test_the_text_pins_refuse_a_missing_or_altered_file(texts):
     got, verify1 = f2.verify_lip_texts(texts)
-    assert len(got) == 6 and Path(verify1).name == "DECLARE-FORWARD-VERIFY-1.md"
+    assert len(got) == 8 and Path(verify1).name == "DECLARE-FORWARD-VERIFY-1.md"
     (texts / "DECLARE-FORWARD-PROCESS-2.md").write_text("altered\n")
     with pytest.raises(f2.F2Refusal, match="does not match the pinned"):
         f2.verify_lip_texts(texts)
@@ -914,6 +921,11 @@ def test_argument_and_pin_refusals(tmp_path, monkeypatch, capsys, texts, decl, g
     (decl_text().replace("F2-B", "F2-X"), "does not name F2-B"),
     (decl_text("2026-10-19T03:33:16Z"), "after LIP-F1's freeze"),
     (decl_text("2026-10-18T03:33:16Z"), "after LIP-F1's freeze"),
+    (decl_text().replace("F2 TOOL MD5", "F2 TOOL MD6"), "F2 TOOL MD5"),                      # no md5 line
+    (decl_text() + "F2 TOOL MD5 = " + "0" * 32 + "\n", "exactly one 'F2 TOOL MD5"),            # two md5 lines
+    (decl_text(md5="0" * 32), "pins F2 TOOL MD5"),                                            # a different tool
+    (decl_text(md5=tool_md5().upper()), "F2 TOOL MD5"),                                       # not the lower-case 32-hex form
+    (decl_text(md5=tool_md5()[:31]), "F2 TOOL MD5"),
 ])
 def test_declaration_parse_and_pin(tmp_path, text, msg):
     p = tmp_path / "d.md"
@@ -1186,3 +1198,19 @@ def test_f2_a_changes_the_fills_of_a_lopsided_book_end_to_end(tmp_path, monkeypa
                          if u["unit_id"] == "pA" and u["cell"] == "U0")
     assert yes_fills("f1") == 25.0 and yes_fills("a") == 0.0                       # the 0.72 YES bid is not posted
     assert 0 < rew("a") < rew("f1")                                               # the reward comes from the NO side only
+
+
+def test_r4_the_tool_refuses_to_run_unless_the_declaration_pins_its_own_md5(tmp_path, monkeypatch, capsys, texts, decl):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    monkeypatch.setattr(sim, "run_sim", lambda cfg: pytest.fail("the simulator ran"))
+    other = tmp_path / "decl" / "DECLARE-F2-other-tool.md"
+    other.write_text(decl_text(md5="0" * 32))
+    for flags in (["--dry-run"],):
+        argv = cli_argv(w, tmp_path, texts, other, None, variant=None, out=None) + flags
+        assert f2.main(argv) == 2 and "pins F2 TOOL MD5" in capsys.readouterr().err
+    # the same tool file, edited: the md5 the declaration froze no longer matches
+    assert f2.load_f2_declaration(str(decl), sha(decl))[1] == F2_FREEZE
+    monkeypatch.setattr(f2, "__file__", str(tmp_path / "edited_tool.py"))
+    (tmp_path / "edited_tool.py").write_text(Path(f2.sim.__file__).read_text()[:100])
+    with pytest.raises(f2.F2Refusal, match="pins F2 TOOL MD5"):
+        f2.load_f2_declaration(str(decl), sha(decl))

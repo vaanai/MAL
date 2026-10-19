@@ -39,6 +39,7 @@ The simulator file, its tests and its output code are never edited.  The context
 simulator is exactly the frozen one (md5) and holds exactly its LIP-F1 constants and functions, so it cannot nest.
 
 Process rules this tool enforces (QP L1; the full text is in DECLARE-F2.md):
+  * the tool refuses to run unless DECLARE-F2.md pins this file's md5 (``F2 TOOL MD5 = <md5>``);
   * an outcome-computing run (``--read-instant`` or ``--scan``) is refused unless (i) a LIP-F1 DECIDING gate.json path
     is given and is one, and (ii) a Book C run-done marker path is given and exists;
   * ``--dry-run`` prints loader counts ONLY (units by status and source, snapshot consistency, unsealed parts, metadata
@@ -74,7 +75,7 @@ SIM_TESTS_MD5_PINNED = "1f5db2f15043f4f8451c647a863f741a"      # DECLARE-FORWARD
 QP_REVIEW_SHA256 = "965a41bc757e8ec5aa1c89953dfa8ca20de1533091af97a45c10207fb5367761"
 LIP_F1_FREEZE_ISO = "2026-10-19T03:33:16Z"
 LIP_F1_NOT_DECIDABLE_ISO = "2026-11-02T00:00:00Z"
-# DECLARE-FORWARD-PINS-1: the inherited LIP-F1 texts (file name, sha256)
+# DECLARE-FORWARD-PINS-1: the inherited LIP-F1 texts (file name, sha256), plus the PINS-1 and PINS-2 records themselves
 LIP_F1_TEXTS = (
     ("declare", "DECLARE-FORWARD.md", "977fa41c78517cad11359121030c81555d9700aa0f66204afc7bc9333f0af796"),
     ("conditions", "DECLARE-FORWARD-CONDITIONS.md", "35ee7e652d470d03ae5ea0de7274c2da0caf8ab518baa4afa4dadeafc3dee63b"),
@@ -82,6 +83,8 @@ LIP_F1_TEXTS = (
     ("conditions2", "DECLARE-FORWARD-CONDITIONS-2.md", "a34bc6df87f823ea09a10164ac295f82f969e75928522df6ed9471647513d117"),
     ("process1", "DECLARE-FORWARD-PROCESS-1.md", "4cc45c27317560ecf2a08d5d65b73c9f02afd32deb0488ad3ce63f9f62de78f8"),
     ("process2", "DECLARE-FORWARD-PROCESS-2.md", "cf635192e8105632790a0cf5081f662aa8f346fb720391ed3fe9e8573419ddb0"),
+    ("pins1", "DECLARE-FORWARD-PINS-1.md", "f313b36d62388ca82bbbd4b1a8fe2a67417ad8d5fbd8b12a43dd59ed4c8659e8"),
+    ("pins2", "DECLARE-FORWARD-PINS-2.md", "f7f78198631b4d0e2925bbc1436be605f23b982f492f1b3208fc37fb54cf66ab"),
 )
 # DECLARE-FORWARD-PINS-2 (run-2 sections appended): the NEW registry sha256 for --registry-sha256
 REGISTRY_PINS = {
@@ -246,9 +249,20 @@ def parse_f2_declaration(text):
     return found[0]
 
 
+_TOOL_MD5_LINE = re.compile(r"^F2 TOOL MD5 = ([0-9a-f]{32})[ \t]*$", re.M)
+
+
+def parse_f2_tool_md5(text):
+    """-> the md5 DECLARE-F2.md pins for tools/kalshi_lip_f2.py: exactly one line ``F2 TOOL MD5 = <32 hex>`` (QP R4)."""
+    found = _TOOL_MD5_LINE.findall(text)
+    if len(found) != 1:
+        raise F2Refusal(f"expected exactly one 'F2 TOOL MD5 = <md5>' line in DECLARE-F2.md, found {len(found)}")
+    return found[0]
+
+
 def load_f2_declaration(path, pin):
     """sha256-pin DECLARE-F2.md (the pin is given on the command line and recorded in the F2 pins record), parse the
-    cohort freeze instant out of it.  -> (sha256, freeze iso)."""
+    cohort freeze instant out of it and check that its ``F2 TOOL MD5`` line is this tool's md5.  -> (sha256, freeze iso)."""
     if not path:
         raise F2Refusal("--f2-declare is required")
     if not pin or not re.fullmatch(r"[0-9a-f]{64}", pin):
@@ -259,9 +273,14 @@ def load_f2_declaration(path, pin):
     got = _sha256_bytes(p.read_bytes())
     if got != pin:
         raise F2Refusal(f"DECLARE-F2.md sha256 {got} does not match the given pin {pin}")
-    freeze = parse_f2_declaration(p.read_text())
+    text = p.read_text()
+    freeze = parse_f2_declaration(text)
     if sim.iso_to_us(freeze) <= sim.iso_to_us(LIP_F1_FREEZE_ISO):
         raise F2Refusal(f"the F2 cohort freeze {freeze} must be after LIP-F1's freeze {LIP_F1_FREEZE_ISO}")
+    want, mine = parse_f2_tool_md5(text), sim.file_md5(__file__)
+    if want != mine:
+        # a tool changed after the freeze is a new rule with a later start (QP L1 item 2), not an F2 read
+        raise F2Refusal(f"DECLARE-F2.md pins F2 TOOL MD5 {want} but tools/kalshi_lip_f2.py is {mine}")
     return got, freeze
 
 
