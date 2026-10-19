@@ -57,6 +57,7 @@ MARKET_SCHEMA = pa.schema([
     ("created_time", pa.timestamp("us", tz="UTC")), ("open_time", pa.timestamp("us", tz="UTC")),
     ("close_time", pa.timestamp("us", tz="UTC")), ("expiration_time", pa.timestamp("us", tz="UTC")),
     ("settlement_ts", pa.timestamp("us", tz="UTC")), ("floor_strike", pa.float64()),
+    ("expiration_value", pa.string()),
     ("fetched_at", pa.timestamp("us", tz="UTC")), ("raw_json", pa.string()),
 ])
 
@@ -68,6 +69,7 @@ def mk_market(series, ticker, close_iso, strike, result, dur_s=900, settle_iso=N
     return {"ticker": ticker, "event_ticker": ticker.rsplit("-", 1)[0] + "-E", "series_ticker": series,
             "market_type": "binary", "status": status, "result": result, "created_time": o, "open_time": o,
             "close_time": c, "expiration_time": c, "settlement_ts": s, "floor_strike": strike,
+            "expiration_value": None,
             "fetched_at": c + 3600 * US, "raw_json": json.dumps(raw if raw is not None else {"ticker": ticker})}
 
 
@@ -596,3 +598,133 @@ def test_cli_run_end_to_end(tmp_path, capsys):
     rc = r3.main(["run", "--split", "holdout", "--trades-stores", str(w.s1), "--markets-root", str(w.markets),
                   "--candles-dir", str(w.tmp / "candles"), "--out", str(tmp_path / "ho"), "--count-only"])
     assert rc == 2                                              # refused without --allow-holdout-count-only
+
+
+# ------------------------------------------------------------------------------------- fit-c (dev only)
+def fit_world(tmp):
+    """BTC dev markets on 2026-10-02 over a random-walk candle series, the last ones inside a flat (s1m == 0)
+    block.  Returns (markets_root, candles_dir, ref) where ref holds the dict candles for a reference fit."""
+    rng = np.random.RandomState(7)
+    t0 = us("2026-10-01T20:00:00Z") // US
+    t1 = us("2026-10-02T12:00:00Z") // US
+    flat_from = us("2026-10-02T08:00:00Z") // US
+    px, cb, bs = 100.0, [], []
+    for st in range(t0, t1, 60):
+        if st < flat_from:
+            px *= math.exp(rng.normal(0, 3e-4))
+        o = px
+        cb.append([st, px * 0.9999, px * 1.0001, o, px, 1.0])
+        bs.append({"timestamp": str(st), "open": str(px * 1.00001), "high": str(px * 1.0002),
+                   "low": str(px * 0.9998), "close": str(px * 0.99999), "volume": "1"})
+    cdir = tmp / "fitcandles"
+    cdir.mkdir()
+    json.dump(cb, open(cdir / "cb_BTC-USD.json", "w"))
+    json.dump(bs, open(cdir / "bs_btcusd.json", "w"))
+    for prod, pair in (("ETH-USD", "ethusd"), ("SOL-USD", "solusd")):
+        json.dump(cb, open(cdir / f"cb_{prod}.json", "w"))
+        json.dump(bs, open(cdir / f"bs_{pair}.json", "w"))
+    close = {r[0]: r[4] for r in cb}
+    ms = []
+    for i in range(40):
+        o = us("2026-10-02T00:00:00Z") // US + 900 * i
+        if i >= 30:
+            o = us("2026-10-02T09:30:00Z") // US + 900 * (i - 30)           # inside the flat block
+        K = close.get(o - 60, 100.0)
+        ev = close.get(o + 900 - 60, K) * (1 + rng.normal(0, 1e-5))
+        m = mk_market("KXBTC15M", f"KXBTC15M-F{i:02d}-15", dt.datetime.fromtimestamp(o + 900, UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                      K, "yes" if ev >= K else "no")
+        m["expiration_value"] = repr(ev)
+        ms.append(m)
+    write_markets(tmp / "fitmarkets", ms)
+    return tmp / "fitmarkets", cdir, {"cb": cb, "bs": bs, "markets": ms}
+
+
+def ref_fit(ref):
+    """proxy_model.py arithmetic restated with plain loops and the DECLARE instants (no +720)."""
+    import statistics as st
+    cb = {r[0]: r for r in ref["cb"]}
+    bs = {int(r["timestamp"]): r for r in ref["bs"]}
+    pts = {}
+    for m in ref["markets"]:
+        pts[m["close_time"] // US] = float(m["expiration_value"])
+        pts[m["open_time"] // US] = m["floor_strike"]
+    errs = []
+    for T, v in pts.items():
+        c, b = cb.get(T - 60), bs.get(T - 60)
+        if c and b:
+            btp = sum(float(b[k]) for k in ("open", "high", "low", "close")) / 4
+            errs.append(1e4 * math.log((((c[1] + c[2] + c[3] + c[4]) / 4) + btp) / 2 / v))
+    e = round(st.pstdev(errs), 3) / 1e4
+
+    def sig(t):
+        rs = []
+        for k in range(60):
+            a, b = cb.get(t - 60 - 60 * k), cb.get(t - 120 - 60 * k)
+            if a and b:
+                rs.append(math.log(a[4] / b[4]))
+        return st.pstdev(rs) if len(rs) >= 40 else None
+    rows = []
+    for m in ref["markets"]:
+        o = m["open_time"] // US
+        for d in (300, 600, 780):
+            c, s = cb.get(o + d - 60), sig(o + d)
+            if not c or not s:
+                continue
+            rows.append((math.log(c[4] / m["floor_strike"]), s, 900 - d, 1 if m["result"] == "yes" else 0))
+    grid = [round(0.6 + 0.05 * i, 2) for i in range(21)]
+    br = {cc: st.mean((r3.phi(x / math.sqrt(cc * cc * s * s * (tau - 40) / 60 + e * e)) - y) ** 2
+                      for x, s, tau, y in rows) for cc in grid}
+    best = min(grid, key=lambda cc: br[cc])
+    return best, br[best], len(rows), round(st.pstdev(errs), 3)
+
+
+def test_fit_c_matches_declare_recipe_three_instants_and_skips_flat_vol(tmp_path, capsys):
+    mroot, cdir, ref = fit_world(tmp_path)
+    res = r3.fit_c("dev", str(mroot), str(cdir), str(tmp_path / "fitout"))
+    best, br, n, e_bps = ref_fit(ref)
+    a = res["assets"]["BTC"]
+    assert (a["c"], a["n_rows"], a["e_bps"]) == (best, n, e_bps)
+    assert a["brier"] == pytest.approx(br, rel=1e-12)
+    # 3 instants per market only (no open+720): rows = 3 x markets outside the flat block, and the flat-block
+    # markets (s1m == 0) are skipped, not fitted
+    assert a["n_rows"] <= 3 * 30 and a["n_rows_skipped"] >= 3 * 10 and a["n_rows"] + a["n_rows_skipped"] == 3 * 40
+    assert res["assets"]["ETH"]["c"] is None and res["assets"]["ETH"]["n_rows"] == 0     # no ETH markets
+    assert list(a["grid_brier"]) == [str(round(0.6 + 0.05 * i, 2)) for i in range(21)]
+    assert json.load(open(tmp_path / "fitout" / "fit_c_dev.json"))["assets"]["BTC"]["c"] == best
+    # CLI prints only per-asset c, brier, n rows, e
+    rc = r3.main(["fit-c", "--split", "dev", "--markets-root", str(mroot), "--candles-dir", str(cdir),
+                  "--out", str(tmp_path / "fitout2")])
+    out = capsys.readouterr().out.strip().splitlines()
+    assert rc == 0 and out[0].startswith(f"BTC c={best} brier=") and f"n_rows={n} e_bps={e_bps}" in out[0]
+    assert len(out) == 3
+
+
+def test_fit_c_refuses_any_non_dev_split_before_reading(tmp_path, capsys):
+    with pytest.raises(r3.Refusal):
+        r3.fit_c("holdout", "/nonexistent", "/nonexistent", str(tmp_path / "x"))
+    rc = r3.main(["fit-c", "--split", "holdout", "--markets-root", "/nonexistent", "--candles-dir", "/nonexistent",
+                  "--out", str(tmp_path / "x")])
+    assert rc == 2 and not (tmp_path / "x").exists()
+
+
+def test_ts_us_normalises_units_and_flat_vol_is_a_missing_input():
+    base = [1_790_000_000, None, 1_790_000_001]
+    for unit, mult in (("s", 1_000_000), ("ms", 1_000), ("us", 1), ("ns", 1 / 1_000)):
+        col = pa.chunked_array([pa.array([None if v is None else int(v * {"s": 1, "ms": 1e3, "us": 1e6, "ns": 1e9}[unit])
+                                          for v in base], type=pa.int64()).cast(pa.timestamp(unit))])
+        got = r3._ts_us(col)
+        assert got.tolist() == [1_790_000_000 * US, 0, 1_790_000_001 * US], unit
+    flat = {60 * i: 100.0 for i in range(0, 200)}
+    assert r3.trailing_vol(flat, 60 * 150) == 0.0
+    assert r3.fair_at(flat, "BTC", 99.9, 60 * 160, 60 * 150 + 0) is None            # s1m == 0 -> skipped
+
+
+def test_vol_needs_at_least_40_returns():
+    closes = {60 * i: 100.0 + (i % 3) * 0.01 for i in range(0, 300)}
+    t = 60 * 200
+    full = {k: v for k, v in closes.items() if t - 60 * 61 <= k < t}          # 61 candles -> 60 returns
+    assert r3.trailing_vol(full, t) is not None
+    keep40 = {k: v for k, v in full.items() if k >= t - 60 * 41}              # 41 candles -> 40 returns: allowed
+    assert r3.trailing_vol(keep40, t) is not None
+    keep39 = {k: v for k, v in full.items() if k >= t - 60 * 40}              # 40 candles -> 39 returns: None
+    assert r3.trailing_vol(keep39, t) is None

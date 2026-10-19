@@ -149,7 +149,7 @@ def fair_at(closes: dict, asset: str, K: float, close_us: int, t_us: int):
     t_s = t_us / US
     S = last_candle_close(closes, t_s)
     s1m = trailing_vol(closes, t_s)
-    if S is None or s1m is None or not S > 0 or not K > 0:
+    if S is None or s1m is None or not s1m > 0 or not S > 0 or not K > 0:   # s1m == 0: skipped, as in the fit
         return None
     return fair_yes(S, K, s1m, (close_us - t_us) / US, FROZEN_C[asset], FROZEN_E_BPS[asset] / 1e4)
 
@@ -297,18 +297,28 @@ def utc_date(us: int) -> str:
 
 
 class Market:
-    __slots__ = ("ticker", "event", "series", "asset", "open_us", "close_us", "strike", "result", "close_date")
+    __slots__ = ("ticker", "event", "series", "asset", "open_us", "close_us", "strike", "result", "close_date",
+                 "expiration_value")
 
     def __init__(self, **kw):
         for k in self.__slots__:
             setattr(self, k, kw.get(k))
 
 
+_UNIT_TO_US = {"s": (1_000_000, 1), "ms": (1_000, 1), "us": (1, 1), "ns": (1, 1_000)}   # (multiply, divide)
+
+
 def _ts_us(col) -> np.ndarray:
-    return np.asarray(col.cast(pa.int64()).to_numpy(zero_copy_only=False), dtype=np.int64)
+    """Timestamp column -> int64 microseconds since epoch, whatever the column's unit; nulls become 0."""
+    unit = getattr(col.type, "unit", None)
+    if unit not in _UNIT_TO_US:
+        raise Refusal(f"timestamp column with unsupported type {col.type}")
+    mul, div = _UNIT_TO_US[unit]
+    v = np.asarray(col.cast(pa.int64()).fill_null(0).to_numpy(zero_copy_only=False), dtype=np.int64)
+    return v * mul // div if (mul != 1 or div != 1) else v
 
 
-def load_markets(markets_root: str, split: str, with_outcomes: bool):
+def load_markets(markets_root: str, split: str, with_outcomes: bool, with_expiration: bool = False):
     """Markets of the universe whose close_time UTC date is in the split.  Phase 1 reads ids and times only;
     phase 2 (strike, raw_json, and the result only if with_outcomes) is read for in-split rows only."""
     lo, hi = SPLITS[split]
@@ -337,12 +347,14 @@ def load_markets(markets_root: str, split: str, with_outcomes: bool):
                     out_of_split.add(tick[i])
             if not sel:
                 continue
-            cols2 = ["floor_strike", "fetched_at", "raw_json"] + (["result"] if with_outcomes else [])
+            cols2 = (["floor_strike", "fetched_at", "raw_json"] + (["result"] if with_outcomes else [])
+                     + (["expiration_value"] if with_expiration else []))
             t2 = pf.read(columns=cols2).take(pa.array(sel))      # in-split rows only reach Python
             strike = t2.column("floor_strike").to_pylist()
             fetched = _ts_us(t2.column("fetched_at"))
             raw = t2.column("raw_json").to_pylist()
             res = t2.column("result").to_pylist() if with_outcomes else [None] * len(sel)
+            expv = t2.column("expiration_value").to_pylist() if with_expiration else [None] * len(sel)
             events = t1.column("event_ticker").to_pylist()
             for k, i in enumerate(sel):
                 if raw[k]:
@@ -355,7 +367,7 @@ def load_markets(markets_root: str, split: str, with_outcomes: bool):
                 cands[tick[i]].append((int(fetched[k]), res[k], Market(
                     ticker=tick[i], event=events[i], series=series, asset=SERIES[series][0],
                     open_us=int(open_us[i]), close_us=int(close_us[i]), strike=strike[k], result=res[k],
-                    close_date=days[i])))
+                    close_date=days[i], expiration_value=expv[k])))
     markets, excl = [], defaultdict(int)
     for tkr, lst in cands.items():
         if with_outcomes:
@@ -383,6 +395,103 @@ def load_candles(candles_dir: str):
         rows = json.load(open(Path(candles_dir) / f"cb_{prod}.json"))
         out[asset] = {int(r[0]): float(r[4]) for r in rows}
     return out
+
+
+def load_candle_ohlc(candles_dir: str):
+    """For fit-c: {asset: {"cb": {start: (low, high, open, close)}, "bs": {start: (open, high, low, close)}}}
+    from cb_<PRODUCT>.json (Coinbase 1m [start, low, high, open, close, vol]) and bs_<pair>.json (Bitstamp 1m
+    {"timestamp","open","high","low","close"})."""
+    out = {}
+    for _series, (asset, prod) in SERIES.items():
+        cb = json.load(open(Path(candles_dir) / f"cb_{prod}.json"))
+        bs = json.load(open(Path(candles_dir) / f"bs_{prod.replace('-', '').lower()}.json"))
+        out[asset] = {
+            "cb": {int(r[0]): (float(r[1]), float(r[2]), float(r[3]), float(r[4])) for r in cb},
+            "bs": {int(r["timestamp"]): tuple(float(r[k]) for k in ("open", "high", "low", "close")) for r in bs}}
+    return out
+
+
+# ------------------------------------------------------------------------------------------ fit-c (dev only)
+FIT_INSTANTS_S = (300, 600, 780)                     # DECLARE: open+300 s, +600 s, +780 s (not +720 s)
+FIT_GRID = [round(0.6 + 0.05 * i, 2) for i in range(21)]     # 0.6 .. 1.6 step 0.05
+
+
+def proxy_error_bps(cb: dict, bs: dict, points: dict):
+    """Log error (bps) of the Coinbase+Bitstamp typical-price proxy of the candle [T-60, T) against Kalshi's own
+    60 s index values at instants T (proxy_model.py 'comp_tp'); points {T_seconds: value}."""
+    errs = []
+    for T, v in points.items():
+        c, b = cb.get(T - 60), bs.get(T - 60)
+        if not (c and b) or not v > 0:
+            continue
+        prox = (sum(c) / 4.0 + sum(b) / 4.0) / 2.0
+        errs.append(1e4 * math.log(prox / v))
+    return errs
+
+
+def fit_c_asset(markets, closes: dict, cb: dict, bs: dict):
+    """DECLARE: c = vol multiplier on development markets only, grid 0.6..1.6 step 0.05, minimum Brier over
+    t = open+300 s, +600 s, +780 s; e = stdev (log) of the proxy error measured on the same development
+    markets' index instants.  S and s1m are the tool's definitions; rows with s1m == 0 or missing inputs are
+    skipped.  e is rounded to 3 decimals of a basis point, as in proxy_model_out.json."""
+    pts = {}
+    for m in markets:
+        try:
+            ev = float(m.expiration_value)
+        except (TypeError, ValueError):
+            ev = None
+        if ev is not None and ev > 0:
+            pts[m.close_us // US] = ev
+        pts[m.open_us // US] = float(m.strike)
+    errs = proxy_error_bps(cb, bs, pts)
+    e_exact = float(np.std(np.asarray(errs, dtype=np.float64))) if errs else float("nan")
+    e_bps = round(e_exact, 3)
+    rows = []
+    skipped = 0
+    for m in markets:
+        o = m.open_us // US
+        y = 1.0 if m.result == "yes" else 0.0
+        for d in FIT_INSTANTS_S:
+            t = o + d
+            S, s = last_candle_close(closes, t), trailing_vol(closes, t)
+            if S is None or s is None or not s > 0:
+                skipped += 1
+                continue
+            rows.append((S, float(m.strike), s, MARKET_DURATION_S - d, y))
+    if not rows:
+        return {"c": None, "brier": None, "n_rows": 0, "n_rows_skipped": skipped, "e_bps": e_bps,
+                "e_bps_unrounded": e_exact, "n_proxy_points": len(errs), "n_markets": len(markets),
+                "grid_brier": {}}
+    brier = {}
+    for c in FIT_GRID:
+        brier[c] = float(np.mean([(fair_yes(S, K, s, tau, c, e_bps / 1e4) - y) ** 2 for S, K, s, tau, y in rows]))
+    best = min(FIT_GRID, key=lambda c: brier[c])
+    return {"c": best, "brier": brier[best], "n_rows": len(rows), "n_rows_skipped": skipped, "e_bps": e_bps,
+            "e_bps_unrounded": e_exact, "n_proxy_points": len(errs), "n_markets": len(markets),
+            "grid_brier": {str(c): brier[c] for c in FIT_GRID}}
+
+
+def fit_c(split, markets_root, candles_dir, out_dir):
+    """Re-derive c (and e) per asset on the development split only.  Reads dev market metadata incl. result
+    and expiration_value, and the Coinbase/Bitstamp candle files; no trade row, no other split."""
+    if split != "dev":
+        raise Refusal("fit-c is development-only (DECLARE: c fit on development only)")
+    markets, excl, _oos = load_markets(markets_root, "dev", with_outcomes=True, with_expiration=True)
+    ohlc = load_candle_ohlc(candles_dir)
+    res = {"meta": {"split": "dev", "dates": list(SPLITS["dev"]), "tool_sha256": sha256_file(__file__),
+                    "git_sha": git_sha(), "instants_s": list(FIT_INSTANTS_S), "grid": FIT_GRID,
+                    "excluded_markets": excl, "previous_frozen_c": FROZEN_C,
+                    "previous_frozen_e_bps": FROZEN_E_BPS}, "assets": {}}
+    for _series, (asset, _prod) in SERIES.items():
+        ms = [m for m in markets if m.asset == asset]
+        closes = {t: v[3] for t, v in ohlc[asset]["cb"].items()}
+        res["assets"][asset] = fit_c_asset(ms, closes, ohlc[asset]["cb"], ohlc[asset]["bs"])
+    res["differs_from_current_frozen_c"] = {a: r["c"] != FROZEN_C[a] for a, r in res["assets"].items()}
+    res["differs_from_current_frozen_e"] = {a: r["e_bps"] != FROZEN_E_BPS[a] for a, r in res["assets"].items()}
+    Path(out_dir).mkdir(parents=True, exist_ok=True)
+    with open(Path(out_dir) / "fit_c_dev.json", "w") as fh:
+        json.dump(res, fh, indent=1, sort_keys=True, default=_json_default)
+    return res
 
 
 # ------------------------------------------------------------------------------------------ signals
@@ -829,7 +938,22 @@ def main(argv=None):
     r.add_argument("--count-only", action="store_true")
     r.add_argument("--allow-holdout-count-only", action="store_true")
     r.add_argument("--max-rss-mb", type=int, default=MAX_RSS_MB_DEFAULT)
+    f = sub.add_parser("fit-c", help="re-derive c and e per asset on the development split only")
+    f.add_argument("--split", required=True, choices=sorted(SPLITS))
+    f.add_argument("--markets-root", required=True)
+    f.add_argument("--candles-dir", required=True)
+    f.add_argument("--out", required=True)
     a = ap.parse_args(argv)
+    if a.cmd == "fit-c":
+        try:
+            res = fit_c(a.split, a.markets_root, a.candles_dir, a.out)
+        except Refusal as e:
+            print(f"REFUSED: {e}", file=sys.stderr)
+            return 2
+        for asset, r in res["assets"].items():
+            b = "n/a" if r["brier"] is None else f"{r['brier']:.6f}"
+            print(f"{asset} c={r['c']} brier={b} n_rows={r['n_rows']} e_bps={r['e_bps']}")
+        return 0
     try:
         res = run(a.split, a.trades_stores, a.markets_root, a.candles_dir, a.out, a.count_only,
                   a.allow_holdout_count_only, a.max_rss_mb)
