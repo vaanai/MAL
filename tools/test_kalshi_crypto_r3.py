@@ -324,7 +324,7 @@ def test_cell_stats_hand_numbers_and_bootstrap_seed():
     for _ in range(1000):
         i = rs.randint(0, 4, size=4)
         means.append(en[i].sum() / nn[i].sum())
-    assert c["ci90_cent"] == pytest.approx([np.percentile(means, 5) / 1e4, np.percentile(means, 95) / 1e4])
+    assert c["ci90_event_cent"] == pytest.approx([np.percentile(means, 5) / 1e4, np.percentile(means, 95) / 1e4])
     assert c["bootstrap"]["draws"] == 1000 and c["bootstrap"]["seed"] == 1
     # empty cell is well formed
     assert r3.cell_stats([], [], [], [], [])["n_contracts"] == 0
@@ -369,7 +369,7 @@ def test_end_to_end_dev_settlement_pnl_fees_clock_and_outputs(tmp_path):
     assert main["n_events"] == 4 and main["n_days"] == 3
     assert set(s["per_series"]) == {"KXBTC15M", "KXETH15M", "KXSOL15M"}
     assert s["per_series"]["KXSOL15M"]["n_contracts"] == 0
-    assert set(s["per_day"]) == {"2026-10-05", "2026-10-06", "2026-10-07"}
+    assert set(s["main"]["per_day"]) == {"2026-10-05", "2026-10-06", "2026-10-07"}
     assert s["maker_15pct_unfilled"]["n_dropped"] == math.ceil(0.15 * 7)
     assert s["maker_15pct_unfilled"]["n_contracts"] == 7 - math.ceil(0.15 * 7)
     assert sum(f["dropped_15"] for f in fills) == 2
@@ -744,3 +744,97 @@ def test_frozen_constants_are_pinned_to_the_dev_fit():
     if old.exists():                                                         # e agrees with the earlier fit
         o = json.load(open(old))
         assert {k: o[f"{k}_model"]["e_dev_bps"] for k in ("BTC", "ETH", "SOL")} == r3.FROZEN_E_BPS
+
+
+# ------------------------------------------------------------- gate cells: queue-back, per-day, window CI
+def test_queue_back_fill_rule_print_at_bid_does_not_fill():
+    t = us("2026-10-05T10:12:00Z")
+    end = us("2026-10-05T10:14:00Z")
+
+    def row(s, yes, taker):
+        ym = int(round(yes * US))
+        return (us(f"2026-10-05T{s}Z"), f"id-{s}", ym, US - ym, taker, 3.0)
+
+    rows = sorted([row("10:12:05", 0.955, "no"),            # at the bid: main fills, queue-back does not
+                   row("10:12:20", 0.9549, "no"),           # strictly below: queue-back fills
+                   row("10:12:36", 0.94, "no"),             # 16 s after the queue-back fill: spacing
+                   row("10:12:55", 0.94, "yes"),            # taker on our side: no
+                   row("10:13:10", 0.955, "no"),            # at the bid again: no
+                   row("10:13:30", 0.9, "no")])             # below, 70 s after: fills
+    main = r3.simulate_fills(rows, "yes", 955_000, t, end)
+    qb = r3.simulate_fills(rows, "yes", 955_000, t, end, strict_below=True)
+    assert [x[1] for x in main] == ["id-10:12:05", "id-10:12:36", "id-10:13:10"]
+    assert [x[1] for x in qb] == ["id-10:12:20", "id-10:13:30"]      # re-simulated, not a subset of main
+    # NO side: price is no_price
+    rows_no = sorted([(us("2026-10-05T10:12:10Z"), "a", 40_000, 960_000, "yes", 1.0),
+                      (us("2026-10-05T10:12:50Z"), "b", 41_000, 959_000, "yes", 1.0)])
+    assert [x[1] for x in r3.simulate_fills(rows_no, "no", 960_000, t, end, strict_below=True)] == ["b"]
+
+
+def test_end_to_end_queue_back_cell_and_gate_fields_on_every_cell(tmp_path):
+    w = build_world(tmp_path)
+    out = tmp_path / "out"
+    s = run_dev(w, out)
+    # M1 (bid 0.955): at-bid prints 10:12:05, 10:13:10 do not fill; 10:12:20 (0.95) and 10:14:00 (0.95) do
+    qb = pq.read_table(out / "r3_dev_fills_queue_back.parquet").to_pylist()
+    by = {}
+    for f in qb:
+        by.setdefault(f["ticker"], []).append(f)
+    assert [f["fill_time_us"] for f in by["KXBTC15M-M1-15"]] == [us("2026-10-05T10:12:20Z"), us("2026-10-05T10:14:00Z")]
+    assert [f["bid_micro"] for f in by["KXBTC15M-M1-15"]] == [955_000, 955_000]       # filled at our bid
+    assert "KXBTC15M-M2-30" not in by and "KXETH15M-M7-15" not in by                 # prints exactly at the bid
+    assert len(by["KXBTC15M-M3-15"]) == 1 and by["KXBTC15M-M3-15"][0]["net_cent_micro"] == -960_000
+    assert not any(f["dropped_15"] for f in qb)                                       # no random drop
+    q = s["queue_back"]
+    assert q["n_contracts"] == 3 and q["n_events"] == 2 and q["n_days"] == 2
+    assert q["total_net_cent"] == pytest.approx((2 * 45_000 - 960_000) / 1e4)
+    assert "strictly below" in q["rule"]
+    # every gate cell carries the same fields
+    for name in ("main", "maker_15pct_unfilled", "queue_back"):
+        c = s[name]
+        for key in ("n_contracts", "n_events", "n_days", "per_day", "days_positive", "ex_best_day",
+                    "ex_top3_events", "added3_worst_losses", "ci90_event_cent", "ci90_window_cent",
+                    "ci90_lo_decider"):
+            assert key in c, (name, key)
+        assert c["n_days"] == len(c["per_day"])
+        assert c["days_positive"] == sum(1 for d in c["per_day"].values() if d["total_net_cent"] > 0)
+        assert sum(d["total_net_cent"] for d in c["per_day"].values()) == pytest.approx(c["total_net_cent"])
+    assert s["main"]["days_positive"] == 2 and s["queue_back"]["days_positive"] == 1
+    # the 15% cell: per-day totals of the kept fills only
+    assert sum(d["n_contracts"] for d in s["maker_15pct_unfilled"]["per_day"].values()) == \
+        s["maker_15pct_unfilled"]["n_contracts"]
+    assert s["ci90_lo_decider"] == {k: s[k]["ci90_lo_decider"] for k in ("main", "maker_15pct_unfilled", "queue_back")}
+    # headline label and skip counts
+    h = s["headline"]
+    assert h["population"] == "R3 on signal markets with a print in [close-300 s, close-180 s)"
+    assert h["signals_without_prior_favoured_print_by_series"] == {"KXBTC15M": 1}
+    assert h["n_filled_events"] == {"main": 4, "maker_15pct_unfilled": s["maker_15pct_unfilled"]["n_events"],
+                                    "queue_back": 2}
+
+
+def test_window_clustered_ci_and_decider_are_the_lower_of_the_two():
+    net = np.array([45_000, 45_000, 45_000, 40_000, -955_000, 45_000], dtype=float)
+    price = np.array([955_000, 955_000, 955_000, 960_000, 955_000, 955_000], dtype=float)
+    events = ["E1", "E1", "E1", "E2", "E3", "E4"]
+    days = ["2026-10-05"] * 4 + ["2026-10-06"] * 2
+    win_t = [1, 1, 1, 1, 2, 3]                 # E2 closes in the same 15-minute window as E1 (BTC + ETH)
+    c = r3.cell_stats(net, net, price, events, days, win=net > 0, windows=win_t)
+    wn, wc = np.array([175_000.0, -955_000.0, 45_000.0]), np.array([4.0, 1.0, 1.0])
+    rs = np.random.RandomState(1)
+    means = []
+    for _ in range(1000):
+        i = rs.randint(0, 3, size=3)
+        means.append(wn[i].sum() / wc[i].sum())
+    assert c["ci90_window_cent"] == pytest.approx([np.percentile(means, 5) / 1e4, np.percentile(means, 95) / 1e4])
+    assert c["n_windows"] == 3
+    assert c["ci90_lo_decider"] == min(c["ci90_event_cent"][0], c["ci90_window_cent"][0])
+    assert c["per_day"]["2026-10-05"] == {"n_contracts": 4, "n_events": 2, "total_net_cent": pytest.approx(17.5),
+                                          "mean_net_cent": pytest.approx(4.375)}
+    assert c["per_day"]["2026-10-06"]["total_net_cent"] == pytest.approx(-91.0)
+    assert c["days_positive"] == 1 and c["n_days"] == 2
+    assert c["ex_best_day"]["total_net_cent"] == pytest.approx(-91.0)
+    # fewer clusters than events: the window CI is not the event CI
+    assert c["ci90_window_cent"] != c["ci90_event_cent"]
+    # without windows the decider falls back to the event CI only
+    c2 = r3.cell_stats(net, net, price, events, days, win=net > 0)
+    assert c2["ci90_lo_decider"] == c2["ci90_event_cent"][0] and c2["ci90_window_cent"] == [None, None]

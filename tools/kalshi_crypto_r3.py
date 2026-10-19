@@ -93,7 +93,7 @@ ID_COLS = ["trade_id", "ticker", "created_time", "is_block_trade"]
 VAL_COLS = ["yes_price", "no_price", "count", "taker_side"]
 FILL_SCHEMA = pa.schema([
     ("ticker", pa.string()), ("event_ticker", pa.string()), ("series", pa.string()),
-    ("close_date", pa.string()), ("side", pa.string()), ("quote_time_us", pa.int64()),
+    ("close_date", pa.string()), ("close_time_us", pa.int64()), ("side", pa.string()), ("quote_time_us", pa.int64()),
     ("fill_time_us", pa.int64()), ("fill_trade_id", pa.string()), ("bid_micro", pa.int64()),
     ("last_print_micro", pa.int64()), ("p_yes", pa.float64()), ("p_fav", pa.float64()),
     ("count", pa.int64()), ("win", pa.bool_()), ("payoff_micro", pa.int64()),
@@ -170,17 +170,19 @@ def to_micro(x: float) -> int:
 
 
 # ----------------------------------------------------------------------------------------- fills + P&L
-def simulate_fills(rows_sorted, side: str, bid_micro: int, t_us: int, end_us: int):
+def simulate_fills(rows_sorted, side: str, bid_micro: int, t_us: int, end_us: int, strict_below: bool = False):
     """DECLARE print rule.  rows_sorted: (created_us, trade_id, yes_micro, no_micro, taker_side, count)
     sorted by (created_us, trade_id).  Fill when created_us in (t, end], the taker bought the OPPOSITE side,
     the print price on our side <= bid, and >= 30 s since our previous fill in this market.  1 contract per
-    fill, filled at our bid."""
+    fill, filled at our bid.  strict_below=True is the queue-back cell: we are last in the queue at our price, so a
+    print AT our bid does not fill; only a print strictly below it does (same window, same spacing)."""
     opp = "no" if side == "yes" else "yes"
     fills, last_fill = [], None
     for created, tid, ym, nm, taker, _count in rows_sorted:
         if created <= t_us or created > end_us or taker != opp:
             continue
-        if (ym if side == "yes" else nm) > bid_micro:
+        px = ym if side == "yes" else nm
+        if px > bid_micro or (strict_below and px >= bid_micro):
             continue
         if last_fill is not None and created - last_fill < FILL_SPACING_US:
             continue
@@ -240,26 +242,44 @@ def _sub(net, net_exact, keep):
             "mean_net_cent": float(net[k].mean() / 1e4) if k.any() else None}
 
 
-def cell_stats(net, net_exact, price, events, days, win=None):
+def _cluster_ci(labels, net):
+    """CI90 of mean net per contract with `labels` as the bootstrap cluster (1,000 draws, RandomState(1))."""
+    ids, inv = np.unique(np.asarray(labels).astype(str), return_inverse=True)
+    cn = np.bincount(inv, weights=net, minlength=len(ids))
+    cc = np.bincount(inv, minlength=len(ids)).astype(np.float64)
+    lo, hi = _ci90(cn, cc)
+    return [None if lo is None else lo / 1e4, None if hi is None else hi / 1e4]
+
+
+def cell_stats(net, net_exact, price, events, days, win=None, windows=None):
     """Report-per-rule block for one set of fills.  net, net_exact, price in micro-dollars (net uses the
-    cent-rounded-up fee = deciding; net_exact the unrounded fee)."""
+    cent-rounded-up fee = deciding; net_exact the unrounded fee).  `windows` is the close_time of the fill's market
+    (the 15-minute window shared by BTC/ETH/SOL): the second bootstrap cluster.  ci90_lo_decider is the lower of
+    the event-clustered and window-clustered 5th percentiles."""
     net = np.asarray(net, dtype=np.float64)
     net_exact = np.asarray(net_exact, dtype=np.float64)
     price = np.asarray(price, dtype=np.float64)
     events = np.asarray(events, dtype=object)
     days = np.asarray(days, dtype=object)
     out = _basic(net, net_exact, events, days)
-    out["bootstrap"] = {"draws": BOOTSTRAP_DRAWS, "seed": SEED, "cluster": "event", "ci": "5th..95th percentile"}
+    out["bootstrap"] = {"draws": BOOTSTRAP_DRAWS, "seed": SEED, "ci": "5th..95th percentile",
+                        "clusters": ["event_ticker", "close_time window"]}
     n = len(net)
     if n == 0:
-        out.update({"ci90_cent": [None, None], "win_rate": None, "mean_price_cent": None, "ex_top3_fills": None,
-                    "ex_top3_events": None, "ex_best_day": None, "added3_worst_losses": None})
+        out.update({"ci90_event_cent": [None, None], "ci90_window_cent": [None, None],
+                    "ci90_day_cent_informational": [None, None], "ci90_lo_decider": None, "n_windows": 0,
+                    "per_day": {}, "days_positive": 0, "win_rate": None, "mean_price_cent": None,
+                    "ex_top3_fills": None, "ex_top3_events": None, "ex_best_day": None,
+                    "added3_worst_losses": None})
         return out
     ev_ids, ev_inv = np.unique(events.astype(str), return_inverse=True)
     ev_net = np.bincount(ev_inv, weights=net, minlength=len(ev_ids))
-    ev_n = np.bincount(ev_inv, minlength=len(ev_ids)).astype(np.float64)
-    lo, hi = _ci90(ev_net, ev_n)
-    out["ci90_cent"] = [None if lo is None else lo / 1e4, None if hi is None else hi / 1e4]
+    out["ci90_event_cent"] = _cluster_ci(events, net)
+    out["ci90_window_cent"] = _cluster_ci(windows, net) if windows is not None else [None, None]
+    out["n_windows"] = int(len(set(np.asarray(windows).astype(str)))) if windows is not None else None
+    out["ci90_day_cent_informational"] = _cluster_ci(days, net)
+    lows = [x for x in (out["ci90_event_cent"][0], out["ci90_window_cent"][0]) if x is not None]
+    out["ci90_lo_decider"] = min(lows) if lows else None
     out["win_rate"] = float(np.asarray(win, dtype=bool).mean()) if win is not None else None
     out["mean_price_cent"] = float(price.mean() / 1e4)
     # ex-top-3 fills: drop the 3 best single fills (stable: ties by position)
@@ -271,9 +291,17 @@ def cell_stats(net, net_exact, price, events, days, win=None):
     ev_order = np.argsort(-ev_net, kind="stable")
     drop_ev = set(ev_order[:3].tolist())
     out["ex_top3_events"] = _sub(net, net_exact, np.array([i not in drop_ev for i in ev_inv]))
-    # ex-best-day
+    # per-day totals, days positive, ex-best-day
     day_ids, day_inv = np.unique(days.astype(str), return_inverse=True)
     day_net = np.bincount(day_inv, weights=net, minlength=len(day_ids))
+    day_n = np.bincount(day_inv, minlength=len(day_ids))
+    out["per_day"] = {}
+    for i, d in enumerate(day_ids):
+        in_day = day_inv == i
+        out["per_day"][str(d)] = {"n_contracts": int(day_n[i]), "n_events": int(len(set(ev_inv[in_day]))),
+                                  "total_net_cent": float(day_net[i] / 1e4),
+                                  "mean_net_cent": float(day_net[i] / day_n[i] / 1e4)}
+    out["days_positive"] = int((day_net > 0).sum())
     best = int(np.argmax(day_net))
     d = _sub(net, net_exact, day_inv != best)
     d["removed_day"] = str(day_ids[best])
@@ -810,17 +838,15 @@ def _count_only(split, markets, excl, signals, sig_skip, by_ticker, out_of_split
     return res
 
 
-def _full_run(split, markets, excl, signals, sig_skip, by_ticker, out_of_split, candles, stores, out_dir,
-              max_rss_mb, meta):
-    wanted = {t: (s["t_us"], by_ticker[t].close_us) for t, s in signals.items()}
-    scan = TradeScan(wanted, values=True, forbidden=out_of_split, max_rss_mb=max_rss_mb).scan(stores)
-    assert set(scan.value_reads) <= set(wanted)
-    fills_rows, no_prior = [], 0
+def _build_fills(signals, by_ticker, scan, candles, strict_below):
+    """Fills of one cell for every signal market with a prior favoured print (re-simulated per cell)."""
+    fills_rows, no_prior, no_prior_by = [], 0, defaultdict(int)
     for tkr in sorted(signals):
         m, s = by_ticker[tkr], signals[tkr]
         last = scan.last.get(tkr)
         if last is None:
             no_prior += 1
+            no_prior_by[m.series] += 1
             continue
         side = s["side"]
         last_px = last[2] if side == "yes" else last[3]
@@ -830,7 +856,7 @@ def _full_run(split, markets, excl, signals, sig_skip, by_ticker, out_of_split, 
         rows = sorted(scan.rows.get(tkr, []), key=lambda r: (r[0], r[1]))
         end_us = m.close_us - WINDOW_END_BEFORE_CLOSE_S * US
         times = [r[0] for r in rows]
-        for created, tid in simulate_fills(rows, side, bid, s["t_us"], end_us):
+        for created, tid in simulate_fills(rows, side, bid, s["t_us"], end_us, strict_below):
             win = (side == m.result)
             payoff = US if win else 0
             fee_c, fee_m = maker_fee_micro_pair(bid)
@@ -851,54 +877,87 @@ def _full_run(split, markets, excl, signals, sig_skip, by_ticker, out_of_split, 
                     mk[f"mk{h}_print_cent"] = float("nan")
             fills_rows.append({
                 "ticker": tkr, "event_ticker": m.event, "series": m.series, "close_date": m.close_date,
-                "side": side, "quote_time_us": s["t_us"], "fill_time_us": created, "fill_trade_id": tid,
-                "bid_micro": bid, "last_print_micro": last_px, "p_yes": s["p_yes"], "p_fav": s["p_fav"],
-                "count": 1, "win": win, "payoff_micro": payoff, "fee_maker_cent_micro": fee_c,
-                "fee_maker_micro_micro": fee_m, "net_cent_micro": payoff - bid - fee_c,
+                "close_time_us": m.close_us, "side": side, "quote_time_us": s["t_us"], "fill_time_us": created,
+                "fill_trade_id": tid, "bid_micro": bid, "last_print_micro": last_px, "p_yes": s["p_yes"],
+                "p_fav": s["p_fav"], "count": 1, "win": win, "payoff_micro": payoff,
+                "fee_maker_cent_micro": fee_c, "fee_maker_micro_micro": fee_m, "net_cent_micro": payoff - bid - fee_c,
                 "net_micro_micro": payoff - bid - fee_m, "taker_equiv_fee_cent_micro": tfee_c,
                 "dropped_15": False, **mk})
     fills_rows.sort(key=lambda r: (r["ticker"], r["fill_time_us"], r["fill_trade_id"]))
+    return fills_rows, no_prior, dict(no_prior_by)
+
+
+def _fcol(rows, name):
+    return np.array([r[name] for r in rows])
+
+
+def _cell_rows(rows):
+    if not rows:
+        return cell_stats([], [], [], [], [])
+    return cell_stats(_fcol(rows, "net_cent_micro"), _fcol(rows, "net_micro_micro"), _fcol(rows, "bid_micro"),
+                      _fcol(rows, "event_ticker"), _fcol(rows, "close_date"), win=_fcol(rows, "win"),
+                      windows=_fcol(rows, "close_time_us"))
+
+
+def _write_fills(path, rows):
+    tbl = pa.Table.from_pylist(rows, schema=FILL_SCHEMA) if rows else FILL_SCHEMA.empty_table()
+    pq.write_table(tbl, path)
+
+
+POPULATION_LABEL = "R3 on signal markets with a print in [close-300 s, close-180 s)"
+QUEUE_BACK_RULE = ("pressure-model stand-in (QP pre-registered): a print AT our bid does not fill; only a print "
+                   "strictly below our bid on our side with the taker selling our side fills; same window "
+                   "(t, close-60 s], same 30 s spacing, fill at our bid, no random drop, re-simulated")
+
+
+def _full_run(split, markets, excl, signals, sig_skip, by_ticker, out_of_split, candles, stores, out_dir,
+              max_rss_mb, meta):
+    wanted = {t: (s["t_us"], by_ticker[t].close_us) for t, s in signals.items()}
+    scan = TradeScan(wanted, values=True, forbidden=out_of_split, max_rss_mb=max_rss_mb).scan(stores)
+    assert set(scan.value_reads) <= set(wanted)
+    fills_rows, no_prior, no_prior_by = _build_fills(signals, by_ticker, scan, candles, strict_below=False)
+    qb_rows, _, _ = _build_fills(signals, by_ticker, scan, candles, strict_below=True)
     drop = unfilled_mask(len(fills_rows))
     for r, d in zip(fills_rows, drop):
         r["dropped_15"] = bool(d)
-
-    def col(name, rows=None):
-        return np.array([r[name] for r in (fills_rows if rows is None else rows)])
-
-    def cell(rows):
-        if not rows:
-            return cell_stats([], [], [], [], [])
-        return cell_stats(col("net_cent_micro", rows), col("net_micro_micro", rows), col("bid_micro", rows),
-                          col("event_ticker", rows), col("close_date", rows), win=col("win", rows))
-
     kept = [r for r in fills_rows if not r["dropped_15"]]
     per_series = {s: _basic_rows([r for r in fills_rows if r["series"] == s]) for s in SERIES}
-    per_day = {d: _basic_rows([r for r in fills_rows if r["close_date"] == d])
-               for d in sorted({r["close_date"] for r in fills_rows})}
 
     def mean_valid(name):
-        v = col(name).astype(float) if fills_rows else np.array([])
+        v = _fcol(fills_rows, name).astype(float) if fills_rows else np.array([])
         v = v[~np.isnan(v)] if len(v) else v
         return {"n": int(len(v)), "mean_cent": float(v.mean()) if len(v) else None}
 
     stress = None
     if fills_rows:
-        sn = col("net_cent_micro") - col("taker_equiv_fee_cent_micro")
+        sn = _fcol(fills_rows, "net_cent_micro") - _fcol(fills_rows, "taker_equiv_fee_cent_micro")
         stress = {"note": "NOT in DECLARE: maker charged the taker formula, cent rounded up",
                   "n_contracts": len(sn), "total_net_cent": float(sn.sum() / 1e4),
                   "mean_net_cent": float(sn.mean() / 1e4)}
-    meta = dict(meta)
-    summary = {
-        "meta": meta, "rule": "R3 late-lock maker 15M", "n_markets_in_split": len(markets),
-        "excluded_markets": excl, "n_signals": len(signals), "signals_by_series": _by_series(signals, by_ticker),
-        "signals_skipped": sig_skip, "signals_without_prior_favoured_print": no_prior,
-        "trade_rows": dict(scan.c), "duplicates_removed": scan.c.get("duplicates", 0),
-        "peak_rss_mb": scan.c.get("peak_rss_mb", 0),
-        "main": cell(fills_rows),
-        "maker_15pct_unfilled": {**cell(kept), "n_dropped": int(drop.sum()), "drop_rule":
+    cells = {
+        "main": _cell_rows(fills_rows),
+        "maker_15pct_unfilled": {**_cell_rows(kept), "n_dropped": int(drop.sum()), "drop_rule":
                                  "ceil(0.15*N) fills via RandomState(1).choice over fills sorted by "
                                  "(ticker, fill_time, trade_id)"},
-        "per_series": per_series, "per_day": per_day,
+        "queue_back": {**_cell_rows(qb_rows), "rule": QUEUE_BACK_RULE},
+    }
+    summary = {
+        "meta": dict(meta), "rule": "R3 late-lock maker 15M",
+        "headline": {"population": POPULATION_LABEL, "n_markets_in_split": len(markets),
+                     "n_signals": len(signals), "signals_by_series": _by_series(signals, by_ticker),
+                     "signals_without_prior_favoured_print": no_prior,
+                     "signals_without_prior_favoured_print_by_series": no_prior_by,
+                     "excluded_markets": excl, "signals_skipped": sig_skip,
+                     "n_filled_events": {k: v["n_events"] for k, v in cells.items()},
+                     "n_contracts": {k: v["n_contracts"] for k, v in cells.items()}},
+        "n_markets_in_split": len(markets), "excluded_markets": excl, "n_signals": len(signals),
+        "signals_by_series": _by_series(signals, by_ticker), "signals_skipped": sig_skip,
+        "signals_without_prior_favoured_print": no_prior,
+        "trade_rows": dict(scan.c), "duplicates_removed": scan.c.get("duplicates", 0),
+        "peak_rss_mb": scan.c.get("peak_rss_mb", 0),
+        **cells,
+        "ci90_lo_decider": {k: v["ci90_lo_decider"] for k, v in cells.items()},
+        "per_series": per_series,
         "markout_cent": {k: mean_valid(k) for k in
                          ("mk10_fair_cent", "mk60_fair_cent", "mk10_print_cent", "mk60_print_cent")},
         "informational": {"stress_taker_equiv_fee": stress},
@@ -906,8 +965,8 @@ def _full_run(split, markets, excl, signals, sig_skip, by_ticker, out_of_split, 
     }
     outp = Path(out_dir)
     outp.mkdir(parents=True, exist_ok=True)
-    tbl = pa.Table.from_pylist(fills_rows, schema=FILL_SCHEMA) if fills_rows else FILL_SCHEMA.empty_table()
-    pq.write_table(tbl, outp / f"r3_{split}_fills.parquet")
+    _write_fills(outp / f"r3_{split}_fills.parquet", fills_rows)
+    _write_fills(outp / f"r3_{split}_fills_queue_back.parquet", qb_rows)
     with open(outp / f"r3_{split}_summary.json", "w") as fh:
         json.dump(summary, fh, indent=1, sort_keys=True, default=_json_default)
     return summary
