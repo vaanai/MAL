@@ -100,6 +100,7 @@ AS_SIZED_KEY = 0.0  # stake_sol sentinel of the as-sized pseudo book
 SUBCELLS = ("flat_1p9_total", "flat_1p9_sc", "press_1p9_total", "press_1p9_sc")
 DECIDABLE = ("PASS", "FAIL")  # arena_score statuses (under the FORCED-SCREEN-ONLY prefix too) whose cells are valid
 SLIM_KEYS = ("n", "days", "days_pos", "mean_sol", "total_sol", "ci90_lo_sol", "ex_top3_sol", "ex_best_day_sol", "pass", "misses", "intercept")
+REFERENCE_LABEL = "reference arm, not promotable"  # CON-P and the three R arms (DESIGN section 5): controls, scored and shown, never candidates
 FILES_PINNED = ("tools/arena_feed.py", "tools/arena_paper.py", "tools/arena_score.py", "tools/hv4_read.py")
 
 
@@ -108,6 +109,11 @@ class Refused(Exception):
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the 25 cells
+def is_reference(bot_id: str | None) -> bool:
+    """CON-P and the three R arms: reference arms of DESIGN section 5 (ArmSpec.promotable is False). A read of one is labelled so everywhere and has no canary path."""
+    return bot_id in ARMS and not ARMS[bot_id].promotable
+
+
 def gate_cells() -> tuple[tuple[str, Any], ...]:
     """(arm, stake) of the DESIGN's gate cells: stake 0.25 / 0.5 / 1.0 or AS_SIZED. 25 of them, all on promotable arms (L, F, X)."""
     out: list[tuple[str, Any]] = []
@@ -383,13 +389,19 @@ def screen_text(existed: int, cells_existed: int, books_read: int, cells_read: i
             "NOT_DECIDABLE ones included.")
 
 
-def disclosure(reg: Mapping[str, Mapping[str, Any]], now_ms: int, books_read: int, cells_read: int, ex_best_day: Mapping[str, Any]) -> dict[str, Any]:
+def reference_text() -> str:
+    return (f"{REFERENCE_LABEL.capitalize()} (DESIGN section 5): a control, not a candidate. This read is not one of the 25 gate cells, it is no screen of a book, "
+            "it has no canary path and no confirmation, and nothing in it says a book made money. Its cells are shown only so that the LLM arms can be compared with it.")
+
+
+def disclosure(reg: Mapping[str, Mapping[str, Any]], now_ms: int, books_read: int, cells_read: int, ex_best_day: Mapping[str, Any], reference: bool = False) -> dict[str, Any]:
     existed = sum(1 for e in reg.values() if e["clock_start_ms"] < now_ms)  # a clock before the read, stopped ones included
     n_gate = len(gate_cells())
     cells_existed = existed * len(STAKES_SOL) * len(AS.MODELS) * len(AS.LATS)  # arena_score's own formula
     return {"books_in_bots_json": len(reg), "books_with_clock_before_read": existed, "books_stopped": sum(1 for e in reg.values() if e.get("stopped_at_ms")),
             "arena_cells_existed": cells_existed, "hv4_arms": len(ARMS), "hv4_gate_cells": n_gate, "hv4_reads_per_bot_id": GATE_READS_PER_BOT, "hv4_gate_checks": n_gate * GATE_READS_PER_BOT,
-            "books_read": books_read, "cells_read": cells_read, "screen_not_promotion": screen_text(existed, cells_existed, books_read, cells_read),
+            "books_read": books_read, "cells_read": cells_read, "reference_arm": bool(reference), "reference_label": REFERENCE_LABEL if reference else None,
+            "screen_not_promotion": reference_text() if reference else screen_text(existed, cells_existed, books_read, cells_read),
             "ex_best_day_sol": dict(ex_best_day),
             "v2_alpha": f"0.05/{V2_FAMILY}", "learning_alpha": LEARN_ALPHA,
             "gate_multiplicity": (f"{n_gate} cells x {GATE_READS_PER_BOT} read each = {n_gate * GATE_READS_PER_BOT} gate checks. DEC-031 section 2 governs: one gate read per bot_id at its "
@@ -477,7 +489,8 @@ def _git_sha() -> str:
 def result_v1(read: Mapping[str, Any], *, command: str, created_utc: str, git_sha: str) -> dict[str, Any]:
     """A result.v1 record of the deciding cell. metrics.flat / pressure_s1 show the strand rule "total"; each gate tick is true only under BOTH strand rules.
     stage is never "passed": a pass here is a screen."""
-    gate_read = read["read"] == "book"
+    ref = bool(read.get("reference_arm"))  # a reference arm carries no gate tick: it is not a candidate (DESIGN section 5)
+    gate_read = read["read"] == "book" and not ref
     decidable = bool(read["decidable"])  # PASS or FAIL: the only statuses whose cells are valid (a NOT_DECIDABLE / REPORT_ONLY read is final and claims nothing)
     res_cells = read["_deciding_cells"] if decidable else {}  # no cell number, no tick, for a read that is not decidable
     span = int(read["window_days"])
@@ -486,8 +499,8 @@ def result_v1(read: Mapping[str, Any], *, command: str, created_utc: str, git_sh
     st = read["status"]
     rec = {"schema_version": "result.v1", "tool": "tools/hv4_read.py", "git_sha": git_sha, "command": command,
            "config": {"read": read["read"], "bot_id": read.get("bot_id"), "instant_ms": read["instant_ms"], "deciding": "1.9 s, stake 0.25, flat and pressure, strand rules total and sc",
-                      "displayed_strand_rule": "total", "gate_evaluated": gate_read, "status": st, "v1": (read.get("v1") or {}).get("status"), "v2": (read.get("v2") or {}).get("status"),
-                      "learning": (read.get("learning") or {}).get("status"), "screen": "a screen, not a promotion"},
+                      "displayed_strand_rule": "total", "gate_evaluated": gate_read, "reference_arm": ref, "label": REFERENCE_LABEL if ref else None, "status": st, "v1": (read.get("v1") or {}).get("status"), "v2": (read.get("v2") or {}).get("status"),
+                      "learning": (read.get("learning") or {}).get("status"), "screen": REFERENCE_LABEL if ref else "a screen, not a promotion"},
            "role": "exploration", "data_blocks": [{"start_hour": _hour(read["clock_start_ms"]), "end_hour_exclusive": _hour(read["instant_ms"]), "host": "arena tape /data/mal/arena (public RPC)",
                                                     "ledger_owner": "hunt20 arena (DEC-031)"}],
            "stage": "failed" if gate_read and st.startswith("FAIL") else "forward-paper",
@@ -496,7 +509,7 @@ def result_v1(read: Mapping[str, Any], *, command: str, created_utc: str, git_sh
            "tries": {"data_key": hashlib.sha256(canon(["hv4", read.get("bot_id"), read["clock_start_ms"]]).encode()).hexdigest()[:16], "variant_n": int(read["tries"]["variant_n"]),
                      "of_m": int(read["tries"]["of_m"])},
            "runtime_s": None, "peak_rss_mb": None, "created_utc": created_utc,
-           "notes": read["disclosure"]["screen_not_promotion"] + f" Status {st}." + ("" if decidable else " Not decidable: no cell number and no gate tick is reported (the read is final and claims nothing).") + ("" if gate_read else " NOT A GATE READ: the D14 learning comparison; the gate ticks are false by construction, not evaluated.") + (" Not proposed for canary: ex-best-day is not positive." if read.get("not_proposed_for_canary") else "")}
+           "notes": read["disclosure"]["screen_not_promotion"] + f" Status {st}." + ("" if decidable else " Not decidable: no cell number and no gate tick is reported (the read is final and claims nothing).") + (" The gate ticks are false by construction: " + REFERENCE_LABEL + "." if ref else "" if gate_read else " NOT A GATE READ: the D14 learning comparison; the gate ticks are false by construction, not evaluated.") + (" Not proposed for canary: ex-best-day is not positive." if read.get("not_proposed_for_canary") else "")}
     errs = validate_result(rec)
     if errs:
         raise ValueError("result.v1 record invalid:\n" + "\n".join(errs))
@@ -516,7 +529,9 @@ def console_rows(read: Mapping[str, Any], created_utc: str) -> dict[str, Any]:
     dec = next((c for c in read["cells"] if c["decides"]), None)
     gate = read["read"] == "book"
     decidable = bool(read["decidable"])
-    parts = [f"Haiku trader v4 {'gate read' if gate else 'D14 learning comparison (NOT a gate read)'}, {who}, instant {read['instant_ms']} ({_hour(read['instant_ms'])}Z): {read['status']}."]
+    ref = bool(read.get("reference_arm"))
+    kind = f"reference read ({REFERENCE_LABEL}; DESIGN section 5)" if ref else "gate read" if gate else "D14 learning comparison (NOT a gate read)"
+    parts = [f"Haiku trader v4 {kind}, {who}, instant {read['instant_ms']} ({_hour(read['instant_ms'])}Z): {read['status']}."]
     if not decidable:
         parts.append(f"Not decidable ({read['status']}): the read is final and claims nothing; no cell number and no gate tick is reported here.")
     elif dec and dec["subcells"]:
@@ -532,13 +547,15 @@ def console_rows(read: Mapping[str, Any], created_utc: str) -> dict[str, Any]:
         lr = read["learning"]
         ps = "; ".join(f"{k} L-F p {_f(v['p'])}, L-P p {_f(lr['L_minus_P']['subcells'].get(k, {}).get('p'))}" for k, v in lr["L_minus_F"]["subcells"].items())
         parts.append(f"Learning (CON, D14) {lr['status']}: {lr['statement']}." + (f" {ps}." if ps else ""))
-    parts.append(read["disclosure"]["gate_multiplicity"])
+    if not ref:
+        parts.append(read["disclosure"]["gate_multiplicity"])
     parts.append(read["disclosure"]["screen_not_promotion"])
-    stage = "failed" if gate and read["status"].startswith("FAIL") else "forward-paper"
+    stage = "failed" if gate and not ref and read["status"].startswith("FAIL") else "forward-paper"
     return {"stream": [{"id": f"s-{day}-{tag}", "from": "claude", "kind": "status", "atUtc": created_utc, "text": " ".join(parts)}],
-            "ladder": [{"id": tag, "title": f"HV4 {who}: {'gate read' if gate else 'D14 learning comparison, not a gate read'} {read['status']}", "stage": stage,
-                        "note": f"A screen, not a promotion; best of {read['disclosure']['books_with_clock_before_read']} arena books. No book has cleared the promotion gate."}],
-            "events": [{"id": f"e-{day}-{tag}", "kind": "record", "title": f"HV4 {who} {'gate read' if gate else 'D14 learning comparison'}", "detail": parts[0], "atUtc": created_utc}]}
+            "ladder": [{"id": tag, "title": f"HV4 {who}: {'reference read, ' + REFERENCE_LABEL if ref else 'gate read' if gate else 'D14 learning comparison, not a gate read'} {read['status']}", "stage": stage,
+                        "note": (f"{REFERENCE_LABEL.capitalize()}; no canary path. No book has cleared the promotion gate." if ref else
+                                 f"A screen, not a promotion; best of {read['disclosure']['books_with_clock_before_read']} arena books. No book has cleared the promotion gate.")}],
+            "events": [{"id": f"e-{day}-{tag}", "kind": "record", "title": f"HV4 {who} {'reference read' if ref else 'gate read' if gate else 'D14 learning comparison'}", "detail": parts[0], "atUtc": created_utc}]}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ write-once
@@ -646,8 +663,9 @@ def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = RE
             "t0_ms": t0, "window_days": max(1, len(calendar_days(reg[bot_id]["clock_start_ms"], b))), "status": status_of(main), "arena_status": main["status"],
             "decidable": base_status(main) in DECIDABLE,
             "cells": cells, "cell_count_in_design": len(gate_cells()), "v1": v1, "v2": v2, "v1_and_v2": v12, "adds_value": adds,
-            "not_proposed_for_canary": bool(main["status"] == "PASS" and (main.get("deciding") or {}).get("not_proposed_for_canary")),
-            "disclosure": disclosure(reg, now, n_books, cells_read, ebd), "tries": {"variant_n": order.index(bot_id) + 1, "of_m": len(order)},
+            "reference_arm": not arm.promotable,
+            "not_proposed_for_canary": bool(arm.promotable and main["status"] == "PASS" and (main.get("deciding") or {}).get("not_proposed_for_canary")),
+            "disclosure": disclosure(reg, now, n_books, cells_read, ebd, reference=not arm.promotable), "tries": {"variant_n": order.index(bot_id) + 1, "of_m": len(order)},
             "inputs": _inputs(registry, ledger_root, reads_dir), "arena_score_read": main, "arena_score_as_sized": asz}
     dec_books = main.get("books", {}).get(PRIMARY_KEY, {}).get("cells", {})
     read["_deciding_cells"] = dec_books

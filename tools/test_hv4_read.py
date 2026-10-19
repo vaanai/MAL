@@ -683,6 +683,44 @@ def test_reference_arms_are_scored_but_are_not_gate_cells(tmp_path):
     assert len(r["cells"]) == 1 and r["cells"][0]["gate_cell"] is False and r["v1"] is None and r["v2"] is None and r["adds_value"] is None
 
 
+def test_a_reference_arm_that_clears_its_cells_is_labelled_not_promotable_everywhere_and_has_no_canary_sentence(tmp_path):
+    for i, arm in enumerate(("CON-R", "CON-P", "BIG-R", "BST-R")):
+        assert not ARMS[arm].promotable and R.is_reference(arm)
+        w = World(tmp_path / arm)
+        w.add(book_rows(arm, noisy(4e6, 5, 20, 31 + i)))  # positive: every cell clears the arena thresholds
+        r = w.book(arm)
+        assert r["arena_status"] == "PASS" and r["reference_arm"] is True and r["not_proposed_for_canary"] is False and r["adds_value"] is None
+        hv4, rec, con = outputs(w, arm)
+        label = R.REFERENCE_LABEL
+        assert label == "reference arm, not promotable"
+        # result.v1: labelled, no gate tick, no pass_both, never "failed"
+        assert rec["config"]["reference_arm"] is True and rec["config"]["label"] == label and rec["config"]["gate_evaluated"] is False
+        assert rec["gate"]["pass_both"] is False and not any(rec["gate"]["flat"].values()) and not any(rec["gate"]["pressure_s1"].values())
+        assert rec["stage"] == "forward-paper" and label in rec["notes"] and R.validate_result(rec) == []
+        # the disclosure
+        d = hv4["disclosure"]
+        assert d["reference_arm"] is True and d["reference_label"] == label and label.capitalize() in d["screen_not_promotion"]
+        # the Console draft: label in the stream, the ladder title and its note, and no canary sentence anywhere
+        text = con["stream"][0]["text"]
+        assert label in text and "reference read" in text
+        assert label in con["ladder"][0]["title"] and "reference read" in con["ladder"][0]["title"] and "gate read" not in con["ladder"][0]["title"]
+        assert label.capitalize() in con["ladder"][0]["note"] and con["ladder"][0]["stage"] == "forward-paper"
+        blob = json.dumps([rec, con, d]).lower()
+        for banned in ("a pass allows", "live canary at", "best of", "winner's curse", "screen, not a promotion"):
+            assert banned not in blob, banned
+        assert "no canary path" in text
+    # a reference arm that fails is not a failed book either
+    w = World(tmp_path / "failing")
+    w.add(book_rows("CON-R", noisy(-4e6, 5, 20, 5)))
+    assert w.book("CON-R")["arena_status"] == "FAIL"
+    assert outputs(w, "CON-R")[1]["stage"] == "forward-paper" and outputs(w, "CON-R")[2]["ladder"][0]["stage"] == "forward-paper"
+    # a promotable arm is not labelled
+    w2 = con_world(tmp_path / "promotable")
+    w2.book("CON-L")
+    hv4, rec, con = outputs(w2)
+    assert rec["config"]["reference_arm"] is False and hv4["disclosure"]["reference_arm"] is False and "live canary" in con["stream"][0]["text"] and R.REFERENCE_LABEL not in con["stream"][0]["text"]
+
+
 # ------------------------------------------------------------------------------------------------------------------------------ outputs
 def test_result_v1_record_matches_the_schema_and_never_says_passed(tmp_path):
     w = con_world(tmp_path)
