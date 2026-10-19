@@ -157,6 +157,7 @@ def read(tmp_path, kind):
     "/portfolio/orders/abc", "/historical/fills", "/historical/orders", "/historical/positions",
     "/api-keys", "/account/endpoint_costs", "/markets/X/orders", "/orders", "/markets/../portfolio/orders",
     "/events", "/series/S/markets/T", "https://evil.example/series",
+    "/incentive_programs/abc", "/incentive_programs/abc/claim", "/incentive_programs/../portfolio/orders",
 ])
 def test_allowlist_refuses_trading_and_account_paths(path):
     fake = Fake()
@@ -169,7 +170,7 @@ def test_allowlist_refuses_trading_and_account_paths(path):
 @pytest.mark.parametrize("path", [
     "/series", "/markets", "/markets/trades", "/markets/KX-1/orderbook", "/historical/cutoff",
     "/historical/markets", "/historical/trades", "/series/S/markets/KX-1/candlesticks",
-    "/historical/markets/KX-1/candlesticks"])
+    "/historical/markets/KX-1/candlesticks", "/incentive_programs"])
 def test_allowlist_accepts_public_paths(path):
     assert kp.check_path(path) == path
 
@@ -438,7 +439,7 @@ def test_orderbook_snap_records_depth_only_with_timestamps(tmp_path):
 def test_cli_parser_has_no_trading_subcommands():
     sub = [a for a in kp.build_parser()._actions if a.dest == "cmd"][0]
     assert set(sub.choices) == {"series", "markets", "trades", "candles", "orderbook-snap",
-                           "quarantine-unsealed"}
+                           "incentive-snap", "quarantine-unsealed"}
 
 
 # ------------------------------------------------------------ review round 1
