@@ -16,9 +16,13 @@ RULE API (a small Python object)
   EVENT EXIT (ExitSpec.exit_fire, optional): a rule-supplied PURE predicate (view) -> bool. The KIT DRIVES IT, hour by hour: for each hour h it first advances every open exit_fire position
   through h's slots, asking the predicate at every print slot of the pool in [landing_slot, cap_slot] on a view that holds only the rows with slot <= that slot (ExitView; the arrays
   end there; upto() refuses a later slot); the first True is the fire. Only then does it call the rule's `triggers(h)` for new entries. So at slot s of hour h the rule has seen triggers()
-  for hours <= h-1 only, and a "no fire" is a series of honest per-slot False answers (nothing is returned that could have been chosen with hindsight). RESIDUAL, stated: a position's own
-  ENTRY hour is run after triggers() of that hour, so for the rest of the entry hour the rule's own state has seen the whole hour (as at every entry: the hour is handed over whole); keep
-  the predicate a function of the view and constants fixed at the entry. `landing_slot` = the kit floor sd + k_slow + 1 (the slower entry leg has landed), `cap_slot` the time cap's decision
+  for hours <= h-1 only, and a "no fire" is a series of honest per-slot False answers (nothing is returned that could have been chosen with hindsight). ENTRY HOUR: a position's own entry
+  hour is run after triggers() of that hour, so for the rest of that hour the rule's state has seen the whole hour (as at every entry: the hour is handed over whole). That is closed by an
+  ENTRY-HOUR RE-RUN inside `causal_probe(..., exit_fire=True)`, the author's seed-1 sample of >= 200 triggers per block (0 failures for registration, the standard of the entry probe, NOT
+  every trigger): it re-runs the rule's triggers() on the entry hour CUT after the entry decision slot, with a deep copy of the state as it was at the start of that hour, takes the ExitSpec
+  that cut run returns for the same (pool, slot, cell) (its predicate was built only from rows <= the entry slot), streams the exit with THAT predicate, and requires the identical fire
+  slot (or the identical no-fire) as the full-hour spec. A mismatch is a probe FAIL, like an entry look-ahead. The kit's own priced run does the prefix probe on EVERY event exit but cannot
+  do the re-run (it holds no per-hour state snapshot). `landing_slot` = the kit floor sd + k_slow + 1 (the slower entry leg has landed), `cap_slot` the time cap's decision
   slot. The fire slot is the exit DECISION slot; the sell lands by the normal exit-lag rule from it (decision slot + 7 feed slots + the exit lag). The time cap and tp / sl / trail still
   apply, the earliest decides (a tp / sl / trail ON the fire slot keeps its own code; a fire on the cap's own slot is an event exit). Admission (one open position per cell and pool, cooldown after
   the exit) runs as the data arrive, so a cell is all exit_fire or none (a mix is refused, counted refused_exit_fire_mixed_cell). Candidate slots are slots with a print of the pool.
@@ -738,7 +742,7 @@ class _Pos:
     def __init__(self, spec: Any, sd: int, rate: float, sps: float, ci: int = -1, pool: str = "", hi: int = -1) -> None:
         self.spec, self.fire, self.sd, self.rate, self.sps, self.ci, self.pool, self.hi = spec, spec.exit_fire, int(sd), float(rate), float(sps), ci, pool, hi
         self.landing, self.cap, self.clamped = _exit_clock(spec, self.sd, rate, sps)
-        self.done, self.xs, self.why = -1, None, 0
+        self.done, self.xs, self.why, self.asks = -1, None, 0, 0  # asks = how many times the predicate was called (the timing figure)
 
     def view(self, rows: dict, slot: int) -> ExitView:
         return ExitView(rows, slot, self.sd, self.landing, self.cap, self.rate, self.sps)
@@ -763,6 +767,7 @@ class _Pos:
                     if cut is not None:
                         cut[n] = rows
                 self.done = s
+                self.asks += 1
                 if _fire_bool(self.fire(self.view(rows, s))):
                     fired = s
                     break
@@ -1399,6 +1404,7 @@ class Screen:
     def _resolve(self, pos: "_Pos", a: dict, pp: np.ndarray, bi: int, set_nxt: bool = True) -> None:
         """A position's exit is decided: free the pool after the cooldown, and probe an event exit (prefix probe: fires again on rows <= the fire slot, does NOT fire at fire - 1)."""
         self._open.pop((pos.ci, pos.pool), None)
+        self.counters["exit_fire_asks"] += pos.asks
         if set_nxt:
             self._nxt[(pos.ci, pos.pool)] = pos.xs + int(np.rint(self.cells[pos.ci].cooldown_s * pos.rate))
         if pos.why == EVENT_CODE:
@@ -1638,22 +1644,37 @@ def load_rule(spec: str, kwargs_json: str | None = None) -> Any:
 def causal_probe(rule: Any, hour: HourRows, state: RunState, pool: str, slot: int, exit_fire: bool = False) -> bool:
     """True if `rule` still fires (pool, slot) when the hour is cut after `slot` (no look-ahead past the decision slot). With exit_fire=True the EXIT is probed too: for every
     spec the rule hands out for (pool, slot) on the whole hour that carries an exit_fire, the predicate is asked at every print slot of the pool's rows (previous hour + this hour, up to
-    the hour's end); on a fire the prefix probe runs (fires again on rows <= the fire slot, does NOT fire at fire - 1: exit_fire_probe). The priced screen streams and probes every event exit
-    itself (Screen.exit_probe); this call is the author's seed-1 sample on a single hour."""
+    the hour's end); on a fire the prefix probe runs (fires again on rows <= the fire slot, does NOT fire at fire - 1: exit_fire_probe). THE ENTRY-HOUR RE-RUN (the manager's decision on #760,
+    QP's option b): the rule's triggers() is re-run on the hour CUT after `slot`, with a deep copy of `state` (the state as it was at the start of the hour, as for the entry check); the
+    ExitSpec that cut run returns for the same (pool, slot, cell) is streamed over the same full rows, and its (exit slot, reason) must equal the full-hour spec's, fire or no fire. A
+    rule that keeps the hour's later rows in its state or closure and gates its fire on the exact slot passes the prefix probe and FAILS here. Scope: the sampled triggers, the standard of the
+    entry probe. The priced screen streams and prefix-probes every event exit itself (Screen.exit_probe)."""
     state = dataclasses.replace(state, scratch=copy.deepcopy(state.scratch), first_seen=dict(state.first_seen))  # the probe must not change a rule that writes to scratch
     keep = hour.sl <= slot
     pid = np.repeat(np.arange(len(hour.pools)), np.diff(hour.ptr))[keep]
     ptr = np.searchsorted(pid, np.arange(len(hour.pools) + 1), "left").astype(np.int64)
     cut = dataclasses.replace(hour, ptr=ptr, _index=None, **{k: getattr(hour, k)[keep] for k in ("sl", "tx", "ev", "isbuy", "sol", "tok", "q", "b", "bt", "trader", "v")})
-    entry = any(p == pool and int(s) == int(slot) for p, s, _ in rule.triggers(cut, state))
-    return entry and (not exit_fire or _exit_probe_on_hour(rule, hour, state, pool, int(slot)))
+    if not exit_fire:
+        return any(p == pool and int(s) == int(slot) for p, s, _ in rule.triggers(cut, state))
+    entry_seen, res = exit_entry_hour_rerun(rule, hour, cut, state, pool, int(slot))
+    return entry_seen and all(r["ok"] for r in res)
 
 
-def _exit_probe_on_hour(rule: Any, hour: HourRows, state: RunState, pool: str, slot: int) -> bool:
-    state = dataclasses.replace(state, scratch=copy.deepcopy(state.scratch), first_seen=dict(state.first_seen))
+def _stream_outcome(spec: Any, a: dict, pp: np.ndarray, slot: int, rate: float, covered_to: int) -> tuple:
+    """Stream one spec's exit over the rows in `a`: ((exit slot, reason) or (None, 0) if undecided in the data, prefix probe ok)."""
+    pos = _Pos(spec, slot, rate, 1.0 / rate)
+    pos.run(a, pp, covered_to)
+    return (pos.xs, pos.why), (True if pos.why != EVENT_CODE else exit_fire_probe(pos, a, pp, pos.xs))
+
+
+def exit_entry_hour_rerun(rule: Any, hour: HourRows, cut: HourRows, state: RunState, pool: str, slot: int) -> tuple[bool, list[dict]]:
+    """The entry-hour re-run (see causal_probe). `cut` = `hour` cut after `slot`, `state` = the state at the start of the hour (this function deep-copies it for each run). Returns
+    (the cut run returned the entry, one dict per exit_fire spec the FULL-hour run hands out for (pool, slot): {"cell", "full": (xs, why), "cut": (xs, why) | None, "prefix_ok", "same", "ok"}). A cut run that returns no exit_fire for that
+    cell gives cut None (not ok). The full-hour specs are streamed BEFORE the cut run starts, so a rule that keeps state on itself cannot leak between them."""
+    cp = lambda: dataclasses.replace(state, scratch=copy.deepcopy(state.scratch), first_seen=dict(state.first_seen))  # noqa: E731
     i = hour.pool_index().get(pool)
     if i is None or not hour.n:
-        return False
+        return False, [{"cell": None, "full": None, "cut": None, "prefix_ok": False, "same": False, "ok": False}]
     chunks = [Screen._chunk(hour, i)]
     prev = state.prev
     if prev is not None and pool in prev.pool_index():
@@ -1662,17 +1683,32 @@ def _exit_probe_on_hour(rule: Any, hour: HourRows, state: RunState, pool: str, s
     a["ib"] = a["ib"].astype(bool)
     pp = post_price(a)
     rate = hour.slots_per_s
-    for p, s_, spec in rule.triggers(hour, state):
+    out: dict[Any, dict] = {}
+    for p, s_, spec in list(rule.triggers(hour, cp())):
         if p != pool or int(s_) != slot or getattr(spec, "exit_fire", None) is None:
             continue
-        pos = _Pos(spec, slot, rate, 1.0 / rate)
+        cell = getattr(spec, "cell", None)
         try:
-            pos.run(a, pp, hour.max_slot)
-            if pos.why == EVENT_CODE and not exit_fire_probe(pos, a, pp, pos.xs):
-                return False
+            full, prefix_ok = _stream_outcome(spec, a, pp, slot, rate, hour.max_slot)
         except Refused:
-            return False
-    return True
+            full, prefix_ok = None, False
+        out[cell] = {"cell": cell, "full": full, "cut": None, "prefix_ok": prefix_ok, "same": False, "ok": False}
+    cut_trigs = list(rule.triggers(cut, cp()))
+    entry_seen = any(p == pool and int(s_) == slot for p, s_, _ in cut_trigs)
+    for p, s_, spec in cut_trigs:
+        cell = getattr(spec, "cell", None)
+        if p != pool or int(s_) != slot or cell not in out or getattr(spec, "exit_fire", None) is None:
+            continue
+        try:
+            out[cell]["cut"], _ = _stream_outcome(spec, a, pp, slot, rate, hour.max_slot)
+        except Refused:
+            out[cell]["cut"] = None
+    for r in out.values():
+        r["same"] = r["cut"] is not None and r["full"] == r["cut"]
+        r["ok"] = bool(r["same"] and r["prefix_ok"])
+    if not out:  # no exit_fire spec on the full-hour run: nothing to re-run; the entry check alone decides
+        return entry_seen, [{"cell": None, "full": None, "cut": None, "prefix_ok": True, "same": True, "ok": True}]
+    return entry_seen, list(out.values())
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ output

@@ -2352,3 +2352,89 @@ def test_the_screen_p_path_and_the_stats_it_reads_are_source_identical_to_the_ba
     consts = ["SCREEN_P_B", "SCREEN_P_B_MIN", "SCREEN_P_B_MAX", "SCREEN_P_SEED", "SCREEN_P_SOURCE", "SCREEN_P_DEFINITION", "STAKE_SOL", "FAILS", "STRAND_RULES", "SUB_CELLS", "LAT_DECIDING"]
     assert [f for f in funcs if inspect.getsource(getattr(S, f)) != inspect.getsource(getattr(base, f))] == []
     assert [c for c in consts if getattr(S, c) != getattr(base, c)] == []
+
+
+class LeakRule:
+    """Keeps the ENTRY hour's rows of pool A in its state (`scratch`) or on itself (`attribute`) and gates its fire on the exact slot: foresight the prefix probe cannot see (it fires again on
+    rows <= the fire slot and is silent at fire - 1). `leak=False` is the honest twin: a predicate that reads the view only."""
+
+    def __init__(self, slot, channel, leak=True):
+        self.slot, self.channel, self.leak, self.attr = slot, channel, leak, None
+
+    def cells(self):
+        return [S.Cell("c", event_triggered=False, event_exit=True)]
+
+    def triggers(self, hour, state):
+        j = hour.pool_index().get(POOLS["A"])
+        if j is None or not (hour.sl[hour.rows(j)] <= self.slot).any():
+            return []
+        s = hour.rows(j)
+        mem = (hour.sl[s].copy(), (hour.q[s] + hour.v[s]) / hour.b[s])  # every row of the hour this call was handed (the cut run is handed only rows <= the entry slot)
+        if self.channel == "scratch":
+            state.scratch["mem"] = mem
+            box = state.scratch
+            get = lambda: box["mem"]  # noqa: E731
+        else:
+            self.attr = mem
+            get = lambda: self.attr  # noqa: E731
+
+        def leak_fire(view):
+            sl, px = get()
+            i0 = int(np.searchsorted(sl, view.landing_slot, "left"))
+            i1 = int(np.searchsorted(sl, view.cap_slot, "right")) - 1
+            return bool(i0 < len(sl) and i1 >= i0 and px[i1] != px[i0] and view.slot == int(sl[i0]))
+
+        return [(POOLS["A"], self.slot, S.ExitSpec(120, cell="c", exit_fire=leak_fire if self.leak else whale_fire(1.0e9)))]
+
+
+@pytest.mark.parametrize("channel", ["scratch", "attribute"])
+def test_the_entry_hour_rerun_fails_a_rule_that_keeps_the_entry_hours_later_rows_and_gates_on_the_exact_slot(tape, monkeypatch, channel):
+    """The manager's decision on #760 (QP option b): re-run triggers() on the entry hour cut after the entry slot, take the cut run's ExitSpec for the same (pool, slot, cell), stream
+    the exit with ITS predicate, and require the identical fire (or no-fire). The leak passes the prefix probe and fails here; the honest twin passes."""
+    rows, files = tape
+    hr = next(S.iter_hours(files[:1], "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
+    slot = int(hr.sl[hr.rows(hr.pool_index()[POOLS["A"]])][5])
+    st = S.RunState("synthetic", scratch={"early": 1})
+    seen: list = []
+    orig = S.exit_entry_hour_rerun
+    monkeypatch.setattr(S, "exit_entry_hour_rerun", lambda *a, **k: seen.append(orig(*a, **k)) or seen[-1])
+
+    assert S.causal_probe(LeakRule(slot, channel, leak=False), hr, st, POOLS["A"], slot, exit_fire=True)
+    entry_seen, res = seen[-1]
+    assert entry_seen and len(res) == 1 and res[0]["full"] == res[0]["cut"] and res[0]["full"][1] == S.EVENT_CODE and res[0]["ok"]  # a real fire, the same fire from the cut run
+
+    leak = LeakRule(slot, channel, leak=True)
+    assert S.causal_probe(leak, hr, st, POOLS["A"], slot)  # the entry alone is causal...
+    assert not S.causal_probe(leak, hr, st, POOLS["A"], slot, exit_fire=True)  # ...the exit is not
+    entry_seen, res = seen[-1]
+    r = res[0]
+    assert entry_seen and r["full"][1] == S.EVENT_CODE and r["prefix_ok"] is True  # the prefix probe on the full-hour spec PASSES (that is the residual)
+    assert r["cut"][1] == 0 and r["cut"][0] > r["full"][0] and r["same"] is False and r["ok"] is False  # the cut run's predicate never saw the later rows: no fire, the time cap decides
+    assert st.scratch == {"early": 1}  # the caller's state is untouched (deep copies)
+
+
+def test_the_entry_hour_rerun_needs_the_cut_run_to_return_the_entry_and_an_exit_fire_for_the_cell(tape):
+    rows, files = tape
+    hr = next(S.iter_hours(files[:1], "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
+    slot = int(hr.sl[hr.rows(hr.pool_index()[POOLS["A"]])][5])
+    st = S.RunState("synthetic")
+
+    class Gone:  # the cut run does not return the trigger at all (an entry look-ahead)
+        def triggers(self, hour, state):
+            j = hour.pool_index()[POOLS["A"]]
+            return [(POOLS["A"], slot, S.ExitSpec(120, exit_fire=whale_fire(1.0e9)))] if (hour.sl[hour.rows(j)] > slot).any() else []
+
+    class NoFire:  # the cut run returns the entry but with a plain time exit
+        def triggers(self, hour, state):
+            j = hour.pool_index()[POOLS["A"]]
+            full = (hour.sl[hour.rows(j)] > slot).any()
+            return [(POOLS["A"], slot, S.ExitSpec(120, exit_fire=whale_fire(1.0e9) if full else None))]
+
+    assert not S.causal_probe(Gone(), hr, st, POOLS["A"], slot, exit_fire=True)
+    assert not S.causal_probe(NoFire(), hr, st, POOLS["A"], slot, exit_fire=True)
+
+
+def test_the_ask_counter_is_reported_for_timing(tape):
+    scr = kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), whale_fire(1.0e9))
+    c = scr.counters
+    assert c["exit_fire_positions"] > 0 and c["exit_fire_asks"] >= c["exit_fire_positions"] and c["exit_fire_asks"] > c["exit_fire_events"]
