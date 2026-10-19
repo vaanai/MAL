@@ -301,6 +301,11 @@ class ShadowDir:
             if rec.get("t_ms") is not None:
                 last_t = int(rec["t_ms"])
             pool = rec.get("pool")
+            if t == "trigger" and rec.get("variant") == VARIANT and not (isinstance(pool, str) and pool):
+                # A pv trigger record that cannot be keyed by pool is still a pv trigger record: the parser's `bad_intent:missing_pool` is a schema fault and stops the scorer (it must
+                # not be skipped silently); a null or non-string pool the parser merely refuses (`bad_intent:ids`) cannot be placed in a book, so that stops too.
+                executor_refusal(rec)
+                raise ParserFault(f"a pv trigger record has no usable pool id ({pool!r}): it cannot be keyed to a pool")
             if pool is None or t not in ("trigger", "outcome", "outcome_bx10", "strip", "pool"):
                 continue
             if t in ("trigger", "outcome", "outcome_bx10") and rec.get("variant") != VARIANT:
