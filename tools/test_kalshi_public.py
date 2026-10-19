@@ -1431,11 +1431,13 @@ def offsets(ticker, close_iso):
 
 
 class TailFake(Fake):
-    """Crypto 15M series; /markets/trades honours ticker, min_ts, max_ts (inclusive), limit, cursor
-    like the real endpoint and records every trades query."""
+    """Crypto 15M series; /markets/trades honours ticker, min_ts, max_ts, limit, cursor and records
+    every trades query.  The real endpoint's bound semantics are not verified, so both are
+    modelled: ``strict=False`` bounds are inclusive, ``strict=True`` exclusive on both sides."""
 
-    def __init__(self, markets=TAIL_MARKETS):
+    def __init__(self, markets=TAIL_MARKETS, strict=False):
         super().__init__()
+        self.strict = strict
         self.series.append({"ticker": "KXBTC15M", "title": "BTC 15 min", "category": "Crypto",
                             "categories": ["Crypto"], "tags": [], "frequency": "fifteen_min",
                             "fee_type": "quadratic", "fee_multiplier": 1.0, "settlement_sources": [],
@@ -1461,7 +1463,9 @@ class TailFake(Fake):
         lo = int(q["min_ts"][0]) if "min_ts" in q else 0
         hi = int(q["max_ts"][0]) if "max_ts" in q else 10 ** 12
         src = self.trades if path == "/markets/trades" else self.hist_trades
-        items = [t for t in src.get(q["ticker"][0], []) if lo <= u(t["created_time"]) <= hi]
+        ts = lambda t: kp.parse_dt(t["created_time"]).timestamp()
+        ok = (lambda t: lo < ts(t) < hi) if self.strict else (lambda t: lo <= ts(t) <= hi)
+        items = [t for t in src.get(q["ticker"][0], []) if ok(t)]
         return 200, json.dumps(self.page(items, "trades", q)).encode()
 
     def asked(self):
@@ -1470,11 +1474,18 @@ class TailFake(Fake):
 
 def test_tail_window_helper():
     c = u("2026-10-01T00:15:00Z")
-    assert kp.tail_window("2026-10-01T00:15:00Z", 600) == (c - 600, c)
-    assert kp.tail_window(str(c), 60) == (c - 60, c)  # epoch seconds as text
-    # fractional close: widened to whole seconds, never narrowed
-    assert kp.tail_window("2026-10-01T00:15:00.500000000Z", 600) == (c - 600, c + 1)
+    # request bounds: padded by 1 s per side so exclusive API bounds cannot lose an edge print
+    assert kp.tail_window("2026-10-01T00:15:00Z", 600) == (c - 601, c + 1)
+    assert kp.tail_window(str(c), 60) == (c - 61, c + 1)  # epoch seconds as text
+    # fractional close: floor / ceil first, then the pad
+    assert kp.tail_window("2026-10-01T00:15:00.500000000Z", 600) == (c - 601, c + 2)
     assert kp.tail_window(None, 600) is None and kp.tail_window("", 600) is None
+    # the stored window is exact and inclusive at both ends
+    lo, hi = kp.tail_keep("2026-10-01T00:15:00Z", 600)
+    assert (lo.timestamp(), hi.timestamp()) == (c - 600, c) and lo.tzinfo is not None
+    lo, hi = kp.tail_keep("2026-10-01T00:15:00.500000000Z", 600)
+    assert (lo.timestamp(), hi.timestamp()) == (c - 599.5, c + 0.5)
+    assert kp.tail_keep(None, 600) is None
 
 
 def test_tail_sends_window_params_from_each_markets_own_close_time(tmp_path):
@@ -1485,16 +1496,18 @@ def test_tail_sends_window_params_from_each_markets_own_close_time(tmp_path):
     for path, q in fake.trade_queries:
         close, _settle = TAIL_MARKETS[q["ticker"]]
         assert path == "/markets/trades"  # October is after the (June) cutoff: live tier only
-        assert int(q["max_ts"]) == u(close)
-        assert int(q["min_ts"]) == u(close) - 600
+        assert int(q["max_ts"]) == u(close) + 1  # padded 1 s per side (bound semantics unverified)
+        assert int(q["min_ts"]) == u(close) - 600 - 1
         assert q["limit"] == str(kp.PAGE_LIMIT) and "cursor" not in q
     # TB settles 3.5 h after close: the window is still close-based, never settlement_ts-based
     qb = [q for _p, q in fake.trade_queries if q["ticker"] == TB][0]
-    assert (int(qb["min_ts"]), int(qb["max_ts"])) == (u("2026-10-01T11:50:00Z"), u("2026-10-01T12:00:00Z"))
+    assert (int(qb["min_ts"]), int(qb["max_ts"])) == (u("2026-10-01T11:50:00Z") - 1,
+                                                      u("2026-10-01T12:00:00Z") + 1)
     # TA's window opens before --since and is not clipped to it
     qa = [q for _p, q in fake.trade_queries if q["ticker"] == TA][0]
-    assert int(qa["min_ts"]) == u("2026-09-30T23:55:00Z") < u(TAIL_SINCE)
-    # stored rows are exactly the trades the (inclusive) window returned, across the date partition
+    assert int(qa["min_ts"]) == u("2026-09-30T23:55:00Z") - 1 < u(TAIL_SINCE)
+    # the padded request also returned the prints at close-601 s and close+1 s; they are cut
+    # client-side, so the stored rows are exactly [close-600, close], across the date partition
     got = {r["trade_id"] for r in read(tmp_path, "trades")}
     want = {f"{t}:{d}" for t in (TA, TB, TC) for d in (600, 300, 1, 0)}
     assert got == want
@@ -1527,9 +1540,9 @@ def test_tail_straddling_the_cutoff_splits_across_tiers(tmp_path):
     assert rc == 0
     by_path = dict(fake.trade_queries)
     assert (int(by_path["/historical/trades"]["min_ts"]), int(by_path["/historical/trades"]["max_ts"])) == (
-        u(close) - 600, CUTOFF_TS)
+        u(close) - 601, CUTOFF_TS)
     assert (int(by_path["/markets/trades"]["min_ts"]), int(by_path["/markets/trades"]["max_ts"])) == (
-        CUTOFF_TS, u(close))
+        CUTOFF_TS, u(close) + 1)
     assert {r["source"] for r in read(tmp_path, "trades")} == {"historical", "live"}
 
 
@@ -1539,12 +1552,13 @@ def test_tail_pages_follow_cursor_inside_the_window(tmp_path, monkeypatch):
     rc, client = run(tmp_path, TAIL_ARGS, fake)
     assert rc == 0
     qs = [q for _p, q in fake.trade_queries]
-    assert len(qs) == 2  # 4 trades in the window, 2 per page; last page has an empty cursor
-    assert "cursor" not in qs[0] and "cursor" in qs[1]
+    assert len(qs) == 3  # 6 trades in the padded request, 2 per page; last page has an empty cursor
+    assert "cursor" not in qs[0] and "cursor" in qs[1] and "cursor" in qs[2]
     assert len({(q["min_ts"], q["max_ts"]) for q in qs}) == 1  # same window on every page
     unit = [m for m in manifest(tmp_path) if m["type"] == "unit"][0]
-    assert unit["rows"] == 4 and unit["requests"] == 2 and unit["tail_s"] == 600
-    assert (unit["min_ts"], unit["max_ts"]) == (u(TAIL_MARKETS[TA][0]) - 600, u(TAIL_MARKETS[TA][0]))
+    assert unit["rows"] == 4 and unit["requests"] == 3 and unit["tail_s"] == 600
+    assert unit["fetched"] == 6  # the padded request also returned close-601 s and close+1 s
+    assert (unit["min_ts"], unit["max_ts"]) == (u(TAIL_MARKETS[TA][0]) - 601, u(TAIL_MARKETS[TA][0]) + 1)
 
 
 def test_tail_s_is_recorded_in_the_manifest_and_full_runs_do_not_carry_it(tmp_path):
@@ -1679,3 +1693,45 @@ def test_tail_s_argument_validation_sends_nothing(tmp_path):
         with pytest.raises(SystemExit):
             run(tmp_path, argv, fake)
         assert fake.calls == [], argv
+
+
+def test_tail_stores_the_same_rows_whether_api_bounds_are_inclusive_or_exclusive(tmp_path):
+    out = {}
+    for name, strict in (("incl", False), ("excl", True)):
+        fake = TailFake(strict=strict)
+        rc, _ = run(tmp_path / name, TAIL_ARGS, fake)
+        assert rc == 0
+        out[name] = {r["trade_id"] for r in read(tmp_path / name, "trades")}
+        for _p, q in fake.trade_queries:  # the request is padded either way
+            close = TAIL_MARKETS[q["ticker"]][0]
+            assert (int(q["min_ts"]), int(q["max_ts"])) == (u(close) - 601, u(close) + 1)
+        units = [m for m in manifest(tmp_path / name) if m["type"] == "unit"]
+        assert [m["rows"] for m in units] == [4, 4, 4]
+        # inclusive API also returns close-601 s and close+1 s (cut client-side); exclusive does not
+        assert [m["fetched"] for m in units] == ([6, 6, 6] if not strict else [4, 4, 4])
+    want = {f"{t}:{d}" for t in (TA, TB, TC) for d in (600, 300, 1, 0)}
+    # with STRICT bounds the prints at exactly close-600 s and close are still stored
+    assert out["excl"] == out["incl"] == want
+
+
+def test_tail_cuts_sub_second_edges_to_the_exact_close_window(tmp_path):
+    def iso(x):
+        return kp.parse_dt(x).isoformat()
+
+    c = u(TAIL_MARKETS[TA][0])
+    fake = TailFake({TA: TAIL_MARKETS[TA]}, strict=True)
+    fake.trades[TA] = [ttr(TA, "in_lo", iso(c - 599.5)), ttr(TA, "out_lo", iso(c - 600.5)),
+                       ttr(TA, "in_hi", iso(c - 0.5)), ttr(TA, "out_hi", iso(c + 0.5))]
+    rc, _ = run(tmp_path / "whole", TAIL_ARGS, fake)
+    assert rc == 0 and {r["trade_id"] for r in read(tmp_path / "whole", "trades")} == {"in_lo", "in_hi"}
+    # fractional close c+0.5: window is [c-599.5, c+0.5], both ends inclusive
+    frac = {TA: ("2026-10-01T00:05:00.500000Z", "2026-10-01T00:05:07Z")}
+    for strict in (False, True):
+        d = tmp_path / f"frac{strict}"
+        fake = TailFake(frac, strict=strict)
+        fake.trades[TA] = [ttr(TA, "edge_lo", iso(c - 599.5)), ttr(TA, "before", iso(c - 599.6)),
+                           ttr(TA, "edge_hi", iso(c + 0.5)), ttr(TA, "after", iso(c + 0.6))]
+        rc, _ = run(d, TAIL_ARGS, fake)
+        assert rc == 0 and {r["trade_id"] for r in read(d, "trades")} == {"edge_lo", "edge_hi"}
+        q = fake.trade_queries[0][1]
+        assert (int(q["min_ts"]), int(q["max_ts"])) == (c - 601, c + 2)
