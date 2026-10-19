@@ -67,7 +67,7 @@ from typing import Any, Callable, Mapping, Sequence
 import numpy as np
 
 from tools import arena_stack as F
-from tools.h5_shadow import SlotClock, sps_ok
+from tools.h5_shadow import SPS_LO, SlotClock, sps_ok
 from tools.paper_curve_math import market_cap_sol, quote_buy, quote_sell, reserves_with_our_buy
 from tools.arena_stack import fail_legs, mint_states, round_trip
 
@@ -85,6 +85,23 @@ SEND_LAMPORTS = F.SEND_FEE_DECIDING  # 505,000
 RENT_LAMPORTS = F.RENT_REPORT  # 2,039,280 per filled trip (the brief)
 GRACE_SLOTS = 10_000  # about 1 h: the state is the tape print the sim uses; derive from the last print only past this (QP ruling on #708)
 HIST_KEEP_SLOTS = 20_000
+# ArenaEngine.trim_history() keeps, for a pool with NO position, the last print before the cut and every print from the cut on; cut = hw_slot - TRIM_KEEP_SLOTS.
+# Why that is every print a later pricing call can read (a pool with a position is never trimmed; it keeps all its prints):
+#   * Every pricing read is anchored at a LATER buy()'s slots, never at an earlier one: the guard spot is the last print before call_feed_slot (= hw_slot at that
+#     call, which never falls); the entry legs land at sd + d + k (d >= 0, k >= 0, k from the 1.3 s / 1.9 s legs) and read the last print <= x (bonding) or the first
+#     print > x (PumpSwap); ssb is the buys in slot x; nearby is the buy lamports over [x - round(NEARBY_WINDOW_S / sps), x]; the exit state and V sources read
+#     slot >= sd, forward only; GRACE_SLOTS only delays the exit read forward. The deepest look-back below the entry slot is therefore the nearby window,
+#     round(2 s / sps) <= TRIM_LOOKBACK_SLOTS = round(NEARBY_WINDOW_S / SPS_LO) = 13 slots (sps_ok means sps > SPS_LO), and the guard spot needs one print before the cut.
+#   * What the engine does NOT bound is how far sd can sit behind hw_slot: sd = max(decision_slot, slot_at(instant)) and slot_at >= hw_ms_slot, the slot of the
+#     newest-RECEIVED row, which trails the highest slot seen by the feed's disorder (a caller that passes the highest slot seen as decision_slot, as HV4 and
+#     arena_rules do, has sd ~ hw_slot and never comes near the floor). Measured on the 9 closed arena hours 2026-10-19T08..T16 (8,095,621 trade rows): at most 928 slots; late
+#     duplicates arrive up to 898 slots behind. TRIM_KEEP_SLOTS is 5,000: 5.4 times the largest disorder seen, plus the 13-slot window.
+#   * The assumption is checked, not trusted: buy() refuses (as no_prints, counted as refused_history_trimmed) when sd - nearby would reach below the pool's
+#     trim floor, and a row below the floor is dropped as the duplicate it nearly always is (counted rows_below_trim_floor next to rows_dup). A refused buy is a
+#     counted data refusal; the trim never prices from a hole. A NONZERO rows_below_trim_floor or any history_trimmed refusal VOIDS the equivalence with an
+#     untrimmed engine for every book on this engine (a dropped new print would have moved hw_ms / hw_ms_slot, the clock, late_print rows and the anchor).
+TRIM_LOOKBACK_SLOTS = int(round(F.NEARBY_WINDOW_S / SPS_LO))
+TRIM_KEEP_SLOTS = 5_000
 LATE_KEEP_SLOTS = 2_000  # a priced position is watched for late prints this many slots past its need slot
 # Provisional pressure intercept stored in the ledger's press_* net_lamports. The AUTHORITATIVE pressure leg is refit per (bot, stake, latency) book by
 # arena_score (the stack refits the intercept per cell so that mean p over the cell's filled sends is 0.289). Fit on the 300-case parity book (1.3 s).
@@ -700,7 +717,7 @@ class PoolHist:
     """Ordered prints of one pool. PumpSwap reserves are PRE-trade, bonding POST-trade; V is per print with its source (a print whose source is "none" is
     never priced as V = 0: the trades that need it are excluded and counted)."""
 
-    __slots__ = ("pool", "mint", "venue", "keys", "seen", "slot", "isbuy", "sol", "tok", "q", "b", "v", "vsrc", "last_v_row", "_np")
+    __slots__ = ("pool", "mint", "venue", "keys", "seen", "slot", "isbuy", "sol", "tok", "q", "b", "v", "vsrc", "last_v_row", "_np", "floor")
 
     def __init__(self, pool: str, mint: str | None, venue: str) -> None:
         self.pool, self.mint, self.venue = pool, mint, venue
@@ -716,9 +733,10 @@ class PoolHist:
         self.vsrc: list[str] = []  # where each print's V came from: row | pool_prev | vmap | none | na (bonding)
         self.last_v_row: float | None = None
         self._np: dict[str, np.ndarray] | None = None
+        self.floor: int | None = None  # set by trim(): prints below this slot (but the anchor) are gone and so are their dedupe keys; None = never trimmed
 
     def add(self, key: tuple, dedupe: tuple, slot: int, isbuy: bool, sol: float, tok: float, q: float, b: float, v: float, vsrc: str) -> bool:
-        if dedupe in self.seen:
+        if dedupe in self.seen or (self.floor is not None and slot < self.floor):  # below the floor the dedupe keys are gone: it is a duplicate
             return False
         self.seen.add(dedupe)
         i = len(self.keys) if (not self.keys or key >= self.keys[-1]) else bisect.bisect_right(self.keys, key)
@@ -727,6 +745,20 @@ class PoolHist:
             lst.insert(i, val)
         self._np = None
         return True
+
+    def trim(self, cut: int) -> int:
+        """Drop every print with slot < cut except the last of them (the anchor: the guard spot and the 'last print <= x' reads of a later buy may land on it),
+        and the dedupe keys below cut. Returns the number of prints dropped; 0 (and no floor) when fewer than two prints lie below cut. See TRIM_KEEP_SLOTS."""
+        i = bisect.bisect_left(self.slot, cut)  # `slot` is sorted: keys sort by slot first
+        if i < 2:
+            return 0
+        n = i - 1
+        for lst in (self.keys, self.slot, self.isbuy, self.sol, self.tok, self.q, self.b, self.v, self.vsrc):
+            del lst[:n]
+        self.seen = {t for t in self.seen if t[0] >= cut}  # a dedupe key is (slot, signature, event_index, tx_index)
+        self.floor = cut if self.floor is None else max(self.floor, cut)
+        self._np = None
+        return n
 
     @property
     def last_slot(self) -> int:
@@ -926,6 +958,8 @@ class ArenaEngine:
         if not h.add(key, dedupe, slot, row["side"] == "buy", float(row["sol_lamports"]), float(row["token_raw"]), float(row["quote_reserve"]),
                      float(row["base_reserve"]), v, vsrc):
             self._count("rows_dup")
+            if h.floor is not None and slot < h.floor:
+                self._count("rows_below_trim_floor")  # also counted in rows_dup: below the floor a duplicate and a very late new print look the same
             return
         if self.hw_ms is not None:  # process downtime / silence / a slot jump between consecutive rows is a gap from the last row seen
             c = self.cfg
@@ -1071,6 +1105,11 @@ class ArenaEngine:
             sps = self.sps()
             if sps is None:
                 raise ArenaRefused("clock_not_ready: slot clock not ready (sps unknown)")
+            # Every read of this buy is at or above sd - nearby, sd = max(decision_slot, slot_at) (d >= 0, k >= 0 only push it later); a caller that passes the highest slot
+            # seen as decision_slot (HV4, arena_rules) has sd ~ hw_slot, far above any floor. Refuse only where the trimmed pool lacks prints the buy would read.
+            if h.floor is not None and max(int(decision_slot), self.slot_at(instant, sps)) - int(round(F.NEARBY_WINDOW_S / sps)) < h.floor:
+                self._count("refused_history_trimmed")
+                raise ArenaRefused(f"no_prints: history_trimmed: the nearby window of this buy reaches below slot {h.floor}, where trim_history() cut pool {pool}")
         except ArenaRefused as exc:  # a refused buy is still a decision: it goes in the decision log and counts toward the excluded share
             try:
                 self.ledger.append({"schema": SCHEMA, "kind": "refused", "trade_id": f"{pid}-refused-{instant}", "position_id": pid, "bot_id": bot_id,
@@ -1274,6 +1313,21 @@ class ArenaEngine:
         for k in drop:
             del self.pools[k]
         return len(drop)
+
+    def trim_history(self) -> int:
+        """Trim the print lists of every pool with no open, pending or retrying position to the prints a later buy can read: the anchor (the last print below the
+        cut) and every print from cut = hw_slot - TRIM_KEEP_SLOTS on (PoolHist.trim; the derivation is at TRIM_KEEP_SLOTS). Returns the number of prints dropped
+        (also counters["hist_trimmed_prints"]). Opt-in: nothing calls it unless a host does, and prune() is unchanged.
+
+        It never drops a pool and never touches a pool's scalar state (mint, venue, last_v_row, the V fallback of _v_of): a revived pool prices exactly as it would
+        have with its whole history. A pool with a position keeps all its prints. It changes no price, slot, fill, V source or exclusion: it removes only prints no
+        later buy can read, and a buy that would read below a pool's trim floor is refused instead (buy)."""
+        busy = {p.pool for p in self.positions.values()}
+        cut = self.hw_slot - TRIM_KEEP_SLOTS
+        n = sum(h.trim(cut) for k, h in self.pools.items() if k not in busy)
+        if n:
+            self.counters["hist_trimmed_prints"] = self.counters.get("hist_trimmed_prints", 0) + n
+        return n
 
     @staticmethod
     def _ref_slot(pos: Position) -> int:
