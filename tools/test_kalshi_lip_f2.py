@@ -1140,11 +1140,12 @@ def test_a_full_cli_run_relabels_every_output_and_writes_only_to_out(tmp_path, m
     stmt = gate["f2_statement_read"]
     assert stmt.startswith("Family declared before any F2 number: LIP-F1 Book A (gated, final at R = 2026-10-24T00:00:00Z, "
                            "not changed by this read); Book B and Book C (report-only); F2-A and F2-B (gated screens); "
-                           "F1-rule control (report-only). m = 3 gated books.")
+                           "F1-rule control (declared, not run). m = 3 gated books.")
     assert "the same 8 gas series, unit-days 2026-10-19, G4b clusters = 1." in stmt
     assert stmt.endswith("An F2 pass does not rescue or condition LIP-F1.") and stmt in table
     assert "The deciding G4/G4b bounds are the 1.667th percentile; the 5th is shown." in stmt
     assert "formula screen passed (multiplicity-adjusted)" in stmt
+    assert "F1-rule control (report-only)" not in table and not hasattr(f2, "STATEMENT_CONTROL")     # R5: declared, not run
     assert gate["f2_statement_cohort"] in table and "frozen 2026-10-19T11:00:00Z" in gate["f2_statement_cohort"]
     assert "gas days from 10-20" in gate["f2_statement_cohort"] and "No F2 number existed when this read ran." in table
     # the marker, the parquet metadata and the label on every output

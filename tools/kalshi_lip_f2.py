@@ -146,13 +146,11 @@ STATEMENT_COHORT = (
     "declared first, and it is final.")
 STATEMENT_F2_READ = (
     "Family declared before any F2 number: LIP-F1 Book A (gated, final at R = {lip_r}, not changed by this read); "
-    "Book B and Book C (report-only); F2-A and F2-B (gated screens); F1-rule control (report-only). m = 3 gated "
-    "books. F2's population is a subset of LIP-F1's: the same 8 gas series, unit-days {days}, G4b clusters = "
+    "Book B and Book C (report-only); F2-A and F2-B (gated screens); F1-rule control (declared, not run). m = 3 "
+    "gated books. F2's population is a subset of LIP-F1's: the same 8 gas series, unit-days {days}, G4b clusters = "
     "{clusters}. The deciding G4/G4b bounds are the 1.667th percentile; the 5th is shown. A pass is 'formula screen "
     "passed (multiplicity-adjusted)', never a positive book. It needs replication on a later-start window plus "
     "Option A and the owner. An F2 pass does not rescue or condition LIP-F1.")
-STATEMENT_CONTROL = ("REPORT_ONLY_F1_CONTROL: LIP-F1's rule on F2's window. Not a LIP-F1 read and never cited as "
-                     "LIP-F1 evidence (DECLARE-FORWARD section 9).")
 RULE_TEXT = {
     "A": ("F2-A SIDE-CAP: a side is posted with size 0 when that side's best bid is above 7000 bp (exactly 70c is "
           "kept). The zero is applied together with the Q5 inventory sizes and Q4 is re-checked with size 0 on that "
