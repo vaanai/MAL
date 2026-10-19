@@ -32,7 +32,7 @@ The pressure intercept is refit on THIS cell's filled set (cost.press_intercept)
 Printed beside it (QP items 2 and 3):
     * the END-minus-worst gap (mean and total) from #747's `end_minus_worst`;
     * a COMPANION "worst-in-slot, no guard rescue": a trip that fills at END and is guarded at its worst entry state keeps its END-priced row under that rule and leg (with the 1.15 guard a
-      spot-selected worst entry can revert a trip that loses at END, so the plain leg is not a bound). R7's canary condition uses the LOWER of the two legs (`lower_of_two`);
+      spot-selected worst entry can revert a trip that loses at END, so the plain leg is not a bound). R7's canary condition uses the LOWER of the two legs (`canary_lower`, #747's semantics: min of the means and of the CI90 bounds, with `leg_of_mean`);
     * the END -> worst state transitions per cell, the trips whose worst pick was a non-finite or invalid state, and the derived_last count (END taken after the pool's last print) with the gap
       recomputed without those trips. The END member of a slot is the scorer's own END state, read from the same strip, so it cannot differ from what the scorer priced.
 Consistency check: for every leg of every trip the END-priced pnl and state recomputed from the strip must equal the ledger row's (both strand rules). A mismatch (a strip that is not the one
@@ -279,12 +279,15 @@ def worst_in_slot(rows: Sequence[Mapping[str, Any]], strips: Mapping[str, Mappin
     if missing:
         return {"measured": False, "why": f"worst-in-slot not measured: {len(missing)} pool(s) have no strip record in the shadow dirs given"}
     per: dict[str, dict[str, dict[str, list]]] = {}  # stake -> variant -> sfx -> items
-    diag: dict[str, Any] = {"trips": 0, "legs": 0, "derived_last": 0, "entry_multi_print": 0, "entry_moved": 0, "exit_multi_print": 0, "exit_moved": 0, "invalid_pick": 0,
-                            "state_mismatch": [], "pnl_mismatch": []}
+    diag: dict[str, Any] = {"trips": 0, "legs": 0, "derived_last": 0, "derived_last_legs": 0, "entry_multi_print": 0, "entry_moved": 0, "exit_multi_print": 0,
+                            "exit_moved": 0, "invalid_pick": 0, "state_mismatch": [], "pnl_mismatch": []}
     trans: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
+    flips: collections.Counter = collections.Counter()
+    nderived: collections.Counter = collections.Counter()  # stake -> trips with a derived_last leg
     for r in rows:
         stake = f"{r['stake_sol']:.2f}"
         diag["trips"] += 1
+        trip_derived = False
         for sfx in SFXS:
             base = items_from_rows([r], sfx)
             if not base:
@@ -298,17 +301,23 @@ def worst_in_slot(rows: Sequence[Mapping[str, Any]], strips: Mapping[str, Mappin
             if not res:
                 continue
             it0 = base[0]
-            diag["derived_last"] += int(it0["derived_last"])
+            diag["derived_last_legs"] += int(it0["derived_last"])
+            trip_derived = trip_derived or it0["derived_last"]
             for variant in ("end", "worst", "companion"):
                 it = dict(it0, pnl={ru: res[ru][variant] for ru in RULES})
                 per.setdefault(stake, {}).setdefault(variant, {}).setdefault(sfx, []).append(it)
             for ru in RULES:
                 if res[ru]["end"][1] != res[ru]["worst"][1]:
                     trans[f"{stake}|{sfx}|{ru}"][f"{res[ru]['end'][1]}->{res[ru]['worst'][1]}"] += 1
+                if (res[ru]["end"][1] == "guarded") != (res[ru]["worst"][1] == "guarded"):  # the guard (1.15) status changed between END and the worst entry state
+                    flips[f"{stake}|{sfx}|{ru}"] += 1
+        diag["derived_last"] += int(trip_derived)  # trips (as #747 counts), not legs
+        nderived[stake] += int(trip_derived)
     if diag["state_mismatch"] or diag["pnl_mismatch"]:
         return {"measured": False, "diag": diag, "why": f"worst-in-slot not measured: END consistency failed ({len(diag['state_mismatch'])} state, {len(diag['pnl_mismatch'])} pnl mismatches)"}
     diag["parity_ok"] = True
     diag["transitions"] = {k: dict(v) for k, v in sorted(trans.items())}
+    diag["guard_flips"] = dict(sorted(flips.items()))
     stakes: dict[str, Any] = {}
     for stake, variants in per.items():
         end_rows = [x for x in rows if f"{x['stake_sol']:.2f}" == stake]
@@ -319,21 +328,21 @@ def worst_in_slot(rows: Sequence[Mapping[str, Any]], strips: Mapping[str, Mappin
         w_cells, c_cells = cells_of(variants["worst"]), cells_of(variants["companion"])
         nd = {sfx: [it for it in its if not it["derived_last"]] for sfx, its in end_items.items()}
         nd_w = {sfx: [it for it in its if not it["derived_last"]] for sfx, its in variants["worst"].items()}
-        stakes[stake] = {"cells": w_cells, "companion_no_guard_rescue": c_cells, "lower_of_two": lower_of_two(w_cells, c_cells),
-                         "end_minus_worst": RL.end_minus_worst(end_cells, w_cells), "end_minus_companion": RL.end_minus_worst(end_cells, c_cells),
-                         "end_minus_worst_ex_derived_last": RL.end_minus_worst(cells_of(nd, None), cells_of(nd_w)) if any(nd.values()) else None,
+        # key names are #747's (legs_for_book): cells, end_minus_worst, no_guard_rescue {cells, end_minus_worst}, canary_lower, end_minus_worst_without_derived_last, n_derived_last
+        stakes[stake] = {"cells": w_cells, "end_minus_worst": RL.end_minus_worst(end_cells, w_cells), "no_guard_rescue": {"cells": c_cells, "end_minus_worst": RL.end_minus_worst(end_cells, c_cells)},
+                         "canary_lower": canary_lower(w_cells, c_cells), "n_derived_last": nderived[stake],
+                         "end_minus_worst_without_derived_last": RL.end_minus_worst(cells_of(nd, None), cells_of(nd_w)) if any(nd.values()) else {},
                          "rent_0_stacked": cells_of(variants["worst"], None, True), "intercepts": {"as_scored": ic, "worst": {k: v["intercept"] for k, v in w_cells.items() if v["intercept"] is not None},
                                                                                                        "companion": {k: v["intercept"] for k, v in c_cells.items() if v["intercept"] is not None}}}
     return {"measured": True, "diag": diag, "stakes": stakes}
 
 
-def lower_of_two(a: Mapping[str, Mapping[str, Any]], b: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
-    """R7: the lower of the two legs' mean and of their CI90 lower bound, cell by cell (the figures a canary proposal must quote)."""
-    out = {}
-    for k in a:
-        lo = lambda x, y: None if x is None or y is None else min(x, y)  # noqa: E731
-        out[k] = {"mean_sol": lo(a[k]["mean_sol"], b[k]["mean_sol"]), "ci90_lo_sol": lo(a[k]["ci90_lo_sol"], b[k]["ci90_lo_sol"]), "n": a[k]["n"]}
-    return out
+def canary_lower(worst: Mapping[str, Mapping[str, Any]], ng: Mapping[str, Mapping[str, Any]]) -> dict[str, dict[str, Any]]:
+    """R7's canary condition, with #747's (QP-approved) semantics: the LOWER of the worst-in-slot and the no-guard-rescue legs, mean and CI90 lower bound each, cell by cell, and the leg
+    that sets the mean (`no_guard_rescue` if its mean is strictly lower, else `worst_in_slot`). Cells without a mean are skipped. A missing CI bound stays missing."""
+    lo = lambda x, y: None if x is None or y is None else min(x, y)  # noqa: E731
+    return {k: {"mean_sol": min(worst[k]["mean_sol"], ng[k]["mean_sol"]), "ci90_lo_sol": lo(worst[k]["ci90_lo_sol"], ng[k]["ci90_lo_sol"]),
+                "leg_of_mean": "no_guard_rescue" if ng[k]["mean_sol"] < worst[k]["mean_sol"] else "worst_in_slot"} for k in worst if worst[k]["mean_sol"] is not None}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ one bot
@@ -366,6 +375,8 @@ def build_report(bot_id: str, ledger_root: str | os.PathLike, *, read_instant_ms
     else:
         w = {"measured": False, "why": "worst-in-slot not measured (no --shadow-dir)"}
     rep["worst_in_slot_diag"] = w.get("diag")
+    d0 = w.get("diag") or {}
+    rep["end_check"] = {"ok": d0.get("parity_ok") if d0 else None, "state_mismatch": d0.get("state_mismatch", []), "pnl_mismatch": d0.get("pnl_mismatch", [])}  # as #747's end_check
     rep["worst_in_slot_measured"] = bool(w["measured"])
     for stake in sorted(by_stake):
         rs = by_stake[stake]
@@ -396,24 +407,29 @@ def render(rep: Mapping[str, Any]) -> str:
         if isinstance(w, str):
             L.append(f"   WORST-IN-SLOT: {w}")
         else:
-            sections += [("WORST-IN-SLOT leg (rent-charged)", w["cells"]), ("WORST-IN-SLOT, no guard rescue (companion)", w["companion_no_guard_rescue"]),
+            sections += [("WORST-IN-SLOT leg (rent-charged)", w["cells"]), ("WORST-IN-SLOT, NO GUARD RESCUE (report-only companion)", w["no_guard_rescue"]["cells"]),
                          ("WORST-IN-SLOT + RENT-0 (stacked, report-only)", w["rent_0_stacked"])]
         for title, cells in sections:
             L.append(f"   {title}:")
             L += [_line(k, c) for k, c in cells.items() if st != dk or "_1p9_" in k]
         if not isinstance(w, str):
-            L.append("   LOWER OF THE TWO WORST-IN-SLOT LEGS (R7; what a canary proposal quotes), mean / ci90 lower bound:")
-            L += [f"    {k:16s} {_f(g['mean_sol'])} / {_f(g['ci90_lo_sol'])}" for k, g in w["lower_of_two"].items() if st != dk or "_1p9_" in k]
-            L.append("   END minus worst-in-slot (SOL per trade / SOL total), and minus the companion:")
-            L += [f"    {k:16s} {_f(g['mean_sol'])} / {_f(g['total_sol'])}    companion {_f(w['end_minus_companion'][k]['mean_sol'])} / {_f(w['end_minus_companion'][k]['total_sol'])}"
-                  for k, g in w["end_minus_worst"].items() if st != dk or "_1p9_" in k]
-            L.append(f"   pressure intercepts, as scored {w['intercepts']['as_scored']}; worst {w['intercepts']['worst']}")
+            L.append("   R7 CANARY CONDITION: quote the LOWER of the worst-in-slot and the no-guard-rescue legs (mean and CI90 lower bound). A guard-rescued worst-in-slot leg can beat END, "
+                     "so it is not a bound on its own. Lower of the two, 1.9 s cells:")
+            for k, g in w["canary_lower"].items():
+                if st != dk or "_1p9_" in k:
+                    L.append(f"    {k:16s} mean {_f(g['mean_sol'])} ({g['leg_of_mean']})  ci90lo {_f(g['ci90_lo_sol'])}")
+            L.append("   END minus worst-in-slot (SOL per trade / SOL total), then the same without the derived_last trips (report-only), then minus the no-guard-rescue companion:")
+            for k, g in w["end_minus_worst"].items():
+                if st != dk or "_1p9_" in k:
+                    g2, g3 = w["end_minus_worst_without_derived_last"].get(k), w["no_guard_rescue"]["end_minus_worst"][k]
+                    L.append(f"    {k:16s} {_f(g['mean_sol'])} / {_f(g['total_sol'])}" + ("" if g2 is None else f"    without derived_last ({w['n_derived_last']} trips): {_f(g2['mean_sol'])} / {_f(g2['total_sol'])}")
+                             + f"    vs companion: {_f(g3['mean_sol'])} / {_f(g3['total_sol'])}")
+            L.append(f"   pressure intercepts, as scored {w['intercepts']['as_scored']}; worst {w['intercepts']['worst']}; companion {w['intercepts']['companion']}")
     d = rep.get("worst_in_slot_diag")
     if d:
         L.append(f"\n  worst-in-slot diagnostics: trips {d['trips']} legs {d['legs']} entry slot >1 print {d['entry_multi_print']} moved {d['entry_moved']}  exit slot >1 print {d['exit_multi_print']} "
                  f"moved {d['exit_moved']}  invalid picks {d['invalid_pick']}  derived_last {d['derived_last']}  END consistency {'ok' if d.get('parity_ok') else 'MISMATCH'}")
-        for k, v in (d.get("transitions") or {}).items():
-            L.append(f"    END->worst {k}: {v}")
+        L.append(f"  END -> worst state transitions by stake|latency|rule: {d.get('transitions') or 'none'}   guard flips (guarded status changed): {d.get('guard_flips') or 'none'}")
         for q in (d["state_mismatch"] + d["pnl_mismatch"])[:8]:
             L.append(f"    END mismatch: {q}")
     return "\n".join(L)

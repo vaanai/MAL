@@ -275,11 +275,42 @@ class WorstInSlotTests(Base):
         self.assertAlmostEqual(s["cells"]["flat_1p9_total"]["mean_sol"], -SEND / 1e9, places=12)
         self.assertAlmostEqual(s["end_minus_worst"]["flat_1p9_total"]["mean_sol"], end_flat / 1e9 + SEND / 1e9, places=9)
         self.assertLess(s["end_minus_worst"]["flat_1p9_total"]["mean_sol"], 0)  # the plain leg is BETTER than END: not a bound
-        self.assertAlmostEqual(s["end_minus_companion"]["flat_1p9_total"]["mean_sol"], 0.0, places=12)
+        self.assertAlmostEqual(s["no_guard_rescue"]["end_minus_worst"]["flat_1p9_total"]["mean_sol"], 0.0, places=12)
         self.assertEqual(w["diag"]["transitions"]["0.30|1p9|total"], {"exit_invalid->guarded": 1})
         self.assertEqual(w["diag"]["transitions"]["0.30|1p9|sc"], {"filled->guarded": 1})
-        low = s["lower_of_two"]["flat_1p9_total"]["mean_sol"]
-        self.assertAlmostEqual(low, end_flat / 1e9, places=9)  # the lower of the two legs is the companion (= END)
+        low = s["canary_lower"]["flat_1p9_total"]
+        self.assertAlmostEqual(low["mean_sol"], end_flat / 1e9, places=9)  # the lower of the two legs is the companion (= END)
+        self.assertEqual(low["leg_of_mean"], "no_guard_rescue")
+        self.assertEqual(w["diag"]["guard_flips"], {"0.30|1p9|sc": 1, "0.30|1p9|total": 1})
+
+    def test_canary_lower_has_747s_semantics_min_of_means_min_of_ci_bounds_and_the_leg_that_sets_the_mean(self):
+        w = {"a": {"mean_sol": 0.01, "ci90_lo_sol": -0.02}, "b": {"mean_sol": 0.03, "ci90_lo_sol": None}, "c": {"mean_sol": None, "ci90_lo_sol": None}}
+        g = {"a": {"mean_sol": 0.02, "ci90_lo_sol": -0.05}, "b": {"mean_sol": 0.01, "ci90_lo_sol": 0.01}, "c": {"mean_sol": None, "ci90_lo_sol": None}}
+        out = L.canary_lower(w, g)
+        self.assertEqual(set(out), {"a", "b"})  # a cell without a mean is skipped
+        self.assertEqual(out["a"], {"mean_sol": 0.01, "ci90_lo_sol": -0.05, "leg_of_mean": "worst_in_slot"})
+        self.assertEqual(out["b"], {"mean_sol": 0.01, "ci90_lo_sol": None, "leg_of_mean": "no_guard_rescue"})
+        self.assertEqual(L.canary_lower(w, w)["a"]["leg_of_mean"], "worst_in_slot")  # equal means: the plain leg, as #747 labels it
+
+    def test_derived_last_trips_are_counted_and_the_gap_is_also_printed_without_them(self):
+        """PD has no print at or after the exit landing slot + 1, so its exit END is the state after the last print (state_src 'post'): that slot has one state and worst == END."""
+        pd = pool_records("PD", [r(1200, 40e9, 2.0e14), r(1206, 41e9, 2.0e14)], [1900, 46e9, 46e9, 2.0e14], bt=BT0 + 120)
+        pools = [pd, variety_pool("win", 0, 0), variety_pool("loss", 1, 1)]
+        rows = [x for p in pools for x in trade_rows(*p)]
+        row = next(x for x in rows if x["pool"] == "PD" and x["stake_sol"] == 0.3)
+        self.assertEqual(row["meta"]["state_src"]["1p9"][1], "post")
+        res, _ = L.worst_trip(row, "1p9", pd[2])
+        for ru in L.RULES:
+            self.assertEqual(res[ru]["worst"], res[ru]["end"])
+        w = L.worst_in_slot(rows, {p[0]["pool"]: p[2] for p in pools})
+        self.assertTrue(w["measured"])
+        self.assertEqual(w["diag"]["derived_last"], 3)  # PD's three stake rows, counted per row as #747 counts trips
+        self.assertEqual(w["diag"]["derived_last_legs"], 6)
+        s = w["stakes"]["0.30"]
+        self.assertEqual(s["n_derived_last"], 1)
+        g, g2 = s["end_minus_worst"]["flat_1p9_total"], s["end_minus_worst_without_derived_last"]["flat_1p9_total"]
+        self.assertAlmostEqual(g["total_sol"], g2["total_sol"], places=12)  # PD adds 0 to the flat gap
+        self.assertIn("guard_flips", w["diag"])
 
     def test_a_tie_takes_the_first_state_in_strip_order(self):
         sa = {"sl": __import__("numpy").array([5, 5, 6]), "QX": __import__("numpy").array([40e9, 40e9, 40e9, 40e9]), "BX": __import__("numpy").array([2e14, 2e14, 2e14, 2e14])}
@@ -316,12 +347,12 @@ class WorstInSlotTests(Base):
         self.assertEqual(rc, 0, err)
         rep = json.loads((self.root / "legs.json").read_text())
         w = rep["books"]["0.30"]["worst_in_slot"]
-        for k in ("cells", "companion_no_guard_rescue", "lower_of_two", "end_minus_worst", "end_minus_companion", "end_minus_worst_ex_derived_last", "rent_0_stacked", "intercepts"):
+        for k in ("cells", "no_guard_rescue", "canary_lower", "end_minus_worst", "n_derived_last", "end_minus_worst_without_derived_last", "rent_0_stacked", "intercepts"):
             self.assertIn(k, w)
         self.assertTrue(rep["worst_in_slot_diag"]["parity_ok"])
         self.assertIn("transitions", rep["worst_in_slot_diag"])
         self.assertIn("derived_last", rep["worst_in_slot_diag"])
-        for token in ("END minus worst-in-slot", "LOWER OF THE TWO", "pressure intercepts", "no guard rescue"):
+        for token in ("END minus worst-in-slot", "R7 CANARY CONDITION", "pressure intercepts", "NO GUARD RESCUE"):
             self.assertIn(token, out)
         self.assertEqual(rep["books"]["0.30"]["as_scored_rent_charged"]["flat_1p9_total"]["n"], rep["books"]["0.30"]["worst_in_slot"]["cells"]["flat_1p9_total"]["n"])
 
