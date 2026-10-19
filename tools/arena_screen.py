@@ -13,15 +13,21 @@ RULE API (a small Python object)
   ExitSpec(hold_s, tp, sl, trail, cell): a time exit after hold_s seconds (always; it bounds the hold), plus optional take-profit multiple tp (> 1), stop multiple sl
   (0 < sl < 1) and trailing multiple trail (0 < trail < 1, against the running peak, which starts at the decision spot), each on the POST-trade price of a print at slot
   >= decision slot + k_slow + 1 (the engine may not sell before the slower entry leg lands). `cell` names the cell a trigger belongs to (optional when the rule has one cell).
-  EVENT EXIT (ExitSpec.exit_fire, optional): a rule-supplied callable (view, landing_slot, cap_slot) -> fire slot | None. The fire slot is the exit DECISION slot, and the sell lands by
-  the normal exit-lag rule from it (decision slot + 7 feed slots + the exit lag). The time cap and tp / sl / trail still apply: the earliest of the three decides (a tp / sl / trail ON the
-  fire slot keeps its own code; a fire on the cap's own slot is an event exit). The callable reads the pool ONLY through an ExitView (rows with slot <= the slot it asks for; nothing
-  after the cap; read-only arrays) and may read ONLY rows with slot <= the slot it returns: the kit keeps the largest slot asked for and refuses a fire that read past itself
-  (ExitLookAhead) or one outside [landing_slot, cap_slot] (ExitFireError). `landing_slot` is the kit's floor, sd + k_slow + 1 (the slower entry leg has landed). Python cannot stop a
-  callable from reaching into private state, so EXIT CAUSALITY PROBE: for EVERY event exit the kit re-runs the callable on data cut after its fire slot and requires the same slot
-  (registration needs >= 200 event exits probed per block, 0 failures; a failure KILLS the cell); `causal_probe(..., exit_fire=True)` is the author's single-hour sample. Declare the
-  cell with Cell(event_exit=True): an event-exit cell is treated like an event-triggered one for the worst-in-slot kill even when its entry is grid-based (a cell that carries an
-  exit_fire without declaring it is treated the same and reported undeclared). The per-cell report carries the event-exit share (results `exits.event`, `event_exit.fire_share`).
+  EVENT EXIT (ExitSpec.exit_fire, optional): a rule-supplied PURE predicate (view) -> bool. The KIT DRIVES IT, hour by hour: for each hour h it first advances every open exit_fire position
+  through h's slots, asking the predicate at every print slot of the pool in [landing_slot, cap_slot] on a view that holds only the rows with slot <= that slot (ExitView; the arrays
+  end there; upto() refuses a later slot); the first True is the fire. Only then does it call the rule's `triggers(h)` for new entries. So at slot s of hour h the rule has seen triggers()
+  for hours <= h-1 only, and a "no fire" is a series of honest per-slot False answers (nothing is returned that could have been chosen with hindsight). RESIDUAL, stated: a position's own
+  ENTRY hour is run after triggers() of that hour, so for the rest of the entry hour the rule's own state has seen the whole hour (as at every entry: the hour is handed over whole); keep
+  the predicate a function of the view and constants fixed at the entry. `landing_slot` = the kit floor sd + k_slow + 1 (the slower entry leg has landed), `cap_slot` the time cap's decision
+  slot. The fire slot is the exit DECISION slot; the sell lands by the normal exit-lag rule from it (decision slot + 7 feed slots + the exit lag). The time cap and tp / sl / trail still
+  apply, the earliest decides (a tp / sl / trail ON the fire slot keeps its own code; a fire on the cap's own slot is an event exit). Admission (one open position per cell and pool, cooldown after
+  the exit) runs as the data arrive, so a cell is all exit_fire or none (a mix is refused, counted refused_exit_fire_mixed_cell). Candidate slots are slots with a print of the pool.
+  PREFIX PROBE on EVERY event exit (a rule can hide foresight outside the view: a memo or a closure built in triggers()): the predicate must fire AGAIN on the rows <= the fire slot and must
+  NOT fire at slot fire - 1 on the rows <= fire - 1 (so the fire needs the fire slot's own prints, and the predicate must be stateless: it is called again). Registration needs >= 200 event
+  exits probed per block, 0 failures; a failure KILLS the cell; a cell whose probes are not satisfied is PROVISIONAL-BLOCKED, never a survivor. `causal_probe(..., exit_fire=True)` is the
+  author's single-hour sample. Declare the cell with Cell(event_exit=True): an event-exit cell is treated like an event-triggered one for the worst-in-slot kill even when its entry is
+  grid-based (a cell that carries an exit_fire without declaring it is treated the same and reported undeclared). The per-cell report carries the event-exit share (results `exits.event`,
+  `event_exit.fire_share`).
   --count-only IS A TIME-ONLY BOUND when an exit_fire is present: its overlap rule holds every position for the full time cap (the callable is not run, no price is read), so the figure
   is an upper bound on the hold. FOR AN exit_fire CELL THE TIME-ONLY FIGURE IS A LOWER BOUND ON ATTEMPTS (an event exit frees the pool earlier, so the real attempts are AT LEAST that
   many), AND THE RULES STEP-2 DROP MUST NOT USE IT: a cell it flags under 20 a day may well be over 20. Count with the rule's own structure scan and report the kit's figure beside it
@@ -161,7 +167,7 @@ class ExitSpec:
     sl: float | None = None
     trail: float | None = None
     cell: str | None = None
-    exit_fire: Callable[..., Any] | None = None  # event-driven exit: (ExitView, landing_slot, cap_slot) -> fire slot | None (see ExitView)
+    exit_fire: Callable[..., Any] | None = None  # event-driven exit: a pure predicate (ExitView) -> bool, asked at every print slot in [landing, cap] (see ExitView)
 
     def problem(self) -> str | None:
         return exit_problem(self)
@@ -184,7 +190,7 @@ def exit_problem(spec: Any) -> str | None:
         return "trail must be a multiple in (0, 1)"
     fire = getattr(spec, "exit_fire", None)
     if fire is not None and not callable(fire):
-        return "exit_fire must be a callable (view, landing_slot, cap_slot) -> fire slot | None"
+        return "exit_fire must be a callable (view) -> bool"
     return None
 
 
@@ -672,105 +678,126 @@ def _price_exit(a: dict, pp: np.ndarray, sd: int, spec: ExitSpec, rate: float, s
 
 
 class ExitLookAhead(Refused):
-    """An exit_fire read rows after the slot it fired at (or past the cap): look-ahead. The run is refused; nothing it priced is a result."""
+    """An exit_fire asked for rows after the slot it is being asked about. The run is refused; nothing it priced is a result."""
 
 
 class ExitFireError(Refused):
-    """An exit_fire returned something that is not a slot in [landing_slot, cap_slot]."""
+    """An exit_fire returned something that is not a bool."""
+
+
+_VIEW_COLS = ("sl", "ib", "so", "tk", "q", "b", "v")
+
+
+def _cut_rows(a: dict, pp: np.ndarray, n: int) -> dict:
+    """The first n rows of the pool arrays as READ-ONLY slices (the view's whole world: nothing after row n is in the dict)."""
+    out = {k: a[k][:n] for k in _VIEW_COLS}
+    out["pp"] = pp[:n]
+    for v in out.values():
+        v.flags.writeable = False
+    return out
 
 
 class ExitView:
-    """What an `exit_fire(view, landing_slot, cap_slot)` callable sees of ONE pool: its prints with slot <= cap_slot (the kit never hands over anything later) through a causal reveal.
+    """What an event exit's predicate `exit_fire(view) -> bool` sees: ONE pool, rows with slot <= `slot` and nothing else. The kit calls the predicate once per print slot of the pool in
+    [landing_slot, cap_slot], in order, on a view cut at that slot; the first True is the fire (the exit DECISION slot). Hour by hour the kit advances every open exit_fire position through
+    the hour's slots BEFORE it calls the rule's `triggers` for that hour, so when the predicate runs at slot s of hour h the rule has seen `triggers()` for hours <= h-1 only (for a position's
+    own entry hour: see the module doc).
+      view.slot          the slot being asked about (a slot with at least one print of the pool)
+      view.rows()        dict of read-only arrays (sl, ib, so, tk, q, b, v, pp) of every print with slot <= view.slot, history before the entry included
+      view.upto(slot)    the same for a slot <= view.slot; a later slot raises ExitLookAhead
+      view.sd, view.landing_slot, view.cap_slot, view.rate, view.sps    the entry decision slot, the kit floor sd + k_slow + 1, the time cap's decision slot, slots per second, seconds per slot
+    The arrays are slices that end at `slot`; reaching past them through numpy internals (`.base`) is deliberate reflection that no Python object can prevent, and the probes below exist for it.
+    A predicate must be a PURE function of the view (and constants fixed at the entry): the probe calls it again."""
 
-    `landing_slot` is the earliest slot an exit may be decided: decision slot + k_slow + 1, the kit's own floor (the engine may not sell before the slower entry leg lands).
-    `cap_slot` is the time cap's decision slot (never before the floor). Also on the view: `sd` (decision slot: a window may start there), `rate` (slots per second of the decision
-    hour) and `sps` (seconds per slot). History before `sd` is there (the kit keeps the previous hour); a rule that wants a window truncated at the entry cuts it itself.
-      view.upto(slot)    -> dict of read-only arrays (sl, ib, so, tk, q, b, v, pp) of the prints with slot <= `slot`; a slot after cap_slot raises ExitLookAhead.
-      view.print_slots() -> iterator of the distinct print slots in [landing_slot, cap_slot], ascending; each one yielded counts as read.
-    CONTRACT (enforced when the callable returns): the callable may read ONLY rows with slot <= the slot it returns. The kit keeps the largest slot asked for (`max_read`); a fire with
-    max_read > fire slot raises ExitLookAhead. A fire must be an int slot in [landing_slot, cap_slot] (else ExitFireError); None = no fire (the time cap, or a tp / sl / trail, decides).
-    This is structural for an honest callable only: Python cannot stop one from reaching into private state, so the exit-causality probe re-runs the callable on a view whose data is
-    cut after the fire slot and requires the same slot (see exit_fire_probe)."""
+    __slots__ = ("_a", "slot", "sd", "landing_slot", "cap_slot", "rate", "sps")
 
-    __slots__ = ("_a", "sd", "landing_slot", "cap_slot", "rate", "sps", "_max_read")
+    def __init__(self, rows: dict, slot: int, sd: int, landing_slot: int, cap_slot: int, rate: float, sps: float) -> None:
+        self._a = rows
+        self.slot, self.sd, self.landing_slot, self.cap_slot, self.rate, self.sps = int(slot), int(sd), int(landing_slot), int(cap_slot), float(rate), float(sps)
 
-    def __init__(self, a: dict, pp: np.ndarray, sd: int, landing_slot: int, cap_slot: int, rate: float, sps: float, last_slot: int | None = None) -> None:
-        last = cap_slot if last_slot is None else min(cap_slot, last_slot)
-        n = int(np.searchsorted(a["sl"], last, "right"))
-        arr = {k: a[k][:n].view() for k in ("sl", "ib", "so", "tk", "q", "b", "v")}
-        arr["pp"] = pp[:n].view()
-        for v in arr.values():
-            v.flags.writeable = False
-        self._a = arr
-        self.sd, self.landing_slot, self.cap_slot, self.rate, self.sps = int(sd), int(landing_slot), int(cap_slot), float(rate), float(sps)
-        self._max_read = -1
-
-    @property
-    def max_read(self) -> int:
-        return self._max_read
+    def rows(self) -> dict:
+        return dict(self._a)
 
     def upto(self, slot: int) -> dict:
         slot = int(slot)
-        if slot > self.cap_slot:
-            raise ExitLookAhead(f"exit_fire asked for rows up to slot {slot}, after the cap slot {self.cap_slot}")
-        self._max_read = max(self._max_read, slot)
+        if slot > self.slot:
+            raise ExitLookAhead(f"exit_fire asked for rows up to slot {slot}, after the slot it is being asked about ({self.slot})")
         m = int(np.searchsorted(self._a["sl"], slot, "right"))
         return {k: v[:m] for k, v in self._a.items()}
 
-    def print_slots(self) -> Iterator[int]:
-        sl = self._a["sl"]
-        j0, j1 = int(np.searchsorted(sl, self.landing_slot, "left")), len(sl)
-        last = -1
-        for s in sl[j0:j1].tolist():
-            if s != last:
-                last = s
-                self._max_read = max(self._max_read, s)
-                yield s
 
-    def checked_fire(self, fire: Any) -> int | None:
-        """The callable's return value, validated against the contract. None passes; otherwise an int slot in [landing_slot, cap_slot] with max_read <= it."""
-        if fire is None:
-            return None
-        if isinstance(fire, bool) or not isinstance(fire, (int, np.integer)):
-            raise ExitFireError(f"exit_fire returned {fire!r}: a fire is an int slot or None")
-        fire = int(fire)
-        if not self.landing_slot <= fire <= self.cap_slot:
-            raise ExitFireError(f"exit_fire returned slot {fire} outside [{self.landing_slot}, {self.cap_slot}] (landing floor, cap)")
-        if self._max_read > fire:
-            raise ExitLookAhead(f"exit_fire fired at slot {fire} but read rows up to slot {self._max_read}: look-ahead")
-        return fire
+def _fire_bool(r: Any) -> bool:
+    if isinstance(r, (bool, np.bool_)):
+        return bool(r)
+    raise ExitFireError(f"exit_fire must return a bool (fire now or not yet), not {r!r}")
 
 
-def run_exit_fire(fire: Callable[..., Any], a: dict, pp: np.ndarray, sd: int, landing: int, cap: int, rate: float, sps: float, last_slot: int | None = None) -> int | None:
-    """One exit_fire call on a causal view (rows with slot <= min(cap, last_slot)); the validated fire slot or None."""
-    view = ExitView(a, pp, sd, landing, cap, rate, sps, last_slot)
-    return view.checked_fire(fire(view, landing, cap))
+class _Pos:
+    """One exit_fire position: the kit drives its predicate through the pool's print slots, as the data arrive. `done` = the last slot the predicate was asked about."""
+
+    def __init__(self, spec: Any, sd: int, rate: float, sps: float, ci: int = -1, pool: str = "", hi: int = -1) -> None:
+        self.spec, self.fire, self.sd, self.rate, self.sps, self.ci, self.pool, self.hi = spec, spec.exit_fire, int(sd), float(rate), float(sps), ci, pool, hi
+        self.landing, self.cap, self.clamped = _exit_clock(spec, self.sd, rate, sps)
+        self.done, self.xs, self.why = -1, None, 0
+
+    def view(self, rows: dict, slot: int) -> ExitView:
+        return ExitView(rows, slot, self.sd, self.landing, self.cap, self.rate, self.sps)
+
+    def run(self, a: dict, pp: np.ndarray, covered_to: int, cut: dict | None = None) -> bool:
+        """Ask the predicate at every print slot of `a` (rows up to the data so far; `covered_to` = the last slot the data cover) after `done`, from the landing floor to the cap. The
+        price rules (tp / sl / trail) are resolved on the data so far and stop the stream, as does the cap. True once the exit is decided (xs, why set)."""
+        spec, sl = self.spec, a["sl"]
+        xs_p, why_p = self.cap, 0
+        if spec.tp is not None or spec.sl is not None or spec.trail is not None:
+            xs_p, why_p, _ = _price_exit(a, pp, self.sd, spec, self.rate, self.sps)
+        last = min(xs_p - 1, self.cap) if why_p else self.cap  # a price exit on the very slot of a fire keeps its own code, so the fire is asked about strictly before it
+        j0, j1 = int(np.searchsorted(sl, max(self.landing, self.done + 1), "left")), int(np.searchsorted(sl, last, "right"))
+        fired = None
+        if j1 > j0:
+            slots = np.unique(sl[j0:j1])
+            ns = np.searchsorted(sl, slots, "right")
+            for s, n in zip(slots.tolist(), ns.tolist()):
+                rows = cut.get(n) if cut is not None else None
+                if rows is None:
+                    rows = _cut_rows(a, pp, n)
+                    if cut is not None:
+                        cut[n] = rows
+                self.done = s
+                if _fire_bool(self.fire(self.view(rows, s))):
+                    fired = s
+                    break
+        if fired is not None:
+            self.xs, self.why = fired, EVENT_CODE
+        elif why_p:
+            self.xs, self.why = xs_p, why_p
+        elif self.cap <= covered_to:
+            self.xs, self.why = self.cap, 0
+        return self.xs is not None
 
 
-def exit_fire_probe(spec: ExitSpec, a: dict, pp: np.ndarray, sd: int, rate: float, sps: float, fire_slot: int) -> bool:
-    """Exit-causality probe: True if spec.exit_fire still returns `fire_slot` when every row after it is cut off. A raise on the cut data (an index past the end, a look-ahead
-    refusal) is a failure: a callable that decides on rows after its own fire slot cannot run on the data that existed then."""
-    landing, cap, _ = _exit_clock(spec, sd, rate, sps)
+def exit_fire_probe(pos: _Pos, a: dict, pp: np.ndarray, fire_slot: int) -> bool:
+    """Prefix probe on one event exit (QP on #760): the predicate must fire AGAIN on the rows <= the fire slot (a pure function of the view), and must NOT fire at slot fire - 1 on the
+    rows <= fire - 1 (it needs the fire slot's own prints; a pre-planned or foresight exit fires there too). A raise is a failure. fire - 1 below the landing floor is asked all the same."""
+    sl = a["sl"]
+    f = int(fire_slot)
     try:
-        return run_exit_fire(spec.exit_fire, a, pp, sd, landing, cap, rate, sps, last_slot=int(fire_slot)) == int(fire_slot)
+        again = _fire_bool(pos.fire(pos.view(_cut_rows(a, pp, int(np.searchsorted(sl, f, "right"))), f)))
+        early = _fire_bool(pos.fire(pos.view(_cut_rows(a, pp, int(np.searchsorted(sl, f - 1, "right"))), f - 1)))
     except Exception:  # noqa: BLE001
         return False
+    return again and not early
 
 
 def resolve_exit(a: dict, pp: np.ndarray, sd: int, spec: ExitSpec, rate: float, sps: float) -> tuple[int, int, bool]:
     """(exit decision slot, reason code, clamped). Time exit at sd + round(hold_s x slots/s); tp / sl / trail on the first eligible print with slot in
-    [sd + k_slow + 1, time exit], whichever comes first. With spec.exit_fire the callable is run on a causal ExitView and its fire slot competes the same way: the earliest of the
-    price-path exit, the fire slot and the time cap decides. Ties: a tp / sl / trail on the fire slot keeps its own code (same slot, so the price is the same); a fire on the time
-    cap's own slot is an event exit. The sell then lands by the normal exit-lag rule from the exit DECISION slot, whatever decided it."""
-    xs, why, clamped = _price_exit(a, pp, sd, spec, rate, sps)
-    fire = getattr(spec, "exit_fire", None)
-    if fire is None:
-        return xs, why, clamped
-    landing, cap, _ = _exit_clock(spec, sd, rate, sps)
-    f = run_exit_fire(fire, a, pp, sd, landing, cap, rate, sps)
-    if f is not None and (f < xs or (f == xs and why == 0)):
-        xs, why = f, EVENT_CODE
-    return xs, why, clamped
+    [sd + k_slow + 1, time exit], whichever comes first. With spec.exit_fire the predicate is asked at every print slot in [landing, cap] on a view cut at that slot (the batch form of the
+    streaming the screen does hour by hour; the two are tested equal); the earliest of the price-path exit, the first fire and the time cap decides. Ties: a tp / sl / trail ON the fire
+    slot keeps its own code (same slot, same price); a fire on the time cap's own slot is an event exit. The sell then lands by the normal exit-lag rule from the exit DECISION slot."""
+    if getattr(spec, "exit_fire", None) is None:
+        return _price_exit(a, pp, sd, spec, rate, sps)
+    pos = _Pos(spec, sd, rate, sps)
+    pos.run(a, pp, 2**62)
+    return int(pos.xs), pos.why, pos.clamped
 
 
 def pool_states(a: dict, sd: np.ndarray, sps_d: np.ndarray, xs: np.ndarray, sps_x: np.ndarray) -> dict:
@@ -1190,6 +1217,10 @@ class Screen:
         self.cnt_ub_expl = [0] * n  # count-only: attempts upper bound inside explore-0814
         self.exit_used: collections.Counter = collections.Counter()  # per cell index: attempts (priced) or triggers (count-only) whose spec carried an exit_fire
         self.exit_probe: dict[tuple[int, int], list[int]] = {}  # (cell index, block index) -> [event exits probed, probe failures]
+        self.cell_fire: dict[int, bool] = {}  # cell index -> its specs carry an exit_fire (a cell is all exit_fire or none)
+        self._open: dict[tuple, _Pos] = {}  # (cell index, pool) -> the unresolved exit_fire position
+        self._nxt: dict[tuple, int] = {}  # (cell index, pool) -> first slot a new position may be admitted (exit + cooldown)
+        self._hc: dict[str, dict] = {}  # pool -> this hour's concatenated arrays (cleared every hour)
 
     # --- trigger validation
     def _validate(self, hr: HourRows, tr: Any, state: RunState) -> tuple[int, str, int, ExitSpec] | None:
@@ -1241,6 +1272,7 @@ class Screen:
         seg_end = -1
         prev: HourRows | None = None
         nextok: dict[tuple, int] = {}
+        self._open, self._nxt = {}, {}
         t0 = time.time()
         for hr in hours:
             self.t_load += time.time() - t0
@@ -1261,6 +1293,9 @@ class Screen:
                 if hr.n == 0:
                     t0 = time.time()
                     continue
+            self._hc = {}
+            if self._open:  # exit_fire positions first: through this hour's slots, BEFORE the rule sees the hour (the rule has seen triggers() for hours <= h-1 only)
+                self._advance_open(hr, stores, bi)
             state.prev, state.hour_index = prev, hr.idx
             t1 = time.time()
             raw = list(rule.triggers(hr, state))
@@ -1279,6 +1314,10 @@ class Screen:
             clk["rate"][hr.idx], clk["min"][hr.idx], clk["T"][hr.idx] = hr.slots_per_s, hr.min_slot, hr.T
             seg_end = max(seg_end, hr.max_slot)
             for ci, pool, slot, spec in good:
+                has_fire = getattr(spec, "exit_fire", None) is not None
+                if not self.count_only and self.cell_fire.setdefault(ci, has_fire) != has_fire:
+                    self.counters["refused_exit_fire_mixed_cell"] += 1  # a cell is all exit_fire or none: admission needs every exit of the cell decided as the data arrive
+                    continue
                 self.cnt[ci][day] += 1
                 if self.count_only:
                     # time-only overlap rule: an upper bound on the hold, since a take-profit / stop exit can only free the pool earlier; it ignores an event exit (see the module doc)
@@ -1294,7 +1333,10 @@ class Screen:
                     s = stores[pool] = _Store()
                     if prev is not None and pool in prev.pool_index():
                         s.chunks.append(self._chunk(prev, prev.pool_index()[pool]))
-                s.trigs.append((ci, slot, hr.idx, spec))
+                if has_fire:
+                    self._admit(ci, pool, slot, spec, hr, s, bi)
+                    continue
+                s.trigs.append((ci, slot, hr.idx, spec, None))
                 s.until = max(s.until, hr.idx + int(math.ceil((spec.hold_s + RETAIN_EXTRA_S) / 3600.0)))
             if not self.count_only:
                 for pool, s in stores.items():
@@ -1313,6 +1355,60 @@ class Screen:
         s = hr.rows(i)
         return {"sl": hr.sl[s].copy(), "ib": hr.isbuy[s].copy(), "so": hr.sol[s].copy(), "tk": hr.tok[s].copy(), "q": hr.q[s].copy(), "b": hr.b[s].copy(), "v": hr.v[s].copy()}
 
+    def _entry(self, pool: str, s: _Store, hr: HourRows) -> dict:
+        """The pool's rows through THIS hour (the store's chunks plus the hour's own), read-only, with the post-trade price; cached for the hour."""
+        e = self._hc.get(pool)
+        if e is None:
+            chunks = list(s.chunks)
+            i = hr.pool_index().get(pool)
+            if i is not None:
+                chunks.append(self._chunk(hr, i))
+            a = {k: np.concatenate([c[k] for c in chunks]) for k in chunks[0]}
+            a["ib"] = a["ib"].astype(bool)
+            pp = post_price(a)
+            for v in (*a.values(), pp):
+                v.flags.writeable = False
+            e = self._hc[pool] = {"a": a, "pp": pp, "cut": {}}
+        return e
+
+    def _advance_open(self, hr: HourRows, stores: dict, bi: int) -> None:
+        for pos in list(self._open.values()):
+            e = self._entry(pos.pool, stores[pos.pool], hr)
+            if pos.run(e["a"], e["pp"], hr.max_slot, e["cut"]):
+                self._resolve(pos, e["a"], e["pp"], bi)
+
+    def _admit(self, ci: int, pool: str, slot: int, spec: Any, hr: HourRows, s: _Store, bi: int) -> None:
+        """Admission of an exit_fire trigger AS THE DATA ARRIVE: dropped while the cell's position in this pool is open or inside exit + cooldown (the same rule as the priced path), else a
+        position that is run through the rest of this hour at once (its exit may be decided before the next trigger of the hour is looked at)."""
+        c, key = self.counters, (ci, pool)
+        if key in self._open or slot < self._nxt.get(key, -1):
+            c["overlap_dropped"] += 1
+            return
+        rate = hr.slots_per_s
+        pos = _Pos(spec, slot, rate, 1.0 / rate, ci, pool, hr.idx)
+        self.exit_used[ci] += 1
+        c["exit_fire_positions"] += 1
+        s.trigs.append((ci, slot, hr.idx, spec, pos))
+        s.until = max(s.until, hr.idx + int(math.ceil((spec.hold_s + RETAIN_EXTRA_S) / 3600.0)))
+        e = self._entry(pool, s, hr)
+        if pos.run(e["a"], e["pp"], hr.max_slot, e["cut"]):
+            self._resolve(pos, e["a"], e["pp"], bi)
+        else:
+            self._open[key] = pos
+
+    def _resolve(self, pos: "_Pos", a: dict, pp: np.ndarray, bi: int, set_nxt: bool = True) -> None:
+        """A position's exit is decided: free the pool after the cooldown, and probe an event exit (prefix probe: fires again on rows <= the fire slot, does NOT fire at fire - 1)."""
+        self._open.pop((pos.ci, pos.pool), None)
+        if set_nxt:
+            self._nxt[(pos.ci, pos.pool)] = pos.xs + int(np.rint(self.cells[pos.ci].cooldown_s * pos.rate))
+        if pos.why == EVENT_CODE:
+            ok = exit_fire_probe(pos, a, pp, pos.xs)
+            rec = self.exit_probe.setdefault((pos.ci, bi), [0, 0])
+            rec[0] += 1
+            rec[1] += not ok
+            self.counters["exit_fire_events"] += 1
+            self.counters["exit_probe_failures"] += not ok
+
     def _flush(self, stores: dict, bi: int, seg_end: int, clk: dict) -> None:
         for pool in list(stores):
             self._price_store(stores.pop(pool), pool, bi, seg_end, clk)
@@ -1320,6 +1416,8 @@ class Screen:
     def _price_store(self, s: _Store, pool: str, bi: int, seg_end: int, clk: dict) -> None:
         rate, minslot = clk["rate"], clk["min"]
         t0 = time.time()
+        for k in [k for k in self._nxt if k[1] == pool]:  # the store is gone after this: the next trigger of the pool starts afresh, as on the priced path
+            del self._nxt[k]
         a = {k: np.concatenate([c[k] for c in s.chunks]) for k in s.chunks[0]}
         a["ib"] = a["ib"].astype(bool)
         pp = post_price(a)
@@ -1330,22 +1428,19 @@ class Screen:
         rows: list[tuple] = []
         for ci in sorted({t[0] for t in s.trigs}):
             nxt = -1
-            for _, slot, hi, spec in sorted((t for t in s.trigs if t[0] == ci), key=lambda t: t[1]):
+            for _, slot, hi, spec, pos in sorted((t for t in s.trigs if t[0] == ci), key=lambda t: t[1]):
+                if pos is not None:  # an exit_fire position: admitted and (but for a gap / the block's end) decided as the data arrived
+                    if pos.xs is None:
+                        pos.run(a, pp, 2**62)
+                        self._resolve(pos, a, pp, bi, set_nxt=False)
+                    c["hold_clamped"] += pos.clamped
+                    rows.append((ci, slot, hi, pos.xs, pos.why))
+                    continue
                 if slot < nxt:
                     c["overlap_dropped"] += 1
                     continue
                 xs, why, clamped = resolve_exit(a, pp, slot, spec, rate[hi], sps_of(hi))
                 c["hold_clamped"] += clamped
-                if getattr(spec, "exit_fire", None) is not None:
-                    self.exit_used[ci] += 1
-                    c["exit_fire_calls"] += 1
-                    if why == EVENT_CODE:  # exit-causality probe on EVERY event exit: the callable must return the same slot with all rows after it cut off
-                        ok = exit_fire_probe(spec, a, pp, slot, rate[hi], sps_of(hi), xs)
-                        rec = self.exit_probe.setdefault((ci, bi), [0, 0])
-                        rec[0] += 1
-                        rec[1] += not ok
-                        c["exit_fire_events"] += 1
-                        c["exit_probe_failures"] += not ok
                 nxt = xs + int(np.rint(self.cells[ci].cooldown_s * rate[hi]))
                 rows.append((ci, slot, hi, xs, why))
         if not rows:
@@ -1408,8 +1503,10 @@ class Screen:
     def _explore_count(self, ci: int) -> dict:
         gd = len(self.gdays.get("explore-0814", ()))
         per = self.cnt_ub_expl[ci] / gd if gd else None
-        return {"days": gd, "attempts_upper_bound": int(self.cnt_ub_expl[ci]), "per_day_upper_bound": per,
-                "below_step2_count": (per < self.min_per_day) if (per is not None and self.min_per_day) else None}
+        below = (per < self.min_per_day) if (per is not None and self.min_per_day) else None
+        if self.exit_used[ci]:
+            below = None  # an exit_fire cell: the time-only figure is a LOWER bound on attempts, so it cannot say "under 20" (undetermined; the RULES step-2 drop must not use it)
+        return {"days": gd, "attempts_upper_bound": int(self.cnt_ub_expl[ci]), "per_day_upper_bound": per, "below_step2_count": below}
 
     @staticmethod
     def _d(day: int) -> str:
@@ -1482,8 +1579,8 @@ class Screen:
             r["kill"] = True
             r["kill_reasons"].append(f"exit-causality probe failed on {r['event_exit']['probe_failures']} of the event exits: the exit_fire reads rows after its own fire slot")
         r["registration"] = registration_status(cell.event_triggered or ee, r["kill"], wis["measured"])
-        if ee and not r["kill"] and not r["event_exit"]["probe_ok"]:
-            r["registration"] += f"; EXIT-CAUSALITY PROBE NOT SATISFIED (needs >= {EXIT_PROBE_MIN} event exits probed per block with 0 failures)"
+        if ee and not r["kill"] and not r["event_exit"]["probe_ok"]:  # never labelled a survivor before its probes have passed (QP on #760)
+            r["registration"] = f"PROVISIONAL-BLOCKED (event exit: exit-causality probe not satisfied; needs >= {EXIT_PROBE_MIN} event exits probed per block with 0 failures)"
         if self.screen_p:  # REPORT ONLY, after the verdict and the registration status are final: a new key, nothing reads it (an event-exit cell gets it like any cell)
             r["screen_p"] = screen_p_cell(st, self.cfg[RENT_DECIDING], stats, B=self.screen_p_B)
         return r
@@ -1540,9 +1637,9 @@ def load_rule(spec: str, kwargs_json: str | None = None) -> Any:
 
 def causal_probe(rule: Any, hour: HourRows, state: RunState, pool: str, slot: int, exit_fire: bool = False) -> bool:
     """True if `rule` still fires (pool, slot) when the hour is cut after `slot` (no look-ahead past the decision slot). With exit_fire=True the EXIT is probed too: for every
-    spec the rule hands out for (pool, slot) on the whole hour that carries an exit_fire, the callable is run on the pool's rows (previous hour + this hour, up to the hour's end), and
-    when it fires, re-run with every row after the fire slot cut off; the same slot is required (exit_fire_probe). The priced screen probes every event exit itself
-    (Screen.exit_probe); this call is the author's seed-1 sample on a single hour."""
+    spec the rule hands out for (pool, slot) on the whole hour that carries an exit_fire, the predicate is asked at every print slot of the pool's rows (previous hour + this hour, up to
+    the hour's end); on a fire the prefix probe runs (fires again on rows <= the fire slot, does NOT fire at fire - 1: exit_fire_probe). The priced screen streams and probes every event exit
+    itself (Screen.exit_probe); this call is the author's seed-1 sample on a single hour."""
     state = dataclasses.replace(state, scratch=copy.deepcopy(state.scratch), first_seen=dict(state.first_seen))  # the probe must not change a rule that writes to scratch
     keep = hour.sl <= slot
     pid = np.repeat(np.arange(len(hour.pools)), np.diff(hour.ptr))[keep]
@@ -1565,17 +1662,15 @@ def _exit_probe_on_hour(rule: Any, hour: HourRows, state: RunState, pool: str, s
     a["ib"] = a["ib"].astype(bool)
     pp = post_price(a)
     rate = hour.slots_per_s
-    sps = 1.0 / rate
-    for p, s, spec in rule.triggers(hour, state):
-        fire = getattr(spec, "exit_fire", None)
-        if p != pool or int(s) != slot or fire is None:
+    for p, s_, spec in rule.triggers(hour, state):
+        if p != pool or int(s_) != slot or getattr(spec, "exit_fire", None) is None:
             continue
-        landing, cap, _ = _exit_clock(spec, slot, rate, sps)
+        pos = _Pos(spec, slot, rate, 1.0 / rate)
         try:
-            f = run_exit_fire(fire, a, pp, slot, landing, cap, rate, sps)
+            pos.run(a, pp, hour.max_slot)
+            if pos.why == EVENT_CODE and not exit_fire_probe(pos, a, pp, pos.xs):
+                return False
         except Refused:
-            return False
-        if f is not None and not exit_fire_probe(spec, a, pp, slot, rate, sps, f):
             return False
     return True
 
@@ -1652,8 +1747,8 @@ def table_md(res: dict, blocks: list[str], meta: dict) -> str:
     ev = {nm: r["event_exit"] for nm, r in res.items() if r.get("event_exit")}
     if ev:
         L += ["", "## 6. Event exits (ExitSpec.exit_fire): share of attempts that exited on the event, and the exit-causality probe", "",
-              "An event exit is treated like an event entry for the worst-in-slot kill (section 4: EVENT-EXIT; section 5 is the screen p, which an event-exit cell gets like any cell), whatever the entry. The probe re-runs the exit_fire on rows cut after its own fire "
-              f"slot for EVERY event exit and needs the same slot: registration needs >= {EXIT_PROBE_MIN} event exits probed per block and 0 failures. Ties: a tp / sl / trail on the fire "
+              "An event exit is treated like an event entry for the worst-in-slot kill (section 4: EVENT-EXIT; section 5 is the screen p, which an event-exit cell gets like any cell), whatever the entry. The kit asks the predicate "
+              f"at every print slot on a view cut there, hour by hour before the rule sees the hour. The prefix probe, on EVERY event exit, needs it to fire again on the rows <= the fire slot and NOT at fire - 1: registration needs >= {EXIT_PROBE_MIN} event exits probed per block and 0 failures; a cell whose probes are not satisfied is PROVISIONAL-BLOCKED, never a survivor. Ties: a tp / sl / trail on the fire "
               "slot keeps its own code. Not a price claim; in-sample.", "",
               "| cell | attempts | event exits | fire share | probe failures | probed per block | probe ok | declared |", "|---|---|---|---|---|---|---|---|"]
         for nm, e in ev.items():

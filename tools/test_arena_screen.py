@@ -1767,7 +1767,7 @@ def test_screen_p_cell_over_several_utc_dates_reproduces_both_bounds_the_kill_us
     none = S.screen_p_cell(None, cfg, None, B=1_000)
     assert none["cell_p"] is None and none["cell_p_date_cluster"] is None
 
-# ------------------------------------------------------------------------------------------------------------------------------ 8. event-driven exits (ExitSpec.exit_fire)
+# ------------------------------------------------------------------------------------------------------------------------------ 8. event-driven exits (ExitSpec.exit_fire): the kit streams a pure predicate
 RATE, SPS = 2.5, 0.4  # the synthetic tape's slot rate (see NHOUR, KMAX); k_slow at 1.9 s = ceil(1.9 / 0.4) = 5, so the floor is sd + 6 and a 120 s hold is 300 slots
 SD0 = 1010
 FLOOR, CAP = SD0 + 6, SD0 + 300
@@ -1786,15 +1786,12 @@ def ev_pool(whales=(1100, 1200), decoys=(1012,), jump=None, n=400) -> dict:
 
 
 def whale_fire(thr: float = 1e9):
-    """The first buy print of >= thr lamports at a slot s in [landing, cap], read through the causal view only (rows with slot <= s)."""
+    """A PURE predicate: the print slot being asked about holds a buy of >= thr lamports."""
 
-    def fire(view, landing, cap):
-        for s in view.print_slots():
-            r = view.upto(s)
-            m = r["sl"] == s
-            if (r["ib"][m] & (r["so"][m] >= thr)).any():
-                return s
-        return None
+    def fire(view):
+        r = view.rows()
+        m = r["sl"] == view.slot
+        return bool((r["ib"][m] & (r["so"][m] >= thr)).any())
 
     return fire
 
@@ -1803,24 +1800,23 @@ def resolve(a, spec, sd=SD0):
     return S.resolve_exit(a, S.post_price(a), sd, spec, RATE, SPS)
 
 
-def test_an_exit_fire_fires_at_the_right_slot_and_is_an_event_exit():
+def test_an_exit_fires_at_the_right_slot_and_is_an_event_exit():
     a = ev_pool()
     assert S._exit_clock(S.ExitSpec(120), SD0, RATE, SPS) == (FLOOR, CAP, False)
-    assert resolve(a, S.ExitSpec(120, exit_fire=whale_fire())) == (1100, S.EVENT_CODE, False)  # the decoy at 1012 is before the floor 1016: not a fire
+    assert resolve(a, S.ExitSpec(120, exit_fire=whale_fire())) == (1100, S.EVENT_CODE, False)  # the decoy at 1012 is before the floor 1016: never asked about
     assert S.EXIT_REASONS[S.EVENT_CODE] == "event" and S.EXIT_REASONS[:4] == ("time", "tp", "sl", "trail")
-    assert resolve(a, S.ExitSpec(120)) == (CAP, 0, False)  # the same spec without the callable is a plain time exit
-    assert resolve(ev_pool(whales=(FLOOR,)), S.ExitSpec(120, exit_fire=whale_fire()))[:2] == (FLOOR, S.EVENT_CODE)  # the floor slot itself is allowed
+    assert resolve(a, S.ExitSpec(120)) == (CAP, 0, False)  # the same spec without the predicate is a plain time exit
+    assert resolve(ev_pool(whales=(FLOOR,)), S.ExitSpec(120, exit_fire=whale_fire()))[:2] == (FLOOR, S.EVENT_CODE)  # the floor slot itself is asked about
     assert resolve(ev_pool(whales=(CAP,)), S.ExitSpec(120, exit_fire=whale_fire()))[:2] == (CAP, S.EVENT_CODE)  # so is the cap slot: a fire there is an event exit, not a time exit
 
 
 def test_the_cap_wins_when_nothing_fires():
     a = ev_pool()
     assert resolve(a, S.ExitSpec(120, exit_fire=whale_fire(5e9))) == (CAP, 0, False)  # no print is that big
-    assert resolve(a, S.ExitSpec(120, exit_fire=lambda v, l, c: None)) == (CAP, 0, False)
-    assert resolve(ev_pool(whales=(), decoys=(1012, CAP + 20)), S.ExitSpec(120, exit_fire=whale_fire()))[:2] == (CAP, 0)  # whales outside [floor, cap] do not count
-    assert resolve(a, S.ExitSpec(3, exit_fire=lambda v, l, c: None)) == (SD0 + 8, 0, False)  # the shortest hold (3 s = 8 slots here): its own cap
-    assert resolve(a, S.ExitSpec(3, exit_fire=whale_fire()))[:2] == (SD0 + 8, 0)  # no whale inside [1016, 1018]: the cap decides
-    clamp = S.resolve_exit(a, S.post_price(a), SD0, S.ExitSpec(3, exit_fire=lambda v, l, c: l), 1.0, 0.4)  # 3 slots < the floor sd + 6: clamped to it, and a fire AT the floor is allowed
+    assert resolve(a, S.ExitSpec(120, exit_fire=lambda v: False)) == (CAP, 0, False)
+    assert resolve(ev_pool(whales=(), decoys=(1012, CAP + 20)), S.ExitSpec(120, exit_fire=whale_fire()))[:2] == (CAP, 0)  # whales outside [floor, cap] are never asked about
+    assert resolve(a, S.ExitSpec(3, exit_fire=lambda v: False)) == (SD0 + 8, 0, False)  # the shortest hold (3 s = 8 slots here): its own cap
+    clamp = S.resolve_exit(a, S.post_price(a), SD0, S.ExitSpec(3, exit_fire=lambda v: v.slot == v.landing_slot), 1.0, 0.4)  # 3 slots < the floor sd + 6: clamped to it; a fire AT the floor is allowed
     assert clamp == (SD0 + 6, S.EVENT_CODE, True)
 
 
@@ -1828,49 +1824,41 @@ def test_tp_sl_trail_still_apply_whichever_fires_first_wins():
     a = ev_pool(jump=1050)
     assert resolve(a, S.ExitSpec(120, tp=1.05)) == (1050, 1, False)  # the price rule alone: the 11% jump
     assert resolve(a, S.ExitSpec(120, tp=1.05, exit_fire=whale_fire())) == (1050, 1, False)  # tp (1050) before the whale (1100): tp wins
-    assert resolve(a, S.ExitSpec(120, tp=1.05, exit_fire=lambda v, l, c: 1030)) == (1030, S.EVENT_CODE, False)  # a fire before the tp wins
-    assert resolve(a, S.ExitSpec(120, tp=1.05, exit_fire=lambda v, l, c: 1050)) == (1050, 1, False)  # the same slot: the price rule keeps its code, the slot is the same
+    assert resolve(a, S.ExitSpec(120, tp=1.05, exit_fire=lambda v: v.slot == 1030)) == (1030, S.EVENT_CODE, False)  # a fire before the tp wins
+    assert resolve(a, S.ExitSpec(120, tp=1.05, exit_fire=lambda v: v.slot == 1050)) == (1050, 1, False)  # the same slot: the price rule keeps its code, the slot is the same
     assert resolve(a, S.ExitSpec(120, tp=1.5, exit_fire=whale_fire()))[:2] == (1100, S.EVENT_CODE)  # a tp that is never hit: the fire beats the cap
     stop = resolve(ev_pool(), S.ExitSpec(120, sl=0.99, exit_fire=whale_fire()))
     assert stop[1] in (S.EVENT_CODE, 2) and stop[0] <= 1100  # a stop (if the path has one) or the whale, never later than the whale
 
 
-def test_the_view_is_causal_it_refuses_look_ahead_and_a_return_that_read_ahead():
+def test_the_predicate_sees_only_rows_up_to_the_slot_it_is_asked_about_and_is_asked_at_print_slots():
     a = ev_pool()
-    pp = S.post_price(a)
-    v = S.ExitView(a, pp, SD0, FLOOR, CAP, RATE, SPS)
-    assert v.upto(FLOOR)["sl"].max() == FLOOR and v.max_read == FLOOR and v.upto(1000)["sl"].tolist() == [1000]
-    with pytest.raises(S.ExitLookAhead):
-        v.upto(CAP + 1)  # after the cap: refused outright
-    r = v.upto(1100)
-    assert r["sl"].max() == 1100 and not r["sl"].flags.writeable and set(r) == {"sl", "ib", "so", "tk", "q", "b", "v", "pp"}
-    with pytest.raises(ValueError):
-        r["so"][0] = 0.0  # read-only
-    assert list(S.ExitView(a, pp, SD0, FLOOR, CAP, RATE, SPS).print_slots())[:2] == [FLOOR, FLOOR + 1] and len(a["sl"]) == 400  # the cap cut is the view's, not the pool's
-    assert max(S.ExitView(a, pp, SD0, FLOOR, CAP, RATE, SPS, last_slot=1100)._a["sl"]) == 1100
+    asked, bad = [], []
 
-    def peek_then_fire(view, landing, cap):  # decides at 1100, but looked at 1101 first
-        view.upto(1101)
-        return 1100
-
-    def peek_one_print_slot(view, landing, cap):  # fires at the whale but asks the iterator for the NEXT print slot first
-        it = view.print_slots()
-        for s in it:
-            if s == 1100:
-                next(it)
-                return s
-
-    def late_fire(view, landing, cap):
-        view.upto(cap)
-        return cap - 1
-
-    for bad in (peek_then_fire, peek_one_print_slot, late_fire):
+    def spy(view):
+        asked.append(view.slot)
+        r = view.rows()
+        bad.append(int(r["sl"].max()) != view.slot or int(view._a["sl"].max()) != view.slot or r["sl"].flags.writeable or r["so"].flags.writeable or len(r["sl"]) != view.slot - 1000 + 1)
+        assert (view.sd, view.landing_slot, view.cap_slot, view.rate, view.sps) == (SD0, FLOOR, CAP, RATE, SPS)
+        assert view.upto(view.slot)["sl"].max() == view.slot and view.upto(1000)["sl"].tolist() == [1000]  # history before the entry is there
         with pytest.raises(S.ExitLookAhead):
-            resolve(a, S.ExitSpec(120, exit_fire=bad))
-    for bad, why in ((lambda v, l, c: FLOOR - 1, "outside"), (lambda v, l, c: CAP + 1, "outside"), (lambda v, l, c: 1100.0, "int slot"), (lambda v, l, c: True, "int slot"), (lambda v, l, c: "x", "int slot")):
-        with pytest.raises(S.ExitFireError, match=why):
-            resolve(a, S.ExitSpec(120, exit_fire=bad))
-    assert resolve(a, S.ExitSpec(120, exit_fire=lambda v, l, c: np.int64(1100)))[:2] == (1100, S.EVENT_CODE)  # numpy ints are fine
+            view.upto(view.slot + 1)  # one slot ahead: refused
+        with pytest.raises(ValueError):
+            r["so"][0] = 0.0  # read-only
+        return False
+
+    assert resolve(a, S.ExitSpec(120, exit_fire=spy)) == (CAP, 0, False)
+    assert asked == list(range(FLOOR, CAP + 1)) and not any(bad)  # every print slot from the floor to the cap, once, on rows that END at that slot
+    sparse = ev_pool()
+    keep = np.arange(400) % 7 == 0
+    sparse = {k: v[keep] for k, v in sparse.items()}
+    got = []
+    resolve(sparse, S.ExitSpec(120, exit_fire=lambda v: got.append(v.slot) or False))
+    assert got == [s for s in sparse["sl"].tolist() if FLOOR <= s <= CAP]  # only slots that have a print are asked about
+    for bad_return in (1100, None, 1.0, "x", np.int64(1)):
+        with pytest.raises(S.ExitFireError, match="bool"):
+            resolve(a, S.ExitSpec(120, exit_fire=lambda v, r=bad_return: r))
+    assert resolve(a, S.ExitSpec(120, exit_fire=lambda v: np.bool_(v.slot == 1100)))[:2] == (1100, S.EVENT_CODE)  # numpy bools are fine
 
 
 def test_exit_fire_must_be_callable_and_the_spec_stays_hashable():
@@ -1920,21 +1908,213 @@ def test_a_fired_exit_lands_by_the_normal_exit_lag_rule_in_the_kit(tape):
     assert 0 < n_twin <= n_fire < len(tr["sd"])  # some exits fire (and are twinned), some run to the cap
 
 
+def pool_arrays_of(files, key="A"):
+    """The whole pool's rows across all hours as the kit's arrays (for the batch resolver)."""
+    vm = S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])
+    ch = [S.Screen._chunk(hr, hr.pool_index()[POOLS[key]]) for hr in S.iter_hours(files, "synthetic", "backfill", vm) if POOLS[key] in hr.pool_index()]
+    a = {k: np.concatenate([c[k] for c in ch]) for k in ch[0]}
+    a["ib"] = a["ib"].astype(bool)
+    return a, S.post_price(a)
+
+
+def test_the_kits_hour_by_hour_stream_equals_the_batch_resolver_including_tp_sl_and_a_hold_across_hours(tape):
+    """Admission and the exit are decided as the data arrive (hour by hour); the batch resolver on the whole pool must give the same exit for every admitted attempt."""
+    rows, files = tape
+    a, pp = pool_arrays_of(files)
+    early = own_slots(rows, "A", 0, 3000, 8800)[::9] + own_slots(rows, "A", 1, 100, 8000)[::25]
+    late = own_slots(rows, "A", 0, 8300, 8990)[::6]  # a few hundred slots before the hour ends, and a whale that almost never comes: the position is open across the hour boundary
+    crossed = 0
+    for hold, tp, sl_, thr, sds in ((120, None, None, 1.3e9, early), (1200, 1.003, 0.997, 1.3e9, early), (1500, None, 0.998, 1.3e9, early), (1500, None, None, 1.4999e9, late), (1500, 1.004, 0.996, 1.4999e9, late)):
+        spec = S.ExitSpec(hold, tp=tp, sl=sl_, exit_fire=whale_fire(thr))
+        scr = run_kit(files, [(POOLS["A"], s, spec) for s in sds])
+        tr = S._cat(scr.acc[0])
+        assert len(tr["sd"]) >= (3 if sds is early else 1), (hold, tp, sl_)
+        crossed += sum((int(x) - SLOT0) // 9000 > (int(s) - SLOT0) // 9000 for x, s in zip(tr["xs"], tr["sd"]))
+        for i, sd in enumerate(tr["sd"].tolist()):
+            xs, why, _ = S.resolve_exit(a, pp, sd, spec, RATE, SPS)
+            assert (int(tr["xs"][i]), int(tr["why"][i])) == (xs, why), (hold, tp, sl_, sd)
+    assert crossed > 0  # some exits were decided in a LATER hour than the entry, by the hour-by-hour stream
+    spec = S.ExitSpec(120, exit_fire=whale_fire(1.3e9))
+    assert collections.Counter(S._cat(run_kit(files, [(POOLS["A"], s, spec) for s in early]).acc[0])["why"].tolist())[S.EVENT_CODE] > 0
+
+
+def test_hour_by_hour_the_rule_has_seen_triggers_only_up_to_the_hour_before_the_slot_it_is_asked_about(tape):
+    """By construction: at slot s of hour h > the entry hour the rule has run triggers() for hours <= h-1 only (the exits are advanced BEFORE the hour's triggers())."""
+    rows, files = tape
+
+    class LogRule(ScriptRule):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.seen: list[int] = []
+
+        def triggers(self, hour, state):
+            self.seen.append(hour.idx)
+            return super().triggers(hour, state)
+
+    log: list[tuple[int, int]] = []
+    rule_box: list[LogRule] = []
+
+    def pred(view):
+        log.append(((view.slot - SLOT0) // 9000, max(rule_box[0].seen)))
+        return False
+
+    sd = own_slots(rows, "A", 0, 7900, 8500)[0]
+    rule = LogRule([(POOLS["A"], sd, S.ExitSpec(4800, exit_fire=pred))], cells=(S.Cell("c", event_triggered=False, event_exit=True),))  # 4,800 s = 12,000 slots: hours 0, 1 and 2
+    rule_box.append(rule)
+    scr = S.Screen(rule)
+    scr.run_block(0, "synthetic", S.iter_hours(files, "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
+    hours_asked = sorted({h for h, _ in log})
+    assert hours_asked == [0, 1, 2] and rule.seen == [0, 1, 2]
+    assert all(seen == (h if h == 0 else h - 1) for h, seen in log)  # entry hour: after its own triggers(); every later hour: only up to the hour before
+    assert scr.counters["exit_fire_positions"] == 1
+
+
+def first_print_ge(rows, key, x):
+    return min(r["slot"] for r in rows if r["pool"] == POOLS[key] and r["slot"] >= x)
+
+
+def test_qp_fixture_peak_picker_through_the_views_private_arrays_cannot_see_the_peak(tape):
+    """QP #760: 'sell at the price PEAK of [landing, cap], read through view._a'. The arrays end at the slot being asked about, so the best it can do is the running maximum, which
+    is the first print: it never picks the peak (the kit never holds a later row in the view)."""
+    rows, files = tape
+
+    def peak(view):
+        a = view._a
+        idx = np.flatnonzero(a["sl"] >= view.landing_slot)
+        return bool(idx.size and a["sl"][idx[np.argmax(a["pp"][idx])]] == view.slot)
+
+    scr = kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), peak)
+    tr = S._cat(scr.acc[0])
+    a, pp = pool_arrays_of(files)
+    n_peak = 0
+    for i, sd in enumerate(tr["sd"].tolist()):
+        pool_is_a = int(tr["pool"][i]) == zlib.crc32(POOLS["A"].encode())
+        if pool_is_a and int(tr["why"][i]) == S.EVENT_CODE:
+            assert int(tr["xs"][i]) == first_print_ge(rows, "A", sd + 6)  # the running max of a stream is its first print
+            j0, j1 = int(np.searchsorted(a["sl"], sd + 6, "left")), int(np.searchsorted(a["sl"], sd + 300, "right"))
+            n_peak += int(a["sl"][j0 + int(np.argmax(pp[j0:j1]))]) == int(tr["xs"][i])
+    r = scr.results()["c"]
+    assert r["exits"]["event"] > 0 and r["event_exit"]["probe_failures"] == 0  # honest-but-dumb: no look-ahead, so nothing for the probe to find
+    assert n_peak < r["exits"]["event"]  # the real peak was not chosen
+
+
+def test_qp_fixture_a_memo_built_in_triggers_never_holds_a_later_hour_and_an_unguarded_foresight_is_caught(tape):
+    """QP #760: foresight 'sell at the first print >= landing iff the cap price is lower', memoised outside the view. (1) The memo lives in rule state; at slot s the rule has seen
+    triggers() up to the hour before only, so with a cap in a LATER hour it cannot know the cap price (impossible). (2) Within the entry hour the rule has seen the whole hour:
+    the UNGUARDED variant (fires on any view once the memo says so) fails the prefix probe. The guarded in-entry-hour variant is the residual stated in the module doc."""
+    rows, files = tape
+
+    class MemoRule(ScriptRule):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.mem: dict[str, tuple] = {}
+
+        def triggers(self, hour, state):
+            for p in hour.pools.tolist():
+                s = hour.rows(hour.pool_index()[p])
+                px = (hour.q[s] + hour.v[s]) / hour.b[s]
+                old = self.mem.get(p, (np.zeros(0, np.int64), np.zeros(0)))
+                self.mem[p] = (np.concatenate([old[0], hour.sl[s]]), np.concatenate([old[1], px]))  # the rule's own buffer of every hour it has been handed
+            return super().triggers(hour, state)
+
+    consulted: list[tuple[int, int]] = []
+
+    def foresight(box, guard):
+        def pred(view):
+            sl, px = box[0].mem[POOLS["A"]]
+            i0 = int(np.searchsorted(sl, view.landing_slot, "left"))
+            i1 = int(np.searchsorted(sl, view.cap_slot, "right")) - 1
+            if i0 >= len(sl):
+                return False
+            consulted.append(((int(sl[i1]) - SLOT0) // 9000, (view.slot - SLOT0) // 9000))  # (hour of the last price it used as 'the cap price', hour of the asked slot)
+            return bool(px[i1] != px[i0]) and (not guard or view.slot == int(sl[i0]))  # 'the cap price differs from the landing price' (the stand-in for 'is lower')
+        return pred
+
+    sds = [s for s in own_slots(rows, "A", 0, 7900, 8800)[::6]][:3]
+    for hold, guard in ((4800, True), (120, False)):  # cap in a later hour / cap inside the entry hour
+        box: list[MemoRule] = []
+        spec = S.ExitSpec(hold, exit_fire=foresight(box, guard))
+        rule = MemoRule([(POOLS["A"], s, spec) for s in (sds[:1] if hold > 1000 else spaced_triggers(rows))], cells=(S.Cell("c", event_triggered=False, event_exit=True),))
+        box.append(rule)
+        consulted.clear()
+        scr = S.Screen(rule)
+        scr.run_block(0, "synthetic", S.iter_hours(files, "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
+        r = scr.results()["c"]
+        if hold > 1000:
+            assert consulted and all(last_h <= asked_h for last_h, asked_h in consulted)  # the price it called 'the cap price' was never from after the hour being asked about
+            assert any(last_h < ((sds[0] + hold * 5 // 2 - SLOT0) // 9000) for last_h, _ in consulted)  # ...and so it was not the real cap price: no foresight
+        else:
+            assert r["exits"]["event"] > 0 and r["event_exit"]["probe_failures"] == r["exits"]["event"] > 0 and r["kill"] is True  # the unguarded foresight fires at fire - 1 too
+
+
+def test_qp_fixture_a_skipped_fire_when_later_is_higher_is_impossible(tape):
+    """QP #760: 'honest +1% trigger that returns None when the cap price is higher'. The predicate can only look at rows <= the slot, so there is nothing later to compare with:
+    the exits equal the honest stream's, trip for trip."""
+    peeked: list[int] = []
+
+    def honest(view):
+        r = view.upto(view.slot)
+        i0 = int(np.searchsorted(r["sl"], view.landing_slot, "left"))
+        return bool(i0 < len(r["sl"]) and r["pp"][-1] >= 1.01 * r["pp"][i0] and view.slot > r["sl"][i0])
+
+    def suppress(view):
+        a = view._a
+        later = a["pp"][a["sl"] > view.slot]  # the attempted peek at the future
+        peeked.append(int(later.size))
+        return honest(view) and not (later.size and later.max() > a["pp"][-1])
+
+    def exits(fire):
+        return {(int(t["sd"][i]), int(t["pool"][i])): (int(t["xs"][i]), int(t["why"][i])) for t in [S._cat(kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), fire).acc[0])]
+                for i in range(len(t["sd"]))}
+
+    base, sup = exits(honest), exits(suppress)
+    assert base == sup and any(w == S.EVENT_CODE for _, w in base.values()) and set(peeked) == {0}  # it saw nothing later, ever
+
+
+def test_the_prefix_probe_catches_a_flaky_and_an_early_firing_predicate_and_passes_an_honest_one():
+    a = ev_pool()
+    pp = S.post_price(a)
+
+    def probe(fire, f):
+        pos = S._Pos(S.ExitSpec(120, exit_fire=fire), SD0, RATE, SPS)
+        return S.exit_fire_probe(pos, a, pp, f)
+
+    assert probe(whale_fire(), 1100) is True  # fires again on rows <= 1100, silent at 1099
+    assert probe(lambda v: True, 1100) is False  # fires at fire - 1 as well: not caused by the fire slot's own prints
+    assert probe(lambda v: v.slot >= 1100, 1100) is True  # a clock rule is a function of the view too: silent at 1099, fires at 1100
+    assert probe(lambda v: v.slot >= 1099, 1100) is False  # it would have fired at 1099: the fire slot is not the first
+    calls = iter(range(10**6))
+    flaky = lambda v: next(calls) == 0 and v.slot == 1100  # noqa: E731
+    assert flaky(type('V', (), {'slot': 1100})()) is True  # the stream's own ask (it fired)
+    assert probe(flaky, 1100) is False  # not a function of the view: the probe's second ask differs
+    assert probe(lambda v: int(v._a["sl"][list(v._a["sl"]).index(1100) + 1]) > 0 or True, 1100) is False  # reaches for a row that is not there: a raise is a failure
+    assert probe(lambda v: (_ for _ in ()).throw(RuntimeError("boom")), 1100) is False
+
+
+def test_causal_probe_probes_the_exit_too_when_asked(tape):
+    rows, files = tape
+    vm = S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])
+    hr = next(S.iter_hours(files[:1], "synthetic", "backfill", vm))
+    slot = int(hr.sl[hr.rows(hr.pool_index()[POOLS["A"]])][5])
+    st = S.RunState("synthetic")
+
+    class R:
+        def __init__(self, fire):
+            self.spec = S.ExitSpec(120, exit_fire=fire)
+
+        def triggers(self, hour, state):
+            j = hour.pool_index()[POOLS["A"]]
+            return [(POOLS["A"], slot, self.spec)] if (hour.sl[hour.rows(j)] <= slot).any() else []
+
+    assert S.causal_probe(R(whale_fire(1.0e9)), hr, st, POOLS["A"], slot) and S.causal_probe(R(whale_fire(1.0e9)), hr, st, POOLS["A"], slot, exit_fire=True)
+    always = lambda v: True  # noqa: E731
+    assert S.causal_probe(R(always), hr, st, POOLS["A"], slot)  # the entry alone is causal...
+    assert not S.causal_probe(R(always), hr, st, POOLS["A"], slot, exit_fire=True)  # ...the exit fires with no print of its own to cause it
+    assert not S.causal_probe(R(lambda v: 1), hr, st, POOLS["A"], slot, exit_fire=True)  # not a bool: refused, so not causal
+    assert S.causal_probe(R(lambda v: False), hr, st, POOLS["A"], slot, exit_fire=True)  # no fire: nothing to probe
+
+
 # ------------------------------------------------------------------------------------------------------------------------------ 8b. the kit run, the probe, worst-in-slot, count-only
-def sneaky_fire(thr: float = 1e9):
-    """NON-CAUSAL on purpose: fires at the print BEFORE a whale, so it needs the next print. It reaches the view's private arrays, which the structural check (max_read) cannot see;
-    only the exit-causality probe, which hands the callable data cut after the fire slot, can catch it."""
-
-    def fire(view, landing, cap):
-        sl, so, ib = view._a["sl"], view._a["so"], view._a["ib"]
-        for j in range(len(sl) - 1):
-            if sl[j] >= landing and ib[j + 1] and so[j + 1] >= thr:
-                return int(sl[j])
-        return None
-
-    return fire
-
-
 def with_fire(script, fire):
     return [(p, s, dataclasses.replace(e, exit_fire=fire)) for p, s, e in script]
 
@@ -2014,56 +2194,36 @@ def test_an_event_exit_cell_reports_its_share_and_probes_every_event_exit(tape, 
     assert sum(r["exits"].values()) == r["attempts"] and e["declared"] is True and e["undeclared_use"] is False and e["worst_in_slot_kill_applies"] is True
     pb = e["probe_per_block"]["synthetic"]
     assert pb == {"event_exits_probed": r["exits"]["event"], "failures": 0} and e["probe_failures"] == 0 and scr.counters["exit_probe_failures"] == 0
-    assert scr.counters["exit_fire_events"] == r["exits"]["event"] and scr.counters["exit_fire_calls"] >= r["attempts"]
-    assert e["probe_ok"] is False and e["probe_min_per_block"] == 200 and "EXIT-CAUSALITY PROBE NOT SATISFIED" in r["registration"]  # 200 per block are not on a fixture this small
+    assert scr.counters["exit_fire_events"] == r["exits"]["event"] and scr.counters["exit_fire_positions"] == r["attempts"]
+    # 200 per block are not on a fixture this small: NOT a survivor until the probes pass (QP #760 item 6)
+    assert e["probe_ok"] is False and e["probe_min_per_block"] == 200 and r["registration"].startswith("PROVISIONAL-BLOCKED") and "SURVIVOR" not in r["registration"]
     md = S.table_md({"c": r}, ["synthetic"], {"rule": "script"})
-    assert "## 6. Event exits" in md and md.index("## 5. Screen p") < md.index("## 6. Event exits") and "EVENT-EXIT" in md and f"| c | {r['attempts']} | {e['event_exits']} |" in md
-    monkeypatch.setattr(S, "EXIT_PROBE_MIN", 1)  # the 200-per-block requirement is a constant: with it met, the survivor carries no probe note
+    assert "## 6. Event exits" in md and "EVENT-EXIT" in md and f"| c | {r['attempts']} | {e['event_exits']} |" in md and "never a survivor" in md
+    monkeypatch.setattr(S, "EXIT_PROBE_MIN", 1)  # the 200-per-block requirement is a constant: with it met, the survivor label is allowed
     ok = _lower_leg_swap(kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), whale_fire(1.0e9)), "all_win")
     assert ok["event_exit"]["probe_ok"] is True and ok["registration"] == "SCREEN-SURVIVOR (worst-in-slot measured > 0 on all four sub-cells)"
 
 
-def test_the_exit_causality_probe_catches_a_deliberately_non_causal_exit_fire(tape, monkeypatch):
-    a = ev_pool()
-    pp = S.post_price(a)
-    spec_ok, spec_bad = S.ExitSpec(120, exit_fire=whale_fire()), S.ExitSpec(120, exit_fire=sneaky_fire())
-    assert resolve(a, spec_bad)[:2] == (1099, S.EVENT_CODE)  # it passes the structural check (it never calls upto): it fires one print BEFORE the whale
-    assert S.exit_fire_probe(spec_ok, a, pp, SD0, RATE, SPS, 1100) is True
-    assert S.exit_fire_probe(spec_bad, a, pp, SD0, RATE, SPS, 1099) is False  # rows after 1099 cut: the whale is gone and so is the fire
-    counter = iter(range(10**6))
-    flaky = S.ExitSpec(120, exit_fire=lambda v, l, c: 1100 if next(counter) == 0 else 1101)
-    assert resolve(a, flaky)[:2] == (1100, S.EVENT_CODE) and S.exit_fire_probe(flaky, a, pp, SD0, RATE, SPS, 1100) is False  # the re-run differs: not a function of the rows
-    assert S.exit_fire_probe(S.ExitSpec(120, exit_fire=lambda v, l, c: int(v._a["sl"][list(v._a["sl"]).index(1100) + 1]) - 1), a, pp, SD0, RATE, SPS, 1100) is False  # indexes past the cut: a raise is a failure
-    assert S.exit_fire_probe(S.ExitSpec(120, exit_fire=lambda v, l, c: (v.upto(1100), 1100)[1] if v.upto(1100)["sl"].size else None), a, pp, SD0, RATE, SPS, 1100) is True
+def test_the_kit_kills_a_cell_whose_event_exits_fail_the_prefix_probe_and_passes_an_honest_stream(tape, monkeypatch):
     monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))
-    bad = kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), sneaky_fire(1.0e9))
-    r = bad.results()["c"]
-    assert r["exits"]["event"] > 0 and r["event_exit"]["probe_failures"] == bad.counters["exit_probe_failures"] > 0
-    assert r["kill"] is True and r["registration"] == "KILLED" and any(w.startswith("exit-causality probe failed") for w in r["kill_reasons"])
-    good = kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), whale_fire(1.0e9)).results()["c"]
+    cell = S.Cell("c", event_triggered=False, event_exit=True)
+    calls = iter(range(10**9))
+    for name, fire in (("fires at fire - 1 too", lambda v: True), ("flaky", lambda v: next(calls) % 3 == 0)):
+        bad = kit_exit_cell(tape, cell, fire)
+        r = bad.results()["c"]
+        assert r["exits"]["event"] > 0 and r["event_exit"]["probe_failures"] == bad.counters["exit_probe_failures"] > 0, name
+        assert r["kill"] is True and r["registration"] == "KILLED" and any(w.startswith("exit-causality probe failed") for w in r["kill_reasons"]), name
+    good = kit_exit_cell(tape, cell, whale_fire(1.0e9)).results()["c"]
     assert good["event_exit"]["probe_failures"] == 0 and not any("exit-causality" in w for w in good["kill_reasons"])  # (it may still be killed on this fixture's random-walk prices: not for causality)
 
 
-def test_causal_probe_probes_the_exit_too_when_asked(tape):
+def test_a_cell_is_all_exit_fire_or_none(tape):
     rows, files = tape
-    vm = S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])
-    hr = next(S.iter_hours(files[:1], "synthetic", "backfill", vm))
-    slot = int(hr.sl[hr.rows(hr.pool_index()[POOLS["A"]])][5])
-    st = S.RunState("synthetic")
-
-    class R:
-        def __init__(self, fire):
-            self.spec = S.ExitSpec(120, exit_fire=fire)
-
-        def triggers(self, hour, state):
-            j = hour.pool_index()[POOLS["A"]]
-            return [(POOLS["A"], slot, self.spec)] if (hour.sl[hour.rows(j)] <= slot).any() else []
-
-    assert S.causal_probe(R(whale_fire(1.0e9)), hr, st, POOLS["A"], slot) and S.causal_probe(R(whale_fire(1.0e9)), hr, st, POOLS["A"], slot, exit_fire=True)
-    assert S.causal_probe(R(sneaky_fire(1.0e9)), hr, st, POOLS["A"], slot)  # the entry alone is causal...
-    assert not S.causal_probe(R(sneaky_fire(1.0e9)), hr, st, POOLS["A"], slot, exit_fire=True)  # ...the exit is not
-    assert not S.causal_probe(R(lambda v, l, c: (v.upto(c), l)[1]), hr, st, POOLS["A"], slot, exit_fire=True)  # a read past the fire is refused (looked at the cap, fired at the floor)
-    assert S.causal_probe(R(lambda v, l, c: None), hr, st, POOLS["A"], slot, exit_fire=True)  # no fire: nothing to cut
+    s0, s1 = own_slots(rows, "A", 0, 1000, 3000)[0], own_slots(rows, "B", 0, 1000, 3000)[0]
+    scr = run_kit(files, [(POOLS["A"], s0, S.ExitSpec(120, exit_fire=whale_fire())), (POOLS["B"], s1, S.ExitSpec(120))])
+    assert scr.counters["refused_exit_fire_mixed_cell"] == 1 and scr.results()["c"]["attempts"] == 1 and scr.counters["exit_fire_positions"] == 1
+    plain = run_kit(files, [(POOLS["A"], s0, S.ExitSpec(120)), (POOLS["B"], s1, S.ExitSpec(120))])
+    assert "refused_exit_fire_mixed_cell" not in plain.counters and plain.results()["c"]["attempts"] == 2
 
 
 @pytest.mark.parametrize("case", ["guard_rescue_flatters_worst", "worst_in_slot_is_lower"])
@@ -2108,7 +2268,7 @@ def test_count_only_with_an_exit_fire_is_a_time_only_bound_and_never_runs_the_ca
     rows, files = tape
     sl_ = own_slots(rows, "A", 0, 1000, 3000)
 
-    def boom(view, landing, cap):
+    def boom(view):
         raise AssertionError("count-only must not run the exit_fire")
 
     script = [(POOLS["A"], sl_[0], S.ExitSpec(120, exit_fire=boom)), (POOLS["A"], sl_[1], S.ExitSpec(120, exit_fire=boom)), (POOLS["A"], sl_[-1], S.ExitSpec(120, exit_fire=boom))]
@@ -2119,10 +2279,12 @@ def test_count_only_with_an_exit_fire_is_a_time_only_bound_and_never_runs_the_ca
     cm = S.counts_md(res, {"rule": "script", "hours_subset": False})
     assert "time-only: exit_fire present" in cm and "LOWER bound on attempts" in cm and "the RULES step-2 drop must not use it" in cm and "at least this many" in cm
     assert r["time_only_figure_is"] == "lower_bound_on_attempts" and "attempts_upper_bound" in r  # the existing key keeps its name
+    assert r["explore_0814"]["below_step2_count"] is None and "DROP (<20)" not in cm  # undetermined: a script keyed on the boolean cannot drop the cell (QP #760 item 5-ii)
+    assert run_kit(files, [(POOLS["A"], sl_[0], S.ExitSpec(120))], count_only=True, name="explore-0814", min_per_day=20.0).results()["c"]["explore_0814"]["below_step2_count"] is True
     plain = run_kit(files, [(POOLS["A"], sl_[0], S.ExitSpec(120))], count_only=True).results()["c"]
     assert "attempts_bound_is_time_only" not in plain and "exit_fire_triggers" not in plain
     doc = S.__doc__
-    assert "--count-only IS A TIME-ONLY BOUND when an exit_fire is present" in doc and "LOWER BOUND ON ATTEMPTS" in doc and "STEP-2 DROP MUST NOT USE IT" in doc and "EXIT CAUSALITY PROBE" in doc
+    assert "--count-only IS A TIME-ONLY BOUND when an exit_fire is present" in doc and "LOWER BOUND ON ATTEMPTS" in doc and "STEP-2 DROP MUST NOT USE IT" in doc and "PREFIX PROBE on EVERY event exit" in doc and "The KIT DRIVES IT, hour by hour" in doc
 
 
 def test_the_time_only_count_is_a_lower_bound_of_the_attempts_an_event_exit_really_makes(tape):
@@ -2141,12 +2303,14 @@ def test_the_kit_refuses_a_bad_exit_fire_and_a_look_ahead_one_stops_the_run(tape
     scr = run_kit(files, [(POOLS["A"], s0, S.ExitSpec(120, exit_fire="not callable"))])
     assert scr.counters["refused_bad_exit"] == 1 and not scr.acc[0] and not scr.exit_used
 
-    def peek(view, landing, cap):
-        view.upto(cap)
-        return landing
+    def peek(view):
+        view.upto(view.cap_slot)
+        return False
 
     with pytest.raises(S.ExitLookAhead):  # a Refused: the CLI turns it into exit code 2 and nothing is written as a result
         run_kit(files, [(POOLS["A"], s0, S.ExitSpec(120, exit_fire=peek))])
+    with pytest.raises(S.ExitFireError):
+        run_kit(files, [(POOLS["A"], s0, S.ExitSpec(120, exit_fire=lambda v: 1))])
     assert issubclass(S.ExitLookAhead, S.Refused) and issubclass(S.ExitFireError, S.Refused)
 
 
