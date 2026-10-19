@@ -882,7 +882,7 @@ def test_a_refused_or_failed_run_leaves_no_marker_only_directory(tmp_path, monke
     assert not (tmp_path / "out").exists() and f2.sim_is_lip_f1()
     (tmp_path / "pre").mkdir()
     with pytest.raises(sim.InputError):
-        f2.run_f2(f2_cfg(w, tmp_path / "pre"), "B", ctx_for(texts, gates))
+        f2.run_f2(f2_cfg(w, tmp_path / "pre", "B"), "B", ctx_for(texts, gates))
     assert (tmp_path / "pre").is_dir() and list((tmp_path / "pre").iterdir()) == []
 
 
