@@ -610,6 +610,10 @@ class HarnessTests(unittest.TestCase):
 class RealTapeParity(unittest.TestCase):
     def test_h5_strip_states_equal_the_independent_extraction(self):
         _need_numpy()
+        try:
+            import pandas  # noqa: F401  (the audit venv: /data/mal/audit-1008/venv/bin/python)
+        except ImportError as e:
+            raise unittest.SkipTest(f"pandas not importable here: {e!r}")
         rep = run_parity()
         self.assertEqual(rep["exact_mismatches_total"], 0, json.dumps(rep["mismatch_examples"], indent=1, default=str)[:4000])
         # the quantities the two sides DERIVE by different conventions are reported with their size (see the PR body); a bound only catches a gross change
