@@ -72,6 +72,7 @@ DEC-014 rule 1 allows one owner per block and catalog rule 5 allows no overlappi
 - **m.** Each push-family EXP that reads the 27 non-P1 dates adds 1 to m in the same PR.
 - The first push-family read instant (freezing k) is recorded in the Status cell when it happens.
 - **Walk-2 extension.** MiScusi job #1036 (the walk-2 follower) needs its time extension by about **2026-10-22T19:21Z**.
+  - *Factual correction 2026-10-19 (manager12; a stated job date only, no rule, threshold, window or decision changes):* the job's 14-day maximum is now about **2026-10-29T19Z** (2026-10-22T19:21Z was the limit before the extension). A successor job is planned (session cron 2026-10-29T12:17Z) so that walk 2 continues to about 2026-11-07T03Z for EXP-027 (W0 2026-10-18T03, E = W0 + 480 h). The ledger window for Forward walk 2 is unchanged.
 
 ## 3. Scope and seals
 
