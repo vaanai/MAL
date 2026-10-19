@@ -215,13 +215,13 @@ def cell_record(arm: str, stake: Any, res: Mapping[str, Any] | None, decides: bo
     if res is None:
         return rec
     rec["arena_status"] = status_of(res)
+    if base_status(res) not in DECIDABLE:  # NOT_DECIDABLE / REPORT_ONLY / PENDING / NOT_READY: final or unripe, it claims nothing, so no cell number is carried (DEC-031 section 2)
+        rec["status"] = base_status(res)
+        return rec
     bk = (res.get("books") or {}).get(key)
     cells = (bk or {}).get("cells") or {}
     rec["subcells"] = {k: _slim(cells[k]) for k in SUBCELLS if k in cells}
     rec["report_1p3"] = {k: _slim(c) for k, c in cells.items() if "_1p3_" in k}
-    if base_status(res) not in DECIDABLE:
-        rec["status"] = base_status(res)
-        return rec
     full = len(rec["subcells"]) == len(SUBCELLS)
     rec["status"] = "PASS" if full and all(c["pass"] for c in rec["subcells"].values()) else "FAIL"
     ebd = [c["ex_best_day_sol"] for c in rec["subcells"].values() if c["ex_best_day_sol"] is not None]
@@ -477,12 +477,12 @@ def _git_sha() -> str:
 def result_v1(read: Mapping[str, Any], *, command: str, created_utc: str, git_sha: str) -> dict[str, Any]:
     """A result.v1 record of the deciding cell. metrics.flat / pressure_s1 show the strand rule "total"; each gate tick is true only under BOTH strand rules.
     stage is never "passed": a pass here is a screen."""
-    deciding = next((c for c in read["cells"] if c["decides"]), None)
-    res_cells = read["_deciding_cells"]
-    span = int(read["window_days"])
     gate_read = read["read"] == "book"
+    decidable = bool(read["decidable"])  # PASS or FAIL: the only statuses whose cells are valid (a NOT_DECIDABLE / REPORT_ONLY read is final and claims nothing)
+    res_cells = read["_deciding_cells"] if decidable else {}  # no cell number, no tick, for a read that is not decidable
+    span = int(read["window_days"])
     none = {k: False for k in ("n_ge_100", "days_ge_5", "majority_days_positive", "ci90_lo_gt_0", "ex_top3_gt_0", "pass")}
-    gf, gp = (_gate_leg(res_cells, "flat"), _gate_leg(res_cells, "press")) if gate_read else (dict(none), dict(none))
+    gf, gp = (_gate_leg(res_cells, "flat"), _gate_leg(res_cells, "press")) if gate_read and decidable else (dict(none), dict(none))
     st = read["status"]
     rec = {"schema_version": "result.v1", "tool": "tools/hv4_read.py", "git_sha": git_sha, "command": command,
            "config": {"read": read["read"], "bot_id": read.get("bot_id"), "instant_ms": read["instant_ms"], "deciding": "1.9 s, stake 0.25, flat and pressure, strand rules total and sc",
@@ -496,7 +496,7 @@ def result_v1(read: Mapping[str, Any], *, command: str, created_utc: str, git_sh
            "tries": {"data_key": hashlib.sha256(canon(["hv4", read.get("bot_id"), read["clock_start_ms"]]).encode()).hexdigest()[:16], "variant_n": int(read["tries"]["variant_n"]),
                      "of_m": int(read["tries"]["of_m"])},
            "runtime_s": None, "peak_rss_mb": None, "created_utc": created_utc,
-           "notes": read["disclosure"]["screen_not_promotion"] + f" Status {st}." + ("" if gate_read else " NOT A GATE READ: the D14 learning comparison; the gate ticks are false by construction, not evaluated.") + (" Not proposed for canary: ex-best-day is not positive." if read.get("not_proposed_for_canary") else "")}
+           "notes": read["disclosure"]["screen_not_promotion"] + f" Status {st}." + ("" if decidable else " Not decidable: no cell number and no gate tick is reported (the read is final and claims nothing).") + ("" if gate_read else " NOT A GATE READ: the D14 learning comparison; the gate ticks are false by construction, not evaluated.") + (" Not proposed for canary: ex-best-day is not positive." if read.get("not_proposed_for_canary") else "")}
     errs = validate_result(rec)
     if errs:
         raise ValueError("result.v1 record invalid:\n" + "\n".join(errs))
@@ -515,8 +515,11 @@ def console_rows(read: Mapping[str, Any], created_utc: str) -> dict[str, Any]:
     tag = f"hv4-{who.lower().replace(' ', '-')}"
     dec = next((c for c in read["cells"] if c["decides"]), None)
     gate = read["read"] == "book"
+    decidable = bool(read["decidable"])
     parts = [f"Haiku trader v4 {'gate read' if gate else 'D14 learning comparison (NOT a gate read)'}, {who}, instant {read['instant_ms']} ({_hour(read['instant_ms'])}Z): {read['status']}."]
-    if dec and dec["subcells"]:
+    if not decidable:
+        parts.append(f"Not decidable ({read['status']}): the read is final and claims nothing; no cell number and no gate tick is reported here.")
+    elif dec and dec["subcells"]:
         s = dec["subcells"].get("flat_1p9_total") or next(iter(dec["subcells"].values()))
         parts.append(f"Deciding cell (1.9 s, stake 0.25, flat and pressure, both strand rules; flat and total rule shown): n {s['n']}, total {_f(s['total_sol'])} SOL, "
                      f"ex-top-3 {_f(s['ex_top3_sol'])}, ex-best-day {_f(s['ex_best_day_sol'])}; weakest ex-best-day over the four sub-cells {_f(dec['ex_best_day_min_sol'])}.")
@@ -641,6 +644,7 @@ def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = RE
     order = sorted(reg, key=lambda k: (reg[k]["clock_start_ms"], k))
     read = {"schema": SCHEMA, "read": "book", "bot_id": bot_id, "instant_ms": b, "now_ms": now, "created_utc": _created(now), "clock_start_ms": reg[bot_id]["clock_start_ms"],
             "t0_ms": t0, "window_days": max(1, len(calendar_days(reg[bot_id]["clock_start_ms"], b))), "status": status_of(main), "arena_status": main["status"],
+            "decidable": base_status(main) in DECIDABLE,
             "cells": cells, "cell_count_in_design": len(gate_cells()), "v1": v1, "v2": v2, "v1_and_v2": v12, "adds_value": adds,
             "not_proposed_for_canary": bool(main["status"] == "PASS" and (main.get("deciding") or {}).get("not_proposed_for_canary")),
             "disclosure": disclosure(reg, now, n_books, cells_read, ebd), "tries": {"variant_n": order.index(bot_id) + 1, "of_m": len(order)},
@@ -744,7 +748,7 @@ def read_learning(*, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PA
     ebd = {"CON-L@0.25": cons[0]["ex_best_day_min_sol"]}
     n_books = sum(len((r.get("books") or {})) for r in res.values())
     read = {"schema": SCHEMA, "read": "learning", "bot_id": None, "instant_ms": cut, "look_ms": look, "now_ms": now, "created_utc": _created(now), "clock_start_ms": t0, "t0_ms": t0,
-            "window_days": WINDOW_DAYS, "status": out["status"], "cells": cons, "learning": out, "v1": None, "v2": None,
+            "window_days": WINDOW_DAYS, "status": out["status"], "decidable": out["status"] in DECIDABLE, "cells": cons, "learning": out, "v1": None, "v2": None,
             "disclosure": disclosure(reg, now, n_books, n_books * len(AS.MODELS) * len(AS.LATS), ebd), "tries": {"variant_n": 1, "of_m": len(reg)},
             "inputs": _inputs(registry, ledger_root, reads_dir), "learning_arms": {a: {k: v for k, v in r.items() if k != "books"} for a, r in res.items()}}
     read["_deciding_cells"] = (res["CON-L"].get("books") or {}).get(PRIMARY_KEY, {}).get("cells", {})

@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -293,6 +294,56 @@ def test_an_incident_before_the_boundary_makes_the_gate_read_not_decidable_and_i
     assert json.loads((Path(w.reads) / "CON-L.json").read_text())["status"] == "NOT_DECIDABLE"  # stored: a NOT_DECIDABLE is final for the bot_id
     with pytest.raises(R.Refused, match="second run"):
         w.book("CON-L")
+
+
+NUMBER = re.compile(r"[+-]\d+\.\d{6}\b")  # the Console draft prints every cell number as a signed 6-decimal figure
+
+
+def outputs(w, bot="CON-L"):
+    rd = Path(w.out) / "reads"
+    return tuple(json.loads((rd / f"{bot}.{k}.json").read_text()) for k in ("hv4", "result", "console"))
+
+
+def assert_claims_nothing(w, status, bot="CON-L"):
+    """A read that is not PASS or FAIL is final and claims nothing (DEC-031 section 2): no gate tick, no pass_both, no cell number in result.v1 or the Console draft."""
+    hv4, rec, con = outputs(w, bot)
+    assert hv4["status"] == status and hv4["decidable"] is False
+    assert rec["config"]["status"] == status and rec["gate"]["pass_both"] is False and rec["stage"] == "forward-paper"
+    assert not any(rec["gate"]["flat"].values()) and not any(rec["gate"]["pressure_s1"].values())
+    for leg in ("flat", "pressure_s1"):
+        assert rec["metrics"][leg]["n_trades"] == 0 and rec["metrics"][leg]["total_sol"] is None and rec["metrics"][leg]["ex_top3_sol"] is None
+    dec = next(c for c in hv4["cells"] if c["decides"])
+    assert dec["subcells"] == {} and dec["report_1p3"] == {} and dec["ex_best_day_min_sol"] is None
+    text = con["stream"][0]["text"]
+    assert "Deciding cell" not in text and not NUMBER.search(text) and "claims nothing" in text
+    assert "NOT PROPOSED FOR CANARY" not in text and "claims nothing" in rec["notes"]
+
+
+def test_a_not_decidable_book_whose_cells_would_pass_reports_no_gate_tick_and_no_number(tmp_path):
+    # (a) a ledger incident before the boundary: the cells at 4e6 per trade would all pass
+    w = con_world(tmp_path / "inc")
+    (Path(w.root) / "CON-L").mkdir(parents=True, exist_ok=True)
+    (Path(w.root) / "CON-L" / "incidents.jsonl").write_text(json.dumps({"kind": "buy_refused", "at_ms": DAY0 + 2 * DAY, "bot_id": "CON-L", "row_decision_ms": DAY0 + 2 * DAY}) + "\n")
+    r = w.book("CON-L")
+    assert r["arena_status"] == "NOT_DECIDABLE"
+    assert r["arena_score_read"]["books"]["0.25"]["cells"]["flat_1p9_total"]["pass"] is True  # the raw arena cell would have passed: this is the bug's precondition
+    assert_claims_nothing(w, "NOT_DECIDABLE")
+    # (b) a restart orphan older than the settle window
+    w2 = World(tmp_path / "orphan")
+    rows = book_rows("CON-L", noisy(4e6, 5, 20, 11))
+    last = max(i for i, x in enumerate(rows) if x["kind"] == "trade")
+    w2.add(rows[:last])
+    w2.book("CON-L", now_ms=rows[last]["decision_ms"]["entry"] + 25 * 3_600_000)
+    assert_claims_nothing(w2, "NOT_DECIDABLE")
+    # (c) a bonding row: no deciding verdict (REPORT_ONLY)
+    w3 = World(tmp_path / "bonding")
+    rows = book_rows("CON-L", noisy(4e6, 5, 20, 11))
+    for x in rows:
+        if x["kind"] == "trade":
+            x["prog"] = "pump_bonding"
+    w3.add(rows)
+    assert w3.book("CON-L")["arena_status"] == "REPORT_ONLY"
+    assert_claims_nothing(w3, "REPORT_ONLY")
 
 
 def test_a_pass_that_rests_on_its_best_day_is_not_proposed_for_canary(tmp_path):
