@@ -79,7 +79,7 @@ from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Sequence
+from typing import Any, Callable, Iterable, Iterator, Sequence
 
 import numpy as np
 
@@ -126,7 +126,9 @@ def block_group(name: str) -> str | None:
 def canonical_block(name: str) -> str | None:
     root = name.split("/")[0]
     return root if root in CANONICAL_BLOCKS else None
-EXIT_REASONS = ("time", "tp", "sl", "trail")
+EXIT_REASONS = ("time", "tp", "sl", "trail", "event")
+EVENT_CODE = 4  # EXIT_REASONS index of an exit_fire exit (the price-path codes are 1..3)
+EXIT_PROBE_MIN = 200  # exit-causality probe: fires probed per block needed for registration (0 failures)
 
 
 class Refused(Exception):
@@ -141,6 +143,7 @@ class ExitSpec:
     sl: float | None = None
     trail: float | None = None
     cell: str | None = None
+    exit_fire: Callable[..., Any] | None = None  # event-driven exit: (ExitView, landing_slot, cap_slot) -> fire slot | None (see ExitView)
 
     def problem(self) -> str | None:
         return exit_problem(self)
@@ -161,6 +164,9 @@ def exit_problem(spec: Any) -> str | None:
         return "sl must be a multiple in (0, 1)"
     if trail is not None and not (ok(trail) and 0.0 < trail < 1.0):
         return "trail must be a multiple in (0, 1)"
+    fire = getattr(spec, "exit_fire", None)
+    if fire is not None and not callable(fire):
+        return "exit_fire must be a callable (view, landing_slot, cap_slot) -> fire slot | None"
     return None
 
 
@@ -168,11 +174,16 @@ def exit_problem(spec: Any) -> str | None:
 class Cell:
     """`event_triggered` is DECLARED per cell in DECLARE before any price (QP on #752): True for a cell that fires on a print, a wallet or any market event; False only for a cell that
     fires on a clock or a fixed grid. The default is True, so an undeclared cell is treated as the stricter kind: an event cell may not register until its worst-in-slot mean is
-    measured and > 0 on all four sub-cells (R7)."""
+    measured and > 0 on all four sub-cells (R7).
+
+    `event_exit` is DECLARED the same way, for the EXIT: True for a cell whose exit is decided by an ExitSpec.exit_fire (a tape event), whatever its entry is. Such a cell is treated like
+    an event-triggered one for the worst-in-slot kill (the sell is placed on a market event, so the lower leg <= 0 kills it) even when its entry is grid-based. The kit also applies it to a
+    cell that carries an exit_fire without declaring it (the stricter reading; reported as undeclared). Default False: a time / tp / sl / trail exit is a clock or a price rule."""
 
     name: str
     cooldown_s: float = 60.0
     event_triggered: bool = True
+    event_exit: bool = False
 
 
 @dataclass
@@ -609,15 +620,18 @@ def post_price(a: dict) -> np.ndarray:
     return qp / np.where(bp > 0, bp, a["b"])
 
 
-def resolve_exit(a: dict, pp: np.ndarray, sd: int, spec: ExitSpec, rate: float, sps: float) -> tuple[int, int, bool]:
-    """(exit decision slot, reason code, clamped). Time exit at sd + round(hold_s x slots/s); tp / sl / trail on the first eligible print with slot in
-    [sd + k_slow + 1, time exit], whichever comes first."""
-    sl = a["sl"]
-    kslow = int(F.k_slots_vec(LAT_DECIDING, sps, "ceil"))
-    floor_slot = sd + kslow + 1
+def _exit_clock(spec: ExitSpec, sd: int, rate: float, sps: float) -> tuple[int, int, bool]:
+    """(floor_slot, cap_slot, clamped): the earliest slot an exit may be DECIDED (the slower entry leg has landed: sd + k_slow + 1) and the time cap's decision slot (never before the floor)."""
+    floor_slot = sd + int(F.k_slots_vec(LAT_DECIDING, sps, "ceil")) + 1
     xt = sd + int(np.rint(spec.hold_s * rate))
-    clamped = xt < floor_slot
-    xs, why = max(xt, floor_slot), 0
+    return floor_slot, max(xt, floor_slot), xt < floor_slot
+
+
+def _price_exit(a: dict, pp: np.ndarray, sd: int, spec: ExitSpec, rate: float, sps: float) -> tuple[int, int, bool]:
+    """The time cap and the tp / sl / trail path rules (the kit's original resolver, unchanged): (exit decision slot, reason code 0..3, clamped)."""
+    sl = a["sl"]
+    floor_slot, xs, clamped = _exit_clock(spec, sd, rate, sps)
+    why = 0
     if spec.tp is None and spec.sl is None and spec.trail is None:
         return xs, why, clamped
     jd = int(np.searchsorted(sl, sd, "left"))
@@ -636,6 +650,108 @@ def resolve_exit(a: dict, pp: np.ndarray, sd: int, spec: ExitSpec, rate: float, 
             best = (int(m[0]), code)
     if best is not None:
         xs, why = int(sl[j0 + best[0]]), best[1]
+    return xs, why, clamped
+
+
+class ExitLookAhead(Refused):
+    """An exit_fire read rows after the slot it fired at (or past the cap): look-ahead. The run is refused; nothing it priced is a result."""
+
+
+class ExitFireError(Refused):
+    """An exit_fire returned something that is not a slot in [landing_slot, cap_slot]."""
+
+
+class ExitView:
+    """What an `exit_fire(view, landing_slot, cap_slot)` callable sees of ONE pool: its prints with slot <= cap_slot (the kit never hands over anything later) through a causal reveal.
+
+    `landing_slot` is the earliest slot an exit may be decided: decision slot + k_slow + 1, the kit's own floor (the engine may not sell before the slower entry leg lands).
+    `cap_slot` is the time cap's decision slot (never before the floor). Also on the view: `sd` (decision slot: a window may start there), `rate` (slots per second of the decision
+    hour) and `sps` (seconds per slot). History before `sd` is there (the kit keeps the previous hour); a rule that wants a window truncated at the entry cuts it itself.
+      view.upto(slot)    -> dict of read-only arrays (sl, ib, so, tk, q, b, v, pp) of the prints with slot <= `slot`; a slot after cap_slot raises ExitLookAhead.
+      view.print_slots() -> iterator of the distinct print slots in [landing_slot, cap_slot], ascending; each one yielded counts as read.
+    CONTRACT (enforced when the callable returns): the callable may read ONLY rows with slot <= the slot it returns. The kit keeps the largest slot asked for (`max_read`); a fire with
+    max_read > fire slot raises ExitLookAhead. A fire must be an int slot in [landing_slot, cap_slot] (else ExitFireError); None = no fire (the time cap, or a tp / sl / trail, decides).
+    This is structural for an honest callable only: Python cannot stop one from reaching into private state, so the exit-causality probe re-runs the callable on a view whose data is
+    cut after the fire slot and requires the same slot (see exit_fire_probe)."""
+
+    __slots__ = ("_a", "sd", "landing_slot", "cap_slot", "rate", "sps", "_max_read")
+
+    def __init__(self, a: dict, pp: np.ndarray, sd: int, landing_slot: int, cap_slot: int, rate: float, sps: float, last_slot: int | None = None) -> None:
+        last = cap_slot if last_slot is None else min(cap_slot, last_slot)
+        n = int(np.searchsorted(a["sl"], last, "right"))
+        arr = {k: a[k][:n].view() for k in ("sl", "ib", "so", "tk", "q", "b", "v")}
+        arr["pp"] = pp[:n].view()
+        for v in arr.values():
+            v.flags.writeable = False
+        self._a = arr
+        self.sd, self.landing_slot, self.cap_slot, self.rate, self.sps = int(sd), int(landing_slot), int(cap_slot), float(rate), float(sps)
+        self._max_read = -1
+
+    @property
+    def max_read(self) -> int:
+        return self._max_read
+
+    def upto(self, slot: int) -> dict:
+        slot = int(slot)
+        if slot > self.cap_slot:
+            raise ExitLookAhead(f"exit_fire asked for rows up to slot {slot}, after the cap slot {self.cap_slot}")
+        self._max_read = max(self._max_read, slot)
+        m = int(np.searchsorted(self._a["sl"], slot, "right"))
+        return {k: v[:m] for k, v in self._a.items()}
+
+    def print_slots(self) -> Iterator[int]:
+        sl = self._a["sl"]
+        j0, j1 = int(np.searchsorted(sl, self.landing_slot, "left")), len(sl)
+        last = -1
+        for s in sl[j0:j1].tolist():
+            if s != last:
+                last = s
+                self._max_read = max(self._max_read, s)
+                yield s
+
+    def checked_fire(self, fire: Any) -> int | None:
+        """The callable's return value, validated against the contract. None passes; otherwise an int slot in [landing_slot, cap_slot] with max_read <= it."""
+        if fire is None:
+            return None
+        if isinstance(fire, bool) or not isinstance(fire, (int, np.integer)):
+            raise ExitFireError(f"exit_fire returned {fire!r}: a fire is an int slot or None")
+        fire = int(fire)
+        if not self.landing_slot <= fire <= self.cap_slot:
+            raise ExitFireError(f"exit_fire returned slot {fire} outside [{self.landing_slot}, {self.cap_slot}] (landing floor, cap)")
+        if self._max_read > fire:
+            raise ExitLookAhead(f"exit_fire fired at slot {fire} but read rows up to slot {self._max_read}: look-ahead")
+        return fire
+
+
+def run_exit_fire(fire: Callable[..., Any], a: dict, pp: np.ndarray, sd: int, landing: int, cap: int, rate: float, sps: float, last_slot: int | None = None) -> int | None:
+    """One exit_fire call on a causal view (rows with slot <= min(cap, last_slot)); the validated fire slot or None."""
+    view = ExitView(a, pp, sd, landing, cap, rate, sps, last_slot)
+    return view.checked_fire(fire(view, landing, cap))
+
+
+def exit_fire_probe(spec: ExitSpec, a: dict, pp: np.ndarray, sd: int, rate: float, sps: float, fire_slot: int) -> bool:
+    """Exit-causality probe: True if spec.exit_fire still returns `fire_slot` when every row after it is cut off. A raise on the cut data (an index past the end, a look-ahead
+    refusal) is a failure: a callable that decides on rows after its own fire slot cannot run on the data that existed then."""
+    landing, cap, _ = _exit_clock(spec, sd, rate, sps)
+    try:
+        return run_exit_fire(spec.exit_fire, a, pp, sd, landing, cap, rate, sps, last_slot=int(fire_slot)) == int(fire_slot)
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def resolve_exit(a: dict, pp: np.ndarray, sd: int, spec: ExitSpec, rate: float, sps: float) -> tuple[int, int, bool]:
+    """(exit decision slot, reason code, clamped). Time exit at sd + round(hold_s x slots/s); tp / sl / trail on the first eligible print with slot in
+    [sd + k_slow + 1, time exit], whichever comes first. With spec.exit_fire the callable is run on a causal ExitView and its fire slot competes the same way: the earliest of the
+    price-path exit, the fire slot and the time cap decides. Ties: a tp / sl / trail on the fire slot keeps its own code (same slot, so the price is the same); a fire on the time
+    cap's own slot is an event exit. The sell then lands by the normal exit-lag rule from the exit DECISION slot, whatever decided it."""
+    xs, why, clamped = _price_exit(a, pp, sd, spec, rate, sps)
+    fire = getattr(spec, "exit_fire", None)
+    if fire is None:
+        return xs, why, clamped
+    landing, cap, _ = _exit_clock(spec, sd, rate, sps)
+    f = run_exit_fire(fire, a, pp, sd, landing, cap, rate, sps)
+    if f is not None and (f < xs or (f == xs and why == 0)):
+        xs, why = f, EVENT_CODE
     return xs, why, clamped
 
 
