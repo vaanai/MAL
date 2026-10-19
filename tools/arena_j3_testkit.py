@@ -51,6 +51,11 @@ class World:
     def rows(self) -> list[dict[str, Any]]:
         return sorted(self._rows, key=lambda r: (r["t_recv_ms"], r["signature"]))
 
+    @property
+    def ordered(self) -> list[dict[str, Any]]:
+        """Sorted by time only (stable): rows of the same millisecond keep the order they were added in, which `rows` does not promise."""
+        return sorted(self._rows, key=lambda r: r["t_recv_ms"])
+
     def pool_create(self, t: int, pool: str, mint: str, quote: str = WSOL) -> None:
         self._rows.append({"v": 1, "type": "pool_create", "prog": "pumpswap", "slot": slot_of(t), "t_recv_ms": t, "signature": self._sig(t, "pc"), "event_index": 0,
                            "pool": pool, "mint": mint, "quote_mint": quote})

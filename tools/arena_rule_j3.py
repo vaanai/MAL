@@ -161,7 +161,7 @@ class J3Rule(Rule):
     universe = "pumpswap_wsol"  # the host drops any Buy whose pool is not a PumpSwap pool with a verified WSOL quote: a child can never become an order
 
     def __init__(self, k: int, hold_s: int, tape_start_ms: int | None = None) -> None:
-        if k not in KS or hold_s not in HOLDS_S:
+        if not _is_int(k) or not _is_int(hold_s) or k not in KS or hold_s not in HOLDS_S:  # a bool is not a cell (True == 1)
             raise ValueError(f"J3 cells are k in {KS} x H in {HOLDS_S}; got k={k!r}, H={hold_s!r}")
         self.k, self.hold_s = k, hold_s
         self.hold_ms = hold_s * 1000 + LEG_MS  # H from the landing of the entry at the 1.9 s leg (module docstring, item 4)
