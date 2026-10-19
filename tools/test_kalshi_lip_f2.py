@@ -1397,3 +1397,54 @@ def test_the_help_and_docstring_say_eight_texts():
     helptext = " ".join(f2.build_parser().format_help().split())
     assert "eight inherited" in helptext and "six inherited" not in helptext
     assert "eight inherited" in f2.verify_lip_texts.__doc__ and len(f2.LIP_F1_TEXTS) == 8
+
+
+# ======================== reviewer finding: gate.json moves first; the marker carries the identity if gate.json is missing
+def test_gate_json_is_moved_first_and_a_kill_after_the_first_rename_cannot_let_another_r_in(tmp_path, monkeypatch, covered, texts, gates):
+    import types
+    w = f2_world(tmp_path / "w", monkeypatch)
+    ctx = ctx_for(texts, gates)
+    out = tmp_path / "out"
+    r1, r2 = "2026-10-26T00:00:00Z", "2026-10-27T00:00:00Z"
+    order, real_replace = [], f2.os.replace
+
+    def kill_after_first(src, dst):
+        order.append(Path(dst).name)
+        if len(order) == 1:
+            real_replace(src, dst)
+            return
+        raise OSError("synthetic kill between the renames")
+    with monkeypatch.context() as mp:
+        mp.setattr(f2, "os", types.SimpleNamespace(replace=kill_after_first))
+        with pytest.raises(OSError, match="synthetic kill"):
+            f2.run_f2(f2_cfg(w, out, read_us=st.at(r1)), "A", ctx)
+    assert order[0] == "gate.json"                                              # gate.json is renamed first
+    left = sorted(p.name for p in out.iterdir())
+    assert "gate.json" in left and "units.parquet" not in left and f2.MARKER in left   # killed after the first rename
+    gate = json.loads((out / "gate.json").read_text())
+    assert gate["book"] == "F2-A" and gate["f2_run"]["read_instant"] == r1       # already relabelled and identified
+    # another R is refused; the same R may finish the job
+    with pytest.raises(f2.F2Refusal, match="another candidate"):
+        f2.run_f2(f2_cfg(w, out, read_us=st.at(r2)), "A", ctx)
+    f2.run_f2(f2_cfg(w, out, read_us=st.at(r1)), "A", ctx)
+    assert "units.parquet" in {p.name for p in out.iterdir()}
+
+
+def test_without_a_gate_json_the_markers_identity_keeps_another_r_out(tmp_path):
+    out = tmp_path / "o"
+    out.mkdir()
+    run = {"mode": "read_instant", "read_instant": "2026-10-26T00:00:00Z", "asof": None}
+    (out / f2.MARKER).write_text(json.dumps({"lip_f2_variant": "F2-A", "f2_run": run}))
+    (out / "units.parquet").write_text("x")                                      # a staged file already moved, gate.json missing
+    f2.check_out(out, "A", run=run)
+    with pytest.raises(f2.F2Refusal, match=r"already holds the LIP-F2-VARIANT.json of another candidate"):
+        f2.check_out(out, "A", run=dict(run, read_instant="2026-10-27T00:00:00Z"))
+    with pytest.raises(f2.F2Refusal, match="another candidate"):
+        f2.check_out(out, "A", run=dict(run, mode="scan", read_instant=None, asof="2026-10-28T00:00:00Z"))
+    (out / "units.parquet").unlink()                                             # a marker-only folder (killed during the sim)
+    with pytest.raises(f2.F2Refusal, match="another candidate"):
+        f2.check_out(out, "A", run=dict(run, read_instant="2026-10-27T00:00:00Z"))
+    f2.check_out(out, "A", run=run)
+    (out / f2.MARKER).write_text(json.dumps({"lip_f2_variant": "F2-A"}))          # a marker with no identity: refuse
+    with pytest.raises(f2.F2Refusal, match="another candidate"):
+        f2.check_out(out, "A", run=run)

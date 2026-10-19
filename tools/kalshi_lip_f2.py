@@ -645,22 +645,25 @@ def check_out(out, variant, inputs=(), run=None):
     if marker.is_file() and not _is_f2_json(marker, variant):
         raise F2Refusal(f"--out {out} holds the marker of another F2 variant (or a foreign one)")
     held = [f for f in SIM_OUTPUT_FILES if (out / f).exists()]
-    if not held:
-        return
-    mine = marker.is_file() and _is_f2_json(marker, variant)
-    if mine and (out / "gate.json").exists():
-        mine = _is_f2_json(out / "gate.json", variant)
-    if not mine:
-        raise F2Refusal(f"--out {out} already holds simulator files {held} that are not {LABELS[variant]} output; "
-                        "each F2 variant writes to its own directory")
-    if run is not None and (out / "gate.json").exists():
-        try:
-            had = json.loads((out / "gate.json").read_text()).get("f2_run")
-        except (OSError, ValueError, AttributeError):
-            had = None
-        if had != run:
-            raise F2Refusal(f"--out {out} already holds the gate.json of another candidate ({had}); use one new --out per "
-                            f"variant per candidate R (and per --scan), never reused for another R (this run: {run})")
+    if held:
+        mine = marker.is_file() and _is_f2_json(marker, variant)
+        if mine and (out / "gate.json").exists():
+            mine = _is_f2_json(out / "gate.json", variant)
+        if not mine:
+            raise F2Refusal(f"--out {out} already holds simulator files {held} that are not {LABELS[variant]} output; "
+                            "each F2 variant writes to its own directory")
+    if run is not None:
+        # the candidate identity is the gate.json's f2_run, or the marker's when there is no gate.json (a run killed between
+        # the renames of the staged files, or during the simulator, must not let another R into the folder)
+        src = out / "gate.json" if (out / "gate.json").exists() else (marker if marker.is_file() else None)
+        if src is not None:
+            try:
+                had = json.loads(src.read_text()).get("f2_run")
+            except (OSError, ValueError, AttributeError):
+                had = None
+            if had != run:
+                raise F2Refusal(f"--out {out} already holds the {src.name} of another candidate ({had}); use one new --out per "
+                                f"variant per candidate R (and per --scan), never reused for another R (this run: {run})")
 
 
 # ------------------------------------------------------------------------------------------------ the dry run
@@ -696,6 +699,14 @@ def _stamp_parquet(out, lab):
         p = Path(out) / f
         if p.exists():
             pq.write_table(pq.read_table(p).replace_schema_metadata(meta), p, compression="snappy")
+
+
+def _move_into_place(stage, out):
+    """Rename the staged, relabelled files into --out: gate.json FIRST, so a kill between two renames leaves the
+    candidate's identity (its gate.json) in --out before any other file (and check_out falls back to the marker)."""
+    for f in ("gate.json",) + tuple(x for x in SIM_OUTPUT_FILES if x != "gate.json"):
+        if (stage / f).exists():
+            os.replace(stage / f, out / f)
 
 
 def run_f2(cfg, variant, ctx):
@@ -751,9 +762,7 @@ def run_f2(cfg, variant, ctx):
         (stage / "table.txt").write_text(f2_table(res))
         _stamp_parquet(stage, lab)
         # ---- only now do the files enter --out, each already carrying the F2 labels
-        for f in SIM_OUTPUT_FILES:
-            if (stage / f).exists():
-                os.replace(stage / f, out / f)
+        _move_into_place(stage, out)
         shutil.rmtree(stage, ignore_errors=True)
     except BaseException:
         # a refused / failed run leaves no simulator-labelled file in --out and no marker-only directory behind
