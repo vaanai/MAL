@@ -109,7 +109,7 @@ EXECUTOR_BLOB = "03995837317f"
 REFUSAL_PREFIX = "bad_intent:"
 SCHEMA_FAULT_PREFIX = "bad_intent:missing_"
 AMENDMENT_1 = "DEC-031 Amendment 1"
-AMENDMENT_1_INSTANT = "@@INSTANT@@"  # the instant the amendment was written (UTC); the same instant is in the DEC-031 text
+AMENDMENT_1_INSTANT = "2026-10-19T03:31:35Z"  # the instant the amendment was written (UTC); the same instant is in the DEC-031 text
 
 
 # ---------------------------------------------------------------------------------------------------------------- the executor's parser (DEC-031 Amendment 1)
@@ -159,8 +159,9 @@ def executor_refusal(trig: dict) -> str | None:
     record it does not take for a pv trigger) and for an exception. Reads decision-time fields only: it is given the trigger record and nothing else of the pool."""
     row = {k: v for k, v in trig.items() if k != "_start"}  # the record as the shadow wrote it (ShadowDir adds `_start`)
     who = f"pool {row.get('pool')!r}"
+    parse = executor_parser()  # an import or blob problem is its own ParserFault, not an exception of the parser
     try:
-        parsed, why = executor_parser()(row, VARIANT, None)
+        parsed, why = parse(row, VARIANT, None)
     except Exception as exc:  # noqa: BLE001 - any exception from the executor's parser is a stop, never a guess
         raise ParserFault(f"parse_shadow_trigger raised {type(exc).__name__} on a trigger record ({who}): {exc}") from exc
     if parsed is not None and why is None:

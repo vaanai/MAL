@@ -90,3 +90,8 @@ Up to now each candidate has been certified one at a time on a sealed block. Edg
 - Any change to a running job's command.
 - Counting a trade decided before its book's clock.
 - Opening the outputs of jobs #817, #729, #658 or #662, or of the H5 executor.
+
+## 5. Amendments
+
+### Amendment 1 (written 2026-10-19T03:31:35Z, after the H5 books' clock of 2026-10-18T06:00:00Z and before any read instant)
+DEC-031 Amendment 1 (before any H5 arena read instant; outcome-blind). For h5v1-boostfloor-a1 and h5v2-boostclock-a1, a pv trigger record for which `tools.h5_executor.parse_shadow_trigger(row, "pv", None)` at blob 03995837317f returns a `bad_intent` refusal is the frozen bot's own pre-send refusal. It is not an entry decision. It is not an attempt for §2's count or read instant, and it is never priced. Its count by reason is reported beside every count and the read. A `bad_intent:missing_*` result is a schema fault and stops the scorer. Every other exclusion stays under the 5% cap, computed over non-refused attempts. Only the counts of jobs #1175 and #1176 were in view. No arena H5 outcome, fill, exit, strip, ledger row or P&L was opened. Code, frozen sha, clock, window, stake, deciding cell and gate are unchanged. `tools/arena_h5_score.py` changes from sha256 a3dd6b31c38081b535cb965223623ae5797341b7374b0d3b3196799e79e65c27 to dfe7f018601633921f06668fd1af3aaff7b87bf00f321d1540e10b41f8ab6006.
