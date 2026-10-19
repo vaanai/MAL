@@ -36,6 +36,7 @@ import os
 import random
 import sys
 import time
+import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -63,10 +64,11 @@ class SimClock:
 class MockRpc:
     """The `post` callable of tools.hv4_chain.RpcClient: JSON-RPC answers built from recorded public account bytes. Counts calls and response bytes."""
 
-    def __init__(self, clock: SimClock, mint_of_pool, *, seed: int = 1) -> None:
+    def __init__(self, clock: SimClock, mint_of_pool, slot_fn=None, *, seed: int = 1) -> None:
         from tools import hv4_chain as H
 
         self.H, self.clock, self.mint_of_pool = H, clock, mint_of_pool
+        self.slot_fn = slot_fn  # the arena's latest slot: a chain fact stamped with a slot AFTER it is refused as a leak (hv4_prefetch._slot_ok)
         fx = json.loads(FIXTURE.read_text())
         pump = [v for v in fx["mints"].values() if v["label"].startswith("non_synthetic")]
         self.mint_blobs = [(v["data_b64"], v["owner"]) for v in pump]
@@ -77,7 +79,7 @@ class MockRpc:
         self.supply = 1_000_000_000 * 10 ** 6
 
     def _slot(self) -> int:
-        return 400_000_000 + self.clock.ms // 400
+        return max(0, int(self.slot_fn()) - 2) if self.slot_fn is not None else 400_000_000 + self.clock.ms // 400
 
     def _account(self, data_b64: str, owner: str) -> dict:
         return {"context": {"slot": self._slot()}, "value": {"data": [data_b64, "base64"], "owner": owner, "lamports": 1_461_600, "executable": False}}
@@ -94,7 +96,7 @@ class MockRpc:
                 raw[H.POOL_BASE_MINT: H.POOL_BASE_MINT + 32] = H.M.b58decode(mint)
                 res = self._account(base64.b64encode(bytes(raw)).decode(), self.pool_blob["owner"])
             else:
-                b64, owner = self.mint_blobs[hash(addr) % len(self.mint_blobs)]
+                b64, owner = self.mint_blobs[zlib.crc32(addr.encode()) % len(self.mint_blobs)]  # not hash(): str hashes differ per process
                 res = self._account(b64, owner)
         elif method == "getTokenSupply":
             res = {"context": {"slot": self._slot()}, "value": {"amount": str(self.supply), "decimals": 6, "uiAmount": 1e9, "uiAmountString": "1000000000"}}
@@ -185,7 +187,8 @@ class Rig:
         kw = {} if evict_idle_min is None else {"evict_idle_min": evict_idle_min}
         self.state = ArenaState(tape_dir, start_ms=state_start_ms, **kw)
         engine = ArenaEngine(scratch / "ledger", scratch / "bots.json", cfg=R.stack_config(feed_delay_slots=feed_delay_slots), sps_fn=lambda: 0.4)
-        self.rpc_mock = MockRpc(self.clock, lambda a: (p.mint if (p := self.state.pool(a)) is not None and p.prog == "pumpswap" else None))
+        self.rpc_mock = MockRpc(self.clock, lambda a: (p.mint if (p := self.state.pool(a)) is not None and p.prog == "pumpswap" else None),
+                                lambda: self.run.slot)
         bucket = TokenBucket(1e9, burst=1e9)
         client = RpcClient(RpcConfig("http://mock.invalid/rpc", "helius" if holders else "public"), bucket=bucket, post=self.rpc_mock, sleep=lambda s: None,
                            now_ms=self.clock, state_path=root / R.CHAIN_CREDITS_FILE)
