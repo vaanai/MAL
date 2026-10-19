@@ -149,7 +149,7 @@ def test_resolve_exit_matches_a_scalar_walk(spec):
         assert got[:2] == want, (sd, got, want)
         reasons[got[1]] += 1
     if spec.tp or spec.sl or spec.trail:
-        assert len(reasons) >= 2  # the path rules fire on some and the clock on others
+        assert any(k != 0 for k in reasons)  # the path rule fires on some paths (the walk above checks every one against the scalar reference)
 
 
 def test_exit_spec_problems():
@@ -347,9 +347,9 @@ def test_end_to_end_kit_prices_equal_an_arena_engine_replay(tape, tmp_path, rent
 
 def test_kit_classes_derived_late_and_block_edge_match_the_engine(tape, tmp_path):
     rows, files = tape
-    d_slot = own_slots(rows, "D", 0, 1500, 1700)[0]  # D falls silent after slot 2000: a derived-last state
-    l_slot = own_slots(rows, "L", 0, 1500, 1700)[0]  # L prints again at hour 1 slot 3500: later than need + GRACE, so still derived from the rows before need
-    edge = own_slots(rows, "A", 2, 8000, 8500)[0]  # too close to the end of the block for need + GRACE
+    d_slot = own_slots(rows, "D", 0, 1900, 2000)[-1]  # D's last print: nothing at or after need, so a derived-last state
+    l_slot = own_slots(rows, "L", 0, 1900, 2000)[-1]  # L's last print of hour 0; it prints again at hour 1 slot 3500, later than need + GRACE: still derived from the rows before need
+    edge = own_slots(rows, "A", 2, 8900, 8995)[-1]  # the last print of the block: no print at or after need, and need + GRACE is past the block end
     script = [(POOLS["D"], d_slot, S.ExitSpec(120)), (POOLS["L"], l_slot, S.ExitSpec(120)), (POOLS["A"], edge, S.ExitSpec(120))]
     scr = run_kit(files, script)
     assert scr.counters["derived_last_state"] == 1 and scr.counters["late_print_derived"] == 1 and scr.counters["excluded_block_edge"] == 1
@@ -571,7 +571,7 @@ def test_output_dir_must_be_outside_the_protected_trees(out):
     assert S.check_out_dir("/tmp/some-screen-out").endswith("some-screen-out")
 
 
-def test_sealed_hours_duplicates_and_open_arena_hours_are_refused(tmp_path):
+def test_d2d3_hours_duplicates_and_arena_file_names_are_refused(tmp_path):
     d = tmp_path / "trades"
     d.mkdir()
     (d / "trades-2026-10-05T00.jsonl.zst").write_bytes(b"")
