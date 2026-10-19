@@ -532,6 +532,8 @@ def compare_trim(on: dict[str, Any], off: dict[str, Any]) -> dict[str, Any]:
                            "hourly": hourly}
     out["identical"] = bool(out["decision_log_md5"]["equal"] and out["ledger_digest"]["equal"] and out["ledger_digest_no_mint"]["equal"] and out["engine_counters_other_equal"]
                             and not on["hook_errors"] and not off["hook_errors"] and ec_on.get("refused_history_trimmed", 0) == 0 and ran)
+    # arena_paper (TRIM_KEEP_SLOTS): a nonzero rows_below_trim_floor or any history_trimmed refusal VOIDS the equivalence for a live engine even when this tape's md5s match
+    out["equivalence_void"] = bool(ec_on.get("rows_below_trim_floor", 0) > 0 or ec_on.get("refused_history_trimmed", 0) > 0)
     return out
 
 
