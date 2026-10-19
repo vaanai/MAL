@@ -85,7 +85,7 @@ SEND_LAMPORTS = F.SEND_FEE_DECIDING  # 505,000
 RENT_LAMPORTS = F.RENT_REPORT  # 2,039,280 per filled trip (the brief)
 GRACE_SLOTS = 10_000  # about 1 h: the state is the tape print the sim uses; derive from the last print only past this (QP ruling on #708)
 HIST_KEEP_SLOTS = 20_000
-# prune(trim_history=True) keeps, for a pool with NO position, the last print before the cut and every print from the cut on; cut = hw_slot - TRIM_KEEP_SLOTS.
+# ArenaEngine.trim_history() keeps, for a pool with NO position, the last print before the cut and every print from the cut on; cut = hw_slot - TRIM_KEEP_SLOTS.
 # Why that is every print a later pricing call can read (a pool with a position is never trimmed; it keeps all its prints):
 #   * Every pricing read is anchored at a LATER buy()'s slots, never at an earlier one: the guard spot is the last print before call_feed_slot (= hw_slot at that
 #     call, which never falls); the entry legs land at sd + d + k (d >= 0, k >= 0, k from the 1.3 s / 1.9 s legs) and read the last print <= x (bonding) or the first
@@ -1105,7 +1105,7 @@ class ArenaEngine:
                 raise ArenaRefused("clock_not_ready: slot clock not ready (sps unknown)")
             if h.floor is not None and self.slot_at(instant, sps) - int(round(F.NEARBY_WINDOW_S / sps)) < h.floor:  # sd >= slot_at, d >= 0, k >= 0: the least this buy reads
                 self._count("refused_history_trimmed")
-                raise ArenaRefused(f"no_prints: history_trimmed: the nearby window of this buy reaches below slot {h.floor}, where prune(trim_history=True) cut pool {pool}")
+                raise ArenaRefused(f"no_prints: history_trimmed: the nearby window of this buy reaches below slot {h.floor}, where trim_history() cut pool {pool}")
         except ArenaRefused as exc:  # a refused buy is still a decision: it goes in the decision log and counts toward the excluded share
             try:
                 self.ledger.append({"schema": SCHEMA, "kind": "refused", "trade_id": f"{pid}-refused-{instant}", "position_id": pid, "bot_id": bot_id,
@@ -1301,24 +1301,29 @@ class ArenaEngine:
             self._try_pending(p, final=True)
         self.ledger.flush_incidents()
 
-    def prune(self, trim_history: bool = False) -> int:
-        """Drop the history of pools with no open position that have been quiet for HIST_KEEP_SLOTS; returns the number of pools dropped.
-
-        trim_history=True (opt-in; the default is the behaviour above, unchanged) also trims every pool with no open, pending or retrying position to the prints a
-        later pricing call can read: the anchor and everything from hw_slot - TRIM_KEEP_SLOTS on (PoolHist.trim; derivation at TRIM_KEEP_SLOTS). A pool with a
-        position keeps all its prints. The trim changes no price, slot, fill or exclusion: it removes only prints no later buy can read, and a buy that would read
-        below a pool's trim floor is refused instead (buy). The trimmed print count is in counters["hist_trimmed_prints"]."""
+    def prune(self) -> int:
+        """Drop the history of pools with no open position that have been quiet for HIST_KEEP_SLOTS."""
         self.ledger.flush_incidents()  # housekeeping: retry incident lines the disk would not take earlier
         busy = {p.pool for p in self.positions.values()}
         drop = [k for k, h in self.pools.items() if k not in busy and h.last_slot < self.hw_slot - HIST_KEEP_SLOTS]
         for k in drop:
             del self.pools[k]
-        if trim_history:
-            cut = self.hw_slot - TRIM_KEEP_SLOTS
-            n = sum(h.trim(cut) for k, h in self.pools.items() if k not in busy)
-            if n:
-                self.counters["hist_trimmed_prints"] = self.counters.get("hist_trimmed_prints", 0) + n
         return len(drop)
+
+    def trim_history(self) -> int:
+        """Trim the print lists of every pool with no open, pending or retrying position to the prints a later buy can read: the anchor (the last print below the
+        cut) and every print from cut = hw_slot - TRIM_KEEP_SLOTS on (PoolHist.trim; the derivation is at TRIM_KEEP_SLOTS). Returns the number of prints dropped
+        (also counters["hist_trimmed_prints"]). Opt-in: nothing calls it unless a host does, and prune() is unchanged.
+
+        It never drops a pool and never touches a pool's scalar state (mint, venue, last_v_row, the V fallback of _v_of): a revived pool prices exactly as it would
+        have with its whole history. A pool with a position keeps all its prints. It changes no price, slot, fill, V source or exclusion: it removes only prints no
+        later buy can read, and a buy that would read below a pool's trim floor is refused instead (buy)."""
+        busy = {p.pool for p in self.positions.values()}
+        cut = self.hw_slot - TRIM_KEEP_SLOTS
+        n = sum(h.trim(cut) for k, h in self.pools.items() if k not in busy)
+        if n:
+            self.counters["hist_trimmed_prints"] = self.counters.get("hist_trimmed_prints", 0) + n
+        return n
 
     @staticmethod
     def _ref_slot(pos: Position) -> int:
