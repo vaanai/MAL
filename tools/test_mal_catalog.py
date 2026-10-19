@@ -55,7 +55,7 @@ def test_parse_real_ledger_has_expected_rows(blocks: list[Block]) -> None:
     assert unassigned.end_hour_exclusive == "2026-08-02T12"
     assert by_name["Fresh confirmation block"].owner == "exploration-pool"  # spent by EXP-012 read, moved by ledger edit
     assert by_name["Fresh confirmation block"].host == "research"
-    assert by_name["Backup confirmation block"].owner == "EXP-028"  # named by EXP-028 Part 1 (2026-10-19); the claim is conditional and the block stays sealed and unread
+    assert by_name["Backup confirmation block"].owner == "reserved"
     assert by_name["Backup confirmation block"].host == "research"
     second = by_name["Second backup confirmation block"]
     assert second.owner == "reserved"  # released unread after EXP-015 failed its screen (2026-10-06)
@@ -335,7 +335,7 @@ def test_build_catalog_missing_checkpoint_reports_error_not_crash(tmp_path: Path
 
 
 def test_reserved_block_denied_for_every_role_even_the_exp_its_text_mentions(blocks: list[Block]) -> None:
-    # fresh-0828 is owned by EXP-028 (Part 1, 2026-10-19); its older ledger text named EXP-012 and EXP-013, and neither may unlock it.
+    # "reserved: the confirmation test after EXP-012" must not unlock for EXP-012.
     for role, exp in (("exploration", None), ("confirmation-oneshot", "EXP-012"), ("confirmation-oneshot", "EXP-013")):
         ok, reasons = _check(blocks, role, "research", "2026-09-01T00", "2026-09-01T01", exp_id=exp)
         assert not ok, (role, exp, reasons)
@@ -349,15 +349,12 @@ def test_research_exploration_expansion_allowed_and_exp012_block_needs_its_id(bl
     assert ok, reasons
     ok, _ = _check(blocks, "confirmation-oneshot", "research", "2026-09-05T00", "2026-09-05T01", exp_id="EXP-012")
     assert not ok
-    # fresh-0828 is owned by EXP-028 (hunt23 wave-2 bank): denied to exploration and to every other id.
-    # EXP-028 matching its own row is a guard, not a permission: its Part 2, pre-read checks and lock still apply, and no EXP-028 tool exists yet.
+    # fresh-0828 stays reserved: EXP-028 Part 1 is the only eligible claimant, but the Owner cell flips only at its claim record. Denied to exploration and to every id, EXP-028 included.
     ok, _ = _check(blocks, "exploration", "research", "2026-08-30T00", "2026-08-30T01")
     assert not ok
-    for exp in ("EXP-012", "EXP-013", "EXP-021", "EXP-027"):
+    for exp in ("EXP-012", "EXP-013", "EXP-021", "EXP-027", "EXP-028"):
         ok, _ = _check(blocks, "confirmation-oneshot", "research", "2026-08-30T00", "2026-08-30T01", exp_id=exp)
         assert not ok, exp
-    ok, reasons = _check(blocks, "confirmation-oneshot", "research", "2026-08-30T00", "2026-08-30T01", exp_id="EXP-028")
-    assert ok, reasons
     # fresh-0808 is reserved as EXP-015's confirmation target, not owned: every role is denied,
     # including a confirmation-oneshot read by EXP-015 itself, until its Part 1 names it
     ok, _ = _check(blocks, "exploration", "research", "2026-08-10T00", "2026-08-10T01")
