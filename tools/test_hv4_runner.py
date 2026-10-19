@@ -121,7 +121,7 @@ def script_for(target_f: float = 6.0):
     return script
 
 
-def make(tmp: Path, *, latency_ms: int = 50, cost_usd: float = 0.0, script=None, rows=None, keep_tape: bool = True, versions=None, h5=None):
+def make(tmp: Path, *, latency_ms: int = 50, cost_usd: float = 0.0, script=None, rows=None, keep_tape: bool = True, versions=None, h5=None, lane_h: bool = True):
     tape = tmp / "tape"
     if not tape.exists():
         write_tape(tape, rows or trade_rows())
@@ -130,7 +130,7 @@ def make(tmp: Path, *, latency_ms: int = 50, cost_usd: float = 0.0, script=None,
     model = StubModel(script if script is not None else script_for(), guard=guard, cost_usd=cost_usd, latency_ms=latency_ms)
     state = ArenaState(tape, start_ms=0)
     engine = ArenaEngine(tmp / "ledger", tmp / "bots.json", cfg=R.stack_config(feed_delay_slots=FEED_DELAY_SLOTS), sps_fn=lambda: 0.4)
-    cfg = R.RunnerConfig(root=str(root), frozen_sha="abcdef1234567", clock_start_ms=T0 - 60 * MIN)
+    cfg = R.RunnerConfig(root=str(root), frozen_sha="abcdef1234567", clock_start_ms=T0 - 60 * MIN, lane_h=lane_h)
     run = R.Runner(cfg, state, engine, model, FakeChain(), guard, h5=h5, version_source=versions)
     if not (tmp / "bots.json").exists():
         run.register_all(str(tmp / "bots.json"), now_ms=T0 - 61 * MIN, verify_sha=False)

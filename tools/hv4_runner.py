@@ -34,6 +34,7 @@ import hashlib
 import json
 import math
 import os
+import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -60,12 +61,18 @@ SCAN_SECOND_MS = 2_000  # the scanner ticks at second :02
 TICK_MS = 1_000
 BOARD_EVERY_MS = 15 * MIN_MS
 BOARD_SIZE = 10
+HOT_TOP_VOL = 25  # the chain prefetch refreshes the 25 pools with the most 60-min volume every 4 min: the board draws from them (hv4_prefetch)
 TOP_K_PER_PERSONA = 8  # cards per persona per scan that go to the LLM arms (two calls of 4)
 RISK_REFRESH_MS = 30 * MIN_MS
 RISK_HIDE_MS = 60 * MIN_MS
 POOL_COOLDOWN_MS = 30 * MIN_MS
 ENTRY_SETTLE_MS = 3_000  # no code exit before the slower entry leg can land (the engine refuses an earlier sell)
-SELL_RETRY_MAX = 5
+SELL_RETRY_MAX = 5  # refusals that are not "the entry has not landed" before a sell is retried slowly (and an alert row is logged); never a reason to drop it
+SELL_EARLY = "slower entry leg"  # the engine's refusal text for a sell decided before the slower entry leg lands (arena_paper.sell)
+SELL_ENGINE_DROPS = ("no open position", "already has a sell")  # the engine does not hold the position (or already holds its sell): the book lets it go
+SELL_EARLY_RETRY_MS = 1_000  # retry cadence (wall clock) while the entry leg has not landed
+SELL_EARLY_CAP_MS = 60_000  # after this much wall time without the leg landing: an alert row, then the slow cadence
+SELL_SLOW_RETRY_MS = 10_000
 R_SEED = 1
 BST_EXIT_MS = 330_000
 # BST-R takes triggers at BST-L's take rate TO DATE (DESIGN section 5). The DESIGN gives no warm-up rule; this module uses ZERO: with fewer than
@@ -241,13 +248,21 @@ class HV4ChainSource:
     """The real source: tools.hv4_chain over public RPC, or Helius when MAL_HV4_RPC=helius (the public endpoint refuses getTokenLargestAccounts, so the
     holder block needs Helius). A failed mint read gives None (no card, fail closed); a failed holder read leaves the holder keys out (null block)."""
 
-    def __init__(self, chain: Any = None) -> None:
+    def __init__(self, chain: Any = None, prefetch: Any = None) -> None:
         from tools.hv4_chain import HV4Chain  # lazy: keeps this module importable without the RPC stack in tests
 
         self.chain = chain if chain is not None else HV4Chain()
+        # prefetch: a tools.hv4_prefetch.ChainPrefetcher (see its docstring). With it, chain_part only READS facts stamped before T; without it the facts
+        # are fetched at card time, as before (the unit tests and the replay path).
+        self.prefetch = prefetch
 
     def credit_report(self) -> dict:
-        return self.chain.credit_report()
+        rep = self.chain.credit_report()
+        return {**rep, "prefetch": self.prefetch.stats()} if self.prefetch is not None else rep
+
+    def watch(self, items: Any, hot: Any, now_ms: int) -> None:
+        if self.prefetch is not None:
+            self.prefetch.watch(items, hot, now_ms)
 
     @staticmethod
     def _ext_values(mf: Any) -> dict[str, Any]:
@@ -274,20 +289,43 @@ class HV4ChainSource:
         return {"ok": not reasons and mf.mint_authority is None and mf.freeze_authority is None, "reasons": reasons, "token": token,
                 "as_of_ms": mf.as_of_ms, "as_of_slot": mf.as_of_slot}
 
+    @classmethod
+    def compose(cls, mf: Any, mh: Any, hd: Any) -> dict[str, Any]:
+        """The card's chain dict from mint facts, the Mayhem flag and (optional) holders. One builder for the card-time path and the prefetch path."""
+        facts: dict[str, Any] = {"as_of_ms": mf.as_of_ms, "as_of_slot": mf.as_of_slot, "mint_authority": mf.mint_authority,
+                                 "freeze_authority": mf.freeze_authority, "token_program": mf.token_program_id, "extensions": list(mf.extensions),
+                                 "mayhem": mh.is_mayhem, **cls._ext_values(mf)}
+        if hd is not None and hd.ok and hd.as_of_ms is not None:
+            facts.update({"top1_frac": hd.top1_frac, "top10_frac": hd.top10_frac, "holders_as_of_ms": hd.as_of_ms})
+        return facts
+
     def chain_part(self, pool_id: str, mint: str | None, now_ms: int, slot: int) -> dict | None:
         if not mint:
             return None
+        if self.prefetch is not None:  # no RPC in the scan: the newest facts stamped before now_ms (= T)
+            return self.prefetch.part_at(pool_id, mint, now_ms, slot)
         mf = self.chain.mint_facts(mint)
         if not mf.ok or mf.as_of_ms is None or mf.as_of_slot is None:
             return None
         mh = self.chain.mayhem_flag(mint, pool=pool_id)
-        facts: dict[str, Any] = {"as_of_ms": mf.as_of_ms, "as_of_slot": mf.as_of_slot, "mint_authority": mf.mint_authority,
-                                 "freeze_authority": mf.freeze_authority, "token_program": mf.token_program_id, "extensions": list(mf.extensions),
-                                 "mayhem": mh.is_mayhem, **self._ext_values(mf)}
         hd = self.chain.largest_holders(mint, token_program=mf.token_program_id, pool=pool_id, max_age_s=C.CHAIN_HOLDERS_MAX_AGE_MS / 1000.0)
-        if hd.ok and hd.as_of_ms is not None:
-            facts.update({"top1_frac": hd.top1_frac, "top10_frac": hd.top10_frac, "holders_as_of_ms": hd.as_of_ms})
-        return facts
+        return self.compose(mf, mh, hd)
+
+
+CHAIN_CREDITS_FILE = "chain-credits.json"  # <root>/: the chain client's per-UTC-day call counts (the 40k/day cap survives a restart)
+CHAIN_SPEND_FILE = "chain-prefetch-spend.json"  # <root>/: the prefetcher's rolling-hour spend (the 1,500/hour bound survives a restart)
+
+
+def live_chain_source(root: str | os.PathLike, env: Mapping[str, str] | None = None) -> HV4ChainSource:
+    """The live chain source: HV4Chain on the RPC that MAL_HV4_RPC names (public or helius; anything else raises at start), with its daily call counts and the
+    prefetcher's hourly spend kept in files under the runner root, so a restart (or a crash loop) does not reset either bound. The prefetch thread is
+    NOT started here; main() starts it."""
+    from tools.hv4_chain import HV4Chain, RpcClient, RpcConfig
+    from tools.hv4_prefetch import ChainPrefetcher
+
+    base = Path(root)
+    chain = HV4Chain(RpcClient(RpcConfig.from_env(env), state_path=base / CHAIN_CREDITS_FILE))
+    return HV4ChainSource(chain, prefetch=ChainPrefetcher(chain, HV4ChainSource.compose, spend_path=base / CHAIN_SPEND_FILE))
 
 
 def holder_cover(snap: Mapping[str, Any]) -> bool | None:
@@ -435,6 +473,18 @@ class RunnerConfig:
     live: bool = False  # live: decision_ms is the wall clock when the answer is in hand; sim: as_of + the reply's latency (deterministic)
     strict_leakage: bool = False
     seed: int = R_SEED
+    # lane H (the BST persona: H5 triggers) is dropped for HV4 window 1: the H5 classifier's feed is the sealed tip tape on mal-fast-0 and no H5Signal source
+    # is wired. main() turns it OFF (--lane-h turns it on later and is refused until a source is wired). Off: nine arms are registered and run (CON and BIG),
+    # no BST arm, book, ledger or log exists. The default here stays True so the lane-H tests of this module keep running.
+    lane_h: bool = True
+    # Timing rows (kind scan_timing, one per scan; kind tick_timing, one per minute) go into the SCAN log. They hold wall-clock counts and timings only, no
+    # outcome, and no decision reads them. None = on when live, off in sim (a sim log must stay a pure function of the tape, so the replay md5 holds).
+    timing: bool | None = None
+
+
+def pct(sorted_vals: list[int], q: float) -> int:
+    """Nearest-rank percentile of an ascending list (q in (0, 1])."""
+    return sorted_vals[max(0, math.ceil(q * len(sorted_vals)) - 1)]
 
 
 class Runner:
@@ -443,17 +493,25 @@ class Runner:
                  binding: Mapping[str, Any] | None = None, version_source: Callable[[str, int], Any] | None = None) -> None:
         if cfg.live:
             require_frozen_checkout(binding or {}, cfg.frozen_sha)  # a live runner must prove its checkout
+        if not cfg.lane_h and h5 is not None:
+            raise ValueError("lane_h is off: an H5 source must not be wired")
+        self.lane_h = bool(cfg.lane_h)
+        self.timing = bool(cfg.live) if cfg.timing is None else bool(cfg.timing)
+        self._tm: dict[str, Any] | None = None  # the minute being summarised: {"minute": ms, "delays": [...], "scans": [...]}
+        self.arm_names = tuple(a for a in arms.ARMS if self.lane_h or arms.ARMS[a].persona != "BST")  # the arms that exist in this run
+        self.llm_arm_names = tuple(a for a in arms.llm_arms() if a in self.arm_names)
         self.binding = dict(binding) if binding is not None else None
         self.cfg, self.state, self.engine, self.model, self.chain, self.guard, self.h5 = cfg, state, engine, model, chain, guard, h5
         self.now_fn = now_fn or (lambda: time.time_ns() // 1_000_000)
         self.log = DecisionLog(cfg.root)
-        self.books = {a: Book(a) for a in arms.ARMS}
-        self.playbooks = {n: load_playbook(n) for n in (*arms.PERSONAS, arms.RISK_LEDGER)}
+        self.books = {a: Book(a) for a in self.arm_names}
+        self.playbooks = {n: load_playbook(n) for n in (*(p for p in arms.PERSONAS if self.lane_h or p != "BST"), arms.RISK_LEDGER)}
         self.playbooks.update(dict(playbook_overrides or {}))
-        self.knobs = {a: Knobs.v0(s.persona) for a, s in arms.ARMS.items() if s.llm}
+        self.knobs = {a: Knobs.v0(arms.ARMS[a].persona) for a in self.llm_arm_names}
         # Per-arm version in force: the L, F and P arms of a persona can differ (the reviewer rewrites a learning arm's playbook, knobs and local vetoes).
         self.arm_state: dict[str, dict] = {}
-        for a, sp in arms.ARMS.items():
+        for a in self.llm_arm_names:
+            sp = arms.ARMS[a]
             if sp.llm:
                 ps = arms.PERSONA_SPECS[sp.persona]
                 self.arm_state[a] = {"version": 0, "playbook": self.playbooks[sp.persona], "knobs": {"min_conviction": ps.min_conviction_v0, **ps.plan_defaults},
@@ -478,10 +536,13 @@ class Runner:
         self.trig_q: list[dict] = []
         self.counters: dict[str, int] = {}
         self.hook_errors: list[str] = []
+        self._sell_next: dict[str, int] = {}  # pid -> earliest wall-clock ms of the next sell attempt (runtime only; a restart retries at once)
+        self._sell_first: dict[str, int] = {}
+        self._sell_alerted: set[str] = set()
         self.sim_now = 0  # sim mode: the engine's wall clock is the sim instant (its stale / future checks compare decision_ms with it)
         if not cfg.live:
             engine.now_fn = lambda: self.sim_now
-        self.invalid = {a: [0, 0] for a in arms.ARMS if arms.ARMS[a].llm}  # arm -> [invalid, total] verdicts (the 10% NOT EVALUABLE rule is read later)
+        self.invalid = {a: [0, 0] for a in self.llm_arm_names}  # arm -> [invalid, total] verdicts (the 10% NOT EVALUABLE rule is read later)
         orig = state.apply
 
         def apply(row: dict) -> None:
@@ -532,7 +593,8 @@ class Runner:
     # -- registration (bots.json lines, before the clock)
     def register_all(self, registry_path: str, now_ms: int | None = None, verify_sha: bool = True) -> dict[str, dict]:
         out = {}
-        for a, spec in arms.ARMS.items():
+        for a in self.arm_names:
+            spec = arms.ARMS[a]
             # The R arms are registered with the model too: their pool picks depend on the risk agent's grades (CON-R, BIG-R) and BST-R's take rate on
             # BST-L's answers. The X arms call no model and read none.
             ids = [self.model.model] if (spec.llm or spec.role == "R") else []
@@ -547,7 +609,7 @@ class Runner:
         cards and the re-check clocks come back. The quote history is a function of the tape (QuoteHistory), so it needs no replay of the log."""
         n = {"rows": 0, "open": 0, "reopened": 0}
         last_scan = None
-        for name in (*arms.ARMS, "SCAN", "RISK"):
+        for name in (*self.arm_names, "SCAN", "RISK"):
             self.log.verify(name)
             for r in self.log.rows(name):
                 n["rows"] += 1
@@ -567,7 +629,7 @@ class Runner:
                 n["reopened"] += 1
                 self.log.append(pos.arm, self.now_fn() if self.cfg.live else self.sim_now, {"kind": "resume_reopen", "pid": pid})
         if self.binding is not None:
-            self.log.append("SCAN", self.now_fn() if self.cfg.live else self.sim_now, {"kind": "start", "binding": self.binding, "frozen_sha": self.cfg.frozen_sha})
+            self.log.append("SCAN", self.now_fn() if self.cfg.live else self.sim_now, {"kind": "start", "binding": self.binding, "frozen_sha": self.cfg.frozen_sha, "lane_h": self.lane_h})
         n["open"] = sum(len(b.open) for b in self.books.values())
         return n
 
@@ -649,9 +711,11 @@ class Runner:
                 else:
                     b.realized[d0] = prev_realized
                 if p is not None:
-                    p.sell_tries += 1
-                    if not ("no open position" in str(r.get("detail", "")) or p.sell_tries >= SELL_RETRY_MAX):
-                        b.open[p.pid] = p  # retriable: still open, as live
+                    detail = str(r.get("detail", ""))
+                    if SELL_EARLY not in detail:
+                        p.sell_tries += 1  # an entry leg that has not landed is waited for, not counted
+                    if not any(k in detail for k in SELL_ENGINE_DROPS):
+                        b.open[p.pid] = p  # retriable: still open, as live (the book never drops a position the engine may still hold)
             elif k == "watch_add":
                 b.watches.append(dict(r["watch"]))
             elif k == "watch_end":
@@ -762,6 +826,10 @@ class Runner:
         if (T // 1000) % (BOARD_EVERY_MS // 1000) == SCAN_SECOND_MS // 1000 and self._board_on(T):
             rest = sorted((p for p in cand if p not in tagged), key=lambda p: (-(feat_of[p].get("vol_60m") or 0.0), p))
             board = rest[:BOARD_SIZE]
+        watch = getattr(self.chain, "watch", None)  # a chain source with a background prefetch learns the watchlist; the stub sources have none
+        if watch is not None:
+            top = sorted(cand, key=lambda p: (-(feat_of[p].get("vol_60m") or 0.0), p))[:HOT_TOP_VOL]
+            watch([(pid, snap_of[pid].get("mint")) for pid in cand], set(tagged) | set(board) | set(top), self._now(T))
         cards: dict[tuple[str, str], dict] = {}  # (pool, persona) -> card, byte-identical for every arm of the persona
         for pr in LANE_G_PERSONAS:
             for t in per_persona[pr]:
@@ -1040,7 +1108,7 @@ class Runner:
 
     # -- watches (minute ticks)
     def watches(self, T: int) -> None:
-        for arm in arms.llm_arms():
+        for arm in self.llm_arm_names:
             b = self.books[arm]
             if arms.ARMS[arm].persona == "BST" or self.persona_halt(arms.ARMS[arm].persona) is not None:
                 continue
@@ -1068,7 +1136,7 @@ class Runner:
 
     # -- exits
     def exits(self, T: int) -> None:
-        for arm in MARKS_ARM_ORDER:
+        for arm in self.arm_names:
             b = self.books[arm]
             for pid in sorted(b.open):
                 pos = b.open.get(pid)
@@ -1094,6 +1162,9 @@ class Runner:
 
     def _sell(self, pos: Pos, why: str, T: int, ret: float | None, dec_ms: int | None = None, follow: bool = False) -> bool:
         b = self.books[pos.arm]
+        now = self._now(T)
+        if self._sell_next.get(pos.pid, 0) > now:
+            return False  # waiting for the engine (wall clock): logical seconds run ahead of it while the loop catches up after a stall
         dec = T if dec_ms is None else dec_ms
         snap = self.state.snapshot(pos.pool)
         flag: dict[str, Any] = {}
@@ -1112,13 +1183,19 @@ class Runner:
         try:
             self.engine.sell(bot_id(pos.arm), pos.pid, 1.0, dec, self.slot, reason=why)
         except ArenaRefused as e:
-            pos.sell_tries += 1
+            early = SELL_EARLY in str(e)
+            if not early:
+                pos.sell_tries += 1
             self._count("sell_refused")
             self.log.append(pos.arm, dec, {"kind": "order_refused", "order_id": pos.pid, "side": "sell", "reason": str(e).split(":")[0], "detail": str(e)[:160]})
-            if "no open position" in str(e) or pos.sell_tries >= SELL_RETRY_MAX:
+            if any(k in str(e) for k in SELL_ENGINE_DROPS):
                 b.open.pop(pos.pid, None)  # an orphan the engine does not know: closed in the book, counted
                 self._count("sell_orphan")
+                self._forget_sell(pos.pid)
+            else:
+                self._defer_sell(pos, early, now, dec, str(e))  # the engine may still hold it: the book keeps it open and retries
             return False
+        self._forget_sell(pos.pid)
         b.open.pop(pos.pid, None)
         day = utc_day(dec)
         b.realized[day] = b.realized.get(day, 0.0) + est
@@ -1127,9 +1204,28 @@ class Runner:
                 self._sell(rp, "follow_L", T, mark_ret(rp, self.state.snapshot(rp.pool, candles=False) or {}), dec_ms=dec, follow=True)
         return True
 
+    def _forget_sell(self, pid: str) -> None:
+        self._sell_next.pop(pid, None)
+        self._sell_first.pop(pid, None)
+        self._sell_alerted.discard(pid)
+
+    def _defer_sell(self, pos: Pos, early: bool, now: int, dec: int, detail: str) -> None:
+        """A refused sell of a position the engine may still hold. An entry leg that has not landed is retried every SELL_EARLY_RETRY_MS of WALL time
+        (the engine counts slots from its own clock; logical seconds can run far ahead of it after a stall) until the engine accepts. After
+        SELL_EARLY_CAP_MS of wall time, or SELL_RETRY_MAX other refusals, an alert row is logged once and the retries slow to SELL_SLOW_RETRY_MS. The
+        position is never dropped here."""
+        first = self._sell_first.setdefault(pos.pid, now)
+        capped = (now - first >= SELL_EARLY_CAP_MS) if early else pos.sell_tries >= SELL_RETRY_MAX
+        if capped and pos.pid not in self._sell_alerted:
+            self._sell_alerted.add(pos.pid)
+            self._count("sell_alert")
+            self.log.append(pos.arm, dec, {"kind": "sell_alert", "pid": pos.pid, "pool": pos.pool, "waited_ms": now - first, "tries": pos.sell_tries, "detail": detail[:160]})
+        if early or capped:
+            self._sell_next[pos.pid] = now + (SELL_SLOW_RETRY_MS if capped else SELL_EARLY_RETRY_MS)
+
     # -- LLM re-checks (minute ticks)
     def rechecks(self, T: int) -> None:
-        for arm in arms.llm_arms():
+        for arm in self.llm_arm_names:
             spec = arms.PERSONA_SPECS[arms.ARMS[arm].persona]
             b = self.books[arm]
             if spec.recheck_minutes is None or not b.open or self.persona_halt(arms.ARMS[arm].persona) is not None:
@@ -1192,6 +1288,9 @@ class Runner:
 
     # -- lane H (BST)
     def triggers(self, T: int) -> None:
+        if not self.lane_h:
+            self.trig_q.clear()  # lane H is off: no trigger is ever decided, no BST arm exists
+            return
         q, self.trig_q = self.trig_q, []
         for f in q:
             if f["t_recv_ms"] >= T:
@@ -1300,7 +1399,7 @@ class Runner:
         if self.version_source is None:
             return
         now = self._now(T)
-        for arm in arms.reviewer_arms():
+        for arm in (a for a in arms.reviewer_arms() if a in self.arm_names):
             try:
                 av = self.version_source(arm, now)
                 if av is None and self.arm_state[arm]["manifest_sha256"] is not None:
@@ -1375,13 +1474,44 @@ class Runner:
         sec = T % MIN_MS
         if sec == SCAN_SECOND_MS or not self._versions_loaded:
             self.refresh_versions(T)  # before any decision of this tick
+        if self.timing:
+            self._tick_timing(T, self.now_fn() - T)  # the delay of this tick's exit check: exits and scans share this thread
         self.exits(T)
         self.triggers(T)
         if sec == SCAN_SECOND_MS:
             self.watches(T)
             self.rechecks(T)
             if T % SCAN_EVERY_MS == SCAN_SECOND_MS:
+                t0 = self.now_fn() if self.timing else 0
                 self.scan(T)
+                if self.timing:
+                    self._scan_timing(T, self.now_fn() - t0)
+
+    # -- timing (counts and wall-clock timings only; nothing here reads an outcome or feeds a decision)
+    def _tick_timing(self, T: int, delay_ms: int) -> None:
+        minute = T - T % MIN_MS
+        if self._tm is not None and self._tm["minute"] != minute:
+            self.flush_timing()
+        if self._tm is None:
+            self._tm = {"minute": minute, "delays": [], "scans": []}
+        self._tm["delays"].append(int(delay_ms))
+
+    def _scan_timing(self, T: int, wall_ms: int) -> None:
+        wall = int(wall_ms)
+        if self._tm is not None:
+            self._tm["scans"].append(wall)
+        self.log.append("SCAN", T, {"kind": "scan_timing", "scan_wall_ms": wall})
+
+    def flush_timing(self) -> None:
+        """Write the summary row of the minute in hand, if any: ticks run, the exit-check delay and the scan wall time over that minute."""
+        tm, self._tm = self._tm, None
+        if not tm or not tm["delays"]:
+            return
+        d, sc = sorted(tm["delays"]), sorted(tm["scans"])
+        self.log.append("SCAN", tm["minute"] + MIN_MS - 1,
+                        {"kind": "tick_timing", "minute_ms": tm["minute"], "n_ticks": len(d),
+                         "exit_check_delay_ms": {"p50": pct(d, 0.5), "p99": pct(d, 0.99), "max": d[-1]},
+                         "n_scans": len(sc), "scan_wall_ms": {"p99": pct(sc, 0.99), "max": sc[-1]} if sc else None})
 
     def run(self, t_from: int, t_to: int, sleep: Callable[[float], None] = time.sleep) -> None:
         """Ticks T = t_from, t_from + 1 s, ... while T < t_to. Live: waits for the wall clock to pass each T."""
@@ -1393,6 +1523,8 @@ class Runner:
                     sleep(lag / 1000.0)
             self.step(T)
             T += TICK_MS
+        if self.timing:
+            self.flush_timing()
 
 
 def stack_config(feed_delay_slots: int, **kw: Any) -> Any:
@@ -1445,21 +1577,30 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--registry", default="/data/mal/arena/bots.json")
     ap.add_argument("--frozen-sha", required=True)
     ap.add_argument("--clock-start-ms", type=int, required=True)
-    ap.add_argument("--register", action="store_true", help="append the 13 bots.json lines (before the clock) and exit")
+    ap.add_argument("--register", action="store_true", help="append the 9 lane-G bots.json lines (13 with --lane-h) (before the clock) and exit")
     ap.add_argument("--stub", action="store_true", help="StubModel: no API call, every answer abstains (count-only shakedown)")
     ap.add_argument("--feed-delay-slots", type=int, required=True, help="the feed delay the stack charges (StackConfig.feed_delay_slots); the manager pins it")
     ap.add_argument("--end-ms", type=int, default=None, help="stop at this instant (default: run until stopped)")
+    ap.add_argument("--lane-h", action="store_true", help="also run lane H (the BST arms, H5 triggers). OFF in window 1: refused until an H5Signal source is wired")
     a = ap.parse_args(argv)
+    h5 = None  # no H5Signal source is wired yet: the H5 classifier's feed is the sealed tip tape on mal-fast-0, not on this host
+    if a.lane_h and h5 is None:
+        print("hv4_runner: --lane-h needs an H5Signal source and none is wired; lane H stays off", file=sys.stderr)
+        return 2
     from tools.hv4_model import CallerModel, StubModel
 
     guard = BudgetGuard(a.root)
     model: Model = StubModel(guard=guard) if a.stub else CallerModel(guard)
     state = ArenaState(a.tape_dir)
     engine = ArenaEngine(a.ledger_root, a.registry, cfg=stack_config(feed_delay_slots=a.feed_delay_slots))
-    cfg = RunnerConfig(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True)
-    run = Runner(cfg, state, engine, model, HV4ChainSource(), guard, h5=None, binding=head_binding(), version_source=review_version_source(a.root, a.frozen_sha))
+    cfg = RunnerConfig(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True, lane_h=a.lane_h)
+    chain_src = live_chain_source(a.root)  # facts are fetched off the scan path, stamped before the scan instant; the call bounds are persisted under the root
+    chain_src.prefetch.start()
+    run = Runner(cfg, state, engine, model, chain_src, guard, h5=h5, binding=head_binding(), version_source=review_version_source(a.root, a.frozen_sha))
     if a.register:
-        for k, v in run.register_all(a.registry).items():
+        regs = run.register_all(a.registry)
+        print(canon({"lane_h": run.lane_h, "n_bots": len(regs)}))
+        for k, v in regs.items():
             print(canon({"bot_id": bot_id(k), **{x: v[x] for x in ("frozen_sha", "clock_start_ms", "deciding_stake", "model_ids")}}))
         return 0
     n = run.resume()
