@@ -38,6 +38,14 @@ Consistency check: for every trip the END state recomputed from the tape and the
 the engine priced, a late print, a different V source) is counted and listed, and the CLI exits 4. A `state_src == derived_last` trip is not exempt: the engine derived its END state from the last print it had, so its history is cut
 at the prints before `need` (arena_paper._needed_slot: the max landing slot + 1) and its END member is that derived state, the ledger's own; it is checked like any other. The
 END-minus-worst gap is also printed without the derived_last trips (report-only), as arena_score does for its cells. Selection is by spot price, as the ruling says, not by realised outcome.
+GUARD RESCUE (QP at ec24494, amending R7's word "bound"): the 1.15 guard can revert a trip that loses at END (-send instead of a large loss) when the worst entry state
+is guarded, so the leg above can BEAT END and is not a bound by itself. diag counts the END -> worst state transitions and the guard flips by latency and strand rule, and a
+report-only companion, "worst-in-slot, no guard rescue", keeps the END-priced row of any trip that is not guarded at END and is guarded at its worst entry state (per rule and
+latency), then applies the same cells and the same per-cell refit. R7's canary condition (the worst-in-slot mean and CI90 lower bound; "an event-triggered book whose worst-in-slot
+mean is <= 0 is not proposed") uses the LOWER of the two legs. The pressure intercept of every cell is printed (the refit moves with the filled set, so the pressure gap mixes the
+price effect and the refit effect).
+END MISMATCH: when the END check fails for a stake, NO worst-in-slot figure (cells, gap, companion, stacked) is printed or stored for it, only "worst-in-slot not measured: END
+consistency failed (...)" and the mismatch list; the CLI exits 4; the rent-charged leg is still printed (it does not depend on the tape).
 Without --tape-dir the leg prints "worst-in-slot not measured" (R7: no canary is proposed from a book until it is measured). Bonding rows are not supported (their fills
 are POST-trade; such a book is REPORT_ONLY in the scorer anyway) and are refused.
 
@@ -262,8 +270,15 @@ def _close(a: float, b: float) -> bool:
     return bool(np.isclose(a, b, rtol=PARITY_RTOL, atol=0.0)) or (a == b)
 
 
-def worst_trip(row: Mapping[str, Any], h: PoolHist) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Re-price one trade row at the worst state of its entry and exit slots, for every latency and strand rule. Returns (calc, diag): the new `calc` and what moved."""
+def _invalid_state(sa: Mapping[str, np.ndarray], i: int) -> bool:
+    with np.errstate(all="ignore"):
+        return bool(not np.isfinite(sa["QX"][i] / sa["BX"][i]) or sa["BX"][i] <= 0)
+
+
+def worst_trip(row: Mapping[str, Any], h: PoolHist) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Re-price one trade row at the worst state of its entry and exit slots, for every latency and strand rule. Returns (calc, calc_ng, diag): the new `calc`, the
+    "no guard rescue" companion `calc` and what moved. In the companion a trip that the ledger priced as not guarded (END) and that is guarded at its worst entry state
+    keeps its END-priced by_rule row under that rule and latency (the 1.15 guard may not revert it); everything else is the worst-in-slot row."""
     if row.get("prog") != "pumpswap":
         raise Refused(f"trade {row.get('trade_id')}: prog {row.get('prog')!r}: worst-in-slot is defined for PumpSwap PRE-trade states only")
     cfg = stack_config_of(row)
@@ -277,13 +292,15 @@ def worst_trip(row: Mapping[str, Any], h: PoolHist) -> tuple[dict[str, Any], dic
     idx_x, je_x = slot_states(sa, xl)
     wx = worst_index(sa, idx_x, "sell")
     diag: dict[str, Any] = {"state_mismatch": [], "pnl_mismatch": [], "entry_multi_print": 0, "entry_moved": 0, "exit_multi_print": int(len(idx_x) > 2),
-                            "exit_moved": int(wx != je_x), "derived_last": derived}
+                            "exit_moved": int(wx != je_x), "derived_last": derived, "invalid_pick": int(_invalid_state(sa, wx)), "transitions": {}, "guard_flips": {}}
     new_calc: dict[str, Any] = {}
+    new_ng: dict[str, Any] = {}
     for tag in LATS:
         c = row["calc"][tag]
         x = int(c["landing_slot"])
         idx_e, je_e = slot_states(sa, x)
         we = worst_index(sa, idx_e, "buy")
+        diag["invalid_pick"] = max(diag["invalid_pick"], int(_invalid_state(sa, we)))
         for i in list(idx_e) + list(idx_x):
             if i < len(sa["vok"]) and not sa["vok"][i]:
                 raise Refused(f"trade {row.get('trade_id')}: a state in the entry or exit slot has no V on the tape: the engine would have excluded it (missing_v)")
@@ -297,36 +314,64 @@ def worst_trip(row: Mapping[str, Any], h: PoolHist) -> tuple[dict[str, Any], dic
         diag["entry_multi_print"] = max(diag["entry_multi_print"], int(len(idx_e) > 2))
         diag["entry_moved"] = max(diag["entry_moved"], int(we != je_e))
         by_rule: dict[str, Any] = {}
-        for rule in c["by_rule"]:
+        by_rule_ng: dict[str, Any] = {}
+        for rule, led_rule in c["by_rule"].items():
             end = price_leg("pumpswap", stake, st_end, lat, cfg, rule)
-            if abs(end["pnl"] - c["by_rule"][rule]["pnl_nofail"]) > PARITY_PNL_ATOL + 1e-9 * abs(end["pnl"]):
+            if abs(end["pnl"] - led_rule["pnl_nofail"]) > PARITY_PNL_ATOL + 1e-9 * abs(end["pnl"]):
                 diag["pnl_mismatch"].append(f"{row['trade_id']}:{tag}:{rule}")
             w = price_leg("pumpswap", stake, st_w, lat, cfg, rule)
             by_rule[rule] = {"pnl_nofail": w["pnl"], "filled": w["filled"], "state": w["state"], "strand": w["strand"], "e1_extra": w["e1_extra"],
                              "p_press_provisional": w["p"]}
+            key = f"{tag}_{rule}"
+            if led_rule["state"] != w["state"]:  # the END -> worst transition of this trip, by (latency, strand rule)
+                t = diag["transitions"].setdefault(key, {})
+                t[f"{led_rule['state']}->{w['state']}"] = t.get(f"{led_rule['state']}->{w['state']}", 0) + 1
+            if bool(led_rule["filled"]) != bool(w["filled"]):  # the guard (1.15) status changed between END and the worst entry state
+                diag["guard_flips"][key] = diag["guard_flips"].get(key, 0) + 1
+            by_rule_ng[rule] = dict(led_rule) if (led_rule["filled"] and not w["filled"]) else by_rule[rule]
         new_calc[tag] = dict(c, Qe=st_w["Qe"][lat], Be=st_w["Be"][lat], Qx=st_w["Qx"], Bx=st_w["Bx"], by_rule=by_rule)
-    return new_calc, diag
+        new_ng[tag] = dict(new_calc[tag], by_rule=by_rule_ng)
+    return new_calc, new_ng, diag
 
 
-def worst_in_slot_rows(trades: Sequence[Mapping[str, Any]], pools: Mapping[str, PoolHist]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Every trade re-priced at the worst states of its slots. Returns (rows, diag): `rows` are the ledger rows with `calc` replaced (so cells_of, the rent
-    transform and the close-blocked reclassification compose on them), diag counts what moved and every END-consistency mismatch."""
+def _merge_counts(into: dict[str, Any], add: Mapping[str, Any]) -> None:
+    for k, v in add.items():
+        if isinstance(v, Mapping):
+            _merge_counts(into.setdefault(k, {}), v)
+        else:
+            into[k] = into.get(k, 0) + int(v)
+
+
+def worst_in_slot_both(trades: Sequence[Mapping[str, Any]], pools: Mapping[str, PoolHist]) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    """Every trade re-priced at the worst states of its slots. Returns (rows, rows_no_guard_rescue, diag): the ledger rows with `calc` replaced (so cells_of, the rent
+    transform and the close-blocked reclassification compose on them), the companion rows, and diag: what moved, the END -> worst state transitions and guard flips
+    by latency and strand rule, the trips whose worst pick was an invalid state, and every END-consistency mismatch."""
     out: list[dict[str, Any]] = []
-    diag = {"trips": 0, "derived_last": 0, "entry_multi_print": 0, "entry_moved": 0, "exit_multi_print": 0, "exit_moved": 0, "state_mismatch": [], "pnl_mismatch": []}
+    out_ng: list[dict[str, Any]] = []
+    diag: dict[str, Any] = {"trips": 0, "derived_last": 0, "entry_multi_print": 0, "entry_moved": 0, "exit_multi_print": 0, "exit_moved": 0, "invalid_pick": 0,
+                            "state_mismatch": [], "pnl_mismatch": [], "transitions": {}, "guard_flips": {}}
     for r in trades:
         h = pools.get(r.get("pool"))
         if h is None:
             raise Refused(f"trade {r['trade_id']}: pool {r.get('pool')} is not on the tape given (--tape-dir does not hold the tape the engine priced)")
-        calc, d = worst_trip(r, h)
+        calc, calc_ng, d = worst_trip(r, h)
         out.append(dict(r, calc=calc))
+        out_ng.append(dict(r, calc=calc_ng))
         diag["trips"] += 1
-        for k in ("entry_multi_print", "entry_moved", "exit_multi_print", "exit_moved"):
+        for k in ("entry_multi_print", "entry_moved", "exit_multi_print", "exit_moved", "invalid_pick"):
             diag[k] += d[k]
         diag["derived_last"] += int(d["derived_last"])
         diag["state_mismatch"] += d["state_mismatch"]
         diag["pnl_mismatch"] += d["pnl_mismatch"]
+        _merge_counts(diag["transitions"], d["transitions"])
+        _merge_counts(diag["guard_flips"], d["guard_flips"])
     diag["parity_ok"] = not diag["state_mismatch"] and not diag["pnl_mismatch"]
-    return out, diag
+    return out, out_ng, diag
+
+
+def worst_in_slot_rows(trades: Sequence[Mapping[str, Any]], pools: Mapping[str, PoolHist]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    rows, _, diag = worst_in_slot_both(trades, pools)
+    return rows, diag
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ tape
@@ -413,14 +458,23 @@ def legs_for_book(trades: Sequence[Mapping[str, Any]], pools: Mapping[str, PoolH
     out["rent_charged"] = cells_of(base, delta)
     if pools is None:
         out["worst_in_slot"] = "worst-in-slot not measured (no --tape-dir)"
+        out["end_check"] = {"ok": None, "state_mismatch": [], "pnl_mismatch": []}
         return out
-    wrows, diag = worst_in_slot_rows(trades, pools)
+    wrows, wng, diag = worst_in_slot_both(trades, pools)
+    out["end_check"] = {"ok": diag["parity_ok"], "state_mismatch": diag["state_mismatch"], "pnl_mismatch": diag["pnl_mismatch"]}
+    if not diag["parity_ok"]:  # the tape is not the one the engine priced: NO worst-in-slot figure is printed or stored (QP at ec24494); the rent-charged leg above stands
+        out["worst_in_slot"] = (f"worst-in-slot not measured: END consistency failed ({len(diag['state_mismatch'])} state, {len(diag['pnl_mismatch'])} pnl mismatches)")
+        return out
     wbase = reclassify_close_blocked(wrows, cb) if cb else wrows
-    worst = cells_of(wbase)
+    wng_base = reclassify_close_blocked(wng, cb) if cb else wng
+    worst, ng = cells_of(wbase), cells_of(wng_base)
+    lower = {k: {"mean_sol": min(worst[k]["mean_sol"], ng[k]["mean_sol"]), "ci90_lo_sol": min(worst[k]["ci90_lo_sol"], ng[k]["ci90_lo_sol"]),
+                 "leg_of_mean": "no_guard_rescue" if ng[k]["mean_sol"] < worst[k]["mean_sol"] else "worst_in_slot"} for k in worst if worst[k]["mean_sol"] is not None}
     keep = [r.get("state_src") != "derived_last" for r in trades]  # as arena_score prints a leg without its derived_last rows, report-only
     nd = lambda rows: [r for r, k in zip(rows, keep) if k]  # noqa: E731
     out["n_derived_last"] = keep.count(False)
     out["worst_in_slot"] = {"cells": worst, "diag": diag, "end_minus_worst": end_minus_worst(out["base"], worst),
+                            "no_guard_rescue": {"cells": ng, "end_minus_worst": end_minus_worst(out["base"], ng)}, "canary_lower": lower,
                             "end_minus_worst_without_derived_last": end_minus_worst(cells_of(nd(base)), cells_of(nd(wbase))),
                             "rent_charged_stacked": cells_of(wbase, delta)}
     return out
@@ -484,8 +538,9 @@ def _f(z: Any) -> str:
 
 def _cell_line(k: str, c: Mapping[str, Any], tag: str = "") -> str:
     return (f"    {tag}{k:16s} n {c['n']:4d} days {c['days']:2d} pos {c['days_pos']:2d} mean {_f(c['mean_sol'])} total {_f(c['total_sol'])} ci90lo {_f(c['ci90_lo_sol'])} "
-            f"ex-top3 {_f(c['ex_top3_sol'])} ex-best-day {_f(c['ex_best_day_sol'])}  [{c['gate_check'].get('label') or 'report-only'}: criteria "
-            f"{'met' if c['gate_check']['criteria_met'] else 'missed'}]")
+            f"ex-top3 {_f(c['ex_top3_sol'])} ex-best-day {_f(c['ex_best_day_sol'])}"
+            + ("" if c.get("intercept") is None else f" icpt {c['intercept']:+.4f}")
+            + f"  [{c['gate_check'].get('label') or 'report-only'}: criteria {'met' if c['gate_check']['criteria_met'] else 'missed'}]")
 
 
 def render(rep: Mapping[str, Any]) -> str:
@@ -511,10 +566,13 @@ def render(rep: Mapping[str, Any]) -> str:
         for title, cells in (("as scored (the scorer's own cells)", b["as_scored"]), (("DECIDING (DEC-031 Am.2 item 6) after close-blocked reclassification" if st == dk else "base after close-blocked reclassification (not the deciding stake)"),
                               b["base"] if b["n_close_blocked"] else None),
                              ("RENT-CHARGED leg", b["rent_charged"]), ("WORST-IN-SLOT leg", None if isinstance(w, str) else w["cells"]),
+                             ("WORST-IN-SLOT, NO GUARD RESCUE (report-only companion)", None if isinstance(w, str) else w["no_guard_rescue"]["cells"]),
                              ("WORST-IN-SLOT + RENT-CHARGED (stacked)", None if isinstance(w, str) else w["rent_charged_stacked"])):
             if cells is None:
-                if title.startswith("WORST") and isinstance(w, str):
-                    L.append(f"   {title}: {w}")
+                if title.startswith("WORST-IN-SLOT leg") and isinstance(w, str):
+                    L.append(f"   WORST-IN-SLOT leg: {w}")
+                    for q in (b["end_check"]["state_mismatch"] + b["end_check"]["pnl_mismatch"])[:8]:
+                        L.append(f"     END mismatch: {q}")
                 continue
             L.append(f"   {title}:")
             for k, c in cells.items():
@@ -523,9 +581,13 @@ def render(rep: Mapping[str, Any]) -> str:
         if not isinstance(w, str):
             d = w["diag"]
             L.append(f"   worst-in-slot diagnostics: trips {d['trips']}  entry slot held >1 print {d['entry_multi_print']}  entry state moved {d['entry_moved']}  exit slot held >1 print "
-                     f"{d['exit_multi_print']}  exit state moved {d['exit_moved']}  derived_last {d['derived_last']}  END consistency {'ok' if d['parity_ok'] else 'MISMATCH'}")
-            for q in (d["state_mismatch"] + d["pnl_mismatch"])[:8]:
-                L.append(f"     END mismatch: {q}")
+                     f"{d['exit_multi_print']}  exit state moved {d['exit_moved']}  derived_last {d['derived_last']}  invalid worst picks {d['invalid_pick']}  END consistency ok")
+            L.append(f"   END -> worst state transitions by latency_rule: {d['transitions'] or 'none'}   guard flips (guarded status changed): {d['guard_flips'] or 'none'}")
+            L.append("   R7 CANARY CONDITION: quote the LOWER of the worst-in-slot and the no-guard-rescue legs (mean and CI90 lower bound). A guard-rescued worst-in-slot leg can beat END, "
+                     "so it is not a bound on its own. Lower of the two, 1.9 s cells:")
+            for k, g in w["canary_lower"].items():
+                if "_1p9_" in k or st != dk:
+                    L.append(f"    {k:16s} mean {_f(g['mean_sol'])} ({g['leg_of_mean']})  ci90lo {_f(g['ci90_lo_sol'])}")
             L.append("   END minus worst-in-slot (SOL per trade / SOL total), then the same without the derived_last trips (report-only):")
             for k, g in w["end_minus_worst"].items():
                 if "_1p9_" in k or st != dk:
@@ -571,9 +633,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if a.json:
         with open(a.json, "w") as fh:
             json.dump(rep, fh, indent=1, sort_keys=True, allow_nan=False)
-    bad = [st for st, b in rep["books"].items() if not isinstance(b["worst_in_slot"], str) and not b["worst_in_slot"]["diag"]["parity_ok"]]
+    bad = [st for st, b in rep["books"].items() if b["end_check"]["ok"] is False]
     if bad:
-        print(f"END CONSISTENCY FAILED for stake(s) {bad}: the tape given is not the tape the engine priced (or a late print); the worst-in-slot gap is not reliable", file=sys.stderr)
+        print(f"END CONSISTENCY FAILED for stake(s) {bad}: the tape given is not the tape the engine priced (or a late print); no worst-in-slot figure was printed", file=sys.stderr)
         return 4
     return 0
 

@@ -687,7 +687,9 @@ def test_the_cli_exits_4_and_still_prints_when_the_end_state_does_not_match_the_
     monkeypatch.setattr(R, "build_report", lambda *a, **k: rep)
     code = R.main(["--bot", "botA", "--ledger-root", "/x/ok/l", "--registry", "/x/ok/r.json", "--tape-dir", "/x/ok/t"])
     cap = capsys.readouterr()
-    assert code == 4 and "END consistency MISMATCH" in cap.out and "END CONSISTENCY FAILED" in cap.err and "WORST-IN-SLOT leg" in cap.out
+    assert code == 4 and "END CONSISTENCY FAILED" in cap.err and "END mismatch:" in cap.out  # still printed, with the mismatch list ...
+    assert "worst-in-slot not measured: END consistency failed" in cap.out and "RENT-CHARGED leg" in cap.out  # ... the rent-charged leg stands ...
+    assert "END minus worst" not in cap.out and "NO GUARD RESCUE" not in cap.out and "stacked" not in cap.out  # ... and no worst-in-slot figure exists
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ derived_last, feed delay, ties
@@ -742,3 +744,169 @@ def test_a_tie_in_price_takes_the_first_state_in_tape_order():
     assert R.worst_index(sa, np.array([1, 2, 3]), "buy") == 1 and R.worst_index(sa, np.array([3, 2]), "sell") == 3
     sa2 = {"QX": np.array([20e9, 40e9, 30e9]), "BX": np.array([1e14, 2e14, 1e14])}  # a tie at the top: the first of the two
     assert R.worst_index(sa2, np.arange(3), "buy") == 2 and R.worst_index(sa2, np.arange(2), "buy") == 0
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ END mismatch, guard rescue, intercepts
+def craft_rep(book, deciding=0.25):
+    return {"bot_id": "botA", "report_only": True, "banner": R.BANNER, "scorer_status": "PASS", "scorer_reasons": [], "read_boundary_ms": 1, "deciding_stake": deciding,
+            "close_blocked": {"supplied": False, "listed": 0}, "books": {str(deciding): book}}
+
+
+def test_on_an_end_mismatch_no_worst_in_slot_figure_is_printed_or_stored_but_the_rent_charged_leg_stands(world):
+    trades, _ = world
+    thin = R.load_pools([r for r in tape_rows() if not (r["pool"] == "PX" and r["slot"] == 106)])
+    legs = R.legs_for_book([r for r in trades if r["stake_sol"] == 0.25], thin)
+    assert legs["worst_in_slot"].startswith("worst-in-slot not measured: END consistency failed (") and legs["end_check"]["ok"] is False
+    assert legs["end_check"]["state_mismatch"] and legs["end_check"]["state_mismatch"][0].startswith(by(trades, "PX", 0.25)["trade_id"])
+    blob = json.dumps(legs)
+    for word in ("end_minus_worst", "no_guard_rescue", "rent_charged_stacked", "canary_lower", "guard_flips", "transitions"):
+        assert word not in blob  # nothing of the worst-in-slot leg exists in the JSON
+    assert legs["rent_charged"]["flat_1p9_total"]["n"] == 3 and legs["rent_charged"]["flat_1p9_total"]["n_charged"] == 3  # the rent-charged leg is still there
+    text = R.render(craft_rep(legs))
+    assert "worst-in-slot not measured: END consistency failed" in text and "END mismatch:" in text and "RENT-CHARGED leg" in text
+    for word in ("END minus worst", "NO GUARD RESCUE", "CANARY CONDITION", "stacked"):
+        assert word not in text
+
+
+def test_guard_rescue_is_counted_and_the_no_guard_rescue_leg_keeps_the_end_row(world):
+    trades, pools = world
+    legs = R.legs_for_book([r for r in trades if r["stake_sol"] == 1.0], pools)  # 1.0 SOL: PX and PI are guarded at the worst 1.9 s entry state only
+    w, d = legs["worst_in_slot"], legs["worst_in_slot"]["diag"]
+    assert d["guard_flips"] == {"1p9_total": 2, "1p9_sc": 2} and d["transitions"]["1p9_total"] == {"filled->guarded": 2} and d["invalid_pick"] == 0
+    assert w["end_minus_worst"]["flat_1p9_total"]["mean_sol"] < 0  # the rescue: the "worst" leg is BETTER than END (a guarded -send replaces a large loss)
+    ng = w["no_guard_rescue"]
+    assert ng["cells"]["flat_1p9_total"]["mean_sol"] == legs["as_scored"]["flat_1p9_total"]["mean_sol"]  # the two flipped trips keep their END row; PN is unchanged
+    assert ng["end_minus_worst"]["flat_1p9_total"]["mean_sol"] == pytest.approx(0.0, abs=1e-15)
+    assert ng["cells"]["flat_1p3_total"] == w["cells"]["flat_1p3_total"]  # no flip at 1.3 s: the companion equals the leg
+    lo = w["canary_lower"]["flat_1p9_total"]  # R7's canary condition: the LOWER of the two legs
+    assert lo["mean_sol"] == min(w["cells"]["flat_1p9_total"]["mean_sol"], ng["cells"]["flat_1p9_total"]["mean_sol"]) == ng["cells"]["flat_1p9_total"]["mean_sol"]
+    assert lo["leg_of_mean"] == "no_guard_rescue" and lo["ci90_lo_sol"] == min(w["cells"]["flat_1p9_total"]["ci90_lo_sol"], ng["cells"]["flat_1p9_total"]["ci90_lo_sol"])
+    # the per-trip row: PX at 1.0 SOL, 1.9 s, is guarded in the leg and END-priced in the companion
+    rows, rows_ng, _ = R.worst_in_slot_both([r for r in trades if r["stake_sol"] == 1.0], pools)
+    px = next(i for i, r in enumerate(rows) if r["pool"] == "PX")
+    assert rows[px]["calc"]["1p9"]["by_rule"]["total"]["state"] == "guarded"
+    assert rows_ng[px]["calc"]["1p9"]["by_rule"]["total"] == by(trades, "PX", 1.0)["calc"]["1p9"]["by_rule"]["total"]
+    assert rows_ng[px]["calc"]["1p3"]["by_rule"] == rows[px]["calc"]["1p3"]["by_rule"]
+    text = R.render(craft_rep(legs, 1.0))
+    assert "NO GUARD RESCUE" in text and "CANARY CONDITION: quote the LOWER" in text and "guard flips" in text and "filled->guarded" in text
+
+
+def test_state_transitions_by_latency_and_rule_are_counted(world):
+    trades, pools = world
+    d = R.worst_in_slot_rows([r for r in trades if r["stake_sol"] == 0.25], pools)[1]
+    assert d["transitions"] == {"1p3_total": {"filled->exit_invalid": 1}, "1p9_total": {"filled->exit_invalid": 1}} and d["guard_flips"] == {}  # PI under "total" only (C8)
+
+
+def test_the_pressure_intercept_of_every_leg_is_printed_and_the_refit_moves_with_the_filled_set(world):
+    trades, pools = world
+    legs = R.legs_for_book([r for r in trades if r["stake_sol"] == 1.0], pools)
+    w = legs["worst_in_slot"]
+    a, b, c = (legs["as_scored"]["press_1p9_total"]["intercept"], w["cells"]["press_1p9_total"]["intercept"], w["no_guard_rescue"]["cells"]["press_1p9_total"]["intercept"])
+    assert a != b and c == a  # 1 filled trip in the worst leg, 3 at END (and in the companion): a different refit
+    text = R.render(craft_rep(legs, 1.0))
+    for v in (a, b):
+        assert f"icpt {v:+.4f}" in text
+    assert text.count("press_1p9_total") >= 5 and "flat_1p9_total" in text  # as scored, rent-charged, worst, companion, stacked
+    assert all(" icpt " not in ln for ln in text.splitlines() if "flat_" in ln)
+
+
+def test_an_invalid_state_in_a_slot_is_the_worst_pick():
+    sa = {"QX": np.array([20e9, 21e9, 20e9]), "BX": np.array([1e14, 0.0, 1e14])}
+    assert R.worst_index(sa, np.arange(3), "buy") == 1 and R.worst_index(sa, np.arange(3), "sell") == 1
+    sa2 = {"QX": np.array([20e9, np.nan, 20e9]), "BX": np.array([1e14, 1e14, 1e14])}
+    assert R.worst_index(sa2, np.arange(3), "sell") == 1 and R._invalid_state(sa2, 1) and not R._invalid_state(sa2, 0)
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ heterogeneous p_i
+def test_the_rent_charge_uses_each_trips_own_p_against_a_full_re_price():
+    """p_i spans about 0.015 to 0.48 here (ssb and nearby vary): a charge at the mean p would be off by up to 0.27 x 2,039,280 on a trip."""
+    rng = np.random.default_rng(5)
+    trades = []
+    for i in range(40):
+        row = synth_row(f"h{i}", i, i % 3, float(rng.normal(3e6, 4e6)))
+        for lat in ("1p3", "1p9"):
+            row["calc"][lat]["ssb"] = float(rng.integers(0, 40))
+            row["calc"][lat]["nearby_lamports"] = float(rng.uniform(0, 30e9))
+        trades.append(row)
+    v0 = R.leg_values(trades, "total", "1p9", 0.0)
+    v = R.leg_values(trades, "total", "1p9", float(RENT))
+    assert v0["p"].min() < 0.05 and v0["p"].max() > 0.4 and abs(v0["p"][v0["filled"]].mean() - 0.289) < 1e-9
+    # a full re-price: every filled-state trip re-priced at rent 2,039,280 (pnl - 2,039,280), the same intercept, then the stack's own fail legs
+    pnl = np.array([r["calc"]["1p9"]["by_rule"]["total"]["pnl_nofail"] for r in trades]) - RENT
+    ssb = np.array([r["calc"]["1p9"]["ssb"] for r in trades])
+    near = np.array([r["calc"]["1p9"]["nearby_lamports"] for r in trades])
+    flat, press, _, p = book_fail_legs(pnl, np.ones(40, bool), np.zeros(40, bool), ssb, near, SEND, intercept=v0["c"])
+    assert list(v["flat"]) == pytest.approx(list(flat), abs=1e-6) and list(v["press"]) == pytest.approx(list(press), abs=1e-6)
+    wrong = v0["press"] - 0.711 * RENT  # what a charge at the mean p (0.289) would give
+    assert np.abs(wrong - v["press"]).max() > 100_000
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ end to end, --tape-dir, at a read boundary
+def big_world(tmp_path):
+    """100 engine-priced positions over 5 UTC dates, each on its own pool: even i has PX's multi-print slots, odd i is quiet. Returns (ledger root, registry, tape dir)."""
+    reg = tmp_path / "bots.json"
+    register_bot("botA", "abc1234", 0, reg, now_ms=0)
+    cfg = StackConfig(feed_delay_slots=0, rent=0, gap_slots=None, gap_silence_ms=None)
+    eng = ArenaEngine(tmp_path / "ledger", reg, cfg, sps_fn=lambda: 0.4, code_state_fn=lambda: ("abc1234", False))
+    eng.now_fn = lambda: eng.hw_ms or 0
+    tape = tmp_path / "tape"
+    tape.mkdir()
+    by_hour: dict[str, list[str]] = {}
+    for i in range(100):
+        pool, base = f"PQ{i:03d}", 1_000 + 1_000 * i
+        t0 = DAY0 + (i // 20) * DAY + 3_600_000 + (i % 20) * 600_000
+
+        def q(off, state, side="buy", toff=0, **kw):
+            r = pr(pool, base + off, state, side, off=toff, **kw)
+            r["t_recv_ms"], r["signature"] = t0 + off * 400 + toff, f"{pool}-{off}-{toff}"
+            return r
+
+        rows = [q(-1, "S0", "sell", sol=5e8, tok=2.6e10), q(0, "S1"), q(100, "S1")]
+        if i % 2 == 0:
+            rows += [q(4, "S1"), q(5, "S2", toff=1), q(5, "S3", toff=2), q(5, "S5", "sell", toff=3), q(6, "S4"), q(102, "S3", "sell", toff=1), q(102, "S1", "sell", toff=2),
+                     q(102, "S0", toff=3), q(103, "S2")]
+        else:
+            rows += [q(6, "S2"), q(103, "S2")]
+        for r in sorted(rows, key=lambda r: (r["t_recv_ms"], r["signature"])):
+            eng.on_row(r)
+            hour = datetime.fromtimestamp(r["t_recv_ms"] / 1000, timezone.utc).strftime("%Y-%m-%dT%H")
+            by_hour.setdefault(hour, []).append(json.dumps(r))
+            if r["slot"] == base and r["signature"].endswith("-0-0"):
+                pid = eng.buy("botA", pool, 0.25, t0, base, {"why": "fixture"})
+            if r["slot"] == base + 100:
+                eng.sell("botA", pid, 1.0, t0 + 100 * 400, base + 100, "fixture")
+    eng.flush()
+    for hour, lines in by_hour.items():
+        (tape / f"tape-{hour}.jsonl").write_text("\n".join(lines) + "\n")
+    return str(tmp_path / "ledger"), str(reg), str(tape)
+
+
+def test_end_to_end_with_a_tape_dir_at_the_read_boundary(tmp_path, capsys):
+    root, reg, tape = big_world(tmp_path)
+    rep = R.build_report("botA", root, reg, tape_dir=tape, now_ms=NOW)
+    assert rep["read_boundary_ms"] == DAY0 + 5 * DAY and rep["scorer_status"] in ("PASS", "FAIL") and rep["tape_files"]
+    for st in ("0.25", "0.5", "1.0"):
+        b = rep["books"][st]
+        w = b["worst_in_slot"]
+        assert b["end_check"]["ok"] is True and w["diag"]["trips"] == 100 and w["diag"]["derived_last"] == 0
+        assert (w["diag"]["entry_multi_print"], w["diag"]["entry_moved"], w["diag"]["exit_multi_print"], w["diag"]["exit_moved"]) == (50, 50, 50, 50)
+        assert w["cells"]["flat_1p9_total"]["n"] == 100 and b["rent_charged"]["flat_1p9_total"]["n_charged"] == 100
+    d1 = rep["books"]["1.0"]["worst_in_slot"]["diag"]
+    assert d1["guard_flips"] == {"1p9_total": 50, "1p9_sc": 50} and rep["books"]["0.25"]["worst_in_slot"]["diag"]["guard_flips"] == {}
+    g = rep["books"]["0.25"]["worst_in_slot"]["end_minus_worst"]["flat_1p9_total"]
+    assert g["mean_sol"] > 0 and g["total_sol"] == pytest.approx(g["mean_sol"] * 100)  # a worse fill than END on the 50 multi-print trips
+    assert rep["books"]["1.0"]["worst_in_slot"]["end_minus_worst"]["flat_1p9_total"]["mean_sol"] < 0  # at 1.0 SOL the guard rescue makes "worst" beat END
+    assert rep["books"]["1.0"]["worst_in_slot"]["canary_lower"]["flat_1p9_total"]["leg_of_mean"] == "no_guard_rescue"
+    out = tmp_path / "legs.json"
+    code = R.main(["--bot", "botA", "--ledger-root", root, "--registry", reg, "--tape-dir", tape, "--json", str(out), "--now-ms", str(NOW)])
+    text = capsys.readouterr().out
+    assert code == 0 and "WORST-IN-SLOT leg:" in text and "NO GUARD RESCUE" in text and "icpt" in text and "R7 CANARY CONDITION" in text
+    assert json.loads(out.read_text())["books"]["0.25"]["worst_in_slot"]["diag"]["parity_ok"] is True
+    # the same ledger with a tape that lacks one print (PQ000's slot-106 END print): exit 4 and no worst-in-slot figure, the rent-charged leg still printed
+    thin = tmp_path / "thin"
+    thin.mkdir()
+    for f in Path(tape).iterdir():
+        (thin / f.name).write_text("".join(ln + "\n" for ln in f.read_text().splitlines() if '"PQ000-6-0"' not in ln))
+    code = R.main(["--bot", "botA", "--ledger-root", root, "--registry", reg, "--tape-dir", str(thin), "--now-ms", str(NOW)])
+    cap = capsys.readouterr()
+    assert code == 4 and "worst-in-slot not measured: END consistency failed" in cap.out and "RENT-CHARGED leg" in cap.out and "END minus worst" not in cap.out
