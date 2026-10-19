@@ -1501,14 +1501,20 @@ def worst_case_instant(u):
 def decide_verdict(*, scan, chosen, asof_us, nd, counts_met, all_pass, dead):
     """The verdict of one run.  A kill (K1/K2) at ANY earlier 00:00Z is DEAD_AS_FROZEN (a FAIL) whatever the
     later numbers show (CONDITIONS-2 item 2)."""
+    if scan:   # CONDITIONS-2 item 4: --scan reads data as of --asof, never as of each candidate R: advisory only
+        if dead:
+            inner = "DEAD_AS_FROZEN"
+        elif nd:
+            inner = "NOT_DECIDABLE"
+        elif chosen is not None:
+            inner = "WOULD_PASS_IF_READ_AT_R" if all_pass else "WOULD_FAIL"
+        else:
+            inner = "NOT_DECIDABLE" if asof_us is not None and asof_us >= iso_to_us(NOT_DECIDABLE_ISO) else "PENDING"
+        return "SCAN_REPORT_ONLY_" + inner
     if dead:
         return "DEAD_AS_FROZEN"
     if nd:
         return "NOT_DECIDABLE"
-    if scan:
-        if chosen is not None:
-            return "FORMULA_SCREEN_PASSED" if all_pass else "FAIL"
-        return "NOT_DECIDABLE" if asof_us is not None and asof_us >= iso_to_us(NOT_DECIDABLE_ISO) else "PENDING"
     return ("FORMULA_SCREEN_PASSED" if all_pass else "FAIL") if counts_met else "COUNTS_NOT_MET"
 
 
@@ -1893,7 +1899,10 @@ def run_sim(cfg):
                 chosen = R
                 break
         R_eval = chosen if chosen is not None else (cands[-1] if cands else cfg.asof_us)
-        gate["scan"] = {"candidates": [us_to_iso(r) for r in cands], "counts_met_at": _iso_or_none(chosen)}
+        gate["scan"] = {"candidates": [us_to_iso(r) for r in cands], "counts_met_at": _iso_or_none(chosen),
+                        "note": "report-only: data is read as of --asof, not as of each candidate R; a deciding "
+                                "verdict comes only from a --read-instant R run (CONDITIONS-2 item 4)"}
+        gate["deciding"] = False
     else:
         chosen, R_eval = cfg.read_us, cfg.read_us
     gate["read_instant"] = _iso_or_none(R_eval)

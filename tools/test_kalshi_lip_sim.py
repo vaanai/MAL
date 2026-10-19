@@ -1427,3 +1427,20 @@ def test_b2_b_trades_files_written_after_R_or_overwritten_make_the_unit_excl_no_
     status = {r["unit_id"]: r["status"] for r in ex}
     assert status == {"pA": "excl_no_trades", "pB": "excl_no_trades"}, status
     assert g["exclusions"] == {"excl_no_trades": 2}
+
+
+def test_b3_scan_is_report_only_and_never_prints_a_deciding_verdict(tmp_path, covered):
+    base = dict(chosen=at("2026-10-24T00:00:00Z"), asof_us=at("2026-10-26T00:00:00Z"), nd=[], counts_met=True,
+                all_pass=True, dead=False)
+    assert sim.decide_verdict(scan=False, **base) == "FORMULA_SCREEN_PASSED"          # only a --read-instant run decides
+    for kw in (dict(), dict(all_pass=False), dict(chosen=None), dict(nd=["x"]), dict(dead=True),
+               dict(chosen=None, asof_us=at("2026-11-03T00:00:00Z"))):
+        v = sim.decide_verdict(scan=True, **dict(base, **kw))
+        assert v.startswith("SCAN_REPORT_ONLY_") and "FORMULA_SCREEN_PASSED" not in v and "FAIL" not in v.split("WOULD_FAIL")[0]
+    assert sim.decide_verdict(scan=True, **base) == "SCAN_REPORT_ONLY_WOULD_PASS_IF_READ_AT_R"
+    assert sim.decide_verdict(scan=True, **dict(base, dead=True)) == "SCAN_REPORT_ONLY_DEAD_AS_FROZEN"
+    w = basic_world(tmp_path)
+    g = sim.run_sim(w.cfg(out=str(tmp_path / "o"), scan=True, read_us=None, asof_us=at("2026-10-26T00:00:00Z")))
+    assert g["verdict"].startswith("SCAN_REPORT_ONLY_") and g["deciding"] is False
+    assert "report-only" in g["scan"]["note"]
+    assert "SCAN_REPORT_ONLY" in (tmp_path / "o" / "table.txt").read_text()
