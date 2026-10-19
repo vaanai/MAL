@@ -184,6 +184,12 @@ def simulate_fills(rows_sorted, side: str, bid_micro: int, t_us: int, end_us: in
     return fills
 
 
+def choose_bid(side: str, p_fav: float, last_yes_micro: int, last_no_micro: int) -> int:
+    """R3 bid: min(last favoured print before t, P_fav - 0.04), the second term rounded UP to the tick grid."""
+    last_px = last_yes_micro if side == "yes" else last_no_micro
+    return min(last_px, tick_ceil_micro(p_fav - BID_MARGIN))
+
+
 def maker_fee_micro_pair(price_micro: int):
     """(cent-rounded-up, unrounded/micro) maker fee in micro-dollars for one contract.  tools/kalshi_fees:
     series fee_type 'quadratic' -> maker fee 0 (DECLARE)."""
@@ -695,7 +701,7 @@ def _full_run(split, markets, excl, signals, sig_skip, by_ticker, out_of_split, 
             continue
         side = s["side"]
         last_px = last[2] if side == "yes" else last[3]
-        bid = min(last_px, tick_ceil_micro(s["p_fav"] - BID_MARGIN))
+        bid = choose_bid(side, s["p_fav"], last[2], last[3])
         if bid <= 0:
             continue
         rows = sorted(scan.rows.get(tkr, []), key=lambda r: (r[0], r[1]))
