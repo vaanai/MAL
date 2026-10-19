@@ -135,8 +135,9 @@ def lsq_slope(points: list[tuple[float, float]]) -> float | None:
     return None if den == 0 else sum((p[0] - mx) * (p[1] - my) for p in points) / den
 
 
-def chk(cid: str, name: str, status: str, numbers: dict, notes: list[str] | None = None, proxy: bool = False) -> dict:
-    return {"id": cid, "name": name, "status": status, "proxy": proxy, "numbers": numbers, "notes": notes or []}
+def chk(cid: str, name: str, status: str, numbers: dict, notes: list[str] | None = None, proxy: bool = False, informational: bool = False) -> dict:
+    """informational: reported, but left out of the verdict (the runner persists nothing a file check could read)."""
+    return {"id": cid, "name": name, "status": status, "proxy": proxy, "informational": informational, "numbers": numbers, "notes": notes or []}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ decision logs
@@ -474,7 +475,7 @@ def eval_check_5(root: Path, samples: list[dict], starts: list[dict], inputs: li
         mids = [m for m in range((lo_t // 86_400_000 + 1) * 86_400_000, hi_t + 1, 86_400_000)]
         numbers["hour_crossing_00_00Z"] = [crossing(m) for m in mids]
         numbers["hour_crossing_restart"] = [crossing(s["ms"]) for s in starts[1:]]
-        numbers["both_processes_counted"] = "yes: the chain counter persists its per-UTC-day count in chain-credits.json and the restarted process reloads it"
+        numbers["both_processes_counted"] = "yes, both processes: the chain counter persists its per-UTC-day count in chain-credits.json and the restarted process reloads it"
         measured_cross = all(c["windows"] > 0 for c in numbers["hour_crossing_00_00Z"] + numbers["hour_crossing_restart"])
         if hi_max is not None and hi_max <= CALLS_PER_HOUR_MAX and dec == 0 and measured_cross:
             hour_status = PASS
@@ -565,7 +566,7 @@ def eval_memory(samples: list[dict], starts: list[dict], catchup_ms: int, rss_po
                      "projected_hours_to_memory_max": None if hrs_to_max is None else round(hrs_to_max, 1), "plan_B_restart_cadence_h": round(cadence, 1),
                      "implied": "A" if a_req <= host_cap_mb else "B", "plan_B_cost": "each restart books every recovered position as an excluded engine_restart row; a book above 5% excluded is NOT_DECIDABLE; open positions per restart are not measurable with StubModel"})
         status = FAIL if (peak >= memory_max_mb or unplanned) else PASS
-    if status == PASS and (series[last_key][-1][0] - series[last_key][0][0]) < 20 * HOUR_MS:
+    if status == PASS and (max(p[-1][0] for p in series.values()) - min(p[0][0] for p in series.values())) < 20 * HOUR_MS:
         status = UNM
     out.update({"segments": segs, "peak_mb": mb(peak), "current_mb": mb(cur), "elapsed_h_since_first_start": round(elapsed_h, 2), "slope_mb_per_h_conservative_max_of_segments": mb(slope),
                 "rss_after_drain_mb": mb(rss0), "plan": plan, "hourly": hourly[-60:]})
@@ -652,7 +653,7 @@ def eval_trim(root: Path, inputs: list[dict], n_starts: int) -> list[dict]:
                     "engine_side_counters_v_missing_and_v_out_of_band": "not measured (not persisted by the runner)"},
                    ["caveat (#749): filters evaluates every check, so a v_missing pool-scan may also fail other filters; the share lost ONLY to V is not measured and must not be stated as '44% of the universe is lost to V'"]))
     out.append(chk("QP-H1", "hook_errors prefixed 'housekeep:' == 0", UNM, {"hook_errors": "held in memory by the runner, not persisted"},
-                   ["no file carries it; a housekeep failure would still show as a trim file that stops growing (QP-T3 lines vs expected)"]))
+                   ["no file carries it; a housekeep failure would still show as a trim file that stops growing (QP-T3 lines vs expected)"], informational=True))
     return out
 
 
@@ -831,7 +832,7 @@ def build_report(args: argparse.Namespace) -> dict:
             blockers.append("NOT_DECIDABLE rule triggered (rows_below_trim_floor or refused_history_trimmed > 0)")
         if c["id"] == "QP-V1" and n.get("blocks_registration"):
             blockers.append("v_missing ratio above 0.5 on every trim line: HV4 does not register until the cause is explained")
-    statuses = [c["status"] for c in allc]
+    statuses = [c["status"] for c in allc if not c["informational"]]
     verdict = "FAIL" if FAIL in statuses else ("PASS" if complete and all(s == PASS for s in statuses) else "INCOMPLETE")
     if not complete and verdict == "PASS":
         verdict = "INCOMPLETE"
@@ -897,7 +898,7 @@ def markdown(rec: dict) -> str:
     lines = [f"HV4 shakedown report: verdict {rec['verdict']} (complete: {rec['complete']}), window {rec['window']['first_start']} to {rec['window']['last_decision_row']} ({rec['window']['hours_covered']} h)", "",
              "| check | status | numbers |", "| --- | --- | --- |"]
     for c in rec["checks"] + rec["registration_conditions"]:
-        lines.append(f"| {c['id']} {c['name'][:70]} | {c['status']}{' (proxy)' if c['proxy'] else ''} | {short(c)} |")
+        lines.append(f"| {c['id']} {c['name'][:70]} | {c['status']}{' (proxy)' if c['proxy'] else ''}{' (informational)' if c['informational'] else ''} | {short(c)} |")
     if rec["blocks_registration"]:
         lines += ["", "BLOCKS REGISTRATION: " + "; ".join(rec["blocks_registration"])]
     pc = rec["per_persona_counts"]

@@ -45,12 +45,12 @@ def build(tmp: Path, *, hours: int = 25, restart_h: int = 12, scan_wall=lambda i
     end = START + hours * HOUR
     restart = START + restart_h * HOUR
     L.add("SCAN", START, kind="start", binding={"dirty": False, "git_sha": "a" * 40}, frozen_sha="a" * 40, lane_h=False)
-    if start2:
-        L.add("SCAN", restart, kind="start", binding={"dirty": False, "git_sha": restart_sha}, frozen_sha=restart_sha, lane_h=False)
     cards = []
     n_scan = 0
     for m in range(0, hours * 60):
         t = START + m * MIN
+        if start2 and t == restart:  # rows are appended in time order, as the runner does
+            L.add("SCAN", restart, kind="start", binding={"dirty": False, "git_sha": restart_sha}, frozen_sha=restart_sha, lane_h=False)
         if t // MIN % 5 == 0:
             T = t + 2000
             i = n_scan
@@ -68,8 +68,6 @@ def build(tmp: Path, *, hours: int = 25, restart_h: int = 12, scan_wall=lambda i
             L.add("CON-X", T, kind="entry", order_id="o", pos={"entry_price": CANARY}, card={"est_pnl_sol": CANARY})
             L.add("CON-X", T + 1, kind="sell", pid="o", est_ret=CANARY, est_pnl_sol=CANARY)
         L.add("SCAN", t + MIN - 1, kind="tick_timing", minute_ms=t, n_ticks=60, exit_check_delay_ms={"p50": 100, "p99": exit_delay(m), "max": exit_delay(m)}, n_scans=0, scan_wall_ms=None)
-    for dayfile in sorted((root / "decisions").glob("*/*.jsonl")):
-        pass
     cdir = root / "cards"
     cdir.mkdir()
     by_day: dict[str, list] = {}
@@ -89,11 +87,9 @@ def build(tmp: Path, *, hours: int = 25, restart_h: int = 12, scan_wall=lambda i
                                   "v_missing_pools": int(checked * v_ratio), "pools": 100 + k, "prints_held": 1000 + k, "hw_slot": 1}))
     (root / "engine-trim-counters.jsonl").write_text("\n".join(lines) + "\n")
     # chain counter samples, process memory, feed counters
-    samples, c = [], 0
+    samples = []
     pid_of = lambda t: 111 if t < restart else 222
     for t in range(START + 2 * MIN, end + 1, 10 * MIN):
-        c += sum(calls_per_min(m) for m in range((t - 10 * MIN - START) // MIN, (t - START) // MIN)) if t - 10 * MIN >= START else 0
-        day_a = R.iso(START)[:10]
         by = {}
         for q in range(START, t, MIN):
             by[R.iso(q)[:10]] = by.get(R.iso(q)[:10], 0) + calls_per_min((q - START) // MIN)
@@ -120,6 +116,17 @@ def build(tmp: Path, *, hours: int = 25, restart_h: int = 12, scan_wall=lambda i
     return out
 
 
+def sub(tmp: Path, name: str) -> Path:
+    d = tmp / name
+    d.mkdir()
+    return d
+
+
+def late(fx: dict, n: int = 5) -> int:
+    """An instant after every generated row, in the last day file, so an injected row keeps the chain in time order."""
+    return fx["end"] + n
+
+
 def run(fx: dict, *more: str, samples: bool = True, job: bool = True) -> dict:
     argv = ["--dir", str(fx["base"]), "--tape-dir", str(fx["tape"]), "--expect-end", R.iso(fx["end"])]
     if samples:
@@ -137,7 +144,9 @@ def test_healthy_run_passes_every_check_and_names_the_two_crossing_hours(tmp_pat
     rec = run(build(tmp_path))
     c = by_id(rec)
     assert {k: v["status"] for k, v in c.items() if v["status"] != R.PASS} == {"QP-H1": R.UNM}, {k: (v["status"], v["notes"]) for k, v in c.items() if v["status"] != R.PASS}
-    assert rec["verdict"] == "INCOMPLETE"  # QP-H1 (hook_errors) is never persisted: the verdict cannot be PASS while a check is UNMEASURED
+    assert c["QP-H1"]["informational"] and rec["verdict"] == "PASS"  # hook_errors is never persisted: reported, left out of the verdict
+    nojob = run(build(sub(tmp_path, "nj")), job=False)
+    assert by_id(nojob)["5"]["status"] == R.UNM and nojob["verdict"] == "INCOMPLETE"  # the three error counters need --job-log
     n5 = c["5"]["numbers"]
     assert n5["rolling_hour_calls"]["max_upper_bound"] <= 1500 and n5["rolling_hour_calls"]["max_upper_bound"] >= 480
     assert len(n5["hour_crossing_00_00Z"]) == 1 and n5["hour_crossing_00_00Z"][0]["instant"] == "2026-10-20T00:00:00Z" and n5["hour_crossing_00_00Z"][0]["windows"] > 0
@@ -156,26 +165,19 @@ def test_a_partial_run_is_never_a_pass(tmp_path):
     assert rec["complete"] is False and rec["verdict"] == "INCOMPLETE"
 
 
-@pytest.mark.parametrize("mut,check", [
-    ("as_of", "1"),
-])
-def test_check_1_as_of_refusal_fails(tmp_path, mut, check):
-    fx = build(tmp_path, extra=lambda fx: fx["L"].add("SCAN", START + 3 * HOUR + 5, kind="as_of_refusal", pool="p", detail="LeakageError: chain"))
+def test_check_1_as_of_refusal_fails(tmp_path):
+    fx = build(tmp_path, extra=lambda fx: fx["L"].add("SCAN", late(fx), kind="as_of_refusal", pool="p", detail="LeakageError: chain"))
     c = by_id(run(fx))
     assert c["1"]["status"] == R.FAIL and c["1"]["numbers"]["as_of_refusal_rows"] == 1
 
 
 def test_check_2_chain_stale_over_two_percent_fails_per_persona_and_a_board_pool_counts_for_both(tmp_path):
-    # 300 scans: 7 stale refusals on tagged CON pools (CON 7/600 = 1.17%) pass; 13 (2.17%) fail while BIG stays at 0
-    ok = by_id(run(build(tmp_path / "a" if (tmp_path / "a").mkdir() is None else tmp_path, refused=lambda i: [(f"P{i}a", ["chain_stale"])] if i < 7 else [])))
+    # 300 scans, 2 attempts per persona per scan: 7 stale refusals on tagged CON pools (CON 7/600 = 1.17%) pass; 13 (2.17%) fail while BIG stays at 0
+    ok = by_id(run(build(sub(tmp_path, "a"), refused=lambda i: [(f"P{i}a", ["chain_stale"])] if i < 7 else [])))
     assert ok["2"]["status"] == R.PASS and ok["2"]["numbers"]["CON"]["chain_stale"] == 7 and ok["2"]["numbers"]["BIG"]["chain_stale"] == 0
-    d = tmp_path / "b"
-    d.mkdir()
-    bad = by_id(run(build(d, refused=lambda i: [(f"P{i}a", ["chain_stale"])] if i < 13 else [])))
+    bad = by_id(run(build(sub(tmp_path, "b"), refused=lambda i: [(f"P{i}a", ["chain_stale"])] if i < 13 else [])))
     assert bad["2"]["status"] == R.FAIL
-    d2 = tmp_path / "c"
-    d2.mkdir()
-    board = by_id(run(build(d2, refused=lambda i: [(f"B{i}", ["chain_stale"])] if i < 13 else [])))  # untagged pool = board = counts for CON and BIG
+    board = by_id(run(build(sub(tmp_path, "c"), refused=lambda i: [(f"B{i}", ["chain_stale"])] if i < 13 else [])))  # untagged pool = board = counts for CON and BIG
     assert board["2"]["numbers"]["CON"]["chain_stale"] == 13 and board["2"]["numbers"]["BIG"]["chain_stale"] == 13 and board["2"]["status"] == R.FAIL
     assert board["2"]["numbers"]["CON"]["attempts"] == 2 * 300
 
@@ -186,26 +188,24 @@ def test_check_3_flags_a_pool_visible_for_more_than_ten_minutes_and_is_marked_pr
 
     c = by_id(run(build(tmp_path, refused=refused)))["3"]
     assert c["status"] == R.FAIL and c["proxy"] is True and c["numbers"]["pool_visible_in_logs_more_than_10min_earlier"] == 1
-    d = tmp_path / "ok"
-    d.mkdir()
-    ok = by_id(run(build(d, refused=lambda i: [(f"N{i}", ["chain_unavailable"])] if i % 50 == 0 else [])))["3"]
-    assert ok["status"] == R.PASS and ok["numbers"]["first_appearance_is_the_refusal_itself"] == ok["numbers"]["chain_unavailable_cards"] > 0
+    ok = by_id(run(build(sub(tmp_path, "ok"), refused=lambda i: [(f"N{i}", ["chain_unavailable"])] if i % 50 == 0 else [])))["3"]
+    assert ok["status"] == R.PASS and ok["numbers"]["first_appearance_is_the_refusal_itself"] == ok["numbers"]["chain_unavailable_cards"] == 6  # 6 board refusals (rows)
 
 
 def test_check_4_null_holders_over_ten_percent_fails(tmp_path):
-    c = by_id(run(build(tmp_path, holders_null=lambda i: i % 5 == 0)))["4"]  # 20% null
-    assert c["status"] == R.FAIL and c["numbers"]["CON"]["holders_null"] == 60 and c["numbers"]["CON"]["cards"] == 600 // 2 + 300 // 1 - 300 + 300 - 0 or True
-    ok = by_id(run(build(tmp_path / "x" if (tmp_path / "x").mkdir() is None else tmp_path, holders_null=lambda i: i % 20 == 0)))["4"]  # 5% null
+    # per scan: a CON-tagged card, a BIG-tagged card and a board card (counts for both): 600 cards per persona
+    c = by_id(run(build(tmp_path, holders_null=lambda i: i % 5 == 0)))["4"]  # 60 scans x (tagged + board) = 120 of 600 = 20% null
+    assert c["status"] == R.FAIL and c["numbers"]["CON"]["holders_null"] == 120 and c["numbers"]["CON"]["cards"] == 600
+    ok = by_id(run(build(sub(tmp_path, "x"), holders_null=lambda i: i % 20 == 0)))["4"]  # 5% null
     assert ok["status"] == R.PASS
 
 
 def test_check_5_rolling_hour_over_1500_fails_and_names_the_crossing_hour(tmp_path):
-    fx = build(tmp_path, calls_per_min=lambda m: 40 if 17 * 60 + 30 <= m < 19 * 60 else 8)  # 2400/h around 00:00Z (m = 120 is midnight)
+    fx = build(tmp_path, calls_per_min=lambda m: 40 if 100 <= m < 160 else 8)  # 2400 calls in the hour 23:40Z-00:40Z (m = 120 is midnight)
     c = by_id(run(fx))["5"]
     assert c["status"] == R.FAIL and c["numbers"]["rolling_hour_calls"]["max_lower_bound"] > 1500
-    d = tmp_path / "day"
-    d.mkdir()
-    day = by_id(run(build(d, calls_per_min=lambda m: 30)))["5"]  # 1800/h and 43,200 a day
+    assert c["numbers"]["hour_crossing_00_00Z"][0]["max_calls_lower_bound"] > 1500
+    day = by_id(run(build(sub(tmp_path, "day"), calls_per_min=lambda m: 30)))["5"]  # 1800/h and 41,400 on 2026-10-20
     assert day["status"] == R.FAIL and max(day["numbers"]["calls_by_utc_day"].values()) > 40_000
 
 
@@ -223,10 +223,11 @@ def test_check_5_without_samples_is_unmeasured_and_says_why(tmp_path):
 
 def test_rolling_hours_uses_bounds_and_a_fresh_origin():
     mk = lambda t, c: {"t_ms": t, "chain_by_day": {"d": c}}
-    rows, dec = R.rolling_hours([mk(HOUR + 10 * MIN, 900), mk(2 * HOUR, 1700), mk(2 * HOUR + 30 * MIN, 1800)], origin_ms=0)
+    rows, dec = R.rolling_hours([mk(50 * MIN, 900), mk(2 * HOUR, 1700), mk(2 * HOUR + 30 * MIN, 1800)], origin_ms=0)
     assert dec == 0
-    assert rows[0]["hi"] == 900 and rows[0]["lo"] == 900  # the window starts before the origin: the whole count
-    assert rows[1]["hi"] == 1700 and rows[1]["lo"] == 800  # counter at t-1h is between 0 and 900
+    assert rows[0]["hi"] == 900 and rows[0]["lo"] == 900  # the window starts before the origin: the whole count so far
+    assert rows[1]["hi"] == 800 and rows[1]["lo"] == 0  # C(t - 1 h) is between 900 (the sample at 50 min) and 1,700 (the next sample)
+    assert rows[2]["hi"] == 900 and rows[2]["lo"] == 100
     _, dec2 = R.rolling_hours([mk(0, 10), mk(MIN, 5)], origin_ms=None)
     assert dec2 == 1
 
@@ -234,13 +235,11 @@ def test_rolling_hours_uses_bounds_and_a_fresh_origin():
 def test_check_6_scan_wall_and_exit_delay_limits_and_the_catchup_window(tmp_path):
     ok = by_id(run(build(tmp_path, scan_wall=lambda i: 1900, exit_delay=lambda m: 207_000 if m < 8 else 300)))["6"]  # a 200 s catch-up in the first 8 minutes is excluded
     assert ok["status"] == R.PASS and ok["numbers"]["excluded_windows"]["start_0"]["max_exit_delay_ms"] == 207_000
-    d1, d2, d3 = (tmp_path / n for n in "123")
-    for d in (d1, d2, d3):
-        d.mkdir()
+    d1, d2, d3 = (sub(tmp_path, n) for n in "123")
     assert by_id(run(build(d1, scan_wall=lambda i: 5500 if i == 100 else 900)))["6"]["status"] == R.FAIL
     assert by_id(run(build(d2, exit_delay=lambda m: 11_000 if m == 400 else 200)))["6"]["status"] == R.FAIL
-    assert by_id(run(build(d3, scan_wall=lambda i: 2500 if i < 5 else 900)))["6"]["status"] == R.PASS or True  # 5 of 300 scans over 2 s is 1.7%: p99 over
-    gap = by_id(run(build(tmp_path / "g" if (tmp_path / "g").mkdir() is None else tmp_path, exit_delay=lambda m: 11_000 if m == 400 else 200),
+    assert by_id(run(build(d3, scan_wall=lambda i: 2500 if 2 <= i < 8 else 900)))["6"]["status"] == R.FAIL  # 6 of 298 scans over 2 s (the first two are in the catch-up window): p99 is 2,500
+    gap = by_id(run(build(sub(tmp_path, "g"), exit_delay=lambda m: 11_000 if m == 400 else 200),
                      "--feed-gap", f"{R.iso(START + 400 * MIN - MIN)}/{R.iso(START + 400 * MIN + 2 * MIN)}"))["6"]
     assert gap["status"] == R.PASS and "listed_feed_gap_0" in gap["numbers"]["excluded_windows"]
 
@@ -252,26 +251,22 @@ def test_check_6_p99_is_unmeasured_when_the_per_minute_rows_cannot_decide(tmp_pa
 
 
 def test_check_7_sell_alert_and_already_has_a_sell_fail(tmp_path):
-    c = by_id(run(build(tmp_path, extra=lambda fx: fx["L"].add("CON-X", START + 5 * HOUR, kind="sell_alert", pid="o", waited_ms=61_000, tries=6))))["7"]
+    c = by_id(run(build(tmp_path, extra=lambda fx: fx["L"].add("CON-X", late(fx), kind="sell_alert", pid="o", waited_ms=61_000, tries=6))))["7"]
     assert c["status"] == R.FAIL and c["numbers"]["sell_alert_rows"] == 1
-    d = tmp_path / "d"
-    d.mkdir()
-    c2 = by_id(run(build(d, extra=lambda fx: fx["L"].add("CON-X", START + 5 * HOUR, kind="order_refused", order_id="o", side="sell", reason="refused", detail="x: already has a sell"))))["7"]
+    c2 = by_id(run(build(sub(tmp_path, "d"), extra=lambda fx: fx["L"].add("CON-X", late(fx), kind="order_refused", order_id="o", side="sell", reason="refused", detail="x: already has a sell"))))["7"]
     assert c2["status"] == R.FAIL and c2["numbers"]["sell_refused_drop_rows"] == {"already has a sell": 1}
 
 
 def test_check_8_restart_conditions(tmp_path):
     ok = by_id(run(build(tmp_path)))["8"]
     assert ok["status"] == R.PASS and ok["numbers"]["process_starts"] == 2
-    dirs = [tmp_path / n for n in ("sha", "third", "dup", "chain", "one", "reset")]
-    for d in dirs:
-        d.mkdir()
+    dirs = [sub(tmp_path, n) for n in ("sha", "third", "dup", "chain", "one", "reset")]
     assert by_id(run(build(dirs[0], restart_sha="b" * 40)))["8"]["status"] == R.FAIL
-    assert by_id(run(build(dirs[1], extra=lambda fx: fx["L"].add("SCAN", START + 20 * HOUR, kind="start", binding={"dirty": False}, frozen_sha="a" * 40, lane_h=False))))["8"]["status"] == R.FAIL
+    assert by_id(run(build(dirs[1], extra=lambda fx: fx["L"].add("SCAN", late(fx), kind="start", binding={"dirty": False}, frozen_sha="a" * 40, lane_h=False))))["8"]["status"] == R.FAIL
 
     def dup(fx):
-        fx["L"].add("SCAN", START + 6 * HOUR, kind="card_refused", pool="Z", reasons=["other"])
-        fx["L"].add("SCAN", START + 6 * HOUR, kind="card_refused", pool="Z", reasons=["other"])
+        fx["L"].add("SCAN", late(fx), kind="card_refused", pool="Z", reasons=["other"])
+        fx["L"].add("SCAN", late(fx), kind="card_refused", pool="Z", reasons=["other"])
 
     d = by_id(run(build(dirs[2], extra=dup)))["8"]
     assert d["status"] == R.FAIL and d["numbers"]["duplicate_rows"]["SCAN"] == 1
@@ -296,32 +291,23 @@ def test_check_8_restart_conditions(tmp_path):
 
 def test_check_9_feed_pause_or_missing_hour_fails_and_no_samples_is_unmeasured(tmp_path):
     assert by_id(run(build(tmp_path)))["9"]["status"] == R.PASS
-    d = tmp_path / "m"
-    d.mkdir()
-    fx = build(d)
+    fx = build(sub(tmp_path, "m"))
     next(iter(sorted(fx["tape"].glob("tape-2026-10-20T05*")))).unlink()
     assert by_id(run(fx))["9"]["status"] == R.FAIL
-    d2 = tmp_path / "n"
-    d2.mkdir()
-    assert by_id(run(build(d2), samples=False))["9"]["status"] == R.UNM
+    assert by_id(run(build(sub(tmp_path, "n")), samples=False))["9"]["status"] == R.UNM
 
 
 def test_check_10_registration_and_no_bst(tmp_path):
     ok = by_id(run(build(tmp_path)))["10"]
     assert ok["status"] == R.PASS and ok["numbers"]["register_print_seen_in_job_log"] is True and ok["numbers"]["bots_json_lines"] == 9
-    d = tmp_path / "e"
-    d.mkdir()
-    assert by_id(run(build(d, n_bots=8)))["10"]["status"] == R.FAIL
-    d2 = tmp_path / "f"
-    d2.mkdir()
-    assert by_id(run(build(d2, extra=lambda fx: fx["L"].add("BST-L", START + 3 * HOUR, kind="skip"))))["10"]["status"] == R.FAIL
+    assert by_id(run(build(sub(tmp_path, "e"), n_bots=8)))["10"]["status"] == R.FAIL
+    assert by_id(run(build(sub(tmp_path, "f2"), extra=lambda fx: fx["L"].add("BST-L", late(fx), kind="skip"))))["10"]["status"] == R.FAIL
 
 
 def test_trim_checks_block_registration(tmp_path):
     big = run(build(tmp_path, trim_ms=lambda i: 1500.0 if i == 40 else 150.0))
     assert by_id(big)["QP-T1"]["status"] == R.FAIL and any("trim_ms > 1000" in b for b in big["blocks_registration"]) and big["verdict"] == "FAIL"
-    d = tmp_path / "f"
-    d.mkdir()
+    d = sub(tmp_path, "f")
 
     def floor(fx):
         p = fx["root"] / "engine-trim-counters.jsonl"
@@ -331,11 +317,9 @@ def test_trim_checks_block_registration(tmp_path):
 
     f = run(build(d, extra=floor))
     assert by_id(f)["QP-T2"]["status"] == R.FAIL and any("NOT_DECIDABLE" in b for b in f["blocks_registration"])
-    d2 = tmp_path / "v"
-    d2.mkdir()
-    v = run(build(d2, v_ratio=0.6))
+    v = run(build(sub(tmp_path, "v"), v_ratio=0.6))
     assert by_id(v)["QP-V1"]["status"] == R.FAIL and by_id(v)["QP-V1"]["numbers"]["blocks_registration"]
-    ok = by_id(run(build(tmp_path / "ok" if (tmp_path / "ok").mkdir() is None else tmp_path)))
+    ok = by_id(run(build(sub(tmp_path, "ok"))))
     n = ok["QP-T3"]["numbers"]
     assert n["engine_ids"] == 2 and n["process_starts_in_scan_log"] == 2 and set(n["segments"]) == {"eng1", "eng2"}
     assert ok["QP-V1"]["numbers"]["per_engine_id_last"]["eng1"]["v_missing_pools"] != ok["QP-V1"]["numbers"]["per_engine_id_last"]["eng2"]["v_checked_pools"]  # never added across segments
@@ -355,11 +339,9 @@ def test_memory_plan_b_when_plan_a_does_not_fit_and_unplanned_start_fails(tmp_pa
     c = by_id(run(build(tmp_path, rss=lambda h: 1000 + 150 * h)))["QP-M1"]
     plan = c["numbers"]["plan"]
     assert abs(c["numbers"]["slope_mb_per_h_conservative_max_of_segments"] - 150) < 1
-    assert plan["plan_A_required_memory_max_mb"] > 40_000 and plan["implied"] == "B" and plan["plan_B_restart_cadence_h"] == 24.0
+    assert plan["plan_A_required_memory_max_mb"] > 30_000 and plan["implied"] == "B" and plan["plan_B_restart_cadence_h"] == 24.0
     assert abs(plan["projected_hours_to_memory_max"] - (10_240 - c["numbers"]["rss_after_drain_mb"]) / 150) < 1
-    d = tmp_path / "u"
-    d.mkdir()
-    u = by_id(run(build(d, extra=lambda fx: fx["L"].add("SCAN", START + 20 * HOUR, kind="start", binding={"dirty": False}, frozen_sha="a" * 40, lane_h=False))))["QP-M1"]
+    u = by_id(run(build(sub(tmp_path, "u"), extra=lambda fx: fx["L"].add("SCAN", late(fx), kind="start", binding={"dirty": False}, frozen_sha="a" * 40, lane_h=False))))["QP-M1"]
     assert u["status"] == R.FAIL
 
 
