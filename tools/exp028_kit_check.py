@@ -681,7 +681,20 @@ def check_cell(cell: Any) -> dict[str, Any]:
     return {"flags_true": flags, "flags_all_true": flags == 8, "B_10000_everywhere": b_ok, "seed_1_everywhere": seed_ok, "sub_cells": per, "pass": bool(flags == 8 and b_ok and seed_ok and all_equal)}
 
 
-def check_c(paths: list[str]) -> dict[str, Any]:
+def check_provenance(doc: Any, sha: str, kit_sha256: str | None) -> dict[str, bool]:
+    """Binding (c) item 3, "the kit sha is the one pinned": the results file must come from THIS kit. `meta.provenance.kit` is written by the kit's own kit_provenance():
+    git_head must be the --sha (full), git_dirty literally False, and sha256 the sha256 of tools/arena_screen.py at --sha. A missing key fails."""
+    meta = doc.get("meta") if isinstance(doc, dict) else None
+    prov = meta.get("provenance") if isinstance(meta, dict) else None
+    kit = prov.get("kit") if isinstance(prov, dict) else None
+    kit = kit if isinstance(kit, dict) else {}
+    return {"provenance_git_head_equals_sha": isinstance(kit.get("git_head"), str) and kit["git_head"] == sha,
+            "provenance_git_dirty_false": kit.get("git_dirty") is False,
+            "provenance_sha256_equals_kit_file_at_sha": isinstance(kit.get("sha256"), str) and kit_sha256 is not None and kit["sha256"] == kit_sha256}
+
+
+def check_c(paths: list[str], sha: str, kit_sha256: str | None) -> dict[str, Any]:
+    """sha: the full --sha; kit_sha256: sha256 of tools/arena_screen.py at that sha. A file passes only if it was produced by that kit AND every cell passes."""
     files, ok = [], True
     for p in paths:
         try:
@@ -690,15 +703,18 @@ def check_c(paths: list[str]) -> dict[str, Any]:
             files.append({"file": p, "error": type(exc).__name__, "pass": False})
             ok = False
             continue
-        meta = (doc.get("meta") or {}).get("screen_p") if isinstance(doc, dict) else None
+        meta = (doc.get("meta") or {}).get("screen_p") if isinstance(doc, dict) and isinstance(doc.get("meta"), dict) else None
         meta = meta if isinstance(meta, dict) else {}
         meta_ok = _is_int(meta.get("B"), B_FIXED) and _is_int(meta.get("seed"), 1)
+        prov = check_provenance(doc, sha, kit_sha256)
         cells = doc.get("cells") if isinstance(doc, dict) and isinstance(doc.get("cells"), dict) else {}
         per = {name: check_cell(c) for name, c in cells.items()}
-        f_ok = meta_ok and bool(per) and all(c["pass"] for c in per.values())
-        files.append({"file": p, "meta_B_10000_seed_1": meta_ok, "cells_checked": len(per), "cells_failing": sum(not c["pass"] for c in per.values()), "cells": per, "pass": f_ok})
+        f_ok = meta_ok and all(prov.values()) and bool(per) and all(c["pass"] for c in per.values())
+        files.append({"file": p, "meta_B_10000_seed_1": meta_ok, **prov, "cells_checked": len(per), "cells_passing": sum(c["pass"] for c in per.values()),
+                      "cells_failing": sum(not c["pass"] for c in per.values()), "cells": per, "pass": f_ok})
         ok = ok and f_ok
-    return {"verdict": "PASS" if ok and files else "FAIL", "files": files}
+    return {"verdict": "PASS" if ok and files else "FAIL", "files": files,
+            "note": "A cell that fails here has no EXP-028 p (p = 1); the claim record applies Am.1 items 1 to 3 (n < 100, < 5 dates, None p) separately. PASS here says nothing about them."}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ check
@@ -712,7 +728,7 @@ def cmd_check(args: argparse.Namespace) -> int:
         raise ToolError(f"cannot read the reference file {ref_path}: {exc}")
     a = check_a(repo, sha, ref_sha, args.strict_pricing)
     b = check_b(repo, sha, ref_sha, ref, args.workdir)
-    c = check_c(args.results) if args.results else {"verdict": "NOT_RUN", "reason": "no --results given"}
+    c = check_c(args.results, sha, git_file_sha256(repo, sha, ARENA_SCREEN)) if args.results else {"verdict": "NOT_RUN", "reason": "no --results given"}
     rec = {"schema": SCHEMA_RECORD, "sha": sha, "ref_sha": ref_sha, "ref_sha_is_pinned": ref_sha == REFERENCE_SHA, "reference_file": str(ref_path), "reference_file_sha256": file_sha256(ref_path),
            "verdicts": {"A": a["verdict"], "B": b["verdict"], "C": c["verdict"]}, "numpy_version": b.get("numpy_version"), "A": a, "B": b, "C": c,
            "note": "Synthetic fixture only; no real data was read; nothing here is a measurement of any book or a profit claim. The exit code is 0 whenever a record is produced."}

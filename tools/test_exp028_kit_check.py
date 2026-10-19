@@ -349,7 +349,13 @@ def test_check_refuses_an_unknown_sha_with_exit_two(capsys):
 def _results(ref_doc: dict, names: tuple[str, ...] = ("cell_ok_300_7", "cell_small_20_3")) -> dict:
     cells = {n: {"screen_p": copy.deepcopy(ref_doc["outputs"]["screen_p_cell"][n]["screen_p"]), "stats": copy.deepcopy(ref_doc["outputs"]["screen_p_cell"][n]["stats"]),
                  "kill": True, "kill_reasons": ["ci_lo <= 0 in total|flat"]} for n in names}
-    return {"meta": {"screen_p": {"enabled": True, "report_only": True, "B": 10_000, "seed": 1}}, "cells": cells}
+    prov = {"path": "/x/tools/arena_screen.py", "sha256": K.REFERENCE_ARENA_SCREEN_SHA256, "git_head": REF_SHA, "git_dirty": False}  # what kit_provenance() writes at 489fa7e
+    return {"meta": {"screen_p": {"enabled": True, "report_only": True, "B": 10_000, "seed": 1}, "provenance": {"kit": prov}}, "cells": cells}
+
+
+def _c(paths: list[str]) -> dict:
+    """(C) against the pinned sha 489fa7e and its arena_screen.py hash (the amendment's value), without needing git history."""
+    return K.check_c(paths, REF_SHA, K.REFERENCE_ARENA_SCREEN_SHA256)
 
 
 def _write(tmp_path: Path, doc: Any, name: str = "results.json") -> str:
@@ -359,7 +365,7 @@ def _write(tmp_path: Path, doc: Any, name: str = "results.json") -> str:
 
 
 def test_c_a_clean_results_pass_and_report_only_booleans_and_counts(tmp_path, ref_doc):
-    c = K.check_c([_write(tmp_path, _results(ref_doc))])
+    c = _c([_write(tmp_path, _results(ref_doc))])
     assert c["verdict"] == "PASS" and c["files"][0]["cells_checked"] == 2 and c["files"][0]["cells_failing"] == 0 and c["files"][0]["meta_B_10000_seed_1"] is True
     cell = c["files"][0]["cells"]["cell_ok_300_7"]
     assert cell["flags_true"] == 8 and cell["flags_all_true"] and cell["B_10000_everywhere"] and cell["seed_1_everywhere"] and cell["pass"]
@@ -367,7 +373,7 @@ def test_c_a_clean_results_pass_and_report_only_booleans_and_counts(tmp_path, re
 
 
 def _fail_only(tmp_path, doc, cell="cell_ok_300_7"):
-    c = K.check_c([_write(tmp_path, doc)])
+    c = _c([_write(tmp_path, doc)])
     files = c["files"][0]
     assert c["verdict"] == "FAIL" and files["cells_failing"] == 1 and files["cells"][cell]["pass"] is False and files["cells"]["cell_small_20_3"]["pass"] is True
     return files["cells"][cell]
@@ -394,7 +400,7 @@ def test_c_b_other_than_10000_anywhere_fails(tmp_path, ref_doc, where, bad):
     sp = doc["cells"]["cell_ok_300_7"]["screen_p"]
     if where == "meta":
         doc["meta"]["screen_p"]["B"] = bad
-        c = K.check_c([_write(tmp_path, doc)])
+        c = _c([_write(tmp_path, doc)])
         assert c["verdict"] == "FAIL" and c["files"][0]["meta_B_10000_seed_1"] is False
         return
     {"cell": sp, "sub": sp["sub_cells"]["total|flat"], "date_cluster": sp["sub_cells"]["sc|press"]["date_cluster"]}[where]["B"] = bad
@@ -408,7 +414,7 @@ def test_c_seed_other_than_1_anywhere_fails_and_true_is_not_1(tmp_path, ref_doc,
     sp = doc["cells"]["cell_ok_300_7"]["screen_p"]
     if where == "meta":
         doc["meta"]["screen_p"]["seed"] = bad
-        assert K.check_c([_write(tmp_path, doc)])["verdict"] == "FAIL"
+        assert _c([_write(tmp_path, doc)])["verdict"] == "FAIL"
         return
     {"cell": sp, "sub": sp["sub_cells"]["sc|flat"], "date_cluster": sp["sub_cells"]["total|press"]["date_cluster"]}[where]["seed"] = bad
     assert _fail_only(tmp_path, doc)["seed_1_everywhere"] is False
@@ -454,18 +460,62 @@ def test_c_a_sub_cell_missing_fails_and_meta_missing_fails_and_unreadable_fails(
     _fail_only(tmp_path, doc)
     doc = _results(ref_doc)
     del doc["meta"]["screen_p"]
-    assert K.check_c([_write(tmp_path, doc)])["verdict"] == "FAIL"
-    assert K.check_c([_write(tmp_path, {"meta": doc["meta"], "cells": {}})])["verdict"] == "FAIL"
-    assert K.check_c([str(tmp_path / "nope.json")])["verdict"] == "FAIL"
+    assert _c([_write(tmp_path, doc)])["verdict"] == "FAIL"
+    assert _c([_write(tmp_path, {"meta": doc["meta"], "cells": {}})])["verdict"] == "FAIL"
+    assert _c([str(tmp_path / "nope.json")])["verdict"] == "FAIL"
     bad = tmp_path / "bad.json"
     bad.write_text("{not json")
-    assert K.check_c([str(bad)])["verdict"] == "FAIL"
+    assert _c([str(bad)])["verdict"] == "FAIL"
+
+
+def _prov_file(tmp_path, ref_doc, **kit) -> dict:
+    doc = _results(ref_doc)
+    doc["meta"]["provenance"]["kit"].update(kit)
+    return _c([_write(tmp_path, doc)])["files"][0]
+
+
+def test_c_a_results_file_from_another_kit_or_a_dirty_tree_fails_even_when_every_cell_agrees_with_itself(tmp_path, ref_doc):
+    f = _prov_file(tmp_path, ref_doc, git_head="0" * 40, git_dirty=True, sha256="f" * 64)  # quant-proof's case (#766 comment 6278863654, item 1)
+    assert f["pass"] is False and f["cells_failing"] == 0 and f["cells_passing"] == 2  # the cells are self-consistent; the file is not from the pinned kit
+    assert (f["provenance_git_head_equals_sha"], f["provenance_git_dirty_false"], f["provenance_sha256_equals_kit_file_at_sha"]) == (False, False, False)
+    assert _c([_write(tmp_path, _results(ref_doc))])["files"][0]["pass"] is True
+
+
+@pytest.mark.parametrize("kit,field", [({"git_head": "0" * 40}, "provenance_git_head_equals_sha"), ({"git_head": REF_SHA[:12]}, "provenance_git_head_equals_sha"),
+                                       ({"git_head": None}, "provenance_git_head_equals_sha"), ({"git_dirty": True}, "provenance_git_dirty_false"),
+                                       ({"git_dirty": None}, "provenance_git_dirty_false"), ({"git_dirty": "false"}, "provenance_git_dirty_false"), ({"git_dirty": 0}, "provenance_git_dirty_false"),
+                                       ({"sha256": "f" * 64}, "provenance_sha256_equals_kit_file_at_sha"), ({"sha256": None}, "provenance_sha256_equals_kit_file_at_sha")])
+def test_c_each_provenance_field_is_required_on_its_own(tmp_path, ref_doc, kit, field):
+    f = _prov_file(tmp_path, ref_doc, **kit)
+    assert f["pass"] is False and f[field] is False and [k for k in f if k.startswith("provenance_") and f[k] is False] == [field]
+
+
+@pytest.mark.parametrize("drop", ["git_head", "git_dirty", "sha256", "kit", "provenance", "meta"])
+def test_c_a_missing_provenance_key_fails(tmp_path, ref_doc, drop):
+    doc = _results(ref_doc)
+    if drop in ("git_head", "git_dirty", "sha256"):
+        del doc["meta"]["provenance"]["kit"][drop]
+    elif drop == "kit":
+        del doc["meta"]["provenance"]["kit"]
+    elif drop == "provenance":
+        del doc["meta"]["provenance"]
+    else:
+        del doc["meta"]
+    f = _c([_write(tmp_path, doc)])["files"][0]
+    assert f["pass"] is False and not all(f[k] for k in f if k.startswith("provenance_"))
+
+
+def test_c_the_kit_file_hash_must_come_from_the_sha(tmp_path, ref_doc):
+    path = _write(tmp_path, _results(ref_doc))
+    assert K.check_c([path], REF_SHA, K.REFERENCE_ARENA_SCREEN_SHA256)["verdict"] == "PASS"
+    assert K.check_c([path], REF_SHA, "0" * 64)["verdict"] == "FAIL" and K.check_c([path], REF_SHA, None)["verdict"] == "FAIL"  # a sha with no kit file gives no hash: fail
+    assert K.check_c([path], "1" * 40, K.REFERENCE_ARENA_SCREEN_SHA256)["verdict"] == "FAIL"  # the results were made at a different head than --sha
 
 
 def test_c_several_files_all_must_pass(tmp_path, ref_doc):
     good, bad = _results(ref_doc), _results(ref_doc)
     bad["cells"]["cell_ok_300_7"]["screen_p"]["sub_cells"]["sc|flat"]["ci90_lo_first1000_equals_stat"] = False
-    c = K.check_c([_write(tmp_path, good, "a.json"), _write(tmp_path, bad, "b.json")])
+    c = _c([_write(tmp_path, good, "a.json"), _write(tmp_path, bad, "b.json")])
     assert c["verdict"] == "FAIL" and [f["pass"] for f in c["files"]] == [True, False]
 
 
