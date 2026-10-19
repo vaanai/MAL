@@ -497,7 +497,9 @@ def run_result(rig: Rig, rows: list[dict[str, Any]], scratch: Path) -> dict[str,
     errs = collections.Counter(run.hook_errors)
     return {"done": True, "decision_log_md5": run.log.md5(), "ledger_digest": ledger_digest(scratch / "ledger"), "ledger_digest_no_mint": ledger_digest(scratch / "ledger", ("mint",)),
             "mock_calls": dict(rig.rpc_mock.calls), "prefetch": rig.prefetch.stats(), "counters": run.counters, "engine_counters": dict(run.engine.counters),
-            "hook_errors": dict(errs), "trim_file": trim_file_stats(Path(run.cfg.root)), "trim_engine_history": run.cfg.trim_engine_history,
+            "hook_errors": dict(errs), "v_filter": {"scans_v_missing": run.counters.get("filter_v_missing", 0), "scans_v_band": run.counters.get("filter_v_band", 0),
+                                                    "pools_checked": len(run._v_checked), "pools_v_missing": len(run._v_missing_pools)},
+            "trim_file": trim_file_stats(Path(run.cfg.root)), "trim_engine_history": run.cfg.trim_engine_history,
             "peak_rss_mb": max(r["rss_mb"] for r in rows) if rows else None, "hwm_mb": round(peak_rss_mb()),
             "samples": [{"sim": r["sim"], "rss_mb": r["rss_mb"], "rows": r["rows"], "engine_pools": r.get("engine.pools"), "engine_hist_rows": r.get("engine.hist_rows"),
                          "engine_hist_seen": r.get("engine.hist_seen"), "wall_s": r["wall_s"]} for r in rows]}
@@ -524,6 +526,7 @@ def compare_trim(on: dict[str, Any], off: dict[str, Any]) -> dict[str, Any]:
     ran = bool(on["trim_file"] and on["trim_file"]["lines"] and ec_on.get("hist_trimmed_prints", 0) > 0) and off["trim_file"] is None
     out: dict[str, Any] = {"decision_log_md5": pair("decision_log_md5"), "ledger_digest": pair("ledger_digest"), "ledger_digest_no_mint": pair("ledger_digest_no_mint"),
                            "engine_counters": {k: {"on": ec_on.get(k, 0), "off": ec_off.get(k, 0)} for k in TRIM_COUNTERS},
+                           "v_filter": {"on": on["v_filter"], "off": off["v_filter"], "equal": on["v_filter"] == off["v_filter"]},
                            "engine_counters_other_equal": other_on == other_off,
                            "engine_counters_other_diff": {k: [other_on.get(k), other_off.get(k)] for k in sorted(set(other_on) | set(other_off)) if other_on.get(k) != other_off.get(k)},
                            "hook_errors": {"on": on["hook_errors"], "off": off["hook_errors"]}, "trim_file_on": on["trim_file"], "trim_file_off": off["trim_file"],
@@ -531,7 +534,7 @@ def compare_trim(on: dict[str, Any], off: dict[str, Any]) -> dict[str, Any]:
                            "wall_s": {"on": on["samples"][-1]["wall_s"] if on["samples"] else None, "off": off["samples"][-1]["wall_s"] if off["samples"] else None},
                            "hourly": hourly}
     out["identical"] = bool(out["decision_log_md5"]["equal"] and out["ledger_digest"]["equal"] and out["ledger_digest_no_mint"]["equal"] and out["engine_counters_other_equal"]
-                            and not on["hook_errors"] and not off["hook_errors"] and ec_on.get("refused_history_trimmed", 0) == 0 and ran)
+                            and out["v_filter"]["equal"] and not on["hook_errors"] and not off["hook_errors"] and ec_on.get("refused_history_trimmed", 0) == 0 and ran)
     # arena_paper (TRIM_KEEP_SLOTS): a nonzero rows_below_trim_floor or any history_trimmed refusal VOIDS the equivalence for a live engine even when this tape's md5s match
     out["equivalence_void"] = bool(ec_on.get("rows_below_trim_floor", 0) > 0 or ec_on.get("refused_history_trimmed", 0) > 0)
     return out

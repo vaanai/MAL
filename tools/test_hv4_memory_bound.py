@@ -466,3 +466,27 @@ def test_a_counter_write_failure_loses_no_trim_and_never_skips_the_feed(tmp_path
     assert run.hook_errors and set(run.hook_errors) == {"housekeep:IsADirectoryError"} and len(run.hook_errors) == run.counters["engine_trims"] >= 14
     assert run.engine.counters["hist_trimmed_prints"] > 0  # the trims were done
     assert sum(len(h.slot) for h in run.engine.pools.values()) == len(rows) - run.engine.counters["hist_trimmed_prints"]
+
+
+def test_the_counters_file_carries_the_v_filter_counters_and_the_distinct_pools_checked(tmp_path):
+    """QP (DEC-031 Am.2 item 6): the v_missing count is read against the DISTINCT pools that reach the V check. Pool 1 has no V on any print: every scan of it adds one
+    filter_v_missing, so the scan count is a multiple of the one distinct pool; both pools reach the V check. The line is the runner's own, written by the trim."""
+    from tools.test_hv4_runner import T_START, _rows_with_pool1_v
+
+    run = make(tmp_path / "missing", rows=_rows_with_pool1_v(None))
+    run.run(T_START, X + 30_000)
+    assert not run.hook_errors
+    run._trim_engine(X + 30_000)  # a final line, after the last scan
+    last = trim_lines(run)[-1]
+    assert last["filter_v_missing"] == run.counters["filter_v_missing"] > 5 and last["filter_v_band"] == 0
+    assert last["v_checked_pools"] == 2 and last["v_missing_pools"] == 1  # one pool lost, many times; both pools were checked
+    ok = make(tmp_path / "inband")  # the recorded tape: both pools carry V = 17,584,505,288
+    ok.run(T_START, X + 30_000)
+    ok._trim_engine(X + 30_000)
+    lo = trim_lines(ok)[-1]
+    assert lo["filter_v_missing"] == 0 and lo["filter_v_band"] == 0 and lo["v_checked_pools"] == 2 and lo["v_missing_pools"] == 0
+    band = make(tmp_path / "band", rows=_rows_with_pool1_v(17_499_999_999))
+    band.run(T_START, X + 30_000)
+    band._trim_engine(X + 30_000)
+    lb = trim_lines(band)[-1]
+    assert lb["filter_v_band"] > 0 and lb["filter_v_missing"] == 0 and lb["v_checked_pools"] == 2 and lb["v_missing_pools"] == 0

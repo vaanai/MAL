@@ -35,6 +35,7 @@ def result(*, md5="m", led="l", led_nm="n", trim=True, dup=5, hook=None, below=0
             ec["refused_history_trimmed"] = refused  # the engine counts a key only when it happens
         tf = {"lines": 12, "trim_ms_sum": 6.0, "trim_ms_max": 1.0, "trim_ms_mean": 0.5, "monotone": True, "last": {}, "engine_ids": 1}
     return {"done": True, "decision_log_md5": md5, "ledger_digest": led, "ledger_digest_no_mint": led_nm, "engine_counters": ec, "hook_errors": hook or {}, "trim_file": tf,
+            "v_filter": {"scans_v_missing": 40, "scans_v_band": 7, "pools_checked": 90, "pools_v_missing": 12},
             "peak_rss_mb": max(rss), "hwm_mb": max(rss) + 2, "samples": [{"sim": f"10-19T{8 + i}:00", "rss_mb": r, "rows": 1000 * (i + 1), "engine_pools": 5, "engine_hist_rows": 10 * r,
                                                                              "engine_hist_seen": 11 * r, "wall_s": 10 * (i + 1)} for i, r in enumerate(rss)]}
 
@@ -50,6 +51,10 @@ def test_compare_trim_is_identical_only_when_every_digest_and_counter_agrees():
     assert not M.compare_trim(result(hook={"housekeep:RuntimeError": 1}), result(trim=False))["identical"]  # a hook error in either run
     assert not M.compare_trim(result(refused=1), result(trim=False))["identical"]  # a buy refused for a trimmed history
     assert not M.compare_trim(result(trim=False), result(trim=False))["identical"]  # the trim did not run: nothing was compared
+    moved = result()
+    moved["v_filter"] = dict(moved["v_filter"], pools_v_missing=13)
+    assert not M.compare_trim(moved, result(trim=False))["identical"]  # the V-universe counters are decisions-level: they must not move with the trim
+    assert c["v_filter"]["on"]["pools_checked"] == 90 and c["v_filter"]["equal"]
 
 
 def test_compare_trim_flags_a_void_equivalence_even_when_the_md5s_match():

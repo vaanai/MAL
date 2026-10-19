@@ -558,6 +558,10 @@ class Runner:
         self.limiter = C.SetupLimiter()
         self.quotes = QuoteHistory()
         self._housekeep_at = 0  # tape instant (t_recv_ms) of the next memory housekeeping
+        # Distinct pool ids that reached the V check of C.filters / that failed it as v_missing (Runner.scan), kept for the counters file (Runner._trim_engine). Runtime
+        # only, never read by a decision. Two sets of pool-id strings: about 130 bytes a pool, a few MB a day at the 2026-10-19 pool rate, against 740 MB/h of prints.
+        self._v_checked: set[str] = set()
+        self._v_missing_pools: set[str] = set()
         self.risk: dict[str, dict] = {}
         self.seq: dict[tuple[str, str], int] = {}
         self.calls: dict[tuple[str, str], list[int]] = {}
@@ -635,6 +639,9 @@ class Runner:
         line = {"schema": ENGINE_TRIM_SCHEMA, "tape_ms": t, "engine_id": eng.engine_id, "trim_no": self.counters["engine_trims"], "dropped": n, "trim_ms": ms,
                 "hist_trimmed_prints": c.get("hist_trimmed_prints", 0), "rows_below_trim_floor": c.get("rows_below_trim_floor", 0),
                 "refused_history_trimmed": c.get("refused_history_trimmed", 0), "rows_dup": c.get("rows_dup", 0),
+                # DEC-031 Amendment 2 V universe (QP): pool-scans lost to v_missing / v_band, and the DISTINCT pools that reached the V check and that failed it as v_missing
+                "filter_v_missing": self.counters.get("filter_v_missing", 0), "filter_v_band": self.counters.get("filter_v_band", 0),
+                "v_checked_pools": len(self._v_checked), "v_missing_pools": len(self._v_missing_pools),
                 "pools": len(eng.pools), "prints_held": sum(len(h.slot) for h in eng.pools.values()), "hw_slot": eng.hw_slot}
         path = Path(self.cfg.root) / ENGINE_TRIM_FILE
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -880,10 +887,14 @@ class Runner:
             except C.LeakageError as e:
                 self._leak(T, p.id, e)
                 continue
+            if "v_missing" in fr.checks or "v_band" in fr.checks:
+                self._v_checked.add(p.id)  # the pool reached the V check (QP: the v_missing count is read against these distinct pools; counted, never read by a decision)
             if not fr.passed:
                 for code in V_FILTER_CODES:  # DEC-031 Amendment 2 item 6: pool-scans lost to the V universe, counted apart so a shakedown report can show v_missing
                     if code in fr.failed:
                         self._count("filter_" + code)
+                        if code == "v_missing":
+                            self._v_missing_pools.add(p.id)
                 continue
             snap = self.state.snapshot(p.id)
             try:
