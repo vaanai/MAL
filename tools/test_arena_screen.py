@@ -1918,3 +1918,232 @@ def test_a_fired_exit_lands_by_the_normal_exit_lag_rule_in_the_kit(tape):
         assert tr["Qx"][i] == twin["Qx"][0] and tr["Bx"][i] == twin["Bx"][0]  # priced at the state of fire slot + 7 feed slots + the exit lag: the engine's rule, not the fire slot itself
         assert want + S.D + int(F.exit_lag_vec(np.array([SPS]))[0]) > want
     assert 0 < n_twin <= n_fire < len(tr["sd"])  # some exits fire (and are twinned), some run to the cap
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ 8b. the kit run, the probe, worst-in-slot, count-only
+def sneaky_fire(thr: float = 1e9):
+    """NON-CAUSAL on purpose: fires at the print BEFORE a whale, so it needs the next print. It reaches the view's private arrays, which the structural check (max_read) cannot see;
+    only the exit-causality probe, which hands the callable data cut after the fire slot, can catch it."""
+
+    def fire(view, landing, cap):
+        sl, so, ib = view._a["sl"], view._a["so"], view._a["ib"]
+        for j in range(len(sl) - 1):
+            if sl[j] >= landing and ib[j + 1] and so[j + 1] >= thr:
+                return int(sl[j])
+        return None
+
+    return fire
+
+
+def with_fire(script, fire):
+    return [(p, s, dataclasses.replace(e, exit_fire=fire)) for p, s, e in script]
+
+
+def kit_exit_cell(tape, cell: S.Cell, fire=None) -> "S.Screen":
+    rows, files = tape
+    script = script_for(rows) if fire is None else with_fire(script_for(rows), fire)
+    scr = S.Screen(ScriptRule(script, cells=(cell,)))
+    scr.run_block(0, "synthetic", S.iter_hours(files, "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
+    return scr
+
+
+GOLDEN = {"event": "3f2be283798d39d27b0e5abdecdc315e19c03ea7b3a8348aaf12666775d0c59a", "event_table": "3a8083574803b53cc68dbb1ca164388919e92a47f892c93b78f3341b518e080e",
+          "grid": "0149dc1b999bd85213015c62f4c6d65db57c38fec54c493bfbddf9c2bac15a61", "grid_table": "b7ffbe239ac5faa05b0828ada3ff66f3d5f368cce771cf309884b25e9e6e2319",
+          "count_only": "45cd2cf604b9ea5698671d4031f2488bbfe9f7fd4997811c71230cb9ba81f8ca", "count_only_md": "7e45a532630b2194b4610c5b7983c2584cba4dfd2485c42c750b097f7bec96e5"}
+BASE_COMMIT = "258ba4f"  # main before this change (arena_screen.py sha256 eabacb55...)
+
+
+def sha(x: str) -> str:
+    return hashlib.sha256(x.encode()).hexdigest()
+
+
+def old_style_outputs(tape, kit=S) -> dict:
+    rows, files = tape
+    out = {}
+    vm = kit.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])
+    for name, ev in (("event", True), ("grid", False)):
+        scr = kit.Screen(ScriptRule(script_for(rows), cells=(kit.Cell("c", event_triggered=ev),)))
+        scr.run_block(0, "synthetic", kit.iter_hours(files, "synthetic", "backfill", vm))
+        res = scr.results()
+        out[name], out[name + "_table"] = sha(json.dumps(res, default=float)), sha(kit.table_md(res, scr.blocks, {"rule": "script"}))
+    co = kit.Screen(ScriptRule(script_for(rows)), count_only=True)
+    co.run_block(0, "explore-0814", kit.iter_hours(files, "synthetic", "backfill", vm))
+    r = co.results()
+    out["count_only"], out["count_only_md"] = sha(json.dumps(r, default=float)), sha(kit.counts_md(r, {"rule": "script", "hours_subset": False}))
+    return out
+
+
+def test_without_an_exit_fire_the_results_are_byte_identical_to_the_kit_before_this_change(tape):
+    """results.json (priced, event and grid cell), TABLE.md, counts.json and COUNTS.md of a run with no exit_fire are the very bytes the kit wrote at 258ba4f (pinned sha256 of the
+    json.dumps / text on this fixture): no new key, no new line, `exits` still has only time / tp / sl / trail."""
+    got = old_style_outputs(tape)
+    assert got == GOLDEN
+    r = json.loads(json.dumps(run_kit(tape[1], script_for(tape[0])).results(), default=float))["c"]
+    assert list(r["exits"]) == ["time", "tp", "sl", "trail"] and "event_exit" not in r and r["registration"].startswith(("SCREEN-SURVIVOR", "KILLED", "PROVISIONAL"))
+
+
+def test_without_an_exit_fire_the_results_equal_the_base_commits_kit_when_it_is_in_the_clone(tape, tmp_path):
+    """The same comparison against the base commit's own file, run side by side (skipped when the clone does not have it)."""
+    repo = Path(S.__file__).resolve().parent.parent
+    p = subprocess.run(["git", "-C", str(repo), "show", f"{BASE_COMMIT}:tools/arena_screen.py"], capture_output=True, text=True)
+    if p.returncode != 0:
+        pytest.skip(f"{BASE_COMMIT} is not in this clone")
+    base_file = tmp_path / "arena_screen_base.py"
+    base_file.write_text(p.stdout)
+    import importlib.util as iu
+
+    spec = iu.spec_from_file_location("arena_screen_base", base_file)
+    base = iu.module_from_spec(spec)
+    sys.modules["arena_screen_base"] = base
+    spec.loader.exec_module(base)
+    assert old_style_outputs(tape, kit=base) == old_style_outputs(tape, kit=S) == GOLDEN
+
+
+def _lower_leg_swap(scr, case):
+    base = S._cat(scr.acc[0])
+    scr.acc[0] = [dict(base, **(lower_leg_st(np.ones(len(base["ref"]), bool), np.zeros(len(base["ref"]), bool)) if case == "all_win" else lower_leg_case(len(base["ref"]), case)))]
+    return scr.results()["c"]
+
+
+def test_an_event_exit_cell_reports_its_share_and_probes_every_event_exit(tape, monkeypatch):
+    monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))
+    scr = kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), whale_fire(1.0e9))
+    r = _lower_leg_swap(scr, "all_win")  # hand-set winning states: isolates the event-exit report from this fixture's random-walk prices (no price claim in the fixture)
+    e = r["event_exit"]
+    assert 0 < r["exits"]["event"] < r["attempts"] and e["event_exits"] == r["exits"]["event"] and e["fire_share"] == pytest.approx(r["exits"]["event"] / r["attempts"])
+    assert sum(r["exits"].values()) == r["attempts"] and e["declared"] is True and e["undeclared_use"] is False and e["worst_in_slot_kill_applies"] is True
+    pb = e["probe_per_block"]["synthetic"]
+    assert pb == {"event_exits_probed": r["exits"]["event"], "failures": 0} and e["probe_failures"] == 0 and scr.counters["exit_probe_failures"] == 0
+    assert scr.counters["exit_fire_events"] == r["exits"]["event"] and scr.counters["exit_fire_calls"] >= r["attempts"]
+    assert e["probe_ok"] is False and e["probe_min_per_block"] == 200 and "EXIT-CAUSALITY PROBE NOT SATISFIED" in r["registration"]  # 200 per block are not on a fixture this small
+    md = S.table_md({"c": r}, ["synthetic"], {"rule": "script"})
+    assert "## 5. Event exits" in md and "EVENT-EXIT" in md and f"| c | {r['attempts']} | {e['event_exits']} |" in md
+    monkeypatch.setattr(S, "EXIT_PROBE_MIN", 1)  # the 200-per-block requirement is a constant: with it met, the survivor carries no probe note
+    ok = _lower_leg_swap(kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), whale_fire(1.0e9)), "all_win")
+    assert ok["event_exit"]["probe_ok"] is True and ok["registration"] == "SCREEN-SURVIVOR (worst-in-slot measured > 0 on all four sub-cells)"
+
+
+def test_the_exit_causality_probe_catches_a_deliberately_non_causal_exit_fire(tape, monkeypatch):
+    a = ev_pool()
+    pp = S.post_price(a)
+    spec_ok, spec_bad = S.ExitSpec(120, exit_fire=whale_fire()), S.ExitSpec(120, exit_fire=sneaky_fire())
+    assert resolve(a, spec_bad)[:2] == (1099, S.EVENT_CODE)  # it passes the structural check (it never calls upto): it fires one print BEFORE the whale
+    assert S.exit_fire_probe(spec_ok, a, pp, SD0, RATE, SPS, 1100) is True
+    assert S.exit_fire_probe(spec_bad, a, pp, SD0, RATE, SPS, 1099) is False  # rows after 1099 cut: the whale is gone and so is the fire
+    counter = iter(range(10**6))
+    flaky = S.ExitSpec(120, exit_fire=lambda v, l, c: 1100 if next(counter) == 0 else 1101)
+    assert resolve(a, flaky)[:2] == (1100, S.EVENT_CODE) and S.exit_fire_probe(flaky, a, pp, SD0, RATE, SPS, 1100) is False  # the re-run differs: not a function of the rows
+    assert S.exit_fire_probe(S.ExitSpec(120, exit_fire=lambda v, l, c: int(v._a["sl"][list(v._a["sl"]).index(1100) + 1]) - 1), a, pp, SD0, RATE, SPS, 1100) is False  # indexes past the cut: a raise is a failure
+    assert S.exit_fire_probe(S.ExitSpec(120, exit_fire=lambda v, l, c: (v.upto(1100), 1100)[1] if v.upto(1100)["sl"].size else None), a, pp, SD0, RATE, SPS, 1100) is True
+    monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))
+    bad = kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), sneaky_fire(1.0e9))
+    r = bad.results()["c"]
+    assert r["exits"]["event"] > 0 and r["event_exit"]["probe_failures"] == bad.counters["exit_probe_failures"] > 0
+    assert r["kill"] is True and r["registration"] == "KILLED" and any(w.startswith("exit-causality probe failed") for w in r["kill_reasons"])
+    good = kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), whale_fire(1.0e9)).results()["c"]
+    assert good["event_exit"]["probe_failures"] == 0 and not any("exit-causality" in w for w in good["kill_reasons"])  # (it may still be killed on this fixture's random-walk prices: not for causality)
+
+
+def test_causal_probe_probes_the_exit_too_when_asked(tape):
+    rows, files = tape
+    vm = S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])
+    hr = next(S.iter_hours(files[:1], "synthetic", "backfill", vm))
+    slot = int(hr.sl[hr.rows(hr.pool_index()[POOLS["A"]])][5])
+    st = S.RunState("synthetic")
+
+    class R:
+        def __init__(self, fire):
+            self.spec = S.ExitSpec(120, exit_fire=fire)
+
+        def triggers(self, hour, state):
+            j = hour.pool_index()[POOLS["A"]]
+            return [(POOLS["A"], slot, self.spec)] if (hour.sl[hour.rows(j)] <= slot).any() else []
+
+    assert S.causal_probe(R(whale_fire(1.0e9)), hr, st, POOLS["A"], slot) and S.causal_probe(R(whale_fire(1.0e9)), hr, st, POOLS["A"], slot, exit_fire=True)
+    assert S.causal_probe(R(sneaky_fire(1.0e9)), hr, st, POOLS["A"], slot)  # the entry alone is causal...
+    assert not S.causal_probe(R(sneaky_fire(1.0e9)), hr, st, POOLS["A"], slot, exit_fire=True)  # ...the exit is not
+    assert not S.causal_probe(R(lambda v, l, c: (v.upto(c), l)[1]), hr, st, POOLS["A"], slot, exit_fire=True)  # a read past the fire is refused (looked at the cap, fired at the floor)
+    assert S.causal_probe(R(lambda v, l, c: None), hr, st, POOLS["A"], slot, exit_fire=True)  # no fire: nothing to cut
+
+
+@pytest.mark.parametrize("case", ["guard_rescue_flatters_worst", "worst_in_slot_is_lower"])
+@pytest.mark.parametrize("cell_kw, fire, killed, note", [
+    (dict(event_exit=True), whale_fire(1.0e9), True, "declared event exit"),
+    (dict(event_exit=True), None, True, "declared event exit, no callable on the specs"),
+    (dict(), whale_fire(1.0e9), True, "undeclared: carries an exit_fire, treated as an event exit"),
+    (dict(), None, False, "grid entry and a clock / price exit: reports only"),
+])
+def test_an_event_exit_cell_is_killed_by_the_lower_leg_even_when_its_entry_is_grid_based(tape, monkeypatch, case, cell_kw, fire, killed, note):
+    monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))  # isolate the worst-in-slot rule from the other kills
+    scr = kit_exit_cell(tape, S.Cell("c", event_triggered=False, **cell_kw), fire)
+    r = _lower_leg_swap(scr, case)
+    assert r["event_triggered"] is False and r["worst_in_slot"]["measured"] is True and all(not c["lower"]["mean_sol"] > 0 for c in r["worst_in_slot"]["sub_cells"].values()), note
+    wis = [w for w in r["kill_reasons"] if w.startswith("worst-in-slot")]
+    if killed:
+        assert r["kill"] is True and r["registration"] == "KILLED" and len(wis) == 1 and all(t in wis[0] for t in ("total/flat", "total/press", "sc/flat", "sc/press")), note
+        assert r["event_exit"]["worst_in_slot_kill_applies"] is True and r["event_exit"]["undeclared_use"] is (not cell_kw and fire is not None)
+        assert "EVENT-EXIT" in S.table_md({"c": r}, ["synthetic"], {"rule": "script"})
+    else:
+        assert r["kill"] is False and not wis and "event_exit" not in r and r["registration"] == "SCREEN-SURVIVOR (worst-in-slot measured)", note
+
+
+def test_a_positive_lower_leg_leaves_an_event_exit_cell_a_survivor_and_one_bad_sub_cell_kills_it(tape, monkeypatch):
+    monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))
+    real = S.worst_in_slot_legs
+
+    def one_bad(st, cfg):
+        o = real(st, cfg)
+        o["sub_cells"]["sc|press"]["lower"]["mean_sol"] = 0.0
+        return o
+
+    monkeypatch.setattr(S, "EXIT_PROBE_MIN", 1)
+    cell = S.Cell("c", event_triggered=False, event_exit=True)
+    assert not _lower_leg_swap(kit_exit_cell(tape, cell, whale_fire(1.0e9)), "all_win")["kill"]
+    monkeypatch.setattr(S, "worst_in_slot_legs", one_bad)
+    r = _lower_leg_swap(kit_exit_cell(tape, cell, whale_fire(1.0e9)), "all_win")
+    assert r["kill"] and any(w.endswith("mean <= 0 in sc/press") for w in r["kill_reasons"]) and r["registration"] == "KILLED"
+
+
+def test_count_only_with_an_exit_fire_is_a_time_only_bound_and_never_runs_the_callable(tape):
+    rows, files = tape
+    sl_ = own_slots(rows, "A", 0, 1000, 3000)
+
+    def boom(view, landing, cap):
+        raise AssertionError("count-only must not run the exit_fire")
+
+    script = [(POOLS["A"], sl_[0], S.ExitSpec(120, exit_fire=boom)), (POOLS["A"], sl_[1], S.ExitSpec(120, exit_fire=boom)), (POOLS["A"], sl_[-1], S.ExitSpec(120, exit_fire=boom))]
+    scr = run_kit(files, script, count_only=True, name="explore-0814", min_per_day=20.0)
+    res = scr.results()
+    r = res["c"]
+    assert r["triggers"] == 3 and r["attempts_upper_bound"] == 2 and r["exit_fire_triggers"] == 3 and r["attempts_bound_is_time_only"] is True and scr.t_price == 0.0 and not scr.acc[0]
+    cm = S.counts_md(res, {"rule": "script", "hours_subset": False})
+    assert "time-only: exit_fire present" in cm and "AT LEAST" not in cm and "at least this many" in cm and "RULES step-2 drop" in cm
+    plain = run_kit(files, [(POOLS["A"], sl_[0], S.ExitSpec(120))], count_only=True).results()["c"]
+    assert "attempts_bound_is_time_only" not in plain and "exit_fire_triggers" not in plain
+    doc = S.__doc__
+    assert "--count-only IS A TIME-ONLY BOUND when an exit_fire is present" in doc and "AT LEAST that many" in doc and "EXIT CAUSALITY PROBE" in doc
+
+
+def test_the_time_only_count_is_a_lower_bound_of_the_attempts_an_event_exit_really_makes(tape):
+    """Why the note says 'at least': with early exits the pool is free sooner, so the priced run admits at least as many attempts as the time-only overlap count."""
+    rows, files = tape
+    picks = [s for s in own_slots(rows, "A", 0, 1000, 8000)][::6]
+    script = [(POOLS["A"], s, S.ExitSpec(120, exit_fire=whale_fire(1.0e9))) for s in picks]
+    bound = run_kit(files, script, count_only=True).results()["c"]["attempts_upper_bound"]
+    priced = run_kit(files, script).results()["c"]["attempts"]
+    assert priced >= bound > 0 and priced > bound  # strictly more here: the fixture's whales free the pool early
+
+
+def test_the_kit_refuses_a_bad_exit_fire_and_a_look_ahead_one_stops_the_run(tape):
+    rows, files = tape
+    s0 = own_slots(rows, "A", 0, 1000, 3000)[0]
+    scr = run_kit(files, [(POOLS["A"], s0, S.ExitSpec(120, exit_fire="not callable"))])
+    assert scr.counters["refused_bad_exit"] == 1 and not scr.acc[0] and not scr.exit_used
+
+    def peek(view, landing, cap):
+        view.upto(cap)
+        return landing
+
+    with pytest.raises(S.ExitLookAhead):  # a Refused: the CLI turns it into exit code 2 and nothing is written as a result
+        run_kit(files, [(POOLS["A"], s0, S.ExitSpec(120, exit_fire=peek))])
+    assert issubclass(S.ExitLookAhead, S.Refused) and issubclass(S.ExitFireError, S.Refused)

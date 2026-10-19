@@ -13,6 +13,18 @@ RULE API (a small Python object)
   ExitSpec(hold_s, tp, sl, trail, cell): a time exit after hold_s seconds (always; it bounds the hold), plus optional take-profit multiple tp (> 1), stop multiple sl
   (0 < sl < 1) and trailing multiple trail (0 < trail < 1, against the running peak, which starts at the decision spot), each on the POST-trade price of a print at slot
   >= decision slot + k_slow + 1 (the engine may not sell before the slower entry leg lands). `cell` names the cell a trigger belongs to (optional when the rule has one cell).
+  EVENT EXIT (ExitSpec.exit_fire, optional): a rule-supplied callable (view, landing_slot, cap_slot) -> fire slot | None. The fire slot is the exit DECISION slot, and the sell lands by
+  the normal exit-lag rule from it (decision slot + 7 feed slots + the exit lag). The time cap and tp / sl / trail still apply: the earliest of the three decides (a tp / sl / trail ON the
+  fire slot keeps its own code; a fire on the cap's own slot is an event exit). The callable reads the pool ONLY through an ExitView (rows with slot <= the slot it asks for; nothing
+  after the cap; read-only arrays) and may read ONLY rows with slot <= the slot it returns: the kit keeps the largest slot asked for and refuses a fire that read past itself
+  (ExitLookAhead) or one outside [landing_slot, cap_slot] (ExitFireError). `landing_slot` is the kit's floor, sd + k_slow + 1 (the slower entry leg has landed). Python cannot stop a
+  callable from reaching into private state, so EXIT CAUSALITY PROBE: for EVERY event exit the kit re-runs the callable on data cut after its fire slot and requires the same slot
+  (registration needs >= 200 event exits probed per block, 0 failures; a failure KILLS the cell); `causal_probe(..., exit_fire=True)` is the author's single-hour sample. Declare the
+  cell with Cell(event_exit=True): an event-exit cell is treated like an event-triggered one for the worst-in-slot kill even when its entry is grid-based (a cell that carries an
+  exit_fire without declaring it is treated the same and reported undeclared). The per-cell report carries the event-exit share (results `exits.event`, `event_exit.fire_share`).
+  --count-only IS A TIME-ONLY BOUND when an exit_fire is present: its overlap rule holds every position for the full time cap (the callable is not run, no price is read), so the figure
+  is an upper bound on the hold and the real attempts are AT LEAST that many (an event exit frees the pool earlier). Never drop a cell under RULES step 2 from it; count with the
+  rule's own structure scan and report the kit's figure beside it (the count-only result carries `attempts_bound_is_time_only` for such a cell).
   The rule gets ONE whole block hour at a time (columns sorted by pool, slot, tx, event) and may look one hour back through state.prev. A rule MUST decide only on rows
   with slot <= its decision slot (the hour is handed over whole for speed; the kit cannot see look-ahead, `causal_probe` re-runs a rule on a truncated hour to catch it).
   AM.2 UNIVERSE (DEC-031 Amendment 2: the rent refund holds only for it): WSOL quote AND V in [17.5e9, 17.7e9] lamports at decision time. The rule enforces it (hour.in_universe /
@@ -37,8 +49,9 @@ KILL (hunt23 RULES.md Amendment 1; deciding leg 1.9 s / 0.25 SOL / rent 0): any 
   ex-best-day <= 0; fewer than 3 blocks positive (a block is positive when its total is > 0 under ALL FOUR sub-cells); (b) mean <= 0 on explore-0814 ALONE or on the three September
   blocks POOLED (one period) under any sub-cell; (c) the in-sample gate pooled over all blocks on all four sub-cells: CI90 lower bound <= 0, or no majority of UTC dates positive.
   WORST-IN-SLOT (QP R7 ruling on #752/#747): on the SAME trips at the deciding cell the kit also prices the worst-in-slot leg and the "no guard rescue" companion (both from the
-  imported tools.arena_report_legs functions) and takes the LOWER of the two legs' mean per sub-cell. An EVENT-triggered cell (Cell.event_triggered, the default) is KILLED when that
-  lower mean is <= 0 in ANY of the four sub-cells; a time- or grid-triggered cell reports it only. If it cannot be measured (the tape states do not reproduce the kit's END states),
+  imported tools.arena_report_legs functions) and takes the LOWER of the two legs' mean per sub-cell. An EVENT-triggered cell (Cell.event_triggered, the default) or an EVENT-EXIT
+  cell (Cell.event_exit, or any cell that carries an ExitSpec.exit_fire) is KILLED when that lower mean is <= 0 in ANY of the four sub-cells; a time- or grid-triggered cell with a
+  clock / price exit reports it only. If it cannot be measured (the tape states do not reproduce the kit's END states),
   nothing is printed for it and an event cell stays PROVISIONAL-BLOCKED.
   A cell that is not killed is a SCREEN SURVIVOR only: at most one survivor per rule group is picked by the rule author's
   declared statistic, and nothing here is a profit claim. `thin` (< --min-attempts-per-day, default 20) is reported beside it, not a kill.
@@ -1155,7 +1168,8 @@ class Screen:
         self.rule, self.count_only, self.min_per_day = rule, count_only, float(min_attempts_per_day)
         self.screen_p, self.screen_p_B = bool(screen_p), (screen_p_check(declared_stake_sol, screen_p_draws) if screen_p else int(screen_p_draws))  # Refused before anything is read
         raw = list(rule.cells())
-        self.cells = [Cell(str(c)) if isinstance(c, str) else Cell(str(c.name), float(getattr(c, "cooldown_s", 60.0)), bool(getattr(c, "event_triggered", True))) for c in raw]
+        self.cells = [Cell(str(c)) if isinstance(c, str) else Cell(str(c.name), float(getattr(c, "cooldown_s", 60.0)), bool(getattr(c, "event_triggered", True)),
+                                                                   bool(getattr(c, "event_exit", False))) for c in raw]
         if not self.cells or len({c.name for c in self.cells}) != len(self.cells):
             raise ValueError("a rule needs at least one cell and unique cell names")
         self.cell_ix = {c.name: i for i, c in enumerate(self.cells)}
@@ -1173,6 +1187,8 @@ class Screen:
         self.excl_cell, self.late_cell, self.derived_cell = collections.Counter(), collections.Counter(), collections.Counter()  # per cell index
         self.gdays: dict[str, set] = {}  # block group -> UTC days run
         self.cnt_ub_expl = [0] * n  # count-only: attempts upper bound inside explore-0814
+        self.exit_used: collections.Counter = collections.Counter()  # per cell index: attempts (priced) or triggers (count-only) whose spec carried an exit_fire
+        self.exit_probe: dict[tuple[int, int], list[int]] = {}  # (cell index, block index) -> [event exits probed, probe failures]
 
     # --- trigger validation
     def _validate(self, hr: HourRows, tr: Any, state: RunState) -> tuple[int, str, int, ExitSpec] | None:
@@ -1263,7 +1279,8 @@ class Screen:
             seg_end = max(seg_end, hr.max_slot)
             for ci, pool, slot, spec in good:
                 self.cnt[ci][day] += 1
-                if self.count_only:  # time-only overlap rule: an upper bound, since a take-profit / stop exit can only free the pool earlier
+                if self.count_only:
+                    self.exit_used[ci] += getattr(spec, "exit_fire", None) is not None  # the time-only overlap rule below ignores the event exit: see the module doc  # time-only overlap rule: an upper bound, since a take-profit / stop exit can only free the pool earlier
                     k = (ci, pool)
                     if slot >= nextok.get(k, -1):
                         self.cnt_ub[ci][day] += 1
@@ -1317,6 +1334,16 @@ class Screen:
                     continue
                 xs, why, clamped = resolve_exit(a, pp, slot, spec, rate[hi], sps_of(hi))
                 c["hold_clamped"] += clamped
+                if getattr(spec, "exit_fire", None) is not None:
+                    self.exit_used[ci] += 1
+                    c["exit_fire_calls"] += 1
+                    if why == EVENT_CODE:  # exit-causality probe on EVERY event exit: the callable must return the same slot with all rows after it cut off
+                        ok = exit_fire_probe(spec, a, pp, slot, rate[hi], sps_of(hi), xs)
+                        rec = self.exit_probe.setdefault((ci, bi), [0, 0])
+                        rec[0] += 1
+                        rec[1] += not ok
+                        c["exit_fire_events"] += 1
+                        c["exit_probe_failures"] += not ok
                 nxt = xs + int(np.rint(self.cells[ci].cooldown_s * rate[hi]))
                 rows.append((ci, slot, hi, xs, why))
         if not rows:
@@ -1369,6 +1396,8 @@ class Screen:
                                         "per_day": {self._d(d): int(self.cnt[ci][d]) for d in sorted(self.days)}, "per_day_after_overlap": {self._d(d): int(self.cnt_ub[ci][d]) for d in sorted(self.days)},
                                         "days_with_trigger": int(sum(1 for d in self.days if self.cnt[ci][d])),
                                         "explore_0814": self._explore_count(ci)}
+                if self.exit_used[ci]:  # new keys only when an exit_fire is present: a run without one is byte-identical to before
+                    out_cells[cell.name].update(exit_fire_triggers=int(self.exit_used[ci]), attempts_bound_is_time_only=True)
                 continue
             out_cells[cell.name] = self._cell_result(ci, names, ndays)
         return out_cells
@@ -1388,6 +1417,8 @@ class Screen:
         if not parts:
             r0 = {"attempts": 0, "kill": True, "kill_reasons": ["no attempts"], "thin": None, "excluded_block_edge": int(self.excl_cell[ci]), "event_triggered": self.cells[ci].event_triggered,
                   "registration": "KILLED"}
+            if self._event_exit(ci):
+                r0["event_exit"] = self._event_exit_info(ci, names, 0, 0)
             if self.screen_p:
                 r0["screen_p"] = screen_p_cell(None, self.cfg[RENT_DECIDING], None, B=self.screen_p_B)  # n = 0: p None, not a pass
             return r0
@@ -1396,6 +1427,11 @@ class Screen:
         day = st["T"] // 86400
         r: dict[str, Any] = {"attempts": n, "pools": int(len(np.unique(st["pool"]))), "exits": {EXIT_REASONS[k]: int((st["why"] == k).sum()) for k in range(4)},
                              "attempts_per_day": n / ndays, "days_in_run": ndays}
+        ee = self._event_exit(ci)  # the exit is decided by a tape event: new keys only for such a cell (a run without an exit_fire is byte-identical to before)
+        if ee:
+            n_event = int((st["why"] == EVENT_CODE).sum())
+            r["exits"][EXIT_REASONS[EVENT_CODE]] = n_event
+            r["event_exit"] = self._event_exit_info(ci, names, n_event, n)
         stats, legsum, press_c, groups = {}, {}, {}, {}
         gmask = {g: np.array([block_group(names[b]) == g for b in range(len(names))])[st["blk"]] for g in GROUPS}
         gd = len(self.gdays.get("explore-0814", ()))
@@ -1435,14 +1471,31 @@ class Screen:
             wis = worst_in_slot_legs(st, self.cfg[RENT_DECIDING])
             if wis["measured"]:
                 bad = [k for k in SUB_CELLS if not wis["sub_cells"]["|".join(k)]["lower"]["mean_sol"] > 0]
-                if cell.event_triggered and bad:
+                if (cell.event_triggered or ee) and bad:  # an event EXIT is treated like an event entry (the sell is placed on a market event), whatever the entry is
                     r["kill"] = True
                     r["kill_reasons"].append("worst-in-slot (lower of the worst-in-slot and no-guard-rescue legs) mean <= 0 in " + ", ".join("/".join(k) for k in bad))
         r["event_triggered"], r["worst_in_slot"] = cell.event_triggered, wis
-        r["registration"] = registration_status(cell.event_triggered, r["kill"], wis["measured"])
-        if self.screen_p:  # REPORT ONLY, after the verdict and the registration status are final: a new key, nothing reads it
+        if ee and r["event_exit"]["probe_failures"]:
+            r["kill"] = True
+            r["kill_reasons"].append(f"exit-causality probe failed on {r['event_exit']['probe_failures']} of the event exits: the exit_fire reads rows after its own fire slot")
+        r["registration"] = registration_status(cell.event_triggered or ee, r["kill"], wis["measured"])
+        if ee and not r["kill"] and not r["event_exit"]["probe_ok"]:
+            r["registration"] += f"; EXIT-CAUSALITY PROBE NOT SATISFIED (needs >= {EXIT_PROBE_MIN} event exits probed per block with 0 failures)"
+        if self.screen_p:  # REPORT ONLY, after the verdict and the registration status are final: a new key, nothing reads it (an event-exit cell gets it like any cell)
             r["screen_p"] = screen_p_cell(st, self.cfg[RENT_DECIDING], stats, B=self.screen_p_B)
         return r
+
+    def _event_exit(self, ci: int) -> bool:
+        """True if the cell's exit is event-driven: declared (Cell.event_exit) or in fact carrying an exit_fire (the stricter reading wins)."""
+        return bool(self.cells[ci].event_exit or self.exit_used[ci])
+
+    def _event_exit_info(self, ci: int, names: list[str], n_event: int, n: int) -> dict:
+        """Per-cell report of an event exit: the share of attempts that exited on the event, and the exit-causality probe per block (every event exit is probed)."""
+        per = {nm: {"event_exits_probed": self.exit_probe.get((ci, bi), [0, 0])[0], "failures": self.exit_probe.get((ci, bi), [0, 0])[1]} for bi, nm in enumerate(names)}
+        fails = sum(v["failures"] for v in per.values())
+        return {"declared": self.cells[ci].event_exit, "undeclared_use": bool(not self.cells[ci].event_exit and self.exit_used[ci]), "attempts_with_exit_fire": int(self.exit_used[ci]),
+                "event_exits": n_event, "fire_share": (n_event / n if n else None), "probe_per_block": per, "probe_failures": fails, "probe_min_per_block": EXIT_PROBE_MIN,
+                "probe_ok": bool(per and fails == 0 and all(v["event_exits_probed"] >= EXIT_PROBE_MIN for v in per.values())), "worst_in_slot_kill_applies": True}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ rules
@@ -1482,14 +1535,46 @@ def load_rule(spec: str, kwargs_json: str | None = None) -> Any:
     return getattr(m, fac)(**(json.loads(kwargs_json) if kwargs_json else {}))
 
 
-def causal_probe(rule: Any, hour: HourRows, state: RunState, pool: str, slot: int) -> bool:
-    """True if `rule` still fires (pool, slot) when the hour is cut after `slot` (no look-ahead past the decision slot)."""
+def causal_probe(rule: Any, hour: HourRows, state: RunState, pool: str, slot: int, exit_fire: bool = False) -> bool:
+    """True if `rule` still fires (pool, slot) when the hour is cut after `slot` (no look-ahead past the decision slot). With exit_fire=True the EXIT is probed too: for every
+    spec the rule hands out for (pool, slot) on the whole hour that carries an exit_fire, the callable is run on the pool's rows (previous hour + this hour, up to the hour's end), and
+    when it fires, re-run with every row after the fire slot cut off; the same slot is required (exit_fire_probe). The priced screen probes every event exit itself
+    (Screen.exit_probe); this call is the author's seed-1 sample on a single hour."""
     state = dataclasses.replace(state, scratch=copy.deepcopy(state.scratch), first_seen=dict(state.first_seen))  # the probe must not change a rule that writes to scratch
     keep = hour.sl <= slot
     pid = np.repeat(np.arange(len(hour.pools)), np.diff(hour.ptr))[keep]
     ptr = np.searchsorted(pid, np.arange(len(hour.pools) + 1), "left").astype(np.int64)
     cut = dataclasses.replace(hour, ptr=ptr, _index=None, **{k: getattr(hour, k)[keep] for k in ("sl", "tx", "ev", "isbuy", "sol", "tok", "q", "b", "bt", "trader", "v")})
-    return any(p == pool and int(s) == int(slot) for p, s, _ in rule.triggers(cut, state))
+    entry = any(p == pool and int(s) == int(slot) for p, s, _ in rule.triggers(cut, state))
+    return entry and (not exit_fire or _exit_probe_on_hour(rule, hour, state, pool, int(slot)))
+
+
+def _exit_probe_on_hour(rule: Any, hour: HourRows, state: RunState, pool: str, slot: int) -> bool:
+    state = dataclasses.replace(state, scratch=copy.deepcopy(state.scratch), first_seen=dict(state.first_seen))
+    i = hour.pool_index().get(pool)
+    if i is None or not hour.n:
+        return False
+    chunks = [Screen._chunk(hour, i)]
+    prev = state.prev
+    if prev is not None and pool in prev.pool_index():
+        chunks.insert(0, Screen._chunk(prev, prev.pool_index()[pool]))
+    a = {k: np.concatenate([c[k] for c in chunks]) for k in chunks[0]}
+    a["ib"] = a["ib"].astype(bool)
+    pp = post_price(a)
+    rate = hour.slots_per_s
+    sps = 1.0 / rate
+    for p, s, spec in rule.triggers(hour, state):
+        fire = getattr(spec, "exit_fire", None)
+        if p != pool or int(s) != slot or fire is None:
+            continue
+        landing, cap, _ = _exit_clock(spec, slot, rate, sps)
+        try:
+            f = run_exit_fire(fire, a, pp, slot, landing, cap, rate, sps)
+        except Refused:
+            return False
+        if f is not None and not exit_fire_probe(spec, a, pp, slot, rate, sps, f):
+            return False
+    return True
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ output
@@ -1514,7 +1599,7 @@ def table_md(res: dict, blocks: list[str], meta: dict) -> str:
         pb = " ".join(f"B{i + 1}:{_f(a['per_block'][bn]['mean_pct'])}/{_f(b['per_block'][bn]['mean_pct'])}" for i, bn in enumerate(blocks))
         big = r["stake_1_0_total_rent0_1p9"]
         im = r["impact"]["1.9"]
-        flags = ("KILL " if r["kill"] else r["registration"] + " ") + ("THIN " if r["thin"] else "") + ("EVENT " if r["event_triggered"] else "GRID ")
+        flags = ("KILL " if r["kill"] else r["registration"] + " ") + ("THIN " if r["thin"] else "") + ("EVENT " if r["event_triggered"] else "GRID ") + ("EVENT-EXIT " if r.get("event_exit") else "")
         L.append(f"| {nm} | {r['attempts']} | {r['legs']['1.9|total']['fills']} | {a['days']}({a['pos_days']}) | {_f(a['mean_pct'])} | {_f(a['ci_lo_pct'])} | {_f(a['total'], 3)} | {_f(a['ex_top3'], 3)} | "
                  f"{_f(a['ex_best_day'], 3)} | {_f(b['mean_pct'])} | {_f(b['ci_lo_pct'])} | {_f(b['total'], 3)} | {_f(b['ex_top3'], 3)} | {_f(b['ex_best_day'], 3)} | "
                  f"{gm(r, 'explore-0814', 'total', 'flat')}/{gm(r, 'explore-0814', 'total', 'press')} | {gm(r, 'september', 'total', 'flat')}/{gm(r, 'september', 'total', 'press')} | {pb} | "
@@ -1547,7 +1632,7 @@ def table_md(res: dict, blocks: list[str], meta: dict) -> str:
         w = r.get("worst_in_slot")
         if r["attempts"] == 0 or w is None:
             continue
-        kind = "EVENT" if r["event_triggered"] else "GRID"
+        kind = "EVENT" if r["event_triggered"] else ("EVENT-EXIT" if r.get("event_exit") else "GRID")
         if not w["measured"]:
             L.append(f"| {nm} | {kind} | " + " | ".join("not measured" for _ in SUB_CELLS) + " | - | - |")
             continue
@@ -1561,6 +1646,17 @@ def table_md(res: dict, blocks: list[str], meta: dict) -> str:
         L.append(f"| {nm} | {kind} | " + " | ".join(cols) + f" | {', '.join(nonpos) or '-'} | {fl['sc']}/{fl['total']} |")
     if any("screen_p" in r for r in res.values()):  # appended only: every line above is the same with and without screen p
         L += screen_p_md(res)
+    ev = {nm: r["event_exit"] for nm, r in res.items() if r.get("event_exit")}
+    if ev:
+        L += ["", "## 6. Event exits (ExitSpec.exit_fire): share of attempts that exited on the event, and the exit-causality probe", "",
+              "An event exit is treated like an event entry for the worst-in-slot kill (section 4: EVENT-EXIT; section 5 is the screen p, which an event-exit cell gets like any cell), whatever the entry. The probe re-runs the exit_fire on rows cut after its own fire "
+              f"slot for EVERY event exit and needs the same slot: registration needs >= {EXIT_PROBE_MIN} event exits probed per block and 0 failures. Ties: a tp / sl / trail on the fire "
+              "slot keeps its own code. Not a price claim; in-sample.", "",
+              "| cell | attempts | event exits | fire share | probe failures | probed per block | probe ok | declared |", "|---|---|---|---|---|---|---|---|"]
+        for nm, e in ev.items():
+            pb = " ".join(f"B{i + 1}:{v['event_exits_probed']}" for i, v in enumerate(e["probe_per_block"].values()))
+            L.append(f"| {nm} | {res[nm]['attempts']} | {e['event_exits']} | {_f(e['fire_share'], 3)} | {e['probe_failures']} | {pb} | {'yes' if e['probe_ok'] else 'NO'} | "
+                     f"{'yes' if e['declared'] else 'NO (carries an exit_fire undeclared: treated as declared)'} |")
     return "\n".join(L) + "\n"
 
 
@@ -1575,7 +1671,12 @@ def counts_md(res: dict, meta: dict) -> str:
         e = r["explore_0814"]
         per = "na" if e["per_day_upper_bound"] is None else f"{e['per_day_upper_bound']:.1f}"
         flag = "na" if e["below_step2_count"] is None else ("DROP (<20)" if e["below_step2_count"] else "ok")
+        flag += " (time-only: exit_fire present)" if r.get("attempts_bound_is_time_only") else ""
         L.append(f"| {nm} | {r['triggers']} | {r['attempts_upper_bound']} | {r['days_with_trigger']} | {per} | {flag} | " + " | ".join(str(r["per_day_after_overlap"].get(d, 0)) for d in days) + " |")
+    if any(r.get("attempts_bound_is_time_only") for r in res.values()):
+        L += ["", "**exit_fire present (cells marked `time-only`):** the overlap rule above holds every position for its full time cap and cannot run the event exit, so the figure is a TIME-ONLY "
+              "bound on the hold. An event exit frees the pool earlier, so the real attempts are at least this many (never fewer). Do not apply the RULES step-2 drop to such a cell from this "
+              "figure; count it with the rule's own structure scan and report the kit's figure beside it."]
     return "\n".join(L) + "\n"
 
 
