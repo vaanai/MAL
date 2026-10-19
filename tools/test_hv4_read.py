@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
+from tools import arena_h5_score as H5
 from tools import arena_score as AS
 from tools import hv4_read as R
 from tools.arena_paper import TEST_ENV, Ledger, book_fail_legs, canon, load_registry, register_bot as _register_bot
@@ -99,6 +100,10 @@ class World:
         for a in ARMS:
             _register_bot(a, "abc1234", DAY0, self.reg, deciding_stake=0.25, model_ids=["m"] if ARMS[a].llm else [], now_ms=0, verify_sha=False)
         self.led = Ledger(self.root, min_free_pct=0)  # the free-space floor (DEC-031 3.8) is a production guard; tests may set 0
+        # the H5 books are registered in ANOTHER bots.json (mal-fast-0, arena_h5_score's own format): the multiplicity count is the union of both
+        self.h5reg = str(tmp_path / "h5-bots.json")
+        H5.register_books(Path(self.h5reg), frozen_sha="a" * 40, sockets=3, endpoints=["e"], host="h", clock_start_ms=DAY0, now_ms=0)
+        self.extra = [f"{self.h5reg}@{hashlib.sha256(Path(self.h5reg).read_bytes()).hexdigest()}"]
 
     def add(self, rows):
         for r in rows:
@@ -113,6 +118,7 @@ class World:
     def book(self, bot, **kw):
         kw.setdefault("now_ms", DAY0 + 30 * DAY)
         kw.setdefault("n_seeds", N_SEEDS)
+        kw.setdefault("extra_registries", self.extra)
         return R.read_book(bot, ledger_root=self.root, registry=self.reg, out_dir=self.out, reads_dir=self.reads, null_dir=self.null, **kw)
 
     def mark(self, arm, status, boundary=DAY0 + 10 * DAY):
@@ -123,6 +129,7 @@ class World:
 
     def learning(self, **kw):
         kw.setdefault("now_ms", DAY0 + R.LEARN_LOOK_OFFSET_MS)
+        kw.setdefault("extra_registries", self.extra)
         return R.read_learning(ledger_root=self.root, registry=self.reg, out_dir=self.out, reads_dir=self.reads, **kw)
 
 
@@ -194,7 +201,7 @@ def test_second_run_is_refused_and_the_files_do_not_change(tmp_path):
     with pytest.raises(R.Refused, match="second run"):
         w.book("CON-L", now_ms=DAY0 + 31 * DAY)
     assert {f.name: f.read_bytes() for f in files} == before
-    assert R.main(["book", "--bot", "CON-L", "--ledger-root", w.root, "--registry", w.reg, "--out-dir", w.out, "--arena-reads-dir", w.reads, "--now-ms", str(DAY0 + 31 * DAY)]) == 3
+    assert R.main(["book", "--bot", "CON-L", "--ledger-root", w.root, "--registry", w.reg, "--extra-registry", w.extra[0], "--out-dir", w.out, "--arena-reads-dir", w.reads, "--now-ms", str(DAY0 + 31 * DAY)]) == 3
 
 
 def test_now_ms_override_is_test_only(tmp_path, monkeypatch):
@@ -441,7 +448,7 @@ def test_v2_fail_when_the_book_equals_the_x_arm(tmp_path):
 def test_v1_v2_not_decidable_when_the_null_or_the_comparator_is_missing(tmp_path):
     w = World(tmp_path)
     w.add(book_rows("CON-L", noisy(4e6, 5, 20, 11)))  # no CON-X rows, no null directory
-    r = R.read_book("CON-L", ledger_root=w.root, registry=w.reg, out_dir=w.out, null_dir=None, now_ms=DAY0 + 30 * DAY, n_seeds=N_SEEDS)
+    r = R.read_book("CON-L", ledger_root=w.root, registry=w.reg, out_dir=w.out, null_dir=None, now_ms=DAY0 + 30 * DAY, n_seeds=N_SEEDS, extra_registries=w.extra)
     assert r["v1"]["status"] == "NOT_DECIDABLE" and "no --null-dir" in " ".join(r["v1"]["reasons"])
     assert r["v2"]["status"] == "NOT_DECIDABLE" and r["adds_value"] is False
     w2 = con_world(tmp_path / "two")
@@ -457,7 +464,7 @@ def test_a_null_shorter_than_200_seeds_is_not_decidable_by_default(tmp_path):
     w.add(book_rows("CON-L", noisy(4e6, 5, 20, 11)))
     w.add(book_rows("CON-X", noisy(1e6, 5, 20, 12)))
     w.seeds("CON", 0.0, 5, 20, n=2)
-    r = R.read_book("CON-L", ledger_root=w.root, registry=w.reg, out_dir=w.out, null_dir=w.null, now_ms=DAY0 + 30 * DAY)  # n_seeds defaults to 200
+    r = R.read_book("CON-L", ledger_root=w.root, registry=w.reg, out_dir=w.out, null_dir=w.null, now_ms=DAY0 + 30 * DAY, extra_registries=w.extra)  # n_seeds defaults to 200
     assert r["v1"]["status"] == "NOT_DECIDABLE" and r["v1"]["null"]["n_seeds"] == 200 and len(r["v1"]["null"]["unusable"]) == 198
 
 
@@ -623,12 +630,12 @@ def test_disclosure_block_states_books_cells_read_screen_wording_and_ex_best_day
     w = con_world(tmp_path)
     r = w.book("CON-L")
     d = r["disclosure"]
-    assert d["books_in_bots_json"] == 13 and d["books_with_clock_before_read"] == 13 and d["books_stopped"] == 0
+    assert d["arena_books_registered"] == 15 and d["books_with_clock_before_read"] == 15 and d["books_stopped"] == 0  # 13 HV4 arms + the 2 H5 books of the other registry
     assert d["hv4_gate_cells"] == 25 and d["hv4_reads_per_bot_id"] == 1 and d["hv4_gate_checks"] == 25 and d["hv4_arms"] == 13
-    assert d["arena_cells_existed"] == 13 * 3 * 2 * 2
+    assert d["arena_cells_existed"] == 15 * 3 * 2 * 2
     assert d["books_read"] == 1 + 1 and d["cells_read"] == d["books_read"] * 4  # the 0.25 stake book and the as-sized book
     t = d["screen_not_promotion"]
-    for needle in ("SCREEN", "not a promotion", "best of 13 arena books", "stopped ones included", "winner's curse", "0.05/c", "NOT_DECIDABLE ones included", "canary"):
+    for needle in ("SCREEN", "not a promotion", "best of 15 arena books", "stopped ones included", "winner's curse", "0.05/c", "NOT_DECIDABLE ones included", "canary"):
         assert needle in t
     assert set(d["ex_best_day_sol"]) == {"CON-L@0.25", "CON-L@0.5", "CON-L@1.0", "CON-L@as_sized"}
     gm = d["gate_multiplicity"]
@@ -638,10 +645,64 @@ def test_disclosure_block_states_books_cells_read_screen_wording_and_ex_best_day
     # a stopped book still counts
     with open(w.reg, "a") as f:
         f.write(json.dumps({"kind": "stop", "bot_id": "BIG-R", "stopped_at_ms": DAY0 + 2 * DAY}) + "\n")
-    reg = load_registry(w.reg)
+    reg, _ = R.arena_books(w.reg, w.extra)
     d2 = R.disclosure(reg, DAY0 + 30 * DAY, 1, 4, {})
-    assert d2["books_with_clock_before_read"] == 13 and d2["books_stopped"] == 1
+    assert d2["books_with_clock_before_read"] == 15 and d2["books_stopped"] == 1
     assert R.disclosure(reg, DAY0 - 1, 1, 4, {})["books_with_clock_before_read"] == 0  # a clock after the read does not count
+
+
+def _pin(path):
+    return f"{path}@{hashlib.sha256(Path(path).read_bytes()).hexdigest()}"
+
+
+def test_the_best_of_n_count_is_the_union_of_every_registry_and_follows_the_files(tmp_path):
+    w = con_world(tmp_path)
+    r = w.book("CON-L")
+    d = r["disclosure"]
+    assert d["arena_books_registered"] == d["books_with_clock_before_read"] == r["tries"]["of_m"] == 15  # 13 HV4 arms + h5v1-boostfloor-a1 + h5v2-boostclock-a1
+    assert "best of 15 arena books" in d["screen_not_promotion"] and "best of 13" not in d["screen_not_promotion"]
+    regs = r["inputs"]["registries"]
+    assert [x["path"] for x in regs] == [w.reg, w.h5reg] and [x["pinned"] for x in regs] == [False, True]
+    assert regs[1]["sha256"] == hashlib.sha256(Path(w.h5reg).read_bytes()).hexdigest() == r["inputs"]["registries"][1]["sha256"]
+    assert "best of 15 arena books" in outputs(w)[2]["stream"][0]["text"]
+    # nothing is hard-coded: three more books in the HV4 registry and a stop line in the H5 registry change the count
+    w2 = con_world(tmp_path / "more")
+    for i in range(3):
+        _register_bot(f"EXTRA-{i}", "abc1234", DAY0 + DAY, w2.reg, deciding_stake=0.25, model_ids=[], now_ms=0, verify_sha=False)
+    H5.set_window_end(Path(w2.h5reg), DAY0 + 2 * DAY)
+    w2.extra = [_pin(w2.h5reg)]
+    d2 = w2.book("CON-L")["disclosure"]
+    assert d2["arena_books_registered"] == d2["books_with_clock_before_read"] == 18 and d2["books_stopped"] == 2
+    assert d2["arena_cells_existed"] == 18 * 3 * 2 * 2 and "best of 18 arena books" in d2["screen_not_promotion"]
+    # the learning read and the table count the same union
+    assert R.build_table(w2.out, w2.reg, DAY0 + 30 * DAY, w2.reads, w2.extra)["disclosure"]["arena_books_registered"] == 18
+    # the loader reads both formats under the name bots.json: arena_paper's JSON lines (the HV4 arms) and arena_h5_score's {"bots": {...}} object (the H5 books)
+    assert set(R.load_registry_any(w.reg)) == set(ARMS) and set(R.load_registry_any(w.h5reg)) == set(H5.BOTS)
+    h5 = R.load_registry_any(w.h5reg)["h5v1-boostfloor-a1"]
+    assert h5["deciding_stake"] == 0.3 and h5["clock_start_ms"] == DAY0 and h5["stopped_at_ms"] is None and h5["frozen_sha"] == "a" * 40
+
+
+def test_a_read_without_the_other_registry_or_with_a_bad_copy_is_refused_and_writes_nothing(tmp_path):
+    w = con_world(tmp_path)
+    sha = hashlib.sha256(Path(w.h5reg).read_bytes()).hexdigest()
+
+    def refused(extra, match):
+        with pytest.raises(R.Refused, match=match):
+            w.book("CON-L", extra_registries=extra)
+        assert not (Path(w.out) / "reads").exists() and not Path(w.reads).exists()
+
+    refused([], "h5v1-boostfloor-a1")  # the count over the HV4 registry alone would say "best of 13"
+    refused([w.h5reg], "PATH@SHA256")  # no sha256 pin
+    refused([f"{w.h5reg}@{'0' * 64}"], "its sha256 is")
+    refused([f"{tmp_path / 'missing.json'}@{sha}"], "no such file")
+    clash = tmp_path / "clash.json"  # the same book_id with another clock: two registries disagree
+    for b in H5.BOTS:
+        _register_bot(b, "a" * 40, DAY0 + DAY, clash, deciding_stake=0.25, model_ids=[], now_ms=0, verify_sha=False)
+    refused([_pin(w.h5reg), _pin(clash)], "registered differently")
+    # the same registry twice, or a copy, is no double count
+    copy = tmp_path / "copy.json"
+    copy.write_bytes(Path(w.h5reg).read_bytes())
+    assert w.book("CON-L", extra_registries=[_pin(w.h5reg), _pin(copy)])["disclosure"]["arena_books_registered"] == 15
 
 
 def test_ex_best_day_is_reported_per_cell_and_is_total_minus_the_best_day(tmp_path):
@@ -731,7 +792,7 @@ def test_result_v1_record_matches_the_schema_and_never_says_passed(tmp_path):
     assert set(schema["required"]) <= set(rec)
     assert rec["schema_version"] == "result.v1" and rec["stage"] == "forward-paper" and rec["role"] == "exploration"
     assert rec["metrics"]["flat"]["n_trades"] == 100 and rec["gate"]["pass_both"] is True
-    assert rec["tries"]["of_m"] == 13 and 1 <= rec["tries"]["variant_n"] <= 13
+    assert rec["tries"]["of_m"] == 15 and 1 <= rec["tries"]["variant_n"] <= 15
     assert "not a promotion" in rec["notes"]
     bad = dict(rec)
     del bad["gate"]
@@ -795,21 +856,21 @@ def test_the_console_draft_shows_all_four_sub_cells_and_a_failed_book_never_prin
 
 def test_table_lists_25_cells_and_only_recorded_reads(tmp_path):
     w = con_world(tmp_path)
-    t0 = R.build_table(w.out, w.reg, DAY0 + 30 * DAY, w.reads)
+    t0 = R.build_table(w.out, w.reg, DAY0 + 30 * DAY, w.reads, w.extra)
     assert t0["cell_count"] == 25 and all(c["status"] == "NOT_READ_YET" for c in t0["cells"]) and t0["learning"] == "NOT_READ_YET"
     w.book("CON-L")
-    t = R.build_table(w.out, w.reg, DAY0 + 30 * DAY, w.reads)
+    t = R.build_table(w.out, w.reg, DAY0 + 30 * DAY, w.reads, w.extra)
     got = {(c["arm"], c["stake"]): c["status"] for c in t["cells"]}
     assert got[("CON-L", 0.25)] == "PASS" and got[("CON-L", R.AS_SIZED)] in ("PASS", "FAIL") and got[("BIG-L", 0.25)] == "NOT_READ_YET"
     assert t["arms_read"] == ["CON-L"] and len(t["arms_not_read"]) == 12
     assert "SCREEN" in R.render_table(t)
     out = tmp_path / "t.json"
-    assert R.main(["table", "--out-dir", w.out, "--arena-reads-dir", w.reads, "--registry", w.reg, "--json", str(out), "--now-ms", str(DAY0 + 30 * DAY)]) == 0
-    assert R.main(["table", "--out-dir", w.out, "--arena-reads-dir", w.reads, "--registry", w.reg, "--json", str(out), "--now-ms", str(DAY0 + 30 * DAY)]) == 3  # never overwrites
+    assert R.main(["table", "--out-dir", w.out, "--arena-reads-dir", w.reads, "--registry", w.reg, "--extra-registry", w.extra[0], "--json", str(out), "--now-ms", str(DAY0 + 30 * DAY)]) == 0
+    assert R.main(["table", "--out-dir", w.out, "--arena-reads-dir", w.reads, "--registry", w.reg, "--extra-registry", w.extra[0], "--json", str(out), "--now-ms", str(DAY0 + 30 * DAY)]) == 3  # never overwrites
     # the gate status of an arm is the store's: a disagreement is flagged
     store = Path(w.reads) / "CON-L.json"
     store.write_text(canon(dict(json.loads(store.read_text()), status="FAIL")) + "\n")
-    bad = {(c["arm"], c["stake"]): c["status"] for c in R.build_table(w.out, w.reg, DAY0 + 30 * DAY, w.reads)["cells"]}
+    bad = {(c["arm"], c["stake"]): c["status"] for c in R.build_table(w.out, w.reg, DAY0 + 30 * DAY, w.reads, w.extra)["cells"]}
     assert bad[("CON-L", 0.25)] == "STORE_MISMATCH"
 
 

@@ -4,9 +4,9 @@ Serves /data/mal/hunt-1008/push-1016/hunt20/haiku-v4/DESIGN.md section 8 (gate r
 DEC/DEC-031-forward-paper-arena.md section 2. It RE-USES tools.arena_score (the per-book gate, the outcome-blind instant, the pressure refit, the exclusions)
 and gates nothing itself: every cell below is an arena_score cell.
 
-    python -m tools.hv4_read book --bot CON-L     [--ledger-root D] [--registry F] [--out-dir D] [--null-dir D]
-    python -m tools.hv4_read learning                                 (D14 only)
-    python -m tools.hv4_read table [--json F]                         (assembles the recorded reads; computes nothing new)
+    python -m tools.hv4_read book --bot CON-L     [--ledger-root D] [--registry F] [--extra-registry PATH@SHA256 ...] [--out-dir D] [--null-dir D]
+    python -m tools.hv4_read learning             [--extra-registry PATH@SHA256 ...]   (D14 only)
+    python -m tools.hv4_read table [--json F]     [--extra-registry PATH@SHA256 ...]   (assembles the recorded reads; computes nothing new)
 
 ONE STORE OF RECORDED GATE READS (manager ruling on #718): arena_score's record (`record_read`, `<arena-reads-dir>/<bot_id>.json`, default /data/mal/arena/reads).
 `book` records the gate read THERE through `arena_score.record_read` (or, when `arena_score --record` already ran, verifies that the stored read equals the fresh
@@ -21,7 +21,11 @@ READS (each at a pre-declared instant, each written ONCE, a second run is refuse
   learning  one, at T0 + 14 d + 13:00Z (D14), covering entries before T0 + 14 d. It is a SEPARATE pre-declared comparison and NOT a gate read: it prints no gate
             verdict, and its result.v1 gate ticks are false by construction. T0 is the common clock_start_ms of the 13 arms in bots.json.
 
-GATE MULTIPLICITY, disclosed in every read: 25 cells x 1 read each = 25 checks (DEC-031 section 2), beside the arena's own book and cell counts.
+GATE MULTIPLICITY, disclosed in every read: 25 cells x 1 read each = 25 checks (DEC-031 section 2), beside the arena's own book and cell counts. The "best of N arena
+books" count is the UNION of every registered arena book, read from the registry files (never a constant): `--registry` (the HV4 arms; arena_paper's JSON-lines format)
+and each `--extra-registry PATH@SHA256` (a verified copy of another registry, e.g. mal-fast-0's `$HOME/data/arena/bots.json` with the H5 books h5v1-boostfloor-a1 and
+h5v2-boostclock-a1, which is arena_h5_score's {"bots": {...}} format). A read is REFUSED, nothing written, when a book that tools/arena_h5_score registers is not in the
+union (the count would be too small). arena_score's own header counts only the registry it is given and hard-codes no number; it is pinned, so it is not changed here.
 
 THE DECIDING CELL (DEC-031 section 2): 1.9 s at the stake pinned in bots.json (0.25 for all 13 arms; the tool refuses any other), flat 15% AND pressure-fail, each
 under BOTH strand rules ("total" and "sc"): four sub-cells, all must pass. "Both legs" in V1, V2 and learning means all four sub-cells, never one. The 1.3 s
@@ -64,6 +68,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -379,9 +384,65 @@ def v2_read(bot_id: str, persona: str, main: Mapping[str, Any], b: int, reg: Map
     return v2
 
 
+# ------------------------------------------------------------------------------------------------------------------------------ the arena's registered books (multiplicity)
+def load_registry_any(path: str | Path) -> dict[str, dict[str, Any]]:
+    """The books of one registry file, normalised to arena_paper's entry shape (bot_id, frozen_sha, clock_start_ms, deciding_stake, stopped_at_ms). Two formats exist
+    under the name bots.json: arena_paper's append-only JSON lines (the HV4 arms and every engine book) and arena_h5_score's {"bots": {...}} object (the H5 books)."""
+    text = Path(path).read_text()
+    try:
+        obj = json.loads(text)
+    except ValueError:
+        obj = None
+    if isinstance(obj, dict) and isinstance(obj.get("bots"), dict):
+        return {bid: {"bot_id": bid, "frozen_sha": e.get("frozen_sha"), "clock_start_ms": int(e["clock_start_ms"]),
+                      "deciding_stake": float(e.get("deciding_stake_sol", e.get("deciding_stake"))), "stopped_at_ms": e.get("stopped_ms")} for bid, e in obj["bots"].items()}
+    return load_registry(path)
+
+
+def other_registered_books() -> tuple[str, ...]:
+    """The arena books that live in another registry than the HV4 arms' (the H5 books of tools/arena_h5_score, registered on mal-fast-0): the union must hold them."""
+    from tools.arena_h5_score import BOTS as H5_BOTS
+
+    return tuple(sorted(H5_BOTS))
+
+
+def arena_books(registry: str | Path, extra: Sequence[str] = ()) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]]]:
+    """EVERY registered arena book, for the multiplicity count (DEC-031 section 2: "the number of arena books in bots.json with a clock before the read, stopped ones
+    included"). The HV4 arms' registry is `registry`; the H5 books are registered in another bots.json on another host, so a count over `registry` alone would say
+    "best of 13" where at least 15 books have a clock. `extra` = "PATH@SHA256" copies of the other registries (the records PR gives each path and sha256); the sha256 is
+    verified. The result is the UNION by bot_id; a bot_id in two files must have the same sha, clock and stake. Refused when a book that tools/arena_h5_score registers
+    is missing from the union (the count would be too small). Returns (books, sources); nothing is hard-coded about how many there are."""
+    sources: list[dict[str, Any]] = [{"path": str(registry), "sha256": _sha(Path(registry)), "pinned": False}]
+    books: dict[str, dict[str, Any]] = {k: dict(v) for k, v in load_registry_any(registry).items()}
+    for spec in extra:
+        path, sep, pin = str(spec).rpartition("@")
+        if not sep or not path or not re.fullmatch(r"[0-9a-f]{64}", pin):
+            raise Refused(f"--extra-registry must be PATH@SHA256 (64 lower-case hex, the sha256 of that copy as given in the records PR): got {spec!r}")
+        have = _sha(Path(path))
+        if have is None:
+            raise Refused(f"--extra-registry {path}: no such file")
+        if have != pin:
+            raise Refused(f"--extra-registry {path}: its sha256 is {have}, not the pinned {pin}: refused")
+        for bid, e in load_registry_any(path).items():
+            old = books.get(bid)
+            if old is None:
+                books[bid] = dict(e)
+                continue
+            if any(str(old.get(k)) != str(e.get(k)) for k in ("frozen_sha", "clock_start_ms", "deciding_stake")):
+                raise Refused(f"{bid} is registered differently in {registry} and {path} (sha, clock or stake): refused")
+            if old.get("stopped_at_ms") is None:
+                old["stopped_at_ms"] = e.get("stopped_at_ms")
+        sources.append({"path": path, "sha256": have, "pinned": True})
+    missing = [b for b in other_registered_books() if b not in books]
+    if missing:
+        raise Refused(f"the arena books {missing} (registered by tools/arena_h5_score on mal-fast-0, $HOME/data/arena/bots.json) are not in the registries given: the multiplicity count "
+                      "would be too small. Pass that registry's copy with --extra-registry PATH@SHA256 (ARTIFACTS/lab/arena-records-2026-10-18.md section 5)")
+    return books, sources
+
+
 # ------------------------------------------------------------------------------------------------------------------------------ disclosure
 def screen_text(existed: int, cells_existed: int, books_read: int, cells_read: int) -> str:
-    return (f"This is a SCREEN, not a promotion. It is the best of {existed} arena books in bots.json with a clock before the read (stopped ones included; "
+    return (f"This is a SCREEN, not a promotion. It is the best of {existed} arena books with a clock before the read, counted over every registry listed in the read's inputs (stopped ones included; "
             f"{cells_existed} cells existed); {books_read} stake books and {cells_read} cells were read here. In-sample for selection: winner's curse applies. "
             "A pass allows only quant-proof's check on the exact files, the owner's OK, and a live canary at its DEC's small limits. A stake above the canary's limits needs a "
             "confirmation: the same bot_id, unchanged, on at least 100 attempts decided after this read's instant over at least 5 further UTC dates, with a one-sided bootstrap p "
@@ -395,10 +456,11 @@ def reference_text() -> str:
 
 
 def disclosure(reg: Mapping[str, Mapping[str, Any]], now_ms: int, books_read: int, cells_read: int, ex_best_day: Mapping[str, Any], reference: bool = False) -> dict[str, Any]:
+    """`reg` = EVERY registered arena book (arena_books: the union of the registries), never one registry's file."""
     existed = sum(1 for e in reg.values() if e["clock_start_ms"] < now_ms)  # a clock before the read, stopped ones included
     n_gate = len(gate_cells())
     cells_existed = existed * len(STAKES_SOL) * len(AS.MODELS) * len(AS.LATS)  # arena_score's own formula
-    return {"books_in_bots_json": len(reg), "books_with_clock_before_read": existed, "books_stopped": sum(1 for e in reg.values() if e.get("stopped_at_ms")),
+    return {"arena_books_registered": len(reg), "books_with_clock_before_read": existed, "books_stopped": sum(1 for e in reg.values() if e.get("stopped_at_ms")),
             "arena_cells_existed": cells_existed, "hv4_arms": len(ARMS), "hv4_gate_cells": n_gate, "hv4_reads_per_bot_id": GATE_READS_PER_BOT, "hv4_gate_checks": n_gate * GATE_READS_PER_BOT,
             "books_read": books_read, "cells_read": cells_read, "reference_arm": bool(reference), "reference_label": REFERENCE_LABEL if reference else None,
             "screen_not_promotion": reference_text() if reference else screen_text(existed, cells_existed, books_read, cells_read),
@@ -598,8 +660,8 @@ def _guard_unwritten(out_dir: Path, name: str) -> None:
             raise Refused(f"{name}: already recorded at {out_dir / 'reads' / (name + suffix)}: a second run is refused")
 
 
-def _inputs(registry: str, ledger_root: str, reads_dir: str) -> dict[str, Any]:
-    return {"registry_sha256": _sha(Path(registry)), "ledger_root": str(ledger_root), "arena_reads_dir": str(reads_dir), "files_sha256": {f: _sha(REPO_ROOT / f) for f in FILES_PINNED},
+def _inputs(registry: str, ledger_root: str, reads_dir: str, sources: Sequence[Mapping[str, Any]] = ()) -> dict[str, Any]:
+    return {"registry_sha256": _sha(Path(registry)), "registries": [dict(x) for x in sources], "ledger_root": str(ledger_root), "arena_reads_dir": str(reads_dir), "files_sha256": {f: _sha(REPO_ROOT / f) for f in FILES_PINNED},
             "note": "the pinned files' sha256 at the read (DEC-031 section 1.4); a difference from the records PR is disclosed, not hidden"}
 
 
@@ -624,9 +686,11 @@ def record_gate_read(reads_dir: str | Path, res: Mapping[str, Any]) -> dict[str,
 
 
 def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, out_dir: str = OUT_DIR, reads_dir: str = ARENA_READS_DIR,
-              null_dir: str | None = None, now_ms: int | None = None, settle_ms: int = AS.SETTLE_MS, n_seeds: int = NULL_SEEDS, command: str = "") -> dict[str, Any]:
+              null_dir: str | None = None, now_ms: int | None = None, settle_ms: int = AS.SETTLE_MS, n_seeds: int = NULL_SEEDS, command: str = "",
+              extra_registries: Sequence[str] = ()) -> dict[str, Any]:
     now = _now(now_ms)
     reg = load_registry(registry)
+    books, sources = arena_books(registry, extra_registries)  # the multiplicity count: every registered arena book (refused when the other registry is missing)
     if bot_id not in ARMS:
         raise Refused(f"{bot_id}: not one of the 13 HV4 arms")
     t0 = window_clock(reg)
@@ -666,15 +730,15 @@ def read_book(bot_id: str, *, ledger_root: str = LEDGER_ROOT, registry: str = RE
     n_books = len(main.get("books") or {}) + (1 if asz and asz.get("books") else 0)
     cells_read = n_books * len(AS.MODELS) * len(AS.LATS)
     ebd = {f"{c['arm']}@{c['stake']}": c["ex_best_day_min_sol"] for c in cells}
-    order = sorted(reg, key=lambda k: (reg[k]["clock_start_ms"], k))
+    order = sorted(books, key=lambda k: (books[k]["clock_start_ms"], k))
     read = {"schema": SCHEMA, "read": "book", "bot_id": bot_id, "instant_ms": b, "now_ms": now, "created_utc": _created(now), "clock_start_ms": reg[bot_id]["clock_start_ms"],
             "t0_ms": t0, "window_days": max(1, len(calendar_days(reg[bot_id]["clock_start_ms"], b))), "status": status_of(main), "arena_status": main["status"],
             "decidable": base_status(main) in DECIDABLE,
             "cells": cells, "cell_count_in_design": len(gate_cells()), "v1": v1, "v2": v2, "v1_and_v2": v12, "adds_value": adds,
             "reference_arm": not arm.promotable,
             "not_proposed_for_canary": bool(arm.promotable and main["status"] == "PASS" and (main.get("deciding") or {}).get("not_proposed_for_canary")),
-            "disclosure": disclosure(reg, now, n_books, cells_read, ebd, reference=not arm.promotable), "tries": {"variant_n": order.index(bot_id) + 1, "of_m": len(order)},
-            "inputs": _inputs(registry, ledger_root, reads_dir), "arena_score_read": main, "arena_score_as_sized": asz}
+            "disclosure": disclosure(books, now, n_books, cells_read, ebd, reference=not arm.promotable), "tries": {"variant_n": order.index(bot_id) + 1, "of_m": len(order)},
+            "inputs": _inputs(registry, ledger_root, reads_dir, sources), "arena_score_read": main, "arena_score_as_sized": asz}
     dec_books = main.get("books", {}).get(PRIMARY_KEY, {}).get("cells", {})
     read["_deciding_cells"] = dec_books
     rv1 = result_v1(read, command=command or f"python -m tools.hv4_read book --bot {bot_id}", created_utc=read["created_utc"], git_sha=_git_sha())
@@ -718,9 +782,10 @@ def nd_arm(arm: str, reason: str) -> dict[str, Any]:
 
 
 def read_learning(*, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, out_dir: str = OUT_DIR, reads_dir: str = ARENA_READS_DIR, now_ms: int | None = None, settle_ms: int = AS.SETTLE_MS,
-                  command: str = "") -> dict[str, Any]:
+                  command: str = "", extra_registries: Sequence[str] = ()) -> dict[str, Any]:
     now = _now(now_ms)
     reg = load_registry(registry)
+    books, sources = arena_books(registry, extra_registries)
     t0 = window_clock(reg)
     if t0 % DAY_MS:
         raise Refused(f"T0 {t0} is not a 00:00Z boundary: the D1..D14 split needs one")
@@ -775,8 +840,8 @@ def read_learning(*, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PA
     n_books = sum(len((r.get("books") or {})) for r in res.values())
     read = {"schema": SCHEMA, "read": "learning", "bot_id": None, "instant_ms": cut, "look_ms": look, "now_ms": now, "created_utc": _created(now), "clock_start_ms": t0, "t0_ms": t0,
             "window_days": WINDOW_DAYS, "status": out["status"], "decidable": out["status"] in DECIDABLE, "cells": cons, "learning": out, "v1": None, "v2": None,
-            "disclosure": disclosure(reg, now, n_books, n_books * len(AS.MODELS) * len(AS.LATS), ebd), "tries": {"variant_n": 1, "of_m": len(reg)},
-            "inputs": _inputs(registry, ledger_root, reads_dir), "learning_arms": {a: {k: v for k, v in r.items() if k != "books"} for a, r in res.items()}}
+            "disclosure": disclosure(books, now, n_books, n_books * len(AS.MODELS) * len(AS.LATS), ebd), "tries": {"variant_n": 1, "of_m": len(books)},
+            "inputs": _inputs(registry, ledger_root, reads_dir, sources), "learning_arms": {a: {k: v for k, v in r.items() if k != "books"} for a, r in res.items()}}
     read["_deciding_cells"] = (res["CON-L"].get("books") or {}).get(PRIMARY_KEY, {}).get("cells", {})
     rv1 = result_v1(read, command=command or "python -m tools.hv4_read learning", created_utc=read["created_utc"], git_sha=_git_sha())
     con = console_rows(read, read["created_utc"])
@@ -788,9 +853,9 @@ def read_learning(*, ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PA
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the table (assembles recorded reads only)
-def build_table(out_dir: str = OUT_DIR, registry: str = REGISTRY_PATH, now_ms: int | None = None, reads_dir: str = ARENA_READS_DIR) -> dict[str, Any]:
+def build_table(out_dir: str = OUT_DIR, registry: str = REGISTRY_PATH, now_ms: int | None = None, reads_dir: str = ARENA_READS_DIR, extra_registries: Sequence[str] = ()) -> dict[str, Any]:
     now = _now(now_ms)
-    reg = load_registry(registry)
+    reg, _ = arena_books(registry, extra_registries)
     rd = Path(out_dir) / "reads"
     recs: dict[str, Any] = {}
     for a in ARMS:
@@ -828,6 +893,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--registry", default=REGISTRY_PATH)
     ap.add_argument("--out-dir", default=OUT_DIR, help="comparison outputs, result.v1 and Console fragments only (no gate record)")
     ap.add_argument("--arena-reads-dir", default=ARENA_READS_DIR, help="arena_score's store of recorded gate reads (the only one)")
+    ap.add_argument("--extra-registry", action="append", default=[], metavar="PATH@SHA256",
+                    help="another arena registry (the H5 books' bots.json from mal-fast-0), for the multiplicity count; repeatable; the sha256 is verified")
     ap.add_argument("--null-dir", help="directory with <persona>-R/seed-0001.jsonl .. seed-0200.jsonl (the 200-seed R null replays)")
     ap.add_argument("--now-ms", type=int, help="TEST ONLY (needs MAL_ARENA_TEST=1)")
     ap.add_argument("--settle-hours", type=float, default=AS.SETTLE_MS / 3_600_000)
@@ -837,7 +904,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     settle = int(a.settle_hours * 3_600_000)
     try:
         if a.what == "table":
-            t = build_table(a.out_dir, a.registry, a.now_ms, a.arena_reads_dir)
+            t = build_table(a.out_dir, a.registry, a.now_ms, a.arena_reads_dir, a.extra_registry)
             print(render_table(t))
             if a.json:
                 _write_once(Path(a.json), t)
@@ -846,9 +913,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not a.bot:
                 print("book needs --bot", file=sys.stderr)
                 return 2
-            r = read_book(a.bot, ledger_root=a.ledger_root, registry=a.registry, out_dir=a.out_dir, reads_dir=a.arena_reads_dir, null_dir=a.null_dir, now_ms=a.now_ms, settle_ms=settle, command=cmd)
+            r = read_book(a.bot, ledger_root=a.ledger_root, registry=a.registry, out_dir=a.out_dir, reads_dir=a.arena_reads_dir, null_dir=a.null_dir, now_ms=a.now_ms, settle_ms=settle, command=cmd, extra_registries=a.extra_registry)
         else:
-            r = read_learning(ledger_root=a.ledger_root, registry=a.registry, out_dir=a.out_dir, reads_dir=a.arena_reads_dir, now_ms=a.now_ms, settle_ms=settle, command=cmd)
+            r = read_learning(ledger_root=a.ledger_root, registry=a.registry, out_dir=a.out_dir, reads_dir=a.arena_reads_dir, now_ms=a.now_ms, settle_ms=settle, command=cmd, extra_registries=a.extra_registry)
     except (Refused, AS.Refused) as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 3
