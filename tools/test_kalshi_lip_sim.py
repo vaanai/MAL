@@ -6,6 +6,7 @@ import json
 import math
 import os
 import random
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -577,25 +578,29 @@ class World:
 
     # -- recorders -------------------------------------------------------------------------------
     def add_run(self, name, snaps_by_ticker, series, seal=True, complete=True, registry=True, extra_unsealed=None):
+        """Parts and seals are per UTC date (a later date never changes the sha256 of an earlier part)."""
         d = self.tmp / name
         st = kp.Store(d, "orderbook-snap", {})
         ob, sn = book_run(snaps_by_ticker)
-        paths = [p for p in st.write_partitioned("orderbook", ob, "p0", "ts") if p]
-        paths += [p for p in st.write_partitioned("orderbook_snaps", sn, "p0", "ts") if p]
+        placed = []                                              # (path, seal hour)
+        for kind, rows in (("orderbook", ob), ("orderbook_snaps", sn)):
+            for p in st.write_partitioned(kind, rows, "p0", "ts"):
+                if p:
+                    placed.append((p, re.search(r"date=(\d{4}-\d{2}-\d{2})", str(p)).group(1) + "T23"))
         allts = sorted({r["ts"] for r in sn})
-        runs = [{"run_id": "r1", "event": "run_start", "ts": allts[0] if allts else dt(FRZ), "series_json": json.dumps(series),
-                 "every_s": 60.0}]
+        first = allts[0].strftime("%Y-%m-%d") if allts else "2026-10-19"
+        runs = [{"run_id": "r1", "event": "run_start", "ts": dt(FRZ), "series_json": json.dumps(series), "every_s": 60.0}]
         if complete:
-            runs.append({"run_id": "r1", "event": "run_end", "ts": allts[-1] if allts else dt(FRZ), "complete": True,
-                         "stop_reason": "duration"})
-        paths += [st.write("orderbook_runs", runs, "p0r")]
+            runs.append({"run_id": "r1", "event": "run_end", "ts": dt(FRZ), "complete": True, "stop_reason": "duration"})
+        placed.append((st.write("orderbook_runs", runs, "p0r"), f"{first}T00"))
         n_open = len(snaps_by_ticker)
-        rounds = [{"run_id": "r1", "round": i, "ts": t, "n_open": n_open, "n_snaps_ok": n_open, "n_errors": 0,
-                   "every_eff": 60.0, "stretched": False} for i, t in enumerate(allts)]
-        if rounds:
-            paths.append(st.write("orderbook_rounds", rounds, "p0rd"))
+        for date in sorted({t.strftime("%Y-%m-%d") for t in allts}):
+            rounds = [{"run_id": "r1", "round": i, "ts": t, "n_open": n_open, "n_snaps_ok": n_open, "n_errors": 0,
+                       "every_eff": 60.0, "stretched": False} for i, t in enumerate(allts) if t.strftime("%Y-%m-%d") == date]
+            placed.append((st.write("orderbook_rounds", rounds, "p0rd" + date), f"{date}T23"))
         if seal:
-            kp.seal_parts(d, "2026-10-19T12", paths)
+            for hour in sorted({h for _p, h in placed}):
+                kp.seal_parts(d, hour, [p for p, h in placed if h == hour])
         if extra_unsealed:
             ob2, sn2 = book_run(extra_unsealed)
             st.write_partitioned("orderbook", ob2, "p1", "ts")
@@ -609,27 +614,29 @@ class World:
 
     # -- LIP programs ----------------------------------------------------------------------------
     def add_polls(self, polls):
-        """polls: [(poll_iso, ok, [program api dicts])]"""
+        """polls: [(poll_iso, ok, [program api dicts])].  Parts and seals are per UTC date (like the hourly
+        parts of a real recorder): a later poll never changes the sha256 of an earlier part."""
         d = self.tmp / "lipsnap-1019"
         st = kp.Store(d, "incentive-snap", {})
-        rows, prog, runs = [], [], []
-        paths = []
+        by_date = {}
         for i, (piso, ok, progs) in enumerate(polls, 1):
             pt = dt(at(piso))
-            rows.append({"run_id": "r1", "poll": i, "poll_ts": pt, "ts_end": pt, "ok": ok,
-                         "end_reason": "cursor_end" if ok else "http_error", "n_pages": 1,
-                         "n_rows": len(progs) if ok else 0, "n_distinct_ids": len(progs)})
+            g = by_date.setdefault(piso[:10], {"polls": [], "prog": []})
+            g["polls"].append({"run_id": "r1", "poll": i, "poll_ts": pt, "ts_end": pt, "ok": ok,
+                               "end_reason": "cursor_end" if ok else "http_error", "n_pages": 1,
+                               "n_rows": len(progs) if ok else 0, "n_distinct_ids": len(progs)})
             if ok:
-                for r in progs:
-                    prog.append(kp.incentive_row(r, "r1", i, pt, pt, 1, pt))
+                g["prog"] += [kp.incentive_row(r, "r1", i, pt, pt, 1, pt) for r in progs]
+        first = sorted(by_date)[0]
         runs = [{"run_id": "r1", "event": "run_start", "ts": dt(FRZ), "every_s": 900.0},
                 {"run_id": "r1", "event": "run_end", "ts": dt(FRZ), "complete": True, "stop_reason": "duration"}]
-        paths.append(st.write("incentive_polls", rows, "p0"))
-        paths.append(st.write("incentive_runs", runs, "p0r"))
-        for date in sorted({r["poll_ts"].strftime("%Y-%m-%d") for r in prog}):
-            paths.append(st.write("incentive_programs", [r for r in prog if r["poll_ts"].strftime("%Y-%m-%d") == date],
-                                  "p0" + date, date=date))
-        kp.seal_parts(d, "2026-10-19T12", paths)
+        kp.seal_parts(d, f"{first}T00", [st.write("incentive_runs", runs, "p0r")])
+        for date in sorted(by_date):
+            g = by_date[date]
+            paths = [st.write("incentive_polls", g["polls"], "p0" + date)]
+            if g["prog"]:
+                paths.append(st.write("incentive_programs", g["prog"], "p0" + date, date=date))
+            kp.seal_parts(d, f"{date}T23", paths)
         self.lip = str(d)
         return d
 
@@ -695,7 +702,7 @@ GAS_A, GAS_B = "KXAAAGASDNY-26OCT19-T3.5", "KXAAAGASDFL-26OCT19-T3.5"
 S0, E_ = "2026-10-19T12:00:00Z", "2026-10-19T14:00:00Z"
 
 
-def basic_world(tmp, extra_prog=(), extra_snaps=None, meta=True):
+def basic_world(tmp, extra_prog=(), extra_snaps=None, meta=True, late_polls=()):
     w = World(tmp)
     snaps = {GAS_A: ticks("2026-10-19T12:05:30Z", "2026-10-19T15:30:00Z", 60),
              GAS_B: ticks("2026-10-19T12:05:30Z", "2026-10-19T15:30:00Z", 60)}
@@ -703,7 +710,7 @@ def basic_world(tmp, extra_prog=(), extra_snaps=None, meta=True):
     w.add_run("obrec-1019c", snaps, sorted({kp.series_of(t) for t in snaps}))
     progs = [prog("pA", GAS_A, S0, E_), prog("pB", GAS_B, S0, E_)] + list(extra_prog)
     w.add_polls([("2026-10-19T03:20:00Z", True, []), ("2026-10-19T12:05:00Z", True, progs),
-                 ("2026-10-19T12:20:00Z", True, progs), ("2026-10-19T14:05:00Z", True, [])])
+                 ("2026-10-19T12:20:00Z", True, progs), ("2026-10-19T14:05:00Z", True, [])] + list(late_polls))
     w.add_series([("KXAAAGASDNY", "daily", "quadratic"), ("KXAAAGASDFL", "daily", "quadratic_with_maker_fees"),
                   ("KXRT", "custom", "quadratic"), ("KXEOWEEK", "weekly", "quadratic")])
     rows = [("tA1", GAS_A, "2026-10-19T12:10:00Z", 0.48, 25, "no"), ("tA2", GAS_A, "2026-10-19T12:30:00Z", 0.50, 10, "yes"),
@@ -1601,3 +1608,53 @@ def test_n_w_report_counts_raw_gaps_above_twice_the_median_and_conditions2_pin_i
     assert g["conditions2_sha256"] == sim.CONDITIONS2_SHA256
     assert sim.main(["--freeze", sim.FREEZE_ISO, "--books", "x", "--programs", "y", "--declare", __file__,
                      "--conditions", __file__, "--out", str(tmp_path)]) == 2
+
+
+# ------------------------------------------------------------------------------------------------ B7 (QP at 449de07)
+def test_b7_polls_after_r_cannot_change_the_reward_or_gate_json(tmp_path, covered):
+    late = [("2026-10-25T00:00:00Z", True, [prog("pA", GAS_A, S0, E_, reward=500_000)]),     # lowers pA's parameters
+            ("2026-10-26T00:00:00Z", True, [])]                                               # then drops pA and pB
+    wa, wb = basic_world(tmp_path / "a"), basic_world(tmp_path / "b", late_polls=late)
+    R = at("2026-10-24T00:00:00Z")
+    ps = sim.read_programs(wb.lip, R_us=R)
+    assert ps.by_id["pA"]["psets"] == [(1_000_000.0, 1000.0, 5000.0)] and not ps.by_id["pA"]["drift"]
+    assert ps.polls and max(ps.polls) < R and ps.poll_stats["n_ok"] == 4
+    assert sim.read_programs(wb.lip).by_id["pA"]["drift"]                                     # uncut reads would see it
+    sim.run_sim(wa.cfg(out=str(tmp_path / "oa")))
+    sim.run_sim(wb.cfg(out=str(tmp_path / "ob")))
+    for f in ("gate.json", "units.parquet", "fills.parquet", "days.parquet", "table.txt"):
+        assert (tmp_path / "oa" / f).read_bytes() == (tmp_path / "ob" / f).read_bytes(), f
+
+
+def test_b7_pre_freeze_polls_are_still_read_for_ids_when_r_is_given(tmp_path):
+    w = World(tmp_path)
+    pa_ = prog("pA", GAS_A, S0, E_)
+    w.add_polls([("2026-10-19T03:23:52Z", True, [pa_]), ("2026-10-19T12:05:00Z", True, [pa_])])
+    ps = sim.read_programs(w.lip, R_us=at("2026-10-24T00:00:00Z"))
+    assert ps.by_id["pA"]["first_poll"] == at("2026-10-19T03:23:52Z")
+
+
+def test_b7_book_snapshots_are_cut_at_r_and_the_input_digests_only_cover_data_up_to_r(tmp_path):
+    R = at("2026-10-24T00:00:00Z")
+    w = World(tmp_path)
+    d = w.add_run("obrec-1019c", {GAS_A: ticks("2026-10-19T12:05:30Z", "2026-10-19T12:10:30Z", 60)
+                                   + ticks("2026-10-25T12:00:00Z", "2026-10-25T12:05:00Z", 60)}, ["KXAAAGASDNY"])
+    got, _ = sim.BookSource(d, cut_us=R).window_snaps(GAS_A, FRZ, at("2027-01-01T00:00:00Z"))
+    assert len(got) == 5 and max(s.ts for s in got) < R
+    assert len(sim.BookSource(d).window_snaps(GAS_A, FRZ, at("2027-01-01T00:00:00Z"))[0]) == 10
+    w2 = World(tmp_path / "x")
+    d2 = w2.add_run("obrec-1019c", {GAS_A: ticks("2026-10-19T12:05:30Z", "2026-10-19T12:10:30Z", 60)}, ["KXAAAGASDNY"])
+    assert sim.chain_digest_upto(d, R) == sim.chain_digest_upto(d2, R) is not None          # data after R is not in the digest
+    assert sim.chain_digest_upto(d, at("2026-10-26T00:00:00Z")) != sim.chain_digest_upto(d2, at("2026-10-26T00:00:00Z"))
+
+
+def test_b7_resolution_report_counts_late_settlements_and_missing_settlement_times():
+    recs = [_opened_rec(i, "2026-10-20", []) for i in range(4)]
+    e = recs[0]["u"].e_us
+    worst = sim.worst_case_instant(recs[0]["u"])
+    results = {"T-0": {"value": 1.0, "settled_us": e + sec(600), "result": "yes", "event": "E"},
+               "T-1": {"value": 0.0, "settled_us": worst + sec(3600), "result": "no", "event": "E"},      # settled > 48 h late
+               "T-2": {"value": 1.0, "settled_us": None, "result": "yes", "event": "E"}}                  # no settlement time
+    rep = sim.resolution_report(recs, results, worst + 10 * 86_400 * US)
+    assert rep == {"opened": 4, "settled": 3, "worst_case": 1, "young": 0, "settled_after_worst_case_instant": 1,
+                   "settled_without_settlement_ts": 1}

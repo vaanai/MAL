@@ -739,6 +739,14 @@ def chain_digest(out):
     return kp.chain_head(out)
 
 
+def chain_digest_upto(out, R_us):
+    """sha256 of the last chain line whose seal hour is at or before the hour of R (the chain is append-only, so
+    this does not move when later hours are sealed): the digest of the data a read at R can use.  None if no line."""
+    r_hour = us_to_iso(R_us)[:13]
+    kept = [ln for ln in kp._chain_lines(out) if json.loads(ln)["hour"][:13] <= r_hour]
+    return hashlib.sha256(kept[-1].encode()).hexdigest() if kept else None
+
+
 def check_registry(root, entries, pin=None):
     """DECLARE 2.1: a recorder run counts only if its series list and start were appended to
     ``obrec-REGISTRY-<suffix>.md`` (next to the run dir) BEFORE its first row.  Returns a list of problems."""
@@ -786,8 +794,9 @@ class PartData:
 class BookSource:
     """Sealed orderbook / orderbook_snaps of ONE recorder dir, read one (series, date) partition at a time."""
 
-    def __init__(self, root, freeze_us=FREEZE_US, strict_runs=False, lru=4):
+    def __init__(self, root, freeze_us=FREEZE_US, strict_runs=False, lru=4, cut_us=None):
         self.root = Path(root)
+        self.cut_us = cut_us            # snapshots at/after R are never read (data as of R)
         self.name = self.root.name
         self.freeze_us = freeze_us
         self.entries, self.unsealed = sealed_entries(root, strict_runs=strict_runs)
@@ -870,6 +879,8 @@ class BookSource:
         whose level rows do not match its recorded level counts, or that repeats a price, is dropped and
         counted (``inconsistent``): it is a gap, never a guess."""
         lo_us = max(lo_us, self.freeze_us)
+        if self.cut_us is not None:
+            hi_us = min(hi_us, self.cut_us)
         out, bad = [], 0
         series = kp.series_of(ticker)
         d0, d1 = us_to_date(lo_us), us_to_date(max(lo_us, hi_us - 1))
@@ -955,16 +966,20 @@ class ProgramSet:
         self.poll_stats = {}
 
 
-def read_programs(lipdir, strict_runs=False):
+def read_programs(lipdir, strict_runs=False, R_us=None):
+    """Program ids and parameters from the COMPLETE polls with poll_ts < R (pre-freeze polls included: they are read
+    for ids only, CONDITIONS 9).  A poll at or after R can neither drop a program nor change its parameters."""
     entries, unsealed = sealed_entries(lipdir, strict_runs=strict_runs)
     ps = ProgramSet()
-    ps.chain = chain_digest(lipdir)
+    ps.chain = chain_digest(lipdir) if R_us is None else chain_digest_upto(lipdir, R_us)
     polls = read_sealed(lipdir, entries, "incentive_polls", ("run_id", "poll", "poll_ts", "ok"))
     pts = ts_col_us(polls["poll_ts"])
     okm = polls["ok"].fill_null(False).to_numpy(zero_copy_only=False)
-    ok_keys = {(r, int(t)) for r, t, o in zip(polls["run_id"].to_pylist(), pts.tolist(), okm.tolist()) if o}
+    ok_keys = {(r, int(t)) for r, t, o in zip(polls["run_id"].to_pylist(), pts.tolist(), okm.tolist())
+               if o and (R_us is None or t < R_us)}
     ps.polls = sorted({t for _r, t in ok_keys})
     ps.poll_stats = {"n_polls": int(len(pts)), "n_ok": len(ok_keys), "unsealed_parts": len(unsealed)}
+    # (rows of polls at/after R fall out below: they are not in ok_keys)
     cols = ("run_id", "poll_ts", "id", "market_ticker", "series_ticker", "incentive_type", "start_date",
             "end_date", "period_reward", "target_size_fp", "discount_factor_bps")
     tab = read_sealed(lipdir, entries, "incentive_programs", cols)
@@ -1039,14 +1054,14 @@ class MetaIndex:
         root = Path(root)
         # captures only: meta-<stamp>.json[l] in this directory (not recursive); anything else is ignored
         for p in sorted(list(root.glob("meta-*.json")) + list(root.glob("meta-*.jsonl"))):
-            self.files.append((str(p.relative_to(root)), kp.sha256_file(p)))
             try:
                 txt = p.read_text()
                 objs = [json.loads(ln) for ln in txt.splitlines() if ln.strip()] if p.suffix == ".jsonl" else [json.loads(txt)]
             except (ValueError, OSError) as e:
                 raise InputError(f"metadata capture {p.name} is unreadable: {type(e).__name__}: {e}")
-            for o in objs:
-                self._add(o, p, asof_us)
+            kept = [self._add(o, p, asof_us) for o in objs]
+            if any(kept):
+                self.files.append((str(p.relative_to(root)), kp.sha256_file(p)))
 
     def _add(self, o, p, asof_us):
         fetched = None
@@ -1066,7 +1081,7 @@ class MetaIndex:
         if markets is None:
             raise InputError(f"metadata capture {p.name}: no 'markets' list")
         if asof_us is not None and fetched > asof_us:
-            return
+            return False
         self.n_captures += 1
         self.first_capture_us = fetched if self.first_capture_us is None else min(self.first_capture_us, fetched)
         for m in markets:
@@ -1081,6 +1096,7 @@ class MetaIndex:
             cur = self.first.get(tk)
             if cur is None or fetched < cur["fetched"]:
                 self.first[tk] = rec
+        return True
 
     def usable(self, ticker, first_quote_us):
         """The EARLIEST capture of ``ticker``, only if taken at or before the first book snapshot of the
@@ -1335,17 +1351,17 @@ class Cfg:
 def load_inputs(cfg):
     inp = {"sources": [], "hashes": {}, "unsealed": {}}
     for b in cfg.books:
-        src = BookSource(b, cfg.freeze_us, cfg.strict_runs)
+        src = BookSource(b, cfg.freeze_us, cfg.strict_runs, cut_us=cfg.data_us)
         pins = getattr(cfg, "registry_pins", None) or {}
         probs = check_registry(b, src.entries, pins.get(src.name))
         if probs:
             raise InputError(f"recorder registry check failed for {b}: {probs}")
         inp["sources"].append(src)
-        inp["hashes"][f"books:{src.name}"] = kp.chain_head(b)
+        inp["hashes"][f"books:{src.name}"] = kp.chain_head(b) if cfg.data_us is None else chain_digest_upto(b, cfg.data_us)
         regf = Path(b).parent / f"obrec-REGISTRY-{src.name[len('obrec-'):]}.md"
         inp["hashes"][f"registry:{src.name}"] = hashlib.sha256(regf.read_bytes()).hexdigest() if regf.exists() else None
         inp["unsealed"][src.name] = len(src.unsealed)
-    inp["programs"] = read_programs(cfg.programs, cfg.strict_runs)
+    inp["programs"] = read_programs(cfg.programs, cfg.strict_runs, cfg.data_us)
     inp["hashes"]["programs"] = inp["programs"].chain
     inp["meta"] = MetaIndex(cfg.meta, cfg.data_us) if cfg.meta else MetaIndex()
     inp["hashes"]["meta"] = hashlib.sha256(json.dumps(inp["meta"].files).encode()).hexdigest() if cfg.meta else None
@@ -1523,6 +1539,27 @@ def worst_case_instant(u):
     """The instant an unresolved unit enters the population at its worst case: 48 h past max(E, X)."""
     x = u.x_us if u.x_us else u.e_us + DAILY_SLACK_S * US
     return max(u.e_us, x) + UNRESOLVED_AFTER_S * US
+
+
+def resolution_report(records, results, R_us):
+    """How the opened units resolve at R, plus the two oddities the read must state: units that settled more than
+    48 h after max(E, X) (they would already have entered at the worst case) and units with a result but no
+    settlement time."""
+    rep = {"opened": 0, "settled": 0, "worst_case": 0, "young": 0, "settled_after_worst_case_instant": 0,
+           "settled_without_settlement_ts": 0}
+    for r in records:
+        if r["status"] != "opened":
+            continue
+        u = r["u"]
+        rep["opened"] += 1
+        resn, _v, settled_us = resolution_at(u, results, R_us)
+        rep[resn] += 1
+        if resn == "settled":
+            if settled_us is None:
+                rep["settled_without_settlement_ts"] += 1
+            elif settled_us > worst_case_instant(u):
+                rep["settled_after_worst_case_instant"] += 1
+    return rep
 
 
 def decide_verdict(*, scan, chosen, asof_us, nd, counts_met, all_pass, dead):
@@ -1955,6 +1992,7 @@ def run_sim(cfg):
             None if not rows else round(cells[c]["stress"]["xw"]["mean"] - cells[c]["stress"]["central"]["mean"], 6))
     gate["cells"] = cells
     gate["population"] = pop
+    gate["resolution_report"] = resolution_report(records, results, R_eval)
     ex = defaultdict(int)
     for u in early:
         ex[u.status] += 1
