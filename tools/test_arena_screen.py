@@ -4,6 +4,7 @@ guard, the Am.2 universe refusal, the exit resolver against a scalar reference, 
 from __future__ import annotations
 
 import collections
+import dataclasses
 import hashlib
 import json
 import math
@@ -652,9 +653,10 @@ def test_pool_age_counts_from_the_first_print_in_the_block_not_the_hour(tape):
     assert scr.counters["refused_pool_age_lt_360s"] == 1
 
 
-def test_rule_can_read_first_seen_in_state(tape):
+def test_first_seen_is_causal_a_rule_sees_earlier_hours_only(tape):
+    """Reviewer 4: state.first_seen used to be filled for the whole hour BEFORE the rule ran, so a rule could learn which pools are about to print."""
     rows, files = tape
-    seen = {}
+    seen = []
 
     class Peek:
         name = "peek"
@@ -663,18 +665,92 @@ def test_rule_can_read_first_seen_in_state(tape):
             return ["c"]
 
         def triggers(self, hour, state):
-            seen.update({k: v for k, v in state.first_seen.items() if k == POOLS["A"]})
+            seen.append((hour.hour, dict(state.first_seen)))
             return []
 
-    run_kit_rule = S.Screen(Peek(), count_only=True)
-    run_kit_rule.run_block(0, "synthetic", S.iter_hours(files[:1], "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
-    assert seen[POOLS["A"]] == min(r["block_time"] for r in rows if r["pool"] == POOLS["A"])
+    scr = S.Screen(Peek(), count_only=True)
+    scr.run_block(0, "synthetic", S.iter_hours(files[:2], "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
+    assert seen[0] == ("2026-08-20T00", {})  # hour 0 holds pools A, B, C, D, F, L but the rule is told about none of them
+    assert seen[1][0] == "2026-08-20T01" and POOLS["A"] in seen[1][1] and POOLS["N"] not in seen[1][1]
+    assert seen[1][1][POOLS["A"]] == min(r["block_time"] for r in rows if r["pool"] == POOLS["A"])
+    assert all(v < H0 + 3600 for v in seen[1][1].values())  # nothing from hour 1 itself
+    # the age check is still right for a pool whose first print is in the hour being decided
+    slot = own_slots(rows, "A", 0, 1000, 1500)[0]
+    assert run_kit(files, [(POOLS["A"], slot, S.ExitSpec(120))], count_only=True).counters["refused_pool_age_lt_360s"] == 0
+
+
+# ---- item 1: rent
+def test_the_deciding_leg_prices_at_rent_zero_and_the_charged_leg_is_exactly_the_charge_apart(tape, monkeypatch):
+    """Reviewer 1: the deciding leg is rent 0 (DEC-031 Am.2). Mutations 'rent charged on the deciding leg' (the pricing loop, the deciding config) must fail here."""
+    from tools import arena_rules
+
+    rows, files = tape
+    scr = run_kit(files, script_for(rows))
+    st = S._cat(scr.acc[0])
+    n = len(st["ref"])
+    cfg0 = arena_rules.stack_config(7)  # the host's own pinned stack, built independently of the kit: rent 0 on a filled trip
+    cfgC = dataclasses.replace(cfg0, rent=2_039_280)
+    assert (cfg0.rent, cfgC.rent, S.RENT_DECIDING, S.RENT_CHARGED, S.screen_cfg().rent) == (0, 2_039_280, 0, 2_039_280, 0)
+    assert scr.cfg[S.RENT_DECIDING].rent == 0 and scr.cfg[S.RENT_CHARGED].rent == 2_039_280
+    states, f0, fC, big0 = collections.Counter(), 0.0, 0.0, 0.0
+    for i in range(n):
+        a = P.price_leg("pumpswap", 0.25e9, one(st, i), 1.9, cfg0, "total")
+        b = P.price_leg("pumpswap", 0.25e9, one(st, i), 1.9, cfgC, "total")
+        states[a["state"]] += 1
+        assert a["state"] == b["state"]
+        if a["state"] == "filled":  # a filled trip: rent 0 and rent-charged differ by EXACTLY the charge
+            assert abs((a["pnl"] - b["pnl"]) - 2_039_280) < 1e-6 and abs((a["flat"] - b["flat"]) - 0.85 * 2_039_280) < 1e-6
+        else:  # guarded or stranded: the rent knob does not touch them (a stranded trip pays rent_stranded either way)
+            assert a["pnl"] == b["pnl"]
+        f0, fC = f0 + a["flat"], fC + b["flat"]
+        big0 += P.price_leg("pumpswap", 1.0e9, one(st, i), 1.9, cfg0, "total")["flat"]
+    assert states["filled"] >= 15
+    r = scr.results()["c"]
+    k0, kC = r["stats"]["1.9|total|rent0|flat"], r["stats"]["1.9|total|rentC|flat"]
+    assert k0["total"] == pytest.approx(f0 / 1e9, abs=1e-9) and kC["total"] == pytest.approx(fC / 1e9, abs=1e-9)  # each leg equals the independent engine pricing at ITS rent
+    assert k0["total"] - kC["total"] == pytest.approx(0.85 * 2_039_280 * states["filled"] / 1e9, abs=1e-9)
+    assert r["stake_1_0_total_rent0_1p9"]["flat"]["total"] == pytest.approx(big0 / 1e9, abs=1e-9)  # the 1.0 SOL leg is rent 0 too
+    assert r["gate"]["total|flat"]["mean_pct"] == k0["mean_pct"] != kC["mean_pct"]  # the gate columns read the deciding leg
+    seen, orig = {}, S.kill_verdict
+    monkeypatch.setattr(S, "kill_verdict", lambda subs, *a, **k: (seen.update(subs), orig(subs, *a, **k))[1])
+    scr.results()
+    assert seen[("total", "flat")]["total"] == k0["total"] != kC["total"]  # and so does the KILL
+    for rule in S.STRAND_RULES:
+        for fail in S.FAILS:
+            assert seen[(rule, fail)]["total"] == r["stats"][f"1.9|{rule}|rent0|{fail}"]["total"]
+
+
+# ---- item 2: forbidden words, hardcoded
+FORBIDDEN_LITERAL = ("fresh-08", "_shakedown", "probe", "shadow", "canary", "forward-", "exp011", "truth-", "tip-tape", "sealed")
+
+
+def test_the_forbidden_word_list_is_exactly_the_hardcoded_one():
+    assert sorted(S.FORBIDDEN) == sorted(FORBIDDEN_LITERAL)
+
+
+@pytest.mark.parametrize("word", FORBIDDEN_LITERAL)
+def test_forbidden_words_are_refused_everywhere(word, tmp_path, monkeypatch):
+    """The words are written out here, not read from S.FORBIDDEN, so deleting one from the module fails this test."""
+    for p in (f"/data/mal/clean-view/explore-0814/w1/{word}x", f"/data/mal/clean-view/explore-0814/{word.upper()}", f"/data/mal/arena/tape/{word}-1"):
+        for count_only in (True, False):
+            with pytest.raises(S.Refused, match=f"path_forbidden_word:{word}"):
+                S.check_block_path(p, count_only)
+    with pytest.raises(S.Refused, match=f"vmap_forbidden_word:{word}"):
+        S.check_vmap_paths([f"/data/mal/pumpswap-virtual/{word}/v.json"])
+    monkeypatch.setattr(S, "BLOCK_ROOTS", (str(tmp_path),))
+    for d, ok in (("wok", True), (f"w{word}", False)):  # an hour file whose directory carries the word
+        f = tmp_path / d / "trades" / "trades-2026-08-20T00.jsonl.zst"
+        f.parent.mkdir(parents=True)
+        f.write_bytes(b"")
+    assert len(S.discover(tmp_path / "wok", "clean")) == 1
+    with pytest.raises(S.Refused, match="path_forbidden_word"):
+        S.discover(tmp_path / f"w{word}", "clean")
 
 
 def test_priced_results_carry_the_four_sub_cells_groups_and_gate_columns(tape):
     rows, files = tape
     r = run_kit(files, script_for(rows)).results()["c"]
-    assert set(r["gate"]) == {"total|flat", "total|press", "sc|flat", "sc|press"} and r["worst_in_slot"].startswith("not measured: PROVISIONAL")
+    assert set(r["gate"]) == {"total|flat", "total|press", "sc|flat", "sc|press"} and r["worst_in_slot"]["measured"] is False and r["registration"] == "KILLED"
     assert all(g["ci_lo_pct"] is not None and "majority_dates" in g for g in r["gate"].values())
     # the synthetic block is neither explore-0814 nor a September block: (b) cannot be shown, so it is not a survivor
     assert all(v is None for v in r["groups"].values()) and any("not measured" in w for w in r["kill_reasons"])
@@ -720,14 +796,6 @@ def test_the_four_exploration_blocks_are_allowed(p, count_only):
 def test_every_other_path_is_refused(p, count_only):
     with pytest.raises(S.Refused):
         S.check_block_path(p, count_only)
-
-
-@pytest.mark.parametrize("word", list(S.FORBIDDEN))
-def test_forbidden_words_are_refused_even_inside_an_allowed_block(word):
-    for p in (f"/data/mal/clean-view/explore-0814/w1/{word}x", f"/data/mal/clean-view/explore-0814/{word.upper()}", f"/data/mal/arena/tape/{word}-1"):
-        for count_only in (True, False):
-            with pytest.raises(S.Refused, match="forbidden_word|arena_path|not_an"):
-                S.check_block_path(p, count_only)
 
 
 def test_arena_tape_only_with_count_only(tmp_path):
@@ -808,13 +876,31 @@ def test_an_hour_file_must_resolve_under_its_own_block_root(tmp_path, monkeypatc
     assert len(S.discover(a, "clean")) == 2
 
 
-def test_cli_refuses_with_exit_code_2_and_reads_nothing(tmp_path, capsys):
-    base = ["--rule", "tools.arena_screen:TrivialRule", "--out", str(tmp_path / "o")]
-    for extra in (["--block", "/etc"], ["--block", "/data/mal/clean-view/fresh-0802/w1"], ["--block", "/data/mal/arena/tape"], ["--block", "/data/mal/arena/ledger", "--count-only"],
-                  ["--block", "/data/mal/clean-view/explore-0814/probe"]):
-        assert S.main(base + extra) == 2
-    assert S.main(["--rule", "tools.arena_screen:TrivialRule", "--out", "/data/mal/arena/x", "--block", "/data/mal/clean-view/explore-0814"]) == 2
-    assert "REFUSED" in capsys.readouterr().err and not (tmp_path / "o").exists()
+def test_cli_refuses_with_exit_code_2_and_reads_nothing(clean_tree, tmp_path, monkeypatch, capsys):
+    """Temp trees only (the module roots are pointed at them): a broken guard can never create /data/mal/arena/x or start a real explore-0814 read. Any read is a test failure."""
+    root, vm = clean_tree
+    arena = tmp_path / "arena"
+    (arena / "tape").mkdir(parents=True)
+    (arena / "ledger").mkdir()
+    monkeypatch.setattr(S, "ARENA_ROOT", str(arena))
+    monkeypatch.setattr(S, "ARENA_TAPE", str(arena / "tape"))
+
+    def boom(*a, **k):
+        raise AssertionError("a read started")
+
+    for name in ("iter_hours", "_hour_lines", "build_hour", "load_rule"):
+        monkeypatch.setattr(S, name, boom)
+    before = sorted(tmp_path.rglob("*"))
+    good, out = str(root / "explore-0814"), str(tmp_path / "o")
+    cases = [["--block", "/etc"], ["--block", str(root / "fresh-0802" / "w1")], ["--block", str(root / "exp011-0909" / "b")], ["--block", str(root)], ["--block", str(arena / "tape")],
+             ["--block", str(arena / "ledger"), "--count-only"], ["--block", str(arena / "tape" / "_shakedown-1"), "--count-only"], ["--block", str(root / "explore-0814" / "probe")],
+             ["--block", good, "--out", str(arena / "x")], ["--block", good, "--out", str(root / "x")], ["--block", good, "--hours", "2026-08-20T00"],
+             ["--block", good, "--block", str(root / "explore-0814" / "w1"), "--count-only"]]
+    for extra in cases:
+        args = ["--rule", "tools.arena_screen:TrivialRule", "--vmap", str(vm)] + (["--out", out] if "--out" not in extra else []) + extra
+        assert S.main(args) == 2, extra
+    assert "REFUSED" in capsys.readouterr().err
+    assert sorted(tmp_path.rglob("*")) == before and not (tmp_path / "o").exists()  # nothing was created anywhere in the tree
 
 
 @pytest.fixture
@@ -858,7 +944,7 @@ def test_cli_end_to_end_on_the_four_synthetic_blocks_writes_files_and_provenance
         assert pv["rule"]["source_sha256"] == hashlib.sha256(Path(S.__file__).read_bytes()).hexdigest() and pv["rule"]["kwargs"] == '{"every": 5, "hold_s": 120}'
         assert pv["vmap"] == [{"path": str(vm.resolve()), "sha256": hashlib.sha256(vm.read_bytes()).hexdigest()}]
         assert pv["hours"]["explore-0814"] == ["2026-08-20T00", "2026-08-20T01", "2026-08-20T02"] and pv["hours_subset_requested"] is None
-    assert doc["cells"]["trivial"]["attempts"] > 0
+    assert doc["cells"]["trivial"]["attempts"] > 0 and doc["cells"]["trivial"]["event_triggered"] is True and doc["cells"]["trivial"]["registration"].startswith(("KILLED", "PROVISIONAL-BLOCKED"))
 
 
 def test_loophole_a_pricing_needs_each_of_the_four_blocks_once_and_whole(clean_tree, tmp_path):
@@ -960,7 +1046,7 @@ class Factory:
         pass
 
     def cells(self):
-        return [Cell("c")]
+        return [Cell("c", event_triggered=False)]
 
     def triggers(self, hour, state):
         return []
@@ -1036,6 +1122,87 @@ def test_causal_probe_leaves_the_rule_state_alone(tape):
 
     assert S.causal_probe(Writer(), hr, st, POOLS["A"], slot)
     assert st.scratch == {"seen": []} and st.first_seen == {POOLS["A"]: 1}
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ 6b. event flag, worst-in-slot, text
+def test_cell_event_flag_defaults_to_the_stricter_kind_and_is_read_from_any_cell_object():
+    assert S.Cell("x").event_triggered is True and S.Cell("x", event_triggered=False).event_triggered is False
+    from types import SimpleNamespace
+
+    scr = S.Screen(ScriptRule([], cells=(S.Cell("a"), S.Cell("b", event_triggered=False), "c", SimpleNamespace(name="d", cooldown_s=5.0, event_triggered=False), SimpleNamespace(name="e"))))
+    assert [(c.name, c.event_triggered) for c in scr.cells] == [("a", True), ("b", False), ("c", True), ("d", False), ("e", True)] and scr.cells[3].cooldown_s == 5.0
+
+
+def test_registration_status_event_cells_are_blocked_until_worst_in_slot_is_measured():
+    st = S.registration_status
+    assert st(True, True, False) == st(False, True, False) == "KILLED"
+    assert st(True, False, False).startswith("PROVISIONAL-BLOCKED") and "no registration" in st(True, False, False)
+    assert st(False, False, False).startswith("PROVISIONAL (grid-triggered") and "worst-in-slot not measured" in st(False, False, False)
+    assert st(True, False, True).startswith("SCREEN-SURVIVOR") and st(False, False, True).startswith("SCREEN-SURVIVOR")
+
+
+@pytest.mark.parametrize("event, want", [(True, "PROVISIONAL-BLOCKED"), (False, "PROVISIONAL (grid-triggered")])
+def test_a_screen_survivor_carries_the_worst_in_slot_verdict_of_its_declared_kind(tape, monkeypatch, event, want):
+    rows, files = tape
+    monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))  # force a survivor to read the registration text
+    scr = S.Screen(ScriptRule(script_for(rows), cells=(S.Cell("c", event_triggered=event),)))
+    scr.run_block(0, "synthetic", S.iter_hours(files, "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
+    r = scr.results()["c"]
+    assert r["event_triggered"] is event and r["registration"].startswith(want)
+    assert r["worst_in_slot"]["measured"] is False and "#747" in r["worst_in_slot"]["hook"]
+    md = S.table_md({"c": r}, scr.blocks, {"rule": "script"})
+    assert want.split(" ")[0] in md and ("EVENT" if event else "GRID") in md
+
+
+def test_worst_in_slot_plumbing_kills_an_event_cell_with_a_non_positive_leg(tape, monkeypatch):
+    """The call site only; the numbers wait for PR #747 (see the skipped parity test)."""
+    rows, files = tape
+    monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))
+    monkeypatch.setattr(S, "WORST_IN_SLOT_AVAILABLE", True)
+
+    def run_with(means, event):
+        monkeypatch.setattr(S, "worst_in_slot_legs", lambda st, cfg: means)
+        scr = S.Screen(ScriptRule(script_for(rows), cells=(S.Cell("c", event_triggered=event),)))
+        scr.run_block(0, "synthetic", S.iter_hours(files, "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
+        return scr.results()["c"]
+
+    good = {k: 0.001 for k in S.SUB_CELLS}
+    bad = {**good, ("sc", "press"): 0.0}
+    r = run_with(good, True)
+    assert not r["kill"] and r["registration"].startswith("SCREEN-SURVIVOR") and r["worst_in_slot"]["measured"] is True
+    r = run_with(bad, True)
+    assert r["kill"] and any("worst-in-slot mean <= 0 in sc/press" in w for w in r["kill_reasons"]) and r["registration"] == "KILLED"
+    assert not run_with(bad, False)["kill"]  # the kill is for event-triggered cells (QP R7 ruling)
+
+
+def test_worst_in_slot_hook_is_not_implemented_and_nothing_is_copied_from_747():
+    assert S.WORST_IN_SLOT_AVAILABLE is False
+    with pytest.raises(NotImplementedError, match="747"):
+        S.worst_in_slot_legs({}, S.screen_cfg())
+    src = Path(S.__file__).read_text()
+    assert "def slot_states" not in src and "def worst_index" not in src  # imported once #747 merges, never copied
+
+
+@pytest.mark.skip(reason="waits for PR #747 (slot_states, worst_index): import them in tools/arena_screen.py, set WORST_IN_SLOT_AVAILABLE, and pin parity on the synthetic tape here")
+def test_worst_in_slot_parity_with_747():
+    raise AssertionError("placeholder")
+
+
+def test_table_and_counts_say_what_the_author_must_do(tape, tmp_path):
+    rows, files = tape
+    md = S.table_md(run_kit(files, script_for(rows)).results(), ["synthetic"], {"rule": "script"})
+    for needle in ("C1-NF", "RULES step 2", "WITHOUT pricing", "at least 200 triggers PER BLOCK with 0 failures", "causal_probe", "not the bot's", "md5 decision-equivalence", "0.95^N",
+                   "candidate for a forward slot and nothing more", "PROVISIONAL-BLOCKED", "no profit claim"):
+        assert needle in md, needle
+    scr = run_kit(files, [(POOLS["A"], own_slots(rows, "A", 0, 1000, 1500)[0], S.ExitSpec(120))], count_only=True, name="explore-0814", min_per_day=20.0)
+    res = scr.results()
+    assert res["c"]["explore_0814"]["days"] == 1 and res["c"]["explore_0814"]["below_step2_count"] is True
+    cm = S.counts_md(res, {"rule": "script", "hours_subset": False})
+    assert "explore-0814 att/day" in cm and "DROP (<20)" in cm and "C1-NF" in cm
+
+
+def test_causal_probe_sampling_requirement_is_stated_in_the_module_doc():
+    assert "causal_probe" in (S.__doc__ or "") and "NOT" in (S.__doc__ or "")
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ 7. loaders

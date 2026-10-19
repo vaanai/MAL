@@ -27,13 +27,18 @@ PRICING (the engine's own functions, imported, never copied: tools.arena_stack.m
   filled trip) is reported beside it. Decision slot = the rule's slot; the guard reference is the last print before it; slot seconds per UTC hour come from the hour's own
   prints. A fill lands on the END-bound state of the first print at slot >= landing + 1. Where no such print exists within GRACE_SLOTS (10,000) the state is derived from the
   last print, as the engine does; an attempt whose derived state would need slots past the end of its block is EXCLUDED and counted (block edge).
-  BOOTSTRAP: UTC-date clustered, 1,000 draws, seed 1, 5th percentile of the pooled mean SOL per trade.
+  BOOTSTRAP: BOTH bounds are computed and BOTH must be > 0 to survive: the trade-level one (tools.arena_stack.boot_lo, exactly as arena_score.cell_stats calls it) and the UTC-date
+  clustered one (resample dates; 1,000 draws, seed 1, 5th percentile of the pooled mean SOL per trade).
+SCOPE (what a kit figure is NOT): exits are resolved by slot arithmetic at each hour's own slot rate, whereas the arena bot holds in ms on a 1 s tick with the engine's rolling clock, so a
+  kit figure is not the bot's; the frozen bot's md5 decision-equivalence replay is still required at registration. Late-print boundary: the engine derives a state once the GLOBAL
+  high-water slot passes need + GRACE, the kit when the pool's own next print is at or after need + GRACE; on a tape that prints every slot the two agree except at the boundary slot
+  itself (negligible). The kit counts the late-print trips per cell (late_print_derived).
 KILL (hunt23 RULES.md Amendment 1; deciding leg 1.9 s / 0.25 SOL / rent 0): any of the FOUR sub-cells {flat, pressure} x {sc, total} with mean, total ex-top-3 or total
   ex-best-day <= 0; fewer than 3 blocks positive (a block is positive when its total is > 0 under ALL FOUR sub-cells); (b) mean <= 0 on explore-0814 ALONE or on the three September
   blocks POOLED (one period) under any sub-cell; (c) the in-sample gate pooled over all blocks on all four sub-cells: CI90 lower bound <= 0, or no majority of UTC dates positive.
   A cell that is not killed is a SCREEN SURVIVOR only: worst-in-slot (R7) is NOT measured by this kit (PROVISIONAL), at most one survivor per rule group is picked by the rule author's
   declared statistic, and nothing here is a profit claim. `thin` (< --min-attempts-per-day, default 20) is reported beside it, not a kill.
-  SEAL (Amendment 1, 3): a pool younger than 360 s at the decision (counted from the pool's first print in the same block; state.first_seen) is REFUSED and counted
+  SEAL (Amendment 1, 3): a pool younger than 360 s at the decision (counted from the pool's first print in the same block; state.first_seen holds EARLIER hours only) is REFUSED and counted
   (refused_pool_age_lt_360s). It is mandatory and not a parameter.
 
 DATA GUARDS (before anything is read): block paths only under /data/mal/clean-view/{explore-0814, oracle-insample-2026-09-22_25, fast-pool-2026-09-18T23_2026-09-22T00,
@@ -156,8 +161,13 @@ def exit_problem(spec: Any) -> str | None:
 
 @dataclass(frozen=True)
 class Cell:
+    """`event_triggered` is DECLARED per cell in DECLARE before any price (QP on #752): True for a cell that fires on a print, a wallet or any market event; False only for a cell that
+    fires on a clock or a fixed grid. The default is True, so an undeclared cell is treated as the stricter kind: an event cell may not register until its worst-in-slot mean is
+    measured and > 0 on all four sub-cells (R7)."""
+
     name: str
     cooldown_s: float = 60.0
+    event_triggered: bool = True
 
 
 @dataclass
@@ -170,7 +180,9 @@ class RunState:
     gap_before: bool = False
     hour_index: int = 0
     scratch: dict = field(default_factory=dict)
-    first_seen: dict = field(default_factory=dict)  # pool -> block_time (s) of its first print in THIS block, updated before every triggers() call
+    # pool -> block_time (s) of its first print in EARLIER hours of this block. Updated only AFTER an hour's triggers are validated, so it never carries this hour's rows (a rule that read it
+    # during the hour would learn which pools are about to print: look-ahead). The kit adds the pool's own first print of the hour when it checks the age, which is causal.
+    first_seen: dict = field(default_factory=dict)
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ guards
@@ -735,6 +747,41 @@ def kill_verdict(subs: dict, blocks: Sequence[str], groups: dict | None = None, 
     return bool(why), why
 
 
+# ------------------------------------------------------------------------------------------------------------------------------ worst-in-slot (R7)
+# HOOK FOR PR #747 (open; exports slot_states(sa, x) and worst_index(sa, idx, side)). NOT IMPLEMENTED: until #747 merges the worst-in-slot leg "cannot be computed" and every cell is
+# reported as not measured (wave 1 only). When it merges: import them here (never copy), compute the worst-in-slot leg on the SAME trips at the deciding cell (1.9 s, 0.25 SOL, rent 0)
+# for all four sub-cells, return {(strand rule, fail): mean SOL per trade}, set WORST_IN_SLOT_AVAILABLE = True, and pin parity against #747 on the synthetic tape
+# (tools/test_arena_screen.py::test_worst_in_slot_parity_with_747 is the skipped placeholder). _cell_result then kills an event-triggered cell whose worst-in-slot mean is <= 0.
+WORST_IN_SLOT_AVAILABLE = False
+
+
+def worst_in_slot_legs(st: dict, cfg: P.StackConfig) -> dict:
+    raise NotImplementedError("worst-in-slot needs PR #747 (slot_states, worst_index) to be merged and imported; see the hook comment above")
+
+
+def registration_status(event_triggered: bool, killed: bool, wis_measured: bool) -> str:
+    """What a cell that was screened may do next (QP R7 ruling on #752)."""
+    if killed:
+        return "KILLED"
+    if wis_measured:
+        return "SCREEN-SURVIVOR (worst-in-slot measured > 0 on all four sub-cells)" if event_triggered else "SCREEN-SURVIVOR (worst-in-slot measured)"
+    if event_triggered:
+        return "PROVISIONAL-BLOCKED (event-triggered: worst-in-slot not measured; no registration until it is, and > 0 on all four sub-cells)"
+    return "PROVISIONAL (grid-triggered: may register with 'worst-in-slot not measured' stated; needed before any canary)"
+
+
+AUTHOR_NOTES = (
+    "**Author's job, not the kit's.** (1) Drop any cell that matches the C1-NF decision grid and exit (EXP-025 section 4, DEC-031 section 3.7) BEFORE pricing. (2) Drop any cell under 20 "
+    "attempts/day on explore-0814 WITHOUT pricing (RULES step 2); the kit's explore-0814 attempts/day kill is a backstop, not a substitute. (3) Before ANY registration run `causal_probe` "
+    "(on a copy of the state) on a seed-1 sample of at least 200 triggers PER BLOCK with 0 failures, and state the count in REPORT; the kit hands a rule the whole hour and cannot see "
+    "look-ahead. (4) Declare per cell, before pricing, whether it is event-triggered (the default) or grid-triggered; an event cell may not register until worst-in-slot (R7) is measured "
+    "and > 0 on all four sub-cells (PR #747 not merged: PROVISIONAL-BLOCKED). (5) The kit's figures are not the bot's: it resolves exits by slot arithmetic at the hour's slot rate, "
+    "the arena bot holds in ms on a 1 s tick with the engine's rolling clock, so the frozen bot's md5 decision-equivalence replay is still required at registration. (6) Selection: "
+    "every figure is in-sample on blocks that were mined before; a survivor is the best of its declared cells, and the chance of at least one false screen pass is up to 1 - 0.95^N "
+    "(QP ruling item 1). A survivor is a candidate for a forward slot and nothing more.",
+)
+
+
 # ------------------------------------------------------------------------------------------------------------------------------ the screen
 @dataclass
 class _Store:
@@ -747,7 +794,7 @@ class Screen:
     def __init__(self, rule: Any, *, count_only: bool = False, min_attempts_per_day: float = 20.0) -> None:
         self.rule, self.count_only, self.min_per_day = rule, count_only, float(min_attempts_per_day)
         raw = list(rule.cells())
-        self.cells = [Cell(str(c)) if isinstance(c, str) else Cell(str(c.name), float(getattr(c, "cooldown_s", 60.0))) for c in raw]
+        self.cells = [Cell(str(c)) if isinstance(c, str) else Cell(str(c.name), float(getattr(c, "cooldown_s", 60.0)), bool(getattr(c, "event_triggered", True))) for c in raw]
         if not self.cells or len({c.name for c in self.cells}) != len(self.cells):
             raise ValueError("a rule needs at least one cell and unique cell names")
         self.cell_ix = {c.name: i for i, c in enumerate(self.cells)}
@@ -784,11 +831,12 @@ class Screen:
         if j < 0:
             c["refused_no_print_at_or_before_decision"] += 1
             return None
-        first = state.first_seen.get(pool)
-        if first is None or first <= 0 or int(hr.bt[a + j]) <= 0:
+        first_prev, first_hr, now = state.first_seen.get(pool), int(hr.bt[a]), int(hr.bt[a + j])
+        if first_hr <= 0 or now <= 0 or (first_prev is not None and first_prev <= 0):
             c["refused_pool_age_unknown"] += 1
             return None
-        if int(hr.bt[a + j]) - first < MIN_POOL_AGE_S:
+        first = first_hr if first_prev is None else min(first_prev, first_hr)  # the pool's first print: an earlier hour's, else this hour's own first row (<= the decision print)
+        if now - first < MIN_POOL_AGE_S:
             c["refused_pool_age_lt_360s"] += 1
             return None
         v = float(hr.v[a + j])
@@ -836,14 +884,14 @@ class Screen:
                     t0 = time.time()
                     continue
             state.prev, state.hour_index = prev, hr.idx
-            for i, nm in enumerate(hr.pools.tolist()):
-                if nm not in state.first_seen:
-                    state.first_seen[nm] = int(hr.bt[hr.ptr[i]])
             t1 = time.time()
             raw = list(rule.triggers(hr, state))
             self.t_rule += time.time() - t1
             state.gap_before = False
             good = [v for v in (self._validate(hr, t, state) for t in raw) if v is not None]
+            for i, nm in enumerate(hr.pools.tolist()):  # only now: the rule has already run on this hour
+                if nm not in state.first_seen:
+                    state.first_seen[nm] = int(hr.bt[hr.ptr[i]])
             good.sort(key=lambda g: (g[0], g[1], g[2]))
             day = hr.T // 86400
             self.days.add(day)
@@ -976,7 +1024,8 @@ class Screen:
     def _cell_result(self, ci: int, names: list[str], ndays: int) -> dict:
         parts = self.acc[ci]
         if not parts:
-            return {"attempts": 0, "kill": True, "kill_reasons": ["no attempts"], "thin": None, "excluded_block_edge": int(self.excl_cell[ci])}
+            return {"attempts": 0, "kill": True, "kill_reasons": ["no attempts"], "thin": None, "excluded_block_edge": int(self.excl_cell[ci]), "event_triggered": self.cells[ci].event_triggered,
+                    "registration": "KILLED"}
         st = _cat(parts)
         n = len(st["ref"])
         day = st["T"] // 86400
@@ -1015,7 +1064,17 @@ class Screen:
         r["gate"] = {f"{rule}|{fail}": gate_row(v) for (rule, fail), v in subs.items()}
         r["kill"], r["kill_reasons"] = kill_verdict(subs, names, {(g.split("|")[0], *g.split("|")[1:]): v for g, v in groups.items()}, excl_share=r["excluded_share"],
                                                     explore_att_per_day=r["explore_attempts_per_day"], min_att_per_day=self.min_per_day)
-        r["worst_in_slot"] = "not measured: PROVISIONAL (QP R7)"
+        cell = self.cells[ci]
+        wis: dict[str, Any] = {"measured": False, "four_sub_cells_mean_sol": None, "hook": "PR #747 (slot_states, worst_index) not merged: not computed"}
+        if WORST_IN_SLOT_AVAILABLE:
+            means = worst_in_slot_legs(st, self.cfg[RENT_DECIDING])
+            wis = {"measured": True, "four_sub_cells_mean_sol": {"|".join(k): float(v) for k, v in means.items()}}
+            bad = [k for k in SUB_CELLS if not means[k] > 0]
+            if cell.event_triggered and bad:
+                r["kill"] = True
+                r["kill_reasons"].append("worst-in-slot mean <= 0 in " + ", ".join("/".join(k) for k in bad))
+        r["event_triggered"], r["worst_in_slot"] = cell.event_triggered, wis
+        r["registration"] = registration_status(cell.event_triggered, r["kill"], wis["measured"])
         return r
 
 
@@ -1075,6 +1134,7 @@ def table_md(res: dict, blocks: list[str], meta: dict) -> str:
     L = [f"# arena_screen TABLE ({meta['rule']}): IN-SAMPLE exploration screen, not evidence, no profit claim", "",
          "Deciding leg: 1.9 s, 0.25 SOL, rent 0 (DEC-031 Am.2 universe enforced), pool age >= 360 s enforced, feed delay 7. KILL (hunt23 Amendment 1) is evaluated on all four sub-cells "
          "{flat, pressure} x {sc, total}. Blocks: " + "; ".join(f"B{i + 1}={b}" for i, b in enumerate(blocks)) + ".", "",
+         *AUTHOR_NOTES, "",
          "## 1. Strand rule total (deciding), pooled over all blocks", "",
          "| cell | att | fills | days(+) | flat mean% | flat CIlo% | flat tot | ex3 | exbest | press mean% | press CIlo% | press tot | ex3 | exbest | explore-0814 alone flat/press mean% | September pooled flat/press mean% | block mean% flat/press | impact .25/1.0 % | 1.0 SOL flat/press mean% | flags |",
          "|" + "---|" * 20]
@@ -1087,7 +1147,7 @@ def table_md(res: dict, blocks: list[str], meta: dict) -> str:
         pb = " ".join(f"B{i + 1}:{_f(a['per_block'][bn]['mean_pct'])}/{_f(b['per_block'][bn]['mean_pct'])}" for i, bn in enumerate(blocks))
         big = r["stake_1_0_total_rent0_1p9"]
         im = r["impact"]["1.9"]
-        flags = ("KILL " if r["kill"] else "screen-survivor (worst-in-slot not measured: PROVISIONAL) ") + ("THIN " if r["thin"] else "")
+        flags = ("KILL " if r["kill"] else r["registration"] + " ") + ("THIN " if r["thin"] else "") + ("EVENT " if r["event_triggered"] else "GRID ")
         L.append(f"| {nm} | {r['attempts']} | {r['legs']['1.9|total']['fills']} | {a['days']}({a['pos_days']}) | {_f(a['mean_pct'])} | {_f(a['ci_lo_pct'])} | {_f(a['total'], 3)} | {_f(a['ex_top3'], 3)} | "
                  f"{_f(a['ex_best_day'], 3)} | {_f(b['mean_pct'])} | {_f(b['ci_lo_pct'])} | {_f(b['total'], 3)} | {_f(b['ex_top3'], 3)} | {_f(b['ex_best_day'], 3)} | "
                  f"{gm(r, 'explore-0814', 'total', 'flat')}/{gm(r, 'explore-0814', 'total', 'press')} | {gm(r, 'september', 'total', 'flat')}/{gm(r, 'september', 'total', 'press')} | {pb} | "
@@ -1118,10 +1178,15 @@ def table_md(res: dict, blocks: list[str], meta: dict) -> str:
 def counts_md(res: dict, meta: dict) -> str:
     days = sorted({d for r in res.values() for d in r["per_day"]})
     L = [f"# COUNTS ({meta['rule']}): count-only, no price read", "",
-         *(["**SUBSET: --hours " + ", ".join(meta["provenance"]["hours_subset_requested"]) + ". Not a full count; do not use it for the RULES step-2 count.**", ""] if meta.get("hours_subset") else []), "Triggers after the universe refusals; `after overlap` applies the time-only one-open-position rule (an upper bound of attempts).", "",
-         "| cell | triggers | after overlap | days>=1 | " + " | ".join(d[5:] for d in days) + " |", "|---|---|---|---|" + "---|" * len(days)]
+         *(["**SUBSET: --hours " + ", ".join(meta["provenance"]["hours_subset_requested"]) + ". Not a full count; do not use it for the RULES step-2 count.**", ""] if meta.get("hours_subset") else []),
+         "Triggers after the universe and pool-age refusals; `after overlap` applies the time-only one-open-position rule (an upper bound of attempts). RULES step 2 counts on explore-0814 ALONE "
+         "(a cell under 20 attempts/day there is dropped WITHOUT pricing; the author drops it, the kit only flags it, as does the C1-NF drop).", "",
+         "| cell | triggers | after overlap | days>=1 | explore-0814 att/day (upper bound) | step 2 | " + " | ".join(d[5:] for d in days) + " |", "|---|---|---|---|---|---|" + "---|" * len(days)]
     for nm, r in res.items():
-        L.append(f"| {nm} | {r['triggers']} | {r['attempts_upper_bound']} | {r['days_with_trigger']} | " + " | ".join(str(r["per_day_after_overlap"].get(d, 0)) for d in days) + " |")
+        e = r["explore_0814"]
+        per = "na" if e["per_day_upper_bound"] is None else f"{e['per_day_upper_bound']:.1f}"
+        flag = "na" if e["below_step2_count"] is None else ("DROP (<20)" if e["below_step2_count"] else "ok")
+        L.append(f"| {nm} | {r['triggers']} | {r['attempts_upper_bound']} | {r['days_with_trigger']} | {per} | {flag} | " + " | ".join(str(r["per_day_after_overlap"].get(d, 0)) for d in days) + " |")
     return "\n".join(L) + "\n"
 
 
