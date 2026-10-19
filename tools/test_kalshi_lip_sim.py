@@ -515,3 +515,277 @@ def test_kill_checks_k1_k2():
     assert not ks["dead_as_frozen"] and not ks["checks"][0]["K2"]                          # < 60 units: no K2
     few_days = [dict(row(i, event=f"E{i}", day="d0", net=-50.0), resolved_us=base) for i in range(10)]
     assert sim.kill_checks(few_days, 25, [base + day])["checks"] == []                    # needs >= 3 unit-days
+
+
+# ======================================================================== synthetic stores (the "world")
+def dt(us):
+    return datetime.fromtimestamp(us / US, tz=timezone.utc)
+
+
+def at(iso):
+    return sim.iso_to_us(iso)
+
+
+def book_run(snaps_by_ticker):
+    """-> (orderbook rows, snaps rows) for kalshi_public tables from {ticker: [Snap]}."""
+    ob, sn = [], []
+    for tk, snaps in snaps_by_ticker.items():
+        s = kp.series_of(tk)
+        for x in snaps:
+            for is_yes, lv in ((True, x.yes), (False, x.no)):
+                for p, q in lv:
+                    ob.append({"ts": dt(x.ts), "ticker": tk, "series_ticker": s, "side": "yes" if is_yes else "no",
+                               "price": p / BP, "size": q})
+            sn.append({"ts": dt(x.ts), "ticker": tk, "series_ticker": s, "n_yes_levels": len(x.yes),
+                       "n_no_levels": len(x.no), "attempts": 1})
+    return ob, sn
+
+
+def ticks(t_start_iso, t_end_iso, step, book=None, jitter=0.0, **kw):
+    """Snapshots every ``step`` s from t_start to t_end (exclusive)."""
+    a, b = at(t_start_iso), at(t_end_iso)
+    book = dict(GOOD, **kw) if book is None else book
+    out, t = [], a
+    while t < b:
+        out.append(make_snap(t / US, **book))
+        t += sec(step)
+    return out
+
+
+class World:
+    def __init__(self, tmp):
+        self.tmp = Path(tmp)
+        self.kal = self.tmp / "kalshi"
+        self.kal.mkdir()
+        self.books = []
+
+    # -- recorders -------------------------------------------------------------------------------
+    def add_run(self, name, snaps_by_ticker, series, seal=True, complete=True, registry=True, extra_unsealed=None):
+        d = self.tmp / name
+        st = kp.Store(d, "orderbook-snap", {})
+        ob, sn = book_run(snaps_by_ticker)
+        paths = [p for p in st.write_partitioned("orderbook", ob, "p0", "ts") if p]
+        paths += [p for p in st.write_partitioned("orderbook_snaps", sn, "p0", "ts") if p]
+        allts = sorted({r["ts"] for r in sn})
+        runs = [{"run_id": "r1", "event": "run_start", "ts": allts[0] if allts else dt(FRZ), "series_json": json.dumps(series),
+                 "every_s": 60.0}]
+        if complete:
+            runs.append({"run_id": "r1", "event": "run_end", "ts": allts[-1] if allts else dt(FRZ), "complete": True,
+                         "stop_reason": "duration"})
+        paths += [st.write("orderbook_runs", runs, "p0r")]
+        n_open = len(snaps_by_ticker)
+        rounds = [{"run_id": "r1", "round": i, "ts": t, "n_open": n_open, "n_snaps_ok": n_open, "n_errors": 0,
+                   "every_eff": 60.0, "stretched": False} for i, t in enumerate(allts)]
+        if rounds:
+            paths.append(st.write("orderbook_rounds", rounds, "p0rd"))
+        if seal:
+            kp.seal_parts(d, "2026-10-19T12", paths)
+        if extra_unsealed:
+            ob2, sn2 = book_run(extra_unsealed)
+            st.write_partitioned("orderbook", ob2, "p1", "ts")
+            st.write_partitioned("orderbook_snaps", sn2, "p1", "ts")
+        if registry:
+            reg = self.tmp / f"obrec-REGISTRY-{name[len('obrec-'):]}.md"
+            reg.write_text("registry: " + ",".join(series) + "\n")
+            os.utime(reg, (1_600_000_000, 1_600_000_000))
+        self.books.append(str(d))
+        return d
+
+    # -- LIP programs ----------------------------------------------------------------------------
+    def add_polls(self, polls):
+        """polls: [(poll_iso, ok, [program api dicts])]"""
+        d = self.tmp / "lipsnap-1019"
+        st = kp.Store(d, "incentive-snap", {})
+        rows, prog, runs = [], [], []
+        paths = []
+        for i, (piso, ok, progs) in enumerate(polls, 1):
+            pt = dt(at(piso))
+            rows.append({"run_id": "r1", "poll": i, "poll_ts": pt, "ts_end": pt, "ok": ok,
+                         "end_reason": "cursor_end" if ok else "http_error", "n_pages": 1,
+                         "n_rows": len(progs) if ok else 0, "n_distinct_ids": len(progs)})
+            if ok:
+                for r in progs:
+                    prog.append(kp.incentive_row(r, "r1", i, pt, pt, 1, pt))
+        runs = [{"run_id": "r1", "event": "run_start", "ts": dt(FRZ), "every_s": 900.0},
+                {"run_id": "r1", "event": "run_end", "ts": dt(FRZ), "complete": True, "stop_reason": "duration"}]
+        paths.append(st.write("incentive_polls", rows, "p0"))
+        paths.append(st.write("incentive_runs", runs, "p0r"))
+        for date in sorted({r["poll_ts"].strftime("%Y-%m-%d") for r in prog}):
+            paths.append(st.write("incentive_programs", [r for r in prog if r["poll_ts"].strftime("%Y-%m-%d") == date],
+                                  "p0" + date, date=date))
+        kp.seal_parts(d, "2026-10-19T12", paths)
+        self.lip = str(d)
+        return d
+
+    # -- metadata, trades, results, series ------------------------------------------------------
+    def add_meta(self, name_stamp, markets):
+        d = self.tmp / "meta"
+        d.mkdir(exist_ok=True)
+        (d / f"markets-{name_stamp}.json").write_text(json.dumps({"markets": markets, "cursor": ""}))
+        self.meta = str(d)
+
+    def add_trades(self, rows, done, since="2026-10-19T03:33:16Z", until=None, name="trades"):
+        st = kp.Store(self.kal, "trades", {"series": name, "since": since, "until": until, "market": None})
+        rr = [{"trade_id": r[0], "ticker": r[1], "series_ticker": kp.series_of(r[1]), "created_time": dt(at(r[2])),
+               "yes_price": r[3], "no_price": round(1 - r[3], 6), "count": r[4], "taker_side": r[5],
+               "is_block_trade": False, "source": "live"} for r in rows]
+        if rr:
+            st.write_partitioned("trades", rr, "t-" + name, "created_time")
+        for t in done:
+            st.mark_done(t)
+
+    def add_markets(self, rows):
+        st = kp.Store(self.kal, "markets", {"series": "x"})
+        rr = [{"ticker": t, "event_ticker": ev, "series_ticker": kp.series_of(t), "status": "finalized", "result": res,
+               "settlement_value_dollars": val, "settlement_ts": dt(at(sts)), "fetched_at": dt(at(fetched))}
+              for (t, ev, res, val, sts, fetched) in rows]
+        st.write_partitioned("markets", rr, "m0", "settlement_ts")
+
+    def add_series(self, rows):
+        st = kp.Store(self.kal, "series", {})
+        rr = [{"ticker": t, "frequency": f, "fee_type": ft, "fee_multiplier": 1.0, "fetched_at": dt(FRZ)} for t, f, ft in rows]
+        st.write("series", rr, "s0", date="2026-10-19")
+
+    def cfg(self, **kw):
+        base = dict(books=self.books, programs=self.lip, meta=getattr(self, "meta", None), trades=str(self.kal),
+                    markets=str(self.kal), series=str(self.kal), read_us=at("2026-10-24T00:00:00Z"),
+                    units_evidence=self.evidence(), size=25.0)
+        base.update(kw)
+        return sim.Cfg(**base)
+
+    def evidence(self):
+        p = self.tmp / "evidence.txt"
+        p.write_text("period_reward centi-cents https://docs.kalshi.com/api-reference/incentive-programs/get-incentives.md "
+                     "fetched 2026-10-19 VERIFIED\n")
+        return str(p)
+
+
+def prog(pid, ticker, start, end, reward=1_000_000, target="1000.00", bps=5000, typ="liquidity"):
+    return {"id": pid, "market_ticker": ticker, "market_id": "m-" + pid, "incentive_type": typ,
+            "start_date": start, "end_date": end, "period_reward": reward, "target_size_fp": target,
+            "discount_factor_bps": bps, "paid_out": False}
+
+
+GAS_A, GAS_B = "KXAAAGASDNY-26OCT19-T3.5", "KXAAAGASDFL-26OCT19-T3.5"
+S0, E_ = "2026-10-19T12:00:00Z", "2026-10-19T14:00:00Z"
+
+
+def basic_world(tmp, extra_prog=(), extra_snaps=None, meta=True):
+    w = World(tmp)
+    snaps = {GAS_A: ticks("2026-10-19T12:05:30Z", "2026-10-19T15:30:00Z", 60),
+             GAS_B: ticks("2026-10-19T12:05:30Z", "2026-10-19T15:30:00Z", 60)}
+    snaps.update(extra_snaps or {})
+    w.add_run("obrec-1019c", snaps, sorted({kp.series_of(t) for t in snaps}))
+    progs = [prog("pA", GAS_A, S0, E_), prog("pB", GAS_B, S0, E_)] + list(extra_prog)
+    w.add_polls([("2026-10-19T03:20:00Z", True, []), ("2026-10-19T12:05:00Z", True, progs),
+                 ("2026-10-19T12:20:00Z", True, progs), ("2026-10-19T14:05:00Z", True, [])])
+    w.add_series([("KXAAAGASDNY", "daily", "quadratic"), ("KXAAAGASDFL", "daily", "quadratic_with_maker_fees"),
+                  ("KXRT", "custom", "quadratic"), ("KXEOWEEK", "weekly", "quadratic")])
+    rows = [("tA1", GAS_A, "2026-10-19T12:10:00Z", 0.48, 25, "no"), ("tA2", GAS_A, "2026-10-19T12:30:00Z", 0.50, 10, "yes"),
+            ("tB1", GAS_B, "2026-10-19T12:11:00Z", 0.48, 7, "no")]
+    w.add_trades(rows, [GAS_A, GAS_B] + [p["market_ticker"] for p in extra_prog])
+    w.add_markets([(GAS_A, "KXAAAGASDNY-26OCT19", "yes", 1.0, "2026-10-19T15:00:00Z", "2026-10-20T04:41:00Z"),
+                   (GAS_B, "KXAAAGASDFL-26OCT19", "no", 0.0, "2026-10-19T15:00:00Z", "2026-10-20T04:41:00Z")])
+    if meta:
+        w.add_meta("20261019T100000Z", [{"ticker": GAS_A, "event_ticker": "KXAAAGASDNY-26OCT19",
+                                          "close_time": "2026-10-19T14:00:00Z", "expected_expiration_time": "2026-10-19T14:30:00Z"}])
+    return w
+
+
+# ========================================================================================= integration
+def test_end_to_end_units_cells_outputs(tmp_path):
+    w = basic_world(tmp_path)
+    cfg = w.cfg(out=str(tmp_path / "out"))
+    g = sim.run_sim(cfg)
+    out = Path(cfg.out)
+    for f in ("units.parquet", "fills.parquet", "days.parquet", "gate.json", "table.txt"):
+        assert (out / f).exists(), f
+    units = pq.read_table(out / "units.parquet").to_pylist()
+    assert {u["cell"] for u in units} == {"U0", "U15", "BQ"} and {u["unit_id"] for u in units} == {"pA", "pB"}
+    a0 = next(u for u in units if u["unit_id"] == "pA" and u["cell"] == "U0")
+    assert a0["status"] == "opened" and a0["resolution"] == "settled" and a0["source"] == "obrec-1019c"
+    assert a0["fills_YES"] == 25.0 and a0["fills_NO"] == 10.0 and a0["n_fills"] == 2      # tA1 hits YES, tA2 hits NO
+    assert a0["settle_pnl"] == pytest.approx(25 * (1.0 - 0.48) + 10 * (0.0 - 0.50))        # result yes
+    assert a0["reward_central"] > 0 and a0["fees_cent"] == 0.0 and a0["unit_day"] == "2026-10-19"
+    b0 = next(u for u in units if u["unit_id"] == "pB" and u["cell"] == "U0")
+    assert b0["fees_cent"] == 0.04 and b0["settle_pnl"] == pytest.approx(7 * (0.0 - 0.48))   # maker fee ceil to cent
+    fills = pq.read_table(out / "fills.parquet").to_pylist()
+    assert any(f["trade_id"] == "tA1" and f["price"] == 0.48 and f["cell"] == "U0" for f in fills)
+    gate = json.loads((out / "gate.json").read_text())
+    assert gate["freeze"] == sim.FREEZE_ISO and gate["declare_sha256"].startswith("977fa41c")
+    assert gate["conditions_sha256"].startswith("35ee7e65") and set(gate["cells"]) == {"U0", "U15", "BQ"}
+    assert gate["verdict"] == "COUNTS_NOT_MET" and gate["deciding"] is True and gate["spec_notes"]
+    assert gate["cells"]["U0"]["gate"]["n_units"] == 2 and gate["exclusions"] == {}
+    assert "formula screen" in (out / "table.txt").read_text()
+
+
+def test_every_exclusion_reason_is_counted(tmp_path):
+    extra = [
+        prog("pLong", "KXAAAGASDNC-26OCT19-T3.5", "2026-10-19T12:00:00Z", "2026-10-26T12:00:00Z"),     # 168 h
+        prog("pLate", "KXAAAGASDOH-26OCT19-T3.5", "2026-10-19T10:00:00Z", "2026-10-19T14:00:00Z"),     # first poll 2h05 after start
+        prog("pWeek", "KXEOWEEK-26OCT19-T1", S0, E_),                                                  # weekly, X > E + 24 h
+        prog("pNoMeta", "KXEOWEEK-26OCT19-T2", S0, E_),                                                # weekly, no capture
+        prog("pRT", "KXRT-26OCT19-T3", S0, E_),                                                        # custom freq, X <= E + 24h : kept
+        prog("pNoTr", "KXAAAGASDGA-26OCT19-T3.5", S0, E_),                                             # trades not complete
+        prog("pTyp", "KXAAAGASDMI-26OCT19-T3.5", S0, E_, typ="volume"),
+        prog("pZero", "KXAAAGASDPA-26OCT19-T3.5", S0, E_, reward=0),
+        prog("pPre", "KXAAAGASDIL-26OCT19-T3.5", S0, E_),                                              # listed in a pre-freeze poll
+    ]
+    tickers = [p["market_ticker"] for p in extra]
+    snaps = {t: ticks("2026-10-19T12:05:30Z", "2026-10-19T13:30:00Z", 60) for t in tickers}
+    w = World(tmp_path)
+    allsnaps = dict(snaps)
+    allsnaps[GAS_A] = ticks("2026-10-19T12:05:30Z", "2026-10-19T15:30:00Z", 60)
+    w.add_run("obrec-1019c", allsnaps, sorted({kp.series_of(t) for t in allsnaps}))
+    progs = [prog("pA", GAS_A, S0, E_)] + extra
+    pre = [p for p in extra if p["id"] == "pPre"]
+    w.add_polls([("2026-10-19T03:20:00Z", True, pre), ("2026-10-19T12:05:00Z", True, progs), ("2026-10-19T14:05:00Z", True, [])])
+    w.add_series([("KXRT", "custom", "quadratic"), ("KXEOWEEK", "weekly", "quadratic")] + [(f"KXAAAGASD{s}", "daily", "quadratic") for s in
+                 ("NY", "FL", "IL", "PA", "OH", "GA", "MI", "NC")])
+    done = [t for t in tickers if "NoTr" not in t and "GASDGA" not in t] + [GAS_A]
+    w.add_trades([], done)
+    w.add_markets([])
+    w.add_meta("20261019T100000Z", [
+        {"ticker": "KXEOWEEK-26OCT19-T1", "event_ticker": "KXEOWEEK-26OCT19", "close_time": E_, "expected_expiration_time": "2026-10-22T14:00:00Z"},
+        {"ticker": "KXRT-26OCT19-T3", "event_ticker": "KXRT-26OCT19", "close_time": E_, "expected_expiration_time": "2026-10-19T14:30:00Z"}])
+    g = sim.run_sim(w.cfg(out=str(tmp_path / "out")))
+    ex = g["exclusions"]
+    assert ex["excl_long_period"] == 1 and ex["excl_late_poll"] == 1 and ex["excl_not_daily"] == 1
+    assert ex["excl_no_meta"] == 1 and ex["excl_no_trades"] == 1 and ex["excl_type"] == 1
+    assert ex["excl_program_fields"] == 1 and ex["excl_pre_freeze"] == 1
+    units = {u["unit_id"]: u for u in pq.read_table(tmp_path / "out" / "units.parquet").to_pylist()}
+    assert units["pRT"]["status"] == "opened" and units["pA"]["status"] == "opened" and units["pWeek"]["status"] == "excl_not_daily"
+    # excluded units with a quotable book count against the 10% rule (2 would-open of 4 here)
+    assert g["exclusion_share"]["excluded_would_open"] == 2 and g["verdict"] == "NOT_DECIDABLE"
+    assert any("excluded units" in r for r in g["nd_reasons"])
+
+
+def test_dry_run_prints_structure_only_and_never_opens_trades_or_results(tmp_path, monkeypatch):
+    w = basic_world(tmp_path)
+    monkeypatch.setattr(sim, "load_trades", lambda *a, **k: pytest.fail("dry run opened the trades parquet"))
+    monkeypatch.setattr(sim, "read_results", lambda *a, **k: pytest.fail("dry run opened settled results"))
+    monkeypatch.setattr(sim, "run_unit", lambda *a, **k: pytest.fail("dry run ran the pass"))
+    rep = sim.run_sim(w.cfg(dry_run=True, read_us=None))
+    assert rep["mode"] == "dry_run" and rep["structurally_opened_units"] == 2
+    assert rep["events"] == 2 and rep["unit_days"] == 1 and rep["snapshots_in_window"] > 100
+    assert rep["carry_forward_gaps"]["gaps_over_cap"] == 0 and rep["units_by_source"] == {"obrec-1019c": 2}
+    blob = json.dumps(rep).lower()
+    for word in ("reward", "net", "pnl", "p&l", "markout", "fill"):
+        assert word not in blob.replace("no reward, fill, markout or p&l computed", "").replace("trades parquet", "")
+
+
+def test_runs_are_byte_identical(tmp_path):
+    w = basic_world(tmp_path)
+    digests = []
+    for i in (1, 2):
+        sim.run_sim(w.cfg(out=str(tmp_path / f"o{i}")))
+        digests.append({f.name: hashlib.md5(f.read_bytes()).hexdigest() for f in sorted((tmp_path / f"o{i}").iterdir())})
+    assert digests[0] == digests[1] and "units.parquet" in digests[0] and "gate.json" in digests[0]
+
+
+def test_units_evidence_missing_makes_the_read_not_decidable_and_computes_nothing(tmp_path, monkeypatch):
+    w = basic_world(tmp_path)
+    monkeypatch.setattr(sim, "run_unit", lambda *a, **k: pytest.fail("computed without verified units"))
+    g = sim.run_sim(w.cfg(out=str(tmp_path / "o"), units_evidence=None))
+    assert g["verdict"] == "NOT_DECIDABLE" and "units" in g["nd_reasons"][0]
+    assert json.loads((tmp_path / "o" / "gate.json").read_text())["cells"] == {}
