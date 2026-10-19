@@ -17,6 +17,7 @@ RULE API (a small Python object)
   with slot <= its decision slot (the hour is handed over whole for speed; the kit cannot see look-ahead, `causal_probe` re-runs a rule on a truncated hour to catch it).
   AM.2 UNIVERSE (DEC-031 Amendment 2: the rent refund holds only for it): WSOL quote AND V in [17.5e9, 17.7e9] lamports at decision time. The rule enforces it (hour.in_universe /
   hour.v per row); the kit REFUSES every trigger outside it and counts it: refused_non_wsol, refused_v_out_of_band, refused_v_unknown, refused_unknown_pool.
+  Only WSOL-quoted PumpSwap rows are loaded (the others are counted as rows_non_wsol; a trigger on such a pool is refused as refused_non_wsol). Unknown V = NaN = outside.
   At most one open position per (cell, pool): a trigger before the previous exit decision + cell.cooldown_s is dropped and counted (overlap_dropped).
 
 PRICING (the engine's own functions, imported, never copied: tools.arena_stack.mint_states / round_trip / book_fail_legs via tools.arena_paper)

@@ -623,3 +623,35 @@ def test_cli_end_to_end_on_a_synthetic_block_writes_the_files(tape, tmp_path, mo
         doc = json.loads((out / outs[0]).read_text())
         assert doc["meta"]["hours"] == 3 and doc["meta"]["rows_pumpswap_per_s"] > 0 and doc["meta"]["blocks"] == ["explore-0814"]
     assert doc["cells"]["trivial"]["attempts"] > 0
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ 7. loaders
+def test_worker_processes_load_the_same_hours_in_order(tape):
+    rows, files = tape
+    vm = S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])
+    a = list(S.iter_hours(files, "synthetic", "backfill", vm, workers=1))
+    b = list(S.iter_hours(files, "synthetic", "backfill", vm, workers=2))
+    assert [h.hour for h in a] == [h.hour for h in b] == ["2026-08-20T00", "2026-08-20T01", "2026-08-20T02"]
+    for x, y in zip(a, b):
+        assert (x.sl == y.sl).all() and (x.v == y.v).all() and (x.ptr == y.ptr).all() and x.slots_per_s == y.slots_per_s == 2.5 and x.nonwsol_pools == y.nonwsol_pools
+    assert a[0].n_nonwsol > 0 and POOLS["N"] in a[0].nonwsol_pools and POOLS["N"] not in a[0].pool_index()  # non-WSOL pools are noted and not loaded
+    ok = a[0].pools[a[0].in_universe].tolist()
+    assert POOLS["A"] in ok and POOLS["C"] not in ok  # C's V (25e9) is outside the Am.2 band
+
+
+def test_arena_tape_format_loader_reads_v_from_the_row_and_orders_by_receive_time():
+    def line(**kw):
+        base = {"v": 1, "type": "trade", "prog": "pumpswap", "venue": "pumpswap", "slot": 500, "t_recv_ms": 1_000, "signature": "s", "event_index": 0, "pool": POOLS["A"], "mint": MINT["A"],
+                "trader": "w", "side": "buy", "sol_lamports": 10**8, "token_raw": 10**11, "quote_reserve": 3 * 10**10, "base_reserve": 10**14, "virtual_quote_reserves": V,
+                "quote_mint": S.WSOL, "event_ts": 1}
+        return json.dumps({**base, **kw}).encode()
+
+    lines = [line(t_recv_ms=1_900, signature="late"), line(t_recv_ms=1_100, signature="early"), line(type="gap"), line(prog="pumpfun", venue="pump_bonding", pool=None),
+             line(pool=POOLS["B"], quote_mint="Other" + "1" * 39), line(pool=POOLS["C"], virtual_quote_reserves=None), line(pool=POOLS["D"], virtual_quote_reserves=V_OUT)]
+    hr = S.build_hour(lines, block="arena-tape", T=H0, idx=0, fmt="arena", vmap=None)
+    assert hr.n == 4 and hr.n_nonwsol == 1 and hr.n_pumpswap == 5
+    a = hr.rows(hr.pool_index()[POOLS["A"]])
+    assert hr.tx[a].tolist() == [1_100, 1_900]  # receive order inside the slot
+    ok = dict(zip(hr.pools.tolist(), hr.in_universe.tolist()))
+    assert ok == {POOLS["A"]: True, POOLS["C"]: False, POOLS["D"]: False}
+    assert math.isnan(hr.v[hr.rows(hr.pool_index()[POOLS["C"]])][0])
