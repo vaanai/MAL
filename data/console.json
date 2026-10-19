@@ -1,8 +1,122 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-19T19:23:43Z",
+ "updated_utc": "2026-10-19T21:53:19Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "pr758-merged-1019",
+   "kind": "other",
+   "title": "PR #758 merged (489fa7e): arena_screen: report-only EXP-028 screen p (trade-level + date-cluster, B parameter, 0.25 SOL only); counts-only explore-0814 precount",
+   "detail": "PR #758 merged 2026-10-19T21:32:52Z (489fa7e): arena_screen: report-only EXP-028 screen p (trade-level + date-cluster, B parameter, 0.25 SOL only); counts-only explore-0814 precount. A tool merge; the precount is counts only. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T21:32:52Z"
+  },
+  {
+   "id": "hv4-stub-shakedown-1019",
+   "kind": "job",
+   "title": "Haiku v4: 24 h stub shakedown started 21:31:27Z (MiScusi #1249, then #1250 to 2026-10-20T21:32Z); target registration T0 2026-10-22T00Z",
+   "detail": "The 24 h stub shakedown for Haiku v4 started at 2026-10-19T21:31:27Z as MiScusi job #1249, followed by job #1250 to 2026-10-20T21:32Z. It follows the out-of-memory kill of the earlier stub (job #1236, see event hv4-stub-oom-1019). The target registration T0 is 2026-10-22T00Z (a target, not fixed). A shakedown is not a result: no HV4 result and no trader P&L is claimed. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T21:31:27Z"
+  },
+  {
+   "id": "pr755-merged-1019",
+   "kind": "other",
+   "title": "PR #755 merged (d1dbcd6): hv4: wire ArenaEngine.trim_history() into Runner._housekeep, append-only trim counters, runner-level trim ON/OFF md5 replay (stacks on #745; merge after it)",
+   "detail": "PR #755 merged 2026-10-19T21:31:03Z (d1dbcd6): hv4: wire ArenaEngine.trim_history() into Runner._housekeep, append-only trim counters, runner-level trim ON/OFF md5 replay (stacks on #745; merge after it). Merged after #745. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T21:31:03Z"
+  },
+  {
+   "id": "pr745-merged-1019",
+   "kind": "other",
+   "title": "PR #745 merged (9b36e91): arena_paper: trim non-position pool history via trim_history() (pricing-neutral; ledger byte-equal, 0 differing prints on 9 h tape replay)",
+   "detail": "PR #745 merged 2026-10-19T21:30:11Z (9b36e91): arena_paper: trim non-position pool history via trim_history() (pricing-neutral; ledger byte-equal, 0 differing prints on 9 h tape replay). The pricing-neutral and byte-equal statements are the PR title's. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T21:30:11Z"
+  },
+  {
+   "id": "wave2-cohort-closed-1019",
+   "kind": "job",
+   "title": "hunt23 wave 2 (death veto, post-crash quiet, sell-into-surge): cohort closed and notebooked; pricing started at about 21:27Z; not bank-eligible",
+   "detail": "The wave-2 cohort (death veto, post-crash quiet, sell-into-surge) is closed and notebooked (n_04A8VteyzvL9rw). Pricing started at about 21:27Z (approximate). The cohort is not bank-eligible (DEC-014 lineage). No wave-2 result is claimed or reported here. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T21:27:00Z",
+   "approx": true
+  },
+  {
+   "id": "pr757-merged-1019",
+   "kind": "other",
+   "title": "PR #757 merged (576aaac): arena_h5_read: the H5 deciding-cell read (1.9 s at 0.30 SOL, four sub-cells, refit at the read, 5% rule, Am.3 block), behind arena_h5_legs' seal; no profit claim",
+   "detail": "PR #757 merged 2026-10-19T21:18:55Z (576aaac): arena_h5_read: the H5 deciding-cell read (1.9 s at 0.30 SOL, four sub-cells, refit at the read, 5% rule, Am.3 block), behind arena_h5_legs' seal; no profit claim. A tool merge behind the seal of arena_h5_legs; this event reports no H5 read figure. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T21:18:55Z"
+  },
+  {
+   "id": "pr754-merged-1019",
+   "kind": "decision",
+   "title": "PR #754 merged (549e40f): EXP-028 Part 1: bank pre-registration on fresh-0828 for the first lineage-free future cohort (records only)",
+   "detail": "PR #754 merged 2026-10-19T20:56:52Z (549e40f): EXP-028 Part 1: bank pre-registration on fresh-0828 for the first lineage-free future cohort (records only). Records only; this event reports no EXP-028 outcome. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T20:56:52Z"
+  },
+  {
+   "id": "pr756-merged-1019",
+   "kind": "other",
+   "title": "PR #756 merged (258ba4f): arena_screen: worst-in-slot + no-guard-rescue, lower leg kills event cells (R7; #747 functions imported; no profit claim)",
+   "detail": "PR #756 merged 2026-10-19T20:54:37Z (258ba4f): arena_screen: worst-in-slot + no-guard-rescue, lower leg kills event cells (R7; #747 functions imported; no profit claim). A tool merge. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T20:54:37Z"
+  },
+  {
+   "id": "pr753-merged-1019",
+   "kind": "other",
+   "title": "PR #753 merged (ecde742): arena_h5_legs: H5 rent-0 leg and worst-in-slot from the shadow strip, behind the read-instant seal (replaces #750; on #747 as merged)",
+   "detail": "PR #753 merged 2026-10-19T20:40:43Z (ecde742): arena_h5_legs: H5 rent-0 leg and worst-in-slot from the shadow strip, behind the read-instant seal (replaces #750; on #747 as merged). A tool merge behind the read-instant seal; this event reports no H5 figure. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T20:40:43Z"
+  },
+  {
+   "id": "hunt23-wave1-killed-1019",
+   "kind": "result",
+   "title": "hunt23 wave 1 (A slow, B flow, C wallets): 33 priced cells, all killed",
+   "detail": "Agent A (slow long-hold): all 12 cells killed, flat/total mean per trade -2.52% (D2) to -24.54% (A3). Agent B (order flow): all 12 cells killed, -3.65% (A1) to -14.89% (E3). Agent C (wallets and creators): 9 priced cells all killed, -4.10% (SM1-xs) to -11.49% (CR-hold-h60); its other two declared cells (HC-h60, SM2-h30) were dropped by counts before pricing and are untested, not dead. Rules: 1.9 s, 0.25 SOL, rent 0, four sub-cells {flat, pressure} x {sc, total}. In-sample exploration (A and B on four blocks, C on explore-0814), best of the declared cells; not gate evidence. Reports: /data/mal/hunt-1008/push-1016/hunt23/a-slow/REPORT.md, /data/mal/hunt-1008/push-1016/hunt23/b-flow/REPORT.md, /data/mal/hunt-1008/push-1016/hunt23/c-wallets/REPORT.md. atUtc is the latest of the three REPORT.md file mtimes (a-slow 20:25:17Z; b-flow 20:08:41Z, c-wallets 20:13:39Z). No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T20:25:17Z"
+  },
+  {
+   "id": "pr752-merged-1019",
+   "kind": "other",
+   "title": "PR #752 merged (9041cfb): arena_screen: reusable in-sample screen pricer (hunt23 Amendment 1 applied; no profit claim)",
+   "detail": "PR #752 merged 2026-10-19T20:23:51Z (9041cfb): arena_screen: reusable in-sample screen pricer (hunt23 Amendment 1 applied; no profit claim). A tool merge. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T20:23:51Z"
+  },
+  {
+   "id": "speed-audit-no-go-1019",
+   "kind": "result",
+   "title": "Speed audit (hunt23): NO-GO on a paid speed track; saving 3.3 s moves the mean by -0.12 to +0.015 pp on the three screen-1019 cells",
+   "detail": "Exploration data only (explore-0814, 336 h), one block, 0.25 SOL, strand rule total. The grid is feed delay 2/4/7 slots x latency 0.5/0.9/1.3/1.9 s on four cells. The slowest point (D 7, 1.9 s) to the fastest (D 2, 0.5 s) saves 3.315 modelled seconds at the August 0.368 s per slot. Paired change in the flat-model mean per trade, fastest minus slowest, rent 0: I3-H6-TP100 -0.1175 pp, I3-H2-TP100 -0.0006 pp, I2-b5-r0.5 +0.0145 pp (pressure model -0.0979, -0.0003, +0.0089). The levels stay negative (flat means -0.81%, -2.18%, -2.11% at the fastest point). The fourth cell, a generic E1 entry (n 975, mean about -20%), moves -1.2017 pp flat and -0.2369 pp pressure: faster is lower, outside the quoted range. No grid point of any cell has mean, ex-top-3 and ex-best-day all above zero under both fail models. NO-GO is the manager's call on that evidence. Source /data/mal/hunt-1008/push-1016/hunt23/speed/run-s1/results_speed.json (no REPORT.md exists there); atUtc is the file mtime. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T20:19:24Z"
+  },
+  {
+   "id": "pr749-merged-1019",
+   "kind": "other",
+   "title": "PR #749 merged (f96dbb0): hv4: DEC-031 Am.2 coverage (rent=0 explicit stack, WSOL + V-band universe with v_missing code); fixtures only",
+   "detail": "PR #749 merged 2026-10-19T20:06:39Z (f96dbb0): hv4: DEC-031 Am.2 coverage (rent=0 explicit stack, WSOL + V-band universe with v_missing code); fixtures only. Fixtures only. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T20:06:39Z"
+  },
+  {
+   "id": "pr751-merged-1019",
+   "kind": "decision",
+   "title": "PR #751 merged (3eadf19): DEC-031 Amendment 3: rolling registration, automatic confirmation, multiplicity block (QP throughput ruling 2026-10-19), records only",
+   "detail": "PR #751 merged 2026-10-19T20:06:29Z (3eadf19): DEC-031 Amendment 3: rolling registration, automatic confirmation, multiplicity block (QP throughput ruling 2026-10-19), records only. Records only. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T20:06:29Z"
+  },
+  {
+   "id": "owner-kalshi-pause-meme-1019",
+   "kind": "decision",
+   "title": "Owner decision (about 19:30Z, approximate): Kalshi paused about two weeks; all effort on meme coins (hunt23)",
+   "detail": "At about 19:30Z (approximate; the instant is not exact) the owner decided to pause the Kalshi lines for about two weeks and put all effort on meme coins, starting with the hunt23 screens. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T19:30:00Z",
+   "approx": true
+  },
+  {
+   "id": "pr744-merged-1019",
+   "kind": "other",
+   "title": "PR #744 merged (d288176): hv4: memory-growth replay harness and QuoteHistory bound (engine history bound withdrawn pending the arena_paper trim; decisions unchanged, md5 replay green)",
+   "detail": "PR #744 merged 2026-10-19T19:23:01Z (d288176): hv4: memory-growth replay harness and QuoteHistory bound (engine history bound withdrawn pending the arena_paper trim; decisions unchanged, md5 replay green). Per the PR title the engine history bound was withdrawn pending the arena_paper trim and decisions are unchanged. The engine trim followed as #745 and #755 at 21:30:11Z and 21:31:03Z. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T19:23:01Z"
+  },
   {
    "id": "research0-disk-1019",
    "kind": "other",
