@@ -1581,7 +1581,7 @@ class Screen:
         r["registration"] = registration_status(cell.event_triggered or ee, r["kill"], wis["measured"])
         if ee and not r["kill"] and not r["event_exit"]["probe_ok"]:  # never labelled a survivor before its probes have passed (QP on #760)
             r["registration"] = f"PROVISIONAL-BLOCKED (event exit: exit-causality probe not satisfied; needs >= {EXIT_PROBE_MIN} event exits probed per block with 0 failures)"
-        if self.screen_p:  # REPORT ONLY, after the verdict and the registration status are final: a new key, nothing reads it (an event-exit cell gets it like any cell)
+        if self.screen_p:  # REPORT ONLY, after the verdict and the registration status are final: a new key, nothing reads it
             r["screen_p"] = screen_p_cell(st, self.cfg[RENT_DECIDING], stats, B=self.screen_p_B)
         return r
 
