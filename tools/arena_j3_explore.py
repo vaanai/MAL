@@ -395,6 +395,16 @@ def _sha256_file(p: Path) -> str:
     return h.hexdigest()
 
 
+HOST_ZERO_COUNTERS = ("blocked_universe", "order_before_clock", "order_bad_type")  # a non-zero count means the rule and the host disagree about the universe, the clock or the order type
+
+
+def integrity_clean(i: Mapping[str, Any]) -> bool:
+    """True when nothing in the run was damaged or disagreed: no unreadable or bad row, no hook or pricing error, no ledger incident, no halted book, and none of the host's
+    blocked_universe / order_before_clock / order_bad_type counters (the rule never asks for any of them)."""
+    return not (i["zst_errors"] or i["bad_lines"] or i["apply_errors"] or i["hook_errors"] or i["price_errors"] or i["ledger_incidents"] or i["halted_books"]
+                or any(i[k] for k in HOST_ZERO_COUNTERS))
+
+
 def run_exploration(files: Sequence[str | Path], scratch: str | Path, *, sha: str | None = None, min_free_pct: float = MIN_FREE_PCT_DEFAULT, hash_inputs: bool = True) -> dict[str, Any]:
     """Validate, replay, report. Returns the report dict (also what REPORT.json holds)."""
     hours = validate_inputs(files)
@@ -421,9 +431,9 @@ def run_exploration(files: Sequence[str | Path], scratch: str | Path, *, sha: st
     incidents = sum(len(led.read_incidents(r.bot_id)[0]) for r in rules)
     integrity = {"zst_errors": int(state.counters["zst_errors"]), "bad_lines": int(state.counters["bad_lines"]), "apply_errors": int(state.counters["apply_errors"]),
                  "hook_errors": list(host.hook_errors[:20]), "price_errors": int(engine.counters.get("price_errors", 0)), "ledger_incidents": incidents,
-                 "halted_books": sorted(engine.halted), "engine_last_errors": dict(sorted(engine.last_error.items())[:5])}
-    integrity["clean"] = not (integrity["zst_errors"] or integrity["bad_lines"] or integrity["apply_errors"] or integrity["hook_errors"] or integrity["price_errors"]
-                              or integrity["ledger_incidents"] or integrity["halted_books"])
+                 "halted_books": sorted(engine.halted), "engine_last_errors": dict(sorted(engine.last_error.items())[:5]),
+                 **{k: int(host.counters.get(k, 0)) for k in HOST_ZERO_COUNTERS}}
+    integrity["clean"] = integrity_clean(integrity)
     cells = {r.bot_id: cell_report(r, host, rows[r.bot_id]) for r in rules}
     alive = [b for b, c in cells.items() if not c["kill"]["killed"]]
     scrub = ("engine_id", "pid", "frozen_sha", "code_head", "code_dirty")  # the digest is a function of the tape and the rules, not of the checkout that ran them

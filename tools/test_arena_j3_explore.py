@@ -362,3 +362,19 @@ def test_a_symlinked_hour_path_is_refused(tmp_path, monkeypatch):
     assert E.validate_inputs([ok])[0].path == ok
     with pytest.raises(E.ExploreRefused, match="only"):
         E.validate_inputs([stray])
+
+
+# -------------------------------------------------------------------------------------------------------------------------- N3: host counters in the integrity verdict
+def test_integrity_is_not_clean_when_the_host_blocked_or_dropped_an_order():
+    base = {"zst_errors": 0, "bad_lines": 0, "apply_errors": 0, "hook_errors": [], "price_errors": 0, "ledger_incidents": 0, "halted_books": [], "blocked_universe": 0,
+            "order_before_clock": 0, "order_bad_type": 0}
+    assert E.integrity_clean(base) is True
+    for key, bad in (("blocked_universe", 1), ("order_before_clock", 1), ("order_bad_type", 2), ("zst_errors", 1), ("bad_lines", 1), ("apply_errors", 1), ("hook_errors", ["x"]),
+                     ("price_errors", 1), ("ledger_incidents", 1), ("halted_books", ["j3-k1-h30"])):
+        assert E.integrity_clean({**base, key: bad}) is False, key
+    assert E.HOST_ZERO_COUNTERS == ("blocked_universe", "order_before_clock", "order_bad_type")
+
+
+def test_end_to_end_integrity_reports_the_host_counters_at_zero(runs):
+    i = runs["rep"]["integrity"]
+    assert i["clean"] is True and (i["blocked_universe"], i["order_before_clock"], i["order_bad_type"]) == (0, 0, 0)
