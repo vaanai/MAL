@@ -32,6 +32,7 @@ from tools.test_arena_h5_legs import BASE_PRE, SELL_RAW, START, pool_records, r
 
 V1, V2 = "h5v1-boostfloor-a1", "h5v2-boostclock-a1"
 BT0 = int(datetime(2026, 3, 2, tzinfo=timezone.utc).timestamp())
+FLOOR = 1 / 10_001  # the smallest p of the pinned estimator (EXP-028 section 3 item 3): (1 + 0) / (1 + B)
 WALL = 1_790_000_000_000  # the patched wall clock: after every fixture instant
 LAM = 300_000_000
 SPOT = 35.0e9 / (BASE_PRE + SELL_RAW)
@@ -157,7 +158,20 @@ class DecidingCell(Base):
         self.assertEqual(res["refit"]["refit_file"], "absent")
         self.assertEqual((res["counts"]["n_attempts"], res["counts"]["n_counted"], res["counts"]["n_excluded"]), (120, 120, 0))
         self.assertFalse(res["not_proposed_for_canary"])
-        self.assertEqual(res["p"], 0.0)  # every bootstrap mean is positive
+        self.assertEqual(res["p"], FLOOR)  # every bootstrap mean is positive: the pinned estimator cannot go below 1 / 10,001
+        for k, v in res["subcells"].items():
+            d = v["p_detail"]
+            self.assertEqual((d["tail_pct"], d["tail_null"], d["B"], d["seed"], d["n"]), (0, 0, 10_000, 1, 120), k)
+            self.assertEqual((d["p_pct"], d["p_null"], d["p"]), (FLOOR, FLOOR, FLOOR))
+            self.assertEqual(d["p5_first_1000_draws"], v["ci90_lo_sol"])  # the first 1,000 draws are boot_lo's
+            self.assertAlmostEqual(d["xbar"], v["mean_sol"], places=15)
+        self.assertEqual(res["not_measured_here"], list(R.CANARY_NOT_MEASURED))
+        rc, out, _ = self.cli(*self.args(b["ri"], V1))
+        self.assertIn("STATUS PASS (screen; not a promotion)", out)
+        self.assertIn("worst-in-slot: not measured by this tool", out)
+        self.assertIn("mint fetch: not run", out)
+        self.assertIn("p detail (unrounded; p_pct decides): n 120 xbar", out)
+        self.assertIn("tail_pct 0 tail_null 0 p_pct 9.999000099990002e-05 p_null 9.999000099990002e-05", out)
 
     def test_fail_cell_misses_are_named(self):
         b = self.make_book(kind=lambda d, i: "flat")
@@ -171,6 +185,8 @@ class DecidingCell(Base):
             self.assertIn("ex-top-3", joined)
             self.assertIn("is not a majority", joined)
         self.assertEqual(res["p"], 1.0)
+        self.assertNotIn("not_measured_here", res)
+        self.assertNotIn("(screen; not a promotion)", self.cli(*self.args(b["ri"], V1))[1])
 
     def test_one_failing_sub_cell_fails_the_book(self):
         """The four sub-cells are a conjunction: a book whose flat cells pass and whose pressure cells fail is a FAIL (here by the refit intercept, next test)."""
@@ -179,7 +195,7 @@ class DecidingCell(Base):
         self.assertTrue(res["subcells"]["flat_1p9_total"]["passes"] and res["subcells"]["flat_1p9_sc"]["passes"])
         self.assertFalse(res["subcells"]["press_1p9_total"]["passes"] or res["subcells"]["press_1p9_sc"]["passes"])
         self.assertEqual(res["status"], "FAIL")
-        self.assertEqual((res["subcells"]["flat_1p9_total"]["p_le_0"], res["subcells"]["press_1p9_total"]["p_le_0"]), (0.0, 1.0))
+        self.assertEqual((res["subcells"]["flat_1p9_total"]["p"], res["subcells"]["press_1p9_total"]["p"]), (FLOOR, 1.0))
         self.assertEqual(res["p"], 1.0)  # the book's p is the largest of its four sub-cells' p
 
     def test_the_refit_intercept_decides_not_the_frozen_one(self):
@@ -456,9 +472,9 @@ class CliAndBlock(Base):
         m = rep["multiplicity"]
         self.assertEqual((m["N"], m["c"], m["cells_in_total"]), (10, 3, 123))
         self.assertEqual(m["books_read_with_verdicts"], {"hv4-CON-L": "FAIL", V1: "PASS", V2: "FAIL"})
-        self.assertIn("1 - 0.95^N = 40% at N = 10", m["plain_line"])
+        self.assertIn("1 - 0.95^N = 40.13% (rounded up) at N = 10", m["plain_line"])
         self.assertAlmostEqual(m["confirmation_threshold_0.05_over_c"], 0.05 / 3)
-        self.assertEqual(m["p_by_book"], {V1: 0.0, V2: 1.0})
+        self.assertEqual(m["p_by_book"], {V1: FLOOR, V2: 1.0})
         h = m["screen_read_line"]
         self.assertEqual((h[V1]["rank"], h[V1]["m"]), (1, 4))  # p 0.0 < 0.02 < 0.3 < 1.0
         self.assertAlmostEqual(h[V1]["holm_level"], 0.05 / 4)
@@ -468,7 +484,7 @@ class CliAndBlock(Base):
         self.assertIn("(e) siblings forward", m["taint_line"])
         self.assertIn("report-only, added after the clock, never deciding", m["rent_line"])
         self.assertIn("MULTIPLICITY BLOCK", out)
-        self.assertIn("1 - 0.95^N = 40% at N = 10", out)
+        self.assertIn("1 - 0.95^N = 40.13% (rounded up) at N = 10", out)
         self.assertIn("Holm rank 1 of 4", out)
         for name, sha in rep["books"][V1]["provenance"].items():
             if name.startswith("tools/"):
@@ -507,9 +523,42 @@ class CliAndBlock(Base):
         self.assertEqual(m["screen_read_line"], {})
         self.assertEqual(m["books_read_with_verdicts"], {V1: "NOT_DECIDABLE"})
 
-    def test_p_is_reproducible_and_the_stack_is_untouched(self):
-        self.assertEqual(R.boot_p_le_zero([0.1, -0.2, 0.3, 0.05, -0.01] * 20), R.boot_p_le_zero([0.1, -0.2, 0.3, 0.05, -0.01] * 20))
-        self.assertIsNone(R.boot_p_le_zero([]))
+    def test_p_is_the_pinned_estimator(self):
+        """EXP-028 section 3 item 3: p_pct = (1 + #{m_b <= 0}) / (1 + B), p_null = (1 + #{m_b - xbar >= xbar}) / (1 + B), p = max, a fresh default_rng(1), boot_lo's loop. Restated here by hand."""
+        x = np.array([1.0] * 97 + [-20.0] * 3)  # a left-skewed sample with a positive mean: the null tail is the heavier one
+        rng = np.random.default_rng(1)
+        m = np.array([x[rng.integers(0, len(x), len(x))].mean() for _ in range(10_000)])
+        xbar = x.mean()
+        k1, k2 = int((m <= 0).sum()), int((m - xbar >= xbar).sum())
+        d = R.boot_p(x)
+        self.assertEqual((d["tail_pct"], d["tail_null"]), (k1, k2))
+        self.assertEqual((d["p_pct"], d["p_null"]), ((1 + k1) / 10_001, (1 + k2) / 10_001))
+        self.assertGreater(d["p_null"], d["p_pct"])  # p_null decides here
+        self.assertEqual((d["p"], d["decides"]), (d["p_null"], "p_null"))
+        self.assertEqual((d["n"], d["xbar"], d["B"], d["seed"]), (100, float(xbar), 10_000, 1))
+        self.assertEqual(R.boot_p(x), R.boot_p(x))  # reproducible; a fresh rng per call
+        self.assertIsNone(R.boot_p([]))
+        self.assertEqual(R.boot_p(np.ones(50))["p"], FLOOR)
+
+    def test_the_first_1000_draws_are_boot_lo(self):
+        """The 5th percentile of the first 1,000 of the 10,000 draws is arena_stack.boot_lo (= cell_stats' ci90_lo_sol) on the same vector."""
+        from tools.arena_stack import boot_lo
+        rng = np.random.default_rng(7)
+        for x in (rng.normal(0.02, 0.1, 120), np.array([1.0] * 97 + [-20.0] * 3)):
+            self.assertEqual(R.boot_p(x)["p5_first_1000_draws"], boot_lo(x))
+            self.assertEqual(float(np.percentile(R.boot_means(x)[:1000], 5)), boot_lo(x))
+            lam = x * 1e9  # cell_stats takes lamports and divides by 1e9 itself: the tool passes boot_p that same quotient
+            self.assertEqual(arena_score.cell_stats(lam, ["2026-03-02"] * len(x))["ci90_lo_sol"], R.boot_p(lam / 1e9)["p5_first_1000_draws"])
+
+    def test_the_plain_line_rounds_up(self):
+        """N = 6: 1 - 0.95^6 = 26.4908...%, which a 0-decimal print would round down to 26%."""
+        b = self.make_book()
+        res = {V1: self.decide(b["ri"])}
+        m = R.multiplicity_block(res, n_books=6, c=1, cells_total=None, prior={}, other_p={})
+        self.assertIn("= 26.50% (rounded up) at N = 6", m["plain_line"])
+        self.assertGreaterEqual(float(m["plain_line"].split("= ")[1].split("%")[0]), 100 * (1 - 0.95 ** 6))
+
+    def test_the_stack_is_untouched(self):
         self.assertEqual((R.P_DRAWS, R.P_SEED), (10_000, 1))
         self.assertEqual((arena_score.MIN_N, arena_score.MIN_DAYS, arena_score.MAX_EXCLUDED_SHARE), (100, 5, 0.05))
         self.assertEqual(R.DECIDING_STAKE, "0.30")

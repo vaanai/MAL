@@ -36,8 +36,9 @@ deciding"), ex-best-day, derived_last counts, the bootstrap p, a parity line aga
 in tools/test_arena_h5_read.py), and the sha256 of this file, the modules it imports, read-instant.json and the refit file. The worst-in-slot legs come from tools/arena_h5_legs.py, not from here.
 
 MULTIPLICITY BLOCK (DEC-031 Amendment 3 item 3 and QP R8). N and c are PARAMETERS supplied by the manager (--n-books, --c, and --cells-total, --prior-read BOT=VERDICT, --other-p BOT=P): the
-tool counts nothing for them and refuses to run without --n-books and --c. It computes: the plain line 1 - 0.95^N, 0.05/c, p (one-sided, 10,000 draws, seed 1, trade level, the share of
-bootstrap means <= 0; per book the LARGEST of its four deciding sub-cells, which covers the larger of the two fail models under both strand rules) and the Holm rank of this run's p among the
+tool counts nothing for them and refuses to run without --n-books and --c. It computes: the plain line 1 - 0.95^N, 0.05/c, p as EXP-028 section 3 item 3 pins it (B = 10,000, a fresh
+default_rng(1) per sub-cell and the loop of tools.arena_stack.boot_lo; p_pct = (1 + #{m_b <= 0}) / (1 + B), p_null = (1 + #{m_b - xbar >= xbar}) / (1 + B), sub-cell p = max of the two, book p =
+the max over the four sub-cells, so it is never below 1 / 10,001; every per-sub-cell figure is reported unrounded) and the Holm rank of this run's p among the
 --other-p values (report-only: neither decides on a screen read). Fields only the manager has (agent, DECLARE sha256 and notebook id, cells declared / killed / surviving, blocks, October hours)
 are printed as "manager states" lines. The taint list of item 8 is stated for what the tool knows ((e) siblings forward).
 
@@ -55,6 +56,7 @@ import argparse
 import collections
 import hashlib
 import json
+import math
 import os
 import sys
 import time
@@ -75,6 +77,10 @@ MODELS = ("flat", "press")
 RULES = L.RULES  # ("total", "sc")
 SUBCELLS = tuple(f"{m}_{DECIDING_SFX}_{r}" for r in RULES for m in MODELS)
 P_DRAWS, P_SEED, ALPHA = 10_000, 1, 0.05
+P_NOTE = ("EXP-028 section 3 item 3: sub-cell p = max(p_pct, p_null), p_pct = (1 + #{m_b <= 0}) / (1 + B), p_null = (1 + #{m_b - xbar >= xbar}) / (1 + B), B = 10,000, a fresh default_rng(1) "
+          "per sub-cell; book p = the max over the four sub-cells; report-only")
+CANARY_NOT_MEASURED = ("worst-in-slot: not measured by this tool (tools/arena_h5_legs.py --shadow-dir; otherwise no canary, R7)",
+                       "mint fetch: not run (report-only for H5, required before any canary, Am.3 item 6)")
 STATS_KEYS = ("n", "days", "days_pos", "mean_sol", "total_sol", "ci90_lo_sol", "ex_top3_sol", "ex_best_day_sol")
 SCREEN_LINE = ("A PASS is a SCREEN: the best of N arena books, in-sample for selection (winner's curse), not a promotion and not a profit claim. It allows only DEC-031 section 2 steps 1 to 3 "
                "(quant-proof's check on the exact files, the owner's OK, a live canary at its DEC's small limits). A stake above the canary's limits needs the confirmation of step 4.")
@@ -101,15 +107,26 @@ def provenance() -> dict[str, str]:
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ statistics
-def boot_p_le_zero(x_sol: Sequence[float], draws: int = P_DRAWS, seed: int = P_SEED) -> float | None:
-    """One-sided trade-level bootstrap p of mean SOL per trade <= 0: the share of `draws` resampled means that are <= 0 (the resampling of tools.arena_stack.boot_lo: one rng.integers
-    call per draw, seed 1; 10,000 draws as DEC-031 section 2 step 4 and Amendment 3 item 3 name). Report-only on a screen read."""
+def boot_means(x_sol: Sequence[float], draws: int = P_DRAWS, seed: int = P_SEED) -> np.ndarray:
+    """The bootstrap means of tools.arena_stack.boot_lo, `draws` of them: a fresh default_rng(seed), one rng.integers call per draw. The first 1,000 of a longer run are the 1,000 of boot_lo."""
+    x = np.asarray(x_sol, float)
+    rng = np.random.default_rng(seed)
+    return np.array([x[rng.integers(0, len(x), len(x))].mean() for _ in range(draws)])
+
+
+def boot_p(x_sol: Sequence[float], draws: int = P_DRAWS, seed: int = P_SEED) -> dict[str, Any] | None:
+    """The lab's cell p of ONE sub-cell, as EXP-028 section 3 item 3 pins it (x_sol = the per-trade SOL vector cell_stats passes to boot_lo). H0: mean <= 0, one-sided.
+    p_pct = (1 + #{m_b <= 0}) / (1 + B); p_null = (1 + #{m_b - xbar >= xbar}) / (1 + B); the sub-cell p is max(p_pct, p_null). Everything is returned unrounded, with the 5th percentile
+    of the first 1,000 draws (it must equal the cell's ci90_lo_sol). Report-only on a screen read."""
     x = np.asarray(x_sol, float)
     if len(x) == 0:
         return None
-    rng = np.random.default_rng(seed)
-    means = np.array([x[rng.integers(0, len(x), len(x))].mean() for _ in range(draws)])
-    return float((means <= 0).mean())
+    m = boot_means(x, draws, seed)
+    xbar = float(x.mean())
+    k_pct, k_null = int((m <= 0).sum()), int((m - xbar >= xbar).sum())
+    p_pct, p_null = (1 + k_pct) / (1 + draws), (1 + k_null) / (1 + draws)
+    return {"n": int(len(x)), "xbar": xbar, "B": int(draws), "seed": int(seed), "tail_pct": k_pct, "tail_null": k_null, "p_pct": p_pct, "p_null": p_null, "p": max(p_pct, p_null),
+            "decides": "p_null" if p_null > p_pct else "p_pct", "p5_first_1000_draws": float(np.percentile(m[:1000], 5)) if draws >= 1000 else None}
 
 
 def holm_rank(p_by_book: Mapping[str, float]) -> dict[str, dict[str, Any]]:
@@ -223,7 +240,10 @@ def decide_book(bot_id: str, ledger_root: str | os.PathLike, *, read_instant_ms:
             gv = cell_verdict(s)
             s0 = cell_stats(v0[model], days)
             gv0 = cell_verdict(s0)
-            sub[f"{model}_{DECIDING_SFX}_{rule}"] = dict(s, passes=gv["pass"], misses=gv["misses"], intercept=ic if model == "press" else None, p_le_0=boot_p_le_zero(np.asarray(v[model]) / 1e9),
+            pd = boot_p(np.asarray(v[model]) / 1e9)
+            if pd["p5_first_1000_draws"] != s["ci90_lo_sol"]:  # the same stream as boot_lo: a drift guard
+                raise Refused(f"{bot_id}: the 5th percentile of the first 1,000 bootstrap draws {pd['p5_first_1000_draws']!r} != the cell's ci90_lo_sol {s['ci90_lo_sol']!r}")
+            sub[f"{model}_{DECIDING_SFX}_{rule}"] = dict(s, passes=gv["pass"], misses=gv["misses"], intercept=ic if model == "press" else None, p=pd["p"], p_detail=pd,
                                                          rent_0={"report_only": True, "label": L.LABEL_RENT0, "n_credited": int(v0["credited"].sum()), "criteria_met": gv0["pass"],
                                                                  "misses": gv0["misses"], **{k: s0[k] for k in STATS_KEYS}})
     legs = L.cells_of({DECIDING_SFX: items}, {DECIDING_SFX: ic})  # drift guard against arena_h5_legs' as-scored lines (same functions)
@@ -234,16 +254,18 @@ def decide_book(bot_id: str, ledger_root: str | os.PathLike, *, read_instant_ms:
     out["subcells"] = sub
     out["derived_last"] = {"n": sum(1 for it in items if it["derived_last"]), "share": (sum(1 for it in items if it["derived_last"]) / len(items)) if items else None}
     ci = {k: v["ci90_lo_sol"] for k, v in sub.items() if v["ci90_lo_sol"] is not None}
-    ps = [v["p_le_0"] for v in sub.values() if v["p_le_0"] is not None]
+    ps = [v["p_detail"]["p"] for v in sub.values()]
     out["weakest_cell"] = min(ci, key=ci.get) if ci else None  # information only
     out["p"] = max(ps) if len(ps) == len(sub) else None
-    out["p_note"] = "the largest of the four deciding sub-cells' one-sided p (10,000 draws, seed 1, trade level): report-only"
+    out["p_note"] = P_NOTE
     ok = len(sub) == 4 and all(v["passes"] for v in sub.values())
     out["status"] = "PASS" if ok else "FAIL"
     misses = [m for v in sub.values() for m in v["misses"]]
     if not ok and misses and all(m.startswith("n ") for m in misses):
         out["fail_label"] = f"FAIL (n < {MIN_N})"  # fewer than 100 priced trades after the exclusions: final, but not a loss
     out["not_proposed_for_canary"] = any(v["ex_best_day_sol"] is None or v["ex_best_day_sol"] <= 0 for v in sub.values())
+    if ok:
+        out["not_measured_here"] = list(CANARY_NOT_MEASURED)
     out["passes_only_at_rent_0"] = (not ok) and all(v["rent_0"]["criteria_met"] for v in sub.values())
     return out
 
@@ -288,8 +310,8 @@ def multiplicity_block(results: Mapping[str, Mapping[str, Any]], *, n_books: int
     return {"N": n_books, "N_source": "supplied by the manager (--n-books)", "books_read_with_verdicts": dict(sorted(read.items())), "n_books_read": len(read),
             "cells_in_total": cells_total if cells_total is not None else "NOT SUPPLIED (the manager states the total across hunt23, J3 and cohort 2)",
             "cells_per_book": "1 deciding decision = a conjunction of 4 sub-cells (1.9 s x 0.30 SOL x flat/pressure x total/sc); 24 cells priced per book (3 stakes x 2 latencies x 4), the other 20 report-only (R8 item 2)",
-            "per_book_manager_states": list(MANAGER_FIELDS), "p_by_book": {b: p_run.get(b) for b in sorted(results)}, "p_note": "report-only; the largest of the four deciding sub-cells",
-            "plain_line": f"If no book has an edge, the chance of at least one screen pass is up to 1 - 0.95^N = {100 * (1 - 0.95 ** n_books):.0f}% at N = {n_books}.",
+            "per_book_manager_states": list(MANAGER_FIELDS), "p_by_book": {b: p_run.get(b) for b in sorted(results)}, "p_note": P_NOTE,
+            "plain_line": f"If no book has an edge, the chance of at least one screen pass is up to 1 - 0.95^N = {math.ceil(100 * (1 - 0.95 ** n_books) * 100) / 100:.2f}% (rounded up) at N = {n_books}.",
             "c": c, "c_source": "supplied by the manager (--c); a running count: each confirmation read states its c", "confirmation_threshold_0.05_over_c": ALPHA / c,
             "screen_read_line": {b: holm[b] for b in sorted(holm) if b in results}, "holm_over_reads": sorted(holm), "holm_note": "report-only; Holm also needs every smaller rank to reject; neither decides on a screen read",
             "screen_line": SCREEN_LINE, "rent_line": RENT_LINE, "taint_line": TAINT_LINE,
@@ -304,7 +326,7 @@ def _f(z: Any) -> str:
 
 def render_book(r: Mapping[str, Any]) -> str:
     c = r["counts"]
-    L_ = [f"\nBOT {r['bot_id']}  STATUS {r.get('fail_label') or r['status']}  exit rule {r['exit_rule']}  read instant {r['read_instant_ms']}  deciding: 1.9 s leg ({r['deciding_leg']}) at {r['deciding_stake']} SOL, RENT-CHARGED",
+    L_ = [f"\nBOT {r['bot_id']}  STATUS {r.get('fail_label') or r['status']}{' (screen; not a promotion)' if r['status'] == 'PASS' else ''}  exit rule {r['exit_rule']}  read instant {r['read_instant_ms']}  deciding: 1.9 s leg ({r['deciding_leg']}) at {r['deciding_stake']} SOL, RENT-CHARGED",
           f"  attempts {c['n_attempts']} = counted {c['n_counted']} + excluded {c['n_excluded']} ({c['excluded_share']:.2%} of non-refused attempts; cap {r['excluded_cap']:.0%})  excluded by reason {c['excluded_by_reason']}",
           f"  refused (not attempts, DEC-031 Amendment 1) {c['n_refused']}  by reason {c['refused_by_reason']}", f"  {r['attempt_definition']}"]
     L_ += [f"  reason: {x}" for x in r["reasons"]]
@@ -316,13 +338,18 @@ def render_book(r: Mapping[str, Any]) -> str:
     L_.append(f"  DECIDING CELL (RENT-CHARGED), four sub-cells, all must pass -> {'pass' if r['status'] == 'PASS' else 'fail'}   weakest cell {r['weakest_cell']}")
     for k, v in r["subcells"].items():
         L_.append(f"    {k:16s} n {v['n']:4d} days {v['days']:2d} pos {v['days_pos']:2d} mean {_f(v['mean_sol'])} total {_f(v['total_sol'])} ci90lo {_f(v['ci90_lo_sol'])} "
-                  f"ex-top3 {_f(v['ex_top3_sol'])} ex-best-day {_f(v['ex_best_day_sol'])} p {_f(v['p_le_0'])} {'pass' if v['passes'] else 'fail'}")
+                  f"ex-top3 {_f(v['ex_top3_sol'])} ex-best-day {_f(v['ex_best_day_sol'])} p {v['p']:.7f} {'pass' if v['passes'] else 'fail'}")
+        d = v["p_detail"]
+        L_.append(f"      p detail (unrounded; {d['decides']} decides): n {d['n']} xbar {d['xbar']!r} B {d['B']} seed {d['seed']} tail_pct {d['tail_pct']} tail_null {d['tail_null']} "
+                  f"p_pct {d['p_pct']!r} p_null {d['p_null']!r} p {d['p']!r}")
         L_ += [f"      miss: {m}" for m in v["misses"]]
         z = v["rent_0"]
         L_.append(f"      rent-0 ({z['label']}): n {z['n']:4d} days {z['days']:2d} pos {z['days_pos']:2d} mean {_f(z['mean_sol'])} total {_f(z['total_sol'])} ci90lo {_f(z['ci90_lo_sol'])} "
                   f"ex-top3 {_f(z['ex_top3_sol'])} ex-best-day {_f(z['ex_best_day_sol'])} n_credited {z['n_credited']}")
     d = r["derived_last"]
     L_.append(f"  derived_last trips {d['n']} (share {_f(d['share'])}); parity with arena_h5_legs: {r['parity_with_arena_h5_legs']}")
+    if r["status"] == "PASS":
+        L_ += [f"  {x}" for x in r["not_measured_here"]]
     if r["status"] == "PASS" and r["not_proposed_for_canary"]:
         L_.append("  NOT PROPOSED FOR CANARY: total is not positive ex best day (or ex-best-day is missing) in a deciding sub-cell")
     if r["passes_only_at_rent_0"]:
@@ -343,7 +370,7 @@ def render(rep: Mapping[str, Any]) -> str:
         L_.append(f"  cells in total: {m['cells_in_total']}")
         L_.append(f"  cells per book: {m['cells_per_book']}")
         L_.append(f"  per book, the manager states: {', '.join(m['per_book_manager_states'])}")
-        L_.append(f"  p (one-sided, 10,000 draws, seed 1; {m['p_note']}): {', '.join(f'{b} {_f(p)}' for b, p in m['p_by_book'].items())}")
+        L_.append(f"  p ({m['p_note']}): {', '.join(f'{b} {p!r}' for b, p in m['p_by_book'].items())}")
         L_.append(f"  {m['plain_line']}")
         L_.append(f"  c = {m['c']} ({m['c_source']}); the confirmation threshold 0.05/c = {m['confirmation_threshold_0.05_over_c']:.6f}")
         for b, h in m["screen_read_line"].items():
