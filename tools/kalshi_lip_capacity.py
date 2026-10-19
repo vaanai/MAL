@@ -91,6 +91,9 @@ D1_TEXT = ("CAP stays 450 s (DECLARE 4, unchanged) against a recorder cadence of
            "still be blind on most gaps. Book C measures the rule at a different blindness than Book A: it is not a "
            "clean 'same rule at 6x the markets' read, and any capacity scaling taken from it is low-confidence in "
            "either direction.")
+W_ABOVE_NOTE = ("w_above_2x_median_gap covers cell U0 and opened units only. n_above is 0 by construction when the "
+                "median gap is >= CAP/2 = 225 s, because each w_k is clipped at CAP = 450 s; read n_gaps_above (the raw "
+                "structural gaps above 2 x median) instead. 'n_above: 0' does not mean no blind quoting.")
 D2_TEXT = ("Book C is outside the promotion gate and is never evidence of profit. It is never promotable, and none of "
            "its numbers, positive or not, may be quoted as LIP-F1 evidence or as profit.")
 NOTES = [
@@ -214,7 +217,10 @@ def table_header():
 def blind_share(out):
     """D1, measured: the blind time of the opened units as the simulator counts it (``blind_s``: the part of each gap
     between consecutive in-window snapshots that exceeds CAP; the head and the tail of a window are not counted),
-    against the unit windows [quote_start, E_eff) and against the quoted time.  Read back from our own units.parquet."""
+    against the unit windows [quote_start, E_eff) and against the quoted seconds.  ``share_of_window`` is a true share
+    (blind_s lies inside the window).  ``blind_s_per_quoted_s`` is only a ratio: blind_s and quoted_s do not overlap by
+    construction (blind_s adds gap - CAP for each gap > CAP; quoted_s adds at most CAP per quoted snapshot), so it
+    is not a share and can exceed 1.  Read back from our own units.parquet."""
     p = Path(out) / "units.parquet"
     if not p.exists():
         return {"available": False, "reason": "no units.parquet in --out"}
@@ -222,8 +228,9 @@ def blind_share(out):
     cols = ["cell", "status", "S0", "first_poll_ts", "E_eff", "quoted_s", "blind_s", "blind_gaps"]
     rows = pq.read_table(p, columns=cols).to_pylist()
     res = {"available": True, "cap_s": sim.CAP_US / sim.US,
-           "note": "blind_s as the simulator counts it; share_of_window = blind_s / (E_eff - quote_start), "
-                   "share_of_quoted_time = blind_s / quoted_s; sums over opened units"}
+           "note": "blind_s as the simulator counts it; share_of_window = blind_s / (E_eff - quote_start) is a share; "
+                   "blind_s_per_quoted_s = blind_s / quoted_s is a ratio of non-overlapping quantities, not a share, "
+                   "and can exceed 1; sums over opened units"}
     for cell in sim.CELLS:
         sel = [r for r in rows if r["cell"] == cell and r["status"] == "opened"]
         win = sum((sim.iso_to_us(r["E_eff"]) - max(sim.iso_to_us(r["S0"]), sim.iso_to_us(r["first_poll_ts"]))) / sim.US
@@ -232,7 +239,7 @@ def blind_share(out):
         res[cell] = {"n_units": len(sel), "blind_gaps": sum(r["blind_gaps"] or 0 for r in sel), "blind_s": round(blind, 3),
                      "quoted_s": round(quoted, 3), "window_s": round(win, 3),
                      "share_of_window": round(blind / win, 6) if win else None,
-                     "share_of_quoted_time": round(blind / quoted, 6) if quoted else None}
+                     "blind_s_per_quoted_s": round(blind / quoted, 6) if quoted else None}
     return res
 
 
@@ -312,11 +319,13 @@ def table_footer(gate):
         for c in sim.CELLS:
             m = d1[c]
             lines.append(f"D1 measured {c}: blind {m['blind_s']} s of {m['window_s']} s window "
-                         f"(share {m['share_of_window']}), of {m['quoted_s']} s quoted ({m['share_of_quoted_time']}), "
+                         f"(share of window {m['share_of_window']}); {m['quoted_s']} s quoted, blind_s_per_quoted_s "
+                         f"{m['blind_s_per_quoted_s']} (a ratio, not a share, can exceed 1); "
                          f"{m['blind_gaps']} blind gaps over {m['n_units']} units")
     w = (gate.get("capacity_disclosures") or {}).get("D1", {}).get("w_above_2x_median_gap")
     if w:
         lines.append(f"D1 w_above_2x_median_gap (obrec-1019e): {w}")
+        lines.append("D1 note: " + W_ABOVE_NOTE)
     cov = gate.get("coverage") or {}
     if "baselines_s" in cov:
         lines.append(f"coverage baselines (s per round / poll): {cov['baselines_s']}; {BASELINE_RULING.split('.')[0]}")
@@ -424,7 +433,7 @@ def run_book_c(cfg):
     if cfg.dry_run:
         res.update(lab)
         return res
-    # measured disclosures (full runs only): D1 blind share and the simulator's own gap report; the median-gap
+    # measured disclosures (full runs only): D1 blind seconds and the simulator's own gap report; the median-gap
     # disclosure beside the coverage block
     disclosure = None
     if isinstance(res.get("coverage"), dict):
@@ -432,8 +441,9 @@ def run_book_c(cfg):
     d1 = lab["capacity_disclosures"]["D1"]
     d1["measured"] = blind_share(out) if "cells" in res and res["cells"] else {"available": False, "reason": "no cells computed"}
     d1["w_above_2x_median_gap"] = (res.get("w_above_2x_median_gap") or {}).get(BOOK_C_RECORDER)
-    d1["w_above_2x_median_gap_source"] = ("the simulator's gate.w_above_2x_median_gap report for obrec-1019e "
-                                          "(mapped to the CONDITIONS 13 count named by the QP verdict on #736)")
+    d1["w_above_2x_median_gap_source"] = ("the simulator's gate.w_above_2x_median_gap report for obrec-1019e: the "
+                                          "CONDITIONS item 13 count (QP-confirmed on #736)")
+    d1["w_above_2x_median_gap_note"] = W_ABOVE_NOTE
     g = out / "gate.json"
     if g.exists():
         gate = json.loads(g.read_text())

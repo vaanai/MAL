@@ -76,7 +76,7 @@ def covered(monkeypatch):
     monkeypatch.setattr(sim, "coverage", lambda *a, **k: {"not_decidable": False, "days": {}})
 
 
-def book_c_world(tmp, monkeypatch, with_f1_program=True, al_hole=False, filler_step=None):
+def book_c_world(tmp, monkeypatch, with_f1_program=True, al_hole=False, filler_step=None, step=60):
     """obrec-1019e with four Book C gas units (three with E on 2026-10-19, one on 2026-10-20) and, in the program
     polls, one program of a LIP-F1 series that must never become a unit.  ``al_hole``: cAL has no snapshot between
     12:20 and 12:35 (one 960 s gap = 510 s blind beyond CAP).  ``filler_step``: one more market, with no program,
@@ -84,8 +84,8 @@ def book_c_world(tmp, monkeypatch, with_f1_program=True, al_hole=False, filler_s
     w = st.World(tmp)
     w.meta = str(Path(tmp) / "meta-empty")                 # daily series need no metadata capture
     Path(w.meta).mkdir(parents=True)
-    snaps = {t: st.ticks("2026-10-19T12:05:30Z", "2026-10-19T15:30:00Z", 60) for t in (AK, AL, AR)}
-    snaps[AZ] = st.ticks("2026-10-20T12:05:30Z", "2026-10-20T15:30:00Z", 60)
+    snaps = {t: st.ticks("2026-10-19T12:05:30Z", "2026-10-19T15:30:00Z", step) for t in (AK, AL, AR)}
+    snaps[AZ] = st.ticks("2026-10-20T12:05:30Z", "2026-10-20T15:30:00Z", step)
     if al_hole:
         snaps[AL] = [s for s in snaps[AL] if not (st.at("2026-10-19T12:20:00Z") <= s.ts < st.at("2026-10-19T12:35:00Z"))]
     if filler_step:
@@ -601,13 +601,28 @@ def test_d1_and_d2_are_in_gate_json_table_and_marker_and_d1_reports_the_blind_sh
     for cell in ("U0", "U15", "BQ"):
         assert m[cell]["n_units"] == 4 and m[cell]["blind_gaps"] == 1 and m[cell]["blind_s"] == 510.0
         assert m[cell]["window_s"] == 27_600.0 and m[cell]["share_of_window"] == round(510 / 27_600, 6)
-        assert m[cell]["quoted_s"] > 0 and m[cell]["share_of_quoted_time"] == round(510.0 / m[cell]["quoted_s"], 6)
+        assert m[cell]["quoted_s"] > 0 and m[cell]["blind_s_per_quoted_s"] == round(510.0 / m[cell]["quoted_s"], 6)
+        assert "share_of_quoted_time" not in m[cell]                       # C1: a ratio, not a share
     units = [u for u in pq.read_table(tmp_path / "out" / "units.parquet").to_pylist() if u["cell"] == "U0"]
     assert sum(u["blind_s"] for u in units) == 510.0 and {u["unit_id"]: u["blind_gaps"] for u in units}["cAL"] == 1
     # the simulator's own gap report for obrec-1019e rides along
     assert dis["D1"]["w_above_2x_median_gap"] == gate["w_above_2x_median_gap"]["obrec-1019e"]
     assert "D1 measured U0: blind 510.0 s of 27600.0 s window" in table and "w_above_2x_median_gap (obrec-1019e)" in table
     assert g["capacity_disclosures"] == dis
+    assert "blind_s_per_quoted_s" in table and "a ratio, not a share, can exceed 1" in table and "share_of_quoted_time" not in table
+    assert "ratio" in m["note"] and "share_of_quoted_time" not in json.dumps(gate)
+
+
+def test_c2_n_above_is_zero_by_construction_at_350s_and_the_note_says_to_read_n_gaps_above(tmp_path, monkeypatch, covered):
+    w = book_c_world(tmp_path / "w", monkeypatch, al_hole=True, step=350)        # one 1,400 s hole in cAL, otherwise 350 s
+    cap.run_book_c(cap_cfg(w, tmp_path / "out"))
+    gate = json.loads((tmp_path / "out" / "gate.json").read_text())
+    r = gate["capacity_disclosures"]["D1"]["w_above_2x_median_gap"]
+    assert r["median_gap_s"] == 350.0 and r["n_above"] == 0 and r["n_gaps_above"] == 1        # w_k <= CAP = 450 s < 700 s
+    note = gate["capacity_disclosures"]["D1"]["w_above_2x_median_gap_note"]
+    assert note == cap.W_ABOVE_NOTE and "cell U0" in note and "opened units only" in note
+    assert "n_above is 0 by construction" in note and "225 s" in note and "n_gaps_above" in note
+    assert "D1 note: " + note in (tmp_path / "out" / "table.txt").read_text()
 
 
 def test_d2_is_on_every_labelled_output_including_the_dry_run_and_the_not_decidable_file(tmp_path, monkeypatch, decl, capsys):
