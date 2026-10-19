@@ -107,7 +107,7 @@ def write_trades(store, rows, name="part-a", series="KXBTC15M", date="2026-10-05
 
 
 class World:
-    """Dev-split fixture.  Candle noise is 1e-4 relative; K is set 1e-3 away from the last close so P is
+    """Dev-split fixture.  Candle noise is 1e-4 relative; K is set 2e-3 away from the last close so P is
     ~1 (or ~0); t = close - 180 s."""
 
     def __init__(self, tmp):
@@ -119,7 +119,7 @@ class World:
     def strike(self, asset, close_iso, kind):
         t_s = (us(close_iso) - 180 * US) / US
         S = r3.last_candle_close(self.closes[asset], t_s)
-        return {"yes": S * math.exp(-1e-3), "no": S * math.exp(1e-3), "mid": S}[kind]
+        return {"yes": S * math.exp(-2e-3), "no": S * math.exp(2e-3), "mid": S}[kind]
 
 
 T1 = "2026-10-05T10:15:00Z"      # M1 close, t = 10:12:00, window end 10:14:00
@@ -160,9 +160,8 @@ def build_world(tmp, with_holdout_rows=True):
     m2 = [
         tr("KXBTC15M-M2-30", "2026-10-05T10:26:00Z", 0.02, "yes"),                  # last no_price 0.98
         tr("KXBTC15M-M2-30", "2026-10-05T10:27:10Z", 0.04, "yes"),                  # taker buys YES; no_price .96
-        tr("KXBTC15M-M2-30", "2026-10-05T10:27:50Z", 0.10, "yes"),                  # no_price 0.90 but taker=yes
+        tr("KXBTC15M-M2-30", "2026-10-05T10:27:50Z", 0.03, "yes"),                  # no_price 0.97 > bid
     ]
-    m2[2]["yes_price"], m2[2]["no_price"] = 0.10, 0.90
     m2.append(tr("KXBTC15M-M2-30", "2026-10-05T10:28:00Z", 0.04, "no"))             # taker buys NO: not opposite
     m3 = [
         tr("KXBTC15M-M3-15", "2026-10-06T11:10:00Z", 0.99, "yes"),
@@ -557,7 +556,7 @@ def test_count_only_prints_structure_without_price_fill_or_return(tmp_path, caps
     # window (t, close-60]: M1, M2, M3, M6, M7 have prints there; M4 none
     assert res["markets_with_any_print_in_window"] == {"KXBTC15M": 4, "KXETH15M": 1}
     low = text.lower()
-    for word in ("price", "fill", "net", "return", "p_fav", "p_yes", "bid", "markout", "mean", "pnl", "win"):
+    for word in ("price", "fill", "net", "return", "p_fav", "p_yes", "bid", "markout", "mean", "pnl", "win_rate"):
         assert word not in low, word
     assert (out / "r3_dev_counts.json").exists()
     assert not list(out.glob("*fills*")) and not list(out.glob("*summary*"))

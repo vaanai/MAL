@@ -74,6 +74,7 @@ MARKET_DURATION_S = 900
 DECISION_BEFORE_CLOSE_S = 180
 WINDOW_END_BEFORE_CLOSE_S = 60
 P_LOCK = 0.90
+P_LOCK_LOW = 0.10           # a literal: 1.0 - 0.90 is 0.09999999999999998 in floating point
 BID_MARGIN = 0.04
 FILL_SPACING_US = 30 * US
 UNFILLED_FRAC = 0.15
@@ -396,7 +397,7 @@ def compute_signals(markets, candles):
             continue
         if p >= P_LOCK:
             sig[m.ticker] = {"side": "yes", "p_yes": p, "p_fav": p, "t_us": t_us}
-        elif p <= 1.0 - P_LOCK:
+        elif p <= P_LOCK_LOW:
             sig[m.ticker] = {"side": "no", "p_yes": p, "p_fav": 1.0 - p, "t_us": t_us}
     return sig, dict(skip)
 
