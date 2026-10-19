@@ -21,17 +21,26 @@ stake pinned in bots.json (0.30 SOL); 1.3 s and the other stakes (0.10, 0.25) ar
 per bot and cell, on the counted 1.9 s set after exclusions (`refit`); the ledger's press_* values carry the frozen exploration intercept and are provisional.
 REPORT-ONLY legs (row.report_only.h5_frozen_55k): the H5 pre-registered stack (55,000 per send, no rent, haircut, floor or guard) at the shadow's own landing and exit states.
 
-EXCLUSIONS (counted, never dropped silently; no_block_time = a trigger without a chain timestamp, never aged from the receipt; written to <ledger>/<bot_id>/exclusions-<day>.jsonl, not to the trades file): gap_flag (a feed gap flagged the pool anywhere from its first print to the end of the trade; a gap after the exit landing does not count),
-base_breaks (base_breaks_unresolved_settled not 0, the executor refuses it), trigger_age (decision more than 3,500 ms after the trigger's block time), strip (no strip, a
+REFUSALS (DEC-031 Amendment 1; counted by reason, never priced, never an attempt; written to <ledger>/<bot_id>/refusals-<day>.jsonl, which holds decision-time fields only): a pv trigger
+record for which the LIVE EXECUTOR'S OWN decision-time parser, `tools.h5_executor.parse_shadow_trigger(row, "pv", None)` (the same function object, never a copy; its git blob must be
+EXECUTOR_BLOB), returns a `bad_intent` refusal is the frozen bot's own pre-send refusal. It is not an entry decision: not an attempt for DEC-031 s2's count or the read instant, not in
+`decisions`, not "open", not priced. The check runs BEFORE any outcome, bx10, strip or pool record of the pool is looked up. The refusals subsume the scorer's old `base_breaks`
+exclusion (the parser refuses every base_breaks_unresolved_settled that is not the integer 0), and also catch what the scorer used to price: s0_minus_announced_slots, sps_span,
+boost_spent, v_missing and the rest of the parser. A `bad_intent:missing_*` result is a SCHEMA FAULT and stops the scorer (ParserFault); so does any parser answer Amendment 1 does not
+name (`synthetic_unconfirmed`, a record the parser does not take for a pv trigger, an exception). Refusals by reason are printed beside every count. The invariant, asserted on every run:
+counted + excluded + refused + open == triggers seen.
+
+EXCLUSIONS (the other classes, counted, never dropped silently; no_block_time = a trigger without a chain timestamp, never aged from the receipt; written to <ledger>/<bot_id>/exclusions-<day>.jsonl, not to the trades file): gap_flag (a feed gap flagged the pool anywhere from its first print to the end of the trade; a gap after the exit landing does not count),
+trigger_age (decision more than 3,500 ms after the trigger's block time), strip (no strip, a
 truncated strip or a truncated buys list), exit_before_landing (the deciding leg's exit is not after its landing), incomplete (the outcome was cut by a stop or restart).
-If more than 5% of a book's attempts are excluded, the read is NOT_DECIDABLE (`not_decidable`). A bx10 error or a missing bx10 record is PRICED at v1's exit, not skipped.
+If more than 5% of a book's NON-REFUSED attempts are excluded, the read is NOT_DECIDABLE (`not_decidable`). A bx10 error or a missing bx10 record is PRICED at v1's exit, not skipped.
 
 REPORT beside the counts: feed_delay_ms p50 / p90 over every attempt that has a block time (counted or excluded), age_clamped_to_zero (host-versus-chain skew), and trigger_age_exclusions on
 its own line. The age carries an error of order +-1 s (whole-second chain timestamp, host clock drift); the executor's binding age check uses its own slot clock, so the scorer can exclude
 a late trade the executor would send (true age about 2.5 to 3.5 s): the 5% cap bounds it, and the count is printed.
-READ GATING. One read per bot_id at the outcome-blind instant: the first 00:00Z at which the book has at least 100 attempts (every pv trigger in the window, excluded or not) on
+READ GATING. One read per bot_id at the outcome-blind instant: the first 00:00Z at which the book has at least 100 attempts (every pv trigger in the window that the executor's parser does not refuse, excluded or not) on
 at least 5 UTC dates, counted from trigger timestamps by `read_instant`, which takes a list of integers and loads no P&L. Until then, and after it, this tool prints counts
-only; the gate itself is tools/arena_score.py's. `score` records the book's ONE read instant (read-instant.json, computed from every attempt, excluded and open ones included); `refit` reads that instant and never computes its own, refuses before it, while an attempt decided before it is still open, or if trades plus exclusions in the ledger do not add up to the recorded attempts.
+only; the gate itself is tools/arena_score.py's. `score` records the book's ONE read instant (read-instant.json, computed from every attempt, excluded and open ones included, refusals not); `refit` reads that instant and never computes its own, refuses before it, while an attempt decided before it is still open, or if trades plus exclusions plus refusals in the ledger do not add up to the recorded triggers seen. The read output (read-instant.json, the refit) carries the refusals by reason and the disclosure sentence of attempt_disclosure().
 
 BOOST TIMING (EXP-024 s11): the share of counted trades whose BOOST last slice (the pool record's boost_last_slice_s) comes before the 1.9 s leg's exit landing; above 15% the
 book is "not proposed for live".
@@ -39,12 +48,14 @@ book is "not proposed for live".
 LEDGER. <ledger-root>/<bot_id>/trades-<UTC day of decision_ms>.jsonl, strict JSON, WRITE-ONCE per trade_id ("<bot_id>:<pool>:<stake>"; one row per stake). Fields: trade_id, bot_id,
 frozen_sha, decision_ms, exit_ms, pool, mint, prog "pumpswap", stake_sol, legs {flat_1p3, flat_1p9, press_1p3, press_1p9} (net_lamports, nofail_lamports, state, p_fail; press
 also ssb, nb_lamports, intercept), report_only, meta. An unparsable line in an existing file is counted (bad_ledger_lines) and the scorer stops without writing.
+<ledger-root>/<bot_id>/refusals-<UTC day of decision_ms>.jsonl: write-once per refusal_id ("<bot_id>:<pool>"); refusal_id, bot_id, pool, mint, reason, decision_ms, frozen_sha. Nothing else: no price, fill or outcome.
 
 Run:  python -m tools.arena_h5_score register --arena-root R --frozen-sha SHA --sockets 3 --endpoint E ...
       python -m tools.arena_h5_score score [--arena-root R] [--shadow-dir D ...] [--dry-run]
       python -m tools.arena_h5_score halt --arena-root R --at-ms N          (A3 HALT flag)
       python -m tools.arena_h5_score refit --arena-root R                   (only at or after the read instant)
-Pure python (no numpy).
+Pure python (no numpy). `score` needs the executor's own parser, so it must run under a python that can import tools.h5_executor (it needs `solders`, as the H5 executor's venv has);
+`register`, `halt` and `refit` do not import it. Without it `score` stops with a clear error; it never falls back to a copy of the parser.
 """
 
 from __future__ import annotations
@@ -59,6 +70,8 @@ import argparse
 import collections
 import fcntl
 import glob
+import hashlib
+import importlib
 import json
 import math
 import os
@@ -88,8 +101,97 @@ READ_MIN_ATTEMPTS, READ_MIN_DATES = 100, 5
 EXIT_LAG_S = 0.55
 PRESSURE_WINDOW_S = 2.0
 FREEZE_SHA256 = "5368cc7b757a2f7a6cb064c71193b4e0cd740583f7348a60cb9a864401c190e0"  # FREEZE.md of H5-BOOSTCLOCK-EXIT (v2); not pinned in code before
-EXCLUSION_REASONS = ("gap_flag", "base_breaks", "trigger_age", "no_block_time", "strip", "exit_before_landing", "incomplete")
+EXCLUSION_REASONS = ("gap_flag", "trigger_age", "no_block_time", "strip", "exit_before_landing", "incomplete")  # base_breaks is a refusal now (DEC-031 Amendment 1)
 DAY_MS = 86_400_000
+# DEC-031 Amendment 1. The executor the frozen bot is: tools/h5_executor.py at blob 03995837317f (the blob at 1f7a89c); the scorer calls ITS parse_shadow_trigger and refuses to run on another blob.
+EXECUTOR_MODULE = "tools.h5_executor"
+EXECUTOR_BLOB = "03995837317f"
+REFUSAL_PREFIX = "bad_intent:"
+SCHEMA_FAULT_PREFIX = "bad_intent:missing_"
+AMENDMENT_1 = "DEC-031 Amendment 1"
+AMENDMENT_1_INSTANT = "2026-10-19T03:31:35Z"  # the instant the amendment was written (UTC); the same instant is in the DEC-031 text
+
+
+# ---------------------------------------------------------------------------------------------------------------- the executor's parser (DEC-031 Amendment 1)
+class ParserFault(ValueError):
+    """The executor's parser, or its import, gave an answer Amendment 1 does not turn into a refusal: a schema fault (`bad_intent:missing_*`), a refusal class the amendment does
+    not name, a record the parser does not take for a pv trigger, an exception, a missing `solders`, or an executor file that is not the pinned blob. The scorer stops (exit 2)."""
+
+
+class ReconciliationError(ValueError):
+    """counted + excluded + refused + open != triggers seen: the scorer lost or double-counted a trigger. It stops."""
+
+
+_EXECUTOR: Any = None
+
+
+def git_blob_sha1(data: bytes) -> str:
+    """`git hash-object` of a file's bytes."""
+    return hashlib.sha1(b"blob %d\0" % len(data) + data, usedforsecurity=False).hexdigest()
+
+
+def executor_module() -> Any:
+    """tools.h5_executor, imported on first use (so register, halt and refit need no `solders`) and checked once against EXECUTOR_BLOB. Importing it is pure: constants, regexes and
+    pubkey constants only, no network, no key or file read (tools/test_arena_h5_score.py::ExecutorImportTests pins that with an audit hook). A failure is a ParserFault: the scorer
+    never substitutes a copy of the parser."""
+    global _EXECUTOR
+    if _EXECUTOR is None:
+        try:
+            mod = importlib.import_module(EXECUTOR_MODULE)
+        except ImportError as exc:
+            raise ParserFault(f"{EXECUTOR_MODULE} cannot be imported ({exc}): the scorer needs the live executor's own parser, so run it under a python that has the executor's requirements "
+                              f"(solders), for example the H5 executor's venv; it does not carry a copy of the parser") from exc
+        blob = git_blob_sha1(Path(mod.__file__).read_bytes())
+        if not blob.startswith(EXECUTOR_BLOB):
+            raise ParserFault(f"{mod.__file__} is git blob {blob[:12]}, not {EXECUTOR_BLOB}: {AMENDMENT_1} names the executor at blob {EXECUTOR_BLOB}; a different executor needs its own amendment")
+        _EXECUTOR = mod
+    return _EXECUTOR
+
+
+def executor_parser() -> Any:
+    """The executor's own parse_shadow_trigger, looked up at call time: the same function object, never a copy."""
+    return executor_module().parse_shadow_trigger
+
+
+def executor_refusal(trig: dict) -> str | None:
+    """The frozen bot's own pre-send decision on a pv trigger record, from `tools.h5_executor.parse_shadow_trigger(row, "pv", None)` and nothing else. Returns None when the parser
+    accepts the record, or its `bad_intent:<why>` refusal. Raises ParserFault for a `bad_intent:missing_*` result (a schema fault), for any other answer (`synthetic_unconfirmed`, a
+    record it does not take for a pv trigger) and for an exception. Reads decision-time fields only: it is given the trigger record and nothing else of the pool."""
+    row = {k: v for k, v in trig.items() if k != "_start"}  # the record as the shadow wrote it (ShadowDir adds `_start`)
+    who = f"pool {row.get('pool')!r}"
+    parse = executor_parser()  # an import or blob problem is its own ParserFault, not an exception of the parser
+    try:
+        parsed, why = parse(row, VARIANT, None)
+    except Exception as exc:  # noqa: BLE001 - any exception from the executor's parser is a stop, never a guess
+        raise ParserFault(f"parse_shadow_trigger raised {type(exc).__name__} on a trigger record ({who}): {exc}") from exc
+    if parsed is not None and why is None:
+        return None
+    if why is None:
+        raise ParserFault(f"parse_shadow_trigger did not take the record for a pv trigger ({who})")
+    if why.startswith(SCHEMA_FAULT_PREFIX):
+        raise ParserFault(f"schema fault: parse_shadow_trigger returned {why!r} ({who}): the shadow and the executor's parser disagree on the trigger schema")
+    if why.startswith(REFUSAL_PREFIX):
+        return why
+    raise ParserFault(f"parse_shadow_trigger returned {why!r} ({who}), a refusal {AMENDMENT_1} does not name: it needs a ruling before the scorer can go on")
+
+
+def decision_ms(trig: dict) -> int:
+    """The trigger's decision instant (t_detect_ms), placed in time before any filter runs. A record without a usable one cannot be dated, so it cannot be a refusal or an attempt: stop."""
+    v = trig.get("t_detect_ms")
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or (isinstance(v, float) and not math.isfinite(v)):
+        raise ParserFault(f"a trigger record (pool {trig.get('pool')!r}) has no usable t_detect_ms ({v!r}): it cannot be placed in time")
+    return int(v)
+
+
+def scorer_sha256() -> str:
+    """sha256 of this file as it is running: the figure the DEC-031 text names for the amendment."""
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+
+
+def attempt_disclosure(refused: int, seen: int) -> str:
+    """The sentence every read and every count line carries (DEC-031 Amendment 1): the attempt definition changed after the clock, with counts only in view."""
+    return (f"Attempt definition amended after the clock ({AMENDMENT_1}, {scorer_sha256()}, {AMENDMENT_1_INSTANT}), with counts only in view; "
+            f"refused {int(refused)} of {int(seen)} triggers.")
 
 
 # ---------------------------------------------------------------------------------------------------------------- slots and states
@@ -200,6 +302,11 @@ class ShadowDir:
             if rec.get("t_ms") is not None:
                 last_t = int(rec["t_ms"])
             pool = rec.get("pool")
+            if t == "trigger" and rec.get("variant") == VARIANT and not (isinstance(pool, str) and pool):
+                # A pv trigger record that cannot be keyed by pool is still a pv trigger record: the parser's `bad_intent:missing_pool` is a schema fault and stops the scorer (it must
+                # not be skipped silently); a null or non-string pool the parser merely refuses (`bad_intent:ids`) cannot be placed in a book, so that stops too.
+                executor_refusal(rec)
+                raise ParserFault(f"a pv trigger record has no usable pool id ({pool!r}): it cannot be keyed to a pool")
             if pool is None or t not in ("trigger", "outcome", "outcome_bx10", "strip", "pool"):
                 continue
             if t in ("trigger", "outcome", "outcome_bx10") and rec.get("variant") != VARIANT:
@@ -338,15 +445,14 @@ def gap_in_span(trig: dict, o: dict, span_end_slot: int) -> bool:
 
 
 def price_trade(bot: str, o: dict, trig: dict, strip_rec: dict | None, bx: dict | None, pool_rec: dict | None, start: dict) -> dict[str, Any]:
-    """Rows data of one pv trade for one bot (all stakes, both legs) or raises Excluded(reason). The exclusion order is the module doc's."""
+    """Rows data of one pv trade for one bot (all stakes, both legs) or raises Excluded(reason). The exclusion order is the module doc's. Only for a trigger the executor's parser
+    ACCEPTED: score_book refuses the rest (executor_refusal) before it looks up an outcome, so a refused trigger never gets here (no base_breaks branch: the parser refuses it)."""
     if not o.get("complete") or not (o.get("legs")):
         raise Excluded("incomplete")
     if not trig.get("block_time"):
         raise Excluded("no_block_time")  # no chain clock, no feed delay: excluded and counted under the 5% cap, never aged from t_recv_ms
     if gap_in_span(trig, o, int(o["exit"]["trigger_slot"]) + exit_lag_slots(float(o["sps"]))):
         raise Excluded("gap_flag")
-    if trig.get("base_breaks_unresolved_settled") != 0:
-        raise Excluded("base_breaks")
     raw_age = raw_trigger_age_ms(trig)
     age = max(0, raw_age)
     if age > MAX_TRIGGER_AGE_MS:
@@ -472,7 +578,9 @@ class BookResult:
     def __init__(self) -> None:
         self.rows: list[dict] = []
         self.exclusions: list[dict] = []
-        self.decisions: list[int] = []  # every attempt in the window (pv trigger), excluded or not, for the read instant
+        self.decisions: list[int] = []  # every attempt in the window (a pv trigger the executor's parser accepted), excluded or not, for the read instant. Refusals are not here.
+        self.refusals: list[dict] = []  # the pv triggers the executor's parser refused (DEC-031 Amendment 1): decision-time fields only, no outcome field
+        self.triggers_seen = 0  # in-window, non-duplicate pv triggers: refused + attempts
         self.open_decisions: list[int] = []  # the attempts among them with no outcome record yet
         self.ages: list[int] = []  # feed delay (age, ms, floored at 0) of every attempt that has a block time, counted or excluded
         self.counts: collections.Counter = collections.Counter()
@@ -482,21 +590,38 @@ class BookResult:
         self.restarts = 0
         self.downtime_ms = 0
 
+    def reconcile(self) -> None:
+        """counted + excluded + refused + open == triggers seen, and attempts + refused == triggers seen. Raises ReconciliationError."""
+        accounted = self.counts["counted"] + len(self.exclusions) + len(self.refusals) + self.counts["open"]
+        if accounted != self.triggers_seen or len(self.decisions) + len(self.refusals) != self.triggers_seen or len(self.open_decisions) != self.counts["open"]:
+            raise ReconciliationError(f"counted {self.counts['counted']} + excluded {len(self.exclusions)} + refused {len(self.refusals)} + open {self.counts['open']} = {accounted}, "
+                                      f"attempts {len(self.decisions)} + refused {len(self.refusals)}, triggers seen {self.triggers_seen}")
+
 
 def score_book(bot: str, entry: dict, dirs: Sequence[ShadowDir]) -> BookResult:
     res = BookResult()
     clock, end = int(entry["clock_start_ms"]), entry.get("window_end_ms")
     seen: set[str] = set()
+    feeding: list[ShadowDir] = []
     for d in sorted(dirs, key=lambda x: x.path.name):
         problem = d.identity_problem(entry)
         if problem:
             res.refused[str(d.path)] = problem
             res.counts["refused_dirs"] += 1
             continue
+        feeding.append(d)
+    # DEC-031 Amendment 1: the executor's parser decides on EVERY pv trigger record of the dirs that feed the book, before any other field of it is used (a schema fault stops here).
+    verdict: dict[tuple[int, str], str | None] = {}
+    when: dict[tuple[int, str], int] = {}
+    for i, d in enumerate(feeding):
+        for pool, trig in d.triggers.items():
+            verdict[(i, pool)] = executor_refusal(trig)
+            when[(i, pool)] = decision_ms(trig)
+    for i, d in enumerate(feeding):
         res.restarts += max(0, len(d.starts) - 1)
         res.downtime_ms += d.downtime_ms
-        for pool, trig in sorted(d.triggers.items(), key=lambda kv: kv[1]["t_detect_ms"]):
-            decision = int(trig["t_detect_ms"])
+        for pool, trig in sorted(d.triggers.items(), key=lambda kv: when[(i, kv[0])]):
+            decision = when[(i, pool)]
             start = trig["_start"]
             if decision < clock or decision < int(start["start_ms"]):
                 res.counts["skipped_before_clock"] += 1
@@ -511,6 +636,15 @@ def score_book(bot: str, entry: dict, dirs: Sequence[ShadowDir]) -> BookResult:
                 res.counts["duplicate_pool"] += 1
                 continue
             seen.add(pool)
+            res.triggers_seen += 1
+            refusal = verdict[(i, pool)]
+            if refusal is not None:
+                # The frozen bot's own pre-send refusal: not an entry decision. It is not an attempt (no `decisions`, no feed-delay sample, no "open"), and it is never priced: this
+                # branch comes BEFORE every outcome, bx10, strip and pool lookup below, so a refused trigger's outcome is not read at all.
+                res.counts[f"refused_{refusal}"] += 1
+                res.refusals.append({"refusal_id": f"{bot}:{pool}", "bot_id": bot, "pool": pool, "mint": trig.get("mint"), "reason": refusal, "decision_ms": decision,
+                                     "frozen_sha": start.get("code_sha")})
+                continue
             res.decisions.append(decision)
             if trig.get("block_time"):
                 raw = raw_trigger_age_ms(trig)
@@ -544,6 +678,7 @@ def score_book(bot: str, entry: dict, dirs: Sequence[ShadowDir]) -> BookResult:
                 xl = priced["legs"][DECIDING_LEG]["exit_landing"]
                 if last < (xl - int(o["s0"])) * priced["sps"]:
                     res.boost_before_exit += 1
+    res.reconcile()
     return res
 
 
@@ -557,13 +692,16 @@ def _pct(xs: Sequence[int], q: float) -> int | None:
 
 def summarize(bot: str, res: BookResult, now_ms: int) -> dict[str, Any]:
     n_exc = len(res.exclusions)
-    attempts = len(res.decisions)
-    decided = res.counts["counted"] + n_exc  # attempts with an outcome record
+    attempts = len(res.decisions)  # refusals are not attempts
+    n_ref = len(res.refusals)
+    decided = res.counts["counted"] + n_exc  # non-refused attempts with an outcome record: the base of the 5% cap
     share = n_exc / decided if decided else 0.0
     ri = read_instant(res.decisions, now_ms)
     bshare = res.boost_before_exit / res.boost_known if res.boost_known else None
     return {"attempts": attempts, "counted": res.counts["counted"], "excluded": n_exc, "excluded_share": share, "not_decidable": share > EXCLUDED_CAP,
             "excluded_by_reason": {r: res.counts[f"excluded_{r}"] for r in EXCLUSION_REASONS if res.counts[f"excluded_{r}"]},
+            "refused": n_ref, "refused_by_reason": dict(sorted(collections.Counter(r["reason"] for r in res.refusals).items())), "triggers_seen": attempts + n_ref,
+            "attempt_definition": attempt_disclosure(n_ref, attempts + n_ref),
             "open": res.counts["open"], "age_clamped_to_zero": res.counts["age_clamped_to_zero"],
             "trigger_age_exclusions": res.counts["excluded_trigger_age"], "no_block_time_exclusions": res.counts["excluded_no_block_time"],
             "feed_delay_ms_p50": _pct(res.ages, 0.5), "feed_delay_ms_p90": _pct(res.ages, 0.9), "feed_delay_n": len(res.ages), "derived_last_deciding_leg": res.counts["derived_last_deciding_leg"], "bx10_error_priced_v1": res.counts["bx10_error_priced_v1"], "skipped_before_clock": res.counts["skipped_before_clock"],
@@ -579,10 +717,27 @@ def _strict(row: dict) -> str:
     return json.dumps(row, separators=(",", ":"), allow_nan=False, sort_keys=False)
 
 
+LEDGER_KEYS = {"trades": "trade_id", "exclusions": "exclusion_id", "refusals": "refusal_id"}
+
+
+def existing_pools(bot_dir: Path, prefix: str, counts: collections.Counter) -> set[str]:
+    """The pools named in the bot's day files of one kind (trades, exclusions or refusals): the `pool` field only, nothing else of a row is used. A torn line is counted."""
+    pools: set[str] = set()
+    for f in sorted(bot_dir.glob(f"{prefix}-????-??-??.jsonl")):
+        with open(f, encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip():
+                    try:
+                        pools.add(json.loads(line)["pool"])
+                    except (ValueError, KeyError):
+                        counts["bad_ledger_lines"] += 1
+    return pools
+
+
 def existing_ids(bot_dir: Path, prefix: str, counts: collections.Counter) -> set[str]:
     """Ids in the bot's day files. An unparsable line is COUNTED (bad_ledger_lines); the caller stops before writing if there is one."""
     ids: set[str] = set()
-    key = "trade_id" if prefix == "trades" else "exclusion_id"
+    key = LEDGER_KEYS[prefix]
     for f in sorted(bot_dir.glob(f"{prefix}-????-??-??.jsonl")):
         with open(f, encoding="utf-8") as fh:
             for line in fh:
@@ -594,9 +749,10 @@ def existing_ids(bot_dir: Path, prefix: str, counts: collections.Counter) -> set
     return ids
 
 
-def write_ledger(bot: str, rows: Sequence[dict], exclusions: Sequence[dict], ledger_root: Path, counts: collections.Counter, dry_run: bool = False) -> None:
+def write_ledger(bot: str, rows: Sequence[dict], exclusions: Sequence[dict], ledger_root: Path, counts: collections.Counter, dry_run: bool = False,
+                 refusals: Sequence[dict] = ()) -> None:
     """Append what is not yet there. Write-once: an existing id is never touched. A non-finite number is refused (strict JSON). A torn line in an existing file stops the
-    write for this book (counted), so a trade is never appended twice after a tear."""
+    write for this book (counted), so a trade is never appended twice after a tear. Trades, exclusions and refusals go to their own day files."""
     bot_dir = ledger_root / bot
     if not dry_run:
         bot_dir.mkdir(parents=True, exist_ok=True)
@@ -604,7 +760,7 @@ def write_ledger(bot: str, rows: Sequence[dict], exclusions: Sequence[dict], led
     try:
         if lock is not None:
             fcntl.flock(lock, fcntl.LOCK_EX)
-        for prefix, items, key in (("trades", rows, "trade_id"), ("exclusions", exclusions, "exclusion_id")):
+        for prefix, items, key in (("trades", rows, "trade_id"), ("exclusions", exclusions, "exclusion_id"), ("refusals", refusals, "refusal_id")):
             before_bad = counts["bad_ledger_lines"]
             seen = existing_ids(bot_dir, prefix, counts) if bot_dir.exists() else set()
             if counts["bad_ledger_lines"] > before_bad:
@@ -694,32 +850,48 @@ def cmd_score(a: argparse.Namespace) -> int:
     now_ms = int(a.now_ms) if a.now_ms is not None else int(time.time() * 1000)
     loaded = [ShadowDir(d, counts) for d in dirs]
     report: dict[str, Any] = {"schema": SCHEMA, "stack": STACK, "shadow_dirs": [str(d) for d in dirs], "dry_run": bool(a.dry_run), "books": {}}
+    results: dict[str, BookResult] = {}
+    for bot in BOTS:  # every book is scored (and every parser verdict taken) before anything is written: a schema fault leaves the ledger untouched
+        if registry.get(bot) is not None:
+            results[bot] = score_book(bot, registry[bot], loaded)
     for bot in BOTS:
-        entry = registry.get(bot)
-        if entry is None:
+        res = results.get(bot)
+        if res is None:
             report["books"][bot] = {"registered": False}
             continue
-        res = score_book(bot, entry, loaded)
-        write_ledger(bot, res.rows, res.exclusions, ledger_root, counts, dry_run=a.dry_run)
+        write_ledger(bot, res.rows, res.exclusions, ledger_root, counts, dry_run=a.dry_run, refusals=res.refusals)
         summ = summarize(bot, res, now_ms)
         if summ["read_instant_ms"] is not None:
             record_read_instant(bot, summ["read_instant_ms"], res, ledger_root, counts, dry_run=a.dry_run)
-        report["books"][bot] = {"registered": True, **summ, "rows_scored": len(res.rows)}
+        report["books"][bot] = {"registered": True, **summ, "rows_scored": len(res.rows), "ledger_superseded": ledger_superseded(ledger_root / bot, res, counts)}
     report["counts"] = dict(sorted(counts.items()))
     print(json.dumps(report, sort_keys=True))
     return 0
+
+
+def ledger_superseded(bot_dir: Path, res: BookResult, counts: collections.Counter) -> dict[str, int]:
+    """How many pools the ledger ALREADY holds trade or exclusion rows for that are refusals now (an earlier run, before DEC-031 Amendment 1, priced or excluded them). Counts only.
+    The scorer never edits or removes a ledger row; `refit` ignores such exclusion rows and refuses while such trade rows exist."""
+    refused = {r["pool"] for r in res.refusals}
+    if not refused or not bot_dir.exists():
+        return {"trade_pools": 0, "exclusion_pools": 0}
+    return {"trade_pools": len(refused & existing_pools(bot_dir, "trades", counts)), "exclusion_pools": len(refused & existing_pools(bot_dir, "exclusions", counts))}
 
 
 READ_INSTANT_FILE = "read-instant.json"
 
 
 def record_read_instant(bot: str, ri: int, res: BookResult, ledger_root: Path, counts: collections.Counter, dry_run: bool = False) -> None:
-    """The ONE read instant of the book, computed by score_book from every attempt (excluded and open ones included, DEC-031 s2) and recorded for `refit`. The instant itself is
-    never changed once written (a different later value is counted as read_instant_conflict and the old one kept); `open_before_read` and `attempts_before` are refreshed
-    on each run, so a refit can tell that every attempt before the boundary has exited and that the ledger holds all of them."""
+    """The ONE read instant of the book, computed by score_book from every attempt (excluded and open ones included, refusals not: DEC-031 s2 and Amendment 1) and recorded for
+    `refit`. The instant itself is never changed once written (a different later value is counted as read_instant_conflict and the old one kept); `open_before_read`,
+    `attempts_before`, `refused_before` and `triggers_before` are refreshed on each run, so a refit can tell that every attempt before the boundary has exited and that the ledger
+    holds all of them and all the refusals. The record carries the refusals by reason and the attempt-definition disclosure."""
     before = [d for d in res.decisions if d < ri]
+    refused = [r for r in res.refusals if r["decision_ms"] < ri]
     doc = {"bot_id": bot, "read_instant_ms": int(ri), "attempts_before": len(before), "dates": len({d // DAY_MS for d in before}),
-           "open_before_read": sum(1 for d in res.open_decisions if d < ri)}
+           "open_before_read": sum(1 for d in res.open_decisions if d < ri),
+           "refused_before": len(refused), "refused_by_reason_before": dict(sorted(collections.Counter(r["reason"] for r in refused).items())),
+           "triggers_before": len(before) + len(refused), "attempt_definition": attempt_disclosure(len(refused), len(before) + len(refused))}
     path = ledger_root / bot / READ_INSTANT_FILE
     if path.exists():
         old = json.loads(path.read_text())
@@ -731,18 +903,18 @@ def record_read_instant(bot: str, ri: int, res: BookResult, ledger_root: Path, c
         _atomic_write_json(path, doc)
 
 
-def ledger_attempts_before(bot_dir: Path, ri: int) -> tuple[list[dict], int]:
-    """(trade rows decided before ri, the number of distinct attempts before ri in trades plus exclusions): one attempt per pool."""
-    rows = [json.loads(l) for f in sorted(bot_dir.glob("trades-????-??-??.jsonl")) for l in f.read_text().splitlines() if l.strip()]
-    rows = [r for r in rows if r["decision_ms"] < ri]
-    pools = {r["pool"] for r in rows}
-    for f in sorted(bot_dir.glob("exclusions-????-??-??.jsonl")):
-        for l in f.read_text().splitlines():
-            if l.strip():
-                e = json.loads(l)
-                if e["decision_ms"] < ri:
-                    pools.add(e["pool"])
-    return rows, len(pools)
+def ledger_attempts_before(bot_dir: Path, ri: int) -> dict[str, Any]:
+    """What the ledger files hold of the attempts decided before ri: the trade rows (not those of a refused pool), the number of distinct attempts (one per pool, trades plus exclusions,
+    minus refused pools), the refusals (a pool each, with its reason), and the pools a pre-Amendment-1 run left a trade row or an exclusion row for that are refusals now."""
+    def lines(prefix: str) -> list[dict]:
+        return [json.loads(l) for f in sorted(bot_dir.glob(f"{prefix}-????-??-??.jsonl")) for l in f.read_text().splitlines() if l.strip()]
+
+    refusals = {r["pool"]: r["reason"] for r in lines("refusals") if r["decision_ms"] < ri}
+    trades = [r for r in lines("trades") if r["decision_ms"] < ri]
+    excl = {e["pool"] for e in lines("exclusions") if e["decision_ms"] < ri}
+    trade_pools = {r["pool"] for r in trades}
+    return {"rows": [r for r in trades if r["pool"] not in refusals], "attempts": len((trade_pools | excl) - set(refusals)), "refusals": refusals,
+            "superseded_trade_pools": len(trade_pools & set(refusals)), "superseded_exclusion_pools": len(excl & set(refusals))}
 
 
 def cmd_refit(a: argparse.Namespace) -> int:
@@ -767,21 +939,36 @@ def cmd_refit(a: argparse.Namespace) -> int:
         if doc["open_before_read"]:
             out[bot] = {"refused": "attempts decided before the read instant are still open"}
             continue
-        rows, n_attempts = ledger_attempts_before(bot_dir, ri)
-        if n_attempts != doc["attempts_before"]:
-            out[bot] = {"refused": "the ledger does not hold every attempt decided before the read instant (score again)"}
+        if "refused_before" not in doc or "triggers_before" not in doc:
+            out[bot] = {"refused": "the read-instant record predates DEC-031 Amendment 1 (no refusal counts): score again"}
             continue
+        led = ledger_attempts_before(bot_dir, ri)
+        rows, n_attempts, refusals = led["rows"], led["attempts"], led["refusals"]
+        if led["superseded_trade_pools"]:
+            out[bot] = {"refused": f"the ledger holds trade rows for {led['superseded_trade_pools']} pool(s) that are refusals under DEC-031 Amendment 1 (priced by an earlier run): they need a ruling"}
+            continue
+        if n_attempts != doc["attempts_before"] or len(refusals) != doc["refused_before"]:
+            out[bot] = {"refused": "the ledger does not hold every attempt and every refusal decided before the read instant (score again)"}
+            continue
+        if n_attempts + len(refusals) != doc["triggers_before"]:
+            out[bot] = {"refused": f"trades + exclusions {n_attempts} + refusals {len(refusals)} != triggers seen {doc['triggers_before']}"}
+            continue
+        by_reason = dict(sorted(collections.Counter(refusals.values()).items()))
+        disclosure = attempt_disclosure(len(refusals), n_attempts + len(refusals))
         target = bot_dir / f"refit-{utc_day(ri)}.json"
         if target.exists():
             out[bot] = {"refused": f"{target.name} exists: the refit is write-once"}
             continue
         cells = refit_cells(rows)
         try:
-            _write_once_json(target, {"bot_id": bot, "read_instant_ms": ri, "attempts_before": n_attempts, "trades_pools": len({r["pool"] for r in rows}), "cells": cells})
+            _write_once_json(target, {"bot_id": bot, "read_instant_ms": ri, "attempts_before": n_attempts, "trades_pools": len({r["pool"] for r in rows}), "cells": cells,
+                                      "refused_before": len(refusals), "refused_by_reason": by_reason, "triggers_before": n_attempts + len(refusals),
+                                      "ledger_superseded_exclusion_pools": led["superseded_exclusion_pools"], "attempt_definition": disclosure})
         except FileExistsError:
             out[bot] = {"refused": f"{target.name} exists: the refit is write-once"}
             continue
-        out[bot] = {"read_instant_ms": ri, "attempts_before": n_attempts, "cells": len(cells)}
+        out[bot] = {"read_instant_ms": ri, "attempts_before": n_attempts, "cells": len(cells), "refused_before": len(refusals), "refused_by_reason": by_reason,
+                    "triggers_before": n_attempts + len(refusals), "attempt_definition": disclosure}
     print(json.dumps(out, sort_keys=True))
     return 0
 
