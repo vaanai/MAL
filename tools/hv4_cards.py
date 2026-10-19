@@ -60,6 +60,8 @@ PRINTS_15M_MIN = 20  # s1: prints in the last 15 min
 SIGNERS_15M_MIN = 8
 LAST_PRINT_MAX_S = 120.0
 VOL_60M_MIN_SOL = 10.0  # s1: gross SOL volume over 60 min
+V_LO_LAMPORTS = 17_500_000_000  # DEC-031 Amendment 2 item 6 (QP ruling R2 item 3, R9 (b)): the canonical pump pool V band, in lamports, BOTH ends inclusive.
+V_HI_LAMPORTS = 17_700_000_000  # A covered book trades only quote_mint == WSOL pools with V in [17.5e9, 17.7e9]; a missing V is its own reason code, "v_missing"
 IMPACT_RT_CAP = 0.03  # s1: round-trip impact at the intended stake
 STAKES = (0.25, 0.5, 1.0)  # s3: size menu
 STATE_LAG_MAX_MS = 10_000  # not in DESIGN: a state clock further behind T than this is a stalled feed (see module docstring)
@@ -378,6 +380,19 @@ def _age(snap: SnapshotLike) -> tuple[float | None, bool]:
     return _num(snap.get("age_since_first_seen_s")), False
 
 
+def _v_lamports(snap: SnapshotLike) -> int | None:
+    """The pool's PumpSwap virtual quote reserve V in whole lamports, or None when it is missing. The snapshot carries V as `reserves.v_sol` = Pool.v / 1e9,
+    where Pool.v is the virtual_quote_reserves of the latest print that carried one and 0 until one has (tools/arena_state.py). So a missing key, a non-number
+    (bool, string, NaN, inf) and a value of 0 or less all read as missing: a V that no print has given is never a number to test against the band. The
+    float is rounded back to the integer lamport it came from (the round trip v -> v/1e9 -> *1e9 -> round is off by far less than 0.5 lamport at V near
+    17.6e9; a test pins both band edges and their neighbours), so the band edges are tested on integers, not on a float with a tolerance."""
+    res = snap.get("reserves")
+    v_sol = _num(res.get("v_sol")) if isinstance(res, Mapping) else None
+    if v_sol is None or v_sol <= 0.0:
+        return None
+    return int(round(v_sol * LAMPORTS))
+
+
 @dataclass(frozen=True)
 class FilterResult:
     passed: bool
@@ -389,7 +404,11 @@ class FilterResult:
 
 
 def filters(snap: SnapshotLike, *, as_of_ms: int) -> FilterResult:
-    """DESIGN section 1 Lane G filters on a snapshot, as of `as_of_ms`. Every check is evaluated and logged with its value."""
+    """DESIGN section 1 Lane G filters on a snapshot, as of `as_of_ms`. Every check is evaluated and logged with its value.
+
+    DEC-031 Amendment 2 item 6 (universe): a card is eligible only if the pool's quote mint is WSOL (`quote_wsol`, read first) and V is in
+    [V_LO_LAMPORTS, V_HI_LAMPORTS] lamports, both ends inclusive (check `v_band`). A WSOL pool with no V is ineligible under its own check `v_missing`
+    (so `failed` carries "v_missing" and not "v_band"); a non-WSOL pool fails `quote_wsol` alone and its V is not read."""
     assert_as_of(snap, as_of_ms)
     checks: dict[str, dict[str, Any]] = {}
 
@@ -399,6 +418,12 @@ def filters(snap: SnapshotLike, *, as_of_ms: int) -> FilterResult:
     add("venue_pumpswap", snap.get("prog"), "pumpswap", snap.get("prog") == "pumpswap")
     add("quote_wsol", snap.get("quote_wsol"), "True (None = unverified fails)", snap.get("quote_wsol") is True)
     wsol = snap.get("quote_wsol") is True  # before any SOL figure: a non-WSOL pool's reserves and volumes are not SOL, so they are never read
+    if wsol:  # DEC-031 Amendment 2 item 6: the quote mint is read first, then V. A non-WSOL pool's V is not read (it fails quote_wsol alone, never v_missing)
+        v = _v_lamports(snap)
+        if v is None:
+            add("v_missing", None, "V present (a print carried virtual_quote_reserves)", False)  # its own reason code, so a report can count it apart from v_band
+        else:
+            add("v_band", v, f"V in [{V_LO_LAMPORTS}, {V_HI_LAMPORTS}] lamports, both ends inclusive", V_LO_LAMPORTS <= v <= V_HI_LAMPORTS)
     lag = _state_lag(snap, as_of_ms)
     add("state_fresh", lag, f"state clock within {STATE_LAG_MAX_MS} ms of T", lag is not None and lag <= STATE_LAG_MAX_MS)
     age, known = _age(snap)
