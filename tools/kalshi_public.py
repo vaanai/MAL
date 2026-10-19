@@ -144,6 +144,7 @@ ALLOWED_GET = tuple(re.compile(p) for p in (
     r"^/historical/markets$",
     r"^/historical/trades$",
     r"^/historical/markets/[A-Za-z0-9._-]+/candlesticks$",
+    r"^/incentive_programs$",
 ))
 
 
