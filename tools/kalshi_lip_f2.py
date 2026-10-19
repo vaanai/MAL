@@ -648,10 +648,21 @@ def run_f2(cfg, variant, ctx):
         return dry_report(rep, ctx)
     lab = labels(variant, ctx)
     check_out(out, variant, [cfg.books, cfg.programs, cfg.meta, cfg.trades, cfg.markets, cfg.series])
-    with f2_cohort(ctx["freeze_iso"], variant):
-        out.mkdir(parents=True, exist_ok=True)
-        (out / MARKER).write_text(_dump(dict(lab, files=list(SIM_OUTPUT_FILES))))
-        res = sim.run_sim(cfg)
+    fresh_dir, had_marker = not out.exists(), (out / MARKER).exists()
+    try:
+        with f2_cohort(ctx["freeze_iso"], variant):
+            out.mkdir(parents=True, exist_ok=True)
+            (out / MARKER).write_text(_dump(dict(lab, files=list(SIM_OUTPUT_FILES))))
+            res = sim.run_sim(cfg)
+    except BaseException:
+        # a refused / failed run leaves no marker-only directory behind (files the simulator wrote stay, labelled by the marker)
+        if not any((out / f).exists() for f in SIM_OUTPUT_FILES):
+            if not had_marker:
+                (out / MARKER).unlink(missing_ok=True)
+            if fresh_dir:
+                with contextlib.suppress(OSError):
+                    out.rmdir()
+        raise
     # ---- relabel every output (outside the patch: the simulator is LIP-F1's again)
     res["verdict_simulator"] = res.get("verdict")
     res.update(lab)

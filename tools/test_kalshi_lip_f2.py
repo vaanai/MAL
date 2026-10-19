@@ -672,3 +672,423 @@ def test_the_verdict_wording_a_p05_only_pass_is_fail_multiplicity_adjusted():
         assert f2.final_verdict(cells_gate(v)) == v
     assert f2.final_verdict({"verdict": "NOT_DECIDABLE", "cells": {}}) == "NOT_DECIDABLE"
     assert f2.final_verdict({"verdict": "FAIL", "cells": {}}) == "FAIL"
+
+
+# ============================================================ (7) refusal paths: the two process gates, R, the pins
+def test_the_lip_f1_gate_must_be_a_final_deciding_book_a_read_instant_file(tmp_path):
+    ok = lip_gate(tmp_path)
+    info = f2.check_lip_f1_gate(str(ok))
+    assert info == {"path": str(ok), "sha256": sha(ok), "read_instant": "2026-10-24T00:00:00Z"}
+    for v in ("FORMULA_SCREEN_PASSED", "FAIL", "DEAD_AS_FROZEN", "NOT_DECIDABLE"):
+        assert f2.check_lip_f1_gate(str(lip_gate(tmp_path, verdict=v)))["sha256"]
+    # a COUNTS_NOT_MET candidate is not final ... except the read at the NOT_DECIDABLE date
+    with pytest.raises(f2.F2Refusal, match="LIP-F1 not final"):
+        f2.check_lip_f1_gate(str(lip_gate(tmp_path, verdict="COUNTS_NOT_MET")))
+    with pytest.raises(f2.F2Refusal, match="LIP-F1 not final"):
+        f2.check_lip_f1_gate(str(lip_gate(tmp_path, verdict="COUNTS_NOT_MET", read_instant="2026-11-01T00:00:00Z")))
+    assert f2.check_lip_f1_gate(str(lip_gate(tmp_path, verdict="COUNTS_NOT_MET", read_instant="2026-11-02T00:00:00Z")))
+    for over in ({"book": "C"}, {"book": "F2-A"}, {"book": "B"}, {"deciding": False}, {"deciding": Ellipsis}, {"scan": {"x": 1}},
+                 {"freeze": "2026-10-20T11:00:00Z"}, {"freeze": Ellipsis}):
+        with pytest.raises(f2.F2Refusal, match="is not a LIP-F1 deciding gate.json"):
+            f2.check_lip_f1_gate(str(lip_gate(tmp_path, **over)))
+    for v in ("SCAN_REPORT_ONLY_WOULD_PASS_IF_READ_AT_R", "PENDING", "REPORT_ONLY_FAIL", None, Ellipsis):
+        with pytest.raises(f2.F2Refusal, match="LIP-F1 not final"):
+            f2.check_lip_f1_gate(str(lip_gate(tmp_path, verdict=v)))
+    with pytest.raises(f2.F2Refusal, match="LIP-F1 not final"):
+        f2.check_lip_f1_gate(None)
+    with pytest.raises(f2.F2Refusal, match="LIP-F1 not final"):
+        f2.check_lip_f1_gate(str(tmp_path / "nope.json"))
+    with pytest.raises(f2.F2Refusal, match="LIP-F1 not final"):
+        f2.check_lip_f1_gate(str(tmp_path))                                # a directory is not a file
+    bad = tmp_path / "bad.json"
+    bad.write_text("{not json")
+    with pytest.raises(f2.F2Refusal, match="not readable JSON"):
+        f2.check_lip_f1_gate(str(bad))
+    bad.write_text("[1, 2]")
+    with pytest.raises(f2.F2Refusal, match="not a JSON object"):
+        f2.check_lip_f1_gate(str(bad))
+
+
+def test_the_book_c_marker_must_exist_and_must_not_be_the_start_marker(tmp_path):
+    ok = bookc_marker(tmp_path)
+    assert f2.check_bookc_done(str(ok)) == {"path": str(ok), "sha256": sha(ok)}
+    done = bookc_marker(tmp_path, json.dumps({"book": "C", "report_only": True, "promotable": False, "verdict": "REPORT_ONLY_FAIL"}))
+    assert f2.check_bookc_done(str(done))["sha256"] == sha(done)             # Book C's own gate.json is accepted
+    for arg in (None, str(tmp_path / "missing"), str(tmp_path)):
+        with pytest.raises(f2.F2Refusal, match="Book C is not done"):
+            f2.check_bookc_done(arg)
+    start = tmp_path / "bookc-out" / f2.BOOKC_START_MARKER
+    start.parent.mkdir()
+    start.write_text(json.dumps({"book": "C", "report_only": True}))
+    with pytest.raises(f2.F2Refusal, match="written when a Book C run starts"):
+        f2.check_bookc_done(str(start))
+    for body in ({"book": "A", "report_only": True}, {"book": "C", "report_only": False}, {"book": "F2-A"}):
+        with pytest.raises(f2.F2Refusal, match="not a Book C file"):
+            f2.check_bookc_done(str(bookc_marker(tmp_path, json.dumps(body))))
+
+
+@pytest.mark.parametrize("flags", [["--read-instant", R], ["--scan"], ["--scan", "--asof", R]])
+def test_outcome_computing_modes_are_refused_without_the_two_gates_and_the_simulator_never_runs(
+        tmp_path, monkeypatch, capsys, texts, decl, gates, flags):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    monkeypatch.setattr(sim, "run_sim", lambda cfg: pytest.fail("the simulator ran without the gates"))
+    nongate = tmp_path / "x.json"
+    nongate.write_text(json.dumps({"book": "A", "deciding": True, "freeze": "2026-10-19T03:33:16Z", "verdict": "COUNTS_NOT_MET"}))
+    cases = [(None, "LIP-F1 not final"),                                               # neither gate
+             ({"lip": None, "bookc": gates["bookc"]}, "LIP-F1 not final"),
+             ({"lip": str(tmp_path / "nope.json"), "bookc": gates["bookc"]}, "LIP-F1 not final"),
+             ({"lip": str(nongate), "bookc": gates["bookc"]}, "LIP-F1 not final"),     # a candidate, not the deciding file
+             ({"lip": gates["lip"], "bookc": None}, "Book C is not done"),
+             ({"lip": gates["lip"], "bookc": str(tmp_path / "nope")}, "Book C is not done")]
+    for gs, msg in cases:
+        argv = cli_argv(w, tmp_path, texts, decl, variant="A") + flags
+        if gs is not None:
+            argv += (["--lip-f1-gate", gs["lip"]] if gs["lip"] else []) + (["--bookc-done", gs["bookc"]] if gs["bookc"] else [])
+        assert f2.main(argv) == 2
+        err = capsys.readouterr().err
+        assert err.startswith("refused:") and msg in err, (gs, err)
+    assert not (tmp_path / "out").exists()
+    # run_f2 re-checks both gates, so no caller can reach the simulator without them
+    for bad_ctx in ({"freeze_iso": F2_FREEZE}, dict(ctx_for(texts, gates), lip_f1_gate={"path": None}),
+                    dict(ctx_for(texts, gates), bookc_done={"path": None})):
+        with pytest.raises(f2.F2Refusal):
+            f2.run_f2(f2_cfg(w, tmp_path / "out2"), "A", bad_ctx)
+    assert not (tmp_path / "out2").exists()
+
+
+def test_a_read_instant_must_be_a_midnight_inside_the_f2_window(tmp_path, monkeypatch, capsys, texts, decl, gates):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    monkeypatch.setattr(sim, "run_sim", lambda cfg: pytest.fail("the simulator ran"))
+    for bad, msg in (("2026-10-24T00:00:00Z", "must lie in"), ("2026-10-25T00:00:00Z", "must lie in"),
+                     ("2026-10-26T12:00:00Z", "00:00:00Z instant"), ("2026-10-26T00:00:01Z", "00:00:00Z instant"),
+                     ("2026-11-03T00:00:00Z", "must lie in"), ("junk", "")):
+        assert f2.main(cli_argv(w, tmp_path, texts, decl, gates) + ["--read-instant", bad]) == 2, bad
+        assert msg in capsys.readouterr().err, bad
+    # F2's window is [2026-10-26, 2026-11-02]; a read at the freeze or before is refused by the same check
+    cfg = f2_cfg(w, tmp_path / "o", read_us=st.at("2026-10-19T00:00:00Z"))
+    with pytest.raises(f2.F2Refusal, match="must lie in"):
+        f2.check_cfg(cfg, "A", st.at(F2_FREEZE))
+    for ok in ("2026-10-26T00:00:00Z", "2026-10-27T00:00:00Z", "2026-11-02T00:00:00Z"):
+        f2.check_cfg(f2_cfg(w, tmp_path / "o", read_us=st.at(ok)), "A", st.at(F2_FREEZE))
+    with pytest.raises(f2.F2Refusal, match="not both"):
+        f2.check_cfg(f2_cfg(w, tmp_path / "o", scan=True), "A", st.at(F2_FREEZE))
+    with pytest.raises(f2.F2Refusal, match="not both"):
+        f2.check_cfg(f2_cfg(w, tmp_path / "o", read_us=None), "A", st.at(F2_FREEZE))
+
+
+def test_argument_and_pin_refusals(tmp_path, monkeypatch, capsys, texts, decl, gates):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    monkeypatch.setattr(sim, "run_sim", lambda cfg: pytest.fail("the simulator ran"))
+    base = lambda **kw: cli_argv(w, tmp_path, texts, decl, gates, **kw) + ["--read-instant", R]
+    # wrong declaration pin, wrong --freeze, missing variant, altered inherited text
+    argv = base()
+    argv[argv.index("--f2-declare-sha256") + 1] = "0" * 64
+    assert f2.main(argv) == 2 and "does not match the given pin" in capsys.readouterr().err
+    argv = base()
+    argv[argv.index("--freeze") + 1] = "2026-10-19T12:00:00Z"
+    assert f2.main(argv) == 2 and "--freeze must be the cohort freeze" in capsys.readouterr().err
+    assert f2.main(base(variant=None)) == 2 and "--variant A|B is required" in capsys.readouterr().err
+    (texts / "DECLARE-FORWARD-CONDITIONS.md").write_text("tampered\n")
+    assert f2.main(base()) == 2 and "does not match the pinned" in capsys.readouterr().err
+    (texts / "DECLARE-FORWARD-CONDITIONS.md").write_text("synthetic conditions\n")
+    # recorders: only obrec-1019c (first) and obrec-1019d; never Book C's obrec-1019e
+    for books in (["--books", str(tmp_path / "obrec-1019e")], ["--books", w.books[0], str(tmp_path / "obrec-1019e")],
+                  ["--books", str(tmp_path / "obrec-1019d")]):
+        argv = base()
+        i = argv.index("--books")
+        argv[i:i + 1 + len(w.books)] = books
+        assert f2.main(argv) == 2 and "obrec-1019c" in capsys.readouterr().err, books
+    # inputs that are not arguments at all: the F2 identity is fixed
+    for flag in (["--force-source", "obrec-1019c"], ["--size", "100"], ["--imax", "40"], ["--registry-sha256", "obrec-1019c=ab"],
+                 ["--no-stress"], ["--conditions", "x"], ["--declare", "x"]):
+        with pytest.raises(SystemExit) as e:
+            f2.main(base() + flag)
+        assert e.value.code == 2, flag
+        capsys.readouterr()
+    with pytest.raises(SystemExit):
+        f2.main(base() + ["--scan"])                                         # --read-instant and --scan are exclusive
+    capsys.readouterr()
+    assert f2.main(base() + ["--asof", R]) == 2 and "--asof is for --scan" in capsys.readouterr().err
+    argv = cli_argv(w, tmp_path, texts, decl, gates, out=None) + ["--read-instant", R]
+    assert f2.main(argv) == 2 and "--out is required" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("text,msg", [
+    ("no freeze line\nF2-A F2-B\n", "exactly one"),
+    (decl_text() + decl_text(), "exactly one"),
+    ("# title\n" + decl_text(), "first line"),
+    (decl_text().replace("F2-B", "F2-X"), "does not name F2-B"),
+    (decl_text("2026-10-19T03:33:16Z"), "after LIP-F1's freeze"),
+    (decl_text("2026-10-18T03:33:16Z"), "after LIP-F1's freeze"),
+])
+def test_declaration_parse_and_pin(tmp_path, text, msg):
+    p = tmp_path / "d.md"
+    p.write_text(text)
+    with pytest.raises(f2.F2Refusal, match=msg):
+        f2.load_f2_declaration(str(p), sha(p))
+
+
+def test_declaration_loading_and_the_first_unit_day(tmp_path):
+    p = tmp_path / "d.md"
+    p.write_text(decl_text("2026-10-20T10:59:59Z"))
+    h, freeze = f2.load_f2_declaration(str(p), sha(p))
+    assert (h, freeze) == (sha(p), "2026-10-20T10:59:59Z")
+    for bad_pin in (None, "", "abc", "Z" * 64):
+        with pytest.raises(f2.F2Refusal, match="required"):
+            f2.load_f2_declaration(str(p), bad_pin)
+    with pytest.raises(f2.F2Refusal, match="not a file"):
+        f2.load_f2_declaration(str(tmp_path / "none"), "0" * 64)
+    with pytest.raises(f2.F2Refusal, match="--f2-declare is required"):
+        f2.load_f2_declaration(None, "0" * 64)
+    # gas periods run 12:00Z -> 03:59Z next day: a freeze before 12:00Z on 10-20 gives unit-day 10-21
+    assert f2.first_unit_day("2026-10-20T11:00:00Z") == "10-21" == f2.first_unit_day("2026-10-20T12:00:00Z")
+    assert f2.first_unit_day("2026-10-20T12:00:01Z") == "10-22" and f2.first_unit_day("2026-10-19T23:00:00Z") == "10-21"
+
+
+# =========================================================================================== --out guard
+def test_out_must_be_its_own_directory_with_a_marker(tmp_path, monkeypatch, covered, texts, gates):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    ctx = ctx_for(texts, gates)
+    # holding LIP-F1 (or Book C) simulator files: refused, nothing overwritten
+    sim.run_sim(w.cfg(out=str(tmp_path / "f1out")))
+    before = md5_dir(tmp_path / "f1out")
+    with pytest.raises(f2.F2Refusal, match="already holds simulator files"):
+        f2.run_f2(f2_cfg(w, tmp_path / "f1out"), "A", ctx)
+    assert md5_dir(tmp_path / "f1out") == before and not (tmp_path / "f1out" / f2.MARKER).exists()
+    # the other variant's directory is refused; the same variant may be re-run into its own
+    f2.run_f2(f2_cfg(w, tmp_path / "oA", "A"), "A", ctx)
+    assert (tmp_path / "oA" / f2.MARKER).is_file()
+    with pytest.raises(f2.F2Refusal, match="another F2 variant"):
+        f2.run_f2(f2_cfg(w, tmp_path / "oA", "B"), "B", ctx)
+    run1 = md5_dir(tmp_path / "oA")
+    f2.run_f2(f2_cfg(w, tmp_path / "oA", "A"), "A", ctx)
+    assert md5_dir(tmp_path / "oA") == run1
+    # an existing file, an output inside an input store
+    (tmp_path / "afile").write_text("x")
+    with pytest.raises(f2.F2Refusal, match="not a directory"):
+        f2.check_out(tmp_path / "afile", "A")
+    with pytest.raises(f2.F2Refusal, match="inside the input store"):
+        f2.check_out(Path(w.lip) / "out", "A", [w.lip])
+    with pytest.raises(f2.F2Refusal, match="inside the input store"):
+        f2.check_out(Path(w.kal) / "deep" / "out", "B", [[str(w.kal) + "/lipdl/run-*"], str(w.kal)])
+    f2.check_out(tmp_path / "fresh", "A", [w.lip, [str(w.kal)]])
+
+
+def test_a_refused_or_failed_run_leaves_no_marker_only_directory(tmp_path, monkeypatch, texts, gates):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    monkeypatch.setattr(f2, "REGISTRY_PINS", {"obrec-1019c": "0" * 64})
+    with pytest.raises(sim.InputError, match="registry check failed"):            # a wrong registry pin is refused by the sim
+        f2.run_f2(f2_cfg(w, tmp_path / "out"), "A", ctx_for(texts, gates))
+    assert not (tmp_path / "out").exists() and f2.sim_is_lip_f1()
+    (tmp_path / "pre").mkdir()
+    with pytest.raises(sim.InputError):
+        f2.run_f2(f2_cfg(w, tmp_path / "pre"), "B", ctx_for(texts, gates))
+    assert (tmp_path / "pre").is_dir() and list((tmp_path / "pre").iterdir()) == []
+
+
+# ======================================================================================= the dry run
+ALLOWED_DRY = {"units_by_status", "excl_no_meta_sub", "units_by_source", "inconsistent_snapshots",
+               "rows_before_freeze_ignored", "unsealed_parts_excluded", "meta_captures", "meta_markets", "stores", "mode",
+               "note", "book", "f2_freeze", "f2_declare_sha256", "f2_universe", "f2_registry_pins", "f2_lip_texts_sha256",
+               "f2_sim_md5_pinned", "f2_tool_md5"}
+FORBIDDEN_DRY = ("quot", "reward", "fill", "pause", "share", "phi", "pnl", "p&l", "markout", "opened", "zero", "side_cap",
+                 "sidecap", "snapshots_in_window", "carry_forward", "gaps_over_cap", "exclusion_share", "events", "unit_days",
+                 "structurally", "g4", "kill")
+
+
+def test_dry_run_prints_loader_counts_only_needs_no_gate_and_never_applies_the_f2_rule(tmp_path, monkeypatch, capsys, texts, decl):
+    w = f2_world(tmp_path / "w", monkeypatch,
+                 extra_prog=[st.prog("pRT", "KXRT-26OCT19-T3", st.S0, st.E_)],
+                 extra_snaps={"KXRT-26OCT19-T3": st.ticks("2026-10-19T12:05:30Z", "2026-10-19T15:30:00Z", 60)})
+    seen = []
+    real_run_sim = sim.run_sim
+
+    def spy(cfg):
+        seen.append({n: getattr(sim, n) is f2.F1_FUNCS[n] for n in f2.PATCHED_FUNCTIONS})
+        seen.append(sim.FREEZE_ISO)
+        return real_run_sim(cfg)
+    monkeypatch.setattr(sim, "run_sim", spy)
+    monkeypatch.setattr(sim, "load_trades", lambda *a, **k: pytest.fail("the dry run opened the trades parquet"))
+    monkeypatch.setattr(sim, "read_results", lambda *a, **k: pytest.fail("the dry run opened settled results"))
+    monkeypatch.setattr(sim, "run_unit", lambda *a, **k: pytest.fail("the dry run ran the pass"))
+    outs = []
+    for variant in (None, "A", "B"):
+        assert f2.main(cli_argv(w, tmp_path, texts, decl, None, variant=variant, out=None) + ["--dry-run"]) == 0
+        outs.append(capsys.readouterr().out)
+    assert outs[0] == outs[1] == outs[2]                                      # no variant rule is applied in a dry run
+    assert seen[0] == {"decide_quote": True, "cluster_bootstrap": True, "evaluate_gate": True}   # the FROZEN functions
+    assert seen[1] == F2_FREEZE
+    rep = json.loads(outs[0])
+    assert set(rep) <= ALLOWED_DRY, set(rep) - ALLOWED_DRY
+    assert rep["mode"] == "dry_run" and rep["f2_freeze"] == F2_FREEZE and rep["f2_universe"] == list(sim.GAS_SERIES)
+    assert rep["units_by_status"] == {"passed_exclusions": 2}                  # opened / not_opened are collapsed
+    assert rep["units_by_source"] == {"obrec-1019c": 2} and rep["inconsistent_snapshots"] == {"obrec-1019c": 0}
+    assert rep["unsealed_parts_excluded"] == {"obrec-1019c": 0} and rep["meta_markets"] == 1 and rep["meta_captures"] == 1
+    assert rep["stores"]["trades"] and rep["stores"]["markets"]
+    blob = json.dumps(rep).lower()
+    for word in FORBIDDEN_DRY:
+        assert word not in blob, word
+    assert "pRT" not in json.dumps(rep) and f2.sim_is_lip_f1()
+    # a dry run needs no gates and refuses the outcome-mode arguments
+    for extra in (["--read-instant", R], ["--scan"], ["--asof", R], ["--out", str(tmp_path / "o")]):
+        assert f2.main(cli_argv(w, tmp_path, texts, decl, None, variant=None, out=None) + ["--dry-run"] + extra) == 2
+        assert "takes no" in capsys.readouterr().err
+
+
+def test_dry_run_still_checks_the_texts_the_declaration_and_the_registry_pins(tmp_path, monkeypatch, capsys, texts, decl):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    argv = cli_argv(w, tmp_path, texts, decl, None, variant=None, out=None) + ["--dry-run"]
+    assert f2.main(argv) == 0
+    capsys.readouterr()
+    (texts / "DECLARE-FORWARD.md").write_text("tampered\n")
+    assert f2.main(argv) == 2 and "does not match the pinned" in capsys.readouterr().err
+    (texts / "DECLARE-FORWARD.md").write_text("synthetic declare\n")
+    monkeypatch.setattr(f2, "REGISTRY_PINS", {"obrec-1019c": "0" * 64})
+    assert f2.main(argv) == 4 and "registry check failed" in capsys.readouterr().err
+    assert f2.sim_is_lip_f1()
+
+
+def test_the_dry_run_whitelist_drops_every_field_that_depends_on_the_quote_rule():
+    rep = {"mode": "dry_run", "units_by_status": {"opened": 7, "not_opened": 3, "excl_not_daily": 4},
+           "structurally_opened_units": 7, "events": 5, "unit_days": 2, "snapshots_in_window": 100,
+           "snapshots_quotable_zero_inventory": 50, "carry_forward_gaps": {}, "exclusion_share": {"share": 0.1},
+           "median_gap_s_by_source": {"obrec-1019c": 222.0}, "programs_admitted_series": 9, "units_by_source": {"obrec-1019c": 14},
+           "excl_no_meta_sub": {}, "inconsistent_snapshots": {}, "meta_captures": 1, "meta_markets": 1, "stores": {}}
+    out = f2.dry_report(rep, {"freeze_iso": F2_FREEZE, "declare_sha256": "a" * 64, "texts": {}})
+    assert out["units_by_status"] == {"excl_not_daily": 4, "passed_exclusions": 10}
+    for k in ("structurally_opened_units", "events", "unit_days", "snapshots_in_window", "snapshots_quotable_zero_inventory",
+              "carry_forward_gaps", "exclusion_share", "median_gap_s_by_source", "programs_admitted_series"):
+        assert k not in out
+
+
+# ==================================================================== universe, first-seen rule, coverage
+def test_the_universe_is_the_eight_gas_series_and_the_first_seen_rule_uses_the_f2_freeze(tmp_path, monkeypatch, covered, texts, gates):
+    gas_c = "KXAAAGASDNY-26OCT19-T4.0"
+    mid = st.prog("pMid", gas_c, st.S0, st.E_)
+    w = f2_world(tmp_path / "w", monkeypatch,
+                 extra_prog=[st.prog("pRT", "KXRT-26OCT19-T3", st.S0, st.E_), mid],
+                 extra_snaps={"KXRT-26OCT19-T3": st.ticks("2026-10-19T12:05:30Z", "2026-10-19T15:30:00Z", 60),
+                              gas_c: st.ticks("2026-10-19T12:05:30Z", "2026-10-19T15:30:00Z", 60)},
+                 late_polls=[("2026-10-19T08:00:00Z", True, [mid])])         # listed at 08:00Z: after LIP-F1's freeze, before F2's
+    g1 = sim.run_sim(w.cfg(out=str(tmp_path / "f1")))
+    u1 = {u["unit_id"]: u for u in pq.read_table(tmp_path / "f1" / "units.parquet").to_pylist() if u["cell"] in ("", "U0")}
+    assert {"pA", "pB", "pMid"} <= {k for k, u in u1.items() if u["status"] == "opened"} and g1["exclusions"] == {"excl_no_meta": 1}
+    g2 = f2.run_f2(f2_cfg(w, tmp_path / "f2"), "A", ctx_for(texts, gates))
+    u2 = {u["unit_id"]: u for u in pq.read_table(tmp_path / "f2" / "units.parquet").to_pylist() if u["cell"] in ("", "U0")}
+    assert {k for k, u in u2.items() if u["status"] == "opened"} == {"pA", "pB"}
+    assert u2["pMid"]["status"] == "excl_pre_freeze" and "pRT" not in u2         # pRT is not admitted at all
+    assert g2["exclusions"] == {"excl_pre_freeze": 1}                           # and is not even counted
+    assert g2["freeze"] == F2_FREEZE
+
+
+def test_the_coverage_block_keeps_the_obrec_1019c_baseline_and_counts_from_the_f2_freeze(tmp_path, monkeypatch):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    with f2.f2_cohort(F2_FREEZE, "A"):
+        cfg = f2_cfg(w, tmp_path / "o")
+        inp = sim.load_inputs(cfg)
+        cov = sim.coverage(inp, cfg, st.at(R))
+    assert cov["baselines_s"] == {"obrec-1019c": 222.7, "lipsnap": 900.0}
+    assert sorted(cov["days"])[0] == "2026-10-19" and "2026-10-25" in cov["days"]
+    assert cov["days"]["2026-10-19"]["recorder"] > 0                              # the 1019c rounds of the synthetic world
+    assert f2.sim_is_lip_f1()
+
+
+# ============================================================ outputs: every one relabelled, deterministic, own --out
+def run_cli(w, tmp, texts_dir, decl_path, gates, variant, out, capsys, *extra):
+    rc = f2.main(cli_argv(w, tmp, texts_dir, decl_path, gates, variant=variant, out=out) + list(extra))
+    cap_ = capsys.readouterr()
+    return rc, cap_.out, cap_.err
+
+
+@pytest.mark.parametrize("variant", ["A", "B"])
+def test_a_full_cli_run_relabels_every_output_and_writes_only_to_out(tmp_path, monkeypatch, capsys, covered, texts, decl, gates, variant):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    label = f"F2-{variant}"
+    rc, out, err = run_cli(w, tmp_path, texts, decl, gates, variant, "out", capsys, "--read-instant", R)
+    assert rc == 0, err
+    o = tmp_path / "out"
+    assert sorted(f.name for f in o.iterdir()) == sorted(["units.parquet", "fills.parquet", "days.parquet", "gate.json", "table.txt", f2.MARKER])
+    gate = json.loads((o / "gate.json").read_text())
+    assert gate["book"] == label == gate["lip_f2_variant"] and gate["book_sim_internal"] == "A"
+    assert gate["report_only"] is False and gate["gated"] is True and gate["promotable"] is False and gate["deciding"] is True
+    assert gate["size"] == 25.0 and gate["i_max"] == {"A": 50.0, "B": 25.0}[variant]
+    assert gate["freeze"] == F2_FREEZE == gate["f2_freeze"] and gate["f2_declare_sha256"] == sha(decl)
+    assert gate["f2_universe"] == list(sim.GAS_SERIES) and gate["f2_m_gated"] == 3 and gate["verdict"] == "COUNTS_NOT_MET"
+    assert gate["f2_rule"] == f2.RULE_TEXT[variant] and gate["f2_tool_md5"] == hashlib.md5(Path(f2.__file__).read_bytes()).hexdigest()
+    assert gate["sim_md5"] == SIM_MD5 and gate["f2_sim_md5_pinned"] == SIM_MD5 and gate["f2_sim_tests_md5_matches"] is True
+    assert gate["f2_lip_f1_gate"] == {"path": gates["lip"], "sha256": sha(gates["lip"]), "read_instant": "2026-10-24T00:00:00Z"}
+    assert gate["f2_bookc_done"] == {"path": gates["bookc"], "sha256": sha(gates["bookc"])}
+    assert set(gate["f2_registry_pins"]) == {"obrec-1019c"}
+    assert gate["f2_lip_texts_sha256"] == {f.name: sha(f) for f in texts.iterdir()} and gate["f2_qp_review_sha256"].startswith("965a41bc")
+    for c in sim.CELLS:
+        g4b = gate["cells"][c]["gate"]["G4b"]
+        assert "p05" in g4b and "p_adj" in g4b and g4b["adj_pct"] == pytest.approx(5 / 3) and "pass_unadjusted" in g4b
+    table = (o / "table.txt").read_text()
+    assert out == table                                                        # the CLI prints the file
+    first = table.splitlines()[0]
+    assert first.startswith(f"LIP-F2 formula screen | {label} {f2.NAMES[variant]} S=25 I_max=") and "verdict=COUNTS_NOT_MET" in first
+    assert "LIP-F1 formula screen | Book" not in table
+    assert "p05$" in table
+    assert "G4 and G4b decide at the 1.6667th percentile" in table and "bound U0:" in table and "bound BQ:" in table
+    # the L3 read statement is in the header, with LIP-F1's R, the F2 unit-days and the G4b cluster count
+    stmt = gate["f2_statement_read"]
+    assert stmt.startswith("Family declared before any F2 number: LIP-F1 Book A (gated, final at R = 2026-10-24T00:00:00Z, "
+                           "not changed by this read); Book B and Book C (report-only); F2-A and F2-B (gated screens); "
+                           "F1-rule control (report-only). m = 3 gated books.")
+    assert "the same 8 gas series, unit-days 2026-10-19, G4b clusters = 1." in stmt
+    assert stmt.endswith("An F2 pass does not rescue or condition LIP-F1.") and stmt in table
+    assert "The deciding G4/G4b bounds are the 1.667th percentile; the 5th is shown." in stmt
+    assert "formula screen passed (multiplicity-adjusted)" in stmt
+    assert gate["f2_statement_cohort"] in table and "frozen 2026-10-19T11:00:00Z" in gate["f2_statement_cohort"]
+    assert "gas days from 10-20" in gate["f2_statement_cohort"] and "No F2 number existed when this read ran." in table
+    # the marker, the parquet metadata and the label on every output
+    marker = json.loads((o / f2.MARKER).read_text())
+    assert marker["lip_f2_variant"] == label and marker["files"] == list(f2.SIM_OUTPUT_FILES) and marker["promotable"] is False
+    for f in ("units.parquet", "fills.parquet", "days.parquet"):
+        md = pq.read_schema(o / f).metadata
+        assert md[b"lip_f2_variant"] == label.encode() and md[b"promotable"] == b"false"
+    assert len(pq.read_table(o / "units.parquet")) > 0 and f2.sim_is_lip_f1()
+    assert "peak RSS" in err
+
+
+@pytest.mark.parametrize("variant", ["A", "B"])
+def test_f2_runs_are_byte_identical(tmp_path, monkeypatch, covered, texts, gates, variant):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    for i in (1, 2):
+        f2.run_f2(f2_cfg(w, tmp_path / f"o{i}", variant), variant, ctx_for(texts, gates))
+    assert md5_dir(tmp_path / "o1") == md5_dir(tmp_path / "o2")
+
+
+def test_a_scan_is_advisory_starts_at_the_f2_read_window_and_keeps_its_wording(tmp_path, monkeypatch, capsys, covered, texts, decl, gates):
+    w = f2_world(tmp_path / "w", monkeypatch)
+    rc, out, err = run_cli(w, tmp_path, texts, decl, gates, "B", "scan", capsys, "--scan", "--asof", "2026-10-28T00:00:00Z")
+    assert rc == 0, err
+    gate = json.loads((tmp_path / "scan" / "gate.json").read_text())
+    assert gate["verdict"].startswith("SCAN_REPORT_ONLY_") and gate["deciding"] is False
+    assert gate["scan"]["candidates"][0] == "2026-10-26T00:00:00Z" and gate["scan"]["candidates"][-1] == "2026-10-28T00:00:00Z"
+    assert "multiplicity" not in gate["verdict"]
+
+
+def test_a_units_evidence_failure_is_labelled_too(tmp_path, monkeypatch, capsys, covered, texts, decl, gates):
+    (texts / "DECLARE-FORWARD-VERIFY-1.md").write_text("no url and no verdict word here\n")
+    monkeypatch.setattr(f2, "LIP_F1_TEXTS", tuple((k, f, sha(texts / f)) for k, f, _h in f2.LIP_F1_TEXTS))
+    w = f2_world(tmp_path / "w", monkeypatch)
+    rc, out, err = run_cli(w, tmp_path, texts, decl, gates, "A", "ne", capsys, "--read-instant", R)
+    assert rc == 0, err
+    gate = json.loads((tmp_path / "ne" / "gate.json").read_text())
+    assert gate["verdict"] == "NOT_DECIDABLE" and gate["book"] == "F2-A" and gate["cells"] == {}
+    assert out.splitlines()[0].startswith("LIP-F2 formula screen | F2-A SIDE-CAP") and "LIP-F1 formula screen | Book" not in out
+    assert "unit-days none, G4b clusters = 0" in gate["f2_statement_read"]
+
+
+def test_f2_a_changes_the_fills_of_a_lopsided_book_end_to_end(tmp_path, monkeypatch, covered, texts, gates):
+    lop = dict(yes=[(0.72, 1000)], no=[(0.27, 1000)])
+    w = f2_world(tmp_path / "w", monkeypatch, extra_snaps={st.GAS_A: st.ticks("2026-10-19T12:05:30Z", "2026-10-19T15:30:00Z", 60, book=lop)})
+    sim.run_sim(w.cfg(out=str(tmp_path / "f1")))
+    f2.run_f2(f2_cfg(w, tmp_path / "a", "A"), "A", ctx_for(texts, gates))
+    yes_fills = lambda d: next(u["fills_YES"] for u in pq.read_table(tmp_path / d / "units.parquet").to_pylist()
+                               if u["unit_id"] == "pA" and u["cell"] == "U0")
+    rew = lambda d: next(u["reward_central"] for u in pq.read_table(tmp_path / d / "units.parquet").to_pylist()
+                         if u["unit_id"] == "pA" and u["cell"] == "U0")
+    assert yes_fills("f1") == 25.0 and yes_fills("a") == 0.0                       # the 0.72 YES bid is not posted
+    assert 0 < rew("a") < rew("f1")                                               # the reward comes from the NO side only
