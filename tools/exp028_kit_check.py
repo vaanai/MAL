@@ -66,6 +66,7 @@ LISTED: tuple[tuple[str, tuple[str, ...]], ...] = (
     (ARENA_STACK, ("boot_lo", "BOOT_DRAWS", "BOOT_SEED", "BOOT_PCT")),
 )
 LISTED_KEYS = frozenset((p, n) for p, ns in LISTED for n in ns)
+DYNAMIC_BUILTINS = frozenset({"getattr", "setattr", "delattr", "globals", "locals", "vars", "exec", "eval", "compile", "__import__"})  # a walked node that uses one cannot be followed by name
 PRICING_BOUNDARY = frozenset({(ARENA_SCREEN, "legs")})  # QP item 5 (C): pricing, covered by (C); see the module docstring
 KIT_FILES = (ARENA_SCREEN, ARENA_STACK)
 RULES = ("sc", "total")
@@ -470,6 +471,38 @@ class _Mod:
             return (cand, orig) if self.exists(cand) else None
         return None
 
+    def dynamic_hits(self, stmt: ast.stmt, loads: set[str], attrs: set[tuple[str, str]], self_alias_stmt: bool) -> list[str]:
+        """Dynamic access inside a walked node: what it reaches is not a name the closure can follow, so it fails (A) closed."""
+        hits = []
+        for nm in sorted(loads):
+            if nm in DYNAMIC_BUILTINS and nm not in self.bind:
+                hits.append(nm)
+            i = self.imp.get(nm)
+            if i is not None and i[1].split(".")[0] == "importlib":
+                hits.append("importlib")
+        if not self_alias_stmt:  # `F = sys.modules[__name__]` (arena_stack) is the one pattern the closure understands: F is a self-alias
+            hits += [f"{b}.{a}" for b, a in sorted(attrs) if a == "modules" and self.imp.get(b, ("",))[0] in ("import", "from") and self.imp[b][1].split(".")[0] == "sys"]
+        if any(isinstance(n, (ast.Global, ast.Nonlocal)) for n in ast.walk(stmt)):
+            hits.append("global/nonlocal statement")
+        return sorted(set(hits))
+
+    def module_level_stores(self, compared: set[str]) -> list[str]:
+        """Module-level `X.attr = ...`, `X[i] = ...`, `del X.attr` (also augmented) whose base X is a compared name, a kit-module alias or a self-alias."""
+        out = []
+        todo: list[ast.AST] = list(self.tree.body)
+        while todo:
+            n = todo.pop()
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+                continue
+            if isinstance(n, (ast.Attribute, ast.Subscript)) and isinstance(n.ctx, (ast.Store, ast.Del)):
+                b: ast.AST = n
+                while isinstance(b, (ast.Attribute, ast.Subscript)):
+                    b = b.value
+                if isinstance(b, ast.Name) and (b.id in compared or b.id in self.self_alias or self.kit_module_for(b.id) is not None):
+                    out.append(f"module-level store to {b.id}.<attribute or subscript> at line {n.lineno}")
+            todo.extend(ast.iter_child_nodes(n))
+        return sorted(set(out))
+
     def unsupported_kit_import(self, name: str) -> bool:
         i = self.imp.get(name)
         return bool(i and i[0] == "import" and i[1].startswith("tools.") and not i[4])  # `import tools.x` binds `tools`: a form this check does not follow
@@ -546,6 +579,8 @@ class Closure:
             if m is None:
                 self.unresolved.add(f"{path}:{name} (file not found at the sha)")
                 continue
+            if m.has_star:
+                self.unresolved.add(f"{path}: star import (names it brings in cannot be compared)")
             if name not in m.bind:
                 self.unresolved.add(f"{path}:{name} (no top-level binding)")
                 continue
@@ -560,6 +595,8 @@ class Closure:
                         todo.append(tgt)
                     continue
                 loads, stores, attrs = m.refs(stmt)
+                for hit in m.dynamic_hits(stmt, loads, attrs, name in m.self_alias):
+                    self.unresolved.add(f"{path}:{name} dynamic access: {hit}")
                 for nm in loads:
                     if nm in m.bind:
                         if m.unsupported_kit_import(nm):
@@ -574,6 +611,11 @@ class Closure:
                         tgt_mod = m.kit_module_for(base)
                         if tgt_mod is not None:
                             todo.append((tgt_mod, attr))
+        for path in sorted({k[0] for k in self.compared}):  # module-level stores to a compared name or a kit module do not bind a name, so the walk above cannot see them
+            m = self.mod(path)
+            if m is not None:
+                for msg in m.module_level_stores({n for (pp, n) in self.compared if pp == path}):
+                    self.unresolved.add(f"{path}: {msg}")
 
 
 def anchoring(ref_sha: str, reference_path: Path | str) -> dict[str, Any]:

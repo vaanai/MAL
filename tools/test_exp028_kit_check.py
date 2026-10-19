@@ -60,6 +60,7 @@ def _edit(src: str, old: str, new: str) -> str:
     return src.replace(old, new)
 
 
+_MAX_P_RETURN = "    return None if (not ps or any(p is None for p in ps)) else max(ps)"
 VARIANTS = {
     "const": (K.ARENA_SCREEN, lambda s: _edit(s, "LAT_DECIDING = 1.9", "LAT_DECIDING = 1.8")),
     "helper": (K.ARENA_SCREEN, lambda s: _edit(s, "p_pct, p_null = (1 + c_pct) / (1 + B), (1 + c_null) / (1 + B)", "p_pct, p_null = c_pct / (1 + B), c_null / (1 + B)")),
@@ -69,6 +70,16 @@ VARIANTS = {
     "comment_only": (K.ARENA_SCREEN, lambda s: _edit(s, "def _max_p(ps: Sequence[float | None]) -> float | None:\n", "def _max_p(ps: Sequence[float | None]) -> float | None:  # a comment\n    # another comment\n")),
     "ghost_name": (K.ARENA_SCREEN, lambda s: _edit(s, "    return None if (not ps or any(p is None for p in ps)) else max(ps)", "    _ghost_helper(ps)\n    return None if (not ps or any(p is None for p in ps)) else max(ps)")),
     "bad_attribute": (K.ARENA_SCREEN, lambda s: _edit(s, "    return None if (not ps or any(p is None for p in ps)) else max(ps)", "    F.no_such_attribute\n    return None if (not ps or any(p is None for p in ps)) else max(ps)")),
+    "star": (K.ARENA_SCREEN, lambda s: _edit(s, "import zlib\n", "import zlib\nfrom math import *\n")),
+    "dyn_getattr": (K.ARENA_SCREEN, lambda s: _edit(s, _MAX_P_RETURN, '    getattr(ps, "x", None)\n' + _MAX_P_RETURN)),
+    "dyn_globals": (K.ARENA_SCREEN, lambda s: _edit(s, _MAX_P_RETURN, "    globals()\n" + _MAX_P_RETURN)),
+    "dyn_exec": (K.ARENA_SCREEN, lambda s: _edit(s, _MAX_P_RETURN, '    exec("pass")\n' + _MAX_P_RETURN)),
+    "dyn_importlib": (K.ARENA_SCREEN, lambda s: _edit(s, _MAX_P_RETURN, '    importlib.import_module("os")\n' + _MAX_P_RETURN)),
+    "dyn_sysmodules": (K.ARENA_SCREEN, lambda s: _edit(s, _MAX_P_RETURN, '    sys.modules.get("os")\n' + _MAX_P_RETURN)),
+    "dyn_global": (K.ARENA_SCREEN, lambda s: _edit(s, "def _max_p(ps: Sequence[float | None]) -> float | None:\n", "def _max_p(ps: Sequence[float | None]) -> float | None:\n    global SCREEN_P_B\n")),
+    "store_attr": (K.ARENA_SCREEN, lambda s: s + "\nF.BOOT_PCT = 5\n"),
+    "store_subscript": (K.ARENA_SCREEN, lambda s: s + "\nSTRAND_RULES[0] = 'x'\n"),
+    "store_unrelated": (K.ARENA_SCREEN, lambda s: s + "\n_scratch = {}\n_scratch['a'] = 1\n"),
     "legs": (K.ARENA_SCREEN, lambda s: _edit(s, "    pnl = pnl - extra\n", "    pnl = pnl - extra - 0.0\n")),
     "broken": (K.ARENA_SCREEN, lambda s: s + "\nraise RuntimeError('broken kit')\n"),
 }
@@ -196,6 +207,20 @@ def test_a_a_referenced_name_without_a_binding_fails_closed_even_when_both_shas_
     assert a["differing"] == [] and a["verdict"] == "FAIL" and any("_ghost_helper" in u for u in a["unresolved_references"])
     b = _a(synth, "bad_attribute", ref=synth["bad_attribute"])
     assert b["differing"] == [] and b["verdict"] == "FAIL" and any("no_such_attribute" in u for u in b["unresolved_references"])
+
+
+@pytest.mark.parametrize("variant,needle", [("star", "star import"), ("dyn_getattr", "getattr"), ("dyn_globals", "globals"), ("dyn_exec", "exec"), ("dyn_importlib", "importlib"),
+                                            ("dyn_sysmodules", "sys.modules"), ("dyn_global", "global/nonlocal"), ("store_attr", "module-level store to F."),
+                                            ("store_subscript", "module-level store to STRAND_RULES.")])
+def test_a_fails_closed_on_star_imports_dynamic_access_and_module_level_stores(synth, variant, needle):
+    a = _a(synth, variant, ref=synth[variant])  # the same commit on both sides: no hash differs, the node simply cannot be followed by name
+    assert a["differing"] == [] and a["verdict"] == "FAIL" and any(needle in u for u in a["unresolved_references"]), a["unresolved_references"]
+
+
+def test_a_a_module_level_store_to_an_unrelated_name_and_the_self_alias_in_arena_stack_are_not_flagged(synth):
+    assert _a(synth, "store_unrelated")["verdict"] == "PASS"
+    base = _a(synth, "comment_only", ref=synth["base"])
+    assert base["verdict"] == "PASS" and "tools/arena_stack.py:F" in base["unlisted_transitive_names"]  # F = sys.modules[__name__] is walked and allowed
 
 
 def test_a_a_sha_without_the_kit_file_fails_closed(synth):
