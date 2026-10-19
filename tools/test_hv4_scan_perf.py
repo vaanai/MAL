@@ -365,3 +365,53 @@ def test_prints_15m_short_counts_what_windows_counts(tmp_path, seed):
             assert R.prints_15m_short(p.events, st.now_ms, need) == (n < need), (n, need)
         short += int(n < 20)
     assert 50 < short < 450
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ round 3: the one-time gc.freeze() after the warm-up
+def test_gc_freeze_once_after_the_warm_up_collect_first_and_decisions_unchanged(tmp_path, monkeypatch):
+    import gc
+
+    calls: list[str] = []
+    monkeypatch.setattr(gc, "collect", lambda *a, **k: calls.append("collect") or 0)  # spies: this process's heap is never really frozen
+    monkeypatch.setattr(gc, "freeze", lambda: calls.append("freeze"))
+    monkeypatch.setattr(gc, "get_freeze_count", lambda: 123)
+    monkeypatch.delenv(R.GC_FREEZE_ENV, raising=False)
+    rows = trade_rows()
+
+    (tmp_path / "small").mkdir()
+    small = make(tmp_path / "small", rows=rows)
+    small.run(T_START, T_START + 12 * MIN)
+    assert calls == [] and not small._gc_frozen and small.gc_freeze_info == {}  # a small tape (fewer than GC_FREEZE_MIN_ROWS rows) is left alone
+
+    monkeypatch.setattr(R, "GC_FREEZE_MIN_ROWS", 1)
+    (tmp_path / "on").mkdir()
+    on = make(tmp_path / "on", rows=rows)
+    on.run(T_START, T_END)
+    assert calls == ["collect", "freeze"]  # once, collect first, before the first scan
+    assert on._gc_frozen and on.gc_freeze_info["frozen"] and on.gc_freeze_info["frozen_objects"] == 123
+    first_scan_ms = min(r["ms"] for r in on.log.rows("SCAN") if r["kind"] == "scan")
+    assert first_scan_ms >= T_START
+
+    calls.clear()
+    monkeypatch.setenv(R.GC_FREEZE_ENV, "0")
+    (tmp_path / "off").mkdir()
+    off = make(tmp_path / "off", rows=rows)
+    off.run(T_START, T_END)
+    assert calls == [] and off.gc_freeze_info == {"frozen": False, "why": "env_off"}
+    a, b = decision_md5_no_timing(on.cfg.root), decision_md5_no_timing(off.cfg.root)
+    assert a["rows"] > 100 and a["md5"] == b["md5"] and on.counters == off.counters
+
+
+def test_gc_freeze_really_freezes_and_the_collector_stays_on(tmp_path, monkeypatch):
+    import gc
+
+    before = gc.get_freeze_count()
+    try:
+        monkeypatch.setattr(R, "GC_FREEZE_MIN_ROWS", 1)
+        monkeypatch.delenv(R.GC_FREEZE_ENV, raising=False)
+        run = make(tmp_path, rows=trade_rows())
+        run.run(T_START, T_START + 2 * MIN)
+        assert run.gc_freeze_info["frozen"] and gc.get_freeze_count() > before
+        assert gc.isenabled()  # the collector is not switched off
+    finally:
+        gc.unfreeze()
