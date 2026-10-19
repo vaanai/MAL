@@ -67,6 +67,7 @@ RISK_REFRESH_MS = 30 * MIN_MS
 RISK_HIDE_MS = 60 * MIN_MS
 POOL_COOLDOWN_MS = 30 * MIN_MS
 ENTRY_SETTLE_MS = 3_000  # no code exit before the slower entry leg can land (the engine refuses an earlier sell)
+V_FILTER_CODES = ("v_missing", "v_band")  # hv4_cards.filters check names for the DEC-031 Amendment 2 V universe; scan() counts a pool-scan lost to each as filter_<code>
 SELL_RETRY_MAX = 5  # refusals that are not "the entry has not landed" before a sell is retried slowly (and an alert row is logged); never a reason to drop it
 SELL_EARLY = "slower entry leg"  # the engine's refusal text for a sell decided before the slower entry leg lands (arena_paper.sell)
 SELL_ENGINE_DROPS = ("no open position", "already has a sell")  # the engine does not hold the position (or already holds its sell): the book lets it go
@@ -841,6 +842,9 @@ class Runner:
                 self._leak(T, p.id, e)
                 continue
             if not fr.passed:
+                for code in V_FILTER_CODES:  # DEC-031 Amendment 2 item 6: pool-scans lost to the V universe, counted apart so a shakedown report can show v_missing
+                    if code in fr.failed:
+                        self._count("filter_" + code)
                 continue
             snap = self.state.snapshot(p.id)
             try:
