@@ -1821,7 +1821,7 @@ def run_sim(cfg):
     if cfg.dry_run:
         return structure_report(cfg, inp, early, records)
     gate["inputs"] = dict(inp["hashes"], stores=hashlib.sha256("\n".join(sorted(in_lines)).encode()).hexdigest())
-    gate["peak_rss_mb"] = round(mem.peak, 1)
+    gate["_peak_rss_mb"] = round(mem.peak, 1)   # volatile: stripped from gate.json, printed by the CLI
     # ---- the read instant
     if cfg.scan:
         cands = [r for r in read_candidates() if cfg.asof_us is None or r <= cfg.asof_us]
@@ -1940,7 +1940,8 @@ def run_sim(cfg):
         write_table(out / "days.parquet", drows, DAYS_SCHEMA)
         if cfg.debug_snaps:
             write_table(out / "snaps.parquet", srows, SNAPS_SCHEMA)
-        (out / "gate.json").write_text(json.dumps(gate, sort_keys=True, indent=1, default=str) + "\n")
+        stable = {k: v for k, v in gate.items() if not k.startswith("_")}
+        (out / "gate.json").write_text(json.dumps(stable, sort_keys=True, indent=1, default=str) + "\n")
         (out / "table.txt").write_text(format_table(gate) + "\n")
     return gate
 
@@ -2010,6 +2011,7 @@ def main(argv=None):
         print(json.dumps(res, sort_keys=True, indent=1, default=str))
     else:
         print(format_table(res))
+        print(f"peak RSS {res.get('_peak_rss_mb')} MB", file=sys.stderr)
     return 0
 
 

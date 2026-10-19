@@ -693,7 +693,13 @@ def basic_world(tmp, extra_prog=(), extra_snaps=None, meta=True):
 
 
 # ========================================================================================= integration
-def test_end_to_end_units_cells_outputs(tmp_path):
+@pytest.fixture
+def covered(monkeypatch):
+    """The synthetic worlds are a few hours long: neutralise the 70% coverage rule where it is not the subject."""
+    monkeypatch.setattr(sim, "coverage", lambda *a, **k: {"not_decidable": False, "days": {}})
+
+
+def test_end_to_end_units_cells_outputs(tmp_path, covered):
     w = basic_world(tmp_path)
     cfg = w.cfg(out=str(tmp_path / "out"))
     g = sim.run_sim(cfg)
@@ -719,7 +725,7 @@ def test_end_to_end_units_cells_outputs(tmp_path):
     assert "formula screen" in (out / "table.txt").read_text()
 
 
-def test_every_exclusion_reason_is_counted(tmp_path):
+def test_every_exclusion_reason_is_counted(tmp_path, covered):
     extra = [
         prog("pLong", "KXAAAGASDNC-26OCT19-T3.5", "2026-10-19T12:00:00Z", "2026-10-26T12:00:00Z"),     # 168 h
         prog("pLate", "KXAAAGASDOH-26OCT19-T3.5", "2026-10-19T10:00:00Z", "2026-10-19T14:00:00Z"),     # first poll 2h05 after start
@@ -774,7 +780,7 @@ def test_dry_run_prints_structure_only_and_never_opens_trades_or_results(tmp_pat
         assert word not in blob.replace("no reward, fill, markout or p&l computed", "").replace("trades parquet", "")
 
 
-def test_runs_are_byte_identical(tmp_path):
+def test_runs_are_byte_identical(tmp_path, covered):
     w = basic_world(tmp_path)
     digests = []
     for i in (1, 2):
