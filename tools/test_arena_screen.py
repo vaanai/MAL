@@ -1766,3 +1766,155 @@ def test_screen_p_cell_over_several_utc_dates_reproduces_both_bounds_the_kill_us
     assert sp["cell_p"] == max(c["p"] for c in sp["sub_cells"].values()) and sp["cell_p_date_cluster"] == max(c["date_cluster"]["p"] for c in sp["sub_cells"].values())
     none = S.screen_p_cell(None, cfg, None, B=1_000)
     assert none["cell_p"] is None and none["cell_p_date_cluster"] is None
+
+# ------------------------------------------------------------------------------------------------------------------------------ 8. event-driven exits (ExitSpec.exit_fire)
+RATE, SPS = 2.5, 0.4  # the synthetic tape's slot rate (see NHOUR, KMAX); k_slow at 1.9 s = ceil(1.9 / 0.4) = 5, so the floor is sd + 6 and a 120 s hold is 300 slots
+SD0 = 1010
+FLOOR, CAP = SD0 + 6, SD0 + 300
+
+
+def ev_pool(whales=(1100, 1200), decoys=(1012,), jump=None, n=400) -> dict:
+    """One print a slot from slot 1000, buys on even offsets. A whale is a 2 SOL buy; a decoy is a whale BEFORE the landing floor. `jump` = a slot whose buy moves the price up 11%."""
+    sl = 1000 + np.arange(n)
+    ib = np.arange(n) % 2 == 0
+    so, tk = np.full(n, 1e8), np.full(n, 1e9)
+    for w in (*whales, *decoys):
+        ib[w - 1000], so[w - 1000] = True, 2e9
+    if jump is not None:
+        ib[jump - 1000], tk[jump - 1000] = True, 1e13
+    return {"sl": sl.astype(np.int64), "ib": ib, "so": so, "tk": tk, "q": np.full(n, 20e9), "b": np.full(n, 1e14), "v": np.full(n, float(V))}
+
+
+def whale_fire(thr: float = 1e9):
+    """The first buy print of >= thr lamports at a slot s in [landing, cap], read through the causal view only (rows with slot <= s)."""
+
+    def fire(view, landing, cap):
+        for s in view.print_slots():
+            r = view.upto(s)
+            m = r["sl"] == s
+            if (r["ib"][m] & (r["so"][m] >= thr)).any():
+                return s
+        return None
+
+    return fire
+
+
+def resolve(a, spec, sd=SD0):
+    return S.resolve_exit(a, S.post_price(a), sd, spec, RATE, SPS)
+
+
+def test_an_exit_fire_fires_at_the_right_slot_and_is_an_event_exit():
+    a = ev_pool()
+    assert S._exit_clock(S.ExitSpec(120), SD0, RATE, SPS) == (FLOOR, CAP, False)
+    assert resolve(a, S.ExitSpec(120, exit_fire=whale_fire())) == (1100, S.EVENT_CODE, False)  # the decoy at 1012 is before the floor 1016: not a fire
+    assert S.EXIT_REASONS[S.EVENT_CODE] == "event" and S.EXIT_REASONS[:4] == ("time", "tp", "sl", "trail")
+    assert resolve(a, S.ExitSpec(120)) == (CAP, 0, False)  # the same spec without the callable is a plain time exit
+    assert resolve(ev_pool(whales=(FLOOR,)), S.ExitSpec(120, exit_fire=whale_fire()))[:2] == (FLOOR, S.EVENT_CODE)  # the floor slot itself is allowed
+    assert resolve(ev_pool(whales=(CAP,)), S.ExitSpec(120, exit_fire=whale_fire()))[:2] == (CAP, S.EVENT_CODE)  # so is the cap slot: a fire there is an event exit, not a time exit
+
+
+def test_the_cap_wins_when_nothing_fires():
+    a = ev_pool()
+    assert resolve(a, S.ExitSpec(120, exit_fire=whale_fire(5e9))) == (CAP, 0, False)  # no print is that big
+    assert resolve(a, S.ExitSpec(120, exit_fire=lambda v, l, c: None)) == (CAP, 0, False)
+    assert resolve(ev_pool(whales=(), decoys=(1012, CAP + 20)), S.ExitSpec(120, exit_fire=whale_fire()))[:2] == (CAP, 0)  # whales outside [floor, cap] do not count
+    assert resolve(a, S.ExitSpec(3, exit_fire=lambda v, l, c: None)) == (SD0 + 8, 0, False)  # the shortest hold (3 s = 8 slots here): its own cap
+    assert resolve(a, S.ExitSpec(3, exit_fire=whale_fire()))[:2] == (SD0 + 8, 0)  # no whale inside [1016, 1018]: the cap decides
+    clamp = S.resolve_exit(a, S.post_price(a), SD0, S.ExitSpec(3, exit_fire=lambda v, l, c: l), 1.0, 0.4)  # 3 slots < the floor sd + 6: clamped to it, and a fire AT the floor is allowed
+    assert clamp == (SD0 + 6, S.EVENT_CODE, True)
+
+
+def test_tp_sl_trail_still_apply_whichever_fires_first_wins():
+    a = ev_pool(jump=1050)
+    assert resolve(a, S.ExitSpec(120, tp=1.05)) == (1050, 1, False)  # the price rule alone: the 11% jump
+    assert resolve(a, S.ExitSpec(120, tp=1.05, exit_fire=whale_fire())) == (1050, 1, False)  # tp (1050) before the whale (1100): tp wins
+    assert resolve(a, S.ExitSpec(120, tp=1.05, exit_fire=lambda v, l, c: 1030)) == (1030, S.EVENT_CODE, False)  # a fire before the tp wins
+    assert resolve(a, S.ExitSpec(120, tp=1.05, exit_fire=lambda v, l, c: 1050)) == (1050, 1, False)  # the same slot: the price rule keeps its code, the slot is the same
+    assert resolve(a, S.ExitSpec(120, tp=1.5, exit_fire=whale_fire()))[:2] == (1100, S.EVENT_CODE)  # a tp that is never hit: the fire beats the cap
+    stop = resolve(ev_pool(), S.ExitSpec(120, sl=0.99, exit_fire=whale_fire()))
+    assert stop[1] in (S.EVENT_CODE, 2) and stop[0] <= 1100  # a stop (if the path has one) or the whale, never later than the whale
+
+
+def test_the_view_is_causal_it_refuses_look_ahead_and_a_return_that_read_ahead():
+    a = ev_pool()
+    pp = S.post_price(a)
+    v = S.ExitView(a, pp, SD0, FLOOR, CAP, RATE, SPS)
+    assert v.upto(FLOOR)["sl"].max() == FLOOR and v.max_read == FLOOR and v.upto(1000)["sl"].tolist() == [1000]
+    with pytest.raises(S.ExitLookAhead):
+        v.upto(CAP + 1)  # after the cap: refused outright
+    r = v.upto(1100)
+    assert r["sl"].max() == 1100 and not r["sl"].flags.writeable and set(r) == {"sl", "ib", "so", "tk", "q", "b", "v", "pp"}
+    with pytest.raises(ValueError):
+        r["so"][0] = 0.0  # read-only
+    assert list(S.ExitView(a, pp, SD0, FLOOR, CAP, RATE, SPS).print_slots())[:2] == [FLOOR, FLOOR + 1] and len(a["sl"]) == 400  # the cap cut is the view's, not the pool's
+    assert max(S.ExitView(a, pp, SD0, FLOOR, CAP, RATE, SPS, last_slot=1100)._a["sl"]) == 1100
+
+    def peek_then_fire(view, landing, cap):  # decides at 1100, but looked at 1101 first
+        view.upto(1101)
+        return 1100
+
+    def peek_one_print_slot(view, landing, cap):  # fires at the whale but asks the iterator for the NEXT print slot first
+        it = view.print_slots()
+        for s in it:
+            if s == 1100:
+                next(it)
+                return s
+
+    def late_fire(view, landing, cap):
+        view.upto(cap)
+        return cap - 1
+
+    for bad in (peek_then_fire, peek_one_print_slot, late_fire):
+        with pytest.raises(S.ExitLookAhead):
+            resolve(a, S.ExitSpec(120, exit_fire=bad))
+    for bad, why in ((lambda v, l, c: FLOOR - 1, "outside"), (lambda v, l, c: CAP + 1, "outside"), (lambda v, l, c: 1100.0, "int slot"), (lambda v, l, c: True, "int slot"), (lambda v, l, c: "x", "int slot")):
+        with pytest.raises(S.ExitFireError, match=why):
+            resolve(a, S.ExitSpec(120, exit_fire=bad))
+    assert resolve(a, S.ExitSpec(120, exit_fire=lambda v, l, c: np.int64(1100)))[:2] == (1100, S.EVENT_CODE)  # numpy ints are fine
+
+
+def test_exit_fire_must_be_callable_and_the_spec_stays_hashable():
+    assert S.exit_problem(S.ExitSpec(60, exit_fire="x")) and "callable" in S.exit_problem(S.ExitSpec(60, exit_fire=5))
+    assert S.exit_problem(S.ExitSpec(60, exit_fire=whale_fire())) is None and S.exit_problem(S.ExitSpec(60)) is None
+    f = whale_fire()
+    assert {S.ExitSpec(60, exit_fire=f), S.ExitSpec(60, exit_fire=f)} == {S.ExitSpec(60, exit_fire=f)}  # frozen dataclass, a callable compares by identity
+
+    @dataclasses.dataclass(frozen=True)
+    class SurgeExit(S.ExitSpec):  # how hunt23's W2-F extends it
+        surge: str | None = None
+
+    assert S.exit_problem(SurgeExit(60, cell="c", surge="W", exit_fire=f)) is None
+
+
+def spaced_triggers(rows, key="A", h=0, lo=1000, hi=8000, gap=700) -> list[int]:
+    out, last = [], -10**9
+    for s in own_slots(rows, key, h, lo, hi):
+        if s - last >= gap:  # a trip is open at most 300 slots + the 150-slot cooldown: none overlaps
+            out.append(s)
+            last = s
+    return out
+
+
+def test_a_fired_exit_lands_by_the_normal_exit_lag_rule_in_the_kit(tape):
+    rows, files = tape
+    thr = 1.3e9
+    picks = spaced_triggers(rows)
+    assert len(picks) >= 6
+    evs = run_kit(files, [(POOLS["A"], s, S.ExitSpec(120, exit_fire=whale_fire(thr))) for s in picks])
+    tr = S._cat(evs.acc[0])
+    a_rows = sorted((r["slot"], r["side"], r["sol_lamports"]) for r in rows if r["pool"] == POOLS["A"])
+    n_fire = n_twin = 0
+    for i, sd in enumerate(tr["sd"].tolist()):
+        want = next((s for s, side, sol in a_rows if sd + 6 <= s <= sd + 300 and side == "buy" and sol >= thr), None)  # the independent scalar scan of the raw rows
+        assert (int(tr["xs"][i]), int(tr["why"][i])) == ((want, S.EVENT_CODE) if want is not None else (sd + 300, 0)), (sd, want)
+        if want is None:
+            continue
+        n_fire += 1
+        if want - sd < 8:  # a time cap needs hold >= 3 s (8 slots here)
+            continue
+        n_twin += 1
+        twin = S._cat(run_kit(files, [(POOLS["A"], sd, S.ExitSpec((want - sd) / RATE))]).acc[0])  # the same exit DECIDED at `want` by a plain time cap
+        assert (int(twin["xs"][0]), int(twin["why"][0])) == (want, 0)
+        assert tr["Qx"][i] == twin["Qx"][0] and tr["Bx"][i] == twin["Bx"][0]  # priced at the state of fire slot + 7 feed slots + the exit lag: the engine's rule, not the fire slot itself
+        assert want + S.D + int(F.exit_lag_vec(np.array([SPS]))[0]) > want
+    assert 0 < n_twin <= n_fire < len(tr["sd"])  # some exits fire (and are twinned), some run to the cap
