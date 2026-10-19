@@ -17,8 +17,12 @@ Scope notes (read before trusting a PASS)
     to a binding fails (A) closed. `legs` is the ONE named boundary: quant-proof (#761 comment 6278219338, item 5 (C)) says legs() is pricing, covered by (C), and
     "does not need to be unchanged". By default it is listed in the record (both hashes, `equal`) and not followed; `--strict-pricing` follows it like any other name.
   * (B) calls screen_p_sub / screen_p_check / stat / boot_lo directly and screen_p_cell with `legs` replaced by a stub that returns the fixture's vectors (the real legs()
-    is pricing, item (C)); the stub's call arguments are part of the compared output. The kit's own `tools/test_arena_screen.py` screen-p tests (item 5 (B), first bullet)
-    are NOT run by this tool.
+    is pricing, item (C)); the stub's call arguments are part of the compared output. 
+  * Verdicts. A PASS for (A) or (B) needs the pinned baseline: ref sha 489fa7e AND the reference file's sha256 equal to REFERENCE_FILE_SHA256. A match against any other baseline reads
+    TEST_ONLY, a mismatch FAIL. (C) needs `meta.provenance.kit` to say git_head == --sha, git_dirty false and the sha256 of arena_screen.py at --sha.
+    Item 5 (B) has three bullets and the record keeps them apart: the byte comparison is `B`; `kit_screen_p_tests` is `pytest -q -k screen_p tools/test_arena_screen.py` run in the
+    worktree at --sha (NOT_RUN with --skip-kit-tests); `numpy_every_scoring_run` takes one --numpy-version per run from the job logs and is NOT_PROVIDED without them, never PASS.
+    `item_5_B_complete` is true only when all three are PASS.
   * The fixture is generated with the standard-library `random.Random` (string seed per case, only `.random()` and `.randrange()`) and integer lamports, so it does
     not depend on numpy's stream; `inputs_sha256` in the reference detects any drift of the generator itself.
 """
@@ -31,7 +35,9 @@ import contextlib
 import hashlib
 import json
 import math
+import os
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -652,18 +658,60 @@ def compare_b(worker: dict, ref: dict, ref_problems: list[str], anchor: dict[str
     return {"verdict": verdict_of(ok, anchor), "comparison": "MATCH" if ok else "MISMATCH", "anchoring": anchor, "numpy_version": worker["numpy_version"], "reference_numpy_version": ref.get("numpy_version"), "numpy_equal_to_reference_and_required": numpy_equal,
             "inputs_sha256_equal": inputs_equal, "outputs_byte_identical": identical, "outputs_sha256_at_sha": sha256_hex(got_bytes), "outputs_sha256_reference": sha256_hex(ref_bytes),
             "differing_sections": [] if identical else _sections_differing(worker["outputs"], ref.get("outputs") or {}), "reference_problems": ref_problems,
-            "python_version": worker.get("python_version"), "kit_screen_p_tests": "NOT_RUN_BY_THIS_TOOL"}
+            "python_version": worker.get("python_version"), "kit_screen_p_tests": dict(NOT_RUN_KIT_TESTS)}
 
 
-def check_b(repo: Path, sha: str, ref_sha: str, ref: dict, workdir: str | None = None, anchor: dict[str, Any] | None = None) -> dict[str, Any]:
+KIT_TEST_FILE = "tools/test_arena_screen.py"
+NOT_RUN_KIT_TESTS = {"result": "NOT_RUN", "reason": "not requested (--skip-kit-tests) or not reached"}
+
+
+def run_kit_tests(repo: Path, sha: str, wt: Path, timeout: int = 1800) -> dict[str, Any]:
+    """Item 5 (B), first bullet: `pytest -q -k screen_p tools/test_arena_screen.py` in the temp worktree at --sha, with this interpreter. Records the test file's sha256 at the sha, the counts
+    and the pytest exit code. Output text is not kept. PASS needs exit code 0 and at least one test passed (exit code 5, no test selected, is FAIL)."""
+    out: dict[str, Any] = {"result": "FAIL", "command": f"pytest -q -k screen_p {KIT_TEST_FILE}", "interpreter": sys.executable, "test_file": KIT_TEST_FILE,
+                           "test_file_sha256": git_file_sha256(repo, sha, KIT_TEST_FILE), "passed": 0, "failed": 0, "errors": 0, "deselected": 0, "pytest_exit_code": None}
+    if out["test_file_sha256"] is None:
+        out["reason"] = "the kit test file does not exist at the sha"
+        return out
+    env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "PYTHONPATH": str(wt)}
+    try:
+        r = subprocess.run([sys.executable, "-m", "pytest", "-q", "-k", "screen_p", KIT_TEST_FILE, "-p", "no:cacheprovider"], cwd=wt, capture_output=True, text=True, env=env, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        out["reason"] = "timeout"
+        return out
+    out["pytest_exit_code"] = r.returncode
+    summary = (r.stdout.strip().splitlines() or [""])[-1]
+    for key, label in (("passed", "passed"), ("failed", "failed"), ("errors", "error"), ("deselected", "deselected")):
+        m = re.search(rf"(\d+) {label}", summary)
+        out[key] = int(m.group(1)) if m else 0
+    out["result"] = "PASS" if r.returncode == 0 and out["passed"] > 0 and out["failed"] == 0 and out["errors"] == 0 else "FAIL"
+    return out
+
+
+def numpy_every_run(provided: list[str] | None, reference_numpy: Any) -> dict[str, Any]:
+    """Item 5 (B), third bullet: numpy.__version__ of EVERY scoring run and of the read. results.json does not record it, so the versions come from the job logs through --numpy-version
+    (once per run). Without them the answer is NOT_PROVIDED, never PASS. With them: PASS only if every one equals the reference's version (and 2.5.3)."""
+    if not provided:
+        return {"verdict": "NOT_PROVIDED", "runs_provided": 0, "reason": "no --numpy-version given; results.json carries no numpy version, so this needs the job logs"}
+    ok = all(v == reference_numpy == REQUIRED_NUMPY for v in provided)
+    return {"verdict": "PASS" if ok else "FAIL", "runs_provided": len(provided), "versions": sorted(set(provided)), "all_equal_to_reference": ok,
+            "note": "the tool cannot know how many scoring runs there were: the claim record must cite one --numpy-version per run and one for the read"}
+
+
+def check_b(repo: Path, sha: str, ref_sha: str, ref: dict, workdir: str | None = None, anchor: dict[str, Any] | None = None, kit_tests: bool = False) -> dict[str, Any]:
     anchor = anchor if anchor is not None else anchoring(ref_sha, REFERENCE_PATH)
     problems = reference_problems(ref, repo, ref_sha)
+    kit: dict[str, Any] = dict(NOT_RUN_KIT_TESTS)
     try:
         with worktree(repo, sha, workdir) as wt:
             w = run_worker(wt)
+            if kit_tests:
+                kit = run_kit_tests(repo, sha, wt)
     except (ToolError, subprocess.TimeoutExpired) as exc:
-        return {"verdict": "FAIL", "comparison": "MISMATCH", "anchoring": anchor, "error": str(exc)[:400], "reference_problems": problems, "kit_screen_p_tests": "NOT_RUN_BY_THIS_TOOL"}
-    return compare_b(w, ref, problems, anchor)
+        return {"verdict": "FAIL", "comparison": "MISMATCH", "anchoring": anchor, "error": str(exc)[:400], "reference_problems": problems, "kit_screen_p_tests": kit}
+    b = compare_b(w, ref, problems, anchor)
+    b["kit_screen_p_tests"] = kit
+    return b
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ (C) runtime coupling to the kill's vector
@@ -750,10 +798,14 @@ def cmd_check(args: argparse.Namespace) -> int:
         raise ToolError(f"cannot read the reference file {ref_path}: {exc}")
     anchor = anchoring(ref_sha, ref_path)
     a = check_a(repo, sha, ref_sha, args.strict_pricing, anchor)
-    b = check_b(repo, sha, ref_sha, ref, args.workdir, anchor)
+    b = check_b(repo, sha, ref_sha, ref, args.workdir, anchor, kit_tests=not args.skip_kit_tests)
+    kit = b["kit_screen_p_tests"]
+    npy = numpy_every_run(args.numpy_version, ref.get("numpy_version"))
     c = check_c(args.results, sha, git_file_sha256(repo, sha, ARENA_SCREEN)) if args.results else {"verdict": "NOT_RUN", "reason": "no --results given"}
     rec = {"schema": SCHEMA_RECORD, "sha": sha, "ref_sha": ref_sha, "ref_sha_is_pinned": anchor["ref_sha_is_pinned"], "reference_file": str(ref_path), "anchoring": anchor,
-           "verdicts": {"A": a["verdict"], "B": b["verdict"], "C": c["verdict"]}, "numpy_version": b.get("numpy_version"), "A": a, "B": b, "C": c,
+           "verdicts": {"A": a["verdict"], "B": b["verdict"], "C": c["verdict"], "kit_screen_p_tests": kit["result"], "numpy_every_scoring_run": npy["verdict"],
+                        "item_5_B_complete": bool(b["verdict"] == "PASS" and kit["result"] == "PASS" and npy["verdict"] == "PASS")},
+           "numpy_version": b.get("numpy_version"), "A": a, "B": b, "C": c, "numpy_every_scoring_run": npy,
            "note": "Synthetic fixture only; no real data was read; nothing here is a measurement of any book or a profit claim. The exit code is 0 whenever a record is produced."}
     print(canon(rec), end="")
     return 0
@@ -776,6 +828,8 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--ref-sha", default=REFERENCE_SHA, help="TESTS ONLY: any other value (or a reference file that is not the pinned one) makes a match read TEST_ONLY, never PASS")
     c.add_argument("--strict-pricing", action="store_true", help="also follow and compare legs() and what it references in (A)")
     c.add_argument("--workdir", help="parent directory for temp worktrees")
+    c.add_argument("--skip-kit-tests", action="store_true", help="do not run `pytest -k screen_p tools/test_arena_screen.py` in the worktree at --sha (the verdict then reads NOT_RUN)")
+    c.add_argument("--numpy-version", action="append", help="numpy.__version__ of one scoring run or of the read, from the job logs; repeat once per run. Without it the verdict is NOT_PROVIDED")
     w = sp.add_parser("worker", help="internal: run the fixed set inside a kit root and print the outputs")
     w.add_argument("--kit-root", required=True)
     args = ap.parse_args(argv)

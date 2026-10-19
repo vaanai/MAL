@@ -11,6 +11,7 @@ import json
 import math
 import re
 import subprocess
+import sys
 import tarfile
 from pathlib import Path
 from typing import Any
@@ -236,10 +237,22 @@ def _main(capsys, *argv: str) -> tuple[int, dict | None, str]:
 
 
 @needs_b
-def test_check_cli_489fa7e_passes_a_and_b_and_exits_zero(capsys):
-    rc, rec, _ = _main(capsys, "check", "--sha", REF_SHA[:12])
-    assert rc == 0 and rec["verdicts"] == {"A": "PASS", "B": "PASS", "C": "NOT_RUN"} and rec["numpy_version"] == "2.5.3" and rec["ref_sha_is_pinned"] is True
+def test_check_cli_489fa7e_passes_a_and_b_runs_the_kit_tests_and_exits_zero(capsys):
+    rc, rec, _ = _main(capsys, "check", "--sha", REF_SHA[:12], "--numpy-version", "2.5.3", "--numpy-version", "2.5.3")
+    assert rc == 0 and rec["verdicts"] == {"A": "PASS", "B": "PASS", "C": "NOT_RUN", "kit_screen_p_tests": "PASS", "numpy_every_scoring_run": "PASS", "item_5_B_complete": True}
+    kit = rec["B"]["kit_screen_p_tests"]
+    assert kit["test_file"] == "tools/test_arena_screen.py" and kit["test_file_sha256"] == K.git_file_sha256(REPO, REF_SHA, "tools/test_arena_screen.py")
+    assert kit["passed"] >= 30 and kit["failed"] == 0 and kit["errors"] == 0 and kit["pytest_exit_code"] == 0 and kit["deselected"] > 0 and rec["numpy_every_scoring_run"]["runs_provided"] == 2
+    assert rec["numpy_version"] == "2.5.3" and rec["ref_sha_is_pinned"] is True
     assert rec["sha"] == REF_SHA and rec["anchoring"]["reference_file_sha256"] == K.sha256_hex(REF_PATH.read_bytes()) and rec["anchoring"]["anchored"] is True
+
+
+@needs_b
+def test_check_cli_without_the_kit_tests_or_numpy_versions_never_reads_item_5_b_complete(capsys):
+    rc, rec, _ = _main(capsys, "check", "--sha", REF_SHA, "--skip-kit-tests")
+    v = rec["verdicts"]
+    assert rc == 0 and v["A"] == "PASS" and v["B"] == "PASS" and v["kit_screen_p_tests"] == "NOT_RUN" and v["numpy_every_scoring_run"] == "NOT_PROVIDED" and v["item_5_B_complete"] is False
+    assert rec["B"]["kit_screen_p_tests"]["result"] == "NOT_RUN"
 
 
 @needs_b
@@ -275,7 +288,7 @@ def test_b_a_different_numpy_at_the_sha_fails_even_with_equal_bytes(worker_at_re
 
 @needs_b
 def test_b_and_a_both_fail_on_a_mutated_helper_and_the_cli_still_exits_zero(synth, capsys):
-    rc, rec, _ = _main(capsys, "check", "--sha", synth["helper"], "--ref-sha", synth["base"], "--repo", str(synth["root"]))
+    rc, rec, _ = _main(capsys, "check", "--sha", synth["helper"], "--ref-sha", synth["base"], "--repo", str(synth["root"]), "--skip-kit-tests")
     assert rc == 0 and rec["verdicts"]["A"] == "FAIL" and rec["verdicts"]["B"] == "FAIL" and rec["ref_sha_is_pinned"] is False
     assert any(s.startswith("screen_p_sub/") for s in rec["B"]["differing_sections"]) and rec["B"]["outputs_byte_identical"] is False
 
@@ -291,6 +304,39 @@ def test_b_a_comment_only_change_is_byte_identical(synth, ref_doc):
     b = K.check_b(synth["root"], synth["comment_only"], synth["base"], ref_doc, anchor=PINNED)
     assert b["verdict"] == "PASS" and b["numpy_version"] == "2.5.3"
     assert K.check_b(synth["root"], synth["comment_only"], synth["base"], ref_doc)["verdict"] == "TEST_ONLY"  # the same match against a baseline that is not 489fa7e: never PASS
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ the other two bullets of item 5 (B)
+def test_numpy_of_every_scoring_run_is_not_provided_without_the_job_log_versions_and_never_passes_then():
+    for none in (None, []):
+        r = K.numpy_every_run(none, "2.5.3")
+        assert r["verdict"] == "NOT_PROVIDED" and r["runs_provided"] == 0
+    assert K.numpy_every_run(["2.5.3"], "2.5.3")["verdict"] == "PASS" and K.numpy_every_run(["2.5.3", "2.5.3", "2.5.3"], "2.5.3")["runs_provided"] == 3
+    assert K.numpy_every_run(["2.5.3", "2.5.2"], "2.5.3")["verdict"] == "FAIL" and K.numpy_every_run(["2.5.2"], "2.5.3")["verdict"] == "FAIL"
+    assert K.numpy_every_run(["2.5.2"], "2.5.2")["verdict"] == "FAIL"  # equal to a reference that is not numpy 2.5.3 is not enough
+
+
+@needs_ref
+@pytest.mark.parametrize("body,result,passed,failed,code", [("def test_screen_p_a():\n    pass\n\n\ndef test_other():\n    assert False\n", "PASS", 1, 0, 0),
+                                                              ("def test_screen_p_a():\n    pass\n\n\ndef test_screen_p_b():\n    assert False\n", "FAIL", 1, 1, 1),
+                                                              ("def test_other():\n    pass\n", "FAIL", 0, 0, 5)])
+def test_run_kit_tests_records_counts_and_the_test_file_hash_and_fails_on_a_failure_or_on_nothing_selected(synth, body, result, passed, failed, code):
+    root = synth["root"]
+    _git(root, "checkout", "-q", "--detach", synth["base"])
+    (root / K.KIT_TEST_FILE).write_text(body)
+    _git(root, "add", K.KIT_TEST_FILE)
+    _git(root, "commit", "-q", "-m", "kit test file")
+    sha = _git(root, "rev-parse", "HEAD")
+    with K.worktree(root, sha) as wt:
+        r = K.run_kit_tests(root, sha, wt)
+    assert (r["result"], r["passed"], r["failed"], r["pytest_exit_code"]) == (result, passed, failed, code)
+    assert r["test_file_sha256"] == K.sha256_hex(body) and r["interpreter"] == sys.executable and "-k screen_p" in r["command"]
+
+
+def test_run_kit_tests_fails_when_the_sha_has_no_kit_test_file(synth):
+    with K.worktree(synth["root"], synth["base"]) as wt:
+        r = K.run_kit_tests(synth["root"], synth["base"], wt)
+    assert r["result"] == "FAIL" and r["test_file_sha256"] is None and "does not exist" in r["reason"]
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ anchoring (#766 comment 6278863654, item 2)
@@ -339,7 +385,7 @@ def test_b_a_relabelled_reference_that_matches_byte_for_byte_reads_test_only(tmp
 @needs_b
 def test_check_cli_with_ref_sha_equal_to_the_target_reads_test_only_for_a_and_b(capsys):
     head = K.resolve_sha(REPO, "HEAD")
-    rc, rec, _ = _main(capsys, "check", "--sha", head, "--ref-sha", head)
+    rc, rec, _ = _main(capsys, "check", "--sha", head, "--ref-sha", head, "--skip-kit-tests")
     assert rc == 0 and rec["verdicts"]["A"] == "TEST_ONLY" and rec["verdicts"]["B"] == "TEST_ONLY" and rec["ref_sha_is_pinned"] is False and rec["anchoring"]["anchored"] is False
 
 
@@ -592,7 +638,7 @@ def test_the_printer_never_emits_a_mean_total_p_or_kill_value(tmp_path, ref_doc,
     doc["cells"]["cell_ok_300_7"]["kill_reasons"] = ["ex-top-3 total -0.31415926535 <= 0"]
     secret_values = {repr(x) for x in _floats(doc) if len(repr(x)) >= 8} | {"ex-top-3 total", "kill_reasons"}
     assert len(secret_values) > 50
-    monkeypatch.setattr(K, "check_b", lambda *a, **k: {"verdict": "PASS"})  # (B) has its own tests; here only the (C) printer
+    monkeypatch.setattr(K, "check_b", lambda *a, **k: {"verdict": "PASS", "kit_screen_p_tests": {"result": "NOT_RUN"}})  # (B) has its own tests; here only the (C) printer
     rc, rec, _ = _main(capsys, "check", "--sha", REF_SHA, "--results", _write(tmp_path, doc))
     text = K.canon(rec)
     assert rc == 0 and rec["verdicts"] == {"A": "PASS", "B": "PASS", "C": "FAIL"}
