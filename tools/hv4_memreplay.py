@@ -546,8 +546,7 @@ def child_argv(a: argparse.Namespace, arm: str, scratch: Path) -> list[str]:
             out += [flag, val]
     if a.evict_idle_min is not None:
         out += ["--evict-idle-min", str(a.evict_idle_min)]
-    if a.no_timing:
-        out.append("--no-timing")
+    out.append("--no-timing")  # always: timing rows hold wall-clock counts, so a log with them is not a function of the tape and no md5 could match
     return out
 
 
