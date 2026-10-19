@@ -113,8 +113,6 @@ STAGING = ".f2-staging"                                        # the simulator w
 BOOKC_START_MARKER = "BOOK-C-REPORT-ONLY.json"                 # written at the START of a Book C run: not a done marker
 SIM_OUTPUT_FILES = ("units.parquet", "fills.parquet", "days.parquet", "gate.json", "table.txt", "snaps.parquet")
 FINAL_LIP_F1_VERDICTS = ("FORMULA_SCREEN_PASSED", "FAIL", "DEAD_AS_FROZEN")
-# The simulator's own wording of the coverage reason (run_sim): coverage over [freeze, R) is monotone in R.
-COVERAGE_ND_REASON = "recorder/poller coverage < 70% on two consecutive days"
 VERDICT_PASS = "FORMULA_SCREEN_PASSED (multiplicity-adjusted)"
 VERDICT_FAIL_ADJ = "FAIL (multiplicity-adjusted)"
 
@@ -311,8 +309,8 @@ def _read_json_dict(p, what):
 def check_lip_f1_gate(path):
     """Process rule (i): an outcome-computing F2 run needs LIP-F1's DECIDING gate.json: Book A, a ``--read-instant`` run
     (no scan), the LIP-F1 freeze, and a verdict that is final: PASS, FAIL, DEAD_AS_FROZEN; NOT_DECIDABLE only if the
-    counts are met in all three cells, or R >= 2026-11-02T00:00Z, or the reason is the coverage rule (an exclusion-share
-    NOT_DECIDABLE at an early candidate is not final); COUNTS_NOT_MET only at the 2026-11-02T00:00Z read.  The verdict
+    counts are met in all three cells or R >= 2026-11-02T00:00Z (an exclusion-share or coverage NOT_DECIDABLE at an
+    early candidate with the counts not met is not final); COUNTS_NOT_MET only at the 2026-11-02T00:00Z read.  The verdict
     and every number in it stay unprinted: F2 never conditions on LIP-F1.  -> {path, sha256, read_instant}."""
     if not path:
         raise F2Refusal("skipped: LIP-F1 not final: --lip-f1-gate (LIP-F1's deciding gate.json) is required")
@@ -333,13 +331,14 @@ def check_lip_f1_gate(path):
     if verdict == "COUNTS_NOT_MET":
         final = at_nd_date
     elif verdict == "NOT_DECIDABLE":
-        # decide_verdict returns NOT_DECIDABLE before it looks at the counts, and the exclusion-share reason is not
-        # monotone in R, so an exclusion-share NOT_DECIDABLE at an early candidate is NOT final (QP R1).  Final only if
-        # (a) the counts are met in all three cells, (b) the read is at/after the NOT_DECIDABLE date, or (c) the reason
-        # is the coverage rule.
+        # decide_verdict returns NOT_DECIDABLE before it looks at the counts.  An exclusion-share NOT_DECIDABLE is not
+        # monotone in R, and neither is a coverage one (coverage() reads only the parts sealed when the run happens, and
+        # a repair from sealed data is allowed, DECLARE-FORWARD section 10), so neither reason makes an early candidate
+        # final (QP R1, R11).  Final only if the counts are met in all three cells, or the read is at/after the
+        # NOT_DECIDABLE date.
         cells = d.get("cells") or {}
         counts_met = all(((cells.get(c) or {}).get("gate") or {}).get("counts_met") is True for c in sim.CELLS)
-        final = counts_met or at_nd_date or COVERAGE_ND_REASON in (d.get("nd_reasons") or [])
+        final = counts_met or at_nd_date
     if not final:
         raise F2Refusal(f"skipped: LIP-F1 not final: {path} is not LIP-F1's deciding gate.json (its verdict is not final)")
     return {"path": str(p), "sha256": _sha256_bytes(p.read_bytes()), "read_instant": r}

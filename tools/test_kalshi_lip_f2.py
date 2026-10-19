@@ -768,23 +768,24 @@ def nd_gate(tmp, reasons, counts=(False, False, False), r="2026-10-25T00:00:00Z"
     return lip_gate(tmp, verdict="NOT_DECIDABLE", nd_reasons=reasons, read_instant=r, cells=cells, **over)
 
 
-def test_r1_a_lip_f1_not_decidable_is_final_only_with_counts_met_the_nd_date_or_the_coverage_reason(tmp_path):
+def test_r1_r11_a_lip_f1_not_decidable_is_final_only_with_counts_met_or_the_nd_date(tmp_path):
     excl = "excluded units (no trades / no metadata) exceed 10% of the units that would otherwise be opened"
-    cov = "recorder/poller coverage < 70% on two consecutive days"
-    assert cov == f2.COVERAGE_ND_REASON
-    # an exclusion-share NOT_DECIDABLE at 10-25 with the counts not met is a candidate, not a deciding file
-    for counts in ((False, False, False), (True, True, False), (True, False, True)):
+    cov = "recorder/poller coverage < 70% on two consecutive days"          # the simulator's own wording; no longer an exception
+    assert not hasattr(f2, "COVERAGE_ND_REASON")
+    # an exclusion-share OR coverage NOT_DECIDABLE at 10-25 with the counts not met is a candidate, not a deciding file
+    for reasons in ([excl], [cov], [excl, cov]):
+        for counts in ((False, False, False), (True, True, False), (True, False, True)):
+            with pytest.raises(f2.F2Refusal, match="skipped: LIP-F1 not final"):
+                f2.check_lip_f1_gate(str(nd_gate(tmp_path, reasons, counts)))
         with pytest.raises(f2.F2Refusal, match="skipped: LIP-F1 not final"):
-            f2.check_lip_f1_gate(str(nd_gate(tmp_path, [excl], counts)))
+            f2.check_lip_f1_gate(str(nd_gate(tmp_path, reasons, r="2026-11-01T00:00:00Z")))
     with pytest.raises(f2.F2Refusal, match="skipped: LIP-F1 not final"):            # no cells at all (units-evidence path)
         f2.check_lip_f1_gate(str(lip_gate(tmp_path, verdict="NOT_DECIDABLE", nd_reasons=["units not verified"], read_instant=Ellipsis)))
-    with pytest.raises(f2.F2Refusal, match="skipped: LIP-F1 not final"):
-        f2.check_lip_f1_gate(str(nd_gate(tmp_path, [excl], r="2026-11-01T00:00:00Z")))
-    # (a) counts met in all three cells, (b) R >= the NOT_DECIDABLE date, (c) the coverage reason
-    assert f2.check_lip_f1_gate(str(nd_gate(tmp_path, [excl], (True, True, True))))["read_instant"] == "2026-10-25T00:00:00Z"
+    # R11: the same coverage-only file is accepted once the counts are met in all three cells, or at the ND date
+    assert f2.check_lip_f1_gate(str(nd_gate(tmp_path, [cov], (True, True, True))))["read_instant"] == "2026-10-25T00:00:00Z"
+    assert f2.check_lip_f1_gate(str(nd_gate(tmp_path, [cov], r="2026-11-02T00:00:00Z")))
+    assert f2.check_lip_f1_gate(str(nd_gate(tmp_path, [excl], (True, True, True))))
     assert f2.check_lip_f1_gate(str(nd_gate(tmp_path, [excl], r="2026-11-02T00:00:00Z")))
-    assert f2.check_lip_f1_gate(str(nd_gate(tmp_path, [cov])))
-    assert f2.check_lip_f1_gate(str(nd_gate(tmp_path, [excl, cov])))
     # PASS / FAIL / DEAD handling is unchanged
     for v in ("FORMULA_SCREEN_PASSED", "FAIL", "DEAD_AS_FROZEN"):
         assert f2.check_lip_f1_gate(str(lip_gate(tmp_path, verdict=v)))
