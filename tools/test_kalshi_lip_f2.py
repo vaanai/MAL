@@ -1036,7 +1036,7 @@ def test_dry_run_prints_loader_counts_only_needs_no_gate_and_never_applies_the_f
         assert word not in blob, word
     assert "pRT" not in json.dumps(rep) and f2.sim_is_lip_f1()
     # a dry run needs no gates and refuses the outcome-mode arguments
-    for extra in (["--read-instant", R], ["--scan"], ["--asof", R], ["--out", str(tmp_path / "o")]):
+    for extra in (["--read-instant", R], ["--scan"], ["--asof", R], ["--out", str(tmp_path / "o")], ["--debug-snaps"]):
         assert f2.main(cli_argv(w, tmp_path, texts, decl, None, variant=None, out=None) + ["--dry-run"] + extra) == 2
         assert "takes no" in capsys.readouterr().err
 

@@ -799,8 +799,8 @@ def prepare(a):
         raise F2Refusal(f"--freeze must be the cohort freeze {freeze_iso}")
     ctx = {"freeze_iso": freeze_iso, "declare_sha256": declare_sha, "texts": texts}
     if a.dry_run:
-        if a.read_instant or a.scan or a.asof or a.out:
-            raise F2Refusal("--dry-run takes no --read-instant / --scan / --asof / --out")
+        if a.read_instant or a.scan or a.asof or a.out or a.debug_snaps:
+            raise F2Refusal("--dry-run takes no --read-instant / --scan / --asof / --out / --debug-snaps")
     else:
         # the process gates: LIP-F1 final, Book C done (QP L1 item 3)
         ctx["lip_f1_gate"] = check_lip_f1_gate(a.lip_f1_gate)
