@@ -2366,7 +2366,7 @@ class LeakRule:
     rows <= the fire slot and is silent at fire - 1). `leak=False` is the honest twin: a predicate that reads the view only."""
 
     def __init__(self, slot, channel, leak=True):
-        self.slot, self.channel, self.leak, self.attr = slot, channel, leak, None
+        self.slot, self.channel, self.leak, self.attr, self.memo = slot, channel, leak, None, {}
 
     def cells(self):
         return [S.Cell("c", event_triggered=False, event_exit=True)]
@@ -2381,6 +2381,10 @@ class LeakRule:
             state.scratch["mem"] = mem
             box = state.scratch
             get = lambda: box["mem"]  # noqa: E731
+        elif self.channel == "memo":  # the reviewer's variant (#760 at 7f5f3d6): kept on self, keyed by hour.idx, FIRST WRITE WINS
+            self.memo.setdefault(hour.idx, mem)
+            idx = hour.idx
+            get = lambda: self.memo[idx]  # noqa: E731
         else:
             self.attr = mem
             get = lambda: self.attr  # noqa: E731
@@ -2394,7 +2398,7 @@ class LeakRule:
         return [(POOLS["A"], self.slot, S.ExitSpec(120, cell="c", exit_fire=leak_fire if self.leak else whale_fire(1.0e9)))]
 
 
-@pytest.mark.parametrize("channel", ["scratch", "attribute"])
+@pytest.mark.parametrize("channel", ["scratch", "attribute", "memo"])
 def test_the_entry_hour_rerun_fails_a_rule_that_keeps_the_entry_hours_later_rows_and_gates_on_the_exact_slot(tape, monkeypatch, channel):
     """The manager's decision on #760 (QP option b): re-run triggers() on the entry hour cut after the entry slot, take the cut run's ExitSpec for the same (pool, slot, cell), stream
     the exit with ITS predicate, and require the identical fire (or no-fire). The leak passes the prefix probe and fails here; the honest twin passes."""
@@ -2410,9 +2414,11 @@ def test_the_entry_hour_rerun_fails_a_rule_that_keeps_the_entry_hours_later_rows
     entry_seen, res = seen[-1]
     assert entry_seen and len(res) == 1 and res[0]["full"] == res[0]["cut"] and res[0]["full"][1] == S.EVENT_CODE and res[0]["ok"]  # a real fire, the same fire from the cut run
 
+    assert S.causal_probe(LeakRule(slot, channel, leak=True), hr, st, POOLS["A"], slot)  # the entry alone is causal... (a fresh rule per call: a first-write memo is polluted by any earlier call)
     leak = LeakRule(slot, channel, leak=True)
-    assert S.causal_probe(leak, hr, st, POOLS["A"], slot)  # the entry alone is causal...
-    assert not S.causal_probe(leak, hr, st, POOLS["A"], slot, exit_fire=True)  # ...the exit is not
+    assert not S.causal_probe(leak, hr, st, POOLS["A"], slot, exit_fire=True)  # ...the exit is not: the cut run is made on a deep copy of the rule taken before the full-hour run
+    if channel == "memo":
+        assert int(leak.memo[hr.idx][0].max()) > slot  # the caller's rule carries the FULL hour (it ran the full-hour run); the copy that ran the cut run never saw it
     entry_seen, res = seen[-1]
     r = res[0]
     assert entry_seen and r["full"][1] == S.EVENT_CODE and r["prefix_ok"] is True  # the prefix probe on the full-hour spec PASSES (that is the residual)

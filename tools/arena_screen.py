@@ -19,7 +19,7 @@ RULE API (a small Python object)
   for hours <= h-1 only, and a "no fire" is a series of honest per-slot False answers (nothing is returned that could have been chosen with hindsight). ENTRY HOUR: a position's own entry
   hour is run after triggers() of that hour, so for the rest of that hour the rule's state has seen the whole hour (as at every entry: the hour is handed over whole). That is closed by an
   ENTRY-HOUR RE-RUN inside `causal_probe(..., exit_fire=True)`, the author's seed-1 sample of >= 200 triggers per block (0 failures for registration, the standard of the entry probe, NOT
-  every trigger): it re-runs the rule's triggers() on the entry hour CUT after the entry decision slot, with a deep copy of the state as it was at the start of that hour, takes the ExitSpec
+  every trigger; the harness must hand it the state SNAPSHOTTED BEFORE triggers(h) of the entry hour): it re-runs the rule's triggers() on the entry hour CUT after the entry decision slot, with a deep copy of the state as it was at the start of that hour, on a deep copy of the RULE object taken before the full-hour run (state kept on self cannot carry the full hour over; the rule must be deep-copyable), takes the ExitSpec
   that cut run returns for the same (pool, slot, cell) (its predicate was built only from rows <= the entry slot), streams the exit with THAT predicate, and requires the identical fire
   slot (or the identical no-fire) as the full-hour spec. A mismatch is a probe FAIL, like an entry look-ahead. The kit's own priced run does the prefix probe on EVERY event exit but cannot
   do the re-run (it holds no per-hour state snapshot). `landing_slot` = the kit floor sd + k_slow + 1 (the slower entry leg has landed), `cap_slot` the time cap's decision
@@ -1682,8 +1682,11 @@ def _stream_outcome(spec: Any, a: dict, pp: np.ndarray, slot: int, rate: float, 
 def exit_entry_hour_rerun(rule: Any, hour: HourRows, cut: HourRows, state: RunState, pool: str, slot: int) -> tuple[bool, list[dict]]:
     """The entry-hour re-run (see causal_probe). `cut` = `hour` cut after `slot`, `state` = the state at the start of the hour (this function deep-copies it for each run). Returns
     (the cut run returned the entry, one dict per exit_fire spec the FULL-hour run hands out for (pool, slot): {"cell", "full": (xs, why), "cut": (xs, why) | None, "prefix_ok", "same", "ok"}). A cut run that returns no exit_fire for that
-    cell gives cut None (not ok). The full-hour specs are streamed BEFORE the cut run starts, so a rule that keeps state on itself cannot leak between them."""
+    cell gives cut None (not ok). The cut run is made on `copy.deepcopy(rule)` taken BEFORE the full-hour run (which uses the caller's rule), so state the rule keeps on itself cannot carry
+    the full hour into the cut run, and the full-hour specs are streamed before the cut run starts. The rule must be deep-copyable. `state` must be the state as it was at the START of
+    the hour (before triggers(h)): a post-triggers state shows both runs the same leaked scratch."""
     cp = lambda: dataclasses.replace(state, scratch=copy.deepcopy(state.scratch), first_seen=dict(state.first_seen))  # noqa: E731
+    rule_cut = copy.deepcopy(rule)  # BEFORE the full-hour run: state the rule keeps on itself (an attribute, a memo keyed by hour.idx, first write wins) cannot carry the full hour into the cut run
     i = hour.pool_index().get(pool)
     if i is None or not hour.n:
         return False, [{"cell": None, "full": None, "cut": None, "prefix_ok": False, "same": False, "ok": False}]
@@ -1705,7 +1708,7 @@ def exit_entry_hour_rerun(rule: Any, hour: HourRows, cut: HourRows, state: RunSt
         except Refused:
             full, prefix_ok = None, False
         out[cell] = {"cell": cell, "full": full, "cut": None, "prefix_ok": prefix_ok, "same": False, "ok": False}
-    cut_trigs = list(rule.triggers(cut, cp()))
+    cut_trigs = list(rule_cut.triggers(cut, cp()))
     entry_seen = any(p == pool and int(s_) == slot for p, s_, _ in cut_trigs)
     for p, s_, spec in cut_trigs:
         cell = getattr(spec, "cell", None)
