@@ -1,9 +1,11 @@
 # HV4 stub memory growth, measured 2026-10-19 (tools/hv4_memreplay.py output)
 
-The tables below are written by the harness, not by hand. Paper only. The chain layer is mocked (no RPC call), the model is StubModel, the data is the closed arena tape hours named in each title.
+Paper only. The chain layer is mocked (no RPC call), the model is StubModel, the data is the closed arena tape hours 2026-10-19T08 to T16 (T09 to T11 for section 1). Sections 1 to 3 are written by the harness, not by hand. Nothing here says any book made money.
 
 Section 1 is the tracemalloc run (3 closed hours, a snapshot every 15 simulated minutes) BEFORE the fix. Its mock chain refused every card on a slot mismatch (fixed afterwards in the harness), so card-side structures are not in it; the engine and state sites are. RSS in that run is inflated by tracemalloc itself.
-Sections 2 and 3 are the 9 h RSS curves without tracemalloc, bounds off (the 2026-10-19 behaviour, `RunnerConfig.bound_memory=False`) and on.
+Sections 2 and 3 are 9 h RSS curves without tracemalloc: bounds off (the 2026-10-19 behaviour, `RunnerConfig.bound_memory=False`) and on.
+Section 4 puts the hourly points of 2, 3 and a what-if side by side. The what-if trims the engine's print history of every pool without a position to the last 20,000 slots from the harness; it is NOT in the runner and needs a decision on `tools/arena_paper.py` (pinned).
+Section 5 is the decision-equivalence check on the real 9 h tape.
 
 ## 1. tracemalloc, before the fix
 
@@ -61,6 +63,8 @@ Sections 2 and 3 are the 9 h RSS curves without tracemalloc, bounds off (the 202
 | arena_state.py:129 | 11.4 |
 | hv4_runner.py:358 | 7.9 |
 | hv4_runner.py:357 | 7.9 |
+
+Reading the sites: `arena_paper.py:723/727/869/886/923/926/927` are the engine's `PoolHist` (one entry per print of every pool: the order-key tuple, the dedupe tuple, nine parallel lists, the float copies); `decoder.py:353` is the JSON decoder, and most of its bytes are the 88-character signature strings those tuples keep alive; `arena_state.py:438/442/466` are the state's own 60-minute event deque, per-trader net dict and candles; `hv4_runner.py:357/358` is `QuoteHistory`.
 
 ## 2. 9 h, bounds OFF
 
@@ -143,3 +147,44 @@ Sections 2 and 3 are the 9 h RSS curves without tracemalloc, bounds off (the 202
 | 10-19T16:30 | 3707 |  | 7580250 | 28333 | 9201 | 3439110 | 1973023 | 194 |
 | 10-19T16:45 | 3738 |  | 7851172 | 28578 | 9414 | 3512100 | 2051929 | 190 |
 | 10-19T17:00 | 3790 |  | 8123858 | 28856 | 9590 | 3575940 | 2139027 | 189 |
+
+## 4. Hourly side by side
+
+| sim (UTC) | rows applied | RSS MB, bounds off | RSS MB, prune + quote sweep (this PR) | RSS MB, plus engine hist trim (what-if) | engine hist rows (what-if) |
+|---|---|---|---|---|---|
+| 10-19T09:00 | 770974 | 836 | 844 | 829 | 766834 |
+| 10-19T10:00 | 1580201 | 1517 | 1441 | 1200 | 1040773 |
+| 10-19T11:00 | 2484507 | 2284 | 1904 | 1486 | 1154632 |
+| 10-19T12:00 | 3254619 | 2911 | 2220 | 1558 | 998795 |
+| 10-19T13:00 | 4134225 | 3679 | 2500 | 1773 | 1090908 |
+| 10-19T14:00 | 5128845 | 4505 | 2966 | 2124 | 1277461 |
+| 10-19T15:00 | 6076025 | 5162 | 3304 | 2135 | 1205502 |
+| 10-19T16:00 | 7089678 | 5921 | 3639 | 2282 | 1303474 |
+| 10-19T17:00 | 8123858 | 6630 | 3790 | 2354 | 1341628 |
+
+## 5. Decision equivalence on the real 9 h tape (timing rows off: they use the wall clock)
+
+| run | decision log md5 (all arms, SCAN, RISK) | ledger digest | ledger digest without the `mint` field |
+|---|---|---|---|
+| bounds off | eb77b1a22de7a9a1cacebffb0f486366 | d0dba3f062a3fa8ff9c9fed9cb4a4318 | 208b3d1de42dd2c0c251251183d2ce04 |
+| bounds on (this PR) | eb77b1a22de7a9a1cacebffb0f486366 | 631963549751978c3544ce858081dc35 | 208b3d1de42dd2c0c251251183d2ce04 |
+| bounds on + engine hist trim (what-if) | eb77b1a22de7a9a1cacebffb0f486366 | 631963549751978c3544ce858081dc35 | 208b3d1de42dd2c0c251251183d2ce04 |
+
+The digest drops the process-start record, `engine_id`, `code_head` and `code_dirty` (process identity). The two runs differ in the `mint` field of 5 ledger rows (2 positions, one BIG-X and one CON-X): the unbounded engine keeps the `PoolHist` it created from the pool's first print, which carried no mint, so those rows say `null`; after a prune the engine re-creates the history from a later print and the rows carry the mint. No price, size, slot, fill, exclusion or PnL field differs. 37 open rows and 102 trade rows in all, 139 rows over two bots (CON-X, BIG-X): in this stub replay only the X arms trade.
+
+## 6. Replay of the failing run (#1236): state warm-up from 08:30, first tick 14:35:23, public chain (holders off), timing on
+
+| sim (UTC) | rows applied | RSS MB, bounds off | RSS MB, bounds on |
+|---|---|---|---|
+| 10-19T14:45 | 5489143 | 4785 | 3147 |
+| 10-19T15:00 | 5742328 | 4959 | 3217 |
+| 10-19T15:15 | 5985917 | 5143 | 3307 |
+| 10-19T15:30 | 6247836 | 5352 | 3400 |
+| 10-19T15:45 | 6507495 | 5542 | 3491 |
+| 10-19T16:00 | 6755981 | 5701 | 3564 |
+| 10-19T16:15 | 7003830 | 5887 | 3614 |
+| 10-19T16:30 | 7246553 | 6051 | 3660 |
+| 10-19T16:45 | 7517475 | 6250 | 3683 |
+| 10-19T17:00 | 7790161 | 6422 | 3719 |
+
+The real process was at 6,274,564 kB anon-rss at 17:07:29Z. The warm-up (5.3 million prints read before the first tick) already costs 4.8 GB with the engine keeping every print; with the bounds on it is 3.1 GB.

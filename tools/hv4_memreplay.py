@@ -342,7 +342,7 @@ def replay(rig: Rig, t_from: int, t_to: int, *, sample_ms: int, tracemalloc_top:
 
 def ledger_digest(ledger_dir: Path, drop_keys: tuple[str, ...] = ()) -> str:
     """md5 of the engine ledger rows that are a function of the tape: every file, every row except the process-start record (a fresh uuid and the wall clock),
-    and the engine_id uuid, plus any top-level key in `drop_keys`. Used to show two runs priced the same fills."""
+    without the engine_id uuid and the code_head / code_dirty process identity, and without any top-level key in `drop_keys`. Used to show two runs priced the same fills."""
     import hashlib
 
     from tools.hv4_runner import canon
@@ -355,7 +355,7 @@ def ledger_digest(ledger_dir: Path, drop_keys: tuple[str, ...] = ()) -> str:
                 row = json.loads(line)
                 if row.get("kind") == "start":
                     continue
-                for k in ("engine_id", *drop_keys):
+                for k in ("engine_id", "code_head", "code_dirty", *drop_keys):  # the process identity: a different commit of the harness gives a different value
                     row.pop(k, None)
                 h.update(canon(row).encode() + b"\n")
     return h.hexdigest()
