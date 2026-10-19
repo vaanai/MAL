@@ -73,6 +73,22 @@ Conventions / caveats:
     (status outside_window).  Run ``markets`` into the same --out first for --market mode.
   * Trades: taker side is stored as ``taker_outcome_side`` (falls back to the
     deprecated ``taker_side``).  Prices are dollars as floats.
+  * Trades ``--tail-s N`` (``--series`` only): for each settled market whose own ``close_time`` is in
+    [--since, --until) fetch only the trades created in [close_time - N s, close_time]
+    (``ticker=``, ``min_ts`` / ``max_ts`` unix seconds, cursor pages; live or historical tier by the
+    cutoff as usual).  Whether the API's bounds are inclusive or exclusive is NOT verified, so the
+    request is padded by 1 s per side (``floor(close) - N - 1``, ``ceil(close) + 1``) and rows are
+    then cut client-side to created_time in [close - N, close], both ends inclusive; the stored set
+    is the same either way (the unit record has ``fetched`` and ``rows``).  The window comes from
+    the market record's ``close_time``, never from ``settlement_ts`` (which can lag close by hours)
+    and is NOT clipped to --since/--until.  At the historical/live cutoff second the tiers still
+    meet at one shared bound (as in full runs); a print created exactly there is not covered if
+    both bounds are exclusive.
+    ``tail_s`` is part of the run's query (checkpoint name, manifest ``query``), part files are
+    named ``trades-tail<N>:...`` so they never overwrite a full-history part, and a checkpoint
+    whose recorded query differs from the run's is refused (exit 4).  A tail run and a full run
+    over the same tickers leave overlapping rows; readers dedupe on trade_id.  A full run's query
+    has no ``tail_s`` key at all, so its checkpoint names are unchanged.
   * Resumability is per unit (series for markets, ticker for trades/candles).
     A unit is marked done only after its files are written.  The manifest is an
     append-only log; for a path that appears twice take the last line.
@@ -138,6 +154,7 @@ import email.utils
 import fcntl
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -218,6 +235,10 @@ class ForbiddenPath(Exception):
 
 class MaxRequestsReached(Exception):
     pass
+
+
+class CheckpointMismatch(Exception):
+    """A checkpoint file's recorded command/query differs from this run's: never resumed."""
 
 
 class HttpError(Exception):
@@ -586,7 +607,17 @@ class Store:
         self.ckpt_path = self.out / "_checkpoints" / f"{command}-{qh}.json"
         self.done: set[str] = set()
         if self.ckpt_path.exists():
-            self.done = set(json.loads(self.ckpt_path.read_text()).get("done", []))
+            ck = json.loads(self.ckpt_path.read_text())
+            saved = ck.get("query")
+            # the file name is a hash of (command, query), so a mismatch means a copied/renamed
+            # file; the case that matters is a full-history checkpoint under a tail name or back
+            if saved is not None and (ck.get("command", command) != command
+                                      or jdump(saved) != jdump(query)):
+                raise CheckpointMismatch(
+                    f"{self.ckpt_path.name} was written by a different query "
+                    f"(tail_s={saved.get('tail_s')!r} there, {query.get('tail_s')!r} now); "
+                    f"refusing to resume it")
+            self.done = set(ck.get("done", []))
 
     def save_checkpoint(self):
         self.ckpt_path.parent.mkdir(parents=True, exist_ok=True)
@@ -796,9 +827,42 @@ def cmd_markets(client, store, args, log):
     return True
 
 
+def tail_window(close_time, tail_s: int):
+    """(min_ts, max_ts) unix seconds REQUESTED for the trades tail of one market:
+    ``floor(close) - tail_s - 1`` and ``ceil(close) + 1``.  The one-second pad on each side makes
+    the fetched set a superset of [close - tail_s, close] whether the API treats ``min_ts`` /
+    ``max_ts`` as inclusive or exclusive (not verified live); ``tail_keep`` then cuts the rows to
+    the exact window.  None if the market has no usable close_time."""
+    d = parse_dt(close_time)
+    if d is None:
+        return None
+    c = d.timestamp()
+    return math.floor(c) - tail_s - 1, math.ceil(c) + 1
+
+
+def tail_keep(close_time, tail_s: int):
+    """(lo, hi) datetimes, both ends inclusive: the exact window [close - tail_s, close] a row's
+    created_time must be in to be stored.  None if there is no usable close_time."""
+    d = parse_dt(close_time)
+    return None if d is None else (d - timedelta(seconds=tail_s), d)
+
+
+def closes_in_window(m: dict, since, until) -> bool:
+    """Selection for ``--tail-s``: the market's own close_time in [since, until).  Never
+    settlement_ts (it lags close, by hours in the stored data)."""
+    ct = to_unix(m.get("close_time"))
+    return ct is not None and (since is None or ct >= since) and (until is None or ct < until)
+
+
 def _markets_for_trades(client, store, args, log, cutoff, since, until):
     """Yield ``(ticker, market_dict_or_None)``.  The dict is the settled-market listing entry
-    (``--series`` mode: already fetched, no extra request); ``--market`` mode has none."""
+    (``--series`` mode: already fetched, no extra request); ``--market`` mode has none.
+
+    With ``--tail-s`` (trades only, ``--series`` only) the listing is still the settled-market
+    listing with ``min_settled_ts = since`` and no upper bound: a settled market settles after it
+    closes, so every market closing at/after ``since`` is listed, and one that closes before
+    ``until`` but settles after it is not lost.  The set is then cut client-side to markets whose
+    own ``close_time`` is in [since, until)."""
     if args.market:
         allowed = set(select_series(client, argparse.Namespace(
             categories=args.categories, allow_series=args.allow_series,
@@ -813,6 +877,10 @@ def _markets_for_trades(client, store, args, log, cutoff, since, until):
     for s in select_series(client, args, log):
         # markets that settled on/after --since; their trades are then limited to the window
         for _src, m in fetch_settled_markets(client, cutoff, s, since, None):
+            if getattr(args, "tail_s", None) and not closes_in_window(m, since, until):
+                if to_unix(m.get("close_time")) is None:
+                    log(f"skip {m['ticker']}: no close_time, no tail window")
+                continue
             yield m["ticker"], m
 
 
@@ -852,19 +920,53 @@ def iter_trade_batches(client, cutoff: Cutoff, ticker, since, until, flush_pages
 
 
 def cmd_trades(client, store, args, log):
+    """Full history of each ticker inside [--since, --until], or with ``--tail-s N`` only the
+    last N seconds before each settled market's own close_time (see ``tail_window``)."""
     if not args.market and not args.series:
         raise SystemExit("trades needs --market or --series")
+    tail_s = getattr(args, "tail_s", None)
+    if tail_s is not None:
+        if tail_s < 1:
+            raise SystemExit("--tail-s must be >= 1")
+        if args.market:
+            raise SystemExit("--tail-s needs --series (the window comes from each market's "
+                             "close_time in the settled-market listing); --market has none")
     since, until = window(args)
     cutoff = Cutoff(client)
-    for t in _tickers_for_trades(client, store, args, log, cutoff, since, until):
+    if tail_s is None:
+        for t in _tickers_for_trades(client, store, args, log, cutoff, since, until):
+            if t in store.done:
+                continue
+            n = 0
+            for i, rows in enumerate(iter_trade_batches(client, cutoff, t, since, until, args.flush_pages)):
+                store.write_partitioned("trades", rows, part=f"trades:{t}:{i}", time_field="created_time")
+                n += len(rows)
+            store.mark_done(t)
+            log(f"trades {t}: {n}")
+        return True
+    n_markets = n_rows = 0
+    for t, m in _markets_for_trades(client, store, args, log, cutoff, since, until):
         if t in store.done:
             continue
-        n = 0
-        for i, rows in enumerate(iter_trade_batches(client, cutoff, t, since, until, args.flush_pages)):
-            store.write_partitioned("trades", rows, part=f"trades:{t}:{i}", time_field="created_time")
+        lo, hi = tail_window(m.get("close_time"), tail_s)  # selection guarantees a close_time
+        keep_lo, keep_hi = tail_keep(m.get("close_time"), tail_s)
+        n, fetched, req0 = 0, 0, client.requests_made
+        for i, rows in enumerate(iter_trade_batches(client, cutoff, t, lo, hi, args.flush_pages)):
+            fetched += len(rows)
+            # the request is padded by 1 s per side; keep exactly [close - tail_s, close]
+            rows = [r for r in rows
+                    if r["created_time"] is not None and keep_lo <= r["created_time"] <= keep_hi]
+            # part name carries tail_s: a tail never overwrites a full-history part of the ticker
+            store.write_partitioned("trades", rows, part=f"trades-tail{tail_s}:{t}:{i}",
+                                    time_field="created_time")
             n += len(rows)
+        store.unit_record(t, "ok" if n else "empty", n, tail_s=tail_s, min_ts=lo, max_ts=hi,
+                          fetched=fetched, requests=client.requests_made - req0)
         store.mark_done(t)
-        log(f"trades {t}: {n}")
+        n_markets += 1
+        n_rows += n
+        log(f"trades {t}: {n} kept of {fetched} (tail {tail_s}s, request min_ts={lo}, max_ts={hi})")
+    log(f"trades tail: {n_markets} market(s), {n_rows} row(s) this run")
     return True
 
 
@@ -1771,6 +1873,9 @@ def build_parser():
     t.add_argument("--series")
     t.add_argument("--since")
     t.add_argument("--until")
+    t.add_argument("--tail-s", type=int, default=None, metavar="N",
+                   help="--series only: per settled market (close_time in [--since, --until)) fetch "
+                        "only trades in [close_time - N s, close_time]; recorded in the query")
 
     c = sub.add_parser("candles", help="candlesticks")
     c.add_argument("--market")
@@ -1816,7 +1921,7 @@ def build_parser():
 QUERY_KEYS = ("categories", "allow_series", "all_categories", "status", "series", "since", "until", "market",
               "period", "markets", "every_s", "duration_s", "depth", "raw_json",
               "discover_every_s", "strict_cadence", "max_discover_failures",
-              "incentive_type", "page_limit", "max_pages")
+              "incentive_type", "page_limit", "max_pages", "tail_s")
 COMMANDS = {"series": cmd_series, "markets": cmd_markets, "trades": cmd_trades,
             "candles": cmd_candles, "orderbook-snap": cmd_orderbook_snap,
             "incentive-snap": cmd_incentive_snap}
@@ -1842,7 +1947,13 @@ def main(argv=None, client: Client | None = None) -> int:
         return 0
     client = client or Client(rate=args.rate, max_requests=args.max_requests)
     query = {k: getattr(args, k) for k in QUERY_KEYS if hasattr(args, k)}
-    store = Store(args.out, args.cmd, query)
+    if query.get("tail_s") is None:
+        query.pop("tail_s", None)  # a full run's query (and so its checkpoint name) is unchanged
+    try:
+        store = Store(args.out, args.cmd, query)
+    except CheckpointMismatch as e:
+        log(f"refused: {e}")
+        return 4
     if args.flush_pages < 1:
         raise SystemExit("--flush-pages must be >= 1")
     try:
