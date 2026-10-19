@@ -1379,3 +1379,303 @@ def test_first_failed_listing_retries_after_min_60_and_keeps_rate_guard(tmp_path
     run2(tmp_path / "slow", fake2, ["--series", "KXFIN", "--every-s", "60", "--discover-every-s", "600",
                                     "--duration-s", "1000"], rate=0.02)
     assert 5 <= len(tab(tmp_path / "slow", "orderbook_discoveries")) <= 11
+
+
+# ------------------------------------------------------------ trades --tail-s
+
+TAIL_SINCE = "2026-10-01T00:00:00Z"
+TAIL_UNTIL = "2026-10-02T00:00:00Z"
+TAIL_ARGS = ["trades", "--series", "KXBTC15M", "--since", TAIL_SINCE, "--until", TAIL_UNTIL,
+             "--tail-s", "600"]
+FULL_ARGS = ["trades", "--series", "KXBTC15M", "--since", TAIL_SINCE, "--until", TAIL_UNTIL]
+
+
+def u(iso):
+    return kp.to_unix(iso)
+
+
+def tmk(t, close, settle):
+    m = Fake.mk(t, settle)
+    m["close_time"] = close
+    return m
+
+
+def ttr(ticker, tid, iso):
+    return {"trade_id": tid, "ticker": ticker, "count_fp": "5.00", "yes_price_dollars": "0.9000",
+            "no_price_dollars": "0.1000", "taker_outcome_side": "yes", "taker_book_side": "bid",
+            "created_time": iso, "is_block_trade": False}
+
+
+# ticker -> (close_time, settlement_ts)
+TA = "KXBTC15M-26OCT010005-05"   # closes 00:05, so its tail starts BEFORE --since
+TB = "KXBTC15M-26OCT011200-00"   # settles 3.5 h after close
+TC = "KXBTC15M-26OCT012345-45"   # closes before --until, settles after it
+TD = "KXBTC15M-26OCT020000-00"   # closes exactly at --until: excluded
+TE = "KXBTC15M-26SEP302345-45"   # closes before --since, settles after it: excluded
+TF = "KXBTC15M-26OCT010600-00"   # no close_time: skipped
+TAIL_MARKETS = {
+    TA: ("2026-10-01T00:05:00Z", "2026-10-01T00:05:07Z"),
+    TB: ("2026-10-01T12:00:00Z", "2026-10-01T15:30:00Z"),
+    TC: ("2026-10-01T23:45:00Z", "2026-10-02T05:00:00Z"),
+    TD: ("2026-10-02T00:00:00Z", "2026-10-02T00:00:09Z"),
+    TE: ("2026-09-30T23:45:00Z", "2026-10-01T00:00:05Z"),
+    TF: (None, "2026-10-01T06:00:09Z"),
+}
+
+
+def offsets(ticker, close_iso):
+    """Trades 601 s, 600 s, 300 s, 1 s, 0 s before close and 1 s after."""
+    c = u(close_iso)
+    return [ttr(ticker, f"{ticker}:{d}", kp.parse_dt(c - d).strftime("%Y-%m-%dT%H:%M:%SZ"))
+            for d in (601, 600, 300, 1, 0, -1)]
+
+
+class TailFake(Fake):
+    """Crypto 15M series; /markets/trades honours ticker, min_ts, max_ts (inclusive), limit, cursor
+    like the real endpoint and records every trades query."""
+
+    def __init__(self, markets=TAIL_MARKETS):
+        super().__init__()
+        self.series.append({"ticker": "KXBTC15M", "title": "BTC 15 min", "category": "Crypto",
+                            "categories": ["Crypto"], "tags": [], "frequency": "fifteen_min",
+                            "fee_type": "quadratic", "fee_multiplier": 1.0, "settlement_sources": [],
+                            "contract_url": "u", "contract_terms_url": "t"})
+        self.live_markets = {"KXBTC15M": [tmk(t, c, s) for t, (c, s) in markets.items()]}
+        self.hist_markets = {}
+        self.trades = {t: offsets(t, c) for t, (c, _s) in markets.items() if c}
+        self.hist_trades = {}
+        self.trade_queries = []
+
+    def __call__(self, url):
+        u_ = urllib.parse.urlparse(url)
+        path = u_.path.replace("/trade-api/v2", "")
+        if path not in ("/markets/trades", "/historical/trades"):
+            return super().__call__(url)
+        self.calls.append(url)
+        if self.status_script:
+            st = self.status_script.pop(0)
+            if st != 200:
+                return st, b"{}"
+        q = urllib.parse.parse_qs(u_.query)
+        self.trade_queries.append((path, {k: v[0] for k, v in q.items()}))
+        lo = int(q["min_ts"][0]) if "min_ts" in q else 0
+        hi = int(q["max_ts"][0]) if "max_ts" in q else 10 ** 12
+        src = self.trades if path == "/markets/trades" else self.hist_trades
+        items = [t for t in src.get(q["ticker"][0], []) if lo <= u(t["created_time"]) <= hi]
+        return 200, json.dumps(self.page(items, "trades", q)).encode()
+
+    def asked(self):
+        return [q["ticker"] for _p, q in self.trade_queries]
+
+
+def test_tail_window_helper():
+    c = u("2026-10-01T00:15:00Z")
+    assert kp.tail_window("2026-10-01T00:15:00Z", 600) == (c - 600, c)
+    assert kp.tail_window(str(c), 60) == (c - 60, c)  # epoch seconds as text
+    # fractional close: widened to whole seconds, never narrowed
+    assert kp.tail_window("2026-10-01T00:15:00.500000000Z", 600) == (c - 600, c + 1)
+    assert kp.tail_window(None, 600) is None and kp.tail_window("", 600) is None
+
+
+def test_tail_sends_window_params_from_each_markets_own_close_time(tmp_path):
+    fake = TailFake()
+    rc, _ = run(tmp_path, TAIL_ARGS, fake)
+    assert rc == 0
+    assert len(fake.trade_queries) == 3  # one page per market
+    for path, q in fake.trade_queries:
+        close, _settle = TAIL_MARKETS[q["ticker"]]
+        assert path == "/markets/trades"  # October is after the (June) cutoff: live tier only
+        assert int(q["max_ts"]) == u(close)
+        assert int(q["min_ts"]) == u(close) - 600
+        assert q["limit"] == str(kp.PAGE_LIMIT) and "cursor" not in q
+    # TB settles 3.5 h after close: the window is still close-based, never settlement_ts-based
+    qb = [q for _p, q in fake.trade_queries if q["ticker"] == TB][0]
+    assert (int(qb["min_ts"]), int(qb["max_ts"])) == (u("2026-10-01T11:50:00Z"), u("2026-10-01T12:00:00Z"))
+    # TA's window opens before --since and is not clipped to it
+    qa = [q for _p, q in fake.trade_queries if q["ticker"] == TA][0]
+    assert int(qa["min_ts"]) == u("2026-09-30T23:55:00Z") < u(TAIL_SINCE)
+    # stored rows are exactly the trades the (inclusive) window returned, across the date partition
+    got = {r["trade_id"] for r in read(tmp_path, "trades")}
+    want = {f"{t}:{d}" for t in (TA, TB, TC) for d in (600, 300, 1, 0)}
+    assert got == want
+    assert {r["source"] for r in read(tmp_path, "trades")} == {"live"}
+    assert {p.name for p in (tmp_path / "trades" / "series=KXBTC15M").iterdir()} == {
+        "date=2026-09-30", "date=2026-10-01"}  # TA's tail starts on the previous UTC day
+
+
+def test_tail_selection_is_close_time_in_since_until_half_open(tmp_path, capsys):
+    fake = TailFake()
+    rc, _ = run(tmp_path, TAIL_ARGS, fake)
+    assert rc == 0
+    assert sorted(fake.asked()) == sorted([TA, TB, TC])  # not TD (== until), TE (before since), TF
+    assert TD not in "".join(fake.calls) and TE not in "".join(fake.calls)
+    err = capsys.readouterr().err
+    assert f"skip {TF}: no close_time" in err
+    # the listing itself is the existing settled listing: min_settled_ts = since, no upper bound
+    listing = [urllib.parse.parse_qs(urllib.parse.urlparse(c).query) for c in fake.calls
+               if urllib.parse.urlparse(c).path.endswith("/markets")]
+    assert len(listing) == 1 and listing[0]["min_settled_ts"] == [str(u(TAIL_SINCE))]
+    assert "max_settled_ts" not in listing[0]
+
+
+def test_tail_straddling_the_cutoff_splits_across_tiers(tmp_path):
+    close = "2026-06-01T00:01:40Z"  # 100 s after the cutoff: window [close-600, close] spans it
+    fake = TailFake({TA: (close, "2026-06-01T00:01:50Z")})
+    fake.hist_trades = {TA: [ttr(TA, "h1", "2026-05-31T23:55:00Z")]}
+    rc, _ = run(tmp_path, ["trades", "--series", "KXBTC15M", "--since", "2026-05-31T00:00:00Z",
+                           "--tail-s", "600"], fake)
+    assert rc == 0
+    by_path = dict(fake.trade_queries)
+    assert (int(by_path["/historical/trades"]["min_ts"]), int(by_path["/historical/trades"]["max_ts"])) == (
+        u(close) - 600, CUTOFF_TS)
+    assert (int(by_path["/markets/trades"]["min_ts"]), int(by_path["/markets/trades"]["max_ts"])) == (
+        CUTOFF_TS, u(close))
+    assert {r["source"] for r in read(tmp_path, "trades")} == {"historical", "live"}
+
+
+def test_tail_pages_follow_cursor_inside_the_window(tmp_path, monkeypatch):
+    monkeypatch.setattr(kp, "PAGE_LIMIT", 2)
+    fake = TailFake({TA: TAIL_MARKETS[TA]})
+    rc, client = run(tmp_path, TAIL_ARGS, fake)
+    assert rc == 0
+    qs = [q for _p, q in fake.trade_queries]
+    assert len(qs) == 2  # 4 trades in the window, 2 per page; last page has an empty cursor
+    assert "cursor" not in qs[0] and "cursor" in qs[1]
+    assert len({(q["min_ts"], q["max_ts"]) for q in qs}) == 1  # same window on every page
+    unit = [m for m in manifest(tmp_path) if m["type"] == "unit"][0]
+    assert unit["rows"] == 4 and unit["requests"] == 2 and unit["tail_s"] == 600
+    assert (unit["min_ts"], unit["max_ts"]) == (u(TAIL_MARKETS[TA][0]) - 600, u(TAIL_MARKETS[TA][0]))
+
+
+def test_tail_s_is_recorded_in_the_manifest_and_full_runs_do_not_carry_it(tmp_path):
+    run(tmp_path / "tail", TAIL_ARGS, TailFake())
+    recs = manifest(tmp_path / "tail")
+    for typ in ("file", "run"):
+        sel = [r for r in recs if r["type"] == typ]
+        assert sel and all(r["query"]["tail_s"] == 600 for r in sel)
+    assert [r for r in recs if r["type"] == "run"][-1]["complete"] is True
+    ck = json.loads(next((tmp_path / "tail" / "_checkpoints").glob("trades-*.json")).read_text())
+    assert ck["query"]["tail_s"] == 600
+    # a full run: no tail_s key anywhere, so its checkpoint name is what it was before this option
+    run(tmp_path / "full", FULL_ARGS, TailFake())
+    recs = manifest(tmp_path / "full")
+    assert all("tail_s" not in r["query"] for r in recs if r["type"] in ("file", "run"))
+    legacy = {"allow_series": None, "categories": None, "market": None, "series": "KXBTC15M",
+              "since": TAIL_SINCE, "until": TAIL_UNTIL}
+    qh = hashlib.sha256(kp.jdump({"c": "trades", "q": legacy}).encode()).hexdigest()[:16]
+    assert (tmp_path / "full" / "_checkpoints" / f"trades-{qh}.json").exists()
+    # and the name an in-flight full run already has on mal-fast-0 is still produced for its query
+    host_q = {"allow_series": None, "categories": None, "market": None,
+              "series": "KXBTCD,KXETHD,KXSOLD,KXBTC,KXETH,KXSOL,KXBTC15M,KXETH15M,KXSOL15M,KXXRPD,KXDOGED",
+              "since": "2026-10-01T00:00:00Z", "until": None}
+    assert kp.Store(tmp_path / "h", "trades", host_q).ckpt_path.name == "trades-6a363748d3082949.json"
+
+
+def test_tail_and_full_runs_never_share_checkpoint_or_part_files(tmp_path):
+    full_fake = TailFake()
+    rc, _ = run(tmp_path, FULL_ARGS, full_fake)
+    assert rc == 0
+    full_parts = {p: kp.sha256_file(p) for p in (tmp_path / "trades").rglob("*.parquet")}
+    full_rows = len(read(tmp_path, "trades"))
+    # a tail run over the same tickers is a fresh run: it does not inherit the full run's done set
+    tail_fake = TailFake()
+    rc, _ = run(tmp_path, TAIL_ARGS, tail_fake)
+    assert rc == 0 and sorted(tail_fake.asked()) == sorted([TA, TB, TC])
+    assert len(list((tmp_path / "_checkpoints").glob("trades-*.json"))) == 2
+    # the full run's part files are untouched; the tail wrote its own
+    assert all(p.exists() and kp.sha256_file(p) == h for p, h in full_parts.items())
+    now_parts = set((tmp_path / "trades").rglob("*.parquet"))
+    assert now_parts > set(full_parts)
+    assert len(read(tmp_path, "trades")) > full_rows  # overlap by trade_id: readers dedupe
+    # and the other way round, on a fresh store
+    d = tmp_path / "rev"
+    run(d, TAIL_ARGS, TailFake())
+    full2 = TailFake()
+    rc, _ = run(d, FULL_ARGS, full2)
+    assert rc == 0 and set(full2.asked()) == {TA, TB, TC, TD, TE, TF}  # tail's done set not inherited
+
+
+def test_tail_refuses_a_full_checkpoint_and_a_full_run_refuses_a_tail_checkpoint(tmp_path, capsys):
+    run(tmp_path, FULL_ARGS, TailFake())
+    full_ck = next((tmp_path / "_checkpoints").glob("trades-*.json"))
+    rc, _ = run(tmp_path, [*TAIL_ARGS], TailFake(), max_requests=3)  # leaves a tail checkpoint
+    assert rc == 3
+    tail_ck = [p for p in (tmp_path / "_checkpoints").glob("trades-*.json") if p != full_ck][0]
+    full_text, tail_text = full_ck.read_text(), tail_ck.read_text()
+    n_manifest = len((tmp_path / "manifest.jsonl").read_text().splitlines())
+    capsys.readouterr()
+    # full-run checkpoint content under the tail checkpoint's name
+    tail_ck.write_text(full_text)
+    fake = TailFake()
+    rc, client = run(tmp_path, TAIL_ARGS, fake)
+    assert rc == 4 and fake.calls == [] and client.requests_made == 0
+    err = capsys.readouterr().err
+    assert "refused" in err and "tail_s=None there, 600 now" in err
+    assert tail_ck.read_text() == full_text  # not rewritten
+    # tail-run checkpoint content under the full run's name
+    tail_ck.write_text(tail_text)
+    full_ck.write_text(tail_text)
+    fake = TailFake()
+    rc, client = run(tmp_path, FULL_ARGS, fake)
+    assert rc == 4 and fake.calls == [] and client.requests_made == 0
+    assert "tail_s=600 there, None now" in capsys.readouterr().err
+    assert len((tmp_path / "manifest.jsonl").read_text().splitlines()) == n_manifest  # no run record
+
+
+def test_tail_checkpoint_resumes_only_its_own_tail_run(tmp_path):
+    # hand-written checkpoint of the SAME tail query is honoured (control for the refusals above)
+    rc, _ = run(tmp_path, TAIL_ARGS, TailFake(), max_requests=3)  # series, cutoff, listing: no market done
+    assert rc == 3
+    ck = next((tmp_path / "_checkpoints").glob("trades-*.json"))
+    d = json.loads(ck.read_text())
+    assert d["done"] == [] and d["query"]["tail_s"] == 600
+    d["done"] = [TA]
+    ck.write_text(json.dumps(d))
+    fake = TailFake()
+    rc, _ = run(tmp_path, TAIL_ARGS, fake)
+    assert rc == 0 and sorted(fake.asked()) == sorted([TB, TC])
+    # a tail run with a different N is a different run: its own checkpoint, TA fetched again
+    fake = TailFake()
+    rc, _ = run(tmp_path, [*TAIL_ARGS[:-1], "900"], fake)
+    assert rc == 0 and TA in fake.asked() and len(list((tmp_path / "_checkpoints").glob("trades-*"))) == 2
+
+
+def test_tail_max_requests_is_respected_and_resume_skips_done_markets(tmp_path):
+    # requests: /series, /historical/cutoff, markets listing (1 page), then 1 trades page per market
+    rc, c1 = run(tmp_path, TAIL_ARGS, f1 := TailFake(), max_requests=5)
+    assert rc == 3 and c1.requests_made == 5
+    assert f1.asked() == [TA, TB]  # the 6th request (TC) was never sent
+    ck = json.loads(next((tmp_path / "_checkpoints").glob("trades-*.json")).read_text())
+    assert ck["done"] == [TA, TB]
+    last = manifest(tmp_path)[-1]
+    assert last["type"] == "run" and last["complete"] is False and last["requests"] == 5
+    assert last["query"]["tail_s"] == 600
+    f2 = TailFake()
+    rc, c2 = run(tmp_path, TAIL_ARGS, f2, max_requests=4)  # exactly enough for series+cutoff+list+TC
+    assert rc == 0 and c2.requests_made == 4 and f2.asked() == [TC]
+    assert {r["ticker"] for r in read(tmp_path, "trades")} == {TA, TB, TC}
+    rc, c3 = run(tmp_path, TAIL_ARGS, f3 := TailFake())  # everything done: no trades request
+    assert rc == 0 and f3.asked() == []
+
+
+def test_tail_retries_count_against_max_requests(tmp_path):
+    fake = TailFake({TA: TAIL_MARKETS[TA]})
+    rc, client = run(tmp_path, TAIL_ARGS, fake, max_requests=5)
+    assert rc == 0 and client.requests_made == 4
+    fake = TailFake({TA: TAIL_MARKETS[TA]})
+    fake.status_script = [200, 200, 200, 429, 429]  # trades page 429 twice, then the cap hits
+    rc, client = run(tmp_path / "b", TAIL_ARGS, fake, max_requests=5)
+    assert rc == 3 and client.requests_made == 5
+
+
+def test_tail_s_argument_validation_sends_nothing(tmp_path):
+    for argv in (["trades", "--series", "KXBTC15M", "--tail-s", "0"],
+                 ["trades", "--series", "KXBTC15M", "--tail-s", "-5"],
+                 ["trades", "--market", TA, "--tail-s", "600"],
+                 ["candles", "--series", "KXBTC15M", "--since", TAIL_SINCE, "--tail-s", "600"],
+                 ["markets", "--series", "KXBTC15M", "--tail-s", "600"],
+                 ["trades", "--series", "KXBTC15M", "--tail-s", "ten"]):
+        fake = TailFake()
+        with pytest.raises(SystemExit):
+            run(tmp_path, argv, fake)
+        assert fake.calls == [], argv
