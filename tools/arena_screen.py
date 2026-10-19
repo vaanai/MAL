@@ -107,16 +107,25 @@ class ExitSpec:
     cell: str | None = None
 
     def problem(self) -> str | None:
-        ok = lambda x: isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)  # noqa: E731
-        if not ok(self.hold_s) or self.hold_s < MIN_HOLD_S:
-            return f"hold_s must be a number >= {MIN_HOLD_S}"
-        if self.tp is not None and not (ok(self.tp) and self.tp > 1.0):
-            return "tp must be a multiple > 1"
-        if self.sl is not None and not (ok(self.sl) and 0.0 < self.sl < 1.0):
-            return "sl must be a multiple in (0, 1)"
-        if self.trail is not None and not (ok(self.trail) and 0.0 < self.trail < 1.0):
-            return "trail must be a multiple in (0, 1)"
-        return None
+        return exit_problem(self)
+
+
+def exit_problem(spec: Any) -> str | None:
+    """Why an exit spec is unusable, or None. Duck-typed on purpose: a rule built from another import of this module (python -m) has its own ExitSpec class."""
+    ok = lambda x: isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)  # noqa: E731
+    try:
+        hold, tp, sl, trail = spec.hold_s, getattr(spec, "tp", None), getattr(spec, "sl", None), getattr(spec, "trail", None)
+    except AttributeError:
+        return "not an ExitSpec"
+    if not ok(hold) or hold < MIN_HOLD_S:
+        return f"hold_s must be a number >= {MIN_HOLD_S}"
+    if tp is not None and not (ok(tp) and tp > 1.0):
+        return "tp must be a multiple > 1"
+    if sl is not None and not (ok(sl) and 0.0 < sl < 1.0):
+        return "sl must be a multiple in (0, 1)"
+    if trail is not None and not (ok(trail) and 0.0 < trail < 1.0):
+        return "trail must be a multiple in (0, 1)"
+    return None
 
 
 @dataclass(frozen=True)
@@ -314,6 +323,13 @@ def build_hour(lines: Iterable[bytes | str], *, block: str, T: int, idx: int, fm
     n_ps = n_non = 0
     arena = fmt == "arena"
     for line in lines:
+        if not arena and b'"quote_is_wsol":false' in line and b'"venue":"pumpswap"' in line:  # the 58% non-WSOL rows: counted and their pool noted, never parsed
+            k = line.find(b'"pool":"')
+            if k >= 0:
+                n_ps += 1
+                n_non += 1
+                nonwsol.add(line[k + 8:line.find(b'"', k + 8)].decode())
+                continue
         r = loads(line)
         if arena and r.get("type", "trade") != "trade":
             continue
@@ -540,7 +556,7 @@ class Screen:
     def __init__(self, rule: Any, *, count_only: bool = False, min_attempts_per_day: float = 20.0) -> None:
         self.rule, self.count_only, self.min_per_day = rule, count_only, float(min_attempts_per_day)
         raw = list(rule.cells())
-        self.cells = [c if isinstance(c, Cell) else Cell(str(c)) for c in raw]
+        self.cells = [Cell(str(c)) if isinstance(c, str) else Cell(str(c.name), float(getattr(c, "cooldown_s", 60.0))) for c in raw]
         if not self.cells or len({c.name for c in self.cells}) != len(self.cells):
             raise ValueError("a rule needs at least one cell and unique cell names")
         self.cell_ix = {c.name: i for i, c in enumerate(self.cells)}
@@ -563,7 +579,7 @@ class Screen:
         if i is None:
             c["refused_non_wsol" if pool in hr.nonwsol_pools else "refused_unknown_pool"] += 1
             return None
-        if not isinstance(spec, ExitSpec) or spec.problem():
+        if exit_problem(spec):
             c["refused_bad_exit"] += 1
             return None
         slot = int(slot)
@@ -579,7 +595,7 @@ class Screen:
         if not (V_LO <= v <= V_HI):
             c["refused_v_out_of_band"] += 1
             return None
-        name = spec.cell if spec.cell is not None else (self.cells[0].name if len(self.cells) == 1 else None)
+        name = getattr(spec, "cell", None) or (self.cells[0].name if len(self.cells) == 1 else None)
         if name is None or name not in self.cell_ix:
             c["refused_no_such_cell"] += 1
             return None
