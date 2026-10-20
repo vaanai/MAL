@@ -7,7 +7,9 @@ optionally (a) a sample file written by the `sample` subcommand of this tool (pe
 logs (only exact marker lines are counted; no log content is printed) and (c) with --tape-first-rows a read-only tape scan for the first row of each
 chain_unavailable pool (pool id and t_recv_ms only).
 
-Pass checks: SHAKEDOWN-CHECKS-2.md (checks 1 to 10). Window rule: QP-RULING-1019-startup (a). Registration conditions from quant-proof: PR #755 comment 6276972823
+Pass checks: revision 3 (default, --checks-rev 3): SHAKEDOWN-CHECKS-3.md, sha256 55fbba0559327c1e18728596506de11fdf0408ae9bedcee49a21966d9314a3af: checks 1, 3, 5, 8 and 11 and rule M read the
+observability side file <root>/hv4-obs.jsonl (--obs; schema hv4_obs_v1, tools/hv4_obs.py), joined by pid; checks 2, 4, 6, 7, 9, 10 are as in revision 2. Revision 2 (--checks-rev 2):
+SHAKEDOWN-CHECKS-2.md (checks 1 to 10), its evaluation and record unchanged. In revision 3 the sampler-based check 5 stays only as the informational cross-check "5S". Window rule: QP-RULING-1019-startup (a). Registration conditions from quant-proof: PR #755 comment 6276972823
 (items 3 to 5), PR #745 (comments 6275482286 and 6276589135, item 4), PR #762 comment 6278428501 (memory plan), PR #764 comment 6278593034.
 
 A missing, empty or misshaped input gives UNMEASURED for the checks that need it (with the error class in the notes), never FAIL, PASS or an aborted report.
@@ -19,13 +21,14 @@ dropped. StubModel trades are not evidence for any book: this report makes no pr
 Exit code is 0 always (argparse usage errors aside). The verdict is in the record: PASS only if every non-informational check is PASS and the run is
 complete; FAIL if any check is FAIL; else INCOMPLETE.
 
-Run:    python -I tools/hv4_shakedown_report.py --dir /data/mal/arena/_shakedown-hv4-1020 [--samples FILE] [--job-log FILE]... [--read-hours H] [--tape-first-rows]
+Run:    python -I tools/hv4_shakedown_report.py --dir /data/mal/arena/_shakedown-hv4-1020 [--obs FILE] [--checks-rev 2|3] [--samples FILE] [--job-log FILE]... [--read-hours H] [--tape-first-rows]
 Sample: python -I tools/hv4_shakedown_report.py sample --dir DIR --out FILE [--until ISO]   (run it as a MiScusi job)
 Stdlib only: it imports nothing from tools/, so the runner's frozen files are not touched by it.
 """
 from __future__ import annotations
 
 import argparse
+import bisect
 import hashlib
 import json
 import math
@@ -359,7 +362,7 @@ def attribute_refusals(L: Logs, process_first_scan, tape_first: dict[str, int]) 
                 fs = process_first_scan(T)
                 floor = max(tape_first.get(r["pool"], 0), fs if fs is not None else T)
                 cards.append({"pool": r["pool"], "T": T, "log_gap_ms": T - first_seen.get(r["pool"], T), "bound_ms": T - floor, "tape_row_found": r["pool"] in tape_first,
-                              "first_appearance_is_the_refusal": first_seen.get(r["pool"]) == T})
+                              "first_appearance_is_the_refusal": first_seen.get(r["pool"]) == T, "tagged": tagged, "personas": list(targets)})  # the last two: rev 3 check 3 only
     return {"per_persona": per, "refused_rows_matched_to_a_scan": matched, "refused_rows_without_scan_row": len(L.refused) - matched, "extra_rows_unattributed": extra, "unavailable_cards": cards}
 
 
@@ -1136,6 +1139,685 @@ def scan_job_logs(paths: list[str], inputs: list[dict]) -> dict:
     return out
 
 
+# ------------------------------------------------------------------------------------------------------------------------------ revision 3: the observability side file
+# SHAKEDOWN-CHECKS-3.md (manager, written 2026-10-19T23:48:29Z) is the spec; its sha256 below is the rev-3 checks pin and is printed in the record. The file is not read.
+CHECKS3_NAME = "SHAKEDOWN-CHECKS-3.md"
+CHECKS3_SHA256 = "55fbba0559327c1e18728596506de11fdf0408ae9bedcee49a21966d9314a3af"
+CHECKS3_SUPERSEDES_SHA256 = "af5052d5bae4efb683d745ed0fbb9aa6c680bc44a79ddfaf3cef7c3110831b18"  # SHAKEDOWN-CHECKS-2.md
+OBS_FILE = "hv4-obs.jsonl"
+OBS_SCHEMA = "hv4_obs_v1"
+STUB_HOURS = 24
+PRIOR_WINDOW_MIN = 61  # tools/hv4_chain.PRIOR_MINUTES: the per-minute buckets the counter persists for the next process (a test cross-checks it against CreditCounter)
+RULE_M_CHECKS = ("1", "3", "5", "8")
+UTC_DAY_MS = 86_400_000
+OBS_START_KINDS = ("runner_start", "prefetch_start", "chain_hour", "runner_hour")
+
+
+def is_int(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def opt_int(r: dict, k: str) -> int | None:
+    v = r.get(k)
+    return v if is_int(v) else None
+
+
+def floor_min(ms: int) -> int:
+    return ms - ms % MIN_MS
+
+
+def floor_hour(ms: int) -> int:
+    return ms - ms % HOUR_MS
+
+
+def parse_prior(v: Any) -> list[tuple[int, int, int]] | None:
+    """The prior_minutes of a prefetch_start row: [[minute_ms, calls, credits], ...] of non-negative ints, or None when absent or misshaped."""
+    if not isinstance(v, list):
+        return None
+    out = []
+    for x in v:
+        if not (isinstance(x, (list, tuple)) and len(x) == 3 and all(is_int(y) and y >= 0 for y in x)):
+            return None
+        out.append((x[0], x[1], x[2]))
+    return out
+
+
+class Obs:
+    """<root>/hv4-obs.jsonl projected row by row to the fields the checks read. Pool ids are held for the joins only; nothing here is printed."""
+
+    def __init__(self) -> None:
+        self.present = False
+        self.torn = 0
+        self.foreign = 0
+        self.rows = 0
+        self.by_kind: Counter = Counter()
+        self.no_pid: Counter = Counter()
+        self.malformed: Counter = Counter()
+        self.runner_start: list[dict] = []
+        self.prefetch_start: list[dict] = []
+        self.first_seen: list[tuple[int, str, int, str]] = []  # (pid, pool, scan_ms, entry)
+        self.stale_served: list[dict] = []
+        self.chain_hour: list[dict] = []
+        self.runner_hour: list[dict] = []
+
+
+def project_obs(O: Obs, r: dict) -> None:
+    kind = str(r.get("kind"))
+    O.by_kind[kind] += 1
+    pid = r.get("pid")
+    has_pid = is_int(pid)
+    if not has_pid:
+        O.no_pid[kind] += 1  # a row without a pid is malformed: counted here, never joined
+    wall = r.get("wall_ms")
+    if kind == "chain_stale_served":  # check 2 diagnosis: joined on pool and scan_ms only
+        if isinstance(r.get("pool"), str) and is_int(r.get("scan_ms")) and is_int(r.get("age_ms")):
+            O.stale_served.append({"pool": r["pool"], "scan_ms": r["scan_ms"], "age_ms": r["age_ms"], "hot": bool(r.get("hot"))})
+        else:
+            O.malformed[kind] += 1
+        return
+    if not has_pid:
+        return
+    if kind == "first_seen_by_scanner":
+        if isinstance(r.get("pool"), str) and is_int(r.get("scan_ms")) and isinstance(r.get("entry"), str):
+            O.first_seen.append((pid, r["pool"], r["scan_ms"], r["entry"]))
+        else:
+            O.malformed[kind] += 1
+    elif kind == "runner_start":
+        if is_int(wall):
+            O.runner_start.append({"pid": pid, "wall_ms": wall, "frozen_sha": r.get("frozen_sha") if isinstance(r.get("frozen_sha"), str) else None})
+        else:
+            O.malformed[kind] += 1
+    elif kind == "prefetch_start":
+        if is_int(wall):
+            O.prefetch_start.append({"pid": pid, "wall_ms": wall, "policy": r.get("policy"), "spent_at_load": opt_int(r, "spent_at_load"), "spend_state_reset": opt_int(r, "spend_state_reset"),
+                                     "counter_day_calls_at_start": opt_int(r, "counter_day_calls_at_start"), "process_start_ms": opt_int(r, "process_start_ms"),
+                                     "prior_minutes": parse_prior(r.get("prior_minutes")), "prior_calls_total": opt_int(r, "prior_calls_total"),
+                                     "prior_minutes_error": r.get("prior_minutes_error") if isinstance(r.get("prior_minutes_error"), str) else None})
+        else:
+            O.malformed[kind] += 1
+    elif kind == "chain_hour":
+        hs, he = r.get("hour_start_ms"), r.get("hour_end_ms")
+        if is_int(hs) and is_int(he):
+            pm = r.get("per_minute_calls")
+            pm = pm if isinstance(pm, list) and len(pm) == 60 and all(is_int(x) and x >= 0 for x in pm) else None
+            ps = r.get("prefetch_stats") if isinstance(r.get("prefetch_stats"), dict) else {}
+            O.chain_hour.append({"pid": pid, "wall_ms": wall if is_int(wall) else None, "hour_start_ms": hs, "hour_end_ms": he, "per_minute_calls": pm, "calls": opt_int(r, "calls"),
+                                 "credits": opt_int(r, "credits"), "counter_day_calls": opt_int(r, "counter_day_calls"), "counter_state_write_errors": opt_int(r, "counter_state_write_errors"),
+                                 "spend_write_errors": opt_int(r, "spend_write_errors"), "spend_state_reset": opt_int(r, "spend_state_reset"), "budget_deferred": opt_int(r, "budget_deferred"),
+                                 "deferred_mint": opt_int(r, "deferred_mint"), "deferred_hold": opt_int(r, "deferred_hold"), "prefetcher_booked_calls": ps.get("calls") if is_int(ps.get("calls")) else None})
+        else:
+            O.malformed[kind] += 1
+    elif kind == "runner_hour":
+        hs, he = r.get("hour_start_ms"), r.get("hour_end_ms")
+        hk = r.get("hook_errors")
+        hk = {str(k): v for k, v in hk.items()} if isinstance(hk, dict) and all(is_int(v) and v >= 0 for v in hk.values()) else None
+        if is_int(hs) and is_int(he):
+            rss = r.get("rss_mb")
+            O.runner_hour.append({"pid": pid, "hour_start_ms": hs, "hour_end_ms": he, "hook_errors": hk, "n_housekeep_errors": opt_int(r, "n_housekeep_errors"),
+                                  "rss_mb": float(rss) if isinstance(rss, (int, float)) and not isinstance(rss, bool) else None, "obs_write_errors": opt_int(r, "obs_write_errors"),
+                                  "obs_build_errors": opt_int(r, "obs_build_errors"), "obs_rows": opt_int(r, "obs_rows")})
+        else:
+            O.malformed[kind] += 1
+
+
+def load_obs(path: Path, inputs: list[dict]) -> Obs:
+    """The obs file through guard()/read_input(); a missing file is `present = False`; a torn last line is dropped and counted; other schemas are counted and skipped."""
+    O = Obs()
+    try:
+        data = read_input(path, inputs)
+    except OSError:
+        return O
+    O.present = True
+    rows, O.torn = jsonl(data)
+    for r in rows:
+        if not isinstance(r, dict) or r.get("schema") != OBS_SCHEMA:
+            O.foreign += 1
+            continue
+        O.rows += 1
+        project_obs(O, r)
+    return O
+
+
+def process_ends(L: Logs) -> list[int]:
+    """segment_ends(), but a process with no tick_timing minute ends at the next start row (the last one at the last decision row)."""
+    out = []
+    for i, e in enumerate(segment_ends(L)):
+        s = L.starts[i]["ms"]
+        if e <= s:
+            e = L.starts[i + 1]["ms"] if i + 1 < len(L.starts) else max(L.last_ms, s)
+        out.append(e)
+    return out
+
+
+def join_processes(L: Logs, O: Obs) -> tuple[list[dict], dict]:
+    """One process per decision-log start row. Its runner_start is the one with the greatest wall_ms at or before the start row and after the previous start row (the
+    start rows carry no pid); its prefetch_start is the row with the same pid. More than one candidate, or none, is recorded for Rule M."""
+    ends = process_ends(L)
+    procs: list[dict] = []
+    used: set[int] = set()
+    prev = -1
+    for i, s in enumerate(L.starts):
+        cands = sorted((r for r in O.runner_start if prev < r["wall_ms"] <= s["ms"]), key=lambda r: r["wall_ms"])
+        used.update(id(c) for c in cands)
+        rs = cands[-1] if cands else None
+        pf = [p for p in O.prefetch_start if rs is not None and p["pid"] == rs["pid"]]
+        procs.append({"index": i, "start_ms": s["ms"], "end_ms": ends[i], "pid": rs["pid"] if rs else None, "runner_start": rs, "n_runner_start_candidates": len(cands),
+                      "n_prefetch_start": len(pf), "prefetch": pf[0] if len(pf) == 1 else None})
+        prev = s["ms"]
+    pid_counts = Counter(r["pid"] for r in O.runner_start)
+    extra = {"orphan_runner_start_rows": sum(1 for r in O.runner_start if id(r) not in used), "pids_in_two_runner_start_rows": sum(1 for n in pid_counts.values() if n > 1)}
+    return procs, extra
+
+
+def window_w(L: Logs) -> tuple[int, int] | None:
+    """W: from the first start row to the end of the first UTC hour that closes at least 24 h after it."""
+    if not L.starts:
+        return None
+    ws = L.starts[0]["ms"]
+    return ws, -(-(ws + STUB_HOURS * HOUR_MS) // HOUR_MS) * HOUR_MS
+
+
+def eval_rule_m(O: Obs, procs: list[dict], extra: dict, ws: int, we: int) -> dict:
+    inw = lambda r: ws < r["hour_end_ms"] <= we  # noqa: E731
+    m1 = [r for r in O.runner_hour if inw(r) and (r["obs_write_errors"] is None or r["obs_write_errors"] > 0)]
+    have_c: dict[int, set[int]] = defaultdict(set)
+    have_r: dict[int, set[int]] = defaultdict(set)
+    for r in O.chain_hour:
+        have_c[r["pid"]].add(r["hour_end_ms"])
+    for r in O.runner_hour:
+        have_r[r["pid"]].add(r["hour_end_ms"])
+    miss_c: list[tuple[int, int]] = []
+    miss_r: list[tuple[int, int]] = []
+    for p in procs:
+        if p["pid"] is None:
+            continue
+        b = (p["start_ms"] // HOUR_MS + 1) * HOUR_MS
+        while b <= min(p["end_ms"], we):  # every UTC hour that closes during this process's life, inside W
+            if b not in have_c[p["pid"]]:
+                miss_c.append((p["index"], b))
+            if b not in have_r[p["pid"]]:
+                miss_r.append((p["index"], b))
+            b += HOUR_MS
+    no_runner = [p["index"] for p in procs if p["runner_start"] is None]
+    no_prefetch = [p["index"] for p in procs if p["runner_start"] is not None and p["n_prefetch_start"] == 0]
+    ambiguous = [p["index"] for p in procs if p["n_runner_start_candidates"] > 1 or p["n_prefetch_start"] > 1]
+    m4: list[int] = []
+    for j in range(1, len(procs)):
+        rows = [r for r in O.chain_hour if r["pid"] == procs[j - 1]["pid"] and procs[j - 1]["pid"] is not None and inw(r)]
+        if rows:
+            v = max(rows, key=lambda r: r["hour_end_ms"])["counter_state_write_errors"]
+            if v is None or v > 0:
+                m4.append(j)
+    pids = {p["pid"] for p in procs if p["pid"] is not None}
+    unjoined_rows = sum(1 for r in O.chain_hour + O.runner_hour if inw(r) and r["pid"] not in pids)
+    dup_rows = 0
+    for rows in (O.chain_hour, O.runner_hour):
+        c = Counter((r["pid"], r["hour_end_ms"]) for r in rows if inw(r))
+        dup_rows += sum(n - 1 for n in c.values() if n > 1)
+    bad_rows = sum(O.malformed[k] + O.no_pid[k] for k in OBS_START_KINDS)
+    g = {"runner_start_rows_without_a_start_row": extra["orphan_runner_start_rows"], "pids_in_two_runner_start_rows": extra["pids_in_two_runner_start_rows"],
+         "hour_rows_from_a_pid_with_no_start_row": unjoined_rows, "duplicate_hour_rows": dup_rows, "malformed_or_pidless_start_and_hour_rows": bad_rows}
+    cond = {"M1_runner_hour_obs_write_errors": {"fired": bool(m1), "rows": len(m1), "max_obs_write_errors": max((r["obs_write_errors"] or 0 for r in m1), default=0)},
+            "M2_hour_without_chain_hour_or_runner_hour_row": {"fired": bool(miss_c or miss_r), "chain_hour_missing": len(miss_c), "runner_hour_missing": len(miss_r),
+                                                              "missing_hours": sorted({iso(b) for _, b in miss_c + miss_r})[:30], "processes": sorted({i for i, _ in miss_c + miss_r})},
+            "M3_start_row_without_runner_start_or_prefetch_start_from_the_same_pid": {"fired": bool(no_runner or no_prefetch or ambiguous), "no_runner_start": no_runner, "no_prefetch_start": no_prefetch,
+                                                                                         "ambiguous_join": ambiguous},
+            "M4_counter_state_write_errors_before_a_restart": {"fired": bool(m4), "restarts": m4},
+            "guards_not_in_the_checks_text": {"fired": any(g.values()), **g}}
+    fired = [k for k, v in cond.items() if v["fired"]]
+    return {"evaluated": True, "fired": bool(fired), "fired_conditions": fired, "conditions": cond, "checks_made_unmeasured": list(RULE_M_CHECKS) if fired else [],
+            "meaning": "an UNMEASURED check fails (SHAKEDOWN-CHECKS-3 rule M): a completed window with a fired condition gets the verdict FAIL"}
+
+
+def unmeasured_by_rule_m(cid: str, name: str, rm: dict, numbers: dict | None = None) -> dict:
+    return chk(cid, name, UNM, {**(numbers or {}), "rule_m_fired": rm["fired_conditions"]}, ["UNMEASURED by rule M (SHAKEDOWN-CHECKS-3): " + ", ".join(rm["fired_conditions"])])
+
+
+def proc_index_at(L: Logs, t: int) -> int | None:
+    idx = None
+    for i, s in enumerate(L.starts):
+        if s["ms"] <= t:
+            idx = i
+    return idx
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ rev 3 check 1 and check 11 (runner_hour rows)
+def runner_hour_rows(O: Obs, procs: list[dict], ws: int, we: int) -> dict[int, list[dict]]:
+    out: dict[int, list[dict]] = {}
+    for p in procs:
+        if p["pid"] is not None:
+            out[p["pid"]] = sorted((r for r in O.runner_hour if r["pid"] == p["pid"] and ws < r["hour_end_ms"] <= we), key=lambda r: r["hour_end_ms"])
+    return out
+
+
+def uncovered_minutes(procs: list[dict], rows: dict[int, list[dict]], ws: int) -> list[dict]:
+    """Per process: the minutes after its last runner_hour row (to the end of the process), for which hook_errors are not covered by any row."""
+    out = []
+    for p in procs:
+        rs = rows.get(p["pid"], []) if p["pid"] is not None else []
+        covered_to = rs[-1]["hour_end_ms"] if rs else p["start_ms"]
+        out.append({"process": p["index"], "pid": p["pid"], "last_runner_hour_row_hour_end": iso(rs[-1]["hour_end_ms"]) if rs else None, "process_end": iso(p["end_ms"]),
+                    "uncovered_minutes": max(0, math.ceil((p["end_ms"] - covered_to) / MIN_MS))})
+    return out
+
+
+def eval_check_1_obs(L: Logs, procs: list[dict], rows: dict[int, list[dict]], rm: dict, job: dict, ws: int, we: int, uncovered: list[dict]) -> dict:
+    name = "0 as_of_refusal rows and 0 LeakageError, in the decision logs and in hook_errors of every runner_hour row"
+    leak = L.leakage_mentions + job.get("leakage_error", 0)
+    allrows = [r for rs in rows.values() for r in rs]
+    bad = sum(1 for r in allrows if r["hook_errors"] is None)
+    per_pid = {str(pid): (rs[-1]["hook_errors"] or {}).get("LeakageError", 0) if rs else None for pid, rs in rows.items()}
+    hook_leak = max(((r["hook_errors"] or {}).get("LeakageError", 0) for r in allrows), default=0)
+    nums = {"as_of_refusal_rows": L.as_of_refusals, "leakage_error_mentions_in_decision_logs": L.leakage_mentions, "leakage_error_lines_in_job_logs": job.get("leakage_error") if job else None,
+            "hook_errors_LeakageError_max_over_runner_hour_rows": hook_leak, "hook_errors_LeakageError_last_row_per_pid": per_pid, "runner_hour_rows_in_W": len(allrows),
+            "runner_hour_rows_with_unreadable_hook_errors": bad, "uncovered_minutes_after_the_last_runner_hour_row": uncovered}
+    notes = ["hook_errors counts are cumulative per pid, so the last row of a pid holds its running total; the minutes after a pid's last row are not covered by any row"]
+    if not L.have_rows:
+        return chk("1", name, UNM, nums, ["no decision rows"])
+    if rm["fired"]:
+        return unmeasured_by_rule_m("1", name, rm, nums)
+    if not allrows or bad:
+        return chk("1", name, UNM, nums, notes + ["no runner_hour row inside W, or a row whose hook_errors is unreadable"])
+    st = PASS if L.as_of_refusals == 0 and leak == 0 and hook_leak == 0 else FAIL
+    return chk("1", name, st, nums, notes + ([] if job else ["no --job-log given: LeakageError counted in the decision logs and hook_errors only"]))
+
+
+def eval_check_11(rows: dict[int, list[dict]], rm: dict, uncovered: list[dict]) -> dict:
+    name = "hook_errors other than LeakageError = 0 in every runner_hour row of W (or each explained by a cause outside the rule)"
+    allrows = [r for rs in rows.values() for r in rs]
+    bad = sum(1 for r in allrows if r["hook_errors"] is None)
+    other = lambda r: sum(v for k, v in (r["hook_errors"] or {}).items() if k != "LeakageError")  # noqa: E731
+    by_type: Counter = Counter()
+    for rs in rows.values():
+        if rs and rs[-1]["hook_errors"]:
+            by_type.update({k: v for k, v in rs[-1]["hook_errors"].items() if k != "LeakageError"})
+    nums = {"runner_hour_rows_in_W": len(allrows), "max_other_hook_errors_in_a_row": max((other(r) for r in allrows if r["hook_errors"] is not None), default=0),
+            "other_hook_errors_by_type_last_row_per_pid_summed": dict(by_type), "uncovered_minutes_after_the_last_runner_hour_row": uncovered}
+    notes = ["a housekeep:<Class> key counts here; a cause outside the rule is judged by the manager, not by this tool"]
+    if not allrows or bad:
+        return chk("11", name, UNM, nums, notes + ["no runner_hour row inside W, or a row whose hook_errors is unreadable"])
+    return chk("11", name, PASS if nums["max_other_hook_errors_in_a_row"] == 0 else FAIL, nums, notes)
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ rev 3 check 3 (first_seen_by_scanner)
+def eval_check_3_obs(L: Logs, O: Obs, procs: list[dict], rm: dict, cards: list[dict]) -> dict:
+    name = "every chain_unavailable card's pool first seen by the scanner within 10 min before that scan (first_seen_by_scanner rows, same pool and pid)"
+    idx: dict[tuple[int, str], list[tuple[int, str]]] = defaultdict(list)
+    for pid, pool, sm, ent in O.first_seen:
+        idx[(pid, pool)].append((sm, ent))
+    for v in idx.values():
+        v.sort()
+    entries: Counter = Counter()
+    gaps: list[int] = []
+    no_row = over = other_entry = unattributed = 0
+    by_persona: Counter = Counter()
+    for c in cards:
+        pi = proc_index_at(L, c["T"])
+        pid = procs[pi]["pid"] if pi is not None else None
+        for pr in c["personas"] or []:
+            by_persona[pr] += 1
+        if pid is None:
+            unattributed += 1
+            continue
+        lst = idx.get((pid, c["pool"]), [])
+        k = bisect.bisect_right([x[0] for x in lst], c["T"]) - 1
+        if k < 0:
+            no_row += 1
+            continue
+        sm, ent = lst[k]
+        entries[ent] += 1
+        gaps.append(c["T"] - sm)
+        if ent not in ("first", "re_entry"):
+            other_entry += 1
+        elif c["T"] - sm > FIRST_SEEN_MAX_MS:
+            over += 1
+    g = sorted(gaps)
+    nums = {"chain_unavailable_cards": len(cards), "cards_by_persona": dict(by_persona), "cards_carrying_a_setup_tag": sum(1 for c in cards if c["tagged"]),
+            "latest_first_seen_row_entry_counts": {"first": entries.get("first", 0), "re_entry": entries.get("re_entry", 0), "other": sum(n for k, n in entries.items() if k not in ("first", "re_entry"))},
+            "cards_with_no_first_seen_row_for_the_pool_and_pid": no_row, "cards_with_t_minus_scan_ms_over_600000": over, "cards_whose_latest_row_has_another_entry_type": other_entry,
+            "cards_not_attributable_to_a_pid": unattributed, "t_minus_scan_ms_p50": pct(g, 0.5), "t_minus_scan_ms_max": g[-1] if g else None, "limit_ms": FIRST_SEEN_MAX_MS,
+            "first_seen_rows_in_file": len(O.first_seen), "first_seen_rows_without_pid": O.no_pid["first_seen_by_scanner"], "first_seen_rows_misshaped": O.malformed["first_seen_by_scanner"]}
+    notes = ["per card: the latest first_seen_by_scanner row with the same pool and pid and scan_ms <= T; a re-entry counts (the prefetcher drops a pool's facts at 30 min); no such row fails the card",
+             "the pid of a card is the process whose start row is the last one at or before T"]
+    if not L.have_scan_rows:
+        return chk("3", name, UNM, nums, notes + ["no SCAN rows"])
+    if rm["fired"]:
+        return unmeasured_by_rule_m("3", name, rm, nums)
+    if not O.present or nums["first_seen_rows_without_pid"] or nums["first_seen_rows_misshaped"] or unattributed:
+        return chk("3", name, UNM, nums, notes + ["a first_seen_by_scanner row without a pid (or misshaped), a missing obs file, or a card in no process: the row is malformed and the check is UNMEASURED"])
+    return chk("3", name, FAIL if (no_row or over or other_entry) else PASS, nums, notes)
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ rev 3 check 5 (the counter's own per-minute record)
+def build_series(O: Obs, procs: list[dict], ws: int, we: int) -> dict:
+    """Per-minute chain calls in W from the counter's own record. A process's minutes come from its chain_hour rows (its own calls). The minutes of an earlier process after
+    its last chain_hour row come from the restarted process's prefetch_start `prior_minutes` (the counter persists its last 61 non-empty minute buckets, so an absent minute
+    inside the persisted window is 0). Where both cover a minute they must agree. Each minute is counted once."""
+    pids = [p["pid"] for p in procs]
+    own: dict[int, dict[int, int]] = {p: {} for p in pids if p is not None}
+    credits_by_hour: dict[int, int] = {}
+    last_end: dict[int, int] = {}
+    unusable: list[str] = []
+    for pid in own:
+        seen: set[int] = set()
+        for r in sorted((r for r in O.chain_hour if r["pid"] == pid and ws < r["hour_end_ms"] <= we), key=lambda r: r["hour_end_ms"]):
+            if r["hour_end_ms"] in seen:
+                continue
+            seen.add(r["hour_end_ms"])
+            if r["per_minute_calls"] is None or r["hour_end_ms"] - r["hour_start_ms"] != HOUR_MS or r["hour_start_ms"] % HOUR_MS:
+                unusable.append(iso(r["hour_end_ms"]))
+                continue
+            for k, c in enumerate(r["per_minute_calls"]):
+                own[pid][r["hour_start_ms"] + k * MIN_MS] = c
+            if r["credits"] is not None:
+                credits_by_hour[r["hour_start_ms"]] = credits_by_hour.get(r["hour_start_ms"], 0) + r["credits"]
+            last_end[pid] = max(last_end.get(pid, 0), r["hour_end_ms"])
+    cover_end = min(we, max(last_end.values(), default=0)) or None
+    tails: dict[int, dict[int, tuple[int, int]]] = {}
+    restarts: list[dict] = []
+    for j in range(1, len(procs)):
+        earlier = [procs[k]["pid"] for k in range(j) if procs[k]["pid"] is not None]
+        e0 = max([last_end.get(procs[k]["pid"], floor_hour(procs[k]["start_ms"])) for k in range(j) if procs[k]["pid"] is not None] or [floor_hour(procs[0]["start_ms"])])
+        rs_j = procs[j]["runner_start"]
+        r_min = floor_min(rs_j["wall_ms"] if rs_j else procs[j]["start_ms"])
+        ps = procs[j]["prefetch"]
+        info: dict[str, Any] = {"restart_index": j, "last_chain_hour_row_hour_end_of_earlier_processes": iso(e0), "restart_minute": iso(r_min), "prior_minutes_rows": None, "persisted_window": None,
+                                "gap_minutes": 0, "gap_basis": None, "overlap_minutes_compared": 0, "overlap_disagreements": 0, "overlap_disagreement_minutes": [], "prior_minutes_error": None,
+                                "prior_calls_total": None}
+        gap_all = False
+        prior: dict[int, tuple[int, int]] = {}
+        window: tuple[int, int] | None = None
+        if ps is None:
+            gap_all, info["gap_basis"] = True, "no prefetch_start row for the restarted process"
+        else:
+            info["prior_minutes_error"], info["prior_calls_total"] = ps["prior_minutes_error"], ps["prior_calls_total"]
+            if ps["prior_minutes"] is None or ps["prior_minutes_error"]:
+                gap_all, info["gap_basis"] = True, "prior_minutes absent, misshaped or reported malformed by the counter"
+            else:
+                info["prior_minutes_rows"] = len(ps["prior_minutes"])
+                prior = {t: (c, w) for t, c, w in ps["prior_minutes"]}
+                if prior:
+                    hi = max(prior)
+                    window = (hi - (PRIOR_WINDOW_MIN - 1) * MIN_MS, hi)
+                elif ps["prior_calls_total"] != 0:
+                    gap_all, info["gap_basis"] = True, "prior_minutes empty but prior_calls_total is not 0"
+                else:
+                    info["gap_basis"] = "prior_minutes empty and prior_calls_total 0: the earlier process made no calls"
+        need = list(range(e0, max(e0, r_min) + MIN_MS, MIN_MS))  # the minutes after the earlier processes' last chain_hour row, up to the restart's own minute
+        if gap_all:
+            info["gap_minutes"] = len(need)
+        elif window is not None:
+            info["persisted_window"] = [iso(window[0]), iso(window[1])]
+            info["gap_minutes"] = sum(1 for m in need if m < window[0])  # outside the persisted window and after the last chain_hour row: nothing records these minutes
+            cmp_n = bad = 0
+            for m in range(window[0], window[1] + MIN_MS, MIN_MS):
+                if any(m in own[p] for p in earlier):
+                    cmp_n += 1
+                    rows_sum = sum(own[p].get(m, 0) for p in earlier)
+                    if prior.get(m, (0, 0))[0] != rows_sum:
+                        bad += 1
+                        if len(info["overlap_disagreement_minutes"]) < 10:
+                            info["overlap_disagreement_minutes"].append({"minute": iso(m), "prior_minutes": prior.get(m, (0, 0))[0], "chain_hour_rows": rows_sum})
+            info["overlap_minutes_compared"], info["overlap_disagreements"] = cmp_n, bad
+            tails[j] = {t: v for t, v in prior.items() if t >= floor_min(ws) and not any(t in own[p] for p in earlier)}
+        restarts.append(info)
+    tail_eff: dict[int, tuple[int, int, int]] = {}
+    for j in sorted(tails):
+        for t, (c, w) in tails[j].items():
+            tail_eff[t] = (j, c, w)
+    mins = list(range(floor_min(ws), cover_end, MIN_MS)) if cover_end else []
+    return {"own": own, "tail_eff": tail_eff, "mins": mins, "cover_end": cover_end, "last_end": last_end, "restarts": restarts, "unusable": unusable, "credits_by_hour": credits_by_hour}
+
+
+def series_split(S: dict, procs: list[dict], j: int) -> tuple[list[int], list[int]]:
+    """For the restart j: the per-minute calls of the processes before it and of the processes from it on (tail minutes belong to the earlier side)."""
+    pre = [procs[k]["pid"] for k in range(j) if procs[k]["pid"] is not None]
+    post = [procs[k]["pid"] for k in range(j, len(procs)) if procs[k]["pid"] is not None]
+    ea, la = [], []
+    for m in S["mins"]:
+        te = S["tail_eff"].get(m)
+        ea.append(sum(S["own"][p].get(m, 0) for p in pre) + (te[1] if te and te[0] <= j else 0))
+        la.append(sum(S["own"][p].get(m, 0) for p in post) + (te[1] if te and te[0] > j else 0))
+    return ea, la
+
+
+def window_sums(vals: list[int]) -> list[int]:
+    out, run = [], 0
+    for i, v in enumerate(vals):
+        run += v
+        if i >= 60:
+            run -= vals[i - 60]
+        if i >= 59:
+            out.append(run)
+    return out  # out[i] = calls in the 60 minute buckets mins[i] .. mins[i + 59]
+
+
+def eval_check_5_obs(O: Obs, procs: list[dict], rm: dict, ws: int, we: int, S: dict) -> dict:
+    name = "chain calls <= 1,500 in every rolling hour and <= 40,000 per UTC day, from the chain counter's own per-minute record (chain_hour rows + prior_minutes)"
+    mins = S["mins"]
+    tail_eff = S["tail_eff"]
+    total = [sum(S["own"][p].get(m, 0) for p in S["own"]) + (tail_eff[m][1] if m in tail_eff else 0) for m in mins]
+    sums = window_sums(total)
+    nums: dict[str, Any] = {"minutes_in_W_covered": len(mins), "covered_to": iso(S["cover_end"]), "chain_hour_rows_unusable": S["unusable"][:10]}
+    if sums:
+        i_max = max(range(len(sums)), key=lambda i: sums[i])
+        nums["rolling_hour_calls"] = {"windows": len(sums), "max": sums[i_max], "max_window_starts": iso(mins[i_max]), "limit": CALLS_PER_HOUR_MAX, "windows_over_limit": sum(1 for s in sums if s > CALLS_PER_HOUR_MAX)}
+    else:
+        nums["rolling_hour_calls"] = {"windows": 0, "max": None, "limit": CALLS_PER_HOUR_MAX, "windows_over_limit": 0}
+
+    def crossing(lo: int, hi: int, instant: int) -> dict:
+        idx = [i for i in range(len(sums)) if lo <= mins[i] <= hi]
+        out = {"instant": iso(instant), "windows": len(idx), "max_calls_both_processes_counted": max((sums[i] for i in idx), default=None), "limit": CALLS_PER_HOUR_MAX}
+        out["within_limit"] = None if not idx else all(sums[i] <= CALLS_PER_HOUR_MAX for i in idx)
+        return out
+
+    b0 = floor_min(ws) // UTC_DAY_MS * UTC_DAY_MS
+    cross_mid = []
+    for b in range(b0 + UTC_DAY_MS, (S["cover_end"] or 0) + 1, UTC_DAY_MS):
+        if ws < b < (S["cover_end"] or 0):
+            cross_mid.append(crossing(b - 59 * MIN_MS, b - MIN_MS, b))  # windows holding both the 23:59 and the 00:00 bucket
+    nums["hour_crossing_00_00Z"] = cross_mid
+    cross_rs = []
+    for info in S["restarts"]:
+        r = parse_iso(info["restart_minute"])
+        c = crossing(r - 59 * MIN_MS, r, r)
+        ea, la = series_split(S, procs, info["restart_index"])
+        se, sl = window_sums(ea), window_sums(la)
+        idx = [i for i in range(len(sums)) if r - 59 * MIN_MS <= mins[i] <= r]
+        c["max_calls_earlier_processes_only"] = max((se[i] for i in idx), default=None)
+        c["max_calls_later_processes_only"] = max((sl[i] for i in idx), default=None)
+        c["restart_index"] = info["restart_index"]
+        cross_rs.append(c)
+    nums["hour_crossing_restart"] = cross_rs
+    nums["restart_coverage"] = S["restarts"]
+    # UTC days
+    days: dict[str, dict] = {}
+    for m, c in zip(mins, total):
+        d = iso(m)[:10]
+        days.setdefault(d, {"minute_sum_in_W": 0})["minute_sum_in_W"] += c
+    day_rows: dict[int, int | None] = {}
+    for r in O.chain_hour:
+        if r["pid"] in S["own"] and ws < r["hour_end_ms"] <= we and r["counter_day_calls"] is not None:
+            day_rows[r["hour_end_ms"]] = max(day_rows.get(r["hour_end_ms"], 0) or 0, r["counter_day_calls"])
+    day_out, day_missing = {}, []
+    for d, v in days.items():
+        d_end = parse_iso(d + "T00:00:00Z") + UTC_DAY_MS
+        closed = S["cover_end"] is not None and d_end <= S["cover_end"]
+        if closed:
+            val = day_rows.get(d_end)
+            if val is None:
+                day_missing.append(d)
+            day_out[d] = {"basis": "counter_day_calls of the chain_hour row ending at 00:00Z", "calls": val, "minute_sum_in_W": v["minute_sum_in_W"]}
+        else:
+            day_out[d] = {"basis": "open day: sum of per-minute calls in W", "calls": v["minute_sum_in_W"], "minute_sum_in_W": v["minute_sum_in_W"]}
+        day_out[d]["limit"] = CALLS_PER_DAY_MAX
+    nums["calls_by_utc_day"] = day_out
+    cred: dict[str, int] = {}
+    for hs, c in S["credits_by_hour"].items():
+        if c is not None:
+            cred[iso(hs)[:10]] = cred.get(iso(hs)[:10], 0) + c
+    for m, (_, _, w) in tail_eff.items():
+        if mins and mins[0] <= m < (S["cover_end"] or 0):
+            cred[iso(m)[:10]] = cred.get(iso(m)[:10], 0) + w
+    nums["helius_credits_by_utc_day"] = cred
+    nums["helius_credits_note"] = "from the chain_hour credits, plus the credits of the minutes taken from prior_minutes"
+    # expected-0 counters
+    last_row: dict[int, dict] = {}
+    for r in sorted(O.chain_hour, key=lambda r: r["hour_end_ms"]):
+        if r["pid"] in S["own"] and ws < r["hour_end_ms"] <= we:
+            last_row[r["pid"]] = r
+    exp0 = {"spend_state_reset": {"prefetch_start_rows": [p["prefetch"]["spend_state_reset"] if p["prefetch"] else None for p in procs],
+                                  "last_chain_hour_row_per_pid": {str(pid): r["spend_state_reset"] for pid, r in last_row.items()}},
+            "spend_write_errors_last_chain_hour_row_per_pid": {str(pid): r["spend_write_errors"] for pid, r in last_row.items()},
+            "counter_state_write_errors_last_chain_hour_row_per_pid": {str(pid): r["counter_state_write_errors"] for pid, r in last_row.items()}}
+    flat = [v for v in exp0["spend_state_reset"]["prefetch_start_rows"]] + list(exp0["spend_state_reset"]["last_chain_hour_row_per_pid"].values()) + list(
+        exp0["spend_write_errors_last_chain_hour_row_per_pid"].values()) + list(exp0["counter_state_write_errors_last_chain_hour_row_per_pid"].values())
+    nums["expected_zero_counters"] = exp0
+    # no-limit reports
+    big = max(range(len(total)), key=lambda i: total[i], default=None)
+    nums["largest_per_minute_count"] = {"calls": total[big] if big is not None else None, "minute": iso(mins[big]) if big is not None else None, "token_bucket_allows": 120}
+    deferred, booked = [], []
+    for pid, _ in sorted(S["own"].items()):
+        prev = {"budget_deferred": 0, "deferred_mint": 0, "deferred_hold": 0, "prefetcher_booked_calls": 0}
+        for r in sorted((r for r in O.chain_hour if r["pid"] == pid and ws < r["hour_end_ms"] <= we), key=lambda r: r["hour_end_ms"]):
+            d = {k: (r[k] - prev[k]) if r[k] is not None else None for k in prev}
+            deferred.append({"pid": pid, "hour_end": iso(r["hour_end_ms"]), "total": d["budget_deferred"], "mint": d["deferred_mint"], "hold": d["deferred_hold"]})
+            booked.append({"pid": pid, "hour_end": iso(r["hour_end_ms"]), "counter_calls": r["calls"], "prefetcher_booked_calls": d["prefetcher_booked_calls"]})
+            prev = {k: (r[k] if r[k] is not None else prev[k]) for k in prev}
+    nums["budget_deferred_by_class_per_hour"] = deferred
+    nums["counter_calls_next_to_the_prefetchers_booked_calls_per_hour"] = booked
+    notes = ["rolling hour = every run of 60 consecutive minute buckets in W with the processes' counts added minute by minute; each minute is counted once (a process's own chain_hour minutes, plus the earlier process's minutes after its last chain_hour row from prior_minutes)",
+             "an absent minute inside the persisted 61-bucket window of prior_minutes is 0; an absent minute between the earlier process's last chain_hour row and the start of that window is a gap, and the check is UNMEASURED",
+             "the prefetcher's booked-calls figure is the cumulative `calls` stat of the prefetcher in each chain_hour row, differenced per hour; the spend file's own sum is not in the obs rows"]
+    over_h = nums["rolling_hour_calls"]["windows_over_limit"]
+    over_d = [d for d, v in day_out.items() if v["calls"] is not None and v["calls"] > CALLS_PER_DAY_MAX]
+    disagree = sum(r["overlap_disagreements"] for r in S["restarts"])
+    gap = sum(r["gap_minutes"] for r in S["restarts"])
+    nz = [v for v in flat if v]
+    nums["failing"] = {"rolling_hours_over_1500": over_h, "utc_days_over_40000": over_d, "prior_minutes_disagreements": disagree, "expected_zero_counters_not_zero": len(nz)}
+    nums["unmeasurable"] = {"gap_minutes_outside_every_record": gap, "chain_hour_rows_unusable": len(S["unusable"]), "closed_days_without_counter_day_calls": day_missing,
+                            "expected_zero_counters_missing": sum(1 for v in flat if v is None), "no_chain_hour_rows": not mins}
+    if rm["fired"]:
+        return unmeasured_by_rule_m("5", name, rm, nums)
+    if over_h or over_d or disagree or nz:
+        return chk("5", name, FAIL, nums, notes)
+    if gap or S["unusable"] or day_missing or not mins or nums["unmeasurable"]["expected_zero_counters_missing"]:
+        return chk("5", name, UNM, nums, notes + ["a gap in the per-minute record, an unusable or missing chain_hour row, a closed day with no counter_day_calls, or a missing expected-0 counter: UNMEASURED"])
+    return chk("5", name, PASS, nums, notes)
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ rev 3 check 8 (the restart, from the obs rows)
+def eval_check_8_obs(L: Logs, O: Obs, procs: list[dict], rm: dict, S: dict) -> dict:
+    name = "after the restart: lane_h false, same frozen_sha, chain verifies, no duplicate rows, and the four obs conditions (runner_start sha, prefetch_start v2 and no reset, spent_at_load, counter_day_calls_at_start)"
+    n = len(L.starts)
+    chains_ok = all(a["chain_ok"] for a in L.arms.values()) and bool(L.arms)
+    dups = sum(L.dup_rows.values())
+    bind_ok = all(s["dirty"] is False and isinstance(s["git_sha"], str) and isinstance(s["frozen_sha"], str) and (s["git_sha"].startswith(s["frozen_sha"]) or s["frozen_sha"].startswith(s["git_sha"])) for s in L.starts)
+    same = len({s["frozen_sha"] for s in L.starts}) == 1 and all(s["lane_h"] is False for s in L.starts)
+    nums: dict[str, Any] = {"process_starts": n, "decision_log_chain_ok": chains_ok, "duplicate_rows": dict(L.dup_rows), "binding_clean_and_at_frozen_sha": bind_ok,
+                            "start_rows_lane_h_false_and_same_frozen_sha": same}
+    if not L.have_rows:
+        return chk("8", name, UNM, nums, ["no decision rows"])
+    if rm["fired"]:
+        return unmeasured_by_rule_m("8", name, rm, nums)
+    if not chains_ok or (n and not bind_ok) or dups:
+        return chk("8", name, FAIL, nums, ["a broken chain, a duplicate row or a start row that is dirty / not at the frozen sha fails at any start count"])
+    if n < 2:
+        return chk("8", name, UNM, nums, ["no restart in the log yet: the post-restart conditions cannot be evaluated"])
+    notes: list[str] = []
+    shas = [p["runner_start"]["frozen_sha"] if p["runner_start"] else None for p in procs]
+    pfs = [p["prefetch"] for p in procs]
+    a = None if any(s is None for s in shas) else len(set(shas)) == 1
+    b_pol = [pf["policy"] == "v2" if pf else None for pf in pfs]
+    b_rst = [None if (pf is None or pf["spend_state_reset"] is None) else pf["spend_state_reset"] == 0 for pf in pfs]
+    b = None if None in b_pol + b_rst else all(b_pol + b_rst)
+    ea, _ = series_split(S, procs, 1) if S["mins"] else ([], [])
+    cancel_min = floor_min(procs[0]["end_ms"])
+    booked = sum(c for m, c in zip(S["mins"], ea) if cancel_min - 59 * MIN_MS <= m <= cancel_min)
+    spent = pfs[1]["spent_at_load"] if pfs[1] else None
+    c_ok = None if spent is None else (spent > 0 if booked > 0 else True)
+    last_rows = [r for r in O.chain_hour if r["pid"] == procs[0]["pid"] and r["counter_day_calls"] is not None]
+    last = max(last_rows, key=lambda r: r["hour_end_ms"]) if last_rows else None
+    start_at = pfs[1]["counter_day_calls_at_start"] if pfs[1] else None
+    d_state, d_ok = "unmeasured", None
+    if last is not None and start_at is not None and pfs[1] and pfs[1]["process_start_ms"] is not None:
+        if iso(last["hour_start_ms"])[:10] != iso(pfs[1]["process_start_ms"])[:10]:
+            d_state = "different_utc_days"
+        else:
+            d_ok = start_at >= last["counter_day_calls"]
+            d_state = "ok" if d_ok else "smaller_than_the_first_process's_last_row: a reset"
+    nums.update({"obs_conditions": {
+        "runner_start_rows_same_frozen_sha": a,
+        "prefetch_start_rows_policy_v2": b_pol, "prefetch_start_rows_spend_state_reset_0": b_rst,
+        "second_prefetch_start_spent_at_load": spent, "first_process_calls_in_the_60_min_before_the_cancel": booked, "spent_at_load_positive_if_the_first_process_booked_calls": c_ok,
+        "second_prefetch_start_counter_day_calls_at_start": start_at, "first_process_last_chain_hour_counter_day_calls": last["counter_day_calls"] if last else None, "counter_day_calls_compare": d_state},
+        "restart_protocol_informational": {"restart_start_minute_of_hour": (procs[1]["start_ms"] % HOUR_MS) // MIN_MS, "restart_hour_starts_at_00_00Z": floor_hour(procs[1]["start_ms"]) % UTC_DAY_MS == 0}})
+    conds = [a, b, c_ok, d_ok]
+    if not same or n != 2 or False in conds:
+        if n > 2:
+            notes.append("more than one restart: every start after the deliberate one is an unplanned restart (an OOM kill or crash is a stub failure)")
+        return chk("8", name, FAIL, nums, notes)
+    if None in conds:
+        return chk("8", name, UNM, nums, notes + ["an obs condition could not be evaluated (a missing field, or the two processes' counters are for different UTC days)"])
+    return chk("8", name, PASS, nums, notes)
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ rev 3: what the obs file adds to the report
+def obs_also_reported(L: Logs, O: Obs, procs: list[dict], rows: dict[int, list[dict]], ws: int, we: int) -> dict:
+    hourly, by_type = [], {}
+    for pid, rs in rows.items():
+        prev: dict[str, int] = {}
+        prev_hs = 0
+        for r in rs:
+            hk = r["hook_errors"] or {}
+            delta = {k: v - prev.get(k, 0) for k, v in hk.items() if v - prev.get(k, 0)}
+            hs = r["n_housekeep_errors"] if r["n_housekeep_errors"] is not None else sum(v for k, v in hk.items() if k.startswith("housekeep:"))
+            hourly.append({"pid": pid, "hour_end": iso(r["hour_end_ms"]), "hook_errors_delta_by_type": delta, "housekeep_errors_delta": hs - prev_hs, "rss_mb": r["rss_mb"],
+                           "obs_rows_written_cumulative": r["obs_rows"], "obs_write_errors": r["obs_write_errors"], "obs_build_errors": r["obs_build_errors"]})
+            prev, prev_hs = hk, hs
+        if rs:
+            by_type[str(pid)] = dict(rs[-1]["hook_errors"] or {})
+    served = [s for s in O.stale_served if ws <= s["scan_ms"] <= we]
+    ages = lambda rows_: {"n": len(rows_), "age_ms_p50": pct(sorted(x["age_ms"] for x in rows_), 0.5), "age_ms_max": max((x["age_ms"] for x in rows_), default=None)}  # noqa: E731
+    keys = {(s["pool"], s["scan_ms"]) for s in O.stale_served}
+    stale_cards = [r for r in L.refused if "chain_stale" in r["reasons"]]
+    return {"runner_hour_per_hour": hourly, "hook_errors_by_type_last_row_per_pid": by_type,
+            "obs_rows_in_file": {"total": O.rows, "by_kind": dict(sorted(O.by_kind.items())), "torn_tail_lines_dropped": O.torn, "rows_with_another_schema": O.foreign,
+                                 "rows_without_pid_by_kind": dict(O.no_pid), "rows_misshaped_by_kind": dict(O.malformed)},
+            "chain_stale_served": {"hot": ages([s for s in served if s["hot"]]), "cold": ages([s for s in served if not s["hot"]]),
+                                   "hot_chain_stale_cards": len(stale_cards), "hot_chain_stale_cards_without_a_served_row_at_the_same_pool_and_scan_ms": sum(1 for r in stale_cards if (r["pool"], r["ms"]) not in keys)}}
+
+
+def no_window(cid: str, name: str) -> dict:
+    return chk(cid, name, UNM, {}, ["no decision-log start row: the window W is unknown"])
+
+
+def eval_rev3(args: argparse.Namespace, root: Path, L: Logs, job: dict, samples: list[dict], starts: list[dict], inputs: list[dict], fresh: bool, cards: list[dict]) -> dict:
+    """Everything rev 3 adds: checks 1, 3, 5, 8 and 11 from the obs file, the sampler-based check 5 as an informational cross-check, rule M, the processes, W."""
+    O = load_obs(guard(args.obs) if args.obs else guard(root / OBS_FILE), inputs)
+    w = window_w(L)
+    cross = safe("5S", "chain calls per rolling hour / per UTC day (sampler cross-check)", eval_check_5, root, samples, starts, inputs, job, fresh)
+    cross = {**cross, "id": "5S", "informational": True, "name": "INFORMATIONAL cross-check of check 5 from the sampler file (rev 2 method; the verdict uses check 5 from the obs rows)"}
+    if w is None:
+        rm = {"evaluated": False, "fired": False, "fired_conditions": [], "conditions": {}, "checks_made_unmeasured": [], "meaning": "no decision-log start row: W unknown"}
+        return {"checks": {c: no_window(c, "obs-based check") for c in RULE_M_CHECKS}, "extra": [no_window("11", "hook_errors other than LeakageError = 0"), cross], "rule_m": rm, "processes": [], "w": None,
+                "obs": O, "also": {}}
+    ws, we = w
+    procs, extra = join_processes(L, O)
+    rm = eval_rule_m(O, procs, extra, ws, we)
+    rows = runner_hour_rows(O, procs, ws, we)
+    unc = uncovered_minutes(procs, rows, ws)
+    S = build_series(O, procs, ws, we)
+    checks = {"1": safe("1", "check 1", eval_check_1_obs, L, procs, rows, rm, job, ws, we, unc), "3": safe("3", "check 3", eval_check_3_obs, L, O, procs, rm, cards),
+              "5": safe("5", "check 5", eval_check_5_obs, O, procs, rm, ws, we, S), "8": safe("8", "check 8", eval_check_8_obs, L, O, procs, rm, S)}
+    c11 = safe("11", "check 11", eval_check_11, rows, rm, unc)
+    return {"checks": checks, "extra": [c11, cross], "rule_m": rm, "w": (ws, we), "obs": O,
+            "processes": [{"index": p["index"], "pid": p["pid"], "start_row": iso(p["start_ms"]), "end": iso(p["end_ms"]), "runner_start_wall": iso(p["runner_start"]["wall_ms"]) if p["runner_start"] else None,
+                           "frozen_sha": (p["runner_start"]["frozen_sha"] or "")[:12] if p["runner_start"] else None, "prefetch_start_found": p["prefetch"] is not None,
+                           "runner_start_candidates": p["n_runner_start_candidates"]} for p in procs],
+            "also": obs_also_reported(L, O, procs, rows, ws, we)}
+
+
 # ------------------------------------------------------------------------------------------------------------------------------ assembly
 def git_info() -> dict:
     here = str(Path(__file__).resolve().parent)
@@ -1167,18 +1849,32 @@ def build_report(args: argparse.Namespace) -> dict:
     windows = startup_windows(L)
     for i, g in enumerate(args.feed_gap_ms):
         windows.append({"label": f"listed_feed_gap_{i}", "kind": "feed_gap", "start_ms": g[0], "end_ms": g[1], "state": "listed", "source": g[2]})
+    rev3 = getattr(args, "checks_rev", 2) == 3
     try:
-        checks, counts = eval_checks_1_to_4(L, cards, job, Path(args.tape_dir), args.tape_first_rows)
+        checks, counts = eval_checks_1_to_4(L, cards, job, Path(args.tape_dir), args.tape_first_rows and not rev3)
     except Refused:
         raise
     except Exception as e:  # noqa: BLE001
         checks = [chk(c, "input error", UNM, {"input_error": type(e).__name__}, ["this check is UNMEASURED; the rest of the report is unaffected"]) for c in "1234"]
         counts = {"scans": len(L.scans), "per_persona": {p: {"attempts": 0, "chain_unavailable": 0, "chain_unavailable_tagged": 0, "chain_stale": 0, "cards_in_sink": 0, "null_holders_cards": 0,
                                                              "setups_by_type_in_sink": {}, "stub_llm_calls": 0, "x_arm_entries": 0, "x_arm_exits": 0} for p in PERSONAS}, "risk_agent_llm_calls": 0}
-    checks.append(safe("5", "chain calls per rolling hour / per UTC day", eval_check_5, root, samples, starts, inputs, job, fresh))
+    r3: dict[str, Any] = {}
+    if rev3:  # SHAKEDOWN-CHECKS-3: checks 1, 3, 5, 8 (and 11) read hv4-obs.jsonl; 2, 4, 6, 7, 9, 10 are the rev 2 evaluators
+        try:
+            r3 = eval_rev3(args, root, L, job, samples, starts, inputs, fresh, attribute_refusals(L, lambda T: None, {})["unavailable_cards"])
+        except Refused:
+            raise
+        except Exception as e:  # noqa: BLE001
+            bad = lambda c: chk(c, "input error", UNM, {"input_error": type(e).__name__}, ["this check is UNMEASURED; the rest of the report is unaffected"])  # noqa: E731
+            r3 = {"checks": {c: bad(c) for c in RULE_M_CHECKS}, "extra": [bad("11")], "rule_m": {"evaluated": False, "fired": False, "fired_conditions": []}, "processes": [], "w": window_w(L), "obs": Obs(),
+                  "also": {}}
+        checks = [r3["checks"].get(c["id"], c) for c in checks]
+        checks.append(r3["checks"]["5"])
+    else:
+        checks.append(safe("5", "chain calls per rolling hour / per UTC day", eval_check_5, root, samples, starts, inputs, job, fresh))
     checks.append(safe("6", "timing", eval_timing, L, windows))
     checks.append(safe("7", "sell_alert / sell_orphan", eval_check_7, L))
-    checks.append(safe("8", "after the restart", eval_check_8, L, samples, job))
+    checks.append(r3["checks"]["8"] if rev3 else safe("8", "after the restart", eval_check_8, L, samples, job))
     checks.append(safe("9", "feed", eval_check_9, L, samples, args))
     checks.append(safe("10", "registration", eval_check_10, root, L, job, inputs))
     checks.sort(key=lambda c: int(c["id"]))
@@ -1186,10 +1882,12 @@ def build_report(args: argparse.Namespace) -> dict:
     trim = trim if isinstance(trim, list) else [trim]
     unplanned = len(starts) > 2
     mem = safe("QP-M1", "memory", eval_memory, samples, starts, windows, args.rss_point_ms, args.memory_max_mb, args.host_cap_mb, args.read_hours, unplanned)
-    extra = trim + [mem]
+    extra = trim + [mem] + (r3["extra"] if rev3 else [])
     allc = checks + extra
     expect_end = parse_iso(args.expect_end)
     complete = bool(L.last_ms) and L.last_ms >= expect_end - 10 * MIN_MS
+    if rev3:  # rev 3: the run is complete once the last decision row is at or after the end of W (the end of the first hour that closes >= 24 h after the first start row)
+        complete = bool(L.last_ms) and r3["w"] is not None and L.last_ms >= r3["w"][1]
     blockers = []
     for c in allc:
         n = c["numbers"]
@@ -1202,6 +1900,9 @@ def build_report(args: argparse.Namespace) -> dict:
     unmeasured_blocking = [c["id"] for c in allc if c["status"] == UNM and not c["informational"]]
     statuses = [c["status"] for c in allc if not c["informational"]]
     verdict = "FAIL" if FAIL in statuses else ("PASS" if complete and all(s == PASS for s in statuses) else "INCOMPLETE")
+    rule_m_fail = bool(rev3 and complete and r3["rule_m"]["fired"])
+    if rule_m_fail:
+        verdict = "FAIL"  # rule M: an UNMEASURED check fails, so a completed window with a fired condition is a FAIL
     record = {"schema": SCHEMA, "generated": iso(time.time() * 1000), "dir": str(base), "verdict": verdict, "complete": complete,
               "window": {"first_start": iso(starts[0]["ms"]) if starts else None, "last_decision_row": iso(L.last_ms) if L.last_ms else None, "expect_end": args.expect_end,
                          "hours_covered": round((L.last_ms - starts[0]["ms"]) / HOUR_MS, 2) if starts and L.last_ms else None},
@@ -1211,6 +1912,15 @@ def build_report(args: argparse.Namespace) -> dict:
               "sampler": {"error_lines": sample_errors, "note": sample_note, "samples": len(samples)}, "job_logs": {k: v for k, v in job.items() if k in ("logs_read", "logs_missing", "register_line")},
               "tool": {"path": str(Path(__file__).resolve()), "sha256": sha256_bytes(Path(__file__).read_bytes()), **git_info()},
               "scope": "counts and timings only; no ledger opened; StubModel trades are not evidence and no profit claim is made"}
+    if rev3:
+        w = r3["w"]
+        record["window"].update({"expect_end": iso(w[1]) if w else None, "w_start": iso(w[0]) if w else None, "w_end": iso(w[1]) if w else None, "w_hours": STUB_HOURS})
+        O = r3["obs"]
+        record.update({"checks_rev": 3, "checks_pin": {"name": CHECKS3_NAME, "sha256": CHECKS3_SHA256, "supersedes_sha256": CHECKS3_SUPERSEDES_SHA256}, "rule_m": r3["rule_m"], "processes": r3["processes"],
+                       "obs": {"path": str(guard(args.obs) if args.obs else guard(root / OBS_FILE)), "present": O.present, "rows": O.rows, "torn_tail_lines_dropped": O.torn},
+                       "also_reported_from_obs": r3["also"],
+                       "verdict_reason": ("rule M fired in a completed window: " + ", ".join(r3["rule_m"]["fired_conditions"]) + "; made UNMEASURED (and so failing): " + ", ".join(r3["rule_m"]["checks_made_unmeasured"])) if rule_m_fail else None,
+                       "tape_first_rows": "not used in revision 3 (check 3 reads the first_seen_by_scanner rows)"})
     forbid_scan(record)
     return record
 
@@ -1238,6 +1948,25 @@ def markdown(rec: dict) -> str:
         if "input_error" in n:
             return f"input error {n['input_error']}"
         try:
+            if rec.get("checks_rev") == 3 and i in ("1", "3", "5", "8", "11", "5S"):
+                if "rule_m_fired" in n:
+                    return "UNMEASURED by rule M: " + ", ".join(n["rule_m_fired"])
+                if i == "1":
+                    return f"as_of_refusal {n['as_of_refusal_rows']}, LeakageError in logs {n['leakage_error_mentions_in_decision_logs']}, in hook_errors {n['hook_errors_LeakageError_max_over_runner_hour_rows']}"
+                if i == "3":
+                    e = n["latest_first_seen_row_entry_counts"]
+                    return (f"{n['chain_unavailable_cards']} chain_unavailable (setup tag {n['cards_carrying_a_setup_tag']}); first {e['first']}, re_entry {e['re_entry']}, no row "
+                            f"{n['cards_with_no_first_seen_row_for_the_pool_and_pid']}, over 600 s {n['cards_with_t_minus_scan_ms_over_600000']}; T-scan p50 {n['t_minus_scan_ms_p50']} max {n['t_minus_scan_ms_max']} ms")
+                if i == "5":
+                    h = n["rolling_hour_calls"]
+                    return (f"rolling hour max {h['max']} of {h['windows']} windows; days " + ", ".join(f"{d} {v['calls']}" for d, v in n["calls_by_utc_day"].items())
+                            + f"; gap minutes {n['unmeasurable']['gap_minutes_outside_every_record']}, prior_minutes disagreements {n['failing']['prior_minutes_disagreements']}")
+                if i == "8":
+                    o = n.get("obs_conditions") or {}
+                    return f"{n['process_starts']} starts; chain ok {n['decision_log_chain_ok']}; dup rows {sum(n['duplicate_rows'].values())}; obs conditions {o.get('runner_start_rows_same_frozen_sha')}/{o.get('spent_at_load_positive_if_the_first_process_booked_calls')}/{o.get('counter_day_calls_compare')}"
+                if i == "11":
+                    return f"max other hook_errors in a row {n['max_other_hook_errors_in_a_row']}"
+                return "informational"
             if i in ("2", "4"):
                 return "; ".join(f"{p}: {n[p].get('chain_stale', n[p].get('holders_null'))}/{n[p].get('attempts', n[p].get('cards'))}" for p in PERSONAS if isinstance(n.get(p), dict))
             if i == "3":
@@ -1280,6 +2009,12 @@ def markdown(rec: dict) -> str:
         lines += ["", "BLOCKS REGISTRATION: " + "; ".join(rec["blocks_registration"])]
     if rec["unmeasured_checks"]:
         lines += ["", "UNMEASURED (block registration until measured): " + ", ".join(rec["unmeasured_checks"])]
+    if rec.get("checks_rev") == 3:
+        rm = rec["rule_m"]
+        lines += ["", f"checks revision 3 (pin {rec['checks_pin']['name']} sha256 {rec['checks_pin']['sha256']}); W {rec['window']['w_start']} to {rec['window']['w_end']}; obs file present {rec['obs']['present']}, {rec['obs']['rows']} rows",
+                  "rule M: " + ("FIRED: " + ", ".join(rm["fired_conditions"]) + "; checks " + ", ".join(rm["checks_made_unmeasured"]) + " are UNMEASURED (and an UNMEASURED check fails)" if rm.get("fired") else "no condition fired")]
+        if rec.get("verdict_reason"):
+            lines.append("verdict reason: " + rec["verdict_reason"])
     pc = rec["per_persona_counts"]
     lines += ["", f"scans {pc['scans']}; risk-agent stub calls {pc['risk_agent_llm_calls']}"]
     for p, v in pc["per_persona"].items():
@@ -1432,7 +2167,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     ap.add_argument("--memory-max-mb", type=float, default=None, help="refused if it differs from the sampled cgroup memory.max")
     ap.add_argument("--host-cap-mb", type=float, default=None, help="the MemoryMax the book job can get beside the other planned jobs (plan A is implied only if it fits)")
     ap.add_argument("--read-hours", type=float, default=None, help="H: hours from T0 to the latest planned read instant (the registered read length)")
-    ap.add_argument("--expect-end", default=EXPECT_END_DEFAULT)
+    ap.add_argument("--expect-end", default=EXPECT_END_DEFAULT, help="revision 2 only: revision 3 takes the end from W")
+    ap.add_argument("--checks-rev", type=int, choices=(2, 3), default=3, help="3 (default): SHAKEDOWN-CHECKS-3, checks 1/3/5/8/11 from hv4-obs.jsonl. 2: SHAKEDOWN-CHECKS-2, the sampler-based evaluation")
+    ap.add_argument("--obs", default=None, help="the observability side file (schema hv4_obs_v1); default <dir>/root/hv4-obs.jsonl; read through the path policy; revision 3 only")
     ap.add_argument("--out-dir", default=None, help="also write report.json and report.md here")
     a = ap.parse_args(argv)
     a.mode = "report"

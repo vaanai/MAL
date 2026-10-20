@@ -35,7 +35,7 @@ class Log:
 
 def build(tmp: Path, *, hours: int = 25, restart_h: int = 12, scan_wall=lambda i: 900, exit_delay=lambda m: 200, refused=lambda i: [], holders_null=lambda i: False,
           trim_ms=lambda i: 150.0, calls_per_min=lambda m: 8, rss=lambda h: 500 + 20 * h, extra=None, restart_sha="a" * 40, v_ratio=0.3, n_bots=9, start2=True,
-          skip_ticks=lambda m: False, tape_rows=None, cg_max=10240.0, oom=0, restart_binding_dirty=False) -> dict:
+          skip_ticks=lambda m: False, tape_rows=None, cg_max=10240.0, oom=0, restart_binding_dirty=False, restart_min: int = 0) -> dict:
     base = tmp / "shake"
     root = base / "root"
     root.mkdir(parents=True)
@@ -44,7 +44,7 @@ def build(tmp: Path, *, hours: int = 25, restart_h: int = 12, scan_wall=lambda i
     (base / "bots.json").write_text("".join(json.dumps({"bot_id": f"hv4-CON-{i}", "botnote": CANARY}) + "\n" for i in range(n_bots)))
     L = Log(root)
     end = START + hours * HOUR
-    restart = START + restart_h * HOUR
+    restart = START + restart_h * HOUR + restart_min * MIN
     L.add("SCAN", START, kind="start", binding={"dirty": False, "git_sha": "a" * 40}, frozen_sha="a" * 40, lane_h=False)
     cards, n_scan = [], 0
     for m in range(0, hours * 60):
@@ -127,7 +127,7 @@ def late(fx: dict, n: int = 5) -> int:
 
 
 def run(fx: dict, *more: str, samples: bool = True, job: bool = True, read_hours: bool = True) -> dict:
-    argv = ["--dir", str(fx["base"]), "--tape-dir", str(fx["tape"]), "--expect-end", R.iso(fx["end"])]
+    argv = ["--dir", str(fx["base"]), "--tape-dir", str(fx["tape"]), "--expect-end", R.iso(fx["end"]), "--checks-rev", "2"]  # these tests are the revision 2 evaluation; the default is revision 3
     if samples:
         argv += ["--samples", str(fx["samples"])]
     if job:
@@ -241,7 +241,7 @@ def test_check_5_needs_samples_and_a_job_log_per_start_and_names_spend_write_err
     fx = build(tmp_path)
     no_samples = by_id(run(fx, samples=False))["5"]
     assert no_samples["status"] == R.UNM and any("per-hour" in x for x in no_samples["notes"])
-    one_log = by_id(R.build_report(R.parse_args(["--dir", str(fx["base"]), "--tape-dir", str(fx["tape"]), "--samples", str(fx["samples"]), "--job-log", str(fx["job"]), "--expect-end", R.iso(fx["end"])])))["5"]
+    one_log = by_id(R.build_report(R.parse_args(["--dir", str(fx["base"]), "--tape-dir", str(fx["tape"]), "--samples", str(fx["samples"]), "--job-log", str(fx["job"]), "--expect-end", R.iso(fx["end"]), "--checks-rev", "2"])))["5"]
     assert one_log["status"] == R.UNM and any("one --job-log per process start" in x for x in one_log["notes"]) and one_log["numbers"]["error_counters"]["spend_write_errors"] == "not measured (no log line, not persisted)"
     fx["job2"].write_text("hv4_prefetch spend state unreadable: treating the hour as fully spent\n")
     assert by_id(run(fx))["5"]["status"] == R.FAIL
@@ -343,7 +343,7 @@ def test_a_missing_input_is_unmeasured_never_fail_error_or_pass(tmp_path):
     missing = run(fx, "--samples", str(tmp_path / "nope.jsonl"), samples=False)
     assert by_id(missing)["8"]["status"] == R.UNM and by_id(missing)["5"]["status"] == R.UNM and "unreadable" in missing["sampler"]["note"]
     # check 9: no tape dir -> UNMEASURED
-    assert by_id(R.build_report(R.parse_args(["--dir", str(fx["base"]), "--tape-dir", str(tmp_path / "no-tape"), "--samples", str(fx["samples"]), "--expect-end", R.iso(fx["end"])])))["9"]["status"] == R.UNM
+    assert by_id(R.build_report(R.parse_args(["--dir", str(fx["base"]), "--tape-dir", str(tmp_path / "no-tape"), "--samples", str(fx["samples"]), "--expect-end", R.iso(fx["end"]), "--checks-rev", "2"])))["9"]["status"] == R.UNM
     # a nonexistent job log does not abort the report
     rec = run(fx, "--job-log", str(tmp_path / "gone.log"))
     assert rec["verdict"] != "ERROR" and rec["job_logs"]["logs_missing"] == 1 and rec["job_logs"]["logs_read"] == 2
