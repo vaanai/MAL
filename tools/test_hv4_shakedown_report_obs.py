@@ -45,7 +45,7 @@ def obs_rows(fx: dict, calls=lambda m: 8, *, sha: str = SHA, w_end: int = W_END)
     zero = dict(spend_state_reset=0, counter_calls_at_start=0, prior_minutes_error=None)
     row(START - 2000, A, "runner_start", frozen_sha=sha, binding={}, live=True)
     row(START - 1900, A, "prefetch_start", process_start_ms=START - 1900, policy="v2", hourly_budget=1500, spent_at_load=0, counter_day_calls_at_start=0, prior_minutes=[], prior_calls_total=0, **zero)
-    lmax = max(a_minutes)  # the counter persists its last 61 buckets, ending at its last call's minute; a minute with no call is not in the list
+    lmax = max(a_minutes) if a_minutes else None  # the counter persists its last 61 buckets, ending at its last call's minute; a minute with no call is not in the list
     prior = [[t, c, c] for t, c in sorted(a_minutes.items()) if t >= lmax - 60 * MIN]
     row(r0 - 2000, B, "runner_start", frozen_sha=sha, binding={}, live=True)
     row(r0 - 1900, B, "prefetch_start", process_start_ms=r0 - 1900, policy="v2", hourly_budget=1500, spent_at_load=sum(c for t, c in a_minutes.items() if t >= rmin - 59 * MIN),
@@ -646,7 +646,8 @@ def test_check_8_passes_when_all_four_obs_conditions_hold(tmp_path):
     c = c8(tmp_path, "ok")
     o = c["numbers"]["obs_conditions"]
     assert c["status"] == R.PASS and o["runner_start_rows_same_frozen_sha"] is True and o["prefetch_start_rows_policy_v2"] == [True, True] and o["prefetch_start_rows_spend_state_reset_0"] == [True, True]
-    assert o["first_process_calls_in_the_60_min_before_the_cancel"] > 0 and o["second_prefetch_start_spent_at_load"] > 0 and o["spent_at_load_positive_if_the_first_process_booked_calls"] is True
+    assert o["first_process_calls_in_the_60_min_ending_at_its_last_recorded_minute"] > 0 and o["first_process_last_recorded_minute"] == R.iso(START + 12 * HOUR + (RESTART_MIN - 1) * MIN)
+    assert o["second_prefetch_start_spent_at_load"] > 0 and o["spent_at_load_positive_if_the_first_process_booked_calls"] is True
     assert o["counter_day_calls_compare"] == "ok" and o["second_prefetch_start_counter_day_calls_at_start"] >= o["first_process_last_chain_hour_counter_day_calls"]
     assert c["numbers"]["restart_protocol_informational"] == {"restart_start_minute_of_hour": RESTART_MIN, "restart_hour_starts_at_00_00Z": False}
 
@@ -665,13 +666,18 @@ def test_check_8_condition_b_policy_v2_and_spend_state_reset_0_in_both_prefetch_
     assert m["status"] == R.UNM  # a field that is missing is not a pass
 
 
-def test_check_8_condition_c_spent_at_load_is_positive_if_the_first_process_booked_calls_before_the_cancel(tmp_path):
+def test_check_8_condition_c_spent_at_load_is_positive_if_the_first_process_booked_calls(tmp_path):
     z = c8(tmp_path, "z", lambda rows, fx: sel(rows, "prefetch_start", B)[0].update(spent_at_load=0))
     assert z["status"] == R.FAIL and z["numbers"]["obs_conditions"]["spent_at_load_positive_if_the_first_process_booked_calls"] is False
-    # the first process booked nothing in the 60 minutes before the cancel (it stopped calling an hour and a half earlier): 0 is right
+    # NOTES-1 N-5: the 60 minutes END AT the first process's last recorded minute, so a process that stopped calling 90 minutes before the cancel still booked calls in them
     quiet = lambda m: 0 if m >= 12 * 60 - 90 else 8  # noqa: E731
     q = c8(tmp_path, "q", lambda rows, fx: sel(rows, "prefetch_start", B)[0].update(spent_at_load=0), calls=quiet)
-    assert q["status"] == R.PASS and q["numbers"]["obs_conditions"]["first_process_calls_in_the_60_min_before_the_cancel"] == 0 and q["numbers"]["obs_conditions"]["second_prefetch_start_spent_at_load"] == 0
+    assert q["status"] == R.FAIL and q["numbers"]["obs_conditions"]["first_process_calls_in_the_60_min_ending_at_its_last_recorded_minute"] > 0
+    assert q["numbers"]["obs_conditions"]["first_process_last_recorded_minute"] == R.iso(START + 12 * HOUR - 91 * MIN)
+    # a first process that made no call at all booked nothing: the condition is vacuous and spent_at_load 0 is right
+    none = c8(tmp_path, "none_at_all", lambda rows, fx: sel(rows, "prefetch_start", B)[0].update(spent_at_load=0), calls=lambda m: 0 if m < 12 * 60 + RESTART_MIN else 8)
+    assert none["numbers"]["obs_conditions"]["first_process_calls_in_the_60_min_ending_at_its_last_recorded_minute"] == 0 and none["numbers"]["obs_conditions"]["first_process_last_recorded_minute"] is None
+    assert none["numbers"]["obs_conditions"]["spent_at_load_positive_if_the_first_process_booked_calls"] is True
 
 
 def test_check_8_condition_d_counter_day_calls_at_start_is_not_smaller_than_the_first_processs_last_row(tmp_path):
@@ -888,3 +894,134 @@ def test_rows_from_the_real_runner_are_read_back_with_the_runners_own_pid_and_fi
     h = Ob.runner_hour[0]
     assert h["hook_errors"] == {} and h["obs_write_errors"] == 0 and h["n_housekeep_errors"] == 0 and h["rss_mb"] is not None and h["obs_rows"] is not None and h["obs_build_errors"] == 0
     assert h["hour_end_ms"] - h["hour_start_ms"] == HOUR and not Ob.no_pid and not Ob.malformed
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ QP #770 changes at 74d13ca (F1 to F5) and the NOTES-1 pins
+ORPHAN_POOL = "ORPHANPOOL-q1"
+
+
+def orphan(tmp: Path, name: str, rows_fn=None, hours: int = 25) -> tuple[dict, int]:
+    """QP fixture C: one chain_unavailable card_refused row at 10:04:30, between two scans, in the first process: the row a cancel in the middle of a scan leaves (the runner writes the
+    refused rows inside scan() and the scan row after it). No scan row has its ms."""
+    t = START + 12 * HOUR + 4 * MIN + 30_000
+    fx = build(sub(tmp, name), restart_min=RESTART_MIN, hours=hours, extra=lambda fx: fx["L"].add("SCAN", t, kind="card_refused", pool=ORPHAN_POOL, reasons=["chain_unavailable"]))
+    rows = obs_rows(fx)
+    if rows_fn:
+        rows_fn(rows, t)
+    put(fx, rows)
+    return fx, t
+
+
+def test_f1_an_orphan_chain_unavailable_row_with_no_scan_row_and_no_first_seen_row_fails_check_3(tmp_path):
+    fx, _ = orphan(tmp_path, "norow")
+    rec = rev3(fx)
+    c = by_id(rec)["3"]
+    n = c["numbers"]
+    assert c["status"] == R.FAIL and rec["verdict"] == "FAIL"  # QP's fixture C used to PASS with chain_unavailable_cards 0
+    assert n["chain_unavailable_cards"] == 1 and n["chain_unavailable_rows_without_scan_row"] == 1 and n["cards_with_tag_status_unknown"] == 1 and n["cards_carrying_a_setup_tag"] == 0
+    assert n["cards_with_no_first_seen_row_for_the_pool_and_pid"] == 1
+    assert ORPHAN_POOL not in json.dumps(rec) + R.markdown(rec)
+
+
+def test_f1_an_orphan_row_with_a_first_seen_row_two_minutes_before_passes_and_the_same_rules_apply_to_it(tmp_path):
+    fx, t = orphan(tmp_path, "two", lambda rows, t: rows.append(first_seen(A, ORPHAN_POOL, t - 2 * MIN)))
+    rec = rev3(fx)
+    c = by_id(rec)["3"]
+    assert c["status"] == R.PASS and c["numbers"]["chain_unavailable_rows_without_scan_row"] == 1 and c["numbers"]["t_minus_scan_ms_max"] == 120_000
+    assert c["numbers"]["latest_first_seen_row_entry_counts"] == {"first": 1, "re_entry": 0, "other": 0} and rec["verdict"] == "PASS"
+    assert by_id(rev3(orphan(tmp_path, "edge", lambda rows, t: rows.append(first_seen(A, ORPHAN_POOL, t - 600_000, "re_entry")))[0]))["3"]["status"] == R.PASS
+    assert by_id(rev3(orphan(tmp_path, "over", lambda rows, t: rows.append(first_seen(A, ORPHAN_POOL, t - 600_001)))[0]))["3"]["status"] == R.FAIL
+    assert by_id(rev3(orphan(tmp_path, "pid", lambda rows, t: rows.append(first_seen(B, ORPHAN_POOL, t - 2 * MIN)))[0]))["3"]["status"] == R.FAIL  # a row of the other process
+    assert by_id(rev3(orphan(tmp_path, "after", lambda rows, t: rows.append(first_seen(A, ORPHAN_POOL, t + 1000)))[0]))["3"]["status"] == R.FAIL  # a row after T
+
+
+def test_f1_an_orphan_row_in_the_second_process_is_judged_with_the_second_pid(tmp_path):
+    t = START + 20 * HOUR + 30_000
+    fx = build(sub(tmp_path, "b"), restart_min=RESTART_MIN, extra=lambda fx: fx["L"].add("SCAN", t, kind="card_refused", pool=ORPHAN_POOL, reasons=["chain_unavailable"]))
+    rows = obs_rows(fx)
+    rows.append(first_seen(A, ORPHAN_POOL, t - MIN))  # only the first process saw it
+    put(fx, rows)
+    assert by_id(rev3(fx))["3"]["status"] == R.FAIL
+    rows.append(first_seen(B, ORPHAN_POOL, t - MIN))
+    put(fx, rows)
+    assert by_id(rev3(fx))["3"]["status"] == R.PASS
+
+
+# QP's fixtures A and B: rolling windows that are not aligned to a clock hour
+def test_qp_fixture_a_an_off_hour_restart_crossing_window_needs_all_three_sources(tmp_path):
+    def offhour(m):  # 09:30-09:59 25/min (first process, its own chain_hour row), 10:00-10:04 50/min (first process, prior_minutes only), 10:05-10:29 22/min (second process)
+        return 25 if 690 <= m < 720 else (50 if 720 <= m < 725 else (22 if 725 <= m < 750 else 8))
+
+    rec = rev3(fixture(tmp_path, calls=offhour))
+    n = by_id(rec)["5"]["numbers"]
+    assert by_id(rec)["5"]["status"] == R.FAIL and n["rolling_hour_calls"]["max"] == 1550 and n["rolling_hour_calls"]["max_window_starts"] == R.iso(START + 11 * HOUR + 30 * MIN)
+    x = n["hour_crossing_restart"][0]
+    assert x["max_calls_earlier_processes_only"] <= 1500 and x["max_calls_later_processes_only"] <= 1500 and x["max_calls_both_processes_counted"] == 1550 and rec["verdict"] == "FAIL"
+
+
+def test_qp_fixture_b_a_midnight_crossing_window_that_no_clock_hour_shows(tmp_path):
+    rec = rev3(fixture(tmp_path, calls=lambda m: 26 if 90 <= m < 150 else 8))  # 23:30-00:29 at 26/min: 1,560 in that hour, 1,020 in each clock hour
+    n = by_id(rec)["5"]["numbers"]
+    assert by_id(rec)["5"]["status"] == R.FAIL and n["rolling_hour_calls"]["max"] == 1560 and n["rolling_hour_calls"]["max_window_starts"] == R.iso(START + 90 * MIN)
+    assert n["hour_crossing_00_00Z"][0]["within_limit"] is False
+
+
+def test_f2_a_leakage_error_key_anywhere_in_hook_errors_counts_in_check_1_and_check_11_never_excuses_it(tmp_path):
+    def hk(rows, fx):
+        for r in sel(rows, "runner_hour", B)[10:]:
+            r["hook_errors"] = {"housekeep:LeakageError": 1}
+
+    rec = rev3(fixture(tmp_path, mutate=hk))
+    c = by_id(rec)
+    assert c["1"]["status"] == R.FAIL and c["1"]["numbers"]["hook_errors_LeakageError_max_over_runner_hour_rows"] == 1 and c["1"]["numbers"]["hook_errors_LeakageError_last_row_per_pid"] == {str(A): 0, str(B): 1}
+    assert c["11"]["numbers"]["max_other_hook_errors_in_a_row"] == 0 and c["11"]["numbers"]["leakage_error_keys_judged_in_check_1_not_here"] == 1 and "never excused" in c["11"]["notes"][0]
+    assert rec["verdict"] == "FAIL" and "1" in rec["verdict_reason"]
+    both = by_id(rev3(fixture(sub(tmp_path, "both"), mutate=lambda rows, fx: [r.update(hook_errors={"housekeep:LeakageError": 1, "KeyError": 2}) for r in sel(rows, "runner_hour", B)[10:]] and None)))
+    assert both["1"]["status"] == R.FAIL and both["11"]["status"] == R.FAIL and both["11"]["numbers"]["max_other_hook_errors_in_a_row"] == 2
+    plain = by_id(rev3(fixture(sub(tmp_path, "plain"), mutate=lambda rows, fx: [r.update(hook_errors={"ValueError:LeakageErrorish": 1}) for r in sel(rows, "runner_hour", B)[10:]] and None)))
+    assert plain["1"]["status"] == R.PASS and plain["11"]["status"] == R.FAIL  # a key that does not END in LeakageError is another hook error
+
+
+def test_f3_a_completed_window_with_a_check_unmeasured_outside_rule_m_is_not_passed_and_an_unfinished_one_is_incomplete(tmp_path):
+    def far(rows, fx):  # check 5: a gap in the per-minute record (not rule M)
+        sel(rows, "prefetch_start", B)[0]["prior_minutes"] = [[START + 12 * HOUR + 4 * MIN, 8, 8], [START + 13 * HOUR + 3 * MIN, 8, 8]]
+
+    rec = rev3(fixture(sub(tmp_path, "done"), mutate=far))
+    assert rec["complete"] and by_id(rec)["5"]["status"] == R.UNM and rec["rule_m"]["fired"] is False
+    assert rec["verdict"] == "NOT_PASSED" and rec["verdict_reason"] == "completed window, UNMEASURED outside rule M: 5" and R.markdown(rec).startswith("HV4 shakedown report: verdict NOT_PASSED")
+    nopid = rev3(fixture(sub(tmp_path, "pidless"), mutate=lambda rows, fx: rows.append({**first_seen(A, "UNAVPOOL-x7", scan_t(5)), "pid": None})))
+    assert nopid["rule_m"]["fired"] is False and by_id(nopid)["3"]["status"] == R.UNM and nopid["verdict"] == "NOT_PASSED" and "3" in nopid["verdict_reason"]
+    unfinished = rev3(fixture(sub(tmp_path, "wip"), mutate=far, hours=13))
+    assert unfinished["complete"] is False and by_id(unfinished)["5"]["status"] == R.UNM and unfinished["verdict"] == "INCOMPLETE" and unfinished["verdict_reason"] is None
+    assert rev3(fixture(sub(tmp_path, "ok")))["verdict"] == "PASS"  # a pass is still a pass
+    # a rule M trigger is still FAIL (not NOT_PASSED), and a failed check names itself
+    m = rev3(fixture(sub(tmp_path, "m"), mutate=lambda rows, fx: sel(rows, "runner_hour", B)[3].update(obs_write_errors=1)))
+    assert m["verdict"] == "FAIL" and m["verdict_reason"].startswith("rule M fired in a completed window")
+
+
+def test_f4_each_closed_day_shows_counter_day_calls_next_to_the_minute_sum_and_their_difference(tmp_path):
+    d = by_id(rev3(fixture(tmp_path)))["5"]["numbers"]["calls_by_utc_day"]["2026-10-19"]
+    assert d["calls"] == d["minute_sum_in_W"] == 960 and d["counter_day_calls_minus_minute_sum"] == 0
+    big = by_id(rev3(fixture(sub(tmp_path, "big"), mutate=lambda rows, fx: next(r for r in sel(rows, "chain_hour", A) if r["hour_end_ms"] == START + 2 * HOUR).update(counter_day_calls=1000))))["5"]
+    assert big["numbers"]["calls_by_utc_day"]["2026-10-19"]["counter_day_calls_minus_minute_sum"] == 40 and big["status"] == R.PASS  # reported, not gated
+
+
+def test_f5_and_the_notes_pin_the_not_measured_list_and_both_pins_are_in_the_record(tmp_path):
+    rec = rev3(fixture(tmp_path))
+    assert rec["checks_notes_pin"] == {"name": "SHAKEDOWN-CHECKS-3-NOTES-1.md", "sha256": "be6df321c0d89804b67fac5f1047748af2ee3ea69733f3c27f48dc47ead3a060"} == {"name": R.CHECKS3_NOTES1_NAME, "sha256": R.CHECKS3_NOTES1_SHA256}
+    assert rec["checks_pin"]["sha256"] == R.CHECKS3_SHA256
+    assert any(x.startswith("F5:") and "ps-verify" in x and "counted as 0" in x for x in rec["not_measured"])
+    text = R.markdown(rec)
+    assert "not measured:" in text and "F5:" in text and "SHAKEDOWN-CHECKS-3-NOTES-1.md" in text
+    assert "not_measured" not in rev2_record_keys(tmp_path)
+    home = Path("/data/mal/hunt-1008/push-1016/hunt20/haiku-v4")  # on the manager's host the pins are the files' own hashes
+    for name, sha in ((R.CHECKS3_NAME, R.CHECKS3_SHA256), (R.CHECKS3_NOTES1_NAME, R.CHECKS3_NOTES1_SHA256)):
+        if (home / name).is_file():
+            import hashlib
+
+            assert hashlib.sha256((home / name).read_bytes()).hexdigest() == sha
+
+
+def rev2_record_keys(tmp: Path) -> set:
+    fx = fixture(sub(tmp, "r2"))
+    return set(R.build_report(R.parse_args(["--dir", str(fx["base"]), "--tape-dir", str(fx["tape"]), "--checks-rev", "2"])))
