@@ -49,7 +49,11 @@ DROP_AFTER_MS = 30 * MIN_MS  # a pool that has not passed the filters for this l
 RETRY_AFTER_MS = 60_000  # after a failed read of a kind, wait this long before trying that kind again; doubles with each failure in a row, up to RETRY_MAX_MS
 RETRY_MAX_MS = 16 * MIN_MS
 SPEND_SCHEMA = "hv4_prefetch.spend.v1"
-HOURLY_BUDGET = 1_500
+HOURLY_BUDGET = 1_500  # policy v1 (d1dbcd6)
+HOURLY_BUDGET_V2 = 2_000  # policy v2, Note N4: the cap in any rolling hour (the refresher plans to stop SAFETY_MARGIN short); 48,000 a day = hv4_chain.DEFAULT_DAILY_CALL_CAP
+V2_HOT_HOLDERS_REFRESH_MS = 12 * MIN_MS  # policy v2: holders of a hot pool are re-read every 12 min (v1: HOT_HOLDERS_REFRESH_MS, 4 min)
+V2_WARM_HOLDERS_REFRESH_MS = 12 * MIN_MS  # policy v2: holders of a warm pool (in the latest scan's filter-pass set, not hot) are re-read every 12 min; v1 reads none
+WARM_HOLD_RESERVE = 600  # v2: warm holders reads stop this many calls short of the cap (P2: at least as far short as any other class; the others stop HOT_MINT_RESERVE short)
 COLD_SHARE = 0.6
 CYCLE_S = 5.0
 KEEP = 3  # facts of each kind kept per pool, so a fact stamped after T can be skipped for an older one
@@ -71,6 +75,8 @@ def default_policy(env: Mapping[str, str] | None = None) -> str:
     return POLICY_V1 if str((os.environ if env is None else env).get("MAL_HV4_PREFETCH_POLICY", "v2")).strip().lower() == "v1" else POLICY_V2
 
 assert HOT_HOLDERS_REFRESH_MS < C.CHAIN_HOLDERS_MAX_AGE_MS and MINT_REFRESH_MS < C.CHAIN_MINT_MAX_AGE_MS
+assert V2_HOT_HOLDERS_REFRESH_MS < C.CHAIN_HOLDERS_MAX_AGE_MS_V2 and V2_WARM_HOLDERS_REFRESH_MS < C.CHAIN_HOLDERS_MAX_AGE_MS_V2  # 12 min against 15 min, both
+assert WARM_HOLD_RESERVE >= 400  # warm reads stop at least as far short as the other lower classes (HOT_MINT_RESERVE)
 
 
 @dataclass
@@ -97,19 +103,24 @@ class ChainPrefetcher:
     mint_facts / mayhem_flag / largest_holders methods). `compose(mf, mh_flag, holders)` builds the card's chain dict (HV4ChainSource.compose)."""
 
     def __init__(self, chain: Any, compose: Callable[[Any, Any, Any], dict], *, clock: Callable[[], int] | None = None, holders: bool | None = None,
-                 hourly_budget: int = HOURLY_BUDGET, spend_path: str | os.PathLike | None = None, policy: str | None = None, obs: Any = None,
+                 hourly_budget: int | None = None, spend_path: str | os.PathLike | None = None, policy: str | None = None, obs: Any = None,
                  cold_mint_refresh_ms: int | None = None, hot_holders_refresh_ms: int | None = None, warm_holders_refresh_ms: int | None = None) -> None:
         self.chain, self.compose = chain, compose
-        # MORE MEASUREMENT KNOBS for the replay harness (PR #768 check 4 variants), same rules as cold_mint_refresh_ms: constructor path only, never passed in run mode.
-        # hot_holders_refresh_ms: the holders refresh interval of a hot pool (None = HOT_HOLDERS_REFRESH_MS, 4 min). warm_holders_refresh_ms: when set, the filter-pass
-        # pools that are NOT hot also get holders reads at this interval, in descending order of the 60-min volume the harness feeds through `set_warm_volumes`, after
-        # every other read of the pass (order: new mint, hot mint, hot holders, cold mint, warm holders); None = off, the order of v2 as merged.
-        self.hot_holders_refresh_ms = hot_holders_refresh_ms
-        self.warm_holders_refresh_ms = warm_holders_refresh_ms
-        self._warm_vol: dict[str, float] = {}
+        # hot_holders_refresh_ms and warm_holders_refresh_ms are OVERRIDES for tests (None = the policy's value below); run mode passes neither.
         # A MEASUREMENT KNOB for the replay harness (hv4_memreplay.Rig through `hv4_scanprof run --cold-mint-refresh-min`); run mode never passes it (live_chain_source
         # builds the prefetcher without it, and no environment variable reaches it): the mint refresh interval of a pool that is not hot. None = MINT_REFRESH_MS for all.
         self.cold_mint_refresh_ms = cold_mint_refresh_ms
+        self.policy = policy or default_policy()
+        v2 = self.policy == POLICY_V2
+        # Policy defaults (Note N4). The two constructor arguments are overrides for tests; run mode passes neither.
+        self.hot_holders_refresh_ms = hot_holders_refresh_ms or (V2_HOT_HOLDERS_REFRESH_MS if v2 else HOT_HOLDERS_REFRESH_MS)
+        self.warm_holders_refresh_ms = warm_holders_refresh_ms if warm_holders_refresh_ms is not None else (V2_WARM_HOLDERS_REFRESH_MS if v2 else None)
+        self.holders_max_age_ms = C.holders_max_age_ms(self.policy)  # the ONE limit this policy serves with, the card vetoes with and the direct chain path reads with
+        self._last_watch_ms: int | None = None
+        self._promoted: set[str] = set()  # pools not hot before the latest scan that the scan made hot (tagged, on the board or top by volume)
+        self._warm_before: set[str] = set()  # the part of those that were already in the store: warm pools
+        self._warm_vol: dict[str, float] = {}
+        self._warm_vol_ms: int | None = None
         self.policy = policy or default_policy()
         assert self.policy in (POLICY_V1, POLICY_V2)
         self.obs = obs  # tools.hv4_obs.ObsLog or None: append-only side rows, never read by a decision
@@ -120,11 +131,12 @@ class ChainPrefetcher:
         self._obs_start_ms = 0
         self._deferred_pools: dict[int, dict[str, set]] = {}  # hour index -> class ("hot_mint", "cold_mint", "hold") -> distinct pools deferred (obs on only)
         self._booked_by_hour: dict[int, int] = {}  # hour index -> calls this prefetcher booked in it (read by the chain_hour row)
+        self._warm_by_hour: dict[int, list[int]] = {}  # hour index -> [warm holders reads, calls] (v2)
         self._at_load: dict[str, Any] = {}
         self.clock = clock or (lambda: time.time_ns() // 1_000_000)
         provider = getattr(getattr(chain, "rpc", None), "provider", None)
         self.holders_on = (provider != "public") if holders is None else holders  # the public endpoint refuses getTokenLargestAccounts: do not spend calls on it
-        self.hourly_budget = hourly_budget
+        self.hourly_budget = hourly_budget if hourly_budget is not None else (HOURLY_BUDGET_V2 if self.policy == POLICY_V2 else HOURLY_BUDGET)
         self.pools: dict[str, _Pool] = {}
         self._spent: deque[list[int]] = deque()  # [minute bucket ms, calls] in the last hour
         self.spend_path = spend_path
@@ -285,15 +297,22 @@ class ChainPrefetcher:
                     pass
 
     # -- the runner's side
-    def watch(self, items: Iterable[tuple[str, str | None]], hot: Iterable[str], now_ms: int) -> None:
-        """The pools that pass the filters at this scan, and the ones about to be carded (tagged, on the board, top by volume)."""
+    def watch(self, items: Iterable[tuple[str, str | None]], hot: Iterable[str], now_ms: int, vols: Mapping[str, Any] | None = None) -> None:
+        """The pools that pass the filters at this scan, and the ones about to be carded (tagged, on the board, top by volume). `vols`: each pool's 60-min gross volume
+        (features vol_60m) as of THIS scan's state, the order of the warm holders reads (policy v2); a later pass uses it only if it was taken at or before the pass."""
         hot = set(hot)
         entered: list[dict[str, Any]] = []
         n_pass = 0
+        promoted: set[str] = set()
+        warm_before: set[str] = set()
         with self._lock:
             for pool, mint in items:
                 n_pass += 1
                 p = self.pools.get(pool)
+                if pool in hot and (p is None or now_ms >= p.hot_until_ms):  # not hot before this scan: this scan promotes it
+                    promoted.add(pool)
+                    if p is not None:
+                        warm_before.add(pool)
                 if p is None:
                     p = self.pools[pool] = _Pool(pool, mint, now_ms, now_ms)
                     self._n("pools_added")
@@ -311,6 +330,11 @@ class ChainPrefetcher:
                 self._n("pools_dropped")
             for pool in [k for k, ms in self._dropped.items() if now_ms - ms > DROPPED_KEEP_MS]:  # bounded: a re-entry after a day is reported as a first entry
                 del self._dropped[pool]
+            self._last_watch_ms = now_ms
+            self._promoted, self._warm_before = promoted, warm_before
+            if vols is not None:
+                self._warm_vol = {k: float(v) for k, v in vols.items() if isinstance(v, (int, float)) and not isinstance(v, bool)}
+                self._warm_vol_ms = now_ms
         obs = self.obs
         if entered and obs is not None and obs.enabled:  # one append for the scan's new pools, after the lock; the scanner's watch set is its filter-pass set
             try:
@@ -323,6 +347,7 @@ class ChainPrefetcher:
     def part_at(self, pool: str, mint: str | None, T: int, slot: int) -> dict | None:
         """The chain dict for a card at scan instant T: only facts stamped strictly before T, no RPC. None when the pool has no usable mint fact."""
         stale_row: dict[str, Any] | None = None
+        null_row: dict[str, Any] | None = None
         with self._lock:
             p = self.pools.get(pool)
             if p is None or not mint:
@@ -344,14 +369,24 @@ class ChainPrefetcher:
                         self._n("obs_errors")
             flag = next(((v, ms) for v, ms in reversed(p.mayhems) if ms < T), None)
             hd = next((h for h in reversed(p.holders) if h.as_of_ms is not None and h.as_of_ms < T and _slot_ok(h.as_of_slot, slot)), None)
-            if hd is not None and T - hd.as_of_ms > C.CHAIN_HOLDERS_MAX_AGE_MS:
+            newest_holders_ms = hd.as_of_ms if hd is not None else None
+            if hd is not None and T - hd.as_of_ms > self.holders_max_age_ms:  # the policy's limit (v2: 15 min), the same constant the card's veto reads
                 self._n("served_holders_omitted_stale")
                 hd = None
+            if hd is None and self.obs is not None and self.obs.enabled:  # a card with no holders block: say why (built here, written after the lock)
+                promoted = pool in self._promoted
+                null_row = {"pool": pool, "scan_ms": T, "hot": (not promoted) and self.clock() < p.hot_until_ms, "promoted_at_scan": promoted,
+                            "warm": pool in self._warm_before, "newest_holders_age_ms": (T - newest_holders_ms) if newest_holders_ms is not None else None}
             self._n("served_ok")
             result = self.compose(mf, _Flag(flag[0] if flag else None), hd)
         if stale_row is not None:
             try:
                 self.obs.write("chain_stale_served", **stale_row)
+            except Exception:  # noqa: BLE001
+                self._obs_err()
+        if null_row is not None:
+            try:
+                self.obs.write("holders_null_served", **null_row)
             except Exception:  # noqa: BLE001
                 self._obs_err()
         return result
@@ -364,15 +399,15 @@ class ChainPrefetcher:
         need_mint = (mint_age is None or mint_age >= every) and now >= p.next_try_ms["mint"]
         hold_age = (now - p.holders[-1].as_of_ms) if p.holders and p.holders[-1].as_of_ms is not None else None
         if hot:
-            every_h = self.hot_holders_refresh_ms or HOT_HOLDERS_REFRESH_MS
+            every_h = self.hot_holders_refresh_ms
+        elif self.warm_holders_refresh_ms is not None and p.last_seen_ms == self._last_watch_ms:
+            every_h = self.warm_holders_refresh_ms  # warm: in the latest scan's filter-pass set and not hot
         else:
-            every_h = self.warm_holders_refresh_ms  # None: the pool gets no holders read until it is hot
+            every_h = None  # v1, or a pool that left the filter-pass set: no holders read until it is hot
         need_hold = (self.holders_on and every_h is not None and (hold_age is None or hold_age >= every_h) and now >= p.next_try_ms["holders"])
         return need_mint, need_hold
 
-    def set_warm_volumes(self, vols: Mapping[str, float]) -> None:
-        """HARNESS ONLY (with warm_holders_refresh_ms): the 60-min volume of each filter-pass pool at the latest scan, the order of the warm holders reads."""
-        self._warm_vol = dict(vols)
+
 
     def run_once(self, now_ms: int | None = None) -> int:
         """One pass under the active policy. Returns the calls made."""
@@ -437,25 +472,28 @@ class ChainPrefetcher:
         (null holders blocks, check 4) before it lets any mint fact go stale (check 2)."""
         with self._lock:
             work = []
+            # warm order: the volumes the latest scan took from the arena state, used only if they were taken at or before this pass (never a later state)
+            vol = self._warm_vol if (self._warm_vol_ms is not None and self._warm_vol_ms <= now) else {}
             for p in self.pools.values():
                 if not p.mint:
                     continue
                 need_mint, need_hold = self._due(p, now)
                 hot = now < p.hot_until_ms
-                warm = self.warm_holders_refresh_ms is not None  # the variant order: new mint, hot mint, hot holders, cold mint, warm holders
+                # the order of service (Note N4): 0 new mint, 1 hot mint, 2 hot holders, 3 cold mint (oldest fact first), 4 warm holders (highest 60-min volume first)
                 if need_mint:
                     age = (p.mints[-1].as_of_ms or 0) if p.mints else 0
-                    work.append((0 if not p.mints else (1 if hot else (3 if warm else 2)), age, p.pool, "mint"))
+                    work.append((0 if not p.mints else (1 if hot else 3), age, p.pool, "mint"))
                 if need_hold:
-                    if hot or not warm:
-                        work.append((2 if warm else 3, (p.holders[-1].as_of_ms or 0) if p.holders else 0, p.pool, "hold"))
+                    if hot:
+                        work.append((2, (p.holders[-1].as_of_ms or 0) if p.holders else 0, p.pool, "hold"))
                     else:
-                        work.append((4, -float(self._warm_vol.get(p.pool, 0.0)), p.pool, "hold"))
+                        work.append((4, -vol.get(p.pool, 0.0), p.pool, "hold"))
             work.sort()
         made = 0
         scale = self.hourly_budget / HOURLY_BUDGET  # the margin and the reserve are fractions of the budget (a small test budget keeps its shape)
         hard = self.hourly_budget - int(SAFETY_MARGIN * min(1.0, scale))
         mint_reserve = int(MINT_RESERVE * min(1.0, scale))
+        warm_reserve = int(WARM_HOLD_RESERVE * min(1.0, scale))
         for cls, _, pool, kind in work:
             with self._lock:
                 p = self.pools.get(pool)
@@ -475,14 +513,15 @@ class ChainPrefetcher:
                     est = HOLDERS_EST
                     holders_spent = spent - self._mint_spent_last_hour(now)
                     hot_class = False
-                    ok = spent + est <= hard and lower + est <= hard - hot_reserve and holders_spent + est <= hard - mint_reserve  # and holders alone leave MINT_RESERVE to the mint class
+                    far = max(hot_reserve, warm_reserve) if cls == 4 else hot_reserve  # P2: warm holders reads stop at least as far short as any other class
+                    ok = spent + est <= hard and lower + est <= hard - far and holders_spent + est <= hard - mint_reserve  # and holders alone leave MINT_RESERVE to the mint class
                 if not ok:
                     self._n("budget_deferred")
                     self._n("deferred_" + kind)
                     if self.obs is not None and self.obs.enabled:  # distinct pools per class per hour, for the chain_hour row (a pool is deferred on every 5 s pass)
                         hr = now // HOUR_MS
                         by = self._deferred_pools.setdefault(hr, {})
-                        by.setdefault("hold" if kind == "hold" else ("hot_mint" if hot_class else "cold_mint"), set()).add(pool)
+                        by.setdefault(("warm_hold" if cls == 4 else "hold") if kind == "hold" else ("hot_mint" if hot_class else "cold_mint"), set()).add(pool)
                         for old in [k for k in self._deferred_pools if k < hr - 2]:
                             del self._deferred_pools[old]
                     continue
@@ -491,6 +530,13 @@ class ChainPrefetcher:
             c1 = self._calls_total()
             used = max(0, c1 - c0) if (c0 is not None and c1 is not None) else est
             self._book(max(now, self.clock()), used, mint=(kind == "mint"), hot=hot_class)  # at the minute the calls were really made (a start-up pass runs minutes)
+            if kind == "hold" and cls == 4:
+                with self._lock:
+                    w = self._warm_by_hour.setdefault(max(now, self.clock()) // HOUR_MS, [0, 0])
+                    w[0] += 1
+                    w[1] += used
+                    for old in [k for k in self._warm_by_hour if k < max(now, self.clock()) // HOUR_MS - 3]:
+                        del self._warm_by_hour[old]
             made += used
         self._n("passes")
         self._n("calls", made)
@@ -543,10 +589,14 @@ class ChainPrefetcher:
                          # distinct pools deferred in this hour, by class (the *_mint / *_hold counters above count every 5 s pass), and the calls this prefetcher booked
                          # in the hour (its spend file's figure, next to the counter's `calls`)
                          "deferred_hot_mint": len(self._deferred_pools.get(hh, {}).get("hot_mint", ())), "deferred_cold_mint": len(self._deferred_pools.get(hh, {}).get("cold_mint", ())),
-                         "deferred_hold_pools": len(self._deferred_pools.get(hh, {}).get("hold", ())), "booked_calls_hour": self._booked_by_hour.get(hh, 0)})
+                         "deferred_hold_pools": len(self._deferred_pools.get(hh, {}).get("hold", ())), "booked_calls_hour": self._booked_by_hour.get(hh, 0),
+                         # warm holders (policy v2): distinct pools deferred in the hour, and the reads and calls booked in it
+                         "deferred_warm_hold": len(self._deferred_pools.get(hh, {}).get("warm_hold", ())),
+                         "warm_holders_reads_hour": self._warm_by_hour.get(hh, [0, 0])[0], "warm_holders_calls_hour": self._warm_by_hour.get(hh, [0, 0])[1]})
         for hh in range(max(self._obs_hour, h - 24), h):
             self._deferred_pools.pop(hh, None)
             self._booked_by_hour.pop(hh, None)
+            self._warm_by_hour.pop(hh, None)
         obs.write_many(rows)
         self._obs_hour = h
 
