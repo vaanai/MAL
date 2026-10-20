@@ -260,3 +260,43 @@ def test_the_report_lines_do_not_gate_the_verdict(tmp_path):
     set_ages(fx, lambda c: 1100.0)  # every block is older than 12 min: reported, no limit
     rec = rev4(fx)
     assert rec["holders_report"]["CON"]["cards_with_a_block_older_than_12_min"] == 600 and rec["verdict"] == "PASS"
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ the real writer at d0d4ca8 (PR #771)
+def test_the_real_prefetcher_writes_the_holders_null_served_fields_and_the_warm_chain_hour_keys_the_report_reads(tmp_path):
+    """Field-name contract against the real ChainPrefetcher (the N4 writer): a pool promoted from warm to hot at the scan, whose newest holders read is 19 min old, is served a null block;
+    the report reads the row (cause, pool state) and the chain_hour row keys (warm reads, warm calls, distinct pools deferred) and joins them to a null-holders card."""
+    pytest.importorskip("numpy")
+    from tools import hv4_obs as O
+    from tools import hv4_prefetch as P
+    from tools import hv4_runner as HR
+    from tools.test_hv4_prefetch_v2 import SLOT, T0, Clock, CountingChain, pools
+
+    clock = Clock(T0)
+    obs = O.ObsLog(tmp_path, wall_ms=lambda: clock.ms)
+    pf = P.ChainPrefetcher(CountingChain(clock), HR.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2, hourly_budget=100)
+    pf.set_obs(obs)
+    pf.run_once(T0)
+    a = pools(2)
+    clock.ms = T0 + MIN
+    pf.watch(a, [], clock.ms, vols={a[0][0]: 3.0})
+    pf.run_once(clock.ms)
+    clock.ms = T0 + 20 * MIN
+    obs.scan_ms = clock.ms
+    pf.watch(a, [a[1][0]], clock.ms)  # a1 promoted at this scan from warm; its holders read at +1 min are 19 min old: null
+    assert "holders_as_of_ms" not in pf.part_at(a[1][0], a[1][1], clock.ms, SLOT + 10)
+    scan_ms = clock.ms
+    clock.ms = T0 + HOUR + MIN
+    pf.run_once(clock.ms)
+    Ob = R.load_obs(tmp_path / O.OBS_FILE, [])
+    assert not Ob.no_pid and not Ob.malformed and len(Ob.holders_null_served) == 1
+    s = Ob.holders_null_served[0]
+    assert s["pool"] == a[1][0] and s["scan_ms"] == scan_ms and s["promoted_at_scan"] is True and s["warm"] is True and s["hot"] is False and s["age_key_present"] is True
+    assert 18 * MIN < s["newest_holders_age_ms"] < 20 * MIN and R.holders_cause(s) == "newest_read_older_than_15_min" and R.holders_state(s) == "promoted_to_hot_at_this_scan"
+    ch = Ob.chain_hour[0]
+    assert ch["deferred_warm_hold"] is not None and ch["warm_holders_booked"] >= 1 and ch["warm_holders_calls_booked"] >= 1  # warm_holders_reads_hour / warm_holders_calls_hour of the real row
+    card = {"persona": "CON", "holders_null": True, "pool": a[1][0], "as_of_ms": scan_ms, "holders_age_s": None, "type": None}
+    rep = R.holders_report([card], Ob, R.Logs(), (T0, T0 + 2 * HOUR))
+    con = rep["CON"]
+    assert con["null_holders_cards_by_cause"] == {"newest_read_older_than_15_min": 1} and con["null_holders_cards_by_pool_state_at_the_scan"] == {"promoted_to_hot_at_this_scan": 1}
+    assert rep["holders_null_served_rows_in_W"]["n"] == 1 and rep["warm_holders_per_hour"][0]["warm_holders_reads_booked"] >= 1 and rep["warm_holders_per_hour"][0]["warm_holders_pools_deferred"] != "not reported"
