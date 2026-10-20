@@ -52,6 +52,7 @@ class ObsLog:
         self.path = Path(root) / OBS_FILE if root is not None else None
         self.enabled = bool(enabled) and self.path is not None
         self.write_errors = 0
+        self._torn = False  # the previous write was short: the next one starts with a newline so a torn line cannot swallow it
         self.build_errors = 0  # a row that could not be BUILT (the writers' callers count it here, apart from write_errors)
         self.rows_written = 0
         self.scan_ms: int | None = None
@@ -69,11 +70,18 @@ class ObsLog:
             data = b"".join(canon({"schema": OBS_SCHEMA, "wall_ms": self._wall_ms(), **r, "pid": pid}).encode() + b"\n" for r in rows)
             with self._lock:
                 self.path.parent.mkdir(parents=True, exist_ok=True)  # type: ignore[union-attr]
+                if self._torn:
+                    data = b"\n" + data
                 fd = os.open(str(self.path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
                 try:
-                    os.write(fd, data)
+                    n = os.write(fd, data)
                 finally:
                     os.close(fd)
+                if n != len(data):  # a full disk: a torn line is left behind; count it, and begin the next write on a new line
+                    self._torn = True
+                    self.write_errors += 1
+                    return False
+                self._torn = False
                 self.rows_written += len(rows)
             return True
         except Exception:  # noqa: BLE001 - observability must never stop the runner
