@@ -43,10 +43,10 @@ class PrefetchTap:
         pf = self.pf
         orig_watch, orig_part, orig_refresh = pf.watch, pf.part_at, pf._refresh
 
-        def watch(items, hot, now_ms):
+        def watch(items, hot, now_ms, **kw):  # **kw: whatever the runner passes to the real watch (vols=...) goes through untouched
             items = list(items)
             before = {k: p.hot_until_ms for k, p in pf.pools.items()}
-            orig_watch(items, hot, now_ms)
+            orig_watch(items, hot, now_ms, **kw)
             self.promoted = {k for k in set(hot) if before.get(k, 0) <= now_ms}
             self.scans.append({"now_ms": now_ms, "filter_pass": len(items), "store": len(pf.pools), "hot": sum(1 for p in pf.pools.values() if now_ms < p.hot_until_ms)})
 
