@@ -183,10 +183,10 @@ def test_a_healthy_two_process_run_passes_and_the_record_carries_the_pin_the_win
     assert "checks revision 3" in text and "rule M: no condition fired" in text
 
 
-def test_the_default_revision_is_3_and_revision_2_has_no_revision_3_keys(tmp_path):
+def test_the_default_revision_is_4_and_revision_2_has_no_revision_3_keys(tmp_path):
     fx = fixture(tmp_path)
     a = R.parse_args(["--dir", str(fx["base"])])
-    assert a.checks_rev == 3 and a.obs is None
+    assert a.checks_rev == 4 and a.obs is None
     rec2 = R.build_report(R.parse_args(["--dir", str(fx["base"]), "--tape-dir", str(fx["tape"]), "--samples", str(fx["samples"]), "--expect-end", R.iso(fx["end"]), "--checks-rev", "2",
                                         "--obs", str(fx["root"] / O.OBS_FILE)]))
     assert set(rec2) == {"schema", "generated", "dir", "verdict", "complete", "window", "blocks_registration", "unmeasured_checks", "checks", "registration_conditions", "per_persona_counts",
@@ -195,7 +195,7 @@ def test_the_default_revision_is_3_and_revision_2_has_no_revision_3_keys(tmp_pat
     assert [c["id"] for c in rec2["checks"]] == [str(i) for i in range(1, 11)] and "5S" not in {c["id"] for c in rec2["registration_conditions"]}
     assert not any(i["path"].endswith("hv4-obs.jsonl") for i in rec2["inputs"])  # revision 2 never opens the obs file
     with pytest.raises(SystemExit):
-        R.parse_args(["--dir", "x", "--checks-rev", "4"])
+        R.parse_args(["--dir", "x", "--checks-rev", "5"])
 
 
 def test_the_obs_path_goes_through_the_path_policy_and_an_explicit_path_is_read(tmp_path, capsys):
