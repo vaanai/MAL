@@ -871,3 +871,20 @@ def test_rows_from_the_real_prefetcher_across_a_counter_restart_are_read_back_mi
     assert {m: n for m, n in got.items() if n} == {m: n for m, n in truth.items() if n} and sum(got.values()) == sum(truth.values())  # (calls after the end of W are in neither)
     rm = R.eval_rule_m(Ob, procs, {"orphan_runner_start_rows": 0, "pids_in_two_runner_start_rows": 0, "join_used": {"pid": 2}}, T0, T0 + 5 * HOUR)
     assert rm["conditions"]["M2_hour_without_chain_hour_or_runner_hour_row"]["chain_hour_missing"] == 0 and rm["conditions"]["M4_counter_state_write_errors_before_a_restart"]["fired"] is False
+
+
+def test_rows_from_the_real_runner_are_read_back_with_the_runners_own_pid_and_field_names(tmp_path, monkeypatch):
+    pytest.importorskip("numpy")
+    from tools.test_hv4_prefetch_v2 import T0 as PT0
+    from tools.test_hv4_runner import make
+
+    monkeypatch.setenv("MAL_ARENA_TEST", "1")
+    monkeypatch.setenv("MAL_HV4_OBS", "1")
+    run = make(tmp_path / "r")
+    run._obs_hour_tick(PT0 + 5 * MIN)
+    run._obs_hour_tick(PT0 + HOUR + 5 * MIN)
+    Ob = R.load_obs(Path(run.cfg.root) / O.OBS_FILE, [])
+    assert Ob.runner_start and Ob.runner_start[0]["pid"] == os.getpid() and Ob.runner_start[0]["frozen_sha"]
+    h = Ob.runner_hour[0]
+    assert h["hook_errors"] == {} and h["obs_write_errors"] == 0 and h["n_housekeep_errors"] == 0 and h["rss_mb"] is not None and h["obs_rows"] is not None and h["obs_build_errors"] == 0
+    assert h["hour_end_ms"] - h["hour_start_ms"] == HOUR and not Ob.no_pid and not Ob.malformed
