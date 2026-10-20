@@ -162,8 +162,20 @@ def run_cmd(a: argparse.Namespace) -> int:
         pkw["hourly_budget"] = a.prefetch_budget  # harness knob (PR #768 variants); never reachable in run mode
     if getattr(a, "cold_mint_refresh_min", None):
         pkw["cold_mint_refresh_ms"] = a.cold_mint_refresh_min * MIN_MS
+    if getattr(a, "hot_holders_refresh_min", None):
+        pkw["hot_holders_refresh_ms"] = a.hot_holders_refresh_min * MIN_MS
+    if getattr(a, "warm_holders_refresh_min", None):
+        pkw["warm_holders_refresh_ms"] = a.warm_holders_refresh_min * MIN_MS
+    if getattr(a, "holders_age_min", None):  # the card's holders age limit (hv4_cards.CHAIN_HOLDERS_MAX_AGE_MS), changed for THIS process only: a replay variant
+        from tools import hv4_cards as _C
+
+        _C.CHAIN_HOLDERS_MAX_AGE_MS = a.holders_age_min * MIN_MS
     rig = M.Rig(tape, scratch, state_start_ms=state_start, clock_start_ms=t_from, holders=a.holders == "on", timing=not a.no_timing, prefetch_kw=pkw or None)
     run = rig.run
+    if pkw.get("warm_holders_refresh_ms"):
+        from tools.hv4_prefetch_tap import feed_warm_volumes
+
+        feed_warm_volumes(rig)
     tap = None
     if getattr(a, "tap", None):
         from tools.hv4_prefetch_tap import PrefetchTap
@@ -317,6 +329,9 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--no-timing", action="store_true")
     r.add_argument("--prefetch-budget", type=int, default=None, help="harness knob: the prefetcher's hourly call budget (default 1,500)")
     r.add_argument("--cold-mint-refresh-min", type=int, default=None, help="harness knob: the mint refresh interval of a pool that is not hot, in minutes (default 10)")
+    r.add_argument("--hot-holders-refresh-min", type=int, default=None, help="harness knob: the holders refresh interval of a hot pool, in minutes (default 4)")
+    r.add_argument("--warm-holders-refresh-min", type=int, default=None, help="harness knob: also read holders of filter-pass pools that are not hot, by 60-min volume, every N minutes (default off)")
+    r.add_argument("--holders-age-min", type=int, default=None, help="harness knob: the card's holders age limit in minutes for this process (default 5)")
     r.add_argument("--tap", default=None, help="write the prefetcher tap summary (tools/hv4_prefetch_tap.py) to this JSON file")
     r.add_argument("--time-fsync", action="store_true", help="record per scan the time spent in os.fsync (fsync_ms, n_fsync)")
     r.add_argument("--time-gc", action="store_true", help="record per scan the cyclic-GC collections by generation (gc_n, gc_ms, gc2_n, gc2_ms) via gc.callbacks, and the run totals")

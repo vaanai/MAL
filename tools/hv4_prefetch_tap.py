@@ -37,6 +37,7 @@ class PrefetchTap:
         self.hours: dict[int, collections.Counter] = collections.defaultdict(collections.Counter)
         self.scans: list[dict[str, int]] = []
         self.promoted: set[str] = set()
+        self.holders_age_ms: list[int] = []  # age of the holders fact at serve, for the cards that have one
 
     def install(self) -> "PrefetchTap":
         pf = self.pf
@@ -56,6 +57,7 @@ class PrefetchTap:
             self.serves += 1
             if res.get("holders_as_of_ms") is not None:
                 self.serves_with_holders += 1
+                self.holders_age_ms.append(T - res["holders_as_of_ms"])
                 return res
             p = pf.pools.get(pool)
             facts = [h for h in (list(p.holders) if p else []) if h.as_of_ms is not None]
@@ -99,6 +101,7 @@ class PrefetchTap:
             by_cause[cause] += n
         return {"serves": self.serves, "serves_with_holders": self.serves_with_holders, "serves_null_holders": n_null, "null_by_cause": dict(by_cause),
                 "null_by_cause_and_promotion": {f"{a}|{b}": n for (a, b), n in sorted(self.null.items())},
+                "holders_age_at_serve_s_non_null": {"p50": (_pct(self.holders_age_ms, 0.5) or 0) / 1000, "p90": (_pct(self.holders_age_ms, 0.9) or 0) / 1000},
                 "older_than_limit_age_s": {"p50": (_pct(self.null_age_ms, 0.5) or 0) / 1000, "p90": (_pct(self.null_age_ms, 0.9) or 0) / 1000},
                 "scans": len(self.scans), "hot_pools_per_scan": {"p50": _pct(hot, 0.5), "p90": _pct(hot, 0.9), "max": max(hot, default=None)},
                 "store_pools_per_scan": {"p50": _pct(store, 0.5), "p90": _pct(store, 0.9)}, "filter_pass_per_scan": {"p50": _pct(fp, 0.5), "p90": _pct(fp, 0.9)},
@@ -106,3 +109,22 @@ class PrefetchTap:
 
     def write(self, path: str | Path) -> None:
         Path(path).write_text(json.dumps(self.summary(), sort_keys=True))
+
+
+def feed_warm_volumes(rig: Any) -> None:
+    """Harness only (the warm-holders variant): after every watch() call hand the prefetcher the 60-min volume (buy_sol + sell_sol of the 60m window, the number
+    hv4_cards.features calls vol_60m) of each pool the scan passed, read from the replay's ArenaState. No run-mode code calls this."""
+    pf, state = rig.prefetch, rig.state
+    orig = pf.watch
+
+    def watch(items, hot, now_ms):
+        items = list(items)
+        orig(items, hot, now_ms)
+        vols: dict[str, float] = {}
+        for pid, _mint in items:
+            snap = state.snapshot(pid, candles=False)
+            w = C._win(snap, "60m") if snap else {}
+            vols[pid] = float((C._num(w.get("buy_sol")) or 0.0) + (C._num(w.get("sell_sol")) or 0.0)) if w else 0.0
+        pf.set_warm_volumes(vols)
+
+    pf.watch = watch  # type: ignore[method-assign]

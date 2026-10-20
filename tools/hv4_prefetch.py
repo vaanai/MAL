@@ -98,8 +98,15 @@ class ChainPrefetcher:
 
     def __init__(self, chain: Any, compose: Callable[[Any, Any, Any], dict], *, clock: Callable[[], int] | None = None, holders: bool | None = None,
                  hourly_budget: int = HOURLY_BUDGET, spend_path: str | os.PathLike | None = None, policy: str | None = None, obs: Any = None,
-                 cold_mint_refresh_ms: int | None = None) -> None:
+                 cold_mint_refresh_ms: int | None = None, hot_holders_refresh_ms: int | None = None, warm_holders_refresh_ms: int | None = None) -> None:
         self.chain, self.compose = chain, compose
+        # MORE MEASUREMENT KNOBS for the replay harness (PR #768 check 4 variants), same rules as cold_mint_refresh_ms: constructor path only, never passed in run mode.
+        # hot_holders_refresh_ms: the holders refresh interval of a hot pool (None = HOT_HOLDERS_REFRESH_MS, 4 min). warm_holders_refresh_ms: when set, the filter-pass
+        # pools that are NOT hot also get holders reads at this interval, in descending order of the 60-min volume the harness feeds through `set_warm_volumes`, after
+        # every other read of the pass (order: new mint, hot mint, hot holders, cold mint, warm holders); None = off, the order of v2 as merged.
+        self.hot_holders_refresh_ms = hot_holders_refresh_ms
+        self.warm_holders_refresh_ms = warm_holders_refresh_ms
+        self._warm_vol: dict[str, float] = {}
         # A MEASUREMENT KNOB for the replay harness (hv4_memreplay.Rig through `hv4_scanprof run --cold-mint-refresh-min`); run mode never passes it (live_chain_source
         # builds the prefetcher without it, and no environment variable reaches it): the mint refresh interval of a pool that is not hot. None = MINT_REFRESH_MS for all.
         self.cold_mint_refresh_ms = cold_mint_refresh_ms
@@ -356,8 +363,16 @@ class ChainPrefetcher:
         every = MINT_REFRESH_MS if (hot or self.cold_mint_refresh_ms is None) else self.cold_mint_refresh_ms
         need_mint = (mint_age is None or mint_age >= every) and now >= p.next_try_ms["mint"]
         hold_age = (now - p.holders[-1].as_of_ms) if p.holders and p.holders[-1].as_of_ms is not None else None
-        need_hold = (self.holders_on and hot and (hold_age is None or hold_age >= HOT_HOLDERS_REFRESH_MS) and now >= p.next_try_ms["holders"])
+        if hot:
+            every_h = self.hot_holders_refresh_ms or HOT_HOLDERS_REFRESH_MS
+        else:
+            every_h = self.warm_holders_refresh_ms  # None: the pool gets no holders read until it is hot
+        need_hold = (self.holders_on and every_h is not None and (hold_age is None or hold_age >= every_h) and now >= p.next_try_ms["holders"])
         return need_mint, need_hold
+
+    def set_warm_volumes(self, vols: Mapping[str, float]) -> None:
+        """HARNESS ONLY (with warm_holders_refresh_ms): the 60-min volume of each filter-pass pool at the latest scan, the order of the warm holders reads."""
+        self._warm_vol = dict(vols)
 
     def run_once(self, now_ms: int | None = None) -> int:
         """One pass under the active policy. Returns the calls made."""
@@ -427,11 +442,15 @@ class ChainPrefetcher:
                     continue
                 need_mint, need_hold = self._due(p, now)
                 hot = now < p.hot_until_ms
+                warm = self.warm_holders_refresh_ms is not None  # the variant order: new mint, hot mint, hot holders, cold mint, warm holders
                 if need_mint:
                     age = (p.mints[-1].as_of_ms or 0) if p.mints else 0
-                    work.append((0 if not p.mints else (1 if hot else 2), age, p.pool, "mint"))
+                    work.append((0 if not p.mints else (1 if hot else (3 if warm else 2)), age, p.pool, "mint"))
                 if need_hold:
-                    work.append((3, (p.holders[-1].as_of_ms or 0) if p.holders else 0, p.pool, "hold"))
+                    if hot or not warm:
+                        work.append((2 if warm else 3, (p.holders[-1].as_of_ms or 0) if p.holders else 0, p.pool, "hold"))
+                    else:
+                        work.append((4, -float(self._warm_vol.get(p.pool, 0.0)), p.pool, "hold"))
             work.sort()
         made = 0
         scale = self.hourly_budget / HOURLY_BUDGET  # the margin and the reserve are fractions of the budget (a small test budget keeps its shape)

@@ -730,3 +730,28 @@ def test_cold_mint_refresh_knob_only_slows_pools_that_are_not_hot_and_run_mode_h
     monkeypatch.setenv("MAL_HV4_PREFETCH_POLICY", "v2")
     src = R.live_chain_source(tmp_path / "root", {"MAL_HV4_RPC": "public"})
     assert src.prefetch.cold_mint_refresh_ms is None and src.prefetch.hourly_budget == P.HOURLY_BUDGET
+
+
+def test_warm_holders_variant_order_intervals_and_the_default_stays_hot_only(tmp_path):
+    clock = Clock(T0)
+    kw = dict(clock=clock, policy=P.POLICY_V2)
+    warm = P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, hot_holders_refresh_ms=12 * MIN, warm_holders_refresh_ms=12 * MIN, **kw)
+    dflt = P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, **kw)
+    a = pools(3)  # a0 hot; a1 low volume, a2 high volume (both cold)
+    order: list[tuple[str, str]] = []
+    orig = warm._refresh
+    warm._refresh = lambda p, now, nm, nh: (order.append((p.pool, "mint" if nm else "hold")), orig(p, now, nm, nh))[1]  # type: ignore[method-assign]
+    warm.set_warm_volumes({a[1][0]: 5.0, a[2][0]: 50.0})
+    for pf in (warm, dflt):
+        pf.watch(a, [a[0][0]], T0)
+        pf.run_once(T0)
+    mints = [x for x in order if x[1] == "mint"]
+    holds = [x for x in order if x[1] == "hold"]
+    assert order == mints + holds and len(mints) == 3  # every mint read before any holders read in the first pass (all pools are new)
+    assert [p for p, _ in holds] == [a[0][0], a[2][0], a[1][0]]  # hot holders first, then the warm ones by volume, highest first
+    assert all(p.holders for p in warm.pools.values()) and [bool(p.holders) for p in dflt.pools.values()] == [True, False, False]  # the default reads hot pools only
+    # intervals: a hot pool is due at 12 min (not at 5), and the default is unchanged at 4
+    clock.ms = T0 + 5 * MIN
+    assert warm._due(warm.pools[a[0][0]], clock.ms)[1] is False and dflt._due(dflt.pools[a[0][0]], clock.ms)[1] is True
+    clock.ms = T0 + 13 * MIN
+    assert warm._due(warm.pools[a[1][0]], clock.ms)[1] is True  # a warm pool, 12 min on
