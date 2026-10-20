@@ -812,3 +812,62 @@ def test_the_prior_minutes_window_matches_how_credit_counter_writes_the_tail_on_
     got = {m: sum(S["own"][p].get(m, 0) for p in S["own"]) + (S["tail_eff"][m][1] if m in S["tail_eff"] else 0) for m in S["mins"]}
     assert {m: n for m, n in got.items() if n} == {m: n for m, n in truth.items() if n}  # every minute counted once, the tail included
     assert sum(got.values()) == ca.calls + cb.calls
+
+
+def test_rows_from_the_real_prefetcher_across_a_counter_restart_are_read_back_minute_for_minute(tmp_path, monkeypatch):
+    """The field-name contract: the real ChainPrefetcher and CreditCounter write the chain_hour, prefetch_start and first_seen_by_scanner rows of two 'processes' (os.getpid is patched per phase),
+    the second loading the first's state file. The report's per-minute series built from those rows must equal the calls the two counters recorded, each minute once."""
+    pytest.importorskip("numpy")
+    from tools import hv4_chain as C
+    from tools import hv4_prefetch as P
+    from tools import hv4_runner as HR
+    from tools.test_hv4_prefetch_v2 import T0, Clock, CountingChain, pools
+
+    monkeypatch.setattr(os, "fsync", lambda fd: None)
+    state = tmp_path / "chain-credits.json"
+    clock = Clock(T0)
+    obs = O.ObsLog(tmp_path, wall_ms=lambda: clock.ms)
+    real = os.getpid
+    counters = []
+
+    def phase(pid: int, t_from: int, t_to: int) -> tuple:
+        monkeypatch.setattr(os, "getpid", lambda: pid)
+        clock.ms = t_from
+        chain = CountingChain(clock)
+        chain.counter = C.CreditCounter("helius", now_ms=clock, state_path=state)
+        counters.append(chain.counter)
+        pf = P.ChainPrefetcher(chain, HR.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2)
+        pf.set_obs(obs)
+        k = 0
+        while t_from + k * 5 * MIN <= t_to:
+            clock.ms = t_from + k * 5 * MIN
+            obs.scan_ms = clock.ms
+            pf.watch(pools(5 + k % 3), [pools(5)[0][0]], clock.ms)
+            pf.run_once(clock.ms)
+            k += 1
+        return chain, pf
+
+    phase(A, T0, T0 + 3 * HOUR + 7 * MIN)  # three closed hours and seven minutes of the fourth
+    phase(B, T0 + 3 * HOUR + 9 * MIN, T0 + 5 * HOUR + 10 * MIN)  # the restart: the counter loads the first one's state file; two more closed hours
+    monkeypatch.setattr(os, "getpid", real)
+    Ob = R.load_obs(tmp_path / O.OBS_FILE, [])
+    assert not Ob.no_pid and not Ob.malformed and {r["pid"] for r in Ob.chain_hour} == {A, B} and len(Ob.prefetch_start) == 2 and Ob.first_seen
+    ch = Ob.chain_hour[0]
+    assert ch["per_minute_calls"] is not None and ch["counter_day_calls"] is not None and ch["booked_calls_hour"] is not None and ch["deferred_hot_mint"] is not None and ch["credits"] == ch["calls"]
+    pb = next(p for p in Ob.prefetch_start if p["pid"] == B)
+    assert pb["prior_minutes"] and pb["prior_calls_total"] == counters[0].calls and pb["spent_at_load"] is not None and pb["spend_state_reset"] == 0 and pb["counter_day_calls_at_start"] > 0
+    procs = [{"index": 0, "pid": A, "start_ms": T0, "end_ms": T0 + 3 * HOUR + 7 * MIN, "runner_start": {"wall_ms": T0}, "prefetch": next(p for p in Ob.prefetch_start if p["pid"] == A),
+              "n_runner_start_candidates": 1, "n_prefetch_start": 1, "join": "pid"},
+             {"index": 1, "pid": B, "start_ms": T0 + 3 * HOUR + 9 * MIN, "end_ms": T0 + 5 * HOUR + 10 * MIN, "runner_start": {"wall_ms": T0 + 3 * HOUR + 9 * MIN}, "prefetch": pb,
+              "n_runner_start_candidates": 1, "n_prefetch_start": 1, "join": "pid"}]
+    S = R.build_series(Ob, procs, T0, T0 + 5 * HOUR)
+    cov = S["restarts"][0]
+    assert cov["gap_minutes"] == 0 and cov["overlap_disagreements"] == 0 and cov["overlap_minutes_compared"] > 0 and not S["unusable"] and S["cover_end"] == T0 + 5 * HOUR
+    truth: dict[int, int] = {}
+    for c in counters:
+        for t, n, _ in c.minute_counts(T0, T0 + 5 * HOUR):
+            truth[t] = truth.get(t, 0) + n
+    got = {m: sum(S["own"][p].get(m, 0) for p in S["own"]) + (S["tail_eff"][m][1] if m in S["tail_eff"] else 0) for m in S["mins"]}
+    assert {m: n for m, n in got.items() if n} == {m: n for m, n in truth.items() if n} and sum(got.values()) == sum(truth.values())  # (calls after the end of W are in neither)
+    rm = R.eval_rule_m(Ob, procs, {"orphan_runner_start_rows": 0, "pids_in_two_runner_start_rows": 0, "join_used": {"pid": 2}}, T0, T0 + 5 * HOUR)
+    assert rm["conditions"]["M2_hour_without_chain_hour_or_runner_hour_row"]["chain_hour_missing"] == 0 and rm["conditions"]["M4_counter_state_write_errors_before_a_restart"]["fired"] is False
