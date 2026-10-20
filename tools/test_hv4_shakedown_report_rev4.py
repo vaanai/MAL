@@ -352,3 +352,14 @@ def test_the_real_prefetcher_writes_the_holders_null_served_fields_and_the_warm_
     con = rep["CON"]
     assert con["null_holders_cards_by_cause"] == {"newest_read_older_than_15_min": 1} and con["null_holders_cards_by_pool_state_at_the_scan"] == {"promoted_to_hot_at_this_scan": 1}
     assert rep["holders_null_served_rows_in_W"]["n"] == 1 and rep["warm_holders_per_hour"][0]["warm_holders_reads_booked"] >= 1 and rep["warm_holders_per_hour"][0]["warm_holders_pools_deferred"] != "not reported"
+
+
+def test_the_pinned_checks_4_sha_is_the_constant_and_matches_the_file_on_the_managers_host(tmp_path):
+    assert R.CHECKS4_SHA256 == "a9b019ca9c8db38e4172a04ceb338c6edc03ef17333bc0ae3d462079bc7dd583" and R.checks4_pinned()
+    f = Path("/data/mal/hunt-1008/push-1016/hunt20/haiku-v4") / R.CHECKS4_NAME
+    if f.is_file():  # on the manager's host the constant is the file's own hash
+        import hashlib
+
+        assert hashlib.sha256(f.read_bytes()).hexdigest() == R.CHECKS4_SHA256
+    rec = rev4(fixture(tmp_path, start_pids=(A, B)))
+    assert rec["checks4_pin"] == {"name": "SHAKEDOWN-CHECKS-4.md", "sha256": R.CHECKS4_SHA256, "pinned": True} and rec["verdict"] == "PASS"

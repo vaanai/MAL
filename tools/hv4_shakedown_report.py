@@ -7,7 +7,7 @@ optionally (a) a sample file written by the `sample` subcommand of this tool (pe
 logs (only exact marker lines are counted; no log content is printed) and (c) with --tape-first-rows a read-only tape scan for the first row of each
 chain_unavailable pool (pool id and t_recv_ms only).
 
-Revision 4 (default, --checks-rev 4; SHAKEDOWN-CHECKS-4.md, whose sha256 is the placeholder CHECKS4_SHA256 until the manager pins it; QP design ruling on #768, comment 6281516193, Note N4) is
+Revision 4 (default, --checks-rev 4; SHAKEDOWN-CHECKS-4.md, sha256 a9b019ca9c8db38e4172a04ceb338c6edc03ef17333bc0ae3d462079bc7dd583 = CHECKS4_SHA256, which a revision 4 PASS requires; QP design ruling on #768, comment 6281516193, Note N4) is
 revision 3 with: check 5 at 2,000 per rolling hour and 48,000 per UTC day (revision 3 keeps 1,500 and 40,000); check 4 unchanged (<= 10% of cards, CON and BIG); the new check 12, holders_stale
 refusals = 0 in the decision logs (CON, BIG); and report lines with no limit per persona: holders_age_s p50 / p90 / max over cards with a block (the card sink), cards with a block older than 5 min and
 than 12 min, null-holders cards by cause (no read before T; newest read older than 15 min) and by the pool's state at that scan (promoted to hot at that scan, hot before, warm, other) from the
@@ -1171,10 +1171,10 @@ CHECKS3_SUPERSEDES_SHA256 = "af5052d5bae4efb683d745ed0fbb9aa6c680bc44a79ddfaf3ce
 # The manager's addendum to CHECKS-3 (records notes 1: N-2 extra rule-M guards, N-3 expected-0 counters, N-5 booked calls, N-F2 LeakageError keys, N-F3 NOT_PASSED, F4, F5). The tool follows it.
 CHECKS3_NOTES1_NAME = "SHAKEDOWN-CHECKS-3-NOTES-1.md"
 CHECKS3_NOTES1_SHA256 = "0f093e68140f021f53979daa7b6251f6b2561b0194e46f3576e77e44fbf1426c"  # corrected N-5; the first version (be6df321...) is kept by the manager as a .bak
-# SHAKEDOWN-CHECKS-4.md (revision 4: Note N4, cap 2,000 / 48,000, check 12, the holders report lines). The manager writes and pins it after the H2 replay. PLACEHOLDER until the sha256 is given:
-# replace the string below with the 64-hex sha256 of the pinned file (the record says `pinned: false` and the markdown shouts while it is a placeholder).
+# SHAKEDOWN-CHECKS-4.md (revision 4: Note N4, cap 2,000 / 48,000, check 12, the holders report lines), written and pinned by the manager 2026-10-20T05:09:39Z. A revision 4 PASS needs this to be a
+# 64-hex sha256 (checks4_pinned()); the record says `pinned: false` and the markdown shouts if it is not.
 CHECKS4_NAME = "SHAKEDOWN-CHECKS-4.md"
-CHECKS4_SHA256 = "PLACEHOLDER-NOT-PINNED-set-this-to-the-sha256-of-SHAKEDOWN-CHECKS-4.md-when-the-manager-gives-it"
+CHECKS4_SHA256 = "a9b019ca9c8db38e4172a04ceb338c6edc03ef17333bc0ae3d462079bc7dd583"
 # The chain_hour keys of "warm holders reads booked per hour" (revision 4 report), as written by tools/hv4_prefetch.py on claude/hv4-v2-fresh-obs-v2 at 5a08227 (the chain_hour row: the reads and the
 # calls booked in the hour; deferred_warm_hold is the distinct pools deferred). A key missing from a row is "not reported", never a failure.
 CHAIN_HOUR_WARM_BOOKED_KEY: str | None = "warm_holders_reads_hour"
