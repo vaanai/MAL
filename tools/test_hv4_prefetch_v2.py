@@ -931,3 +931,12 @@ def test_holders_null_served_row_and_the_warm_chain_hour_keys(tmp_path):
     pf.run_once(clock.ms)
     ch = next(r for r in O.read_rows(tmp_path / O.OBS_FILE) if r["kind"] == "chain_hour")
     assert {"deferred_warm_hold", "warm_holders_reads_hour", "warm_holders_calls_hour"} <= set(ch) and ch["warm_holders_reads_hour"] >= 1
+
+
+def test_n4_the_default_v2_cap_is_2000_never_exceeded_and_the_day_stays_under_48000():
+    for n_pools, n_hot, extra in ((200, 50, 0), (800, 60, 2)):  # a normal load and an overload
+        pf, ctr, stale, reads = simulate(P.POLICY_V2, n_pools=n_pools, n_hot=n_hot, hours=4, budget=None, extra=extra)
+        assert pf.hourly_budget == P.HOURLY_BUDGET_V2 == 2_000
+        peak = rolling_max(ctr, T0 + 4 * HOUR)
+        assert peak <= P.HOURLY_BUDGET_V2 - P.SAFETY_MARGIN and peak * 24 <= H.DEFAULT_DAILY_CALL_CAP == 48_000, (n_pools, peak)
+        assert reads > 0  # the stale fraction of these synthetic loads is not asserted here (a 200 pool store does not fit in the cap); only the cap and the day are
