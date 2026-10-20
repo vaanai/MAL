@@ -157,8 +157,18 @@ def run_cmd(a: argparse.Namespace) -> int:
     t_to = parse(a.end, M.hour_ms(keys[-1]) + HOUR_MS)
     t_from -= t_from % 1000
     state_start = parse(a.state_start, M.hour_ms(keys[0]))
-    rig = M.Rig(tape, scratch, state_start_ms=state_start, clock_start_ms=t_from, holders=a.holders == "on", timing=not a.no_timing)
+    pkw: dict[str, Any] = {}
+    if getattr(a, "prefetch_budget", None):
+        pkw["hourly_budget"] = a.prefetch_budget  # harness knob (PR #768 variants); never reachable in run mode
+    if getattr(a, "cold_mint_refresh_min", None):
+        pkw["cold_mint_refresh_ms"] = a.cold_mint_refresh_min * MIN_MS
+    rig = M.Rig(tape, scratch, state_start_ms=state_start, clock_start_ms=t_from, holders=a.holders == "on", timing=not a.no_timing, prefetch_kw=pkw or None)
     run = rig.run
+    tap = None
+    if getattr(a, "tap", None):
+        from tools.hv4_prefetch_tap import PrefetchTap
+
+        tap = PrefetchTap(rig).install()
     profs = {"ordinary": cProfile.Profile(), "board": cProfile.Profile()} if a.profile else {}
     n_prof = {"ordinary": 0, "board": 0}
     if profs:
@@ -245,6 +255,8 @@ def run_cmd(a: argparse.Namespace) -> int:
     rows_s = M.replay(rig, t_from, t_to, sample_ms=a.sample_min * MIN_MS, tracemalloc_top=0, log=lambda *x, **k: None)
     wall = round(time.time() - t0)
     run.flush_timing()
+    if tap is not None:
+        tap.write(a.tap)
     scans = scan_rows(run.cfg.root)
     for sc in scans:
         sc.update(fs.get(sc["ms"], {}))
@@ -303,6 +315,9 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--holders", choices=("on", "off"), default="on", help="on = the Helius run (holders refreshed for hot pools, as the shakedown does); off = public")
     r.add_argument("--sample-min", type=int, default=60)
     r.add_argument("--no-timing", action="store_true")
+    r.add_argument("--prefetch-budget", type=int, default=None, help="harness knob: the prefetcher's hourly call budget (default 1,500)")
+    r.add_argument("--cold-mint-refresh-min", type=int, default=None, help="harness knob: the mint refresh interval of a pool that is not hot, in minutes (default 10)")
+    r.add_argument("--tap", default=None, help="write the prefetcher tap summary (tools/hv4_prefetch_tap.py) to this JSON file")
     r.add_argument("--time-fsync", action="store_true", help="record per scan the time spent in os.fsync (fsync_ms, n_fsync)")
     r.add_argument("--time-gc", action="store_true", help="record per scan the cyclic-GC collections by generation (gc_n, gc_ms, gc2_n, gc2_ms) via gc.callbacks, and the run totals")
     r.add_argument("--profile", default=None, help="write cProfile text (cumulative and tottime tables for ordinary and board scans) here; slows the scans")

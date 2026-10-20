@@ -706,3 +706,27 @@ def test_n13_a_live_runner_needs_the_v2_prefetcher_and_survives_a_failing_attach
     cfg2 = R.RunnerConfig(root=str(tmp_path / "l2"), frozen_sha="a" * 40, clock_start_ms=RT0, live=True, lane_h=False)
     run = R.Runner(cfg2, base.state, base.engine, base.model, BadAttach(), base.guard, binding=bnd)
     assert run.obs.build_errors == 1
+
+
+# ---- harness knobs for the PR #768 check 4 variants (constructor path only; run mode builds its prefetcher without them)
+
+
+def test_cold_mint_refresh_knob_only_slows_pools_that_are_not_hot_and_run_mode_has_no_knob(tmp_path, monkeypatch):
+    clock = Clock(T0)
+    slow = P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2, cold_mint_refresh_ms=20 * MIN)
+    dflt = P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2)
+    a = pools(2)
+    for pf in (slow, dflt):
+        pf.watch(a, [a[0][0]], T0)  # A0 hot, A1 cold
+        pf.run_once(T0)
+    clock.ms = T0 + 12 * MIN
+    for pf in (slow, dflt):
+        pf.pools[a[0][0]].hot_until_ms = clock.ms + 1  # keep A0 hot at the check
+    due = {k: [pf._due(pf.pools[pid], clock.ms)[0] for pid, _ in a] for k, pf in (("slow", slow), ("default", dflt))}
+    assert due == {"slow": [True, False], "default": [True, True]}  # hot pools stay at 10 min; the cold one waits for 20; the default is unchanged
+    clock.ms = T0 + 21 * MIN
+    assert slow._due(slow.pools[a[1][0]], clock.ms)[0] is True
+    # run mode: the live source takes no knob, and the policy variable does not reach it
+    monkeypatch.setenv("MAL_HV4_PREFETCH_POLICY", "v2")
+    src = R.live_chain_source(tmp_path / "root", {"MAL_HV4_RPC": "public"})
+    assert src.prefetch.cold_mint_refresh_ms is None and src.prefetch.hourly_budget == P.HOURLY_BUDGET

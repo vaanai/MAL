@@ -179,7 +179,7 @@ class Rig:
 
     def __init__(self, tape_dir: Path, scratch: Path, *, state_start_ms: int, clock_start_ms: int, holders: bool, feed_delay_slots: int = 2,
                  timing: bool = True, evict_idle_min: int | None = None, bound_memory: bool = True, shadow: bool = False, engine_prune: bool = False,
-                 trim_history: bool = True) -> None:
+                 trim_history: bool = True, prefetch_kw: dict | None = None) -> None:
         os.environ.setdefault("MAL_ARENA_TEST", "1")  # scratch registry only: register_bot's test overrides
         from tools import hv4_prefetch as P
         from tools import hv4_runner as R
@@ -203,7 +203,8 @@ class Rig:
         client = RpcClient(RpcConfig("http://mock.invalid/rpc", "helius" if holders else "public"), bucket=bucket, post=self.rpc_mock, sleep=lambda s: None,
                            now_ms=self.clock, state_path=root / R.CHAIN_CREDITS_FILE)
         self.chain = HV4Chain(client, TtlCache(clock=self.clock.seconds), now_ms=self.clock)
-        self.prefetch = P.ChainPrefetcher(self.chain, R.HV4ChainSource.compose, clock=self.clock, holders=holders, spend_path=root / R.CHAIN_SPEND_FILE)
+        self.prefetch = P.ChainPrefetcher(self.chain, R.HV4ChainSource.compose, clock=self.clock, holders=holders, spend_path=root / R.CHAIN_SPEND_FILE,
+                                      **(prefetch_kw or {}))  # harness knobs only (hourly_budget, cold_mint_refresh_ms); run mode builds its own prefetcher
         self.source = R.HV4ChainSource(self.chain, prefetch=self.prefetch)
         cfg = R.RunnerConfig(root=str(root), frozen_sha="abcdef1234567", clock_start_ms=clock_start_ms, lane_h=False, timing=timing, bound_memory=bound_memory,
                           trim_engine_history=trim_history)

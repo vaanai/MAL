@@ -97,8 +97,12 @@ class ChainPrefetcher:
     mint_facts / mayhem_flag / largest_holders methods). `compose(mf, mh_flag, holders)` builds the card's chain dict (HV4ChainSource.compose)."""
 
     def __init__(self, chain: Any, compose: Callable[[Any, Any, Any], dict], *, clock: Callable[[], int] | None = None, holders: bool | None = None,
-                 hourly_budget: int = HOURLY_BUDGET, spend_path: str | os.PathLike | None = None, policy: str | None = None, obs: Any = None) -> None:
+                 hourly_budget: int = HOURLY_BUDGET, spend_path: str | os.PathLike | None = None, policy: str | None = None, obs: Any = None,
+                 cold_mint_refresh_ms: int | None = None) -> None:
         self.chain, self.compose = chain, compose
+        # A MEASUREMENT KNOB for the replay harness (hv4_memreplay.Rig through `hv4_scanprof run --cold-mint-refresh-min`); run mode never passes it (live_chain_source
+        # builds the prefetcher without it, and no environment variable reaches it): the mint refresh interval of a pool that is not hot. None = MINT_REFRESH_MS for all.
+        self.cold_mint_refresh_ms = cold_mint_refresh_ms
         self.policy = policy or default_policy()
         assert self.policy in (POLICY_V1, POLICY_V2)
         self.obs = obs  # tools.hv4_obs.ObsLog or None: append-only side rows, never read by a decision
@@ -348,8 +352,9 @@ class ChainPrefetcher:
     # -- the worker's side
     def _due(self, p: _Pool, now: int) -> tuple[bool, bool]:
         mint_age = (now - p.mints[-1].as_of_ms) if p.mints and p.mints[-1].as_of_ms is not None else None
-        need_mint = (mint_age is None or mint_age >= MINT_REFRESH_MS) and now >= p.next_try_ms["mint"]
         hot = now < p.hot_until_ms
+        every = MINT_REFRESH_MS if (hot or self.cold_mint_refresh_ms is None) else self.cold_mint_refresh_ms
+        need_mint = (mint_age is None or mint_age >= every) and now >= p.next_try_ms["mint"]
         hold_age = (now - p.holders[-1].as_of_ms) if p.holders and p.holders[-1].as_of_ms is not None else None
         need_hold = (self.holders_on and hot and (hold_age is None or hold_age >= HOT_HOLDERS_REFRESH_MS) and now >= p.next_try_ms["holders"])
         return need_mint, need_hold
