@@ -272,9 +272,14 @@ class HV4ChainSource:
         rep = self.chain.credit_report()
         return {**rep, "prefetch": self.prefetch.stats()} if self.prefetch is not None else rep
 
-    def watch(self, items: Any, hot: Any, now_ms: int) -> None:
+    @property
+    def holders_max_age_ms(self) -> int:
+        """The holders age limit of this source's policy (hv4_cards.holders_max_age_ms): 15 min under a v2 prefetcher, 5 min otherwise (the direct path below)."""
+        return C.holders_max_age_ms(getattr(self.prefetch, "policy", None))
+
+    def watch(self, items: Any, hot: Any, now_ms: int, vols: Any = None) -> None:
         if self.prefetch is not None:
-            self.prefetch.watch(items, hot, now_ms)
+            self.prefetch.watch(items, hot, now_ms, vols=vols)
 
     def attach_obs(self, obs: Any) -> None:
         """The runner hands its ObsLog to the prefetcher (first_seen, stale-served, chain_hour rows). No effect without a prefetcher."""
@@ -325,7 +330,7 @@ class HV4ChainSource:
         if not mf.ok or mf.as_of_ms is None or mf.as_of_slot is None:
             return None
         mh = self.chain.mayhem_flag(mint, pool=pool_id)
-        hd = self.chain.largest_holders(mint, token_program=mf.token_program_id, pool=pool_id, max_age_s=C.CHAIN_HOLDERS_MAX_AGE_MS / 1000.0)
+        hd = self.chain.largest_holders(mint, token_program=mf.token_program_id, pool=pool_id, max_age_s=self.holders_max_age_ms / 1000.0)
         return self.compose(mf, mh, hd)
 
 
@@ -595,6 +600,7 @@ class Runner:
         self.arm_halt: dict[str, str] = {}  # arm -> why its LLM entries and re-checks are stopped (a refused manifest); code exits go on
         self._versions_loaded = False
         self.cards = CardSink(cfg.root)
+        self.holders_max_age_ms = C.holders_max_age_ms(getattr(getattr(chain, "prefetch", None), "policy", None))  # the card's holders limit: its prefetch policy's (Note N4)
         self.obs = ObsLog(cfg.root, enabled=cfg.obs)  # side rows only (see RunnerConfig.obs); never read by a decision
         self._obs_hour: int | None = None
         if self.obs.enabled:
@@ -934,7 +940,7 @@ class Runner:
         self.token_of[pool_id] = {k: part[k] for k in ("token_program", "extensions", "transfer_fee_bps", "default_account_state") if k in part}
         try:
             C.assert_as_of(snap, T, prints=prints, chain=chain, as_of_slot=self.slot)
-            return C.build_card(snap, prints, chain, as_of_ms=T, as_of_slot=self.slot, setup=tag, feats=feats)
+            return C.build_card(snap, prints, chain, as_of_ms=T, as_of_slot=self.slot, setup=tag, feats=feats, holders_max_age_ms=self.holders_max_age_ms)
         except C.LeakageError as e:
             self._leak(T, pool_id, e)
         except C.CardRefused as e:
@@ -1019,7 +1025,8 @@ class Runner:
         watch = getattr(self.chain, "watch", None)  # a chain source with a background prefetch learns the watchlist; the stub sources have none
         if watch is not None:
             top = sorted(cand, key=lambda p: (-(feat_of[p].get("vol_60m") or 0.0), p))[:HOT_TOP_VOL]
-            watch([(pid, snap_of[pid].get("mint")) for pid in cand], set(tagged) | set(board) | set(top), self._now(T))
+            # vols: each filter-pass pool's 60-min gross volume from THIS scan's features (state as of T), the order of the v2 warm holders reads (Note N4)
+            watch([(pid, snap_of[pid].get("mint")) for pid in cand], set(tagged) | set(board) | set(top), self._now(T), vols={pid: feat_of[pid].get("vol_60m") or 0.0 for pid in cand})
         cards: dict[tuple[str, str], dict] = {}  # (pool, persona) -> card, byte-identical for every arm of the persona
         for pr in LANE_G_PERSONAS:
             for t in per_persona[pr]:
