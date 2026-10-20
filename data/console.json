@@ -1,8 +1,43 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-20T03:10:59Z",
+ "updated_utc": "2026-10-20T08:27:52Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "j3-we-killed-1020",
+   "kind": "finding",
+   "title": "J3 W_e explorer: all 12 cells killed, no survivor, no registration (2 to 4 priced trades per cell in 24 h); in-sample, paper",
+   "detail": "J3 W_e arena explorer, job #1245 (precount #1243 PASS, rows_total 22,911,630). Window: tape 2026-10-19T08:05:20Z to 2026-10-20T08:00Z, IN-SAMPLE, paper. Report /data/mal/hunt-1008/push-1016/hunt21/j3-we-1020/scratch/REPORT.json (sha256 b50f06f2ff869cf8798606855340b5c8cd1f8d4b469b182a816a57312dbebcfa): valid True, rows_before_start 0, git_head 5d03e90f, not dirty, rc 0. 12 of 12 cells killed (mean <= 0, ex-top-3 <= 0, ex-best-day <= 0 under every deciding sub-cell); no survivor, so no registration. Triggers 1,569 to 2,013 per cell, but only 2 to 4 priced trades per cell in 24 h. parent_no_pumpswap_pool 1,943 of 2,013 for k1 (the parent was still on the bonding curve); the bonding-curve parents belong to the QSINK line (hunt23-w3-qsink-1). Library row lib-c-J3 set to explored-no-survivor. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-20T08:23:00Z"
+  },
+  {
+   "id": "hv4-d1dbcd6-stub-cancelled-1020",
+   "kind": "decision",
+   "title": "Haiku v4 d1dbcd6 stub cancelled (it had already failed check 6 on 10-19 23:00Z); memory freed for J3",
+   "detail": "Jobs #1249 and #1250 were cancelled and the leftover scope was stopped and checked with ps. The arena feed was untouched. The burn census #1260 was moved to #1274 with the same command and still runs at 2026-10-21T01:00Z. The v2 stub at b240191 follows after the research-0 SSD install. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-20T08:10:30Z"
+  },
+  {
+   "id": "a3-pins-changed-1020",
+   "kind": "finding",
+   "title": "A3 daily: pump and PumpSwap programs redeployed 2026-10-19T17:47Z (pins_changed); H5 already stopped, record only",
+   "detail": "A3 daily, job #1271. program_pump deploy_slot 456494698 to 458921440 (2026-10-19T17:47:02Z); program_pumpswap 454596406 to 458921517 (2026-10-19T17:47:20Z); same binary length. Unchanged: bonding_fee_config, pumpswap_fee_config, pumpswap_global_config, program_fees. The other 5 flags are clear (InitBoost 10/10, last slice median 340.5 s, budget 17.586 SOL, synthetic 2/19). Slice watch #1272: exact median 29 slices. The arena tape kept recording across the deploy (rows per hour T17 1,029,989, T18 1,084,548). H5 is already stopped, so this is a record only; any H5 revival must re-pin. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-20T07:14:40Z"
+  },
+  {
+   "id": "pr770-merged-1020",
+   "kind": "decision",
+   "title": "PR #770 merged (9fbe292): hv4_shakedown_report revisions 3 and 4",
+   "detail": "PR #770 merged (9fbe292). This is the shakedown report tool for SHAKEDOWN-CHECKS-3 and -4 (rule M, checks 1/3/5/8/11/12). Tool sha256 f5e62ab57a72ebed0620b36a084893b10030350949204bd20624a78299b438ae. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-20T05:23:54Z"
+  },
+  {
+   "id": "pr771-merged-1020",
+   "kind": "decision",
+   "title": "PR #771 merged (b240191): Haiku v4 prefetch v2 with Note N4 (holders up to 15 min old, warm holders, cap 2,000 chain calls per rolling hour and 48,000 per day)",
+   "detail": "PR #771 merged (b240191). It replaced #768; frozen code d0d4ca8. DESIGN.md with Note N4 sha256 bcd26affadf1c9900852ee9f2f3489b46c418b5ee393f75d154d965ee6e176d8; SHAKEDOWN-CHECKS-4 sha256 a9b019ca9c8db38e4172a04ceb338c6edc03ef17333bc0ae3d462079bc7dd583. Replay on the R2 window (96 scans): chain_stale 0/599, null holders 38/456 (8.3%), at most 1,980 calls in a rolling hour. Held-out window (tape 2026-10-19T19..2026-10-20T04, 48 scans): chain_stale 0/278, null holders 9/212 (4.2%), at most 1,760 calls in a rolling hour. StubModel, mock RPC with no latency: a policy screen, not a prediction of live rates. The 24 h v2 stub is the next step. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-20T05:14:16Z"
+  },
   {
    "id": "w4s-short-scout-1020",
    "kind": "finding",
