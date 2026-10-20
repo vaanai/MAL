@@ -9,8 +9,8 @@ chain_unavailable pool (pool id and t_recv_ms only).
 
 Pass checks: revision 3 (default, --checks-rev 3): SHAKEDOWN-CHECKS-3.md, sha256 55fbba0559327c1e18728596506de11fdf0408ae9bedcee49a21966d9314a3af: checks 1, 3, 5, 8 and 11 and rule M read the
 observability side file <root>/hv4-obs.jsonl (--obs; schema hv4_obs_v1, tools/hv4_obs.py), joined by pid; checks 2, 4, 6, 7, 9, 10 are as in revision 2. The manager's addendum
-SHAKEDOWN-CHECKS-3-NOTES-1.md (sha256 be6df321c0d89804b67fac5f1047748af2ee3ea69733f3c27f48dc47ead3a060) pins the extra rule-M guards (N-2), the expected-0 counters of check 5 (N-3), the
-booked-calls reading of check 8 (N-5), LeakageError keys (N-F2) and the verdict NOT_PASSED (N-F3); the tool follows it. Verdicts in revision 3: PASS, FAIL (a failed check, or rule M
+SHAKEDOWN-CHECKS-3-NOTES-1.md (sha256 0f093e68140f021f53979daa7b6251f6b2561b0194e46f3576e77e44fbf1426c) pins the extra rule-M guards (N-2), the expected-0 counters of check 5 (N-3), the
+booked-calls reading of check 8 (N-5: the hour spent_at_load covers, the calls of the whole minute buckets inside it), LeakageError keys (N-F2) and the verdict NOT_PASSED (N-F3); the tool follows it. Verdicts in revision 3: PASS, FAIL (a failed check, or rule M
 fired in a completed window), NOT_PASSED (a completed window with a check UNMEASURED outside rule M), INCOMPLETE (the window is not complete).
 NOT MEASURED (printed in the record under `not_measured`): first-process calls after its last successful counter state save (if the final saves fail) and calls made while two processes
 overlap are invisible to every record and counted as 0 (QP #770 F5; the guard is the ps-verify step of the restart and stop protocol); the restart timing rule is reported, not gated;
@@ -1154,7 +1154,7 @@ CHECKS3_SHA256 = "55fbba0559327c1e18728596506de11fdf0408ae9bedcee49a21966d9314a3
 CHECKS3_SUPERSEDES_SHA256 = "af5052d5bae4efb683d745ed0fbb9aa6c680bc44a79ddfaf3cef7c3110831b18"  # SHAKEDOWN-CHECKS-2.md
 # The manager's addendum to CHECKS-3 (records notes 1: N-2 extra rule-M guards, N-3 expected-0 counters, N-5 booked calls, N-F2 LeakageError keys, N-F3 NOT_PASSED, F4, F5). The tool follows it.
 CHECKS3_NOTES1_NAME = "SHAKEDOWN-CHECKS-3-NOTES-1.md"
-CHECKS3_NOTES1_SHA256 = "be6df321c0d89804b67fac5f1047748af2ee3ea69733f3c27f48dc47ead3a060"
+CHECKS3_NOTES1_SHA256 = "0f093e68140f021f53979daa7b6251f6b2561b0194e46f3576e77e44fbf1426c"  # corrected N-5; the first version (be6df321...) is kept by the manager as a .bak
 NOT_MEASURED = [
     "F5: first-process calls after its last successful counter state save (if the final saves fail) and calls made while two processes overlap are invisible to every record and are counted as 0; the guard is the ps-verify step of the restart and stop protocol",
     "the restart timing rule (cancel between HH:02Z and HH:10Z, restart hour not starting at 00:00Z) is reported, not gated",
@@ -1780,12 +1780,18 @@ def eval_check_8_obs(L: Logs, O: Obs, procs: list[dict], rm: dict, S: dict) -> d
     b_rst = [None if (pf is None or pf["spend_state_reset"] is None) else pf["spend_state_reset"] == 0 for pf in pfs]
     b = None if None in b_pol + b_rst else all(b_pol + b_rst)
     ea, _ = series_split(S, procs, 1) if S["mins"] else ([], [])
-    # NOTES-1 N-5: the 60 minutes ending at the first process's last RECORDED minute (the last minute with a call in the counter's own series: chain_hour rows + prior_minutes)
-    recorded = [m for m, c in zip(S["mins"], ea) if c > 0]
-    last_recorded = max(recorded) if recorded else None
-    booked = 0 if last_recorded is None else sum(c for m, c in zip(S["mins"], ea) if last_recorded - 59 * MIN_MS <= m <= last_recorded)
+    # NOTES-1 N-5 (corrected, sha256 0f093e68): the hour spent_at_load covers (_spent_last_hour at load). The counter's per-minute calls (chain_hour rows + prior_minutes) over the whole minute
+    # buckets that start after (load - 60 min) and end at or before the load; the bucket straddling the cutoff is left out. No call there (also: the first process stopped calling more
+    # than 60 min before the load) exempts the condition; no process_start_ms makes it UNMEASURED.
+    load = pfs[1]["process_start_ms"] if pfs[1] else None
+    booked = None if load is None else sum(c for m, c in zip(S["mins"], ea) if load - 60 * MIN_MS < m and m + MIN_MS <= load)
     spent = pfs[1]["spent_at_load"] if pfs[1] else None
-    c_ok = None if spent is None else (spent > 0 if booked > 0 else True)
+    if booked is None:
+        c_ok = None
+    elif booked == 0:
+        c_ok = True
+    else:
+        c_ok = None if spent is None else spent > 0
     last_rows = [r for r in O.chain_hour if r["pid"] == procs[0]["pid"] and r["counter_day_calls"] is not None]
     last = max(last_rows, key=lambda r: r["hour_end_ms"]) if last_rows else None
     start_at = pfs[1]["counter_day_calls_at_start"] if pfs[1] else None
@@ -1799,8 +1805,8 @@ def eval_check_8_obs(L: Logs, O: Obs, procs: list[dict], rm: dict, S: dict) -> d
     nums.update({"obs_conditions": {
         "runner_start_rows_same_frozen_sha": a,
         "prefetch_start_rows_policy_v2": b_pol, "prefetch_start_rows_spend_state_reset_0": b_rst,
-        "second_prefetch_start_spent_at_load": spent, "first_process_last_recorded_minute": iso(last_recorded) if last_recorded is not None else None,
-        "first_process_calls_in_the_60_min_ending_at_its_last_recorded_minute": booked, "spent_at_load_positive_if_the_first_process_booked_calls": c_ok,
+        "second_prefetch_start_spent_at_load": spent, "first_process_calls_window_the_hour_before_the_load": [iso(load - 60 * MIN_MS), iso(load)] if load is not None else None,
+        "first_process_calls_in_the_hour_before_the_load": booked, "spent_at_load_positive_if_the_first_process_booked_calls": c_ok,
         "second_prefetch_start_counter_day_calls_at_start": start_at, "first_process_last_chain_hour_counter_day_calls": last["counter_day_calls"] if last else None, "counter_day_calls_compare": d_state},
         "restart_protocol_informational": {"restart_start_minute_of_hour": (procs[1]["start_ms"] % HOUR_MS) // MIN_MS, "restart_hour_starts_at_00_00Z": floor_hour(procs[1]["start_ms"]) % UTC_DAY_MS == 0}})
     conds = [a, b, c_ok, d_ok]

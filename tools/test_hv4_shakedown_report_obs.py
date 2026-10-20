@@ -646,7 +646,8 @@ def test_check_8_passes_when_all_four_obs_conditions_hold(tmp_path):
     c = c8(tmp_path, "ok")
     o = c["numbers"]["obs_conditions"]
     assert c["status"] == R.PASS and o["runner_start_rows_same_frozen_sha"] is True and o["prefetch_start_rows_policy_v2"] == [True, True] and o["prefetch_start_rows_spend_state_reset_0"] == [True, True]
-    assert o["first_process_calls_in_the_60_min_ending_at_its_last_recorded_minute"] > 0 and o["first_process_last_recorded_minute"] == R.iso(START + 12 * HOUR + (RESTART_MIN - 1) * MIN)
+    load = START + 12 * HOUR + RESTART_MIN * MIN - 1900  # the second prefetch_start's process_start_ms in the fixture
+    assert o["first_process_calls_in_the_hour_before_the_load"] == 8 * 59 and o["first_process_calls_window_the_hour_before_the_load"] == [R.iso(load - HOUR), R.iso(load)]  # buckets 09:05 to 10:03
     assert o["second_prefetch_start_spent_at_load"] > 0 and o["spent_at_load_positive_if_the_first_process_booked_calls"] is True
     assert o["counter_day_calls_compare"] == "ok" and o["second_prefetch_start_counter_day_calls_at_start"] >= o["first_process_last_chain_hour_counter_day_calls"]
     assert c["numbers"]["restart_protocol_informational"] == {"restart_start_minute_of_hour": RESTART_MIN, "restart_hour_starts_at_00_00Z": False}
@@ -669,15 +670,26 @@ def test_check_8_condition_b_policy_v2_and_spend_state_reset_0_in_both_prefetch_
 def test_check_8_condition_c_spent_at_load_is_positive_if_the_first_process_booked_calls(tmp_path):
     z = c8(tmp_path, "z", lambda rows, fx: sel(rows, "prefetch_start", B)[0].update(spent_at_load=0))
     assert z["status"] == R.FAIL and z["numbers"]["obs_conditions"]["spent_at_load_positive_if_the_first_process_booked_calls"] is False
-    # NOTES-1 N-5: the 60 minutes END AT the first process's last recorded minute, so a process that stopped calling 90 minutes before the cancel still booked calls in them
+    # NOTES-1 N-5 (corrected): the window is the hour spent_at_load covers, the whole minute buckets after (load - 60 min) and ending at or before the load. A first process that stopped
+    # calling more than 60 min before the load (last call 08:29Z, load 10:04:58Z) booked nothing in it: spent_at_load 0 is right and the condition holds
     quiet = lambda m: 0 if m >= 12 * 60 - 90 else 8  # noqa: E731
     q = c8(tmp_path, "q", lambda rows, fx: sel(rows, "prefetch_start", B)[0].update(spent_at_load=0), calls=quiet)
-    assert q["status"] == R.FAIL and q["numbers"]["obs_conditions"]["first_process_calls_in_the_60_min_ending_at_its_last_recorded_minute"] > 0
-    assert q["numbers"]["obs_conditions"]["first_process_last_recorded_minute"] == R.iso(START + 12 * HOUR - 91 * MIN)
-    # a first process that made no call at all booked nothing: the condition is vacuous and spent_at_load 0 is right
+    qo = q["numbers"]["obs_conditions"]
+    assert q["status"] == R.PASS and qo["first_process_calls_in_the_hour_before_the_load"] == 0 and qo["spent_at_load_positive_if_the_first_process_booked_calls"] is True and qo["second_prefetch_start_spent_at_load"] == 0
+    # a first process that made no call at all: the condition holds
     none = c8(tmp_path, "none_at_all", lambda rows, fx: sel(rows, "prefetch_start", B)[0].update(spent_at_load=0), calls=lambda m: 0 if m < 12 * 60 + RESTART_MIN else 8)
-    assert none["numbers"]["obs_conditions"]["first_process_calls_in_the_60_min_ending_at_its_last_recorded_minute"] == 0 and none["numbers"]["obs_conditions"]["first_process_last_recorded_minute"] is None
-    assert none["numbers"]["obs_conditions"]["spent_at_load_positive_if_the_first_process_booked_calls"] is True
+    assert none["numbers"]["obs_conditions"]["first_process_calls_in_the_hour_before_the_load"] == 0 and none["numbers"]["obs_conditions"]["spent_at_load_positive_if_the_first_process_booked_calls"] is True
+    # the boundary buckets: load is 10:04:58.1, so the 09:04 bucket (it starts before load - 60 min) is left out, the 09:05 bucket is in, and the 10:04 bucket (it ends after the load) is out
+    only = lambda minute_index: (lambda m: 5 if m == minute_index else (0 if m < 12 * 60 + RESTART_MIN else 8))  # noqa: E731
+    out = c8(tmp_path, "edge_out", lambda rows, fx: sel(rows, "prefetch_start", B)[0].update(spent_at_load=0), calls=only(11 * 60 + 4))
+    assert out["numbers"]["obs_conditions"]["first_process_calls_in_the_hour_before_the_load"] == 0 and out["status"] == R.PASS
+    inn = c8(tmp_path, "edge_in", lambda rows, fx: sel(rows, "prefetch_start", B)[0].update(spent_at_load=0), calls=only(11 * 60 + 5))
+    assert inn["numbers"]["obs_conditions"]["first_process_calls_in_the_hour_before_the_load"] == 5 and inn["status"] == R.FAIL
+    late_bucket = c8(tmp_path, "edge_late", lambda rows, fx: sel(rows, "prefetch_start", B)[0].update(spent_at_load=0), calls=only(12 * 60 + RESTART_MIN - 1))
+    assert late_bucket["numbers"]["obs_conditions"]["first_process_calls_in_the_hour_before_the_load"] == 0
+    # no process_start_ms in the second prefetch_start: the condition (and so the check) is UNMEASURED
+    nol = c8(tmp_path, "no_load", lambda rows, fx: sel(rows, "prefetch_start", B)[0].pop("process_start_ms") and None)
+    assert nol["status"] == R.UNM and nol["numbers"]["obs_conditions"]["spent_at_load_positive_if_the_first_process_booked_calls"] is None and nol["numbers"]["obs_conditions"]["first_process_calls_in_the_hour_before_the_load"] is None
 
 
 def test_check_8_condition_d_counter_day_calls_at_start_is_not_smaller_than_the_first_processs_last_row(tmp_path):
@@ -1008,7 +1020,7 @@ def test_f4_each_closed_day_shows_counter_day_calls_next_to_the_minute_sum_and_t
 
 def test_f5_and_the_notes_pin_the_not_measured_list_and_both_pins_are_in_the_record(tmp_path):
     rec = rev3(fixture(tmp_path))
-    assert rec["checks_notes_pin"] == {"name": "SHAKEDOWN-CHECKS-3-NOTES-1.md", "sha256": "be6df321c0d89804b67fac5f1047748af2ee3ea69733f3c27f48dc47ead3a060"} == {"name": R.CHECKS3_NOTES1_NAME, "sha256": R.CHECKS3_NOTES1_SHA256}
+    assert rec["checks_notes_pin"] == {"name": "SHAKEDOWN-CHECKS-3-NOTES-1.md", "sha256": "0f093e68140f021f53979daa7b6251f6b2561b0194e46f3576e77e44fbf1426c"} == {"name": R.CHECKS3_NOTES1_NAME, "sha256": R.CHECKS3_NOTES1_SHA256}
     assert rec["checks_pin"]["sha256"] == R.CHECKS3_SHA256
     assert any(x.startswith("F5:") and "ps-verify" in x and "counted as 0" in x for x in rec["not_measured"])
     text = R.markdown(rec)
