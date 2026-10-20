@@ -363,7 +363,7 @@ def test_v2_books_each_refresh_at_the_minute_it_really_ran():
             self.clock.ms += 20_000  # 20 s a read: a start-up pass of 12 new pools runs over four minutes
             return r
 
-    pf = P.ChainPrefetcher(Slow(clock), R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2)
+    pf = P.ChainPrefetcher(Slow(clock), R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2, holders=False)
     pf.watch(pools(12), [], T0)
     pf.run_once(T0)
     buckets = [b for b, _ in pf._spent]
@@ -445,7 +445,7 @@ def test_every_obs_kind_carries_one_integer_pid_equal_to_the_writers_taken_at_wr
     clock.ms = T0 + HOUR + MIN
     pf.run_once(clock.ms)  # chain_hour
     rows = O.read_rows(Path(run.cfg.root) / O.OBS_FILE) + O.read_rows(tmp_path / "p" / O.OBS_FILE)
-    assert {r["kind"] for r in rows} == {"runner_start", "runner_hour", "prefetch_start", "first_seen_by_scanner", "chain_stale_served", "chain_hour"}
+    assert {r["kind"] for r in rows} == {"runner_start", "runner_hour", "prefetch_start", "first_seen_by_scanner", "chain_stale_served", "holders_null_served", "chain_hour"}
     for r in rows:
         assert type(r["pid"]) is int and r["pid"] == os.getpid(), r["kind"]
     # taken at write time, and a row cannot carry another one: a child that forks after the log was built writes its own pid
@@ -464,7 +464,7 @@ def test_every_obs_kind_carries_one_integer_pid_equal_to_the_writers_taken_at_wr
 def test_b1_a_new_untagged_pool_still_gets_its_first_mint_read_in_a_loaded_hour():
     clock = Clock(T0)
     chain = CountingChain(clock)
-    pf = P.ChainPrefetcher(chain, R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2)
+    pf = P.ChainPrefetcher(chain, R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2, hourly_budget=P.HOURLY_BUDGET)  # the 1,500 numbers: holders 680, cold mint 400
     old = pools(1, "O")
     pf.watch(old, [], T0)
     pf.run_once(T0)  # O has a mint fact
@@ -595,7 +595,7 @@ def test_n7_the_stale_row_is_written_after_the_lock_is_released():
     pf.run_once(T0)
     pf.obs = Spy()
     assert pf.part_at(a[0][0], a[0][1], T0 + 20 * MIN, SLOT + 10) is not None
-    assert held == [False]
+    assert held and not any(held)  # chain_stale_served and holders_null_served, neither inside the lock
 
 
 def test_n8_a_short_write_is_counted_and_the_next_row_starts_on_a_new_line(tmp_path, monkeypatch):
@@ -729,29 +729,205 @@ def test_cold_mint_refresh_knob_only_slows_pools_that_are_not_hot_and_run_mode_h
     # run mode: the live source takes no knob, and the policy variable does not reach it
     monkeypatch.setenv("MAL_HV4_PREFETCH_POLICY", "v2")
     src = R.live_chain_source(tmp_path / "root", {"MAL_HV4_RPC": "public"})
-    assert src.prefetch.cold_mint_refresh_ms is None and src.prefetch.hourly_budget == P.HOURLY_BUDGET
+    assert src.prefetch.cold_mint_refresh_ms is None and src.prefetch.hourly_budget == P.HOURLY_BUDGET_V2
 
 
-def test_warm_holders_variant_order_intervals_and_the_default_stays_hot_only(tmp_path):
+# ---- Note N4 (QP ruling 6281516193): holders limit 15 min under v2, hot and warm holders every 12 min, the order, P1 and P2
+
+
+def _chain_with_holders(part: dict, t_part: int):
+    """tools.test_hv4_cards' base chain with the holders block replaced by what the prefetcher served, re-based to that module's scan instant (same ages)."""
+    from tools import test_hv4_cards as TC
+
+    chain = TC.base_chain()
+    for k in ("holders_as_of_ms", "top1_frac", "top10_frac"):
+        chain.pop(k, None)
+    if part.get("holders_as_of_ms") is not None:
+        chain.update({"holders_as_of_ms": TC.T - (t_part - part["holders_as_of_ms"]), "top1_frac": part["top1_frac"], "top10_frac": part["top10_frac"]})
+    return chain
+
+
+def _card(chain: dict, limit: int):
+    from tools import test_hv4_cards as TC
+
+    return hc.build_card(TC.base_snap(), TC.base_prints(), chain, as_of_ms=TC.T, as_of_slot=TC.SLOT, holders_max_age_ms=limit)
+
+
+def _served(policy: str, age_min: int):
+    """A prefetcher with one holders read `age_min` minutes old at the card instant; returns (chain dict served, scan instant)."""
     clock = Clock(T0)
-    kw = dict(clock=clock, policy=P.POLICY_V2)
-    warm = P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, hot_holders_refresh_ms=12 * MIN, warm_holders_refresh_ms=12 * MIN, **kw)
-    dflt = P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, **kw)
-    a = pools(3)  # a0 hot; a1 low volume, a2 high volume (both cold)
+    pf = P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, clock=clock, policy=policy)
+    a = pools(1)
+    pf.watch(a, [a[0][0]], T0)
+    pf.run_once(T0)
+    assert pf.pools[a[0][0]].holders
+    t = pf.pools[a[0][0]].holders[-1].as_of_ms + age_min * MIN + 1000
+    return pf.part_at(a[0][0], a[0][1], t, SLOT + 10), t
+
+
+def test_n4_one_holders_limit_per_policy_feeds_the_card_the_serve_and_the_direct_path(tmp_path, monkeypatch):
+    from tools.test_hv4_runner import T0 as RT0
+    from tools.test_hv4_runner import make
+
+    monkeypatch.setenv("MAL_ARENA_TEST", "1")
+    assert hc.holders_max_age_ms("v2") == hc.CHAIN_HOLDERS_MAX_AGE_MS_V2 == 15 * MIN
+    assert hc.holders_max_age_ms("v1") == hc.holders_max_age_ms(None) == hc.CHAIN_HOLDERS_MAX_AGE_MS == 5 * MIN
+    clock = Clock(RT0)
+    pf2 = P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2)
+    pf1 = P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V1)
+    src2, src1 = R.HV4ChainSource(CountingChain(clock), prefetch=pf2), R.HV4ChainSource(CountingChain(clock), prefetch=pf1)
+    direct = R.HV4ChainSource(CountingChain(clock))  # no prefetcher: the card-time path
+    assert (pf2.holders_max_age_ms, src2.holders_max_age_ms) == (15 * MIN, 15 * MIN) and (pf1.holders_max_age_ms, src1.holders_max_age_ms) == (5 * MIN, 5 * MIN)
+    assert direct.holders_max_age_ms == 5 * MIN
+    asked: list[float] = []
+    chain = direct.chain
+    orig = chain.largest_holders
+    chain.largest_holders = lambda mint, **kw: (asked.append(kw["max_age_s"]), orig(mint, **kw))[1]  # type: ignore[method-assign]
+    direct.chain_part("P" * 44, "m" * 44, RT0, SLOT + 10)
+    assert asked == [300.0]  # the direct path reads the same constant
+    base = make(tmp_path / "x")
+    for src, want in ((src2, 15 * MIN), (src1, 5 * MIN), (direct, 5 * MIN)):
+        run = R.Runner(R.RunnerConfig(root=str(tmp_path / f"r{want}{id(src)}"), frozen_sha="a" * 40, clock_start_ms=RT0, live=False, lane_h=False), base.state, base.engine,
+                       base.model, src, base.guard)
+        assert run.holders_max_age_ms == want  # and the card veto reads the runner's value (build_card(holders_max_age_ms=...), below)
+
+
+def test_n4_under_v2_a_holders_read_5_to_15_min_old_is_a_block_with_its_age_and_no_holders_stale():
+    part, t = _served(P.POLICY_V2, 10)
+    assert part["top10_frac"] is not None and part["holders_as_of_ms"] is not None
+    card = _card(_chain_with_holders(part, t), hc.holders_max_age_ms("v2"))
+    assert card["risk"]["top10_frac"] is not None and 300 < card["risk"]["holders_age_s"] <= 900
+    import pytest
+
+    with pytest.raises(hc.CardRefused) as e:  # the SAME fact under the v1 limit is the d1dbcd6 veto, which is what a mismatch of the three places would give
+        _card(_chain_with_holders(part, t), hc.holders_max_age_ms("v1"))
+    assert "holders_stale" in e.value.reasons
+
+
+def test_n4_under_v2_a_holders_read_older_than_15_min_is_a_null_block_and_no_veto():
+    part, t = _served(P.POLICY_V2, 16)
+    assert "holders_as_of_ms" not in part and "top10_frac" not in part  # left out by the serve
+    card = _card(_chain_with_holders(part, t), hc.holders_max_age_ms("v2"))  # not refused
+    assert card["risk"]["holders_as_of_ms"] is None and card["risk"]["top10_frac"] is None and card["risk"]["holders_age_s"] is None
+    part15, t15 = _served(P.POLICY_V2, 14)  # and 14 min is still served
+    assert part15["top10_frac"] is not None
+
+
+def test_n4_v1_is_unchanged_at_5_min():
+    part, t = _served(P.POLICY_V1, 6)
+    assert "holders_as_of_ms" not in part  # left out at 6 min, as at d1dbcd6
+    assert _served(P.POLICY_V1, 4)[0]["top10_frac"] is not None
+    card = _card(_chain_with_holders(part, t), hc.holders_max_age_ms("v1"))
+    assert card["risk"]["top10_frac"] is None
+    assert P.HOT_HOLDERS_REFRESH_MS == 4 * MIN and P.HOURLY_BUDGET == 1_500 and P.MINT_REFRESH_MS == 10 * MIN
+    assert P.ChainPrefetcher(CountingChain(Clock(T0)), R.HV4ChainSource.compose, policy=P.POLICY_V1).warm_holders_refresh_ms is None  # v1 reads no warm holders
+
+
+def test_n4_the_module_asserts_hold_for_the_12_min_refreshes_against_15_min():
+    assert P.V2_HOT_HOLDERS_REFRESH_MS == P.V2_WARM_HOLDERS_REFRESH_MS == 12 * MIN < hc.CHAIN_HOLDERS_MAX_AGE_MS_V2 == 15 * MIN
+    assert P.HOT_HOLDERS_REFRESH_MS < hc.CHAIN_HOLDERS_MAX_AGE_MS and P.HOURLY_BUDGET_V2 == 2_000
+    pf = P.ChainPrefetcher(CountingChain(Clock(T0)), R.HV4ChainSource.compose, policy=P.POLICY_V2)
+    assert (pf.hot_holders_refresh_ms, pf.warm_holders_refresh_ms, pf.hourly_budget) == (12 * MIN, 12 * MIN, 2_000)
+    assert H.DEFAULT_DAILY_CALL_CAP == 48_000
+
+
+def _warm_setup(vol_taken_at: int):
+    clock = Clock(T0)
+    pf = P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2)
+    a = pools(3)  # a0 hot; a1 and a2 warm
+    pf.watch(a, [a[0][0]], T0)
+    pf.run_once(T0)
     order: list[tuple[str, str]] = []
-    orig = warm._refresh
-    warm._refresh = lambda p, now, nm, nh: (order.append((p.pool, "mint" if nm else "hold")), orig(p, now, nm, nh))[1]  # type: ignore[method-assign]
-    warm.set_warm_volumes({a[1][0]: 5.0, a[2][0]: 50.0})
-    for pf in (warm, dflt):
-        pf.watch(a, [a[0][0]], T0)
-        pf.run_once(T0)
-    mints = [x for x in order if x[1] == "mint"]
-    holds = [x for x in order if x[1] == "hold"]
-    assert order == mints + holds and len(mints) == 3  # every mint read before any holders read in the first pass (all pools are new)
-    assert [p for p, _ in holds] == [a[0][0], a[2][0], a[1][0]]  # hot holders first, then the warm ones by volume, highest first
-    assert all(p.holders for p in warm.pools.values()) and [bool(p.holders) for p in dflt.pools.values()] == [True, False, False]  # the default reads hot pools only
-    # intervals: a hot pool is due at 12 min (not at 5), and the default is unchanged at 4
-    clock.ms = T0 + 5 * MIN
-    assert warm._due(warm.pools[a[0][0]], clock.ms)[1] is False and dflt._due(dflt.pools[a[0][0]], clock.ms)[1] is True
+    orig = pf._refresh
+    pf._refresh = lambda p, now, nm, nh: (order.append((p.pool, "mint" if nm else "hold")), orig(p, now, nm, nh))[1]  # type: ignore[method-assign]
+    w = T0 + 13 * MIN
+    clock.ms = w
+    pf.watch(a, [a[0][0]], w, vols={a[1][0]: 5.0, a[2][0]: 50.0})
+    pf._warm_vol_ms = vol_taken_at
+    return pf, a, order, w
+
+
+def test_n4_warm_holders_go_highest_volume_first_and_read_only_state_at_or_before_the_pass_clock():
+    pf, a, order, w = _warm_setup(vol_taken_at=T0 + 13 * MIN)
+    pf.run_once(w)  # pass clock = the instant the volumes were taken: used
+    warm = [p for p, k in order if k == "hold" and p != a[0][0]]
+    assert warm == [a[2][0], a[1][0]]  # a2 (50) before a1 (5)
+    pf2, a2, order2, w2 = _warm_setup(vol_taken_at=T0 + 13 * MIN + 5000)  # volumes stamped AFTER the pass clock
+    pf2.run_once(w2)
+    assert [p for p, k in order2 if k == "hold" and p != a2[0][0]] == [a2[1][0], a2[2][0]]  # ignored: pool-id order, not the later volume
+    # the order of the whole pass: hot holders before cold mint before warm holders
+    kinds = [(p == a[0][0], k) for p, k in order]
+    assert order.index((a[0][0], "hold")) < max(i for i, (p, k) in enumerate(order) if k == "hold" and p in (a[1][0], a[2][0]))
+
+
+def test_n4_the_entry_and_risk_requests_carry_the_holders_stamp_and_age():
+    """Traced with a REAL card (build_card of a 10 min old holders block under the v2 limit), not the reduced card of test_hv4_prompts: the model-facing text of the entry
+    request and of the risk request holds risk.holders_as_of_ms and risk.holders_age_s."""
+    import json as _json
+
+    from tools import hv4_prompts as pr
+    from tools.test_hv4_prompts import pb
+
+    part, t = _served(P.POLICY_V2, 10)
+    card = _card(_chain_with_holders(part, t), hc.holders_max_age_ms("v2"))
+    assert 300 < card["risk"]["holders_age_s"] <= 900
+    for req in (pr.build_entry_request("CON-L", pb("CON"), [card], 0), pr.build_risk_request(pb("RISK"), [card], 0)):
+        sent = _json.loads(next(line for line in req.user_text.splitlines() if line.startswith("{")))
+        assert sent["risk"]["holders_as_of_ms"] == card["risk"]["holders_as_of_ms"] and sent["risk"]["holders_age_s"] == card["risk"]["holders_age_s"], req.kind
+
+
+def _loaded(book: int):
+    """A v2 prefetcher (cap 2,000, plan stop 1,980) with `book` calls of cold-mint class spent in the hour and one pool of every kind due:
+    N new, H hot (mint and holders), C cold (mint only: not in the latest scan), W warm (holders only)."""
+    clock = Clock(T0)
+    pf = P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2)
+    h, c, w, n = pools(1, "H"), pools(1, "C"), pools(1, "W"), pools(1, "N")
+    pf.watch(h + c + w, [h[0][0]], T0)
+    pf.run_once(T0)
     clock.ms = T0 + 13 * MIN
-    assert warm._due(warm.pools[a[1][0]], clock.ms)[1] is True  # a warm pool, 12 min on
+    for pid in (w[0][0],):
+        pf.pools[pid].mints.clear()  # W's mint is fresh below; keep its holders due only
+    pf.pools[w[0][0]].mints.append(pf.chain.mint_facts(w[0][1], force=True))
+    pf.watch(h + w + n, [h[0][0]], clock.ms, vols={w[0][0]: 10.0})  # C is not in the latest scan: cold, mint only
+    order: list[tuple[str, str]] = []
+    orig = pf._refresh
+    pf._refresh = lambda p, now, nm, nh: (order.append((p.pool[0], "mint" if nm else "hold")), orig(p, now, nm, nh))[1]  # type: ignore[method-assign]
+    pf._book(clock.ms, book, mint=True)
+    pf.run_once(clock.ms)
+    return order
+
+
+def test_p1_p2_new_and_hot_mint_use_the_cap_the_lower_classes_stop_400_short_and_warm_holders_stop_600_short():
+    # lower classes at 1,480 of the 1,980 plan stop: inside the 400 line (1,580) but past the warm line (1,380): everything but the warm holders read
+    mid = _loaded(1480)
+    assert ("N", "mint") in mid and ("H", "mint") in mid and ("H", "hold") in mid and ("C", "mint") in mid and ("W", "hold") not in mid
+    # lower classes at 1,700: past the 400 line. New and hot mint still read (P1); hot holders, cold mint and warm holders are shed
+    hi = _loaded(1700)
+    assert ("N", "mint") in hi and ("H", "mint") in hi and ("H", "hold") not in hi and ("C", "mint") not in hi and ("W", "hold") not in hi
+    # lower classes at 1,300: before the warm line, everything reads, and the order is new, hot mint, hot holders, cold mint, warm holders
+    lo = _loaded(1300)
+    assert lo.index(("N", "mint")) < lo.index(("H", "hold")) < lo.index(("C", "mint")) < lo.index(("W", "hold"))
+    assert lo.index(("H", "mint")) < lo.index(("H", "hold"))
+
+
+def test_holders_null_served_row_and_the_warm_chain_hour_keys(tmp_path):
+    clock = Clock(T0)
+    pf = P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2, hourly_budget=100)
+    obs = O.ObsLog(tmp_path)
+    pf.set_obs(obs)
+    pf.run_once(T0)
+    a = pools(2)
+    clock.ms = T0 + MIN
+    pf.watch(a, [], clock.ms, vols={a[0][0]: 3.0})
+    pf.run_once(clock.ms)  # both get mints and (warm) holders under a budget of 100
+    clock.ms = T0 + 20 * MIN
+    pf.watch(a, [a[1][0]], clock.ms)  # a1 promoted at this scan from warm; its holders (read at +1 min) are 19 min old: null
+    assert "holders_as_of_ms" not in pf.part_at(a[1][0], a[1][1], clock.ms, SLOT + 10)
+    row = next(r for r in O.read_rows(tmp_path / O.OBS_FILE) if r["kind"] == "holders_null_served")
+    assert row["pool"] == a[1][0] and row["scan_ms"] == clock.ms and row["promoted_at_scan"] is True and row["warm"] is True and row["hot"] is False
+    assert 18 * MIN < row["newest_holders_age_ms"] < 20 * MIN
+    pf.hourly_budget = 100
+    clock.ms = T0 + HOUR + MIN
+    pf.run_once(clock.ms)
+    ch = next(r for r in O.read_rows(tmp_path / O.OBS_FILE) if r["kind"] == "chain_hour")
+    assert {"deferred_warm_hold", "warm_holders_reads_hour", "warm_holders_calls_hour"} <= set(ch) and ch["warm_holders_reads_hour"] >= 1
