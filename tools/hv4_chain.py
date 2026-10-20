@@ -706,7 +706,7 @@ def _http_post(url: str, payload: dict[str, Any], timeout: float) -> dict[str, A
 
 # Paced calls per second. DESIGN section 6: about 40k standard calls a day at 2 rps. The public endpoint throttles heavy methods harder.
 DEFAULT_RPS = {"public": 2.0, "helius": 2.0, "custom": 2.0}
-DEFAULT_DAILY_CALL_CAP = 40_000
+DEFAULT_DAILY_CALL_CAP = 48_000  # Note N4: 2,000 chain calls an hour x 24 = 48,000 (was 40,000 with the 1,500 an hour of N1)
 ALLOWED_METHODS = frozenset({"getAccountInfo", "getTokenSupply", "getTokenLargestAccounts"})  # every read this module makes
 MAX_RETRY_AFTER_S = 10.0
 RETRY_HTTP = frozenset({429, 500, 502, 503, 504})

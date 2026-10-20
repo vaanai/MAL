@@ -414,7 +414,7 @@ def test_rpc_client_waits_on_the_bucket_and_the_method_bucket():
 
 def test_default_client_is_paced_at_two_per_second():
     rpc = H.RpcClient(H.RpcConfig.public(), post=FakeNode({"getAccountInfo": [account_reply(build_base(), H.SPL_TOKEN_PROGRAM)]}))
-    assert rpc.bucket.rate == 2.0 and rpc.bucket.burst == 2.0 and rpc.daily_call_cap == 40_000
+    assert rpc.bucket.rate == 2.0 and rpc.bucket.burst == 2.0 and rpc.daily_call_cap == 48_000
 
 
 # ======================================================================================================================

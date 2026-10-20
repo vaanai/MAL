@@ -66,7 +66,14 @@ IMPACT_RT_CAP = 0.03  # s1: round-trip impact at the intended stake
 STAKES = (0.25, 0.5, 1.0)  # s3: size menu
 STATE_LAG_MAX_MS = 10_000  # not in DESIGN: a state clock further behind T than this is a stalled feed (see module docstring)
 CHAIN_MINT_MAX_AGE_MS = 15 * MIN_MS  # not in DESIGN (manager, review of PR 710): mint facts (chain.as_of_ms) older than this veto
-CHAIN_HOLDERS_MAX_AGE_MS = 5 * MIN_MS  # not in DESIGN (manager): largest-holders facts (chain.holders_as_of_ms) older than this veto
+CHAIN_HOLDERS_MAX_AGE_MS = 5 * MIN_MS  # not in DESIGN (manager): largest-holders facts (chain.holders_as_of_ms) older than this veto. Prefetch policy v1 (d1dbcd6): unchanged.
+CHAIN_HOLDERS_MAX_AGE_MS_V2 = 15 * MIN_MS  # prefetch policy v2, Note N4 (QP ruling on PR #768): a holders read up to 15 min old is served and is never a holders_stale veto
+
+
+def holders_max_age_ms(policy: str | None) -> int:
+    """THE holders age limit of a prefetch policy: the card's holders_stale veto (code_vetoes), the prefetcher's serve (ChainPrefetcher.part_at) and the runner's direct
+    chain path (HV4ChainSource.chain_part) all read it from here, so they cannot disagree. v2: 15 min; anything else (v1, no prefetcher): 5 min, as at d1dbcd6."""
+    return CHAIN_HOLDERS_MAX_AGE_MS_V2 if policy == "v2" else CHAIN_HOLDERS_MAX_AGE_MS
 QUOTE_REF_AGE_MS = 15 * MIN_MS  # s2 veto 7: the reference quote is the one from 15 min before T ...
 QUOTE_REF_TOL_MS = 2 * MIN_MS  # ... observed within this much either side of it (not in DESIGN; the scanner samples each minute)
 
@@ -884,7 +891,7 @@ class VetoResult:
 
 
 def code_vetoes(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: Mapping[str, Any], *, as_of_ms: int, as_of_slot: int,
-                stake: float = STAKES[0], feats: Mapping[str, Any] | None = None) -> VetoResult:
+                stake: float = STAKES[0], feats: Mapping[str, Any] | None = None, holders_max_age_ms: int | None = None) -> VetoResult:
     """DESIGN section 2 hard vetoes 1-7. Every check is evaluated; a missing or malformed fact is a veto, never a pass.
 
     Chain facts (a Mapping from tools/hv4_chain.py; key present with None means "null on chain"; key absent means "not fetched"):
@@ -921,11 +928,12 @@ def code_vetoes(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: M
             reasons.append(f"chain_invalid:{k}")
     hs = chain.get("holders_as_of_ms")
     held = [chain.get(k) is not None for k in ("top1_frac", "top10_frac")]
-    checks["holders_stamp"] = {"holders_as_of_ms": hs, "max_age_ms": CHAIN_HOLDERS_MAX_AGE_MS}
+    hmax = CHAIN_HOLDERS_MAX_AGE_MS if holders_max_age_ms is None else holders_max_age_ms  # None = the d1dbcd6 limit; the runner passes its policy's (holders_max_age_ms())
+    checks["holders_stamp"] = {"holders_as_of_ms": hs, "max_age_ms": hmax}
     if hs is not None or any(held):  # holder facts, or a stamp for them, must come with a valid fresh stamp
         if _stamp(hs) is None:
             reasons.append("holders_stamp_invalid")
-        elif as_of_ms - hs > CHAIN_HOLDERS_MAX_AGE_MS:
+        elif as_of_ms - hs > hmax:
             reasons.append("holders_stale")
     checks["quote_wsol"] = snap.get("quote_wsol")
     if snap.get("quote_wsol") is not True:
@@ -1043,7 +1051,8 @@ def numeric_fields(card: Mapping[str, Any]) -> dict[str, float]:
 
 
 def build_card(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: Mapping[str, Any], *, as_of_ms: int, as_of_slot: int,
-               setup: SetupTag | None = None, stake: float = STAKES[0], feats: Mapping[str, Any] | None = None) -> dict[str, Any]:
+               setup: SetupTag | None = None, stake: float = STAKES[0], feats: Mapping[str, Any] | None = None,
+               holders_max_age_ms: int | None = None) -> dict[str, Any]:
     """The card for one Lane G pool as of `as_of_ms`, or CardRefused (a Lane G filter missed, or a hard veto fired, or a stamp is missing).
     LeakageError if any input is later than the scan instant. Every value on the card is as of `as_of_slot` / `as_of_ms`; the chain facts keep
     their own stamps under `risk`. Name and symbol are sanitized and live only under `untrusted`; the id and wallet handles must look like
@@ -1055,7 +1064,7 @@ def build_card(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: Ma
     fr = filters(snap, as_of_ms=as_of_ms)
     if feats is None:
         feats = features(snap, pr, as_of_ms=as_of_ms)  # `feats`, when given, must be features() of this very snap, prints and as_of_ms (the runner's scan passes its own); it is only read
-    vr = code_vetoes(snap, pr, chain, as_of_ms=as_of_ms, as_of_slot=as_of_slot, stake=stake, feats=feats)
+    vr = code_vetoes(snap, pr, chain, as_of_ms=as_of_ms, as_of_slot=as_of_slot, stake=stake, feats=feats, holders_max_age_ms=holders_max_age_ms)
     slot = as_of_slot
     reasons = list(fr.failed) + list(vr.reasons)
     if not is_safe_id(snap.get("id")):

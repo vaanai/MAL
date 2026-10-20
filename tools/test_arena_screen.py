@@ -1465,3 +1465,1066 @@ def test_arena_tape_format_loader_reads_v_from_the_row_and_orders_by_receive_tim
     ok = dict(zip(hr.pools.tolist(), hr.in_universe.tolist()))
     assert ok == {POOLS["A"]: True, POOLS["C"]: False, POOLS["D"]: False}
     assert math.isnan(hr.v[hr.rows(hr.pool_index()[POOLS["C"]])][0])
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ 9. screen p (EXP-028, report only; QP ruling on #756 item 4)
+def ref_means(x: np.ndarray, B: int, seed: int = 1) -> np.ndarray:
+    """arena_stack.boot_lo's own loop, written out in the test."""
+    rng = np.random.default_rng(seed)
+    return np.array([x[rng.integers(0, len(x), len(x))].mean() for _ in range(B)])
+
+
+def ref_p(x: np.ndarray, B: int, seed: int = 1) -> tuple[int, int, float, float]:
+    m, xbar = ref_means(x, B, seed), float(np.mean(x))
+    c1, c2 = sum(1 for v in m if v <= 0), sum(1 for v in m if v - xbar >= xbar)
+    return c1, c2, (1 + c1) / (1 + B), (1 + c2) / (1 + B)
+
+
+def day_vec(n: int, k: int) -> np.ndarray:
+    return np.arange(n) % k + 20_000
+
+
+def date_sums(x: np.ndarray, day: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    _, inv = np.unique(day, return_inverse=True)
+    return np.bincount(inv, weights=x), np.bincount(inv).astype(float)
+
+
+def skewed(seed: int = 1, n: int = 300, t: float = 2.2) -> np.ndarray:
+    """A right-skewed per-attempt vector (a few large winners) with a positive mean of about t standard errors, in SOL."""
+    x = np.random.default_rng(seed).lognormal(0, 1.5, n)
+    return x - x.mean() + t * x.std(ddof=1) / np.sqrt(n)
+
+
+@pytest.mark.parametrize("B", [1_000, 10_000, 25_000])
+def test_screen_p_first_1000_draws_reproduce_arena_stack_boot_lo_exactly(B):
+    rng = np.random.default_rng(B)
+    lam = rng.normal(1e6, 6e7, 500)
+    day = day_vec(500, 9)
+    x = lam / 1e9
+    m = S._boot_means(x, B)
+    assert np.percentile(m[:1000], F.BOOT_PCT) == F.boot_lo(x)  # bit for bit, no tolerance
+    assert (m[:1000] == ref_means(x, 1000)).all()
+    dsum, dn = date_sums(x, day)
+    r = S.screen_p_sub(lam, day, B=B, ci_lo_trade=F.boot_lo(x), ci_lo_date=S.boot_lo(dsum, dn))
+    assert r["ci90_lo_first1000"] == F.boot_lo(x) and r["ci90_lo_first1000_equals_stat"] is True
+    rr = S._cluster_ratios(dsum, dn, B)
+    assert np.percentile(rr[:1000], F.BOOT_PCT) == S.boot_lo(dsum, dn)  # the kit's date resampler, bit for bit
+    assert r["date_cluster"]["ci90_lo_first1000"] == S.boot_lo(dsum, dn) and r["date_cluster"]["ci90_lo_first1000_equals_stat"] is True
+    r2 = S.screen_p_sub(lam, day, B=B, ci_lo_trade=F.boot_lo(x) + 1e-12)
+    assert r2["ci90_lo_first1000_equals_stat"] is False  # the self-check can fail
+
+
+def test_screen_p_each_B_is_a_prefix_of_a_longer_B_with_the_same_seed_and_a_fresh_rng_per_sub_cell():
+    x = np.random.default_rng(2).normal(0.002, 0.05, 200)
+    assert (S._boot_means(x, 3_000)[:1_500] == S._boot_means(x, 1_500)).all()
+    a = S.screen_p_sub(x * 1e9, day_vec(200, 7), B=2_000)
+    S.screen_p_sub(np.random.default_rng(9).normal(0, 1e7, 300), day_vec(300, 6), B=2_000)  # another sub-cell in between: no shared stream
+    assert S.screen_p_sub(x * 1e9, day_vec(200, 7), B=2_000) == a
+
+
+def test_screen_p_all_positive_vector_sits_on_the_1_over_B_plus_1_floor():
+    lam = 1_000_000 + np.random.default_rng(5).integers(0, 1_000, 300)  # every attempt positive, tiny spread
+    r = S.screen_p_sub(lam, day_vec(300, 6), B=10_000)
+    assert (r["tail_count_pct"], r["tail_count_null"]) == (0, 0)
+    assert r["p_pct"] == r["p_null"] == r["p"] == 1 / 10_001
+    d = r["date_cluster"]
+    assert (d["tail_count_pct"], d["tail_count_null"], d["k_dates"]) == (0, 0, 6) and d["p"] == 1 / 10_001
+    r2 = S.screen_p_sub(lam, day_vec(300, 6), B=40_000)
+    assert r2["p"] == 1 / 40_001 and r2["B"] == 40_000 and r2["date_cluster"]["B"] == 40_000  # the floor moves with B
+
+
+def test_screen_p_non_positive_mean_gives_p_near_one():
+    r = S.screen_p_sub(np.random.default_rng(6).normal(-3e6, 1e7, 400), day_vec(400, 8), B=10_000)
+    assert r["xbar"] < 0 and r["p_pct"] == r["p_null"] == r["p"] == 1.0 and r["tail_count_pct"] == r["tail_count_null"] == 10_000
+    assert r["date_cluster"]["p"] == 1.0
+    z = S.screen_p_sub(np.zeros(50), day_vec(50, 5), B=1_000)  # a mean of exactly 0 is H0 itself: p = 1
+    assert z["xbar"] == 0.0 and z["p"] == 1.0 and z["date_cluster"]["p"] == 1.0
+    sym = S.screen_p_sub(np.array([2e7, -2e7] * 100), day_vec(200, 5), B=10_000)  # mean exactly 0, symmetric draws: near one half on both tails
+    assert sym["xbar"] == 0.0 and 0.4 < sym["p_pct"] < 0.65 and 0.4 < sym["p_null"] < 0.65
+
+
+def test_screen_p_skewed_vector_percentile_tail_is_anticonservative_and_the_max_rule_takes_the_null_tail():
+    x = skewed()
+    day = day_vec(300, 8)
+    r = S.screen_p_sub(x * 1e9, day, B=10_000)
+    c1, c2, p1, p2 = ref_p(x, 10_000)
+    assert (r["tail_count_pct"], r["tail_count_null"]) == (c1, c2) == (21, 216)  # pinned: the draws are deterministic at seed 1
+    assert (r["p_pct"], r["p_null"]) == (p1, p2) == (22 / 10_001, 217 / 10_001)
+    assert r["p_pct"] < r["p_null"] and r["p"] == r["p_null"]  # right skew: the percentile tail alone would pass what the null tail does not
+    dsum, dn = date_sums(x, day)
+    rng = np.random.default_rng(1)
+    rr = np.array([dsum[ix].sum() / max(1, dn[ix].sum()) for ix in (rng.integers(0, 8, 8) for _ in range(10_000))])
+    rhat = dsum.sum() / dn.sum()
+    d = r["date_cluster"]
+    assert (d["tail_count_pct"], d["tail_count_null"]) == (int((rr <= 0).sum()), int(((rr - rhat) >= rhat).sum())) and d["rhat"] == rhat
+    assert d["p_pct"] == (1 + d["tail_count_pct"]) / 10_001 and d["p"] == max(d["p_pct"], d["p_null"])
+
+
+def test_screen_p_the_percentile_tail_can_be_the_larger_one_too():
+    x = np.array([-1.0] * 97 + [40.0] * 3)  # discrete right skew where the left tail is the heavier one
+    r = S.screen_p_sub(x * 1e9, day_vec(100, 5), B=10_000)
+    c1, c2, p1, p2 = ref_p(x, 10_000)
+    assert (r["tail_count_pct"], r["tail_count_null"], r["p_pct"], r["p_null"]) == (c1, c2, p1, p2) and p1 > p2 and r["p"] == p1
+
+
+def test_screen_p_tails_count_equality_inclusively_and_use_one_plus_over_one_plus_B(monkeypatch):
+    lam = np.array([5e8, 1.5e9] * 50)  # xbar is exactly 1.0 SOL
+    m = np.full(1_000, 1.0)
+    m[:10] = 0.0  # exactly 0: counted by m_b <= 0
+    m[10:17] = 2.0  # exactly xbar + xbar: counted by m_b - xbar >= xbar
+    m[17:20] = -5.0
+    monkeypatch.setattr(S, "_boot_means", lambda x, B, seed=1: m)
+    r = S.screen_p_sub(lam, day_vec(100, 4), B=1_000)
+    assert r["xbar"] == 1.0 and (r["tail_count_pct"], r["tail_count_null"]) == (13, 7)
+    assert r["p_pct"] == 14 / 1_001 and r["p_null"] == 8 / 1_001 and r["p"] == 14 / 1_001
+
+
+def test_screen_p_no_p_is_none_and_never_a_pass():
+    e = S.screen_p_sub(np.empty(0), np.empty(0), B=1_000)
+    assert e["p"] is None and e["n"] == 0 and e["xbar"] is None and e["date_cluster"]["p"] is None and "not a pass" in e["none_reason"]
+    nan = S.screen_p_sub(np.array([1e7, np.nan, 2e7] * 40), day_vec(120, 5), B=1_000)  # NaN compares False in both tails: it would otherwise read as the floor
+    assert nan["p"] is None and nan["date_cluster"]["p"] is None and "non-finite" in nan["none_reason"]
+    one = S.screen_p_sub(np.array([1e7]), np.array([20_000]), B=1_000)
+    assert one["p"] is None and one["date_cluster"]["p"] is None
+    onedate = S.screen_p_sub(np.random.default_rng(1).normal(1e7, 1e7, 100), np.full(100, 20_000), B=1_000)
+    assert onedate["p"] is not None and onedate["date_cluster"]["p"] is None and onedate["date_cluster"]["k_dates"] == 1
+    assert S._max_p([0.1, None, 0.2]) is None and S._max_p([]) is None and S._max_p([0.1, 0.3, 0.2]) == 0.3
+
+
+def test_screen_p_uses_the_vectors_stat_hands_to_the_two_bootstraps(monkeypatch):
+    rng = np.random.default_rng(8)
+    lam, day, blk = rng.normal(3e6, 4e7, 400), day_vec(400, 7), rng.integers(0, 2, 400)
+    seen = {}
+    real_f, real_k = F.boot_lo, S.boot_lo
+    monkeypatch.setattr(F, "boot_lo", lambda x, *a, **k: (seen.setdefault("x", np.array(x, copy=True)), real_f(x, *a, **k))[1])
+    monkeypatch.setattr(S, "boot_lo", lambda ds, dn, *a, **k: (seen.setdefault("d", (np.array(ds, copy=True), np.array(dn, copy=True))), real_k(ds, dn, *a, **k))[1])
+    st = S.stat(lam, day, blk, ["a", "b"])
+    got = {}
+    real_m, real_c = S._boot_means, S._cluster_ratios
+    monkeypatch.setattr(S, "_boot_means", lambda x, B, seed=1: (got.setdefault("x", np.array(x, copy=True)), real_m(x, B, seed))[1])
+    monkeypatch.setattr(S, "_cluster_ratios", lambda ds, dn, B, seed=1: (got.setdefault("d", (np.array(ds, copy=True), np.array(dn, copy=True))), real_c(ds, dn, B, seed))[1])
+    r = S.screen_p_sub(lam, day, B=1_000, ci_lo_trade=st["ci_lo_trade"], ci_lo_date=st["ci_lo"])
+    assert np.array_equal(seen["x"], got["x"]) and np.array_equal(seen["d"][0], got["d"][0]) and np.array_equal(seen["d"][1], got["d"][1])
+    assert r["xbar"] == st["mean"] and r["n"] == st["n"] and r["date_cluster"]["k_dates"] == st["days"]
+    assert r["ci90_lo_first1000_equals_stat"] is True and r["date_cluster"]["ci90_lo_first1000_equals_stat"] is True
+
+
+def test_screen_p_refuses_any_stake_other_than_a_quarter_sol_and_a_B_out_of_range():
+    lam, day = np.random.default_rng(1).normal(1e7, 1e7, 50), day_vec(50, 5)
+    assert S.screen_p_sub(lam, day, B=1_000, stake_sol=0.25)["B"] == 1_000
+    for bad in (1.0, 0.5, 0.2500001, 0.0, -0.25, 250_000_000, True, "0.25"):
+        with pytest.raises(S.Refused, match="screen_p_stake_refused"):
+            S.screen_p_sub(lam, day, B=1_000, stake_sol=bad)
+    with pytest.raises(S.Refused, match="screen_p_stake_refused"):
+        S.screen_p_cell(None, S.screen_cfg(), None, B=1_000, stake_sol=1.0)
+    with pytest.raises(S.Refused, match="screen_p_stake_refused"):
+        S.Screen(ScriptRule([]), declared_stake_sol=0.5)  # refused at construction, before any block is read
+    S.Screen(ScriptRule([]), screen_p=False, declared_stake_sol=0.5)  # p off: no p is computed, nothing to refuse
+    assert S.screen_p_check(0.25, 1_000) == 1_000 and S.screen_p_check(0.25, 1_000_000) == 1_000_000 and S.screen_p_check(0.25, 10_000) == 10_000
+    for bad in (999, 0, -1, 1_000_001, 10_000.5, 10_000.0, True, None, "10000"):
+        with pytest.raises(S.Refused, match="screen_p_draws_refused"):
+            S.screen_p_check(0.25, bad)
+    with pytest.raises(S.Refused, match="screen_p_draws_refused"):
+        S.screen_p_sub(lam, day, B=999)
+    with pytest.raises(S.Refused, match="screen_p_draws_refused"):
+        S.Screen(ScriptRule([]), screen_p_draws=1_000_001)
+
+
+def test_screen_p_cli_refuses_a_declared_stake_other_than_a_quarter_sol_and_reads_nothing(clean_tree, tmp_path, capsys):
+    root, vm = clean_tree
+    for i, extra in enumerate((["--declared-stake-sol", "1.0"], ["--declared-stake-sol", "0.5", "--count-only"], ["--screen-p-draws", "999"], ["--screen-p-draws", "1000001"])):
+        out = tmp_path / f"refused{i}"
+        assert cli(root, vm, out, *extra) == 2
+        assert "REFUSED: screen_p_" in capsys.readouterr().err and not out.exists()  # nothing listed, read or written
+    out = tmp_path / "ok_off"
+    assert cli(root, vm, out, "--no-screen-p", "--declared-stake-sol", "1.0") == 0  # p off: no p is defined, no stake to refuse
+    assert "screen_p" not in json.loads((out / "results.json").read_text())["cells"]["trivial"]
+    out = tmp_path / "ok_on"
+    assert cli(root, vm, out, "--declared-stake-sol", "0.25", "--screen-p-draws", "1500") == 0
+    doc = json.loads((out / "results.json").read_text())
+    assert doc["meta"]["screen_p"] == {"enabled": True, "report_only": True, "B": 1500, "seed": 1, "stake_sol": 0.25, "source": S.SCREEN_P_SOURCE}
+    assert doc["cells"]["trivial"]["screen_p"]["B"] == 1500 and all(c["B"] == 1500 for c in doc["cells"]["trivial"]["screen_p"]["sub_cells"].values())
+
+
+def kit_cell_p(tape, event: bool, **kw) -> "S.Screen":
+    rows, files = tape
+    scr = S.Screen(ScriptRule(script_for(rows), cells=(S.Cell("c", event_triggered=event),)), **kw)
+    scr.run_block(0, "synthetic", S.iter_hours(files, "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
+    return scr
+
+
+def dump(o) -> str:
+    return json.dumps(o, sort_keys=True, default=float)
+
+
+@pytest.mark.parametrize("survive", [False, True])
+@pytest.mark.parametrize("event", [True, False])
+def test_screen_p_changes_no_existing_field_in_results_or_table(tape, monkeypatch, event, survive):
+    if survive:
+        monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))  # a SCREEN SURVIVOR too, not only killed cells
+    off, on = kit_cell_p(tape, event, screen_p=False), kit_cell_p(tape, event, screen_p=True, screen_p_draws=1_500)
+    r_off, r_on = off.results()["c"], on.results()["c"]
+    assert "screen_p" not in r_off and "screen_p" in r_on and (not r_on["kill"]) is survive
+    assert dump(r_off) == dump({k: v for k, v in r_on.items() if k != "screen_p"})  # every pre-existing field byte-identical
+    assert list(r_off) == [k for k in r_on if k != "screen_p"] and list(r_on)[-1] == "screen_p"  # same keys in the same order, the new key last
+    t_off, t_on = S.table_md({"c": r_off}, off.blocks, {"rule": "script"}), S.table_md({"c": r_on}, on.blocks, {"rule": "script"})
+    assert t_on.startswith(t_off) and t_on[len(t_off):].startswith("\n## 5. Screen p (EXP-028, REPORT ONLY")  # every TABLE line above is unchanged; section 5 is appended
+    assert "## 5." not in t_off and repr(r_on["screen_p"]["cell_p"]) in t_on
+
+
+def test_screen_p_changes_no_existing_field_through_the_cli(clean_tree, tmp_path):
+    root, vm = clean_tree
+    assert cli(root, vm, tmp_path / "off", "--no-screen-p") == 0 and cli(root, vm, tmp_path / "on", "--screen-p-draws", "1500") == 0
+    a, b = (json.loads((tmp_path / d / "results.json").read_text()) for d in ("off", "on"))
+    volatile = ("wall_s", "rows_pumpswap_per_s", "rows_kept_per_s", "seconds", "written_utc", "screen_p")
+    assert dump({k: v for k, v in a["meta"].items() if k not in volatile}) == dump({k: v for k, v in b["meta"].items() if k not in volatile})
+    assert a["meta"]["screen_p"]["enabled"] is False and b["meta"]["screen_p"]["enabled"] is True
+    assert dump(a["cells"]) == dump({nm: {k: v for k, v in c.items() if k != "screen_p"} for nm, c in b["cells"].items()})
+    ta, tb = ((tmp_path / d / "TABLE.md").read_text() for d in ("off", "on"))
+    assert tb.startswith(ta) and tb[len(ta):].startswith("\n## 5. Screen p")
+    assert (tmp_path / "off" / "results.json").read_bytes() != (tmp_path / "on" / "results.json").read_bytes()  # the new keys are really there
+    co = tmp_path / "count"
+    assert cli(root, vm, co, "--count-only") == 0 and "screen_p" not in json.loads((co / "counts.json").read_text())["cells"]["trivial"]  # a count-only run has no p
+
+
+@pytest.mark.parametrize("stub", [1.0, 1 / 10_001, None])
+@pytest.mark.parametrize("survive", [False, True])
+@pytest.mark.parametrize("event", [True, False])
+def test_screen_p_never_kills_or_rescues_a_cell(tape, monkeypatch, event, survive, stub):
+    if survive:
+        monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))
+    base = kit_cell_p(tape, event, screen_p=False).results()["c"]
+    fake = {"report_only": True, "cell_p": stub, "cell_p_date_cluster": stub, "B": 1_000, "seed": 1, "sub_cells": {}}
+    monkeypatch.setattr(S, "screen_p_cell", lambda *a, **k: fake)  # the best and the worst p a cell can carry, and no p at all
+    r = kit_cell_p(tape, event, screen_p=True).results()["c"]
+    assert r["screen_p"] is fake
+    assert (r["kill"], r["kill_reasons"], r["registration"]) == (base["kill"], base["kill_reasons"], base["registration"])
+    assert dump({k: v for k, v in r.items() if k != "screen_p"}) == dump(base)
+
+
+def test_screen_p_is_not_read_by_any_kill_or_registration_function():
+    import inspect
+
+    for fn in (S.kill_verdict, S.registration_status, S.gate_row, S.worst_in_slot_legs, S.stat):
+        assert "screen_p" not in inspect.getsource(fn) and "cell_p" not in inspect.getsource(fn)
+    src = inspect.getsource(S.Screen._cell_result)
+    head, _, tail = src.partition("if self.screen_p:  # REPORT ONLY")
+    assert 'r["registration"] = registration_status' in head and 'r["kill"]' not in tail and "return r" in tail  # computed after the verdict is final
+
+
+def test_screen_p_on_a_real_cell_has_four_sub_cells_n_equal_to_the_gates_and_a_cell_p_that_is_their_max(tape):
+    r = kit_cell_p(tape, True, screen_p_draws=2_000).results()["c"]
+    sp = r["screen_p"]
+    assert sp["report_only"] is True and sp["B"] == 2_000 and sp["seed"] == 1 and sp["stake_sol"] == 0.25 and sp["source"] == S.SCREEN_P_SOURCE
+    assert set(sp["sub_cells"]) == {"total|flat", "total|press", "sc|flat", "sc|press"}
+    for key, c in sp["sub_cells"].items():
+        rule, fail = key.split("|")
+        s_ = r["stats"][f"1.9|{rule}|rent0|{fail}"]
+        assert c["n"] == s_["n"] and c["xbar"] == s_["mean"] and c["date_cluster"]["k_dates"] == s_["days"]  # n is arena_score's n, guarded reverts included
+        assert c["ci90_lo_first1000_equals_stat"] is True  # the draws are the ones the kill used
+        assert c["p"] == max(c["p_pct"], c["p_null"]) and 1 / 2_001 <= c["p"] <= 1.0
+        assert c["date_cluster"]["k_dates"] == 1 and c["date_cluster"]["p"] is None and "fewer than 2 UTC dates" in c["date_cluster"]["none_reason"]  # the synthetic tape is ONE UTC date
+    assert sp["cell_p"] == max(c["p"] for c in sp["sub_cells"].values()) and sp["cell_p_date_cluster"] is None
+    json.dumps(sp)
+
+
+def test_screen_p_cell_with_no_attempts_has_p_none(tape):
+    rows, files = tape
+    scr = S.Screen(ScriptRule([]), screen_p_draws=1_000)
+    scr.run_block(0, "synthetic", S.iter_hours(files, "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
+    r = scr.results()["c"]
+    assert r["attempts"] == 0 and r["kill"] is True and r["screen_p"]["cell_p"] is None and r["screen_p"]["cell_p_date_cluster"] is None
+    assert all(c["p"] is None and c["n"] == 0 for c in r["screen_p"]["sub_cells"].values())
+    md = S.table_md({"c": r}, ["synthetic"], {"rule": "script"})
+    assert "## 5. Screen p" in md and "None" in md
+
+
+def test_screen_p_definition_is_stated_in_the_module_doc_and_the_table():
+    for needle in ("SCREEN P", "6276924696", "p_pct = (1 + #{m_b <= 0}) / (1 + B)", "#{m_b - xbar >= xbar}", "0.25 SOL"):
+        assert needle in S.__doc__
+    assert "max(p_pct, p_null)" in S.SCREEN_P_DEFINITION and "fresh" in S.SCREEN_P_DEFINITION and "None" in S.SCREEN_P_DEFINITION
+    assert (S.SCREEN_P_B, S.SCREEN_P_SEED, S.SCREEN_P_B_MIN, S.SCREEN_P_B_MAX) == (10_000, 1, 1_000, 1_000_000)
+
+
+def test_screen_p_leaves_the_pinned_files_alone():
+    here = Path(S.__file__).resolve().parent
+    assert hashlib.sha256((here / "arena_report_legs.py").read_bytes()).hexdigest() == S.REPORT_LEGS_PIN
+
+
+def test_screen_p_cell_over_several_utc_dates_reproduces_both_bounds_the_kill_used():
+    st = random_states(400, seed=21)
+    st["T"] = day_vec(400, 6) * 86400 + 3600  # six UTC dates
+    cfg = S.screen_cfg()
+    day, blk = st["T"] // 86400, np.zeros(400, np.int64)
+    stats = {f"1.9|{rule}|rent0|{fail}": S.stat(S.legs(st, S.STAKE_SOL * 1e9, 1.9, rule, cfg)[fail], day, blk, ["a"]) for rule in S.STRAND_RULES for fail in S.FAILS}
+    sp = S.screen_p_cell(st, cfg, stats, B=2_000)
+    assert sp["B"] == 2_000 and set(sp["sub_cells"]) == {"total|flat", "total|press", "sc|flat", "sc|press"}
+    for key, c in sp["sub_cells"].items():
+        assert c["n"] == 400 and c["date_cluster"]["k_dates"] == 6 and c["p"] is not None and c["date_cluster"]["p"] is not None
+        assert c["ci90_lo_first1000_equals_stat"] is True and c["date_cluster"]["ci90_lo_first1000_equals_stat"] is True
+        assert c["date_cluster"]["p"] == max(c["date_cluster"]["p_pct"], c["date_cluster"]["p_null"])
+    assert sp["cell_p"] == max(c["p"] for c in sp["sub_cells"].values()) and sp["cell_p_date_cluster"] == max(c["date_cluster"]["p"] for c in sp["sub_cells"].values())
+    none = S.screen_p_cell(None, cfg, None, B=1_000)
+    assert none["cell_p"] is None and none["cell_p_date_cluster"] is None
+
+# ------------------------------------------------------------------------------------------------------------------------------ 8. event-driven exits (ExitSpec.exit_fire): the kit streams a pure predicate
+RATE, SPS = 2.5, 0.4  # the synthetic tape's slot rate (see NHOUR, KMAX); k_slow at 1.9 s = ceil(1.9 / 0.4) = 5, so the floor is sd + 6 and a 120 s hold is 300 slots
+SD0 = 1010
+FLOOR, CAP = SD0 + 6, SD0 + 300
+
+
+def ev_pool(whales=(1100, 1200), decoys=(1012,), jump=None, n=400) -> dict:
+    """One print a slot from slot 1000, buys on even offsets. A whale is a 2 SOL buy; a decoy is a whale BEFORE the landing floor. `jump` = a slot whose buy moves the price up 11%."""
+    sl = 1000 + np.arange(n)
+    ib = np.arange(n) % 2 == 0
+    so, tk = np.full(n, 1e8), np.full(n, 1e9)
+    for w in (*whales, *decoys):
+        ib[w - 1000], so[w - 1000] = True, 2e9
+    if jump is not None:
+        ib[jump - 1000], tk[jump - 1000] = True, 1e13
+    return {"sl": sl.astype(np.int64), "ib": ib, "so": so, "tk": tk, "q": np.full(n, 20e9), "b": np.full(n, 1e14), "v": np.full(n, float(V))}
+
+
+def whale_fire(thr: float = 1e9):
+    """A PURE predicate: the print slot being asked about holds a buy of >= thr lamports."""
+
+    def fire(view):
+        r = view.rows()
+        m = r["sl"] == view.slot
+        return bool((r["ib"][m] & (r["so"][m] >= thr)).any())
+
+    return fire
+
+
+def resolve(a, spec, sd=SD0):
+    return S.resolve_exit(a, S.post_price(a), sd, spec, RATE, SPS)
+
+
+def test_an_exit_fires_at_the_right_slot_and_is_an_event_exit():
+    a = ev_pool()
+    assert S._exit_clock(S.ExitSpec(120), SD0, RATE, SPS) == (FLOOR, CAP, False)
+    assert resolve(a, S.ExitSpec(120, exit_fire=whale_fire())) == (1100, S.EVENT_CODE, False)  # the decoy at 1012 is before the floor 1016: never asked about
+    assert S.EXIT_REASONS[S.EVENT_CODE] == "event" and S.EXIT_REASONS[:4] == ("time", "tp", "sl", "trail")
+    assert resolve(a, S.ExitSpec(120)) == (CAP, 0, False)  # the same spec without the predicate is a plain time exit
+    assert resolve(ev_pool(whales=(FLOOR,)), S.ExitSpec(120, exit_fire=whale_fire()))[:2] == (FLOOR, S.EVENT_CODE)  # the floor slot itself is asked about
+    assert resolve(ev_pool(whales=(CAP,)), S.ExitSpec(120, exit_fire=whale_fire()))[:2] == (CAP, S.EVENT_CODE)  # so is the cap slot: a fire there is an event exit, not a time exit
+
+
+def test_the_cap_wins_when_nothing_fires():
+    a = ev_pool()
+    assert resolve(a, S.ExitSpec(120, exit_fire=whale_fire(5e9))) == (CAP, 0, False)  # no print is that big
+    assert resolve(a, S.ExitSpec(120, exit_fire=lambda v: False)) == (CAP, 0, False)
+    assert resolve(ev_pool(whales=(), decoys=(1012, CAP + 20)), S.ExitSpec(120, exit_fire=whale_fire()))[:2] == (CAP, 0)  # whales outside [floor, cap] are never asked about
+    assert resolve(a, S.ExitSpec(3, exit_fire=lambda v: False)) == (SD0 + 8, 0, False)  # the shortest hold (3 s = 8 slots here): its own cap
+    clamp = S.resolve_exit(a, S.post_price(a), SD0, S.ExitSpec(3, exit_fire=lambda v: v.slot == v.landing_slot), 1.0, 0.4)  # 3 slots < the floor sd + 6: clamped to it; a fire AT the floor is allowed
+    assert clamp == (SD0 + 6, S.EVENT_CODE, True)
+
+
+def test_tp_sl_trail_still_apply_whichever_fires_first_wins():
+    a = ev_pool(jump=1050)
+    assert resolve(a, S.ExitSpec(120, tp=1.05)) == (1050, 1, False)  # the price rule alone: the 11% jump
+    assert resolve(a, S.ExitSpec(120, tp=1.05, exit_fire=whale_fire())) == (1050, 1, False)  # tp (1050) before the whale (1100): tp wins
+    assert resolve(a, S.ExitSpec(120, tp=1.05, exit_fire=lambda v: v.slot == 1030)) == (1030, S.EVENT_CODE, False)  # a fire before the tp wins
+    assert resolve(a, S.ExitSpec(120, tp=1.05, exit_fire=lambda v: v.slot == 1050)) == (1050, 1, False)  # the same slot: the price rule keeps its code, the slot is the same
+    assert resolve(a, S.ExitSpec(120, tp=1.5, exit_fire=whale_fire()))[:2] == (1100, S.EVENT_CODE)  # a tp that is never hit: the fire beats the cap
+    stop = resolve(ev_pool(), S.ExitSpec(120, sl=0.99, exit_fire=whale_fire()))
+    assert stop[1] in (S.EVENT_CODE, 2) and stop[0] <= 1100  # a stop (if the path has one) or the whale, never later than the whale
+
+
+def test_the_predicate_sees_only_rows_up_to_the_slot_it_is_asked_about_and_is_asked_at_print_slots():
+    a = ev_pool()
+    asked, bad = [], []
+
+    def spy(view):
+        asked.append(view.slot)
+        r = view.rows()
+        bad.append(int(r["sl"].max()) != view.slot or int(view._a["sl"].max()) != view.slot or r["sl"].flags.writeable or r["so"].flags.writeable or len(r["sl"]) != view.slot - 1000 + 1)
+        assert (view.sd, view.landing_slot, view.cap_slot, view.rate, view.sps) == (SD0, FLOOR, CAP, RATE, SPS)
+        assert view.upto(view.slot)["sl"].max() == view.slot and view.upto(1000)["sl"].tolist() == [1000]  # history before the entry is there
+        with pytest.raises(S.ExitLookAhead):
+            view.upto(view.slot + 1)  # one slot ahead: refused
+        with pytest.raises(ValueError):
+            r["so"][0] = 0.0  # read-only
+        return False
+
+    assert resolve(a, S.ExitSpec(120, exit_fire=spy)) == (CAP, 0, False)
+    assert asked == list(range(FLOOR, CAP + 1)) and not any(bad)  # every print slot from the floor to the cap, once, on rows that END at that slot
+    sparse = ev_pool()
+    keep = np.arange(400) % 7 == 0
+    sparse = {k: v[keep] for k, v in sparse.items()}
+    got = []
+    resolve(sparse, S.ExitSpec(120, exit_fire=lambda v: got.append(v.slot) or False))
+    assert got == [s for s in sparse["sl"].tolist() if FLOOR <= s <= CAP]  # only slots that have a print are asked about
+    for bad_return in (1100, None, 1.0, "x", np.int64(1)):
+        with pytest.raises(S.ExitFireError, match="bool"):
+            resolve(a, S.ExitSpec(120, exit_fire=lambda v, r=bad_return: r))
+    assert resolve(a, S.ExitSpec(120, exit_fire=lambda v: np.bool_(v.slot == 1100)))[:2] == (1100, S.EVENT_CODE)  # numpy bools are fine
+
+
+def test_exit_fire_must_be_callable_and_the_spec_stays_hashable():
+    assert S.exit_problem(S.ExitSpec(60, exit_fire="x")) and "callable" in S.exit_problem(S.ExitSpec(60, exit_fire=5))
+    assert S.exit_problem(S.ExitSpec(60, exit_fire=whale_fire())) is None and S.exit_problem(S.ExitSpec(60)) is None
+    f = whale_fire()
+    assert {S.ExitSpec(60, exit_fire=f), S.ExitSpec(60, exit_fire=f)} == {S.ExitSpec(60, exit_fire=f)}  # frozen dataclass, a callable compares by identity
+
+    @dataclasses.dataclass(frozen=True)
+    class SurgeExit(S.ExitSpec):  # how hunt23's W2-F extends it
+        surge: str | None = None
+
+    assert S.exit_problem(SurgeExit(60, cell="c", surge="W", exit_fire=f)) is None
+
+
+def spaced_triggers(rows, key="A", h=0, lo=1000, hi=8000, gap=700) -> list[int]:
+    out, last = [], -10**9
+    for s in own_slots(rows, key, h, lo, hi):
+        if s - last >= gap:  # a trip is open at most 300 slots + the 150-slot cooldown: none overlaps
+            out.append(s)
+            last = s
+    return out
+
+
+def test_a_fired_exit_lands_by_the_normal_exit_lag_rule_in_the_kit(tape):
+    rows, files = tape
+    thr = 1.3e9
+    picks = spaced_triggers(rows)
+    assert len(picks) >= 6
+    evs = run_kit(files, [(POOLS["A"], s, S.ExitSpec(120, exit_fire=whale_fire(thr))) for s in picks])
+    tr = S._cat(evs.acc[0])
+    a_rows = sorted((r["slot"], r["side"], r["sol_lamports"]) for r in rows if r["pool"] == POOLS["A"])
+    n_fire = n_twin = 0
+    for i, sd in enumerate(tr["sd"].tolist()):
+        want = next((s for s, side, sol in a_rows if sd + 6 <= s <= sd + 300 and side == "buy" and sol >= thr), None)  # the independent scalar scan of the raw rows
+        assert (int(tr["xs"][i]), int(tr["why"][i])) == ((want, S.EVENT_CODE) if want is not None else (sd + 300, 0)), (sd, want)
+        if want is None:
+            continue
+        n_fire += 1
+        if want - sd < 8:  # a time cap needs hold >= 3 s (8 slots here)
+            continue
+        n_twin += 1
+        twin = S._cat(run_kit(files, [(POOLS["A"], sd, S.ExitSpec((want - sd) / RATE))]).acc[0])  # the same exit DECIDED at `want` by a plain time cap
+        assert (int(twin["xs"][0]), int(twin["why"][0])) == (want, 0)
+        assert tr["Qx"][i] == twin["Qx"][0] and tr["Bx"][i] == twin["Bx"][0]  # priced at the state of fire slot + 7 feed slots + the exit lag: the engine's rule, not the fire slot itself
+        assert want + S.D + int(F.exit_lag_vec(np.array([SPS]))[0]) > want
+    assert 0 < n_twin <= n_fire < len(tr["sd"])  # some exits fire (and are twinned), some run to the cap
+
+
+def pool_arrays_of(files, key="A"):
+    """The whole pool's rows across all hours as the kit's arrays (for the batch resolver)."""
+    vm = S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])
+    ch = [S.Screen._chunk(hr, hr.pool_index()[POOLS[key]]) for hr in S.iter_hours(files, "synthetic", "backfill", vm) if POOLS[key] in hr.pool_index()]
+    a = {k: np.concatenate([c[k] for c in ch]) for k in ch[0]}
+    a["ib"] = a["ib"].astype(bool)
+    return a, S.post_price(a)
+
+
+def test_the_kits_hour_by_hour_stream_equals_the_batch_resolver_including_tp_sl_and_a_hold_across_hours(tape):
+    """Admission and the exit are decided as the data arrive (hour by hour); the batch resolver on the whole pool must give the same exit for every admitted attempt."""
+    rows, files = tape
+    a, pp = pool_arrays_of(files)
+    early = own_slots(rows, "A", 0, 3000, 8800)[::9] + own_slots(rows, "A", 1, 100, 8000)[::25]
+    late = own_slots(rows, "A", 0, 8300, 8990)[::6]  # a few hundred slots before the hour ends, and a whale that almost never comes: the position is open across the hour boundary
+    crossed = 0
+    for hold, tp, sl_, thr, sds in ((120, None, None, 1.3e9, early), (1200, 1.003, 0.997, 1.3e9, early), (1500, None, 0.998, 1.3e9, early), (1500, None, None, 1.4999e9, late), (1500, 1.004, 0.996, 1.4999e9, late)):
+        spec = S.ExitSpec(hold, tp=tp, sl=sl_, exit_fire=whale_fire(thr))
+        scr = run_kit(files, [(POOLS["A"], s, spec) for s in sds])
+        tr = S._cat(scr.acc[0])
+        assert len(tr["sd"]) >= (3 if sds is early else 1), (hold, tp, sl_)
+        crossed += sum((int(x) - SLOT0) // 9000 > (int(s) - SLOT0) // 9000 for x, s in zip(tr["xs"], tr["sd"]))
+        for i, sd in enumerate(tr["sd"].tolist()):
+            xs, why, _ = S.resolve_exit(a, pp, sd, spec, RATE, SPS)
+            assert (int(tr["xs"][i]), int(tr["why"][i])) == (xs, why), (hold, tp, sl_, sd)
+    assert crossed > 0  # some exits were decided in a LATER hour than the entry, by the hour-by-hour stream
+    spec = S.ExitSpec(120, exit_fire=whale_fire(1.3e9))
+    assert collections.Counter(S._cat(run_kit(files, [(POOLS["A"], s, spec) for s in early]).acc[0])["why"].tolist())[S.EVENT_CODE] > 0
+
+
+def test_hour_by_hour_the_rule_has_seen_triggers_only_up_to_the_hour_before_the_slot_it_is_asked_about(tape):
+    """By construction: at slot s of hour h > the entry hour the rule has run triggers() for hours <= h-1 only (the exits are advanced BEFORE the hour's triggers())."""
+    rows, files = tape
+
+    class LogRule(ScriptRule):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.seen: list[int] = []
+
+        def triggers(self, hour, state):
+            self.seen.append(hour.idx)
+            return super().triggers(hour, state)
+
+    log: list[tuple[int, int]] = []
+    rule_box: list[LogRule] = []
+
+    def pred(view):
+        log.append(((view.slot - SLOT0) // 9000, max(rule_box[0].seen)))
+        return False
+
+    sd = own_slots(rows, "A", 0, 7900, 8500)[0]
+    rule = LogRule([(POOLS["A"], sd, S.ExitSpec(4800, exit_fire=pred))], cells=(S.Cell("c", event_triggered=False, event_exit=True),))  # 4,800 s = 12,000 slots: hours 0, 1 and 2
+    rule_box.append(rule)
+    scr = S.Screen(rule)
+    scr.run_block(0, "synthetic", S.iter_hours(files, "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
+    hours_asked = sorted({h for h, _ in log})
+    assert hours_asked == [0, 1, 2] and rule.seen == [0, 1, 2]
+    assert all(seen == (h if h == 0 else h - 1) for h, seen in log)  # entry hour: after its own triggers(); every later hour: only up to the hour before
+    assert scr.counters["exit_fire_positions"] == 1
+
+
+def first_print_ge(rows, key, x):
+    return min(r["slot"] for r in rows if r["pool"] == POOLS[key] and r["slot"] >= x)
+
+
+def test_qp_fixture_peak_picker_through_the_views_private_arrays_cannot_see_the_peak(tape):
+    """QP #760: 'sell at the price PEAK of [landing, cap], read through view._a'. The arrays end at the slot being asked about, so the best it can do is the running maximum, which
+    is the first print: it never picks the peak (the kit never holds a later row in the view)."""
+    rows, files = tape
+
+    def peak(view):
+        a = view._a
+        idx = np.flatnonzero(a["sl"] >= view.landing_slot)
+        return bool(idx.size and a["sl"][idx[np.argmax(a["pp"][idx])]] == view.slot)
+
+    scr = kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), peak)
+    tr = S._cat(scr.acc[0])
+    a, pp = pool_arrays_of(files)
+    n_peak = 0
+    for i, sd in enumerate(tr["sd"].tolist()):
+        pool_is_a = int(tr["pool"][i]) == zlib.crc32(POOLS["A"].encode())
+        if pool_is_a and int(tr["why"][i]) == S.EVENT_CODE:
+            assert int(tr["xs"][i]) == first_print_ge(rows, "A", sd + 6)  # the running max of a stream is its first print
+            j0, j1 = int(np.searchsorted(a["sl"], sd + 6, "left")), int(np.searchsorted(a["sl"], sd + 300, "right"))
+            n_peak += int(a["sl"][j0 + int(np.argmax(pp[j0:j1]))]) == int(tr["xs"][i])
+    r = scr.results()["c"]
+    assert r["exits"]["event"] > 0 and r["event_exit"]["probe_failures"] == 0  # honest-but-dumb: no look-ahead, so nothing for the probe to find
+    assert n_peak < r["exits"]["event"]  # the real peak was not chosen
+
+
+def test_qp_fixture_a_memo_built_in_triggers_never_holds_a_later_hour_and_an_unguarded_foresight_is_caught(tape):
+    """QP #760: foresight 'sell at the first print >= landing iff the cap price is lower', memoised outside the view. (1) The memo lives in rule state; at slot s the rule has seen
+    triggers() up to the hour before only, so with a cap in a LATER hour it cannot know the cap price (impossible). (2) Within the entry hour the rule has seen the whole hour:
+    the prefix probe cannot see a foresight that fires at the first slot asked; the entry-hour re-run (test_the_entry_hour_rerun_*) is the check for it."""
+    rows, files = tape
+
+    class MemoRule(ScriptRule):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.mem: dict[str, tuple] = {}
+
+        def triggers(self, hour, state):
+            for p in hour.pools.tolist():
+                s = hour.rows(hour.pool_index()[p])
+                px = (hour.q[s] + hour.v[s]) / hour.b[s]
+                old = self.mem.get(p, (np.zeros(0, np.int64), np.zeros(0)))
+                self.mem[p] = (np.concatenate([old[0], hour.sl[s]]), np.concatenate([old[1], px]))  # the rule's own buffer of every hour it has been handed
+            return super().triggers(hour, state)
+
+    consulted: list[tuple[int, int]] = []
+
+    def foresight(box, guard):
+        def pred(view):
+            sl, px = box[0].mem[POOLS["A"]]
+            i0 = int(np.searchsorted(sl, view.landing_slot, "left"))
+            i1 = int(np.searchsorted(sl, view.cap_slot, "right")) - 1
+            if i0 >= len(sl):
+                return False
+            consulted.append(((int(sl[i1]) - SLOT0) // 9000, (view.slot - SLOT0) // 9000))  # (hour of the last price it used as 'the cap price', hour of the asked slot)
+            return bool(px[i1] != px[i0]) and (not guard or view.slot == int(sl[i0]))  # 'the cap price differs from the landing price' (the stand-in for 'is lower')
+        return pred
+
+    sds = [s for s in own_slots(rows, "A", 0, 7900, 8800)[::6]][:3]
+    for hold, guard in ((4800, True), (120, False)):  # cap in a later hour / cap inside the entry hour
+        box: list[MemoRule] = []
+        spec = S.ExitSpec(hold, exit_fire=foresight(box, guard))
+        rule = MemoRule([(POOLS["A"], s, spec) for s in (sds[:1] if hold > 1000 else spaced_triggers(rows))], cells=(S.Cell("c", event_triggered=False, event_exit=True),))
+        box.append(rule)
+        consulted.clear()
+        scr = S.Screen(rule)
+        scr.run_block(0, "synthetic", S.iter_hours(files, "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
+        r = scr.results()["c"]
+        if hold > 1000:
+            assert consulted and all(last_h <= asked_h for last_h, asked_h in consulted)  # the price it called 'the cap price' was never from after the hour being asked about
+            assert any(last_h < ((sds[0] + hold * 5 // 2 - SLOT0) // 9000) for last_h, _ in consulted)  # ...and so it was not the real cap price: no foresight
+        else:
+            assert r["exits"]["event"] > 0 and r["event_exit"]["probe_failures"] == 0  # it fires at the FIRST slot asked: the prefix probe has no earlier slot to ask (the entry-hour re-run is the check, below)
+
+
+def test_qp_fixture_a_skipped_fire_when_later_is_higher_is_impossible(tape):
+    """QP #760: 'honest +1% trigger that returns None when the cap price is higher'. The predicate can only look at rows <= the slot, so there is nothing later to compare with:
+    the exits equal the honest stream's, trip for trip."""
+    peeked: list[int] = []
+
+    def honest(view):
+        r = view.upto(view.slot)
+        i0 = int(np.searchsorted(r["sl"], view.landing_slot, "left"))
+        return bool(i0 < len(r["sl"]) and r["pp"][-1] >= 1.01 * r["pp"][i0] and view.slot > r["sl"][i0])
+
+    def suppress(view):
+        a = view._a
+        later = a["pp"][a["sl"] > view.slot]  # the attempted peek at the future
+        peeked.append(int(later.size))
+        return honest(view) and not (later.size and later.max() > a["pp"][-1])
+
+    def exits(fire):
+        return {(int(t["sd"][i]), int(t["pool"][i])): (int(t["xs"][i]), int(t["why"][i])) for t in [S._cat(kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), fire).acc[0])]
+                for i in range(len(t["sd"]))}
+
+    base, sup = exits(honest), exits(suppress)
+    assert base == sup and any(w == S.EVENT_CODE for _, w in base.values()) and set(peeked) == {0}  # it saw nothing later, ever
+
+
+def test_the_prefix_probe_catches_a_flaky_and_an_early_firing_predicate_and_passes_an_honest_one():
+    a = ev_pool()
+    pp = S.post_price(a)
+
+    def probe(fire, f):
+        pos = S._Pos(S.ExitSpec(120, exit_fire=fire), SD0, RATE, SPS)
+        return S.exit_fire_probe(pos, a, pp, f)
+
+    assert probe(whale_fire(), 1100) is True  # fires again on rows <= 1100, silent at 1099
+    assert probe(lambda v: True, 1100) is False  # fires at fire - 1 as well: not caused by the fire slot's own prints
+    assert probe(lambda v: v.slot >= 1100, 1100) is True  # a clock rule is a function of the view too: silent at 1099, fires at 1100
+    assert probe(lambda v: v.slot >= 1099, 1100) is False  # it would have fired at 1099: the fire slot is not the first
+    calls = iter(range(10**6))
+    flaky = lambda v: next(calls) == 0 and v.slot == 1100  # noqa: E731
+    assert flaky(type('V', (), {'slot': 1100})()) is True  # the stream's own ask (it fired)
+    assert probe(flaky, 1100) is False  # not a function of the view: the probe's second ask differs
+    assert probe(lambda v: int(v._a["sl"][list(v._a["sl"]).index(1100) + 1]) > 0 or True, 1100) is False  # reaches for a row that is not there: a raise is a failure
+    assert probe(lambda v: (_ for _ in ()).throw(RuntimeError("boom")), 1100) is False
+
+
+def test_causal_probe_probes_the_exit_too_when_asked(tape):
+    rows, files = tape
+    vm = S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])
+    hr = next(S.iter_hours(files[:1], "synthetic", "backfill", vm))
+    slot = int(hr.sl[hr.rows(hr.pool_index()[POOLS["A"]])][5])
+    st = S.RunState("synthetic")
+
+    class R:
+        def __init__(self, fire):
+            self.spec = S.ExitSpec(120, exit_fire=fire)
+
+        def triggers(self, hour, state):
+            j = hour.pool_index()[POOLS["A"]]
+            return [(POOLS["A"], slot, self.spec)] if (hour.sl[hour.rows(j)] <= slot).any() else []
+
+    assert S.causal_probe(R(whale_fire(1.0e9)), hr, st, POOLS["A"], slot) and S.causal_probe(R(whale_fire(1.0e9)), hr, st, POOLS["A"], slot, exit_fire=True)
+    always = lambda v: True  # noqa: E731
+    assert S.causal_probe(R(always), hr, st, POOLS["A"], slot)  # the entry alone is causal...
+    assert S.causal_probe(R(always), hr, st, POOLS["A"], slot, exit_fire=True)  # ...and a pure always-true exit is a fire at the first slot asked: nothing for the prefix probe or the re-run to object to
+    n = [0]
+
+    def third_ask(v):  # not a pure function of the view: True only on its third call, whatever it is asked
+        n[0] += 1
+        return n[0] == 3
+
+    assert not S.causal_probe(R(third_ask), hr, st, POOLS["A"], slot, exit_fire=True)  # fires on the third slot asked, and the probe's second ask of that slot is False
+    assert not S.causal_probe(R(lambda v: 1), hr, st, POOLS["A"], slot, exit_fire=True)  # not a bool: refused, so not causal
+    assert S.causal_probe(R(lambda v: False), hr, st, POOLS["A"], slot, exit_fire=True)  # no fire: nothing to probe
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ 8b. the kit run, the probe, worst-in-slot, count-only
+def with_fire(script, fire):
+    return [(p, s, dataclasses.replace(e, exit_fire=fire)) for p, s, e in script]
+
+
+def kit_exit_cell(tape, cell: S.Cell, fire=None) -> "S.Screen":
+    rows, files = tape
+    script = script_for(rows) if fire is None else with_fire(script_for(rows), fire)
+    scr = S.Screen(ScriptRule(script, cells=(cell,)))
+    scr.run_block(0, "synthetic", S.iter_hours(files, "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
+    return scr
+
+
+GOLDEN = {"event": "35fce10beb3c9272f263f616070deb7e60006dec9f3429a467a6950f823b2b91", "event_table": "82e170be2df7a893f4306531983d010b367bf2d6c78bc67264e4a9e460a3a6ec",
+          "grid": "47b3a8c746f27801361ce778d7df481889c3058cb1a4dd08330b5ebe2b6126cd", "grid_table": "a9ef5d17440247fe1432b11d4a8a3a42545e94240854735dd27d9f5b64c53b9a",
+          "count_only": "45cd2cf604b9ea5698671d4031f2488bbfe9f7fd4997811c71230cb9ba81f8ca", "count_only_md": "7e45a532630b2194b4610c5b7983c2584cba4dfd2485c42c750b097f7bec96e5"}
+BASE_COMMIT = "489fa7e"  # main before this change: #758 (screen p) is on top of #756; the golden below is that kit's output, screen_p keys and section 5 included
+
+
+def sha(x: str) -> str:
+    return hashlib.sha256(x.encode()).hexdigest()
+
+
+def old_style_outputs(tape, kit=S) -> dict:
+    rows, files = tape
+    out = {}
+    vm = kit.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])
+    for name, ev in (("event", True), ("grid", False)):
+        scr = kit.Screen(ScriptRule(script_for(rows), cells=(kit.Cell("c", event_triggered=ev),)))
+        scr.run_block(0, "synthetic", kit.iter_hours(files, "synthetic", "backfill", vm))
+        res = scr.results()
+        out[name], out[name + "_table"] = sha(json.dumps(res, default=float)), sha(kit.table_md(res, scr.blocks, {"rule": "script"}))
+    co = kit.Screen(ScriptRule(script_for(rows)), count_only=True)
+    co.run_block(0, "explore-0814", kit.iter_hours(files, "synthetic", "backfill", vm))
+    r = co.results()
+    out["count_only"], out["count_only_md"] = sha(json.dumps(r, default=float)), sha(kit.counts_md(r, {"rule": "script", "hours_subset": False}))
+    return out
+
+
+def test_without_an_exit_fire_the_results_are_byte_identical_to_the_kit_before_this_change(tape):
+    """results.json (priced, event and grid cell), TABLE.md, counts.json and COUNTS.md of a run with no exit_fire are the very bytes the kit wrote at 489fa7e (pinned sha256 of the
+    json.dumps / text on this fixture): no new key, no new line, `exits` still has only time / tp / sl / trail."""
+    got = old_style_outputs(tape)
+    assert got == GOLDEN
+    r = json.loads(json.dumps(run_kit(tape[1], script_for(tape[0])).results(), default=float))["c"]
+    assert list(r["exits"]) == ["time", "tp", "sl", "trail"] and "event_exit" not in r and r["registration"].startswith(("SCREEN-SURVIVOR", "KILLED", "PROVISIONAL"))
+
+
+def test_without_an_exit_fire_the_results_equal_the_base_commits_kit_when_it_is_in_the_clone(tape, tmp_path):
+    """The same comparison against the base commit's own file, run side by side (skipped when the clone does not have it)."""
+    repo = Path(S.__file__).resolve().parent.parent
+    p = subprocess.run(["git", "-C", str(repo), "show", f"{BASE_COMMIT}:tools/arena_screen.py"], capture_output=True, text=True)
+    if p.returncode != 0:
+        pytest.skip(f"{BASE_COMMIT} is not in this clone")
+    base_file = tmp_path / "arena_screen_base.py"
+    base_file.write_text(p.stdout)
+    import importlib.util as iu
+
+    spec = iu.spec_from_file_location("arena_screen_base", base_file)
+    base = iu.module_from_spec(spec)
+    sys.modules["arena_screen_base"] = base
+    spec.loader.exec_module(base)
+    assert old_style_outputs(tape, kit=base) == old_style_outputs(tape, kit=S) == GOLDEN
+
+
+def _lower_leg_swap(scr, case):
+    base = S._cat(scr.acc[0])
+    scr.acc[0] = [dict(base, **(lower_leg_st(np.ones(len(base["ref"]), bool), np.zeros(len(base["ref"]), bool)) if case == "all_win" else lower_leg_case(len(base["ref"]), case)))]
+    return scr.results()["c"]
+
+
+def test_an_event_exit_cell_reports_its_share_and_probes_every_event_exit(tape, monkeypatch):
+    monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))
+    scr = kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), whale_fire(1.0e9))
+    r = _lower_leg_swap(scr, "all_win")  # hand-set winning states: isolates the event-exit report from this fixture's random-walk prices (no price claim in the fixture)
+    e = r["event_exit"]
+    assert 0 < r["exits"]["event"] < r["attempts"] and e["event_exits"] == r["exits"]["event"] and e["fire_share"] == pytest.approx(r["exits"]["event"] / r["attempts"])
+    assert sum(r["exits"].values()) == r["attempts"] and e["declared"] is True and e["undeclared_use"] is False and e["worst_in_slot_kill_applies"] is True
+    pb = e["probe_per_block"]["synthetic"]
+    assert pb == {"event_exits_probed": r["exits"]["event"], "failures": 0} and e["probe_failures"] == 0 and scr.counters["exit_probe_failures"] == 0
+    assert scr.counters["exit_fire_events"] == r["exits"]["event"] and scr.counters["exit_fire_positions"] == r["attempts"]
+    # 200 per block are not on a fixture this small: NOT a survivor until the probes pass (QP #760 item 6)
+    assert e["probe_ok"] is False and e["probe_min_per_block"] == 200 and r["registration"].startswith("PROVISIONAL-BLOCKED") and "SURVIVOR" not in r["registration"]
+    md = S.table_md({"c": r}, ["synthetic"], {"rule": "script"})
+    assert "## 6. Event exits" in md and "EVENT-EXIT" in md and f"| c | {r['attempts']} | {e['event_exits']} |" in md and "never a survivor" in md
+    monkeypatch.setattr(S, "EXIT_PROBE_MIN", 1)  # the 200-per-block requirement is a constant: with it met, the survivor label is allowed
+    ok = _lower_leg_swap(kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), whale_fire(1.0e9)), "all_win")
+    assert ok["event_exit"]["probe_ok"] is True and ok["registration"] == "SCREEN-SURVIVOR (worst-in-slot measured > 0 on all four sub-cells)"
+
+
+def test_the_kit_kills_a_cell_whose_event_exits_fail_the_prefix_probe_and_passes_an_honest_stream(tape, monkeypatch):
+    monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))
+    cell = S.Cell("c", event_triggered=False, event_exit=True)
+    calls = iter(range(10**9))
+    for name, fire in (("flaky", lambda v: next(calls) % 3 == 0), ("state-dependent", lambda v: next(calls) % 7 == 3)):
+        bad = kit_exit_cell(tape, cell, fire)
+        r = bad.results()["c"]
+        assert r["exits"]["event"] > 0 and r["event_exit"]["probe_failures"] == bad.counters["exit_probe_failures"] > 0, name
+        assert r["kill"] is True and r["registration"] == "KILLED" and any(w.startswith("exit-causality probe failed") for w in r["kill_reasons"]), name
+    good = kit_exit_cell(tape, cell, whale_fire(1.0e9)).results()["c"]
+    assert good["event_exit"]["probe_failures"] == 0 and not any("exit-causality" in w for w in good["kill_reasons"])  # (it may still be killed on this fixture's random-walk prices: not for causality)
+
+
+def test_a_cell_is_all_exit_fire_or_none(tape):
+    rows, files = tape
+    s0, s1 = own_slots(rows, "A", 0, 1000, 3000)[0], own_slots(rows, "B", 0, 1000, 3000)[0]
+    scr = run_kit(files, [(POOLS["A"], s0, S.ExitSpec(120, exit_fire=whale_fire())), (POOLS["B"], s1, S.ExitSpec(120))])
+    assert scr.counters["refused_exit_fire_mixed_cell"] == 1 and scr.results()["c"]["attempts"] == 1 and scr.counters["exit_fire_positions"] == 1
+    plain = run_kit(files, [(POOLS["A"], s0, S.ExitSpec(120)), (POOLS["B"], s1, S.ExitSpec(120))])
+    assert "refused_exit_fire_mixed_cell" not in plain.counters and plain.results()["c"]["attempts"] == 2
+
+
+@pytest.mark.parametrize("case", ["guard_rescue_flatters_worst", "worst_in_slot_is_lower"])
+@pytest.mark.parametrize("cell_kw, fire, killed, note", [
+    (dict(event_exit=True), whale_fire(1.0e9), True, "declared event exit"),
+    (dict(event_exit=True), None, True, "declared event exit, no callable on the specs"),
+    (dict(), whale_fire(1.0e9), True, "undeclared: carries an exit_fire, treated as an event exit"),
+    (dict(), None, False, "grid entry and a clock / price exit: reports only"),
+])
+def test_an_event_exit_cell_is_killed_by_the_lower_leg_even_when_its_entry_is_grid_based(tape, monkeypatch, case, cell_kw, fire, killed, note):
+    monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))  # isolate the worst-in-slot rule from the other kills
+    scr = kit_exit_cell(tape, S.Cell("c", event_triggered=False, **cell_kw), fire)
+    r = _lower_leg_swap(scr, case)
+    assert r["event_triggered"] is False and r["worst_in_slot"]["measured"] is True and all(not c["lower"]["mean_sol"] > 0 for c in r["worst_in_slot"]["sub_cells"].values()), note
+    wis = [w for w in r["kill_reasons"] if w.startswith("worst-in-slot")]
+    if killed:
+        assert r["kill"] is True and r["registration"] == "KILLED" and len(wis) == 1 and all(t in wis[0] for t in ("total/flat", "total/press", "sc/flat", "sc/press")), note
+        assert r["event_exit"]["worst_in_slot_kill_applies"] is True and r["event_exit"]["undeclared_use"] is (not cell_kw and fire is not None)
+        assert "EVENT-EXIT" in S.table_md({"c": r}, ["synthetic"], {"rule": "script"})
+    else:
+        assert r["kill"] is False and not wis and "event_exit" not in r and r["registration"] == "SCREEN-SURVIVOR (worst-in-slot measured)", note
+
+
+def test_a_positive_lower_leg_leaves_an_event_exit_cell_a_survivor_and_one_bad_sub_cell_kills_it(tape, monkeypatch):
+    monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))
+    real = S.worst_in_slot_legs
+
+    def one_bad(st, cfg):
+        o = real(st, cfg)
+        o["sub_cells"]["sc|press"]["lower"]["mean_sol"] = 0.0
+        return o
+
+    monkeypatch.setattr(S, "EXIT_PROBE_MIN", 1)
+    cell = S.Cell("c", event_triggered=False, event_exit=True)
+    assert not _lower_leg_swap(kit_exit_cell(tape, cell, whale_fire(1.0e9)), "all_win")["kill"]
+    monkeypatch.setattr(S, "worst_in_slot_legs", one_bad)
+    r = _lower_leg_swap(kit_exit_cell(tape, cell, whale_fire(1.0e9)), "all_win")
+    assert r["kill"] and any(w.endswith("mean <= 0 in sc/press") for w in r["kill_reasons"]) and r["registration"] == "KILLED"
+
+
+def test_count_only_with_an_exit_fire_is_a_time_only_bound_and_never_runs_the_callable(tape):
+    rows, files = tape
+    sl_ = own_slots(rows, "A", 0, 1000, 3000)
+
+    def boom(view):
+        raise AssertionError("count-only must not run the exit_fire")
+
+    script = [(POOLS["A"], sl_[0], S.ExitSpec(120, exit_fire=boom)), (POOLS["A"], sl_[1], S.ExitSpec(120, exit_fire=boom)), (POOLS["A"], sl_[-1], S.ExitSpec(120, exit_fire=boom))]
+    scr = run_kit(files, script, count_only=True, name="explore-0814", min_per_day=20.0)
+    res = scr.results()
+    r = res["c"]
+    assert r["triggers"] == 3 and r["attempts_upper_bound"] == 2 and r["exit_fire_triggers"] == 3 and r["attempts_bound_is_time_only"] is True and scr.t_price == 0.0 and not scr.acc[0]
+    cm = S.counts_md(res, {"rule": "script", "hours_subset": False})
+    assert "time-only: exit_fire present" in cm and "LOWER bound on attempts" in cm and "the RULES step-2 drop must not use it" in cm and "at least this many" in cm
+    assert r["time_only_figure_is"] == "lower_bound_on_attempts" and "attempts_upper_bound" in r  # the existing key keeps its name
+    assert r["explore_0814"]["below_step2_count"] is None and "DROP (<20)" not in cm  # undetermined: a script keyed on the boolean cannot drop the cell (QP #760 item 5-ii)
+    assert run_kit(files, [(POOLS["A"], sl_[0], S.ExitSpec(120))], count_only=True, name="explore-0814", min_per_day=20.0).results()["c"]["explore_0814"]["below_step2_count"] is True
+    plain = run_kit(files, [(POOLS["A"], sl_[0], S.ExitSpec(120))], count_only=True).results()["c"]
+    assert "attempts_bound_is_time_only" not in plain and "exit_fire_triggers" not in plain
+    doc = S.__doc__
+    assert "--count-only IS A TIME-ONLY BOUND when an exit_fire is present" in doc and "LOWER BOUND ON ATTEMPTS" in doc and "STEP-2 DROP MUST NOT USE IT" in doc and "PREFIX PROBE on EVERY event exit" in doc and "The KIT DRIVES IT, hour by hour" in doc
+
+
+def test_the_time_only_count_is_a_lower_bound_of_the_attempts_an_event_exit_really_makes(tape):
+    """Why the note says 'at least': with early exits the pool is free sooner, so the priced run admits at least as many attempts as the time-only overlap count."""
+    rows, files = tape
+    picks = [s for s in own_slots(rows, "A", 0, 1000, 8000)][::6]
+    script = [(POOLS["A"], s, S.ExitSpec(120, exit_fire=whale_fire(1.0e9))) for s in picks]
+    bound = run_kit(files, script, count_only=True).results()["c"]["attempts_upper_bound"]
+    priced = run_kit(files, script).results()["c"]["attempts"]
+    assert priced >= bound > 0 and priced > bound  # strictly more here: the fixture's whales free the pool early
+
+
+def test_the_kit_refuses_a_bad_exit_fire_and_a_look_ahead_one_stops_the_run(tape):
+    rows, files = tape
+    s0 = own_slots(rows, "A", 0, 1000, 3000)[0]
+    scr = run_kit(files, [(POOLS["A"], s0, S.ExitSpec(120, exit_fire="not callable"))])
+    assert scr.counters["refused_bad_exit"] == 1 and not scr.acc[0] and not scr.exit_used
+
+    def peek(view):
+        view.upto(view.cap_slot)
+        return False
+
+    with pytest.raises(S.ExitLookAhead):  # a Refused: the CLI turns it into exit code 2 and nothing is written as a result
+        run_kit(files, [(POOLS["A"], s0, S.ExitSpec(120, exit_fire=peek))])
+    with pytest.raises(S.ExitFireError):
+        run_kit(files, [(POOLS["A"], s0, S.ExitSpec(120, exit_fire=lambda v: 1))])
+    assert issubclass(S.ExitLookAhead, S.Refused) and issubclass(S.ExitFireError, S.Refused)
+
+
+def test_an_event_exit_cell_gets_the_screen_p_like_any_cell_and_the_p_is_untouched_by_the_event_exit(tape):
+    """#758's report-only screen p: computed after the verdict on the same trips, for a killed or a surviving event-exit cell, and nothing in it reads the event-exit fields."""
+    scr = kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), whale_fire(1.0e9))
+    r = scr.results()["c"]
+    sp = r["screen_p"]
+    assert sp["report_only"] is True and sp["B"] == S.SCREEN_P_B and set(sp["sub_cells"]) == {"total|flat", "total|press", "sc|flat", "sc|press"} and "event_exit" in r
+    again = S.screen_p_cell(S._cat(scr.acc[0]), scr.cfg[S.RENT_DECIDING], None, B=S.SCREEN_P_B)
+    assert again["cell_p"] == sp["cell_p"] and again["cell_p_date_cluster"] == sp["cell_p_date_cluster"]  # the same function on the same trips
+    md = S.table_md({"c": r}, ["synthetic"], {"rule": "script"})
+    assert md.index("## 5. Screen p") < md.index("## 6. Event exits")
+    off = S.Screen(ScriptRule(with_fire(script_for(tape[0]), whale_fire(1.0e9)), cells=(S.Cell("c", event_triggered=False, event_exit=True),)), screen_p=False)
+    off.run_block(0, "synthetic", S.iter_hours(tape[1], "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
+    r_off = off.results()["c"]
+    assert "screen_p" not in r_off and {k: v for k, v in r.items() if k != "screen_p"} == r_off  # nothing else moves with it
+    empty = S.Screen(ScriptRule([], cells=(S.Cell("c", event_triggered=False, event_exit=True),)))
+    r0 = empty.results()["c"]
+    assert r0["screen_p"]["cell_p"] is None and r0["event_exit"]["event_exits"] == 0 and r0["registration"] == "KILLED"  # n = 0: p None, not a pass
+
+
+def test_the_screen_p_path_and_the_stats_it_reads_are_source_identical_to_the_base_commit(tmp_path):
+    """EXP-028 Amendment 1 needs the screen p source identical to 489fa7e (#758): every screen_p_* function and constant, and the stat / boot_lo / legs it reads, are the very text of the base."""
+    import importlib.util as iu
+    import inspect
+
+    repo = Path(S.__file__).resolve().parent.parent
+    p = subprocess.run(["git", "-C", str(repo), "show", f"{BASE_COMMIT}:tools/arena_screen.py"], capture_output=True, text=True)
+    if p.returncode != 0:
+        pytest.skip(f"{BASE_COMMIT} is not in this clone")
+    (tmp_path / "base_screen_p.py").write_text(p.stdout)
+    spec = iu.spec_from_file_location("base_screen_p", tmp_path / "base_screen_p.py")
+    base = iu.module_from_spec(spec)
+    sys.modules["base_screen_p"] = base
+    spec.loader.exec_module(base)
+    funcs = ["screen_p_check", "_boot_means", "_cluster_ratios", "_tails", "screen_p_sub", "_max_p", "screen_p_cell", "screen_p_md", "stat", "boot_lo", "gate_row", "legs", "kill_verdict",
+             "worst_in_slot_legs", "registration_status"]
+    consts = ["SCREEN_P_B", "SCREEN_P_B_MIN", "SCREEN_P_B_MAX", "SCREEN_P_SEED", "SCREEN_P_SOURCE", "SCREEN_P_DEFINITION", "STAKE_SOL", "FAILS", "STRAND_RULES", "SUB_CELLS", "LAT_DECIDING"]
+    assert [f for f in funcs if inspect.getsource(getattr(S, f)) != inspect.getsource(getattr(base, f))] == []
+    assert [c for c in consts if getattr(S, c) != getattr(base, c)] == []
+
+
+class LeakRule:
+    """Keeps the ENTRY hour's rows of pool A in its state (`scratch`) or on itself (`attribute`) and gates its fire on the exact slot: foresight the prefix probe cannot see (it fires again on
+    rows <= the fire slot and is silent at fire - 1). `leak=False` is the honest twin: a predicate that reads the view only."""
+
+    def __init__(self, slot, channel, leak=True):
+        self.slot, self.channel, self.leak, self.attr, self.memo = slot, channel, leak, None, {}
+
+    def cells(self):
+        return [S.Cell("c", event_triggered=False, event_exit=True)]
+
+    def triggers(self, hour, state):
+        j = hour.pool_index().get(POOLS["A"])
+        if j is None or not (hour.sl[hour.rows(j)] <= self.slot).any():
+            return []
+        s = hour.rows(j)
+        mem = (hour.sl[s].copy(), (hour.q[s] + hour.v[s]) / hour.b[s])  # every row of the hour this call was handed (the cut run is handed only rows <= the entry slot)
+        if self.channel == "scratch":
+            state.scratch["mem"] = mem
+            box = state.scratch
+            get = lambda: box["mem"]  # noqa: E731
+        elif self.channel == "memo":  # the reviewer's variant (#760 at 7f5f3d6): kept on self, keyed by hour.idx, FIRST WRITE WINS
+            self.memo.setdefault(hour.idx, mem)
+            idx = hour.idx
+            get = lambda: self.memo[idx]  # noqa: E731
+        else:
+            self.attr = mem
+            get = lambda: self.attr  # noqa: E731
+
+        def leak_fire(view):
+            sl, px = get()
+            i0 = int(np.searchsorted(sl, view.landing_slot, "left"))
+            i1 = int(np.searchsorted(sl, view.cap_slot, "right")) - 1
+            return bool(i0 < len(sl) and i1 >= i0 and px[i1] != px[i0] and view.slot == int(sl[i0]))
+
+        return [(POOLS["A"], self.slot, S.ExitSpec(120, cell="c", exit_fire=leak_fire if self.leak else whale_fire(1.0e9)))]
+
+
+@pytest.mark.parametrize("channel", ["scratch", "attribute", "memo"])
+def test_the_entry_hour_rerun_fails_a_rule_that_keeps_the_entry_hours_later_rows_and_gates_on_the_exact_slot(tape, monkeypatch, channel):
+    """The manager's decision on #760 (QP option b): re-run triggers() on the entry hour cut after the entry slot, take the cut run's ExitSpec for the same (pool, slot, cell), stream
+    the exit with ITS predicate, and require the identical fire (or no-fire). The leak passes the prefix probe and fails here; the honest twin passes."""
+    rows, files = tape
+    hr = next(S.iter_hours(files[:1], "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
+    slot = int(hr.sl[hr.rows(hr.pool_index()[POOLS["A"]])][5])
+    st = S.RunState("synthetic", scratch={"early": 1})
+    seen: list = []
+    orig = S.exit_entry_hour_rerun
+    monkeypatch.setattr(S, "exit_entry_hour_rerun", lambda *a, **k: seen.append(orig(*a, **k)) or seen[-1])
+
+    assert S.causal_probe(LeakRule(slot, channel, leak=False), hr, st, POOLS["A"], slot, exit_fire=True)
+    entry_seen, res = seen[-1]
+    assert entry_seen and len(res) == 1 and res[0]["full"] == res[0]["cut"] and res[0]["full"][1] == S.EVENT_CODE and res[0]["ok"]  # a real fire, the same fire from the cut run
+
+    assert S.causal_probe(LeakRule(slot, channel, leak=True), hr, st, POOLS["A"], slot)  # the entry alone is causal... (a fresh rule per call: a first-write memo is polluted by any earlier call)
+    leak = LeakRule(slot, channel, leak=True)
+    assert not S.causal_probe(leak, hr, st, POOLS["A"], slot, exit_fire=True)  # ...the exit is not: the cut run is made on a deep copy of the rule taken before the full-hour run
+    if channel == "memo":
+        assert int(leak.memo[hr.idx][0].max()) > slot  # the caller's rule carries the FULL hour (it ran the full-hour run); the copy that ran the cut run never saw it
+    entry_seen, res = seen[-1]
+    r = res[0]
+    assert entry_seen and r["full"][1] == S.EVENT_CODE and r["prefix_ok"] is True  # the prefix probe on the full-hour spec PASSES (that is the residual)
+    assert r["cut"][1] == 0 and r["cut"][0] > r["full"][0] and r["same"] is False and r["ok"] is False  # the cut run's predicate never saw the later rows: no fire, the time cap decides
+    assert st.scratch == {"early": 1}  # the caller's state is untouched (deep copies)
+
+
+def test_the_entry_hour_rerun_needs_the_cut_run_to_return_the_entry_and_an_exit_fire_for_the_cell(tape):
+    rows, files = tape
+    hr = next(S.iter_hours(files[:1], "synthetic", "backfill", S.VMap([{POOLS[k]: float(v) for k, v in V_OF.items()}])))
+    slot = int(hr.sl[hr.rows(hr.pool_index()[POOLS["A"]])][5])
+    st = S.RunState("synthetic")
+
+    class Gone:  # the cut run does not return the trigger at all (an entry look-ahead)
+        def triggers(self, hour, state):
+            j = hour.pool_index()[POOLS["A"]]
+            return [(POOLS["A"], slot, S.ExitSpec(120, exit_fire=whale_fire(1.0e9)))] if (hour.sl[hour.rows(j)] > slot).any() else []
+
+    class NoFire:  # the cut run returns the entry but with a plain time exit
+        def triggers(self, hour, state):
+            j = hour.pool_index()[POOLS["A"]]
+            full = (hour.sl[hour.rows(j)] > slot).any()
+            return [(POOLS["A"], slot, S.ExitSpec(120, exit_fire=whale_fire(1.0e9) if full else None))]
+
+    assert not S.causal_probe(Gone(), hr, st, POOLS["A"], slot, exit_fire=True)
+    assert not S.causal_probe(NoFire(), hr, st, POOLS["A"], slot, exit_fire=True)
+
+
+def test_the_ask_counter_is_reported_for_timing(tape):
+    scr = kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), whale_fire(1.0e9))
+    c = scr.counters
+    assert c["exit_fire_positions"] > 0 and c["exit_fire_asks"] >= c["exit_fire_positions"] and c["exit_fire_asks"] > c["exit_fire_events"]
+
+
+def test_qp_fixture_an_honest_buy_seen_since_entry_rule_has_zero_probe_failures(tape):
+    """QP #760 at 7f5f3d6 (blocking 1): 'a buy print after sd has been seen' is already true at the FIRST slot asked when a buy came before it. The prefix probe used to ask at fire - 1,
+    a slot the stream never asked, and killed the cell (2 false failures). It now asks at the previous slot the stream actually asked and skips the check when the fire is the first slot asked."""
+    rows, files = tape
+
+    def buy_since_entry(view):
+        r = view.rows()
+        return bool(((r["sl"] > view.sd) & r["ib"]).any())
+
+    scr = kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), buy_since_entry)
+    tr = S._cat(scr.acc[0])
+    key_of = {zlib.crc32(POOLS[k].encode()): k for k in POOLS}
+    first_asked_fires = before_landing_buy = 0
+    for i in range(len(tr["sd"])):
+        if int(tr["why"][i]) != S.EVENT_CODE:
+            continue
+        key, sd = key_of[int(tr["pool"][i])], int(tr["sd"][i])
+        pool_slots = sorted(r["slot"] for r in rows if r["pool"] == POOLS[key])
+        first_asked = next(x for x in pool_slots if x >= sd + 6)
+        if int(tr["xs"][i]) == first_asked:
+            first_asked_fires += 1
+            # the buy that made it true came BEFORE the fire slot (between the entry and the first print at or above the floor): the case that was falsely killed
+            before_landing_buy += any(r["slot"] > sd and r["slot"] < first_asked and r["side"] == "buy" and r["pool"] == POOLS[key] for r in rows)
+    r = scr.results()["c"]
+    assert r["exits"]["event"] > 0 and first_asked_fires > 0 and before_landing_buy > 0  # the fixture really contains the case
+    assert r["event_exit"]["probe_failures"] == 0 and scr.counters["exit_probe_failures"] == 0 and not any("exit-causality" in w for w in r["kill_reasons"])
+
+
+def test_the_prefix_probe_asks_only_at_slots_the_stream_asked_and_skips_the_first():
+    a = ev_pool()
+    pp = S.post_price(a)
+    asked: list[int] = []
+
+    def probe(fire, f):
+        pos = S._Pos(S.ExitSpec(120, exit_fire=fire), SD0, RATE, SPS)
+        return S.exit_fire_probe(pos, a, pp, f)
+
+    spy = lambda v: asked.append(v.slot) or v.slot >= 1100  # noqa: E731
+    assert probe(spy, 1100) and asked == [1100, 1099]  # again at the fire slot, then the previous slot the stream asked
+    asked.clear()
+    assert probe(lambda v: asked.append(v.slot) or True, FLOOR) and asked == [FLOOR]  # the first slot asked (the floor): no earlier slot, no early check, however true it was before
+    sparse = {k: v[np.arange(400) % 7 == 0] for k, v in a.items()}  # prints every 7 slots: 1015, 1022, ...
+    pps = S.post_price(sparse)
+    asked.clear()
+    pos = S._Pos(S.ExitSpec(120, exit_fire=lambda v: asked.append(v.slot) or True), SD0, RATE, SPS)
+    first = int(sparse["sl"][sparse["sl"] >= FLOOR][0])
+    assert S.exit_fire_probe(pos, sparse, pps, first) and asked == [first]  # fire - 1 is not a print slot and is never asked
+    asked.clear()
+    second = int(sparse["sl"][sparse["sl"] >= FLOOR][1])
+    assert not S.exit_fire_probe(pos, sparse, pps, second) and asked == [second, first]  # it fires at the previous asked slot too: not a first fire
+
+
+def test_a_naive_base_reader_fails_the_prefix_probe_and_the_docs_say_reflection_is_not_detectable(tape, monkeypatch):
+    """QP #760 blocking 2. A predicate that sells at the PEAK of [landing, cap] by reading `rows["pp"].base` reaches the whole hour's array in the stream. The prefix probe's views are
+    copies, so the same read gets None there and raises: counted as a failure, the cell is killed. A reader that falls back to the view is NOT caught: the docs say so, and name the control."""
+    monkeypatch.setattr(S, "kill_verdict", lambda *a, **k: (False, []))
+
+    def naive_base_peak(view):
+        r = view.rows()
+        slf, ppf = r["sl"].base, r["pp"].base
+        idx = np.flatnonzero((slf >= view.landing_slot) & (slf <= view.cap_slot))
+        return bool(idx.size and view.slot == int(slf[idx[np.argmax(ppf[idx])]]))
+
+    scr = kit_exit_cell(tape, S.Cell("c", event_triggered=False, event_exit=True), naive_base_peak)
+    r = scr.results()["c"]
+    assert r["exits"]["event"] > 0  # in the stream `.base` really reached past the slot: it found peaks
+    assert r["event_exit"]["probe_failures"] == r["exits"]["event"] and r["kill"] is True and r["registration"] == "KILLED"
+    a = ev_pool()
+    cut = S._cut_rows(a, S.post_price(a), 50)
+    assert cut["sl"].base is not None and S._cut_rows(a, S.post_price(a), 50, copy=True)["sl"].base is None  # the stream's views are slices, the probe's are copies
+    assert not S._cut_rows(a, S.post_price(a), 50, copy=True)["sl"].flags.writeable
+    doc = S.__doc__ + S.ExitView.__doc__ + S.exit_fire_probe.__doc__
+    for needle in ("REFLECTION IS NOT DETECTABLE BY ANY PROBE", "SOURCE REVIEW", "before PHASE 2 GO", "`.base`", "`inspect`", "`ctypes`", "COPIES", "a reader with a fallback is not caught"):
+        assert needle in doc, needle
+    assert "deliberate reflection that no Python object can prevent, and the probes below exist for it" not in doc  # the overclaim is gone
