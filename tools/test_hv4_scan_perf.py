@@ -367,51 +367,104 @@ def test_prints_15m_short_counts_what_windows_counts(tmp_path, seed):
     assert 50 < short < 450
 
 
-# ------------------------------------------------------------------------------------------------------------------------------ round 3: the one-time gc.freeze() after the warm-up
-def test_gc_freeze_once_after_the_warm_up_collect_first_and_decisions_unchanged(tmp_path, monkeypatch):
+# ------------------------------------------------------------------------------------------------------------------------------ round 4: no automatic GC inside a scan
+def test_run_mode_has_no_gc_knob_and_the_scan_makes_no_explicit_collection(tmp_path, monkeypatch):
+    import gc
+    import inspect
+
+    assert not hasattr(R, "GC_FREEZE_ENV") and not hasattr(R, "GC_FREEZE_MIN_ROWS")  # the freeze and its env switch are gone
+    src = inspect.getsource(R)
+    assert "gc.collect" not in src and "gc.freeze" not in src and "HV4_GC" not in src
+    frozen = gc.get_freeze_count()
+    run = make(tmp_path, rows=trade_rows())
+    run.run(T_START, T_START + 12 * MIN)
+    assert gc.get_freeze_count() == frozen and gc.isenabled()
+
+
+def test_gc_is_re_enabled_after_a_scan_that_raises(tmp_path, monkeypatch):
     import gc
 
-    calls: list[str] = []
-    monkeypatch.setattr(gc, "collect", lambda *a, **k: calls.append("collect") or 0)  # spies: this process's heap is never really frozen
-    monkeypatch.setattr(gc, "freeze", lambda: calls.append("freeze"))
-    monkeypatch.setattr(gc, "get_freeze_count", lambda: 123)
-    monkeypatch.delenv(R.GC_FREEZE_ENV, raising=False)
-    rows = trade_rows()
+    run = make(tmp_path, rows=trade_rows())
 
-    (tmp_path / "small").mkdir()
-    small = make(tmp_path / "small", rows=rows)
-    small.run(T_START, T_START + 12 * MIN)
-    assert calls == [] and not small._gc_frozen and small.gc_freeze_info == {}  # a small tape (fewer than GC_FREEZE_MIN_ROWS rows) is left alone
+    def boom(self, T):
+        assert not gc.isenabled()  # paused while the scan body runs
+        raise RuntimeError("scan failed")
 
-    monkeypatch.setattr(R, "GC_FREEZE_MIN_ROWS", 1)
-    (tmp_path / "on").mkdir()
-    on = make(tmp_path / "on", rows=rows)
-    on.run(T_START, T_END)
-    assert calls == ["collect", "freeze"]  # once, collect first, before the first scan
-    assert on._gc_frozen and on.gc_freeze_info["frozen"] and on.gc_freeze_info["frozen_objects"] == 123
-    first_scan_ms = min(r["ms"] for r in on.log.rows("SCAN") if r["kind"] == "scan")
-    assert first_scan_ms >= T_START
-
-    calls.clear()
-    monkeypatch.setenv(R.GC_FREEZE_ENV, "0")
-    (tmp_path / "off").mkdir()
-    off = make(tmp_path / "off", rows=rows)
-    off.run(T_START, T_END)
-    assert calls == [] and off.gc_freeze_info == {"frozen": False, "why": "env_off"}
-    a, b = decision_md5_no_timing(on.cfg.root), decision_md5_no_timing(off.cfg.root)
-    assert a["rows"] > 100 and a["md5"] == b["md5"] and on.counters == off.counters
+    monkeypatch.setattr(R.Runner, "_scan", boom)
+    assert gc.isenabled()
+    with pytest.raises(RuntimeError, match="scan failed"):
+        run.scan(T_START)
+    assert gc.isenabled()  # restored by the finally
 
 
-def test_gc_freeze_really_freezes_and_the_collector_stays_on(tmp_path, monkeypatch):
+def test_gc_stays_disabled_after_a_scan_if_it_was_disabled_before(tmp_path):
     import gc
 
-    before = gc.get_freeze_count()
+    run = make(tmp_path, rows=trade_rows())
+    gc.disable()
     try:
-        monkeypatch.setattr(R, "GC_FREEZE_MIN_ROWS", 1)
-        monkeypatch.delenv(R.GC_FREEZE_ENV, raising=False)
-        run = make(tmp_path, rows=trade_rows())
-        run.run(T_START, T_START + 2 * MIN)
-        assert run.gc_freeze_info["frozen"] and gc.get_freeze_count() > before
-        assert gc.isenabled()  # the collector is not switched off
+        run.scan(T_START + 5 * MIN)  # a real scan on the synthetic tape
+        assert not gc.isenabled()
     finally:
-        gc.unfreeze()
+        gc.enable()
+    assert gc.isenabled()
+
+
+def test_a_scan_never_runs_with_gc_enabled_and_no_collection_starts_inside_one(tmp_path, monkeypatch):
+    import gc
+
+    inside = [False]
+    seen = {"scan_calls": 0, "enabled_in_scan": 0, "enabled_between": 0, "gc_inside": 0, "gc_outside": 0}
+    orig_scan = R.Runner._scan
+    orig_exits = R.Runner.exits
+
+    def spy_scan(self, T):
+        inside[0] = True
+        seen["scan_calls"] += 1
+        seen["enabled_in_scan"] += int(gc.isenabled())
+        try:
+            return orig_scan(self, T)
+        finally:
+            seen["enabled_in_scan"] += int(gc.isenabled())  # still paused at the end of the body
+            inside[0] = False
+
+    def spy_exits(self, T):
+        seen["enabled_between"] += int(gc.isenabled())  # the tick loop outside the scan has the collector on
+        return orig_exits(self, T)
+
+    def cb(phase, info):
+        if phase == "start":
+            seen["gc_inside" if inside[0] else "gc_outside"] += 1
+
+    monkeypatch.setattr(R.Runner, "_scan", spy_scan)
+    monkeypatch.setattr(R.Runner, "exits", spy_exits)
+    old_threshold = gc.get_threshold()
+    gc.set_threshold(10, 2, 2)  # collections are frequent, so a collection inside a scan would show if one were allowed
+    gc.callbacks.append(cb)
+    try:
+        rows = sorted(trade_rows() + dead_pool_rows(), key=lambda r: (r["t_recv_ms"], r["signature"]))
+        run = make(tmp_path, rows=rows)
+        run.run(T_START, T_END)
+    finally:
+        gc.callbacks.remove(cb)
+        gc.set_threshold(*old_threshold)
+    assert seen["scan_calls"] >= 15 and seen["enabled_in_scan"] == 0 and seen["enabled_between"] > 1000
+    assert seen["gc_outside"] > 0 and seen["gc_inside"] == 0  # collections happen in the tick loop and never inside a scan
+    assert gc.isenabled()
+
+
+def test_scan_gc_pause_leaves_the_decision_logs_unchanged(tmp_path, monkeypatch):
+    import gc
+
+    rows = sorted(trade_rows() + dead_pool_rows(), key=lambda r: (r["t_recv_ms"], r["signature"]))
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    a = make(tmp_path / "a", rows=rows)
+    a.run(T_START, T_END)
+    orig_scan = R.Runner.scan
+    monkeypatch.setattr(R.Runner, "scan", lambda self, T: R.Runner._scan(self, T))  # no pause at all: the body alone
+    b = make(tmp_path / "b", rows=rows)
+    b.run(T_START, T_END)
+    ma, mb = decision_md5_no_timing(a.cfg.root), decision_md5_no_timing(b.cfg.root)
+    assert ma["rows"] > 100 and ma["md5"] == mb["md5"] and a.counters == b.counters
+    assert orig_scan is not None and gc.isenabled()
