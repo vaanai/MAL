@@ -30,6 +30,7 @@ if __package__ in (None, ""):
 import argparse
 import bisect
 import fcntl
+import gc
 import hashlib
 import json
 import math
@@ -44,6 +45,8 @@ from tools import hv4_arms as arms
 from tools import hv4_cards as C
 from tools.arena_h5_signal import H5Signal, bst_card, safe_path
 from tools.arena_paper import ArenaEngine, ArenaRefused, canon, register_bot
+from tools.arena_state import CANDLE_MIN as STATE_CANDLE_MIN
+from tools.arena_state import LAMPORTS as STATE_LAMPORTS
 from tools.arena_state import WSOL_MINT, ArenaState
 from tools.haiku_caller import canonical_bytes
 from tools.hv4_budget import BudgetGuard, utc_day
@@ -517,6 +520,35 @@ def pct(sorted_vals: list[int], q: float) -> int:
     return sorted_vals[max(0, math.ceil(q * len(sorted_vals)) - 1)]
 
 
+def lite_snapshot(p: Any, now_ms: int) -> dict[str, Any]:
+    """The window-free keys of `ArenaState.snapshot(p.id, candles=False)` for a PumpSwap pool, built from the Pool's attributes with the same expressions as
+    ArenaState.snapshot (SCAN SPEED ONLY: hv4_cards.prescreen_fails reads it). Leaves out the 60-minute windows, the top-net heap and everything else the
+    prescreen does not test; tools/test_hv4_scan_perf.py pins every key against the real snapshot. `now_ms` is the state clock (ArenaState.now_ms)."""
+    created, q, lt = p.created_ms, p.q_real, p.last_trade
+    return {"now_ms": now_ms, "last_ms": p.last_ms, "ath_ms": p.ath_ms, "created_ms": created, "complete_ms": p.complete_ms, "origin_create_ms": p.origin_create_ms,
+            "last_trade_ms": lt.get("t_ms") if isinstance(lt, Mapping) else None, "created_known": created is not None,
+            "age_s": (now_ms - created) / 1000.0 if created is not None else None, "age_since_first_seen_s": (now_ms - p.first_seen_ms) / 1000.0,
+            "reserves": {"quote_sol": q / STATE_LAMPORTS if q is not None else None, "v_sol": p.v / STATE_LAMPORTS,
+                         "quote_eff_sol": (q + p.v) / STATE_LAMPORTS if q is not None else None}}
+
+
+def prints_15m_short(events: Any, now_ms: int, need: int) -> bool:
+    """True when fewer than `need` of a pool's prints fall in the last 15 minutes of the state clock: the prints_15m filter check certainly fails. The count is the one
+    ArenaState.windows makes for its 15m window (walk the events newest first, stop at the first one older than 60 minutes, count those with t >= now - 15 min), and it stops
+    counting at `need`. SCAN SPEED ONLY; the scan calls it only for a pool whose stamps and window-free checks already passed (PRESCREEN_GO)."""
+    cut60, cut15 = now_ms - 60 * MIN_MS, now_ms - 15 * MIN_MS
+    n = 0
+    for ev in reversed(events):
+        t = ev[0]
+        if t < cut60:
+            break
+        if t >= cut15:
+            n += 1
+            if n >= need:
+                return False
+    return True
+
+
 class Runner:
     def __init__(self, cfg: RunnerConfig, state: ArenaState, engine: ArenaEngine, model: Model, chain: ChainSource, guard: BudgetGuard | None = None,
                  h5: H5Signal | None = None, now_fn: Callable[[], int] | None = None, playbook_overrides: Mapping[str, Playbook] | None = None,
@@ -853,12 +885,18 @@ class Runner:
             facts["quote_sol_peak"] = pk
         return facts
 
-    def _card(self, pool_id: str, T: int, tag: C.SetupTag | None, feats: Mapping | None = None, snap: Mapping | None = None) -> dict | None:
+    def _card(self, pool_id: str, T: int, tag: C.SetupTag | None, feats: Mapping | None = None, snap: Mapping | None = None,
+              prints: list | None = None) -> dict | None:
+        """`feats` and `prints`, when the scan passes them, are the features() and the normalised prints it computed for this very `snap` at this very T (nothing polls the
+        state between that and here); they are read, never changed. Without them (a watch or a re-check) everything is computed here, as before."""
         snap = snap or self.state.snapshot(pool_id)
         if snap is None:
             return None
         p = self.state.pool(pool_id)
-        prints = list(p.events) if p is not None else []
+        if prints is None:
+            prints = list(p.events) if p is not None else []
+        if "candles" not in snap and p is not None:  # the scan's snapshot is kept without candles; a card needs them (ArenaState.snapshot(p.id) = this + state.candles(p))
+            snap["candles"] = self.state.candles(p)
         part = self.chain.chain_part(pool_id, snap.get("mint"), T, self.slot)
         if part is None:
             self._count("chain_none")
@@ -868,7 +906,7 @@ class Runner:
         self.token_of[pool_id] = {k: part[k] for k in ("token_program", "extensions", "transfer_fee_bps", "default_account_state") if k in part}
         try:
             C.assert_as_of(snap, T, prints=prints, chain=chain, as_of_slot=self.slot)
-            return C.build_card(snap, prints, chain, as_of_ms=T, as_of_slot=self.slot, setup=tag)
+            return C.build_card(snap, prints, chain, as_of_ms=T, as_of_slot=self.slot, setup=tag, feats=feats)
         except C.LeakageError as e:
             self._leak(T, pool_id, e)
         except C.CardRefused as e:
@@ -878,12 +916,42 @@ class Runner:
 
     # -- the scan
     def scan(self, T: int) -> None:
+        """One scan at instant T, with the cyclic garbage collector paused for its duration. SCAN SPEED ONLY. A generation-2 pass walks the millions of long-lived containers
+        of the state, the engine and the quote history and took 0.7 to 1.1 s inside a scan on the 2026-10-19 replay (tools/hv4_scanprof.py --time-gc): every scan over 1.4 s
+        had one. With the collector paused here, no automatic collection can start inside a scan; whatever it owes runs after the scan, in the tick loop, where a pause delays
+        the next exit check instead of the scan. The state it had on entry is restored in a `finally` (a scan that raises re-enables it; a collector that was already off stays
+        off). No explicit collection is made, and nothing here is read by a decision."""
+        was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            self._scan(T)
+        finally:
+            if was_enabled:
+                gc.enable()
+
+    def _scan(self, T: int) -> None:
         self.poll_to(T)
         slot = self.slot
-        cand, tags, feat_of, snap_of = [], [], {}, {}
+        cand, tags, feat_of, snap_of, prints_of = [], [], {}, {}, {}
+        state_now = self.state.now_ms
         for p in self.state.pools_wsol(lambda p: p.prog == "pumpswap"):
+            lite = lite_snapshot(p, state_now)
+            verdict = C.prescreen(lite, as_of_ms=T)
+            if verdict == C.PRESCREEN_GO and prints_15m_short(p.events, state_now, C.PRINTS_15M_MIN):
+                verdict = C.PRESCREEN_FAIL  # stamps fine, window-free checks pass, but fewer than 20 prints in 15 minutes: prints_15m fails
+            if verdict == C.PRESCREEN_FAIL:
+                # SCAN SPEED: a pool that certainly fails the filters, and certainly raises no LeakageError, is not snapshotted. Everything the full path would have
+                # recorded for it is recorded here: it reached the V check (always, the pool is WSOL), and a failed V check is counted.
+                self._v_checked.add(p.id)
+                code = C.v_filter_code(lite)
+                if code is not None:
+                    self._count("filter_" + code)
+                    if code == "v_missing":
+                        self._v_missing_pools.add(p.id)
+                continue
+            snap = self.state.snapshot(p.id, candles=False)
             try:
-                fr = C.filters(self.state.snapshot(p.id, candles=False), as_of_ms=T)
+                fr = C.filters(snap, as_of_ms=T)
             except C.LeakageError as e:
                 self._leak(T, p.id, e)
                 continue
@@ -896,14 +964,18 @@ class Runner:
                         if code == "v_missing":
                             self._v_missing_pools.add(p.id)
                 continue
-            snap = self.state.snapshot(p.id)
+            # The snapshot stays without its candles here (ArenaState.snapshot(p.id) is this snapshot plus snap["candles"] = state.candles(p); _card adds them for a pool that
+            # gets a card). features() takes the candle series straight from the Pool's candle map. No candle can start at or after T when the state clock is before T, and
+            # filters() above has just checked the clock, so assert_as_of loses nothing by not seeing the candles.
+            series = C.series_from_pool_candles(p.candles, state_now // MIN_MS, STATE_CANDLE_MIN, STATE_LAMPORTS)
+            prints = C.norm_prints(list(p.events))
             try:
-                feats = C.features(snap, list(p.events), as_of_ms=T)
+                feats = C.features(snap, prints, as_of_ms=T, series=series)
             except C.LeakageError as e:
                 self._leak(T, p.id, e)
                 continue
             cand.append(p.id)
-            feat_of[p.id], snap_of[p.id] = feats, snap
+            feat_of[p.id], snap_of[p.id], prints_of[p.id] = feats, snap, prints
             tags.extend(C.setups(feats, pool_id=p.id, as_of_ms=T, limiter=self.limiter))
         ranked = C.rank_setups(tags)
         per_persona: dict[str, list[C.SetupTag]] = {pr: [t for t in ranked if t.persona == pr][:TOP_K_PER_PERSONA] for pr in LANE_G_PERSONAS}
@@ -922,11 +994,11 @@ class Runner:
         cards: dict[tuple[str, str], dict] = {}  # (pool, persona) -> card, byte-identical for every arm of the persona
         for pr in LANE_G_PERSONAS:
             for t in per_persona[pr]:
-                c = self._card(t.pool_id, T, t, snap=snap_of[t.pool_id])
+                c = self._card(t.pool_id, T, t, snap=snap_of[t.pool_id], feats=feat_of[t.pool_id], prints=prints_of[t.pool_id])
                 if c is not None:
                     cards[(t.pool_id, pr)] = c
         for pid in board:
-            c = self._card(pid, T, None, snap=snap_of[pid])
+            c = self._card(pid, T, None, snap=snap_of[pid], feats=feat_of[pid], prints=prints_of[pid])
             if c is not None:
                 for pr in LANE_G_PERSONAS:
                     cards[(pid, pr)] = c
