@@ -1172,8 +1172,10 @@ CHECKS3_NOTES1_SHA256 = "0f093e68140f021f53979daa7b6251f6b2561b0194e46f3576e77e4
 # replace the string below with the 64-hex sha256 of the pinned file (the record says `pinned: false` and the markdown shouts while it is a placeholder).
 CHECKS4_NAME = "SHAKEDOWN-CHECKS-4.md"
 CHECKS4_SHA256 = "PLACEHOLDER-NOT-PINNED-set-this-to-the-sha256-of-SHAKEDOWN-CHECKS-4.md-when-the-manager-gives-it"
-# The chain_hour key of "warm holders reads booked per hour" (revision 4 report). The #768 builder's name is not known yet: None = "not reported". Set it when the commit lands; do not guess.
-CHAIN_HOUR_WARM_BOOKED_KEY: str | None = None
+# The chain_hour keys of "warm holders reads booked per hour" (revision 4 report), as written by tools/hv4_prefetch.py on claude/hv4-v2-fresh-obs-v2 at 5a08227 (the chain_hour row: the reads and the
+# calls booked in the hour; deferred_warm_hold is the distinct pools deferred). A key missing from a row is "not reported", never a failure.
+CHAIN_HOUR_WARM_BOOKED_KEY: str | None = "warm_holders_reads_hour"
+CHAIN_HOUR_WARM_CALLS_KEY: str | None = "warm_holders_calls_hour"
 HOLDERS_AGE_REPORT_S = (300, 720)  # revision 4 report: cards whose holders block is older than 5 min, and older than 12 min
 HOLDERS_READ_MAX_AGE_MS = 15 * MIN_MS  # N4 (1): a holders read older than 15 min at T is left out
 NOT_MEASURED = [
@@ -1294,7 +1296,8 @@ def project_obs(O: Obs, r: dict) -> None:
                                  "deferred_mint": opt_int(r, "deferred_mint"), "deferred_hold": opt_int(r, "deferred_hold"), "prefetcher_booked_calls": ps.get("calls") if is_int(ps.get("calls")) else None,
                                  "deferred_hot_mint": opt_int(r, "deferred_hot_mint"), "deferred_cold_mint": opt_int(r, "deferred_cold_mint"), "deferred_hold_pools": opt_int(r, "deferred_hold_pools"),
                                  "booked_calls_hour": opt_int(r, "booked_calls_hour"), "deferred_warm_hold": opt_int(r, "deferred_warm_hold"),
-                                 "warm_holders_booked": opt_int(r, CHAIN_HOUR_WARM_BOOKED_KEY) if CHAIN_HOUR_WARM_BOOKED_KEY else None})
+                                 "warm_holders_booked": opt_int(r, CHAIN_HOUR_WARM_BOOKED_KEY) if CHAIN_HOUR_WARM_BOOKED_KEY else None,
+                                 "warm_holders_calls_booked": opt_int(r, CHAIN_HOUR_WARM_CALLS_KEY) if CHAIN_HOUR_WARM_CALLS_KEY else None})
         else:
             O.malformed[kind] += 1
     elif kind == "runner_hour":
@@ -1947,10 +1950,11 @@ def holders_report(cards: list[dict], O: Obs, L: Logs, w: tuple[int, int] | None
     ni = lambda v: "not reported" if v is None else v  # noqa: E731 - a key missing from a row is "not reported", never a failure
     for r in sorted(O.chain_hour, key=lambda r: (r["pid"], r["hour_end_ms"])):
         if w is None or w[0] < r["hour_end_ms"] <= w[1]:
-            hourly.append({"pid": r["pid"], "hour_end": iso(r["hour_end_ms"]), "warm_holders_reads_booked": ni(r["warm_holders_booked"]), "warm_holders_reads_deferred": ni(r["deferred_warm_hold"])})
+            hourly.append({"pid": r["pid"], "hour_end": iso(r["hour_end_ms"]), "warm_holders_reads_booked": ni(r["warm_holders_booked"]), "warm_holders_calls_booked": ni(r["warm_holders_calls_booked"]),
+                           "warm_holders_pools_deferred": ni(r["deferred_warm_hold"])})
     out["warm_holders_per_hour"] = hourly
     out["notes"] = ["no limit; holders_age_s is read from the card sink (risk.holders_age_s), cause and state from the holders_null_served obs rows joined on pool and scan_ms; a board card counts for both personas",
-                    "the booked key of chain_hour is " + ("`" + CHAIN_HOUR_WARM_BOOKED_KEY + "`" if CHAIN_HOUR_WARM_BOOKED_KEY else "not set in this tool yet: warm reads booked are 'not reported'")]
+                    f"warm holders per hour from chain_hour: reads booked `{CHAIN_HOUR_WARM_BOOKED_KEY}`, calls booked `{CHAIN_HOUR_WARM_CALLS_KEY}`, distinct pools deferred `deferred_warm_hold`; a key missing from a row is 'not reported'"]
     return out
 
 

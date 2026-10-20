@@ -225,20 +225,21 @@ def test_a_null_card_without_a_served_row_a_missing_flag_and_a_young_null_read_a
 
 
 def test_warm_holders_reads_per_hour_are_reported_and_a_missing_key_is_not_reported_never_a_failure(tmp_path, monkeypatch):
-    def deferred(rows, fx):
-        for k, r in enumerate(sel(rows, "chain_hour", B)):
-            r.update(deferred_warm_hold=k, warm_booked=10 + k)
+    def warm(rows, fx):
+        for k, r in enumerate(sel(rows, "chain_hour", B)):  # the keys of the builder's chain_hour row (hv4_prefetch.py on claude/hv4-v2-fresh-obs-v2): the first process's rows lack them
+            r.update(deferred_warm_hold=k, warm_holders_reads_hour=10 + k, warm_holders_calls_hour=12 + k)
 
-    fx = fixture(tmp_path, mutate=deferred)
-    rec = rev4(fx)  # the tool does not know the builder's booked key yet
+    fx = fixture(tmp_path, mutate=warm)
+    rec = rev4(fx)
     hourly = rec["holders_report"]["warm_holders_per_hour"]
     b = [x for x in hourly if x["pid"] == B]
-    assert len(hourly) == 24 and [x["warm_holders_reads_deferred"] for x in b] == list(range(12)) and {x["warm_holders_reads_booked"] for x in b} == {"not reported"}
-    assert {x["warm_holders_reads_deferred"] for x in hourly if x["pid"] == A} == {"not reported"} and rec["verdict"] == "PASS"
-    assert any("not set in this tool yet" in n for n in rec["holders_report"]["notes"])
-    monkeypatch.setattr(R, "CHAIN_HOUR_WARM_BOOKED_KEY", "warm_booked")
-    b2 = [x for x in rev4(fx)["holders_report"]["warm_holders_per_hour"] if x["pid"] == B]
-    assert [x["warm_holders_reads_booked"] for x in b2] == [10 + k for k in range(12)]
+    assert len(hourly) == 24 and [x["warm_holders_pools_deferred"] for x in b] == list(range(12))
+    assert [x["warm_holders_reads_booked"] for x in b] == [10 + k for k in range(12)] and [x["warm_holders_calls_booked"] for x in b] == [12 + k for k in range(12)]
+    a = [x for x in hourly if x["pid"] == A]
+    assert all(set(x.values()) - {A, x["hour_end"]} == {"not reported"} for x in a) and rec["verdict"] == "PASS"  # absent keys are 'not reported'
+    assert any("warm_holders_reads_hour" in n for n in rec["holders_report"]["notes"])
+    monkeypatch.setattr(R, "CHAIN_HOUR_WARM_BOOKED_KEY", "renamed_key")  # a key the rows do not have
+    assert {x["warm_holders_reads_booked"] for x in rev4(fx)["holders_report"]["warm_holders_per_hour"]} == {"not reported"}
 
 
 def test_no_pool_id_reaches_the_revision_4_output(tmp_path):
