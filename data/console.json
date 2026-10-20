@@ -1,8 +1,29 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-20T00:18:12Z",
+ "updated_utc": "2026-10-20T03:10:59Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "w4s-short-scout-1020",
+   "kind": "finding",
+   "title": "W4-S short-side desk scout: dead for transfer (6 pump-origin coins got a perp in 45 days, all MEXC/Gate, p50 5.1 days after the pool; about 0.13 a day); counts only; report hunt23/w4s-short/REPORT.md",
+   "detail": "hunt23 wave 4 W4-S, desk research plus counts of instrument availability on public APIs (2 rps or less); no lab tape, no keys, no post-listing return computed. Window 2026-09-05 to 2026-10-20 (45 days): 6 pump-origin coins got a perp (BATON, PAID, OTC, AGENCY, JEANPHIL, DOPE), all on MEXC and 3 also on Gate; age since PumpSwap pool creation p50 about 123 h (5.1 d; range 8.4 h to 25.7 d); 1 of 6 listed within 48 h, 2 of 6 within 72 h; FDV at listing $4.7M to $22.8M. Hyperliquid (core and HIP-3), Jupiter Perps, Binance, Bybit, OKX and Bitget listed 0 in the window. About 0.13 coins/day (the scout's arithmetic), so 100 out-of-sample trades would take about 750 days; listed coins are survivors, so the death tail does not transfer. Holding a short is cheap next to fees (Hyperliquid funding p50 +0.00125%/h paid to shorts). Counts are a lower bound (symbol plus price-match mapping, recall unknown). Library rows w4s-short-cex-listing-watch (untested, counts-only watch), w4s-short-hl-funding-cost and w4s-short-borrow-short (explored-no-survivor). Report: /data/mal/hunt-1008/push-1016/hunt23/w4s-short/REPORT.md (sha256 112a95ddda33dcedb36b14fc59bdfe25990b67361516619a755d68fe9e8ca116); atUtc is its mtime. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-20T00:57:31Z"
+  },
+  {
+   "id": "pr767-merged-1020",
+   "kind": "other",
+   "title": "PR #767 merged (bd00256): HV4 scan speed-up (decision logs md5-identical; QP OK and reviewer APPROVE at 78ae0fb)",
+   "detail": "PR #767 merged 2026-10-20T00:41:06Z (bd00256): HEDGE: hv4 scan speed-up (decision-neutral), for stub check 6 at d1dbcd6. The decision logs are md5-identical; QP OK and reviewer APPROVE at 78ae0fb (as stated in the manager's brief; not re-read from the PR). One half of the v2 fix named in event hv4-check6-fail-1019 (PR #767 + PR #768). No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-20T00:41:06Z"
+  },
+  {
+   "id": "w4x-mech-buyer-scout-1020",
+   "kind": "finding",
+   "title": "W4-X cross-venue mechanical-buyer scout: dead on capacity (Pump Agent Payments buyback 14.3 buys/day, p50 0.116 SOL; StonkFun platform wallet buys only STONK); counts only, public RPC; report hunt23/w4x-scout/REPORT.md",
+   "detail": "hunt23 wave 4 W4-X, public RPC only, counts only, 3 UTC days 2026-10-17..19; no price after any buy was computed. Candidate A, Pump Agent Payments buyback: 43 buys (14.3/day, 37 PumpSwap and 6 pump curve), 14 coins, 7.29 SOL in 3 days; SOL per buy p50 0.116, p90 0.321, max 0.534, 1 of 43 at or above 0.5; 12 of 12 batches start at HH:33:4x UTC every 6.000 h. The buy's own implied move is p50 0.11%, p90 0.66%, max 2.3% against a 2.5% round trip, so it misses the wave-3 bar (0.5 SOL or more into one pool, at least 13 events/day) by about 40 times (the scout's arithmetic). Candidate B, StonkFun platform wallet: 36,399 signatures in 3 days; a random sample of 260 gave 58 Jupiter swaps, 58 of 58 into STONK, so it buys no launch coins. The StonkFun top-coin flywheel wallet is unidentified (a lead, not measured). Library rows mech-buyer-scout-1, -2 (explored-no-survivor) and -3 (untested, lead). Report: /data/mal/hunt-1008/push-1016/hunt23/w4x-scout/REPORT.md (sha256 73b4c6af85cf88ded68ebdf3e0e5d7885f45c0f057b361fd3e06d4bd44da9cd2); atUtc is its mtime. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-20T00:34:19Z"
+  },
   {
    "id": "hunt23-w2f-surge-killed-1020",
    "kind": "result",
