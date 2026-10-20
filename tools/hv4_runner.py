@@ -546,7 +546,7 @@ class Runner:
                  binding: Mapping[str, Any] | None = None, version_source: Callable[[str, int], Any] | None = None) -> None:
         if cfg.live:
             require_frozen_checkout(binding or {}, cfg.frozen_sha)  # a live runner must prove its checkout
-            reason = unpinned_run_mode(None, chain=chain, obs=cfg.obs)  # QP 6279836164 R1: the book's chain facts and obs rows cannot change at a restart
+            reason = unpinned_run_mode(None, chain=chain, obs=cfg.obs, live_runner=True)  # QP 6279836164 R1: the book's chain facts and obs rows cannot change at a restart
             if reason:
                 raise RuntimeError(reason)
         if not cfg.lane_h and h5 is not None:
@@ -582,7 +582,10 @@ class Runner:
             self.obs.write("runner_start", pid=os.getpid(), frozen_sha=cfg.frozen_sha, binding=dict(binding) if isinstance(binding, Mapping) else None, live=cfg.live)
             attach = getattr(self.chain, "attach_obs", None)
             if attach is not None:
-                attach(self.obs)
+                try:
+                    attach(self.obs)
+                except Exception:  # noqa: BLE001 - a chain object whose attach fails must not stop the runner; the obs rows of the prefetcher are then missing (Rule M)
+                    self.obs.build_errors += 1
         self.seen_triggers: set[str] = set()  # H5 triggers already handled (a restart replays the warm-up tape and the signal re-emits them)
         self._logged_version: dict[str, str] = {}
         self._replay_pos: dict[str, Pos] = {}
@@ -748,6 +751,7 @@ class Runner:
             if self.cfg.live:  # run mode only: a replay's start rows (and so its md5) are unchanged
                 start["prefetch_policy"] = getattr(getattr(self.chain, "prefetch", None), "policy", None)
                 start["obs"] = bool(self.cfg.obs)
+                start["pid"] = os.getpid()  # pairs this row with the runner_start / prefetch_start obs rows of the same process (Rule M)
             self.log.append("SCAN", self.now_fn() if self.cfg.live else self.sim_now, start)
         n["open"] = sum(len(b.open) for b in self.books.values())
         return n
@@ -1647,10 +1651,13 @@ class Runner:
             from collections import Counter
 
             errs = Counter(self.hook_errors)
-            self.obs.write("runner_hour", hour_start_ms=self._obs_hour * 3_600_000, hour_end_ms=h * 3_600_000, pid=os.getpid(), hook_errors=dict(sorted(errs.items())),
-                           n_hook_errors=len(self.hook_errors), n_housekeep_errors=sum(v for k, v in errs.items() if k.startswith("housekeep:")),
-                           counters=dict(sorted(self.counters.items())), rss_mb=rss_mb(), obs_write_errors=self.obs.write_errors, obs_build_errors=self.obs.build_errors,
-                           obs_rows=self.obs.rows_written)
+            body = dict(hook_errors=dict(sorted(errs.items())), n_hook_errors=len(self.hook_errors),
+                        n_housekeep_errors=sum(v for k, v in errs.items() if k.startswith("housekeep:")), counters=dict(sorted(self.counters.items())), rss_mb=rss_mb(),
+                        obs_write_errors=self.obs.write_errors, obs_build_errors=self.obs.build_errors, obs_rows=self.obs.rows_written)
+            # one row per closed hour, like the prefetcher's tick: a stall past an hour (a feed gap) must not leave a row that spans several. The figures are the
+            # cumulative ones at the instant of writing; `written_in_hour` says which hour that was.
+            self.obs.write_many([{"kind": "runner_hour", "hour_start_ms": hh * 3_600_000, "hour_end_ms": (hh + 1) * 3_600_000, "written_in_hour": h, **body}
+                                 for hh in range(max(self._obs_hour, h - 24), h)])
         except Exception:  # noqa: BLE001
             self.obs.build_errors += 1
         self._obs_hour = h
@@ -1744,7 +1751,7 @@ def require_frozen_checkout(binding: Mapping[str, Any], frozen_sha: str) -> None
         raise RuntimeError("the checkout is not at the frozen sha")
 
 
-def unpinned_run_mode(env: Mapping[str, str] | None, *, chain: Any = None, obs: bool | None = None) -> str | None:
+def unpinned_run_mode(env: Mapping[str, str] | None, *, chain: Any = None, obs: bool | None = None, live_runner: bool = False) -> str | None:
     """Why a live (or stub) run may not start, or None. A live book runs ONE prefetch policy (v2) with the obs rows on, so a restart with a changed environment cannot
     change its chain facts under the same sha and the same decision-log bytes (QP 6279836164 R1). With `env`: MAL_HV4_PREFETCH_POLICY, when set, must be "v2", and
     MAL_HV4_OBS must not be "0". With `chain` / `obs`: the prefetcher in hand must be v2 and the obs flag on. Replay harnesses (Rig, hv4_scanprof) do not come through here."""
@@ -1755,6 +1762,8 @@ def unpinned_run_mode(env: Mapping[str, str] | None, *, chain: Any = None, obs: 
         if not obs_enabled(env):
             return "MAL_HV4_OBS=0 refused: a live or stub run writes the observability rows (unset the variable)"
     pf = getattr(chain, "prefetch", None)
+    if live_runner and pf is None:
+        return "a live or stub run needs the background chain prefetcher at policy v2; this chain source has none (card-time fetch path)"
     if pf is not None and getattr(pf, "policy", "v2") != "v2":
         return f"prefetch policy {getattr(pf, 'policy', None)!r} refused: a live or stub run uses prefetch policy v2 only"
     if obs is False:

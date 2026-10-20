@@ -456,3 +456,253 @@ def test_every_obs_kind_carries_one_integer_pid_equal_to_the_writers_taken_at_wr
     log.write("y")
     got = O.read_rows(tmp_path / "q" / O.OBS_FILE)
     assert [(r["kind"], r["pid"]) for r in got] == [("x", 4242), ("y", 4243)]
+
+
+# ---- reviewer pre-review round (comment 6280231012): B1 and N1 to N13
+
+
+def test_b1_a_new_untagged_pool_still_gets_its_first_mint_read_in_a_loaded_hour():
+    clock = Clock(T0)
+    chain = CountingChain(clock)
+    pf = P.ChainPrefetcher(chain, R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2)
+    old = pools(1, "O")
+    pf.watch(old, [], T0)
+    pf.run_once(T0)  # O has a mint fact
+    clock.ms = T0 + 11 * MIN  # and it is due again (cold)
+    # the loaded hour: holders at their cap (680) and ~400 cold mint reads, so the lower classes stand at 1,080 of the 1,480
+    pf._book(clock.ms, 680)
+    pf._book(clock.ms, 400, mint=True)
+    new = pools(1, "N")
+    pf.watch(old + new, [], clock.ms)  # N passes the filters, untagged (not hot)
+    n_before = len(pf.pools[old[0][0]].mints)
+    pf.run_once(clock.ms)
+    assert pf.pools[new[0][0]].mints, "the new pool's first read is a hot-class read"
+    assert len(pf.pools[old[0][0]].mints) == n_before and pf.stats_.get("deferred_mint", 0) == 1  # the cold refresh is the one that waits
+
+
+def test_n1_hour_rows_are_written_even_when_every_pass_raises(tmp_path):
+    clock = Clock(T0)
+    pf = P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2)
+    obs = O.ObsLog(tmp_path)
+    pf.set_obs(obs)
+    pf.watch(pools(2), [], T0)
+
+    def boom(*a, **k):
+        raise RuntimeError("refresh failed")
+
+    pf._refresh = boom  # type: ignore[method-assign]
+    for ms in (T0, T0 + HOUR + MIN):
+        try:
+            pf.run_once(ms)
+        except RuntimeError:
+            pass
+    rows = [r for r in O.read_rows(tmp_path / O.OBS_FILE) if r["kind"] == "chain_hour"]
+    assert [r["hour_start_ms"] for r in rows] == [T0]
+
+
+def test_n2_prefetch_start_reports_what_was_loaded_not_what_was_booked_since(tmp_path):
+    clock = Clock(T0)
+    spend = tmp_path / "s.json"
+    first = P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, clock=clock, spend_path=spend, policy=P.POLICY_V2)
+    first._book(T0, 5)
+    chain = CountingChain(clock)
+    pf = P.ChainPrefetcher(chain, R.HV4ChainSource.compose, clock=clock, spend_path=spend, policy=P.POLICY_V2)  # the restart: loads 5
+    pf._book(T0, 7)  # a call booked before the obs file is attached
+    chain.counter.record_call("getAccountInfo")
+    pf.set_obs(O.ObsLog(tmp_path))
+    row = next(r for r in O.read_rows(tmp_path / O.OBS_FILE) if r["kind"] == "prefetch_start")
+    assert row["spent_at_load"] == 5 and row["counter_calls_at_start"] == 0 and row["spend_state_reset"] == 0
+
+
+def test_n3_the_gate_reads_the_real_clock_inside_a_long_pass():
+    clock = Clock(T0)
+
+    class Slow(CountingChain):
+        def mint_facts(self, mint, force=False):
+            r = super().mint_facts(mint, force)
+            self.clock.ms += 2 * MIN
+            return r
+
+    pf = P.ChainPrefetcher(Slow(clock), R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2)
+    seen: list[int] = []
+    orig = pf._hour_calls
+    pf._hour_calls = lambda n: (seen.append(n), orig(n))[1]  # type: ignore[method-assign]
+    pf.watch(pools(3), [], T0)
+    pf.run_once(T0)
+    assert seen[0] == T0 and seen[-1] >= T0 + 4 * MIN  # the third gate asks about the window that ends at the real minute, not at the pass start
+
+
+def test_n4_a_lost_spend_file_cannot_hide_the_restart_crossing_hour(tmp_path):
+    clock = Clock(T0)
+    state = tmp_path / "chain-credits.json"
+    a = H.CreditCounter("helius", now_ms=clock, state_path=state)
+    for k in range(60):  # the previous process: 2 calls a minute for the whole hour
+        for _ in range(2):
+            clock.ms = T0 + k * MIN + 1000
+            a.record_call("getAccountInfo")
+    clock.ms = T0 + 60 * MIN + 5000
+
+    def restarted(counter_path):
+        chain = CountingChain(clock)
+        chain.counter = H.CreditCounter("helius", now_ms=clock, state_path=counter_path)
+        pf = P.ChainPrefetcher(chain, R.HV4ChainSource.compose, clock=clock, hourly_budget=100, policy=P.POLICY_V2)  # no spend file: it was deleted
+        pf.watch(pools(1), [], clock.ms)
+        pf.run_once(clock.ms)
+        return pf
+
+    pf = restarted(state)
+    assert not pf.pools[pools(1)[0][0]].mints and pf.stats_["deferred_mint"] == 1  # 120 calls in the last hour against a budget of 100: it waits
+    fresh = restarted(tmp_path / "other.json")  # control: the same prefetcher with no prior hour reads at once
+    assert fresh.pools[pools(1)[0][0]].mints
+
+
+def test_n5_an_unreadable_class_key_books_nothing_to_the_mint_classes(tmp_path):
+    clock = Clock(T0)
+    spend = tmp_path / "s.json"
+    spend.write_text(json.dumps({"schema": P.SPEND_SCHEMA, "spent": [[T0 - T0 % MIN, 300]], "mint": "garbage", "hot_mint": [[1, 2]]}))
+    pf = P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, clock=clock, spend_path=spend, policy=P.POLICY_V2)
+    assert pf._spent_last_hour(T0) == 300 and pf._mint_spent_last_hour(T0) == 0 and pf._hot_spent_last_hour(T0) == 0 and pf.stats_["spend_class_reset"] == 1
+    # holders_spent = spent - mint_spent = 300: the holders class looks as spent as possible, the fail-closed direction
+
+
+def test_n6_dropped_pools_are_forgotten_after_a_day():
+    clock = Clock(T0)
+    pf = P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2)
+    pf.watch(pools(2), [], T0)
+    pf.watch(pools(1, "Z"), [], T0 + 40 * MIN)  # the two leave the set: dropped
+    assert len(pf._dropped) == 2
+    pf.watch(pools(1, "Z"), [], T0 + 25 * HOUR)
+    assert pf._dropped == {}
+
+
+def test_n7_the_stale_row_is_written_after_the_lock_is_released():
+    clock = Clock(T0)
+    held: list[bool] = []
+    pf = P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2)
+
+    class Spy:
+        enabled = True
+        scan_ms = None
+        write_errors = build_errors = rows_written = 0
+
+        def write(self, kind, **f):
+            held.append(pf._lock._is_owned())  # type: ignore[attr-defined]
+
+        write_many = write
+
+    a = pools(1)
+    pf.watch(a, [], T0)
+    pf.run_once(T0)
+    pf.obs = Spy()
+    assert pf.part_at(a[0][0], a[0][1], T0 + 20 * MIN, SLOT + 10) is not None
+    assert held == [False]
+
+
+def test_n8_a_short_write_is_counted_and_the_next_row_starts_on_a_new_line(tmp_path, monkeypatch):
+    log = O.ObsLog(tmp_path)
+    real = O.os.write
+    calls = {"n": 0}
+
+    def short(fd, data):
+        calls["n"] += 1
+        return real(fd, data[: len(data) // 2]) if calls["n"] == 1 else real(fd, data)
+
+    monkeypatch.setattr(O.os, "write", short)
+    assert log.write("lost", a="x" * 40) is False and log.write_errors == 1
+    assert log.write("kept", b=2) is True
+    kinds = [r["kind"] for r in O.read_rows(tmp_path / O.OBS_FILE)]
+    assert kinds == ["kept"]  # the torn line is skipped by the reader and did not swallow the next row
+    assert (tmp_path / O.OBS_FILE).read_bytes().count(b"\n") == 2  # the newline that separated them
+
+
+def test_n9_runner_hour_writes_one_row_per_closed_hour(tmp_path, monkeypatch):
+    from tools.test_hv4_runner import make
+
+    monkeypatch.setenv("MAL_ARENA_TEST", "1")
+    monkeypatch.setenv("MAL_HV4_OBS", "1")
+    run = make(tmp_path / "r")
+    run._obs_hour_tick(T0 + 5 * MIN)  # sets the hour
+    run._obs_hour_tick(T0 + 3 * HOUR + 5 * MIN)  # a stall of three hours
+    rows = [r for r in O.read_rows(Path(run.cfg.root) / O.OBS_FILE) if r["kind"] == "runner_hour"]
+    assert [(r["hour_start_ms"], r["hour_end_ms"]) for r in rows] == [(T0 + k * HOUR, T0 + (k + 1) * HOUR) for k in range(3)]
+    assert {r["written_in_hour"] for r in rows} == {(T0 + 3 * HOUR) // HOUR}
+
+
+def test_n11_chain_hour_counts_distinct_deferred_pools_by_class_and_the_booked_calls(tmp_path):
+    clock = Clock(T0)
+    pf = P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, clock=clock, hourly_budget=100, policy=P.POLICY_V2)
+    pf.set_obs(O.ObsLog(tmp_path))
+    pf.run_once(T0)  # the first pass fixes the hour
+    clock.ms = T0 + 10 * MIN
+    pf._book(clock.ms, 98)  # the budget is spent: every read waits
+    a = pools(3)
+    pf.watch(a, [a[0][0]], clock.ms)
+    for k in range(3):  # three passes: the same three pools are deferred each time
+        pf.run_once(clock.ms + k * 5000)
+    clock.ms = T0 + HOUR + MIN
+    pf.run_once(clock.ms)
+    row = next(r for r in O.read_rows(tmp_path / O.OBS_FILE) if r["kind"] == "chain_hour")
+    # the old counter is cumulative and per pass (3 pools x 4 passes, the fourth being the pass that closes the hour); the new ones are per distinct pool and per hour
+    assert row["deferred_mint"] == 12 and row["deferred_hot_mint"] == 3 and row["deferred_cold_mint"] == 0  # a new pool is a hot-class read
+    assert row["booked_calls_hour"] == 98 and "deferred_hold" in row and row["calls"] == 0
+
+
+def test_n10_the_live_start_row_has_the_pid_and_the_replay_start_row_does_not(tmp_path, monkeypatch):
+    import os
+
+    from tools.test_hv4_runner import T0 as RT0
+    from tools.test_hv4_runner import make
+
+    monkeypatch.setenv("MAL_ARENA_TEST", "1")
+    base = make(tmp_path / "x")
+    clock = Clock(RT0)
+    chain = R.HV4ChainSource(CountingChain(clock), prefetch=P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2))
+    bnd = {"git_sha": "a" * 40, "dirty": False}
+    cfg = R.RunnerConfig(root=str(tmp_path / "live"), frozen_sha="a" * 40, clock_start_ms=RT0, live=True, lane_h=False)
+    live = R.Runner(cfg, base.state, base.engine, base.model, chain, base.guard, binding=bnd)
+    live.resume()
+    assert [r["pid"] for r in live.log.rows("SCAN") if r["kind"] == "start"] == [os.getpid()]
+
+
+def test_n12_a_state_payload_that_cannot_be_built_never_reaches_the_rpc_path_and_record_call_reads_the_clock_once(tmp_path):
+    reads = []
+
+    def clock():
+        reads.append(1)
+        return T0 + 5000
+
+    c = H.CreditCounter("helius", now_ms=clock, state_path=tmp_path / "s.json")
+    c.record_call("getAccountInfo")
+    assert len(reads) == 1  # one clock read per call: the day key, the minute bucket and the saved instant agree
+    c._tail = lambda now: (_ for _ in ()).throw(RuntimeError("bad tail"))  # type: ignore[method-assign]
+    c.record_call("getAccountInfo")  # must not raise
+    assert c.state_write_errors == 1 and c.calls == 2
+
+
+def test_n13_a_live_runner_needs_the_v2_prefetcher_and_survives_a_failing_attach(tmp_path, monkeypatch):
+    import pytest
+    from tools.test_hv4_runner import T0 as RT0
+    from tools.test_hv4_runner import FakeChain, make
+
+    monkeypatch.setenv("MAL_ARENA_TEST", "1")
+    base = make(tmp_path / "x")
+    bnd = {"git_sha": "a" * 40, "dirty": False}
+    cfg = R.RunnerConfig(root=str(tmp_path / "l1"), frozen_sha="a" * 40, clock_start_ms=RT0, live=True, lane_h=False)
+    with pytest.raises(RuntimeError, match="background chain prefetcher"):
+        R.Runner(cfg, base.state, base.engine, base.model, FakeChain(), base.guard, binding=bnd)  # no .prefetch: the card-time fetch path
+
+    class BadAttach:
+        prefetch = types.SimpleNamespace(policy="v2")
+
+        def __init__(self):
+            self._c = FakeChain()
+
+        def attach_obs(self, obs):
+            raise RuntimeError("attach failed")
+
+        def __getattr__(self, k):
+            return getattr(self._c, k)
+
+    cfg2 = R.RunnerConfig(root=str(tmp_path / "l2"), frozen_sha="a" * 40, clock_start_ms=RT0, live=True, lane_h=False)
+    run = R.Runner(cfg2, base.state, base.engine, base.model, BadAttach(), base.guard, binding=bnd)
+    assert run.obs.build_errors == 1

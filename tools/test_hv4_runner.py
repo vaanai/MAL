@@ -141,6 +141,20 @@ T_START = T0 - 20 * MIN + R.SCAN_SECOND_MS
 T_END = T0 + 100 * MIN
 
 
+class V2Chain:
+    """A chain source that carries a policy-v2 prefetcher marker (run mode refuses a live Runner without one, QP 6279836164 R1 and the pre-review N13); everything else is
+    the wrapped source's."""
+
+    def __init__(self, inner) -> None:
+        import types as _t
+
+        self._inner = inner
+        self.prefetch = _t.SimpleNamespace(policy="v2")
+
+    def __getattr__(self, k):
+        return getattr(self._inner, k)
+
+
 def rows_of(run: R.Runner, arm: str, kind: str | None = None) -> list[dict]:
     return [r for r in run.log.rows(arm) if kind is None or r["kind"] == kind]
 
@@ -568,7 +582,7 @@ def test_head_binding_reports_sha_and_dirty_flag_and_a_live_runner_needs_a_clean
     for bnd in (None, d):
         with pytest.raises(RuntimeError):
             R.Runner(cfg, base.state, base.engine, base.model, base.chain, base.guard, binding=bnd)
-    R.Runner(cfg, base.state, base.engine, base.model, base.chain, base.guard, binding=b)
+    R.Runner(cfg, base.state, base.engine, base.model, V2Chain(base.chain), base.guard, binding=b)
 
 
 # -------------------------------------------------------------------------------------------------------------------------- reviewer wiring (PR 5 hooks)

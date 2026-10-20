@@ -541,16 +541,17 @@ class CreditCounter:
                 a[1] += w
         return [[t, *acc[t]] for t in sorted(acc)]
 
-    def _save_state(self) -> None:
-        """Atomic write: temp file in the same directory, fsync, rename. Called with the lock held."""
+    def _save_state(self, now: int | None = None) -> None:
+        """Atomic write: temp file in the same directory, fsync, rename. Called with the lock held. The payload is built inside the try: nothing here may raise into the RPC path."""
         if self.state_path is None:
             return
-        days = sorted(self.by_day)[-STATE_KEEP_DAYS:]
-        payload = {"schema": STATE_SCHEMA, "by_day": {d: self.by_day[d] for d in days},
-                   "credits_by_day": {d: self.credits_by_day.get(d, 0) for d in days}, "saved_ms": self._now_ms(),
-                   "minutes": self._tail(int(self._now_ms())), "calls_total": self.prior_calls_total + self.calls}
         tmp = None
         try:
+            now = int(self._now_ms()) if now is None else now
+            days = sorted(self.by_day)[-STATE_KEEP_DAYS:]
+            payload = {"schema": STATE_SCHEMA, "by_day": {d: self.by_day[d] for d in days},
+                       "credits_by_day": {d: self.credits_by_day.get(d, 0) for d in days}, "saved_ms": now,
+                       "minutes": self._tail(now), "calls_total": self.prior_calls_total + self.calls}
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp = tempfile.mkstemp(dir=self.state_path.parent, prefix=".hv4-chain-state.", suffix=".tmp")
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -559,7 +560,7 @@ class CreditCounter:
                 os.fsync(f.fileno())
             os.replace(tmp, self.state_path)
             tmp = None
-        except OSError as e:
+        except Exception as e:  # noqa: BLE001 - OSError from the write, anything from building the payload: counted, never raised into the RPC path
             self.state_write_errors += 1
             log.warning("hv4_chain state write failed: %s", type(e).__name__)
         finally:
@@ -577,21 +578,21 @@ class CreditCounter:
         with self._lock:
             self.calls += 1
             self.by_method[method] = self.by_method.get(method, 0) + 1
-            day = _utc_day(self._now_ms())
+            now = int(self._now_ms())  # ONE clock read: the day key and the minute bucket cannot straddle 00:00Z between them
+            day = _utc_day(now)
             self.by_day[day] = self.by_day.get(day, 0) + 1
             w = 0
             if self.provider == "helius":
                 w = HELIUS_CREDITS.get(method, HELIUS_DEFAULT_CREDITS)
                 self.credits += w
                 self.credits_by_day[day] = self.credits_by_day.get(day, 0) + w
-            now = int(self._now_ms())
             m = self._minutes.setdefault(now - now % 60_000, [0, 0])
             m[0] += 1
             m[1] += w
             if len(self._minutes) > MINUTE_KEEP:
                 for k in sorted(self._minutes)[:-MINUTE_KEEP]:
                     del self._minutes[k]
-            self._save_state()
+            self._save_state(now)
 
     def minute_counts(self, start_ms: int, end_ms: int) -> list[list[int]]:
         """[[minute_start_ms, calls, credits], ...] for every whole minute in [start_ms, end_ms), zeros included, from this process's own record of every attempt sent."""

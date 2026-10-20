@@ -44,6 +44,7 @@ MIN_MS = 60_000
 HOT_HOLDERS_REFRESH_MS = 4 * MIN_MS  # under the card's 5 min holders limit, with slack for a cycle
 MINT_REFRESH_MS = 10 * MIN_MS  # under the card's 15 min mint limit (C.CHAIN_MINT_MAX_AGE_MS)
 HOT_LINGER_MS = 15 * MIN_MS  # a pool stays hot for three scans after it was last tagged, boarded or top by volume
+DROPPED_KEEP_MS = 24 * 60 * MIN_MS  # how long a dropped pool is remembered, for the "re_entry" label of its first_seen row
 DROP_AFTER_MS = 30 * MIN_MS  # a pool that has not passed the filters for this long leaves the store
 RETRY_AFTER_MS = 60_000  # after a failed read of a kind, wait this long before trying that kind again; doubles with each failure in a row, up to RETRY_MAX_MS
 RETRY_MAX_MS = 16 * MIN_MS
@@ -103,9 +104,12 @@ class ChainPrefetcher:
         self.obs = obs  # tools.hv4_obs.ObsLog or None: append-only side rows, never read by a decision
         self._spent_mint: deque[list[int]] = deque()  # v2: [minute bucket ms, calls] of the mint class in the last hour
         self._spent_hot: deque[list[int]] = deque()  # v2: the part of the mint class spent on new and hot pools
-        self._dropped: dict[str, int] = {}  # pool -> last_seen_ms of a pool that left the watch set (a later entry is a re-entry)
+        self._dropped: dict[str, int] = {}  # pool -> last_seen_ms of a pool that left the watch set (a later entry is a re-entry); entries older than DROPPED_KEEP_MS go
         self._obs_hour: int | None = None
         self._obs_start_ms = 0
+        self._deferred_pools: dict[int, dict[str, set]] = {}  # hour index -> class ("hot_mint", "cold_mint", "hold") -> distinct pools deferred (obs on only)
+        self._booked_by_hour: dict[int, int] = {}  # hour index -> calls this prefetcher booked in it (read by the chain_hour row)
+        self._at_load: dict[str, Any] = {}
         self.clock = clock or (lambda: time.time_ns() // 1_000_000)
         provider = getattr(getattr(chain, "rpc", None), "provider", None)
         self.holders_on = (provider != "public") if holders is None else holders  # the public endpoint refuses getTokenLargestAccounts: do not spend calls on it
@@ -119,6 +123,24 @@ class ChainPrefetcher:
         self.stats_: dict[str, int] = {}
         if spend_path is not None:
             self._load_spend()
+        self._capture_load()
+
+    def _capture_load(self) -> None:
+        """What this process found at load (the spend file's rolling hour, the counter's running and per-day calls), read here and not when the obs file is attached: a
+        call made in between must not make a reset spend file look like a reload (check 8)."""
+        now = self.clock()
+        c = getattr(self.chain, "counter", None)
+        self._obs_start_ms = now
+        try:
+            self._at_load = {"process_start_ms": now, "spent_at_load": self._spent_last_hour(now), "spend_state_reset": self.stats_.get("spend_state_reset", 0),
+                             "counter_calls_at_start": getattr(c, "calls", None),
+                             "counter_day_calls_at_start": (c.calls_today() if c is not None and hasattr(c, "calls_today") else None)}
+        except Exception:  # noqa: BLE001
+            self._at_load = {"process_start_ms": now}
+
+    def _obs_err(self) -> None:
+        with self._lock:
+            self._n("obs_errors")
 
     # -- bookkeeping
     def _n(self, k: str, n: int = 1) -> None:
@@ -148,6 +170,10 @@ class ChainPrefetcher:
         used = max(0, int(used))
         b = now - now % MIN_MS
         with self._lock:
+            hr = b // HOUR_MS
+            self._booked_by_hour[hr] = self._booked_by_hour.get(hr, 0) + used
+            for old in [k for k in self._booked_by_hour if k < hr - 3]:
+                del self._booked_by_hour[old]
             for dq, on in ((self._spent, True), (self._spent_mint, mint), (self._spent_hot, hot)):
                 if not on:
                     continue
@@ -171,11 +197,16 @@ class ChainPrefetcher:
         """v2: calls in the rolling hour as the CHAIN COUNTER saw them (every attempt sent, by any caller, retries included), or the prefetcher's own booking when that
         is larger (after a restart the counter's minutes are empty and the spend file holds the previous process's calls). One extra minute is counted: conservative."""
         own = self._spent_last_hour(now)
-        fn = getattr(getattr(self.chain, "counter", None), "calls_between", None)
+        c = getattr(self.chain, "counter", None)
+        fn = getattr(c, "calls_between", None)
         if fn is None:
             return own
+        lo = now - 60 * MIN_MS - MIN_MS + 1
         try:
-            return max(own, int(fn(now - 60 * MIN_MS - MIN_MS + 1, now + 1)))
+            # plus the minutes the PREVIOUS process left in the counter's state file (CreditCounter.prior_minutes): a lost or reset spend file cannot hide the hour
+            # that crosses a restart. They are the earlier processes' calls only; this process's own minutes are what calls_between counts.
+            prior = sum(int(m[1]) for m in (getattr(c, "prior_minutes", None) or []) if lo <= m[0] < now + 1)
+            return max(own, int(fn(lo, now + 1)) + prior)
         except Exception:  # noqa: BLE001
             return own
 
@@ -202,11 +233,15 @@ class ChainPrefetcher:
             return
         self._spent.extend(r for r in sorted(rows) if r[0] > now - 60 * MIN_MS)
         try:
-            self._spent_mint.extend(r for r in sorted([int(a), int(b)] for a, b in doc.get("mint", [])) if r[0] > now - 60 * MIN_MS and r[1] >= 0)
-            self._spent_hot.extend(r for r in sorted([int(a), int(b)] for a, b in doc.get("hot_mint", [])) if r[0] > now - 60 * MIN_MS and r[1] >= 0)
+            mint_rows = [r for r in sorted([int(a), int(b)] for a, b in doc.get("mint", [])) if r[0] > now - 60 * MIN_MS and r[1] >= 0]
+            hot_rows = [r for r in sorted([int(a), int(b)] for a, b in doc.get("hot_mint", [])) if r[0] > now - 60 * MIN_MS and r[1] >= 0]
         except (ValueError, TypeError, OverflowError):
-            self._spent_mint.append([now - now % MIN_MS, MINT_RESERVE])  # unreadable: the reserves count as spent (the lower classes get the rest)
-            self._spent_hot.append([now - now % MIN_MS, HOT_MINT_RESERVE])
+            # Fail closed means booking NOTHING to the mint classes: the holders and lower classes are measured as `spent - mint_spent` and `spent - hot_spent`, so a smaller
+            # mint figure makes them look larger and they are deferred first. (Booking a full reserve here would have made them look smaller: permissive.)
+            self._n("spend_class_reset")
+            return
+        self._spent_mint.extend(mint_rows)
+        self._spent_hot.extend(hot_rows)
 
     def _save_spend(self) -> None:
         """Atomic write: temp file in the same directory, fsync, rename. Called with the lock held. A failed write is counted, never raised."""
@@ -263,6 +298,8 @@ class ChainPrefetcher:
                 self._dropped[pool] = self.pools[pool].last_seen_ms
                 del self.pools[pool]
                 self._n("pools_dropped")
+            for pool in [k for k, ms in self._dropped.items() if now_ms - ms > DROPPED_KEEP_MS]:  # bounded: a re-entry after a day is reported as a first entry
+                del self._dropped[pool]
         obs = self.obs
         if entered and obs is not None and obs.enabled:  # one append for the scan's new pools, after the lock; the scanner's watch set is its filter-pass set
             try:
@@ -270,10 +307,11 @@ class ChainPrefetcher:
                 obs.write_many([{"kind": "first_seen_by_scanner", "scan_ms": scan_ms if scan_ms is not None else now_ms, "now_ms": now_ms, "in_filter_pass": True,
                                  "n_filter_pass": n_pass, **e} for e in entered])
             except Exception:  # noqa: BLE001 - on the scan thread: never let a side row stop the scan
-                self._n("obs_errors")
+                self._obs_err()
 
     def part_at(self, pool: str, mint: str | None, T: int, slot: int) -> dict | None:
         """The chain dict for a card at scan instant T: only facts stamped strictly before T, no RPC. None when the pool has no usable mint fact."""
+        stale_row: dict[str, Any] | None = None
         with self._lock:
             p = self.pools.get(pool)
             if p is None or not mint:
@@ -287,10 +325,10 @@ class ChainPrefetcher:
                 self._n("served_mint_stale")  # still returned: the card refuses it as chain_stale
                 obs = self.obs
                 if obs is not None and obs.enabled:
-                    try:
+                    try:  # built under the lock, WRITTEN after it: the scan thread must not hold the lock across file I/O
                         now = self.clock()
-                        obs.write("chain_stale_served", pool=pool, scan_ms=T, age_ms=T - mf.as_of_ms, hot=now < p.hot_until_ms, n_mints=len(p.mints),
-                                  fails_mint=p.fails["mint"], next_try_in_ms=max(0, p.next_try_ms["mint"] - now), pool_age_in_store_ms=now - p.first_ms)
+                        stale_row = {"pool": pool, "scan_ms": T, "age_ms": T - mf.as_of_ms, "hot": now < p.hot_until_ms, "n_mints": len(p.mints),
+                                     "fails_mint": p.fails["mint"], "next_try_in_ms": max(0, p.next_try_ms["mint"] - now), "pool_age_in_store_ms": now - p.first_ms}
                     except Exception:  # noqa: BLE001
                         self._n("obs_errors")
             flag = next(((v, ms) for v, ms in reversed(p.mayhems) if ms < T), None)
@@ -299,7 +337,13 @@ class ChainPrefetcher:
                 self._n("served_holders_omitted_stale")
                 hd = None
             self._n("served_ok")
-            return self.compose(mf, _Flag(flag[0] if flag else None), hd)
+            result = self.compose(mf, _Flag(flag[0] if flag else None), hd)
+        if stale_row is not None:
+            try:
+                self.obs.write("chain_stale_served", **stale_row)
+            except Exception:  # noqa: BLE001
+                self._obs_err()
+        return result
 
     # -- the worker's side
     def _due(self, p: _Pool, now: int) -> tuple[bool, bool]:
@@ -313,11 +357,13 @@ class ChainPrefetcher:
     def run_once(self, now_ms: int | None = None) -> int:
         """One pass under the active policy. Returns the calls made."""
         now = self.clock() if now_ms is None else now_ms
-        made = self._run_once_v2(now) if self.policy == POLICY_V2 else self._run_once_v1(now)
         try:
-            self._obs_tick(now)
-        except Exception:  # noqa: BLE001 - an observability failure is counted apart from pass_errors (which would mask a refresh failure) and never stops the pass
-            self._n("obs_errors")
+            made = self._run_once_v2(now) if self.policy == POLICY_V2 else self._run_once_v1(now)
+        finally:  # the hour rows are written even when a pass raises on every loop (the loop counts pass_errors and goes on)
+            try:
+                self._obs_tick(now)
+            except Exception:  # noqa: BLE001 - counted apart from pass_errors (which would mask a refresh failure), never raised
+                self._obs_err()
         return made
 
     def _run_once_v1(self, now: int) -> int:
@@ -393,12 +439,13 @@ class ChainPrefetcher:
                     continue
                 if kind == "hold" and not p.mints:
                     continue  # no mint fact yet: the holders read needs the token program from it
+                now = max(now, self.clock())  # a pass can run minutes: the window is the real one
                 spent = self._hour_calls(now)
                 hot_reserve = int(HOT_MINT_RESERVE * min(1.0, scale))
                 lower = spent - self._hot_spent_last_hour(now)  # everything except new-pool and hot-pool mint reads: cold mint reads and holders reads
                 if kind == "mint":
                     est = MINT_EST + (0 if p.mayhems else 1)
-                    hot_class = cls == 1 or (cls == 0 and now < p.hot_until_ms)  # a new pool that is not hot yet is a lower-class read
+                    hot_class = cls in (0, 1)  # a new pool's first read counts with the hot reserve whether or not the pool is hot yet (N3 text, QP 6279836164)
                     ok = spent + est <= hard and (hot_class or lower + est <= hard - hot_reserve)  # the lower classes together stop HOT_MINT_RESERVE short of the cap
                 else:
                     est = HOLDERS_EST
@@ -408,6 +455,12 @@ class ChainPrefetcher:
                 if not ok:
                     self._n("budget_deferred")
                     self._n("deferred_" + kind)
+                    if self.obs is not None and self.obs.enabled:  # distinct pools per class per hour, for the chain_hour row (a pool is deferred on every 5 s pass)
+                        hr = now // HOUR_MS
+                        by = self._deferred_pools.setdefault(hr, {})
+                        by.setdefault("hold" if kind == "hold" else ("hot_mint" if hot_class else "cold_mint"), set()).add(pool)
+                        for old in [k for k in self._deferred_pools if k < hr - 2]:
+                            del self._deferred_pools[old]
                     continue
             c0 = self._calls_total()
             self._refresh(p, now, kind == "mint", kind == "hold")
@@ -426,12 +479,8 @@ class ChainPrefetcher:
         if obs is None or not obs.enabled:
             return
         try:
-            now = self.clock()
             c = getattr(self.chain, "counter", None)
-            self._obs_start_ms = now
-            obs.write("prefetch_start", pid=os.getpid(), process_start_ms=now, policy=self.policy, hourly_budget=self.hourly_budget,
-                      spent_at_load=self._spent_last_hour(now), spend_state_reset=self.stats_.get("spend_state_reset", 0),
-                      counter_calls_at_start=getattr(c, "calls", None), counter_day_calls_at_start=(c.calls_today() if c is not None and hasattr(c, "calls_today") else None),
+            obs.write("prefetch_start", policy=self.policy, hourly_budget=self.hourly_budget, **self._at_load,  # process_start_ms, spent_at_load, spend_state_reset, counter_* at LOAD
                       # R3: what the previous process left (its last 61 per-minute counts [minute_ms, calls, credits] and the running total of all earlier processes),
                       # apart from this process's own record; check 5's restart hour is these minutes plus the old process's chain_hour rows
                       prior_minutes=list(getattr(c, "prior_minutes", None) or []), prior_calls_total=getattr(c, "prior_calls_total", None),
@@ -466,7 +515,14 @@ class ChainPrefetcher:
                          "counter_day_calls": (getattr(c, "by_day", {}) or {}).get(day), "counter_state_write_errors": getattr(c, "state_write_errors", None),
                          "spend_write_errors": self.stats_.get("spend_write_errors", 0), "spend_state_reset": self.stats_.get("spend_state_reset", 0),
                          "budget_deferred": self.stats_.get("budget_deferred", 0), "deferred_mint": self.stats_.get("deferred_mint", 0),
-                         "deferred_hold": self.stats_.get("deferred_hold", 0), "hourly_budget": self.hourly_budget, "prefetch_stats": dict(self.stats_)})
+                         "deferred_hold": self.stats_.get("deferred_hold", 0), "hourly_budget": self.hourly_budget, "prefetch_stats": dict(self.stats_),
+                         # distinct pools deferred in this hour, by class (the *_mint / *_hold counters above count every 5 s pass), and the calls this prefetcher booked
+                         # in the hour (its spend file's figure, next to the counter's `calls`)
+                         "deferred_hot_mint": len(self._deferred_pools.get(hh, {}).get("hot_mint", ())), "deferred_cold_mint": len(self._deferred_pools.get(hh, {}).get("cold_mint", ())),
+                         "deferred_hold_pools": len(self._deferred_pools.get(hh, {}).get("hold", ())), "booked_calls_hour": self._booked_by_hour.get(hh, 0)})
+        for hh in range(max(self._obs_hour, h - 24), h):
+            self._deferred_pools.pop(hh, None)
+            self._booked_by_hour.pop(hh, None)
         obs.write_many(rows)
         self._obs_hour = h
 
