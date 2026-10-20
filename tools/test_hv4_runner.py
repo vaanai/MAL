@@ -1298,3 +1298,132 @@ def test_pools_inside_the_v_band_are_traded_as_before_and_no_v_counter_moves(ful
     run, _ = full  # the recorded tape: both pools carry V = 17,584,505,288
     assert {e["pool"] for a in ("CON-L", "CON-F", "CON-X") for e in rows_of(run, a, "entry")} == {POOLS[0], POOLS[1]}
     assert run.counters.get("filter_v_missing", 0) == 0 and run.counters.get("filter_v_band", 0) == 0
+
+
+# -------------------------------------------------------------------------------------------------------------------------- main --register: registration only
+# Smoke finding at b240191: a registration-only process ran live_chain_source + prefetch.start() + Runner(obs=True) before the --register branch. It made a real chain
+# call and wrote runner_start / prefetch_start to hv4-obs.jsonl with no decision-log start row, so the shakedown report (Rule M) counted an orphan runner_start.
+import socket  # noqa: E402
+
+from tools import hv4_obs as _O  # noqa: E402
+from tools import hv4_prefetch as _P  # noqa: E402
+
+REG_SHA = "abcdef1234567"
+REG_CLOCK = T0 - 60 * MIN
+REG_NOW = T0 - 61 * MIN  # the fixed registration clock of these tests (the real clock is replaced in the cli_env fixture)
+
+
+class _NullChain:
+    """A chain object that must never be asked a fact: any chain read on it is a test failure."""
+
+    def _refuse(self, *a, **kw):
+        raise AssertionError("chain call")
+
+    mint_facts = mayhem_flag = largest_holders = mint_gate = chain_part = credit_report = _refuse
+
+
+def _argv(tmp: Path, *extra: str) -> list[str]:
+    return ["--tape-dir", str(tmp / "tape"), "--root", str(tmp / "hv4"), "--ledger-root", str(tmp / "ledger"), "--registry", str(tmp / "bots.json"),
+            "--frozen-sha", REG_SHA, "--clock-start-ms", str(REG_CLOCK), "--feed-delay-slots", str(FEED_DELAY_SLOTS), *extra]
+
+
+@pytest.fixture
+def cli_env(monkeypatch):
+    """main() with no network, no real git and a fixed registration clock. `built` lists the live_chain_source calls, `started` the prefetcher starts."""
+    built: list[str] = []
+    started: list[object] = []
+
+    def fake_source(root, env=None):
+        built.append(str(root))
+        pf = _P.ChainPrefetcher(_NullChain(), R.HV4ChainSource.compose, clock=lambda: T0, policy="v2")
+        return R.HV4ChainSource(_NullChain(), prefetch=pf)
+
+    def no_network(*a, **kw):
+        raise AssertionError("network call")
+
+    real_register = R.register_bot
+
+    def register(*a, **kw):
+        return real_register(*a, **{**kw, "now_ms": REG_NOW, "verify_sha": False})
+
+    monkeypatch.setattr(R, "live_chain_source", fake_source)
+    monkeypatch.setattr(_P.ChainPrefetcher, "start", lambda self: started.append(self))  # no thread
+    monkeypatch.setattr(R, "head_binding", lambda repo=None: {"git_sha": REG_SHA + "0" * 27, "dirty": False})
+    monkeypatch.setattr(R, "register_bot", register)
+    monkeypatch.setattr(socket.socket, "connect", no_network)
+    monkeypatch.setattr(socket, "create_connection", no_network)
+    return SimpleNamespace(built=built, started=started)
+
+
+@pytest.mark.parametrize("stub", [True, False])
+def test_register_starts_no_prefetcher_and_writes_no_obs_row_and_no_chain_state(tmp_path, cli_env, capsys, stub):
+    assert R.main(_argv(tmp_path, "--register", *(["--stub"] if stub else []))) == 0
+    capsys.readouterr()
+    assert cli_env.built == [] and cli_env.started == []  # no chain source was built, so no prefetcher and no chain or RPC call
+    root = tmp_path / "hv4"
+    for name in (_O.OBS_FILE, R.CHAIN_CREDITS_FILE, R.CHAIN_SPEND_FILE):
+        assert not (root / name).exists(), name
+    assert not root.exists() or [p for p in root.rglob("*")] == []  # nothing at all under the runner root
+    assert len(load_registry(tmp_path / "bots.json")) == 9
+
+
+def _old_register_all(run, path: str) -> dict:
+    """The body of Runner.register_all before register_arms was factored out of it, verbatim."""
+    out = {}
+    for a in run.arm_names:
+        spec = arms.ARMS[a]
+        ids = [run.model.model] if (spec.llm or spec.role == "R") else []
+        out[a] = R.register_bot(R.bot_id(a), run.cfg.frozen_sha, run.cfg.clock_start_ms, path, deciding_stake=0.25, model_ids=ids, now_ms=REG_NOW, verify_sha=False)
+    return out
+
+
+@pytest.mark.parametrize("stub", [True, False])
+def test_register_writes_the_same_bots_json_bytes_and_prints_the_same_lines_as_the_old_path(tmp_path, cli_env, capsys, stub):
+    ref = make(tmp_path / "ref", lane_h=False)  # a Runner with the cfg main() builds: the same sha, clock and (lane G only) arms
+    assert ref.cfg.frozen_sha == REG_SHA and ref.cfg.clock_start_ms == REG_CLOCK
+    old_regs = _old_register_all(ref, str(tmp_path / "old-bots.json"))
+    old_out = [R.canon({"lane_h": ref.lane_h, "n_bots": len(old_regs)})] + [
+        R.canon({"bot_id": R.bot_id(k), **{x: v[x] for x in ("frozen_sha", "clock_start_ms", "deciding_stake", "model_ids")}}) for k, v in old_regs.items()]
+    assert R.main(_argv(tmp_path, "--register", *(["--stub"] if stub else []))) == 0
+    assert capsys.readouterr().out.splitlines() == old_out
+    new_bytes = (tmp_path / "bots.json").read_bytes()
+    assert new_bytes == (tmp_path / "old-bots.json").read_bytes() and new_bytes.count(b"\n") == 9
+    # the Runner method (what the tests and any other caller use) writes those bytes too
+    ref.register_all(str(tmp_path / "method-bots.json"), now_ms=REG_NOW, verify_sha=False)
+    assert (tmp_path / "method-bots.json").read_bytes() == new_bytes
+    # a second --register of the same inputs is a no-op on the registry, as before
+    assert R.main(_argv(tmp_path, "--register", *(["--stub"] if stub else []))) == 0
+    assert (tmp_path / "bots.json").read_bytes() == new_bytes
+    assert R.arm_names_for(True) == tuple(arms.ARMS) and len(R.arm_names_for(False)) == 9 and ref.arm_names == R.arm_names_for(False)
+
+
+def test_register_keeps_the_run_mode_refusals_and_writes_nothing_when_refused(tmp_path, cli_env, capsys, monkeypatch):
+    monkeypatch.setenv("MAL_HV4_OBS", "0")
+    assert R.main(_argv(tmp_path, "--register")) == 2 and "MAL_HV4_OBS" in capsys.readouterr().err  # unpinned_run_mode runs first, for every mode
+    monkeypatch.delenv("MAL_HV4_OBS")
+    monkeypatch.setenv("MAL_HV4_PREFETCH_POLICY", "v1")
+    assert R.main(_argv(tmp_path, "--register")) == 2 and "MAL_HV4_PREFETCH_POLICY" in capsys.readouterr().err
+    monkeypatch.delenv("MAL_HV4_PREFETCH_POLICY")
+    assert R.main(_argv(tmp_path, "--register", "--lane-h")) == 2 and "lane H stays off" in capsys.readouterr().err
+    monkeypatch.setattr(R, "head_binding", lambda repo=None: {"git_sha": REG_SHA + "0" * 27, "dirty": True})
+    with pytest.raises(RuntimeError, match="dirty"):  # the live Runner's checkout check still stands in front of registration
+        R.main(_argv(tmp_path, "--register"))
+    monkeypatch.setattr(R, "head_binding", lambda repo=None: {"git_sha": "f" * 40, "dirty": False})
+    with pytest.raises(RuntimeError, match="frozen sha"):
+        R.main(_argv(tmp_path, "--register"))
+    assert not (tmp_path / "bots.json").exists() and cli_env.built == [] and cli_env.started == []
+
+
+def test_the_stub_run_still_starts_the_prefetcher_and_a_register_before_it_leaves_one_runner_start(tmp_path, cli_env, capsys):
+    (tmp_path / "tape").mkdir()
+    assert R.main(_argv(tmp_path, "--register")) == 0  # the stub procedure's first step
+    assert R.main(_argv(tmp_path, "--stub", "--end-ms", "1")) == 0  # then the run: no tick is due before the end
+    capsys.readouterr()
+    assert len(cli_env.built) == 1 and len(cli_env.started) == 1  # the run path builds the source and starts the prefetcher once
+    root = tmp_path / "hv4"
+    obs = _O.read_rows(root / _O.OBS_FILE)
+    runner_start = [r for r in obs if r["kind"] == "runner_start"]
+    prefetch_start = [r for r in obs if r["kind"] == "prefetch_start"]
+    assert len(runner_start) == 1 and len(prefetch_start) == 1 and runner_start[0]["pid"] == prefetch_start[0]["pid"] == _os.getpid()
+    starts = [r for r in R.DecisionLog(root).rows("SCAN") if r["kind"] == "start"]
+    assert len(starts) == 1 and starts[0]["pid"] == runner_start[0]["pid"]  # every runner_start has a decision-log start row of the same pid (Rule M)
