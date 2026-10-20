@@ -1246,7 +1246,8 @@ def project_obs(O: Obs, r: dict) -> None:
                                  "credits": opt_int(r, "credits"), "counter_day_calls": opt_int(r, "counter_day_calls"), "counter_state_write_errors": opt_int(r, "counter_state_write_errors"),
                                  "spend_write_errors": opt_int(r, "spend_write_errors"), "spend_state_reset": opt_int(r, "spend_state_reset"), "budget_deferred": opt_int(r, "budget_deferred"),
                                  "deferred_mint": opt_int(r, "deferred_mint"), "deferred_hold": opt_int(r, "deferred_hold"), "prefetcher_booked_calls": ps.get("calls") if is_int(ps.get("calls")) else None,
-                                 "deferred_hot_mint": opt_int(r, "deferred_hot_mint"), "deferred_cold_mint": opt_int(r, "deferred_cold_mint"), "booked_calls_hour": opt_int(r, "booked_calls_hour")})
+                                 "deferred_hot_mint": opt_int(r, "deferred_hot_mint"), "deferred_cold_mint": opt_int(r, "deferred_cold_mint"), "deferred_hold_pools": opt_int(r, "deferred_hold_pools"),
+                                 "booked_calls_hour": opt_int(r, "booked_calls_hour")})
         else:
             O.malformed[kind] += 1
     elif kind == "runner_hour":
@@ -1695,7 +1696,7 @@ def eval_check_5_obs(O: Obs, procs: list[dict], rm: dict, ws: int, we: int, S: d
             hour = iso(r["hour_end_ms"])
             ni = lambda v: "not reported" if v is None else v  # noqa: E731 - a missing field is "not reported", never a failure
             deferred.append({"pid": pid, "hour_end": hour, "total": ni(d["budget_deferred"]), "mint": ni(d["deferred_mint"]), "hold": ni(d["deferred_hold"]),
-                             "hot_mint_distinct_pools": ni(r["deferred_hot_mint"]), "cold_mint_distinct_pools": ni(r["deferred_cold_mint"])})
+                             "hot_mint_distinct_pools": ni(r["deferred_hot_mint"]), "cold_mint_distinct_pools": ni(r["deferred_cold_mint"]), "hold_distinct_pools": ni(r["deferred_hold_pools"])})
             counter_calls = sum(r["per_minute_calls"]) if r["per_minute_calls"] is not None else r["calls"]
             booked.append({"pid": pid, "hour_end": hour, "counter_calls": ni(counter_calls), "prefetcher_booked_calls_hour": ni(r["booked_calls_hour"]),
                            "prefetcher_calls_stat_delta": ni(d["prefetcher_booked_calls"]),

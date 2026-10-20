@@ -1,7 +1,7 @@
 """Tests for revision 3 (SHAKEDOWN-CHECKS-3, sha256 55fbba05...) of tools/hv4_shakedown_report.py: rule M and checks 1, 3, 5, 8, 11 from hv4-obs.jsonl.
 
-The obs files are written with the real writer (tools.hv4_obs.ObsLog; a subclass sets the pid and the wall clock, which a real run takes from the process), so the row
-schema (`hv4_obs_v1`, the canonical JSON line, the `schema` / `wall_ms` envelope) is the real one. The decision logs, cards and the rest of the shakedown root come from the
+The obs files are written with the real writer (tools.hv4_obs.ObsLog; the wall clock is injected through its `wall_ms` argument and os.getpid is patched per row, because the writer
+stamps the pid of the writing process and a row cannot override it), so the row schema (`hv4_obs_v1`, the canonical JSON line, the `schema` / `wall_ms` / `pid` envelope) is the real one. The decision logs, cards and the rest of the shakedown root come from the
 revision 2 fixture builder. Nothing here is a real pool, trade or price; the pool ids below are synthetic and must never reach the output.
 """
 from __future__ import annotations
@@ -22,18 +22,6 @@ W_END = START + 24 * HOUR
 DAY = 86_400_000
 SHA = "a" * 40
 POOL_IDS = ("UNAVPOOL-x7", "TAGPOOL-q3", "STALEPOOL-z9", "OTHERPOOL-k2")  # synthetic ids that appear in the obs file and the decision logs; none may reach the output
-
-
-class FakeObs(O.ObsLog):
-    """The real ObsLog with a pid and a wall clock set by the test (a real run takes both from the process)."""
-
-    def __init__(self, root: Path, pid: int | None) -> None:
-        self.clock = 0
-        self.pid = pid
-        super().__init__(root, enabled=True, wall_ms=lambda: self.clock)
-
-    def write_many(self, rows):
-        return super().write_many([{"pid": self.pid, **r} for r in rows])  # a row's own pid wins: {"pid": None} writes a row with no usable pid
 
 
 def floor_min(ms: int) -> int:
@@ -78,15 +66,31 @@ def obs_rows(fx: dict, calls=lambda m: 8, *, sha: str = SHA, w_end: int = W_END)
 
 
 def put(fx: dict, rows: list[dict], name: str = O.OBS_FILE) -> Path:
+    """Write the rows with the REAL ObsLog. The writer stamps `pid` = os.getpid() at write time and a row cannot override it, so each row is written with os.getpid patched to the row's pid
+    (a real run has one pid per process). A row whose pid is None is written and then has its pid key removed (a row without a usable pid)."""
     path = fx["root"] / name
     if path.exists():
         path.unlink()
-    objs: dict = {}
-    for r in sorted(rows, key=lambda r: r["wall_ms"]):
-        o = objs.setdefault(r["pid"], FakeObs(fx["root"], r["pid"]))
-        o.path = path
-        o.clock = r["wall_ms"]
-        o.write(r["kind"], **{k: v for k, v in r.items() if k not in ("wall_ms", "kind")})
+    clock = {"ms": 0}
+    log = O.ObsLog(fx["root"], enabled=True, wall_ms=lambda: clock["ms"])
+    log.path = path
+    ordered = sorted(rows, key=lambda r: r["wall_ms"])
+    real = os.getpid
+    try:
+        for r in ordered:
+            clock["ms"] = r["wall_ms"]
+            os.getpid = lambda pid=r["pid"]: 0 if pid is None else pid  # type: ignore[assignment]
+            assert log.write(r["kind"], **{k: v for k, v in r.items() if k not in ("wall_ms", "kind", "pid")})
+    finally:
+        os.getpid = real  # type: ignore[assignment]
+    if any(r["pid"] is None for r in ordered):
+        lines = path.read_text().splitlines()
+        for i, r in enumerate(ordered):
+            if r["pid"] is None:
+                d = json.loads(lines[i])
+                del d["pid"]
+                lines[i] = O.canon(d)
+        path.write_text("".join(x + "\n" for x in lines))
     return path
 
 
@@ -708,6 +712,14 @@ def test_a_torn_last_line_is_dropped_and_counted_and_other_schemas_are_skipped(t
         f.write(b'\n{"schema":"other_v9","kind":"runner_hour","pid":1}\n')
     rec2 = rev3(fx)
     assert rec2["also_reported_from_obs"]["obs_rows_in_file"]["rows_with_another_schema"] == 1 and rec2["obs"]["torn_tail_lines_dropped"] >= 0
+
+
+def test_a_row_written_by_the_real_writer_in_this_process_carries_this_processs_pid_and_is_read_back(tmp_path):
+    log = O.ObsLog(tmp_path)
+    log.write("runner_start", frozen_sha=SHA, binding={}, live=True)
+    log.write_many([first_seen(0, "UNAVPOOL-x7", 5_000)])  # the writer's pid wins over any pid in the row
+    Ob = R.load_obs(tmp_path / O.OBS_FILE, [])
+    assert Ob.runner_start[0]["pid"] == os.getpid() and Ob.first_seen == [(os.getpid(), "UNAVPOOL-x7", 5_000, "first")] and not Ob.no_pid
 
 
 def test_the_rows_come_from_the_real_writer_and_the_reader_keeps_only_the_fields_it_uses(tmp_path):
