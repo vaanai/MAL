@@ -66,7 +66,7 @@ class PrefetchTap:
                 cause = "never_had_a_fact"
             elif not before_T:
                 cause = "fact_not_before_T"
-            elif T - max(before_T) > C.CHAIN_HOLDERS_MAX_AGE_MS:
+            elif T - max(before_T) > pf.holders_max_age_ms:
                 cause = "older_than_limit"
                 self.null_age_ms.append(T - max(before_T))
             else:
@@ -110,21 +110,3 @@ class PrefetchTap:
     def write(self, path: str | Path) -> None:
         Path(path).write_text(json.dumps(self.summary(), sort_keys=True))
 
-
-def feed_warm_volumes(rig: Any) -> None:
-    """Harness only (the warm-holders variant): after every watch() call hand the prefetcher the 60-min volume (buy_sol + sell_sol of the 60m window, the number
-    hv4_cards.features calls vol_60m) of each pool the scan passed, read from the replay's ArenaState. No run-mode code calls this."""
-    pf, state = rig.prefetch, rig.state
-    orig = pf.watch
-
-    def watch(items, hot, now_ms):
-        items = list(items)
-        orig(items, hot, now_ms)
-        vols: dict[str, float] = {}
-        for pid, _mint in items:
-            snap = state.snapshot(pid, candles=False)
-            w = C._win(snap, "60m") if snap else {}
-            vols[pid] = float((C._num(w.get("buy_sol")) or 0.0) + (C._num(w.get("sell_sol")) or 0.0)) if w else 0.0
-        pf.set_warm_volumes(vols)
-
-    pf.watch = watch  # type: ignore[method-assign]
