@@ -19,6 +19,13 @@ from tools import hv4_runner as R
 from tools.test_hv4_cards import SLOT, T, POOL, base_chain, base_prints, base_snap
 from tools.test_hv4_runner import MIN, T0, T_START, make, rows_of
 
+
+@pytest.fixture(autouse=True)
+def _tests_of_this_file_pin_prefetch_policy_v1(monkeypatch):
+    """The tests below were written for d1dbcd6 (policy v1: 5 min holders limit, hot holders only, 1,500 an hour). The default policy is now v2 (Note N4); the v2 rules
+    are pinned in tools/test_hv4_prefetch_v2.py, and live_chain_source ignores this variable."""
+    monkeypatch.setenv("MAL_HV4_PREFETCH_POLICY", "v1")
+
 @pytest.fixture(scope="module", autouse=True)
 def _arena_test_env():
     with pytest.MonkeyPatch.context() as mp:  # register_bot's test overrides need MAL_ARENA_TEST=1 (as in test_hv4_runner)
