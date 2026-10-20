@@ -463,13 +463,17 @@ class ChainPrefetcher:
         the old fact and was refused chain_stale. A pool only becomes a card candidate by being in the filter-pass set, so a fresh mint fact for EVERY pool in the set is what
         the check needs; a holders block is a model fact, not a veto (a missing one only counts against check 4).
 
-        Order of service (one pass; the passes repeat every CYCLE_S):
-          class M, mint reads (including a new pool's first read and its once-only Mayhem flag): new pools, then pools hot now, then the rest, oldest fact first;
-          class H, holders reads of hot pools, oldest first.
-        Caps, all on the rolling hour as the chain counter counts it (every attempt, every caller) and under `hourly_budget - SAFETY_MARGIN`:
-          class M may use all of it; class H may not plan into the MINT_RESERVE calls an hour that class M has not yet spent.
-        No call is added to the plan of v1: the budget is the same 1,500 an hour (36k a day) and is only spent in a different order, so a loaded hour sheds holders reads
-        (null holders blocks, check 4) before it lets any mint fact go stale (check 2)."""
+        Note N4 (QP ruling on PR #768): the order of service in one pass (the passes repeat every CYCLE_S) is
+          0 mint reads of new pools (with the once-only Mayhem flag), 1 mint reads of hot pools, 2 holders reads of hot pools (every 12 min), 3 mint reads of the other pools
+          (oldest fact first), 4 holders reads of warm pools (every 12 min; highest 60-min volume first, the volume taken from the scan's state at or before this pass).
+        Caps, all on the rolling hour as the chain counter counts it (every attempt, every caller) and under `hourly_budget - SAFETY_MARGIN` (cap 2,000, plan stop 1,980);
+        the reserves are ABSOLUTE calls, they do not scale with the cap (below a 1,500 test budget they shrink in proportion):
+          P1  classes 0 and 1 (new and hot mint) may use all of it; classes 2, 3 and 4 TOGETHER stop HOT_MINT_RESERVE (400) short;
+          classes 2 and 4 (all holders reads together) leave MINT_RESERVE (800) calls an hour to the mint classes;
+          P2  class 4 (warm holders) stops WARM_HOLD_RESERVE (600) short, farther than any other class, and comes last: a loaded hour sheds warm holders reads first, then
+          cold mint and hot holders reads, and new and hot mint reads last.
+        The budget is counted as N3 counts it and is only spent in a different order than v1: a loaded hour sheds holders reads (null holders blocks, check 4) before it
+        lets any mint fact go stale (check 2)."""
         with self._lock:
             work = []
             # warm order: the volumes the latest scan took from the arena state, used only if they were taken at or before this pass (never a later state)
