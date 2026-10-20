@@ -958,6 +958,7 @@ class Runner:
                 gc.enable()
 
     def _scan(self, T: int) -> None:
+        self.obs.scan_ms = T  # the scan instant, for the first_seen rows the prefetcher writes during this scan (inside the paused-collector body, like the decision code)
         self.poll_to(T)
         slot = self.slot
         cand, tags, feat_of, snap_of, prints_of = [], [], {}, {}, {}
@@ -1672,7 +1673,6 @@ class Runner:
             self.rechecks(T)
             if T % SCAN_EVERY_MS == SCAN_SECOND_MS:
                 t0 = self.now_fn() if self.timing else 0
-                self.obs.scan_ms = T  # the scan instant, for the first_seen rows the prefetcher writes during this scan
                 self.scan(T)
                 if self.timing:
                     self._scan_timing(T, self.now_fn() - t0)
