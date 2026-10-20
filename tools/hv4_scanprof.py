@@ -118,6 +118,27 @@ def summarize_scans(scans: list[dict[str, Any]], skip_first: int = 0) -> dict[st
             "cards_per_board_scan": {"min": min((s["n_cards"] for s in sc if s["n_board"] > 0), default=None), "max": max((s["n_cards"] for s in sc if s["n_board"] > 0), default=None)}}
 
 
+def gc_outside_summary(pauses: list[tuple[int, float]]) -> dict[str, Any]:
+    """Collections that ran outside a scan, in the tick loop: count by generation, and p50 / p99 / max of the pause (ms), for all generations and for generation 2 alone."""
+    def d(v: list[float]) -> dict[str, Any]:
+        s = sorted(v)
+        return {"n": len(s)} if not s else {"n": len(s), "p50": round(s[len(s) // 2], 1), "p99": round(s[min(len(s) - 1, int(0.99 * len(s)))], 1), "max": round(s[-1], 1),
+                                            "total_ms": round(sum(s), 1)}
+    return {"by_gen_n": [sum(1 for g, _ in pauses if g == k) for k in (0, 1, 2)], "all": d([ms for _g, ms in pauses]), "gen2": d([ms for g, ms in pauses if g == 2]),
+            "gen2_over_500ms": sum(1 for g, ms in pauses if g == 2 and ms > 500.0)}
+
+
+def exit_check_delay_sim(step_ms: list[float], period: float = 1000.0, nominal: float = 100.0) -> dict[str, Any]:
+    """SIMULATED exit-check delay of the live tick loop from the measured wall time of each replay step. The runner's own tick_timing delay is `wall now - T`, which in a replay
+    is hours (T is tape time), so it is meaningless here. The live loop starts tick k at max(T_k + 100 ms, end of tick k-1): the lateness L_k = max(0, L_k-1 + d_k-1 - 1000), and
+    the delay the runner would record is about 100 ms + L_k. A queue model on replay step times: it carries the replay's CPU and disk, not the live host's."""
+    late, out = 0.0, []
+    for d in step_ms:
+        out.append(nominal + late)
+        late = max(0.0, late + d - period)
+    return dist([int(x) for x in out])
+
+
 def is_board(T: int) -> bool:
     return (T // 1000) % (BOARD_EVERY_MS // 1000) == SCAN_SECOND_MS // 1000
 
@@ -154,16 +175,90 @@ def run_cmd(a: argparse.Namespace) -> int:
                 n_prof[kind] += 1
 
         run.scan = scan  # type: ignore[method-assign]
+    fs: dict[int, dict[str, float]] = {}
+    gc_out: list[tuple[int, float]] = []  # (generation, ms) of every collection outside a scan, after the first step
+    step_ms: list[float] = []  # wall ms of every step after the first (the first reads the warm-up)
+    gc_total = {"n": [0, 0, 0], "ms": [0.0, 0.0, 0.0]}  # every collection of the run by generation (the warm-up included), when --time-gc
+    if a.time_fsync or a.time_gc:  # per scan: the time spent in os.fsync (decision-log rows, budget and prefetch files) and in the cyclic GC, by generation
+        import gc
+        import os
+
+        acc: dict[str, Any] = {"on": 0, "loop": 0, "fsync_ms": 0.0, "n_fsync": 0, "gc_n": [0, 0, 0], "gc_ms": [0.0, 0.0, 0.0], "gc_t0": 0.0}
+        orig_fsync, inner_scan = os.fsync, run.scan
+
+        def timed_fsync(fd: int) -> None:
+            t = time.perf_counter()
+            try:
+                return orig_fsync(fd)
+            finally:
+                if acc["on"]:
+                    acc["fsync_ms"] += (time.perf_counter() - t) * 1000.0
+                    acc["n_fsync"] += 1
+
+        def gc_cb(phase: str, info: dict) -> None:
+            if phase == "start":
+                acc["gc_t0"] = time.perf_counter()
+                return
+            g, ms = int(info["generation"]), (time.perf_counter() - acc["gc_t0"]) * 1000.0
+            gc_total["n"][g] += 1
+            gc_total["ms"][g] += ms
+            if acc["on"]:
+                acc["gc_n"][g] += 1
+                acc["gc_ms"][g] += ms
+            elif acc["loop"]:  # a pause in the tick loop outside a scan (after the first step, which reads the warm-up)
+                gc_out.append((g, ms))
+
+        def timed_scan(T: int) -> None:
+            acc.update(on=1, fsync_ms=0.0, n_fsync=0, gc_n=[0, 0, 0], gc_ms=[0.0, 0.0, 0.0])
+            try:
+                inner_scan(T)
+            finally:
+                acc["on"] = 0
+                rec: dict[str, Any] = {}
+                if a.time_fsync:
+                    rec.update(fsync_ms=round(acc["fsync_ms"], 1), n_fsync=acc["n_fsync"])
+                if a.time_gc:
+                    rec.update(gc_n=list(acc["gc_n"]), gc_ms=[round(x, 1) for x in acc["gc_ms"]], gc2_n=acc["gc_n"][2], gc2_ms=round(acc["gc_ms"][2], 1))
+                fs[T] = rec
+
+        if a.time_fsync:
+            os.fsync = timed_fsync  # type: ignore[assignment]
+        if a.time_gc:
+            gc.callbacks.append(gc_cb)
+        run.scan = timed_scan  # type: ignore[method-assign]
+        if a.time_gc:
+            inner_step, first_step = run.step, [True]
+
+            def timed_step(T: int) -> None:
+                t = time.perf_counter()
+                try:
+                    inner_step(T)
+                finally:
+                    if first_step[0]:
+                        first_step[0] = False
+                        acc["loop"] = 1
+                    else:
+                        step_ms.append((time.perf_counter() - t) * 1000.0)
+
+            run.step = timed_step  # type: ignore[method-assign]
     t0 = time.time()
-    M.replay(rig, t_from, t_to, sample_ms=a.sample_min * MIN_MS, tracemalloc_top=0, log=lambda *x, **k: None)
+    rows_s = M.replay(rig, t_from, t_to, sample_ms=a.sample_min * MIN_MS, tracemalloc_top=0, log=lambda *x, **k: None)
     wall = round(time.time() - t0)
     run.flush_timing()
     scans = scan_rows(run.cfg.root)
+    for sc in scans:
+        sc.update(fs.get(sc["ms"], {}))
     res: dict[str, Any] = {"hours": a.hours, "start": a.start, "state_start": a.state_start, "wall_s": wall, "n_scans": len(scans), "timing": not a.no_timing,
                            "summary": summarize_scans(scans, a.skip_scans), "summary_all_scans": summarize_scans(scans, 0), "scans": scans,
                            "decision_md5_no_timing": decision_md5_no_timing(run.cfg.root), "counters": dict(run.counters),
                            "hook_errors": sorted(set(run.hook_errors)), "mock_calls": dict(rig.rpc_mock.calls), "prefetch": rig.prefetch.stats(),
                            "ledger_digest": M.ledger_digest(scratch / "ledger")}  # the scratch engine ledger of THIS replay, never a live one
+    res["rss"] = {"samples_mb": [[r["sim"], r["rss_mb"]] for r in rows_s], "peak_sampled_mb": max((r["rss_mb"] for r in rows_s), default=None), "hwm_mb": round(M.peak_rss_mb())}
+    if a.time_gc:
+        res["gc_outside_scans"] = gc_outside_summary(gc_out)
+        res["step_ms"] = dist([int(x) for x in step_ms])
+        res["exit_check_delay_sim_ms"] = exit_check_delay_sim(step_ms)
+        res["gc_total"] = {"n_by_gen": gc_total["n"], "ms_by_gen": [round(x, 1) for x in gc_total["ms"]]}
     if profs:
         txt = io.StringIO()
         for kind, pr in profs.items():
@@ -208,6 +303,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--holders", choices=("on", "off"), default="on", help="on = the Helius run (holders refreshed for hot pools, as the shakedown does); off = public")
     r.add_argument("--sample-min", type=int, default=60)
     r.add_argument("--no-timing", action="store_true")
+    r.add_argument("--time-fsync", action="store_true", help="record per scan the time spent in os.fsync (fsync_ms, n_fsync)")
+    r.add_argument("--time-gc", action="store_true", help="record per scan the cyclic-GC collections by generation (gc_n, gc_ms, gc2_n, gc2_ms) via gc.callbacks, and the run totals")
     r.add_argument("--profile", default=None, help="write cProfile text (cumulative and tottime tables for ordinary and board scans) here; slows the scans")
     r.add_argument("--skip-scans", type=int, default=0, help="leave the first N scans out of the summary")
     r.add_argument("--top", type=int, default=35)

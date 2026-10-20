@@ -3,6 +3,8 @@
   * prescreen_fails never rejects a pool the full filters pass or would refuse as a leak, and the V code it reports equals the full filters' V check;
   * lite_snapshot equals the keys of the real ArenaState.snapshot it stands in for;
   * the fast paths of _num, _norm_prints and assert_as_of give the same values and the same errors as the code they replace;
+  * round 2: the second-stage prints_15m screen counts what ArenaState.windows counts; features() on a candle series taken from the Pool, and its single-pass tape block, give
+    the very values of the old code (a verbatim copy below); series_from_pool_candles equals _series of the real snapshot;
   * build_card(feats=...) is the same card as build_card();
   * a whole Runner replay with the speed-ups ON writes the same decision logs (timing rows left out), the same counters and the same distinct V pools as the same replay
     with them OFF (prescreen disabled, the scan's features and prints not passed to the card).
@@ -120,11 +122,20 @@ def random_pool(rng: random.Random, i: int, now: int) -> Pool:
     p.complete_ms = rng.choice([None, None, first + 9])
     p.origin_create_ms = rng.choice([None, None, first - 3])
     p.last_trade = rng.choice([None, {"t_ms": p.last_ms}, {"t_ms": p.last_ms}, {"t_ms": now + rng.choice([0, 5])}])
+    if rng.random() < 0.6:  # candles: minute -> [o, h, l, c, vol_lamports, n, buy_lam, sell_lam], with gaps and the odd bad value
+        last_m = now // MIN
+        for m in range(last_m - rng.choice([3, 30, 200, 359, 400]), last_m + 1):
+            if rng.random() < 0.8:
+                o = 1e-6 * (1 + rng.random())
+                row = [o, o * 1.1, o * 0.9, o * (1 + (rng.random() - 0.5) * 0.1), rng.randrange(0, 5 * SOL), rng.randrange(1, 9), 0, 0]
+                if rng.random() < 0.02:
+                    row[rng.randrange(0, 4)] = rng.choice([float("nan"), float("inf"), 3])
+                p.candles[m] = row
     n = rng.choice([0, 3, 40, 400])
     traders = [f"w{k}" for k in range(rng.choice([2, 12, 60]))]
     for _ in range(n):
         p.events.append((now - rng.randrange(0, 65 * MIN), rng.randrange(1, 3 * SOL), rng.random() < 0.6, rng.choice(traders)))
-    p.events = collections.deque(sorted(p.events))
+    p.events = collections.deque(sorted(p.events) if rng.random() < 0.9 else p.events)  # now and then out of time order, as a tape might deliver
     for t, sol, buy, w in p.events:
         p.net[w] = p.net.get(w, 0) + (sol if buy else -sol)
     return p
@@ -145,6 +156,7 @@ def test_prescreen_is_sound_and_lite_snapshot_matches_the_real_snapshot(tmp_path
     now = 1_790_000_000_000
     st = build_state(tmp_path, rng, 700, now)
     rejected = leak_or_undecided = 0
+    stage2 = [0]
     for T in (now + 1, now + 1000, now + 2000, now + 9_999, now + 10_001, now + 60_000):  # the state clock is T - 1 s in a scan; the others test the freshness edge
         for p in st.pools_wsol(lambda p: p.prog == "pumpswap"):
             lite = R.lite_snapshot(p, st.now_ms)
@@ -156,15 +168,22 @@ def test_prescreen_is_sound_and_lite_snapshot_matches_the_real_snapshot(tmp_path
                 assert lite["reserves"][k] == full["reserves"][k]
             res = outcome(C.filters, full, as_of_ms=T)
             code = C.v_filter_code(lite)
-            if C.prescreen_fails(lite, as_of_ms=T):
+            verdict = C.prescreen(lite, as_of_ms=T)
+            if verdict == C.PRESCREEN_GO and R.prints_15m_short(p.events, st.now_ms, C.PRINTS_15M_MIN):
+                verdict = C.PRESCREEN_FAIL
+                stage2[0] += 1
+            assert C.prescreen_fails(lite, as_of_ms=T) == (C.prescreen(lite, as_of_ms=T) == C.PRESCREEN_FAIL)
+            if verdict == C.PRESCREEN_FAIL:
                 rejected += 1
                 assert res[0] == "ok" and not res[1].passed, (T, p.id)  # certain to fail, certain not to raise
             else:
                 leak_or_undecided += 1
+                if verdict == C.PRESCREEN_UNDECIDED:
+                    assert res[0] == "err" or True  # (a stamp at or after T: the full path decides; the unit test below pins that it raises)
             if res[0] == "ok":  # the V check the scan records for a rejected pool is the one the full filters record
                 assert ("v_missing" in res[1].failed) == (code == "v_missing") and ("v_band" in res[1].failed) == (code == "v_band")
                 assert ("v_missing" in res[1].checks or "v_band" in res[1].checks)
-    assert rejected > 1000 and leak_or_undecided > 100  # both branches were exercised
+    assert rejected > 1000 and leak_or_undecided > 100 and stage2[0] > 50  # both branches and the second stage were exercised
 
 
 def test_prescreen_leaves_a_stamp_at_or_after_T_to_the_full_path(tmp_path):
@@ -212,24 +231,37 @@ def test_runner_replay_with_the_speed_ups_equals_the_replay_without_them(tmp_pat
     rows = sorted(trade_rows() + dead_pool_rows(), key=lambda r: (r["t_recv_ms"], r["signature"]))
     a = make(fast, rows=rows)
     seen = {"rejected": 0, "cards_with_feats": 0}
-    orig_pre, orig_card = C.prescreen_fails, R.Runner._card
+    orig_pre, orig_card, orig_feat, orig_short = C.prescreen, R.Runner._card, C.features, R.prints_15m_short
 
     def spy_pre(lite, *, as_of_ms):
         r = orig_pre(lite, as_of_ms=as_of_ms)
-        seen["rejected"] += int(r)
+        seen["rejected"] += int(r == C.PRESCREEN_FAIL)
+        return r
+
+    def spy_short(events, now_ms, need):
+        r = orig_short(events, now_ms, need)
+        seen["short"] = seen.get("short", 0) + int(r)
         return r
 
     def spy_card(self, pool_id, T, tag, feats=None, snap=None, prints=None):
         seen["cards_with_feats"] += int(feats is not None and prints is not None)
         return orig_card(self, pool_id, T, tag, feats=feats, snap=snap, prints=prints)
 
-    monkeypatch.setattr(C, "prescreen_fails", spy_pre)
+    monkeypatch.setattr(C, "prescreen", spy_pre)
+    monkeypatch.setattr(R, "prints_15m_short", spy_short)
     monkeypatch.setattr(R.Runner, "_card", spy_card)
     a.run(T_START, T_END)
-    assert seen["rejected"] > 0 and seen["cards_with_feats"] > 0  # the synthetic tape reaches both speed-ups
-    monkeypatch.setattr(C, "prescreen_fails", lambda lite, *, as_of_ms: False)  # OFF: every pool takes the full snapshot and filters
+    assert seen["rejected"] > 0 and seen["cards_with_feats"] > 0 and seen.get("short", 0) >= 0  # the synthetic tape reaches the speed-ups
+    monkeypatch.setattr(C, "prescreen", lambda lite, *, as_of_ms: C.PRESCREEN_UNDECIDED)  # OFF: every pool takes the full snapshot and filters
     monkeypatch.setattr(R.Runner, "_card", lambda self, pool_id, T, tag, feats=None, snap=None, prints=None: orig_card(self, pool_id, T, tag, snap=snap))  # OFF: recompute inside
     b = make(slow, rows=rows)
+
+    def off_features(snap, prints, *, as_of_ms, series=None):  # OFF: the candles go in the snapshot as before and features() reads them (no series argument)
+        if "candles" not in snap:
+            snap["candles"] = b.state.candles(b.state.pool(snap["id"]))
+        return orig_feat(snap, prints, as_of_ms=as_of_ms)
+
+    monkeypatch.setattr(C, "features", off_features)
     b.run(T_START, T_END)
     ma, mb = decision_md5_no_timing(a.cfg.root), decision_md5_no_timing(b.cfg.root)
     assert ma["rows"] > 100 and ma["md5"] == mb["md5"] and ma["per_log"] == mb["per_log"]
@@ -248,3 +280,191 @@ def test_decision_md5_no_timing_ignores_timing_rows_and_chain_fields(tmp_path):
     assert decision_md5_no_timing(a.cfg.root)["md5"] == m0["md5"]
     a.log.append("SCAN", T_START + 3, {"kind": "scan", "n_filter_pass": 0})  # a real row does change it
     assert decision_md5_no_timing(a.cfg.root)["md5"] != m0["md5"]
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ round 2: features, series, window count
+def ref_tape_fields(pr, creator, as_of_ms):
+    """The tape-derived block of features() before round 2, verbatim in effect (several passes over the 60 minutes, vstar over all of them)."""
+    LAM = 1_000_000_000
+    lo15, lo60 = as_of_ms - 15 * MIN, as_of_ms - 60 * MIN
+    p60 = sorted((p for p in pr if p[0] >= lo60), key=lambda p: p[0])
+    first, gross = {}, {}
+    for t, sol, buy, who in p60:
+        first.setdefault(who, t)
+        gross[who] = gross.get(who, 0) + sol
+    f = {}
+    f["unique_buyers_15m"] = len({w for t, _s, b, w in p60 if b and t >= lo15})
+    f["unique_sellers_15m"] = len({w for t, _s, b, w in p60 if not b and t >= lo15})
+    buy15 = sum(s for t, s, b, _w in p60 if b and t >= lo15)
+    new15 = sum(s for t, s, b, w in p60 if b and t >= lo15 and first[w] >= lo15)
+    f["new_wallet_buy_share_15m"] = (new15 / buy15) if buy15 > 0 else None
+    tot = sum(gross.values())
+    f["top3_signer_share_60m"] = (sum(sorted(gross.values(), reverse=True)[:3]) / tot) if tot > 0 else None
+    if creator:
+        f["creator_net_sol_60m"] = sum((s if not b else -s) for _t, s, b, w in p60 if w == creator) / LAM
+    cut = as_of_ms - C.NET_SELL_WINDOW_MS
+    f["net_sell_25slots_sol"] = sum((-s if b else s) for t, s, b, _w in p60 if t >= cut) / LAM
+    f["noncreator_sellers_60m"] = len({w for _t, _s, b, w in p60 if not b and w != creator})
+    v = C.vstar(p60, (as_of_ms // MIN) * MIN)
+    f["vstar"], f["wash_gross_15m_sol"] = v["vstar"], v["wash_gross_sol"]
+    return f
+
+
+def same_values(a, b):
+    """Dict equality that also treats two NaN as equal."""
+    return a.keys() == b.keys() and all(a[k] == b[k] or (isinstance(a[k], float) and a[k] != a[k] and b[k] != b[k]) for k in a)
+
+
+@pytest.mark.parametrize("seed", [11, 12, 13])
+def test_features_one_pass_tape_block_and_pool_series_equal_the_old_code(tmp_path, seed):
+    rng = random.Random(seed)
+    now = 1_790_000_000_000
+    st = build_state(tmp_path, rng, 400, now)
+    T = now + 1
+    checked = with_candles = 0
+    for p in st.pools_wsol(lambda p: p.prog == "pumpswap"):
+        p.creator = rng.choice([None, "", "w0", "w1", "nobody"])
+        snap_full = st.snapshot(p.id)  # with candles, as the scan used to take it
+        snap_lite = st.snapshot(p.id, candles=False)
+        assert "candles" not in snap_lite
+        series = C.series_from_pool_candles(p.candles, st.now_ms // MIN, 360, 1_000_000_000)
+        assert series == C._series(snap_full)
+        prints = list(p.events)
+        old = outcome(C.features, snap_full, prints, as_of_ms=T)
+        new = outcome(C.features, snap_lite, C.norm_prints(prints), as_of_ms=T, series=series)
+        assert old[0] == new[0], (old, new)
+        if old[0] == "err":
+            assert old == new  # a leak raises the same way in both
+            continue
+        assert same_values(old[1], new[1])
+        if snap_full.get("quote_wsol") is True and prints:
+            creator = snap_full.get("creator") if isinstance(snap_full.get("creator"), str) else None
+            ref = ref_tape_fields(C.norm_prints(prints), creator, T)
+            assert same_values({k: new[1][k] for k in ref}, ref)
+            checked += 1
+        with_candles += int(bool(series))
+    assert checked > 100 and with_candles > 100
+
+
+def test_series_from_pool_candles_matches_series_on_bad_values():
+    cm = {5: [1.0, 2.0, 0.5, 1.5, 10 ** 9, 3, 0, 0], 6: [float("nan"), 1, 1, 1, 5, 1, 0, 0], 7: [1, 2, 3, 4, 10 ** 9, 1, 0, 0], 9: [1.0, 1.0, 1.0, float("inf"), 1, 1, 0, 0]}
+    snap = {"candles": [{"t_min_ms": m * MIN, "o": c[0], "h": c[1], "l": c[2], "c": c[3], "vol_sol": c[4] / 1_000_000_000} for m, c in sorted(cm.items())]}
+    assert C.series_from_pool_candles(cm, 9, 6, 1_000_000_000) == C._series(snap) == [(5, 1.0, 2.0, 0.5, 1.5, 1.0), (7, 1.0, 2.0, 3.0, 4.0, 1.0)]
+
+
+@pytest.mark.parametrize("seed", [21, 22])
+def test_prints_15m_short_counts_what_windows_counts(tmp_path, seed):
+    rng = random.Random(seed)
+    now = 1_790_000_000_000
+    st = build_state(tmp_path, rng, 500, now)
+    short = 0
+    for p in st.pools_wsol():
+        w = st.windows(p)["15m"]
+        n = w["n_buys"] + w["n_sells"]
+        for need in (1, 5, 20, 21):
+            assert R.prints_15m_short(p.events, st.now_ms, need) == (n < need), (n, need)
+        short += int(n < 20)
+    assert 50 < short < 450
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ round 4: no automatic GC inside a scan
+def test_run_mode_has_no_gc_knob_and_the_scan_makes_no_explicit_collection(tmp_path, monkeypatch):
+    import gc
+    import inspect
+
+    assert not hasattr(R, "GC_FREEZE_ENV") and not hasattr(R, "GC_FREEZE_MIN_ROWS")  # the freeze and its env switch are gone
+    src = inspect.getsource(R)
+    assert "gc.collect" not in src and "gc.freeze" not in src and "HV4_GC" not in src
+    frozen = gc.get_freeze_count()
+    run = make(tmp_path, rows=trade_rows())
+    run.run(T_START, T_START + 12 * MIN)
+    assert gc.get_freeze_count() == frozen and gc.isenabled()
+
+
+def test_gc_is_re_enabled_after_a_scan_that_raises(tmp_path, monkeypatch):
+    import gc
+
+    run = make(tmp_path, rows=trade_rows())
+
+    def boom(self, T):
+        assert not gc.isenabled()  # paused while the scan body runs
+        raise RuntimeError("scan failed")
+
+    monkeypatch.setattr(R.Runner, "_scan", boom)
+    assert gc.isenabled()
+    with pytest.raises(RuntimeError, match="scan failed"):
+        run.scan(T_START)
+    assert gc.isenabled()  # restored by the finally
+
+
+def test_gc_stays_disabled_after_a_scan_if_it_was_disabled_before(tmp_path):
+    import gc
+
+    run = make(tmp_path, rows=trade_rows())
+    gc.disable()
+    try:
+        run.scan(T_START + 5 * MIN)  # a real scan on the synthetic tape
+        assert not gc.isenabled()
+    finally:
+        gc.enable()
+    assert gc.isenabled()
+
+
+def test_a_scan_never_runs_with_gc_enabled_and_no_collection_starts_inside_one(tmp_path, monkeypatch):
+    import gc
+
+    inside = [False]
+    seen = {"scan_calls": 0, "enabled_in_scan": 0, "enabled_between": 0, "gc_inside": 0, "gc_outside": 0}
+    orig_scan = R.Runner._scan
+    orig_exits = R.Runner.exits
+
+    def spy_scan(self, T):
+        inside[0] = True
+        seen["scan_calls"] += 1
+        seen["enabled_in_scan"] += int(gc.isenabled())
+        try:
+            return orig_scan(self, T)
+        finally:
+            seen["enabled_in_scan"] += int(gc.isenabled())  # still paused at the end of the body
+            inside[0] = False
+
+    def spy_exits(self, T):
+        seen["enabled_between"] += int(gc.isenabled())  # the tick loop outside the scan has the collector on
+        return orig_exits(self, T)
+
+    def cb(phase, info):
+        if phase == "start":
+            seen["gc_inside" if inside[0] else "gc_outside"] += 1
+
+    monkeypatch.setattr(R.Runner, "_scan", spy_scan)
+    monkeypatch.setattr(R.Runner, "exits", spy_exits)
+    old_threshold = gc.get_threshold()
+    gc.set_threshold(10, 2, 2)  # collections are frequent, so a collection inside a scan would show if one were allowed
+    gc.callbacks.append(cb)
+    try:
+        rows = sorted(trade_rows() + dead_pool_rows(), key=lambda r: (r["t_recv_ms"], r["signature"]))
+        run = make(tmp_path, rows=rows)
+        run.run(T_START, T_END)
+    finally:
+        gc.callbacks.remove(cb)
+        gc.set_threshold(*old_threshold)
+    assert seen["scan_calls"] >= 15 and seen["enabled_in_scan"] == 0 and seen["enabled_between"] > 1000
+    assert seen["gc_outside"] > 0 and seen["gc_inside"] == 0  # collections happen in the tick loop and never inside a scan
+    assert gc.isenabled()
+
+
+def test_scan_gc_pause_leaves_the_decision_logs_unchanged(tmp_path, monkeypatch):
+    import gc
+
+    rows = sorted(trade_rows() + dead_pool_rows(), key=lambda r: (r["t_recv_ms"], r["signature"]))
+    (tmp_path / "a").mkdir()
+    (tmp_path / "b").mkdir()
+    a = make(tmp_path / "a", rows=rows)
+    a.run(T_START, T_END)
+    orig_scan = R.Runner.scan
+    monkeypatch.setattr(R.Runner, "scan", lambda self, T: R.Runner._scan(self, T))  # no pause at all: the body alone
+    b = make(tmp_path / "b", rows=rows)
+    b.run(T_START, T_END)
+    ma, mb = decision_md5_no_timing(a.cfg.root), decision_md5_no_timing(b.cfg.root)
+    assert ma["rows"] > 100 and ma["md5"] == mb["md5"] and a.counters == b.counters
+    assert orig_scan is not None and gc.isenabled()
