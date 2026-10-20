@@ -17,6 +17,16 @@ from tools.test_hv4_shakedown_report import HOUR, MIN, START, by_id, sub
 from tools.test_hv4_shakedown_report_obs import A, B, DAY, fixture, put, scan_t, sel
 
 
+UNPINNED = "PLACEHOLDER-NOT-PINNED-test"  # what the tool carries until the manager gives the sha256 of SHAKEDOWN-CHECKS-4.md
+
+
+@pytest.fixture(autouse=True)
+def _checks4_pinned(monkeypatch):
+    """A revision 4 PASS needs the CHECKS-4 pin. Tests that are not about the pin run with a valid sha256 in place (when the tool still holds the placeholder); the pin tests set their own."""
+    if not R.checks4_pinned():
+        monkeypatch.setattr(R, "CHECKS4_SHA256", "ab" * 32)
+
+
 def rev(fx: dict, n: int, *more: str) -> dict:
     argv = ["--dir", str(fx["base"]), "--tape-dir", str(fx["tape"]), "--checks-rev", str(n), "--samples", str(fx["samples"]), "--job-log", str(fx["job"]), "--job-log", str(fx["job2"]),
             "--read-hours", "168"]
@@ -34,18 +44,38 @@ def block_hour(total: int, at: int = 300):
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the revision, the pins, rev 3 unchanged
-def test_revision_4_is_the_default_carries_its_placeholder_pin_and_passes_a_healthy_run(tmp_path):
+def test_revision_4_is_the_default_and_a_healthy_pinned_run_passes_with_both_pins_in_the_record(tmp_path):
     fx = fixture(tmp_path, start_pids=(A, B))
     rec = rev4(fx)
     c = by_id(rec)
-    assert rec["checks_rev"] == 4 and rec["verdict"] == "PASS" and {k: v["status"] for k, v in c.items() if v["status"] != R.PASS and not v["informational"]} == {}
+    assert rec["checks_rev"] == 4 and rec["verdict"] == "PASS" and rec["verdict_reason"] is None and {k: v["status"] for k, v in c.items() if v["status"] != R.PASS and not v["informational"]} == {}
     assert c["12"]["status"] == R.PASS and c["12"]["numbers"]["holders_stale_refusals_total"] == 0 and c["4"]["status"] == R.PASS
     assert rec["checks_pin"]["sha256"] == "55fbba0559327c1e18728596506de11fdf0408ae9bedcee49a21966d9314a3af" and rec["checks_notes_pin"]["sha256"] == R.CHECKS3_NOTES1_SHA256
-    assert rec["checks4_pin"] == {"name": "SHAKEDOWN-CHECKS-4.md", "sha256": R.CHECKS4_SHA256, "pinned": False} and R.CHECKS4_SHA256.startswith("PLACEHOLDER") and not R.checks4_pinned()
+    assert rec["checks4_pin"] == {"name": "SHAKEDOWN-CHECKS-4.md", "sha256": R.CHECKS4_SHA256, "pinned": True} and R.checks4_pinned()
     assert rec["check_5_limits"] == {"rolling_hour": 2000, "utc_day": 48000} and "2,000" in c["5"]["name"] and "48,000" in c["5"]["name"]
     text = R.markdown(rec)
-    assert "checks revision 4" in text and "PLACEHOLDER: NOT PINNED YET" in text and "2,000 per rolling hour and 48,000 per UTC day" in text and "| 12 holders_stale" in text
+    assert "checks revision 4" in text and "PLACEHOLDER" not in text and "2,000 per rolling hour and 48,000 per UTC day" in text and "| 12 holders_stale" in text
     assert R.parse_args(["--dir", "x"]).checks_rev == 4
+
+
+def test_a_revision_4_pass_needs_the_checks_4_pin_otherwise_the_verdict_is_not_passed(tmp_path, monkeypatch):
+    fx = fixture(tmp_path)
+    for bad in (UNPINNED, "AB" * 32, "ab" * 31, "g" * 64, ""):  # the placeholder, upper case, short, not hex, empty: all "missing or mismatched"
+        monkeypatch.setattr(R, "CHECKS4_SHA256", bad)
+        rec = rev4(fx)
+        assert rec["complete"] and rec["verdict"] == "NOT_PASSED" and rec["verdict_reason"] == "CHECKS-4 pin missing or mismatched" and rec["checks4_pin"]["pinned"] is False
+        assert all(v["status"] == R.PASS for v in by_id(rec).values() if not v["informational"])  # every check passed: only the pin stands between the run and a PASS
+    monkeypatch.setattr(R, "CHECKS4_SHA256", UNPINNED)
+    assert "PLACEHOLDER: NOT PINNED YET" in R.markdown(rev4(fx)) and "verdict reason: CHECKS-4 pin missing or mismatched" in R.markdown(rev4(fx))
+    monkeypatch.setattr(R, "CHECKS4_SHA256", "ab" * 32)
+    assert rev4(fx)["verdict"] == "PASS"
+    # the pin never turns a worse verdict into a better one or an unfinished window into a finished one
+    monkeypatch.setattr(R, "CHECKS4_SHA256", UNPINNED)
+    bad_run = rev4(fixture(sub(tmp_path, "fail"), refused=lambda i: [(f"P{i}a", ["holders_stale"])] if i == 40 else []))
+    assert bad_run["verdict"] == "FAIL" and bad_run["verdict_reason"].startswith("FAILED: 12")
+    assert rev4(fixture(sub(tmp_path, "wip"), hours=13))["verdict"] == "INCOMPLETE"
+    # revision 3 never reads the revision 4 pin
+    assert rev(fixture(sub(tmp_path, "r3"), start_pids=(A, B)), 3)["verdict"] == "PASS"
 
 
 def test_the_revision_4_pin_constant_is_the_only_thing_to_set_when_the_manager_gives_the_sha(tmp_path, monkeypatch):
@@ -94,6 +124,20 @@ def test_check_5_day_limit_is_48000_in_revision_4_and_40000_in_revision_3(tmp_pa
     assert by_id(rev(fixture(sub(tmp_path, "old_ok"), mutate=day(40_000)), 3))["5"]["status"] == R.PASS
 
 
+def test_the_revision_specific_numbers_in_the_text_and_the_sampler_note(tmp_path):
+    doc = " ".join(R.__doc__.split())
+    assert "revision 3 (24 x 1,500 = 36,000 is below its 40,000)" in doc and "revision 4 (24 x 2,000 = 48,000 is its day limit" in doc
+    fx = fixture(tmp_path)
+    (fx["root"] / "chain-prefetch-spend.json").write_text(json.dumps({"schema": "hv4_prefetch.spend.v1", "spent": [[START + 2 * HOUR, 2000], [START + 2 * HOUR + MIN, 1500]]}))
+    note = lambda rec, n: [x for x in by_id(rec)["5S"]["notes"] if "exactly" in x]  # noqa: E731
+    r4 = note(rev4(fx), 4)
+    assert len(r4) == 1 and "exactly 2,000" in r4[0] and "1,500" not in r4[0]
+    r3 = note(rev(fx, 3), 3)
+    assert len(r3) == 1 and "exactly 1,500" in r3[0]
+    r2 = [x for x in by_id(rev(fx, 2))["5"]["notes"] if "exactly" in x]
+    assert len(r2) == 1 and "exactly 1,500" in r2[0]
+
+
 def test_the_informational_sampler_cross_check_uses_the_revision_limits_and_the_verdict_never_reads_it(tmp_path):
     rec = rev4(fixture(tmp_path, calls=block_hour(1999)))
     cross = by_id(rec)["5S"]
@@ -113,6 +157,14 @@ def test_check_12_passes_without_holders_stale_refusals_and_fails_on_any_per_per
     assert cd["status"] == R.FAIL and cd["numbers"]["per_persona"] == {"CON": 1, "BIG": 1} and cd["numbers"]["holders_stale_refusals_total"] == 1
     other = lambda i: [(f"P{i}a", ["chain_stale"])] if i < 3 else []  # noqa: E731 - other refusals do not count
     assert by_id(rev4(fixture(sub(tmp_path, "other"), refused=other)))["12"]["status"] == R.PASS
+
+
+def test_check_12_gates_on_the_total_of_every_card_refused_row_with_the_reason_in_any_arm_and_reports_the_persona_split(tmp_path):
+    t = START + 3 * HOUR + 17 * MIN
+    rec = rev4(fixture(tmp_path, extra=lambda fx: fx["L"].add("CON-L", t, kind="card_refused", pool="OTHERARMPOOL-z1", reasons=["holders_stale"])))
+    c = by_id(rec)["12"]
+    assert c["status"] == R.FAIL and c["numbers"]["holders_stale_refusals_total"] == 1 and c["numbers"]["per_persona"] == {"CON": 0, "BIG": 0} and c["numbers"]["refusals_with_no_scan_row_at_their_ms"] == 0
+    assert "in total over every card_refused row" in c["name"] and "OTHERARMPOOL" not in json.dumps(rec) + R.markdown(rec)
 
 
 def test_check_12_counts_a_refused_row_that_has_no_scan_row_and_fails_the_verdict(tmp_path):

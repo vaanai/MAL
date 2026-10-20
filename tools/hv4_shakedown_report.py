@@ -19,8 +19,8 @@ booked-calls reading of check 8 (N-5: the hour spent_at_load covers, the calls o
 fired in a completed window), NOT_PASSED (a completed window with a check UNMEASURED outside rule M), INCOMPLETE (the window is not complete).
 NOT MEASURED (printed in the record under `not_measured`): first-process calls after its last successful counter state save (if the final saves fail) and calls made while two processes
 overlap are invisible to every record and counted as 0 (QP #770 F5; the guard is the ps-verify step of the restart and stop protocol); the restart timing rule is reported, not gated;
-the spend file's own hourly sum is not in the obs rows (booked_calls_hour stands in); with a fresh root the 40,000 per UTC day limit cannot bind on its own (24 x 1,500 = 36,000), so
-each closed day shows counter_day_calls next to the minute sum in W and their difference (F4). Revision 2 (--checks-rev 2):
+the spend file's own hourly sum is not in the obs rows (booked_calls_hour stands in); with a fresh root the per UTC day limit cannot bind on its own: revision 3 (24 x 1,500 = 36,000 is below its 40,000) and revision 4
+(24 x 2,000 = 48,000 is its day limit, so a day over 48,000 implies an hour over 2,000), so each closed day shows counter_day_calls next to the minute sum in W and their difference (F4). Revision 2 (--checks-rev 2):
 SHAKEDOWN-CHECKS-2.md (checks 1 to 10), its evaluation and record unchanged. In revision 3 the sampler-based check 5 stays only as the informational cross-check "5S". Window rule: QP-RULING-1019-startup (a). Registration conditions from quant-proof: PR #755 comment 6276972823
 (items 3 to 5), PR #745 (comments 6275482286 and 6276589135, item 4), PR #762 comment 6278428501 (memory plan), PR #764 comment 6278593034.
 
@@ -186,6 +186,7 @@ class Logs:
         self.scans: list[dict] = []
         self.refused: list[dict] = []
         self.as_of_refusals = 0
+        self.holders_stale_rows = 0  # card_refused rows with reason holders_stale in ANY arm's log (revision 4 check 12 gates on this total)
         self.leakage_mentions = 0
         self.scan_timing: list[tuple[int, int]] = []
         self.tick_timing: list[dict] = []
@@ -258,6 +259,8 @@ def project(L: Logs, arm: str, row: dict) -> None:
     ms = row.get("ms") if isinstance(row.get("ms"), int) else 0
     L.kinds[arm][str(kind)] += 1
     L.last_ms = max(L.last_ms, ms)
+    if kind == "card_refused" and isinstance(row.get("reasons"), list) and "holders_stale" in row["reasons"]:
+        L.holders_stale_rows += 1
     if kind == "sell_alert":
         L.sell_alert += 1
     elif kind == "order_refused" and row.get("side") == "sell":
@@ -764,10 +767,10 @@ def eval_check_5(root: Path, samples: list[dict], starts: list[dict], inputs: li
         day_status = FAIL
         notes.append("a job log shows a spend-state reset or a chain state-write failure")
     if spend_buckets is not None and any(b == hour_max for _, b in spend_buckets):
-        notes.append("a spend bucket of exactly 1,500 is the signature of a reset spend file (_load_spend books a full hour); look at it")
+        notes.append(f"a spend bucket of exactly {hour_max:,} is the signature of a reset spend file (_load_spend books a full hour); look at it")
     status = FAIL if FAIL in (hour_status, day_status) else (PASS if hour_status == PASS and day_status == PASS and logs_ok else UNM)
     numbers["status_parts"] = {"rolling_hour": hour_status, "per_utc_day": day_status, "error_counters_measured": logs_ok}
-    return chk("5", "chain calls <= 1,500 per rolling hour and <= 40,000 per UTC day, from the chain counter", status, numbers, notes)
+    return chk("5", f"chain calls <= {hour_max:,} per rolling hour and <= {day_max:,} per UTC day, from the chain counter", status, numbers, notes)
 
 
 def mb(v: Any) -> float | None:
@@ -1886,16 +1889,17 @@ def checks4_pinned() -> bool:
 
 
 def eval_check_12(L: Logs, att: dict) -> dict:
-    name = "holders_stale refusals = 0 in the decision logs, CON and BIG"
+    name = "holders_stale refusals = 0 in total over every card_refused row with that reason, including rows with no scan row; the CON/BIG split is reported"
     rows = [r for r in L.refused if "holders_stale" in r["reasons"]]
+    total = max(L.holders_stale_rows, len(rows))  # the gate: every card_refused row with this reason in any decision log, with or without a scan row at its ms
     scan_ms = {s["ms"] for s in L.scans}
-    nums = {"holders_stale_refusals_total": len(rows), "per_persona": dict(att["holders_stale"]), "refusals_with_no_scan_row_at_their_ms": sum(1 for r in rows if r["ms"] not in scan_ms)}
+    nums = {"holders_stale_refusals_total": total, "per_persona": dict(att["holders_stale"]), "refusals_with_no_scan_row_at_their_ms": sum(1 for r in rows if r["ms"] not in scan_ms)}
     notes = ["under policy v2 a holders_stale refusal is the constant mismatch of Note N4 (1): the card veto, the prefetcher's serve and the runner's direct chain path must share one holders age limit; "
              "any count is a code defect and a fail",
              "a tagged pool's refused row counts for its persona, an untagged (board) pool for both, as in checks 2 and 4; the total counts every refused row"]
     if not L.have_rows:
         return chk("12", name, UNM, nums, ["no decision rows"])
-    return chk("12", name, FAIL if rows else PASS, nums, notes)
+    return chk("12", name, FAIL if total else PASS, nums, notes)
 
 
 def holders_cause(s: dict) -> str:
@@ -2094,6 +2098,9 @@ def build_report(args: argparse.Namespace) -> dict:
         reason = "completed window, UNMEASURED outside rule M: " + ", ".join(unmeasured_blocking)
     elif rev3 and verdict == "FAIL":
         reason = "FAILED: " + ", ".join(failed_ids) + ("; UNMEASURED: " + ", ".join(unmeasured_blocking) if unmeasured_blocking else "")
+    if rev4 and verdict == "PASS" and not checks4_pinned():
+        verdict = "NOT_PASSED"  # a revision 4 PASS needs the CHECKS-4 pin: the report must not pass a shakedown against checks whose sha256 was never pinned
+        reason = "CHECKS-4 pin missing or mismatched"
     record = {"schema": SCHEMA, "generated": iso(time.time() * 1000), "dir": str(base), "verdict": verdict, "complete": complete,
               "window": {"first_start": iso(starts[0]["ms"]) if starts else None, "last_decision_row": iso(L.last_ms) if L.last_ms else None, "expect_end": args.expect_end,
                          "hours_covered": round((L.last_ms - starts[0]["ms"]) / HOUR_MS, 2) if starts and L.last_ms else None},
