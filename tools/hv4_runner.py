@@ -84,8 +84,6 @@ HOUSEKEEP_EVERY_MS = 5 * MIN_MS  # memory bounds (Runner._housekeep) run every 5
 # dropped prints (measured per trim as trim_ms in the counters file and in tools/hv4_memreplay.py). A boundary of the tape clock, not a row count or the wall clock, so
 # a replay trims at the same rows as the live run and the 6-hour warm-up of a start is bounded as it is read.
 QUOTE_PRUNE_MIN_ROWS = 64  # with bound_memory on, QuoteHistory trims a pool's list once it holds more rows than this (it was 4,096: pools with fewer rows were never trimmed)
-GC_FREEZE_ENV = "HV4_GC_FREEZE"  # "0" turns the post-warm-up gc.freeze() off; unset or anything else leaves it on
-GC_FREEZE_MIN_ROWS = 1_000_000  # the freeze waits until the state has read this many tape rows (the 6-hour warm-up reads about 5 million); a unit-test tape never gets there
 R_SEED = 1
 BST_EXIT_MS = 330_000
 # BST-R takes triggers at BST-L's take rate TO DATE (DESIGN section 5). The DESIGN gives no warm-up rule; this module uses ZERO: with fewer than
@@ -592,8 +590,6 @@ class Runner:
         self.limiter = C.SetupLimiter()
         self.quotes = QuoteHistory()
         self._housekeep_at = 0  # tape instant (t_recv_ms) of the next memory housekeeping
-        self._gc_frozen = False  # the one-time gc.freeze() after the warm-up has been done (or switched off)
-        self.gc_freeze_info: dict[str, Any] = {}  # what the freeze did, for ops and the replay harness; never read by a decision
         # Distinct pool ids that reached the V check of C.filters / that failed it as v_missing (Runner.scan), kept for the counters file (Runner._trim_engine). Runtime
         # only, never read by a decision. Two sets of pool-id strings: about 130 bytes a pool, a few MB a day at the 2026-10-19 pool rate, against 740 MB/h of prints.
         self._v_checked: set[str] = set()
@@ -687,29 +683,6 @@ class Runner:
             os.fsync(fd)
         finally:
             os.close(fd)
-
-    def _gc_freeze_after_warmup(self) -> None:
-        """One gc.collect() and then gc.freeze(), once, as soon as the warm-up (or the catch-up after a restart) has been read and before the first scan. SCAN SPEED ONLY.
-        Why: the state, the engine and the quote history hold millions of long-lived containers, and a generation-2 collection walks all of them: measured on the 2026-10-19
-        replay, 0.7 to 1.1 s per pass, and every scan longer than 1.4 s had one inside it (tools/hv4_scanprof.py --time-gc). Frozen objects are moved out of the collector's
-        generations, so later passes walk only what was created after the freeze. Reference counting still frees a frozen object that is dropped (an evicted pool, a trimmed
-        print), so memory is not held; only a reference CYCLE among frozen objects would never be collected. The collector stays ON for everything else. It changes no value
-        any decision reads. Env HV4_GC_FREEZE=0 turns it off. A state that has read fewer than GC_FREEZE_MIN_ROWS rows (a unit-test tape) is left alone."""
-        if os.environ.get(GC_FREEZE_ENV, "1") == "0":
-            self._gc_frozen = True
-            self.gc_freeze_info = {"frozen": False, "why": "env_off"}
-            return
-        rows = int(self.state.counters.get("rows", 0))
-        if rows < GC_FREEZE_MIN_ROWS:
-            return  # the warm-up has not been read yet (or this is a small tape): look again next tick
-        t0 = time.perf_counter()
-        collected = gc.collect()
-        t1 = time.perf_counter()
-        gc.freeze()
-        self._gc_frozen = True
-        self.gc_freeze_info = {"frozen": True, "rows": rows, "collected": collected, "collect_ms": round((t1 - t0) * 1000.0, 1), "frozen_objects": gc.get_freeze_count()}
-        if self.cfg.live:
-            print(canon({"gc_freeze": self.gc_freeze_info}), flush=True)
 
     def _now(self, T: int) -> int:
         return self.now_fn() if self.cfg.live else T
@@ -943,6 +916,20 @@ class Runner:
 
     # -- the scan
     def scan(self, T: int) -> None:
+        """One scan at instant T, with the cyclic garbage collector paused for its duration. SCAN SPEED ONLY. A generation-2 pass walks the millions of long-lived containers
+        of the state, the engine and the quote history and took 0.7 to 1.1 s inside a scan on the 2026-10-19 replay (tools/hv4_scanprof.py --time-gc): every scan over 1.4 s
+        had one. With the collector paused here, no automatic collection can start inside a scan; whatever it owes runs after the scan, in the tick loop, where a pause delays
+        the next exit check instead of the scan. The state it had on entry is restored in a `finally` (a scan that raises re-enables it; a collector that was already off stays
+        off). No explicit collection is made, and nothing here is read by a decision."""
+        was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            self._scan(T)
+        finally:
+            if was_enabled:
+                gc.enable()
+
+    def _scan(self, T: int) -> None:
         self.poll_to(T)
         slot = self.slot
         cand, tags, feat_of, snap_of, prints_of = [], [], {}, {}, {}
@@ -1645,8 +1632,6 @@ class Runner:
         """One tick at instant T (the state is stepped to T-1 first)."""
         self.sim_now = max(self.sim_now, T)
         self.poll_to(T)
-        if not self._gc_frozen:
-            self._gc_freeze_after_warmup()  # the first tick's poll_to has just read the warm-up; the first scan comes after this
         sec = T % MIN_MS
         if sec == SCAN_SECOND_MS or not self._versions_loaded:
             self.refresh_versions(T)  # before any decision of this tick
