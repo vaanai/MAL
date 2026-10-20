@@ -39,7 +39,7 @@ import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from tools import hv4_arms as arms
 from tools import hv4_cards as C
@@ -102,6 +102,25 @@ class LogChainError(RuntimeError):
 
 def bot_id(arm: str) -> str:
     return f"hv4-{arm}"
+
+
+def arm_names_for(lane_h: bool) -> tuple[str, ...]:
+    """The arms that exist in a run: all of them with lane H on, else without the BST persona."""
+    return tuple(a for a in arms.ARMS if lane_h or arms.ARMS[a].persona != "BST")
+
+
+def register_arms(arm_names: Sequence[str], frozen_sha: str, clock_start_ms: int, model_id: str, registry_path: str, now_ms: int | None = None,
+                  verify_sha: bool = True) -> dict[str, dict]:
+    """The bots.json lines of a run (one per arm), before the clock. Runner.register_all and `main --register` both come through here. It touches the registry
+    and nothing else: no chain source, prefetcher, obs row or file under the runner root, which is why `--register` can run it without building a Runner."""
+    out = {}
+    for a in arm_names:
+        spec = arms.ARMS[a]
+        # The R arms are registered with the model too: their pool picks depend on the risk agent's grades (CON-R, BIG-R) and BST-R's take rate on
+        # BST-L's answers. The X arms call no model and read none.
+        ids = [model_id] if (spec.llm or spec.role == "R") else []
+        out[a] = register_bot(bot_id(a), frozen_sha, clock_start_ms, registry_path, deciding_stake=0.25, model_ids=ids, now_ms=now_ms, verify_sha=verify_sha)
+    return out
 
 
 def position_id(bot: str, pool: str, decision_ms: int, decision_slot: int) -> str:
@@ -578,7 +597,7 @@ class Runner:
         self.lane_h = bool(cfg.lane_h)
         self.timing = bool(cfg.live) if cfg.timing is None else bool(cfg.timing)
         self._tm: dict[str, Any] | None = None  # the minute being summarised: {"minute": ms, "delays": [...], "scans": [...]}
-        self.arm_names = tuple(a for a in arms.ARMS if self.lane_h or arms.ARMS[a].persona != "BST")  # the arms that exist in this run
+        self.arm_names = arm_names_for(self.lane_h)  # the arms that exist in this run
         self.llm_arm_names = tuple(a for a in arms.llm_arms() if a in self.arm_names)
         self.binding = dict(binding) if binding is not None else None
         self.cfg, self.state, self.engine, self.model, self.chain, self.guard, self.h5 = cfg, state, engine, model, chain, guard, h5
@@ -735,15 +754,7 @@ class Runner:
 
     # -- registration (bots.json lines, before the clock)
     def register_all(self, registry_path: str, now_ms: int | None = None, verify_sha: bool = True) -> dict[str, dict]:
-        out = {}
-        for a in self.arm_names:
-            spec = arms.ARMS[a]
-            # The R arms are registered with the model too: their pool picks depend on the risk agent's grades (CON-R, BIG-R) and BST-R's take rate on
-            # BST-L's answers. The X arms call no model and read none.
-            ids = [self.model.model] if (spec.llm or spec.role == "R") else []
-            out[a] = register_bot(bot_id(a), self.cfg.frozen_sha, self.cfg.clock_start_ms, registry_path, deciding_stake=0.25, model_ids=ids,
-                                  now_ms=now_ms, verify_sha=verify_sha)
-        return out
+        return register_arms(self.arm_names, self.cfg.frozen_sha, self.cfg.clock_start_ms, self.model.model, registry_path, now_ms=now_ms, verify_sha=verify_sha)
 
     # -- resume
     def resume(self) -> dict[str, int]:
@@ -1833,7 +1844,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--registry", default="/data/mal/arena/bots.json")
     ap.add_argument("--frozen-sha", required=True)
     ap.add_argument("--clock-start-ms", type=int, required=True)
-    ap.add_argument("--register", action="store_true", help="append the 9 lane-G bots.json lines (13 with --lane-h) (before the clock) and exit")
+    ap.add_argument("--register", action="store_true", help="append the 9 lane-G bots.json lines (13 with --lane-h) (before the clock) and exit; starts no chain prefetcher and writes no obs row")
     ap.add_argument("--stub", action="store_true", help="StubModel: no API call, every answer abstains (count-only shakedown)")
     ap.add_argument("--feed-delay-slots", type=int, required=True, help="the feed delay the stack charges (StackConfig.feed_delay_slots); the manager pins it")
     ap.add_argument("--end-ms", type=int, default=None, help="stop at this instant (default: run until stopped)")
@@ -1854,15 +1865,20 @@ def main(argv: list[str] | None = None) -> int:
     state = ArenaState(a.tape_dir)
     engine = ArenaEngine(a.ledger_root, a.registry, cfg=stack_config(feed_delay_slots=a.feed_delay_slots))
     cfg = RunnerConfig(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True, lane_h=a.lane_h, obs=True)
-    chain_src = live_chain_source(a.root)  # facts are fetched off the scan path, stamped before the scan instant; the call bounds are persisted under the root
-    chain_src.prefetch.start()
-    run = Runner(cfg, state, engine, model, chain_src, guard, h5=h5, binding=head_binding(), version_source=review_version_source(a.root, a.frozen_sha))
     if a.register:
-        regs = run.register_all(a.registry)
-        print(canon({"lane_h": run.lane_h, "n_bots": len(regs)}))
+        # Registration only (the first step of the stub procedure, and of every live start). It writes the bots.json lines and prints them, and nothing else: no
+        # chain source, no prefetcher thread, no chain or RPC call, no Runner (so no runner_start row and no hv4-obs.jsonl) and no chain counter or spend file under
+        # the root. A registration process that built the live Runner left an orphan runner_start row and made a real chain call, and the shakedown report (Rule M)
+        # counted the orphan as a second runner. The checkout check is the live Runner's own, so a dirty or wrong-sha checkout still cannot register.
+        require_frozen_checkout(head_binding(), cfg.frozen_sha)
+        regs = register_arms(arm_names_for(cfg.lane_h), cfg.frozen_sha, cfg.clock_start_ms, model.model, a.registry)
+        print(canon({"lane_h": bool(cfg.lane_h), "n_bots": len(regs)}))
         for k, v in regs.items():
             print(canon({"bot_id": bot_id(k), **{x: v[x] for x in ("frozen_sha", "clock_start_ms", "deciding_stake", "model_ids")}}))
         return 0
+    chain_src = live_chain_source(a.root)  # facts are fetched off the scan path, stamped before the scan instant; the call bounds are persisted under the root
+    chain_src.prefetch.start()
+    run = Runner(cfg, state, engine, model, chain_src, guard, h5=h5, binding=head_binding(), version_source=review_version_source(a.root, a.frozen_sha))
     n = run.resume()
     print(canon({"resumed": n}))
     start = max(a.clock_start_ms, int(time.time() * 1000))
