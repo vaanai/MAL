@@ -254,7 +254,8 @@ def project(L: Logs, arm: str, row: dict) -> None:
         return
     if kind == "start":
         b = row.get("binding") if isinstance(row.get("binding"), dict) else {}
-        L.starts.append({"ms": ms, "seq": row.get("seq"), "frozen_sha": row.get("frozen_sha"), "lane_h": row.get("lane_h"), "dirty": b.get("dirty"), "git_sha": b.get("git_sha")})
+        L.starts.append({"ms": ms, "seq": row.get("seq"), "frozen_sha": row.get("frozen_sha"), "lane_h": row.get("lane_h"), "dirty": b.get("dirty"), "git_sha": b.get("git_sha"),
+                         "pid": row.get("pid") if is_int(row.get("pid")) else None})  # pid: live-mode start rows only (revision 3 joins on it; none = time-order join)
     elif kind == "scan":
         nt = row.get("n_tags") if isinstance(row.get("n_tags"), dict) else {}
         tagged = [(p[0], p[1]) for p in (row.get("tagged") or []) if isinstance(p, list) and len(p) == 2]
@@ -1244,7 +1245,8 @@ def project_obs(O: Obs, r: dict) -> None:
             O.chain_hour.append({"pid": pid, "wall_ms": wall if is_int(wall) else None, "hour_start_ms": hs, "hour_end_ms": he, "per_minute_calls": pm, "calls": opt_int(r, "calls"),
                                  "credits": opt_int(r, "credits"), "counter_day_calls": opt_int(r, "counter_day_calls"), "counter_state_write_errors": opt_int(r, "counter_state_write_errors"),
                                  "spend_write_errors": opt_int(r, "spend_write_errors"), "spend_state_reset": opt_int(r, "spend_state_reset"), "budget_deferred": opt_int(r, "budget_deferred"),
-                                 "deferred_mint": opt_int(r, "deferred_mint"), "deferred_hold": opt_int(r, "deferred_hold"), "prefetcher_booked_calls": ps.get("calls") if is_int(ps.get("calls")) else None})
+                                 "deferred_mint": opt_int(r, "deferred_mint"), "deferred_hold": opt_int(r, "deferred_hold"), "prefetcher_booked_calls": ps.get("calls") if is_int(ps.get("calls")) else None,
+                                 "deferred_hot_mint": opt_int(r, "deferred_hot_mint"), "deferred_cold_mint": opt_int(r, "deferred_cold_mint"), "booked_calls_hour": opt_int(r, "booked_calls_hour")})
         else:
             O.malformed[kind] += 1
     elif kind == "runner_hour":
@@ -1290,22 +1292,31 @@ def process_ends(L: Logs) -> list[int]:
 
 
 def join_processes(L: Logs, O: Obs) -> tuple[list[dict], dict]:
-    """One process per decision-log start row. Its runner_start is the one with the greatest wall_ms at or before the start row and after the previous start row (the
-    start rows carry no pid); its prefetch_start is the row with the same pid. More than one candidate, or none, is recorded for Rule M."""
+    """One process per decision-log start row. When the start row carries a pid (live mode) its runner_start is the row with that pid ("pid" join). A start row without a
+    pid (a replay, an old log) is joined by time order: the runner_start with the greatest wall_ms at or before the start row and after the previous start row ("time_order"
+    join). Its prefetch_start is the row with the same pid as its runner_start. More than one candidate, or none, is recorded for Rule M; the join used is recorded per process."""
     ends = process_ends(L)
     procs: list[dict] = []
     used: set[int] = set()
     prev = -1
     for i, s in enumerate(L.starts):
-        cands = sorted((r for r in O.runner_start if prev < r["wall_ms"] <= s["ms"]), key=lambda r: r["wall_ms"])
+        if is_int(s.get("pid")):
+            join, cands = "pid", sorted((r for r in O.runner_start if r["pid"] == s["pid"]), key=lambda r: r["wall_ms"])
+        else:
+            join, cands = "time_order", sorted((r for r in O.runner_start if prev < r["wall_ms"] <= s["ms"]), key=lambda r: r["wall_ms"])
         used.update(id(c) for c in cands)
         rs = cands[-1] if cands else None
         pf = [p for p in O.prefetch_start if rs is not None and p["pid"] == rs["pid"]]
         procs.append({"index": i, "start_ms": s["ms"], "end_ms": ends[i], "pid": rs["pid"] if rs else None, "runner_start": rs, "n_runner_start_candidates": len(cands),
-                      "n_prefetch_start": len(pf), "prefetch": pf[0] if len(pf) == 1 else None})
+                      "n_prefetch_start": len(pf), "prefetch": pf[0] if len(pf) == 1 else None, "join": join})
         prev = s["ms"]
+    start_pids = Counter(p["pid"] for p in procs if p["pid"] is not None)
+    for p in procs:
+        if p["pid"] is not None and start_pids[p["pid"]] > 1:
+            p["n_runner_start_candidates"] += 1  # one pid behind two start rows: ambiguous
     pid_counts = Counter(r["pid"] for r in O.runner_start)
-    extra = {"orphan_runner_start_rows": sum(1 for r in O.runner_start if id(r) not in used), "pids_in_two_runner_start_rows": sum(1 for n in pid_counts.values() if n > 1)}
+    extra = {"orphan_runner_start_rows": sum(1 for r in O.runner_start if id(r) not in used), "pids_in_two_runner_start_rows": sum(1 for n in pid_counts.values() if n > 1),
+             "join_used": dict(Counter(p["join"] for p in procs))}
     return procs, extra
 
 
@@ -1365,7 +1376,7 @@ def eval_rule_m(O: Obs, procs: list[dict], extra: dict, ws: int, we: int) -> dic
             "M4_counter_state_write_errors_before_a_restart": {"fired": bool(m4), "restarts": m4},
             "guards_not_in_the_checks_text": {"fired": any(g.values()), **g}}
     fired = [k for k, v in cond.items() if v["fired"]]
-    return {"evaluated": True, "fired": bool(fired), "fired_conditions": fired, "conditions": cond, "checks_made_unmeasured": list(RULE_M_CHECKS) if fired else [],
+    return {"evaluated": True, "fired": bool(fired), "fired_conditions": fired, "join_used": extra["join_used"], "conditions": cond, "checks_made_unmeasured": list(RULE_M_CHECKS) if fired else [],
             "meaning": "an UNMEASURED check fails (SHAKEDOWN-CHECKS-3 rule M): a completed window with a fired condition gets the verdict FAIL"}
 
 
@@ -1681,14 +1692,21 @@ def eval_check_5_obs(O: Obs, procs: list[dict], rm: dict, ws: int, we: int, S: d
         prev = {"budget_deferred": 0, "deferred_mint": 0, "deferred_hold": 0, "prefetcher_booked_calls": 0}
         for r in sorted((r for r in O.chain_hour if r["pid"] == pid and ws < r["hour_end_ms"] <= we), key=lambda r: r["hour_end_ms"]):
             d = {k: (r[k] - prev[k]) if r[k] is not None else None for k in prev}
-            deferred.append({"pid": pid, "hour_end": iso(r["hour_end_ms"]), "total": d["budget_deferred"], "mint": d["deferred_mint"], "hold": d["deferred_hold"]})
-            booked.append({"pid": pid, "hour_end": iso(r["hour_end_ms"]), "counter_calls": r["calls"], "prefetcher_booked_calls": d["prefetcher_booked_calls"]})
+            hour = iso(r["hour_end_ms"])
+            ni = lambda v: "not reported" if v is None else v  # noqa: E731 - a missing field is "not reported", never a failure
+            deferred.append({"pid": pid, "hour_end": hour, "total": ni(d["budget_deferred"]), "mint": ni(d["deferred_mint"]), "hold": ni(d["deferred_hold"]),
+                             "hot_mint_distinct_pools": ni(r["deferred_hot_mint"]), "cold_mint_distinct_pools": ni(r["deferred_cold_mint"])})
+            counter_calls = sum(r["per_minute_calls"]) if r["per_minute_calls"] is not None else r["calls"]
+            booked.append({"pid": pid, "hour_end": hour, "counter_calls": ni(counter_calls), "prefetcher_booked_calls_hour": ni(r["booked_calls_hour"]),
+                           "prefetcher_calls_stat_delta": ni(d["prefetcher_booked_calls"]),
+                           "differ": None if (counter_calls is None or r["booked_calls_hour"] is None) else counter_calls != r["booked_calls_hour"]})
             prev = {k: (r[k] if r[k] is not None else prev[k]) for k in prev}
     nums["budget_deferred_by_class_per_hour"] = deferred
     nums["counter_calls_next_to_the_prefetchers_booked_calls_per_hour"] = booked
+    nums["booked_calls_note"] = "informational, no limit: booked_calls_hour is the prefetcher's own booking for the closed hour (the spend file's hourly figure); a field missing from a row is 'not reported'"
     notes = ["rolling hour = every run of 60 consecutive minute buckets in W with the processes' counts added minute by minute; each minute is counted once (a process's own chain_hour minutes, plus the earlier process's minutes after its last chain_hour row from prior_minutes)",
              "an absent minute inside the persisted 61-bucket window of prior_minutes is 0; an absent minute between the earlier process's last chain_hour row and the start of that window is a gap, and the check is UNMEASURED",
-             "the prefetcher's booked-calls figure is the cumulative `calls` stat of the prefetcher in each chain_hour row, differenced per hour; the spend file's own sum is not in the obs rows"]
+             "booked_calls_hour and deferred_hot_mint / deferred_cold_mint are reported when the chain_hour row has them; prefetcher_calls_stat_delta is the cumulative `calls` stat of the prefetcher differenced per hour"]
     over_h = nums["rolling_hour_calls"]["windows_over_limit"]
     over_d = [d for d, v in day_out.items() if v["calls"] is not None and v["calls"] > CALLS_PER_DAY_MAX]
     disagree = sum(r["overlap_disagreements"] for r in S["restarts"])
@@ -1813,7 +1831,7 @@ def eval_rev3(args: argparse.Namespace, root: Path, L: Logs, job: dict, samples:
     c11 = safe("11", "check 11", eval_check_11, rows, rm, unc)
     return {"checks": checks, "extra": [c11, cross], "rule_m": rm, "w": (ws, we), "obs": O,
             "processes": [{"index": p["index"], "pid": p["pid"], "start_row": iso(p["start_ms"]), "end": iso(p["end_ms"]), "runner_start_wall": iso(p["runner_start"]["wall_ms"]) if p["runner_start"] else None,
-                           "frozen_sha": (p["runner_start"]["frozen_sha"] or "")[:12] if p["runner_start"] else None, "prefetch_start_found": p["prefetch"] is not None,
+                           "frozen_sha": (p["runner_start"]["frozen_sha"] or "")[:12] if p["runner_start"] else None, "prefetch_start_found": p["prefetch"] is not None, "join": p["join"],
                            "runner_start_candidates": p["n_runner_start_candidates"]} for p in procs],
             "also": obs_also_reported(L, O, procs, rows, ws, we)}
 

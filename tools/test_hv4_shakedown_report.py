@@ -35,7 +35,7 @@ class Log:
 
 def build(tmp: Path, *, hours: int = 25, restart_h: int = 12, scan_wall=lambda i: 900, exit_delay=lambda m: 200, refused=lambda i: [], holders_null=lambda i: False,
           trim_ms=lambda i: 150.0, calls_per_min=lambda m: 8, rss=lambda h: 500 + 20 * h, extra=None, restart_sha="a" * 40, v_ratio=0.3, n_bots=9, start2=True,
-          skip_ticks=lambda m: False, tape_rows=None, cg_max=10240.0, oom=0, restart_binding_dirty=False, restart_min: int = 0) -> dict:
+          skip_ticks=lambda m: False, tape_rows=None, cg_max=10240.0, oom=0, restart_binding_dirty=False, restart_min: int = 0, start_pids=None) -> dict:
     base = tmp / "shake"
     root = base / "root"
     root.mkdir(parents=True)
@@ -45,12 +45,12 @@ def build(tmp: Path, *, hours: int = 25, restart_h: int = 12, scan_wall=lambda i
     L = Log(root)
     end = START + hours * HOUR
     restart = START + restart_h * HOUR + restart_min * MIN
-    L.add("SCAN", START, kind="start", binding={"dirty": False, "git_sha": "a" * 40}, frozen_sha="a" * 40, lane_h=False)
+    L.add("SCAN", START, kind="start", binding={"dirty": False, "git_sha": "a" * 40}, frozen_sha="a" * 40, lane_h=False, **({"pid": start_pids[0]} if start_pids else {}))
     cards, n_scan = [], 0
     for m in range(0, hours * 60):
         t = START + m * MIN
         if start2 and t == restart:  # rows are appended in time order, as the runner does
-            L.add("SCAN", restart, kind="start", binding={"dirty": restart_binding_dirty, "git_sha": restart_sha}, frozen_sha=restart_sha, lane_h=False)
+            L.add("SCAN", restart, kind="start", binding={"dirty": restart_binding_dirty, "git_sha": restart_sha}, frozen_sha=restart_sha, lane_h=False, **({"pid": start_pids[1]} if start_pids else {}))
         if t // MIN % 5 == 0:
             T, i = t + 2000, n_scan
             n_scan += 1
