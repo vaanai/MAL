@@ -5,7 +5,7 @@ truncate. A failed write is counted in `ObsLog.write_errors` and never raised, s
 `Runner.counters` are NOT touched by anything in this module, which is what the B equivalence proof pins (decision logs md5-identical with the rows on and off; the
 switch is `RunnerConfig.obs`, default from the environment variable MAL_HV4_OBS, "0" = off).
 
-Rows (every row has `schema`, `kind` and `wall_ms`):
+Rows (every row has `schema`, `kind`, `wall_ms` and `pid`, the writing process's os.getpid() at write time):
   runner_start         pid, frozen_sha, the head binding: one per process start.
   prefetch_start       the spend file and the chain counter as the process loaded them (check 8: reload with no reset), and `prior_minutes` / `prior_calls_total`: the
                        previous process's last 61 per-minute counts [minute_ms, calls, credits] and the running total of all earlier processes, read from the counter's
@@ -63,7 +63,10 @@ class ObsLog:
         if not self.enabled or not rows:
             return False
         try:
-            data = b"".join(canon({"schema": OBS_SCHEMA, "wall_ms": self._wall_ms(), **r}).encode() + b"\n" for r in rows)
+            # `pid` is taken at WRITE time (a forked child never inherits its parent's) and set after the row's own keys, so every row carries exactly one pid and a
+            # row cannot override it. CHECKS-3 joins first_seen_by_scanner and the decision-log cards on it.
+            pid = os.getpid()
+            data = b"".join(canon({"schema": OBS_SCHEMA, "wall_ms": self._wall_ms(), **r, "pid": pid}).encode() + b"\n" for r in rows)
             with self._lock:
                 self.path.parent.mkdir(parents=True, exist_ok=True)  # type: ignore[union-attr]
                 fd = os.open(str(self.path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)

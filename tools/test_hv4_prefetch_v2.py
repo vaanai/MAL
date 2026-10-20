@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import types
+from pathlib import Path
 
 from tools import hv4_chain as H
 from tools import hv4_cards as hc
@@ -241,7 +242,12 @@ def test_runner_obs_rows_are_written_and_the_decision_logs_are_identical_with_ob
     off = make(tmp_path / "off")
     off.run(T_START, T_END)
     assert on.cfg.obs is True and off.cfg.obs is False
-    assert _decision_rows(on) == _decision_rows(off)  # every row of every log, chain fields included: byte-for-byte the same decisions
+    assert _decision_rows(on) == _decision_rows(off)  # every row of every log, chain fields included: the same decisions
+    def log_bytes(run):  # and the files themselves: every decision-log file under <root>/decisions, byte for byte
+        base = Path(run.cfg.root) / "decisions"
+        return {str(p.relative_to(base)): p.read_bytes() for p in sorted(base.rglob("*")) if p.is_file()}
+
+    assert log_bytes(on) == log_bytes(off) and log_bytes(on)
     assert on.counters == off.counters and on.hook_errors == off.hook_errors == []
     rows = O.read_rows(tmp_path / "on" / "hv4" / O.OBS_FILE)
     kinds = [r["kind"] for r in rows]
@@ -412,3 +418,41 @@ def test_a_runner_hour_row_that_cannot_be_built_is_counted_and_the_decision_logs
     bad.run(T_START, T_END)  # must not raise
     assert bad.obs.build_errors >= 1 and ok.obs.build_errors == 0
     assert _decision_rows(bad) == _decision_rows(ok) and bad.counters == ok.counters and bad.hook_errors == ok.hook_errors == []
+
+
+# ---- every obs row carries the pid of the process that wrote it (CHECKS-3 check 3 joins on it)
+
+
+def test_every_obs_kind_carries_one_integer_pid_equal_to_the_writers_taken_at_write_time(tmp_path, monkeypatch):
+    import os
+
+    from tools.test_hv4_runner import T_END, T_START, make
+
+    monkeypatch.setenv("MAL_ARENA_TEST", "1")
+    monkeypatch.setenv("MAL_HV4_OBS", "1")
+    run = make(tmp_path / "r")  # runner_start, runner_hour
+    run.run(T_START, T_END)
+    clock = Clock(T0)
+    obs = O.ObsLog(tmp_path / "p")
+    pf = P.ChainPrefetcher(CountingChain(clock), R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V2)
+    pf.set_obs(obs)  # prefetch_start
+    obs.scan_ms = T0 + 2000
+    a = pools(3)
+    pf.watch(a, [a[0][0]], T0 + 2100)  # first_seen_by_scanner
+    pf.run_once(T0 + 2100)
+    clock.ms = T0 + 20 * MIN
+    assert pf.part_at(a[0][0], a[0][1], clock.ms, SLOT + 10) is not None  # chain_stale_served: a mint fact older than 15 min
+    clock.ms = T0 + HOUR + MIN
+    pf.run_once(clock.ms)  # chain_hour
+    rows = O.read_rows(Path(run.cfg.root) / O.OBS_FILE) + O.read_rows(tmp_path / "p" / O.OBS_FILE)
+    assert {r["kind"] for r in rows} == {"runner_start", "runner_hour", "prefetch_start", "first_seen_by_scanner", "chain_stale_served", "chain_hour"}
+    for r in rows:
+        assert type(r["pid"]) is int and r["pid"] == os.getpid(), r["kind"]
+    # taken at write time, and a row cannot carry another one: a child that forks after the log was built writes its own pid
+    log = O.ObsLog(tmp_path / "q")
+    monkeypatch.setattr(O.os, "getpid", lambda: 4242)
+    log.write("x", pid=1)
+    monkeypatch.setattr(O.os, "getpid", lambda: 4243)
+    log.write("y")
+    got = O.read_rows(tmp_path / "q" / O.OBS_FILE)
+    assert [(r["kind"], r["pid"]) for r in got] == [("x", 4242), ("y", 4243)]
