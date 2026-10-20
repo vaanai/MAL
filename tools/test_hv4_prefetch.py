@@ -19,6 +19,13 @@ from tools import hv4_runner as R
 from tools.test_hv4_cards import SLOT, T, POOL, base_chain, base_prints, base_snap
 from tools.test_hv4_runner import MIN, T0, T_START, make, rows_of
 
+
+@pytest.fixture(autouse=True)
+def _tests_of_this_file_pin_prefetch_policy_v1(monkeypatch):
+    """The tests below were written for d1dbcd6 (policy v1: 5 min holders limit, hot holders only, 1,500 an hour). The default policy is now v2 (Note N4); the v2 rules
+    are pinned in tools/test_hv4_prefetch_v2.py, and live_chain_source ignores this variable."""
+    monkeypatch.setenv("MAL_HV4_PREFETCH_POLICY", "v1")
+
 @pytest.fixture(scope="module", autouse=True)
 def _arena_test_env():
     with pytest.MonkeyPatch.context() as mp:  # register_bot's test overrides need MAL_ARENA_TEST=1 (as in test_hv4_runner)
@@ -274,10 +281,11 @@ def test_hot_and_cold_pools_stay_inside_both_limits_at_every_scan_for_two_hours(
 
 
 # ----------------------------------------------------------------------------------------------------------------------- budget and priority
+# These three pin the d1dbcd6 (v1) budget arithmetic with tiny budgets; the v2 policy has its own tests in tools/test_hv4_prefetch_v2.py.
 def test_the_hourly_call_budget_is_never_exceeded_and_new_pools_come_first():
     clock = Clock(T - 3_600_000)
     chain = FakeChain(clock)
-    pf = P.ChainPrefetcher(chain, R.HV4ChainSource.compose, clock=clock)  # default budget for the start-up burst: every pool's first read
+    pf = P.ChainPrefetcher(chain, R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V1)  # default budget for the start-up burst: every pool's first read
     old = [(f"O{i:042d}", f"o{i:043d}") for i in range(80)]
     pf.watch(old, [], clock.ms)
     pf.run_once()
@@ -424,7 +432,7 @@ def test_a_refresh_that_straddles_utc_midnight_books_its_real_calls_not_a_negati
     for _ in range(1200):  # calls already made today
         ctr.record_call("getAccountInfo")
     chain = DayChain(clock, ctr)
-    pf = P.ChainPrefetcher(chain, R.HV4ChainSource.compose, clock=clock)
+    pf = P.ChainPrefetcher(chain, R.HV4ChainSource.compose, clock=clock, policy=P.POLICY_V1)
     pf.watch([(POOL, MINT)], [POOL], clock.ms)
     before_day = ctr.calls_today()
     made = pf.run_once(clock.ms)
@@ -459,25 +467,25 @@ def test_a_counter_that_goes_backwards_is_clamped_at_zero():
 def test_the_hourly_spend_survives_a_restart_and_a_corrupt_file_counts_as_a_spent_hour(tmp_path):
     path = tmp_path / "spend.json"
     clock = Clock(T)
-    a = P.ChainPrefetcher(FakeChain(clock), R.HV4ChainSource.compose, clock=clock, hourly_budget=6, spend_path=path)
+    a = P.ChainPrefetcher(FakeChain(clock), R.HV4ChainSource.compose, clock=clock, hourly_budget=6, spend_path=path, policy=P.POLICY_V1)
     a.watch([(f"P{k:043d}", f"m{k:043d}") for k in range(5)], [], clock.ms)
     a.run_once()
     assert a._spent_last_hour(clock.ms) == 6 and a.chain.calls == 6  # three new pools at 2 calls (mint, Mayhem); the other two wait for the next hour
     assert [f.name for f in tmp_path.iterdir()] == ["spend.json"]  # atomic: no temp file left behind
     clock.ms += 30 * MIN
-    b = P.ChainPrefetcher(FakeChain(clock), R.HV4ChainSource.compose, clock=clock, hourly_budget=6, spend_path=path)  # the restarted process
+    b = P.ChainPrefetcher(FakeChain(clock), R.HV4ChainSource.compose, clock=clock, hourly_budget=6, spend_path=path, policy=P.POLICY_V1)  # the restarted process
     assert b._spent_last_hour(clock.ms) == 6  # not reset to 0: a crash loop cannot spend 6 an hour for ever
     b.watch([("Z" * 44, "z" * 44)], [], clock.ms)
     b.run_once()
     assert b.chain.calls == 0 and b.stats()["budget_deferred"] == 1
     clock.ms += 31 * MIN  # an hour after the first spend: it has aged out of the window
-    c = P.ChainPrefetcher(FakeChain(clock), R.HV4ChainSource.compose, clock=clock, hourly_budget=6, spend_path=path)
+    c = P.ChainPrefetcher(FakeChain(clock), R.HV4ChainSource.compose, clock=clock, hourly_budget=6, spend_path=path, policy=P.POLICY_V1)
     assert c._spent_last_hour(clock.ms) == 0
     path.write_text("{not json")
-    d = P.ChainPrefetcher(FakeChain(clock), R.HV4ChainSource.compose, clock=clock, hourly_budget=6, spend_path=path)
+    d = P.ChainPrefetcher(FakeChain(clock), R.HV4ChainSource.compose, clock=clock, hourly_budget=6, spend_path=path, policy=P.POLICY_V1)
     assert d._spent_last_hour(clock.ms) == 6 and d.stats()["spend_state_reset"] == 1  # fail closed
     path.write_text('{"schema": "%s", "spent": [[Infinity, 1]]}' % P.SPEND_SCHEMA)  # json accepts Infinity; int() of it is an OverflowError, not a ValueError
-    e = P.ChainPrefetcher(FakeChain(clock), R.HV4ChainSource.compose, clock=clock, hourly_budget=6, spend_path=path)
+    e = P.ChainPrefetcher(FakeChain(clock), R.HV4ChainSource.compose, clock=clock, hourly_budget=6, spend_path=path, policy=P.POLICY_V1)
     assert e._spent_last_hour(clock.ms) == 6 and e.stats()["spend_state_reset"] == 1
 
 

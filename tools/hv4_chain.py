@@ -455,6 +455,10 @@ STATE_SCHEMA = "hv4_chain.state.v1"
 STATE_KEEP_DAYS = 8
 
 
+PRIOR_MINUTES = 61  # per-minute buckets persisted in the state file for the next process (a rolling hour plus the minute in hand)
+MINUTE_KEEP = 24 * 60  # minutes of per-minute counts kept in memory (a day: a closed-hour row is written within minutes of the hour ending)
+
+
 class CreditCounter:
     """Calls (every attempt sent), Helius credits (calls x weight, 0 on a public endpoint), errors and cache hits, per method and UTC day.
 
@@ -477,6 +481,15 @@ class CreditCounter:
         self.credits_by_day: dict[str, int] = {}
         self.state_path = Path(state_path) if state_path else None
         self.state_write_errors = 0
+        # Per-minute call and credit counts of THIS process (minute start ms -> [calls, credits]); the last MINUTE_KEEP minutes. Read by the observability rows
+        # (tools/hv4_obs: the exact closed-hour and rolling-hour call counts of shakedown check 5) and by the v2 prefetch budget. Never persisted, never a decision input.
+        self._minutes: dict[int, list[int]] = {}
+        # What the PREVIOUS process left in the state file (QP 6279836164 R3): its last 61 per-minute counts [minute_ms, calls, credits] and the running call total of
+        # all earlier processes. Kept apart from `_minutes` (this process's own record); the prefetch_start obs row writes them as `prior_minutes`, so the hour that
+        # crosses a restart is measurable minute by minute. A state file from before this field has none: empty, no error.
+        self.prior_minutes: list[list[int]] = []
+        self.prior_calls_total = 0
+        self.prior_error: str | None = None
         if self.state_path is not None:
             self._load_state()
 
@@ -503,16 +516,42 @@ class CreditCounter:
             raise ChainError("state_file_corrupt") from None
         self.by_day = dict(doc["by_day"])
         self.credits_by_day = dict(doc["credits_by_day"])
+        try:  # the optional tail is read leniently: a malformed one is reported (prior_error), it never stops the counter or resets the daily cap
+            rows = [[int(a), int(b), int(c)] for a, b, c in doc.get("minutes", [])]
+            if any(a < 0 or b < 0 or c < 0 for a, b, c in rows):
+                raise ValueError("negative")
+            self.prior_minutes = sorted(rows)[-PRIOR_MINUTES:]
+            self.prior_calls_total = int(doc.get("calls_total", 0))
+            if self.prior_calls_total < 0:
+                raise ValueError("negative")
+        except (ValueError, TypeError, OverflowError):
+            self.prior_minutes, self.prior_calls_total, self.prior_error = [], 0, "minutes_malformed"
 
-    def _save_state(self) -> None:
-        """Atomic write: temp file in the same directory, fsync, rename. Called with the lock held."""
+    def _tail(self, now: int) -> list[list[int]]:
+        """The last PRIOR_MINUTES per-minute buckets (this process's own plus the ones it loaded), summed by minute. Called with the lock held."""
+        lo = now - now % 60_000 - (PRIOR_MINUTES - 1) * 60_000
+        acc: dict[int, list[int]] = {}
+        for t, c, w in self.prior_minutes:
+            if t >= lo:
+                acc[t] = [c, w]
+        for t, (c, w) in self._minutes.items():
+            if t >= lo:
+                a = acc.setdefault(t, [0, 0])
+                a[0] += c
+                a[1] += w
+        return [[t, *acc[t]] for t in sorted(acc)]
+
+    def _save_state(self, now: int | None = None) -> None:
+        """Atomic write: temp file in the same directory, fsync, rename. Called with the lock held. The payload is built inside the try: nothing here may raise into the RPC path."""
         if self.state_path is None:
             return
-        days = sorted(self.by_day)[-STATE_KEEP_DAYS:]
-        payload = {"schema": STATE_SCHEMA, "by_day": {d: self.by_day[d] for d in days},
-                   "credits_by_day": {d: self.credits_by_day.get(d, 0) for d in days}, "saved_ms": self._now_ms()}
         tmp = None
         try:
+            now = int(self._now_ms()) if now is None else now
+            days = sorted(self.by_day)[-STATE_KEEP_DAYS:]
+            payload = {"schema": STATE_SCHEMA, "by_day": {d: self.by_day[d] for d in days},
+                       "credits_by_day": {d: self.credits_by_day.get(d, 0) for d in days}, "saved_ms": now,
+                       "minutes": self._tail(now), "calls_total": self.prior_calls_total + self.calls}
             self.state_path.parent.mkdir(parents=True, exist_ok=True)
             fd, tmp = tempfile.mkstemp(dir=self.state_path.parent, prefix=".hv4-chain-state.", suffix=".tmp")
             with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -521,7 +560,7 @@ class CreditCounter:
                 os.fsync(f.fileno())
             os.replace(tmp, self.state_path)
             tmp = None
-        except OSError as e:
+        except Exception as e:  # noqa: BLE001 - OSError from the write, anything from building the payload: counted, never raised into the RPC path
             self.state_write_errors += 1
             log.warning("hv4_chain state write failed: %s", type(e).__name__)
         finally:
@@ -539,13 +578,31 @@ class CreditCounter:
         with self._lock:
             self.calls += 1
             self.by_method[method] = self.by_method.get(method, 0) + 1
-            day = _utc_day(self._now_ms())
+            now = int(self._now_ms())  # ONE clock read: the day key and the minute bucket cannot straddle 00:00Z between them
+            day = _utc_day(now)
             self.by_day[day] = self.by_day.get(day, 0) + 1
+            w = 0
             if self.provider == "helius":
                 w = HELIUS_CREDITS.get(method, HELIUS_DEFAULT_CREDITS)
                 self.credits += w
                 self.credits_by_day[day] = self.credits_by_day.get(day, 0) + w
-            self._save_state()
+            m = self._minutes.setdefault(now - now % 60_000, [0, 0])
+            m[0] += 1
+            m[1] += w
+            if len(self._minutes) > MINUTE_KEEP:
+                for k in sorted(self._minutes)[:-MINUTE_KEEP]:
+                    del self._minutes[k]
+            self._save_state(now)
+
+    def minute_counts(self, start_ms: int, end_ms: int) -> list[list[int]]:
+        """[[minute_start_ms, calls, credits], ...] for every whole minute in [start_ms, end_ms), zeros included, from this process's own record of every attempt sent."""
+        with self._lock:
+            return [[t, *self._minutes.get(t, (0, 0))] for t in range(start_ms - start_ms % 60_000, end_ms, 60_000) if t >= start_ms - start_ms % 60_000]
+
+    def calls_between(self, start_ms: int, end_ms: int) -> int:
+        """Calls this process sent in the minutes whose start lies in [start_ms, end_ms)."""
+        with self._lock:
+            return sum(v[0] for t, v in self._minutes.items() if start_ms <= t < end_ms)
 
     def record_error(self) -> None:
         with self._lock:
@@ -649,7 +706,7 @@ def _http_post(url: str, payload: dict[str, Any], timeout: float) -> dict[str, A
 
 # Paced calls per second. DESIGN section 6: about 40k standard calls a day at 2 rps. The public endpoint throttles heavy methods harder.
 DEFAULT_RPS = {"public": 2.0, "helius": 2.0, "custom": 2.0}
-DEFAULT_DAILY_CALL_CAP = 40_000
+DEFAULT_DAILY_CALL_CAP = 48_000  # Note N4: 2,000 chain calls an hour x 24 = 48,000 (was 40,000 with the 1,500 an hour of N1)
 ALLOWED_METHODS = frozenset({"getAccountInfo", "getTokenSupply", "getTokenLargestAccounts"})  # every read this module makes
 MAX_RETRY_AFTER_S = 10.0
 RETRY_HTTP = frozenset({429, 500, 502, 503, 504})

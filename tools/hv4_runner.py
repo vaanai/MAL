@@ -51,6 +51,7 @@ from tools.arena_state import WSOL_MINT, ArenaState
 from tools.haiku_caller import canonical_bytes
 from tools.hv4_budget import BudgetGuard, utc_day
 from tools.hv4_model import Model, ModelReply
+from tools.hv4_obs import ObsLog, obs_enabled, rss_mb
 from tools.hv4_prompts import (Playbook, build_entry_request, build_recheck_request, build_risk_request, card_sha256, load_playbook, load_template,
                                sha256_hex)
 from tools.hv4_validate import Knobs, PredicateError, final_size, parse_watch_predicate, validate_entry, validate_recheck, validate_risk
@@ -271,9 +272,19 @@ class HV4ChainSource:
         rep = self.chain.credit_report()
         return {**rep, "prefetch": self.prefetch.stats()} if self.prefetch is not None else rep
 
-    def watch(self, items: Any, hot: Any, now_ms: int) -> None:
+    @property
+    def holders_max_age_ms(self) -> int:
+        """The holders age limit of this source's policy (hv4_cards.holders_max_age_ms): 15 min under a v2 prefetcher, 5 min otherwise (the direct path below)."""
+        return C.holders_max_age_ms(getattr(self.prefetch, "policy", None))
+
+    def watch(self, items: Any, hot: Any, now_ms: int, vols: Any = None) -> None:
         if self.prefetch is not None:
-            self.prefetch.watch(items, hot, now_ms)
+            self.prefetch.watch(items, hot, now_ms, vols=vols)
+
+    def attach_obs(self, obs: Any) -> None:
+        """The runner hands its ObsLog to the prefetcher (first_seen, stale-served, chain_hour rows). No effect without a prefetcher."""
+        if self.prefetch is not None and hasattr(self.prefetch, "set_obs"):
+            self.prefetch.set_obs(obs)
 
     @staticmethod
     def _ext_values(mf: Any) -> dict[str, Any]:
@@ -319,7 +330,7 @@ class HV4ChainSource:
         if not mf.ok or mf.as_of_ms is None or mf.as_of_slot is None:
             return None
         mh = self.chain.mayhem_flag(mint, pool=pool_id)
-        hd = self.chain.largest_holders(mint, token_program=mf.token_program_id, pool=pool_id, max_age_s=C.CHAIN_HOLDERS_MAX_AGE_MS / 1000.0)
+        hd = self.chain.largest_holders(mint, token_program=mf.token_program_id, pool=pool_id, max_age_s=self.holders_max_age_ms / 1000.0)
         return self.compose(mf, mh, hd)
 
 
@@ -338,7 +349,8 @@ def live_chain_source(root: str | os.PathLike, env: Mapping[str, str] | None = N
 
     base = Path(root)
     chain = HV4Chain(RpcClient(RpcConfig.from_env(env), state_path=base / CHAIN_CREDITS_FILE))
-    return HV4ChainSource(chain, prefetch=ChainPrefetcher(chain, HV4ChainSource.compose, spend_path=base / CHAIN_SPEND_FILE))
+    # policy v2 is pinned here: the run-mode path does not read MAL_HV4_PREFETCH_POLICY (the v1 path is for replay and test harnesses, which build the prefetcher themselves)
+    return HV4ChainSource(chain, prefetch=ChainPrefetcher(chain, HV4ChainSource.compose, spend_path=base / CHAIN_SPEND_FILE, policy="v2"))
 
 
 def holder_cover(snap: Mapping[str, Any]) -> bool | None:
@@ -513,6 +525,9 @@ class RunnerConfig:
     # appends the engine's trim counters to <root>/engine-trim-counters.jsonl. ArenaEngine.prune() is never called. Off only in the tests and the replay that prove the
     # trim changes no decision and no fill (tools/hv4_memreplay.py --trim-history off).
     trim_engine_history: bool = True
+    # Observability rows (tools/hv4_obs.py): an append-only side file <root>/hv4-obs.jsonl, outside the decision log, the cards, the ledger and Runner.counters. Nothing
+    # reads it back into a decision (the B equivalence replay: decision logs md5-identical with it on and off). Default on; MAL_HV4_OBS=0 turns it off.
+    obs: bool = field(default_factory=obs_enabled)
 
 
 def pct(sorted_vals: list[int], q: float) -> int:
@@ -555,6 +570,9 @@ class Runner:
                  binding: Mapping[str, Any] | None = None, version_source: Callable[[str, int], Any] | None = None) -> None:
         if cfg.live:
             require_frozen_checkout(binding or {}, cfg.frozen_sha)  # a live runner must prove its checkout
+            reason = unpinned_run_mode(None, chain=chain, obs=cfg.obs, live_runner=True)  # QP 6279836164 R1: the book's chain facts and obs rows cannot change at a restart
+            if reason:
+                raise RuntimeError(reason)
         if not cfg.lane_h and h5 is not None:
             raise ValueError("lane_h is off: an H5 source must not be wired")
         self.lane_h = bool(cfg.lane_h)
@@ -582,6 +600,17 @@ class Runner:
         self.arm_halt: dict[str, str] = {}  # arm -> why its LLM entries and re-checks are stopped (a refused manifest); code exits go on
         self._versions_loaded = False
         self.cards = CardSink(cfg.root)
+        self.holders_max_age_ms = C.holders_max_age_ms(getattr(getattr(chain, "prefetch", None), "policy", None))  # the card's holders limit: its prefetch policy's (Note N4)
+        self.obs = ObsLog(cfg.root, enabled=cfg.obs)  # side rows only (see RunnerConfig.obs); never read by a decision
+        self._obs_hour: int | None = None
+        if self.obs.enabled:
+            self.obs.write("runner_start", pid=os.getpid(), frozen_sha=cfg.frozen_sha, binding=dict(binding) if isinstance(binding, Mapping) else None, live=cfg.live)
+            attach = getattr(self.chain, "attach_obs", None)
+            if attach is not None:
+                try:
+                    attach(self.obs)
+                except Exception:  # noqa: BLE001 - a chain object whose attach fails must not stop the runner; the obs rows of the prefetcher are then missing (Rule M)
+                    self.obs.build_errors += 1
         self.seen_triggers: set[str] = set()  # H5 triggers already handled (a restart replays the warm-up tape and the signal re-emits them)
         self._logged_version: dict[str, str] = {}
         self._replay_pos: dict[str, Pos] = {}
@@ -743,7 +772,12 @@ class Runner:
                 n["reopened"] += 1
                 self.log.append(pos.arm, self.now_fn() if self.cfg.live else self.sim_now, {"kind": "resume_reopen", "pid": pid})
         if self.binding is not None:
-            self.log.append("SCAN", self.now_fn() if self.cfg.live else self.sim_now, {"kind": "start", "binding": self.binding, "frozen_sha": self.cfg.frozen_sha, "lane_h": self.lane_h})
+            start = {"kind": "start", "binding": self.binding, "frozen_sha": self.cfg.frozen_sha, "lane_h": self.lane_h}
+            if self.cfg.live:  # run mode only: a replay's start rows (and so its md5) are unchanged
+                start["prefetch_policy"] = getattr(getattr(self.chain, "prefetch", None), "policy", None)
+                start["obs"] = bool(self.cfg.obs)
+                start["pid"] = os.getpid()  # pairs this row with the runner_start / prefetch_start obs rows of the same process (Rule M)
+            self.log.append("SCAN", self.now_fn() if self.cfg.live else self.sim_now, start)
         n["open"] = sum(len(b.open) for b in self.books.values())
         return n
 
@@ -906,7 +940,7 @@ class Runner:
         self.token_of[pool_id] = {k: part[k] for k in ("token_program", "extensions", "transfer_fee_bps", "default_account_state") if k in part}
         try:
             C.assert_as_of(snap, T, prints=prints, chain=chain, as_of_slot=self.slot)
-            return C.build_card(snap, prints, chain, as_of_ms=T, as_of_slot=self.slot, setup=tag, feats=feats)
+            return C.build_card(snap, prints, chain, as_of_ms=T, as_of_slot=self.slot, setup=tag, feats=feats, holders_max_age_ms=self.holders_max_age_ms)
         except C.LeakageError as e:
             self._leak(T, pool_id, e)
         except C.CardRefused as e:
@@ -930,6 +964,7 @@ class Runner:
                 gc.enable()
 
     def _scan(self, T: int) -> None:
+        self.obs.scan_ms = T  # the scan instant, for the first_seen rows the prefetcher writes during this scan (inside the paused-collector body, like the decision code)
         self.poll_to(T)
         slot = self.slot
         cand, tags, feat_of, snap_of, prints_of = [], [], {}, {}, {}
@@ -990,7 +1025,8 @@ class Runner:
         watch = getattr(self.chain, "watch", None)  # a chain source with a background prefetch learns the watchlist; the stub sources have none
         if watch is not None:
             top = sorted(cand, key=lambda p: (-(feat_of[p].get("vol_60m") or 0.0), p))[:HOT_TOP_VOL]
-            watch([(pid, snap_of[pid].get("mint")) for pid in cand], set(tagged) | set(board) | set(top), self._now(T))
+            # vols: each filter-pass pool's 60-min gross volume from THIS scan's features (state as of T), the order of the v2 warm holders reads (Note N4)
+            watch([(pid, snap_of[pid].get("mint")) for pid in cand], set(tagged) | set(board) | set(top), self._now(T), vols={pid: feat_of[pid].get("vol_60m") or 0.0 for pid in cand})
         cards: dict[tuple[str, str], dict] = {}  # (pool, persona) -> card, byte-identical for every arm of the persona
         for pr in LANE_G_PERSONAS:
             for t in per_persona[pr]:
@@ -1647,6 +1683,32 @@ class Runner:
                 self.scan(T)
                 if self.timing:
                     self._scan_timing(T, self.now_fn() - t0)
+        if self.obs.enabled:
+            self._obs_hour_tick(T)
+
+    def _obs_hour_tick(self, T: int) -> None:
+        """One `runner_hour` row per closed UTC hour of the tick clock, on the runner thread: the error counters that were in memory only (hook_errors, the housekeeping
+        errors), the runner counters, RSS. Read-only on the runner's state; the file is the obs side file."""
+        h = T // 3_600_000
+        if self._obs_hour is None:
+            self._obs_hour = h
+            return
+        if h <= self._obs_hour:
+            return
+        try:  # on the decision thread: a row that cannot be built is counted (obs.build_errors) and never raised (QP R5)
+            from collections import Counter
+
+            errs = Counter(self.hook_errors)
+            body = dict(hook_errors=dict(sorted(errs.items())), n_hook_errors=len(self.hook_errors),
+                        n_housekeep_errors=sum(v for k, v in errs.items() if k.startswith("housekeep:")), counters=dict(sorted(self.counters.items())), rss_mb=rss_mb(),
+                        obs_write_errors=self.obs.write_errors, obs_build_errors=self.obs.build_errors, obs_rows=self.obs.rows_written)
+            # one row per closed hour, like the prefetcher's tick: a stall past an hour (a feed gap) must not leave a row that spans several. The figures are the
+            # cumulative ones at the instant of writing; `written_in_hour` says which hour that was.
+            self.obs.write_many([{"kind": "runner_hour", "hour_start_ms": hh * 3_600_000, "hour_end_ms": (hh + 1) * 3_600_000, "written_in_hour": h, **body}
+                                 for hh in range(max(self._obs_hour, h - 24), h)])
+        except Exception:  # noqa: BLE001
+            self.obs.build_errors += 1
+        self._obs_hour = h
 
     # -- timing (counts and wall-clock timings only; nothing here reads an outcome or feeds a decision)
     def _tick_timing(self, T: int, delay_ms: int) -> None:
@@ -1737,6 +1799,26 @@ def require_frozen_checkout(binding: Mapping[str, Any], frozen_sha: str) -> None
         raise RuntimeError("the checkout is not at the frozen sha")
 
 
+def unpinned_run_mode(env: Mapping[str, str] | None, *, chain: Any = None, obs: bool | None = None, live_runner: bool = False) -> str | None:
+    """Why a live (or stub) run may not start, or None. A live book runs ONE prefetch policy (v2) with the obs rows on, so a restart with a changed environment cannot
+    change its chain facts under the same sha and the same decision-log bytes (QP 6279836164 R1). With `env`: MAL_HV4_PREFETCH_POLICY, when set, must be "v2", and
+    MAL_HV4_OBS must not be "0". With `chain` / `obs`: the prefetcher in hand must be v2 and the obs flag on. Replay harnesses (Rig, hv4_scanprof) do not come through here."""
+    if env is not None:
+        pol = env.get("MAL_HV4_PREFETCH_POLICY")
+        if pol is not None and pol.strip().lower() != "v2":
+            return f"MAL_HV4_PREFETCH_POLICY={pol!r} refused: a live or stub run uses prefetch policy v2 only (unset the variable)"
+        if not obs_enabled(env):
+            return "MAL_HV4_OBS=0 refused: a live or stub run writes the observability rows (unset the variable)"
+    pf = getattr(chain, "prefetch", None)
+    if live_runner and pf is None:
+        return "a live or stub run needs the background chain prefetcher at policy v2; this chain source has none (card-time fetch path)"
+    if pf is not None and getattr(pf, "policy", "v2") != "v2":
+        return f"prefetch policy {getattr(pf, 'policy', None)!r} refused: a live or stub run uses prefetch policy v2 only"
+    if obs is False:
+        return "obs rows off refused: a live or stub run writes the observability rows"
+    return None
+
+
 def first_tick_at_or_after(ms: int) -> int:
     """The first scan instant (minute boundary + :02, 5-min aligned) at or after ms."""
     base = (ms - SCAN_SECOND_MS) // SCAN_EVERY_MS * SCAN_EVERY_MS + SCAN_SECOND_MS
@@ -1757,6 +1839,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--end-ms", type=int, default=None, help="stop at this instant (default: run until stopped)")
     ap.add_argument("--lane-h", action="store_true", help="also run lane H (the BST arms, H5 triggers). OFF in window 1: refused until an H5Signal source is wired")
     a = ap.parse_args(argv)
+    why = unpinned_run_mode(os.environ)
+    if why:
+        print(f"hv4_runner: {why}", file=sys.stderr)
+        return 2
     h5 = None  # no H5Signal source is wired yet: the H5 classifier's feed is the sealed tip tape on mal-fast-0, not on this host
     if a.lane_h and h5 is None:
         print("hv4_runner: --lane-h needs an H5Signal source and none is wired; lane H stays off", file=sys.stderr)
@@ -1767,7 +1853,7 @@ def main(argv: list[str] | None = None) -> int:
     model: Model = StubModel(guard=guard) if a.stub else CallerModel(guard)
     state = ArenaState(a.tape_dir)
     engine = ArenaEngine(a.ledger_root, a.registry, cfg=stack_config(feed_delay_slots=a.feed_delay_slots))
-    cfg = RunnerConfig(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True, lane_h=a.lane_h)
+    cfg = RunnerConfig(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True, lane_h=a.lane_h, obs=True)
     chain_src = live_chain_source(a.root)  # facts are fetched off the scan path, stamped before the scan instant; the call bounds are persisted under the root
     chain_src.prefetch.start()
     run = Runner(cfg, state, engine, model, chain_src, guard, h5=h5, binding=head_binding(), version_source=review_version_source(a.root, a.frozen_sha))
