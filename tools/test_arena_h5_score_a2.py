@@ -150,7 +150,7 @@ class EquivalenceTests(Helpers, Base):
             self.assertTrue(rep["books"][a2]["registered"])
             self.assertGreater(rep["books"][a2]["rows_scored"], 0)
             renamed = json.loads(json.dumps(rep["books"][a1]).replace(a1, a2))
-            self.assertEqual(rep["books"][a2].pop("dropped_s0_before_clock", 0), 0)
+            self.assertEqual([rep["books"][a2].pop(k, 0) for k in w.DROP_KEYS], [0, 0, 0])
             self.assertEqual(rep["books"][a2], renamed)
 
     def test_a2_alone_scores_the_same_as_a1_alone(self):
@@ -161,7 +161,7 @@ class EquivalenceTests(Helpers, Base):
         self.setup_registry(["a2"])
         a2 = json.loads(self.dry(w.main))
         for x, y in zip(A1, A2):
-            self.assertEqual(a2["books"][y].pop("dropped_s0_before_clock", 0), 0)
+            self.assertEqual([a2["books"][y].pop(k, 0) for k in w.DROP_KEYS], [0, 0, 0])
             self.assertEqual(json.loads(json.dumps(a1["books"][x]).replace(x, y)), a2["books"][y])
             self.assertEqual(a1["books"][y], {"registered": False})
             self.assertEqual(a2["books"][x], {"registered": False})
@@ -204,6 +204,53 @@ class S0FilterTests(Helpers, Base):
         self.assertEqual((res.counts["dropped_s0_before_clock"], res.triggers_seen), (2, 2))
         self.assertNotIn(self.P0, RecordingDict.looked_up)
         self.assertNotIn(self.P1, RecordingDict.looked_up)
+
+    def counted_drops(self, recs_by_dir, window_end=None, bad_sha_dirs=()):
+        counts = collections.Counter()
+        dirs = []
+        for name, recs in recs_by_dir.items():
+            if name in bad_sha_dirs:
+                recs[0]["code_sha"] = "0" * 40
+            dirs.append(RecordingShadowDir(self.shadow_dir(recs, name), counts))
+        with w.a2_bots():
+            return sc.score_book(A2[1], entry(window_end_ms=window_end), dirs)
+
+    def shaped(self, n=4, **by_pool):
+        """records(n) with per-pool (s0_t_recv_ms, t_detect_ms offset from the clock, sealed)."""
+        recs = records(n)
+        for r in recs:
+            if r.get("type") == "trigger" and r.get("variant") == "pv" and r["pool"] in by_pool:
+                s0, det, sealed = by_pool[r["pool"]]
+                r["s0_t_recv_ms"], r["t_detect_ms"] = START_MS + s0, START_MS + det
+                if sealed:
+                    r["h5_look2_sealed"] = True
+        return recs
+
+    def test_drop_counts_split_by_decision_time_and_count_distinct_pools_in_passing_dirs(self):
+        shape = {self.P0: (-200_000, -1_000, False),  # decided before the clock
+                 self.P1: (-100_000, 5_000, False),  # straddle: s0 before clock + 60 s, decided after the clock
+                 self.P2: (60_000, 70_000, False),   # kept
+                 self.P3: (-50_000, 8_000, False)}   # straddle
+        res = self.counted_drops({"h5-shadow-a": self.shaped(**shape), "h5-shadow-b": self.shaped(**shape)})  # the same pools in two dirs
+        c = res.counts
+        self.assertEqual((c["dropped_s0_before_clock"], c["dropped_decided_before_clock"], c["dropped_after_window"]), (2, 1, 0))
+        self.assertEqual(res.triggers_seen, 1)
+        self.assertEqual({r["pool"] for r in res.rows}, {self.P2})
+
+    def test_drop_counts_after_window_sealed_and_refused_dirs(self):
+        shape = {self.P0: (-100_000, 5_000, False), self.P1: (-100_000, 9_000_000, False), self.P2: (-100_000, 6_000, True), self.P3: (60_000, 70_000, False)}
+        res = self.counted_drops({"h5-shadow-a": self.shaped(**shape)}, window_end=START_MS + 1_000_000)
+        c = res.counts
+        self.assertEqual((c["dropped_s0_before_clock"], c["dropped_decided_before_clock"], c["dropped_after_window"]), (1, 0, 1))  # the sealed pool is in neither
+        res = self.counted_drops({"h5-shadow-a": self.shaped(**shape), "h5-shadow-bad": self.shaped(**shape)}, window_end=START_MS + 1_000_000, bad_sha_dirs=("h5-shadow-bad",))
+        self.assertEqual(res.refused and len(res.refused), 1)
+        self.assertEqual(res.counts["dropped_s0_before_clock"], 1)  # the refused dir adds nothing
+
+    def test_summarize_reports_all_three_for_v2_only(self):
+        rep = self.run_score({self.P0: START_MS - 100_000, self.P1: START_MS, self.P2: START_MS + 60_000, self.P3: START_MS + 60_000})
+        for k in w.DROP_KEYS:
+            self.assertIn(k, rep["books"][A2[1]])
+            self.assertNotIn(k, rep["books"][A2[0]])
 
     def test_v2_a2_keeps_s0_at_or_after_clock_plus_60s(self):
         rep = self.run_score({p: START_MS + 60_000 for p in (self.P0, self.P1, self.P2, self.P3)})

@@ -10,6 +10,7 @@ Subcommand whitelist (QP-RULING-1022-a2pack (2) ii): only `score` (with or witho
 """
 from __future__ import annotations
 
+import collections
 import contextlib
 import copy
 import sys
@@ -24,6 +25,9 @@ SCORE_FLAGS = ("--arena-root", "--shadow-dir", "--ledger-root", "--dry-run", "--
 V2_A2 = "h5v2-boostclock-a2"
 S0_MARGIN_MS = 60_000
 DROPPED = "dropped_s0_before_clock"
+DROPPED_BEFORE = "dropped_decided_before_clock"
+DROPPED_AFTER = "dropped_after_window"
+DROP_KEYS = (DROPPED, DROPPED_BEFORE, DROPPED_AFTER)
 
 
 def _s0_ok(trig: dict, clock: int) -> bool:
@@ -32,16 +36,41 @@ def _s0_ok(trig: dict, clock: int) -> bool:
     return isinstance(v, int) and not isinstance(v, bool) and v >= clock + S0_MARGIN_MS
 
 
-def filtered_dirs(entry: dict, dirs: Sequence[sc.ShadowDir]) -> tuple[list[sc.ShadowDir], int]:
+def _bucket(trig: dict, clock: int, end: int | None) -> str | None:
+    """Which drop counter a dropped trigger belongs to, in the scorer's own order of skips (clock, window, Look-2 seal). None: the scorer skips it as sealed_decision_only anyway."""
+    v = trig.get("t_detect_ms")
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or (isinstance(v, float) and v != v) or v in (float("inf"), float("-inf")):
+        return DROPPED  # unusable instant: kept visible in the main counter
+    d = int(v)
+    if d < clock:
+        return DROPPED_BEFORE
+    if end is not None and d >= int(end):
+        return DROPPED_AFTER
+    return None if trig.get("h5_look2_sealed") else DROPPED
+
+
+def filtered_dirs(entry: dict, dirs: Sequence[sc.ShadowDir]) -> tuple[list[sc.ShadowDir], collections.Counter]:
     """Shallow copies of the dirs whose pv triggers keep only the pools with s0 at or after clock + 60 s. A dropped pool is never an attempt: its outcome, bx10 and strip are
-    never looked up because score_book reaches them only through the trigger."""
-    clock, out, dropped = int(entry["clock_start_ms"]), [], 0
+    never looked up because score_book reaches them only through the trigger. Dropping covers every dir; the COUNTS cover only dirs that pass the scorer's identity check, by
+    distinct pool, split by decision instant into dropped_s0_before_clock (decided at or after the clock and inside the window, Look-2 sealed triggers excluded),
+    dropped_decided_before_clock and dropped_after_window.
+
+    Note: for v2-a2 the dropped triggers skip the executor parser, but a schema fault still stops the run when v1-a2 (or a1) scores the same dirs."""
+    clock, end = int(entry["clock_start_ms"]), entry.get("window_end_ms")
+    out, counts, seen = [], collections.Counter(), set()
     for d in dirs:
         c = copy.copy(d)
         c.triggers = {p: t for p, t in d.triggers.items() if _s0_ok(t, clock)}
-        dropped += len(d.triggers) - len(c.triggers)
+        if d.identity_problem(entry) is None:
+            for pool, t in d.triggers.items():
+                if pool in c.triggers or pool in seen:
+                    continue
+                seen.add(pool)
+                k = _bucket(t, clock, end)
+                if k:
+                    counts[k] += 1
         out.append(c)
-    return out, dropped
+    return out, counts
 
 
 @contextlib.contextmanager
@@ -58,13 +87,15 @@ def a2_bots() -> Iterator[None]:
             return orig_score(bot, entry, dirs)
         fdirs, dropped = filtered_dirs(entry, dirs)
         res = orig_score(bot, entry, fdirs)
-        res.counts[DROPPED] += dropped
+        for k in DROP_KEYS:
+            res.counts[k] += dropped[k]
         return res
 
     def summarize(bot, res, now_ms):
         out = orig_summ(bot, res, now_ms)
         if bot == V2_A2:
-            out[DROPPED] = res.counts[DROPPED]
+            for k in DROP_KEYS:
+                out[k] = res.counts[k]
         return out
 
     try:
