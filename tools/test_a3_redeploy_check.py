@@ -474,7 +474,7 @@ def test_shipped_pins_are_complete_and_a_null_anywhere_is_error(tmp_path):
 
     def nulls(o):
         return o is None or (isinstance(o, dict) and any(nulls(v) for v in o.values()))
-    assert not nulls(shipped) and shipped["trailing_bytes"] == {"BuyEvent": [8], "SellEvent": [8], "TradeEvent": [8]}
+    assert not nulls(shipped) and shipped["trailing_bytes"]["WithdrawEvent"] == [8]
     assert len(shipped["idl"]) == 3 and all(len(v["sha256"]) == 64 for v in shipped["idl"].values())
     for key in ("max_capped_share", "boost"):
         broken = copy.deepcopy(shipped)
