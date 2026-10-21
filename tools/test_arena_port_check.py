@@ -390,3 +390,24 @@ def test_cli_exit_codes_pass_fail_refused(tape, tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["verdict"] == "FAIL"
     assert M.main([*args[:-2], str(tmp_path / "missing" / "tape-2026-09-25T06.jsonl"), "--out", str(tmp_path / "o3")]) == 2
     assert "REFUSED: hour_file_missing" in capsys.readouterr().err and not (tmp_path / "o3").exists()
+
+
+def test_price_store_takes_the_five_tuple_trigs_of_current_main(monkeypatch):
+    """s.trigs entries are (cell, slot, hour idx, spec, pos): pos is None for a priced trigger, a position object for an admitted exit_fire one."""
+    import types
+    import numpy as np
+
+    monkeypatch.setattr(S, "post_price", lambda a: None)
+    monkeypatch.setattr(S, "resolve_exit", lambda a, pp, slot, spec, rate, sps: (slot + 10, "hold", 0))
+    scr = object.__new__(M.DecisionScreen)
+    scr.labels = {0: "2026-10-19T08"}
+    scr.cells = [types.SimpleNamespace(name="c0", cooldown_s=1.0)]
+    scr.counters = __import__("collections").Counter()
+    scr.kept = []
+    scr._nxt = {(0, "P"): 5, (0, "Q"): 6}
+    spec = types.SimpleNamespace(hold_s=60)
+    s = types.SimpleNamespace(chunks=[{"ib": np.array([1, 0]), "sl": np.array([1, 2])}],
+                              trigs=[(0, 100, 0, spec, None), (0, 105, 0, spec, None), (0, 200, 0, spec, object())])
+    scr._price_store(s, "P", 0, 1000, {"rate": {0: 2.0}})
+    assert [(k[3]) for k in scr.kept] == [100, 200]  # slot 105 is inside hold + cooldown of 100 (100 + 10 + 2): dropped; the admitted position is kept
+    assert scr.counters["overlap_dropped"] == 1 and (0, "P") not in scr._nxt and (0, "Q") in scr._nxt
