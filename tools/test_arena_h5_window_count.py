@@ -3,7 +3,10 @@ from __future__ import annotations
 
 import contextlib
 import io
+import collections
+import datetime
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -41,7 +44,7 @@ def write_dir(root: Path, name: str, recs, hour="2026-10-19T15", raw_lines=()):
 
 
 def run(root, dirs, books=B1, start="2026-10-19T15:46:16Z", end_ms=END, extra=()):
-    argv = ["--books", books, "--start-utc", start, "--end-ms", str(end_ms), "--arena-root", str(root), "--allow-root", "--frozen-sha", SHA, "--registered-at-ms", str(REG)]
+    argv = ["--books", books, "--start-utc", start, "--end-ms", str(end_ms), "--arena-root", str(root), "--frozen-sha", SHA, "--registered-at-ms", str(REG)]
     for d in dirs:
         argv += ["--shadow-dir", d]
     argv += list(extra)
@@ -55,9 +58,12 @@ class WindowCount(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        p = mock.patch.object(sc, "executor_refusal", lambda rec: "bad_intent:ids" if rec.get("pool", "").startswith("REF") else None)
-        p.start()
-        self.addCleanup(p.stop)
+        self.root_patch = mock.patch.object(sc, "_arena_root", lambda path: Path(os.path.realpath(path)))
+        self.root_patch.start()
+        self.addCleanup(self.root_patch.stop)
+        self.stub_patch = mock.patch.object(sc, "executor_refusal", lambda rec: "bad_intent:ids" if rec.get("pool", "").startswith("REF") else None)
+        self.stub_patch.start()
+        self.addCleanup(self.stub_patch.stop)
         self.addCleanup(self.tmp.cleanup)
 
     def test_half_open_boundaries(self):
@@ -139,7 +145,7 @@ class WindowCount(unittest.TestCase):
         write_dir(self.root, "h5-x", [start_rec(), trig("c", END - 1), trig("d", END)])
         argv_rc, out, _ = run(self.root, ["h5-x"], end_ms=END)
         out2 = io.StringIO()
-        argv = ["--books", B1, "--start-utc", "2026-10-19T15:46:16Z", "--end-utc", "2026-10-20T07:11:27Z", "--arena-root", str(self.root), "--allow-root", "--frozen-sha", SHA,
+        argv = ["--books", B1, "--start-utc", "2026-10-19T15:46:16Z", "--end-utc", "2026-10-20T07:11:27Z", "--arena-root", str(self.root), "--frozen-sha", SHA,
                 "--registered-at-ms", str(REG), "--shadow-dir", "h5-x"]
         with contextlib.redirect_stdout(out2):
             wc.main(argv)
@@ -154,7 +160,7 @@ class WindowCount(unittest.TestCase):
         self.assertEqual(json.loads(out)["lines"], {"total_lines": 4, "parsed_lines": 2, "other_type_lines": 1, "unclassified_lines": 1})
         for w in SECRET_WORDS:
             self.assertNotIn(w, out + err)
-        self.assertEqual(set(json.loads(out)), {"window", "books", "refused_dirs", "lines", "malformed", "feed_gaps_by_date", "hard_gap", "lower_bound", "label", "counts_only"})
+        self.assertEqual(set(json.loads(out)), {"window", "books", "refused_dirs", "lines", "malformed", "feed_gaps_by_date", "hard_gap", "data_loss_ms", "data_loss_over_1h", "lower_bound", "label", "counts_only"})
         self.assertEqual(set(json.loads(out)["books"][B1]), {"attempts", "refused", "refused_by_reason", "triggers_seen", "per_utc_date", "total"})
         # the reader hands on whitelisted fields only (the raw trigger goes to the executor's parser, never to output)
         import collections
@@ -164,6 +170,7 @@ class WindowCount(unittest.TestCase):
         self.assertTrue(set(recs[1]) - {"_raw"} <= set(wc.TRIGGER_FIELDS))
 
     def test_root_guard(self):
+        self.root_patch.stop()
         write_dir(self.root, "h5-x", [start_rec()])
         argv = ["--books", B1, "--start-utc", "2026-10-19T15:46:16Z", "--end-ms", str(END), "--arena-root", str(self.root), "--frozen-sha", SHA, "--registered-at-ms", "1",
                 "--shadow-dir", "h5-x"]
@@ -236,7 +243,7 @@ class WindowCount(unittest.TestCase):
         self.assertNotIn("SECRETVAL", out)
         row = doc["feed_gaps_by_date"]["2026-10-19"]
         self.assertEqual(row["gap_records"], {"silence": 1, "slot_jump": 1, "socket_reconnect": 1})
-        self.assertEqual((row["silent_ms_total"], row["missed_slots_total"], row["flagged_gap_records"]), (45_000, 7, 2))
+        self.assertEqual((row["silence_detect_ms_total_not_a_duration"], row["missed_slots_total"], row["flagged_gap_records"]), (45_000, 7, 2))
         self.assertEqual(row["restarts"], 1)
         self.assertEqual(row["restart_ms_upper_bound"], 8_000)  # start 70 s minus the last gap record (62 s)
         self.assertGreaterEqual(row["missing_hour_files"], 2)  # hours 16 and 17 have no file
@@ -260,10 +267,10 @@ class WindowCount(unittest.TestCase):
         with open(self.root / "h5-x" / "h5-shadow-2026-10-19T00.jsonl", "w") as fh:
             for r in recs:
                 fh.write(json.dumps(r) + "\n")
-        argv = ["--books", B1, "--p0-dates", "2026-10-19,2026-10-20,2026-10-21", "--arena-root", str(self.root), "--allow-root", "--frozen-sha", SHA, "--registered-at-ms", str(REG),
+        argv = ["--books", B1, "--p0-dates", "2026-10-19,2026-10-20,2026-10-21", "--arena-root", str(self.root), "--frozen-sha", SHA, "--registered-at-ms", str(REG),
                 "--shadow-dir", "h5-x"]
         out = io.StringIO()
-        with contextlib.redirect_stdout(out):
+        with contextlib.redirect_stdout(out), mock.patch.object(wc, "_now_ms", lambda: d0 + 3 * day + 11 * 60_000):
             rc = wc.main(argv)
         doc = json.loads(out.getvalue())
         self.assertEqual(rc, 0)
@@ -273,14 +280,127 @@ class WindowCount(unittest.TestCase):
         self.assertAlmostEqual(p0["average_per_day"], 1.0)
         self.assertFalse(p0["floor_average_ge_2_0"])
         self.assertFalse(p0["hard_gap"])
+        self.assertEqual((p0["data_loss_ms"], p0["not_decidable_by_gap_rule"]), (0, False))
         self.assertEqual(doc["window"]["end_ms"], d0 + 3 * day)
 
     def test_p0_dates_refusals(self):
         write_dir(self.root, "h5-x", [start_rec()])
         for bad in ("2026-10-19,2026-10-21", "2026-10-19T00", ""):
-            argv = ["--books", B1, "--p0-dates", bad, "--arena-root", str(self.root), "--allow-root", "--frozen-sha", SHA, "--registered-at-ms", "1", "--shadow-dir", "h5-x"]
-            with contextlib.redirect_stderr(io.StringIO()):
+            argv = ["--books", B1, "--p0-dates", bad, "--arena-root", str(self.root), "--frozen-sha", SHA, "--registered-at-ms", "1", "--shadow-dir", "h5-x"]
+            with contextlib.redirect_stderr(io.StringIO()), mock.patch.object(wc, "_now_ms", lambda: 2_000_000_000_000):
                 self.assertEqual(wc.main(argv), 2)
+
+    def test_p0_refused_when_last_day_not_closed(self):
+        write_dir(self.root, "h5-x", [start_rec()])
+        d0 = 1_792_368_000_000
+        argv = ["--books", B1, "--p0-dates", "2026-10-19,2026-10-20,2026-10-21", "--arena-root", str(self.root), "--frozen-sha", SHA, "--registered-at-ms", "1", "--shadow-dir", "h5-x"]
+        end = d0 + 3 * 86_400_000
+        for now, rc_want in ((end + 599_999, 2), (end + 600_000, 0)):
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), mock.patch.object(wc, "_now_ms", lambda: now):
+                rc = wc.main(argv)
+            self.assertIn(rc, (rc_want, 3) if rc_want == 0 else (2,))
+            if rc_want == 2:
+                self.assertEqual(out.getvalue(), "")
+                self.assertIn("not closed", err.getvalue())
+
+    def test_data_loss_and_hard_gap_causes(self):
+        T = START + 10_000
+        recs = [start_rec(),
+                {"type": "gap", "kind": "silence", "t_ms": T, "silent_ms": 20_000},  # followed by a slot_jump: resolved
+                {"type": "gap", "kind": "slot_jump", "t_ms": T + 1, "missed_slots": 100},
+                {"type": "gap", "kind": "silence", "t_ms": T + 2, "silent_ms": 20_000},  # no later slot_jump: unresolved
+                {"type": "gap", "kind": "socket_reconnect", "t_ms": T + 3, "flags_pools": True, "common_down_ms": 5_400_000},
+                {"type": "gap", "kind": "socket_reconnect", "t_ms": T + 4, "flags_pools": False, "common_down_ms": 7},
+                {"type": "gap", "kind": "socket_reconnect", "t_ms": T + 5, "flags_pools": True},  # flagged, no common_down_ms: hard
+                {"type": "gap", "kind": "feed_restart", "t_ms": T + 6}]
+        hours = ["2026-10-19T15"]
+        write_dir(self.root, "h5-x", recs, hour=hours[0])
+        doc = json.loads(run(self.root, ["h5-x"], end_ms=START + 1_000_000)[1])
+        row = doc["feed_gaps_by_date"]["2026-10-19"]
+        self.assertEqual(row["data_loss_ms"], 400 * 100 + 5_400_000)
+        self.assertEqual((row["common_down_ms_flagged"], row["common_down_ms_all"]), (5_400_000, 5_400_007))
+        self.assertEqual((row["unresolved_silences"], row["flagged_reconnect_without_common_down"], row["feed_restart_records"]), (1, 1, 1))
+        self.assertTrue(doc["hard_gap"] and doc["data_loss_over_1h"])
+        self.assertEqual(doc["data_loss_ms"], 5_440_000)
+
+    def test_silence_followed_by_slot_jump_only_is_not_hard(self):
+        T = START + 10_000
+        write_dir(self.root, "h5-x", [start_rec(), {"type": "gap", "kind": "silence", "t_ms": T, "silent_ms": 20_000}, {"type": "gap", "kind": "slot_jump", "t_ms": T + 1, "missed_slots": 3}])
+        doc = json.loads(run(self.root, ["h5-x"], end_ms=START + 500_000)[1])
+        self.assertFalse(doc["hard_gap"])
+        self.assertEqual(doc["data_loss_ms"], 1200)
+
+    def test_poisoned_pool_never_counted(self):
+        # first trigger of 'a' has no usable time, a later one is fine: the scorer stops, the tool must not count 'a'
+        write_dir(self.root, "h5-x", [start_rec(), trig("a", None), trig("a", START + 5), trig("b", START + 6)])
+        rc, out, _ = run(self.root, ["h5-x"])
+        doc = json.loads(out)
+        self.assertEqual((rc, doc["books"][B1]["attempts"]), (3, 1))
+        # a trigger before any start record poisons its pool too
+        write_dir(self.root, "h5-y", [trig("c", START + 5), start_rec(), trig("c", START + 7), trig("d", START + 8)])
+        rc, out, _ = run(self.root, ["h5-y"])
+        doc = json.loads(out)
+        self.assertEqual((rc, doc["books"][B1]["attempts"]), (3, 1))
+        # a bad LATER duplicate does not poison (the first record wins, as in the scorer)
+        write_dir(self.root, "h5-z", [start_rec(), trig("e", START + 5), trig("e", None)])
+        self.assertEqual(json.loads(run(self.root, ["h5-z"])[1])["books"][B1]["attempts"], 1)
+
+    def test_nested_type_never_selects_a_parse(self):
+        line = '{"x":{"type":"trigger"},"type":"outcome","pnl":1}'
+        write_dir(self.root, "h5-x", [start_rec(), line, '{"x":{"type":"trigger"}}'])
+        rc, out, _ = run(self.root, ["h5-x"])
+        doc = json.loads(out)
+        self.assertEqual(doc["lines"], {"total_lines": 3, "parsed_lines": 1, "other_type_lines": 0, "unclassified_lines": 2})
+        self.assertEqual(doc["malformed"], {})
+        self.assertEqual(rc, 3)
+
+    def test_equality_by_date_with_restart_and_refused_dir(self):
+        d1 = write_dir(self.root, "h5-a", [start_rec(), trig("a", START + 1), trig("REF1", START + 2), trig("b", END - 5), start_rec(start_ms=START + 100), trig("c", START + 200)])
+        d2 = write_dir(self.root, "h5-bad", [start_rec(sha="0" * 40), trig("q", START + 3)])
+        counts = collections.Counter()
+        sdirs = [sc.ShadowDir(d1, counts), sc.ShadowDir(d2, counts)]
+        res = sc.score_book(B1, {"clock_start_ms": START, "window_end_ms": END, "frozen_sha": SHA, "registered_at_ms": REG}, sdirs)
+        doc = json.loads(run(self.root, ["h5-a", "h5-bad"])[1])
+        b = doc["books"][B1]
+        by_date = collections.Counter(sc.utc_day(x) for x in res.decisions)
+        self.assertEqual(b["per_utc_date"], dict(by_date))
+        self.assertEqual((b["attempts"], b["refused"]), (len(res.decisions), len(res.refusals)))
+        self.assertEqual(doc["refused_dirs"], 1)
+        self.assertEqual(doc["feed_gaps_by_date"]["2026-10-19"]["restarts"], 1)
+
+    def test_real_line_format_and_real_parser(self):
+        try:
+            import solders  # noqa: F401
+            from tools.test_arena_h5_score import records, START_MS
+        except ImportError as exc:
+            self.skipTest(f"needs solders and the engine fixtures: {exc}")
+        self.stub_patch.stop()  # the REAL executor parser, on both sides
+        recs = records(n=3)
+        sha = recs[0]["code_sha"]
+        d = self.root / "h5-real"
+        d.mkdir()
+        hour = datetime.datetime.fromtimestamp(START_MS / 1000, tz=datetime.timezone.utc).strftime("%Y-%m-%dT%H")
+        with open(d / f"h5-shadow-{hour}.jsonl", "w") as fh:
+            for r in recs:  # the shadow's own serialization: compact separators, `type` first
+                fh.write(json.dumps({"type": r["type"], **{k: v for k, v in r.items() if k != "type"}}, separators=(",", ":"), allow_nan=False) + "\n")
+        res = sc.score_book(B1, {"clock_start_ms": START_MS, "window_end_ms": START_MS + 10**9, "frozen_sha": sha, "registered_at_ms": START_MS - 1_000},
+                            [sc.ShadowDir(d, collections.Counter())])
+        start_utc = datetime.datetime.fromtimestamp(START_MS // 1000, tz=datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.assertEqual(START_MS % 1000, 0)
+        argv = ["--books", B1, "--start-utc", start_utc, "--end-ms", str(START_MS + 10**9), "--arena-root", str(self.root), "--frozen-sha", sha,
+                "--registered-at-ms", str(START_MS - 1_000), "--shadow-dir", "h5-real"]
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            wc.main(argv)
+        doc = json.loads(out.getvalue())
+        b = doc["books"][B1]
+        self.assertEqual(doc["lines"]["unclassified_lines"], 0)
+        self.assertEqual(doc["malformed"], {})
+        self.assertEqual((b["attempts"], b["refused"], b["triggers_seen"]), (len(res.decisions), len(res.refusals), res.triggers_seen))
+        self.assertGreaterEqual(b["attempts"], 1)
+        by_date = collections.Counter(sc.utc_day(x) for x in res.decisions)
+        self.assertEqual(b["per_utc_date"], dict(by_date))
 
 
 if __name__ == "__main__":
