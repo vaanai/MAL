@@ -176,7 +176,9 @@ def flat_vals(o, out):
 def nt_unmatched(fro, ev):
     """frozen keys (non-meta) whose value equals no value of the independent IDL parse (value containment)."""
     pool = flat_vals(ev, [])
-    return [k for k, v in fro.items() if k not in META_KEYS and v is not None and not isinstance(v, bool) and v not in pool and not (isinstance(v, str) and v == "11111111111111111111111111111111")]
+    # the frozen create/complete/migration decoders store the native-SOL zero pubkey as WSOL (bf._quote_or_wsol): by design, accepted
+    zero = "11111111111111111111111111111111" in pool
+    return [k for k, v in fro.items() if k not in META_KEYS and v is not None and not isinstance(v, bool) and v not in pool and not (k == "quote_mint" and zero and v == td.WSOL_MINT)]
 
 def compare(name, row, ev):
     bad = []
@@ -232,9 +234,11 @@ def analyse(tx, slot, sig, src, acc):
                     blob = d[8:]
                     if log_multiset.get(blob, 0) > 0: log_multiset[blob] -= 1
                     else: evs.append((pid, blob, None, "cpi_only"))
-    ntr_ev = 0; ntr_frozen = 0
+    ntr_ev = 0; ntr_frozen = 0; ncap_log = 0; trunc = any(l.startswith('Log truncated') for l in logs)
     for pid, blob, line, srcname in evs:
         if pid not in PNAME: continue
+        if len(blob) == 0 and srcname == "cpi_only":
+            acc["empty_tag_cpi"] += 1; continue  # bare Anchor event-authority self-CPI (tag only, no event): not an event
         if len(blob) < 8: flag("N2", detail="short blob", program=PNAME[pid]); continue
         name = EV_BY_PROG[pid].get(blob[:8])
         idl = PNAME[pid]
@@ -270,7 +274,7 @@ def analyse(tx, slot, sig, src, acc):
                 acc["cpi_only"][f"{idl}.{name}"] += 1
                 # the log path (shadow) cannot see it; the walker decodes only migration and the extra events from CPIs
                 if name in TRADE_EV or name in ("CreateEvent", "CompleteEvent", "CreatePoolEvent"):
-                    flag("N1", program=idl, event=name, why="CPI-only (not in logs): invisible to records_from_logs")
+                    flag("N1", program=idl, event=name, truncated=trunc, why="CPI-only (not in logs): invisible to records_from_logs")
                     continue
             ok, row = frozen_blob(idl, name, blob, line)
             if not ok:
@@ -283,6 +287,7 @@ def analyse(tx, slot, sig, src, acc):
                     acc["refused"][(f"{idl}.{name}", why)] += 1
                     acc["refused_rows"].append(dict(sig=sig, slot=slot, event=f"{idl}.{name}", why=why, amount=big, quote_mints=qm))
                     if idl == "pump_amm" and why == "sol_lamports > cap": acc["refused_quote"].update(qm)
+                    if srcname == "log": ncap_log += 1
                     continue
                 flag("N1", program=idl, event=name, len=len(blob), ix_name=ev.get("ix_name")); continue
             if name in TRADE_EV and row is not None:
@@ -302,20 +307,20 @@ def analyse(tx, slot, sig, src, acc):
         elif pid != PID["pump_fees"] and is_trade_ix(nm): n_trade_ix += 1
     acc["trade_ix_total"] += n_trade_ix
     if not multihop and ntr_ev != n_trade_ix:
-        flag("N5", trade_events=ntr_ev, trade_ix=n_trade_ix, why="events != trade instructions")
+        flag("N5", trade_events=ntr_ev, trade_ix=n_trade_ix, truncated=trunc, why="events != trade instructions")
     if multihop: acc["multihop_txs"] += 1
     # N5 second half: frozen trade rows from the logs path vs independent log-sourced trade events
     rows = td.records_from_logs(logs, slot=slot, signature=sig, t_recv_ms=0, commitment="finalized", feed="parity", pool_mints={}, event_v=True)
     n_log_trade = sum(1 for pid, b, ln, s in evs if s == "log" and pid in PNAME and EV_BY_PROG[pid].get(b[:8]) in TRADE_EV)
     acc["frozen_rows"] += len(rows); acc["indep_log_trade_events"] += n_log_trade
     if len(rows) != n_log_trade:
-        flag("N5", frozen_rows=len(rows), indep_log_trade_events=n_log_trade, why="records_from_logs row count differs")
+        flag("N5", frozen_rows=len(rows), indep_log_trade_events=n_log_trade, capped_log_events=ncap_log, explained_by_cap=(len(rows) == n_log_trade - ncap_log), why="records_from_logs row count differs")
     for r in rows:
         if r.get("venue") == "pumpswap" and not r.get("quote_mint"): acc["unresolved_mint_rows"] += 1
 
 acc = dict(failed_txs=0, txs=collections.Counter(), nondecode=[], log_truncated_txs=0, unknown_disc=collections.Counter(), events=collections.Counter(), layout_len=collections.defaultdict(collections.Counter),
            read_events=collections.Counter(), cpi_only=collections.Counter(), compared=collections.Counter(), unknown_ix=collections.Counter(), ix=collections.Counter(), trade_ix_total=0,
-           multihop_txs=0, nt_total=collections.Counter(), nt_none=collections.Counter(), nt_unmatched=collections.Counter(), nt_equal=collections.Counter(), nt_in_migrate_tx=collections.Counter(), trail8=collections.Counter(), trail8_by_slot=[], refused=collections.Counter(), refused_rows=[], refused_quote=collections.Counter(), frozen_rows=0, indep_log_trade_events=0, unresolved_mint_rows=0)
+           multihop_txs=0, empty_tag_cpi=0, nt_total=collections.Counter(), nt_none=collections.Counter(), nt_unmatched=collections.Counter(), nt_equal=collections.Counter(), nt_in_migrate_tx=collections.Counter(), trail8=collections.Counter(), trail8_by_slot=[], refused=collections.Counter(), refused_rows=[], refused_quote=collections.Counter(), frozen_rows=0, indep_log_trade_events=0, unresolved_mint_rows=0)
 idx = json.load(open(RAW / "sample_index.json"))
 slots = sorted({v["slot"] for v in idx["a"].values()})
 walker = collections.Counter(); wk = collections.defaultdict(collections.Counter)
@@ -355,7 +360,7 @@ res = dict(n_blocks_A=nblocks, n_A_txs_success_touching=len(idx["a"]), tx_analys
     ix=dict(acc["ix"]), layout_len={k: dict(v) for k, v in acc["layout_len"].items()}, compared_fields_ok_or_not=dict(acc["compared"]), multihop_txs=acc["multihop_txs"],
     frozen_rows_records_from_logs=acc["frozen_rows"], indep_log_trade_events=acc["indep_log_trade_events"], unresolved_mint_rows=acc["unresolved_mint_rows"], trade_ix_total=acc["trade_ix_total"],
     walker_rows=dict(walker), walker_unknown_disc=dict(wk["unknown_disc"]), walker_bad_disc=dict(wk["bad_disc"]), walker_cpi_only_disc=dict(wk["cpi_only_disc"]),
-    nontrade={k: dict(total=acc['nt_total'][k], frozen_none=acc['nt_none'][k], value_unmatched=acc['nt_unmatched'][k], equal=acc['nt_equal'][k], in_migrate_tx=acc['nt_in_migrate_tx'][k]) for k in acc['nt_total']), trail8=dict(acc['trail8']), refused={f'{a}|{b}': v for (a, b), v in acc['refused'].items()}, refused_quote=dict(acc['refused_quote']), refused_rows=acc['refused_rows'], trail8_values=dict(collections.Counter(v for _, _, v in acc['trail8_by_slot']).most_common(10)), trail8_first_last_slot=[min((x[0] for x in acc['trail8_by_slot']), default=None), max((x[0] for x in acc['trail8_by_slot']), default=None)], nondecode_by_cat=dict(collections.Counter(n["cat"] for n in acc["nondecode"])), nondecode=acc["nondecode"], blob_sha=blob_sha,
+    empty_tag_cpi=acc["empty_tag_cpi"], nontrade={k: dict(total=acc['nt_total'][k], frozen_none=acc['nt_none'][k], value_unmatched=acc['nt_unmatched'][k], equal=acc['nt_equal'][k], in_migrate_tx=acc['nt_in_migrate_tx'][k]) for k in acc['nt_total']}, trail8=dict(acc['trail8']), refused={f'{a}|{b}': v for (a, b), v in acc['refused'].items()}, refused_quote=dict(acc['refused_quote']), refused_rows=acc['refused_rows'], trail8_values=dict(collections.Counter(v for _, _, v in acc['trail8_by_slot']).most_common(10)), trail8_first_last_slot=[min((x[0] for x in acc['trail8_by_slot']), default=None), max((x[0] for x in acc['trail8_by_slot']), default=None)], nondecode_by_cat=dict(collections.Counter(n["cat"] for n in acc["nondecode"])), nondecode=acc["nondecode"], blob_sha=blob_sha,
     idl_sha256={k: hashlib.sha256((DOCS / f"{k}.main.json").read_bytes()).hexdigest() for k in IDL}, c_sample=idx["c"])
 (OUT / ("s06_parity_pre.json" if os.environ.get("SAMPLE") == "pre" else "s06_parity.json")).write_text(json.dumps(res, indent=1, sort_keys=True, default=str) + "\n")
 print(json.dumps({k: v for k, v in res.items() if k not in ("nondecode", "ix", "layout_len", "c_sample", "events", "read_events")}, indent=1, default=str)[:5000])
