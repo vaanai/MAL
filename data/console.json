@@ -1,8 +1,327 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-19T19:23:43Z",
+ "updated_utc": "2026-10-21T18:45:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "xpool-killed-1021",
+   "kind": "finding",
+   "title": "XPOOL (same-mint sibling-pool dislocation) killed at the structure count: 0 attempts a day, 0 of 173 sibling pairs deep enough",
+   "detail": "hunt24 w4-gap. 0 attempts a day on the four exploration blocks (552 h) and 0 on 58 closed October hours. 190 mints have two WSOL pools but 0 of 173 sibling pairs had the sibling's real quote at or above 10 SOL. October: 4 of 20 pairs reached 10 SOL; all 24 raw triggers were refused out of the V band. Nothing was priced. Library row w4-gap-xpool-1 (explored-no-survivor). No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-21T18:31:00Z"
+  },
+  {
+   "id": "pr775-776-merged-1021",
+   "kind": "job",
+   "title": "PRs #775 (arena_close_blocked) and #776 (arena_live_bridge, DRY default) merged; nothing installed, no send",
+   "detail": "#776 merged at 2026-10-21T17:57:33Z (d4aa3d5) and #775 at 17:59:17Z (430c704); commit times of the merges on main. #776: decision log to orders through the probe send path, DRY by default (S1+S2). #775: mint fetch output to a --close-blocked list plus a live per-mint pre-filter (S3). Neither is installed on a host and neither sends anything; no trading key exists. Paper only. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-21T17:59:17Z"
+  },
+  {
+   "id": "h5-arena-a1-end-1021",
+   "kind": "decision",
+   "title": "H5 arena a1 books (h5v1-boostfloor-a1, h5v2-boostclock-a1) ended NOT_DECIDABLE, final; halt applied late",
+   "detail": "Both books: window_end_ms 1792480287000 (2026-10-20T07:11:27Z, the A3 pins_changed flag of job #1271), 3 UTC dates against the 5 DEC-031 needs, so NOT_DECIDABLE and final per QP-RULING-1021-a3. Arena halt job #1299 ran at 2026-10-21T17:55:02Z, 34 h 43 min 35 s after the flag (job #1271's notebook said 'record only'); only attempt counts were seen in between, no outcome. 15 h 25 min 11 s lie between the first program write (2026-10-19T15:46:16Z, pump slot 458888140, found by the #780 review) and the flag; the monitor-flagged write was 2026-10-19T17:47:02Z (13 h 24 min 25 s before the flag). Notebook n_h2cG8iJoOrg1OQ. Record: ARTIFACTS/lab/arena-records-2026-10-18.md section 6 and ARTIFACTS/lab/qp-ruling-1021-a3.md. No P&L was computed. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-21T17:55:02Z"
+  },
+  {
+   "id": "owner-decisions-1021",
+   "kind": "decision",
+   "title": "Owner 2026-10-21 ~17:51Z: API $200 cap to 11-11; low-frequency strategies welcome (direction recorded; current P0 and A3 rules apply until the DEC-031 amendment merges); work with pump redeploys",
+   "detail": "Owner decisions of about 2026-10-21T17:51Z, notebook n_VXxa1CEWcslpaA with correction n_Mt_dg3k_cZP3eA (copied from the manager's brief). (1) API budget: $200 cap through 2026-11-11. (2) Low-frequency strategies are welcome: the 20-attempts-a-day P0 count bar is no longer a kill; the floor is about 2 a day, pending a DEC-031 amendment (QP ruling Q6). The direction is recorded. The amendment is not merged, so until it merges the current rules still apply: DEC-031 Am.3 item 1 (P0 at least 20 a day, no day under 10) and the current A3 rule (a pins_changed flag ends counted windows at the flag instant; no manual PASS). (3) Work with the pump program redeploys instead of stopping for them. The promotion gate is unchanged. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-21T17:51:00Z",
+   "approx": true
+  },
+  {
+   "id": "restart-hv4-v2-shakedown-1021",
+   "kind": "job",
+   "title": "After the SSD restart: HV4 v2 shakedown started; its T0 is 2026-10-23T00Z; walk 2 #1036 resumed (limit 2026-11-03T17:51Z, successor gate #1289 -> #1290)",
+   "detail": "Hosts restarted on 2026-10-20 (SSD work). HV4 v2 shakedown started after the restart; clock T0 2026-10-23T00Z (from the manager's brief; the shakedown report and the #762 retarget are still ahead of it). Walk 2 #1036 resumed from its checkpoint after the reboot; new limit 2026-11-03T17:51Z; the host-side successor gate is #1289 -> #1290 (replaces #1214 -> #1215). Recorded in LAB_STATE Now as a mid-week restart. Job ids and instants are from the manager's brief and were not re-read from MiScusi. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-21T17:51:00Z",
+   "approx": true
+  },
+  {
+   "id": "burn-census-fail-1021",
+   "kind": "result",
+   "title": "Buy-and-burn census (CENSUS-PLAN-2) FAIL: control ratio 1.0241094111786195 against the 1.5 bar; library row closed",
+   "detail": "Job #1293 (notebook n__-aJYMsIKkT__w), /data/mal/hunt-1008/push-1016/hunt23/w3-burn/out2/plan2_counts.json (sha256 25b436db176a71e81fd4250d7f0f0fb4453212f253048ddc9d833cee92df2179): Q 25, hours_q 12, control_obs 15431, control_exp 15067.725998378322, control_ratio 1.0241094111786195, verdict FAIL. L1/L2 close as tape-visible front-runnable buyers (hunt23-w3-burn-1 set to explored-no-survivor). Structure counts only; nothing was priced; burns are not on the tape. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-21T17:38:42Z"
+  },
+  {
+   "id": "j3-we-killed-1020",
+   "kind": "finding",
+   "title": "J3 W_e explorer: all 12 cells killed, no survivor, no registration (2 to 4 priced trades per cell in 24 h); in-sample, paper",
+   "detail": "J3 W_e arena explorer, job #1245 (precount #1243 PASS, rows_total 22,911,630). Window: tape 2026-10-19T08:05:20Z to 2026-10-20T08:00Z, IN-SAMPLE, paper. Report /data/mal/hunt-1008/push-1016/hunt21/j3-we-1020/scratch/REPORT.json (sha256 b50f06f2ff869cf8798606855340b5c8cd1f8d4b469b182a816a57312dbebcfa): valid True, rows_before_start 0, git_head 5d03e90f, not dirty, rc 0. 12 of 12 cells killed (mean <= 0, ex-top-3 <= 0, ex-best-day <= 0 under every deciding sub-cell); no survivor, so no registration. Triggers 1,569 to 2,013 per cell, but only 2 to 4 priced trades per cell in 24 h. parent_no_pumpswap_pool 1,943 of 2,013 for k1 (the parent was still on the bonding curve); the bonding-curve parents belong to the QSINK line (hunt23-w3-qsink-1). Library row lib-c-J3 set to explored-no-survivor. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-20T08:23:00Z"
+  },
+  {
+   "id": "hv4-d1dbcd6-stub-cancelled-1020",
+   "kind": "decision",
+   "title": "Haiku v4 d1dbcd6 stub cancelled (it had already failed check 6 on 10-19 23:00Z); memory freed for J3",
+   "detail": "Jobs #1249 and #1250 were cancelled and the leftover scope was stopped and checked with ps. The arena feed was untouched. The burn census #1260 was moved to #1274 with the same command and still runs at 2026-10-21T01:00Z. The v2 stub at b240191 follows after the research-0 SSD install. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-20T08:10:30Z"
+  },
+  {
+   "id": "a3-pins-changed-1020",
+   "kind": "finding",
+   "title": "A3 daily: pump and PumpSwap programs redeployed 2026-10-19T17:47Z (pins_changed); H5 already stopped, record only",
+   "detail": "A3 daily, job #1271. program_pump deploy_slot 456494698 to 458921440 (2026-10-19T17:47:02Z); program_pumpswap 454596406 to 458921517 (2026-10-19T17:47:20Z); same binary length. Unchanged: bonding_fee_config, pumpswap_fee_config, pumpswap_global_config, program_fees. The other 5 flags are clear (InitBoost 10/10, last slice median 340.5 s, budget 17.586 SOL, synthetic 2/19). Slice watch #1272: exact median 29 slices. The arena tape kept recording across the deploy (rows per hour T17 1,029,989, T18 1,084,548). H5 is already stopped, so this is a record only; any H5 revival must re-pin. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-20T07:14:40Z"
+  },
+  {
+   "id": "pr770-merged-1020",
+   "kind": "decision",
+   "title": "PR #770 merged (9fbe292): hv4_shakedown_report revisions 3 and 4",
+   "detail": "PR #770 merged (9fbe292). This is the shakedown report tool for SHAKEDOWN-CHECKS-3 and -4 (rule M, checks 1/3/5/8/11/12). Tool sha256 f5e62ab57a72ebed0620b36a084893b10030350949204bd20624a78299b438ae. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-20T05:23:54Z"
+  },
+  {
+   "id": "pr771-merged-1020",
+   "kind": "decision",
+   "title": "PR #771 merged (b240191): Haiku v4 prefetch v2 with Note N4 (holders up to 15 min old, warm holders, cap 2,000 chain calls per rolling hour and 48,000 per day)",
+   "detail": "PR #771 merged (b240191). It replaced #768; frozen code d0d4ca8. DESIGN.md with Note N4 sha256 bcd26affadf1c9900852ee9f2f3489b46c418b5ee393f75d154d965ee6e176d8; SHAKEDOWN-CHECKS-4 sha256 a9b019ca9c8db38e4172a04ceb338c6edc03ef17333bc0ae3d462079bc7dd583. Replay on the R2 window (96 scans): chain_stale 0/599, null holders 38/456 (8.3%), at most 1,980 calls in a rolling hour. Held-out window (tape 2026-10-19T19..2026-10-20T04, 48 scans): chain_stale 0/278, null holders 9/212 (4.2%), at most 1,760 calls in a rolling hour. StubModel, mock RPC with no latency: a policy screen, not a prediction of live rates. The 24 h v2 stub is the next step. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-20T05:14:16Z"
+  },
+  {
+   "id": "w4s-short-scout-1020",
+   "kind": "finding",
+   "title": "W4-S short-side desk scout: dead for transfer (6 pump-origin coins got a perp in 45 days, all MEXC/Gate, p50 5.1 days after the pool; about 0.13 a day); counts only; report hunt23/w4s-short/REPORT.md",
+   "detail": "hunt23 wave 4 W4-S, desk research plus counts of instrument availability on public APIs (2 rps or less); no lab tape, no keys, no post-listing return computed. Window 2026-09-05 to 2026-10-20 (45 days): 6 pump-origin coins got a perp (BATON, PAID, OTC, AGENCY, JEANPHIL, DOPE), all on MEXC and 3 also on Gate; age since PumpSwap pool creation p50 about 123 h (5.1 d; range 8.4 h to 25.7 d); 1 of 6 listed within 48 h, 2 of 6 within 72 h; FDV at listing $4.7M to $22.8M. Hyperliquid (core and HIP-3), Jupiter Perps, Binance, Bybit, OKX and Bitget listed 0 in the window. About 0.13 coins/day (the scout's arithmetic), so 100 out-of-sample trades would take about 750 days; listed coins are survivors, so the death tail does not transfer. Holding a short is cheap next to fees (Hyperliquid funding p50 +0.00125%/h paid to shorts). Counts are a lower bound (symbol plus price-match mapping, recall unknown). Library rows w4s-short-cex-listing-watch (untested, counts-only watch), w4s-short-hl-funding-cost and w4s-short-borrow-short (explored-no-survivor). Report: /data/mal/hunt-1008/push-1016/hunt23/w4s-short/REPORT.md (sha256 112a95ddda33dcedb36b14fc59bdfe25990b67361516619a755d68fe9e8ca116); atUtc is its mtime. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-20T00:57:31Z"
+  },
+  {
+   "id": "pr767-merged-1020",
+   "kind": "other",
+   "title": "PR #767 merged (bd00256): HV4 scan speed-up (decision logs md5-identical; QP OK and reviewer APPROVE at 78ae0fb)",
+   "detail": "PR #767 merged 2026-10-20T00:41:06Z (bd00256): HEDGE: hv4 scan speed-up (decision-neutral), for stub check 6 at d1dbcd6. The decision logs are md5-identical; QP OK and reviewer APPROVE at 78ae0fb (as stated in the manager's brief; not re-read from the PR). One half of the v2 fix named in event hv4-check6-fail-1019 (PR #767 + PR #768). No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-20T00:41:06Z"
+  },
+  {
+   "id": "w4x-mech-buyer-scout-1020",
+   "kind": "finding",
+   "title": "W4-X cross-venue mechanical-buyer scout: dead on capacity (Pump Agent Payments buyback 14.3 buys/day, p50 0.116 SOL; StonkFun platform wallet buys only STONK); counts only, public RPC; report hunt23/w4x-scout/REPORT.md",
+   "detail": "hunt23 wave 4 W4-X, public RPC only, counts only, 3 UTC days 2026-10-17..19; no price after any buy was computed. Candidate A, Pump Agent Payments buyback: 43 buys (14.3/day, 37 PumpSwap and 6 pump curve), 14 coins, 7.29 SOL in 3 days; SOL per buy p50 0.116, p90 0.321, max 0.534, 1 of 43 at or above 0.5; 12 of 12 batches start at HH:33:4x UTC every 6.000 h. The buy's own implied move is p50 0.11%, p90 0.66%, max 2.3% against a 2.5% round trip, so it misses the wave-3 bar (0.5 SOL or more into one pool, at least 13 events/day) by about 40 times (the scout's arithmetic). Candidate B, StonkFun platform wallet: 36,399 signatures in 3 days; a random sample of 260 gave 58 Jupiter swaps, 58 of 58 into STONK, so it buys no launch coins. The StonkFun top-coin flywheel wallet is unidentified (a lead, not measured). Library rows mech-buyer-scout-1, -2 (explored-no-survivor) and -3 (untested, lead). Report: /data/mal/hunt-1008/push-1016/hunt23/w4x-scout/REPORT.md (sha256 73b4c6af85cf88ded68ebdf3e0e5d7885f45c0f057b361fd3e06d4bd44da9cd2); atUtc is its mtime. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-20T00:34:19Z"
+  },
+  {
+   "id": "hunt23-w2f-surge-killed-1020",
+   "kind": "result",
+   "title": "W2-F sell-into-surge: all 12 cells and 4 time-exit controls killed on the four in-sample blocks (kit 4cc052a); report /data/mal/hunt-1008/push-1016/hunt23/w2-surge/REPORT.md",
+   "detail": "hunt23 W2-F (sell into surge; 6 survivor-drift cells and 6 floor-hold cells, plus 4 time-exit controls): every cell fails the four deciding sub-cells {flat, pressure} x {sc, total} at 1.9 s / 0.25 SOL / rent 0 and the gate, and the worst-in-slot kill applies to all 12. The surge exit improves on its own time-exit control in 10 of 12 cells but every cell is far below zero, and for the survivor-drift cells a shorter hold cap beat any surge exit. In-sample exploration, best of 12, no survivor, nothing to register. Library rows hunt23-w2f-SD, hunt23-w2f-FH and hunt23-w2f-exit-lesson. Report: /data/mal/hunt-1008/push-1016/hunt23/w2-surge/REPORT.md (DECLARE sha256 27dfe00614b4876db8f03920735261259f82a73f40f9604f33bd835c4b14e6d6); atUtc is the REPORT.md mtime. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-20T00:11:47Z"
+  },
+  {
+   "id": "hv4-check6-fail-1019",
+   "kind": "finding",
+   "title": "Haiku v4 24 h stub (d1dbcd6) FAILED shakedown check 6 (scan timing); fix is v2 (PR #767 + PR #768, both drafts); registration T0 rule changed",
+   "detail": "Shakedown check 6 (nearest-rank p99 of scan_wall_ms <= 2,000 ms outside process starts; SHAKEDOWN-CHECKS-3.md, revision 3, sha256 55fbba0559327c1e18728596506de11fdf0408ae9bedcee49a21966d9314a3af) failed on the d1dbcd6 stub (MiScusi #1249, then #1250): boards of about 20 cards took 1.7-2.5 s (the manager's reading of the stub's scan timing, from the brief; not re-measured by the records worker). The 2,000 ms limit is not changed. The fix is v2: PR #767 (scan speed; decision logs md5-identical; final timing table in the PR body) and PR #768 (hot-first chain prefetch refresh plus an append-only observability file, hv4-obs.jsonl). Both are drafts and neither is merged; each needs a quant-proof OK, a reviewer verdict and a new 24 h stub. DESIGN.md (sha256 d6e643c7a74170e8991f17c1ec2032995357aa4fed10274269099d9c4624e638) carries Note N3 (the quant-proof design ruling on PR #768, comment 6279836164). Registration T0 is changed: T0 = the first 00:00Z or 12:00Z at least 24 h after the v2 stub's first start row, never before 2026-10-21T00:00Z. That gives 2026-10-21T12:00Z if the v2 stub starts by 2026-10-20T12:00Z, otherwise 2026-10-22T00:00Z or later. No start time is assumed. A shakedown is not a result: no HV4 result and no trader P&L is claimed. atUtc is the later of the file mtimes of SHAKEDOWN-CHECKS-3.md and DESIGN.md. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T23:48:45Z"
+  },
+  {
+   "id": "hunt23-w3b-burn-counting-1019",
+   "kind": "job",
+   "title": "hunt23 W3-B buy-and-burn census: plan 1 passed on a plan defect; plan 2 runs as job #1260 at 2026-10-21T01:00Z, control ratio >= 1.5 decides",
+   "detail": "Plan 1 on 15 closed hours of 2026-10-19 (0 full UTC days): 326 never-sell candidate wallets, 18,864 WSOL pool-claims; the letter of the plan is PASS (PROVISIONAL), Q = 8,691. The agent's reading is that this is a plan defect, not a mechanical buyer: 8,688 of 8,691 come from the arm that admits any wallet, and the per-pool control is 1.02 (11,355 against 11,091.7 expected). H1 and H2 are not supported as front-runnable buyers on this window. Plan 2 (CENSUS-PLAN-2.md, sha256 b1233e472f76a8a28793c8501ffdf77057ac167f36550d3b4f2a5526a7628ec8) recounts on 2026-10-20 with causal labels and passes only if qualifying events >= 13, at least 12 of 24 hours have one, no wallet or pool exceeds 50%, and the control ratio is >= 1.5. It runs as MiScusi job #1260 at 2026-10-21T01:00Z (from the manager's brief). The result is not in. Counts only; nothing is priced. Library row hunt23-w3-burn-1. Files: /data/mal/hunt-1008/push-1016/hunt23/w3-burn/COUNTS.md; atUtc is the latest mtime of COUNTS.md and CENSUS-PLAN-2.md. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T23:38:17Z"
+  },
+  {
+   "id": "hunt23-w3q-qsink-counting-1019",
+   "kind": "job",
+   "title": "hunt23 W3-Q QSINK: census counting; 10-20..10-24 results not in (MiScusi #1256 and #1259)",
+   "detail": "Census on 14 closed hours of 2026-10-19 (13.911 h, 0 full UTC days): child creates 648, 189 parents, top-parent share 0.071; JUDGE-14 K0 as written NOT_DECIDABLE, K0-R PROVISIONAL PASS (a provisional pass is not a signal). The counting plan for the 5 full UTC days 2026-10-20 .. 10-24 is COUNTS-PLAN-2.md, sha256 f8893e28e995c087b98ba44162640c4bb302245a580f3c652c3ca2f55e24f292 (addenda 2a: net parent flow; 2b: net flow by child origin). MiScusi jobs #1256 and #1259 run those counts (job ids from the manager's brief). Results are not in. Counts only; nothing is priced. Library row hunt23-w3-qsink-1. Files: /data/mal/hunt-1008/push-1016/hunt23/w3-qsink/COUNTS.md; atUtc is the latest mtime of COUNTS.md and COUNTS-PLAN-2b.md. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T23:26:58Z"
+  },
+  {
+   "id": "hunt23-w3-buyer-scout-1019",
+   "kind": "finding",
+   "title": "hunt23 wave 3 mechanical-buyer scout (desk and web): no second buyer the size of QSINK found; one new lead, the PUMP-token sink",
+   "detail": "Desk and web read; no tape row was opened and every vendor, press or company figure is [unverified]. Two buyers of pump coins exist on paper on our venue (the pump.fun Tokenized Agent buyback authority and third-party creator-fee buy-and-burn bots); no source sizes either, and the W3-B census above tests both. Shorting fresh pump coins: no venue found. New lead L4, the PUMP-token sink (library row hunt23-w3-pump-sink-1, untested): test is the hourly share of PUMP-pool buy SOL inside multi-hop child-buy signatures, dead if under 5%. The 7,915 SOL/day in QSINK is gross and the forced buy sits in the child buy's own transaction, so it can be ridden only as a drift. Report: /data/mal/hunt-1008/push-1016/hunt23/wave3/MECHANICAL-BUYER-SCOUT.md; atUtc is its mtime. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T23:21:09Z"
+  },
+  {
+   "id": "pr764-merged-1019",
+   "kind": "other",
+   "title": "PR #764 merged (58048b6): hv4_shakedown_report: one-command evaluation of the HV4 24 h stub shakedown (counts and timings only)",
+   "detail": "PR #764 merged 2026-10-19T23:20:22Z (58048b6): hv4_shakedown_report: one-command evaluation of the HV4 24 h stub shakedown (counts and timings only) A tool merge; counts and timings only (per the PR title). No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T23:20:22Z"
+  },
+  {
+   "id": "hunt23-w2b-strand-killed-1019",
+   "kind": "result",
+   "title": "hunt23 W2b-S (strand veto on the C1 and C3 bases): all 6 cells killed; the C1/C3 + veto line is closed",
+   "detail": "Every cell fails the kit's kill_verdict. Best flat/total mean per trade +1.07% (DS-C1-g50), carried by one block: explore -4.57%, fast-pool -9.01%, oracle-insample +38.40%, oracle-live -4.48%. Strand-only cells S-C1-g50 -4.15% and S-C3-g50 -7.86%. The strand score works on strands (out-of-time AUC pooled C1 0.827, C3 0.809) and cuts the strand share to 1.2% (C1) and 4.0% (C3), but the books still lose 4 to 8% per trade; layered on the death veto it does not beat random thinning. Report next steps: close the C1/C3 + veto line; keep the strand score as an ingredient only. In-sample, best of 6 after best of 9; not gate evidence. Library rows hunt23-w2b-strand-1 and hunt23-w2b-strand-2. Report: /data/mal/hunt-1008/push-1016/hunt23/w2b-strand/REPORT.md (DECLARE.md sha256 11e4450a45a6e6d270611eb0ad5b748cbae1f96f7d4e2816250c6bdc4a465566); atUtc is the REPORT.md mtime. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T23:11:11Z"
+  },
+  {
+   "id": "hunt23-w3l-hidden-lp-killed-1019",
+   "kind": "result",
+   "title": "hunt23 W3-L (hidden LP deposits): killed before pricing; nothing was priced",
+   "detail": "Killed by four of the declared structure checks, each alone enough: (a1) raw deposits, median full day 3.0 (below 20); (a2) attempts per day E 0.27 and G 0.07 (below 20); (b) V consistency, 6 evaluable and 6 of 6 inconsistent; (c) positive-V deposits in band 6/11 = 54.5% (below 80%). 46 deposits over 15 explore-0814 dates. No cell was scored and there is no Phase 2. Exploration counts only. Library row w3-hidden-lp-1. Report: /data/mal/hunt-1008/push-1016/hunt23/w3-lp/REPORT.md (DECLARE sha256 e79370389d8d362d82d0434140b019a8f98fb9ac6cdfa391b1bc436ee55cab14); atUtc is the REPORT.md mtime. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T23:08:20Z"
+  },
+  {
+   "id": "pr766-merged-1019",
+   "kind": "other",
+   "title": "PR #766 merged (79fca0b): tools/exp028_kit_check.py: EXP-028 Amendment 1 item 5 kit equivalence check (A source identity, B byte-identical outputs, C results coupling) + reference at 489fa7e; no profit claim",
+   "detail": "PR #766 merged 2026-10-19T22:59:58Z (79fca0b): tools/exp028_kit_check.py: EXP-028 Amendment 1 item 5 kit equivalence check (A source identity, B byte-identical outputs, C results coupling) + reference at 489fa7e; no profit claim A tool merge: the EXP-028 Amendment 1 item 5 kit equivalence check with a reference at 489fa7e; no profit claim (per the PR title). No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T22:59:58Z"
+  },
+  {
+   "id": "pr760-merged-1019",
+   "kind": "other",
+   "title": "PR #760 merged (4cc052a): arena_screen: event-driven exits (ExitSpec.exit_fire, causal view, exit-causality probe, event-exit worst-in-slot kill), rebased on #758; replaces #759; kit only, no profit claim",
+   "detail": "PR #760 merged 2026-10-19T22:43:49Z (4cc052a): arena_screen: event-driven exits (ExitSpec.exit_fire, causal view, exit-causality probe, event-exit worst-in-slot kill), rebased on #758; replaces #759; kit only, no profit claim A kit merge: event-driven exits in arena_screen, rebased on #758, replacing #759; kit only, no profit claim (per the PR title). No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T22:43:49Z"
+  },
+  {
+   "id": "hunt23-w2d-death-killed-1019",
+   "kind": "result",
+   "title": "hunt23 W2-D (death veto on the wave-1 A4, C1 and C3 bases): all 9 cells killed",
+   "detail": "Every V cell fails the kill rule on all four sub-cells. Flat/total mean per trade: V-A4-f25 -12.33%, f50 -9.68%, f75 -6.50%; V-C1-f25 -3.59%, f50 -1.54%, f75 -0.46%; V-C3-f25 -6.49%, f50 -3.36%, f75 -1.17%; no veto (BASE) A4 -16.90%, C1 -8.41%, C3 -10.18%. The score has out-of-time signal (pooled AUC A4 0.653, C1 0.690, C3 0.669) but removes the slow -50% deaths, not the total-loss strands; V-C1-f75's September +3.11% is carried by oracle-insample (+21.8%) and its explore-0814 alone is -3.32%. In-sample exploration, best of 9; not gate evidence. Library rows hunt23-w2-death-1 and hunt23-w2-death-2. Report: /data/mal/hunt-1008/push-1016/hunt23/w2-death/REPORT.md (DECLARE.md sha256 46aac450b986c34990a334e8c67d441eb091c0fbe4a409b65f45e9af14c5252e); atUtc is the REPORT.md mtime. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T22:16:28Z"
+  },
+  {
+   "id": "pr763-merged-1019",
+   "kind": "other",
+   "title": "PR #763 merged (58bcf6e): records: hunt23 wave-1, speed audit and Kalshi fair-value library rows; Console events for the evening of 2026-10-19",
+   "detail": "PR #763 merged 2026-10-19T22:10:22Z (58bcf6e): records: hunt23 wave-1, speed audit and Kalshi fair-value library rows; Console events for the evening of 2026-10-19 A records merge: hunt23 wave-1, speed audit and Kalshi fair-value library rows, and Console events for the evening of 2026-10-19. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T22:10:22Z"
+  },
+  {
+   "id": "pr761-merged-1019",
+   "kind": "other",
+   "title": "PR #761 merged (6cca562): EXP-028 Amendment 1: small cells, None p, first-1,000-draws check, B and kit sha (records only; QP #758 comment 6277777163)",
+   "detail": "PR #761 merged 2026-10-19T22:00:45Z (6cca562): EXP-028 Amendment 1: small cells, None p, first-1,000-draws check, B and kit sha (records only; QP #758 comment 6277777163) Records only (per the PR title): EXP-028 Amendment 1. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T22:00:45Z"
+  },
+  {
+   "id": "hunt23-w2e-quiet-killed-1019",
+   "kind": "result",
+   "title": "hunt23 W2-E (post-crash quiet): all 12 cells killed",
+   "detail": "All 12 cells (7 grid, 5 event) fail the Amendment 1 kill rule on all four sub-cells {flat, pressure} x {sc, total} at 1.9 s, 0.25 SOL, rent 0. Deciding-leg flat/total mean per trade, pooled over 4 blocks: R9 -0.48%, Rx2 -1.80%, R1 -2.01%, R4 +0.02% (373 trips; ex-top-3 -1.13 SOL; explore-0814 alone -0.38%; CI90 lower bound -3.65%), Rx8 -1.41%, R7 -3.69%, Rx4 -2.71%; event cells S1 -2.84%, Rx5 -2.22%, Rx7 -1.90%, Rx6 -2.16%, S4 -6.20%. Explore-0814 alone is negative in all 12 cells. In-sample exploration, best of 12; not gate evidence. Library rows hunt23-w2-quiet-1 and hunt23-w2-quiet-2. Report: /data/mal/hunt-1008/push-1016/hunt23/w2-quiet/REPORT.md (DECLARE.md sha256 da6256e96478b1ec10d46cafe407edf1276af91ba825d03f52e340fa46b52fd2); atUtc is the REPORT.md mtime. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T21:50:37Z"
+  },
+  {
+   "id": "pr758-merged-1019",
+   "kind": "other",
+   "title": "PR #758 merged (489fa7e): arena_screen: report-only EXP-028 screen p (trade-level + date-cluster, B parameter, 0.25 SOL only); counts-only explore-0814 precount",
+   "detail": "PR #758 merged 2026-10-19T21:32:52Z (489fa7e): arena_screen: report-only EXP-028 screen p (trade-level + date-cluster, B parameter, 0.25 SOL only); counts-only explore-0814 precount. A tool merge; the precount is counts only. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T21:32:52Z"
+  },
+  {
+   "id": "hv4-stub-shakedown-1019",
+   "kind": "job",
+   "title": "Haiku v4: 24 h stub shakedown started 21:31:27Z (MiScusi #1249, then #1250 to 2026-10-20T21:32Z); registration T0 rule corrected 2026-10-20 (see hv4-check6-fail-1019)",
+   "detail": "The 24 h stub shakedown for Haiku v4 started at 2026-10-19T21:31:27Z as MiScusi job #1249, followed by job #1250 to 2026-10-20T21:32Z. It follows the out-of-memory kill of the earlier stub (job #1236, see event hv4-stub-oom-1019). Correction (2026-10-20): this event first gave a target registration T0 of 2026-10-22T00Z. The T0 rule is now: T0 = the first 00:00Z or 12:00Z at least 24 h after the v2 stub's first start row, never before 2026-10-21T00:00Z. That gives 2026-10-21T12:00Z if the v2 stub starts by 2026-10-20T12:00Z, otherwise 2026-10-22T00:00Z or later. No start time is assumed. The stub failed check 6; see hv4-check6-fail-1019. A shakedown is not a result: no HV4 result and no trader P&L is claimed. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T21:31:27Z"
+  },
+  {
+   "id": "pr755-merged-1019",
+   "kind": "other",
+   "title": "PR #755 merged (d1dbcd6): hv4: wire ArenaEngine.trim_history() into Runner._housekeep, append-only trim counters, runner-level trim ON/OFF md5 replay (stacks on #745; merge after it)",
+   "detail": "PR #755 merged 2026-10-19T21:31:03Z (d1dbcd6): hv4: wire ArenaEngine.trim_history() into Runner._housekeep, append-only trim counters, runner-level trim ON/OFF md5 replay (stacks on #745; merge after it). Merged after #745. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T21:31:03Z"
+  },
+  {
+   "id": "pr745-merged-1019",
+   "kind": "other",
+   "title": "PR #745 merged (9b36e91): arena_paper: trim non-position pool history via trim_history() (pricing-neutral; ledger byte-equal, 0 differing prints on 9 h tape replay)",
+   "detail": "PR #745 merged 2026-10-19T21:30:11Z (9b36e91): arena_paper: trim non-position pool history via trim_history() (pricing-neutral; ledger byte-equal, 0 differing prints on 9 h tape replay). The pricing-neutral and byte-equal statements are the PR title's. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T21:30:11Z"
+  },
+  {
+   "id": "wave2-cohort-closed-1019",
+   "kind": "job",
+   "title": "hunt23 wave 2 (death veto, post-crash quiet, sell-into-surge): cohort closed and notebooked; pricing started at about 21:27Z; not bank-eligible",
+   "detail": "The wave-2 cohort (death veto, post-crash quiet, sell-into-surge) is closed and notebooked (n_04A8VteyzvL9rw). Pricing started at about 21:27Z (approximate). The cohort is not bank-eligible (DEC-014 lineage). No wave-2 result is claimed or reported here. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T21:27:00Z",
+   "approx": true
+  },
+  {
+   "id": "pr757-merged-1019",
+   "kind": "other",
+   "title": "PR #757 merged (576aaac): arena_h5_read: the H5 deciding-cell read (1.9 s at 0.30 SOL, four sub-cells, refit at the read, 5% rule, Am.3 block), behind arena_h5_legs' seal; no profit claim",
+   "detail": "PR #757 merged 2026-10-19T21:18:55Z (576aaac): arena_h5_read: the H5 deciding-cell read (1.9 s at 0.30 SOL, four sub-cells, refit at the read, 5% rule, Am.3 block), behind arena_h5_legs' seal; no profit claim. A tool merge behind the seal of arena_h5_legs; this event reports no H5 read figure. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T21:18:55Z"
+  },
+  {
+   "id": "pr754-merged-1019",
+   "kind": "decision",
+   "title": "PR #754 merged (549e40f): EXP-028 Part 1: bank pre-registration on fresh-0828 for the first lineage-free future cohort (records only)",
+   "detail": "PR #754 merged 2026-10-19T20:56:52Z (549e40f): EXP-028 Part 1: bank pre-registration on fresh-0828 for the first lineage-free future cohort (records only). Records only; this event reports no EXP-028 outcome. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T20:56:52Z"
+  },
+  {
+   "id": "pr756-merged-1019",
+   "kind": "other",
+   "title": "PR #756 merged (258ba4f): arena_screen: worst-in-slot + no-guard-rescue, lower leg kills event cells (R7; #747 functions imported; no profit claim)",
+   "detail": "PR #756 merged 2026-10-19T20:54:37Z (258ba4f): arena_screen: worst-in-slot + no-guard-rescue, lower leg kills event cells (R7; #747 functions imported; no profit claim). A tool merge. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T20:54:37Z"
+  },
+  {
+   "id": "pr753-merged-1019",
+   "kind": "other",
+   "title": "PR #753 merged (ecde742): arena_h5_legs: H5 rent-0 leg and worst-in-slot from the shadow strip, behind the read-instant seal (replaces #750; on #747 as merged)",
+   "detail": "PR #753 merged 2026-10-19T20:40:43Z (ecde742): arena_h5_legs: H5 rent-0 leg and worst-in-slot from the shadow strip, behind the read-instant seal (replaces #750; on #747 as merged). A tool merge behind the read-instant seal; this event reports no H5 figure. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T20:40:43Z"
+  },
+  {
+   "id": "hunt23-wave1-killed-1019",
+   "kind": "result",
+   "title": "hunt23 wave 1 (A slow, B flow, C wallets): 33 priced cells, all killed",
+   "detail": "Agent A (slow long-hold): all 12 cells killed, flat/total mean per trade -2.52% (D2) to -24.54% (A3). Agent B (order flow): all 12 cells killed, -3.65% (A1) to -14.89% (E3). Agent C (wallets and creators): 9 priced cells all killed, -4.10% (SM1-xs) to -11.49% (CR-hold-h60); its other two declared cells (HC-h60, SM2-h30) were dropped by counts before pricing and are untested, not dead. Rules: 1.9 s, 0.25 SOL, rent 0, four sub-cells {flat, pressure} x {sc, total}. In-sample exploration (A and B on four blocks, C on explore-0814), best of the declared cells; not gate evidence. Reports: /data/mal/hunt-1008/push-1016/hunt23/a-slow/REPORT.md, /data/mal/hunt-1008/push-1016/hunt23/b-flow/REPORT.md, /data/mal/hunt-1008/push-1016/hunt23/c-wallets/REPORT.md. atUtc is the latest of the three REPORT.md file mtimes (a-slow 20:25:17Z; b-flow 20:08:41Z, c-wallets 20:13:39Z). No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T20:25:17Z"
+  },
+  {
+   "id": "pr752-merged-1019",
+   "kind": "other",
+   "title": "PR #752 merged (9041cfb): arena_screen: reusable in-sample screen pricer (hunt23 Amendment 1 applied; no profit claim)",
+   "detail": "PR #752 merged 2026-10-19T20:23:51Z (9041cfb): arena_screen: reusable in-sample screen pricer (hunt23 Amendment 1 applied; no profit claim). A tool merge. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T20:23:51Z"
+  },
+  {
+   "id": "speed-audit-no-go-1019",
+   "kind": "result",
+   "title": "Speed audit (hunt23): NO-GO on a paid speed track; saving 3.3 s moves the mean by -0.12 to +0.015 pp on the three screen-1019 cells",
+   "detail": "Exploration data only (explore-0814, 336 h), one block, 0.25 SOL, strand rule total. The grid is feed delay 2/4/7 slots x latency 0.5/0.9/1.3/1.9 s on four cells. The slowest point (D 7, 1.9 s) to the fastest (D 2, 0.5 s) saves 3.315 modelled seconds at the August 0.368 s per slot. Paired change in the flat-model mean per trade, fastest minus slowest, rent 0: I3-H6-TP100 -0.1175 pp, I3-H2-TP100 -0.0006 pp, I2-b5-r0.5 +0.0145 pp (pressure model -0.0979, -0.0003, +0.0089). The levels stay negative (flat means -0.81%, -2.18%, -2.11% at the fastest point). The fourth cell, a generic E1 entry (n 975, mean about -20%), moves -1.2017 pp flat and -0.2369 pp pressure: faster is lower, outside the quoted range. No grid point of any cell has mean, ex-top-3 and ex-best-day all above zero under both fail models. NO-GO is the manager's call on that evidence. Source /data/mal/hunt-1008/push-1016/hunt23/speed/run-s1/results_speed.json (no REPORT.md exists there); atUtc is the file mtime. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T20:19:24Z"
+  },
+  {
+   "id": "pr749-merged-1019",
+   "kind": "other",
+   "title": "PR #749 merged (f96dbb0): hv4: DEC-031 Am.2 coverage (rent=0 explicit stack, WSOL + V-band universe with v_missing code); fixtures only",
+   "detail": "PR #749 merged 2026-10-19T20:06:39Z (f96dbb0): hv4: DEC-031 Am.2 coverage (rent=0 explicit stack, WSOL + V-band universe with v_missing code); fixtures only. Fixtures only. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T20:06:39Z"
+  },
+  {
+   "id": "pr751-merged-1019",
+   "kind": "decision",
+   "title": "PR #751 merged (3eadf19): DEC-031 Amendment 3: rolling registration, automatic confirmation, multiplicity block (QP throughput ruling 2026-10-19), records only",
+   "detail": "PR #751 merged 2026-10-19T20:06:29Z (3eadf19): DEC-031 Amendment 3: rolling registration, automatic confirmation, multiplicity block (QP throughput ruling 2026-10-19), records only. Records only. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T20:06:29Z"
+  },
+  {
+   "id": "owner-kalshi-pause-meme-1019",
+   "kind": "decision",
+   "title": "Owner decision (about 19:30Z, approximate): Kalshi paused about two weeks; all effort on meme coins (hunt23)",
+   "detail": "At about 19:30Z (approximate; the instant is not exact) the owner decided to pause the Kalshi lines for about two weeks and put all effort on meme coins, starting with the hunt23 screens. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T19:30:00Z",
+   "approx": true
+  },
+  {
+   "id": "pr746-merged-1019",
+   "kind": "other",
+   "title": "PR #746 merged (9860162): records: Console events for the afternoon of 2026-10-19",
+   "detail": "PR #746 merged 2026-10-19T19:25:25Z (9860162): records: Console events for the afternoon of 2026-10-19 A records merge: Console events for the afternoon of 2026-10-19. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T19:25:25Z"
+  },
+  {
+   "id": "pr744-merged-1019",
+   "kind": "other",
+   "title": "PR #744 merged (d288176): hv4: memory-growth replay harness and QuoteHistory bound (engine history bound withdrawn pending the arena_paper trim; decisions unchanged, md5 replay green)",
+   "detail": "PR #744 merged 2026-10-19T19:23:01Z (d288176): hv4: memory-growth replay harness and QuoteHistory bound (engine history bound withdrawn pending the arena_paper trim; decisions unchanged, md5 replay green). Per the PR title the engine history bound was withdrawn pending the arena_paper trim and decisions are unchanged. The engine trim followed as #745 and #755 at 21:30:11Z and 21:31:03Z. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T19:23:01Z"
+  },
   {
    "id": "research0-disk-1019",
    "kind": "other",
@@ -49,8 +368,22 @@
    "id": "hv4-stub-oom-1019",
    "kind": "job",
    "title": "Haiku v4 (arena book): 24 h stub killed out-of-memory (job #1236, exit 137); PR #744 does not fix it; engine trim PR #745 in review",
-   "detail": "The 24 h stub for Haiku v4 (job #1236) was killed with exit 137 at 2026-10-19T17:07:29Z. #744 bounds the runner's quote history but gives no measurable RSS saving and does NOT fix the OOM (growth ~740 MB/h, ~17.8 GB at 24 h). The fix path is the engine trim, PR #745 (open, in review). HV4 registration T0 is expected 2026-10-22T00Z, not fixed. No HV4 result is claimed and no trader P&L is claimed. No book has cleared the promotion gate; nothing here says any book made money.",
+   "detail": "The 24 h stub for Haiku v4 (job #1236) was killed with exit 137 at 2026-10-19T17:07:29Z. #744 bounds the runner's quote history but gives no measurable RSS saving and does NOT fix the OOM (growth ~740 MB/h, ~17.8 GB at 24 h). The fix path is the engine trim, PR #745 (open, in review). HV4 registration T0 is expected 2026-10-22T00Z, not fixed. Superseded 2026-10-20: the T0 rule is in event hv4-check6-fail-1019. No HV4 result is claimed and no trader P&L is claimed. No book has cleared the promotion gate; nothing here says any book made money.",
    "atUtc": "2026-10-19T17:07:29Z"
+  },
+  {
+   "id": "pr739-merged-1019",
+   "kind": "other",
+   "title": "PR #739 merged (77bdf7e): hv4: background chain-fact prefetch (as-of strict) and wall-clock sell retry",
+   "detail": "PR #739 merged 2026-10-19T14:32:30Z (77bdf7e): hv4: background chain-fact prefetch (as-of strict) and wall-clock sell retry A tool merge: background chain-fact prefetch (as-of strict) and wall-clock sell retry in hv4. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T14:32:30Z"
+  },
+  {
+   "id": "pr738-merged-1019",
+   "kind": "other",
+   "title": "PR #738 merged (9c590b3): Records 2026-10-19: Kalshi crypto R3 holdout FAIL, LIP Book C row, Console events (records only)",
+   "detail": "PR #738 merged 2026-10-19T12:30:25Z (9c590b3): Records 2026-10-19: Kalshi crypto R3 holdout FAIL, LIP Book C row, Console events (records only) A records merge: Kalshi crypto R3 holdout FAIL, LIP Book C row and Console events (records only, per the PR title). No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-19T12:30:25Z"
   },
   {
    "id": "kalshi-crypto-r3-holdout-1019",
@@ -62,8 +395,8 @@
   {
    "id": "hv4-feed-shakedown-1019",
    "kind": "job",
-   "title": "Haiku v4: research-0 arena feed live (#1207), feed delay d = 7 slots, 24 h stub shakedown running (#1219), T0 target 2026-10-21T00:00Z",
-   "detail": "The research-0 arena live feed for Haiku v4 is up (job #1207; tape /data/mal/arena/tape; public RPC; 25% disk reserve). Feed delay measured on it: d = 7 slots (median 1.0445 s, p90 1.4523 s) from /data/mal/arena/feed-delay-research0-20261019.json, generated 2026-10-19T09:25:55Z (timing fields only; block_time has 1 s resolution, so each delay reads up to 1 s high). A 24 h stub shakedown (job #1219) is running; this event is stamped with the delay measurement's instant, not the shakedown's start. T0 target 2026-10-21T00:00Z. Timing and counts only; Haiku v4 has no result and no trader P&L is claimed. No book has cleared the promotion gate; nothing here says any book made money.",
+   "title": "Haiku v4: research-0 arena feed live (#1207), feed delay d = 7 slots, 24 h stub shakedown running (#1219), T0 target 2026-10-21T00:00Z (superseded 2026-10-20, see hv4-check6-fail-1019)",
+   "detail": "The research-0 arena live feed for Haiku v4 is up (job #1207; tape /data/mal/arena/tape; public RPC; 25% disk reserve). Feed delay measured on it: d = 7 slots (median 1.0445 s, p90 1.4523 s) from /data/mal/arena/feed-delay-research0-20261019.json, generated 2026-10-19T09:25:55Z (timing fields only; block_time has 1 s resolution, so each delay reads up to 1 s high). A 24 h stub shakedown (job #1219) is running; this event is stamped with the delay measurement's instant, not the shakedown's start. T0 target 2026-10-21T00:00Z (superseded 2026-10-20: the T0 rule is in event hv4-check6-fail-1019). Timing and counts only; Haiku v4 has no result and no trader P&L is claimed. No book has cleared the promotion gate; nothing here says any book made money.",
    "atUtc": "2026-10-19T09:25:55Z"
   },
   {

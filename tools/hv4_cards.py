@@ -66,7 +66,14 @@ IMPACT_RT_CAP = 0.03  # s1: round-trip impact at the intended stake
 STAKES = (0.25, 0.5, 1.0)  # s3: size menu
 STATE_LAG_MAX_MS = 10_000  # not in DESIGN: a state clock further behind T than this is a stalled feed (see module docstring)
 CHAIN_MINT_MAX_AGE_MS = 15 * MIN_MS  # not in DESIGN (manager, review of PR 710): mint facts (chain.as_of_ms) older than this veto
-CHAIN_HOLDERS_MAX_AGE_MS = 5 * MIN_MS  # not in DESIGN (manager): largest-holders facts (chain.holders_as_of_ms) older than this veto
+CHAIN_HOLDERS_MAX_AGE_MS = 5 * MIN_MS  # not in DESIGN (manager): largest-holders facts (chain.holders_as_of_ms) older than this veto. Prefetch policy v1 (d1dbcd6): unchanged.
+CHAIN_HOLDERS_MAX_AGE_MS_V2 = 15 * MIN_MS  # prefetch policy v2, Note N4 (QP ruling on PR #768): a holders read up to 15 min old is served and is never a holders_stale veto
+
+
+def holders_max_age_ms(policy: str | None) -> int:
+    """THE holders age limit of a prefetch policy: the card's holders_stale veto (code_vetoes), the prefetcher's serve (ChainPrefetcher.part_at) and the runner's direct
+    chain path (HV4ChainSource.chain_part) all read it from here, so they cannot disagree. v2: 15 min; anything else (v1, no prefetcher): 5 min, as at d1dbcd6."""
+    return CHAIN_HOLDERS_MAX_AGE_MS_V2 if policy == "v2" else CHAIN_HOLDERS_MAX_AGE_MS
 QUOTE_REF_AGE_MS = 15 * MIN_MS  # s2 veto 7: the reference quote is the one from 15 min before T ...
 QUOTE_REF_TOL_MS = 2 * MIN_MS  # ... observed within this much either side of it (not in DESIGN; the scanner samples each minute)
 
@@ -234,8 +241,15 @@ class Predicate:
 # ---------------------------------------------------------------------------------------------------------------------------------------
 # small numeric helpers
 # ---------------------------------------------------------------------------------------------------------------------------------------
+def _is_map(x: Any) -> bool:
+    """isinstance(x, Mapping), with a fast exit for the plain dict every snapshot, window and candle is (typing.Mapping's isinstance is slow and the scan calls it ~100k times)."""
+    return type(x) is dict or isinstance(x, Mapping)
+
+
 def _num(x: Any) -> float | None:
     """A finite float, or None (bools, strings, NaN and inf are all None)."""
+    if type(x) is float:  # speed only (scan perf): an exact float is finite iff x - x == 0.0, and float(x) is x; every other type takes the path below
+        return x if x - x == 0.0 else None
     if isinstance(x, bool) or not isinstance(x, (int, float)):
         return None
     return float(x) if math.isfinite(x) else None
@@ -258,8 +272,8 @@ def _r(x: Any, sig: int = 6) -> Any:
 
 def _win(snap: SnapshotLike, label: str) -> Mapping[str, Any]:
     ws = snap.get("windows")
-    w = ws.get(label) if isinstance(ws, Mapping) else None
-    return w if isinstance(w, Mapping) else {}
+    w = ws.get(label) if _is_map(ws) else None
+    return w if _is_map(w) else {}
 
 
 def _stamp(x: Any) -> int | None:
@@ -284,11 +298,35 @@ def _count(x: Any) -> float | None:
     return n if n is not None and n >= 0.0 else None
 
 
+class _NormPrints(list):
+    """A print list that `_norm_prints` has already validated and normalised (every item an exact (int t, int sol >= 0, bool buy, str who) tuple). Speed only: a second
+    `_norm_prints` call returns it as is, and `assert_as_of` tests its times with one `max` instead of a Python loop. Callers never mutate it."""
+
+    __slots__ = ()
+
+
+def norm_prints(prints: Iterable[PrintLike] | None) -> list[tuple[int, int, bool, str]] | None:
+    """Public name of `_norm_prints`, for a caller (the runner's scan) that normalises a pool's prints once and hands the result to features() and build_card()."""
+    return _norm_prints(prints)
+
+
 def _norm_prints(prints: Iterable[PrintLike] | None) -> list[tuple[int, int, bool, str]] | None:
     if prints is None:
         return None
-    out = []
+    if type(prints) is _NormPrints:
+        return prints  # already normalised, same values
+    if type(prints) is list or type(prints) is tuple:  # a sized sequence: test all items at C speed, then copy
+        if prints and set(map(type, prints)) == {tuple} and set(map(len, prints)) == {4}:
+            ts, sols, buys, whos = zip(*prints)
+            if set(map(type, ts)) == {int} and set(map(type, sols)) == {int} and min(sols) >= 0 and set(map(type, buys)) == {bool} and set(map(type, whos)) == {str}:
+                return _NormPrints(prints)  # every item is already the exact normalised tuple
+    out = _NormPrints()
     for p in prints:
+        if type(p) is tuple and len(p) == 4:  # the exact shape ArenaState keeps: normalising it gives an equal tuple, so it is kept as is
+            t0, s0, b0, w0 = p
+            if type(t0) is int and type(s0) is int and s0 >= 0 and type(b0) is bool and type(w0) is str:
+                out.append(p)
+                continue
         try:
             t, sol, buy, who = p[0], p[1], p[2], p[3]
         except (TypeError, IndexError, KeyError) as exc:
@@ -314,14 +352,15 @@ def assert_as_of(snap: SnapshotLike, as_of_ms: int, *, prints: Iterable[PrintLik
     for k in ("now_ms", "last_ms", "ath_ms", "created_ms", "complete_ms", "origin_create_ms"):
         chk(k, snap.get(k))
     lt = snap.get("last_trade")
-    if isinstance(lt, Mapping):
+    if _is_map(lt):
         chk("last_trade.t_ms", lt.get("t_ms"))
     for c in snap.get("candles") or ():
-        if isinstance(c, Mapping):
+        if _is_map(c):
             chk("candle.t_min_ms", c.get("t_min_ms"))
     if prints is not None:
-        for p in prints:
-            chk("print.t_ms", p[0])
+        if type(prints) is not _NormPrints or (prints and max(p[0] for p in prints) >= as_of_ms):  # a normalised list: one max; the loop below then names the first offender
+            for p in prints:
+                chk("print.t_ms", p[0])
     if chain is not None:
         chk("chain.as_of_ms", chain.get("as_of_ms"))
         chk("chain.holders_as_of_ms", chain.get("holders_as_of_ms"))
@@ -387,7 +426,7 @@ def _v_lamports(snap: SnapshotLike) -> int | None:
     float is rounded back to the integer lamport it came from (the round trip v -> v/1e9 -> *1e9 -> round is off by far less than 0.5 lamport at V near
     17.6e9; a test pins both band edges and their neighbours), so the band edges are tested on integers, not on a float with a tolerance."""
     res = snap.get("reserves")
-    v_sol = _num(res.get("v_sol")) if isinstance(res, Mapping) else None
+    v_sol = _num(res.get("v_sol")) if _is_map(res) else None
     if v_sol is None or v_sol <= 0.0:
         return None
     return int(round(v_sol * LAMPORTS))
@@ -429,7 +468,7 @@ def filters(snap: SnapshotLike, *, as_of_ms: int) -> FilterResult:
     age, known = _age(snap)
     add("age_min", age, f">= {AGE_MIN_S} s", age is not None and _ge(age, AGE_MIN_S))
     add("age_max", age, f"<= {AGE_MAX_S} s", age is not None and _le(age, AGE_MAX_S))
-    res = snap.get("reserves") if wsol and isinstance(snap.get("reserves"), Mapping) else {}
+    res = snap.get("reserves") if wsol and _is_map(snap.get("reserves")) else {}
     q = _num(res.get("quote_sol"))
     add("quote_floor", q, f">= {QUOTE_FLOOR_SOL} SOL real quote", q is not None and _ge(q, QUOTE_FLOOR_SOL))
     w15, w60 = _win(snap, "15m"), (_win(snap, "60m") if wsol else {})
@@ -453,6 +492,76 @@ def filters(snap: SnapshotLike, *, as_of_ms: int) -> FilterResult:
     if cap is not None and tier != "established":
         cap = min(cap, YOUNG_STAKE_CAP)  # unknown age is tiered young unless the lower bound already clears 24 h
     return FilterResult(not failed, failed, checks, tier, known, cap)
+
+
+def v_filter_code(snap: SnapshotLike) -> str | None:
+    """The V check of `filters` for a WSOL PumpSwap pool, alone: "v_missing", "v_band" when that check FAILS, None when V is in the band. Same function of the same
+    `reserves.v_sol` as the V block of `filters` (it calls the same `_v_lamports` and the same band test)."""
+    v = _v_lamports(snap)
+    if v is None:
+        return "v_missing"
+    return None if V_LO_LAMPORTS <= v <= V_HI_LAMPORTS else "v_band"
+
+
+PRESCREEN_FAIL, PRESCREEN_GO, PRESCREEN_UNDECIDED = "fail", "go", "undecided"
+
+
+def prescreen(lite: SnapshotLike, *, as_of_ms: int) -> str:
+    """SCAN SPEED ONLY (hedge branch claude/hv4-scan-perf). Judges a pool from `lite`, a snapshot holding only the keys below (the runner builds it from the Pool's
+    attributes without the 60-minute windows, the top-net heap or the candles, which are the expensive part of a snapshot and are needed by no check tested here).
+      PRESCREEN_FAIL      `filters` on the pool's FULL snapshot is certain to FAIL and certain not to raise LeakageError;
+      PRESCREEN_GO        no stamp is at or after T (so the full path would not raise) and every window-free check passes: the caller may test the window checks cheaply
+                          (Runner.scan counts the prints of the last 15 minutes) or run the full snapshot and `filters`;
+      PRESCREEN_UNDECIDED a stamp is at or after T, or is not a plain int: the full path runs, and raises as before.
+    Never FAIL for a pool the full path would pass or would refuse as a leak.
+
+    lite keys: now_ms, last_ms, ath_ms, created_ms, complete_ms, origin_create_ms, last_trade_ms (last_trade.t_ms or None), created_known, age_s, age_since_first_seen_s,
+    reserves {quote_sol, quote_eff_sol, v_sol}. The pool is PumpSwap with a verified WSOL quote (venue_pumpswap and quote_wsol hold by construction).
+
+    Each test below is the same expression as the check of the same name in `filters`; a pool fails as soon as ONE of them fails, because `filters` fails when any
+    check fails. The window checks (prints_15m, signers_15m, vol_60m) are not evaluated here: they can only add failures."""
+    for k in ("now_ms", "last_ms", "ath_ms", "created_ms", "complete_ms", "origin_create_ms", "last_trade_ms"):
+        v = lite.get(k)  # assert_as_of's stamps; anything not a plain int (or None), or at/after T, is left to the full path, which raises as before
+        if v is not None and (type(v) is not int or v >= as_of_ms):
+            return PRESCREEN_UNDECIDED
+    lag = _state_lag(lite, as_of_ms)
+    if not (lag is not None and lag <= STATE_LAG_MAX_MS):
+        return PRESCREEN_FAIL
+    last = _num(lite.get("last_ms"))
+    idle = (as_of_ms - last) / 1000.0 if last is not None else None
+    if not (idle is not None and _le(idle, LAST_PRINT_MAX_S)):
+        return PRESCREEN_FAIL
+    age, _known = _age(lite)
+    if not (age is not None and _ge(age, AGE_MIN_S)) or not (age is not None and _le(age, AGE_MAX_S)):
+        return PRESCREEN_FAIL
+    res = lite.get("reserves") if _is_map(lite.get("reserves")) else {}
+    q = _num(res.get("quote_sol"))
+    if not (q is not None and _ge(q, QUOTE_FLOOR_SOL)):
+        return PRESCREEN_FAIL
+    i025 = impact_rt(STAKES[0], _num(res.get("quote_eff_sol")))
+    return PRESCREEN_GO if (i025 is not None and _le(i025, IMPACT_RT_CAP)) else PRESCREEN_FAIL
+
+
+def prescreen_fails(lite: SnapshotLike, *, as_of_ms: int) -> bool:
+    """True when `prescreen` says FAIL (see there)."""
+    return prescreen(lite, as_of_ms=as_of_ms) == PRESCREEN_FAIL
+
+
+def series_from_pool_candles(candles: Mapping[int, Sequence[Any]], last_minute: int, n_minutes: int, lamports: int) -> list[tuple[int, float, float, float, float, float]]:
+    """`_series(snap)` for a snapshot whose candles are `ArenaState.candles(p)`, computed straight from the Pool's candle map (minute -> [o, h, l, c, volume_lamports, ...]):
+    the last `n_minutes` minutes up to `last_minute` (= state.now_ms // MIN_MS), a minute with no candle left out, a candle with a non-finite value skipped, volume in SOL as
+    `volume_lamports / lamports`. Same rows, same order, without building the 360 candle dicts the snapshot would. SCAN SPEED ONLY; tools/test_hv4_scan_perf.py pins it
+    against `_series(state.snapshot(...))`."""
+    rows = []
+    get = candles.get
+    for m in range(last_minute - n_minutes + 1, last_minute + 1):
+        c = get(m)
+        if c is None:
+            continue
+        o, h, lo, cl, v = _num(c[0]), _num(c[1]), _num(c[2]), _num(c[3]), _num(c[4] / lamports)
+        if None not in (o, h, lo, cl, v):
+            rows.append((m, o, h, lo, cl, v))
+    return rows
 
 
 # ---------------------------------------------------------------------------------------------------------------------------------------
@@ -508,7 +617,7 @@ def _series(snap: SnapshotLike) -> list[tuple[int, float, float, float, float, f
     """The snapshot's 1-min candles as (minute, o, h, l, c, vol_sol), sorted; a malformed candle is skipped."""
     rows = []
     for c in snap.get("candles") or ():
-        if not isinstance(c, Mapping):
+        if not _is_map(c):
             continue
         t = c.get("t_min_ms")
         vals = [_num(c.get(k)) for k in ("o", "h", "l", "c", "vol_sol")]
@@ -530,7 +639,7 @@ def _covered(snap: SnapshotLike, window_min: int) -> bool:
     return ret >= min(window_min, span_min) if known else (ret >= window_min and span_min >= window_min)
 
 
-def features(snap: SnapshotLike, prints: Iterable[PrintLike] | None, *, as_of_ms: int) -> dict[str, Any]:
+def features(snap: SnapshotLike, prints: Iterable[PrintLike] | None, *, as_of_ms: int, series: list[tuple[int, float, float, float, float, float]] | None = None) -> dict[str, Any]:
     """All FEATURE_FIELDS as of `as_of_ms`. Horizons: ret_Nm = price now / the close of minute (M - N) - 1, M the minute of T, so its horizon
     is (N - 1) minutes plus the seconds into the minute (at the :02 tick ret_1m spans about 2 s); this is the lab's frame (counts/setups.py
     RANGE 840000 / 3540000 PRECEDING), so the setup thresholds stay comparable to the count run. new_wallet_buy_share_15m counts a wallet as
@@ -544,7 +653,7 @@ def features(snap: SnapshotLike, prints: Iterable[PrintLike] | None, *, as_of_ms
     f["last_print_s"] = (as_of_ms - last) / 1000.0 if last is not None else None
     if snap.get("quote_wsol") is not True:
         return f  # no SOL figure of a non-WSOL (or unverified) pool is read: every other field stays None
-    res = snap.get("reserves") if isinstance(snap.get("reserves"), Mapping) else {}
+    res = snap.get("reserves") if _is_map(snap.get("reserves")) else {}
     qe = _num(res.get("quote_eff_sol"))
     f["quote_sol"], f["quote_eff_sol"], f["price"] = _num(res.get("quote_sol")), qe, _num(snap.get("price"))
     for tag, s in (("025", 0.25), ("050", 0.5), ("100", 1.0)):
@@ -560,14 +669,14 @@ def features(snap: SnapshotLike, prints: Iterable[PrintLike] | None, *, as_of_ms
         f["n_prints_15m"] = (f["n_buys_15m"] or 0) + (f["n_sells_15m"] or 0)
         f["signers_15m"] = _num(_win(snap, "15m").get("unique_signers"))
     f["dd_ath"] = _num(snap.get("drawdown_from_ath"))
-    tn = snap.get("top_net") if isinstance(snap.get("top_net"), Mapping) else {}
+    tn = snap.get("top_net") if _is_map(snap.get("top_net")) else {}
     for key, name in (("buyers", "top_buyer_net_sol"), ("sellers", "top_seller_net_sol")):
         lst = tn.get(key) or []
-        f[name] = _num(lst[0].get("net_sol")) if lst and isinstance(lst[0], Mapping) else None
+        f[name] = _num(lst[0].get("net_sol")) if lst and _is_map(lst[0]) else None
     f["creator_net_sol_life"] = _num(snap.get("creator_net_sol"))
 
     # candles: returns, 6 h high / low / volume
-    rows = _series(snap)
+    rows = series if series is not None else _series(snap)  # `series`, when given, is _series(snap) computed another way (series_from_pool_candles); only read
     mins = [r[0] for r in rows]
     price = f["price"]
     ret_cap = _num(snap.get("candle_retention_min"))
@@ -593,25 +702,36 @@ def features(snap: SnapshotLike, prints: Iterable[PrintLike] | None, *, as_of_ms
     if pr is not None:
         creator = snap.get("creator") if isinstance(snap.get("creator"), str) else None
         lo15, lo60 = as_of_ms - 15 * MIN_MS, as_of_ms - 60 * MIN_MS
-        p60 = sorted((p for p in pr if p[0] >= lo60), key=lambda p: p[0])
+        p60 = _NormPrints(sorted((p for p in pr if p[0] >= lo60), key=lambda p: p[0]))
+        times = [p[0] for p in p60]
+        p15 = p60[bisect.bisect_left(times, lo15):]  # t >= lo15, in time order
         first: dict[str, int] = {}
         gross: dict[str, int] = {}
-        for t, sol, buy, who in p60:
-            first.setdefault(who, t)
+        csum = 0
+        nonc_sellers: set[str] = set()
+        for t, sol, buy, who in p60:  # one pass over the 60 minutes: first sight and gross per wallet, the creator's net, the sellers other than the creator
+            if who not in first:
+                first[who] = t
             gross[who] = gross.get(who, 0) + sol
-        f["unique_buyers_15m"] = len({w for t, _s, b, w in p60 if b and t >= lo15})
-        f["unique_sellers_15m"] = len({w for t, _s, b, w in p60 if not b and t >= lo15})
-        buy15 = sum(s for t, s, b, _w in p60 if b and t >= lo15)
-        new15 = sum(s for t, s, b, w in p60 if b and t >= lo15 and first[w] >= lo15)
+            if who == creator:
+                if creator:
+                    csum += -sol if buy else sol
+            elif not buy:
+                nonc_sellers.add(who)
+        f["unique_buyers_15m"] = len({w for t, _s, b, w in p15 if b})
+        f["unique_sellers_15m"] = len({w for t, _s, b, w in p15 if not b})
+        buy15 = sum(s for t, s, b, _w in p15 if b)
+        new15 = sum(s for t, s, b, w in p15 if b and first[w] >= lo15)
         f["new_wallet_buy_share_15m"] = (new15 / buy15) if buy15 > 0 else None  # "new" = not seen in the 60 min of tape before this print
         tot = sum(gross.values())
         f["top3_signer_share_60m"] = (sum(sorted(gross.values(), reverse=True)[:3]) / tot) if tot > 0 else None
         if creator:
-            f["creator_net_sol_60m"] = sum((s if not b else -s) for _t, s, b, w in p60 if w == creator) / LAMPORTS
+            f["creator_net_sol_60m"] = csum / LAMPORTS
         cut = as_of_ms - NET_SELL_WINDOW_MS
-        f["net_sell_25slots_sol"] = sum((-s if b else s) for t, s, b, _w in p60 if t >= cut) / LAMPORTS
-        f["noncreator_sellers_60m"] = len({w for _t, _s, b, w in p60 if not b and w != creator})
-        v = vstar(p60, (as_of_ms // MIN_MS) * MIN_MS)
+        f["net_sell_25slots_sol"] = sum((-s if b else s) for t, s, b, _w in p60[bisect.bisect_left(times, cut):]) / LAMPORTS
+        f["noncreator_sellers_60m"] = len(nonc_sellers)
+        te = (as_of_ms // MIN_MS) * MIN_MS
+        v = vstar(_NormPrints(p60[bisect.bisect_left(times, te - VSTAR_WINDOWS * VSTAR_WINDOW_MS):]), te)  # vstar ignores every print outside its 15 minutes anyway
         f["vstar"], f["wash_gross_15m_sol"] = v["vstar"], v["wash_gross_sol"]
     return f
 
@@ -755,7 +875,7 @@ def sell_route(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: Ma
     wsol = snap.get("quote_wsol") is True
     lag = _state_lag(snap, as_of_ms)
     fresh = lag is not None and lag <= STATE_LAG_MAX_MS
-    res = snap.get("reserves") if wsol and isinstance(snap.get("reserves"), Mapping) else {}
+    res = snap.get("reserves") if wsol and _is_map(snap.get("reserves")) else {}
     ret = sim_sell_return(stake, res.get("quote_eff_sol"))
     ok = (wsol and fresh and not bad and sellers is not None and sellers >= SELL_ROUTE_MIN_SELLERS and ret is not None
           and _ge(ret, SELL_ROUTE_MIN_RETURN))
@@ -771,7 +891,7 @@ class VetoResult:
 
 
 def code_vetoes(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: Mapping[str, Any], *, as_of_ms: int, as_of_slot: int,
-                stake: float = STAKES[0], feats: Mapping[str, Any] | None = None) -> VetoResult:
+                stake: float = STAKES[0], feats: Mapping[str, Any] | None = None, holders_max_age_ms: int | None = None) -> VetoResult:
     """DESIGN section 2 hard vetoes 1-7. Every check is evaluated; a missing or malformed fact is a veto, never a pass.
 
     Chain facts (a Mapping from tools/hv4_chain.py; key present with None means "null on chain"; key absent means "not fetched"):
@@ -808,11 +928,12 @@ def code_vetoes(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: M
             reasons.append(f"chain_invalid:{k}")
     hs = chain.get("holders_as_of_ms")
     held = [chain.get(k) is not None for k in ("top1_frac", "top10_frac")]
-    checks["holders_stamp"] = {"holders_as_of_ms": hs, "max_age_ms": CHAIN_HOLDERS_MAX_AGE_MS}
+    hmax = CHAIN_HOLDERS_MAX_AGE_MS if holders_max_age_ms is None else holders_max_age_ms  # None = the d1dbcd6 limit; the runner passes its policy's (holders_max_age_ms())
+    checks["holders_stamp"] = {"holders_as_of_ms": hs, "max_age_ms": hmax}
     if hs is not None or any(held):  # holder facts, or a stamp for them, must come with a valid fresh stamp
         if _stamp(hs) is None:
             reasons.append("holders_stamp_invalid")
-        elif as_of_ms - hs > CHAIN_HOLDERS_MAX_AGE_MS:
+        elif as_of_ms - hs > hmax:
             reasons.append("holders_stale")
     checks["quote_wsol"] = snap.get("quote_wsol")
     if snap.get("quote_wsol") is not True:
@@ -930,7 +1051,8 @@ def numeric_fields(card: Mapping[str, Any]) -> dict[str, float]:
 
 
 def build_card(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: Mapping[str, Any], *, as_of_ms: int, as_of_slot: int,
-               setup: SetupTag | None = None, stake: float = STAKES[0]) -> dict[str, Any]:
+               setup: SetupTag | None = None, stake: float = STAKES[0], feats: Mapping[str, Any] | None = None,
+               holders_max_age_ms: int | None = None) -> dict[str, Any]:
     """The card for one Lane G pool as of `as_of_ms`, or CardRefused (a Lane G filter missed, or a hard veto fired, or a stamp is missing).
     LeakageError if any input is later than the scan instant. Every value on the card is as of `as_of_slot` / `as_of_ms`; the chain facts keep
     their own stamps under `risk`. Name and symbol are sanitized and live only under `untrusted`; the id and wallet handles must look like
@@ -940,8 +1062,9 @@ def build_card(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: Ma
     pr = _norm_prints(prints)
     assert_as_of(snap, as_of_ms, prints=pr, chain=chain, as_of_slot=as_of_slot)
     fr = filters(snap, as_of_ms=as_of_ms)
-    feats = features(snap, pr, as_of_ms=as_of_ms)
-    vr = code_vetoes(snap, pr, chain, as_of_ms=as_of_ms, as_of_slot=as_of_slot, stake=stake, feats=feats)
+    if feats is None:
+        feats = features(snap, pr, as_of_ms=as_of_ms)  # `feats`, when given, must be features() of this very snap, prints and as_of_ms (the runner's scan passes its own); it is only read
+    vr = code_vetoes(snap, pr, chain, as_of_ms=as_of_ms, as_of_slot=as_of_slot, stake=stake, feats=feats, holders_max_age_ms=holders_max_age_ms)
     slot = as_of_slot
     reasons = list(fr.failed) + list(vr.reasons)
     if not is_safe_id(snap.get("id")):
@@ -974,11 +1097,11 @@ def build_card(snap: SnapshotLike, prints: Iterable[PrintLike] | None, chain: Ma
     risk["quote_chg_15m"] = _r(q / ago - 1.0) if ago and q is not None else None
     risk["quote_dd_peak"] = _r(1.0 - q / peak) if peak and peak > 0 and q is not None else None
     c1, c5 = _candles_for_card(snap, as_of_ms, feats["price"])
-    tn = snap.get("top_net") if isinstance(snap.get("top_net"), Mapping) else {}
+    tn = snap.get("top_net") if _is_map(snap.get("top_net")) else {}
 
     def top(key: str) -> str | None:
         lst = tn.get(key) or []
-        return short_addr(lst[0].get("trader")) if lst and isinstance(lst[0], Mapping) else None
+        return short_addr(lst[0].get("trader")) if lst and _is_map(lst[0]) else None
 
     card = {
         "v": CARD_VERSION, "id": snap["id"], "lane": "G", "as_of_slot": slot, "as_of_ms": as_of_ms,

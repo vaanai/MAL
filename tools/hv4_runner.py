@@ -30,6 +30,7 @@ if __package__ in (None, ""):
 import argparse
 import bisect
 import fcntl
+import gc
 import hashlib
 import json
 import math
@@ -38,16 +39,19 @@ import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from tools import hv4_arms as arms
 from tools import hv4_cards as C
 from tools.arena_h5_signal import H5Signal, bst_card, safe_path
 from tools.arena_paper import ArenaEngine, ArenaRefused, canon, register_bot
+from tools.arena_state import CANDLE_MIN as STATE_CANDLE_MIN
+from tools.arena_state import LAMPORTS as STATE_LAMPORTS
 from tools.arena_state import WSOL_MINT, ArenaState
 from tools.haiku_caller import canonical_bytes
 from tools.hv4_budget import BudgetGuard, utc_day
 from tools.hv4_model import Model, ModelReply
+from tools.hv4_obs import ObsLog, obs_enabled, rss_mb
 from tools.hv4_prompts import (Playbook, build_entry_request, build_recheck_request, build_risk_request, card_sha256, load_playbook, load_template,
                                sha256_hex)
 from tools.hv4_validate import Knobs, PredicateError, final_size, parse_watch_predicate, validate_entry, validate_recheck, validate_risk
@@ -98,6 +102,25 @@ class LogChainError(RuntimeError):
 
 def bot_id(arm: str) -> str:
     return f"hv4-{arm}"
+
+
+def arm_names_for(lane_h: bool) -> tuple[str, ...]:
+    """The arms that exist in a run: all of them with lane H on, else without the BST persona."""
+    return tuple(a for a in arms.ARMS if lane_h or arms.ARMS[a].persona != "BST")
+
+
+def register_arms(arm_names: Sequence[str], frozen_sha: str, clock_start_ms: int, model_id: str, registry_path: str, now_ms: int | None = None,
+                  verify_sha: bool = True) -> dict[str, dict]:
+    """The bots.json lines of a run (one per arm), before the clock. Runner.register_all and `main --register` both come through here. It touches the registry
+    and nothing else: no chain source, prefetcher, obs row or file under the runner root, which is why `--register` can run it without building a Runner."""
+    out = {}
+    for a in arm_names:
+        spec = arms.ARMS[a]
+        # The R arms are registered with the model too: their pool picks depend on the risk agent's grades (CON-R, BIG-R) and BST-R's take rate on
+        # BST-L's answers. The X arms call no model and read none.
+        ids = [model_id] if (spec.llm or spec.role == "R") else []
+        out[a] = register_bot(bot_id(a), frozen_sha, clock_start_ms, registry_path, deciding_stake=0.25, model_ids=ids, now_ms=now_ms, verify_sha=verify_sha)
+    return out
 
 
 def position_id(bot: str, pool: str, decision_ms: int, decision_slot: int) -> str:
@@ -268,9 +291,19 @@ class HV4ChainSource:
         rep = self.chain.credit_report()
         return {**rep, "prefetch": self.prefetch.stats()} if self.prefetch is not None else rep
 
-    def watch(self, items: Any, hot: Any, now_ms: int) -> None:
+    @property
+    def holders_max_age_ms(self) -> int:
+        """The holders age limit of this source's policy (hv4_cards.holders_max_age_ms): 15 min under a v2 prefetcher, 5 min otherwise (the direct path below)."""
+        return C.holders_max_age_ms(getattr(self.prefetch, "policy", None))
+
+    def watch(self, items: Any, hot: Any, now_ms: int, vols: Any = None) -> None:
         if self.prefetch is not None:
-            self.prefetch.watch(items, hot, now_ms)
+            self.prefetch.watch(items, hot, now_ms, vols=vols)
+
+    def attach_obs(self, obs: Any) -> None:
+        """The runner hands its ObsLog to the prefetcher (first_seen, stale-served, chain_hour rows). No effect without a prefetcher."""
+        if self.prefetch is not None and hasattr(self.prefetch, "set_obs"):
+            self.prefetch.set_obs(obs)
 
     @staticmethod
     def _ext_values(mf: Any) -> dict[str, Any]:
@@ -316,7 +349,7 @@ class HV4ChainSource:
         if not mf.ok or mf.as_of_ms is None or mf.as_of_slot is None:
             return None
         mh = self.chain.mayhem_flag(mint, pool=pool_id)
-        hd = self.chain.largest_holders(mint, token_program=mf.token_program_id, pool=pool_id, max_age_s=C.CHAIN_HOLDERS_MAX_AGE_MS / 1000.0)
+        hd = self.chain.largest_holders(mint, token_program=mf.token_program_id, pool=pool_id, max_age_s=self.holders_max_age_ms / 1000.0)
         return self.compose(mf, mh, hd)
 
 
@@ -335,7 +368,8 @@ def live_chain_source(root: str | os.PathLike, env: Mapping[str, str] | None = N
 
     base = Path(root)
     chain = HV4Chain(RpcClient(RpcConfig.from_env(env), state_path=base / CHAIN_CREDITS_FILE))
-    return HV4ChainSource(chain, prefetch=ChainPrefetcher(chain, HV4ChainSource.compose, spend_path=base / CHAIN_SPEND_FILE))
+    # policy v2 is pinned here: the run-mode path does not read MAL_HV4_PREFETCH_POLICY (the v1 path is for replay and test harnesses, which build the prefetcher themselves)
+    return HV4ChainSource(chain, prefetch=ChainPrefetcher(chain, HV4ChainSource.compose, spend_path=base / CHAIN_SPEND_FILE, policy="v2"))
 
 
 def holder_cover(snap: Mapping[str, Any]) -> bool | None:
@@ -510,11 +544,43 @@ class RunnerConfig:
     # appends the engine's trim counters to <root>/engine-trim-counters.jsonl. ArenaEngine.prune() is never called. Off only in the tests and the replay that prove the
     # trim changes no decision and no fill (tools/hv4_memreplay.py --trim-history off).
     trim_engine_history: bool = True
+    # Observability rows (tools/hv4_obs.py): an append-only side file <root>/hv4-obs.jsonl, outside the decision log, the cards, the ledger and Runner.counters. Nothing
+    # reads it back into a decision (the B equivalence replay: decision logs md5-identical with it on and off). Default on; MAL_HV4_OBS=0 turns it off.
+    obs: bool = field(default_factory=obs_enabled)
 
 
 def pct(sorted_vals: list[int], q: float) -> int:
     """Nearest-rank percentile of an ascending list (q in (0, 1])."""
     return sorted_vals[max(0, math.ceil(q * len(sorted_vals)) - 1)]
+
+
+def lite_snapshot(p: Any, now_ms: int) -> dict[str, Any]:
+    """The window-free keys of `ArenaState.snapshot(p.id, candles=False)` for a PumpSwap pool, built from the Pool's attributes with the same expressions as
+    ArenaState.snapshot (SCAN SPEED ONLY: hv4_cards.prescreen_fails reads it). Leaves out the 60-minute windows, the top-net heap and everything else the
+    prescreen does not test; tools/test_hv4_scan_perf.py pins every key against the real snapshot. `now_ms` is the state clock (ArenaState.now_ms)."""
+    created, q, lt = p.created_ms, p.q_real, p.last_trade
+    return {"now_ms": now_ms, "last_ms": p.last_ms, "ath_ms": p.ath_ms, "created_ms": created, "complete_ms": p.complete_ms, "origin_create_ms": p.origin_create_ms,
+            "last_trade_ms": lt.get("t_ms") if isinstance(lt, Mapping) else None, "created_known": created is not None,
+            "age_s": (now_ms - created) / 1000.0 if created is not None else None, "age_since_first_seen_s": (now_ms - p.first_seen_ms) / 1000.0,
+            "reserves": {"quote_sol": q / STATE_LAMPORTS if q is not None else None, "v_sol": p.v / STATE_LAMPORTS,
+                         "quote_eff_sol": (q + p.v) / STATE_LAMPORTS if q is not None else None}}
+
+
+def prints_15m_short(events: Any, now_ms: int, need: int) -> bool:
+    """True when fewer than `need` of a pool's prints fall in the last 15 minutes of the state clock: the prints_15m filter check certainly fails. The count is the one
+    ArenaState.windows makes for its 15m window (walk the events newest first, stop at the first one older than 60 minutes, count those with t >= now - 15 min), and it stops
+    counting at `need`. SCAN SPEED ONLY; the scan calls it only for a pool whose stamps and window-free checks already passed (PRESCREEN_GO)."""
+    cut60, cut15 = now_ms - 60 * MIN_MS, now_ms - 15 * MIN_MS
+    n = 0
+    for ev in reversed(events):
+        t = ev[0]
+        if t < cut60:
+            break
+        if t >= cut15:
+            n += 1
+            if n >= need:
+                return False
+    return True
 
 
 class Runner:
@@ -523,12 +589,15 @@ class Runner:
                  binding: Mapping[str, Any] | None = None, version_source: Callable[[str, int], Any] | None = None) -> None:
         if cfg.live:
             require_frozen_checkout(binding or {}, cfg.frozen_sha)  # a live runner must prove its checkout
+            reason = unpinned_run_mode(None, chain=chain, obs=cfg.obs, live_runner=True)  # QP 6279836164 R1: the book's chain facts and obs rows cannot change at a restart
+            if reason:
+                raise RuntimeError(reason)
         if not cfg.lane_h and h5 is not None:
             raise ValueError("lane_h is off: an H5 source must not be wired")
         self.lane_h = bool(cfg.lane_h)
         self.timing = bool(cfg.live) if cfg.timing is None else bool(cfg.timing)
         self._tm: dict[str, Any] | None = None  # the minute being summarised: {"minute": ms, "delays": [...], "scans": [...]}
-        self.arm_names = tuple(a for a in arms.ARMS if self.lane_h or arms.ARMS[a].persona != "BST")  # the arms that exist in this run
+        self.arm_names = arm_names_for(self.lane_h)  # the arms that exist in this run
         self.llm_arm_names = tuple(a for a in arms.llm_arms() if a in self.arm_names)
         self.binding = dict(binding) if binding is not None else None
         self.cfg, self.state, self.engine, self.model, self.chain, self.guard, self.h5 = cfg, state, engine, model, chain, guard, h5
@@ -550,6 +619,17 @@ class Runner:
         self.arm_halt: dict[str, str] = {}  # arm -> why its LLM entries and re-checks are stopped (a refused manifest); code exits go on
         self._versions_loaded = False
         self.cards = CardSink(cfg.root)
+        self.holders_max_age_ms = C.holders_max_age_ms(getattr(getattr(chain, "prefetch", None), "policy", None))  # the card's holders limit: its prefetch policy's (Note N4)
+        self.obs = ObsLog(cfg.root, enabled=cfg.obs)  # side rows only (see RunnerConfig.obs); never read by a decision
+        self._obs_hour: int | None = None
+        if self.obs.enabled:
+            self.obs.write("runner_start", pid=os.getpid(), frozen_sha=cfg.frozen_sha, binding=dict(binding) if isinstance(binding, Mapping) else None, live=cfg.live)
+            attach = getattr(self.chain, "attach_obs", None)
+            if attach is not None:
+                try:
+                    attach(self.obs)
+                except Exception:  # noqa: BLE001 - a chain object whose attach fails must not stop the runner; the obs rows of the prefetcher are then missing (Rule M)
+                    self.obs.build_errors += 1
         self.seen_triggers: set[str] = set()  # H5 triggers already handled (a restart replays the warm-up tape and the signal re-emits them)
         self._logged_version: dict[str, str] = {}
         self._replay_pos: dict[str, Pos] = {}
@@ -674,15 +754,7 @@ class Runner:
 
     # -- registration (bots.json lines, before the clock)
     def register_all(self, registry_path: str, now_ms: int | None = None, verify_sha: bool = True) -> dict[str, dict]:
-        out = {}
-        for a in self.arm_names:
-            spec = arms.ARMS[a]
-            # The R arms are registered with the model too: their pool picks depend on the risk agent's grades (CON-R, BIG-R) and BST-R's take rate on
-            # BST-L's answers. The X arms call no model and read none.
-            ids = [self.model.model] if (spec.llm or spec.role == "R") else []
-            out[a] = register_bot(bot_id(a), self.cfg.frozen_sha, self.cfg.clock_start_ms, registry_path, deciding_stake=0.25, model_ids=ids,
-                                  now_ms=now_ms, verify_sha=verify_sha)
-        return out
+        return register_arms(self.arm_names, self.cfg.frozen_sha, self.cfg.clock_start_ms, self.model.model, registry_path, now_ms=now_ms, verify_sha=verify_sha)
 
     # -- resume
     def resume(self) -> dict[str, int]:
@@ -711,7 +783,12 @@ class Runner:
                 n["reopened"] += 1
                 self.log.append(pos.arm, self.now_fn() if self.cfg.live else self.sim_now, {"kind": "resume_reopen", "pid": pid})
         if self.binding is not None:
-            self.log.append("SCAN", self.now_fn() if self.cfg.live else self.sim_now, {"kind": "start", "binding": self.binding, "frozen_sha": self.cfg.frozen_sha, "lane_h": self.lane_h})
+            start = {"kind": "start", "binding": self.binding, "frozen_sha": self.cfg.frozen_sha, "lane_h": self.lane_h}
+            if self.cfg.live:  # run mode only: a replay's start rows (and so its md5) are unchanged
+                start["prefetch_policy"] = getattr(getattr(self.chain, "prefetch", None), "policy", None)
+                start["obs"] = bool(self.cfg.obs)
+                start["pid"] = os.getpid()  # pairs this row with the runner_start / prefetch_start obs rows of the same process (Rule M)
+            self.log.append("SCAN", self.now_fn() if self.cfg.live else self.sim_now, start)
         n["open"] = sum(len(b.open) for b in self.books.values())
         return n
 
@@ -853,12 +930,18 @@ class Runner:
             facts["quote_sol_peak"] = pk
         return facts
 
-    def _card(self, pool_id: str, T: int, tag: C.SetupTag | None, feats: Mapping | None = None, snap: Mapping | None = None) -> dict | None:
+    def _card(self, pool_id: str, T: int, tag: C.SetupTag | None, feats: Mapping | None = None, snap: Mapping | None = None,
+              prints: list | None = None) -> dict | None:
+        """`feats` and `prints`, when the scan passes them, are the features() and the normalised prints it computed for this very `snap` at this very T (nothing polls the
+        state between that and here); they are read, never changed. Without them (a watch or a re-check) everything is computed here, as before."""
         snap = snap or self.state.snapshot(pool_id)
         if snap is None:
             return None
         p = self.state.pool(pool_id)
-        prints = list(p.events) if p is not None else []
+        if prints is None:
+            prints = list(p.events) if p is not None else []
+        if "candles" not in snap and p is not None:  # the scan's snapshot is kept without candles; a card needs them (ArenaState.snapshot(p.id) = this + state.candles(p))
+            snap["candles"] = self.state.candles(p)
         part = self.chain.chain_part(pool_id, snap.get("mint"), T, self.slot)
         if part is None:
             self._count("chain_none")
@@ -868,7 +951,7 @@ class Runner:
         self.token_of[pool_id] = {k: part[k] for k in ("token_program", "extensions", "transfer_fee_bps", "default_account_state") if k in part}
         try:
             C.assert_as_of(snap, T, prints=prints, chain=chain, as_of_slot=self.slot)
-            return C.build_card(snap, prints, chain, as_of_ms=T, as_of_slot=self.slot, setup=tag)
+            return C.build_card(snap, prints, chain, as_of_ms=T, as_of_slot=self.slot, setup=tag, feats=feats, holders_max_age_ms=self.holders_max_age_ms)
         except C.LeakageError as e:
             self._leak(T, pool_id, e)
         except C.CardRefused as e:
@@ -878,12 +961,43 @@ class Runner:
 
     # -- the scan
     def scan(self, T: int) -> None:
+        """One scan at instant T, with the cyclic garbage collector paused for its duration. SCAN SPEED ONLY. A generation-2 pass walks the millions of long-lived containers
+        of the state, the engine and the quote history and took 0.7 to 1.1 s inside a scan on the 2026-10-19 replay (tools/hv4_scanprof.py --time-gc): every scan over 1.4 s
+        had one. With the collector paused here, no automatic collection can start inside a scan; whatever it owes runs after the scan, in the tick loop, where a pause delays
+        the next exit check instead of the scan. The state it had on entry is restored in a `finally` (a scan that raises re-enables it; a collector that was already off stays
+        off). No explicit collection is made, and nothing here is read by a decision."""
+        was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            self._scan(T)
+        finally:
+            if was_enabled:
+                gc.enable()
+
+    def _scan(self, T: int) -> None:
+        self.obs.scan_ms = T  # the scan instant, for the first_seen rows the prefetcher writes during this scan (inside the paused-collector body, like the decision code)
         self.poll_to(T)
         slot = self.slot
-        cand, tags, feat_of, snap_of = [], [], {}, {}
+        cand, tags, feat_of, snap_of, prints_of = [], [], {}, {}, {}
+        state_now = self.state.now_ms
         for p in self.state.pools_wsol(lambda p: p.prog == "pumpswap"):
+            lite = lite_snapshot(p, state_now)
+            verdict = C.prescreen(lite, as_of_ms=T)
+            if verdict == C.PRESCREEN_GO and prints_15m_short(p.events, state_now, C.PRINTS_15M_MIN):
+                verdict = C.PRESCREEN_FAIL  # stamps fine, window-free checks pass, but fewer than 20 prints in 15 minutes: prints_15m fails
+            if verdict == C.PRESCREEN_FAIL:
+                # SCAN SPEED: a pool that certainly fails the filters, and certainly raises no LeakageError, is not snapshotted. Everything the full path would have
+                # recorded for it is recorded here: it reached the V check (always, the pool is WSOL), and a failed V check is counted.
+                self._v_checked.add(p.id)
+                code = C.v_filter_code(lite)
+                if code is not None:
+                    self._count("filter_" + code)
+                    if code == "v_missing":
+                        self._v_missing_pools.add(p.id)
+                continue
+            snap = self.state.snapshot(p.id, candles=False)
             try:
-                fr = C.filters(self.state.snapshot(p.id, candles=False), as_of_ms=T)
+                fr = C.filters(snap, as_of_ms=T)
             except C.LeakageError as e:
                 self._leak(T, p.id, e)
                 continue
@@ -896,14 +1010,18 @@ class Runner:
                         if code == "v_missing":
                             self._v_missing_pools.add(p.id)
                 continue
-            snap = self.state.snapshot(p.id)
+            # The snapshot stays without its candles here (ArenaState.snapshot(p.id) is this snapshot plus snap["candles"] = state.candles(p); _card adds them for a pool that
+            # gets a card). features() takes the candle series straight from the Pool's candle map. No candle can start at or after T when the state clock is before T, and
+            # filters() above has just checked the clock, so assert_as_of loses nothing by not seeing the candles.
+            series = C.series_from_pool_candles(p.candles, state_now // MIN_MS, STATE_CANDLE_MIN, STATE_LAMPORTS)
+            prints = C.norm_prints(list(p.events))
             try:
-                feats = C.features(snap, list(p.events), as_of_ms=T)
+                feats = C.features(snap, prints, as_of_ms=T, series=series)
             except C.LeakageError as e:
                 self._leak(T, p.id, e)
                 continue
             cand.append(p.id)
-            feat_of[p.id], snap_of[p.id] = feats, snap
+            feat_of[p.id], snap_of[p.id], prints_of[p.id] = feats, snap, prints
             tags.extend(C.setups(feats, pool_id=p.id, as_of_ms=T, limiter=self.limiter))
         ranked = C.rank_setups(tags)
         per_persona: dict[str, list[C.SetupTag]] = {pr: [t for t in ranked if t.persona == pr][:TOP_K_PER_PERSONA] for pr in LANE_G_PERSONAS}
@@ -918,15 +1036,16 @@ class Runner:
         watch = getattr(self.chain, "watch", None)  # a chain source with a background prefetch learns the watchlist; the stub sources have none
         if watch is not None:
             top = sorted(cand, key=lambda p: (-(feat_of[p].get("vol_60m") or 0.0), p))[:HOT_TOP_VOL]
-            watch([(pid, snap_of[pid].get("mint")) for pid in cand], set(tagged) | set(board) | set(top), self._now(T))
+            # vols: each filter-pass pool's 60-min gross volume from THIS scan's features (state as of T), the order of the v2 warm holders reads (Note N4)
+            watch([(pid, snap_of[pid].get("mint")) for pid in cand], set(tagged) | set(board) | set(top), self._now(T), vols={pid: feat_of[pid].get("vol_60m") or 0.0 for pid in cand})
         cards: dict[tuple[str, str], dict] = {}  # (pool, persona) -> card, byte-identical for every arm of the persona
         for pr in LANE_G_PERSONAS:
             for t in per_persona[pr]:
-                c = self._card(t.pool_id, T, t, snap=snap_of[t.pool_id])
+                c = self._card(t.pool_id, T, t, snap=snap_of[t.pool_id], feats=feat_of[t.pool_id], prints=prints_of[t.pool_id])
                 if c is not None:
                     cards[(t.pool_id, pr)] = c
         for pid in board:
-            c = self._card(pid, T, None, snap=snap_of[pid])
+            c = self._card(pid, T, None, snap=snap_of[pid], feats=feat_of[pid], prints=prints_of[pid])
             if c is not None:
                 for pr in LANE_G_PERSONAS:
                     cards[(pid, pr)] = c
@@ -1575,6 +1694,32 @@ class Runner:
                 self.scan(T)
                 if self.timing:
                     self._scan_timing(T, self.now_fn() - t0)
+        if self.obs.enabled:
+            self._obs_hour_tick(T)
+
+    def _obs_hour_tick(self, T: int) -> None:
+        """One `runner_hour` row per closed UTC hour of the tick clock, on the runner thread: the error counters that were in memory only (hook_errors, the housekeeping
+        errors), the runner counters, RSS. Read-only on the runner's state; the file is the obs side file."""
+        h = T // 3_600_000
+        if self._obs_hour is None:
+            self._obs_hour = h
+            return
+        if h <= self._obs_hour:
+            return
+        try:  # on the decision thread: a row that cannot be built is counted (obs.build_errors) and never raised (QP R5)
+            from collections import Counter
+
+            errs = Counter(self.hook_errors)
+            body = dict(hook_errors=dict(sorted(errs.items())), n_hook_errors=len(self.hook_errors),
+                        n_housekeep_errors=sum(v for k, v in errs.items() if k.startswith("housekeep:")), counters=dict(sorted(self.counters.items())), rss_mb=rss_mb(),
+                        obs_write_errors=self.obs.write_errors, obs_build_errors=self.obs.build_errors, obs_rows=self.obs.rows_written)
+            # one row per closed hour, like the prefetcher's tick: a stall past an hour (a feed gap) must not leave a row that spans several. The figures are the
+            # cumulative ones at the instant of writing; `written_in_hour` says which hour that was.
+            self.obs.write_many([{"kind": "runner_hour", "hour_start_ms": hh * 3_600_000, "hour_end_ms": (hh + 1) * 3_600_000, "written_in_hour": h, **body}
+                                 for hh in range(max(self._obs_hour, h - 24), h)])
+        except Exception:  # noqa: BLE001
+            self.obs.build_errors += 1
+        self._obs_hour = h
 
     # -- timing (counts and wall-clock timings only; nothing here reads an outcome or feeds a decision)
     def _tick_timing(self, T: int, delay_ms: int) -> None:
@@ -1665,6 +1810,26 @@ def require_frozen_checkout(binding: Mapping[str, Any], frozen_sha: str) -> None
         raise RuntimeError("the checkout is not at the frozen sha")
 
 
+def unpinned_run_mode(env: Mapping[str, str] | None, *, chain: Any = None, obs: bool | None = None, live_runner: bool = False) -> str | None:
+    """Why a live (or stub) run may not start, or None. A live book runs ONE prefetch policy (v2) with the obs rows on, so a restart with a changed environment cannot
+    change its chain facts under the same sha and the same decision-log bytes (QP 6279836164 R1). With `env`: MAL_HV4_PREFETCH_POLICY, when set, must be "v2", and
+    MAL_HV4_OBS must not be "0". With `chain` / `obs`: the prefetcher in hand must be v2 and the obs flag on. Replay harnesses (Rig, hv4_scanprof) do not come through here."""
+    if env is not None:
+        pol = env.get("MAL_HV4_PREFETCH_POLICY")
+        if pol is not None and pol.strip().lower() != "v2":
+            return f"MAL_HV4_PREFETCH_POLICY={pol!r} refused: a live or stub run uses prefetch policy v2 only (unset the variable)"
+        if not obs_enabled(env):
+            return "MAL_HV4_OBS=0 refused: a live or stub run writes the observability rows (unset the variable)"
+    pf = getattr(chain, "prefetch", None)
+    if live_runner and pf is None:
+        return "a live or stub run needs the background chain prefetcher at policy v2; this chain source has none (card-time fetch path)"
+    if pf is not None and getattr(pf, "policy", "v2") != "v2":
+        return f"prefetch policy {getattr(pf, 'policy', None)!r} refused: a live or stub run uses prefetch policy v2 only"
+    if obs is False:
+        return "obs rows off refused: a live or stub run writes the observability rows"
+    return None
+
+
 def first_tick_at_or_after(ms: int) -> int:
     """The first scan instant (minute boundary + :02, 5-min aligned) at or after ms."""
     base = (ms - SCAN_SECOND_MS) // SCAN_EVERY_MS * SCAN_EVERY_MS + SCAN_SECOND_MS
@@ -1679,12 +1844,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--registry", default="/data/mal/arena/bots.json")
     ap.add_argument("--frozen-sha", required=True)
     ap.add_argument("--clock-start-ms", type=int, required=True)
-    ap.add_argument("--register", action="store_true", help="append the 9 lane-G bots.json lines (13 with --lane-h) (before the clock) and exit")
+    ap.add_argument("--register", action="store_true", help="append the 9 lane-G bots.json lines (13 with --lane-h) (before the clock) and exit; starts no chain prefetcher and writes no obs row")
     ap.add_argument("--stub", action="store_true", help="StubModel: no API call, every answer abstains (count-only shakedown)")
     ap.add_argument("--feed-delay-slots", type=int, required=True, help="the feed delay the stack charges (StackConfig.feed_delay_slots); the manager pins it")
     ap.add_argument("--end-ms", type=int, default=None, help="stop at this instant (default: run until stopped)")
     ap.add_argument("--lane-h", action="store_true", help="also run lane H (the BST arms, H5 triggers). OFF in window 1: refused until an H5Signal source is wired")
     a = ap.parse_args(argv)
+    why = unpinned_run_mode(os.environ)
+    if why:
+        print(f"hv4_runner: {why}", file=sys.stderr)
+        return 2
     h5 = None  # no H5Signal source is wired yet: the H5 classifier's feed is the sealed tip tape on mal-fast-0, not on this host
     if a.lane_h and h5 is None:
         print("hv4_runner: --lane-h needs an H5Signal source and none is wired; lane H stays off", file=sys.stderr)
@@ -1695,16 +1864,21 @@ def main(argv: list[str] | None = None) -> int:
     model: Model = StubModel(guard=guard) if a.stub else CallerModel(guard)
     state = ArenaState(a.tape_dir)
     engine = ArenaEngine(a.ledger_root, a.registry, cfg=stack_config(feed_delay_slots=a.feed_delay_slots))
-    cfg = RunnerConfig(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True, lane_h=a.lane_h)
-    chain_src = live_chain_source(a.root)  # facts are fetched off the scan path, stamped before the scan instant; the call bounds are persisted under the root
-    chain_src.prefetch.start()
-    run = Runner(cfg, state, engine, model, chain_src, guard, h5=h5, binding=head_binding(), version_source=review_version_source(a.root, a.frozen_sha))
+    cfg = RunnerConfig(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True, lane_h=a.lane_h, obs=True)
     if a.register:
-        regs = run.register_all(a.registry)
-        print(canon({"lane_h": run.lane_h, "n_bots": len(regs)}))
+        # Registration only (the first step of the stub procedure, and of every live start). It writes the bots.json lines and prints them, and nothing else: no
+        # chain source, no prefetcher thread, no chain or RPC call, no Runner (so no runner_start row and no hv4-obs.jsonl) and no chain counter or spend file under
+        # the root. A registration process that built the live Runner left an orphan runner_start row and made a real chain call, and the shakedown report (Rule M)
+        # counted the orphan as a second runner. The checkout check is the live Runner's own, so a dirty or wrong-sha checkout still cannot register.
+        require_frozen_checkout(head_binding(), cfg.frozen_sha)
+        regs = register_arms(arm_names_for(cfg.lane_h), cfg.frozen_sha, cfg.clock_start_ms, model.model, a.registry)
+        print(canon({"lane_h": bool(cfg.lane_h), "n_bots": len(regs)}))
         for k, v in regs.items():
             print(canon({"bot_id": bot_id(k), **{x: v[x] for x in ("frozen_sha", "clock_start_ms", "deciding_stake", "model_ids")}}))
         return 0
+    chain_src = live_chain_source(a.root)  # facts are fetched off the scan path, stamped before the scan instant; the call bounds are persisted under the root
+    chain_src.prefetch.start()
+    run = Runner(cfg, state, engine, model, chain_src, guard, h5=h5, binding=head_binding(), version_source=review_version_source(a.root, a.frozen_sha))
     n = run.resume()
     print(canon({"resumed": n}))
     start = max(a.clock_start_ms, int(time.time() * 1000))
