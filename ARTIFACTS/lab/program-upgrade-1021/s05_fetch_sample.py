@@ -13,7 +13,9 @@ import base64, gzip, json, subprocess, sys, time
 from pathlib import Path
 from common import RAW, OUT, LClient, m
 TAPE = Path("/data/mal/arena/tape")
-HOURS = [f"2026-10-19T{h:02d}" for h in range(18, 24)] + [f"2026-10-20T{h:02d}" for h in range(0, 18)]
+import os
+PRE = os.environ.get("SAMPLE") == "pre"
+HOURS = [f"2026-10-19T{h:02d}" for h in range(8, 18)] if PRE else [f"2026-10-19T{h:02d}" for h in range(18, 24)] + [f"2026-10-20T{h:02d}" for h in range(0, 18)]
 PROGS = {m.PUMP_PROGRAM_ID if hasattr(m, "PUMP_PROGRAM_ID") else "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
          "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA", "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ"}
 (RAW / "blocks").mkdir(parents=True, exist_ok=True); (RAW / "txs").mkdir(parents=True, exist_ok=True)
@@ -73,7 +75,7 @@ for hour in HOURS:
     plan["hours"][hour] = {"anchor": anchor, "blocks": got, "skipped_slots": skipped, "b_rows": b_rows}
     print(hour, anchor, len(got), skipped, len(b_rows), len(a_txs), flush=True)
 for hour, h in plan["hours"].items():
-    for row in h["b_rows"]:
+    for row in ([] if PRE else h["b_rows"]):
         if row["sig"] in a_txs or row["sig"] in b_txs:
             continue
         r = cached("txs", row["sig"], "getTransaction", [row["sig"], {"encoding": "json", "commitment": "finalized", "maxSupportedTransactionVersion": MAXV}])
@@ -81,7 +83,7 @@ for hour, h in plan["hours"].items():
 # sample C
 c_info = []
 for idx, hour in enumerate(HOURS):
-    if idx % 4:
+    if idx % 4 or PRE:
         continue
     for sig, meta in b_txs.items():
         if meta["hour"] != hour or not meta["fetched"]:
@@ -102,7 +104,7 @@ for idx, hour in enumerate(HOURS):
         c_info.append({"hour": hour, "mig_sig": sig, "pool": g["pool"], "n_sigs": len(ok), "picked": pick})
         break
 plan["c_candidates"] = c_info
-(OUT / "s05_plan.json").write_text(json.dumps({"hours": {k: {kk: vv for kk, vv in v.items() if kk != "b_rows"} | {"n_b_rows": len(v["b_rows"])} for k, v in plan["hours"].items()},
+(OUT / ("s05_plan_pre.json" if PRE else "s05_plan.json")).write_text(json.dumps({"hours": {k: {kk: vv for kk, vv in v.items() if kk != "b_rows"} | {"n_b_rows": len(v["b_rows"])} for k, v in plan["hours"].items()},
     "n_a_txs": len(a_txs), "n_b_txs": len(b_txs), "rpc_attempts": c.total_calls, "c_candidates": c_info}, indent=1))
 (RAW / "sample_index.json").write_text(json.dumps({"a": a_txs, "b": b_txs, "c": c_info}))
 print("A", len(a_txs), "B", len(b_txs), "rpc", c.total_calls, dict(c.calls))
