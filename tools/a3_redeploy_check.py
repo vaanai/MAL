@@ -81,6 +81,11 @@ MAX_RECORD_AGE_S = 1800  # a newer daily line than this is "stale" (exit 11, no 
 IDL_URL = "https://raw.githubusercontent.com/pump-fun/pump-public-docs/main/idl/{name}.json"
 IDL_NAMES = ("pump", "pump_amm", "pump_fees")
 
+LOADER_PROGRAM = "BPFLoaderUpgradeab1e11111111111111111111111"
+LOADER_UPGRADE_TAG = 3  # UpgradeableLoaderInstruction::Upgrade (bincode u32, little endian)
+MAX_WRITE_PAGES = 8  # getSignaturesForAddress(programdata) pages of 1000 back to the pinned deploy slot; not reached => fail closed
+TRAILING_EVENTS = ("TradeEvent", "BuyEvent", "SellEvent", "WithdrawEvent")  # the events that carry the added 8-byte field (QP repin ruling C3'b)
+SOL_QUOTES = (mon.NATIVE_SOL, mon.WSOL_MINT)
 PROGRAM_FLAG_ITEMS = ("pump", "pumpswap")  # the only items whose deploy-slot change may start the check
 BOOST_FLAGS = ("boost_disabled", "boost_share_low", "boost_last_slice_early", "boost_budget_or_slices_changed")
 OTHER_FIVE = BOOST_FLAGS + ("synthetic_share_high",)
@@ -412,6 +417,7 @@ def evaluate_blobs(blobs: Iterable[bytes], idls: Mapping[str, Json] | None, igno
     trailing_seen: dict[str, set[int]] = {}
     capped = n_swap = n_events = n_init_boost = 0
     layout_bad: dict[str, int] = {}
+    nonzero: list[dict[str, Any]] = []
     disc_len: dict[str, list[int]] = {}
     undecodable: dict[str, int] = {}
     unknown: dict[str, int] = {}
@@ -433,8 +439,13 @@ def evaluate_blobs(blobs: Iterable[bytes], idls: Mapping[str, Json] | None, igno
         if entry:
             seen_names.add(entry[0])
             try:
-                extra = len(raw) - idl_full_len(raw, entry)
+                end = idl_full_len(raw, entry)
+                extra = len(raw) - end
                 trailing_seen.setdefault(entry[0], set()).add(extra)
+                if extra == 8 and entry[0] in TRAILING_EVENTS and int.from_bytes(raw[end:end + 8], "little") != 0:
+                    # C3'c: the added field is non-zero. Where is it? A SOL/WSOL-quoted trade (bonding: the event's quote_mint; PumpSwap: the pool's quote mint, looked up later)
+                    probe = idl_decode(raw, entry, ["quote_mint"]) if entry[0] == "TradeEvent" else idl_decode(raw, entry, ["pool"]) if "pool" in {f["name"] for f in entry[1]} else {}
+                    nonzero.append({"name": entry[0], "quote_mint": probe.get("quote_mint"), "pool": probe.get("pool")})
                 if extra not in (trailing.get(entry[0]) or [0]):
                     layout_bad[entry[0]] = layout_bad.get(entry[0], 0) + 1
             except CheckError:
@@ -466,7 +477,7 @@ def evaluate_blobs(blobs: Iterable[bytes], idls: Mapping[str, Json] | None, igno
                 key = f"{entry[0]}.{b}"
                 mismatch[key] = mismatch.get(key, 0) + 1
     return {"n_events": n_events, "disc_len": disc_len, "undecodable": undecodable, "unknown": unknown, "idl_mismatch": mismatch, "seen_events": sorted(seen_names),
-            "n_init_boost": n_init_boost, "capped": capped, "n_swap_events": n_swap, "layout_mismatch": layout_bad,
+            "n_init_boost": n_init_boost, "capped": capped, "n_swap_events": n_swap, "layout_mismatch": layout_bad, "nonzero_trailing": nonzero,
             "trailing_seen": {k: sorted(v) for k, v in sorted(trailing_seen.items())}}
 
 
@@ -608,8 +619,49 @@ def fetch_idls(http_get: Callable[[str, float], tuple[int, Mapping[str, str], by
     return out, fails
 
 
-def sample_failures(ev: Mapping[str, Any], label: str, pins: Json, fails: list[str]) -> None:
+def validate_trailing_pins(trailing: Any) -> dict[str, list[int]]:
+    """C3'b: each pinned event has EXACTLY one allowed trailing count (a one-element list), TRAILING_EVENTS pinned [8], every other pinned event [0]. Anything else is ERROR."""
+    if not isinstance(trailing, dict) or not trailing:
+        raise CheckError("pin missing: trailing_bytes")
+    for name, v in trailing.items():
+        if not (isinstance(v, list) and len(v) == 1 and isinstance(v[0], int) and not isinstance(v[0], bool)):
+            raise CheckError(f"pin invalid: trailing_bytes.{name} must be a one-element list")
+        if (v[0] == 8) != (name in TRAILING_EVENTS) or v[0] not in (0, 8):
+            raise CheckError(f"pin invalid: trailing_bytes.{name} = {v}: only {list(TRAILING_EVENTS)} carry 8, every other event 0")
+    missing = [n for n in TRAILING_EVENTS if n not in trailing]
+    if missing:
+        raise CheckError(f"pin missing: trailing_bytes for {missing}")
+    return trailing
+
+
+def universe_nonzero(client: Any, ev: Mapping[str, Any]) -> int:
+    """C3'c: how many events with a NON-ZERO added field sit in the H5 universe (SOL-quoted bonding trade, WSOL-quoted PumpSwap trade). A PumpSwap pool whose quote mint cannot be
+    read counts as in the universe (fail closed). Any count > 0 is a hard fail: the field's meaning would then be unknown inside the universe."""
+    n = 0
+    pools = sorted({x["pool"] for x in ev.get("nonzero_trailing", ()) if x["name"] != "TradeEvent" and x.get("pool")})
+    quote: dict[str, str | None] = {}
+    for i in range(0, len(pools), 100):
+        chunk = pools[i:i + 100]
+        res = client.call("getMultipleAccounts", [chunk, {"encoding": "base64", "commitment": "finalized"}])
+        for pool, entry in zip(chunk, (res or {}).get("value") or []):
+            info = td.decode_pool_account(mon._account_bytes(entry)) if entry else None
+            quote[pool] = info["quote_mint"] if info else None
+    for x in ev.get("nonzero_trailing", ()):
+        if x["name"] == "TradeEvent":
+            n += x.get("quote_mint") in SOL_QUOTES or x.get("quote_mint") is None
+        else:
+            q = quote.get(x.get("pool"))
+            n += q is None or q in SOL_QUOTES
+    return n
+
+
+def sample_failures(ev: Mapping[str, Any], label: str, pins: Json, fails: list[str], client: Any = None) -> None:
     """The FAIL reasons common to both samples."""
+    if client is not None and ev.get("nonzero_trailing"):
+        n_univ = universe_nonzero(client, ev)
+        ev["n_nonzero_trailing"], ev["n_nonzero_in_universe"] = len(ev["nonzero_trailing"]), n_univ
+        if n_univ:
+            fails.append(f"c: {label}: HARD: {n_univ} SOL/WSOL-quoted trade events carry a NON-ZERO added 8-byte field (meaning unknown inside the H5 universe)")
     if ev["undecodable"]:
         fails.append(f"c: {label}: undecodable events of a decoded discriminator: {ev['undecodable']}")
     if ev["unknown"]:
@@ -669,7 +721,7 @@ def check_redeploy(rec: Json, mon_pins: Json, pins: Json, tri: Json, *, client: 
     # f. IDL unchanged
     idls, idl_fails = fetch_idls(http_get, pins)
     fails += [f"f: {x}" for x in idl_fails]
-    ignored, trailing = pins.get("ignored_discs") or {}, pins.get("trailing_bytes")
+    ignored, trailing = pins.get("ignored_discs") or {}, validate_trailing_pins(pins.get("trailing_bytes"))
     idl_discs = set(idl_event_table(idls))
     start_slot = max(d["new"] for d in tri["redeploys"]) + SAMPLE_START_OFFSET_SLOTS
     detail: dict[str, Any] = {"sample_start_slot": start_slot}
@@ -681,7 +733,7 @@ def check_redeploy(rec: Json, mon_pins: Json, pins: Json, tri: Json, *, client: 
     ev = evaluate_sample(sample, idls, ignored, trailing)
     ev["_idl_discs"] = idl_discs
     detail["log_sample"] = {k: ev[k] for k in ("n_txs", "n_events", "seen_events", "capped", "n_swap_events", "trailing_seen")}
-    sample_failures(ev, "log sample", pins, fails)
+    sample_failures(ev, "log sample", pins, fails, client)
     for name in REQUIRED_EVENTS:
         if name not in ev["seen_events"]:
             fails.append(f"d: {name} not seen in the log sample")
@@ -690,7 +742,7 @@ def check_redeploy(rec: Json, mon_pins: Json, pins: Json, tri: Json, *, client: 
     mv["_idl_discs"] = idl_discs
     detail["migrate_sample"] = {k: mv[k] for k in ("n_migrate_txs", "slot_min", "slot_max", "n_events", "seen_events", "n_init_boost", "trailing_seen", "n_nonmayhem_wsol",
                                                     "n_init_boost_graduations", "init_boost_share", "budget_sol_median", "slices_median")}
-    sample_failures(mv, "migrate sample", pins, fails)
+    sample_failures(mv, "migrate sample", pins, fails, client)
     for name in required:
         if name not in mv["seen_events"]:
             fails.append(f"d: {name} not seen in the migrate sample")
