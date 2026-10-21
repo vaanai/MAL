@@ -3334,7 +3334,14 @@ class Refused(Exception):
     pass
 
 
-def refuse_replay(path: str, hours: Sequence[str]) -> None:
+Q50_REPLAY_CUTOFF_HOUR = "2026-10-01T00"  # QP comment on #789 (P3): a Q* != 40 replay reads no hour at or after this, refused before anything is read
+
+
+def refuse_replay(path: str, hours: Sequence[str], q_star_sol: float = Q_STAR_SOL) -> None:
+    if q_star_sol != Q_STAR_SOL:
+        for h in hours:
+            if h >= Q50_REPLAY_CUTOFF_HOUR:
+                raise Refused(f"{h}: a --q-star-sol != 40 replay reads no hour at or after {Q50_REPLAY_CUTOFF_HOUR}")
     for bad in FORBIDDEN:
         if bad in path:
             raise Refused(f"{path}: outside the exploration pools ({bad!r})")
@@ -3463,7 +3470,7 @@ def compare_frozen(records: list[dict], meta: dict[str, dict], frozen_path: str,
 def run_replay(args: argparse.Namespace) -> int:
     hours = [h.strip() for h in args.replay_hours.split(",") if h.strip()]
     try:
-        refuse_replay(args.replay_tape, hours)
+        refuse_replay(args.replay_tape, hours, check_q_star(getattr(args, "q_star_sol", Q_STAR_SOL)))
         refuse_replay(args.work_dir, [])
     except Refused as e:
         print(f"REFUSED: {e}", file=sys.stderr)

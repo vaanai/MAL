@@ -212,6 +212,26 @@ class QStarMainTests(unittest.TestCase):
             self.run_live(["--fresh-forward", "ARENA", "--q-star-sol", "50"], sha=None)
 
 
+class QStarReplayCutoffTests(unittest.TestCase):
+    def test_q50_replay_refuses_october_hours_before_reading_anything(self):
+        for hours in ("2026-10-01T00", "2026-09-30T23,2026-10-01T00", "2026-10-01T05", "2026-10-02T09", "2026-10-16T01"):
+            err = io.StringIO()
+            with mock.patch.object(h5, "replay_rows", side_effect=AssertionError("read before refusing")), contextlib.redirect_stderr(err):
+                rc = h5.main(["--q-star-sol", "50", "--replay-tape", "/x", "--replay-hours", hours])
+            self.assertEqual(rc, 2, hours)
+            self.assertIn("REFUSED", err.getvalue())
+            self.assertIn("2026-10-01T00", err.getvalue())
+
+    def test_q50_replay_allows_september_hours_past_the_check(self):
+        h5.refuse_replay("/x", ["2026-09-20T00", "2026-09-30T23"], 50.0)
+
+    def test_q40_replay_guard_is_unchanged(self):
+        h5.refuse_replay("/x", ["2026-10-01T00", "2026-10-02T09"], 40.0)
+        h5.refuse_replay("/x", ["2026-10-01T00"])
+        with self.assertRaises(h5.Refused):
+            h5.refuse_replay("/x", ["2026-10-02T10"])
+
+
 class QStarRulePinTests(unittest.TestCase):
     def test_pin_is_the_rule_file_sha_and_the_code_reads_no_file_for_it(self):
         self.assertEqual(h5.Q50_RULE_SHA256, "b3f8ecbf8731dc322a035a0b3996b7ed3f0b8c508cc6947014e3de1aa9524fd4")

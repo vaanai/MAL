@@ -14,7 +14,7 @@ SRC = Path(__file__).resolve().parent / "h5_shadow.py"
 REPO = SRC.parent.parent
 
 # top-level definitions changed on purpose (the flag, its checks, the Q50 constants, the start record, replay compare)
-CHANGED_TOP = {"check_q_star", "_q_star_arg", "Q_STAR_ALLOWED", "Q50_RULE_ID", "Q50_RULE_SHA256", "Engine", "run_live", "run_replay", "compare_frozen", "build_parser", "main"}
+CHANGED_TOP = {"Q50_REPLAY_CUTOFF_HOUR", "refuse_replay", "check_q_star", "_q_star_arg", "Q_STAR_ALLOWED", "Q50_RULE_ID", "Q50_RULE_SHA256", "Engine", "run_live", "run_replay", "compare_frozen", "build_parser", "main"}
 # Engine methods changed: the constructor and the places that compared against the constant (+ the trigger record)
 CHANGED_ENGINE = {"__init__", "_fire", "_evaluate", "_eval"}
 # decode path: must be listed as unchanged (sanity that the allowlists did not swallow them)
@@ -47,9 +47,10 @@ def _strip_doc(n: ast.AST) -> str:
     return ast.dump(n)
 
 
-@unittest.skipIf(_frozen_source() is None, f"object {FROZEN} not in this clone")
 class DecodePathIdentity(unittest.TestCase):
     def setUp(self):
+        if _frozen_source() is None:  # fail, never skip: a clone without the frozen object proves nothing
+            self.fail(f"object {FROZEN} is not in this clone: git fetch it")
         self.old = _defs(ast.parse(_frozen_source()))
         self.new = _defs(ast.parse(SRC.read_text()))
 
