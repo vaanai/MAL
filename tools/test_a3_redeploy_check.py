@@ -1124,3 +1124,11 @@ def test_unfetchable_and_non_migrate_txs_are_counted_not_dropped_silently(tmp_pa
 def test_reviewed_programdata_is_labelled_record_only():
     shipped = json.loads((Path(c.__file__).with_name("a3_redeploy_pins.json")).read_text())
     assert "RECORD ONLY" in shipped["reviewed_programdata"]["note"] and "WithdrawEvent" in shipped["reviewed_programdata"]["note"]
+
+
+def test_not_reached_error_reports_the_number_of_signatures_read(tmp_path):
+    cl = FakeClient(sample_blobs())
+    cl.set_writes({"PD_PUMP": [(1000, DEPLOY_PUMP)], "PD_SWAP": [(1100, DEPLOY_SWAP)]})
+    cl.write_sigs["PD_SWAP"] = [x for x in cl.write_sigs["PD_SWAP"] if not x["signature"].startswith("pinned")]
+    v = run(make_rec(), tmp_path, client=cl)
+    assert v["verdict"] == "ERROR" and "after reading 1 signatures" in v["reasons"][0]

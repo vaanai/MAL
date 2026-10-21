@@ -816,11 +816,13 @@ def list_upgrade_writes(client: Any, name: str, programdata: str, pinned_slot: i
     cands: list[dict[str, Any]] = []
     before = None
     reached = False
+    n_read = 0
     for _ in range(MAX_WRITE_PAGES):
         opts: dict[str, Any] = {"limit": 1000, "commitment": "finalized"}
         if before:
             opts["before"] = before
         sigs = client.call("getSignaturesForAddress", [programdata, opts]) or []
+        n_read += len(sigs)
         for sg in sigs:
             before = sg["signature"]
             if sg["slot"] <= pinned_slot:
@@ -830,7 +832,7 @@ def list_upgrade_writes(client: Any, name: str, programdata: str, pinned_slot: i
         if reached or len(sigs) < 1000:
             break
     if not reached:
-        raise CheckError(f"{name}: the pinned deploy slot {pinned_slot} was not reached in the programdata signature list (fail closed)")
+        raise CheckError(f"{name}: the pinned deploy slot {pinned_slot} was not reached in the programdata signature list after reading {n_read} signatures (fail closed)")
     out: list[dict[str, Any]] = []
     for sg in sorted(cands, key=lambda x: x["slot"]):
         tx = mon.fetch_tx(client, sg["signature"])
