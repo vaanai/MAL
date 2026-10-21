@@ -21,7 +21,7 @@
    "id": "h5-arena-a1-end-1021",
    "kind": "decision",
    "title": "H5 arena a1 books (h5v1-boostfloor-a1, h5v2-boostclock-a1) ended NOT_DECIDABLE, final; halt applied late",
-   "detail": "Both books: window_end_ms 1792480287000 (2026-10-20T07:11:27Z, the A3 pins_changed flag of job #1271), 3 UTC dates against the 5 DEC-031 needs, so NOT_DECIDABLE and final per QP-RULING-1021-a3. Arena halt job #1299 ran at 2026-10-21T17:55:02Z, 34 h 43 min 35 s after the flag (job #1271's notebook said 'record only'); only attempt counts were seen in between, no outcome. 13 h 24 min 25 s lie between the redeploy (2026-10-19T17:47:02Z) and the flag. Notebook n_h2cG8iJoOrg1OQ. Record: ARTIFACTS/lab/arena-records-2026-10-18.md section 6 and ARTIFACTS/lab/qp-ruling-1021-a3.md. No P&L was computed. No book has cleared the promotion gate; nothing here says any book made money.",
+   "detail": "Both books: window_end_ms 1792480287000 (2026-10-20T07:11:27Z, the A3 pins_changed flag of job #1271), 3 UTC dates against the 5 DEC-031 needs, so NOT_DECIDABLE and final per QP-RULING-1021-a3. Arena halt job #1299 ran at 2026-10-21T17:55:02Z, 34 h 43 min 35 s after the flag (job #1271's notebook said 'record only'); only attempt counts were seen in between, no outcome. 15 h 25 min 11 s lie between the first program write (2026-10-19T15:46:16Z, pump slot 458888140, found by the #780 review) and the flag; the monitor-flagged write was 2026-10-19T17:47:02Z (13 h 24 min 25 s before the flag). Notebook n_h2cG8iJoOrg1OQ. Record: ARTIFACTS/lab/arena-records-2026-10-18.md section 6 and ARTIFACTS/lab/qp-ruling-1021-a3.md. No P&L was computed. No book has cleared the promotion gate; nothing here says any book made money.",
    "atUtc": "2026-10-21T17:55:02Z"
   },
   {
