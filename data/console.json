@@ -1,13 +1,20 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-21T18:35:04Z",
+ "updated_utc": "2026-10-21T18:45:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "xpool-killed-1021",
+   "kind": "finding",
+   "title": "XPOOL (same-mint sibling-pool dislocation) killed at the structure count: 0 attempts a day, 0 of 173 sibling pairs deep enough",
+   "detail": "hunt24 w4-gap. 0 attempts a day on the four exploration blocks (552 h) and 0 on 58 closed October hours. 190 mints have two WSOL pools but 0 of 173 sibling pairs had the sibling's real quote at or above 10 SOL. October: 4 of 20 pairs reached 10 SOL; all 24 raw triggers were refused out of the V band. Nothing was priced. Library row w4-gap-xpool-1 (explored-no-survivor). No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-21T18:31:00Z"
+  },
   {
    "id": "pr775-776-merged-1021",
    "kind": "job",
    "title": "PRs #775 (arena_close_blocked) and #776 (arena_live_bridge, DRY default) merged; nothing installed, no send",
-   "detail": "#776 merged at 2026-10-21T17:57:33Z and #775 at 17:59:17Z (commit times of the merges on main, 430c704 and d4aa3d5). #776: decision log to orders through the probe send path, DRY by default (S1+S2). #775: mint fetch output to a --close-blocked list plus a live per-mint pre-filter (S3). Neither is installed on a host and neither sends anything; no trading key exists. Paper only. No book has cleared the promotion gate; nothing here says any book made money.",
+   "detail": "#776 merged at 2026-10-21T17:57:33Z (d4aa3d5) and #775 at 17:59:17Z (430c704); commit times of the merges on main. #776: decision log to orders through the probe send path, DRY by default (S1+S2). #775: mint fetch output to a --close-blocked list plus a live per-mint pre-filter (S3). Neither is installed on a host and neither sends anything; no trading key exists. Paper only. No book has cleared the promotion gate; nothing here says any book made money.",
    "atUtc": "2026-10-21T17:59:17Z"
   },
   {
@@ -20,8 +27,8 @@
   {
    "id": "owner-decisions-1021",
    "kind": "decision",
-   "title": "Owner 2026-10-21 ~17:51Z: API $200 cap to 11-11; low-frequency strategies welcome (P0 20 a day no longer a kill, floor about 2 a day, pending a DEC-031 amendment); work with pump redeploys",
-   "detail": "Owner decisions of about 2026-10-21T17:51Z, notebook n_VXxa1CEWcslpaA with correction n_Mt_dg3k_cZP3eA (copied from the manager's brief). (1) API budget: $200 cap through 2026-11-11. (2) Low-frequency strategies are welcome: the 20-attempts-a-day P0 count bar is no longer a kill; the floor is about 2 a day, pending a DEC-031 amendment (QP ruling Q6). The amendment is not merged, so DEC-031's text still says 20. (3) Work with the pump program redeploys instead of stopping for them. The promotion gate is unchanged. No book has cleared the promotion gate; nothing here says any book made money.",
+   "title": "Owner 2026-10-21 ~17:51Z: API $200 cap to 11-11; low-frequency strategies welcome (direction recorded; current P0 and A3 rules apply until the DEC-031 amendment merges); work with pump redeploys",
+   "detail": "Owner decisions of about 2026-10-21T17:51Z, notebook n_VXxa1CEWcslpaA with correction n_Mt_dg3k_cZP3eA (copied from the manager's brief). (1) API budget: $200 cap through 2026-11-11. (2) Low-frequency strategies are welcome: the 20-attempts-a-day P0 count bar is no longer a kill; the floor is about 2 a day, pending a DEC-031 amendment (QP ruling Q6). The direction is recorded. The amendment is not merged, so until it merges the current rules still apply: DEC-031 Am.3 item 1 (P0 at least 20 a day, no day under 10) and the current A3 rule (a pins_changed flag ends counted windows at the flag instant; no manual PASS). (3) Work with the pump program redeploys instead of stopping for them. The promotion gate is unchanged. No book has cleared the promotion gate; nothing here says any book made money.",
    "atUtc": "2026-10-21T17:51:00Z",
    "approx": true
   },
@@ -34,20 +41,11 @@
    "approx": true
   },
   {
-   "id": "xpool-killed-1021",
-   "kind": "finding",
-   "title": "XPOOL (same-mint sibling-pool dislocation) killed at the structure count: 0 attempts a day, 0 of 173 sibling pairs deep enough",
-   "detail": "hunt24 w4-gap. 0 attempts a day on the four exploration blocks (552 h) and 0 on 58 closed October hours. 190 mints have two WSOL pools but 0 of 173 sibling pairs had the sibling's real quote at or above 10 SOL. October: 4 of 20 pairs reached 10 SOL; all 24 raw triggers were refused out of the V band. Nothing was priced. Library row w4-gap-xpool-1 (explored-no-survivor). The completion instant was not re-read; atUtc is a placeholder for ordering (approx). No book has cleared the promotion gate; nothing here says any book made money.",
-   "atUtc": "2026-10-21T17:30:00Z",
-   "approx": true
-  },
-  {
    "id": "burn-census-fail-1021",
    "kind": "result",
    "title": "Buy-and-burn census (CENSUS-PLAN-2) FAIL: control ratio 1.0241094111786195 against the 1.5 bar; library row closed",
-   "detail": "Job #1293 (notebook n__-aJYMsIKkT__w), /data/mal/hunt-1008/push-1016/hunt23/w3-burn/out2/plan2_counts.json (sha256 25b436db176a71e81fd4250d7f0f0fb4453212f253048ddc9d833cee92df2179): Q 25, hours_q 12, control_obs 15431, control_exp 15067.725998378322, control_ratio 1.0241094111786195, verdict FAIL. L1/L2 close as tape-visible front-runnable buyers (hunt23-w3-burn-1 set to explored-no-survivor). Structure counts only; nothing was priced; burns are not on the tape. The completion instant was not re-read; atUtc is a placeholder for ordering (approx). No book has cleared the promotion gate; nothing here says any book made money.",
-   "atUtc": "2026-10-21T17:00:00Z",
-   "approx": true
+   "detail": "Job #1293 (notebook n__-aJYMsIKkT__w), /data/mal/hunt-1008/push-1016/hunt23/w3-burn/out2/plan2_counts.json (sha256 25b436db176a71e81fd4250d7f0f0fb4453212f253048ddc9d833cee92df2179): Q 25, hours_q 12, control_obs 15431, control_exp 15067.725998378322, control_ratio 1.0241094111786195, verdict FAIL. L1/L2 close as tape-visible front-runnable buyers (hunt23-w3-burn-1 set to explored-no-survivor). Structure counts only; nothing was priced; burns are not on the tape. No book has cleared the promotion gate; nothing here says any book made money.",
+   "atUtc": "2026-10-21T17:38:42Z"
   },
   {
    "id": "j3-we-killed-1020",
