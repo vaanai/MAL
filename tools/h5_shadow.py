@@ -199,7 +199,7 @@ Q_STAR_SOL = 40.0  # Q = real quote + V after the sell, SOL
 
 Q_STAR_ALLOWED = (40.0, 50.0)  # QP ruling 2026-10-22: exactly these two levels; any other value is a different, unregistered rule
 Q50_RULE_ID = "H5-BOOSTFLOOR-Q50 v1"  # the rule_id of a Q* = 50 process (EXP-024 Amendment 10, owed)
-Q50_RULE_SHA256: str | None = None  # sha256 of the RULE-Q50 block: set by the Amendment 10 / G1 PR. None = a Q* != 40 live process refuses to start
+Q50_RULE_SHA256: str | None = "b3f8ecbf8731dc322a035a0b3996b7ed3f0b8c508cc6947014e3de1aa9524fd4"  # sha256 of EXP/EXP-024-RULE-Q50.md (PR #790); the sha only, the file is never read. None = a Q* != 40 live process refuses to start
 
 
 def check_q_star(v: Any) -> float:

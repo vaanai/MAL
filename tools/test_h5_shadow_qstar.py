@@ -212,6 +212,14 @@ class QStarMainTests(unittest.TestCase):
             self.run_live(["--fresh-forward", "ARENA", "--q-star-sol", "50"], sha=None)
 
 
+class QStarRulePinTests(unittest.TestCase):
+    def test_pin_is_the_rule_file_sha_and_the_code_reads_no_file_for_it(self):
+        self.assertEqual(h5.Q50_RULE_SHA256, "b3f8ecbf8731dc322a035a0b3996b7ed3f0b8c508cc6947014e3de1aa9524fd4")
+        self.assertEqual(h5.Q50_RULE_ID, "H5-BOOSTFLOOR-Q50 v1")
+        self.assertNotIn("RULE-Q50", __import__("inspect").getsource(h5.run_live))
+        self.assertNotIn("RULE-Q50.md", Path(h5.__file__).read_text().split("Q50_RULE_SHA256", 1)[1].split("\n", 1)[1])
+
+
 class QStarCompareFrozenTests(unittest.TestCase):
     def test_compare_frozen_filters_on_the_level(self):
         src = __import__("inspect").getsource(h5.compare_frozen)
