@@ -781,8 +781,8 @@ def read_state(path: Path) -> dict[str, dict[str, Any]]:
 
 def list_upgrade_writes(client: Any, name: str, programdata: str, pinned_slot: int, newest_slot: int) -> list[dict[str, Any]]:
     """Q4: EVERY successful upgrade write to a program's programdata account after the pinned deploy slot, oldest first. Pages getSignaturesForAddress(programdata)
-    back until a signature at or before the pinned slot is seen; not reached in MAX_WRITE_PAGES pages => CheckError (fail closed). A write is a successful tx whose
-    BPF-loader instruction is `Upgrade`. The newest write must be the record's deploy slot, else CheckError (the enumeration and the monitor disagree)."""
+    back until a signature at or before the pinned slot is seen; not reached in MAX_WRITE_PAGES pages => CheckError (fail closed). A write is a successful tx with a
+    BPF-loader `Upgrade` instruction, top-level or inner (the real upgrades are Squads multisig CPIs). The newest write must be the record's deploy slot, else CheckError (the enumeration and the monitor disagree)."""
     cands: list[dict[str, Any]] = []
     before = None
     reached = False
@@ -807,7 +807,9 @@ def list_upgrade_writes(client: Any, name: str, programdata: str, pinned_slot: i
         if tx is None:
             raise CheckError(f"{name}: write candidate {sg['signature'][:12]} unreadable")
         keys = mon.tx_keys(tx)
-        ixs = ((tx.get("transaction") or {}).get("message") or {}).get("instructions") or []
+        ixs = list(((tx.get("transaction") or {}).get("message") or {}).get("instructions") or [])
+        for grp in (tx.get("meta") or {}).get("innerInstructions") or []:  # upgrades go through the Squads multisig: the loader Upgrade is an INNER instruction
+            ixs += list(grp.get("instructions") or [])
         is_upgrade = False
         for ix in ixs:
             idx = ix.get("programIdIndex")

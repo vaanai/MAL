@@ -1010,3 +1010,15 @@ def test_hard_flag_uses_the_earliest_unreviewed_write_and_survives_a_broken_enum
     cl.fail = mon.RpcUnreachable("down")
     v2 = run(rec, tmp_path / "b", client=cl)  # enumeration fails: the record's own redeploys stand in, the halt is not lost
     assert v2["verdict"] == "HALT" and v2["halt_at_ms"] == ms(DEPLOY_PUMP) and "enumeration failed" in v2["reasons"][-1]
+
+
+def test_upgrade_through_a_multisig_inner_instruction_is_a_write(tmp_path):
+    cl = FakeClient(sample_blobs())
+    cl.set_writes({"PD_PUMP": [(1000, DEPLOY_PUMP)], "PD_SWAP": [(1100, DEPLOY_SWAP)]})
+    for sig, tx in cl.write_txs.items():  # the real shape: the loader Upgrade is a CPI inside a Squads instruction
+        msg = tx["transaction"]["message"]
+        msg["accountKeys"].append("SQDS4ep65T869zMMBKyuUq6aD6EgTu8psMjkvj52pCf")
+        msg["instructions"] = [{"programIdIndex": 3, "data": mon.b58encode(b"\xc2\x08\xa1\x57")}]
+        tx["meta"]["innerInstructions"] = [{"index": 0, "instructions": [{"programIdIndex": 2, "data": mon.b58encode(struct.pack("<I", c.LOADER_UPGRADE_TAG))}]}]
+    v = run(make_rec(), tmp_path, client=cl)
+    assert v["verdict"] == "PASS" and sorted(v["per_write"]) == ["pump:1000", "pumpswap:1100"]
