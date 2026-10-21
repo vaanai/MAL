@@ -6,12 +6,12 @@ Books: `h5v1-boostfloor-a2` and `h5v2-boostclock-a2`, new `bot_id`s at the same 
 
 ## 1. Books file (Am.4 item 1.10)
 - Path (mal-fast-0): `$HOME/data/arena/a3-books.json`. The registry is mal-fast-0 `$HOME/data/arena/bots.json`, as for a1 (DEC-031 §1.2 names `/data/mal/arena/bots.json`; the real path follows the a1 precedent, QP (1)e).
-- **v0 (now; job #1317; legacy ids only, new_rule list empty):** verbatim `{"legacy_bot_ids": ["h5v1-boostfloor-a1", "h5v2-boostclock-a1"], "new_rule_bot_ids": []}`. sha256 `b406b3aa...` (first 8 hex, from the manager log; full value `<FILL 10-22: full sha256 from the #1317 log>`).
+- **v0 (now; job #1317; legacy ids only, new_rule list empty):** verbatim `{"legacy_bot_ids": ["h5v1-boostfloor-a1", "h5v2-boostclock-a1"], "new_rule_bot_ids": []}`. sha256 `b406b3aa431eb5f80d05e9a0065f705165d3a23663c87411175d40020a27670f` (the manager's value from the #1317 log; equal to the hash of the `a3-setup.sh` literal, checked by QP-RULING-1022-exec).
 - **v1 (written in the same job as the registration, via tmp + mv):** verbatim
   ```json
   {"legacy_bot_ids": ["h5v1-boostfloor-a1", "h5v2-boostclock-a1"], "new_rule_bot_ids": ["h5v1-boostfloor-a2", "h5v2-boostclock-a2"]}
   ```
-  sha256 `<FILL 10-22: BOOKS_V1_SHA256 from the registration job log>`.
+  expected sha256 `aa1cd01f8c2dc2bce9463d8d1c2537868f0531dab472bd25e3e34af5a2831aa4` (the hash of the step 3 literal, computed off-host by QP); sha256 as printed by the registration job: `<FILL 10-22: BOOKS_V1_SHA256 from the registration job log; must equal the expected value, BOOKS_V1_OK>`.
 - Validation: `tools/a3_halt.py` refuses a listed id that is not registered and any registered `h5*` book in neither list, on every `deadman` and `apply` call. The a1 ids stay listed as legacy (ended, never removed).
 
 ## 2. Pins
@@ -30,26 +30,63 @@ Books: `h5v1-boostfloor-a2` and `h5v2-boostclock-a2`, new `bot_id`s at the same 
 
   `frozen_sha` `1f7a89cdf02ff46c3e33b9dcc88531c75d2b6cde` for both books (same as a1). The blob pin of `tools/h5_shadow.py` is by text (EXP-024 Note under Am.9 (e), QP (5)): `git rev-parse 1f7a89cdf02ff46c3e33b9dcc88531c75d2b6cde:tools/h5_shadow.py` prints `23b9ccc2562f4cb83113a8b9faa4cb8d9e86907f`.
 - **Wrapper sha256 `78e5bdab...` (full value above)** goes in with this record (QP (2) iv). Whitelist: `score` only; `register`, `halt`, `refit` exit 2. It drops, for `h5v2-boostclock-a2` only, every pv trigger whose `s0_t_recv_ms` is missing, not an integer, or earlier than `clock_start_ms` + 60,000 ms (counted as `dropped_s0_before_clock`, plus `dropped_decided_before_clock` and `dropped_after_window`).
-- **StackConfig pin (Am.2 item 8). Reported as the code shows it, not resolved:** the H5 a2 books are scored by `tools/arena_h5_cost.py` (`STACK_ID` `DEC-031-rev2`), not by `tools/arena_paper.py`'s `StackConfig`; neither `tools/arena_h5_score.py` nor `tools/h5_shadow.py` constructs a `StackConfig` (grep at origin/main eb8b32d and, for the shadow, at 1f7a89c). The pinned constants that play the role of the `StackConfig` keys, from `tools/arena_h5_cost.py` at eb8b32d:
+- **StackConfig pin (Am.2 item 8). Reported as the code shows it, then ruled below:** the H5 a2 books are scored by `tools/arena_h5_cost.py` (`STACK_ID` `DEC-031-rev2`), not by `tools/arena_paper.py`'s `StackConfig`; neither `tools/arena_h5_score.py` nor `tools/h5_shadow.py` constructs a `StackConfig` (grep at origin/main eb8b32d and, for the shadow, at 1f7a89c). The pinned constants that play the role of the `StackConfig` keys, from `tools/arena_h5_cost.py` at eb8b32d:
 
   | Am.2 item 8 key | value in the H5 cost module | note |
   |---|---|---|
-  | `rent` | `RENT` = 2,039,280 lamports per filled trip; `RENT_STRANDED` = 2,039,280 | **not 0.** Am.2 item 3 says each covered host passes `rent=0` in its `StackConfig`; the H5 host has no `StackConfig`. The scorer docstring (`tools/arena_h5_score.py:13`) says rent 2,039,280. See open question 1. |
+  | `rent` | `RENT` = 2,039,280 lamports per filled trip; `RENT_STRANDED` = 2,039,280 | **not 0.** Am.2 item 3 says each covered host passes `rent=0` in its `StackConfig`; the H5 host has no `StackConfig`. The scorer docstring (`tools/arena_h5_score.py:13`) says rent 2,039,280. Resolved below (Am.2 does not cover H5 a2). |
   | `e1_floor_per_005` | `E1_FIXED_PER_REF` 384,022 at `E1_REF_STAKE` 50,000,000 (0.05 SOL) | equal to the Am.2 value |
   | `strand_rule` | `STRANDS = ("dec031", "sc")`; every leg is priced under both (the "both" semantics) | |
   | `k_rounding`, `feed_delay_slots` | no such key: H5 measures delay per trigger on the chain clock (arena-records-2026-10-18 section 3) | |
   | `gap_slots` 150, `gap_silence_ms` 60000 | no such key: the shadow's own `gap` records (`slot_jump`, `silence`, `feed_restart`, `socket_reconnect`) feed the counts tool's gap measure | |
   | other | `SEND` 505,000; `H_IN` 0.002608; `H_OUT` 0.0016; `GUARD` 1.15; `FAIL_FLAT` 0.15; `PRESS_SLOPE_SLOT` 0.8; `PRESS_SLOPE_SOL` 0.35; deciding stake 0.30 SOL, cell 1p9 | |
 
-  The Am.2 item 8 read check (compare `StackConfig.as_dict()` on every engine start row) has no H5 counterpart. **No claim is made that Am.2 item 8 is satisfied; this is the pin as found.** QP rules (open question 1).
+  **Ruling (QP-RULING-1022-exec (a); PR #788 comment 6327273295):** Amendment 2 does NOT cover the H5 a2 books (DEC-031 Am.2 item 9: "for an H5 book, rent-charged decides (item 10)"; Am.3 at DEC-031 line 216: "Amendment 2 does not cover the H5 books (its item 10)"). Item 8's StackConfig pin does not apply; the H5 cost pins listed above stand in its place. The deciding stack is rent-charged (`arena_h5_cost.RENT` 2,039,280 lamports per filled trip). Every a2 read states the rent-charged and the rent-0 legs side by side; the rent-0 leg is report-only and never decides. This is written before the clock so it is not open at the read. It has no effect on registration (`register_books` takes no rent argument).
 - **V-band check (Am.2 item 6, Am.3), as `path:line@frozen_sha`:**
   - `tools/h5_shadow.py:194-195@1f7a89cdf02ff46c3e33b9dcc88531c75d2b6cde`: `V_LO = 17.5e9`, `V_HI = 17.7e9` (lamports).
   - `tools/h5_shadow.py:1400@1f7a89cdf02ff46c3e33b9dcc88531c75d2b6cde`: `if not (V_LO <= v_raw <= V_HI)` on the first print's `virtual_quote_reserves`, counter `rejected_v_range`.
   - `tools/h5_shadow.py:1410-1411@1f7a89cdf02ff46c3e33b9dcc88531c75d2b6cde`: `if ann is not None and ann[3] is not None and ann[3] != WSOL_MINT:` counter `rejected_quote_mint`.
-  - **Deviation from the DEC wording, disclosed:** Am.2 item 2 / item 6 say `quote_mint == WSOL` is "read before the V test". In the frozen code the V test (line 1400) runs BEFORE the quote_mint test (line 1410), by design ("V range first", comment at line 1400), and the quote_mint test applies only when an announce record exists (`ann[3] is not None`); an unannounced pool is rejected earlier at `rejected_unannounced` when `require_announce` is set. The order does not change which pools are admitted (a pool must pass both), only which counter a rejection lands in. Not re-run or re-verified here.
+  - **Scope:** Am.2 item 6 and Am.3's V-band check bind covered books only (DEC-031 line 183), and Am.2 does not cover the H5 books, so for H5 this pointer is a disclosure, not a precondition (QP-RULING-1022-exec (b)).
+  - **Deviation from the DEC wording, disclosed:** Am.2 item 2 / item 6 say `quote_mint == WSOL` is "read before the V test". In the frozen code the V test (line 1400) runs BEFORE the quote_mint test (line 1410), by design ("V range first", comment at line 1400), and the quote_mint test applies only when an announce record exists (`ann[3] is not None`); an unannounced pool is rejected earlier at `rejected_unannounced` when `require_announce` is set. A third case: if an announce record exists but its `quote_mint` is `None` (`on_create_pool` stores `quote_mint` as given, `h5_shadow.py:1229-1231@1f7a89cdf02ff46c3e33b9dcc88531c75d2b6cde`), the quote_mint test is skipped (`ann[3] is not None` is False) and the pool is admitted on the V test alone. The V band [17.5e9, 17.7e9] on `virtual_quote_reserves` is the canonical-WSOL-pool signature, so the residual risk is small; it is disclosed, not argued away. The order does not change which pools are admitted (a pool must pass both), only which counter a rejection lands in. Not re-run or re-verified here.
 
 ## 3. Registration (to fill after the step; Am.3 item 1, §1.2)
 - Registration job: `<FILL 10-22: job id>`, mal-fast-0, git_ref eb8b32deef236257e7b5c9dca62a77a5c6afc455, in-process `tools.arena_h5_score.register_books(..., generation="a2")` on the UNMODIFIED module (QP (1): accepted; no `-I`; asserts that `BOTS` is exactly the two a1 ids before and after the call, and that the returned keys are exactly the two a2 ids; `python -c` from the pinned tree). Never from the wrapper.
+- **git_ref disclosure:** git_ref eb8b32d, not 136cd98 as ruling (1)a wrote; `git diff --stat 136cd98 eb8b32d` = 5 added files, none imported by `tools/arena_h5_score.py`; scorer sha256 equal; QP-RULING-1022-exec accepts it.
+- **Registration job text, verbatim as submitted** (the step 3 command of the execution sheet; copied at drafting, to be re-pasted from the job as actually submitted if it differs: `<FILL 10-22: confirm identical, or paste the submitted text>`):
+```sh
+set -u; date -u; hostname
+[ "$(hostname)" = mal-fast-0 ] || { echo "REFUSED host"; exit 1; }
+[ "$(git rev-parse HEAD)" = eb8b32deef236257e7b5c9dca62a77a5c6afc455 ] || { echo "REFUSED head"; exit 1; }
+[ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "REFUSED dirty tree"; exit 1; }
+[ "$(sha256sum tools/arena_h5_score.py | cut -d' ' -f1)" = dfe7f018601633921f06668fd1af3aaff7b87bf00f321d1540e10b41f8ab6006 ] || { echo "REFUSED scorer sha"; exit 1; }
+NOW_MS=$(( $(date -u +%s) * 1000 ))
+[ "$NOW_MS" -ge 1792627200000 ] && [ "$NOW_MS" -lt 1792713000000 ] || { echo "REFUSED not 2026-10-22 UTC (clock would slip)"; exit 1; }
+HH=$(date -u +%H); MM=$(date -u +%M)
+case "$HH" in 07|13|19) if [ "$MM" -ge 4 ] && [ "$MM" -le 25 ]; then echo "REFUSED guard slot :04-:25"; exit 1; fi ;; esac
+PY=/home/claude/venvs/c1nf-shadow/bin/python
+"$PY" -c "import solders" || { echo "REFUSED no solders"; exit 1; }
+A="$HOME/data/arena"
+[ -f "$A/a3-books.json" ] || { echo "REFUSED books file missing"; exit 1; }
+V0=$(sha256sum "$A/a3-books.json" | cut -d' ' -f1); echo "BOOKS_V0_SHA256=$V0"
+[ "$V0" = b406b3aa431eb5f80d05e9a0065f705165d3a23663c87411175d40020a27670f ] || { echo "REFUSED books file is not v0 (already swapped? do NOT rerun)"; exit 1; }
+[ ! -e "$A/a3-books.json.new" ] || { echo "REFUSED stale a3-books.json.new"; exit 1; }
+umask 077
+printf '%s\n' '{"legacy_bot_ids": ["h5v1-boostfloor-a1", "h5v2-boostclock-a1"], "new_rule_bot_ids": ["h5v1-boostfloor-a2", "h5v2-boostclock-a2"]}' > "$A/a3-books.json.new" || { echo "REFUSED cannot write .new"; exit 1; }
+"$PY" -c '
+import json, os, sys
+from pathlib import Path
+from tools import arena_h5_score as sc
+A1 = {"h5v1-boostfloor-a1", "h5v2-boostclock-a1"}
+A2 = {"h5v1-boostfloor-a2", "h5v2-boostclock-a2"}
+assert set(sc.BOTS) == A1, sorted(sc.BOTS)
+assert sc.__file__.startswith(os.getcwd()), sc.__file__
+out = sc.register_books(Path(os.environ["HOME"]) / "data" / "arena" / "bots.json", frozen_sha="1f7a89cdf02ff46c3e33b9dcc88531c75d2b6cde", sockets=3,
+    endpoints=["wss://api.mainnet-beta.solana.com", "wss://public.rpc.solanavibestation.com"], host="mal-fast-0", clock_start_ms=1792713600000, generation="a2")
+assert set(out) == A2, sorted(out)
+assert set(sc.BOTS) == A1, sorted(sc.BOTS)
+print(json.dumps({"registered": sorted(out), "clock_start_ms": {k: v["clock_start_ms"] for k, v in sorted(out.items())}, "registered_at_ms": {k: v["registered_at_ms"] for k, v in sorted(out.items())}}, sort_keys=True))
+' && mv "$A/a3-books.json.new" "$A/a3-books.json" && V1=$(sha256sum "$A/a3-books.json" | cut -d' ' -f1) && echo "BOOKS_V1_SHA256=$V1" && { if [ "$V1" = aa1cd01f8c2dc2bce9463d8d1c2537868f0531dab472bd25e3e34af5a2831aa4 ]; then echo BOOKS_V1_OK; else echo BOOKS_V1_MISMATCH; fi; } && cat "$A/a3-books.json" && sha256sum "$A/bots.json" && date -u
+```
 - Arguments copied from the a1 registration record (arena-records-2026-10-18 section 5): `frozen_sha` 1f7a89cdf02ff46c3e33b9dcc88531c75d2b6cde; `sockets` 3; `endpoints` `wss://api.mainnet-beta.solana.com` and `wss://public.rpc.solanavibestation.com`; `host` mal-fast-0; `stake` default (0.30); `clock_start_ms` 1792713600000.
 - Printed line: `<FILL 10-22: the registered / clock_start_ms / registered_at_ms JSON line>`. `registered_at_ms` for `h5v1-boostfloor-a2` `<FILL 10-22>`, for `h5v2-boostclock-a2` `<FILL 10-22>`. Registered at `<FILL 10-22: UTC instant>`, on 2026-10-22 UTC, so the clock is the first 00:00Z after the record (Am.3 item 1).
 - Lines (what `register_books` writes; values copied from the printed JSON and the a1 precedent, never from reading bots.json): rule `H5-BOOSTFLOOR v1`; `exit_rule` v1 (330 s) for `h5v1-boostfloor-a2`, v2 (bx10) with `freeze_sha256` `5368cc7b757a2f7a6cb064c71193b4e0cd740583f7348a60cb9a864401c190e0` for `h5v2-boostclock-a2`; `deciding_stake_sol` 0.30; `deciding_cell` 1p9; `stack` DEC-031-rev2; scorer `tools/arena_h5_score.py`; cost module `tools/arena_h5_cost.py`; `window_end_ms` null and `stopped_ms` null at registration.
@@ -70,7 +107,10 @@ Books: `h5v1-boostfloor-a2` and `h5v2-boostclock-a2`, new `bot_id`s at the same 
 ## 6. Truncated-log audit pre-declaration (Am.4 item 1.13 / repin Q2; QP (8)); outcome-blind, before the a2 clock
 "Before any outcome is opened, each a2 read runs a counts-only audit listing the counted attempts whose pool had any successful transaction with `Log truncated` between entry and exit (`getSignaturesForAddress(pool)` and `getTransaction` meta). If MORE THAN 5% of counted attempts are affected (the exclusion cap's level) the read is NOT_DECIDABLE. Otherwise the count is disclosed. The audit does not exclude attempts from the count." The 5% threshold is fixed and is not re-opened at the read.
 - The rule is merged DEC text (DEC-031 Am.4 item 1.13, 136cd98dd6845e9e60b65153ab0f3c4f31959142). The audit TOOL is owed before the a2 read instant (merged, counts-only, QP OK, run before any outcome is opened); it does not exist in the repo at eb8b32d. If it does not exist at the read instant, the read waits (QP (8)).
-- Disclosures that go with the registration (review doc `ARTIFACTS/lab/a3-repin-2026-10-21-program-upgrade-review.md`, post sample A+B+C, 23,471 txs): WSOL-only PumpSwap txs with truncated logs 209/5,771 = 3.62% post vs 11/2,723 = 0.40% pre; 17/5,579 = 0.30% post without the one pool; one-pool one-hour episode (384 CPI-only WSOL PumpSwap SellEvents in pool `34tiphuqXUgkH9c2KCrFqCiyuhz58HEbhQBk61ub46bU`; 384/3,157 post vs 0/1,040 pre); `records_from_logs` cannot see CPI-only events.
+- Disclosures that go with the registration. Two samples, each with its source (QP-RULING-1022-exec R1):
+  - **QP's A-only split** (`ARTIFACTS/lab/qp-ruling-1021-repin.md` line 11; review doc line 145, "QP's A-only split"): WSOL-only PumpSwap txs with truncated logs 209/5,771 = 3.62% post vs 11/2,723 = 0.40% pre; 17/5,579 = 0.30% post without the one pool; one-pool one-hour episode: 384 CPI-only WSOL PumpSwap SellEvents in pool `34tiphuqXUgkH9c2KCrFqCiyuhz58HEbhQBk61ub46bU`, 384/3,157 post vs 0/1,040 pre.
+  - **The review doc's post sample A+B+C** (`ARTIFACTS/lab/a3-repin-2026-10-21-program-upgrade-review.md`, 23,471 txs): 212/5,857 = 3.62% post; 20/5,665 = 0.35% without the one pool; 384/3,174 CPI-only SellEvents.
+  - `records_from_logs` cannot see CPI-only events.
 
 ## 7. Mixed-tx table (review doc section 8(c), post sample A+B+C, 23,471 txs; QP (9): cite as the review doc's table)
 
@@ -97,7 +137,7 @@ For `h5v2-boostclock-a2` the wrapper drops any pv trigger whose `s0_t_recv_ms` i
 About 12 attempts a day (the a3 ruling's order of magnitude): 100 attempts on 5 or more UTC dates is reachable inside the 14-day window if nothing halts (about 9 dates). The real risks are an A3 FAIL or ERROR halt (any PumpSwap redeploy is a certain false halt on public RPC, `A3_ENUM_ENV_FILE` unset; a pump redeploy needs a PASS within 24 h), a rate below about 7 a day, and a lapsed guard. This is an expectation about counts, not about profit. No one plans live money on this path.
 
 ## 11. Am.4 item 1.14 disclosures (as quoted in the DEC)
-Quoted from DEC-031 Am.4 item 1.14 at 136cd98 (PumpSwap enumeration fails closed on public RPC; the N-1 CompleteEvent / PostCompleteBuyEvent fail-open; judgement pins; one-sample pins; deadline costs; Token-2022 base-mint fail-open; guard job "not exercised live" until its first fast-0 run). `A3_ENUM_ENV_FILE` is left unset: 0 Helius credits used by the guard.
+Pointer, not quoted: DEC-031 Am.4 item 1.14 at 136cd98dd6845e9e60b65153ab0f3c4f31959142. In summary only (PumpSwap enumeration fails closed on public RPC; the N-1 CompleteEvent / PostCompleteBuyEvent fail-open; judgement pins; one-sample pins; deadline costs; Token-2022 base-mint fail-open; guard job "not exercised live" until its first fast-0 run). `A3_ENUM_ENV_FILE` is left unset: 0 Helius credits used by the guard.
 
 ## 12. Job ids and merge shas
 - Guard loop **#1318**, dead-man **#1319**, guard setup #1317, guard trial read #1321 (all mal-fast-0 at 136cd98dd6845e9e60b65153ab0f3c4f31959142). C5 run **#1314**.
@@ -105,7 +145,7 @@ Quoted from DEC-031 Am.4 item 1.14 at 136cd98 (PumpSwap enumeration fails closed
 - Registration job, a2 shadow job, deadman check, successors, 11-03 reminder, a2 day-1 dry score, a2 daily score: `<FILL 10-22: job ids>`.
 - PR merge shas on origin/main:
   - #783 counts tool: `3f3aea76193accaa9e8902397bba127dbb3b4aca` (2026-10-21T21:27:09Z);
-  - #784 EXP-024 Note under Am.9 for `h5v2-boostclock-a2` (C7): `024dff25a98534e93034e31489eae2856765e80d` (2026-10-21T21:28:43Z);
+  - #784 EXP-024 Note under Am.9 for `h5v2-boostclock-a2` (C7): `024dff25a98534e93034e31489eae2856765e80d` (2026-10-21T21:28:43Z); the merged text is in `EXP/EXP-024-h5-boostfloor-part1-prereg.md`, "Note under Amendment 9", merged as 024dff2; QP OK 6326952781;
   - #785 a2 scoring wrapper: `89dbe120de5546e2f2c0f552a03000438888c672` (2026-10-21T21:22:25Z);
   - #787 wrapper s0 filter: `eb8b32deef236257e7b5c9dca62a77a5c6afc455` (2026-10-21T21:34:53Z).
   - Earlier pins: #782 DEC-031 Am.4 `136cd98dd6845e9e60b65153ab0f3c4f31959142`; #778 `22338cf88525b966aa055fbf7890a092f034dd2c`; #780 `b1a4997b24c7a542526c4b8377948336c78c9d5d`.
@@ -115,8 +155,6 @@ Quoted from DEC-031 Am.4 item 1.14 at 136cd98 (PumpSwap enumeration fails closed
 `python -m tools.arena_h5_score_a2 score --dry-run --shadow-dir $HOME/data/arena/h5-2026-10-22`, job `<FILL after the clock>`: both a2 books `registered: true`, `refused_dirs` empty `<FILL after the clock>`; counts only. If it fails it is reported at once and not fixed by hand (QP GO item 12).
 
 ## Open questions for QP
-1. **StackConfig / rent.** Am.2 item 3 says each covered host passes `rent=0` in its `StackConfig`; the H5 books have no `StackConfig` and are priced by `tools/arena_h5_cost.py` with `RENT` 2,039,280 (section 2). Does Am.2 cover the H5 a2 books at all, and if it does, is the rent-charged H5 stack the intended comparator? Reported here as found.
-2. The V-band order (V test before the quote_mint test) differs from the DEC wording; accepted as disclosed?
-3. Full sha256 of the v0 books file is not in the files available to the author (only the first 8 hex).
+None open from the first pass: StackConfig / rent (section 2: Am.2 does not cover H5 a2; rent-charged decides), the V-band order (section 2: disclosure), and the v0 sha (section 1) are answered by QP-RULING-1022-exec and PR #788 comment 6327273295.
 
 Nothing here is a profit claim. No book has cleared the promotion gate.
