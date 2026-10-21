@@ -154,7 +154,7 @@ def build_pins(blobs=None):
         h = b[:8].hex()
         lens[h] = {"min_len": len(b) - 5, "max_len": len(b) + 5}
     return {"idl": {k: {"sha256": hashlib.sha256(v).hexdigest()} for k, v in IDL_BYTES.items()}, "disc_len": lens,
-            "boost": {"init_boost_share": 0.9, "min_init_boost_in_sample": 1}}
+            "boost": {"init_boost_share": 0.9, "min_init_boost_in_sample": 1}, "ignored_discs": {}, "max_capped_share": 0.05}
 
 
 MON_PINS = {
@@ -333,6 +333,27 @@ def _d2(rec, pins, kw):
     return "d: SellEvent not seen"
 
 
+@_case("d_layout_not_consumed_exactly")
+def _d3(rec, pins, kw):
+    kw["client"] = FakeClient(sample_blobs([(encode("SellEvent", prog="pump_amm") + b"\x00" * 8, SWAP)]))  # a field appended after the IDL's last
+    pins["disc_len"][encode("SellEvent", prog="pump_amm")[:8].hex()] = {"min_len": 400, "max_len": 500}
+    return "d: event bytes not consumed exactly"
+
+
+@_case("c_capped_share_too_high")
+def _c5(rec, pins, kw):
+    pins["max_capped_share"] = 0.0
+    kw["client"] = FakeClient(sample_blobs([(huge_swap("BuyEvent"), SWAP)]))
+    return "c: 80/250 Buy/Sell events above the shadow"
+
+
+def huge_swap(name):
+    raw = bytearray(encode(name, prog="pump_amm"))
+    fld = {"BuyEvent": 112, "SellEvent": 112}[name]
+    raw[fld:fld + 8] = struct.pack("<Q", 700_000 * 10**9)  # user_quote_amount_* above the shadow's 100,000 SOL cap
+    return bytes(raw)
+
+
 @pytest.mark.parametrize("case", sorted(FAIL_CASES))
 def test_fail_reasons(case, tmp_path, monkeypatch):
     rec, pins, kw = make_rec(), build_pins(), {}
@@ -358,9 +379,39 @@ def test_missing_pin_is_error_and_halts_at_redeploy(tmp_path):
     pins["idl"]["pump"]["sha256"] = None
     v = run(make_rec(), tmp_path, pins=pins)
     assert v["verdict"] == "ERROR" and "pin missing" in v["reasons"][0] and v["halt_at_ms"] == ms(DEPLOY_PUMP)
-    # the shipped stub has nulls everywhere: it can never PASS
-    stub = json.loads((Path(c.__file__).with_name("a3_redeploy_pins.json")).read_text())
-    assert run(make_rec(), tmp_path / "x", pins=stub)["verdict"] == "ERROR"
+
+
+def test_shipped_pins_are_complete_and_a_null_anywhere_is_error(tmp_path):
+    shipped = json.loads((Path(c.__file__).with_name("a3_redeploy_pins.json")).read_text())
+
+    def nulls(o):
+        return o is None or (isinstance(o, dict) and any(nulls(v) for v in o.values()))
+    assert not nulls(shipped) and shipped["trailing_bytes"] == {"BuyEvent": [8], "SellEvent": [8], "TradeEvent": [8]}
+    assert len(shipped["idl"]) == 3 and all(len(v["sha256"]) == 64 for v in shipped["idl"].values())
+    for key in ("max_capped_share", "boost"):
+        broken = copy.deepcopy(shipped)
+        broken[key] = None if key == "max_capped_share" else {"init_boost_share": None, "min_init_boost_in_sample": 0}
+        assert run(make_rec(), tmp_path / key, pins=broken | {"idl": build_pins()["idl"]})["verdict"] == "ERROR"
+
+
+def test_trailing_bytes_pin_allows_exactly_the_pinned_count():
+    raw = encode("SellEvent", prog="pump_amm") + b"\x00" * 8
+    assert c.evaluate_sample([logs_for(SWAP, raw)], IDLS, None, {"SellEvent": [8]})["layout_mismatch"] == {}
+    assert c.evaluate_sample([logs_for(SWAP, raw)], IDLS, None, {"SellEvent": [0]})["layout_mismatch"] == {"SellEvent": 1}
+    assert c.evaluate_sample([logs_for(SWAP, raw[:-3])], IDLS, None, {"SellEvent": [8]})["layout_mismatch"] == {"SellEvent": 1}
+
+
+def test_event_without_idl_entry_and_without_length_pin_is_error(tmp_path):
+    pins = build_pins()
+    h = encode("CreatePoolEvent", prog="pump_amm")[:8].hex()
+    del pins["disc_len"][h]
+    assert run(make_rec(), tmp_path, pins=pins)["verdict"] == "PASS"  # IDL consumes it exactly: no length pin needed
+    idl = copy.deepcopy(IDLS)
+    idl["pump_amm"]["events"] = [e for e in idl["pump_amm"]["events"] if e["name"] != "CreatePoolEvent"]
+    body = {**IDL_BYTES, "pump_amm": json.dumps(idl["pump_amm"], sort_keys=True).encode()}
+    pins["idl"]["pump_amm"]["sha256"] = hashlib.sha256(body["pump_amm"]).hexdigest()
+    v = run(make_rec(), tmp_path / "y", pins=pins, http=http_ok(body))
+    assert v["verdict"] == "ERROR" and "disc_len" in v["reasons"][0]
 
 
 def test_idl_fetch_failure_is_error(tmp_path):
@@ -549,3 +600,36 @@ def test_observe_prints_pin_values_and_decides_nothing(tmp_path, capsys):
     out = json.loads(capsys.readouterr().out)
     assert out["idl_sha256"]["pump"] == hashlib.sha256(IDL_BYTES["pump"]).hexdigest() and out["n_init_boost"] > 0 and not out["unknown"]
     assert not (tmp_path / "st.jsonl").exists()
+
+
+def test_swap_above_the_amount_cap_is_explained_not_undecodable(tmp_path):
+    """The 10-14 review's unexplained '3 + 3 PumpSwap Buy/Sell not decoded': the shadow refuses a quote amount above 100,000 SOL. Counted apart, bounded by the pinned share."""
+    pins = build_pins()
+    pins["max_capped_share"] = 0.5
+    blobs = sample_blobs([(huge_swap("BuyEvent"), SWAP), (huge_swap("SellEvent"), SWAP)])
+    v = run(make_rec(), tmp_path, pins=pins, client=FakeClient(blobs, per_block=100))
+    assert v["verdict"] == "PASS", v["reasons"]
+    assert v["detail"]["capped"] > 0 and v["detail"]["capped"] / v["detail"]["n_swap_events"] < 0.5
+
+
+def test_other_buy_sell_non_decode_is_still_undecodable():
+    short = encode("SellEvent", prog="pump_amm", trunc=100)
+    ev = c.evaluate_sample([logs_for(SWAP, short)], IDLS)
+    assert ev["undecodable"] == {td._SELL_DISC.hex(): 1} and ev["capped"] == 0
+    bad_ts = bytearray(encode("BuyEvent", prog="pump_amm"))
+    bad_ts[8:16] = struct.pack("<q", 5)
+    bad_ts[112:120] = struct.pack("<Q", 700_000 * 10**9)
+    ev = c.evaluate_sample([logs_for(SWAP, bytes(bad_ts))], IDLS)
+    assert ev["undecodable"] and ev["capped"] == 0  # an insane timestamp is not an explained cap
+
+
+def test_pinned_ignored_discriminator_is_accepted_only_with_its_idl_name():
+    other = bytes(hashlib.sha256(b"event:ExtendAccountEvent").digest()[:8]) + b"\x00" * 40
+    log = logs_for(SWAP, other)
+    assert c.evaluate_sample([log], IDLS)["unknown"] == {other[:8].hex(): 1}
+    assert c.evaluate_sample([log], IDLS, {other[:8].hex(): "ExtendAccountEvent"})["unknown"] == {}
+    # an IDL that names the discriminator differently than the pin is not accepted
+    idl = copy.deepcopy(IDLS)
+    idl["pump_amm"]["events"].append({"name": "OtherEvent", "discriminator": list(other[:8])})
+    idl["pump_amm"]["types"].append({"name": "OtherEvent", "type": {"kind": "struct", "fields": []}})
+    assert c.evaluate_sample([log], idl, {other[:8].hex(): "ExtendAccountEvent"})["unknown"] == {other[:8].hex(): 1}

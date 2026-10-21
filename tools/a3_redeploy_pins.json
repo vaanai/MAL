@@ -1,11 +1,82 @@
 {
   "schema": "a3_redeploy_pins.v1",
-  "note": "Pins for tools/a3_redeploy_check.py. A null here is ERROR (hard halt), never a pass. Fill from the program-upgrade review (`python -m tools.a3_redeploy_check --observe`) in a QP-OK PR merged before the a2 clock.",
-  "idl": {
-    "pump": {"sha256": null},
-    "pump_amm": {"sha256": null},
-    "pump_fees": {"sha256": null}
+  "note": "Pins for tools/a3_redeploy_check.py, from `python -m tools.a3_redeploy_check --observe` on mal-research-0, public RPC, 0 credits, 2026-10-21T18:13Z (see the PR body for the raw output). A null is ERROR (hard halt), never a pass. Re-pin only by a QP-OK PR after a program-upgrade review.",
+  "observed": {
+    "utc": "2026-10-21T18:13:45Z",
+    "sample_start_slot": 458921667,
+    "n_txs": 500,
+    "slots_scanned": 4,
+    "redeploy": "pump 458921440 (2026-10-19T17:47:02Z), pumpswap 458921517 (2026-10-19T17:47:20Z)"
   },
-  "disc_len": {},
-  "boost": {"init_boost_share": null, "min_init_boost_in_sample": null}
+  "idl": {
+    "pump": {
+      "sha256": "7616681ea557975f9f623ac211080f22a93060781eaf4765b0a488d980997207"
+    },
+    "pump_amm": {
+      "sha256": "b7d8c57a4d9c4dd0109a9ab893052352333252d4eedced10ac091d4d66cab89b"
+    },
+    "pump_fees": {
+      "sha256": "6b9fa3eccc6e06273076a47b581f9fcb9e531bb7c3c88acbcd44db55a4002b29"
+    }
+  },
+  "disc_len": {
+    "1b72a94ddeeb6376": {
+      "min_len": 333,
+      "max_len": 333
+    },
+    "3e2f370aa503dc2a": {
+      "min_len": 449,
+      "max_len": 449
+    },
+    "6161d7905d92167c": {
+      "min_len": 96,
+      "max_len": 96
+    },
+    "67f4521f2cf57777": {
+      "min_len": 473,
+      "max_len": 539
+    },
+    "742b4dbd117a482b": {
+      "min_len": 153,
+      "max_len": 153
+    },
+    "7a027f010ebf0caf": {
+      "min_len": 88,
+      "max_len": 88
+    },
+    "86240d48e86582d8": {
+      "min_len": 80,
+      "max_len": 80
+    },
+    "929fbdac925838f4": {
+      "min_len": 80,
+      "max_len": 80
+    },
+    "bddb7fd34ee661ee": {
+      "min_len": 366,
+      "max_len": 429
+    }
+  },
+  "trailing_bytes": {
+    "BuyEvent": [
+      8
+    ],
+    "SellEvent": [
+      8
+    ],
+    "TradeEvent": [
+      8
+    ]
+  },
+  "ignored_discs": {
+    "6161d7905d92167c": "ExtendAccountEvent",
+    "7a027f010ebf0caf": "CollectCreatorFeeEvent",
+    "86240d48e86582d8": "InitUserVolumeAccumulatorEvent",
+    "929fbdac925838f4": "CloseUserVolumeAccumulatorEvent"
+  },
+  "max_capped_share": 0.05,
+  "boost": {
+    "init_boost_share": 1.0,
+    "min_init_boost_in_sample": 0
+  }
 }

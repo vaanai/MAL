@@ -30,8 +30,12 @@ THE CHECK (all must hold, else FAIL; a missing pin or a failed fetch is ERROR; b
      discriminator set in (d) is the on-chain half of the same question. A fetch failure is ERROR, never a pass.
   g. the whole check finishes within CHECK_WINDOW_S (24 h) of the earliest changed redeploy instant; later is a FAIL (timeout).
 
-PINS STILL TO BE FILLED (null in tools/a3_redeploy_pins.json => ERROR => hard halt; fail closed): IDL sha256 x3, per-discriminator length ranges, InitBoost share, the
-minimum InitBoost events in the sample. `--observe` prints the observed values for the program-upgrade review (C2/C3) to pin; it writes no pin and decides nothing.
+ALSO IN THE SAMPLE CHECK: every event with an IDL entry must be consumed EXACTLY by the IDL's full field list (a field added, removed or resized breaks it); a Buy/Sell the shadow
+refuses only for a quote amount above its own 100,000 SOL sanity cap is `capped` (explained, bounded by the pinned max_capped_share); `ignored_discs` pins known events the rule
+does not read. LIMIT: the sample is the tx LOGS, as the shadow reads them; an event emitted only through emit_cpi inner instructions is not in it (InitBoost was never seen in logs
+in 14,755 txs on 2026-10-21), so the BOOST evidence is the monitor record half in (e), and min_init_boost_in_sample is pinned 0.
+
+PINS (null in tools/a3_redeploy_pins.json => ERROR => hard halt; fail closed): IDL sha256 x3, per-discriminator length ranges, InitBoost share, min InitBoost events, max_capped_share. `--observe` prints the observed values for the program-upgrade review (C2/C3) to pin; it writes no pin and decides nothing.
 
 Exit codes: 0 NONE or PASS; 10 HALT (verdict.halt_at_ms is set); 11 operational error that is NOT an A3 flag (stale or unreadable daily record): no halt, the job is loud.
 Counts and discriminators only: no price, mint, wallet or signature is written.
@@ -368,9 +372,30 @@ def fetch_sample(client: Any, start_slot: int) -> tuple[list[list[str]], int]:
     return out, scanned
 
 
-def evaluate_sample(sample: Sequence[Sequence[str]], idls: Mapping[str, Json] | None) -> dict[str, Any]:
-    """Counts only. disc_len: hex -> [min, max, n]. failures are the reasons that make the sample a FAIL (the pins comparison is separate)."""
+SWAP_AMOUNT_FIELD = {td._BUY_DISC: "user_quote_amount_in", td._SELL_DISC: "user_quote_amount_out"}
+
+
+def idl_full_len(raw: bytes, entry: tuple[str, list[Json], dict[str, Json]]) -> int:
+    """Offset at which the IDL's COMPLETE field list ends. An event whose bytes are not exactly consumed has a different layout than the IDL (field added, removed or resized)."""
+    off = 8
+    for f in entry[1]:
+        _v, off = _read(raw, off, f["type"], entry[2])
+    return off
+
+
+def evaluate_sample(sample: Sequence[Sequence[str]], idls: Mapping[str, Json] | None, ignored: Mapping[str, str] | None = None,
+                    trailing: Mapping[str, Sequence[int]] | None = None) -> dict[str, Any]:
+    """Counts only. disc_len: hex -> [min, max, n]. `ignored` = pinned {disc hex: IDL event name} of events the rule does not read (known, not decoded by the shadow).
+    capped = a Buy/Sell the shadow refuses ONLY because its quote amount is above the shadow's own sanity cap (td._MAX_SWAP_SOL_LAMPORTS, 100,000 SOL), with a sane timestamp:
+    explained, counted apart, bounded by a pinned share. Any other non-decode is `undecodable`. layout_mismatch = the bytes after the IDL's full field list (`trailing`, per event
+    name, pinned list of allowed counts; default [0]) are not an allowed count. The live programs append 8 bytes the docs-main IDL does not list (observed 2026-10-21), so 8 is pinned."""
     table = idl_event_table(idls) if idls else {}
+    ignored = ignored or {}
+    trailing = trailing or {}
+    trailing_seen: dict[str, set[int]] = {}
+    capped = 0
+    n_swap = 0
+    layout_bad: dict[str, int] = {}
     disc_len: dict[str, list[int]] = {}
     undecodable: dict[str, int] = {}
     unknown: dict[str, int] = {}
@@ -386,16 +411,33 @@ def evaluate_sample(sample: Sequence[Sequence[str]], idls: Mapping[str, Json] | 
             h = disc.hex()
             r = disc_len.setdefault(h, [len(raw), len(raw), 0])
             r[0], r[1], r[2] = min(r[0], len(raw)), max(r[1], len(raw)), r[2] + 1
-            if h not in td.KNOWN_DISCS:
+            entry = table.get(disc)
+            if h not in td.KNOWN_DISCS and not (h in ignored and (entry is None or entry[0] == ignored[h])):
                 unknown[h] = unknown.get(h, 0) + 1
                 continue
-            entry = table.get(disc)
             if entry:
                 seen_names.add(entry[0])
+                try:
+                    extra = len(raw) - idl_full_len(raw, entry)
+                    trailing_seen.setdefault(entry[0], set()).add(extra)
+                    if extra not in (trailing.get(entry[0]) or [0]):
+                        layout_bad[entry[0]] = layout_bad.get(entry[0], 0) + 1
+                except CheckError:
+                    layout_bad[entry[0]] = layout_bad.get(entry[0], 0) + 1
             if disc not in SHADOW_DECODED_DISCS:
                 continue
+            if disc in SWAP_AMOUNT_FIELD:
+                n_swap += 1
             row = shadow_decode(raw)
             if row is None:
+                if entry and disc in SWAP_AMOUNT_FIELD:
+                    try:
+                        ref = idl_decode(raw, entry, ["timestamp", SWAP_AMOUNT_FIELD[disc]])
+                        if td._sane_ts(ref["timestamp"]) and ref[SWAP_AMOUNT_FIELD[disc]] > td._MAX_SWAP_SOL_LAMPORTS:
+                            capped += 1
+                            continue
+                    except CheckError:
+                        pass
                 undecodable[h] = undecodable.get(h, 0) + 1
                 continue
             if disc == INIT_BOOST_DISC:
@@ -409,7 +451,8 @@ def evaluate_sample(sample: Sequence[Sequence[str]], idls: Mapping[str, Json] | 
                     key = f"{entry[0]}.{b}"
                     mismatch[key] = mismatch.get(key, 0) + 1
     return {"n_txs": len(sample), "n_events": n_events, "disc_len": disc_len, "undecodable": undecodable, "unknown": unknown, "idl_mismatch": mismatch,
-            "seen_events": sorted(seen_names), "n_init_boost": n_init_boost}
+            "seen_events": sorted(seen_names), "n_init_boost": n_init_boost,
+            "capped": capped, "n_swap_events": n_swap, "layout_mismatch": layout_bad, "trailing_seen": {k: sorted(v) for k, v in sorted(trailing_seen.items())}}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the check
@@ -498,8 +541,15 @@ def check_redeploy(rec: Json, mon_pins: Json, pins: Json, tri: Json, *, client: 
     detail: dict[str, Any] = {"sample_start_slot": start_slot, "slots_scanned": scanned}
     if len(sample) < SAMPLE_MIN_TXS:
         fails.append(f"c: sample has {len(sample)} txs after {scanned} slots, need {SAMPLE_MIN_TXS}")
-    ev = evaluate_sample(sample, idls)
-    detail.update({k: ev[k] for k in ("n_txs", "n_events", "n_init_boost", "seen_events")})
+    ignored = pins.get("ignored_discs") or {}
+    trailing = pins.get("trailing_bytes")
+    ev = evaluate_sample(sample, idls, ignored, trailing)
+    detail.update({k: ev[k] for k in ("n_txs", "n_events", "n_init_boost", "seen_events", "capped", "n_swap_events")})
+    max_cap = need(pins.get("max_capped_share"), "max_capped_share")
+    if ev["n_swap_events"] and ev["capped"] / ev["n_swap_events"] > max_cap:
+        fails.append(f"c: {ev['capped']}/{ev['n_swap_events']} Buy/Sell events above the shadow's amount cap (pinned max share {max_cap})")
+    if ev["layout_mismatch"]:
+        fails.append(f"d: event bytes not consumed exactly by the IDL layout: {ev['layout_mismatch']}")
     detail["disc_len"] = ev["disc_len"]
     if ev["undecodable"]:
         fails.append(f"c: undecodable events of a decoded discriminator: {ev['undecodable']}")
@@ -511,10 +561,13 @@ def check_redeploy(rec: Json, mon_pins: Json, pins: Json, tri: Json, *, client: 
         if name not in ev["seen_events"]:
             fails.append(f"d: {name} not seen in the sample")
     ranges = pins.get("disc_len") or {}
+    idl_discs = set(idl_event_table(idls))
     for h, (lo, hi, _n) in ev["disc_len"].items():
         if h in ev["unknown"]:
             continue  # already a FAIL reason above; an unknown discriminator has no pin by definition
         pr = ranges.get(h)
+        if pr is None and bytes.fromhex(h) in idl_discs:
+            continue  # no length pin, but the IDL consumes this event exactly (the stronger test above); the length range is only the guard for events without an IDL entry
         if pr is None or pr.get("min_len") is None or pr.get("max_len") is None:
             raise CheckError(f"pin missing: disc_len.{h}")
         if lo < pr["min_len"] or hi > pr["max_len"]:
@@ -603,7 +656,7 @@ def last_two_records(path: Path) -> tuple[dict[str, Any], dict[str, Any] | None]
     return recs[-1], (recs[-2] if len(recs) > 1 else None)
 
 
-def observe_report(rec: Json, client: Any, http_get: Callable, start_slot: int) -> dict[str, Any]:
+def observe_report(rec: Json, client: Any, http_get: Callable, start_slot: int, ignored: Mapping[str, str] | None = None, trailing: Mapping[str, Sequence[int]] | None = None) -> dict[str, Any]:
     """For the program-upgrade review: what the pins file should hold. Writes nothing, decides nothing."""
     idl_sha, idls = {}, {}
     for name in IDL_NAMES:
@@ -613,11 +666,12 @@ def observe_report(rec: Json, client: Any, http_get: Callable, start_slot: int) 
         idl_sha[name] = hashlib.sha256(body).hexdigest()
         idls[name] = json.loads(body)
     sample, scanned = fetch_sample(client, start_slot)
-    ev = evaluate_sample(sample, idls)
+    ev = evaluate_sample(sample, idls, ignored, trailing)
     den = (rec.get("graduations") or {}).get("boost_denominator") or {}
     return {"idl_sha256": idl_sha, "sample_start_slot": start_slot, "slots_scanned": scanned, "n_txs": ev["n_txs"], "disc_len": ev["disc_len"], "n_init_boost": ev["n_init_boost"],
             "init_boost_share": (den.get("n_init_boost", 0) / den["n_nonmayhem_wsol"]) if den.get("n_nonmayhem_wsol") else None,
-            "undecodable": ev["undecodable"], "unknown": ev["unknown"], "idl_mismatch": ev["idl_mismatch"]}
+            "undecodable": ev["undecodable"], "unknown": ev["unknown"], "idl_mismatch": ev["idl_mismatch"],
+            "capped": ev["capped"], "n_swap_events": ev["n_swap_events"], "layout_mismatch": ev["layout_mismatch"], "seen_events": ev["seen_events"], "trailing_seen": ev["trailing_seen"]}
 
 
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -657,7 +711,7 @@ def main(argv: Sequence[str] | None = None, *, client: Any = None, http_get: Cal
         if not tri["redeploys"]:
             print("no program redeploy in the newest record", file=sys.stderr)
             return 11
-        print(json.dumps(observe_report(rec, cl, get, max(d["new"] for d in tri["redeploys"]) + SAMPLE_START_OFFSET_SLOTS), sort_keys=True))
+        print(json.dumps(observe_report(rec, cl, get, max(d["new"] for d in tri["redeploys"]) + SAMPLE_START_OFFSET_SLOTS, pins.get("ignored_discs"), pins.get("trailing_bytes")), sort_keys=True))
         return 0
     v = decide(rec, prev, mon_pins, pins, Path(a.state), client=cl, http_get=get, now_ms=clock, job_id=a.job_id)
     text = json.dumps(v, sort_keys=True)
