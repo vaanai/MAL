@@ -118,56 +118,100 @@ def fresh_record(**flag_over):
     return run_utc, {"run_utc": run_utc, "halt": {"flags": flags}, "accounts": {}, "programs": {}}
 
 
-def run_script(tmp_path: Path, rec: dict, books: dict, arena: Path):
+def run_script(tmp_path: Path, rec: dict):
+    """research-0 half: monitor stubbed, check real. Returns (result, out dir)."""
     out = tmp_path / "out"
     out.mkdir(exist_ok=True)
     daily = out / "daily.jsonl"
     daily.write_text(json.dumps(rec) + "\n")
-    bf = out / "books.json"
-    bf.write_text(json.dumps(books))
-    env = dict(os.environ, A3_REPO=str(ROOT), A3_PY=str(stub_python(tmp_path)), A3_DAILY=str(daily), A3_STATE=str(out / "state.jsonl"), A3_BOOKS=str(bf),
-               A3_ARENA_ROOT=str(arena), A3_OUT=str(out))
-    # the real check reads tools/pump_structure_pins.json and tools/a3_redeploy_pins.json from the repo
+    env = dict(os.environ, A3_REPO=str(ROOT), A3_PY=str(stub_python(tmp_path)), A3_DAILY=str(daily), A3_STATE=str(out / "state.jsonl"), A3_OUT=str(out))
     r = subprocess.run(["sh", str(ROOT / "scripts/ops/a3-daily.sh")], env=env, capture_output=True, text=True, timeout=120)
     return r, out
 
 
-def test_script_hard_flag_halts_both_rule_groups_at_the_flag_instant(tmp_path):
+def decision_of(r) -> str:
+    lines = [ln for ln in r.stdout.splitlines() if ln.startswith("A3_HALT_DECISION ")]
+    assert len(lines) == 1, r.stdout + r.stderr
+    return lines[0]
+
+
+def run_apply(tmp_path: Path, line: str, books: dict, arena: Path):
+    bf = tmp_path / "books.json"
+    bf.write_text(json.dumps(books))
+    env = dict(os.environ, A3_REPO=str(ROOT), A3_PY=sys.executable, A3_BOOKS=str(bf), A3_ARENA_ROOT=str(arena))
+    return subprocess.run(["sh", str(ROOT / "scripts/ops/a3-apply-halt.sh"), line], env=env, capture_output=True, text=True, timeout=120)
+
+
+def test_cross_host_hard_flag_halts_both_rule_groups_at_the_flag_instant(tmp_path):
     path = make_registry(tmp_path)
     run_utc, rec = fresh_record(boost_disabled={"halt": True, "evaluated": True, "reason": "x"})
-    r, out = run_script(tmp_path, rec, BOOKS, path.parent)
-    assert r.returncode == 0, r.stdout + r.stderr
-    at = sc.load_registry(path)
+    r, out = run_script(tmp_path, rec)
+    assert r.returncode == 20 and "A3_HALT_NEEDED" in r.stdout, r.stdout + r.stderr
+    assert not (out / "bots.json").exists()  # the research-0 half touches no arena file
+    line = decision_of(r)
+    a = run_apply(tmp_path, line, BOOKS, path.parent)
+    assert a.returncode == 0, a.stdout + a.stderr
     from tools import a3_redeploy_check as c
     want = c.utc_ms(run_utc)
+    at = sc.load_registry(path)
     assert at["h5v1-boostfloor-a2"]["window_end_ms"] == want and at["h5v1-q50-a2"]["window_end_ms"] == want and at["h5v2-boostclock-a1"]["window_end_ms"] == want
-    assert "A3_HALT_APPLIED" in r.stdout
     assert json.loads((out / "a3-verdicts.jsonl").read_text().splitlines()[-1])["verdict"] == "HALT"
+    # applying the same line again, or the bare JSON, changes nothing
+    before = path.read_text()
+    assert run_apply(tmp_path, line.split(" ", 1)[1], BOOKS, path.parent).returncode == 0 and path.read_text() == before
 
 
-def test_script_clean_record_halts_nothing(tmp_path):
+def test_cross_host_clean_record_prints_a_noop_decision(tmp_path):
     path = make_registry(tmp_path)
     before = path.read_text()
     _, rec = fresh_record()
-    r, _ = run_script(tmp_path, rec, BOOKS, path.parent)
-    assert r.returncode == 0 and "A3_HALT_APPLIED" not in r.stdout
-    assert sc.load_registry(path)["h5v1-boostfloor-a2"]["window_end_ms"] is None
-    assert path.read_text() == before
+    r, _ = run_script(tmp_path, rec)
+    assert r.returncode == 0 and "A3_HALT_NEEDED" not in r.stdout
+    line = decision_of(r)
+    assert json.loads(line.split(" ", 1)[1])["verdict"] == "NONE"
+    assert run_apply(tmp_path, line, BOOKS, path.parent).returncode == 0 and path.read_text() == before
 
 
-def test_script_stale_record_is_loud_and_halts_nothing(tmp_path):
-    path = make_registry(tmp_path)
+def test_cross_host_stale_record_makes_no_decision(tmp_path):
     _, rec = fresh_record(boost_disabled={"halt": True, "evaluated": True, "reason": "x"})
     rec["run_utc"] = "2026-01-01T00:00:00Z"
-    r, out = run_script(tmp_path, rec, BOOKS, path.parent)
-    assert r.returncode == 11 and "A3_NO_VERDICT" in r.stdout
-    assert sc.load_registry(path)["h5v1-boostfloor-a2"]["window_end_ms"] is None
+    r, _ = run_script(tmp_path, rec)
+    assert r.returncode == 11 and "A3_NO_VERDICT" in r.stdout and "A3_HALT_DECISION" not in r.stdout
 
 
-def test_script_is_posix_sh():
-    text = (ROOT / "scripts/ops/a3-daily.sh").read_text()
+@pytest.mark.parametrize("bad", ["", "not json", '{"verdict": "HALT", "halt_at_ms": 5, "flag_halt_ms": 5}', '{"verdict": "HALT", "flag_halt_ms": 1792480287000}',
+                                 '{"verdict": "PASS", "flag_halt_ms": "1792480287000"}', '{"verdict": "MAYBE"}', '[1]'])
+def test_malformed_decision_is_refused_and_writes_nothing(tmp_path, bad):
+    path = make_registry(tmp_path)
+    before = path.read_text()
+    a = run_apply(tmp_path, "A3_HALT_DECISION " + bad if bad else "x", BOOKS, path.parent)
+    assert a.returncode == 2 and path.read_text() == before
+
+
+def test_older_decision_after_a_newer_one_cannot_move_a_window_later(tmp_path):
+    path = make_registry(tmp_path)
+    h.apply({"verdict": "FAIL", "flag_halt_ms": RUN_UTC_MS, "halt_at_ms": RUN_UTC_MS - 1000}, BOOKS, path)
+    h.apply({"verdict": "FAIL", "flag_halt_ms": RUN_UTC_MS + 99_000, "halt_at_ms": RUN_UTC_MS + 99_000}, BOOKS, path)
+    assert ends(path)["h5v1-boostfloor-a2"] == RUN_UTC_MS - 1000
+
+
+def test_apply_script_needs_an_argument():
+    r = subprocess.run(["sh", str(ROOT / "scripts/ops/a3-apply-halt.sh")], capture_output=True, text=True)
+    assert r.returncode == 2
+
+
+@pytest.mark.parametrize("name", ["a3-daily.sh", "a3-apply-halt.sh"])
+def test_script_is_posix_sh(name):
+    text = (ROOT / "scripts/ops" / name).read_text()
     assert text.startswith("#!/bin/sh")
     for bad in ("PIPESTATUS", "[[", "<(", "source ", "local ", "function ", "$'"):
         assert bad not in text
-    r = subprocess.run(["sh", "-n", str(ROOT / "scripts/ops/a3-daily.sh")], capture_output=True, text=True)
+    r = subprocess.run(["sh", "-n", str(ROOT / "scripts/ops" / name)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
+
+
+def test_apply_half_imports_without_third_party_packages():
+    """fast-0 has no /data/mal/venv: tools.a3_halt (via the scorer) must import on a bare interpreter. -S drops site-packages; stdlib only."""
+    code = "import tools.a3_halt"
+    r = subprocess.run([sys.executable, "-S", "-c", code], cwd=ROOT, capture_output=True, text=True, env=dict(os.environ, PYTHONPATH=str(ROOT)))
+    assert r.returncode == 0, r.stderr[-400:]

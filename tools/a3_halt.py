@@ -8,6 +8,11 @@ reached at all. tools/arena_h5_score.py is pinned (sha256 dfe7f018... DEC-031 Am
    "new_rule_bot_ids": [...]} books under the Q3 rule: only a HALT verdict ends them, at verdict.halt_at_ms (the redeploy instant for a FAIL/ERROR/timeout)
 The write is the scorer's own: same registry lock, same atomic write, same semantics as set_window_end (window_end_ms and stopped_ms set once, an earlier end is never moved
 later, lines are never removed). An id in the list that is not registered yet is reported and skipped (a book registered later must be in the list before its clock).
+CROSS-HOST. The A3 monitor and check run on mal-research-0; the arena registry is on mal-fast-0. The research-0 job prints ONE line `A3_HALT_DECISION <json>` (decision_line: run_utc,
+verdict, the two instants in epoch ms, reasons, redeploys) and nothing else crosses. The fast-0 job takes that line (or its JSON) as an argument: `--decision`. Why this and not
+re-deriving: re-running the decision on fast-0 would need the monitor pins, the state file (PASS/FAIL memory) and public RPC there, and a second evaluation could disagree with the
+first (a different sample, a later clock). One evaluation, one printed decision, strictly validated here (parse_decision), applied idempotently (an earlier end is never moved later,
+so applying the same line twice, or an older line after a newer one, changes nothing). A line that is malformed or hand-edited to a non-epoch instant is refused (exit 2).
 Prints one JSON line. Exit 0 whatever was applied; 2 for an unreadable verdict, list or registry.
 """
 from __future__ import annotations
@@ -58,6 +63,41 @@ def plan(verdict: Mapping[str, Any], books: Mapping[str, Any]) -> list[tuple[int
     return out
 
 
+DECISION_PREFIX = "A3_HALT_DECISION "
+DECISION_KEYS = ("run_utc", "verdict", "flag_halt_ms", "halt_at_ms", "reasons", "redeploys")
+
+
+def decision_from_verdict(verdict: Mapping[str, Any]) -> dict[str, Any]:
+    """The small, self-contained halt decision that crosses hosts (research-0 -> fast-0). Instants are epoch ms; books are chosen on the arena host from its own books file."""
+    return {"run_utc": verdict.get("run_utc"), "verdict": verdict.get("verdict"), "flag_halt_ms": verdict.get("flag_halt_ms"), "halt_at_ms": verdict.get("halt_at_ms"),
+            "reasons": [str(r)[:300] for r in (verdict.get("reasons") or [])][:5], "redeploys": verdict.get("redeploys") or []}
+
+
+def needs_halt(decision: Mapping[str, Any]) -> bool:
+    return decision.get("flag_halt_ms") is not None or decision.get("halt_at_ms") is not None
+
+
+def decision_line(verdict: Mapping[str, Any]) -> str:
+    return DECISION_PREFIX + json.dumps(decision_from_verdict(verdict), sort_keys=True)
+
+
+def parse_decision(text: str) -> dict[str, Any]:
+    """Accepts the bare JSON or the whole `A3_HALT_DECISION <json>` line (a job log line copied as is). Strict: anything malformed raises ValueError, nothing is guessed."""
+    t = text.strip()
+    if DECISION_PREFIX.strip() in t:
+        t = t.split(DECISION_PREFIX.strip(), 1)[1].strip()
+    d = json.loads(t)
+    if not isinstance(d, dict) or d.get("verdict") not in ("NONE", "PASS", "HALT", "FAIL", "ERROR"):
+        raise ValueError("not an A3 decision")
+    for k in ("flag_halt_ms", "halt_at_ms"):
+        v = d.get(k)
+        if v is not None and (not isinstance(v, int) or isinstance(v, bool) or v < 1_600_000_000_000):
+            raise ValueError(f"{k} is not an epoch-ms integer")
+    if d["verdict"] in ("HALT", "FAIL", "ERROR") and d.get("halt_at_ms") is None:
+        raise ValueError("a hard verdict needs halt_at_ms")
+    return d
+
+
 def apply(verdict: Mapping[str, Any], books: Mapping[str, Any], registry: Path) -> dict[str, Any]:
     done = []
     for at_ms, ids, rule in plan(verdict, books):
@@ -66,13 +106,28 @@ def apply(verdict: Mapping[str, Any], books: Mapping[str, Any], registry: Path) 
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="Apply an A3 verdict to the arena registry (explicit book list).")
-    p.add_argument("--verdict", required=True)
-    p.add_argument("--books", required=True)
-    p.add_argument("--arena-root", required=True)
+    p = argparse.ArgumentParser(description="Apply an A3 decision to the arena registry (explicit book list), or print the decision line for it.")
+    src = p.add_mutually_exclusive_group(required=True)
+    src.add_argument("--verdict", help="verdict JSON file (same host as the check): apply it")
+    src.add_argument("--decision", help="the A3_HALT_DECISION line (or its JSON) printed by the research-0 job: apply it (the cross-host route)")
+    src.add_argument("--emit-decision", metavar="VERDICT_FILE", help="research-0 side: print the A3_HALT_DECISION line; exit 20 if a halt is needed, 0 if not, 2 if unreadable")
+    p.add_argument("--books")
+    p.add_argument("--arena-root")
     a = p.parse_args(argv)
+    if a.emit_decision:
+        try:
+            verdict = json.loads(Path(a.emit_decision).read_text(encoding="utf-8"))
+            line = decision_line(verdict)
+            need_halt = needs_halt(decision_from_verdict(verdict))
+        except (OSError, ValueError) as exc:
+            print(f"A3_HALT_ERROR {type(exc).__name__}: {str(exc)[:200]}", file=sys.stderr)
+            return 2
+        print(line)
+        return 20 if need_halt else 0
     try:
-        verdict = json.loads(Path(a.verdict).read_text(encoding="utf-8"))
+        if not a.books or not a.arena_root:
+            raise ValueError("--books and --arena-root are required to apply")
+        verdict = json.loads(Path(a.verdict).read_text(encoding="utf-8")) if a.verdict else parse_decision(a.decision)
         books = json.loads(Path(a.books).read_text(encoding="utf-8"))
         out = apply(verdict, books, Path(a.arena_root) / "bots.json")
     except (OSError, ValueError, KeyError) as exc:
