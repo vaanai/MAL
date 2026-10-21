@@ -108,7 +108,7 @@ Caveats: 10 of the 28 migration txs have no InitBoost in the sample (mayhem or n
 ## 7. NOT checked
 
 - The PumpSwap 15:46Z deploy slot (inferred from events only), the 15:46Z binary (never captured), the old PumpSwap binary (not diffed).
-- On-chain Anchor IDL accounts (docs IDLs only); the meaning of the 8 bytes; the 9 non-zero values.
+- On-chain Anchor IDL accounts (docs IDLs only); the meaning of the 8 bytes and of their 131 non-zero values.
 - Any fee computation of the redeployed programs (no `h5_upgrade_dryrun` run; fee configs are byte-equal only); the executor's remaining accounts after the deploy (simulation not re-run).
 - Events outside the sampled blocks and rare types: no BoostBuyAndBurn beyond 8, no PostCompleteBuy outside 16, sample is 10 blocks of each of 24 hours (about 1.5% of slots).
 - Whether logsSubscribe delivers the same truncated logs as `getBlock` (assumed).
