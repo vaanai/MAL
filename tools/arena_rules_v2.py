@@ -106,6 +106,7 @@ class HostV2(R.Host):
         super().step(T)
         if T - self._last_sweep >= SWEEP_EVERY_MS:
             self._last_sweep = T
+            self.table.live_positions = {pid for b in self.books.values() for pid in b.open}
             self.table.sweep(T)
         if T - self._last_ckpt >= CHECKPOINT_EVERY_MS:
             self._last_ckpt = T

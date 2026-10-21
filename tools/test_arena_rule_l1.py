@@ -200,8 +200,9 @@ def test_time_exit_and_cooldown_reentry(tmp_path):
 
 def test_take_profit_on_post_trade_spot(tmp_path):
     rows = pool_rows()
-    t = rows[-1]["t_recv_ms"] + 60_000
-    rows.append(row(t, "P", "buy", q=60 * SOLX, sol=50_000_000))  # the spot is several times the decision print's
+    t = rows[-1]["t_recv_ms"]
+    rows.append(row(t + 10_000, "P", "sell", q=400_000_000, sol=1_000_000))  # the landing print (>= decision slot + 7 + k + 1): the mark is its pre-trade state with our buy
+    rows.append(row(t + 60_000, "P", "buy", q=60 * SOLX, sol=50_000_000))  # the spot is several times the mark
     host = run_host(tmp_path, rows, hours=34)
     ex = [r for r in host.log.rows("l1-floor-v2") if r.get("kind") == "exit"]
     assert len(entries(host)) == 1 and [x["reason"] for x in ex] == [L.REASON_TP]
@@ -210,6 +211,7 @@ def test_take_profit_on_post_trade_spot(tmp_path):
 def test_cooldown_blocks_a_second_entry_within_60s(tmp_path):
     rows = pool_rows()
     t = rows[-1]["t_recv_ms"]
+    rows.append(row(t + 10_000, "P", "sell", q=400_000_000, sol=1_000_000))
     rows.append(row(t + 60_000, "P", "buy", q=60 * SOLX, sol=50_000_000))  # tp exit at t + 60 s
     rows.append(row(t + 70_000, "P", "sell", q=600_000_000))  # a second qualifying sell 10 s after the exit decision
     host = run_host(tmp_path, rows, hours=34)
@@ -255,3 +257,14 @@ def test_rule_source_has_no_banned_family_and_keeps_wsol_first():
     on_row = src.split("def on_row")[1].split("quote_mint")[0]
     assert "virtual_quote_reserves" not in on_row  # the quote test comes before the V test
     assert json.dumps(L.make_rule().table_mode) == '"first_print"'
+
+
+def test_tp_reference_is_the_post_buy_mark_not_the_decision_spot(tmp_path):
+    """RECONCILE.md section 4: after a sell cascade the decision-slot spot is far above the entry price. A print at 1.2x the mark must NOT take profit; 1.6x must."""
+    rows = pool_rows()
+    t = rows[-1]["t_recv_ms"]
+    rows.append(row(t + 10_000, "P", "sell", q=400_000_000, sol=1_000_000))
+    rows.append(row(t + 30_000, "P", "buy", q=5 * SOLX, sol=10_000_000))  # spot (5 + 17.6) / (22.6 / 18.0 -> 1.25x) stays under 1.5x
+    host = run_host(tmp_path, rows, hours=34)
+    mark = next(iter(host.table.marks.values()))[0]
+    assert mark > 0 and not [r for r in host.log.rows("l1-floor-v2") if r.get("kind") == "exit"]

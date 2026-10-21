@@ -95,6 +95,9 @@ class PoolTable:
         self.last_exit: dict[str, int] = {}
         self.rows_applied = 0
         self.skip_before = 0
+        self.rate_h: dict[int, list] = {}  # arrival hour -> [min slot, max slot, min bt, max bt, n] over WSOL PumpSwap rows (the kit's per-hour slots_per_s)
+        self.live_positions: set[str] = set()  # set by the host before sweep()
+        self.marks: dict[str, tuple] = {}  # position_id -> (post-buy mark, net lamports, tokens): the landing state, derived once from the tape
 
     # ---- reading
     def base(self, pool: str) -> int | None:
@@ -107,6 +110,15 @@ class PoolTable:
         return self.last_exit.get(pool)
 
     # ---- writing
+    def rate(self, hidx: int, default: float = 2.5) -> float:
+        """Slots per second of arrival hour `hidx` as the kit computes it ((max slot - min slot) / (max bt - min bt)), running within the hour; the previous hour's when the
+        current one has fewer than 1000 rows."""
+        for h in (hidx, hidx - 1):
+            r = self.rate_h.get(h)
+            if r and (r[4] >= 1000 or h != hidx or (hidx - 1) not in self.rate_h) and r[3] > r[2]:
+                return (r[1] - r[0]) / (r[3] - r[2])
+        return default
+
     def note_exit(self, pool: str, ms: int) -> None:
         self.last_exit[pool] = int(ms)
 
@@ -150,6 +162,14 @@ class PoolTable:
         bt = int(ts)
         hidx = t // HOUR_MS
         self.rows_applied += 1
+        sl_ = int(row["slot"])
+        rh = self.rate_h.get(hidx)
+        if rh is None:
+            self.rate_h[hidx] = [sl_, sl_, bt, bt, 1]
+            for old in [h for h in self.rate_h if h < hidx - 2]:
+                del self.rate_h[old]
+        else:
+            rh[0], rh[1], rh[2], rh[3], rh[4] = min(rh[0], sl_), max(rh[1], sl_), min(rh[2], bt), max(rh[3], bt), rh[4] + 1
         if pool not in self.seen:
             self.seen[pool] = bt
             self._admit(pool, row, bt)
@@ -194,6 +214,8 @@ class PoolTable:
             if len(pp) == 0 and now_ms // 1000 - self.uni[pool] > AGE_DROP_S:
                 del self.prints[pool]
                 n += 1
+        for pid in [k for k in self.marks if k not in self.live_positions]:
+            del self.marks[pid]
         for pool in [p for p, ms in self.last_exit.items() if now_ms - ms > 3_600_000]:
             del self.last_exit[pool]
         return n
@@ -201,7 +223,7 @@ class PoolTable:
     # ---- persistence
     def to_dict(self) -> dict[str, Any]:
         return {"version": VERSION, "mode": self.mode, "t0": self.t0, "hwm_ms": self.hwm_ms, "hwm_keys": sorted(map(tuple, self.hwm_keys), key=repr), "seen": self.seen,
-                "uni": self.uni, "canon": self.canon, "mig": self.mig, "have": self.have, "mayhem": self.mayhem, "last_exit": self.last_exit,
+                "uni": self.uni, "canon": self.canon, "mig": self.mig, "have": self.have, "mayhem": self.mayhem, "last_exit": self.last_exit, "rate_h": self.rate_h, "marks": self.marks,
                 "prints": {p: (pp.bt, pp.sol, pp.spot, pp.hidx) for p, pp in self.prints.items()}, "rows_applied": self.rows_applied}
 
     @classmethod
@@ -212,6 +234,7 @@ class PoolTable:
         t.hwm_ms, t.hwm_keys = int(d["hwm_ms"]), {tuple(k) for k in d["hwm_keys"]}
         t.seen, t.uni, t.canon, t.mig = dict(d["seen"]), dict(d["uni"]), dict(d["canon"]), dict(d["mig"])
         t.have, t.mayhem, t.last_exit, t.rows_applied = set(d["have"]), set(d["mayhem"]), dict(d["last_exit"]), int(d["rows_applied"])
+        t.rate_h, t.marks = {int(k): list(v) for k, v in d["rate_h"].items()}, {k: tuple(v) for k, v in d["marks"].items()}
         t.skip_before = t.hwm_ms
         for p, (bt, sol, spot, hidx) in d["prints"].items():
             pp = PoolPrints()

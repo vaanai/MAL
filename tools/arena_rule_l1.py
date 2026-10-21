@@ -13,12 +13,13 @@ ENTRY (every condition is l1_rule.py's; line numbers are l1_rule.py's)
   * the previous print of the pool is within 6 h (l1_rule.py:133), volume over the last 24 h including this print >= 1 SOL (:135-138), and post-trade spot / post-trade spot
     of the last print at or before 6 h back < 0.80 (:139-143). Prints are the table's: WSOL PumpSwap prints of the last 26 arrival hours (the kit's `hist` deque).
   * one open position per pool; re-entry no earlier than 60 s after the exit decision (Cell cooldown_s 60). Uncapped book (QP C5). No attempt key.
-EXIT: take profit when the pool's post-trade spot >= 1.5 x the post-trade spot of the decision print (the state's price; the kit used the FILLED post-buy mark: disclosed
-  difference), else a time exit at decision + 1.9 s + 24 h on the 1 s tick. No stop.
+EXIT: take profit when the post-trade spot with our position kept >= 1.5 x the POST-BUY MARK (the frozen spec; RECONCILE.md section 4: the kit's default resolver used 1.5 x the
+  pre-decision spot, so the port is compared with l1_rule_tpfix.py, see `_tp_hit`), else a time exit at decision + 1.9 s + 24 h on the 1 s tick. No stop.
 
 WHERE THIS IS NOT l1_rule.py (disclosed)
   1. Causality is the same reading as l1_rule.py (own row's post-trade vault). The kit's slot arithmetic for the 24 h exit and the 60 s cooldown is replaced by ms on a 1 s tick.
-  2. TP mark: the decision print's post-trade spot, not the filled mark.
+  2. TP: the mark is derived at the landing print from the tape with the kit's own fee tier and 0.25 SOL stake (no ledger fill); checks start at the landing print, not 7 slots earlier.
+     The slots-per-second used for k is the running figure of the decision's arrival hour (the kit's is the whole hour's).
   3. The previous-print / volume / 6 h-spot arrays are in ARRIVAL order (t_recv_ms); the kit sorts a pool's hour by (slot, tx, event). Differences only if a pool's prints
      arrive out of slot order.
   4. The decision slot is the host's highest trade slot seen (arena_rules.Host.slot), the kit's is the print's slot.
@@ -29,6 +30,9 @@ from __future__ import annotations
 from bisect import bisect_left, bisect_right
 from typing import Any, Mapping
 
+import math
+
+from tools import arena_stack as F
 from tools.arena_pool_table import FEE, HIST_HOURS, HOUR_MS, V_HI, V_LO, WSOL
 from tools.arena_rules import Buy, Ctx, Rule, Sell
 
@@ -47,6 +51,9 @@ HOLD_MS = int(HOLD_S * 1000) + LEG_MS
 COOLDOWN_MS = 60_000
 REASON_TP = "tp_1.5x"
 REASON_TIME = "time_24h"
+STAKE_LAMPORTS = 0.25e9
+FEED_D = 7  # arena_screen.py:131 (feed_delay_slots, pinned like arena_rules.stack_config(7))
+LAT_DECIDING = 1.9
 TABLE_MODE = "first_print"  # the mode the port-equivalence run covered; "complete" is available and was NOT compared to the kit
 
 
@@ -73,9 +80,8 @@ class L1Rule(Rule):
         mine = [p for p in ctx.positions if p.pool == pool]
         pr = ctx.state.pool(pool)
         px = pr.price if pr is not None else None
-        for pos in mine:  # take profit on the post-trade spot of every print of the pool
-            mark = pos.meta.get("mark")
-            if not pos.exiting and isinstance(mark, (int, float)) and mark > 0 and isinstance(px, (int, float)) and px >= TP * mark:
+        for pos in mine:
+            if not pos.exiting and self._tp_hit(ctx, pos, row, px):
                 orders.append(Sell(pos.position_id, REASON_TP))
         if mine or row.get("side") != "sell":
             return orders
@@ -103,8 +109,46 @@ class L1Rule(Rule):
             return orders
         vol24, r6 = got
         meta = {"rule": BOT_ID, "cell": CELL, "hold_s": HOLD_S, "tp": TP, "mint": row.get("mint"), "v": v, "age_s": int(ts) - M, "vol24_sol": vol24 / 1e9, "r6": r6,
-                "mark": px, "signal_slot": row.get("slot"), "signal_sig": row.get("signature"), "signal_t_recv_ms": t}
+                "mark0": px, "rate": ctx.table.rate(t // HOUR_MS), "signal_slot": row.get("slot"), "signal_sig": row.get("signature"), "signal_t_recv_ms": t}
         return orders + [Buy(pool, meta)]
+
+    @staticmethod
+    def _tp_hit(ctx: Any, pos: Any, row: Mapping[str, Any], px: Any) -> bool:
+        """Take profit against the FROZEN spec's reference, the POST-BUY MARK (RECONCILE.md section 4, l1_rule_tpfix.py): mark = (Qe + net) / (Be - tokens) at the landing
+        state, hit when the post-trade spot WITH OUR POSITION KEPT, (q_post + V + net) / (b_post - tokens), is >= 1.5 x mark. The landing state is the PRE-trade state of the
+        first print of the pool at or after slot signal_slot + 7 + k + 1 (k = ceil(1.9 s x slots/s)); the mark is derived once from the tape and kept in the pool table. The
+        port checks from that print on (the kit also looks at the <= 7 slots before it: disclosed). Constants 0.99 / 1.01 are the kit's own (tpfix _price_exit)."""
+        meta = pos.meta
+        sd, rate, slot = meta.get("signal_slot"), meta.get("rate"), row.get("slot")
+        if not all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in (sd, rate, slot)) or rate <= 0:
+            return False
+        k = int(F.k_slots(LAT_DECIDING, 1.0 / rate, "ceil"))
+        if slot < sd + FEED_D + k + 1:
+            return False
+        tab = ctx.table
+        m = tab.marks.get(pos.position_id)
+        try:
+            q, b, so, tk = float(row["quote_reserve"]), float(row["base_reserve"]), float(row["sol_lamports"]), float(row["token_raw"])
+            v = float(row.get("virtual_quote_reserves"))
+        except (KeyError, TypeError, ValueError):
+            return False
+        if m is None:
+            Qe, Be = q + v, b
+            net = STAKE_LAMPORTS * (1 - float(F.fee_ppm(Qe, Be)) / 1e6)
+            tok = Be * net / (Qe + net)
+            if math.isfinite(tok) and 0 < tok < Be:
+                m = (float((Qe + net) / (Be - tok)), net, tok)
+            else:  # the kit falls back to its own resolver here; the port falls back to the decision print's post-trade spot
+                m = (float(meta.get("mark0") or 0.0), net, 0.0)
+            tab.marks[pos.position_id] = m
+        mark, net, tok = m
+        if not mark > 0:
+            return False
+        buy = row.get("side") == "buy"
+        qp = (q + so * 0.99 if buy else q - so * 1.01) + v
+        bp = b - tk if buy else b + tk
+        bp = bp if bp > 0 else b
+        return (qp + net) / max(bp - tok, 1.0) >= TP * mark
 
     @staticmethod
     def _floor_option(pp: Any, bt_now: int, hidx_now: int) -> tuple[float, float] | None:
