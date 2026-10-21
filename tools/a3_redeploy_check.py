@@ -199,7 +199,10 @@ def triage(rec: Json, pins: Json, prev: Json | None) -> dict[str, Any]:
                 hard.append(f"{k}: {v['reason']}")
     # a core rule unevaluated on two consecutive daily runs (an absent flag is unevaluated)
     if prev is not None:
-        pflags = _norm_flags(prev)
+        try:
+            pflags = _norm_flags(prev)
+        except CheckError:  # a broken PREVIOUS record is all-unevaluated: it must never discard a valid halt found today
+            pflags = {k: {"halt": False, "evaluated": False, "reason": "previous record broken"} for k in ALL_HALT_FLAGS}
         for k in ALL_HALT_FLAGS:
             if not flags[k]["evaluated"] and not pflags[k]["evaluated"]:
                 hard.append(f"{k}: unevaluated on two consecutive daily runs")

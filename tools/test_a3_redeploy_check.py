@@ -1132,3 +1132,13 @@ def test_not_reached_error_reports_the_number_of_signatures_read(tmp_path):
     cl.write_sigs["PD_SWAP"] = [x for x in cl.write_sigs["PD_SWAP"] if not x["signature"].startswith("pinned")]
     v = run(make_rec(), tmp_path, client=cl)
     assert v["verdict"] == "ERROR" and "after reading 1 signatures" in v["reasons"][0]
+
+
+def test_broken_previous_record_does_not_discard_todays_valid_halt(tmp_path):
+    rec = make_rec(redeploy=False)
+    rec["halt"]["flags"]["boost_disabled"] = flag(True, reason="boost off")
+    for n, prev in enumerate(({**make_rec(redeploy=False, run_utc="2026-10-19T07:11:27Z"), "halt": {}}, {"run_utc": "2026-10-19T07:11:27Z"})):
+        t = c.triage(rec, MON_PINS, prev)  # yesterday's flagless record: all-unevaluated, today's hard BOOST flag still halts
+        assert t["action"] == "hard" and t["flag_halt_ms"] == ms(RUN_UTC) and any(r.startswith("boost_disabled: boost off") for r in t["hard_reasons"])
+        v = run(rec, tmp_path / str(n), prev=prev)
+        assert v["verdict"] == "HALT" and v["halt_at_ms"] == ms(RUN_UTC)
