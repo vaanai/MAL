@@ -174,8 +174,8 @@
           8
         ]
       },
-      "observed_utc": "2026-10-21T17:55:29Z",
-      "note": "WithdrawEvent: pinned 8 on the QP repin ruling (not seen in the samples)"
-    }
+      "observed_utc": "2026-10-21T17:55:29Z"
+    },
+    "note": "RECORD ONLY, no code compares against it: the programdata sha256 of pump and pumpswap that the trailing set was derived from. WithdrawEvent 8 is pinned on the QP repin ruling (not seen in this PR's samples; #780 reports 8 bytes on 2 PumpSwap WithdrawEvents)."
   }
 }

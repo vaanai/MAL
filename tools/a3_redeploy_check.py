@@ -2,16 +2,19 @@
 """A3 automatic redeploy check (QP ruling 2026-10-21, Q3 R2-R5; DEC-031 amendment pending). Paper only. No credential is read, no outcome is touched.
 
 WHAT IT DECIDES. It reads the NEWEST line of the A3 daily record (tools/pump_structure_monitor.py output) and sorts it into one of three outcomes:
-  NONE   no A3 halt flag in the line.
-  PASS   the line's pins_changed covers ONLY the pump and/or PumpSwap PROGRAM deploy slots, every other flag is clear and evaluated, and every check below holds.
-         Record-only: the redeploy is disclosed (slot, UTC, check job id) and the counted window continues.
+  NONE   no A3 halt flag in the line AND the pins agree with the record. Every one of the six flags must be present with a boolean `halt` (absent or malformed = UNEVALUATED);
+         a record without any `halt.flags` is a broken record: operational error (exit 11), never a NONE. The pins comparison runs on EVERY record, whatever pins_changed says.
+  PASS   the line's pins differ ONLY in the pump and/or PumpSwap PROGRAM deploy slots, every other flag is clear and evaluated, and every check below holds for EVERY upgrade write
+         since the pinned slot. Record-only: each write is disclosed (slot, UTC, check job id) and the counted window continues.
   HALT   anything else. The verdict carries the halt instant (epoch ms):
-           - the REDEPLOY instant (the earliest changed deploy_utc) when the redeploy check FAILS, ERRORS or TIMES OUT (a fixed rule, no judgment);
-           - the flag's instant (the run's run_utc, as under the old rule) for every always-hard item: a fee / global config account hash change, a fees-program
-             redeploy, any of boost_disabled / boost_share_low / boost_last_slice_early / boost_budget_or_slices_changed, synthetic_share_high, any other
-             halt flag, or a core rule unevaluated on two consecutive daily runs.
+           - the instant of the EARLIEST UNREVIEWED upgrade write (each write of each flagged program is its own redeploy, enumerated back to the pinned slot) when its check
+             FAILS, ERRORS or TIMES OUT; for a program whose enumeration failed or did not reach the pinned slot, no later than the run_utc of the newest earlier daily record
+             that still showed the pinned slot (else the pinned deploy's own instant): a fixed rule, no judgment;
+           - the flag's instant (the run's run_utc, as under the old rule) for every always-hard item (a fee / global config account hash change, a fees-program redeploy,
+             any of the four BOOST flags, synthetic_share_high, any other halt flag, a core rule unevaluated on two consecutive daily runs), or the earliest unreviewed write /
+             enumeration bound when that is earlier (a hard flag in the same run as an unreviewed write cannot be a PASS).
 There is NO override path: no flag, no environment variable and no file edit turns a FAIL into a PASS. The only memory is the append-only STATE file, which records the
-verdict per (program, deploy slot); a PASSed slot is covered afterwards (one deploy is never classified twice, R5) and a FAILed slot stays failed.
+verdict per (program, deploy slot); a PASSed write is covered afterwards (one deploy is never classified twice, R5) and a FAILed write stays failed.
 
 THE CHECK (all must hold, else FAIL; a missing pin or a failed fetch is ERROR; both halt):
   a. the other five A3 flags (the four BOOST flags and synthetic_share_high) are clear AND evaluated;
@@ -28,15 +31,19 @@ THE CHECK (all must hold, else FAIL; a missing pin or a failed fetch is ERROR; b
   f. IDL unchanged: sha256 of each pinned IDL URL (the MAIN branch of github.com/pump-fun/pump-public-docs, unauthenticated, fetched at run time) equals the pin.
      This is the credential-free route. The alternative (programdata-derived discriminator table) would need the program's Anchor IDL account or a decompile; the samples'
      discriminator sets in (c)/(d) are the on-chain half of the same question. A fetch failure is ERROR, never a pass;
+  g. the whole check finishes within CHECK_WINDOW_S (24 h) of the earliest unresolved write's instant; later is a FAIL (timeout);
   h. FROZEN GUARD: git blob of each decoder file the frozen book imports (FROZEN_FILES) equals the pinned blob from the book's frozen_sha, else ERROR.
-  g. the whole check finishes within CHECK_WINDOW_S (24 h) of the earliest changed redeploy instant; later is a FAIL (timeout).
 
-ALSO IN THE SAMPLE CHECK: every event with an IDL entry must be consumed EXACTLY by the IDL's full field list (a field added, removed or resized breaks it); a Buy/Sell the shadow
-refuses only for a quote amount above its own 100,000 SOL sanity cap is `capped` (explained, bounded by the pinned max_capped_share); `ignored_discs` pins known events the rule
-does not read. LIMIT: the sample is the tx LOGS, as the shadow reads them; an event emitted only through emit_cpi inner instructions is not in it (InitBoost was never seen in logs
-in 14,755 txs on 2026-10-21), so the BOOST evidence is the monitor record half in (e), and min_init_boost_in_sample is pinned 0.
+TRAILING BYTES (QP repin ruling C3'b/c): the live Trade / Buy / Sell / Withdraw events carry 8 bytes after the IDL's last field. Pinned EXACTLY [8] for those four events and [0] for
+every other pinned event (anything looser is ERROR; any other count seen is a FAIL). A NON-ZERO value in that field on a SOL-quoted bonding trade or a WSOL-quoted PumpSwap trade is a
+hard FAIL (meaning unknown inside the H5 universe). A Buy/Sell the shadow refuses only for a quote amount above its own 100,000 SOL cap is `capped` (bounded by the pinned
+max_capped_share, a one-sample judgement). `ignored_discs` pins known events the rule does not read.
+KNOWN LIMITS: CompleteEvent (it rides the completing tx, not the migrate tx) and PostCompleteBuyEvent (synthetic migrations; none seen) are not sampled, so a redeploy that changes
+only their layout PASSes this check. The log sample cannot see emit_cpi-only events (InitBoost was never in the logs); the migrate sample can. `reviewed_programdata` in the pins
+file is a RECORD of the programdata hashes the trailing set was derived from; no code compares against it (a new redeploy has a different hash by definition and is judged by the checks).
 
-PINS (null in tools/a3_redeploy_pins.json => ERROR => hard halt; fail closed): IDL sha256 x3, per-discriminator length ranges, InitBoost share, min InitBoost events, max_capped_share. `--observe` prints the observed values for the program-upgrade review (C2/C3) to pin; it writes no pin and decides nothing.
+PINS (missing in tools/a3_redeploy_pins.json => ERROR => hard halt; fail closed): IDL sha256 x3, the trailing set, frozen blobs, required migrate events, InitBoost share, min InitBoost events
+(> 0), max_capped_share. `--observe` prints the observed values for the program-upgrade review to pin; it writes no pin and decides nothing.
 
 Exit codes: 0 NONE or PASS; 10 HALT (verdict.halt_at_ms is set); 11 operational error that is NOT an A3 flag (stale or unreadable daily record, a state file that cannot be written): no halt
 from this tool, the job is loud and tools.a3_halt's dead-man rule is the backstop.
@@ -534,17 +541,21 @@ def migrate_sample(client: Any, min_slot: int, now_s: float) -> list[tuple[dict[
         raise CheckError(f"migrate sample: start slot {min_slot} not reached in {MIGRATE_MAX_PAGES} pages")
     cands.sort(key=lambda s: s["slot"])
     out: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    skipped = {"unfetchable": 0, "not_a_migrate_tx": 0}
     for s in cands:
         tx = mon.fetch_tx(client, s["signature"])
         if tx is None:
+            skipped["unfetchable"] += 1
             continue
         g = mon.parse_migrate_tx(tx)
         if g is None:
+            skipped["not_a_migrate_tx"] += 1
             continue
         g["sig"] = s["signature"]
         out.append((tx, g))
         if len(out) >= MIGRATE_K:
             break
+    migrate_sample.skipped = skipped  # type: ignore[attr-defined]  # counted, never silent: reported in the evidence detail
     return out
 
 
@@ -562,6 +573,7 @@ def migrate_evidence(client: Any, idls: Mapping[str, Json], min_slot: int, now_s
     mon.annotate_mayhem(client, grads)
     ev = evaluate_blobs((b for tx, _g in txs for b in mon.tx_event_blobs(tx)), idls, ignored, trailing)
     ev["n_migrate_txs"] = len(txs)
+    ev["migrate_skipped"] = dict(getattr(migrate_sample, "skipped", {}))
     ev["slot_min"], ev["slot_max"] = min(g["slot"] for g in grads), max(g["slot"] for g in grads)
     den = [g for g in grads if g.get("mayhem") is False and g["quote_wsol"]]
     if len(den) < mon.MIN_EVAL_N_DEFAULT:
@@ -759,7 +771,7 @@ def check_redeploy(rec: Json, mon_pins: Json, pins: Json, tri: Json, *, client: 
     mv = migrate_evidence(client, idls, start_slot, now_ms() / 1000, ignored, trailing)
     mv["_idl_discs"] = idl_discs
     detail["migrate_sample"] = {k: mv[k] for k in ("n_migrate_txs", "slot_min", "slot_max", "n_events", "seen_events", "n_init_boost", "trailing_seen", "n_nonmayhem_wsol",
-                                                    "n_init_boost_graduations", "init_boost_share", "budget_sol_median", "slices_median")}
+                                                    "n_init_boost_graduations", "init_boost_share", "budget_sol_median", "slices_median", "migrate_skipped")}
     sample_failures(mv, "migrate sample", pins, fails, client)
     for name in required:
         if name not in mv["seen_events"]:

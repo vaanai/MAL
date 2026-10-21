@@ -1111,3 +1111,16 @@ def test_an_absent_flag_is_unevaluated_and_two_consecutive_runs_halt():
     assert c.triage(rec, MON_PINS, make_rec(redeploy=False, run_utc="2026-10-19T07:11:27Z"))["action"] == "none"  # only one run missing it
     rec["halt"]["flags"]["boost_share_low"] = {"evaluated": True}  # no boolean halt: malformed => unevaluated, not clear
     assert c._norm_flags(rec)["boost_share_low"]["evaluated"] is False
+
+
+def test_unfetchable_and_non_migrate_txs_are_counted_not_dropped_silently(tmp_path):
+    cl = FakeClient(sample_blobs(), n_migrate=c.MIGRATE_K + 3)
+    del cl.txs["sig0"]  # unfetchable
+    cl.txs["sig1"] = {"slot": cl.txs["sig1"]["slot"], "blockTime": cl.txs["sig1"]["blockTime"], "transaction": {"message": {"accountKeys": []}}, "meta": {"logMessages": [], "innerInstructions": []}}
+    v = run(make_rec(), tmp_path, client=cl)
+    assert v["verdict"] == "PASS" and v["detail"]["migrate_sample"]["migrate_skipped"] == {"unfetchable": 1, "not_a_migrate_tx": 1}
+
+
+def test_reviewed_programdata_is_labelled_record_only():
+    shipped = json.loads((Path(c.__file__).with_name("a3_redeploy_pins.json")).read_text())
+    assert "RECORD ONLY" in shipped["reviewed_programdata"]["note"] and "WithdrawEvent" in shipped["reviewed_programdata"]["note"]
