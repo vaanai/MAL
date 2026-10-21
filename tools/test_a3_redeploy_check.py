@@ -87,7 +87,7 @@ IDLS = make_idls()
 IDL_BYTES = {k: json.dumps(v, sort_keys=True).encode() for k, v in IDLS.items()}
 
 
-def encode(name: str, *, prog: str, trunc: int | None = None, ix: str = "buy", over: dict | None = None) -> bytes:
+def encode(name: str, *, prog: str, trunc: int | None = None, ix: str = "buy", over: dict | None = None, trail: bytes | None = None) -> bytes:
     entry = {e["name"]: e for e in IDLS[prog]["events"]}[name]
     out = bytearray(bytes(entry["discriminator"]))
     for i, f in enumerate(IDLS[prog]["types"][[t["name"] for t in IDLS[prog]["types"]].index(name)]["type"]["fields"]):
@@ -112,6 +112,8 @@ def encode(name: str, *, prog: str, trunc: int | None = None, ix: str = "buy", o
             out += struct.pack("<I", len(ix)) + ix.encode()
         else:
             out += struct.pack("<I", 0)
+    if name in c.TRAILING_EVENTS:
+        out += b"\x00" * 8 if trail is None else trail  # the live programs append 8 bytes (zero on SOL-quoted trades) the IDL does not list
     return bytes(out if trunc is None else out[:trunc])
 
 
@@ -159,7 +161,7 @@ def migrate_tx(i: int, *, slot0: int = MIN_SLOT, init_boost: bool = True, budget
 class FakeClient:
     """Fake public RPC. getBlock feeds the log sample; the migrate flow (signature list, whole txs, Pool accounts, BOOST vault authority signature lists) is served from `migrate_kw`."""
 
-    def __init__(self, blobs, per_block=100, fail=None, n_migrate=c.MIGRATE_K, n_slices=29, mayhem=False, boost_every=1, budget_sol=17.585, migrate_extra=(), migrate_drop=(), old_sig_slot=1000, slot0=MIN_SLOT):
+    def __init__(self, blobs, per_block=100, fail=None, n_migrate=c.MIGRATE_K, n_slices=29, mayhem=False, boost_every=1, budget_sol=17.585, migrate_extra=(), migrate_drop=(), old_sig_slot=1000, slot0=MIN_SLOT, pool_quote=mon.b58decode(mon.WSOL_MINT)):
         self.blobs, self.per_block, self.fail, self.calls = blobs, per_block, fail, 0
         self.txs = {}
         self.sigs = []
@@ -170,7 +172,7 @@ class FakeClient:
             self.sigs.append({"signature": sig, "slot": tx["slot"], "blockTime": tx["blockTime"], "err": None})
         self.sigs.append({"signature": "old", "slot": old_sig_slot, "blockTime": (NOW // 1000) - 90000, "err": None})
         self.sigs.sort(key=lambda x: -x["slot"])
-        self.n_slices, self.mayhem = n_slices, mayhem
+        self.n_slices, self.mayhem, self.pool_quote = n_slices, mayhem, pool_quote
         self.authorities = {mon.boost_vault_authority(POOLS[i]) for i in range(60)}
 
     def call(self, method, params):
@@ -194,6 +196,9 @@ class FakeClient:
                 return {"value": [{"lamports": 0} for _ in params[0]]}
             data = bytearray(300)
             data[mon.POOL_MAYHEM_OFFSET] = 1 if self.mayhem else 0
+            if self.pool_quote is not None:  # a PumpSwap Pool account: discriminator, quote mint at 75
+                data[:8] = td._POOL_ACCOUNT_DISC
+                data[75:107] = self.pool_quote
             return {"value": [{"data": [base64.b64encode(bytes(data)).decode(), "base64"]} for _ in params[0]]}
         raise AssertionError(method)
 
@@ -216,6 +221,7 @@ def build_pins(blobs=None):
         h = b[:8].hex()
         lens[h] = {"min_len": len(b) - 5, "max_len": len(b) + 5}
     return {"idl": {k: {"sha256": hashlib.sha256(v).hexdigest()} for k, v in IDL_BYTES.items()}, "disc_len": lens, "ignored_discs": {}, "max_capped_share": 0.05,
+            "trailing_bytes": {"TradeEvent": [8], "BuyEvent": [8], "SellEvent": [8], "WithdrawEvent": [8], "CreatePoolEvent": [0]},
             "boost": {"init_boost_share": 0.9, "min_init_boost_in_migrate_sample": 5}, "frozen_sha": "f" * 40, "frozen_blobs": dict(FROZEN_BLOBS),
             "migrate": {"required_events": ["CompleteEvent", "CompletePumpAmmMigrationEvent", "CreatePoolEvent", "InitBoostEvent"]}}
 
@@ -477,7 +483,7 @@ def test_shipped_pins_are_complete_and_a_null_anywhere_is_error(tmp_path):
 
 
 def test_trailing_bytes_pin_allows_exactly_the_pinned_count():
-    raw = encode("SellEvent", prog="pump_amm") + b"\x00" * 8
+    raw = encode("SellEvent", prog="pump_amm")  # carries 8 trailing bytes
     assert c.evaluate_sample([logs_for(SWAP, raw)], IDLS, None, {"SellEvent": [8]})["layout_mismatch"] == {}
     assert c.evaluate_sample([logs_for(SWAP, raw)], IDLS, None, {"SellEvent": [0]})["layout_mismatch"] == {"SellEvent": 1}
     assert c.evaluate_sample([logs_for(SWAP, raw[:-3])], IDLS, None, {"SellEvent": [8]})["layout_mismatch"] == {"SellEvent": 1}
@@ -822,3 +828,61 @@ def test_migrate_events_through_the_frozen_path_equal_the_idl_decode():
     ev = c.evaluate_blobs(blobs, IDLS)
     assert ev["idl_mismatch"] == {} and ev["unknown"] == {} and ev["undecodable"] == {} and ev["layout_mismatch"] == {}
     assert set(ev["seen_events"]) == {"CompleteEvent", "CompletePumpAmmMigrationEvent", "CreatePoolEvent", "InitBoostEvent"}
+
+
+# ---- QP repin ruling C3'b / C3'c
+def test_shipped_trailing_pin_is_exactly_8_on_four_events_and_0_elsewhere():
+    shipped = json.loads((Path(c.__file__).with_name("a3_redeploy_pins.json")).read_text())
+    tb = c.validate_trailing_pins(shipped["trailing_bytes"])
+    assert {k for k, v in tb.items() if v == [8]} == {"TradeEvent", "BuyEvent", "SellEvent", "WithdrawEvent"}
+    assert all(v == [0] for k, v in tb.items() if k not in c.TRAILING_EVENTS)
+
+
+@pytest.mark.parametrize("bad", [{"TradeEvent": [0, 8], "BuyEvent": [8], "SellEvent": [8], "WithdrawEvent": [8]},
+                                 {"TradeEvent": [8], "BuyEvent": [8], "SellEvent": [8]},
+                                 {"TradeEvent": [8], "BuyEvent": [8], "SellEvent": [8], "WithdrawEvent": [8], "CreatePoolEvent": [8]},
+                                 {"TradeEvent": [4], "BuyEvent": [8], "SellEvent": [8], "WithdrawEvent": [8]},
+                                 {"TradeEvent": 8, "BuyEvent": [8], "SellEvent": [8], "WithdrawEvent": [8]}, None, {}])
+def test_loose_trailing_pins_are_error(bad, tmp_path):
+    with pytest.raises(c.CheckError):
+        c.validate_trailing_pins(bad)
+    pins = build_pins()
+    pins["trailing_bytes"] = bad
+    assert run(make_rec(), tmp_path, pins=pins)["verdict"] == "ERROR"
+
+
+def test_any_other_trailing_count_is_a_hard_fail(tmp_path):
+    for trail in (b"", b"\x00" * 16):  # 0 and 16 where exactly 8 is pinned
+        v = run(make_rec(), tmp_path / str(len(trail)), client=FakeClient(sample_blobs([(encode("SellEvent", prog="pump_amm", trail=trail), SWAP)])))
+        assert v["verdict"] == "FAIL" and any("not consumed exactly" in r for r in v["reasons"])
+    v = run(make_rec(), tmp_path / "other", client=FakeClient(sample_blobs([(encode("CreatePoolEvent", prog="pump_amm") + b"\x00" * 8, SWAP)])))
+    assert v["verdict"] == "FAIL"
+
+
+NONZERO = struct.pack("<Q", 12345)
+
+
+def test_nonzero_added_field_on_a_wsol_pumpswap_trade_is_a_hard_halt(tmp_path):
+    blob = encode("BuyEvent", prog="pump_amm", over={"pool": mon.b58decode(POOLS[0])}, trail=NONZERO)
+    v = run(make_rec(), tmp_path, client=FakeClient(sample_blobs([(blob, SWAP)])))  # the fake Pool account's quote mint is WSOL
+    assert v["verdict"] == "FAIL" and any("HARD" in r and "NON-ZERO" in r for r in v["reasons"]) and v["halt_at_ms"] == ms(DEPLOY_PUMP)
+
+
+def test_nonzero_added_field_on_a_non_sol_quote_is_allowed_and_counted(tmp_path):
+    blob = encode("BuyEvent", prog="pump_amm", over={"pool": mon.b58decode(POOLS[0])}, trail=NONZERO)
+    trade = encode("TradeEvent", prog="pump", over={"quote_mint": bytes([77]) * 32}, trail=NONZERO)
+    v = run(make_rec(), tmp_path, client=FakeClient(sample_blobs([(blob, SWAP), (trade, PUMP)]), pool_quote=bytes([77]) * 32))
+    assert v["verdict"] == "PASS", v["reasons"]
+
+
+def test_nonzero_added_field_on_a_sol_quoted_bonding_trade_is_a_hard_halt(tmp_path):
+    for q in (bytes(32), mon.b58decode(mon.WSOL_MINT)):
+        trade = encode("TradeEvent", prog="pump", over={"quote_mint": q}, trail=NONZERO)
+        v = run(make_rec(), tmp_path / q.hex()[:4], client=FakeClient(sample_blobs([(trade, PUMP)])))
+        assert v["verdict"] == "FAIL" and any("NON-ZERO" in r for r in v["reasons"])
+
+
+def test_nonzero_on_an_unreadable_pool_fails_closed(tmp_path):
+    blob = encode("SellEvent", prog="pump_amm", over={"pool": mon.b58decode(POOLS[0])}, trail=NONZERO)
+    v = run(make_rec(), tmp_path, client=FakeClient(sample_blobs([(blob, SWAP)]), pool_quote=None))
+    assert v["verdict"] == "FAIL" and any("NON-ZERO" in r for r in v["reasons"])

@@ -63,14 +63,44 @@
     }
   },
   "trailing_bytes": {
+    "TradeEvent": [
+      8
+    ],
     "BuyEvent": [
       8
     ],
     "SellEvent": [
       8
     ],
-    "TradeEvent": [
+    "WithdrawEvent": [
       8
+    ],
+    "CompletePumpAmmMigrationEvent": [
+      0
+    ],
+    "CreatePoolEvent": [
+      0
+    ],
+    "InitBoostEvent": [
+      0
+    ],
+    "CreateEvent": [
+      0
+    ],
+    "SweepBondingCurveFeeEvent": [
+      0
+    ],
+    "ExtendAccountEvent": [
+      0
+    ],
+    "CollectCreatorFeeEvent": [
+      0
+    ],
+    "InitUserVolumeAccumulatorEvent": [
+      0
+    ],
+    "CloseUserVolumeAccumulatorEvent": [
+      0
     ]
   },
   "ignored_discs": {
@@ -120,5 +150,32 @@
       "CreatePoolEvent",
       "InitBoostEvent"
     ]
+  },
+  "reviewed_programdata": {
+    "pump": {
+      "sha256": "0b692730f9707139fd86d1c1e3a7d63a3f7cb0702278975fa99df90883aab508",
+      "trailing_bytes": {
+        "TradeEvent": [
+          8
+        ]
+      },
+      "observed_utc": "2026-10-21T17:55:29Z"
+    },
+    "pumpswap": {
+      "sha256": "e3d3be2256841163ba89b6184c2cc90ca1700c820bf887e5bb58b0aa668f5840",
+      "trailing_bytes": {
+        "BuyEvent": [
+          8
+        ],
+        "SellEvent": [
+          8
+        ],
+        "WithdrawEvent": [
+          8
+        ]
+      },
+      "observed_utc": "2026-10-21T17:55:29Z",
+      "note": "WithdrawEvent: pinned 8 on the QP repin ruling (not seen in the samples)"
+    }
   }
 }
