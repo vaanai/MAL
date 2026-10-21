@@ -322,6 +322,9 @@ def summarize(entries: Sequence[Mapping[str, Any]], days: Sequence[str], coverag
         "all4_attempts": int(sum(full_by_day.values())), "all4_worst_7day": worst_window(full_by_day, days),
     }
     out["bar_met"] = bool(per_day >= BAR_MIN_PER_DAY and ww is not None and ww >= BAR_MIN_PER_WINDOW)
+    a4 = out["all4_attempts"] / coverage_days if coverage_days > 0 else 0.0
+    out["all4_per_day"] = a4
+    out["all4_bar_met"] = bool(a4 >= BAR_MIN_PER_DAY and out["all4_worst_7day"] is not None and out["all4_worst_7day"] >= BAR_MIN_PER_WINDOW)
     return out
 
 
@@ -342,11 +345,11 @@ def render_md(res: Mapping[str, Mapping[str, Any]], meta: Mapping[str, Any]) -> 
     L.append("")
     L.append("## Delta-feature availability, share of attempts (as-of strict; flags only)")
     L.append("")
-    L.append("| source | holders 4-12 min | creator history | buyer cohort | BOOST state | all four | all-four attempts | all-four worst 7-day |")
-    L.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+    L.append("| source | holders 4-12 min | creator history | buyer cohort | BOOST state | all four | all-four attempts | all-four per day | all-four worst 7-day | bar on all-four subset |")
+    L.append("|---|---:|---:|---:|---:|---:|---:|---:|---:|---|")
     for k, r in res.items():
         s = r["share"]
-        L.append(f"| {k} | {s['holders']:.1%} | {s['creator']:.1%} | {s['cohort']:.1%} | {s['boost']:.1%} | {s['all4']:.1%} | {r['all4_attempts']:,} | {r['all4_worst_7day']} |")
+        L.append(f"| {k} | {s['holders']:.1%} | {s['creator']:.1%} | {s['cohort']:.1%} | {s['boost']:.1%} | {s['all4']:.1%} | {r['all4_attempts']:,} | {r['all4_per_day']:.1f} | {r['all4_worst_7day']} | {'MET' if r['all4_bar_met'] else 'NOT MET'} |")
     L.append("")
     L.append("## Attempts per UTC day")
     L.append("")
@@ -381,18 +384,14 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     days = [utc_day(BLOCK_START_MS + i * DAY_MS) for i in range(15)]
     # --- tokens: create facts only (create_ms, creator, has_create, ps_first_ms) -----------------------------------------------------------
     tk = con.execute(f"SELECT mint, create_ms, creator, has_create, ps_first_ms FROM read_parquet('{tokens}') WHERE block = '{BLOCK}'").df()
-    tk = tk.set_index("mint")
-    creators = CreatorIndex((m, c, ms) for m, c, ms in zip(tk.index, tk["creator"], tk["create_ms"]) if isinstance(c, str) and ms == ms and tk.loc[m, "has_create"])
-    print("tokens", len(tk), flush=True)
+    tdict: dict[str, tuple[int | None, bool, str | None]] = {}
+    for mint_, ce_, cr_, hc__ in zip(tk["mint"], tk["create_ms"], tk["creator"], tk["has_create"]):
+        tdict[mint_] = (None if pd.isna(ce_) else int(ce_), bool(hc__) if not pd.isna(hc__) else False, cr_ if isinstance(cr_, str) else None)
+    creators = CreatorIndex((m_, v_[2], v_[0]) for m_, v_ in tdict.items() if v_[1] and v_[2] and v_[0] is not None)
+    print("tokens", len(tdict), flush=True)
 
     def mint_create(mint: str) -> tuple[int | None, bool, str | None]:
-        if mint not in tk.index:
-            return None, False, None
-        r = tk.loc[mint]
-        ce = int(r["create_ms"]) if r["create_ms"] == r["create_ms"] else None
-        hc_ = bool(r["has_create"])
-        cr = r["creator"] if isinstance(r["creator"], str) else None
-        return ce, hc_, cr
+        return tdict.get(mint, (None, False, None))
 
     # --- H5F -----------------------------------------------------------------------------------------------------------------------------
     h5: list[dict[str, Any]] = []
