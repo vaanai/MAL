@@ -42,9 +42,15 @@ class StubPort(alb.OrderPort):
         self.returns: dict[str, float] = {}
         self.universe: str | None = None
         self.warmed: list[list[str]] = []
+        self.pool_mint: str | None = None
+
+    held: dict | None = None
+
+    def holdings(self):
+        return self.held
 
     def mint_for_pool(self, pool, meta):
-        return meta.get("mint") or f"M-{pool}"
+        return self.pool_mint or meta.get("mint") or f"M-{pool}"
 
     def universe_problem(self, pool, mint):
         return self.universe
@@ -58,6 +64,8 @@ class StubPort(alb.OrderPort):
 
     def sell(self, order, reason):
         self.calls.append(("sell", order["order_id"], reason))
+        if self.held is not None:
+            self.held[order["mint"]] = "pending"
         return True, None
 
     def warm(self, mints):
@@ -281,7 +289,7 @@ class GateTests(TmpCase):
 
     def test_floor_breach_refused(self):
         e = Env(self.tmp)
-        e.port._balance = 400_000_000 + 20_000_000 + alb.FEE_RESERVE_LAMPORTS + alb.BUFFER_LAMPORTS - 1
+        e.port._balance = 400_000_000 + 20_000_000 + alb.FEE_RESERVE_LAMPORTS + alb.RENT_RESERVE_LAMPORTS + alb.BUFFER_LAMPORTS - 1
         b = self.run_entry(e)
         self.assertEqual(e.port.calls, [])
         self.assertEqual(e.log_rows("entry_refused")[0]["why"], "wallet_floor")
@@ -292,8 +300,8 @@ class GateTests(TmpCase):
 
     def test_open_stakes_count_at_zero(self):
         e = Env(self.tmp)
-        floor = 400_000_000 + alb.FEE_RESERVE_LAMPORTS + alb.BUFFER_LAMPORTS
-        e.port._balance = floor + 2 * 20_000_000 - 1  # one stake for the new buy, one for the open position: one short
+        floor = 400_000_000 + alb.FEE_RESERVE_LAMPORTS + alb.RENT_RESERVE_LAMPORTS + alb.BUFFER_LAMPORTS
+        e.port._balance = floor + 2 * 20_000_000 + alb.SELL_FEE_RESERVE_LAMPORTS - 1  # one stake for the new buy, one for the open position: one short
         e.start()
         e.entry("o1")
         e.entry("o2", pool="P2")
@@ -561,6 +569,174 @@ class LiveGateTests(TmpCase):
             alb.Bridge(alb.Config.from_dict({k: v for k, v in raw.items() if k not in ("stop_file", "halt_file")} | {"mode": "live"}), StubPort(live=False), now_ms=e.clock)
 
 
+class ReconcileTests(TmpCase):
+    def landed(self, e: Env) -> alb.Bridge:
+        e.start()
+        e.entry("o1", mint="MM")
+        b = e.bridge()
+        b.tick()
+        e.port.events.append({"order_id": "o1", "event": "buy_landed", "landed_slot": 1003})
+        b.tick()
+        return b
+
+    def test_crash_during_sell_backstop_sells_once(self):
+        e = Env(self.tmp, live=True)
+        e.live_ok.write_text("")
+        b = self.landed(e)
+        b.state.orders["o1"]["status"] = "sell_sending"  # the write-ahead was saved, the executor never heard of the sell
+        b._save()
+        e.port.held = {"MM": "open"}
+        b2 = e.bridge()  # restart: reconciled at start
+        self.assertEqual(b2.state.orders["o1"]["status"], "open")
+        e.clock.t += H + alb.BACKSTOP_EXTRA_MS + 10_000
+        e.port.returns = {"MM": -0.9}
+        for _ in range(3):
+            e.clock.t += 6000
+            b2.tick()
+        self.assertEqual([c[0] for c in e.port.calls], ["buy", "sell"])  # exactly one sell
+        self.assertEqual(b2.state.orders["o1"]["status"], "sell_sent")
+
+    def test_crash_during_sell_pending_tx_kept(self):
+        e = Env(self.tmp, live=True)
+        e.live_ok.write_text("")
+        b = self.landed(e)
+        b.state.orders["o1"]["status"] = "sell_sending"
+        b._save()
+        e.port.held = {"MM": "pending"}
+        b2 = e.bridge()
+        self.assertEqual(b2.state.orders["o1"]["status"], "sell_sent")
+        e.exit("o1")
+        b2.tick()
+        self.assertEqual([c[0] for c in e.port.calls], ["buy"])  # the signed sell is in flight: no second sell
+
+    def test_stale_selling_at_runtime_reopens_then_time_stop(self):
+        e = Env(self.tmp, live=True)
+        e.live_ok.write_text("")
+        b = self.landed(e)
+        e.exit("o1")
+        b.tick()
+        self.assertEqual(b.state.orders["o1"]["status"], "sell_sent")
+        e.port.held = {"MM": "open"}  # the executor lost the sell (expired, dropped): nothing pending
+        e.clock.t += alb.SELL_RETRY_MS + 1
+        b.tick()
+        self.assertEqual(b.state.orders["o1"]["status"], "open")
+        e.clock.t += H + alb.BACKSTOP_EXTRA_MS
+        b.tick()
+        self.assertEqual([c[0] for c in e.port.calls], ["buy", "sell", "sell"])
+
+    def test_sell_without_position_closed(self):
+        e = Env(self.tmp, live=True)
+        e.live_ok.write_text("")
+        b = self.landed(e)
+        b.state.orders["o1"]["status"] = "sell_sending"
+        b._save()
+        e.port.held = {}
+        b2 = e.bridge()
+        self.assertEqual(b2.state.orders["o1"]["status"], "closed")
+        self.assertTrue(b2.state.orders["o1"]["closed_unknown_pnl"])
+
+    def test_crash_during_buy(self):
+        e = Env(self.tmp, live=True)
+        e.live_ok.write_text("")
+        e.start()
+        e.entry("o1", mint="MM")
+        b = e.bridge()
+        b.tick()
+        b.state.orders["o1"]["status"] = "buy_sending"
+        b._save()
+        for held, want in (({}, "refused"), ({"MM": "pending"}, "buy_sent"), ({"MM": "open"}, "open")):
+            b.state.orders["o1"]["status"] = "buy_sending"
+            b._save()
+            e.port.held = held
+            self.assertEqual(e.bridge().state.orders["o1"]["status"], want)
+        e.port.held = {}
+        b.state.orders["o1"]["status"] = "buy_sending"
+        b._save()
+        b3 = e.bridge()
+        self.assertEqual(len([o for o in b3.open_orders().values()]), 0)  # the max_open slot is free again
+        self.assertEqual(sum(1 for c in e.port.calls if c[0] == "buy"), 1)  # and no second buy
+
+    def test_dry_orders_have_no_executor_to_reconcile(self):
+        e = Env(self.tmp)
+        e.start()
+        e.entry("o1")
+        b = e.bridge()
+        b.tick()
+        b.state.orders["o1"]["status"] = "sell_sending"
+        b._save()
+        self.assertEqual(e.bridge().state.orders["o1"]["status"], "closed")
+
+
+class SpecGapTests(TmpCase):
+    def test_partial_exit_refused(self):
+        e = Env(self.tmp)
+        e.start()
+        e.entry("o1")
+        b = e.bridge()
+        b.tick()
+        e.port.events.append({"order_id": "o1", "event": "buy_landed", "landed_slot": 1})
+        b.tick()
+        e.row({"kind": "exit", "order_id": "o1", "pool": "P1", "reason": "x", "decision_slot": 2, "frac": 0.5})
+        b.tick()
+        self.assertEqual([c[0] for c in e.port.calls], ["buy"])
+        self.assertEqual(b.state.counts["exit_partial_refused"], 1)
+
+    def test_close_blocked_hook_denies_on_error_and_true(self):
+        for hook in (lambda m: True, lambda m: None, lambda m: 1 / 0):
+            e = Env(tempfile.mkdtemp())
+            e.start()
+            e.entry("o1")
+            b = e.bridge()
+            b.close_blocked = hook
+            b.tick()
+            self.assertEqual(e.port.calls, [])
+        e = Env(tempfile.mkdtemp())
+        e.start()
+        e.entry("o1")
+        b = e.bridge()
+        b.close_blocked = lambda m: False
+        b.tick()
+        self.assertEqual(len(e.port.calls), 1)
+
+    def test_row_mint_must_match_pool_mint(self):
+        e = Env(self.tmp)
+        e.port.pool_mint = "REAL"
+        e.start()
+        e.entry("o1", mint="FAKE")
+        b = e.bridge()
+        b.tick()
+        self.assertEqual(e.port.calls, [])
+        self.assertEqual(e.log_rows("entry_refused")[0]["why"], "mint_pool_mismatch")
+
+    def test_dry_routed_orders_do_not_use_live_headroom(self):
+        e = Env(self.tmp, live=True, max_open=1)
+        e.start()
+        e.entry("o1", mint="A")
+        b = e.bridge()
+        b.tick()  # LIVE_OK missing: dry-routed
+        self.assertEqual(e.port.calls, [])
+        e.live_ok.write_text("")
+        e.entry("o2", pool="P2", mint="B")
+        b.tick()
+        self.assertEqual([c[:2] for c in e.port.calls], [("buy", "o2")])  # max_open 1 was not used up by the dry order
+
+    def test_presend_end_ms_recheck(self):
+        e = Env(self.tmp)
+        e.start()
+        e.entry("o1")
+        b = e.bridge()
+        orig = e.port.balance
+
+        def slow_balance():
+            e.clock.t = e.raw["end_ms"] + 1  # the clock crosses end_ms during the pre-send RPCs
+            return orig()
+
+        e.port.balance = slow_balance
+        b.tick()
+        self.assertEqual(e.port.calls, [])
+        self.assertEqual(e.log_rows("entry_refused")[-1]["why"], "end_ms")
+
+
 class ConfigAndCliTests(TmpCase):
     def base(self, **kw):
         return {"bot_id": BOT, "frozen_sha": SHA, "root": self.tmp, "state_dir": self.tmp, "end_ms": T0, "max_hold_ms": H, **kw}
@@ -653,6 +829,8 @@ class LivePortTests(TmpCase):
         self.assertNotIn(MINT, port.ex.state.open)
         self.assertIsInstance(port.balance(), int)
         self.assertEqual(port.balance(), BAL)
+        self.assertEqual(port.holdings(), {})
+        self.assertEqual(port.ex.limits.end_ms, cfg.end_ms)  # N1: the executor enforces the bridge's end, not a far-future one
 
 
 if __name__ == "__main__":

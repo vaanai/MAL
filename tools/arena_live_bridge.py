@@ -24,8 +24,9 @@ where "open" counts pending buys too. The balance has already paid for the open 
 test, not an accounting identity.
 
 Latches (stay set in the state file until the manager clears them with the bridge stopped): chain_break, frozen_sha_mismatch, total_loss_cap,
-per_trade_loss_cap, stuck_sell. A latch refuses new buys only; exits of positions already open (book exit rows, and the time-stop and stop-loss
-backstops) still run, so nothing is stranded. The HALT file freezes everything. The STOP file stops new buys only.
+per_trade_loss_cap, stuck_sell. A latch refuses new buys only. Book exit rows of positions already open still run under every latch EXCEPT chain_break:
+after a break no row is trusted or read, so only the time-stop and stop-loss backstops close positions. Nothing is stranded either way.
+The stop-loss backstop is best effort (it needs a warm quote under 5 s old); the time stop is the guaranteed backstop. The HALT file freezes everything. The STOP file stops new buys only.
 """
 
 from __future__ import annotations
@@ -57,6 +58,7 @@ MIN_WALLET_FLOOR = 50_000_000
 DEFAULT_WALLET_FLOOR = 400_000_000
 FEE_RESERVE_LAMPORTS = 1_010_000  # per trip: 2 x (500,000 priority + 5,000 base)
 RENT_RESERVE_LAMPORTS = 2_100_000  # token ATA rent, paid on the buy and refunded on the sell
+SELL_FEE_RESERVE_LAMPORTS = 505_000  # one sell: 500,000 priority + 5,000 base; reserved for every open position
 BUFFER_LAMPORTS = 20_000_000
 MAX_DECISION_AGE_MS = 5_000
 BACKSTOP_EXTRA_MS = 60_000  # time stop = the book's max hold + this
@@ -169,6 +171,10 @@ class OrderPort:
 
     def sell(self, order: Mapping[str, Any], reason: str) -> tuple[bool, str | None]:
         raise NotImplementedError
+
+    def holdings(self) -> dict[str, str] | None:
+        """mint -> "pending" (a signed tx is in flight) | "open" (held, nothing in flight), from the executor's own state. None = no executor (dry)."""
+        return None
 
     def warm(self, mints: list[str]) -> None:
         """S2: refresh the sell plan of every open position (batched vault read, blockhash). Never sends."""
@@ -300,8 +306,11 @@ def read_tier(path: Path, root_checks: bool) -> tuple[str, str | None]:
 
 class Bridge:
     def __init__(self, cfg: Config, port: OrderPort, *, now_ms: Callable[[], int] | None = None,
-                 live_ok_path: Path = LIVE_OK_PATH, tier_path: Path = TIER_PATH, root_checks: bool = True) -> None:
+                 live_ok_path: Path = LIVE_OK_PATH, tier_path: Path = TIER_PATH, root_checks: bool = True,
+                 close_blocked: Callable[[str], bool | None] | None = None) -> None:
+        """close_blocked: optional S3 hook, mint -> True (blocked) | False (ok). Interface only here. When set, a True, a None or a raise all refuse."""
         self.cfg = cfg
+        self.close_blocked = close_blocked
         self.port = port
         self.dry_port = port if not port.live else DryPort(cfg.dry_balance_lamports)  # an entry that is not live-eligible (LIVE_OK missing) is routed here: logged, never sent
         self.now_ms = now_ms or (lambda: int(time.time() * 1000))
@@ -320,6 +329,7 @@ class Bridge:
         self._last_warm = 0
         self._last_sell_try: dict[str, int] = {}
         self._verify_at_start()
+        self.reconcile()
 
     # -- plumbing
     def _log(self, kind: str, **kw: Any) -> None:
@@ -402,17 +412,25 @@ class Bridge:
         t = TIERS[tier]
         return tier, {k: min(getattr(self.cfg, k), v) for k, v in t.items()}, prob
 
-    def open_orders(self) -> dict[str, dict[str, Any]]:
-        return {k: o for k, o in self.state.orders.items() if o["status"] in ("buy_sending", "buy_sent", "open", "sell_sending", "sell_sent")}
+    def in_scope(self, o: Mapping[str, Any], scope: bool) -> bool:
+        """Orders count against the limits and the floor of their own kind: a live-config bridge does not let dry-routed orders (LIVE_OK missing)
+        use up live headroom. In a dry-config bridge every order is dry and they all count against the dry limits."""
+        return (bool(o["live"]) or self.cfg.mode == DRY) == scope
 
-    def floor_problem(self, stake: int, bal: int | None) -> str | None:
+    def open_orders(self, scope: bool = True) -> dict[str, dict[str, Any]]:
+        return {k: o for k, o in self.state.orders.items()
+                if o["status"] in ("buy_sending", "buy_sent", "open", "sell_sending", "sell_sent") and self.in_scope(o, scope)}
+
+    def floor_problem(self, stake: int, bal: int | None, scope: bool = True) -> str | None:
         if bal is None:
             return "balance_unreadable"
-        open_stakes = sum(o["stake_lamports"] for o in self.open_orders().values())
-        projected = bal - open_stakes - stake - FEE_RESERVE_LAMPORTS - BUFFER_LAMPORTS
+        opens = self.open_orders(scope)
+        open_stakes = sum(o["stake_lamports"] for o in opens.values())
+        projected = (bal - open_stakes - stake - FEE_RESERVE_LAMPORTS - RENT_RESERVE_LAMPORTS - BUFFER_LAMPORTS
+                     - SELL_FEE_RESERVE_LAMPORTS * len(opens))
         return "wallet_floor" if projected < self.cfg.wallet_floor_lamports else None
 
-    def entry_refusal(self, row: Mapping[str, Any], now: int, lim: dict[str, int]) -> str | None:
+    def entry_refusal(self, row: Mapping[str, Any], now: int, lim: dict[str, int], scope: bool = True) -> str | None:
         if self.state.latches:
             return "latched:" + sorted(self.state.latches)[0]
         halt, stop = self._files()
@@ -424,10 +442,10 @@ class Bridge:
             return "end_ms"
         if now - int(row["ms"]) > MAX_DECISION_AGE_MS:
             return "stale_decision"
-        if len(self.open_orders()) >= lim["max_open"]:
+        if len(self.open_orders(scope)) >= lim["max_open"]:
             return "max_open"
         day = self.state.days.get(utc_day(now), {})
-        if day.get("trades", 0) >= lim["max_trades_per_day"]:
+        if day.get("trades" if scope else "dry_trades", 0) >= lim["max_trades_per_day"]:
             return "max_trades_per_day"
         if day.get("realized", 0) <= -lim["daily_loss_lamports"]:
             return "daily_loss_cap"
@@ -464,19 +482,29 @@ class Bridge:
             return self._refuse(row, "no_start_row")
         live, why_dry = self.effective_live()
         tier, lim, tier_prob = self.tier_limits()
-        why = self.entry_refusal(row, now, lim)
+        scope = live or self.cfg.mode == DRY
+        why = self.entry_refusal(row, now, lim, scope)
         pool = str(row.get("pool"))
         meta = row.get("meta") or {}
         mint = self.port.mint_for_pool(pool, meta) if not why else None
         if not why and not mint:
             why = "no_mint"
+        if not why and meta.get("mint") and str(meta["mint"]) != mint:
+            why = "mint_pool_mismatch"  # the row's mint is not the pool's base mint
+        if not why and self.close_blocked is not None:
+            try:
+                blocked = self.close_blocked(mint)
+            except Exception:  # noqa: BLE001 - deny on error when a prefilter is configured
+                blocked = None
+            if blocked is not False:
+                why = "close_blocked" if blocked else "close_blocked_unknown"
         if not why and mint in self.state.bought:
             why = "already_bought"
         if not why:
             why = self.port.universe_problem(pool, mint)  # type: ignore[arg-type]
         stake = lim["stake_lamports"]
         if not why:
-            why = self.floor_problem(stake, self.port.balance())
+            why = self.floor_problem(stake, self.port.balance(), scope)
         if why:
             return self._refuse(row, why, tier=tier, tier_problem=tier_prob)
         # Write-ahead: the order exists on disk BEFORE the first send, so a crash cannot produce a second buy.
@@ -487,8 +515,17 @@ class Bridge:
         self.state.bought.append(mint)  # type: ignore[arg-type]
         self.state.attempts += 1
         d = self.state.days.setdefault(utc_day(now), {"trades": 0, "realized": 0})
-        d["trades"] += 1
+        d["trades" if scope else "dry_trades"] = d.get("trades" if scope else "dry_trades", 0) + 1
+        order["last_action_ms"] = now
         self._save()
+        late = self._presend_refusal(row)  # end_ms, STOP/HALT and decision age again, after the RPCs above
+        if late:
+            order["status"] = "refused"
+            order["refused"] = late
+            self._count("refused_" + late)
+            self._log("entry_refused", order_id=oid, why=late, decision_ms=row["ms"], seq=row["seq"], presend=True)
+            self._save()
+            return
         order["send_ms"] = self.now_ms()
         ok, label = (self.port if order["live"] else self.dry_port).buy(order)
         order["status"] = "buy_sent" if ok else "refused"
@@ -500,6 +537,19 @@ class Bridge:
                   decision_slot=order["decision_slot"], would_send=not order["live"], dry_reason=why_dry, tier=tier, label=label)
         self._save()
 
+    def _presend_refusal(self, row: Mapping[str, Any]) -> str | None:
+        now = self.now_ms()
+        halt, stop = self._files()
+        if halt:
+            return "halt_file"
+        if stop:
+            return "stop_file"
+        if now >= self.cfg.end_ms:
+            return "end_ms"
+        if now - int(row["ms"]) > MAX_DECISION_AGE_MS:
+            return "stale_decision"
+        return None
+
     def _refuse(self, row: Mapping[str, Any], why: str, **kw: Any) -> None:
         self._count("refused_" + why.split(":")[0])
         self._log("entry_refused", order_id=row["order_id"], why=why, decision_ms=row["ms"], seq=row["seq"], **kw)
@@ -509,6 +559,11 @@ class Bridge:
         o = self.state.orders.get(oid)
         if o is None or o["status"] in ("refused", "closed"):
             self._count("exit_unknown_order")
+            return
+        frac = row.get("frac", 1.0)
+        if not isinstance(frac, (int, float)) or isinstance(frac, bool) or frac < 1.0:
+            self._count("exit_partial_refused")  # v1: full exits only
+            self._log("exit_refused", order_id=oid, why="partial_exit", frac=frac)
             return
         o["exit_decision_ms"] = o.get("exit_decision_ms") or int(row["ms"])
         o["exit_decision_slot"] = o.get("exit_decision_slot") or row.get("decision_slot")
@@ -534,6 +589,7 @@ class Bridge:
             return
         self._last_sell_try[oid] = now
         o["status"] = "sell_sending"  # write-ahead
+        o["last_action_ms"] = now
         o["sell_reason"] = reason
         o["sell_tries"] = o.get("sell_tries", 0) + 1
         self._save()
@@ -595,9 +651,57 @@ class Bridge:
         if self.state.realized_lamports <= -self.cfg.total_loss_lamports:
             self._latch("total_loss_cap", f"realized {self.state.realized_lamports}")
 
+    # -- reconciliation of half-finished orders (crash between the write-ahead save and the executor's own state)
+    def reconcile(self, only_stale: bool = False) -> None:
+        """Compare every in-flight order with the executor's own open + pending positions.
+        pending -> keep (status sent); held with nothing in flight -> open; in neither -> a buy is refused (nothing was bought), a sell is closed
+        (flagged: P&L unknown, the next live balance read is the truth). Dry orders have no executor: their fills are instantaneous."""
+        now = self.now_ms()
+        held = self.port.holdings() if self.port.live else None
+        changed = False
+        for oid, o in self.state.orders.items():
+            st = o["status"]
+            if st not in ("buy_sending", "buy_sent", "sell_sending", "sell_sent"):
+                continue
+            if only_stale and now - o.get("last_action_ms", 0) < SELL_RETRY_MS:
+                continue
+            was = st
+            if not o["live"] or held is None:
+                if not o["live"]:
+                    o["status"] = "open" if st.startswith("buy") else "closed"
+                    if o["status"] == "open" and o.get("t_open_ms") is None:
+                        o["t_open_ms"] = now
+                else:
+                    continue
+            else:
+                where = held.get(o["mint"])
+                if where == "pending":
+                    o["status"] = "buy_sent" if st.startswith("buy") else "sell_sent"
+                    if o["status"] == was:
+                        continue
+                elif where == "open":
+                    o["status"] = "open"
+                    if o.get("t_open_ms") is None:
+                        o["t_open_ms"] = now
+                elif st.startswith("buy"):
+                    if st == "buy_sent" and now - o.get("last_action_ms", 0) < SELL_RETRY_MS:
+                        continue
+                    o["status"] = "refused"
+                    o["refused"] = "reconcile_no_position"
+                else:
+                    o["status"] = "closed"
+                    o["closed_unknown_pnl"] = True
+                    print(f"arena_live_bridge ALERT reconcile_sell_without_position order={oid}", flush=True)
+            o["last_action_ms"] = now
+            changed = True
+            self._log("reconcile", order_id=oid, was=was, now=o["status"], where=(held or {}).get(o["mint"]) if held is not None else None)
+        if changed:
+            self._save()
+
     # -- backstops and warm plan (S2)
     def backstops(self) -> None:
         now = self.now_ms()
+        self.reconcile(only_stale=True)  # a *_sending order left by a crash, or a sent one that vanished from the executor, is fixed here
         for oid, o in list(self.state.orders.items()):
             if o["status"] != "open" or o.get("t_open_ms") is None:
                 continue
@@ -658,17 +762,19 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
     from tools import h5_executor as h5
     from tools import probe_executor as pe
     from tools import probe_live as pl
+    from tools import pumpswap_tx as tx_mod
 
     class BridgeExecutor(pl.LiveExecutor):
         """The probe's send path with no signal tail and no probe exit rules: buys come from `buy`, sells from the bridge (exit_reason is set by the
         bridge only), and the open-position poll prices only positions the bridge asked to sell. Everything else (write-ahead, rebroadcast,
         confirm loop, meta, sell + close ATA, stuck handling) is the base class."""
 
-        def __init__(self, rpc_: Callable, pcfg: dict[str, Any], kp: Any, now: Callable[[], int] | None) -> None:
+        def __init__(self, rpc_: Callable, pcfg: dict[str, Any], kp: Any, now: Callable[[], int] | None, end_ms: int) -> None:
             with h5._h5_precheck_scope(h5.LIVE):  # the probe's cross-profile flat check on the shared wallet, scoped to this state dir
                 super().__init__(rpc_, pcfg, kp, now_ms=now)
-            # The profile's own end (dec019: 2026-10-12) is replaced by the bridge's end_ms, which the Bridge enforces before every buy.
-            object.__setattr__(self.limits, "end_ms", 2**62)
+            # The profile's own end (dec019: 2026-10-12) is replaced by the bridge's end_ms: the executor's check_buy soft stop (end_instant) then
+            # enforces it at send time too, and the Bridge re-checks it right before the send.
+            object.__setattr__(self.limits, "end_ms", int(end_ms))
             self.events: list[dict[str, Any]] = []
             self.last_skip: str | None = None
             self.warm_snaps: dict[str, tuple[Any, int]] = {}
@@ -750,13 +856,11 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
                 "min_balance_buffer_lamports": BUFFER_LAMPORTS,
             }
             Path(pcfg["signals_dir"]).mkdir(parents=True, exist_ok=True)
-            self.ex = BridgeExecutor(rpc, pcfg, keypair, now_ms)
+            self.ex = BridgeExecutor(rpc, pcfg, keypair, now_ms, cfg.end_ms)
             self.now = self.ex.now_ms
 
         def mint_for_pool(self, pool: str, meta: Mapping[str, Any]) -> str | None:
-            m = meta.get("mint") or meta.get("base_mint")
-            if m:
-                return str(m)
+            """Always the pool account's own base mint; a mint in the row's meta is only compared with it by the Bridge."""
             try:  # the pool account's base mint (one read; the executor's canonical-pool check re-verifies it before any buy)
                 from tools import pumpswap_simulate as sim_
                 from tools import pumpswap_tx as tx_
@@ -773,6 +877,8 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
             snap, _pool, err = self.ex._snapshot(mint)
             if snap is None:
                 return f"pool_unreadable:{err}"
+            if snap.ps.quote_mint != tx_mod.WSOL_MINT:
+                return "quote_not_wsol"
             if snap.v is None or not UNIVERSE_V_RANGE[0] <= snap.v <= UNIVERSE_V_RANGE[1]:
                 return "universe_v_out_of_range"
             return None
@@ -796,6 +902,11 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
             pos["exit_reason"] = reason
             self.ex.poll_positions()
             return (order["mint"] in self.ex.state.pending), None
+
+        def holdings(self) -> dict[str, str]:
+            out = {m: "open" for m in self.ex.state.open}
+            out.update({m: "pending" for m in self.ex.state.pending})
+            return out
 
         def warm(self, mints: list[str]) -> None:
             self.ex.refresh_warm(mints)
