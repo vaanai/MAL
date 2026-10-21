@@ -159,33 +159,51 @@ def pins_diff(rec: Json, pins: Json) -> list[dict[str, Any]]:
     return out
 
 
+def _norm_flags(rec: Json) -> dict[str, dict[str, Any]]:
+    """The six A3 halt flags of a record, each as {halt: bool, evaluated: bool, reason}. A flag that is absent or has no boolean `halt` is UNEVALUATED, never clear.
+    A record with no `halt.flags` object at all is a broken record: CheckError (the caller's operational error: no decision, no applied-log line, no dead-man reset)."""
+    raw = (rec.get("halt") or {}).get("flags") if isinstance(rec.get("halt"), Mapping) else None
+    if not isinstance(raw, Mapping) or not raw:
+        raise CheckError("record has no halt flags")
+    out: dict[str, dict[str, Any]] = {}
+    for k, v in raw.items():
+        if isinstance(v, Mapping) and isinstance(v.get("halt"), bool):
+            out[k] = {"halt": v["halt"], "evaluated": bool(v.get("evaluated", True)), "reason": v.get("reason")}
+        else:
+            out[k] = {"halt": False, "evaluated": False, "reason": "malformed flag"}
+    for k in ALL_HALT_FLAGS:
+        out.setdefault(k, {"halt": False, "evaluated": False, "reason": "flag absent from the record"})
+    return out
+
+
 def triage(rec: Json, pins: Json, prev: Json | None) -> dict[str, Any]:
     """Pure. Returns {action: none|redeploy|hard, run_ms, flag_halt_ms, hard_reasons, redeploys}.
-    flag_halt_ms is set whenever ANY A3 halt flag is true (the OLD rule's instant, run_utc): books still under the old rule halt there."""
-    flags = ((rec.get("halt") or {}).get("flags")) or {}
+    flag_halt_ms is set whenever ANY A3 halt flag is true, or the pins differ (the OLD rule's instant, run_utc): books still under the old rule halt there.
+    The pins comparison (pins_diff) runs on EVERY record, whatever `pins_changed` says."""
+    flags = _norm_flags(rec)
     run_ms = utc_ms(rec["run_utc"])
-    any_halt = any(v.get("halt") for v in flags.values() if isinstance(v, Mapping))
+    diff = pins_diff(rec, pins)
+    any_halt = any(v["halt"] for v in flags.values()) or bool(diff)
     out: dict[str, Any] = {"run_utc": rec["run_utc"], "run_ms": run_ms, "flag_halt_ms": run_ms if any_halt else None, "hard_reasons": [], "redeploys": [], "action": "none"}
     hard = out["hard_reasons"]
-    for k in BOOST_FLAGS + ("synthetic_share_high",):
-        if (flags.get(k) or {}).get("halt"):
-            hard.append(f"{k}: {(flags[k] or {}).get('reason')}")
     for k, v in flags.items():
-        if k not in ALL_HALT_FLAGS and isinstance(v, Mapping) and v.get("halt"):
-            hard.append(f"{k}: {v.get('reason')}")
-    # a core rule unevaluated on two consecutive daily runs
+        if k in BOOST_FLAGS + ("synthetic_share_high",) or k not in ALL_HALT_FLAGS:
+            if v["halt"]:
+                hard.append(f"{k}: {v['reason']}")
+    # a core rule unevaluated on two consecutive daily runs (an absent flag is unevaluated)
     if prev is not None:
-        pflags = ((prev.get("halt") or {}).get("flags")) or {}
+        pflags = _norm_flags(prev)
         for k in ALL_HALT_FLAGS:
-            if flags.get(k) and pflags.get(k) and not flags[k].get("evaluated", True) and not pflags[k].get("evaluated", True):
+            if not flags[k]["evaluated"] and not pflags[k]["evaluated"]:
                 hard.append(f"{k}: unevaluated on two consecutive daily runs")
-    pc = flags.get("pins_changed") or {}
-    if pc.get("halt"):
-        diff = pins_diff(rec, pins)
+    pc = flags["pins_changed"]
+    if pc["halt"] or diff:
         redeploys = [d for d in diff if d["kind"] == "program" and d["name"] in PROGRAM_FLAG_ITEMS]
         others = [d for d in diff if d not in redeploys]
         if not diff:
-            hard.append(f"pins_changed: flag set but no typed difference found ({pc.get('reason')})")
+            hard.append(f"pins_changed: flag set but no typed difference found ({pc['reason']})")
+        if diff and not pc["halt"]:
+            hard.append("pins differ from the record but the pins_changed flag is not set (degraded record)")
         for d in others:
             hard.append(f"pins_changed: {d['kind']} {d['name']} changed" + (f" deploy_slot {d['old']} -> {d['new']}" if d["kind"] == "program" else " (account hash)"))
         out["redeploys"] = redeploys

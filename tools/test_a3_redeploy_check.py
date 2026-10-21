@@ -1022,3 +1022,42 @@ def test_upgrade_through_a_multisig_inner_instruction_is_a_write(tmp_path):
         tx["meta"]["innerInstructions"] = [{"index": 0, "instructions": [{"programIdIndex": 2, "data": mon.b58encode(struct.pack("<I", c.LOADER_UPGRADE_TAG))}]}]
     v = run(make_rec(), tmp_path, client=cl)
     assert v["verdict"] == "PASS" and sorted(v["per_write"]) == ["pump:1000", "pumpswap:1100"]
+
+
+# ---- reviewer 6324690172 B1: a degraded record is never a quiet NONE
+def test_record_without_flags_is_an_operational_error_not_none(tmp_path):
+    for rec in ({**make_rec(redeploy=False), "halt": {}}, {k: v for k, v in make_rec(redeploy=False).items() if k != "halt"}, {**make_rec(redeploy=False), "halt": {"flags": {}}}):
+        with pytest.raises(c.CheckError):
+            c.triage(rec, MON_PINS, None)
+    write_pins_files(tmp_path, build_pins())
+    write_daily(tmp_path / "daily.jsonl", [{**make_rec(redeploy=False), "halt": {}}])
+    assert c.main(argv(tmp_path), client=FakeClient([]), http_get=http_ok(), now_ms=lambda: NOW) == 11
+    assert not (tmp_path / "v.json").exists()  # no verdict => the daily script applies nothing and appends nothing to the applied log (the dead-man is not reset)
+
+
+def test_pins_are_compared_on_every_run_even_when_the_flag_says_false():
+    rec = make_rec()
+    rec["halt"]["flags"]["pins_changed"] = flag(False)  # a degraded monitor line: the programs differ from the pins but the flag is clear
+    t = c.triage(rec, MON_PINS, None)
+    assert t["action"] == "hard" and any("degraded" in r for r in t["hard_reasons"])  # the flag/pins disagreement is itself a hard reason ...
+    assert {d["name"] for d in t["redeploys"]} == {"pump", "pumpswap"} and t["flag_halt_ms"] == ms(RUN_UTC)  # ... and the redeploys still bound the instant
+    rec2 = make_rec(redeploy=False)
+    rec2["accounts"]["pumpswap_global_config"]["sha256"] = "f" * 64
+    rec2["halt"]["flags"]["pins_changed"] = flag(False)
+    t2 = c.triage(rec2, MON_PINS, None)
+    assert t2["action"] == "hard" and any("pumpswap_global_config" in r for r in t2["hard_reasons"]) and any("degraded" in r for r in t2["hard_reasons"])
+    rec3 = make_rec(redeploy=False)
+    del rec3["halt"]["flags"]["pins_changed"]  # absent flag AND a changed pin
+    rec3["programs"]["fees"] = {"deploy_slot": 999, "deploy_utc": "2026-10-19T20:00:00Z"}
+    assert c.triage(rec3, MON_PINS, None)["action"] == "hard"
+
+
+def test_an_absent_flag_is_unevaluated_and_two_consecutive_runs_halt():
+    rec, prev = make_rec(redeploy=False), make_rec(redeploy=False, run_utc="2026-10-19T07:11:27Z")
+    for r in (rec, prev):
+        del r["halt"]["flags"]["boost_disabled"]
+    t = c.triage(rec, MON_PINS, prev)
+    assert t["action"] == "hard" and any(r.startswith("boost_disabled: unevaluated on two") for r in t["hard_reasons"])
+    assert c.triage(rec, MON_PINS, make_rec(redeploy=False, run_utc="2026-10-19T07:11:27Z"))["action"] == "none"  # only one run missing it
+    rec["halt"]["flags"]["boost_share_low"] = {"evaluated": True}  # no boolean halt: malformed => unevaluated, not clear
+    assert c._norm_flags(rec)["boost_share_low"]["evaluated"] is False
