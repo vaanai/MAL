@@ -20,6 +20,7 @@ DEPLOY_PUMP = "2026-10-19T17:47:02Z"
 DEPLOY_SWAP = "2026-10-19T17:47:20Z"
 RUN_UTC = "2026-10-20T07:11:27Z"
 PUMP, SWAP = td.PUMP_BONDING_PROGRAM, td.PUMPSWAP_PROGRAM
+PIN_PUMP_UTC, PIN_SWAP_UTC = "2026-10-13T15:40:41Z", "2026-10-08T16:20:03Z"  # the monitor pins' own deploy instants
 
 
 def ms(t: str) -> int:
@@ -289,14 +290,14 @@ def make_rec(*, redeploy=True, run_utc=RUN_UTC, **over):
 NOW = ms("2026-10-20T07:20:00Z")
 
 
-def run(rec, tmp_path, *, prev=None, pins=None, client=None, http=None, now=None, state=None):
+def run(rec, tmp_path, *, prev=None, pins=None, client=None, http=None, now=None, state=None, history=()):
     clock = now or (lambda: NOW)
     cl = client if client is not None else FakeClient(sample_blobs())
     if hasattr(cl, "writes_set") and not cl.writes_set and not cl.fail:
         cl.set_writes_from_rec(rec)
     client = cl
     return c.decide(rec, prev, MON_PINS, pins if pins is not None else build_pins(), state or tmp_path / "state.jsonl",
-                    client=client if client is not None else FakeClient(sample_blobs()), http_get=http or http_ok(), now_ms=clock, job_id="job-1")
+                    client=client if client is not None else FakeClient(sample_blobs()), http_get=http or http_ok(), now_ms=clock, job_id="job-1", history=history)
 
 
 # ---------------------------------------------------------------- tests
@@ -543,7 +544,8 @@ def test_idl_fetch_failure_is_error(tmp_path):
 @pytest.mark.parametrize("exc", [mon.RpcError("boom"), mon.RpcUnreachable("down"), mon.CallBudgetExceeded("cap")])
 def test_rpc_failure_is_error(tmp_path, exc):
     v = run(make_rec(), tmp_path, client=FakeClient([], fail=exc))
-    assert v["verdict"] == "ERROR" and v["halt_at_ms"] == ms(DEPLOY_PUMP)
+    # nothing could be enumerated: fail closed at the pinned deploys' own instants (the earliest, PumpSwap 2026-10-08), not at the record's newest write
+    assert v["verdict"] == "ERROR" and v["halt_at_ms"] == ms(PIN_SWAP_UTC) < ms(DEPLOY_PUMP)
 
 
 def test_unmapped_idl_layout_is_error_not_pass(tmp_path):
@@ -585,7 +587,7 @@ def test_fail_is_sticky_and_a_later_clean_run_cannot_pass_it(tmp_path):
 
 # ---- hard halts: always, no check, no network
 def hard(rec, tmp_path, prev=None):
-    cl = FakeClient([], fail=AssertionError("a hard halt must not run the check"))
+    cl = FakeClient([], fail_on={"getBlock", "getMultipleAccounts"})  # the write enumeration may run; the check (samples) must not
     return run(rec, tmp_path, prev=prev, client=cl, http=lambda *a: (_ for _ in ()).throw(AssertionError("no http")))
 
 
@@ -635,7 +637,7 @@ def test_b1_covered_redeploy_does_not_pull_a_hard_halt_earlier(tmp_path):
 def test_b1_hard_flag_with_a_new_pending_slot_uses_the_earlier_pending_instant(tmp_path):
     run(make_rec(), tmp_path)
     rec = make_rec(run_utc="2026-10-22T07:11:27Z")
-    rec["programs"]["pump"] = {"deploy_slot": 5000, "deploy_utc": "2026-10-22T01:00:00Z"}
+    rec["programs"]["pump"] = {"deploy_slot": 5000, "deploy_utc": "2026-10-22T01:00:00Z", "programdata": "PD_PUMP"}
     rec["halt"]["flags"]["boost_disabled"] = flag(True)
     assert hard(rec, tmp_path)["halt_at_ms"] == ms("2026-10-22T01:00:00Z")
 
@@ -975,7 +977,7 @@ def test_pinned_slot_not_reached_fails_closed(tmp_path):
     for addr in cl.write_sigs:
         cl.write_sigs[addr] = [x for x in cl.write_sigs[addr] if not x["signature"].startswith("pinned")]  # the list ends without the pinned deploy
     v = run(make_rec(), tmp_path, client=cl)
-    assert v["verdict"] == "ERROR" and "not reached" in v["reasons"][0] and v["halt_at_ms"] == ms(DEPLOY_PUMP)
+    assert v["verdict"] == "ERROR" and "not reached" in v["reasons"][0] and v["halt_at_ms"] == ms(PIN_SWAP_UTC)
     # a full page of 1000 that never gets down to the pinned slot is the same
     cl.write_sigs["PD_PUMP"] = [{"signature": f"x{i}", "slot": 5000 + i, "blockTime": 1, "err": None} for i in range(1000)]
     v2 = run(make_rec(), tmp_path / "b", client=cl)
@@ -1001,15 +1003,63 @@ def test_newest_write_must_match_the_records_deploy_slot(tmp_path):
     assert v["verdict"] == "ERROR" and "!= the record's deploy slot" in v["reasons"][0]
 
 
-def test_hard_flag_uses_the_earliest_unreviewed_write_and_survives_a_broken_enumeration(tmp_path):
+def test_hard_flag_uses_the_earliest_unreviewed_write(tmp_path):
     rec = make_rec()
     rec["halt"]["flags"]["boost_disabled"] = flag(True)
     v = run(rec, tmp_path, client=multi_client())
     assert v["verdict"] == "HALT" and v["halt_at_ms"] == ms(EARLY_SWAP)
+
+
+# ---- reviewer B2 / QP B-1: the 10-19 case (a 15:46:16Z write plus the 17:47 writes) when the enumeration fails
+def history_recs():
+    """Daily records before the redeploys: the pins are still the live pins (pump 100, pumpswap 200)."""
+    return [make_rec(redeploy=False, run_utc="2026-10-18T07:11:13Z"), make_rec(redeploy=False, run_utc="2026-10-19T07:12:59Z")]
+
+
+def swap_not_reached_client():
+    cl = multi_client()  # PumpSwap writes at 15:46:16Z and 17:47:20Z, pump at 17:47:02Z
+    cl.write_sigs["PD_SWAP"] = [x for x in cl.write_sigs["PD_SWAP"] if not x["signature"].startswith("pinned")]  # PumpSwap paging fails: the pinned slot is not reached
+    return cl
+
+
+def test_enumeration_failure_in_the_error_path_halts_no_later_than_the_last_record_at_the_pinned_slot(tmp_path):
+    v = run(make_rec(), tmp_path, client=swap_not_reached_client(), history=history_recs())
+    assert v["verdict"] == "ERROR" and "pumpswap" in v["reasons"][0]
+    assert v["halt_at_ms"] == ms("2026-10-19T07:12:59Z") < ms(EARLY_SWAP) < ms(DEPLOY_SWAP)  # not 17:47:20Z, not even 15:46:16Z
+    assert c.read_state(tmp_path / "state.jsonl")["pumpswap:1100"]["verdict"] == "ERROR"
+    v2 = run(make_rec(), tmp_path / "b", client=swap_not_reached_client())  # no earlier record at the pinned slot: the pinned deploy's own instant
+    assert v2["halt_at_ms"] == ms(PIN_SWAP_UTC)
+
+
+def test_enumeration_failure_in_the_hard_flag_path_uses_the_same_bound(tmp_path):
+    rec = make_rec()
+    rec["halt"]["flags"]["boost_disabled"] = flag(True)
+    v = run(rec, tmp_path, client=swap_not_reached_client(), history=history_recs())
+    assert v["verdict"] == "HALT" and v["halt_at_ms"] == ms("2026-10-19T07:12:59Z") and "write enumeration failed for pumpswap" in v["reasons"][-1]
     cl = multi_client()
     cl.fail = mon.RpcUnreachable("down")
-    v2 = run(rec, tmp_path / "b", client=cl)  # enumeration fails: the record's own redeploys stand in, the halt is not lost
-    assert v2["verdict"] == "HALT" and v2["halt_at_ms"] == ms(DEPLOY_PUMP) and "enumeration failed" in v2["reasons"][-1]
+    v2 = run(rec, tmp_path / "b", client=cl, history=history_recs())  # every program fails: still bounded, the halt is not lost
+    assert v2["verdict"] == "HALT" and v2["halt_at_ms"] == ms("2026-10-19T07:12:59Z")
+
+
+def test_other_programs_keep_their_earliest_unreviewed_write_when_one_enumeration_fails(tmp_path):
+    cl = multi_client()
+    cl.write_sigs["PD_PUMP"] = [x for x in cl.write_sigs["PD_PUMP"] if not x["signature"].startswith("pinned")]  # pump fails; pumpswap enumerates
+    rec = make_rec()
+    rec["halt"]["flags"]["boost_disabled"] = flag(True)
+    # history: the last record at the PUMP pinned slot was 2026-10-19T07:12:59Z, later than the enumerated PumpSwap write? no: earlier. The earliest of all wins.
+    v = run(rec, tmp_path, client=cl, history=history_recs())
+    assert v["halt_at_ms"] == ms("2026-10-19T07:12:59Z") and v["halt_at_ms"] <= ms(EARLY_SWAP)
+    h2 = [make_rec(redeploy=False, run_utc="2026-10-19T16:00:00Z")]  # a record at the pinned slot AFTER the enumerated 15:46:16Z write cannot exist; the enumerated write is the earlier bound
+    v2 = run(rec, tmp_path / "b", client=cl, history=h2)
+    assert v2["halt_at_ms"] == ms(EARLY_SWAP)
+
+
+def test_sticky_failed_state_bounds_a_later_enumeration_failure(tmp_path):
+    state = tmp_path / "state.jsonl"
+    c.append_state(state, {"key": "pumpswap:900", "program": "pumpswap", "slot": 900, "deploy_utc": "2026-10-19T06:00:00Z", "verdict": "FAIL", "reasons": ["x"]})
+    b = c.failclosed_bound_ms("pumpswap", make_rec(), MON_PINS, history_recs(), c.read_state(state))
+    assert b == ms("2026-10-19T06:00:00Z")
 
 
 def test_upgrade_through_a_multisig_inner_instruction_is_a_write(tmp_path):

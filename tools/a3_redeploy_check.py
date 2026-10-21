@@ -859,7 +859,30 @@ def expand_writes(client: Any, rec: Json, redeploys: Sequence[Json]) -> list[dic
     return sorted(out, key=lambda w: (w["new"], w["name"]))
 
 
-def decide(rec: Json, prev: Json | None, mon_pins: Json, pins: Json, state_path: Path, *, client: Any, http_get: Callable, now_ms: Callable[[], int], job_id: str = "") -> dict[str, Any]:
+def failclosed_bound_ms(name: str, rec: Json, mon_pins: Json, history: Sequence[Json], state: Mapping[str, Mapping[str, Any]]) -> int:
+    """The instant for a program whose write enumeration failed or did not reach the pinned slot: no later than any write that could be unreviewed. That is
+    the run_utc of the NEWEST EARLIER daily record that still showed the pinned deploy slot (no write could have happened before it), else the pinned deploy's own
+    instant. A sticky non-PASS state entry of the program bounds it too."""
+    pinned = ((mon_pins.get("programs") or {}).get(name) or {}).get("deploy_slot")
+    cands: list[int] = []
+    for r in history:
+        if r.get("run_utc") and r["run_utc"] < rec["run_utc"] and ((r.get("programs") or {}).get(name) or {}).get("deploy_slot") == pinned:
+            cands.append(utc_ms(r["run_utc"]))
+    if cands:
+        bound = max(cands)
+    else:
+        pu = ((mon_pins.get("programs") or {}).get(name) or {}).get("deploy_utc")
+        if not pu:
+            raise CheckError(f"no fail-closed bound for {name}: no earlier record at the pinned slot and no pinned deploy_utc")
+        bound = utc_ms(pu)
+    for e in state.values():
+        if e.get("program") == name and e["verdict"] != "PASS" and e.get("deploy_utc"):
+            bound = min(bound, utc_ms(e["deploy_utc"]))
+    return bound
+
+
+def decide(rec: Json, prev: Json | None, mon_pins: Json, pins: Json, state_path: Path, *, client: Any, http_get: Callable, now_ms: Callable[[], int], job_id: str = "",
+           history: Sequence[Json] = ()) -> dict[str, Any]:
     tri = triage(rec, mon_pins, prev)
     v: dict[str, Any] = {"schema": SCHEMA, "run_utc": rec["run_utc"], "action": tri["action"], "verdict": "NONE", "reasons": [], "redeploys": [],
                          "flag_halt_ms": tri["flag_halt_ms"], "halt_at_ms": None, "record_only": False, "job_id": job_id}
@@ -867,40 +890,50 @@ def decide(rec: Json, prev: Json | None, mon_pins: Json, pins: Json, state_path:
         return v
     # Q4: every upgrade write since the pinned slot is its own redeploy (own instant, own state, own check). If the enumeration fails the record's own
     # (newest-write) redeploys stand in, and in the redeploy-only path the failure itself is an ERROR.
-    redeploys, expand_err = list(tri["redeploys"]), None
-    if redeploys:
-        try:
-            redeploys = expand_writes(client, rec, redeploys)
-        except Exception as exc:  # noqa: BLE001
-            redeploys, expand_err = list(tri["redeploys"]), exc
-    v["redeploys"] = [{"name": d["name"], "slot": d["new"], "deploy_utc": d.get("deploy_utc")} for d in redeploys]
+    redeploys: list[dict[str, Any]] = []
+    unenum: list[dict[str, Any]] = []  # programs whose enumeration failed: {"d": the record's own redeploy, "err": ..., "bound_ms": ...}
     state = read_state(state_path)
+    for d in tri["redeploys"]:
+        try:
+            redeploys += expand_writes(client, rec, [d])
+        except Exception as exc:  # noqa: BLE001
+            try:
+                bound = failclosed_bound_ms(d["name"], rec, mon_pins, history, state)
+            except CheckError:
+                bound = tri["run_ms"]
+            unenum.append({"d": d, "err": exc, "bound_ms": min(bound, tri["run_ms"])})
+    redeploys.sort(key=lambda w: (w["new"], w["name"]))
+    expand_err = unenum[0]["err"] if unenum else None
+    bounds = [u["bound_ms"] for u in unenum]
+    v["redeploys"] = [{"name": d["name"], "slot": d["new"], "deploy_utc": d.get("deploy_utc")} for d in redeploys + [u["d"] for u in unenum]]
     unresolved = [d for d in redeploys if state.get(redeploy_key(d)) is None or state[redeploy_key(d)]["verdict"] != "PASS"]
     if tri["action"] == "hard":
         # B1: a hard flag in the same run as a not-yet-PASSed program write cannot be a PASS (R3a), so R4 applies: the window ends at the EARLIEST unreviewed write,
         # or at the flag's instant when that is earlier.
-        halt_at = tri["run_ms"]
+        halt_at = min([tri["run_ms"], *bounds])
         if unresolved:
             try:
                 halt_at = min(halt_at, redeploy_instant_ms(unresolved))
             except CheckError:
                 pass
-        v.update(verdict="HALT", reasons=tri["hard_reasons"] + ([f"write enumeration failed: {expand_err}"] if expand_err else []), halt_at_ms=halt_at)
+        v.update(verdict="HALT", reasons=tri["hard_reasons"] + [f"write enumeration failed for {u['d']['name']} ({type(u['err']).__name__}: {str(u['err'])[:120]}): bound {iso_ms(u['bound_ms'])}" for u in unenum],
+                 halt_at_ms=halt_at)
         return v
     # redeploy-only: a write that already PASSed is covered and no longer sets the instant, the deadline or the sample
     failed = [state[redeploy_key(d)] for d in redeploys if state.get(redeploy_key(d)) and state[redeploy_key(d)]["verdict"] != "PASS"]
     pending = sorted((d for d in redeploys if state.get(redeploy_key(d)) is None), key=lambda w: (redeploy_instant_ms([w]), w["new"], w["name"]))
     try:
-        deploy_ms = redeploy_instant_ms(unresolved or redeploys)
+        inst = [redeploy_instant_ms([w]) for w in (unresolved or redeploys)]
     except CheckError as exc:  # no redeploy instant exists: the flag's instant is all there is
-        v.update(verdict="ERROR", reasons=[str(exc)], halt_at_ms=tri["run_ms"])
+        v.update(verdict="ERROR", reasons=[str(exc)], halt_at_ms=min([tri["run_ms"], *bounds]))
         return v
-    if failed and not expand_err:
+    deploy_ms = min([*inst, *bounds, tri["run_ms"]])
+    if failed and not unenum:
         bad = failed[0]
         v.update(verdict=bad["verdict"], reasons=[f"state: {bad['key']} was {bad['verdict']} ({'; '.join(bad.get('reasons', []))[:300]})"], halt_at_ms=deploy_ms,
                  redeploy_utc=iso_ms(deploy_ms))
         return v
-    if not pending and not expand_err:
+    if not pending and not unenum:
         v.update(verdict="PASS", record_only=True, reasons=["covered: every changed slot already PASSed"], covered=True)
         return v
     deadline = deploy_ms + CHECK_WINDOW_S * 1000
@@ -921,8 +954,9 @@ def decide(rec: Json, prev: Json | None, mon_pins: Json, pins: Json, state_path:
             remember(d, verdict, reasons)
         return v
 
-    if expand_err:  # the enumeration could not be completed (or the pinned slot was not reached): ERROR, at the earliest record-known redeploy instant
-        return end("ERROR", [f"{type(expand_err).__name__}: {str(expand_err)[:200]}"], deploy_ms, [d for d in tri["redeploys"] if state.get(redeploy_key(d)) is None])
+    if unenum:  # the enumeration could not be completed (or the pinned slot was not reached): ERROR, at the earliest record-known redeploy instant
+        return end("ERROR", [f"write enumeration failed for {u['d']['name']} ({type(u['err']).__name__}: {str(u['err'])[:160]}): bound {iso_ms(u['bound_ms'])}" for u in unenum],
+                   deploy_ms, [u["d"] for u in unenum if state.get(redeploy_key(u["d"])) is None])
     if now_ms() > deadline:
         return end("FAIL", [f"timeout: check started {iso_ms(now_ms())}, after the deadline {iso_ms(deadline)}"], deploy_ms, pending)
     detail: dict[str, Any] = {}
@@ -960,10 +994,15 @@ def previous_daily(recs: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
     return None
 
 
-def last_two_records(path: Path) -> tuple[dict[str, Any], dict[str, Any] | None]:
+def read_records(path: Path) -> list[dict[str, Any]]:
     recs = mon.read_tail_records(path)
     if not recs:
         raise CheckError(f"no daily record in {path}")
+    return recs
+
+
+def last_two_records(path: Path) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    recs = read_records(path)
     return recs[-1], previous_daily(recs)
 
 
@@ -1011,7 +1050,8 @@ def main(argv: Sequence[str] | None = None, *, client: Any = None, http_get: Cal
         print("refused: public RPC only", file=sys.stderr)
         return 64
     try:
-        rec, prev = last_two_records(Path(a.daily))
+        recs = read_records(Path(a.daily))
+        rec, prev = recs[-1], previous_daily(recs)
         age_s = clock() / 1000 - utc_ms(rec["run_utc"]) / 1000
         mon_pins = mon.load_pins(Path(a.monitor_pins))
         pins = load_json(Path(a.pins))
@@ -1034,7 +1074,7 @@ def main(argv: Sequence[str] | None = None, *, client: Any = None, http_get: Cal
             out["upgrade_writes"] = [{k: w[k] for k in ("name", "new", "deploy_utc")} for w in writes]
             print(json.dumps(out, sort_keys=True))
             return 0
-        v = decide(rec, prev, mon_pins, pins, Path(a.state), client=cl, http_get=get, now_ms=clock, job_id=a.job_id)
+        v = decide(rec, prev, mon_pins, pins, Path(a.state), client=cl, http_get=get, now_ms=clock, job_id=a.job_id, history=recs[:-1])
         text = json.dumps(v, sort_keys=True)
         print(text)
         if a.verdict_out:
