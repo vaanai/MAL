@@ -27,6 +27,13 @@ def ms(t: str) -> int:
     return c.utc_ms(t)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_sleep(monkeypatch):
+    slept = []
+    monkeypatch.setattr(c, "RETRY_SLEEP", slept.append)  # the null-retry backoff must not cost test time
+    return slept
+
+
 # ---------------------------------------------------------------- IDL fixture and encoder
 def fields(spec: str):
     out = []
@@ -1142,3 +1149,115 @@ def test_broken_previous_record_does_not_discard_todays_valid_halt(tmp_path):
         assert t["action"] == "hard" and t["flag_halt_ms"] == ms(RUN_UTC) and any(r.startswith("boost_disabled: boost off") for r in t["hard_reasons"])
         v = run(rec, tmp_path / str(n), prev=prev)
         assert v["verdict"] == "HALT" and v["halt_at_ms"] == ms(RUN_UTC)
+
+
+# ---- M-1 failure (job #1311): 'write candidate unreadable' on the public RPC
+class FlakyTx(FakeClient):
+    """The first `nulls` getTransaction answers per signature are null (what a lagging public backend's -32004/-32009 look like through mon.RpcClient)."""
+
+    def __init__(self, *a, nulls=0, **kw):
+        super().__init__(*a, **kw)
+        self.nulls, self.seen = nulls, {}
+
+    def call(self, method, params):
+        if method == "getTransaction" and params[0].startswith("w"):
+            self.seen[params[0]] = self.seen.get(params[0], 0) + 1
+            if self.seen[params[0]] <= self.nulls:
+                self.calls += 1
+                return None
+        return super().call(method, params)
+
+
+def test_transient_null_candidate_is_retried_with_backoff_and_then_read(tmp_path, _no_real_sleep):
+    cl = FlakyTx(sample_blobs(), nulls=2)
+    v = run(make_rec(), tmp_path, client=cl)
+    assert v["verdict"] == "PASS" and sorted(v["per_write"]) == ["pump:1000", "pumpswap:1100"]
+    assert _no_real_sleep[:2] == [c.TX_RETRY_BACKOFF_S, c.TX_RETRY_BACKOFF_S * 2]  # exponential, bounded
+
+
+def test_a_candidate_that_stays_null_fails_closed_after_the_bounded_tries(tmp_path, _no_real_sleep):
+    cl = FlakyTx(sample_blobs(), nulls=99)
+    v = run(make_rec(), tmp_path, client=cl)
+    assert v["verdict"] == "ERROR" and f"unreadable after {c.TX_RETRY_ATTEMPTS} tries" in v["reasons"][0]
+    assert max(cl.seen.values()) == c.TX_RETRY_ATTEMPTS and len(_no_real_sleep) <= 2 * (c.TX_RETRY_ATTEMPTS - 1)
+
+
+def test_real_errors_are_not_retried_as_nulls():
+    class Boom:
+        calls = 0
+
+        def call(self, method, params):
+            Boom.calls += 1
+            raise mon.RpcError("rpc error -32602 invalid")
+    with pytest.raises(mon.RpcError):
+        c.fetch_tx_retry(Boom(), "sig")
+    assert Boom.calls == 1
+
+
+# ---- optional archival RPC for the enumeration only
+SECRET = "k3y-SHOULD-NEVER-APPEAR"
+
+
+def test_env_file_url_is_read_without_echo(tmp_path):
+    f = tmp_path / "h.env"
+    f.write_text(f'# comment\nOTHER=1\nexport HELIUS_RPC_URL="https://mainnet.example.test/?api-key={SECRET}"\n')
+    assert c.rpc_url_from_env_file(str(f)).endswith(SECRET)
+    f.write_text(f"HELIUS_API_KEY={SECRET}\n")
+    assert c.rpc_url_from_env_file(str(f)) == f"https://mainnet.helius-rpc.com/?api-key={SECRET}"
+    f.write_text(f"MY_URL=https://x.test/{SECRET}\n")
+    assert c.rpc_url_from_env_file(str(f), "MY_URL").endswith(SECRET)
+    for bad in ("NOTHING=1\n", f"HELIUS_RPC_URL=http://insecure/{SECRET}\n"):
+        f.write_text(bad)
+        with pytest.raises(c.CheckError) as ei:
+            c.rpc_url_from_env_file(str(f))
+        assert SECRET not in str(ei.value)
+    with pytest.raises(c.CheckError) as ei:
+        c.rpc_url_from_env_file(str(tmp_path / "missing.env"))
+
+
+def test_enumeration_uses_the_separate_client_and_the_samples_do_not(tmp_path, capsys):
+    write_pins_files(tmp_path, build_pins())
+    write_daily(tmp_path / "daily.jsonl", [make_rec()])
+    main_cl = FakeClient(sample_blobs(), fail_on={"getSignaturesForAddress_pd"})
+    main_cl.write_sigs.clear()  # the main client knows no programdata signatures: enumeration must NOT go through it
+    enum_cl = FakeClient([])
+    enum_cl.set_writes({"PD_PUMP": [(1000, DEPLOY_PUMP)], "PD_SWAP": [(1100, DEPLOY_SWAP)]})
+    enum_cl.fail_on = {"getBlock", "getMultipleAccounts"}  # and the archival client must never serve the samples
+    rc = c.main(argv(tmp_path), client=main_cl, enum_client=enum_cl, http_get=http_ok(), now_ms=lambda: NOW)
+    out = json.loads((tmp_path / "v.json").read_text())
+    assert rc == 0 and out["verdict"] == "PASS" and out["enumeration"]["separate_rpc"] is True
+
+
+def test_main_with_env_file_never_prints_the_url(tmp_path, capsys, monkeypatch):
+    write_pins_files(tmp_path, build_pins())
+    write_daily(tmp_path / "daily.jsonl", [make_rec()])
+    f = tmp_path / "h.env"
+    f.write_text(f"HELIUS_API_KEY={SECRET}\n")
+    seen = {}
+
+    class Rec(FakeClient):
+        pass
+    enum_cl = Rec([])
+    enum_cl.set_writes({"PD_PUMP": [(1000, DEPLOY_PUMP)], "PD_SWAP": [(1100, DEPLOY_SWAP)]})
+
+    def fake_rpc(url, **kw):
+        seen["url"] = url
+        return enum_cl
+    monkeypatch.setattr(c.mon, "RpcClient", fake_rpc)
+    rc = c.main(argv(tmp_path, "--enum-rpc-env-file", str(f)), client=FakeClient(sample_blobs()), http_get=http_ok(), now_ms=lambda: NOW)
+    cap = capsys.readouterr()
+    assert rc == 0 and SECRET in seen["url"]
+    assert SECRET not in cap.out and SECRET not in cap.err and SECRET not in (tmp_path / "v.json").read_text() and SECRET not in (tmp_path / "st.jsonl").read_text()
+    bad = tmp_path / "bad.env"
+    bad.write_text("X=1\n")
+    assert c.main(argv(tmp_path, "--enum-rpc-env-file", str(bad)), client=FakeClient([]), http_get=http_ok(), now_ms=lambda: NOW) == 11
+
+
+def test_enum_only_prints_writes_and_call_count(tmp_path, capsys):
+    cl = FakeClient([])
+    cl.set_writes({"PD_PUMP": [(900, EARLY_SWAP), (1000, DEPLOY_PUMP)]})
+    rc = c.main(["--enum-only", "pump", "--programdata", "PD_PUMP", "--pinned-slot", "100", "--newest-slot", "1000"], enum_client=cl)
+    out = json.loads(capsys.readouterr().out)
+    assert rc == 0 and [w["new"] for w in out["writes"]] == [900, 1000] and out["program"] == "pump"
+    assert c.main(["--enum-only", "pump", "--programdata", "PD_PUMP", "--pinned-slot", "100", "--newest-slot", "999"], enum_client=cl) == 11
+    assert c.main(["--enum-only", "pump"], enum_client=cl) == 11

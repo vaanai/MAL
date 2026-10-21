@@ -546,7 +546,7 @@ def migrate_sample(client: Any, min_slot: int, now_s: float) -> list[tuple[dict[
     out: list[tuple[dict[str, Any], dict[str, Any]]] = []
     skipped = {"unfetchable": 0, "not_a_migrate_tx": 0}
     for s in cands:
-        tx = mon.fetch_tx(client, s["signature"])
+        tx, _tries = fetch_tx_retry(client, s["signature"], 3)
         if tx is None:
             skipped["unfetchable"] += 1
             continue
@@ -812,6 +812,26 @@ def read_state(path: Path) -> dict[str, dict[str, Any]]:
     return out
 
 
+TX_RETRY_ATTEMPTS = 5  # getTransaction answering null is retried this many times in all, with backoff TX_RETRY_BACKOFF_S * 2**n between tries
+TX_RETRY_BACKOFF_S = 2.0
+RETRY_SLEEP: Callable[[float], None] = time.sleep  # replaced in tests
+
+
+def fetch_tx_retry(client: Any, sig: str, attempts: int = TX_RETRY_ATTEMPTS) -> tuple[dict[str, Any] | None, int]:
+    """getTransaction with bounded retries on a null answer. ROOT CAUSE (measured 2026-10-21, public api.mainnet-beta): the public endpoint is load-balanced; a backend that lags the
+    chain answers -32004 / -32009 ('block not available') or null for a transaction another backend serves a moment later, and mon.RpcClient maps those codes to None (its
+    'skipped / missing' convention). The same candidate (5HtoG6baGa55) read fine seconds later with maxSupportedTransactionVersion=1. A null is therefore retried with backoff;
+    after `attempts` nulls it is still reported as None (the caller fails closed). Real errors (RpcError, RpcUnreachable, call cap) propagate, they are not nulls.
+    Returns (tx or None, tries used)."""
+    for n in range(attempts):
+        tx = mon.fetch_tx(client, sig)
+        if tx is not None:
+            return tx, n + 1
+        if n + 1 < attempts:
+            RETRY_SLEEP(TX_RETRY_BACKOFF_S * (2 ** n))
+    return None, attempts
+
+
 def list_upgrade_writes(client: Any, name: str, programdata: str, pinned_slot: int, newest_slot: int) -> list[dict[str, Any]]:
     """Q4: EVERY successful upgrade write to a program's programdata account after the pinned deploy slot, oldest first. Pages getSignaturesForAddress(programdata)
     back until a signature at or before the pinned slot is seen; not reached in MAX_WRITE_PAGES pages => CheckError (fail closed). A write is a successful tx with a
@@ -838,9 +858,9 @@ def list_upgrade_writes(client: Any, name: str, programdata: str, pinned_slot: i
         raise CheckError(f"{name}: the pinned deploy slot {pinned_slot} was not reached in the programdata signature list after reading {n_read} signatures (fail closed)")
     out: list[dict[str, Any]] = []
     for sg in sorted(cands, key=lambda x: x["slot"]):
-        tx = mon.fetch_tx(client, sg["signature"])
+        tx, tries = fetch_tx_retry(client, sg["signature"])
         if tx is None:
-            raise CheckError(f"{name}: write candidate {sg['signature'][:12]} unreadable")
+            raise CheckError(f"{name}: write candidate {sg['signature'][:12]} unreadable after {tries} tries (null from getTransaction; see fetch_tx_retry)")
         keys = mon.tx_keys(tx)
         ixs = list(((tx.get("transaction") or {}).get("message") or {}).get("instructions") or [])
         for grp in (tx.get("meta") or {}).get("innerInstructions") or []:  # upgrades go through the Squads multisig: the loader Upgrade is an INNER instruction
@@ -899,7 +919,7 @@ def failclosed_bound_ms(name: str, rec: Json, mon_pins: Json, history: Sequence[
 
 
 def decide(rec: Json, prev: Json | None, mon_pins: Json, pins: Json, state_path: Path, *, client: Any, http_get: Callable, now_ms: Callable[[], int], job_id: str = "",
-           history: Sequence[Json] = ()) -> dict[str, Any]:
+           history: Sequence[Json] = (), enum_client: Any = None) -> dict[str, Any]:
     tri = triage(rec, mon_pins, prev)
     v: dict[str, Any] = {"schema": SCHEMA, "run_utc": rec["run_utc"], "action": tri["action"], "verdict": "NONE", "reasons": [], "redeploys": [],
                          "flag_halt_ms": tri["flag_halt_ms"], "halt_at_ms": None, "record_only": False, "job_id": job_id}
@@ -912,7 +932,7 @@ def decide(rec: Json, prev: Json | None, mon_pins: Json, pins: Json, state_path:
     state = read_state(state_path)
     for d in tri["redeploys"]:
         try:
-            redeploys += expand_writes(client, rec, [d])
+            redeploys += expand_writes(enum_client or client, rec, [d])
         except Exception as exc:  # noqa: BLE001
             try:
                 bound = failclosed_bound_ms(d["name"], rec, mon_pins, history, state)
@@ -923,6 +943,8 @@ def decide(rec: Json, prev: Json | None, mon_pins: Json, pins: Json, state_path:
     expand_err = unenum[0]["err"] if unenum else None
     bounds = [u["bound_ms"] for u in unenum]
     v["redeploys"] = [{"name": d["name"], "slot": d["new"], "deploy_utc": d.get("deploy_utc")} for d in redeploys + [u["d"] for u in unenum]]
+    ec = enum_client or client
+    v["enumeration"] = {"separate_rpc": enum_client is not None, "calls": getattr(ec, "total_calls", None) if not callable(getattr(ec, "total_calls", None)) else None}
     unresolved = [d for d in redeploys if state.get(redeploy_key(d)) is None or state[redeploy_key(d)]["verdict"] != "PASS"]
     if tri["action"] == "hard":
         # B1: a hard flag in the same run as a not-yet-PASSed program write cannot be a PASS (R3a), so R4 applies: the window ends at the EARLIEST unreviewed write,
@@ -1047,6 +1069,35 @@ def observe_report(rec: Json, client: Any, http_get: Callable, start_slot: int, 
 FROZEN_FILES = ("observe/trade_decode.py", "tools/h5_shadow.py", "tools/pump_structure_monitor.py", "observe/link_state.py", "tools/cap_pick_oracle.py", "tools/paper_curve_math.py")
 
 
+ENV_URL_VARS = ("HELIUS_RPC_URL", "RPC_URL", "HELIUS_URL", "SOLANA_RPC_URL")
+ENV_KEY_VARS = ("HELIUS_API_KEY", "HELIUS_KEY")
+
+
+def rpc_url_from_env_file(path: str, var: str | None = None) -> str:
+    """Read an RPC URL from a KEY=VALUE env FILE on the host (e.g. the Helius file that stays on fast-0). The value is returned to the caller only, never printed or logged,
+    and no error message contains it. `var` names the variable; otherwise ENV_URL_VARS are tried, then a bare API key from ENV_KEY_VARS becomes a Helius mainnet URL."""
+    vals: dict[str, str] = {}
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise CheckError(f"enumeration RPC env file unreadable ({type(exc).__name__})") from None
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        k = k.strip().removeprefix("export ").strip()
+        vals[k] = v.strip().strip('"').strip("'")
+    for k in ([var] if var else list(ENV_URL_VARS)):
+        if vals.get(k, "").startswith("https://"):
+            return vals[k]
+    if not var:
+        for k in ENV_KEY_VARS:
+            if vals.get(k):
+                return "https://mainnet.helius-rpc.com/?api-key=" + vals[k]
+    raise CheckError("enumeration RPC env file has no usable URL variable")
+
+
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="A3 automatic redeploy check (no override path).")
     p.add_argument("--daily", default=DEFAULT_DAILY, help="A3 daily record JSONL (default %(default)s)")
@@ -1056,16 +1107,37 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p.add_argument("--verdict-out", help="also write the verdict JSON here")
     p.add_argument("--rpc-url", default=mon.DEFAULT_RPC)
     p.add_argument("--job-id", default=os.environ.get("MISCUSI_JOB_ID", ""))
+    p.add_argument("--enum-rpc-env-file", help="KEY=VALUE env file holding an archival RPC URL (e.g. the Helius file on fast-0). Used ONLY for the upgrade-write enumeration (signature list + the "
+                   "candidate getTransactions); the samples stay on --rpc-url. The tool reads the file itself and never prints it.")
+    p.add_argument("--enum-rpc-var", help="variable name inside --enum-rpc-env-file (default: try common names, then a bare API key)")
+    p.add_argument("--enum-only", metavar="PROGRAM", help="enumerate the upgrade writes of one program (pump|pumpswap) and print them with the call count, nothing else; needs "
+                   "--programdata, --pinned-slot and --newest-slot (no daily record, no state, no samples)")
+    p.add_argument("--programdata", help="programdata account address for --enum-only")
+    p.add_argument("--pinned-slot", type=int, help="pinned deploy slot for --enum-only")
+    p.add_argument("--newest-slot", type=int, help="the record's newest deploy slot for --enum-only")
     p.add_argument("--observe", action="store_true", help="print the values the pins file should hold from the newest record's redeploy; decide nothing")
     return p.parse_args(argv)
 
 
-def main(argv: Sequence[str] | None = None, *, client: Any = None, http_get: Callable | None = None, now_ms: Callable[[], int] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, *, client: Any = None, http_get: Callable | None = None, now_ms: Callable[[], int] | None = None, enum_client: Any = None) -> int:
     a = parse_args(argv)
     clock = now_ms or (lambda: int(time.time() * 1000))
     if "helius" in a.rpc_url.lower():
         print("refused: public RPC only", file=sys.stderr)
         return 64
+    if a.enum_only:
+        try:
+            ecl0 = enum_client or mon.RpcClient(rpc_url_from_env_file(a.enum_rpc_env_file, a.enum_rpc_var) if a.enum_rpc_env_file else a.rpc_url, min_interval=0.2, max_calls=300)
+            if not (a.programdata and a.pinned_slot and a.newest_slot):
+                raise CheckError("--enum-only needs --programdata, --pinned-slot and --newest-slot")
+            t0 = time.time()
+            ws = list_upgrade_writes(ecl0, a.enum_only, a.programdata, a.pinned_slot, a.newest_slot)
+            print(json.dumps({"program": a.enum_only, "writes": [{k: w[k] for k in ("new", "deploy_utc", "sig")} for w in ws], "rpc_calls": getattr(ecl0, "total_calls", None),
+                              "seconds": round(time.time() - t0), "separate_rpc": bool(a.enum_rpc_env_file or enum_client)}, sort_keys=True))
+            return 0
+        except Exception as exc:  # noqa: BLE001
+            print(f"A3_ENUM_ERROR {type(exc).__name__}: {str(exc)[:240]}", file=sys.stderr)
+            return 11
     try:
         recs = read_records(Path(a.daily))
         rec, prev = recs[-1], previous_daily(recs)
@@ -1080,18 +1152,25 @@ def main(argv: Sequence[str] | None = None, *, client: Any = None, http_get: Cal
         return 11
     cl = client or mon.RpcClient(a.rpc_url, min_interval=0.5, max_calls=450)
     get = http_get or mon.urllib_get
+    ecl = enum_client
+    if ecl is None and a.enum_rpc_env_file:
+        try:
+            ecl = mon.RpcClient(rpc_url_from_env_file(a.enum_rpc_env_file, a.enum_rpc_var), min_interval=0.1, max_calls=300)
+        except CheckError as exc:  # the message carries no URL or key
+            print(f"A3_CHECK_OPERATIONAL_ERROR {exc}", file=sys.stderr)
+            return 11
     try:
         if a.observe:
             tri = triage(rec, mon_pins, prev)
             if not tri["redeploys"]:
                 print("no program redeploy in the newest record", file=sys.stderr)
                 return 11
-            writes = expand_writes(cl, rec, tri["redeploys"])  # Q4: every upgrade write since the pinned slot, printed with the report
+            writes = expand_writes(ecl or cl, rec, tri["redeploys"])  # Q4: every upgrade write since the pinned slot, printed with the report
             out = observe_report(rec, cl, get, max(d["new"] for d in tri["redeploys"]) + SAMPLE_START_OFFSET_SLOTS, pins.get("ignored_discs"), pins.get("trailing_bytes"), clock() / 1000)
             out["upgrade_writes"] = [{k: w[k] for k in ("name", "new", "deploy_utc")} for w in writes]
             print(json.dumps(out, sort_keys=True))
             return 0
-        v = decide(rec, prev, mon_pins, pins, Path(a.state), client=cl, http_get=get, now_ms=clock, job_id=a.job_id, history=recs[:-1])
+        v = decide(rec, prev, mon_pins, pins, Path(a.state), client=cl, http_get=get, now_ms=clock, job_id=a.job_id, history=recs[:-1], enum_client=ecl)
         text = json.dumps(v, sort_keys=True)
         print(text)
         if a.verdict_out:

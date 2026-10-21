@@ -3,7 +3,7 @@
 # Run at least twice a day (QP): a redeploy found at the next run is checked against a 24 h deadline counted from its deploy instant.
 #   sh scripts/ops/a3-daily.sh            the full run
 #   sh scripts/ops/a3-daily.sh deadman    only the cheap dead-man check (no RPC, no monitor); schedule it as its own job as well, at another hour
-# Env (defaults): A3_REPO=$HOME/MAL, A3_PY=/home/claude/venvs/c1nf-shadow/bin/python (or /usr/bin/python3), A3_OUT=$HOME/data/structure-monitor (daily file, state, verdicts,
+# Env (defaults; optional A3_ENUM_ENV_FILE, see below): A3_REPO=$HOME/MAL, A3_PY=/home/claude/venvs/c1nf-shadow/bin/python (or /usr/bin/python3), A3_OUT=$HOME/data/structure-monitor (daily file, state, verdicts,
 # applied log), A3_BOOKS=$HOME/data/arena/a3-books.json, A3_ARENA_ROOT=$HOME/data/arena.
 # Exit: 0 whenever a decision was made AND applied (a halt that was applied is printed as A3_HALT_APPLIED and still exits 0); nonzero only on tool failure:
 #   1 cannot cd / monitor could not write, 2 books file or verdict refused (nothing written), 11 stale or unreadable daily record or unwritable state (no decision made),
@@ -31,7 +31,13 @@ echo "A3_MONITOR_RC=$rc_mon"
 
 VERDICT="$A3_OUT/a3-verdict-latest.json"
 rm -f "$VERDICT"
-"$A3_PY" -m tools.a3_redeploy_check --daily "$A3_DAILY" --state "$A3_STATE" --verdict-out "$VERDICT"
+# A3_ENUM_ENV_FILE (optional): a KEY=VALUE env file holding an archival RPC URL (e.g. the Helius file on this host). The check reads it itself, never prints it, and uses it
+# ONLY for the upgrade-write enumeration; the samples stay on the public RPC.
+if [ -n "${A3_ENUM_ENV_FILE:-}" ]; then
+  "$A3_PY" -m tools.a3_redeploy_check --daily "$A3_DAILY" --state "$A3_STATE" --verdict-out "$VERDICT" --enum-rpc-env-file "$A3_ENUM_ENV_FILE"
+else
+  "$A3_PY" -m tools.a3_redeploy_check --daily "$A3_DAILY" --state "$A3_STATE" --verdict-out "$VERDICT"
+fi
 rc_chk=$?
 echo "A3_CHECK_RC=$rc_chk"
 if [ "$rc_chk" -ne 0 ] && [ "$rc_chk" -ne 10 ]; then
