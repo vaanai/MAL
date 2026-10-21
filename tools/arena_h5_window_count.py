@@ -14,9 +14,12 @@ not counted, refused triggers are not attempts. A dir whose start records fail t
 
 Line classification is from raw text only (QP-RULING-1022 (3)): total lines; start/trigger/gap lines parsed; lines carrying some other `"type": "<word>"`; UNCLASSIFIED lines (no
 `"type"` text, or not ending in `}`; never JSON-parsed). Any unclassified or malformed line gives exit 3 and the output says LOWER BOUND.
-Feed gaps by UTC date, from the shadow's own record `{"type": "gap", "kind": slot_jump|silence|feed_restart|socket_reconnect}` (tools/h5_shadow.py `_gap`; only `silence` carries a
-duration, `silent_ms`; `slot_jump` carries `missed_slots`), plus restarts (extra start records) and missing hour files, both of which are HARD gaps (a process restart or a missing
-hour has no gap record of its own).
+Feed gaps by UTC date, from the shadow's own record `{"type": "gap", "kind": slot_jump|silence|feed_restart|socket_reconnect}` (tools/h5_shadow.py `_gap`). Fields kept:
+`missed_slots` (slot_jump), `silent_ms` (silence: the time since the last event at DETECTION, about SILENCE_S; one record per silence, none when it ends, so the sum
+`silence_detect_ms_total` is NOT A DURATION and is not used for the 1 h rule), `common_down_ms` and `flags_pools` (socket_reconnect: the measured length of a common all-socket outage).
+data_loss_ms = 400 x sum(missed_slots) + sum(common_down_ms of flagged socket_reconnect records); `data_loss_over_1h` is that over the whole window (overlap counted twice: fail-closed).
+HARD gaps (no duration recorded): restarts (extra start records), missing hour files, any feed_restart record, any silence not followed by a later slot_jump of the same dir inside the
+window, any flagged socket_reconnect without a usable common_down_ms.
 `--p0-dates D1,D2,..` is the P0 mode: attempts by date (zero-filled) over those whole UTC days, plus the gap counts.
 
 Exit codes: 0 counted cleanly; 2 refused input; 3 counted, but some lines or records were malformed or unclassified (the counts are then a LOWER BOUND).
@@ -29,6 +32,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator, Sequence
@@ -37,11 +41,13 @@ from tools import arena_h5_score as sc
 from tools import h5_shadow as h5
 
 KNOWN_BOOKS = ("h5v1-boostfloor-a1", "h5v2-boostclock-a1", "h5v1-boostfloor-a2", "h5v2-boostclock-a2")
-TYPE_RE = re.compile(r'"type"\s*:\s*"([A-Za-z0-9_]+)"')
+TYPE_RE = re.compile(r'^\{\s*"type"\s*:\s*"([A-Za-z0-9_]+)"')  # anchored: only a line whose FIRST key is "type" is classified; a nested "type" can never select a parse
 PARSED_TYPES = ("start", "trigger", "gap")
 START_FIELDS = ("type", "start_ms", "t_ms", "code_sha", "fresh_forward", "dirty")
 TRIGGER_FIELDS = ("type", "variant", "pool", "t_detect_ms", "h5_look2_sealed")
-GAP_FIELDS = ("type", "kind", "t_ms", "silent_ms", "missed_slots", "flags_pools")
+GAP_FIELDS = ("type", "kind", "t_ms", "silent_ms", "missed_slots", "flags_pools", "common_down_ms")
+SLOT_MS = 400  # the lab's slot length for the data-loss measure
+P0_MIN_AGE_MS = 600_000
 WHITELIST = {"start": START_FIELDS, "trigger": TRIGGER_FIELDS, "gap": GAP_FIELDS}
 GAP_KINDS = ("slot_jump", "silence", "feed_restart", "socket_reconnect")
 HOUR_MS = 3_600_000
@@ -65,8 +71,8 @@ def _no_constant(name: str) -> Any:
 
 
 def read_decision_records(shadow_dir: Path, malformed: collections.Counter, lines: collections.Counter | None = None) -> Iterator[dict]:
-    """Whitelisted start / trigger / gap records in file then line order. Classification is by raw text: a line with no `"type"` text or not ending in `}` is UNCLASSIFIED and never
-    parsed; a line of another type is counted and never parsed. A start/trigger/gap line that is not strict JSON is counted as malformed."""
+    """Whitelisted start / trigger / gap records in file then line order. Classification is by raw text: a line that does not begin `{"type": "<word>"` or does not end in `}` is
+    UNCLASSIFIED and never parsed. A trigger's whole record is kept as `_raw` for the executor's parser only; it is never output; a line of another type is counted and never parsed. A start/trigger/gap line that is not strict JSON is counted as malformed."""
     lines = lines if lines is not None else collections.Counter()
     for f in sorted(shadow_dir.glob(HOUR_FILE)):
         with open(f, encoding="utf-8", errors="replace") as fh:
@@ -75,7 +81,7 @@ def read_decision_records(shadow_dir: Path, malformed: collections.Counter, line
                 if not text:
                     continue
                 lines["total_lines"] += 1
-                m = TYPE_RE.search(text)
+                m = TYPE_RE.match(text)
                 if not m or not text.endswith("}"):
                     lines["unclassified_lines"] += 1
                     continue
@@ -103,6 +109,7 @@ class DirRead:
 
     def __init__(self, path: Path, malformed: collections.Counter, lines: collections.Counter | None = None) -> None:
         self.path = path
+        self.poisoned: set[str] = set()  # pools whose FIRST pv trigger is unusable: the scorer stops on them, so the tool never counts them
         self.starts: list[dict] = []
         self.triggers: dict[str, dict] = {}
         self.gaps: list[dict] = []
@@ -133,11 +140,15 @@ class DirRead:
             if not (isinstance(pool, str) and pool):
                 malformed["pv_trigger_without_pool"] += 1
                 continue
+            if pool in self.triggers or pool in self.poisoned:
+                continue  # the first record of a pool wins, as in the scorer
             if cur is None:
                 malformed["trigger_before_any_start"] += 1
+                self.poisoned.add(pool)
                 continue
             if not _usable_ms(rec.get("t_detect_ms")):
                 malformed["trigger_without_usable_t_detect_ms"] += 1
+                self.poisoned.add(pool)
                 continue
             self.triggers.setdefault(pool, {"rec": rec, "start": cur})
 
@@ -170,7 +181,7 @@ def count_window(dirs: Sequence[Path], start_ms: int, end_ms: int, frozen_sha: s
             continue
         feeding.append(d)
     out["feeding"] = feeding
-    seen: set[str] = set()
+    seen: set[str] = set().union(*(d.poisoned for d in feeding)) if feeding else set()  # poisoned pools are never counted
     for d in feeding:
         for pool, t in sorted(d.triggers.items(), key=lambda kv: kv[1]["rec"]["t_detect_ms"]):
             rec = t["rec"]
@@ -205,28 +216,47 @@ def _hour_ms(h: str) -> int | None:
 
 
 def gap_summary(feeding: Sequence[DirRead], start_ms: int, end_ms: int) -> dict[str, Any]:
-    """Feed-gap counts by UTC date over [start_ms, end_ms). Gap records: count by kind, `silent_ms` total (silence only) and `missed_slots` total (slot_jump only), flagged count.
-    Restarts (extra start records, hard gaps; duration = start_ms minus the last decision/gap timestamp seen before it, an upper bound as other records are not read). Missing
-    hour files (hard gaps of a full hour each, over the hours the window touches, in no feeding dir)."""
+    """Feed-gap counts by UTC date over [start_ms, end_ms); see the module docstring for the measures and the hard-gap causes. Returns {"by_date", "data_loss_ms", ...}."""
     by_date: dict[str, dict[str, Any]] = {}
 
     def day(ms: int) -> dict[str, Any]:
-        return by_date.setdefault(sc.utc_day(ms), {"gap_records": {}, "silent_ms_total": 0, "missed_slots_total": 0, "flagged_gap_records": 0, "restarts": 0,
-                                                    "restart_ms_upper_bound": 0, "missing_hour_files": 0, "missing_hour_ms": 0, "hard_gap": False})
+        return by_date.setdefault(sc.utc_day(ms), {"gap_records": {}, "silence_detect_ms_total_not_a_duration": 0, "missed_slots_total": 0, "common_down_ms_flagged": 0,
+                                                    "common_down_ms_all": 0, "data_loss_ms": 0, "flagged_gap_records": 0, "feed_restart_records": 0, "unresolved_silences": 0,
+                                                    "flagged_reconnect_without_common_down": 0, "restarts": 0, "restart_ms_upper_bound": 0, "missing_hour_files": 0,
+                                                    "missing_hour_ms": 0, "hard_gap": False})
     for d in feeding:
-        for g in d.gaps:
+        inwin = [g for g in d.gaps if start_ms <= int(g["t_ms"]) < end_ms]
+        for i, g in enumerate(inwin):
             t = int(g["t_ms"])
-            if not start_ms <= t < end_ms:
-                continue
             row = day(t)
             kind = g.get("kind") if isinstance(g.get("kind"), str) else "other"
             row["gap_records"][kind] = row["gap_records"].get(kind, 0) + 1
-            if _usable_ms(g.get("silent_ms")):
-                row["silent_ms_total"] += int(g["silent_ms"])
-            if _usable_ms(g.get("missed_slots")):
-                row["missed_slots_total"] += int(g["missed_slots"])
-            if g.get("flags_pools"):
+            flagged = bool(g.get("flags_pools"))
+            if flagged:
                 row["flagged_gap_records"] += 1
+            if kind == "silence":
+                if _usable_ms(g.get("silent_ms")):
+                    row["silence_detect_ms_total_not_a_duration"] += int(g["silent_ms"])
+                if not any(h.get("kind") == "slot_jump" for h in inwin[i + 1:]):
+                    row["unresolved_silences"] += 1
+                    row["hard_gap"] = True
+            elif kind == "slot_jump":
+                if _usable_ms(g.get("missed_slots")):
+                    row["missed_slots_total"] += int(g["missed_slots"])
+                    row["data_loss_ms"] += SLOT_MS * int(g["missed_slots"])
+            elif kind == "feed_restart":
+                row["feed_restart_records"] += 1
+                row["hard_gap"] = True
+            elif kind == "socket_reconnect":
+                cd = g.get("common_down_ms")
+                if _usable_ms(cd):
+                    row["common_down_ms_all"] += int(cd)
+                    if flagged:
+                        row["common_down_ms_flagged"] += int(cd)
+                        row["data_loss_ms"] += int(cd)
+                elif flagged:
+                    row["flagged_reconnect_without_common_down"] += 1
+                    row["hard_gap"] = True
         for sm, down in d.restarts:
             if start_ms <= sm < end_ms:
                 row = day(sm)
@@ -243,7 +273,13 @@ def gap_summary(feeding: Sequence[DirRead], start_ms: int, end_ms: int) -> dict[
             row["missing_hour_ms"] += HOUR_MS
             row["hard_gap"] = True
         h += HOUR_MS
-    return {k: by_date[k] for k in sorted(by_date)}
+    by = {k: by_date[k] for k in sorted(by_date)}
+    total = sum(r["data_loss_ms"] for r in by.values())
+    return {"by_date": by, "data_loss_ms": total, "data_loss_over_1h": total > 3_600_000, "hard_gap": any(r["hard_gap"] for r in by.values())}
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
 
 
 def _resolve_dirs(root: Path, names: Sequence[str]) -> list[Path]:
@@ -265,14 +301,13 @@ def _clean(d: dict[str, Any]) -> dict[str, Any]:
 
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Counts-only: H5 arena decided attempts in a half-open UTC window [start, end).")
-    ap.add_argument("--books", required=True, help="comma-separated bot ids")
+    ap.add_argument("--books", required=True, help="comma-separated bot ids; every book gets identical counts (one --frozen-sha / --registered-at-ms per call)")
     ap.add_argument("--start-utc", help="window start, inclusive, YYYY-MM-DDTHH:MM:SSZ")
     ap.add_argument("--p0-dates", help="P0 mode: comma-separated whole UTC dates YYYY-MM-DD (consecutive); the window is those days; replaces --start-utc / --end-*")
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--end-ms", type=int, help="window end, exclusive, epoch ms (the halt flag instant)")
     g.add_argument("--end-utc", help="window end, exclusive, YYYY-MM-DDTHH:MM:SSZ")
-    ap.add_argument("--arena-root", help="the arena root; only the scorer's own roots are accepted unless --allow-root")
-    ap.add_argument("--allow-root", action="store_true", help="accept an arena root other than the scorer's (tests only)")
+    ap.add_argument("--arena-root", help="the arena root; only the scorer's own roots are accepted (no override flag; tests patch the scorer's guard)")
     ap.add_argument("--shadow-dir", action="append", required=True, help="a shadow dir under the arena root (repeat)")
     ap.add_argument("--frozen-sha", required=True, help="the books' registered frozen_sha (copied, not read from bots.json)")
     ap.add_argument("--registered-at-ms", required=True, type=int, help="the books' registered_at_ms (copied, not read from bots.json)")
@@ -296,6 +331,8 @@ def run(a: argparse.Namespace, out=None) -> int:
         if not days or None in days or any(b - a_ != DAY_MS for a_, b in zip(days, days[1:])):
             raise Refused("--p0-dates must be consecutive YYYY-MM-DD dates")
         start_ms, end_ms = days[0], days[-1] + DAY_MS
+        if end_ms > _now_ms() - P0_MIN_AGE_MS:
+            raise Refused(f"P0 window end {end_ms} is later than now minus 10 min: the last day is not closed; nothing counted")
     else:
         if not a.start_utc or (a.end_ms is None and not a.end_utc):
             raise Refused("give --start-utc and --end-ms/--end-utc, or --p0-dates")
@@ -303,31 +340,29 @@ def run(a: argparse.Namespace, out=None) -> int:
         end_ms = a.end_ms if a.end_ms is not None else parse_utc(a.end_utc)
     if end_ms < start_ms:
         raise Refused(f"window end {end_ms} is before start {start_ms}")
-    if a.allow_root:
-        if not a.arena_root:
-            raise Refused("--allow-root needs --arena-root")
-        root = Path(os.path.realpath(a.arena_root))
-    else:
-        try:
-            root = sc._arena_root(a.arena_root)
-        except ValueError as exc:
-            raise Refused(str(exc)) from exc
+    try:
+        root = sc._arena_root(a.arena_root)
+    except ValueError as exc:
+        raise Refused(str(exc)) from exc
     dirs = _resolve_dirs(root, a.shadow_dir)
     malformed: collections.Counter = collections.Counter()
     lines: collections.Counter = collections.Counter()
     res = count_window(dirs, start_ms, end_ms, a.frozen_sha, a.registered_at_ms, malformed, lines)
     clean = _clean(res)
     line_doc = {k: lines.get(k, 0) for k in ("total_lines", "parsed_lines", "other_type_lines", "unclassified_lines")}
-    gaps = gap_summary(res["feeding"], start_ms, end_ms)
+    gs = gap_summary(res["feeding"], start_ms, end_ms)
+    gaps = gs["by_date"]
     lower = bool(malformed) or line_doc["unclassified_lines"] > 0
     doc = {"window": {"start_ms": start_ms, "end_ms": end_ms, "half_open": True}, "books": {b: dict(clean) for b in books}, "refused_dirs": res["refused_dirs"],
-           "lines": line_doc, "malformed": dict(sorted(malformed.items())), "feed_gaps_by_date": gaps, "hard_gap": any(g["hard_gap"] for g in gaps.values()),
+           "lines": line_doc, "malformed": dict(sorted(malformed.items())), "feed_gaps_by_date": gaps, "hard_gap": gs["hard_gap"], "data_loss_ms": gs["data_loss_ms"],
+           "data_loss_over_1h": gs["data_loss_over_1h"],
            "lower_bound": lower, "label": "LOWER BOUND: unclassified or malformed lines present" if lower else "complete for the lines read", "counts_only": True}
     if p0 is not None:
         per = {d: clean["per_utc_date"].get(d, 0) for d in p0}
         avg = sum(per.values()) / len(per)
         doc["p0"] = {"dates": p0, "attempts_by_date": per, "average_per_day": avg, "min_day": min(per.values()), "floor_average_ge_2_0": avg >= 2.0,
-                     "floor_no_zero_day": min(per.values()) > 0, "hard_gap": doc["hard_gap"]}
+                     "floor_no_zero_day": min(per.values()) > 0, "hard_gap": doc["hard_gap"], "data_loss_ms": gs["data_loss_ms"], "data_loss_over_1h": gs["data_loss_over_1h"],
+                     "not_decidable_by_gap_rule": bool(doc["hard_gap"] or gs["data_loss_over_1h"])}
     out.write(json.dumps(doc, sort_keys=True) + "\n")
     return 3 if lower else 0
 
