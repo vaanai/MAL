@@ -512,6 +512,8 @@ def check_redeploy(rec: Json, mon_pins: Json, pins: Json, tri: Json, *, client: 
             fails.append(f"d: {name} not seen in the sample")
     ranges = pins.get("disc_len") or {}
     for h, (lo, hi, _n) in ev["disc_len"].items():
+        if h in ev["unknown"]:
+            continue  # already a FAIL reason above; an unknown discriminator has no pin by definition
         pr = ranges.get(h)
         if pr is None or pr.get("min_len") is None or pr.get("max_len") is None:
             raise CheckError(f"pin missing: disc_len.{h}")
@@ -549,23 +551,26 @@ def decide(rec: Json, prev: Json | None, mon_pins: Json, pins: Json, state_path:
     if tri["action"] == "hard":
         v.update(verdict="HALT", reasons=tri["hard_reasons"], halt_at_ms=tri["run_ms"])
         return v
-    # redeploy-only: decide at the redeploy instant
+    # redeploy-only: decide at the redeploy instant of the PENDING slots (a slot that already PASSed is covered and no longer sets the instant, the deadline or the sample)
+    state = read_state(state_path)
+    failed = [state[redeploy_key(d)] for d in tri["redeploys"] if state.get(redeploy_key(d)) and state[redeploy_key(d)]["verdict"] != "PASS"]
+    pending = [d for d in tri["redeploys"] if state.get(redeploy_key(d)) is None]
     try:
-        deploy_ms = redeploy_instant_ms(tri["redeploys"])
+        deploy_ms = redeploy_instant_ms([d for d in tri["redeploys"] if state.get(redeploy_key(d)) is None or state[redeploy_key(d)]["verdict"] != "PASS"] or tri["redeploys"])
     except CheckError as exc:
         v.update(verdict="ERROR", reasons=[str(exc)], halt_at_ms=tri["run_ms"])
         return v
-    deadline = deploy_ms + CHECK_WINDOW_S * 1000
-    v["redeploy_utc"], v["deadline_utc"] = iso_ms(deploy_ms), iso_ms(deadline)
-    state = read_state(state_path)
-    prior = [state.get(redeploy_key(d)) for d in tri["redeploys"]]
-    if any(p and p["verdict"] != "PASS" for p in prior):
-        bad = next(p for p in prior if p and p["verdict"] != "PASS")
-        v.update(verdict=bad["verdict"], reasons=[f"state: {bad['key']} was {bad['verdict']} ({'; '.join(bad.get('reasons', []))[:300]})"], halt_at_ms=deploy_ms)
+    if failed:
+        bad = failed[0]
+        v.update(verdict=bad["verdict"], reasons=[f"state: {bad['key']} was {bad['verdict']} ({'; '.join(bad.get('reasons', []))[:300]})"], halt_at_ms=deploy_ms,
+                 redeploy_utc=iso_ms(deploy_ms))
         return v
-    if all(prior):
+    if not pending:
         v.update(verdict="PASS", record_only=True, reasons=["covered: every changed slot already PASSed"], covered=True)
         return v
+    tri = dict(tri, redeploys=pending)
+    deadline = deploy_ms + CHECK_WINDOW_S * 1000
+    v["redeploy_utc"], v["deadline_utc"] = iso_ms(deploy_ms), iso_ms(deadline)
 
     def finish(verdict: str, reasons: list[str], detail: dict[str, Any] | None = None) -> dict[str, Any]:
         v.update(verdict=verdict, reasons=reasons, detail=detail or {})
@@ -573,7 +578,7 @@ def decide(rec: Json, prev: Json | None, mon_pins: Json, pins: Json, state_path:
             v["record_only"] = True
         else:
             v["halt_at_ms"] = deploy_ms
-        for d in tri["redeploys"]:
+        for d in pending:
             if state.get(redeploy_key(d)) is None:
                 append_state(state_path, {"key": redeploy_key(d), "program": d["name"], "slot": d["new"], "deploy_utc": d.get("deploy_utc"), "verdict": verdict,
                                           "reasons": reasons[:20], "checked_ms": now_ms(), "run_utc": rec["run_utc"], "job_id": job_id})
