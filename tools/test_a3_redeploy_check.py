@@ -37,6 +37,8 @@ def fields(spec: str):
 
 EVENTS = {
     "pump": {
+        "CompleteEvent": "user:pubkey mint:pubkey bonding_curve:pubkey timestamp:i64 quote_mint:pubkey",
+        "CompletePumpAmmMigrationEvent": "user:pubkey mint:pubkey mint_amount:u64 sol_amount:u64 pool_migration_fee:u64 bonding_curve:pubkey timestamp:i64 pool:pubkey quote_mint:pubkey",
         "TradeEvent": "mint:pubkey sol_amount:u64 token_amount:u64 is_buy:bool user:pubkey timestamp:i64 virtual_sol_reserves:u64 virtual_token_reserves:u64 real_sol_reserves:u64 "
                       "real_token_reserves:u64 fee_recipient:pubkey fee_basis_points:u64 fee:u64 creator:pubkey creator_fee_basis_points:u64 creator_fee:u64 track_volume:bool "
                       "total_unclaimed_tokens:u64 total_claimed_tokens:u64 current_sol_volume:u64 last_update_timestamp:i64 ix_name:string mayhem_mode:bool "
@@ -85,12 +87,14 @@ IDLS = make_idls()
 IDL_BYTES = {k: json.dumps(v, sort_keys=True).encode() for k, v in IDLS.items()}
 
 
-def encode(name: str, *, prog: str, trunc: int | None = None, ix: str = "buy") -> bytes:
+def encode(name: str, *, prog: str, trunc: int | None = None, ix: str = "buy", over: dict | None = None) -> bytes:
     entry = {e["name"]: e for e in IDLS[prog]["events"]}[name]
     out = bytearray(bytes(entry["discriminator"]))
     for i, f in enumerate(IDLS[prog]["types"][[t["name"] for t in IDLS[prog]["types"]].index(name)]["type"]["fields"]):
         t = f["type"]
-        if t == "bool":
+        if over and f["name"] in over:
+            out += over[f["name"]]
+        elif t == "bool":
             out += b"\x01" if f["name"] != "track_volume" else b"\x00"
         elif t == "pubkey":
             out += bytes([i + 1]) * 32
@@ -124,19 +128,74 @@ def sample_blobs(extra=()):
     return base + list(extra)
 
 
+MIN_SLOT = 1100 + c.SAMPLE_START_OFFSET_SLOTS
+POOLS = [mon.b58encode(bytes([200 + i % 50, i]) * 16) for i in range(60)]
+
+
+def migrate_tx(i: int, *, slot0: int = MIN_SLOT, init_boost: bool = True, budget_sol: float = 17.585, extra_blobs=(), drop=(), quote_wsol: bool = True) -> dict:
+    """A constructed migrate tx: CompleteEvent / CompletePumpAmmMigration / CreatePool / InitBoost as emit_cpi inner instructions (the shape the shadow reads)."""
+    pool = POOLS[i]
+    mint = mon.b58encode(bytes([i + 1]) * 32)
+    over = {"mint": mon.b58decode(mint), "pool": mon.b58decode(pool), "bonding_curve": bytes([90 + i]) * 32}
+    if quote_wsol:
+        over["quote_mint"] = bytes(32)  # native SOL, normalised to WSOL by the decoder
+    blobs = [encode("CompleteEvent", prog="pump", over=over), encode("CompletePumpAmmMigrationEvent", prog="pump", over=over),
+             encode("CreatePoolEvent", prog="pump_amm", over={"pool": mon.b58decode(pool)}),
+             encode("InitBoostEvent", prog="pump_amm", over=over)]
+    blobs = [b for b in blobs if b[:8] not in drop] + list(extra_blobs)
+    vault = mon.boost_vault(pool)
+    keys = ["Signer1111111111111111111111111111111111111", PUMP, SWAP, vault]
+    inner = [{"index": 0, "instructions": [{"programIdIndex": 1 if j % 2 == 0 else 2, "data": mon.b58encode(td.ANCHOR_EVENT_IX_TAG + b)} for j, b in enumerate(blobs)]}]
+    logs = [f"Program {PUMP} invoke [1]", "Program log: Instruction: Migrate", f"Program {PUMP} success"]
+    if init_boost:
+        logs += [f"Program {SWAP} invoke [1]", "Program log: Instruction: InitBoost", f"Program {SWAP} success"]
+    pre = [10**9, 0, 0, 0]
+    post = [10**9, 0, 0, int(budget_sol * 1e9) if init_boost else 0]
+    return {"slot": slot0 + i, "blockTime": (NOW // 1000) - 7200 + i,
+            "transaction": {"message": {"accountKeys": keys, "header": {"numRequiredSignatures": 1}}},
+            "meta": {"err": None, "logMessages": logs, "innerInstructions": inner, "preBalances": pre, "postBalances": post}}
+
+
 class FakeClient:
-    def __init__(self, blobs, per_block=100, fail=None):
+    """Fake public RPC. getBlock feeds the log sample; the migrate flow (signature list, whole txs, Pool accounts, BOOST vault authority signature lists) is served from `migrate_kw`."""
+
+    def __init__(self, blobs, per_block=100, fail=None, n_migrate=24, n_slices=29, mayhem=False, boost_every=1, budget_sol=17.585, migrate_extra=(), migrate_drop=(), old_sig_slot=1000, slot0=MIN_SLOT):
         self.blobs, self.per_block, self.fail, self.calls = blobs, per_block, fail, 0
+        self.txs = {}
+        self.sigs = []
+        for i in range(n_migrate):
+            tx = migrate_tx(i, slot0=slot0, init_boost=(i % boost_every == 0), budget_sol=budget_sol, extra_blobs=migrate_extra, drop=migrate_drop)
+            sig = f"sig{i}"
+            self.txs[sig] = tx
+            self.sigs.append({"signature": sig, "slot": tx["slot"], "blockTime": tx["blockTime"], "err": None})
+        self.sigs.append({"signature": "old", "slot": old_sig_slot, "blockTime": (NOW // 1000) - 90000, "err": None})
+        self.sigs.sort(key=lambda x: -x["slot"])
+        self.n_slices, self.mayhem = n_slices, mayhem
+        self.authorities = {mon.boost_vault_authority(POOLS[i]) for i in range(60)}
 
     def call(self, method, params):
         self.calls += 1
         if self.fail:
             raise self.fail
-        txs = []
-        for i in range(self.per_block):
-            blob, pid = self.blobs[i % len(self.blobs)]
-            txs.append({"meta": {"err": None, "logMessages": logs_for(pid, blob)}})
-        return {"transactions": txs}
+        if method == "getBlock":
+            txs = []
+            for i in range(self.per_block):
+                blob, pid = self.blobs[i % len(self.blobs)]
+                txs.append({"meta": {"err": None, "logMessages": logs_for(pid, blob)}})
+            return {"transactions": txs}
+        if method == "getSignaturesForAddress":
+            if params[0] == mon.MIGRATION_FEE_ACCOUNT:
+                return self.sigs
+            return [{"signature": f"sl{j}", "slot": MIN_SLOT + 1000 + j, "blockTime": (NOW // 1000) - 7000 + j, "err": None} for j in range(self.n_slices)]
+        if method == "getTransaction":
+            return self.txs.get(params[0])
+        if method == "getMultipleAccounts":
+            if "dataSlice" in params[1]:
+                return {"value": [{"lamports": 0} for _ in params[0]]}
+            data = bytearray(300)
+            data[mon.POOL_MAYHEM_OFFSET] = 1 if self.mayhem else 0
+            return {"value": [{"data": [base64.b64encode(bytes(data)).decode(), "base64"]} for _ in params[0]]}
+        raise AssertionError(method)
 
 
 def http_ok(overrides=None):
@@ -147,14 +206,18 @@ def http_ok(overrides=None):
     return get
 
 
+FROZEN_BLOBS = {rel: c.git_blob_sha(c.REPO_ROOT / rel) for rel in c.FROZEN_FILES}
+
+
 def build_pins(blobs=None):
     blobs = blobs or sample_blobs()
     lens = {}
     for b, _ in blobs:
         h = b[:8].hex()
         lens[h] = {"min_len": len(b) - 5, "max_len": len(b) + 5}
-    return {"idl": {k: {"sha256": hashlib.sha256(v).hexdigest()} for k, v in IDL_BYTES.items()}, "disc_len": lens,
-            "boost": {"init_boost_share": 0.9, "min_init_boost_in_sample": 1}, "ignored_discs": {}, "max_capped_share": 0.05}
+    return {"idl": {k: {"sha256": hashlib.sha256(v).hexdigest()} for k, v in IDL_BYTES.items()}, "disc_len": lens, "ignored_discs": {}, "max_capped_share": 0.05,
+            "boost": {"init_boost_share": 0.9, "min_init_boost_in_migrate_sample": 5}, "frozen_sha": "f" * 40, "frozen_blobs": dict(FROZEN_BLOBS),
+            "migrate": {"required_events": ["CompleteEvent", "CompletePumpAmmMigrationEvent", "CreatePoolEvent", "InitBoostEvent"]}}
 
 
 MON_PINS = {
@@ -212,8 +275,9 @@ def test_pass_path_is_record_only_and_discloses(tmp_path):
     assert {r["name"]: r["slot"] for r in v["redeploys"]} == {"pump": 1000, "pumpswap": 1100}
     assert v["flag_halt_ms"] == ms(RUN_UTC)  # old-rule books still see the flag
     assert v["detail"]["sample_start_slot"] == 1100 + c.SAMPLE_START_OFFSET_SLOTS
-    assert v["detail"]["n_txs"] == c.SAMPLE_MIN_TXS
-    assert cl.calls == 5  # 100 txs per block
+    assert v["detail"]["log_sample"]["n_txs"] == c.SAMPLE_MIN_TXS
+    assert v["detail"]["migrate_sample"]["n_migrate_txs"] == c.MIGRATE_K and v["detail"]["migrate_sample"]["slot_min"] >= v["detail"]["sample_start_slot"]
+    assert v["detail"]["migrate_sample"]["n_init_boost"] == c.MIGRATE_K and v["detail"]["migrate_sample"]["init_boost_share"] == 1.0
     assert v["redeploy_utc"] == DEPLOY_PUMP and v["deadline_utc"] == "2026-10-20T17:47:02Z"
     st = c.read_state(tmp_path / "state.jsonl")
     assert set(st) == {"pump:1000", "pumpswap:1100"} and st["pump:1000"]["job_id"] == "job-1" and st["pump:1000"]["verdict"] == "PASS"
@@ -230,7 +294,7 @@ def test_new_slot_after_a_pass_is_checked_again(tmp_path):
     run(make_rec(), tmp_path)
     rec = make_rec(run_utc="2026-10-22T07:11:27Z")
     rec["programs"]["pump"] = {"deploy_slot": 5000, "deploy_utc": "2026-10-22T01:00:00Z"}
-    cl = FakeClient(sample_blobs())
+    cl = FakeClient(sample_blobs(), slot0=5150, old_sig_slot=5000)
     v = run(rec, tmp_path, client=cl, now=lambda: ms("2026-10-22T07:20:00Z"))
     assert v["verdict"] == "PASS" and not v.get("covered") and cl.calls > 0
 
@@ -259,26 +323,44 @@ def _a2(rec, pins, kw):
 
 @_case("e_share_off")
 def _e1(rec, pins, kw):
-    rec["graduations"]["boost_denominator"] = {"n_nonmayhem_wsol": 20, "n_init_boost": 12}  # 0.6 vs 0.9
+    kw["client"] = FakeClient(sample_blobs(), boost_every=2)  # 12 of 24 post-deploy graduations carry InitBoost: 0.5 vs 0.9
     return "e: InitBoost share"
 
 
 @_case("e_budget_off")
 def _e2(rec, pins, kw):
-    rec["boost"]["budget_sol"] = {"median": 22.0}
+    kw["client"] = FakeClient(sample_blobs(), budget_sol=22.0)
     return "e: BOOST budget median"
 
 
 @_case("e_slices_off")
 def _e3(rec, pins, kw):
-    rec["boost"]["slices"] = {"median": 40}
+    kw["client"] = FakeClient(sample_blobs(), n_slices=40)
     return "e: BOOST slices median"
 
 
 @_case("e_few_init_boost_events")
 def _e4(rec, pins, kw):
-    pins["boost"]["min_init_boost_in_sample"] = 10_000
-    return "e: InitBoost events in sample"
+    pins["boost"]["min_init_boost_in_migrate_sample"] = 10_000
+    return "e: InitBoost events in the migrate sample"
+
+
+@_case("d_migrate_required_event_missing")
+def _e5(rec, pins, kw):
+    kw["client"] = FakeClient(sample_blobs(), migrate_drop=(td._CREATE_POOL_DISC,))
+    return "d: CreatePoolEvent not seen in the migrate sample"
+
+
+@_case("c_migrate_unknown_discriminator")
+def _e6(rec, pins, kw):
+    kw["client"] = FakeClient(sample_blobs(), migrate_extra=(b"\x09" * 8 + b"\x00" * 40,))
+    return "c: migrate sample: unknown discriminators"
+
+
+@_case("d_migrate_trailing_bytes_unpinned")
+def _e7(rec, pins, kw):
+    kw["client"] = FakeClient(sample_blobs(), migrate_extra=(encode("InitBoostEvent", prog="pump_amm") + b"\x00" * 8,))
+    return "d: migrate sample: event bytes not consumed exactly"
 
 
 @_case("f_idl_changed")
@@ -292,13 +374,13 @@ def _f(rec, pins, kw):
 @_case("c_unknown_discriminator")
 def _c1(rec, pins, kw):
     kw["client"] = FakeClient(sample_blobs([(b"\x01\x02\x03\x04\x05\x06\x07\x08" + b"\x00" * 40, SWAP)]))
-    return "c: unknown discriminators"
+    return "c: log sample: unknown discriminators"
 
 
 @_case("c_undecodable_known_event")
 def _c2(rec, pins, kw):
     kw["client"] = FakeClient(sample_blobs([(encode("SellEvent", prog="pump_amm", trunc=100), SWAP)]))
-    return "c: undecodable events"
+    return "c: log sample: undecodable events"
 
 
 @_case("c_shadow_differs_from_idl")
@@ -311,7 +393,7 @@ def _c3(rec, pins, kw):
             row = dict(row, sol_lamports=row["sol_lamports"] + 1)
         return row
     kw["patch"] = ("shadow_decode", bad)
-    return "c: shadow decode differs from the IDL decode"
+    return "c: log sample: shadow decode differs from the IDL decode"
 
 
 @_case("c_sample_short")
@@ -324,7 +406,7 @@ def _c4(rec, pins, kw):
 def _d1(rec, pins, kw):
     h = encode("BuyEvent", prog="pump_amm")[:8].hex()
     pins["disc_len"][h] = {"min_len": 10, "max_len": 20}
-    return "d: discriminator"
+    return "d: log sample: discriminator"
 
 
 @_case("d_required_event_missing")
@@ -337,14 +419,14 @@ def _d2(rec, pins, kw):
 def _d3(rec, pins, kw):
     kw["client"] = FakeClient(sample_blobs([(encode("SellEvent", prog="pump_amm") + b"\x00" * 8, SWAP)]))  # a field appended after the IDL's last
     pins["disc_len"][encode("SellEvent", prog="pump_amm")[:8].hex()] = {"min_len": 400, "max_len": 500}
-    return "d: event bytes not consumed exactly"
+    return "d: log sample: event bytes not consumed exactly"
 
 
 @_case("c_capped_share_too_high")
 def _c5(rec, pins, kw):
     pins["max_capped_share"] = 0.0
     kw["client"] = FakeClient(sample_blobs([(huge_swap("BuyEvent"), SWAP)]))
-    return "c: 80/250 Buy/Sell events above the shadow"
+    return "c: log sample: 80/250 Buy/Sell events above the shadow"
 
 
 def huge_swap(name):
@@ -433,7 +515,7 @@ def test_unmapped_idl_layout_is_error_not_pass(tmp_path):
     pins = build_pins()
     pins["idl"]["pump_amm"]["sha256"] = hashlib.sha256(json.dumps(idl).encode()).hexdigest()
     v = run(make_rec(), tmp_path, pins=pins, http=http_ok({"pump_amm": json.dumps(idl).encode()}))
-    assert v["verdict"] == "FAIL" and any("c: shadow decode differs" in r for r in v["reasons"])
+    assert v["verdict"] == "FAIL" and any("c: log sample: shadow decode differs" in r for r in v["reasons"])
 
 
 def test_timeout_when_started_late(tmp_path):
@@ -473,7 +555,8 @@ def test_boost_and_synthetic_flags_hard_halt_at_flag_instant(name, tmp_path):
     rec = make_rec()
     rec["halt"]["flags"][name] = flag(True, reason="x")
     v = hard(rec, tmp_path)
-    assert v["verdict"] == "HALT" and v["halt_at_ms"] == ms(RUN_UTC) and v["reasons"][0].startswith(name)
+    # B1: a hard flag in the same run as a not-yet-PASSed program redeploy ends the window at the REDEPLOY instant (earlier than the flag's)
+    assert v["verdict"] == "HALT" and v["halt_at_ms"] == ms(DEPLOY_PUMP) < ms(RUN_UTC) and v["reasons"][0].startswith(name) and v["flag_halt_ms"] == ms(RUN_UTC)
 
 
 def test_boost_flag_alone_hard_halts(tmp_path):
@@ -487,15 +570,35 @@ def test_fee_or_global_config_change_hard_halts(acct, tmp_path):
     rec = make_rec()
     rec["accounts"][acct]["sha256"] = "f" * 64
     v = hard(rec, tmp_path)
-    assert v["verdict"] == "HALT" and v["halt_at_ms"] == ms(RUN_UTC)
+    assert v["verdict"] == "HALT" and v["halt_at_ms"] == ms(DEPLOY_PUMP)
     assert any(acct in r for r in v["reasons"])
+    rec2 = make_rec(redeploy=False)
+    rec2["accounts"][acct]["sha256"] = "f" * 64
+    rec2["halt"]["flags"]["pins_changed"] = flag(True, reason="account")
+    assert hard(rec2, tmp_path / "n")["halt_at_ms"] == ms(RUN_UTC)  # no redeploy: the flag's instant
 
 
 def test_fees_program_redeploy_hard_halts_even_with_pump(tmp_path):
     rec = make_rec()
     rec["programs"]["fees"] = {"deploy_slot": 999, "deploy_utc": "2026-10-19T20:00:00Z"}
     v = hard(rec, tmp_path)
-    assert v["verdict"] == "HALT" and v["halt_at_ms"] == ms(RUN_UTC) and any("fees" in r for r in v["reasons"])
+    assert v["verdict"] == "HALT" and v["halt_at_ms"] == ms(DEPLOY_PUMP) and any("fees" in r for r in v["reasons"])
+
+
+def test_b1_covered_redeploy_does_not_pull_a_hard_halt_earlier(tmp_path):
+    run(make_rec(), tmp_path)  # PASS: both slots covered
+    rec = make_rec(run_utc="2026-10-21T07:11:27Z")
+    rec["halt"]["flags"]["boost_disabled"] = flag(True)
+    v = hard(rec, tmp_path)
+    assert v["verdict"] == "HALT" and v["halt_at_ms"] == ms("2026-10-21T07:11:27Z")
+
+
+def test_b1_hard_flag_with_a_new_pending_slot_uses_the_earlier_pending_instant(tmp_path):
+    run(make_rec(), tmp_path)
+    rec = make_rec(run_utc="2026-10-22T07:11:27Z")
+    rec["programs"]["pump"] = {"deploy_slot": 5000, "deploy_utc": "2026-10-22T01:00:00Z"}
+    rec["halt"]["flags"]["boost_disabled"] = flag(True)
+    assert hard(rec, tmp_path)["halt_at_ms"] == ms("2026-10-22T01:00:00Z")
 
 
 def test_unevaluated_on_two_consecutive_runs_hard_halts(tmp_path):
@@ -598,7 +701,9 @@ def test_observe_prints_pin_values_and_decides_nothing(tmp_path, capsys):
     write_daily(tmp_path / "daily.jsonl", [make_rec()])
     assert c.main(argv(tmp_path, "--observe"), client=FakeClient(sample_blobs()), http_get=http_ok(), now_ms=lambda: NOW) == 0
     out = json.loads(capsys.readouterr().out)
-    assert out["idl_sha256"]["pump"] == hashlib.sha256(IDL_BYTES["pump"]).hexdigest() and out["n_init_boost"] > 0 and not out["unknown"]
+    assert out["idl_sha256"]["pump"] == hashlib.sha256(IDL_BYTES["pump"]).hexdigest() and out["frozen_blobs"] == FROZEN_BLOBS
+    assert out["migrate_sample"]["n_init_boost"] == c.MIGRATE_K and not out["migrate_sample"]["unknown"] and out["migrate_sample"]["trailing_seen"]["InitBoostEvent"] == [0]
+    assert out["log_sample"]["n_txs"] == c.SAMPLE_MIN_TXS and out["migrate_sample"]["budget_sol_median"] == 17.585 and out["migrate_sample"]["slices_median"] == 29
     assert not (tmp_path / "st.jsonl").exists()
 
 
@@ -609,7 +714,8 @@ def test_swap_above_the_amount_cap_is_explained_not_undecodable(tmp_path):
     blobs = sample_blobs([(huge_swap("BuyEvent"), SWAP), (huge_swap("SellEvent"), SWAP)])
     v = run(make_rec(), tmp_path, pins=pins, client=FakeClient(blobs, per_block=100))
     assert v["verdict"] == "PASS", v["reasons"]
-    assert v["detail"]["capped"] > 0 and v["detail"]["capped"] / v["detail"]["n_swap_events"] < 0.5
+    ls = v["detail"]["log_sample"]
+    assert ls["capped"] > 0 and ls["capped"] / ls["n_swap_events"] < 0.5
 
 
 def test_other_buy_sell_non_decode_is_still_undecodable():
@@ -633,3 +739,86 @@ def test_pinned_ignored_discriminator_is_accepted_only_with_its_idl_name():
     idl["pump_amm"]["events"].append({"name": "OtherEvent", "discriminator": list(other[:8])})
     idl["pump_amm"]["types"].append({"name": "OtherEvent", "type": {"kind": "struct", "fields": []}})
     assert c.evaluate_sample([log], idl, {other[:8].hex(): "ExtendAccountEvent"})["unknown"] == {other[:8].hex(): 1}
+
+
+def test_previous_daily_skips_same_day_manual_runs():
+    recs = [{"run_utc": "2026-10-19T07:00:00Z", "n": 1}, {"run_utc": "2026-10-20T07:00:00Z", "n": 2}, {"run_utc": "2026-10-21T07:00:00Z", "n": 3},
+            {"run_utc": "2026-10-21T09:00:00Z", "n": 4}, {"run_utc": "2026-10-21T17:55:29Z", "n": 5}]
+    assert c.previous_daily(recs)["n"] == 2  # the previous UTC date's newest run, not the 09:00 manual run
+    assert c.previous_daily(recs[:1]) is None
+    assert c.previous_daily([{"run_utc": "2026-10-21T07:00:00Z"}, {"run_utc": "2026-10-21T09:00:00Z"}]) is None
+
+
+def test_unexpected_exception_in_the_check_is_error_and_recorded(tmp_path, monkeypatch):
+    def boom(*a, **k):
+        raise ZeroDivisionError("pin of zero")
+    monkeypatch.setattr(c, "check_redeploy", boom)
+    v = run(make_rec(), tmp_path)
+    assert v["verdict"] == "ERROR" and "ZeroDivisionError" in v["reasons"][0] and v["halt_at_ms"] == ms(DEPLOY_PUMP)
+    assert c.read_state(tmp_path / "state.jsonl")["pump:1000"]["verdict"] == "ERROR"
+
+
+def test_short_blobs_are_counted_as_undecodable():
+    ev = c.evaluate_blobs([b"\x01\x02", encode("TradeEvent", prog="pump")], IDLS)
+    assert ev["undecodable"] == {"short": 1} and ev["n_events"] == 2
+
+
+def test_state_write_failure_is_operational_error_not_silent(tmp_path, capsys):
+    write_pins_files(tmp_path, build_pins())
+    write_daily(tmp_path / "daily.jsonl", [make_rec()])
+    (tmp_path / "st.jsonl").mkdir()  # cannot be appended to
+    rc = c.main(argv(tmp_path), client=FakeClient(sample_blobs()), http_get=http_ok(), now_ms=lambda: NOW)
+    assert rc == 11 and not (tmp_path / "v.json").exists()
+
+
+# ---- C-3, C-2 and the migrate sample
+def test_frozen_guard_error_on_a_changed_decoder_file(tmp_path):
+    pins = build_pins()
+    pins["frozen_blobs"]["observe/trade_decode.py"] = "0" * 40
+    v = run(make_rec(), tmp_path, pins=pins)
+    assert v["verdict"] == "ERROR" and "decoder files differ" in v["reasons"][0] and v["halt_at_ms"] == ms(DEPLOY_PUMP)
+    pins = build_pins()
+    del pins["frozen_blobs"]
+    assert run(make_rec(), tmp_path / "x", pins=pins)["verdict"] == "ERROR"
+
+
+def test_frozen_guard_matches_the_shipped_pins_at_head():
+    shipped = json.loads((Path(c.__file__).with_name("a3_redeploy_pins.json")).read_text())
+    assert c.frozen_guard(shipped) == shipped["frozen_blobs"] and set(shipped["frozen_blobs"]) == set(c.FROZEN_FILES)
+
+
+def test_too_few_post_deploy_migrate_txs_is_error(tmp_path):
+    v = run(make_rec(), tmp_path, client=FakeClient(sample_blobs(), n_migrate=c.MIGRATE_K_MIN - 1))
+    assert v["verdict"] == "ERROR" and "migrate txs" in v["reasons"][0]
+
+
+def test_boost_evidence_needs_min_eval_n_graduations(tmp_path):
+    v = run(make_rec(), tmp_path, client=FakeClient(sample_blobs(), mayhem=True))  # every post-deploy pool is mayhem: no denominator
+    assert v["verdict"] == "ERROR" and "BOOST evidence" in v["reasons"][0]
+
+
+def test_boost_evidence_ignores_pre_deploy_graduations(tmp_path):
+    cl = FakeClient(sample_blobs(), old_sig_slot=1249)  # a migrate sig just below the start slot is the 'older than start' marker and is never fetched
+    v = run(make_rec(), tmp_path, client=cl)
+    assert v["verdict"] == "PASS" and v["detail"]["migrate_sample"]["slot_min"] >= 1250
+    assert "old" not in cl.txs
+
+
+def test_start_slot_not_reached_is_error(tmp_path):
+    cl = FakeClient(sample_blobs())
+    cl.sigs = [x for x in cl.sigs if x["signature"] != "old"]  # fewer than 1000 sigs and none older than the start slot => the list ended: that IS 'reached'
+    assert run(make_rec(), tmp_path, client=cl)["verdict"] == "PASS"
+    big = [{"signature": f"s{i}", "slot": 10_000 + i, "blockTime": 1, "err": None} for i in range(1000)]
+    cl2 = FakeClient(sample_blobs())
+    cl2.sigs = big
+    cl2.call_orig = cl2.call
+    v = run(make_rec(), tmp_path / "y", client=cl2)
+    assert v["verdict"] == "ERROR" and "not reached" in v["reasons"][0]
+
+
+def test_migrate_events_through_the_frozen_path_equal_the_idl_decode():
+    tx = migrate_tx(3)
+    blobs = mon.tx_event_blobs(tx)
+    ev = c.evaluate_blobs(blobs, IDLS)
+    assert ev["idl_mismatch"] == {} and ev["unknown"] == {} and ev["undecodable"] == {} and ev["layout_mismatch"] == {}
+    assert set(ev["seen_events"]) == {"CompleteEvent", "CompletePumpAmmMigrationEvent", "CreatePoolEvent", "InitBoostEvent"}

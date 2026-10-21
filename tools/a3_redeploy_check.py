@@ -16,18 +16,19 @@ verdict per (program, deploy slot); a PASSed slot is covered afterwards (one dep
 THE CHECK (all must hold, else FAIL; a missing pin or a failed fetch is ERROR; both halt):
   a. the other five A3 flags (the four BOOST flags and synthetic_share_high) are clear AND evaluated;
   b. bonding_fee_config, pumpswap_fee_config and pumpswap_global_config sha256 equal the monitor pins (re-checked here from the record), fees deploy slot equal;
-  c. decoder parity on the pinned SAMPLE RULE (constants below): the first SAMPLE_MIN_TXS successful txs that invoke the pump or PumpSwap program, in slot order, scanning
-     from (newest changed deploy slot + SAMPLE_START_OFFSET_SLOTS). Events are the `Program data:` lines whose emitting program (log stack top) is pump or PumpSwap. Decoded
-     with the SAME functions the H5 shadow uses (observe.trade_decode.decode_program_data(raw, event_v=True) and decode_extra_event, imported, never copied). Pass bar:
-     0 undecodable events of a discriminator the shadow decodes, 0 unknown discriminators (not in observe.trade_decode.KNOWN_DISCS), and field-by-field equality of every
-     decoded Trade / Buy / Sell / CreatePool / BOOST event with an INDEPENDENT decode driven by the IDL's own field list (offsets computed from the IDL, not from the shadow);
-  d. the discriminators seen are a subset of the known set, TradeEvent / BuyEvent / SellEvent were each seen, and each discriminator's byte length lies inside the pinned
-     [min_len, max_len] (a_3 redeploy pins file);
-  e. BOOST: the daily record's InitBoost share of non-mayhem WSOL graduations, the median budget and the median slice count are each within +/-BOOST_TOL (20%) of the pins,
-     and at least the pinned minimum of InitBoost events is decoded in the sample;
+  c. decoder parity on TWO pinned samples, both at or after (newest changed deploy slot + SAMPLE_START_OFFSET_SLOTS), both through the frozen decoders (imported, never copied):
+       LOG SAMPLE: the first SAMPLE_MIN_TXS successful txs that invoke the pump or PumpSwap program (public getBlock), events = `Program data:` lines emitted by those programs.
+       MIGRATE (inner-instruction) SAMPLE: the first MIGRATE_K settled migrate txs (fetched whole), events = mon.tx_event_blobs (log lines AND emit_cpi inner instructions), which is
+       how the book gets Complete, CompletePumpAmmMigration, CreatePool, InitBoost and the V-carrying fields. Pass bar for each: 0 undecodable, 0 unknown discriminators
+       (not in KNOWN_DISCS and not a pinned ignored one), field-by-field equality of every decoded event with an INDEPENDENT decode driven by the IDL's own field list;
+  d. every event with an IDL entry is consumed EXACTLY by the IDL's full field list plus its pinned trailing bytes; the pinned required events were seen in the migrate sample;
+     Trade / Buy / Sell were seen in the log sample; each discriminator's length lies in its pinned range (or the IDL consumes it exactly);
+  e. BOOST evidence ONLY from the migrate sample's graduations (all at or after the changed deploy slot, settled): at least MIN_EVAL_N non-mayhem WSOL graduations and MIN_BOOST_POOLS
+     boost pools, else ERROR; InitBoost share, median budget and median slice count within +/-BOOST_TOL (20%) of the pins; at least the pinned (> 0) InitBoost events in the sample;
   f. IDL unchanged: sha256 of each pinned IDL URL (the MAIN branch of github.com/pump-fun/pump-public-docs, unauthenticated, fetched at run time) equals the pin.
-     This is the credential-free route. The alternative (programdata-derived discriminator table) would need the program's Anchor IDL account or a decompile; the sample's
-     discriminator set in (d) is the on-chain half of the same question. A fetch failure is ERROR, never a pass.
+     This is the credential-free route. The alternative (programdata-derived discriminator table) would need the program's Anchor IDL account or a decompile; the samples'
+     discriminator sets in (c)/(d) are the on-chain half of the same question. A fetch failure is ERROR, never a pass;
+  h. FROZEN GUARD: git blob of each decoder file the frozen book imports (FROZEN_FILES) equals the pinned blob from the book's frozen_sha, else ERROR.
   g. the whole check finishes within CHECK_WINDOW_S (24 h) of the earliest changed redeploy instant; later is a FAIL (timeout).
 
 ALSO IN THE SAMPLE CHECK: every event with an IDL entry must be consumed EXACTLY by the IDL's full field list (a field added, removed or resized breaks it); a Buy/Sell the shadow
@@ -37,7 +38,8 @@ in 14,755 txs on 2026-10-21), so the BOOST evidence is the monitor record half i
 
 PINS (null in tools/a3_redeploy_pins.json => ERROR => hard halt; fail closed): IDL sha256 x3, per-discriminator length ranges, InitBoost share, min InitBoost events, max_capped_share. `--observe` prints the observed values for the program-upgrade review (C2/C3) to pin; it writes no pin and decides nothing.
 
-Exit codes: 0 NONE or PASS; 10 HALT (verdict.halt_at_ms is set); 11 operational error that is NOT an A3 flag (stale or unreadable daily record): no halt, the job is loud.
+Exit codes: 0 NONE or PASS; 10 HALT (verdict.halt_at_ms is set); 11 operational error that is NOT an A3 flag (stale or unreadable daily record, a state file that cannot be written): no halt
+from this tool, the job is loud and tools.a3_halt's dead-man rule is the backstop.
 Counts and discriminators only: no price, mint, wallet or signature is written.
 """
 from __future__ import annotations
@@ -49,18 +51,20 @@ import hashlib
 import json
 import os
 import re
+import statistics
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from observe import trade_decode as td
 from tools import pump_structure_monitor as mon
 
 SCHEMA = "a3_redeploy_check.v1"
 DEFAULT_PINS = Path(__file__).with_name("a3_redeploy_pins.json")
-DEFAULT_DAILY = "/data/mal/structure-monitor/daily.jsonl"
+DEFAULT_DAILY = os.path.expanduser("~/data/structure-monitor/daily.jsonl")
+DEFAULT_STATE = os.path.expanduser("~/data/structure-monitor/a3-redeploy-state.jsonl")
 
 # ----- pinned rule constants (changing any of them changes the pinned tool blob) -----
 CHECK_WINDOW_S = 24 * 3600  # the check must finish within this long of the earliest changed redeploy instant
@@ -68,6 +72,10 @@ SAMPLE_START_OFFSET_SLOTS = 150  # sample starts this many slots after the newes
 SAMPLE_MIN_TXS = 500  # first N successful txs that invoke the pump or PumpSwap program
 SAMPLE_MAX_SLOTS = 300  # slots scanned at most (skipped slots included); short of SAMPLE_MIN_TXS by then => FAIL
 SAMPLE_PROGRAMS = (td.PUMP_BONDING_PROGRAM, td.PUMPSWAP_PROGRAM)
+REPO_ROOT = Path(__file__).resolve().parent.parent
+MIGRATE_K = 24  # the inner-instruction sample: the first K settled migrate txs at or after (newest changed deploy slot + SAMPLE_START_OFFSET_SLOTS)
+MIGRATE_K_MIN = 20  # fewer than this many => ERROR (not enough post-deploy evidence)
+MIGRATE_MAX_PAGES = 8  # getSignaturesForAddress pages of 1000 back from now; the start slot not reached => ERROR
 BOOST_TOL = mon.BOOST_CHANGE_MAX  # 0.20
 MAX_RECORD_AGE_S = 1800  # a newer daily line than this is "stale" (exit 11, no halt)
 IDL_URL = "https://raw.githubusercontent.com/pump-fun/pump-public-docs/main/idl/{name}.json"
@@ -99,13 +107,15 @@ EVENT_FIELDS: dict[str, dict[str, str]] = {
                              "base_amount_burned": "base_amount_burned", "virtual_quote_reserves": "virtual_quote_reserves",
                              "real_quote_reserves_after": "real_quote_reserves_after", "base_reserves_after": "base_reserves_after",
                              "boost_vault_remaining": "boost_vault_remaining"},
+    "CompleteEvent": {"mint": "mint", "bonding_curve": "curve"},
+    "CompletePumpAmmMigrationEvent": {"mint": "mint", "bonding_curve": "curve", "pool": "pool", "quote_mint": "quote_mint"},
     "PostCompleteBuyEvent": {"user": "trader", "mint": "mint", "bonding_curve": "bonding_curve", "quote_mint": "quote_mint", "timestamp": "event_ts", "base_out": "base_out",
                              "quote_in": "quote_in", "fee": "fee", "creator_fee": "creator_fee", "buyback_fee": "buyback_fee",
                              "pool_base_reserves_before": "pool_base_reserves_before", "pool_quote_reserves_before": "pool_quote_reserves_before",
                              "pool_base_reserves_after": "pool_base_reserves_after", "pool_quote_reserves_after": "pool_quote_reserves_after"},
 }
 SHADOW_DECODED_DISCS = {  # discriminators the shadow decodes: the pinned `read` set
-    td._TRADE_DISC, td._BUY_DISC, td._SELL_DISC, td._CREATE_POOL_DISC, td._POST_COMPLETE_BUY_DISC, td._BOOST_BUY_AND_BURN_DISC,
+    mon.DISC_MIGRATE, mon.DISC_COMPLETE, td._TRADE_DISC, td._BUY_DISC, td._SELL_DISC, td._CREATE_POOL_DISC, td._POST_COMPLETE_BUY_DISC, td._BOOST_BUY_AND_BURN_DISC,
     td._SWEEP_POOL_FEE_DISC, td._SWEEP_CURVE_FEE_DISC, td._INIT_BOOST_EVENT_DISC,
 }
 INIT_BOOST_DISC = td._INIT_BOOST_EVENT_DISC
@@ -293,7 +303,10 @@ def shadow_decode(raw: bytes) -> dict[str, Any] | None:
     ev = td.decode_program_data(raw, event_v=True)
     if ev is not None:
         return ev
-    return td.decode_extra_event(raw)
+    ev = td.decode_extra_event(raw)
+    if ev is not None:
+        return ev
+    return mon.decode_migration_event(raw) or mon.decode_complete_event(raw)  # the monitor's decoders: the shadow imports them for the class inputs
 
 
 def compare_event(raw: bytes, entry: tuple[str, list[Json], dict[str, Json]], row: Mapping[str, Any]) -> list[str]:
@@ -311,8 +324,12 @@ def compare_event(raw: bytes, entry: tuple[str, list[Json], dict[str, Json]], ro
     for fld, key in mapping.items():
         if key not in row:
             bad.append(f"{fld}:missing_in_shadow")
-        elif row[key] != ref[fld]:
-            bad.append(fld)
+        else:
+            want_v = ref[fld]
+            if name == "CompletePumpAmmMigrationEvent" and fld == "quote_mint" and want_v == mon.NATIVE_SOL:
+                want_v = mon.WSOL_MINT  # the monitor's decoder normalises native SOL to WSOL
+            if row[key] != want_v:
+                bad.append(fld)
     if name == "TradeEvent" and row.get("side") != ("buy" if ref["is_buy"] else "sell"):
         bad.append("is_buy")
     return bad
@@ -383,76 +400,154 @@ def idl_full_len(raw: bytes, entry: tuple[str, list[Json], dict[str, Json]]) -> 
     return off
 
 
-def evaluate_sample(sample: Sequence[Sequence[str]], idls: Mapping[str, Json] | None, ignored: Mapping[str, str] | None = None,
-                    trailing: Mapping[str, Sequence[int]] | None = None) -> dict[str, Any]:
+def evaluate_blobs(blobs: Iterable[bytes], idls: Mapping[str, Json] | None, ignored: Mapping[str, str] | None = None,
+                   trailing: Mapping[str, Sequence[int]] | None = None) -> dict[str, Any]:
     """Counts only. disc_len: hex -> [min, max, n]. `ignored` = pinned {disc hex: IDL event name} of events the rule does not read (known, not decoded by the shadow).
     capped = a Buy/Sell the shadow refuses ONLY because its quote amount is above the shadow's own sanity cap (td._MAX_SWAP_SOL_LAMPORTS, 100,000 SOL), with a sane timestamp:
-    explained, counted apart, bounded by a pinned share. Any other non-decode is `undecodable`. layout_mismatch = the bytes after the IDL's full field list (`trailing`, per event
-    name, pinned list of allowed counts; default [0]) are not an allowed count. The live programs append 8 bytes the docs-main IDL does not list (observed 2026-10-21), so 8 is pinned."""
+    explained, counted apart, bounded by a pinned share. A blob shorter than 8 bytes has no discriminator: counted as undecodable ("short"). Any other non-decode is `undecodable`.
+    layout_mismatch = the bytes after the IDL's full field list (`trailing`, per event name, pinned list of allowed counts; default [0]) are not an allowed count."""
     table = idl_event_table(idls) if idls else {}
     ignored = ignored or {}
     trailing = trailing or {}
     trailing_seen: dict[str, set[int]] = {}
-    capped = 0
-    n_swap = 0
+    capped = n_swap = n_events = n_init_boost = 0
     layout_bad: dict[str, int] = {}
     disc_len: dict[str, list[int]] = {}
     undecodable: dict[str, int] = {}
     unknown: dict[str, int] = {}
     mismatch: dict[str, int] = {}
     seen_names: set[str] = set()
-    n_events = n_init_boost = 0
-    for logs in sample:
-        for raw in program_data_events(logs):
-            if len(raw) < 8:
-                continue
-            n_events += 1
-            disc = raw[:8]
-            h = disc.hex()
-            r = disc_len.setdefault(h, [len(raw), len(raw), 0])
-            r[0], r[1], r[2] = min(r[0], len(raw)), max(r[1], len(raw)), r[2] + 1
-            entry = table.get(disc)
-            if h not in td.KNOWN_DISCS and not (h in ignored and (entry is None or entry[0] == ignored[h])):
-                unknown[h] = unknown.get(h, 0) + 1
-                continue
-            if entry:
-                seen_names.add(entry[0])
-                try:
-                    extra = len(raw) - idl_full_len(raw, entry)
-                    trailing_seen.setdefault(entry[0], set()).add(extra)
-                    if extra not in (trailing.get(entry[0]) or [0]):
-                        layout_bad[entry[0]] = layout_bad.get(entry[0], 0) + 1
-                except CheckError:
+    for raw in blobs:
+        n_events += 1
+        if len(raw) < 8:
+            undecodable["short"] = undecodable.get("short", 0) + 1
+            continue
+        disc = raw[:8]
+        h = disc.hex()
+        r = disc_len.setdefault(h, [len(raw), len(raw), 0])
+        r[0], r[1], r[2] = min(r[0], len(raw)), max(r[1], len(raw)), r[2] + 1
+        entry = table.get(disc)
+        if h not in td.KNOWN_DISCS and not (h in ignored and (entry is None or entry[0] == ignored[h])):
+            unknown[h] = unknown.get(h, 0) + 1
+            continue
+        if entry:
+            seen_names.add(entry[0])
+            try:
+                extra = len(raw) - idl_full_len(raw, entry)
+                trailing_seen.setdefault(entry[0], set()).add(extra)
+                if extra not in (trailing.get(entry[0]) or [0]):
                     layout_bad[entry[0]] = layout_bad.get(entry[0], 0) + 1
-            if disc not in SHADOW_DECODED_DISCS:
-                continue
-            if disc in SWAP_AMOUNT_FIELD:
-                n_swap += 1
-            row = shadow_decode(raw)
-            if row is None:
-                if entry and disc in SWAP_AMOUNT_FIELD:
-                    try:
-                        ref = idl_decode(raw, entry, ["timestamp", SWAP_AMOUNT_FIELD[disc]])
-                        if td._sane_ts(ref["timestamp"]) and ref[SWAP_AMOUNT_FIELD[disc]] > td._MAX_SWAP_SOL_LAMPORTS:
-                            capped += 1
-                            continue
-                    except CheckError:
-                        pass
-                undecodable[h] = undecodable.get(h, 0) + 1
-                continue
-            if disc == INIT_BOOST_DISC:
-                n_init_boost += 1
-            if entry:
+            except CheckError:
+                layout_bad[entry[0]] = layout_bad.get(entry[0], 0) + 1
+        if disc not in SHADOW_DECODED_DISCS:
+            continue
+        if disc in SWAP_AMOUNT_FIELD:
+            n_swap += 1
+        row = shadow_decode(raw)
+        if row is None:
+            if entry and disc in SWAP_AMOUNT_FIELD:
                 try:
-                    bad = compare_event(raw, entry, row)
-                except CheckError as exc:
-                    bad = [f"idl_decode:{exc}"]
-                for b in bad:
-                    key = f"{entry[0]}.{b}"
-                    mismatch[key] = mismatch.get(key, 0) + 1
-    return {"n_txs": len(sample), "n_events": n_events, "disc_len": disc_len, "undecodable": undecodable, "unknown": unknown, "idl_mismatch": mismatch,
-            "seen_events": sorted(seen_names), "n_init_boost": n_init_boost,
-            "capped": capped, "n_swap_events": n_swap, "layout_mismatch": layout_bad, "trailing_seen": {k: sorted(v) for k, v in sorted(trailing_seen.items())}}
+                    ref = idl_decode(raw, entry, ["timestamp", SWAP_AMOUNT_FIELD[disc]])
+                    if td._sane_ts(ref["timestamp"]) and ref[SWAP_AMOUNT_FIELD[disc]] > td._MAX_SWAP_SOL_LAMPORTS:
+                        capped += 1
+                        continue
+                except CheckError:
+                    pass
+            undecodable[h] = undecodable.get(h, 0) + 1
+            continue
+        if disc == INIT_BOOST_DISC:
+            n_init_boost += 1
+        if entry:
+            try:
+                bad = compare_event(raw, entry, row)
+            except CheckError as exc:
+                bad = [f"idl_decode:{exc}"]
+            for b in bad:
+                key = f"{entry[0]}.{b}"
+                mismatch[key] = mismatch.get(key, 0) + 1
+    return {"n_events": n_events, "disc_len": disc_len, "undecodable": undecodable, "unknown": unknown, "idl_mismatch": mismatch, "seen_events": sorted(seen_names),
+            "n_init_boost": n_init_boost, "capped": capped, "n_swap_events": n_swap, "layout_mismatch": layout_bad,
+            "trailing_seen": {k: sorted(v) for k, v in sorted(trailing_seen.items())}}
+
+
+def evaluate_sample(sample: Sequence[Sequence[str]], idls: Mapping[str, Json] | None, ignored: Mapping[str, str] | None = None,
+                    trailing: Mapping[str, Sequence[int]] | None = None) -> dict[str, Any]:
+    """The log sample: `Program data:` blobs emitted by the pump / PumpSwap programs (log-stack top), as the shadow reads logs."""
+    ev = evaluate_blobs((raw for logs in sample for raw in program_data_events(logs)), idls, ignored, trailing)
+    ev["n_txs"] = len(sample)
+    return ev
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ the inner-instruction (migrate) sample
+def migrate_sample(client: Any, min_slot: int, now_s: float) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+    """The first MIGRATE_K settled migrate txs with slot >= min_slot (oldest first), each as (whole tx, the monitor's parse_migrate_tx dict + sig).
+    Candidates come from the migration fee account's signature list read back from now until a signature older than min_slot; the start slot not reached in
+    MIGRATE_MAX_PAGES pages of 1000 is ERROR. Only txs older than the settle time (mon.SETTLE_S_DEFAULT) are taken, so BOOST has finished."""
+    cutoff_bt = int(now_s) - mon.SETTLE_S_DEFAULT
+    cands: list[dict[str, Any]] = []
+    before = None
+    reached = False
+    for _ in range(MIGRATE_MAX_PAGES):
+        opts: dict[str, Any] = {"limit": 1000, "commitment": "finalized"}
+        if before:
+            opts["before"] = before
+        sigs = client.call("getSignaturesForAddress", [mon.MIGRATION_FEE_ACCOUNT, opts]) or []
+        for s in sigs:
+            before = s["signature"]
+            if s["slot"] < min_slot:
+                reached = True
+            elif s.get("err") is None and s.get("blockTime") is not None and s["blockTime"] <= cutoff_bt:
+                cands.append(s)
+        if reached or len(sigs) < 1000:
+            reached = True
+            break
+    if not reached:
+        raise CheckError(f"migrate sample: start slot {min_slot} not reached in {MIGRATE_MAX_PAGES} pages")
+    cands.sort(key=lambda s: s["slot"])
+    out: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for s in cands:
+        tx = mon.fetch_tx(client, s["signature"])
+        if tx is None:
+            continue
+        g = mon.parse_migrate_tx(tx)
+        if g is None:
+            continue
+        g["sig"] = s["signature"]
+        out.append((tx, g))
+        if len(out) >= MIGRATE_K:
+            break
+    return out
+
+
+def median(vals: Sequence[float]) -> float:
+    return statistics.median(vals)
+
+
+def migrate_evidence(client: Any, idls: Mapping[str, Json], min_slot: int, now_s: float, ignored: Mapping[str, str] | None, trailing: Mapping[str, Sequence[int]] | None) -> dict[str, Any]:
+    """C-1 and C-2: the post-deploy migrate sample decoded through the FROZEN path (mon.tx_event_blobs: log lines AND emit_cpi inner instructions, then the shadow's decoders),
+    compared with the independent IDL decode, plus the BOOST evidence from the SAME graduations (all at or after min_slot). Not enough graduations => ERROR."""
+    txs = migrate_sample(client, min_slot, now_s)
+    if len(txs) < MIGRATE_K_MIN:
+        raise CheckError(f"migrate sample: {len(txs)} settled post-deploy migrate txs, need {MIGRATE_K_MIN}")
+    grads = [g for _tx, g in txs]
+    mon.annotate_mayhem(client, grads)
+    ev = evaluate_blobs((b for tx, _g in txs for b in mon.tx_event_blobs(tx)), idls, ignored, trailing)
+    ev["n_migrate_txs"] = len(txs)
+    ev["slot_min"], ev["slot_max"] = min(g["slot"] for g in grads), max(g["slot"] for g in grads)
+    den = [g for g in grads if g.get("mayhem") is False and g["quote_wsol"]]
+    if len(den) < mon.MIN_EVAL_N_DEFAULT:
+        raise CheckError(f"BOOST evidence: {len(den)} non-mayhem WSOL post-deploy graduations, need {mon.MIN_EVAL_N_DEFAULT}")
+    boost_pools = [g for g in den if g["init_boost"]]
+    ev["n_nonmayhem_wsol"], ev["n_init_boost_graduations"] = len(den), len(boost_pools)
+    ev["init_boost_share"] = len(boost_pools) / len(den)
+    budgets = [g["budget_lamports"] / 1e9 for g in boost_pools if g.get("budget_lamports") is not None]
+    prof = mon.profile_boost(client, boost_pools, None) if boost_pools else {}
+    slices = [g["boost"]["n_slices"] for g in boost_pools if g.get("boost")]
+    if len(budgets) < mon.MIN_BOOST_POOLS or len(slices) < mon.MIN_BOOST_POOLS:
+        raise CheckError(f"BOOST evidence: {len(budgets)} budgets and {len(slices)} slice counts from post-deploy pools, need {mon.MIN_BOOST_POOLS}")
+    ev["budget_sol_median"], ev["slices_median"] = median(budgets), median(slices)
+    ev["n_pools_skipped"] = prof.get("n_pools_skipped", 0)
+    return ev
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the check
@@ -468,6 +563,30 @@ def need(value: Any, what: str) -> Any:
     if value is None:
         raise CheckError(f"pin missing: {what}")
     return value
+
+
+def git_blob_sha(path: Path) -> str:
+    data = path.read_bytes()
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def frozen_guard(pins: Json, root: Path = REPO_ROOT) -> dict[str, str]:
+    """C-3: every decoder file the frozen book imports must be byte-identical (git blob) to the one at the covered book's frozen_sha, or ERROR."""
+    blobs = need(pins.get("frozen_blobs"), "frozen_blobs")
+    need(pins.get("frozen_sha"), "frozen_sha")
+    if not isinstance(blobs, dict) or not blobs:
+        raise CheckError("pin missing: frozen_blobs is empty")
+    bad = []
+    for rel, want in sorted(blobs.items()):
+        try:
+            got = git_blob_sha(root / rel)
+        except OSError as exc:
+            raise CheckError(f"frozen file {rel} unreadable: {exc}") from exc
+        if got != want:
+            bad.append(f"{rel} blob {got[:10]} != frozen {str(want)[:10]}")
+    if bad:
+        raise CheckError("decoder files differ from the frozen book's: " + "; ".join(bad))
+    return dict(blobs)
 
 
 def fetch_idls(http_get: Callable[[str, float], tuple[int, Mapping[str, str], bytes]], pins: Json) -> tuple[dict[str, Json], list[str]]:
@@ -487,6 +606,33 @@ def fetch_idls(http_get: Callable[[str, float], tuple[int, Mapping[str, str], by
         except ValueError as exc:
             raise CheckError(f"IDL {name} is not JSON") from exc
     return out, fails
+
+
+def sample_failures(ev: Mapping[str, Any], label: str, pins: Json, fails: list[str]) -> None:
+    """The FAIL reasons common to both samples."""
+    if ev["undecodable"]:
+        fails.append(f"c: {label}: undecodable events of a decoded discriminator: {ev['undecodable']}")
+    if ev["unknown"]:
+        fails.append(f"c: {label}: unknown discriminators: {ev['unknown']}")
+    if ev["idl_mismatch"]:
+        fails.append(f"c: {label}: shadow decode differs from the IDL decode: {ev['idl_mismatch']}")
+    if ev["layout_mismatch"]:
+        fails.append(f"d: {label}: event bytes not consumed exactly by the IDL layout: {ev['layout_mismatch']}")
+    max_cap = need(pins.get("max_capped_share"), "max_capped_share")
+    if ev["n_swap_events"] and ev["capped"] / ev["n_swap_events"] > max_cap:
+        fails.append(f"c: {label}: {ev['capped']}/{ev['n_swap_events']} Buy/Sell events above the shadow's amount cap (pinned max share {max_cap})")
+    ranges = pins.get("disc_len") or {}
+    idl_known = set(ev.get("_idl_discs", ()))
+    for h, (lo, hi, _n) in ev["disc_len"].items():
+        if h in ev["unknown"]:
+            continue  # already a FAIL reason above; an unknown discriminator has no pin by definition
+        pr = ranges.get(h)
+        if pr is None and bytes.fromhex(h) in idl_known:
+            continue  # no length pin, but the IDL consumes this event exactly (the stronger test); the range is only the guard for events without an IDL entry
+        if pr is None or pr.get("min_len") is None or pr.get("max_len") is None:
+            raise CheckError(f"pin missing: disc_len.{h}")
+        if lo < pr["min_len"] or hi > pr["max_len"]:
+            fails.append(f"d: {label}: discriminator {h} length {lo}-{hi} outside pinned {pr['min_len']}-{pr['max_len']}")
 
 
 def check_redeploy(rec: Json, mon_pins: Json, pins: Json, tri: Json, *, client: Any, http_get: Callable, now_ms: Callable[[], int], deploy_ms: int) -> tuple[str, list[str], dict[str, Any]]:
@@ -512,75 +658,62 @@ def check_redeploy(rec: Json, mon_pins: Json, pins: Json, tri: Json, *, client: 
     fobs, fpin = (rec.get("programs") or {}).get("fees") or {}, (mon_pins.get("programs") or {}).get("fees") or {}
     if fobs.get("deploy_slot") is None or fobs.get("deploy_slot") != fpin.get("deploy_slot"):
         fails.append("b: fees program deploy slot unread or changed")
-    # e (record half). BOOST share, budget, slices within +/-20% of the pins
-    grads = (rec.get("graduations") or {}).get("boost_denominator") or {}
-    n_den, n_ib = grads.get("n_nonmayhem_wsol", 0), grads.get("n_init_boost", 0)
+    # C-3. the decoder files are the frozen book's
+    frozen_guard(pins)
+    # the pins every later step needs: ERROR before any RPC when one is missing
     share_pin = need((pins.get("boost") or {}).get("init_boost_share"), "boost.init_boost_share")
-    min_ib = need((pins.get("boost") or {}).get("min_init_boost_in_sample"), "boost.min_init_boost_in_sample")
-    if n_den < mon.MIN_EVAL_N_DEFAULT:
-        fails.append(f"e: only {n_den} non-mayhem WSOL graduations, share not evaluable")
-    else:
-        sh = n_ib / n_den
-        if abs(sh / share_pin - 1.0) > BOOST_TOL:
-            fails.append(f"e: InitBoost share {sh:.3f} vs pin {share_pin} beyond +/-{BOOST_TOL:.0%}")
-    boost = rec.get("boost") or {}
-    pb = mon_pins.get("boost") or {}
-    for key, pin_key, label in (("budget_sol", "budget_sol", "budget"), ("slices", "slices", "slices")):
-        cur = (boost.get(key) or {}).get("median")
-        want = pb.get(pin_key)
-        if cur is None or not want:
-            fails.append(f"e: BOOST {label} median or pin unavailable")
-        elif abs(cur / want - 1.0) > BOOST_TOL:
-            fails.append(f"e: BOOST {label} median {cur} vs pin {want} beyond +/-{BOOST_TOL:.0%}")
+    min_ib = need((pins.get("boost") or {}).get("min_init_boost_in_migrate_sample"), "boost.min_init_boost_in_migrate_sample")
+    if not min_ib > 0:
+        raise CheckError("pin invalid: boost.min_init_boost_in_migrate_sample must be > 0")
+    required = need((pins.get("migrate") or {}).get("required_events"), "migrate.required_events")
     # f. IDL unchanged
     idls, idl_fails = fetch_idls(http_get, pins)
     fails += [f"f: {x}" for x in idl_fails]
-    # c, d. the sample
+    ignored, trailing = pins.get("ignored_discs") or {}, pins.get("trailing_bytes")
+    idl_discs = set(idl_event_table(idls))
     start_slot = max(d["new"] for d in tri["redeploys"]) + SAMPLE_START_OFFSET_SLOTS
+    detail: dict[str, Any] = {"sample_start_slot": start_slot}
+    # c, d. the log sample
     sample, scanned = fetch_sample(client, start_slot)
-    detail: dict[str, Any] = {"sample_start_slot": start_slot, "slots_scanned": scanned}
+    detail["slots_scanned"] = scanned
     if len(sample) < SAMPLE_MIN_TXS:
         fails.append(f"c: sample has {len(sample)} txs after {scanned} slots, need {SAMPLE_MIN_TXS}")
-    ignored = pins.get("ignored_discs") or {}
-    trailing = pins.get("trailing_bytes")
     ev = evaluate_sample(sample, idls, ignored, trailing)
-    detail.update({k: ev[k] for k in ("n_txs", "n_events", "n_init_boost", "seen_events", "capped", "n_swap_events")})
-    max_cap = need(pins.get("max_capped_share"), "max_capped_share")
-    if ev["n_swap_events"] and ev["capped"] / ev["n_swap_events"] > max_cap:
-        fails.append(f"c: {ev['capped']}/{ev['n_swap_events']} Buy/Sell events above the shadow's amount cap (pinned max share {max_cap})")
-    if ev["layout_mismatch"]:
-        fails.append(f"d: event bytes not consumed exactly by the IDL layout: {ev['layout_mismatch']}")
-    detail["disc_len"] = ev["disc_len"]
-    if ev["undecodable"]:
-        fails.append(f"c: undecodable events of a decoded discriminator: {ev['undecodable']}")
-    if ev["unknown"]:
-        fails.append(f"c: unknown discriminators: {ev['unknown']}")
-    if ev["idl_mismatch"]:
-        fails.append(f"c: shadow decode differs from the IDL decode: {ev['idl_mismatch']}")
+    ev["_idl_discs"] = idl_discs
+    detail["log_sample"] = {k: ev[k] for k in ("n_txs", "n_events", "seen_events", "capped", "n_swap_events", "trailing_seen")}
+    sample_failures(ev, "log sample", pins, fails)
     for name in REQUIRED_EVENTS:
         if name not in ev["seen_events"]:
-            fails.append(f"d: {name} not seen in the sample")
-    ranges = pins.get("disc_len") or {}
-    idl_discs = set(idl_event_table(idls))
-    for h, (lo, hi, _n) in ev["disc_len"].items():
-        if h in ev["unknown"]:
-            continue  # already a FAIL reason above; an unknown discriminator has no pin by definition
-        pr = ranges.get(h)
-        if pr is None and bytes.fromhex(h) in idl_discs:
-            continue  # no length pin, but the IDL consumes this event exactly (the stronger test above); the length range is only the guard for events without an IDL entry
-        if pr is None or pr.get("min_len") is None or pr.get("max_len") is None:
-            raise CheckError(f"pin missing: disc_len.{h}")
-        if lo < pr["min_len"] or hi > pr["max_len"]:
-            fails.append(f"d: discriminator {h} length {lo}-{hi} outside pinned {pr['min_len']}-{pr['max_len']}")
-    if ev["n_init_boost"] < min_ib:
-        fails.append(f"e: InitBoost events in sample {ev['n_init_boost']} below pinned minimum {min_ib}")
+            fails.append(f"d: {name} not seen in the log sample")
+    # C-1, C-2. the inner-instruction (migrate) sample and the BOOST evidence from the same post-deploy graduations
+    mv = migrate_evidence(client, idls, start_slot, now_ms() / 1000, ignored, trailing)
+    mv["_idl_discs"] = idl_discs
+    detail["migrate_sample"] = {k: mv[k] for k in ("n_migrate_txs", "slot_min", "slot_max", "n_events", "seen_events", "n_init_boost", "trailing_seen", "n_nonmayhem_wsol",
+                                                    "n_init_boost_graduations", "init_boost_share", "budget_sol_median", "slices_median")}
+    sample_failures(mv, "migrate sample", pins, fails)
+    for name in required:
+        if name not in mv["seen_events"]:
+            fails.append(f"d: {name} not seen in the migrate sample")
+    if mv["n_init_boost"] < min_ib:
+        fails.append(f"e: InitBoost events in the migrate sample {mv['n_init_boost']} below pinned minimum {min_ib}")
+    if abs(mv["init_boost_share"] / share_pin - 1.0) > BOOST_TOL:
+        fails.append(f"e: InitBoost share {mv['init_boost_share']:.3f} vs pin {share_pin} beyond +/-{BOOST_TOL:.0%}")
+    pb = mon_pins.get("boost") or {}
+    for cur, want, label in ((mv["budget_sol_median"], pb.get("budget_sol"), "budget"), (mv["slices_median"], pb.get("slices"), "slices")):
+        if not want:
+            raise CheckError(f"monitor pin missing: boost.{label}")
+        if abs(cur / want - 1.0) > BOOST_TOL:
+            fails.append(f"e: BOOST {label} median {cur} vs pin {want} beyond +/-{BOOST_TOL:.0%}")
     return ("FAIL" if fails else "PASS"), fails, detail
 
 
 def append_state(path: Path, entry: Json) -> None:
+    """Checked append: any failure raises (the caller turns it into an operational error; a verdict that cannot be remembered is not a quiet pass)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(entry, sort_keys=True) + "\n")
+        fh.flush()
+        os.fsync(fh.fileno())
 
 
 def read_state(path: Path) -> dict[str, dict[str, Any]]:
@@ -601,16 +734,25 @@ def decide(rec: Json, prev: Json | None, mon_pins: Json, pins: Json, state_path:
     if tri["action"] == "none":
         return v
     v["redeploys"] = [{"name": d["name"], "slot": d["new"], "deploy_utc": d.get("deploy_utc")} for d in tri["redeploys"]]
+    state = read_state(state_path)
+    unresolved = [d for d in tri["redeploys"] if state.get(redeploy_key(d)) is None or state[redeploy_key(d)]["verdict"] != "PASS"]
     if tri["action"] == "hard":
-        v.update(verdict="HALT", reasons=tri["hard_reasons"], halt_at_ms=tri["run_ms"])
+        # B1: a hard flag in the same run as a not-yet-PASSed program redeploy cannot be a PASS (R3a), so R4 applies: the window ends at the REDEPLOY instant,
+        # or at the flag's instant when that is earlier.
+        halt_at = tri["run_ms"]
+        if unresolved:
+            try:
+                halt_at = min(halt_at, redeploy_instant_ms(unresolved))
+            except CheckError:
+                pass
+        v.update(verdict="HALT", reasons=tri["hard_reasons"], halt_at_ms=halt_at)
         return v
     # redeploy-only: decide at the redeploy instant of the PENDING slots (a slot that already PASSed is covered and no longer sets the instant, the deadline or the sample)
-    state = read_state(state_path)
     failed = [state[redeploy_key(d)] for d in tri["redeploys"] if state.get(redeploy_key(d)) and state[redeploy_key(d)]["verdict"] != "PASS"]
     pending = [d for d in tri["redeploys"] if state.get(redeploy_key(d)) is None]
     try:
-        deploy_ms = redeploy_instant_ms([d for d in tri["redeploys"] if state.get(redeploy_key(d)) is None or state[redeploy_key(d)]["verdict"] != "PASS"] or tri["redeploys"])
-    except CheckError as exc:
+        deploy_ms = redeploy_instant_ms(unresolved or tri["redeploys"])
+    except CheckError as exc:  # no redeploy instant exists: the flag's instant is all there is
         v.update(verdict="ERROR", reasons=[str(exc)], halt_at_ms=tri["run_ms"])
         return v
     if failed:
@@ -632,16 +774,15 @@ def decide(rec: Json, prev: Json | None, mon_pins: Json, pins: Json, state_path:
         else:
             v["halt_at_ms"] = deploy_ms
         for d in pending:
-            if state.get(redeploy_key(d)) is None:
-                append_state(state_path, {"key": redeploy_key(d), "program": d["name"], "slot": d["new"], "deploy_utc": d.get("deploy_utc"), "verdict": verdict,
-                                          "reasons": reasons[:20], "checked_ms": now_ms(), "run_utc": rec["run_utc"], "job_id": job_id})
+            append_state(state_path, {"key": redeploy_key(d), "program": d["name"], "slot": d["new"], "deploy_utc": d.get("deploy_utc"), "verdict": verdict,
+                                      "reasons": reasons[:20], "checked_ms": now_ms(), "run_utc": rec["run_utc"], "job_id": job_id})
         return v
 
     if now_ms() > deadline:
         return finish("FAIL", [f"timeout: check started {iso_ms(now_ms())}, after the deadline {iso_ms(deadline)}"])
     try:
         verdict, reasons, detail = check_redeploy(rec, mon_pins, pins, tri, client=client, http_get=http_get, now_ms=now_ms, deploy_ms=deploy_ms)
-    except (CheckError, mon.RpcError, mon.RpcUnreachable, mon.CallBudgetExceeded, OSError, ValueError, KeyError) as exc:
+    except Exception as exc:  # noqa: BLE001 - ANY failure of the check is ERROR (hard halt), recorded in the state; a traceback with no state would be a silent no-halt
         return finish("ERROR", [f"{type(exc).__name__}: {str(exc)[:200]}"])
     if now_ms() > deadline:
         return finish("FAIL", [f"timeout: finished {iso_ms(now_ms())}, after the deadline {iso_ms(deadline)}"] + reasons, detail)
@@ -649,15 +790,25 @@ def decide(rec: Json, prev: Json | None, mon_pins: Json, pins: Json, state_path:
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ CLI
+def previous_daily(recs: Sequence[dict[str, Any]]) -> dict[str, Any] | None:
+    """The newest record of an EARLIER UTC date than the last record: the previous daily run. A manual run in between (same date) does not reset 'two consecutive runs'."""
+    last = recs[-1]["run_utc"][:10]
+    for r in reversed(recs[:-1]):
+        if str(r.get("run_utc", ""))[:10] < last:
+            return r
+    return None
+
+
 def last_two_records(path: Path) -> tuple[dict[str, Any], dict[str, Any] | None]:
     recs = mon.read_tail_records(path)
     if not recs:
         raise CheckError(f"no daily record in {path}")
-    return recs[-1], (recs[-2] if len(recs) > 1 else None)
+    return recs[-1], previous_daily(recs)
 
 
-def observe_report(rec: Json, client: Any, http_get: Callable, start_slot: int, ignored: Mapping[str, str] | None = None, trailing: Mapping[str, Sequence[int]] | None = None) -> dict[str, Any]:
-    """For the program-upgrade review: what the pins file should hold. Writes nothing, decides nothing."""
+def observe_report(rec: Json, client: Any, http_get: Callable, start_slot: int, ignored: Mapping[str, str] | None = None, trailing: Mapping[str, Sequence[int]] | None = None,
+                   now_s: float | None = None) -> dict[str, Any]:
+    """For the program-upgrade review: what the pins file should hold. Writes nothing, decides nothing. Both samples: the log sample and the migrate (inner-instruction) sample."""
     idl_sha, idls = {}, {}
     for name in IDL_NAMES:
         status, _h, body = http_get(IDL_URL.format(name=name), 30.0)
@@ -667,11 +818,16 @@ def observe_report(rec: Json, client: Any, http_get: Callable, start_slot: int, 
         idls[name] = json.loads(body)
     sample, scanned = fetch_sample(client, start_slot)
     ev = evaluate_sample(sample, idls, ignored, trailing)
-    den = (rec.get("graduations") or {}).get("boost_denominator") or {}
-    return {"idl_sha256": idl_sha, "sample_start_slot": start_slot, "slots_scanned": scanned, "n_txs": ev["n_txs"], "disc_len": ev["disc_len"], "n_init_boost": ev["n_init_boost"],
-            "init_boost_share": (den.get("n_init_boost", 0) / den["n_nonmayhem_wsol"]) if den.get("n_nonmayhem_wsol") else None,
-            "undecodable": ev["undecodable"], "unknown": ev["unknown"], "idl_mismatch": ev["idl_mismatch"],
-            "capped": ev["capped"], "n_swap_events": ev["n_swap_events"], "layout_mismatch": ev["layout_mismatch"], "seen_events": ev["seen_events"], "trailing_seen": ev["trailing_seen"]}
+    keep = ("disc_len", "n_init_boost", "undecodable", "unknown", "idl_mismatch", "capped", "n_swap_events", "layout_mismatch", "seen_events", "trailing_seen")
+    out: dict[str, Any] = {"idl_sha256": idl_sha, "sample_start_slot": start_slot, "frozen_blobs": {rel: git_blob_sha(REPO_ROOT / rel) for rel in FROZEN_FILES},
+                           "log_sample": {"slots_scanned": scanned, "n_txs": ev["n_txs"], **{k: ev[k] for k in keep}}}
+    mv = migrate_evidence(client, idls, start_slot, now_s if now_s is not None else time.time(), ignored, trailing)
+    out["migrate_sample"] = {k: mv[k] for k in (*keep, "n_migrate_txs", "slot_min", "slot_max", "n_events", "n_nonmayhem_wsol", "n_init_boost_graduations", "init_boost_share",
+                                                 "budget_sol_median", "slices_median", "n_pools_skipped")}
+    return out
+
+
+FROZEN_FILES = ("observe/trade_decode.py", "tools/h5_shadow.py", "tools/pump_structure_monitor.py", "observe/link_state.py", "tools/cap_pick_oracle.py", "tools/paper_curve_math.py")
 
 
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -679,7 +835,7 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p.add_argument("--daily", default=DEFAULT_DAILY, help="A3 daily record JSONL (default %(default)s)")
     p.add_argument("--monitor-pins", default=str(mon.DEFAULT_PINS))
     p.add_argument("--pins", default=str(DEFAULT_PINS), help="a3_redeploy pins (default tools/a3_redeploy_pins.json)")
-    p.add_argument("--state", required=False, default="/data/mal/structure-monitor/a3-redeploy-state.jsonl", help="append-only verdict memory")
+    p.add_argument("--state", default=DEFAULT_STATE, help="append-only verdict memory (default %(default)s)")
     p.add_argument("--verdict-out", help="also write the verdict JSON here")
     p.add_argument("--rpc-url", default=mon.DEFAULT_RPC)
     p.add_argument("--job-id", default=os.environ.get("MISCUSI_JOB_ID", ""))
@@ -698,7 +854,7 @@ def main(argv: Sequence[str] | None = None, *, client: Any = None, http_get: Cal
         age_s = clock() / 1000 - utc_ms(rec["run_utc"]) / 1000
         mon_pins = mon.load_pins(Path(a.monitor_pins))
         pins = load_json(Path(a.pins))
-    except (CheckError, OSError, ValueError, KeyError) as exc:
+    except Exception as exc:  # noqa: BLE001 - unreadable inputs are an operational error, loud, never a pass
         print(f"A3_CHECK_OPERATIONAL_ERROR {type(exc).__name__}: {str(exc)[:200]}", file=sys.stderr)
         return 11
     if age_s > MAX_RECORD_AGE_S and not a.observe:
@@ -706,18 +862,23 @@ def main(argv: Sequence[str] | None = None, *, client: Any = None, http_get: Cal
         return 11
     cl = client or mon.RpcClient(a.rpc_url, min_interval=0.5, max_calls=450)
     get = http_get or mon.urllib_get
-    if a.observe:
-        tri = triage(rec, mon_pins, prev)
-        if not tri["redeploys"]:
-            print("no program redeploy in the newest record", file=sys.stderr)
-            return 11
-        print(json.dumps(observe_report(rec, cl, get, max(d["new"] for d in tri["redeploys"]) + SAMPLE_START_OFFSET_SLOTS, pins.get("ignored_discs"), pins.get("trailing_bytes")), sort_keys=True))
-        return 0
-    v = decide(rec, prev, mon_pins, pins, Path(a.state), client=cl, http_get=get, now_ms=clock, job_id=a.job_id)
-    text = json.dumps(v, sort_keys=True)
-    print(text)
-    if a.verdict_out:
-        Path(a.verdict_out).write_text(text + "\n", encoding="utf-8")
+    try:
+        if a.observe:
+            tri = triage(rec, mon_pins, prev)
+            if not tri["redeploys"]:
+                print("no program redeploy in the newest record", file=sys.stderr)
+                return 11
+            print(json.dumps(observe_report(rec, cl, get, max(d["new"] for d in tri["redeploys"]) + SAMPLE_START_OFFSET_SLOTS, pins.get("ignored_discs"), pins.get("trailing_bytes"),
+                                            clock() / 1000), sort_keys=True))
+            return 0
+        v = decide(rec, prev, mon_pins, pins, Path(a.state), client=cl, http_get=get, now_ms=clock, job_id=a.job_id)
+        text = json.dumps(v, sort_keys=True)
+        print(text)
+        if a.verdict_out:
+            Path(a.verdict_out).write_text(text + "\n", encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001 - the state could not be written, the triage failed, ...: tool failure, loud
+        print(f"A3_CHECK_OPERATIONAL_ERROR {type(exc).__name__}: {str(exc)[:200]}", file=sys.stderr)
+        return 11
     return 10 if v["halt_at_ms"] is not None else 0
 
 
