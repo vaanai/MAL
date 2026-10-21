@@ -779,17 +779,85 @@ def read_state(path: Path) -> dict[str, dict[str, Any]]:
     return out
 
 
+def list_upgrade_writes(client: Any, name: str, programdata: str, pinned_slot: int, newest_slot: int) -> list[dict[str, Any]]:
+    """Q4: EVERY successful upgrade write to a program's programdata account after the pinned deploy slot, oldest first. Pages getSignaturesForAddress(programdata)
+    back until a signature at or before the pinned slot is seen; not reached in MAX_WRITE_PAGES pages => CheckError (fail closed). A write is a successful tx whose
+    BPF-loader instruction is `Upgrade`. The newest write must be the record's deploy slot, else CheckError (the enumeration and the monitor disagree)."""
+    cands: list[dict[str, Any]] = []
+    before = None
+    reached = False
+    for _ in range(MAX_WRITE_PAGES):
+        opts: dict[str, Any] = {"limit": 1000, "commitment": "finalized"}
+        if before:
+            opts["before"] = before
+        sigs = client.call("getSignaturesForAddress", [programdata, opts]) or []
+        for sg in sigs:
+            before = sg["signature"]
+            if sg["slot"] <= pinned_slot:
+                reached = True
+            elif sg.get("err") is None:
+                cands.append(sg)
+        if reached or len(sigs) < 1000:
+            break
+    if not reached:
+        raise CheckError(f"{name}: the pinned deploy slot {pinned_slot} was not reached in the programdata signature list (fail closed)")
+    out: list[dict[str, Any]] = []
+    for sg in sorted(cands, key=lambda x: x["slot"]):
+        tx = mon.fetch_tx(client, sg["signature"])
+        if tx is None:
+            raise CheckError(f"{name}: write candidate {sg['signature'][:12]} unreadable")
+        keys = mon.tx_keys(tx)
+        ixs = ((tx.get("transaction") or {}).get("message") or {}).get("instructions") or []
+        is_upgrade = False
+        for ix in ixs:
+            idx = ix.get("programIdIndex")
+            if idx is not None and idx < len(keys) and keys[idx] == LOADER_PROGRAM:
+                try:
+                    data = mon.b58decode(ix.get("data") or "")
+                except ValueError:
+                    continue
+                if len(data) >= 4 and int.from_bytes(data[:4], "little") == LOADER_UPGRADE_TAG:
+                    is_upgrade = True
+        if not is_upgrade:
+            continue
+        bt = sg.get("blockTime") or tx.get("blockTime")
+        if bt is None:
+            raise CheckError(f"{name}: write at slot {sg['slot']} has no block time")
+        out.append({"kind": "program", "name": name, "old": pinned_slot, "new": int(tx.get("slot", sg["slot"])), "deploy_utc": mon.iso(bt), "sig": sg["signature"]})
+    if not out or out[-1]["new"] != newest_slot:
+        raise CheckError(f"{name}: newest enumerated write {out[-1]['new'] if out else None} != the record's deploy slot {newest_slot}")
+    return out
+
+
+def expand_writes(client: Any, rec: Json, redeploys: Sequence[Json]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for d in redeploys:
+        pdata = ((rec.get("programs") or {}).get(d["name"]) or {}).get("programdata")
+        if not pdata:
+            raise CheckError(f"record has no programdata address for {d['name']}")
+        out += list_upgrade_writes(client, d["name"], pdata, d["old"], d["new"])
+    return sorted(out, key=lambda w: (w["new"], w["name"]))
+
+
 def decide(rec: Json, prev: Json | None, mon_pins: Json, pins: Json, state_path: Path, *, client: Any, http_get: Callable, now_ms: Callable[[], int], job_id: str = "") -> dict[str, Any]:
     tri = triage(rec, mon_pins, prev)
     v: dict[str, Any] = {"schema": SCHEMA, "run_utc": rec["run_utc"], "action": tri["action"], "verdict": "NONE", "reasons": [], "redeploys": [],
                          "flag_halt_ms": tri["flag_halt_ms"], "halt_at_ms": None, "record_only": False, "job_id": job_id}
     if tri["action"] == "none":
         return v
-    v["redeploys"] = [{"name": d["name"], "slot": d["new"], "deploy_utc": d.get("deploy_utc")} for d in tri["redeploys"]]
+    # Q4: every upgrade write since the pinned slot is its own redeploy (own instant, own state, own check). If the enumeration fails the record's own
+    # (newest-write) redeploys stand in, and in the redeploy-only path the failure itself is an ERROR.
+    redeploys, expand_err = list(tri["redeploys"]), None
+    if redeploys:
+        try:
+            redeploys = expand_writes(client, rec, redeploys)
+        except Exception as exc:  # noqa: BLE001
+            redeploys, expand_err = list(tri["redeploys"]), exc
+    v["redeploys"] = [{"name": d["name"], "slot": d["new"], "deploy_utc": d.get("deploy_utc")} for d in redeploys]
     state = read_state(state_path)
-    unresolved = [d for d in tri["redeploys"] if state.get(redeploy_key(d)) is None or state[redeploy_key(d)]["verdict"] != "PASS"]
+    unresolved = [d for d in redeploys if state.get(redeploy_key(d)) is None or state[redeploy_key(d)]["verdict"] != "PASS"]
     if tri["action"] == "hard":
-        # B1: a hard flag in the same run as a not-yet-PASSed program redeploy cannot be a PASS (R3a), so R4 applies: the window ends at the REDEPLOY instant,
+        # B1: a hard flag in the same run as a not-yet-PASSed program write cannot be a PASS (R3a), so R4 applies: the window ends at the EARLIEST unreviewed write,
         # or at the flag's instant when that is earlier.
         halt_at = tri["run_ms"]
         if unresolved:
@@ -797,48 +865,69 @@ def decide(rec: Json, prev: Json | None, mon_pins: Json, pins: Json, state_path:
                 halt_at = min(halt_at, redeploy_instant_ms(unresolved))
             except CheckError:
                 pass
-        v.update(verdict="HALT", reasons=tri["hard_reasons"], halt_at_ms=halt_at)
+        v.update(verdict="HALT", reasons=tri["hard_reasons"] + ([f"write enumeration failed: {expand_err}"] if expand_err else []), halt_at_ms=halt_at)
         return v
-    # redeploy-only: decide at the redeploy instant of the PENDING slots (a slot that already PASSed is covered and no longer sets the instant, the deadline or the sample)
-    failed = [state[redeploy_key(d)] for d in tri["redeploys"] if state.get(redeploy_key(d)) and state[redeploy_key(d)]["verdict"] != "PASS"]
-    pending = [d for d in tri["redeploys"] if state.get(redeploy_key(d)) is None]
+    # redeploy-only: a write that already PASSed is covered and no longer sets the instant, the deadline or the sample
+    failed = [state[redeploy_key(d)] for d in redeploys if state.get(redeploy_key(d)) and state[redeploy_key(d)]["verdict"] != "PASS"]
+    pending = sorted((d for d in redeploys if state.get(redeploy_key(d)) is None), key=lambda w: (redeploy_instant_ms([w]), w["new"], w["name"]))
     try:
-        deploy_ms = redeploy_instant_ms(unresolved or tri["redeploys"])
+        deploy_ms = redeploy_instant_ms(unresolved or redeploys)
     except CheckError as exc:  # no redeploy instant exists: the flag's instant is all there is
         v.update(verdict="ERROR", reasons=[str(exc)], halt_at_ms=tri["run_ms"])
         return v
-    if failed:
+    if failed and not expand_err:
         bad = failed[0]
         v.update(verdict=bad["verdict"], reasons=[f"state: {bad['key']} was {bad['verdict']} ({'; '.join(bad.get('reasons', []))[:300]})"], halt_at_ms=deploy_ms,
                  redeploy_utc=iso_ms(deploy_ms))
         return v
-    if not pending:
+    if not pending and not expand_err:
         v.update(verdict="PASS", record_only=True, reasons=["covered: every changed slot already PASSed"], covered=True)
         return v
-    tri = dict(tri, redeploys=pending)
     deadline = deploy_ms + CHECK_WINDOW_S * 1000
     v["redeploy_utc"], v["deadline_utc"] = iso_ms(deploy_ms), iso_ms(deadline)
 
-    def finish(verdict: str, reasons: list[str], detail: dict[str, Any] | None = None) -> dict[str, Any]:
+    def remember(d: Json, verdict: str, reasons: list[str]) -> None:
+        if state.get(redeploy_key(d)) is None:
+            append_state(state_path, {"key": redeploy_key(d), "program": d["name"], "slot": d["new"], "deploy_utc": d.get("deploy_utc"), "verdict": verdict,
+                                      "reasons": reasons[:20], "checked_ms": now_ms(), "run_utc": rec["run_utc"], "job_id": job_id})
+
+    def end(verdict: str, reasons: list[str], halt_ms: int | None, items: Sequence[Json], detail: dict[str, Any] | None = None) -> dict[str, Any]:
         v.update(verdict=verdict, reasons=reasons, detail=detail or {})
         if verdict == "PASS":
             v["record_only"] = True
         else:
-            v["halt_at_ms"] = deploy_ms
-        for d in pending:
-            append_state(state_path, {"key": redeploy_key(d), "program": d["name"], "slot": d["new"], "deploy_utc": d.get("deploy_utc"), "verdict": verdict,
-                                      "reasons": reasons[:20], "checked_ms": now_ms(), "run_utc": rec["run_utc"], "job_id": job_id})
+            v["halt_at_ms"] = halt_ms
+        for d in items:
+            remember(d, verdict, reasons)
         return v
 
+    if expand_err:  # the enumeration could not be completed (or the pinned slot was not reached): ERROR, at the earliest record-known redeploy instant
+        return end("ERROR", [f"{type(expand_err).__name__}: {str(expand_err)[:200]}"], deploy_ms, [d for d in tri["redeploys"] if state.get(redeploy_key(d)) is None])
     if now_ms() > deadline:
-        return finish("FAIL", [f"timeout: check started {iso_ms(now_ms())}, after the deadline {iso_ms(deadline)}"])
-    try:
-        verdict, reasons, detail = check_redeploy(rec, mon_pins, pins, tri, client=client, http_get=http_get, now_ms=now_ms, deploy_ms=deploy_ms)
-    except Exception as exc:  # noqa: BLE001 - ANY failure of the check is ERROR (hard halt), recorded in the state; a traceback with no state would be a silent no-halt
-        return finish("ERROR", [f"{type(exc).__name__}: {str(exc)[:200]}"])
-    if now_ms() > deadline:
-        return finish("FAIL", [f"timeout: finished {iso_ms(now_ms())}, after the deadline {iso_ms(deadline)}"] + reasons, detail)
-    return finish(verdict, reasons, detail)
+        return end("FAIL", [f"timeout: check started {iso_ms(now_ms())}, after the deadline {iso_ms(deadline)}"], deploy_ms, pending)
+    detail: dict[str, Any] = {}
+    per_write: dict[str, str] = {}
+    all_reasons: list[str] = []
+    for i, w in enumerate(pending):
+        w_ms = redeploy_instant_ms([w])
+        try:
+            verdict, reasons, detail = check_redeploy(rec, mon_pins, pins, dict(tri, redeploys=[w]), client=client, http_get=http_get, now_ms=now_ms, deploy_ms=w_ms)
+        except Exception as exc:  # noqa: BLE001 - ANY failure of the check is ERROR (hard halt), recorded in the state; a traceback with no state would be a silent no-halt
+            verdict, reasons, detail = "ERROR", [f"{type(exc).__name__}: {str(exc)[:200]}"], {}
+        if verdict == "PASS" and now_ms() > deadline:
+            verdict, reasons = "FAIL", [f"timeout: finished {iso_ms(now_ms())}, after the deadline {iso_ms(deadline)}"]
+        per_write[redeploy_key(w)] = verdict
+        remember(w, verdict, reasons)
+        if verdict != "PASS":
+            # the window ends at the EARLIEST write that is not reviewed; the writes after it are not evaluated (the window is already over)
+            for later in pending[i + 1:]:
+                remember(later, verdict, [f"not evaluated: earlier write {redeploy_key(w)} {verdict}"])
+                per_write[redeploy_key(later)] = f"not evaluated ({verdict})"
+            v["per_write"] = per_write
+            return end(verdict, [f"{redeploy_key(w)}: {r}" for r in reasons], w_ms, [], detail)
+        all_reasons += reasons
+    v["per_write"] = per_write
+    return end("PASS", all_reasons, None, [], detail)
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ CLI
@@ -920,8 +1009,10 @@ def main(argv: Sequence[str] | None = None, *, client: Any = None, http_get: Cal
             if not tri["redeploys"]:
                 print("no program redeploy in the newest record", file=sys.stderr)
                 return 11
-            print(json.dumps(observe_report(rec, cl, get, max(d["new"] for d in tri["redeploys"]) + SAMPLE_START_OFFSET_SLOTS, pins.get("ignored_discs"), pins.get("trailing_bytes"),
-                                            clock() / 1000), sort_keys=True))
+            writes = expand_writes(cl, rec, tri["redeploys"])  # Q4: every upgrade write since the pinned slot, printed with the report
+            out = observe_report(rec, cl, get, max(d["new"] for d in tri["redeploys"]) + SAMPLE_START_OFFSET_SLOTS, pins.get("ignored_discs"), pins.get("trailing_bytes"), clock() / 1000)
+            out["upgrade_writes"] = [{k: w[k] for k in ("name", "new", "deploy_utc")} for w in writes]
+            print(json.dumps(out, sort_keys=True))
             return 0
         v = decide(rec, prev, mon_pins, pins, Path(a.state), client=cl, http_get=get, now_ms=clock, job_id=a.job_id)
         text = json.dumps(v, sort_keys=True)

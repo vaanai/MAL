@@ -161,7 +161,7 @@ def migrate_tx(i: int, *, slot0: int = MIN_SLOT, init_boost: bool = True, budget
 class FakeClient:
     """Fake public RPC. getBlock feeds the log sample; the migrate flow (signature list, whole txs, Pool accounts, BOOST vault authority signature lists) is served from `migrate_kw`."""
 
-    def __init__(self, blobs, per_block=100, fail=None, n_migrate=c.MIGRATE_K, n_slices=29, mayhem=False, boost_every=1, budget_sol=17.585, migrate_extra=(), migrate_drop=(), old_sig_slot=1000, slot0=MIN_SLOT, pool_quote=mon.b58decode(mon.WSOL_MINT)):
+    def __init__(self, blobs, per_block=100, fail=None, n_migrate=c.MIGRATE_K, n_slices=29, mayhem=False, boost_every=1, budget_sol=17.585, migrate_extra=(), migrate_drop=(), old_sig_slot=1000, slot0=MIN_SLOT, pool_quote=mon.b58decode(mon.WSOL_MINT), fail_on=()):
         self.blobs, self.per_block, self.fail, self.calls = blobs, per_block, fail, 0
         self.txs = {}
         self.sigs = []
@@ -174,11 +174,37 @@ class FakeClient:
         self.sigs.sort(key=lambda x: -x["slot"])
         self.n_slices, self.mayhem, self.pool_quote = n_slices, mayhem, pool_quote
         self.authorities = {mon.boost_vault_authority(POOLS[i]) for i in range(60)}
+        self.write_sigs = {}
+        self.write_txs = {}
+        self.fail_on = set(fail_on)
+        self.set_writes({"PD_PUMP": [(1000, DEPLOY_PUMP)], "PD_SWAP": [(1100, DEPLOY_SWAP)]})
+        self.writes_set = False
+
+    def set_writes(self, writes: dict, pinned: dict | None = None):
+        """writes: {programdata address: [(slot, utc), ...]} (the Upgrade txs); pinned: {address: pinned deploy slot} (the old deploy, always listed last)."""
+        pinned = pinned or {"PD_PUMP": 100, "PD_SWAP": 200}
+        self.writes_set = True
+        for addr, items in writes.items():
+            sigs = []
+            for slot, utc in items:
+                sig = f"w{addr}{slot}"
+                bt = c.utc_ms(utc) // 1000
+                self.write_txs[sig] = {"slot": slot, "blockTime": bt, "transaction": {"message": {"accountKeys": ["Auth", addr, c.LOADER_PROGRAM],
+                                       "instructions": [{"programIdIndex": 2, "data": mon.b58encode(struct.pack("<I", c.LOADER_UPGRADE_TAG))}]}}, "meta": {"err": None}}
+                sigs.append({"signature": sig, "slot": slot, "blockTime": bt, "err": None})
+            sigs.append({"signature": f"pinned{addr}", "slot": pinned.get(addr, 1), "blockTime": 1, "err": None})
+            self.write_sigs[addr] = sorted(sigs, key=lambda x: -x["slot"])
+
+    def set_writes_from_rec(self, rec: dict):
+        self.set_writes({rec["programs"][n]["programdata"]: [(rec["programs"][n]["deploy_slot"], rec["programs"][n]["deploy_utc"])] for n in ("pump", "pumpswap")
+                         if rec["programs"][n].get("programdata") and rec["programs"][n]["deploy_slot"] != MON_PINS["programs"][n]["deploy_slot"]})
 
     def call(self, method, params):
         self.calls += 1
         if self.fail:
             raise self.fail
+        if method in self.fail_on:
+            raise AssertionError(f"{method} must not be called")
         if method == "getBlock":
             txs = []
             for i in range(self.per_block):
@@ -186,11 +212,13 @@ class FakeClient:
                 txs.append({"meta": {"err": None, "logMessages": logs_for(pid, blob)}})
             return {"transactions": txs}
         if method == "getSignaturesForAddress":
+            if params[0] in self.write_sigs:
+                return self.write_sigs[params[0]]
             if params[0] == mon.MIGRATION_FEE_ACCOUNT:
                 return self.sigs
             return [{"signature": f"sl{j}", "slot": MIN_SLOT + 1000 + j, "blockTime": (NOW // 1000) - 7000 + j, "err": None} for j in range(self.n_slices)]
         if method == "getTransaction":
-            return self.txs.get(params[0])
+            return self.write_txs.get(params[0]) or self.txs.get(params[0])
         if method == "getMultipleAccounts":
             if "dataSlice" in params[1]:
                 return {"value": [{"lamports": 0} for _ in params[0]]}
@@ -244,14 +272,14 @@ def make_rec(*, redeploy=True, run_utc=RUN_UTC, **over):
         "run_utc": run_utc,
         "halt": {"flags": flags},
         "accounts": {n: {"pinned": True, "sha256": p["sha256"]} for n, p in MON_PINS["accounts"].items()},
-        "programs": {"pump": {"deploy_slot": 100, "deploy_utc": "2026-10-13T15:40:41Z"}, "pumpswap": {"deploy_slot": 200, "deploy_utc": "2026-10-08T16:20:03Z"},
+        "programs": {"pump": {"deploy_slot": 100, "deploy_utc": "2026-10-13T15:40:41Z", "programdata": "PD_PUMP"}, "pumpswap": {"deploy_slot": 200, "deploy_utc": "2026-10-08T16:20:03Z", "programdata": "PD_SWAP"},
                      "fees": {"deploy_slot": 300, "deploy_utc": "2026-10-12T17:40:24Z"}},
         "graduations": {"boost_denominator": {"n_nonmayhem_wsol": 20, "n_init_boost": 18}},
         "boost": {"budget_sol": {"median": 17.6}, "slices": {"median": 29}},
     }
     if redeploy:
-        rec["programs"]["pump"] = {"deploy_slot": 1000, "deploy_utc": DEPLOY_PUMP}
-        rec["programs"]["pumpswap"] = {"deploy_slot": 1100, "deploy_utc": DEPLOY_SWAP}
+        rec["programs"]["pump"] = {"deploy_slot": 1000, "deploy_utc": DEPLOY_PUMP, "programdata": "PD_PUMP"}
+        rec["programs"]["pumpswap"] = {"deploy_slot": 1100, "deploy_utc": DEPLOY_SWAP, "programdata": "PD_SWAP"}
         flags["pins_changed"] = flag(True, reason="program_pump deploy_slot 100 -> 1000; program_pumpswap deploy_slot 200 -> 1100")
     for k, v in over.items():
         rec[k] = v
@@ -263,6 +291,10 @@ NOW = ms("2026-10-20T07:20:00Z")
 
 def run(rec, tmp_path, *, prev=None, pins=None, client=None, http=None, now=None, state=None):
     clock = now or (lambda: NOW)
+    cl = client if client is not None else FakeClient(sample_blobs())
+    if hasattr(cl, "writes_set") and not cl.writes_set and not cl.fail:
+        cl.set_writes_from_rec(rec)
+    client = cl
     return c.decide(rec, prev, MON_PINS, pins if pins is not None else build_pins(), state or tmp_path / "state.jsonl",
                     client=client if client is not None else FakeClient(sample_blobs()), http_get=http or http_ok(), now_ms=clock, job_id="job-1")
 
@@ -291,7 +323,7 @@ def test_pass_path_is_record_only_and_discloses(tmp_path):
 
 def test_passed_slot_is_covered_not_reclassified(tmp_path):
     run(make_rec(), tmp_path)
-    boom = FakeClient([], fail=AssertionError("must not fetch"))
+    boom = FakeClient([], fail_on={"getBlock", "getMultipleAccounts"})  # only the write enumeration (signature list) may run
     v = run(make_rec(run_utc="2026-10-21T07:11:27Z"), tmp_path, client=boom, http=lambda *a: (_ for _ in ()).throw(AssertionError("no http")))
     assert v["verdict"] == "PASS" and v.get("covered") and v["halt_at_ms"] is None
 
@@ -299,10 +331,11 @@ def test_passed_slot_is_covered_not_reclassified(tmp_path):
 def test_new_slot_after_a_pass_is_checked_again(tmp_path):
     run(make_rec(), tmp_path)
     rec = make_rec(run_utc="2026-10-22T07:11:27Z")
-    rec["programs"]["pump"] = {"deploy_slot": 5000, "deploy_utc": "2026-10-22T01:00:00Z"}
+    rec["programs"]["pump"] = {"deploy_slot": 5000, "deploy_utc": "2026-10-22T01:00:00Z", "programdata": "PD_PUMP"}
     cl = FakeClient(sample_blobs(), slot0=5150, old_sig_slot=5000)
+    cl.set_writes({"PD_PUMP": [(1000, DEPLOY_PUMP), (5000, "2026-10-22T01:00:00Z")], "PD_SWAP": [(1100, DEPLOY_SWAP)]})  # the monitor pins are not re-pinned: both pump writes are listed
     v = run(rec, tmp_path, client=cl, now=lambda: ms("2026-10-22T07:20:00Z"))
-    assert v["verdict"] == "PASS" and not v.get("covered") and cl.calls > 0
+    assert v["verdict"] == "PASS" and not v.get("covered") and v["per_write"] == {"pump:5000": "PASS"}
 
 
 FAIL_CASES = {}
@@ -456,7 +489,7 @@ def test_fail_reasons(case, tmp_path, monkeypatch):
 
 def test_halt_instant_is_earliest_changed_redeploy(tmp_path):
     rec = make_rec()
-    rec["programs"]["pumpswap"] = {"deploy_slot": 1100, "deploy_utc": "2026-10-19T17:40:00Z"}
+    rec["programs"]["pumpswap"] = {"deploy_slot": 1100, "deploy_utc": "2026-10-19T17:40:00Z", "programdata": "PD_SWAP"}
     rec["halt"]["flags"]["boost_share_low"] = flag(False, evaluated=False)
     v = run(rec, tmp_path)
     assert v["verdict"] == "FAIL" and v["halt_at_ms"] == ms("2026-10-19T17:40:00Z")
@@ -526,7 +559,7 @@ def test_unmapped_idl_layout_is_error_not_pass(tmp_path):
 
 def test_timeout_when_started_late(tmp_path):
     late = ms("2026-10-20T17:47:03Z")  # 24 h and 1 s after the pump redeploy
-    cl = FakeClient([], fail=AssertionError("must not run the check"))
+    cl = FakeClient([], fail_on={"getBlock", "getMultipleAccounts"})
     v = run(make_rec(), tmp_path, client=cl, now=lambda: late)
     assert v["verdict"] == "FAIL" and "timeout" in v["reasons"][0] and v["halt_at_ms"] == ms(DEPLOY_PUMP)
 
@@ -673,10 +706,12 @@ def test_main_pass_and_fail_exit_codes(tmp_path, capsys):
     assert c.main(argv(tmp_path), client=FakeClient(sample_blobs()), http_get=http_ok(), now_ms=lambda: NOW) == 0
     assert json.loads((tmp_path / "v.json").read_text())["verdict"] == "PASS"
     bad = make_rec(run_utc="2026-10-21T07:11:27Z")
-    bad["programs"]["pump"] = {"deploy_slot": 7777, "deploy_utc": "2026-10-21T01:00:00Z"}
+    bad["programs"]["pump"] = {"deploy_slot": 7777, "deploy_utc": "2026-10-21T01:00:00Z", "programdata": "PD_PUMP"}
     bad["halt"]["flags"]["boost_share_low"] = flag(False, evaluated=False)
     write_daily(tmp_path / "daily.jsonl", [make_rec(), bad])
-    assert c.main(argv(tmp_path), client=FakeClient(sample_blobs()), http_get=http_ok(), now_ms=lambda: ms("2026-10-21T07:15:00Z")) == 10
+    cl2 = FakeClient(sample_blobs())
+    cl2.set_writes({"PD_PUMP": [(1000, DEPLOY_PUMP), (7777, "2026-10-21T01:00:00Z")], "PD_SWAP": [(1100, DEPLOY_SWAP)]})
+    assert c.main(argv(tmp_path), client=cl2, http_get=http_ok(), now_ms=lambda: ms("2026-10-21T07:15:00Z")) == 10
     # pump 1000 / pumpswap 1100 already PASSed (state), so only the new pump slot is pending: the halt is at ITS redeploy instant
     assert json.loads((tmp_path / "v.json").read_text())["halt_at_ms"] == ms("2026-10-21T01:00:00Z")
 
@@ -886,3 +921,92 @@ def test_nonzero_on_an_unreadable_pool_fails_closed(tmp_path):
     blob = encode("SellEvent", prog="pump_amm", over={"pool": mon.b58decode(POOLS[0])}, trail=NONZERO)
     v = run(make_rec(), tmp_path, client=FakeClient(sample_blobs([(blob, SWAP)]), pool_quote=None))
     assert v["verdict"] == "FAIL" and any("NON-ZERO" in r for r in v["reasons"])
+
+
+# ---- QP repin ruling Q4: every programdata write is its own redeploy
+EARLY_SWAP = "2026-10-19T15:46:16Z"  # an extra, earlier PumpSwap write on the same day (the 10-19 case)
+
+
+def multi_client(**kw):
+    cl = FakeClient(sample_blobs(), **kw)
+    cl.set_writes({"PD_PUMP": [(1000, DEPLOY_PUMP)], "PD_SWAP": [(900, EARLY_SWAP), (1100, DEPLOY_SWAP)]})
+    return cl
+
+
+def test_every_write_is_enumerated_with_its_own_state_and_check(tmp_path):
+    rec = make_rec()
+    v = run(rec, tmp_path, client=multi_client())
+    assert v["verdict"] == "PASS", v["reasons"]
+    assert sorted(v["per_write"]) == ["pump:1000", "pumpswap:1100", "pumpswap:900"] and set(v["per_write"].values()) == {"PASS"}
+    assert set(c.read_state(tmp_path / "state.jsonl")) == {"pump:1000", "pumpswap:1100", "pumpswap:900"}
+    assert [r["slot"] for r in v["redeploys"]] == [900, 1000, 1100]
+
+
+def test_fail_instant_is_the_earliest_unreviewed_write_not_the_newest(tmp_path):
+    rec = make_rec()
+    pins = build_pins()
+    v = run(rec, tmp_path, pins=pins, client=multi_client(pool_quote=None), http=http_ok())  # all clean...
+    assert v["verdict"] == "PASS"
+    # ...now an unreviewed earlier write with a failing check: the BOOST evidence is bad for every write, so the FIRST one (15:46Z) fails and ends the window
+    rec2 = make_rec()
+    rec2["halt"]["flags"]["boost_share_low"] = flag(False, evaluated=False)
+    v2 = run(rec2, tmp_path / "b", client=multi_client())
+    assert v2["verdict"] == "FAIL" and v2["halt_at_ms"] == ms(EARLY_SWAP) and v2["reasons"][0].startswith("pumpswap:900")
+    st = c.read_state(tmp_path / "b" / "state.jsonl")
+    assert st["pumpswap:900"]["verdict"] == "FAIL" and "not evaluated" in st["pump:1000"]["reasons"][0] and st["pumpswap:1100"]["verdict"] == "FAIL"
+
+
+def test_a_reviewed_earlier_write_does_not_set_the_instant_of_a_later_failure(tmp_path):
+    cl = FakeClient(sample_blobs())
+    cl.set_writes({"PD_PUMP": [(1000, DEPLOY_PUMP)], "PD_SWAP": [(1100, DEPLOY_SWAP)]})
+    assert run(make_rec(), tmp_path, client=cl)["verdict"] == "PASS"
+    rec = make_rec(run_utc="2026-10-22T07:11:27Z")
+    rec["programs"]["pump"] = {"deploy_slot": 5000, "deploy_utc": "2026-10-22T01:00:00Z", "programdata": "PD_PUMP"}
+    rec["halt"]["flags"]["boost_share_low"] = flag(False, evaluated=False)
+    cl2 = FakeClient(sample_blobs(), slot0=5150, old_sig_slot=5000)
+    cl2.set_writes({"PD_PUMP": [(1000, DEPLOY_PUMP), (5000, "2026-10-22T01:00:00Z")], "PD_SWAP": [(1100, DEPLOY_SWAP)]})
+    v = run(rec, tmp_path, client=cl2, now=lambda: ms("2026-10-22T07:20:00Z"))
+    assert v["verdict"] == "FAIL" and v["halt_at_ms"] == ms("2026-10-22T01:00:00Z")
+
+
+def test_pinned_slot_not_reached_fails_closed(tmp_path):
+    cl = FakeClient(sample_blobs())
+    cl.set_writes({"PD_PUMP": [(1000, DEPLOY_PUMP)], "PD_SWAP": [(1100, DEPLOY_SWAP)]})
+    for addr in cl.write_sigs:
+        cl.write_sigs[addr] = [x for x in cl.write_sigs[addr] if not x["signature"].startswith("pinned")]  # the list ends without the pinned deploy
+    v = run(make_rec(), tmp_path, client=cl)
+    assert v["verdict"] == "ERROR" and "not reached" in v["reasons"][0] and v["halt_at_ms"] == ms(DEPLOY_PUMP)
+    # a full page of 1000 that never gets down to the pinned slot is the same
+    cl.write_sigs["PD_PUMP"] = [{"signature": f"x{i}", "slot": 5000 + i, "blockTime": 1, "err": None} for i in range(1000)]
+    v2 = run(make_rec(), tmp_path / "b", client=cl)
+    assert v2["verdict"] == "ERROR" and "not reached" in v2["reasons"][0]
+
+
+def test_non_upgrade_and_failed_txs_on_the_programdata_are_not_writes(tmp_path):
+    cl = FakeClient(sample_blobs())
+    cl.set_writes({"PD_PUMP": [(1000, DEPLOY_PUMP)], "PD_SWAP": [(1100, DEPLOY_SWAP)]})
+    cl.write_sigs["PD_PUMP"].append({"signature": "failedw", "slot": 700, "blockTime": 1, "err": {"x": 1}})  # failed: skipped
+    cl.write_sigs["PD_PUMP"].append({"signature": "setauth", "slot": 800, "blockTime": 1, "err": None})
+    cl.write_txs["setauth"] = {"slot": 800, "blockTime": 1, "transaction": {"message": {"accountKeys": ["A", "PD_PUMP", c.LOADER_PROGRAM],
+                               "instructions": [{"programIdIndex": 2, "data": mon.b58encode(struct.pack("<I", 4))}]}}, "meta": {"err": None}}  # SetAuthority, not Upgrade
+    cl.write_sigs["PD_PUMP"].sort(key=lambda x: -x["slot"])
+    v = run(make_rec(), tmp_path, client=cl)
+    assert v["verdict"] == "PASS" and sorted(v["per_write"]) == ["pump:1000", "pumpswap:1100"]
+
+
+def test_newest_write_must_match_the_records_deploy_slot(tmp_path):
+    cl = FakeClient(sample_blobs())
+    cl.set_writes({"PD_PUMP": [(999, DEPLOY_PUMP)], "PD_SWAP": [(1100, DEPLOY_SWAP)]})
+    v = run(make_rec(), tmp_path, client=cl)
+    assert v["verdict"] == "ERROR" and "!= the record's deploy slot" in v["reasons"][0]
+
+
+def test_hard_flag_uses_the_earliest_unreviewed_write_and_survives_a_broken_enumeration(tmp_path):
+    rec = make_rec()
+    rec["halt"]["flags"]["boost_disabled"] = flag(True)
+    v = run(rec, tmp_path, client=multi_client())
+    assert v["verdict"] == "HALT" and v["halt_at_ms"] == ms(EARLY_SWAP)
+    cl = multi_client()
+    cl.fail = mon.RpcUnreachable("down")
+    v2 = run(rec, tmp_path / "b", client=cl)  # enumeration fails: the record's own redeploys stand in, the halt is not lost
+    assert v2["verdict"] == "HALT" and v2["halt_at_ms"] == ms(DEPLOY_PUMP) and "enumeration failed" in v2["reasons"][-1]
