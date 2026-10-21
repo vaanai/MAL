@@ -303,6 +303,7 @@ class Bridge:
                  live_ok_path: Path = LIVE_OK_PATH, tier_path: Path = TIER_PATH, root_checks: bool = True) -> None:
         self.cfg = cfg
         self.port = port
+        self.dry_port = port if not port.live else DryPort(cfg.dry_balance_lamports)  # an entry that is not live-eligible (LIVE_OK missing) is routed here: logged, never sent
         self.now_ms = now_ms or (lambda: int(time.time() * 1000))
         self.live_ok_path = live_ok_path
         self.tier_path = tier_path
@@ -489,7 +490,7 @@ class Bridge:
         d["trades"] += 1
         self._save()
         order["send_ms"] = self.now_ms()
-        ok, label = self.port.buy(order)
+        ok, label = (self.port if order["live"] else self.dry_port).buy(order)
         order["status"] = "buy_sent" if ok else "refused"
         if not ok:
             order["refused"] = label
@@ -537,7 +538,7 @@ class Bridge:
         o["sell_tries"] = o.get("sell_tries", 0) + 1
         self._save()
         o["sell_send_ms"] = self.now_ms()
-        ok, label = self.port.sell(o, reason)
+        ok, label = (self.port if o["live"] else self.dry_port).sell(o, reason)
         if ok:
             o["status"] = "sell_sent"
         else:
@@ -623,7 +624,7 @@ class Bridge:
     # -- loop
     def tick(self) -> int:
         """One pass: port events, rows, backstops, warm plan. Returns rows consumed."""
-        self.apply_events(self.port.poll())
+        self._poll_ports()
         n = 0
         if not Path(self.cfg.halt_file).exists():
             for row in self.read_new_rows():
@@ -633,8 +634,13 @@ class Bridge:
                 self._save()
             self.backstops()
             self.warm()
-            self.apply_events(self.port.poll())
+            self._poll_ports()
         return n
+
+    def _poll_ports(self) -> None:
+        self.apply_events(self.port.poll())
+        if self.dry_port is not self.port:
+            self.apply_events(self.dry_port.poll())
 
     def run(self, poll_s: float = 0.05, once: bool = False, sleep: Callable[[float], None] = time.sleep) -> None:
         while True:
@@ -744,7 +750,7 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
                 "min_balance_buffer_lamports": BUFFER_LAMPORTS,
             }
             Path(pcfg["signals_dir"]).mkdir(parents=True, exist_ok=True)
-            self.ex = BridgeExecutor(rpc, pcfg, keypair, now)
+            self.ex = BridgeExecutor(rpc, pcfg, keypair, now_ms)
             self.now = self.ex.now_ms
 
         def mint_for_pool(self, pool: str, meta: Mapping[str, Any]) -> str | None:
@@ -807,7 +813,6 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
             out, self.ex.events = self.ex.events, []
             return out
 
-    now = now_ms
     return LiveExecutorPort()
 
 
