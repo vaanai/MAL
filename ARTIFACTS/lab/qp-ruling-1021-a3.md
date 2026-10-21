@@ -1,3 +1,5 @@
+> Repo copy of /data/mal/hunt-1008/push-1016/hunt24/h5-canary/QP-RULING-1021-a3.md. Source sha256 e777b8966768c4562bd3a500b8b73f4f5cc0d1a1f8187131a5d81e23a85af8ed (checked at copy time). Everything below this line is the source unchanged. Records only; no outcome was computed; no book has cleared the promotion gate.
+
 # QP RULING 2026-10-21 (a3): A3 pins_changed of 2026-10-20 and the H5 arena books
 
 Written 2026-10-21T17:52:27Z (`date -u`, mal-research-0), repo main 9ed4c5f, scorer tools/arena_h5_score.py sha256 dfe7f018601633921f06668fd1af3aaff7b87bf00f321d1540e10b41f8ab6006 (DEC-031 Am.1 pin).
