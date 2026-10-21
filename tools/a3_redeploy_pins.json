@@ -1,0 +1,11 @@
+{
+  "schema": "a3_redeploy_pins.v1",
+  "note": "Pins for tools/a3_redeploy_check.py. A null here is ERROR (hard halt), never a pass. Fill from the program-upgrade review (`python -m tools.a3_redeploy_check --observe`) in a QP-OK PR merged before the a2 clock.",
+  "idl": {
+    "pump": {"sha256": null},
+    "pump_amm": {"sha256": null},
+    "pump_fees": {"sha256": null}
+  },
+  "disc_len": {},
+  "boost": {"init_boost_share": null, "min_init_boost_in_sample": null}
+}
