@@ -239,7 +239,7 @@ def pool_setups(minute: Sequence[int], close: Sequence[float], high: Sequence[fl
     last_present = np.maximum.accumulate(np.where(present, np.arange(L), -1))
     limiter = hc.SetupLimiter()
     out: list[dict[str, Any]] = []
-    t = ((max(scan_lo_ms, lo_m * MIN_MS + MIN_MS) + SCAN_EVERY_MS - 1) // SCAN_EVERY_MS) * SCAN_EVERY_MS + SCAN_SECOND_MS
+    t = ((max(scan_lo_ms, lo_m * MIN_MS + MIN_MS) - SCAN_SECOND_MS + SCAN_EVERY_MS - 1) // SCAN_EVERY_MS) * SCAN_EVERY_MS + SCAN_SECOND_MS
     while t < scan_hi_ms:
         M = t // MIN_MS
         j = M - 1 - lo_m  # dense index of minute M-1
