@@ -159,7 +159,7 @@ def migrate_tx(i: int, *, slot0: int = MIN_SLOT, init_boost: bool = True, budget
 class FakeClient:
     """Fake public RPC. getBlock feeds the log sample; the migrate flow (signature list, whole txs, Pool accounts, BOOST vault authority signature lists) is served from `migrate_kw`."""
 
-    def __init__(self, blobs, per_block=100, fail=None, n_migrate=24, n_slices=29, mayhem=False, boost_every=1, budget_sol=17.585, migrate_extra=(), migrate_drop=(), old_sig_slot=1000, slot0=MIN_SLOT):
+    def __init__(self, blobs, per_block=100, fail=None, n_migrate=c.MIGRATE_K, n_slices=29, mayhem=False, boost_every=1, budget_sol=17.585, migrate_extra=(), migrate_drop=(), old_sig_slot=1000, slot0=MIN_SLOT):
         self.blobs, self.per_block, self.fail, self.calls = blobs, per_block, fail, 0
         self.txs = {}
         self.sigs = []

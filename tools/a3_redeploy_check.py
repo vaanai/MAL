@@ -73,7 +73,7 @@ SAMPLE_MIN_TXS = 500  # first N successful txs that invoke the pump or PumpSwap 
 SAMPLE_MAX_SLOTS = 300  # slots scanned at most (skipped slots included); short of SAMPLE_MIN_TXS by then => FAIL
 SAMPLE_PROGRAMS = (td.PUMP_BONDING_PROGRAM, td.PUMPSWAP_PROGRAM)
 REPO_ROOT = Path(__file__).resolve().parent.parent
-MIGRATE_K = 24  # the inner-instruction sample: the first K settled migrate txs at or after (newest changed deploy slot + SAMPLE_START_OFFSET_SLOTS)
+MIGRATE_K = 40  # the inner-instruction sample: the first K settled migrate txs at or after (newest changed deploy slot + SAMPLE_START_OFFSET_SLOTS)
 MIGRATE_K_MIN = 20  # fewer than this many => ERROR (not enough post-deploy evidence)
 MIGRATE_MAX_PAGES = 8  # getSignaturesForAddress pages of 1000 back from now; the start slot not reached => ERROR
 BOOST_TOL = mon.BOOST_CHANGE_MAX  # 0.20
