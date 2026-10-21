@@ -349,9 +349,9 @@ def test_programdata_and_program_accounts_recorded():
     assert [m.decode_program_account(m._account_bytes(v)) for v in vals[8:11]] == [
         "B5MvUwXdiW1NMM6QFFD3ssPKBujD4zMohncbM73Z2BQu", "6naEzKeUuFh1Jeeu51NXQgr5qkXgXtc9WKNct4xynVJc", "75Uu23mqWBb8LM8vDppqC1mQAnCcBuLXhVaDezVMQLRw"]
     # programdata.json was re-recorded on 2026-10-09 (after the 2026-10-08T16:20Z redeploy), on 2026-10-13 (after the
-    # 2026-10-12T17:40:24Z fees-program redeploy) and on 2026-10-14 (after the 2026-10-13T15:40:41Z pump-program redeploy),
-    # so it carries the current deploy slots
-    assert [m.decode_programdata_slot(m._account_bytes(v)) for v in fx("programdata.json")["value"]] == [456494698, 454596406, 456132171]
+    # 2026-10-12T17:40:24Z fees-program redeploy), on 2026-10-14 (after the 2026-10-13T15:40:41Z pump-program redeploy) and on
+    # 2026-10-21 (after the 2026-10-19T17:47:02Z pump / 17:47:20Z PumpSwap redeploys), so it carries the current deploy slots
+    assert [m.decode_programdata_slot(m._account_bytes(v)) for v in fx("programdata.json")["value"]] == [458921440, 458921517, 456132171]
     assert m.decode_programdata_slot(bytes(45)) is None and m.decode_programdata_slot(None) is None
 
 
