@@ -17,7 +17,8 @@ after flag_halt_ms; instants are epoch ms in a sane range and not in the future)
 
 DEAD-MAN (C-4). `apply` appends one line to the APPLIED log for every decision it applied (also NONE/PASS). `deadman` reads it: if the newest applied run_utc is more than
 DEADMAN_S (48 h, pinned) older than now, the new-rule books end at (that run_utc + DEADMAN_S). It needs no RPC and no daily record, and runs first in the job (and can run as its
-own cheap job: `sh a3-daily.sh deadman`). It cannot fire before the first applied decision exists (there is no anchor); the manager's first run creates it. If this job never runs
+own cheap job: `sh a3-daily.sh deadman`). Per new-rule book the anchor is the later of the newest applied run and the book's registered_at_ms; with NO applied log it is the
+registration instant alone, so a lost or never-created log ends the books 48 h after registration (the exit stays 0 so the daily can create the log). If this job never runs
 at all, nothing on fast-0 runs either: the dead-man is only as alive as the host-side schedule.
 
 Exit codes: 0 applied / nothing to apply; 2 invalid input (nothing written); 12 registry or log write failed.
@@ -46,6 +47,14 @@ FUTURE_SLACK_MS = 5 * 60 * 1000
 
 class Invalid(ValueError):
     """Input refused; nothing was written."""
+
+
+class PartialApply(Invalid):
+    """The halts that could be applied were written, then an applicable rule had an empty list: nonzero exit, no applied-log line."""
+
+    def __init__(self, msg: str, result: dict[str, Any]) -> None:
+        super().__init__(msg)
+        self.result = result
 
 
 def utc_ms(text: str) -> int:
@@ -141,18 +150,22 @@ def halt_books(registry: Path, at_ms: int, bot_ids: Sequence[str]) -> dict[str, 
     return result
 
 
-def plan(d: Mapping[str, Any], legacy: Sequence[str], new: Sequence[str]) -> list[tuple[int, list[str], str]]:
-    """[(at_ms, bot_ids, rule)] to apply, from a VALIDATED decision. Pure. An applicable rule with an empty list is an error (a halt that ends nothing)."""
+def plan(d: Mapping[str, Any], legacy: Sequence[str], new: Sequence[str]) -> tuple[list[tuple[int, list[str], str]], list[str]]:
+    """([(at_ms, bot_ids, rule)] to apply, [errors]) from a VALIDATED decision. Pure. An applicable rule with an empty list is an error (a halt that ends nothing),
+    but it does not stop the other rule's halt from being written."""
     out: list[tuple[int, list[str], str]] = []
+    errs: list[str] = []
     if d["flag_halt_ms"] is not None:
-        if not legacy:
-            raise Invalid("an A3 flag was set but legacy_bot_ids is empty: the halt would end no book")
-        out.append((int(d["flag_halt_ms"]), list(legacy), "legacy"))
+        if legacy:
+            out.append((int(d["flag_halt_ms"]), list(legacy), "legacy"))
+        else:
+            errs.append("an A3 flag was set but legacy_bot_ids is empty: that halt ends no book")
     if d["verdict"] in HARD:
-        if not new:
-            raise Invalid(f"verdict {d['verdict']} but new_rule_bot_ids is empty: the halt would end no book")
-        out.append((int(d["halt_at_ms"]), list(new), "new_rule"))
-    return out
+        if new:
+            out.append((int(d["halt_at_ms"]), list(new), "new_rule"))
+        else:
+            errs.append(f"verdict {d['verdict']} but new_rule_bot_ids is empty: that halt ends no book")
+    return out, errs
 
 
 def _check(books: Any, registry: Path) -> tuple[list[str], list[str]]:
@@ -175,9 +188,12 @@ def apply(verdict: Mapping[str, Any], books: Any, registry: Path, now_ms: int | 
     now = int(time.time() * 1000) if now_ms is None else now_ms
     d = validate_decision(decision_from_verdict(verdict), now)
     legacy, new = _check(books, registry)
-    steps = plan(d, legacy, new)
+    steps, errs = plan(d, legacy, new)
     done = [{"rule": rule, "at_ms": at_ms, **halt_books(registry, at_ms, ids)} for at_ms, ids, rule in steps]
-    return {"run_utc": d["run_utc"], "verdict": d["verdict"], "applied": done}
+    result = {"run_utc": d["run_utc"], "verdict": d["verdict"], "applied": done}
+    if errs:
+        raise PartialApply("; ".join(errs), result)
+    return result
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ dead-man
@@ -196,18 +212,41 @@ def last_applied_run_ms(applied: Path) -> int | None:
     return best
 
 
+def _registered_ms(entry: Mapping[str, Any]) -> int | None:
+    for k in ("registered_at_ms", "clock_start_ms"):
+        if isinstance(entry.get(k), int):
+            return int(entry[k])
+    return None
+
+
 def deadman(applied: Path, books: Any, registry: Path, now_ms: int | None = None) -> dict[str, Any]:
+    """Each new-rule book's anchor is the LATER of the newest applied run and its own registration instant (a book registered after the last applied run is not dead
+    on arrival). With NO applied log (first run, or the file lost or A3_OUT changed) the anchor is the registration instant alone: the log can never be missing quietly.
+    A book whose anchor is more than DEADMAN_S old is ended at anchor + DEADMAN_S. Exit stays 0 so the daily can continue and create the log."""
     now = int(time.time() * 1000) if now_ms is None else now_ms
     legacy, new = _check(books, registry)
+    bots = sc.load_registry(registry)
     last = last_applied_run_ms(applied)
-    if last is None:
-        return {"deadman": "no anchor: no applied decision yet", "applied": []}
-    if now - last <= DEADMAN_S * 1000:
-        return {"deadman": "alive", "last_run_utc": datetime.fromtimestamp(last / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "applied": []}
     if not new:
-        raise Invalid("dead-man due but new_rule_bot_ids is empty: it would end no book")
-    at = last + DEADMAN_S * 1000
-    return {"deadman": "FIRED", "end_ms": at, "applied": [{"rule": "deadman", "at_ms": at, **halt_books(registry, at, new)}]}
+        return {"deadman": "no new-rule books", "applied": []}
+    out: dict[str, Any] = {"deadman": "alive", "applied": []}
+    if last is not None:
+        out["last_run_utc"] = datetime.fromtimestamp(last / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    else:
+        out["anchor"] = "no applied log: anchored on each book's registration instant"
+    due: dict[int, list[str]] = {}
+    for bot_id in new:
+        reg = _registered_ms(bots[bot_id])
+        if reg is None and last is None:
+            raise Invalid(f"{bot_id} has no registered_at_ms or clock_start_ms and there is no applied log: no dead-man anchor")
+        anchor = max(x for x in (last, reg) if x is not None)
+        if now - anchor > DEADMAN_S * 1000:
+            due.setdefault(anchor + DEADMAN_S * 1000, []).append(bot_id)
+    for at, ids in sorted(due.items()):
+        out["applied"].append({"rule": "deadman", "at_ms": at, **halt_books(registry, at, ids)})
+    if due:
+        out["deadman"] = "FIRED"
+    return out
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ CLI
@@ -231,6 +270,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             verdict = json.loads(Path(a.verdict).read_text(encoding="utf-8"))
             out = apply(verdict, books, registry)
+    except PartialApply as exc:
+        print(json.dumps(exc.result, sort_keys=True))
+        print(f"A3_HALT_PARTIAL {exc}", file=sys.stderr)
+        return 2
     except (OSError, ValueError, KeyError) as exc:  # Invalid is a ValueError
         print(f"A3_HALT_REFUSED {type(exc).__name__}: {str(exc)[:300]}", file=sys.stderr)
         return 2

@@ -23,15 +23,15 @@ NOW = RUN_MS + 3600_000
 DEPLOY_MS = 1_792_432_022_000  # 2026-10-19T17:47:02Z
 
 
-def make_registry(tmp_path: Path, q50: bool = True) -> Path:
+def make_registry(tmp_path: Path, q50: bool = True, reg_ms: int = REG_MS) -> Path:
     arena = tmp_path / "arena"
     arena.mkdir()
     path = arena / "bots.json"
     for gen in ("a1", "a2"):
-        sc.register_books(path, frozen_sha=SHA, sockets=2, endpoints=["default"], host="t", clock_start_ms=REG_MS + 1000, now_ms=REG_MS, generation=gen)
+        sc.register_books(path, frozen_sha=SHA, sockets=2, endpoints=["default"], host="t", clock_start_ms=reg_ms + 1000, now_ms=reg_ms, generation=gen)
     bots = sc.load_registry(path)
-    bots["h5v1-boostfloor-a1"]["window_end_ms"] = REG_MS + 500  # a1 already ended earlier
-    bots["h5v1-boostfloor-a1"]["stopped_ms"] = REG_MS + 500
+    bots["h5v1-boostfloor-a1"]["window_end_ms"] = reg_ms + 500  # a1 already ended earlier
+    bots["h5v1-boostfloor-a1"]["stopped_ms"] = reg_ms + 500
     if q50:
         bots["h5v1-q50-a2"] = copy.deepcopy(bots["h5v1-boostfloor-a2"])  # a prefix the scorer's halt does not reach
     sc._atomic_write_json(path, {"bots": bots})
@@ -131,18 +131,30 @@ def test_books_schema_errors_write_nothing(tmp_path):
         assert path.read_text() == before, name
 
 
-def test_applicable_rule_with_empty_list_is_an_error(tmp_path):
+def test_applicable_rule_with_empty_list_is_an_error_but_the_other_halt_is_still_written(tmp_path):
     path = make_registry(tmp_path, q50=False)
-    only_legacy = {"legacy_bot_ids": ["h5v1-boostfloor-a1", "h5v2-boostclock-a1", "h5v1-boostfloor-a2", "h5v2-boostclock-a2"], "new_rule_bot_ids": []}
-    before = path.read_text()
-    with pytest.raises(h.Invalid, match="new_rule_bot_ids is empty"):
+    all4 = ["h5v1-boostfloor-a1", "h5v2-boostclock-a1", "h5v1-boostfloor-a2", "h5v2-boostclock-a2"]
+    only_legacy = {"legacy_bot_ids": all4, "new_rule_bot_ids": []}
+    with pytest.raises(h.PartialApply, match="new_rule_bot_ids is empty") as ei:
         h.apply(verdict("FAIL", flag=RUN_MS, halt=DEPLOY_MS), only_legacy, path, NOW)
-    assert path.read_text() == before
+    assert ends(path)["h5v2-boostclock-a2"] == RUN_MS and ei.value.result["applied"][0]["rule"] == "legacy"  # the legacy halt was written, then the error
+    path2 = make_registry(tmp_path / "n", q50=False) if (tmp_path / "n").mkdir() is None else None
+    only_new = {"legacy_bot_ids": [], "new_rule_bot_ids": all4}
+    with pytest.raises(h.PartialApply, match="legacy_bot_ids is empty"):
+        h.apply(verdict("FAIL", flag=RUN_MS, halt=DEPLOY_MS), only_new, path2, NOW)
+    assert ends(path2)["h5v1-boostfloor-a2"] == DEPLOY_MS  # the new-rule halt was written although the legacy list is empty
     # a PASS applies no new-rule step, so an empty new-rule list is fine for it
-    assert h.apply(verdict("PASS", flag=RUN_MS), only_legacy, path, NOW)["applied"][0]["rule"] == "legacy"
-    only_new = {"legacy_bot_ids": [], "new_rule_bot_ids": ["h5v1-boostfloor-a1", "h5v2-boostclock-a1", "h5v1-boostfloor-a2", "h5v2-boostclock-a2"]}
-    with pytest.raises(h.Invalid, match="legacy_bot_ids is empty"):
-        h.apply(verdict("PASS", flag=RUN_MS), only_new, path, NOW)
+    assert h.apply(verdict("PASS", flag=RUN_MS), only_legacy, make_registry(tmp_path / "m", q50=False) if (tmp_path / "m").mkdir() is None else None, NOW)["applied"][0]["rule"] == "legacy"
+
+
+def test_partial_apply_exits_nonzero_and_leaves_no_applied_line(tmp_path):
+    path = make_registry(tmp_path, q50=False)
+    bf, vf = tmp_path / "books.json", tmp_path / "v.json"
+    bf.write_text(json.dumps({"legacy_bot_ids": ["h5v1-boostfloor-a1", "h5v2-boostclock-a1", "h5v1-boostfloor-a2", "h5v2-boostclock-a2"], "new_rule_bot_ids": []}))
+    now_ms = int(time.time() * 1000)
+    vf.write_text(json.dumps(verdict("FAIL", flag=now_ms - 5000, halt=now_ms - 9000, run_utc=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 60)))))
+    rc = h.main(["apply", "--verdict", str(vf), "--applied", str(tmp_path / "ap.jsonl"), "--books", str(bf), "--arena-root", str(path.parent)])
+    assert rc == 2 and not (tmp_path / "ap.jsonl").exists()
 
 
 def test_a_none_decision_still_validates_the_books(tmp_path):
@@ -155,13 +167,13 @@ def test_a_none_decision_still_validates_the_books(tmp_path):
 # ---------------------------------------------------------------- applying
 def test_plan_pass_ends_only_legacy_books():
     d = h.decision_from_verdict(verdict("PASS", flag=5000 + h.MIN_MS))
-    assert h.plan(d, BOOKS["legacy_bot_ids"], BOOKS["new_rule_bot_ids"]) == [(5000 + h.MIN_MS, BOOKS["legacy_bot_ids"], "legacy")]
+    assert h.plan(d, BOOKS["legacy_bot_ids"], BOOKS["new_rule_bot_ids"]) == ([(5000 + h.MIN_MS, BOOKS["legacy_bot_ids"], "legacy")], [])
 
 
 @pytest.mark.parametrize("v", ["FAIL", "ERROR", "HALT"])
 def test_hard_ends_both_with_their_own_instants(v):
     d = h.decision_from_verdict(verdict(v, flag=RUN_MS, halt=DEPLOY_MS))
-    assert h.plan(d, BOOKS["legacy_bot_ids"], BOOKS["new_rule_bot_ids"]) == [(RUN_MS, BOOKS["legacy_bot_ids"], "legacy"), (DEPLOY_MS, BOOKS["new_rule_bot_ids"], "new_rule")]
+    assert h.plan(d, BOOKS["legacy_bot_ids"], BOOKS["new_rule_bot_ids"]) == ([(RUN_MS, BOOKS["legacy_bot_ids"], "legacy"), (DEPLOY_MS, BOOKS["new_rule_bot_ids"], "new_rule")], [])
 
 
 def test_apply_fail_uses_redeploy_instant_for_new_books_and_covers_q50(tmp_path):
@@ -207,19 +219,37 @@ def write_applied(path: Path, *run_utcs: str):
     path.write_text("".join(json.dumps({"run_utc": r, "verdict": "NONE"}) + "\n" for r in run_utcs))
 
 
-def test_deadman_alive_no_anchor_and_fired(tmp_path):
+def test_deadman_alive_and_fired_with_a_log(tmp_path):
     reg_path = make_registry(tmp_path)
     ap = tmp_path / "ap.jsonl"
-    assert h.deadman(ap, BOOKS, reg_path, NOW)["deadman"].startswith("no anchor")
     write_applied(ap, "2026-10-19T07:11:27Z", RUN_UTC)
     assert h.deadman(ap, BOOKS, reg_path, NOW)["deadman"] == "alive"
     assert h.deadman(ap, BOOKS, reg_path, RUN_MS + h.DEADMAN_S * 1000)["deadman"] == "alive"  # exactly 48 h is not past 48 h
-    late = RUN_MS + h.DEADMAN_S * 1000 + 1
-    out = h.deadman(ap, BOOKS, reg_path, late)
-    assert out["deadman"] == "FIRED" and out["end_ms"] == RUN_MS + h.DEADMAN_S * 1000
+    out = h.deadman(ap, BOOKS, reg_path, RUN_MS + h.DEADMAN_S * 1000 + 1)
+    assert out["deadman"] == "FIRED" and out["applied"][0]["at_ms"] == RUN_MS + h.DEADMAN_S * 1000
     e = ends(reg_path)
     assert e["h5v1-boostfloor-a2"] == e["h5v2-boostclock-a2"] == e["h5v1-q50-a2"] == RUN_MS + h.DEADMAN_S * 1000
     assert e["h5v2-boostclock-a1"] is None  # legacy books are not the dead-man's
+
+
+def test_deadman_without_a_log_anchors_on_registration(tmp_path):
+    """Reviewer B3: a missing applied log must not mean 'never fires'."""
+    reg = REG_MS
+    reg_path = make_registry(tmp_path, reg_ms=reg)
+    ap = tmp_path / "never-written.jsonl"
+    assert h.deadman(ap, BOOKS, reg_path, reg + h.DEADMAN_S * 1000)["deadman"] == "alive"
+    out = h.deadman(ap, BOOKS, reg_path, reg + h.DEADMAN_S * 1000 + 1)
+    assert out["deadman"] == "FIRED" and "registration" in out["anchor"]
+    assert ends(reg_path)["h5v1-boostfloor-a2"] == reg + h.DEADMAN_S * 1000 and ends(reg_path)["h5v2-boostclock-a1"] is None
+
+
+def test_deadman_a_book_registered_after_the_last_applied_run_is_not_dead_on_arrival(tmp_path):
+    reg_path = make_registry(tmp_path, reg_ms=RUN_MS + 10 * 86400_000)  # registered 10 days after the newest applied run
+    ap = tmp_path / "ap.jsonl"
+    write_applied(ap, RUN_UTC)
+    now = RUN_MS + 10 * 86400_000 + 3600_000
+    assert h.deadman(ap, BOOKS, reg_path, now)["deadman"] == "alive"
+    assert ends(reg_path)["h5v1-boostfloor-a2"] is None
 
 
 def test_deadman_uses_the_newest_applied_run_and_never_moves_an_end_later(tmp_path):
@@ -231,14 +261,10 @@ def test_deadman_uses_the_newest_applied_run_and_never_moves_an_end_later(tmp_pa
     assert ends(reg_path)["h5v1-boostfloor-a2"] == DEPLOY_MS
 
 
-def test_deadman_with_no_new_rule_books_is_an_error_when_due(tmp_path):
+def test_deadman_with_no_new_rule_books_does_nothing(tmp_path):
     reg_path = make_registry(tmp_path, q50=False)
-    ap = tmp_path / "ap.jsonl"
-    write_applied(ap, RUN_UTC)
     b = {"legacy_bot_ids": BOOKS["legacy_bot_ids"] + ["h5v1-boostfloor-a2", "h5v2-boostclock-a2"], "new_rule_bot_ids": []}
-    assert h.deadman(ap, b, reg_path, NOW)["deadman"] == "alive"
-    with pytest.raises(h.Invalid):
-        h.deadman(ap, b, reg_path, RUN_MS + h.DEADMAN_S * 1000 + 5)
+    assert h.deadman(tmp_path / "ap.jsonl", b, reg_path, RUN_MS + 99 * 86400_000)["deadman"] == "no new-rule books"
 
 
 # ---------------------------------------------------------------- the daily script, end to end on a fixture (monitor stubbed; check, apply and dead-man real)
@@ -270,7 +296,7 @@ def run_script(tmp_path: Path, rec: dict | None, books: dict, arena: Path, *args
 
 
 def test_script_hard_flag_halts_both_rule_groups_without_a_manager(tmp_path):
-    path = make_registry(tmp_path)
+    path = make_registry(tmp_path, reg_ms=int(time.time() * 1000) - 60_000)
     run_utc, rec = fresh_record(boost_disabled={"halt": True, "evaluated": True, "reason": "x"})
     r, out = run_script(tmp_path, rec, BOOKS, path.parent)
     assert r.returncode == 0, r.stdout + r.stderr  # a decision was made AND applied: exit 0
@@ -284,7 +310,7 @@ def test_script_hard_flag_halts_both_rule_groups_without_a_manager(tmp_path):
 
 
 def test_script_clean_record_halts_nothing_and_leaves_an_anchor(tmp_path):
-    path = make_registry(tmp_path)
+    path = make_registry(tmp_path, reg_ms=int(time.time() * 1000) - 60_000)
     before = path.read_text()
     run_utc, rec = fresh_record()
     r, out = run_script(tmp_path, rec, BOOKS, path.parent)
@@ -293,7 +319,7 @@ def test_script_clean_record_halts_nothing_and_leaves_an_anchor(tmp_path):
 
 
 def test_script_stale_record_is_loud_halts_nothing_and_leaves_no_anchor(tmp_path):
-    path = make_registry(tmp_path)
+    path = make_registry(tmp_path, reg_ms=int(time.time() * 1000) - 60_000)
     before = path.read_text()
     _, rec = fresh_record(boost_disabled={"halt": True, "evaluated": True, "reason": "x"})
     rec["run_utc"] = "2026-01-01T00:00:00Z"
