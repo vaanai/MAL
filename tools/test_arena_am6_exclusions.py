@@ -280,3 +280,14 @@ def test_c4_open_attempt_span_check_and_as_of():
     # data after the cut -> refuse
     with pytest.raises(m.Refused, match="after --as-of"):
         out(health(BASE), att([A("late", 8, 8)]), "", T0 + 2 * H)
+
+
+def test_d1_missing_gap_hour_refused_and_5pct_counted_once():
+    # restart gap in hour 12, which the table does not hold; an attempt decided there is refused, never decision-input-only
+    with pytest.raises(m.Refused, match="absent from health table"):
+        out(health(BASE), att([A("g", 12, 12)]), json.dumps([T0 + 12 * H + 1, T0 + 12 * H + 2]) + "\n", T0 + 13 * H)
+    # s14 + span + open-at-restart on one attempt: ONE 5% exclusion
+    sp = dict(BASE); sp[3] = ["price-path"]
+    r = json.dumps([T0 + 4 * H, T0 + 4 * H + 60_000]) + "\n"
+    st, t, _ = out(health(sp), att([A("a", 2, 6, s14_excluded=True), A("b", 2, 3, s14_excluded=True), A("c", 0, 0)]), r)
+    assert st["a"] == m.S_RESTART and st["b"] == m.S_SPAN and t["n_excl_5pct_class"] == 2 and t["n_counted"] == 1
