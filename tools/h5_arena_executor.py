@@ -233,7 +233,7 @@ class ArenaExecutor(h.H5Executor):
         book = BOOKS.get(cfg.get("book_id"))  # type: ignore[arg-type]
         if book is None:
             raise SystemExit(f"book_id {cfg.get('book_id')!r} is not one of {sorted(BOOKS)}")
-        self.book = book
+        self.abook = book
         self.EXIT_MODE_PIN = book.exit_pin  # instance pin, read by the base __init__ (item 5)
         why = arena_start_refusal(book, cfg, root or h.repo_root(), live=keypair is not None)
         if why:
@@ -256,7 +256,7 @@ class ArenaExecutor(h.H5Executor):
             raise SystemExit("exit mode pin was not applied")
 
     def __repr__(self) -> str:
-        return f"ArenaExecutor(book={self.book.bot_id}, mode={self.run_mode})"
+        return f"ArenaExecutor(book={self.abook.bot_id}, mode={self.run_mode})"
 
     # -- seal (item 2): the CAP-PICK guard is gone; the book's own windows are the refusals below
     def _seal_reason(self, trg: h.H5Trigger, now: int) -> str | None:
@@ -273,11 +273,11 @@ class ArenaExecutor(h.H5Executor):
             return why
         if not self.feed_verified:
             return REFUSAL_UNVERIFIED
-        if self.book.exit_pin == h.EXIT_MODE_V2 and self.slices_taken == 0:
+        if self.abook.exit_pin == h.EXIT_MODE_V2 and self.slices_taken == 0:
             return REFUSAL_V2_FEED
-        if trg.q_lamports > self.book.q_star_lamports:
+        if trg.q_lamports > self.abook.q_star_lamports:
             return REFUSAL_Q
-        if trg.decision_ms < self.book.clock_start_ms or trg.decision_ms >= self.book.end_ms_seal or \
+        if trg.decision_ms < self.abook.clock_start_ms or trg.decision_ms >= self.abook.end_ms_seal or \
                 (self._start_ms is not None and trg.decision_ms < self._start_ms):
             return REFUSAL_DECISION_WINDOW
         # the base check tests the 40 SOL constant; the trigger handed to it is capped at that constant (our own check above is the book's)
@@ -293,7 +293,7 @@ class ArenaExecutor(h.H5Executor):
         The order of the window filters follows tools/arena_h5_score.py score_book (clock, end, look2, duplicate pool) so the md5 of verdicts matches."""
         t = row.get("type")
         if t == "start":
-            why = start_record_problem(self.book, row)
+            why = start_record_problem(self.abook, row)
             self.starts_seen += 1
             if why:
                 self.feed_verified = False
@@ -310,11 +310,11 @@ class ArenaExecutor(h.H5Executor):
         d = row.get("t_detect_ms")
         if isinstance(d, bool) or not isinstance(d, (int, float)):
             return "keep", None  # the parser will refuse it with its own reason
-        if int(d) < self.book.clock_start_ms or (self._start_ms is not None and int(d) < self._start_ms) or int(d) >= self.book.end_ms_seal:
+        if int(d) < self.abook.clock_start_ms or (self._start_ms is not None and int(d) < self._start_ms) or int(d) >= self.abook.end_ms_seal:
             return self._window("drop", REFUSAL_DECISION_WINDOW)
         s0 = row.get("s0_t_recv_ms")
-        if self.book.s0_margin_ms or s0 is not None:
-            if isinstance(s0, bool) or not isinstance(s0, int) or s0 < self.book.clock_start_ms + self.book.s0_margin_ms or s0 >= self.book.end_ms_seal:
+        if self.abook.s0_margin_ms or s0 is not None:
+            if isinstance(s0, bool) or not isinstance(s0, int) or s0 < self.abook.clock_start_ms + self.abook.s0_margin_ms or s0 >= self.abook.end_ms_seal:
                 return self._window("drop", REFUSAL_S0_WINDOW)
         if h._sealed_flag(row.get("h5_look2_sealed")):
             return self._window("drop", REFUSAL_LOOK2)
@@ -371,9 +371,9 @@ class ArenaExecutor(h.H5Executor):
     def _log(self, kind: str, mint: str, **kw: Any) -> None:
         if kind == "decision":
             trg = kw.get("pool"), kw.get("trigger_slot")
-            kw = {**kw, "bot_id": self.book.bot_id, "frozen_sha": self.book.frozen_sha, "trigger_key": [mint, trg[0], trg[1]]}
+            kw = {**kw, "bot_id": self.abook.bot_id, "frozen_sha": self.abook.frozen_sha, "trigger_key": [mint, trg[0], trg[1]]}
         elif kind in ("dry_sell", "sell_sent", "exit_landing"):
-            kw = {**kw, "bot_id": self.book.bot_id, "frozen_sha": self.book.frozen_sha}
+            kw = {**kw, "bot_id": self.abook.bot_id, "frozen_sha": self.abook.frozen_sha}
         super()._log(kind, mint, **kw)
 
     def _latch_name(self, name: str | None, **detail: Any) -> None:
