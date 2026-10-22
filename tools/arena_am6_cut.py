@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Attempt-timing cutter for DEC-031 Amendment 6 (QP ruling on PR #801: the pinned path from a book's ledger to tools/arena_am6_exclusions.py).
 
-    python -m tools.arena_am6_cut --ledger-root DIR --registry FILE --bot BOT --as-of-ms MS --out cut.jsonl [--restarts-hint-only]
+    python -m tools.arena_am6_cut --ledger-root DIR --registry FILE --bot BOT --as-of-ms MS --out cut.jsonl
 
 Reads the SAME ledger rows tools/arena_score.py reads for that bot (Ledger.scan_bot) and writes ONE line per attempt with EXACTLY these keys, nothing else
 (no price, stake, fill, leg, P&L or mint is carried over; the schema is the allowlist of arena_am6_exclusions.ALLOWED):
