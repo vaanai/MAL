@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tools import arena_bridge_dry_proof as proof
 from tools import arena_live_bridge as alb
@@ -59,6 +60,7 @@ class StubRpcBuildPathTests(unittest.TestCase):
         from solders.keypair import Keypair
         from solders.transaction import VersionedTransaction
 
+        from tools import probe_executor as pe
         from tools import pumpswap_tx as tx_mod
         from tools.test_arena_live_bridge import BOT, H, SHA
         from tools.test_probe_executor import MINT, T0 as PT0, Clock as PClock
@@ -70,6 +72,11 @@ class StubRpcBuildPathTests(unittest.TestCase):
             kp = Keypair()
             cfg = alb.Config.from_dict({"bot_id": BOT, "frozen_sha": SHA, "root": d, "state_dir": str(Path(d) / "st"), "end_ms": PT0 + 86_400_000,
                                         "max_hold_ms": H, "mode": "live"})
+            # hermetic: every path the probe stack reads (STOP/HALT, cross-profile state dir) points into the tmp dir, never /var/lib/mal-live
+            cfg = alb.Config(**{**cfg.__dict__, "stop_file": str(Path(d) / "STOP"), "halt_file": str(Path(d) / "HALT")})
+            lp = mock.patch.object(pe, "LIVE_DIR", Path(d) / "live")
+            lp.start()
+            self.addCleanup(lp.stop)
             port = alb.make_live_port(cfg, rpc, kp, now_ms=clock)
             ok, why = port.buy({"order_id": "o1", "mint": MINT, "decision_ms": clock(), "stake_lamports": cfg.stake_lamports})
             self.assertTrue(ok, why)
@@ -92,6 +99,7 @@ class StubRpcBuildPathTests(unittest.TestCase):
                 self.assertIn(str(tx_mod.PUMPSWAP_PROGRAM), ps)
             self.assertNotEqual(progs[0], progs[1])  # the sell leg carries the close-ATA instruction the buy does not
             self.assertEqual(port.holdings(), {})
+            self.assertEqual(port.ex.limits.stop_file, str(Path(d) / "STOP"))
             self.assertEqual(sum(1 for c in rpc.calls if c == "sendTransaction"), 2)  # stub only: both recorded, none sent anywhere
 
 
