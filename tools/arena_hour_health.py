@@ -20,6 +20,7 @@ Optional feed-status checks from the sampler's `feed` section (value = the large
   feed_writing_paused    samples inside the hour with writing_paused true
   feed_pauses_delta      largest `pauses` delta between consecutive non-null samples overlapping the hour (carried across boundaries)
   feed_rows_dropped_delta  same for `rows_dropped_total`
+  feed_max_nonnull_gap_s longest uncut gap in seconds between consecutive non-null feed samples overlapping the hour (carried across boundaries)
 An hour with no non-null sample inside it (paused) or not covered by a sample at/before its start and one at/after its end (deltas), a missing field, or
 a counter that went down (feed restart) is unmeasurable, hence excluded.
 A missing tape hour, a zero-size file, torn lines or both .jsonl and .jsonl.zst for one hour make the hour fail or be unmeasurable (excluded).
@@ -52,7 +53,7 @@ FORBIDDEN_WORDS = ("ledger", "decisions", "bots.json", "runner-status")
 KIND_OK = re.compile(r"^[a-z0-9_]{1,40}$")
 TAPE_NAME = re.compile(r"^tape-(\d{4}-\d\d-\d\dT\d\d)\.jsonl(\.zst)?$")
 RECV_RE = re.compile(rb'"t_recv_ms":\s*(\d+)')
-FEED_KEYS = ("feed_writing_paused", "feed_pauses_delta", "feed_rows_dropped_delta")  # optional feed-status checks (HV4 L7); value = the largest count allowed (0)
+FEED_KEYS = ("feed_writing_paused", "feed_pauses_delta", "feed_rows_dropped_delta", "feed_max_nonnull_gap_s")  # optional feed-status checks (HV4 L7); value = the largest count allowed (0)
 FEED_FIELD = {"feed_pauses_delta": "pauses", "feed_rows_dropped_delta": "rows_dropped_total"}  # feed dict fields written by hv4_shakedown_report.py take_sample
 THRESHOLD_KEYS = ("max_gap_s", "max_data_loss_count", "min_samples_per_hour", "max_sample_gap_s", "max_input_age_s") + FEED_KEYS
 
@@ -291,6 +292,14 @@ def feed_delta_max(fs: list[tuple[int, dict]], h: int, field: str) -> int | None
     return worst
 
 
+def feed_gap_max_s(fs: list[tuple[int, dict]], h: int) -> float | None:
+    """Longest gap (seconds, uncut) between consecutive NON-NULL feed samples whose interval overlaps the hour; carried across hour boundaries.
+    None (unmeasurable) unless a non-null sample exists at or before the hour start and one at or after its end."""
+    if not fs or fs[0][0] > h or fs[-1][0] < h + HOUR_MS:
+        return None
+    return max([(tb - ta) / 1000.0 for (ta, _), (tb, _) in zip(fs, fs[1:]) if ta < h + HOUR_MS and tb > h] or [0.0])
+
+
 def sample_stats(samples: list[tuple[int, int | None]], h: int) -> dict:
     ts = [t for t, _ in samples]
     inside = [(t, u) for t, u in samples if h <= t < h + HOUR_MS]
@@ -422,7 +431,12 @@ def evaluate(tape_dir: Path, samples_path: Path | None, h0: int, h1: int, thr: d
             for key in FEED_KEYS:
                 if key not in thr:
                     continue
-                val = feed_paused_count(fsamp, h) if key == "feed_writing_paused" else feed_delta_max(fsamp, h, FEED_FIELD[key])
+                if key == "feed_writing_paused":
+                    val = feed_paused_count(fsamp, h)
+                elif key == "feed_max_nonnull_gap_s":
+                    val = feed_gap_max_s(fsamp, h)
+                else:
+                    val = feed_delta_max(fsamp, h, FEED_FIELD[key])
                 row[key] = val
                 over(key, val, key)
         # "unmeasurable" is treated as failing (Amendment 6 item 2.2): the hour is excluded, later evidence does not replace it
