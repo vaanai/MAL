@@ -121,3 +121,17 @@ class ToyPort(Rule):
 
 def make_rule(**kw: Any) -> ToyPort:
     return ToyPort(**kw)
+
+
+def never_fire(view: Any) -> bool:
+    """A pure exit_fire predicate that never fires: the position runs to its time cap."""
+    return False
+
+
+class ToyFireKit(ToyKit):
+    """ToyKit with an event exit (ExitSpec.exit_fire): the kit admits each trigger as the data arrive and keeps the position open until the cap (the predicate never fires)."""
+
+    name = "toy-fire-kit"
+
+    def triggers(self, hour: S.HourRows, state: S.RunState) -> list[tuple[str, int, S.ExitSpec]]:
+        return [(p, s, S.ExitSpec(sp.hold_s, sp.tp, sp.sl, sp.trail, sp.cell, exit_fire=never_fire)) for p, s, sp in super().triggers(hour, state)]
