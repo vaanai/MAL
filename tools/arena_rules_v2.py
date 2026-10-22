@@ -87,6 +87,7 @@ class HostV2(R.Host):
         self.table = table
         self._ctx = {r.bot_id: CtxV2(R.StateView(state), self.books[r.bot_id], cfg.clock_start_ms, self.table) for r in self.rules}
         self._last_ckpt = 0
+        self.last_ckpt_report: dict[str, Any] = {}
         self._last_sweep = 0
 
     def _on_row(self, row: dict) -> None:
@@ -113,7 +114,14 @@ class HostV2(R.Host):
             self.save_table()
 
     def save_table(self) -> None:
+        t0 = time.monotonic()
         self.table.checkpoint(self.table_path)
+        try:  # report-only: table sizes, checkpoint bytes and seconds (measures the memory plan; never changes a decision)
+            nbytes = os.path.getsize(self.table_path)
+        except OSError:
+            nbytes = -1
+        self.last_ckpt_report = {"ckpt_bytes": nbytes, "ckpt_s": round(time.monotonic() - t0, 3), **self.table.sizes()}
+        print(canon({"table_checkpoint": self.last_ckpt_report}), file=sys.stderr, flush=True)
 
     def run(self, t_from: int, t_to: int, sleep: Callable[[float], None] = time.sleep) -> None:
         try:

@@ -319,6 +319,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"REFUSED {e}", file=sys.stderr)
         return 2
     Path(a.out, "adapter_report.json").write_text(json.dumps(rep, indent=1))
+    print(json.dumps({"adapter_summary": {"out": a.out, "n_hours": rep.get("n_hours"), "seconds_over_1000_rows": rep.get("seconds_over_1000_rows")}}), flush=True)
     return 0
 
 

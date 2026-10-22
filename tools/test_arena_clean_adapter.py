@@ -77,3 +77,9 @@ def test_refuses_sealed_and_arena_paths(tmp_path):
         A.refuse_path("/data/mal/clean-view/fresh-0802")
     with pytest.raises(A.AdapterRefused):
         A.run(["/data/mal/clean-view/explore-0814/w1"], "/data/mal/arena/x", [], False)
+
+
+def test_main_prints_the_tied_ms_count(monkeypatch, capsys, tmp_path):
+    monkeypatch.setattr(A, "run", lambda *a, **k: {"n_hours": 3, "seconds_over_1000_rows": 4})
+    assert A.main(["--block", "x", "--out", str(tmp_path)]) == 0
+    assert '"seconds_over_1000_rows": 4' in capsys.readouterr().out

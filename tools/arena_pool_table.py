@@ -35,6 +35,7 @@ FEE = 0.0125
 V_LO, V_HI = 17_500_000_000, 17_700_000_000
 HIST_HOURS = 26
 HOUR_MS = 3_600_000
+PENDING_S = 3600  # a first print waits at most this long (event time) for its mint's create / complete row
 AGE_DROP_S = 200 * 3600 + 3600  # past this age a pool can never be a candidate: its prints are freed
 VERSION = 1
 MODES = ("first_print", "complete")
@@ -88,7 +89,7 @@ class PoolTable:
         self.seen: dict[str, int] = {}
         self.uni: dict[str, int] = {}
         self.canon: dict[str, str] = {}
-        self.pending: dict[str, tuple[str, int]] = {}  # complete mode: mint -> (pool, first print s) of a V-in-band first print whose create / complete row has not arrived yet
+        self.pending: dict[str, list[tuple[str, int]]] = {}  # complete mode: mint -> arrival-ordered [(pool, first print s)] of V-in-band first prints whose create / complete row has not arrived yet
         self.mig: dict[str, int] = {}
         self.have: set[str] = set()
         self.mayhem: set[str] = set()
@@ -145,13 +146,13 @@ class PoolTable:
                 self.have.add(m)
                 if row.get("is_mayhem_mode"):
                     self.mayhem.add(m)
-                self._try_pending(m)
+                self._try_pending(m, t)
             return True
         if typ == "complete":
             m, ts = row.get("mint"), row.get("event_ts")
             if m and isinstance(ts, (int, float)) and not isinstance(ts, bool) and m not in self.mig:
                 self.mig[m] = int(ts)
-                self._try_pending(m)
+                self._try_pending(m, t)
             return True
         if typ != "trade" or (row.get("venue") or row.get("prog")) != "pumpswap":
             return False
@@ -198,10 +199,10 @@ class PoolTable:
             else:
                 M = self.mig.get(mint)
                 ok = M is not None and mint in self.have and mint not in self.mayhem and (M - 5 <= bt0 <= M + 600)
-                if not ok and mint and (M is None or mint not in self.have) and mint not in self.pending:
+                if not ok and mint and (M is None or mint not in self.have) and mint not in self.canon:
                     # the feed can deliver the pool's first print BEFORE the mint's complete / create row (C4: 16 of 21 mints in one live hour); the kit's tables are global, so
                     # decide again when the row arrives. Prints are kept meanwhile (dropped if the pool is never admitted).
-                    self.pending[mint] = (pool, bt0)
+                    self.pending.setdefault(mint, []).append((pool, bt0))
                     self.prints[pool] = PoolPrints()
         if ok:
             if mint in self.canon and self.canon[mint] != pool:
@@ -212,27 +213,44 @@ class PoolTable:
             self.uni[pool] = int(M)
             self.prints[pool] = PoolPrints()
 
-    def _try_pending(self, mint: str) -> None:
-        """A create or complete row arrived for a mint whose first print came earlier: apply the first-print test of l1_rule.py lines 90-96 now that M and `have` are known."""
-        pe = self.pending.get(mint)
+    def _try_pending(self, mint: str, t_ms: int) -> None:
+        """A create or complete row arrived (at t_recv `t_ms`) for a mint whose first print(s) came earlier: apply the first-print test of l1_rule.py lines 90-96 now that M and
+        `have` are known, to the mint's pools in arrival order (the kit sorts new pools by slot and sets canon only on ok, so a failed first pool does not hide a second).
+        A first print more than PENDING_S older than the row's own time is expired: a function of event time only, never of when sweep() ran."""
+        lst = self.pending.get(mint)
         M = self.mig.get(mint)
-        if pe is None or M is None or mint not in self.have:
+        if not lst or M is None or mint not in self.have:
             return
-        pool, bt0 = self.pending.pop(mint)
-        if mint in self.mayhem or not (M - 5 <= bt0 <= M + 600) or (mint in self.canon and self.canon[mint] != pool):
-            self.prints.pop(pool, None)
-            return
-        self.canon[mint] = pool
-        self.uni[pool] = int(M)
+        del self.pending[mint]
+        for pool, bt0 in lst:
+            if (t_ms // 1000 - bt0 > PENDING_S or mint in self.mayhem or not (M - 5 <= bt0 <= M + 600) or (mint in self.canon and self.canon[mint] != pool)):
+                self.prints.pop(pool, None)
+                continue
+            self.canon[mint] = pool
+            self.uni[pool] = int(M)
+
+    def sizes(self) -> dict[str, int]:
+        """Report-only: sizes of the tables, the never-shrinking ones included (seen, have, mig, canon, uni, mayhem)."""
+        return {"seen": len(self.seen), "uni": len(self.uni), "canon": len(self.canon), "pending_mints": len(self.pending), "pending_pools": sum(map(len, self.pending.values())),
+                "mig": len(self.mig), "have": len(self.have), "mayhem": len(self.mayhem), "prints_pools": len(self.prints), "prints_rows": sum(map(len, self.prints.values())),
+                "last_exit": len(self.last_exit), "marks": len(self.marks)}
 
     def sweep(self, now_ms: int) -> int:
         """Free prints older than the visible window and of pools past the age limit; forget old exit stamps. Returns pools whose arrays were dropped."""
         hid = now_ms // HOUR_MS
         n = 0
-        for mint, (pool, bt0) in list(self.pending.items()):  # a row that never came: forget the first print after an hour
-            if now_ms // 1000 - bt0 > 3600:
+        # memory only: forget first prints past the horizon of the newest applied row (hwm_ms). Any later row has t_recv >= hwm_ms, so _try_pending would expire them anyway:
+        # the decisions do not depend on when (or whether) sweep runs.
+        hs = min(now_ms, self.hwm_ms) // 1000
+        for mint, lst in list(self.pending.items()):
+            keep = [(p, b) for p, b in lst if hs - b <= PENDING_S]
+            for p, b in lst:
+                if (p, b) not in keep:
+                    self.prints.pop(p, None)
+            if keep:
+                self.pending[mint] = keep
+            else:
                 del self.pending[mint]
-                self.prints.pop(pool, None)
         for pool in list(self.prints):
             if pool not in self.uni:
                 continue
@@ -260,7 +278,7 @@ class PoolTable:
         t = cls(d["mode"], d["t0"])
         t.hwm_ms, t.hwm_keys = int(d["hwm_ms"]), {tuple(k) for k in d["hwm_keys"]}
         t.seen, t.uni, t.canon, t.mig = dict(d["seen"]), dict(d["uni"]), dict(d["canon"]), dict(d["mig"])
-        t.pending = {k: (v[0], int(v[1])) for k, v in d.get("pending", {}).items()}
+        t.pending = {k: [(x[0], int(x[1])) for x in ([v] if isinstance(v[0], str) else v)] for k, v in d.get("pending", {}).items()}
         t.have, t.mayhem, t.last_exit, t.rows_applied = set(d["have"]), set(d["mayhem"]), dict(d["last_exit"]), int(d["rows_applied"])
         t.rate_h, t.marks = {int(k): list(v) for k, v in d["rate_h"].items()}, {k: tuple(v) for k, v in d["marks"].items()}
         t.skip_before = t.hwm_ms

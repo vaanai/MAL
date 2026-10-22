@@ -319,5 +319,62 @@ def test_table_complete_row_after_the_first_print_still_admits_the_pool():
     assert len(t.prints["A"]) == 2
     t2 = PoolTable.from_dict(t.to_dict())
     assert t2.pending == t.pending and t2.base("A") == t.base("A")
+    t.update(row(H0 + 6 * HOUR, "A", mint="MA"))  # sweep only forgets what the applied rows' own time has outrun
     t.sweep(H0 + 6 * HOUR)  # MD never got its rows: forgotten after an hour
     assert "MD" not in t.pending and "D" not in t.prints and "A" in t.prints
+
+
+def _mig_rows(t, mint, ts_event):
+    return [{"type": "create", "t_recv_ms": t, "mint": mint, "is_mayhem_mode": False, "signature": "c" + mint},
+            {"type": "complete", "t_recv_ms": t, "mint": mint, "event_ts": ts_event, "signature": "k" + mint}]
+
+
+def test_table_second_pool_of_a_mint_is_admitted_when_the_first_pending_pool_fails():
+    """Reviewer item 1: A's first print is outside [M-5, M+600], B's is inside, the row comes after both. The kit sets canon only on ok and admits B."""
+    t0 = H0 + 4 * HOUR
+    M = t0 // 1000 + 100
+    t = PoolTable("complete")
+    t.update(row(t0, "A", mint="MX"))  # first print at M - 100: outside the window
+    t.update(row(t0 + 100_000, "B", mint="MX"))  # at M: inside
+    t.update(row(t0 + 101_000, "C", mint="MX"))  # also inside, later: the kit takes the first ok pool
+    assert set(t.pending) == {"MX"} and len(t.pending["MX"]) == 3
+    for r in _mig_rows(t0 + 102_000, "MX", M):
+        t.update(r)
+    assert t.base("A") is None and t.base("C") is None and t.base("B") == M and t.canon["MX"] == "B"
+    assert "A" not in t.prints and "C" not in t.prints and "B" in t.prints and not t.pending
+
+
+def test_table_pending_expiry_is_event_time_not_sweep_phase():
+    """Reviewer item 2: the same rows, with the hourly sweep at different instants (or never), give identical decisions."""
+    t0 = H0 + 4 * HOUR
+    M = t0 // 1000 + 1
+
+    def play(sweeps):
+        t = PoolTable("complete")
+        t.update(row(t0, "A", mint="MA"))
+        t.update(row(t0 + 1, "B", mint="MB"))
+        for s in sweeps:
+            t.sweep(s)
+        for r in _mig_rows(t0 + 1_800_000, "MA", M):  # inside the horizon
+            t.update(r)
+        t.update(row(t0 + 1_800_001, "Z", mint="MZ"))
+        for s in sweeps:
+            t.sweep(s + 1_800_000)
+        for r in _mig_rows(t0 + 5_400_000, "MB", M + 1):  # past it
+            t.update(r)
+        return (dict(t.uni), dict(t.canon), sorted(t.prints))
+
+    base = play([])
+    assert base[0] == {"A": M}
+    for sweeps in ([t0 + 10_000], [t0 + 1_000_000, t0 + 3_000_000], [t0 + 7_200_000]):
+        assert play(sweeps) == base
+
+
+def test_table_sizes_and_old_pending_format():
+    t = PoolTable("complete")
+    t.update(row(H0 + 4 * HOUR, "A", mint="MA"))
+    s = t.sizes()
+    assert s["seen"] == 1 and s["pending_pools"] == 1 and s["have"] == 0 and s["mig"] == 0
+    d = t.to_dict()
+    d["pending"] = {"MA": ("A", t.pending["MA"][0][1])}  # a checkpoint written before the list format
+    assert PoolTable.from_dict(d).pending == t.pending
