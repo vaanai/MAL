@@ -1,0 +1,28 @@
+{
+  "_DRAFT": "NOT PINNED. Draft of the DEC-031 Am.6 item 2.3 thresholds for HV4 (QP-RULING-1022-hv4-am6 L7). Format: tools/arena_hour_health.py --thresholds ({check: {value, label}}). The tool accepts only the five check keys; strip every key that starts with an underscore, and replace the FILL value, before hashing and pinning. As written the file is REFUSED by the tool on purpose (max_input_age_s.value is null).",
+  "_not_in_this_file": [
+    "tape-hour file present with size > 0 (price-path): not a threshold; the tool treats a missing or zero-size tape hour as a tape-level failure carrying both labels.",
+    "feed-status writing_paused never true, pauses and rows_dropped_total deltas 0 (price-path): arena_hour_health@71a6142a has no check for these. FILL: QP says whether a second pinned counts-only tool reads them, or whether the 900 s sample-gap check is the only sampler check. Owner: manager + QP, before the registration record.",
+    "Holders/prefetch age is stamped by HV4's own process: report-only, never excludes (Am.6 2.2, QP 6349425527). No threshold."
+  ],
+  "max_gap_s": {
+    "value": 3600,
+    "label": "price-path",
+    "_note": "Longest data_loss gap span (seconds) overlapping the hour. 3600 is the value in ADDENDUM 3 Q2 (P0 gap check). The ruling L7 says only 'the number is pinned'; QP confirms 3600 for the book window or gives another."
+  },
+  "max_sample_gap_s": {
+    "value": 900,
+    "label": "price-path",
+    "_note": "L7: no gap above 900 s between non-null feed-status samples in the hour."
+  },
+  "min_samples_per_hour": {
+    "value": 12,
+    "label": "price-path",
+    "_note": "DRAFT, derived not measured: 300 s sampler (L8) gives 12 per hour. Am.6 2.2: an hour with a missing sample FAILS. QP confirms the boundary (the first and last hour of the sampler may hold 11 or 13)."
+  },
+  "max_input_age_s": {
+    "value": null,
+    "label": "decision-input",
+    "_FILL": "X seconds: decision-input staleness = scan instant minus the newest tape row's feed-stamped t_recv_ms. From: the PRE-WINDOW tape only (hours before 2026-10-25T00:00Z, outside the D2/D3 seal hours [2026-10-02T10, 2026-10-16T01)), as a counts-only silence distribution, with the percentile rule written FIRST. Who: QP names the rule and X; manager runs arena_hour_health counts-only. By: before the registration record is notebooked (registration before 2026-10-24T23:00Z)."
+  }
+}
