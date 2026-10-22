@@ -175,3 +175,34 @@ def test_cli_exit_codes(tmp_path):
     assert ok.returncode == 0 and json.loads(ok.stdout.strip().split("\n")[-1])["type"] == "sha256"
     bad = subprocess.run([sys.executable, tool, "--health", str(tmp_path / "h"), "--attempts", str(tmp_path / "bad")], capture_output=True, text=True)
     assert bad.returncode == 2 and bad.stdout == ""
+
+
+def test_gap_hour_labels_union_gives_5pct_class():
+    # a healthy-decided attempt spanning a restart-gap hour that is also price-path failed in the #799 table: 5% class either way (restart rule or 2.4),
+    # never 10%, never counted. The union is what keeps the 2.4 route alive for the gap hour's table label.
+    sp = dict(BASE); sp[4] = ["price-path"]
+    r = json.dumps([T0 + 4 * H + 1, T0 + 4 * H + 2]) + "\n"
+    st, t, _ = out(health(sp), att([A("a", 2, 6)]), r)
+    assert st["a"] in (m.S_SPAN, m.S_RESTART) and t["n_excl_5pct_class"] == 1 and t["n_excl_10pct_class"] == 0
+    # decided inside that gap hour: 10% class
+    st, _, _ = out(health(sp), att([A("b", 4, 4)]), r)
+    assert st["b"] == m.S_10
+
+
+def test_restart_end_on_boundary_does_not_take_next_hour():
+    r = json.dumps([T0 + 2 * H + 10, T0 + 3 * H]) + "\n"
+    st, _, _ = out(health(BASE), att([A("in2", 2, 2), A("in3", 3, 3)]), r)
+    assert st["in3"] == "counted" and st["in2"] == m.S_10
+    r = json.dumps([T0 + 3 * H, T0 + 3 * H]) + "\n"  # zero-length on a boundary: its own hour
+    st, _, _ = out(health(BASE), att([A("in3", 3, 3), A("in2", 2, 2)]), r)
+    assert st["in3"] == m.S_10 and st["in2"] == "counted"
+
+
+def test_kept_by_date_and_orphan_flag():
+    day = 24
+    st, t, _ = out(health({i: None for i in range(60)}), att([A("a", 0, 0), A("b", 1, 1), A("c", day + 1, day + 1)]))
+    ks = t["kept_by_utc_date"]
+    assert sum(ks.values()) == 3 and len(ks) >= 1
+    assert t["item4_orphans_unchecked"] is True and t["n_open_after_restart"] == 0
+    _, t, _ = out(health(BASE), att([A("o", 2, None)]), json.dumps([T0 + 5 * H, T0 + 5 * H + 5]) + "\n")
+    assert t["n_open_after_restart"] == 1

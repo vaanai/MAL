@@ -24,12 +24,14 @@ Classification, first match wins (an attempt is in exactly one class, so never i
      and including the exit hour)                                              -> excluded_span_overlap_pricepath     (item 2.4, 5% cap only)
   4. else                                                                      -> counted
 A decision or exit hour absent from the health table (and not in a restart gap) is unmeasurable: exit 2, never silently counted.
-Open attempts with no restart are counted (reported as n_open_unclosed); the >24 h orphan rule of item 4 is not applied here.
+Open attempts with no restart are counted (reported as n_open_unclosed_counted); the >24 h orphan rule of item 4 is not applied here (flagged, see below).
 
 Caps (Amendment 6 item 3; DEC-031 §1.4 "Feed gaps": "If more than 5% of a book's trades are excluded this way at its read, the read is NOT_DECIDABLE"):
   10% cap: n_excl_10pct_class / n_attempts > 0.10  (denominator: all attempts given, i.e. decided before the read boundary).
   5% cap : n_excl_5pct_class / (n_attempts - n_excl_10pct_class) > 0.05  (trades that remain after item 3; the smaller, conservative denominator).
            share_5pct_of_all is also printed. Exact integer comparison, no float rounding: exactly 10% / 5% is OK.
+  kept_by_utc_date: {YYYY-MM-DD: counted attempts} by decision date (item 2.7). item4_orphans_unchecked: true always: the >24 h orphan rule of item 4
+  needs the read instant and is NOT applied here; n_open_after_restart counts the attempts it would concern. verdict_cap OK is therefore a CAP verdict only.
   verdict_cap: OK | NOT_DECIDABLE_10PCT | NOT_DECIDABLE_5PCT; if both exceed, NOT_DECIDABLE_10PCT is printed (both flags are in the totals line).
 Output: one JSON line per attempt (sorted by decided_ms, attempt_id), a {"type":"totals"} line, then {"type":"sha256"} over all earlier lines.
 Exit codes: 0 ok (verdict is data, not exit code), 2 refused/invalid input.
@@ -159,17 +161,20 @@ def classify(attempts: list[dict], table: dict[int, tuple[bool, frozenset]], res
     gap_hours: set[int] = set()
     for s, e in restarts:
         h = s // HOUR_MS * HOUR_MS
-        last = e // HOUR_MS * HOUR_MS  # whole hours, rounded outward: first hour of start .. hour containing end
+        last = max(h, (e - 1) // HOUR_MS * HOUR_MS)  # rounded outward (ceil): an end exactly on a boundary does not take the next hour
         while h <= last:
             gap_hours.add(h)
             h += HOUR_MS
 
     def health(h: int, aid: str):
-        if h in gap_hours:
-            return True, frozenset({"decision-input"})
+        # a restart-gap hour is excluded as decision-input; its #799 table labels (if any) are kept (union), so a price-path-failed gap hour still
+        # triggers the item 2.4 span exclusion
         if h not in table:
+            if h in gap_hours:
+                return True, frozenset({"decision-input"})
             raise Refused(f"attempt {aid}: hour {h} absent from health table (unmeasurable)")
-        return table[h]
+        ex, labels = table[h]
+        return (True, labels | {"decision-input"}) if h in gap_hours else (ex, labels)
 
     res = []
     for a in sorted(attempts, key=lambda x: (x["decided_ms"], x["attempt_id"])):
@@ -185,7 +190,7 @@ def classify(attempts: list[dict], table: dict[int, tuple[bool, frozenset]], res
                 h = dh + HOUR_MS
                 while h <= e // HOUR_MS * HOUR_MS:
                     ex, labels = health(h, aid)
-                    if ex and "price-path" in labels and h not in gap_hours:
+                    if ex and "price-path" in labels:
                         status = S_SPAN
                         break
                     h += HOUR_MS
@@ -198,6 +203,11 @@ def totals(rows: list[dict], health_sha: str) -> dict:
     n10 = sum(1 for r in rows if r["status"] == S_10)
     n5 = sum(1 for r in rows if r["status"] in (S_RESTART, S_SPAN))
     rest = n - n10
+    kept: dict[str, int] = {}
+    for r in rows:
+        if r["status"] == S_OK:
+            dk = datetime.fromtimestamp(r["decided_ms"] / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+            kept[dk] = kept.get(dk, 0) + 1
     over10 = n10 * 10 > n
     over5 = n5 * 20 > rest
     verdict = "NOT_DECIDABLE_10PCT" if over10 else ("NOT_DECIDABLE_5PCT" if over5 else "OK")
@@ -210,6 +220,7 @@ def totals(rows: list[dict], health_sha: str) -> dict:
         "n_excl_span_overlap_pricepath": sum(1 for r in rows if r["status"] == S_SPAN),
         "n_excl_open_at_restart": sum(1 for r in rows if r["status"] == S_RESTART),
         "n_open_unclosed_counted": sum(1 for r in rows if r["status"] == S_OK and r["exit_ms"] is None),
+        "kept_by_utc_date": kept, "item4_orphans_unchecked": True, "n_open_after_restart": sum(1 for r in rows if r["status"] == S_RESTART and r["exit_ms"] is None),
         "cap_10pct_exceeded": over10, "cap_5pct_exceeded": over5, "verdict_cap": verdict,
     }
 
