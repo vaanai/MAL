@@ -13,54 +13,69 @@ import arena_hour_health as A  # noqa: E402
 
 H0 = A.parse_hour("2026-10-23T00")
 HR = A.HOUR_MS
+NOW = H0 + 100 * HR  # everything under test is closed unless a test says otherwise
 
 
-def trade_rows(h, step_s=60):
-    return [{"v": 1, "type": "trade", "t_recv_ms": h + i * step_s * 1000} for i in range(0, 3600 // step_s)]
+def T(v, label="decision-input"):
+    return {"value": v, "label": label}
+
+
+THR = {"max_gap_s": T(30, "price-path"), "max_data_loss_count": T(0, "price-path"), "min_samples_per_hour": T(10), "max_sample_gap_s": T(900), "max_input_age_s": T(120, "price-path")}
+
+
+def tr(h, a=0, b=3600, step=1, prog="pumpswap", typ="trade"):
+    return [{"v": 1, "type": typ, "prog": prog, "t_recv_ms": h + s * 1000} for s in range(a, b, step)]
+
+
+def both(h, a=0, b=3600, step=30):
+    return tr(h, a, b, step, "pumpswap") + tr(h, a, b, step, "pumpfun")
+
+
+def hb(h):
+    return [{"type": "hb", "prog": "pumpswap", "t_recv_ms": h + i * 60000 + 500} for i in range(60)]
 
 
 def write_hour(d, h, rows, zst=False):
     p = d / A.hour_name(h)
-    p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    p.write_text("".join(json.dumps(r) + "\n" for r in sorted(rows, key=lambda r: r["t_recv_ms"])))
     if zst:
         subprocess.run(["zstd", "-q", "--rm", str(p)], check=True)
 
 
-def samples_file(path, times, updated_lag_ms=1000):
+def gap(kind, f, t, closed=True, at=None):
+    return {"type": "gap", "prog": "pumpswap", "kind": kind, "data_loss": True, "closed": closed, "from_ms": f, "to_ms": t, "t_recv_ms": at if at is not None else t}
+
+
+def samples_file(path, times, lag=1000):
     with open(path, "w") as f:
         for t in times:
-            f.write(json.dumps({"schema": A.SAMPLE_SCHEMA, "t_ms": t, "feed": {"updated_ms": t - updated_lag_ms}}) + "\n")
+            f.write(json.dumps({"schema": A.SAMPLE_SCHEMA, "t_ms": t, "feed": {"updated_ms": t - lag}}) + "\n")
 
 
-THR = {"max_gap_s": 30, "max_data_loss_count": 0, "min_samples_per_hour": 10, "max_sample_gap_s": 900, "max_input_age_s": 120}
+def ev(tmp, hours=4, thr=THR, samples=True, now=NOW, programs=A.DEFAULT_PROGRAMS):
+    return A.evaluate(tmp / "tape", tmp / "s.jsonl" if samples else None, H0, H0 + (hours - 1) * HR, thr, now, programs)
 
 
-def run(tmp, hours=4, thr=THR, samples=True):
-    t = tmp / "thr.json"
-    t.write_text(json.dumps(thr))
-    return A.render(A.evaluate(tmp / "tape", tmp / "s.jsonl" if samples else None, H0, H0 + (hours - 1) * HR, thr), "x")
+def run(tmp, **kw):
+    rows, nc = ev(tmp, **kw)
+    return A.render(rows, "x", nc), rows
 
 
 @pytest.fixture
 def world(tmp_path):
     d = tmp_path / "tape"
     d.mkdir()
-    write_hour(d, H0, trade_rows(H0))  # clean
+    write_hour(d, H0, both(H0) + hb(H0))  # clean
     # H0+1 missing
     (d / A.hour_name(H0 + 2 * HR)).write_text("")  # zero size
-    rows = trade_rows(H0 + 3 * HR) + [{"type": "gap", "kind": "silence", "data_loss": True, "from_ms": 1, "to_ms": 61001, "t_recv_ms": H0 + 3 * HR + 5}]
-    write_hour(d, H0 + 3 * HR, rows)
+    write_hour(d, H0 + 3 * HR, both(H0 + 3 * HR) + [gap("silence", H0 + 3 * HR + 100, H0 + 3 * HR + 61100)])
     samples_file(tmp_path / "s.jsonl", [H0 + i * 60_000 for i in range(60)] + [H0 + 3 * HR + i * 60_000 for i in range(60)])
     return tmp_path
 
 
-def hours(lines):
-    return [json.loads(x) for x in lines[:-1]]
-
-
 def test_clean_missing_zero_dataloss(world):
-    r = hours(run(world))
-    assert r[0]["excluded"] is False and r[0]["failed_checks"] == [] and r[0]["unmeasurable"] == []
+    _, r = run(world)
+    assert r[0]["excluded"] is False and r[0]["failed_checks"] == [] and r[0]["unmeasurable"] == [] and r[0]["failed_labels"] == {}
     assert "tape_file_missing" in r[1]["failed_checks"] and r[1]["excluded"]
     assert "tape_file_zero_size" in r[2]["failed_checks"] and r[2]["tape_size"] == 0
     assert r[3]["data_loss_rows"] == 1 and r[3]["data_loss_max_span_s"] == 61.0
@@ -68,41 +83,170 @@ def test_clean_missing_zero_dataloss(world):
     assert r[3]["gap_rows"] == [{"kind": "silence", "data_loss": True, "rows": 1}]
 
 
-def test_sampler_gap_and_missing_samples_unmeasurable(world):
+def test_E5_labels_printed(world):
+    _, r = run(world)
+    assert r[3]["failed_labels"]["max_gap_s"] == "price-path" and r[3]["failed_labels"]["max_data_loss_count"] == "price-path"
+    assert r[1]["failed_labels"]["max_gap_s"] == "price-path"  # unmeasurable checks print their label too
+    thr = {"max_gap_s": {"value": 1, "label": "bogus"}}
+    p = world / "t.json"
+    p.write_text(json.dumps(thr))
+    with pytest.raises(ValueError):
+        A.load_thresholds(p)
+    p.write_text(json.dumps({"max_gap_s": 5}))  # old flat format
+    with pytest.raises(ValueError):
+        A.load_thresholds(p)
+
+
+def test_sampler_gap_and_samples_required(world):
     samples_file(world / "s.jsonl", [H0 + i * 60_000 for i in range(5)] + [H0 + 50 * 60_000 + i for i in range(20)])
-    r = hours(run(world, hours=1))[0]
-    assert r["excluded"] and "max_sample_gap_s" in r["failed_checks"]
-    # no sample file but sampler thresholds pinned: refused at the CLI (exit 2)
+    _, r = run(world, hours=1)
+    assert r[0]["excluded"] and "max_sample_gap_s" in r[0]["failed_checks"] and r[0]["failed_labels"]["max_sample_gap_s"] == "decision-input"
     thr = world / "thr.json"
     thr.write_text(json.dumps(THR))
     assert A.main(["--tape-dir", str(world / "tape"), "--from", "2026-10-23T00", "--to", "2026-10-23T00", "--thresholds", str(thr)]) == 2
-    # only tape thresholds: fine without samples
-    r2 = hours(run(world, hours=1, thr={"max_gap_s": 30}, samples=False))[0]
-    assert r2["excluded"] is False and r2["samples_n"] is None
+    _, r2 = run(world, hours=1, thr={"max_gap_s": T(30)}, samples=False)
+    assert r2[0]["excluded"] is False and r2[0]["samples_n"] is None
 
 
-def test_input_age_from_tape_gap(world):
-    write_hour(world / "tape", H0, [{"type": "trade", "t_recv_ms": H0 + 10}, {"type": "trade", "t_recv_ms": H0 + 600_000}])
-    r = hours(run(world, hours=1))[0]
-    assert r["tape_input_age_max_s"] == 3000.0 and "max_input_age_s[tape]" in r["failed_checks"]
+def test_E1_only_data_rows_count_heartbeats_never(tmp_path):
+    d = tmp_path / "tape"
+    d.mkdir()
+    # hb every minute but data only in the first 10 minutes: a 50 min data silence must fail
+    write_hour(d, H0, both(H0, 0, 600) + hb(H0))
+    write_hour(d, H0 + HR, both(H0 + HR))
+    _, r = run(tmp_path, hours=2, thr={"max_input_age_s": T(120, "price-path")}, samples=False)
+    assert r[0]["tape_input_age_max_s"] == 3030.0  # last data row at +570 s (step 30), next at the next hour start
+    assert r[0]["excluded"] and r[0]["failed_labels"] == {"max_input_age_s": "price-path"}
 
 
-def test_tape_without_feed_time_unmeasurable(world):
-    write_hour(world / "tape", H0, [{"type": "trade"}])
-    r = hours(run(world, hours=1))[0]
-    assert "max_input_age_s[tape]" in r["unmeasurable"] and r["excluded"]
+@pytest.mark.parametrize("typ", ["hb", "start", "stop", "pool_info"])
+def test_E1_non_data_types_never_count(tmp_path, typ):
+    d = tmp_path / "tape"
+    d.mkdir()
+    write_hour(d, H0, both(H0, 0, 60) + tr(H0, 60, 3600, 5, "pumpswap", typ) + tr(H0, 60, 3600, 5, "pumpfun", typ))
+    _, r = run(tmp_path, hours=1, thr={"max_input_age_s": T(120)}, samples=False, now=H0 + 10 * HR)
+    assert r[0]["excluded"]
+
+
+@pytest.mark.parametrize("typ", ["trade", "create", "complete", "pool_create"])
+def test_E1_data_types_count(tmp_path, typ):
+    d = tmp_path / "tape"
+    d.mkdir()
+    write_hour(d, H0, tr(H0, 0, 3600, 30, "pumpswap", typ) + tr(H0, 0, 3600, 30, "pumpfun", typ))
+    _, r = run(tmp_path, hours=1, thr={"max_input_age_s": T(120)}, samples=False)
+    assert r[0]["excluded"] is False and r[0]["tape_input_age_max_s"] <= 60
+
+
+def test_E1_per_program(tmp_path):
+    d = tmp_path / "tape"
+    d.mkdir()
+    write_hour(d, H0, tr(H0, 0, 3600, 30, "pumpswap") + tr(H0, 0, 600, 30, "pumpfun"))
+    thr = {"max_input_age_s": T(120)}
+    _, r = run(tmp_path, hours=1, thr=thr, samples=False)
+    assert r[0]["excluded"] and r[0]["tape_input_age_by_prog_s"]["pumpswap"] <= 60
+    _, r = run(tmp_path, hours=1, thr=thr, samples=False, programs=("pumpswap",))
+    assert r[0]["excluded"] is False
+    _, r = run(tmp_path, hours=1, thr=thr, samples=False, programs=("pumpswap", "nosuch"))
+    assert "max_input_age_s[tape]" in r[0]["unmeasurable"]  # a program with no data row at all is not measurable
+
+
+def test_E2_gap_span_fails_every_overlapped_hour_and_dedups(tmp_path):
+    d = tmp_path / "tape"
+    d.mkdir()
+    f, t = H0 + 3_000_000, H0 + HR + 300_000  # outage 00:50 -> 01:05, feed process alive
+    write_hour(d, H0, both(H0, 0, 3000) + hb(H0) + [gap("silence", f, f + 20_000, closed=False, at=f + 20_000)])
+    write_hour(d, H0 + HR, [gap("silence", f, t)] + both(H0 + HR, 300, 3600) + hb(H0 + HR))
+    thr = {"max_gap_s": T(30, "price-path"), "max_data_loss_count": T(0, "price-path")}
+    _, r = run(tmp_path, hours=2, thr=thr, samples=False)
+    for x in r:
+        assert x["data_loss_rows"] == 1 and x["data_loss_max_span_s"] == 900.0 and x["excluded"]  # open+closed twin collapses to one span; both hours fail
+
+
+def test_E2_open_gap_without_twin_counts(tmp_path):
+    d = tmp_path / "tape"
+    d.mkdir()
+    write_hour(d, H0, both(H0) + [gap("silence", H0 + 100_000, H0 + 140_000, closed=False)])
+    _, r = run(tmp_path, hours=1, thr={"max_data_loss_count": T(0)}, samples=False)
+    assert r[0]["data_loss_rows"] == 1 and r[0]["excluded"]
+
+
+def test_E2_unreadable_gap_span_unmeasurable(tmp_path):
+    d = tmp_path / "tape"
+    d.mkdir()
+    write_hour(d, H0, both(H0) + [{"type": "gap", "kind": "silence", "data_loss": True, "t_recv_ms": H0 + 5}])
+    _, r = run(tmp_path, hours=1, thr={"max_gap_s": T(30)}, samples=False)
+    assert r[0]["excluded"] and "gap_span_unreadable" in r[0]["unmeasurable"]
+
+
+def test_E3_silence_across_boundary_fails_both_hours(tmp_path):
+    d = tmp_path / "tape"
+    d.mkdir()
+    write_hour(d, H0 + 2 * HR, tr(H0 + 2 * HR, 0, 3540))
+    write_hour(d, H0 + 3 * HR, tr(H0 + 3 * HR, 90, 3600))
+    thr = {"max_input_age_s": T(120, "price-path")}
+    _, r = run(tmp_path, hours=4, thr=thr, samples=False, programs=("pumpswap",))
+    assert r[2]["tape_input_age_max_s"] == 151.0 and r[3]["tape_input_age_max_s"] == 151.0
+    assert r[2]["excluded"] and r[3]["excluded"]  # H0 and H0+1 files do not exist (failed for that reason)
+
+
+def test_E3_exact_150s(tmp_path):
+    d = tmp_path / "tape"
+    d.mkdir()
+    write_hour(d, H0, tr(H0, 0, 3540) + [{"type": "trade", "prog": "pumpswap", "t_recv_ms": H0 + 3_540_000}])
+    write_hour(d, H0 + HR, [{"type": "trade", "prog": "pumpswap", "t_recv_ms": H0 + HR + 90_000}] + tr(H0 + HR, 91, 3600))
+    _, r = run(tmp_path, hours=2, thr={"max_input_age_s": T(120)}, samples=False, programs=("pumpswap",))
+    assert [x["tape_input_age_max_s"] for x in r] == [150.0, 150.0] and all(x["excluded"] for x in r)
+
+
+def test_E4_open_hours_not_tabled(tmp_path):
+    d = tmp_path / "tape"
+    d.mkdir()
+    write_hour(d, H0, both(H0))
+    write_hour(d, H0 + HR, both(H0 + HR))
+    now = H0 + 2 * HR + 299_000  # hour 01 ended 299 s ago: still inside the 300 s compaction grace
+    lines, rows = run(tmp_path, hours=2, thr={"max_gap_s": T(30)}, samples=False, now=now)
+    assert [x["hour"] for x in rows] == [A.iso(H0)]
+    fin = json.loads(lines[-1])
+    assert fin["hours"] == 1 and fin["not_closed_hours_not_tabled"] == [A.iso(H0 + HR)]
+    _, rows = run(tmp_path, hours=2, thr={"max_gap_s": T(30)}, samples=False, now=H0 + 2 * HR + 300_000)
+    assert len(rows) == 2
+
+
+def test_E4_cli_now_flag(world, capsys):
+    thr = world / "thr.json"
+    thr.write_text(json.dumps({"max_gap_s": T(30)}))
+    assert A.main(["--tape-dir", str(world / "tape"), "--from", "2026-10-23T00", "--to", "2026-10-23T03", "--thresholds", str(thr), "--now", "2026-10-23T01:00:00Z"]) == 0
+    out = capsys.readouterr().out.strip().split("\n")
+    assert len(out) == 1 and json.loads(out[0])["hours"] == 0
+
+
+def test_input_age_from_tape_gap(tmp_path):
+    d = tmp_path / "tape"
+    d.mkdir()
+    write_hour(d, H0, [{"type": "trade", "prog": "pumpswap", "t_recv_ms": H0 + 10}, {"type": "trade", "prog": "pumpswap", "t_recv_ms": H0 + 600_000}])
+    _, r = run(tmp_path, hours=1, thr={"max_input_age_s": T(120)}, samples=False, programs=("pumpswap",))
+    assert r[0]["tape_input_age_max_s"] == 3000.0 and "max_input_age_s[tape]" in r[0]["failed_checks"]
+
+
+def test_tape_without_feed_time_unmeasurable(tmp_path):
+    d = tmp_path / "tape"
+    d.mkdir()
+    write_hour(d, H0, [{"type": "trade", "prog": "pumpswap", "t_recv_ms": H0 + 1}][:0] + [{"type": "gap", "kind": "x", "data_loss": False, "t_recv_ms": H0}])
+    _, r = run(tmp_path, hours=1, thr={"max_input_age_s": T(120)}, samples=False)
+    assert "max_input_age_s[tape]" in r[0]["unmeasurable"] and r[0]["excluded"]
 
 
 def test_zst_hour(world):
     if not shutil.which("zstd"):
         pytest.skip("no zstd")
-    write_hour(world / "tape", H0, trade_rows(H0), zst=True)
-    r = hours(run(world, hours=1))[0]
-    assert r["tape_file"].endswith(".zst") and r["excluded"] is False
+    write_hour(world / "tape", H0, both(H0), zst=True)
+    _, r = run(world, hours=1)
+    assert r[0]["tape_file"].endswith(".zst") and r[0]["excluded"] is False
 
 
 def test_deterministic_sha(world):
-    a, b = run(world), run(world)
+    a, _ = run(world)
+    b, _ = run(world)
     assert a == b
     fin = json.loads(a[-1])
     assert fin["sha256"] == hashlib.sha256("".join(x + "\n" for x in a[:-1]).encode()).hexdigest()
@@ -110,7 +254,7 @@ def test_deterministic_sha(world):
 
 
 @pytest.mark.parametrize("bad", ["ledger", "decisions", "bots.json", "runner-status"])
-def test_forbidden_paths_exit_2(world, bad, capsys):
+def test_forbidden_paths_exit_2(world, bad):
     thr = world / "thr.json"
     thr.write_text(json.dumps(THR))
     args = ["--from", "2026-10-23T00", "--to", "2026-10-23T00", "--thresholds", str(thr)]
@@ -130,45 +274,46 @@ def test_forbidden_paths_exit_2(world, bad, capsys):
 def test_main_cli_ok_and_bad_thresholds(world, capsys):
     thr = world / "thr.json"
     thr.write_text(json.dumps(THR))
-    assert A.main(["--tape-dir", str(world / "tape"), "--samples", str(world / "s.jsonl"), "--from", "2026-10-23T00", "--to", "2026-10-23T03", "--thresholds", str(thr)]) == 0
+    assert A.main(["--tape-dir", str(world / "tape"), "--samples", str(world / "s.jsonl"), "--from", "2026-10-23T00", "--to", "2026-10-23T03", "--thresholds", str(thr),
+                   "--now", "2026-12-01T00:00:00Z"]) == 0
     out = capsys.readouterr().out.strip().split("\n")
     assert len(out) == 5 and json.loads(out[-1])["thresholds_sha256"] == hashlib.sha256(thr.read_bytes()).hexdigest()
-    thr.write_text(json.dumps({"max_pnl": 1}))
+    thr.write_text(json.dumps({"max_pnl": T(1)}))
     assert A.main(["--tape-dir", str(world / "tape"), "--from", "2026-10-23T00", "--to", "2026-10-23T00", "--thresholds", str(thr)]) == 2
 
 
 def test_no_forbidden_fields_in_output(world):
-    out = "\n".join(run(world))
-    for w in ("signature", "mint", "wallet", "price", "pnl"):
+    out = "\n".join(run(world)[0])
+    for w in ("signature", "mint", "wallet", "price_sol", "pnl", "fill"):
         assert w not in out
 
 
 def test_torn_lines_make_hour_unmeasurable(world):
-    base = "".join(json.dumps(r) + "\n" for r in trade_rows(H0))
+    base = "".join(json.dumps(r) + "\n" for r in both(H0))
     p = world / "tape" / A.hour_name(H0)
-    gap = json.dumps({"type": "gap", "kind": "silence", "data_loss": True, "from_ms": 1, "to_ms": 2})
-    for body in (base + gap[:-8], base + gap[:-1] + "\n", base + '{"type":"trade","t_recv_ms":5}'):  # torn tail, cut gap line, no newline
+    g = json.dumps(gap("silence", 1, 2))
+    for body in (base + g[:-8], base + g[:-1] + "\n", base + '{"type":"trade","prog":"pumpswap","t_recv_ms":5}'):
         p.write_text(body)
-        r = hours(run(world, hours=1))[0]
-        assert r["excluded"] and "tape_torn_lines" in r["unmeasurable"] and r["torn_lines"] >= 1 and r["data_loss_rows"] is None
+        _, r = run(world, hours=1)
+        assert r[0]["excluded"] and "tape_torn_lines" in r[0]["unmeasurable"] and r[0]["torn_lines"] >= 1 and r[0]["data_loss_rows"] is None
 
 
 def test_missing_tape_dir_exit_2(world):
     thr = world / "thr.json"
-    thr.write_text(json.dumps({"max_gap_s": 1}))
+    thr.write_text(json.dumps({"max_gap_s": T(1)}))
     assert A.main(["--tape-dir", str(world / "nope"), "--from", "2026-10-23T00", "--to", "2026-10-23T00", "--thresholds", str(thr)]) == 2
 
 
 def test_both_jsonl_and_zst_ambiguous(world):
     (world / "tape" / (A.hour_name(H0) + ".zst")).write_bytes(b"x")
-    r = hours(run(world, hours=1))[0]
-    assert r["excluded"] and "tape_ambiguous_files" in r["unmeasurable"]
+    _, r = run(world, hours=1)
+    assert r[0]["excluded"] and "tape_ambiguous_files" in r[0]["unmeasurable"]
 
 
-@pytest.mark.parametrize("rows", [[{"feed": None}], [{"feed": {"updated_ms": 10**15}}]])
-def test_sample_without_feed_time_or_negative_age(world, rows):
+@pytest.mark.parametrize("bad_row", [{"feed": None}, {"feed": {"updated_ms": 10**15}}])
+def test_sample_without_feed_time_or_negative_age(world, bad_row):
     with open(world / "s.jsonl", "w") as f:
         for i in range(30):
-            f.write(json.dumps({"schema": A.SAMPLE_SCHEMA, "t_ms": H0 + i * 60_000, **(rows[0] if i == 7 else {"feed": {"updated_ms": H0 + i * 60_000 - 1000}})}) + "\n")
-    r = hours(run(world, hours=1, thr={"max_input_age_s": 120}))[0]
-    assert r["excluded"] and "max_input_age_s[sampler]" in r["unmeasurable"] and r["samples_n"] == 30
+            f.write(json.dumps({"schema": A.SAMPLE_SCHEMA, "t_ms": H0 + i * 60_000, **(bad_row if i == 7 else {"feed": {"updated_ms": H0 + i * 60_000 - 1000}})}) + "\n")
+    _, r = run(world, hours=1, thr={"max_input_age_s": T(120)})
+    assert r[0]["excluded"] and "max_input_age_s[sampler]" in r[0]["unmeasurable"] and r[0]["samples_n"] == 30
