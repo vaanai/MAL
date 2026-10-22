@@ -54,7 +54,7 @@ REASON_TIME = "time_24h"
 STAKE_LAMPORTS = 0.25e9
 FEED_D = 7  # arena_screen.py:131 (feed_delay_slots, pinned like arena_rules.stack_config(7))
 LAT_DECIDING = 1.9
-TABLE_MODE = "first_print"  # the mode the port-equivalence run covered; "complete" is available and was NOT compared to the kit
+TABLE_MODE = "complete"  # the registration mode (HostV2 builds the rule with make_rule()): M = the mint's `complete` row, l1_rule.py lines 90-91. "first_print" is the kit's oracle-live proxy only
 
 
 class L1Rule(Rule):

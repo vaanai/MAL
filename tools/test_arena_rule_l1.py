@@ -50,11 +50,19 @@ def pool_rows(drop_quote=WSOL, with_drop=True, p="P"):
     return sorted(rows, key=lambda r: r["t_recv_ms"])
 
 
+def _first_print_rules():
+    """The synthetic tapes carry no create / complete rows; the registration default is mode complete (TABLE_MODE), so these tests ask for the first_print proxy."""
+    rules = load_rules_v2(["l1-floor-v2"])
+    for r in rules:
+        r.table_mode = "first_print"
+    return rules
+
+
 def run_host(tmp, rows, hours=70, evict_min=None, table=None):
     tape = tmp / "tape"
     if not tape.exists():
         write_tape(tape, rows)
-    rules = load_rules_v2(["l1-floor-v2"])
+    rules = _first_print_rules()
     reg = tmp / "bots.json"
     if not reg.exists():
         register_rules(rules, str(reg), SHA, H0, now_ms=H0 - 1, verify_sha=False)
@@ -226,7 +234,7 @@ def test_restart_keeps_table_and_positions_in_log(tmp_path):
     again = PoolTable.load(first.table_path)
     assert again.to_dict() == first.table.to_dict() and again.base("P") == first.table.base("P")
     # a new host over the same logs rebuilds the book from the decision log (the real engine would book the position engine_restart: tools/arena_rules_v2.py docstring)
-    rules = load_rules_v2(["l1-floor-v2"])
+    rules = _first_print_rules()
     state = ArenaState(tmp_path / "tape", start_ms=0)
     cfg = HostConfig(root=str(tmp_path / "rules"), registry=str(tmp_path / "bots.json"), frozen_sha=SHA, clock_start_ms=H0)
     host = HostV2(cfg, rules, state, first.engine)
@@ -256,7 +264,7 @@ def test_rule_source_has_no_banned_family_and_keeps_wsol_first():
     src = (REPO / "tools" / "arena_rule_l1.py").read_text()
     on_row = src.split("def on_row")[1].split("quote_mint")[0]
     assert "virtual_quote_reserves" not in on_row  # the quote test comes before the V test
-    assert json.dumps(L.make_rule().table_mode) == '"first_print"'
+    assert json.dumps(L.make_rule().table_mode) == '"complete"'  # registration mode; first_print is the oracle-live proxy only
 
 
 def test_tp_reference_is_the_post_buy_mark_not_the_decision_spot(tmp_path):
@@ -268,3 +276,23 @@ def test_tp_reference_is_the_post_buy_mark_not_the_decision_spot(tmp_path):
     host = run_host(tmp_path, rows, hours=34)
     mark = next(iter(host.table.marks.values()))[0]
     assert mark > 0 and not [r for r in host.log.rows("l1-floor-v2") if r.get("kind") == "exit"]
+
+
+def test_registration_mode_complete_enters_nothing_without_create_and_complete_rows(tmp_path):
+    """The registered default (TABLE_MODE complete) needs the mint's create and complete rows; the tape that enters under first_print gives no universe pool here."""
+    import tools.arena_rule_l1 as L1
+    assert L1.TABLE_MODE == "complete" and L1.make_rule().table_mode == "complete"
+    rows = pool_rows()
+    base = tmp_path / "fp"
+    base.mkdir()
+    assert len(entries(run_host(base, rows))) == 1  # first_print (the helper's rules)
+    cdir = tmp_path / "cm"
+    cdir.mkdir()
+    tape = cdir / "tape"
+    write_tape(tape, rows)
+    rules = load_rules_v2(["l1-floor-v2"])  # the registered default
+    reg = cdir / "bots.json"
+    register_rules(rules, str(reg), SHA, H0, now_ms=H0 - 1, verify_sha=False)
+    host = HostV2(HostConfig(root=str(cdir / "rules"), registry=str(reg), frozen_sha=SHA, clock_start_ms=H0), rules, ArenaState(tape, start_ms=0), FakeEngine(cdir / "rules"))
+    host.run(H0, H0 + 70 * HOUR)
+    assert entries(host) == []
