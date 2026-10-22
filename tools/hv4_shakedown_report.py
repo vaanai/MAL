@@ -1183,6 +1183,8 @@ def eval_check_9(L: Logs, samples: list[dict], args: argparse.Namespace) -> dict
         nums["gaps_total_tape"] = scan["gaps_total"]
         nums["gaps_data_loss_true_by_kind"] = [{"kind": r["kind"], "rows": r["rows"]} for r in scan["by_kind"] if r["data_loss"]]
         nums["gaps_data_loss_false_by_kind"] = [{"kind": r["kind"], "rows": r["rows"]} for r in scan["by_kind"] if not r["data_loss"]]
+    if scan is not None and scan["data_loss_disk_reserve"]:  # a measured failure always FAILs, with or without feed samples
+        return chk("9", name, FAIL, nums, notes + ["the tape carries a data_loss gap of kind disk_reserve: that implies the paused-reserve FAIL"])
     if len(fsamp) < 2:
         return chk("9", name, UNM, nums, notes + ["fewer than two feed samples: 'writes throughout' cannot be shown (tape-hour file names only)"])
     paused = sum(1 for _, f in fsamp if f.get("writing_paused"))
@@ -1198,8 +1200,6 @@ def eval_check_9(L: Logs, samples: list[dict], args: argparse.Namespace) -> dict
     notes.append(f"feed samples cover {iso(fsamp[0][0])} to {iso(fsamp[-1][0])}; inside W: {iso(inw[0]) if inw else None} to {iso(inw[-1]) if inw else None}")
     if paused or d("pauses") or d("rows_dropped_total") or stalls:
         return chk("9", name, FAIL, nums, notes + ["a paused disk reserve means the shakedown is extended, not passed (SHAKEDOWN-CHECKS-2 check 9)"])
-    if scan is not None and scan["data_loss_disk_reserve"]:
-        return chk("9", name, FAIL, nums, notes + ["the tape carries a data_loss gap of kind disk_reserve: that implies the paused-reserve FAIL"])
     if scan is None or scan["errors"]:
         return chk("9", name, UNM, nums, notes + ["the counts-only tape gap scan did not complete: data_loss gaps are not measured"])
     if not inw or inw[0] > t_lo + FEED_COVER_MS or inw[-1] < t_hi - FEED_COVER_MS:

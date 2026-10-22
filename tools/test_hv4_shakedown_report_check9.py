@@ -104,6 +104,17 @@ def test_data_loss_gap_of_kind_disk_reserve_is_the_paused_reserve_fail(tmp_path)
     assert by_id(run(fx))["9"]["status"] == R.FAIL
 
 
+def test_disk_reserve_data_loss_fails_even_without_feed_samples(tmp_path):
+    fx = build(tmp_path)
+    add_tape_rows(fx, START + 5 * MIN, [gap("disk_reserve", True, count=3)])
+    assert by_id(run(fx, samples=False))["9"]["status"] == R.FAIL
+    fx2 = build(sub(tmp_path, "one"))
+    add_tape_rows(fx2, START + 5 * MIN, [gap("disk_reserve", True)])
+    rows = [json.loads(x) for x in fx2["samples"].read_text().splitlines()]
+    fx2["samples"].write_text(json.dumps(rows[-1]) + "\n")
+    assert by_id(run(fx2))["9"]["status"] == R.FAIL
+
+
 @pytest.mark.skipif(shutil.which("zstd") is None, reason="zstd CLI not installed")
 def test_tape_gap_scan_reads_zst_hours(tmp_path):
     fx = build(tmp_path)
