@@ -12,7 +12,7 @@ from pathlib import Path
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "ops" / "bridge-dry-checklist.sh"
 GOOD_UNIT = """[Service]
 User=mal-arena-bridge
-ExecStart=/usr/bin/python3 -I -m tools.arena_live_bridge --config /etc/mal-arena-live/dry.json
+ExecStart=/usr/bin/python3 -m tools.arena_live_bridge --config /etc/mal-arena-live/dry.json
 """
 
 
