@@ -195,6 +195,27 @@ V_LO = 17.5e9  # lamports, universe: first print's V in [V_LO, V_HI]
 V_HI = 17.7e9
 SPS_LO, SPS_HI = 0.15, 0.6  # seconds per slot must lie in this open interval
 Q_STAR_SOL = 40.0  # Q = real quote + V after the sell, SOL
+
+
+Q_STAR_ALLOWED = (40.0, 50.0)  # QP ruling 2026-10-22: exactly these two levels; any other value is a different, unregistered rule
+Q50_RULE_ID = "H5-BOOSTFLOOR-Q50 v1"  # the rule_id of a Q* = 50 process (EXP-024 Amendment 10, owed)
+Q50_RULE_SHA256: str | None = "b3f8ecbf8731dc322a035a0b3996b7ed3f0b8c508cc6947014e3de1aa9524fd4"  # sha256 of EXP/EXP-024-RULE-Q50.md (PR #790); the sha only, the file is never read. None = a Q* != 40 live process refuses to start
+
+
+def check_q_star(v: Any) -> float:
+    """--q-star-sol / Engine(q_star_sol=): a real number (not a bool) equal to 40.0 or 50.0; anything else is refused."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or float(v) not in Q_STAR_ALLOWED:
+        raise ValueError(f"q_star_sol must be one of {Q_STAR_ALLOWED}, got {v!r}")
+    return float(v)
+
+
+def _q_star_arg(text: str) -> float:
+    try:
+        return check_q_star(float(text))
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from None
+
+
 T_MIN_S, T_MAX_S = 0.0, 300.0
 BOOST_BUDGET = 17.585e9
 BOOST_DONE_FRAC = 0.999
@@ -1176,7 +1197,9 @@ class Engine:
         classifier: Any = None,  # synthetic-migration class source: .lookup(mint, s0) -> (syn, src). None = nothing is classified: every trigger is excluded
         bx10_enabled: bool = False,  # True only with the declared flag (bx10_flag(); EXP-026). Off: no outcome_bx10 record, no bx10 computation, no counter
         fresh_start_ms: int | None = None,  # fresh forward (--fresh-forward ARENA): a pool whose s0 is before this instant is never tracked. None = off
+        q_star_sol: float = Q_STAR_SOL,  # trigger level in SOL; the module constant is the frozen default (--q-star-sol; another value is another book)
     ) -> None:
+        self.q_star_sol = check_q_star(q_star_sol)
         if boost_mode not in ("auto", "pda", "behavioural"):
             raise ValueError("boost_mode")
         self._emit, self.boost_mode, self.sps_fn, self.require_announce = emit, boost_mode, sps_fn, require_announce
@@ -1187,7 +1210,8 @@ class Engine:
         self.pda_fn = pda_fn
         self.suppress_outcome, self.seal_start_ms = suppress_outcome, seal_start_ms
         self.pick_oracle = pick_oracle
-        self.bx10_enabled = bx10_enabled is True  # strictly the boolean True: a string or a number never turns it on
+        self.bx10_enabled = bx10_enabled is True and self.q_star_sol == Q_STAR_SOL  # a Q* != 40 engine never computes bx10 (QP ruling 2026-10-22, NO-GO 1)
+        # strictly the boolean True: a string or a number never turns it on
         self.fresh_start_ms = None if fresh_start_ms is None else int(fresh_start_ms)
         self.h5_look2_start_ms, self.h5_look2_observed = h5_look2_start_ms, bool(h5_look2_observed)
         self.pools: dict[str, Pool] = {}
@@ -1863,7 +1887,7 @@ class Engine:
             if not sealed:
                 p.no_sps += 1
                 self.counters["no_sps_evals"] += 1
-            if not p.skip_logged and min(pr.q_post("pv", p.v0), pr.q_post("fv", p.v0)) / 1e9 <= Q_STAR_SOL:
+            if not p.skip_logged and min(pr.q_post("pv", p.v0), pr.q_post("fv", p.v0)) / 1e9 <= self.q_star_sol:
                 spent, ident, src = self.boost_spent(p)
                 if not (ident is not None and pr.trader == ident) and spent < BOOST_BUDGET * BOOST_DONE_FRAC:
                     p.skip_logged = True  # once per pool: this sell would have been evaluated as a trigger candidate if sps had been known
@@ -1881,7 +1905,7 @@ class Engine:
         t = (pr.slot - p.s0) * sps
         if not (T_MIN_S <= t <= T_MAX_S):
             return
-        if (pr.q_post("pv", p.v0) / 1e9 <= Q_STAR_SOL) != (pr.q_post("fv", p.v0) / 1e9 <= Q_STAR_SOL) and not self._sealed(p):
+        if (pr.q_post("pv", p.v0) / 1e9 <= self.q_star_sol) != (pr.q_post("fv", p.v0) / 1e9 <= self.q_star_sol) and not self._sealed(p):
             p.disagree += 1
             self.counters["pv_fv_disagree_sells"] += 1
         spent, ident, src = self.boost_spent(p)
@@ -1892,7 +1916,7 @@ class Engine:
         for var in VARIANTS:
             if var in p.trig:
                 continue
-            if pr.q_post(var, p.v0) / 1e9 <= Q_STAR_SOL:
+            if pr.q_post(var, p.v0) / 1e9 <= self.q_star_sol:
                 self._fire(p, pr, idx, var, sps, t, spent, ident, src)
 
     def _flush_withheld_skip(self, p: Pool) -> None:
@@ -1974,7 +1998,7 @@ class Engine:
             "detect_lag_ms": detect - pr.recv_ms,
             "q_trigger_sol": pr.q_post(var, p.v0) / 1e9, "q_pv_post_sol": pr.q_post("pv", p.v0) / 1e9, "q_fv_post_sol": pr.q_post("fv", p.v0) / 1e9,
             "q_pv_pre_sol": pr.q_pre("pv", p.v0) / 1e9, "q_fv_pre_sol": pr.q_pre("fv", p.v0) / 1e9,
-            "pv_fv_disagree_at_trigger": (pr.q_post("pv", p.v0) / 1e9 <= Q_STAR_SOL) != (pr.q_post("fv", p.v0) / 1e9 <= Q_STAR_SOL),
+            "pv_fv_disagree_at_trigger": (pr.q_post("pv", p.v0) / 1e9 <= self.q_star_sol) != (pr.q_post("fv", p.v0) / 1e9 <= self.q_star_sol),
             "real_quote_pre": pr.q, "v_print": pr.v, "v0": p.v0, "base_pre": pr.b, "sell_token_raw": pr.tok, "sell_user_out": pr.sol,
             "boost_spent_sol": spent / 1e9, "boost_remaining_sol": (BOOST_BUDGET - spent) / 1e9, "boost_id": ident, "boost_src": src,
             "boost_vault_remaining_sol": None if p.boost_remaining is None else p.boost_remaining / 1e9,
@@ -1991,6 +2015,8 @@ class Engine:
         }
         if self.tip is not None:  # report-only, after every decision field is set; O(recent prints), never raises; decision time only
             rec.update(self._union_fields(p, pr.slot))
+        if self.q_star_sol != Q_STAR_SOL:  # absent at 40.0: the default record is unchanged
+            rec["q_star_sol"] = self.q_star_sol
         p.trig[var] = rec
         if self._h5_sealed(p):  # EXP-024 Look 2's added window without the declared observation: the decision-time record only, no ladder, no outcome
             rec["h5_look2_sealed"] = True
@@ -3181,6 +3207,16 @@ async def run_live(args: argparse.Namespace) -> int:
     fresh = fresh_forward_flag(fresh_ref)
     if fresh_ref and not fresh:
         log.warning("--fresh-forward %r is not %r: fresh forward stays OFF (default behaviour, seals applied)", fresh_ref, FRESH_FORWARD_REF)
+    q_star = check_q_star(getattr(args, "q_star_sol", Q_STAR_SOL))
+    if q_star != Q_STAR_SOL:  # QP ruling 2026-10-22 s2: Q* != 40 is the Q50 arena book only
+        if not fresh:
+            raise ValueError("--q-star-sol != 40 requires --fresh-forward ARENA")
+        if getattr(args, "h5_look2_observed", None) is not None:
+            raise ValueError("--h5-look2-observed does not apply with --q-star-sol != 40 (EXP-024 Am.2 does not cover it)")
+        if getattr(args, "bx10_enable", None) is not None:
+            raise ValueError("--bx10-enable does not apply with --q-star-sol != 40 (bx10 is off for a Q* != 40 book)")
+        if Q50_RULE_SHA256 is None:
+            raise ValueError("Q50_RULE_SHA256 is not pinned yet (EXP-024 Amendment 10): a Q* != 40 process cannot start")
     if fresh:  # the arena mode: its own out dir, never the live executor's feed; checked before anything is created
         out_dir = check_fresh_out_dir(args.out_dir or "")
     else:
@@ -3194,7 +3230,7 @@ async def run_live(args: argparse.Namespace) -> int:
     errlog = ErrorLog(out_dir / "h5-shadow-errors.log")
     look2_ref = check_look2_ref(getattr(args, "h5_look2_observed", None))
     bx10_ref = getattr(args, "bx10_enable", None)
-    bx10_on = True if fresh else bx10_flag(bx10_ref)  # fresh forward always writes outcome_bx10
+    bx10_on = (q_star == Q_STAR_SOL) if fresh else bx10_flag(bx10_ref)  # fresh forward writes outcome_bx10, except a Q* != 40 book (off)
     if bx10_ref and not bx10_flag(bx10_ref) and not fresh:
         log.warning("--bx10-enable %r is not %r: bx10 stays OFF", bx10_ref, BX10_ENABLE_REF)
     rpc_url = check_rpc_url(getattr(args, "rpc_url", None) or DEFAULT_RPC)
@@ -3209,14 +3245,14 @@ async def run_live(args: argparse.Namespace) -> int:
         seal_info = {"oracle": "not_applied", "why": "fresh_forward_arena"}
         start_ms = now_ms()
         engine = Engine(sink.write, boost_mode=args.boost_mode, suppress_outcome=None, pick_oracle=None, seal_start_ms=None, h5_look2_start_ms=H5_LOOK2_END_MS,
-                        h5_look2_observed=False, classifier=classifier, bx10_enabled=True, fresh_start_ms=start_ms)
+                        h5_look2_observed=False, classifier=classifier, bx10_enabled=(q_star == Q_STAR_SOL), fresh_start_ms=start_ms, q_star_sol=q_star)
     else:
         pick_oracle, seal_info = cap_pick_oracle_from_env()
         if pick_oracle is None:
             log.warning("CAP-PICK pick oracle not configured (%s): every pool with s0 from %s is sealed (fail closed); set CAP_PICK_LIVE and "
                         "CAP_PICK_FINAL_MARKER", seal_info.get("why"), iso_from_ms(SEAL_START_MS))
         engine = Engine(sink.write, boost_mode=args.boost_mode, suppress_outcome=cap_pick_seal_oracle_stub, pick_oracle=pick_oracle,
-                        h5_look2_observed=look2_ref is not None, classifier=classifier, bx10_enabled=bx10_on)
+                        h5_look2_observed=look2_ref is not None, classifier=classifier, bx10_enabled=bx10_on, q_star_sol=q_star)
     engine.syn_request = fallback.request
     engine.on_error = errlog.log
     if tip_dir:  # report-only tip union (phase 0); off = byte-identical records
@@ -3248,6 +3284,8 @@ async def run_live(args: argparse.Namespace) -> int:
                                        "end_only_ms": H5_LOOK2_END_MS, "end_only": iso_from_ms(H5_LOOK2_END_MS)},
                           "tip_union": "off", "dirty": os.environ.get("H5_DIRTY") == "1",  # the wrapper sets H5_DIRTY=1 under ARENA_H5_ALLOW_DIRTY: code_sha does not name the code
                           "endpoints": sorted({_strip_url(u) for u in (args.ws_url or [])}) or ["default"], "host": os.uname().nodename})
+    if q_star != Q_STAR_SOL:  # only a non-default level changes the start record: the default one stays byte-identical
+        start_rec.update({"rule": Q50_RULE_ID, "rule_sha256": Q50_RULE_SHA256, "q_star_sol": q_star})
     engine.emit(start_rec)
 
     def probe() -> tuple[int, dict] | None:
@@ -3296,7 +3334,14 @@ class Refused(Exception):
     pass
 
 
-def refuse_replay(path: str, hours: Sequence[str]) -> None:
+Q50_REPLAY_CUTOFF_HOUR = "2026-10-01T00"  # QP comment on #789 (P3): a Q* != 40 replay reads no hour at or after this, refused before anything is read
+
+
+def refuse_replay(path: str, hours: Sequence[str], q_star_sol: float = Q_STAR_SOL) -> None:
+    if q_star_sol != Q_STAR_SOL:
+        for h in hours:
+            if h >= Q50_REPLAY_CUTOFF_HOUR:
+                raise Refused(f"{h}: a --q-star-sol != 40 replay reads no hour at or after {Q50_REPLAY_CUTOFF_HOUR}")
     for bad in FORBIDDEN:
         if bad in path:
             raise Refused(f"{path}: outside the exploration pools ({bad!r})")
@@ -3395,13 +3440,13 @@ def replay(rows: Iterable[dict], meta: dict[str, dict], engine: Engine) -> None:
     engine.close_all("replay_end")
 
 
-def compare_frozen(records: list[dict], meta: dict[str, dict], frozen_path: str, s0_hour_prefix: str, tape_hours: Sequence[str]) -> dict:
+def compare_frozen(records: list[dict], meta: dict[str, dict], frozen_path: str, s0_hour_prefix: str, tape_hours: Sequence[str], q_star_sol: float = Q_STAR_SOL) -> dict:
     """Trigger lists vs the frozen rule's (leg p, exit 'end', stake 0.1) for pools whose s0 block time (UTC, 'YYYY-MM-DDTHH') starts with
     `s0_hour_prefix` (an hour, or a day). The tape hours must cover s0 + 400 s of every such pool."""
     import pandas as pd
 
     f = pd.read_parquet(frozen_path)
-    f = f[(f.D == 40.0) & (f.leg == "p") & (f.H == "end") & (f.stake == "01")]
+    f = f[(f.D == q_star_sol) & (f.leg == "p") & (f.H == "end") & (f.stake == "01")]
     pool_of = {v["mint"]: k for k, v in meta.items()}
     pools = {r["pool"]: r for r in records if r["type"] == "pool" and r["s0_block_time"] is not None
              and datetime.fromtimestamp(r["s0_block_time"], tz=timezone.utc).strftime("%Y-%m-%dT%H").startswith(s0_hour_prefix)}
@@ -3425,7 +3470,7 @@ def compare_frozen(records: list[dict], meta: dict[str, dict], frozen_path: str,
 def run_replay(args: argparse.Namespace) -> int:
     hours = [h.strip() for h in args.replay_hours.split(",") if h.strip()]
     try:
-        refuse_replay(args.replay_tape, hours)
+        refuse_replay(args.replay_tape, hours, check_q_star(getattr(args, "q_star_sol", Q_STAR_SOL)))
         refuse_replay(args.work_dir, [])
     except Refused as e:
         print(f"REFUSED: {e}", file=sys.stderr)
@@ -3436,7 +3481,7 @@ def run_replay(args: argparse.Namespace) -> int:
     records: list[dict] = []
     sps_fn = (lambda p: sps_pool.get(p.pool)) if args.sps == "pool" else None
     engine = Engine(records.append, boost_mode=args.boost_mode, sps_fn=sps_fn, classifier=PreEventClassifier(),  # every replayable hour is pre-event
-                    bx10_enabled=bx10_flag(getattr(args, "bx10_enable", None)))
+                    bx10_enabled=bx10_flag(getattr(args, "bx10_enable", None)), q_star_sol=getattr(args, "q_star_sol", Q_STAR_SOL))
     if getattr(args, "replay_tip_lag_slots", None) is not None:
         engine.tip = ReplayTip(args.replay_tip_lag_slots)
     replay(rows, meta, engine)
@@ -3459,7 +3504,7 @@ def run_replay(args: argparse.Namespace) -> int:
                    f':tipauth{"null" if ta is None else ("0" if ta == 0 else "1+")}'] += 1
         summary["tip_union"] = {**engine.tip.stats(), "crosstab": dict(sorted(xt.items()))}
     if args.compare_frozen:
-        summary["compare"] = compare_frozen(records, meta, args.compare_frozen, args.compare_s0 or hours[0], hours)
+        summary["compare"] = compare_frozen(records, meta, args.compare_frozen, args.compare_s0 or hours[0], hours, check_q_star(getattr(args, "q_star_sol", Q_STAR_SOL)))
     print(json.dumps(clean(summary), indent=1, sort_keys=True))
     return 0
 
@@ -3473,6 +3518,8 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--syn-sockets", type=int, default=1, help="logsSubscribe sockets on the pump.fun program for the synthetic-migration class (side feed; the RPC fallback covers a miss)")
     ap.add_argument("--rpc-url", default=DEFAULT_RPC, help="public RPC for the synthetic-class fallback (default %(default)s); Helius URLs are refused")
     ap.add_argument("--boost-mode", default="auto", choices=("auto", "pda", "behavioural"))
+    ap.add_argument("--q-star-sol", type=_q_star_arg, default=Q_STAR_SOL, metavar="SOL",
+                    help="trigger level Q* in SOL: 40 (default, the frozen rule) or 50 (H5-BOOSTFLOOR-Q50, its own amendment and frozen sha; live needs --fresh-forward ARENA, bx10 off)")
     ap.add_argument("--max-seconds", type=float, default=None, help="stop after this many seconds (smoke test)")
     ap.add_argument("--h5-look2-observed", default=None, metavar="AMENDMENT_REF",
                     help=f"live: declare EXP-024 Amendment 2's observation of Look 2 outcomes for pools with s0 in [2026-10-16T00Z, 2026-11-06T00Z); the value must be "
@@ -3514,6 +3561,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             check_fresh_out_dir(args.out_dir or "")
         except ValueError as e:
             ap.error(str(e))
+    if args.q_star_sol != Q_STAR_SOL:  # QP ruling 2026-10-22 s2 (the live refusals are repeated in run_live)
+        if args.h5_look2_observed is not None:
+            ap.error("--h5-look2-observed does not apply with --q-star-sol != 40 (EXP-024 Am.2 does not cover it)")
+        if args.bx10_enable is not None:
+            ap.error("--bx10-enable does not apply with --q-star-sol != 40")
+        if not args.replay_tape and not fresh_forward_flag(args.fresh_forward):
+            ap.error("--q-star-sol != 40 requires --fresh-forward ARENA (replay on exploration tape is the only other mode)")
     if args.out_dir:
         try:
             check_out_dir(args.out_dir)
