@@ -17,8 +17,11 @@ cannot be computed FAILS the hour):
                          per program in --programs (default pumpswap,pumpfun), carried across hour boundaries and unclipped (a 150 s silence over a
                          boundary is 150 s in both hours); plus sampler (t_ms - feed.updated_ms)  (sampler part needs --samples)
 A missing tape hour, a zero-size file, torn lines or both .jsonl and .jsonl.zst for one hour make the hour fail or be unmeasurable (excluded).
-Only CLOSED hours are tabled: an hour is closed when its end + 300 s <= now (the feed compacts at end + 120 s); others are listed in the final line.
-Each hour prints failed_labels {check: label} for failed and unmeasurable checks.
+An hour is closed when its end + 300 s <= now (the feed compacts at end + 120 s). Hour h is TABLED only when h and h+1 are both closed (h+1 is read
+for gap rows written after h ends; a later row never re-decides a tabled hour); others are listed in the final line. If h-1 is unknown (missing,
+torn, ambiguous, scan error) the tape age of h is unmeasurable (R1: the carried silence starts in h-1).
+Each hour prints failed_labels {check: label} for failed and unmeasurable pinned checks, tape_level_failures, and labels_failing (the union; every
+tape-level failure carries BOTH labels).
 """
 from __future__ import annotations
 
@@ -88,6 +91,7 @@ DATA_TYPES = frozenset({b"trade", b"create", b"complete", b"pool_create"})
 DEFAULT_PROGRAMS = ("pumpswap", "pumpfun")  # tools/arena_feed.py PROG_PROGRAM keys
 CLOSE_GRACE_MS = 300_000  # feed compacts an hour 120 s after it ends; an hour is tabled only after end + 300 s
 LABELS = ("price-path", "decision-input")
+TAPE_LEVEL = frozenset({"tape_file_missing", "tape_file_unreadable", "tape_file_zero_size", "tape_scan_error", "tape_torn_lines", "tape_ambiguous_files", "gap_span_unreadable"})
 
 
 def scan_hour(path: Path) -> dict:
@@ -259,7 +263,8 @@ def evaluate(tape_dir: Path, samples_path: Path | None, h0: int, h1: int, thr: d
     names = sorted(p.name for p in tape_dir.iterdir() if TAPE_NAME.match(p.name))
     samples, _ = load_samples(samples_path)
     closed = lambda h: h + HOUR_MS + CLOSE_GRACE_MS <= now_ms  # noqa: E731
-    not_closed = [iso(h) for h in range(h0, h1 + HOUR_MS, HOUR_MS) if not closed(h)]
+    tabled = lambda h: closed(h) and closed(h + HOUR_MS)  # noqa: E731  R3: h is tabled only once h+1 is also closed and has been read for gap rows
+    not_closed = [iso(h) for h in range(h0, h1 + HOUR_MS, HOUR_MS) if not tabled(h)]
     scans: dict[int, dict | None] = {}
     meta: dict[int, dict] = {}
     for h in range(h0 - HOUR_MS, h1 + 2 * HOUR_MS, HOUR_MS):  # the tabled hours plus one neighbour each side, to carry silences and spans over boundaries
@@ -299,7 +304,7 @@ def evaluate(tape_dir: Path, samples_path: Path | None, h0: int, h1: int, thr: d
     all_spans = merge_spans([sp for sc in scans.values() if sc for sp in sc["spans"]])
     rows = []
     for h in range(h0, h1 + HOUR_MS, HOUR_MS):
-        if not closed(h):
+        if not tabled(h):
             continue
         m = meta[h]
         sc = m["sc"]
@@ -319,7 +324,10 @@ def evaluate(tape_dir: Path, samples_path: Path | None, h0: int, h1: int, thr: d
             ivs = sil.get(pg)
             by_prog[pg] = None if (sc is None or ivs is None) else overlap_max(ivs, h) / 1000.0
         row["tape_input_age_by_prog_s"] = by_prog
-        row["tape_input_age_max_s"] = None if sc is None or any(v is None for v in by_prog.values()) else max(by_prog.values())  # type: ignore[type-var]
+        # R1: the carried silence's start edge lies in h-1; if h-1 is unknown (missing, torn, ambiguous, scan error, not read) the age at the start of h is unmeasurable
+        prev_unknown = scans.get(h - HOUR_MS) is None
+        row["prev_hour_unknown"] = prev_unknown
+        row["tape_input_age_max_s"] = None if sc is None or prev_unknown or any(v is None for v in by_prog.values()) else max(by_prog.values())  # type: ignore[type-var]
         if samples is None:
             row.update(samples_n=None, sample_gap_max_s=None, sampler_input_age_max_s=None)
         else:
@@ -355,6 +363,10 @@ def evaluate(tape_dir: Path, samples_path: Path | None, h0: int, h1: int, thr: d
         # "unmeasurable" is treated as failing (Amendment 6 item 2.2): the hour is excluded, later evidence does not replace it
         row["unmeasurable"] = sorted(set(unm))
         row["failed_checks"] = sorted(set(failed))
+        tape_level = sorted(set(failed + unm) & TAPE_LEVEL)
+        row["tape_level_failures"] = tape_level
+        # R2: every tape-level failure carries BOTH labels, whatever is pinned
+        row["labels_failing"] = sorted(set(LABELS if tape_level else ()) | {thr[base_check(n)]["label"] for n in set(failed + unm) if base_check(n) in thr})
         row["failed_labels"] = {base_check(n): thr[base_check(n)]["label"] for n in sorted(set(failed + unm)) if base_check(n) in thr}
         row["excluded"] = bool(failed or unm)
         rows.append(row)
