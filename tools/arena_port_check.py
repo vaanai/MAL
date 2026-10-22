@@ -278,6 +278,7 @@ class DecisionScreen(S.Screen):
             for _, slot, hi, spec, pos in sorted((t for t in s.trigs if t[0] == ci), key=lambda t: t[1]):  # the kit's overlap loop (arena_screen.Screen._price_store); trigs are 5-tuples
                 if pos is not None:  # exit_fire position: already admitted (overlap rule applied in Screen._admit); its entry decision is kept, nothing is run
                     self.kept.append((self.labels[hi], self.cells[ci].name, pool, int(slot), spec))
+                    self._open.pop((ci, pool), None)  # as the kit's _resolve: the flushed store's position is gone, or the next hour's _advance_open raises KeyError and _admit drops the pool
                     continue
                 if slot < nxt:
                     self.counters["overlap_dropped"] += 1
