@@ -296,3 +296,28 @@ def test_registration_mode_complete_enters_nothing_without_create_and_complete_r
     host = HostV2(HostConfig(root=str(cdir / "rules"), registry=str(reg), frozen_sha=SHA, clock_start_ms=H0), rules, ArenaState(tape, start_ms=0), FakeEngine(cdir / "rules"))
     host.run(H0, H0 + 70 * HOUR)
     assert entries(host) == []
+
+
+def test_table_complete_row_after_the_first_print_still_admits_the_pool():
+    """Live, the complete row often arrives after the pool's first print (C4, 16 of 21 mints in one hour); the kit's tables are global. The pool is decided when the row arrives."""
+    ts = (H0 + 4 * HOUR) // 1000
+    t = PoolTable("complete")
+    t.update(row(H0 + 4 * HOUR, "A", mint="MA"))
+    t.update(row(H0 + 4 * HOUR + 1, "B", mint="MB"))
+    t.update(row(H0 + 4 * HOUR + 2, "C", mint="MC"))
+    t.update(row(H0 + 4 * HOUR + 3, "D", mint="MD"))
+    assert t.base("A") is None and set(t.pending) == {"MA", "MB", "MC", "MD"}
+    for m, may in (("MA", False), ("MB", True), ("MC", False), ("MD", False)):
+        t.update({"type": "create", "t_recv_ms": H0 + 4 * HOUR + 10, "mint": m, "is_mayhem_mode": may, "signature": "c" + m})
+    t.update({"type": "complete", "t_recv_ms": H0 + 4 * HOUR + 11, "mint": "MA", "event_ts": ts + 1, "signature": "kA"})  # M - 5 <= first print
+    t.update({"type": "complete", "t_recv_ms": H0 + 4 * HOUR + 11, "mint": "MB", "event_ts": ts, "signature": "kB"})  # mayhem
+    t.update({"type": "complete", "t_recv_ms": H0 + 4 * HOUR + 11, "mint": "MC", "event_ts": ts - 700, "signature": "kC"})  # first print > M + 600
+    assert t.base("A") == ts + 1 and t.base("B") is None and t.base("C") is None and t.base("D") is None
+    assert "MA" not in t.pending and "MB" not in t.pending and "MD" in t.pending
+    assert "A" in t.prints and "B" not in t.prints and "C" not in t.prints and "D" in t.prints and len(t.prints["A"]) == 1
+    t.update(row(H0 + 4 * HOUR + 5000, "A", mint="MA"))
+    assert len(t.prints["A"]) == 2
+    t2 = PoolTable.from_dict(t.to_dict())
+    assert t2.pending == t.pending and t2.base("A") == t.base("A")
+    t.sweep(H0 + 6 * HOUR)  # MD never got its rows: forgotten after an hour
+    assert "MD" not in t.pending and "D" not in t.prints and "A" in t.prints
