@@ -245,6 +245,9 @@ def prints_15m_short(events: Any, now_ms: int, need: int) -> bool:
     return True
 
 
+TIMING = collections.Counter()  # wall seconds, stderr only (never in the hashed report)
+
+
 class DayCounts:
     def __init__(self) -> None:
         self.scans = 0
@@ -264,7 +267,9 @@ def scan_once(R: SimpleNamespace, st: Any, T: int, limiter: Any, dc: DayCounts, 
     """One scan at instant T. Returns the per-persona card counts of this scan (for the tests)."""
     C = R.C
     LAM = R.AS.LAMPORTS
+    t0 = time.perf_counter()
     st.poll(until_ms=T - 1)
+    TIMING["poll_s"] += time.perf_counter() - t0
     if st.now_ms >= T:
         raise AsOfError(f"state clock {st.now_ms} is not before the scan instant {T}")
     dc.scans += 1
@@ -498,7 +503,7 @@ def run(a: argparse.Namespace, R: SimpleNamespace, repo_sha: str, log: Any = sys
         rec, dc = count_window(R, state, limiter, label, s, e, prescreen=not a.no_prescreen, progress=progress)
         results.append((rec, dc))
         prev_end = e
-    print(f"# done wall_s={time.time() - t_start:.1f} rss_peak_mb={rss_mb(peak=True):.0f}", file=log, flush=True)
+    print(f"# done wall_s={time.time() - t_start:.1f} poll_s={TIMING['poll_s']:.1f} rss_peak_mb={rss_mb(peak=True):.0f}", file=log, flush=True)
     return build_report(header, results)
 
 
