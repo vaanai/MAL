@@ -28,7 +28,7 @@
    "id": "hunt26-1022",
    "kind": "finding",
    "title": "Cost-stack sweep + 4 screens (in-sample): only lead = G4 v1 entries under a patient fee stack",
-   "detail": "505k/send is the p75 fee of slot+1 landings; rent is refunded on ATA close. Patient stack (35k/send, rent refunded) saves 0.00298 SOL per round trip. G4 v1 at 0.1 SOL: -0.43%/trade at the deciding stack vs +2.18% patient (explore-0814, ex-top-3 +0.47 SOL). Exit upgrades, PUMP hour-16 drift dead. Needs live landing data (fee-arm probe, asked Helm). Not gate evidence.",
+   "detail": "505k/send is the p75 fee of slot+1 landings; rent is refunded on ATA close. Patient stack (35k/send, rent refunded) saves 0.00298 SOL per round trip. G4 v1 at 0.1 SOL: -0.43%/trade at 505k+rent (stack A) vs +2.18% patient (explore-0814, ex-top-3 +0.47 SOL). Exit upgrades, PUMP hour-16 drift dead. Needs live landing data (fee-arm probe, asked Helm). Not gate evidence.",
    "atUtc": "2026-10-22T19:52:00Z"
   },
   {
