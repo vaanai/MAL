@@ -1,0 +1,111 @@
+{
+ "docs_idl_contains_QuoteMintNotWritable": false,
+ "new_len": 10485760,
+ "new_sha256": "0b692730f9707139fd86d1c1e3a7d63a3f7cb0702278975fa99df90883aab508",
+ "old_len": 10485760,
+ "old_sha256": "ba1f91ac91dd8c578fd069230601f090775b88acbeecd680bde10d90e3606671",
+ "pump_binary_error_new_text_in_idl": {
+  "quote_mint must be writable for a quote with a Token-2022 transfer fee: its withheld fees are harvested to the mint": true
+ },
+ "pump_changed_runs_diff": [
+  [
+   {
+    "ctx_old": "rtedQuoteChainAccountsRequired",
+    "new": "QuoteMintNotWritable",
+    "old": "",
+    "op": "insert"
+   },
+   {
+    "ctx_old": "chain down to the depth-0 root",
+    "new": "quote_mint must be writable for a quote with a Token-2022 transfer fee: its withheld fees are harvested to the mint",
+    "old": "",
+    "op": "insert"
+   }
+  ],
+  [
+   {
+    "ctx_old": "duct.rsprograms/pump/src/util/",
+    "new": "fee.rsprograms/pump/src/util/transfer_",
+    "old": "",
+    "op": "insert"
+   }
+  ]
+ ],
+ "pump_instruction_pieces": {
+  "n_only_new": 3,
+  "n_only_old": 2
+ },
+ "pump_new_standalone_runs": [
+  "src/extension/transfer_fee/instruction.rs"
+ ],
+ "pump_old_vs_idl_new": {
+  "binary_instruction_tokens_not_idl_names": [
+   "AddQuoteControlMintBuybackFeeRecipientNotAuthorizedA",
+   "BuyCreateV2Disabled",
+   "IdlCloseAccount",
+   "IdlCreateAccount",
+   "IdlSetBuffer",
+   "IdlWrite",
+   "SetQuoteControlMintReservesNotAuthorizedAlreadyInitializedTooMuchSolRequiredTooLittleSolReceivedMintDoesNotMatchBondingCurveBondingCurveCompleteBondingCurveNotCompleteNotInitializedWithdrawTooFrequentNewSizeShouldBeGreaterThanCurrentSizeAccountTypeNotSupportedInitialRealTokenReservesShouldBeLessThanTokenTotalSupplyInitialVirtualTokenReservesShouldBeGreaterThanInitialRealTokenReservesAllZerosWithdrawAuthorityPoolMigrationFeeShouldBeLessThanFinalRealSolReservesPoolMigrationFeeShouldBeGreaterThanCreatorFeePlusMaxMigrateFeesDisabledMigrateInvalidCreatorBuyZeroAmountNotEnoughTokensToBuySellZeroAmountNotEnoughTokensToSellTruncationDivisionByZeroNotEnoughRemainingAccountsAllFeeRecipientsShouldBeNonZeroUnsortedNotUniqueFeeRecipientsCreatorShouldNotBeZeroStartTimeInThePastEndTimeBeforeStartTimeTimeRangeTooLargeEndTimeBeforeCurrentDaySupplyUpdateForFinishedRangeDayIndexAfterEndIndexInvalidIncentiveMintBuyNotEnoughSolToCoverRentBuyNotEnoughSolToCoverFeesBuySlippageBelowMinTokensOutNameTooLongSymbolTooLongUriTooLongCpitializeMayhemFailedMayhemModeDisabledCreatorMigratedToSharingConfigUnableToDistributeCreatorVaultMigratedToSharingConfigSharingConfigNotActiveUnableToDistributeCreatorFeesToExecutableRecipientBondingCurveAndSharingConfigCreatorMismatchShareholdersAndRemainingAccountsMismatchInvalidShareBpsCashbackNotEnabledAllBuybackFeeRecipientsShouldBeNonZeroNotUniqueBuybackFeeRecipientsBuybackBasisPointsOutOfRangeWrongBuybackFeeRecipientsCountBuybackFeeRecipientMissingUnsupportedQuoteMintInvalidQuoteTokenProgramInvalidAssociatedQuoteBondingCurveQuoteMintWhitelistFullQuoteMintAlreadyWhitelistedQuoteMintNotWhitelistedUnableToDistributeCreatorFeesToUninitializedAccountMayhemModeQuoteMintNotAllowedMissingCashbackAccountsInvalidCashbackAccumulatorInvalidBondingCurveV2InvalidQuoteControlInvalidCashbackRecipientCreatorFeeNotConfigurableCreatorFeeBpsOutOfRangeCreatorFeeNotEditableCreatorFeeNotAllowedForCashbackCoinBondingCurveAlreadyMigratedCashbackDeprecatedHolderRewardCreatorImmutableHolderRewardDisabledHolderRewardRecipientsMismatchHolderRewardsRentFloorHolderRewardTokenAccountMissingCtoNotAllowedForMayhemCoinCtoNewCreatorRequiredCtoNewCreatorNotAllowedCreatorFeeNotConfigurableForQuoteCtoCreatorAccountNotWritableCtoSharedVaultFrozenCashbackCoinNotSupportedCreatorFeesNotSweptFeeTiersEmptyFeeConfigTooShortMultiHopDiscontinuousPathInvalidQuoteBondingCurveQuoteBondingCurveNotEligibleQuotePoolAccountsRequiredQuotePoolNotFoundQuoteReservesOutOfRangeCurveDepthExceededMultiHopHopFeesMismatchQuoteCurveAwaitingMigrationMultiHopMayhemCurveNotSupportedQuoteChainAccountsRequiredThe",
+   "UpdateBuybackConfigAn"
+  ],
+  "idl_errors_missing_in_binary": [],
+  "idl_names_without_bare_occurrence": [
+   "AddQuoteControlMint",
+   "Buy",
+   "SetQuoteControlMintReserves",
+   "UpdateBuybackConfig"
+  ],
+  "n_idl_errors": 110,
+  "n_idl_instructions": 56
+ },
+ "pump_pages_4k": {
+  "differing": 472,
+  "total": 2560
+ },
+ "pump_runs": {
+  "new": 64,
+  "old": 63,
+  "only_new": 3,
+  "only_old": 2
+ },
+ "pump_vs_idl_new": {
+  "binary_instruction_tokens_not_idl_names": [
+   "AddQuoteControlMintBuybackFeeRecipientNotAuthorizedA",
+   "BuyCreateV2Disabled",
+   "IdlCloseAccount",
+   "IdlCreateAccount",
+   "IdlSetBuffer",
+   "IdlWrite",
+   "SetQuoteControlMintReservesNotAuthorizedAlreadyInitializedTooMuchSolRequiredTooLittleSolReceivedMintDoesNotMatchBondingCurveBondingCurveCompleteBondingCurveNotCompleteNotInitializedWithdrawTooFrequentNewSizeShouldBeGreaterThanCurrentSizeAccountTypeNotSupportedInitialRealTokenReservesShouldBeLessThanTokenTotalSupplyInitialVirtualTokenReservesShouldBeGreaterThanInitialRealTokenReservesAllZerosWithdrawAuthorityPoolMigrationFeeShouldBeLessThanFinalRealSolReservesPoolMigrationFeeShouldBeGreaterThanCreatorFeePlusMaxMigrateFeesDisabledMigrateInvalidCreatorBuyZeroAmountNotEnoughTokensToBuySellZeroAmountNotEnoughTokensToSellTruncationDivisionByZeroNotEnoughRemainingAccountsAllFeeRecipientsShouldBeNonZeroUnsortedNotUniqueFeeRecipientsCreatorShouldNotBeZeroStartTimeInThePastEndTimeBeforeStartTimeTimeRangeTooLargeEndTimeBeforeCurrentDaySupplyUpdateForFinishedRangeDayIndexAfterEndIndexInvalidIncentiveMintBuyNotEnoughSolToCoverRentBuyNotEnoughSolToCoverFeesBuySlippageBelowMinTokensOutNameTooLongSymbolTooLongUriTooLongCpitializeMayhemFailedMayhemModeDisabledCreatorMigratedToSharingConfigUnableToDistributeCreatorVaultMigratedToSharingConfigSharingConfigNotActiveUnableToDistributeCreatorFeesToExecutableRecipientBondingCurveAndSharingConfigCreatorMismatchShareholdersAndRemainingAccountsMismatchInvalidShareBpsCashbackNotEnabledAllBuybackFeeRecipientsShouldBeNonZeroNotUniqueBuybackFeeRecipientsBuybackBasisPointsOutOfRangeWrongBuybackFeeRecipientsCountBuybackFeeRecipientMissingUnsupportedQuoteMintInvalidQuoteTokenProgramInvalidAssociatedQuoteBondingCurveQuoteMintWhitelistFullQuoteMintAlreadyWhitelistedQuoteMintNotWhitelistedUnableToDistributeCreatorFeesToUninitializedAccountMayhemModeQuoteMintNotAllowedMissingCashbackAccountsInvalidCashbackAccumulatorInvalidBondingCurveV2InvalidQuoteControlInvalidCashbackRecipientCreatorFeeNotConfigurableCreatorFeeBpsOutOfRangeCreatorFeeNotEditableCreatorFeeNotAllowedForCashbackCoinBondingCurveAlreadyMigratedCashbackDeprecatedHolderRewardCreatorImmutableHolderRewardDisabledHolderRewardRecipientsMismatchHolderRewardsRentFloorHolderRewardTokenAccountMissingCtoNotAllowedForMayhemCoinCtoNewCreatorRequiredCtoNewCreatorNotAllowedCreatorFeeNotConfigurableForQuoteCtoCreatorAccountNotWritableCtoSharedVaultFrozenCashbackCoinNotSupportedCreatorFeesNotSweptFeeTiersEmptyFeeConfigTooShortMultiHopDiscontinuousPathInvalidQuoteBondingCurveQuoteBondingCurveNotEligibleQuotePoolAccountsRequiredQuotePoolNotFoundQuoteReservesOutOfRangeCurveDepthExceededMultiHopHopFeesMismatchQuoteCurveAwaitingMigrationMultiHopMayhemCurveNotSupportedQuoteChainAccountsRequiredQuoteMintNotWritableThe",
+   "UpdateBuybackConfigAn"
+  ],
+  "idl_errors_missing_in_binary": [],
+  "idl_names_without_bare_occurrence": [
+   "AddQuoteControlMint",
+   "Buy",
+   "SetQuoteControlMintReserves",
+   "UpdateBuybackConfig"
+  ],
+  "n_idl_errors": 110,
+  "n_idl_instructions": 56
+ },
+ "pumpswap_vs_idl": {
+  "binary_instruction_tokens_not_idl_names": [
+   "ClaimCashbacksol_destinationbufferidltoIdlAccount",
+   "IdlCloseAccount",
+   "IdlCreateAccountanchor",
+   "IdlResizeAccountdata_len",
+   "IdlSetBuffer",
+   "IdlWrite",
+   "UpdateBuybackConfigAn"
+  ],
+  "idl_errors_missing_in_binary": [],
+  "idl_names_without_bare_occurrence": [
+   "ClaimCashback",
+   "UpdateBuybackConfig"
+  ],
+  "n_idl_errors": 88,
+  "n_idl_instructions": 38
+ }
+}

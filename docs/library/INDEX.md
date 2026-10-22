@@ -32,13 +32,13 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `explored-survivor-unconfirmed` | 6 | 0 | 0 |
 | `parked` | 5 | 0 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 25 | 20 | 1 |
+| `untested` | 28 | 20 | 1 |
 | `desk-read` | 1 | 43 | 0 |
-| `explored-no-survivor` | 11 | 6 | 1 |
+| `explored-no-survivor` | 12 | 6 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 129 | 75 | 2 |
+| **all** | 133 | 75 | 2 |
 
-The file holds 456 rows: the 206 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 460 rows: the 210 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -103,6 +103,9 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `lib-c-R2.SB-H6` | SB-H6: V-floor on custom-pair pools (extra) | Search B October structure (R2) | not in source |
 | `lib-c-R2.SB-H8` | SB-H8: 200 ms slots as a fill-cost parameter (extra) | Search B October structure (R2) | Kill count (prints per active slot within +-10%) via r8/r9 octstruct cell 5, after the FINAL. |
 | `lib-c-R3.tipauth` | tipauth (tip-authoritative base check) | H5 trade-rate levers (R3) | Note: 2026-10-13: gate code (PR #614) and watch tool (PR #635) are on main with the switch OFF; nothing installed or enabled. Still required before enabling: acceptance counts, a parser differential against the installed build, the look-comparison tool, two daily-check alerts, Amendment 8 with the owner's dated acceptance, Helm's install. In the 24 h before 18:49Z: 2 decisions; 13 of 20 refusals were bad_intent:base_breaks_unresolved_settled. Needs its own md5 replay, reviewer and quant-proof passes, then 24 h of side-by-side counts (comment). |
+| `l3-boost-h5q50-1` | H5-BOOSTFLOOR with Q* 50 or 60 (sibling retune of the running H5 books; hunt24 L3 … | BOOST ride variants (hunt24 L3) | Owner/QP decision on the amendment; a Q_STAR_SOL option with default 40 and an md5 decision-equivalence replay; covered halt prefix; P0 on 3 full closed days (not before 10-23). Per DESIGN.md section 3, route 1. |
+| `l3-boost-offband-1` | H5 structure on off-band WSOL pools (V 0.5 to 30 SOL, stake scaled by V; hunt24 L3 … | BOOST ride variants (hunt24 L3) | None until the P0 bar or the pool supply changes. |
+| `l3-boost-custompair-1` | H5 structure on custom-pair (non-WSOL quote) BOOSTed pools: PUMP, USDC, other quotes … | BOOST ride variants (hunt24 L3) | None; see the existing rows boost-universe-1..4 and boost-custom-v2-1..3 for the exploration side. |
 
 ## Owner ideas
 
@@ -338,6 +341,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `lib-c-R2.SB-H9` | SB-H9 (no description in source) | `dead-as-frozen` | "DROPPED" for latency (owner decision O7; 0 of 62 live fills at k at or below 2). |
 | `lib-c-R2.SB-H10` | SB-H10 (fee-share count, KC-B) | `dead-as-frozen` | "DROPPED" by count (KC-B DROP). Share with total fee at or below 35 bps = 0.25; share at or above 100 bps = 0.625; bar DROP at or above 0.50. |
 | `lib-c-R3.union` | Union (second-feed) gate on H5 triggers | `explored-no-survivor` | No status word in source; mapped to explored-no-survivor by librarian choice. "A gate on the union field would have changed no live decision in these 24 h." "No phase-2 proposal on base_breaks_unresolved_settled_union will be made: by these counts it recovers nothing." Websocket-only unmatched prints: 46 not found, 3 found, 1 error across two samples that may overlap, so at … |
+| `w4-gap-xpool-1` | XPOOL: same-mint sibling-pool dislocation, buy the cheaper pool | `explored-no-survivor` | Killed at the structure count, nothing priced: 0 attempts/day on the four exploration blocks (552 h) and 0 on 58 closed October hours. 190 mints have two WSOL pools but 0 of 173 sibling pairs had R real quote >= 10 SOL (dust siblings). October: 4 of 20 pairs reached 10 SOL, gaps look like V-scale mismatches, all 24 raw triggers refused out of the V band. |
 
 ## Duplicate rows
 

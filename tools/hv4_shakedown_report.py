@@ -46,6 +46,7 @@ import json
 import math
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -88,6 +89,9 @@ JOBLOG_MARKERS = {"spend_state_reset": b"spend state unreadable", "state_write_f
 BLOCKED_WORDS = ("ledger", "tip-tape-archive")
 BLOCKED_PREFIXES = ("/data/mal/blocks", "/var/lib/mal/sealed", "/data/mal/kalshi")
 OUTPUT_FORBIDDEN_KEYS = ("pnl", "price", "fill", "outcome", "realized", "est_ret", "tokens_eq", "bankroll")
+FEED_SAMPLE_GAP_MAX_MS = 900_000  # NOTES-2 2(a) with QP B2: a gap above 900 s between consecutive non-null feed samples inside W = check 9 UNMEASURED
+FEED_COVER_MS = 15 * MIN_MS  # first feed sample <= W start + 15 min, last >= W end - 15 min
+KIND_OK = re.compile(r"^[a-z0-9_]{1,40}$")
 TAPE_NAME = re.compile(r"tape-(\d{4}-\d\d-\d\dT\d\d)\.jsonl(\.zst)?$")
 
 
@@ -1068,6 +1072,62 @@ def eval_check_8(L: Logs, samples: list[dict], job: dict) -> dict:
     return chk("8", name, PASS, nums, notes)
 
 
+def scan_tape_gaps(tape: Path, hour_files: dict[int, Path]) -> dict:
+    """Counts-only scan of the tape-hour files: rows with "type": "gap", grouped by (kind, data_loss) and UTC hour, plus the sum of the integer `count` fields of data_loss rows.
+    Nothing else of a row is kept or printed (a kind outside [a-z0-9_]{1,40} is counted as "other"). .zst hours are read through the zstd CLI (this tool imports nothing from tools/)."""
+    per: Counter = Counter()  # (hour_ms, kind, data_loss) -> rows
+    loss_count_sum = 0
+    torn = 0
+    errors: list[str] = []
+    for h, path in sorted(hour_files.items()):
+        proc = None
+        try:
+            guard(path)
+            if path.name.endswith(".zst"):
+                exe = shutil.which("zstd")
+                if exe is None:
+                    errors.append("zstd CLI not found")
+                    continue
+                proc = subprocess.Popen([exe, "-dc", "-q", str(path)], stdout=subprocess.PIPE, stdin=subprocess.DEVNULL)
+                stream = proc.stdout
+            else:
+                stream = open(path, "rb")
+            assert stream is not None
+            try:
+                for ln in stream:
+                    if b'"gap"' not in ln:  # cheap prefilter: only candidate lines are parsed
+                        continue
+                    try:
+                        r = json.loads(ln)
+                    except ValueError:
+                        torn += 1
+                        continue
+                    if not isinstance(r, dict) or r.get("type") != "gap":
+                        continue
+                    k = r.get("kind")
+                    kind = k if isinstance(k, str) and KIND_OK.match(k) else "other"
+                    dl = r.get("data_loss") is True
+                    per[(h, kind, dl)] += 1
+                    c = r.get("count")
+                    if dl and isinstance(c, int) and not isinstance(c, bool) and c >= 0:
+                        loss_count_sum += c
+            finally:
+                stream.close()
+            if proc is not None and proc.wait() != 0:
+                errors.append(f"zstd failed on {iso(h)[:13]}")
+        except Refused:
+            raise
+        except OSError as e:
+            errors.append(f"{type(e).__name__} on {iso(h)[:13]}")
+    by_kind: Counter = Counter()
+    for (h, kind, dl), n in per.items():
+        by_kind[(kind, dl)] += n
+    return {"per_hour": [{"hour": iso(h), "kind": kind, "data_loss": dl, "rows": n} for (h, kind, dl), n in sorted(per.items())],
+            "by_kind": [{"kind": kind, "data_loss": dl, "rows": n} for (kind, dl), n in sorted(by_kind.items())],
+            "gaps_total": sum(by_kind.values()), "gaps_data_loss_true": sum(n for (_, dl), n in by_kind.items() if dl), "gaps_data_loss_false": sum(n for (_, dl), n in by_kind.items() if not dl),
+            "data_loss_disk_reserve": by_kind.get(("disk_reserve", True), 0), "data_loss_rows_count_field_sum": loss_count_sum, "torn_candidate_lines": torn, "errors": errors}
+
+
 def eval_check_9(L: Logs, samples: list[dict], args: argparse.Namespace) -> dict:
     name = "feed #1207 writes throughout; data_loss gaps reported; disk reserve not paused"
     t_lo = L.starts[0]["ms"] if L.starts else None
@@ -1078,15 +1138,24 @@ def eval_check_9(L: Logs, samples: list[dict], args: argparse.Namespace) -> dict
     if not tape.is_dir():
         return chk("9", name, UNM, {}, ["the tape directory is not readable: the check is UNMEASURED"])
     names = sorted(p.name for p in tape.iterdir())
-    hours_missing, hours_n = [], 0
+    hours_missing, hours_zero, hour_files, sizes, hours_n = [], [], {}, {}, 0
     h = t_lo // HOUR_MS * HOUR_MS
     while h <= t_hi:
         hours_n += 1
         stamp = datetime.fromtimestamp(h / 1000, tz=timezone.utc).strftime("tape-%Y-%m-%dT%H.jsonl")
-        if not any(n in (stamp, stamp + ".zst") for n in names):
+        have = [n for n in (stamp, stamp + ".zst") if n in names]
+        if not have:
             hours_missing.append(iso(h))
+        else:
+            hour_files[h] = tape / have[0]
+            try:
+                sizes[iso(h)[:13]] = (tape / have[0]).stat().st_size  # names and byte sizes only (NOTES-2 2(b))
+            except OSError:
+                sizes[iso(h)[:13]] = None
+            if sizes[iso(h)[:13]] == 0:
+                hours_zero.append(iso(h))
         h += HOUR_MS
-    nums: dict[str, Any] = {"utc_hours_in_window": hours_n, "tape_hour_files_missing": hours_missing}
+    nums: dict[str, Any] = {"utc_hours_in_window": hours_n, "tape_hour_files_missing": hours_missing, "tape_hour_files_zero_size": hours_zero, "tape_hour_sizes_bytes": sizes}
     st_path = tape / "arena-feed-status.json"
     if st_path.exists():
         try:
@@ -1097,23 +1166,50 @@ def eval_check_9(L: Logs, samples: list[dict], args: argparse.Namespace) -> dict
         except (ValueError, AttributeError, OSError):
             nums["feed_status_now"] = "unreadable"
     fsamp = [(s["t_ms"], s["feed"]) for s in samples if isinstance(s.get("feed"), dict)]
-    notes = ["data_loss gaps: the status 'gaps' counter covers every gap kind, so the delta is an UPPER bound: data_loss <= N (0 means data_loss 0, measured); the subset needs a tape scan"]
+    notes = ["data_loss gaps: the status 'gaps' counter covers every gap kind, so its delta is an UPPER bound, never the data_loss count; the data_loss count is the counts-only tape scan (kind, data_loss) below"]
     if hours_missing:
         return chk("9", name, FAIL, nums, notes + ["a tape hour file is missing inside the run window"])
+    if hours_zero:
+        return chk("9", name, FAIL, nums, notes + ["a tape hour file has size 0 inside the run window"])
+    scan: dict | None = None
+    try:
+        scan = scan_tape_gaps(tape, hour_files)
+    except Refused:
+        raise
+    except Exception as e:  # noqa: BLE001
+        nums["tape_gap_scan"] = {"input_error": type(e).__name__}
+    if scan is not None:
+        nums["tape_gap_scan"] = scan
+        nums["gaps_total_tape"] = scan["gaps_total"]
+        nums["gaps_data_loss_true_by_kind"] = [{"kind": r["kind"], "rows": r["rows"]} for r in scan["by_kind"] if r["data_loss"]]
+        nums["gaps_data_loss_false_by_kind"] = [{"kind": r["kind"], "rows": r["rows"]} for r in scan["by_kind"] if not r["data_loss"]]
+    if scan is not None and scan["data_loss_disk_reserve"]:  # a measured failure always FAILs, with or without feed samples
+        return chk("9", name, FAIL, nums, notes + ["the tape carries a data_loss gap of kind disk_reserve: that implies the paused-reserve FAIL"])
     if len(fsamp) < 2:
         return chk("9", name, UNM, nums, notes + ["fewer than two feed samples: 'writes throughout' cannot be shown (tape-hour file names only)"])
     paused = sum(1 for _, f in fsamp if f.get("writing_paused"))
     d = lambda k: (fsamp[-1][1].get(k) or 0) - (fsamp[0][1].get(k) or 0)
     stalls = sum(1 for (ta, a), (tb, b) in zip(fsamp, fsamp[1:]) if (b.get("lines_written") or 0) == (a.get("lines_written") or 0) and tb - ta >= MIN_MS)
     negative = [k for k in ("lines_written", "gaps", "pauses", "rows_dropped_total") if any((b.get(k) or 0) < (a.get(k) or 0) for (_, a), (_, b) in zip(fsamp, fsamp[1:]))]
-    nums["feed_samples"] = {"n": len(fsamp), "first": iso(fsamp[0][0]), "last": iso(fsamp[-1][0]), "samples_with_writing_paused": paused, "lines_written_delta": d("lines_written"),
+    inw = [t for t, _ in fsamp if t_lo <= t <= t_hi]
+    gap_ms = max((b - a for a, b in zip(inw, inw[1:])), default=None)
+    nums["feed_samples"] = {"n": len(fsamp), "n_inside_w": len(inw), "first": iso(fsamp[0][0]), "last": iso(fsamp[-1][0]), "first_inside_w": iso(inw[0]) if inw else None, "last_inside_w": iso(inw[-1]) if inw else None,
+                            "max_gap_s_between_non_null_samples_inside_w": None if gap_ms is None else gap_ms // 1000, "samples_with_writing_paused": paused, "lines_written_delta": d("lines_written"),
                             "stalls_no_new_lines_between_samples": stalls, "pauses_delta": d("pauses"), "rows_dropped_delta": d("rows_dropped_total"), "data_loss_upper_bound_gaps_all_kinds_delta": d("gaps"),
                             "negative_deltas": negative}
-    notes.append(f"feed samples cover {iso(fsamp[0][0])} to {iso(fsamp[-1][0])}; before the first sample 'writes throughout' rests on the tape-hour file names only")
+    notes.append(f"feed samples cover {iso(fsamp[0][0])} to {iso(fsamp[-1][0])}; inside W: {iso(inw[0]) if inw else None} to {iso(inw[-1]) if inw else None}")
     if paused or d("pauses") or d("rows_dropped_total") or stalls:
         return chk("9", name, FAIL, nums, notes + ["a paused disk reserve means the shakedown is extended, not passed (SHAKEDOWN-CHECKS-2 check 9)"])
+    if scan is None or scan["errors"]:
+        return chk("9", name, UNM, nums, notes + ["the counts-only tape gap scan did not complete: data_loss gaps are not measured"])
+    if not inw or inw[0] > t_lo + FEED_COVER_MS or inw[-1] < t_hi - FEED_COVER_MS:
+        return chk("9", name, UNM, nums, notes + ["the feed samples do not cover W (first <= W start + 15 min and last >= W end - 15 min required): not waived, not replaced by later evidence"])
+    if gap_ms is not None and gap_ms > FEED_SAMPLE_GAP_MAX_MS:
+        return chk("9", name, UNM, nums, notes + [f"a gap of {gap_ms // 1000} s (above 900 s) between consecutive non-null feed samples inside W: 'writes throughout' is not measured"])
     if negative:
         return chk("9", name, UNM, nums, notes + ["a negative counter delta means the feed restarted and reset its counters: the deltas are not comparable"])
+    if scan["gaps_data_loss_true"] > d("gaps"):
+        return chk("9", name, UNM, nums, notes + [f"disagreement: {scan['gaps_data_loss_true']} data_loss gap rows in the tape exceed the status all-kinds delta {d('gaps')}"])
     return chk("9", name, PASS, nums, notes)
 
 
@@ -2068,6 +2164,7 @@ def build_report(args: argparse.Namespace) -> dict:
     trim = trim if isinstance(trim, list) else [trim]
     unplanned = len(starts) > 2
     mem = safe("QP-M1", "memory", eval_memory, samples, starts, windows, args.rss_point_ms, args.memory_max_mb, args.host_cap_mb, args.read_hours, unplanned)
+    mem["informational"] = True  # NOTES-2 section 3: QP-M1 is shown, its numbers kept, and it is left out of the verdict (the memory evidence is ruling item 16)
     extra = trim + [mem] + (r3["extra"] if rev3 else [])
     allc = checks + extra
     expect_end = parse_iso(args.expect_end)

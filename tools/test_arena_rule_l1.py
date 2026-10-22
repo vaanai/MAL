@@ -1,0 +1,459 @@
+"""L1 FLOOR-OPTION v2 streaming port: pool table, rule, v2 host, restart, frozen v1 files. Synthetic tape only. Nothing here says the rule makes money."""
+
+from __future__ import annotations
+
+import collections
+import hashlib
+import json
+from pathlib import Path
+
+import pytest
+
+from tools import arena_pool_table as PT
+from tools import arena_rule_l1 as L
+from tools.arena_pool_table import PoolTable
+from tools.arena_rules import HostConfig, register_rules
+from tools.arena_rules_testkit import FakeEngine, write_tape
+from tools.arena_rules_v2 import HostV2, load_rules_v2
+from tools.arena_state import ArenaState
+
+REPO = Path(__file__).resolve().parent.parent
+HOUR = 3_600_000
+H0 = 1_792_000_000_000 // HOUR * HOUR  # an hour boundary
+WSOL = PT.WSOL
+V = 17_600_000_000
+SOLX = 1_000_000_000
+SHA = "abcdef1234567"
+
+
+@pytest.fixture(autouse=True)
+def _env(monkeypatch):
+    monkeypatch.setenv("MAL_ARENA_TEST", "1")
+    monkeypatch.setattr("tools.arena_paper.shutil.disk_usage", lambda path: collections.namedtuple("Usage", "total used free")(1000, 500, 500))
+
+
+def row(t, pool, side="buy", q=10 * SOLX, sol=200_000_000, v=V, mint=None, quote=WSOL, n=0):
+    return {"v": 1, "type": "trade", "prog": "pumpswap", "venue": "pumpswap", "slot": 1000 + (t - H0) // 400, "t_recv_ms": t, "signature": f"s{t}-{pool}-{n}", "event_index": 0,
+            "pool": pool, "mint": mint or "M" + pool, "trader": "tr", "side": side, "sol_lamports": sol, "token_raw": sol * 1000, "quote_reserve": q, "base_reserve": 10**12,
+            "virtual_quote_reserves": v, "quote_mint": quote, "event_ts": t // 1000}
+
+
+def pool_rows(drop_quote=WSOL, with_drop=True, p="P"):
+    """Filler pool X at hour 0; P first prints at 4 h (V in band), every 30 min to 29 h, then a drained-pool SELL at 30 h 15 min (age 26.25 h)."""
+    rows = [row(H0 + 1000, "X")]
+    t = H0 + 4 * HOUR
+    while t <= H0 + 29 * HOUR:
+        rows.append(row(t, p, "buy" if (t // 1800000) % 2 else "sell"))
+        t += 1_800_000
+    if with_drop:
+        rows.append(row(H0 + 30 * HOUR + 900_000, p, "sell", q=600_000_000, sol=200_000_000, quote=drop_quote))
+    return sorted(rows, key=lambda r: r["t_recv_ms"])
+
+
+def _first_print_rules():
+    """The synthetic tapes carry no create / complete rows; the registration default is mode complete (TABLE_MODE), so these tests ask for the first_print proxy."""
+    rules = load_rules_v2(["l1-floor-v2"])
+    for r in rules:
+        r.table_mode = "first_print"
+    return rules
+
+
+def run_host(tmp, rows, hours=70, evict_min=None, table=None):
+    tape = tmp / "tape"
+    if not tape.exists():
+        write_tape(tape, rows)
+    rules = _first_print_rules()
+    reg = tmp / "bots.json"
+    if not reg.exists():
+        register_rules(rules, str(reg), SHA, H0, now_ms=H0 - 1, verify_sha=False)
+    kw = {} if evict_min is None else {"evict_idle_min": evict_min}
+    state = ArenaState(tape, start_ms=0, **kw)
+    cfg = HostConfig(root=str(tmp / "rules"), registry=str(reg), frozen_sha=SHA, clock_start_ms=H0)
+    host = HostV2(cfg, rules, state, FakeEngine(tmp / "rules"), table=table)
+    host.run(H0, H0 + hours * HOUR)
+    return host
+
+
+def entries(host):
+    return [r for r in host.log.rows("l1-floor-v2") if r.get("kind") == "entry"]
+
+
+# ------------------------------------------------------------------------------------------------ pool table
+def test_table_universe_rules():
+    t = PoolTable("first_print")
+    rows = [row(H0 + 1000, "X"),  # sets t0 = H0
+            row(H0 + 4 * HOUR, "A", mint="MA"), row(H0 + 5 * HOUR, "B", mint="MA"),  # B: second pool of mint MA is not canonical
+            row(H0 + 4 * HOUR, "C", v=25 * SOLX), row(H0 + 2 * HOUR, "D"),  # C: V out of band; D: first print < t0 + 3 h
+            row(H0 + 6 * HOUR, "E", quote="Other111")]  # not WSOL: never seen
+    for r in rows:
+        t.update(r)
+    assert t.base("A") == (H0 + 4 * HOUR) // 1000 and t.base("B") is None and t.base("C") is None and t.base("D") is None and "E" not in t.seen
+    assert t.t0 == H0 // 1000 and set(t.prints) == {"A"}
+
+
+def test_table_complete_mode():
+    t = PoolTable("complete")
+    ts = (H0 + 4 * HOUR) // 1000
+    t.update({"type": "create", "t_recv_ms": H0, "mint": "MA", "is_mayhem_mode": False, "signature": "c1"})
+    t.update({"type": "create", "t_recv_ms": H0, "mint": "MB", "is_mayhem_mode": True, "signature": "c2"})
+    for m in ("MA", "MB", "MC"):
+        t.update({"type": "complete", "t_recv_ms": H0 + 1, "mint": m, "event_ts": ts - 30, "signature": "k" + m})
+    t.update(row(H0 + 4 * HOUR, "A", mint="MA"))
+    t.update(row(H0 + 4 * HOUR + 1, "B", mint="MB"))  # mayhem
+    t.update(row(H0 + 4 * HOUR + 2, "C", mint="MC"))  # no create row
+    assert t.base("A") == ts - 30 and t.base("B") is None and t.base("C") is None
+
+
+def test_table_checkpoint_roundtrip_and_overlap(tmp_path):
+    rows = pool_rows()
+    full = PoolTable()
+    for r in rows:
+        full.update(r)
+    half = PoolTable()
+    for r in rows[:30]:
+        half.update(r)
+    half.checkpoint(tmp_path / "t.pkl")
+    again = PoolTable.load(tmp_path / "t.pkl")
+    for r in rows[25:]:  # the warm-up feeds rows the checkpoint already holds
+        again.update(r)
+    assert again.to_dict() == full.to_dict()
+
+
+def test_table_rebuild_from_tape_equals_incremental(tmp_path):
+    rows = pool_rows()
+    write_tape(tmp_path / "tape", rows)
+    inc = PoolTable()
+    for r in rows:
+        inc.update(r)
+    rb = PoolTable()
+    rb.rebuild(tmp_path / "tape", H0 + 200 * HOUR)
+    assert rb.to_dict() == inc.to_dict()
+    cut = PoolTable()
+    n = cut.rebuild(tmp_path / "tape", H0 + 10 * HOUR)
+    cut2 = PoolTable.from_dict(cut.to_dict())
+    cut2.rebuild(tmp_path / "tape", H0 + 200 * HOUR)
+    assert n > 0 and cut2.to_dict() == inc.to_dict()
+
+
+def test_table_windows_trim_and_sweep():
+    t = PoolTable()
+    for r in pool_rows():
+        t.update(r)
+    pp = t.pool_prints("P")
+    assert min(pp.hidx) >= (H0 + 30 * HOUR + 900_000) // HOUR - (PT.HIST_HOURS - 1)
+    t.sweep(H0 + 400 * HOUR)
+    assert "P" not in t.prints and t.base("P") is not None  # arrays freed, the pool stays known
+
+
+# ------------------------------------------------------------------------------------------------ rule through the v2 host
+def test_entry_once_with_kit_fields(tmp_path):
+    host = run_host(tmp_path, pool_rows(), hours=34)
+    e = entries(host)
+    assert len(e) == 1 and e[0]["pool"] == "P"
+    m = e[0]["meta"]
+    assert (m["cell"], m["hold_s"], m["tp"]) == ("l1", 86400.0, 1.5) and m["age_s"] >= L.AGE_LO and m["r6"] < 0.8 and m["vol24_sol"] >= 1.0
+    assert not host.hook_errors and host.fatal is None
+
+
+def test_non_wsol_quote_on_the_deciding_row_is_refused(tmp_path):
+    host = run_host(tmp_path, pool_rows(drop_quote="Other111"), hours=34)  # QP C8: the row's own quote mint
+    assert entries(host) == []
+    host2 = run_host(tmp_path / "n", pool_rows(drop_quote=None), hours=34)
+    assert entries(host2) == []
+
+
+@pytest.mark.parametrize("change,why", [({"v": 25 * SOLX}, "v out of band"), ({"q": 5 * SOLX}, "vault above 0.5 SOL"), ({"side": "buy"}, "not a sell")])
+def test_each_entry_condition_blocks(tmp_path, change, why):
+    rows = pool_rows()
+    rows[-1] = {**row(rows[-1]["t_recv_ms"], "P", "sell", q=600_000_000), **{}}
+    r = rows[-1]
+    if "v" in change:
+        r["virtual_quote_reserves"] = change["v"]
+    if "q" in change:
+        r["quote_reserve"] = change["q"]
+    if "side" in change:
+        r["side"] = change["side"]
+    assert entries(run_host(tmp_path, rows, hours=34)) == [], why
+
+
+def test_age_below_24h_and_stale_previous_print_block(tmp_path):
+    rows = [r for r in pool_rows() if r["pool"] != "P" or r["t_recv_ms"] > H0 + 12 * HOUR]  # first P print at 12.5 h: age at the drop = 17.75 h
+    assert entries(run_host(tmp_path, rows, hours=34)) == []
+    rows = [r for r in pool_rows() if not (H0 + 24 * HOUR < r["t_recv_ms"] < H0 + 30 * HOUR)]  # nothing in the 6 h before the drop print
+    assert entries(run_host(tmp_path / "b", rows, hours=34)) == []
+
+
+def test_low_volume_blocks(tmp_path):
+    rows = pool_rows()
+    for r in rows:
+        if r["pool"] == "P":
+            r["sol_lamports"] = 1_000_000
+    rows[-1]["sol_lamports"] = 1_000_000
+    assert entries(run_host(tmp_path, rows, hours=34)) == []
+
+
+def test_table_survives_state_eviction(tmp_path):
+    host = run_host(tmp_path, pool_rows(), hours=34, evict_min=20)  # the state forgets a pool idle 20 min; the table does not
+    assert len(entries(host)) == 1
+
+
+def test_time_exit_and_cooldown_reentry(tmp_path):
+    host = run_host(tmp_path, pool_rows(), hours=55)
+    ex = [r for r in host.log.rows("l1-floor-v2") if r.get("kind") == "exit"]
+    e = entries(host)
+    assert len(ex) == 1 and ex[0]["reason"] == L.REASON_TIME
+    assert ex[0]["ms"] >= e[0]["ms"] + 86_400_000 + 1_900 and ex[0]["ms"] < e[0]["ms"] + 86_400_000 + 4_000
+    assert host.table.exit_ms("P") == ex[0]["ms"]
+
+
+def test_take_profit_on_post_trade_spot(tmp_path):
+    rows = pool_rows()
+    t = rows[-1]["t_recv_ms"]
+    rows.append(row(t + 10_000, "P", "sell", q=400_000_000, sol=1_000_000))  # the landing print (>= decision slot + 7 + k + 1): the mark is its pre-trade state with our buy
+    rows.append(row(t + 60_000, "P", "buy", q=60 * SOLX, sol=50_000_000))  # the spot is several times the mark
+    host = run_host(tmp_path, rows, hours=34)
+    ex = [r for r in host.log.rows("l1-floor-v2") if r.get("kind") == "exit"]
+    assert len(entries(host)) == 1 and [x["reason"] for x in ex] == [L.REASON_TP]
+
+
+def test_cooldown_blocks_a_second_entry_within_60s(tmp_path):
+    rows = pool_rows()
+    t = rows[-1]["t_recv_ms"]
+    rows.append(row(t + 10_000, "P", "sell", q=400_000_000, sol=1_000_000))
+    rows.append(row(t + 60_000, "P", "buy", q=60 * SOLX, sol=50_000_000))  # tp exit at t + 60 s
+    rows.append(row(t + 70_000, "P", "sell", q=600_000_000))  # a second qualifying sell 10 s after the exit decision
+    host = run_host(tmp_path, rows, hours=34)
+    assert len(entries(host)) == 1
+
+
+# ------------------------------------------------------------------------------------------------ restart
+def test_restart_keeps_table_and_positions_in_log(tmp_path):
+    first = run_host(tmp_path, pool_rows(), hours=34)
+    first.save_table()
+    assert len(entries(first)) == 1
+    again = PoolTable.load(first.table_path)
+    assert again.to_dict() == first.table.to_dict() and again.base("P") == first.table.base("P")
+    # a new host over the same logs rebuilds the book from the decision log (the real engine would book the position engine_restart: tools/arena_rules_v2.py docstring)
+    rules = _first_print_rules()
+    state = ArenaState(tmp_path / "tape", start_ms=0)
+    cfg = HostConfig(root=str(tmp_path / "rules"), registry=str(tmp_path / "bots.json"), frozen_sha=SHA, clock_start_ms=H0)
+    host = HostV2(cfg, rules, state, first.engine)
+    host.resume()
+    assert host.table.base("P") == first.table.base("P") and len(host.books["l1-floor-v2"].open) == 1 and len(entries(host)) == 1
+
+
+# ------------------------------------------------------------------------------------------------ report-only K = 4 leg
+def test_fifo_cap_k4():
+    e = [(i * 10, None) for i in range(6)]
+    r = L.fifo_cap(e, 4)
+    assert (r["taken"], r["skipped"], r["peak_open"]) == (4, 2, 4)
+    e = [(0, 5), (1, 5), (2, 5), (3, 5), (6, 20), (7, 20)]  # the first four exit at 5: the later two fit
+    assert L.fifo_cap(e, 4)["taken"] == 6
+
+
+# ------------------------------------------------------------------------------------------------ frozen v1 files
+def test_v1_host_and_rule_files_are_unchanged():
+    pins = {"tools/arena_rules.py": "048dd78901c52e0c14fe9b1611f354c49ac6d0bb37fad8e5be3e27c756e3e2af", "tools/arena_paper.py": "9d2fdb04a3da9bb38de9e30c91154f5a9ab2de513e6f4d7936c1eb1a54863514",
+            "tools/arena_rule_h2ps.py": "1e2d3db5f60f987a3221d225f23c9864dffa5b86e161d35f2fbb90ad3eb189d2", "tools/arena_rule_j3.py": "614f082aae28c335a7c93d219d5962ebcc9f6d597c081fde15569e976859a9e7",
+            "scripts/research/arena-rules-job.sh": "42ceb0360b1aa6f7d66a3b21b49f97148805a514bfce97986a8ae5198b08da43"}
+    for rel, sha in pins.items():
+        assert hashlib.sha256((REPO / rel).read_bytes()).hexdigest() == sha, rel
+
+
+def test_rule_source_has_no_banned_family_and_keeps_wsol_first():
+    src = (REPO / "tools" / "arena_rule_l1.py").read_text()
+    on_row = src.split("def on_row")[1].split("quote_mint")[0]
+    assert "virtual_quote_reserves" not in on_row  # the quote test comes before the V test
+    assert json.dumps(L.make_rule().table_mode) == '"complete"'  # registration mode; first_print is the oracle-live proxy only
+
+
+def test_tp_reference_is_the_post_buy_mark_not_the_decision_spot(tmp_path):
+    """RECONCILE.md section 4: after a sell cascade the decision-slot spot is far above the entry price. A print at 1.2x the mark must NOT take profit; 1.6x must."""
+    rows = pool_rows()
+    t = rows[-1]["t_recv_ms"]
+    rows.append(row(t + 10_000, "P", "sell", q=400_000_000, sol=1_000_000))
+    rows.append(row(t + 30_000, "P", "buy", q=5 * SOLX, sol=10_000_000))  # spot (5 + 17.6) / (22.6 / 18.0 -> 1.25x) stays under 1.5x
+    host = run_host(tmp_path, rows, hours=34)
+    mark = next(iter(host.table.marks.values()))[0]
+    assert mark > 0 and not [r for r in host.log.rows("l1-floor-v2") if r.get("kind") == "exit"]
+
+
+def test_registration_mode_complete_enters_nothing_without_create_and_complete_rows(tmp_path):
+    """The registered default (TABLE_MODE complete) needs the mint's create and complete rows; the tape that enters under first_print gives no universe pool here."""
+    import tools.arena_rule_l1 as L1
+    assert L1.TABLE_MODE == "complete" and L1.make_rule().table_mode == "complete"
+    rows = pool_rows()
+    base = tmp_path / "fp"
+    base.mkdir()
+    assert len(entries(run_host(base, rows))) == 1  # first_print (the helper's rules)
+    cdir = tmp_path / "cm"
+    cdir.mkdir()
+    tape = cdir / "tape"
+    write_tape(tape, rows)
+    rules = load_rules_v2(["l1-floor-v2"])  # the registered default
+    reg = cdir / "bots.json"
+    register_rules(rules, str(reg), SHA, H0, now_ms=H0 - 1, verify_sha=False)
+    host = HostV2(HostConfig(root=str(cdir / "rules"), registry=str(reg), frozen_sha=SHA, clock_start_ms=H0), rules, ArenaState(tape, start_ms=0), FakeEngine(cdir / "rules"))
+    host.run(H0, H0 + 70 * HOUR)
+    assert entries(host) == []
+
+
+def test_table_complete_row_after_the_first_print_still_admits_the_pool():
+    """Live, the complete row often arrives after the pool's first print (C4, 16 of 21 mints in one hour); the kit's tables are global. The pool is decided when the row arrives."""
+    ts = (H0 + 4 * HOUR) // 1000
+    t = PoolTable("complete")
+    t.update(row(H0 + 4 * HOUR, "A", mint="MA"))
+    t.update(row(H0 + 4 * HOUR + 1, "B", mint="MB"))
+    t.update(row(H0 + 4 * HOUR + 2, "C", mint="MC"))
+    t.update(row(H0 + 4 * HOUR + 3, "D", mint="MD"))
+    assert t.base("A") is None and set(t.pending) == {"MA", "MB", "MC", "MD"}
+    for m, may in (("MA", False), ("MB", True), ("MC", False), ("MD", False)):
+        t.update({"type": "create", "t_recv_ms": H0 + 4 * HOUR + 10, "mint": m, "is_mayhem_mode": may, "signature": "c" + m})
+    t.update({"type": "complete", "t_recv_ms": H0 + 4 * HOUR + 11, "mint": "MA", "event_ts": ts + 1, "signature": "kA"})  # M - 5 <= first print
+    t.update({"type": "complete", "t_recv_ms": H0 + 4 * HOUR + 11, "mint": "MB", "event_ts": ts, "signature": "kB"})  # mayhem
+    t.update({"type": "complete", "t_recv_ms": H0 + 4 * HOUR + 11, "mint": "MC", "event_ts": ts - 700, "signature": "kC"})  # first print > M + 600
+    assert t.base("A") == ts + 1 and t.base("B") is None and t.base("C") is None and t.base("D") is None
+    assert "MA" not in t.pending and "MB" not in t.pending and "MD" in t.pending
+    assert "A" in t.prints and "B" not in t.prints and "C" not in t.prints and "D" in t.prints and len(t.prints["A"]) == 1
+    t.update(row(H0 + 4 * HOUR + 5000, "A", mint="MA"))
+    assert len(t.prints["A"]) == 2
+    t2 = PoolTable.from_dict(t.to_dict())
+    assert t2.pending == t.pending and t2.base("A") == t.base("A")
+    t.update(row(H0 + 6 * HOUR, "A", mint="MA"))  # sweep only forgets what the applied rows' own time has outrun
+    t.sweep(H0 + 6 * HOUR)  # MD never got its rows: forgotten after an hour
+    assert "MD" not in t.pending and "D" not in t.prints and "A" in t.prints
+
+
+def _mig_rows(t, mint, ts_event):
+    return [{"type": "create", "t_recv_ms": t, "mint": mint, "is_mayhem_mode": False, "signature": "c" + mint},
+            {"type": "complete", "t_recv_ms": t, "mint": mint, "event_ts": ts_event, "signature": "k" + mint}]
+
+
+def test_table_second_pool_of_a_mint_is_admitted_when_the_first_pending_pool_fails():
+    """Reviewer item 1: A's first print is outside [M-5, M+600], B's is inside, the row comes after both. The kit sets canon only on ok and admits B."""
+    t0 = H0 + 4 * HOUR
+    M = t0 // 1000 + 100
+    t = PoolTable("complete")
+    t.update(row(t0, "A", mint="MX"))  # first print at M - 100: outside the window
+    t.update(row(t0 + 100_000, "B", mint="MX"))  # at M: inside
+    t.update(row(t0 + 101_000, "C", mint="MX"))  # also inside, later: the kit takes the first ok pool
+    assert set(t.pending) == {"MX"} and len(t.pending["MX"]) == 3
+    for r in _mig_rows(t0 + 102_000, "MX", M):
+        t.update(r)
+    assert t.base("A") is None and t.base("C") is None and t.base("B") == M and t.canon["MX"] == "B"
+    assert "A" not in t.prints and "C" not in t.prints and "B" in t.prints and not t.pending
+
+
+def test_table_pending_expiry_is_event_time_not_sweep_phase():
+    """Reviewer item 2: the same rows, with the hourly sweep at different instants (or never), give identical decisions."""
+    t0 = H0 + 4 * HOUR
+    M = t0 // 1000 + 1
+
+    def play(sweeps):
+        t = PoolTable("complete")
+        t.update(row(t0, "A", mint="MA"))
+        t.update(row(t0 + 1, "B", mint="MB"))
+        for s in sweeps:
+            t.sweep(s)
+        for r in _mig_rows(t0 + 1_800_000, "MA", M):  # inside the horizon
+            t.update(r)
+        t.update(row(t0 + 1_800_001, "Z", mint="MZ"))
+        for s in sweeps:
+            t.sweep(s + 1_800_000)
+        for r in _mig_rows(t0 + 5_400_000, "MB", M + 1):  # past it
+            t.update(r)
+        return (dict(t.uni), dict(t.canon), sorted(t.prints))
+
+    base = play([])
+    assert base[0] == {"A": M}
+    for sweeps in ([t0 + 10_000], [t0 + 1_000_000, t0 + 3_000_000], [t0 + 7_200_000]):
+        assert play(sweeps) == base
+
+
+def test_table_sizes_and_old_pending_format():
+    t = PoolTable("complete")
+    t.update(row(H0 + 4 * HOUR, "A", mint="MA"))
+    s = t.sizes()
+    assert s["seen"] == 1 and s["pending_pools"] == 1 and s["have"] == 0 and s["mig"] == 0
+    d = t.to_dict()
+    d["pending"] = {"MA": ("A", t.pending["MA"][0][1])}  # a checkpoint written before the list format
+    assert PoolTable.from_dict(d).pending == t.pending
+
+
+# ---- engine print history is bounded (C4(iii) OOM, 2026-10-22: ArenaEngine kept every print of every pool; ~450 MB per arena hour)
+def test_host_v2_trims_the_engine_history_every_five_tape_minutes(tmp_path):
+    from tools.arena_rules_v2 import ENGINE_TRIM_EVERY_MS
+
+    class TrimEngine(FakeEngine):
+        trims = 0
+
+        def trim_history(self):
+            TrimEngine.trims += 1
+            return 0
+
+    TrimEngine.trims = 0
+    tape = tmp_path / "tape"
+    write_tape(tape, [row(H0 + 1000, "X")])
+    rules = _first_print_rules()
+    reg = tmp_path / "bots.json"
+    register_rules(rules, str(reg), SHA, H0, now_ms=H0 - 1, verify_sha=False)
+    host = HostV2(HostConfig(root=str(tmp_path / "rules"), registry=str(reg), frozen_sha=SHA, clock_start_ms=H0), rules, ArenaState(tape, start_ms=0), TrimEngine(tmp_path / "rules"))
+    host.run(H0, H0 + HOUR)
+    zero = {"rows_below_trim_floor": 0, "refused_history_trimmed": 0, "hist_trimmed_prints": 0, "rows_dup": 0}
+    assert host.status()["trim_counters"] == zero  # an engine without the counters reads 0, consistently
+    assert host.last_ckpt_report["trim_counters"] == zero
+    assert ENGINE_TRIM_EVERY_MS == 300_000
+    assert TrimEngine.trims == HOUR // ENGINE_TRIM_EVERY_MS  # 12 an hour, on the tick clock (deterministic in replay)
+
+
+def test_host_v2_bounds_real_engine_print_history_and_keeps_entry_decisions(tmp_path):
+    """A real ArenaEngine under HostV2 holds a bounded number of prints per idle pool, and the entries equal those of a host whose engine is never trimmed."""
+    from tools import arena_paper as AP
+    from tools.arena_paper import ArenaEngine
+    import tools.arena_rules_v2 as V2
+
+    def go(sub, every):
+        tmp = tmp_path / sub
+        tmp.mkdir()
+        rows = pool_rows()
+        for k in range(3000):  # a busy idle-after pool: many prints that no later buy can read
+            t = H0 + HOUR + k * 1000
+            rows.append(row(t, "BUSY", "buy" if k % 2 else "sell", n=k))
+        rows.sort(key=lambda r: r["t_recv_ms"])
+        write_tape(tmp / "tape", rows)
+        rules = _first_print_rules()
+        register_rules(rules, str(tmp / "bots.json"), SHA, H0, now_ms=H0 - 1, verify_sha=False)
+        old = V2.ENGINE_TRIM_EVERY_MS
+        V2.ENGINE_TRIM_EVERY_MS = every
+        try:
+            eng = ArenaEngine(str(tmp / "ledger"), str(tmp / "bots.json"), cfg=__import__("tools.arena_rules", fromlist=["x"]).stack_config(7))
+            host = HostV2(HostConfig(root=str(tmp / "rules"), registry=str(tmp / "bots.json"), frozen_sha=SHA, clock_start_ms=H0), rules, ArenaState(tmp / "tape", start_ms=0), eng)
+            host.run(H0, H0 + 40 * HOUR)
+        finally:
+            V2.ENGINE_TRIM_EVERY_MS = old
+        return host, eng
+
+    h_off, e_off = go("off", 10**15)
+    h_on, e_on = go("on", 300_000)
+    assert [(r["ms"], r["order_id"]) for r in entries(h_on)] == [(r["ms"], r["order_id"]) for r in entries(h_off)]
+    n_off = sum(len(h.slot) for h in e_off.pools.values())
+    n_on = sum(len(h.slot) for h in e_on.pools.values())
+    assert n_off >= 3000 and n_on < n_off // 2, (n_on, n_off)
+    tc = h_on.status()["trim_counters"]
+    assert tc["refused_history_trimmed"] == 0 and tc["rows_below_trim_floor"] == 0, tc
+    assert tc["hist_trimmed_prints"] > 0 and h_off.status()["trim_counters"]["hist_trimmed_prints"] == 0
+    assert h_on.last_ckpt_report["trim_counters"] == tc
+
+
+def test_trim_counters_on_the_done_line(tmp_path, capsys):
+    from tools.arena_rules_v2 import canon
+    tape = tmp_path / "tape"
+    write_tape(tape, [row(H0 + 1000, "X")])
+    rules = _first_print_rules()
+    reg = tmp_path / "bots.json"
+    register_rules(rules, str(reg), SHA, H0, now_ms=H0 - 1, verify_sha=False)
+    host = HostV2(HostConfig(root=str(tmp_path / "rules"), registry=str(reg), frozen_sha=SHA, clock_start_ms=H0), rules, ArenaState(tape, start_ms=0), FakeEngine(tmp_path / "rules"))
+    host.run(H0, H0 + 60_000)
+    line = canon({"done": host.status()})  # the exact expression main() prints
+    for k in ("rows_below_trim_floor", "refused_history_trimmed", "hist_trimmed_prints", "rows_dup"):
+        assert f'"{k}":0' in line.replace(" ", ""), (k, line)
