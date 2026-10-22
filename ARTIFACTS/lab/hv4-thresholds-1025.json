@@ -1,8 +1,7 @@
 {
-  "_DRAFT": "NOT PINNED. Draft of the DEC-031 Am.6 item 2.3 thresholds for HV4 (QP-RULING-1022-hv4-am6 L7). Format: tools/arena_hour_health.py --thresholds ({check: {value, label}}). The tool accepts only the five check keys; strip every key that starts with an underscore, and replace the FILL value, before hashing and pinning. As written the file is REFUSED by the tool on purpose (max_input_age_s.value is null).",
+  "_DRAFT": "NOT PINNED. Draft of the DEC-031 Am.6 item 2.3 thresholds for HV4 (QP-RULING-1022-hv4-am6 L7). Format: tools/arena_hour_health.py@227f92be (sha256 227f92be466fec0bd6c6502bcece6b2e7755d0a675a30d08a2dd79d6353903b5) --thresholds ({check: {value, label}}). The tool accepts only the five check keys; strip every key that starts with an underscore, and replace the FILL value, before hashing and pinning. As written the file is REFUSED by the tool on purpose (max_input_age_s.value is null).",
   "_not_in_this_file": [
     "tape-hour file present with size > 0 (price-path): not a threshold; the tool treats a missing or zero-size tape hour as a tape-level failure carrying both labels.",
-    "feed-status writing_paused never true, pauses and rows_dropped_total deltas 0 (price-path): arena_hour_health@71a6142a has no check for these. FILL: QP says whether a second pinned counts-only tool reads them, or whether the 900 s sample-gap check is the only sampler check. Owner: manager + QP, before the registration record.",
     "Holders/prefetch age is stamped by HV4's own process: report-only, never excludes (Am.6 2.2, QP 6349425527). No threshold."
   ],
   "max_gap_s": {
@@ -24,5 +23,25 @@
     "value": null,
     "label": "decision-input",
     "_FILL": "X seconds: decision-input staleness = scan instant minus the newest tape row's feed-stamped t_recv_ms. From: the PRE-WINDOW tape only (hours before 2026-10-25T00:00Z, outside the D2/D3 seal hours [2026-10-02T10, 2026-10-16T01)), as a counts-only silence distribution, with the percentile rule written FIRST. Who: QP names the rule and X; manager runs arena_hour_health counts-only. By: before the registration record is notebooked (registration before 2026-10-24T23:00Z)."
+  },
+  "feed_max_nonnull_gap_s": {
+    "value": 900,
+    "label": "price-path",
+    "_note": "QP 6350625135"
+  },
+  "feed_writing_paused": {
+    "value": 0,
+    "label": "price-path",
+    "_note": "QP 6350625135"
+  },
+  "feed_pauses_delta": {
+    "value": 0,
+    "label": "price-path",
+    "_note": "QP 6350625135"
+  },
+  "feed_rows_dropped_delta": {
+    "value": 0,
+    "label": "price-path",
+    "_note": "QP 6350625135"
   }
 }
