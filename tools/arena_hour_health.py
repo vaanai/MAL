@@ -81,6 +81,7 @@ def scan_hour(path: Path) -> dict:
     gaps: Counter = Counter()
     max_span_ms: int | None = None
     recv: list[int] = []
+    torn = 0
     err = None
     proc = None
     try:
@@ -95,11 +96,16 @@ def scan_hour(path: Path) -> dict:
         assert stream is not None
         try:
             for ln in stream:
+                core = ln.strip()
+                if core and (not ln.endswith(b"\n") or not core.startswith(b"{") or not core.endswith(b"}")):
+                    torn += 1  # a torn tail or a cut line: the hour is unmeasurable, never silently clean
+                    continue
                 m = RECV_RE.search(ln)
                 if b'"gap"' in ln:
                     try:
                         r = json.loads(ln)
                     except ValueError:
+                        torn += 1
                         continue
                     if isinstance(r, dict) and r.get("type") == "gap":
                         k = r.get("kind")
@@ -118,7 +124,7 @@ def scan_hour(path: Path) -> dict:
             err = "zstd failed"
     except OSError as e:
         err = type(e).__name__
-    return {"gaps": gaps, "max_span_ms": max_span_ms, "recv": recv, "error": err}
+    return {"gaps": gaps, "max_span_ms": max_span_ms, "recv": recv, "torn": torn, "error": err}
 
 
 def tape_age_ms(recv: list[int], h: int) -> int | None:
@@ -165,11 +171,14 @@ def sample_stats(samples: list[tuple[int, int | None]], h: int) -> dict:
     pts = [max(lo, h) if lo is not None else h] + [t for t, _ in inside] + [min(hi, h + HOUR_MS) if hi is not None else h + HOUR_MS]
     max_gap = max(b - a for a, b in zip(pts, pts[1:]))
     ages = [t - u for t, u in inside if u is not None and t >= u]
-    return {"n": len(inside), "max_gap_ms": max_gap, "max_age_ms": max(ages) if ages else None, "n_with_feed_time": len(ages)}
+    bad = len(inside) - len(ages)  # no feed time or negative age: the age is not measurable for the hour
+    return {"n": len(inside), "max_gap_ms": max_gap, "max_age_ms": max(ages) if ages and not bad else None, "n_with_feed_time": len(ages), "bad_age_samples": bad}
 
 
 def evaluate(tape_dir: Path, samples_path: Path | None, h0: int, h1: int, thr: dict) -> list[dict]:
     tape_dir = guard(tape_dir)
+    if not tape_dir.is_dir():
+        raise NotADirectoryError("tape dir missing or unreadable")
     names = sorted(p.name for p in tape_dir.iterdir() if TAPE_NAME.match(p.name)) if tape_dir.is_dir() else []
     samples, sample_errs = load_samples(samples_path)
     rows = []
@@ -179,6 +188,7 @@ def evaluate(tape_dir: Path, samples_path: Path | None, h0: int, h1: int, thr: d
         have = [n for n in (stamp, stamp + ".zst") if n in names]
         failed: list[str] = []
         unmeasurable: list[str] = []
+        ambiguous = len(have) > 1
         row: dict[str, Any] = {"schema": SCHEMA, "hour": iso(h)}
         tape_age = None
         if not have:
@@ -192,7 +202,9 @@ def evaluate(tape_dir: Path, samples_path: Path | None, h0: int, h1: int, thr: d
                 size = None
             row.update(tape_file=have[0], tape_size=size)
             sc = None
-            if size is None:
+            if ambiguous:
+                unmeasurable.append("tape_ambiguous_files")  # both .jsonl and .jsonl.zst present: no silent pick
+            elif size is None:
                 failed.append("tape_file_unreadable")
             elif size == 0:
                 failed.append("tape_file_zero_size")
@@ -200,6 +212,10 @@ def evaluate(tape_dir: Path, samples_path: Path | None, h0: int, h1: int, thr: d
                 sc = scan_hour(p)
                 if sc.get("error"):
                     failed.append("tape_scan_error")
+                    sc = None
+                elif sc["torn"]:
+                    unmeasurable.append("tape_torn_lines")
+                    row["torn_lines"] = sc["torn"]
                     sc = None
             if sc is None:
                 row.update(gap_rows=[], data_loss_rows=None, data_loss_max_span_s=None)
@@ -224,7 +240,7 @@ def evaluate(tape_dir: Path, samples_path: Path | None, h0: int, h1: int, thr: d
             elif val > limit:
                 failed.append(name)
 
-        have_tape = not any(f.startswith("tape_") for f in failed)
+        have_tape = not any(f.startswith("tape_") for f in failed + unmeasurable)
         if "max_gap_s" in thr:
             if not have_tape:
                 unmeasurable.append("max_gap_s")
@@ -297,10 +313,17 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
+    needs = [k for k in ("max_input_age_s", "min_samples_per_hour", "max_sample_gap_s") if k in thr]
+    if needs and samples is None:
+        print(f"error: thresholds {needs} need --samples", file=sys.stderr)
+        return 2
     try:
         out = render(evaluate(tape, samples, h0, h1, thr), thr_sha)
     except Refused as e:
         print(f"refused: {e}", file=sys.stderr)
+        return 2
+    except OSError as e:
+        print(f"error: {e}", file=sys.stderr)
         return 2
     print("\n".join(out))
     return 0
