@@ -52,7 +52,10 @@ def samples_file(path, times, lag=1000):
             f.write(json.dumps({"schema": A.SAMPLE_SCHEMA, "t_ms": t, "feed": {"updated_ms": t - lag}}) + "\n")
 
 
-def ev(tmp, hours=4, thr=THR, samples=True, now=NOW, programs=A.DEFAULT_PROGRAMS):
+def ev(tmp, hours=4, thr=THR, samples=True, now=NOW, programs=A.DEFAULT_PROGRAMS, prev=True):
+    pf = tmp / "tape" / A.hour_name(H0 - HR)
+    if prev and not pf.exists():  # R1: a known, healthy hour before the window, so the first hour's age is measurable
+        write_hour(tmp / "tape", H0 - HR, both(H0 - HR))
     return A.evaluate(tmp / "tape", tmp / "s.jsonl" if samples else None, H0, H0 + (hours - 1) * HR, thr, now, programs)
 
 
@@ -181,6 +184,7 @@ def test_E2_unreadable_gap_span_unmeasurable(tmp_path):
 def test_E3_silence_across_boundary_fails_both_hours(tmp_path):
     d = tmp_path / "tape"
     d.mkdir()
+    write_hour(d, H0 + HR, tr(H0 + HR))
     write_hour(d, H0 + 2 * HR, tr(H0 + 2 * HR, 0, 3540))
     write_hour(d, H0 + 3 * HR, tr(H0 + 3 * HR, 90, 3600))
     thr = {"max_input_age_s": T(120, "price-path")}
@@ -203,12 +207,12 @@ def test_E4_open_hours_not_tabled(tmp_path):
     d.mkdir()
     write_hour(d, H0, both(H0))
     write_hour(d, H0 + HR, both(H0 + HR))
-    now = H0 + 2 * HR + 299_000  # hour 01 ended 299 s ago: still inside the 300 s compaction grace
+    now = H0 + 3 * HR + 299_000  # hour 02 ended 299 s ago: still inside the 300 s compaction grace, so hour 01 (needs h+1 closed) is not tabled
     lines, rows = run(tmp_path, hours=2, thr={"max_gap_s": T(30)}, samples=False, now=now)
     assert [x["hour"] for x in rows] == [A.iso(H0)]
     fin = json.loads(lines[-1])
     assert fin["hours"] == 1 and fin["not_closed_hours_not_tabled"] == [A.iso(H0 + HR)]
-    _, rows = run(tmp_path, hours=2, thr={"max_gap_s": T(30)}, samples=False, now=H0 + 2 * HR + 300_000)
+    _, rows = run(tmp_path, hours=2, thr={"max_gap_s": T(30)}, samples=False, now=H0 + 3 * HR + 300_000)
     assert len(rows) == 2
 
 
@@ -232,7 +236,7 @@ def test_tape_without_feed_time_unmeasurable(tmp_path):
     d = tmp_path / "tape"
     d.mkdir()
     write_hour(d, H0, [{"type": "trade", "prog": "pumpswap", "t_recv_ms": H0 + 1}][:0] + [{"type": "gap", "kind": "x", "data_loss": False, "t_recv_ms": H0}])
-    _, r = run(tmp_path, hours=1, thr={"max_input_age_s": T(120)}, samples=False)
+    _, r = run(tmp_path, hours=1, thr={"max_input_age_s": T(120)}, samples=False, prev=False)
     assert "max_input_age_s[tape]" in r[0]["unmeasurable"] and r[0]["excluded"]
 
 
@@ -317,3 +321,57 @@ def test_sample_without_feed_time_or_negative_age(world, bad_row):
             f.write(json.dumps({"schema": A.SAMPLE_SCHEMA, "t_ms": H0 + i * 60_000, **(bad_row if i == 7 else {"feed": {"updated_ms": H0 + i * 60_000 - 1000}})}) + "\n")
     _, r = run(world, hours=1, thr={"max_input_age_s": T(120)})
     assert r[0]["excluded"] and "max_input_age_s[sampler]" in r[0]["unmeasurable"] and r[0]["samples_n"] == 30
+
+
+def test_R3_hour_tabled_only_after_next_hour_closed_and_read(tmp_path):
+    d = tmp_path / "tape"
+    d.mkdir()
+    # the span's closed row is written in hour 01 and overlaps the tail of hour 00
+    f, t = H0 + 3_500_000, H0 + HR + 60_000
+    write_hour(d, H0, both(H0, 0, 3500))
+    write_hour(d, H0 + HR, [gap("silence", f, t)] + both(H0 + HR, 60, 3600))
+    thr = {"max_data_loss_count": T(0, "price-path")}
+    _, rows = run(tmp_path, hours=1, thr=thr, samples=False, now=H0 + HR + 400_000)  # hour 00 closed, hour 01 not: nothing tabled
+    assert rows == []
+    _, rows = run(tmp_path, hours=1, thr=thr, samples=False, now=H0 + 2 * HR + 300_000)
+    assert rows[0]["data_loss_rows"] == 1 and rows[0]["excluded"]  # the h+1 gap row re-decides nothing: it was read before tabling
+
+
+def test_R1_previous_hour_unknown_makes_age_unmeasurable(tmp_path):
+    d = tmp_path / "tape"
+    d.mkdir()
+    base = "".join(json.dumps(r) + "\n" for r in both(H0 + HR, 0, 4000))
+    (d / A.hour_name(H0 + HR)).write_text(base + '{"type":"trade","prog":"pump')  # torn tail: hour 01 unknown
+    write_hour(d, H0 + 2 * HR, both(H0 + 2 * HR, 30, 3600))  # hour 02 itself is fine, data starts 30 s in
+    _, r = run(tmp_path, hours=3, thr={"max_input_age_s": T(120, "price-path")}, samples=False, prev=False)
+    assert r[2]["prev_hour_unknown"] is True and r[2]["tape_input_age_max_s"] is None
+    assert "max_input_age_s[tape]" in r[2]["unmeasurable"] and r[2]["excluded"] and r[2]["failed_labels"] == {"max_input_age_s": "price-path"}
+    # a known previous hour keeps it measurable
+    write_hour(d, H0 + HR, both(H0 + HR, 0, 3600))
+    _, r = run(tmp_path, hours=3, thr={"max_input_age_s": T(120, "price-path")}, samples=False)
+    assert r[2]["prev_hour_unknown"] is False and r[2]["tape_input_age_max_s"] == 60.0 and r[2]["excluded"] is False
+
+
+def _lab(r):
+    return r["labels_failing"]
+
+
+def test_R2_tape_level_failures_carry_both_labels(tmp_path):
+    d = tmp_path / "tape"
+    d.mkdir()
+    thr = {"max_input_age_s": T(120, "decision-input")}  # only one label pinned
+    g = json.dumps(gap("silence", 1, 2))
+    # 00 missing; 01 zero; 02 torn; 03 ambiguous; 04 unreadable span
+    (d / A.hour_name(H0 + HR)).write_text("")
+    (d / A.hour_name(H0 + 2 * HR)).write_text(json.dumps(both(H0)[0]) + "\n" + g[:-5])
+    write_hour(d, H0 + 3 * HR, both(H0 + 3 * HR))
+    (d / (A.hour_name(H0 + 3 * HR) + ".zst")).write_bytes(b"x")
+    write_hour(d, H0 + 4 * HR, [{"type": "gap", "kind": "s", "data_loss": True, "t_recv_ms": H0 + 4 * HR}])
+    write_hour(d, H0 + 5 * HR, both(H0 + 5 * HR))  # healthy, previous hour unknown -> only the pinned label
+    write_hour(d, H0 + 6 * HR, both(H0 + 6 * HR))  # healthy
+    _, r = run(tmp_path, hours=7, thr=thr, samples=False, prev=False)
+    names = ["tape_file_missing", "tape_file_zero_size", "tape_torn_lines", "tape_ambiguous_files", "gap_span_unreadable"]
+    for x, n in zip(r[:5], names):
+        assert n in x["tape_level_failures"] and _lab(x) == ["decision-input", "price-path"], n
+    assert r[5]["tape_level_failures"] == [] and _lab(r[5]) == ["decision-input"]  # R1 unmeasurable carries the pinned label only
+    assert r[6]["labels_failing"] == [] and r[6]["excluded"] is False
