@@ -378,3 +378,60 @@ def test_table_sizes_and_old_pending_format():
     d = t.to_dict()
     d["pending"] = {"MA": ("A", t.pending["MA"][0][1])}  # a checkpoint written before the list format
     assert PoolTable.from_dict(d).pending == t.pending
+
+
+# ---- engine print history is bounded (C4(iii) OOM, 2026-10-22: ArenaEngine kept every print of every pool; ~450 MB per arena hour)
+def test_host_v2_trims_the_engine_history_every_five_tape_minutes(tmp_path):
+    from tools.arena_rules_v2 import ENGINE_TRIM_EVERY_MS
+
+    class TrimEngine(FakeEngine):
+        trims = 0
+
+        def trim_history(self):
+            TrimEngine.trims += 1
+            return 0
+
+    tape = tmp_path / "tape"
+    write_tape(tape, [row(H0 + 1000, "X")])
+    rules = _first_print_rules()
+    reg = tmp_path / "bots.json"
+    register_rules(rules, str(reg), SHA, H0, now_ms=H0 - 1, verify_sha=False)
+    host = HostV2(HostConfig(root=str(tmp_path / "rules"), registry=str(reg), frozen_sha=SHA, clock_start_ms=H0), rules, ArenaState(tape, start_ms=0), TrimEngine(tmp_path / "rules"))
+    host.run(H0, H0 + HOUR)
+    assert ENGINE_TRIM_EVERY_MS == 300_000
+    assert TrimEngine.trims == HOUR // ENGINE_TRIM_EVERY_MS  # 12 an hour, on the tick clock (deterministic in replay)
+
+
+def test_host_v2_bounds_real_engine_print_history_and_keeps_entry_decisions(tmp_path):
+    """A real ArenaEngine under HostV2 holds a bounded number of prints per idle pool, and the entries equal those of a host whose engine is never trimmed."""
+    from tools import arena_paper as AP
+    from tools.arena_paper import ArenaEngine
+    import tools.arena_rules_v2 as V2
+
+    def go(sub, every):
+        tmp = tmp_path / sub
+        tmp.mkdir()
+        rows = pool_rows()
+        for k in range(3000):  # a busy idle-after pool: many prints that no later buy can read
+            t = H0 + HOUR + k * 1000
+            rows.append(row(t, "BUSY", "buy" if k % 2 else "sell", n=k))
+        rows.sort(key=lambda r: r["t_recv_ms"])
+        write_tape(tmp / "tape", rows)
+        rules = _first_print_rules()
+        register_rules(rules, str(tmp / "bots.json"), SHA, H0, now_ms=H0 - 1, verify_sha=False)
+        old = V2.ENGINE_TRIM_EVERY_MS
+        V2.ENGINE_TRIM_EVERY_MS = every
+        try:
+            eng = ArenaEngine(str(tmp / "ledger"), str(tmp / "bots.json"), cfg=__import__("tools.arena_rules", fromlist=["x"]).stack_config(7))
+            host = HostV2(HostConfig(root=str(tmp / "rules"), registry=str(tmp / "bots.json"), frozen_sha=SHA, clock_start_ms=H0), rules, ArenaState(tmp / "tape", start_ms=0), eng)
+            host.run(H0, H0 + 40 * HOUR)
+        finally:
+            V2.ENGINE_TRIM_EVERY_MS = old
+        return host, eng
+
+    h_off, e_off = go("off", 10**15)
+    h_on, e_on = go("on", 300_000)
+    assert [(r["ms"], r["order_id"]) for r in entries(h_on)] == [(r["ms"], r["order_id"]) for r in entries(h_off)]
+    n_off = sum(len(h.slot) for h in e_off.pools.values())
+    n_on = sum(len(h.slot) for h in e_on.pools.values())
+    assert n_off >= 3000 and n_on < n_off // 2, (n_on, n_off)
