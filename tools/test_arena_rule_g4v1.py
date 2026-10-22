@@ -239,3 +239,19 @@ def test_rule_source_has_no_banned_family_and_uses_the_shared_base_exit():
     for bad in ("r4b", "laya", "lightgbm", "anthropic", "/data/mal", "blocks"):
         assert bad not in code.lower(), bad
     assert "L1Rule._tp_hit" in code and G.TP == 1.5 and G.HOLD_MS == 86_400_000 + 1_900 and G.REASON_TP == "tp_1.5x"
+
+
+# ---------------------------------------------------------------------------------------------------------------- equivalence tool (counts only)
+def test_equiv_compare_counts_and_csv(tmp_path):
+    from tools import arena_g4v1_equiv as E
+    f = tmp_path / "kit.csv"
+    f.write_text("pool,T\nA,3600\nB,7200.0\nC,7200\n")
+    kit = E.read_kit(str(f))
+    assert kit == {("A", 3600), ("B", 7200), ("C", 7200)}
+    r = E.compare(kit, {("A", 3600), ("B", 7200), ("D", 10800)})
+    assert (r["n_kit"], r["n_port"], r["matched"], r["only_kit"], r["only_port"]) == (3, 3, 2, 1, 1) and r["first_only_kit"] == [{"hour_s": 7200, "pool": "C"}]
+
+
+def test_equiv_refuses_a_forbidden_path_and_a_sealed_hour(tmp_path):
+    from tools import arena_g4v1_equiv as E
+    assert E.main(["--hours", "/data/mal/blocks/forward-1002/tape-2026-10-03T00.jsonl.zst", "--kit-csv", str(tmp_path / "k.csv"), "--out", str(tmp_path / "o")]) == 2
