@@ -375,3 +375,115 @@ def test_R2_tape_level_failures_carry_both_labels(tmp_path):
         assert n in x["tape_level_failures"] and _lab(x) == ["decision-input", "price-path"], n
     assert r[5]["tape_level_failures"] == [] and _lab(r[5]) == ["decision-input"]  # R1 unmeasurable carries the pinned label only
     assert r[6]["labels_failing"] == [] and r[6]["excluded"] is False
+
+
+# ---- optional feed-status checks (HV4 L7) ----
+FT = {"feed_writing_paused": T(0, "price-path"), "feed_pauses_delta": T(0, "price-path"), "feed_rows_dropped_delta": T(0, "price-path")}
+
+
+def feed_samples(path, rows):
+    """rows: [(t_ms, writing_paused, pauses, rows_dropped_total)] or (t_ms, None) for a null feed section."""
+    with open(path, "w") as f:
+        for r in rows:
+            feed = None if r[1] is None else {"writing_paused": r[1], "pauses": r[2], "rows_dropped_total": r[3], "updated_ms": r[0] - 1000}
+            f.write(json.dumps({"schema": A.SAMPLE_SCHEMA, "t_ms": r[0], "feed": feed}) + "\n")
+
+
+def feed_world(tmp_path, rows, hours=2, thr=FT):
+    d = tmp_path / "tape"
+    d.mkdir()
+    for k in range(-1, hours + 2):
+        write_hour(d, H0 + k * HR, both(H0 + k * HR))
+    feed_samples(tmp_path / "s.jsonl", rows)
+    return run(tmp_path, hours=hours, thr=thr)[1]
+
+
+def clean_rows(a=-1, b=4, extra=()):
+    return [(H0 + k * HR + m * 300_000, False, 0, 0) for k in range(a, b) for m in range(12)] + list(extra)
+
+
+def test_feed_clean_hours_pass(tmp_path):
+    r = feed_world(tmp_path, clean_rows())
+    assert all(not x["excluded"] and x["feed_writing_paused"] == 0 and x["feed_pauses_delta"] == 0 and x["feed_rows_dropped_delta"] == 0 for x in r)
+
+
+def test_feed_writing_paused_fails_only_that_hour(tmp_path):
+    rows = [(t, p or (H0 + HR + 600_000 == t), 0, 0) for t, p, _, _ in clean_rows()]
+    r = feed_world(tmp_path, rows)
+    assert not r[0]["excluded"] and r[1]["feed_writing_paused"] == 1 and "feed_writing_paused" in r[1]["failed_checks"]
+    assert r[1]["failed_labels"] == {"feed_writing_paused": "price-path"} and r[1]["labels_failing"] == ["price-path"]
+
+
+def test_feed_pauses_delta_carried_across_boundary(tmp_path):
+    # the counter rises between the last sample of hour 00 and the first of hour 01: the interval overlaps BOTH hours
+    rows = [(t, False, 1 if t > H0 + HR else 0, 0) for t, _, _, _ in clean_rows() if t != H0 + HR]  # no sample on the boundary: the pair straddles it
+    r = feed_world(tmp_path, rows)
+    assert r[0]["feed_pauses_delta"] == 1 and r[1]["feed_pauses_delta"] == 1 and r[0]["excluded"] and r[1]["excluded"]
+    assert "feed_pauses_delta" in r[0]["failed_checks"] and r[0]["feed_rows_dropped_delta"] == 0
+
+
+def test_feed_rows_dropped_delta_fails(tmp_path):
+    rows = [(t, False, 0, 5 if t >= H0 + HR + 1_800_000 else 0) for t, _, _, _ in clean_rows()]
+    r = feed_world(tmp_path, rows)
+    assert not r[0]["excluded"] and r[1]["feed_rows_dropped_delta"] == 5 and "feed_rows_dropped_delta" in r[1]["failed_checks"]
+
+
+def test_feed_too_few_samples_unmeasurable(tmp_path):
+    rows = [x for x in clean_rows() if not (H0 + HR <= x[0] < H0 + 2 * HR)]  # no sample at all inside hour 01
+    r = feed_world(tmp_path, rows)
+    assert "feed_writing_paused" in r[1]["unmeasurable"] and r[1]["excluded"] and r[1]["feed_writing_paused"] is None
+    assert not r[0]["excluded"] or "feed_writing_paused" not in r[0]["unmeasurable"]
+
+
+def test_feed_delta_needs_coverage_before_and_after(tmp_path):
+    r = feed_world(tmp_path, [x for x in clean_rows(a=0) if x[0] > H0])  # no sample at or before the first hour start: not covered
+    assert r[0]["feed_pauses_delta"] is None and "feed_pauses_delta" in r[0]["unmeasurable"] and r[0]["feed_writing_paused"] == 0
+    assert r[1]["feed_pauses_delta"] == 0 and not r[1]["excluded"]
+
+
+def test_feed_null_sections_ignored_and_counter_reset_unmeasurable(tmp_path):
+    rows = clean_rows(extra=[(H0 + 5, None)])
+    assert not any(x["excluded"] for x in feed_world(tmp_path, rows))
+    tmp2 = tmp_path / "b"
+    tmp2.mkdir()
+    rows = [(t, False, 9 if t < H0 + HR + 600_000 else 0, 0) for t, _, _, _ in clean_rows()]  # counter goes down: the feed restarted
+    r = feed_world(tmp2, rows)
+    assert "feed_pauses_delta" in r[1]["unmeasurable"] and r[1]["excluded"]
+
+
+def test_feed_checks_need_samples_flag_and_validation(tmp_path):
+    thr = tmp_path / "t.json"
+    thr.write_text(json.dumps({"feed_pauses_delta": T(0, "price-path")}))
+    (tmp_path / "tape").mkdir()
+    assert A.main(["--tape-dir", str(tmp_path / "tape"), "--from", "2026-10-23T00", "--to", "2026-10-23T00", "--thresholds", str(thr)]) == 2
+    assert set(A.FEED_KEYS) <= set(A.THRESHOLD_KEYS)
+
+
+def test_feed_not_configured_leaves_rows_unchanged(world):
+    _, r = run(world)
+    assert not any(k in r[0] for k in A.FEED_KEYS)
+
+
+def test_feed_max_nonnull_gap_carried_across_hours(tmp_path):
+    # QP case: 30 min of sampler silence across 01:00 (last sample 00:45, next 01:15) fails BOTH hour 00 and hour 01 at 900 s
+    rows = [x for x in clean_rows() if not (H0 + HR - 900_000 < x[0] < H0 + HR + 900_000)]
+    d = tmp_path / "tape"
+    d.mkdir()
+    for k in range(-1, 4):
+        write_hour(d, H0 + k * HR, both(H0 + k * HR))
+    feed_samples(tmp_path / "s.jsonl", rows)
+    r = run(tmp_path, hours=3, thr={"feed_max_nonnull_gap_s": T(900, "price-path")})[1]
+    assert r[0]["feed_max_nonnull_gap_s"] == 1800.0 and r[1]["feed_max_nonnull_gap_s"] == 1800.0
+    assert r[0]["excluded"] and r[1]["excluded"] and not r[2]["excluded"] and r[2]["feed_max_nonnull_gap_s"] == 300.0
+    assert r[0]["failed_labels"] == {"feed_max_nonnull_gap_s": "price-path"}
+
+
+def test_feed_max_nonnull_gap_null_samples_do_not_bridge_and_coverage(tmp_path):
+    # null-feed samples are not non-null samples: 20 min of nulls is a 20 min non-null gap
+    rows = [x for x in clean_rows() if not (H0 + 1_800_000 < x[0] < H0 + 3_000_000)] + [(H0 + 2_000_000, None), (H0 + 2_500_000, None)]
+    GT = {"feed_max_nonnull_gap_s": T(900, "price-path")}
+    r = feed_world(tmp_path, rows, thr=GT)
+    assert r[0]["feed_max_nonnull_gap_s"] == 1200.0 and r[0]["excluded"]
+    (tmp_path / "b").mkdir()
+    r2 = feed_world(tmp_path / "b", [x for x in clean_rows(a=0) if x[0] > H0], thr=GT)
+    assert r2[0]["feed_max_nonnull_gap_s"] is None and "feed_max_nonnull_gap_s" in r2[0]["unmeasurable"]
