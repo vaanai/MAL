@@ -8,10 +8,12 @@ import io
 import json
 import subprocess
 import sys
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
 
+from tools import a3_halt
 from tools import arena_h5_score as sc
 from tools import arena_h5_score_a2 as a2
 from tools import arena_h5_score_q50 as w
@@ -19,6 +21,7 @@ from tools.test_arena_h5_score import Base, START_MS, SHA, V1, V2, entry, record
 
 REPO = Path(__file__).resolve().parent.parent
 SCORER_SHA256 = "dfe7f018601633921f06668fd1af3aaff7b87bf00f321d1540e10b41f8ab6006"
+A2_WRAPPER_SHA256 = "78e5bdab0fe23d82ed5a21d1fa1fc66f4f550f10004a2df14077e83b48059710"
 Q50 = "h5v1q50-boostfloor-a1"
 Q50_START = {"q_star_sol": 50.0, "rule": "H5-BOOSTFLOOR-Q50 v1", "rule_sha256": "b3f8ecbf8731dc322a035a0b3996b7ed3f0b8c508cc6947014e3de1aa9524fd4"}
 P = [f"Pool{i:04d}" for i in range(4)]
@@ -54,6 +57,7 @@ class Helpers:
 class PinTests(unittest.TestCase):
     def test_scorer_and_a2_wrapper_bytes_and_constants(self):
         self.assertEqual(hashlib.sha256((REPO / "tools" / "arena_h5_score.py").read_bytes()).hexdigest(), SCORER_SHA256)
+        self.assertEqual(hashlib.sha256((REPO / "tools" / "arena_h5_score_a2.py").read_bytes()).hexdigest(), A2_WRAPPER_SHA256)
         self.assertEqual(sc.scorer_sha256(), SCORER_SHA256)
         self.assertEqual(w.Q50_BOTS, {Q50: "v1"})
 
@@ -86,7 +90,7 @@ class PinTests(unittest.TestCase):
         self.assertEqual(set(sc.BOTS), {V1, V2})
         with mock.patch.dict(sc.BOTS, {"extra": "v1"}):
             with self.assertRaises(RuntimeError):
-                w.main(["score"])
+                w.main(["score", "--shadow-dir", "d"])
 
     def test_a1_and_a2_wrappers_are_unchanged_by_importing_this_one(self):
         self.assertEqual(a2.A2_BOTS, {"h5v1-boostfloor-a2": "v1", "h5v2-boostclock-a2": "v2"})
@@ -114,9 +118,18 @@ class WhitelistTests(unittest.TestCase):
             r.assert_not_called()
         self.assertEqual(set(sc.BOTS), {V1, V2})
 
+    def test_score_without_an_explicit_shadow_dir_is_refused(self):
+        for argv in (["score"], ["score", "--dry-run"], ["--dry-run"], [], ["--arena-root=/x", "--now-ms", "1"], ["score", "--shadow-dirs", "x"]):
+            with mock.patch.object(sc, "main") as m:
+                rc, _, err = self.run_main(*argv)
+            self.assertEqual(rc, 2, argv)
+            self.assertIn("--shadow-dir", err)
+            m.assert_not_called()
+
     def test_score_and_bare_flags_reach_the_scorer_as_score(self):
-        for argv, want in ((["score", "--dry-run"], ["score", "--dry-run"]), (["--dry-run"], ["score", "--dry-run"]), ([], ["score"]),
-                            (["--arena-root=/x", "--now-ms", "1"], ["score", "--arena-root=/x", "--now-ms", "1"])):
+        for argv, want in ((["score", "--dry-run", "--shadow-dir", "d"], ["score", "--dry-run", "--shadow-dir", "d"]), (["--dry-run", "--shadow-dir=d"], ["score", "--dry-run", "--shadow-dir=d"]),
+                           (["--shadow-dir", "d"], ["score", "--shadow-dir", "d"]),
+                           (["--arena-root=/x", "--now-ms", "1", "--shadow-dir", "d"], ["score", "--arena-root=/x", "--now-ms", "1", "--shadow-dir", "d"])):
             with mock.patch.object(sc, "main", return_value=0) as m:
                 self.assertEqual(w.main(argv), 0)
             m.assert_called_once_with(want)
@@ -124,7 +137,7 @@ class WhitelistTests(unittest.TestCase):
     def test_bots_is_exactly_the_q50_id_inside_main(self):
         seen = {}
         with mock.patch.object(sc, "main", side_effect=lambda argv: seen.update(bots=dict(sc.BOTS)) or 0):
-            self.assertEqual(w.main(["score", "--dry-run"]), 0)
+            self.assertEqual(w.main(["score", "--dry-run", "--shadow-dir", "d"]), 0)
         self.assertEqual(seen["bots"], {Q50: "v1"})
 
     def test_halt_via_the_cli_exits_2_and_writes_nothing(self):
@@ -336,6 +349,56 @@ class S0FilterTests(Helpers, Base):
         run(w.main)  # a Q50 run in between must leave the module as it was
         self.assertEqual(run(sc.main), before)
         self.assertNotIn(Q50, json.loads(before)["books"])
+
+
+class A3HaltStopPathTests(Base):
+    """The A3 halt is the only way the Q50 window ends before the end-seal: pinned against the line register_q50 wrote (QP comment 6329652379, C1)."""
+    A1 = ["h5v1-boostfloor-a1", "h5v2-boostclock-a1"]
+    A2 = ["h5v1-boostfloor-a2", "h5v2-boostclock-a2"]
+
+    def setUp(self):
+        super().setUp()
+        self.now = int(time.time() * 1000)
+        self.reg = self.now - 3_600_000
+        self.p = self.root / "bots.json"
+        kw = dict(frozen_sha=SHA, sockets=1, endpoints=["e"], host="h", now_ms=self.reg, clock_start_ms=self.reg + 1_000)
+        sc.register_books(self.p, **kw)
+        sc.register_books(self.p, generation="a2", **kw)
+        w.register_q50(self.p, **kw)
+        self.run_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.now / 1000 - 60))
+
+    def line(self):
+        return json.loads(self.p.read_text())["bots"][Q50]
+
+    def verdict(self, v, flag=None, halt=None):
+        return {"run_utc": self.run_utc, "verdict": v, "flag_halt_ms": flag, "halt_at_ms": halt, "reasons": ["x"] if v != "PASS" else [], "redeploys": []}
+
+    def test_a_books_file_without_the_q50_id_is_refused(self):
+        with self.assertRaises(a3_halt.Invalid) as cm:
+            a3_halt._check({"legacy_bot_ids": self.A1, "new_rule_bot_ids": self.A2}, self.p)
+        self.assertIn(Q50, str(cm.exception))
+        with self.assertRaises(a3_halt.Invalid):
+            a3_halt.apply(self.verdict("HALT", halt=self.now - 300_000), {"legacy_bot_ids": self.A1, "new_rule_bot_ids": self.A2}, self.p, now_ms=self.now)
+        self.assertIsNone(self.line()["window_end_ms"])
+        a3_halt._check({"legacy_bot_ids": self.A1, "new_rule_bot_ids": self.A2 + [Q50]}, self.p)  # with the id it is accepted
+
+    def test_a_hard_halt_with_q50_in_new_rule_ends_it_at_halt_at_ms(self):
+        books = {"legacy_bot_ids": self.A1, "new_rule_bot_ids": self.A2 + [Q50]}
+        at = self.now - 300_000
+        a3_halt.apply(self.verdict("HALT", halt=at), books, self.p, now_ms=self.now)
+        e = self.line()
+        self.assertEqual((e["window_end_ms"], e["stopped_ms"]), (at, at))
+
+    def test_a_legacy_flag_with_a_pass_verdict_leaves_q50_open(self):
+        books = {"legacy_bot_ids": self.A1, "new_rule_bot_ids": self.A2 + [Q50]}
+        flag = self.now - 120_000
+        r = a3_halt.apply(self.verdict("PASS", flag=flag), books, self.p, now_ms=self.now)
+        bots = json.loads(self.p.read_text())["bots"]
+        self.assertEqual([a["rule"] for a in r["applied"]], ["legacy"])
+        self.assertEqual({b: bots[b]["window_end_ms"] for b in self.A1}, {b: flag for b in self.A1})
+        for b in (*self.A2, Q50):
+            self.assertIsNone(bots[b]["window_end_ms"], b)
+            self.assertIsNone(bots[b]["stopped_ms"], b)
 
 
 class A3HaltTests(unittest.TestCase):

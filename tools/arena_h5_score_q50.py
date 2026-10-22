@@ -8,6 +8,7 @@ score_book / summarize seams are replaced, and only for the duration of main(); 
   the books file, never by set_window_end), `refit`, `-h`, unknown and `--` exit 2.
 - `register` writes ONLY the Q50 line (register_books hard-codes rule "H5-BOOSTFLOOR v1" and derives ids from BOTS). It reuses the scorer's registry lock and atomic write and
   never edits or removes any other line.
+- `score` refuses to run without an explicit --shadow-dir (the scorer's default glob h5-shadow-* misses the h5-q50-* out dirs).
 - A shadow dir feeds the book only if EVERY start record carries q_star_sol == 50.0, rule "H5-BOOSTFLOOR-Q50 v1" and the Q50 rule sha256 (otherwise a Q* = 40 run at the same
   sha could feed the Q50 id). Such a dir is refused by the scorer's own refusal path (refused_dirs, with the reason).
 - pv triggers whose s0_t_recv_ms is missing, not an integer, or below clock_start_ms + 60,000 ms are dropped before score_book (counted, never attempts), with the a2 split counters.
@@ -193,6 +194,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     if cmd == "register":
         return cmd_register(argv[1:])
+    if not any(a == "--shadow-dir" or a.startswith("--shadow-dir=") for a in argv[1:]):
+        # the scorer's default glob h5-shadow-* misses the h5-q50-* out dirs, so the run would silently score nothing
+        print("REFUSED: arena_h5_score_q50 score needs an explicit --shadow-dir (the default h5-shadow-* glob does not match h5-q50-* dirs)", file=sys.stderr)
+        return 2
     with q50_bots():
         return sc.main(argv)
 
