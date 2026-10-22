@@ -13,7 +13,7 @@ WHAT IT WRITES (entry-decision material only; nothing is priced)
   * t_recv_ms is SYNTHETIC: the views have none (null), or a different clock. Rows of an hour are put in the kit's own order, (slot, tx_index or 0, event_index) with the file order as
     the tie-break (what `np.lexsort` does in `build_hour`), and the second `block_time` is spread over [0, 1000) ms in that order: t_recv_ms = block_time * 1000 + 1000 * rank // n_in_second.
     Order inside a pool is therefore the kit's; the hour of a row is the hour of its block_time. The adapter REFUSES an hour whose rows are not in non-decreasing block_time in that
-    order, a row outside its file hour, or a second with more than 1000 rows.
+    order, a row outside its file hour, (a second with more than 1000 rows gets tied ms values and is counted in the report).
   * `create` and `complete` rows (creates/ and migrations/ of the block, mode complete): in the same order, as `type` create (mint, is_mayhem_mode) and complete (mint, event_ts).
     Creates/migrations of a --lookback block, and of any block hour outside the trade hours, are written FIRST in the first hour (t_recv_ms = hour start + index), because the kit's
     aux tables (l4-audit/aux.py) hold the whole creates/migrations directories of the block and its DECLARE lookback. The first `complete` per mint wins on both sides.
@@ -44,6 +44,9 @@ from tools import arena_screen as S
 
 WSOL = S.WSOL
 HOUR_RE = re.compile(r"-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl\.zst$")
+
+
+STATS = {"seconds_over_1000_rows": 0}
 
 
 class AdapterRefused(Exception):
@@ -179,7 +182,7 @@ def stamp(rows: list[dict], hour: str) -> list[dict]:
             j += 1
         n = j - i
         if n > 1000:
-            raise AdapterRefused(f"more_than_1000_rows_in_one_second: {hour} {rows[i]['event_ts']}")
+            STATS["seconds_over_1000_rows"] += 1  # ms ties: file order keeps the kit's order, but build_hour's tie-break would be event_index only (reported, not refused)
         for k in range(i, j):
             rows[k]["t_recv_ms"] = rows[k]["event_ts"] * 1000 + 1000 * (k - i) // n
         i = j
@@ -296,6 +299,7 @@ def run(block_dirs: list[str], out: str, lookback: list[str], first_print_only: 
     for h in hours:
         if h not in done:
             flush(h)
+    report["seconds_over_1000_rows"] = STATS["seconds_over_1000_rows"]
     report["n_hours"] = len(hours)
     report["first_hour"], report["last_hour"] = hours[0], hours[-1]
     report["creates_in_range"], report["completes_in_range"] = ncre, nmig

@@ -44,13 +44,14 @@ def test_stamp_orders_like_the_kit_and_spreads_inside_the_second():
     assert all("tx_index" not in r for r in out)
 
 
-def test_stamp_refuses_a_row_outside_the_hour_and_a_non_monotone_block_time():
+def test_stamp_refuses_outside_hour_and_non_monotone_and_counts_overfull_seconds():
     with pytest.raises(A.AdapterRefused, match="outside_hour"):
         A.stamp([raw("A", 1, T + 3600)], H)
     with pytest.raises(A.AdapterRefused, match="monotone"):
         A.stamp([raw("A", 1, T + 9), raw("B", 2, T + 3)], H)
-    with pytest.raises(A.AdapterRefused, match="1000"):
-        A.stamp([raw("A", 1, T + 3, ev=i) for i in range(1001)], H)
+    before = A.STATS["seconds_over_1000_rows"]
+    out = A.stamp([raw("A", 1, T + 3, ev=i) for i in range(1001)], H)
+    assert A.STATS["seconds_over_1000_rows"] == before + 1 and [r["event_index"] for r in out] == list(range(1001))
 
 
 def test_real_t_recv_rows_keep_their_clock_and_order():
