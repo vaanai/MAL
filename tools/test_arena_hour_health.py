@@ -72,9 +72,13 @@ def test_sampler_gap_and_missing_samples_unmeasurable(world):
     samples_file(world / "s.jsonl", [H0 + i * 60_000 for i in range(5)] + [H0 + 50 * 60_000 + i for i in range(20)])
     r = hours(run(world, hours=1))[0]
     assert r["excluded"] and "max_sample_gap_s" in r["failed_checks"]
-    # no sample file but sampler thresholds pinned: unmeasurable, treated as failing
-    r2 = hours(run(world, hours=1, samples=False))[0]
-    assert r2["excluded"] and "min_samples_per_hour" in r2["unmeasurable"] and "max_sample_gap_s" in r2["unmeasurable"]
+    # no sample file but sampler thresholds pinned: refused at the CLI (exit 2)
+    thr = world / "thr.json"
+    thr.write_text(json.dumps(THR))
+    assert A.main(["--tape-dir", str(world / "tape"), "--from", "2026-10-23T00", "--to", "2026-10-23T00", "--thresholds", str(thr)]) == 2
+    # only tape thresholds: fine without samples
+    r2 = hours(run(world, hours=1, thr={"max_gap_s": 30}, samples=False))[0]
+    assert r2["excluded"] is False and r2["samples_n"] is None
 
 
 def test_input_age_from_tape_gap(world):
@@ -137,3 +141,34 @@ def test_no_forbidden_fields_in_output(world):
     out = "\n".join(run(world))
     for w in ("signature", "mint", "wallet", "price", "pnl"):
         assert w not in out
+
+
+def test_torn_lines_make_hour_unmeasurable(world):
+    base = "".join(json.dumps(r) + "\n" for r in trade_rows(H0))
+    p = world / "tape" / A.hour_name(H0)
+    gap = json.dumps({"type": "gap", "kind": "silence", "data_loss": True, "from_ms": 1, "to_ms": 2})
+    for body in (base + gap[:-8], base + gap[:-1] + "\n", base + '{"type":"trade","t_recv_ms":5}'):  # torn tail, cut gap line, no newline
+        p.write_text(body)
+        r = hours(run(world, hours=1))[0]
+        assert r["excluded"] and "tape_torn_lines" in r["unmeasurable"] and r["torn_lines"] >= 1 and r["data_loss_rows"] is None
+
+
+def test_missing_tape_dir_exit_2(world):
+    thr = world / "thr.json"
+    thr.write_text(json.dumps({"max_gap_s": 1}))
+    assert A.main(["--tape-dir", str(world / "nope"), "--from", "2026-10-23T00", "--to", "2026-10-23T00", "--thresholds", str(thr)]) == 2
+
+
+def test_both_jsonl_and_zst_ambiguous(world):
+    (world / "tape" / (A.hour_name(H0) + ".zst")).write_bytes(b"x")
+    r = hours(run(world, hours=1))[0]
+    assert r["excluded"] and "tape_ambiguous_files" in r["unmeasurable"]
+
+
+@pytest.mark.parametrize("rows", [[{"feed": None}], [{"feed": {"updated_ms": 10**15}}]])
+def test_sample_without_feed_time_or_negative_age(world, rows):
+    with open(world / "s.jsonl", "w") as f:
+        for i in range(30):
+            f.write(json.dumps({"schema": A.SAMPLE_SCHEMA, "t_ms": H0 + i * 60_000, **(rows[0] if i == 7 else {"feed": {"updated_ms": H0 + i * 60_000 - 1000}})}) + "\n")
+    r = hours(run(world, hours=1, thr={"max_input_age_s": 120}))[0]
+    assert r["excluded"] and "max_input_age_s[sampler]" in r["unmeasurable"] and r["samples_n"] == 30
