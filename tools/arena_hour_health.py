@@ -16,6 +16,12 @@ cannot be computed FAILS the hour):
   max_input_age_s        longest silence of feed-stamped DATA rows (types trade, create, complete, pool_create; hb/start/stop/pool_info/gap never count),
                          per program in --programs (default pumpswap,pumpfun), carried across hour boundaries and unclipped (a 150 s silence over a
                          boundary is 150 s in both hours); plus sampler (t_ms - feed.updated_ms)  (sampler part needs --samples)
+Optional feed-status checks from the sampler's `feed` section (value = the largest count allowed, normally 0; need --samples):
+  feed_writing_paused    samples inside the hour with writing_paused true
+  feed_pauses_delta      largest `pauses` delta between consecutive non-null samples overlapping the hour (carried across boundaries)
+  feed_rows_dropped_delta  same for `rows_dropped_total`
+An hour with no non-null sample inside it (paused) or not covered by a sample at/before its start and one at/after its end (deltas), a missing field, or
+a counter that went down (feed restart) is unmeasurable, hence excluded.
 A missing tape hour, a zero-size file, torn lines or both .jsonl and .jsonl.zst for one hour make the hour fail or be unmeasurable (excluded).
 An hour is closed when its end + 300 s <= now (the feed compacts at end + 120 s). Hour h is TABLED only when h and h+1 are both closed (h+1 is read
 for gap rows written after h ends; a later row never re-decides a tabled hour); others are listed in the final line. If h-1 is unknown (missing,
@@ -46,7 +52,9 @@ FORBIDDEN_WORDS = ("ledger", "decisions", "bots.json", "runner-status")
 KIND_OK = re.compile(r"^[a-z0-9_]{1,40}$")
 TAPE_NAME = re.compile(r"^tape-(\d{4}-\d\d-\d\dT\d\d)\.jsonl(\.zst)?$")
 RECV_RE = re.compile(rb'"t_recv_ms":\s*(\d+)')
-THRESHOLD_KEYS = ("max_gap_s", "max_data_loss_count", "min_samples_per_hour", "max_sample_gap_s", "max_input_age_s")
+FEED_KEYS = ("feed_writing_paused", "feed_pauses_delta", "feed_rows_dropped_delta")  # optional feed-status checks (HV4 L7); value = the largest count allowed (0)
+FEED_FIELD = {"feed_pauses_delta": "pauses", "feed_rows_dropped_delta": "rows_dropped_total"}  # feed dict fields written by hv4_shakedown_report.py take_sample
+THRESHOLD_KEYS = ("max_gap_s", "max_data_loss_count", "min_samples_per_hour", "max_sample_gap_s", "max_input_age_s") + FEED_KEYS
 
 
 class Refused(Exception):
@@ -235,6 +243,54 @@ def load_samples(path: Path | None) -> tuple[list[tuple[int, int | None]] | None
     return sorted(out), errs
 
 
+def load_feed_samples(path: Path | None) -> list[tuple[int, dict]]:
+    """[(t_ms, feed dict)] of the sampler's valid, non-error samples whose `feed` section is not null, sorted by time."""
+    if path is None:
+        return []
+    try:
+        data = guard(path).read_bytes()
+    except OSError:
+        return []
+    out = []
+    for ln in data.split(b"\n"):
+        try:
+            r = json.loads(ln) if ln.strip() else None
+        except ValueError:
+            continue
+        if isinstance(r, dict) and r.get("schema") == SAMPLE_SCHEMA and isinstance(r.get("t_ms"), int) and "error" not in r and isinstance(r.get("feed"), dict):
+            out.append((r["t_ms"], r["feed"]))
+    return sorted(out, key=lambda x: x[0])
+
+
+def _int(v: Any) -> int | None:
+    return v if isinstance(v, int) and not isinstance(v, bool) else None
+
+
+def feed_paused_count(fs: list[tuple[int, dict]], h: int) -> int | None:
+    """Samples inside the hour with writing_paused true. None (unmeasurable) when no non-null sample is inside the hour or one has no boolean field."""
+    inside = [f for t, f in fs if h <= t < h + HOUR_MS]
+    if not inside or any(not isinstance(f.get("writing_paused"), bool) for f in inside):
+        return None
+    return sum(1 for f in inside if f["writing_paused"])
+
+
+def feed_delta_max(fs: list[tuple[int, dict]], h: int, field: str) -> int | None:
+    """Largest counter delta between consecutive non-null samples whose interval overlaps the hour (carried across hour boundaries). None
+    (unmeasurable) unless a sample at or before the hour start and one at or after the hour end exist (the hour is fully covered), a value is
+    missing, or the counter went down (the feed restarted and reset it: deltas are not comparable)."""
+    if not fs or fs[0][0] > h or fs[-1][0] < h + HOUR_MS:
+        return None
+    worst = 0
+    for (ta, a), (tb, b) in zip(fs, fs[1:]):
+        if not (ta < h + HOUR_MS and tb > h):
+            continue
+        va, vb = _int(a.get(field)), _int(b.get(field))
+        if va is None or vb is None or vb < va:
+            return None
+        worst = max(worst, vb - va)
+    return worst
+
+
 def sample_stats(samples: list[tuple[int, int | None]], h: int) -> dict:
     ts = [t for t, _ in samples]
     inside = [(t, u) for t, u in samples if h <= t < h + HOUR_MS]
@@ -262,6 +318,8 @@ def evaluate(tape_dir: Path, samples_path: Path | None, h0: int, h1: int, thr: d
         now_ms = int(time.time() * 1000)
     names = sorted(p.name for p in tape_dir.iterdir() if TAPE_NAME.match(p.name))
     samples, _ = load_samples(samples_path)
+    feed_on = any(k in thr for k in FEED_KEYS)
+    fsamp = load_feed_samples(samples_path) if feed_on else []
     closed = lambda h: h + HOUR_MS + CLOSE_GRACE_MS <= now_ms  # noqa: E731
     tabled = lambda h: closed(h) and closed(h + HOUR_MS)  # noqa: E731  R3: h is tabled only once h+1 is also closed and has been read for gap rows
     not_closed = [iso(h) for h in range(h0, h1 + HOUR_MS, HOUR_MS) if not tabled(h)]
@@ -360,6 +418,13 @@ def evaluate(tape_dir: Path, samples_path: Path | None, h0: int, h1: int, thr: d
             over("max_input_age_s[tape]", row["tape_input_age_max_s"], "max_input_age_s")
             if samples is not None:
                 over("max_input_age_s[sampler]", row["sampler_input_age_max_s"], "max_input_age_s")
+        if feed_on:
+            for key in FEED_KEYS:
+                if key not in thr:
+                    continue
+                val = feed_paused_count(fsamp, h) if key == "feed_writing_paused" else feed_delta_max(fsamp, h, FEED_FIELD[key])
+                row[key] = val
+                over(key, val, key)
         # "unmeasurable" is treated as failing (Amendment 6 item 2.2): the hour is excluded, later evidence does not replace it
         row["unmeasurable"] = sorted(set(unm))
         row["failed_checks"] = sorted(set(failed))
@@ -428,7 +493,7 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, OSError) as e:
         print(f"error: {e}", file=sys.stderr)
         return 2
-    needs = [k for k in ("max_input_age_s", "min_samples_per_hour", "max_sample_gap_s") if k in thr]
+    needs = [k for k in ("max_input_age_s", "min_samples_per_hour", "max_sample_gap_s") + FEED_KEYS if k in thr]
     if needs and samples is None:
         print(f"error: thresholds {needs} need --samples", file=sys.stderr)
         return 2
