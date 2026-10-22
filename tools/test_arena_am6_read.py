@@ -224,3 +224,49 @@ def test_scorer_file_is_not_touched():
     diff = subprocess.run(["git", "diff", "--name-only", "origin/main", "--", "tools/arena_score.py", "tools/arena_am6_exclusions.py", "tools/arena_hour_health.py"],
                           cwd=str(Path(__file__).parent.parent), capture_output=True, text=True).stdout
     assert diff.strip() == ""
+
+
+def late_book():
+    """110 attempts, 21 per date; p0107 is on date 5, AFTER the scorer's natural boundary (end of date 4) on unmodified rows, and has no V."""
+    return [dict(r, v_src={"entry": "none", "exit": "row", "span": {"none": 1}}) if r["kind"] == "trade" and r["position_id"] == "p0107" else r for r in book(110)]
+
+
+def six_bad_hours():
+    return health({DAY0 + (1 + k) * H: ["decision-input"] for k in range(6)})  # 6 of 110 attempts decided in excluded hours of date 0
+
+
+def test_parity_guard_runs_over_the_rows_scored_through_the_wrappers_boundary(tmp_path, monkeypatch):
+    rows = late_book()
+    root, reg = setup(tmp_path, rows)
+    led = Ledger(root).scan_bot("botA")[0]
+    natural = S.score_bot("botA", S.load_registry(reg), led, AS_OF)["read_boundary_ms"]
+    (code, lines, res), *_ = go(tmp_path / "w", rows, hl=six_bad_hours()) if (tmp_path / "w").mkdir() is None else None
+    b = int(next(x for x in lines if x.startswith("read_boundary_ms")).split()[1])
+    assert b > natural  # removing the excluded-hour attempts moved the boundary later
+    dropped = [f"p{i:04d}" for i in range(6)]
+    g = C.parity_guard("botA", S.load_registry(reg), led, AS_OF, 0.25, dropped)
+    assert g["boundary_ms"] == b and g["ok"] and g["scorer"]["excluded"] == {"missing_v": 1}  # p0107 is covered only through B
+    # a mirror that misses p0107 passes the old (natural-boundary) check but fails the wrapper
+    real = C.s14_reasons
+    monkeypatch.setattr(C, "s14_reasons", lambda rs, st: {k: v for k, v in real(rs, st).items() if k != "p0107"})
+    sub = tmp_path / "z"
+    sub.mkdir()
+    root2, reg2 = setup(sub, rows)
+    with pytest.raises(R.Refused, match="parity"):
+        R.run(root2, reg2, "botA", six_bad_hours(), AS_OF)
+
+
+def test_an_earlier_read_can_be_rerun_exit_after_as_of_is_open():
+    rows = book(5, 5)
+    p = next(r for r in rows if r["kind"] == "open")
+    a = {x["attempt_id"]: x for x in C.attempts_from_rows(rows, DAY0, 0.25, as_of_ms=p["decision_ms"]["entry"] + 1000)}
+    assert a["p0000"]["exit_ms"] is None and "p0001" not in a  # exit 5 s later than the cut, and a later decision is not yet an attempt
+
+
+def test_unexpected_errors_exit_2(tmp_path, monkeypatch):
+    root, reg = setup(tmp_path, book())
+    hp = tmp_path / "h.jsonl"
+    hp.write_text(health())
+    monkeypatch.setattr(C, "attempts_from_rows", lambda *a, **k: 1 / 0)
+    assert R.main(["--ledger-root", root, "--registry", reg, "--bot", "botA", "--health", str(hp), "--as-of-ms", str(AS_OF)]) == 2
+    assert C.main(["--ledger-root", root, "--registry", reg, "--bot", "botA", "--as-of-ms", str(AS_OF), "--out", str(tmp_path / "o")]) == 2

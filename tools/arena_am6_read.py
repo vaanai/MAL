@@ -54,6 +54,18 @@ def _by_id(lines: Sequence[str]) -> dict[str, dict]:
     return {r["attempt_id"]: r for r in map(json.loads, lines) if r.get("type") == "attempt"}
 
 
+def asof_rows(rows: Sequence[Mapping[str, Any]], clock_ms: int, as_of_ms: int) -> list[Mapping[str, Any]]:
+    """The ledger as it stood at --as-of-ms: no row decided after it, and a close row whose exit is after it is not yet written (the attempt is open)."""
+    out = []
+    for r in rows:
+        if r.get("kind") != "start" and r["decision_ms"]["entry"] > as_of_ms:
+            continue
+        if r.get("kind") in ("trade", "excluded") and (r["decision_ms"].get("exit") or 0) > as_of_ms:
+            continue
+        out.append(r)
+    return out
+
+
 def filter_rows(rows: Sequence[Mapping[str, Any]], status: Mapping[str, str], clock_ms: int, as_of_ms: int) -> list[dict[str, Any]]:
     out = []
     for r in rows:
@@ -115,7 +127,11 @@ def run(ledger_root: str, registry: str, bot: str, health_text: str, as_of_ms: i
     if tot["verdict_cap"] != "OK":
         out.append(f"{tot['verdict_cap']}: final for the bot_id; the scorer is not called")
         return 0, out, None
-    g = C.parity_guard(bot, reg, rows, as_of_ms, stake)
+    rows = asof_rows(rows, clock, as_of_ms)
+    dropped = [aid for aid, r in _by_id(ex_lines).items() if r["status"] == X.S_10]
+    g = C.parity_guard(bot, reg, rows, as_of_ms, stake, dropped)  # the rows actually scored (S_10 attempts removed), through the wrapper's B
+    if g.get("boundary_ms") != b:
+        raise Refused(f"parity guard boundary {g.get('boundary_ms')} != wrapper boundary {b}")
     if not g["ok"]:
         raise Refused(f"s14 parity with arena_score.py failed: scorer {g['scorer']} != cutter {g['cutter']}")
     status = {aid: r["status"] for aid, r in _by_id(ex_lines).items()}
@@ -148,7 +164,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         code, lines, res = run(a.ledger_root, a.registry, a.bot, open(a.health).read(), a.as_of_ms, open(a.restarts).read() if a.restarts else "",
                                a.expect_health_sha, a.excl_out)
-    except (Refused, X.Refused, C.Refused, S.Refused, OSError, KeyError, TypeError, ValueError) as ex:
+    except Exception as ex:  # noqa: BLE001 - any failure is a refusal (exit 2), never a traceback exit 1
         print(f"REFUSED: {ex}", file=sys.stderr)
         return 2
     print("\n".join(lines))

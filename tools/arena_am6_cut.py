@@ -97,6 +97,8 @@ def attempts_from_rows(rows: Sequence[Mapping[str, Any]], clock_ms: int, stake: 
         else:
             exits = [c["decision_ms"].get("exit") for c in closes.get(pid, [])]
             e = None if not exits or any(x is None for x in exits) else max(int(x) for x in exits)
+            if e is not None and as_of_ms is not None and e > as_of_ms:
+                e = None  # closed after the cut instant: open as of --as-of-ms, so an earlier read can be re-run
             restart = any(c["kind"] == "excluded" and c.get("exclusion_reason") in RESTART_REASONS for c in closes.get(pid, []))
         out.append({"attempt_id": pid, "decided_ms": d, "exit_ms": e, "open_at_restart": restart, "s14_excluded": pid in s14})
     return sorted(out, key=lambda a: (a["decided_ms"], a["attempt_id"]))
@@ -109,9 +111,12 @@ def render_cut(attempts: Sequence[Mapping[str, Any]]) -> tuple[list[str], str]:
     return lines, canon({"type": "sha256", "schema": SCHEMA, "lines": len(lines), "sha256": sha})
 
 
-def parity_guard(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], now_ms: int, stake: float) -> dict[str, Any]:
+def parity_guard(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], now_ms: int, stake: float,
+                 drop_ids: Sequence[str] = ()) -> dict[str, Any]:
     """Run the scorer's OWN score_bot (natural boundary, same rows) and compare its exclusions at `stake` with s14_reasons over the attempts it covers.
-    Returns {"ok": bool, "scorer": {...}, "cutter": {...}}. Not ok means the mirror drifted from the pinned scorer: the read must not proceed."""
+    The boundary is the scorer's natural boundary on the rows given (the wrapper passes the rows it scores, so it is the wrapper's B and the wrapper checks that). Returns {"ok": bool, "scorer": {...}, "cutter": {...}}. Not ok means the mirror drifted from the pinned scorer: the read must not proceed."""
+    drop = set(drop_ids)  # attempts decided in excluded hours: the wrapper never scores them, so the guard does not either
+    rows = [r for r in rows if r.get("position_id") not in drop]
     res = S.score_bot(bot_id, reg, rows, now_ms, None, S.SETTLE_MS)
     b = res.get("read_boundary_ms")
     if b is None or "books" not in res:
@@ -146,7 +151,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if problems:
             raise Refused(f"{a.bot}: {len(problems)} torn or unparseable ledger line(s): no cut")
         lines, shaline = render_cut(attempts_from_rows(rows, e["clock_start_ms"], e["deciding_stake"], a.as_of_ms))
-    except (Refused, S.Refused, KeyError, TypeError, ValueError) as ex:
+    except Exception as ex:  # noqa: BLE001 - any failure is a refusal (exit 2), never a traceback exit 1
         print(f"REFUSED: {ex}", file=sys.stderr)
         return 2
     with open(a.out, "w") as fh:
