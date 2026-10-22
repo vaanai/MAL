@@ -110,7 +110,7 @@ def test_projection_keeps_only_the_p1_fields_and_nothing_identifying_is_printed(
     row = {"v": 1, "type": "create", "prog": "pumpfun", "t_recv_ms": 5, "mint": "MintXYZ", "creator": "CreatorSecret", "trader": "T1", "name": "NameSecret",
            "symbol": "SYM", "signature": "sig", "event_index": 0, "slot": 7, "quote_reserve": 1, "base_reserve": 2, "event_ts": 1}
     out = P.project_row(row)
-    assert set(out) == {"type", "prog", "t_recv_ms", "mint", "trader", "slot", "quote_reserve", "base_reserve"}
+    assert set(out) == {"type", "prog", "t_recv_ms", "mint", "trader", "creator", "slot", "quote_reserve", "base_reserve"}
     assert P.project_row({"type": "weird", "prog": "x", "t_recv_ms": 1, "mint": "m", "trader": "w"}) == {"type": "weird", "prog": "x", "t_recv_ms": 1}
     tape = make_tape(tmp_path)
     st = P.make_state_class(AS)(str(tape), start_ms=DAY0 - 365 * 60_000)
@@ -173,7 +173,10 @@ def clean_repo(tmp_path):
 
 
 def cli(args: list[str]) -> subprocess.CompletedProcess:
-    return subprocess.run([sys.executable, "-I", str(SCRIPT), *args], capture_output=True, text=True, timeout=600)
+    import os
+
+    env = {**os.environ, "MAL_ARENA_TEST": "1"} if "--expect-sha" in args else dict(os.environ)
+    return subprocess.run([sys.executable, "-I", str(SCRIPT), *args], capture_output=True, text=True, timeout=600, env=env)
 
 
 def test_cli_refuses_wrong_sha_and_dirty_repo(tmp_path, clean_repo):
@@ -185,6 +188,42 @@ def test_cli_refuses_wrong_sha_and_dirty_repo(tmp_path, clean_repo):
     (repo / "tools" / "extra.py").write_text("x = 1\n")  # untracked file: dirty
     r = cli([*base, "--expect-sha", sha])
     assert r.returncode == 2 and "dirty" in r.stderr and r.stdout == ""
+    import os
+
+    r = subprocess.run([sys.executable, "-I", str(SCRIPT), *base, "--expect-sha", sha], capture_output=True, text=True, env={k: v for k, v in os.environ.items() if k != "MAL_ARENA_TEST"})
+    assert r.returncode == 2 and "MAL_ARENA_TEST" in r.stderr
+
+
+def test_projection_gives_the_same_verdicts_as_a_plain_state_with_a_creator_selling(tmp_path):
+    rows = trade_rows()
+    cr = "CreatorWallet" + "1" * 30
+    rows = [{"v": 1, "type": "create", "prog": "pumpfun", "slot": 1, "t_recv_ms": T0 - 4 * HOUR, "signature": f"c{k}", "event_index": 0, "mint": m, "creator": cr,
+             "trader": cr, "quote_reserve": 30 * 10 ** 9, "base_reserve": 10 ** 15} for k, m in MINTS.items()] + rows
+    n = 0
+    for r in rows:  # make the creator one of the sellers
+        if r["type"] == "trade" and r["side"] == "sell":
+            n += 1
+            if n % 2:
+                r["trader"] = cr
+    tape = make_tape(tmp_path, rows)
+    base = AS.ArenaState(str(tape), start_ms=DAY0 - 365 * 60_000)
+    prj = P.make_state_class(AS)(str(tape), start_ms=DAY0 - 365 * 60_000)
+    T = T0 + 30 * 60_000 + 2000
+    base.poll(until_ms=T - 1)
+    prj.poll(until_ms=T - 1)
+    chain = {"as_of_ms": T - 1, "as_of_slot": prj.slot, "mint_authority": None, "freeze_authority": None, "token_program": C.SPL_TOKEN_PROGRAM, "extensions": [], "mayhem": False}
+    seen = 0
+    for p in base.pools_wsol(lambda p: p.prog == "pumpswap"):
+        q = prj.pool(p.id)
+        out = []
+        for st, pp in ((base, p), (prj, q)):
+            snap = st.snapshot(pp.id, candles=False)
+            pr = C.norm_prints(list(pp.events))
+            vr = C.code_vetoes(snap, pr, chain, as_of_ms=T, as_of_slot=prj.slot)
+            out.append((snap["creator"], vr.reasons, vr.checks["sell_route"]))
+        assert out[0] == out[1]
+        seen += int(out[0][0] == cr)
+    assert seen >= 1
 
 
 def test_cli_runs_from_the_repo_it_is_pointed_at_and_prints_counts_only(tmp_path, clean_repo):

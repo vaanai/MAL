@@ -21,10 +21,10 @@ is counted in `chain_veto_not_applied`. The model's choice, the risk agent's gra
 engine are not applied either. So a count is an UPPER BOUND of would-be attempts (P2): "P0 is an upper bound (structure filters before the model; chain vetoes not
 applied); it is anti-conservative for the floor only, which protects N and the calendar, not the gate."
 
-TAPE FIELDS (P1). Every row is projected to a whitelist the moment it is read, so nothing else reaches the state: type, prog, t_recv_ms; trade: side, trader, mint,
-pool, quote_mint, virtual_quote_reserves, slot, sol_lamports, token_raw, quote_reserve, base_reserve, lp_fee, pool_quote_amount; create: mint, trader, slot,
+TAPE FIELDS (P1). Every row is projected to a whitelist the moment it is read, so nothing else reaches the state: type, prog, t_recv_ms; trade: side, trader, creator, mint,
+pool, quote_mint, virtual_quote_reserves, slot, sol_lamports, token_raw, quote_reserve, base_reserve, lp_fee, pool_quote_amount; create: mint, trader, creator, slot,
 quote_reserve, base_reserve; complete: mint; pool_create: pool, mint, quote_mint, slot; pool_info: pool, mint, quote_mint; gap: kind, prog and the span stamps
-and counts the state keeps (GAP_EXTRA); hb: prog. NOT read: creator, name, symbol, signature, event_index, event_ts, anything else.
+and counts the state keeps (GAP_EXTRA); hb: prog. NOT read: name, symbol, signature, event_index, event_ts, anything else.
 
 AS-OF (guaranteed three ways). (1) The state is stepped with poll(until_ms=T - 1): no row at or after the scan instant T is applied. (2) After every poll the
 tool asserts state.now_ms < T and raises AsOfError otherwise. (3) The rule code's own assert_as_of (filters, features, code_vetoes) runs on every snapshot, and
@@ -71,9 +71,9 @@ DISCLOSURE = ("P0 is an upper bound (structure filters before the model; chain v
               "which protects N and the calendar, not the gate (a3 ruling Q6).")
 
 ROW_KEEP = {
-    "trade": ("side", "trader", "mint", "pool", "quote_mint", "virtual_quote_reserves", "slot", "sol_lamports", "token_raw", "quote_reserve", "base_reserve",
+    "trade": ("side", "trader", "creator", "mint", "pool", "quote_mint", "virtual_quote_reserves", "slot", "sol_lamports", "token_raw", "quote_reserve", "base_reserve",
               "lp_fee", "pool_quote_amount"),
-    "create": ("mint", "trader", "slot", "quote_reserve", "base_reserve"),
+    "create": ("mint", "trader", "creator", "slot", "quote_reserve", "base_reserve"),
     "complete": ("mint",),
     "pool_create": ("pool", "mint", "quote_mint", "slot"),
     "pool_info": ("pool", "mint", "quote_mint"),
@@ -481,7 +481,7 @@ def run(a: argparse.Namespace, R: SimpleNamespace, repo_sha: str, log: Any = sys
               "frozen_sha": PINNED_SHA, "windows": [w[0] for w in windows], "warmup_min": a.warmup_min, "scan_every_ms": SCAN_EVERY_MS, "scan_second_ms": SCAN_SECOND_MS,
               "top_k_per_persona": TOP_K_PER_PERSONA, "board_every_ms": BOARD_EVERY_MS, "board_size": BOARD_SIZE, "as_of": "poll(until_ms=T-1); assert state.now_ms < T",
               "chain_vetoes": "not applied (neutral chain; counted as chain_veto_not_applied)", "prescreen": not a.no_prescreen,
-              "fields": "type,prog,t_recv_ms; trade: side,trader,mint,pool,quote_mint,virtual_quote_reserves,slot,sol_lamports,token_raw,quote_reserve,base_reserve,lp_fee,pool_quote_amount; "
+              "fields": "type,prog,t_recv_ms; trade: side,trader,creator,mint,pool,quote_mint,virtual_quote_reserves,slot,sol_lamports,token_raw,quote_reserve,base_reserve,lp_fee,pool_quote_amount; "
                         "create/pool_create/pool_info/complete: ids,quote_mint,slot,reserves; gap: kind,span stamps,counts; hb: prog"}
     results: list[tuple[dict, DayCounts | None]] = []
     state = limiter = None
@@ -543,13 +543,20 @@ def main(argv: list[str] | None = None) -> int:
     except ValueError:
         print("hv4_p0_count: bad --days or --warmup-min", file=sys.stderr)
         return 2
+    if a.expect_sha != PINNED_SHA and os.environ.get("MAL_ARENA_TEST") != "1":
+        print("hv4_p0_count: refused: --expect-sha other than the pinned sha needs MAL_ARENA_TEST=1", file=sys.stderr)
+        return 2
     try:
         sha = verify_repo(a.repo, a.expect_sha)
         R = load_rules(a.repo)
     except (RepoError, OSError, subprocess.SubprocessError, ImportError) as e:
         print(f"hv4_p0_count: refused: {e}", file=sys.stderr)
         return 2
-    rows = run(a, R, sha)
+    try:
+        rows = run(a, R, sha)
+    except Exception as e:  # noqa: BLE001 - exit 2 = tool error (distinct from exit 1 = a day FAILED)
+        print(f"hv4_p0_count: error: {type(e).__name__}", file=sys.stderr)
+        return 2
     try:
         verify_repo(a.repo, a.expect_sha)  # the run must not have changed the checkout
     except RepoError as e:
