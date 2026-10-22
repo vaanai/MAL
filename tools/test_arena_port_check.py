@@ -16,7 +16,7 @@ import pytest
 from tools import arena_port_check as M
 from tools import arena_screen as S
 from tools.arena_paper import ArenaRefused
-from tools.arena_port_check_testkit import ToyKit, ToyPort, write_toy_tape
+from tools.arena_port_check_testkit import ToyFireKit, ToyKit, ToyPort, write_toy_tape
 from tools.arena_rules import RULE_MODULES, position_id
 from tools.arena_rules_testkit import POOL
 
@@ -225,7 +225,13 @@ def test_the_recorder_copies_the_kits_overlap_loop_and_nothing_changes_it_silent
     for line in ("if slot < nxt:", 'c["overlap_dropped"] += 1', "xs, why, clamped = resolve_exit(a, pp, slot, spec, rate[hi], sps_of(hi))",
                  "nxt = xs + int(np.rint(self.cells[ci].cooldown_s * rate[hi]))", "sorted((t for t in s.trigs if t[0] == ci), key=lambda t: t[1])"):
         assert line in src, line  # the loop in DecisionScreen._price_store is a copy of these lines: if the kit changes one, re-copy and re-prove
+    for line in ("for _, slot, hi, spec, pos in sorted(", "if pos is not None:", 'for k in [k for k in self._nxt if k[1] == pool]:', "del self._nxt[k]",
+                 "if pos.xs is None:", "self._resolve(pos, a, pp, bi, set_nxt=False)"):
+        assert line in src, line  # the 5-tuple unpack, the exit_fire branch and the _nxt clearing that broke against main; _resolve is what pops _open
+    assert "self._open.pop((pos.ci, pos.pool), None)" in inspect.getsource(S.Screen._resolve)
     mine = inspect.getsource(M.DecisionScreen._price_store)
+    for line in ("for _, slot, hi, spec, pos in sorted(", "if pos is not None:", "self._open.pop((ci, pool), None)", "del self._nxt[k]"):
+        assert line in mine, line
     assert "S.resolve_exit(a, pp, slot, spec, rate[hi], 1.0 / rate[hi])" in mine and "int(np.rint(self.cells[ci].cooldown_s * rate[hi]))" in mine
     assert S.Screen._price_store is not M.DecisionScreen._price_store and M.DecisionScreen.run_block is S.Screen.run_block and M.DecisionScreen._validate is S.Screen._validate
 
@@ -405,9 +411,27 @@ def test_price_store_takes_the_five_tuple_trigs_of_current_main(monkeypatch):
     scr.counters = __import__("collections").Counter()
     scr.kept = []
     scr._nxt = {(0, "P"): 5, (0, "Q"): 6}
+    scr._open = {(0, "P"): object(), (0, "Q"): object()}
     spec = types.SimpleNamespace(hold_s=60)
     s = types.SimpleNamespace(chunks=[{"ib": np.array([1, 0]), "sl": np.array([1, 2])}],
                               trigs=[(0, 100, 0, spec, None), (0, 105, 0, spec, None), (0, 200, 0, spec, object())])
     scr._price_store(s, "P", 0, 1000, {"rate": {0: 2.0}})
     assert [(k[3]) for k in scr.kept] == [100, 200]  # slot 105 is inside hold + cooldown of 100 (100 + 10 + 2): dropped; the admitted position is kept
     assert scr.counters["overlap_dropped"] == 1 and (0, "P") not in scr._nxt and (0, "Q") in scr._nxt
+    assert (0, "P") not in scr._open and (0, "Q") in scr._open  # the exit_fire position of the flushed pool is cleared, as the kit's _resolve does; other pools are untouched
+
+
+def test_exit_fire_entry_then_an_empty_hour_then_a_later_entry_on_the_same_pool_is_accepted(tmp_path):
+    """End to end through the kit's own run_block: hour 0 and 1 carry data, hour 2 is EMPTY (the kit flushes its stores), hour 3 carries data again. The position opened in hour 0 is
+    still open at the flush (hold_s 10000 s, the predicate never fires). Before the fix the position stayed in _open: hour 3 raised KeyError in _advance_open."""
+    files = write_toy_tape(tmp_path / "tape", n_hours=4)
+    files[2].write_bytes(b"")
+    by_file = [(datetime.strptime(f.stem.removeprefix("tape-"), "%Y-%m-%dT%H").replace(tzinfo=timezone.utc), f) for f in files]
+    by, counters = M.kit_decisions(ToyFireKit(every=20, hold_s=10_000.0, cooldown_s=60.0), by_file)
+    hours = sorted(by)
+    assert counters["empty_hours"] == 1 and counters["exit_fire_positions"] >= 2
+    pools = lambda h: {ln[0] for ln in by[h]}  # noqa: E731 (a line starts with the pool)
+    pool_a = next(iter(p for p in pools(hours[0]) if p.startswith("PoolA")))
+    assert not by[hours[2]] and pool_a in pools(hours[0])
+    assert pool_a in pools(hours[3]), "a later entry on the same pool after the empty hour must be accepted, not dropped"
+    assert counters["overlap_dropped"] >= 1  # the open position did drop the same-hour re-triggers before the flush
