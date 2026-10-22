@@ -49,6 +49,7 @@ from tools.arena_state import WARM_MIN_DEFAULT, ArenaState
 RULE_MODULES_V2 = {"l1-floor-v2": "tools.arena_rule_l1"}
 CHECKPOINT_EVERY_MS = 600_000
 SWEEP_EVERY_MS = 3_600_000
+ENGINE_TRIM_EVERY_MS = 300_000  # ArenaEngine.trim_history() cadence (tick time), the same 5 tape minutes the HV4 runner uses
 
 
 class CtxV2(R.Ctx):
@@ -89,6 +90,7 @@ class HostV2(R.Host):
         self._last_ckpt = 0
         self.last_ckpt_report: dict[str, Any] = {}
         self._last_sweep = 0
+        self._last_trim = 0
 
     def _on_row(self, row: dict) -> None:
         if self.fatal is None:
@@ -105,6 +107,14 @@ class HostV2(R.Host):
 
     def step(self, T: int) -> None:
         super().step(T)
+        if T - self._last_trim >= ENGINE_TRIM_EVERY_MS:
+            # MEMORY ONLY. The engine keeps every print of every pool for ever (about 1 KB a print, ~450 MB per arena hour: a 2-day replay was OOM-killed at 20 GB, and the
+            # forward book plans 8 GB). trim_history() (PR #745, QP-reviewed, pricing-neutral: ledger byte-equal on a 9 h replay) drops only prints no later buy can read; a buy
+            # that would read below a trim floor is refused instead of mispriced. Entry decisions are made from the state and the pool table, never from the engine's prints.
+            self._last_trim = T
+            trim = getattr(self.engine, "trim_history", None)
+            if trim is not None:
+                trim()
         if T - self._last_sweep >= SWEEP_EVERY_MS:
             self._last_sweep = T
             self.table.live_positions = {pid for b in self.books.values() for pid in b.open}
