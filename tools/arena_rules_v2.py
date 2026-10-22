@@ -123,6 +123,16 @@ class HostV2(R.Host):
             self._last_ckpt = T
             self.save_table()
 
+    def trim_counters(self) -> dict[str, Any]:
+        """REPORT-ONLY: the engine's history-trim counters (PR #745). A nonzero rows_below_trim_floor or refused_history_trimmed voids the trim's
+        pricing equivalence. An engine without them (FakeEngine) reads 0. Never used by a decision."""
+        c = getattr(self.engine, "counters", None)
+        c = c if isinstance(c, dict) else {}
+        return {k: c.get(k, 0) for k in ("rows_below_trim_floor", "refused_history_trimmed", "hist_trimmed_prints", "rows_dup")}
+
+    def status(self) -> dict[str, Any]:
+        return {**super().status(), "trim_counters": self.trim_counters()}
+
     def save_table(self) -> None:
         t0 = time.monotonic()
         self.table.checkpoint(self.table_path)
@@ -130,7 +140,7 @@ class HostV2(R.Host):
             nbytes = os.path.getsize(self.table_path)
         except OSError:
             nbytes = -1
-        self.last_ckpt_report = {"ckpt_bytes": nbytes, "ckpt_s": round(time.monotonic() - t0, 3), **self.table.sizes()}
+        self.last_ckpt_report = {"ckpt_bytes": nbytes, "ckpt_s": round(time.monotonic() - t0, 3), **self.table.sizes(), "trim_counters": self.trim_counters()}
         print(canon({"table_checkpoint": self.last_ckpt_report}), file=sys.stderr, flush=True)
 
     def run(self, t_from: int, t_to: int, sleep: Callable[[float], None] = time.sleep) -> None:

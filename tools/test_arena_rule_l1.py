@@ -391,6 +391,7 @@ def test_host_v2_trims_the_engine_history_every_five_tape_minutes(tmp_path):
             TrimEngine.trims += 1
             return 0
 
+    TrimEngine.trims = 0
     tape = tmp_path / "tape"
     write_tape(tape, [row(H0 + 1000, "X")])
     rules = _first_print_rules()
@@ -398,6 +399,9 @@ def test_host_v2_trims_the_engine_history_every_five_tape_minutes(tmp_path):
     register_rules(rules, str(reg), SHA, H0, now_ms=H0 - 1, verify_sha=False)
     host = HostV2(HostConfig(root=str(tmp_path / "rules"), registry=str(reg), frozen_sha=SHA, clock_start_ms=H0), rules, ArenaState(tape, start_ms=0), TrimEngine(tmp_path / "rules"))
     host.run(H0, H0 + HOUR)
+    zero = {"rows_below_trim_floor": 0, "refused_history_trimmed": 0, "hist_trimmed_prints": 0, "rows_dup": 0}
+    assert host.status()["trim_counters"] == zero  # an engine without the counters reads 0, consistently
+    assert host.last_ckpt_report["trim_counters"] == zero
     assert ENGINE_TRIM_EVERY_MS == 300_000
     assert TrimEngine.trims == HOUR // ENGINE_TRIM_EVERY_MS  # 12 an hour, on the tick clock (deterministic in replay)
 
@@ -435,3 +439,21 @@ def test_host_v2_bounds_real_engine_print_history_and_keeps_entry_decisions(tmp_
     n_off = sum(len(h.slot) for h in e_off.pools.values())
     n_on = sum(len(h.slot) for h in e_on.pools.values())
     assert n_off >= 3000 and n_on < n_off // 2, (n_on, n_off)
+    tc = h_on.status()["trim_counters"]
+    assert tc["refused_history_trimmed"] == 0 and tc["rows_below_trim_floor"] == 0, tc
+    assert tc["hist_trimmed_prints"] > 0 and h_off.status()["trim_counters"]["hist_trimmed_prints"] == 0
+    assert h_on.last_ckpt_report["trim_counters"] == tc
+
+
+def test_trim_counters_on_the_done_line(tmp_path, capsys):
+    from tools.arena_rules_v2 import canon
+    tape = tmp_path / "tape"
+    write_tape(tape, [row(H0 + 1000, "X")])
+    rules = _first_print_rules()
+    reg = tmp_path / "bots.json"
+    register_rules(rules, str(reg), SHA, H0, now_ms=H0 - 1, verify_sha=False)
+    host = HostV2(HostConfig(root=str(tmp_path / "rules"), registry=str(reg), frozen_sha=SHA, clock_start_ms=H0), rules, ArenaState(tape, start_ms=0), FakeEngine(tmp_path / "rules"))
+    host.run(H0, H0 + 60_000)
+    line = canon({"done": host.status()})  # the exact expression main() prints
+    for k in ("rows_below_trim_floor", "refused_history_trimmed", "hist_trimmed_prints", "rows_dup"):
+        assert f'"{k}":0' in line.replace(" ", ""), (k, line)
