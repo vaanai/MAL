@@ -73,7 +73,7 @@ PrivateDevices=yes
 ReadWritePaths=/var/lib/mal-arena-bridge-dry
 ReadOnlyPaths=<arena root>
 MemoryMax=512M
-# Deliberately absent: LoadCredential, SetCredential, EnvironmentFile, Environment=HELIUS..., --live
+# This unit has no key directives, no environment settings, no drop-ins and no mode switch to live.
 ```
 
 ## 3. Install steps (Helm; every step has a check)
@@ -93,8 +93,10 @@ MemoryMax=512M
 ## 4. How to verify DRY (any time)
 
 ```sh
-systemctl cat mal-arena-live-bridge-dry | grep -ci credential          # expect 0
+systemctl cat mal-arena-live-bridge-dry | grep -Eci '^[[:space:]]*(Load|Set|Import)Credential'   # expect 0
+systemctl cat mal-arena-live-bridge-dry | grep -Eci '^[[:space:]]*(Environment|EnvironmentFile|PassEnvironment)[[:space:]]*='   # expect 0
 systemctl cat mal-arena-live-bridge-dry | grep -c -- '--live'          # expect 0
+systemctl cat mal-arena-live-bridge-dry | grep -c '\.service\.d/'      # expect 0 (no drop-ins)
 sudo test ! -e /etc/mal-arena-live/LIVE_OK && echo "gate closed"
 sudo test ! -e /var/lib/mal-arena-bridge-dry/bridge-state-live.json && echo "no live state"
 sudo head -c 600 /var/lib/mal-arena-bridge-dry/bridge-log-dry.jsonl    # kind=buy_sent rows carry "would_send":true
@@ -108,7 +110,7 @@ journalctl -u mal-arena-live-bridge-dry -n 20 --no-pager              # first li
 | Want | Do |
 | --- | --- |
 | No new would-send orders, keep running | `sudo -u mal-arena-bridge touch /var/lib/mal-arena-bridge-dry/STOP` (remove to resume) |
-| Freeze everything | `touch /var/lib/mal-arena-bridge-dry/HALT` |
+| Freeze everything | `sudo -u mal-arena-bridge touch /var/lib/mal-arena-bridge-dry/HALT` |
 | Stop the process | `sudo systemctl stop mal-arena-live-bridge-dry` (state is write-ahead; a restart replays nothing) |
 | Remove | `sudo systemctl disable --now mal-arena-live-bridge-dry`; keep `/var/lib/mal-arena-bridge-dry/` for the manager's read |
 
