@@ -111,16 +111,19 @@ def merge_health(texts: Sequence[str], expected_shas: Sequence[str]) -> tuple[st
     return "\n".join(lines + [C.canon({"type": "sha256", "hours": len(lines), "sha256": sha})]) + "\n", sha, shas
 
 
-def check_restart_starts(rows: Sequence[Mapping[str, Any]], restarts: Sequence[tuple[int, int]], clock_ms: int) -> None:
-    """Every engine start row after the clock except the first must lie in a declared restart gap (rounded outward to whole UTC hours). Timestamps only."""
+def check_restart_starts(rows: Sequence[Mapping[str, Any]], restarts: Sequence[tuple[int, int]], clock_ms: int, as_of_ms: int) -> None:
+    """Every engine start row after the clock (and at or before --as-of-ms) must lie in a declared restart gap (rounded outward to whole UTC hours). Timestamps only."""
     gap = set()
     for st, en in restarts:
         h = st // X.HOUR_MS * X.HOUR_MS
         while h <= max(st // X.HOUR_MS * X.HOUR_MS, (en - 1) // X.HOUR_MS * X.HOUR_MS):
             gap.add(h)
             h += X.HOUR_MS
-    starts = sorted(int(r["decision_ms"]["entry"]) for r in rows if r.get("kind") == "start" and int(r["decision_ms"]["entry"]) >= clock_ms)
-    for t in starts[1:]:
+    allst = sorted(int(r["decision_ms"]["entry"]) for r in rows if r.get("kind") == "start" and int(r["decision_ms"]["entry"]) <= as_of_ms)
+    post = [t for t in allst if t > clock_ms]
+    # the first post-clock start is exempt ONLY when no start row exists at or before the clock: a process started earlier makes every post-clock start a restart
+    starts = post if any(t <= clock_ms for t in allst) else post[1:]
+    for t in starts:
         if t // X.HOUR_MS * X.HOUR_MS not in gap:
             raise Refused(f"engine start row at {t} (after the first) is outside every declared restart gap: declare it in --restarts")
 
@@ -143,7 +146,7 @@ def run(ledger_root: str, registry: str, bot: str, health_texts: Sequence[str] |
     rows, problems = led.scan_bot(bot)
     incidents, inc_problems = led.read_incidents(bot)
     restarts = X.load_restarts(restarts_text)
-    check_restart_starts(rows, restarts, clock)
+    check_restart_starts(rows, restarts, clock, as_of_ms)
     out = [f"AM6 READ  bot {bot}  as_of_ms {as_of_ms}  health_tables {','.join(table_shas)}  health_merged_sha256 {hsha}  restarts_sha256 {restarts_sha}"]
     if problems or inc_problems:
         out.append(f"NOT_DECIDABLE_LEDGER: {len(problems) + len(inc_problems)} torn or unparseable ledger line(s): scorer not called")

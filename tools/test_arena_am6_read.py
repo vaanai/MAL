@@ -367,3 +367,26 @@ def test_r4_restarts_required_and_unexplained_engine_starts_refused(tmp_path):
     assert any(f"restarts_sha256 {hashlib.sha256(gap.encode()).hexdigest()}" in x for x in out)
     with pytest.raises(R.Refused, match="--restarts is required"):
         R.run(root, reg, "botA", [health()], AS_OF, None, [sha_of(health())])
+
+
+def _start_at(eid, ms):
+    return dict(start_row(eid), decision_ms={"entry": ms, "exit": None})
+
+
+def test_r4b_a_start_before_the_clock_makes_every_post_clock_start_a_restart(tmp_path):
+    rows = [r for r in book() if r["kind"] != "start"] + [_start_at("eng1", DAY0 - 600_000), _start_at("eng2", DAY0 + 30 * H)]
+    root, reg = setup(tmp_path, rows)
+    with pytest.raises(R.Refused, match="restart gap"):
+        RR(root, reg, "botA", health(), AS_OF, "")  # empty --restarts
+
+
+def test_r4b_a_first_start_after_the_clock_is_allowed(tmp_path):
+    rows = [r for r in book() if r["kind"] != "start"] + [_start_at("eng1", DAY0 + 30 * H)]
+    root, reg = setup(tmp_path, rows)
+    assert RR(root, reg, "botA", health(), AS_OF, "")[2] is not None
+
+
+def test_r4b_starts_after_as_of_are_not_checked(tmp_path):
+    rows = book() + [_start_at("eng9", AS_OF + DAY)]
+    root, reg = setup(tmp_path, rows)
+    assert RR(root, reg, "botA", health(), AS_OF, "")[2] is not None
