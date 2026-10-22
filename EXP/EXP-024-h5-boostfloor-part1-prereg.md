@@ -1187,6 +1187,114 @@ Quant-proof ruling: PR #629, comment 6140947978, "QP RULING: EXP-024 after the 2
 
 QP OK and reviewer verdict: on PR #784 at its merged head; the records PR cites the comment ids.
 
+### Amendment 10 (first written 2026-10-21T23:38Z, revised 2026-10-21T23:43Z, from `date -u`; before any `H5-BOOSTFLOOR-Q50 v1` process exists and before any Q50 trigger outcome exists on an October pool): declared real-time observation of the arena H5-BOOSTFLOOR-Q50 book's outcomes ([DEC-031](../DEC/DEC-031-forward-paper-arena.md) Amendment 5)
+
+Text only. This turns quant-proof's ruling `ARTIFACTS/lab/qp-ruling-1022-q50.md` (repo copy; source `/data/mal/hunt-1008/push-1016/hunt24/l3-boost/QP-RULING-1022-q50.md`, sha256 `a0dcf39100d30b944544955981e7452e4449d5018a942d30a35a4c3a2057cac7`) section 1 into EXP-024 text. It has its own rule block, its own sha256 and its own `rule_id`. Nothing here says that any book makes money, and no book has cleared the promotion gate.
+
+**Gating.** This amendment merges with quant-proof's OK and a reviewer verdict on its exact final head, before the Q50 process starts and so before the Q50 book's clock. Otherwise the Q50 book is not registered. Without it, no Amendment 2, Amendment 9 or Note covers a Q* = 50 trigger outcome, and a Q50 book could count only pools with s0 at or after 2026-11-14T00:00Z.
+
+**What was in view (not outcome-blind for v1).** The people who chose Q* = 50 saw the arena v1 and v2 a1 outcomes and the canary outcomes as they arrived, in real time, under Amendment 2 and Amendment 9. Also in view: the hunt24 `DESIGN.md`, `COUNTS.md` (structure counts only) and the discovery grid (September data). To the knowledge of the writer, the manager (as relayed) and quant-proof, no Q* = 50 trigger outcome, fill, exit or P&L has been computed on any October pool, from any source; the hunt24 L3 lane computed counts only. The P0 counter is `scripts/research/l3_count_q50p0.py` in this repo (sha256 `8c6b490576690193934451af9d6dd4eff3ca649d066553bc172d31f1de2d2446`; DEC-031 Amendment 5 item 1.1), which differs from `l3_count.py` (sha256 `c45bfbfa98f06c561e1bf302e5cc318580bae21323f13d4ce9cdc38626a7424d`) only in the allowed tape-file range. Per quant-proof comment 6329033726 on PR #790, quant-proof read every line of `l3_count.py` at c45bfbfa: it reads decision-time fields (type, prog, slot, t_recv_ms, signature, mint, quote_mint, trader, side, sol_lamports, pre-trade reserves, pool_quote_amount, gap and heartbeat rows); it reads prints up to s0 + 420 s (TRACK_S) only for wallet buy counts and sums (the BOOST detector and the separate `boosted` count); it computes no price, fill, exit, P&L or return, and makes no RPC call. **What the writer of this amendment checked himself:** the writer read the file's header docstring, imports and constants and searched the whole file for network, RPC, price, fill, exit, P&L, return and fee terms: the imports are stdlib only (`collections, datetime, json, re, subprocess, sys`), the only subprocess call is `zstd -dc` on a tape file, the only hit for a price-like term is a comment that the buy/pre-trade-Q ratio is a decision-time size ratio, not a price, and no network or RPC call appears. That is a header, import and keyword check, not a line-by-line audit; the full-read statement is quant-proof's. The writer opened no ledger, `bots.json`, shadow or canary output and no sealed path, and did not open the owner's notebook entry.
+
+**The rule block.** `rule_id` `H5-BOOSTFLOOR-Q50 v1`. The block is `RULE.md` (sha256 `c66b1a5990468080d56a97d67619c035cd81e2782eac89c48b94b8c9c9abe56c`) byte for byte except four lines: (a) the header line, (b) the trigger line `post-trade Q_i = real quote + V <= 50 SOL`, (c) the Code line `DS=50`, (d) the second line of the "Parameters chosen on discovery" bullet, which keeps its original text and adds the Q* = 50 sentence. The paraphrased block in hunt24 `DESIGN.md` section 3 is NOT used. Arena-layer terms (WSOL, V band, synthetic exclusion, stack, rent) belong to DEC-031 and the registration, not to the rule. The block is also the file `EXP/EXP-024-RULE-Q50.md` (the repo text is the pin; a `/data`-only file is not). Check (the fence is `rule-q50`, so Section 2's `rule` check is unaffected): `sed -n '/^~~~rule-q50$/,/^~~~$/p' EXP/EXP-024-h5-boostfloor-part1-prereg.md | sed '1d;$d' | sha256sum` gives `b3f8ecbf8731dc322a035a0b3996b7ed3f0b8c508cc6947014e3de1aa9524fd4`, equal to `sha256sum EXP/EXP-024-RULE-Q50.md`. The difference from RULE.md is exactly (a) to (d): `git diff --no-index /data/mal/hunt-1008/h5-flows/RULE.md EXP/EXP-024-RULE-Q50.md` (hunks only, printed):
+
+```
+@@ -1,4 +1,4 @@
+-# RULE H5-BOOSTFLOOR v1 (frozen 2026-10-08, before any confirmation data was read)
++# RULE H5-BOOSTFLOOR-Q50 v1 (sibling of H5-BOOSTFLOOR v1; frozen 2026-10-21, before any Q50 trigger outcome was computed on an October pool)
+ 
+ Thesis H5 (predictable flows). The pump.fun BOOST agent is a price-insensitive TWAP buyer: after every non-mayhem graduation it spends
+ exactly 17.585 SOL in ~29 slices over ~345 s, whatever the price. PumpSwap price = (real quote + V) / base with V = 17.58 SOL, so sells
+@@ -19,7 +19,7 @@ buy and hold to just before BOOST's last slice.
+ 
+ ## Trigger (one trade per pool, first qualifying print)
+ - print i is a sell (non-BOOST by construction), t_i = (slot_i - s0) * sps in [0, 300] s,
+-- post-trade Q_i = real quote + V <= 40 SOL (post-trade state of print i = pre-trade state of print i+1),
++- post-trade Q_i = real quote + V <= 50 SOL (post-trade state of print i = pre-trade state of print i+1),
+ - spent(i) < 0.999 * 17.585 SOL.
+ 
+ ## Entry
+@@ -39,9 +39,9 @@ buy and hold to just before BOOST's last slice.
+ - Gate statistics: common.gate (date-cluster bootstrap, 1,000 day resamples, seed 1, 5th/95th percentiles).
+ 
+ ## Code
+-- s14_boostdip.py run with env DS=40 TMIN=0 TMAX=300 TEND=330 NOBOOSTREQ=0 (MODE unset); the rule's exit is column H == 'end'.
++- s14_boostdip.py run with env DS=50 TMIN=0 TMAX=300 TEND=330 NOBOOSTREQ=0 (MODE unset); the rule's exit is column H == 'end'.
+ - s15_score_dip.py scores it. Discovery numbers that motivated the rule: out/s15_dip_v2_disc_grid.txt and the full-leg rows in REPORT.md.
+ 
+ ## Parameters chosen on discovery (explore-0814 only)
+ - Q* = 40 SOL from {40, 50, 60} (monotone: smaller Q* better); exit 'end' (330 s after first print) from {15, 30, 60, 120 s after landing, end};
+-  trigger window [0, 300] s fixed a priori; BOOST remaining check fixed a priori.
++  trigger window [0, 300] s fixed a priori; BOOST remaining check fixed a priori. Q* = 50 here, a discarded discovery cell (discovery: monotone, smaller Q* better); chosen 2026-10-21 for attempts/day, not for edge.
+```
+
+~~~rule-q50
+# RULE H5-BOOSTFLOOR-Q50 v1 (sibling of H5-BOOSTFLOOR v1; frozen 2026-10-21, before any Q50 trigger outcome was computed on an October pool)
+
+Thesis H5 (predictable flows). The pump.fun BOOST agent is a price-insensitive TWAP buyer: after every non-mayhem graduation it spends
+exactly 17.585 SOL in ~29 slices over ~345 s, whatever the price. PumpSwap price = (real quote + V) / base with V = 17.58 SOL, so sells
+cannot push Q = real quote + V below V. Rule: when early dumping has drained the pool close to its V floor while BOOST still has budget,
+buy and hold to just before BOOST's last slice.
+
+## Universe (decision-time information only)
+- Every `complete` graduation whose canonical PumpSwap pool has V in [17.5, 17.7] SOL (non-mayhem, BOOST era). Canonical pool and V as in
+  /data/mal/audit-1008/work/g_reachable_cap_book_rescore/meta/<day>.parquet (first V-range pool after `complete`); paths from
+  .../paths/<day>.parquet (PumpSwap PRE-trade reserves, ordered slot, tx_index, event_index). The graduation precedes every decision; no
+  future event defines the universe.
+- s0 = slot of the canonical pool's first print. sps = seconds per slot of that pool, from block_time over its path (must be in (0.15, 0.6)).
+
+## BOOST tracking
+- BOOST wallet = the buy-only wallet with >= 3 buys, each 0.2..2.0 SOL, total <= 17.7 SOL, in the pool's first 1,600 slots (most buys wins).
+  Live equivalent: the per-pool BOOST vault PDA. Completion of the 17.585 SOL budget is NOT required (an early stop counts against the rule).
+- spent(i) = cumulative BOOST buy SOL up to and including print i.
+
+## Trigger (one trade per pool, first qualifying print)
+- print i is a sell (non-BOOST by construction), t_i = (slot_i - s0) * sps in [0, 300] s,
+- post-trade Q_i = real quote + V <= 50 SOL (post-trade state of print i = pre-trade state of print i+1),
+- spent(i) < 0.999 * 17.585 SOL.
+
+## Entry
+- Landing slot X = slot_i + ceil(1.3 s / sps) (primary leg) or ceil(1.9 s / sps) (binding leg). END bound: pool state after every print
+  in slots <= X. Buy size S in {0.1, 0.25} SOL; net = S * (1 - f), f = canonical PumpSwap tier (tools/paper_curve_math.PUMPSWAP_SOL_FEE_TIERS)
+  on the landing state's market cap; tokens = B * net / (Q + net). Our own impact is applied (constant product on Q incl. V).
+
+## Exit
+- Exit trigger at slot s0 + round(330 s / sps) (just before BOOST's last slice and the documented post-BOOST cliff). The sell lands
+  ceil(0.55 s / sps) slots later, END bound; our buy stays in the pool until we sell; proceeds = tokens * Q' / (B' + tokens) * (1 - tier fee).
+
+## Costs and legs
+- 55,000 lamports priority per send, on the buy and on the sell.
+- Flat fail: pnl_flat = 0.85 * pnl + 0.15 * (-55,000 lamports).
+- Pressure fail: tools/latency_curve.fit_curve (slopes 0.8 / 0.35 at scale 1, intercept refit so mean p = 0.289 on this book's sends) on
+  (buys in the landing slot, buy lamports in the 2 s up to and including the landing slot); pnl_press = (1-p) * pnl + p * (-55,000).
+- Gate statistics: common.gate (date-cluster bootstrap, 1,000 day resamples, seed 1, 5th/95th percentiles).
+
+## Code
+- s14_boostdip.py run with env DS=50 TMIN=0 TMAX=300 TEND=330 NOBOOSTREQ=0 (MODE unset); the rule's exit is column H == 'end'.
+- s15_score_dip.py scores it. Discovery numbers that motivated the rule: out/s15_dip_v2_disc_grid.txt and the full-leg rows in REPORT.md.
+
+## Parameters chosen on discovery (explore-0814 only)
+- Q* = 40 SOL from {40, 50, 60} (monotone: smaller Q* better); exit 'end' (330 s after first print) from {15, 30, 60, 120 s after landing, end};
+  trigger window [0, 300] s fixed a priori; BOOST remaining check fixed a priori. Q* = 50 here, a discarded discovery cell (discovery: monotone, smaller Q* better); chosen 2026-10-21 for attempts/day, not for edge.
+~~~
+
+**What it declares.** In the form of Amendment 9 and the Note under it.
+- **(a) Scope.** A declared exception to section 3's seal for `rule_id` `H5-BOOSTFLOOR-Q50 v1`, block sha256 `b3f8ecbf8731dc322a035a0b3996b7ed3f0b8c508cc6947014e3de1aa9524fd4`, computed only by `tools/h5_shadow.py` at the Q50 book's `frozen_sha`, started with `--fresh-forward ARENA --q-star-sol 50`. It covers pools with s0 at or after that process's start record `start_ms` and before 2026-11-06T00:00:00Z. Coverage starts at process start, not at the clock, so that no outcome the process writes is ever uncovered (stricter than the Note under Amendment 9, which left pre-clock outcomes uncovered and unopened). The `bots.json` line and the records PR pin the commit; a process whose running code does not match that pin is not covered. Outcomes go to the arena output and ledger only. They may be observed in real time, and are gate-read once by the Q50 scoring wrapper under DEC-031 section 2.
+- **(b) No revival.** EXP-024 ended NOT_DECIDABLE on 2026-10-13 (A3 halt record). Nothing here revives, re-files or re-scopes it. No arena result may change any EXP-024 parameter or record, and EXP-024's read tool does not use any of this.
+- **(c) Not changed.** Amendment 2, Amendment 9 and the Note under it, and the v1 and v2 scope and the a2 coverage, are unchanged. No EXP-024 parameter or record is changed.
+- **(d) End.** No pool with s0 at or after 2026-11-06T00:00Z is covered. The code's end-seal stays. After 2026-11-06T00Z nothing covers Q50, and Amendment 9 (e) is not extended to it.
+- **(e) bx10.** No bx10 or v2 exit computed on Q50 triggers is covered. That would be a third rule. It is not declared and must never be computed. The Q50 process runs with bx10 off and writes no `outcome_bx10` record (DEC-031 Amendment 5, QP G2).
+- **(f) Synthetic class.** Amendment 4 D1, A2 and B3 and Amendment 9 (d) bind Q50 word for word. Before 2026-11-14T00:00Z no Q50 record carries an outcome for a synthetic or unclassified pool, or splits an outcome by class. The universe excludes synthetic and unclassified pools before any outcome exists. Pool records of non-plain pools carry no `min_q` fields (the existing fresh-mode behaviour).
+- **(g) Look-2 seal for Q50 pools in their first 360 s.** Covered only by this declaration, inside the scope in (a). Outside it (pools before the process start; any other process, replay or tape; arena tape on research-0; walk 2; RPC), the section 3 seal holds until EXP-024's end state, first 2026-11-14T00:00Z. Nobody prices Q50 on arena-tape October hours, before or after the clock. That includes a "sanity" replay.
+
+**Disclosures.**
+- Amendment 2's clause applies: an amendment dated after 2026-10-16T00Z was made with Look 2-window outcomes in view.
+- Q50 is a sibling of `h5v1-boostfloor-a2` and `h5v2-boostclock-a2`. Its triggered-pool set contains every v1 trigger pool (the first Q <= 50 sell is at or before the first Q <= 40 sell, since spent() is monotone and t is earlier). The v1 and Q50 books share the 330 s exit.
+- Q* = 50 is a discarded discovery cell (discovery: Q* = 40 best, monotone). No Q50 edge exists and none is claimed.
+- It adds 1 to N (DEC-031 Amendment 4 item 2.5), from the Q50 book's clock.
+- **Owner provenance.** Notebook entry `n_e4wMMd_5XtLT4A` (owner, 2026-10-21 about 23:3xZ), as relayed in the manager's brief; the writer did not open it.
+
+QP OK and reviewer verdict: on the PR at its merged head; the records PR cites the comment ids.
+
 ## Sources
 
 - `/data/mal/hunt-1008/h5-flows/{RULE,REPORT,VERIFY}.md` and `out/`
