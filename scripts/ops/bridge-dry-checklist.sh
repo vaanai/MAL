@@ -10,6 +10,7 @@
 #   BRIDGE_UNIT_TEXT=<file>                     read the unit text from this file instead of `systemctl cat` (tests / pre-install review)
 #   BRIDGE_KEY_PATHS="..."                      extra paths that must NOT be readable
 #   BRIDGE_LIVE_DIR=/etc/mal-arena-live         where LIVE_OK and TIER would live
+#   BRIDGE_DROPIN_DIRS="..."                     extra drop-in dirs that must not exist (tests)
 BRIDGE_UNIT=${BRIDGE_UNIT:-mal-arena-live-bridge-dry}
 BRIDGE_CONFIG=${BRIDGE_CONFIG:-/etc/mal-arena-live/dry.json}
 BRIDGE_LIVE_DIR=${BRIDGE_LIVE_DIR:-/etc/mal-arena-live}
@@ -35,9 +36,22 @@ else utext=$(systemctl cat "$BRIDGE_UNIT" 2>/dev/null); u_rc=$?; fi
 if [ "$u_rc" -ne 0 ] || [ -z "$utext" ]; then
   fail "unit_text_unreadable ($BRIDGE_UNIT)"
 else
-  bad=$(printf '%s\n' "$utext" | grep -Ei '^[[:space:]]*(LoadCredential|LoadCredentialEncrypted|SetCredential|SetCredentialEncrypted|ImportCredential)[[:space:]]*=|HELIUS_API_KEY|probe-wallet|EnvironmentFile[[:space:]]*=.*(helius|probe|wallet)' | sed 's/=.*/=<redacted>/')
-  if [ -z "$bad" ]; then pass "no_credential_lines_in_unit"; else fail "credential_lines_in_unit: $bad"; fi
+  # Comment lines are ignored for the directive checks (the template documents what is absent), but a drop-in header comment (systemctl cat prints
+  # "# /etc/systemd/system/<unit>.service.d/x.conf") is itself a FAIL: this unit has no drop-ins.
+  code=$(printf '%s\n' "$utext" | grep -Ev '^[[:space:]]*[#;]')
+  bad=$(printf '%s\n' "$code" | grep -Ei '^[[:space:]]*(LoadCredential|LoadCredentialEncrypted|SetCredential|SetCredentialEncrypted|ImportCredential)[[:space:]]*=' | sed 's/=.*/=<redacted>/')
+  [ -n "$bad" ] && fail "credential_directive_in_unit: $bad" || pass "no_credential_directives_in_unit"
+  bad=$(printf '%s\n' "$code" | grep -Ei '^[[:space:]]*(EnvironmentFile|PassEnvironment)[[:space:]]*=' | sed 's/=.*/=<redacted>/')
+  [ -n "$bad" ] && fail "environment_file_in_unit: $bad" || pass "no_environment_file_in_unit"
+  bad=$(printf '%s\n' "$code" | grep -Ei '^[[:space:]]*Environment[[:space:]]*=.*(key|token|pass|cred|helius|rpc|wallet|keypair)' | sed 's/=.*/=<redacted>/')
+  [ -n "$bad" ] && fail "key_like_environment_in_unit: $bad" || pass "no_key_like_environment_in_unit"
+  bad=$(printf '%s\n' "$code" | grep -Ei '^[[:space:]]*(BindPaths|BindReadOnlyPaths)[[:space:]]*=.*(/etc/mal-|/var/lib/mal-live|wallet|key|probe|cred|helius)' | sed 's/=.*/=<paths hidden>/')
+  [ -n "$bad" ] && fail "bind_to_key_location_in_unit: $bad" || pass "no_bind_to_key_locations"
+  if printf '%s\n' "$utext" | grep -Eq '\.service\.d/|\.conf[[:space:]]*$'; then fail "drop_in_present_in_unit_text"; else pass "no_drop_in_in_unit_text"; fi
 fi
+for dd in "/etc/systemd/system/$BRIDGE_UNIT.service.d" "/run/systemd/system/$BRIDGE_UNIT.service.d" "/usr/lib/systemd/system/$BRIDGE_UNIT.service.d" ${BRIDGE_DROPIN_DIRS:-}; do
+  if [ -e "$dd" ]; then fail "drop_in_dir_present ($dd)"; fi
+done
 
 # 3. DRY flag: config mode is dry, ExecStart has no --live, LIVE_OK is absent (a live-configured bridge without LIVE_OK would still only log, but the
 #    dry install must not even have the file).
@@ -45,6 +59,7 @@ mode=$("$PY" -I -c 'import json,sys; print(json.load(open(sys.argv[1])).get("mod
 if [ "$mode" = "dry" ]; then pass "config_mode_dry ($BRIDGE_CONFIG)"; else fail "config_mode_not_dry (got '${mode:-unreadable}')"; fi
 if [ -n "$utext" ] && printf '%s\n' "$utext" | grep -E '^[[:space:]]*ExecStart' | grep -q -- '--live'; then fail "execstart_has_--live"; else pass "execstart_has_no_--live"; fi
 if [ -e "$BRIDGE_LIVE_DIR/LIVE_OK" ]; then fail "LIVE_OK_exists ($BRIDGE_LIVE_DIR/LIVE_OK): a dry install has no LIVE_OK"; else pass "LIVE_OK_absent"; fi
+if [ -e "$BRIDGE_LIVE_DIR/TIER" ]; then fail "TIER_exists ($BRIDGE_LIVE_DIR/TIER): a dry install has no TIER"; else pass "TIER_absent"; fi
 
 # 4. STOP / HALT paths: configured, and their directory exists (the owner of the unit can then create STOP; HALT likewise). Whether STOP currently
 #    exists is printed as INFO: in dry a STOP file also blocks the would-send log, so a dry run to see orders needs it absent.
