@@ -1,8 +1,36 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-21T18:45:00Z",
+ "updated_utc": "2026-10-22T19:52:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "am6-merged-1022",
+   "kind": "decision",
+   "title": "DEC-031 Amendment 6 merged (90ab73dc): new paper books start after a >=2 h smoke instead of a 24 h stub; outcome-blind per-hour data-integrity exclusions; >10% of attempts in excluded hours = NOT_DECIDABLE",
+   "detail": "PR #797, QP OK 6349434917, reviewer APPROVE 6349434018. Gate unchanged. Tools merged: #799 arena_hour_health (a238ab48), #801 arena_am6_exclusions (17408d82). Am.7 (#800, c3467607) pins HV4's horizon in the notebook copy + records PR.",
+   "atUtc": "2026-10-22T19:52:00Z"
+  },
+  {
+   "id": "hv4-clock-1025",
+   "kind": "decision",
+   "title": "HV4 (9 Haiku bots) clock moves to 2026-10-25T00:00Z",
+   "detail": "Covered by Am.6: real-model smoke 2026-10-22T21:45Z to 10-23T01:45Z (API cap $7.20) replaces the 24 h stub gate; reviewer read Am.4 item 2 literally, so HV4 needs a counts-only P0 on 3 closed days (no exemption). QP ruling haiku-v4/QP-RULING-1022-hv4-am6.md.",
+   "atUtc": "2026-10-22T19:52:00Z"
+  },
+  {
+   "id": "floor-796-merged",
+   "kind": "decision",
+   "title": "FLOOR v2 host memory fix merged (#796, 5e12f8f5); C4(iii) slice A rerun job #1372",
+   "detail": "Trim engine print history every 5 tape minutes + trim counters (report-only). Slice A passed both runs at 06122b9c (md5 792269fc, 5 entries). Slice B (343 entries) running. FLOOR clock realistic ~10-26 (P0 recount after 10-25).",
+   "atUtc": "2026-10-22T19:52:00Z"
+  },
+  {
+   "id": "hunt26-1022",
+   "kind": "finding",
+   "title": "Cost-stack sweep + 4 screens (in-sample): only lead = G4 v1 entries under a patient fee stack",
+   "detail": "505k/send is the p75 fee of slot+1 landings; rent is refunded on ATA close. Patient stack (35k/send, rent refunded) saves 0.00298 SOL per round trip. G4 v1 at 0.1 SOL: -0.43%/trade at the deciding stack vs +2.18% patient (explore-0814, ex-top-3 +0.47 SOL). Exit upgrades, PUMP hour-16 drift dead. Needs live landing data (fee-arm probe, asked Helm). Not gate evidence.",
+   "atUtc": "2026-10-22T19:52:00Z"
+  },
   {
    "id": "xpool-killed-1021",
    "kind": "finding",
@@ -1272,6 +1300,12 @@
  ],
  "for_you": [
   {
+   "id": "fy-20261022-helm-feearm",
+   "from": "claude",
+   "atUtc": "2026-10-22T19:52:00Z",
+   "text": "For Helm: the fee-arm probe's landing fields only (fee_arm, arm_priority_lamports, side, outcome, fail_class, landed_slot, slots_between; no amounts/P&L) so Claude can run its pre-registered landing test. Draft: /data/mal/hunt-1008/push-1016/hunt26/landing/HELM-ASK-1022.md."
+  },
+  {
    "id": "fy-20261019-disk-helm",
    "from": "claude",
    "atUtc": "2026-10-19T04:06:29Z",
@@ -1627,6 +1661,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261022-m14-1952",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-10-22T19:52:00Z",
+   "text": "manager14 push 10-22: Am.6/Am.7 + 2 tools merged; FLOOR fix merged; HV4 real-model smoke tonight, clock 10-25; H5 a2 books start counting 10-23T00Z; Q50 10-25; FLOOR ~10-26. No book has cleared the promotion gate."
+  },
   {
    "id": "s-20261019-records-0406",
    "from": "claude",
