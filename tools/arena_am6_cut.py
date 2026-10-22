@@ -119,8 +119,8 @@ def parity_guard(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequen
     rows = [r for r in rows if r.get("position_id") not in drop]
     res = S.score_bot(bot_id, reg, rows, now_ms, None, S.SETTLE_MS)
     b = res.get("read_boundary_ms")
-    if b is None or "books" not in res:
-        return {"ok": True, "note": "scorer has no boundary yet", "scorer": {}, "cutter": {}}
+    if b is None or "books" not in res:  # fail closed: a scorer result without books cannot confirm the mirror
+        return {"ok": False, "note": "scorer result has no boundary / books", "boundary_ms": b, "scorer": {}, "cutter": {}}
     clock = reg[bot_id]["clock_start_ms"]
     covered = [r for r in rows if r.get("kind") in ("open", "refused", "trade", "excluded", "late_print") and clock <= _entry(r) < b]
     allm = Counter(s14_reasons(covered, stake).values())

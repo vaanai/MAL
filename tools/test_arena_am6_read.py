@@ -60,6 +60,16 @@ def book(n=105, per=21, entry_of=None):
     return rows
 
 
+def sha_of(text):
+    return json.loads(text.rstrip("\n").split("\n")[-1])["sha256"]
+
+
+def RR(root, reg, bot, hl, as_of, restarts="", shas=None, **kw):
+    """R.run with the notebooked table sha(s) derived from the table text(s) unless `shas` is given."""
+    hls = [hl] if isinstance(hl, str) else list(hl)
+    return R.run(root, reg, bot, hls, as_of, restarts, shas if shas is not None else [sha_of(t) for t in hls], **kw)
+
+
 def setup(tmp_path, rows):
     reg = tmp_path / "bots.json"
     register_bot("botA", "abc1234", DAY0, reg, deciding_stake=0.25, model_ids=[], now_ms=0)
@@ -71,7 +81,7 @@ def setup(tmp_path, rows):
 
 def go(tmp_path, rows, hl=None, restarts="", as_of=AS_OF, **kw):
     root, reg = setup(tmp_path, rows)
-    return R.run(root, reg, "botA", hl or health(), as_of, restarts, **kw), root, reg
+    return RR(root, reg, "botA", hl or health(), as_of, restarts, **kw), root, reg
 
 
 def test_cut_carries_only_the_five_keys_and_is_deterministic(tmp_path):
@@ -137,7 +147,7 @@ def test_wrapper_refuses_when_the_mirror_drifts(tmp_path, monkeypatch):
     real = C.s14_reasons
     monkeypatch.setattr(C, "s14_reasons", lambda rs, st: {k: v for k, v in real(rs, st).items() if v != "missing_v"})
     with pytest.raises(R.Refused, match="parity"):
-        R.run(root, reg, "botA", health(), AS_OF)
+        RR(root, reg, "botA", health(), AS_OF)
 
 
 def test_healthy_book_matches_the_direct_scorer_and_excluded_hour_attempts_are_absent(tmp_path):
@@ -170,9 +180,12 @@ def test_span_overlap_attempt_is_not_a_priced_trade_but_still_an_attempt(tmp_pat
 
 def test_not_decidable_short_circuits_without_calling_the_scorer(tmp_path, monkeypatch):
     bad = {DAY0 + d * DAY + (1 + k) * H: ["decision-input"] for d in (0, 1) for k in range(7)}  # 14 of 130 attempts (> 10%); the other 116 still reach the boundary
-    monkeypatch.setattr(S, "score_bot", lambda *a, **k: (_ for _ in ()).throw(AssertionError("scorer must not run")))
+    calls = []
+    real = S.score_bot
+    monkeypatch.setattr(S, "score_bot", lambda *a, **k: calls.append(1) or real(*a, **k))
     (code, lines, res), *_ = go(tmp_path, book(130), hl=health(bad))
     assert code == 0 and res is None
+    assert len(calls) == 1  # only the parity guard (R2: it runs BEFORE the verdict); the scored read is never made
     assert any("NOT_DECIDABLE_10PCT" in x for x in lines) and not any("ARENA GATE READ" in x for x in lines)
 
 
@@ -191,14 +204,15 @@ def test_refusals(tmp_path):
     root, reg = setup(tmp_path, book())
     tampered = health().replace('"excluded":false', '"excluded":true', 1)
     with pytest.raises(X.Refused, match="sha256"):
-        R.run(root, reg, "botA", tampered, AS_OF)
+        RR(root, reg, "botA", tampered, AS_OF)
     with pytest.raises(R.Refused, match="expected"):
-        R.run(root, reg, "botA", health(), AS_OF, expect_health_sha="0" * 64)
+        RR(root, reg, "botA", health(), AS_OF, shas=["0" * 64])
     with pytest.raises(R.Refused, match="not in the registry"):
-        R.run(root, reg, "nobody", health(), AS_OF)
+        RR(root, reg, "nobody", health(), AS_OF)
     with pytest.raises(X.Refused, match="absent from health table"):  # a decision hour the table does not cover is unmeasurable
-        R.run(root, reg, "botA", health(days=2), AS_OF)
-    assert R.main(["--ledger-root", root, "--registry", reg, "--bot", "botA", "--health", str(tmp_path / "missing"), "--as-of-ms", str(AS_OF)]) == 2
+        RR(root, reg, "botA", health(days=2), AS_OF)
+    assert R.main(["--ledger-root", root, "--registry", reg, "--bot", "botA", "--health", str(tmp_path / "missing"), "--health-sha", "x", "--restarts",
+                   str(tmp_path / "missing"), "--as-of-ms", str(AS_OF)]) == 2
     with pytest.raises(X.Refused, match="forbidden"):  # the exclusions tool still refuses a price key in a hand-made cut
         X.run(health(), json.dumps({"attempt_id": "a", "decided_ms": DAY0 + H, "exit_ms": None, "s14_excluded": False, "pnl_sol": 1}) + "\n", "", AS_OF)
 
@@ -208,14 +222,14 @@ def test_cut_refuses_a_torn_ledger(tmp_path):
     f = next(Path(root, "botA").glob("trades-*.jsonl"))
     f.write_text(f.read_text() + '{"kind":"trade", torn')
     assert C.main(["--ledger-root", root, "--registry", reg, "--bot", "botA", "--as-of-ms", str(AS_OF), "--out", str(tmp_path / "o")]) == 2
-    code, lines, res = R.run(root, reg, "botA", health(), AS_OF)
+    code, lines, res = RR(root, reg, "botA", health(), AS_OF)
     assert res is None and any("NOT_DECIDABLE_LEDGER" in x for x in lines)
 
 
 def test_wrapper_output_is_deterministic(tmp_path):
     root, reg = setup(tmp_path, s14_rows())
-    a = R.run(root, reg, "botA", health(), AS_OF)[1]
-    b = R.run(root, reg, "botA", health(), AS_OF)[1]
+    a = RR(root, reg, "botA", health(), AS_OF)[1]
+    b = RR(root, reg, "botA", health(), AS_OF)[1]
     assert a == b
 
 
@@ -253,7 +267,7 @@ def test_parity_guard_runs_over_the_rows_scored_through_the_wrappers_boundary(tm
     sub.mkdir()
     root2, reg2 = setup(sub, rows)
     with pytest.raises(R.Refused, match="parity"):
-        R.run(root2, reg2, "botA", six_bad_hours(), AS_OF)
+        RR(root2, reg2, "botA", six_bad_hours(), AS_OF)
 
 
 def test_an_earlier_read_can_be_rerun_exit_after_as_of_is_open():
@@ -268,5 +282,88 @@ def test_unexpected_errors_exit_2(tmp_path, monkeypatch):
     hp = tmp_path / "h.jsonl"
     hp.write_text(health())
     monkeypatch.setattr(C, "attempts_from_rows", lambda *a, **k: 1 / 0)
-    assert R.main(["--ledger-root", root, "--registry", reg, "--bot", "botA", "--health", str(hp), "--as-of-ms", str(AS_OF)]) == 2
+    rp = tmp_path / "r.jsonl"
+    rp.write_text("")
+    assert R.main(["--ledger-root", root, "--registry", reg, "--bot", "botA", "--health", str(hp), "--health-sha", sha_of(health()), "--restarts", str(rp),
+                   "--as-of-ms", str(AS_OF)]) == 2
     assert C.main(["--ledger-root", root, "--registry", reg, "--bot", "botA", "--as-of-ms", str(AS_OF), "--out", str(tmp_path / "o")]) == 2
+
+
+# ---- QP R1 to R4
+def test_r1_the_wrapper_records_the_one_read_and_a_second_is_refused(tmp_path):
+    rows = book()
+    root, reg = setup(tmp_path, rows)
+    rd = tmp_path / "reads"
+    code, lines, res = RR(root, reg, "botA", health(), AS_OF, record=True, reads_dir=str(rd))
+    rec = json.loads((rd / "botA.json").read_text())
+    assert rec["status"] == res["bots"]["botA"]["status"] and rec["attempts"] == 105
+    am6 = rec["am6"]
+    assert set(am6) == {"read_boundary_ms", "cut_sha256", "exclusions_sha256", "health_table_sha256", "health_merged_sha256", "restarts_sha256"}
+    assert am6["restarts_sha256"] == hashlib.sha256(b"").hexdigest() and am6["read_boundary_ms"] == rec["read_boundary_ms"]
+    with pytest.raises(S.Refused, match="already recorded"):
+        RR(root, reg, "botA", health(), AS_OF, record=True, reads_dir=str(rd))
+    # the CLI path records too (second CLI call is a refusal, exit 2)
+    hp, rp = tmp_path / "h", tmp_path / "r"
+    hp.write_text(health())
+    rp.write_text("")
+    args = ["--ledger-root", root, "--registry", reg, "--bot", "botA", "--health", str(hp), "--health-sha", sha_of(health()), "--restarts", str(rp), "--as-of-ms", str(AS_OF),
+            "--record", "--reads-dir", str(rd)]
+    assert R.main(args) == 2
+
+
+def test_r1_a_not_decidable_verdict_is_recorded_as_final(tmp_path):
+    bad = {DAY0 + d * DAY + (1 + k) * H: ["decision-input"] for d in (0, 1) for k in range(7)}
+    root, reg = setup(tmp_path, book(130))
+    rd = tmp_path / "reads"
+    RR(root, reg, "botA", health(bad), AS_OF, record=True, reads_dir=str(rd))
+    rec = json.loads((rd / "botA.json").read_text())
+    assert rec["status"] == "NOT_DECIDABLE" and rec["reasons"] == ["NOT_DECIDABLE_10PCT"] and "am6" in rec
+
+
+def test_r2_parity_runs_before_the_short_circuit_and_no_books_fails_closed(tmp_path, monkeypatch):
+    bad = {DAY0 + d * DAY + (1 + k) * H: ["decision-input"] for d in (0, 1) for k in range(7)}
+    root, reg = setup(tmp_path, [r if not (r["kind"] == "trade" and r["position_id"] == "p0100") else dict(r, v_src={"entry": "none", "exit": "row", "span": {"none": 1}})
+                                  for r in book(130)])
+    real = C.s14_reasons
+    monkeypatch.setattr(C, "s14_reasons", lambda rs, st: {k: v for k, v in real(rs, st).items() if v != "missing_v"})
+    with pytest.raises(R.Refused, match="parity"):  # the verdict would be NOT_DECIDABLE_10PCT, but a drifted mirror is refused first
+        RR(root, reg, "botA", health(bad), AS_OF)
+    monkeypatch.setattr(C, "s14_reasons", real)
+    monkeypatch.setattr(S, "score_bot", lambda *a, **k: {"read_boundary_ms": None})
+    assert C.parity_guard("botA", S.load_registry(reg), [], AS_OF, 0.25)["ok"] is False
+
+
+def test_r3_notebooked_daily_tables_are_merged_and_must_match(tmp_path):
+    root, reg = setup(tmp_path, book())
+    full = health()
+    lines = full.rstrip("\n").split("\n")[:-1]
+
+    def table(ls):
+        sha = hashlib.sha256("".join(x + "\n" for x in ls).encode()).hexdigest()
+        return "\n".join(ls + [X.canon({"type": "sha256", "hours": len(ls), "sha256": sha})]) + "\n"
+    t1, t2 = table(lines[:120]), table(lines[100:])  # overlap of 20 identical hours
+    code, out, res = RR(root, reg, "botA", [t1, t2], AS_OF)
+    assert res["bots"]["botA"]["attempts"] == 105 and any("health_tables" in x for x in out)
+    with pytest.raises(R.Refused, match="expected"):
+        RR(root, reg, "botA", [t1, t2], AS_OF, shas=[sha_of(t1)])  # missing expected sha
+    with pytest.raises(R.Refused, match="expected"):
+        RR(root, reg, "botA", [t1, t2], AS_OF, shas=[sha_of(t1), "f" * 64])
+    flipped = list(lines[100:])
+    flipped[0] = flipped[0].replace('"excluded":false', '"excluded":true')
+    with pytest.raises(R.Refused, match="differs"):
+        RR(root, reg, "botA", [t1, table(flipped)], AS_OF)
+    with pytest.raises(SystemExit):  # --health-sha and --restarts are required on the command line
+        R.main(["--bot", "botA", "--health", "x", "--as-of-ms", "1"])
+
+
+def test_r4_restarts_required_and_unexplained_engine_starts_refused(tmp_path):
+    rows = book()
+    rows.append(dict(start_row("eng2"), decision_ms={"entry": DAY0 + 2 * DAY + 5 * H + 7, "exit": None}))  # a second engine start 2 days in
+    root, reg = setup(tmp_path, rows)
+    with pytest.raises(R.Refused, match="restart gap"):
+        RR(root, reg, "botA", health(), AS_OF)
+    gap = json.dumps([DAY0 + 2 * DAY + 5 * H - 600_000, DAY0 + 2 * DAY + 5 * H + 5000]) + "\n"
+    code, out, res = RR(root, reg, "botA", health(), AS_OF, gap)
+    assert any(f"restarts_sha256 {hashlib.sha256(gap.encode()).hexdigest()}" in x for x in out)
+    with pytest.raises(R.Refused, match="--restarts is required"):
+        R.run(root, reg, "botA", [health()], AS_OF, None, [sha_of(health())])
