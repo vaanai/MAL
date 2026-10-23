@@ -205,6 +205,7 @@ class FakeChain:
 
 NOW = lambda: datetime(2026, 10, 24, 0, 5, 0, tzinfo=timezone.utc)  # noqa: E731
 DAY = "2026-10-23"
+AFTER = 0
 
 
 class EndToEnd(unittest.TestCase):
@@ -216,7 +217,7 @@ class EndToEnd(unittest.TestCase):
         chain = FakeChain(w, {sig: tx}, tx["meta"]["postBalances"][F._keys(tx).index(w)], accounts=accounts, statuses=statuses)
         ledger = {"sends": [{"signature": sig, "side": "sell", "status": "landed"}, *(ledger_extra or [])], "trips": [], "open_mints": []}
         d = Path(tempfile.mkdtemp())
-        m = F.run(chain, w, DAY, ledger, d, now=NOW)
+        m = F.run(chain, w, DAY, ledger, d, after_slot=AFTER, now=NOW)
         return m, d, chain, w, tx
 
     def test_outputs_feed_arena_tieout_and_sign_off(self):
@@ -273,50 +274,121 @@ class EndToEnd(unittest.TestCase):
     def test_refuses_overwrite_and_bad_ledger_and_null_tx(self):
         m, d, chain, w, tx = self.run_sell()
         with self.assertRaises(FileExistsError):
-            F.run(chain, w, DAY, {"sends": [], "trips": [], "open_mints": []}, d, now=NOW)
+            F.run(chain, w, DAY, {"sends": [], "trips": [], "open_mints": []}, d, after_slot=AFTER, now=NOW)
         with self.assertRaises(F.FetchError):
-            F.run(chain, w, DAY, {"sends": []}, Path(tempfile.mkdtemp()), now=NOW)
+            F.run(chain, w, DAY, {"sends": []}, Path(tempfile.mkdtemp()), after_slot=AFTER, now=NOW)
         sig = tx["transaction"]["signatures"][0]
         chain.txs[sig] = None
         with self.assertRaises(F.FetchError):
-            F.run(chain, w, DAY, {"sends": [], "trips": [], "open_mints": []}, Path(tempfile.mkdtemp()), now=NOW)
+            F.run(chain, w, DAY, {"sends": [], "trips": [], "open_mints": []}, Path(tempfile.mkdtemp()), after_slot=AFTER, now=NOW)
 
     def test_wallet_must_be_a_public_key(self):
         with self.assertRaises(ValueError):
-            F.run(FakeChain("x", {}, 0), "not-a-key", DAY, {"sends": [], "trips": [], "open_mints": []}, Path(tempfile.mkdtemp()), now=NOW)
+            F.run(FakeChain("x", {}, 0), "not-a-key", DAY, {"sends": [], "trips": [], "open_mints": []}, Path(tempfile.mkdtemp()), after_slot=AFTER, now=NOW)
 
     def test_empty_day_still_writes_all_files(self):
         d = Path(tempfile.mkdtemp())
-        m = F.run(FakeChain(W, {}, 123), W, DAY, {"sends": [], "trips": [], "open_mints": []}, d, now=NOW)
+        m = F.run(FakeChain(W, {}, 123), W, DAY, {"sends": [], "trips": [], "open_mints": []}, d, after_slot=AFTER, now=NOW)
         self.assertEqual(m["txs"], 0)
         self.assertEqual(json.loads((d / "txs.json").read_text()), [])
 
 
 class Paging(unittest.TestCase):
-    def test_pages_until_older_than_day_start_and_drops_older(self):
-        start, _ = F.day_bounds(DAY)
+    def mk(self, n=2500):
         txs = {}
-        for i in range(2500):  # 2500 txs, newest first by slot; the oldest 300 are before the day
-            t = start + 2200 - i
-            txs[f"sig{i:05d}"] = synth(f"sig{i:05d}", 10_000 - i, [W, OTHER, F.SYSTEM_PROGRAM], [], [1, 1, 1], [1, 1, 1], block_time=t)
-        chain = FakeChain(W, txs, 1)
-        got = F.page_signatures(chain, W, start)
-        self.assertEqual(len(got), 2201)  # blockTime >= start
+        for i in range(n):  # newest first by slot: slot 10_000 - i
+            txs[f"sig{i:05d}"] = synth(f"sig{i:05d}", 10_000 - i, [W, OTHER, F.SYSTEM_PROGRAM], [], [1, 1, 1], [1, 1, 1])
+        return txs
+
+    def test_pages_until_at_or_before_after_slot_and_drops_them(self):
+        chain = FakeChain(W, self.mk(), 1)
+        got = F.page_signatures(chain, W, 10_000 - 2200)  # slots 7800..: i <= 2199 are strictly after
+        self.assertEqual(len(got), 2200)
         self.assertEqual(chain.calls["getSignaturesForAddress"], 3)
-        self.assertTrue(all(g["blockTime"] >= start for g in got))
+        self.assertTrue(all(g["slot"] > 7800 for g in got))
 
-    def test_day_bounds(self):
-        self.assertEqual(F.day_bounds("2026-10-23")[1] - F.day_bounds("2026-10-23")[0], 86400)
-        self.assertEqual(datetime.fromtimestamp(F.day_bounds("2026-10-23")[0], timezone.utc).isoformat(), "2026-10-23T00:00:00+00:00")
+    def test_window_starts_strictly_after_the_slot_not_at_midnight(self):
+        # a tx with blockTime long before 00:00Z of the day but slot after the previous sign-off is IN; the slot of the baseline itself is OUT
+        txs = {"old": synth("old", 100, [W, OTHER, F.SYSTEM_PROGRAM], [], [1, 1, 1], [1, 1, 1], block_time=1),
+               "base": synth("base", 200, [W, OTHER, F.SYSTEM_PROGRAM], [], [1, 1, 1], [1, 1, 1], block_time=1),
+               "new": synth("new", 201, [W, OTHER, F.SYSTEM_PROGRAM], [], [1, 1, 1], [1, 1, 1], block_time=1)}
+        chain = FakeChain(W, txs, 1)
+        self.assertEqual([g["signature"] for g in F.page_signatures(chain, W, 200)], ["new"])
+        rows = F.fetch_txs(chain, W, F.page_signatures(chain, W, 200), 200)
+        self.assertEqual([r["signature"] for r in rows], ["new"])
 
-    def test_txs_after_day_end_counted(self):
+    def test_after_slot_required_and_validated(self):
+        for bad in (-1, "5", None, True):
+            with self.assertRaises(F.FetchError):
+                F.run(FakeChain(W, {}, 1), W, DAY, {"sends": [], "trips": [], "open_mints": []}, Path(tempfile.mkdtemp()), after_slot=bad, now=NOW)
+
+    def test_manifest_records_window(self):
+        m = F.run(FakeChain(W, {}, 1), W, DAY, {"sends": [], "trips": [], "open_mints": []}, Path(tempfile.mkdtemp()), after_slot=77, now=NOW)
+        self.assertEqual((m["window_after_slot"], m["day_label"]), (77, DAY))
+
+
+class LedgerCut(unittest.TestCase):
+    """The ledger is cumulative; the fetch window is (after_slot, now]. Chain evidence (finalized status slot) decides what is earlier."""
+
+    def run_cut(self, ledger, statuses, after=500, in_window=("w1",)):
+        txs = {s: synth(s, 600, [W, OTHER, F.SYSTEM_PROGRAM], [], [1, 1, 1], [1, 1, 1]) for s in in_window}
+        chain = FakeChain(W, txs, 1, statuses=statuses)
+        d = Path(tempfile.mkdtemp())
+        m = F.run(chain, W, DAY, ledger, d, after_slot=after, now=NOW)
+        return m, json.loads((d / "ledger.json").read_text()), chain
+
+    def st(self, slot):
+        return {"slot": slot, "confirmationStatus": "finalized", "err": None}
+
+    def test_earlier_sends_removed_window_and_unknown_kept(self):
+        ledger = {"sends": [{"signature": "w1", "side": "buy", "status": "landed"}, {"signature": "e1", "side": "buy", "status": "landed"},
+                            {"signature": "u1", "side": "buy", "status": "landed"}, {"signature": "d1", "side": "buy", "status": "dropped", "last_valid_block_height": 5}],
+                  "trips": [], "open_mints": ["M"]}
+        m, led, _ = self.run_cut(ledger, {"e1": self.st(499), "d1": None})
+        self.assertEqual([s["signature"] for s in led["sends"]], ["w1", "u1", "d1"])
+        self.assertEqual(m["cut_sends"], 1)
+        self.assertEqual(led["open_mints"], ["M"])
+        by = {s["signature"]: s for s in led["sends"]}
+        self.assertNotIn("status_check", by["w1"])
+        self.assertIsNone(by["u1"]["status_check"]["result"])  # unknown stays, the tie-out halts on a landed send missing on chain
+        self.assertEqual(m["sends_checked_not_on_chain"], 2)
+
+    def test_slot_equal_to_after_slot_is_earlier_and_slot_after_is_kept(self):
+        ledger = {"sends": [{"signature": "e1", "side": "buy", "status": "landed"}, {"signature": "n1", "side": "buy", "status": "landed"}], "trips": [], "open_mints": []}
+        m, led, _ = self.run_cut(ledger, {"e1": self.st(500), "n1": self.st(501)}, in_window=())
+        self.assertEqual([s["signature"] for s in led["sends"]], ["n1"])  # landed after the signature list: kept, tie-out halts, retry
+
+    def test_trips_cut_straddle_and_window(self):
+        trips = [{"trip_id": "T_old", "buy_sig": "eb", "sell_sig": "es", "closed": True, "realized_lamports": 1},
+                 {"trip_id": "T_straddle", "buy_sig": "eb2", "sell_sig": "w1", "closed": True, "realized_lamports": 2},
+                 {"trip_id": "T_win", "buy_sig": "w2", "sell_sig": "w1", "closed": True, "realized_lamports": 3},
+                 {"trip_id": "T_unknown", "buy_sig": "nb", "sell_sig": "w1", "closed": True, "realized_lamports": 4},
+                 {"trip_id": "T_open", "buy_sig": "eb3", "closed": False}]
+        ledger = {"sends": [], "trips": trips, "open_mints": []}
+        m, led, _ = self.run_cut(ledger, {"eb": self.st(10), "es": self.st(20), "eb2": self.st(30), "eb3": self.st(40)}, in_window=("w1", "w2"))
+        self.assertEqual([t["trip_id"] for t in led["trips"]], ["T_win", "T_unknown", "T_open"])
+        self.assertEqual(m["cut_trips"], ["T_old"])
+        self.assertEqual([x["trip_id"] for x in m["straddling_trips"]], ["T_straddle"])
+        self.assertEqual(m["straddling_trips"][0]["legs"], {"buy_sig": "earlier", "sell_sig": "window"})
+
+    def test_tieout_no_false_halt_on_cumulative_ledger_and_still_fails_closed(self):
         tx, w = real("sell_a")
         tx = copy.deepcopy(tx)
-        tx["blockTime"] = F.day_bounds(DAY)[1] + 60
+        tx["slot"], tx["blockTime"] = 600, 1_792_800_000
         sig = tx["transaction"]["signatures"][0]
-        chain = FakeChain(w, {sig: tx}, 1)
-        m = F.run(chain, w, DAY, {"sends": [], "trips": [], "open_mints": []}, Path(tempfile.mkdtemp()), now=NOW)
-        self.assertEqual(m["txs_after_day_end"], 1)
+        chain = FakeChain(w, {sig: tx}, tx["meta"]["postBalances"][F._keys(tx).index(w)], statuses={"old_buy": self.st(100), "old_sell": self.st(120)})
+        ledger = {"sends": [{"signature": sig, "side": "sell", "status": "landed"}, {"signature": "old_buy", "side": "buy", "status": "landed"},
+                            {"signature": "old_sell", "side": "sell", "status": "landed"}],
+                  "trips": [{"trip_id": "T0", "buy_sig": "old_buy", "sell_sig": "old_sell", "closed": True, "realized_lamports": 7}], "open_mints": []}
+        d = Path(tempfile.mkdtemp())
+        F.run(chain, w, DAY, ledger, d, after_slot=500, now=NOW)
+        load = lambda n: json.loads((d / n).read_text())  # noqa: E731
+        base = tx["meta"]["preBalances"][F._keys(tx).index(w)]
+        res = T.reconcile(load("txs.json"), load("ledger.json"), load("tokens.json"), base, load("balance.json"), {"deposit_from": [], "withdraw_to": []})
+        self.assertTrue(res["signed_off"], res["problems"])
+        # the same cumulative ledger WITHOUT the cut halts (what QP condition 2 describes)
+        raw = T.reconcile(load("txs.json"), ledger, load("tokens.json"), base, load("balance.json"), {"deposit_from": [], "withdraw_to": []})
+        self.assertFalse(raw["signed_off"])
 
 
 class Rate(unittest.TestCase):
@@ -355,7 +427,7 @@ class Rate(unittest.TestCase):
 
 class Cli(unittest.TestCase):
     def test_refuses_keyed_url_abbrev_and_missing_env(self):
-        base = ["--wallet", W, "--day", DAY, "--ledger", "/nonexistent", "--out-dir", "/nonexistent/o"]
+        base = ["--wallet", W, "--day", DAY, "--after-slot", "5", "--ledger", "/nonexistent", "--out-dir", "/nonexistent/o"]
         self.assertEqual(F.main([*base, "--rpc", "https://x.invalid/?api-key=abc"]), 2)
         self.assertEqual(F.main([*base, "--rpc", "https://user@x.invalid"]), 2)
         self.assertEqual(F.main([*base, "--rpc-env", "NO_SUCH_VAR_FOR_TEST"]), 2)

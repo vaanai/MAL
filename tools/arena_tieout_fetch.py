@@ -1,20 +1,25 @@
 """Fetcher for the arena daily tie-out (DEC-032 section 6): builds the input files tools/arena_tieout.py reads, from PUBLIC RPC, for a wallet ADDRESS.
 
-    python -m tools.arena_tieout_fetch --wallet PUBKEY --day YYYY-MM-DD --ledger LEDGER_IN.json --out-dir DIR [--rpc URL | --rpc-env VAR] [--rps 2]
+    python -m tools.arena_tieout_fetch --wallet PUBKEY --day LABEL --after-slot SLOT --ledger LEDGER_IN.json --out-dir DIR [--rpc URL | --rpc-env VAR] [--rps 2]
 
 PUBLIC KEY ONLY. No key file is opened, nothing is signed or sent, only read methods are called: getBalance, getBlockHeight, getSignaturesForAddress, getTransaction,
 getTokenAccountsByOwner, getSignatureStatuses. Every read is at FINALIZED commitment. The RPC URL is never printed (use --rpc-env VAR for a keyed URL; a URL with a query
 string or user-info is refused on the command line).
 
 WRITES in --out-dir (0644; refuses to overwrite):
-  txs.json      every chain tx of the wallet from 00:00:00Z of --day up to NOW, one row per tx in the shape arena_tieout reads: signature, slot, status ("ok"|"failed"),
+  txs.json      every chain tx of the wallet in slots STRICTLY AFTER --after-slot (the previous signed-off tie-out's balance.json context_slot) up to NOW, one row per tx in the shape arena_tieout reads: signature, slot, status ("ok"|"failed"),
                 pre_balance / post_balance (lamports of the wallet, from meta), fee_lamports (what the WALLET paid: 0 when it is not the fee payer), priority_fee_lamports
                 (meta.fee minus 5,000 per signature), kind ("transfer"|"buy"|"sell"|"other") and the kind's fields. Same-slot txs are put in balance-chain order.
-                The window runs to now because the balance below is the balance now; txs after the day's end are counted in the manifest (`txs_after_day_end`).
+                The window starts where the baseline (the previous signed-off balance) was taken, never at 00:00Z: a tx before that instant is already inside the baseline and a tx after it is not, so nothing is
+                counted twice and nothing is missed after a halt-time run. It runs to now because the balance below is the balance now. --day is only a label in the manifest.
   balance.json  its OWN finalized getBalance: {lamports, context_slot, commitment, finalized_block_height} (getBlockHeight at finalized, right after).
   tokens.json   {programs_covered: [Token, Token-2022], accounts: [{mint, token_account, amount}]} from getTokenAccountsByOwner for BOTH programs, zero-amount accounts kept.
-  ledger.json   the executor's ledger (--ledger, {sends, trips, open_mints}) with `status_check` {search_transaction_history: true, result: <null|status>} added to every send whose
-                signature is NOT on chain in txs.json (getSignatureStatuses, searchTransactionHistory=true). Everything else in the ledger is copied unchanged.
+  ledger.json   the executor's ledger (--ledger, {sends, trips, open_mints}) CUT TO THE SAME WINDOW, with `status_check` {search_transaction_history: true, result: <null|status>} added to every
+                kept send whose signature is NOT on chain in txs.json (getSignatureStatuses, searchTransactionHistory=true). The cut uses chain evidence, not clocks: a send or trip leg
+                that is not in the window but whose finalized status slot is <= --after-slot belongs to an earlier window and is removed. A CLOSED trip with both legs earlier is removed;
+                a closed trip with ONE leg earlier and one in the window (a straddler) is removed too and listed in the manifest `straddling_trips` (the tie-out cannot check its
+                realized P&L: the balance chain still covers its SOL, and the list is the owner's to review). A leg with no status (unknown) is KEPT, so the tie-out fails closed on it.
+                open_mints and open trips are copied unchanged.
   manifest.json counts, the request count, sha256 of each file, the first tx's pre-balance (information only: the BASELINE is the previous signed-off tie-out's, never this), and
                 the list of txs classified "other".
 named.json (the owner's and Helm's addresses) is not made here.
@@ -108,8 +113,8 @@ class Rpc:
         raise FetchError(f"{method} failed after 3 tries ({last})")
 
 
-# --- day window
-def day_bounds(day: str) -> tuple[int, int]:
+# --- window: strictly after the previous signed-off slot
+def day_bounds(day: str) -> tuple[int, int]:  # kept for callers that label a day; the fetch window itself is slot-based
     d = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
     return int(d.timestamp()), int((d + timedelta(days=1)).timestamp())
 
@@ -121,8 +126,8 @@ def fetch_balance(rpc: Callable[[str, list], Any], wallet: str) -> dict[str, Any
     return {"lamports": int(got["value"]), "context_slot": int(got["context"]["slot"]), "commitment": "finalized", "finalized_block_height": int(height)}
 
 
-def page_signatures(rpc: Callable[[str, list], Any], wallet: str, start_s: int) -> list[dict[str, Any]]:
-    """Newest first, until a page's oldest tx is older than start_s. A null blockTime never ends the paging."""
+def page_signatures(rpc: Callable[[str, list], Any], wallet: str, after_slot: int) -> list[dict[str, Any]]:
+    """Newest first, until a page's oldest tx is at or before after_slot. Only slots > after_slot are returned."""
     out: list[dict[str, Any]] = []
     before = None
     while True:
@@ -134,9 +139,9 @@ def page_signatures(rpc: Callable[[str, list], Any], wallet: str, start_s: int) 
             break
         out.extend(page)
         before = page[-1]["signature"]
-        if len(page) < SIG_PAGE or (page[-1].get("blockTime") is not None and page[-1]["blockTime"] < start_s):
+        if len(page) < SIG_PAGE or page[-1]["slot"] <= after_slot:
             break
-    return [p for p in out if p.get("blockTime") is None or p["blockTime"] >= start_s]
+    return [p for p in out if p["slot"] > after_slot]
 
 
 def fetch_tokens(rpc: Callable[[str, list], Any], wallet: str) -> dict[str, Any]:
@@ -151,18 +156,56 @@ def fetch_tokens(rpc: Callable[[str, list], Any], wallet: str) -> dict[str, Any]
     return {"programs_covered": list(TOKEN_PROGRAMS), "accounts": accounts, "context_slots": slots}
 
 
-def check_sends(rpc: Callable[[str, list], Any], ledger: dict[str, Any], on_chain: set[str]) -> dict[str, Any]:
-    """Copy of the ledger with status_check on every send that is not on chain."""
-    out = json.loads(json.dumps(ledger))
-    missing = [s for s in out["sends"] if s["signature"] not in on_chain]
-    for i in range(0, len(missing), STATUS_BATCH):
-        chunk = missing[i:i + STATUS_BATCH]
-        got = rpc("getSignatureStatuses", [[s["signature"] for s in chunk], {"searchTransactionHistory": True}])["value"]
+def lookup_statuses(rpc: Callable[[str, list], Any], sigs: list[str]) -> dict[str, Any]:
+    """getSignatureStatuses with searchTransactionHistory=true, in batches. Returns signature -> status object or None."""
+    out: dict[str, Any] = {}
+    uniq = list(dict.fromkeys(sigs))
+    for i in range(0, len(uniq), STATUS_BATCH):
+        chunk = uniq[i:i + STATUS_BATCH]
+        got = rpc("getSignatureStatuses", [chunk, {"searchTransactionHistory": True}])["value"]
         if len(got) != len(chunk):
             raise FetchError("getSignatureStatuses returned a different number of results")
-        for s, r in zip(chunk, got):
-            s["status_check"] = {"search_transaction_history": True, "result": r}
+        out.update(zip(chunk, got))
     return out
+
+
+def cut_ledger(rpc: Callable[[str, list], Any], ledger: dict[str, Any], on_chain: set[str], after_slot: int) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The ledger cut to the window (after_slot, now]; status_check on every kept send that is not on chain. Returns (ledger, report). See the module docstring."""
+    out = json.loads(json.dumps(ledger))
+    need = [s["signature"] for s in out["sends"] if s["signature"] not in on_chain]
+    for t in out["trips"]:
+        if t.get("closed"):
+            need += [t[k] for k in ("buy_sig", "sell_sig") if t.get(k) and t[k] not in on_chain]
+    status = lookup_statuses(rpc, need)
+
+    def earlier(sig: str | None) -> bool:
+        st = status.get(sig) if sig else None
+        return bool(st) and st.get("slot") is not None and st["slot"] <= after_slot
+
+    kept_sends, cut_sends = [], []
+    for sd in out["sends"]:
+        if sd["signature"] in on_chain:
+            kept_sends.append(sd)
+        elif earlier(sd["signature"]):
+            cut_sends.append(sd["signature"])
+        else:
+            sd["status_check"] = {"search_transaction_history": True, "result": status[sd["signature"]]}
+            kept_sends.append(sd)
+    kept_trips, cut_trips, straddling = [], [], []
+    for t in out["trips"]:
+        if not t.get("closed"):
+            kept_trips.append(t)
+            continue
+        legs = {k: ("window" if t.get(k) in on_chain else "earlier" if earlier(t.get(k)) else "unknown") for k in ("buy_sig", "sell_sig")}
+        if set(legs.values()) == {"earlier"}:
+            cut_trips.append(t.get("trip_id"))
+        elif "earlier" in legs.values() and "unknown" not in legs.values():
+            straddling.append({"trip_id": t.get("trip_id"), "legs": legs, "realized_lamports": t.get("realized_lamports")})
+        else:
+            kept_trips.append(t)  # both legs in the window, or a leg with no status: keep, the tie-out fails closed on a missing leg
+    out["sends"], out["trips"] = kept_sends, kept_trips
+    return out, {"cut_sends": len(cut_sends), "cut_trips": cut_trips, "straddling_trips": straddling,
+                 "sends_checked_not_on_chain": sum(1 for sd in kept_sends if "status_check" in sd)}
 
 
 # --- classification
@@ -268,13 +311,13 @@ def chain_order(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return out
 
 
-def fetch_txs(rpc: Callable[[str, list], Any], wallet: str, sigs: list[dict[str, Any]], start_s: int) -> list[dict[str, Any]]:
+def fetch_txs(rpc: Callable[[str, list], Any], wallet: str, sigs: list[dict[str, Any]], after_slot: int) -> list[dict[str, Any]]:
     rows = []
     for s in sigs:
         tx = rpc("getTransaction", [s["signature"], {"encoding": "json", "maxSupportedTransactionVersion": 0, "commitment": "finalized"}])
         if tx is None:
             raise FetchError(f"getTransaction returned null for {s['signature']} (not yet finalized or pruned): the day cannot be tied out")
-        if tx.get("blockTime") is not None and tx["blockTime"] < start_s:
+        if tx["slot"] <= after_slot:
             continue
         rows.append(classify_tx(tx, wallet))
     return chain_order(rows)
@@ -291,30 +334,31 @@ def write_new(path: Path, obj: Any) -> None:
         fh.write(json.dumps(obj, indent=1, sort_keys=True) + "\n")
 
 
-def run(rpc: Callable[[str, list], Any], wallet: str, day: str, ledger: dict[str, Any], out_dir: Path, now: Callable[[], datetime] | None = None) -> dict[str, Any]:
+def run(rpc: Callable[[str, list], Any], wallet: str, day: str, ledger: dict[str, Any], out_dir: Path, after_slot: int, now: Callable[[], datetime] | None = None) -> dict[str, Any]:
     Pubkey.from_string(wallet)  # a public key, nothing else
     if not isinstance(ledger, dict) or any(not isinstance(ledger.get(k), list) for k in ("sends", "trips", "open_mints")):
         raise FetchError("ledger must hold the lists sends, trips, open_mints")
-    start_s, end_s = day_bounds(day)
+    if not isinstance(after_slot, int) or isinstance(after_slot, bool) or after_slot < 0:
+        raise FetchError("after_slot must be the previous signed-off context_slot (an integer >= 0)")
     out_dir.mkdir(parents=True, exist_ok=True)
     # order matters: the signature list first, then the balance last, so the balance context slot is at or after every tx listed
-    sigs = page_signatures(rpc, wallet, start_s)
-    txs = fetch_txs(rpc, wallet, sigs, start_s)
+    sigs = page_signatures(rpc, wallet, after_slot)
+    txs = fetch_txs(rpc, wallet, sigs, after_slot)
     tokens = fetch_tokens(rpc, wallet)
     balance = fetch_balance(rpc, wallet)
-    ledger_out = check_sends(rpc, ledger, {t["signature"] for t in txs})
+    ledger_out, cut = cut_ledger(rpc, ledger, {t["signature"] for t in txs}, after_slot)
     files = {"txs.json": txs, "balance.json": balance, "tokens.json": tokens, "ledger.json": ledger_out}
     for name, obj in files.items():
         write_new(out_dir / name, obj)
     stamp = (now or (lambda: datetime.now(timezone.utc)))().strftime("%Y-%m-%dT%H:%M:%SZ")
     manifest = {
-        "kind": "arena_tieout_fetch.v1", "utc": stamp, "wallet": wallet, "day": day, "window_start_s": start_s, "day_end_s": end_s, "commitment": "finalized",
-        "txs": len(txs), "txs_after_day_end": sum(1 for t in txs if (t.get("block_time") or 0) >= end_s),
+        "kind": "arena_tieout_fetch.v1", "utc": stamp, "wallet": wallet, "day_label": day, "window_after_slot": after_slot, "commitment": "finalized",
+        "txs": len(txs),
         "first_tx_pre_balance_information_only": txs[0]["pre_balance"] if txs else None,
         "last_tx_slot": txs[-1]["slot"] if txs else None, "balance_context_slot": balance["context_slot"],
         "balance_context_at_or_after_last_tx": (not txs) or balance["context_slot"] >= txs[-1]["slot"],
         "other_txs": [{"signature": t["signature"], "detail": t.get("detail")} for t in txs if t["kind"] == "other"],
-        "sends_checked_not_on_chain": sum(1 for s in ledger_out["sends"] if "status_check" in s),
+        **cut,
         "rpc_calls": dict(getattr(rpc, "calls", {})), "files_sha256": {n: sha256_file(out_dir / n) for n in files},
     }
     write_new(out_dir / "manifest.json", manifest)
@@ -324,7 +368,8 @@ def run(rpc: Callable[[str, list], Any], wallet: str, day: str, ledger: dict[str
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0], allow_abbrev=False)
     ap.add_argument("--wallet", required=True, help="a public address")
-    ap.add_argument("--day", required=True, help="UTC day YYYY-MM-DD")
+    ap.add_argument("--day", required=True, help="a label for the manifest (the window is --after-slot, not the day)")
+    ap.add_argument("--after-slot", required=True, type=int, help="the previous signed-off tie-out's balance.json context_slot (0 only for the very first run)")
     ap.add_argument("--ledger", required=True, type=Path)
     ap.add_argument("--out-dir", required=True, type=Path)
     g = ap.add_mutually_exclusive_group()
@@ -347,11 +392,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     try:
         ledger = json.loads(a.ledger.read_text())
-        m = run(Rpc(url, a.rps), a.wallet, a.day, ledger, a.out_dir)
+        m = run(Rpc(url, a.rps), a.wallet, a.day, ledger, a.out_dir, a.after_slot)
     except (FetchError, OSError, ValueError, KeyError) as exc:
         print(f"FETCH FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps({k: m[k] for k in ("day", "txs", "txs_after_day_end", "balance_context_at_or_after_last_tx", "other_txs", "sends_checked_not_on_chain")}, sort_keys=True))
+    print(json.dumps({k: m[k] for k in ("day_label", "window_after_slot", "txs", "balance_context_at_or_after_last_tx", "other_txs", "sends_checked_not_on_chain", "cut_sends", "cut_trips", "straddling_trips")}, sort_keys=True))
     return 0
 
 
