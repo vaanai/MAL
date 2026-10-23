@@ -463,7 +463,7 @@ class PriorityPinTests(ACase):
         for bot_id in (A2, A2V2, Q50):
             self.book_id = bot_id
             e = self.env()
-            base = dataclasses.replace(h.H5Limits.from_config(e.conf), end_ms=ax.SEAL_END_MS)  # end_ms is the book's seal clamp, not a fee
+            base = dataclasses.replace(h.H5Limits.from_config(e.conf), end_ms=ax.SEAL_END_MS, gap_hold_ms=ax.GAP_HOLD_MS)  # end_ms: the seal clamp; gap hold: DEC-032 s5 (10 min). Neither is a fee
             self.assertEqual(e.ex.h5, base, bot_id)
             self.assertEqual((e.ex.h5.buy_priority_lamports, e.ex.h5.sell_priority_lamports, e.ex.h5.escalated_priority_lamports), (55_000, 55_000, 150_000))
 
@@ -614,3 +614,36 @@ class C0PinTests(ACase):
         (self.tmp / "state" / "TIER").write_text(tier)
         e.ex._refresh_tier(e.clock())
         return e.ex.tier
+
+
+class GapHoldTests(ACase):
+    """Gap (c): the feed-gap hold is 10 minutes (DEC-032 s5 item 2)."""
+
+    def test_hold_is_ten_minutes_and_config_cannot_shorten_it(self):
+        self.assertEqual(ax.GAP_HOLD_MS, 600_000)
+        self.assertEqual(self.env().ex.h5.gap_hold_ms, 600_000)
+        self.assertEqual(self.env(gap_hold_ms=1).ex.h5.gap_hold_ms, 600_000)
+
+    def test_any_gap_record_holds_buys_for_ten_minutes_even_a_redundant_reconnect(self):
+        for flags in (True, False):
+            e = self.env()
+            self.assertEqual(e.ex.decide_row({"type": "gap", "kind": "reconnect", "flags_pools": flags}), ("keep", None))
+            e.jump(599_000)
+            e.fire()
+            self.assertEqual(e.refusals(), ["feed_gap"], flags)
+            e.jump(1_000)
+            e.fire()
+            self.assertEqual(e.refusals(), ["feed_gap"], flags)  # 600 s after the gap record the hold is over: no second gap refusal
+            self.assertEqual(len(e.ledger("decision")), 1, flags)
+
+
+class SellReserveTests(ACase):
+    """Gap (d): the sell reserve covers 10 sends at the p155 worst case (1.6M)."""
+
+    def test_reserve_is_at_least_1_6m_for_every_book_and_follows_the_pin(self):
+        for b in ax.BOOKS.values():
+            self.assertGreaterEqual(ax.sell_reserve_lamports(b), 1_600_000)
+        p155 = dataclasses.replace(ax.BOOKS[A2], priority=ax.PRIORITY_P155)
+        self.assertEqual(ax.sell_reserve_lamports(p155), 10 * (155_000 + 5_000))
+        high = dataclasses.replace(ax.BOOKS[A2], priority=ax.Priority("default", 55_000, 55_000, 400_000))
+        self.assertEqual(ax.sell_reserve_lamports(high), 10 * 405_000)

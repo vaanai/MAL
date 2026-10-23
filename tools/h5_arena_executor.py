@@ -61,6 +61,9 @@ LIVE_BUILT = False  # this PR builds no live entry point
 C0_TIER = {  # DEC-032 s3, the C0 canary table, PINNED in code per canary book. The shared /etc/mal-h5/TIER (T0/T1/T2) and the config may only LOWER these.
     "stake_lamports": 50_000_000, "max_open": 2, "max_trades_per_day": 30, "daily_loss_lamports": 100_000_000, "total_loss_lamports": 200_000_000,
 }
+GAP_HOLD_MS = 600_000  # DEC-032 s5 item 2: after a feed gap, buys restart only once the feed has been gap-free for 10 minutes
+SELL_RESERVE_SENDS = 10  # the worst case of one exit: the ladder's sends (escalated resends included), each at the book's top priority
+SELL_RESERVE_FLOOR_LAMPORTS = 1_600_000  # 10 sends x (155,000 + 5,000): the p155 worst case (QP 10-23 gap d); never below it
 PAPER_FAIL_RATE = 0.15  # the flat fail model of the gate; landing-fail excess is measured against it
 
 
@@ -234,6 +237,13 @@ def v2_start_refusal() -> str | None:
     return None if hashlib.sha256(data).hexdigest() == V2_RULE_SHA256 else "v2_rule_source_sha_mismatch"
 
 
+def sell_reserve_lamports(book: Book) -> int:
+    """Worst-case fees reserved per open position for its exit (DEC-032 s3): SELL_RESERVE_SENDS sends at the book's highest sell priority plus the
+    5,000 base fee, never below the p155 figure of 1.6M. (The base class' 1.0M constant covers 6 sends at p155 only.)"""
+    top = max(book.priority.sell, book.priority.escalated)
+    return max(SELL_RESERVE_FLOOR_LAMPORTS, SELL_RESERVE_SENDS * (top + h.tx.BASE_FEE_PER_SIGNATURE))
+
+
 class FidelityMonitor:
     """Pure counters for the item-14 soft halts. Each `note_*` returns the halt name to latch, or None. No network, no price of its own: the paper
     comparator values arrive from the caller (entry: the trigger-quote expected tokens; exit: the parity join, which runs only under the item-17 note)."""
@@ -326,7 +336,8 @@ class ArenaExecutor(h.H5Executor):
         lim = replace(super().h5, buy_priority_lamports=pr.buy, sell_priority_lamports=pr.sell, escalated_priority_lamports=pr.escalated)
         # C0 (gap a): the pinned table is the ceiling whatever the shared TIER file says. T1 / T2 in the file cannot raise a single field; a lower tier
         # (T0) or a tighter config still lowers it, because this takes the minimum.
-        return replace(lim, **{k: min(getattr(lim, k), v) for k, v in C0_TIER.items()})
+        return replace(lim, gap_hold_ms=max(lim.gap_hold_ms, GAP_HOLD_MS),
+                       **{k: min(getattr(lim, k), v) for k, v in C0_TIER.items()})
 
     def __repr__(self) -> str:
         return f"ArenaExecutor(book={self.abook.bot_id}, mode={self.run_mode})"
@@ -375,6 +386,11 @@ class ArenaExecutor(h.H5Executor):
             self._start_ms = int(row["start_ms"])
             self.feed_verified = True
             return "drop", None
+        if t == "gap":
+            # DEC-032 s5 item 2: ANY gap record holds buys for 10 minutes. The base class skips the hold when flags_pools is the literal false
+            # (a redundant-socket reconnect); a canary does not take that exemption.
+            self._gap_until_ms = max(self._gap_until_ms, self.now_ms() + self.h5.gap_hold_ms)
+            return "keep", None
         if t == "boost_slice":
             self.slices_taken += 1 if self._slice_format_ok(row) else 0
             return "keep", None
