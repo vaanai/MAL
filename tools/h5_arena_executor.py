@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import sys
 from collections import deque
@@ -73,6 +74,9 @@ FUNDED_MIN_LAMPORTS, FUNDED_MAX_LAMPORTS = 350_000_000, 1_000_000_000  # DEC-032
 FLOOR_BELOW_FUNDED_LAMPORTS = 250_000_000  # DEC-032 s3: floor = max(0.05 SOL, funded - 0.25 SOL)
 A3_RECORD_DEFAULT = "/data/mal/structure-monitor/daily.jsonl"  # tools/pump_structure_monitor.py DEFAULT_OUT: one JSON record per line, the newest is the state
 A3_POLL_MS = 60_000
+A3_FUTURE_SKEW_MS = 300_000  # a run_utc more than 5 min ahead of the executor's clock is not a fresh record, it is a wrong one: latch
+ARENA_TIER_PATH = Path("/etc/mal-h5-arena/TIER")  # the arena canary's OWN tier file (root:root 0644 like the base TIER); the shared /etc/mal-h5/TIER is ignored for arena books
+ARENA_LIVE_TIER = "T1"  # a live start needs this file to read exactly T1 (the C0 stake 0.05 SOL needs T1's stake ceiling)
 GAP_HOLD_MS = 600_000  # DEC-032 s5 item 2: after a feed gap, buys restart only once the feed has been gap-free for 10 minutes
 SELL_RESERVE_SENDS = 10  # the worst case of one exit: the ladder's sends (escalated resends included), each at the book's top priority
 SELL_RESERVE_FLOOR_LAMPORTS = 1_600_000  # 10 sends x (155,000 + 5,000): the p155 worst case (QP 10-23 gap d); never below it
@@ -241,7 +245,12 @@ def arena_start_refusal(book: Book, cfg: dict[str, Any], root: Path, live: bool)
             return why
         if cfg.get("end_ms") is None:
             return "end_ms_missing"
-        return canary_record_refusal(book.bot_id, root)
+        why = canary_record_refusal(book.bot_id, root)
+        if why:
+            return why
+        if not cfg.get("exit_gap_file"):
+            return "exit_gap_file_missing"  # the exit-gap feed (parity P6) is mandatory live: unset would mean no check at all
+        return arena_tier_refusal()
     if book.exit_pin == h.EXIT_MODE_V2:
         return v2_start_refusal()
     return None
@@ -265,6 +274,15 @@ def canary_record_refusal(bot_id: str, root: Path) -> str | None:
         except OSError:
             seen_unreadable = True
     return "canary_dec_unreadable" if seen_unreadable else "canary_record_for_bot_id_missing"
+
+
+def arena_tier_refusal(path: Path | None = None) -> str | None:
+    """A live start needs the arena's own tier file, with the base class' file checks (root-owned regular file, 0644, no symlink), to read exactly T1.
+    The shared /etc/mal-h5/TIER is not read for arena books (ArenaExecutor._tier_path)."""
+    tier, problem = h.read_tier(path or ARENA_TIER_PATH, root_checks=True)
+    if problem:
+        return f"arena_{problem}"
+    return None if tier == ARENA_LIVE_TIER else f"arena_tier_not_{ARENA_LIVE_TIER.lower()}:{tier}"
 
 
 def funded_refusal(cfg: dict[str, Any], live: bool) -> str | None:
@@ -344,6 +362,8 @@ def a3_record_problem(path: Path, now_ms: int | None = None) -> tuple[list[str],
             run_ms = int(datetime.strptime(rec["run_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp() * 1000)
         except (KeyError, ValueError, TypeError):
             return [], "a3_record_no_run_utc"
+        if run_ms - now_ms > A3_FUTURE_SKEW_MS:
+            return [], "a3_record_future"  # fail closed: a future stamp would stay "fresh" for ever
         if now_ms - run_ms > A3_MAX_AGE_MS:
             return [], "a3_record_stale"
     # a flag counts when it is set, malformed, or NOT evaluated (halt false with evaluated false is "unknown", not "clear")
@@ -481,6 +501,10 @@ class ArenaExecutor(h.H5Executor):
         return replace(lim, gap_hold_ms=max(lim.gap_hold_ms, GAP_HOLD_MS),
                        wallet_floor_lamports=wallet_floor_lamports(getattr(self, "funded_lamports", None), lim.wallet_floor_lamports),
                        **{k: min(getattr(lim, k), v) for k, v in C0_TIER.items()})
+
+    def _tier_path(self) -> Path:
+        """Item 2 (QP 10-23): live reads the arena's own tier file, never /etc/mal-h5/TIER. A dry run keeps the base's <state_dir>/TIER."""
+        return ARENA_TIER_PATH if not self.dry_run else super()._tier_path()
 
     def __repr__(self) -> str:
         return f"ArenaExecutor(book={self.abook.bot_id}, mode={self.run_mode})"
@@ -723,14 +747,19 @@ class ArenaExecutor(h.H5Executor):
         end = chunk.rfind(b"\n") + 1  # only complete lines; a partial last line waits for its newline
         self._exit_gap_off += end
         for line in chunk[:end].decode("utf-8", "replace").splitlines():
+            if not line.strip():
+                continue
             try:
                 row = json.loads(line)
                 bps = row["exit_gap_bps"]
             except (ValueError, KeyError, TypeError):
+                bps = None
+            if isinstance(bps, bool) or not isinstance(bps, (int, float)) or not math.isfinite(bps):
+                # a row that cannot be read is a parity input we cannot see: latch (QP 10-23: bad rows used to alert only, and a non-numeric bps was dropped silently)
                 self._alert("exit_gap_row_unreadable", "")
+                self.latch_external(H_EXIT_GAP, why="exit_gap_row_bad", row=line[:120])
                 continue
-            if isinstance(bps, (int, float)) and not isinstance(bps, bool):
-                self.ingest_exit_gap(float(bps), str(row.get("mint") or ""))
+            self.ingest_exit_gap(float(bps), str(row.get("mint") or ""))
 
     def latch_external(self, name: str, **detail: Any) -> None:
         """For the checks that live outside this process (the parity join's exit gap, A3 pins_changed / program_changed)."""
