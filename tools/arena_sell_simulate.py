@@ -85,7 +85,7 @@ class RateLimitedRpc:
 
 
 def build_sell(rpc: Callable[[str, list], Any], mint: str, pool: str | None, owner: Keypair | Pubkey, amount: int, priority: ax.Priority,
-               book_stake: int = 100_000_000) -> tuple[dict[str, Any], tx.PoolState]:
+               book_stake: int = 100_000_000, emergency: bool = True) -> tuple[dict[str, Any], tx.PoolState]:
     """Run the pinned H5Executor._arm_sell against a stub. Returns (pending record, pool state). Emergency shape: min_out = 1, no quote needed.
     `owner` is a Keypair (signed, the throwaway) or a bare Pubkey (the funded-payer probe: UNSIGNED, validate_message still runs)."""
     owner_pk = owner.pubkey() if isinstance(owner, Keypair) else owner
@@ -103,6 +103,7 @@ def build_sell(rpc: Callable[[str, list], Any], mint: str, pool: str | None, own
     stub._sell_balance = lambda pos: (amount, "simulate_stub")
     stub._snapshot = lambda m, c=None: (None, "", "stub")
     stub._alert = lambda kind, mint_=None, **kw: stub.alerts.append((kind, kw))
+    stub._due = lambda *a, **kw: True  # normal-exit shape without a quote: the executor's escalated path (floor from the stake), same priority as the emergency
     stub._exit_fields = lambda kind: {"exit_poll_ms": 0, "exit_commitment": "processed", "exit_snapshot": kind}
     stub.bh = SimpleNamespace(get=lambda fresh=False: (Hash.default(), 0))
     stub._signer_spend_cap = MethodType(h.H5Executor._signer_spend_cap, stub)
@@ -117,7 +118,7 @@ def build_sell(rpc: Callable[[str, list], Any], mint: str, pool: str | None, own
     base_tp = str(ps.base_token_program)
     pos = {"mint": mint, "pool": str(ps.pool), "base_ata": str(tx.ata(owner_pk, Pubkey.from_string(mint), ps.base_token_program)),
            "base_tp": base_tp, "spend": book_stake, "sell_attempts": 0, "h5": {"plan": {}}}
-    rec = h.H5Executor._arm_sell(stub, mint, pos, 0, True)  # type: ignore[arg-type]  # emergency: the market-sell shape, no quote
+    rec = h.H5Executor._arm_sell(stub, mint, pos, 0, emergency)  # type: ignore[arg-type]  # emergency (default): market-sell shape, min_out = 1
     if rec is None:
         raise SystemExit(f"sell build failed: {stub.alerts}")
     return rec, ps
@@ -146,10 +147,10 @@ def _custom(err: Any) -> tuple[int | None, int | None]:
 def classify(sim_value: dict[str, Any]) -> dict[str, Any]:
     err, logs = sim_value.get("err"), sim_value.get("logs") or []
     text = json.dumps(err)
-    out: dict[str, Any] = {"class": "unclassified", "err": err, "ix_index": None, "ix_role": None, "structural_checked_by_chain": False}
+    out: dict[str, Any] = {"class": "unclassified", "err": err, "ix_index": None, "ix_role": None, "structural_checked_by_chain": "none"}
     if err is None:
         out["class"] = "ok_unexpected"
-        out["structural_checked_by_chain"] = True
+        out["structural_checked_by_chain"] = "all_instructions_ran"
         return out
     if err == "AccountNotFound":
         out["class"] = "expected_unfunded_owner"
@@ -157,7 +158,8 @@ def classify(sim_value: dict[str, Any]) -> dict[str, Any]:
     idx, code = _custom(err)
     if idx is not None:
         out["ix_index"], out["ix_role"] = idx, IX_ROLES[idx] if idx < len(IX_ROLES) else "?"
-        out["structural_checked_by_chain"] = idx >= 3  # reached the swap: its account checks ran at least in part
+        # states only what ran: the failing instruction's own account checks (and the instructions before it), nothing after it
+        out["structural_checked_by_chain"] = f"up_to_ix_{idx}_account_checks_failed_at_ix_{idx}"
         out["custom_code"] = code
         detail = err["InstructionError"][1]
         dstr = detail if isinstance(detail, str) else ""
@@ -174,6 +176,10 @@ def classify(sim_value: dict[str, Any]) -> dict[str, Any]:
     elif any(s in text for s in ("ProgramAccountNotFound", "InvalidProgramForExecution", "InvalidAccountForFee")):
         out["class"] = "structural"
     return out
+
+
+def reached_swap(verdict: dict[str, Any]) -> bool:
+    return verdict["structural_checked_by_chain"] == "all_instructions_ran" or (verdict["ix_index"] is not None and verdict["ix_index"] >= 3)
 
 
 def simulate(rpc: Callable[[str, list], Any], tx_b64: str) -> dict[str, Any]:
@@ -211,8 +217,147 @@ def run(rpc: Callable[[str, list], Any], mint: str, pool: str | None, amount: in
         "tx_len_bytes": len(base64.b64decode(rec["tx_b64"])), "shape": shape, "simulate": res, "verdict": verdict, "funded_payer_probe": probe,
         "rpc_host": "api.mainnet-beta.solana.com", "rpc_calls": list(getattr(rpc, "calls", [])),
         "not_measured": ["a funded sell (no owner here holds tokens)", "landing", "price impact or proceeds"]
-        + ([] if verdict["structural_checked_by_chain"] or (probe and probe["verdict"]["structural_checked_by_chain"]) else ["on-chain account checks of the swap (stopped before it)"]),
+        + ([] if reached_swap(verdict) or (probe and reached_swap(probe["verdict"])) else ["on-chain account checks of the swap (stopped before it)"]),
+        "not_measured_chain": "the instructions after the failing one never ran in these simulates (no close was exercised); see the holder records",
     }
+
+
+# ---------------------------------------------------------------- holder mode (QP 2026-10-23, FILL:simulate_ref conditions 1-6)
+SYSTEM_PROGRAM = "11111111111111111111111111111111"
+MIN_HOLDER_LAMPORTS = 10_000_000  # fee + WSOL-ATA rent with a wide margin
+MAX_HOLDER_CANDIDATES = 20
+
+
+def candidate_token_accounts(rpc: Callable[[str, list], Any], mint: str, pool: Pubkey, token_program: Pubkey) -> tuple[str, list[str]]:
+    """Token-account candidates. First choice: getTokenLargestAccounts. The public mainnet endpoint serves that method with a zero limit (HTTP 429), so
+    the fallback reads the pool's recent signatures + their post-token-balances and takes the OWNERS of non-pool balances of this mint; their canonical ATA
+    is derived and checked below by getAccountInfo, like every candidate."""
+    try:
+        return "getTokenLargestAccounts", [r["address"] for r in rpc("getTokenLargestAccounts", [mint, {"commitment": "confirmed"}])["value"]][:MAX_HOLDER_CANDIDATES]
+    except SystemExit:
+        pass
+    sigs = rpc("getSignaturesForAddress", [str(pool), {"limit": 80, "commitment": "finalized"}])
+    seen: list[str] = []
+    for row in sigs:
+        if row.get("err"):
+            continue
+        t = rpc("getTransaction", [row["signature"], {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 1, "commitment": "finalized"}])
+        for b in ((t or {}).get("meta") or {}).get("postTokenBalances") or []:
+            o = b.get("owner")
+            if b.get("mint") == mint and o and o != str(pool) and o not in seen and Pubkey.from_string(o).is_on_curve():
+                seen.append(o)
+        if len(seen) >= MAX_HOLDER_CANDIDATES:
+            break
+    mpk = Pubkey.from_string(mint)
+    return "pool_history_post_token_balances", [str(tx.ata(Pubkey.from_string(o), mpk, token_program)) for o in seen]
+
+
+def find_holder(rpc: Callable[[str, list], Any], mint: str, pool: Pubkey, token_program: Pubkey) -> dict[str, Any]:
+    """A PUBLIC ordinary holder: system-owned, on-curve wallet, holds `mint` in its canonical ATA (owner, mint, the mint's token program),
+    not frozen, balance > 1, enough lamports. The pool, its vault authority and every PDA are excluded. Public keys only."""
+    source, big = candidate_token_accounts(rpc, mint, pool, token_program)
+    skipped: dict[str, int] = {}
+    for tok in big:
+        got = rpc("getAccountInfo", [tok, {"encoding": "jsonParsed", "commitment": "confirmed"}])["value"]
+        info = (((got or {}).get("data") or {}).get("parsed") or {}).get("info") or {}
+        if not got or not info or got.get("owner") != str(token_program):
+            skipped["not_token_account"] = skipped.get("not_token_account", 0) + 1
+            continue
+        owner = info.get("owner", "")
+        if info.get("state") != "initialized" or info.get("mint") != mint or int(info["tokenAmount"]["amount"]) < 2:
+            skipped["frozen_or_empty"] = skipped.get("frozen_or_empty", 0) + 1
+            continue
+        opk = Pubkey.from_string(owner)
+        if owner == str(pool) or not opk.is_on_curve():
+            skipped["pool_or_pda_owner"] = skipped.get("pool_or_pda_owner", 0) + 1
+            continue
+        if str(tx.ata(opk, Pubkey.from_string(mint), token_program)) != tok:
+            skipped["not_canonical_ata"] = skipped.get("not_canonical_ata", 0) + 1
+            continue
+        w = rpc("getAccountInfo", [owner, {"encoding": "base64", "commitment": "confirmed"}])["value"]
+        if not w or w.get("owner") != SYSTEM_PROGRAM or w.get("executable") or w.get("lamports", 0) < MIN_HOLDER_LAMPORTS or w.get("space", 0) != 0:
+            skipped["owner_not_funded_system_wallet"] = skipped.get("owner_not_funded_system_wallet", 0) + 1
+            continue
+        return {"owner": owner, "token_account": tok, "owner_lamports": w["lamports"], "candidate_source": source, "candidates_checked": len(big), "skipped": skipped}
+    raise SystemExit(f"no ordinary holder found among {len(big)} candidates ({source}): {skipped}")
+
+
+def read_balance(rpc: Callable[[str, list], Any], token_account: str) -> tuple[int, int]:
+    got = rpc("getTokenAccountBalance", [token_account, {"commitment": "confirmed"}])
+    return int(got["value"]["amount"]), int((got.get("context") or {}).get("slot"))
+
+
+def simulate_with_accounts(rpc: Callable[[str, list], Any], tx_b64: str, addresses: list[str]) -> dict[str, Any]:
+    cfg = {"encoding": "base64", "sigVerify": False, "replaceRecentBlockhash": True, "commitment": "confirmed",
+           "accounts": {"encoding": "jsonParsed", "addresses": addresses}}
+    got = rpc("simulateTransaction", [tx_b64, cfg])
+    v = got["value"]
+
+    def post(a: Any) -> Any:
+        if a is None:
+            return None
+        info = ((a.get("data") or {}).get("parsed") or {}).get("info") if isinstance(a.get("data"), dict) else None
+        return {"lamports": a.get("lamports"), "owner": a.get("owner"), "token_amount": ((info or {}).get("tokenAmount") or {}).get("amount")}
+
+    return {"context_slot": (got.get("context") or {}).get("slot"), "err": v.get("err"), "units_consumed": v.get("unitsConsumed"),
+            "logs": v.get("logs") or [], "post_state": {addr: post(a) for addr, a in zip(addresses, v.get("accounts") or [None] * len(addresses))}}
+
+
+def is_closed(post: Any) -> bool:
+    """simulateTransaction returns a closed account as null or as a zero-lamport system-owned empty account."""
+    return post is None or (post.get("lamports") == 0 and post.get("owner") == SYSTEM_PROGRAM)
+
+
+def holder_checks(res: dict[str, Any], pos_base_ata: str, wsol_ata: str, base_tp: str) -> dict[str, Any]:
+    """Facts read from the logs and the post-state. CloseAccount is counted as top-level token-program invocations that succeed (the Token program does
+    not always log 'Instruction: CloseAccount'): the sell tx has exactly two top-level token-program ixs, the WSOL close and the base close."""
+    logs = res["logs"]
+    top = [i for i, line in enumerate(logs) if line == f"Program {base_tp} invoke [1]" or line == f"Program {tx.TOKEN_PROGRAM} invoke [1]"]
+    top_ok = sum(1 for i in top if any(l == logs[i].replace("invoke [1]", "success") for l in logs[i + 1:i + 4]))
+    return {"err_is_null": res["err"] is None, "pumpswap_success_log": any(line.startswith(f"Program {tx.PUMPSWAP_PROGRAM} success") for line in logs),
+            "top_level_token_ixs": len(top), "top_level_token_ixs_succeeded": top_ok,
+            "base_ata_closed_in_post_state": is_closed(res["post_state"].get(pos_base_ata, "absent")) if pos_base_ata in res["post_state"] else False,
+            "wsol_ata_closed_in_post_state": is_closed(res["post_state"].get(wsol_ata)) if wsol_ata in res["post_state"] else False,
+            "non_native_close_error_log": any("Non-native account can only be closed if its balance is zero" in line for line in logs)}
+
+
+def holder_run(rpc: Callable[[str, list], Any], mint: str, pool: str | None, priority: ax.Priority, now: Callable[[], datetime] | None = None) -> dict[str, Any]:
+    pool_pk = Pubkey.from_string(pool) if pool else tx.canonical_pool(Pubkey.from_string(mint))
+    ps0, _ = sim.fetch_pool_state(rpc, str(pool_pk), Pubkey.from_string(SYSTEM_PROGRAM))
+    holder = find_holder(rpc, mint, pool_pk, ps0.base_token_program)
+    owner = Pubkey.from_string(holder["owner"])
+    balance, bal_slot = read_balance(rpc, holder["token_account"])
+    runs: dict[str, Any] = {}
+    for name, amount in (("full_balance", balance), ("control_balance_minus_1", balance - 1)):
+        rec, ps = build_sell(rpc, mint, str(pool_pk), owner, amount, priority)
+        shape = decode_shape(rec["tx_b64"], owner, ps)
+        base_ata = str(tx.ata(owner, Pubkey.from_string(mint), ps.base_token_program))
+        wsol_ata = str(tx.ata(owner, tx.WSOL_MINT, tx.TOKEN_PROGRAM))
+        res = simulate_with_accounts(rpc, rec["tx_b64"], [base_ata, wsol_ata])
+        runs[name] = {"sell_amount_raw": amount, "min_out": rec["min_out"], "tx_len_bytes": len(base64.b64decode(rec["tx_b64"])), "shape": shape,
+                      "simulate": res, "checks": holder_checks(res, base_ata, wsol_ata, str(ps.base_token_program)), "base_ata": base_ata, "wsol_ata": wsol_ata}
+        if name == "full_balance":
+            # state of the base ATA right before the control run is the pre-state of both runs (simulate never writes)
+            runs[name]["balance_read_before_simulate"] = {"amount": balance, "context_slot": bal_slot}
+        else:  # simulateTransaction does not report post-state reliably when the tx fails: do not let a flag read as a measurement
+            for k in ("base_ata_closed_in_post_state", "wsol_ata_closed_in_post_state"):
+                runs[name]["checks"][k] = "not_reported_on_error"
+    full, ctl = runs["full_balance"], runs["control_balance_minus_1"]
+    close_idx = len(full["shape"]["instructions"]) - 1
+    ctl_err = ctl["simulate"]["err"]
+    ctl_ix = ctl_err["InstructionError"][0] if isinstance(ctl_err, dict) and "InstructionError" in ctl_err else None
+    verdict = {
+        "full_sell_ok": all((full["checks"]["err_is_null"], full["checks"]["pumpswap_success_log"], full["checks"]["top_level_token_ixs_succeeded"] >= 2,
+                             full["checks"]["base_ata_closed_in_post_state"], full["checks"]["wsol_ata_closed_in_post_state"])),
+        "control_reverts_at_base_close": ctl_err is not None and ctl_ix == close_idx and ctl["checks"]["non_native_close_error_log"],
+        "control_err": ctl_err,
+    }
+    stamp = (now or (lambda: datetime.now(timezone.utc)))().strftime("%Y-%m-%dT%H:%M:%SZ")
+    return {"kind": "arena_sell_simulate_holder.v1", "utc": stamp, "builder_pin": ax.SELL_BUILDER_PIN, "builder_pin_problem": ax.sell_pin_problem(),
+            "mint": mint, "pool": str(pool_pk), "token_program": TOKEN_NAMES.get(str(ps0.base_token_program), str(ps0.base_token_program)),
+            "holder": holder, "signed": False, "priority": priority.as_dict(), "shape_note": "emergency shape (min_out = 1); normal-exit shape is tested by ix-list equality",
+            "runs": runs, "verdict": verdict, "rpc_host": "api.mainnet-beta.solana.com", "rpc_calls": list(getattr(rpc, "calls", [])),
+            "not_measured": ["the post-state accounts of the failed control run (the RPC does not report them reliably on error)", "landing", "proceeds or price impact (min_out = 1, no quote used)", "a signed or sent transaction (none exists)"]}
 
 
 def record_sha256(rec: dict[str, Any]) -> str:
@@ -235,11 +380,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--amount", type=int, default=DEFAULT_AMOUNT)
     ap.add_argument("--priority", choices=("default", "p155"), default="p155")
     ap.add_argument("--no-funded-probe", action="store_true")
+    ap.add_argument("--holder", action="store_true", help="holder mode: unsigned simulate with a public holder of the mint as owner, full balance + balance-1 control")
     ap.add_argument("--out", required=True, type=Path)
     a = ap.parse_args(argv)
     if "?" in a.rpc or "api-key" in a.rpc.lower() or "@" in a.rpc:
         raise SystemExit("--rpc must be a plain public URL (no query string, no key)")
     prio = ax.PRIORITY_P155 if a.priority == "p155" else ax.PRIORITY_DEFAULT
+    if a.holder:
+        rec = holder_run(RateLimitedRpc(a.rpc), a.mint, a.pool, prio)
+        sha = write_record(rec, a.out)
+        print(json.dumps({"mint": a.mint, "token_program": rec["token_program"], "holder": rec["holder"]["owner"], "verdict": rec["verdict"],
+                          "full_slot": rec["runs"]["full_balance"]["simulate"]["context_slot"], "sha256": sha, "out": str(a.out)}))
+        return 0
     rec = run(RateLimitedRpc(a.rpc), a.mint, a.pool, a.amount, prio, funded_probe=not a.no_funded_probe)
     sha = write_record(rec, a.out)
     print(json.dumps({"mint": a.mint, "token_program": rec["token_program"], "class": rec["verdict"]["class"], "err": rec["simulate"]["err"],

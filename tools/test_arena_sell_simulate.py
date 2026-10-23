@@ -73,7 +73,8 @@ class BuildAndRun(unittest.TestCase):
         for p in rpc.sim_params:
             self.assertEqual(p[1], {"encoding": "base64", "sigVerify": False, "replaceRecentBlockhash": True, "commitment": "processed"})
         self.assertEqual(rec["verdict"]["class"], "expected_unfunded_owner")
-        self.assertFalse(rec["verdict"]["structural_checked_by_chain"])
+        self.assertEqual(rec["verdict"]["structural_checked_by_chain"], "none")
+        self.assertEqual(rec["funded_payer_probe"]["verdict"]["structural_checked_by_chain"], "up_to_ix_3_account_checks_failed_at_ix_3")
         self.assertEqual(rec["funded_payer_probe"]["verdict"]["class"], "expected_no_tokens")
         self.assertNotIn("on-chain account checks of the swap (stopped before it)", rec["not_measured"])  # the probe reached the swap
 
@@ -104,6 +105,82 @@ class BuildAndRun(unittest.TestCase):
     def test_pool_mint_mismatch_refused(self):
         with self.assertRaises(SystemExit):
             ss.build_sell(Rpc([]), "11111111111111111111111111111112", None, ss.Keypair(), 5, ax.PRIORITY_P155)
+
+
+class NormalExitShape(unittest.TestCase):
+    """QP condition 6: the normal-exit instruction list equals the emergency list; only min_out (and priority, equal here) differ."""
+
+    def test_ix_lists_equal_except_min_out(self):
+        owner = ss.Pubkey.from_string("62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV")
+        out = {}
+        for name, em in (("emergency", True), ("normal", False)):
+            rec, ps = ss.build_sell(Rpc([]), MINT, None, owner, 5000, ax.PRIORITY_P155, emergency=em)
+            msg = VersionedTransaction.from_bytes(base64.b64decode(rec["tx_b64"])).message
+            keys = list(msg.account_keys)
+            out[name] = (rec, [(str(keys[i.program_id_index]), [str(keys[a]) for a in i.accounts], bytes(i.data)) for i in msg.instructions])
+        self.assertEqual(out["emergency"][0]["min_out"], 1)
+        self.assertGreater(out["normal"][0]["min_out"], 1)
+        e, n = out["emergency"][1], out["normal"][1]
+        self.assertEqual(len(e), len(n))
+        for i, (a, b) in enumerate(zip(e, n)):
+            self.assertEqual(a[:2], b[:2], i)
+            if i == 3:  # pumpswap sell: discriminator + base_amount equal, min_quote_out (the last u64) differs
+                self.assertEqual(a[2][:-8], b[2][:-8])
+                self.assertNotEqual(a[2][-8:], b[2][-8:])
+            else:
+                self.assertEqual(a[2], b[2], i)
+
+
+class HolderMode(unittest.TestCase):
+    def test_is_closed(self):
+        self.assertTrue(ss.is_closed(None))
+        self.assertTrue(ss.is_closed({"lamports": 0, "owner": ss.SYSTEM_PROGRAM}))
+        self.assertFalse(ss.is_closed({"lamports": 2039280, "owner": str(tx.TOKEN_PROGRAM)}))
+
+    def _res(self, err, post, ok_closes=2):
+        tp = str(tx.TOKEN_PROGRAM)
+        logs = [f"Program {tx.PUMPSWAP_PROGRAM} success"]
+        for _ in range(ok_closes):
+            logs += [f"Program {tp} invoke [1]", f"Program {tp} consumed 1 of 2 compute units", f"Program {tp} success"]
+        if err is not None:
+            logs += [f"Program {tp} invoke [1]", "Program log: Error: Non-native account can only be closed if its balance is zero"]
+        return {"err": err, "logs": logs, "post_state": post}
+
+    def test_checks_full_and_control(self):
+        tp = str(tx.TOKEN_PROGRAM)
+        c = ss.holder_checks(self._res(None, {"B": None, "W": {"lamports": 0, "owner": ss.SYSTEM_PROGRAM}}), "B", "W", tp)
+        self.assertTrue(c["err_is_null"] and c["pumpswap_success_log"] and c["base_ata_closed_in_post_state"] and c["wsol_ata_closed_in_post_state"])
+        self.assertEqual(c["top_level_token_ixs_succeeded"], 2)
+        c = ss.holder_checks(self._res({"InstructionError": [5, {"Custom": 11}]}, {"B": None, "W": None}, ok_closes=1), "B", "W", tp)
+        self.assertFalse(c["err_is_null"])
+        self.assertTrue(c["non_native_close_error_log"])
+        self.assertEqual(c["top_level_token_ixs_succeeded"], 1)
+
+    def test_find_holder_filters(self):
+        mint, pool = MINT, ss.Pubkey.from_string("4JfV6QHCFTWUdQJ6MFj72r1JmJybJowHNYWDs6MUovsX")
+        tp = tx.TOKEN_PROGRAM
+        good, pda_owner = ss.Keypair().pubkey(), ss.Pubkey.find_program_address([b"x"], tx.PUMPSWAP_PROGRAM)[0]
+        a = lambda o: str(tx.ata(o, ss.Pubkey.from_string(mint), tp))  # noqa: E731
+
+        def tok(owner, amount="5", state="initialized", prog=str(tp)):
+            return {"owner": prog, "data": {"parsed": {"info": {"owner": str(owner), "mint": mint, "state": state, "tokenAmount": {"amount": amount}}}}}
+
+        accts = {a(pda_owner): tok(pda_owner), a(pool): tok(pool), "frozen": tok(good, state="frozen"), "noncanon": tok(good), a(good): tok(good)}
+        wallets = {str(good): {"owner": ss.SYSTEM_PROGRAM, "lamports": 5 * 10**9, "executable": False, "space": 0}}
+
+        def rpc(method, params):
+            if method == "getTokenLargestAccounts":
+                return {"value": [{"address": k} for k in accts]}
+            if method == "getAccountInfo":
+                return {"value": accts.get(params[0]) or wallets.get(params[0])}
+            raise AssertionError(method)
+
+        h = ss.find_holder(rpc, mint, pool, tp)
+        self.assertEqual(h["owner"], str(good))
+        self.assertEqual(h["skipped"], {"pool_or_pda_owner": 2, "frozen_or_empty": 1, "not_canonical_ata": 1})
+        wallets[str(good)]["lamports"] = 1000  # unfunded -> no holder
+        with self.assertRaises(SystemExit):
+            ss.find_holder(rpc, mint, pool, tp)
 
 
 class Classify(unittest.TestCase):
