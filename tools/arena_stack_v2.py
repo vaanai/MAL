@@ -62,7 +62,7 @@ def check_ledger_send(ledger_root: str | Path, bot_ids: Iterable[str], send: int
 
 def report_main(argv: list[str] | None = None) -> int:
     """The read wrapper for a covered book: `python -m tools.arena_stack_v2 --expect-send 160000 <arena_report_legs args>`. It refuses (exit 3) unless every row of
-    --bot in --ledger-root carries exactly that stack.send, then runs tools.arena_report_legs.main unchanged (that file is a pin and is not edited)."""
+    --bot in --ledger-root carries exactly that stack.send, then runs tools.arena_report_legs.main unchanged (that file is a pin and is not edited), then prints tools.arena_flip_read (Am.8 item 7)."""
     import argparse
     import sys
 
@@ -78,8 +78,24 @@ def report_main(argv: list[str] | None = None) -> int:
     if seen - {a.expect_send}:
         print(f"REFUSED: the rows of {a.bot} carry send {sorted(seen)}, the book pins {a.expect_send}", file=sys.stderr)
         return 3
-    from tools import arena_report_legs
-    return arena_report_legs.main(["--bot", a.bot, "--ledger-root", a.ledger_root, *rest])
+    from tools import arena_flip_read, arena_report_legs
+    rc = arena_report_legs.main(["--bot", a.bot, "--ledger-root", a.ledger_root, *rest])
+    # DEC-031 Am.8 item 7: every read of a covered book also prints the dust-rule flip count and SOL, and the gate re-checked with the flipped legs priced as strands.
+    # The legs report owns --json; the flip read does not write to it.
+    flip_rest, skip = [], False
+    for x in rest:
+        if skip:
+            skip = False
+        elif x == "--json":
+            skip = True
+        elif not x.startswith("--json="):
+            flip_rest.append(x)
+    # A book on the 160,000 path (stack_config_v2) always states the flip count: with none, one line "ARENA FLIP READ: 0 flipped legs, 0 SOL". Any other book
+    # (another --expect-send) gets the legs output byte-identical and the legs rc.
+    if a.expect_send != SEND_V2:
+        return rc
+    rc2 = arena_flip_read.main(["--bot", a.bot, "--ledger-root", a.ledger_root, "--expect-send", str(a.expect_send), *flip_rest], only_if_flips=True, zero_line=True)
+    return rc or rc2
 
 
 if __name__ == "__main__":
