@@ -58,6 +58,42 @@ class ReplayTests(unittest.TestCase):
             self.assertGreaterEqual(r["attempts_executor"], 1)
             self.assertEqual(r["attempts_scorer"], r["attempts_executor"])
 
+    def export(self, edit=None):
+        """A separate export of the tools tree (what `git archive <registration sha>` gives); `edit` may change the frozen scorer to show the reference does not move with the head."""
+        import shutil
+        dst = self.root / "export"
+        shutil.copytree(Path(rp.__file__).parent, dst / "tools", ignore=shutil.ignore_patterns("__pycache__", "fixtures"))
+        shutil.copytree(Path(rp.__file__).parent / "fixtures" / "arena_h5", dst / "tools" / "fixtures" / "arena_h5") if (Path(rp.__file__).parent / "fixtures" / "arena_h5").exists() else None
+        if edit:
+            edit(dst / "tools" / "arena_h5_score.py")
+        return dst
+
+    def test_reference_is_the_separate_export_and_modules_are_restored(self):
+        import sys
+        d = write_day(self.root, rows_for(Clock()))
+        head_mod = sys.modules["tools.arena_h5_score"]
+        r = rp.run(d, "h5v1-boostfloor-a2", scorer_root=self.export(), expect_code_sha=ax.A2_SHA)
+        self.assertTrue(r["equal"], r)
+        self.assertTrue(r["scorer_is_separate_export"])
+        self.assertEqual(r["start_records_checked"], 1)
+        self.assertIs(sys.modules["tools.arena_h5_score"], head_mod)  # the head's modules are back
+        self.assertIsNot(rp.load_frozen_scorer(self.root / "export"), head_mod)
+
+    def test_a_changed_frozen_scorer_is_a_difference(self):
+        d = write_day(self.root, rows_for(Clock()))
+        ex = self.export(lambda f: f.write_text(f.read_text().replace("def executor_refusal(", "def _orig_executor_refusal(", 1) + "\n\ndef executor_refusal(trig):\n    return 'frozen_changed'\n"))
+        r = rp.run(d, "h5v1-boostfloor-a2", scorer_root=ex)
+        self.assertFalse(r["equal"])
+
+    def test_start_record_sha_and_dirty_are_checked(self):
+        d = write_day(self.root, rows_for(Clock()))
+        with self.assertRaises(SystemExit):
+            rp.run(d, "h5v1-boostfloor-a2", expect_code_sha="0" * 40)
+        f = next(d.glob("h5-shadow-*.jsonl"))
+        f.write_text(f.read_text().replace('"code_sha"', '"dirty": true, "code_sha"', 1))
+        with self.assertRaises(SystemExit):
+            rp.run(d, "h5v1-boostfloor-a2", expect_code_sha=ax.A2_SHA)
+
     def test_refusal_counts_are_reported(self):
         d = write_day(self.root, rows_for(Clock()))
         a = rp.run(d, "h5v1-boostfloor-a2")
