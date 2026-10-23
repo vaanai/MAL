@@ -13,7 +13,7 @@ INPUTS (JSON lines; the tests use fixtures only, a real canary file is never ope
 
 DEFINITIONS (exactly DEC-032 section 5)
   eligible trip     has a twin (a failed twin price is no_twin), is not marked gap, and its exit has landed. Non-eligible trips are counted by reason: no_twin, gap, exit_pending.
-                    A trip with several reasons is counted once as ineligible and once under EACH reason (the shares are conservative).
+                    A trip with no twin row at all is no_twin, never eligible. A zero-row twins file with a live trip past its exit is P7 at once. A trip with several reasons is counted once as ineligible and once under EACH reason (the shares are conservative).
   d_i (bps)         (live_net_lamports - twin pnl_lamports) / stake_lamports * 10,000.
   g_entry_i (bps)   (live_buy_price / twin entry_price - 1) * 10,000; positive = live paid more.  g_exit_i likewise on the sell; negative = live received less.
   landing-fail excess   live share of buy sends that failed or expired minus max(0.15, mean p_fail_press) over the same attempts. DEC-032 section 5 says "mean 1 - p"; QP ruling 1023 reads it as the fail share p itself (fail_legs' p is the failure probability), so this tool uses p.
@@ -130,6 +130,7 @@ def validate_inputs(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[
         _bool(t, "gap", "trip")
         _bool(t, "exit_landed", "trip")
         _bool(t, "gap_through", "trip", required=False)
+        _bool(t, "unreadable", "trip", required=False)
         if t["exit_landed"]:
             for k in ("live_net_lamports", "live_sell_price", "exit_landed_ms", "exit_bound_ms"):
                 _need(t, k, "exited trip")
@@ -182,8 +183,10 @@ def classify_trip(t: Mapping[str, Any], twin: Mapping[str, Any] | None) -> dict[
         reasons.append("no_twin")
     if not t.get("exit_landed"):
         reasons.append("exit_pending")
+    if t.get("unreadable"):
+        reasons.append("unreadable")  # QP 10-23 W2: a landed buy whose amounts could not be read is never eligible
     stake = float(t["stake_lamports"])
-    m: dict[str, Any] = {"trip_id": t["trip_id"], "reasons": reasons, "eligible": not reasons, "has_fill_twin": ok_twin and not t.get("gap") and t.get("live_buy_price") is not None}
+    m: dict[str, Any] = {"trip_id": t["trip_id"], "reasons": reasons, "eligible": not reasons, "has_fill_twin": ok_twin and not t.get("gap") and not t.get("unreadable") and t.get("live_buy_price") is not None}
     if ok_twin:
         if t.get("live_buy_price") is not None:
             m["g_entry"] = bps(float(t["live_buy_price"]) / float(twin["entry_price"]) - 1.0)
@@ -257,11 +260,18 @@ def evaluate(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[str, An
                     _first(halts, "P6", k, float(np.mean(sl_g)), f"mean g_exit {np.mean(sl_g):+.1f} bps over the first {P6_N} stop-loss exits < {P6_BPS:.0f}")
         if n_exits and n_late / n_exits > P5_LATE_SHARE:
             _first(halts, "P5", k, n_late / n_exits, f"{n_late}/{n_exits} sells landed after their exit bound (> {P5_LATE_SHARE:.0%})")
+        if t.get("unreadable"):
+            _first(halts, "P7", k, 1, f"trip {t['trip_id']!r}: a landed buy whose token or spend amount could not be read (flagged unreadable): no buy until the manager has reviewed it")
         if m["reasons"]:  # every non-eligible trip is logged with its reason (Amendment 1 item 1)
             ineligible_log.append({"index": k, "trip_id": m["trip_id"], "reasons": list(m["reasons"])})
         for name, cnt in (("gap", n_gap), ("no_twin", n_no_twin)):
             if share_breach(cnt, k):
                 _first(halts, "P7", k, cnt / k, f"{name} {cnt}/{k} live trips: " + (f"share above {P7_SHARE:.0%}" if k >= P7_SHARE_MIN_TRIPS else f"{cnt} before {P7_SHARE_MIN_TRIPS} trips (small-sample rule)"))
+    # Twins (QP 10-23, PR #825 probe: an empty twins file with fresh stamps returned rc 0): a zero-row twins file while a live trip is past its exit (landed, or its exit
+    # bound has passed) is P7 at once. Before the first exit is due nothing can be priced yet, so an empty file is allowed then; after, the producer is missing.
+    due = sorted(t["trip_id"] for t in trips if t.get("exit_landed") or now_ms > int(t["exit_bound_ms"]))
+    if not twins and due:
+        _first(halts, "P7", len(order), len(due), f"twins file has zero rows while {len(due)} live trip(s) are past their exit ({', '.join(due[:5])}): the twin producer is missing or has not run (fail closed)")
     # B4: an exit still pending after exit_bound + 600 s is a stuck position (hard); it never drops out of the books
     stuck = sorted(t["trip_id"] for t in trips if not t.get("exit_landed") and now_ms > int(t["exit_bound_ms"]) + STUCK_AFTER_MS)
     if stuck:

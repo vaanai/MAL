@@ -172,7 +172,9 @@ H_LATE_SEND = "sell_send_late_x2"
 H_STUCK2 = "two_stuck_sells"
 H_STRAND = "close_blocked_strand"
 H_A3 = "a3_pins_changed"
-ARENA_HALTS = frozenset({H_FEED_BREAK, H_ENTRY_GAP, H_LANDING, H_EXIT_GAP, H_LATE_SEND, H_STUCK2, H_STRAND, H_A3})
+SIGNAL_AGE_MAX_MS = 5_000  # DEC-032 s3 "Buy guard": signal age at most 5 s (the base executor's own PRESEND_MAX_TRIGGER_AGE_MS is 3.5 s; the stricter of the two applies)
+H_BUY_UNREADABLE = "landed_buy_unreadable"  # QP 10-23 W2: a landed buy whose token or spend amount cannot be read (an open, flagged trip exists)
+ARENA_HALTS = frozenset({H_BUY_UNREADABLE, H_FEED_BREAK, H_ENTRY_GAP, H_LANDING, H_EXIT_GAP, H_LATE_SEND, H_STUCK2, H_STRAND, H_A3})
 ENTRY_GAP_WINDOW = 20  # DEC-032 s5 P1: the first 10 eligible fills, then ROLLING over the last 20
 LANDING_WINDOW_N = 30  # DEC-032 s5 P2: rolling 30 buy attempts, judged once 30 exist
 ENTRY_GAP_BPS, ENTRY_GAP_MIN_N = 200.0, 10
@@ -617,7 +619,26 @@ class ArenaExecutor(h.H5Executor):
         if blocked:
             self.close_blocked_refused += 1
             return self._refuse(trg, f"close_blocked_mint:{blocked}")
+        if self._signal_age_ms(trg) > self._signal_age_limit_ms():  # W3: the gates and the mint screen above can take seconds; the age is judged AFTER them, not before
+            return self._refuse(trg, "stale_trigger_after_gates")
         super()._live_buy(trg, ps, terms, plan, now, drift, seen_ms)
+
+    def _signal_age_limit_ms(self) -> int:
+        return min(SIGNAL_AGE_MAX_MS, int(self.h5.max_trigger_age_ms))
+
+    def _signal_age_ms(self, trg: h.H5Trigger) -> int:
+        return self.now_ms() - trg.decision_ms
+
+    def _send(self, p: dict[str, Any], mint: str) -> None:
+        """Immediately before the FIRST send of a live buy, judge the signal age once more (W3: building and signing come after the gates and take time too).
+        A stale signal is not sent: the pending buy is dropped exactly as the base class drops one whose kill switch fired. Rebroadcasts are left to the base."""
+        if not self.dry_run and p.get("kind") == "buy" and p.get("sends", 0) == 0 and not self._halt_present():
+            age = self.now_ms() - int(p.get("decision_t_ms") or 0)
+            if age > self._signal_age_limit_ms():
+                self.state.pending.pop(mint, None)
+                self._log("send_blocked", mint, reason="stale_trigger_presend", kind_="buy", signal_age_ms=age)
+                return
+        super()._send(p, mint)
 
     def _screen_mint(self, mint: str) -> str | None:
         """Fresh read of the mint account (never a cache: the pre-send look is the one that counts). Returns the close-blocked reason, None when clear."""
@@ -752,7 +773,8 @@ class ArenaExecutor(h.H5Executor):
         super()._log(kind, mint, **kw)
         if self.gates is not None and kind in ("buy", "sell"):
             if kind == "buy":
-                self.gates.recorder.on_buy(mint, kw, self.now_ms(), self._exit_bound_ms(mint, kw.get("decision_t_ms")))
+                if self.gates.recorder.on_buy(mint, kw, self.now_ms(), self._exit_bound_ms(mint, kw.get("decision_t_ms")), self.h5.stake_lamports):
+                    self._latch(H_BUY_UNREADABLE, position_mint=mint, signature=kw.get("signature"))
             else:
                 self.gates.recorder.on_sell(mint, kw, self.now_ms())
 

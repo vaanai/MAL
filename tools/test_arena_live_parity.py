@@ -659,3 +659,49 @@ def test_allow_abbrev_is_off_in_the_three_tools(tmp_path):
     with pytest.raises(SystemExit) as e:
         arena_worst_gaps.main(["--trad", "x", "--tape-dir", "x", "--out", str(tmp_path / "o.json")])
     assert e.value.code == 2
+
+
+# ---------------------------------------------------------------------------------------------------------------------- QP-RULING-1023 wiring (PR #825) twins item
+def test_an_empty_twins_file_with_a_trip_past_its_exit_fails_closed(tmp_path, capsys):
+    """QP probe: empty trips/twins/attempts returned rc 0. A live trip past its exit with a zero-row twins file is P7 at once (before this: rc 0 for the
+    first trip, because one no_twin is under the small-sample rule's 2)."""
+    ts, _ = book(1)
+    r = P.evaluate(ts, [], attempts(40), fresh_state(), NOW)
+    assert "P7" in r["halts"] and "zero rows" in r["halts"]["P7"]["detail"]
+    assert not r["match"] and r["stop_required"]
+    args = cli(tmp_path, ts, [], attempts(40), fresh_state())
+    (tmp_path / "twins.jsonl").write_text("")
+    assert P.main(args) == 10 and (tmp_path / "STOP").exists()
+
+
+def test_empty_twins_with_a_blank_or_whitespace_file_is_the_same(tmp_path):
+    ts, _ = book(3)
+    args = cli(tmp_path, ts, [], attempts(40), fresh_state())
+    (tmp_path / "twins.jsonl").write_text("\n  \n")
+    assert P.main(args) == 10
+
+
+def test_empty_twins_with_no_trip_is_not_a_halt_and_a_young_open_trip_is_not_yet_due():
+    assert P.evaluate([], [], [], fresh_state(), NOW)["halts"] == {}  # nothing live yet: the first buy may go
+    t, _ = trip(0, landed=False)
+    t["exit_bound_ms"] = NOW + 100_000  # the exit is not due: the producer cannot price the twin before the paper exit
+    r = P.evaluate([t], [], attempts(40), fresh_state(), NOW)
+    assert "P7" not in r["halts"] or "zero rows" not in r["halts"]["P7"]["detail"]
+
+
+def test_a_trip_without_a_twin_row_is_no_twin_never_eligible():
+    ts, ws = book(30)
+    r = P.evaluate(ts, ws[:-1], attempts(40), fresh_state(), NOW)  # the last trip has no twin row
+    assert r["shares"]["no_twin"] == 1 and r["shares"]["eligible"] == 29
+    assert not any(e["trip_id"] == "t29" and "no_twin" not in e["reasons"] for e in r["ineligible_log"])
+    m = P.classify_trip(ts[-1], None)
+    assert not m["eligible"] and "no_twin" in m["reasons"]
+    m = P.classify_trip(ts[-1], {"trip_id": "t29", "price_failed": True})
+    assert not m["eligible"] and "no_twin" in m["reasons"]
+
+
+def test_unreadable_trip_is_never_eligible_and_halts():
+    ts, ws = book(3)
+    ts[0]["unreadable"] = True
+    r = P.evaluate(ts, ws, attempts(40), fresh_state(), NOW)
+    assert "P7" in r["halts"] and "unreadable" in r["halts"]["P7"]["detail"] and r["shares"]["eligible"] == 2

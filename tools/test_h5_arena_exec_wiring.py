@@ -257,6 +257,51 @@ class RecorderSchemaTests(LiveCase):
         self.assertEqual([(a["landed"], a["failed_or_expired"]) for a in rec.attempts.values()], [(False, True), (False, True)])
         alp.validate_inputs([], [], list(rec.attempts.values()))
 
+    def test_a_landed_buy_with_unreadable_amounts_is_an_open_flagged_trip_never_a_failed_attempt(self):
+        """QP 10-23 W2: tokens or spend that cannot be read after a landed buy must keep the position visible (B3, P3, P4), not vanish."""
+        bad = [{"tokens_received": None}, {"tokens_received": "12"}, {"tokens_received": True}, {"tokens_received": -5}, {"tokens_received": 1.5},
+               {"tokens_received": 1000, "spend_lamports": None}, {"tokens_received": 1000, "spend_lamports": 0}, {"tokens_received": 1000, "spend_lamports": "5"},
+               {"tokens_received": 1000, "tokens_source": "quote_estimate"}, {}]
+        for i, extra in enumerate(bad):
+            with self.subTest(extra=extra):
+                rec = gt.ParityRecorder(self.tmp / f"rec{i}")
+                kw = {"landed": True, "spend_lamports": 20_000_000, "signature": f"s{i}", "decision_t_ms": 5, "expected_tokens": 4_000_000, **extra}
+                why = rec.on_buy(f"M{i}", kw, 100, None, stake_fallback=20_000_000)
+                self.assertEqual(why, "landed_buy_unreadable")
+                t = rec.trips[f"M{i}"]
+                self.assertTrue(t["unreadable"] and not t["exit_landed"])
+                self.assertGreater(t["stake_lamports"], 0)
+                (a,) = rec.attempts.values()
+                self.assertTrue(a["landed"] and not a["failed_or_expired"] and a["trip_id"] == f"M{i}")
+                alp.validate_inputs(list(rec.trips.values()), [], list(rec.attempts.values()))
+
+    def test_a_readable_landed_buy_is_not_flagged(self):
+        e = self.live()
+        rec = e.ex.gates.recorder
+        self.assertIsNone(rec.on_buy("M", {"landed": True, "tokens_received": 7, "spend_lamports": 9, "signature": "s", "decision_t_ms": 5}, 100, None))
+        self.assertFalse(rec.trips["M"].get("unreadable"))
+
+    def test_the_executor_latches_on_an_unreadable_landed_buy_and_refuses_the_next(self):
+        e = self.live()
+        e.ex._log("buy", MINT, landed=True, tokens_received=None, spend_lamports=20_000_000, signature="sig-u", decision_t_ms=e.clock())
+        self.assertIn(ax.H_BUY_UNREADABLE, e.ex.counters.halts)
+        self.assertTrue(e.ex.gates.recorder.trips[MINT]["unreadable"])
+        self.assertIn(ax.H_BUY_UNREADABLE, ax.HARD_ARENA_HALTS)
+        self.assertIn(ax.H_BUY_UNREADABLE, e.ex._parity_state(e.clock())["unresolved_hard_halts"])
+        e.fire(mint="Other")
+        self.assertEqual(e.refusals()[-1], ax.H_BUY_UNREADABLE)
+
+    def test_the_parity_tool_halts_on_an_unreadable_trip(self):
+        t = {"trip_id": "M", "stake_lamports": 10, "decision_ms": 1, "buy_landed_ms": 2, "live_buy_price": 1.0, "gap": False, "exit_landed": False,
+             "exit_bound_ms": 10**12, "unreadable": True}
+        a = {"attempt_id": "s", "decision_ms": 1, "landed": True, "landed_ms": 2, "failed_or_expired": False, "p_fail_press": 0.289, "trip_id": "M"}
+        now = 1000
+        st = {"at_ms": {n: now for n in alp.STATE_NAMES}, "unresolved_hard_halts": []}
+        res = alp.evaluate([t], [], [a], st, now)
+        self.assertIn("P7", res["halts"])
+        self.assertIn("unreadable", res["halts"]["P7"]["detail"])
+        self.assertFalse(res["match"])
+
     def test_a_gap_marks_open_trips_and_a_restart_reloads(self):
         e = self.live()
         e.open_position()
@@ -315,7 +360,25 @@ class ParityGateTests(LiveCase):
         self.assertEqual(len(self.calls), 2)
         g.maybe_run_parity(now + 2000 + g.interval_ms)
         self.assertEqual(len(self.calls), 3)
-        self.assertLessEqual(g.interval_ms, 300_000)
+        self.assertLessEqual(g.interval_ms, 60_000)  # DEC-032 s3: stale after 60 s (QP 10-23 W1)
+
+    def test_a_result_is_fresh_for_at_most_60_s_even_with_a_long_config_interval(self):
+        e = self.live(parity_interval_s=300)
+        g = e.ex.gates
+        self.assertEqual(g.interval_ms, 60_000)
+        g.runner = self.stub(0)
+        now = e.clock()
+        g.run_parity(now)
+        self.assertTrue(g.parity_fresh(now + 59_999))
+        self.assertTrue(g.parity_fresh(now + 60_000))
+        self.assertFalse(g.parity_fresh(now + 60_001))
+        n = len(self.calls)
+        self.assertIsNone(g.parity_refusal(now + 61_000))  # stale: rerun now, rc 0 lets it through
+        self.assertEqual(len(self.calls), n + 1)
+
+    def test_a_shorter_config_interval_still_wins(self):
+        e = self.live(parity_interval_s=20)
+        self.assertEqual(e.ex.gates.interval_ms, 20_000)
 
     def test_a_result_older_than_the_last_landed_event_is_not_fresh(self):
         e = self.live()
@@ -379,6 +442,71 @@ class ParityGateTests(LiveCase):
         self.assertEqual(e.ex.gates.parity_refusal(now), f"parity_gate:rc_{rc}")
 
 
+class SignalAgeAfterGatesTests(LiveCase):
+    """QP 10-23 W3: the parity and tie-out runs are synchronous in the buy path (up to 60 s each). The signal age is re-read after they run and again
+    immediately before the first send; a signal that went stale while the gates ran is no buy."""
+
+    def slow_gate(self, e, ms):
+        def run(argv):
+            e.clock.t += ms
+            return 0
+        e.ex.gates.runner = run
+
+    def test_slow_gates_make_the_signal_stale_so_no_buy(self):
+        e = self.live()
+        self.slow_gate(e, 4_000)  # the age limit is 3.5 s (PRESEND_MAX_TRIGGER_AGE_MS); DEC-032 s3 allows at most 5 s
+        e.fire()
+        self.assertEqual(e.refusals(), ["stale_trigger_after_gates"])
+        self.assertEqual(e.rpc.sent, [])
+        self.assertNotIn(MINT, e.ex.state.pending)
+        self.assertEqual(e.ex.state.attempts, 0)
+
+    def test_fast_gates_let_it_through(self):
+        e = self.live()
+        self.slow_gate(e, 50)
+        e.fire()
+        self.assertIn(MINT, e.ex.state.pending)
+        self.assertEqual(len(e.rpc.sent), 1)
+
+    def test_the_limit_is_never_above_5_s(self):
+        self.assertLessEqual(ax.SIGNAL_AGE_MAX_MS, 5_000)
+        e = self.live()
+        self.assertLessEqual(e.ex._signal_age_limit_ms(), 5_000)
+
+    def test_the_tieout_run_counts_too(self):
+        e = self.live()
+        e.ex.state.first_attempt_ms = e.clock() - 2 * 86_400_000
+        def run(argv):
+            if argv[0] == "tools.arena_tieout":
+                e.clock.t += 4_000
+            return 0
+        e.ex.gates.runner = run
+        e.fire()
+        self.assertEqual(e.refusals(), ["stale_trigger_after_gates"])
+        self.assertEqual(e.rpc.sent, [])
+
+    def test_a_signal_that_goes_stale_between_build_and_send_is_not_sent(self):
+        e = self.live()
+        real = e.ex._sign
+        def slow_sign(*a, **k):
+            r = real(*a, **k)
+            e.clock.t += 4_000
+            return r
+        e.ex._sign = slow_sign
+        e.fire()
+        self.assertEqual(e.rpc.sent, [])
+        self.assertNotIn(MINT, e.ex.state.pending)
+        self.assertEqual([r["reason"] for r in e.ledger("send_blocked")], ["stale_trigger_presend"])
+
+    def test_a_rebroadcast_is_not_judged_by_the_signal_age(self):
+        e = self.live()
+        e.fire()
+        p = e.ex.state.pending[MINT]
+        e.clock.t += 4_000
+        e.ex._send(p, MINT)  # sends >= 1: the base class's rebroadcast rules apply, not the first-send age check
+        self.assertEqual(e.ledger("send_blocked"), [])
+
+
 class TieoutGateTests(LiveCase):
     DAY = 86_400_000
 
@@ -433,3 +561,60 @@ class TieoutGateTests(LiveCase):
         e.ex.state.first_attempt_ms = e.clock() - 2 * self.DAY
         e.fire()
         self.assertEqual(e.refusals(), ["tieout_gate:rc_1"])
+
+
+class LiveNetIsTheChainDeltaTests(LiveCase):
+    """QP 10-23 "Before a first live send": live_net_lamports must be the wallet's chain delta (SOL in minus out, fees and rent included, from tx meta)."""
+
+    FIXT = Path(__file__).resolve().parent / "fixtures" / "live_net"  # two recorded PUBLIC mainnet PumpSwap txs (getTransaction results, from the tie-out fetch fixtures)
+
+    def chain(self, name):
+        from solders.pubkey import Pubkey
+        from tools import probe_live as pl
+        res = json.loads((self.FIXT / f"{name}.json").read_text())
+        wallet = (self.FIXT / f"{name}.wallet").read_text().strip()
+        meta = res["meta"]
+        keys = pl._keys(res)
+        wi = keys.index(wallet)
+        owned = [b for b in meta["postTokenBalances"] if b.get("owner") == wallet and b["mint"] != gt.WSOL]
+        ata = keys[owned[0]["accountIndex"]]
+        parsed = pl.parse_meta(res, Pubkey.from_string(wallet), Pubkey.from_string(owned[0]["mint"]), Pubkey.from_string(ata))
+        return res, meta, wi, parsed
+
+    def test_the_executors_sol_delta_is_post_minus_pre_of_the_wallet_and_includes_fee_and_rent(self):
+        for name in ("buy_exact_quote_in_a", "sell_a"):
+            with self.subTest(tx=name):
+                res, meta, wi, parsed = self.chain(name)
+                self.assertEqual(wi, 0)  # the wallet is the fee payer
+                self.assertEqual(parsed["sol_delta"], meta["postBalances"][wi] - meta["preBalances"][wi])
+                # conservation: every lamport the wallet lost went to another account or to the fee; the fee is therefore inside the delta
+                others = sum(p - q for i, (p, q) in enumerate(zip(meta["postBalances"], meta["preBalances"])) if i != wi)
+                self.assertEqual(parsed["sol_delta"] + others, -meta["fee"])
+                self.assertEqual(parsed["fee"], meta["fee"])
+
+    def test_a_trips_live_net_is_the_sum_of_its_two_chain_deltas(self):
+        """The executor books pnl = sell delta - buy cost (buy cost = minus the buy's delta) - failed-sell fees; the recorder stores that as live_net_lamports."""
+        e = self.live()
+        _, _, _, buy = self.chain("buy_exact_quote_in_a")
+        _, _, _, sell = self.chain("sell_a")
+        cost = -buy["sol_delta"]
+        pnl = sell["sol_delta"] - cost - 0
+        rec = e.ex.gates.recorder
+        rec.on_buy("MX", {"landed": True, "tokens_received": 1000, "spend_lamports": 50_000_000, "signature": "b", "decision_t_ms": 5}, 100, None)
+        rec.on_sell("MX", {"landed": True, "pnl_lamports": pnl, "tokens": 1000, "sol_received_lamports": 1, "exit_reason": "timer"}, 200)
+        self.assertEqual(rec.trips["MX"]["live_net_lamports"], buy["sol_delta"] + sell["sol_delta"])
+
+    def test_through_the_executor_live_net_equals_the_meta_deltas_of_the_two_landed_txs(self):
+        from tools.test_h5_executor import RENT
+        e = self.live()
+        e.open_position()
+        spend = e.ex.state.open[MINT]["spend"]
+        buy_delta = -(spend + 60_000 + RENT)  # what land_buy writes into the buy's meta: stake, fee and the ATA rent
+        e.at_slot(e.plan()["send_slot"] + 2)
+        if e.ex.state.pending.get(MINT):
+            e.land_sell(e.rpc.slot + 1, proceeds=21_000_000)
+        sell_delta = 21_000_000 - 60_000 + RENT  # proceeds less the fee, plus the refunded rent
+        t = e.ex.gates.recorder.trips[MINT]
+        self.assertTrue(t["exit_landed"])
+        self.assertEqual(t["live_net_lamports"], buy_delta + sell_delta)
+        self.assertEqual(t["live_net_lamports"], 21_000_000 - spend - 120_000)  # rent paid and refunded nets out; both fees are inside

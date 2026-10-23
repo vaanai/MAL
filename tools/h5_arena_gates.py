@@ -27,12 +27,12 @@ from tools.arena_stack import PRESS_P_TARGET
 V_BAND = (17_500_000_000, 17_700_000_000)  # DEC-031 Am.2 item 6, DEC-032 s3 (also tools/arena_live_bridge.py UNIVERSE_V_RANGE)
 WSOL = "So11111111111111111111111111111111111111112"
 LATE_SELL_MS = 335_000  # tools/h5_executor.py LATE_SELL_S (335 s after s0): the exit bound; asserted equal in the tests
-PARITY_INTERVAL_S_MAX = 300  # "every N minutes": config may only shorten it
+PARITY_INTERVAL_S_MAX = 60  # DEC-032 s3: a parity result older than 60 s is stale (QP 10-23 W1; was 300). Config may only shorten it. The same bound is the freshness window.
 PARITY_RUN_TIMEOUT_S = 60
 PARITY_RETRY_AFTER_FAIL_MS = 15_000  # a failed run is not retried on every trigger
 TIEOUT_CACHE_MS = 60_000
 DAY_MS = 86_400_000
-HARD_ARENA_HALTS = frozenset({"out_of_rule_entry", "stuck_position", "close_blocked_strand", "a3_pins_changed", "feed_break"})  # unresolved = latched
+HARD_ARENA_HALTS = frozenset({"landed_buy_unreadable", "out_of_rule_entry", "stuck_position", "close_blocked_strand", "a3_pins_changed", "feed_break"})  # unresolved = latched
 
 
 def v_band_refusal(v_lamports: Any, quote_mint: Any) -> str | None:
@@ -99,31 +99,50 @@ class ParityRecorder:
         if changed:
             self._save()
 
-    def on_buy(self, mint: str, kw: Mapping[str, Any], now_ms: int, exit_bound_ms: int | None) -> None:
-        """One `buy` ledger row (landed true or false, including expired). Writes the attempt, and the trip when tokens arrived."""
+    def on_buy(self, mint: str, kw: Mapping[str, Any], now_ms: int, exit_bound_ms: int | None, stake_fallback: int | None = None) -> str | None:
+        """One `buy` ledger row (landed true or false, including expired). Writes the attempt, and the trip when tokens arrived.
+
+        QP 10-23 W2: a landed buy whose token or spend amount cannot be read is NEVER a failed attempt with no trip. It opens a trip flagged `unreadable` (stake =
+        the row's spend, else `stake_fallback`; price = stake / expected tokens, or 1.0) so that B3, P3, P4 and the stuck rule still see the position. Returns
+        "landed_buy_unreadable" for that case (the caller latches), else None. A readable landed buy with zero tokens stays a failed attempt (SOL gone, no position)."""
         decision = kw.get("decision_t_ms")
         decision = decision if isinstance(decision, int) and not isinstance(decision, bool) else now_ms
         landed_ms = kw.get("confirm_seen_ms") if isinstance(kw.get("confirm_seen_ms"), int) else now_ms
         tokens = kw.get("tokens_received")
         spend = kw.get("spend_lamports")
-        opened = bool(kw.get("landed")) and isinstance(tokens, int) and tokens > 0 and isinstance(spend, int) and spend > 0
+        landed = bool(kw.get("landed"))
+        tok_ok = isinstance(tokens, int) and not isinstance(tokens, bool) and tokens >= 0
+        spend_ok = isinstance(spend, int) and not isinstance(spend, bool) and spend > 0
+        unreadable = landed and (not tok_ok or not spend_ok or kw.get("tokens_source") == "quote_estimate")
+        opened = landed and (unreadable or (tok_ok and tokens > 0 and spend_ok))
         aid = str(kw.get("signature") or f"{mint}:{decision}")
         if aid in self.attempts:
-            return  # a row is never booked twice (a restart replays nothing, but the file refuses duplicates)
+            return None  # a row is never booked twice (a restart replays nothing, but the file refuses duplicates)
         att: dict[str, Any] = {"attempt_id": aid, "decision_ms": decision, "landed": opened, "failed_or_expired": not opened,
                                "p_fail_press": PRESS_P_TARGET, "mint": mint}
         if opened:
             att.update(landed_ms=landed_ms, trip_id=mint)
+            stake = spend if spend_ok else stake_fallback if isinstance(stake_fallback, int) and stake_fallback > 0 else 1
+            exp = kw.get("expected_tokens")
+            if unreadable:
+                price = stake / exp if isinstance(exp, int) and not isinstance(exp, bool) and exp > 0 else 1.0
+            else:
+                price = spend / tokens  # stake lamports per raw token: the twins file's entry_price must use the same unit
             self.trips[mint] = {
-                "trip_id": mint, "stake_lamports": spend, "decision_ms": decision, "buy_landed_ms": landed_ms,
-                "live_buy_price": spend / tokens,  # stake lamports per raw token: the twins file's entry_price must use the same unit
+                "trip_id": mint, "stake_lamports": stake, "decision_ms": decision, "buy_landed_ms": landed_ms, "live_buy_price": price,
                 "gap": self.last_gap_ms is not None and self.last_gap_ms >= decision, "exit_landed": False,
                 "exit_bound_ms": int(exit_bound_ms if exit_bound_ms is not None else decision + LATE_SELL_MS),
             }
+            for k in ("fee_lamports",):  # the landed buy's own fee, as sent (the twin producer prices the twin at it)
+                if isinstance(kw.get(k), int) and not isinstance(kw.get(k), bool):
+                    self.trips[mint]["buy_fee_lamports"] = kw[k]
+            if unreadable:
+                self.trips[mint]["unreadable"] = True
             self.last_landed_ms = max(self.last_landed_ms or 0, landed_ms)
             self.seq += 1
         self.attempts[aid] = att
         self._save()
+        return "landed_buy_unreadable" if unreadable else None
 
     def on_sell(self, mint: str, kw: Mapping[str, Any], now_ms: int) -> None:
         """One landed `sell` ledger row that closed the position (it carries pnl_lamports). A failed or expired sell changes nothing."""
@@ -136,6 +155,9 @@ class ParityRecorder:
         landed_ms = kw.get("confirm_seen_ms") if isinstance(kw.get("confirm_seen_ms"), int) else now_ms
         t.update(exit_landed=True, exit_landed_ms=landed_ms, closed_ms=landed_ms, exit_reason=str(kw.get("exit_reason") or "unknown"),
                  live_net_lamports=kw["pnl_lamports"], live_sell_price=got / tokens)
+        fee, failed = kw.get("fee_lamports"), kw.get("failed_attempt_cost_lamports")
+        if isinstance(fee, int) and not isinstance(fee, bool):  # the sells as sent: the landed one plus earlier failed attempts (the twin is priced at these)
+            t["sell_fee_lamports"] = fee + (failed if isinstance(failed, int) and not isinstance(failed, bool) else 0)
         self.last_landed_ms = max(self.last_landed_ms or 0, landed_ms)
         self.seq += 1
         self._save()
