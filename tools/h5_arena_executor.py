@@ -15,6 +15,8 @@ the sell ladder, caps, write-ahead, STOP / HALT, counters). What this module cha
  6  v2 feed: a v2 book refuses buys until it has taken a boost_slice record in the executor's format (v2_feed_absent). Else it would exit at 330 s,
     which is not the book's exit.
  7  Limits: end_ms / max_days come from config, clamped to the book's seal end. TIERS are the base ones; T0 is the default stake.
+ 9  Priority pin: Book.priority (profile default = 55,000 / 55,000 / 150,000, the registered books; p155 = 155,000 on buy, sell and escalation, for NEW books
+    per DEC-031 Am.8). Asserted at start (cfg["priority_pin"] must equal it; a p155 book requires it) and applied through the `h5` property.
  8  Fidelity log: each decision row carries bot_id, frozen_sha, the trigger key (mint, pool, trigger_slot), decision_ms. Sells add send/landed slots and
     late_slots. No exit quote, no P&L is ever written by a dry run (outcome-blind).
 14  Soft halts, latched (names in ARENA_HALTS): see FidelityMonitor.
@@ -60,6 +62,28 @@ PAPER_FAIL_RATE = 0.15  # the flat fail model of the gate; landing-fail excess i
 
 
 @dataclass(frozen=True)
+class Priority:
+    """The book's compiled priority-fee pin (lamports of priority per send; the 5,000 base fee is on top). Item 9 (L1a, 2026-10-23)."""
+    profile: str
+    buy: int
+    sell: int
+    escalated: int
+
+    def __post_init__(self) -> None:
+        if self.profile == "p155" and (self.buy, self.sell, self.escalated) != (AM8_PRIORITY,) * 3:
+            raise ValueError("profile p155 is 155,000 on the buy, the sell and the escalation (DEC-031 Am.8 item 2: every retry at or below 155,000)")
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"profile": self.profile, "buy": self.buy, "sell": self.sell, "escalated": self.escalated}
+
+
+AM8_PRIORITY = 155_000  # DEC-031 Amendment 8 item 2: buy AND sell pinned at exactly 155,000, every escalation at or below it (160,000 per send with the base fee)
+PRIORITY_DEFAULT = Priority("default", h.H5_DEFAULT["buy_priority_lamports"], h.H5_DEFAULT["sell_priority_lamports"], h.H5_DEFAULT["escalated_priority_lamports"])
+PRIORITY_P155 = Priority("p155", AM8_PRIORITY, AM8_PRIORITY, AM8_PRIORITY)
+assert (PRIORITY_DEFAULT.buy, PRIORITY_DEFAULT.sell, PRIORITY_DEFAULT.escalated) == (55_000, 55_000, 150_000)  # the registered books' values, h5_executor.py:267-268
+
+
+@dataclass(frozen=True)
 class Book:
     bot_id: str
     frozen_sha: str
@@ -71,6 +95,7 @@ class Book:
     s0_margin_ms: int
     q_star_in_record: float | None  # None: the start record carries no q_star_sol (the default 40.0 path is byte-identical)
     rule_sha256: str | None
+    priority: Priority = PRIORITY_DEFAULT  # registered books keep h5_executor's 55,000 / 55,000 / 150,000; only a NEW book (registered after Am.8) may be p155
 
     @property
     def q_star_sol(self) -> float:
@@ -143,6 +168,9 @@ def start_record_problem(book: Book, rec: dict[str, Any]) -> str | None:
 
 def arena_start_refusal(book: Book, cfg: dict[str, Any], root: Path, live: bool) -> str | None:
     """Static start conditions (keyless). Item 2 pick files, item 5 v2 checks, item 17 feed note. Live also needs the canary DEC's owner line."""
+    why = priority_refusal(book, cfg)
+    if why:
+        return why
     if cfg.get("pick_file") or cfg.get("pick_replay_files"):
         return "pick_file_set"  # the CAP-PICK oracle no longer exists (DEC-031 s3.5): a configured one is a wrong config, never silently ignored
     if not FEED_NOTE_MERGED and cfg.get("replay_only") is not True:
@@ -163,6 +191,23 @@ def arena_start_refusal(book: Book, cfg: dict[str, Any], root: Path, live: bool)
             return "canary_dec_unreadable"
     if book.exit_pin == h.EXIT_MODE_V2:
         return v2_start_refusal()
+    return None
+
+
+def priority_refusal(book: Book, cfg: dict[str, Any]) -> str | None:
+    """The priority pin is compiled in (item 9) and asserted at start. cfg["priority_pin"] is a declaration, not a setting: it must equal the book's
+    compiled pin (a p155 book REQUIRES it, so a canary config names its fee). A buy priority in the config may only restate the pin."""
+    pin = book.priority
+    decl = cfg.get("priority_pin")
+    if book.priority.profile != "default" and decl is None:
+        return "priority_pin_missing"
+    if decl is not None and decl != pin.as_dict():
+        return "priority_pin_mismatch"
+    for key in ("sell_priority_lamports", "escalated_priority_lamports"):
+        if key in cfg:
+            return f"{key}_not_configurable"
+    if "buy_priority_lamports" in cfg and cfg["buy_priority_lamports"] != pin.buy:
+        return "buy_priority_lamports_not_pin"
     return None
 
 
@@ -239,6 +284,7 @@ class ArenaExecutor(h.H5Executor):
         if why:
             raise SystemExit(f"arena executor start refused: {why}")
         cfg = dict(cfg)
+        cfg.pop("buy_priority_lamports", None)  # restated pin only (checked above); the base would clamp 155,000 to its 55,000 maximum and report a clamp
         end = cfg.get("end_ms")
         cfg["end_ms"] = book.end_ms_seal if end is None else min(int(end), book.end_ms_seal)  # item 7: clamped, never later
         days = cfg.get("max_days")
@@ -254,6 +300,16 @@ class ArenaExecutor(h.H5Executor):
         super().__init__(rpc, cfg, keypair, now_ms=now_ms, pick_oracle=None, root=root, rpc_label=rpc_label)
         if self.exit_mode != book.exit_pin:
             raise SystemExit("exit mode pin was not applied")
+        got = (self.h5.buy_priority_lamports, self.h5.sell_priority_lamports, self.h5.escalated_priority_lamports)
+        if got != (book.priority.buy, book.priority.sell, book.priority.escalated):  # asserted at start, after the base has built its limits
+            raise SystemExit(f"arena executor start refused: priority pin not applied {got}")
+
+    @property
+    def h5(self) -> h.H5Limits:
+        """The base limits with the book's compiled priority pin on all three fee fields (item 9). The base clamps these to its 55,000 / 150,000 code
+        constants; this is the only place a book's fee differs from them, and the start row's `limits` shows the result."""
+        pr = self.abook.priority
+        return replace(super().h5, buy_priority_lamports=pr.buy, sell_priority_lamports=pr.sell, escalated_priority_lamports=pr.escalated)
 
     def __repr__(self) -> str:
         return f"ArenaExecutor(book={self.abook.bot_id}, mode={self.run_mode})"

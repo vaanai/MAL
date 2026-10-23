@@ -432,3 +432,92 @@ class LiveShapePathTests(ACase):
             self.assertLessEqual(abs(send_s - (330 - lim.send_lead_ms / 1000.0)), sps)
             self.assertEqual(p.send_wall_ms, 1_000_000 + 330_000 - lim.send_lead_ms)
             self.assertLess(lim.slot_poll_ms, 400)  # the slot poll is finer than a slot at either rate; poll_s is not read by the exit path
+
+
+class PriorityPinTests(ACase):
+    """Item 9: the per-book priority pin. Registered books keep 55,000 / 55,000 / 150,000; a NEW p155 book sends exactly 155,000 on both legs (DEC-031 Am.8 item 2)."""
+
+    NEW = "h5v1-p155-testbook"
+
+    def p155_book(self) -> ax.Book:
+        return dataclasses.replace(ax.BOOKS[A2], bot_id=self.NEW, priority=ax.PRIORITY_P155)
+
+    def live_env(self, **kw):
+        (self.tmp / "repo" / "DEC").mkdir(parents=True, exist_ok=True)
+        (self.tmp / "repo" / ax.CANARY_DEC_FILE).write_text("OWNER_CANARY_CONFIRMED: test\n")
+        (self.tmp / "FREEZE.md").write_text("x")
+        kw.setdefault("book_id", self.book_id)
+        e = AEnv(self.tmp, live=True, replay_only=True, end_ms=ax.SEAL_END_MS, **kw)
+        e.ex.feed_verified, e.ex._start_ms, e.ex.slices_taken = True, 0, 1
+        e.ex.abook = dataclasses.replace(e.ex.abook, clock_start_ms=0)
+        return e
+
+    def test_registered_books_keep_their_current_priority(self):
+        for bot_id, book in ax.BOOKS.items():
+            self.assertEqual(book.priority, ax.PRIORITY_DEFAULT, bot_id)
+            self.assertEqual((book.priority.buy, book.priority.sell, book.priority.escalated), (55_000, 55_000, 150_000), bot_id)
+            self.assertEqual((book.priority.buy, book.priority.sell, book.priority.escalated),
+                             (h.H5_DEFAULT["buy_priority_lamports"], h.H5_DEFAULT["sell_priority_lamports"], h.H5_DEFAULT["escalated_priority_lamports"]))
+
+    def test_default_books_h5_limits_equal_the_base_executor_limits(self):
+        for bot_id in (A2, A2V2, Q50):
+            self.book_id = bot_id
+            e = self.env()
+            base = dataclasses.replace(h.H5Limits.from_config(e.conf), end_ms=ax.SEAL_END_MS)  # end_ms is the book's seal clamp, not a fee
+            self.assertEqual(e.ex.h5, base, bot_id)
+            self.assertEqual((e.ex.h5.buy_priority_lamports, e.ex.h5.sell_priority_lamports, e.ex.h5.escalated_priority_lamports), (55_000, 55_000, 150_000))
+
+    def test_default_book_sends_55k_buy_55k_sell_150k_escalated_and_emergency(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            e.open_position()
+            plan = e.plan()
+            e.at_slot(plan["send_slot"])
+            e.at_slot(plan["escalate_slot"])
+            e.at_slot(plan["deadline_slot"])
+        self.assertEqual([d["priority"] for d in e.sent()], [55_000, 55_000, 150_000, 150_000])
+
+    def test_p155_book_sends_exactly_155k_on_buy_sell_escalation_and_emergency(self):
+        nb = self.p155_book()
+        with mock.patch.object(ax, "LIVE_BUILT", True), mock.patch.dict(ax.BOOKS, {self.NEW: nb}):
+            e = self.live_env(book_id=self.NEW, priority_pin=ax.PRIORITY_P155.as_dict())
+            self.assertEqual((e.ex.h5.buy_priority_lamports, e.ex.h5.sell_priority_lamports, e.ex.h5.escalated_priority_lamports), (155_000,) * 3)
+            e.open_position()
+            plan = e.plan()
+            e.at_slot(plan["send_slot"])
+            e.at_slot(plan["escalate_slot"])
+            e.at_slot(plan["deadline_slot"])
+            sent = e.sent()
+        self.assertEqual([d["priority"] for d in sent], [155_000] * 4)  # buy, timed sell, escalated sell, emergency sell: nothing above 155,000
+        self.assertEqual(sent[0]["swap"][:8], h.tx.DISC_BUY_EXACT_QUOTE_IN)
+        self.assertEqual([d["closes"] for d in sent[1:]], [2, 2, 2])  # every sell closes the token account and the WSOL account in the same tx
+        start = [r for r in e.ledger("start")][-1] if e.ledger("start") else None
+        if start is not None:
+            self.assertEqual(start["limits"]["buy_priority_lamports"], 155_000)
+
+    def test_p155_book_requires_the_declaration_and_it_must_match(self):
+        nb = self.p155_book()
+        with mock.patch.dict(ax.BOOKS, {self.NEW: nb}):
+            self.assertEqual(ax.priority_refusal(nb, {}), "priority_pin_missing")
+            self.assertEqual(ax.priority_refusal(nb, {"priority_pin": ax.PRIORITY_DEFAULT.as_dict()}), "priority_pin_mismatch")
+            self.assertEqual(ax.priority_refusal(nb, {"priority_pin": {**ax.PRIORITY_P155.as_dict(), "sell": 150_000}}), "priority_pin_mismatch")
+            self.assertIsNone(ax.priority_refusal(nb, {"priority_pin": ax.PRIORITY_P155.as_dict(), "buy_priority_lamports": 155_000}))
+            self.assertEqual(ax.priority_refusal(nb, {"priority_pin": ax.PRIORITY_P155.as_dict(), "buy_priority_lamports": 55_000}), "buy_priority_lamports_not_pin")
+            with self.assertRaises(SystemExit) as cm:
+                ax.ArenaExecutor(None, {"book_id": self.NEW, "replay_only": True}, None, root=self.tmp)
+            self.assertIn("priority_pin_missing", str(cm.exception))
+
+    def test_default_book_refuses_a_155k_declaration_and_config_priorities(self):
+        a2 = ax.BOOKS[A2]
+        self.assertEqual(ax.priority_refusal(a2, {"priority_pin": ax.PRIORITY_P155.as_dict()}), "priority_pin_mismatch")
+        self.assertEqual(ax.priority_refusal(a2, {"buy_priority_lamports": 155_000}), "buy_priority_lamports_not_pin")
+        self.assertEqual(ax.priority_refusal(a2, {"sell_priority_lamports": 155_000}), "sell_priority_lamports_not_configurable")
+        self.assertEqual(ax.priority_refusal(a2, {"escalated_priority_lamports": 155_000}), "escalated_priority_lamports_not_configurable")
+        self.assertIsNone(ax.priority_refusal(a2, {"priority_pin": ax.PRIORITY_DEFAULT.as_dict()}))
+        self.assertIsNone(ax.priority_refusal(a2, {}))
+
+    def test_p155_profile_cannot_carry_an_escalation_above_155k(self):
+        with self.assertRaises(ValueError):
+            ax.Priority("p155", 155_000, 155_000, 150_000 + 10_000)
+        with self.assertRaises(ValueError):
+            ax.Priority("p155", 155_000, 150_000, 155_000)
