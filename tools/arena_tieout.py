@@ -195,6 +195,9 @@ def reconcile(txs: Sequence[Mapping[str, Any]], ledger: Mapping[str, Any], token
     trip_diffs = []
     for tr in ledger["trips"]:
         if not tr["closed"]:
+            sell = tr.get("sell_sig")  # an "open" trip whose sell is on chain or whose sell send landed is an inconsistency, not an open trip (its P&L would go unchecked)
+            if sell and (sell in deltas or (sends.get(sell) or {}).get("status") == "landed"):
+                bad("open_trip_has_sell", trip_id=tr["trip_id"], sell_sig=sell)
             continue
         if tr["buy_sig"] not in deltas or tr["sell_sig"] not in deltas:
             bad("closed_trip_signature_missing", trip_id=tr["trip_id"])
@@ -281,6 +284,15 @@ def _run(a: argparse.Namespace) -> tuple[int, str]:
     return (1, "hard halt: " + ", ".join(sorted({p["kind"] for p in res["problems"]}))) if res["hard_halt"] else (0, "")
 
 
+def scan_flag(argv: Sequence[str], flag: str) -> str | None:
+    for i, t in enumerate(argv):
+        if t == flag and i + 1 < len(argv):
+            return argv[i + 1]
+        if t.startswith(flag + "="):
+            return t.split("=", 1)[1]
+    return None
+
+
 def check_main(argv: Sequence[str]) -> int:
     ap = argparse.ArgumentParser(prog="arena_tieout --check-last-day")
     ap.add_argument("--check-last-day", required=True, metavar="RESULTS_DIR")
@@ -289,8 +301,15 @@ def check_main(argv: Sequence[str]) -> int:
     try:
         a = ap.parse_args(argv)
         ok, why = check_last_closed_day(a.check_last_day, a.now_ms)
-    except SystemExit:
-        return 5
+    except SystemExit:  # an argument error is a failure: STOP whenever the stop path can be found at all
+        stop = scan_flag(argv, "--stop-file")
+        if not stop:
+            return 5
+        try:
+            write_stop(stop, 1, "check-last-day: argument error")
+        except OSError:
+            return 5
+        return 1
     if ok:
         return 0
     print(f"NO RC-0 RESULT: {why}", file=sys.stderr)
@@ -306,6 +325,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if any(x == "--check-last-day" or x.startswith("--check-last-day=") for x in args):
         return check_main(args)
+    old = scan_flag(args, "--json")  # a rerun must never leave an earlier (possibly signed-off) result for this day: remove it before anything can fail
+    if old:
+        try:
+            Path(old).unlink(missing_ok=True)
+        except OSError:
+            pass
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     for k in ("txs", "ledger", "tokens", "named", "balance", "stop-file"):
         ap.add_argument(f"--{k}", required=True)

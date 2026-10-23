@@ -366,3 +366,57 @@ def test_the_day_stamp_is_written_by_the_main_run(tmp_path, capsys):
     assert T.main(args + ["--day=2026-10-22"]) == 0
     assert json.loads((tmp_path / "o.json").read_text())["day"] == "2026-10-22"
     capsys.readouterr()
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ final round (a), (b), (c)
+def test_c_an_open_trip_with_a_sell_on_chain_or_a_landed_sell_is_a_hard_halt_1e9_case():
+    txs, led, tok0, now = good_day()
+    l2 = copy.deepcopy(led)
+    l2["trips"][0]["closed"] = False
+    l2["trips"][0]["realized_lamports"] += 10**9      # the 1e9 error that "closed: false" used to hide
+    r = run(txs, l2, tok0, now)
+    assert "open_trip_has_sell" in kinds(r) and r["hard_halt"] and not r["signed_off"]
+    l3 = copy.deepcopy(led)                           # the sell is not on chain but the ledger says the sell send landed
+    l3["trips"][0].update(closed=False, sell_sig="sell9")
+    l3["sends"].append({"signature": "sell9", "side": "sell", "status": "landed"})
+    assert "open_trip_has_sell" in kinds(run(txs, l3, tok0, now))
+    l4 = copy.deepcopy(led)                           # a genuinely open trip: no sell yet
+    l4["trips"][0].update(closed=False, sell_sig=None)
+    l4["sends"] = [s for s in l4["sends"] if s["signature"] != "sell1"]
+    txs4 = [t for t in txs if t["signature"] != "sell1"]
+    assert "open_trip_has_sell" not in kinds(run(txs4, l4, tok0, now - (txs[2]["post_balance"] - txs[2]["pre_balance"])))
+
+
+def test_c_through_the_cli_it_is_exit_1_and_stop(tmp_path, capsys):
+    txs, led, tk, now = good_day()
+    led["trips"][0]["closed"] = False
+    led["trips"][0]["realized_lamports"] += 10**9
+    args, _ = _files(tmp_path, txs, led, tk, now)
+    assert T.main(args) == 1 and "open_trip_has_sell" in (tmp_path / "STOP").read_text()
+    capsys.readouterr()
+
+
+def test_b_a_failed_rerun_of_a_day_cannot_leave_an_old_signed_off_json(tmp_path, capsys):
+    txs, led, tk, now = good_day()
+    args, files = _files(tmp_path, txs, led, tk, now)
+    assert T.main(args + ["--day=2026-10-22"]) == 0 and (tmp_path / "o.json").exists()
+    files["txs"].write_text("{")                      # the rerun fails
+    assert T.main(args + ["--day=2026-10-22"]) == 2
+    assert not (tmp_path / "o.json").exists()         # the old signed-off file is gone, so the last-closed-day check says STOP
+    ok, why = T.check_last_closed_day(tmp_path, 1_789_000_000_000)
+    assert ok is False
+    # and an argument error removes it too
+    (tmp_path / "o.json").write_text(json.dumps({"day": "x", "signed_off": True}))
+    assert T.main([f"--json={tmp_path / 'o.json'}", f"--stop-file={tmp_path / 'S2'}"]) == 2 and not (tmp_path / "o.json").exists()
+    capsys.readouterr()
+
+
+def test_a_check_mode_argument_errors_write_stop_when_the_path_is_readable(tmp_path, capsys):
+    stop = tmp_path / "STOP"
+    assert T.main(["--check-last-day", str(tmp_path), f"--stop-file={stop}"]) == 1 and stop.exists()   # --now-ms missing
+    stop.unlink()
+    assert T.main(["--check-last-day", str(tmp_path), "--now-ms", "x", "--stop-file", str(stop)]) == 1 and stop.exists()
+    stop.unlink()
+    assert T.main(["--check-last-day", str(tmp_path), "--now-ms", "1"]) == 5                             # no stop path to write: fail closed
+    assert T.main(["--check-last-day", str(tmp_path), "--now-ms", "1", "--stop-file", str(tmp_path / "nodir" / "S")]) == 5
+    capsys.readouterr()
