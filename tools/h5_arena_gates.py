@@ -27,7 +27,7 @@ from tools.arena_stack import PRESS_P_TARGET
 V_BAND = (17_500_000_000, 17_700_000_000)  # DEC-031 Am.2 item 6, DEC-032 s3 (also tools/arena_live_bridge.py UNIVERSE_V_RANGE)
 WSOL = "So11111111111111111111111111111111111111112"
 LATE_SELL_MS = 335_000  # tools/h5_executor.py LATE_SELL_S (335 s after s0): the exit bound; asserted equal in the tests
-PARITY_INTERVAL_S_MAX = 300  # "every N minutes": config may only shorten it
+PARITY_INTERVAL_S_MAX = 60  # DEC-032 s3: a parity result older than 60 s is stale (QP 10-23 W1; was 300). Config may only shorten it. The same bound is the freshness window.
 PARITY_RUN_TIMEOUT_S = 60
 PARITY_RETRY_AFTER_FAIL_MS = 15_000  # a failed run is not retried on every trigger
 TIEOUT_CACHE_MS = 60_000

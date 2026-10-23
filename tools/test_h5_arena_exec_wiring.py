@@ -315,7 +315,25 @@ class ParityGateTests(LiveCase):
         self.assertEqual(len(self.calls), 2)
         g.maybe_run_parity(now + 2000 + g.interval_ms)
         self.assertEqual(len(self.calls), 3)
-        self.assertLessEqual(g.interval_ms, 300_000)
+        self.assertLessEqual(g.interval_ms, 60_000)  # DEC-032 s3: stale after 60 s (QP 10-23 W1)
+
+    def test_a_result_is_fresh_for_at_most_60_s_even_with_a_long_config_interval(self):
+        e = self.live(parity_interval_s=300)
+        g = e.ex.gates
+        self.assertEqual(g.interval_ms, 60_000)
+        g.runner = self.stub(0)
+        now = e.clock()
+        g.run_parity(now)
+        self.assertTrue(g.parity_fresh(now + 59_999))
+        self.assertTrue(g.parity_fresh(now + 60_000))
+        self.assertFalse(g.parity_fresh(now + 60_001))
+        n = len(self.calls)
+        self.assertIsNone(g.parity_refusal(now + 61_000))  # stale: rerun now, rc 0 lets it through
+        self.assertEqual(len(self.calls), n + 1)
+
+    def test_a_shorter_config_interval_still_wins(self):
+        e = self.live(parity_interval_s=20)
+        self.assertEqual(e.ex.gates.interval_ms, 20_000)
 
     def test_a_result_older_than_the_last_landed_event_is_not_fresh(self):
         e = self.live()
