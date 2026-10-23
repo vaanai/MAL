@@ -14,9 +14,13 @@ import numpy as np
 import pytest
 
 from tools import arena_rules as R
+from tools import arena_rules_v2 as RV2
+from tools import arena_stack_v2 as V2
+from tools import arena_report_legs as RL
 from tools import arena_screen as S
 from tools.arena_paper import StackConfig, price_leg
-from tools.arena_rules import STACK_FIELDS, STACK_FIELDS_V2, stack_config, stack_config_for, stack_config_v2
+from tools.arena_rules import STACK_FIELDS, stack_config
+from tools.arena_stack_v2 import STACK_FIELDS_V2, stack_config_for, stack_config_v2
 from tools.test_arena_paper import BINDING, BINDING_MD5, CASES_SHA256, FIX, KEYS, LEGACY, LEGACY_MD5, _replay, _states
 from tools.test_arena_rules_stack import PINNED_AS_DICT, PINNED_FIELDS
 
@@ -56,13 +60,90 @@ def test_old_config_reproduces_the_committed_parity_md5s_on_the_same_cases():
         assert len(lines) == len(cases)
 
 
-def test_main_cli_default_is_version_1():
-    import argparse  # the flag's default and choices are the contract; the hosts build cfg from stack_config_for(a.stack_version, ...)
-    assert stack_config_for(1) == stack_config()
-    for bad in (0, 3, -1, None, "2"):
+def test_stack_config_for_refuses_other_versions():
+    assert stack_config_for(1, 7) == stack_config()
+    for bad in (0, 3, -1, None, "2", True):
         with pytest.raises(ValueError):
             stack_config_for(bad)  # type: ignore[arg-type]
-    assert argparse is not None
+
+
+class _Stop(Exception):
+    pass
+
+
+def _run_main(monkeypatch, extra):
+    seen = {}
+
+    def fake_for(version, d):
+        seen["version"] = version
+        raise R.HostError("stop here")
+
+    monkeypatch.setattr(RV2, "stack_config_for", fake_for)
+    monkeypatch.setattr(RV2, "ArenaState", lambda *a, **k: None)
+    rc = RV2.main(["--rules", "l1-floor-v2", "--mode", "replay", "--frozen-sha", "abc1234", "--clock-start-ms", "1", "--from-ms", "1", "--to-ms", "2",
+                   "--root", "/tmp/x-root", "--ledger-root", "/tmp/x-ledger", "--registry", "/tmp/x-reg.json"] + extra)
+    return rc, seen
+
+
+def test_arena_rules_v2_cli_default_is_version_1(monkeypatch):
+    assert _run_main(monkeypatch, []) == (2, {"version": 1})
+    assert _run_main(monkeypatch, ["--stack-version", "2"]) == (2, {"version": 2})
+
+
+def test_arena_rules_v2_cli_rejects_version_3(monkeypatch, capsys):
+    with pytest.raises(SystemExit) as e:
+        _run_main(monkeypatch, ["--stack-version", "3"])
+    assert e.value.code == 2
+    assert "invalid choice" in capsys.readouterr().err
+
+
+def test_arena_rules_py_is_not_given_a_stack_flag():
+    assert not hasattr(R, "stack_config_v2") and not hasattr(R, "stack_config_for") and "--stack-version" not in Path(R.__file__).read_text()
+
+
+# ----------------------------------------------------------------------------------------------------------------------------------- resume / read safety
+def _ledger(tmp_path, bot, sends):
+    d = tmp_path / bot
+    d.mkdir(parents=True)
+    (d / "trades-2026-10-24.jsonl").write_text("".join(json.dumps({"trade_id": str(i), "stack": {"send": x}}) + "\n" for i, x in enumerate(sends)))
+    return tmp_path
+
+
+def test_ledger_send_guard(tmp_path):
+    root = _ledger(tmp_path, "b1", [160_000, 160_000])
+    V2.check_ledger_send(root, ["b1", "no-rows-yet"], 160_000)
+    with pytest.raises(R.HostError):
+        V2.check_ledger_send(root, ["b1"], 505_000)
+    with pytest.raises(R.HostError):
+        V2.check_ledger_send(_ledger(tmp_path / "m", "b2", [160_000, 505_000]), ["b2"], 160_000)
+
+
+def test_hostv2_resume_refuses_a_ledger_with_another_send(tmp_path):
+    from types import SimpleNamespace
+    root = _ledger(tmp_path, "b1", [505_000])
+    h = object.__new__(RV2.HostV2)
+    h.engine = SimpleNamespace(ledger=SimpleNamespace(root=root), cfg=stack_config_v2())
+    h.rules = [SimpleNamespace(bot_id="b1")]
+    with pytest.raises(R.HostError, match="refused"):
+        h.resume()  # refused before verify_registered / the chain is touched
+
+
+def test_report_refuses_rows_with_another_send_than_the_pin():
+    rows = [{"stack": {"send": 160_000}}, {"stack": {"send": 160_000}}]
+    assert RL.book_send(rows, 160_000) == 160_000 and RL.book_send(rows) == 160_000
+    with pytest.raises(RL.Refused):
+        RL.book_send(rows, 505_000)
+    with pytest.raises(RL.Refused):
+        RL.book_send(rows + [{"stack": {"send": 505_000}}], 160_000)
+    with pytest.raises(RL.Refused):
+        RL.book_send(rows + [{"stack": {"send": 505_000}}])
+
+
+def test_v2_job_script_passes_the_flag_and_the_v1_script_is_unchanged():
+    root = Path(__file__).resolve().parent.parent / "scripts" / "research"
+    v2, v1 = (root / "arena-rules-v2-send-job.sh").read_text(), (root / "arena-rules-v2-job.sh").read_text()
+    assert "--stack-version \"$STACK\"" in v2 and "ARENA_RULES_STACK_VERSION:?" in v2 and "tools/arena_rules_v2.py" in v2
+    assert "stack-version" not in v1
 
 
 # ----------------------------------------------------------------------------------------------------------------------------------- (c) new pins
@@ -76,7 +157,7 @@ def test_v2_differs_from_v1_in_send_only():
     a, b = dataclasses.asdict(OLD), dataclasses.asdict(NEW)
     assert {k for k in a if a[k] != b[k]} == {"send"}
     assert set(STACK_FIELDS_V2) == set(STACK_FIELDS) and set(STACK_FIELDS_V2) | {"feed_delay_slots"} == {f.name for f in dataclasses.fields(StackConfig)}
-    assert NEW.send == 160_000 == 155_000 + 5_000 and R.SEND_V2 == 160_000
+    assert NEW.send == 160_000 == 155_000 + 5_000 and V2.SEND_V2 == 160_000
 
 
 def test_v2_validates_the_feed_delay_like_v1_and_takes_no_keyword():

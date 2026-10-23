@@ -115,6 +115,17 @@ def book_rent(trades: Sequence[Mapping[str, Any]]) -> int:
     return rents.pop()
 
 
+def book_send(trades: Sequence[Mapping[str, Any]], expect: int | None = None) -> int:
+    """The send cost (lamports per send) the rows were priced at: one value, and, when `expect` (the book's pinned value) is given, that value, or the report is refused
+    (DEC-031 Amendment 8: a ledger that mixes two stacks, or carries a stack the book did not pin, is never read)."""
+    sends = {int(r["stack"]["send"]) for r in trades}
+    if len(sends) > 1:
+        raise Refused(f"the rows carry {len(sends)} different stack sends {sorted(sends)}: refused")
+    if sends and expect is not None and sends != {int(expect)}:
+        raise Refused(f"the rows were priced at send {sorted(sends)}, the book pins {int(expect)}: refused")
+    return sends.pop() if sends else (int(expect) if expect is not None else 0)
+
+
 def covered_trades(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], boundary_ms: int) -> dict[float, list[dict[str, Any]]]:
     """The scorer's trade set at the read boundary: clock filter, covered attempts (entry decision before the boundary), then the DEC-031 exclusions of
     arena_score._score_bot (a late print over a gap; a missing V on the entry, the exit or in the span). By stake, in file order (the bootstrap depends on it)."""
@@ -441,11 +452,13 @@ def load_pools(rows: Iterator[Mapping[str, Any]] | Sequence[Mapping[str, Any]], 
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ one bot
-def legs_for_book(trades: Sequence[Mapping[str, Any]], pools: Mapping[str, PoolHist] | None, close_blocked: Sequence[str] | None = None) -> dict[str, Any]:
+def legs_for_book(trades: Sequence[Mapping[str, Any]], pools: Mapping[str, PoolHist] | None, close_blocked: Sequence[str] | None = None,
+                  expect_send: int | None = None) -> dict[str, Any]:
     """All legs of one (bot, stake) book: the base figure, the rent-charged leg, and (when pools are given) the worst-in-slot leg, the END-minus-worst gap and the
     two stacked. Close-blocked positions are reclassified in every one of them, before the rent transform. close_blocked None = no list supplied (the mint fetch has
     not been applied); [] = a list was supplied and holds no id."""
     cb = list(close_blocked or ())
+    book_send(trades, expect_send)
     ledger_rent = book_rent(trades)
     if ledger_rent > RENT_CHARGED:
         raise Refused(f"the rows were priced at rent {ledger_rent}, above the {RENT_CHARGED} this leg charges: a negative delta would credit rent, and this tool never credits rent")
@@ -482,7 +495,7 @@ def legs_for_book(trades: Sequence[Mapping[str, Any]], pools: Mapping[str, PoolH
 
 def build_report(bot_id: str, ledger_root: str | os.PathLike, registry: str | os.PathLike, *, tape_dir: str | os.PathLike | None = None,
                  close_blocked: Sequence[str] | None = None, vmap: Mapping[str, Any] | None = None, now_ms: int | None = None, settle_ms: int = SETTLE_MS,
-                 tape_pad_hours: float = 2.0) -> dict[str, Any]:
+                 tape_pad_hours: float = 2.0, expect_send: int | None = None) -> dict[str, Any]:
     _check_text(bot_id, "bot_id")
     check_path(ledger_root, "ledger root")
     check_path(registry, "registry")
@@ -513,7 +526,7 @@ def build_report(bot_id: str, ledger_root: str | os.PathLike, registry: str | os
         rep["tape_files"] = [f.name for f in files]
     for st in sorted(by_stake):
         trades = by_stake[st]
-        legs = legs_for_book(trades, pools, close_blocked)
+        legs = legs_for_book(trades, pools, close_blocked, expect_send)
         check_parity_with_scorer(st, legs["as_scored"], scored["books"][str(st)]["cells"])
         rep["books"][str(st)] = legs
     dk = str(scored["deciding_stake"])
@@ -614,6 +627,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--close-blocked", help="JSON list of position_ids made close-blocked by the structure-only mint fetch (DEC-031 Am.2 item 6)")
     ap.add_argument("--vmap", help="JSON {pool: V} if the engine that priced the book used a V map")
     ap.add_argument("--json")
+    ap.add_argument("--expect-send", type=int, default=None, help="the send cost (lamports) the book pins; rows priced at any other value are refused (DEC-031 Amendment 8)")
     ap.add_argument("--now-ms", type=int)
     ap.add_argument("--settle-hours", type=float, default=SETTLE_MS / HOUR_MS)
     ap.add_argument("--tape-pad-hours", type=float, default=2.0, help="tape hours read either side of the first decision and the last exit")
@@ -625,7 +639,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         cb = load_json_ids(a.close_blocked) if a.close_blocked else None  # None: no list supplied; [] (an empty file list): supplied, zero blocked
         vmap = json.loads(Path(a.vmap).read_text()) if a.vmap else None
         rep = build_report(a.bot, a.ledger_root, a.registry, tape_dir=a.tape_dir, close_blocked=cb, vmap=vmap, now_ms=a.now_ms, settle_ms=int(a.settle_hours * HOUR_MS),
-                           tape_pad_hours=a.tape_pad_hours)
+                           tape_pad_hours=a.tape_pad_hours, expect_send=a.expect_send)
     except Refused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 3

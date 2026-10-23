@@ -78,14 +78,6 @@ STACK_FIELDS: dict[str, Any] = {  # every StackConfig field except feed_delay_sl
     "send": 505_000, "rent": 0, "h_in": 0.002608, "h_out": 0.0016, "k_rounding": "ceil", "stakes_sol": (0.25, 0.5, 1.0), "grace_slots": 10_000, "portal_ppm": 0,
     "press_intercept": -1.4197242838379789, "strand_rule": "both", "e1_floor_per_005": 384_022, "gap_slots": 150, "gap_silence_ms": 60_000, "max_future_ms": 5_000,
 }
-# DEC-031 Amendment 8 (PR pending): the stack for books registered after it merges AND whose live path is declared to send at 155,000 priority. Identical to STACK_FIELDS
-# in every field except `send` (155,000 priority + 5,000 base). STACK_FIELDS above is NOT touched: every registered book keeps it.
-SEND_V2 = 160_000
-STACK_FIELDS_V2: dict[str, Any] = {
-    "send": 160_000, "rent": 0, "h_in": 0.002608, "h_out": 0.0016, "k_rounding": "ceil", "stakes_sol": (0.25, 0.5, 1.0), "grace_slots": 10_000, "portal_ppm": 0,
-    "press_intercept": -1.4197242838379789, "strand_rule": "both", "e1_floor_per_005": 384_022, "gap_slots": 150, "gap_silence_ms": 60_000, "max_future_ms": 5_000,
-}
-STACK_VERSIONS: dict[int, dict[str, Any]] = {1: STACK_FIELDS, 2: STACK_FIELDS_V2}
 RULE_MODULES = {"h2ps-a1": "tools.arena_rule_h2ps"}  # rule name -> module with make_rule(); every new rule is a new file and a new line here, in a new host version
 
 
@@ -325,23 +317,6 @@ def stack_config(feed_delay_slots: int = DEFAULT_FEED_DELAY_SLOTS) -> StackConfi
     if isinstance(feed_delay_slots, bool) or not isinstance(feed_delay_slots, int) or feed_delay_slots < 0:
         raise ValueError("feed_delay_slots must be a whole number of slots >= 0")
     return StackConfig(**{**STACK_FIELDS, "feed_delay_slots": feed_delay_slots})
-
-
-def stack_config_v2(feed_delay_slots: int = DEFAULT_FEED_DELAY_SLOTS) -> StackConfig:
-    """DEC-031 Amendment 8: `stack_config` with the send cost 160,000 lamports (155,000 priority + 5,000 base) and every other field identical. For books registered
-    after Amendment 8 merges whose canary/live path is declared to send at 155,000 priority. `stack_config` (505,000) is unchanged and stays the default everywhere."""
-    if isinstance(feed_delay_slots, bool) or not isinstance(feed_delay_slots, int) or feed_delay_slots < 0:
-        raise ValueError("feed_delay_slots must be a whole number of slots >= 0")
-    return StackConfig(**{**STACK_FIELDS_V2, "feed_delay_slots": feed_delay_slots})
-
-
-def stack_config_for(version: int, feed_delay_slots: int = DEFAULT_FEED_DELAY_SLOTS) -> StackConfig:
-    """Version 1 = `stack_config` (505,000, the default), 2 = `stack_config_v2` (160,000). Any other value is refused."""
-    if version == 1:
-        return stack_config(feed_delay_slots)
-    if version == 2:
-        return stack_config_v2(feed_delay_slots)
-    raise ValueError("stack version must be 1 (505,000 per send) or 2 (160,000 per send, DEC-031 Amendment 8)")
 
 
 def head_binding(repo: str | os.PathLike | None = None) -> dict[str, Any]:
@@ -748,7 +723,6 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--frozen-sha", required=True)
     ap.add_argument("--clock-start-ms", type=int, required=True)
     ap.add_argument("--feed-delay-slots", type=int, default=DEFAULT_FEED_DELAY_SLOTS, help="the whole-slot feed delay the stack charges (the manager pins it)")
-    ap.add_argument("--stack-version", type=int, default=1, choices=(1, 2), help="1 = 505,000 per send (default; every registered book); 2 = 160,000 (DEC-031 Amendment 8 books only)")
     ap.add_argument("--end-ms", type=int, default=int(os.environ["ARENA_RULES_END_MS"]) if os.environ.get("ARENA_RULES_END_MS") else None,
                     help="stop at this instant (default: run until stopped; env ARENA_RULES_END_MS)")
     ap.add_argument("--warm-min", type=int, default=WARM_MIN_DEFAULT, help="minutes of tape before the start that warm the state")
@@ -771,7 +745,7 @@ def main(argv: list[str] | None = None) -> int:
                 if _inside(p, ARENA_OUTPUT_ROOT):
                     raise HostError(f"replay refuses to write inside {ARENA_OUTPUT_ROOT} ({p}): a counted decision is never regenerated or replayed")
         state = ArenaState(a.tape_dir, start_ms=None if live else a.from_ms - a.warm_min * MIN_MS, warm_min=a.warm_min)
-        engine = ArenaEngine(a.ledger_root, a.registry, cfg=stack_config_for(a.stack_version, a.feed_delay_slots))
+        engine = ArenaEngine(a.ledger_root, a.registry, cfg=stack_config(a.feed_delay_slots))
         cfg = HostConfig(root=a.root, registry=a.registry, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=live, verbose=True)
         host = Host(cfg, rules, state, engine, binding=head_binding() if live else None)
         print(canon({"resumed": host.resume()}), flush=True)

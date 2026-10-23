@@ -44,6 +44,7 @@ from tools import arena_rules as R
 from tools.arena_declog import LogChainError
 from tools.arena_paper import ArenaEngine, canon
 from tools.arena_pool_table import PoolTable
+from tools.arena_stack_v2 import check_ledger_send, stack_config_for
 from tools.arena_state import WARM_MIN_DEFAULT, ArenaState
 
 RULE_MODULES_V2 = {"l1-floor-v2": "tools.arena_rule_l1"}
@@ -73,6 +74,14 @@ def load_rules_v2(names: Sequence[str]) -> list[R.Rule]:
 
 
 class HostV2(R.Host):
+    def resume(self) -> dict[str, int]:
+        """DEC-031 Amendment 8: refuse to continue a ledger whose rows were priced at another send than this process prices at (a restart with the wrong --stack-version)."""
+        root = getattr(getattr(self.engine, "ledger", None), "root", None)
+        cfg = getattr(self.engine, "cfg", None)
+        if root is not None and cfg is not None:
+            check_ledger_send(root, [r.bot_id for r in self.rules], cfg.send)
+        return super().resume()
+
     def __init__(self, cfg: R.HostConfig, rules: Sequence[R.Rule], state: ArenaState, engine: Any, now_fn: Callable[[], int] | None = None,
                  binding: Mapping[str, Any] | None = None, table_path: str | os.PathLike | None = None, table: PoolTable | None = None) -> None:
         modes = {getattr(r, "table_mode", None) for r in rules}
@@ -189,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise R.HostError(f"replay refuses to write inside {R.ARENA_OUTPUT_ROOT} ({p}): a counted decision is never regenerated or replayed")
         state_start = None if live else a.from_ms - a.warm_min * R.MIN_MS
         state = ArenaState(a.tape_dir, start_ms=state_start, warm_min=a.warm_min)
-        engine = ArenaEngine(a.ledger_root, a.registry, cfg=R.stack_config_for(a.stack_version, a.feed_delay_slots))
+        engine = ArenaEngine(a.ledger_root, a.registry, cfg=stack_config_for(a.stack_version, a.feed_delay_slots))
         cfg = R.HostConfig(root=a.root, registry=a.registry, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=live, verbose=True)
         host = HostV2(cfg, rules, state, engine, binding=R.head_binding() if live else None)
         if live:
