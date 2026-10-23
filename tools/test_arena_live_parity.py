@@ -273,3 +273,83 @@ def test_cli_exit_codes_and_stop_file(tmp_path, capsys):
     (tmp_path / "trips.jsonl").write_text("")
     (tmp_path / "state.json").write_text("{")
     assert P.main(args) == 10  # unreadable state: fail closed
+
+
+# ---------------------------------------------------------------------------------------------------------------------- QP-RULING-1023 #816 blocking items
+def cli(tmp_path, ts, ws, att, state, extra=(), stop=None):
+    args = _write(tmp_path, ts, ws, att, state)
+    if stop is not None:
+        args[args.index("--stop-file") + 1] = str(stop)
+    return args + list(extra)
+
+
+def test_b1_missing_input_file_writes_stop_and_exits_2(tmp_path, capsys):
+    args = cli(tmp_path, *book(30), attempts(40), fresh_state())
+    (tmp_path / "twins.jsonl").unlink()
+    assert P.main(args) == 2 and (tmp_path / "STOP").exists()
+    assert "FAIL CLOSED" in capsys.readouterr().out
+    assert json.loads((tmp_path / "STOP").read_text())["ids"] == ["P7"]
+
+
+def test_b1_malformed_json_row_writes_stop(tmp_path):
+    args = cli(tmp_path, *book(30), attempts(40), fresh_state())
+    (tmp_path / "trips.jsonl").write_text("{not json\n")
+    assert P.main(args) == 2 and (tmp_path / "STOP").exists()
+
+
+@pytest.mark.parametrize("key", ["trip_id", "stake_lamports", "decision_ms"])
+def test_b1_trip_missing_required_key_is_bad_input_not_a_traceback(tmp_path, capsys, key):
+    ts, ws = book(30)
+    del ts[3][key]
+    with pytest.raises(P.BadInput):
+        run(ts, ws)
+    assert P.main(cli(tmp_path, ts, ws, attempts(40), fresh_state())) == 2 and (tmp_path / "STOP").exists()
+    assert "Traceback" not in capsys.readouterr().err
+
+
+def test_b1_nan_and_zero_stake_and_zero_twin_price_are_refused_or_no_twin():
+    ts, ws = book(30)
+    ts[0]["stake_lamports"] = 0
+    with pytest.raises(P.BadInput):
+        run(ts, ws)
+    ts, ws = book(30)
+    ts[1]["live_net_lamports"] = float("nan")
+    with pytest.raises(P.BadInput):
+        run(ts, ws)
+    ts, ws = book(30)
+    ws[2]["entry_price"] = 0.0  # would divide by zero: the twin price is unusable -> no_twin, never a crash
+    assert run(ts, ws)["shares"]["no_twin"] == 1
+
+
+def test_b1_unwritable_stop_path_exits_3_with_a_loud_line(tmp_path, capsys):
+    ts, ws = book(10, g_entry=300.0)
+    rc = P.main(cli(tmp_path, ts, ws, attempts(40), fresh_state(), stop=tmp_path / "no_such_dir" / "STOP"))
+    out = capsys.readouterr()
+    assert rc == 3 and "STOP FILE NOT WRITTEN" in out.out and "NO BUY" in out.out and "Traceback" not in out.err
+
+
+def test_b1_unwritable_stop_path_with_unusable_input_also_exits_3(tmp_path, capsys):
+    args = cli(tmp_path, *book(30), attempts(40), fresh_state(), stop=tmp_path / "no_such_dir" / "STOP")
+    (tmp_path / "attempts.jsonl").unlink()
+    assert P.main(args) == 3 and "STOP FILE NOT WRITTEN" in capsys.readouterr().out
+
+
+def test_b1_unexpected_internal_error_is_fail_closed(tmp_path, monkeypatch, capsys):
+    def boom(*a, **k):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(P, "evaluate", boom)
+    assert P.main(cli(tmp_path, *book(30), attempts(40), fresh_state())) == 4
+    assert (tmp_path / "STOP").exists() and "FAIL CLOSED" in capsys.readouterr().out
+
+
+def test_b1_json_output_failure_is_nonzero_and_loud(tmp_path, capsys):
+    rc = P.main(cli(tmp_path, *book(100), attempts(40), fresh_state(), extra=["--json", str(tmp_path / "nodir" / "o.json")]))
+    assert rc == 5 and "JSON OUTPUT NOT WRITTEN" in capsys.readouterr().out
+
+
+def test_b1_state_with_nan_or_wrong_types_is_p7_not_a_crash():
+    st = fresh_state()
+    st["at_ms"]["loss"] = float("nan")
+    assert "P7" in run(*book(30), state=st)["halts"]
+    assert "P7" in run(*book(30), state=fresh_state(unresolved_hard_halts="A3"))["halts"]
+    assert "P7" in run(*book(30), state=[1, 2])["halts"]

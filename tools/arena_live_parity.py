@@ -27,13 +27,15 @@ READING OF THE TEXT WHERE IT IS SHORT (stated, for review)
 
 OUTPUT: a dict with the P1..P7 halts (first breach: prefix index, value), the shares, d_i statistics, the NOT_DECIDABLE flag and the verdict "LIVE FILLS MATCH PAPER" or "parity not shown".
 SOFT-HALT CONTRACT: `write_stop(path, result)` creates the STOP file at the path passed in (O_EXCL; an existing STOP is never overwritten or removed; this module never deletes one).
-Hard halts (P4) create STOP too and are marked hard: cleared only by the manager's written review and the owner. Exit code: 0 no halt, 10 soft, 11 hard, 2 unusable input.
+Hard halts (P4) create STOP too and are marked hard: cleared only by the manager's written review and the owner. Exit codes: 0 no halt, 10 soft, 11 hard, 2 unusable input (STOP written), 3 STOP required but not writable, 4 internal error (STOP written), 5 --json not written.
+EXECUTOR CONTRACT: any exit other than 0, or no fresh result, means NO BUY. The STOP file is a second line, not the only one.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -59,7 +61,14 @@ STOP_SCHEMA = "arena_live_parity_stop_v1"
 
 
 class BadInput(Exception):
-    pass
+    """An input is missing, unreadable, malformed or inconsistent. Fail closed: the caller writes STOP (P7) and exits non-zero."""
+
+
+class StopUnwritable(Exception):
+    """A STOP file was required but could not be created (and does not already exist)."""
+
+
+EXIT_OK, EXIT_SOFT, EXIT_HARD, EXIT_BAD_INPUT, EXIT_STOP_UNWRITABLE, EXIT_INTERNAL, EXIT_JSON = 0, 10, 11, 2, 3, 4, 5
 
 
 def load_jsonl(path: str | Path) -> list[dict[str, Any]]:
@@ -76,6 +85,44 @@ def load_jsonl(path: str | Path) -> list[dict[str, Any]]:
     return out
 
 
+def _isnum(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _need(row: Mapping[str, Any], key: str, what: str, positive: bool = False) -> None:
+    v = row.get(key)
+    if not _isnum(v) or (positive and v <= 0):
+        raise BadInput(f"{what} {row.get('trip_id', row.get('attempt_id', '?'))!r}: {key} missing or not a finite number{' > 0' if positive else ''}")
+
+
+def _opt(row: Mapping[str, Any], key: str, what: str) -> None:
+    if row.get(key) is not None:
+        _need(row, key, what)
+
+
+def _need_id(row: Mapping[str, Any], key: str, what: str) -> None:
+    if not isinstance(row.get(key), str) or not row[key]:
+        raise BadInput(f"{what} row without a {key}")
+
+
+def validate_inputs(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[str, Any]], attempts: Sequence[Mapping[str, Any]]) -> None:
+    """Every malformed row is a BadInput (never a KeyError, TypeError or ZeroDivisionError mid-evaluation)."""
+    for t in trips:
+        _need_id(t, "trip_id", "trip")
+        _need(t, "stake_lamports", "trip", positive=True)
+        _need(t, "decision_ms", "trip")
+        for k in ("buy_landed_ms", "closed_ms", "exit_landed_ms", "exit_bound_ms", "live_net_lamports", "live_buy_price", "live_sell_price"):
+            _opt(t, k, "trip")
+    for w in twins:
+        _need_id(w, "trip_id", "twin")
+        for k in ("pnl_lamports", "pnl_e1_lamports", "entry_price", "exit_price"):
+            _opt(w, k, "twin")  # a twin missing a needed field is no_twin (conservative), but a non-numeric one is a bad file
+    for a in attempts:
+        _need_id(a, "attempt_id", "attempt")
+        _need(a, "decision_ms", "attempt")
+        _opt(a, "landed_ms", "attempt")
+
+
 def bps(x: float) -> float:
     return round(float(x) * 10_000.0, 6)  # float noise below 1e-6 bps must not decide a strict threshold
 
@@ -86,8 +133,8 @@ def classify_trip(t: Mapping[str, Any], twin: Mapping[str, Any] | None) -> dict[
     reasons = []
     if t.get("gap"):
         reasons.append("gap")
-    ok_twin = twin is not None and not twin.get("price_failed") and all(isinstance(twin.get(k), (int, float)) and not isinstance(twin.get(k), bool)
-                                                                       for k in ("pnl_lamports", "entry_price", "exit_price"))
+    ok_twin = twin is not None and not twin.get("price_failed") and all(_isnum(twin.get(k)) for k in ("pnl_lamports", "entry_price", "exit_price")) \
+        and twin["entry_price"] > 0 and twin["exit_price"] > 0
     if not ok_twin:
         reasons.append("no_twin")
     if not t.get("exit_landed"):
@@ -121,7 +168,8 @@ def _first(h: dict[str, Any], pid: str, k: int, value: Any, detail: str) -> None
 # ------------------------------------------------------------------------------------------------------------------------------ the evaluation
 def evaluate(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[str, Any]], attempts: Sequence[Mapping[str, Any]],
              state: Mapping[str, Any] | None, now_ms: int) -> dict[str, Any]:
-    tw = {w["trip_id"]: w for w in twins if "trip_id" in w}
+    validate_inputs(trips, twins, attempts)
+    tw = {w["trip_id"]: w for w in twins}
     order = sorted(trips, key=lambda t: int(t.get("closed_ms") if t.get("closed_ms") is not None else t["decision_ms"]))
     halts: dict[str, dict[str, Any]] = {}
     mets: list[dict[str, Any]] = []
@@ -188,7 +236,7 @@ def evaluate(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[str, An
              "ci90_hi_d_bps": boot_lo(d, q=95.0) if len(d) else None, "mean_d_e1_bps": float(d_e1.mean()) if len(d_e1) else None,
              "landing_p50_s": float(np.median(lands)) if lands else None,
              "stop_loss_exits": len(sl_g), "gap_through_share": (sum(m["gap_through"] for m in mets if m["stop_loss"] and m["eligible"]) / max(1, sum(m["stop_loss"] and m["eligible"] for m in mets)))}
-    unresolved = sorted(set(state.get("unresolved_hard_halts", [])) if state else [])
+    unresolved = sorted({str(x) for x in state["unresolved_hard_halts"]}) if isinstance(state, Mapping) and isinstance(state.get("unresolved_hard_halts"), list) else []
     hard_open = sorted(set(unresolved) | {h for h in halts if halts[h]["hard"]})
     why = []
     if stats["n_eligible"] < MATCH_MIN:
@@ -215,13 +263,15 @@ def state_problems(state: Mapping[str, Any] | None, now_ms: int) -> list[str]:
         return ["state file missing or unreadable"]
     last = state.get("last_landed_ms")
     out = []
+    if "unresolved_hard_halts" in state and not isinstance(state["unresolved_hard_halts"], list):
+        out.append("unresolved_hard_halts is not a list")
     for n in STATE_NAMES:
         v = state["at_ms"].get(n)
-        if isinstance(v, bool) or not isinstance(v, (int, float)):
+        if not _isnum(v):
             out.append(f"{n} missing")
         elif now_ms - v > STALE_MS:
             out.append(f"{n} older than {STALE_MS // 1000} s")
-        elif isinstance(last, (int, float)) and not isinstance(last, bool) and v < last:
+        elif _isnum(last) and v < last:
             out.append(f"{n} older than the last landed tx")
     return out
 
@@ -237,8 +287,13 @@ def write_stop(path: str | Path, result: Mapping[str, Any], now_ms: int) -> str:
         fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
     except FileExistsError:
         return "exists"
-    with os.fdopen(fd, "w") as fh:
-        fh.write(json.dumps(body, sort_keys=True) + "\n")
+    except OSError as exc:  # missing parent directory, permission, read-only filesystem...
+        raise StopUnwritable(f"{path}: {exc}") from None
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(body, sort_keys=True) + "\n")
+    except OSError as exc:
+        raise StopUnwritable(f"{path}: {exc}") from None
     return "created"
 
 
@@ -255,28 +310,58 @@ def render(res: Mapping[str, Any]) -> str:
     return "\n".join(L)
 
 
+def bad_input_result(msg: str) -> dict[str, Any]:
+    """The result used when nothing can be judged: a P7 soft halt (no buy until restored)."""
+    halts = {"P7": {"id": "P7", "hard": False, "at_index": 0, "value": None, "detail": "unusable input: " + msg}}
+    return {"halts": halts, "soft_halts": ["P7"], "hard_halts": [], "stop_required": True}
+
+
+def _fail_closed(stop_file: str, now_ms: int, code: int, msg: str) -> int:
+    """Loud line on stdout and stderr, STOP where possible, a distinct non-zero code. The executor contract: any exit other than 0, or no fresh result, means no buy."""
+    print(f"FAIL CLOSED (NO BUY): {msg}")
+    print(f"FAIL CLOSED (NO BUY): {msg}", file=sys.stderr)
+    try:
+        print("STOP file:", write_stop(stop_file, bad_input_result(msg), now_ms))
+    except StopUnwritable as exc:
+        print(f"STOP FILE NOT WRITTEN ({exc}): NO BUY. The executor must treat this exit code as no buy.")
+        print("STOP FILE NOT WRITTEN: NO BUY", file=sys.stderr)
+        return EXIT_STOP_UNWRITABLE
+    return code
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     for a in ("trips", "twins", "attempts", "state", "stop-file"):
         ap.add_argument(f"--{a}", required=True)
     ap.add_argument("--now-ms", type=int, required=True)
     ap.add_argument("--json")
-    a = ap.parse_args(argv)
+    a = ap.parse_args(argv)  # argparse itself exits 2 on a missing flag: non-zero, so no buy
     try:
         trips, twins, attempts = load_jsonl(a.trips), load_jsonl(a.twins), load_jsonl(a.attempts)
-    except BadInput as exc:  # a missing parity input is itself a P7 condition for the executor; here it is reported and nothing is judged
-        print(f"UNUSABLE INPUT: {exc}", file=sys.stderr)
-        return 2
-    try:
-        state = json.loads(Path(a.state).read_text())
-    except (OSError, ValueError):
-        state = None  # fail closed: P7
-    res = evaluate(trips, twins, attempts, state, a.now_ms)
+        try:
+            state = json.loads(Path(a.state).read_text())
+        except (OSError, ValueError):
+            state = None  # fail closed: P7 inside evaluate
+        res = evaluate(trips, twins, attempts, state, a.now_ms)
+    except BadInput as exc:
+        return _fail_closed(a.stop_file, a.now_ms, EXIT_BAD_INPUT, f"UNUSABLE INPUT: {exc}")
+    except Exception as exc:  # noqa: BLE001 - nothing may escape as a bare traceback
+        return _fail_closed(a.stop_file, a.now_ms, EXIT_INTERNAL, f"INTERNAL ERROR {type(exc).__name__}: {exc}")
     print(render(res))
-    print("STOP file:", write_stop(a.stop_file, res, a.now_ms))
+    code = EXIT_HARD if res["hard_halts"] else EXIT_SOFT if res["soft_halts"] else EXIT_OK
+    try:
+        print("STOP file:", write_stop(a.stop_file, res, a.now_ms))
+    except StopUnwritable as exc:
+        print(f"STOP FILE NOT WRITTEN ({exc}): NO BUY. The executor must treat this exit code as no buy.")
+        print("STOP FILE NOT WRITTEN: NO BUY", file=sys.stderr)
+        return EXIT_STOP_UNWRITABLE
     if a.json:
-        Path(a.json).write_text(json.dumps(res, indent=1, sort_keys=True, allow_nan=False))
-    return 11 if res["hard_halts"] else 10 if res["soft_halts"] else 0
+        try:
+            Path(a.json).write_text(json.dumps(res, indent=1, sort_keys=True, allow_nan=False))
+        except (OSError, ValueError) as exc:
+            print(f"JSON OUTPUT NOT WRITTEN ({exc}): the result above is the only copy")
+            return code or EXIT_JSON
+    return code
 
 
 if __name__ == "__main__":
