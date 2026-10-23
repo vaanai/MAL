@@ -659,6 +659,7 @@ def render(res: Mapping[str, Any]) -> str:
             else:
                 L.append(f"  WORST-IN-SLOT (report-only, never decides; 1.9 s, lowest of the 4 sub-cells): mean {f(w['mean_sol'])} ci90lo {f(w['ci90_lo_sol'])} "
                          f"worst cell {w['worst_cell']}  mean > 0 in every sub-cell: {w['mean_positive_all_cells']}")
+                L.append("  worst-in-slot per sub-cell (quote these, not only the headline):")
                 for k, c in w["cells"].items():
                     L.append(f"    wis {k:16s} n {c['n']:4d} mean {f(c['mean_sol'])} total {f(c['total_sol'])} ci90lo {f(c['ci90_lo_sol'])} mean gap {f(c['mean_gap_sol'])}")
         for st, bk in v["books"].items():

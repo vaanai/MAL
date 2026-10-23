@@ -956,7 +956,7 @@ def test_worst_in_slot_off_leaves_every_output_unchanged(tmp_path, capsys):
     on = score_all(root, reg, now_ms=now, worst_gaps=_all_gaps(root, reg, now, 0.0))
     assert canon(_strip(on)) == canon(off)  # the flag adds one key and changes nothing else
     assert render(on).replace(next(l for l in render(on).splitlines() if "WORST-IN-SLOT" in l), "") != render(off)
-    keep = [l for l in render(on).splitlines() if "WORST-IN-SLOT" not in l and not l.startswith("    wis ")]
+    keep = [l for l in render(on).splitlines() if "WORST-IN-SLOT" not in l and "worst-in-slot per sub-cell" not in l and not l.startswith("    wis ")]
     assert "\n".join(keep) == render(off)
     # the CLI without the flag prints exactly render(score_all(...))
     args = ["--ledger-root", root, "--registry", reg, "--now-ms", str(now)]
@@ -1020,3 +1020,17 @@ def test_worst_in_slot_cli_and_bad_files(tmp_path, capsys):
         assert main(args + ["--worst-in-slot", str(tmp_path / name)]) == 3
     assert main(args + ["--worst-in-slot", str(tmp_path / "absent.json")]) == 3
     capsys.readouterr()
+
+
+def test_worst_in_slot_output_prints_every_sub_cell_mean_and_ci_beside_the_headline(tmp_path):
+    root, reg, now = _wis_book(tmp_path)
+    res = score_all(root, reg, now_ms=now, worst_gaps=_all_gaps(root, reg, now, 2e6))
+    w = res["bots"]["botA"]["worst_in_slot"]
+    text = render(res)
+    assert "per sub-cell (quote these" in text
+    assert sorted(w["cells"]) == ["flat_1p9_sc", "flat_1p9_total", "press_1p9_sc", "press_1p9_total"]
+    for k, c in w["cells"].items():
+        line = next(l for l in text.splitlines() if l.startswith(f"    wis {k}"))
+        assert f"mean {c['mean_sol']:+.6f}" in line and f"ci90lo {c['ci90_lo_sol']:+.6f}" in line
+    head = next(l for l in text.splitlines() if "WORST-IN-SLOT (report-only" in l)
+    assert f"mean {w['mean_sol']:+.6f}" in head and f"ci90lo {w['ci90_lo_sol']:+.6f}" in head
