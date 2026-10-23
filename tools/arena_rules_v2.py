@@ -167,6 +167,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--clock-start-ms", type=int, required=True)
     ap.add_argument("--feed-delay-slots", type=int, default=R.DEFAULT_FEED_DELAY_SLOTS)
     ap.add_argument("--end-ms", type=int, default=int(os.environ["ARENA_RULES_END_MS"]) if os.environ.get("ARENA_RULES_END_MS") else None)
+    ap.add_argument("--stack-version", type=int, default=1, choices=(1, 2), help="1 = 505,000 per send (default; every registered book); 2 = 160,000 (DEC-031 Amendment 8 books only)")
     ap.add_argument("--warm-min", type=int, default=WARM_MIN_DEFAULT)
     ap.add_argument("--from-ms", type=int, default=None)
     ap.add_argument("--to-ms", type=int, default=None)
@@ -188,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise R.HostError(f"replay refuses to write inside {R.ARENA_OUTPUT_ROOT} ({p}): a counted decision is never regenerated or replayed")
         state_start = None if live else a.from_ms - a.warm_min * R.MIN_MS
         state = ArenaState(a.tape_dir, start_ms=state_start, warm_min=a.warm_min)
-        engine = ArenaEngine(a.ledger_root, a.registry, cfg=R.stack_config(a.feed_delay_slots))
+        engine = ArenaEngine(a.ledger_root, a.registry, cfg=R.stack_config_for(a.stack_version, a.feed_delay_slots))
         cfg = R.HostConfig(root=a.root, registry=a.registry, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=live, verbose=True)
         host = HostV2(cfg, rules, state, engine, binding=R.head_binding() if live else None)
         if live:
