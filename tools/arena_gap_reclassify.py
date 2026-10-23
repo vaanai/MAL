@@ -33,6 +33,7 @@ Exit codes: 0 ok, 2 refused or invalid input.
 from __future__ import annotations
 
 import argparse
+import bisect
 import hashlib
 import json
 import re
@@ -77,18 +78,46 @@ def _lines(path: Path):
             yield from f
 
 
-def scan(paths: list[str]) -> dict[str, Any]:
-    """One pass over the tape files. Returns slot sets, the last t_recv_ms per program, and the data_loss gap rows."""
-    slots: dict[str, set[int]] = {p: set() for p in PROGRAMS}
-    last_ms: dict[str, int] = {p: 0 for p in PROGRAMS}
+HOUR_RE = re.compile(r"^tape-(\d{4}-\d\d-\d\dT\d\d)\.jsonl(\.zst)?$")
+HOUR_MS = 3_600_000
+MAX_GAP_SLOTS = 100_000  # a slot_jump wider than this is refused (corrupt row); the largest observed PumpSwap/pump.fun jump is a few hundred slots
+
+
+def check_hours(paths: list[str]) -> list[tuple[int, Path]]:
+    """Guard every path; names must be tape-YYYY-MM-DDTHH.jsonl[.zst], one file per hour, hours contiguous. Returns [(hour_start_ms, path)]."""
+    from datetime import datetime, timezone
+    out: list[tuple[int, Path]] = []
+    for raw in sorted(set(paths)):
+        p = guard(raw)
+        m = HOUR_RE.match(p.name)
+        if not m:
+            raise Refused(f"not a tape hour file name: {p.name}")
+        if not p.is_file():
+            raise Refused(f"tape file missing: {p.name}")
+        h = int(datetime.strptime(m.group(1), "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp() * 1000)
+        out.append((h, p))
+    out.sort()
+    for (a, pa), (b, pb) in zip(out, out[1:]):
+        if a == b:
+            raise Refused(f"two files for one hour: {pa.name}, {pb.name}")
+        if b - a != HOUR_MS:
+            raise Refused(f"tape hours are not contiguous: {pa.name} then {pb.name}")
+    if not out:
+        raise Refused("no tape files")
+    return out
+
+
+def scan(paths: list[str], grace_s: int = DEFAULT_GRACE_S) -> dict[str, Any]:
+    """Two passes over contiguous tape hours. Pass 1: data_loss gap rows. Pass 2: for each data row of a program, the gaps whose skipped range holds
+    its slot; the row covers that slot only if t_recv_ms <= gap.to_ms + grace_s. Memory: per gap only the covered skipped slots."""
+    hours = check_hours(paths)
+    files = [p for _, p in hours]
+    grace_ms = grace_s * 1000
     jumps: dict[tuple[str, int, int], dict[str, Any]] = {}
     other: dict[str, set[tuple[int, int]]] = {}
     other_n: dict[str, int] = {}
     torn = 0
-    for raw in paths:
-        p = guard(raw)
-        if not p.is_file():
-            raise Refused(f"tape file missing: {p.name}")
+    for p in files:
         for ln in _lines(p):
             core = ln.strip()
             if not core:
@@ -96,23 +125,35 @@ def scan(paths: list[str]) -> dict[str, Any]:
             if not core.startswith(b"{") or not core.endswith(b"}"):
                 torn += 1
                 continue
+            if b'"gap"' not in ln:
+                continue
+            try:
+                r = json.loads(ln)
+            except ValueError:
+                torn += 1
+                continue
+            if not isinstance(r, dict) or r.get("type") != "gap" or r.get("data_loss") is not True:
+                continue
+            kind, prog = r.get("kind"), r.get("prog")
+            if kind == "slot_jump" and prog in PROGRAMS and all(_int(r.get(k)) for k in ("from_slot", "to_slot", "from_ms", "to_ms")):
+                if r["to_slot"] - r["from_slot"] > MAX_GAP_SLOTS:
+                    raise Refused(f"slot_jump wider than MAX_GAP_SLOTS={MAX_GAP_SLOTS}")
+                jumps[(prog, r["from_slot"], r["to_slot"])] = {"from_ms": r["from_ms"], "to_ms": r["to_ms"]}
+            else:
+                k = f"{prog}:{kind}"
+                other_n[k] = other_n.get(k, 0) + 1
+                f, t = r.get("from_ms"), r.get("to_ms")
+                if _int(f) and _int(t) and t >= f:
+                    other.setdefault(k, set()).add((f, t))
+    keys = sorted(jumps)
+    cover: dict[tuple[str, int, int], dict[str, Any]] = {k: {"slots": set(), "late": 0} for k in keys}
+    starts = {p: [k[1] for k in keys if k[0] == p] for p in PROGRAMS}
+    gaps_of = {p: [k for k in keys if k[0] == p] for p in PROGRAMS}
+    maxw = {p: max([k[2] - k[1] for k in gaps_of[p]] or [0]) for p in PROGRAMS}
+    last_ms: dict[str, int] = {p: 0 for p in PROGRAMS}
+    for p in files:
+        for ln in _lines(p):
             if b'"gap"' in ln:
-                try:
-                    r = json.loads(ln)
-                except ValueError:
-                    torn += 1
-                    continue
-                if not isinstance(r, dict) or r.get("type") != "gap" or r.get("data_loss") is not True:
-                    continue
-                kind, prog = r.get("kind"), r.get("prog")
-                if kind == "slot_jump" and prog in PROGRAMS and all(_int(r.get(k)) for k in ("from_slot", "to_slot", "from_ms", "to_ms")):
-                    jumps[(prog, r["from_slot"], r["to_slot"])] = {"from_ms": r["from_ms"], "to_ms": r["to_ms"]}
-                else:
-                    k = f"{prog}:{kind}"
-                    other_n[k] = other_n.get(k, 0) + 1
-                    f, t = r.get("from_ms"), r.get("to_ms")
-                    if _int(f) and _int(t) and t >= f:
-                        other.setdefault(k, set()).add((f, t))
                 continue
             tm = TYPE_RE.search(ln)
             if not tm or tm.group(1) not in DATA_TYPES:
@@ -121,13 +162,24 @@ def scan(paths: list[str]) -> dict[str, Any]:
             if not pm or not sm or not rm:
                 continue
             prog = pm.group(1).decode()
-            if prog not in slots:
+            if prog not in last_ms:
                 continue
-            slots[prog].add(int(sm.group(1)))
             t = int(rm.group(1))
             if t > last_ms[prog]:
                 last_ms[prog] = t
-    return {"slots": slots, "last_ms": last_ms, "jumps": jumps, "other": other, "other_n": other_n, "torn": torn}
+            if not starts[prog]:
+                continue
+            sl = int(sm.group(1))
+            i = bisect.bisect_left(starts[prog], sl) - 1  # last gap with from_slot < sl
+            while i >= 0 and starts[prog][i] > sl - maxw[prog] - 1:
+                k = gaps_of[prog][i]
+                if sl < k[2] and t <= jumps[k]["to_ms"] + grace_ms:
+                    c = cover[k]
+                    c["slots"].add(sl)
+                    if t > c["late"]:
+                        c["late"] = t
+                i -= 1
+    return {"hours": [h for h, _ in hours], "last_ms": last_ms, "jumps": jumps, "cover": cover, "other": other, "other_n": other_n, "torn": torn}
 
 
 def _runs(missing: list[int]) -> list[list[int]]:
@@ -164,16 +216,24 @@ def _union_s(spans) -> float:
     return tot / 1000.0
 
 
-def reclassify(sc: dict[str, Any], grace_s: int = DEFAULT_GRACE_S) -> list[dict[str, Any]]:
-    """Pure function of the scan result. Returns the output records (without the sha256 line)."""
-    recs: list[dict[str, Any]] = []
+def _day(ms: int) -> str:
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def reclassify(sc: dict[str, Any], grace_s: int = DEFAULT_GRACE_S, windows: tuple[int, ...] = ()) -> list[dict[str, Any]]:
+    """Pure function of the scan result (scan must have used the same grace_s). Returns the output records (without the sha256 line)."""
+    recs: list[dict[str, Any]] = [{"type": "header", "schema": SCHEMA, "grace_s": grace_s, "max_gap_slots": MAX_GAP_SLOTS,
+                                   "first_hour_ms": sc["hours"][0], "last_hour_ms": sc["hours"][-1], "hours": len(sc["hours"])}]
     per: dict[str, dict[str, Any]] = {p: {"flagged": 0, "covered": 0, "partial": 0, "empty": 0, "unresolved_tape_cut": 0,
                                           "skipped_slots": 0, "uncovered_slots": 0, "ranges": []} for p in PROGRAMS}
+    by_day: dict[str, dict[str, dict[str, int]]] = {p: {} for p in PROGRAMS}
+    gaprows: list[dict[str, Any]] = []
     for (prog, fs, ts) in sorted(sc["jumps"]):
         j = sc["jumps"][(prog, fs, ts)]
-        seen = sc["slots"][prog]
+        cov = sc["cover"][(prog, fs, ts)]
         skipped = max(0, ts - fs - 1)
-        missing = [s for s in range(fs + 1, ts) if s not in seen]
+        missing = [s for s in range(fs + 1, ts) if s not in cov["slots"]]
         if sc["last_ms"][prog] < j["to_ms"] + grace_s * 1000:
             cls = "unresolved_tape_cut"
         elif not missing:
@@ -183,13 +243,18 @@ def reclassify(sc: dict[str, Any], grace_s: int = DEFAULT_GRACE_S) -> list[dict[
         else:
             cls = "partial"
         runs = _runs(missing)
+        late = cov["late"] or None
+        gaprows.append({"prog": prog, "from_ms": j["from_ms"], "end_ms": max(j["to_ms"], late or 0), "class": cls})
         recs.append({"type": "gap", "prog": prog, "from_slot": fs, "to_slot": ts, "from_ms": j["from_ms"], "to_ms": j["to_ms"],
-                     "skipped_slots": skipped, "uncovered_slots": len(missing), "class": cls, "uncovered_ranges": runs})
+                     "late_until_ms": late, "skipped_slots": skipped, "uncovered_slots": len(missing), "class": cls, "uncovered_ranges": runs})
         a = per[prog]
         a["flagged"] += 1
         a[cls] += 1
         a["skipped_slots"] += skipped
         a["uncovered_slots"] += len(missing)
+        d = by_day[prog].setdefault(_day(j["from_ms"]), {"flagged": 0, "covered": 0, "partial": 0, "empty": 0, "unresolved_tape_cut": 0})
+        d["flagged"] += 1
+        d[cls] += 1
         if cls != "unresolved_tape_cut":
             a["ranges"].extend(runs)
     for prog in PROGRAMS:
@@ -197,9 +262,28 @@ def reclassify(sc: dict[str, Any], grace_s: int = DEFAULT_GRACE_S) -> list[dict[
         merged = _merge(a.pop("ranges"))
         recs.append({"type": "program", "prog": prog, **a, "uncovered_ranges_merged": merged,
                      "uncovered_slots_merged": sum(b - x + 1 for x, b in merged),
-                     "covered_share": (a["covered"] / a["flagged"]) if a["flagged"] else None})
+                     "covered_share": (a["covered"] / a["flagged"]) if a["flagged"] else None,
+                     "by_day": {k: by_day[prog][k] for k in sorted(by_day[prog])}})
     nr = {k: {"rows": sc["other_n"][k], "union_s": _union_s(sc["other"].get(k, set()))} for k in sorted(sc["other_n"])}
     recs.append({"type": "not_reclassified", "kinds": nr})
+    for n in windows:
+        for prog in PROGRAMS:
+            h0, h1 = sc["hours"][0], sc["hours"][-1] + HOUR_MS
+            other_spans = [sp for k, v in sc["other"].items() if k.split(":")[0] in (prog, "all", "None") for sp in v]
+            mine = [g for g in gaprows if g["prog"] == prog]
+            tot = ok = ok_other = 0
+            s = h0
+            while s + n * HOUR_MS <= h1:
+                e = s + n * HOUR_MS
+                tot += 1
+                if all(g["class"] == "covered" for g in mine if g["from_ms"] < e and g["end_ms"] >= s):
+                    ok += 1
+                    if not any(f < e and t >= s for f, t in other_spans):
+                        ok_other += 1
+                s += HOUR_MS
+            recs.append({"type": "windows", "prog": prog, "hours": n, "windows": tot, "all_covered": ok,
+                         "all_covered_and_no_other_data_loss_kind": ok_other,
+                         "share_all_covered": (ok / tot) if tot else None})
     recs.append({"type": "meta", "schema": SCHEMA, "grace_s": grace_s, "torn_lines": sc["torn"],
                  "note": "uncovered = no tape row from any source by to_ms + grace_s; an upper bound on whole-slot loss; within-slot loss in covered slots not measured; not proof of loss"})
     return recs
@@ -216,27 +300,29 @@ def render(recs: list[dict[str, Any]]) -> list[str]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--tape", nargs="+", required=True, help="tape hour files (.jsonl or .jsonl.zst); gap rows and data rows are read from these")
-    ap.add_argument("--grace-s", type=int, default=DEFAULT_GRACE_S, help="a gap needs tape of its program to run this long past to_ms, else unresolved_tape_cut")
+    ap.add_argument("--tape", nargs="+", required=True, help="contiguous tape hour files (.jsonl or .jsonl.zst); gap rows and data rows are read from these")
+    ap.add_argument("--grace-s", type=int, default=DEFAULT_GRACE_S, help="a row covers a slot only if t_recv_ms <= to_ms + grace_s; pinned default 120")
+    ap.add_argument("--windows", nargs="*", type=int, default=[], help="window lengths in hours (start every hour): count windows whose flagged gaps are all covered")
     ap.add_argument("--out", help="output file (default stdout)")
     ap.add_argument("--counts-only", action="store_true", help="omit the per-gap lines and the range lists")
     args = ap.parse_args(argv)
-    if args.grace_s < 0:
-        print("refused: --grace-s must be >= 0", file=sys.stderr)
+    if args.grace_s < 0 or any(w <= 0 for w in args.windows):
+        print("refused: --grace-s must be >= 0 and windows > 0", file=sys.stderr)
         return 2
     try:
-        sc = scan(sorted(set(args.tape)))
+        outp = guard(args.out) if args.out else None
+        sc = scan(args.tape, args.grace_s)
     except Refused as e:
         print(f"refused: {e}", file=sys.stderr)
         return 2
-    recs = reclassify(sc, args.grace_s)
+    recs = reclassify(sc, args.grace_s, tuple(args.windows))
     if args.counts_only:
         recs = [r for r in recs if r["type"] != "gap"]
         for r in recs:
             r.pop("uncovered_ranges_merged", None)
     text = "\n".join(render(recs)) + "\n"
-    if args.out:
-        Path(args.out).write_text(text)
+    if outp:
+        outp.write_text(text)
     else:
         sys.stdout.write(text)
     return 0
