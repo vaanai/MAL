@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import json
+import struct
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -24,10 +27,42 @@ def start_rec(book: ax.Book, **kw) -> dict:
     return {**rec, **kw}
 
 
+def mint_value(owner: str = ax.mf.SPL_TOKEN_PROGRAM, freeze: bool = False, ext_types: tuple = ()) -> dict:
+    """A getAccountInfo value for a mint: SPL layout (82 bytes) or Token-2022 with TLV extension types (18 metadataPointer, 19 tokenMetadata, 1 transferFeeConfig...)."""
+    raw = bytearray(82)
+    raw[45] = 1
+    if freeze:
+        struct.pack_into("<I", raw, 46, 1)
+        raw[50:82] = bytes([7]) * 32
+    if owner == ax.mf.TOKEN_2022_PROGRAM:
+        raw = bytearray(raw) + bytearray(165 - 82) + bytearray([1])
+        for t in ext_types:
+            raw += struct.pack("<HH", t, 4) + bytes(4)
+    return {"data": [base64.b64encode(bytes(raw)).decode(), "base64"], "owner": owner, "lamports": 1, "executable": False}
+
+
+CANARY_TEST_FILE = "DEC/DEC-033-h5-arena-canary-test.md"
+
+
+def write_canary_record(root: Path, *bot_ids: str, name: str = "DEC-033-h5-arena-canary-test.md") -> None:
+    (root / "DEC").mkdir(parents=True, exist_ok=True)
+    ids = bot_ids or (A2, A2V2, Q50, "h5v1-p155-testbook")
+    (root / "DEC" / name).write_text("".join(f"OWNER_CANARY_CONFIRMED: bot_id={b}\n" for b in ids))
+
+
+def a3_rec(run_utc: str = "2099-01-01T00:00:00Z", **halt_true) -> dict:
+    names = ("pins_changed", "boost_disabled", "boost_share_low", "boost_budget_shift", "boost_slices_shift", "synthetic_share_high")
+    return {"run_utc": run_utc, "halt": {"flags": {n: {"halt": n in halt_true, "evaluated": True, "reason": "x"} for n in names}},
+            "warn": {"flags": {"program_changed": {"warn": bool(halt_true.get("program_changed")), "evaluated": True, "reason": "x"}}}}
+
+
 class AEnv(Env):
     book_id = A2
 
     def build(self):
+        self.rpc.accounts[MINT] = mint_value()  # a clean classic SPL mint: the pre-send screen passes
+        if self.conf.get("funded_lamports"):
+            self.rpc.balance = self.conf["funded_lamports"]  # the finalized balance a live start compares with funded_lamports
         ex = ax.ArenaExecutor(self.rpc, self.conf, self.kp, now_ms=self.clock, root=self.root)
         self.seed_clock(ex)
         return ex
@@ -38,7 +73,9 @@ class ACase(Case):
 
     def setUp(self):
         super().setUp()
-        for patcher in (mock.patch.object(ax, "V2_RULE_SOURCE", self.tmp / "FREEZE.md"),):
+        (self.tmp / "a3-default.jsonl").write_text(json.dumps(a3_rec()) + "\n")  # never the host's real file
+        for patcher in (mock.patch.object(ax, "V2_RULE_SOURCE", self.tmp / "FREEZE.md"),
+                        mock.patch.object(ax, "A3_RECORD_DEFAULT", str(self.tmp / "a3-default.jsonl"))):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -382,17 +419,16 @@ class MonitorTests(ACase):
         e = self.env(live=False)
         e.fire()
         # dry run lands nothing; the hook is exercised through the monitor on the real _finish_buy path in the live-path test below
-        self.assertEqual(e.ex.monitor.entry_gaps, [])
+        self.assertEqual(list(e.ex.monitor.entry_gaps), [])
 
 
 class LiveShapePathTests(ACase):
     """The keyed code path with a throwaway Keypair and the fake RPC (LIVE_BUILT patched on for the test only; nothing is sent anywhere)."""
 
     def live_env(self):
-        (self.tmp / "repo" / "DEC").mkdir(parents=True, exist_ok=True)
-        (self.tmp / "repo" / ax.CANARY_DEC_FILE).write_text("OWNER_CANARY_CONFIRMED: test\n")
+        write_canary_record(self.tmp / "repo")
         (self.tmp / "FREEZE.md").write_text("x")
-        e = AEnv(self.tmp, live=True, book_id=self.book_id, replay_only=True, end_ms=ax.SEAL_END_MS)
+        e = AEnv(self.tmp, live=True, book_id=self.book_id, replay_only=True, end_ms=ax.SEAL_END_MS, funded_lamports=500_000_000)
         e.ex.feed_verified, e.ex._start_ms, e.ex.slices_taken = True, 0, 1
         e.ex.abook = dataclasses.replace(e.ex.abook, clock_start_ms=0)
         return e
@@ -443,11 +479,10 @@ class PriorityPinTests(ACase):
         return dataclasses.replace(ax.BOOKS[A2], bot_id=self.NEW, priority=ax.PRIORITY_P155)
 
     def live_env(self, **kw):
-        (self.tmp / "repo" / "DEC").mkdir(parents=True, exist_ok=True)
-        (self.tmp / "repo" / ax.CANARY_DEC_FILE).write_text("OWNER_CANARY_CONFIRMED: test\n")
+        write_canary_record(self.tmp / "repo")
         (self.tmp / "FREEZE.md").write_text("x")
         kw.setdefault("book_id", self.book_id)
-        e = AEnv(self.tmp, live=True, replay_only=True, end_ms=ax.SEAL_END_MS, **kw)
+        e = AEnv(self.tmp, live=True, replay_only=True, end_ms=ax.SEAL_END_MS, **{"funded_lamports": 500_000_000, **kw})
         e.ex.feed_verified, e.ex._start_ms, e.ex.slices_taken = True, 0, 1
         e.ex.abook = dataclasses.replace(e.ex.abook, clock_start_ms=0)
         return e
@@ -463,7 +498,7 @@ class PriorityPinTests(ACase):
         for bot_id in (A2, A2V2, Q50):
             self.book_id = bot_id
             e = self.env()
-            base = dataclasses.replace(h.H5Limits.from_config(e.conf), end_ms=ax.SEAL_END_MS)  # end_ms is the book's seal clamp, not a fee
+            base = dataclasses.replace(h.H5Limits.from_config(e.conf), end_ms=ax.SEAL_END_MS, gap_hold_ms=ax.GAP_HOLD_MS)  # end_ms: the seal clamp; gap hold: DEC-032 s5 (10 min). Neither is a fee
             self.assertEqual(e.ex.h5, base, bot_id)
             self.assertEqual((e.ex.h5.buy_priority_lamports, e.ex.h5.sell_priority_lamports, e.ex.h5.escalated_priority_lamports), (55_000, 55_000, 150_000))
 
@@ -561,3 +596,640 @@ class SellBuilderPinTests(PriorityPinTests):
         self.assertEqual(str(base_close[2][0]), pos["base_ata"])
         self.assertEqual(ixs.index(base_close), len(ixs) - 1)  # after the swap
         self.assertTrue(any(x[1][:8] == ptx.DISC_SELL for x in ixs))
+
+
+class C0PinTests(ACase):
+    """Gap (a): the C0 canary table is pinned in code; the shared TIER file may only lower it."""
+
+    def tier_limits(self, tier):
+        e = self.env()
+        (self.tmp / "state").mkdir(parents=True, exist_ok=True)
+        (self.tmp / "state" / "TIER").write_text(tier)
+        e.ex._refresh_tier(e.clock())
+        return e.ex.h5
+
+    def test_c0_table_is_the_dec032_one(self):
+        self.assertEqual(ax.C0_TIER, {"stake_lamports": 50_000_000, "max_open": 2, "max_trades_per_day": 30,
+                                      "daily_loss_lamports": 100_000_000, "total_loss_lamports": 200_000_000})
+
+    def test_t1_and_t2_files_cannot_raise_stake_or_open_count_or_stops(self):
+        for tier in ("T1", "T2"):
+            lim = self.tier_limits(tier)
+            self.assertEqual(self.sub(lim), ax.C0_TIER, tier)
+            self.assertEqual(self.ex_tier(tier), tier)  # the file was read as that tier: the clamp, not the file, held the line
+
+    def test_t0_file_lowers_below_c0(self):
+        lim = self.tier_limits("T0")
+        self.assertEqual(lim.stake_lamports, h.TIERS["T0"]["stake_lamports"])
+        self.assertLess(lim.stake_lamports, ax.C0_TIER["stake_lamports"])
+
+    def test_config_can_lower_but_not_raise(self):
+        e = self.env(stake_lamports=10_000_000)
+        self.assertEqual(e.ex.h5.stake_lamports, 10_000_000)
+        e = self.env(stake_lamports=900_000_000, max_open=9)
+        (self.tmp / "state").mkdir(parents=True, exist_ok=True)
+        (self.tmp / "state" / "TIER").write_text("T2")
+        e.ex._refresh_tier(e.clock())
+        self.assertLessEqual(e.ex.h5.stake_lamports, ax.C0_TIER["stake_lamports"])
+        self.assertLessEqual(e.ex.h5.max_open, 2)
+
+    def test_t2_file_does_not_let_a_third_buy_through(self):
+        e = self.env()
+        (self.tmp / "state").mkdir(parents=True, exist_ok=True)
+        (self.tmp / "state" / "TIER").write_text("T2")
+        self.assertEqual(e.ex.h5.max_open, 2)
+
+    @staticmethod
+    def sub(lim):
+        return {k: getattr(lim, k) for k in ax.C0_TIER}
+
+    def ex_tier(self, tier):
+        e = self.env()
+        (self.tmp / "state").mkdir(parents=True, exist_ok=True)
+        (self.tmp / "state" / "TIER").write_text(tier)
+        e.ex._refresh_tier(e.clock())
+        return e.ex.tier
+
+
+class GapHoldTests(ACase):
+    """Gap (c): the feed-gap hold is 10 minutes (DEC-032 s5 item 2)."""
+
+    def test_hold_is_ten_minutes_and_config_cannot_shorten_it(self):
+        self.assertEqual(ax.GAP_HOLD_MS, 600_000)
+        self.assertEqual(self.env().ex.h5.gap_hold_ms, 600_000)
+        self.assertEqual(self.env(gap_hold_ms=1).ex.h5.gap_hold_ms, 600_000)
+
+    def check(self, flags):
+        e = self.env()
+        n0, d0 = len(e.refusals()), len(e.ledger("decision"))
+        self.assertEqual(e.ex.decide_row({"type": "gap", "kind": "reconnect", "flags_pools": flags}), ("keep", None))
+        e.jump(599_000)
+        e.fire()
+        self.assertEqual(e.refusals()[n0:], ["feed_gap"], flags)  # 599 s after the gap record: held
+        e.jump(1_000)
+        e.fire()
+        self.assertEqual(e.refusals()[n0:], ["feed_gap"], flags)  # 600 s after: the hold is over, no second gap refusal
+        self.assertEqual(len(e.ledger("decision")) - d0, 1, flags)
+
+    def test_any_gap_record_holds_buys_for_ten_minutes(self):
+        self.check(True)
+
+    def test_a_redundant_reconnect_gap_record_holds_too(self):
+        self.check(False)  # the base class would skip the hold for flags_pools false
+
+
+class SellReserveTests(ACase):
+    """Gap (d): the sell reserve covers 10 sends at the p155 worst case (1.6M)."""
+
+    def test_reserve_is_at_least_1_6m_for_every_book_and_follows_the_pin(self):
+        for b in ax.BOOKS.values():
+            self.assertGreaterEqual(ax.sell_reserve_lamports(b), 1_600_000)
+        p155 = dataclasses.replace(ax.BOOKS[A2], priority=ax.PRIORITY_P155)
+        self.assertEqual(ax.sell_reserve_lamports(p155), 10 * (155_000 + 5_000))
+        high = dataclasses.replace(ax.BOOKS[A2], priority=ax.Priority("default", 55_000, 55_000, 400_000))
+        self.assertEqual(ax.sell_reserve_lamports(high), 10 * 405_000)
+
+
+class CommittedLossTests(ACase):
+    """Gap (b): DEC-032 s3 committed loss and the wallet floor, in code (QP 10-23)."""
+
+    def live_env(self, **kw):
+        write_canary_record(self.tmp / "repo")
+        (self.tmp / "FREEZE.md").write_text("x")
+        kw.setdefault("book_id", self.book_id)
+        kw.setdefault("funded_lamports", 500_000_000)
+        e = AEnv(self.tmp, live=True, replay_only=True, end_ms=ax.SEAL_END_MS, **kw)
+        e.ex.feed_verified, e.ex._start_ms, e.ex.slices_taken = True, 0, 1
+        e.ex.abook = dataclasses.replace(e.ex.abook, clock_start_ms=0)
+        e.rpc.balance = 10 * 10**9
+        return e
+
+    def worst(self, e, stake):
+        return stake + 55_000 + 5_000 + h.RENT_RESERVE_LAMPORTS + ax.sell_reserve_lamports(e.ex.abook)
+
+    def test_open_position_counts_stake_buy_fee_rent_and_sell_reserve(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            self.assertEqual(e.ex.committed_loss_lamports(), 0)
+            pos = e.open_position()
+            extra = int(pos.get("extra_cost") or 0)
+            self.assertEqual(e.ex.committed_loss_lamports(), self.worst(e, int(pos["spend"])) + extra)
+            self.assertGreater(e.ex.committed_loss_lamports(), int(pos["spend"]) + 2_100_000 + 1_600_000)
+
+    def test_in_flight_buy_counts_before_it_lands(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            e.fire()
+            self.assertIn(MINT, e.ex.state.pending)
+            self.assertEqual(e.ex.committed_loss_lamports(), self.worst(e, e.ex.h5.stake_lamports))
+
+    def test_realized_loss_is_counted_and_a_profit_is_floored_at_zero(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            e.ex.state.realized_lamports = -7_000_000
+            self.assertEqual(e.ex.committed_loss_lamports(), 7_000_000)
+            e.ex.state.realized_lamports = 9_000_000
+            self.assertEqual(e.ex.committed_loss_lamports(), 0)
+
+    def test_pre_send_check_refuses_when_committed_plus_this_buy_passes_the_total_stop(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env(total_loss_lamports=22_000_000)  # the stake alone (20M) would pass the base check; the stake plus fees, rent and reserve does not
+            e.fire()
+            self.assertEqual(e.refusals(), ["committed_loss_stop"])
+            self.assertEqual(e.rpc.sent, [])
+
+    def test_realized_loss_since_first_send_enters_the_pre_send_check(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env(total_loss_lamports=35_000_000)
+            e.ex.state.realized_lamports = -12_000_000
+            e.fire()
+            self.assertEqual(e.refusals(), ["committed_loss_stop"])
+            e.ex.state.realized_lamports = -10_000_000
+            e.fire()
+            self.assertEqual(len(e.ledger("decision")), 1)
+
+    def test_live_buy_rechecks_right_before_building_even_if_the_budget_stop_was_bypassed(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env(total_loss_lamports=22_000_000)
+            with mock.patch.object(ax.ArenaExecutor, "_budget_stop", return_value=None):
+                e.fire()
+            self.assertEqual(e.refusals(), ["committed_loss_stop"])
+            self.assertEqual(e.rpc.sent, [])
+
+    def test_floor_is_funded_minus_a_quarter_sol_never_below_0_05(self):
+        for funded, floor in ((350_000_000, 100_000_000), (500_000_000, 250_000_000), (1_000_000_000, 750_000_000)):
+            with mock.patch.object(ax, "LIVE_BUILT", True):
+                self.assertEqual(self.live_env(funded_lamports=funded).ex.h5.wallet_floor_lamports, floor)
+        self.assertEqual(ax.wallet_floor_lamports(300_000_000, 50_000_000), 50_000_000)  # 0.30 funded: 0.05, the minimum
+        self.assertEqual(ax.wallet_floor_lamports(None, 50_000_000), 50_000_000)
+
+    def test_config_cannot_lower_the_floor_but_can_raise_it(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            self.assertEqual(self.live_env(wallet_floor_lamports=60_000_000).ex.h5.wallet_floor_lamports, 250_000_000)
+            self.assertEqual(self.live_env(wallet_floor_lamports=300_000_000).ex.h5.wallet_floor_lamports, 300_000_000)
+
+    def test_balance_check_counts_open_stakes_again_and_the_floor(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env(funded_lamports=500_000_000)
+            floor, stake = e.ex.h5.wallet_floor_lamports, e.ex.h5.stake_lamports
+            need0 = stake + 60_000 + 2_100_000 + ax.sell_reserve_lamports(e.ex.abook) + floor
+            e.rpc.balance = need0 - 1
+            e.fire()
+            self.assertEqual(e.refusals(), ["balance_floor"])
+            e.rpc.balance = need0
+            e.ex._bal = None
+            e.fire()
+            self.assertEqual(len(e.ledger("decision")), 1)
+            # one pending/open position: the second buy needs that stake once more, plus a second sell reserve
+            need1 = need0 + int(e.ex.state.pending[MINT]["spend"]) + ax.sell_reserve_lamports(e.ex.abook)
+            e.rpc.balance = need1 - 1
+            e.ex._bal = None
+            self.assertEqual(e.ex._balance_refusal(e.clock()), "balance_floor")
+            e.rpc.balance = need1
+            e.ex._bal = None
+            self.assertIsNone(e.ex._balance_refusal(e.clock()))
+
+    def test_live_start_needs_funded_lamports_in_range(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            for bad, why in ((None, "funded_lamports_missing"), (349_999_999, "funded_lamports_out_of_range"), (1_000_000_001, "funded_lamports_out_of_range"),
+                             (True, "funded_lamports_out_of_range"), (5e8, "funded_lamports_out_of_range")):
+                kw = {"funded_lamports": bad}
+                with self.assertRaises(SystemExit) as cm:
+                    write_canary_record(self.tmp / "repo")
+                    AEnv(self.tmp, live=True, book_id=self.book_id, replay_only=True, end_ms=ax.SEAL_END_MS, **kw)
+                self.assertIn(why, str(cm.exception))
+
+
+class RollingWindowTests(ACase):
+    """Gap (e): P1 and P2 are rolling (DEC-032 s5), not running totals."""
+
+    def test_a_bad_stretch_after_a_good_one_still_fires_the_entry_gap(self):
+        m = ax.FidelityMonitor()
+        got = [m.note_entry_gap(0) for _ in range(10)] + [m.note_entry_gap(210) for _ in range(20)]
+        self.assertIn(ax.H_ENTRY_GAP, got)
+        cumulative_mean = (20 * 210) / 30
+        self.assertLess(cumulative_mean, ax.ENTRY_GAP_BPS)  # a running total would have stayed silent
+
+    def test_first_ten_then_rolling_twenty_boundaries(self):
+        m = ax.FidelityMonitor()
+        self.assertEqual([m.note_entry_gap(500) for _ in range(9)], [None] * 9)  # fewer than 10 fills: no verdict
+        self.assertEqual(m.note_entry_gap(500), ax.H_ENTRY_GAP)
+
+    def test_old_bad_fills_age_out(self):
+        m = ax.FidelityMonitor()
+        for _ in range(9):
+            m.note_entry_gap(1000)
+        out = [m.note_entry_gap(0) for _ in range(40)]
+        self.assertEqual(out[-1], None)  # the window has moved past the bad stretch
+        self.assertEqual(len(m.entry_gaps), 20)
+
+    def test_landing_fail_excess_is_over_the_last_30_attempts(self):
+        m = ax.FidelityMonitor()
+        got = [m.note_attempt(True) for _ in range(30)] + [m.note_attempt(i >= 9) for i in range(30)]  # then 9 failures in the next 30
+        self.assertEqual(got[:30], [None] * 30)
+        self.assertIn(ax.H_LANDING, got[30:])
+        self.assertEqual((m.failed, m.attempts), (9, 60))
+        self.assertLessEqual(100.0 * (m.failed / m.attempts - ax.PAPER_FAIL_RATE), ax.LANDING_EXCESS_PP)  # a running total would not have fired
+
+    def test_landing_old_failures_age_out(self):
+        m = ax.FidelityMonitor()
+        for _ in range(30):
+            m.note_attempt(False)
+        out = [m.note_attempt(True) for _ in range(30)]
+        self.assertIsNone(out[-1])
+        self.assertEqual(len(m.recent_attempts), 30)
+
+
+class MintScreenTests(ACase):
+    """Gap (f, second half): a pre-send refusal of a close-blocked mint (DEC-032 s3 Venue; DEC-031 Am.2 item 6)."""
+
+    live_env = CommittedLossTests.live_env
+    worst = CommittedLossTests.worst
+
+    def refused_with(self, value, expect):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            e.rpc.accounts[MINT] = value
+            e.fire()
+        self.assertEqual(e.refusals(), [f"close_blocked_mint:{expect}"])
+        self.assertEqual(e.rpc.sent, [])
+        self.assertEqual(e.ex.close_blocked_refused, 1)
+
+    def test_freeze_authority_is_refused_before_anything_is_sent(self):
+        self.refused_with(mint_value(freeze=True), "freeze_authority")
+
+    def test_token2022_freeze_authority_is_refused_too(self):
+        self.refused_with(mint_value(ax.mf.TOKEN_2022_PROGRAM, freeze=True, ext_types=(18, 19)), "freeze_authority")
+
+    def risky(self, t):
+        self.refused_with(mint_value(ax.mf.TOKEN_2022_PROGRAM, ext_types=(18, t)), "extension_outside_allowlist")
+
+    def test_token2022_transfer_fee_is_refused(self):
+        self.risky(1)
+
+    def test_token2022_transfer_hook_is_refused(self):
+        self.risky(14)
+
+    def test_token2022_permanent_delegate_is_refused(self):
+        self.risky(12)
+
+    def test_token2022_mint_close_authority_is_refused(self):
+        self.risky(3)
+
+    def test_unknown_owner_program_is_refused(self):
+        self.refused_with(mint_value(owner="11111111111111111111111111111111"), "unknown_owner_program")
+
+    def test_a_failed_or_missing_fetch_is_refused_deny_by_default(self):
+        self.refused_with(None, "fetch_failed")
+
+    def test_token2022_with_only_the_allowlisted_extensions_passes(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            e.rpc.accounts[MINT] = mint_value(ax.mf.TOKEN_2022_PROGRAM, ext_types=(18, 19))
+            e.fire()
+        self.assertEqual(e.refusals(), [])
+        self.assertEqual(len(e.ledger("decision")), 1)
+        self.assertIsNone(e.ex.mint_screens[MINT])
+
+    def test_classic_spl_mint_without_freeze_passes(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            e.fire()
+        self.assertEqual(len(e.ledger("decision")), 1)
+
+    def test_extension_names_used_by_the_allowlist_are_the_real_ones(self):
+        self.assertEqual((ax.mf.EXT_NAMES[18], ax.mf.EXT_NAMES[19]), ("metadataPointer", "tokenMetadata"))
+
+
+class StrandTests(ACase):
+    """Gap (f, first half): H_STRAND fires. close_blocked is set when the mint is re-read after the buy lands; strand when the sell is stuck past the deadline."""
+
+    live_env = CommittedLossTests.live_env
+
+    def test_freeze_authority_added_after_the_pre_send_screen_marks_the_position_and_latches(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            e.fire()
+            e.rpc.accounts[MINT] = mint_value(freeze=True)  # set between the screen and the landing
+            e.land_buy()
+            pos = e.ex.state.open[MINT]
+            self.assertTrue(pos["close_blocked"])
+            self.assertEqual(pos["close_blocked_why"], "freeze_authority")
+            self.assertNotIn(ax.H_STRAND, e.ex.counters.halts)
+            e.ex.exit_tick(e.clock())
+            self.assertIn(ax.H_STRAND, e.ex.counters.halts)
+            e.fire(mint="Other")  # the latch stops further buys (any reason; the arena halt is checked first)
+            self.assertEqual(e.refusals()[-1], ax.H_STRAND)
+
+    def test_a_clean_mint_leaves_the_position_unmarked(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            pos = e.open_position()
+            e.ex.exit_tick(e.clock())
+        self.assertNotIn("close_blocked", pos)
+        self.assertNotIn("strand", pos)
+        self.assertNotIn(ax.H_STRAND, e.ex.counters.halts)
+
+    def test_stuck_sell_past_the_emergency_attempt_is_a_strand(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            pos = e.open_position()
+            pos["stuck"] = True
+            e.ex.exit_tick(e.clock())
+            self.assertNotIn(ax.H_STRAND, e.ex.counters.halts)  # stuck alone is the stuck_position / two_stuck_sells path, not a strand yet
+            pos["emergency_attempted"] = True
+            e.ex.exit_tick(e.clock())
+            self.assertTrue(pos["strand"])
+            self.assertIn(ax.H_STRAND, e.ex.counters.halts)
+
+    def test_an_abandoned_position_is_a_strand(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            pos = e.open_position()
+            pos["abandoned"] = True
+            e.ex.exit_tick(e.clock())
+            self.assertIn(ax.H_STRAND, e.ex.counters.halts)
+
+
+class ExternalLatchTests(ACase):
+    """Gap (g): latch_external is wired to the A3 record and the exit-gap input."""
+
+    def a3_env(self, rec_text):
+        f = self.tmp / "a3.jsonl"
+        f.write_text(rec_text)
+        return self.env(a3_record_file=str(f)), f
+
+    def test_clean_record_latches_nothing_and_the_newest_line_decides(self):
+        e, f = self.a3_env(json.dumps(a3_rec(pins_changed=True)) + "\n" + json.dumps(a3_rec()) + "\n")
+        e.ex.a3_tick(e.clock())
+        self.assertNotIn(ax.H_A3, e.ex.counters.halts)
+
+    def test_pins_changed_latches_the_a3_halt_and_refuses_buys(self):
+        e, f = self.a3_env(json.dumps(a3_rec(pins_changed=True)) + "\n")
+        e.ex.exit_tick(e.clock())
+        self.assertIn(ax.H_A3, e.ex.counters.halts)
+        self.assertEqual(e.ex.counters.halts[ax.H_A3]["flags"], ["pins_changed"])
+        e.fire()
+        self.assertEqual(e.refusals(), [ax.H_A3])
+
+    def test_program_changed_warn_latches(self):
+        e, f = self.a3_env(json.dumps(a3_rec(program_changed=True)) + "\n")
+        e.ex.a3_tick(e.clock())
+        self.assertEqual(e.ex.counters.halts[ax.H_A3]["flags"], ["program_changed"])
+
+    def test_any_other_halt_flag_latches_via_the_intent_tick(self):
+        e, f = self.a3_env(json.dumps(a3_rec(boost_disabled=True)) + "\n")
+        e.ex.intent_tick()
+        self.assertIn(ax.H_A3, e.ex.counters.halts)
+
+    def test_unreadable_or_flagless_record_fails_closed(self):
+        for text in ("", "not json\n", json.dumps({"run_utc": "x"}) + "\n"):
+            e, f = self.a3_env(text)
+            e.ex.a3_tick(e.clock())
+            self.assertIn(ax.H_A3, e.ex.counters.halts, text)
+            (self.tmp / "state" / "h5-counters.json").unlink(missing_ok=True)
+
+    def test_a_malformed_flag_is_not_a_clear(self):
+        rec = a3_rec()
+        rec["halt"]["flags"]["boost_share_low"] = {"evaluated": True}
+        e, f = self.a3_env(json.dumps(rec) + "\n")
+        e.ex.a3_tick(e.clock())
+        self.assertEqual(e.ex.counters.halts[ax.H_A3]["flags"], ["boost_share_low"])
+
+    def test_the_poll_is_throttled(self):
+        e, f = self.a3_env(json.dumps(a3_rec()) + "\n")
+        e.ex.a3_tick(e.clock())
+        f.write_text(json.dumps(a3_rec(pins_changed=True)) + "\n")
+        e.ex.a3_tick(e.clock() + 1_000)
+        self.assertNotIn(ax.H_A3, e.ex.counters.halts)
+        e.ex.a3_tick(e.clock() + ax.A3_POLL_MS)
+        self.assertIn(ax.H_A3, e.ex.counters.halts)
+
+    def test_a_stale_record_fails_closed_and_the_limit_is_36h(self):
+        self.assertEqual(ax.A3_MAX_AGE_MS, 36 * 3_600_000)
+        e = self.env()
+        now = e.clock()
+        iso = lambda ms: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ms / 1000))  # noqa: E731
+        for age, ok in ((ax.A3_MAX_AGE_MS - 1_000, True), (ax.A3_MAX_AGE_MS + 2_000, False)):
+            f = self.tmp / f"a3-{age}.jsonl"
+            f.write_text(json.dumps(a3_rec(run_utc=iso(now - age))) + "\n")
+            why, problem = ax.a3_record_problem(f, now)
+            self.assertEqual((why, problem), ([], None) if ok else ([], "a3_record_stale"), age)
+
+    def test_stale_record_latches_through_the_tick(self):
+        e = self.env()
+        f = self.tmp / "a3old.jsonl"
+        f.write_text(json.dumps(a3_rec(run_utc="2000-01-01T00:00:00Z")) + "\n")
+        e.ex.cfg_a3_file = str(f)
+        e.ex.a3_tick(e.clock() + 10**12)
+        self.assertEqual(e.ex.counters.halts[ax.H_A3]["why"], "a3_record_stale")
+
+    def test_an_unevaluated_flag_is_not_a_clear(self):
+        rec = a3_rec()
+        rec["halt"]["flags"]["boost_slices_shift"]["evaluated"] = False
+        e, f = self.a3_env(json.dumps(rec) + "\n")
+        e.ex.a3_tick(e.clock())
+        self.assertEqual(e.ex.counters.halts[ax.H_A3]["flags"], ["boost_slices_shift"])
+
+    def test_a_record_without_run_utc_fails_closed(self):
+        rec = a3_rec()
+        del rec["run_utc"]
+        f = self.tmp / "norun.jsonl"
+        f.write_text(json.dumps(rec) + "\n")
+        self.assertEqual(ax.a3_record_problem(f, 0), ([], "a3_record_no_run_utc"))
+
+    def test_missing_exit_gap_file_latches(self):
+        e = self.env(exit_gap_file=str(self.tmp / "nope.jsonl"))
+        e.ex.exit_gap_tick()
+        self.assertEqual(e.ex.counters.halts[ax.H_EXIT_GAP]["why"], "exit_gap_file_unreadable")
+
+    def test_no_exit_gap_file_configured_does_nothing(self):
+        e = self.env()
+        e.ex.exit_gap_tick()
+        self.assertNotIn(ax.H_EXIT_GAP, e.ex.counters.halts)
+
+    def test_a_partial_last_line_waits_for_its_newline(self):
+        g = self.tmp / "gaps2.jsonl"
+        full = "".join(json.dumps({"mint": f"m{i}", "exit_gap_bps": 500}) + "\n" for i in range(9))
+        g.write_text(full + '{"mint": "m9", "exit_gap_')
+        e = self.env(exit_gap_file=str(g))
+        e.ex.exit_gap_tick()
+        self.assertEqual(len(e.ex.monitor.exit_gaps), 9)
+        self.assertEqual(e.ex._exit_gap_off, len(full.encode()))
+        self.assertEqual(e.alerts("exit_gap_row_unreadable"), [])
+        g.write_text(full + json.dumps({"mint": "m9", "exit_gap_bps": 500}) + "\n")
+        e.ex.exit_gap_tick()
+        self.assertEqual(len(e.ex.monitor.exit_gaps), 10)
+        self.assertIn(ax.H_EXIT_GAP, e.ex.counters.halts)
+
+    def test_a_shrunk_file_resets_the_offset_and_logs_it(self):
+        g = self.tmp / "gaps3.jsonl"
+        g.write_text("".join(json.dumps({"mint": "a", "exit_gap_bps": 1}) + "\n" for _ in range(5)))
+        e = self.env(exit_gap_file=str(g))
+        e.ex.exit_gap_tick()
+        self.assertEqual(len(e.ex.monitor.exit_gaps), 5)
+        g.write_text(json.dumps({"mint": "b", "exit_gap_bps": 2}) + "\n")  # rotated: shorter than the offset
+        e.ex.exit_gap_tick()
+        self.assertEqual(len(e.ledger("exit_gap_file_reset")), 1)
+        self.assertEqual(len(e.ex.monitor.exit_gaps), 6)
+
+    def test_dry_run_without_a_configured_file_never_reads_one(self):
+        e = self.env()
+        self.assertIsNone(e.ex.cfg_a3_file)
+
+    def test_live_run_defaults_to_the_monitor_file(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = CommittedLossTests.live_env(self)
+        self.assertEqual(e.ex.cfg_a3_file, ax.A3_RECORD_DEFAULT)
+
+    def test_exit_gap_rows_reach_the_halt_after_ten(self):
+        g = self.tmp / "gaps.jsonl"
+        g.write_text("".join(json.dumps({"mint": f"m{i}", "exit_gap_bps": 500}) + "\n" for i in range(9)))
+        e = self.env(exit_gap_file=str(g))
+        e.ex.exit_gap_tick()
+        self.assertNotIn(ax.H_EXIT_GAP, e.ex.counters.halts)
+        with g.open("a") as fh:
+            fh.write(json.dumps({"mint": "m9", "exit_gap_bps": 500}) + "\n")
+        e.ex.exit_gap_tick()
+        self.assertIn(ax.H_EXIT_GAP, e.ex.counters.halts)
+
+    def test_ingest_exit_gap_below_threshold_does_not_latch(self):
+        e = self.env()
+        for _ in range(12):
+            e.ex.ingest_exit_gap(100.0)
+        self.assertNotIn(ax.H_EXIT_GAP, e.ex.counters.halts)
+
+
+class CanaryRecordTests(ACase):
+    """Gap (h): the owner line is tied to a bot_id."""
+
+    def start(self, **kw):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            return AEnv(self.tmp, live=True, book_id=A2, replay_only=True, end_ms=ax.SEAL_END_MS, funded_lamports=500_000_000, **kw)
+
+    def refused(self, why):
+        with self.assertRaises(SystemExit) as cm:
+            self.start()
+        self.assertIn(why, str(cm.exception))
+
+    def test_no_record_refuses(self):
+        (self.tmp / "FREEZE.md").write_text("x")
+        self.refused("canary_record_for_bot_id_missing")
+
+    def test_a_record_for_another_book_does_not_cover_this_one(self):
+        write_canary_record(self.tmp / "repo", Q50, A2V2)
+        self.refused("canary_record_for_bot_id_missing")
+
+    def test_a_prefix_or_substring_of_the_bot_id_does_not_match(self):
+        write_canary_record(self.tmp / "repo", A2 + "-x", "x" + A2)
+        self.refused("canary_record_for_bot_id_missing")
+
+    def test_the_old_free_text_owner_line_no_longer_counts(self):
+        (self.tmp / "repo" / "DEC").mkdir(parents=True, exist_ok=True)
+        (self.tmp / "repo" / "DEC" / "DEC-033-h5-arena-canary-test.md").write_text("OWNER_CANARY_CONFIRMED: test\n")
+        self.refused("canary_record_for_bot_id_missing")
+
+    def test_the_template_file_never_counts(self):
+        write_canary_record(self.tmp / "repo", A2, name="DEC-032-arena-canary-template.md")
+        self.refused("canary_record_for_bot_id_missing")
+
+    def test_a_symlinked_record_does_not_count(self):
+        write_canary_record(self.tmp / "repo", A2, name="real.md")
+        (self.tmp / "repo" / "DEC" / "DEC-033-h5-arena-canary-link.md").symlink_to(self.tmp / "repo" / "DEC" / "real.md")
+        self.refused("canary_record_for_bot_id_missing")
+
+    def test_a_record_naming_this_bot_id_starts(self):
+        write_canary_record(self.tmp / "repo", A2)
+        (self.tmp / "FREEZE.md").write_text("x")
+        self.assertEqual(self.start().ex.abook.bot_id, A2)
+
+
+class StartChecksTests(ACase):
+    """Funded vs the finalized balance, the sell-builder pin and the P1 definition."""
+
+    def live(self, balance=None, funded=500_000_000):
+        write_canary_record(self.tmp / "repo")
+        (self.tmp / "FREEZE.md").write_text("x")
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            def build(self_env):
+                self_env.rpc.accounts[MINT] = mint_value()
+                self_env.rpc.balance = funded if balance is None else balance
+                ex = ax.ArenaExecutor(self_env.rpc, self_env.conf, self_env.kp, now_ms=self_env.clock, root=self_env.root)
+                self_env.seed_clock(ex)
+                return ex
+            with mock.patch.object(AEnv, "build", build):
+                return AEnv(self.tmp, live=True, book_id=A2, replay_only=True, end_ms=ax.SEAL_END_MS, funded_lamports=funded)
+
+    def refused(self, why, **kw):
+        with self.assertRaises(SystemExit) as cm:
+            self.live(**kw)
+        self.assertIn(why, str(cm.exception))
+
+    def test_balance_within_tolerance_starts(self):
+        tol = ax.FUNDED_BALANCE_TOLERANCE_LAMPORTS
+        self.assertEqual(tol, 10_000_000)
+        self.live(balance=500_000_000)
+        self.live(balance=500_000_000 + tol)
+        self.live(balance=500_000_000 - tol)
+
+    def test_balance_outside_tolerance_refuses(self):
+        tol = ax.FUNDED_BALANCE_TOLERANCE_LAMPORTS
+        self.refused("funded_balance_mismatch", balance=500_000_000 + tol + 1)
+        self.refused("funded_balance_mismatch", balance=500_000_000 - tol - 1)
+        self.refused("funded_balance_mismatch", balance=0)
+
+    def test_unreadable_balance_refuses(self):
+        with mock.patch.object(ax.ArenaExecutor, "_funded_balance_problem", ax.ArenaExecutor._funded_balance_problem):
+            e_rpc_error = lambda m, p: (_ for _ in ()).throw(RuntimeError("down"))  # noqa: E731
+            class Dummy:  # a minimal stand-in carrying what the method reads
+                rpc = staticmethod(e_rpc_error)
+                user = "u"
+                funded_lamports = 500_000_000
+                state = type("S", (), {"realized_lamports": 0})()
+            self.assertEqual(ax.ArenaExecutor._funded_balance_problem(Dummy()), "funded_balance_unreadable")
+
+    def test_a_restart_after_a_realized_loss_may_be_lower_by_that_loss(self):
+        class Dummy:
+            rpc = staticmethod(lambda m, p: {"value": 500_000_000 - 30_000_000})
+            user = "u"
+            funded_lamports = 500_000_000
+            state = type("S", (), {"realized_lamports": -30_000_000})()
+        self.assertIsNone(ax.ArenaExecutor._funded_balance_problem(Dummy()))
+        Dummy.state = type("S", (), {"realized_lamports": 0})()
+        self.assertEqual(ax.ArenaExecutor._funded_balance_problem(Dummy()), "funded_balance_mismatch")
+
+    def test_the_balance_read_is_finalized(self):
+        seen = []
+        class Dummy:
+            rpc = staticmethod(lambda m, p: (seen.append((m, p)), {"value": 500_000_000})[1])
+            user = "u"
+            funded_lamports = 500_000_000
+            state = type("S", (), {"realized_lamports": 0})()
+        ax.ArenaExecutor._funded_balance_problem(Dummy())
+        self.assertEqual(seen, [("getBalance", ["u", {"commitment": "finalized"}])])
+
+    def test_sell_pin_matches_on_disk_code(self):
+        self.assertIsNone(ax.sell_pin_problem())
+
+    def test_a_wrong_pin_item_refuses_a_live_start(self):
+        for k in ax.SELL_BUILDER_PIN:
+            if not k.endswith("sha256"):
+                continue
+            bad = {**ax.SELL_BUILDER_PIN, k: "0" * 64}
+            self.assertEqual(ax.sell_pin_problem(bad), f"sell_builder_pin_mismatch:{k}")
+        write_canary_record(self.tmp / "repo")
+        bad = {**ax.SELL_BUILDER_PIN, "symbol_sha256": "0" * 64}
+        with mock.patch.object(ax, "LIVE_BUILT", True), mock.patch.object(ax, "SELL_BUILDER_PIN", bad):
+            self.assertEqual(ax.arena_start_refusal(ax.BOOKS[A2], {"book_id": A2, "replay_only": True, "end_ms": 1, "funded_lamports": 500_000_000},
+                                                    self.tmp / "repo", live=True), "sell_builder_pin_mismatch:symbol_sha256")
+
+    def test_p1_entry_gap_is_the_price_ratio_and_200_bps_reads_200(self):
+        self.assertAlmostEqual(ax.entry_gap_bps(10_200, 10_000), 200.0)  # 2% fewer tokens for the same stake is a 2% higher price
+        self.assertAlmostEqual(ax.entry_gap_bps(102, 100), 200.0)
+        self.assertLess(1e4 * (102 - 100) / 102, 200.0)  # the old (exp - got) / exp read 196
+        self.assertEqual(ax.entry_gap_bps(100, 0), float("inf"))
+        self.assertLess(ax.entry_gap_bps(100, 150), 0)  # better than quoted is negative
+        m = ax.FidelityMonitor()
+        self.assertIsNone([m.note_entry_gap(ax.entry_gap_bps(102, 100)) for _ in range(10)][-1])  # exactly 200 is not above 200
+        m2 = ax.FidelityMonitor()
+        self.assertEqual([m2.note_entry_gap(ax.entry_gap_bps(1021, 1000)) for _ in range(10)][-1], ax.H_ENTRY_GAP)

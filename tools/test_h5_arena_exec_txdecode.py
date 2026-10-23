@@ -13,7 +13,7 @@ from tools import h5_arena_executor as ax
 from tools import h5_executor as h
 from tools import probe_live as pl
 from tools import pumpswap_tx as tx
-from tools.test_h5_arena_executor import A2, ACase, AEnv
+from tools.test_h5_arena_executor import A2, ACase, AEnv, write_canary_record
 from tools.test_h5_executor import Q, STAKE, buy_args, sell_args
 from tools.test_probe_executor import BASE0
 from tools.test_h5_executor_rules import quote_out
@@ -47,10 +47,10 @@ def wire(b64: str) -> dict:
 
 class TxDecodeTests(ACase):
     def live_env(self, **kw):
-        (self.tmp / "repo" / "DEC").mkdir(parents=True, exist_ok=True)
-        (self.tmp / "repo" / ax.CANARY_DEC_FILE).write_text("OWNER_CANARY_CONFIRMED: test\n")
+        write_canary_record(self.tmp / "repo", A2, NEW)
         (self.tmp / "FREEZE.md").write_text("x")
         kw.setdefault("book_id", A2)
+        kw.setdefault("funded_lamports", 500_000_000)
         e = AEnv(self.tmp, live=True, replay_only=True, end_ms=ax.SEAL_END_MS, **kw)
         e.ex.feed_verified, e.ex._start_ms, e.ex.slices_taken = True, 0, 1
         e.ex.abook = dataclasses.replace(e.ex.abook, clock_start_ms=0)
