@@ -25,7 +25,7 @@ def write_day(root: Path, rows: list[dict]) -> Path:
 def rows_for(clock: Clock) -> list[dict]:
     def t(pool, **kw):
         return shadow_trigger(clock, pool=pool, mint="M" + pool, **kw)
-    return [{"type": "start", "rule": "H5-BOOSTFLOOR v1", "code_sha": ax.A2_SHA, "start_ms": 1, "t_ms": 1},
+    return [{"type": "start", "rule": "H5-BOOSTFLOOR v1", "code_sha": ax.A2_SHA, "dirty": False, "start_ms": 1, "t_ms": 1},
             t("P1"), t("P2", v_print=None), t("P3", h5_look2_sealed=True), t("P1"), t("P4", s0_t_recv_ms=5),
             t("P5", t_detect_ms=0)]
 
@@ -90,7 +90,12 @@ class ReplayTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             rp.run(d, "h5v1-boostfloor-a2", expect_code_sha="0" * 40)
         f = next(d.glob("h5-shadow-*.jsonl"))
-        f.write_text(f.read_text().replace('"code_sha"', '"dirty": true, "code_sha"', 1))
+        good = f.read_text()
+        for bad in ('"dirty": true', '"dirty": "1"', '"dirty": null', '"dirty": 0'):
+            f.write_text(good.replace('"dirty": false', bad, 1))
+            with self.assertRaises(SystemExit, msg=bad):
+                rp.run(d, "h5v1-boostfloor-a2", expect_code_sha=ax.A2_SHA)
+        f.write_text(good.replace('"dirty": false, ', "", 1))  # a missing key refuses
         with self.assertRaises(SystemExit):
             rp.run(d, "h5v1-boostfloor-a2", expect_code_sha=ax.A2_SHA)
 

@@ -253,62 +253,131 @@ class TwinPinTests(LiveCase):
 
 
 class RealWriterTests(LiveCase):
-    """Fixtures are the REAL output of tools/arena_twin_writer (QP 10-23 ruling 4): a float pnl, and an H5-shaped ledger row."""
+    """Fixtures are the REAL output of tools/arena_twin_writer on an H5-shaped ledger row and a SYNTHETIC shadow strip (no tape is read)."""
 
     DEC = 1_790_000_000_000
     STAKE = 300_000_000
+    QE, BE, QX, BX = 18_000_000_000.0, 1.8e15, 18_300_000_000.0, 1.77e15
+    LAND, XTRIG, EL = 100, 130, 2
 
-    def h5_row(self, mint, stake_sol=0.3, state="filled", nofail=-1_234_567.5):
-        return {"trade_id": f"b:pool:{stake_sol}", "bot_id": "h5v1-boostfloor-a2", "frozen_sha": "x", "decision_ms": self.DEC, "exit_ms": self.DEC + 330_000, "pool": "pool",
-                "mint": mint, "prog": "pumpswap", "stake_sol": stake_sol, "meta": {"schema": "arena_h5_trade_v1", "stack": "DEC-031-rev2"},
+    def cost(self):
+        from tools import arena_h5_cost as c
+        return c
+
+    def nofail(self):
+        return self.cost().deciding_round_trip(self.STAKE, self.QE, self.BE, self.QE / self.BE, self.QX, self.BX)["pnl"]
+
+    def h5_row(self, mint, stake_sol=0.3, state="filled", nofail=None, frozen_sha=None):
+        nofail = self.nofail() if nofail is None else nofail
+        return {"trade_id": f"b:pool:{stake_sol}", "bot_id": "h5v1-boostfloor-a2", "frozen_sha": frozen_sha or ax.A2_SHA, "decision_ms": self.DEC, "exit_ms": self.DEC + 330_000,
+                "pool": "pool", "mint": mint, "prog": "pumpswap", "stake_sol": stake_sol,
+                "meta": {"schema": "arena_h5_trade_v1", "stack": "DEC-031-rev2", "spot": self.QE / self.BE, "landing_slots": {"1p9": self.LAND}, "exit_trigger_slots": {"1p9": self.XTRIG},
+                         "exit_lag_slots": self.EL},
                 "legs": {"flat_1p9": {"net_lamports": nofail * 0.85, "nofail_lamports": nofail, "state": state, "p_fail": 0.15}}}
 
-    def run_writer(self, e, rows):
-        import hashlib
+    def strip_dir(self, d, strip=True):
+        sd = d / "shadow-2026-09-20-synthetic"
+        sd.mkdir(exist_ok=True)
+        recs = [{"type": "start", "code_sha": ax.A2_SHA, "dirty": False}]
+        if strip:
+            recs.append({"type": "strip", "pool": "pool", "from_slot": 90, "truncated": False, "buys": [], "post_last": [140, self.QX, self.QX, self.BX],
+                         "rows": [[101, self.QE, self.QE, self.BE], [133, self.QX, self.QX, self.BX]]})
+        (sd / "h5-shadow-2026-09-20T12.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
+        return sd
+
+    def run_writer(self, e, rows, strip=True, with_inputs=True, expect_sha=None, fees=None):
+        from datetime import datetime, timezone
         from tools import arena_twin_writer as tw
         d = Path(e.conf["parity_twins_file"]).parent
         led = d / "ledger"
         led.mkdir(exist_ok=True)
-        from datetime import datetime, timezone
         day = datetime.fromtimestamp(self.DEC / 1000, timezone.utc).strftime("%Y-%m-%d")
         (led / f"trades-{day}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
         trips = d / "trips-in.jsonl"
-        trips.write_text(json.dumps({"trip_id": MINT, "decision_ms": self.DEC, "stake_lamports": self.STAKE}) + "\n")
+        trips.write_text(json.dumps({"trip_id": MINT, "decision_ms": self.DEC, "stake_lamports": self.STAKE, **(fees or {})}) + "\n")
         ch, _ = ax.twin_pins(ax.BOOKS["h5v1-boostfloor-a2"])
-        rc = tw.main(["--trips", str(trips), "--ledger-dir", str(led), "--bot-id", "h5v1-boostfloor-a2", "--out", e.conf["parity_twins_file"], "--config-hash", ch,
-                      "--now-ms", str(e.clock())])
-        return rc
+        args = ["--trips", str(trips), "--ledger-dir", str(led), "--bot-id", "h5v1-boostfloor-a2", "--out", e.conf["parity_twins_file"], "--config-hash", ch, "--now-ms", str(e.clock())]
+        if with_inputs:
+            args += ["--shadow-dir", str(self.strip_dir(d, strip)), "--frozen-root", str(Path(tw.__file__).parent.parent), "--expect-frozen-sha", expect_sha or ax.A2_SHA]
+        return tw.main(args)
 
-    def test_the_h5_adapter_does_not_crash_and_a_real_float_row_opens_the_gate(self):
+    def written(self, e):
+        return json.loads(Path(e.conf["parity_twins_file"]).read_text().splitlines()[0])
+
+    def case(self, rows=None, **kw):
         e = LiveCase.live(self)
         e.ex.gates.runner = lambda argv: 0
         e.open_position()
-        self.assertEqual(self.run_writer(e, [self.h5_row(MINT)]), 0)
-        row = json.loads(Path(e.conf["parity_twins_file"]).read_text().splitlines()[0])
+        self.assertEqual(self.run_writer(e, rows if rows is not None else [self.h5_row(MINT)], **kw), 0)
+        return e
+
+    def test_real_writer_output_has_prices_and_opens_the_gate(self):
+        e = self.case()
+        row = self.written(e)
         self.assertIsInstance(row["pnl_lamports"], float)
-        self.assertEqual(row["pnl_lamports"], -1_234_567.5)
-        self.assertEqual(row["pnl_rent0_lamports"], -1_234_567.5 + 2_039_280)
-        self.assertEqual(row["stack"], "DEC-031-rev2")
-        self.assertIsNone(e.ex.gates.twin_refusal(e.clock()))  # the real writer output + the real run record carry the pins
+        self.assertAlmostEqual(row["pnl_lamports"], self.nofail())
+        self.assertEqual(row["pnl_rent0_lamports"], row["pnl_lamports"] + 2_039_280)
+        self.assertGreater(row["entry_price"], 0)
+        self.assertGreater(row["exit_price"], 0)
+        # units: lamports per raw token, entry = stake / tokens bought (about the pool price 1e-5 here)
+        self.assertAlmostEqual(row["entry_price"], self.QE / self.BE, delta=self.QE / self.BE * 0.06)  # 0.3 SOL into an 18 SOL pool: about 3% impact, plus fee and haircut
+        self.assertIsNone(e.ex.gates.twin_refusal(e.clock()))
 
-    def price_failed_case(self, rows):
-        e = LiveCase.live(self)
-        e.ex.gates.runner = lambda argv: 0
-        e.open_position()
-        self.assertEqual(self.run_writer(e, rows), 0)
-        row = json.loads(Path(e.conf["parity_twins_file"]).read_text().splitlines()[0])
-        self.assertTrue(row["price_failed"])
+    def test_fee_delta_is_explicit_and_documented(self):
+        e = self.case()
+        row = self.written(e)
+        self.assertEqual(row["twin_send_lamports"], 505_000)
+        self.assertEqual(row["fee_delta_lamports"], 2 * (505_000 - 60_000))  # no trip fee given: the writer default 60,000 per send
+        from tools import arena_twin_writer as tw
+        self.assertIn("fee_delta_lamports", tw.price_h5_trip.__doc__)
+
+    def test_fee_delta_at_160k_per_send_is_690k(self):
+        e = self.case(fees={"buy_fee_lamports": 160_000, "sell_fee_lamports": 160_000})
+        self.assertEqual(self.written(e)["fee_delta_lamports"], 690_000)
+
+    def test_a_row_of_another_frozen_sha_is_price_failed(self):
+        e = self.case(rows=[self.h5_row(MINT, frozen_sha="0" * 40)])
+        self.assertEqual(self.written(e)["reason"], "h5_row_frozen_sha_not_the_books")
         self.assertEqual(e.ex.gates.twin_refusal(e.clock()), "twin_gate:open_untwinned_cap_1")
 
-    def test_an_h5_row_at_another_stake_is_price_failed_and_refuses(self):
-        self.price_failed_case([self.h5_row(MINT, stake_sol=0.25)])
+    def test_a_rebuilt_pnl_that_differs_by_more_than_one_lamport_is_price_failed(self):
+        row = self.case(rows=[self.h5_row(MINT, nofail=self.nofail() + 5)])
+        self.assertEqual(self.written(row)["reason"], "h5_price:rebuilt_pnl_differs_from_row")
+
+    def test_a_rebuilt_pnl_within_one_lamport_passes(self):
+        e = self.case(rows=[self.h5_row(MINT, nofail=self.nofail() + 0.5)])
+        self.assertNotIn("price_failed", self.written(e))
+
+    def test_no_strip_is_price_failed(self):
+        self.assertEqual(self.written(self.case(strip=False))["reason"], "h5_price:no_strip_record")
+
+    def test_no_inputs_is_price_failed(self):
+        self.assertEqual(self.written(self.case(with_inputs=False))["reason"], "h5_no_price_inputs")
+
+    def test_a_frozen_root_whose_cost_module_differs_is_refused(self):
+        import shutil
+        import tempfile
+        from tools import arena_twin_writer as tw
+        e = LiveCase.live(self)
+        with tempfile.TemporaryDirectory() as td:
+            shutil.copytree(Path(tw.__file__).parent, Path(td) / "tools", ignore=shutil.ignore_patterns("__pycache__", "fixtures"))
+            cf = Path(td) / "tools" / "arena_h5_cost.py"
+            cf.write_text(cf.read_text() + "\n# changed\n")
+            from tools import arena_h5_twin_prices as P
+            with self.assertRaises(P.PriceFailed):
+                P.load_frozen(Path(td), __import__("hashlib").sha256((Path(tw.__file__).parent / "arena_h5_cost.py").read_bytes()).hexdigest())
 
     def test_an_unfilled_h5_row_is_price_failed_and_refuses(self):
-        self.price_failed_case([self.h5_row(MINT, state="guarded")])
+        e = self.case(rows=[self.h5_row(MINT, state="guarded")])
+        self.assertTrue(self.written(e)["price_failed"])
+        self.assertEqual(e.ex.gates.twin_refusal(e.clock()), "twin_gate:open_untwinned_cap_1")
+
+    def test_an_h5_row_at_another_stake_is_price_failed(self):
+        e = self.case(rows=[self.h5_row(MINT, stake_sol=0.25)])
+        self.assertEqual(self.written(e)["reason"], "h5_no_row_at_canary_stake")
 
     def test_a_wrong_h5_pin_refuses_the_whole_run(self):
         from tools import arena_twin_writer as tw
-        e = LiveCase.live(self)
         self.assertEqual(tw.main(["--trips", "/nonexistent", "--ledger-dir", "/x", "--bot-id", "b", "--out", "/x/o", "--config-hash", "0" * 64]), 2)
 
     def test_priced_numbers(self):
