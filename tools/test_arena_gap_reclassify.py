@@ -24,13 +24,20 @@ def write(tmp, rows, name="tape-2026-10-23T00.jsonl"):
     return str(p)
 
 
-def run(tmp, rows, grace=0):
-    sc = G.scan([write(tmp, rows)])
+T0 = 1_000_000
+SENT = 10**9
+
+
+def sentinels(t=T0 + 500_000):
+    return [trade("pumpswap", SENT, t), trade("pumpfun", SENT, t)]
+
+
+def run(tmp, rows, grace=120, sentinel=True):
+    rows = rows + (sentinels() if sentinel else [])
+    sc = G.scan([write(tmp, rows)], grace)
     recs = G.reclassify(sc, grace)
     return {(r.get("prog"), r["type"], r.get("from_slot")): r for r in recs}, recs
 
-
-T0 = 1_000_000
 
 
 def test_skew_gap_fully_covered_by_late_rows(tmp_path):
@@ -84,7 +91,7 @@ def test_non_data_rows_do_not_cover_and_create_does(tmp_path):
 
 def test_tape_cut_is_unresolved_and_not_in_merged_ranges(tmp_path):
     rows = [jump("pumpswap", 100, 140, T0, T0 + 200), trade("pumpswap", 140, T0 + 300)]
-    by, _ = run(tmp_path, rows, grace=120)
+    by, _ = run(tmp_path, rows, sentinel=False)
     assert by[("pumpswap", "gap", 100)]["class"] == "unresolved_tape_cut"
     p = by[("pumpswap", "program", None)]
     assert p["unresolved_tape_cut"] == 1 and p["uncovered_ranges_merged"] == []
@@ -114,12 +121,14 @@ def test_deterministic_sha_and_order_independent(tmp_path):
     rows = [jump("pumpswap", 100, 140, T0, T0 + 200)] + [trade("pumpswap", s, T0 + 9000) for s in range(101, 120)] + [trade("pumpswap", 150, T0 + 9000)]
     a = write(tmp_path, rows, "tape-2026-10-23T00.jsonl")
     b = write(tmp_path, [trade("pumpswap", s, T0 + 9000) for s in range(120, 140)], "tape-2026-10-23T01.jsonl")
-    l1 = G.render(G.reclassify(G.scan([a, b]), 0))
-    l2 = G.render(G.reclassify(G.scan([b, a, a]), 0))
+    c = write(tmp_path, sentinels(), "tape-2026-10-23T02.jsonl")
+    l1 = G.render(G.reclassify(G.scan([a, b, c]), 120))
+    l2 = G.render(G.reclassify(G.scan([c, b, a, a]), 120))
     assert l1 == l2
     last = json.loads(l1[-1])
     assert last["type"] == "sha256" and last["lines"] == len(l1) - 1
-    assert json.loads(l1[0])["class"] == "covered"  # coverage is read across files
+    assert next(json.loads(x) for x in l1 if '"type":"gap"' in x)["class"] == "covered"  # coverage is read across files
+    assert json.loads(l1[0]) == {"type": "header", **{k: v for k, v in json.loads(l1[0]).items() if k != "type"}} and json.loads(l1[0])["grace_s"] == 120
 
 
 def test_refuses_policy_paths_and_missing_files(tmp_path, capsys):
@@ -128,6 +137,7 @@ def test_refuses_policy_paths_and_missing_files(tmp_path, capsys):
     p = d / "tape-2026-10-23T00.jsonl"
     p.write_text("")
     assert G.main(["--tape", str(p)]) == 2
+    assert G.main(["--tape", str(tmp_path / "tape-2026-10-23T05.jsonl")]) == 2
     assert G.main(["--tape", str(tmp_path / "nope.jsonl")]) == 2
 
 
@@ -142,7 +152,8 @@ def test_cli_counts_only_and_zst(tmp_path, capsys):
         Path(p).unlink()
         paths = [p + ".zst"]
     out = tmp_path / "o.jsonl"
-    assert G.main(["--tape", *paths, "--grace-s", "0", "--counts-only", "--out", str(out)]) == 0
+    sent = write(tmp_path, sentinels(), "tape-2026-10-23T01.jsonl")
+    assert G.main(["--tape", *paths, sent, "--counts-only", "--out", str(out)]) == 0
     recs = [json.loads(x) for x in out.read_text().splitlines()]
     assert not any(r["type"] == "gap" for r in recs)
     ps = next(r for r in recs if r["type"] == "program" and r["prog"] == "pumpswap")
@@ -153,6 +164,81 @@ def test_outcome_fields_are_never_needed(tmp_path):
     # rows carrying outcome-like fields change nothing: only prog/slot/t_recv_ms are read
     r1 = [jump("pumpswap", 100, 140, T0, T0 + 1)] + [trade("pumpswap", s, T0 + 9000) for s in range(101, 140)] + [trade("pumpswap", 141, T0 + 9000)]
     r2 = [dict(r, pnl_sol=5, sol_lamports=99) if r["type"] == "trade" else r for r in r1]
-    a = G.render(G.reclassify(G.scan([write(tmp_path, r1, "a.jsonl")]), 0))
-    b = G.render(G.reclassify(G.scan([write(tmp_path, r2, "b.jsonl")]), 0))
-    assert a == b
+    a = G.render(G.reclassify(G.scan([write(tmp_path, r1 + sentinels(), "tape-2026-10-23T00.jsonl")]), 120))
+    b = G.render(G.reclassify(G.scan([write(tmp_path, r2 + sentinels(), "tape-2026-10-24T00.jsonl")]), 120))
+    assert a[1:-1] == b[1:-1]  # header differs only by the hour
+
+
+def test_f2_late_600s_row_does_not_cover(tmp_path):
+    # slots 101..139 arrive 600 s after to_ms: not covered, whether or not tape runs far past the gap
+    rows = [jump("pumpswap", 100, 140, T0, T0 + 200)] + [trade("pumpswap", s, T0 + 200 + 600_000) for s in range(101, 140)]
+    by_long, _ = run(tmp_path, rows)  # tape runs to +700 s
+    rows_cut = rows[:1] + [trade("pumpswap", s, T0 + 130_000) for s in range(101, 120)]
+    by_cut, _ = run(tmp_path, rows_cut + [trade("pumpswap", SENT, T0 + 400_000)])
+    assert by_long[("pumpswap", "gap", 100)]["class"] == "empty"
+    assert by_long[("pumpswap", "gap", 100)]["late_until_ms"] is None
+    # same gap, tape cut at +130 s versus long tape: identical class for the same covering set
+    assert by_cut[("pumpswap", "gap", 100)]["class"] == "empty"
+
+
+def test_grace_boundary_inclusive_and_late_until(tmp_path):
+    g = 120_000
+    rows = [jump("pumpswap", 100, 132, T0, T0 + 200)]
+    rows += [trade("pumpswap", s, T0 + 200 + g) for s in range(101, 131)]       # exactly at the limit: covers
+    rows += [trade("pumpswap", 131, T0 + 200 + g + 1)]                           # one ms past: does not
+    by, _ = run(tmp_path, rows)
+    gp = by[("pumpswap", "gap", 100)]
+    assert gp["class"] == "partial" and gp["uncovered_ranges"] == [[131, 131]]
+    assert gp["late_until_ms"] == T0 + 200 + g
+    by2, _ = run(tmp_path, [jump("pumpswap", 100, 132, T0, T0 + 200)] + [trade("pumpswap", s, T0 + 300) for s in range(101, 132)])
+    assert by2[("pumpswap", "gap", 100)]["class"] == "covered" and by2[("pumpswap", "gap", 100)]["late_until_ms"] == T0 + 300
+
+
+def test_endpoints_are_not_skipped(tmp_path):
+    # rows only at from_slot and to_slot cover nothing; the skipped range is exactly from+1..to-1
+    rows = [jump("pumpswap", 100, 140, T0, T0 + 200), trade("pumpswap", 100, T0 + 10), trade("pumpswap", 140, T0 + 10)]
+    by, _ = run(tmp_path, rows)
+    g = by[("pumpswap", "gap", 100)]
+    assert g["skipped_slots"] == 39 and g["uncovered_ranges"] == [[101, 139]] and g["class"] == "empty"
+
+
+def test_noncontiguous_or_duplicate_hours_refused(tmp_path):
+    a = write(tmp_path, sentinels(), "tape-2026-10-23T00.jsonl")
+    c = write(tmp_path, sentinels(), "tape-2026-10-23T02.jsonl")
+    assert G.main(["--tape", a, c]) == 2
+    d = write(tmp_path, sentinels(), "tape-2026-10-23T00.jsonl.zst")
+    assert G.main(["--tape", a, d]) == 2
+    assert G.main(["--tape", write(tmp_path, [], "other.jsonl")]) == 2
+
+
+def test_max_gap_slots_refused(tmp_path):
+    p = write(tmp_path, [jump("pumpswap", 100, 100 + G.MAX_GAP_SLOTS + 5, T0, T0 + 1)])
+    assert G.main(["--tape", p]) == 2
+
+
+def test_out_goes_through_guard(tmp_path):
+    p = write(tmp_path, sentinels())
+    bad = tmp_path / "bots.json"
+    assert G.main(["--tape", p, "--out", str(bad)]) == 2 and not bad.exists()
+
+
+def test_windows_counts_and_header(tmp_path):
+    hr = 3_600_000
+    base = 1_792_400_400_000 // hr * hr  # an hour boundary; tape hours named for it below
+    from datetime import datetime, timezone
+    nm = lambda i: "tape-" + datetime.fromtimestamp((base + i * hr) / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H") + ".jsonl"  # noqa: E731
+    files = []
+    for i in range(6):
+        rows = [trade("pumpswap", SENT + i, base + i * hr + 10), trade("pumpfun", SENT + i, base + i * hr + 10)]
+        if i == 1:  # hour 1: a covered gap
+            rows += [jump("pumpswap", 100, 140, base + hr + 1000, base + hr + 1200)] + [trade("pumpswap", s, base + hr + 2000) for s in range(101, 140)]
+        if i == 3:  # hour 3: an empty gap
+            rows += [jump("pumpswap", 500, 540, base + 3 * hr + 1000, base + 3 * hr + 1200)]
+        files.append(write(tmp_path, rows, nm(i)))
+    files.append(write(tmp_path, [trade("pumpswap", SENT + 9, base + 6 * hr + 500_000)], nm(6)))
+    recs = G.reclassify(G.scan(files, 120), 120, (2, 4))
+    w = {(r["prog"], r["hours"]): r for r in recs if r["type"] == "windows"}
+    # 7 hours: 2 h windows = 6 starts; those touching hour 3 (starts 2h,3h) are bad
+    assert w[("pumpswap", 2)]["windows"] == 6 and w[("pumpswap", 2)]["all_covered"] == 4
+    assert w[("pumpswap", 4)]["windows"] == 4 and w[("pumpswap", 4)]["all_covered"] == 0
+    assert w[("pumpfun", 4)]["all_covered"] == 4
