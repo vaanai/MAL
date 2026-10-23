@@ -34,11 +34,11 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 28 | 20 | 1 |
 | `desk-read` | 1 | 43 | 0 |
-| `explored-no-survivor` | 12 | 6 | 1 |
+| `explored-no-survivor` | 16 | 6 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 133 | 75 | 2 |
+| **all** | 137 | 75 | 2 |
 
-The file holds 460 rows: the 210 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 464 rows: the 214 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -342,6 +342,10 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `lib-c-R2.SB-H10` | SB-H10 (fee-share count, KC-B) | `dead-as-frozen` | "DROPPED" by count (KC-B DROP). Share with total fee at or below 35 bps = 0.25; share at or above 100 bps = 0.625; bar DROP at or above 0.50. |
 | `lib-c-R3.union` | Union (second-feed) gate on H5 triggers | `explored-no-survivor` | No status word in source; mapped to explored-no-survivor by librarian choice. "A gate on the union field would have changed no live decision in these 24 h." "No phase-2 proposal on base_breaks_unresolved_settled_union will be made: by these counts it recovers nothing." Websocket-only unmatched prints: 46 not found, 3 found, 1 error across two samples that may overlap, so at … |
 | `w4-gap-xpool-1` | XPOOL: same-mint sibling-pool dislocation, buy the cheaper pool | `explored-no-survivor` | Killed at the structure count, nothing priced: 0 attempts/day on the four exploration blocks (552 h) and 0 on 58 closed October hours. 190 mints have two WSOL pools but 0 of 173 sibling pairs had R real quote >= 10 SOL (dust siblings). October: 4 of 20 pairs reached 10 SOL, gaps look like V-scale mismatches, all 24 raw triggers refused out of the V band. |
+| `hunt28-breadth-1` | BREADTH: buy the burst of distinct buyers (b5, b8, b12) | `explored-no-survivor` | FAIL on all three cells. 0.25 SOL, 160,000 per send: flat15 mean -3.55% / -4.52% / -6.12%, pressure -2.89% / -3.66% / -4.95%, 0 of 25 days positive, no-fail mean already negative (-4.2% to -7.2%); 992 to 3,274 attempts a day. More breadth is worse. Screen numbers. |
+| `hunt28-accum-1` | ACCUM: follow one wallet accumulating inside a pool (a3x3, a4x6, a3x10) | `explored-no-survivor` | FAIL on all three cells. flat15 mean -4.44% / -4.77% / -4.50%, pressure -3.80% / -4.12% / -3.92%, 0 of 25 days positive, 599 to 1,559 attempts a day. Single-wallet accumulation carries no edge over the crowd at these stops. Screen numbers. |
+| `hunt28-revive-1` | REVIVE: a dormant pool wakes with two fresh buyers (r2h, r6h, r12h) | `explored-no-survivor` | FAIL on all three cells, the least bad family. flat15 mean -1.18% / -1.47% / -1.10%, pressure -1.02% / -1.24% / -0.94%, 6 of 23-24 days positive, ex-top-3 negative; 16 to 97 attempts a day. Screen numbers. |
+| `hunt28-sellabs-1` | SELLABS: a big sell absorbed by fresh buyers, entered below the pre-sell price (s1, s2 … | `explored-no-survivor` | FAIL on all three cells. flat15 mean -2.82% / -2.72% / -2.69%, pressure -2.39% / -2.32% / -2.28%, 0 of 25 days positive; take profit fires on 70% of exits but the 28% stops cost more; 951 to 2,863 attempts a day. Screen numbers. |
 
 ## Duplicate rows
 
