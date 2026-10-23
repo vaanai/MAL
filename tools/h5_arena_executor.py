@@ -68,6 +68,8 @@ C0_TIER = {  # DEC-032 s3, the C0 canary table, PINNED in code per canary book. 
 }
 FUNDED_MIN_LAMPORTS, FUNDED_MAX_LAMPORTS = 350_000_000, 1_000_000_000  # DEC-032 s3: "Wallet needed: funded 0.35 to 1.00 SOL"
 FLOOR_BELOW_FUNDED_LAMPORTS = 250_000_000  # DEC-032 s3: floor = max(0.05 SOL, funded - 0.25 SOL)
+A3_RECORD_DEFAULT = "/data/mal/structure-monitor/daily.jsonl"  # tools/pump_structure_monitor.py DEFAULT_OUT: one JSON record per line, the newest is the state
+A3_POLL_MS = 60_000
 GAP_HOLD_MS = 600_000  # DEC-032 s5 item 2: after a feed gap, buys restart only once the feed has been gap-free for 10 minutes
 SELL_RESERVE_SENDS = 10  # the worst case of one exit: the ladder's sends (escalated resends included), each at the book's top priority
 SELL_RESERVE_FLOOR_LAMPORTS = 1_600_000  # 10 sends x (155,000 + 5,000): the p155 worst case (QP 10-23 gap d); never below it
@@ -273,6 +275,26 @@ def sell_reserve_lamports(book: Book) -> int:
     return max(SELL_RESERVE_FLOOR_LAMPORTS, SELL_RESERVE_SENDS * (top + h.tx.BASE_FEE_PER_SIGNATURE))
 
 
+def a3_record_problem(path: Path) -> tuple[list[str], str | None]:
+    """(halt reasons, problem) from the NEWEST line of the A3 daily record (DEC-032 s5 item 1). A halt reason is any `halt.flags.*.halt` true (pins_changed
+    included) or `warn.flags.program_changed.warn` true (a pump / PumpSwap / fees programdata hash differs from its pin). A missing, empty, unparsable or
+    flag-less record is a problem, not a clear: the caller latches (fail closed)."""
+    try:
+        with path.open("rb") as fh:
+            lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+        rec = json.loads(lines[-1])
+    except (OSError, ValueError, IndexError):
+        return [], "a3_record_unreadable"
+    flags = ((rec.get("halt") or {}).get("flags")) if isinstance(rec, dict) and isinstance(rec.get("halt"), dict) else None
+    if not isinstance(flags, dict) or not flags:
+        return [], "a3_record_no_halt_flags"
+    why = sorted(k for k, v in flags.items() if not (isinstance(v, dict) and isinstance(v.get("halt"), bool)) or v["halt"])
+    pc = (((rec.get("warn") or {}).get("flags") or {}).get("program_changed")) if isinstance(rec.get("warn"), dict) else None
+    if isinstance(pc, dict) and pc.get("warn") is True:
+        why.append("program_changed")
+    return why, None
+
+
 def mint_screen_record(rpc: Callable[[str, list], Any], mint: str) -> dict[str, Any]:
     """The r4b-style record of one mint from ONE getAccountInfo (base64) on the executor's own RPC (no key handled here). Any failure is fetch_ok false,
     which classify_record denies (deny by default, DEC-031 Am.2 item 6)."""
@@ -365,6 +387,10 @@ class ArenaExecutor(h.H5Executor):
         if days is not None:
             cfg["max_days"] = min(float(days), (book.end_ms_seal - book.clock_start_ms) / 86_400_000)
         self.funded_lamports: int | None = cfg.get("funded_lamports")
+        self.cfg_a3_file = cfg.get("a3_record_file") or (A3_RECORD_DEFAULT if keypair is not None else None)
+        self.cfg_exit_gap_file = cfg.get("exit_gap_file")
+        self._a3_polled_ms = -A3_POLL_MS
+        self._exit_gap_off = 0
         self.mint_screens: dict[str, str | None] = {}  # mint -> close-blocked reason (None = clear), written by the pre-send screen
         self.close_blocked_refused = 0
         self.monitor = FidelityMonitor()
@@ -559,6 +585,7 @@ class ArenaExecutor(h.H5Executor):
                 kept.append(line)
             return kept
 
+        self.a3_tick(self.now_ms())
         h.tail_lines = screened  # swapped for this call only; the loop is single-threaded
         try:
             return super().intent_tick()
@@ -586,6 +613,45 @@ class ArenaExecutor(h.H5Executor):
         if name:
             self._latch(name, **detail)
 
+    def a3_tick(self, now: int) -> None:
+        """Poll the A3 daily record (throttled) and latch H_A3 on any halt flag, pins_changed, program_changed or a record that cannot be read. Live runs
+        poll the monitor's default file; a dry run polls only a configured `a3_record_file` (so replays never depend on the host's file)."""
+        path = self.cfg_a3_file
+        if path is None or now - self._a3_polled_ms < A3_POLL_MS:
+            return
+        self._a3_polled_ms = now
+        why, problem = a3_record_problem(Path(path))
+        if problem:
+            self.latch_external(H_A3, why=problem)
+        elif why:
+            self.latch_external(H_A3, why="a3_flags", flags=why)
+
+    def ingest_exit_gap(self, bps_worse: float, mint: str = "") -> None:
+        """One exit gap (bps the live sell received below its paper twin) from the parity join; the rolling-free check of FidelityMonitor decides."""
+        name = self.monitor.note_exit_gap(bps_worse)
+        if name:
+            self.latch_external(name, mint=mint, n=len(self.monitor.exit_gaps))
+
+    def exit_gap_tick(self) -> None:
+        """Tail the parity join's exit-gap file (`exit_gap_file`, JSON lines {"mint", "exit_gap_bps"}); each new line goes through ingest_exit_gap."""
+        path = self.cfg_exit_gap_file
+        if path is None:
+            return
+        try:
+            data = Path(path).read_bytes()
+        except OSError:
+            return
+        chunk, self._exit_gap_off = data[self._exit_gap_off:], len(data)
+        for line in chunk.decode("utf-8", "replace").splitlines():
+            try:
+                row = json.loads(line)
+                bps = row["exit_gap_bps"]
+            except (ValueError, KeyError, TypeError):
+                self._alert("exit_gap_row_unreadable", "")
+                continue
+            if isinstance(bps, (int, float)) and not isinstance(bps, bool):
+                self.ingest_exit_gap(float(bps), str(row.get("mint") or ""))
+
     def latch_external(self, name: str, **detail: Any) -> None:
         """For the checks that live outside this process (the parity join's exit gap, A3 pins_changed / program_changed)."""
         if name not in ARENA_HALTS:
@@ -597,6 +663,8 @@ class ArenaExecutor(h.H5Executor):
         super()._fire_sell(mint, pos, est, emergency)
 
     def exit_tick(self, now: int) -> None:
+        self.a3_tick(now)
+        self.exit_gap_tick()
         super().exit_tick(now)
         for mint, pos in self.state.open.items():
             if pos.get("stuck") and mint not in self.monitor.stuck:

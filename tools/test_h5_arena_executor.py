@@ -40,6 +40,12 @@ def mint_value(owner: str = ax.mf.SPL_TOKEN_PROGRAM, freeze: bool = False, ext_t
     return {"data": [base64.b64encode(bytes(raw)).decode(), "base64"], "owner": owner, "lamports": 1, "executable": False}
 
 
+def a3_rec(**halt_true) -> dict:
+    names = ("pins_changed", "boost_disabled", "boost_share_low", "boost_budget_shift", "boost_slices_shift", "synthetic_share_high")
+    return {"run_utc": "2026-10-23T00:00:00Z", "halt": {"flags": {n: {"halt": n in halt_true, "evaluated": True, "reason": "x"} for n in names}},
+            "warn": {"flags": {"program_changed": {"warn": bool(halt_true.get("program_changed")), "evaluated": True, "reason": "x"}}}}
+
+
 class AEnv(Env):
     book_id = A2
 
@@ -55,7 +61,9 @@ class ACase(Case):
 
     def setUp(self):
         super().setUp()
-        for patcher in (mock.patch.object(ax, "V2_RULE_SOURCE", self.tmp / "FREEZE.md"),):
+        (self.tmp / "a3-default.jsonl").write_text(json.dumps(a3_rec()) + "\n")  # never the host's real file
+        for patcher in (mock.patch.object(ax, "V2_RULE_SOURCE", self.tmp / "FREEZE.md"),
+                        mock.patch.object(ax, "A3_RECORD_DEFAULT", str(self.tmp / "a3-default.jsonl"))):
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -933,3 +941,84 @@ class StrandTests(ACase):
             pos["abandoned"] = True
             e.ex.exit_tick(e.clock())
             self.assertIn(ax.H_STRAND, e.ex.counters.halts)
+
+
+class ExternalLatchTests(ACase):
+    """Gap (g): latch_external is wired to the A3 record and the exit-gap input."""
+
+    def a3_env(self, rec_text):
+        f = self.tmp / "a3.jsonl"
+        f.write_text(rec_text)
+        return self.env(a3_record_file=str(f)), f
+
+    def test_clean_record_latches_nothing_and_the_newest_line_decides(self):
+        e, f = self.a3_env(json.dumps(a3_rec(pins_changed=True)) + "\n" + json.dumps(a3_rec()) + "\n")
+        e.ex.a3_tick(e.clock())
+        self.assertNotIn(ax.H_A3, e.ex.counters.halts)
+
+    def test_pins_changed_latches_the_a3_halt_and_refuses_buys(self):
+        e, f = self.a3_env(json.dumps(a3_rec(pins_changed=True)) + "\n")
+        e.ex.exit_tick(e.clock())
+        self.assertIn(ax.H_A3, e.ex.counters.halts)
+        self.assertEqual(e.ex.counters.halts[ax.H_A3]["flags"], ["pins_changed"])
+        e.fire()
+        self.assertEqual(e.refusals(), [ax.H_A3])
+
+    def test_program_changed_warn_latches(self):
+        e, f = self.a3_env(json.dumps(a3_rec(program_changed=True)) + "\n")
+        e.ex.a3_tick(e.clock())
+        self.assertEqual(e.ex.counters.halts[ax.H_A3]["flags"], ["program_changed"])
+
+    def test_any_other_halt_flag_latches_via_the_intent_tick(self):
+        e, f = self.a3_env(json.dumps(a3_rec(boost_disabled=True)) + "\n")
+        e.ex.intent_tick()
+        self.assertIn(ax.H_A3, e.ex.counters.halts)
+
+    def test_unreadable_or_flagless_record_fails_closed(self):
+        for text in ("", "not json\n", json.dumps({"run_utc": "x"}) + "\n"):
+            e, f = self.a3_env(text)
+            e.ex.a3_tick(e.clock())
+            self.assertIn(ax.H_A3, e.ex.counters.halts, text)
+            (self.tmp / "state" / "h5-counters.json").unlink(missing_ok=True)
+
+    def test_a_malformed_flag_is_not_a_clear(self):
+        rec = a3_rec()
+        rec["halt"]["flags"]["boost_share_low"] = {"evaluated": True}
+        e, f = self.a3_env(json.dumps(rec) + "\n")
+        e.ex.a3_tick(e.clock())
+        self.assertEqual(e.ex.counters.halts[ax.H_A3]["flags"], ["boost_share_low"])
+
+    def test_the_poll_is_throttled(self):
+        e, f = self.a3_env(json.dumps(a3_rec()) + "\n")
+        e.ex.a3_tick(e.clock())
+        f.write_text(json.dumps(a3_rec(pins_changed=True)) + "\n")
+        e.ex.a3_tick(e.clock() + 1_000)
+        self.assertNotIn(ax.H_A3, e.ex.counters.halts)
+        e.ex.a3_tick(e.clock() + ax.A3_POLL_MS)
+        self.assertIn(ax.H_A3, e.ex.counters.halts)
+
+    def test_dry_run_without_a_configured_file_never_reads_one(self):
+        e = self.env()
+        self.assertIsNone(e.ex.cfg_a3_file)
+
+    def test_live_run_defaults_to_the_monitor_file(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = CommittedLossTests.live_env(self)
+        self.assertEqual(e.ex.cfg_a3_file, ax.A3_RECORD_DEFAULT)
+
+    def test_exit_gap_rows_reach_the_halt_after_ten(self):
+        g = self.tmp / "gaps.jsonl"
+        g.write_text("".join(json.dumps({"mint": f"m{i}", "exit_gap_bps": 500}) + "\n" for i in range(9)))
+        e = self.env(exit_gap_file=str(g))
+        e.ex.exit_gap_tick()
+        self.assertNotIn(ax.H_EXIT_GAP, e.ex.counters.halts)
+        with g.open("a") as fh:
+            fh.write(json.dumps({"mint": "m9", "exit_gap_bps": 500}) + "\n")
+        e.ex.exit_gap_tick()
+        self.assertIn(ax.H_EXIT_GAP, e.ex.counters.halts)
+
+    def test_ingest_exit_gap_below_threshold_does_not_latch(self):
+        e = self.env()
+        for _ in range(12):
+            e.ex.ingest_exit_gap(100.0)
+        self.assertNotIn(ax.H_EXIT_GAP, e.ex.counters.halts)
