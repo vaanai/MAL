@@ -90,8 +90,11 @@ def report_main(argv: list[str] | None = None) -> int:
             skip = True
         elif not x.startswith("--json="):
             flip_rest.append(x)
-    print()
-    rc2 = arena_flip_read.main(["--bot", a.bot, "--ledger-root", a.ledger_root, "--expect-send", str(a.expect_send), *flip_rest])
+    # A book on the 160,000 path (stack_config_v2) always states the flip count: with none, one line "ARENA FLIP READ: 0 flipped legs, 0 SOL". Any other book
+    # (another --expect-send) gets the legs output byte-identical and the legs rc.
+    if a.expect_send != SEND_V2:
+        return rc
+    rc2 = arena_flip_read.main(["--bot", a.bot, "--ledger-root", a.ledger_root, "--expect-send", str(a.expect_send), *flip_rest], only_if_flips=True, zero_line=True)
     return rc or rc2
 
 
