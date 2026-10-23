@@ -17,6 +17,14 @@ Units match the live recorder: entry_price = stake / raw tokens bought; exit_pri
 Output rows: trip_id, pnl_lamports, pnl_e1_lamports, entry_price, exit_price, state, buy_send_lamports, sell_send_lamports, position_id, bot_id.
 A paper position that was excluded, guarded, stranded or invalid gets {"trip_id", "price_failed": true, "reason"} (the parity tool counts no_twin). A trip with NO paper position
 in the ledger gets NO row (also no_twin), so an output with zero rows while trips exist stays a fail-closed signal in the parity tool. Bonding positions are price_failed (the arena canary is PumpSwap).
+CONFIG PIN (QP 10-23 condition 2): --config-hash is the sha256 of the book's REGISTERED stack block (`stack_hash`: the row's `stack` without the per-position sps_entry / sps_exit), pinned
+in the DEC copy. A joined ledger row whose stack hashes differently refuses the whole run (exit 2, nothing written): the twin would be priced at a config the book did not register.
+RUN RECORD (condition 1): after the twins file, `<out>.run.json` is written atomically: run_ms (the writer's own clock, or --now-ms), covered_trip_ids (EVERY trip in the trips file read),
+twin_rows, twins_sha256 (of the file just written), config_hash, code_sha256. The executor's parity state takes the twin stamp from run_ms only (never from "the file parses"), and only while
+the record covers every live trip and matches the file. A stalled or failed writer (exit 2 writes nothing) therefore goes stale: the parity tool's 60 s / last-landed-tx rule gives P7.
+FEE BASIS (condition 5): a trip's buy fee is the LANDED buy's own fee; failed earlier buy sends are EXCLUDED from the twin. The live side excludes them too (the executor's pnl is the landed sell delta
+minus the landed buy's cost; a failed buy's fee is booked as realized loss but is not part of the trip), so d_i compares like with like; their cost shows in the landing-fail excess (P2) and the
+daily tie-out. The sell fee is the landed sell plus earlier failed SELL attempts (extra_cost), which the live pnl does include. Rows carry `fee_basis`.
 The file is replaced atomically on every run (same inputs, same bytes). Exit 0 written; 2 unusable input (nothing written). Nothing here says a book made money.
 """
 
@@ -27,6 +35,7 @@ import hashlib
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -39,6 +48,14 @@ from tools.arena_paper import StackConfig, price_leg, rules_of
 LAT = 1.9
 DEFAULT_SEND = 60_000  # tools/h5_executor.py H5_DEFAULT: priority 55,000 + base 5,000
 DAY_MS = 86_400_000
+RUN_SCHEMA = "arena_twin_run_v1"
+FEE_BASIS = "landed_buy_fee; landed_sell_fee_plus_failed_sells; failed_earlier_buy_sends_excluded"
+
+
+def stack_hash(stack: Mapping[str, Any]) -> str:
+    """sha256 of the canonical JSON of a ledger row's stack block without the per-position slot rates."""
+    core = {k: v for k, v in stack.items() if not str(k).startswith("sps_")}
+    return hashlib.sha256(json.dumps(core, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
 class BadInput(Exception):
@@ -102,7 +119,7 @@ def fills(stake: float, st: Mapping[str, Any], cfg: StackConfig) -> tuple[float,
 
 
 def price_trip(trip: Mapping[str, Any], row: Mapping[str, Any], buy_send: int, sell_send: int) -> dict[str, Any]:
-    out: dict[str, Any] = {"trip_id": trip["trip_id"], "position_id": row.get("position_id"), "bot_id": row.get("bot_id"), "buy_send_lamports": buy_send, "sell_send_lamports": sell_send}
+    out: dict[str, Any] = {"trip_id": trip["trip_id"], "position_id": row.get("position_id"), "bot_id": row.get("bot_id"), "buy_send_lamports": buy_send, "sell_send_lamports": sell_send, "fee_basis": FEE_BASIS}
     if row.get("kind") != "trade" or not row.get("calc"):
         return {**out, "price_failed": True, "reason": f"paper_{row.get('kind')}:{row.get('exclusion_reason')}"}
     if row.get("prog") != "pumpswap":
@@ -127,7 +144,7 @@ def price_trip(trip: Mapping[str, Any], row: Mapping[str, Any], buy_send: int, s
     return {**out, "pnl_lamports": pick["pnl"], "pnl_e1_lamports": pick["pnl_e1"], "entry_price": entry, "exit_price": exit_}
 
 
-def build(trips: Sequence[Mapping[str, Any]], ledger_dir: Path, bot_id: str, buy_send: int, sell_send: int, join_tol_ms: int) -> tuple[list[dict[str, Any]], list[str]]:
+def build(trips: Sequence[Mapping[str, Any]], ledger_dir: Path, bot_id: str, buy_send: int, sell_send: int, join_tol_ms: int, config_hash: str) -> tuple[list[dict[str, Any]], list[str]]:
     rows, notes = [], []
     for t in sorted(trips, key=lambda x: str(x.get("trip_id"))):
         if not isinstance(t.get("trip_id"), str) or not _isint(t.get("decision_ms")) or not isinstance(t.get("stake_lamports"), (int, float)) or t["stake_lamports"] <= 0:
@@ -138,6 +155,9 @@ def build(trips: Sequence[Mapping[str, Any]], ledger_dir: Path, bot_id: str, buy
             notes.append(f"{t['trip_id']}: no paper position in the ledger (no row written)")
             continue
         cand.sort(key=lambda r: (abs(r["decision_ms"]["entry"] - t["decision_ms"]), r.get("kind") != "trade", str(r.get("trade_id"))))
+        got = stack_hash(cand[0].get("stack") if isinstance(cand[0].get("stack"), Mapping) else {})
+        if got != config_hash:
+            raise BadInput(f"ledger row {cand[0].get('trade_id')!r} of trip {t['trip_id']!r}: stack hash {got} is not the pinned registered config {config_hash}: refused")
         bs = t["buy_fee_lamports"] if _isint(t.get("buy_fee_lamports")) else buy_send
         ss = t["sell_fee_lamports"] if _isint(t.get("sell_fee_lamports")) else sell_send
         rows.append(price_trip(t, cand[0], bs, ss))
@@ -157,10 +177,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--buy-send", type=int, default=DEFAULT_SEND)
     ap.add_argument("--sell-send", type=int, default=DEFAULT_SEND)
     ap.add_argument("--join-tol-ms", type=int, default=10_000)
+    ap.add_argument("--config-hash", required=True)
+    ap.add_argument("--now-ms", type=int)
+    ap.add_argument("--run-record")
     a = ap.parse_args(list(sys.argv[1:] if argv is None else argv))
     try:
-        rows, notes = build(load_jsonl(Path(a.trips)), Path(a.ledger_dir), a.bot_id, a.buy_send, a.sell_send, a.join_tol_ms)
-        write_atomic(Path(a.out), rows)
+        trips = load_jsonl(Path(a.trips))
+        rows, notes = build(trips, Path(a.ledger_dir), a.bot_id, a.buy_send, a.sell_send, a.join_tol_ms, a.config_hash)
+        out = Path(a.out)
+        write_atomic(out, rows)
+        rec = {"schema": RUN_SCHEMA, "run_ms": int(a.now_ms if a.now_ms is not None else time.time() * 1000), "covered_trip_ids": sorted(t["trip_id"] for t in trips),
+               "twin_rows": len(rows), "twins_sha256": hashlib.sha256(out.read_bytes()).hexdigest(), "config_hash": a.config_hash,
+               "code_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
+        rp = Path(a.run_record) if a.run_record else out.with_name(out.name + ".run.json")
+        tmp = rp.with_name(rp.name + ".tmp")
+        tmp.write_text(json.dumps(rec, sort_keys=True, allow_nan=False) + "\n")
+        os.replace(tmp, rp)
     except (BadInput, OSError, ValueError, KeyError, TypeError) as exc:
         print(f"arena_twin_writer: UNUSABLE INPUT, nothing written: {exc}", file=sys.stderr)
         return 2
