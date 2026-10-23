@@ -618,9 +618,10 @@ def iter_hours(files: Sequence[tuple[datetime, str]], block: str, fmt: str, vmap
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ pricing
-def screen_cfg(rent: int = RENT_DECIDING) -> P.StackConfig:
-    """The deciding stack: arena_rules.stack_config(7) with `rent` (0 deciding, 2,039,280 for the rent-charged leg). Pinned equal in the tests."""
-    return P.StackConfig(send=505_000, rent=rent, h_in=0.002608, h_out=0.0016, k_rounding="ceil", stakes_sol=(0.25, 0.5, 1.0), grace_slots=10_000, portal_ppm=0,
+def screen_cfg(rent: int = RENT_DECIDING, send: int = 505_000) -> P.StackConfig:
+    """The deciding stack: arena_rules.stack_config(7) with `rent` (0 deciding, 2,039,280 for the rent-charged leg). Pinned equal in the tests.
+    `send` defaults to 505,000 (every registered book); 160_000 is the DEC-031 Amendment 8 stack (arena_rules.stack_config_v2) and must be passed explicitly."""
+    return P.StackConfig(send=send, rent=rent, h_in=0.002608, h_out=0.0016, k_rounding="ceil", stakes_sol=(0.25, 0.5, 1.0), grace_slots=10_000, portal_ppm=0,
                          press_intercept=-1.4197242838379789, strand_rule="both", e1_floor_per_005=384_022, feed_delay_slots=D, gap_slots=150, gap_silence_ms=60_000, max_future_ms=5_000)
 
 
