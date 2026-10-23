@@ -257,6 +257,51 @@ class RecorderSchemaTests(LiveCase):
         self.assertEqual([(a["landed"], a["failed_or_expired"]) for a in rec.attempts.values()], [(False, True), (False, True)])
         alp.validate_inputs([], [], list(rec.attempts.values()))
 
+    def test_a_landed_buy_with_unreadable_amounts_is_an_open_flagged_trip_never_a_failed_attempt(self):
+        """QP 10-23 W2: tokens or spend that cannot be read after a landed buy must keep the position visible (B3, P3, P4), not vanish."""
+        bad = [{"tokens_received": None}, {"tokens_received": "12"}, {"tokens_received": True}, {"tokens_received": -5}, {"tokens_received": 1.5},
+               {"tokens_received": 1000, "spend_lamports": None}, {"tokens_received": 1000, "spend_lamports": 0}, {"tokens_received": 1000, "spend_lamports": "5"},
+               {"tokens_received": 1000, "tokens_source": "quote_estimate"}, {}]
+        for i, extra in enumerate(bad):
+            with self.subTest(extra=extra):
+                rec = gt.ParityRecorder(self.tmp / f"rec{i}")
+                kw = {"landed": True, "spend_lamports": 20_000_000, "signature": f"s{i}", "decision_t_ms": 5, "expected_tokens": 4_000_000, **extra}
+                why = rec.on_buy(f"M{i}", kw, 100, None, stake_fallback=20_000_000)
+                self.assertEqual(why, "landed_buy_unreadable")
+                t = rec.trips[f"M{i}"]
+                self.assertTrue(t["unreadable"] and not t["exit_landed"])
+                self.assertGreater(t["stake_lamports"], 0)
+                (a,) = rec.attempts.values()
+                self.assertTrue(a["landed"] and not a["failed_or_expired"] and a["trip_id"] == f"M{i}")
+                alp.validate_inputs(list(rec.trips.values()), [], list(rec.attempts.values()))
+
+    def test_a_readable_landed_buy_is_not_flagged(self):
+        e = self.live()
+        rec = e.ex.gates.recorder
+        self.assertIsNone(rec.on_buy("M", {"landed": True, "tokens_received": 7, "spend_lamports": 9, "signature": "s", "decision_t_ms": 5}, 100, None))
+        self.assertFalse(rec.trips["M"].get("unreadable"))
+
+    def test_the_executor_latches_on_an_unreadable_landed_buy_and_refuses_the_next(self):
+        e = self.live()
+        e.ex._log("buy", MINT, landed=True, tokens_received=None, spend_lamports=20_000_000, signature="sig-u", decision_t_ms=e.clock())
+        self.assertIn(ax.H_BUY_UNREADABLE, e.ex.counters.halts)
+        self.assertTrue(e.ex.gates.recorder.trips[MINT]["unreadable"])
+        self.assertIn(ax.H_BUY_UNREADABLE, ax.HARD_ARENA_HALTS)
+        self.assertIn(ax.H_BUY_UNREADABLE, e.ex._parity_state(e.clock())["unresolved_hard_halts"])
+        e.fire(mint="Other")
+        self.assertEqual(e.refusals()[-1], ax.H_BUY_UNREADABLE)
+
+    def test_the_parity_tool_halts_on_an_unreadable_trip(self):
+        t = {"trip_id": "M", "stake_lamports": 10, "decision_ms": 1, "buy_landed_ms": 2, "live_buy_price": 1.0, "gap": False, "exit_landed": False,
+             "exit_bound_ms": 10**12, "unreadable": True}
+        a = {"attempt_id": "s", "decision_ms": 1, "landed": True, "landed_ms": 2, "failed_or_expired": False, "p_fail_press": 0.289, "trip_id": "M"}
+        now = 1000
+        st = {"at_ms": {n: now for n in alp.STATE_NAMES}, "unresolved_hard_halts": []}
+        res = alp.evaluate([t], [], [a], st, now)
+        self.assertIn("P7", res["halts"])
+        self.assertIn("unreadable", res["halts"]["P7"]["detail"])
+        self.assertFalse(res["match"])
+
     def test_a_gap_marks_open_trips_and_a_restart_reloads(self):
         e = self.live()
         e.open_position()

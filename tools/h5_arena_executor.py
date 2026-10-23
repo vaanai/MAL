@@ -172,7 +172,8 @@ H_LATE_SEND = "sell_send_late_x2"
 H_STUCK2 = "two_stuck_sells"
 H_STRAND = "close_blocked_strand"
 H_A3 = "a3_pins_changed"
-ARENA_HALTS = frozenset({H_FEED_BREAK, H_ENTRY_GAP, H_LANDING, H_EXIT_GAP, H_LATE_SEND, H_STUCK2, H_STRAND, H_A3})
+H_BUY_UNREADABLE = "landed_buy_unreadable"  # QP 10-23 W2: a landed buy whose token or spend amount cannot be read (an open, flagged trip exists)
+ARENA_HALTS = frozenset({H_BUY_UNREADABLE, H_FEED_BREAK, H_ENTRY_GAP, H_LANDING, H_EXIT_GAP, H_LATE_SEND, H_STUCK2, H_STRAND, H_A3})
 ENTRY_GAP_WINDOW = 20  # DEC-032 s5 P1: the first 10 eligible fills, then ROLLING over the last 20
 LANDING_WINDOW_N = 30  # DEC-032 s5 P2: rolling 30 buy attempts, judged once 30 exist
 ENTRY_GAP_BPS, ENTRY_GAP_MIN_N = 200.0, 10
@@ -752,7 +753,8 @@ class ArenaExecutor(h.H5Executor):
         super()._log(kind, mint, **kw)
         if self.gates is not None and kind in ("buy", "sell"):
             if kind == "buy":
-                self.gates.recorder.on_buy(mint, kw, self.now_ms(), self._exit_bound_ms(mint, kw.get("decision_t_ms")))
+                if self.gates.recorder.on_buy(mint, kw, self.now_ms(), self._exit_bound_ms(mint, kw.get("decision_t_ms")), self.h5.stake_lamports):
+                    self._latch(H_BUY_UNREADABLE, position_mint=mint, signature=kw.get("signature"))
             else:
                 self.gates.recorder.on_sell(mint, kw, self.now_ms())
 
