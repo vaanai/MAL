@@ -59,8 +59,8 @@ S0_MARGIN_V2_MS = 60_000  # the scorer wrappers drop v2 / Q50 triggers whose s0 
 FRESH_FORWARD = "ARENA"
 V2_RULE_SHA256 = "5368cc7b757a2f7a6cb064c71193b4e0cd740583f7348a60cb9a864401c190e0"  # iter-r2 C10 FREEZE.md
 V2_RULE_SOURCE = Path("/data/mal/hunt-1008/iter-r2/h5-boostclock-exit/FREEZE.md")  # (a test may point it elsewhere; the sha is the pin)
-CANARY_DEC_FILE = "DEC/DEC-032-h5-arena-canary.md"  # the new canary DEC (does not exist yet: a live start is refused until it does)
-CANARY_OWNER_RE = re.compile(r"^[ \t]*OWNER_CANARY_CONFIRMED:[ \t]*\S", re.M)
+CANARY_DEC_GLOB = "DEC-*canary*.md"  # canary records (copies of the DEC-032 template) live in DEC/. The template itself never counts.
+CANARY_OWNER_RE = re.compile(r"^[ \t]*OWNER_CANARY_CONFIRMED:[ \t]*bot_id=(\S+)[ \t]*$", re.M)  # the owner's line names the book: "OWNER_CANARY_CONFIRMED: bot_id=<bot_id>"
 FEED_NOTE_MERGED = False  # scope item 17: the EXP-024 note declaring this executor's observation. False = replay_only
 LIVE_BUILT = False  # this PR builds no live entry point
 C0_TIER = {  # DEC-032 s3, the C0 canary table, PINNED in code per canary book. The shared /etc/mal-h5/TIER (T0/T1/T2) and the config may only LOWER these.
@@ -214,15 +214,30 @@ def arena_start_refusal(book: Book, cfg: dict[str, Any], root: Path, live: bool)
             return why
         if cfg.get("end_ms") is None:
             return "end_ms_missing"
-        dec = root / CANARY_DEC_FILE
-        try:
-            if not (dec.is_file() and not dec.is_symlink() and CANARY_OWNER_RE.search(dec.read_text())):
-                return "canary_dec_owner_line_missing"
-        except OSError:
-            return "canary_dec_unreadable"
+        return canary_record_refusal(book.bot_id, root)
     if book.exit_pin == h.EXIT_MODE_V2:
         return v2_start_refusal()
     return None
+
+
+def canary_record_refusal(bot_id: str, root: Path) -> str | None:
+    """A live start needs a canary record in DEC/ whose owner line names THIS bot_id exactly (QP gap h). Regular files only (no symlink), the template
+    file never counts, and a line naming another book does not cover this one."""
+    d = root / "DEC"
+    try:
+        files = sorted(d.glob(CANARY_DEC_GLOB))
+    except OSError:
+        return "canary_dec_unreadable"
+    seen_unreadable = False
+    for f in files:
+        if "template" in f.name or f.is_symlink() or not f.is_file():
+            continue
+        try:
+            if bot_id in CANARY_OWNER_RE.findall(f.read_text()):
+                return None
+        except OSError:
+            seen_unreadable = True
+    return "canary_dec_unreadable" if seen_unreadable else "canary_record_for_bot_id_missing"
 
 
 def funded_refusal(cfg: dict[str, Any], live: bool) -> str | None:

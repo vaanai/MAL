@@ -40,6 +40,15 @@ def mint_value(owner: str = ax.mf.SPL_TOKEN_PROGRAM, freeze: bool = False, ext_t
     return {"data": [base64.b64encode(bytes(raw)).decode(), "base64"], "owner": owner, "lamports": 1, "executable": False}
 
 
+CANARY_TEST_FILE = "DEC/DEC-033-h5-arena-canary-test.md"
+
+
+def write_canary_record(root: Path, *bot_ids: str, name: str = "DEC-033-h5-arena-canary-test.md") -> None:
+    (root / "DEC").mkdir(parents=True, exist_ok=True)
+    ids = bot_ids or (A2, A2V2, Q50, "h5v1-p155-testbook")
+    (root / "DEC" / name).write_text("".join(f"OWNER_CANARY_CONFIRMED: bot_id={b}\n" for b in ids))
+
+
 def a3_rec(**halt_true) -> dict:
     names = ("pins_changed", "boost_disabled", "boost_share_low", "boost_budget_shift", "boost_slices_shift", "synthetic_share_high")
     return {"run_utc": "2026-10-23T00:00:00Z", "halt": {"flags": {n: {"halt": n in halt_true, "evaluated": True, "reason": "x"} for n in names}},
@@ -414,8 +423,7 @@ class LiveShapePathTests(ACase):
     """The keyed code path with a throwaway Keypair and the fake RPC (LIVE_BUILT patched on for the test only; nothing is sent anywhere)."""
 
     def live_env(self):
-        (self.tmp / "repo" / "DEC").mkdir(parents=True, exist_ok=True)
-        (self.tmp / "repo" / ax.CANARY_DEC_FILE).write_text("OWNER_CANARY_CONFIRMED: test\n")
+        write_canary_record(self.tmp / "repo")
         (self.tmp / "FREEZE.md").write_text("x")
         e = AEnv(self.tmp, live=True, book_id=self.book_id, replay_only=True, end_ms=ax.SEAL_END_MS, funded_lamports=500_000_000)
         e.ex.feed_verified, e.ex._start_ms, e.ex.slices_taken = True, 0, 1
@@ -468,8 +476,7 @@ class PriorityPinTests(ACase):
         return dataclasses.replace(ax.BOOKS[A2], bot_id=self.NEW, priority=ax.PRIORITY_P155)
 
     def live_env(self, **kw):
-        (self.tmp / "repo" / "DEC").mkdir(parents=True, exist_ok=True)
-        (self.tmp / "repo" / ax.CANARY_DEC_FILE).write_text("OWNER_CANARY_CONFIRMED: test\n")
+        write_canary_record(self.tmp / "repo")
         (self.tmp / "FREEZE.md").write_text("x")
         kw.setdefault("book_id", self.book_id)
         e = AEnv(self.tmp, live=True, replay_only=True, end_ms=ax.SEAL_END_MS, **{"funded_lamports": 500_000_000, **kw})
@@ -684,8 +691,7 @@ class CommittedLossTests(ACase):
     """Gap (b): DEC-032 s3 committed loss and the wallet floor, in code (QP 10-23)."""
 
     def live_env(self, **kw):
-        (self.tmp / "repo" / "DEC").mkdir(parents=True, exist_ok=True)
-        (self.tmp / "repo" / ax.CANARY_DEC_FILE).write_text("OWNER_CANARY_CONFIRMED: test\n")
+        write_canary_record(self.tmp / "repo")
         (self.tmp / "FREEZE.md").write_text("x")
         kw.setdefault("book_id", self.book_id)
         kw.setdefault("funded_lamports", 500_000_000)
@@ -786,8 +792,7 @@ class CommittedLossTests(ACase):
                              (True, "funded_lamports_out_of_range"), (5e8, "funded_lamports_out_of_range")):
                 kw = {"funded_lamports": bad}
                 with self.assertRaises(SystemExit) as cm:
-                    (self.tmp / "repo" / "DEC").mkdir(parents=True, exist_ok=True)
-                    (self.tmp / "repo" / ax.CANARY_DEC_FILE).write_text("OWNER_CANARY_CONFIRMED: test\n")
+                    write_canary_record(self.tmp / "repo")
                     AEnv(self.tmp, live=True, book_id=self.book_id, replay_only=True, end_ms=ax.SEAL_END_MS, **kw)
                 self.assertIn(why, str(cm.exception))
 
@@ -1022,3 +1027,47 @@ class ExternalLatchTests(ACase):
         for _ in range(12):
             e.ex.ingest_exit_gap(100.0)
         self.assertNotIn(ax.H_EXIT_GAP, e.ex.counters.halts)
+
+
+class CanaryRecordTests(ACase):
+    """Gap (h): the owner line is tied to a bot_id."""
+
+    def start(self, **kw):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            return AEnv(self.tmp, live=True, book_id=A2, replay_only=True, end_ms=ax.SEAL_END_MS, funded_lamports=500_000_000, **kw)
+
+    def refused(self, why):
+        with self.assertRaises(SystemExit) as cm:
+            self.start()
+        self.assertIn(why, str(cm.exception))
+
+    def test_no_record_refuses(self):
+        (self.tmp / "FREEZE.md").write_text("x")
+        self.refused("canary_record_for_bot_id_missing")
+
+    def test_a_record_for_another_book_does_not_cover_this_one(self):
+        write_canary_record(self.tmp / "repo", Q50, A2V2)
+        self.refused("canary_record_for_bot_id_missing")
+
+    def test_a_prefix_or_substring_of_the_bot_id_does_not_match(self):
+        write_canary_record(self.tmp / "repo", A2 + "-x", "x" + A2)
+        self.refused("canary_record_for_bot_id_missing")
+
+    def test_the_old_free_text_owner_line_no_longer_counts(self):
+        (self.tmp / "repo" / "DEC").mkdir(parents=True, exist_ok=True)
+        (self.tmp / "repo" / "DEC" / "DEC-033-h5-arena-canary-test.md").write_text("OWNER_CANARY_CONFIRMED: test\n")
+        self.refused("canary_record_for_bot_id_missing")
+
+    def test_the_template_file_never_counts(self):
+        write_canary_record(self.tmp / "repo", A2, name="DEC-032-arena-canary-template.md")
+        self.refused("canary_record_for_bot_id_missing")
+
+    def test_a_symlinked_record_does_not_count(self):
+        write_canary_record(self.tmp / "repo", A2, name="real.md")
+        (self.tmp / "repo" / "DEC" / "DEC-033-h5-arena-canary-link.md").symlink_to(self.tmp / "repo" / "DEC" / "real.md")
+        self.refused("canary_record_for_bot_id_missing")
+
+    def test_a_record_naming_this_bot_id_starts(self):
+        write_canary_record(self.tmp / "repo", A2)
+        (self.tmp / "FREEZE.md").write_text("x")
+        self.assertEqual(self.start().ex.abook.bot_id, A2)
