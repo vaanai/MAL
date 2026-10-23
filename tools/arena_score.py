@@ -1,6 +1,6 @@
 """Arena gate scorer (hunt20): CLAUDE.md's promotion gate read per DEC-031 section 2, on forward-paper arena ledgers. READ-ONLY on the ledger. PAPER ONLY.
 
-    python -m tools.arena_score [--bot BOT_ID] [--json out.json] [--now-ms MS] [--record] [--ledger-root DIR] [--registry FILE] [--reads-dir DIR]
+    python -m tools.arena_score [--bot BOT_ID] [--json out.json] [--now-ms MS] [--record] [--worst-in-slot GAPS.json] [--ledger-root DIR] [--registry FILE] [--reads-dir DIR]
 
 ONE READ PER bot_id, AT AN OUTCOME-BLIND INSTANT. `blind_read_instant` takes decision timestamps only and loads no fill, exit or P&L: it is the first 00:00Z
 boundary B at which the book has at least 100 attempts (every entry decision: open rows and refused buys) over at least 5 UTC dates, counted from the
@@ -267,6 +267,50 @@ def book_cells(trades: Sequence[Mapping[str, Any]], rules: Sequence[str]) -> dic
     return cells
 
 
+def load_worst_gaps(path: str | Path) -> dict[str, float]:
+    """The worst-in-slot input (DEC-032 section 1 item 2, QP ruling R7): a JSON object {trade_id: gap_lamports}, the cost of the worst-in-slot fills over the
+    engine's END-bound fills (>= 0), computed from ledger and tape by a separate tape tool. This scorer reads no tape."""
+    try:
+        g = json.loads(Path(path).read_text())
+    except (OSError, ValueError) as exc:
+        raise Refused(f"worst-in-slot file {path} is unreadable: {exc}") from None
+    ok = isinstance(g, dict) and all(isinstance(k, str) and isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 and v != float("inf") for k, v in g.items())
+    if not ok:
+        raise Refused(f"worst-in-slot file {path}: expected an object {{trade_id: gap_lamports >= 0}}")
+    return {k: float(v) for k, v in g.items()}
+
+
+def worst_in_slot_cells(trades: Sequence[Mapping[str, Any]], gaps: Mapping[str, float], rules: Sequence[str]) -> dict[str, Any]:
+    """REPORT-ONLY worst-in-slot leg of the deciding book at 1.9 s (QP ruling R7): each trade's no-fail P&L minus its END-minus-worst gap, re-run through the same
+    fail legs as the book's cells. Never decides. A trade without a gap makes the figure 'not measured' (no partial coverage). Per sub-cell: mean and CI90 lower
+    bound (trade-level bootstrap, 1,000 draws, seed 1, 5th percentile); the headline is the lowest of the sub-cells."""
+    missing = sorted(r["trade_id"] for r in trades if r["trade_id"] not in gaps)
+    if missing:
+        return {"measured": False, "reason": f"worst-in-slot not measured: {len(missing)} of {len(trades)} deciding trade(s) have no gap (first: {missing[0]})"}
+    days = [utc_day(r["decision_ms"]["entry"]) for r in trades]
+    gap = np.array([gaps[r["trade_id"]] for r in trades], float)
+    cells: dict[str, Any] = {}
+    lat = "1p9"
+    for rule in rules:
+        pnl = np.array([r["calc"][lat]["by_rule"][rule]["pnl_nofail"] for r in trades], float)
+        fil = np.array([r["calc"][lat]["by_rule"][rule]["filled"] for r in trades], bool)
+        strand = np.array([r["calc"][lat]["by_rule"][rule]["strand"] for r in trades], bool)
+        ssb = np.array([r["calc"][lat]["ssb"] for r in trades], float)
+        near = np.array([r["calc"][lat]["nearby_lamports"] for r in trades], float)
+        send = float(trades[0]["stack"]["send"])
+        live = fil & ~strand  # an unfilled trade or a total-loss strand has no slot fill to worsen
+        pnl_w = np.where(live, pnl - gap, pnl)
+        flat, press, _, _ = _legs(rule, pnl_w, fil, strand, ssb, near, send)
+        for model, x in (("flat", flat), ("press", press)):
+            s = cell_stats(x, days)
+            cells[f"{model}_{lat}_{rule}"] = {"n": s["n"], "mean_sol": s["mean_sol"], "total_sol": s["total_sol"], "ci90_lo_sol": s["ci90_lo_sol"],
+                                              "mean_gap_sol": float(gap[live].mean() / 1e9) if live.any() else None}
+    means = [c["mean_sol"] for c in cells.values() if c["mean_sol"] is not None]
+    los = [c["ci90_lo_sol"] for c in cells.values() if c["ci90_lo_sol"] is not None]
+    return {"measured": True, "report_only": True, "latency": lat, "mean_sol": min(means) if means else None, "ci90_lo_sol": min(los) if los else None,
+            "worst_cell": min(cells, key=lambda k: cells[k]["mean_sol"]) if cells else None, "mean_positive_all_cells": bool(means) and min(means) > 0, "cells": cells}
+
+
 # ------------------------------------------------------------------------------------------------------------------------------ one bot
 def _entry(r: Mapping[str, Any]) -> int:
     return int(r["decision_ms"]["entry"])
@@ -305,7 +349,8 @@ def check_bot_rows(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequ
 
 def score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], now_ms: int, trace: list[str] | None = None,
               settle_ms: int = SETTLE_MS, boundary_ms: int | None = None, *, incidents: Sequence[Mapping[str, Any]] = (),
-              ledger_problems: Sequence[str] = (), comparator_read: Mapping[str, Any] | None = None) -> dict[str, Any]:
+              ledger_problems: Sequence[str] = (), comparator_read: Mapping[str, Any] | None = None,
+              worst_gaps: Mapping[str, float] | None = None) -> dict[str, Any]:
     """Score one bot. `boundary_ms` (optional) FORCES the read boundary so that comparator arms can be scored over the SAME attempt boundary as the book being read
     (the normal way: `common_boundary(a, b)`, the earlier of the two natural instants). It must be a 00:00Z instant. At or before this bot's own outcome-blind
     instant it is always allowed. LATER than it, it is allowed only if `comparator_read` (the bot's own RECORDED read, from the reads dir) has status FAIL, FAIL (n < 100),
@@ -318,7 +363,7 @@ def score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[
     NOT_DECIDABLE, even after the day file was repaired. `ledger_problems` are the torn / unparseable lines found in the bot's files (and incident file): they make
     THIS bot NOT_DECIDABLE with those reasons (the caller scored the lines that did parse)."""
     try:
-        out = _score_bot(bot_id, reg, rows, now_ms, trace, settle_ms, boundary_ms, incidents, comparator_read)
+        out = _score_bot(bot_id, reg, rows, now_ms, trace, settle_ms, boundary_ms, incidents, comparator_read, worst_gaps)
     except Refused as exc:
         if ledger_problems:
             raise Refused(f"{exc} [also: {len(ledger_problems)} ledger problem(s), first: {ledger_problems[0]}]") from None
@@ -348,7 +393,8 @@ def score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[
 
 
 def _score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence[Mapping[str, Any]], now_ms: int, trace: list[str] | None, settle_ms: int,
-               boundary_ms: int | None = None, incidents: Sequence[Mapping[str, Any]] = (), comparator_read: Mapping[str, Any] | None = None) -> dict[str, Any]:
+               boundary_ms: int | None = None, incidents: Sequence[Mapping[str, Any]] = (), comparator_read: Mapping[str, Any] | None = None,
+               worst_gaps: Mapping[str, float] | None = None) -> dict[str, Any]:
     tr = trace if trace is not None else []
     config = check_bot_rows(bot_id, reg, rows)
     e = reg[bot_id]
@@ -458,6 +504,8 @@ def _score_bot(bot_id: str, reg: Mapping[str, Mapping[str, Any]], rows: Sequence
                        "weakest_cell": min((k for k in dec["cells"] if dec["cells"][k]["ci90_lo_sol"] is not None), key=lambda k: dec["cells"][k]["ci90_lo_sol"], default=None),
                        "misses": {k: v["misses"] for k, v in subs.items() if v["misses"]},
                        "not_proposed_for_canary": any((v["ex_best_day_sol"] is None or v["ex_best_day_sol"] <= 0) for v in subs.values())}
+    if worst_gaps is not None:  # opt-in and report-only: the key is absent unless the flag is given, so every existing output is unchanged
+        out["worst_in_slot"] = worst_in_slot_cells(by_stake[float(dk)]["trades"], worst_gaps, dec["rules"])
     if has_bonding:
         out["status"] = "REPORT_ONLY"
         why.append("a bonding row is in the book: its costs are unmeasured (no send / haircut DEC), so no deciding verdict")
@@ -495,7 +543,7 @@ def record_read(reads_dir: str | Path, res: Mapping[str, Any]) -> Path:
 
 # ------------------------------------------------------------------------------------------------------------------------------ all bots
 def score_all(ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, only: str | None = None, now_ms: int | None = None,
-              settle_ms: int = SETTLE_MS, boundary_ms: int | None = None, reads_dir: str = READS_DIR) -> dict[str, Any]:
+              settle_ms: int = SETTLE_MS, boundary_ms: int | None = None, reads_dir: str = READS_DIR, worst_gaps: Mapping[str, float] | None = None) -> dict[str, Any]:
     import time
 
     now = int(time.time() * 1000) if now_ms is None else int(now_ms)
@@ -510,7 +558,7 @@ def score_all(ledger_root: str = LEDGER_ROOT, registry: str = REGISTRY_PATH, onl
             rows, problems = led.scan_bot(b)  # a damaged file makes THIS bot NOT_DECIDABLE (with the reason); it never stops the others
             incidents, inc_problems = led.read_incidents(b)
             recorded = load_recorded_read(reads_dir, b) if boundary_ms is not None else None  # only a forced boundary can need the bot's own recorded read
-            bots[b] = score_bot(b, reg, rows, now, None, settle_ms, boundary_ms, incidents=incidents, ledger_problems=problems + inc_problems, comparator_read=recorded)
+            bots[b] = score_bot(b, reg, rows, now, None, settle_ms, boundary_ms, incidents=incidents, ledger_problems=problems + inc_problems, comparator_read=recorded, worst_gaps=worst_gaps)
             bd = bots[b].get("read_boundary_ms")
             if bd is not None and not bots[b]["status"].endswith("NOT_READY"):  # informational file hashes of the covered entry days
                 d0 = reg[b]["clock_start_ms"] // DAY_MS * DAY_MS
@@ -604,6 +652,16 @@ def render(res: Mapping[str, Any]) -> str:
                 L.append(f"    {k}: {'; '.join(m)}")
             if d["pass"] and d["not_proposed_for_canary"]:
                 L.append("  NOT PROPOSED FOR CANARY: total is not positive ex best day (or ex-best-day is missing) in a deciding sub-cell")
+        w = v.get("worst_in_slot")
+        if w is not None:
+            if not w["measured"]:
+                L.append(f"  WORST-IN-SLOT (report-only): {w['reason']}")
+            else:
+                L.append(f"  WORST-IN-SLOT (report-only, never decides; 1.9 s, lowest of the 4 sub-cells): mean {f(w['mean_sol'])} ci90lo {f(w['ci90_lo_sol'])} "
+                         f"worst cell {w['worst_cell']}  mean > 0 in every sub-cell: {w['mean_positive_all_cells']}")
+                L.append("  worst-in-slot per sub-cell (quote these, not only the headline):")
+                for k, c in w["cells"].items():
+                    L.append(f"    wis {k:16s} n {c['n']:4d} mean {f(c['mean_sol'])} total {f(c['total_sol'])} ci90lo {f(c['ci90_lo_sol'])} mean gap {f(c['mean_gap_sol'])}")
         for st, bk in v["books"].items():
             L.append(f"  stake {st}{' (deciding)' if st == str(v['deciding_stake']) else ' (report-only)'}  trades {bk['n_trades']}  excluded {bk['excluded']}  "
                      f"refused {bk['refused']}  excluded+refused share {f(bk['excluded_share'])}")
@@ -636,6 +694,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "instant it needs that bot's own read recorded (not PASS) in --reads-dir; compare two arms at --common-boundary instead")
     ap.add_argument("--common-boundary", nargs=2, metavar=("BOT_A", "BOT_B"), help="print the earlier of the two bots' natural outcome-blind instants (the boundary to compare them at) and exit")
     ap.add_argument("--settle-hours", type=float, default=SETTLE_MS / 3_600_000, help="an unclosed attempt younger than this is PENDING, older a restart orphan")
+    ap.add_argument("--worst-in-slot", metavar="GAPS_JSON", help="report-only: JSON {trade_id: END-minus-worst gap in lamports}; adds the worst-in-slot mean and CI90 lower bound of the "
+                    "deciding book (QP ruling R7, DEC-032 section 1). Off: every output is unchanged")
     ap.add_argument("--record", action="store_true", help="write the one read of --bot (refused if already recorded or not ready)")
     a = ap.parse_args(argv)
     if a.daily_digest:
@@ -657,7 +717,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"common boundary {cb} ({datetime.fromtimestamp(cb / 1000, timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')}): the earlier of the two natural instants; "
               f"score both with --boundary-ms {cb}")
         return 0
-    res = score_all(a.ledger_root, a.registry, a.bot, a.now_ms, int(a.settle_hours * 3_600_000), a.boundary_ms, a.reads_dir)
+    try:
+        gaps = load_worst_gaps(a.worst_in_slot) if a.worst_in_slot else None
+    except Refused as exc:
+        print(f"NOT AVAILABLE: {exc}", file=sys.stderr)
+        return 3
+    res = score_all(a.ledger_root, a.registry, a.bot, a.now_ms, int(a.settle_hours * 3_600_000), a.boundary_ms, a.reads_dir, gaps)
     print(render(res))
     if a.json:
         with open(a.json, "w") as fh:
