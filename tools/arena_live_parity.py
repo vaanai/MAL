@@ -23,7 +23,7 @@ DEFINITIONS (exactly DEC-032 section 5)
 
 READING OF THE TEXT WHERE IT IS SHORT (stated, for review)
   P1 "eligible fills" is a BUY-side notion: trips with a twin and not gap whose buy filled (entry price present), whether or not the exit has landed. Window: the first 10 at n = 10, the last 20 from n = 20.
-  The 5% shares of P7 are over ALL live trips seen so far with no minimum count (literal): one no_twin trip among fewer than 20 trips is a soft halt.
+  The shares of P7 are over ALL live trips seen so far (Amendment 1 item 1): from 20 trips, share above 5%; before 20, 2 no_twin or 2 gap trips are the soft halt.
   The sell-lateness arm of P5 is over trips whose exit landed. The match test's landing p50 is over the eligible trips' buys.
 
 OUTPUT: a dict with the P1..P7 halts (first breach: prefix index, value), the shares, d_i statistics, the NOT_DECIDABLE flag and the verdict "LIVE FILLS MATCH PAPER" or "parity not shown".
@@ -53,6 +53,7 @@ P4_BPS, P4_MIN = -100.0, 100
 P5_P50_S, P5_N, P5_LATE_SHARE = 3.0, 20, 0.05
 P6_BPS, P6_N = -300.0, 10
 P7_SHARE = 0.05
+P7_SHARE_MIN_TRIPS, P7_SMALL_COUNT = 20, 2  # DEC-032 Amendment 1 item 1: the 5% shares count only from 20 live trips; before that 2 no_twin or 2 gap trips are the soft halt
 FLAT_FAIL = 0.15
 MATCH_MIN, MATCH_LO_BPS, MATCH_P50_S = 100, -100.0, 1.9
 STALE_MS = 60_000
@@ -202,6 +203,13 @@ def classify_trip(t: Mapping[str, Any], twin: Mapping[str, Any] | None) -> dict[
     return m
 
 
+def share_breach(count: int, n_trips: int) -> bool:
+    """Amendment 1 item 1. Counts run from the first live send over ALL live trips, never reset. At 20 or more trips: share above 5%. Before: 2 or more is the soft halt."""
+    if n_trips >= P7_SHARE_MIN_TRIPS:
+        return count / n_trips > P7_SHARE
+    return count >= P7_SMALL_COUNT
+
+
 def _first(h: dict[str, Any], pid: str, k: int, value: Any, detail: str) -> None:
     if pid not in h:
         h[pid] = {"id": pid, "hard": pid in HARD, "at_index": k, "value": value, "detail": detail}
@@ -219,6 +227,7 @@ def evaluate(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[str, An
     fills_g: list[float] = []
     sl_g: list[float] = []
     n_gap = n_no_twin = n_exits = n_late = 0
+    ineligible_log: list[dict[str, Any]] = []
     for k, t in enumerate(order, 1):
         m = classify_trip(t, tw.get(t["trip_id"]))
         mets.append(m)
@@ -248,9 +257,11 @@ def evaluate(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[str, An
                     _first(halts, "P6", k, float(np.mean(sl_g)), f"mean g_exit {np.mean(sl_g):+.1f} bps over the first {P6_N} stop-loss exits < {P6_BPS:.0f}")
         if n_exits and n_late / n_exits > P5_LATE_SHARE:
             _first(halts, "P5", k, n_late / n_exits, f"{n_late}/{n_exits} sells landed after their exit bound (> {P5_LATE_SHARE:.0%})")
+        if m["reasons"]:  # every non-eligible trip is logged with its reason (Amendment 1 item 1)
+            ineligible_log.append({"index": k, "trip_id": m["trip_id"], "reasons": list(m["reasons"])})
         for name, cnt in (("gap", n_gap), ("no_twin", n_no_twin)):
-            if cnt / k > P7_SHARE:
-                _first(halts, "P7", k, cnt / k, f"{name} share {cnt}/{k} of live trips > {P7_SHARE:.0%}")
+            if share_breach(cnt, k):
+                _first(halts, "P7", k, cnt / k, f"{name} {cnt}/{k} live trips: " + (f"share above {P7_SHARE:.0%}" if k >= P7_SHARE_MIN_TRIPS else f"{cnt} before {P7_SHARE_MIN_TRIPS} trips (small-sample rule)"))
     # B4: an exit still pending after exit_bound + 600 s is a stuck position (hard); it never drops out of the books
     stuck = sorted(t["trip_id"] for t in trips if not t.get("exit_landed") and now_ms > int(t["exit_bound_ms"]) + STUCK_AFTER_MS)
     if stuck:
@@ -279,7 +290,7 @@ def evaluate(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[str, An
     n_trips = len(order)
     shares = {"trips": n_trips, "gap": n_gap, "no_twin": n_no_twin, "exit_pending": sum("exit_pending" in m["reasons"] for m in mets), "stuck": len(stuck),
               "eligible": sum(m["eligible"] for m in mets), "gap_share": n_gap / n_trips if n_trips else 0.0, "no_twin_share": n_no_twin / n_trips if n_trips else 0.0}
-    not_decidable = shares["gap_share"] > P7_SHARE or shares["no_twin_share"] > P7_SHARE
+    not_decidable = share_breach(n_gap, n_trips) or share_breach(n_no_twin, n_trips)
     d = np.asarray([m["d"] for m in mets if m["eligible"] and "d" in m], float)
     d_e1 = np.asarray([m["d_e1"] for m in mets if m["eligible"] and "d_e1" in m], float)
     lands = [m["landing_s"] for m in mets if m["eligible"] and "landing_s" in m]
@@ -309,7 +320,7 @@ def evaluate(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[str, An
     hard = [h for h in sorted(halts) if halts[h]["hard"]]
     return {"halts": halts, "soft_halts": soft, "hard_halts": hard, "stop_required": bool(halts), "shares": shares, "stats": stats,
             "not_decidable": not_decidable, "match": match, "verdict": "LIVE FILLS MATCH PAPER" if match else "parity not shown", "not_shown_because": why,
-            "unresolved_hard_halts": hard_open, "label": "unpromoted execution measurement"}
+            "unresolved_hard_halts": hard_open, "ineligible_log": ineligible_log, "label": "unpromoted execution measurement"}
 
 
 def state_problems(state: Mapping[str, Any] | None, now_ms: int) -> list[str]:
@@ -362,6 +373,8 @@ def render(res: Mapping[str, Any]) -> str:
          f"stop-loss exits {st['stop_loss_exits']}  gap-through share {st['gap_through_share']:.1%}"]
     for h in res["halts"].values():
         L.append(f"  {'HARD' if h['hard'] else 'SOFT'} HALT {h['id']} at event {h['at_index']}: {h['detail']}")
+    for e in res["ineligible_log"]:
+        L.append(f"  ineligible trip #{e['index']} {e['trip_id']}: {', '.join(e['reasons'])}")
     for w in res["not_shown_because"]:
         L.append(f"  parity not shown: {w}")
     return "\n".join(L)
@@ -396,7 +409,7 @@ def _flag_value(argv: Sequence[str], name: str) -> str | None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0], allow_abbrev=False)
     for a in ("trips", "twins", "attempts", "state", "stop-file"):
         ap.add_argument(f"--{a}", required=True)
     ap.add_argument("--now-ms", type=int, required=True)
