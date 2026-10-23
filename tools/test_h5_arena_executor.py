@@ -392,7 +392,7 @@ class LiveShapePathTests(ACase):
         (self.tmp / "repo" / "DEC").mkdir(parents=True, exist_ok=True)
         (self.tmp / "repo" / ax.CANARY_DEC_FILE).write_text("OWNER_CANARY_CONFIRMED: test\n")
         (self.tmp / "FREEZE.md").write_text("x")
-        e = AEnv(self.tmp, live=True, book_id=self.book_id, replay_only=True, end_ms=ax.SEAL_END_MS)
+        e = AEnv(self.tmp, live=True, book_id=self.book_id, replay_only=True, end_ms=ax.SEAL_END_MS, funded_lamports=500_000_000)
         e.ex.feed_verified, e.ex._start_ms, e.ex.slices_taken = True, 0, 1
         e.ex.abook = dataclasses.replace(e.ex.abook, clock_start_ms=0)
         return e
@@ -447,7 +447,7 @@ class PriorityPinTests(ACase):
         (self.tmp / "repo" / ax.CANARY_DEC_FILE).write_text("OWNER_CANARY_CONFIRMED: test\n")
         (self.tmp / "FREEZE.md").write_text("x")
         kw.setdefault("book_id", self.book_id)
-        e = AEnv(self.tmp, live=True, replay_only=True, end_ms=ax.SEAL_END_MS, **kw)
+        e = AEnv(self.tmp, live=True, replay_only=True, end_ms=ax.SEAL_END_MS, **{"funded_lamports": 500_000_000, **kw})
         e.ex.feed_verified, e.ex._start_ms, e.ex.slices_taken = True, 0, 1
         e.ex.abook = dataclasses.replace(e.ex.abook, clock_start_ms=0)
         return e
@@ -653,3 +653,115 @@ class SellReserveTests(ACase):
         self.assertEqual(ax.sell_reserve_lamports(p155), 10 * (155_000 + 5_000))
         high = dataclasses.replace(ax.BOOKS[A2], priority=ax.Priority("default", 55_000, 55_000, 400_000))
         self.assertEqual(ax.sell_reserve_lamports(high), 10 * 405_000)
+
+
+class CommittedLossTests(ACase):
+    """Gap (b): DEC-032 s3 committed loss and the wallet floor, in code (QP 10-23)."""
+
+    def live_env(self, **kw):
+        (self.tmp / "repo" / "DEC").mkdir(parents=True, exist_ok=True)
+        (self.tmp / "repo" / ax.CANARY_DEC_FILE).write_text("OWNER_CANARY_CONFIRMED: test\n")
+        (self.tmp / "FREEZE.md").write_text("x")
+        kw.setdefault("book_id", self.book_id)
+        kw.setdefault("funded_lamports", 500_000_000)
+        e = AEnv(self.tmp, live=True, replay_only=True, end_ms=ax.SEAL_END_MS, **kw)
+        e.ex.feed_verified, e.ex._start_ms, e.ex.slices_taken = True, 0, 1
+        e.ex.abook = dataclasses.replace(e.ex.abook, clock_start_ms=0)
+        e.rpc.balance = 10 * 10**9
+        return e
+
+    def worst(self, e, stake):
+        return stake + 55_000 + 5_000 + h.RENT_RESERVE_LAMPORTS + ax.sell_reserve_lamports(e.ex.abook)
+
+    def test_open_position_counts_stake_buy_fee_rent_and_sell_reserve(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            self.assertEqual(e.ex.committed_loss_lamports(), 0)
+            pos = e.open_position()
+            extra = int(pos.get("extra_cost") or 0)
+            self.assertEqual(e.ex.committed_loss_lamports(), self.worst(e, int(pos["spend"])) + extra)
+            self.assertGreater(e.ex.committed_loss_lamports(), int(pos["spend"]) + 2_100_000 + 1_600_000)
+
+    def test_in_flight_buy_counts_before_it_lands(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            e.fire()
+            self.assertIn(MINT, e.ex.state.pending)
+            self.assertEqual(e.ex.committed_loss_lamports(), self.worst(e, e.ex.h5.stake_lamports))
+
+    def test_realized_loss_is_counted_and_a_profit_is_floored_at_zero(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            e.ex.state.realized_lamports = -7_000_000
+            self.assertEqual(e.ex.committed_loss_lamports(), 7_000_000)
+            e.ex.state.realized_lamports = 9_000_000
+            self.assertEqual(e.ex.committed_loss_lamports(), 0)
+
+    def test_pre_send_check_refuses_when_committed_plus_this_buy_passes_the_total_stop(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env(total_loss_lamports=22_000_000)  # the stake alone (20M) would pass the base check; the stake plus fees, rent and reserve does not
+            e.fire()
+            self.assertEqual(e.refusals(), ["committed_loss_stop"])
+            self.assertEqual(e.rpc.sent, [])
+
+    def test_realized_loss_since_first_send_enters_the_pre_send_check(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env(total_loss_lamports=35_000_000)
+            e.ex.state.realized_lamports = -12_000_000
+            e.fire()
+            self.assertEqual(e.refusals(), ["committed_loss_stop"])
+            e.ex.state.realized_lamports = -10_000_000
+            e.fire()
+            self.assertEqual(len(e.ledger("decision")), 1)
+
+    def test_live_buy_rechecks_right_before_building_even_if_the_budget_stop_was_bypassed(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env(total_loss_lamports=22_000_000)
+            with mock.patch.object(ax.ArenaExecutor, "_budget_stop", return_value=None):
+                e.fire()
+            self.assertEqual(e.refusals(), ["committed_loss_stop"])
+            self.assertEqual(e.rpc.sent, [])
+
+    def test_floor_is_funded_minus_a_quarter_sol_never_below_0_05(self):
+        for funded, floor in ((350_000_000, 100_000_000), (500_000_000, 250_000_000), (1_000_000_000, 750_000_000)):
+            with mock.patch.object(ax, "LIVE_BUILT", True):
+                self.assertEqual(self.live_env(funded_lamports=funded).ex.h5.wallet_floor_lamports, floor)
+        self.assertEqual(ax.wallet_floor_lamports(300_000_000, 50_000_000), 50_000_000)  # 0.30 funded: 0.05, the minimum
+        self.assertEqual(ax.wallet_floor_lamports(None, 50_000_000), 50_000_000)
+
+    def test_config_cannot_lower_the_floor_but_can_raise_it(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            self.assertEqual(self.live_env(wallet_floor_lamports=60_000_000).ex.h5.wallet_floor_lamports, 250_000_000)
+            self.assertEqual(self.live_env(wallet_floor_lamports=300_000_000).ex.h5.wallet_floor_lamports, 300_000_000)
+
+    def test_balance_check_counts_open_stakes_again_and_the_floor(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env(funded_lamports=500_000_000)
+            floor, stake = e.ex.h5.wallet_floor_lamports, e.ex.h5.stake_lamports
+            need0 = stake + 60_000 + 2_100_000 + ax.sell_reserve_lamports(e.ex.abook) + floor
+            e.rpc.balance = need0 - 1
+            e.fire()
+            self.assertEqual(e.refusals(), ["balance_floor"])
+            e.rpc.balance = need0
+            e.ex._bal = None
+            e.fire()
+            self.assertEqual(len(e.ledger("decision")), 1)
+            # one pending/open position: the second buy needs that stake once more, plus a second sell reserve
+            need1 = need0 + int(e.ex.state.pending[MINT]["spend"]) + ax.sell_reserve_lamports(e.ex.abook)
+            e.rpc.balance = need1 - 1
+            e.ex._bal = None
+            self.assertEqual(e.ex._balance_refusal(e.clock()), "balance_floor")
+            e.rpc.balance = need1
+            e.ex._bal = None
+            self.assertIsNone(e.ex._balance_refusal(e.clock()))
+
+    def test_live_start_needs_funded_lamports_in_range(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            for bad, why in ((None, "funded_lamports_missing"), (349_999_999, "funded_lamports_out_of_range"), (1_000_000_001, "funded_lamports_out_of_range"),
+                             (True, "funded_lamports_out_of_range"), (5e8, "funded_lamports_out_of_range")):
+                kw = {"funded_lamports": bad}
+                with self.assertRaises(SystemExit) as cm:
+                    (self.tmp / "repo" / "DEC").mkdir(parents=True, exist_ok=True)
+                    (self.tmp / "repo" / ax.CANARY_DEC_FILE).write_text("OWNER_CANARY_CONFIRMED: test\n")
+                    AEnv(self.tmp, live=True, book_id=self.book_id, replay_only=True, end_ms=ax.SEAL_END_MS, **kw)
+                self.assertIn(why, str(cm.exception))

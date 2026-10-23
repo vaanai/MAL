@@ -61,6 +61,8 @@ LIVE_BUILT = False  # this PR builds no live entry point
 C0_TIER = {  # DEC-032 s3, the C0 canary table, PINNED in code per canary book. The shared /etc/mal-h5/TIER (T0/T1/T2) and the config may only LOWER these.
     "stake_lamports": 50_000_000, "max_open": 2, "max_trades_per_day": 30, "daily_loss_lamports": 100_000_000, "total_loss_lamports": 200_000_000,
 }
+FUNDED_MIN_LAMPORTS, FUNDED_MAX_LAMPORTS = 350_000_000, 1_000_000_000  # DEC-032 s3: "Wallet needed: funded 0.35 to 1.00 SOL"
+FLOOR_BELOW_FUNDED_LAMPORTS = 250_000_000  # DEC-032 s3: floor = max(0.05 SOL, funded - 0.25 SOL)
 GAP_HOLD_MS = 600_000  # DEC-032 s5 item 2: after a feed gap, buys restart only once the feed has been gap-free for 10 minutes
 SELL_RESERVE_SENDS = 10  # the worst case of one exit: the ladder's sends (escalated resends included), each at the book's top priority
 SELL_RESERVE_FLOOR_LAMPORTS = 1_600_000  # 10 sends x (155,000 + 5,000): the p155 worst case (QP 10-23 gap d); never below it
@@ -192,9 +194,12 @@ def arena_start_refusal(book: Book, cfg: dict[str, Any], root: Path, live: bool)
         return "pick_file_set"  # the CAP-PICK oracle no longer exists (DEC-031 s3.5): a configured one is a wrong config, never silently ignored
     if not FEED_NOTE_MERGED and cfg.get("replay_only") is not True:
         return "feed_note_unmerged_replay_only"
+    if live and not LIVE_BUILT:
+        return "live_not_built"
+    why = funded_refusal(cfg, live)
+    if why:
+        return why
     if live:
-        if not LIVE_BUILT:
-            return "live_not_built"
         why = h.live_ok_valid()
         if why:
             return why
@@ -209,6 +214,23 @@ def arena_start_refusal(book: Book, cfg: dict[str, Any], root: Path, live: bool)
     if book.exit_pin == h.EXIT_MODE_V2:
         return v2_start_refusal()
     return None
+
+
+def funded_refusal(cfg: dict[str, Any], live: bool) -> str | None:
+    """`funded_lamports` is what the wallet was funded with for this canary (the owner's line). A live start needs it, in 0.35 .. 1.00 SOL; the wallet
+    floor of the run is derived from it in code (funded - 0.25 SOL, never below 0.05), so it cannot be a config choice that is only checked elsewhere."""
+    f = cfg.get("funded_lamports")
+    if f is None:
+        return "funded_lamports_missing" if live else None
+    if isinstance(f, bool) or not isinstance(f, int) or not FUNDED_MIN_LAMPORTS <= f <= FUNDED_MAX_LAMPORTS:
+        return "funded_lamports_out_of_range"
+    return None
+
+
+def wallet_floor_lamports(funded: int | None, configured: int) -> int:
+    """max(configured, 0.05 SOL, funded - 0.25 SOL). Config can raise the floor, never lower it below the derived one."""
+    derived = h.MIN_WALLET_FLOOR_LAMPORTS if funded is None else max(h.MIN_WALLET_FLOOR_LAMPORTS, funded - FLOOR_BELOW_FUNDED_LAMPORTS)
+    return max(configured, derived)
 
 
 def priority_refusal(book: Book, cfg: dict[str, Any]) -> str | None:
@@ -314,6 +336,7 @@ class ArenaExecutor(h.H5Executor):
         days = cfg.get("max_days")
         if days is not None:
             cfg["max_days"] = min(float(days), (book.end_ms_seal - book.clock_start_ms) / 86_400_000)
+        self.funded_lamports: int | None = cfg.get("funded_lamports")
         self.monitor = FidelityMonitor()
         self.feed_verified = False
         self.starts_seen = 0
@@ -337,10 +360,57 @@ class ArenaExecutor(h.H5Executor):
         # C0 (gap a): the pinned table is the ceiling whatever the shared TIER file says. T1 / T2 in the file cannot raise a single field; a lower tier
         # (T0) or a tighter config still lowers it, because this takes the minimum.
         return replace(lim, gap_hold_ms=max(lim.gap_hold_ms, GAP_HOLD_MS),
+                       wallet_floor_lamports=wallet_floor_lamports(getattr(self, "funded_lamports", None), lim.wallet_floor_lamports),
                        **{k: min(getattr(lim, k), v) for k, v in C0_TIER.items()})
 
     def __repr__(self) -> str:
         return f"ArenaExecutor(book={self.abook.bot_id}, mode={self.run_mode})"
+
+    # -- committed loss and the wallet floor (DEC-032 s3; QP gap b). The base class' at_risk is the stakes only and its balance_need omits open stakes.
+    def _sell_reserve(self) -> int:
+        return sell_reserve_lamports(self.abook)
+
+    def _buy_fee(self) -> int:
+        return self.h5.buy_priority_lamports + h.tx.BASE_FEE_PER_SIGNATURE
+
+    def _position_worst_case(self, stake: int, extra: int = 0) -> int:
+        """One position or in-flight buy at zero: the stake, what the buy cost in fees, the ATA rent, the reserved sell fees, and fees booked since."""
+        return stake + extra + self._buy_fee() + h.RENT_RESERVE_LAMPORTS + self._sell_reserve()
+
+    def committed_loss_lamports(self) -> int:
+        """realized loss since the first send (floored at 0) + every open or pending position's worst case. Does NOT include the buy about to be sent."""
+        st = self.state
+        total = max(0, -int(st.realized_lamports))
+        total += sum(self._position_worst_case(int(p.get("spend") or 0), int(p.get("extra_cost") or 0)) for p in st.open.values())
+        total += sum(self._position_worst_case(int(p.get("spend") or 0)) for p in st.pending.values() if p["kind"] == "buy")
+        return total
+
+    def committed_loss_refusal(self) -> str | None:
+        """Pre-send: committed loss plus this buy's worst case must be at most the total stop (DEC-032 s3; the stop does not reset on restart)."""
+        if self.committed_loss_lamports() + self._position_worst_case(self.h5.stake_lamports) > self.h5.total_loss_lamports:
+            return "committed_loss_stop"
+        return None
+
+    def _budget_stop(self, now: int) -> str | None:
+        return super()._budget_stop(now) or self.committed_loss_refusal()
+
+    def _balance_refusal(self, now: int) -> str | None:
+        """balance - open stakes at zero - this stake - fees - rent - the sell reserves must stay at or above the floor. The balance has already paid
+        for the open stakes; counting them again is deliberate (DEC-032 s3)."""
+        bal = self._balance_value(now)
+        if bal is None:
+            return "balance_unreadable"
+        st = self.state
+        held = sum(int(p.get("spend") or 0) for p in st.open.values()) + sum(int(p.get("spend") or 0) for p in st.pending.values() if p["kind"] == "buy")
+        n_pos = len(st.open) + sum(1 for p in st.pending.values() if p["kind"] == "buy")
+        need = held + self.h5.stake_lamports + self._buy_fee() + h.RENT_RESERVE_LAMPORTS + (n_pos + 1) * self._sell_reserve() + self.h5.wallet_floor_lamports
+        return None if bal >= need else "balance_floor"
+
+    def _live_buy(self, trg: h.H5Trigger, ps: Any, terms: dict[str, Any], plan: Any, now: int, drift: float | None, seen_ms: int | None) -> None:
+        why = self.committed_loss_refusal() or self._balance_refusal(self.now_ms())  # the last look before anything is built or signed
+        if why:
+            return self._refuse(trg, why)
+        super()._live_buy(trg, ps, terms, plan, now, drift, seen_ms)
 
     # -- seal (item 2): the CAP-PICK guard is gone; the book's own windows are the refusals below
     def _seal_reason(self, trg: h.H5Trigger, now: int) -> str | None:
