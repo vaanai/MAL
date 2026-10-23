@@ -8,7 +8,7 @@ INPUTS (JSON lines; the tests use fixtures only, a real canary file is never ope
             sells received minus buys paid minus all fees, rent refunded counted), live_buy_price, live_sell_price, gap_through (bool, optional)
   twins     one line per paper twin (arena_paper, nofail leg, 1.9 s, priced at the executor's actual per-send fees): trip_id, pnl_lamports (E1 floor EXCLUDED: this decides),
             pnl_e1_lamports (E1 included: reported beside), entry_price, exit_price, price_failed (bool, optional)
-  attempts  one line per live buy send: attempt_id, decision_ms, landed (bool), landed_ms, failed_or_expired (bool), p_fail_press (the pressure refit's modelled failure share)
+  attempts  one line per live buy send: attempt_id, trip_id (required on a landed buy: the trip it opened), decision_ms, landed (bool), landed_ms, failed_or_expired (bool), p_fail_press (the pressure refit's modelled failure share)
   state     {"at_ms": {"loss": ms, "balance": ms, "twin": ms, "parity": ms, "decision_chain": ms, "control_files": ms}, "last_landed_ms": ms, "unresolved_hard_halts": [ids]}
 
 DEFINITIONS (exactly DEC-032 section 5)
@@ -57,7 +57,7 @@ MATCH_MIN, MATCH_LO_BPS, MATCH_P50_S = 100, -100.0, 1.9
 STALE_MS = 60_000
 CLOCK_SKEW_MS = 5_000  # a state stamp more than this far ahead of now is not fresh, it is wrong: invalid, P7
 STATE_NAMES = ("loss", "balance", "twin", "parity", "decision_chain", "control_files")
-HARD = frozenset({"P4"})
+HARD = frozenset({"P4", "out_of_rule_entry", "stuck_position"})
 STOP_SCHEMA = "arena_live_parity_stop_v1"
 
 
@@ -210,6 +210,11 @@ def evaluate(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[str, An
         for name, cnt in (("gap", n_gap), ("no_twin", n_no_twin)):
             if cnt / k > P7_SHARE:
                 _first(halts, "P7", k, cnt / k, f"{name} share {cnt}/{k} of live trips > {P7_SHARE:.0%}")
+    # B3: every landed buy send must map to a trip row (a live buy with no frozen decision row is a hard latch, DEC-032 section 5, DEC-024 out_of_rule_entry)
+    known = {t["trip_id"] for t in trips}
+    orphans = sorted(str(a.get("trip_id")) for a in attempts if a.get("landed") and a.get("trip_id") not in known)
+    if orphans:
+        _first(halts, "out_of_rule_entry", len(order), len(orphans), f"{len(orphans)} landed buy send(s) with no trip row (trip_id: {', '.join(orphans[:5])}): a live buy with no frozen decision row")
     # attempts: P2 (landing-fail excess, rolling 30) and P5 (landing p50, first 20 then rolling 20)
     att = sorted(attempts, key=lambda a: int(a["decision_ms"]))
     for k in range(P2_N, len(att) + 1):

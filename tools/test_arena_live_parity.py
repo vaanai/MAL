@@ -44,7 +44,7 @@ def attempts(n, fail_every=0, p_press=0.10, land_s=1.0):
     for i in range(n):
         f = bool(fail_every) and i % fail_every == 0
         t0 = NOW - 20_000_000 + i * 1000
-        out.append({"attempt_id": f"a{i}", "decision_ms": t0, "landed": not f, "landed_ms": None if f else t0 + int(land_s * 1000), "failed_or_expired": f, "p_fail_press": p_press})
+        out.append({"attempt_id": f"a{i}", "trip_id": None if f else "t0", "decision_ms": t0, "landed": not f, "landed_ms": None if f else t0 + int(land_s * 1000), "failed_or_expired": f, "p_fail_press": p_press})
     return out
 
 
@@ -271,6 +271,7 @@ def test_cli_exit_codes_and_stop_file(tmp_path, capsys):
     (tmp_path / "trips.jsonl").write_text("{not json\n")
     assert P.main(args) == 2 and "UNUSABLE INPUT" in capsys.readouterr().err
     (tmp_path / "trips.jsonl").write_text("")
+    (tmp_path / "attempts.jsonl").write_text("")
     (tmp_path / "state.json").write_text("{")
     assert P.main(args) == 10  # unreadable state: fail closed
 
@@ -371,3 +372,34 @@ def test_b2_future_state_exits_nonzero_through_the_cli(tmp_path):
     st = fresh_state()
     st["at_ms"] = {n: NOW + 10**9 for n in P.STATE_NAMES}
     assert P.main(cli(tmp_path, *book(30), attempts(40), st)) == 10 and (tmp_path / "STOP").exists()
+
+
+def test_b3_landed_buy_with_no_trip_row_is_a_hard_out_of_rule_entry_halt():
+    att = attempts(40)
+    att[5]["trip_id"] = "ghost"      # a landed buy whose trip is not in the trips file
+    r = run(*book(100), att=att)
+    h = r["halts"]["out_of_rule_entry"]
+    assert h["hard"] and "ghost" in h["detail"] and "out_of_rule_entry" in r["unresolved_hard_halts"] and not r["match"]
+    assert r["hard_halts"] == ["out_of_rule_entry"] and r["stop_required"]
+
+
+def test_b3_landed_buy_with_no_trip_id_and_empty_trips_file_halts():
+    att = attempts(40)
+    for a in att:
+        a["trip_id"] = None
+    r = P.evaluate([], [], att, fresh_state(), NOW)
+    assert r["halts"]["out_of_rule_entry"]["hard"]
+    # the QP reproduction: one landed buy, an empty trips file
+    r = P.evaluate([], [], attempts(1)[:1], fresh_state(), NOW)
+    assert "out_of_rule_entry" in r["halts"]
+
+
+def test_b3_exit_code_is_hard_and_stop_is_written(tmp_path):
+    att = attempts(40)
+    att[0]["trip_id"] = "ghost"
+    assert P.main(cli(tmp_path, *book(100), att, fresh_state())) == 11
+    assert json.loads((tmp_path / "STOP").read_text())["hard"] is True
+
+
+def test_b3_failed_sends_need_no_trip():
+    assert "out_of_rule_entry" not in run(*book(30), att=attempts(40, fail_every=2))["halts"]
