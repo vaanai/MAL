@@ -55,6 +55,7 @@ P7_SHARE = 0.05
 FLAT_FAIL = 0.15
 MATCH_MIN, MATCH_LO_BPS, MATCH_P50_S = 100, -100.0, 1.9
 STALE_MS = 60_000
+STUCK_AFTER_MS = 600_000  # DEC-032 section 5 item 4: a position not closed by its exit instant + 600 s is stuck (hard halt)
 CLOCK_SKEW_MS = 5_000  # a state stamp more than this far ahead of now is not fresh, it is wrong: invalid, P7
 STATE_NAMES = ("loss", "balance", "twin", "parity", "decision_chain", "control_files")
 HARD = frozenset({"P4", "out_of_rule_entry", "stuck_position"})
@@ -112,6 +113,8 @@ def validate_inputs(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[
         _need_id(t, "trip_id", "trip")
         _need(t, "stake_lamports", "trip", positive=True)
         _need(t, "decision_ms", "trip")
+        if not t.get("exit_landed"):
+            _need(t, "exit_bound_ms", "pending-exit trip")  # without the exit instant the age of an open position cannot be judged: refuse
         for k in ("buy_landed_ms", "closed_ms", "exit_landed_ms", "exit_bound_ms", "live_net_lamports", "live_buy_price", "live_sell_price"):
             _opt(t, k, "trip")
     for w in twins:
@@ -210,6 +213,10 @@ def evaluate(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[str, An
         for name, cnt in (("gap", n_gap), ("no_twin", n_no_twin)):
             if cnt / k > P7_SHARE:
                 _first(halts, "P7", k, cnt / k, f"{name} share {cnt}/{k} of live trips > {P7_SHARE:.0%}")
+    # B4: an exit still pending after exit_bound + 600 s is a stuck position (hard); it never drops out of the books
+    stuck = sorted(t["trip_id"] for t in trips if not t.get("exit_landed") and now_ms > int(t["exit_bound_ms"]) + STUCK_AFTER_MS)
+    if stuck:
+        _first(halts, "stuck_position", len(order), len(stuck), f"{len(stuck)} trip(s) with the exit not landed {STUCK_AFTER_MS // 1000} s after the exit bound ({', '.join(stuck[:5])}): no new buys, Helm runs the root sell-and-close tool")
     # B3: every landed buy send must map to a trip row (a live buy with no frozen decision row is a hard latch, DEC-032 section 5, DEC-024 out_of_rule_entry)
     known = {t["trip_id"] for t in trips}
     orphans = sorted(str(a.get("trip_id")) for a in attempts if a.get("landed") and a.get("trip_id") not in known)
@@ -232,7 +239,7 @@ def evaluate(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[str, An
     if stale:
         _first(halts, "P7", len(order), len(stale), "missing, unreadable or stale state: " + "; ".join(stale))
     n_trips = len(order)
-    shares = {"trips": n_trips, "gap": n_gap, "no_twin": n_no_twin, "exit_pending": sum("exit_pending" in m["reasons"] for m in mets),
+    shares = {"trips": n_trips, "gap": n_gap, "no_twin": n_no_twin, "exit_pending": sum("exit_pending" in m["reasons"] for m in mets), "stuck": len(stuck),
               "eligible": sum(m["eligible"] for m in mets), "gap_share": n_gap / n_trips if n_trips else 0.0, "no_twin_share": n_no_twin / n_trips if n_trips else 0.0}
     not_decidable = shares["gap_share"] > P7_SHARE or shares["no_twin_share"] > P7_SHARE
     d = np.asarray([m["d"] for m in mets if m["eligible"] and "d" in m], float)
@@ -253,6 +260,10 @@ def evaluate(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[str, An
         why.append(f"landing p50 {stats['landing_p50_s']} s > {MATCH_P50_S} s")
     if "P7" in halts or not_decidable:
         why.append("P7 is on" if "P7" in halts else "no_twin or gap share above 5%")
+    if shares["exit_pending"]:
+        why.append(f"{shares['exit_pending']} exit(s) still pending ({len(stuck)} stuck): open or stuck trips are not survivorship-excluded from the match")
+    if stuck:
+        why.append(f"{len(stuck)} stuck position(s)")
     if hard_open:
         why.append(f"unresolved hard halt(s): {hard_open}")
     match = not why

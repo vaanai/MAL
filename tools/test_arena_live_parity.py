@@ -403,3 +403,45 @@ def test_b3_exit_code_is_hard_and_stop_is_written(tmp_path):
 
 def test_b3_failed_sends_need_no_trip():
     assert "out_of_rule_entry" not in run(*book(30), att=attempts(40, fail_every=2))["halts"]
+
+
+def _good_plus_pending(n_good=100, n_pending=10):
+    ts, ws = book(n_good)
+    for i in range(n_good, n_good + n_pending):
+        a, b = trip(i, landed=False)
+        a["exit_landed_ms"] = None
+        ts.append(a)
+        ws.append(b)
+    return ts, ws
+
+
+def test_b4_100_good_plus_10_unexited_is_a_stuck_hard_halt_and_never_match():
+    ts, ws = _good_plus_pending()
+    r = run(ts, ws)
+    h = r["halts"]["stuck_position"]
+    assert h["hard"] and r["verdict"] == "parity not shown" and not r["match"] and r["stop_required"]
+    assert r["shares"]["stuck"] == 10 and r["shares"]["exit_pending"] == 10 and "10" in h["detail"]
+    assert "stuck_position" in r["unresolved_hard_halts"]
+    assert any("stuck" in w for w in r["not_shown_because"])
+
+
+def test_b4_pending_inside_the_max_open_age_is_no_halt_but_still_blocks_the_match():
+    ts, ws = _good_plus_pending(100, 1)
+    ts[-1]["exit_bound_ms"] = NOW - P.STUCK_AFTER_MS + 1000   # not yet bound + 600 s
+    r = run(ts, ws)
+    assert "stuck_position" not in r["halts"] and r["shares"]["stuck"] == 0
+    assert not r["match"] and any("exit(s) still pending" in w for w in r["not_shown_because"])
+    ts[-1]["exit_bound_ms"] = NOW - P.STUCK_AFTER_MS - 1       # now stuck
+    assert "stuck_position" in run(ts, ws)["halts"]
+
+
+def test_b4_pending_trip_without_exit_bound_is_bad_input():
+    ts, ws = _good_plus_pending(30, 1)
+    del ts[-1]["exit_bound_ms"]
+    with pytest.raises(P.BadInput):
+        run(ts, ws)
+
+
+def test_b4_cli_exit_11_for_stuck(tmp_path):
+    ts, ws = _good_plus_pending()
+    assert P.main(cli(tmp_path, ts, ws, attempts(40), fresh_state())) == 11 and json.loads((tmp_path / "STOP").read_text())["hard"] is True
