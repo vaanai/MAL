@@ -12,16 +12,20 @@ Reads ONLY, from each tape file: gap rows (type gap) and, from DATA rows (types 
 ledger/decision/bots/runner-status/probe word are refused by tools/arena_hour_health.guard.
 
 Per slot_jump gap (data_loss true; deduplicated on prog, from_slot, to_slot) the skipped slots are from_slot+1 .. to_slot-1:
-  covered           every skipped slot has at least one data row from any source (any arrival time)
+  covered           every skipped slot has at least one data row from any source arriving by to_ms + grace_s
   partial           some do, some do not
   empty             none does
-  unresolved_tape_cut  the tape of that program ends before to_ms + --grace-s: late rows could still be missing, no verdict
+  unresolved_tape_cut  the tape of that program ends before to_ms + grace_s: late rows could still be missing, no verdict
 A slot with no row is reported as UNCOVERED. It may be a slot with no program transaction or a skipped Solana slot, so uncovered is an UPPER
-BOUND on real loss. Never read it as proof of loss.
+BOUND on whole-slot loss only. Within-slot loss in covered slots (a slot needs just one row to be covered) is NOT measured. Never read it as proof of loss.
+A row covers a slot only if its t_recv_ms <= to_ms + grace_s (default 120, pinned): the class never depends on how much tape lies past the gap.
+Per gap, late_until_ms = the max t_recv_ms of the covering rows (null if none): an attempt decided in [from_ms, late_until_ms] had a degraded view.
+Inputs must be whole, contiguous, unduplicated tape hours (tape-YYYY-MM-DDTHH.jsonl[.zst]); a missing hour is refused (exit 2). A gap wider than
+MAX_GAP_SLOTS is refused (exit 2). --out goes through the same path guard as the inputs.
 Gap kinds without a slot range (silence, feed_restart, process_restart, socket_reconnect with data_loss) are NOT reclassified. They are listed
 in not_reclassified (counts and union seconds) and stay data loss for any consumer.
 
-Output JSON lines: one {"type":"gap",...} per slot_jump gap (sorted), one {"type":"program",...} per program with counts and the merged uncovered
+Output JSON lines: a {"type":"header"} line (schema, grace_s, max_gap_slots, hours), one {"type":"gap",...} per slot_jump gap (sorted), one {"type":"program",...} per program with counts and the merged uncovered
 ranges (inclusive [first, last] slots), a {"type":"not_reclassified"} line, a {"type":"meta"} line, then {"type":"sha256"} over all earlier
 lines (each + "\\n").
 Exit codes: 0 ok, 2 refused or invalid input.
@@ -197,7 +201,7 @@ def reclassify(sc: dict[str, Any], grace_s: int = DEFAULT_GRACE_S) -> list[dict[
     nr = {k: {"rows": sc["other_n"][k], "union_s": _union_s(sc["other"].get(k, set()))} for k in sorted(sc["other_n"])}
     recs.append({"type": "not_reclassified", "kinds": nr})
     recs.append({"type": "meta", "schema": SCHEMA, "grace_s": grace_s, "torn_lines": sc["torn"],
-                 "note": "uncovered = no tape row from any source; an upper bound on real loss, not proof of loss"})
+                 "note": "uncovered = no tape row from any source by to_ms + grace_s; an upper bound on whole-slot loss; within-slot loss in covered slots not measured; not proof of loss"})
     return recs
 
 
