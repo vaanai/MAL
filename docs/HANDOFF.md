@@ -96,7 +96,7 @@ Read this first. Then read the END of manager14's state log (/data/mal/hunt-1008
 ## 4. Push 10-23 results (hunt28/PUSH-PLAN-1023.md)
 - **L1 (live tools):** done, see §3.
 - **L2:** the gap reclassifier #813 does not unblock 24 h holds; it is low priority.
-- **L3 reprice at 160k:** only FLOOR revives, and it was already positive at 505k. Library rows are in #833, which needs a reviewer and then a merge.
+- **L3 reprice at 160k (exploration, in-sample only, never a gate input):** FLOOR is the only cell flagged as a revive candidate. Its in-sample screen numbers were already above zero at 505k (winner's curse: the best of 51 cells; NOT_DECIDABLE in-sample). Library rows merged in #833 (38a54a96).
 - **L4:** four new screens, all FAIL.
 - **L5:** HV5 #814 waits for HV4.
 - **Next ideas:**
