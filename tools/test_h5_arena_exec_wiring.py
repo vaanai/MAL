@@ -442,6 +442,71 @@ class ParityGateTests(LiveCase):
         self.assertEqual(e.ex.gates.parity_refusal(now), f"parity_gate:rc_{rc}")
 
 
+class SignalAgeAfterGatesTests(LiveCase):
+    """QP 10-23 W3: the parity and tie-out runs are synchronous in the buy path (up to 60 s each). The signal age is re-read after they run and again
+    immediately before the first send; a signal that went stale while the gates ran is no buy."""
+
+    def slow_gate(self, e, ms):
+        def run(argv):
+            e.clock.t += ms
+            return 0
+        e.ex.gates.runner = run
+
+    def test_slow_gates_make_the_signal_stale_so_no_buy(self):
+        e = self.live()
+        self.slow_gate(e, 4_000)  # the age limit is 3.5 s (PRESEND_MAX_TRIGGER_AGE_MS); DEC-032 s3 allows at most 5 s
+        e.fire()
+        self.assertEqual(e.refusals(), ["stale_trigger_after_gates"])
+        self.assertEqual(e.rpc.sent, [])
+        self.assertNotIn(MINT, e.ex.state.pending)
+        self.assertEqual(e.ex.state.attempts, 0)
+
+    def test_fast_gates_let_it_through(self):
+        e = self.live()
+        self.slow_gate(e, 50)
+        e.fire()
+        self.assertIn(MINT, e.ex.state.pending)
+        self.assertEqual(len(e.rpc.sent), 1)
+
+    def test_the_limit_is_never_above_5_s(self):
+        self.assertLessEqual(ax.SIGNAL_AGE_MAX_MS, 5_000)
+        e = self.live()
+        self.assertLessEqual(e.ex._signal_age_limit_ms(), 5_000)
+
+    def test_the_tieout_run_counts_too(self):
+        e = self.live()
+        e.ex.state.first_attempt_ms = e.clock() - 2 * 86_400_000
+        def run(argv):
+            if argv[0] == "tools.arena_tieout":
+                e.clock.t += 4_000
+            return 0
+        e.ex.gates.runner = run
+        e.fire()
+        self.assertEqual(e.refusals(), ["stale_trigger_after_gates"])
+        self.assertEqual(e.rpc.sent, [])
+
+    def test_a_signal_that_goes_stale_between_build_and_send_is_not_sent(self):
+        e = self.live()
+        real = e.ex._sign
+        def slow_sign(*a, **k):
+            r = real(*a, **k)
+            e.clock.t += 4_000
+            return r
+        e.ex._sign = slow_sign
+        e.fire()
+        self.assertEqual(e.rpc.sent, [])
+        self.assertNotIn(MINT, e.ex.state.pending)
+        self.assertEqual([r["reason"] for r in e.ledger("send_blocked")], ["stale_trigger_presend"])
+
+    def test_a_rebroadcast_is_not_judged_by_the_signal_age(self):
+        e = self.live()
+        e.fire()
+        p = e.ex.state.pending[MINT]
+        e.clock.t += 4_000
+        e.ex._send(p, MINT)  # sends >= 1: the base class's rebroadcast rules apply, not the first-send age check
+        self.assertEqual(e.ledger("send_blocked"), [])
+
+
 class TieoutGateTests(LiveCase):
     DAY = 86_400_000
 
