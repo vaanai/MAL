@@ -13,7 +13,7 @@ INPUTS (JSON lines; the tests use fixtures only, a real canary file is never ope
 
 DEFINITIONS (exactly DEC-032 section 5)
   eligible trip     has a twin (a failed twin price is no_twin), is not marked gap, and its exit has landed. Non-eligible trips are counted by reason: no_twin, gap, exit_pending.
-                    A trip with several reasons is counted once as ineligible and once under EACH reason (the shares are conservative).
+                    A trip with no twin row at all is no_twin, never eligible. A zero-row twins file with a live trip past its exit is P7 at once. A trip with several reasons is counted once as ineligible and once under EACH reason (the shares are conservative).
   d_i (bps)         (live_net_lamports - twin pnl_lamports) / stake_lamports * 10,000.
   g_entry_i (bps)   (live_buy_price / twin entry_price - 1) * 10,000; positive = live paid more.  g_exit_i likewise on the sell; negative = live received less.
   landing-fail excess   live share of buy sends that failed or expired minus max(0.15, mean p_fail_press) over the same attempts. DEC-032 section 5 says "mean 1 - p"; QP ruling 1023 reads it as the fail share p itself (fail_legs' p is the failure probability), so this tool uses p.
@@ -267,6 +267,11 @@ def evaluate(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[str, An
         for name, cnt in (("gap", n_gap), ("no_twin", n_no_twin)):
             if share_breach(cnt, k):
                 _first(halts, "P7", k, cnt / k, f"{name} {cnt}/{k} live trips: " + (f"share above {P7_SHARE:.0%}" if k >= P7_SHARE_MIN_TRIPS else f"{cnt} before {P7_SHARE_MIN_TRIPS} trips (small-sample rule)"))
+    # Twins (QP 10-23, PR #825 probe: an empty twins file with fresh stamps returned rc 0): a zero-row twins file while a live trip is past its exit (landed, or its exit
+    # bound has passed) is P7 at once. Before the first exit is due nothing can be priced yet, so an empty file is allowed then; after, the producer is missing.
+    due = sorted(t["trip_id"] for t in trips if t.get("exit_landed") or now_ms > int(t["exit_bound_ms"]))
+    if not twins and due:
+        _first(halts, "P7", len(order), len(due), f"twins file has zero rows while {len(due)} live trip(s) are past their exit ({', '.join(due[:5])}): the twin producer is missing or has not run (fail closed)")
     # B4: an exit still pending after exit_bound + 600 s is a stuck position (hard); it never drops out of the books
     stuck = sorted(t["trip_id"] for t in trips if not t.get("exit_landed") and now_ms > int(t["exit_bound_ms"]) + STUCK_AFTER_MS)
     if stuck:
