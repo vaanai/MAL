@@ -12,12 +12,15 @@ within 6 h, 24 h volume >= 1 SOL, 6 h spot ratio < 0.80). The state-dependent pa
 depend on exits, which depend on prices. They are bounded instead, from decision times only:
     att_lo  signals thinned by a per-pool lock of HOLD_MS + COOLDOWN_MS (the position is held to the 24 h time exit; no take profit)   -> LOWER bound of would-be attempts
     att_hi  signals thinned by a per-pool lock of COOLDOWN_MS + LEG_MS (every position exits as early as the leg latency allows)      -> UPPER bound
-Real attempts lie between. Locks start at the first selected day (signals before it, on table-only days, lock nothing).
+Real attempts lie between. K1: the rule is run (and signals collected) from min(days) - (HOLD_MS + COOLDOWN_MS) through the end of max(days), unselected days in between included, so a signal
+before or between selected days locks its pool exactly as the live book would; att_lo/att_hi are counted on selected days only. att_lo is therefore the same whichever days are selected.
+WHAT att_lo DOES NOT MODEL: it is a lower bound up to the 1 s exit tick and sell-retry delay; live stale-row drops, buy refusals and failed buys are not modelled (the last two raise real
+attempts above att_lo). Take profit is ignored (it can only free a pool earlier). Fewer than 3 days: floor false, days_lt_3 true. Corrupt/torn tape lines are counted per day (bad_lines) and fail that day.
 meta fields that need prices (mark0) are None here; nothing in the signal depends on them.
 
 TAPE FIELDS. Every row is projected to a whitelist the moment it is read: type, prog, venue, t_recv_ms, slot, event_ts, mint, pool, side, quote_mint, virtual_quote_reserves,
 quote_reserve, base_reserve, sol_lamports, token_raw (trade); mint, is_mayhem_mode (create); mint, event_ts (complete); gap: kind, prog, from_ms, paused_since_ms, to_ms,
-data_loss. signature and event_index are kept ONLY as the table's de-duplication key (PoolTable.update) and the rule's meta field; they are never printed. trader, creator,
+data_loss. signature and event_index are kept as the table's de-duplication key and the rule's meta field, never printed; the key is inert in this path (no checkpoint load). trader, creator,
 name, symbol are never kept. No mint, pool, wallet or signature is printed.
 
 OUTPUT. Canonical JSON lines, then a last line `sha256 <hex>` over everything before it: header (repo_sha, tool_sha256, rule/table file sha256, constants), one `day` line per selected
@@ -120,6 +123,10 @@ def project(row: dict) -> dict | None:
         if k in row:
             out[k] = row[k]
     return out
+
+
+def hour_day(ms: int) -> str:
+    return datetime.fromtimestamp(ms // 1000, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
 def hour_key(ms: int) -> str:
@@ -225,8 +232,10 @@ def run(a: argparse.Namespace, M: SimpleNamespace, sha: str) -> list[dict]:
     end_ms = max(day_ms.values()) + DAY_MS
     have = {h for h, _ in files}
     missing = [h for h in range(first_h, end_ms, HOUR_MS) if h not in have]
-    sig: dict[str, dict[str, list[int]]] = {d: collections.defaultdict(list) for d in days}  # day -> pool -> signal times
+    lock_from = max(first_h, min(day_ms.values()) - (L1.HOLD_MS + L1.COOLDOWN_MS))
+    allsig: dict[str, list[int]] = collections.defaultdict(list)  # pool -> signal times (every dispatched day, selected or not)
     rows_disp = collections.Counter()
+    bad_lines = collections.Counter()
     spans: dict[tuple, list] = {}
     t_start = time.time()
     n_rows = 0
@@ -234,17 +243,16 @@ def run(a: argparse.Namespace, M: SimpleNamespace, sha: str) -> list[dict]:
         if h < first_h or h >= end_ms:
             continue
         for ln in lines(f):
-            if b'"trade"' not in ln and b'"create"' not in ln and b'"complete"' not in ln and b'"gap"' not in ln:
-                continue
-            if b"pumpfun" in ln and b'"trade"' in ln:
+            if not ln.strip():
                 continue
             try:
                 raw = json.loads(ln)
             except ValueError:
+                bad_lines[hour_day(h)] += 1  # K3: counted, fails the day
                 continue
             row = project(raw) if isinstance(raw, dict) else None
             if row is None:
-                continue
+                continue  # K2: rows are parsed, never grepped; table.update itself ignores a pump.fun trade
             t = row["t_recv_ms"]
             if row["type"] == "gap":
                 prog, kind = str(row.get("prog") or "all"), row.get("kind")
@@ -255,35 +263,39 @@ def run(a: argparse.Namespace, M: SimpleNamespace, sha: str) -> list[dict]:
                 sp[1] = sp[1] or bool(row.get("data_loss"))
                 continue
             table.update(row)  # HostV2._on_row: the table sees every row first
-            d = win(t)
-            if d is None or row["type"] != "trade":
+            if row["type"] != "trade" or t < lock_from or t >= end_ms:
                 continue
+            d = win(t)
             ctx.now_ms = t
-            rows_disp[d] += 1
+            if d is not None:
+                rows_disp[d] += 1
             try:
                 orders = rule.on_row(ctx, row)
-            except Exception:  # noqa: BLE001 - counted, never swallowed silently: a rule exception FAILS the day
-                rows_disp[d + ":error"] += 1
+            except Exception:  # noqa: BLE001 - counted, never swallowed silently: a rule exception FAILS every selected day
+                rows_disp["error"] += 1
                 continue
             if any(type(o).__name__ == "Buy" for o in orders):
-                sig[d][row["pool"]].append(t)
+                allsig[row["pool"]].append(t)
             n_rows += 1
         print(f"# hour {hour_key(h)} rows_dispatched={n_rows} wall_s={time.time() - t_start:.0f} rss_mb={resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024:.0f}", file=sys.stderr, flush=True)
     # thinning over the selected days in time order, per pool, locks carried across days
-    allsig: dict[str, list[int]] = collections.defaultdict(list)
-    for d in days:
-        for pool, ts in sig[d].items():
-            allsig[pool].extend(ts)
-    lo_t, hi_t = collections.Counter(), collections.Counter()
+    lo_t, hi_t, sig_t, carried = collections.Counter(), collections.Counter(), collections.Counter(), collections.Counter()
     for pool, ts in allsig.items():
         ts.sort()
+        for t in ts:
+            if win(t) is not None:
+                sig_t[win(t)] += 1
         for t in thin(ts, L1.HOLD_MS + L1.COOLDOWN_MS):
-            lo_t[win(t)] += 1
+            if win(t) is not None:
+                lo_t[win(t)] += 1
         for t in thin(ts, L1.COOLDOWN_MS + L1.LEG_MS):
-            hi_t[win(t)] += 1
+            if win(t) is not None:
+                hi_t[win(t)] += 1
+        for d in days:  # signals before the day (inside the lock horizon) that were carried into it
+            carried[d] += sum(1 for t in ts if day_ms[d] - (L1.HOLD_MS + L1.COOLDOWN_MS) <= t < day_ms[d])
     rows: list[dict] = [{"kind": "header", "tool": "floor_p0_count", "repo_sha": sha, "tool_sha256": sha_file(__file__),
                          "rule_sha256": sha_file(str(Path(M.repo) / "tools/arena_rule_l1.py")), "table_sha256": sha_file(str(Path(M.repo) / "tools/arena_pool_table.py")),
-                         "bot_id": L1.BOT_ID, "table_mode": rule.table_mode, "windows": days, "table_from": hour_key(first_h),
+                         "bot_id": L1.BOT_ID, "table_mode": rule.table_mode, "windows": days, "table_from": hour_key(first_h), "lock_warmup_from": hour_key(lock_from),
                          "constants": {"HOLD_MS": L1.HOLD_MS, "COOLDOWN_MS": L1.COOLDOWN_MS, "LEG_MS": L1.LEG_MS, "ATT_HI_LOCK_MS": L1.COOLDOWN_MS + L1.LEG_MS,
                                        "ATT_LO_LOCK_MS": L1.HOLD_MS + L1.COOLDOWN_MS}, "fields": sorted({k for v in KEEP.values() for k in v}),
                          "not_read": "trader, creator, name, symbol; signature/event_index only as the table's de-dup key, never printed"}]
@@ -291,18 +303,19 @@ def run(a: argparse.Namespace, M: SimpleNamespace, sha: str) -> list[dict]:
     for d in days:
         s, e = day_ms[d], day_ms[d] + DAY_MS
         miss = [m for m in missing if m < e]  # any tape hour missing from table start to the end of the day
-        err = rows_disp[d + ":error"]
-        status = "OK" if not miss and not err else "FAILED"
+        err, bad = rows_disp["error"], bad_lines[d]
+        status = "OK" if not miss and not err and not bad else "FAILED"
         ok_all &= status == "OK"
-        rows.append({"kind": "day", "day": d, "status": status, "reason": None if status == "OK" else ("tape_missing_hours=%d" % len(miss) if miss else "rule_errors=%d" % err),
-                     "rows_dispatched": rows_disp[d], "signals": sum(len(v) for v in sig[d].values()), "att_lo": lo_t[d], "att_hi": hi_t[d], "gaps": gap_counts(spans, s, e)})
+        rows.append({"kind": "day", "day": d, "status": status, "reason": None if status == "OK" else ("tape_missing_hours=%d" % len(miss) if miss else "rule_errors=%d" % err if err else "bad_lines=%d" % bad),
+                     "rows_dispatched": rows_disp[d], "signals": sig_t[d], "bad_lines": bad, "carried_lock_signals": carried[d], "att_lo": lo_t[d], "att_hi": hi_t[d], "gaps": gap_counts(spans, s, e)})
     lo = [lo_t[d] for d in days]
     hi = [hi_t[d] for d in days]
     avg_lo, avg_hi = sum(lo) / len(lo), sum(hi) / len(hi)
-    floor = ok_all and avg_lo >= FLOOR_PER_DAY and all(x > 0 for x in lo)
+    lt3 = len(days) < 3
+    floor = (not lt3) and ok_all and avg_lo >= FLOOR_PER_DAY and all(x > 0 for x in lo)
     H = lambda r: min(90, max(14, math.ceil(150 / r))) if r > 0 else None  # noqa: E731
     rows.append({"kind": "verdict", "days": days, "att_lo_per_day": lo, "att_hi_per_day": hi, "avg_att_lo": avg_lo, "avg_att_hi": avg_hi, "any_day_zero_att_lo": any(x == 0 for x in lo),
-                 "floor_pass_att_lo": floor, "rate_att_lo": avg_lo, "H_days_att_lo": H(avg_lo) if floor else None, "H_days_att_hi_report_only": H(avg_hi),
+                 "floor_pass_att_lo": floor, "days_lt_3": lt3, "rate_att_lo": avg_lo, "H_days_att_lo": H(avg_lo) if floor else None, "H_days_att_hi_report_only": H(avg_hi),
                  "all_days_ok": ok_all, "disclosure": DISCLOSURE})
     return rows
 

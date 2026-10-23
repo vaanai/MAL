@@ -42,6 +42,33 @@ def make_rows(days=3, signals=()):
     return sorted(rows, key=lambda r: r["t_recv_ms"])
 
 
+def make_multi(pools, ndays, signals, create_extra=None):
+    """pools: list of names; signals: {pool: [offset_ms from H0]}. Every pool completes at H0+1h and prints every 30 min."""
+    rows = [row(H0 + 1000, "X")]
+    for p in pools:
+        c = {"type": "create", "t_recv_ms": H0 + HOUR - 1000, "mint": "M" + p, "is_mayhem_mode": False, "signature": "c" + p, "event_index": 0}
+        if create_extra:
+            c.update(create_extra)
+        rows += [c, {"type": "complete", "t_recv_ms": H0 + HOUR, "mint": "M" + p, "event_ts": (H0 + HOUR) // 1000, "signature": "k" + p, "event_index": 0}]
+        t = H0 + HOUR + 10_000
+        while t <= H0 + ndays * DAY:
+            rows.append(row(t, p, "buy" if (t // 1800000) % 2 else "sell"))
+            t += 1_800_000
+        for off in signals.get(p, ()):
+            rows.append(row(H0 + off, p, "sell", q=600_000_000, n=off))
+    return sorted(rows, key=lambda r: r["t_recv_ms"])
+
+
+def dd(i):
+    from datetime import datetime, timedelta, timezone
+    return (datetime.fromtimestamp(H0 / 1000, timezone.utc) + timedelta(days=i)).strftime("%Y-%m-%d")
+
+
+def run_multi(tmp_path, pools, ndays, signals, sel, **kw):
+    write_tape(tmp_path / "tape", make_multi(pools, ndays, signals, **kw))
+    return F.run(args(tmp_path / "tape", [dd(i) for i in sel]), mods(), "x" * 40)
+
+
 def args(tape, days, **kw):
     return SimpleNamespace(tape_dir=str(tape), days=days, table_from=None, **kw)
 
@@ -106,3 +133,68 @@ def test_main_exit_codes(tmp_path, capsys):
     assert F.main(["--repo", str(tmp_path), "--days", "bad"]) == 2
     assert F.main(["--repo", str(tmp_path), "--days", "2026-10-15"]) == 2  # not the pinned repo
     assert F.main(["--repo", str(tmp_path), "--days", "2026-10-15", "--expect-sha", "1" * 40]) == 2  # override needs MAL_ARENA_TEST
+
+
+def test_k1_att_lo_independent_of_selected_days(tmp_path):
+    sig = {"P": [DAY + 20 * HOUR, 2 * DAY + 5 * HOUR]}  # the second signal is locked by the first (9 h later)
+    out = {}
+    for sel in ([2], [1, 2], [0, 2]):
+        rows = run_multi(tmp_path / ("s" + "".join(map(str, sel))), ["P"], 3, sig, sel)
+        out[tuple(sel)] = {r["day"]: r["att_lo"] for r in rows if r["kind"] == "day"}
+        assert rows[0]["lock_warmup_from"]
+    assert out[(2,)][dd(2)] == out[(1, 2)][dd(2)] == out[(0, 2)][dd(2)] == 0
+    assert out[(1, 2)][dd(1)] == 1
+
+
+def test_k1_carried_lock_signals_reported(tmp_path):
+    rows = run_multi(tmp_path, ["P"], 3, {"P": [DAY + 20 * HOUR]}, [2])
+    assert rows[1]["carried_lock_signals"] == 1
+
+
+def test_k2_pumpfun_create_named_trade_does_not_drop_the_pool(tmp_path):
+    rows = run_multi(tmp_path, ["P"], 3, {"P": [DAY + 20 * HOUR]}, [1], create_extra={"prog": "pumpfun", "name": "trade", "symbol": "trade"})
+    assert rows[1]["att_lo"] == 1
+
+
+def test_k3_bad_line_fails_day(tmp_path):
+    write_tape(tmp_path / "tape", make_multi(["P"], 3, {"P": [DAY + 20 * HOUR]}))
+    f = sorted((tmp_path / "tape").iterdir())[DAY // HOUR + 5]
+    f.write_text(f.read_text() + '{"type":"trade","t_recv_ms":12\n')
+    rows = F.run(args(tmp_path / "tape", [dd(1)]), mods(), "x" * 40)
+    assert rows[1]["status"] == "FAILED" and rows[1]["reason"] == "bad_lines=1" and rows[1]["bad_lines"] == 1
+
+
+def pass_signals(extra=None, skip_day=None):
+    sig = {}
+    for p, base in (("P", 51), ("Q", 63), ("R", 55), ("S", 67)):
+        sig[p] = [(base + 25 * k) * HOUR for k in range(3)]
+    return sig
+
+
+def test_k4_floor_boundary_pass_and_exact_h(tmp_path):
+    # P and Q: one signal per day on days 2,3,4 (25 h apart), so att_lo = 2,2,2: average exactly 2.0 passes; H = ceil(150 / 2.0) = 75
+    sig = {p: pass_signals()[p] for p in ("P", "Q")}
+    rows = run_multi(tmp_path, ["P", "Q"], 6, sig, [2, 3, 4])
+    v = rows[-1]
+    assert v["att_lo_per_day"] == [2, 2, 2] and v["avg_att_lo"] == 2.0 and v["floor_pass_att_lo"] is True and v["days_lt_3"] is False and v["H_days_att_lo"] == 75
+
+
+def test_k4_h_for_higher_rate(tmp_path):
+    sig = pass_signals()  # four pools -> 4 a day, H = max(14, ceil(150 / 4)) = 38
+    rows = run_multi(tmp_path, ["P", "Q", "R", "S"], 6, sig, [2, 3, 4])
+    v = rows[-1]
+    assert v["att_lo_per_day"] == [4, 4, 4] and v["H_days_att_lo"] == 38
+
+
+def test_k4_any_day_zero_fails_floor(tmp_path):
+    sig = {p: [(base + 0) * HOUR, (base + 52) * HOUR] for p, base in (("P", 50), ("Q", 51), ("R", 52), ("S", 53))}  # days 2 and 4 only
+    rows = run_multi(tmp_path, ["P", "Q", "R", "S"], 6, sig, [2, 3, 4])
+    v = rows[-1]
+    assert v["att_lo_per_day"] == [4, 0, 4] and v["avg_att_lo"] > 2.0 and v["floor_pass_att_lo"] is False and v["any_day_zero_att_lo"] is True
+
+
+def test_k5_fewer_than_three_days_never_passes(tmp_path):
+    sig = pass_signals()
+    rows = run_multi(tmp_path, ["P", "Q", "R", "S"], 6, sig, [2, 3])
+    v = rows[-1]
+    assert v["avg_att_lo"] >= 2.0 and v["floor_pass_att_lo"] is False and v["days_lt_3"] is True
