@@ -44,11 +44,13 @@ from tools import arena_rules as R
 from tools.arena_declog import LogChainError
 from tools.arena_paper import ArenaEngine, canon
 from tools.arena_pool_table import PoolTable
+from tools.arena_stack_v2 import check_ledger_send, stack_config_for
 from tools.arena_state import WARM_MIN_DEFAULT, ArenaState
 
 RULE_MODULES_V2 = {"l1-floor-v2": "tools.arena_rule_l1"}
 CHECKPOINT_EVERY_MS = 600_000
 SWEEP_EVERY_MS = 3_600_000
+ENGINE_TRIM_EVERY_MS = 300_000  # ArenaEngine.trim_history() cadence (tick time), the same 5 tape minutes the HV4 runner uses
 
 
 class CtxV2(R.Ctx):
@@ -72,6 +74,14 @@ def load_rules_v2(names: Sequence[str]) -> list[R.Rule]:
 
 
 class HostV2(R.Host):
+    def resume(self) -> dict[str, int]:
+        """DEC-031 Amendment 8: refuse to continue a ledger whose rows were priced at another send than this process prices at (a restart with the wrong --stack-version)."""
+        root = getattr(getattr(self.engine, "ledger", None), "root", None)
+        cfg = getattr(self.engine, "cfg", None)
+        if root is not None and cfg is not None:
+            check_ledger_send(root, [r.bot_id for r in self.rules], cfg.send)
+        return super().resume()
+
     def __init__(self, cfg: R.HostConfig, rules: Sequence[R.Rule], state: ArenaState, engine: Any, now_fn: Callable[[], int] | None = None,
                  binding: Mapping[str, Any] | None = None, table_path: str | os.PathLike | None = None, table: PoolTable | None = None) -> None:
         modes = {getattr(r, "table_mode", None) for r in rules}
@@ -89,6 +99,7 @@ class HostV2(R.Host):
         self._last_ckpt = 0
         self.last_ckpt_report: dict[str, Any] = {}
         self._last_sweep = 0
+        self._last_trim = 0
 
     def _on_row(self, row: dict) -> None:
         if self.fatal is None:
@@ -105,6 +116,14 @@ class HostV2(R.Host):
 
     def step(self, T: int) -> None:
         super().step(T)
+        if T - self._last_trim >= ENGINE_TRIM_EVERY_MS:
+            # MEMORY ONLY. The engine keeps every print of every pool for ever (about 1 KB a print, ~450 MB per arena hour: a 2-day replay was OOM-killed at 20 GB, and the
+            # forward book plans 8 GB). trim_history() (PR #745, QP-reviewed, pricing-neutral: ledger byte-equal on a 9 h replay) drops only prints no later buy can read; a buy
+            # that would read below a trim floor is refused instead of mispriced. Entry decisions are made from the state and the pool table, never from the engine's prints.
+            self._last_trim = T
+            trim = getattr(self.engine, "trim_history", None)
+            if trim is not None:
+                trim()
         if T - self._last_sweep >= SWEEP_EVERY_MS:
             self._last_sweep = T
             self.table.live_positions = {pid for b in self.books.values() for pid in b.open}
@@ -113,6 +132,16 @@ class HostV2(R.Host):
             self._last_ckpt = T
             self.save_table()
 
+    def trim_counters(self) -> dict[str, Any]:
+        """REPORT-ONLY: the engine's history-trim counters (PR #745). A nonzero rows_below_trim_floor or refused_history_trimmed voids the trim's
+        pricing equivalence. An engine without them (FakeEngine) reads 0. Never used by a decision."""
+        c = getattr(self.engine, "counters", None)
+        c = c if isinstance(c, dict) else {}
+        return {k: c.get(k, 0) for k in ("rows_below_trim_floor", "refused_history_trimmed", "hist_trimmed_prints", "rows_dup")}
+
+    def status(self) -> dict[str, Any]:
+        return {**super().status(), "trim_counters": self.trim_counters()}
+
     def save_table(self) -> None:
         t0 = time.monotonic()
         self.table.checkpoint(self.table_path)
@@ -120,7 +149,7 @@ class HostV2(R.Host):
             nbytes = os.path.getsize(self.table_path)
         except OSError:
             nbytes = -1
-        self.last_ckpt_report = {"ckpt_bytes": nbytes, "ckpt_s": round(time.monotonic() - t0, 3), **self.table.sizes()}
+        self.last_ckpt_report = {"ckpt_bytes": nbytes, "ckpt_s": round(time.monotonic() - t0, 3), **self.table.sizes(), "trim_counters": self.trim_counters()}
         print(canon({"table_checkpoint": self.last_ckpt_report}), file=sys.stderr, flush=True)
 
     def run(self, t_from: int, t_to: int, sleep: Callable[[float], None] = time.sleep) -> None:
@@ -147,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--clock-start-ms", type=int, required=True)
     ap.add_argument("--feed-delay-slots", type=int, default=R.DEFAULT_FEED_DELAY_SLOTS)
     ap.add_argument("--end-ms", type=int, default=int(os.environ["ARENA_RULES_END_MS"]) if os.environ.get("ARENA_RULES_END_MS") else None)
+    ap.add_argument("--stack-version", type=int, default=1, choices=(1, 2), help="1 = 505,000 per send (default; every registered book); 2 = 160,000 (DEC-031 Amendment 8 books only)")
     ap.add_argument("--warm-min", type=int, default=WARM_MIN_DEFAULT)
     ap.add_argument("--from-ms", type=int, default=None)
     ap.add_argument("--to-ms", type=int, default=None)
@@ -168,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise R.HostError(f"replay refuses to write inside {R.ARENA_OUTPUT_ROOT} ({p}): a counted decision is never regenerated or replayed")
         state_start = None if live else a.from_ms - a.warm_min * R.MIN_MS
         state = ArenaState(a.tape_dir, start_ms=state_start, warm_min=a.warm_min)
-        engine = ArenaEngine(a.ledger_root, a.registry, cfg=R.stack_config(a.feed_delay_slots))
+        engine = ArenaEngine(a.ledger_root, a.registry, cfg=stack_config_for(a.stack_version, a.feed_delay_slots))
         cfg = R.HostConfig(root=a.root, registry=a.registry, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=live, verbose=True)
         host = HostV2(cfg, rules, state, engine, binding=R.head_binding() if live else None)
         if live:
