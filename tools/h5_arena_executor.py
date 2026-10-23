@@ -108,6 +108,17 @@ BOOKS: dict[str, Book] = {b.bot_id: b for b in (
     Book("h5v1q50-boostfloor-a1", Q50_SHA, Q50_RULE, "v1", 50 * 10**9, Q50_CLOCK_MS, SEAL_END_MS, S0_MARGIN_V2_MS, 50.0, Q50_RULE_SHA256),
 )}
 
+# --- the sell builder pin (DEC-032 section 4, FILL:builder_path). The sell + close of the base ATA in ONE transaction is built by the unmodified base class:
+# tools/h5_executor.py H5Executor._arm_sell (tx.sell_instructions: budget, WSOL ATA, swap, WSOL close; then pl.close_token_account(base_ata, user, base_tp)
+# with base_tp = the pool's base_token_program = the mint's own token program). Pinned by sha256; a test recomputes them and decodes a built sell.
+SELL_BUILDER_PIN = {
+    "path": "tools/h5_executor.py", "symbol": "H5Executor._arm_sell",
+    "file_sha256": "bc4c957c11caa536e107fc9b944fc33d13397039fcaf74cba45c8c2c603d5c17",
+    "symbol_sha256": "3c4bf3f8a748afcbc2a991a9126988f023acf9692c20d8009a69f3d37764effb",
+    "close_token_account_sha256": "93119b2ea159bcb9defcb5e7d2424a5635df432f7ffc9b18d07355d2f364895a",  # tools/probe_live.py close_token_account
+    "sell_instructions_sha256": "ad40960ef8cc18260f0682cf83989be8ab36f7366354cada1a84367194757eeb",  # tools/pumpswap_tx.py sell_instructions
+}
+
 # --- soft halts (item 14), latched by name
 H_FEED_BREAK = "feed_break"
 H_ENTRY_GAP = "entry_gap_gt_200bps"

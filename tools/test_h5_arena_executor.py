@@ -521,3 +521,43 @@ class PriorityPinTests(ACase):
             ax.Priority("p155", 155_000, 155_000, 150_000 + 10_000)
         with self.assertRaises(ValueError):
             ax.Priority("p155", 155_000, 150_000, 155_000)
+
+
+class SellBuilderPinTests(PriorityPinTests):
+    """DEC-032 section 4: the sell + close of the base ATA in one tx under the mint's token program, pinned by sha256."""
+
+    def test_pins_match_the_source(self):
+        import hashlib
+        import inspect
+        from tools import probe_live as pl
+        from tools import pumpswap_tx as ptx
+        sha = lambda b: hashlib.sha256(b).hexdigest()  # noqa: E731
+        pin = ax.SELL_BUILDER_PIN
+        self.assertEqual(sha(Path(h.__file__).read_bytes()), pin["file_sha256"])
+        self.assertEqual(sha(inspect.getsource(h.H5Executor._arm_sell).encode()), pin["symbol_sha256"])
+        self.assertEqual(sha(inspect.getsource(pl.close_token_account).encode()), pin["close_token_account_sha256"])
+        self.assertEqual(sha(inspect.getsource(ptx.sell_instructions).encode()), pin["sell_instructions_sha256"])
+        self.assertIs(ax.ArenaExecutor._arm_sell, h.H5Executor._arm_sell)  # the subclass does not override the builder
+
+    def test_built_sell_is_one_tx_that_closes_the_base_ata_under_the_mints_token_program(self):
+        import base64
+        from solders.transaction import VersionedTransaction
+        from tools import pumpswap_tx as ptx
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            pos = e.open_position()
+            plan = e.plan()
+            e.at_slot(plan["send_slot"])
+            sells = [t for t in e.rpc.sent][1:]
+            self.assertEqual(len(sells), 1)
+            msg = VersionedTransaction.from_bytes(base64.b64decode(sells[0][1])).message
+        keys = list(msg.account_keys)
+        ixs = [(keys[i.program_id_index], bytes(i.data), [keys[a] for a in i.accounts]) for i in msg.instructions]
+        closes = [x for x in ixs if x[1] == b"\x09"]
+        self.assertEqual(len(closes), 2)  # WSOL account and base token account, in the same transaction
+        base_close = closes[-1]
+        self.assertEqual(str(base_close[0]), pos["base_tp"])  # the mint's own token program (Token or Token-2022)
+        self.assertIn(pos["base_tp"], (str(ptx.TOKEN_PROGRAM), str(ptx.TOKEN_2022_PROGRAM)))
+        self.assertEqual(str(base_close[2][0]), pos["base_ata"])
+        self.assertEqual(ixs.index(base_close), len(ixs) - 1)  # after the swap
+        self.assertTrue(any(x[1][:8] == ptx.DISC_SELL for x in ixs))
