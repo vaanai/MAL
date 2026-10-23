@@ -39,7 +39,11 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
 
+import base64
+
 from tools import h5_executor as h
+from tools import mint_account_fetch as mf
+from tools.arena_close_blocked import classify_record
 
 # --- the books (item 1). Values copied from the merged records: ARTIFACTS/lab/arena-records-2026-10-22.md (a2), qp-ruling-1022-q50.md and
 # EXP-024-RULE-Q50.md (Q50). Nothing here is read from config or bots.json.
@@ -269,6 +273,24 @@ def sell_reserve_lamports(book: Book) -> int:
     return max(SELL_RESERVE_FLOOR_LAMPORTS, SELL_RESERVE_SENDS * (top + h.tx.BASE_FEE_PER_SIGNATURE))
 
 
+def mint_screen_record(rpc: Callable[[str, list], Any], mint: str) -> dict[str, Any]:
+    """The r4b-style record of one mint from ONE getAccountInfo (base64) on the executor's own RPC (no key handled here). Any failure is fetch_ok false,
+    which classify_record denies (deny by default, DEC-031 Am.2 item 6)."""
+    rec: dict[str, Any] = {"mint": mint, "fetch_ok": False, "owner_program": None, "freeze_authority": None, "token2022_extensions": []}
+    try:
+        res = rpc("getAccountInfo", [mint, {"encoding": "base64", "commitment": "confirmed"}])
+        value = (res or {}).get("value")
+        data = (value or {}).get("data")
+        if value is None or not (isinstance(data, list) and len(data) == 2 and data[1] == "base64"):
+            return rec
+        owner = value.get("owner")
+        parsed = mf.parse_mint_base64(base64.b64decode(data[0]), owner)
+        rec.update(owner_program=owner, freeze_authority=parsed["freeze_authority"], token2022_extensions=parsed["token2022_extensions"], fetch_ok=True)
+    except (Exception, SystemExit):
+        rec["fetch_ok"] = False
+    return rec
+
+
 class FidelityMonitor:
     """Pure counters for the item-14 soft halts. Each `note_*` returns the halt name to latch, or None. No network, no price of its own: the paper
     comparator values arrive from the caller (entry: the trigger-quote expected tokens; exit: the parity join, which runs only under the item-17 note)."""
@@ -343,6 +365,8 @@ class ArenaExecutor(h.H5Executor):
         if days is not None:
             cfg["max_days"] = min(float(days), (book.end_ms_seal - book.clock_start_ms) / 86_400_000)
         self.funded_lamports: int | None = cfg.get("funded_lamports")
+        self.mint_screens: dict[str, str | None] = {}  # mint -> close-blocked reason (None = clear), written by the pre-send screen
+        self.close_blocked_refused = 0
         self.monitor = FidelityMonitor()
         self.feed_verified = False
         self.starts_seen = 0
@@ -416,7 +440,17 @@ class ArenaExecutor(h.H5Executor):
         why = self.committed_loss_refusal() or self._balance_refusal(self.now_ms())  # the last look before anything is built or signed
         if why:
             return self._refuse(trg, why)
+        blocked = self._screen_mint(trg.mint)  # DEC-032 s3 "Venue": a freeze authority or a Token-2022 extension outside the allowlist is a strand = total loss
+        if blocked:
+            self.close_blocked_refused += 1
+            return self._refuse(trg, f"close_blocked_mint:{blocked}")
         super()._live_buy(trg, ps, terms, plan, now, drift, seen_ms)
+
+    def _screen_mint(self, mint: str) -> str | None:
+        """Fresh read of the mint account (never a cache: the pre-send look is the one that counts). Returns the close-blocked reason, None when clear."""
+        why = classify_record(mint_screen_record(self.rpc, mint))
+        self.mint_screens[mint] = why
+        return why
 
     # -- seal (item 2): the CAP-PICK guard is gone; the book's own windows are the refusals below
     def _seal_reason(self, trg: h.H5Trigger, now: int) -> str | None:
@@ -541,6 +575,13 @@ class ArenaExecutor(h.H5Executor):
             kw = {**kw, "bot_id": self.abook.bot_id, "frozen_sha": self.abook.frozen_sha}
         super()._log(kind, mint, **kw)
 
+    def _latch(self, name: str, **detail: Any) -> None:
+        """The base `_latch` logs `halt_latched` through `_log(kind, mint, **kw)`, so a detail key called `mint` collides with its positional argument and the
+        latch raises TypeError (every arena halt passed mint=...: H_STRAND, H_STUCK2, H_LATE_SEND, H_LANDING, H_ENTRY_GAP never latched). Renamed once, here."""
+        if "mint" in detail:
+            detail["position_mint"] = detail.pop("mint")
+        super()._latch(name, **detail)
+
     def _latch_name(self, name: str | None, **detail: Any) -> None:
         if name:
             self._latch(name, **detail)
@@ -560,12 +601,28 @@ class ArenaExecutor(h.H5Executor):
         for mint, pos in self.state.open.items():
             if pos.get("stuck") and mint not in self.monitor.stuck:
                 self._latch_name(self.monitor.note_stuck(mint), mint=mint)
+            # strand = the position cannot be closed: the sell has failed to the point of being stuck AND the deadline's emergency sell was already tried
+            # (or the base class gave the position up). Set here, where the base class has just updated `stuck` / `abandoned` / `emergency_attempted`.
+            if pos.get("stuck") and (pos.get("emergency_attempted") or pos.get("abandoned")) and not pos.get("strand"):
+                pos["strand"] = True
+                self.save()
+            if pos.get("abandoned") and not pos.get("strand"):
+                pos["strand"] = True
+                self.save()
             if pos.get("close_blocked") or pos.get("strand"):
-                self._latch(H_STRAND, mint=mint)
+                self._latch(H_STRAND, mint=mint, close_blocked=bool(pos.get("close_blocked")), strand=bool(pos.get("strand")), why=pos.get("close_blocked_why"))
 
     def _finish_buy(self, mint: str, p: dict[str, Any], m: dict[str, Any]) -> None:
         super()._finish_buy(mint, p, m)
         pos = self.state.open.get(mint)
+        if pos is not None and not self.dry_run:
+            # Off the hot path, right after the buy landed: look at the mint again. A freeze authority or an extension added since the pre-send screen
+            # makes this position close-blocked (it cannot be sold and closed); exit_tick latches H_STRAND on it.
+            why = classify_record(mint_screen_record(self.rpc, mint))
+            self.mint_screens[mint] = why
+            if why:
+                pos["close_blocked"], pos["close_blocked_why"] = True, why
+                self.save()
         self._latch_name(self.monitor.note_attempt(pos is not None), mint=mint)
         exp = int(p.get("q_tokens") or 0)
         if pos is not None and exp > 0:

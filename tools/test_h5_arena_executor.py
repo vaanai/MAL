@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import json
+import struct
 from pathlib import Path
 from unittest import mock
 
@@ -24,10 +26,25 @@ def start_rec(book: ax.Book, **kw) -> dict:
     return {**rec, **kw}
 
 
+def mint_value(owner: str = ax.mf.SPL_TOKEN_PROGRAM, freeze: bool = False, ext_types: tuple = ()) -> dict:
+    """A getAccountInfo value for a mint: SPL layout (82 bytes) or Token-2022 with TLV extension types (18 metadataPointer, 19 tokenMetadata, 1 transferFeeConfig...)."""
+    raw = bytearray(82)
+    raw[45] = 1
+    if freeze:
+        struct.pack_into("<I", raw, 46, 1)
+        raw[50:82] = bytes([7]) * 32
+    if owner == ax.mf.TOKEN_2022_PROGRAM:
+        raw = bytearray(raw) + bytearray(165 - 82) + bytearray([1])
+        for t in ext_types:
+            raw += struct.pack("<HH", t, 4) + bytes(4)
+    return {"data": [base64.b64encode(bytes(raw)).decode(), "base64"], "owner": owner, "lamports": 1, "executable": False}
+
+
 class AEnv(Env):
     book_id = A2
 
     def build(self):
+        self.rpc.accounts[MINT] = mint_value()  # a clean classic SPL mint: the pre-send screen passes
         ex = ax.ArenaExecutor(self.rpc, self.conf, self.kp, now_ms=self.clock, root=self.root)
         self.seed_clock(ex)
         return ex
@@ -805,3 +822,114 @@ class RollingWindowTests(ACase):
         out = [m.note_attempt(True) for _ in range(30)]
         self.assertIsNone(out[-1])
         self.assertEqual(len(m.recent_attempts), 30)
+
+
+class MintScreenTests(ACase):
+    """Gap (f, second half): a pre-send refusal of a close-blocked mint (DEC-032 s3 Venue; DEC-031 Am.2 item 6)."""
+
+    live_env = CommittedLossTests.live_env
+    worst = CommittedLossTests.worst
+
+    def refused_with(self, value, expect):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            e.rpc.accounts[MINT] = value
+            e.fire()
+        self.assertEqual(e.refusals(), [f"close_blocked_mint:{expect}"])
+        self.assertEqual(e.rpc.sent, [])
+        self.assertEqual(e.ex.close_blocked_refused, 1)
+
+    def test_freeze_authority_is_refused_before_anything_is_sent(self):
+        self.refused_with(mint_value(freeze=True), "freeze_authority")
+
+    def test_token2022_freeze_authority_is_refused_too(self):
+        self.refused_with(mint_value(ax.mf.TOKEN_2022_PROGRAM, freeze=True, ext_types=(18, 19)), "freeze_authority")
+
+    def risky(self, t):
+        self.refused_with(mint_value(ax.mf.TOKEN_2022_PROGRAM, ext_types=(18, t)), "extension_outside_allowlist")
+
+    def test_token2022_transfer_fee_is_refused(self):
+        self.risky(1)
+
+    def test_token2022_transfer_hook_is_refused(self):
+        self.risky(14)
+
+    def test_token2022_permanent_delegate_is_refused(self):
+        self.risky(12)
+
+    def test_token2022_mint_close_authority_is_refused(self):
+        self.risky(3)
+
+    def test_unknown_owner_program_is_refused(self):
+        self.refused_with(mint_value(owner="11111111111111111111111111111111"), "unknown_owner_program")
+
+    def test_a_failed_or_missing_fetch_is_refused_deny_by_default(self):
+        self.refused_with(None, "fetch_failed")
+
+    def test_token2022_with_only_the_allowlisted_extensions_passes(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            e.rpc.accounts[MINT] = mint_value(ax.mf.TOKEN_2022_PROGRAM, ext_types=(18, 19))
+            e.fire()
+        self.assertEqual(e.refusals(), [])
+        self.assertEqual(len(e.ledger("decision")), 1)
+        self.assertIsNone(e.ex.mint_screens[MINT])
+
+    def test_classic_spl_mint_without_freeze_passes(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            e.fire()
+        self.assertEqual(len(e.ledger("decision")), 1)
+
+    def test_extension_names_used_by_the_allowlist_are_the_real_ones(self):
+        self.assertEqual((ax.mf.EXT_NAMES[18], ax.mf.EXT_NAMES[19]), ("metadataPointer", "tokenMetadata"))
+
+
+class StrandTests(ACase):
+    """Gap (f, first half): H_STRAND fires. close_blocked is set when the mint is re-read after the buy lands; strand when the sell is stuck past the deadline."""
+
+    live_env = CommittedLossTests.live_env
+
+    def test_freeze_authority_added_after_the_pre_send_screen_marks_the_position_and_latches(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            e.fire()
+            e.rpc.accounts[MINT] = mint_value(freeze=True)  # set between the screen and the landing
+            e.land_buy()
+            pos = e.ex.state.open[MINT]
+            self.assertTrue(pos["close_blocked"])
+            self.assertEqual(pos["close_blocked_why"], "freeze_authority")
+            self.assertNotIn(ax.H_STRAND, e.ex.counters.halts)
+            e.ex.exit_tick(e.clock())
+            self.assertIn(ax.H_STRAND, e.ex.counters.halts)
+            e.fire(mint="Other")  # the latch stops further buys (any reason; the arena halt is checked first)
+            self.assertEqual(e.refusals()[-1], ax.H_STRAND)
+
+    def test_a_clean_mint_leaves_the_position_unmarked(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            pos = e.open_position()
+            e.ex.exit_tick(e.clock())
+        self.assertNotIn("close_blocked", pos)
+        self.assertNotIn("strand", pos)
+        self.assertNotIn(ax.H_STRAND, e.ex.counters.halts)
+
+    def test_stuck_sell_past_the_emergency_attempt_is_a_strand(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            pos = e.open_position()
+            pos["stuck"] = True
+            e.ex.exit_tick(e.clock())
+            self.assertNotIn(ax.H_STRAND, e.ex.counters.halts)  # stuck alone is the stuck_position / two_stuck_sells path, not a strand yet
+            pos["emergency_attempted"] = True
+            e.ex.exit_tick(e.clock())
+            self.assertTrue(pos["strand"])
+            self.assertIn(ax.H_STRAND, e.ex.counters.halts)
+
+    def test_an_abandoned_position_is_a_strand(self):
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            e = self.live_env()
+            pos = e.open_position()
+            pos["abandoned"] = True
+            e.ex.exit_tick(e.clock())
+            self.assertIn(ax.H_STRAND, e.ex.counters.halts)
