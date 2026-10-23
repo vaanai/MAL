@@ -107,5 +107,5 @@ Read this first. Then read the END of manager14's state log (/data/mal/hunt-1008
 ## 5. Environment notes
 - /data/mal/venv lacks `certifi`, so 11 arena test files cannot collect there.
 - `scripts/mal-core/agent-ssh.sh` fails here (missing env), and mal-fast-0 does not resolve from research-0. Helm verifies fast-box units.
-- **Open drafts:** #779, #806, #810/#811 (FLOOR records, to update for Am.9), #812 (this file), #813, #814, #833, #798.
+- **Open drafts:** #779, #806, #811 (FLOOR records), #812 (this file), #813, #814, #798. Merged tonight: #833 library rows (38a54a96) and #835 Am.9 Erratum 1 (7e7f03ff).
 - **Scratch to delete later:** /data2/mal/scratch/g4v1/w1hours and /data2/mal/scratch/hunt26 (~11 GB).
