@@ -928,3 +928,95 @@ def test_a_disk_failure_on_an_append_makes_the_book_not_decidable_at_the_scorer(
     assert v["status"] == "NOT_DECIDABLE" and v["incidents"]["kinds"] == {kind: 1} and v["incidents"]["before_boundary"] == 1
     assert any("ledger incident" in r for r in v["reasons"]) and f"INCIDENTS: 1 on record {{'{kind}': 1}}" in render(res)
     assert bool(v["ledger_problems"]) == (mode == "short_write")  # a short write also leaves a fragment, which the scan reports on its own
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ S4 worst-in-slot (report-only, opt-in)
+def _wis_book(tmp_path):
+    root, reg = setup(tmp_path, positions(good_pnls()))
+    return root, reg, DAY0 + 30 * DAY
+
+
+def _all_gaps(root, reg, now, g):
+    v = score_all(root, reg, now_ms=now)["bots"]["botA"]
+    ids = [r["trade_id"] for r in Ledger(root).scan_bot("botA")[0] if r["kind"] == "trade"]
+    assert len(ids) == v["books"]["0.25"]["n_trades"] == 100
+    return {t: g for t in ids}
+
+
+def _strip(o):
+    if isinstance(o, dict):
+        return {k: _strip(x) for k, x in o.items() if k != "worst_in_slot"}
+    return o
+
+
+def test_worst_in_slot_off_leaves_every_output_unchanged(tmp_path, capsys):
+    root, reg, now = _wis_book(tmp_path)
+    off = score_all(root, reg, now_ms=now)
+    assert "worst_in_slot" not in canon(off) and "WORST-IN-SLOT" not in render(off)
+    on = score_all(root, reg, now_ms=now, worst_gaps=_all_gaps(root, reg, now, 0.0))
+    assert canon(_strip(on)) == canon(off)  # the flag adds one key and changes nothing else
+    assert render(on).replace(next(l for l in render(on).splitlines() if "WORST-IN-SLOT" in l), "") != render(off)
+    keep = [l for l in render(on).splitlines() if "WORST-IN-SLOT" not in l and not l.startswith("    wis ")]
+    assert "\n".join(keep) == render(off)
+    # the CLI without the flag prints exactly render(score_all(...))
+    args = ["--ledger-root", root, "--registry", reg, "--now-ms", str(now)]
+    assert main(args) == 0
+    assert capsys.readouterr().out == render(off) + "\n"
+
+
+def test_worst_in_slot_with_zero_gap_equals_the_deciding_cells(tmp_path):
+    root, reg, now = _wis_book(tmp_path)
+    v = score_all(root, reg, now_ms=now, worst_gaps=_all_gaps(root, reg, now, 0.0))["bots"]["botA"]
+    w, cells = v["worst_in_slot"], v["books"]["0.25"]["cells"]
+    assert w["measured"] and w["report_only"] and w["latency"] == "1p9" and sorted(w["cells"]) == sorted(k for k in cells if "_1p9_" in k)
+    for k, c in w["cells"].items():
+        assert c["mean_sol"] == cells[k]["mean_sol"] and c["ci90_lo_sol"] == cells[k]["ci90_lo_sol"] and c["total_sol"] == cells[k]["total_sol"]
+    assert w["mean_sol"] == min(c["mean_sol"] for c in w["cells"].values())
+    assert v["status"] == "PASS"
+
+
+def test_worst_in_slot_gap_lowers_the_mean_and_the_ci_and_never_changes_the_verdict(tmp_path):
+    root, reg, now = _wis_book(tmp_path)
+    base = score_all(root, reg, now_ms=now)["bots"]["botA"]
+    v = score_all(root, reg, now_ms=now, worst_gaps=_all_gaps(root, reg, now, 3e6))["bots"]["botA"]  # 0.003 SOL gap on ~0.004 SOL mean
+    w = v["worst_in_slot"]
+    assert all(c["mean_sol"] < base["books"]["0.25"]["cells"][k]["mean_sol"] and c["ci90_lo_sol"] < base["books"]["0.25"]["cells"][k]["ci90_lo_sol"] for k, c in w["cells"].items())
+    assert all(abs(c["mean_gap_sol"] - 3e-3) < 1e-12 for c in w["cells"].values())
+    w2 = score_all(root, reg, now_ms=now, worst_gaps=_all_gaps(root, reg, now, 1e7))["bots"]["botA"]
+    assert w2["worst_in_slot"]["mean_sol"] < 0 and not w2["worst_in_slot"]["mean_positive_all_cells"]
+    assert w2["status"] == base["status"] == "PASS" and w2["deciding"] == base["deciding"]  # report-only: never decides
+
+
+def test_worst_in_slot_bootstrap_is_the_gates_bootstrap(tmp_path):
+    root, reg, now = _wis_book(tmp_path)
+    gaps = _all_gaps(root, reg, now, 1e6)
+    w = score_all(root, reg, now_ms=now, worst_gaps=gaps)["bots"]["botA"]["worst_in_slot"]
+    rows = [r for r in Ledger(root).scan_bot("botA")[0] if r["kind"] == "trade"]
+    pnl = np.array([r["calc"]["1p9"]["by_rule"]["sc"]["pnl_nofail"] for r in rows]) - 1e6
+    flat, _, _, _ = fail_legs(pnl, np.ones(len(rows), bool), np.zeros(len(rows)), np.zeros(len(rows)), SEND)
+    assert w["cells"]["flat_1p9_sc"]["ci90_lo_sol"] == boot_lo(flat / 1e9)  # 1,000 draws, seed 1, 5th percentile
+
+
+def test_worst_in_slot_with_a_missing_gap_is_not_measured(tmp_path, capsys):
+    root, reg, now = _wis_book(tmp_path)
+    gaps = _all_gaps(root, reg, now, 1e6)
+    gaps.pop(sorted(gaps)[0])
+    v = score_all(root, reg, now_ms=now, worst_gaps=gaps)["bots"]["botA"]
+    assert v["worst_in_slot"]["measured"] is False and "worst-in-slot not measured" in v["worst_in_slot"]["reason"] and v["status"] == "PASS"
+    assert "worst-in-slot not measured" in render({"now_ms": now, "arena_books_with_clock_before_read": 1, "arena_books_registered": 1, "arena_books_stopped": 0,
+                                                    "cells_existed": 12, "books_read": 1, "cells_read": 4, "bots_refused": {}, "bots": {"botA": v}})
+
+
+def test_worst_in_slot_cli_and_bad_files(tmp_path, capsys):
+    root, reg, now = _wis_book(tmp_path)
+    good = tmp_path / "gaps.json"
+    good.write_text(json.dumps(_all_gaps(root, reg, now, 2e6)))
+    args = ["--ledger-root", root, "--registry", reg, "--now-ms", str(now)]
+    assert main(args + ["--worst-in-slot", str(good)]) == 0
+    out = capsys.readouterr().out
+    assert "WORST-IN-SLOT (report-only, never decides" in out and "wis flat_1p9_total" in out
+    for name, text in (("neg.json", '{"a": -1}'), ("list.json", "[1]"), ("bad.json", "{"), ("str.json", '{"a": "x"}')):
+        (tmp_path / name).write_text(text)
+        assert main(args + ["--worst-in-slot", str(tmp_path / name)]) == 3
+    assert main(args + ["--worst-in-slot", str(tmp_path / "absent.json")]) == 3
+    capsys.readouterr()
