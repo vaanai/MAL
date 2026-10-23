@@ -6,6 +6,7 @@ import base64
 import dataclasses
 import json
 import struct
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -49,9 +50,9 @@ def write_canary_record(root: Path, *bot_ids: str, name: str = "DEC-033-h5-arena
     (root / "DEC" / name).write_text("".join(f"OWNER_CANARY_CONFIRMED: bot_id={b}\n" for b in ids))
 
 
-def a3_rec(**halt_true) -> dict:
+def a3_rec(run_utc: str = "2099-01-01T00:00:00Z", **halt_true) -> dict:
     names = ("pins_changed", "boost_disabled", "boost_share_low", "boost_budget_shift", "boost_slices_shift", "synthetic_share_high")
-    return {"run_utc": "2026-10-23T00:00:00Z", "halt": {"flags": {n: {"halt": n in halt_true, "evaluated": True, "reason": "x"} for n in names}},
+    return {"run_utc": run_utc, "halt": {"flags": {n: {"halt": n in halt_true, "evaluated": True, "reason": "x"} for n in names}},
             "warn": {"flags": {"program_changed": {"warn": bool(halt_true.get("program_changed")), "evaluated": True, "reason": "x"}}}}
 
 
@@ -60,6 +61,8 @@ class AEnv(Env):
 
     def build(self):
         self.rpc.accounts[MINT] = mint_value()  # a clean classic SPL mint: the pre-send screen passes
+        if self.conf.get("funded_lamports"):
+            self.rpc.balance = self.conf["funded_lamports"]  # the finalized balance a live start compares with funded_lamports
         ex = ax.ArenaExecutor(self.rpc, self.conf, self.kp, now_ms=self.clock, root=self.root)
         self.seed_clock(ex)
         return ex
@@ -1002,6 +1005,74 @@ class ExternalLatchTests(ACase):
         e.ex.a3_tick(e.clock() + ax.A3_POLL_MS)
         self.assertIn(ax.H_A3, e.ex.counters.halts)
 
+    def test_a_stale_record_fails_closed_and_the_limit_is_36h(self):
+        self.assertEqual(ax.A3_MAX_AGE_MS, 36 * 3_600_000)
+        e = self.env()
+        now = e.clock()
+        iso = lambda ms: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ms / 1000))  # noqa: E731
+        for age, ok in ((ax.A3_MAX_AGE_MS - 1_000, True), (ax.A3_MAX_AGE_MS + 2_000, False)):
+            f = self.tmp / f"a3-{age}.jsonl"
+            f.write_text(json.dumps(a3_rec(run_utc=iso(now - age))) + "\n")
+            why, problem = ax.a3_record_problem(f, now)
+            self.assertEqual((why, problem), ([], None) if ok else ([], "a3_record_stale"), age)
+
+    def test_stale_record_latches_through_the_tick(self):
+        e = self.env()
+        f = self.tmp / "a3old.jsonl"
+        f.write_text(json.dumps(a3_rec(run_utc="2000-01-01T00:00:00Z")) + "\n")
+        e.ex.cfg_a3_file = str(f)
+        e.ex.a3_tick(e.clock() + 10**12)
+        self.assertEqual(e.ex.counters.halts[ax.H_A3]["why"], "a3_record_stale")
+
+    def test_an_unevaluated_flag_is_not_a_clear(self):
+        rec = a3_rec()
+        rec["halt"]["flags"]["boost_slices_shift"]["evaluated"] = False
+        e, f = self.a3_env(json.dumps(rec) + "\n")
+        e.ex.a3_tick(e.clock())
+        self.assertEqual(e.ex.counters.halts[ax.H_A3]["flags"], ["boost_slices_shift"])
+
+    def test_a_record_without_run_utc_fails_closed(self):
+        rec = a3_rec()
+        del rec["run_utc"]
+        f = self.tmp / "norun.jsonl"
+        f.write_text(json.dumps(rec) + "\n")
+        self.assertEqual(ax.a3_record_problem(f, 0), ([], "a3_record_no_run_utc"))
+
+    def test_missing_exit_gap_file_latches(self):
+        e = self.env(exit_gap_file=str(self.tmp / "nope.jsonl"))
+        e.ex.exit_gap_tick()
+        self.assertEqual(e.ex.counters.halts[ax.H_EXIT_GAP]["why"], "exit_gap_file_unreadable")
+
+    def test_no_exit_gap_file_configured_does_nothing(self):
+        e = self.env()
+        e.ex.exit_gap_tick()
+        self.assertNotIn(ax.H_EXIT_GAP, e.ex.counters.halts)
+
+    def test_a_partial_last_line_waits_for_its_newline(self):
+        g = self.tmp / "gaps2.jsonl"
+        full = "".join(json.dumps({"mint": f"m{i}", "exit_gap_bps": 500}) + "\n" for i in range(9))
+        g.write_text(full + '{"mint": "m9", "exit_gap_')
+        e = self.env(exit_gap_file=str(g))
+        e.ex.exit_gap_tick()
+        self.assertEqual(len(e.ex.monitor.exit_gaps), 9)
+        self.assertEqual(e.ex._exit_gap_off, len(full.encode()))
+        self.assertEqual(e.alerts("exit_gap_row_unreadable"), [])
+        g.write_text(full + json.dumps({"mint": "m9", "exit_gap_bps": 500}) + "\n")
+        e.ex.exit_gap_tick()
+        self.assertEqual(len(e.ex.monitor.exit_gaps), 10)
+        self.assertIn(ax.H_EXIT_GAP, e.ex.counters.halts)
+
+    def test_a_shrunk_file_resets_the_offset_and_logs_it(self):
+        g = self.tmp / "gaps3.jsonl"
+        g.write_text("".join(json.dumps({"mint": "a", "exit_gap_bps": 1}) + "\n" for _ in range(5)))
+        e = self.env(exit_gap_file=str(g))
+        e.ex.exit_gap_tick()
+        self.assertEqual(len(e.ex.monitor.exit_gaps), 5)
+        g.write_text(json.dumps({"mint": "b", "exit_gap_bps": 2}) + "\n")  # rotated: shorter than the offset
+        e.ex.exit_gap_tick()
+        self.assertEqual(len(e.ledger("exit_gap_file_reset")), 1)
+        self.assertEqual(len(e.ex.monitor.exit_gaps), 6)
+
     def test_dry_run_without_a_configured_file_never_reads_one(self):
         e = self.env()
         self.assertIsNone(e.ex.cfg_a3_file)
@@ -1071,3 +1142,94 @@ class CanaryRecordTests(ACase):
         write_canary_record(self.tmp / "repo", A2)
         (self.tmp / "FREEZE.md").write_text("x")
         self.assertEqual(self.start().ex.abook.bot_id, A2)
+
+
+class StartChecksTests(ACase):
+    """Funded vs the finalized balance, the sell-builder pin and the P1 definition."""
+
+    def live(self, balance=None, funded=500_000_000):
+        write_canary_record(self.tmp / "repo")
+        (self.tmp / "FREEZE.md").write_text("x")
+        with mock.patch.object(ax, "LIVE_BUILT", True):
+            def build(self_env):
+                self_env.rpc.accounts[MINT] = mint_value()
+                self_env.rpc.balance = funded if balance is None else balance
+                ex = ax.ArenaExecutor(self_env.rpc, self_env.conf, self_env.kp, now_ms=self_env.clock, root=self_env.root)
+                self_env.seed_clock(ex)
+                return ex
+            with mock.patch.object(AEnv, "build", build):
+                return AEnv(self.tmp, live=True, book_id=A2, replay_only=True, end_ms=ax.SEAL_END_MS, funded_lamports=funded)
+
+    def refused(self, why, **kw):
+        with self.assertRaises(SystemExit) as cm:
+            self.live(**kw)
+        self.assertIn(why, str(cm.exception))
+
+    def test_balance_within_tolerance_starts(self):
+        tol = ax.FUNDED_BALANCE_TOLERANCE_LAMPORTS
+        self.assertEqual(tol, 10_000_000)
+        self.live(balance=500_000_000)
+        self.live(balance=500_000_000 + tol)
+        self.live(balance=500_000_000 - tol)
+
+    def test_balance_outside_tolerance_refuses(self):
+        tol = ax.FUNDED_BALANCE_TOLERANCE_LAMPORTS
+        self.refused("funded_balance_mismatch", balance=500_000_000 + tol + 1)
+        self.refused("funded_balance_mismatch", balance=500_000_000 - tol - 1)
+        self.refused("funded_balance_mismatch", balance=0)
+
+    def test_unreadable_balance_refuses(self):
+        with mock.patch.object(ax.ArenaExecutor, "_funded_balance_problem", ax.ArenaExecutor._funded_balance_problem):
+            e_rpc_error = lambda m, p: (_ for _ in ()).throw(RuntimeError("down"))  # noqa: E731
+            class Dummy:  # a minimal stand-in carrying what the method reads
+                rpc = staticmethod(e_rpc_error)
+                user = "u"
+                funded_lamports = 500_000_000
+                state = type("S", (), {"realized_lamports": 0})()
+            self.assertEqual(ax.ArenaExecutor._funded_balance_problem(Dummy()), "funded_balance_unreadable")
+
+    def test_a_restart_after_a_realized_loss_may_be_lower_by_that_loss(self):
+        class Dummy:
+            rpc = staticmethod(lambda m, p: {"value": 500_000_000 - 30_000_000})
+            user = "u"
+            funded_lamports = 500_000_000
+            state = type("S", (), {"realized_lamports": -30_000_000})()
+        self.assertIsNone(ax.ArenaExecutor._funded_balance_problem(Dummy()))
+        Dummy.state = type("S", (), {"realized_lamports": 0})()
+        self.assertEqual(ax.ArenaExecutor._funded_balance_problem(Dummy()), "funded_balance_mismatch")
+
+    def test_the_balance_read_is_finalized(self):
+        seen = []
+        class Dummy:
+            rpc = staticmethod(lambda m, p: (seen.append((m, p)), {"value": 500_000_000})[1])
+            user = "u"
+            funded_lamports = 500_000_000
+            state = type("S", (), {"realized_lamports": 0})()
+        ax.ArenaExecutor._funded_balance_problem(Dummy())
+        self.assertEqual(seen, [("getBalance", ["u", {"commitment": "finalized"}])])
+
+    def test_sell_pin_matches_on_disk_code(self):
+        self.assertIsNone(ax.sell_pin_problem())
+
+    def test_a_wrong_pin_item_refuses_a_live_start(self):
+        for k in ax.SELL_BUILDER_PIN:
+            if not k.endswith("sha256"):
+                continue
+            bad = {**ax.SELL_BUILDER_PIN, k: "0" * 64}
+            self.assertEqual(ax.sell_pin_problem(bad), f"sell_builder_pin_mismatch:{k}")
+        write_canary_record(self.tmp / "repo")
+        bad = {**ax.SELL_BUILDER_PIN, "symbol_sha256": "0" * 64}
+        with mock.patch.object(ax, "LIVE_BUILT", True), mock.patch.object(ax, "SELL_BUILDER_PIN", bad):
+            self.assertEqual(ax.arena_start_refusal(ax.BOOKS[A2], {"book_id": A2, "replay_only": True, "end_ms": 1, "funded_lamports": 500_000_000},
+                                                    self.tmp / "repo", live=True), "sell_builder_pin_mismatch:symbol_sha256")
+
+    def test_p1_entry_gap_is_the_price_ratio_and_200_bps_reads_200(self):
+        self.assertAlmostEqual(ax.entry_gap_bps(10_200, 10_000), 200.0)  # 2% fewer tokens for the same stake is a 2% higher price
+        self.assertAlmostEqual(ax.entry_gap_bps(102, 100), 200.0)
+        self.assertLess(1e4 * (102 - 100) / 102, 200.0)  # the old (exp - got) / exp read 196
+        self.assertEqual(ax.entry_gap_bps(100, 0), float("inf"))
+        self.assertLess(ax.entry_gap_bps(100, 150), 0)  # better than quoted is negative
+        m = ax.FidelityMonitor()
+        self.assertIsNone([m.note_entry_gap(ax.entry_gap_bps(102, 100)) for _ in range(10)][-1])  # exactly 200 is not above 200
+        m2 = ax.FidelityMonitor()
+        self.assertEqual([m2.note_entry_gap(ax.entry_gap_bps(1021, 1000)) for _ in range(10)][-1], ax.H_ENTRY_GAP)

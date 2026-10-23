@@ -40,6 +40,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 import base64
+from datetime import datetime, timezone
 
 from tools import h5_executor as h
 from tools import mint_account_fetch as mf
@@ -66,6 +67,8 @@ LIVE_BUILT = False  # this PR builds no live entry point
 C0_TIER = {  # DEC-032 s3, the C0 canary table, PINNED in code per canary book. The shared /etc/mal-h5/TIER (T0/T1/T2) and the config may only LOWER these.
     "stake_lamports": 50_000_000, "max_open": 2, "max_trades_per_day": 30, "daily_loss_lamports": 100_000_000, "total_loss_lamports": 200_000_000,
 }
+FUNDED_BALANCE_TOLERANCE_LAMPORTS = 10_000_000  # 0.01 SOL: a live start needs the FINALIZED balance within this of funded_lamports (minus realized loss on a restart)
+A3_MAX_AGE_MS = 36 * 3_600_000  # the monitor writes daily; a newest record older than 36 h is stale = fail closed
 FUNDED_MIN_LAMPORTS, FUNDED_MAX_LAMPORTS = 350_000_000, 1_000_000_000  # DEC-032 s3: "Wallet needed: funded 0.35 to 1.00 SOL"
 FLOOR_BELOW_FUNDED_LAMPORTS = 250_000_000  # DEC-032 s3: floor = max(0.05 SOL, funded - 0.25 SOL)
 A3_RECORD_DEFAULT = "/data/mal/structure-monitor/daily.jsonl"  # tools/pump_structure_monitor.py DEFAULT_OUT: one JSON record per line, the newest is the state
@@ -133,6 +136,27 @@ SELL_BUILDER_PIN = {
     "close_token_account_sha256": "93119b2ea159bcb9defcb5e7d2424a5635df432f7ffc9b18d07355d2f364895a",  # tools/probe_live.py close_token_account
     "sell_instructions_sha256": "ad40960ef8cc18260f0682cf83989be8ab36f7366354cada1a84367194757eeb",  # tools/pumpswap_tx.py sell_instructions
 }
+
+def sell_pin_problem(pin: dict[str, str] | None = None) -> str | None:
+    """Recompute the four sha256 values of SELL_BUILDER_PIN from the code on disk. None when all match; else the first item that differs. A live start
+    refuses on any mismatch (QP 10-23: the pin was test-checked only)."""
+    import inspect
+    from tools import probe_live as pl
+    from tools import pumpswap_tx as ptx
+    pin = pin or SELL_BUILDER_PIN
+    sha = lambda b: hashlib.sha256(b).hexdigest()  # noqa: E731
+    got = {"file_sha256": lambda: sha(Path(h.__file__).read_bytes()),
+           "symbol_sha256": lambda: sha(inspect.getsource(h.H5Executor._arm_sell).encode()),
+           "close_token_account_sha256": lambda: sha(inspect.getsource(pl.close_token_account).encode()),
+           "sell_instructions_sha256": lambda: sha(inspect.getsource(ptx.sell_instructions).encode())}
+    for k, fn in got.items():
+        try:
+            if fn() != pin.get(k):
+                return f"sell_builder_pin_mismatch:{k}"
+        except (OSError, TypeError):
+            return f"sell_builder_pin_unreadable:{k}"
+    return None
+
 
 # --- soft halts (item 14), latched by name
 H_FEED_BREAK = "feed_break"
@@ -209,6 +233,9 @@ def arena_start_refusal(book: Book, cfg: dict[str, Any], root: Path, live: bool)
     if why:
         return why
     if live:
+        why = sell_pin_problem()
+        if why:
+            return why
         why = h.live_ok_valid()
         if why:
             return why
@@ -283,6 +310,15 @@ def v2_start_refusal() -> str | None:
     return None if hashlib.sha256(data).hexdigest() == V2_RULE_SHA256 else "v2_rule_source_sha_mismatch"
 
 
+def entry_gap_bps(expected_tokens: int, got_tokens: int) -> float:
+    """DEC-032 s5 g_entry: live buy average price over the entry price, minus 1, in bps. Price per token is stake / tokens, so with the same stake the
+    ratio is expected / got: g = (expected / got - 1) * 10,000. 2% fewer tokens than 1/1.02 of expected reads exactly 200 (the old (exp - got) / exp read 196).
+    The comparator is the trigger quote's expected tokens, not the paper twin (the twin join is the parity tool's). Zero tokens read as +inf."""
+    if got_tokens <= 0:
+        return float("inf")
+    return 1e4 * (expected_tokens - got_tokens) / got_tokens
+
+
 def sell_reserve_lamports(book: Book) -> int:
     """Worst-case fees reserved per open position for its exit (DEC-032 s3): SELL_RESERVE_SENDS sends at the book's highest sell priority plus the
     5,000 base fee, never below the p155 figure of 1.6M. (The base class' 1.0M constant covers 6 sends at p155 only.)"""
@@ -290,7 +326,7 @@ def sell_reserve_lamports(book: Book) -> int:
     return max(SELL_RESERVE_FLOOR_LAMPORTS, SELL_RESERVE_SENDS * (top + h.tx.BASE_FEE_PER_SIGNATURE))
 
 
-def a3_record_problem(path: Path) -> tuple[list[str], str | None]:
+def a3_record_problem(path: Path, now_ms: int | None = None) -> tuple[list[str], str | None]:
     """(halt reasons, problem) from the NEWEST line of the A3 daily record (DEC-032 s5 item 1). A halt reason is any `halt.flags.*.halt` true (pins_changed
     included) or `warn.flags.program_changed.warn` true (a pump / PumpSwap / fees programdata hash differs from its pin). A missing, empty, unparsable or
     flag-less record is a problem, not a clear: the caller latches (fail closed)."""
@@ -303,7 +339,15 @@ def a3_record_problem(path: Path) -> tuple[list[str], str | None]:
     flags = ((rec.get("halt") or {}).get("flags")) if isinstance(rec, dict) and isinstance(rec.get("halt"), dict) else None
     if not isinstance(flags, dict) or not flags:
         return [], "a3_record_no_halt_flags"
-    why = sorted(k for k, v in flags.items() if not (isinstance(v, dict) and isinstance(v.get("halt"), bool)) or v["halt"])
+    if now_ms is not None:
+        try:
+            run_ms = int(datetime.strptime(rec["run_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp() * 1000)
+        except (KeyError, ValueError, TypeError):
+            return [], "a3_record_no_run_utc"
+        if now_ms - run_ms > A3_MAX_AGE_MS:
+            return [], "a3_record_stale"
+    # a flag counts when it is set, malformed, or NOT evaluated (halt false with evaluated false is "unknown", not "clear")
+    why = sorted(k for k, v in flags.items() if not (isinstance(v, dict) and isinstance(v.get("halt"), bool)) or v["halt"] or v.get("evaluated") is False)
     pc = (((rec.get("warn") or {}).get("flags") or {}).get("program_changed")) if isinstance(rec.get("warn"), dict) else None
     if isinstance(pc, dict) and pc.get("warn") is True:
         why.append("program_changed")
@@ -418,6 +462,10 @@ class ArenaExecutor(h.H5Executor):
         super().__init__(rpc, cfg, keypair, now_ms=now_ms, pick_oracle=None, root=root, rpc_label=rpc_label)
         if self.exit_mode != book.exit_pin:
             raise SystemExit("exit mode pin was not applied")
+        if keypair is not None:
+            why = self._funded_balance_problem()
+            if why:
+                raise SystemExit(f"arena executor start refused: {why}")
         got = (self.h5.buy_priority_lamports, self.h5.sell_priority_lamports, self.h5.escalated_priority_lamports)
         if got != (book.priority.buy, book.priority.sell, book.priority.escalated):  # asserted at start, after the base has built its limits
             raise SystemExit(f"arena executor start refused: priority pin not applied {got}")
@@ -438,6 +486,17 @@ class ArenaExecutor(h.H5Executor):
         return f"ArenaExecutor(book={self.abook.bot_id}, mode={self.run_mode})"
 
     # -- committed loss and the wallet floor (DEC-032 s3; QP gap b). The base class' at_risk is the stakes only and its balance_need omits open stakes.
+    def _funded_balance_problem(self) -> str | None:
+        """funded_lamports (the owner's line) must match the wallet's FINALIZED balance: balance in [funded - realized loss - tol, funded + tol]. A restart
+        after losses is allowed to be lower by exactly what was realized; anything else is a wrong funded figure and the floor derived from it would lie."""
+        try:
+            bal = int(self.rpc("getBalance", [str(self.user), {"commitment": "finalized"}])["value"])
+        except (Exception, SystemExit):
+            return "funded_balance_unreadable"
+        lost = max(0, -int(self.state.realized_lamports))
+        f, tol = int(self.funded_lamports or 0), FUNDED_BALANCE_TOLERANCE_LAMPORTS
+        return None if f - lost - tol <= bal <= f + tol else "funded_balance_mismatch"
+
     def _sell_reserve(self) -> int:
         return sell_reserve_lamports(self.abook)
 
@@ -635,7 +694,7 @@ class ArenaExecutor(h.H5Executor):
         if path is None or now - self._a3_polled_ms < A3_POLL_MS:
             return
         self._a3_polled_ms = now
-        why, problem = a3_record_problem(Path(path))
+        why, problem = a3_record_problem(Path(path), now)
         if problem:
             self.latch_external(H_A3, why=problem)
         elif why:
@@ -655,9 +714,15 @@ class ArenaExecutor(h.H5Executor):
         try:
             data = Path(path).read_bytes()
         except OSError:
+            self.latch_external(H_EXIT_GAP, why="exit_gap_file_unreadable")  # fail closed: a configured input that cannot be read is not a clear
             return
-        chunk, self._exit_gap_off = data[self._exit_gap_off:], len(data)
-        for line in chunk.decode("utf-8", "replace").splitlines():
+        if len(data) < self._exit_gap_off:  # rotated / truncated: start again from the top and say so
+            self._log("exit_gap_file_reset", "", old_offset=self._exit_gap_off, new_size=len(data))
+            self._exit_gap_off = 0
+        chunk = data[self._exit_gap_off:]
+        end = chunk.rfind(b"\n") + 1  # only complete lines; a partial last line waits for its newline
+        self._exit_gap_off += end
+        for line in chunk[:end].decode("utf-8", "replace").splitlines():
             try:
                 row = json.loads(line)
                 bps = row["exit_gap_bps"]
@@ -709,7 +774,7 @@ class ArenaExecutor(h.H5Executor):
         self._latch_name(self.monitor.note_attempt(pos is not None), mint=mint)
         exp = int(p.get("q_tokens") or 0)
         if pos is not None and exp > 0:
-            self._latch_name(self.monitor.note_entry_gap(1e4 * (exp - int(pos.get("tokens") or 0)) / exp), mint=mint)
+            self._latch_name(self.monitor.note_entry_gap(entry_gap_bps(exp, int(pos.get("tokens") or 0))), mint=mint)
 
     def _resolve_expired(self, mint: str, p: dict[str, Any]) -> None:
         super()._resolve_expired(mint, p)
