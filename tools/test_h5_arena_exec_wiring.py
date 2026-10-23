@@ -561,3 +561,60 @@ class TieoutGateTests(LiveCase):
         e.ex.state.first_attempt_ms = e.clock() - 2 * self.DAY
         e.fire()
         self.assertEqual(e.refusals(), ["tieout_gate:rc_1"])
+
+
+class LiveNetIsTheChainDeltaTests(LiveCase):
+    """QP 10-23 "Before a first live send": live_net_lamports must be the wallet's chain delta (SOL in minus out, fees and rent included, from tx meta)."""
+
+    FIXT = Path(__file__).resolve().parent / "fixtures" / "live_net"  # two recorded PUBLIC mainnet PumpSwap txs (getTransaction results, from the tie-out fetch fixtures)
+
+    def chain(self, name):
+        from solders.pubkey import Pubkey
+        from tools import probe_live as pl
+        res = json.loads((self.FIXT / f"{name}.json").read_text())
+        wallet = (self.FIXT / f"{name}.wallet").read_text().strip()
+        meta = res["meta"]
+        keys = pl._keys(res)
+        wi = keys.index(wallet)
+        owned = [b for b in meta["postTokenBalances"] if b.get("owner") == wallet and b["mint"] != gt.WSOL]
+        ata = keys[owned[0]["accountIndex"]]
+        parsed = pl.parse_meta(res, Pubkey.from_string(wallet), Pubkey.from_string(owned[0]["mint"]), Pubkey.from_string(ata))
+        return res, meta, wi, parsed
+
+    def test_the_executors_sol_delta_is_post_minus_pre_of_the_wallet_and_includes_fee_and_rent(self):
+        for name in ("buy_exact_quote_in_a", "sell_a"):
+            with self.subTest(tx=name):
+                res, meta, wi, parsed = self.chain(name)
+                self.assertEqual(wi, 0)  # the wallet is the fee payer
+                self.assertEqual(parsed["sol_delta"], meta["postBalances"][wi] - meta["preBalances"][wi])
+                # conservation: every lamport the wallet lost went to another account or to the fee; the fee is therefore inside the delta
+                others = sum(p - q for i, (p, q) in enumerate(zip(meta["postBalances"], meta["preBalances"])) if i != wi)
+                self.assertEqual(parsed["sol_delta"] + others, -meta["fee"])
+                self.assertEqual(parsed["fee"], meta["fee"])
+
+    def test_a_trips_live_net_is_the_sum_of_its_two_chain_deltas(self):
+        """The executor books pnl = sell delta - buy cost (buy cost = minus the buy's delta) - failed-sell fees; the recorder stores that as live_net_lamports."""
+        e = self.live()
+        _, _, _, buy = self.chain("buy_exact_quote_in_a")
+        _, _, _, sell = self.chain("sell_a")
+        cost = -buy["sol_delta"]
+        pnl = sell["sol_delta"] - cost - 0
+        rec = e.ex.gates.recorder
+        rec.on_buy("MX", {"landed": True, "tokens_received": 1000, "spend_lamports": 50_000_000, "signature": "b", "decision_t_ms": 5}, 100, None)
+        rec.on_sell("MX", {"landed": True, "pnl_lamports": pnl, "tokens": 1000, "sol_received_lamports": 1, "exit_reason": "timer"}, 200)
+        self.assertEqual(rec.trips["MX"]["live_net_lamports"], buy["sol_delta"] + sell["sol_delta"])
+
+    def test_through_the_executor_live_net_equals_the_meta_deltas_of_the_two_landed_txs(self):
+        from tools.test_h5_executor import RENT
+        e = self.live()
+        e.open_position()
+        spend = e.ex.state.open[MINT]["spend"]
+        buy_delta = -(spend + 60_000 + RENT)  # what land_buy writes into the buy's meta: stake, fee and the ATA rent
+        e.at_slot(e.plan()["send_slot"] + 2)
+        if e.ex.state.pending.get(MINT):
+            e.land_sell(e.rpc.slot + 1, proceeds=21_000_000)
+        sell_delta = 21_000_000 - 60_000 + RENT  # proceeds less the fee, plus the refunded rent
+        t = e.ex.gates.recorder.trips[MINT]
+        self.assertTrue(t["exit_landed"])
+        self.assertEqual(t["live_net_lamports"], buy_delta + sell_delta)
+        self.assertEqual(t["live_net_lamports"], 21_000_000 - spend - 120_000)  # rent paid and refunded nets out; both fees are inside
