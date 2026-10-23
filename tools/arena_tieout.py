@@ -40,6 +40,7 @@ import argparse
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from collections import Counter
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -75,6 +76,9 @@ def check_inputs(ledger: Any, tokens: Any, balance: Any) -> None:
         raise BadInput("tokens must be {programs_covered: [...], accounts: [...]}")
     if not all(p in tokens["programs_covered"] for p in TOKEN_PROGRAMS):
         raise BadInput("tokens.programs_covered must name both the Token and the Token-2022 program (an empty or partial fetch cannot pass)")
+    for t in ledger["trips"]:
+        if not isinstance(t, Mapping) or not isinstance(t.get("closed"), bool):
+            raise BadInput(f"every ledger trip needs a boolean 'closed' (trip {t.get('trip_id') if isinstance(t, Mapping) else t!r}): a trip without it would be skipped unchecked")
     if not isinstance(balance, Mapping) or isinstance(balance.get("lamports"), bool) or not isinstance(balance.get("lamports"), int) or not isinstance(balance.get("context_slot"), int):
         raise BadInput("balance must be {lamports, context_slot, commitment, finalized_block_height} from its own getBalance")
     if balance.get("commitment") != "finalized":
@@ -119,6 +123,10 @@ def reconcile(txs: Sequence[Mapping[str, Any]], ledger: Mapping[str, Any], token
         on = sig in chain
         if s["status"] == "landed" and not on:
             bad("landed_send_missing_on_chain", signature=sig)
+        elif s["status"] not in ("landed", "dropped", "expired"):
+            if not on:  # e.g. a write-ahead "pending" the executor never closed: unknown, so not signed off. On chain it is matched by signature.
+                pending_sends += 1
+                bad("send_pending", signature=sig, reason=f"unknown ledger status {s['status']!r}, not on chain")
         elif s["status"] in ("dropped", "expired"):
             chk = s.get("status_check") or {}
             expired = isinstance(s.get("last_valid_block_height"), int) and s["last_valid_block_height"] < fin
@@ -186,7 +194,7 @@ def reconcile(txs: Sequence[Mapping[str, Any]], ledger: Mapping[str, Any], token
     # 5. ledger realized vs chain for closed trips
     trip_diffs = []
     for tr in ledger["trips"]:
-        if not tr.get("closed"):
+        if not tr["closed"]:
             continue
         if tr["buy_sig"] not in deltas or tr["sell_sig"] not in deltas:
             bad("closed_trip_signature_missing", trip_id=tr["trip_id"])
@@ -216,6 +224,35 @@ def render(r: Mapping[str, Any]) -> str:
 
 
 STOP_SCHEMA = "arena_tieout_stop_v1"
+DAY_MS = 86_400_000
+
+
+def utc_day_str(ms: int) -> str:
+    return datetime.fromtimestamp(ms / 1000, timezone.utc).strftime("%Y-%m-%d")
+
+
+def last_closed_day(now_ms: int) -> str:
+    """The most recent UTC day that has ended."""
+    return utc_day_str(now_ms - (now_ms % DAY_MS) - DAY_MS)
+
+
+def check_last_closed_day(results_dir: str | Path, now_ms: int) -> tuple[bool, str]:
+    """THE WIRING CONTRACT: no rc-0 result for the last closed UTC day = STOP. A tie-out run for day D is called with --day D --json <dir>/tieout-D.json; it writes signed_off true only
+    when it exits 0. The executor or its watchdog job calls this (CLI: --check-last-day DIR --now-ms MS --stop-file PATH) at least hourly, and also before every buy once a day has
+    closed. It is the guard against a tie-out that was SIGKILLed or never ran, which writes no STOP of its own. Returns (ok, reason)."""
+    day = last_closed_day(now_ms)
+    p = Path(results_dir) / f"tieout-{day}.json"
+    try:
+        r = json.loads(p.read_text())
+    except FileNotFoundError:
+        return False, f"no tie-out result for the last closed UTC day {day} ({p})"
+    except (OSError, ValueError):
+        return False, f"tie-out result {p} is unreadable"
+    if not isinstance(r, dict) or r.get("day") != day:
+        return False, f"tie-out result {p} does not carry day {day} (got {r.get('day') if isinstance(r, dict) else None!r})"
+    if r.get("signed_off") is not True:
+        return False, f"tie-out for {day} is not signed off"
+    return True, ""
 
 
 def write_stop(path: str | Path, rc: int, why: str) -> str:
@@ -234,6 +271,7 @@ def _run(a: argparse.Namespace) -> tuple[int, str]:
     try:
         txs, ledger, tokens, named, balance = (json.loads(Path(getattr(a, k)).read_text()) for k in ("txs", "ledger", "tokens", "named", "balance"))
         res = reconcile(txs, ledger, tokens, a.baseline, balance, named)
+        res["day"] = a.day
     except (OSError, ValueError, KeyError, TypeError, BadInput) as exc:
         print(f"UNUSABLE INPUT: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2, f"unusable input: {type(exc).__name__}: {exc}"
@@ -243,12 +281,37 @@ def _run(a: argparse.Namespace) -> tuple[int, str]:
     return (1, "hard halt: " + ", ".join(sorted({p["kind"] for p in res["problems"]}))) if res["hard_halt"] else (0, "")
 
 
+def check_main(argv: Sequence[str]) -> int:
+    ap = argparse.ArgumentParser(prog="arena_tieout --check-last-day")
+    ap.add_argument("--check-last-day", required=True, metavar="RESULTS_DIR")
+    ap.add_argument("--now-ms", type=int, required=True)
+    ap.add_argument("--stop-file", required=True)
+    try:
+        a = ap.parse_args(argv)
+        ok, why = check_last_closed_day(a.check_last_day, a.now_ms)
+    except SystemExit:
+        return 5
+    if ok:
+        return 0
+    print(f"NO RC-0 RESULT: {why}", file=sys.stderr)
+    try:
+        print("STOP file:", write_stop(a.stop_file, 1, why))
+    except OSError as exc:
+        print(f"FAIL CLOSED: STOP could not be written ({exc})", file=sys.stderr)
+        return 5
+    return 1
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    if any(x == "--check-last-day" or x.startswith("--check-last-day=") for x in args):
+        return check_main(args)
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     for k in ("txs", "ledger", "tokens", "named", "balance", "stop-file"):
         ap.add_argument(f"--{k}", required=True)
     ap.add_argument("--baseline", type=int, required=True)
     ap.add_argument("--json")
+    ap.add_argument("--day", help="UTC day YYYY-MM-DD this run reconciles; stamped into the --json result for check_last_closed_day")
     try:
         a = ap.parse_args(argv)
     except SystemExit as e:  # an argument error is also a failure: try to STOP when the path can be found at all

@@ -287,3 +287,82 @@ def test_an_argument_error_also_stops_or_fails_closed(tmp_path, capsys):
     stop.unlink()
     assert T.main([]) == 5  # no STOP path to write at all: fail closed
     capsys.readouterr()
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ QP re-check 2026-10-23 (B1, B2, no-result = STOP)
+@pytest.mark.parametrize("status", ["pending", "submitted", "", None, 7])
+def test_b1_a_send_with_an_unknown_status_that_is_not_on_chain_is_pending_not_signed_off(status):
+    txs, led, tok0, now = good_day()
+    l2 = copy.deepcopy(led)
+    l2["sends"].append({"signature": "wal1", "side": "buy", "status": status})
+    r = run(txs, l2, tok0, now)
+    assert kinds(r) == ["send_pending"] and r["pending_sends"] == 1 and not r["signed_off"]
+    assert r["problems"][0]["signature"] == "wal1"
+
+
+def test_b1_an_unknown_status_send_that_is_on_chain_is_matched():
+    txs, led, tok0, now = good_day()
+    l2 = copy.deepcopy(led)
+    l2["sends"][0]["status"] = "submitted"  # buy1 is on chain: matched by signature
+    assert run(txs, l2, tok0, now)["signed_off"]
+
+
+def test_b2_a_trip_without_a_boolean_closed_is_refused():
+    txs, led, tok0, now = good_day()
+    for bad in (None, "yes", 1, "missing"):
+        l2 = copy.deepcopy(led)
+        if bad == "missing":
+            del l2["trips"][0]["closed"]
+        else:
+            l2["trips"][0]["closed"] = bad
+        with pytest.raises(T.BadInput, match="closed"):
+            run(txs, l2, tok0, now)
+    l3 = copy.deepcopy(led)
+    l3["trips"][0]["realized_lamports"] += 10**9  # the case QP reproduced: a 1e9 error with `closed` absent must not be signed off
+    del l3["trips"][0]["closed"]
+    with pytest.raises(T.BadInput):
+        run(txs, l3, tok0, now)
+
+
+def test_b2_through_the_cli_it_is_exit_2_and_stop(tmp_path, capsys):
+    txs, led, tk, now = good_day()
+    del led["trips"][0]["closed"]
+    args, _ = _files(tmp_path, txs, led, tk, now)
+    assert T.main(args) == 2 and (tmp_path / "STOP").exists()
+    capsys.readouterr()
+
+
+DAYMS = 86_400_000
+
+
+def test_no_result_for_the_last_closed_utc_day_is_stop(tmp_path, capsys):
+    now = 1_789_000_000_000 + 3 * 3_600_000
+    day = T.last_closed_day(now)
+    assert day == T.utc_day_str(now - (now % DAYMS) - DAYMS)
+    d = tmp_path / "results"
+    d.mkdir()
+    assert T.check_last_closed_day(d, now)[0] is False                                            # no file
+    (d / f"tieout-{day}.json").write_text("{")
+    assert "unreadable" in T.check_last_closed_day(d, now)[1]                                       # torn
+    (d / f"tieout-{day}.json").write_text(json.dumps({"day": day, "signed_off": False}))
+    assert "not signed off" in T.check_last_closed_day(d, now)[1]
+    (d / f"tieout-{day}.json").write_text(json.dumps({"day": "2000-01-01", "signed_off": True}))
+    assert "day" in T.check_last_closed_day(d, now)[1]                                              # wrong day stamp
+    (d / f"tieout-{day}.json").write_text(json.dumps({"day": day, "signed_off": True}))
+    assert T.check_last_closed_day(d, now) == (True, "")
+    stop = tmp_path / "STOP"
+    base = ["--check-last-day", str(d), f"--now-ms={now}", f"--stop-file={stop}"]
+    assert T.main(base) == 0 and not stop.exists()
+    (d / f"tieout-{day}.json").unlink()
+    assert T.main(base) == 1 and json.loads(stop.read_text())["exit_code"] == 1                      # no result = STOP
+    stop.unlink()
+    assert T.main(base[:2] + [f"--now-ms={now}", f"--stop-file={tmp_path / 'nodir' / 'STOP'}"]) == 5  # cannot write: fail closed
+    capsys.readouterr()
+
+
+def test_the_day_stamp_is_written_by_the_main_run(tmp_path, capsys):
+    txs, led, tk, now = good_day()
+    args, _ = _files(tmp_path, txs, led, tk, now)
+    assert T.main(args + ["--day=2026-10-22"]) == 0
+    assert json.loads((tmp_path / "o.json").read_text())["day"] == "2026-10-22"
+    capsys.readouterr()
