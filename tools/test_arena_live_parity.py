@@ -353,3 +353,21 @@ def test_b1_state_with_nan_or_wrong_types_is_p7_not_a_crash():
     assert "P7" in run(*book(30), state=st)["halts"]
     assert "P7" in run(*book(30), state=fresh_state(unresolved_hard_halts="A3"))["halts"]
     assert "P7" in run(*book(30), state=[1, 2])["halts"]
+
+
+def test_b2_future_state_timestamps_are_stale_p7():
+    st = fresh_state()
+    st["at_ms"] = {n: NOW + 1_000_000_000 for n in P.STATE_NAMES}
+    r = run(*book(30), state=st)
+    assert "P7" in r["halts"] and "in the future" in r["halts"]["P7"]["detail"]
+    st = fresh_state()
+    st["at_ms"]["loss"] = NOW + P.CLOCK_SKEW_MS  # within tolerance: fine
+    assert "P7" not in run(*book(30), state=st)["halts"]
+    st["at_ms"]["loss"] = NOW + P.CLOCK_SKEW_MS + 1
+    assert "P7" in run(*book(30), state=st)["halts"]
+
+
+def test_b2_future_state_exits_nonzero_through_the_cli(tmp_path):
+    st = fresh_state()
+    st["at_ms"] = {n: NOW + 10**9 for n in P.STATE_NAMES}
+    assert P.main(cli(tmp_path, *book(30), attempts(40), st)) == 10 and (tmp_path / "STOP").exists()

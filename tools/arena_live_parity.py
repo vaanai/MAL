@@ -55,6 +55,7 @@ P7_SHARE = 0.05
 FLAT_FAIL = 0.15
 MATCH_MIN, MATCH_LO_BPS, MATCH_P50_S = 100, -100.0, 1.9
 STALE_MS = 60_000
+CLOCK_SKEW_MS = 5_000  # a state stamp more than this far ahead of now is not fresh, it is wrong: invalid, P7
 STATE_NAMES = ("loss", "balance", "twin", "parity", "decision_chain", "control_files")
 HARD = frozenset({"P4"})
 STOP_SCHEMA = "arena_live_parity_stop_v1"
@@ -269,6 +270,8 @@ def state_problems(state: Mapping[str, Any] | None, now_ms: int) -> list[str]:
         v = state["at_ms"].get(n)
         if not _isnum(v):
             out.append(f"{n} missing")
+        elif v > now_ms + CLOCK_SKEW_MS:
+            out.append(f"{n} is in the future (clock skew above {CLOCK_SKEW_MS // 1000} s)")
         elif now_ms - v > STALE_MS:
             out.append(f"{n} older than {STALE_MS // 1000} s")
         elif _isnum(last) and v < last:
