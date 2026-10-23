@@ -624,17 +624,23 @@ class GapHoldTests(ACase):
         self.assertEqual(self.env().ex.h5.gap_hold_ms, 600_000)
         self.assertEqual(self.env(gap_hold_ms=1).ex.h5.gap_hold_ms, 600_000)
 
-    def test_any_gap_record_holds_buys_for_ten_minutes_even_a_redundant_reconnect(self):
-        for flags in (True, False):
-            e = self.env()
-            self.assertEqual(e.ex.decide_row({"type": "gap", "kind": "reconnect", "flags_pools": flags}), ("keep", None))
-            e.jump(599_000)
-            e.fire()
-            self.assertEqual(e.refusals(), ["feed_gap"], flags)
-            e.jump(1_000)
-            e.fire()
-            self.assertEqual(e.refusals(), ["feed_gap"], flags)  # 600 s after the gap record the hold is over: no second gap refusal
-            self.assertEqual(len(e.ledger("decision")), 1, flags)
+    def check(self, flags):
+        e = self.env()
+        n0, d0 = len(e.refusals()), len(e.ledger("decision"))
+        self.assertEqual(e.ex.decide_row({"type": "gap", "kind": "reconnect", "flags_pools": flags}), ("keep", None))
+        e.jump(599_000)
+        e.fire()
+        self.assertEqual(e.refusals()[n0:], ["feed_gap"], flags)  # 599 s after the gap record: held
+        e.jump(1_000)
+        e.fire()
+        self.assertEqual(e.refusals()[n0:], ["feed_gap"], flags)  # 600 s after: the hold is over, no second gap refusal
+        self.assertEqual(len(e.ledger("decision")) - d0, 1, flags)
+
+    def test_any_gap_record_holds_buys_for_ten_minutes(self):
+        self.check(True)
+
+    def test_a_redundant_reconnect_gap_record_holds_too(self):
+        self.check(False)  # the base class would skip the hold for flags_pools false
 
 
 class SellReserveTests(ACase):
