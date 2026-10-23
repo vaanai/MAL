@@ -128,15 +128,12 @@ def test_hostv2_resume_refuses_a_ledger_with_another_send(tmp_path):
         h.resume()  # refused before verify_registered / the chain is touched
 
 
-def test_report_refuses_rows_with_another_send_than_the_pin():
-    rows = [{"stack": {"send": 160_000}}, {"stack": {"send": 160_000}}]
-    assert RL.book_send(rows, 160_000) == 160_000 and RL.book_send(rows) == 160_000
-    with pytest.raises(RL.Refused):
-        RL.book_send(rows, 505_000)
-    with pytest.raises(RL.Refused):
-        RL.book_send(rows + [{"stack": {"send": 505_000}}], 160_000)
-    with pytest.raises(RL.Refused):
-        RL.book_send(rows + [{"stack": {"send": 505_000}}])
+def test_report_wrapper_refuses_another_send_and_leaves_the_pinned_report_file_alone(tmp_path, capsys):
+    root = _ledger(tmp_path, "b1", [505_000])
+    assert V2.report_main(["--expect-send", "160000", "--bot", "b1", "--ledger-root", str(root), "--registry", "x"]) == 3
+    assert "REFUSED" in capsys.readouterr().err
+    assert V2.report_main(["--expect-send", "160000"]) == 3
+    assert "expect_send" not in Path(RL.__file__).read_text()  # arena_report_legs.py is a pin: not edited
 
 
 def test_v2_job_script_passes_the_flag_and_the_v1_script_is_unchanged():

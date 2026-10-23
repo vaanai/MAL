@@ -58,3 +58,29 @@ def check_ledger_send(ledger_root: str | Path, bot_ids: Iterable[str], send: int
     for b, seen in ledger_sends(ledger_root, bot_ids).items():
         if seen - {int(send)}:
             raise HostError(f"{b}: the ledger has rows priced at send {sorted(seen)}, this process prices at {int(send)}: refused (wrong --stack-version?)")
+
+
+def report_main(argv: list[str] | None = None) -> int:
+    """The read wrapper for a covered book: `python -m tools.arena_stack_v2 --expect-send 160000 <arena_report_legs args>`. It refuses (exit 3) unless every row of
+    --bot in --ledger-root carries exactly that stack.send, then runs tools.arena_report_legs.main unchanged (that file is a pin and is not edited)."""
+    import argparse
+    import sys
+
+    ap = argparse.ArgumentParser(add_help=False)
+    ap.add_argument("--expect-send", type=int, required=True)
+    ap.add_argument("--bot")
+    ap.add_argument("--ledger-root")
+    a, rest = ap.parse_known_args(sys.argv[1:] if argv is None else argv)
+    if not a.bot or not a.ledger_root:
+        print("REFUSED: --bot and --ledger-root are required", file=sys.stderr)
+        return 3
+    seen = ledger_sends(a.ledger_root, [a.bot])[a.bot]
+    if seen - {a.expect_send}:
+        print(f"REFUSED: the rows of {a.bot} carry send {sorted(seen)}, the book pins {a.expect_send}", file=sys.stderr)
+        return 3
+    from tools import arena_report_legs
+    return arena_report_legs.main(["--bot", a.bot, "--ledger-root", a.ledger_root, *rest])
+
+
+if __name__ == "__main__":
+    raise SystemExit(report_main())
