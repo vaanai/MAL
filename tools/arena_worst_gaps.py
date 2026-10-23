@@ -24,6 +24,7 @@ MEMORY (streams; at most one tape line is decoded at a time, and only rows that 
        the trades, not to the tape, whatever its size; a window that is too short to reach the END print shows as an END mismatch (trade left out), not as a wrong gap. Lines are
        pre-filtered by a byte search for the book's pool ids before json decoding. A pool's V comes from each kept row's own virtual_quote_reserves (or --vmap).
 PATHS  every path, and every tape FILE by its resolved (symlink-free) path, is checked with arena_report_legs.check_path (refuses sealed, forward, walk, probe, shadow, canary, shakedown ... before any filesystem access).
+HARDLINKS  a tape file with st_nlink > 1 is NOT refused here: the wrapper must read tapes only from the expected tape root and must require rc 0 (documented choice, QP re-check 6368647431 (c)).
 OUT   any earlier --out / --detail is removed before the run and the new ones are written to a temp file and renamed only on success: a refused run leaves none. The wrapper must require rc 0.
 Run long as a MiScusi job; it holds the kept rows only.
 """
@@ -185,7 +186,31 @@ def atomic_write(path: str | Path, text: str) -> None:
     os.replace(tmp, p)
 
 
+def scan_flag(argv: Sequence[str], flag: str) -> str | None:
+    """The value of `flag` in argv without argparse (so it works when argparse itself fails)."""
+    for i, t in enumerate(argv):
+        if t == flag and i + 1 < len(argv):
+            return argv[i + 1]
+        if t.startswith(flag + "="):
+            return t.split("=", 1)[1]
+    return None
+
+
+def clear_outputs(argv: Sequence[str]) -> None:
+    """Remove an earlier --out / --detail FIRST, before the path guard, the argument checks or any read: no refusal of any kind leaves a stale file. A path the guard would refuse
+    (closed material) is never touched."""
+    for flag in ("--out", "--detail"):
+        p = scan_flag(argv, flag)
+        if p:
+            try:
+                check_path(p, flag)
+                Path(p).unlink(missing_ok=True)
+            except (Refused, OSError):
+                pass
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    clear_outputs(list(sys.argv[1:] if argv is None else argv))
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--trades", required=True)
     ap.add_argument("--tape-dir", required=True)
@@ -199,9 +224,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         for what, p in (("trades", a.trades), ("tape dir", a.tape_dir), ("out", a.out), ("detail", a.detail), ("vmap", a.vmap)):
             if p:
                 check_path(p, what)
-        for p in (a.out, a.detail):  # a refused run must never leave an earlier output behind to be picked up as this run's
-            if p:
-                Path(p).unlink(missing_ok=True)
         rows = load_trades(a.trades)
         vmap = json.loads(Path(a.vmap).read_text()) if a.vmap else None
         if not rows:
