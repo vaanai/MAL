@@ -72,15 +72,29 @@ def find_strip(shadow_dir: Path, pool: str) -> dict[str, Any] | None:
     return None
 
 
-def derive(row: Mapping[str, Any], strip_rec: Mapping[str, Any] | None, sc: Any, cost: Any) -> dict[str, float]:
-    """{entry_price, exit_price, pnl_derived} for one ledger row, or PriceFailed(reason)."""
+def _fills(cost: Any, lam: float, qe: float, be: float, qx: float, bx: float) -> tuple[float, float]:
+    """(entry_price, exit_price) of a filled trip at stake `lam`: the cost module's own fill arithmetic (fee tier on each leg, own buy re-injected, haircut)."""
+    net = lam * (1 - cost.fee_ppm(qe, be) / 1e6)
+    tok = be * net / (qe + net)
+    tokh = tok / (1 + cost.H_IN)
+    qa, ba = qx + net, bx - tok
+    gross = tokh * qa / (ba + tokh)
+    proceeds = gross * (1 - cost.fee_ppm(qa, ba) / 1e6) * (1 - cost.H_OUT)
+    return lam / tok, proceeds / tokh
+
+
+def derive(row: Mapping[str, Any], strip_rec: Mapping[str, Any] | None, sc: Any, cost: Any, live_stake_lamports: float | None = None) -> dict[str, float]:
+    """Prices for one ledger row at the scorer's stake, or (live_stake_lamports given) at the LIVE trip's stake with the same code path (QP 10-23 ruling 6 (2)).
+    The 1-lamport self-check always runs first at the row's own stake: the rebuilt nofail P&L must equal the row's `nofail_lamports`. Only then is the trip repriced at the live
+    stake from the SAME states (impact at that size). Returns entry_price, exit_price, pnl_derived (E1 included, rent charged, 505,000 sends: what the row records),
+    pnl_noe1_lamports (E1 excluded, same rent and sends) and check_stake_lamports / twin_stake_lamports. Raises PriceFailed(reason)."""
     meta = row.get("meta") or {}
     try:
         land = int((meta["landing_slots"])[LEG])
         xtrig = int((meta["exit_trigger_slots"])[LEG])
         el = int(meta["exit_lag_slots"])
         spot = float(meta["spot"])
-        lam = float(row["stake_sol"]) * 1e9
+        row_lam = float(row["stake_sol"]) * 1e9
         want = float(row["legs"]["flat_1p9"]["nofail_lamports"])
     except (KeyError, TypeError, ValueError):
         raise PriceFailed("row_missing_meta") from None
@@ -95,18 +109,19 @@ def derive(row: Mapping[str, Any], strip_rec: Mapping[str, Any] | None, sc: Any,
     xland = xtrig + el
     qe, be, _ = strip.state_at(land)
     qx, bx, _ = strip.state_at(xland)
-    t = cost.deciding_round_trip(lam, qe, be, spot, qx, bx)
+    chk = cost.deciding_round_trip(row_lam, qe, be, spot, qx, bx)
+    if chk["state"] != "filled":
+        raise PriceFailed(f"rebuilt_state:{chk['state']}")
+    if not (math.isfinite(chk["pnl"]) and abs(chk["pnl"] - want) <= TOL_LAMPORTS):
+        raise PriceFailed("rebuilt_pnl_differs_from_row")  # the self-check: the frozen fill model reproduces the scorer's own row
+    lam = row_lam if live_stake_lamports is None else float(live_stake_lamports)
+    if not (math.isfinite(lam) and lam > 0):
+        raise PriceFailed("bad_live_stake")
+    t = chk if lam == row_lam else cost.deciding_round_trip(lam, qe, be, spot, qx, bx)
     if t["state"] != "filled":
-        raise PriceFailed(f"rebuilt_state:{t['state']}")
-    if not (math.isfinite(t["pnl"]) and abs(t["pnl"] - want) <= TOL_LAMPORTS):
-        raise PriceFailed("rebuilt_pnl_differs_from_row")
-    net = lam * (1 - cost.fee_ppm(qe, be) / 1e6)
-    tok = be * net / (qe + net)
-    tokh = tok / (1 + cost.H_IN)
-    qa, ba = qx + net, bx - tok
-    gross = tokh * qa / (ba + tokh)
-    proceeds = gross * (1 - cost.fee_ppm(qa, ba) / 1e6) * (1 - cost.H_OUT)
-    entry, exit_ = lam / tok, proceeds / tokh
-    if not (math.isfinite(entry) and math.isfinite(exit_) and entry > 0 and exit_ > 0):
+        raise PriceFailed(f"state_at_live_stake:{t['state']}")
+    t0 = cost.deciding_round_trip(lam, qe, be, spot, qx, bx, e1=False)
+    entry, exit_ = _fills(cost, lam, qe, be, qx, bx)
+    if not (math.isfinite(entry) and math.isfinite(exit_) and entry > 0 and exit_ > 0 and math.isfinite(t["pnl"]) and math.isfinite(t0["pnl"])):
         raise PriceFailed("prices_not_finite")
-    return {"entry_price": entry, "exit_price": exit_, "pnl_derived": t["pnl"]}
+    return {"entry_price": entry, "exit_price": exit_, "pnl_derived": t["pnl"], "pnl_noe1_lamports": t0["pnl"], "check_stake_lamports": row_lam, "twin_stake_lamports": lam}
