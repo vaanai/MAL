@@ -131,6 +131,11 @@ def test_verify_repo_refuses_wrong_sha_and_dirty(tmp_path):
 
 def test_main_exit_codes(tmp_path, capsys):
     assert F.main(["--repo", str(tmp_path), "--days", "bad"]) == 2
+    d = "2026-10-15"
+    capsys.readouterr()
+    assert F.main(["--repo", str(tmp_path), "--days", f"{d},{d},{d}"]) == 2  # K7: duplicate days refused
+    assert "bad --days" in capsys.readouterr().err  # refused at argument parsing, not by the repo check
+    assert F.main(["--repo", str(tmp_path), "--days", f"{d},{d}"]) == 2
     assert F.main(["--repo", str(tmp_path), "--days", "2026-10-15"]) == 2  # not the pinned repo
     assert F.main(["--repo", str(tmp_path), "--days", "2026-10-15", "--expect-sha", "1" * 40]) == 2  # override needs MAL_ARENA_TEST
 

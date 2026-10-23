@@ -13,7 +13,7 @@ depend on exits, which depend on prices. They are bounded instead, from decision
     att_lo  signals thinned by a per-pool lock of HOLD_MS + COOLDOWN_MS (the position is held to the 24 h time exit; no take profit)   -> LOWER bound of would-be attempts
     att_hi  signals thinned by a per-pool lock of COOLDOWN_MS + LEG_MS (every position exits as early as the leg latency allows)      -> UPPER bound
 Real attempts lie between. K1: the rule is run (and signals collected) from min(days) - (HOLD_MS + COOLDOWN_MS) through the end of max(days), unselected days in between included, so a signal
-before or between selected days locks its pool exactly as the live book would; att_lo/att_hi are counted on selected days only. att_lo is therefore the same whichever days are selected.
+before or between selected days locks its pool exactly as the live book would; att_lo/att_hi are counted on selected days only. att_lo on a given day does not depend on which other days are selected, provided the selected days leave the lock horizon (min(days) - HOLD_MS - COOLDOWN_MS) unchanged; it is a pure function of the tape from that horizon on.
 WHAT att_lo DOES NOT MODEL: it is a lower bound up to the 1 s exit tick and sell-retry delay; live stale-row drops, buy refusals and failed buys are not modelled (the last two raise real
 attempts above att_lo). Take profit is ignored (it can only free a pool earlier). Fewer than 3 days: floor false, days_lt_3 true. Corrupt/torn tape lines are counted per day (bad_lines) and fail that day.
 meta fields that need prices (mark0) are None here; nothing in the signal depends on them.
@@ -340,6 +340,8 @@ def main(argv: list[str] | None = None) -> int:
             parse_day(d)
         if not a.days:
             raise ValueError("days")
+        if len(set(a.days)) != len(a.days):  # K7: duplicate days would triple-count one day
+            raise ValueError("duplicate days")
         if a.table_from:
             parse_hour(a.table_from)
     except ValueError:
