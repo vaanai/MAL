@@ -47,6 +47,7 @@ from tools import h5_executor as h
 from tools import mint_account_fetch as mf
 from tools.arena_close_blocked import classify_record
 from tools.h5_arena_gates import HARD_ARENA_HALTS, LiveGates, ParityRecorder, v_band_refusal
+from tools.h5_arena_gates import twin_run_stamp as gt_twin_run_stamp
 
 # --- the books (item 1). Values copied from the merged records: ARTIFACTS/lab/arena-records-2026-10-22.md (a2), qp-ruling-1022-q50.md and
 # EXP-024-RULE-Q50.md (Q50). Nothing here is read from config or bots.json.
@@ -544,13 +545,9 @@ class ArenaExecutor(h.H5Executor):
             pass
         if self._balance_value(now) is not None and self._bal is not None:
             at["balance"] = self._bal[1]
-        try:
-            for line in Path(self.gates.twins_file).read_text().splitlines():  # type: ignore[union-attr]
-                if line.strip():
-                    json.loads(line)
-            at["twin"] = now
-        except (OSError, ValueError):
-            pass
+        stamp = gt_twin_run_stamp(self.gates.twins_file, list(self.gates.recorder.trips))  # type: ignore[union-attr]
+        if stamp is not None:  # the writer's own run time, never now (QP 10-23 condition 1)
+            at["twin"] = stamp
         at["parity"] = now
         if self.feed_verified and H_FEED_BREAK not in self.counters.halts:
             at["decision_chain"] = now
@@ -612,7 +609,7 @@ class ArenaExecutor(h.H5Executor):
             return self._refuse(trg, why)
         if self.gates is not None:
             t = self.now_ms()
-            why = self.gates.parity_refusal(t) or self.gates.tieout_refusal(t, self.state.first_attempt_ms)
+            why = self.gates.twin_refusal(t) or self.gates.parity_refusal(t) or self.gates.tieout_refusal(t, self.state.first_attempt_ms)
             if why:
                 return self._refuse(trg, why)
         blocked = self._screen_mint(trg.mint)  # DEC-032 s3 "Venue": a freeze authority or a Token-2022 extension outside the allowlist is a strand = total loss
@@ -638,7 +635,33 @@ class ArenaExecutor(h.H5Executor):
                 self.state.pending.pop(mint, None)
                 self._log("send_blocked", mint, reason="stale_trigger_presend", kind_="buy", signal_age_ms=age)
                 return
+        if not self.dry_run and p.get("kind") == "buy" and p.get("sends", 0) == 0:
+            self._send_guarded(p, mint)  # the first send of a live buy: the age is judged once more at the sendTransaction call itself
+            return
         super()._send(p, mint)
+
+    def _send_guarded(self, p: dict[str, Any], mint: str) -> None:
+        """QP 10-23 condition 5: tools/h5_executor.py and tools/probe_live.py stay untouched, so the last check is made at the one place the base class writes to the socket,
+        `self.rpc("sendTransaction", ...)`, by wrapping `self.rpc` for the duration of this one call. A stale signal raises before the call is made (nothing is written); the base
+        class files that as a send_error alert and counts a send, so afterwards the pending buy is dropped and a send_blocked row is written. The wrapper is always removed."""
+        real, stale = self.rpc, []
+
+        def guard(method: str, params: Any = None, *a: Any, **k: Any) -> Any:
+            if method == "sendTransaction":
+                age = self.now_ms() - int(p.get("decision_t_ms") or 0)
+                if age > self._signal_age_limit_ms():
+                    stale.append(age)
+                    raise RuntimeError("stale_trigger_at_write")
+            return real(method, params, *a, **k) if params is not None else real(method)
+
+        self.rpc = guard
+        try:
+            super()._send(p, mint)
+        finally:
+            self.rpc = real
+        if stale:
+            self.state.pending.pop(mint, None)
+            self._log("send_blocked", mint, reason="stale_trigger_at_write", kind_="buy", signal_age_ms=stale[0])
 
     def _screen_mint(self, mint: str) -> str | None:
         """Fresh read of the mint account (never a cache: the pre-send look is the one that counts). Returns the close-blocked reason, None when clear."""
