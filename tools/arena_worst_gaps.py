@@ -211,7 +211,7 @@ def clear_outputs(argv: Sequence[str]) -> None:
 
 def main(argv: Sequence[str] | None = None) -> int:
     clear_outputs(list(sys.argv[1:] if argv is None else argv))
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0], allow_abbrev=False)
     ap.add_argument("--trades", required=True)
     ap.add_argument("--tape-dir", required=True)
     ap.add_argument("--out", required=True)
