@@ -1,4 +1,4 @@
-# MAL manager handoff — manager14 (rewritten 2026-10-23T20:00Z from date -u)
+# MAL manager handoff — manager14 (rewritten 2026-10-23T20:00Z, FLOOR section updated 20:08Z, from date -u)
 
 Read this first. Then read the END of manager14's state log (/data/mal/hunt-1008/ops/manager13/push-1022-manager14.md, a copy of the memory file) and the latest MiScusi notebook entries. No book has cleared the promotion gate. Profit so far: 0.
 
@@ -23,19 +23,32 @@ Read this first. Then read the END of manager14's state log (/data/mal/hunt-1008
 | G4 v1 | after FLOOR | Port PR #806; equivalence 12/13 on w7. |
 
 **FLOOR detail:**
-- **Rules:** DEC-031 Am.9 MERGED 6f431ae3: H = 12 d in one ≤14 d job, P0 rate ≥ 12.5/day on 3 days, a 72 h zero-gap check, an hour_health dry run ≤ 5%, and the feed hand-off on 10-24.
-- **Execution sheet:** hunt24/floor-1026/EXEC-AM9-1026.md (953da6bf), with scripts A2-p0count-v3, G1-gapcheck-am9, DR1-hourhealth-dryrun, E3-register-v2 and E4-run-v2.
-- **Open:**
-  - **D-A:** PumpSwap gap rows at 10-22T19/T20 fail item 5 if E3 must be before 22:00Z. Proposed: an erratum moving the deadline to 23:45Z (E3_LEAD_S=87300).
-  - **D-B:** FLOOR is priced at 505,000 per send (Am.8 item 3). Am.9 item 9's wording needs an erratum.
-  - **D-E:** the DR1 thresholds JSON.
-  - The QP ruling is at hunt24/floor-1026/QP-RULING-1023-am9-erratum.md. Status: see the state log END.
-- **10-25 order:**
-  - A1 at ≥ 01:10:30Z, then A2-v3.
-  - G1 22:05Z, DR1 22:10Z.
-  - E3 23:10Z, then E4 and D1 23:20Z.
-- **Before then:** the smoke S1–S3 on 10-24 at ~14:00Z, after the feed hand-off. The P0 fixed-first entry goes out 10-24 between 13:00Z and 23:00Z.
-- **Also owed:** the H-pin records PR (#811 update), the L3 test job script, and the C9/C5/Q2 items listed in EXEC §A.
+- **Rules:**
+  - DEC-031 Am.9 MERGED 6f431ae3, plus **Erratum 1 MERGED 7e7f03ff** (n_btre2WZHqU06Sw; ruling hunt24/floor-1026/QP-RULING-1023-am9-erratum.md a914d1ff).
+  - H = 12 d, END_H 11-07T00Z, one ≤14 d job.
+  - P0 rate ≥ 12.5/day on 3 days.
+  - **The gap check and the DR1 window are exactly [10-22T21Z, 10-25T21Z)** (window_to_ms 1792962000000).
+  - **E3 deadline 10-25T23:45Z (CLOCK − 15 min; use E3_LEAD_S=900).** The slip to 10-27 uses the same formula (deadline 10-26T23:45Z, window_to_ms 1793048400000).
+  - Priced at **505,000/send** (not covered by Am.8).
+  - DR1 thresholds FLOOR-THRESHOLDS-DR1.json (41758769…).
+- **NO PEEKING:** do not look at any gap rows or hour-health output for window hours before G1 runs.
+- **Files in hunt24/floor-1026/:**
+  - EXEC-AM9-1026.md (953da6bf). **Read EXEC-AM9-1026-ERRATUM.md first:** EXEC's "CLOCK − 26 h", "24 h 15 min" and 87300 are wrong; use 900.
+  - Scripts: A2-p0count-v3, G1-gapcheck-am9 (ab125883), DR1-hourhealth-dryrun, E3-register-v2 (3d024b0b), E4-run-v2, L3-tests-floor.sh (c285f73f, not run).
+  - P0-FIXED-FIRST-AM9.md (ddf9517d), the text to post.
+- **Records PR #811** (head ba61f01b) has FILLs. It needs QP and a reviewer on the final head before E3.
+- **Owed before E3** (QP F1–F4):
+  - the union of the hand-off rows ≤ 600,000 ms, notebooked;
+  - evidence that the platform accepts a runner limit ≥ 1,130,400 s;
+  - the C9 kill-review confirmation in writing;
+  - the in-window thresholds file (price-path = exactly the DR1 entry; sampler checks are decision-input) and X (pack item 2 rule);
+  - L3 green;
+  - the C5 and Q2 entries;
+  - G1's window_to_ms notebooked before E3;
+  - E4 running by 23:55Z.
+- **Order:**
+  - 10-24 after the 12:10–12:25Z feed hand-off: post the fixed-first entry (13:00–23:00Z) and run the smoke S1–S3 (~14:00Z).
+  - 10-25: A1 ≥ 01:10:30Z, then A2-v3; L3 and the records fills; G1 ≥ 22:05Z; DR1 ≥ 22:10Z; E3 23:00–23:45Z; E4 and D1 right after.
 
 ## 2. Fixed instants (session crons; FULL prompts in /data/mal/hunt-1008/ops/manager13/crons-manager14-full.json — RECREATE at session start with CronCreate)
 - **10-24 00:12Z:** Q50 G7.
