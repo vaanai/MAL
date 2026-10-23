@@ -29,6 +29,13 @@ CHECKS (section 6; any failure is a hard halt (O), exit 1, and the day is NOT si
      Open ATAs: a token account with a non-zero amount whose mint is not an open ledger position is a STRANDED position, a P4-class alert (hard halt). An open ledger mint with no
      non-zero token account is flagged, and a zero-amount token account left open is listed (a rent leak: a sell must close the ATA, DEC-032 section 4).
   5. for each closed trip, ledger realized P&L against the chain sum of its buy and sell txs; a difference above one base fee (5,000 lamports) is unexplained.
+EXCLUDED TRIPS (QP ruling 2026-10-23 (7) item 9): the fetcher cuts a closed trip with one leg in the day and one in an earlier window (a straddler) out of the ledger and lists it in
+manifest.json `straddling_trips`. The list is written ONCE per day to EXCLUDED-TRIPS-<day>.json by `--write-exclusions` (create-exclusive, O_EXCL; a rerun with the same list is a no-op, a rerun
+with a different list is a hard halt (rc 1) and creates STOP; the file is never overwritten). Every P&L figure this tool quotes is the `quoted_pnl` block: a sum over the trips that are NOT in
+that file, plus the file's sha256. The tool refuses (rc 2) if the file is missing, torn, for another day or has no list for the day. `split` is a wallet-flow breakdown that includes the legs
+of excluded trips: it is not a P&L and says so. --check-last-day also needs the marker, and its sha256 must equal the one the signed-off result recorded.
+    python -m tools.arena_tieout --write-exclusions MANIFEST.json --day YYYY-MM-DD --excluded-trips PATH --stop-file PATH
+
 STOP (fail closed): ANY non-zero exit, a refused input and a crash create the STOP file at --stop-file (O_EXCL, never overwritten or removed). If STOP cannot be written the exit code is 5.
 Exit codes: 0 signed off, 1 hard halt, 2 unusable input, 3 crash, 5 STOP could not be written (also non-zero, still means no buy).
 The result carries no sentence that says the book made money (an execution report).
@@ -37,6 +44,7 @@ The result carries no sentence that says the book made money (an execution repor
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -213,10 +221,92 @@ def reconcile(txs: Sequence[Mapping[str, Any]], ledger: Mapping[str, Any], token
             "problems": problems, "hard_halt": bool(problems), "signed_off": signed_off, "next_baseline": balance_now if signed_off else None}
 
 
+EXCLUDED_SCHEMA = "arena_excluded_trips_v1"
+
+
+class MarkerConflict(Exception):
+    """A rerun produced a different excluded-trip list than the marker already on disk: a hard halt, the marker is never overwritten."""
+
+
+def marker_name(day: str) -> str:
+    return f"EXCLUDED-TRIPS-{day}.json"
+
+
+def canonical_trips(trips: Any) -> list[dict[str, Any]]:
+    """The straddling_trips list in canonical order. Each entry needs a string trip_id; duplicates are refused. A missing list is never an empty list."""
+    if not isinstance(trips, list):
+        raise BadInput("straddling_trips must be a list (a missing key is a refusal, not an empty list)")
+    out = []
+    for t in trips:
+        if not isinstance(t, Mapping) or not isinstance(t.get("trip_id"), str) or not t["trip_id"]:
+            raise BadInput(f"every excluded trip needs a string trip_id, got {t!r}")
+        out.append(dict(t))
+    ids = [t["trip_id"] for t in out]
+    if len(set(ids)) != len(ids):
+        raise BadInput("duplicate trip_id in straddling_trips")
+    return sorted(out, key=lambda t: t["trip_id"])
+
+
+def write_exclusion_marker(path: str | Path, day: str, trips: Any) -> str:
+    """Create EXCLUDED-TRIPS-<day>.json with O_EXCL. Returns "created", or "same" when the file exists with an identical list. A different list raises MarkerConflict."""
+    if not isinstance(day, str) or len(day) != 10:
+        raise BadInput(f"day must be YYYY-MM-DD, got {day!r}")
+    canon = canonical_trips(trips)
+    body = {"schema": EXCLUDED_SCHEMA, "day": day, "straddling_trips": canon, "n": len(canon),
+            "rule": "these trips are EXCLUDED from every canary P&L figure of this day; quote this file with any P&L; owner review"}
+    text = json.dumps(body, sort_keys=True, indent=1) + "\n"
+    try:
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        try:
+            old = json.loads(Path(path).read_text())
+        except (OSError, ValueError) as exc:
+            raise MarkerConflict(f"{path} exists and is unreadable ({type(exc).__name__}); not overwritten") from exc
+        if isinstance(old, dict) and old.get("schema") == EXCLUDED_SCHEMA and old.get("day") == day and old.get("straddling_trips") == canon:
+            return "same"
+        raise MarkerConflict(f"{path} exists with a different list or day; a rerun never overwrites it")
+    with os.fdopen(fd, "w") as fh:
+        fh.write(text)
+    return "created"
+
+
+def load_exclusion_marker(path: str | Path, day: str) -> tuple[dict[str, Any], str]:
+    """The marker and the sha256 of its bytes. BadInput if it is missing, torn, from another schema or day, or has no list."""
+    try:
+        raw = Path(path).read_bytes()
+    except OSError as exc:
+        raise BadInput(f"excluded-trips marker {path} is missing or unreadable ({type(exc).__name__}): P&L is not quoted without it") from exc
+    try:
+        m = json.loads(raw)
+    except ValueError as exc:
+        raise BadInput(f"excluded-trips marker {path} is not valid JSON") from exc
+    if not isinstance(m, dict) or m.get("schema") != EXCLUDED_SCHEMA:
+        raise BadInput(f"excluded-trips marker {path}: wrong schema")
+    if m.get("day") != day:
+        raise BadInput(f"excluded-trips marker {path} is for day {m.get('day')!r}, not {day!r}")
+    canon = canonical_trips(m.get("straddling_trips"))
+    if m.get("n") != len(canon):
+        raise BadInput(f"excluded-trips marker {path}: n does not match the list")
+    return m, hashlib.sha256(raw).hexdigest()
+
+
+def quoted_pnl(trip_diffs: Sequence[Mapping[str, Any]], marker: Mapping[str, Any], marker_sha256: str) -> dict[str, Any]:
+    """THE canary P&L figure of a tie-out day: closed trips minus every trip in the marker (lamports, ledger and chain side). Trips the fetcher already cut are not in trip_diffs;
+    a listed trip that is still there is subtracted and counted. The marker's own realized figures are NOT added back or netted: an excluded trip is out of the figure."""
+    ids = {t["trip_id"] for t in marker["straddling_trips"]}
+    kept = [d for d in trip_diffs if d["trip_id"] not in ids]
+    return {"basis": "closed trips only, excluded trips removed", "n_trips": len(kept), "ledger_realized_lamports": sum(d["ledger"] for d in kept),
+            "chain_realized_lamports": sum(d["chain"] for d in kept), "excluded_trip_ids": sorted(ids), "excluded_still_in_ledger": sorted(ids & {d["trip_id"] for d in trip_diffs}),
+            "exclusions_sha256": marker_sha256}
+
+
 def render(r: Mapping[str, Any]) -> str:
     L = [f"ARENA TIE-OUT ({r['label']})  {'SIGNED OFF' if r['signed_off'] else 'NOT SIGNED OFF: HARD HALT (O)'}",
          f"baseline {r['baseline']}  balance_now {r['balance_now']}  sum of {r['txs']} tx deltas {r['sum_deltas']}  residual {r['residual']}  confirmed drops {r['confirmed_drops']}",
-         "split (lamports): " + ", ".join(f"{k} {v}" for k, v in sorted(r["split"].items())), f"pool fees: {r['pool_fees']}"]
+         "split (lamports, wallet flows incl. legs of excluded trips; NOT a P&L): " + ", ".join(f"{k} {v}" for k, v in sorted(r["split"].items())), f"pool fees: {r['pool_fees']}"]
+    q = r.get("quoted_pnl")
+    if q:
+        L.append(f"quoted P&L ({q['basis']}): {q['n_trips']} trips, chain {q['chain_realized_lamports']} lamports, ledger {q['ledger_realized_lamports']}; excluded trips {len(q['excluded_trip_ids'])} (marker sha256 {q['exclusions_sha256'][:12]})")
     for d in r["dust_inflows"]:
         L.append(f"  DUST inflow {d['lamports']} from {d['counterparty']} ({d['signature']}): listed, not netted")
     for a in r["open_atas"]:
@@ -255,6 +345,12 @@ def check_last_closed_day(results_dir: str | Path, now_ms: int) -> tuple[bool, s
         return False, f"tie-out result {p} does not carry day {day} (got {r.get('day') if isinstance(r, dict) else None!r})"
     if r.get("signed_off") is not True:
         return False, f"tie-out for {day} is not signed off"
+    try:  # the exclusion marker must exist and be the one the result was computed with (a missing or rewritten marker = no quoted P&L = STOP)
+        _, sha = load_exclusion_marker(Path(results_dir) / marker_name(day), day)
+    except BadInput as exc:
+        return False, str(exc)
+    if r.get("exclusions_sha256") != sha:
+        return False, f"excluded-trips marker for {day} differs from the one the tie-out used (or the result has none)"
     return True, ""
 
 
@@ -273,8 +369,11 @@ def write_stop(path: str | Path, rc: int, why: str) -> str:
 def _run(a: argparse.Namespace) -> tuple[int, str]:
     try:
         txs, ledger, tokens, named, balance = (json.loads(Path(getattr(a, k)).read_text()) for k in ("txs", "ledger", "tokens", "named", "balance"))
+        marker, msha = load_exclusion_marker(a.excluded_trips, a.day)
         res = reconcile(txs, ledger, tokens, a.baseline, balance, named)
         res["day"] = a.day
+        res["quoted_pnl"] = quoted_pnl(res["trip_diffs"], marker, msha)
+        res["exclusions_sha256"] = msha
     except (OSError, ValueError, KeyError, TypeError, BadInput) as exc:
         print(f"UNUSABLE INPUT: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 2, f"unusable input: {type(exc).__name__}: {exc}"
@@ -321,10 +420,49 @@ def check_main(argv: Sequence[str]) -> int:
     return 1
 
 
+def write_exclusions_main(argv: Sequence[str]) -> int:
+    """--write-exclusions MANIFEST --day D --excluded-trips PATH --stop-file PATH. rc 0 created or identical; rc 1 a different list on a rerun (hard halt, STOP); rc 2 unusable input (STOP)."""
+    ap = argparse.ArgumentParser(prog="arena_tieout --write-exclusions", allow_abbrev=False)
+    ap.add_argument("--write-exclusions", required=True, metavar="MANIFEST")
+    ap.add_argument("--day", required=True)
+    ap.add_argument("--excluded-trips", required=True)
+    ap.add_argument("--stop-file", required=True)
+    try:
+        a = ap.parse_args(argv)
+    except SystemExit:
+        stop = scan_flag(argv, "--stop-file")
+        if not stop:
+            return 5
+        try:
+            write_stop(stop, 2, "write-exclusions: argument error")
+        except OSError:
+            return 5
+        return 2
+    try:
+        m = json.loads(Path(a.write_exclusions).read_text())
+        if not isinstance(m, dict) or "straddling_trips" not in m:
+            raise BadInput("manifest has no straddling_trips key")
+        print("excluded-trips marker:", write_exclusion_marker(a.excluded_trips, a.day, m["straddling_trips"]))
+        return 0
+    except MarkerConflict as exc:
+        rc, why = 1, f"hard halt: excluded-trips marker conflict: {exc}"
+    except (OSError, ValueError, BadInput) as exc:
+        rc, why = 2, f"unusable input: {type(exc).__name__}: {exc}"
+    print(why, file=sys.stderr)
+    try:
+        print("STOP file:", write_stop(a.stop_file, rc, why))
+    except OSError as exc:
+        print(f"FAIL CLOSED: STOP could not be written ({exc})", file=sys.stderr)
+        return 5
+    return rc
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     if any(x == "--check-last-day" or x.startswith("--check-last-day=") for x in args):
         return check_main(args)
+    if any(x == "--write-exclusions" or x.startswith("--write-exclusions=") for x in args):
+        return write_exclusions_main(args)
     old = scan_flag(args, "--json")  # a rerun must never leave an earlier (possibly signed-off) result for this day: remove it before anything can fail
     if old:
         try:
@@ -336,7 +474,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         ap.add_argument(f"--{k}", required=True)
     ap.add_argument("--baseline", type=int, required=True)
     ap.add_argument("--json")
-    ap.add_argument("--day", help="UTC day YYYY-MM-DD this run reconciles; stamped into the --json result for check_last_closed_day")
+    ap.add_argument("--day", required=True, help="UTC day YYYY-MM-DD this run reconciles; stamped into the --json result for check_last_closed_day")
+    ap.add_argument("--excluded-trips", required=True, metavar="PATH", help="EXCLUDED-TRIPS-<day>.json written by --write-exclusions; missing = refused (rc 2)")
     try:
         a = ap.parse_args(argv)
     except SystemExit as e:  # an argument error is also a failure: try to STOP when the path can be found at all

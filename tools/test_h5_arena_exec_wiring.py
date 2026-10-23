@@ -567,6 +567,13 @@ class TieoutGateTests(LiveCase):
         Path(e.conf["tieout_dir"]).mkdir()
         day = gt.utc_day(first)
         (Path(e.conf["tieout_dir"]) / f"tieout-{day}.json").write_text(json.dumps({"day": day, "signed_off": True}))
+        g.tieout_ok_until = None
+        self.assertEqual(g.tieout_refusal(now, first), "tieout_gate:rc_1")  # signed off but no EXCLUDED-TRIPS marker: still no buy (QP ruling 7 item 9)
+        from tools import arena_tieout as at
+        marker = Path(e.conf["tieout_dir"]) / at.marker_name(day)
+        at.write_exclusion_marker(marker, day, [])
+        (Path(e.conf["tieout_dir"]) / f"tieout-{day}.json").write_text(json.dumps({"day": day, "signed_off": True, "exclusions_sha256": at.load_exclusion_marker(marker, day)[1]}))
+        g.tieout_ok_until = None
         self.assertIsNone(g.tieout_refusal(now, first))
 
     def test_the_buy_path_refuses_on_a_failed_tieout(self):
