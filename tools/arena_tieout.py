@@ -294,7 +294,7 @@ def scan_flag(argv: Sequence[str], flag: str) -> str | None:
 
 
 def check_main(argv: Sequence[str]) -> int:
-    ap = argparse.ArgumentParser(prog="arena_tieout --check-last-day")
+    ap = argparse.ArgumentParser(prog="arena_tieout --check-last-day", allow_abbrev=False)
     ap.add_argument("--check-last-day", required=True, metavar="RESULTS_DIR")
     ap.add_argument("--now-ms", type=int, required=True)
     ap.add_argument("--stop-file", required=True)
@@ -331,7 +331,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             Path(old).unlink(missing_ok=True)
         except OSError:
             pass
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0], allow_abbrev=False)
     for k in ("txs", "ledger", "tokens", "named", "balance", "stop-file"):
         ap.add_argument(f"--{k}", required=True)
     ap.add_argument("--baseline", type=int, required=True)

@@ -583,3 +583,79 @@ def test_b7_argparse_failure_writes_stop_when_a_stop_path_was_given(tmp_path, ca
 def test_b7_json_failure_exit_5_writes_stop_when_otherwise_clean(tmp_path, capsys):
     rc = P.main(cli(tmp_path, *book(100), attempts(40), fresh_state(), extra=["--json", str(tmp_path / "nodir" / "o.json")]))
     assert rc == 5 and (tmp_path / "STOP").exists()
+
+
+# --- DEC-032 Amendment 1 item 1: the 20-trip rule
+def test_amendment1_one_ineligible_trip_before_20_is_not_a_halt():
+    ts, ws = book(10)
+    ts[3]["gap"] = True
+    ws.pop(5)  # one gap, one no_twin
+    r = run(ts, ws)
+    assert "P7" not in r["halts"] and not r["not_decidable"]
+
+
+def test_amendment1_two_no_twin_before_20_is_the_p7_soft_halt():
+    ts, ws = book(15)
+    ws.pop(2)
+    ws.pop(6)
+    r = run(ts, ws)
+    assert r["shares"]["no_twin"] == 2 and "P7" in r["halts"] and not r["halts"]["P7"]["hard"] and r["not_decidable"]
+    assert "small-sample" in r["halts"]["P7"]["detail"] and r["verdict"] == "parity not shown"
+
+
+def test_amendment1_two_gap_before_20_is_the_p7_soft_halt_and_one_of_each_is_not():
+    ts, ws = book(12)
+    ts[1]["gap"] = ts[8]["gap"] = True
+    assert "P7" in run(ts, ws)["halts"]
+    ts, ws = book(12)
+    ts[1]["gap"] = True
+    ws.pop(8)
+    assert "P7" not in run(ts, ws)["halts"]  # the two counts are separate: 1 gap, 1 no_twin
+
+
+def test_amendment1_from_20_trips_the_share_rule_applies():
+    ts, ws = book(20)
+    ts[19]["gap"] = True  # 1/20 = 5%, not above
+    assert "P7" not in run(ts, ws)["halts"]
+    ts, ws = book(40)
+    ts[3]["gap"] = ts[30]["gap"] = ts[38]["gap"] = True
+    r = run(ts, ws)  # the first two gaps came before trip 20 (only 1 then); 3/40 = 7.5% at the end but 2/31 = 6.5% latches at trip 31
+    assert "P7" in r["halts"] and r["halts"]["P7"]["at_index"] == 31
+
+
+def test_amendment1_two_before_20_latches_even_if_later_share_is_low():
+    ts, ws = book(100)
+    ts[2]["gap"] = ts[4]["gap"] = True  # 2 of the first 5 trips; 2/100 at the end
+    r = run(ts, ws)
+    assert "P7" in r["halts"] and r["halts"]["P7"]["at_index"] == 5
+    assert not r["not_decidable"]  # the end-state share is 2%: NOT_DECIDABLE is the current share, the halt stays latched
+
+
+def test_amendment1_every_ineligible_trip_is_logged_with_its_reason():
+    ts, ws = book(15)
+    ts[0]["gap"] = True
+    ws.pop(0)  # trip 1: gap AND no_twin
+    ws.pop(5)
+    r = run(ts, ws)
+    log = r["ineligible_log"]
+    assert [e["index"] for e in log] == [1, 7]
+    assert sorted(log[0]["reasons"]) == ["gap", "no_twin"]
+    assert "ineligible trip #1" in P.render(r)
+
+
+def test_amendment1_stale_state_stays_immediate_at_any_count():
+    ts, ws = book(3)
+    r = P.evaluate(ts, ws, [], None, NOW)
+    assert "P7" in r["halts"] and "state" in r["halts"]["P7"]["detail"]
+
+
+def test_allow_abbrev_is_off_in_the_three_tools(tmp_path):
+    from tools import arena_tieout, arena_worst_gaps
+    stop = tmp_path / "STOP"
+    assert P.main(["--trip", "x", "--twins", "x", "--attempts", "x", "--state", "x", "--now-ms", "1", "--stop-file", str(stop)]) != 0
+    assert stop.exists()  # an abbreviated flag is an argument error: fail closed, STOP written
+    stop2 = tmp_path / "STOP2"
+    assert arena_tieout.main(["--tx", "x", "--ledger", "x", "--tokens", "x", "--named", "x", "--balance", "x", "--baseline", "0", "--stop-file", str(stop2)]) != 0
+    with pytest.raises(SystemExit) as e:
+        arena_worst_gaps.main(["--trad", "x", "--tape-dir", "x", "--out", str(tmp_path / "o.json")])
+    assert e.value.code == 2
