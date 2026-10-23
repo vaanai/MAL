@@ -72,6 +72,15 @@ class ClassifyReal(unittest.TestCase):
         tx, w = real("sell_b_token2022_or_legacy")
         self.assertGreater(F.classify_tx(tx, w)["rent_refunded"], 0)
 
+    def test_buy_that_creates_the_base_ata_has_rent_paid(self):
+        tx, w = real("buy_exact_quote_in_a")
+        mod = copy.deepcopy(tx)
+        idx = [b["accountIndex"] for b in mod["meta"]["postTokenBalances"] if b["owner"] == w and b["mint"] != F.WSOL][0]
+        rent = mod["meta"]["postBalances"][idx]
+        mod["meta"]["preBalances"][idx] = 0  # as if the ATA did not exist before
+        mod["meta"]["preTokenBalances"] = [b for b in mod["meta"]["preTokenBalances"] if b["accountIndex"] != idx]
+        self.assertEqual(F.classify_tx(mod, w)["rent_paid"], rent)
+
     def test_side_mismatch_is_other(self):
         tx, w = real("sell_a")
         bad = copy.deepcopy(tx)
