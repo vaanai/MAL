@@ -1,52 +1,111 @@
-# MAL manager handoff — manager13 → next manager (2026-10-22 ~18:25Z)
+# MAL manager handoff — manager14 (rewritten 2026-10-23T20:00Z, FLOOR section updated 20:08Z, from date -u)
 
-Read this first. Then read the END blocks of manager13's memory log (copy: /data/mal/hunt-1008/ops/manager13/push-1021-manager13.md) and the MiScusi notebook (latest entries). This file replaces the stale 10-19 docs/HANDOFF.md.
+Read this first. Then read the END of manager14's state log (/data/mal/hunt-1008/ops/manager13/push-1022-manager14.md, a copy of the memory file) and the latest MiScusi notebook entries. No book has cleared the promotion gate. Profit so far: 0.
 
-## 0. Owner direction
-- Goals: $20–50/day first; ~$200/day by end of November; recover ~$1,500 spent. Promotion gate unchanged. 1 SOL to start; more SOL with confidence. Anthropic API: $200 hard cap until 2026-11-11 (offline LLM tests on the Claude plan / subagents, not the API).
-- 10-21: rare strategies welcome, stack many books; don't drop a rule for < 20/day (DEC-031 Am.4: floor 2/day); adapt to pump redeploys.
-- 10-22 ~16:40Z: "today we need to start pushing rapidly … Be smart. Be motivated to make money." The owner is telling the next manager to **push really hard for profit**. Cost-optimise: Opus for quant-proof + reviewer, Sonnet builders, Haiku for simple work.
-- Standing rules: paper only; no trading/wallet/X keys; never print the DB password, .env, API keys (the MiScusi hook blocks the word s-e-c-r-e-t-s: say "credential material"); no ufw/sshd/cloudflared/Cloudflare edits; never touch /opt/miscusi; stop on host-key mismatch; spending/live/wallet/LIVE_OK/TIER need Vaan's own OK; never report probe P&L; never open shadow outputs, ledgers, bots.json, runner-status.json, canary/probe outputs or sealed paths (EXP-024 Look-2 until 11-14; D2/D3; DEC-031 §3.1); October tape is structure-only; `date -u` before every timestamp; every long job is a MiScusi job (POSIX sh); job cap 24 is usually FULL (small jobs: priority background, cpus 0.1; free slots deliberately); max job time 14 days; merge only with a reviewer verdict + QP OK on the exact head (`gh pr merge --squash --match-head-commit`).
+## 0. Owner direction (current)
+- Goals: $20–50/day first, ~$200/day by end of November, recover ~$1,500. The gate is unchanged. 1 SOL to start, more with confidence. API cap $200 to 11-11.
+- **10-23 15:00Z, standing OK:** start a C0 live canary as soon as a book's gate read PASSes, provided DEC-032's preconditions hold. The owner's line is quoted verbatim in DEC-032 Am.1 (OWNER_CANARY_STANDING_OK). The per-book DEC copy adds `OWNER_CANARY_CONFIRMED: bot_id=<id>`. Tell the owner in one line when it is used.
+- **Not covered by the standing OK:** wallet funding (the owner sends a fresh ~0.5 SOL wallet), Helm's install plus a 1 h dry run, C1 step-ups, and stakes above C0. Line these up as soon as a gate read looks close.
+- The manager decides rule, DEC and lane questions and tells the owner afterwards.
+- **Push direction:** run new strategies in parallel and keep the slow books (FLOOR, G4) moving. Time is crucial: nearly a month with no profit.
+- **Helm, done 10-23:**
+  - C1-NF was never live; it is STOPped and disabled.
+  - The probe live.conf and the H5 live.conf were moved to /root/disabled/.
+  - The probe/H5 wallet reconciles at 0.183342695 SOL and stays put. FUNDED_SOL stays 0.298688847.
 
-## 1. Where profit can come from (honest)
-No book has cleared the promotion gate. Under DEC-031 a first pass is a SCREEN: it allows a small live canary under its own canary DEC + the owner's OK; stake above the canary's limits needs a confirmation (DEC-031 §2 step 4, Am.3 item 2): the same bot unchanged, ≥100 fresh attempts on ≥5 further UTC dates, the same gate on the deciding cell under both fail models read once at the outcome-blind instant, AND a one-sided bootstrap p ≤ 0.05/c (10,000 draws, seed 1, the larger p of the two fail models), where c is the running count of books that entered a confirmation (every screen PASS enters it automatically); live fills must also match paper. The owner was told the outline on 10-22.
-
+## 1. Books and clocks
 | Book | Clock | State |
 |---|---|---|
-| h5v1-boostfloor-a2, h5v2-boostclock-a2 (H5, frozen 1f7a89c) | 2026-10-23T00:00Z | registered 10-22 00:15:18.837Z; guards green (A3 07:10Z #1356); P0 13/11/3 per day — may not reach 100 attempts by end-seal 11-06T00Z (H=17) |
-| HV4: 9 Haiku bots (frozen 9ed4c5f) | earliest 2026-10-24T00:00Z | **10-23 T0 LOST**: stub report #1365 NOT_PASSED (check 9 unmeasured; QP n_SYpOnv8Sh0IpEg). New v3 stub running (§2) |
-| h5v1q50-boostfloor-a1 (H5-Q50, frozen a5f41370) | 2026-10-25T00:00Z | locked exec sheet; G7 count job ≥10-24T00:10Z |
-| l1-floor-v2 (FLOOR rule book; port merged 9a8f2bf) | blocked | C4 (i)(ii) met; (iii) replay #1361 **OOM-killed at 20 GB** (n_HF4F6vHG9pkEPA) — host memory fix in progress (§3) |
-| hunt25 cell A (HC-h60 revived) | after screen | K0 PASS (199 triggers; 08-23 = 33% of them); priced four-block screen #1366 running |
+| H5 a2 v1+v2 (frozen 1f7a89c) | 2026-10-23T00Z | Counting. **CHECK 10-24 ~00:25Z** that the daily score #1344 counts 10-23's triggers (the day-1 dry run showed skipped_after_window 3 and triggers_seen 0); if not, ask QP. Successors #1332–#1334: check on 11-04. |
+| HV4, 9 bots (frozen 9ed4c5f) | 2026-10-25T00Z | Pack haiku-v4/t0-1025/. Records PR #779. Steps on 10-24, see §2. |
+| Q50 (h5v1q50-boostfloor-a1) | 2026-10-25T00Z | Sheet hunt24/l3-boost/Q50-EXEC-1024.md. G7 at 10-24 00:12Z. |
+| FLOOR l1-floor-v2 (frozen 5e12f8f5) | 2026-10-26T00Z (one slip to 10-27) | See below. |
+| G4 v1 | after FLOOR | Port PR #806; equivalence 12/13 on w7. |
 
-## 2. Fixed steps (next 48 h)
-- **HV4 v3 stub** (QP-RULING-1022-hv4exec.md ADDENDUM 1+2, sha 33be3deb; NOTES-2 pinned e46149ca, n_eSotcl3H26GW3w; commands file HV4-V3-STUB-COMMANDS-1022.md 85e13c06, all in /data/mal/hunt-1008/push-1016/hunt20/haiku-v4/):
-  - Job A sampler #1367 (every 300 s to 2026-10-23T21:20Z; gap > 900 s between non-null samples = check 9 UNMEASURED).
-  - Job B seg1 #1368 sleeps to 2026-10-22T20:45Z, END 2026-10-23T09:05Z. **Check its log ~20:48Z: the printed "computed seg2 END" must be 2026-10-23T21:05Z.** If it is 22:05Z, Job C (#1369) and the sampler `--until` must change (see commands file) and the 10-24 clock needs the report PASS + QP read before 22:45Z.
-  - Job C seg2 #1369 (after #1368), END 2026-10-23T21:05Z.
-  - Report-tool fix PR (builder on branch `claude/hv4-report-check9`, QP B5 (i)–(vi)): must merge with QP OK + reviewer verdict and its sha notebooked BEFORE the report. The report is never run with the old tool for a PASS.
-  - Then the locked sheet HV4-EXEC-1022.md (cb07965d) runs again with QP items 1–16: report (with `--samples /data/mal/arena/_shakedown-hv4-v3-1022-feedsamples.jsonl --tape-dir /data/mal/arena/tape`, new tool pin) → Step 2 memory plan (H=349, M_MB=45000 already notebooked n_o4RED5rk7pKHjw; v2 data showed ~25 MB/h → plan A expected) → Step 3 register 9 bots (real root /data/mal/arena/haiku-v4, ledger /data/mal/arena/ledger, registry /data/mal/arena/bots.json) + notebook copy → 3b genesis → Step 4 runner job (END 2026-11-06T13:05Z = new clock + 14 d look; handover at the 14-day limit) → Step 5 reviewer jobs (CON-L, BIG-L, CON-P; first run the day after the clock) → Step 6 daily digest → Step 7 PR #779 fill (disclosure A5 word for word) + QP + reviewer. **Every date in the sheet shifts by one day for a 10-24 clock; get QP to confirm the shifted instants.**
-- **H5 a2 after the 10-23 clock:** #1342 day-1 dry score at 10-23T06:30Z (read: refused_dirs empty, registered true, v2 dropped_* counters, rc 0); daily score #1344 (+succ #1345); guard #1318 07:10/19:10Z (+succ #1332); dead-man #1319 13:10Z (+succ #1333); shadow #1331 (+succ #1334); digest v2 #1349 (+succ #1351) for a1/a2/q50 dirs. **The 11-03 reminder job #1335 was cancelled 10-22 18:2xZ to free a slot — resubmit a host-side reminder before 11-03 (a2 guard/dead-man/shadow reach their 13-day limit ~11-04; check the successors started).**
-- **Q50:** sheet hunt24/l3-boost/Q50-EXEC-1024.md LOCKED (d1067102). G7 P0 job submitted ≥10-24T00:10Z after notebooking the #790 §4 text; G8 register + books swap in ONE command before 10-24T23:50Z, not :04–:25 of 07/13/19; free fast-0 cores/slots first; any slip after registration = Q50 void. Refuse G7b if 72/57 × the COUNTS job duration is more than 8 h (16 GB / 16 h spec; exec ruling Q4). The day-1 undercount text is appended after the verbatim #790 text in the same notebook entry, before the job (Q3). Its host-side reminder job was never resubmitted (cap) — submit one.
-- **Helm (via owner):** bridge DRY installed on research-0 (/opt/mal-arena-bridge/660e6e0f…, user mal-arena-bridge uid 995; proof 20/20; dry checks 0/0/0/0; checklist FAIL ×3 only from the missing dry.json; python3-numpy installed). Helm is HOLDING. Per QP-RULING-1022-hv4exec item 15 ("Helm installs nothing against the HV4 root until an adapter PR has its own review"): hold dry.json and ACLs until the bridge SCAN start-row adapter PR has its own review and QP OK. Only then send `dry.json`: bot_id `CON-X` (the decisions dir name), frozen_sha `9ed4c5ff63935696b2a89150e13565e123047754` (40-hex), root `/data/mal/arena/haiku-v4`, end_ms, max_hold_ms; ACL: x on /data/mal/arena, /data/mal/arena/haiku-v4, …/decisions; rX + default r on …/decisions/CON-X and …/decisions/SCAN. Known limit: HV4 writes the start row to decisions/SCAN, the bridge reads per-arm dirs → every entry refused `no_start_row` until the adapter PR above (not built). Pack: /data/mal/hunt-1008/push-1016/hunt25/install-pack-bridge/HELM-INSTALL-PACK.md.
+**FLOOR detail:**
+- **Rules:**
+  - DEC-031 Am.9 MERGED 6f431ae3, plus **Erratum 1 MERGED 7e7f03ff** (n_btre2WZHqU06Sw; ruling hunt24/floor-1026/QP-RULING-1023-am9-erratum.md a914d1ff).
+  - H = 12 d, END_H 11-07T00Z, one ≤14 d job.
+  - P0 rate ≥ 12.5/day on 3 days.
+  - **The gap check and the DR1 window are exactly [10-22T21Z, 10-25T21Z)** (window_to_ms 1792962000000).
+  - **E3 deadline 10-25T23:45Z (CLOCK − 15 min; use E3_LEAD_S=900).** The slip to 10-27 uses the same formula (deadline 10-26T23:45Z, window_to_ms 1793048400000).
+  - Priced at **505,000/send** (not covered by Am.8).
+  - DR1 thresholds FLOOR-THRESHOLDS-DR1.json (41758769…).
+- **NO PEEKING:** do not look at any gap rows or hour-health output for window hours before G1 runs.
+- **Files in hunt24/floor-1026/:**
+  - EXEC-AM9-1026.md (953da6bf). **Read EXEC-AM9-1026-ERRATUM.md first:** EXEC's "CLOCK − 26 h", "24 h 15 min" and 87300 are wrong; use 900.
+  - Scripts: A2-p0count-v3, G1-gapcheck-am9 (ab125883), DR1-hourhealth-dryrun, E3-register-v2 (3d024b0b), E4-run-v2, L3-tests-floor.sh (c285f73f, not run).
+  - P0-FIXED-FIRST-AM9.md (ddf9517d), the text to post.
+- **Records PR #811** (head ba61f01b) has FILLs. It needs QP and a reviewer on the final head before E3.
+- **Owed before E3** (QP F1–F4):
+  - the union of the hand-off rows ≤ 600,000 ms, notebooked;
+  - evidence that the platform accepts a runner limit ≥ 1,130,400 s;
+  - the C9 kill-review confirmation in writing;
+  - the in-window thresholds file (price-path = exactly the DR1 entry; sampler checks are decision-input) and X (pack item 2 rule);
+  - L3 green;
+  - the C5 and Q2 entries;
+  - G1's window_to_ms notebooked before E3;
+  - E4 running by 23:55Z.
+- **Order:**
+  - 10-24 after the 12:10–12:25Z feed hand-off: post the fixed-first entry (13:00–23:00Z) and run the smoke S1–S3 (~14:00Z).
+  - 10-25: A1 ≥ 01:10:30Z, then A2-v3; L3 and the records fills; G1 ≥ 22:05Z; DR1 ≥ 22:10Z; E3 23:00–23:45Z; E4 and D1 right after.
 
-## 3. Lanes in flight (agents may still be running; their results land in the files named)
-- **FLOOR memory:** builder on branch `claude/floor-v2-memory` diagnosing why the arena-rules-v2 host grows past 20 GB in replay (port_check used ~2.7 GB; table checkpoint prints_rows ~7.9 M). Fix must not change any entry decision (prove with arena_port_check vs /data2/mal/scratch/floor-port/c4b/out/*/entries.tsv and arena61). Then QP on whether C4 parts must rerun; rerun C4(iii) (/data2/mal/scratch/floor-port/c4iii/job.sh; QP 6345166853: pass = entry tuples per hour + two runs identical) at the new merged sha; FLOOR records PR; P0 recount after 10-25T00Z (2/day looks borderline); clock ≥ next 00:00Z after.
-- **hunt25 screen #1366** (cell A, one four-block kit run, QP Addendum 2): when done, notebook TABLE.md + OUTPUT.sha256, read the explore-0814 kill FIRST (if A dies there, never cite September), oracle-live is a non-positive block (A must be positive on all three others), 08-23 concentration → ex-best-day matters. In-sample screen; a survivor needs a port to the arena-rules-v2 host + C4-style equivalence before registration. Cell B (Mayhem) is not priced (curve blocker).
-- **H5 arena executor:** DRAFT PR #793 (head c0c7c234, 215 pass / 1 skip). Left: 09-20 md5 replay per book on real data (fast-0 job), v2 boost_slice format (event_index null rejected), excluded/skipped_no_sps pools vs scorer, exit-gap + A3 pins_changed latches, Token-2022 screen, sell+close builder pin, CANARY_DEC_FILE. The EXP-024 declared-observation note must merge before it reads any live feed (QP scope hunt25/QP-SCOPE-1022-h5exec.md d10b6a36).
-- **Live-readiness build-now** (hunt25/LIVE-READINESS.md): (3) `arena_live_parity` soft halts, (4) worst-in-slot + ex-best-day in the scorer, (5) pre-drafted canary DEC + owner ask per book type — not started.
-- **D3 (QP P2):** every read of the three H5 books prints `derived_last_deciding_leg` side by side; if derived_last_deciding_leg > 5% of counted attempts, print the ex-derived total as a report-only line that changes no gate input. It does not block G8 (Q50 exec item 9). It must be merged with tests, QP OK and a reviewer verdict before the first gate read of any of a2 v1/v2 or q50-a1. tools/arena_h5_read.py at 29e214ae is not that tool (a1 ids only, no ex-derived total).
+## 2. Fixed instants (session crons; FULL prompts in /data/mal/hunt-1008/ops/manager13/crons-manager14-full.json — RECREATE at session start with CronCreate)
+- **10-24 00:12Z:** Q50 G7.
+- **10-24 01:12Z:** HV4 P0 (A1→A2) and the X job.
+- **10-24 12:09Z, FEED HANDOVER:** window 12:10–12:25Z only, per QP-RULING-1023-feed-handover.md (sha256 170bd3bb).
+  - Cancel #1207 (j_rw-Xx119yREwew).
+  - Check that `pgrep` is empty. A MiScusi cancel leaves scope children alive.
+  - Resubmit the same `sh /data/mal/hunt-1008/ops/hv4-feed-shakedown.sh feed` at f5bd26e7 with a 14 d limit.
+  - Check there is one process_restart ≤ 600 s.
+  - Notebook it, including the new job id; FLOOR's G1 needs it.
+- **10-24 12:35Z:** HV4 L8 sampler/table jobs, and #779 to QP and the reviewer.
+- **10-24 21:17Z:** HV4 registration night (STEP-3-4-5-6.md): register before 23:00Z, Step 4 at 23:40Z.
+- **Recurring:**
+  - hourly at :23: Job A lag and lanes;
+  - every 2 h at :37: disk;
+  - 00:23: digest copy (#1349);
+  - 03:23: tip-tape archive;
+  - 06:41: structure monitor;
+  - 09:13: housekeeping;
+  - 12:17: H5 health (record only).
+- **Later:**
+  - Schedule HV4's in-clock feed restart at ~11-07T11:50–11:58Z, because the new feed job ends at the 14 d cap. The old "#1207 successor before 11-02" plan is superseded by the 10-24 hand-off.
+  - #817 ends 10-26 and is not extended.
 
-## 4. Owed records / decisions
-- Records PR (ARTIFACTS/lab/arena-records-2026-10-22.md §12 etc.): #1342/#1344/#1345 ids, 14-day + successor deviation, LAB_STATE.md:8 stale line, #1201/#1255 cancel (QP CANCEL OK) + digest v2 #1349, #1335 cancel, P2 disclosures D1–D5, #765/#786/#792 merges, Helm moves (clean-view ro bind mounts; /data/mal/clean is read-only now), HV4 10-23 loss (disclosure A5).
-- Decide by 10-24: #658 C1-NF watch ends ~10-24T21:45Z; #817 old H5 detector ends ~10-26T09:30Z (carries H5_LOOK2_OBSERVED — check nothing needs it past then).
-- Fee-arm probe: Helm shut it off 10-22; the daily H5 health alerts about the probe unit should clear.
+## 3. Live path (all dry-only, LIVE_BUILT=False)
+- **Merged 10-23:** #793 and #815–#832.
+  - H5 arena executor with C0 guards and the p155 fee pin;
+  - parity P1–P7 with the STOP contract;
+  - the tie-out and fetch tools, worst-gap and worst-in-slot;
+  - the sell simulate, the twin writer and the flip read;
+  - exec replay plus the rpc-label rewrite.
+- **md5 decision-equivalence:** EQUAL for all three H5 books (a2 v1 #1410, a2 v2 #1411, Q50 #1412; rolling-sps inputs #1408/#1409).
+- **DEC-032 template:** merged; Am.1 2a131bf6 carries the owner's standing line.
+- **Still blocking a live send** (hunt28/l1a/QP-RULING-1023-wiring.md, rulings 7/8):
+  - the live-entry PR (LIVE_BUILT=True);
+  - re-pin and run the twin-writer and tie-out host jobs (hunt28/l1f, l1g);
+  - the per-book DEC copy text (T1, the decision_chain substitute, the V-band subset, the +26 bps bias, constant p 0.289, the fee gap, the md5 scope);
+  - FEED_NOTE_MERGED;
+  - rent 0 on chain;
+  - a gate PASS;
+  - the owner's funding;
+  - Helm's install plus a 1 h dry run.
+- HV4's bots have no live executor; only the H5-family books do.
 
-## 5. Session crons to RECREATE (they died with the old session)
-From /data/mal/hunt-1008/ops/crons-1016-manager12.json and recurring-crons-1011.json: hourly push check :23 (Job A lag via meta-capture #1288 + lanes); disk/memory guard :37 every 2 h (root 44.7% free after Helm's move); daily 00:21 H5 day check + C1-NF ledger rollup (`day` needs `--adapter tip`); 00:23 digest copy (reads #1349 j_aG2MSZyCQ_Qurg log); 03:23 tip-tape archive; 06:41 A3 structure monitor + slice watch; 09:13 housekeeping; 12:17 H5 health. One-shots: Q50 G7 at 10-24 00:12Z; HV4 v3 seg2-END check 10-22 20:48Z; HV4 report after 10-23 21:20Z.
+## 4. Push 10-23 results (hunt28/PUSH-PLAN-1023.md)
+- **L1 (live tools):** done, see §3.
+- **L2:** the gap reclassifier #813 does not unblock 24 h holds; it is low priority.
+- **L3 reprice at 160k (exploration, in-sample only, never a gate input):** FLOOR is the only cell flagged as a revive candidate. Its in-sample screen numbers were already above zero at 505k (winner's curse: the best of 51 cells; NOT_DECIDABLE in-sample). Library rows merged in #833 (38a54a96).
+- **L4:** four new screens, all FAIL.
+- **L5:** HV5 #814 waits for HV4.
+- **Next ideas:**
+  - a strategy hunt focused on exits;
+  - G4 v1 and the H2-PS kit-form reprice;
+  - set an executor to exactly 155,000, so that new books get Am.8's 160k price.
 
-## 6. Push for profit — recommendation
-1. HV4 clock = first 00:00Z after a complete record: 10-24 only if the stub's first start row is before 21:00:00Z, the tool-fix PR merges under B5 (i)-(vi), and the report PASSes (if seg2 END is 22:05Z, PASS plus a QP read before 22:45Z); otherwise 10-25 or later. Nothing is cut to keep a date (A4). HV4 is the book most likely to reach 100 attempts first if its rate is high.
-2. Unblock FLOOR (memory fix → C4(iii) → P0 → register).
-3. Finish the live path so a screen pass becomes a canary the same day: #793 → QP/reviewer → Helm dry install; bridge SCAN start-row fix; parity soft halts; pre-drafted canary DEC.
-4. Keep stacking: hunt25 A if it survives; new declared cohorts on Aug/Sep exploration blocks (notebook before the first price). hunt25/FAST-FORWARD-CANDIDATES.md found no candidate with positive evidence yet — fresh ideas are the bottleneck.
+## 5. Environment notes
+- /data/mal/venv lacks `certifi`, so 11 arena test files cannot collect there.
+- `scripts/mal-core/agent-ssh.sh` fails here (missing env), and mal-fast-0 does not resolve from research-0. Helm verifies fast-box units.
+- **Open drafts:** #779, #806, #811 (FLOOR records), #812 (this file), #813, #814, #798. Merged tonight: #833 library rows (38a54a96) and #835 Am.9 Erratum 1 (7e7f03ff).
+- **Scratch to delete later:** /data2/mal/scratch/g4v1/w1hours and /data2/mal/scratch/hunt26 (~11 GB).
