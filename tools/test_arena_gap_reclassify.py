@@ -295,7 +295,7 @@ def test_fetch_chunks_and_allowlist():
         return [s for s in range(a, b + 1) if s % 10]   # every 10th slot produced no block
     sleeps = []
     r = F.fetch(F.ALLOWED_URLS[0], 1, 250_000, getter, sleeps.append)
-    assert calls == [(1, 100_000), (100_001, 200_000), (200_001, 250_000)] and len(sleeps) == 2
+    assert calls == [(1, 50_000), (50_001, 100_000), (100_001, 150_000), (150_001, 200_000), (200_001, 250_000)] and len(sleeps) == 4
     assert r[0] == [1, 9] and r[1] == [11, 19]
     with pytest.raises(ValueError):
         F.fetch("https://mainnet.helius-rpc.com", 1, 5, getter, sleeps.append)

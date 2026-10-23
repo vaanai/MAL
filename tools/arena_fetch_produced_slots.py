@@ -3,7 +3,7 @@
 
 Separate from the reclassifier on purpose: the reclassifier stays offline and deterministic; this script is the only network step, and its
 output file is hashed and pinned. Public endpoint only (https://api.mainnet-beta.solana.com), JSON-RPC getBlocks(start, end) with
-end - start <= 500,000 (calls are chunked to 100,000), one request per second, finalized commitment. No API key, no credential material, no wallet; it refuses any URL that is
+end - start <= 500,000 (calls are chunked to 50,000), one request per second, finalized commitment. No API key, no credential material, no wallet; it refuses any URL that is
 not on the allow list. Input is the range [first, last] of slots (from the reclassifier output's uncovered ranges, or given explicitly).
 Output JSON lines: {"type":"produced_slots","source","commitment","first","last","count","ranges":[[a,b],...]} then {"type":"sha256",...}.
 A slot in [first, last] that is NOT in ranges produced no block (leader-skipped).
@@ -20,15 +20,15 @@ from pathlib import Path
 
 ALLOWED_URLS = ("https://api.mainnet-beta.solana.com",)
 MAX_SPAN = 500_000  # RPC limit per call
-CHUNK = 100_000  # a 500k call timed out on the public endpoint; 100k takes ~8 s
-RETRIES = 3
+CHUNK = 50_000  # a 500k call timed out on the public endpoint and a 100k call timed out at the newest slots; 50k is reliable
+RETRIES = 5
 MIN_INTERVAL_S = 1.0
 
 
 def rpc_get_blocks(url: str, a: int, b: int, commitment: str = "finalized") -> list[int]:
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getBlocks", "params": [a, b, {"commitment": commitment}]}).encode()
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=120) as r:
+    with urllib.request.urlopen(req, timeout=60) as r:
         d = json.loads(r.read())
     if "result" not in d:
         raise RuntimeError(f"rpc error: {str(d.get('error'))[:200]}")
