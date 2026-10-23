@@ -5,7 +5,7 @@ Separate from the reclassifier on purpose: the reclassifier stays offline and de
 output file is hashed and pinned. Public endpoint only (https://api.mainnet-beta.solana.com), JSON-RPC getBlocks(start, end) with
 end - start <= 500,000 (calls are chunked to 50,000), one request per second, finalized commitment. No API key, no credential material, no wallet; it refuses any URL that is
 not on the allow list. Input: the uncovered ranges of one program in a full reclassifier output; only those ranges (optionally merged) are queried, not the whole window.
-Output JSON lines: {"type":"produced_slots","source","commitment","queried":[[a,b],...],"first","last","count","ranges":[[a,b],...]} then {"type":"sha256",...}.
+Output JSON lines: {"type":"produced_slots","prog","source","commitment","queried":[[a,b],...],"first","last","count","ranges":[[a,b],...]} then {"type":"sha256",...}.
 A slot inside a queried range that is NOT in ranges produced no block (leader-skipped). Slots outside every queried range are unknown.
 """
 from __future__ import annotations
@@ -85,8 +85,8 @@ def fetch(url: str, queried: list[list[int]], getter=rpc_get_blocks, sleep=time.
     return to_ranges(got)
 
 
-def render(url: str, queried: list[list[int]], ranges: list[list[int]]) -> list[str]:
-    head = {"type": "produced_slots", "source": url, "commitment": "finalized", "queried": queried, "first": queried[0][0], "last": queried[-1][1],
+def render(url: str, queried: list[list[int]], ranges: list[list[int]], prog: str = "pumpswap") -> list[str]:
+    head = {"type": "produced_slots", "prog": prog, "source": url, "commitment": "finalized", "queried": queried, "first": queried[0][0], "last": queried[-1][1],
             "count": sum(b - a + 1 for a, b in ranges), "ranges": ranges}
     l1 = json.dumps(head, sort_keys=True, separators=(",", ":"))
     h = hashlib.sha256((l1 + "\n").encode()).hexdigest()
@@ -119,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
     except (ValueError, RuntimeError, OSError) as e:
         print(f"refused/failed: {e}", file=sys.stderr)
         return 2
-    Path(args.out).write_text("\n".join(render(args.url, queried, ranges)) + "\n")
+    Path(args.out).write_text("\n".join(render(args.url, queried, ranges, args.prog)) + "\n")
     return 0
 
 

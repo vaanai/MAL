@@ -316,3 +316,12 @@ def test_fetch_merge_and_unqueried_slots_refused(tmp_path):
     pf2 = G.load_produced(produced_file(tmp_path, 101, 130, [[101, 104], [106, 109], [130, 130]], "p2.jsonl", queried=[[101, 109], [130, 130]]))
     g = next(r for r in G.reclassify(sc, 120, (), pf2) if r["type"] == "gap")
     assert g["class"] == "partial" and g["no_block_slots"] == 1 and g["uncovered_ranges"] == [[130, 130]]
+
+
+def test_produced_file_applies_only_to_its_program(tmp_path):
+    rows = [jump("pumpswap", 100, 140, T0, T0 + 200), jump("pumpfun", 100, 140, T0, T0 + 200)] + sentinels()
+    sc = G.scan([write(tmp_path, rows)], 120)
+    pf = G.load_produced(produced_file(tmp_path, 101, 139, [], "np.jsonl"))   # prog pumpswap: nothing produced = all 39 slots had no block
+    gaps = {r["prog"]: r for r in G.reclassify(sc, 120, (), pf) if r["type"] == "gap"}
+    assert gaps["pumpswap"]["class"] == "covered" and gaps["pumpswap"]["no_block_slots"] == 39
+    assert gaps["pumpfun"]["class"] == "empty" and gaps["pumpfun"]["no_block_slots"] == 0

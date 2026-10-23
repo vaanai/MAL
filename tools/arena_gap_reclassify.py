@@ -20,7 +20,7 @@ A slot with no row is reported as UNCOVERED. It may be a slot with no program tr
 BOUND on whole-slot loss only. Within-slot loss in covered slots (a slot needs just one row to be covered) is NOT measured. Never read it as proof of loss.
 A row covers a slot only if its t_recv_ms <= to_ms + grace_s (default 120, pinned): the class never depends on how much tape lies past the gap.
 Per gap, late_until_ms = the max t_recv_ms of the covering rows (null if none): an attempt decided in [from_ms, late_until_ms] had a degraded view.
-Optional --produced-slots FILE (pinned, written by tools/arena_fetch_produced_slots.py from a public RPC getBlocks): an uncovered slot with no
+Optional --produced-slots FILE (one program per file; pinned, written by tools/arena_fetch_produced_slots.py from a public RPC getBlocks): an uncovered slot with no
 produced block (leader-skipped) lost nothing and counts as covered; the tool stays offline. Gaps made covered only that way are counted in
 covered_via_no_block, and no_block_slots is printed per gap.
 Inputs must be whole, contiguous, unduplicated tape hours (tape-YYYY-MM-DDTHH.jsonl[.zst]); a missing hour is refused (exit 2). A gap wider than
@@ -247,7 +247,9 @@ def load_produced(path: str) -> dict[str, Any]:
         if not (isinstance(r, list) and len(r) == 2 and _int(r[0]) and _int(r[1]) and r[0] <= r[1] and r[0] > prev + 1 and head["first"] <= r[0] and r[1] <= head["last"]):
             raise Refused("produced-slots ranges not sorted, disjoint and inside [first, last]")
         prev = r[1]
-    return {"queried": q, "qstarts": [r[0] for r in q], "first": head["first"], "last": head["last"], "ranges": rg, "starts": [r[0] for r in rg], "sha256": tail["sha256"]}
+    if head.get("prog") not in PROGRAMS:
+        raise Refused("produced-slots file has no valid prog")
+    return {"prog": head["prog"], "queried": q, "qstarts": [r[0] for r in q], "first": head["first"], "last": head["last"], "ranges": rg, "starts": [r[0] for r in rg], "sha256": tail["sha256"]}
 
 
 def _queried(pr: dict[str, Any], s: int) -> bool:
@@ -281,7 +283,7 @@ def reclassify(sc: dict[str, Any], grace_s: int = DEFAULT_GRACE_S, windows: tupl
         missing = [s for s in range(fs + 1, ts) if s not in cov["slots"]]
         raw_missing = len(missing)
         is_cut = sc["last_ms"][prog] < j["to_ms"] + grace_s * 1000
-        if produced is not None and missing and not is_cut:
+        if produced is not None and produced["prog"] == prog and missing and not is_cut:
             if not all(_queried(produced, x) for x in missing):
                 raise Refused("uncovered slot outside the produced-slots queried ranges")
             missing = [s for s in missing if _produced(produced, s)]  # an uncovered slot with no produced block lost nothing
