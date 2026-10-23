@@ -27,7 +27,7 @@ Read this first, then the END blocks of manager14's state log (/data/mal/hunt-10
 - DEC-032 canary template MERGED 6345934a (TEMPLATE, not in force): owner-ask text, C0 limits (≤0.05 SOL stake, 2 open, daily stop 0.10, wallet floor funded−0.25 binding), parity = ≥100 trips + CI90 lo of mean d ≥ −100 bps.
 
 ## 4. Next push candidates
-0. INFRA (unblocks FLOOR, G4 and every long-hold book): arena tape gap repair from chain data (Helius backfill) + a process design surviving the 14-day job cap without restart exclusions. Needs QP design ruling first.
+0. INFRA (unblocks FLOOR, G4 and every long-hold book). Design: hunt27/infra/DESIGN.md (n_ORRs-tK8Y4qGUQ). Skew test CONFIRMED (hunt27/infra/SKEW-TEST.md, n finding): PumpSwap slot_jump gaps are endpoint skew (212/212 covered; ≤0.25% slots possibly lost). Do NOT change/restart the live feed or tools/arena_feed.py before HV4 ends (pinned; window to 11-08). Next: QP ruling on a pinned post-hoc gap reclassifier (true uncovered ranges) for long-hold books' exclusions; warm-start same-sha handover (md5 replay proof) for >14-day books; pump.fun gaps untested.
 1. (#808, #809 merged.) Set a canary executor to exactly 155,000 (unlocks Am.8) + build the Am.8 flip-read code; FLOOR to 10-26; G4 equivalence → port checks → Am.6 pack.
 2. Live path: #793 H5 executor finish, parity soft halts, tie-out tool, worst-in-slot in scorer.
 3. Re-price the parked candidates at 160,000 (patient-stack sweep hunt26/patient-stack/REPORT.md used 35,000) — exploration only.
