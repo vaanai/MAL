@@ -163,14 +163,24 @@ def test_read_only_and_wrapper_prints_the_flip_read_after_the_legs(tmp_path, cap
     assert FR.main(["--bot", "botA", "--ledger-root", root, "--registry", reg, "--now-ms", str(NOW), "--tape-dir", "ignored"]) == 0
 
 
-def test_with_no_flip_the_wrapper_output_is_byte_identical_to_the_legs_output_and_rc_is_the_legs_rc(tmp_path, capsys):
+def test_covered_book_with_no_flip_gets_the_legs_output_plus_one_zero_line(tmp_path, capsys):
     root, reg = write_world(tmp_path, book(list(np.random.default_rng(11).normal(10e6, 1e6, 100))))
     args = ["--bot", "botA", "--ledger-root", root, "--registry", reg, "--now-ms", str(NOW)]
     rc_legs = RL.main(args)
     legs = capsys.readouterr().out
     rc = V2.report_main(["--expect-send", "160000", *args])
     wrapped = capsys.readouterr().out
-    assert rc == rc_legs == 0 and wrapped == legs and "FLIP" not in wrapped
+    assert rc == rc_legs == 0 and wrapped == legs + "\nARENA FLIP READ: 0 flipped legs, 0 SOL\n"
+
+
+def test_any_other_book_gets_output_byte_identical_to_the_legs_output(tmp_path, capsys):
+    from tools.test_arena_report_legs import clean_book
+    root, reg = write_world(tmp_path, clean_book())  # rows at 505,000
+    args = ["--bot", "botA", "--ledger-root", root, "--registry", reg, "--now-ms", str(NOW)]
+    rc_legs = RL.main(args)
+    legs = capsys.readouterr().out
+    rc = V2.report_main(["--expect-send", "505000", *args])
+    assert rc == rc_legs == 0 and capsys.readouterr().out == legs
 
 
 @pytest.mark.parametrize("bad", ["sealed-x", "shadow-y"])

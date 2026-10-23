@@ -16,7 +16,7 @@ pnl = sv - stake - 2 x send - rent). Rule "sc" has no dust rule and no flips. Ro
 How the re-check prices a flipped leg (the narrowest reading of Am.8 item 7). It becomes a strand exactly as arena_report_legs.reclassify_close_blocked prices a strand:
 pnl_nofail = -stake - send - 2,039,280 with `send` the row's own send (160,000), state "stranded", strand True under "total" (it bypasses the fail blend),
 `filled` stays True (so p_i and the pressure refit do not change), e1_extra 0. A second, harsher variant prices the strand at the 505,000 send the Am.8 item 7 figures
-(2,384,280 to 2,729,280 per flip) are quoted against; it is printed beside the first and also decides nothing by itself. Close-blocked trips (Am.2 item 6), when a list is
+(2,384,280 to 2,729,280 per flip) are quoted against; it is printed beside the first and is part of the verdict: PASS needs the fills, the row-send strand and the 505,000-send strand variants all to pass (QP 1023). Close-blocked trips (Am.2 item 6), when a list is
 given, are reclassified first, as in arena_report_legs; a trip already stranded by that cannot flip.
 
 The verdict line is the scorer's own cell_verdict over the deciding stake's four 1.9 s sub-cells (flat and pressure x strand rules total and sc), as arena_report_legs
@@ -199,7 +199,7 @@ def render(rep: Mapping[str, Any]) -> str:
     return "\n".join(L)
 
 
-def main(argv: Sequence[str] | None = None, *, only_if_flips: bool = False) -> int:
+def main(argv: Sequence[str] | None = None, *, only_if_flips: bool = False, zero_line: bool = False) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--bot", required=True)
     ap.add_argument("--ledger-root", required=True)
@@ -220,7 +220,10 @@ def main(argv: Sequence[str] | None = None, *, only_if_flips: bool = False) -> i
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 3
     if only_if_flips and not any(b["flips"]["n"] for b in rep["books"].values()):
-        return 0  # nothing flipped: print nothing, write nothing
+        if zero_line:  # a covered read always states the count (Am.8 item 7)
+            print()
+            print("ARENA FLIP READ: 0 flipped legs, 0 SOL")
+        return 0  # nothing flipped: nothing else printed or written
     if only_if_flips:
         print()
     print(render(rep))
