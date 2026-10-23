@@ -155,6 +155,9 @@ class ParityRecorder:
         landed_ms = kw.get("confirm_seen_ms") if isinstance(kw.get("confirm_seen_ms"), int) else now_ms
         t.update(exit_landed=True, exit_landed_ms=landed_ms, closed_ms=landed_ms, exit_reason=str(kw.get("exit_reason") or "unknown"),
                  live_net_lamports=kw["pnl_lamports"], live_sell_price=got / tokens)
+        fee, failed = kw.get("fee_lamports"), kw.get("failed_attempt_cost_lamports")
+        if isinstance(fee, int) and not isinstance(fee, bool):  # the sells as sent: the landed one plus earlier failed attempts (the twin is priced at these)
+            t["sell_fee_lamports"] = fee + (failed if isinstance(failed, int) and not isinstance(failed, bool) else 0)
         self.last_landed_ms = max(self.last_landed_ms or 0, landed_ms)
         self.seq += 1
         self._save()
