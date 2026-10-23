@@ -242,3 +242,62 @@ def test_windows_counts_and_header(tmp_path):
     assert w[("pumpswap", 2)]["windows"] == 6 and w[("pumpswap", 2)]["all_covered"] == 4
     assert w[("pumpswap", 4)]["windows"] == 4 and w[("pumpswap", 4)]["all_covered"] == 0
     assert w[("pumpfun", 4)]["all_covered"] == 4
+
+
+def produced_file(tmp, first, last, ranges, name="produced.jsonl"):
+    import arena_fetch_produced_slots as F
+    p = tmp / name
+    p.write_text("\n".join(F.render(F.ALLOWED_URLS[0], first, last, ranges)) + "\n")
+    return str(p)
+
+
+def test_produced_slots_no_block_counts_as_covered(tmp_path):
+    # skipped 101..139; rows for all but 110..112 and 130. The leader skipped 110..112 (no block) but 130 produced a block.
+    have = set(range(101, 140)) - {110, 111, 112, 130}
+    rows = [jump("pumpswap", 100, 140, T0, T0 + 200)] + [trade("pumpswap", s, T0 + 900) for s in sorted(have)] + sentinels()
+    rows += [jump("pumpswap", 200, 240, T0, T0 + 200)] + [trade("pumpswap", s, T0 + 900) for s in range(201, 240) if s not in (210, 211)]
+    sc = G.scan([write(tmp_path, rows)], 120)
+    produced = [[101, 109], [113, 139], [201, 209], [212, 239]]   # 110-112 and 210-211 produced no block
+    pf = G.load_produced(produced_file(tmp_path, 101, 239, [r for r in produced if r[0] <= 139] + [[r[0], r[1]] for r in produced if r[0] >= 201]))
+    recs = G.reclassify(sc, 120, (), pf)
+    gaps = {r["from_slot"]: r for r in recs if r["type"] == "gap"}
+    assert gaps[100]["class"] == "partial" and gaps[100]["uncovered_ranges"] == [[130, 130]] and gaps[100]["no_block_slots"] == 3
+    assert gaps[200]["class"] == "covered" and gaps[200]["no_block_slots"] == 2 and gaps[200]["uncovered_ranges"] == []
+    ps = next(r for r in recs if r["type"] == "program" and r["prog"] == "pumpswap")
+    assert ps["covered"] == 1 and ps["covered_via_no_block"] == 1 and ps["no_block_slots"] == 5
+    assert recs[0]["produced_slots_sha256"] == pf["sha256"]
+    # without the file nothing changes
+    base = {r["from_slot"]: r for r in G.reclassify(sc, 120) if r["type"] == "gap"}
+    assert base[200]["class"] == "partial"
+
+
+def test_produced_file_checks(tmp_path):
+    good = produced_file(tmp_path, 1, 10, [[1, 5]])
+    G.load_produced(good)
+    lines = Path(good).read_text().splitlines()
+    Path(good).write_text(lines[0].replace('"count":5', '"count":6') + "\n" + lines[1] + "\n")
+    with pytest.raises(G.Refused):
+        G.load_produced(good)
+    with pytest.raises(G.Refused):
+        G.load_produced(produced_file(tmp_path, 1, 10, [[1, 5], [4, 8]], "b.jsonl"))
+    # uncovered slot outside the file span -> refused
+    rows = [jump("pumpswap", 100, 140, T0, T0 + 200)] + sentinels()
+    sc = G.scan([write(tmp_path, rows)], 120)
+    with pytest.raises(G.Refused):
+        G.reclassify(sc, 120, (), G.load_produced(produced_file(tmp_path, 101, 120, [[101, 120]], "c.jsonl")))
+
+
+def test_fetch_chunks_and_allowlist():
+    import arena_fetch_produced_slots as F
+    calls = []
+    def getter(url, a, b):
+        calls.append((a, b))
+        return [s for s in range(a, b + 1) if s % 10]   # every 10th slot produced no block
+    sleeps = []
+    r = F.fetch(F.ALLOWED_URLS[0], 1, 250_000, getter, sleeps.append)
+    assert calls == [(1, 100_000), (100_001, 200_000), (200_001, 250_000)] and len(sleeps) == 2
+    assert r[0] == [1, 9] and r[1] == [11, 19]
+    with pytest.raises(ValueError):
+        F.fetch("https://mainnet.helius-rpc.com", 1, 5, getter, sleeps.append)
+    with pytest.raises(RuntimeError):
+        F.fetch(F.ALLOWED_URLS[0], 1, 5, lambda u, a, b: [99], sleeps.append)

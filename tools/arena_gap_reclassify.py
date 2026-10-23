@@ -20,6 +20,9 @@ A slot with no row is reported as UNCOVERED. It may be a slot with no program tr
 BOUND on whole-slot loss only. Within-slot loss in covered slots (a slot needs just one row to be covered) is NOT measured. Never read it as proof of loss.
 A row covers a slot only if its t_recv_ms <= to_ms + grace_s (default 120, pinned): the class never depends on how much tape lies past the gap.
 Per gap, late_until_ms = the max t_recv_ms of the covering rows (null if none): an attempt decided in [from_ms, late_until_ms] had a degraded view.
+Optional --produced-slots FILE (pinned, written by tools/arena_fetch_produced_slots.py from a public RPC getBlocks): an uncovered slot with no
+produced block (leader-skipped) lost nothing and counts as covered; the tool stays offline. Gaps made covered only that way are counted in
+covered_via_no_block, and no_block_slots is printed per gap.
 Inputs must be whole, contiguous, unduplicated tape hours (tape-YYYY-MM-DDTHH.jsonl[.zst]); a missing hour is refused (exit 2). A gap wider than
 MAX_GAP_SLOTS is refused (exit 2). --out goes through the same path guard as the inputs.
 Gap kinds without a slot range (silence, feed_restart, process_restart, socket_reconnect with data_loss) are NOT reclassified. They are listed
@@ -216,17 +219,50 @@ def _union_s(spans) -> float:
     return tot / 1000.0
 
 
+def load_produced(path: str) -> dict[str, Any]:
+    """Read a pinned file written by tools/arena_fetch_produced_slots.py. Verifies its own sha256 line. Returns first/last/ranges/sha256."""
+    p = guard(path)
+    if not p.is_file():
+        raise Refused("produced-slots file missing")
+    lines = p.read_text().splitlines()
+    if len(lines) != 2:
+        raise Refused("produced-slots file must have 2 lines")
+    try:
+        head, tail = json.loads(lines[0]), json.loads(lines[1])
+    except ValueError:
+        raise Refused("produced-slots file is not JSON")
+    if head.get("type") != "produced_slots" or tail.get("type") != "sha256":
+        raise Refused("produced-slots file has the wrong record types")
+    if hashlib.sha256((lines[0] + "\n").encode()).hexdigest() != tail.get("sha256"):
+        raise Refused("produced-slots sha256 mismatch")
+    rg = head.get("ranges")
+    if not (_int(head.get("first")) and _int(head.get("last")) and isinstance(rg, list)):
+        raise Refused("produced-slots file malformed")
+    prev = head["first"] - 2
+    for r in rg:
+        if not (isinstance(r, list) and len(r) == 2 and _int(r[0]) and _int(r[1]) and r[0] <= r[1] and r[0] > prev + 1 and head["first"] <= r[0] and r[1] <= head["last"]):
+            raise Refused("produced-slots ranges not sorted, disjoint and inside [first, last]")
+        prev = r[1]
+    return {"first": head["first"], "last": head["last"], "ranges": rg, "starts": [r[0] for r in rg], "sha256": tail["sha256"]}
+
+
+def _produced(pr: dict[str, Any], s: int) -> bool:
+    i = bisect.bisect_right(pr["starts"], s) - 1
+    return i >= 0 and pr["ranges"][i][1] >= s
+
+
 def _day(ms: int) -> str:
     from datetime import datetime, timezone
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
 
 
-def reclassify(sc: dict[str, Any], grace_s: int = DEFAULT_GRACE_S, windows: tuple[int, ...] = ()) -> list[dict[str, Any]]:
+def reclassify(sc: dict[str, Any], grace_s: int = DEFAULT_GRACE_S, windows: tuple[int, ...] = (), produced: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """Pure function of the scan result (scan must have used the same grace_s). Returns the output records (without the sha256 line)."""
     recs: list[dict[str, Any]] = [{"type": "header", "schema": SCHEMA, "grace_s": grace_s, "max_gap_slots": MAX_GAP_SLOTS,
-                                   "first_hour_ms": sc["hours"][0], "last_hour_ms": sc["hours"][-1], "hours": len(sc["hours"])}]
+                                   "first_hour_ms": sc["hours"][0], "last_hour_ms": sc["hours"][-1], "hours": len(sc["hours"]),
+                                   "produced_slots_sha256": produced["sha256"] if produced else None}]
     per: dict[str, dict[str, Any]] = {p: {"flagged": 0, "covered": 0, "partial": 0, "empty": 0, "unresolved_tape_cut": 0,
-                                          "skipped_slots": 0, "uncovered_slots": 0, "ranges": []} for p in PROGRAMS}
+                                          "skipped_slots": 0, "uncovered_slots": 0, "no_block_slots": 0, "covered_via_no_block": 0, "ranges": []} for p in PROGRAMS}
     by_day: dict[str, dict[str, dict[str, int]]] = {p: {} for p in PROGRAMS}
     gaprows: list[dict[str, Any]] = []
     for (prog, fs, ts) in sorted(sc["jumps"]):
@@ -234,7 +270,13 @@ def reclassify(sc: dict[str, Any], grace_s: int = DEFAULT_GRACE_S, windows: tupl
         cov = sc["cover"][(prog, fs, ts)]
         skipped = max(0, ts - fs - 1)
         missing = [s for s in range(fs + 1, ts) if s not in cov["slots"]]
-        if sc["last_ms"][prog] < j["to_ms"] + grace_s * 1000:
+        raw_missing = len(missing)
+        is_cut = sc["last_ms"][prog] < j["to_ms"] + grace_s * 1000
+        if produced is not None and missing and not is_cut:
+            if missing[0] < produced["first"] or missing[-1] > produced["last"]:
+                raise Refused("uncovered slot outside the produced-slots file span")
+            missing = [s for s in missing if _produced(produced, s)]  # an uncovered slot with no produced block lost nothing
+        if is_cut:
             cls = "unresolved_tape_cut"
         elif not missing:
             cls = "covered"
@@ -246,12 +288,14 @@ def reclassify(sc: dict[str, Any], grace_s: int = DEFAULT_GRACE_S, windows: tupl
         late = cov["late"] or None
         gaprows.append({"prog": prog, "from_ms": j["from_ms"], "end_ms": max(j["to_ms"], late or 0), "class": cls})
         recs.append({"type": "gap", "prog": prog, "from_slot": fs, "to_slot": ts, "from_ms": j["from_ms"], "to_ms": j["to_ms"],
-                     "late_until_ms": late, "skipped_slots": skipped, "uncovered_slots": len(missing), "class": cls, "uncovered_ranges": runs})
+                     "late_until_ms": late, "skipped_slots": skipped, "uncovered_slots": len(missing), "no_block_slots": raw_missing - len(missing), "class": cls, "uncovered_ranges": runs})
         a = per[prog]
         a["flagged"] += 1
         a[cls] += 1
         a["skipped_slots"] += skipped
         a["uncovered_slots"] += len(missing)
+        a["no_block_slots"] += raw_missing - len(missing)
+        a["covered_via_no_block"] += int(cls == "covered" and raw_missing > 0)
         d = by_day[prog].setdefault(_day(j["from_ms"]), {"flagged": 0, "covered": 0, "partial": 0, "empty": 0, "unresolved_tape_cut": 0})
         d["flagged"] += 1
         d[cls] += 1
@@ -303,6 +347,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--tape", nargs="+", required=True, help="contiguous tape hour files (.jsonl or .jsonl.zst); gap rows and data rows are read from these")
     ap.add_argument("--grace-s", type=int, default=DEFAULT_GRACE_S, help="a row covers a slot only if t_recv_ms <= to_ms + grace_s; pinned default 120")
     ap.add_argument("--windows", nargs="*", type=int, default=[], help="window lengths in hours (start every hour): count windows whose flagged gaps are all covered")
+    ap.add_argument("--produced-slots", help="pinned file from tools/arena_fetch_produced_slots.py: an uncovered slot with NO produced block counts as covered (leader-skipped)")
     ap.add_argument("--out", help="output file (default stdout)")
     ap.add_argument("--counts-only", action="store_true", help="omit the per-gap lines and the range lists")
     args = ap.parse_args(argv)
@@ -311,11 +356,12 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         outp = guard(args.out) if args.out else None
+        produced = load_produced(args.produced_slots) if args.produced_slots else None
         sc = scan(args.tape, args.grace_s)
+        recs = reclassify(sc, args.grace_s, tuple(args.windows), produced)
     except Refused as e:
         print(f"refused: {e}", file=sys.stderr)
         return 2
-    recs = reclassify(sc, args.grace_s, tuple(args.windows))
     if args.counts_only:
         recs = [r for r in recs if r["type"] != "gap"]
         for r in recs:
