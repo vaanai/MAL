@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import sys
 from collections import deque
@@ -45,6 +46,7 @@ from datetime import datetime, timezone
 from tools import h5_executor as h
 from tools import mint_account_fetch as mf
 from tools.arena_close_blocked import classify_record
+from tools.h5_arena_gates import HARD_ARENA_HALTS, LiveGates, ParityRecorder, v_band_refusal
 
 # --- the books (item 1). Values copied from the merged records: ARTIFACTS/lab/arena-records-2026-10-22.md (a2), qp-ruling-1022-q50.md and
 # EXP-024-RULE-Q50.md (Q50). Nothing here is read from config or bots.json.
@@ -73,6 +75,9 @@ FUNDED_MIN_LAMPORTS, FUNDED_MAX_LAMPORTS = 350_000_000, 1_000_000_000  # DEC-032
 FLOOR_BELOW_FUNDED_LAMPORTS = 250_000_000  # DEC-032 s3: floor = max(0.05 SOL, funded - 0.25 SOL)
 A3_RECORD_DEFAULT = "/data/mal/structure-monitor/daily.jsonl"  # tools/pump_structure_monitor.py DEFAULT_OUT: one JSON record per line, the newest is the state
 A3_POLL_MS = 60_000
+A3_FUTURE_SKEW_MS = 300_000  # a run_utc more than 5 min ahead of the executor's clock is not a fresh record, it is a wrong one: latch
+ARENA_TIER_PATH = Path("/etc/mal-h5-arena/TIER")  # the arena canary's OWN tier file (root:root 0644 like the base TIER); the shared /etc/mal-h5/TIER is ignored for arena books
+ARENA_LIVE_TIER = "T1"  # a live start needs this file to read exactly T1 (the C0 stake 0.05 SOL needs T1's stake ceiling)
 GAP_HOLD_MS = 600_000  # DEC-032 s5 item 2: after a feed gap, buys restart only once the feed has been gap-free for 10 minutes
 SELL_RESERVE_SENDS = 10  # the worst case of one exit: the ladder's sends (escalated resends included), each at the book's top priority
 SELL_RESERVE_FLOOR_LAMPORTS = 1_600_000  # 10 sends x (155,000 + 5,000): the p155 worst case (QP 10-23 gap d); never below it
@@ -241,7 +246,15 @@ def arena_start_refusal(book: Book, cfg: dict[str, Any], root: Path, live: bool)
             return why
         if cfg.get("end_ms") is None:
             return "end_ms_missing"
-        return canary_record_refusal(book.bot_id, root)
+        why = canary_record_refusal(book.bot_id, root)
+        if why:
+            return why
+        if not cfg.get("exit_gap_file"):
+            return "exit_gap_file_missing"  # the exit-gap feed (parity P6) is mandatory live: unset would mean no check at all
+        for key in ("parity_twins_file", "tieout_dir"):  # the parity tool's twins input and the tie-out results directory (DEC-032 s5, s6)
+            if not cfg.get(key):
+                return f"{key}_missing"
+        return arena_tier_refusal()
     if book.exit_pin == h.EXIT_MODE_V2:
         return v2_start_refusal()
     return None
@@ -265,6 +278,15 @@ def canary_record_refusal(bot_id: str, root: Path) -> str | None:
         except OSError:
             seen_unreadable = True
     return "canary_dec_unreadable" if seen_unreadable else "canary_record_for_bot_id_missing"
+
+
+def arena_tier_refusal(path: Path | None = None) -> str | None:
+    """A live start needs the arena's own tier file, with the base class' file checks (root-owned regular file, 0644, no symlink), to read exactly T1.
+    The shared /etc/mal-h5/TIER is not read for arena books (ArenaExecutor._tier_path)."""
+    tier, problem = h.read_tier(path or ARENA_TIER_PATH, root_checks=True)
+    if problem:
+        return f"arena_{problem}"
+    return None if tier == ARENA_LIVE_TIER else f"arena_tier_not_{ARENA_LIVE_TIER.lower()}:{tier}"
 
 
 def funded_refusal(cfg: dict[str, Any], live: bool) -> str | None:
@@ -344,6 +366,8 @@ def a3_record_problem(path: Path, now_ms: int | None = None) -> tuple[list[str],
             run_ms = int(datetime.strptime(rec["run_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp() * 1000)
         except (KeyError, ValueError, TypeError):
             return [], "a3_record_no_run_utc"
+        if run_ms - now_ms > A3_FUTURE_SKEW_MS:
+            return [], "a3_record_future"  # fail closed: a future stamp would stay "fresh" for ever
         if now_ms - run_ms > A3_MAX_AGE_MS:
             return [], "a3_record_stale"
     # a flag counts when it is set, malformed, or NOT evaluated (halt false with evaluated false is "unknown", not "clear")
@@ -459,7 +483,13 @@ class ArenaExecutor(h.H5Executor):
         self.window_counts: dict[str, int] = {}
         self._pools_seen: set[str] = set()
         self._start_ms: int | None = None
+        self.gates: LiveGates | None = None  # live only: parity recorder and the parity / tie-out gates
         super().__init__(rpc, cfg, keypair, now_ms=now_ms, pick_oracle=None, root=root, rpc_label=rpc_label)
+        if keypair is not None:
+            gdir = Path(self.h5cfg["state_dir"]) / "arena-parity"
+            interval = cfg.get("parity_interval_s")
+            self.gates = LiveGates(gdir, ParityRecorder(gdir), str(cfg["parity_twins_file"]), str(cfg["tieout_dir"]), self.paths["stop"],
+                                   self._parity_state, interval_s=interval if isinstance(interval, (int, float)) and interval > 0 else None)
         if self.exit_mode != book.exit_pin:
             raise SystemExit("exit mode pin was not applied")
         if keypair is not None:
@@ -482,6 +512,10 @@ class ArenaExecutor(h.H5Executor):
                        wallet_floor_lamports=wallet_floor_lamports(getattr(self, "funded_lamports", None), lim.wallet_floor_lamports),
                        **{k: min(getattr(lim, k), v) for k, v in C0_TIER.items()})
 
+    def _tier_path(self) -> Path:
+        """Item 2 (QP 10-23): live reads the arena's own tier file, never /etc/mal-h5/TIER. A dry run keeps the base's <state_dir>/TIER."""
+        return ARENA_TIER_PATH if not self.dry_run else super()._tier_path()
+
     def __repr__(self) -> str:
         return f"ArenaExecutor(book={self.abook.bot_id}, mode={self.run_mode})"
 
@@ -496,6 +530,37 @@ class ArenaExecutor(h.H5Executor):
         lost = max(0, -int(self.state.realized_lamports))
         f, tol = int(self.funded_lamports or 0), FUNDED_BALANCE_TOLERANCE_LAMPORTS
         return None if f - lost - tol <= bal <= f + tol else "funded_balance_mismatch"
+
+    def _parity_state(self, now: int) -> dict[str, Any]:
+        """The parity tool's state.json: a stamp only for a read that succeeded just now; a missing stamp is P7 (no buy). The H5 executor has no hash-chained
+        decision log; its analogue (the feed's start record pinned to the book's frozen sha, no feed_break latched) stamps decision_chain."""
+        at: dict[str, int] = {}
+        try:
+            self.committed_loss_lamports()
+            at["loss"] = now
+        except Exception:  # noqa: BLE001
+            pass
+        if self._balance_value(now) is not None and self._bal is not None:
+            at["balance"] = self._bal[1]
+        try:
+            for line in Path(self.gates.twins_file).read_text().splitlines():  # type: ignore[union-attr]
+                if line.strip():
+                    json.loads(line)
+            at["twin"] = now
+        except (OSError, ValueError):
+            pass
+        at["parity"] = now
+        if self.feed_verified and H_FEED_BREAK not in self.counters.halts:
+            at["decision_chain"] = now
+        tier, problem = h.read_tier(self._tier_path(), root_checks=not self.dry_run)
+        if h.live_ok_valid() is None and problem is None:
+            at["control_files"] = now
+        return {"at_ms": at, "unresolved_hard_halts": sorted(HARD_ARENA_HALTS & set(self.counters.halts))}
+
+    def _exit_bound_ms(self, mint: str, decision_ms: Any) -> int | None:
+        """The book's own late instant for the exit (plan late_wall_ms = s0 + LATE_SELL_S), never an input of the parity files."""
+        late = ((self.counters.plans.get(mint) or {}).get("plan") or {}).get("late_wall_ms")
+        return late if isinstance(late, int) and not isinstance(late, bool) else None
 
     def _sell_reserve(self) -> int:
         return sell_reserve_lamports(self.abook)
@@ -540,6 +605,14 @@ class ArenaExecutor(h.H5Executor):
         why = self.committed_loss_refusal() or self._balance_refusal(self.now_ms())  # the last look before anything is built or signed
         if why:
             return self._refuse(trg, why)
+        why = v_band_refusal(trg.v_lamports, ps.quote_mint)  # canonical pools only (DEC-031 Am.2 item 6)
+        if why:
+            return self._refuse(trg, why)
+        if self.gates is not None:
+            t = self.now_ms()
+            why = self.gates.parity_refusal(t) or self.gates.tieout_refusal(t, self.state.first_attempt_ms)
+            if why:
+                return self._refuse(trg, why)
         blocked = self._screen_mint(trg.mint)  # DEC-032 s3 "Venue": a freeze authority or a Token-2022 extension outside the allowlist is a strand = total loss
         if blocked:
             self.close_blocked_refused += 1
@@ -600,6 +673,8 @@ class ArenaExecutor(h.H5Executor):
             # DEC-032 s5 item 2: ANY gap record holds buys for 10 minutes. The base class skips the hold when flags_pools is the literal false
             # (a redundant-socket reconnect); a canary does not take that exemption.
             self._gap_until_ms = max(self._gap_until_ms, self.now_ms() + self.h5.gap_hold_ms)
+            if self.gates is not None:
+                self.gates.recorder.note_gap(self.now_ms())
             return "keep", None
         if t == "boost_slice":
             self.slices_taken += 1 if self._slice_format_ok(row) else 0
@@ -675,6 +750,11 @@ class ArenaExecutor(h.H5Executor):
         elif kind in ("dry_sell", "sell_sent", "exit_landing"):
             kw = {**kw, "bot_id": self.abook.bot_id, "frozen_sha": self.abook.frozen_sha}
         super()._log(kind, mint, **kw)
+        if self.gates is not None and kind in ("buy", "sell"):
+            if kind == "buy":
+                self.gates.recorder.on_buy(mint, kw, self.now_ms(), self._exit_bound_ms(mint, kw.get("decision_t_ms")))
+            else:
+                self.gates.recorder.on_sell(mint, kw, self.now_ms())
 
     def _latch(self, name: str, **detail: Any) -> None:
         """The base `_latch` logs `halt_latched` through `_log(kind, mint, **kw)`, so a detail key called `mint` collides with its positional argument and the
@@ -723,14 +803,19 @@ class ArenaExecutor(h.H5Executor):
         end = chunk.rfind(b"\n") + 1  # only complete lines; a partial last line waits for its newline
         self._exit_gap_off += end
         for line in chunk[:end].decode("utf-8", "replace").splitlines():
+            if not line.strip():
+                continue
             try:
                 row = json.loads(line)
                 bps = row["exit_gap_bps"]
             except (ValueError, KeyError, TypeError):
+                bps = None
+            if isinstance(bps, bool) or not isinstance(bps, (int, float)) or not math.isfinite(bps):
+                # a row that cannot be read is a parity input we cannot see: latch (QP 10-23: bad rows used to alert only, and a non-numeric bps was dropped silently)
                 self._alert("exit_gap_row_unreadable", "")
+                self.latch_external(H_EXIT_GAP, why="exit_gap_row_bad", row=line[:120])
                 continue
-            if isinstance(bps, (int, float)) and not isinstance(bps, bool):
-                self.ingest_exit_gap(float(bps), str(row.get("mint") or ""))
+            self.ingest_exit_gap(float(bps), str(row.get("mint") or ""))
 
     def latch_external(self, name: str, **detail: Any) -> None:
         """For the checks that live outside this process (the parity join's exit gap, A3 pins_changed / program_changed)."""
@@ -745,6 +830,8 @@ class ArenaExecutor(h.H5Executor):
     def exit_tick(self, now: int) -> None:
         self.a3_tick(now)
         self.exit_gap_tick()
+        if self.gates is not None:
+            self.gates.maybe_run_parity(now)
         super().exit_tick(now)
         for mint, pos in self.state.open.items():
             if pos.get("stuck") and mint not in self.monitor.stuck:

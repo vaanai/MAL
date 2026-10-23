@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import dataclasses
 import json
+import os
 import struct
 import time
 from pathlib import Path
@@ -50,7 +51,7 @@ def write_canary_record(root: Path, *bot_ids: str, name: str = "DEC-033-h5-arena
     (root / "DEC" / name).write_text("".join(f"OWNER_CANARY_CONFIRMED: bot_id={b}\n" for b in ids))
 
 
-def a3_rec(run_utc: str = "2099-01-01T00:00:00Z", **halt_true) -> dict:
+def a3_rec(run_utc: str = "2026-10-06T15:00:00Z", **halt_true) -> dict:
     names = ("pins_changed", "boost_disabled", "boost_share_low", "boost_budget_shift", "boost_slices_shift", "synthetic_share_high")
     return {"run_utc": run_utc, "halt": {"flags": {n: {"halt": n in halt_true, "evaluated": True, "reason": "x"} for n in names}},
             "warn": {"flags": {"program_changed": {"warn": bool(halt_true.get("program_changed")), "evaluated": True, "reason": "x"}}}}
@@ -59,12 +60,26 @@ def a3_rec(run_utc: str = "2099-01-01T00:00:00Z", **halt_true) -> dict:
 class AEnv(Env):
     book_id = A2
 
+    def __init__(self, tmp: Path, live: bool = True, **cfg):
+        if live:  # a live start needs these (QP 10-23): the exit-gap feed file, the twins file and the tie-out results dir
+            for key, name in (("exit_gap_file", "exit-gap.jsonl"), ("parity_twins_file", "twins.jsonl")):
+                cfg.setdefault(key, str(tmp / name))
+                if cfg[key]:
+                    Path(cfg[key]).touch()
+            cfg.setdefault("tieout_dir", str(tmp / "tieout"))
+            (tmp / "etc-mal-h5" / "arena-TIER").write_text("T1\n")
+        super().__init__(tmp, live=live, **cfg)
+        if live:  # the start check saw T1 (the file's content at construction); the older fixtures below test base-tier semantics, so they run on at T0
+            (tmp / "etc-mal-h5" / "arena-TIER").write_text("T0\n")
+
     def build(self):
         self.rpc.accounts[MINT] = mint_value()  # a clean classic SPL mint: the pre-send screen passes
         if self.conf.get("funded_lamports"):
             self.rpc.balance = self.conf["funded_lamports"]  # the finalized balance a live start compares with funded_lamports
         ex = ax.ArenaExecutor(self.rpc, self.conf, self.kp, now_ms=self.clock, root=self.root)
         self.seed_clock(ex)
+        if ex.gates is not None:
+            ex.gates.runner = lambda argv: 0  # the parity and tie-out tools are stubbed here; tools/test_h5_arena_exec_wiring.py runs the real ones
         return ex
 
 
@@ -74,7 +89,11 @@ class ACase(Case):
     def setUp(self):
         super().setUp()
         (self.tmp / "a3-default.jsonl").write_text(json.dumps(a3_rec()) + "\n")  # never the host's real file
-        for patcher in (mock.patch.object(ax, "V2_RULE_SOURCE", self.tmp / "FREEZE.md"),
+        self.arena_tier = self.etc / "arena-TIER"  # stand-in for /etc/mal-h5-arena/TIER (owned by the test's uid, which the patched root uid matches)
+        self.arena_tier.write_text("T1\n")
+        os.chmod(self.arena_tier, 0o644)
+        for patcher in (mock.patch.object(ax, "ARENA_TIER_PATH", self.arena_tier),
+                        mock.patch.object(ax, "V2_RULE_SOURCE", self.tmp / "FREEZE.md"),
                         mock.patch.object(ax, "A3_RECORD_DEFAULT", str(self.tmp / "a3-default.jsonl"))):
             patcher.start()
             self.addCleanup(patcher.stop)
