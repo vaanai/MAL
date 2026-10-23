@@ -90,8 +90,8 @@ def report_main(argv: list[str] | None = None) -> int:
             skip = True
         elif not x.startswith("--json="):
             flip_rest.append(x)
-    print()
-    rc2 = arena_flip_read.main(["--bot", a.bot, "--ledger-root", a.ledger_root, "--expect-send", str(a.expect_send), *flip_rest])
+    # With no flipped leg anywhere the flip read appends nothing (the output is byte-identical to the legs report) and the legs rc stands.
+    rc2 = arena_flip_read.main(["--bot", a.bot, "--ledger-root", a.ledger_root, "--expect-send", str(a.expect_send), *flip_rest], only_if_flips=True)
     return rc or rc2
 
 

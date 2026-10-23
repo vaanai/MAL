@@ -149,7 +149,7 @@ def build_flip_report(bot_id: str, ledger_root: str, registry: str, *, close_blo
     if dec:
         before = scored["status"]
         gated = before in ("PASS", "FAIL")
-        ok = dec["verdict_as_fills"]["pass"] and dec["verdict_as_strands"]["pass"]
+        ok = dec["verdict_as_fills"]["pass"] and dec["verdict_as_strands"]["pass"] and dec["verdict_as_strands_at_505k_send"]["pass"]  # QP 1023: both strand prices
         rep["gate_with_flips_as_strands"] = {
             "deciding_stake": dk, "scorer_status": before, "flips_deciding_1p9": dec["flips"]["by_lat"].get("1p9", {}).get("n", 0),
             "passes_as_fills": dec["verdict_as_fills"]["pass"], "passes_as_strands": dec["verdict_as_strands"]["pass"],
@@ -199,7 +199,7 @@ def render(rep: Mapping[str, Any]) -> str:
     return "\n".join(L)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None, *, only_if_flips: bool = False) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--bot", required=True)
     ap.add_argument("--ledger-root", required=True)
@@ -219,6 +219,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Refused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 3
+    if only_if_flips and not any(b["flips"]["n"] for b in rep["books"].values()):
+        return 0  # nothing flipped: print nothing, write nothing
+    if only_if_flips:
+        print()
     print(render(rep))
     if a.json:
         slim = {k: v for k, v in rep.items()}

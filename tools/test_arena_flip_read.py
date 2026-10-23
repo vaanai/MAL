@@ -120,6 +120,19 @@ def test_a_book_that_passes_only_with_the_flips_priced_as_fills_does_not_pass(tm
     assert "FAIL ***" in FR.render(rep)
 
 
+def test_a_book_that_passes_at_the_160k_strand_but_fails_at_the_505k_strand_is_not_a_pass(tmp_path):
+    # QP 1023: Am.8 item 7's figures assume the 505,000 strand price, so PASS needs both strand variants. Mean 11.25M sits between the two thresholds
+    # (160k strand passes from about 11.244M, the 505k strand from about 11.259M; one flip, seed 5).
+    p = list(np.random.default_rng(5).normal(11.25e6, 1e6, 100))
+    p[7] = tiny_fill_pnl(300_000)
+    root, reg = write_world(tmp_path, book(p))
+    rep = FR.build_flip_report("botA", root, reg, now_ms=NOW)
+    g = rep["gate_with_flips_as_strands"]
+    assert rep["scorer_status"] == "PASS" and g["passes_as_fills"] and g["passes_as_strands"] and g["passes_as_strands_at_505k_send"] is False
+    assert g["verdict"] != "PASS" and g["verdict"] == "FAIL"
+    assert "FAIL ***" in FR.render(rep)
+
+
 def test_a_clean_book_with_no_flips_keeps_its_verdict(tmp_path):
     rng = np.random.default_rng(11)
     root, reg = write_world(tmp_path, book(list(rng.normal(10e6, 1e6, 100))))
@@ -148,6 +161,16 @@ def test_read_only_and_wrapper_prints_the_flip_read_after_the_legs(tmp_path, cap
     assert txt.index("ARENA REPORT LEGS") < txt.index("ARENA FLIP READ") and "FLIPPED LEGS" in txt
     assert "books" in json.loads(out.read_text()) and "gate_with_flips_as_strands" not in json.loads(out.read_text())  # the legs report owns --json
     assert FR.main(["--bot", "botA", "--ledger-root", root, "--registry", reg, "--now-ms", str(NOW), "--tape-dir", "ignored"]) == 0
+
+
+def test_with_no_flip_the_wrapper_output_is_byte_identical_to_the_legs_output_and_rc_is_the_legs_rc(tmp_path, capsys):
+    root, reg = write_world(tmp_path, book(list(np.random.default_rng(11).normal(10e6, 1e6, 100))))
+    args = ["--bot", "botA", "--ledger-root", root, "--registry", reg, "--now-ms", str(NOW)]
+    rc_legs = RL.main(args)
+    legs = capsys.readouterr().out
+    rc = V2.report_main(["--expect-send", "160000", *args])
+    wrapped = capsys.readouterr().out
+    assert rc == rc_legs == 0 and wrapped == legs and "FLIP" not in wrapped
 
 
 @pytest.mark.parametrize("bad", ["sealed-x", "shadow-y"])
