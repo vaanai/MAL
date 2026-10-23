@@ -15,6 +15,7 @@ The landing-fail excess then compares the live failure share with max(15%, 28.9%
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import subprocess
@@ -44,6 +45,44 @@ def v_band_refusal(v_lamports: Any, quote_mint: Any) -> str | None:
     if not V_BAND[0] <= v_lamports <= V_BAND[1]:
         return f"v_band:v_{v_lamports}_outside_{V_BAND[0]}_{V_BAND[1]}"
     return None
+
+
+TWIN_RUN_SCHEMA = "arena_twin_run_v1"  # tools/arena_twin_writer.py RUN_SCHEMA (a string here: the gates import nothing from the writer)
+
+
+def twin_run_path(twins_file: str) -> Path:
+    return Path(twins_file + ".run.json")
+
+
+def load_twin_ids(twins_file: str) -> set[str] | None:
+    """Trip ids that have a twin row, or None when the file cannot be read as JSON lines of objects with a trip_id."""
+    try:
+        ids = set()
+        for line in Path(twins_file).read_text().splitlines():
+            if line.strip():
+                row = json.loads(line)
+                ids.add(row["trip_id"])
+        return ids
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def twin_run_stamp(twins_file: str, trip_ids: Any) -> int | None:
+    """The twin freshness stamp (QP 10-23 condition 1): the WRITER's own run time (run_ms), and only while its run record is valid: right schema, an int run_ms, covered_trip_ids
+    holding EVERY live trip id now, and twins_sha256 equal to the sha256 of the twins file as it is now (the file is the one that run wrote). Anything else is None (no stamp,
+    so P7 and no buy). Never 'now': a file that merely parses stays stale when the writer stops."""
+    try:
+        rec = json.loads(twin_run_path(twins_file).read_text())
+        run_ms = rec["run_ms"]
+        if rec["schema"] != TWIN_RUN_SCHEMA or isinstance(run_ms, bool) or not isinstance(run_ms, int):
+            return None
+        if not set(trip_ids) <= set(rec["covered_trip_ids"]):
+            return None
+        if rec["twins_sha256"] != hashlib.sha256(Path(twins_file).read_bytes()).hexdigest() or load_twin_ids(twins_file) is None:
+            return None
+        return run_ms
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def _write_jsonl_atomic(path: Path, rows: list[Mapping[str, Any]]) -> None:
@@ -236,6 +275,23 @@ class LiveGates:
             return f"parity_gate:rc_{r['rc']}"
         rc = self.run_parity(now_ms)
         return None if rc == 0 else f"parity_gate:rc_{rc}"
+
+    # -- twins (QP 10-23 condition 3): the simplest fail-closed rule
+    def twin_refusal(self, now_ms: int) -> str | None:
+        """A new buy needs a twin row for EVERY live trip. A trip past its exit (landed, or its bound passed) without one is `past_exit_untwinned`; a trip still open without one holds the
+        effective open cap at 1 (`open_untwinned_cap_1`): the second buy waits for the first trip's paper twin. An unreadable twins file is no buy."""
+        trips = self.recorder.trips
+        if not trips:
+            return None
+        have = load_twin_ids(self.twins_file)
+        if have is None:
+            return "twin_gate:twins_unreadable"
+        missing = [t for k, t in trips.items() if k not in have]
+        if not missing:
+            return None
+        if any(t.get("exit_landed") or now_ms > int(t["exit_bound_ms"]) for t in missing):
+            return "twin_gate:past_exit_untwinned"
+        return "twin_gate:open_untwinned_cap_1"
 
     # -- tie-out
     def tieout_refusal(self, now_ms: int, first_attempt_ms: int | None) -> str | None:
