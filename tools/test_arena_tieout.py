@@ -48,6 +48,7 @@ def good_day():
 
 TOK0 = {"programs_covered": list(T.TOKEN_PROGRAMS), "accounts": []}
 FIN = 200
+DAY = "2026-10-22"
 
 
 def tok(*accounts):
@@ -236,7 +237,11 @@ def _files(tmp_path, txs, led, tk, now, balance=None):
     for name, obj in (("txs", txs), ("ledger", led), ("tokens", tk), ("named", NAMED), ("balance", balance or bal(now))):
         files[name] = tmp_path / f"{name}.json"
         files[name].write_text(json.dumps(obj))
-    return [f"--{k}={v}" for k, v in files.items()] + ["--baseline=0", f"--stop-file={tmp_path / 'STOP'}", f"--json={tmp_path / 'o.json'}"], files
+    marker = tmp_path / T.marker_name(DAY)
+    if not marker.exists():
+        T.write_exclusion_marker(marker, DAY, [])
+    files["excluded-trips"] = marker
+    return [f"--{k}={v}" for k, v in files.items()] + ["--baseline=0", f"--day={DAY}", f"--stop-file={tmp_path / 'STOP'}", f"--json={tmp_path / 'o.json'}"], files
 
 
 def test_cli_clean_day_exits_0_and_makes_no_stop(tmp_path, capsys):
@@ -349,10 +354,19 @@ def test_no_result_for_the_last_closed_utc_day_is_stop(tmp_path, capsys):
     (d / f"tieout-{day}.json").write_text(json.dumps({"day": "2000-01-01", "signed_off": True}))
     assert "day" in T.check_last_closed_day(d, now)[1]                                              # wrong day stamp
     (d / f"tieout-{day}.json").write_text(json.dumps({"day": day, "signed_off": True}))
+    assert "marker" in T.check_last_closed_day(d, now)[1]                                           # signed off but no EXCLUDED-TRIPS marker: refused
+    T.write_exclusion_marker(d / T.marker_name(day), day, [])
+    assert "differs" in T.check_last_closed_day(d, now)[1]                                          # the result carries no marker sha
+    sha = T.load_exclusion_marker(d / T.marker_name(day), day)[1]
+    (d / f"tieout-{day}.json").write_text(json.dumps({"day": day, "signed_off": True, "exclusions_sha256": sha}))
     assert T.check_last_closed_day(d, now) == (True, "")
     stop = tmp_path / "STOP"
     base = ["--check-last-day", str(d), f"--now-ms={now}", f"--stop-file={stop}"]
     assert T.main(base) == 0 and not stop.exists()
+    (d / T.marker_name(day)).unlink()
+    assert T.main(base) == 1 and json.loads(stop.read_text())["exit_code"] == 1                      # marker removed after sign-off = STOP
+    stop.unlink()
+    T.write_exclusion_marker(d / T.marker_name(day), day, [])
     (d / f"tieout-{day}.json").unlink()
     assert T.main(base) == 1 and json.loads(stop.read_text())["exit_code"] == 1                      # no result = STOP
     stop.unlink()
@@ -419,4 +433,106 @@ def test_a_check_mode_argument_errors_write_stop_when_the_path_is_readable(tmp_p
     stop.unlink()
     assert T.main(["--check-last-day", str(tmp_path), "--now-ms", "1"]) == 5                             # no stop path to write: fail closed
     assert T.main(["--check-last-day", str(tmp_path), "--now-ms", "1", "--stop-file", str(tmp_path / "nodir" / "S")]) == 5
+    capsys.readouterr()
+
+
+# ---- QP ruling 2026-10-23 (7) item 9: exclusions enforced where P&L is quoted; the marker is create-exclusive ----
+STRAD = [{"trip_id": "s2", "legs": {"buy_sig": "earlier", "sell_sig": "window"}, "realized_lamports": -777}, {"trip_id": "s1", "legs": {"buy_sig": "earlier", "sell_sig": "window"}, "realized_lamports": 555}]
+
+
+def test_marker_is_created_once_sorted_and_a_same_list_rerun_is_a_noop(tmp_path):
+    p = tmp_path / T.marker_name(DAY)
+    assert T.write_exclusion_marker(p, DAY, STRAD) == "created"
+    first = p.read_bytes()
+    assert [t["trip_id"] for t in json.loads(first)["straddling_trips"]] == ["s1", "s2"]
+    assert T.write_exclusion_marker(p, DAY, list(reversed(STRAD))) == "same" and p.read_bytes() == first
+
+
+def test_a_rerun_with_a_different_list_is_a_hard_halt_and_never_overwrites(tmp_path):
+    p = tmp_path / T.marker_name(DAY)
+    T.write_exclusion_marker(p, DAY, STRAD)
+    first = p.read_bytes()
+    for other in ([], STRAD[:1], STRAD + [{"trip_id": "s3"}], [dict(STRAD[0], realized_lamports=1), STRAD[1]]):
+        with pytest.raises(T.MarkerConflict):
+            T.write_exclusion_marker(p, DAY, other)
+        assert p.read_bytes() == first
+    p.write_text("{")                                                       # a torn existing file is a conflict too, not a reason to rewrite
+    with pytest.raises(T.MarkerConflict):
+        T.write_exclusion_marker(p, DAY, STRAD)
+    assert p.read_text() == "{"
+
+
+@pytest.mark.parametrize("bad", [None, {"a": 1}, [{"trip_id": ""}], [{"x": 1}], [{"trip_id": "a"}, {"trip_id": "a"}], ["a"]])
+def test_a_malformed_list_is_refused_and_a_missing_list_is_not_an_empty_one(tmp_path, bad):
+    with pytest.raises(T.BadInput):
+        T.write_exclusion_marker(tmp_path / "m.json", DAY, bad)
+    assert not (tmp_path / "m.json").exists()
+
+
+def test_write_exclusions_cli_conflict_is_rc1_with_stop_and_missing_key_is_rc2(tmp_path, capsys):
+    man = tmp_path / "manifest.json"
+    man.write_text(json.dumps({"straddling_trips": STRAD}))
+    mk_ = tmp_path / T.marker_name(DAY)
+    args = [f"--write-exclusions={man}", f"--day={DAY}", f"--excluded-trips={mk_}", f"--stop-file={tmp_path / 'STOP'}"]
+    assert T.main(args) == 0 and T.main(args) == 0 and not (tmp_path / "STOP").exists()
+    man.write_text(json.dumps({"straddling_trips": STRAD[:1]}))
+    assert T.main(args) == 1 and "marker conflict" in (tmp_path / "STOP").read_text()
+    assert len(json.loads(mk_.read_text())["straddling_trips"]) == 2
+    (tmp_path / "STOP").unlink()
+    man.write_text(json.dumps({"other": []}))
+    assert T.main(args) == 2 and (tmp_path / "STOP").exists()
+    capsys.readouterr()
+
+
+def test_the_tieout_refuses_without_the_marker_or_with_the_wrong_day(tmp_path, capsys):
+    txs, led, tk, now = good_day()
+    args, files = _files(tmp_path, txs, led, tk, now)
+    files["excluded-trips"].unlink()
+    assert T.main(args) == 2 and "missing" in capsys.readouterr().err and (tmp_path / "STOP").exists() and not (tmp_path / "o.json").exists()
+    (tmp_path / "STOP").unlink()
+    T.write_exclusion_marker(files["excluded-trips"], "2026-10-21", [])      # a marker for another day
+    assert T.main(args) == 2 and "not '2026-10-22'" in capsys.readouterr().err
+    (tmp_path / "STOP").unlink()
+    assert T.main([a for a in args if not a.startswith("--excluded-trips")]) == 2                 # the argument is required
+    capsys.readouterr()
+
+
+def test_quoted_pnl_subtracts_the_excluded_trips_and_carries_the_marker_sha(tmp_path, capsys):
+    txs, led, tk, now = good_day()
+    chain = led["trips"][0]["realized_lamports"]
+    args, files = _files(tmp_path, txs, led, tk, now)
+    assert T.main(args) == 0
+    q = json.loads((tmp_path / "o.json").read_text())["quoted_pnl"]
+    assert q["n_trips"] == 1 and q["chain_realized_lamports"] == chain and q["excluded_still_in_ledger"] == []
+    assert q["exclusions_sha256"] == T.load_exclusion_marker(files["excluded-trips"], DAY)[1]
+    # a listed trip that the ledger still holds is subtracted from the quoted figure, not just flagged
+    files["excluded-trips"].unlink()
+    T.write_exclusion_marker(files["excluded-trips"], DAY, [{"trip_id": "t1"}])
+    assert T.main(args) == 0
+    q = json.loads((tmp_path / "o.json").read_text())["quoted_pnl"]
+    assert q["n_trips"] == 0 and q["chain_realized_lamports"] == 0 and q["excluded_still_in_ledger"] == ["t1"]
+    out = capsys.readouterr().out
+    assert "quoted P&L" in out and "NOT a P&L" in out
+
+
+def test_a_signed_off_day_whose_marker_was_rewritten_is_stop(tmp_path, capsys):
+    txs, led, tk, now = good_day()
+    args, files = _files(tmp_path, txs, led, tk, now)
+    assert T.main(args) == 0
+    res = tmp_path / f"tieout-{DAY}.json"
+    res.write_text((tmp_path / "o.json").read_text())
+    nowms = 1_792_000_000_000
+    day = T.last_closed_day(nowms)
+    # put the result and marker under the day the gate will look for
+    d = tmp_path / "res"
+    d.mkdir()
+    r = json.loads(res.read_text())
+    r["day"] = day
+    T.write_exclusion_marker(d / T.marker_name(day), day, [])
+    r["exclusions_sha256"] = T.load_exclusion_marker(d / T.marker_name(day), day)[1]
+    (d / f"tieout-{day}.json").write_text(json.dumps(r))
+    assert T.check_last_closed_day(d, nowms) == (True, "")
+    (d / T.marker_name(day)).write_text(json.dumps({"schema": T.EXCLUDED_SCHEMA, "day": day, "straddling_trips": [{"trip_id": "x"}], "n": 1}))
+    ok, why = T.check_last_closed_day(d, nowms)
+    assert ok is False and "differs" in why
     capsys.readouterr()
