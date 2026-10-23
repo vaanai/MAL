@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import subprocess
 import sys
@@ -54,6 +55,11 @@ def twin_run_path(twins_file: str) -> Path:
     return Path(twins_file + ".run.json")
 
 
+def _finite_number(v: Any) -> bool:
+    """An int or a float that is finite (the writer's pnl is a float); a bool, None, a string, nan and inf are not a price."""
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
 def load_twin_ids(twins_file: str, priced_only: bool = False) -> set[str] | None:
     """Trip ids that have a twin row, or None when the file cannot be read as JSON lines of objects with a trip_id. priced_only (QP 10-23 blocker 1) keeps only a
     PRICED row: no `price_failed` flag and an integer `pnl_lamports`. A price_failed row (or one without a price) is a missing twin, so the buy gate refuses."""
@@ -63,7 +69,7 @@ def load_twin_ids(twins_file: str, priced_only: bool = False) -> set[str] | None
             if line.strip():
                 row = json.loads(line)
                 tid = row["trip_id"]
-                if priced_only and (row.get("price_failed") or isinstance(row.get("pnl_lamports"), bool) or not isinstance(row.get("pnl_lamports"), int)):
+                if priced_only and (row.get("price_failed") or not _finite_number(row.get("pnl_lamports"))):
                     continue
                 ids.add(tid)
         return ids

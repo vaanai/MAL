@@ -101,12 +101,29 @@ class Priority:
         return {"profile": self.profile, "buy": self.buy, "sell": self.sell, "escalated": self.escalated}
 
 
-# --- the twin writer pins (QP 10-23 blocker 2 / P5). The executor refuses a buy (and latches H_TWIN_PIN) unless the writer's run record carries these two values.
-# TWIN_STACK_CONFIG_HASH = tools.arena_twin_writer.stack_hash(tools.arena_rules.stack_config(7).as_dict()): the twin is priced at the arena host's spelled-out stack
-# (rent 0, E1 floor 384,022, strand_rule both, ceil rounding, feed delay d = 7). The H5 books have no registered arena StackConfig of their own (arena-records-2026-10-22
-# section 2), so this value is a proposal the DEC copy must confirm. TWIN_WRITER_SHA256 = sha256 of tools/arena_twin_writer.py. A test recomputes both.
-TWIN_STACK_CONFIG_HASH = "1e611a5a636dfe6bd563ab5258f6b498cdb8906500ee8bf2f0264a2621621986"
-TWIN_WRITER_SHA256 = "47f26c12da37d97b6475c28580829730dec30e8d6e1e166e051e7c18a90f21cf"
+# --- the twin writer pins (QP 10-23 blocker 2 / P5, ruling 4). The H5 books register stack DEC-031-rev2 (tools/arena_h5_cost.py), not the arena host's StackConfig.
+# The config pin of a book = sha256 of canonical JSON {adapter, arena_h5_cost_sha256, stack_id} (tools/arena_twin_writer.h5_config_hash), with arena_h5_cost_sha256 =
+# `git show <registration sha>:tools/arena_h5_cost.py | sha256sum` (eb8b32d for the a2 books, a5f4137 for Q50: both give the same file). A test recomputes them.
+# TWIN_WRITER_SHA256 = sha256 of tools/arena_twin_writer.py. The twin's rent 0 is a declared twin-only deviation (reported beside as pnl_rent0_lamports).
+TWIN_STACK_ID = "DEC-031-rev2"
+TWIN_ADAPTER = "h5_twin_adapter_v1"
+H5_COST_SHA256 = {"eb8b32d": "b20d51ceb939822ce813ca48b14348e61873277fef54a3d71af660e37fe03328", "a5f4137": "b20d51ceb939822ce813ca48b14348e61873277fef54a3d71af660e37fe03328"}
+TWIN_WRITER_SHA256 = "709e803ec01055874ff29b70003f6ae4c1574c513ff4b6ed5cb18a06d6af9091"
+
+
+def h5_twin_config_hash(cost_sha256: str) -> str:
+    return hashlib.sha256(json.dumps({"adapter": TWIN_ADAPTER, "arena_h5_cost_sha256": cost_sha256, "stack_id": TWIN_STACK_ID}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+TWIN_REG_SHA = {"h5v1-boostfloor-a2": "eb8b32d", "h5v2-boostclock-a2": "eb8b32d", "h5v1q50-boostfloor-a1": "a5f4137"}
+
+
+def twin_pins(book: "Book") -> tuple[str, str]:
+    """(config_hash, code_sha256) the book's twin run record must carry."""
+    reg = TWIN_REG_SHA.get(book.bot_id)
+    if reg is None:  # a book with no registration sha has no pin a real writer could carry: its pin never matches (test books only)
+        return (f"unregistered:{book.bot_id}", TWIN_WRITER_SHA256)
+    return (h5_twin_config_hash(H5_COST_SHA256[reg]), TWIN_WRITER_SHA256)
 
 
 AM8_PRIORITY = 155_000  # DEC-031 Amendment 8 item 2: buy AND sell pinned at exactly 155,000, every escalation at or below it (160,000 per send with the base fee)
@@ -127,7 +144,6 @@ class Book:
     s0_margin_ms: int
     q_star_in_record: float | None  # None: the start record carries no q_star_sol (the default 40.0 path is byte-identical)
     rule_sha256: str | None
-    twin_config_hash: str = TWIN_STACK_CONFIG_HASH
     priority: Priority = PRIORITY_DEFAULT  # registered books keep h5_executor's 55,000 / 55,000 / 150,000; only a NEW book (registered after Am.8) may be p155
 
     @property
@@ -140,11 +156,6 @@ BOOKS: dict[str, Book] = {b.bot_id: b for b in (
     Book("h5v2-boostclock-a2", A2_SHA, A2_RULE, "v2", 40 * 10**9, A2_CLOCK_MS, SEAL_END_MS, S0_MARGIN_V2_MS, None, None),
     Book("h5v1q50-boostfloor-a1", Q50_SHA, Q50_RULE, "v1", 50 * 10**9, Q50_CLOCK_MS, SEAL_END_MS, S0_MARGIN_V2_MS, 50.0, Q50_RULE_SHA256),
 )}
-
-def twin_pins(book: "Book") -> tuple[str, str]:
-    """(config_hash, code_sha256) the book's twin run record must carry. One stack for the three registered books today; per-book so a later book can differ."""
-    return (book.twin_config_hash, TWIN_WRITER_SHA256)
-
 
 # --- the sell builder pin (DEC-032 section 4, FILL:builder_path). The sell + close of the base ATA in ONE transaction is built by the unmodified base class:
 # tools/h5_executor.py H5Executor._arm_sell (tx.sell_instructions: budget, WSOL ATA, swap, WSOL close; then pl.close_token_account(base_ata, user, base_tp)

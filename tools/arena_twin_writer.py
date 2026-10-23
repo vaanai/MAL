@@ -17,6 +17,7 @@ Units match the live recorder: entry_price = stake / raw tokens bought; exit_pri
 Output rows: trip_id, pnl_lamports, pnl_e1_lamports, entry_price, exit_price, state, buy_send_lamports, sell_send_lamports, position_id, bot_id.
 A paper position that was excluded, guarded, stranded or invalid gets {"trip_id", "price_failed": true, "reason"} (the parity tool counts no_twin). A trip with NO paper position
 in the ledger gets NO row (also no_twin), so an output with zero rows while trips exist stays a fail-closed signal in the parity tool. Bonding positions are price_failed (the arena canary is PumpSwap).
+H5 BOOKS (QP 10-23 ruling 4): a ledger row of tools/arena_h5_score (decision_ms an int, meta.stack DEC-031-rev2, legs.flat_1p9) is priced by the H5 adapter (price_h5_trip): legs.flat_1p9.nofail_lamports of the row at the canary stake, rent-charged (pnl_rent0_lamports beside); no entry/exit price (open). Its --config-hash is h5_config_hash(sha256 of tools/arena_h5_cost.py).
 CONFIG PIN (QP 10-23 condition 2): --config-hash is the sha256 of the book's REGISTERED stack block (`stack_hash`: the row's `stack` without the per-position sps_entry / sps_exit), pinned
 in the DEC copy. A joined ledger row whose stack hashes differently refuses the whole run (exit 2, nothing written): the twin would be priced at a config the book did not register.
 RUN RECORD (condition 1): after the twins file, `<out>.run.json` is written atomically: run_ms (the writer's own clock, or --now-ms), covered_trip_ids (EVERY trip in the trips file read),
@@ -62,6 +63,46 @@ class BadInput(Exception):
     pass
 
 
+H5_STACK_ID = "DEC-031-rev2"  # tools/arena_h5_cost.STACK_ID; the H5 books' registered paper stack
+H5_ADAPTER = "h5_twin_adapter_v1"
+H5_COST_PATH = Path(__file__).with_name("arena_h5_cost.py")
+
+
+def h5_config_hash(cost_sha256: str) -> str:
+    """The config pin of an H5 book: STACK_ID plus the sha256 of tools/arena_h5_cost.py at the book's registration sha (QP 10-23 ruling 4)."""
+    return hashlib.sha256(json.dumps({"adapter": H5_ADAPTER, "arena_h5_cost_sha256": cost_sha256, "stack_id": H5_STACK_ID}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def is_h5_row(r: Mapping[str, Any]) -> bool:
+    return isinstance(r.get("legs"), Mapping) and _isint(r.get("decision_ms")) and (r.get("meta") or {}).get("stack") == H5_STACK_ID
+
+
+def entry_ms(r: Mapping[str, Any]) -> Any:
+    d = r.get("decision_ms")
+    return d.get("entry") if isinstance(d, Mapping) else d
+
+
+def price_h5_trip(trip: Mapping[str, Any], rows: Sequence[Mapping[str, Any]], buy_send: int, sell_send: int) -> dict[str, Any]:
+    """H5 adapter: the book's registered cost model (tools/arena_h5_cost, rent-charged 2,039,280 decides, no feed delay) read from the ledger row's own legs.flat_1p9
+    nofail_lamports at the row whose stake equals the canary stake. The row stores no pool states, so a canary stake that is not a recorded stake is price_failed (fail closed).
+    The nofail P&L is the registered model's, rent-charged, and no live fee is substituted. `pnl_rent0_lamports` is the same trip with the rent refunded (the live sell closes the ATA;
+    a twin-only deviation, reported beside). entry_price / exit_price are NOT in an H5 row, so they are absent (the parity tool's entry/exit gap needs them: open)."""
+    out: dict[str, Any] = {"trip_id": trip["trip_id"], "bot_id": rows[0].get("bot_id"), "position_id": rows[0].get("trade_id"), "buy_send_lamports": buy_send,
+                           "sell_send_lamports": sell_send, "fee_basis": "h5_registered_cost_model_505000_per_send", "adapter": H5_ADAPTER, "stack": H5_STACK_ID}
+    lam = float(trip["stake_lamports"])
+    at = [r for r in rows if isinstance(r.get("stake_sol"), (int, float)) and abs(float(r["stake_sol"]) * 1e9 - lam) < 1.0]
+    if not at:
+        return {**out, "price_failed": True, "reason": "h5_no_row_at_canary_stake"}
+    leg = (at[0]["legs"] or {}).get("flat_1p9")
+    if not isinstance(leg, Mapping) or not isinstance(leg.get("nofail_lamports"), (int, float)) or isinstance(leg.get("nofail_lamports"), bool) or not np.isfinite(leg["nofail_lamports"]):
+        return {**out, "price_failed": True, "reason": f"h5_leg_unpriced:{(leg or {}).get('state') if isinstance(leg, Mapping) else None}"}
+    out["state"] = leg.get("state")
+    if leg.get("state") != "filled":
+        return {**out, "price_failed": True, "reason": f"paper_state:{leg.get('state')}"}
+    pnl = float(leg["nofail_lamports"])
+    return {**out, "pnl_lamports": pnl, "pnl_e1_lamports": pnl, "pnl_rent0_lamports": pnl + 2_039_280.0}
+
+
 def _day(ms: int) -> str:
     return datetime.fromtimestamp(ms / 1000, timezone.utc).strftime("%Y-%m-%d")
 
@@ -85,7 +126,7 @@ def ledger_rows(ledger_dir: Path, bot_id: str, decision_ms: int) -> list[dict[st
     for d in (decision_ms - DAY_MS, decision_ms, decision_ms + DAY_MS):
         f = ledger_dir / f"trades-{_day(d)}.jsonl"
         if f.exists():
-            out += [r for r in load_jsonl(f) if r.get("bot_id") == bot_id and r.get("kind") in ("trade", "excluded")]
+            out += [r for r in load_jsonl(f) if r.get("bot_id") == bot_id and (r.get("kind") in ("trade", "excluded") or is_h5_row(r))]
     return out
 
 
@@ -150,16 +191,23 @@ def build(trips: Sequence[Mapping[str, Any]], ledger_dir: Path, bot_id: str, buy
         if not isinstance(t.get("trip_id"), str) or not _isint(t.get("decision_ms")) or not isinstance(t.get("stake_lamports"), (int, float)) or t["stake_lamports"] <= 0:
             raise BadInput(f"trip row unusable: {t.get('trip_id')!r}")
         cand = [r for r in ledger_rows(ledger_dir, bot_id, t["decision_ms"]) if r.get("mint") == t["trip_id"]
-                and isinstance((r.get("decision_ms") or {}).get("entry"), int) and abs(r["decision_ms"]["entry"] - t["decision_ms"]) <= join_tol_ms]
+                and isinstance(entry_ms(r), int) and not isinstance(entry_ms(r), bool) and abs(entry_ms(r) - t["decision_ms"]) <= join_tol_ms]
         if not cand:
             notes.append(f"{t['trip_id']}: no paper position in the ledger (no row written)")
             continue
-        cand.sort(key=lambda r: (abs(r["decision_ms"]["entry"] - t["decision_ms"]), r.get("kind") != "trade", str(r.get("trade_id"))))
+        cand.sort(key=lambda r: (abs(entry_ms(r) - t["decision_ms"]), r.get("kind", "trade") != "trade", str(r.get("trade_id"))))
+        bs = t["buy_fee_lamports"] if _isint(t.get("buy_fee_lamports")) else buy_send
+        ss = t["sell_fee_lamports"] if _isint(t.get("sell_fee_lamports")) else sell_send
+        if is_h5_row(cand[0]):  # H5 book: the pin is STACK_ID + the sha256 of the cost module this writer sits next to
+            want = h5_config_hash(hashlib.sha256(H5_COST_PATH.read_bytes()).hexdigest())
+            if want != config_hash:
+                raise BadInput(f"H5 config pin {config_hash} is not {want} (DEC-031-rev2 + sha256 of tools/arena_h5_cost.py): refused")
+            same = [r for r in cand if is_h5_row(r) and abs(entry_ms(r) - entry_ms(cand[0])) == 0]
+            rows.append(price_h5_trip(t, same, bs, ss))
+            continue
         got = stack_hash(cand[0].get("stack") if isinstance(cand[0].get("stack"), Mapping) else {})
         if got != config_hash:
             raise BadInput(f"ledger row {cand[0].get('trade_id')!r} of trip {t['trip_id']!r}: stack hash {got} is not the pinned registered config {config_hash}: refused")
-        bs = t["buy_fee_lamports"] if _isint(t.get("buy_fee_lamports")) else buy_send
-        ss = t["sell_fee_lamports"] if _isint(t.get("sell_fee_lamports")) else sell_send
         rows.append(price_trip(t, cand[0], bs, ss))
     return rows, notes
 
