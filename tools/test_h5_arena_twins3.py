@@ -115,11 +115,32 @@ class Buy2WindowTests(LiveCase):
         e.ex.gates.recorder.trips[MINT].update(exit_bound_ms=e.clock() + 10**9, exit_landed=True)
         self.assertEqual(e.ex.gates.twin_refusal(e.clock()), "twin_gate:past_exit_untwinned")
 
-    def test_a_twin_row_for_every_trip_opens_the_gate_and_a_price_failed_row_counts(self):
+    def test_a_priced_twin_row_for_every_trip_opens_the_gate(self):
+        e = self.live2()
+        e.open_position()
+        gt_write_twin_run(e, rows=[{"trip_id": MINT, "pnl_lamports": -5, "entry_price": 1.0, "exit_price": 0.9}])
+        self.assertIsNone(e.ex.gates.twin_refusal(e.clock()))
+
+    def test_a_price_failed_twin_row_is_a_missing_twin(self):
         e = self.live2()
         e.open_position()
         gt_write_twin_run(e, rows=[{"trip_id": MINT, "price_failed": True, "reason": "paper_excluded:gap"}])
-        self.assertIsNone(e.ex.gates.twin_refusal(e.clock()))
+        self.assertEqual(e.ex.gates.twin_refusal(e.clock()), "twin_gate:open_untwinned_cap_1")
+        e.ex.gates.recorder.trips[MINT].update(exit_landed=True)
+        self.assertEqual(e.ex.gates.twin_refusal(e.clock()), "twin_gate:past_exit_untwinned")
+        e.ex.state.open.clear()
+        e.ex.state.bought.clear()
+        sent = len(e.rpc.sent)
+        e.fire()
+        self.assertEqual(e.refusals()[-1], "twin_gate:past_exit_untwinned")
+        self.assertEqual(len(e.rpc.sent), sent)  # fail closed: no buy
+
+    def test_a_row_without_a_price_is_not_priced(self):
+        e = self.live2()
+        e.open_position()
+        for row in ({"trip_id": MINT}, {"trip_id": MINT, "pnl_lamports": None}, {"trip_id": MINT, "pnl_lamports": True}, {"trip_id": MINT, "pnl_lamports": 1, "price_failed": True}):
+            gt_write_twin_run(e, rows=[row])
+            self.assertIsNotNone(e.ex.gates.twin_refusal(e.clock()), row)
 
     def test_an_unreadable_twins_file_is_no_buy(self):
         e = self.live2()
@@ -162,3 +183,62 @@ class SocketWriteAgeTests(LiveCase):
         e.ex._send(p, MINT)
         self.assertEqual(e.ledger("send_blocked"), [])
         self.assertTrue(callable(e.ex.rpc))
+
+
+class TwinPinTests(LiveCase):
+    """QP 10-23 blocker 2 (P5): the run record's config_hash and code_sha256 are checked against the book's compiled pins."""
+
+    def live2(self, **kw):
+        e = self.live(**kw)
+        e.ex.gates.runner = lambda argv: 0
+        return e
+
+    def test_the_pins_are_the_recomputed_values(self):
+        import hashlib
+        from tools import arena_rules as ar
+        from tools import arena_twin_writer as tw
+        self.assertEqual(ax.TWIN_STACK_CONFIG_HASH, tw.stack_hash(ar.stack_config().as_dict()))
+        self.assertEqual(ax.TWIN_WRITER_SHA256, hashlib.sha256(Path(tw.__file__).read_bytes()).hexdigest())
+        for b in ax.BOOKS.values():
+            self.assertEqual(ax.twin_pins(b), (ax.TWIN_STACK_CONFIG_HASH, ax.TWIN_WRITER_SHA256))
+
+    def test_a_matching_record_passes_even_with_no_trip(self):
+        e = self.live2()
+        self.assertIsNone(e.ex.gates.twin_refusal(e.clock()))
+
+    def test_no_record_is_no_buy_but_no_latch(self):
+        e = self.live2(pinned_twin_record=False)
+        self.assertEqual(e.ex.gates.twin_refusal(e.clock()), "twin_gate:run_record_unreadable")
+        e.fire()
+        self.assertEqual(e.refusals()[-1], "twin_gate:run_record_unreadable")
+        self.assertNotIn(ax.H_TWIN_PIN, e.ex.counters.halts)
+
+    def mismatch(self, want, **kw):
+        e = self.live2()
+        gt_write_twin_run(e, rows=[], **kw)
+        self.assertEqual(e.ex.gates.twin_refusal(e.clock()), f"twin_gate:pin_mismatch:{want}")
+        sent = len(e.rpc.sent)
+        e.fire()
+        self.assertIn(f"twin_gate:pin_mismatch:{want}", e.refusals())
+        self.assertIn(ax.H_TWIN_PIN, e.ex.counters.halts)
+        self.assertEqual(len(e.rpc.sent), sent)
+        e.fire()  # latched: still no buy
+        self.assertEqual(len(e.rpc.sent), sent)
+
+    def test_a_wrong_config_hash_is_no_buy_and_a_latch(self):
+        self.mismatch("config_hash", config_hash="0" * 64)
+
+    def test_a_wrong_code_sha_is_no_buy_and_a_latch(self):
+        self.mismatch("code_sha256", code_sha256="f" * 64)
+
+    def test_a_record_with_a_missing_pin_field_is_a_mismatch(self):
+        e = self.live2()
+        f = Path(e.conf["parity_twins_file"])
+        rec = json.loads(gt.twin_run_path(str(f)).read_text())
+        del rec["code_sha256"]
+        gt.twin_run_path(str(f)).write_text(json.dumps(rec))
+        self.assertEqual(e.ex.gates.twin_refusal(e.clock()), "twin_gate:pin_mismatch:code_sha256")
+
+    def test_the_latch_is_a_hard_halt(self):
+        self.assertIn(ax.H_TWIN_PIN, ax.ARENA_HALTS)
+        self.assertIn(ax.H_TWIN_PIN, ax.HARD_ARENA_HALTS)

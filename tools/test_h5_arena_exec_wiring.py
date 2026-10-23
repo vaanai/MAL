@@ -179,13 +179,15 @@ from tools import h5_arena_gates as gt
 from tools.test_h5_executor import V as POOL_V
 
 
-def gt_write_twin_run(e, run_ms=None, covered=None, rows=()):
+def gt_write_twin_run(e, run_ms=None, covered=None, rows=(), config_hash=None, code_sha256=None):
     """What tools/arena_twin_writer.py leaves next to the twins file: the file, and the run record that stamps it."""
     import hashlib
     f = Path(e.conf["parity_twins_file"])
     f.write_text("".join(json.dumps(r) + "\n" for r in rows))
     rec = {"schema": gt.TWIN_RUN_SCHEMA, "run_ms": e.clock() if run_ms is None else run_ms,
-           "covered_trip_ids": sorted(e.ex.gates.recorder.trips) if covered is None else covered, "twins_sha256": hashlib.sha256(f.read_bytes()).hexdigest()}
+           "covered_trip_ids": sorted(e.ex.gates.recorder.trips) if covered is None else covered, "twins_sha256": hashlib.sha256(f.read_bytes()).hexdigest(),
+           "config_hash": ax.twin_pins(ax.BOOKS[e.conf["book_id"]])[0] if config_hash is None else config_hash,
+           "code_sha256": ax.twin_pins(ax.BOOKS[e.conf["book_id"]])[1] if code_sha256 is None else code_sha256}
     gt.twin_run_path(str(f)).write_text(json.dumps(rec))
 
 
@@ -427,7 +429,7 @@ class ParityGateTests(LiveCase):
         self.refused("tieout_dir_missing", tieout_dir=None)
 
     def test_state_stamps_only_reads_that_succeeded(self):
-        e = self.live()
+        e = self.live(pinned_twin_record=False)
         e.rpc.balance = 10**10
         self.assertNotIn("twin", e.ex._parity_state(e.clock())["at_ms"])  # a parsing twins file is not a stamp: only the writer's run record is (QP 10-23 condition 1)
         gt_write_twin_run(e)

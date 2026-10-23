@@ -33,7 +33,7 @@ PARITY_RUN_TIMEOUT_S = 60
 PARITY_RETRY_AFTER_FAIL_MS = 15_000  # a failed run is not retried on every trigger
 TIEOUT_CACHE_MS = 60_000
 DAY_MS = 86_400_000
-HARD_ARENA_HALTS = frozenset({"landed_buy_unreadable", "out_of_rule_entry", "stuck_position", "close_blocked_strand", "a3_pins_changed", "feed_break"})  # unresolved = latched
+HARD_ARENA_HALTS = frozenset({"landed_buy_unreadable", "out_of_rule_entry", "stuck_position", "close_blocked_strand", "a3_pins_changed", "feed_break", "twin_pin_mismatch"})  # unresolved = latched
 
 
 def v_band_refusal(v_lamports: Any, quote_mint: Any) -> str | None:
@@ -54,14 +54,18 @@ def twin_run_path(twins_file: str) -> Path:
     return Path(twins_file + ".run.json")
 
 
-def load_twin_ids(twins_file: str) -> set[str] | None:
-    """Trip ids that have a twin row, or None when the file cannot be read as JSON lines of objects with a trip_id."""
+def load_twin_ids(twins_file: str, priced_only: bool = False) -> set[str] | None:
+    """Trip ids that have a twin row, or None when the file cannot be read as JSON lines of objects with a trip_id. priced_only (QP 10-23 blocker 1) keeps only a
+    PRICED row: no `price_failed` flag and an integer `pnl_lamports`. A price_failed row (or one without a price) is a missing twin, so the buy gate refuses."""
     try:
         ids = set()
         for line in Path(twins_file).read_text().splitlines():
             if line.strip():
                 row = json.loads(line)
-                ids.add(row["trip_id"])
+                tid = row["trip_id"]
+                if priced_only and (row.get("price_failed") or isinstance(row.get("pnl_lamports"), bool) or not isinstance(row.get("pnl_lamports"), int)):
+                    continue
+                ids.add(tid)
         return ids
     except (OSError, ValueError, KeyError, TypeError):
         return None
@@ -83,6 +87,25 @@ def twin_run_stamp(twins_file: str, trip_ids: Any) -> int | None:
         return run_ms
     except (OSError, ValueError, KeyError, TypeError):
         return None
+
+
+TWIN_PIN_MISMATCH = "twin_gate:pin_mismatch"  # the caller latches H_TWIN_PIN on this prefix
+TWIN_NO_RECORD = "twin_gate:run_record_unreadable"
+
+
+def twin_pin_problem(twins_file: str, config_hash: str, code_sha256: str) -> str | None:
+    """None when the writer's run record carries exactly the pinned config_hash and code_sha256. An absent or unreadable record is a refusal (the writer has not run:
+    it runs once on the empty trips file before the first buy); a record with a different or missing value is a pin mismatch (no buy and a latch)."""
+    try:
+        rec = json.loads(twin_run_path(twins_file).read_text())
+        got = (rec["config_hash"] if "config_hash" in rec else None, rec["code_sha256"] if "code_sha256" in rec else None)
+    except (OSError, ValueError, TypeError):
+        return TWIN_NO_RECORD
+    if got[0] != config_hash:
+        return f"{TWIN_PIN_MISMATCH}:config_hash"
+    if got[1] != code_sha256:
+        return f"{TWIN_PIN_MISMATCH}:code_sha256"
+    return None
 
 
 def _write_jsonl_atomic(path: Path, rows: list[Mapping[str, Any]]) -> None:
@@ -223,7 +246,9 @@ class LiveGates:
     """Parity and tie-out gates for the live buy path. `state_builder(now_ms)` returns the parity state.json content (the executor stamps only reads that succeeded)."""
 
     def __init__(self, directory: Path, recorder: ParityRecorder, twins_file: str, tieout_dir: str, stop_file: str,
-                 state_builder: Callable[[int], dict[str, Any]], interval_s: float | None = None, runner: Runner | None = None):
+                 state_builder: Callable[[int], dict[str, Any]], interval_s: float | None = None, runner: Runner | None = None,
+                 twin_pins: tuple[str, str] | None = None):
+        self.twin_pins = twin_pins  # (config_hash, code_sha256) the twin writer's run record must carry (QP 10-23 blocker 2); None = unchecked (unit tests only; the executor always passes it)
         self.dir, self.recorder, self.twins_file, self.tieout_dir, self.stop_file = directory, recorder, twins_file, tieout_dir, stop_file
         self.state_builder = state_builder
         self.interval_ms = int(min(float(interval_s if interval_s is not None else PARITY_INTERVAL_S_MAX), PARITY_INTERVAL_S_MAX) * 1000)
@@ -280,10 +305,14 @@ class LiveGates:
     def twin_refusal(self, now_ms: int) -> str | None:
         """A new buy needs a twin row for EVERY live trip. A trip past its exit (landed, or its bound passed) without one is `past_exit_untwinned`; a trip still open without one holds the
         effective open cap at 1 (`open_untwinned_cap_1`): the second buy waits for the first trip's paper twin. An unreadable twins file is no buy."""
+        if self.twin_pins is not None:
+            pin = twin_pin_problem(self.twins_file, *self.twin_pins)
+            if pin:
+                return pin
         trips = self.recorder.trips
         if not trips:
             return None
-        have = load_twin_ids(self.twins_file)
+        have = load_twin_ids(self.twins_file, priced_only=True)
         if have is None:
             return "twin_gate:twins_unreadable"
         missing = [t for k, t in trips.items() if k not in have]

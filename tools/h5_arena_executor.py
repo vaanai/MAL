@@ -46,7 +46,7 @@ from datetime import datetime, timezone
 from tools import h5_executor as h
 from tools import mint_account_fetch as mf
 from tools.arena_close_blocked import classify_record
-from tools.h5_arena_gates import HARD_ARENA_HALTS, LiveGates, ParityRecorder, v_band_refusal
+from tools.h5_arena_gates import HARD_ARENA_HALTS, TWIN_PIN_MISMATCH, LiveGates, ParityRecorder, v_band_refusal
 from tools.h5_arena_gates import twin_run_stamp as gt_twin_run_stamp
 
 # --- the books (item 1). Values copied from the merged records: ARTIFACTS/lab/arena-records-2026-10-22.md (a2), qp-ruling-1022-q50.md and
@@ -101,6 +101,14 @@ class Priority:
         return {"profile": self.profile, "buy": self.buy, "sell": self.sell, "escalated": self.escalated}
 
 
+# --- the twin writer pins (QP 10-23 blocker 2 / P5). The executor refuses a buy (and latches H_TWIN_PIN) unless the writer's run record carries these two values.
+# TWIN_STACK_CONFIG_HASH = tools.arena_twin_writer.stack_hash(tools.arena_rules.stack_config(7).as_dict()): the twin is priced at the arena host's spelled-out stack
+# (rent 0, E1 floor 384,022, strand_rule both, ceil rounding, feed delay d = 7). The H5 books have no registered arena StackConfig of their own (arena-records-2026-10-22
+# section 2), so this value is a proposal the DEC copy must confirm. TWIN_WRITER_SHA256 = sha256 of tools/arena_twin_writer.py. A test recomputes both.
+TWIN_STACK_CONFIG_HASH = "1e611a5a636dfe6bd563ab5258f6b498cdb8906500ee8bf2f0264a2621621986"
+TWIN_WRITER_SHA256 = "47f26c12da37d97b6475c28580829730dec30e8d6e1e166e051e7c18a90f21cf"
+
+
 AM8_PRIORITY = 155_000  # DEC-031 Amendment 8 item 2: buy AND sell pinned at exactly 155,000, every escalation at or below it (160,000 per send with the base fee)
 PRIORITY_DEFAULT = Priority("default", h.H5_DEFAULT["buy_priority_lamports"], h.H5_DEFAULT["sell_priority_lamports"], h.H5_DEFAULT["escalated_priority_lamports"])
 PRIORITY_P155 = Priority("p155", AM8_PRIORITY, AM8_PRIORITY, AM8_PRIORITY)
@@ -119,6 +127,7 @@ class Book:
     s0_margin_ms: int
     q_star_in_record: float | None  # None: the start record carries no q_star_sol (the default 40.0 path is byte-identical)
     rule_sha256: str | None
+    twin_config_hash: str = TWIN_STACK_CONFIG_HASH
     priority: Priority = PRIORITY_DEFAULT  # registered books keep h5_executor's 55,000 / 55,000 / 150,000; only a NEW book (registered after Am.8) may be p155
 
     @property
@@ -131,6 +140,11 @@ BOOKS: dict[str, Book] = {b.bot_id: b for b in (
     Book("h5v2-boostclock-a2", A2_SHA, A2_RULE, "v2", 40 * 10**9, A2_CLOCK_MS, SEAL_END_MS, S0_MARGIN_V2_MS, None, None),
     Book("h5v1q50-boostfloor-a1", Q50_SHA, Q50_RULE, "v1", 50 * 10**9, Q50_CLOCK_MS, SEAL_END_MS, S0_MARGIN_V2_MS, 50.0, Q50_RULE_SHA256),
 )}
+
+def twin_pins(book: "Book") -> tuple[str, str]:
+    """(config_hash, code_sha256) the book's twin run record must carry. One stack for the three registered books today; per-book so a later book can differ."""
+    return (book.twin_config_hash, TWIN_WRITER_SHA256)
+
 
 # --- the sell builder pin (DEC-032 section 4, FILL:builder_path). The sell + close of the base ATA in ONE transaction is built by the unmodified base class:
 # tools/h5_executor.py H5Executor._arm_sell (tx.sell_instructions: budget, WSOL ATA, swap, WSOL close; then pl.close_token_account(base_ata, user, base_tp)
@@ -172,10 +186,11 @@ H_EXIT_GAP = "exit_gap_gt_200bps"
 H_LATE_SEND = "sell_send_late_x2"
 H_STUCK2 = "two_stuck_sells"
 H_STRAND = "close_blocked_strand"
+H_TWIN_PIN = "twin_pin_mismatch"  # QP 10-23 blocker 2: the twin writer's run record carries a config_hash or code_sha256 other than the pinned one
 H_A3 = "a3_pins_changed"
 SIGNAL_AGE_MAX_MS = 5_000  # DEC-032 s3 "Buy guard": signal age at most 5 s (the base executor's own PRESEND_MAX_TRIGGER_AGE_MS is 3.5 s; the stricter of the two applies)
 H_BUY_UNREADABLE = "landed_buy_unreadable"  # QP 10-23 W2: a landed buy whose token or spend amount cannot be read (an open, flagged trip exists)
-ARENA_HALTS = frozenset({H_BUY_UNREADABLE, H_FEED_BREAK, H_ENTRY_GAP, H_LANDING, H_EXIT_GAP, H_LATE_SEND, H_STUCK2, H_STRAND, H_A3})
+ARENA_HALTS = frozenset({H_BUY_UNREADABLE, H_FEED_BREAK, H_ENTRY_GAP, H_LANDING, H_EXIT_GAP, H_LATE_SEND, H_STUCK2, H_STRAND, H_A3, H_TWIN_PIN})
 ENTRY_GAP_WINDOW = 20  # DEC-032 s5 P1: the first 10 eligible fills, then ROLLING over the last 20
 LANDING_WINDOW_N = 30  # DEC-032 s5 P2: rolling 30 buy attempts, judged once 30 exist
 ENTRY_GAP_BPS, ENTRY_GAP_MIN_N = 200.0, 10
@@ -492,7 +507,7 @@ class ArenaExecutor(h.H5Executor):
             gdir = Path(self.h5cfg["state_dir"]) / "arena-parity"
             interval = cfg.get("parity_interval_s")
             self.gates = LiveGates(gdir, ParityRecorder(gdir), str(cfg["parity_twins_file"]), str(cfg["tieout_dir"]), self.paths["stop"],
-                                   self._parity_state, interval_s=interval if isinstance(interval, (int, float)) and interval > 0 else None)
+                                   self._parity_state, twin_pins=twin_pins(book), interval_s=interval if isinstance(interval, (int, float)) and interval > 0 else None)
         if self.exit_mode != book.exit_pin:
             raise SystemExit("exit mode pin was not applied")
         if keypair is not None:
@@ -609,7 +624,10 @@ class ArenaExecutor(h.H5Executor):
             return self._refuse(trg, why)
         if self.gates is not None:
             t = self.now_ms()
-            why = self.gates.twin_refusal(t) or self.gates.parity_refusal(t) or self.gates.tieout_refusal(t, self.state.first_attempt_ms)
+            twin_why = self.gates.twin_refusal(t)
+            if twin_why and twin_why.startswith(TWIN_PIN_MISMATCH):
+                self.latch_external(H_TWIN_PIN, why=twin_why)  # no buy and a latch: the twins were priced by another config or another writer
+            why = twin_why or self.gates.parity_refusal(t) or self.gates.tieout_refusal(t, self.state.first_attempt_ms)
             if why:
                 return self._refuse(trg, why)
         blocked = self._screen_mint(trg.mint)  # DEC-032 s3 "Venue": a freeze authority or a Token-2022 extension outside the allowlist is a strand = total loss
