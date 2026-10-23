@@ -494,3 +494,92 @@ def test_b6_duplicate_trip_rows_and_attempt_ids_are_refused():
     att.append(dict(att[0]))
     with pytest.raises(P.BadInput, match="duplicate"):
         run(ts, ws, att=att)
+
+
+# ---------------------------------------------------------------------------------------------------------------------- B7: strict per-state field validation
+def test_b7_qp_repro_100_good_plus_10_exited_without_live_net_is_not_a_match(tmp_path):
+    ts, ws = book(100, d_bps=-250.0)
+    ts2, ws2 = book(10)
+    for t, w in zip(ts2, ws2):
+        t["trip_id"] = w["trip_id"] = "x" + t["trip_id"]
+        del t["live_net_lamports"]
+    with pytest.raises(P.BadInput, match="live_net_lamports"):
+        run(ts + ts2, ws + ws2)
+    assert P.main(cli(tmp_path, ts + ts2, ws + ws2, attempts(40), fresh_state())) == 2 and (tmp_path / "STOP").exists()
+
+
+@pytest.mark.parametrize("key", ["live_net_lamports", "exit_landed_ms", "exit_bound_ms", "live_sell_price", "exit_reason", "buy_landed_ms", "live_buy_price", "gap", "exit_landed"])
+def test_b7_exited_trip_missing_or_null_required_field_is_bad_input(key):
+    for mode in ("missing", "null"):
+        ts, ws = book(30)
+        if mode == "missing":
+            del ts[3][key]
+        else:
+            ts[3][key] = None
+        with pytest.raises(P.BadInput):
+            run(ts, ws)
+
+
+@pytest.mark.parametrize("key,val", [("exit_landed", "false"), ("exit_landed", 1), ("exit_landed", 0), ("exit_landed", "true"), ("gap", "false"), ("gap", 0), ("gap_through", "no"), ("exit_reason", 5),
+                                     ("live_net_lamports", "5"), ("stake_lamports", "50000000")])
+def test_b7_mistyped_trip_field_is_bad_input(key, val):
+    ts, ws = book(30)
+    ts[3][key] = val
+    with pytest.raises(P.BadInput):
+        run(ts, ws)
+
+
+def test_b7_pending_trip_does_not_need_exit_fields():
+    ts, ws = book(30)
+    for k in ("live_net_lamports", "exit_landed_ms", "live_sell_price", "exit_reason"):
+        ts[3].pop(k)
+    ts[3]["exit_landed"] = False
+    run(ts, ws)  # no BadInput
+
+
+@pytest.mark.parametrize("key,val", [("landed", "true"), ("landed", 1), ("failed_or_expired", "false"), ("failed_or_expired", 0), ("trip_id", 7)])
+def test_b7_mistyped_attempt_field_is_bad_input(key, val):
+    att = attempts(40)
+    att[5][key] = val
+    with pytest.raises(P.BadInput):
+        run(*book(5), att=att)
+
+
+@pytest.mark.parametrize("key", ["landed", "failed_or_expired"])
+def test_b7_attempt_missing_bool_is_bad_input(key):
+    att = attempts(40)
+    del att[5][key]
+    with pytest.raises(P.BadInput):
+        run(*book(5), att=att)
+
+
+def test_b7_landed_buy_without_landed_ms_is_bad_input_not_a_silent_p5_drop(tmp_path):
+    att = attempts(40, land_s=9.0)
+    att[3]["landed_ms"] = None
+    with pytest.raises(P.BadInput, match="landed_ms"):
+        run(*book(5), att=att)
+    del att[3]["landed_ms"]
+    with pytest.raises(P.BadInput, match="landed_ms"):
+        run(*book(5), att=att)
+    assert P.main(cli(tmp_path, *book(5), att, fresh_state())) == 2 and (tmp_path / "STOP").exists()
+
+
+def test_b7_twin_price_failed_must_be_a_bool():
+    ts, ws = book(30)
+    ws[2]["price_failed"] = "false"
+    with pytest.raises(P.BadInput):
+        run(ts, ws)
+
+
+def test_b7_argparse_failure_writes_stop_when_a_stop_path_was_given(tmp_path, capsys):
+    stop = tmp_path / "STOP"
+    assert P.main(["--stop-file", str(stop), "--bogus"]) == 2 and stop.exists()
+    assert "FAIL CLOSED" in capsys.readouterr().out
+    assert P.main(["--stop-file", str(tmp_path / "STOP2"), "--now-ms", "nope"]) == 2 and (tmp_path / "STOP2").exists()
+    assert P.main(["--stop-file=" + str(tmp_path / "STOP3"), "-h"]) == 2 and (tmp_path / "STOP3").exists()  # help must never look like a clean pass
+    assert P.main(["--trips", "x"]) == 2  # no stop path given: still non-zero
+
+
+def test_b7_json_failure_exit_5_writes_stop_when_otherwise_clean(tmp_path, capsys):
+    rc = P.main(cli(tmp_path, *book(100), attempts(40), fresh_state(), extra=["--json", str(tmp_path / "nodir" / "o.json")]))
+    assert rc == 5 and (tmp_path / "STOP").exists()

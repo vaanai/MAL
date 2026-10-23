@@ -108,24 +108,52 @@ def _need_id(row: Mapping[str, Any], key: str, what: str) -> None:
         raise BadInput(f"{what} row without a {key}")
 
 
+def _bool(row: Mapping[str, Any], key: str, what: str, required: bool = True) -> None:
+    v = row.get(key)
+    if v is None and not required:
+        return
+    if not isinstance(v, bool):
+        raise BadInput(f"{what} {row.get('trip_id', row.get('attempt_id', '?'))!r}: {key} must be a real boolean (got {v!r})")
+
+
 def validate_inputs(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[str, Any]], attempts: Sequence[Mapping[str, Any]]) -> None:
-    """Every malformed row is a BadInput (never a KeyError, TypeError or ZeroDivisionError mid-evaluation)."""
+    """Strict, per-state field validation. Every malformed row is a BadInput (exit 2 + STOP), never a KeyError, TypeError, ZeroDivisionError or a silent drop.
+    trip (all): trip_id, stake_lamports > 0, decision_ms, buy_landed_ms, live_buy_price, gap (bool), exit_landed (bool).
+    trip exited: also live_net_lamports, live_sell_price, exit_landed_ms, exit_bound_ms, exit_reason (str). trip pending: exit_bound_ms.
+    twin: trip_id; price_failed bool if present; numbers finite. attempt: attempt_id, decision_ms, landed (bool), failed_or_expired (bool), p_fail_press in [0, 1]; landed: landed_ms."""
     for t in trips:
         _need_id(t, "trip_id", "trip")
         _need(t, "stake_lamports", "trip", positive=True)
-        _need(t, "decision_ms", "trip")
-        if not t.get("exit_landed"):
+        for k in ("decision_ms", "buy_landed_ms", "live_buy_price"):
+            _need(t, k, "trip")
+        _bool(t, "gap", "trip")
+        _bool(t, "exit_landed", "trip")
+        _bool(t, "gap_through", "trip", required=False)
+        if t["exit_landed"]:
+            for k in ("live_net_lamports", "live_sell_price", "exit_landed_ms", "exit_bound_ms"):
+                _need(t, k, "exited trip")
+            if not isinstance(t.get("exit_reason"), str):
+                raise BadInput(f"exited trip {t['trip_id']!r}: exit_reason missing or not a string")
+        else:
             _need(t, "exit_bound_ms", "pending-exit trip")  # without the exit instant the age of an open position cannot be judged: refuse
-        for k in ("buy_landed_ms", "closed_ms", "exit_landed_ms", "exit_bound_ms", "live_net_lamports", "live_buy_price", "live_sell_price"):
+        for k in ("closed_ms", "live_net_lamports", "live_sell_price", "exit_landed_ms"):
             _opt(t, k, "trip")
     for w in twins:
         _need_id(w, "trip_id", "twin")
+        _bool(w, "price_failed", "twin", required=False)
         for k in ("pnl_lamports", "pnl_e1_lamports", "entry_price", "exit_price"):
             _opt(w, k, "twin")  # a twin missing a needed field is no_twin (conservative), but a non-numeric one is a bad file
     for a in attempts:
         _need_id(a, "attempt_id", "attempt")
         _need(a, "decision_ms", "attempt")
-        _opt(a, "landed_ms", "attempt")
+        _bool(a, "landed", "attempt")
+        _bool(a, "failed_or_expired", "attempt")
+        if a.get("trip_id") is not None and not isinstance(a["trip_id"], str):
+            raise BadInput(f"attempt {a['attempt_id']!r}: trip_id must be a string or null")
+        if a["landed"]:
+            _need(a, "landed_ms", "landed buy attempt")
+        else:
+            _opt(a, "landed_ms", "attempt")
         _need(a, "p_fail_press", "attempt")
         if not 0.0 <= a["p_fail_press"] <= 1.0:
             raise BadInput(f"attempt {a['attempt_id']!r}: p_fail_press {a['p_fail_press']} outside [0, 1] (it is the pressure leg's FAIL probability p, mean 0.289 in arena_stack.fail_legs, never 1 - p)")
@@ -358,13 +386,31 @@ def _fail_closed(stop_file: str, now_ms: int, code: int, msg: str) -> int:
     return code
 
 
+def _flag_value(argv: Sequence[str], name: str) -> str | None:
+    for i, x in enumerate(argv):
+        if x == name and i + 1 < len(argv):
+            return argv[i + 1]
+        if x.startswith(name + "="):
+            return x.split("=", 1)[1]
+    return None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     for a in ("trips", "twins", "attempts", "state", "stop-file"):
         ap.add_argument(f"--{a}", required=True)
     ap.add_argument("--now-ms", type=int, required=True)
     ap.add_argument("--json")
-    a = ap.parse_args(argv)  # argparse itself exits 2 on a missing flag: non-zero, so no buy
+    argv_l = list(sys.argv[1:] if argv is None else argv)
+    try:
+        a = ap.parse_args(argv_l)
+    except SystemExit:  # argparse exits 2 (or 0 for -h): never a clean pass; write STOP if a stop path was given
+        stop = _flag_value(argv_l, "--stop-file")
+        now = _flag_value(argv_l, "--now-ms")
+        if stop:
+            return _fail_closed(stop, int(now) if now and now.lstrip("-").isdigit() else 0, EXIT_BAD_INPUT, "command line unusable (argparse)")
+        print("FAIL CLOSED (NO BUY): command line unusable and no --stop-file given")
+        return EXIT_BAD_INPUT
     try:
         trips, twins, attempts = load_jsonl(a.trips), load_jsonl(a.twins), load_jsonl(a.attempts)
         try:
@@ -389,7 +435,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             Path(a.json).write_text(json.dumps(res, indent=1, sort_keys=True, allow_nan=False))
         except (OSError, ValueError) as exc:
             print(f"JSON OUTPUT NOT WRITTEN ({exc}): the result above is the only copy")
-            return code or EXIT_JSON
+            if code:
+                return code  # STOP already written for this halt
+            return _fail_closed(a.stop_file, a.now_ms, EXIT_JSON, f"JSON output not written ({exc})")
     return code
 
 
