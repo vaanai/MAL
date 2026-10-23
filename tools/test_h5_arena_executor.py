@@ -382,7 +382,7 @@ class MonitorTests(ACase):
         e = self.env(live=False)
         e.fire()
         # dry run lands nothing; the hook is exercised through the monitor on the real _finish_buy path in the live-path test below
-        self.assertEqual(e.ex.monitor.entry_gaps, [])
+        self.assertEqual(list(e.ex.monitor.entry_gaps), [])
 
 
 class LiveShapePathTests(ACase):
@@ -765,3 +765,43 @@ class CommittedLossTests(ACase):
                     (self.tmp / "repo" / ax.CANARY_DEC_FILE).write_text("OWNER_CANARY_CONFIRMED: test\n")
                     AEnv(self.tmp, live=True, book_id=self.book_id, replay_only=True, end_ms=ax.SEAL_END_MS, **kw)
                 self.assertIn(why, str(cm.exception))
+
+
+class RollingWindowTests(ACase):
+    """Gap (e): P1 and P2 are rolling (DEC-032 s5), not running totals."""
+
+    def test_a_bad_stretch_after_a_good_one_still_fires_the_entry_gap(self):
+        m = ax.FidelityMonitor()
+        got = [m.note_entry_gap(0) for _ in range(10)] + [m.note_entry_gap(210) for _ in range(20)]
+        self.assertIn(ax.H_ENTRY_GAP, got)
+        cumulative_mean = (20 * 210) / 30
+        self.assertLess(cumulative_mean, ax.ENTRY_GAP_BPS)  # a running total would have stayed silent
+
+    def test_first_ten_then_rolling_twenty_boundaries(self):
+        m = ax.FidelityMonitor()
+        self.assertEqual([m.note_entry_gap(500) for _ in range(9)], [None] * 9)  # fewer than 10 fills: no verdict
+        self.assertEqual(m.note_entry_gap(500), ax.H_ENTRY_GAP)
+
+    def test_old_bad_fills_age_out(self):
+        m = ax.FidelityMonitor()
+        for _ in range(9):
+            m.note_entry_gap(1000)
+        out = [m.note_entry_gap(0) for _ in range(40)]
+        self.assertEqual(out[-1], None)  # the window has moved past the bad stretch
+        self.assertEqual(len(m.entry_gaps), 20)
+
+    def test_landing_fail_excess_is_over_the_last_30_attempts(self):
+        m = ax.FidelityMonitor()
+        got = [m.note_attempt(True) for _ in range(30)] + [m.note_attempt(i >= 9) for i in range(30)]  # then 9 failures in the next 30
+        self.assertEqual(got[:30], [None] * 30)
+        self.assertIn(ax.H_LANDING, got[30:])
+        self.assertEqual((m.failed, m.attempts), (9, 60))
+        self.assertLessEqual(100.0 * (m.failed / m.attempts - ax.PAPER_FAIL_RATE), ax.LANDING_EXCESS_PP)  # a running total would not have fired
+
+    def test_landing_old_failures_age_out(self):
+        m = ax.FidelityMonitor()
+        for _ in range(30):
+            m.note_attempt(False)
+        out = [m.note_attempt(True) for _ in range(30)]
+        self.assertIsNone(out[-1])
+        self.assertEqual(len(m.recent_attempts), 30)

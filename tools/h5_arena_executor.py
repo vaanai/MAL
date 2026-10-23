@@ -34,6 +34,7 @@ import hashlib
 import json
 import re
 import sys
+from collections import deque
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable
@@ -137,6 +138,8 @@ H_STUCK2 = "two_stuck_sells"
 H_STRAND = "close_blocked_strand"
 H_A3 = "a3_pins_changed"
 ARENA_HALTS = frozenset({H_FEED_BREAK, H_ENTRY_GAP, H_LANDING, H_EXIT_GAP, H_LATE_SEND, H_STUCK2, H_STRAND, H_A3})
+ENTRY_GAP_WINDOW = 20  # DEC-032 s5 P1: the first 10 eligible fills, then ROLLING over the last 20
+LANDING_WINDOW_N = 30  # DEC-032 s5 P2: rolling 30 buy attempts, judged once 30 exist
 ENTRY_GAP_BPS, ENTRY_GAP_MIN_N = 200.0, 10
 EXIT_GAP_BPS, EXIT_GAP_MIN_N = 200.0, 10
 LANDING_EXCESS_PP, LANDING_MIN_N = 10.0, 30
@@ -271,17 +274,18 @@ class FidelityMonitor:
     comparator values arrive from the caller (entry: the trigger-quote expected tokens; exit: the parity join, which runs only under the item-17 note)."""
 
     def __init__(self) -> None:
-        self.entry_gaps: list[float] = []
+        self.entry_gaps: deque[float] = deque(maxlen=ENTRY_GAP_WINDOW)  # rolling: an old good stretch never dilutes a bad one (DEC-032 s5: no window reset)
         self.exit_gaps: list[float] = []
-        self.attempts = 0
+        self.attempts = 0  # lifetime counts, for the report; the halt reads the rolling window below
         self.failed = 0
+        self.recent_attempts: deque[bool] = deque(maxlen=LANDING_WINDOW_N)  # True = landed
         self.late_trips = 0
         self.stuck: set[str] = set()
         self.late_slots: list[int] = []
 
     def note_entry_gap(self, bps_worse: float) -> str | None:
         self.entry_gaps.append(float(bps_worse))
-        n = len(self.entry_gaps)
+        n = len(self.entry_gaps)  # 10 .. 20: every fill so far; beyond that the last 20
         return H_ENTRY_GAP if n >= ENTRY_GAP_MIN_N and sum(self.entry_gaps) / n > ENTRY_GAP_BPS else None
 
     def note_exit_gap(self, bps_worse: float) -> str | None:
@@ -292,9 +296,11 @@ class FidelityMonitor:
     def note_attempt(self, landed: bool) -> str | None:
         self.attempts += 1
         self.failed += 0 if landed else 1
-        if self.attempts < LANDING_MIN_N:
+        self.recent_attempts.append(bool(landed))
+        n = len(self.recent_attempts)
+        if n < LANDING_MIN_N:
             return None
-        excess = 100.0 * (self.failed / self.attempts - PAPER_FAIL_RATE)
+        excess = 100.0 * ((n - sum(self.recent_attempts)) / n - PAPER_FAIL_RATE)  # rolling 30 against the flat 15% model (the pressure refit is not available here)
         return H_LANDING if excess > LANDING_EXCESS_PP else None
 
     def note_sell_send(self, send_slot: int, sent_at_slot: int) -> str | None:
