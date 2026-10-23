@@ -118,7 +118,7 @@ class Buy2WindowTests(LiveCase):
     def test_a_priced_twin_row_for_every_trip_opens_the_gate(self):
         e = self.live2()
         e.open_position()
-        gt_write_twin_run(e, rows=[{"trip_id": MINT, "pnl_lamports": -5.25, "entry_price": 1.0, "exit_price": 0.9}])
+        gt_write_twin_run(e, rows=[{"trip_id": MINT, "pnl_lamports": -5.25, "pnl_live_basis_lamports": -5.25, "entry_price": 1.0, "exit_price": 0.9}])
         self.assertIsNone(e.ex.gates.twin_refusal(e.clock()))
 
     def test_a_price_failed_twin_row_is_a_missing_twin(self):
@@ -264,11 +264,11 @@ class RealWriterTests(LiveCase):
         from tools import arena_h5_cost as c
         return c
 
-    def nofail(self):
-        return self.cost().deciding_round_trip(self.STAKE, self.QE, self.BE, self.QE / self.BE, self.QX, self.BX)["pnl"]
+    def nofail(self, stake=None, e1=True):
+        return self.cost().deciding_round_trip(self.STAKE if stake is None else stake, self.QE, self.BE, self.QE / self.BE, self.QX, self.BX, e1=e1)["pnl"]
 
     def h5_row(self, mint, stake_sol=0.3, state="filled", nofail=None, frozen_sha=None):
-        nofail = self.nofail() if nofail is None else nofail
+        nofail = self.nofail(stake_sol * 1e9) if nofail is None else nofail
         return {"trade_id": f"b:pool:{stake_sol}", "bot_id": "h5v1-boostfloor-a2", "frozen_sha": frozen_sha or ax.A2_SHA, "decision_ms": self.DEC, "exit_ms": self.DEC + 330_000,
                 "pool": "pool", "mint": mint, "prog": "pumpswap", "stake_sol": stake_sol,
                 "meta": {"schema": "arena_h5_trade_v1", "stack": "DEC-031-rev2", "spot": self.QE / self.BE, "landing_slots": {"1p9": self.LAND}, "exit_trigger_slots": {"1p9": self.XTRIG},
@@ -285,7 +285,7 @@ class RealWriterTests(LiveCase):
         (sd / "h5-shadow-2026-09-20T12.jsonl").write_text("".join(json.dumps(r) + "\n" for r in recs))
         return sd
 
-    def run_writer(self, e, rows, strip=True, with_inputs=True, expect_sha=None, fees=None):
+    def run_writer(self, e, rows, strip=True, with_inputs=True, expect_sha=None, fees=None, stake=None):
         from datetime import datetime, timezone
         from tools import arena_twin_writer as tw
         d = Path(e.conf["parity_twins_file"]).parent
@@ -294,7 +294,7 @@ class RealWriterTests(LiveCase):
         day = datetime.fromtimestamp(self.DEC / 1000, timezone.utc).strftime("%Y-%m-%d")
         (led / f"trades-{day}.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
         trips = d / "trips-in.jsonl"
-        trips.write_text(json.dumps({"trip_id": MINT, "decision_ms": self.DEC, "stake_lamports": self.STAKE, **(fees or {})}) + "\n")
+        trips.write_text(json.dumps({"trip_id": MINT, "decision_ms": self.DEC, "stake_lamports": self.STAKE if stake is None else stake, **(fees or {})}) + "\n")
         ch, _ = ax.twin_pins(ax.BOOKS["h5v1-boostfloor-a2"])
         args = ["--trips", str(trips), "--ledger-dir", str(led), "--bot-id", "h5v1-boostfloor-a2", "--out", e.conf["parity_twins_file"], "--config-hash", ch, "--now-ms", str(e.clock())]
         if with_inputs:
@@ -372,9 +372,56 @@ class RealWriterTests(LiveCase):
         self.assertTrue(self.written(e)["price_failed"])
         self.assertEqual(e.ex.gates.twin_refusal(e.clock()), "twin_gate:open_untwinned_cap_1")
 
-    def test_an_h5_row_at_another_stake_is_price_failed(self):
-        e = self.case(rows=[self.h5_row(MINT, stake_sol=0.25)])
-        self.assertEqual(self.written(e)["reason"], "h5_no_row_at_canary_stake")
+    def test_the_canary_stake_is_priced_from_a_recorded_stake_row_after_the_self_check(self):
+        live = 50_000_000
+        e = self.case(rows=[self.h5_row(MINT, stake_sol=0.3), self.h5_row(MINT, stake_sol=0.25)], stake=live, fees={"buy_fee_lamports": 160_000, "sell_fee_lamports": 160_000})
+        row = self.written(e)
+        self.assertNotIn("price_failed", row)
+        self.assertEqual(row["twin_stake_lamports"], live)
+        self.assertEqual(row["check_stake_lamports"], 250_000_000)  # the nearest recorded stake is the check row
+        c = self.cost()
+        rent0_fee = self.nofail(live, e1=False) + c.RENT + 690_000
+        self.assertAlmostEqual(row["pnl_live_basis_lamports"], rent0_fee)
+        self.assertAlmostEqual(row["pnl_e1_live_basis_lamports"], self.nofail(live) + c.RENT + 690_000)
+        self.assertLessEqual(row["pnl_e1_live_basis_lamports"], row["pnl_live_basis_lamports"] + 1e-6)  # the E1 floor only lowers the P&L
+        self.assertIsNone(e.ex.gates.twin_refusal(e.clock()))
+
+    def test_impact_at_the_live_size_is_smaller_than_at_the_recorded_size(self):
+        e = self.case(rows=[self.h5_row(MINT, stake_sol=0.3)], stake=50_000_000)
+        small = self.written(e)["entry_price"]
+        from tools import arena_h5_twin_prices as P
+        sc, cost = P.load_frozen(Path(__file__).parent.parent, __import__("hashlib").sha256((Path(__file__).parent / "arena_h5_cost.py").read_bytes()).hexdigest())
+        big, _ = P._fills(cost, 3e8, self.QE, self.BE, self.QX, self.BX)
+        self.assertLess(small, big)
+
+    def test_a_failed_self_check_at_the_recorded_stake_fails_the_row_at_any_live_stake(self):
+        e = self.case(rows=[self.h5_row(MINT, stake_sol=0.3, nofail=self.nofail(300_000_000) + 3)], stake=50_000_000)
+        self.assertEqual(self.written(e)["reason"], "h5_price:rebuilt_pnl_differs_from_row")
+
+    def test_a_live_basis_figure_is_written_and_parity_fires_p3_on_real_writer_output(self):
+        from tools import arena_live_parity as alp
+        e = self.case(stake=50_000_000, fees={"buy_fee_lamports": 160_000, "sell_fee_lamports": 160_000})
+        w = self.written(e)
+        now = 1_790_100_000_000
+        trips, twins = [], []
+        for i in range(20):
+            t0 = now - 10_000_000 + i * 1000
+            trips.append({"trip_id": f"t{i}", "stake_lamports": 50_000_000, "decision_ms": t0, "buy_landed_ms": t0 + 1000, "closed_ms": t0 + 500, "gap": False, "exit_landed": True,
+                          "exit_reason": "timer", "exit_landed_ms": t0 + 400, "exit_bound_ms": t0 + 400, "gap_through": False,
+                          "live_net_lamports": w["pnl_live_basis_lamports"] - 0.03 * 50_000_000,  # 300 bps worse on the comparable basis (strictly: 301)
+                          "live_buy_price": w["entry_price"], "live_sell_price": w["exit_price"]})
+            twins.append({**w, "trip_id": f"t{i}"})
+        trips = [{**t, "live_net_lamports": t["live_net_lamports"] - 0.0001 * 50_000_000} for t in trips]
+        att = [{"attempt_id": f"a{i}", "trip_id": None, "decision_ms": now - 20_000_000 + i * 1000, "landed": True, "landed_ms": now - 20_000_000 + i * 1000 + 1000,
+                "failed_or_expired": False, "p_fail_press": 0.1} for i in range(40)]
+        st = {"at_ms": {n: now - 1000 for n in alp.STATE_NAMES}, "last_landed_ms": now - 5000, "unresolved_hard_halts": []}
+        self.assertIn("P3", alp.evaluate(trips, twins, att, st, now)["halts"])
+        # on the registered (biased) figure the same live trips look BETTER than the twin: the old rule could not fire
+        old = (trips[0]["live_net_lamports"] - w["pnl_lamports"]) / 50_000_000 * 1e4
+        self.assertGreater(old, -300)
+        # a twin row without the live-basis figure is no_twin
+        bad = [{k: v for k, v in x.items() if k != "pnl_live_basis_lamports"} for x in twins]
+        self.assertEqual(alp.evaluate(trips, bad, att, st, now)["stats"]["n_eligible"], 0)
 
     def test_a_wrong_h5_pin_refuses_the_whole_run(self):
         from tools import arena_twin_writer as tw

@@ -6,7 +6,7 @@ INPUTS (JSON lines; the tests use fixtures only, a real canary file is never ope
   trips     one line per live round trip: trip_id, stake_lamports, decision_ms, buy_landed_ms, closed_ms (optional; order key, else decision_ms), gap (bool, the live trip
             overlapped a feed gap), exit_landed (bool), exit_reason ("stop_loss" | other), exit_landed_ms, exit_bound_ms, live_net_lamports (chain wallet delta of the trip:
             sells received minus buys paid minus all fees, rent refunded counted), live_buy_price, live_sell_price, gap_through (bool, optional)
-  twins     one line per paper twin (arena_paper, nofail leg, 1.9 s, priced at the executor's actual per-send fees): trip_id, pnl_lamports (E1 floor EXCLUDED: this decides),
+  twins     one line per paper twin (arena_paper, nofail leg, 1.9 s, priced at the executor's actual per-send fees): trip_id, pnl_lamports (the twin's registered figure), pnl_live_basis_lamports (REQUIRED, QP 10-23 ruling 6: rent 0, E1 floor EXCLUDED, the executor's actual per-send fees: this decides P3/P4 and the match test; a twin without it is no_twin),
             pnl_e1_lamports (E1 included: reported beside), entry_price, exit_price, price_failed (bool, optional)
   attempts  one line per live buy send: attempt_id, trip_id (required on a landed buy: the trip it opened), decision_ms, landed (bool), landed_ms, failed_or_expired (bool), p_fail_press (REQUIRED, in [0, 1]: the pressure leg's FAIL probability p, as in arena_stack.fail_legs, refit mean 0.289; NOT 1 - p)
   state     {"at_ms": {"loss": ms, "balance": ms, "twin": ms, "parity": ms, "decision_chain": ms, "control_files": ms}, "last_landed_ms": ms, "unresolved_hard_halts": [ids]}
@@ -14,7 +14,7 @@ INPUTS (JSON lines; the tests use fixtures only, a real canary file is never ope
 DEFINITIONS (exactly DEC-032 section 5)
   eligible trip     has a twin (a failed twin price is no_twin), is not marked gap, and its exit has landed. Non-eligible trips are counted by reason: no_twin, gap, exit_pending.
                     A trip with no twin row at all is no_twin, never eligible. A zero-row twins file with a live trip past its exit is P7 at once. A trip with several reasons is counted once as ineligible and once under EACH reason (the shares are conservative).
-  d_i (bps)         (live_net_lamports - twin pnl_lamports) / stake_lamports * 10,000.
+  d_i (bps)         (live_net_lamports - twin pnl_live_basis_lamports) / stake_lamports * 10,000.
   g_entry_i (bps)   (live_buy_price / twin entry_price - 1) * 10,000; positive = live paid more.  g_exit_i likewise on the sell; negative = live received less.
   landing-fail excess   live share of buy sends that failed or expired minus max(0.15, mean p_fail_press) over the same attempts. DEC-032 section 5 says "mean 1 - p"; QP ruling 1023 reads it as the fail share p itself (fail_legs' p is the failure probability), so this tool uses p.
   Duplicate trip_id (trips, twins) or attempt_id rows are refused (BadInput, exit 2, STOP): no last-wins.
@@ -143,7 +143,7 @@ def validate_inputs(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[
     for w in twins:
         _need_id(w, "trip_id", "twin")
         _bool(w, "price_failed", "twin", required=False)
-        for k in ("pnl_lamports", "pnl_e1_lamports", "entry_price", "exit_price"):
+        for k in ("pnl_lamports", "pnl_e1_lamports", "pnl_live_basis_lamports", "pnl_e1_live_basis_lamports", "entry_price", "exit_price"):
             _opt(w, k, "twin")  # a twin missing a needed field is no_twin (conservative), but a non-numeric one is a bad file
     for a in attempts:
         _need_id(a, "attempt_id", "attempt")
@@ -177,7 +177,7 @@ def classify_trip(t: Mapping[str, Any], twin: Mapping[str, Any] | None) -> dict[
     reasons = []
     if t.get("gap"):
         reasons.append("gap")
-    ok_twin = twin is not None and not twin.get("price_failed") and all(_isnum(twin.get(k)) for k in ("pnl_lamports", "entry_price", "exit_price")) \
+    ok_twin = twin is not None and not twin.get("price_failed") and all(_isnum(twin.get(k)) for k in ("pnl_lamports", "pnl_live_basis_lamports", "entry_price", "exit_price")) \
         and twin["entry_price"] > 0 and twin["exit_price"] > 0
     if not ok_twin:
         reasons.append("no_twin")
@@ -193,9 +193,9 @@ def classify_trip(t: Mapping[str, Any], twin: Mapping[str, Any] | None) -> dict[
         if t.get("exit_landed") and t.get("live_sell_price") is not None:
             m["g_exit"] = bps(float(t["live_sell_price"]) / float(twin["exit_price"]) - 1.0)
         if t.get("exit_landed") and t.get("live_net_lamports") is not None:
-            m["d"] = bps((float(t["live_net_lamports"]) - float(twin["pnl_lamports"])) / stake)
-            if isinstance(twin.get("pnl_e1_lamports"), (int, float)):
-                m["d_e1"] = bps((float(t["live_net_lamports"]) - float(twin["pnl_e1_lamports"])) / stake)
+            m["d"] = bps((float(t["live_net_lamports"]) - float(twin["pnl_live_basis_lamports"])) / stake)  # the COMPARABLE basis: rent 0, E1 excluded, the executor's actual fees
+            if _isnum(twin.get("pnl_e1_live_basis_lamports")):
+                m["d_e1"] = bps((float(t["live_net_lamports"]) - float(twin["pnl_e1_live_basis_lamports"])) / stake)
     if t.get("buy_landed_ms") is not None:
         m["landing_s"] = (int(t["buy_landed_ms"]) - int(t["decision_ms"])) / 1000.0
     m["stop_loss"] = t.get("exit_reason") == "stop_loss"

@@ -21,7 +21,7 @@ def trip(i, d_bps=0.0, g_entry=0.0, g_exit=0.0, stop=False, gap=False, landed=Tr
     return ({"trip_id": f"t{i}", "stake_lamports": STAKE, "decision_ms": t0, "buy_landed_ms": t0 + int(land_s * 1000), "closed_ms": t0 + 500, "gap": gap, "exit_landed": landed,
              "exit_reason": "stop_loss" if stop else "timer", "exit_landed_ms": t0 + 400 + (200 if late else 0), "exit_bound_ms": t0 + 500 - 100, "gap_through": gt,
              "live_net_lamports": tw_pnl + d_bps / 1e4 * STAKE, "live_buy_price": 1.0 + g_entry / 1e4, "live_sell_price": 2.0 * (1 + g_exit / 1e4)},
-            {"trip_id": f"t{i}", "pnl_lamports": tw_pnl, "pnl_e1_lamports": tw_pnl - 384_022, "entry_price": 1.0, "exit_price": 2.0})
+            {"trip_id": f"t{i}", "pnl_lamports": tw_pnl, "pnl_e1_lamports": tw_pnl - 384_022, "pnl_live_basis_lamports": tw_pnl, "pnl_e1_live_basis_lamports": tw_pnl - 384_022, "entry_price": 1.0, "exit_price": 2.0})
 
 
 def book(n, **kw):
@@ -705,3 +705,22 @@ def test_unreadable_trip_is_never_eligible_and_halts():
     ts[0]["unreadable"] = True
     r = P.evaluate(ts, ws, attempts(40), fresh_state(), NOW)
     assert "P7" in r["halts"] and "unreadable" in r["halts"]["P7"]["detail"] and r["shares"]["eligible"] == 2
+
+
+def test_a_twin_without_the_live_basis_field_is_no_twin_fail_closed():
+    ts, ws = book(3, d_bps=0.0)
+    del ws[1]["pnl_live_basis_lamports"]
+    r = run(ts, ws)
+    assert "no_twin" in next(m for m in r["trips"] if m["trip_id"] == "t1")["reasons"] if "trips" in r else True
+    assert r["stats"]["n_eligible"] == 2
+
+
+def test_p3_and_p4_use_the_live_basis_not_the_registered_pnl():
+    """The registered pnl_lamports is biased (rent charged, E1, 505,000 sends): a live trip 300+ bps worse on the COMPARABLE basis fires P3 even though it looks better
+    than the registered figure (which d used before this field existed)."""
+    ts, ws = book(20, d_bps=-301.0)
+    for w in ws:
+        w["pnl_lamports"] = w["pnl_live_basis_lamports"] - 620.0 / 1e4 * STAKE  # the registered figure sits ~620 bps lower: against it live looks +319 bps BETTER
+    assert run(ts, ws)["halts"]["P3"]["at_index"] == 20
+    old_d = (ts[0]["live_net_lamports"] - ws[0]["pnl_lamports"]) / STAKE * 1e4
+    assert old_d > 300  # the previous rule (live_net - pnl_lamports) could never fire P3 here
