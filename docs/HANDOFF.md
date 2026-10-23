@@ -23,12 +23,16 @@ Read this first, then the END blocks of manager14's state log (/data/mal/hunt-10
 
 ## 3. Rules changed this push (all QP + reviewer, merged)
 - DEC-031 Am.6 (90ab73dc): smoke-then-clock for new paper books; outcome-blind per-hour data-integrity exclusions; caps. Tools: arena_hour_health (227f92be), arena_am6_exclusions, arena_am6_cut, arena_am6_read (every covered read goes ONLY through it). Am.7 (c3467607): HV4 H pin.
-- Fee-arm probe PASS (ARTIFACTS/lab/feearm-landing-2026-10-23.md): 155,000 priority lands as well and no slower than 500,000. DEC-031 Am.8 (160,000/send for new books) = PR #809, CHANGES being applied (keep arena_rules.py byte-identical; executor must pin exactly 155,000 buy+sell; TODAY NO EXECUTOR QUALIFIES: H5 55k/150k, bridge+probe 500k). QP finding: tools/h5_executor.py sends 55,000 (150,000 escalated) (n_IOUX4gYGPieCVw).
+- Fee-arm probe PASS (ARTIFACTS/lab/feearm-landing-2026-10-23.md): 155,000 priority lands as well and no slower than 500,000. DEC-031 Am.8 MERGED 2835eb45: 160,000/send for NEW books whose executor pins exactly 155,000 buy+sell; TODAY NO EXECUTOR QUALIFIES (H5 55k/150k, bridge+probe 500k); flip-disclosure read code owed before the first covered clock. QP finding: tools/h5_executor.py sends 55,000 (150,000 escalated) (n_IOUX4gYGPieCVw).
 - DEC-032 canary template MERGED 6345934a (TEMPLATE, not in force): owner-ask text, C0 limits (≤0.05 SOL stake, 2 open, daily stop 0.10, wallet floor funded−0.25 binding), parity = ≥100 trips + CI90 lo of mean d ≥ −100 bps.
 
 ## 4. Next push candidates
 0. INFRA (unblocks FLOOR, G4 and every long-hold book): arena tape gap repair from chain data (Helius backfill) + a process design surviving the 14-day job cap without restart exclusions. Needs QP design ruling first.
-1. Merge #809/#808 after verdicts; FLOOR to 10-26; G4 equivalence → port checks → Am.6 pack.
+1. (#808, #809 merged.) Set a canary executor to exactly 155,000 (unlocks Am.8) + build the Am.8 flip-read code; FLOOR to 10-26; G4 equivalence → port checks → Am.6 pack.
 2. Live path: #793 H5 executor finish, parity soft halts, tie-out tool, worst-in-slot in scorer.
 3. Re-price the parked candidates at 160,000 (patient-stack sweep hunt26/patient-stack/REPORT.md used 35,000) — exploration only.
 4. HV5: fix risk why_words + LLM over-skipping seen in the smoke (new sha, later clock).
+
+## 5. Environment notes
+- /data/mal/venv lacks `certifi`: 11 arena test files (candles, disk_reserve, errors, feed, gap_order, gaps, restart, state, state_gaps, state_robust, zst) cannot collect there.
+- Open drafts: #779 HV4 records (fills on 10-24), #806 G4 port, #810 FLOOR P0 counter (QP re-review owed), #811 FLOOR records, #798 hunt26 library rows (review+merge), #793 H5 executor, #812 this handoff.
