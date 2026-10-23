@@ -1,5 +1,5 @@
 {
-  "_DRAFT": "NOT PINNED. Draft of the DEC-031 Am.6 item 2.3 thresholds for HV4 (QP-RULING-1022-hv4-am6 L7). Format: tools/arena_hour_health.py@227f92be (sha256 227f92be466fec0bd6c6502bcece6b2e7755d0a675a30d08a2dd79d6353903b5) --thresholds ({check: {value, label}}). The tool accepts only the five check keys; strip every key that starts with an underscore, and replace the FILL value, before hashing and pinning. As written the file is REFUSED by the tool on purpose (max_input_age_s.value is null).",
+  "_DRAFT": "NOT PINNED. Proposal for DEC-031 Am.6 item 2.3 thresholds (L7). Pinned form = this file without every key starting with an underscore and with max_input_age_s.value replaced by X, made mechanically by t0-1025/C2-l7-finalize.sh (canonical JSON, sha256 printed). Tool: tools/arena_hour_health.py@0a5aef86, sha256 227f92be466fec0bd6c6502bcece6b2e7755d0a675a30d08a2dd79d6353903b5. As written the file is REFUSED by the tool on purpose (max_input_age_s.value is null).",
   "_not_in_this_file": [
     "tape-hour file present with size > 0 (price-path): not a threshold; the tool treats a missing or zero-size tape hour as a tape-level failure carrying both labels.",
     "Holders/prefetch age is stamped by HV4's own process: report-only, never excludes (Am.6 2.2, QP 6349425527). No threshold."
@@ -22,7 +22,7 @@
   "max_input_age_s": {
     "value": null,
     "label": "decision-input",
-    "_FILL": "X seconds: decision-input staleness = scan instant minus the newest tape row's feed-stamped t_recv_ms. From: the PRE-WINDOW tape only (hours before 2026-10-25T00:00Z, outside the D2/D3 seal hours [2026-10-02T10, 2026-10-16T01)), as a counts-only silence distribution, with the percentile rule written FIRST. Who: QP names the rule and X; manager runs arena_hour_health counts-only. By: before the registration record is notebooked (registration before 2026-10-24T23:00Z)."
+    "_FILL": "X = max(A, Bc). A = ceil to 10 s of the nearest-rank PCT-th percentile (PCT 95 or 99, QP names it before the job is submitted) of the per-hour longest silence of feed-stamped pumpswap data rows (tape_input_age_max_s) over the 72 closed hours 2026-10-21T00..10-23T23, counts only, arena_hour_health --programs pumpswap; fewer than 60 measurable hours = no X. Bc = ceil to 10 s of the largest sampler_input_age_max_s over the 3 smoke hours 10-22T22..10-23T00 (the tool applies X to the sampler leg too; the feed status file updates about once a minute). Job: t0-1025/C-l6-dryrun-xrule.sh; result x-rule.txt; then C2-l7-finalize.sh. QP confirms the rule first. Seal: hours are outside D2/D3 [2026-10-02T10, 2026-10-16T01)."
   },
   "feed_max_nonnull_gap_s": {
     "value": 900,
