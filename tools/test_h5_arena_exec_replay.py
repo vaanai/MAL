@@ -158,11 +158,35 @@ class ReplayTests(unittest.TestCase):
                 with self.assertRaises(sc.ParserFault, msg=msg):
                     rp.scorer_verdicts(d, book, sc)
 
-    def test_reason_universe_literals_exist_in_the_parser_source(self):
+    def test_reason_list_covers_every_refusal_string_in_the_parsers(self):
+        """Fails when parse_trigger / parse_shadow_trigger gain a refusal that DECISION_REFUSAL_REASONS lacks (and when the list holds one the source no longer has)."""
+        import ast
         src = (Path(rp.__file__).parent / "h5_executor.py").read_text()
-        for x in rp.DECISION_REFUSAL_REASONS:
-            if x.startswith("bad_intent:"):
-                self.assertIn(x, src)
+        tree = ast.parse(src)
+        found: set[str] = set()
+        for fn in (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name in ("parse_trigger", "parse_shadow_trigger")):
+            for n in ast.walk(fn):
+                if isinstance(n, ast.Return) and isinstance(n.value, ast.Tuple) and len(n.value.elts) == 2:
+                    r = n.value.elts[1]
+                    if isinstance(r, ast.Constant) and r.value is None:
+                        continue  # an accept
+                    if isinstance(r, ast.Constant) and isinstance(r.value, str):
+                        found.add(r.value)
+                    elif isinstance(r, ast.Name) and r.id == "SYNTHETIC_UNCONFIRMED":
+                        found.add("synthetic_unconfirmed")
+                    elif isinstance(r, ast.JoinedStr):  # f"bad_intent:{k}" over the integer-field loop, or missing_<key>
+                        text = ast.unparse(r)
+                        if "missing_" in text:
+                            continue
+                        loop = next(f for f in ast.walk(fn) if isinstance(f, ast.For) and isinstance(f.iter, ast.Tuple))
+                        found.update("bad_intent:" + e.value for e in loop.iter.elts)
+                    elif isinstance(r, ast.Name) and r.id in ("tipauth", "why", "bad"):
+                        continue  # tipauth reasons (unreachable with tipauth=None) and the nested parse_trigger answer (its own returns are scanned)
+                    else:
+                        self.fail(f"unclassified return in the parsers: {ast.unparse(n)}")
+        listed = {x for x in rp.DECISION_REFUSAL_REASONS if x not in ("excluded_pool", "sps_skipped_pool")}
+        self.assertEqual(found - listed, set())
+        self.assertEqual(listed - found, set())
 
     def test_stub_rpc_refuses_any_call(self):
         with self.assertRaises(RuntimeError):

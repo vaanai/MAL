@@ -41,10 +41,17 @@ SYNTHETIC_UNCONFIRMED = "synthetic_unconfirmed"
 # Every refusal reason the executor's decision layer can give a pv trigger (tools/h5_executor.py parse_shadow_trigger + the exclusion/sps checks in executor_verdicts).
 # `bad_intent:missing_*` is a schema fault: the scorer halts on it, so it is never a verdict. A reason in this list that a run never shows is named in the result.
 DECISION_REFUSAL_REASONS = (
-    "synthetic_unconfirmed", "bad_intent:suppressed", "bad_intent:q_trigger_sol", "bad_intent:base", "bad_intent:v_print", "bad_intent:v_missing",
-    "bad_intent:gap", "bad_intent:base_breaks_unresolved_settled", "bad_intent:s0_minus_announced_slots", "bad_intent:sps_span", "bad_intent:boost_spent",
+    "synthetic_unconfirmed", "bad_intent:suppressed",
+    # parse_shadow_trigger itself
+    "bad_intent:q_trigger_sol", "bad_intent:base", "bad_intent:v_print", "bad_intent:v_missing", "bad_intent:gap", "bad_intent:base_breaks_unresolved_settled",
+    "bad_intent:s0_minus_announced_slots", "bad_intent:sps_span", "bad_intent:boost_spent",
+    # parse_trigger, reached through parse_shadow_trigger (h5_executor.py: ids, the integer-field loop, sps, order checks)
+    "bad_intent:ids", "bad_intent:s0_slot", "bad_intent:trigger_slot", "bad_intent:q_lamports", "bad_intent:base_reserve", "bad_intent:v_lamports", "bad_intent:decision_ms",
+    "bad_intent:sps", "bad_intent:slot_order", "bad_intent:q_below_v",
+    # the harness's own post-parse checks (executor_verdicts)
     "excluded_pool", "sps_skipped_pool",
 )
+# Not listed: bad_intent:missing_<key> (a schema fault: the scorer halts), and the tipauth_gate reasons (parse_shadow_trigger is called here with tipauth=None, where they are unreachable).
 
 OCTOBER_RE = re.compile(r"2026-10|202610|arena", re.I)
 EXPLORATION_DAY_RE = re.compile(r"2026-09-20|20260920")
