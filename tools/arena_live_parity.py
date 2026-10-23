@@ -8,7 +8,7 @@ INPUTS (JSON lines; the tests use fixtures only, a real canary file is never ope
             sells received minus buys paid minus all fees, rent refunded counted), live_buy_price, live_sell_price, gap_through (bool, optional)
   twins     one line per paper twin (arena_paper, nofail leg, 1.9 s, priced at the executor's actual per-send fees): trip_id, pnl_lamports (E1 floor EXCLUDED: this decides),
             pnl_e1_lamports (E1 included: reported beside), entry_price, exit_price, price_failed (bool, optional)
-  attempts  one line per live buy send: attempt_id, trip_id (required on a landed buy: the trip it opened), decision_ms, landed (bool), landed_ms, failed_or_expired (bool), p_fail_press (the pressure refit's modelled failure share)
+  attempts  one line per live buy send: attempt_id, trip_id (required on a landed buy: the trip it opened), decision_ms, landed (bool), landed_ms, failed_or_expired (bool), p_fail_press (REQUIRED, in [0, 1]: the pressure leg's FAIL probability p, as in arena_stack.fail_legs, refit mean 0.289; NOT 1 - p)
   state     {"at_ms": {"loss": ms, "balance": ms, "twin": ms, "parity": ms, "decision_chain": ms, "control_files": ms}, "last_landed_ms": ms, "unresolved_hard_halts": [ids]}
 
 DEFINITIONS (exactly DEC-032 section 5)
@@ -16,7 +16,8 @@ DEFINITIONS (exactly DEC-032 section 5)
                     A trip with several reasons is counted once as ineligible and once under EACH reason (the shares are conservative).
   d_i (bps)         (live_net_lamports - twin pnl_lamports) / stake_lamports * 10,000.
   g_entry_i (bps)   (live_buy_price / twin entry_price - 1) * 10,000; positive = live paid more.  g_exit_i likewise on the sell; negative = live received less.
-  landing-fail excess   live share of buy sends that failed or expired minus max(0.15, mean p_fail_press) over the same attempts.
+  landing-fail excess   live share of buy sends that failed or expired minus max(0.15, mean p_fail_press) over the same attempts. DEC-032 section 5 says "mean 1 - p"; QP ruling 1023 reads it as the fail share p itself (fail_legs' p is the failure probability), so this tool uses p.
+  Duplicate trip_id (trips, twins) or attempt_id rows are refused (BadInput, exit 2, STOP): no last-wins.
   No window reset: aggregates run over all eligible trips; rolling windows (P1, P2, P3, P5) are the last N and never skip a stretch. Every rule is checked at EVERY prefix of the
   event stream (the executor checks on each landed buy and closed trip), so a breach at any point latches; a later recovery does not clear it.
 
@@ -125,6 +126,15 @@ def validate_inputs(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[
         _need_id(a, "attempt_id", "attempt")
         _need(a, "decision_ms", "attempt")
         _opt(a, "landed_ms", "attempt")
+        _need(a, "p_fail_press", "attempt")
+        if not 0.0 <= a["p_fail_press"] <= 1.0:
+            raise BadInput(f"attempt {a['attempt_id']!r}: p_fail_press {a['p_fail_press']} outside [0, 1] (it is the pressure leg's FAIL probability p, mean 0.289 in arena_stack.fail_legs, never 1 - p)")
+    for rows, key, what in ((trips, "trip_id", "trip"), (twins, "trip_id", "twin"), (attempts, "attempt_id", "attempt")):
+        seen: set[str] = set()
+        for r in rows:
+            if r[key] in seen:
+                raise BadInput(f"duplicate {what} row for {r[key]!r}: refused (no last-wins)")
+            seen.add(r[key])
 
 
 def bps(x: float) -> float:
@@ -226,7 +236,7 @@ def evaluate(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[str, An
     att = sorted(attempts, key=lambda a: int(a["decision_ms"]))
     for k in range(P2_N, len(att) + 1):
         w = att[k - P2_N:k]
-        excess = sum(bool(a.get("failed_or_expired")) for a in w) / P2_N - max(FLAT_FAIL, float(np.mean([float(a.get("p_fail_press", 0.0)) for a in w])))
+        excess = sum(bool(a.get("failed_or_expired")) for a in w) / P2_N - max(FLAT_FAIL, float(np.mean([float(a["p_fail_press"]) for a in w])))
         if excess > P2_PP:
             _first(halts, "P2", k, excess, f"landing-fail excess {excess * 100:+.1f} pp > {P2_PP * 100:.0f} over the last {P2_N} buy attempts")
     landed = [(int(a["landed_ms"]) - int(a["decision_ms"])) / 1000.0 for a in att if a.get("landed") and a.get("landed_ms") is not None]

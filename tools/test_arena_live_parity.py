@@ -445,3 +445,52 @@ def test_b4_pending_trip_without_exit_bound_is_bad_input():
 def test_b4_cli_exit_11_for_stuck(tmp_path):
     ts, ws = _good_plus_pending()
     assert P.main(cli(tmp_path, ts, ws, attempts(40), fresh_state())) == 11 and json.loads((tmp_path / "STOP").read_text())["hard"] is True
+
+
+def test_b5_p_fail_press_is_the_fail_probability_a_50pct_live_fail_rate_fires_p2():
+    # arena_stack.fail_legs: p is the FAIL probability (refit mean 0.289). 50% live failures vs max(15%, 28.9%) = 21.1 pp > 10 pp.
+    r = run(*book(5), att=attempts(30, fail_every=2, p_press=0.289))
+    assert r["halts"]["P2"]["value"] == pytest.approx(0.5 - 0.289)
+    # fed the success share 1 - p (0.711) by mistake, the larger-model rule would hide it: the tool must not do that internally
+    assert "P2" not in run(*book(5), att=attempts(30, fail_every=2, p_press=0.711))["halts"]
+
+
+@pytest.mark.parametrize("bad", [5, -0.1, 1.0001, float("nan"), None, "0.2", True])
+def test_b5_p_fail_press_outside_0_1_or_missing_is_bad_input(bad, tmp_path):
+    att = attempts(40)
+    att[7]["p_fail_press"] = bad
+    with pytest.raises(P.BadInput):
+        run(*book(5), att=att)
+    assert P.main(cli(tmp_path, *book(5), att, fresh_state())) == 2 and (tmp_path / "STOP").exists()
+
+
+def test_b5_missing_p_fail_press_key_is_bad_input():
+    att = attempts(40)
+    del att[0]["p_fail_press"]
+    with pytest.raises(P.BadInput):
+        run(*book(5), att=att)
+
+
+@pytest.mark.parametrize("p", [0.0, 1.0])
+def test_b5_bounds_are_inclusive(p):
+    run(*book(5), att=attempts(40, p_press=p))
+
+
+def test_b6_duplicate_twin_rows_are_refused_not_last_wins(tmp_path):
+    ts, ws = book(30)
+    bad = dict(ws[4], price_failed=True)
+    with pytest.raises(P.BadInput, match="duplicate"):
+        run(ts, ws + [bad])
+    with pytest.raises(P.BadInput, match="duplicate"):
+        run(ts, [bad] + ws)  # either order: neither a failed nor a good twin wins
+    assert P.main(cli(tmp_path, ts, ws + [bad], attempts(40), fresh_state())) == 2 and (tmp_path / "STOP").exists()
+
+
+def test_b6_duplicate_trip_rows_and_attempt_ids_are_refused():
+    ts, ws = book(30)
+    with pytest.raises(P.BadInput, match="duplicate"):
+        run(ts + [dict(ts[3])], ws)
+    att = attempts(40)
+    att.append(dict(att[0]))
+    with pytest.raises(P.BadInput, match="duplicate"):
+        run(ts, ws, att=att)
