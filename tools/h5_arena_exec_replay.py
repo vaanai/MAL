@@ -82,8 +82,8 @@ def check_start_records(shadow_dir: Path, expect_sha: str) -> int:
             if r.get("type") != "start":
                 continue
             n += 1
-            if r.get("code_sha") != expect_sha or r.get("dirty") not in (False, None, 0):
-                raise SystemExit(f"refused: start record code_sha {r.get('code_sha')!r} dirty {r.get('dirty')!r} is not the frozen {expect_sha} with dirty=0")
+            if r.get("code_sha") != expect_sha or r.get("dirty") is not False:  # a missing key refuses: h5_shadow at 1f7a89c writes `dirty` only in fresh_forward mode
+                raise SystemExit(f"refused: start record code_sha {r.get('code_sha')!r} dirty {r.get('dirty')!r} is not the frozen {expect_sha} with dirty=false (explicit)")
     if n == 0:
         raise SystemExit("refused: no start record in the replay input")
     return n

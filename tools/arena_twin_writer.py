@@ -82,25 +82,42 @@ def entry_ms(r: Mapping[str, Any]) -> Any:
     return d.get("entry") if isinstance(d, Mapping) else d
 
 
-def price_h5_trip(trip: Mapping[str, Any], rows: Sequence[Mapping[str, Any]], buy_send: int, sell_send: int) -> dict[str, Any]:
+def price_h5_trip(trip: Mapping[str, Any], rows: Sequence[Mapping[str, Any]], buy_send: int, sell_send: int, h5: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """H5 adapter: the book's registered cost model (tools/arena_h5_cost, rent-charged 2,039,280 decides, no feed delay) read from the ledger row's own legs.flat_1p9
-    nofail_lamports at the row whose stake equals the canary stake. The row stores no pool states, so a canary stake that is not a recorded stake is price_failed (fail closed).
-    The nofail P&L is the registered model's, rent-charged, and no live fee is substituted. `pnl_rent0_lamports` is the same trip with the rent refunded (the live sell closes the ATA;
-    a twin-only deviation, reported beside). entry_price / exit_price are NOT in an H5 row, so they are absent (the parity tool's entry/exit gap needs them: open)."""
+    nofail_lamports at the row whose stake equals the canary stake. A row whose `frozen_sha` is not the book's pinned sha is price_failed (the ledger producer is not the registered one).
+    Entry and exit prices are REBUILT (tools/arena_h5_twin_prices) at the scorer's own landing and exit-trigger pool states from the shadow strip, with the cost module of the
+    registration export; the rebuilt nofail P&L must equal the row's within 1 lamport, else price_failed. The scorer row is frozen and gains no field. Without `h5` (shadow dir,
+    frozen root, expected frozen sha) every H5 row is price_failed (fail closed).
+    FEE BASIS (QP 10-23 ruling 5 (a)): the twin is priced at the registered 505,000 lamports per send and substitutes NO live fee, so twin P&L is LOWER than the live trip's by
+    `fee_delta_lamports` = (505,000 - the trip's buy fee) + (505,000 - the trip's sell fee), about 690,000 at 160,000 per send. P6 must add `fee_delta_lamports` to the twin P&L
+    (or the DEC copy declares the bias); `pnl_lamports` itself is left as the registered model's figure. `pnl_rent0_lamports` is the same trip with the rent refunded (twin-only deviation)."""
     out: dict[str, Any] = {"trip_id": trip["trip_id"], "bot_id": rows[0].get("bot_id"), "position_id": rows[0].get("trade_id"), "buy_send_lamports": buy_send,
                            "sell_send_lamports": sell_send, "fee_basis": "h5_registered_cost_model_505000_per_send", "adapter": H5_ADAPTER, "stack": H5_STACK_ID}
     lam = float(trip["stake_lamports"])
     at = [r for r in rows if isinstance(r.get("stake_sol"), (int, float)) and abs(float(r["stake_sol"]) * 1e9 - lam) < 1.0]
     if not at:
         return {**out, "price_failed": True, "reason": "h5_no_row_at_canary_stake"}
-    leg = (at[0]["legs"] or {}).get("flat_1p9")
+    row = at[0]
+    if not h5 or not h5.get("expect_frozen_sha"):
+        return {**out, "price_failed": True, "reason": "h5_no_price_inputs"}
+    if row.get("frozen_sha") != h5["expect_frozen_sha"]:
+        return {**out, "price_failed": True, "reason": "h5_row_frozen_sha_not_the_books"}
+    leg = (row["legs"] or {}).get("flat_1p9")
     if not isinstance(leg, Mapping) or not isinstance(leg.get("nofail_lamports"), (int, float)) or isinstance(leg.get("nofail_lamports"), bool) or not np.isfinite(leg["nofail_lamports"]):
         return {**out, "price_failed": True, "reason": f"h5_leg_unpriced:{(leg or {}).get('state') if isinstance(leg, Mapping) else None}"}
     out["state"] = leg.get("state")
     if leg.get("state") != "filled":
         return {**out, "price_failed": True, "reason": f"paper_state:{leg.get('state')}"}
+    from tools import arena_h5_twin_prices as P
+    try:
+        sc, cost = h5["modules"]
+        px = P.derive(row, P.find_strip(h5["shadow_dir"], str(row.get("pool"))), sc, cost)
+    except P.PriceFailed as exc:
+        return {**out, "price_failed": True, "reason": f"h5_price:{exc}"}
     pnl = float(leg["nofail_lamports"])
-    return {**out, "pnl_lamports": pnl, "pnl_e1_lamports": pnl, "pnl_rent0_lamports": pnl + 2_039_280.0}
+    send = int(cost.SEND)
+    return {**out, "pnl_lamports": pnl, "pnl_e1_lamports": pnl, "pnl_rent0_lamports": pnl + 2_039_280.0, "entry_price": px["entry_price"], "exit_price": px["exit_price"],
+            "fee_delta_lamports": (send - buy_send) + (send - sell_send), "twin_send_lamports": send}
 
 
 def _day(ms: int) -> str:
@@ -185,7 +202,7 @@ def price_trip(trip: Mapping[str, Any], row: Mapping[str, Any], buy_send: int, s
     return {**out, "pnl_lamports": pick["pnl"], "pnl_e1_lamports": pick["pnl_e1"], "entry_price": entry, "exit_price": exit_}
 
 
-def build(trips: Sequence[Mapping[str, Any]], ledger_dir: Path, bot_id: str, buy_send: int, sell_send: int, join_tol_ms: int, config_hash: str) -> tuple[list[dict[str, Any]], list[str]]:
+def build(trips: Sequence[Mapping[str, Any]], ledger_dir: Path, bot_id: str, buy_send: int, sell_send: int, join_tol_ms: int, config_hash: str, h5: Mapping[str, Any] | None = None) -> tuple[list[dict[str, Any]], list[str]]:
     rows, notes = [], []
     for t in sorted(trips, key=lambda x: str(x.get("trip_id"))):
         if not isinstance(t.get("trip_id"), str) or not _isint(t.get("decision_ms")) or not isinstance(t.get("stake_lamports"), (int, float)) or t["stake_lamports"] <= 0:
@@ -203,7 +220,7 @@ def build(trips: Sequence[Mapping[str, Any]], ledger_dir: Path, bot_id: str, buy
             if want != config_hash:
                 raise BadInput(f"H5 config pin {config_hash} is not {want} (DEC-031-rev2 + sha256 of tools/arena_h5_cost.py): refused")
             same = [r for r in cand if is_h5_row(r) and abs(entry_ms(r) - entry_ms(cand[0])) == 0]
-            rows.append(price_h5_trip(t, same, bs, ss))
+            rows.append(price_h5_trip(t, same, bs, ss, h5))
             continue
         got = stack_hash(cand[0].get("stack") if isinstance(cand[0].get("stack"), Mapping) else {})
         if got != config_hash:
@@ -228,10 +245,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--config-hash", required=True)
     ap.add_argument("--now-ms", type=int)
     ap.add_argument("--run-record")
+    ap.add_argument("--shadow-dir", type=Path, help="H5 books: the book's arena shadow dir (the strip records price the twin)")
+    ap.add_argument("--frozen-root", type=Path, help="H5 books: a separate export at the book's registration sha (scorer + arena_h5_cost)")
+    ap.add_argument("--expect-frozen-sha", help="H5 books: the book's pinned frozen sha; a ledger row with another frozen_sha is price_failed")
     a = ap.parse_args(list(sys.argv[1:] if argv is None else argv))
     try:
         trips = load_jsonl(Path(a.trips))
-        rows, notes = build(trips, Path(a.ledger_dir), a.bot_id, a.buy_send, a.sell_send, a.join_tol_ms, a.config_hash)
+        h5 = None
+        if a.frozen_root and a.shadow_dir:
+            from tools import arena_h5_twin_prices as P
+            try:
+                h5 = {"shadow_dir": a.shadow_dir, "expect_frozen_sha": a.expect_frozen_sha, "modules": P.load_frozen(a.frozen_root, hashlib.sha256(H5_COST_PATH.read_bytes()).hexdigest())}
+            except P.PriceFailed as exc:
+                raise BadInput(f"frozen root refused: {exc}") from None
+        rows, notes = build(trips, Path(a.ledger_dir), a.bot_id, a.buy_send, a.sell_send, a.join_tol_ms, a.config_hash, h5)
         out = Path(a.out)
         write_atomic(out, rows)
         rec = {"schema": RUN_SCHEMA, "run_ms": int(a.now_ms if a.now_ms is not None else time.time() * 1000), "covered_trip_ids": sorted(t["trip_id"] for t in trips),
