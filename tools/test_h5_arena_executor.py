@@ -78,6 +78,8 @@ class AEnv(Env):
             self.rpc.balance = self.conf["funded_lamports"]  # the finalized balance a live start compares with funded_lamports
         ex = ax.ArenaExecutor(self.rpc, self.conf, self.kp, now_ms=self.clock, root=self.root)
         self.seed_clock(ex)
+        if ex.gates is not None:
+            ex.gates.runner = lambda argv: 0  # the parity and tie-out tools are stubbed here; tools/test_h5_arena_exec_wiring.py runs the real ones
         return ex
 
 

@@ -46,6 +46,7 @@ from datetime import datetime, timezone
 from tools import h5_executor as h
 from tools import mint_account_fetch as mf
 from tools.arena_close_blocked import classify_record
+from tools.h5_arena_gates import HARD_ARENA_HALTS, LiveGates, ParityRecorder, v_band_refusal
 
 # --- the books (item 1). Values copied from the merged records: ARTIFACTS/lab/arena-records-2026-10-22.md (a2), qp-ruling-1022-q50.md and
 # EXP-024-RULE-Q50.md (Q50). Nothing here is read from config or bots.json.
@@ -250,6 +251,9 @@ def arena_start_refusal(book: Book, cfg: dict[str, Any], root: Path, live: bool)
             return why
         if not cfg.get("exit_gap_file"):
             return "exit_gap_file_missing"  # the exit-gap feed (parity P6) is mandatory live: unset would mean no check at all
+        for key in ("parity_twins_file", "tieout_dir"):  # the parity tool's twins input and the tie-out results directory (DEC-032 s5, s6)
+            if not cfg.get(key):
+                return f"{key}_missing"
         return arena_tier_refusal()
     if book.exit_pin == h.EXIT_MODE_V2:
         return v2_start_refusal()
@@ -479,7 +483,13 @@ class ArenaExecutor(h.H5Executor):
         self.window_counts: dict[str, int] = {}
         self._pools_seen: set[str] = set()
         self._start_ms: int | None = None
+        self.gates: LiveGates | None = None  # live only: parity recorder and the parity / tie-out gates
         super().__init__(rpc, cfg, keypair, now_ms=now_ms, pick_oracle=None, root=root, rpc_label=rpc_label)
+        if keypair is not None:
+            gdir = Path(self.h5cfg["state_dir"]) / "arena-parity"
+            interval = cfg.get("parity_interval_s")
+            self.gates = LiveGates(gdir, ParityRecorder(gdir), str(cfg["parity_twins_file"]), str(cfg["tieout_dir"]), self.paths["stop"],
+                                   self._parity_state, interval_s=interval if isinstance(interval, (int, float)) and interval > 0 else None)
         if self.exit_mode != book.exit_pin:
             raise SystemExit("exit mode pin was not applied")
         if keypair is not None:
@@ -520,6 +530,37 @@ class ArenaExecutor(h.H5Executor):
         lost = max(0, -int(self.state.realized_lamports))
         f, tol = int(self.funded_lamports or 0), FUNDED_BALANCE_TOLERANCE_LAMPORTS
         return None if f - lost - tol <= bal <= f + tol else "funded_balance_mismatch"
+
+    def _parity_state(self, now: int) -> dict[str, Any]:
+        """The parity tool's state.json: a stamp only for a read that succeeded just now; a missing stamp is P7 (no buy). The H5 executor has no hash-chained
+        decision log; its analogue (the feed's start record pinned to the book's frozen sha, no feed_break latched) stamps decision_chain."""
+        at: dict[str, int] = {}
+        try:
+            self.committed_loss_lamports()
+            at["loss"] = now
+        except Exception:  # noqa: BLE001
+            pass
+        if self._balance_value(now) is not None and self._bal is not None:
+            at["balance"] = self._bal[1]
+        try:
+            for line in Path(self.gates.twins_file).read_text().splitlines():  # type: ignore[union-attr]
+                if line.strip():
+                    json.loads(line)
+            at["twin"] = now
+        except (OSError, ValueError):
+            pass
+        at["parity"] = now
+        if self.feed_verified and H_FEED_BREAK not in self.counters.halts:
+            at["decision_chain"] = now
+        tier, problem = h.read_tier(self._tier_path(), root_checks=not self.dry_run)
+        if h.live_ok_valid() is None and problem is None:
+            at["control_files"] = now
+        return {"at_ms": at, "unresolved_hard_halts": sorted(HARD_ARENA_HALTS & set(self.counters.halts))}
+
+    def _exit_bound_ms(self, mint: str, decision_ms: Any) -> int | None:
+        """The book's own late instant for the exit (plan late_wall_ms = s0 + LATE_SELL_S), never an input of the parity files."""
+        late = ((self.counters.plans.get(mint) or {}).get("plan") or {}).get("late_wall_ms")
+        return late if isinstance(late, int) and not isinstance(late, bool) else None
 
     def _sell_reserve(self) -> int:
         return sell_reserve_lamports(self.abook)
@@ -564,6 +605,14 @@ class ArenaExecutor(h.H5Executor):
         why = self.committed_loss_refusal() or self._balance_refusal(self.now_ms())  # the last look before anything is built or signed
         if why:
             return self._refuse(trg, why)
+        why = v_band_refusal(trg.v_lamports, ps.quote_mint)  # canonical pools only (DEC-031 Am.2 item 6)
+        if why:
+            return self._refuse(trg, why)
+        if self.gates is not None:
+            t = self.now_ms()
+            why = self.gates.parity_refusal(t) or self.gates.tieout_refusal(t, self.state.first_attempt_ms)
+            if why:
+                return self._refuse(trg, why)
         blocked = self._screen_mint(trg.mint)  # DEC-032 s3 "Venue": a freeze authority or a Token-2022 extension outside the allowlist is a strand = total loss
         if blocked:
             self.close_blocked_refused += 1
@@ -624,6 +673,8 @@ class ArenaExecutor(h.H5Executor):
             # DEC-032 s5 item 2: ANY gap record holds buys for 10 minutes. The base class skips the hold when flags_pools is the literal false
             # (a redundant-socket reconnect); a canary does not take that exemption.
             self._gap_until_ms = max(self._gap_until_ms, self.now_ms() + self.h5.gap_hold_ms)
+            if self.gates is not None:
+                self.gates.recorder.note_gap(self.now_ms())
             return "keep", None
         if t == "boost_slice":
             self.slices_taken += 1 if self._slice_format_ok(row) else 0
@@ -699,6 +750,11 @@ class ArenaExecutor(h.H5Executor):
         elif kind in ("dry_sell", "sell_sent", "exit_landing"):
             kw = {**kw, "bot_id": self.abook.bot_id, "frozen_sha": self.abook.frozen_sha}
         super()._log(kind, mint, **kw)
+        if self.gates is not None and kind in ("buy", "sell"):
+            if kind == "buy":
+                self.gates.recorder.on_buy(mint, kw, self.now_ms(), self._exit_bound_ms(mint, kw.get("decision_t_ms")))
+            else:
+                self.gates.recorder.on_sell(mint, kw, self.now_ms())
 
     def _latch(self, name: str, **detail: Any) -> None:
         """The base `_latch` logs `halt_latched` through `_log(kind, mint, **kw)`, so a detail key called `mint` collides with its positional argument and the
@@ -774,6 +830,8 @@ class ArenaExecutor(h.H5Executor):
     def exit_tick(self, now: int) -> None:
         self.a3_tick(now)
         self.exit_gap_tick()
+        if self.gates is not None:
+            self.gates.maybe_run_parity(now)
         super().exit_tick(now)
         for mint, pos in self.state.open.items():
             if pos.get("stuck") and mint not in self.monitor.stuck:

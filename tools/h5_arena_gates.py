@@ -75,6 +75,8 @@ class ParityRecorder:
         except (OSError, ValueError, KeyError, TypeError) as exc:
             self.trips, self.attempts = {}, {}
             self.broken = f"parity_files_unreadable:{type(exc).__name__}"
+        if not self.broken and not (self.trips_path.exists() and self.attempts_path.exists()):
+            self._save()  # the parity tool refuses a missing file: an empty one is a valid "no trips yet"
         for r in [*self.trips.values(), *self.attempts.values()]:
             for k in ("closed_ms", "exit_landed_ms", "buy_landed_ms", "landed_ms"):
                 if isinstance(r.get(k), int):
@@ -186,7 +188,7 @@ class LiveGates:
             rc = self.runner(["tools.arena_live_parity", "--trips", str(self.recorder.trips_path), "--twins", self.twins_file,
                               "--attempts", str(self.recorder.attempts_path), "--state", str(self.state_path), "--now-ms", str(now_ms),
                               "--stop-file", self.stop_file, "--json", str(self.dir / "parity-result.json")])
-        except (OSError, ValueError, TypeError):
+        except (Exception, SystemExit):  # nothing may escape into the trading loop; a failed run is no buy
             rc = 99
         self.parity_run = {"rc": rc, "at_ms": now_ms, "seq": self.recorder.seq}
         return rc
