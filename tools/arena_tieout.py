@@ -1,6 +1,6 @@
 """Arena canary daily wallet tie-out (DEC-032 section 6). OFFLINE and PURE: it reconciles JSON files it is given. It makes NO RPC call and opens no key.
 
-    python -m tools.arena_tieout --txs TXS.json --ledger LEDGER.json --tokens TOKENS.json --baseline LAMPORTS --balance-now LAMPORTS --named NAMED.json [--json OUT]
+    python -m tools.arena_tieout --txs TXS.json --ledger LEDGER.json --tokens TOKENS.json --balance BALANCE.json --baseline LAMPORTS --named NAMED.json --stop-file PATH [--json OUT]
 
 A separate fetcher (the pattern of tools/probe_rent_audit.py: public address only, finalized commitment, the RPC key never printed) writes TXS.json and TOKENS.json; this tool
 does the arithmetic and the alerts, so the same code runs in tests on fixtures and on the host on fetched files.
@@ -9,19 +9,28 @@ INPUTS
   txs      list of chain txs of the canary wallet: signature, slot, status ("ok" | "failed"), pre_balance, post_balance (lamports), fee_lamports (base), priority_fee_lamports,
            kind ("transfer" | "buy" | "sell" | "other"), counterparty (transfers), sol_paid / rent_paid (buys), sol_received / rent_refunded (sells). The delta is post - pre; it is
            computed, never trusted from a field. The pool fee is inside sol_paid / sol_received (not separable on chain) and is reported as such.
-  ledger   {"sends": [{signature, side, status ("landed" | "dropped" | "expired")}], "trips": [{trip_id, buy_sig, sell_sig, closed, realized_lamports}], "open_mints": [mint, ...]}
-  tokens   list of token accounts owned by the wallet (Token and Token-2022): mint, token_account, amount (raw, integer string or int)
+  balance  its OWN finalized getBalance: {"lamports", "context_slot", "commitment": "finalized", "finalized_block_height"}. It is never the last tx's post-balance (that would make the
+           tie a tautology); the context slot must be at or after the last tx's slot.
+  ledger   {"sends": [{signature, side, status ("landed" | "dropped" | "expired"), last_valid_block_height, status_check: {"search_transaction_history": true, "result": null}}],
+            "trips": [{trip_id, buy_sig, sell_sig, closed, realized_lamports}], "open_mints": [mint, ...]}. ALL THREE keys are required: a missing key is refused (exit 2).
+  tokens   {"programs_covered": [Token program id, Token-2022 program id], "accounts": [{mint, token_account, amount (raw, integer string or int)}, ...]}: it must declare that it covers
+           BOTH programs (an empty fetch cannot pass); zero-amount accounts are included.
   named    {"deposit_from": [addr], "withdraw_to": [addr]}: only the owner's and Helm's named addresses (section 6 item 4)
 
 CHECKS (section 6; any failure is a hard halt (O), exit 1, and the day is NOT signed off)
   2. baseline + sum(deltas) == balance_now to the lamport, and the first tx's pre-balance == baseline, and each tx's pre-balance == the previous tx's post-balance (txs in slot order).
   3. every ledger send signature is on chain and every chain signature is in the ledger (a named transfer excepted). A ledger send marked dropped / expired that is NOT on chain is a
-     confirmed drop (counted, not a failure); one that IS on chain is a discrepancy; a landed send missing from chain, or a chain tx the ledger does not know, is a failure.
+     CONFIRMED DROP only if its blockhash is expired against the finalized height (last_valid_block_height < finalized_block_height) AND getSignatureStatuses with
+     searchTransactionHistory=true returned null (status_check). Otherwise it is PENDING and the day is not signed off. One that IS on chain is a discrepancy; a landed send missing from
+     chain, or a chain tx the ledger does not know, is a failure.
   4. split of the deltas: deposits, withdrawals (named counterparty only), buys, sells, base fees, priority fees, ATA rent paid and refunded, failed-tx fees. A buy / sell whose delta
      is not explained by its fields, a failed tx that cost more than its fees, or a transfer with an unnamed counterparty is unexplained. Unnamed inflows of at most 10,000 lamports
      are address-poisoning dust: LISTED, never netted away silently, and still inside the sum of step 2 (they are a failure only if they break the tie).
-     Open ATAs: a token account with a non-zero amount whose mint is not an open ledger position is a STRANDED position, a P4-class alert (hard halt).
+     Open ATAs: a token account with a non-zero amount whose mint is not an open ledger position is a STRANDED position, a P4-class alert (hard halt). An open ledger mint with no
+     non-zero token account is flagged, and a zero-amount token account left open is listed (a rent leak: a sell must close the ATA, DEC-032 section 4).
   5. for each closed trip, ledger realized P&L against the chain sum of its buy and sell txs; a difference above one base fee (5,000 lamports) is unexplained.
+STOP (fail closed): ANY non-zero exit, a refused input and a crash create the STOP file at --stop-file (O_EXCL, never overwritten or removed). If STOP cannot be written the exit code is 5.
+Exit codes: 0 signed off, 1 hard halt, 2 unusable input, 3 crash, 5 STOP could not be written (also non-zero, still means no buy).
 The result carries no sentence that says the book made money (an execution report).
 """
 
@@ -29,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections import Counter
 from pathlib import Path
@@ -53,8 +63,30 @@ def tx_delta(tx: Mapping[str, Any]) -> int:
     return _int(tx["post_balance"], f"{tx.get('signature')} post_balance") - _int(tx["pre_balance"], f"{tx.get('signature')} pre_balance")
 
 
-def reconcile(txs: Sequence[Mapping[str, Any]], ledger: Mapping[str, Any], tokens: Sequence[Mapping[str, Any]], baseline: int, balance_now: int,
+TOKEN_PROGRAMS = ("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb")
+LEDGER_KEYS = ("sends", "trips", "open_mints")
+
+
+def check_inputs(ledger: Any, tokens: Any, balance: Any) -> None:
+    """Refuse (BadInput) anything that would let a check be skipped silently."""
+    if not isinstance(ledger, Mapping) or any(k not in ledger or not isinstance(ledger[k], list) for k in LEDGER_KEYS):
+        raise BadInput(f"ledger must be an object with the lists {LEDGER_KEYS}: a missing key would skip its checks")
+    if not isinstance(tokens, Mapping) or not isinstance(tokens.get("accounts"), list) or not isinstance(tokens.get("programs_covered"), list):
+        raise BadInput("tokens must be {programs_covered: [...], accounts: [...]}")
+    if not all(p in tokens["programs_covered"] for p in TOKEN_PROGRAMS):
+        raise BadInput("tokens.programs_covered must name both the Token and the Token-2022 program (an empty or partial fetch cannot pass)")
+    if not isinstance(balance, Mapping) or isinstance(balance.get("lamports"), bool) or not isinstance(balance.get("lamports"), int) or not isinstance(balance.get("context_slot"), int):
+        raise BadInput("balance must be {lamports, context_slot, commitment, finalized_block_height} from its own getBalance")
+    if balance.get("commitment") != "finalized":
+        raise BadInput("balance.commitment must be 'finalized'")
+    if not isinstance(balance.get("finalized_block_height"), int):
+        raise BadInput("balance.finalized_block_height is required (it decides whether a missing send is a confirmed drop)")
+
+
+def reconcile(txs: Sequence[Mapping[str, Any]], ledger: Mapping[str, Any], tokens: Mapping[str, Any], baseline: int, balance: Mapping[str, Any],
               named: Mapping[str, Sequence[str]]) -> dict[str, Any]:
+    check_inputs(ledger, tokens, balance)
+    balance_now = int(balance["lamports"])
     problems: list[dict[str, Any]] = []
 
     def bad(kind: str, **kw: Any) -> None:
@@ -69,6 +101,8 @@ def reconcile(txs: Sequence[Mapping[str, Any]], ledger: Mapping[str, Any], token
     residual = balance_now - baseline - total
     if residual != 0:
         bad("tie_residual", lamports=residual)
+    if ordered and balance["context_slot"] < ordered[-1]["slot"]:
+        bad("balance_context_before_last_tx", context_slot=balance["context_slot"], last_tx_slot=ordered[-1]["slot"])
     if ordered and ordered[0]["pre_balance"] != baseline:
         bad("first_tx_pre_balance", expected=baseline, got=ordered[0]["pre_balance"])
     for a, b in zip(ordered, ordered[1:]):
@@ -76,19 +110,26 @@ def reconcile(txs: Sequence[Mapping[str, Any]], ledger: Mapping[str, Any], token
             bad("balance_chain_break", after=a["signature"], at=b["signature"], gap=b["pre_balance"] - a["post_balance"])
     # 3. signatures both ways
     chain = set(deltas)
-    sends = {s["signature"]: s for s in ledger.get("sends", [])}
+    sends = {s["signature"]: s for s in ledger["sends"]}
+    fin = balance["finalized_block_height"]
     dep_from, wd_to = set(named.get("deposit_from", [])), set(named.get("withdraw_to", []))
     transfer_named = {t["signature"] for t in ordered if t.get("kind") == "transfer" and (t.get("counterparty") in dep_from | wd_to or 0 < deltas[t["signature"]] <= DUST_MAX)}  # dust is listed in step 4
-    confirmed_drops = 0
+    confirmed_drops = pending_sends = 0
     for sig, s in sends.items():
         on = sig in chain
         if s["status"] == "landed" and not on:
             bad("landed_send_missing_on_chain", signature=sig)
         elif s["status"] in ("dropped", "expired"):
+            chk = s.get("status_check") or {}
+            expired = isinstance(s.get("last_valid_block_height"), int) and s["last_valid_block_height"] < fin
+            nulled = chk.get("search_transaction_history") is True and "result" in chk and chk["result"] is None
             if on:
                 bad("dropped_send_is_on_chain", signature=sig, ledger_status=s["status"])
-            else:
+            elif expired and nulled:
                 confirmed_drops += 1
+            else:
+                pending_sends += 1
+                bad("send_pending", signature=sig, blockhash_expired=expired, status_null_with_history=nulled)
     for sig in sorted(chain - set(sends) - transfer_named):
         bad("chain_tx_not_in_ledger", signature=sig)
     # 4. the split
@@ -131,14 +172,20 @@ def reconcile(txs: Sequence[Mapping[str, Any]], ledger: Mapping[str, Any], token
         else:
             bad("unclassified_tx", signature=sig, delta=d)
     # open ATAs and stranded positions
-    open_mints = set(ledger.get("open_mints", []))
-    open_atas = [{"mint": a["mint"], "token_account": a.get("token_account"), "amount": int(a["amount"]), "open_position": a["mint"] in open_mints} for a in tokens if int(a["amount"]) > 0]
+    open_mints = set(ledger["open_mints"])
+    open_atas = [{"mint": a["mint"], "token_account": a.get("token_account"), "amount": int(a["amount"]), "open_position": a["mint"] in open_mints} for a in tokens["accounts"] if int(a["amount"]) > 0]
     stranded = [a for a in open_atas if not a["open_position"]]
     for a in stranded:
         bad("stranded_position", mint=a["mint"], token_account=a["token_account"], amount=a["amount"], alert="P4-class")
+    funded = {a["mint"] for a in open_atas}
+    for m in sorted(open_mints - funded):
+        bad("open_mint_without_token_account", mint=m)
+    zero_atas = [{"mint": a["mint"], "token_account": a.get("token_account")} for a in tokens["accounts"] if int(a["amount"]) == 0]
+    for z in zero_atas:
+        bad("zero_amount_ata_open", rent_leak=True, **z)
     # 5. ledger realized vs chain for closed trips
     trip_diffs = []
-    for tr in ledger.get("trips", []):
+    for tr in ledger["trips"]:
         if not tr.get("closed"):
             continue
         if tr["buy_sig"] not in deltas or tr["sell_sig"] not in deltas:
@@ -150,7 +197,7 @@ def reconcile(txs: Sequence[Mapping[str, Any]], ledger: Mapping[str, Any], token
         if abs(diff) > BASE_FEE:
             bad("trip_pnl_unexplained", trip_id=tr["trip_id"], diff=diff)
     signed_off = not problems
-    return {"label": LABEL, "baseline": baseline, "balance_now": balance_now, "sum_deltas": total, "residual": residual, "txs": len(ordered), "confirmed_drops": confirmed_drops,
+    return {"label": LABEL, "baseline": baseline, "balance_now": balance_now, "sum_deltas": total, "residual": residual, "txs": len(ordered), "confirmed_drops": confirmed_drops, "pending_sends": pending_sends, "balance_context_slot": balance["context_slot"], "zero_amount_atas": zero_atas,
             "split": dict(split), "pool_fees": "inside buys and sells (not separable on chain)", "dust_inflows": dust, "open_atas": open_atas, "stranded": stranded, "trip_diffs": trip_diffs,
             "problems": problems, "hard_halt": bool(problems), "signed_off": signed_off, "next_baseline": balance_now if signed_off else None}
 
@@ -168,24 +215,65 @@ def render(r: Mapping[str, Any]) -> str:
     return "\n".join(L)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    for a in ("txs", "ledger", "tokens", "named"):
-        ap.add_argument(f"--{a}", required=True)
-    ap.add_argument("--baseline", type=int, required=True)
-    ap.add_argument("--balance-now", type=int, required=True)
-    ap.add_argument("--json")
-    a = ap.parse_args(argv)
+STOP_SCHEMA = "arena_tieout_stop_v1"
+
+
+def write_stop(path: str | Path, rc: int, why: str) -> str:
+    """Create STOP (O_EXCL). Returns "created" or "exists"; any other failure raises OSError (the caller turns that into exit 5)."""
+    body = {"schema": STOP_SCHEMA, "exit_code": rc, "hard": True, "reason": why[:500], "note": "wallet tie-out not signed off: no new buys; cleared only by the manager's written review and the owner (O)"}
     try:
-        txs, ledger, tokens, named = (json.loads(Path(getattr(a, k)).read_text()) for k in ("txs", "ledger", "tokens", "named"))
-        res = reconcile(txs, ledger, tokens, a.baseline, a.balance_now, named)
+        fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        return "exists"
+    with os.fdopen(fd, "w") as fh:
+        fh.write(json.dumps(body, sort_keys=True) + "\n")
+    return "created"
+
+
+def _run(a: argparse.Namespace) -> tuple[int, str]:
+    try:
+        txs, ledger, tokens, named, balance = (json.loads(Path(getattr(a, k)).read_text()) for k in ("txs", "ledger", "tokens", "named", "balance"))
+        res = reconcile(txs, ledger, tokens, a.baseline, balance, named)
     except (OSError, ValueError, KeyError, TypeError, BadInput) as exc:
         print(f"UNUSABLE INPUT: {type(exc).__name__}: {exc}", file=sys.stderr)
-        return 2
+        return 2, f"unusable input: {type(exc).__name__}: {exc}"
     print(render(res))
     if a.json:
         Path(a.json).write_text(json.dumps(res, indent=1, sort_keys=True))
-    return 1 if res["hard_halt"] else 0
+    return (1, "hard halt: " + ", ".join(sorted({p["kind"] for p in res["problems"]}))) if res["hard_halt"] else (0, "")
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    for k in ("txs", "ledger", "tokens", "named", "balance", "stop-file"):
+        ap.add_argument(f"--{k}", required=True)
+    ap.add_argument("--baseline", type=int, required=True)
+    ap.add_argument("--json")
+    try:
+        a = ap.parse_args(argv)
+    except SystemExit as e:  # an argument error is also a failure: try to STOP when the path can be found at all
+        stop = next((v for f, v in zip(list(argv or sys.argv[1:]), list(argv or sys.argv[1:])[1:]) if f == "--stop-file"), None)
+        for tok in (list(argv or sys.argv[1:])):
+            if tok.startswith("--stop-file="):
+                stop = tok.split("=", 1)[1]
+        if stop:
+            try:
+                write_stop(stop, 2, "argument error")
+            except OSError:
+                return 5
+        return 5 if not stop else int(e.code or 2)
+    try:
+        rc, why = _run(a)
+    except Exception as exc:  # noqa: BLE001  a crash is a failure too
+        print(f"CRASH: {type(exc).__name__}: {exc}", file=sys.stderr)
+        rc, why = 3, f"crash: {type(exc).__name__}: {exc}"
+    if rc != 0:
+        try:
+            print("STOP file:", write_stop(a.stop_file, rc, why))
+        except OSError as exc:
+            print(f"FAIL CLOSED: STOP could not be written ({exc}); no buy until it is", file=sys.stderr)
+            return 5
+    return rc
 
 
 if __name__ == "__main__":
