@@ -23,7 +23,8 @@ MEMORY (streams; at most one tape line is decoded at a time, and only rows that 
        --margin-slots (default 2000, about 13 min) to reach that first print; every other row is dropped before it reaches the pool history. Retained rows are therefore proportional to
        the trades, not to the tape, whatever its size; a window that is too short to reach the END print shows as an END mismatch (trade left out), not as a wrong gap. Lines are
        pre-filtered by a byte search for the book's pool ids before json decoding. A pool's V comes from each kept row's own virtual_quote_reserves (or --vmap).
-PATHS  every path is checked with arena_report_legs.check_path (refuses sealed, forward, walk, probe, shadow, canary, shakedown ... before any filesystem access).
+PATHS  every path, and every tape FILE by its resolved (symlink-free) path, is checked with arena_report_legs.check_path (refuses sealed, forward, walk, probe, shadow, canary, shakedown ... before any filesystem access).
+OUT   any earlier --out / --detail is removed before the run and the new ones are written to a temp file and renamed only on success: a refused run leaves none. The wrapper must require rc 0.
 Run long as a MiScusi job; it holds the kept rows only.
 """
 
@@ -32,6 +33,7 @@ from __future__ import annotations
 import argparse
 import bisect
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -161,6 +163,8 @@ def load_trades(path: str | Path) -> list[dict[str, Any]]:
 
 
 def run(rows: Sequence[Mapping[str, Any]], files: Sequence[Path], vmap: Mapping[str, Any] | None = None, margin: int = DEFAULT_MARGIN_SLOTS) -> tuple[dict[str, float], dict[str, Any]]:
+    for f in files:  # the guard runs on every tape FILE as well as the directory: check_path resolves symlinks (QP re-check, condition 1)
+        check_path(f, "tape file")
     stats: dict[str, int] = {}
     pools = load_pools(iter_window_rows(files, windows_by_pool(rows, margin), stats), vmap)
     gaps, detail = compute(rows, pools)
@@ -168,6 +172,17 @@ def run(rows: Sequence[Mapping[str, Any]], files: Sequence[Path], vmap: Mapping[
     detail["margin_slots"] = margin
     detail["rule"] = "max over strand rules of END minus the no-guard-rescue worst-in-slot row, 1.9 s leg, lamports, clipped at 0"
     return gaps, detail
+
+
+def atomic_write(path: str | Path, text: str) -> None:
+    """Write to a temp file in the same directory, fsync, rename. A reader never sees a half file."""
+    p = Path(path)
+    tmp = p.with_name(p.name + ".tmp")
+    with open(tmp, "w") as fh:
+        fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.replace(tmp, p)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -184,6 +199,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         for what, p in (("trades", a.trades), ("tape dir", a.tape_dir), ("out", a.out), ("detail", a.detail), ("vmap", a.vmap)):
             if p:
                 check_path(p, what)
+        for p in (a.out, a.detail):  # a refused run must never leave an earlier output behind to be picked up as this run's
+            if p:
+                Path(p).unlink(missing_ok=True)
         rows = load_trades(a.trades)
         vmap = json.loads(Path(a.vmap).read_text()) if a.vmap else None
         if not rows:
@@ -195,9 +213,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (Refused, OSError, KeyError, ValueError) as exc:
         print(f"REFUSED: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 3
-    Path(a.out).write_text(json.dumps(gaps, sort_keys=True, indent=1, allow_nan=False) + "\n")
+    atomic_write(a.out, json.dumps(gaps, sort_keys=True, indent=1, allow_nan=False) + "\n")
     if a.detail:
-        Path(a.detail).write_text(json.dumps(detail, sort_keys=True, indent=1, allow_nan=False) + "\n")
+        atomic_write(a.detail, json.dumps(detail, sort_keys=True, indent=1, allow_nan=False) + "\n")
     print(f"trades {detail['n']}  measured {detail['measured']}  left out {len(detail['left_out'])}  non-zero gaps {detail['nonzero']}  clipped negative {detail['clipped_negative']}  "
           f"stream {detail['stream']}")
     for t, why in list(detail["left_out"].items())[:5]:

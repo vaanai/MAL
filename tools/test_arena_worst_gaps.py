@@ -187,3 +187,246 @@ def test_non_trade_rows_and_bad_json_are_refused(tmp_path):
     p.write_text("{torn\n")
     with pytest.raises(R.Refused, match="not JSON"):
         G.load_trades(p)
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ QP re-check 2026-10-23
+def test_a_tape_file_that_links_into_closed_material_is_refused_by_its_resolved_path(world, tmp_path, capsys):
+    trades, _ = world
+    closed = tmp_path / "sealed_x"
+    write_tape(closed, tape_rows())
+    clean = tmp_path / "clean_tape"
+    clean.mkdir()
+    (clean / hour_name(tms(90))).symlink_to(closed / hour_name(tms(90)))  # the dir name is clean, the file resolves into sealed_x
+    tj = tmp_path / "trades.jsonl"
+    tj.write_text("".join(json.dumps(r) + "\n" for r in trades))
+    out = tmp_path / "gaps.json"
+    with pytest.raises(R.Refused, match="resolved"):
+        G.run(trades, R.tape_files(clean))
+    assert G.main(["--trades", str(tj), "--tape-dir", str(clean), "--out", str(out), "--pad-hours", "24"]) == 3
+    assert "REFUSED" in capsys.readouterr().err and not out.exists()
+
+
+def test_a_refused_run_never_leaves_a_stale_out_and_a_success_replaces_it_atomically(world, tmp_path, capsys):
+    trades, _ = world
+    tj = tmp_path / "trades.jsonl"
+    tj.write_text("".join(json.dumps(r) + "\n" for r in trades))
+    tape = write_tape(tmp_path / "tp", tape_rows())
+    out, det = tmp_path / "gaps.json", tmp_path / "detail.json"
+    out.write_text('{"stale": 1.0}\n')
+    det.write_text("{}")
+    bad = ["--trades", str(tj), "--tape-dir", str(tmp_path / "nonexistent_tape"), "--out", str(out), "--detail", str(det)]
+    rc = G.main(bad)
+    assert rc != 0 and not out.exists() and not det.exists()            # the earlier out is gone, not left to be picked up
+    out.write_text('{"stale": 1.0}\n')
+    ok = ["--trades", str(tj), "--tape-dir", str(tape), "--out", str(out), "--detail", str(det), "--pad-hours", "24"]
+    assert G.main(ok) == 0 and len(json.loads(out.read_text())) == 9 and "stale" not in out.read_text()
+    assert not list(tmp_path.glob("*.tmp*"))                             # no temp file left behind
+    # some trades left out: rc 4, the file holds only what was measured (never a stale one)
+    out.write_text('{"stale": 1.0}\n')
+    tj2 = tmp_path / "px.jsonl"
+    tj2.write_text("".join(json.dumps(r) + "\n" for r in trades if r["pool"] == "PX"))
+    no_px = write_tape(tmp_path / "tp_nopx", [r for r in tape_rows() if r["pool"] != "PX"])
+    assert G.main(["--trades", str(tj2), "--tape-dir", str(no_px), "--out", str(out), "--pad-hours", "24"]) == 4 and json.loads(out.read_text()) == {}
+    capsys.readouterr()
+
+
+def test_the_negative_gap_clamp_and_its_count(world):
+    trades, pools = world
+    x = by(trades, "PX", 0.25)
+    gaps, d = G.compute([x], pools)
+    t = d["trades"][x["trade_id"]]
+    assert t["rule"] == "total"  # total strands at LOWK, sc sells normally
+    strand = -0.25e9 - SEND - R.STRAND_RENT
+    assert gaps[x["trade_id"]] == pytest.approx(end_pnl(x, "total") - strand, abs=1e-3)
+
+
+def test_gaps_file_is_what_the_scorer_reads(world, tmp_path):
+    trades, pools = world
+    gaps, _ = G.compute(trades, pools)
+    p = tmp_path / "gaps.json"
+    p.write_text(json.dumps(gaps))
+    assert load_worst_gaps(p) == gaps and len(gaps) == 9
+
+
+def test_a_trade_that_cannot_be_measured_is_left_out_not_zeroed(world):
+    trades, pools = world
+    thin = R.load_pools([r for r in tape_rows() if not (r["pool"] == "PX" and r["slot"] == 106)])  # the END print is missing
+    gaps, d = G.compute([by(trades, "PX", 0.25), by(trades, "PN", 0.25)], thin)
+    assert by(trades, "PX", 0.25)["trade_id"] not in gaps and by(trades, "PN", 0.25)["trade_id"] in gaps
+    assert "END consistency failed" in d["left_out"][by(trades, "PX", 0.25)["trade_id"]] and not d["all_measured"]
+    gaps, d = G.compute([by(trades, "PX", 0.25)], R.load_pools([r for r in tape_rows() if r["pool"] != "PX"]))
+    assert gaps == {} and "not on the tape" in next(iter(d["left_out"].values()))
+    gaps, d = G.compute([dict(by(trades, "PX", 0.25), prog="pump_bonding")], pools)
+    assert gaps == {} and "PumpSwap" in next(iter(d["left_out"].values()))
+    with pytest.raises(R.Refused, match="duplicated"):
+        G.compute([trades[0], trades[0]], pools)
+
+
+def test_windows_merge_and_membership(world):
+    trades, _ = world
+    w = G.windows_by_pool(trades, margin=10)
+    assert set(w) == {"PX", "PI", "PN"} and all(len(v) == 1 for v in w.values())  # the three stakes of a pool share one window
+    lo, hi = w["PX"][0]
+    assert lo == 104 and hi == 203 + 10  # need = exit slot 202 + 1, plus the margin
+    assert G.in_window(w["PX"], 105) and not G.in_window(w["PX"], 50) and not G.in_window(w["PX"], hi + 1)
+
+
+def write_tape(d, rows):
+    d.mkdir(exist_ok=True)
+    (d / hour_name(tms(90))).write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return d
+
+
+def noise(n):
+    """Many prints of other pools and of the wanted pools far outside every window."""
+    rows = [pr(f"Z{i % 50}", 100_000 + i, "S1", off=i % 7, ev=i) for i in range(n)]
+    rows += [pr("PX", 900_000 + i, "S1", off=i % 7, ev=i) for i in range(n // 10)]
+    return rows
+
+
+def test_streaming_run_equals_the_full_load_and_drops_what_cannot_matter(world, tmp_path):
+    trades, pools = world
+    want, _ = G.compute(trades, pools)
+    tape = write_tape(tmp_path / "tp", sorted(tape_rows() + noise(3000), key=lambda r: (r["slot"], r["t_recv_ms"], r["signature"])))
+    files = R.tape_files(tape)
+    gaps, d = G.run(trades, files, margin=50)
+    assert gaps == want and d["all_measured"]
+    s = d["stream"]
+    assert s["lines"] == len(tape_rows()) + 3300 and s["kept"] == len(tape_rows()) - 6 and s["dropped_outside_window"] == 306 and s["decoded"] == s["kept"] + 306  # 6 = the slot-99/100 prints before every window
+    # lines of other pools are never decoded
+    assert s["decoded"] < s["lines"] / 5
+
+
+def test_a_window_too_short_to_reach_the_end_print_is_an_end_mismatch_not_a_wrong_gap(world, tmp_path):
+    trades, _ = world
+    x = by(trades, "PX", 0.25)
+    full = write_tape(tmp_path / "full", tape_rows())
+    ok, _ = G.run([x], R.tape_files(full), margin=0)  # the window ends exactly at the END print's slot (203): enough
+    assert x["trade_id"] in ok
+    far = [r for r in tape_rows() if not (r["pool"] == "PX" and r["slot"] == 203)] + [pr("PX", 5000, "S2")]  # the END print comes 4,800 slots later
+    tape = write_tape(tmp_path / "far", sorted(far, key=lambda r: (r["slot"], r["t_recv_ms"], r["signature"])))
+    gaps, d = G.run([x], R.tape_files(tape), margin=50)
+    assert gaps == {} and "END consistency failed" in d["left_out"][x["trade_id"]]  # left out, never a wrong number
+    gaps, d = G.run([x], R.tape_files(tape), margin=6000)
+    assert gaps == ok  # a wide enough margin reaches it
+
+
+def test_memory_is_bounded_by_the_trades_not_the_tape(world, tmp_path):
+    trades, _ = world
+    small = write_tape(tmp_path / "small", sorted(tape_rows() + noise(500), key=lambda r: (r["slot"], r["t_recv_ms"], r["signature"])))
+    big = write_tape(tmp_path / "big", sorted(tape_rows() + noise(20_000), key=lambda r: (r["slot"], r["t_recv_ms"], r["signature"])))
+    peaks = []
+    for t in (small, big):
+        tracemalloc.start()
+        G.run(trades, R.tape_files(t), margin=50)
+        peaks.append(tracemalloc.get_traced_memory()[1])
+        tracemalloc.stop()
+    assert peaks[1] < peaks[0] * 1.5  # 40x the tape, about the same peak
+
+
+def test_cli_end_to_end_and_exit_codes(world, tmp_path, capsys):
+    trades, _ = world
+    tape = write_tape(tmp_path / "tp", tape_rows())
+    tj = tmp_path / "trades.jsonl"
+    tj.write_text("".join(json.dumps(r) + "\n" for r in trades))
+    out, det = tmp_path / "gaps.json", tmp_path / "detail.json"
+    args = ["--trades", str(tj), "--tape-dir", str(tape), "--out", str(out), "--detail", str(det), "--pad-hours", "24"]
+    assert G.main(args) == 0
+    gaps = json.loads(out.read_text())
+    assert len(gaps) == 9 and load_worst_gaps(out) == gaps and json.loads(det.read_text())["all_measured"]
+    assert "measured 9" in capsys.readouterr().out
+    # a tape without PX: its trades are left out and the exit code says so
+    tj2 = tmp_path / "two.jsonl"
+    tj2.write_text("".join(json.dumps(r) + "\n" for r in trades if r["pool"] == "PX"))
+    write_tape(tmp_path / "tp2", [r for r in tape_rows() if r["pool"] != "PX"])
+    assert G.main(["--trades", str(tj2), "--tape-dir", str(tmp_path / "tp2"), "--out", str(tmp_path / "g2.json"), "--pad-hours", "24"]) == 4
+    assert json.loads((tmp_path / "g2.json").read_text()) == {}
+
+
+@pytest.mark.parametrize("flag", ["--trades", "--tape-dir", "--out", "--detail", "--vmap"])
+def test_every_path_is_checked_for_closed_material(flag, tmp_path, capsys):
+    base = {"--trades": str(tmp_path / "t.jsonl"), "--tape-dir": str(tmp_path), "--out": str(tmp_path / "o.json")}
+    base[flag] = "/x/canary/f"
+    argv = [x for k, v in base.items() for x in (k, v)] + ([] if flag in base else [flag, "/x/canary/f"])
+    assert G.main(argv) == 3 and "REFUSED" in capsys.readouterr().err
+
+
+def test_non_trade_rows_and_bad_json_are_refused(tmp_path):
+    p = tmp_path / "t.jsonl"
+    p.write_text('{"kind": "open"}\n')
+    with pytest.raises(R.Refused, match="expected a ledger row of kind 'trade'"):
+        G.load_trades(p)
+    p.write_text("{torn\n")
+    with pytest.raises(R.Refused, match="not JSON"):
+        G.load_trades(p)
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ QP re-check 2026-10-23
+def test_a_tape_file_that_links_into_closed_material_is_refused_by_its_resolved_path(world, tmp_path, capsys):
+    trades, _ = world
+    closed = tmp_path / "sealed_x"
+    write_tape(closed, tape_rows())
+    clean = tmp_path / "clean_tape"
+    clean.mkdir()
+    (clean / hour_name(tms(90))).symlink_to(closed / hour_name(tms(90)))  # the dir name is clean, the file resolves into sealed_x
+    tj = tmp_path / "trades.jsonl"
+    tj.write_text("".join(json.dumps(r) + "\n" for r in trades))
+    out = tmp_path / "gaps.json"
+    with pytest.raises(R.Refused, match="resolved"):
+        G.run(trades, R.tape_files(clean))
+    assert G.main(["--trades", str(tj), "--tape-dir", str(clean), "--out", str(out), "--pad-hours", "24"]) == 3
+    assert "REFUSED" in capsys.readouterr().err and not out.exists()
+
+
+def test_a_refused_run_never_leaves_a_stale_out_and_a_success_replaces_it_atomically(world, tmp_path, capsys):
+    trades, _ = world
+    tj = tmp_path / "trades.jsonl"
+    tj.write_text("".join(json.dumps(r) + "\n" for r in trades))
+    tape = write_tape(tmp_path / "tp", tape_rows())
+    out, det = tmp_path / "gaps.json", tmp_path / "detail.json"
+    out.write_text('{"stale": 1.0}\n')
+    det.write_text("{}")
+    bad = ["--trades", str(tj), "--tape-dir", str(tmp_path / "nonexistent_tape"), "--out", str(out), "--detail", str(det)]
+    rc = G.main(bad)
+    assert rc != 0 and not out.exists() and not det.exists()            # the earlier out is gone, not left to be picked up
+    out.write_text('{"stale": 1.0}\n')
+    ok = ["--trades", str(tj), "--tape-dir", str(tape), "--out", str(out), "--detail", str(det), "--pad-hours", "24"]
+    assert G.main(ok) == 0 and len(json.loads(out.read_text())) == 9 and "stale" not in out.read_text()
+    assert not list(tmp_path.glob("*.tmp*"))                             # no temp file left behind
+    # some trades left out: rc 4, the file holds only what was measured (never a stale one)
+    out.write_text('{"stale": 1.0}\n')
+    tj2 = tmp_path / "px.jsonl"
+    tj2.write_text("".join(json.dumps(r) + "\n" for r in trades if r["pool"] == "PX"))
+    no_px = write_tape(tmp_path / "tp_nopx", [r for r in tape_rows() if r["pool"] != "PX"])
+    assert G.main(["--trades", str(tj2), "--tape-dir", str(no_px), "--out", str(out), "--pad-hours", "24"]) == 4 and json.loads(out.read_text()) == {}
+    capsys.readouterr()
+
+
+def test_the_negative_gap_clamp_and_its_count(world):
+    trades, pools = world
+    # swap the roles: price the "worst" row from a pool where the worst state is BETTER than END by feeding a ledger END pnl that is lower than the re-priced worst row
+    x = by(trades, "PX", 0.25)
+    lowered = json.loads(json.dumps(x))
+    for rule in ("sc", "total"):
+        lowered["calc"]["1p9"]["by_rule"][rule]["pnl_nofail"] -= 5e7  # ledger END pnl far below what the tape reprices... (END check would flag it)
+    gaps, d = G.compute([x], pools)
+    t = d["trades"][x["trade_id"]]
+    assert t["raw_gap"] > 0 and not t["clipped_negative"] and d["clipped_negative"] == 0
+    # direct unit test of the clamp through gap_of_trade with a patched worst_trip whose NG row beats END
+    import tools.arena_worst_gaps as mod
+
+    real = mod.worst_trip
+
+    def better(row, h):
+        calc, ng, diag = real(row, h)
+        for rule in ("sc", "total"):
+            ng["1p9"]["by_rule"][rule]["pnl_nofail"] = row["calc"]["1p9"]["by_rule"][rule]["pnl_nofail"] + 123.0
+        return calc, ng, diag
+
+    mod.worst_trip = better
+    try:
+        gaps, d = G.compute([x, by(trades, "PN", 0.25)], pools)
+    finally:
+        mod.worst_trip = real
+    assert gaps == {x["trade_id"]: 0.0, by(trades, "PN", 0.25)["trade_id"]: 0.0}  # never credited
+    assert d["clipped_negative"] == 2 and d["trades"][x["trade_id"]]["raw_gap"] == pytest.approx(-123.0) and d["nonzero"] == 0
