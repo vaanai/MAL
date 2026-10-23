@@ -33,6 +33,19 @@ from tools import arena_h5_score as sc
 from tools import h5_arena_executor as ax
 from tools import h5_executor as h
 
+# QP 10-23 md5 ruling item 12 (c): the ONLY ParserFault the harness turns into a verdict. The scorer raises it for a parser answer of `synthetic_unconfirmed`
+# (arena_h5_score.executor_refusal, "parse_shadow_trigger returned 'synthetic_unconfirmed' (pool ...), a refusal ..."). Anything else still halts. The scorer is not changed.
+SYNTHETIC_UNCONFIRMED_FAULT_RE = re.compile(r"^parse_shadow_trigger returned 'synthetic_unconfirmed' \(pool ")
+SYNTHETIC_UNCONFIRMED = "synthetic_unconfirmed"
+
+# Every refusal reason the executor's decision layer can give a pv trigger (tools/h5_executor.py parse_shadow_trigger + the exclusion/sps checks in executor_verdicts).
+# `bad_intent:missing_*` is a schema fault: the scorer halts on it, so it is never a verdict. A reason in this list that a run never shows is named in the result.
+DECISION_REFUSAL_REASONS = (
+    "synthetic_unconfirmed", "bad_intent:suppressed", "bad_intent:q_trigger_sol", "bad_intent:base", "bad_intent:v_print", "bad_intent:v_missing",
+    "bad_intent:gap", "bad_intent:base_breaks_unresolved_settled", "bad_intent:s0_minus_announced_slots", "bad_intent:sps_span", "bad_intent:boost_spent",
+    "excluded_pool", "sps_skipped_pool",
+)
+
 OCTOBER_RE = re.compile(r"2026-10|202610|arena", re.I)
 EXPLORATION_DAY_RE = re.compile(r"2026-09-20|20260920")
 
@@ -113,7 +126,12 @@ def scorer_verdicts(shadow_dir: Path, book: ax.Book, sc: Any = sc) -> tuple[dict
         if pool in seen:
             continue
         seen.add(pool)
-        why = sc.executor_refusal(trig)
+        try:
+            why = sc.executor_refusal(trig)
+        except sc.ParserFault as exc:
+            if not SYNTHETIC_UNCONFIRMED_FAULT_RE.match(str(exc)):
+                raise  # any other ParserFault still crashes
+            why = SYNTHETIC_UNCONFIRMED
         out[(trig.get("mint"), pool, trig.get("slot"))] = "attempt" if why is None else why
     return out, counts
 
@@ -186,6 +204,10 @@ def bx10_exit_slots(shadow_dir: Path) -> tuple[list[tuple], list[tuple]]:
     return mine, theirs
 
 
+def reason_counts(rows: list[tuple]) -> dict[str, int]:
+    return dict(collections.Counter(r[-1] for r in rows))
+
+
 def run(shadow_dir: Path, bot_id: str, scorer_root: Path | None = None, expect_code_sha: str | None = None) -> dict[str, Any]:
     if OCTOBER_RE.search(str(shadow_dir)) or not EXPLORATION_DAY_RE.search(str(shadow_dir)):
         raise SystemExit("refused: the replay dir must be the 2026-09-20 exploration day and must not be an October or arena path")
@@ -203,7 +225,12 @@ def run(shadow_dir: Path, bot_id: str, scorer_root: Path | None = None, expect_c
                            "refusals_executor": dict(collections.Counter(r[-1] for r in e_rows if r[-1] != "attempt")),
                            "window_counts_scorer": dict(s_c), "window_counts_executor": dict(e_c), "differing_keys": len(set(s_rows) ^ set(e_rows)),
                            "scorer_file_sha256": hashlib.sha256(Path(frozen.__file__).read_bytes()).hexdigest(), "scorer_is_separate_export": scorer_root is not None,
-                           "start_records_checked": n_start}
+                           "start_records_checked": n_start,
+                           "reason_counts_scorer": reason_counts(s_rows), "reason_counts_executor": reason_counts(e_rows),
+                           "synthetic_unconfirmed_scorer": sum(1 for r in s_rows if r[-1] == SYNTHETIC_UNCONFIRMED),
+                           "synthetic_unconfirmed_executor": sum(1 for r in e_rows if r[-1] == SYNTHETIC_UNCONFIRMED),
+                           "reasons_never_in_scorer": [x for x in DECISION_REFUSAL_REASONS if x not in {r[-1] for r in s_rows}],
+                           "reasons_never_in_executor": [x for x in DECISION_REFUSAL_REASONS if x not in {r[-1] for r in e_rows}]}
     if ax.BOOKS[bot_id].exit_pin == h.EXIT_MODE_V2:
         mine, theirs = bx10_exit_slots(shadow_dir)
         res.update(bx10_n=len(mine), bx10_md5_executor=md5_of(mine), bx10_md5_shadow=md5_of(theirs), bx10_equal=md5_of(mine) == md5_of(theirs))

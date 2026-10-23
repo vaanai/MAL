@@ -127,6 +127,43 @@ class ReplayTests(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 rp.run(d, "h5v1-boostfloor-a2")
 
+    def test_synthetic_unconfirmed_is_a_verdict_on_both_sides(self):
+        c = Clock()
+        rows = rows_for(c) + [shadow_trigger(c, pool="P6", mint="MP6", synthetic_src="pre_event_binary"), shadow_trigger(c, pool="P7", mint="MP7", synthetic_src="pre_event_binary")]
+        d = write_day(self.root, rows)
+        r = rp.run(d, "h5v1-boostfloor-a2", scorer_root=self.export(), expect_code_sha=ax.A2_SHA)
+        self.assertTrue(r["equal"], r)
+        self.assertEqual((r["synthetic_unconfirmed_scorer"], r["synthetic_unconfirmed_executor"]), (2, 2))
+        self.assertEqual(r["reason_counts_scorer"], r["reason_counts_executor"])
+        self.assertIn("bad_intent:boost_spent", r["reasons_never_in_scorer"])
+        self.assertNotIn("synthetic_unconfirmed", r["reasons_never_in_executor"])
+        self.assertEqual(r["reasons_never_in_scorer"], r["reasons_never_in_executor"])
+
+    def test_synthetic_unconfirmed_mapping_does_not_hide_a_difference(self):
+        c = Clock()
+        d = write_day(self.root, rows_for(c) + [shadow_trigger(c, pool="P6", mint="MP6", synthetic_src="ws")])
+        ex = self.export(lambda f: f.write_text(f.read_text() + "\n_o = executor_refusal\ndef executor_refusal(trig):\n    return 'attempt_x' if trig.get('pool') == 'P6' else _o(trig)\n"))
+        self.assertFalse(rp.run(d, "h5v1-boostfloor-a2", scorer_root=ex)["equal"])
+
+    def test_any_other_parser_fault_still_crashes(self):
+        from unittest import mock
+        from tools import arena_h5_score as sc
+        d = write_day(self.root, rows_for(Clock()))
+        book = rp.replay_book(ax.BOOKS["h5v1-boostfloor-a2"])
+        for msg in ("schema fault: parse_shadow_trigger returned 'bad_intent:missing_x' (pool 'P1')",
+                    "parse_shadow_trigger returned 'bad_intent:foo' (pool 'P1'), a refusal x",
+                    "x parse_shadow_trigger returned 'synthetic_unconfirmed' (pool 'P1')",
+                    "parse_shadow_trigger raised ValueError on a trigger record (pool 'P1'): returned 'synthetic_unconfirmed'"):
+            with mock.patch.object(sc, "executor_refusal", side_effect=sc.ParserFault(msg)):
+                with self.assertRaises(sc.ParserFault, msg=msg):
+                    rp.scorer_verdicts(d, book, sc)
+
+    def test_reason_universe_literals_exist_in_the_parser_source(self):
+        src = (Path(rp.__file__).parent / "h5_executor.py").read_text()
+        for x in rp.DECISION_REFUSAL_REASONS:
+            if x.startswith("bad_intent:"):
+                self.assertIn(x, src)
+
     def test_stub_rpc_refuses_any_call(self):
         with self.assertRaises(RuntimeError):
             rp.StubRpc()("getSlot", [])
