@@ -58,6 +58,9 @@ CANARY_DEC_FILE = "DEC/DEC-032-h5-arena-canary.md"  # the new canary DEC (does n
 CANARY_OWNER_RE = re.compile(r"^[ \t]*OWNER_CANARY_CONFIRMED:[ \t]*\S", re.M)
 FEED_NOTE_MERGED = False  # scope item 17: the EXP-024 note declaring this executor's observation. False = replay_only
 LIVE_BUILT = False  # this PR builds no live entry point
+C0_TIER = {  # DEC-032 s3, the C0 canary table, PINNED in code per canary book. The shared /etc/mal-h5/TIER (T0/T1/T2) and the config may only LOWER these.
+    "stake_lamports": 50_000_000, "max_open": 2, "max_trades_per_day": 30, "daily_loss_lamports": 100_000_000, "total_loss_lamports": 200_000_000,
+}
 PAPER_FAIL_RATE = 0.15  # the flat fail model of the gate; landing-fail excess is measured against it
 
 
@@ -320,7 +323,10 @@ class ArenaExecutor(h.H5Executor):
         """The base limits with the book's compiled priority pin on all three fee fields (item 9). The base clamps these to its 55,000 / 150,000 code
         constants; this is the only place a book's fee differs from them, and the start row's `limits` shows the result."""
         pr = self.abook.priority
-        return replace(super().h5, buy_priority_lamports=pr.buy, sell_priority_lamports=pr.sell, escalated_priority_lamports=pr.escalated)
+        lim = replace(super().h5, buy_priority_lamports=pr.buy, sell_priority_lamports=pr.sell, escalated_priority_lamports=pr.escalated)
+        # C0 (gap a): the pinned table is the ceiling whatever the shared TIER file says. T1 / T2 in the file cannot raise a single field; a lower tier
+        # (T0) or a tighter config still lowers it, because this takes the minimum.
+        return replace(lim, **{k: min(getattr(lim, k), v) for k, v in C0_TIER.items()})
 
     def __repr__(self) -> str:
         return f"ArenaExecutor(book={self.abook.bot_id}, mode={self.run_mode})"

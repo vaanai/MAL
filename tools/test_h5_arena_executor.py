@@ -561,3 +561,56 @@ class SellBuilderPinTests(PriorityPinTests):
         self.assertEqual(str(base_close[2][0]), pos["base_ata"])
         self.assertEqual(ixs.index(base_close), len(ixs) - 1)  # after the swap
         self.assertTrue(any(x[1][:8] == ptx.DISC_SELL for x in ixs))
+
+
+class C0PinTests(ACase):
+    """Gap (a): the C0 canary table is pinned in code; the shared TIER file may only lower it."""
+
+    def tier_limits(self, tier):
+        e = self.env()
+        (self.tmp / "state").mkdir(parents=True, exist_ok=True)
+        (self.tmp / "state" / "TIER").write_text(tier)
+        e.ex._refresh_tier(e.clock())
+        return e.ex.h5
+
+    def test_c0_table_is_the_dec032_one(self):
+        self.assertEqual(ax.C0_TIER, {"stake_lamports": 50_000_000, "max_open": 2, "max_trades_per_day": 30,
+                                      "daily_loss_lamports": 100_000_000, "total_loss_lamports": 200_000_000})
+
+    def test_t1_and_t2_files_cannot_raise_stake_or_open_count_or_stops(self):
+        for tier in ("T1", "T2"):
+            lim = self.tier_limits(tier)
+            self.assertEqual(self.sub(lim), ax.C0_TIER, tier)
+            self.assertEqual(self.ex_tier(tier), tier)  # the file was read as that tier: the clamp, not the file, held the line
+
+    def test_t0_file_lowers_below_c0(self):
+        lim = self.tier_limits("T0")
+        self.assertEqual(lim.stake_lamports, h.TIERS["T0"]["stake_lamports"])
+        self.assertLess(lim.stake_lamports, ax.C0_TIER["stake_lamports"])
+
+    def test_config_can_lower_but_not_raise(self):
+        e = self.env(stake_lamports=10_000_000)
+        self.assertEqual(e.ex.h5.stake_lamports, 10_000_000)
+        e = self.env(stake_lamports=900_000_000, max_open=9)
+        (self.tmp / "state").mkdir(parents=True, exist_ok=True)
+        (self.tmp / "state" / "TIER").write_text("T2")
+        e.ex._refresh_tier(e.clock())
+        self.assertLessEqual(e.ex.h5.stake_lamports, ax.C0_TIER["stake_lamports"])
+        self.assertLessEqual(e.ex.h5.max_open, 2)
+
+    def test_t2_file_does_not_let_a_third_buy_through(self):
+        e = self.env()
+        (self.tmp / "state").mkdir(parents=True, exist_ok=True)
+        (self.tmp / "state" / "TIER").write_text("T2")
+        self.assertEqual(e.ex.h5.max_open, 2)
+
+    @staticmethod
+    def sub(lim):
+        return {k: getattr(lim, k) for k in ax.C0_TIER}
+
+    def ex_tier(self, tier):
+        e = self.env()
+        (self.tmp / "state").mkdir(parents=True, exist_ok=True)
+        (self.tmp / "state" / "TIER").write_text(tier)
+        e.ex._refresh_tier(e.clock())
+        return e.ex.tier
