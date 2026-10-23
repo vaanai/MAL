@@ -244,10 +244,10 @@ def test_windows_counts_and_header(tmp_path):
     assert w[("pumpfun", 4)]["all_covered"] == 4
 
 
-def produced_file(tmp, first, last, ranges, name="produced.jsonl"):
+def produced_file(tmp, first, last, ranges, name="produced.jsonl", queried=None):
     import arena_fetch_produced_slots as F
     p = tmp / name
-    p.write_text("\n".join(F.render(F.ALLOWED_URLS[0], first, last, ranges)) + "\n")
+    p.write_text("\n".join(F.render(F.ALLOWED_URLS[0], queried or [[first, last]], ranges)) + "\n")
     return str(p)
 
 
@@ -294,10 +294,25 @@ def test_fetch_chunks_and_allowlist():
         calls.append((a, b))
         return [s for s in range(a, b + 1) if s % 10]   # every 10th slot produced no block
     sleeps = []
-    r = F.fetch(F.ALLOWED_URLS[0], 1, 250_000, getter, sleeps.append)
-    assert calls == [(1, 50_000), (50_001, 100_000), (100_001, 150_000), (150_001, 200_000), (200_001, 250_000)] and len(sleeps) == 4
-    assert r[0] == [1, 9] and r[1] == [11, 19]
+    r = F.fetch(F.ALLOWED_URLS[0], [[1, 120_000], [500_000, 500_099]], getter, sleeps.append)
+    assert calls == [(1, 50_000), (50_001, 100_000), (100_001, 120_000), (500_000, 500_099)] and len(sleeps) == 3
+    assert r[0] == [1, 9] and r[1] == [11, 19] and r[-1] == [500_091, 500_099]
     with pytest.raises(ValueError):
-        F.fetch("https://mainnet.helius-rpc.com", 1, 5, getter, sleeps.append)
+        F.fetch("https://mainnet.helius-rpc.com", [[1, 5]], getter, sleeps.append)
     with pytest.raises(RuntimeError):
-        F.fetch(F.ALLOWED_URLS[0], 1, 5, lambda u, a, b: [99], sleeps.append)
+        F.fetch(F.ALLOWED_URLS[0], [[1, 5]], lambda u, a, b: [99], sleeps.append)
+
+
+def test_fetch_merge_and_unqueried_slots_refused(tmp_path):
+    import arena_fetch_produced_slots as F
+    assert F.merge_ranges([[10, 12], [20, 22], [100, 101]], 10) == [[10, 22], [100, 101]]
+    assert F.merge_ranges([[10, 12], [20, 22]], 0) == [[10, 12], [20, 22]]
+    # queried only 101..109; the gap's uncovered slot 130 is outside the queried ranges -> refused
+    rows = [jump("pumpswap", 100, 140, T0, T0 + 200)] + [trade("pumpswap", s, T0 + 900) for s in range(101, 140) if s not in (105, 130)] + sentinels()
+    sc = G.scan([write(tmp_path, rows)], 120)
+    pf = G.load_produced(produced_file(tmp_path, 101, 109, [[101, 104], [106, 109]], queried=[[101, 109]]))
+    with pytest.raises(G.Refused):
+        G.reclassify(sc, 120, (), pf)
+    pf2 = G.load_produced(produced_file(tmp_path, 101, 130, [[101, 104], [106, 109], [130, 130]], "p2.jsonl", queried=[[101, 109], [130, 130]]))
+    g = next(r for r in G.reclassify(sc, 120, (), pf2) if r["type"] == "gap")
+    assert g["class"] == "partial" and g["no_block_slots"] == 1 and g["uncovered_ranges"] == [[130, 130]]

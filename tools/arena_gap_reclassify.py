@@ -238,12 +238,21 @@ def load_produced(path: str) -> dict[str, Any]:
     rg = head.get("ranges")
     if not (_int(head.get("first")) and _int(head.get("last")) and isinstance(rg, list)):
         raise Refused("produced-slots file malformed")
+    q = head.get("queried")
+    if not (isinstance(q, list) and q and all(isinstance(r, list) and len(r) == 2 and _int(r[0]) and _int(r[1]) and r[0] <= r[1] for r in q)
+            and all(a[1] < b[0] for a, b in zip(q, q[1:]))):
+        raise Refused("produced-slots queried ranges missing or not sorted and disjoint")
     prev = head["first"] - 2
     for r in rg:
         if not (isinstance(r, list) and len(r) == 2 and _int(r[0]) and _int(r[1]) and r[0] <= r[1] and r[0] > prev + 1 and head["first"] <= r[0] and r[1] <= head["last"]):
             raise Refused("produced-slots ranges not sorted, disjoint and inside [first, last]")
         prev = r[1]
-    return {"first": head["first"], "last": head["last"], "ranges": rg, "starts": [r[0] for r in rg], "sha256": tail["sha256"]}
+    return {"queried": q, "qstarts": [r[0] for r in q], "first": head["first"], "last": head["last"], "ranges": rg, "starts": [r[0] for r in rg], "sha256": tail["sha256"]}
+
+
+def _queried(pr: dict[str, Any], s: int) -> bool:
+    i = bisect.bisect_right(pr["qstarts"], s) - 1
+    return i >= 0 and pr["queried"][i][1] >= s
 
 
 def _produced(pr: dict[str, Any], s: int) -> bool:
@@ -273,8 +282,8 @@ def reclassify(sc: dict[str, Any], grace_s: int = DEFAULT_GRACE_S, windows: tupl
         raw_missing = len(missing)
         is_cut = sc["last_ms"][prog] < j["to_ms"] + grace_s * 1000
         if produced is not None and missing and not is_cut:
-            if missing[0] < produced["first"] or missing[-1] > produced["last"]:
-                raise Refused("uncovered slot outside the produced-slots file span")
+            if not all(_queried(produced, x) for x in missing):
+                raise Refused("uncovered slot outside the produced-slots queried ranges")
             missing = [s for s in missing if _produced(produced, s)]  # an uncovered slot with no produced block lost nothing
         if is_cut:
             cls = "unresolved_tape_cut"
