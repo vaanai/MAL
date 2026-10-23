@@ -51,7 +51,45 @@ def replay_book(book: ax.Book) -> ax.Book:
     return dataclasses.replace(book, clock_start_ms=0, end_ms_seal=2**62)
 
 
-def scorer_verdicts(shadow_dir: Path, book: ax.Book) -> tuple[dict[tuple, str], collections.Counter]:
+def load_frozen_scorer(root: Path) -> Any:
+    """tools/arena_h5_score.py (and the tools it imports) loaded from a SEPARATE export at `root` (the book's registration sha), so the reference does not move with
+    the PR head (QP 10-23 ruling 4 (c)1). sys.modules is restored afterwards: the executor side keeps using this checkout's modules."""
+    import importlib
+    saved = {k: v for k, v in sys.modules.items() if k == "tools" or k.startswith("tools.")}
+    for k in saved:
+        del sys.modules[k]
+    sys.path.insert(0, str(root))
+    try:
+        mod = importlib.import_module("tools.arena_h5_score")
+        if not str(Path(mod.__file__).resolve()).startswith(str(Path(root).resolve())):
+            raise SystemExit("refused: the frozen scorer was not loaded from the export")
+        return mod
+    finally:
+        sys.path.remove(str(root))
+        for k in [k for k in sys.modules if k == "tools" or k.startswith("tools.")]:
+            del sys.modules[k]
+        sys.modules.update(saved)
+
+
+def check_start_records(shadow_dir: Path, expect_sha: str) -> int:
+    """Every start record of the replay input must carry code_sha == the frozen shadow sha and not be dirty (QP 10-23 ruling 4 (c)2). Returns the count; refuses on any miss."""
+    n = 0
+    for f in sorted(shadow_dir.glob("h5-shadow-????-??-??T??.jsonl")):
+        for line in f.read_text(encoding="utf-8").splitlines():
+            if '"type": "start"' not in line and '"type":"start"' not in line:
+                continue
+            r = json.loads(line)
+            if r.get("type") != "start":
+                continue
+            n += 1
+            if r.get("code_sha") != expect_sha or r.get("dirty") not in (False, None, 0):
+                raise SystemExit(f"refused: start record code_sha {r.get('code_sha')!r} dirty {r.get('dirty')!r} is not the frozen {expect_sha} with dirty=0")
+    if n == 0:
+        raise SystemExit("refused: no start record in the replay input")
+    return n
+
+
+def scorer_verdicts(shadow_dir: Path, book: ax.Book, sc: Any = sc) -> tuple[dict[tuple, str], collections.Counter]:
     counts: collections.Counter = collections.Counter()
     d = sc.ShadowDir(shadow_dir, counts)
     out: dict[tuple, str] = {}
@@ -148,11 +186,13 @@ def bx10_exit_slots(shadow_dir: Path) -> tuple[list[tuple], list[tuple]]:
     return mine, theirs
 
 
-def run(shadow_dir: Path, bot_id: str) -> dict[str, Any]:
+def run(shadow_dir: Path, bot_id: str, scorer_root: Path | None = None, expect_code_sha: str | None = None) -> dict[str, Any]:
     if OCTOBER_RE.search(str(shadow_dir)) or not EXPLORATION_DAY_RE.search(str(shadow_dir)):
         raise SystemExit("refused: the replay dir must be the 2026-09-20 exploration day and must not be an October or arena path")
     book = replay_book(ax.BOOKS[bot_id])
-    s_v, s_c = scorer_verdicts(shadow_dir, book)
+    n_start = check_start_records(shadow_dir, expect_code_sha) if expect_code_sha else None
+    frozen = load_frozen_scorer(scorer_root) if scorer_root else sc
+    s_v, s_c = scorer_verdicts(shadow_dir, book, frozen)
     e_v, e_c = executor_verdicts(shadow_dir, ax.BOOKS[bot_id])
     s_rows = [(*k, v) for k, v in s_v.items()]
     e_rows = [(*k, v) for k, v in e_v.items()]
@@ -161,7 +201,9 @@ def run(shadow_dir: Path, bot_id: str) -> dict[str, Any]:
                            "attempts_executor": sum(1 for r in e_rows if r[-1] == "attempt"),
                            "refusals_scorer": dict(collections.Counter(r[-1] for r in s_rows if r[-1] != "attempt")),
                            "refusals_executor": dict(collections.Counter(r[-1] for r in e_rows if r[-1] != "attempt")),
-                           "window_counts_scorer": dict(s_c), "window_counts_executor": dict(e_c), "differing_keys": len(set(s_rows) ^ set(e_rows))}
+                           "window_counts_scorer": dict(s_c), "window_counts_executor": dict(e_c), "differing_keys": len(set(s_rows) ^ set(e_rows)),
+                           "scorer_file_sha256": hashlib.sha256(Path(frozen.__file__).read_bytes()).hexdigest(), "scorer_is_separate_export": scorer_root is not None,
+                           "start_records_checked": n_start}
     if ax.BOOKS[bot_id].exit_pin == h.EXIT_MODE_V2:
         mine, theirs = bx10_exit_slots(shadow_dir)
         res.update(bx10_n=len(mine), bx10_md5_executor=md5_of(mine), bx10_md5_shadow=md5_of(theirs), bx10_equal=md5_of(mine) == md5_of(theirs))
@@ -172,8 +214,10 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="decision-equivalence replay of the H5 arena executor (exploration day only; counts and md5)")
     ap.add_argument("--shadow-dir", required=True, type=Path)
     ap.add_argument("--bot-id", required=True, choices=sorted(ax.BOOKS))
+    ap.add_argument("--scorer-root", type=Path, help="a separate export (git archive) of the book's registration sha: the reference scorer is loaded from here")
+    ap.add_argument("--expect-code-sha", help="every start record must carry this code_sha and dirty=0")
     args = ap.parse_args(argv)
-    print(json.dumps(run(args.shadow_dir, args.bot_id), sort_keys=True))
+    print(json.dumps(run(args.shadow_dir, args.bot_id, args.scorer_root, args.expect_code_sha), sort_keys=True))
     return 0
 
 

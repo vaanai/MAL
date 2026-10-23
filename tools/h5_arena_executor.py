@@ -46,7 +46,7 @@ from datetime import datetime, timezone
 from tools import h5_executor as h
 from tools import mint_account_fetch as mf
 from tools.arena_close_blocked import classify_record
-from tools.h5_arena_gates import HARD_ARENA_HALTS, LiveGates, ParityRecorder, v_band_refusal
+from tools.h5_arena_gates import HARD_ARENA_HALTS, TWIN_PIN_MISMATCH, LiveGates, ParityRecorder, v_band_refusal
 from tools.h5_arena_gates import twin_run_stamp as gt_twin_run_stamp
 
 # --- the books (item 1). Values copied from the merged records: ARTIFACTS/lab/arena-records-2026-10-22.md (a2), qp-ruling-1022-q50.md and
@@ -99,6 +99,31 @@ class Priority:
 
     def as_dict(self) -> dict[str, Any]:
         return {"profile": self.profile, "buy": self.buy, "sell": self.sell, "escalated": self.escalated}
+
+
+# --- the twin writer pins (QP 10-23 blocker 2 / P5, ruling 4). The H5 books register stack DEC-031-rev2 (tools/arena_h5_cost.py), not the arena host's StackConfig.
+# The config pin of a book = sha256 of canonical JSON {adapter, arena_h5_cost_sha256, stack_id} (tools/arena_twin_writer.h5_config_hash), with arena_h5_cost_sha256 =
+# `git show <registration sha>:tools/arena_h5_cost.py | sha256sum` (eb8b32d for the a2 books, a5f4137 for Q50: both give the same file). A test recomputes them.
+# TWIN_WRITER_SHA256 = sha256 of tools/arena_twin_writer.py. The twin's rent 0 is a declared twin-only deviation (reported beside as pnl_rent0_lamports).
+TWIN_STACK_ID = "DEC-031-rev2"
+TWIN_ADAPTER = "h5_twin_adapter_v1"
+H5_COST_SHA256 = {"eb8b32d": "b20d51ceb939822ce813ca48b14348e61873277fef54a3d71af660e37fe03328", "a5f4137": "b20d51ceb939822ce813ca48b14348e61873277fef54a3d71af660e37fe03328"}
+TWIN_WRITER_SHA256 = "709e803ec01055874ff29b70003f6ae4c1574c513ff4b6ed5cb18a06d6af9091"
+
+
+def h5_twin_config_hash(cost_sha256: str) -> str:
+    return hashlib.sha256(json.dumps({"adapter": TWIN_ADAPTER, "arena_h5_cost_sha256": cost_sha256, "stack_id": TWIN_STACK_ID}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+TWIN_REG_SHA = {"h5v1-boostfloor-a2": "eb8b32d", "h5v2-boostclock-a2": "eb8b32d", "h5v1q50-boostfloor-a1": "a5f4137"}
+
+
+def twin_pins(book: "Book") -> tuple[str, str]:
+    """(config_hash, code_sha256) the book's twin run record must carry."""
+    reg = TWIN_REG_SHA.get(book.bot_id)
+    if reg is None:  # a book with no registration sha has no pin a real writer could carry: its pin never matches (test books only)
+        return (f"unregistered:{book.bot_id}", TWIN_WRITER_SHA256)
+    return (h5_twin_config_hash(H5_COST_SHA256[reg]), TWIN_WRITER_SHA256)
 
 
 AM8_PRIORITY = 155_000  # DEC-031 Amendment 8 item 2: buy AND sell pinned at exactly 155,000, every escalation at or below it (160,000 per send with the base fee)
@@ -172,10 +197,11 @@ H_EXIT_GAP = "exit_gap_gt_200bps"
 H_LATE_SEND = "sell_send_late_x2"
 H_STUCK2 = "two_stuck_sells"
 H_STRAND = "close_blocked_strand"
+H_TWIN_PIN = "twin_pin_mismatch"  # QP 10-23 blocker 2: the twin writer's run record carries a config_hash or code_sha256 other than the pinned one
 H_A3 = "a3_pins_changed"
 SIGNAL_AGE_MAX_MS = 5_000  # DEC-032 s3 "Buy guard": signal age at most 5 s (the base executor's own PRESEND_MAX_TRIGGER_AGE_MS is 3.5 s; the stricter of the two applies)
 H_BUY_UNREADABLE = "landed_buy_unreadable"  # QP 10-23 W2: a landed buy whose token or spend amount cannot be read (an open, flagged trip exists)
-ARENA_HALTS = frozenset({H_BUY_UNREADABLE, H_FEED_BREAK, H_ENTRY_GAP, H_LANDING, H_EXIT_GAP, H_LATE_SEND, H_STUCK2, H_STRAND, H_A3})
+ARENA_HALTS = frozenset({H_BUY_UNREADABLE, H_FEED_BREAK, H_ENTRY_GAP, H_LANDING, H_EXIT_GAP, H_LATE_SEND, H_STUCK2, H_STRAND, H_A3, H_TWIN_PIN})
 ENTRY_GAP_WINDOW = 20  # DEC-032 s5 P1: the first 10 eligible fills, then ROLLING over the last 20
 LANDING_WINDOW_N = 30  # DEC-032 s5 P2: rolling 30 buy attempts, judged once 30 exist
 ENTRY_GAP_BPS, ENTRY_GAP_MIN_N = 200.0, 10
@@ -492,7 +518,7 @@ class ArenaExecutor(h.H5Executor):
             gdir = Path(self.h5cfg["state_dir"]) / "arena-parity"
             interval = cfg.get("parity_interval_s")
             self.gates = LiveGates(gdir, ParityRecorder(gdir), str(cfg["parity_twins_file"]), str(cfg["tieout_dir"]), self.paths["stop"],
-                                   self._parity_state, interval_s=interval if isinstance(interval, (int, float)) and interval > 0 else None)
+                                   self._parity_state, twin_pins=twin_pins(book), interval_s=interval if isinstance(interval, (int, float)) and interval > 0 else None)
         if self.exit_mode != book.exit_pin:
             raise SystemExit("exit mode pin was not applied")
         if keypair is not None:
@@ -609,7 +635,10 @@ class ArenaExecutor(h.H5Executor):
             return self._refuse(trg, why)
         if self.gates is not None:
             t = self.now_ms()
-            why = self.gates.twin_refusal(t) or self.gates.parity_refusal(t) or self.gates.tieout_refusal(t, self.state.first_attempt_ms)
+            twin_why = self.gates.twin_refusal(t)
+            if twin_why and twin_why.startswith(TWIN_PIN_MISMATCH):
+                self.latch_external(H_TWIN_PIN, why=twin_why)  # no buy and a latch: the twins were priced by another config or another writer
+            why = twin_why or self.gates.parity_refusal(t) or self.gates.tieout_refusal(t, self.state.first_attempt_ms)
             if why:
                 return self._refuse(trg, why)
         blocked = self._screen_mint(trg.mint)  # DEC-032 s3 "Venue": a freeze authority or a Token-2022 extension outside the allowlist is a strand = total loss

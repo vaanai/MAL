@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import dataclasses
+import hashlib
 import json
 import os
 import struct
@@ -67,6 +68,10 @@ class AEnv(Env):
                 if cfg[key]:
                     Path(cfg[key]).touch()
             cfg.setdefault("tieout_dir", str(tmp / "tieout"))
+            if cfg.get("parity_twins_file") and cfg.pop("pinned_twin_record", True):  # the writer has run once on the empty trips file (QP 10-23 blocker 3): a pinned, empty run record
+                ch, cs = ax.twin_pins(ax.BOOKS[cfg.get("book_id", A2)])
+                Path(cfg["parity_twins_file"] + ".run.json").write_text(json.dumps({"schema": "arena_twin_run_v1", "run_ms": 0, "covered_trip_ids": [], "twin_rows": 0,
+                    "twins_sha256": hashlib.sha256(b"").hexdigest(), "config_hash": ch, "code_sha256": cs}))
             (tmp / "etc-mal-h5" / "arena-TIER").write_text("T1\n")
         super().__init__(tmp, live=live, **cfg)
         if live:  # the start check saw T1 (the file's content at construction); the older fixtures below test base-tier semantics, so they run on at T0
