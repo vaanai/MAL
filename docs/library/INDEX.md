@@ -32,13 +32,13 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `explored-survivor-unconfirmed` | 9 | 0 | 0 |
 | `parked` | 8 | 0 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 39 | 20 | 1 |
+| `untested` | 47 | 20 | 1 |
 | `desk-read` | 1 | 43 | 0 |
 | `explored-no-survivor` | 39 | 6 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 177 | 75 | 2 |
+| **all** | 185 | 75 | 2 |
 
-The file holds 504 rows: the 254 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 512 rows: the 262 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -123,6 +123,14 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `p20-launch-allocation` | Launch-allocation underpricing: Meteora Alpha Vault / Metaplex Genesis pro-rata deposits | P20 fresh ideas (2026-10-24) | Program-account scan of Alpha Vault and Genesis (<10k credits); first-hours prices from the public GeckoTerminal API; no ledger block; forward record only from a registered start. |
 | `p20-listing-announce` | Exchange-listing announcement long (off-chain notice, on-chain buy within 2-4 s) | P20 fresh ideas (2026-10-24) | Public announcement archives (Binance, Upbit, Bithumb, Coinbase, Robinhood, Bybit, OKX) and GeckoTerminal minute OHLCV; 0 Helius credits; no ledger block. |
 | `p20-xstock-offhours` | Tokenized-stock (xStocks) off-hours fair-value reversion on Solana AMMs (not a meme coin) | P20 fresh ideas (2026-10-24) | Owner's say first; then xStock pool histories (~50-150k credits) and minute futures data; no ledger block. |
+| `p25-alpenglow-send-cost` | Re-cost the shelf after 200 ms slots and Alpenglow (send-fee overlay, not a book) | P25 change-capture (2026-10-24) | 24 h of hourly public getRecentPrioritizationFees on pump/PumpSwap/DBC hot accounts, forward from a declared start; 0 Helius; no tape hour. |
+| `p25-pump-order-keeper-absorb` | Absorb tagged pump app stop-loss sell clusters | P25 change-capture (2026-10-24) | Desk + a few public getTransaction reads to find the tag; then a counts-only pass on fresh-0903 (exploration pool); later screens on fast 09-09..09-15, pre-cut, Oracle in-sample; no October pump hour. |
+| `p25-redeploy-holiday` | Trade the competition gap after a layout-changing venue redeploy | P25 change-capture (2026-10-24) | Counts-only: DBC exploration [10-14T00, 10-17T00) around the Swap3 switch, and forward-1002 D0 hours (oct-structure-d0 role, distinct-trader counts and slot timing) around 10-08T16:20Z and 10-13T15:40Z; 0 credits; no walk-2 or DBC >= 10-25T00Z hour. |
+| `p25-app-fee-retail-tag` | App-flow label from the 2026-10-17 pump app platform fee | P25 change-capture (2026-10-24) | Desk + public getTransaction sample of 2,000 pump txs on one declared closed day of new data; 0 Helius; any book is an arena book only (post-10-16 pump hours are walk-2 information). |
+| `p25-pump-bridge-lead` | Pump Bridge cross-chain intent seen before the Solana fill | P25 change-capture (2026-10-24) | Desk + public EVM/Solana RPC to find the bridge contracts and solver; one declared day of forward logging; 0 Helius; any pump book is arena-only. |
+| `p25-quote-drift-completion` | Custom-pair curves whose SOL cost to complete falls with their quote asset | P25 change-capture (2026-10-24) | Counts on fast [09-09T12, 09-15T12) with public external quote prices; pump-coin parents only via the oct-pregrad-d1 role and only while the parent is on its curve (graduated-parent prices are D2/D3, sealed); 0 Helius. |
+| `p25-t22-fee-epoch-clock` | Token-2022 transfer-fee cut public epochs before it binds (DBC transfer-fee mints) | P25 change-capture (2026-10-24) | Public getMultipleAccounts / getSignaturesForAddress on the 42 configs' mints (0 Helius); priced looks only on DBC [10-17, 10-24) as disclosed exploration with QP's OK (not D1); nothing >= 2026-10-25T00Z for DBC/DAMM before the m10 read; a forward recorder after 2026-11-01T00:10Z. |
+| `p25-prestock-quote-band` | PreStock quote-leg dislocation against an external anchor | P25 change-capture (2026-10-24) | Owner's say first; then public mint/pool lists and anchor prices (GeckoTerminal), one declared day of forward gap logging; 0 Helius; any pump-side book is arena-only. |
 
 ## Owner ideas
 
