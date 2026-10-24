@@ -30,15 +30,15 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `live-canary` | 1 | 0 | 0 |
 | `forward-test` | 2 | 0 | 0 |
 | `explored-survivor-unconfirmed` | 7 | 0 | 0 |
-| `parked` | 5 | 0 | 0 |
+| `parked` | 6 | 0 | 0 |
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 28 | 20 | 1 |
 | `desk-read` | 1 | 43 | 0 |
-| `explored-no-survivor` | 18 | 6 | 1 |
+| `explored-no-survivor` | 22 | 6 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 140 | 75 | 2 |
+| **all** | 145 | 75 | 2 |
 
-The file holds 467 rows: the 217 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 472 rows: the 222 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -73,6 +73,7 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `lib-c-O1` | LAYA r4-a (cost-aware Huber model, 59 columns, 5-seed bag, hold 1 minute) | `shelved` | "UNDER REVIEW / PRE-REGISTRATION REQUESTED; not promoted". Central +0.1449% / +0.0847 SOL/d after haircut; P(trade CI90 lo > 0) = 0.078; 24/29 days. Report: "Nothing is yet 'consistently positive' at the cost we have measured." Disagreement: RULE B +1.842% to +0.8076% and l3 xs10 +2.479% to +2.048072% on fresh data … | a race-free entry slice (r4-c, report-only) with an outcome-blind pre-registration (library O1) |
 | `lib-c-P1` | C1-NF (C1 with non-farm cap h_top1 <= 0.5, 1.3 s, 505k per send) | `shelved` | "SHELVED 10-12 (owner) for the live canary plan; shadow soak running as a regime watch". Earlier verifier status "SURVIVES-VERIFY" on exploration data only. Corrected 2026-10-12: not a conflict once the live plan is separated from the shadow; job #658 [unverified, brief]. Keyless shadow soak restarted … | Revive at >=10 kept trades/day on 2 days (library TOC row 13) |
 | `lib-c-R2.SB-H5` | SB-H5: depth-raise tripwire (max_curve_depth 1 to 2..5) | `parked` | 2026-10-13: the official docs commit 639b87f (2026-10-13T15:37:48Z) says pump coins can be quoted two levels deep "Starting October 13". Global.max_curve_depth has not been re-read on-chain since; the 06:41Z structure check of 2026-10-14 is the next read. | not in source |
+| `ll-grad-floor` | LaunchLab graduation to CPMM, FLOOR-style long hold | `parked` | No CPMM pool trades on the tape (P10 fetched only the LaunchLab program) and migrate rows hold no pool address. Not counted, not priced. | Manager decides the fetch: migrate-tx getTransaction for the CPMM pool address, then per-pool CPMM history; probe 5 pools first. Migrate ix rows seen: 264 in 241 hours (~26/day, standard + other curves). |
 
 ## Never tested
 
@@ -349,6 +350,10 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `hunt28-sellabs-1` | SELLABS: a big sell absorbed by fresh buyers, entered below the pre-sell price (s1, s2 … | `explored-no-survivor` | FAIL on all three cells. flat15 mean -2.82% / -2.72% / -2.69%, pressure -2.39% / -2.32% / -2.28%, 0 of 25 days positive; take profit fires on 70% of exits but the 28% stops cost more; 951 to 2,863 attempts a day. Screen numbers. |
 | `reprice-160k-w2-family` | hunt23 w2-quiet (12 cells), w2b-strand (16), w2-death (21) re-priced at 160,000 per send | `explored-no-survivor` | Fee saves about 0.26 pp per trade at 0.25 SOL; 49 of 49 cells have ex-top-3 negative under both fail models. Closest: w2-quiet R4 flat mean +0.0007 SOL/trade (505k: +0.0001), CI90 lo -0.0103, ex-top-3 -0.90 / -0.92 SOL, 10 of 21 days; w2b-strand DS-C1-g50 flat +0.0039 SOL/trade but ex-top-3 about -11 SOL, 4 of 21 days. Class MARGINAL for these two, STILL-DEAD for the rest. |
 | `reprice-160k-hc-h60` | hunt25 A-HC-h60 re-priced at 160,000 per send | `explored-no-survivor` | STILL-DEAD: the fee saves about 0.26 pp leaving a flat deciding mean of about -8.3% (505k: -9.21%); ex-top-3 negative under both fail models. |
+| `ll-early-momentum` | LaunchLab early-curve momentum (m4/m6/m10) | `explored-no-survivor` | Block A (2026-10-07..10-16, 10 days): all 3 cells FAIL; flat deciding means m4 -0.0085, m6 -0.0068, m10 -0.0064 SOL/trip, ex-top-3 negative under both fail models in every cell. Closest: m10 (flat -0.0064, pressure -0.0052 SOL/trip, n=148, CI90 lo -0.0130). LaunchLab round-trip fee ~2.5% (median 1.25% per side) plus own impact. |
+| `ll-milestone` | LaunchLab curve-progress milestone (ms30/ms50/ms70) | `explored-no-survivor` | Block A (2026-10-07..10-16, 10 days): all 3 cells FAIL; flat deciding means ms30 -0.0101, ms50 -0.0013, ms70 -0.0012 SOL/trip, ex-top-3 negative under both fail models in every cell. Closest: ms70 (flat -0.0012, pressure -0.0015 SOL/trip, n=52, CI90 lo -0.0091). LaunchLab round-trip fee ~2.5% (median 1.25% per side) plus own impact. |
+| `ll-bigbuy` | LaunchLab large-buy follow (bb1/bb2/bb4) | `explored-no-survivor` | Block A (2026-10-07..10-16, 10 days): all 3 cells FAIL; flat deciding means bb1 -0.0055, bb2 -0.0021, bb4 -0.0076 SOL/trip, ex-top-3 negative under both fail models in every cell. Closest: bb2 (flat -0.0021, pressure -0.0016 SOL/trip, n=462, CI90 lo -0.0059). LaunchLab round-trip fee ~2.5% (median 1.25% per side) plus own impact. |
+| `ll-cascade-fade` | LaunchLab sell-cascade fade (c3/c4/c6) | `explored-no-survivor` | Block A (2026-10-07..10-16, 10 days): all 3 cells FAIL; flat deciding means c3 -0.0104, c4 -0.0100, c6 -0.0117 SOL/trip, ex-top-3 negative under both fail models in every cell. Closest: c4 (flat -0.0100, pressure -0.0087 SOL/trip, n=504, CI90 lo -0.0120). LaunchLab round-trip fee ~2.5% (median 1.25% per side) plus own impact. |
 
 ## Duplicate rows
 
