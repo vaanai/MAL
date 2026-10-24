@@ -3,7 +3,7 @@
 
     python -m tools.dbc_holdout_read --out DIR --confirm-one-look
 
-Rules enforced in code: (1) refuses to start if ANY output file already exists in DIR, or if the fixed marker file MARKER exists (created atomically before the first holdout file is opened, regardless of --out); (2) the holdout switch tools.dbc_price.HOLDOUT_READ_ENABLED is False by
+Rules enforced in code: (1) refuses to start if ANY output file already exists in DIR, if the preflight fails (168 hour NAMES present, newest mtime >= 10 min old; marker not claimed), or if the fixed marker file MARKER (v2) exists (created atomically before the first holdout file is opened, regardless of --out); (2) the holdout switch tools.dbc_price.HOLDOUT_READ_ENABLED is False by
 default and is turned on here, explicitly, after the output check, and the run prints that it did; (3) while it is on the exploration hours are refused; (4) the cell is frozen (D1 m10 as in
 tools.dbc_screen.CELLS), no flag changes it; (5) more than 6 missing/incomplete hours = NOT_DECIDABLE (nothing priced); (6) the verdict is computed by `verdict()` below (P5) on the PRIMARY line
 (strand = full loss, deciding leg 1.9 s / 0.25 SOL / rent 0 / 160k sends) under BOTH fail models; sensitivities are report-only and never enter it. A PASS is exploration-to-forward evidence only, not a
@@ -35,7 +35,10 @@ from tools import dbc_price as L
 from tools import dbc_screen as S
 
 MAX_BAD_HOURS = 6
-MARKER = "/data/mal/hunt-1008/push-1016/hunt29/dbc/HOLDOUT_READ_DONE"  # fixed path OUTSIDE --out: one look per holdout, whatever --out is
+MARKER_V1 = "/data/mal/hunt-1008/push-1016/hunt29/dbc/HOLDOUT_READ_DONE"  # v1: claimed by the crashed job #1493 (pre-read crash, QP ruling: look NOT consumed). Never touched or consulted.
+MARKER = "/data/mal/hunt-1008/push-1016/hunt29/dbc/HOLDOUT_READ_DONE_v2"  # fixed path OUTSIDE --out: one look per holdout, whatever --out is
+DEFAULT_OUT = "/data/mal/hunt-1008/push-1016/hunt29/dbc/holdout-read-1024-v2"
+MIN_AGE_S = 600  # newest mtime under the holdout root must be at least this old (no writer)
 OUT_JSON = "holdout-m10.json"
 OUT_MD = "holdout-m10.md"
 CELL = "m10"
@@ -75,6 +78,35 @@ def claim_marker(path: str) -> bool:
     return True
 
 
+def expected_names() -> list[str]:
+    from datetime import timedelta
+
+    n = int((L.HOLDOUT_END - L.EXPLORE_END).total_seconds() // 3600)
+    return [f"tape-{(L.EXPLORE_END + timedelta(hours=i)).strftime('%Y-%m-%dT%H')}.jsonl.zst" for i in range(n)]
+
+
+def preflight(root: str, now: float | None = None, min_age_s: int = MIN_AGE_S) -> tuple[bool, str]:
+    """QP crash ruling: BEFORE the marker is claimed and without enabling the switch, check by NAME (listdir + lstat, never an open) that all 168 holdout hour files sit directly under
+    `root`, and that nothing under the root (the root itself and every top-level entry) was modified within `min_age_s`. Returns (ok, reason)."""
+    import time
+
+    now = time.time() if now is None else now
+    try:
+        names = set(os.listdir(root))
+    except OSError as e:
+        return False, f"cannot_list_root: {e}"
+    want = expected_names()
+    missing = [n for n in want if n not in names]
+    if missing:
+        return False, f"missing_{len(missing)}_of_{len(want)}_hour_files (first: {missing[0]})"
+    newest = os.lstat(root).st_mtime
+    for n in names:
+        newest = max(newest, os.lstat(os.path.join(root, n)).st_mtime)
+    if now - newest < min_age_s:
+        return False, f"newest_mtime_only_{int(now - newest)}s_old (< {min_age_s}s): a writer may still be active"
+    return True, "ok"
+
+
 def sha(path: str | Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -101,6 +133,10 @@ def run(out_dir: Path, root: str | None = None) -> int:
         print(f"REFUSED: output already exists in {out_dir} (one look only)", file=sys.stderr)
         return 3
     out_dir = Path(S.check_out_dir(str(out_dir)))
+    ok, why = preflight(root or L.HOLDOUT_ROOT)
+    if not ok:
+        print(f"REFUSED (preflight, marker NOT claimed): {why}", file=sys.stderr)
+        return 5
     if not claim_marker(MARKER):
         print(f"REFUSED: one-look marker {MARKER} exists (the holdout was already read or claimed)", file=sys.stderr)
         return 4
@@ -155,7 +191,7 @@ def run(out_dir: Path, root: str | None = None) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--out", required=True)
+    ap.add_argument("--out", default=DEFAULT_OUT)
     ap.add_argument("--confirm-one-look", action="store_true", help="required: acknowledges that this is the single holdout read")
     ns = ap.parse_args(argv)
     if not ns.confirm_one_look:

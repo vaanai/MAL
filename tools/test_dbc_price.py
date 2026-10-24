@@ -123,6 +123,50 @@ def test_holdout_read_refuses_without_flag_and_when_output_exists(tmp_path=None)
     assert L.HOLDOUT_READ_ENABLED is False
 
 
+def _fake_root(n_missing=0, age_s=3600):
+    import os, tempfile, time
+    from tools import dbc_holdout_read as H
+    d = Path(tempfile.mkdtemp())
+    names = H.expected_names()
+    assert len(names) == 168 and names[0] == 'tape-2026-10-17T00.jsonl.zst' and names[-1] == 'tape-2026-10-23T23.jsonl.zst'
+    for n in names[n_missing:]:
+        (d / n).write_bytes(b'')
+    t = time.time() - age_s
+    for p in list(d.iterdir()) + [d]:
+        os.utime(p, (t, t))
+    return d
+
+
+def test_v2_preflight_and_marker_rules():
+    import os, tempfile, time
+    from tools import dbc_holdout_read as H
+    assert H.preflight(str(_fake_root()))[0] is True
+    assert H.preflight(str(_fake_root(n_missing=1)))[0] is False  # missing hour
+    d = _fake_root(age_s=60)  # too fresh
+    ok, why = H.preflight(str(d))
+    assert not ok and 'writer' in why
+    d2 = _fake_root()
+    (d2 / 'checkpoint-x.json').write_text('{}')  # a fresh non-tape entry also counts as a writer
+    assert not H.preflight(str(d2))[0]
+    old_m, old_m1 = H.MARKER, H.MARKER_V1
+    tmp = Path(tempfile.mkdtemp())
+    try:
+        H.MARKER, H.MARKER_V1 = str(tmp / 'v2'), str(tmp / 'v1')
+        Path(H.MARKER_V1).write_text('old')  # old marker present: v2 is still allowed to claim
+        assert H.claim_marker(H.MARKER) is True
+        assert H.claim_marker(H.MARKER) is False  # v2 present: refuse
+        # a failed preflight never claims the marker (run with a root that lacks the files)
+        H.MARKER = str(tmp / 'v2b')
+        fresh = Path(tempfile.mkdtemp()) / 'out'
+        import tools.dbc_holdout_read as HH
+        orig = L.HOLDOUT_ROOT
+        assert HH.run(fresh, root=str(_fake_root(n_missing=3))) == 5
+        assert not Path(H.MARKER).exists() and not fresh.exists()
+        assert L.HOLDOUT_READ_ENABLED is False
+    finally:
+        H.MARKER, H.MARKER_V1 = old_m, old_m1
+
+
 def test_one_look_marker_is_global_and_atomic():
     import tempfile
     from tools import dbc_holdout_read as H
@@ -134,11 +178,11 @@ def test_one_look_marker_is_global_and_atomic():
     H.MARKER = m
     try:
         fresh = Path(tempfile.mkdtemp()) / "fresh-out"  # a NEW --out must not allow a second look
-        assert H.run(fresh) == 4
+        assert H.run(fresh, root=str(_fake_root())) == 4  # preflight ok, existing v2 marker refuses
         assert L.HOLDOUT_READ_ENABLED is False and not fresh.exists()
     finally:
         H.MARKER = old
-    assert not Path(old).exists()
+    assert old.endswith('HOLDOUT_READ_DONE_v2') and not Path(old).exists()
 
 
 def test_verdict_p5():
