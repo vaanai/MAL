@@ -5,6 +5,13 @@ a screen (DEC-031 section 2), the best of N, in-sample for selection (winner's c
     python -m tools.arena_h5_read --ledger-root <arena>/ledger --read-instant MS --i-am-the-read --n-books N --c C [--bot BOT ...] [--cells-total K]
                                   [--prior-read BOT=VERDICT ...] [--other-p BOT=P ...] [--json OUT] [--now-ms MS]
 
+BOOK LIST (Audit B1; DEC-031 Amendments 5 and 11): `--books-file F [--books-sha256 H]` reads the registered books file (tools/arena_h5_books.py; default pin the v2 sha256 819c699d...)
+and accepts its ids, Q50 included; the default book set is then its new_rule_bot_ids. Each book's seal keys on its own instant file: the Q50 book's is DEC-031 Amendment 11's write-once
+q50-read-instant.json (never read-instant.json), recomputed by the Am.11 rule (arena_h5_books.check_recorded_instant, the one instant check); an Am.11 ENDED record is NOT_DECIDABLE,
+final, counts only. Book-list mode adds the D3 extras (derived_last_deciding_leg count, the ex-derived total above 5% of attempts, the books side by side with the shared-pool count),
+report-only. The worst-in-slot figure of DEC-032 section 1 item 2 is tools/arena_h5_legs.py's (`dec032_worst_in_slot`, same --books-file). Without --books-file nothing changes
+(tools/test_arena_h5_read_golden.py pins the a1 outputs).
+
 WHY A NEW TOOL. tools/arena_score.py cannot read an H5 ledger (its rows have no `calc` / `by_rule` / `stack`, tools/arena_h5_legs.py doc) and tools/arena_h5_legs.py prints the same cells as
 REPORT-ONLY lines with no verdict. tools/arena_h5_score.py prints counts only and, at the read, writes the refit (`refit`); its own docstring says "the gate itself is tools/arena_score.py's". So
 the verdict path is: this file, calling the gate's own functions.
