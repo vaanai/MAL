@@ -29,11 +29,11 @@ while :; do now=$(date -u +%s); t=$(date -u -d "$(date -u +%F)T00:20:00Z" +%s); 
 ```
 
 Conventions copied from #1425: pinned head and wrapper sha, `$PY` = c1nf-shadow venv, first scorer line prints both sha256, `date -u -d` loop to 00:20Z daily, END 2026-11-06T01:00Z, status files by mtime only (never content), `score_rc` echoed.
-Not copied: nothing else changed. `--shadow-dir` repeated is the manager's rule in Q50-EXEC; VERIFY below that the wrapper accepts a repeated flag (if it takes one value, use `--shadow-dir "$SD" "$SD2"` per `python -m tools.arena_h5_score_q50 score -h`... note the wrapper refuses `-h`, so read the argparse line in `tools/arena_h5_score_q50.py`/`tools/arena_h5_score.py` instead).
+The repeated `--shadow-dir` is valid: `tools/arena_h5_score.py:992` declares it `action="append"` (usage line 54).
 
 ## Verify (counts only)
 
 1. Right after submit, run once as a dry run in a one-shot job (same pin/sha lines) with `score --dry-run --shadow-dir "$SD" --shadow-dir "$SD2"; echo RC=$?`.
 2. Expected: one JSON of counts; `books["h5v1q50-boostfloor-a1"]` has `registered: true`; `refused_dirs` empty (a dir listed with `started_before_registration`, `sha_mismatch`, `q_star_mismatch`, `rule_mismatch` or `rule_sha_mismatch` = the book is not counting: stop, call QP, do not fix by hand); `RC=0`.
-3. Never open rows, ledgers, bots.json or reports. If the repeated flag is refused (nonzero RC, no JSON), score the two dirs in two loops (one `--shadow-dir` each) and sum nothing by hand: report both counts to QP.
+3. Never open rows, ledgers, bots.json or reports. If the run is refused, do not sum by hand: report to QP.
 4. Record the new job id and the succ dir name in the next records PR and a notebook entry.
