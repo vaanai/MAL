@@ -24,3 +24,9 @@ Measured (job #1465, measure.json): the constant-product curve with the fee take
 in the millions of SOL (non-SOL quote atoms or test pools). The tape has no quote mint, so the quote asset is unknown. Slot time measured 0.22 s (4.5-5 slots/s), not 0.4 s: k(1.9 s) = ~9 slots.
 Therefore the universe is narrowed (a universe definition, not a rule tuning): total_base_sell within 1e9 atoms of 793.1e12 AND virtual_quote in [20e9, 40e9] atoms. A non-SOL quote with a similar atom magnitude cannot be excluded; said in the report.
 Slot time fallback range corrected to [0.1, 0.6] s (the 0.3 floor in the first code was wrong for this tape). The priced run uses the FULL exploration window once the backfill has written it (one pricing look, not a partial-window look); counts on the partial window are counts only.
+
+## AMENDMENT 2 (2026-10-24 ~03:32Z, before any price): two blocks instead of waiting
+The backfill writes newest-first and is slow (~1.6 hours per minute now, ~3 h to finish). To avoid idling, pricing is split in two blocks of the exploration window, each priced ONCE:
+ BLOCK A = hours present now (2026-10-07T00 .. 2026-10-16T23, ~10 days) -> all 12 cells priced now. It is the primary screen.
+ BLOCK B = 2026-09-24T00 .. 2026-10-06T23, priced later and ONLY for cells that are not FAIL on block A (MARGINAL or SCREEN-PASS-CANDIDATE); a confirmation block, no cell is added or changed between A and B.
+Cells FAIL on A are not re-priced on B. The label table reports A, then B for survivors. Multiplicity: 12 cells on A; nothing else.

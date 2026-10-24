@@ -79,7 +79,7 @@ def test_synthetic_rows_reproduce_exactly(tape):
 
 def test_loads_and_counts(tape, monkeypatch):
     root, s = tape
-    monkeypatch.setattr(L, "exploration_hours", lambda: [T0 + timedelta(hours=h) for h in range(6)])
+    monkeypatch.setattr(L, "exploration_hours", lambda *a, **k: [T0 + timedelta(hours=h) for h in range(6)])
     D = S.load_exploration(root, log=lambda *_: None)
     assert D["n_pools"] == 1 and len(D["a"]["slot"]) == len(s.rows) and D["bad_hours"] == []
     m = S.measure(D)
@@ -88,7 +88,7 @@ def test_loads_and_counts(tape, monkeypatch):
 
 def test_bb1_fires_once_with_cooldown_and_prices(tape, monkeypatch):
     root, s = tape
-    monkeypatch.setattr(L, "exploration_hours", lambda: [T0 + timedelta(hours=h) for h in range(6)])
+    monkeypatch.setattr(L, "exploration_hours", lambda *a, **k: [T0 + timedelta(hours=h) for h in range(6)])
     D = S.load_exploration(root, log=lambda *_: None)
     c = next(c for c in S.CELLS if c.name == "bb1")
     att, refused, st = S.cell_attempts(c, D)
@@ -101,7 +101,7 @@ def test_bb1_fires_once_with_cooldown_and_prices(tape, monkeypatch):
 
 def test_trigger_uses_only_rows_up_to_the_print(tape, monkeypatch):
     root, s = tape
-    monkeypatch.setattr(L, "exploration_hours", lambda: [T0 + timedelta(hours=h) for h in range(6)])
+    monkeypatch.setattr(L, "exploration_hours", lambda *a, **k: [T0 + timedelta(hours=h) for h in range(6)])
     D = S.load_exploration(root, log=lambda *_: None)
     A = D["a"]
     n = len(A["slot"])

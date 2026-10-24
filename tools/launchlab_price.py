@@ -181,9 +181,10 @@ def count_hour_files(root: str = BACKFILL_ROOT) -> dict[str, int]:
     return {"exploration_hours": ex, "holdout_hours": ho, "exploration_hours_needed": int((EXPLORE_END - EXPLORE_START).total_seconds() // 3600)}
 
 
-def exploration_hours() -> list[datetime]:
-    out, t = [], EXPLORE_START
-    while t < EXPLORE_END:
+def exploration_hours(start: datetime | None = None, end: datetime | None = None) -> list[datetime]:
+    out, t = [], start or EXPLORE_START
+    end = min(end or EXPLORE_END, EXPLORE_END)
+    while t < end:
         out.append(t)
         t += timedelta(hours=1)
     return out

@@ -182,9 +182,9 @@ def triggers_for(cell: CellDef, P: Pool, first_ok_bt: float) -> list[int]:
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ loading
-def load_exploration(root: str = L.BACKFILL_ROOT, log=print) -> dict[str, Any]:
+def load_exploration(root: str = L.BACKFILL_ROOT, log=print, start: datetime | None = None, end: datetime | None = None) -> dict[str, Any]:
     """All exploration hours present -> columns sorted by (pool, original order). Hours missing or incomplete are listed in `bad_hours`."""
-    hours = L.exploration_hours()
+    hours = L.exploration_hours(start, end)
     cols: list[dict[str, np.ndarray]] = []
     pool_names: list[np.ndarray] = []
     pid_of: dict[str, int] = {}
@@ -218,7 +218,7 @@ def load_exploration(root: str = L.BACKFILL_ROOT, log=print) -> dict[str, Any]:
     A = {k: np.concatenate([c[k] for c in cols]) for k in cols[0]}
     order = np.argsort(A["pid"], kind="stable")
     A = {k: v[order] for k, v in A.items()}
-    return {"root": root, "a": A, "bad_hours": sorted(bad), "good_hours": sorted(present), "slot_s": slot_s, "n_pools": len(pid_of), "pool_names": list(pid_of)}
+    return {"start_ts": hours[0].timestamp(), "root": root, "a": A, "bad_hours": sorted(bad), "good_hours": sorted(present), "slot_s": slot_s, "n_pools": len(pid_of), "pool_names": list(pid_of)}
 
 
 def slot_s_for(slot_s: dict[int, float], hk: int) -> float:
@@ -309,7 +309,7 @@ def cell_attempts(cell: CellDef, D: dict[str, Any], lat_in: float = L.LAT_S, lat
     bounds = np.flatnonzero(np.diff(pid)) + 1
     starts = np.concatenate([[0], bounds])
     ends = np.concatenate([bounds, [len(pid)]])
-    first_ok_bt = L.EXPLORE_START.timestamp() + WARMUP_HOURS * 3600
+    first_ok_bt = D["start_ts"] + WARMUP_HOURS * 3600
     att: list[dict[str, Any]] = []
     ref_tot = {"bad_hour": 0, "block_edge": 0, "cooldown": 0, "no_state": 0}
     stats = {"pools": 0, "trigger_prints": 0}
@@ -453,16 +453,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--count-only", action="store_true")
     ap.add_argument("--cells", default="")
     ap.add_argument("--root", default=L.BACKFILL_ROOT)
+    ap.add_argument("--start", default="", help="block start hour YYYY-MM-DDTHH (inside the exploration window)")
+    ap.add_argument("--end", default="", help="block end hour (exclusive)")
     ns = ap.parse_args(argv)
     out = Path(check_out_dir(ns.out))
     out.mkdir(parents=True, exist_ok=True)
     cnt = L.count_hour_files(ns.root)
     print(json.dumps({"file_counts": cnt}), flush=True)
     t0 = time.time()
-    D = load_exploration(ns.root)
+    pa = lambda v: datetime.strptime(v, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc) if v else None  # noqa: E731
+    start, end = pa(ns.start), pa(ns.end)
+    D = load_exploration(ns.root, start=start, end=end)
     print(f"loaded {len(D['a']['slot'])} trade rows, {D['n_pools']} pools, bad hours {len(D['bad_hours'])} in {time.time() - t0:.0f}s", flush=True)
     meta = {"schema": SCHEMA, "taken_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "file_counts": cnt, "kit_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-            "price_sha256": hashlib.sha256(Path(L.__file__).read_bytes()).hexdigest(), "bad_hours": D["bad_hours"], "window": [L.EXPLORE_START.isoformat(), L.EXPLORE_END.isoformat()]}
+            "price_sha256": hashlib.sha256(Path(L.__file__).read_bytes()).hexdigest(), "bad_hours": D["bad_hours"], "window": [datetime.fromtimestamp(D["start_ts"], tz=timezone.utc).isoformat(), ns.end or L.EXPLORE_END.isoformat()], "block_args": [ns.start, ns.end]}
     if ns.measure:
         (out / "measure.json").write_text(json.dumps({**meta, "measure": measure(D)}, indent=1))
         print((out / "measure.json").read_text())
