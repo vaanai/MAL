@@ -1,0 +1,728 @@
+{
+ "books": {
+  "h5v1-boostfloor-a1": {
+   "attempt_definition": "Attempt definition amended after the clock (DEC-031 Amendment 1, dfe7f018601633921f06668fd1af3aaff7b87bf00f321d1540e10b41f8ab6006, 2026-10-19T03:31:35Z), with counts only in view; refused 3 of 123 triggers.",
+   "bot_id": "h5v1-boostfloor-a1",
+   "counts": {
+    "excluded_by_reason": {},
+    "excluded_share": 0.0,
+    "n_attempts": 120,
+    "n_counted": 120,
+    "n_excluded": 0,
+    "n_refused": 3,
+    "n_unpriced_deciding_leg": 0,
+    "refused_by_reason": {
+     "bad_intent:base_breaks_unresolved_settled": 3
+    }
+   },
+   "deciding_leg": "1p9",
+   "deciding_rent_lamports": 2039280,
+   "deciding_stake": "0.30",
+   "derived_last": {
+    "n": 0,
+    "share": 0.0
+   },
+   "excluded_cap": 0.05,
+   "exit_rule": "v1",
+   "not_measured_here": [
+    "worst-in-slot: not measured by this tool (tools/arena_h5_legs.py --shadow-dir; otherwise no canary, R7)",
+    "mint fetch: not run (report-only for H5, required before any canary, Am.3 item 6)"
+   ],
+   "not_proposed_for_canary": false,
+   "p": 9.999000099990002e-05,
+   "p_note": "EXP-028 section 3 item 3: sub-cell p = max(p_pct, p_null), p_pct = (1 + #{m_b <= 0}) / (1 + B), p_null = (1 + #{m_b - xbar >= xbar}) / (1 + B), B = 10,000, a fresh default_rng(1) per sub-cell; book p = the max over the four sub-cells; report-only",
+   "parity_with_arena_h5_legs": "equal on n, days, days_pos, mean_sol, total_sol, ci90_lo_sol, ex_top3_sol, ex_best_day_sol (same functions: a drift guard, not an independent check)",
+   "passes_only_at_rent_0": false,
+   "provenance": {
+    "read-instant.json": "<sha256>",
+    "tools/arena_h5_cost.py": "<sha256>",
+    "tools/arena_h5_legs.py": "<sha256>",
+    "tools/arena_h5_read.py": "<sha256>",
+    "tools/arena_h5_score.py": "<sha256>",
+    "tools/arena_report_legs.py": "<sha256>",
+    "tools/arena_score.py": "<sha256>"
+   },
+   "read_instant_ms": 1772841600000,
+   "reasons": [],
+   "refit": {
+    "cell": "0.30|1p9",
+    "frozen_exploration_intercept_not_used": -1.938758504543896,
+    "intercept": -0.9002457416908087,
+    "n": 120,
+    "n_filled": 120,
+    "refit_file": "absent"
+   },
+   "rent_line": "Rent (DEC-031 Amendment 2 items 9 and 10; QP R1 (h)): the H5 books decide RENT-CHARGED (2,039,280 lamports per filled trip). The rent-0 leg is report-only, added after the clock, never deciding. A book that passes only at rent 0 has FAILED its read.",
+   "screen_line": "A PASS is a SCREEN: the best of N arena books, in-sample for selection (winner's curse), not a promotion and not a profit claim. It allows only DEC-031 section 2 steps 1 to 3 (quant-proof's check on the exact files, the owner's OK, a live canary at its DEC's small limits). A stake above the canary's limits needs the confirmation of step 4.",
+   "status": "PASS",
+   "subcells": {
+    "flat_1p9_sc": {
+     "ci90_lo_sol": 0.022410502413844333,
+     "daily": {
+      "2026-03-02": {
+       "n": 24,
+       "sol": 0.5761734570621458
+      },
+      "2026-03-03": {
+       "n": 24,
+       "sol": 0.5761734570621458
+      },
+      "2026-03-04": {
+       "n": 24,
+       "sol": 0.5761734570621458
+      },
+      "2026-03-05": {
+       "n": 24,
+       "sol": 0.5761734570621458
+      },
+      "2026-03-06": {
+       "n": 24,
+       "sol": 0.5761734570621458
+      }
+     },
+     "days": 5,
+     "days_pos": 5,
+     "ex_best_day_sol": 2.3046938282485834,
+     "ex_top3_sol": 2.7841619322408375,
+     "intercept": null,
+     "mean_sol": 0.024007227377589407,
+     "misses": [],
+     "n": 120,
+     "p": 9.999000099990002e-05,
+     "p_detail": {
+      "B": 10000,
+      "decides": "p_pct",
+      "n": 120,
+      "p": 9.999000099990002e-05,
+      "p5_first_1000_draws": 0.022410502413844333,
+      "p_null": 9.999000099990002e-05,
+      "p_pct": 9.999000099990002e-05,
+      "seed": 1,
+      "tail_null": 0,
+      "tail_pct": 0,
+      "xbar": 0.02400722737758941
+     },
+     "passes": true,
+     "rent_0": {
+      "ci90_lo_sol": 0.02414389041384433,
+      "criteria_met": true,
+      "days": 5,
+      "days_pos": 5,
+      "ex_best_day_sol": 2.471099076248583,
+      "ex_top3_sol": 2.986968328240838,
+      "label": "report-only, added after the clock, never deciding",
+      "mean_sol": 0.02574061537758941,
+      "misses": [],
+      "n": 120,
+      "n_credited": 120,
+      "report_only": true,
+      "total_sol": 3.088873845310729
+     },
+     "total_sol": 2.880867285310729
+    },
+    "flat_1p9_total": {
+     "ci90_lo_sol": 0.022410502413844333,
+     "daily": {
+      "2026-03-02": {
+       "n": 24,
+       "sol": 0.5761734570621458
+      },
+      "2026-03-03": {
+       "n": 24,
+       "sol": 0.5761734570621458
+      },
+      "2026-03-04": {
+       "n": 24,
+       "sol": 0.5761734570621458
+      },
+      "2026-03-05": {
+       "n": 24,
+       "sol": 0.5761734570621458
+      },
+      "2026-03-06": {
+       "n": 24,
+       "sol": 0.5761734570621458
+      }
+     },
+     "days": 5,
+     "days_pos": 5,
+     "ex_best_day_sol": 2.3046938282485834,
+     "ex_top3_sol": 2.7841619322408375,
+     "intercept": null,
+     "mean_sol": 0.024007227377589407,
+     "misses": [],
+     "n": 120,
+     "p": 9.999000099990002e-05,
+     "p_detail": {
+      "B": 10000,
+      "decides": "p_pct",
+      "n": 120,
+      "p": 9.999000099990002e-05,
+      "p5_first_1000_draws": 0.022410502413844333,
+      "p_null": 9.999000099990002e-05,
+      "p_pct": 9.999000099990002e-05,
+      "seed": 1,
+      "tail_null": 0,
+      "tail_pct": 0,
+      "xbar": 0.02400722737758941
+     },
+     "passes": true,
+     "rent_0": {
+      "ci90_lo_sol": 0.02414389041384433,
+      "criteria_met": true,
+      "days": 5,
+      "days_pos": 5,
+      "ex_best_day_sol": 2.471099076248583,
+      "ex_top3_sol": 2.986968328240838,
+      "label": "report-only, added after the clock, never deciding",
+      "mean_sol": 0.02574061537758941,
+      "misses": [],
+      "n": 120,
+      "n_credited": 120,
+      "report_only": true,
+      "total_sol": 3.088873845310729
+     },
+     "total_sol": 2.880867285310729
+    },
+    "press_1p9_sc": {
+     "ci90_lo_sol": 0.018663143783815672,
+     "daily": {
+      "2026-03-02": {
+       "n": 24,
+       "sol": 0.479970174083748
+      },
+      "2026-03-03": {
+       "n": 24,
+       "sol": 0.479970174083748
+      },
+      "2026-03-04": {
+       "n": 24,
+       "sol": 0.479970174083748
+      },
+      "2026-03-05": {
+       "n": 24,
+       "sol": 0.479970174083748
+      },
+      "2026-03-06": {
+       "n": 24,
+       "sol": 0.479970174083748
+      }
+     },
+     "days": 5,
+     "days_pos": 5,
+     "ex_best_day_sol": 1.919880696334991,
+     "ex_top3_sol": 2.31920743390969,
+     "intercept": -0.9002457416908087,
+     "mean_sol": 0.019998757253489496,
+     "misses": [],
+     "n": 120,
+     "p": 9.999000099990002e-05,
+     "p_detail": {
+      "B": 10000,
+      "decides": "p_pct",
+      "n": 120,
+      "p": 9.999000099990002e-05,
+      "p5_first_1000_draws": 0.018663143783815672,
+      "p_null": 9.999000099990002e-05,
+      "p_pct": 9.999000099990002e-05,
+      "seed": 1,
+      "tail_null": 0,
+      "tail_pct": 0,
+      "xbar": 0.019998757253489496
+     },
+     "passes": true,
+     "rent_0": {
+      "ci90_lo_sol": 0.02011307186381567,
+      "criteria_met": true,
+      "days": 5,
+      "days_pos": 5,
+      "ex_best_day_sol": 2.0590737920149915,
+      "ex_top3_sol": 2.4888490192696895,
+      "label": "report-only, added after the clock, never deciding",
+      "mean_sol": 0.021448685333489495,
+      "misses": [],
+      "n": 120,
+      "n_credited": 120,
+      "report_only": true,
+      "total_sol": 2.5738422400187395
+     },
+     "total_sol": 2.399850870418739
+    },
+    "press_1p9_total": {
+     "ci90_lo_sol": 0.018663143783815672,
+     "daily": {
+      "2026-03-02": {
+       "n": 24,
+       "sol": 0.479970174083748
+      },
+      "2026-03-03": {
+       "n": 24,
+       "sol": 0.479970174083748
+      },
+      "2026-03-04": {
+       "n": 24,
+       "sol": 0.479970174083748
+      },
+      "2026-03-05": {
+       "n": 24,
+       "sol": 0.479970174083748
+      },
+      "2026-03-06": {
+       "n": 24,
+       "sol": 0.479970174083748
+      }
+     },
+     "days": 5,
+     "days_pos": 5,
+     "ex_best_day_sol": 1.919880696334991,
+     "ex_top3_sol": 2.31920743390969,
+     "intercept": -0.9002457416908087,
+     "mean_sol": 0.019998757253489496,
+     "misses": [],
+     "n": 120,
+     "p": 9.999000099990002e-05,
+     "p_detail": {
+      "B": 10000,
+      "decides": "p_pct",
+      "n": 120,
+      "p": 9.999000099990002e-05,
+      "p5_first_1000_draws": 0.018663143783815672,
+      "p_null": 9.999000099990002e-05,
+      "p_pct": 9.999000099990002e-05,
+      "seed": 1,
+      "tail_null": 0,
+      "tail_pct": 0,
+      "xbar": 0.019998757253489496
+     },
+     "passes": true,
+     "rent_0": {
+      "ci90_lo_sol": 0.02011307186381567,
+      "criteria_met": true,
+      "days": 5,
+      "days_pos": 5,
+      "ex_best_day_sol": 2.0590737920149915,
+      "ex_top3_sol": 2.4888490192696895,
+      "label": "report-only, added after the clock, never deciding",
+      "mean_sol": 0.021448685333489495,
+      "misses": [],
+      "n": 120,
+      "n_credited": 120,
+      "report_only": true,
+      "total_sol": 2.5738422400187395
+     },
+     "total_sol": 2.399850870418739
+    }
+   },
+   "weakest_cell": "press_1p9_total"
+  },
+  "h5v2-boostclock-a1": {
+   "attempt_definition": "Attempt definition amended after the clock (DEC-031 Amendment 1, dfe7f018601633921f06668fd1af3aaff7b87bf00f321d1540e10b41f8ab6006, 2026-10-19T03:31:35Z), with counts only in view; refused 0 of 120 triggers.",
+   "bot_id": "h5v2-boostclock-a1",
+   "counts": {
+    "excluded_by_reason": {},
+    "excluded_share": 0.0,
+    "n_attempts": 120,
+    "n_counted": 120,
+    "n_excluded": 0,
+    "n_refused": 0,
+    "n_unpriced_deciding_leg": 0,
+    "refused_by_reason": {}
+   },
+   "deciding_leg": "1p9",
+   "deciding_rent_lamports": 2039280,
+   "deciding_stake": "0.30",
+   "derived_last": {
+    "n": 0,
+    "share": 0.0
+   },
+   "excluded_cap": 0.05,
+   "exit_rule": "v2",
+   "not_proposed_for_canary": true,
+   "p": 1.0,
+   "p_note": "EXP-028 section 3 item 3: sub-cell p = max(p_pct, p_null), p_pct = (1 + #{m_b <= 0}) / (1 + B), p_null = (1 + #{m_b - xbar >= xbar}) / (1 + B), B = 10,000, a fresh default_rng(1) per sub-cell; book p = the max over the four sub-cells; report-only",
+   "parity_with_arena_h5_legs": "equal on n, days, days_pos, mean_sol, total_sol, ci90_lo_sol, ex_top3_sol, ex_best_day_sol (same functions: a drift guard, not an independent check)",
+   "passes_only_at_rent_0": false,
+   "provenance": {
+    "read-instant.json": "<sha256>",
+    "tools/arena_h5_cost.py": "<sha256>",
+    "tools/arena_h5_legs.py": "<sha256>",
+    "tools/arena_h5_read.py": "<sha256>",
+    "tools/arena_h5_score.py": "<sha256>",
+    "tools/arena_report_legs.py": "<sha256>",
+    "tools/arena_score.py": "<sha256>"
+   },
+   "read_instant_ms": 1772841600000,
+   "reasons": [],
+   "refit": {
+    "cell": "0.30|1p9",
+    "frozen_exploration_intercept_not_used": -1.938758504543896,
+    "intercept": -0.9002457416908087,
+    "n": 120,
+    "n_filled": 120,
+    "refit_file": "absent"
+   },
+   "rent_line": "Rent (DEC-031 Amendment 2 items 9 and 10; QP R1 (h)): the H5 books decide RENT-CHARGED (2,039,280 lamports per filled trip). The rent-0 leg is report-only, added after the clock, never deciding. A book that passes only at rent 0 has FAILED its read.",
+   "screen_line": "A PASS is a SCREEN: the best of N arena books, in-sample for selection (winner's curse), not a promotion and not a profit claim. It allows only DEC-031 section 2 steps 1 to 3 (quant-proof's check on the exact files, the owner's OK, a live canary at its DEC's small limits). A stake above the canary's limits needs the confirmation of step 4.",
+   "status": "FAIL",
+   "subcells": {
+    "flat_1p9_sc": {
+     "ci90_lo_sol": -0.010961306449999996,
+     "daily": {
+      "2026-03-02": {
+       "n": 24,
+       "sol": -0.2630713547999999
+      },
+      "2026-03-03": {
+       "n": 24,
+       "sol": -0.2630713547999999
+      },
+      "2026-03-04": {
+       "n": 24,
+       "sol": -0.2630713547999999
+      },
+      "2026-03-05": {
+       "n": 24,
+       "sol": -0.2630713547999999
+      },
+      "2026-03-06": {
+       "n": 24,
+       "sol": -0.2630713547999999
+      }
+     },
+     "days": 5,
+     "days_pos": 0,
+     "ex_best_day_sol": -1.0522854192000002,
+     "ex_top3_sol": -1.2824728546500004,
+     "intercept": null,
+     "mean_sol": -0.01096130645,
+     "misses": [
+      "days positive 0/5 is not a majority",
+      "CI90 lo -0.010961306449999996 <= 0",
+      "ex-top-3 -1.2824728546500004 <= 0"
+     ],
+     "n": 120,
+     "p": 1.0,
+     "p_detail": {
+      "B": 10000,
+      "decides": "p_pct",
+      "n": 120,
+      "p": 1.0,
+      "p5_first_1000_draws": -0.010961306449999996,
+      "p_null": 1.0,
+      "p_pct": 1.0,
+      "seed": 1,
+      "tail_null": 10000,
+      "tail_pct": 10000,
+      "xbar": -0.010961306449999996
+     },
+     "passes": false,
+     "rent_0": {
+      "ci90_lo_sol": -0.00922791845,
+      "criteria_met": false,
+      "days": 5,
+      "days_pos": 0,
+      "ex_best_day_sol": -0.8858801712000003,
+      "ex_top3_sol": -1.0796664586500004,
+      "label": "report-only, added after the clock, never deciding",
+      "mean_sol": -0.00922791845,
+      "misses": [
+       "days positive 0/5 is not a majority",
+       "CI90 lo -0.00922791845 <= 0",
+       "ex-top-3 -1.0796664586500004 <= 0"
+      ],
+      "n": 120,
+      "n_credited": 120,
+      "report_only": true,
+      "total_sol": -1.1073502140000002
+     },
+     "total_sol": -1.315356774
+    },
+    "flat_1p9_total": {
+     "ci90_lo_sol": -0.010961306449999996,
+     "daily": {
+      "2026-03-02": {
+       "n": 24,
+       "sol": -0.2630713547999999
+      },
+      "2026-03-03": {
+       "n": 24,
+       "sol": -0.2630713547999999
+      },
+      "2026-03-04": {
+       "n": 24,
+       "sol": -0.2630713547999999
+      },
+      "2026-03-05": {
+       "n": 24,
+       "sol": -0.2630713547999999
+      },
+      "2026-03-06": {
+       "n": 24,
+       "sol": -0.2630713547999999
+      }
+     },
+     "days": 5,
+     "days_pos": 0,
+     "ex_best_day_sol": -1.0522854192000002,
+     "ex_top3_sol": -1.2824728546500004,
+     "intercept": null,
+     "mean_sol": -0.01096130645,
+     "misses": [
+      "days positive 0/5 is not a majority",
+      "CI90 lo -0.010961306449999996 <= 0",
+      "ex-top-3 -1.2824728546500004 <= 0"
+     ],
+     "n": 120,
+     "p": 1.0,
+     "p_detail": {
+      "B": 10000,
+      "decides": "p_pct",
+      "n": 120,
+      "p": 1.0,
+      "p5_first_1000_draws": -0.010961306449999996,
+      "p_null": 1.0,
+      "p_pct": 1.0,
+      "seed": 1,
+      "tail_null": 10000,
+      "tail_pct": 10000,
+      "xbar": -0.010961306449999996
+     },
+     "passes": false,
+     "rent_0": {
+      "ci90_lo_sol": -0.00922791845,
+      "criteria_met": false,
+      "days": 5,
+      "days_pos": 0,
+      "ex_best_day_sol": -0.8858801712000003,
+      "ex_top3_sol": -1.0796664586500004,
+      "label": "report-only, added after the clock, never deciding",
+      "mean_sol": -0.00922791845,
+      "misses": [
+       "days positive 0/5 is not a majority",
+       "CI90 lo -0.00922791845 <= 0",
+       "ex-top-3 -1.0796664586500004 <= 0"
+      ],
+      "n": 120,
+      "n_credited": 120,
+      "report_only": true,
+      "total_sol": -1.1073502140000002
+     },
+     "total_sol": -1.315356774
+    },
+    "press_1p9_sc": {
+     "ci90_lo_sol": -0.009251392807000002,
+     "daily": {
+      "2026-03-02": {
+       "n": 24,
+       "sol": -0.22203342736800008
+      },
+      "2026-03-03": {
+       "n": 24,
+       "sol": -0.22203342736800008
+      },
+      "2026-03-04": {
+       "n": 24,
+       "sol": -0.22203342736800008
+      },
+      "2026-03-05": {
+       "n": 24,
+       "sol": -0.22203342736800008
+      },
+      "2026-03-06": {
+       "n": 24,
+       "sol": -0.22203342736800008
+      }
+     },
+     "days": 5,
+     "days_pos": 0,
+     "ex_best_day_sol": -0.8881337094719999,
+     "ex_top3_sol": -1.082412958419,
+     "intercept": -0.9002457416908087,
+     "mean_sol": -0.009251392807,
+     "misses": [
+      "days positive 0/5 is not a majority",
+      "CI90 lo -0.009251392807000002 <= 0",
+      "ex-top-3 -1.082412958419 <= 0"
+     ],
+     "n": 120,
+     "p": 1.0,
+     "p_detail": {
+      "B": 10000,
+      "decides": "p_pct",
+      "n": 120,
+      "p": 1.0,
+      "p5_first_1000_draws": -0.009251392807000002,
+      "p_null": 1.0,
+      "p_pct": 1.0,
+      "seed": 1,
+      "tail_null": 10000,
+      "tail_pct": 10000,
+      "xbar": -0.009251392807000002
+     },
+     "passes": false,
+     "rent_0": {
+      "ci90_lo_sol": -0.007801464726999999,
+      "criteria_met": false,
+      "days": 5,
+      "days_pos": 0,
+      "ex_best_day_sol": -0.7489406137919998,
+      "ex_top3_sol": -0.9127713730589999,
+      "label": "report-only, added after the clock, never deciding",
+      "mean_sol": -0.007801464726999999,
+      "misses": [
+       "days positive 0/5 is not a majority",
+       "CI90 lo -0.007801464726999999 <= 0",
+       "ex-top-3 -0.9127713730589999 <= 0"
+      ],
+      "n": 120,
+      "n_credited": 120,
+      "report_only": true,
+      "total_sol": -0.9361757672399998
+     },
+     "total_sol": -1.11016713684
+    },
+    "press_1p9_total": {
+     "ci90_lo_sol": -0.009251392807000002,
+     "daily": {
+      "2026-03-02": {
+       "n": 24,
+       "sol": -0.22203342736800008
+      },
+      "2026-03-03": {
+       "n": 24,
+       "sol": -0.22203342736800008
+      },
+      "2026-03-04": {
+       "n": 24,
+       "sol": -0.22203342736800008
+      },
+      "2026-03-05": {
+       "n": 24,
+       "sol": -0.22203342736800008
+      },
+      "2026-03-06": {
+       "n": 24,
+       "sol": -0.22203342736800008
+      }
+     },
+     "days": 5,
+     "days_pos": 0,
+     "ex_best_day_sol": -0.8881337094719999,
+     "ex_top3_sol": -1.082412958419,
+     "intercept": -0.9002457416908087,
+     "mean_sol": -0.009251392807,
+     "misses": [
+      "days positive 0/5 is not a majority",
+      "CI90 lo -0.009251392807000002 <= 0",
+      "ex-top-3 -1.082412958419 <= 0"
+     ],
+     "n": 120,
+     "p": 1.0,
+     "p_detail": {
+      "B": 10000,
+      "decides": "p_pct",
+      "n": 120,
+      "p": 1.0,
+      "p5_first_1000_draws": -0.009251392807000002,
+      "p_null": 1.0,
+      "p_pct": 1.0,
+      "seed": 1,
+      "tail_null": 10000,
+      "tail_pct": 10000,
+      "xbar": -0.009251392807000002
+     },
+     "passes": false,
+     "rent_0": {
+      "ci90_lo_sol": -0.007801464726999999,
+      "criteria_met": false,
+      "days": 5,
+      "days_pos": 0,
+      "ex_best_day_sol": -0.7489406137919998,
+      "ex_top3_sol": -0.9127713730589999,
+      "label": "report-only, added after the clock, never deciding",
+      "mean_sol": -0.007801464726999999,
+      "misses": [
+       "days positive 0/5 is not a majority",
+       "CI90 lo -0.007801464726999999 <= 0",
+       "ex-top-3 -0.9127713730589999 <= 0"
+      ],
+      "n": 120,
+      "n_credited": 120,
+      "report_only": true,
+      "total_sol": -0.9361757672399998
+     },
+     "total_sol": -1.11016713684
+    }
+   },
+   "weakest_cell": "flat_1p9_total"
+  }
+ },
+ "multiplicity": {
+  "N": 10,
+  "N_source": "supplied by the manager (--n-books)",
+  "books_read_with_verdicts": {
+   "h5v1-boostfloor-a1": "PASS",
+   "h5v2-boostclock-a1": "FAIL",
+   "hv4-CON-L": "FAIL"
+  },
+  "c": 3,
+  "c_source": "supplied by the manager (--c); a running count: each confirmation read states its c",
+  "cells_in_total": 123,
+  "cells_per_book": "1 deciding decision = a conjunction of 4 sub-cells (1.9 s x 0.30 SOL x flat/pressure x total/sc); 24 cells priced per book (3 stakes x 2 latencies x 4), the other 20 report-only (R8 item 2)",
+  "confirmation_threshold_0.05_over_c": 0.016666666666666666,
+  "holm_note": "report-only; Holm also needs every smaller rank to reject; neither decides on a screen read",
+  "holm_over_reads": [
+   "h5v1-boostfloor-a1",
+   "h5v2-boostclock-a1",
+   "hv4-F",
+   "j3-a1"
+  ],
+  "n_books_read": 3,
+  "p_by_book": {
+   "h5v1-boostfloor-a1": 9.999000099990002e-05,
+   "h5v2-boostclock-a1": 1.0
+  },
+  "p_note": "EXP-028 section 3 item 3: sub-cell p = max(p_pct, p_null), p_pct = (1 + #{m_b <= 0}) / (1 + B), p_null = (1 + #{m_b - xbar >= xbar}) / (1 + B), B = 10,000, a fresh default_rng(1) per sub-cell; book p = the max over the four sub-cells; report-only",
+  "per_book_manager_states": [
+   "agent",
+   "DECLARE sha256 and notebook id",
+   "cells declared / killed / surviving",
+   "blocks",
+   "October hours used"
+  ],
+  "plain_line": "If no book has an edge, the chance of at least one screen pass is up to 1 - 0.95^N = 40.13% (rounded up) at N = 10.",
+  "refusals_am1": {
+   "h5v1-boostfloor-a1": {
+    "by_reason": {
+     "bad_intent:base_breaks_unresolved_settled": 3
+    },
+    "n_refused": 3,
+    "sentence": "Attempt definition amended after the clock (DEC-031 Amendment 1, dfe7f018601633921f06668fd1af3aaff7b87bf00f321d1540e10b41f8ab6006, 2026-10-19T03:31:35Z), with counts only in view; refused 3 of 123 triggers."
+   },
+   "h5v2-boostclock-a1": {
+    "by_reason": {},
+    "n_refused": 0,
+    "sentence": "Attempt definition amended after the clock (DEC-031 Amendment 1, dfe7f018601633921f06668fd1af3aaff7b87bf00f321d1540e10b41f8ab6006, 2026-10-19T03:31:35Z), with counts only in view; refused 0 of 120 triggers."
+   }
+  },
+  "rent_line": "Rent (DEC-031 Amendment 2 items 9 and 10; QP R1 (h)): the H5 books decide RENT-CHARGED (2,039,280 lamports per filled trip). The rent-0 leg is report-only, added after the clock, never deciding. A book that passes only at rent 0 has FAILED its read.",
+  "screen_line": "A PASS is a SCREEN: the best of N arena books, in-sample for selection (winner's curse), not a promotion and not a profit claim. It allows only DEC-031 section 2 steps 1 to 3 (quant-proof's check on the exact files, the owner's OK, a live canary at its DEC's small limits). A stake above the canary's limits needs the confirmation of step 4.",
+  "screen_read_line": {
+   "h5v1-boostfloor-a1": {
+    "holm_level": 0.0125,
+    "m": 4,
+    "p": 9.999000099990002e-05,
+    "rank": 1
+   },
+   "h5v2-boostclock-a1": {
+    "holm_level": 0.05,
+    "m": 4,
+    "p": 1.0,
+    "rank": 4
+   }
+  },
+  "synthetic_class": "no outcome is split by class and no pool class is read (EXP-024 Amendment 9 (d))",
+  "taint_line": "Taints touched (Amendment 3 item 8): (e) siblings forward: h5v1-boostfloor-a1 and h5v2-boostclock-a1 share the trigger and the entry legs and differ in the exit, so the best of them at the read is in-sample. Not touched by this tool's rule: (a) it decides on all four sub-cells. The manager states any other taint."
+ },
+ "refused": {}
+}

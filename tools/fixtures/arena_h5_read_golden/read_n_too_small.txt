@@ -1,0 +1,5 @@
+rc 3
+--- stdout
+
+--- stderr
+REFUSED: --n-books 1 is smaller than the 2 books read (['h5v1-boostfloor-a1', 'h5v2-boostclock-a1']): N counts every book with a clock before the read
