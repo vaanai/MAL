@@ -1,4 +1,4 @@
-# Arena records, 2026-10-24: H5 Q50 registration (`h5v1q50-boostfloor-a1`; DEC-031 Am.5, QP-RULING-1022-q50, QP-RULING-1022-q50-exec, QP-RULING-1022-q50-P2)
+# Arena records, 2026-10-24: H5 Q50 registration (`h5v1q50-boostfloor-a1`; DEC-031 Am.5, QP-RULING-1022-q50, QP-RULING-1022-q50-exec, QP-RULING-1022-q50-P2; DEC-031 Amendment 10, main 024ee71423a8cdeb7a358401b7b30f81a72531d1)
 
 Written 2026-10-24 (UTC) by a worker agent from the manager's copied job outputs only: `/data/mal/hunt-1008/push-1016/hunt29/q50-records/FACTS-1024.md`, the execution sheet `/data/mal/hunt-1008/push-1016/hunt24/l3-boost/Q50-EXEC-1024.md` (sha256 `d1067102de0a4acbfc5b383d25a13cdad202b321733b6ca696e9b0a3ff529b9e`; not in git), and the QP rulings in the same directory. The writer ran nothing on any host and opened no ledger, bots.json, shadow, canary, probe or outcome file. Any value not in those sources is written "not recorded". The PR is opened BEFORE `clock_start_ms` 1792886400000 (2026-10-25T00:00:00Z). After the clock this file may only be ADDED to. Paper only. No book has cleared the promotion gate. Nothing here says any book makes money.
 
@@ -28,7 +28,8 @@ Written 2026-10-24 (UTC) by a worker agent from the manager's copied job outputs
 - Deciding cell `G0_wsol_band|trig|Q50|strict`: 2026-10-21 46, 2026-10-22 25, 2026-10-23 35; sum 106; mean 35.333333333333336; min day 25.
 - Gap counts: all_gap_rows 0, all_gap_ms 0; pumpswap_gap_rows 145; pumpswap_dataloss_ms 97170 (97.17 s; bar 3,600 s).
 - AID_VERDICT PASS; the manager's decision: **PASS** (all conditions), H = 14.
-- Runtime condition (QP Q4): the 57-file COUNTS run of record took at most 226 s (PLAN-COUNTS.md mtime 17:44:31Z to out/l3_counts.json mtime 17:48:17Z, 10-21); 72/57 x 226 s is about 286 s, under 8 h.
+- Runtime condition (QP Q4): the 57-file COUNTS run of record was NOT a MiScusi job; it was a background Bash task, started 2026-10-21T17:44:37Z and completed 17:48:17Z (about 220 s; file mtimes 17:44:31Z to 17:48:17Z). The duration therefore comes from the task's start/complete instants and file mtimes, not from MiScusi job metadata. 72/57 x about 278 s is far under the 8 h bar.
+- Duplicate notebook entry: manager14 posted a duplicate G7a entry n_5Z8jSUNGcKbisw (about 00:14Z, same text and addendum) and marked it DUPLICATE in n_7AhY2f0NkJtStQ. The record is n_dYHDF5CZxV9Kbw plus job #1413; manager14 submitted no G7 job. manager14 checked at 00:13Z that zstd is present and all 72 hours of 10-21..23 were .zst with no .jsonl or .zst.tmp left.
 - Disclosures: day 1 (2026-10-21) is an undercount at the start edge (a pool created before 2026-10-21T00:00Z is not tracked). Day 3 (2026-10-23) is a LOWER BOUND (300 s / 420 s tail cut at 10-24T00; DEC Am.5 1.7). Both are conservative for an "at least" bar.
 - **Proxy departure (DEC Am.5 1):** the P0 count is a tape-based proxy, not the shadow's own trigger record. It includes synthetic/unclassified pools (an upper bound), its strict detector is a behavioural proxy, and the bar is the old Am.3 bar for that reason.
 
@@ -96,14 +97,19 @@ QP rulings (same directory as the sheet): QP-RULING-1022-q50.md sha256 `a0dcf391
 - N: +1 from the clock (Am.4 2.5). c: a Q50 screen pass enters confirmation automatically (Am.3 item 2) and adds 1 to c. Current values of N and c: not recorded.
 - Winner's curse: Q50 is a discarded discovery cell. Discovery found Q*=40 best and monotone; the only edge figure cited for the family (+4.939% per attempt, best of 413 variants, enrichment p 0.1953) is Q40 and in-sample. No Q50 edge exists. Expect a lower per-trade edge than v1. At 1.0 SOL the cited impact (median 5.94%) exceeds the cited Q40 edge.
 - fast-0 memory reading before the shadow start: MemAvailable 19,069,300 kB; `user-1002.slice` MemoryCurrent 13,500,489,728 (printed by the shadow command at start). Earlier reading at 00:18Z (#1415): MemAvailable 19,076,660 kB.
-- a2 books: Q50 registration changed no file on the a2 path (see section 5 diffs). But see section 10: the a2 books were already ended by the guard before their clock.
+- a2 books: Q50 registration changed no file on the a2 path (see section 5 diffs). The a2 books had already ended before their clock (section 10).
 
 ## 9. Not measured (item 9)
 - The Q50 trigger rate on the shadow's own feed (the P0 proxy is an upper bound on a different feed); any outcome; any P&L.
 - No book has cleared the promotion gate. Nothing in this file says any book makes money. This file does not ask anyone to merge it.
 
-## 10. A3 guard risk (facts only)
-- The 2026-10-22T19:10:05Z A3 guard run was a HALT (`synthetic_share_high`, 8/19). It ended both a2 books (`h5v1-boostfloor-a2`, `h5v2-boostclock-a2`) before their clock. Notebook n_5ob4j6rvho4xuQ. It was found after the 10-22 registration.
-- Q50 (`h5v1q50-boostfloor-a1`) is under the same guard (books file v2, `synthetic_share_high` is one of the six flags; G9b on 2026-10-24T00:22:39Z: verdict NONE, all six flags clear and evaluated).
-- A fix is under QP review. Its content and status beyond that: not recorded.
-- The A3 rule alone ends Q50 through the books file. If a HALT lands on Q50 before its clock, the book ends the same way.
+## 10. A3 guard fix and redeploy (facts; 2026-10-24, before Q50's clock)
+Notebooks: n_5ob4j6rvho4xuQ (finding), n_fF-zfsZwsQyiag (QP ruling); the redeploy notebook entry id: not recorded.
+- Finding: the 2026-10-22T19:10:05Z A3 guard run was a HALT (`synthetic_share_high`, 8/19). It ended both a2 books before their clock. Q50 was under the same guard.
+- QP ruling `/data/mal/hunt-1008/push-1016/hunt29/a3fix/QP-RULING-1024-a3-synthetic.md`, final sha256 `0487fee28c6e36950947877fe0f1397a2b9fdb6e889327318b462b6fda8add29` (with Addenda 1-2).
+- PR #840 merged to main `79a93e94464e26d3f7246e637fac0ae58430e043`. DEC-031 Amendment 10 (PR #845) merged to main `024ee71423a8cdeb7a358401b7b30f81a72531d1`.
+- Guard pin tag `a3-guard-pin-1024` = `0ec7fae89abe00021871f35258a8bc659b3df6bd` (136cd98 + check tool + its tests); check tool sha256 `1f84072da673cc451f9e3a6baa8b25d6295b497305ffe7bc38fef42e3a710f70`; `h5_shadow.py` blob `23b9ccc2`. Tests at the pin on fast-0: job #1442, 168 passed.
+- Old guard loop #1318 and queued successor #1332 cancelled (ps check #1443: 0 guard processes). New loop #1446 and successor #1447 run at the pin.
+- First OFFICIAL run at 2026-10-24T00:57:40Z: all RCs 0, verdict NONE, `A3_FLAGS` 6 evaluated, none halting, `A3_FLAGS_OK` (jobs #1448, #1449). **It replaces G9b (section 4, run at 136cd98) as Q50's pre-clock green run** (Am.10 item 5(4)).
+- a2 books: NOT_DECIDABLE (empty window, ended 2026-10-22T19:10:05Z before their clock), final. a2 shadow #1331, score #1344 and successors were cancelled at 00:50Z.
+- Q50 remains governed by the A3 rule through the books file; any later HALT is not known at writing.
