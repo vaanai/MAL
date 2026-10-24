@@ -1,6 +1,6 @@
 # Q50 successor score (audit M3)
 
-Problem: the daily score loop #1425 (`h5-q50-daily-score`) passes ONE dir, `$HOME/data/arena/h5-q50-2026-10-24`. If the shadow #1419 dies early, the successor #1421 writes to
+Problem: the daily score loop (#1425, now #1543) (`h5-q50-daily-score`) passes ONE dir, `$HOME/data/arena/h5-q50-2026-10-24`. If the shadow #1419 dies early, the successor #1421 writes to
 `$HOME/data/arena/h5-q50-$(date -u +%F)-succ` (date = the successor's start day, so read the real name from #1421's first log line `out=...`), and #1425 never scores it.
 Q50 dirs only: the wrapper refuses a dir whose start records are not Q50. Source: `Q50-EXEC-1024.md` STEP Q50-SCORE ("a `-succ` dir is added as a second `--shadow-dir` by the manager").
 
@@ -12,15 +12,16 @@ Q50 dirs only: the wrapper refuses a dir whose start records are not Q50. Source
 
 ## Job spec (replaces #1425)
 
-label `h5-q50-daily-score-2dir`; machine mal-fast-0; memory 1.5 GB; cpus 0.5; time limit 14 d (platform max; the loop ends itself at END); git_ref `29e214aec8e75084f1910a458af3c7d8426751cf`; resumable true; after: none.
+label `h5-q50-daily-score-2dir`; machine mal-fast-0; memory 1.5 GB; cpus 0.5; time limit 14 d (platform max; the loop ends itself at END); git_ref `659f33e85abf487001729829aef60478e7e86281`; resumable true; after: none.
 Same body as #1425 with ONE edit: `SD2` is set to the real succ dir and the score line carries both `--shadow-dir` arguments (primary first). Replace `SUCC_NAME` before submitting.
 
 ```sh
 set -u; date -u; git rev-parse HEAD
-PIN=29e214aec8e75084f1910a458af3c7d8426751cf
+PIN=659f33e85abf487001729829aef60478e7e86281
 [ "$(hostname)" = mal-fast-0 ] || { echo "REFUSED host"; exit 1; }
 [ "$(git rev-parse HEAD)" = "$PIN" ] || { echo "REFUSED head"; exit 1; }
-[ "$(sha256sum tools/arena_h5_score_q50.py | cut -d' ' -f1)" = f5a479adc0beaf26dbe46620a1fad4fc0864bf4eff72a8eff7521c22dc0b4f61 ] || { echo "REFUSED wrapper sha"; exit 1; }
+[ "$(sha256sum tools/arena_h5_score_q50.py | cut -d' ' -f1)" = 4ab3e909537b96fb6eb3089d3f156798869028c14125ba0cc8dfa318c6860a9c ] || { echo "REFUSED wrapper sha"; exit 1; }
+[ "$(sha256sum tools/arena_h5_score.py | cut -d' ' -f1)" = dfe7f018601633921f06668fd1af3aaff7b87bf00f321d1540e10b41f8ab6006 ] || { echo "REFUSED scorer sha"; exit 1; }
 sha256sum tools/arena_h5_score.py tools/arena_h5_score_q50.py
 PY=/home/claude/venvs/c1nf-shadow/bin/python; SD="$HOME/data/arena/h5-q50-2026-10-24"; SD2="$HOME/data/arena/SUCC_NAME"
 [ -d "$SD2" ] || { echo "REFUSED no succ dir $SD2"; exit 1; }
@@ -28,7 +29,7 @@ END=$(date -u -d 2026-11-06T01:00:00Z +%s)
 while :; do now=$(date -u +%s); t=$(date -u -d "$(date -u +%F)T00:20:00Z" +%s); [ "$t" -le "$now" ] && t=$((t + 86400)); [ "$t" -gt "$END" ] && { echo "end reached"; exit 0; }; sleep $((t - now)); echo "== $(date -u +%FT%TZ) daily score"; echo "SHADOW_STATUS_AGE_S=$(( $(date -u +%s) - $(stat -c %Y "$SD/h5-shadow-status.json" 2>/dev/null || echo 0) ))"; echo "SUCC_STATUS_AGE_S=$(( $(date -u +%s) - $(stat -c %Y "$SD2/h5-shadow-status.json" 2>/dev/null || echo 0) ))"; $PY -m tools.arena_h5_score_q50 score --shadow-dir "$SD" --shadow-dir "$SD2"; echo "score_rc=$?"; done
 ```
 
-Conventions copied from #1425: pinned head and wrapper sha, `$PY` = c1nf-shadow venv, first scorer line prints both sha256, `date -u -d` loop to 00:20Z daily, END 2026-11-06T01:00Z, status files by mtime only (never content), `score_rc` echoed.
+Replaces the live loop #1543 when a succ dir exists; same command as #1543 except the second dir (head 659f33e8 = #884, DEC-031 Am.11 item 5: the loop runs at the item-1 tool commit; new wrapper sha, added scorer sha check). Conventions: pinned head and wrapper sha, `$PY` = c1nf-shadow venv, first scorer line prints both sha256, `date -u -d` loop to 00:20Z daily, END 2026-11-06T01:00Z, status files by mtime only (never content), `score_rc` echoed.
 The repeated `--shadow-dir` is valid: `tools/arena_h5_score.py:992` declares it `action="append"` (usage line 54).
 
 ## Verify (counts only)
