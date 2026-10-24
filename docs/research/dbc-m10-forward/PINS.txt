@@ -1,0 +1,14 @@
+commit 9b933fc4f2aeb2b7f1e78a720fe76aef25b6c90e
+7db0afdd7845c0d159f73ec438632dfb2ddc7ef45ab3ef971569625e1335a7eb tools/dbc_price.py
+607e3173cae997b30972aef1f863c9355014bb01cee6f6622e352b42b4363b66 tools/dbc_screen.py
+04a015e0c42548549457d4b1b96f2eccda62022dfe1a740cf73db26d9c72d2c1 tools/dbc_config.py
+a39b2ba68dd46b7d3a555fb8e06580718300f354020c1f91280ab7a0e0856778 tools/arena_stack.py
+b40f09cd6f407b1f86d87a2b557e97050096255dba77a0eb727b99d951b0e2c4 tools/dbc_fwd_read.py
+c6f754fae49f27f1fd2f9b00f8d6876065948607f5ed0eeb3c45ff234af84018 tools/venue_backfill_dbc.py
+10a52a52ee382a56e13e03b3fa76c1a36cd690b414b83e2f91c8438f000f8535 tools/dbc_decode.py
+15605f65894282f71d39dca5e2be1ba0935d5c9676a29c4be6415ac06ea23571 tools/venue_backfill.py
+913c27256dbfa11762c039957d5977a4a01fcaae5e41ac1ce4b730ef0988ca07 docs/research/dbc-p17/data/cfg_summary.json
+63035b9a4a04b6a7f8fb9f81778275049c129a70d6f8bf6e08866516cf3da4cc tools/data/meteora_dbc_idl_v0.2.2.json
+legacy-path proof: MiScusi job #1508 at code head 9b933fc4f2aeb2b7f1e78a720fe76aef25b6c90e (code identical to the tag commit; later commits add only this file and records): tools/dbc_screen.py --cells m10 on 10-14..16, the whole m10 cell JSON equals docs/research/dbc-p14/screens_a2fix.json (#1488) byte-for-byte. Earlier proof: #1497 at 882c72f6.
+rehearsal: MiScusi job #1507 (head 7a4ec81f; tools/dbc_fwd_read.py end to end on exploration hours 10-14..16 with patched window: FAIL only because 3 days < 5; 589 attempts; not part of the read).
+tests: python3 -m tools.test_dbc_fwd_read (7 ok), tools.test_dbc_swap3 (8 ok), tools.test_dbc_price (all ok), tools.test_dbc_decode (OK).
