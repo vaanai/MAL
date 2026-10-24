@@ -229,6 +229,8 @@ LANDING_EXCESS_PP, LANDING_MIN_N = 10.0, 30
 LATE_SEND_SLOTS, LATE_SEND_TRIPS = 3, 2
 MARK_EXIT_GUARD_MS = 5_000  # no mark read from 5 s before a position's sell send onward (the exit path stays free of mark RPCs)
 MARKS_PER_TICK = 1  # at most one position marked (2 RPC calls) per exit tick
+LAST_MARK_LEAD_MS = 3_000  # the last mark is taken in the 3 s before a position's no-lookup window (and carried through the window)
+LAST_MARK_MIN_GAP_MS = 1_000  # ... at most once a second
 REFUSAL_LOOK2 = "h5_look2_sealed"
 REFUSAL_S0_WINDOW = "s0_outside_book_window"
 REFUSAL_DECISION_WINDOW = "decision_outside_book_window"
@@ -771,6 +773,16 @@ class ArenaExecutor(h.H5Executor):
         if kind != "daily_trigger":
             self._alert("ladder_" + kind, "", rung_from=frm, rung_to=to, why=why)
 
+    def _unlock_still_valid(self, step_up: dict[str, Any]) -> str | None:
+        ok, why = ld.verify_unlock(self.abook.bot_id)
+        if not ok:
+            return f"unlock_no_longer_valid:{why}"
+        try:
+            sha = hashlib.sha256(ld.UNLOCK_PATH.read_bytes()).hexdigest()
+        except OSError:
+            return "unlock_unreadable"
+        return None if sha == step_up.get("unlock_sha256") else "unlock_changed_since_step_up"
+
     def _realized_today(self, now: int) -> int:
         return int(self.counters.day(h.day_key(now)).get("realized") or 0)
 
@@ -794,13 +806,13 @@ class ArenaExecutor(h.H5Executor):
         done = 0
         for mint, pos in list(self.state.open.items()):
             old = self._marks.get(mint)
-            if old is not None and now - old[1] < ld.MARK_MAX_AGE_MS // 2:
+            send, guard = self._exit_window_start(pos)
+            in_window = send is not None and now >= send - guard
+            if mint in self.state.pending or in_window:
+                continue  # never an RPC read in a position's exit window or while its sell is in flight (QP #862 condition 3)
+            last_chance = send is not None and now >= send - guard - LAST_MARK_LEAD_MS  # the last ticks before the window: refresh now, whatever the cadence
+            if old is not None and now - old[1] < ld.MARK_MAX_AGE_MS // 2 and not (last_chance and now - old[1] >= LAST_MARK_MIN_GAP_MS):
                 continue
-            plan = ((pos.get("h5") or {}).get("plan")) or {}
-            send = plan.get("send_wall_ms")
-            guard = max(MARK_EXIT_GUARD_MS, int(self.h5.arm_lead_ms) + 3_000)  # never inside the arm-and-send window, whatever arm_lead_ms is configured to
-            if mint in self.state.pending or (isinstance(send, int) and now >= send - guard):
-                continue  # never an RPC read in a position's exit window or while its sell is in flight (QP #862 condition 3); a missing mark counts at zero
             if done >= MARKS_PER_TICK:
                 break
             done += 1
@@ -816,10 +828,25 @@ class ArenaExecutor(h.H5Executor):
         for gone in set(self._marks) - set(self.state.open):
             self._marks.pop(gone, None)
 
+    def _exit_window_start(self, pos: dict[str, Any]) -> tuple[int | None, int]:
+        """(the position's sell send instant or None, the no-lookup guard before it)."""
+        send = (((pos.get("h5") or {}).get("plan")) or {}).get("send_wall_ms")
+        guard = max(MARK_EXIT_GUARD_MS, int(self.h5.arm_lead_ms) + 3_000)  # never inside the arm-and-send window, whatever arm_lead_ms is configured to
+        return (send if isinstance(send, int) and not isinstance(send, bool) else None), guard
+
     def daily_loss_now(self, now: int) -> int:
-        positions = [{"cost_lamports": int(p.get("buy_cost_lamports") or p.get("spend") or 0) + int(p.get("extra_cost") or 0),
-                      "mark_value_lamports": (self._marks.get(m) or (None, None))[0], "mark_ms": (self._marks.get(m) or (None, None))[1]}
-                     for m, p in self.state.open.items()]
+        """Item 3 (a). A position INSIDE its exit window (no mark reads there, QP #862 c.3) keeps its last mark, taken at most LAST_MARK_LEAD_MS before the
+        window, instead of counting at zero: otherwise every normal exit would read as a total loss and fire the C0 trigger with no real loss (QP observation
+        on #862). A position with no mark at all, or with a stale mark OUTSIDE its window, still counts at zero. The pre-send intraday cap still counts every
+        open position at zero (unchanged, conservative)."""
+        positions = []
+        for m, p in self.state.open.items():
+            mv, ms = self._marks.get(m) or (None, None)
+            send, guard = self._exit_window_start(p)
+            if mv is not None and isinstance(ms, int) and send is not None and now >= send - guard and ms >= send - guard - LAST_MARK_LEAD_MS - ld.MARK_MAX_AGE_MS:
+                ms = now  # the last pre-window mark stands for the window (it was fresh when the window opened)
+            positions.append({"cost_lamports": int(p.get("buy_cost_lamports") or p.get("spend") or 0) + int(p.get("extra_cost") or 0),
+                              "mark_value_lamports": mv, "mark_ms": ms})
         return ld.daily_loss_lamports(self._realized_today(now), positions, now)
 
     def _ladder_guarded(self, fn: Any, now: int) -> None:
@@ -860,6 +887,8 @@ class ArenaExecutor(h.H5Executor):
                 trailing_mean_d_bps=None, deposits_lamports=None)  # trailing-30 and chain deposits: not built yet -> a step down (fail closed)
             if why is None and int(getattr(self, "funded_lamports", 0) or 0) < ld.LADDER["C1"].deposits_min_lamports:
                 why = "funded_below_c1_need"
+            if why is None:
+                why = self._unlock_still_valid(entered)  # reviewer nit on #862: the root evidence is re-checked at every tick while at C1
             if why:
                 self._step(lg, "step_down", "C1", "C0", why)
                 self._c1_by_this_process = False
@@ -1349,7 +1378,7 @@ class ArenaExecutor(h.H5Executor):
 
 
 _ARENA_CLASS = ArenaExecutor  # the class the tripwire inspects (a name bound at import, so rebinding ArenaExecutor cannot hide a removed override)
-GUARD_METHODS = ("h5", "_tier_path", "_refresh_tier", "_ladder_buy_refusal", "ladder_tick", "_ladder_start_problem", "_ladder_pre_buy", "_ladder_guarded", "_live_gate", "prime_feed_start", "_live_buy", "_send", "_send_guarded", "_note_send", "write_exit_gaps", "_rescue_problem", "_budget_stop", "_balance_refusal", "committed_loss_refusal", "_hard_refusal",
+GUARD_METHODS = ("h5", "_tier_path", "_refresh_tier", "_ladder_buy_refusal", "ladder_tick", "_ladder_start_problem", "_ladder_pre_buy", "_ladder_guarded", "_unlock_still_valid", "daily_loss_now", "_refresh_marks", "_live_gate", "prime_feed_start", "_live_buy", "_send", "_send_guarded", "_note_send", "write_exit_gaps", "_rescue_problem", "_budget_stop", "_balance_refusal", "committed_loss_refusal", "_hard_refusal",
                  "_parity_state", "decide_row", "intent_tick", "_latch", "exit_tick", "_fire_sell", "_finish_buy", "_resolve_expired", "_seal_reason")
 
 

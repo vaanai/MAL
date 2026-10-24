@@ -266,3 +266,99 @@ class TriggerAndCapTests(LadderCase):
         n0 = len(e.rpc.sent)
         e.fire()
         self.assertEqual(len(e.rpc.sent), n0)
+
+
+class ExitWindowMarkTests(LadderCase):
+    """QP observation on #862: a stale mark counted at zero inside the exit window fired the C0 trigger on two normal exits with no real loss."""
+
+    def two_positions(self, e, send_in_ms):
+        now = e.ex.now_ms()
+        guard = max(ax.MARK_EXIT_GUARD_MS, int(e.ex.h5.arm_lead_ms) + 3_000)
+        for i in range(2):
+            m = f"Mint{i}" + "1" * 30
+            e.ex.state.open[m] = {"buy_cost_lamports": 50_150_000, "spend": 50_000_000, "h5": {"plan": {"send_wall_ms": now + send_in_ms + i * 4_000}}}
+        return now, guard
+
+    def test_two_exits_within_10_s_do_not_fire_the_trigger_with_their_last_marks(self):
+        e = self.q50(ceiling="T1")
+        now, guard = self.two_positions(e, 20_000)
+        for m, p in e.ex.state.open.items():  # the last marks, taken just before each window (cost 0.10015 vs value 0.0999: a 0.25 % loss)
+            e.ex._marks[m] = (49_900_000, p["h5"]["plan"]["send_wall_ms"] - guard - 1_000)
+        e.clock.t += 20_000 + 4_000 + 15_000 - guard  # both positions inside their windows, the marks now more than 10 s old
+        self.assertLess(e.ex.daily_loss_now(e.ex.now_ms()), ld.LADDER["C0"].daily_trigger_lamports)
+        e.ex.ladder_tick(e.ex.now_ms())
+        self.assertIsNone(e.ex._trigger_day)
+
+    def test_without_any_mark_they_still_count_at_zero_and_fire(self):
+        e = self.q50(ceiling="T1")
+        self.two_positions(e, 20_000)
+        e.ex._marks.clear()
+        e.clock.t += 30_000
+        with mock.patch.object(e.ex, "_refresh_marks", lambda now: None):
+            e.ex.ladder_tick(e.ex.now_ms())
+        self.assertEqual(e.ex._trigger_day, h.day_key(e.ex.now_ms()))  # 2 x 0.10015 counted at zero: conservative when nothing was ever marked
+
+    def test_a_mark_taken_long_before_the_window_does_not_stand_for_it(self):
+        e = self.q50(ceiling="T1")
+        now, guard = self.two_positions(e, 60_000)
+        for m, p in e.ex.state.open.items():
+            e.ex._marks[m] = (49_900_000, now)  # 60 s before the send: not a last pre-window mark
+        e.clock.t += 60_000 + 4_000 - guard + 100
+        self.assertEqual(e.ex.daily_loss_now(e.ex.now_ms()), 2 * 50_150_000)
+
+    def test_the_last_mark_is_taken_just_before_the_window_and_never_inside_it(self):
+        e = self.q50(ceiling="T1")
+        pos = e.open_position()
+        send = pos["h5"]["plan"]["send_wall_ms"]
+        guard = max(ax.MARK_EXIT_GUARD_MS, int(e.ex.h5.arm_lead_ms) + 3_000)
+        calls = []
+        real = e.ex._snapshot
+        e.ex._snapshot = lambda *a, **k: (calls.append(e.ex.now_ms()), real(*a, **k))[1]
+        e.clock.t = send - guard - ax.LAST_MARK_LEAD_MS - 1
+        e.ex._marks[MINT] = (1, e.clock.t)  # fresh mark: the normal 5 s cadence would skip the next read
+        e.clock.t = send - guard - ax.LAST_MARK_LEAD_MS + 1_500  # inside the last-chance lead, 1.5 s after the mark
+        e.ex._refresh_marks(e.ex.now_ms())
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(e.ex._marks[MINT][1], e.clock.t)
+        e.clock.t = send - guard  # the window: no read whatever the mark's age
+        e.ex._refresh_marks(e.ex.now_ms())
+        self.assertEqual(len(calls), 1)
+
+    def test_the_intraday_pre_send_cap_still_counts_open_positions_at_zero(self):
+        e = self.q50(ceiling="T1")
+        now, guard = self.two_positions(e, 20_000)
+        for m in e.ex.state.open:
+            e.ex._marks[m] = (50_150_000, now)  # perfectly marked: no unrealized loss at all
+        worst = [e.ex._position_worst_case(int(p["spend"])) for p in e.ex.state.open.values()]
+        e.ex.counters.day(h.day_key(now))["realized"] = -(ld.LADDER["C0"].intraday_cap_lamports - sum(worst) - e.ex._position_worst_case(e.ex.h5.stake_lamports) + 1)
+        self.assertEqual(e.ex._ladder_buy_refusal(), "intraday_cap")
+
+
+class UnlockReverifyTests(C1Helpers):
+    def c1_kept(self):
+        e = self.c1()
+        self.assertEqual(e.ex._rung(), "C1")
+        return e
+
+    def test_a_changed_unlock_steps_c1_down_at_the_next_tick(self):
+        e = self.c1_kept()
+        unlock = self.tmp / "LADDER_UNLOCK"
+        unlock.write_text('{"changed": 1}')
+        with mock.patch.object(ld, "step_down_reason", lambda *a, **k: None), mock.patch.object(ld, "UNLOCK_PATH", unlock), \
+                mock.patch.object(ld, "verify_unlock", lambda *a, **k: (True, None)):
+            e.ex._ladder_pre_buy(e.ex.now_ms())
+        self.assertEqual(e.ex._rung(), "C0")
+        self.assertEqual(self.log(e).records[-1]["why"], "unlock_changed_since_step_up")
+
+    def test_an_unlock_that_no_longer_verifies_steps_c1_down(self):
+        e = self.c1_kept()
+        with mock.patch.object(ld, "step_down_reason", lambda *a, **k: None), mock.patch.object(ld, "UNLOCK_PATH", self.tmp / "LADDER_UNLOCK"):
+            e.ex._ladder_pre_buy(e.ex.now_ms())
+        self.assertTrue(self.log(e).records[-1]["why"].startswith("unlock_no_longer_valid:"))
+
+    def test_an_unchanged_valid_unlock_keeps_c1(self):
+        e = self.c1_kept()
+        with mock.patch.object(ld, "step_down_reason", lambda *a, **k: None), mock.patch.object(ld, "UNLOCK_PATH", self.tmp / "LADDER_UNLOCK"), \
+                mock.patch.object(ld, "verify_unlock", lambda *a, **k: (True, None)):
+            e.ex._ladder_pre_buy(e.ex.now_ms())
+        self.assertEqual(e.ex._rung(), "C1")
