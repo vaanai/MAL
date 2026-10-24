@@ -30,15 +30,15 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `live-canary` | 1 | 0 | 0 |
 | `forward-test` | 2 | 0 | 0 |
 | `explored-survivor-unconfirmed` | 7 | 0 | 0 |
-| `parked` | 5 | 0 | 0 |
+| `parked` | 7 | 0 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 29 | 20 | 1 |
+| `untested` | 31 | 20 | 1 |
 | `desk-read` | 1 | 43 | 0 |
 | `explored-no-survivor` | 22 | 6 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 145 | 75 | 2 |
+| **all** | 149 | 75 | 2 |
 
-The file holds 472 rows: the 222 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 476 rows: the 226 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -73,6 +73,8 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `lib-c-O1` | LAYA r4-a (cost-aware Huber model, 59 columns, 5-seed bag, hold 1 minute) | `shelved` | "UNDER REVIEW / PRE-REGISTRATION REQUESTED; not promoted". Central +0.1449% / +0.0847 SOL/d after haircut; P(trade CI90 lo > 0) = 0.078; 24/29 days. Report: "Nothing is yet 'consistently positive' at the cost we have measured." Disagreement: RULE B +1.842% to +0.8076% and l3 xs10 +2.479% to +2.048072% on fresh data … | a race-free entry slice (r4-c, report-only) with an outcome-blind pre-registration (library O1) |
 | `lib-c-P1` | C1-NF (C1 with non-farm cap h_top1 <= 0.5, 1.3 s, 505k per send) | `shelved` | "SHELVED 10-12 (owner) for the live canary plan; shadow soak running as a regime watch". Earlier verifier status "SURVIVES-VERIFY" on exploration data only. Corrected 2026-10-12: not a conflict once the live plan is separated from the shadow; job #658 [unverified, brief]. Keyless shadow soak restarted … | Revive at >=10 kept trades/day on 2 days (library TOC row 13) |
 | `lib-c-R2.SB-H5` | SB-H5: depth-raise tripwire (max_curve_depth 1 to 2..5) | `parked` | 2026-10-13: the official docs commit 639b87f (2026-10-13T15:37:48Z) says pump coins can be quoted two levels deep "Starting October 13". Global.max_curve_depth has not been re-read on-chain since; the 06:41Z structure check of 2026-10-14 is the next read. | not in source |
+| `census-orca-whirlpool` | Orca Whirlpool new-pool launches | `parked` | Low tradeable fraction; id not cross-checked. | A launch-specific signal. |
+| `census-heaven-boop-moonit` | Heaven, Boop, Moonit activity check | `parked` | No recorder; ids unverified, Heaven 2026 id not confirmed. | Recheck monthly or when an official id is found. |
 
 ## Never tested
 
@@ -108,6 +110,8 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `l3-boost-offband-1` | H5 structure on off-band WSOL pools (V 0.5 to 30 SOL, stake scaled by V; hunt24 L3 … | BOOST ride variants (hunt24 L3) | None until the P0 bar or the pool supply changes. |
 | `l3-boost-custompair-1` | H5 structure on custom-pair (non-WSOL quote) BOOSTed pools: PUMP, USDC, other quotes … | BOOST ride variants (hunt24 L3) | None; see the existing rows boost-universe-1..4 and boost-custom-v2-1..3 for the exploration side. |
 | `p6-latency-desk` | Feed and landing upgrade desk note: what a paid upgrade would buy in leg seconds and at … | execution-speed | the 60-buy two-arm landing test of round45 section f (owner go and a DEC-019 Amendment 3) is the only independent landing measurement proposed; no spending in this lane. |
+| `census-cpmm-grad` | Raydium CPMM pools born from LaunchLab graduation | launchpad migration | Per-pool filter from LaunchLab migrate rows. |
+| `census-damm2-grad` | Meteora DAMM v2 pools born from DBC migration | launchpad migration | After P12 migration rows exist. |
 
 ## Owner ideas
 
