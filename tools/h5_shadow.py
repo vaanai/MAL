@@ -256,6 +256,9 @@ H5_LOOK2_START_MS = int(datetime(2026, 10, 16, 0, 0, tzinfo=timezone.utc).timest
 # The declared window is [H5_LOOK2_START_MS, H5_LOOK2_END_MS) only (Amendment 2). A pool with s0 at or after the end is outside it: its outcomes
 # stay withheld whatever the flag says.
 H5_LOOK2_END_MS = int(datetime(2026, 11, 6, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
+# Q50 successor base S* (QP-RULING-1024-successor R7(b)): the end-seal of a --fresh-forward ARENA engine only (Engine.fresh_start_ms set). Chosen once,
+# never edited (another value is another sha with new proofs). H5_LOOK2_END_MS and every non-fresh path are unchanged.
+SUCC_END_MS = int(datetime(2026, 12, 1, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)
 H5_LOOK2_AMENDMENT_REF = "EXP-024-Am2"  # the only value --h5-look2-observed accepts
 BX10_ENABLE_REF = "EXP-026"  # the only value that turns the report-only bx10 exit variant on (--bx10-enable / H5_BX10_ENABLE); anything else is off
 H5_LOOK2_SEAL_REASON = "h5_look2_seal"
@@ -2212,7 +2215,7 @@ class Engine:
         t = p.s0_ts * 1000 if p.s0_ts else p.s0_recv_ms
         if t < self.h5_look2_start_ms:
             return False
-        if t >= H5_LOOK2_END_MS:
+        if t >= (SUCC_END_MS if self.fresh_start_ms is not None else H5_LOOK2_END_MS):
             return True  # outside the declared window [start, end): sealed whatever the flag says
         return not self.h5_look2_observed
 
@@ -3239,12 +3242,12 @@ async def run_live(args: argparse.Namespace) -> int:
     start_ms: int | None = None
     if fresh:
         # The CAP-PICK oracle seal does not apply (EXP-022 was withdrawn 2026-10-15; no pick oracle is read). The H5 Look-2 seal's START does not apply (EXP-024 Am.2
-        # covers v1 from 2026-10-16, and Am.9 the arena's v2), but its END does, fail closed: a pool with s0 at or after H5_LOOK2_END_MS (2026-11-06T00Z) gets its
-        # decision records only, no outcome, strip or ladder, because no declared observation covers it. A fresh window that starts at this instant is out-of-sample
+        # covers v1 from 2026-10-16, and Am.9 the arena's v2), but an END does, fail closed: at S* the successor end SUCC_END_MS (2026-12-01T00Z; R7(b)), so a pool
+        # with s0 at or after it gets its decision records only, no outcome, strip or ladder. A fresh window that starts at this instant is out-of-sample
         # by construction: a pool whose s0 is before it is never tracked.
         seal_info = {"oracle": "not_applied", "why": "fresh_forward_arena"}
         start_ms = now_ms()
-        engine = Engine(sink.write, boost_mode=args.boost_mode, suppress_outcome=None, pick_oracle=None, seal_start_ms=None, h5_look2_start_ms=H5_LOOK2_END_MS,
+        engine = Engine(sink.write, boost_mode=args.boost_mode, suppress_outcome=None, pick_oracle=None, seal_start_ms=None, h5_look2_start_ms=SUCC_END_MS,
                         h5_look2_observed=False, classifier=classifier, bx10_enabled=(q_star == Q_STAR_SOL), fresh_start_ms=start_ms, q_star_sol=q_star)
     else:
         pick_oracle, seal_info = cap_pick_oracle_from_env()
@@ -3281,7 +3284,7 @@ async def run_live(args: argparse.Namespace) -> int:
         start_rec.update({"t_ms": start_ms, "start_ms": start_ms, "fresh_forward": FRESH_FORWARD_REF,
                           "seal": {"reason": SEAL_REASON, "start_ms": None, "applied": False, **seal_info},
                           "h5_look2": {"reason": H5_LOOK2_SEAL_REASON, "start_ms": None, "applied": False, "observed": False, "amendment_ref": None,
-                                       "end_only_ms": H5_LOOK2_END_MS, "end_only": iso_from_ms(H5_LOOK2_END_MS)},
+                                       "end_only_ms": SUCC_END_MS, "end_only": iso_from_ms(SUCC_END_MS)},
                           "tip_union": "off", "dirty": os.environ.get("H5_DIRTY") == "1",  # the wrapper sets H5_DIRTY=1 under ARENA_H5_ALLOW_DIRTY: code_sha does not name the code
                           "endpoints": sorted({_strip_url(u) for u in (args.ws_url or [])}) or ["default"], "host": os.uname().nodename})
     if q_star != Q_STAR_SOL:  # only a non-default level changes the start record: the default one stays byte-identical
