@@ -1128,7 +1128,8 @@ def fees_only_trigger(tri: Json, rec: Json, mon_pins: Json) -> dict[str, Any] | 
 
 
 def decide_fees(rec: Json, mon_pins: Json, pins: Json, fee_pins: Any, state_path: Path, tri: Json, d: Json, *, client: Any, http_get: Callable,
-                now_ms: Callable[[], int], job_id: str = "", history: Sequence[Json] = (), enum_client: Any = None) -> dict[str, Any]:
+                now_ms: Callable[[], int], job_id: str = "", history: Sequence[Json] = (), enum_client: Any = None, bounded_enum: bool = False,
+                upgrade_auth: Mapping[str, str] | None = None) -> dict[str, Any]:
     """The fees_check sub-verdict for a fees-only trigger: {schema, verdict PASS|FAIL|ERROR, halt_at_ms (None on PASS), reasons, redeploys, record_only, ...}.
     Same memory and order as the pump / PumpSwap path: every upgrade write of the fees programdata since the pinned slot is its own redeploy (state key fees:<slot>), a PASSed
     write is covered, a non-PASS write is sticky, the EARLIEST unreviewed write sets the instant, the 24 h deadline counts from it."""
@@ -1148,7 +1149,7 @@ def decide_fees(rec: Json, mon_pins: Json, pins: Json, fee_pins: Any, state_path
                                       "reasons": reasons[:20], "checked_ms": now_ms(), "run_utc": rec["run_utc"], "job_id": job_id})
 
     try:
-        writes = expand_writes(enum_client or client, rec, [d])
+        writes = expand_writes(enum_client or client, rec, [d], bounded=bounded_enum, upgrade_auth=upgrade_auth)
     except Exception as exc:  # noqa: BLE001 - the enumeration failed or did not reach the pinned slot: ERROR at the fail-closed bound (Am.4 1.6)
         b = bound()
         reasons = [f"write enumeration failed for {FEES_ITEM} ({type(exc).__name__}: {str(exc)[:160]}): bound {iso_ms(b)}"]
@@ -1294,13 +1295,106 @@ def list_upgrade_writes(client: Any, name: str, programdata: str, pinned_slot: i
     return out
 
 
-def expand_writes(client: Any, rec: Json, redeploys: Sequence[Json]) -> list[dict[str, Any]]:
+LOADER_SET_AUTHORITY_TAGS = (4, 7)  # UpgradeableLoaderInstruction::SetAuthority, SetAuthorityChecked
+
+
+def read_programdata_header(client: Any, programdata: str) -> tuple[int, str | None]:
+    """(last deploy slot, upgrade authority or None) from the first 45 bytes of a programdata account (tag 3, slot u64 at 4, Option<Pubkey> at 12). Unreadable = CheckError."""
+    res = client.call("getAccountInfo", [programdata, {"encoding": "base64", "dataSlice": {"offset": 0, "length": 45}, "commitment": "finalized"}])
+    val = (res or {}).get("value")
+    data = mon._account_bytes(val) if val else None
+    if data is None or len(data) < 13 or int.from_bytes(data[:4], "little") != 3:
+        raise CheckError(f"programdata {programdata[:8]} unreadable or not a ProgramData account")
+    auth = mon.b58encode(data[13:45]) if data[12] == 1 and len(data) >= 45 else None
+    return int.from_bytes(data[4:12], "little"), auth
+
+
+def list_upgrade_writes_bounded(client: Any, name: str, programdata: str, pinned_slot: int, newest_slot: int, authority_pin: str | None) -> list[dict[str, Any]]:
+    """SUCCESSOR books only (books-file flag). The same answer as list_upgrade_writes (every successful upgrade write after the pinned slot, oldest first) without walking the
+    programdata's signature list, which on PumpSwap is the whole trading history (job #1545: call cap 300 reached). Bounded steps, each fail closed (CheckError):
+      1. read the programdata header: its upgrade authority must equal the pin, and its deploy slot must equal the record's newest slot;
+      2. deploy slot == pinned slot: zero writes, no further call;
+      3. else page getSignaturesForAddress(UPGRADE AUTHORITY) back to the pinned slot (MAX_WRITE_PAGES pages; not reached = CheckError). A write is a successful tx with a loader
+         `Upgrade` (top-level or inner) whose first account is THIS programdata (the authority upgrades other programs too). A loader SetAuthority / SetAuthorityChecked on this
+         programdata inside the walk is CheckError (an upgrade signed by another authority would not be on this list). The newest write must be the header's slot."""
+    if not authority_pin:
+        raise CheckError(f"pin missing: upgrade_authority.{name}")
+    cur, auth = read_programdata_header(client, programdata)
+    if auth != authority_pin:
+        raise CheckError(f"{name}: upgrade authority {str(auth)[:8]} != pinned {authority_pin[:8]} (authority changed: fail closed)")
+    if cur != newest_slot:
+        raise CheckError(f"{name}: programdata deploy slot {cur} != the record's deploy slot {newest_slot}")
+    if cur == pinned_slot:
+        return []
+    if cur < pinned_slot:
+        raise CheckError(f"{name}: programdata deploy slot {cur} is before the pinned slot {pinned_slot}")
+    cands: list[dict[str, Any]] = []
+    before = None
+    reached = False
+    n_read = 0
+    for _ in range(MAX_WRITE_PAGES):
+        opts: dict[str, Any] = {"limit": 1000, "commitment": "finalized"}
+        if before:
+            opts["before"] = before
+        sigs = client.call("getSignaturesForAddress", [authority_pin, opts]) or []
+        n_read += len(sigs)
+        for sg in sigs:
+            before = sg["signature"]
+            if sg["slot"] <= pinned_slot:
+                reached = True
+            elif sg.get("err") is None:
+                cands.append(sg)
+        if reached or len(sigs) < 1000:  # a list that ends before the pinned slot is NOT reached (the authority's history must cover the pin)
+            break
+    if not reached:
+        raise CheckError(f"{name}: the pinned deploy slot {pinned_slot} was not reached in the upgrade authority's signature list after reading {n_read} signatures (fail closed)")
+    out: list[dict[str, Any]] = []
+    for sg in sorted(cands, key=lambda x: x["slot"]):
+        tx, tries = fetch_tx_retry(client, sg["signature"])
+        if tx is None:
+            raise CheckError(f"{name}: authority tx {sg['signature'][:12]} unreadable after {tries} tries (fail closed)")
+        keys = mon.tx_keys(tx)
+        ixs = list(((tx.get("transaction") or {}).get("message") or {}).get("instructions") or [])
+        for grp in (tx.get("meta") or {}).get("innerInstructions") or []:
+            ixs += list(grp.get("instructions") or [])
+        is_upgrade = False
+        for ix in ixs:
+            idx = ix.get("programIdIndex")
+            if idx is None or idx >= len(keys) or keys[idx] != LOADER_PROGRAM:
+                continue
+            accts = ix.get("accounts") or []
+            if not accts or not isinstance(accts[0], int) or accts[0] >= len(keys) or keys[accts[0]] != programdata:
+                continue
+            try:
+                data = mon.b58decode(ix.get("data") or "")
+            except ValueError:
+                raise CheckError(f"{name}: undecodable loader instruction on the programdata (fail closed)") from None
+            tag = int.from_bytes(data[:4], "little") if len(data) >= 4 else None
+            if tag == LOADER_UPGRADE_TAG:
+                is_upgrade = True
+            elif tag in LOADER_SET_AUTHORITY_TAGS:
+                raise CheckError(f"{name}: SetAuthority on the programdata at slot {sg['slot']} (authority changed: fail closed)")
+        if not is_upgrade:
+            continue
+        bt = sg.get("blockTime") or tx.get("blockTime")
+        if bt is None:
+            raise CheckError(f"{name}: write at slot {sg['slot']} has no block time")
+        out.append({"kind": "program", "name": name, "old": pinned_slot, "new": int(tx.get("slot", sg["slot"])), "deploy_utc": mon.iso(bt), "sig": sg["signature"]})
+    if not out or out[-1]["new"] != cur:
+        raise CheckError(f"{name}: newest enumerated write {out[-1]['new'] if out else None} != the programdata deploy slot {cur}")
+    return out
+
+
+def expand_writes(client: Any, rec: Json, redeploys: Sequence[Json], *, bounded: bool = False, upgrade_auth: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for d in redeploys:
         pdata = ((rec.get("programs") or {}).get(d["name"]) or {}).get("programdata")
         if not pdata:
             raise CheckError(f"record has no programdata address for {d['name']}")
-        out += list_upgrade_writes(client, d["name"], pdata, d["old"], d["new"])
+        if bounded:  # successor books only (books-file flag)
+            out += list_upgrade_writes_bounded(client, d["name"], pdata, d["old"], d["new"], (upgrade_auth or {}).get(d["name"]))
+        else:
+            out += list_upgrade_writes(client, d["name"], pdata, d["old"], d["new"])
     return sorted(out, key=lambda w: (w["new"], w["name"]))
 
 
@@ -1327,8 +1421,11 @@ def failclosed_bound_ms(name: str, rec: Json, mon_pins: Json, history: Sequence[
 
 
 def decide(rec: Json, prev: Json | None, mon_pins: Json, pins: Json, state_path: Path, *, client: Any, http_get: Callable, now_ms: Callable[[], int], job_id: str = "",
-           history: Sequence[Json] = (), enum_client: Any = None, fees_check: bool = False, fee_pins: Any = None) -> dict[str, Any]:
-    """fees_check (default False): only when a books file opts a successor book into the fees-program check. With it False the verdict is the rule's without that check."""
+           history: Sequence[Json] = (), enum_client: Any = None, fees_check: bool = False, fee_pins: Any = None, bounded_enum: bool = False,
+           upgrade_auth: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """fees_check (default False): only when a books file opts a successor book into the fees-program check. With it False the verdict is the rule's without that check.
+    bounded_enum (default False; set together with fees_check by main): upgrade writes are enumerated by list_upgrade_writes_bounded (authority signatures), not by the
+    programdata's signature list. Both False = the rule as merged, byte for byte."""
     tri = triage(rec, mon_pins, prev, history)
     v: dict[str, Any] = {"schema": SCHEMA, "run_utc": rec["run_utc"], "action": tri["action"], "verdict": "NONE", "reasons": [], "redeploys": [],
                          "flag_halt_ms": tri["flag_halt_ms"], "halt_at_ms": None, "record_only": False, "job_id": job_id}
@@ -1341,7 +1438,8 @@ def decide(rec: Json, prev: Json | None, mon_pins: Json, pins: Json, state_path:
     state = read_state(state_path)
     for d in tri["redeploys"]:
         try:
-            redeploys += expand_writes(enum_client or client, rec, [d])
+            redeploys += expand_writes(enum_client or client, rec, [d]) if not bounded_enum else \
+                expand_writes(enum_client or client, rec, [d], bounded=True, upgrade_auth=upgrade_auth)
         except Exception as exc:  # noqa: BLE001
             try:
                 bound = failclosed_bound_ms(d["name"], rec, mon_pins, history, state)
@@ -1370,7 +1468,7 @@ def decide(rec: Json, prev: Json | None, mon_pins: Json, pins: Json, state_path:
         if fd is not None:  # the HALT above stands for every book; the sub-verdict is for the opted-in successor books only (tools.a3_halt)
             try:
                 v["fees_check"] = decide_fees(rec, mon_pins, pins, fee_pins, state_path, tri, fd, client=client, http_get=http_get, now_ms=now_ms, job_id=job_id,
-                                              history=history, enum_client=enum_client)
+                                              history=history, enum_client=enum_client, bounded_enum=bounded_enum, upgrade_auth=upgrade_auth)
             except Exception as exc:  # noqa: BLE001 - e.g. the state could not be written: the sub-verdict fails closed, the main HALT is still delivered
                 v["fees_check"] = {"schema": FEES_SCHEMA, "verdict": "ERROR", "halt_at_ms": halt_at, "reasons": [f"{type(exc).__name__}: {str(exc)[:200]}"], "redeploys": [],
                                    "record_only": False}
@@ -1532,6 +1630,8 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p.add_argument("--programdata", help="programdata account address for --enum-only")
     p.add_argument("--pinned-slot", type=int, help="pinned deploy slot for --enum-only")
     p.add_argument("--newest-slot", type=int, help="the record's newest deploy slot for --enum-only")
+    p.add_argument("--bounded", action="store_true", help="with --enum-only: the bounded enumeration of successor books (programdata header + the upgrade authority's signatures; "
+                   "authority from --fees-pins upgrade_authority)")
     p.add_argument("--observe", action="store_true", help="print the values the pins file should hold from the newest record's redeploy; decide nothing")
     p.add_argument("--books", help="the A3 books file; only a non-empty fees_check_bot_ids list in it turns the fees-program check on (successor books only)")
     p.add_argument("--fees-pins", default=str(DEFAULT_FEES_PINS), help="fees-program check pins (default tools/a3_fees_check_pins.json)")
@@ -1550,9 +1650,16 @@ def main(argv: Sequence[str] | None = None, *, client: Any = None, http_get: Cal
             if not (a.programdata and a.pinned_slot and a.newest_slot):
                 raise CheckError("--enum-only needs --programdata, --pinned-slot and --newest-slot")
             t0 = time.time()
-            ws = list_upgrade_writes(ecl0, a.enum_only, a.programdata, a.pinned_slot, a.newest_slot)
-            print(json.dumps({"program": a.enum_only, "writes": [{k: w[k] for k in ("new", "deploy_utc", "sig")} for w in ws], "rpc_calls": getattr(ecl0, "total_calls", None),
-                              "seconds": round(time.time() - t0), "separate_rpc": bool(a.enum_rpc_env_file or enum_client)}, sort_keys=True))
+            if a.bounded:
+                auth = ((load_json(Path(a.fees_pins)).get("upgrade_authority") or {}).get(a.enum_only))
+                ws = list_upgrade_writes_bounded(ecl0, a.enum_only, a.programdata, a.pinned_slot, a.newest_slot, auth)
+            else:
+                ws = list_upgrade_writes(ecl0, a.enum_only, a.programdata, a.pinned_slot, a.newest_slot)
+            out = {"program": a.enum_only, "writes": [{k: w[k] for k in ("new", "deploy_utc", "sig")} for w in ws], "rpc_calls": getattr(ecl0, "total_calls", None),
+                   "seconds": round(time.time() - t0), "separate_rpc": bool(a.enum_rpc_env_file or enum_client)}
+            if a.bounded:
+                out["bounded"] = True
+            print(json.dumps(out, sort_keys=True))
             return 0
         except Exception as exc:  # noqa: BLE001
             print(f"A3_ENUM_ERROR {type(exc).__name__}: {str(exc)[:240]}", file=sys.stderr)
@@ -1597,7 +1704,7 @@ def main(argv: Sequence[str] | None = None, *, client: Any = None, http_get: Cal
             except Exception:  # noqa: BLE001 - an unreadable pins file is the sub-verdict's ERROR (validate_fee_pins), never a pass
                 fee_pins = None
         v = decide(rec, prev, mon_pins, pins, Path(a.state), client=cl, http_get=get, now_ms=clock, job_id=a.job_id, history=recs[:-1], enum_client=ecl,
-                   fees_check=fees_on, fee_pins=fee_pins)
+                   fees_check=fees_on, fee_pins=fee_pins, bounded_enum=fees_on, upgrade_auth=(fee_pins or {}).get("upgrade_authority") if fees_on else None)
         text = json.dumps(v, sort_keys=True)
         print(text)
         if a.verdict_out:
