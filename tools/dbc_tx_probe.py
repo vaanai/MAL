@@ -52,8 +52,11 @@ def main(argv=None) -> int:
     call = vb.http_rpc(url, vb.Pacer(4.0))
     out = []
     for it in items:
-        tx = call("getTransaction", [it["signature"], {"encoding": "json", "maxSupportedTransactionVersion": 0, "commitment": "finalized"}])
-        out.append({**it, **(summarize(tx, hooks) if tx else {"missing": True})})
+        try:
+            tx = call("getTransaction", [it["signature"], {"encoding": "json", "maxSupportedTransactionVersion": 1, "commitment": "finalized"}])
+            out.append({**it, **(summarize(tx, hooks) if tx else {"missing": True})})
+        except Exception as exc:  # one bad signature must not lose the sample
+            out.append({**it, "missing": True, "error": str(exc)[:120]})
     Path(a.out).write_text(json.dumps(out, indent=0))
     print(json.dumps({"requested": len(items), "returned": sum(1 for o in out if not o.get("missing")), "rpc_calls": len(items)}))
     return 0
