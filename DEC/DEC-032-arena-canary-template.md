@@ -195,3 +195,122 @@ Everything else in this template stays as written. A copy that changes a limit u
    - **Notice before the first send:** the owner receives the copy's filled §2 paragraph (the book's in-sample screen figures, best of N, and the worst case at C0) as notice before the first send. Any "no" from the owner stops the canary.
    - **Use:** a copy quotes this line verbatim as `FILL:owner_line` and adds, on a line of its own with nothing after the id, `OWNER_CANARY_CONFIRMED: bot_id=<bot_id>` (the executor matches that line exactly; the reference to this item goes on the line above it); the manager tells the owner in one line when it is used.
 4. **Tools.** Item 1 binds only on a parity-tool head that implements it; on any other head the literal 5% rule of §5 applies.
+
+## Amendment 2: pre-approvable stake ladder C0 -> C1 -> C2 for `h5v1q50-boostfloor-a1` only (DRAFT)
+
+**Status: DRAFT, NOT IN FORCE.** Written 2026-10-24 (`date -u` 03:00Z at start) by a builder agent for manager15; records only, outcome-blind: no forward-book output, ledger, runner status, canary, probe or October outcome was opened. It takes effect only when all hold: (a) this text merges with quant-proof's OK on the exact head and a reviewer verdict on the PR; (b) the owner's own message contains the line of item 8 verbatim; (c) the build items of item 9 are merged, installed by Helm and dry-run. Until then section 3's C1 column and section 7 stand as written, and nothing above C0 is allowed. No book has cleared the promotion gate. Q50 has no gate read (its clock starts 2026-10-25T00:00Z) and no edge figure of its own.
+
+**Purpose.** Let the owner approve, once and in advance, the stake steps of the first H5-family canary, so that a step happens when its evidence is in, without waiting for a new owner message. It moves no evidence bar: every step still needs DEC-031 §2 step 4 (the confirmation PASS at p at most 0.05/c, and live fills matching paper), and section 7's checks. It only removes the wait for a second owner message once those are met.
+
+**Does not amend.** The promotion gate and its thresholds; DEC-031 (screen read, confirmation, c, taints, seals); sections 1, 2, 4, 5 and 6 of this DEC; Amendment 1; the halts P1 to P7 and their thresholds; the Q50 DEC copy's declarations; EXP-024 and its notes (the Q50 declared observation covers pools with s0 in `[2026-10-25T00:00Z, 2026-11-06T00:00Z)` and nothing later).
+
+### 1. Scope
+Only `bot_id` `h5v1q50-boostfloor-a1` at its registered `frozen_sha`, in the canary of its merged DEC copy (the copy of this template for Q50), one wallet, one executor process (`tools/h5_arena_executor.py`). Any other book (the a2 siblings, FLOOR, HV4, a later Q50 variant), a second wallet or a second instance is outside this amendment. For Q50, this amendment replaces section 3's C1 column and the "Beyond C1" bullet of section 7.
+
+### 2. Preconditions (unchanged; each is required before C0, and stays required at every rung)
+1. The book's one DEC-031 gate read is a **PASS** on its deciding cell (0.30 SOL, 1.9 s leg, both fail models), with the multiplicity block and quant-proof's OK on the exact files. A screen PASS is in-sample for selection, the best of N.
+2. The Q50 DEC copy merged as its own DEC (QP OK on head, reviewer verdict), every FILL filled, `OWNER_CANARY_CONFIRMED: bot_id=h5v1q50-boostfloor-a1` written under Amendment 1 item 3.
+3. Helm's pinned install from the install sha and a dry run of at least 1 h with 0 build errors; the md5 decision-equivalence replay EQUAL at that sha.
+C0 then runs exactly as section 3 and the copy say. This amendment adds nothing at C0 except the step-down target of item 5 and the lifetime accounting of item 4.
+
+### 3. Rungs
+Stakes chosen from `/data/mal/hunt-1008/push-1016/hunt29/p5/STACK.md` §1 and `stake_tables.csv` (H5 v1 Q*=40 latest-regime rows, the capacity-pessimistic impact model B; Q50 has no rows of its own) and from Q50's deciding stake.
+
+| | **C0** (as section 3) | **C1** | **C2** |
+| --- | --- | --- | --- |
+| Stake per entry | **0.05 SOL** | **0.15 SOL** | **0.30 SOL** |
+| Max open | 2 | 3 | 4 |
+| Buy attempts per UTC day (guard reverts count) | 30 | 40 | 50 |
+| Daily stop (realized loss in a UTC day; no new buys until 00:00Z, and a step down per item 5) | 0.10 SOL | 0.30 SOL | 0.60 SOL |
+| Lifetime committed-loss cap (item 4) | 0.20 SOL | 0.70 SOL | 1.70 SOL |
+| Slack the reserve cannot see (resend fees, failed-sell fee, dust) | 0.05 SOL | 0.10 SOL | 0.15 SOL |
+| **Worst case** (cap plus slack; the most the wallet can lose, all rungs counted) | **0.25 SOL** | **0.80 SOL** | **1.85 SOL** |
+| Capital at work (max open x (stake + about 0.003 SOL buy fee, ATA rent and reserved sell fees)) | 0.106 SOL | 0.459 SOL | 1.212 SOL |
+| Owner deposits needed in the canary wallet (worst case + 0.10, live gains not counted) | 0.35 to 1.00 SOL | **0.90 SOL** (fund to 1.00) | **1.95 SOL** (fund to 2.00) |
+| Wallet floor | deposits - 0.25, not below 0.05 | deposits - 0.80 | deposits - 1.85 |
+
+Why these numbers:
+- **C1 = 0.15 SOL.** It is the low end of the 0.15 to 0.25 band. Under STACK's model B the per-trade return of the Q40 rows is almost flat from 0.05 to 0.15 SOL (pressure 4.17% to 4.12%; flat 4.96% to 4.85%) and falls by 0.25 SOL (3.78% / 4.42%), so 0.15 is the largest stake in the band that model B does not mark down. It is 3 x C0; the C0 parity at 0.05 SOL does not test impact at 0.15, which is why C1 is re-priced (item 6) and measured live before C2.
+- **C2 = 0.30 SOL, not 0.5.** 0.30 SOL is Q50's deciding stake: the gate read and the confirmation read are priced at 0.30 SOL with the engine's own impact, so it is the largest stake any read covers. At 0.5 SOL no read exists for Q50, and model B marks the Q40 rows down to 2.79% (pressure) from 3.78% at 0.25. A stake above 0.30 SOL is outside this amendment (item 7).
+- **Max open 2, 3, 4 and the caps.** Each lifetime cap is the rung's capital at work plus room for realized loss (C0 0.094, C1 about 0.24, C2 about 0.49 SOL). Once realized loss eats that room, the pre-send check allows fewer open positions, so the rung derates itself before its cap.
+- **Daily stops** are 2 stakes at every rung, as at C0.
+- **Fixed cost.** The executor's 60,000 lamports per send are 0.24% of stake per round trip at C0, 0.08% at C1 and 0.04% at C2.
+
+### 4. Lifetime money accounting (replaces section 3's per-tier total stop for Q50)
+- **Committed loss** is counted from the first live send, for the whole canary, and never resets on a step, a restart or a step down: the net realized loss since the first send (losses minus gains, floored at 0) plus every open or pending position's stake at zero, its buy fee, rent reserve and reserved sell fees, plus every in-flight buy's worst case (section 3, unchanged method).
+- **The current rung's cap binds.** No buy is sent unless committed loss plus that buy's worst case is at most the current rung's lifetime cap, and the wallet floor check passes (section 3 method, with the floor of the highest rung reached). After a step down to C0, the cap is C0's 0.20 SOL counted from the first send: if the canary has already lost more than that, no new buy passes and the canary is in effect stopped.
+- **Hence the owner's worst case** over the whole canary is the worst case of the highest rung reached: 0.25, 0.80 or 1.85 SOL. Owner deposits fix the floor; live gains never lower it and never count toward the deposits a step needs.
+- Hitting the lifetime cap or the floor ends the canary (section 5 item 6, (O)), as at C0.
+
+### 5. Step rules (computed by the executor on every landed buy and every closed trip; the daily job re-computes them)
+**Step C0 -> C1: all of these, at one instant.**
+1. **Confirmation PASS.** The DEC-031 §2 step 4 read of Q50 is a PASS at p at most 0.05/c, with quant-proof's OK on its exact files, recorded in a merged PR (the unlock record of item 9).
+2. **Live fills match paper (section 5, unchanged):** at least **100** eligible trips at C0; the CI90 lower bound of mean d_i (1,000 draws, seed 1) at or above -100 bps; landing p50 at most 1.9 s; P7 off.
+3. **Trailing fill gap.** Over the last 30 eligible trips: mean d_i at or above **-100 bps**; mean g_entry at most **+100 bps** (as the tool computes it, the declared +26 bps bias included, which errs toward refusing); cumulative mean exit gap (copy item 14) at most **100 bps**.
+4. **Halts.** No hard halt or latch since the first send (`ARENA_HALTS`, section 5 structure halts 1, 3 to 7, P4), resolved or not. At most one soft halt since the first send, cleared by the manager's written review, and none in the last 48 h.
+5. **Tie-out.** Every closed UTC day since the first send is signed off with residual 0 (section 6), at least 5 days, plus a tie-out at the step instant (section 6: "before every tier step").
+6. **Live total.** The chain total since the first send (from the tie-out, all fees and rent counted) is at least **-0.10 SOL**. This is a loss guard, not an edge test: 100 trips at 0.05 SOL cannot show an edge.
+7. **Impact at 0.15 SOL.** The confirmation read's reported-beside cells at 0.10 SOL and 0.25 SOL (scorer `STAKES` 0.10/0.25/0.30) both meet the gate's tests (CI90 lower bound > 0, ex-top-3 total > 0, a majority of days positive, both fail models). They bracket 0.15 SOL. This check is on a step already earned; it never picks a book, a cell or a stake.
+8. **Wallet.** Owner deposits at least 0.90 SOL (the tie-out names the deposits), and the floor check passes for one C1 buy with 3 open.
+9. **Time.** At least one full UTC day remains before `end_ms`.
+
+**Step C1 -> C2: all of these, at one instant.**
+1. At least **30** eligible trips at the C1 stake, and at least one full UTC day at C1 signed off by the tie-out with residual 0.
+2. Live fills still match paper over all eligible trips since the first send (no window reset; item 2 of the C0 -> C1 list).
+3. Trailing fill gap over the last 30 eligible trips (all at C1): as C0 -> C1 item 3.
+4. No hard halt or latch since the first send; no soft halt at C1.
+5. Tie-outs as C0 -> C1 item 5.
+6. **Live total.** The chain total since the first send is **above 0**, and the chain total of the C1 trips without their 3 best trips is at least **-0.15 SOL** (one C1 stake).
+7. Impact at 0.30 SOL is the confirmation read's own deciding cell (item 1 of the C0 -> C1 list); nothing extra.
+8. Owner deposits at least 1.95 SOL, and the floor check passes for one C2 buy with 4 open.
+9. At least one full UTC day remains before `end_ms`.
+
+The 20-trip rule (Amendment 1 item 1; P3 after 20 trips) stays a halt rule. It is not a step rule: a step needs the 100 eligible trips of section 5's match test, which this amendment does not lower.
+
+**Step down (automatic, no human act needed to step down).**
+- **To C0** (stake 0.05 SOL, max open 2, C0's lifetime cap from item 4): any soft halt (P1, P2, P3, P5, P7, `exit_gap_gt_200bps`, `entry_gap_gt_200bps`, `landing_fail_excess_gt_10pp`, `sell_send_late_x2`); a daily stop at C1 or C2; a rung drawdown, i.e. the realized net since entering the rung at or below minus the rung's daily stop (C1 -0.30, C2 -0.60 SOL), over any number of days; trailing-30 mean d_i below **-200 bps**; owner deposits below the rung's need (a withdrawal). A soft halt also creates `STOP` as section 5 says, and the manager's written review clears it; buying resumes at C0.
+- **To stop** (the canary ends; restart only as section 5 says, (O) items need the owner): any hard halt or latch (A3 / `a3_pins_changed` / `pins_changed` / `program_changed`, `feed_break`, `twin_pin_mismatch`, `close_blocked_strand`, `two_stuck_sells`, `landed_buy_unreadable`, out-of-rule entry, a seal or universe breach, P4); a tie-out residual; the lifetime cap; the wallet floor; `end_ms`; a confirmation FAIL or NOT_DECIDABLE (section 7: the canary ends at the next 00:00Z).
+- **No automatic step back up.** After any step down, the rung stays C0 for the rest of the canary. A second step up needs a new owner line.
+
+### 6. Re-pricing and parity at a new stake
+- At each rung the paper twin is priced at the rung's stake (0.15 or 0.30 SOL) with the engine's own impact and the executor's actual per-send fees; d_i, g_entry and the exit gap are in bps of each trip's own stake. The twin's pins (copy item 10) carry the stake per trip; a twin priced at another stake is a missing twin (P7).
+- Section 5's thresholds apply unchanged at every rung. Statistics run over all eligible trips since the first send; the trailing-30 checks of item 5 are the only per-rung windows.
+- Per-attempt pressure p (copy item 5: "required before C1, not C0") is in the parity tool before C1.
+
+### 7. Not pre-approved by the line of item 8
+- Any stake above 0.30 SOL, more than 4 open, more than 50 buys a day, or a looser cap, stop or floor.
+- Any other book, wallet or instance (a2 v1/v2, FLOOR, HV4, a Q50 retune).
+- Any change to the promotion gate, DEC-031's screen or confirmation rule, c, the halts or their thresholds.
+- A canary longer than its copy's `FILL:days` (at most 14 days) or past `end_ms`, which is clamped to 2026-11-06T00:00Z (`SEAL_END_MS`); any new declared observation under EXP-024 after that date.
+- A second step up after a step down.
+- The funding transfers themselves (the owner makes them) and any Helm install other than the one-time items of item 9.
+
+### 8. The owner's line (to be quoted verbatim from the owner's own message)
+The manager asks through `miscusi_ask`, with this amendment's item 3 table, item 5 and the worst cases in view. The owner approves by sending this line exactly, on its own line, in their own message:
+
+`OWNER_LADDER_PREAPPROVED: book=h5v1q50-boostfloor-a1 rungs=C0,C1,C2 stake_sol=0.05,0.15,0.30 max_open=2,3,4 daily_stop_sol=0.10,0.30,0.60 lifetime_cap_sol=0.20,0.70,1.70 worst_case_sol=0.25,0.80,1.85 deposits_sol=0.35,0.90,1.95 rules=DEC-032-Am2 helm_ceiling=C2`
+
+It is recorded in the Q50 DEC copy as a dated line (`OWNER_LADDER_PREAPPROVED: <date> (owner, in session, asked by <manager>). Question: "...". Answer: "..." Notebook: <id>`), and nobody writes it except from the owner's own message. `helm_ceiling=C2` asks Helm, once, to write the root files of item 9. Any word changed in the line is not this approval; the manager asks again. Any later "no" from the owner steps the canary down to C0 at once and ends the pre-approval.
+
+### 9. Build items before any step above C0 (none exists on main at writing)
+1. Executor: `LADDER` table (item 3) compiled in code with C0 = `DEC032_C0`; the rung computed only from the executor's own state (parity state, halts, tie-out records, balance, deposits record); a live start refuses if any constant is looser than item 3 (`ladder_guard_problem`); step-down rules of item 5; lifetime accounting of item 4.
+2. Root files, written by Helm once after the owner's line: `/etc/mal-h5-arena/TIER` = `LADDER_C2` (the ceiling; `T1` keeps the canary at C0, fail-safe) and `/etc/mal-h5-arena/LADDER_UNLOCK`, written by Helm when the manager shows the merged confirmation PASS (report sha256, QP comment id). Without `LADDER_UNLOCK` the rung stays C0 whatever the live checks show.
+3. Twin writer priced at each trip's stake (item 6); parity tool with per-attempt pressure p and the trailing-30 checks; tie-out reporting deposits and the C1-trip ex-top-3 total.
+4. Tests for every step and step-down rule, QP OK, reviewer verdict; md5 decision-equivalence replay EQUAL at the new install sha (the rule's decisions do not change with the stake); Helm's install and a 1 h dry run; the restart recorded in LAB_STATE.
+
+### 10. Timeline under today's windows (stated so nobody plans on a rung that cannot occur)
+- Q50's clock starts 2026-10-25T00:00Z. The gate read is at the first 00:00Z with at least 100 attempts on at least 5 UTC dates: about 2026-10-30T00:00Z at the earliest.
+- The confirmation needs at least 100 attempts on at least 5 further UTC dates: about 2026-11-04T00:00Z at the earliest.
+- The canary's `end_ms` is clamped to 2026-11-06T00:00Z, and the Q50 declared observation covers no pool after it.
+- So C1 can run for about 2 days at most, and C2 (at least 30 C1 trips plus one full signed C1 day plus one more day before `end_ms`) **cannot be reached inside the current window**. C2 needs a new window first: a new EXP-024 declared observation, or the EXP-024 seal's end (first 2026-11-14T00:00Z), and an owner extension. Neither is in this amendment. Under such a window the step rules here apply unchanged.
+
+### 11. In-sample $ reference (labelled; not evidence)
+At Q50's planned 20 to 35 triggers a day, **if live matched paper, and paper here is the in-sample Q40 sibling's rows** (STACK.md, model B, pressure, $150 per SOL, latest-regime rows on or after 09-18; best of N, winner's curse; Q50 has no edge figure and STACK.md does not stack it):
+
+| rung | SOL per trade (model B, pressure) | in-sample $/day at 20 trades / at 30 (C0 cap) or 35 trades | 50% haircut |
+| --- | --- | --- | --- |
+| C0 | 0.0021 (4.17% of 0.05) | $6 / $9 | $3 / $5 |
+| C1 | 0.0062 (4.12% of 0.15) | $19 / $32 | $9 / $16 |
+| C2 | 0.0107 (3.58% of 0.30, interpolated) | $32 / $56 | $16 / $28 |
+
+Without each day's 3 best trades, 52% to 67% of these daily figures remains in the Q40 rows. Trades per day are triggers, not fills: band skips, landing fails and the open cap are not modelled. A zero or negative true edge is consistent with these numbers (STACK.md §2 "Blunt"). No sentence here says the book makes money; the canary is an unpromoted execution measurement at every rung.
