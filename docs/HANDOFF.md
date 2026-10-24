@@ -44,3 +44,23 @@ Read this first, then the END block of the manager state log (memory note `push-
 - /data/mal/venv lacks certifi (11 arena test files cannot collect) and pandas.
 - MiScusi cancel leaves systemd-run scope children alive: ps-check after cancels.
 - Stacked PRs that get squash-merged must be rebased with an identical patch-id before merging (done for #843 #847 #839 #852).
+
+## 7. Update 2026-10-24 07:2xZ (read this first)
+- **Stake ladder:** DEC-032 Amendment 2 merged (560bb6c8). The owner's OWNER_LADDER_PREAPPROVED line was received verbatim (notebook n_p5ZEchJioV1W7A) and recorded in hunt29/p1/DEC-copy-h5v1q50-boostfloor-a1.md. Ladder code merged: #861 fcb1575b, #862 f5676fe6, #864 0526d5cd. C1 stays locked until a reviewed PR sets the c/report pins after a confirmation read. Still to build before C1: Helm tie-out sign-offs, owner deposit addresses, executor chain total, halt history, trailing-30 parity, stake-priced twins.
+- **INSTALL SHA is now 0526d5cd** (md5 EQUAL #1481; manifest on fast-0 ~/h5-arena-manifest-0526d5cd….txt, sha256 5299a3c4…; HELM-SHEET 0dc7597e).
+- **Helm channel:** the owner told Helm to work with the manager on the keyless dry install.
+  - Helm writes hunt29/p1/HELM-REPLY-1024.md; the manager answers in HELM-ASK-*.md in the same dir.
+  - HELM-ASK-1024a.md asks Helm to redo section D at 0526d5cd and to run the dry run with the old /etc/mal-h5/LIVE_OK and TIER untouched (no key, mode dryrun).
+  - ASK VAAN to OK moving those two files to /root/disabled/ before any live step. Keys, wallets, funding, LIVE_OK/TIER and go-live need Vaan's own OK.
+  - structure-monitor opened (#1490).
+  - Manager cron :13/:43 checks the folder.
+- **LaunchLab closed:** all 13 cells FAIL (n_ZiijNtAh5w2RBA). Backfill #1461 cancelled at 1.82M counted credits.
+- **Meteora DBC:**
+  - m10 (D1 early momentum) was +0.021/+0.016 SOL/attempt in-sample on 10-14..16.
+  - The one-look holdout read #1494 was NOT_DECIDABLE (tool defect: every EvtSwap3 row was mislabelled a hook pool). QP ruling 2a34dfc0 (hunt29/dbc/QP-RULING-1024-dbc-m10-swap3.md).
+  - **ONE LAST m10 attempt:** a pre-registered backfill confirmation on [2026-10-25T00Z, 2026-11-01T00Z). P17 (PR #868, Swap3 pricer) is preparing REGISTRATION.md and a window-locked read tool.
+  - **TAG dbc-m10-forward-v1 BEFORE 10-25T00Z**, after QP + reviewer on #868; otherwise the window shifts.
+  - Fetch each day only after it closes (~0.34M counted credits/day). A PASS only allows a live forward paper book (P18 is designing it on fast-0).
+  - Hours 10-17..10-23 are spent for m10/D1. D2/D3/D4/D6 all FAIL on Swap3.
+- **P6** (#867): speed does not revive the pump lines. **P15** (#866): the DBC entry leg on fast-0 is p50 ~1.1–1.3 s. **P16** DAMM v2 fetch #1492 is running (strand + post-graduation pricing).
+- **Helius counted credits this push:** LaunchLab ~1.9M, DBC sample 1.16M, DBC holdout 2.47M (+ probes). About 5.6M of ~20M.
