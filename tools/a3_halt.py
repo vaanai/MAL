@@ -21,6 +21,12 @@ own cheap job: `sh a3-daily.sh deadman`). Per new-rule book the anchor is the la
 registration instant alone, so a lost or never-created log ends the books 48 h after registration (the exit stays 0 so the daily can create the log). If this job never runs
 at all, nothing on fast-0 runs either: the dead-man is only as alive as the host-side schedule.
 
+SUCCESSOR BOOKS, FEES-PROGRAM CHECK (QP-RULING-1024-redeploy item (2); opt-in). The books file MAY carry a third key, "fees_check_bot_ids": [...] (unique strings, each also in
+new_rule_bot_ids, never one of FEES_CHECK_REFUSED_IDS). Without it (or with an empty list) everything below is byte-identical to the rule as merged. With it, and only when the verdict
+carries a valid `fees_check` sub-verdict (tools.a3_redeploy_check adds one only when the fees deploy slot is the record's ONLY change), the books of that list follow the sub-verdict
+instead of the main HALT: PASS = no end (record only); FAIL / ERROR = end at fees_check.halt_at_ms (never after the flag's instant). Every other new-rule book keeps the main HALT.
+A verdict without the sub-verdict ends the listed books with the main HALT, as now. A malformed sub-verdict is refused (nothing written).
+
 Exit codes: 0 applied / nothing to apply; 2 invalid input (nothing written); 12 registry or log write failed.
 """
 from __future__ import annotations
@@ -40,6 +46,9 @@ DECISION_KEYS = ("run_utc", "verdict", "flag_halt_ms", "halt_at_ms", "reasons", 
 VERDICTS = ("NONE", "PASS", "HALT", "FAIL", "ERROR")
 HARD = ("HALT", "FAIL", "ERROR")
 BOOKS_KEYS = ("legacy_bot_ids", "new_rule_bot_ids")
+FEES_KEY = "fees_check_bot_ids"  # optional; successor books only
+FEES_CHECK_REFUSED_IDS = ("h5v1q50-boostfloor-a1", "h5v1-boostfloor-a1", "h5v2-boostclock-a1", "h5v1-boostfloor-a2", "h5v2-boostclock-a2")  # registered before this rule
+FEES_VERDICTS = ("PASS", "FAIL", "ERROR")
 DEADMAN_S = 48 * 3600
 MIN_MS = 1_600_000_000_000
 FUTURE_SLACK_MS = 5 * 60 * 1000
@@ -103,8 +112,8 @@ def validate_decision(d: Mapping[str, Any], now_ms: int) -> dict[str, Any]:
 
 # ------------------------------------------------------------------------------------------------------------------------------ books
 def validate_books(books: Any, registry_ids: Sequence[str]) -> tuple[list[str], list[str]]:
-    if not isinstance(books, dict) or set(books) != set(BOOKS_KEYS):
-        raise Invalid(f"books file must be an object with exactly the keys {list(BOOKS_KEYS)}")
+    if not isinstance(books, dict) or set(books) not in (set(BOOKS_KEYS), set(BOOKS_KEYS) | {FEES_KEY}):
+        raise Invalid(f"books file must be an object with exactly the keys {list(BOOKS_KEYS)} (and optionally {FEES_KEY})")
     lists = {}
     for k in BOOKS_KEYS:
         v = books[k]
@@ -121,7 +130,39 @@ def validate_books(books: Any, registry_ids: Sequence[str]) -> tuple[list[str], 
     uncovered = sorted(b for b in reg if b.startswith("h5") and b not in set(legacy) | set(new))
     if uncovered:
         raise Invalid(f"registered H5 books in neither list: {uncovered}")
+    if FEES_KEY in books:
+        fees = books[FEES_KEY]
+        if not isinstance(fees, list) or not all(isinstance(x, str) and x for x in fees) or len(set(fees)) != len(fees):
+            raise Invalid(f"{FEES_KEY} must be a list of unique non-empty strings")
+        if set(fees) - set(new):
+            raise Invalid(f"{FEES_KEY} ids not in new_rule_bot_ids: {sorted(set(fees) - set(new))}")
+        if set(fees) & set(FEES_CHECK_REFUSED_IDS):
+            raise Invalid(f"{FEES_KEY} may not list books registered before the fees-program check: {sorted(set(fees) & set(FEES_CHECK_REFUSED_IDS))}")
     return legacy, new
+
+
+def fees_ids(books: Mapping[str, Any]) -> list[str]:
+    """The (validated) fees_check_bot_ids, [] when absent."""
+    return list(books.get(FEES_KEY) or [])
+
+
+def fees_decision(verdict: Mapping[str, Any], d: Mapping[str, Any], now_ms: int) -> dict[str, Any] | None:
+    """The validated fees_check sub-verdict ({verdict, halt_at_ms}) or None when the verdict has none. Refused (Invalid) when malformed: it must sit beside a main HALT
+    with a flag instant, be PASS (no instant) or FAIL / ERROR (an epoch-ms instant in range, not after the flag's instant)."""
+    if "fees_check" not in verdict:
+        return None
+    f = verdict["fees_check"]
+    if not isinstance(f, Mapping) or f.get("verdict") not in FEES_VERDICTS or "halt_at_ms" not in f:
+        raise Invalid("fees_check sub-verdict malformed")
+    if d["verdict"] != "HALT" or d["flag_halt_ms"] is None:
+        raise Invalid("fees_check sub-verdict without a main HALT")
+    h = f["halt_at_ms"]
+    if f["verdict"] == "PASS":
+        if h is not None:
+            raise Invalid("fees_check PASS carries halt_at_ms")
+    elif not isinstance(h, int) or isinstance(h, bool) or not MIN_MS <= h <= now_ms + FUTURE_SLACK_MS or h > d["flag_halt_ms"]:
+        raise Invalid("fees_check halt_at_ms is not an epoch-ms integer in range at or before the flag's instant")
+    return {"verdict": f["verdict"], "halt_at_ms": h}
 
 
 def halt_books(registry: Path, at_ms: int, bot_ids: Sequence[str]) -> dict[str, Any]:
@@ -150,9 +191,11 @@ def halt_books(registry: Path, at_ms: int, bot_ids: Sequence[str]) -> dict[str, 
     return result
 
 
-def plan(d: Mapping[str, Any], legacy: Sequence[str], new: Sequence[str]) -> tuple[list[tuple[int, list[str], str]], list[str]]:
+def plan(d: Mapping[str, Any], legacy: Sequence[str], new: Sequence[str], fees: Sequence[str] = (), fd: Mapping[str, Any] | None = None
+         ) -> tuple[list[tuple[int, list[str], str]], list[str]]:
     """([(at_ms, bot_ids, rule)] to apply, [errors]) from a VALIDATED decision. Pure. An applicable rule with an empty list is an error (a halt that ends nothing),
-    but it does not stop the other rule's halt from being written."""
+    but it does not stop the other rule's halt from being written. `fees` / `fd` (successor books, fees-program check): with both, the `fees` books follow fd instead of
+    the main HALT; with either missing the plan is the merged rule's."""
     out: list[tuple[int, list[str], str]] = []
     errs: list[str] = []
     if d["flag_halt_ms"] is not None:
@@ -161,10 +204,16 @@ def plan(d: Mapping[str, Any], legacy: Sequence[str], new: Sequence[str]) -> tup
         else:
             errs.append("an A3 flag was set but legacy_bot_ids is empty: that halt ends no book")
     if d["verdict"] in HARD:
-        if new:
-            out.append((int(d["halt_at_ms"]), list(new), "new_rule"))
-        else:
+        if not new:
             errs.append(f"verdict {d['verdict']} but new_rule_bot_ids is empty: that halt ends no book")
+        elif fees and fd is not None:
+            rest = [b for b in new if b not in set(fees)]
+            if rest:
+                out.append((int(d["halt_at_ms"]), rest, "new_rule"))
+            if fd["verdict"] in HARD:
+                out.append((int(fd["halt_at_ms"]), list(fees), "fees_check"))
+        else:
+            out.append((int(d["halt_at_ms"]), list(new), "new_rule"))
     return out, errs
 
 
@@ -188,9 +237,13 @@ def apply(verdict: Mapping[str, Any], books: Any, registry: Path, now_ms: int | 
     now = int(time.time() * 1000) if now_ms is None else now_ms
     d = validate_decision(decision_from_verdict(verdict), now)
     legacy, new = _check(books, registry)
-    steps, errs = plan(d, legacy, new)
+    fees = fees_ids(books)
+    fd = fees_decision(verdict, d, now) if fees else None
+    steps, errs = plan(d, legacy, new, fees, fd)
     done = [{"rule": rule, "at_ms": at_ms, **halt_books(registry, at_ms, ids)} for at_ms, ids, rule in steps]
     result = {"run_utc": d["run_utc"], "verdict": d["verdict"], "applied": done}
+    if fd is not None:
+        result["fees_check"] = fd["verdict"]
     if errs:
         raise PartialApply("; ".join(errs), result)
     return result
