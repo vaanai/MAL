@@ -76,7 +76,7 @@ CELLS: tuple[CellDef, ...] = (
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ loading
-def load_exploration(root: str = L.BACKFILL_ROOT, log=print, start: datetime | None = None, end: datetime | None = None) -> dict[str, Any]:
+def load_exploration(root: str | None = None, log=print, start: datetime | None = None, end: datetime | None = None) -> dict[str, Any]:
     """All exploration hours present -> columns sorted by (pool, tape order), order-fixed, with derived columns. Hours missing or incomplete are listed in `bad_hours`."""
     hours = L.exploration_hours(start, end)
     cols: list[dict[str, np.ndarray]] = []
@@ -501,7 +501,7 @@ def capacity(D: dict[str, Any]) -> dict[str, Any]:
 # ------------------------------------------------------------------------------------------------------------------------------ main
 def check_out_dir(out: str) -> str:
     real = os.path.realpath(out)
-    if real.startswith(os.path.realpath(L.BACKFILL_ROOT)) or real.startswith(os.path.realpath(os.path.dirname(L.BACKFILL_ROOT))):
+    if real.startswith(os.path.realpath(L.BACKFILL_ROOT)) or real.startswith(os.path.realpath(L.HOLDOUT_ROOT)) or real.startswith(os.path.realpath(os.path.dirname(L.BACKFILL_ROOT))):
         raise L.Refused(f"out_dir_inside_backfill_tree: {out}")
     return real
 
@@ -512,7 +512,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--validate", action="store_true")
     ap.add_argument("--count-only", action="store_true")
     ap.add_argument("--cells", default="")
-    ap.add_argument("--root", default=L.BACKFILL_ROOT)
+    ap.add_argument("--root", default=None)
     ap.add_argument("--start", default="")
     ap.add_argument("--end", default="")
     ns = ap.parse_args(argv)

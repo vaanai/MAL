@@ -90,6 +90,56 @@ def test_holdout_refused():
     assert L.check_hour_path(L.BACKFILL_ROOT + "/tape-2026-10-16T23.jsonl.zst").hour == 23
 
 
+def test_holdout_switch_default_refuses_and_enabled_accepts_only_holdout():
+    from tools import dbc_holdout_read as H
+    assert L.HOLDOUT_READ_ENABLED is False
+    with _raises(L.Refused):
+        L.check_hour_path(L.HOLDOUT_ROOT + "/tape-2026-10-20T05.jsonl.zst")
+    with _raises(L.Refused):
+        L.check_hour_path(L.HOLDOUT_ROOT + "/tape-2026-10-20T05.jsonl.zst", L.HOLDOUT_ROOT)
+    L.HOLDOUT_READ_ENABLED = True  # names only: check_hour_path opens nothing
+    try:
+        assert L.check_hour_path(L.HOLDOUT_ROOT + "/tape-2026-10-20T05.jsonl.zst").hour == 5
+        with _raises(L.Refused):
+            L.check_hour_path(L.BACKFILL_ROOT + "/tape-2026-10-15T05.jsonl.zst")  # exploration refused while enabled
+        with _raises(L.Refused):
+            L.check_hour_path(L.HOLDOUT_ROOT + "/tape-2026-10-16T05.jsonl.zst")
+        with _raises(L.Refused):
+            L.check_hour_path(L.HOLDOUT_ROOT + "/tape-2026-10-24T00.jsonl.zst")
+        hrs = L.exploration_hours()
+        assert len(hrs) == 168 and hrs[0].day == 17 and hrs[-1].day == 23
+    finally:
+        L.HOLDOUT_READ_ENABLED = False
+    assert len(L.exploration_hours()) == 72
+
+
+def test_holdout_read_refuses_without_flag_and_when_output_exists(tmp_path=None):
+    import tempfile
+    from tools import dbc_holdout_read as H
+    assert H.main(["--out", "/tmp/never-used-dbc-holdout"]) == 2
+    d = Path(tempfile.mkdtemp())
+    (d / "holdout-m10.json").write_text("{}")
+    assert H.run(d) == 3  # refused before the switch is touched
+    assert L.HOLDOUT_READ_ENABLED is False
+
+
+def test_verdict_p5():
+    from tools import dbc_holdout_read as H
+
+    def side(mean=0.01, days=5, pos=3, ci=0.001, ex3=1.0, exday=1.0):
+        return {"n": 120, "mean": mean, "days": days, "days_pos": pos, "ci90_lo_trade": ci, "ex_top3": ex3, "ex_best_day": exday}
+
+    good = {"filled": 120, "flat": side(), "press": side()}
+    assert H.verdict(good)["verdict"] == "PASS"
+    assert H.verdict({**good, "filled": 99})["verdict"] == "FAIL"
+    assert H.verdict({**good, "press": side(ci=0.0)})["verdict"] == "FAIL"  # 0 is a fail
+    assert H.verdict({**good, "flat": side(days=4)})["verdict"] == "FAIL"
+    assert H.verdict({**good, "flat": side(days=4, pos=2)})["verdict"] == "FAIL"
+    assert H.verdict({**good, "flat": side(days=6, pos=3)})["verdict"] == "FAIL"  # needs strictly more than half
+    assert H.verdict({**good, "flat": side(exday=-0.1)})["verdict"] == "FAIL"
+    assert H.verdict({**good, "press": side(ex3=0.0)})["verdict"] == "FAIL"
+
+
 if __name__ == "__main__":
     for k, v in list(globals().items()):
         if k.startswith("test_"):

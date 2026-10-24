@@ -43,6 +43,10 @@ BACKFILL_ROOT = "/data2/mal/venue-tape-backfill/meteora_dbc"
 EXPLORE_START = datetime(2026, 10, 14, 0, tzinfo=timezone.utc)
 EXPLORE_END = datetime(2026, 10, 17, 0, tzinfo=timezone.utc)  # exclusive; [10-17T00, 10-24T00) is the reserved holdout
 HOLDOUT_END = datetime(2026, 10, 24, 0, tzinfo=timezone.utc)
+HOLDOUT_ROOT = "/data2/mal/venue-tape-backfill/meteora_dbc_holdout"
+# P0c: the holdout-window switch. DEFAULT = REFUSE the holdout. Only tools/dbc_holdout_read.py (the ONE-LOOK run) flips it, through enable_holdout_read(), which prints that it did.
+# While it is on, the exploration hours and every root other than HOLDOUT_ROOT are refused instead.
+HOLDOUT_READ_ENABLED = False
 WSOL = "So11111111111111111111111111111111111111112"
 
 SEND_LAMPORTS = 160_000  # DEC-031 Am.8
@@ -65,6 +69,18 @@ IMPACT_MAX = 0.02  # capacity bar: our 0.25 SOL buy may move the spot by at most
 
 class Refused(Exception):
     """A guard refused: nothing was read."""
+
+
+def enable_holdout_read() -> None:
+    """Switch the data guard to the holdout window [2026-10-17T00, 2026-10-24T00) under HOLDOUT_ROOT. Prints that it did. Nothing else changes."""
+    global HOLDOUT_READ_ENABLED
+    HOLDOUT_READ_ENABLED = True
+    print("HOLDOUT READ ENABLED: data guard now accepts only [2026-10-17T00, 2026-10-24T00) under " + HOLDOUT_ROOT, flush=True)
+
+
+def window() -> tuple[datetime, datetime, str]:
+    """(start, end exclusive, root) the guard currently accepts."""
+    return (EXPLORE_END, HOLDOUT_END, HOLDOUT_ROOT) if HOLDOUT_READ_ENABLED else (EXPLORE_START, EXPLORE_END, BACKFILL_ROOT)
 
 
 # ----------------------------------------------------------------------------------------------------------------------- curve
@@ -134,19 +150,21 @@ def hour_of_name(name: str) -> datetime | None:
     return datetime.strptime(m.group(1), "%Y-%m-%dT%H").replace(tzinfo=timezone.utc) if m else None
 
 
-def check_hour_path(path: str | os.PathLike, root: str = BACKFILL_ROOT) -> datetime:
-    """Returns the hour of an EXPLORATION file; raises Refused for the holdout, any hour outside the window, any path not directly under `root`.
-    The given path and its resolved target are both checked (a symlink cannot smuggle a holdout hour in)."""
+def check_hour_path(path: str | os.PathLike, root: str | None = None) -> datetime:
+    """Returns the hour of an accepted file; raises Refused otherwise. Default (HOLDOUT_READ_ENABLED False): only exploration hours [10-14T00, 10-17T00) directly under BACKFILL_ROOT;
+    the holdout is refused. Enabled: only holdout hours directly under HOLDOUT_ROOT. The given path and its resolved target are both checked (a symlink cannot smuggle a hour in)."""
+    w0, w1, wroot = window()
+    root = wroot if root is None else root
+    if os.path.realpath(root) != os.path.realpath(wroot):
+        raise Refused(f"root_not_allowed_in_this_mode: {root}")
     raw = os.path.abspath(str(path))
     real = os.path.realpath(raw)
     for p, rt in ((raw, os.path.abspath(root)), (real, os.path.realpath(root))):
         h = hour_of_name(os.path.basename(p))
         if h is None:
             raise Refused(f"not_a_tape_hour_file: {path}")
-        if h >= EXPLORE_END:
-            raise Refused(f"holdout_or_later_hour_refused: {path}")
-        if h < EXPLORE_START:
-            raise Refused(f"before_exploration_window: {path}")
+        if not (w0 <= h < w1):
+            raise Refused(("holdout_or_later_hour_refused" if not HOLDOUT_READ_ENABLED else "outside_holdout_window") + f": {path}")
         if os.path.dirname(p) != rt:
             raise Refused(f"outside_backfill_root: {path}")
     h0 = hour_of_name(os.path.basename(raw))
@@ -154,9 +172,10 @@ def check_hour_path(path: str | os.PathLike, root: str = BACKFILL_ROOT) -> datet
     return h0
 
 
-def count_hour_files(root: str = BACKFILL_ROOT) -> dict[str, int]:
+def count_hour_files(root: str | None = None) -> dict[str, int]:
     """Directory listing only (never opens a file)."""
-    names = os.listdir(root) if os.path.isdir(root) else []
+    root = window()[2] if root is None else root
+    names = os.listdir(root) if os.path.isdir(root) else []  # names only, never a file open
     ex = ho = 0
     for n in names:
         h = hour_of_name(n)
@@ -170,20 +189,22 @@ def count_hour_files(root: str = BACKFILL_ROOT) -> dict[str, int]:
 
 
 def exploration_hours(start: datetime | None = None, end: datetime | None = None) -> list[datetime]:
-    out, t = [], start or EXPLORE_START
-    end = min(end or EXPLORE_END, EXPLORE_END)
+    w0, w1, _ = window()
+    out, t = [], max(start or w0, w0)
+    end = min(end or w1, w1)
     while t < end:
         out.append(t)
         t += timedelta(hours=1)
     return out
 
 
-def hour_file(h: datetime, root: str = BACKFILL_ROOT) -> str:
+def hour_file(h: datetime, root: str | None = None) -> str:
+    root = window()[2] if root is None else root
     return f"{root}/tape-{h.strftime('%Y-%m-%dT%H')}.jsonl.zst"
 
 
 # ----------------------------------------------------------------------------------------------------------------------- loading
-def _zstd_lines(path: str | os.PathLike, root: str) -> Iterable[bytes]:
+def _zstd_lines(path: str | os.PathLike, root: str | None) -> Iterable[bytes]:
     check_hour_path(path, root)
     p = subprocess.Popen(["zstd", "-dc", "-q", str(path)], stdout=subprocess.PIPE, stdin=subprocess.DEVNULL)
     assert p.stdout is not None
@@ -197,7 +218,7 @@ def _zstd_lines(path: str | os.PathLike, root: str) -> Iterable[bytes]:
         raise RuntimeError(f"zstd -dc exited {rc} for {path}")
 
 
-def read_hour(path: str | os.PathLike, root: str = BACKFILL_ROOT) -> dict[str, Any]:
+def read_hour(path: str | os.PathLike, root: str | None = None) -> dict[str, Any]:
     """One exploration hour (guarded): SOL-quoted trade rows in tape order, create rows, curve_complete rows, and `incomplete` (gap row present or no end row)."""
     trades, creates, completes = [], [], []
     gap, ended = False, False
