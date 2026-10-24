@@ -140,6 +140,31 @@ class PerBuyArenaLiveOkTests(LiveCase):
         self.assertEqual(len(e.rpc.sent), n0)
         self.assertEqual(e.ex._refusal_counts.get("arena_live_ok_other_book"), 1)
 
+    def test_removing_the_arena_live_ok_after_the_tx_is_built_stops_the_send(self):
+        """Reviewer #836 item 1: the socket-time gate (_live_gate) reads the arena LIVE_OK, not only the shared one."""
+        e = self.live()
+        real_send = ax.h.H5Executor._send
+
+        def drop_then_send(ex, p, mint):
+            if p.get("kind") == "buy" and p.get("sends", 0) == 0 and ax.ARENA_LIVE_OK_PATH.exists():
+                ax.ARENA_LIVE_OK_PATH.unlink()  # the tx is built and signed; the operator removes the arena gate now
+            return real_send(ex, p, mint)
+
+        n0 = len(e.rpc.sent)
+        with mock.patch.object(ax.h.H5Executor, "_send", drop_then_send):
+            e.fire()
+        self.assertEqual(len(e.rpc.sent), n0)
+        self.assertFalse(ax.ARENA_LIVE_OK_PATH.exists())
+
+    def test_live_gate_reads_both_files(self):
+        e = self.live()
+        self.assertIsNone(e.ex._live_gate())
+        ax.ARENA_LIVE_OK_PATH.write_text(Q50 + "\n")
+        self.assertEqual(e.ex._live_gate(), "arena_live_ok_other_book")
+        ax.ARENA_LIVE_OK_PATH.write_text(A2 + "\n")
+        ax.h.LIVE_OK_PATH.unlink()
+        self.assertEqual(e.ex._live_gate(), "live_ok_missing")
+
     def test_with_the_file_in_place_the_buy_goes_out(self):
         e = self.live()
         n0 = len(e.rpc.sent)
@@ -182,7 +207,7 @@ class MainTests(ACase):
 
     def write_cfg(self, **kw) -> str:
         c = {"book_id": A2, "mode": "live", "state_dir": str(self.tmp / "state"), "intents_file": str(self.tmp / "feed"), "a3_record_file": str(self.tmp / "a3.jsonl"),
-             "end_ms": ax.SEAL_END_MS, "funded_lamports": 500_000_000, "exit_gap_file": str(self.tmp / "eg.jsonl"), "parity_twins_file": str(self.tmp / "tw.jsonl"),
+             "end_ms": ax.SEAL_END_MS, "funded_lamports": 500_000_000, "exit_gap_file": str(self.tmp / "state" / "arena-parity" / "exit-gaps.jsonl"), "parity_twins_file": str(self.tmp / "tw.jsonl"),
              "tieout_dir": str(self.tmp / "tieout")}
         c.update(kw)
         c = {k: v for k, v in c.items() if v is not None}

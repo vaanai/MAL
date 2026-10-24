@@ -759,6 +759,13 @@ class ArenaExecutor(h.H5Executor):
             return self._refuse(trg, "stale_trigger_after_gates")
         super()._live_buy(trg, ps, terms, plan, now, drift, seen_ms)
 
+    def _live_gate(self) -> str | None:
+        """The base class's gate, read immediately before every live buy send and rebroadcast (h5_executor._send / _live_buy): the arena's OWN LIVE_OK first
+        (it must exist and name this bot_id), then the base checks (/etc/mal-h5/LIVE_OK, EXP-024 Part 1). Removing either file stops the next send."""
+        if self.dry_run:
+            return None
+        return arena_live_ok_refusal(self.abook.bot_id) or super()._live_gate()
+
     def _signal_age_limit_ms(self) -> int:
         return min(SIGNAL_AGE_MAX_MS, int(self.h5.max_trigger_age_ms))
 
@@ -1063,7 +1070,7 @@ class ArenaExecutor(h.H5Executor):
 
 
 _ARENA_CLASS = ArenaExecutor  # the class the tripwire inspects (a name bound at import, so rebinding ArenaExecutor cannot hide a removed override)
-GUARD_METHODS = ("h5", "_tier_path", "prime_feed_start", "_live_buy", "_send", "_send_guarded", "_budget_stop", "_balance_refusal", "committed_loss_refusal", "_hard_refusal",
+GUARD_METHODS = ("h5", "_tier_path", "_live_gate", "prime_feed_start", "_live_buy", "_send", "_send_guarded", "_budget_stop", "_balance_refusal", "committed_loss_refusal", "_hard_refusal",
                  "_parity_state", "decide_row", "intent_tick", "_latch", "exit_tick", "_fire_sell", "_finish_buy", "_resolve_expired", "_seal_reason")
 
 
