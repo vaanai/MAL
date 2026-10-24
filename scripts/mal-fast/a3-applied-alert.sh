@@ -9,7 +9,7 @@ UNTIL=${A3_ALERT_UNTIL:-$(( $(date -u +%s) + 14 * 86400 ))}
 cd "$A3_REPO" || { echo "ALERT A3_ALERT_JOB cannot cd $A3_REPO"; exit 1; }
 echo "A3_ALERT_JOB start $(date -u +%FT%TZ) head $(git rev-parse HEAD) every ${EVERY}s"
 while :; do
-  "$A3_PY" -I -m tools.a3_applied_alert
+  "$A3_PY" -I tools/a3_applied_alert.py
   [ "$(date -u +%s)" -ge "$UNTIL" ] && { echo "A3_ALERT_JOB end reached"; exit 0; }
   sleep "$EVERY"
 done
