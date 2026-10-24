@@ -125,6 +125,25 @@ def test_verdict_r11_and_2p5():
     assert R.verdict({**good, "flat": side(ex3=0.0)}, g25)["verdict"] == "FAIL"
 
 
+def test_setup_failure_does_not_claim_marker():
+    out = Path(tempfile.mkdtemp()) / "o"
+    m = str(Path(tempfile.mkdtemp()) / "mk")
+
+    def boom():
+        raise ValueError("env file unreadable")
+
+    assert R.run(out, root=str(_root()), now=LATE, marker=m, make_fetch=boom) == 7
+    assert not Path(m).exists() and L.FWD_ACTIVE is None
+    ro = Path(tempfile.mkdtemp())
+    os.chmod(ro, 0o500)
+    try:
+        if os.access(ro, os.W_OK):  # running as root: cannot make a read-only dir
+            return
+        assert R.run(ro / "o", root=str(_root()), now=LATE, marker=m, fetch=lambda ks: {}) == 7 and not Path(m).exists()
+    finally:
+        os.chmod(ro, 0o700)
+
+
 def test_out_exists_refuses():
     out = Path(tempfile.mkdtemp())
     (out / "x").write_text("1")

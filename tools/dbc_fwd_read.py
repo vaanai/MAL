@@ -195,7 +195,7 @@ def day_shares(D: dict[str, Any]) -> dict[str, Any]:
 
 
 def run(out_dir: Path, root: str | None = None, now: datetime | None = None, fetch: Callable[[list[str]], dict[str, Any]] | None = None, marker: str | None = None,
-        base_map: str = BASE_MAP) -> int:
+        base_map: str = BASE_MAP, make_fetch: Callable[[], Callable[[list[str]], dict[str, Any]]] | None = None) -> int:
     root = root or L.FWD_ROOT
     marker = marker or MARKER
     ok, why = time_gate(now)
@@ -210,14 +210,21 @@ def run(out_dir: Path, root: str | None = None, now: datetime | None = None, fet
     if not ok:
         print(f"REFUSED (preflight, marker NOT claimed): {why}", file=sys.stderr)
         return 5
+    try:  # everything that can fail for operational reasons is built/validated BEFORE the marker is claimed (reviewer note): fetcher (key file, lock), out dir
+        fetcher = fetch or (make_fetch or helius_fetch)()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        if not os.access(out_dir, os.W_OK):
+            raise OSError(f"out dir not writable: {out_dir}")
+    except Exception as e:  # noqa: BLE001
+        print(f"REFUSED (setup, marker NOT claimed): {type(e).__name__}: {str(e)[:120]}", file=sys.stderr)
+        return 7
     if not claim_marker(marker):
         print(f"REFUSED: one-look marker {marker} exists", file=sys.stderr)
         return 4
-    out_dir.mkdir(parents=True, exist_ok=True)
     L.enable_swap3_pricing()
     L.enable_forward_window(root)
     counts = scan_configs(root)
-    final, rep = resolve_configs(counts, json.loads(Path(base_map).read_text()), fetch or helius_fetch())
+    final, rep = resolve_configs(counts, json.loads(Path(base_map).read_text()), fetcher)
     (out_dir / "cfg_map_final.json").write_text(json.dumps(final, sort_keys=True))
     L.load_config_thresholds(str(out_dir / "cfg_map_final.json"))
     L.CFG_UNMAPPED.clear()
