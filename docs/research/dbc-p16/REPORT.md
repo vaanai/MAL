@@ -9,7 +9,7 @@ Numbers: grad.json. Baseline check: the P14 full-loss line of every strand cell 
 - DBC `MigrationDammV2` is a separate transaction from the `curve_complete` event (6,541 completions, 6,458 migration txs in the window). It creates the pool in Meteora DAMM v2, program `cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG`.
 - Pool address: the inner DAMM `initialize_pool_with_dynamic_config` instruction has the pool at accounts[7] (accounts[6] is the constant pool authority, the same for every pool: the P11 index lesson); 109 migrations use the plain
   `initialize_pool` variant (pool at accounts[6]). Both equal the DBC instruction's accounts[4] on every resolved migration (index_ok true for all 6,458 resolved; 0 unresolved after the fix). The DBC virtual pool is DBC accounts[0].
-- Swaps: `EvtSwap2` self-CPI (180-byte payload, every one of the 1,568 probe events and no old `EvtSwap`). Reproduction: first swap from the init sqrt price reproduces quote and base liquidity to 1e-7; swap-to-swap L ratio within 1% for 99.7% of 2,300+ probe swaps (same math as DBC: constant L on sqrt price). Fee seen: 10 bps of gross in the probe pools (20% protocol share), fee mode 0 mostly.
+- Swaps: `EvtSwap2` self-CPI (180-byte payload, every one of the 1,568 probe events and no old `EvtSwap`). Reproduction: first swap from the init sqrt price reproduces quote and base liquidity to 1e-7; swap-to-swap quote-leg vs base-leg L ratio within 1% for 100% and within 1e-4 for 99.0% of 1,556 consecutive swap pairs in 5 probe pools (same math as DBC: constant L on sqrt price). Fee seen: 10 bps of gross in the probe pools (20% protocol share), fee mode 0 mostly.
 - Tests: tools/test_damm_decode.py (real-tx fixtures), tools/test_damm_grad_price.py (rule walk).
 
 ## Fetch (credits)
@@ -32,7 +32,7 @@ Per-day flat totals re-priced (10-14 / 10-15 / 10-16): m4 +8.87 / +5.34 / +2.39;
 Mean re-priced strand trip: m4 +0.031, ms30 +0.027, ms50 +0.010, ms70 +0.00004 SOL (stake 0.25). Exits on DAMM: m4 time 82 / sl 39 / trail 55; ms30 tp 213 / sl 3; ms50 tp 222 / sl 9; ms70 tp 565 / sl 61.
 The first DAMM print is a median 11% above the decision spot (m4/ms30; 8% ms50, 13.5% ms70): the migrated pool starts at or above the last curve price and the stranded positions are carried into that.
 Reading: the strand assumption does decide those cells (the P14 note). With real DAMM prices m4/m6 (and ms30 narrowly) flip sign. The m4/m6 flip comes from 176 positions that entered an early-momentum rule and ride the migration jump.
-The old last-price bracket (+0.031 / +0.032 / +0.011 / +0.010 / +0.009) was close for m4/m6 and optimistic for ms30/50/70 only in ms70.
+The P14 last-price bracket (m4 +0.031, m6 +0.032, ms30 +0.011, ms50 +0.010, ms70 +0.009) was optimistic against the real DAMM prices in all five cells (re-priced +0.022, +0.023, +0.006, 0.000, -0.006).
 Open: (a) no competition for the migration/first-DAMM-print sell (snipers buy there too; our sell is the exit, the first print is at +11%); (b) the 1.9 s sell latency is measured on pump.fun stacks only; (c) 3 days of one regime; (d) the flipped cells are 2 of 6 re-priced and
 12 + 3 cells declared; ex-top-3 and CI are in-sample trade-level; (e) strand pools unlinked or not fetched stay full loss (conservative); (f) price units: DAMM spot is (S/2^64)^2 like DBC, ratios exact, no decimals factor involved.
 
