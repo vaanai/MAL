@@ -43,7 +43,7 @@ Score = (expected $/day × probability that a first screen survives) / days to t
 | 3 | p20-dbc-fee-floor-clock | DBC/DAMM v2 anti-sniper fee-expiry clock (pre-signed entry) | 30 | 0.06 | 1.5 | 1.20 | ~1-2 |
 | 4 | p20-wick-bid-zero-latency | Resting-bid wick capture (0-latency bound first) | 6 | 0.05 | 0.5 | 0.60 | ~5 |
 | 5 | p20-dbc-segment-convexity | DBC multi-segment curve: enter before a thin segment | 15 | 0.03 | 1.5 | 0.30 | ~2 |
-| 6 | p20-atomic-xpool-bundle | Atomic two-pool arb in a revert-if-unprofitable bundle (free option) | 9 | 0.10 | 3.0 | 0.30 | ~5 |
+| 6 | p20-atomic-xpool-bundle | Atomic two-pool arb in a revert-unless-surplus bundle (free option) | 9 | 0.10 | 3.0 | 0.30 | ~5 |
 | 7 | p20-incentive-farming | Trading-incentive farming vs round-trip cost | 10 | 0.03 | 1.0 | 0.30 | n/a |
 | 8 | p20-launch-allocation | Launch-allocation underpricing (Alpha Vault / Genesis) | 7.5 | 0.10 | 3.0 | 0.25 | ~100 |
 | 9 | p20-listing-announce | Exchange-listing announcement long (off-chain signal, on-chain buy) | 4.5 | 0.15 | 3.0 | 0.23 | ~200 |
