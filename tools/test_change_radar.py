@@ -296,9 +296,9 @@ def test_closed_days_and_lookback(tmp_path):
     root = tmp_path / "arena"
     for d in ("2026-10-10", "2026-10-23", "2026-10-24", "2026-10-25"):
         write_day(root, d, 1, arena_rows(1, 1))
-    recs = cr.stage_tapes({"arena": (root, cr.count_arena_file)}, set(), NOW, 8, [])
+    recs = cr.stage_tapes({"arena": (root, cr.count_arena_file)}, set(), NOW, 8, [], cr.load_seals_dict(NO_SEALS))
     assert [r["day"] for r in recs] == ["2026-10-23", "2026-10-24"]  # 10-10 outside lookback, 10-25 still open
-    recs2 = cr.stage_tapes({"arena": (root, cr.count_arena_file)}, {("arena", "2026-10-23")}, NOW, 8, [])
+    recs2 = cr.stage_tapes({"arena": (root, cr.count_arena_file)}, {("arena", "2026-10-23")}, NOW, 8, [], cr.load_seals_dict(NO_SEALS))
     assert [r["day"] for r in recs2] == ["2026-10-24"]
 
 
@@ -358,8 +358,16 @@ def test_monitor_passthrough_once(tmp_path):
 
 
 # ===================================================================================================== end to end
-def _args(tmp_path, arena, venue, monitor, extra=()):
-    return ["--out-dir", str(tmp_path / "out"), "--arena-tape", str(arena), "--venue-tape", str(venue), "--monitor", str(monitor), *extra]
+NO_SEALS = {"schema": "change_radar_seals.v1", "seals": [], "disabled_until": {}}
+
+
+def _args(tmp_path, arena, venue, monitor, extra=(), seals=NO_SEALS):
+    sp = tmp_path / "seals.json"
+    if seals is not None:
+        sp.write_text(json.dumps(seals))
+    else:
+        sp = cr.DEFAULT_SEALS
+    return ["--out-dir", str(tmp_path / "out"), "--arena-tape", str(arena), "--venue-tape", str(venue), "--monitor", str(monitor), "--seals", str(sp), *extra]
 
 
 def test_main_end_to_end(tmp_path, capsys):
@@ -420,3 +428,71 @@ def test_watch_file_ids_valid():
         assert spec["tier"] in cr.TIER_SEVERITY
     for n, spec in WATCH["accounts"].items():
         assert len(b58decode(spec["address"])) == 32, n
+
+
+# ===================================================================================================== sealed windows (QP verdict on #889)
+def _utc(text):
+    return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+
+
+def test_pinned_seals_file_floor_window():
+    seals = cr.load_seals(cr.DEFAULT_SEALS)
+    assert seals["seals"] == [{"source": "arena", "lo": _utc("2026-10-22T21:00:00Z"), "hi": _utc("2026-10-26T21:00:00Z")}]
+    assert cr.source_disabled(seals, "arena", _utc("2026-10-26T20:59:59Z"))
+    assert not cr.source_disabled(seals, "arena", _utc("2026-10-26T21:00:00Z"))
+    assert not cr.source_disabled(seals, "venue:meteora_dbc", NOW)
+    assert [d for d in ("2026-10-21", "2026-10-22", "2026-10-23", "2026-10-26", "2026-10-27") if cr.day_sealed(seals, "arena", d)] == \
+        ["2026-10-22", "2026-10-23", "2026-10-26"]
+    assert cr.day_sealed(seals, "arena", "2026-10-24") and cr.day_sealed(seals, "arena", "2026-10-25")
+    assert not cr.day_sealed(seals, "venue:meteora_dbc", "2026-10-23")
+
+
+def test_sealed_days_never_opened_and_never_recorded(tmp_path):
+    root = tmp_path / "arena"
+    for i in range(20, 28):
+        write_day(root, f"2026-10-{i}", 24, arena_rows(1, 1))
+    opened = []
+
+    def counter(p):
+        opened.append(p.name[5:15])
+        return cr.count_arena_file(p)
+
+    skipped: list[str] = []
+    now = _utc("2026-10-28T01:00:00Z")
+    recs = cr.stage_tapes({"arena": (root, counter)}, set(), now, 8, [], cr.load_seals(cr.DEFAULT_SEALS), skipped)
+    assert [r["day"] for r in recs] == ["2026-10-20", "2026-10-21", "2026-10-27"]
+    assert set(opened) == {"2026-10-20", "2026-10-21", "2026-10-27"}
+    assert skipped == [f"arena 2026-10-{i} sealed" for i in range(22, 27)]
+
+
+def test_arena_disabled_before_seal_end_not_even_listed(tmp_path, monkeypatch, capsys):
+    arena, venue = tmp_path / "arena", tmp_path / "venue"
+    for i in range(18, 24):
+        write_day(arena, f"2026-10-{i}", 24, arena_rows(3, 5))
+    write_day(venue / "launchlab", "2026-10-24", 24, ['{"type": "create"}'])
+    listed = []
+    real = cr.tape_days
+    monkeypatch.setattr(cr, "tape_days", lambda root: listed.append(Path(root).name) or real(root))
+    rc = cr.main(_args(tmp_path, arena, venue, "", ["--no-rpc"], seals=None), now=NOW)
+    out = capsys.readouterr().out
+    assert rc == 0 and "arena" not in listed and listed == ["launchlab"]
+    counts = cr.load_jsonl(tmp_path / "out" / "daily-counts.jsonl")
+    assert [r["source"] for r in counts] == ["venue:launchlab"] and "tape skipped 1" in out
+
+
+@pytest.mark.parametrize("body", [None, "not json", json.dumps({"seals": [{"source": "arena", "start": "2026-10-26T21:00:00Z", "end": "2026-10-22T21:00:00Z"}]}),
+                                  json.dumps({"seals": [{"source": "arena", "start": "bad", "end": "2026-10-22T21:00:00Z"}]}), json.dumps({"x": 1})])
+def test_seals_file_fail_closed(tmp_path, body):
+    sp = tmp_path / "seals.json"
+    if body is not None:
+        sp.write_text(body)
+    arena = tmp_path / "arena"
+    arena.mkdir()
+    args = ["--out-dir", str(tmp_path / "out"), "--arena-tape", str(arena), "--venue-tape", "", "--monitor", "", "--seals", str(sp), "--no-rpc"]
+    assert cr.main(args, now=NOW) == 2
+    assert not (tmp_path / "out" / "daily-counts.jsonl").exists()
+
+
+def test_stage_tapes_requires_seals(tmp_path):
+    with pytest.raises(cr.RadarError):
+        cr.stage_tapes({}, set(), NOW, 8, [])

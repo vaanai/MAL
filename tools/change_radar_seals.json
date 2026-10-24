@@ -1,0 +1,10 @@
+{
+  "schema": "change_radar_seals.v1",
+  "note": "Pinned sealed windows for the change radar's tape counts (QP verdict on PR #889, 2026-10-24, relayed by manager15). A UTC day of a source that overlaps any window here is never counted, now or later: no hour file of it is opened and no record of it is written. disabled_until: the source is not touched at all (no listing, no file opened) before that instant. Times are [start, end) UTC. Changes to this file go through the manager and QP.",
+  "seals": [
+    {"source": "arena", "start": "2026-10-22T21:00:00Z", "end": "2026-10-26T21:00:00Z", "owner": "FLOOR", "ref": "QP verdict on #889 (manager15, 2026-10-24)"}
+  ],
+  "disabled_until": {
+    "arena": "2026-10-26T21:00:00Z"
+  }
+}

@@ -14,6 +14,8 @@ Stages (each one fails alone; a failed stage is an error in the record, never a 
   W5/W6 tapes     local files. Rows per (program, type) per closed UTC day from the arena tape (tape-<hour>.jsonl[.zst]) and per (venue, type,
                   instruction name, undecoded discriminator) from the venue tape. Counts only: no price, amount, reserve, mint, pool or wallet
                   value is copied into any output. Shift / new key / gone key / share rules from DESIGN section 2.
+                  Sealed windows (tools/change_radar_seals.json, pinned, fail closed): a day overlapping a window is never counted, and a
+                  source with disabled_until is not touched before that instant (arena tape: 2026-10-26T21:00:00Z, FLOOR seal).
   W7 monitor      local file. The newest pump_structure_monitor record's true HALT (high) and WARN (low) flags, once per monitor run.
 
 Outputs under --out-dir: radar.jsonl (one record per run), state.json (baseline), daily-counts.jsonl (one record per source and day),
@@ -70,6 +72,7 @@ DEFAULT_ARENA = "/data/mal/arena/tape"
 DEFAULT_VENUE = "/data2/mal/venue-tape"
 DEFAULT_MONITOR = "/data/mal/structure-monitor/daily.jsonl"
 DEFAULT_WATCH = Path(__file__).with_name("change_radar_watch.json")
+DEFAULT_SEALS = Path(__file__).with_name("change_radar_seals.json")  # pinned sealed windows; a missing or bad file refuses the run
 
 # A tape dir whose path holds any of these is refused (sealed, owned or bot-output data is never an input).
 FORBIDDEN_PATH_TOKENS = ("holdout", "fwdv1", "shadow", "probe", "sealed", "ledger", "bots.json", "backfill")
@@ -493,14 +496,74 @@ def tape_sources(arena: Path | None, venue_root: Path | None) -> dict[str, tuple
     return src
 
 
+def _ts(text: str) -> float:
+    return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
+
+
+def load_seals(path: Path) -> dict[str, Any]:
+    """Pinned sealed windows. Fail closed: a missing file, bad JSON or a malformed window is a RadarError (exit 2)."""
+    try:
+        cfg = json.loads(Path(path).read_text())
+    except (OSError, ValueError) as exc:
+        raise RadarError(f"seals file unreadable ({type(exc).__name__}): refusing to count tapes") from exc
+    return load_seals_dict(cfg)
+
+
+def load_seals_dict(cfg: Any) -> dict[str, Any]:
+    seals = cfg.get("seals") if isinstance(cfg, dict) else None
+    dis = cfg.get("disabled_until", {}) if isinstance(cfg, dict) else None
+    if not isinstance(seals, list) or not isinstance(dis, dict):
+        raise RadarError("seals file malformed")
+    out = []
+    try:
+        for w in seals:
+            lo, hi = _ts(w["start"]), _ts(w["end"])
+            if not (isinstance(w["source"], str) and lo < hi):
+                raise ValueError("window")
+            out.append({"source": w["source"], "lo": lo, "hi": hi})
+        disabled = {str(k): _ts(v) for k, v in dis.items()}
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RadarError("seals file malformed") from exc
+    return {"seals": out, "disabled_until": disabled}
+
+
+def _applies(pattern: str, source: str) -> bool:
+    return pattern in ("*", source) or (pattern.endswith(":*") and source.startswith(pattern[:-1]))
+
+
+def source_disabled(seals: Mapping[str, Any], source: str, now: float) -> bool:
+    return any(_applies(k, source) and now < t for k, t in (seals.get("disabled_until") or {}).items())
+
+
+def day_sealed(seals: Mapping[str, Any], source: str, day: str) -> bool:
+    """True when the UTC day [00Z, 24Z) of `source` overlaps any sealed window (permanent: also after the window ends)."""
+    lo = _ts(day + "T00:00:00Z")
+    hi = lo + 86_400
+    return any(_applies(w["source"], source) and lo < w["hi"] and w["lo"] < hi for w in seals.get("seals") or [])
+
+
 def stage_tapes(sources: Mapping[str, tuple[Path, Callable[[Path], Counter]]], done: set[tuple[str, str]], now: float, lookback_days: int,
-                errors: list[str]) -> list[dict[str, Any]]:
-    """Count every closed, not yet counted day that started within the last `lookback_days` days (oldest first). One record per (source, day)."""
+                errors: list[str], seals: Mapping[str, Any] | None = None, skipped: list[str] | None = None) -> list[dict[str, Any]]:
+    """Count every closed, not yet counted, unsealed day that started within the last `lookback_days` days (oldest first). One record per
+    (source, day). A disabled source is not listed; a sealed day is never opened and leaves no record (only its name in `skipped`)."""
+    if seals is None:
+        raise RadarError("stage_tapes needs the sealed-window list")
+    skipped = [] if skipped is None else skipped
     recs: list[dict[str, Any]] = []
     cutoff = (datetime.fromtimestamp(now, tz=timezone.utc) - timedelta(days=lookback_days)).strftime("%Y-%m-%d")
     for name, (root, counter) in sources.items():
+        if source_disabled(seals, name, now):
+            skipped.append(f"{name} disabled")
+            continue
         days = tape_days(root)
-        todo = [d for d in closed_days(days, now) if (name, d) not in done and d >= cutoff]
+        todo = []
+        for d in closed_days(days, now):
+            if (name, d) in done or d < cutoff:
+                continue
+            if day_sealed(seals, name, d):
+                skipped.append(f"{name} {d} sealed")
+                continue
+            todo.append(d)
         for d in todo:
             total: Counter = Counter()
             bad_files = 0
@@ -708,7 +771,7 @@ def digest_lines(rec: Mapping[str, Any]) -> list[str]:
     voc = st.get("vocab") or {}
     v_ok = sum(1 for o in voc.values() if o.get("status") == "ok")
     head = (f"CHANGES {rec['run_date']} high={n['high']} med={n['med']} low={n['low']} (programs {p_ok}/{len(progs)} read, accounts {a_ok}/{len(accts)}, "
-            f"vocab {v_ok}/{len(voc)}, tape days {len(st.get('tape_days_counted') or [])}, status {rec['status']})")
+            f"vocab {v_ok}/{len(voc)}, tape days {len(st.get('tape_days_counted') or [])}, tape skipped {len(st.get('tape_skipped') or [])}, status {rec['status']})")
     if rec.get("baseline_run"):
         head += " baseline run"
     if not ch:
@@ -749,6 +812,7 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
     p.add_argument("--out-dir", default=DEFAULT_OUT)
     p.add_argument("--watch", default=str(DEFAULT_WATCH))
+    p.add_argument("--seals", default=str(DEFAULT_SEALS), help="pinned sealed-window list (fail closed)")
     p.add_argument("--rpc", default=DEFAULT_RPC)
     p.add_argument("--arena-tape", default=DEFAULT_ARENA, help="'' to skip")
     p.add_argument("--venue-tape", default=DEFAULT_VENUE, help="'' to skip")
@@ -765,6 +829,7 @@ def run(a: argparse.Namespace, *, client: Any = None, now: float | None = None) 
     host = check_rpc_url(a.rpc)
     arena = check_tape_dir(a.arena_tape) if a.arena_tape else None
     venue = check_tape_dir(a.venue_tape) if a.venue_tape else None
+    seals = load_seals(Path(a.seals))
     watch = load_json(Path(a.watch), None)
     if not isinstance(watch, dict) or not isinstance(watch.get("programs"), dict):
         raise RadarError(f"watch file unreadable: {a.watch}")
@@ -803,8 +868,10 @@ def run(a: argparse.Namespace, *, client: Any = None, now: float | None = None) 
         new_state["vocab"], new_state["vocab_runs"] = merge_vocab(state.get("vocab") or {}, state.get("vocab_runs") or {}, vobs)
     sources = tape_sources(arena, venue)
     done = {(r.get("source"), r.get("day")) for r in history}
-    new_counts = stage_tapes(sources, done, now, a.lookback_days, errors)
+    skipped: list[str] = []
+    new_counts = stage_tapes(sources, done, now, a.lookback_days, errors, seals, skipped)
     stages["tape_days_counted"] = [f"{r['source']} {r['day']}" for r in new_counts]
+    stages["tape_skipped"] = skipped
     all_hist = history + new_counts
     changes += tape_changes(new_counts, all_hist) + share_changes(new_counts, all_hist)
     if a.monitor:

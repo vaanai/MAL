@@ -90,6 +90,18 @@ Per metric m (launches, trades, graduations per venue; per-key row counts) for t
 The thresholds are first guesses written before any run of the tool on real tape. They are tuned only by a dated amendment to this file,
 and the amendment says how many alerts per day the old setting gave.
 
+## 2a. Sealed windows (QP verdict on PR #889, 2026-10-24)
+
+- The radar **never counts gap or health rows (or any other row) of a sealed window.** Row counts, gap rows and hours present are all
+  information about a sealed window, so a UTC day of a tape that overlaps a sealed window is skipped as a whole: no hour file of it is
+  opened and no record of it is written, now or after the window ends. Only the skip itself ("arena 2026-10-23 sealed") is recorded.
+- The windows are a pinned config file, `tools/change_radar_seals.json` (fail closed: a missing or malformed file refuses the run). Start:
+  arena tape [2026-10-22T21:00:00Z, 2026-10-26T21:00:00Z), owner FLOOR. Changes go through the manager and QP.
+- **The radar is disabled for the arena tape before 2026-10-26T21:00:00Z** (`disabled_until` in the same file): before that instant the
+  arena tape directory is not even listed. Because the sealed days are skipped for good, the arena baseline restarts from 2026-10-27.
+- Disclosure: the 2026-10-24 smoke runs (about 17:51Z and 18:05Z, written to a scratch directory, not `/data/mal/change-radar`) counted
+  arena rows for 2026-10-22 and 2026-10-23, including gap rows and hours present, before this rule existed. See the PR #889 body.
+
 ## 3. Output
 
 Every run writes under `--out-dir` (default `/data/mal/change-radar`):
@@ -141,6 +153,7 @@ lane that misses 72 h records why.
   "unread", never "changed".
 - Sampled vocabulary (W4) misses rare instructions: 20 transactions per program per day. The venue tape (W5) sees every instruction name for
   DBC and LaunchLab; pump and PumpSwap have no instruction-name tape.
+- Sealed windows: section 2a.
 - Paths: the tape readers refuse a directory whose path contains `holdout`, `fwdv1`, `shadow`, `probe`, `sealed`, `ledger` or `bots.json`, and
   read only `tape-<hour>.jsonl[.zst]` names. Backfill tapes (`venue-tape-backfill`, `forward-*`) are not inputs.
 
