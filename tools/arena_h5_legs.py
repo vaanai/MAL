@@ -405,7 +405,33 @@ def build_report(bot_id: str, ledger_root: str | os.PathLike, *, read_instant_ms
         ic = {sfx: refit[f"{stake}|{sfx}"]["intercept"] for sfx in SFXS if f"{stake}|{sfx}" in refit}
         rep["books"][stake] = {"n_trades": len(rs), "as_scored_rent_charged": cells_of(items, ic), "rent_0": cells_of(items, ic, True),
                                "worst_in_slot": w["stakes"].get(stake) if w["measured"] else w["why"]}
+    if books is not None:
+        rep["dec032_worst_in_slot"] = dec032_figure(rep)
     return rep
+
+
+DEC032_NOTE = ("DEC-032 section 1 item 2: the worst-in-slot mean and its CI90 lower bound of the deciding cell (1.9 s leg at the deciding stake, rent-charged), quoted as R7's LOWER of the "
+               "worst-in-slot and no-guard-rescue legs, and the lowest over the four sub-cells (flat / pressure x total / sc). 'not measured' means no proposal; for an event-triggered book "
+               "(H5) a mean at or below 0 is not proposed. Report-only, never deciding; in-sample.")
+
+
+def dec032_figure(rep: Mapping[str, Any]) -> dict[str, Any]:
+    """The one worst-in-slot figure DEC-032 section 1 item 2 quotes, from this report's canary_lower cells (no new pricing)."""
+    b = rep["books"].get(rep["deciding_stake"])
+    w = None if b is None else b["worst_in_slot"]
+    if not isinstance(w, Mapping):
+        why = "no trade at the deciding stake" if b is None else w
+        return {"measured": False, "why": why, "proposal": "no proposal (worst-in-slot not measured)", "note": DEC032_NOTE}
+    cells = {k: dict(v) for k, v in w["canary_lower"].items() if f"_{rep['deciding_leg']}_" in k}
+    if len(cells) != 4:
+        return {"measured": False, "why": f"{len(cells)} of 4 deciding sub-cells have a worst-in-slot mean", "proposal": "no proposal (worst-in-slot not measured)", "note": DEC032_NOTE}
+    mk = min(cells, key=lambda k: (cells[k]["mean_sol"], k))
+    los = [v["ci90_lo_sol"] for v in cells.values()]
+    lk = None if any(x is None for x in los) else min(cells, key=lambda k: (cells[k]["ci90_lo_sol"], k))
+    mean = cells[mk]["mean_sol"]
+    return {"measured": True, "wis_mean_sol": mean, "wis_mean_cell": mk, "wis_ci90_lo_sol": None if lk is None else cells[lk]["ci90_lo_sol"], "wis_ci90_lo_cell": lk,
+            "not_proposed_mean_le_0": mean <= 0, "proposal": "not proposed (worst-in-slot mean <= 0)" if mean <= 0 else "worst-in-slot mean > 0 (one of DEC-032's conditions only)",
+            "cells": cells, "note": DEC032_NOTE}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ render
@@ -446,6 +472,14 @@ def render(rep: Mapping[str, Any]) -> str:
                     L.append(f"    {k:16s} {_f(g['mean_sol'])} / {_f(g['total_sol'])}" + ("" if g2 is None else f"    without derived_last ({w['n_derived_last']} trips): {_f(g2['mean_sol'])} / {_f(g2['total_sol'])}")
                              + f"    vs companion: {_f(g3['mean_sol'])} / {_f(g3['total_sol'])}")
             L.append(f"   pressure intercepts, as scored {w['intercepts']['as_scored']}; worst {w['intercepts']['worst']}; companion {w['intercepts']['companion']}")
+    g = rep.get("dec032_worst_in_slot")
+    if g:
+        if g["measured"]:
+            L.append(f"\n  DEC-032 WORST-IN-SLOT FIGURE (deciding cell, lower of the two legs, lowest sub-cell): mean {_f(g['wis_mean_sol'])} ({g['wis_mean_cell']})  "
+                     f"ci90lo {_f(g['wis_ci90_lo_sol'])} ({g['wis_ci90_lo_cell']})  -> {g['proposal']}")
+        else:
+            L.append(f"\n  DEC-032 WORST-IN-SLOT FIGURE: not measured ({g['why']}) -> {g['proposal']}")
+        L.append(f"  {g['note']}")
     d = rep.get("worst_in_slot_diag")
     if d:
         L.append(f"\n  worst-in-slot diagnostics: trips {d['trips']} legs {d['legs']} entry slot >1 print {d['entry_multi_print']} moved {d['entry_moved']}  exit slot >1 print {d['exit_multi_print']} "
