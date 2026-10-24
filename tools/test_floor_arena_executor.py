@@ -17,7 +17,7 @@ from tools.arena_pool_table import PoolTable  # noqa: F401  (import check only)
 from tools.test_arena_rule_l1 import H0, HOUR, SOLX, SHA, entries, pool_rows, row, run_host  # noqa: F401  (fixtures of the rule's own tests)
 import tools.test_arena_rule_l1 as T
 
-SHA40 = F.FROZEN_SHA_PREFIX + "a" * 32
+SHA40 = F.FROZEN_SHA
 V = 17_600_000_000
 
 
@@ -101,7 +101,7 @@ def test_constants_equal_the_h5_arena_executor_where_they_overlap():
         assert h5.wallet_floor_lamports(funded, 0) == F.wallet_floor_lamports(funded, 0)
 
 
-@pytest.mark.parametrize("bad", [{"mode": "live"}, {"bot_id": "h5v1"}, {"frozen_sha": "5e12f8f5"}, {"frozen_sha": "0" * 40}, {"max_hold_ms": 86_400_000},
+@pytest.mark.parametrize("bad", [{"mode": "live"}, {"bot_id": "h5v1"}, {"frozen_sha": "5e12f8f5"}, {"frozen_sha": "0" * 40}, {"frozen_sha": F.FROZEN_SHA[:39] + "0"}, {"max_hold_ms": 86_400_000},
                                  {"end_ms": None}, {"end_ms": True}, {"funded_lamports": 100_000_000}, {"funded_lamports": 2_000_000_000}, {"stake_lamports": 0},
                                  {"root": ""}, {"per_trade_loss_lamports": -1}])
 def test_config_refusals(tmp_path, bad):
@@ -190,10 +190,12 @@ def test_replay_check_fails_when_the_log_is_tampered(tmp_path):
     assert not res["equal"] and "chain_break" in res["latches"]
 
 
-def test_replay_other_sha_latches(tmp_path):
-    host_with_start(tmp_path, pool_rows(), hours=34)
-    res = F.replay_equivalence(cfg_dict(tmp_path, frozen_sha=F.FROZEN_SHA_PREFIX + "b" * 32))
-    assert not res["equal"] and "frozen_sha_mismatch" in res["latches"]
+def test_replay_of_a_log_from_another_sha_latches(tmp_path):
+    lg = Log(tmp_path)
+    lg.start(H0, sha="0" * 40)  # the book's start row repeats a different sha than the pin
+    lg.entry(H0 + 1000, "o1")
+    res = F.replay_equivalence(cfg_dict(tmp_path))
+    assert not res["equal"] and "frozen_sha_mismatch" in res["latches"] and res["orders"] == 0
 
 
 # ------------------------------------------------------------------------------------------------ restart and resume of open positions

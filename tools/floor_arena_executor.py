@@ -7,7 +7,7 @@ It edits no frozen or pinned file (arena_live_bridge.py, arena_rule_l1.py, arena
 The decisions are the frozen rule's, read from the hash-chained decision log the v2 host writes (`entry` and `exit` rows). Nothing is re-decided here.
 
 WHAT THIS CHANGES ON TOP OF THE BRIDGE (each item is a difference between a 24 h-hold, take-profit +50 % book and the H5 / probe-profile defaults the bridge was written for)
-  1 BOOK PIN       bot_id, the frozen sha prefix (5e12f8f5, DEC-031 Am.9), max hold HOLD_MS (24 h + the 1.9 s leg), stake and the C0 table are code constants. Config can only tighten.
+  1 BOOK PIN       bot_id, the frozen sha (5e12f8f5, DEC-031 Am.9), max hold HOLD_MS (24 h + the 1.9 s leg), stake and the C0 table are code constants. Config can only tighten.
                    The bridge's own TIERS["T0"] (0.02 SOL, 10 trades a day) is the old L6 proposal; the DEC-032 C0 table (0.05 SOL, 2 open, 30 a day, 0.10 / 0.20 SOL stops) is used here.
   2 FEES           155,000 priority + 5,000 base = 160,000 per send (DEC-031 Am.8). The bridge's reserves assume 500,000 priority.
   3 NO STOP LOSS   The book has none: it holds 24 h or takes profit at +50 %. The bridge's sl_backstop (default -50 %) would sell positions the paper book keeps, so `backstops`
@@ -30,7 +30,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import re
 import sys
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -44,8 +43,8 @@ from tools.arena_pool_table import V_HI, V_LO
 LIVE_BUILT = False  # this PR builds no live entry point; a live config is refused at start
 BOT_ID = L.BOT_ID
 CELL = L.CELL
-FROZEN_SHA_PREFIX = "5e12f8f5"  # DEC-031 Am.9: FLOOR's frozen sha. A config needs the full 40 hex starting with this prefix.
-SHA_RE = re.compile(r"[0-9a-f]{40}")
+FROZEN_SHA = "5e12f8f597571d6d5191a7ba38125c67ad723b7d"  # DEC-031 Am.9: FLOOR's frozen sha (git: "FLOOR v2 host: trim engine print history (#796)"). A config must equal it.
+FROZEN_SHA_PREFIX = FROZEN_SHA[:8]
 HOLD_MS = L.HOLD_MS  # 24 h + 1.9 s, the rule's own constant (never config)
 FOLLOWED_EXIT_REASONS = (L.REASON_TP, L.REASON_TIME)
 PAPER_STAKE_SOL = L.STAKE_SOL  # the paper book's deciding stake (0.25); the canary stake is lower and the twin is repriced at it
@@ -87,8 +86,8 @@ def make_config(d: Mapping[str, Any]) -> B.Config:
     if d.get("bot_id", BOT_ID) != BOT_ID:
         raise ValueError(f"bot_id must be {BOT_ID}")
     sha = d.get("frozen_sha")
-    if not (isinstance(sha, str) and SHA_RE.fullmatch(sha) and sha.startswith(FROZEN_SHA_PREFIX)):
-        raise ValueError(f"frozen_sha must be 40 hex starting {FROZEN_SHA_PREFIX}")
+    if sha != FROZEN_SHA:
+        raise ValueError("frozen_sha must be FLOOR's frozen sha")
     if "max_hold_ms" in d and d["max_hold_ms"] != HOLD_MS:
         raise ValueError("max_hold_ms is the rule's constant")
     for k in ("root", "state_dir"):
@@ -127,7 +126,7 @@ class FloorBridge(B.Bridge):
     def __init__(self, cfg: B.Config, port: B.OrderPort, *, now_ms: Callable[[], int] | None = None, dry_replay_caps: bool = False,
                  live_ok_path: Path = B.LIVE_OK_PATH, tier_path: Path = B.TIER_PATH, root_checks: bool = True,
                  close_blocked: Callable[[str], bool | None] | None = None) -> None:
-        if cfg.bot_id != BOT_ID or cfg.max_hold_ms != HOLD_MS or not cfg.frozen_sha.startswith(FROZEN_SHA_PREFIX):
+        if cfg.bot_id != BOT_ID or cfg.max_hold_ms != HOLD_MS or cfg.frozen_sha != FROZEN_SHA:
             raise SystemExit("floor executor start refused: book pin")
         if cfg.mode != B.DRY or port.live or LIVE_BUILT:
             raise SystemExit("floor executor start refused: live_not_built")
