@@ -33,3 +33,16 @@ Variants (K, S, d): c3 = (3, 1.0, 10%), c4 = (4, 2.0, 15%), c6 = (6, 4.0, 20%). 
 ## Rate bar
 >= 3 attempts/day averaged over the exploration window (counts first; a cell below the bar is dropped unpriced and said so). 4 ideas x 3 variants = 12 cells; nothing else is tried;
 no parameter changes after a count.
+
+## I5 GRAD-FLOOR (added 2026-10-24 by manager15 scope addition, before any count or price; NOT PRICED in this lane)
+FLOOR-style post-graduation idea: a LaunchLab token that graduates to a Raydium CPMM pool; enter on the CPMM pool after graduation, long hold (take-profit +50%, 24 h cap, as FLOOR v2 in tools/arena_rule_l1.py).
+Tape status: the P10 backfill fetched only the LaunchLab program (LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj). CPMM pool trades are NOT on the tape, and the LaunchLab TradeEvent/`ix` rows carry no
+destination pool address (the tape stores instruction names only for `ix` rows, no accounts). So I5 cannot be counted or priced; it is specified here only.
+Extra fetch needed (manager decides):
+ 1. Migrate transactions: the LaunchLab `ix` rows whose names include the migrate instruction (MigrateToCpswap / MigrateToAmm) give signatures; getTransaction on each (jsonParsed, accounts + inner instructions)
+    yields the new CPMM pool address and the token mint. Cost ~ 1 call per migration (Helius getTransaction, 50 credits/call at the backfill's measured --credits-per-call).
+ 2. CPMM trades: Raydium CPMM program CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C (executable on mainnet, checked 10-24 by P8) -- the program-wide stream is router noise (458 notices in 90 s), so fetch per POOL:
+    getTransactionsForAddress(pool address) from the migration time for 24 h + 1 h per graduated pool, decode CPMM swap events (SwapEvent: pool, input/output vault balances before/after, fees; decoder NOT written yet).
+ 3. Credits estimate: migrations/day M (counted from the exploration `ix` rows in this lane's count step; reported in the PR) x (1 + P pages per pool-day). Rough planning figure until M is counted:
+    M x (50 + 24 h of pool history at ~50 credits per 100 txs, unknown tx count) -- cannot be bounded before the first pool is fetched; propose a 5-pool probe fetch (<= ~5,000 credits) before a full run.
+Cell pre-declaration if fetched: entry = first CPMM state >= 1.9 s after graduation + 5 min; exit tp 1.5 / time 24 h; stakes 0.25 and 1.0 SOL; same fail models; decided on a separate DECLARE then.
