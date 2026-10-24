@@ -34,11 +34,11 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 28 | 20 | 1 |
 | `desk-read` | 1 | 43 | 0 |
-| `explored-no-survivor` | 18 | 6 | 1 |
+| `explored-no-survivor` | 22 | 6 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 140 | 75 | 2 |
+| **all** | 144 | 75 | 2 |
 
-The file holds 467 rows: the 217 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 471 rows: the 221 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -349,6 +349,10 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `hunt28-sellabs-1` | SELLABS: a big sell absorbed by fresh buyers, entered below the pre-sell price (s1, s2 … | `explored-no-survivor` | FAIL on all three cells. flat15 mean -2.82% / -2.72% / -2.69%, pressure -2.39% / -2.32% / -2.28%, 0 of 25 days positive; take profit fires on 70% of exits but the 28% stops cost more; 951 to 2,863 attempts a day. Screen numbers. |
 | `reprice-160k-w2-family` | hunt23 w2-quiet (12 cells), w2b-strand (16), w2-death (21) re-priced at 160,000 per send | `explored-no-survivor` | Fee saves about 0.26 pp per trade at 0.25 SOL; 49 of 49 cells have ex-top-3 negative under both fail models. Closest: w2-quiet R4 flat mean +0.0007 SOL/trade (505k: +0.0001), CI90 lo -0.0103, ex-top-3 -0.90 / -0.92 SOL, 10 of 21 days; w2b-strand DS-C1-g50 flat +0.0039 SOL/trade but ex-top-3 about -11 SOL, 4 of 21 days. Class MARGINAL for these two, STILL-DEAD for the rest. |
 | `reprice-160k-hc-h60` | hunt25 A-HC-h60 re-priced at 160,000 per send | `explored-no-survivor` | STILL-DEAD: the fee saves about 0.26 pp leaving a flat deciding mean of about -8.3% (505k: -9.21%); ex-top-3 negative under both fail models. |
+| `hunt29-flush-1` | FLUSH: buy after a cascade of realized-loss sellers exhausts (f2, f3, f5) | `explored-no-survivor` | FAIL on all three cells. 0.25 SOL at 160,000/send: 970 to 2,744 attempts/day, flat15 mean -2.75% / -2.85% / -3.02%, pressure -2.31% / -2.40% / -2.55%, 0 of 24 days positive, ex-top-3 -473 / -318 / -185 SOL (flat). Stricter is worse; tp fires on about a third of exits, the stop on about 37%. |
+| `hunt29-wake-1` | WAKE: first buy into a shallow zombie pool after silence (w1, w6, w24) | `explored-no-survivor` | FAIL on all three cells. 31 to 134 attempts/day, flat15 -1.39% / -0.91% / -4.94%, pressure -1.43% / -1.05% / -4.44%, 2 to 3 of 24 days positive, ex-top-3 -31 / -22 / -10 SOL; impact 1.3% at 0.25 SOL and 5.2% at 1.0 SOL. w6 is the least negative cell of the lane and still FAIL. |
+| `hunt29-rankup-1` | RANKUP: pool enters the top K by 10-minute SOL volume for the first time in 2 h (k10 … | `explored-no-survivor` | FAIL on all three cells. 24 / 51 / 86 attempts/day, flat15 -4.99% / -3.81% / -2.71%, pressure -4.40% / -3.71% / -2.48%, 3 to 5 of 25 days positive, ex-top-3 -8 / -14 / -16 SOL. Tighter top-K is worse. |
+| `hunt29-drought-1` | DROUGHT: many buys and no sell print for D minutes (d30, d60; d120 dropped) | `explored-no-survivor` | FAIL on both priced cells. 141 and 21 attempts/day, flat15 -1.79% / -1.33%, pressure -1.54% / -1.19%, 3 and 6 of 25 days positive, ex-top-3 -18.9 / -3.1 SOL. No sign of a mechanical buyer. |
 
 ## Duplicate rows
 
