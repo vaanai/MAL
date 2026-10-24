@@ -75,7 +75,8 @@ KILL (hunt23 RULES.md Amendment 1; deciding leg 1.9 s / 0.25 SOL / rent 0): any 
   (refused_pool_age_lt_360s). It is mandatory and not a parameter.
 
 DATA GUARDS (before anything is read): block paths only under /data/mal/clean-view/{explore-0814, oracle-insample-2026-09-22_25, fast-pool-2026-09-18T23_2026-09-22T00,
-  oracle-live-2026-09-25_27}; /data/mal/arena/tape closed hours (tape-<hour>.jsonl.zst) ONLY with --count-only (structure counts, never a price after a decision); every other path
+  oracle-live-2026-09-25_27}, plus fresh-0903 (exploration pool since the 2026-10-06 ledger move; priced ALONE, whole, never with the four; its group stats are n/a);
+  /data/mal/arena/tape closed hours (tape-<hour>.jsonl.zst) ONLY with --count-only (structure counts, never a price after a decision); every other path
   is refused; so is any path containing probe, shadow, canary, _shakedown, forward-, fresh-08, exp011, truth-, tip-tape or sealed (raw and resolved); --out must be outside
   /data/mal/arena and /data/mal/clean-view.
 """
@@ -120,6 +121,9 @@ from tools.arena_report_legs import PARITY_RTOL, end_minus_worst, slot_states, s
 SCHEMA = "arena_screen_v1"
 CLEAN_VIEW = "/data/mal/clean-view"
 BLOCK_ROOTS = tuple(f"{CLEAN_VIEW}/{b}" for b in ("explore-0814", "oracle-insample-2026-09-22_25", "fast-pool-2026-09-18T23_2026-09-22T00", "oracle-live-2026-09-25_27"))
+# P7 (2026-10-24): one more exploration-pool block, priced ALONE only (never as a fifth block of the four-block screen). fresh-0903 = [2026-09-03T12, 2026-09-09T12), exploration pool since the
+# 2026-10-06 ledger move (hardlink view of the EXP-012 dedupe output, plain hour names). The four-block rules, BLOCK_ROOTS and CANONICAL_BLOCKS are unchanged.
+EXTRA_SOLO_BLOCK_ROOTS = (f"{CLEAN_VIEW}/fresh-0903",)
 ARENA_ROOT = "/data/mal/arena"
 ARENA_TAPE = f"{ARENA_ROOT}/tape"
 FORBIDDEN = ("probe", "shadow", "canary", "_shakedown", "forward-", "fresh-08", "exp011", "truth-", "tip-tape", "sealed")
@@ -260,9 +264,10 @@ def check_block_path(path: str | os.PathLike, count_only: bool) -> str:
         if not (count_only and _under(raw, ARENA_TAPE) and _under(real, ARENA_TAPE)):
             raise Refused(f"arena_path_refused: only {ARENA_TAPE} closed hours, and only with --count-only: {path}")
         return "arena"
-    if any(_under(raw, r) for r in BLOCK_ROOTS) and any(_under(real, r) for r in BLOCK_ROOTS):
+    roots = BLOCK_ROOTS + EXTRA_SOLO_BLOCK_ROOTS
+    if any(_under(raw, r) for r in roots) and any(_under(real, r) for r in roots):
         return "clean"
-    raise Refused(f"not_an_exploration_block: {path} (allowed: {', '.join(BLOCK_ROOTS)})")
+    raise Refused(f"not_an_exploration_block: {path} (allowed: {', '.join(roots)})")
 
 
 def check_out_dir(out: str | os.PathLike) -> str:
@@ -386,7 +391,7 @@ def discover(path: str | os.PathLike, kind: str, hours: Sequence[str] | None = N
     """The hour files of one block path (a block root, a worker dir, a trades dir, or for the arena tape a dir or one closed-hour file), sorted by hour."""
     p = Path(path)
     bp = os.path.realpath(p)
-    root = next((os.path.realpath(r) for r in BLOCK_ROOTS if _under(bp, os.path.realpath(r))), None)
+    root = next((os.path.realpath(r) for r in BLOCK_ROOTS + EXTRA_SOLO_BLOCK_ROOTS if _under(bp, os.path.realpath(r))), None)
     if kind == "arena":
         fs = [p] if p.is_file() else sorted(p.glob("tape-*.jsonl.zst"))
         out = []
@@ -1844,7 +1849,8 @@ def run(args: argparse.Namespace) -> dict:
             raise Refused(f"repeated_or_nested_block: {b} (each block once; explore-0814 is ONE block, not its workers)")
         reals.append(real)
         specs.append((b, kind, discover(b, kind, args.hours)))
-    if not args.count_only and sorted(reals) != sorted(os.path.realpath(r) for r in BLOCK_ROOTS):
+    solo = [[os.path.realpath(r)] for r in EXTRA_SOLO_BLOCK_ROOTS]
+    if not args.count_only and sorted(reals) != sorted(os.path.realpath(r) for r in BLOCK_ROOTS) and sorted(reals) not in solo:  # a solo block: one, whole, alone
         raise Refused("pricing_needs_the_four_blocks: pass each of " + ", ".join(BLOCK_ROOTS) + " once, whole (blocks positive are counted out of these four)")
     kinds = {k for _, k, _ in specs}
     rule_path = rule_source_path(args.rule)

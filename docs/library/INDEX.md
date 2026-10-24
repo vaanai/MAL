@@ -34,11 +34,11 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 30 | 20 | 1 |
 | `desk-read` | 1 | 43 | 0 |
-| `explored-no-survivor` | 18 | 6 | 1 |
+| `explored-no-survivor` | 21 | 6 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 144 | 75 | 2 |
+| **all** | 147 | 75 | 2 |
 
-The file holds 471 rows: the 221 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 474 rows: the 224 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -353,6 +353,9 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `hunt28-sellabs-1` | SELLABS: a big sell absorbed by fresh buyers, entered below the pre-sell price (s1, s2 … | `explored-no-survivor` | FAIL on all three cells. flat15 mean -2.82% / -2.72% / -2.69%, pressure -2.39% / -2.32% / -2.28%, 0 of 25 days positive; take profit fires on 70% of exits but the 28% stops cost more; 951 to 2,863 attempts a day. Screen numbers. |
 | `reprice-160k-w2-family` | hunt23 w2-quiet (12 cells), w2b-strand (16), w2-death (21) re-priced at 160,000 per send | `explored-no-survivor` | Fee saves about 0.26 pp per trade at 0.25 SOL; 49 of 49 cells have ex-top-3 negative under both fail models. Closest: w2-quiet R4 flat mean +0.0007 SOL/trade (505k: +0.0001), CI90 lo -0.0103, ex-top-3 -0.90 / -0.92 SOL, 10 of 21 days; w2b-strand DS-C1-g50 flat +0.0039 SOL/trade but ex-top-3 about -11 SOL, 4 of 21 days. Class MARGINAL for these two, STILL-DEAD for the rest. |
 | `reprice-160k-hc-h60` | hunt25 A-HC-h60 re-priced at 160,000 per send | `explored-no-survivor` | STILL-DEAD: the fee saves about 0.26 pp leaving a flat deciding mean of about -8.3% (505k: -9.21%); ex-top-3 negative under both fail models. |
+| `p3-floor-exits` | FLOOR v2 exit families at 160k (trail-after, time caps, burst sell, partial TP) | `explored-no-survivor` | No variant beats TP +50% / 24 h on mean AND ex-top-3 under both fail models. TR50 mean +0.01675/+0.01347 vs F0 +0.01605/+0.01285 SOL/trade but ex-top-3 +4.12/+3.26 vs +4.40/+3.49 (noise-sized). P50 +0.01283/+0.01026; burst sells and short caps lose 0.5-1.0 pp. Time-only 24 h still +0.01125/+0.00905. |
+| `p3-g4k-exits` | G4 v1 in kit form at 160k: baseline, partial TP (X3), burst sells (X4) | `explored-no-survivor` | Baseline G0 mean +0.00448/+0.00334 SOL/trade, ex-top-3 -0.43/-0.56, CI90 lo negative; X3 (+0.00184/+0.00116), X4 (-0.00404/-0.00497), burst 2 SOL (-0.00039/-0.00146) all worse. |
+| `p3-revive-exits` | REVIVE (dormancy break) with time-only holds and wider stops at 160k | `explored-no-survivor` | All time-only holds more negative than the L4 exit (r12h -0.0016 to -0.0063 flat vs -0.00276). Wide stop lifts the mean (r12h +0.00470/+0.00405) but ex-top-3 -2.65/-2.21, 5 of 23 days positive. |
 
 ## Duplicate rows
 
