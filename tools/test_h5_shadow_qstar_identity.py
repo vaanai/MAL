@@ -14,9 +14,11 @@ SRC = Path(__file__).resolve().parent / "h5_shadow.py"
 REPO = SRC.parent.parent
 
 # top-level definitions changed on purpose (the flag, its checks, the Q50 constants, the start record, replay compare)
-CHANGED_TOP = {"Q50_REPLAY_CUTOFF_HOUR", "refuse_replay", "check_q_star", "_q_star_arg", "Q_STAR_ALLOWED", "Q50_RULE_ID", "Q50_RULE_SHA256", "Engine", "run_live", "run_replay", "compare_frozen", "build_parser", "main"}
+CHANGED_TOP = {"Q50_REPLAY_CUTOFF_HOUR", "refuse_replay", "check_q_star", "_q_star_arg", "Q_STAR_ALLOWED", "Q50_RULE_ID", "Q50_RULE_SHA256", "Engine", "run_live", "run_replay", "compare_frozen", "build_parser", "main",
+               "SUCC_END_MS"}  # S* (QP-RULING-1024-successor R7(b)); S* vs F50 identity: tools/test_h5_shadow_succ_identity.py
 # Engine methods changed: the constructor and the places that compared against the constant (+ the trigger record)
-CHANGED_ENGINE = {"__init__", "_fire", "_evaluate", "_eval"}
+CHANGED_ENGINE = {"__init__", "_fire", "_evaluate", "_eval",
+                  "_h5_sealed_now"}  # S*: the fresh-forward end (QP-RULING-1024-successor R7(b))
 # decode path: must be listed as unchanged (sanity that the allowlists did not swallow them)
 MUST_BE_IDENTICAL = {"decode_notice", "post_state", "tier_fee", "fill_round_trip", "Pr", "SlotClock", "SynClassifier", "PreEventClassifier", "UnionChain",
                      "classify_via_rpc", "_rpc_tx_parts", "replay", "replay_rows", "JsonlSink", "redact_argv", "code_sha", "bx10_exit", "project_e", "sps_ok"}
