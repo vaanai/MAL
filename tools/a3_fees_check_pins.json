@@ -31,5 +31,7 @@
     [98240000000000, [20, 5, 5]]
   ],
   "min_universe_events": 100,
-  "max_mismatch_share": 0.0
+  "max_mismatch_share": 0.0,
+  "upgrade_authority_note": "Successor books only (same books-file flag): the bounded upgrade-write enumeration reads each programdata account (45 bytes: tag, slot, authority) and walks the UPGRADE AUTHORITY's signatures, not the programdata's (the PumpSwap programdata is in every swap; job #1545 hit the call cap). Authority read 2026-10-24T18:28:34Z, public RPC, 0 credits: identical on all three programdata accounts (pump B5MvUwXd... slot 458921440, pumpswap 6naEzKeU... slot 458921517, fees 75Uu23mq... slot 456132171). A different authority now, or a SetAuthority on the programdata during the walk, is ERROR.",
+  "upgrade_authority": {"pump": "7gZufwwAo17y5kg8FMyJy2phgpvv9RSdzWtdXiWHjFr8", "pumpswap": "7gZufwwAo17y5kg8FMyJy2phgpvv9RSdzWtdXiWHjFr8", "fees": "7gZufwwAo17y5kg8FMyJy2phgpvv9RSdzWtdXiWHjFr8"}
 }
