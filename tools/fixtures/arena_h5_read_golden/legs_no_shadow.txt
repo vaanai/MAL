@@ -1,0 +1,61 @@
+rc 0
+--- stdout
+ARENA H5 REPORT LEGS  bot h5v1-boostfloor-a1  read instant 1800230400000  trade rows 42  refit file absent
+*** REPORT-ONLY LEGS beside the H5 deciding figures (DEC-031 Amendment 2 items 9 and 10; QP ruling R7). The H5 books DECIDE RENT-CHARGED (2,039,280 lamports per filled trip). The rent-0 leg is report-only, added after the clock, never deciding. Worst-in-slot is never deciding. Nothing here is a profit claim. ***
+
+  stake 0.10 (report-only)  trades 14
+   WORST-IN-SLOT: worst-in-slot not measured (no --shadow-dir)
+   AS SCORED, RENT-CHARGED (DECIDES):
+    flat_1p3_total   n   14 days  3 pos  0 mean -0.028875 total -0.404245 ci90lo -0.048675 ex-top3 -0.425156 ex-best-day -0.330140 n_credited 0
+    press_1p3_total  n   14 days  3 pos  0 mean -0.026111 total -0.365555 ci90lo -0.044120 ex-top3 -0.383951 ex-best-day -0.301772 n_credited 0
+    flat_1p3_sc      n   14 days  3 pos  1 mean -0.012526 total -0.175363 ci90lo -0.028091 ex-top3 -0.196274 ex-best-day -0.178931 n_credited 0
+    press_1p3_sc     n   14 days  3 pos  1 mean -0.011400 total -0.159594 ci90lo -0.024706 ex-top3 -0.177991 ex-best-day -0.161417 n_credited 0
+    flat_1p9_total   n   14 days  3 pos  0 mean -0.029018 total -0.406246 ci90lo -0.048895 ex-top3 -0.427158 ex-best-day -0.332142 n_credited 0
+    press_1p9_total  n   14 days  3 pos  0 mean -0.023847 total -0.333854 ci90lo -0.041033 ex-top3 -0.351674 ex-best-day -0.284256 n_credited 0
+    flat_1p9_sc      n   14 days  3 pos  1 mean -0.012669 total -0.177364 ci90lo -0.028234 ex-top3 -0.198276 ex-best-day -0.180932 n_credited 0
+    press_1p9_sc     n   14 days  3 pos  1 mean -0.010070 total -0.140978 ci90lo -0.022149 ex-top3 -0.158797 ex-best-day -0.145568 n_credited 0
+   RENT-0 leg (report-only, added after the clock, never deciding):
+    flat_1p3_total   n   14 days  3 pos  0 mean -0.027884 total -0.390378 ci90lo -0.047944 ex-top3 -0.416489 ex-best-day -0.319740 n_credited 8
+    press_1p3_total  n   14 days  3 pos  0 mean -0.025319 total -0.354461 ci90lo -0.043569 ex-top3 -0.377539 ex-best-day -0.293409 n_credited 8
+    flat_1p3_sc      n   14 days  3 pos  1 mean -0.011164 total -0.156296 ci90lo -0.026859 ex-top3 -0.182407 ex-best-day -0.165064 n_credited 11
+    press_1p3_sc     n   14 days  3 pos  1 mean -0.010273 total -0.143818 ci90lo -0.023604 ex-top3 -0.166897 ex-best-day -0.149836 n_credited 11
+    flat_1p9_total   n   14 days  3 pos  0 mean -0.028027 total -0.392379 ci90lo -0.048197 ex-top3 -0.418491 ex-best-day -0.321742 n_credited 8
+    press_1p9_total  n   14 days  3 pos  0 mean -0.023006 total -0.322079 ci90lo -0.040495 ex-top3 -0.344442 ex-best-day -0.275540 n_credited 8
+    flat_1p9_sc      n   14 days  3 pos  1 mean -0.011307 total -0.158297 ci90lo -0.027002 ex-top3 -0.184409 ex-best-day -0.167065 n_credited 11
+    press_1p9_sc     n   14 days  3 pos  1 mean -0.008916 total -0.124822 ci90lo -0.021155 ex-top3 -0.147185 ex-best-day -0.133680 n_credited 11
+
+  stake 0.25 (report-only)  trades 14
+   WORST-IN-SLOT: worst-in-slot not measured (no --shadow-dir)
+   AS SCORED, RENT-CHARGED (DECIDES):
+    flat_1p3_total   n   14 days  3 pos  0 mean -0.068697 total -0.961762 ci90lo -0.118110 ex-top3 -1.025702 ex-best-day -0.788396 n_credited 0
+    press_1p3_total  n   14 days  3 pos  0 mean -0.062247 total -0.871455 ci90lo -0.107201 ex-top3 -0.928178 ex-best-day -0.722161 n_credited 0
+    flat_1p3_sc      n   14 days  3 pos  1 mean -0.027677 total -0.387473 ci90lo -0.066429 ex-top3 -0.451414 ex-best-day -0.408970 n_credited 0
+    press_1p3_sc     n   14 days  3 pos  1 mean -0.025334 total -0.354676 ci90lo -0.058295 ex-top3 -0.411399 ex-best-day -0.369971 n_credited 0
+    flat_1p9_total   n   14 days  3 pos  0 mean -0.069053 total -0.966741 ci90lo -0.118694 ex-top3 -1.030681 ex-best-day -0.793376 n_credited 0
+    press_1p9_total  n   14 days  3 pos  0 mean -0.056567 total -0.791943 ci90lo -0.099588 ex-top3 -0.846972 ex-best-day -0.678319 n_credited 0
+    flat_1p9_sc      n   14 days  3 pos  1 mean -0.028032 total -0.392453 ci90lo -0.066785 ex-top3 -0.456393 ex-best-day -0.413949 n_credited 0
+    press_1p9_sc     n   14 days  3 pos  1 mean -0.022000 total -0.307997 ci90lo -0.052135 ex-top3 -0.363026 ex-best-day -0.330319 n_credited 0
+   RENT-0 leg (report-only, added after the clock, never deciding):
+    flat_1p3_total   n   14 days  3 pos  0 mean -0.067707 total -0.947895 ci90lo -0.117379 ex-top3 -1.017035 ex-best-day -0.777996 n_credited 8
+    press_1p3_total  n   14 days  3 pos  0 mean -0.061454 total -0.860361 ci90lo -0.106648 ex-top3 -0.921766 ex-best-day -0.713798 n_credited 8
+    flat_1p3_sc      n   14 days  3 pos  1 mean -0.026315 total -0.368406 ci90lo -0.065197 ex-top3 -0.437547 ex-best-day -0.395103 n_credited 11
+    press_1p3_sc     n   14 days  3 pos  1 mean -0.024207 total -0.338900 ci90lo -0.057193 ex-top3 -0.400305 ex-best-day -0.358390 n_credited 11
+    flat_1p9_total   n   14 days  3 pos  0 mean -0.068062 total -0.952874 ci90lo -0.118055 ex-top3 -1.022014 ex-best-day -0.782975 n_credited 8
+    press_1p9_total  n   14 days  3 pos  0 mean -0.055726 total -0.780169 ci90lo -0.099049 ex-top3 -0.839741 ex-best-day -0.669603 n_credited 8
+    flat_1p9_sc      n   14 days  3 pos  1 mean -0.026670 total -0.373386 ci90lo -0.065553 ex-top3 -0.442526 ex-best-day -0.400082 n_credited 11
+    press_1p9_sc     n   14 days  3 pos  1 mean -0.020846 total -0.291842 ci90lo -0.051185 ex-top3 -0.351414 ex-best-day -0.318432 n_credited 11
+
+  stake 0.30 (deciding)  trades 14
+   WORST-IN-SLOT: worst-in-slot not measured (no --shadow-dir)
+   AS SCORED, RENT-CHARGED (DECIDES):
+    flat_1p9_total   n   14 days  3 pos  0 mean -0.082411 total -1.153753 ci90lo -0.141961 ex-top3 -1.231946 ex-best-day -0.947242 n_credited 0
+    press_1p9_total  n   14 days  3 pos  0 mean -0.067485 total -0.944788 ci90lo -0.119113 ex-top3 -1.012142 ex-best-day -0.809770 n_credited 0
+    flat_1p9_sc      n   14 days  3 pos  1 mean -0.033164 total -0.464290 ci90lo -0.079636 ex-top3 -0.542482 ex-best-day -0.491713 n_credited 0
+    press_1p9_sc     n   14 days  3 pos  1 mean -0.025985 total -0.363785 ci90lo -0.062129 ex-top3 -0.431139 ex-best-day -0.391973 n_credited 0
+   RENT-0 leg (report-only, added after the clock, never deciding):
+    flat_1p9_total   n   14 days  3 pos  0 mean -0.081420 total -1.139886 ci90lo -0.141343 ex-top3 -1.223279 ex-best-day -0.936842 n_credited 8
+    press_1p9_total  n   14 days  3 pos  0 mean -0.066644 total -0.933013 ci90lo -0.118574 ex-top3 -1.004911 ex-best-day -0.801054 n_credited 8
+    flat_1p9_sc      n   14 days  3 pos  1 mean -0.031802 total -0.445222 ci90lo -0.078404 ex-top3 -0.528615 ex-best-day -0.477846 n_credited 11
+    press_1p9_sc     n   14 days  3 pos  1 mean -0.024831 total -0.347630 ci90lo -0.061201 ex-top3 -0.419527 ex-best-day -0.380086 n_credited 11
+
+--- stderr

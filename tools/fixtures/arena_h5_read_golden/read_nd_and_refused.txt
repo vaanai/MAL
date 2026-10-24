@@ -1,0 +1,27 @@
+rc 3
+--- stdout
+ARENA H5 DECIDING READ  (tools/arena_h5_read.py; PAPER ONLY; a PASS is a screen, not a profit claim)
+*** A PASS is a SCREEN: the best of N arena books, in-sample for selection (winner's curse), not a promotion and not a profit claim. It allows only DEC-031 section 2 steps 1 to 3 (quant-proof's check on the exact files, the owner's OK, a live canary at its DEC's small limits). A stake above the canary's limits needs the confirmation of step 4. ***
+*** Rent (DEC-031 Amendment 2 items 9 and 10; QP R1 (h)): the H5 books decide RENT-CHARGED (2,039,280 lamports per filled trip). The rent-0 leg is report-only, added after the clock, never deciding. A book that passes only at rent 0 has FAILED its read. ***
+REFUSED h5v2-boostclock-a1: h5v2-boostclock-a1: no recorded read instant (read-instant.json absent): the score has not reached it, nothing is opened
+
+BOT h5v1-boostfloor-a1  STATUS NOT_DECIDABLE  exit rule v1  read instant 1772841600000  deciding: 1.9 s leg (1p9) at 0.30 SOL, RENT-CHARGED
+  attempts 120 = counted 113 + excluded 7 (5.83% of non-refused attempts; cap 5%)  excluded by reason {'gap_flag': 7}
+  refused (not attempts, DEC-031 Amendment 1) 0  by reason {}
+  Attempt definition amended after the clock (DEC-031 Amendment 1, dfe7f018601633921f06668fd1af3aaff7b87bf00f321d1540e10b41f8ab6006, 2026-10-19T03:31:35Z), with counts only in view; refused 0 of 120 triggers.
+  reason: excluded 7 of 120 non-refused attempts = 5.83% is above 5% (DEC-031 section 1.4, Amendment 1): {'gap_flag': 7}
+  none: a NOT_DECIDABLE read prints counts only
+
+MULTIPLICITY BLOCK (DEC-031 Amendment 3 item 3; QP R8)
+  N = 10 (supplied by the manager (--n-books)); books read here and before, with verdicts: {'h5v1-boostfloor-a1': 'NOT_DECIDABLE'}
+  cells in total: NOT SUPPLIED (the manager states the total across hunt23, J3 and cohort 2)
+  cells per book: 1 deciding decision = a conjunction of 4 sub-cells (1.9 s x 0.30 SOL x flat/pressure x total/sc); 24 cells priced per book (3 stakes x 2 latencies x 4), the other 20 report-only (R8 item 2)
+  per book, the manager states: agent, DECLARE sha256 and notebook id, cells declared / killed / surviving, blocks, October hours used
+  p (EXP-028 section 3 item 3: sub-cell p = max(p_pct, p_null), p_pct = (1 + #{m_b <= 0}) / (1 + B), p_null = (1 + #{m_b - xbar >= xbar}) / (1 + B), B = 10,000, a fresh default_rng(1) per sub-cell; book p = the max over the four sub-cells; report-only): h5v1-boostfloor-a1 None
+  If no book has an edge, the chance of at least one screen pass is up to 1 - 0.95^N = 40.13% (rounded up) at N = 10.
+  c = 3 (supplied by the manager (--c); a running count: each confirmation read states its c); the confirmation threshold 0.05/c = 0.016667
+  Amendment 1 refusals h5v1-boostfloor-a1: 0 by reason {}
+  Taints touched (Amendment 3 item 8): (e) siblings forward: h5v1-boostfloor-a1 and h5v2-boostclock-a1 share the trigger and the entry legs and differ in the exit, so the best of them at the read is in-sample. Not touched by this tool's rule: (a) it decides on all four sub-cells. The manager states any other taint.
+  no outcome is split by class and no pool class is read (EXP-024 Amendment 9 (d))
+
+--- stderr
