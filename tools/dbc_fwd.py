@@ -6,8 +6,9 @@ seen. It runs the FROZEN screen code on the pool's rows at decision time (tools.
 m10 from dbc_screen.CELLS); it does not re-implement the rule. What it adds is the causal plumbing:
 
 * slot close: a pool's rows of slot s are decided once a row of a later slot arrives (the screen's order fix needs the whole (pool, slot) group);
-* config fee mode: the screen takes each config's mode as the majority of fee-mode evidence over the WHOLE loaded data (all pools, all hours). The engine keeps the same
-  majority over the evidence seen SO FAR (evidence per row as in dbc_price.derive with the isolated-row mask) and injects it (`forced fob`, see `_pipeline`);
+* config fee mode: the screen takes each config's mode as the majority of fee-mode evidence over the WHOLE loaded data (all pools, all hours), twice (first derive with the
+  isolated-row mask for the order fix, final derive with the not-bad mask). The engine keeps both majorities over the evidence seen SO FAR and injects them (`forced fob`,
+  see `_pipeline`);
 * tail evaluation: the pipeline runs on the pool's rows from one group before the last "anchor" row (a single-row slot after a single-row slot whose quote leg is >= MIN_L_QUOTE
   under both fee modes) at or before the 60 s window. From an anchor on, every carried value (L, order-fix reference L, bad flag, S0) equals the full-history value; the
   equivalence replay below checks this on real hours;
@@ -17,9 +18,14 @@ m10 from dbc_screen.CELLS); it does not re-implement the rule. What it adds is t
     - `screen` (parity only): exactly dbc_screen.resolve's order: a trigger is resolved by dbc_screen.resolve itself once the data up to its exit horizon has arrived, and a
               refused trigger does not block. Decisions that waited for an earlier unresolved trigger are late (flagged); this policy exists only for the md5 proof.
 
+The screen has two lookahead inputs a causal engine cannot have (QP ruling "A3"): (1) the order fix and bad flags of a pool's early multi-row slots use a reference L
+back-filled from the pool's LATER isolated rows; (2) the config fee mode is the majority over all data. The replay therefore runs the engine four ways: with both inputs
+given as PROOF-ONLY oracles (must equal the screen exactly), with one each (attribution) and causal (the book). The oracles are never used outside `replay`.
+
 Replay (`--replay`) reads tape hours through the dbc_price data guard and ADDITIONALLY refuses any hour outside [2026-10-14T00, 2026-10-16T04) (m10's Swap2-era exploration
 window, manager15 correction 2026-10-24: hours [10-17T00, 10-24T00) are spent for every D1 variant and hours >= 10-25T00 are never read). It runs the screen (load_exploration,
-triggers_for, cell_attempts) on the same hours and prints the md5 of the sorted trigger keys and of the sorted entry keys on both sides. Counts only; nothing is priced.
+triggers_for, cell_attempts) on the same hours and prints the md5 of the sorted trigger keys and of the sorted entry keys on both sides, per engine variant. Counts only;
+nothing is priced. Exit 0 iff the both-oracle variant equals the screen on triggers and entries.
 
     python3 -m tools.dbc_fwd --replay --start 2026-10-14T00 --end 2026-10-16T04 --cfg-summary docs/research/dbc-p17/data/cfg_summary.json --out DIR
 """
@@ -41,7 +47,7 @@ import os
 import sys
 import time
 from array import array
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
@@ -58,8 +64,6 @@ WIN_S = 60.0  # m10 window (dbc_screen.triggers_for D1)
 EXIT_RULE = "sl0.90|trail0.90|time600|cooldown600"
 REPLAY_MIN = datetime(2026, 10, 14, 0, tzinfo=timezone.utc)
 REPLAY_MAX = datetime(2026, 10, 16, 4, tzinfo=timezone.utc)  # exclusive: Swap2-era exploration only
-SPENT_START = datetime(2026, 10, 17, 0, tzinfo=timezone.utc)
-NEVER_FROM = datetime(2026, 10, 25, 0, tzinfo=timezone.utc)
 FORBIDDEN_PATH_PARTS = ("fwdv1", "meteora_dbc_holdout", "p17_union")
 _COLS_F = ("bt", "S1", "ain", "aout", "fee", "qres", "thr")
 _COLS_I = ("slot", "side", "sw3", "fob")
