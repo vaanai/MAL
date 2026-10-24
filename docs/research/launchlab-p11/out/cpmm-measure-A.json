@@ -1,0 +1,27 @@
+{
+ "schema": "launchlab_cpmm_screen_v1",
+ "taken_utc": "2026-10-24T03:51:33Z",
+ "mig_window": [
+  "2026-10-07T00",
+  "2026-10-17T00"
+ ],
+ "kit_sha256": "96e9aa7ebc602b0836250173a433c46c3b63d3407c9103d7d994ee3330addc64",
+ "pools_loaded": 23,
+ "measure": {
+  "wsol_pools": 23,
+  "swaps_checked": 52806,
+  "output_within_1_atom": 0.9990531379009961,
+  "output_within_1e-9": 0.9994508199825778,
+  "state_continuity_within_0.2pct_share": 0.7040524411268779,
+  "buy_input_fee_rate_q10_50_90": [
+   0.003000002663127405,
+   0.012500000853105995,
+   0.04050001620000648
+  ],
+  "sell_input_fee_rate_q10_50_90": [
+   0.002500000000076414,
+   0.002500000002308249,
+   0.007000000002818616
+  ]
+ }
+}

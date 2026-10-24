@@ -9,6 +9,7 @@ row; an hour that could not be fetched is a file holding one `gap` row (reason `
 Method (measured in PLAN.md): Helius getTransactionsForAddress (full transactions with logs, blockTime window, asc, paginated) on the program.
 Credits are counted per call at --credits-per-call (set from the probe) and a HARD cap stops the run (exit 5) before any call that would exceed it.
 State: <out>/checkpoint.json (hours done, credits). Resumable: a rerun skips done hours. One Helius flock slot is held (LOCKDIR), rps <= 10.
+Record, MiScusi job #1461: credits_used = 1,823,700, counted at an ASSUMED 50 credits per gTFA page (from the job log); it walked hours backward from 2026-10-23T23 and wrote 504 hourly LaunchLab tape files covering [2026-10-03T00, 2026-10-24T00) to /data2/mal/venue-tape-backfill/launchlab/ (that is what the credits bought; per-hour tx counts are in the job log); the manager cancelled it at hour 2026-10-03T00 when the LaunchLab line closed (MiScusi records the cancel under the session's account). The docs note gives 10 credits per call, so the real spend may differ (not measured: no usage endpoint).
 The key is read from the env file and never printed or logged.
 """
 

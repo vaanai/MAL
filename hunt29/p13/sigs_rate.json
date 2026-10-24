@@ -1,0 +1,66 @@
+{
+ "launchlab": {
+  "n": 1000,
+  "newest_age_s": 32,
+  "oldest_age_s": 1146,
+  "span_s": 1114,
+  "per_day": 77558,
+  "fail_share": 0.82
+ },
+ "dbc": {
+  "n": 1000,
+  "newest_age_s": 4,
+  "oldest_age_s": 157,
+  "span_s": 153,
+  "per_day": 564706,
+  "fail_share": 0.27
+ },
+ "heaven": {
+  "n": 1000,
+  "newest_age_s": 1884,
+  "oldest_age_s": 2758436,
+  "span_s": 2756552,
+  "per_day": 31,
+  "fail_share": 0.09
+ },
+ "boop": {
+  "n": 1000,
+  "newest_age_s": 40381,
+  "oldest_age_s": 9510689,
+  "span_s": 9470308,
+  "per_day": 9,
+  "fail_share": 0.38
+ },
+ "moonit": {
+  "n": 1000,
+  "newest_age_s": 2801,
+  "oldest_age_s": 1076536,
+  "span_s": 1073735,
+  "per_day": 80,
+  "fail_share": 0.02
+ },
+ "whirlpool": {
+  "n": 1000,
+  "newest_age_s": 3,
+  "oldest_age_s": 79,
+  "span_s": 76,
+  "per_day": 1136842,
+  "fail_share": 0.29
+ },
+ "cpmm": {
+  "n": 1000,
+  "newest_age_s": 3,
+  "oldest_age_s": 246,
+  "span_s": 243,
+  "per_day": 355556,
+  "fail_share": 0.3
+ },
+ "damm2": {
+  "n": 1000,
+  "newest_age_s": 2,
+  "oldest_age_s": 33,
+  "span_s": 31,
+  "per_day": 2787097,
+  "fail_share": 0.24
+ }
+}

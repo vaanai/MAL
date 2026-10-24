@@ -1,8 +1,43 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-24T01:45:00Z",
+ "updated_utc": "2026-10-24T13:02:15Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "floor-entry-1024",
+   "kind": "decision",
+   "title": "FLOOR fixed-first entry posted; smoke S1/S2 running",
+   "detail": "Notebook n_CBfWkrs5XZDl5A. FLOOR smoke S1/S2 running (jobs #1521/#1522). FLOOR clock 2026-10-26T00:00Z if A1/A2/G1/DR1 pass. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-24T13:00:00Z"
+  },
+  {
+   "id": "hv4-registration-records-1024",
+   "kind": "decision",
+   "title": "HV4 registration records (PR #779): QP OK and reviewer APPROVE at 297fd27a",
+   "detail": "HV4 clock 2026-10-25T00:00Z; registration tonight. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-24T12:55:00Z"
+  },
+  {
+   "id": "arena-feed-restart-1024",
+   "kind": "job",
+   "title": "Planned arena feed restart #1207 to #1516",
+   "detail": "One process_restart row of 5,193 ms; recorded in LAB_STATE (PR #872). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-24T12:10:00Z"
+  },
+  {
+   "id": "dbc-m10-forward-1024",
+   "kind": "decision",
+   "title": "Meteora DBC m10 forward confirmation registered (tag dbc-m10-forward-v1)",
+   "detail": "Window 2026-10-25T00:00Z to 2026-11-01T00:00Z; one read at or after 2026-11-01T00:10Z. The earlier holdout look (#1494) was ruled NOT_DECIDABLE (tool defect: DBC switched to a new swap event about 10-16). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-24T07:10:00Z"
+  },
+  {
+   "id": "q50-dryrun-1024",
+   "kind": "result",
+   "title": "Q50 live executor keyless dry run PASSED at install sha 0526d5cd",
+   "detail": "Helm's keyless dry run: 60 min, 0 halts, 0 restarts, no key, no wallet. Executor stopped and disabled again. Live steps still need the owner's own OK and a Q50 gate pass (earliest about 10-30). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-24T07:09:00Z"
+  },
   {
    "id": "q50-registered-1024",
    "kind": "decision",
@@ -1136,7 +1171,7 @@
    "id": "Q50",
    "title": "Q50 (h5v1q50-boostfloor-a1) H5 BOOST-floor",
    "stage": "registered, clock 2026-10-25T00:00Z",
-   "note": "P0 PASS: 46/25/35 triggers per day (mean 35.33, min 25), no feed gap; H 14 days. No book has cleared the promotion gate.",
+   "note": "Keyless dry run of the live executor at 0526d5cd PASSED (07:09Z; 60 min, 0 halts, 0 restarts, no key, no wallet). Live steps need the owner's own OK and a Q50 gate pass (earliest about 10-30). No book has cleared the promotion gate.",
    "tag": {
     "text": "registered",
     "tone": "accent"
@@ -1165,8 +1200,8 @@
   {
    "id": "HV4",
    "title": "HV4 (9 Haiku bots)",
-   "stage": "registering 10-24 night",
-   "note": "X-rule fixed by QP ruling (X = 120 s); thresholds pinned; P0 count running; clock 2026-10-25T00:00Z. No book has cleared the promotion gate.",
+   "stage": "registration tonight, clock 2026-10-25T00:00Z",
+   "note": "QP OK and reviewer APPROVE at 297fd27a (PR #779); registration tonight; clock 2026-10-25T00:00Z. No book has cleared the promotion gate.",
    "tag": {
     "text": "registering",
     "tone": "accent"
@@ -1175,10 +1210,20 @@
   {
    "id": "FLOOR",
    "title": "FLOOR",
-   "stage": "clock 2026-10-26T00:00Z",
-   "note": "Same sign on unseen fresh-0903 but about 55% smaller (flat +0.0073 vs +0.0161 SOL/trade); exploration screen numbers, not evidence. No book has cleared the promotion gate.",
+   "stage": "smoke S1/S2 running; clock 2026-10-26T00:00Z if A1/A2/G1/DR1 pass",
+   "note": "Fixed-first entry posted 13:00Z (notebook n_CBfWkrs5XZDl5A); smoke jobs #1521/#1522. Same sign on fresh-0903 (a much-read exploration block) but about 55% smaller (flat +0.0073 vs +0.0161 SOL/trade); exploration screen numbers, not evidence. No book has cleared the promotion gate.",
    "tag": {
     "text": "clock 10-26T00Z",
+    "tone": "accent"
+   }
+  },
+  {
+   "id": "DBC-m10",
+   "title": "Meteora DBC m10 (dbc-m10-forward-v1)",
+   "stage": "forward confirmation registered, read ≥ 2026-11-01T00:10Z",
+   "note": "Window 2026-10-25T00:00Z to 2026-11-01T00:00Z. The earlier holdout look (#1494) was NOT_DECIDABLE (tool defect). Other DBC cells FAIL on the new-swap-event days. No book has cleared the promotion gate.",
+   "tag": {
+    "text": "forward registered",
     "tone": "accent"
    }
   },
@@ -1378,6 +1423,12 @@
   }
  ],
  "for_you": [
+  {
+   "id": "fy-20261024-helm-dec-move",
+   "from": "claude",
+   "text": "Please confirm (or reverse) Helm's 06:07Z move of the old /etc/mal-h5/LIVE_OK and TIER files to /root/disabled/ (it closed an old gate; nothing was deleted).",
+   "atUtc": "2026-10-24T13:00:00Z"
+  },
   {
    "id": "fy-20261024-helm-sheet",
    "from": "claude",
@@ -1753,10 +1804,24 @@
  ],
  "stream": [
   {
+   "id": "s-20261024-q50-dryrun",
+   "from": "claude",
+   "kind": "result",
+   "text": "Q50 live executor keyless dry run (Helm) at install sha 0526d5cd PASSED: 60 min, 0 halts, 0 restarts, no key, no wallet; executor stopped and disabled again. Live steps still need the owner's own OK and a Q50 gate pass (earliest about 10-30). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-24T07:09:00Z"
+  },
+  {
+   "id": "s-20261024-launchlab-closed",
+   "from": "claude",
+   "kind": "finding",
+   "text": "LaunchLab line closed earlier today: all 13 cells FAIL. Meteora DBC: other DBC cells (D2/D3/D4/D6) FAIL on the new-swap-event days; m10 is the only open DBC candidate. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-24T13:02:15Z"
+  },
+  {
    "id": "s-20261024-manager15-screens",
    "from": "claude",
    "kind": "result",
-   "text": "Research (exploration screen numbers, not evidence): exit variants (P3): none beat baseline. Four new high-rate ideas (P4): all negative. FLOOR on unseen fresh-0903 (P7): same sign but about 55% smaller (flat +0.0073 vs +0.0161 SOL/trade). Stacked FLOOR+H5 model (P5): about $29/$43/$59 a day at 1/2/5 SOL on paper, $10/$16/$27 at half edge. New venue tape recording started (Raydium LaunchLab, Meteora DBC). No book has cleared the promotion gate.",
+   "text": "Research (exploration screen numbers, not evidence): exit variants (P3): none beat baseline. Four new high-rate ideas (P4): all negative. FLOOR on fresh-0903 (a much-read exploration block) (P7): same sign but about 55% smaller (flat +0.0073 vs +0.0161 SOL/trade). Stacked FLOOR+H5 model (P5): about $29/$43/$59 a day at 1/2/5 SOL on paper, $10/$16/$27 at half edge. New venue tape recording started (Raydium LaunchLab, Meteora DBC). No book has cleared the promotion gate.",
    "atUtc": "2026-10-24T01:45:00Z"
   },
   {
