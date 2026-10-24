@@ -34,11 +34,11 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 31 | 20 | 1 |
 | `desk-read` | 1 | 43 | 0 |
-| `explored-no-survivor` | 26 | 6 | 1 |
+| `explored-no-survivor` | 31 | 6 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 153 | 75 | 2 |
+| **all** | 158 | 75 | 2 |
 
-The file holds 480 rows: the 230 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 485 rows: the 235 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -362,6 +362,11 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `p3-floor-exits` | FLOOR v2 exit families at 160k (trail-after, time caps, burst sell, partial TP) | `explored-no-survivor` | No variant beats TP +50% / 24 h on mean AND ex-top-3 under both fail models. TR50 mean +0.01675/+0.01347 vs F0 +0.01605/+0.01285 SOL/trade but ex-top-3 +4.12/+3.26 vs +4.40/+3.49 (noise-sized). P50 +0.01283/+0.01026; burst sells and short caps lose 0.5-1.0 pp. Time-only 24 h still +0.01125/+0.00905. |
 | `p3-g4k-exits` | G4 v1 in kit form at 160k: baseline, partial TP (X3), burst sells (X4) | `explored-no-survivor` | Baseline G0 mean +0.00448/+0.00334 SOL/trade, ex-top-3 -0.43/-0.56, CI90 lo negative; X3 (+0.00184/+0.00116), X4 (-0.00404/-0.00497), burst 2 SOL (-0.00039/-0.00146) all worse. |
 | `p3-revive-exits` | REVIVE (dormancy break) with time-only holds and wider stops at 160k | `explored-no-survivor` | All time-only holds more negative than the L4 exit (r12h -0.0016 to -0.0063 flat vs -0.00276). Wide stop lifts the mean (r12h +0.00470/+0.00405) but ex-top-3 -2.65/-2.21, 5 of 23 days positive. |
+| `ll-early-momentum` | LaunchLab early-curve momentum (m4/m6/m10) | `explored-no-survivor` | Block A (2026-10-07..10-16, 10 days): all 3 cells FAIL; flat deciding means m4 -0.0085, m6 -0.0068, m10 -0.0064 SOL/trip, ex-top-3 negative under both fail models in every cell. Closest: m10 (flat -0.0064, pressure -0.0052 SOL/trip, n=148, CI90 lo -0.0130). LaunchLab round-trip fee ~2.5% (median 1.25% per side) plus own impact. |
+| `ll-milestone` | LaunchLab curve-progress milestone (ms30/ms50/ms70) | `explored-no-survivor` | Block A (2026-10-07..10-16, 10 days): all 3 cells FAIL; flat deciding means ms30 -0.0101, ms50 -0.0013, ms70 -0.0012 SOL/trip, ex-top-3 negative under both fail models in every cell. Closest: ms70 (flat -0.0012, pressure -0.0015 SOL/trip, n=52, CI90 lo -0.0091). LaunchLab round-trip fee ~2.5% (median 1.25% per side) plus own impact. |
+| `ll-bigbuy` | LaunchLab large-buy follow (bb1/bb2/bb4) | `explored-no-survivor` | Block A (2026-10-07..10-16, 10 days): all 3 cells FAIL; flat deciding means bb1 -0.0055, bb2 -0.0021, bb4 -0.0076 SOL/trip, ex-top-3 negative under both fail models in every cell. Closest: bb2 (flat -0.0021, pressure -0.0016 SOL/trip, n=462, CI90 lo -0.0059). LaunchLab round-trip fee ~2.5% (median 1.25% per side) plus own impact. |
+| `ll-cascade-fade` | LaunchLab sell-cascade fade (c3/c4/c6) | `explored-no-survivor` | Block A (2026-10-07..10-16, 10 days): all 3 cells FAIL; flat deciding means c3 -0.0104, c4 -0.0100, c6 -0.0117 SOL/trip, ex-top-3 negative under both fail models in every cell. Closest: c4 (flat -0.0100, pressure -0.0087 SOL/trip, n=504, CI90 lo -0.0120). LaunchLab round-trip fee ~2.5% (median 1.25% per side) plus own impact. |
+| `ll-grad-floor` | LaunchLab graduation to CPMM, FLOOR-style long hold (GF-TP150-24H) | `explored-no-survivor` | Block A (graduations 10-07..10-16): 21 WSOL-quoted CPMM pools, flat deciding mean -0.0236 and pressure -0.0235 SOL/trip, ex-top-3 negative under both fail models, FAIL. Only ~7% of graduations are SOL-quoted, so n stays tens of pools per month. Block B not priced. |
 
 ## Duplicate rows
 
