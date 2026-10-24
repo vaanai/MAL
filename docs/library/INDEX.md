@@ -29,16 +29,16 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | --- | --- | --- | --- |
 | `live-canary` | 1 | 0 | 0 |
 | `forward-test` | 2 | 0 | 0 |
-| `explored-survivor-unconfirmed` | 7 | 0 | 0 |
-| `parked` | 5 | 0 | 0 |
+| `explored-survivor-unconfirmed` | 8 | 0 | 0 |
+| `parked` | 6 | 0 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 28 | 20 | 1 |
+| `untested` | 29 | 20 | 1 |
 | `desk-read` | 1 | 43 | 0 |
-| `explored-no-survivor` | 18 | 6 | 1 |
+| `explored-no-survivor` | 20 | 6 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 140 | 75 | 2 |
+| **all** | 145 | 75 | 2 |
 
-The file holds 467 rows: the 217 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 472 rows: the 222 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -61,6 +61,7 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `lib-b-D5` | l3 hourly top-10 cross-sectional (xs10, _v2) (hunt-3) | 2026-10-13: the rebuilt run does not reproduce the 10-08 run (n 2,986 against 3,002). Cause found (swarm-1013/w2-r4b-repro/REPORT.md): prints with a null tx_index tie in the sort order and come back in a different order on each load, which changes a few feature and label values; the model amplifies it. Not reproducible by recipe; a deterministic variant would be a new variant with new numbers. | quant-proof VERIFY first (JUDGE-3 section 3.10); a pre-registration candidate only if the VERIFY passes it. |
 | `lib-c-L1` | FLOOR-OPTION v2 (G4-FLOORDIP successor; q0.5 cap, take-profit +50%) | 2026-10-13, judge-checked against iter-r1 logs: confirmation flat +4.4670 %, pressure +3.6409 %, n 112, 11 of 12 days; stacked stress flat +0.5157 %, CI lower bound -0.6684 %, 7 of 12 days, ex-top-3 -0.0413 SOL; median trade -1.6347 % (confirmation, flat); 46 of 112 exits are priced after the pool's last print. 2026-10-13, sell-cap judge pass (stronger model, declared before its runs … | Deciding legs: END and worst-in-slot, 1.9 s, exit lag 2 s, both fail models, rent refunded; gate n >= 100 and >= 10 dates, majority positive (library L1). |
 | `reprice-160k-l1` | FLOOR-OPTION v2 re-priced at 160,000 per send (arena_screen, 4 Aug/Sep blocks) | Not a fee stop: kit flags unchanged (event-triggered, excluded block-edge share 22.4% over 5%, worst-in-slot owed). Screen numbers at 160k: n 332, 13.3 trades/day, flat mean 6.42% (505k: 6.17%), flat +0.0161 SOL/trade, pressure +0.0129 SOL/trade, ex-top-3 +4.41 / +3.49 SOL, 18 of 19 days positive both models, trade-level CI90 lower bound +0.0112 / +0.0086 SOL/trade; impact 1.37% at 0.25 SOL, 5.48% at 1.0 SOL. … | quant-proof reads the 160k input; no gate claim from this row. |
+| `dbc-early-momentum` | Meteora DBC early-curve momentum (m4/m6/m10) | 3 days only (cannot meet the 5-day criterion). m4/m6 FAIL (flat -0.0341/-0.0406 SOL/trip; 194/193 of ~590/520 fills strand at curve completion = full loss). m10 MARGINAL: n=369 (243 fills), flat +0.0218, pressure +0.0169 SOL/trip, ex-top-3 +5.4 SOL, 3 of 3 days positive, trade CI90 lo +0.0117, but 12 cells looked at (winner's curse), the three days are one regime, and 5 strands only because m10 fires in … | Manager decides whether to fetch the holdout; DAMM v2 exit tape would remove the strand assumption. |
 
 ## Parked and shelved, with what would reopen them
 
@@ -73,6 +74,7 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `lib-c-O1` | LAYA r4-a (cost-aware Huber model, 59 columns, 5-seed bag, hold 1 minute) | `shelved` | "UNDER REVIEW / PRE-REGISTRATION REQUESTED; not promoted". Central +0.1449% / +0.0847 SOL/d after haircut; P(trade CI90 lo > 0) = 0.078; 24/29 days. Report: "Nothing is yet 'consistently positive' at the cost we have measured." Disagreement: RULE B +1.842% to +0.8076% and l3 xs10 +2.479% to +2.048072% on fresh data … | a race-free entry slice (r4-c, report-only) with an outcome-blind pre-registration (library O1) |
 | `lib-c-P1` | C1-NF (C1 with non-farm cap h_top1 <= 0.5, 1.3 s, 505k per send) | `shelved` | "SHELVED 10-12 (owner) for the live canary plan; shadow soak running as a regime watch". Earlier verifier status "SURVIVES-VERIFY" on exploration data only. Corrected 2026-10-12: not a conflict once the live plan is separated from the shadow; job #658 [unverified, brief]. Keyless shadow soak restarted … | Revive at >=10 kept trades/day on 2 days (library TOC row 13) |
 | `lib-c-R2.SB-H5` | SB-H5: depth-raise tripwire (max_curve_depth 1 to 2..5) | `parked` | 2026-10-13: the official docs commit 639b87f (2026-10-13T15:37:48Z) says pump coins can be quoted two levels deep "Starting October 13". Global.max_curve_depth has not been re-read on-chain since; the 06:41Z structure check of 2026-10-14 is the next read. | not in source |
+| `dbc-milestone` | Meteora DBC curve-progress milestones (ms30/ms50/ms70) | `parked` | Result decided by an assumption the tape cannot settle: a position still open when the curve completes is priced as a full loss (strand): flat -0.1095/-0.1221/-0.1618 SOL/trip, 230/243/642 strands. If it is instead sold at the last on-curve price (optimistic bound) the means are +0.011/+0.0095/+0.0094. The bracket is … | Post-completion tape (D5: Meteora DAMM v2 pool swaps after migration) so a completed-curve exit can be priced. |
 
 ## Never tested
 
@@ -107,6 +109,7 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `l3-boost-h5q50-1` | H5-BOOSTFLOOR with Q* 50 or 60 (sibling retune of the running H5 books; hunt24 L3 … | BOOST ride variants (hunt24 L3) | Owner/QP decision on the amendment; a Q_STAR_SOL option with default 40 and an md5 decision-equivalence replay; covered halt prefix; P0 on 3 full closed days (not before 10-23). Per DESIGN.md section 3, route 1. |
 | `l3-boost-offband-1` | H5 structure on off-band WSOL pools (V 0.5 to 30 SOL, stake scaled by V; hunt24 L3 … | BOOST ride variants (hunt24 L3) | None until the P0 bar or the pool supply changes. |
 | `l3-boost-custompair-1` | H5 structure on custom-pair (non-WSOL quote) BOOSTed pools: PUMP, USDC, other quotes … | BOOST ride variants (hunt24 L3) | None; see the existing rows boost-universe-1..4 and boost-custom-v2-1..3 for the exploration side. |
+| `dbc-completion-hold` | Meteora DBC curve_complete then DAMM v2 hold (FLOOR-style) | DBC screens (P14, 2026-10-24) | Probe fetch, then its own DECLARE. |
 
 ## Owner ideas
 
@@ -349,6 +352,8 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `hunt28-sellabs-1` | SELLABS: a big sell absorbed by fresh buyers, entered below the pre-sell price (s1, s2 … | `explored-no-survivor` | FAIL on all three cells. flat15 mean -2.82% / -2.72% / -2.69%, pressure -2.39% / -2.32% / -2.28%, 0 of 25 days positive; take profit fires on 70% of exits but the 28% stops cost more; 951 to 2,863 attempts a day. Screen numbers. |
 | `reprice-160k-w2-family` | hunt23 w2-quiet (12 cells), w2b-strand (16), w2-death (21) re-priced at 160,000 per send | `explored-no-survivor` | Fee saves about 0.26 pp per trade at 0.25 SOL; 49 of 49 cells have ex-top-3 negative under both fail models. Closest: w2-quiet R4 flat mean +0.0007 SOL/trade (505k: +0.0001), CI90 lo -0.0103, ex-top-3 -0.90 / -0.92 SOL, 10 of 21 days; w2b-strand DS-C1-g50 flat +0.0039 SOL/trade but ex-top-3 about -11 SOL, 4 of 21 days. Class MARGINAL for these two, STILL-DEAD for the rest. |
 | `reprice-160k-hc-h60` | hunt25 A-HC-h60 re-priced at 160,000 per send | `explored-no-survivor` | STILL-DEAD: the fee saves about 0.26 pp leaving a flat deciding mean of about -8.3% (505k: -9.21%); ex-top-3 negative under both fail models. |
+| `dbc-bigbuy` | Meteora DBC large-buy follow (bb1/bb2/bb4) | `explored-no-survivor` | All 3 FAIL: flat -0.0043 / -0.0003 / +0.0007 SOL/trip (n 512 / 173 / 25), ex-top-3 -5.2 / -0.8 / -0.3 SOL. Round-trip fee paid at these trades averages 154-195 bps (young pools), not 50. |
+| `dbc-cascade-fade` | Meteora DBC sell-cascade fade (c3/c4/c6) | `explored-no-survivor` | All 3 FAIL: flat -0.0091 / -0.0043 / +0.0006 SOL/trip (n 1097 / 735 / 522), ex-top-3 -10.8 / -3.8 / -0.4 SOL under both fail models. Closest: c6 (flat +0.0006, pressure -0.0016, ex-top-3 negative). |
 
 ## Duplicate rows
 
