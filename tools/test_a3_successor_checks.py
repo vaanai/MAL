@@ -515,3 +515,83 @@ def test_decide_uses_the_bounded_walk_only_with_the_flag(tmp_path):
     v1 = fees_decide(copy.deepcopy(rec), tmp_path, client=cl1, fees_check=False, bounded=True, auth=SHIPPED["upgrade_authority"], state=tmp_path / "b.jsonl")
     assert v1["verdict"] == "PASS" and v1["redeploys"] == v0["redeploys"]
     assert "getAccountInfo" in cl1.methods
+
+
+# ---------------------------------------------------------------- QP 6388090983 item (3): the pinned explained exception (0, 5, 0)
+def _classify(triples, cashback=0, n_good=100):
+    blobs = [fee_ev()[0]] * n_good + [fee_ev(bps=t, cashback=cashback)[0] for t in triples]
+    ev, _ = c.fee_events(blobs, c_idls())
+    fp = c.validate_fee_pins(fee_pins(), MON_PINS_F)
+    ft = dict(c.classify_fee_events(ev, {CANON[0]: {"base_mint": MINTS[0], "quote_mint": mon.WSOL_MINT}}, fp["canonical_tiers"], fp["explained_exceptions"]),
+              n_idl_undecodable=0)
+    return ft, c.fee_tier_failures(ft, fp)
+
+
+def test_explained_exception_under_the_cap_passes_and_is_counted_apart():
+    ft, fails = _classify([(0, 5, 0)] * 2)  # 2 of 102 = 1.96%
+    assert fails == [] and ft["n_explained"] == 2 and ft["n_match"] == 100 and ft["n_mismatch"] == 0 and ft["n_tested"] == 102
+    assert ft["explained_patterns"] == {"tier 1 observed [0, 5, 0]": 2}
+
+
+def test_explained_exception_over_the_cap_fails():
+    ft, fails = _classify([(0, 5, 0)] * 3)  # 3 of 103 = 2.9%
+    assert ft["n_explained"] == 3 and len(fails) == 1 and "explained-exception" in fails[0]
+
+
+@pytest.mark.parametrize("triple,cashback", [((0, 6, 0), 0), ((1, 5, 0), 0), ((0, 5, 1), 0), ((0, 5, 0), 5), ((20, 6, 95), 0)])
+def test_near_misses_of_the_exception_and_any_other_triple_fail_at_zero_tolerance(triple, cashback):
+    ft, fails = _classify([triple], cashback=cashback)
+    assert ft["n_explained"] == 0 and ft["n_mismatch"] == 1 and any("!= the pinned tier" in f for f in fails)
+
+
+def test_explained_exception_pins_are_validated(tmp_path):
+    for over in ({"explained_exceptions": None}, {"explained_exceptions": [[0, 5]]}, {"explained_exceptions": [[20, 5, 95]]}, {"max_explained_share": 0.5},
+                 {"max_explained_share": None}):
+        with pytest.raises(c.CheckError):
+            c.validate_fee_pins(fee_pins(**over), MON_PINS_F)
+    assert SHIPPED["explained_exceptions"] == [[0, 5, 0]] and SHIPPED["max_explained_share"] == 0.02 and SHIPPED["max_mismatch_share"] == 0.0
+
+
+def test_explained_exception_through_the_whole_check(tmp_path):
+    many = [fee_ev(pool=CANON[i % 5]) for i in range(40)]
+    v = fees_decide(fees_rec(), tmp_path, client=FeesClient(sample_blobs(good_fee_blobs() + many + [fee_ev(pool=CANON[5], bps=(0, 5, 0))])))
+    f = v["fees_check"]
+    assert f["verdict"] == "PASS" and f["detail"]["fee_tiers"]["n_explained"] > 0, f["reasons"]
+
+
+# ---------------------------------------------------------------- QP 6388090983 item (2): page cap and multi-page walk
+class PagedAuthClient(AuthClient):
+    """The authority's signature list served in pages of 1000 (`before` cursor)."""
+
+    def __init__(self, cur_slot, pages, **kw):
+        super().__init__(cur_slot, **kw)
+        self.pages = pages
+        self.n_pages = 0
+
+    def call(self, method, params):
+        if method == "getSignaturesForAddress" and params[0] == AUTH:
+            self.methods.append((method, params[0]))
+            i = self.n_pages
+            self.n_pages += 1
+            return self.pages[i] if i < len(self.pages) else []
+        return super().call(method, params)
+
+
+def _noise_page(start, n=1000):
+    return [{"signature": f"n{start + j}", "slot": start - j, "blockTime": 1, "err": {"x": 1}} for j in range(n)]  # failed txs: never fetched
+
+
+def test_bounded_walk_hits_the_page_cap_and_fails_closed():
+    cl = PagedAuthClient(500_000, [_noise_page(400_000 - 1000 * k) for k in range(c.MAX_WRITE_PAGES + 2)])
+    with pytest.raises(c.CheckError, match="not reached"):
+        c.list_upgrade_writes_bounded(cl, "pumpswap", PD, 100, 500_000, AUTH)
+    assert cl.n_pages == c.MAX_WRITE_PAGES
+
+
+def test_bounded_walk_full_page_then_short_page_reaches_the_pin():
+    up = AuthClient(500_000, txs=[("u500k", 500_000, [loader_ix(3)], None)])
+    first = [s for s in up.sigs if s["slot"] > 100][:1] + _noise_page(400_000, 999)  # a full page of 1000 that does not reach the pin
+    second = _noise_page(200_000, 10) + [{"signature": "before-pin", "slot": 90, "blockTime": 1, "err": None}]
+    cl = PagedAuthClient(500_000, [first, second], txs=[("u500k", 500_000, [loader_ix(3)], None)])
+    ws = c.list_upgrade_writes_bounded(cl, "pumpswap", PD, 100, 500_000, AUTH)
+    assert [w["new"] for w in ws] == [500_000] and cl.n_pages == 2
