@@ -11,8 +11,11 @@ registration, day-1 dry score, clean clock, not in a kill-review week). A FAIL o
 ## History disclosed (multiplicity and prior)
 - m10 came from the P14 screen on 10-14..10-16 (about 2.2 days of Swap2 era): flat +0.0212, pressure +0.0164 per attempt, 369 attempts, 12 cells, best of 12, 3 days.
 - #1494 (one-look holdout 10-17..10-23): NOT_DECIDABLE (tool defect, 0 trigger prints because EvtSwap3 was labelled a hook); printed "FAIL no attempts" stays on record. Those hours are SPENT for m10 and all D1 variants.
-- P17 screened 11 further cells (D2, D3, D4, new D6) on 10-17..10-23: all FAIL. Screened cells on this data family: 23; m10 is the only positive; m10 has never been priced on a Swap3 pool.
-  Expect less than +0.021. Registered cells for this read: ONE (m10) => k = 1, CI bound = the 5th percentile.
+- P17 screened 11 further cells (D2, D3, D4, new D6) on 10-17..10-23: all FAIL. Screened cells on this data family: 23; m10 is the only positive; the Swap3-era rehearsal below is disclosed. Registered cells for this read: ONE (m10) => k = 1, CI bound = the 5th percentile.
+
+- Rehearsal #1507 (tools/dbc_fwd_read.py end to end on exploration hours 10-14..10-16 with a patched window; exploration data, Swap2 + Swap3 pricing mix, not part of the read), verbatim: 589 attempts, 398 fills,
+  10 strands; flat +0.01358 per attempt (trade CI90 lo +0.00635), pressure +0.01051 (CI90 lo +0.00455); at a 2.5 s entry leg +0.0097 flat / +0.0078 pressure; 10-16 (83% Swap3 rows) 223 attempts at about
+  +0.004 per attempt, about one-fifth of the Swap2-era mean. Expectations are LOWERED accordingly: expect well below the +0.021 of the Swap2-era screen.
 
 ## R1 Window
 Fixed 7 UTC days [2026-10-25T00:00Z, 2026-11-01T00:00Z) (168 hours). If the tag and this registration are not both done before 2026-10-25T00:00Z, the window becomes the 7 days starting at the first 00Z
@@ -78,8 +81,9 @@ fee paid buy/sell/round trip bps; slot_s per hour; Swap3 share, hook / transfer-
 Output: fwd-m10.json + fwd-m10.md (sha256 in the md).
 
 ## R14 One look
-The look is consumed at the first "loaded" line (printed after the marker claim and config resolution, before any pool is loaded). A FAIL or NOT_DECIDABLE ends m10. No re-tuning, no other D1 variant
-on these hours, no second read, no smoke on window hours.
+The look is used at the marker claim: the tool prints "LOOK CONSUMED" immediately after claiming the marker, before any window file is opened. Any later failure (crash, missing key at fetch time, undecodable data,
+anything) is NOT_DECIDABLE and ends m10. A FAIL or NOT_DECIDABLE ends m10 and every D1 variant on DBC. No re-tuning, no other D1 variant on these hours, no second read, no smoke on window hours.
+Operational failures that can be checked beforehand (fetcher/key file/lock, out dir writable, time gate, preflight) are validated BEFORE the claim and exit without claiming.
 
 ## Before any live canary (QP section 3, not part of this read)
 Forward paper DBC book passing the gate under both fail models plus owner approval; a DBC executor (does not exist); md5 decision-equivalence replay proof; trigger and send on mal-fast-0 with a processed

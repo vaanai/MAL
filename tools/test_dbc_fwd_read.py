@@ -83,10 +83,15 @@ def test_empty_window_is_not_decidable_end_to_end():
     m = str(Path(tempfile.mkdtemp()) / "mk")
     base = Path(tempfile.mkdtemp()) / "base.json"
     base.write_text("{}")
+    import contextlib, io
+    buf = io.StringIO()
     try:
-        rc = R.run(out, root=str(_root(content=True)), now=LATE, marker=m, fetch=lambda ks: {}, base_map=str(base))
+        with contextlib.redirect_stdout(buf):
+            rc = R.run(out, root=str(_root(content=True)), now=LATE, marker=m, fetch=lambda ks: {}, base_map=str(base))
     finally:
         _reset()
+    o = buf.getvalue()
+    assert o.index("LOOK CONSUMED") < o.index("FORWARD WINDOW ENABLED")  # printed right after the claim, before the window guard opens or any file is read
     assert rc == 0 and Path(m).exists()
     res = json.loads((out / "fwd-m10.json").read_text())
     assert res["verdict"] == "NOT_DECIDABLE" and (out / "cfg_map_final.json").exists()

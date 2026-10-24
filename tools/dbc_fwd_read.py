@@ -221,6 +221,7 @@ def run(out_dir: Path, root: str | None = None, now: datetime | None = None, fet
     if not claim_marker(marker):
         print(f"REFUSED: one-look marker {marker} exists", file=sys.stderr)
         return 4
+    print("LOOK CONSUMED: marker claimed; any later failure is NOT_DECIDABLE and ends m10 (R14)", flush=True)  # before any window file is opened
     L.enable_swap3_pricing()
     L.enable_forward_window(root)
     counts = scan_configs(root)
@@ -229,7 +230,6 @@ def run(out_dir: Path, root: str | None = None, now: datetime | None = None, fet
     L.load_config_thresholds(str(out_dir / "cfg_map_final.json"))
     L.CFG_UNMAPPED.clear()
     L.CFG_UNMAPPED.update(rep["unmapped"])
-    print("loaded: window config map ready; the look is consumed", flush=True)  # R14: consumed here
     meta: dict[str, Any] = {
         "schema": "dbc_fwd_m10_v1", "taken_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "commit": subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, cwd=Path(__file__).resolve().parent.parent).stdout.strip(),
