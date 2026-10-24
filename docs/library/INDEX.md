@@ -32,9 +32,9 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `explored-survivor-unconfirmed` | 9 | 0 | 0 |
 | `parked` | 8 | 0 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 40 | 20 | 1 |
+| `untested` | 39 | 20 | 1 |
 | `desk-read` | 1 | 43 | 0 |
-| `explored-no-survivor` | 38 | 6 | 1 |
+| `explored-no-survivor` | 39 | 6 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
 | **all** | 177 | 75 | 2 |
 
@@ -117,7 +117,6 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `census-damm2-grad` | Meteora DAMM v2 pools born from DBC migration | launchpad migration | After P12 migration rows exist. |
 | `dbc-completion-hold` | Meteora DBC curve_complete then DAMM v2 hold (FLOOR-style) | DBC screens (P14, 2026-10-24) | Probe fetch, then its own DECLARE. |
 | `p20-dbc-completion-step` | DBC completing buy into the migration price step (buy at p >= 0.95, sell on first DAMM v2 … | P20 fresh ideas (2026-10-24) | None toward a book. Optional exploration screen per QP-RULING-1024-p20 (d) (DECLARE first; uniform sample primary; DAMM prints only < min(+24 h, end of the DBC block used), never >= 10-25T00Z). |
-| `p20-wick-bid-zero-latency` | Resting-bid wick capture: one-sided bid liquidity filled at the dump print's own price … | P20 fresh ideas (2026-10-24) | Kill test: dump-absorb triggers in tools/arena_screen.py with entry at the sell's post-trade state, PumpSwap exploration blocks only (explore-0814, fresh-0903, exp011-0909, fast pre-cut, Oracle in-sample); 0 credits. |
 | `p20-dbc-segment-convexity` | DBC multi-segment curve: enter just before a thin-liquidity segment boundary | P20 fresh ideas (2026-10-24) | Config refetch (curve segments); DECLARE boundary bands 1%/3% of quote before the boundary. DBC hours [10-14T00,10-17T00) exploration; [10-17T00,10-24T00) only as disclosed exploration with QP OK (not a D1 variant); no DBC hour >= 2026-10-25T00 opened or registered before the m10 read (REGISTRATION R3/R12). |
 | `p20-atomic-xpool-bundle` | Atomic two-pool arbitrage in a revert-unless-surplus bundle (cross-program: PumpSwap vs … | P20 fresh ideas (2026-10-24) | Structure count at today's account state (getProgramAccounts by mint, ~30-60k credits assumed for 2,000 mints); then a forward public-logsSubscribe gap logger from a registered start. No October pump tape (ledger D2/D3). |
 | `p20-incentive-farming` | Trading-incentive farming: platform volume rewards vs round-trip cost on the cheapest … | P20 fresh ideas (2026-10-24) | Desk list of live Solana programmes with official terms (0 credits); owner policy check before any test. |
@@ -386,6 +385,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `dbc-d5-post-graduation-hold` | Buy a migrated DAMM v2 pool 1.9 s after migration, hold (tp +50%/23 h, +25%/6 h, time 1 h) | `explored-no-survivor` | Capacity: only 0.5% of migrated pools let a 0.25 SOL buy move the spot <= 2% (47% <= 5%, the rest far larger), so the declared universe has 6-8 attempts in 3 days (<3/day) and is dropped unpriced. Post-hoc at <=5% impact: tp+50%/23h flat +0.0084 but ex-best-day -9.2 and CI lo <0; tp+25%/6h -0.0075; time-only 1 h -0.204 (most pools collapse). Not a result. |
 | `p20-dbc-start-floor` | DBC curve start-price floor option (buy pools back near sqrt_start_price, tp +50%) | `explored-no-survivor` | P21 exploration screen (E1 10-14..16 + E2 10-17..23 as disclosed exploration; m 26->32): 4 cells (band 1.02/1.05 x cap 6 h/24 h, prior peak >= 2x start, age >= 30 min, tp +50%) all FAIL. Primary d7_s105_h6: n 150, 1/10 days positive, flat -0.0070 (CI90 lo -0.0083, ex-top-3 -1.20), pressure -0.0058 (CI90 lo -0.0070). 97-100% of trips end at the time cap (dead pools, as … |
 | `p20-dbc-fee-floor-clock` | DBC/DAMM v2 anti-sniper fee-expiry clock: pre-signed buy landing at the fee-scheduler or … | `explored-no-survivor` | P21 exploration screen (E1 + E2 disclosed exploration; m 26->32): config fee schedule decoded and validated (non-dynamic configs 92-95% of tape fees within 1 bp); 634 of 7,399 configs have a schedule (modes linear/exponential; no rate limiter in candidates). 2 cells, time exit 60 s / 300 s, landing expiry + 2 slots: both FAIL. Primary d9_t60: n 123, 2/10 days positive, flat … |
+| `p20-wick-bid-zero-latency` | Resting-bid wick capture: one-sided bid liquidity filled at the dump print's own price … | `explored-no-survivor` | Latency-0 upper bound DEAD (P22, 2026-10-24, declared rule): entering at the sell's post-trade state on dump-absorb D8/D15 triggers, exploration blocks explore-0814/fresh-0903/exp011-0909 (28 days), pooled net of 25 bps and 505k-lamport sends, flat 15%: D8-300 mean -0.0208 SOL/trade at 0.1 SOL (n 336,648, CI90 lo -0.0210, 0 of 28 days positive), D15-300 -0.0316 (n 87,282). … |
 
 ## Duplicate rows
 
