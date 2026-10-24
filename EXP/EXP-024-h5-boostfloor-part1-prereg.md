@@ -1295,6 +1295,71 @@ buy and hold to just before BOOST's last slice.
 
 QP OK and reviewer verdict: on the PR at its merged head; the records PR cites the comment ids.
 
+### Note under Amendment 10 (written 2026-10-24T01:27Z from `date -u` on mal-research-0; before the Q50 book's clock 2026-10-25T00:00:00Z, so before any Q50 trigger outcome exists on any pool; outcome-blind; text only): declared real-time observation of the arena H5 executor's dry and live outcomes for `h5v1q50-boostfloor-a1` (QP-SCOPE-1022-h5exec item 17)
+
+Text only. This is the "EXP-024 observation note" that the QP scoping ruling for the arena H5 executor requires (`/data/mal/hunt-1008/push-1016/hunt25/QP-SCOPE-1022-h5exec.md`, item 17). The later rulings require the same note before `FEED_NOTE_MERGED` (`hunt28/l1a/QP-RULING-1023-exec.md` (6); `QP-RULING-1023-wiring.md` blocker 12; `hunt29/p1/QP-RULING-1024-live-prs.md` (b), (c)). Nothing here says that any book makes money. No book has cleared the promotion gate.
+
+**Gating.** This note merges, with quant-proof's OK and a reviewer verdict on its exact final head, BEFORE `tools/h5_arena_executor.py` reads any live feed, dry runs included. In code that is the constant `FEED_NOTE_MERGED`. A separate, reviewed PR flips it, after this note's merge commit exists. The md5 decision-equivalence replay for the book is run again at the flip's merge commit (QP-RULING-1024-live-prs (b)). Until the flip merges, the executor reads replay inputs only (`replay_only`), and a live start is refused (`live_feed_note_unmerged`).
+
+**What was in view.** The writer opened none of these:
+- a canary or probe ledger, or any probe P&L;
+- a shadow outcome, fill, exit, strip or P&L record;
+- an arena ledger, `bots.json` or `runner-status.json`;
+- any row of forward-1002, forward-1002ev or walk 2;
+- any sealed path.
+
+In view:
+- this file through Amendment 10;
+- DEC-031 through Amendment 10 (`024ee714`), including the a2 end state in its item 4;
+- DEC-032 and its Amendment 1;
+- the source of `tools/h5_arena_executor.py`, `tools/h5_arena_gates.py`, `tools/arena_twin_writer.py`, `tools/arena_live_parity.py`, `tools/arena_tieout*.py` and `tools/h5_shadow.py`, at main `542ce714`;
+- the QP rulings named above;
+- the manager's relayed result of md5 job #1456 for Q50 at `542ce714`: EQUAL, Run B 101/101. That is a count and a hash on the 2026-09-20 exploration day, outside every counted window, and no outcome.
+
+No Q50 trigger outcome exists on any October pool at writing: the Q50 clock is 2026-10-25T00:00:00Z.
+
+- **(a) Scope.** One `bot_id`: `h5v1q50-boostfloor-a1`.
+  - Pins:
+    - rule `H5-BOOSTFLOOR-Q50 v1` (Amendment 10; `EXP/EXP-024-RULE-Q50.md` sha256 `b3f8ecbf8731dc322a035a0b3996b7ed3f0b8c508cc6947014e3de1aa9524fd4`);
+    - `frozen_sha` `a5f413704eb120c8f529101a6186e3a95de7f83e`;
+    - `clock_start_ms` 1792886400000.
+  - The executor is `tools/h5_arena_executor.py` with this book compiled into its `BOOKS` table. It runs at a main commit that contains this note and the flip PR. A process at any other code, or for any other `bot_id`, is not covered.
+  - Covered pools: s0 in `[2026-10-25T00:00:00Z, 2026-11-06T00:00:00Z)`. These are also the executor's own window refusals: `s0_outside_book_window` with the 60 s s0 margin, `decision_outside_book_window`, and the 2026-11-06T00Z seal end, which is clamped in code.
+  - What may be observed in real time, by anyone, as in Amendment 2:
+    - the executor's dry decision rows and its outcome-blind dry sell rows;
+    - its live fills, exits, wallet deltas and realized P&L;
+    - its parity files (`trips.jsonl`, `attempts.jsonl`, `state.json`, `parity-result.json`) and its exit-gap rows;
+    - the paper-twin rows that `tools/arena_twin_writer.py` prices for its live trips;
+    - the daily tie-out results.
+- **(b) The joins this note allows, and no others before 2026-11-14T00:00Z.**
+  1. The twin writer joins each live trip to the book's own ledger row. It prices it at the scorer's own pool states, read from the book's own arena shadow strip records, as the twin of that trip.
+  2. `tools/arena_live_parity.py` joins live trips to those twin rows.
+  3. The executor's exit-gap writer compares each live sell with its twin's exit price.
+  4. The tie-out matches executor sends and trips to the wallet's chain transactions.
+
+  No other join of executor rows to arena outcomes is made before 2026-11-14T00:00Z (QP-SCOPE-1022-h5exec, "No join of executor rows to arena outcomes before 2026-11-14 except under item 17").
+- **(c) Not covered.**
+  - `h5v1-boostfloor-a2` and `h5v2-boostclock-a2`: they ENDED NOT_DECIDABLE (DEC-031 Amendment 10 item 4). The executor refuses their live feed in code.
+  - Any revival of them under a new `bot_id`: that needs its own note.
+  - Any pool outside (a)'s window.
+  - Any outcome computed from any other source.
+  - Any outcome split by synthetic class.
+- **(d) Synthetic class (Amendment 4 D1).** Before 2026-11-14T00:00Z no executor, twin, parity, exit-gap or tie-out record carries an outcome for a synthetic or unclassified pool, and none splits an outcome by class. The executor refuses such pools before any order: `synthetic_unconfirmed`, `excluded_pool`. So they have no fill, no twin and no trip.
+- **(e) Independence.**
+  - Nothing the executor shows may stop, delay, re-scope or change the Q50 book's gate read (DEC-031 §2), its ledger or its scorer. Executor rows are never an input of `tools/arena_h5_score.py` or `tools/arena_h5_score_q50.py`.
+  - Nothing changes any EXP-024 parameter or record. EXP-024's own read ended NOT_DECIDABLE on 2026-10-13 and is not revived (Amendment 9 (b)).
+  - A canary halt stops the canary only (DEC-032 §7).
+  - Every report about the executor's live trips is labelled "unpromoted execution measurement". The confirmation report carries the concurrent-observation disclosure of DEC-032 §7.
+- **(f) No send authorised.** This note declares an observation. It authorises no live send, no wallet use, no tier and no `LIVE_OK`. A live send still needs every DEC-032 precondition:
+  - a gate PASS;
+  - a merged canary copy with QP OK, a reviewer verdict and the owner's line;
+  - Helm's root-owned `/etc/mal-h5/LIVE_OK`, `/etc/mal-h5-arena/LIVE_OK` (naming this `bot_id`) and `/etc/mal-h5-arena/TIER` (T1);
+  - the live drop-in with the credential;
+  - the owner's funding.
+- **(g) Disclosure.** Real-time observation of this book's executor outcomes is declared from the book's clock. The executor's dry run is keyless and places no orders. No statement here says any book makes money, and no book has cleared the promotion gate.
+
+QP OK and reviewer verdict: on the PR at its merged head; the flip PR cites the comment ids.
+
 ## Sources
 
 - `/data/mal/hunt-1008/h5-flows/{RULE,REPORT,VERIFY}.md` and `out/`

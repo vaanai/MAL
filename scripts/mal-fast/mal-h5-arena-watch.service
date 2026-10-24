@@ -1,0 +1,41 @@
+[Unit]
+Description=MAL H5 arena canary watchdog (DEC-032): keyless checks of mal-h5-arena-executor, alerts to Discord
+Documentation=https://github.com/vaanai/MAL
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+# /etc/mal-h5-arena-watch/watch.env (root:root 0600 in a root:root 0700 dir): ARENA_WATCH_DISCORD_WEBHOOK (a secret, never printed),
+# ARENA_WATCH_FEED_DIR, ARENA_WATCH_TWINS_FILE, ARENA_WATCH_TIEOUT_DIR, optional ARENA_WATCH_WALLET (public) + ARENA_WATCH_FUNDED_SOL. No "-": a missing file fails.
+EnvironmentFile=/etc/mal-h5-arena-watch/watch.env
+ExecStartPre=+/usr/bin/env -i /bin/sh -c 'test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-h5-arena-watch)" = 0:0:700 && test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-h5-arena-watch/watch.env)" = 0:0:600'
+# Stdlib only, -I -S, from the root-owned pinned arena tree. It holds no key and never needs one: the key and RPC-key paths are fenced off.
+ExecStart=/usr/bin/python3 -I -S -B -u /usr/local/lib/mal-h5-arena-exec/current/scripts/mal-fast/h5-arena-watch.py
+StateDirectory=mal-h5-arena-watch
+StateDirectoryMode=0700
+TimeoutStartSec=120
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+InaccessiblePaths=-/etc/mal-h5-arena-key -/etc/mal-probe -/etc/mal-probe-rpc -/run/credentials
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+MemoryMax=256M
+MemorySwapMax=0
+UMask=0077

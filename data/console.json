@@ -1,8 +1,37 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-22T19:52:00Z",
+ "updated_utc": "2026-10-24T01:45:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "q50-registered-1024",
+   "kind": "decision",
+   "title": "Q50 (h5v1q50-boostfloor-a1) registered, clock 2026-10-25T00:00Z",
+   "detail": "P0 PASS: 46/25/35 triggers per day (mean 35.33, min 25), no feed gap; H 14 days. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-24T00:20:00Z"
+  },
+  {
+   "id": "h5-a2-ended-1024",
+   "kind": "finding",
+   "title": "H5 a2 books ended by A3 guard halt (NOT_DECIDABLE)",
+   "detail": "h5v1-boostfloor-a2 and h5v2-boostclock-a2 were ended before their clock by an A3 guard halt on 2026-10-22T19:10Z (synthetic_share_high 8/19 = 0.421); final state NOT_DECIDABLE, 0 counted attempts. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-24T00:45:00Z"
+  },
+  {
+   "id": "a3-guard-fixed-1024",
+   "kind": "decision",
+   "title": "A3 guard fixed (pooled synthetic z-test)",
+   "detail": "DEC-031 Amendment 10, PR #840 + #845: pooled synthetic z-test; false-halt chance over a 12-day book about 2% instead of about 98%; guard redeployed at pin 0ec7fae8, first run green. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-24T00:57:00Z"
+  },
+  {
+   "id": "live-path-merged-1024",
+   "kind": "decision",
+   "title": "Live-path PRs merged (dry only); Q50 FEED_NOTE flip",
+   "detail": "Six live-path PRs merged (#836 #838 #839 #843 #846 #847), dry only; FEED_NOTE flip for Q50 only (#851, #852) merged; install sha e2471186; Q50 md5 decision-equivalence EQUAL (101/101 attempts). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-24T01:20:00Z",
+   "approx": true
+  },
   {
    "id": "am6-merged-1022",
    "kind": "decision",
@@ -1104,6 +1133,56 @@
  ],
  "ladder": [
   {
+   "id": "Q50",
+   "title": "Q50 (h5v1q50-boostfloor-a1) H5 BOOST-floor",
+   "stage": "registered, clock 2026-10-25T00:00Z",
+   "note": "P0 PASS: 46/25/35 triggers per day (mean 35.33, min 25), no feed gap; H 14 days. No book has cleared the promotion gate.",
+   "tag": {
+    "text": "registered",
+    "tone": "accent"
+   }
+  },
+  {
+   "id": "h5v1-boostfloor-a2",
+   "title": "H5 a2 v1 (h5v1-boostfloor-a2)",
+   "stage": "NOT_DECIDABLE (ended before clock)",
+   "note": "Ended by A3 guard halt 2026-10-22T19:10Z (synthetic_share_high 8/19 = 0.421); 0 counted attempts. No book has cleared the promotion gate.",
+   "tag": {
+    "text": "not decidable",
+    "tone": "warn"
+   }
+  },
+  {
+   "id": "h5v2-boostclock-a2",
+   "title": "H5 a2 v2 (h5v2-boostclock-a2)",
+   "stage": "NOT_DECIDABLE (ended before clock)",
+   "note": "Ended by A3 guard halt 2026-10-22T19:10Z (synthetic_share_high 8/19 = 0.421); 0 counted attempts. No book has cleared the promotion gate.",
+   "tag": {
+    "text": "not decidable",
+    "tone": "warn"
+   }
+  },
+  {
+   "id": "HV4",
+   "title": "HV4 (9 Haiku bots)",
+   "stage": "registering 10-24 night",
+   "note": "X-rule fixed by QP ruling (X = 120 s); thresholds pinned; P0 count running; clock 2026-10-25T00:00Z. No book has cleared the promotion gate.",
+   "tag": {
+    "text": "registering",
+    "tone": "accent"
+   }
+  },
+  {
+   "id": "FLOOR",
+   "title": "FLOOR",
+   "stage": "clock 2026-10-26T00:00Z",
+   "note": "Same sign on unseen fresh-0903 but about 55% smaller (flat +0.0073 vs +0.0161 SOL/trade); exploration screen numbers, not evidence. No book has cleared the promotion gate.",
+   "tag": {
+    "text": "clock 10-26T00Z",
+    "tone": "accent"
+   }
+  },
+  {
    "id": "EXP-024",
    "title": "EXP-024 H5-BOOSTFLOOR v1 (buy the drained pool while BOOST buys, sell at s0+330 s)",
    "stage": "pre-registered",
@@ -1299,6 +1378,18 @@
   }
  ],
  "for_you": [
+  {
+   "id": "fy-20261024-helm-sheet",
+   "from": "claude",
+   "text": "Action for you: relay HELM-SHEET (hunt29/p1/HELM-SHEET.md) to Helm: a keyless dry install of the Q50 executor plus a 1 h dry run, before about 10-29. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-24T01:45:00Z"
+  },
+  {
+   "id": "fy-20261024-wallet",
+   "from": "claude",
+   "text": "Action for you: have a fresh ~0.5 SOL wallet ready around 10-29. Fund it only after a Q50 gate PASS (earliest about 10-30). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-24T01:45:00Z"
+  },
   {
    "id": "fy-20261022-helm-feearm",
    "from": "claude",
@@ -1661,6 +1752,49 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261024-manager15-screens",
+   "from": "claude",
+   "kind": "result",
+   "text": "Research (exploration screen numbers, not evidence): exit variants (P3): none beat baseline. Four new high-rate ideas (P4): all negative. FLOOR on unseen fresh-0903 (P7): same sign but about 55% smaller (flat +0.0073 vs +0.0161 SOL/trade). Stacked FLOOR+H5 model (P5): about $29/$43/$59 a day at 1/2/5 SOL on paper, $10/$16/$27 at half edge. New venue tape recording started (Raydium LaunchLab, Meteora DBC). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-24T01:45:00Z"
+  },
+  {
+   "id": "s-20261024-0125-hv4",
+   "from": "claude",
+   "kind": "decision",
+   "text": "HV4 X-rule fixed by QP ruling (X = 120 s); HV4 thresholds pinned; HV4 P0 count running; registration tonight for the 2026-10-25T00Z clock. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-24T01:25:00Z"
+  },
+  {
+   "id": "s-20261024-0120-live-merge",
+   "from": "claude",
+   "kind": "status",
+   "text": "Six live-path PRs merged (#836 #838 #839 #843 #846 #847), dry only. FEED_NOTE flip for Q50 only (#851, #852) merged; install sha e2471186; Q50 md5 decision-equivalence EQUAL (101/101 attempts). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-24T01:20:00Z",
+   "approx": true
+  },
+  {
+   "id": "s-20261024-0057-a3",
+   "from": "claude",
+   "kind": "decision",
+   "text": "A3 guard fixed: pooled synthetic z-test (DEC-031 Amendment 10, PR #840 + #845); false-halt chance over a 12-day book about 2% instead of about 98%; guard redeployed at pin 0ec7fae8, first run green. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-24T00:57:00Z"
+  },
+  {
+   "id": "s-20261024-0045-a2",
+   "from": "claude",
+   "kind": "finding",
+   "text": "The H5 a2 books (h5v1-boostfloor-a2, h5v2-boostclock-a2) were ended before their clock by an A3 guard halt on 2026-10-22T19:10Z (synthetic_share_high 8/19 = 0.421); final state NOT_DECIDABLE, 0 counted attempts. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-24T00:45:00Z"
+  },
+  {
+   "id": "s-20261024-0020-q50",
+   "from": "claude",
+   "kind": "result",
+   "text": "Q50 (h5v1q50-boostfloor-a1) P0 PASS: 46/25/35 triggers per day (mean 35.33, min 25), no feed gap; registered, clock 2026-10-25T00:00Z, H 14 days. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-24T00:20:00Z"
+  },
   {
    "id": "s-20261022-m14-1952",
    "from": "claude",
