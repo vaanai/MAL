@@ -3,7 +3,9 @@
 # solders (+ jsonalias, typing_extensions). The three solders pins are identical to requirements-probe-exec.txt (a test checks it).
 # Install ONLY with: pip install --require-hashes --only-binary=:all: --no-deps --no-cache-dir -r this-file
 # numpy: sha256 of numpy-2.5.3-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl from pypi.org/pypi/numpy/2.5.3/json (uploaded 2026-09-06),
-# read 2026-10-24; 2.5.3 is the research-0 venv's version, the one the tests ran on.
+# read 2026-10-24; 2.5.3 is the research-0 venv's version, the one the tests ran on. QP #838 condition 4: the sha256 was also checked against the
+# DOWNLOADED wheel (pip download --only-binary=:all: --platform manylinux_2_28_x86_64 --python-version 3.12 --abi cp312 numpy==2.5.3): equal.
+# A fresh python3.12 venv built from this file with --require-hashes holds exactly these four, and imports the arena closure (2026-10-24, research-0).
 solders==0.29.0 \
     --hash=sha256:00524baf575ae5edb2ba43cdb1d80491c59efdc16b48fec96a6f929c0401d0e4
 jsonalias==0.1.1 \
