@@ -284,7 +284,7 @@ class ExitWindowMarkTests(LadderCase):
         now, guard = self.two_positions(e, 20_000)
         for m, p in e.ex.state.open.items():  # the last marks, taken just before each window (cost 0.10015 vs value 0.0999: a 0.25 % loss)
             e.ex._marks[m] = (49_900_000, p["h5"]["plan"]["send_wall_ms"] - guard - 1_000)
-        e.clock.t += 20_000 + 4_000 + 15_000 - guard  # both positions inside their windows, the marks now more than 10 s old
+        e.clock.t += 20_000 + 4_000 + 5_000  # both positions inside their windows (up to send + 10 s), the marks now more than 10 s old
         self.assertLess(e.ex.daily_loss_now(e.ex.now_ms()), ld.LADDER["C0"].daily_trigger_lamports)
         e.ex.ladder_tick(e.ex.now_ms())
         self.assertIsNone(e.ex._trigger_day)
@@ -362,3 +362,31 @@ class UnlockReverifyTests(C1Helpers):
                 mock.patch.object(ld, "verify_unlock", lambda *a, **k: (True, None)):
             e.ex._ladder_pre_buy(e.ex.now_ms())
         self.assertEqual(e.ex._rung(), "C1")
+
+
+class CarryBoundTests(LadderCase):
+    two_positions = ExitWindowMarkTests.two_positions
+
+    def test_a_position_still_open_15_s_after_its_send_counts_at_zero(self):
+        e = self.q50(ceiling="T1")
+        now, guard = self.two_positions(e, 20_000)
+        m0 = next(iter(e.ex.state.open))
+        e.ex.state.open = {m0: e.ex.state.open[m0]}
+        send = e.ex.state.open[m0]["h5"]["plan"]["send_wall_ms"]
+        e.ex._marks[m0] = (49_900_000, send - guard - 1_000)
+        e.clock.t = send + 9_999
+        self.assertEqual(e.ex.daily_loss_now(e.ex.now_ms()), 250_000)  # carried until send + 10 s
+        e.clock.t = send + 15_000  # a stuck or failed sell: still open 15 s after its send instant
+        self.assertEqual(e.ex.daily_loss_now(e.ex.now_ms()), 50_150_000)
+
+    def test_a_mark_older_than_the_3_s_lead_at_window_open_is_not_carried(self):
+        e = self.q50(ceiling="T1")
+        now, guard = self.two_positions(e, 20_000)
+        m0 = next(iter(e.ex.state.open))
+        e.ex.state.open = {m0: e.ex.state.open[m0]}
+        send = e.ex.state.open[m0]["h5"]["plan"]["send_wall_ms"]
+        e.ex._marks[m0] = (49_900_000, send - guard - ax.LAST_MARK_LEAD_MS - 1)  # 1 ms before the lead: not a last pre-window mark
+        e.clock.t = send - guard + 11_000  # inside the window, the mark more than 10 s old
+        self.assertEqual(e.ex.daily_loss_now(e.ex.now_ms()), 50_150_000)
+        e.ex._marks[m0] = (49_900_000, send - guard - ax.LAST_MARK_LEAD_MS)  # exactly at the lead start: carried
+        self.assertEqual(e.ex.daily_loss_now(e.ex.now_ms()), 250_000)
