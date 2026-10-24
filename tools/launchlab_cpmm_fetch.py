@@ -131,14 +131,16 @@ def instructions(tx: dict[str, Any]) -> list[tuple[str, list[str], bytes, int]]:
 
 def pool_from_migration_tx(tx: dict[str, Any]) -> dict[str, Any] | None:
     ixs = instructions(tx)
-    init = next(((a, d) for p, a, d, _ in ixs if p == CPMM and d[:8] in INIT_DISCS and len(a) >= 12), None)
+    init = next(((a, d) for p, a, d, _ in ixs if p == CPMM and d[:8] in INIT_DISCS and len(a) >= 13), None)
     if init is None:
         return None
     a, _ = init
     ll = next((acc for p, acc, d, dep in ixs if p == LAUNCHLAB and dep == 1), [])
-    m0, m1 = a[4], a[5]
-    return {"cpmm_pool": a[3], "mint0": m0, "mint1": m1, "vault0": a[10], "vault1": a[11], "amm_config": a[1], "creator": a[0],
-            "token_mint": m1 if m0 == WSOL else m0, "wsol_is_token0": m0 == WSOL, "ll_accounts": ll}
+    # initialize_with_permission accounts (verified against the on-chain PoolState of two migrations: amm_config, creator, vaults and mints match):
+    # 0 payer, 1 creator, 2 amm_config, 3 permission, 4 pool_state, 5 token_0_mint, 6 token_1_mint, 7 lp_mint, ..., 11 token_0_vault, 12 token_1_vault
+    m0, m1 = a[5], a[6]
+    return {"cpmm_pool": a[4], "mint0": m0, "mint1": m1, "vault0": a[11], "vault1": a[12], "amm_config": a[2], "creator": a[1],
+            "token_mint": m1 if m0 == WSOL else m0, "wsol_in_pool": WSOL in (m0, m1), "wsol_is_token0": m0 == WSOL, "ll_accounts": ll}
 
 
 # ------------------------------------------------------------------------------------------------------------------------ CPMM swap decode
@@ -271,6 +273,10 @@ def process_migration(out: Path, call, credits: vb.Credits, m: dict[str, Any], m
     if meta is None:
         return {"signature": m["signature"], "status": "no_cpmm_init", "credits": credits.used - before}
     t0 = m["block_time"]
+    if not meta["wsol_in_pool"]:
+        write_pool_file(out, meta["cpmm_pool"], [{"v": vt.SCHEMA_V, "venue": VENUE, "type": "pool_meta", "src": "backfill", "slot": m["slot"], "t_recv_ms": t0 * 1000, "block_time": t0,
+                                                  "signature": m["signature"], "event_index": 0, **meta, "history_not_fetched": "non_wsol_quote"}])
+        return {"signature": m["signature"], "status": "non_wsol_quote", "cpmm_pool": meta["cpmm_pool"], "block_time": t0, "credits": credits.used - before}
     rows, st = fetch_pool(call, credits, meta["cpmm_pool"], t0, t0 + HIST_S, max_pages=max_pages)
     head = {"v": vt.SCHEMA_V, "venue": VENUE, "type": "pool_meta", "src": "backfill", "slot": m["slot"], "t_recv_ms": t0 * 1000, "block_time": t0, "signature": m["signature"],
             "event_index": 0, **meta, "window": [t0, min(t0 + HIST_S, int(L.EXPLORE_END.timestamp()))], **st}
@@ -361,8 +367,8 @@ def main(argv: list[str] | None = None) -> int:
     if a.mode == "probe":
         start = datetime.strptime(a.probe_from, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)
         hrs = [h for h in L.exploration_hours() if h >= start][:48]
-        ms = migrations_from_tape(hours=hrs)[: a.n]
-        print(f"probe: {len(ms)} migrations", flush=True)
+        ms = migrations_from_tape(hours=hrs)[:40]
+        print(f"probe: scanning up to {len(ms)} migrations for {a.n} WSOL pools", flush=True)
         slot = acquire_slot(a.lockdir)
         call = vb.http_rpc(url, vb.Pacer(a.rps))
         res = []
@@ -370,7 +376,9 @@ def main(argv: list[str] | None = None) -> int:
             r = process_migration(out, call, credits, m, a.max_pages)
             res.append(r)
             print(json.dumps(r), flush=True)
-        print(json.dumps({"probe_credits_assumed": credits.used, "pools": len(res), "per_pool": credits.used / max(len(res), 1)}))
+            if sum(1 for x in res if x["status"] == "ok") >= a.n:
+                break
+        print(json.dumps({"probe_credits_assumed": credits.used, "migrations_resolved": len(res), "pools_fetched": sum(1 for x in res if x["status"] == "ok"), "non_wsol": sum(1 for x in res if x["status"] == "non_wsol_quote")}))
         slot.close()
         return 0
     deadline = time.time() + a.wait_h * 3600
