@@ -8,6 +8,7 @@ clears, and an EVENT when STOP is placed or removed. A check that cannot run is 
 
 Checks (alert names):
   watch_config            the env file is missing a value or a value is invalid
+  watch_internal_error    the checks raised (a bug or an unexpected shape): posted, never a silent oneshot failure
   systemctl_failed        systemd did not answer
   unit_failed             mal-h5-arena-executor ActiveState is failed
   unit_restarted          NRestarts went up since the last run
@@ -136,7 +137,15 @@ def config(env: dict[str, str]) -> tuple[dict[str, Any] | None, str | None]:
 
 
 def collect(host: Host, env: dict[str, str], now: float) -> tuple[dict[str, str], dict[str, Any]]:
-    """(alerts by name, observations). Never raises."""
+    """(alerts by name, observations). Never raises: any unexpected error, whatever its shape, is the alert watch_internal_error."""
+    obs: dict[str, Any] = {"active": "unknown", "restarts": None, "stop": None, "live": None}
+    try:
+        return _collect(host, env, now)
+    except Exception as exc:  # noqa: BLE001 - a silent watchdog is the one failure it must not have
+        return {"watch_internal_error": f"the checks raised {type(exc).__name__}; nothing below was checked"}, obs
+
+
+def _collect(host: Host, env: dict[str, str], now: float) -> tuple[dict[str, str], dict[str, Any]]:
     alerts: dict[str, str] = {}
     obs: dict[str, Any] = {"active": "unknown", "restarts": None, "stop": None, "live": None}
     cfg, why = config(env)
@@ -169,6 +178,12 @@ def collect(host: Host, env: dict[str, str], now: float) -> tuple[dict[str, str]
     except (OSError, ValueError):
         alerts["state_unreadable"] = "the live state or counters cannot be read (symlink, not regular, oversize or not JSON)"
         counters = None
+    shapes_ok = (st is None or (isinstance(st, dict) and isinstance(st.get("open", {}), dict) and isinstance(st.get("pending", {}), dict))) and \
+        (counters is None or (isinstance(counters, dict) and isinstance(counters.get("halts", {}), dict)))
+    if not shapes_ok:  # a list, a string or a wrong-typed field is not a clear state (reviewer #846 items 1-2)
+        alerts["state_unreadable"] = "the live state or counters have the wrong shape (not an object, or open/pending/halts not objects)"
+        st = st if isinstance(st, dict) and isinstance(st.get("open", {}), dict) and isinstance(st.get("pending", {}), dict) else None
+        counters = counters if isinstance(counters, dict) and isinstance(counters.get("halts", {}), dict) else None
     if isinstance(st, dict):
         open_, pending = st.get("open") or {}, st.get("pending") or {}
         if (open_ or pending) and not active:

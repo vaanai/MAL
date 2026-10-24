@@ -198,3 +198,28 @@ def test_units_are_keyless_and_fenced():
     src = (MF / "h5-arena-watch.py").read_text()
     imports = {line.split()[1].split(".")[0] for line in src.splitlines() if line.startswith(("import ", "from "))}
     assert imports <= {"__future__", "json", "os", "re", "stat", "subprocess", "sys", "time", "urllib", "datetime", "pathlib", "typing"}, imports  # stdlib only (-S)
+
+
+@pytest.mark.parametrize("state, counters", [
+    (js({"open": [1]}), None), (js({"open": "x"}), None), (js([1, 2]), None), (js("text"), None), (js({"pending": 3}), None),
+    (None, js({"halts": 5})), (None, js([1])), (None, js({"halts": ["a"]})),
+])
+def test_wrong_shapes_are_state_unreadable_never_a_crash(state, counters):
+    files = {}
+    if state is not None:
+        files[STATE] = state
+    if counters is not None:
+        files[COUNTERS] = counters
+    a = alerts(FakeHost(files=files))
+    assert "state_unreadable" in a, a
+
+
+def test_an_unexpected_error_is_an_alert_and_is_posted(tmp_path):
+    class Broken(FakeHost):
+        def exists(self, p):
+            raise ZeroDivisionError("bug")
+    a = alerts(Broken())
+    assert set(a) == {"watch_internal_error"}
+    posted = []
+    assert W.run(Broken(), ENV, lambda hook, c: posted.append(c), tmp_path / "s.json", NOW) == 0
+    assert posted and "watch_internal_error" in posted[0]
