@@ -278,8 +278,13 @@ def derive(a: dict[str, np.ndarray], pid: np.ndarray, cfg: np.ndarray, iso: np.n
         b1 = np.where(buy, aout, ain)
         Lq0, Lq1 = q0 * Q128 / dS, q1 * Q128 / dS
         Lb0, Lb1 = b0 * S0 * S1 / dS, b1 * S0 * S1 / dS
-        e0, e1 = np.abs(Lq0 / Lb0 - 1.0), np.abs(Lq1 / Lb1 - 1.0)
-        big = (np.minimum(q0, q1) >= MIN_L_QUOTE) & (fee > 0)
+        # Mode LABELS are kept exactly as in 5ea8bf17 (QP A2: "fix the sell fee only"): evidence for sells still uses the legacy mode-1 sell legs (quote = amount_out, base = amount_in - fee).
+        # Only the PRICING of sells (and the L implied by sells) uses the fee-on-quote-output legs below.
+        q1_ev = np.where(buy, ain - fee, aout)
+        b1_ev = np.where(buy, aout, ain - fee)
+        Lq1_ev, Lb1_ev = q1_ev * Q128 / dS, b1_ev * S0 * S1 / dS
+        e0, e1 = np.abs(Lq0 / Lb0 - 1.0), np.abs(Lq1_ev / Lb1_ev - 1.0)
+        big = (np.minimum(q0, q1_ev) >= MIN_L_QUOTE) & (fee > 0)
         if iso is not None:
             big = big & iso  # evidence only from rows whose pre-state is certain (see order_fix)
         ev = np.where(big & (e0 < MODE_TOL) & (e1 >= MODE_TOL), 0, np.where(big & (e1 < MODE_TOL) & (e0 >= MODE_TOL), 1, -1))
