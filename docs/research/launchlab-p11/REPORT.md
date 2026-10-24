@@ -31,3 +31,12 @@ Sensitivities (flat mean): 1.0 SOL stake worse in every cell (e.g. ms50 -0.0046)
 - I5 GRAD-FLOOR not priced: no CPMM tape; fetch spec in IDEAS.md (probe 5 pools first, <= ~5,000 credits).
 - The backfill still writes 09-24..10-06; those days are unread.
 - No haircut applied (none measured on this venue), no trader/mint on the tape, fee ladder per pool is last-observed.
+
+## I5 GRAD-FLOOR (CPMM after LaunchLab graduation), added 2026-10-24
+Fetch (tools/launchlab_cpmm_fetch.py, job #1474, output /data2/mal/venue-tape-backfill/launchlab_cpmm/pools, venue_tape schema, venue `raydium_cpmm`): migrate tx -> pool_state (initialize_with_permission accounts[4]) -> 24 h history of that pool.
+Only about 7% of LaunchLab graduations are WSOL-quoted (the rest BONK or other quote tokens, priced nowhere here). A WSOL pool has about 550-1,900 transactions in 24 h (7-20 pages, 350-1,000 assumed credits).
+Credits (assumed costs: gTFA 50, getTransaction 10; upper bounds): probes #1468 50, #1470 19,960 (a bug read a global account instead of the pool: wasted), #1471 5,050 (same bug), #1473 ~2,600 (40 migrations resolved + pool pages); main job #1474 see PR comment (cap 1,000,000).
+Swap math (measure, 23 pools, 52,806 swaps): output reproduced within 1 atom for 99.9%; fee input rate median 1.25% on buys (0.25% trade + creator fee, varies by pool), 0.25% on sells; the reserve used is the next swap's vault_before.
+Screen GF-TP150-24H, block A (graduations 10-07..10-16), one cell, pre-declared in DECLARE-I5.md: 21 attempts (2 pools skipped, history clipped at the holdout edge), 13 take-profit exits, 8 time exits.
+Deciding (0.25 SOL, 1.9 s, rent 0, 160k): flat mean -0.0236, pressure -0.0235 SOL/trip, total -0.495 SOL, ex-top-3 -0.87 / -0.81, ex-best-day -0.70 flat. 1.0 SOL: -0.0922. Exit lag 3.4 s: -0.0244. FAIL on both fail models. n = 21 is far under the 100-trade gate. Block B (graduations 09-24..10-06) not priced because block A is FAIL.
+Many take-profit hits reverse inside the 1.9 s exit lag (the price at landing is below the entry in several tp exits).
