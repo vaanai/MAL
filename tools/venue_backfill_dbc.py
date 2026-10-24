@@ -107,17 +107,12 @@ def write_hour(out: Path, t0: int, rows, compact) -> Path:
     return p
 
 
-HOLDOUT_DIR = "meteora_dbc_holdout"
-HOLDOUT_README = "HOLDOUT - do not open before the QP protocol (hunt29/dbc/QP-RULING-1024-dbc-m10.md) is pinned\n"
-
-
-def run_hours(out: Path, hours: list[int], call, credits: vb.Credits, compact, progress=lambda s: None, max_tries: int = 3,
-              allow_holdout: bool = False, cp_name: str = "checkpoint-meteora_dbc.json") -> int:
+def run_hours(out: Path, hours: list[int], call, credits: vb.Credits, compact, progress=lambda s: None, max_tries: int = 3) -> int:
     for t0 in hours:
-        if in_holdout(t0) and not allow_holdout:
+        if in_holdout(t0):
             raise ValueError(f"hour {vb.hour_label(t0)} is inside the reserved holdout")
     out.mkdir(parents=True, exist_ok=True)
-    cpf = out / cp_name
+    cpf = out / "checkpoint-meteora_dbc.json"
     cp = vb.load_cp(cpf)
     credits.used = max(credits.used, int(cp["credits_used"]))
     tries: dict[int, int] = {}
@@ -194,13 +189,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--limit", type=int, default=100)
     ap.add_argument("--probe-pages", type=int, default=2)
     ap.add_argument("--no-compress", action="store_true")
-    ap.add_argument("--allow-holdout-write", action="store_true",
-                    help="write-only fetch of the reserved holdout; out-dir must end in meteora_dbc_holdout; prints only hour/tx counts and credits")
     a = ap.parse_args(argv)
-    if a.allow_holdout_write:
-        if a.mode != "run" or Path(a.out_dir).name != HOLDOUT_DIR:
-            print(f"refused: --allow-holdout-write needs mode run and an out-dir named {HOLDOUT_DIR}", file=sys.stderr)
-            return 2
     t0 = vb.parse_hour(a.start)
     if a.mode == "probe":
         hours = [t0]
@@ -209,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
             print("--end required", file=sys.stderr)
             return 2
         hours = vb.hours_between(t0, vb.parse_hour(a.end))[::-1]
-    if any(in_holdout(h) for h in hours) and not a.allow_holdout_write:
+    if any(in_holdout(h) for h in hours):
         print("refused: window touches the reserved holdout [2026-10-17T00, 2026-10-24T00)", file=sys.stderr)
         return EXIT_HOLDOUT
     try:
@@ -250,17 +239,7 @@ def main(argv: list[str] | None = None) -> int:
             except OSError:
                 pass
 
-    out = Path(a.out_dir)
-    cp_name = "checkpoint-meteora_dbc.json"
-    if a.allow_holdout_write:
-        out.mkdir(parents=True, exist_ok=True, mode=0o750)
-        os.chmod(out, 0o750)
-        (out / "README.txt").write_text(HOLDOUT_README)
-        cp_name = f"checkpoint-{vb.hour_label(t0)}.json"  # per-block checkpoint: each block has its own credit cap
-    rc = run_hours(out, hours, call, credits, None if a.no_compress else compact_file, progress, allow_holdout=a.allow_holdout_write, cp_name=cp_name)
-    if a.allow_holdout_write:
-        for dp, dn, fn in os.walk(out):
-            os.chmod(dp, 0o750)
+    rc = run_hours(Path(a.out_dir), hours, call, credits, None if a.no_compress else compact_file, progress)
     progress(f"done rc={rc} credits_used={credits.used}")
     return rc
 

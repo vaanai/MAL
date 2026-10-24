@@ -79,13 +79,6 @@ class Backfill(unittest.TestCase):
         with self.assertRaises(ValueError):
             vbd.run_hours(Path(tempfile.mkdtemp()), [vb.parse_hour("2026-10-20T00")], None, vb.Credits(10, 1), None)
 
-    def test_holdout_flag_scope(self):
-        self.assertEqual(vbd.main(["run", "--start", "2026-10-17T00", "--end", "2026-10-17T02", "--allow-holdout-write", "--out-dir", "/tmp/x_not_holdout"]), 2)
-        out = Path(tempfile.mkdtemp()) / "meteora_dbc_holdout"
-        t0 = vb.parse_hour("2026-10-18T00")
-        rc = vbd.run_hours(out, [t0], lambda m, p: {"data": [], "paginationToken": None}, vb.Credits(100, 50), None, allow_holdout=True, cp_name="checkpoint-x.json")
-        self.assertEqual(rc, 0)
-
     def test_run_hour_resume_and_cap(self):
         data = txs()
         t0 = vb.parse_hour("2026-10-14T12")

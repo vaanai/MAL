@@ -1,0 +1,198 @@
+{
+ "schema": "dbc_screen_v1",
+ "taken_utc": "2026-10-24T04:01:26Z",
+ "file_counts": {
+  "exploration_hours": 72,
+  "holdout_hours_present": 0,
+  "exploration_hours_needed": 72
+ },
+ "kit_sha256": "b9f5f77af87df7600839f477fecb4c724b999c1b0bfcfd57f9cf7f281cbfb5a5",
+ "price_sha256": "85faa6637fefc4aaebbf286eea4a2f998a1360539bc0361b5668ae972bbe8fd6",
+ "bad_hours": [],
+ "block_args": [
+  "",
+  ""
+ ],
+ "validate": {
+  "sol_trade_rows": 2232011,
+  "pools": 9261,
+  "configs": 2285,
+  "creates": 9572,
+  "completed_pools": 6541,
+  "hook_pools": 2678,
+  "good_hours": 72,
+  "bad_hours": [],
+  "order_fix": {
+   "groups_multi": 628487,
+   "reordered": 406174,
+   "chain_failed": 28616
+  },
+  "bad_rows": 108990,
+  "curve_all_rows": {
+   "rows": 2232011,
+   "rows_with_state": 2175920,
+   "config_mode_known_share": 0.997407718868769,
+   "buy": {
+    "n": 1054882,
+    "within_1bp": 0.9598049829270003,
+    "within_10bp": 0.9665460212611457,
+    "within_1pct": 0.9869710545824083,
+    "median_abs_err": 7.426781412078753e-12,
+    "n_ge_0p01sol": 952354,
+    "ge_0p01sol_within_10bp": 0.96487650600512,
+    "ge_0p01sol_within_1pct": 0.9863086625351497,
+    "post_sqrt_price_rel_err_median": 1.4497292255555294e-12
+   },
+   "sell": {
+    "n": 1121033,
+    "within_1bp": 0.9190648268159813,
+    "within_10bp": 0.9259986102104042,
+    "within_1pct": 0.9678644607250634,
+    "median_abs_err": 6.39432728988254e-09,
+    "n_ge_0p01sol": 1028645,
+    "ge_0p01sol_within_10bp": 0.9339334755916764,
+    "ge_0p01sol_within_1pct": 0.9768549888445479,
+    "post_sqrt_price_rel_err_median": 8.881784197001252e-16
+   }
+  },
+  "curve_excl_bad_rows": {
+   "rows": 2232011,
+   "rows_with_state": 2091494,
+   "config_mode_known_share": 0.997407718868769,
+   "buy": {
+    "n": 1013266,
+    "within_1bp": 0.9815951586256718,
+    "within_10bp": 0.984501601751169,
+    "within_1pct": 0.9937410314764337,
+    "median_abs_err": 6.931788476549627e-12,
+    "n_ge_0p01sol": 913212,
+    "ge_0p01sol_within_10bp": 0.983798942633255,
+    "ge_0p01sol_within_1pct": 0.9935294323771479,
+    "post_sqrt_price_rel_err_median": 1.1373124664260104e-12
+   },
+   "sell": {
+    "n": 1078223,
+    "within_1bp": 0.9376353500157203,
+    "within_10bp": 0.9398593797386997,
+    "within_1pct": 0.9740879205878561,
+    "median_abs_err": 6.189773804621268e-09,
+    "n_ge_0p01sol": 989714,
+    "ge_0p01sol_within_10bp": 0.9474151118403903,
+    "ge_0p01sol_within_1pct": 0.9823322697264059,
+    "post_sqrt_price_rel_err_median": 4.440892098500626e-16
+   }
+  },
+  "config_mode": {
+   "configs_mode_input": 385,
+   "configs_with_evidence": 1243,
+   "rows_mode_unknown": 5786
+  },
+  "fee_bps_all_rows": {
+   "buy": [
+    0.0017749247426659593,
+    25.00000000240775,
+    25.000000024631586,
+    25.0000093026377,
+    250.00002463112472
+   ],
+   "sell": [
+    0.0009117755437271883,
+    25.000004573214326,
+    25.000053478311294,
+    25.000383016010936,
+    100.00013003796057
+   ]
+  },
+  "fee_bps_top_rounded": [
+   {
+    "bps": 25.0,
+    "rows": 2062063
+   },
+   {
+    "bps": 0.0,
+    "rows": 83572
+   },
+   {
+    "bps": 100.0,
+    "rows": 56318
+   },
+   {
+    "bps": 200.0,
+    "rows": 8004
+   },
+   {
+    "bps": 300.0,
+    "rows": 6262
+   },
+   {
+    "bps": 250.0,
+    "rows": 3548
+   },
+   {
+    "bps": 400.0,
+    "rows": 1139
+   },
+   {
+    "bps": 360.0,
+    "rows": 879
+   }
+  ],
+  "share_rows_fee_gt_100bps": 0.03682419127862721
+ },
+ "capacity": {
+  "per_day": {
+   "2026-10-14": {
+    "rows": 790538,
+    "buys": 384396,
+    "tradable_rows": 737633,
+    "tradable_buys": 357369,
+    "imp_le_2pct_rows": 226064,
+    "imp_le_2pct_buys": 110510,
+    "universe_rows": 220596,
+    "pools_with_imp_le_2pct": 1370
+   },
+   "2026-10-15": {
+    "rows": 689679,
+    "buys": 339398,
+    "tradable_rows": 650243,
+    "tradable_buys": 318945,
+    "imp_le_2pct_rows": 194293,
+    "imp_le_2pct_buys": 99220,
+    "universe_rows": 194292,
+    "pools_with_imp_le_2pct": 1176
+   },
+   "2026-10-16": {
+    "rows": 751794,
+    "buys": 371549,
+    "tradable_rows": 117056,
+    "tradable_buys": 56944,
+    "imp_le_2pct_rows": 48100,
+    "imp_le_2pct_buys": 23687,
+    "universe_rows": 48100,
+    "pools_with_imp_le_2pct": 211
+   }
+  },
+  "by_threshold_band_rows_and_rows_imp_le_2pct": {
+   "thr<20": [
+    1376023,
+    673582
+   ],
+   "20<=thr<60": [
+    20622,
+    19001
+   ],
+   "thr>=60": [
+    91721,
+    86899
+   ]
+  },
+  "imp25_quantiles_10_25_50_75_90": [
+   0.008595638948528661,
+   0.010222093568879376,
+   0.018890286731050643,
+   0.030821388744919076,
+   0.03636117082233403
+  ],
+  "share_rows_imp_le_2pct": 0.5237166127148833
+ }
+}

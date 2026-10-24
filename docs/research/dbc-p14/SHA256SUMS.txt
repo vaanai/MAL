@@ -1,0 +1,2 @@
+d7571111e59ba4fc460c97cfe9541c13dd915380f254d7bcc0e9588eb0e1827b  docs/research/dbc-p14/DECLARE.md
+1e51305d7ea30d7ea240d1c2463a76746c241d74d3820e40fc6d2c4a1976b9e4  docs/research/dbc-p14/IDEAS.md
