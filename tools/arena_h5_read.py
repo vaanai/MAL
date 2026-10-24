@@ -237,9 +237,13 @@ def decide_book(bot_id: str, ledger_root: str | os.PathLike, *, read_instant_ms:
     if c["n_unpriced_deciding_leg"]:
         why.append(f"{c['n_unpriced_deciding_leg']} counted trade(s) at the deciding stake without a deciding-leg (1.9 s flat / pressure) P&L (DEC-031 section 2, DEC-014 Amendment 1)")
     out["reasons"] = why
+    if books is not None:
+        out["_pools"] = sorted(c["pools"])  # for the side-by-side shared-pool count; popped by build_report
     if why:
         out["status"] = "NOT_DECIDABLE"
         out["figures"] = "none: a NOT_DECIDABLE read prints counts only"
+        if books is not None:
+            out["d3"] = d3_extras(c, None, None)
         return out
     refit = h5s.refit_cells(c["rows"])  # THE DECIDING INTERCEPT: refit at the read, per stake and latency leg
     key = f"{DECIDING_STAKE}|{DECIDING_SFX}"
@@ -288,7 +292,62 @@ def decide_book(bot_id: str, ledger_root: str | os.PathLike, *, read_instant_ms:
     if ok:
         out["not_measured_here"] = list(CANARY_NOT_MEASURED)
     out["passes_only_at_rent_0"] = (not ok) and all(v["rent_0"]["criteria_met"] for v in sub.values())
+    if books is not None:
+        out["d3"] = d3_extras(c, items, ic)
     return out
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ D3 (DEC-031 Am.5 4.3; records D3)
+D3_SHARE = 0.05
+D3_LINE = ("D3 (QP-RULING-1022-q50-P2; DEC-031 Amendment 5 item 4.3): the derived_last_deciding_leg count of every book side by side, plus the report-only total without those trades "
+           "when the count exceeds 5% of attempts; and the shared-pool count of the books (counts only). Report-only, never deciding.")
+
+
+def is_derived_last(row: Mapping[str, Any]) -> bool:
+    """The scorer's derived_last_deciding_leg flag of a row: the deciding (1.9 s) leg took a state after the pool's last print (meta.state_src; no P&L field is read)."""
+    return "post" in tuple(((row.get("meta") or {}).get("state_src") or {}).get(DECIDING_SFX) or ())
+
+
+def d3_extras(c: Mapping[str, Any], items: Sequence[Mapping[str, Any]] | None, ic: float | None) -> dict[str, Any]:
+    """The D3 extras of one book: the derived_last count over the counted trades at the deciding stake and its share of the book's attempts; when that share is above 5%, the
+    four deciding sub-cells WITHOUT those trades (n, total, mean; report-only, at the read's refit intercept; never passed to cell_verdict). items None (a NOT_DECIDABLE read):
+    the count only."""
+    n = sum(1 for r in c["dec_rows"] if is_derived_last(r))
+    att = c["n_attempts"]
+    share = n / att if att else 0.0
+    out: dict[str, Any] = {"report_only": True, "derived_last_deciding_leg": n, "attempts": att, "share_of_attempts": share, "over_5pct": share > D3_SHARE}
+    if items is None:
+        out["ex_derived"] = "not computed: a NOT_DECIDABLE read prints counts only"
+    elif share <= D3_SHARE:
+        out["ex_derived"] = f"not required: derived_last {n} of {att} attempts is not above {D3_SHARE:.0%}"
+    else:
+        keep = [it for it in items if not it["derived_last"]]
+        days = [it["day"] for it in keep]
+        cells = {}
+        for rule in RULES:
+            v = L.cell_values(keep, rule, ic)
+            for model in MODELS:
+                st = cell_stats(v[model], days)
+                cells[f"{model}_{DECIDING_SFX}_{rule}"] = {k: st[k] for k in ("n", "total_sol", "mean_sol")}
+        out["ex_derived"] = cells
+    return out
+
+
+def side_by_side(rep: Mapping[str, Any], bots: Sequence[str], pools: Mapping[str, set]) -> dict[str, Any]:
+    """Every book of the run on one block (status, counts, D3), and the shared-pool count of every pair of books that were read (attempted pools, counted or excluded, before each
+    book's own instant). Counts only."""
+    rows = {}
+    for b in bots:
+        if b in rep["books"]:
+            r = rep["books"][b]
+            k = r["counts"]
+            rows[b] = {"status": r.get("fail_label") or r["status"], "read_instant_ms": r["read_instant_ms"], "attempts": k["n_attempts"], "counted": k["n_counted"],
+                       "excluded": k["n_excluded"], "refused": k["n_refused"], "d3": r.get("d3", "not in the record (counts only)")}
+        else:
+            rows[b] = {"status": "REFUSED", "why": rep["refused"].get(b)}
+    read = [b for b in bots if b in pools]
+    shared = {f"{a}|{b}": len(pools[a] & pools[b]) for i, a in enumerate(read) for b in read[i + 1:]}
+    return {"line": D3_LINE, "books": rows, "shared_pools": shared, "shared_pools_note": "pairs of books read in this run; a REFUSED or ENDED book has no pool set here"}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ multiplicity (DEC-031 Amendment 3 item 3, QP R8)
@@ -352,6 +411,14 @@ def render_book(r: Mapping[str, Any]) -> str:
           f"  attempts {c['n_attempts']} = counted {c['n_counted']} + excluded {c['n_excluded']} ({c['excluded_share']:.2%} of non-refused attempts; cap {r['excluded_cap']:.0%})  excluded by reason {c['excluded_by_reason']}",
           f"  refused (not attempts, DEC-031 Amendment 1) {c['n_refused']}  by reason {c['refused_by_reason']}", f"  {r['attempt_definition']}"]
     L_ += [f"  reason: {x}" for x in r["reasons"]]
+    if "d3" in r:
+        d = r["d3"]
+        L_.append(f"  D3 derived_last_deciding_leg {d['derived_last_deciding_leg']} of {d['attempts']} attempts ({d['share_of_attempts']:.2%}; report-only)")
+        if isinstance(d["ex_derived"], str):
+            L_.append(f"    ex-derived: {d['ex_derived']}")
+        else:
+            for k, v in d["ex_derived"].items():
+                L_.append(f"    ex-derived (report-only, never deciding) {k:16s} n {v['n']:4d} total {_f(v['total_sol'])} mean {_f(v['mean_sol'])}")
     if "subcells" not in r:
         return "\n".join(L_ + [f"  {r['figures']}"])
     rf = r["refit"]
@@ -385,6 +452,20 @@ def render(rep: Mapping[str, Any]) -> str:
     for b, why in rep["refused"].items():
         L_.append(f"REFUSED {b}: {why}")
     L_ += [render_book(r) for r in rep["books"].values()]
+    sb = rep.get("side_by_side")
+    if sb:
+        L_.append(f"\nBOOKS SIDE BY SIDE (books file sha256 {rep['books_file']['sha256']})  {sb['line']}")
+        for b, x in sb["books"].items():
+            if x["status"] == "REFUSED":
+                L_.append(f"  {b:24s} REFUSED: {x['why']}")
+                continue
+            d = x["d3"]
+            dl = d if isinstance(d, str) else f"derived_last {d['derived_last_deciding_leg']} ({d['share_of_attempts']:.2%} of attempts)"
+            L_.append(f"  {b:24s} {x['status']:22s} read instant {x['read_instant_ms']}  attempts {x['attempts']} counted {x['counted']} excluded {x['excluded']} refused {x['refused']}  {dl}")
+        for k, n in sb["shared_pools"].items():
+            L_.append(f"  shared pools {k}: {n}")
+        if not sb["shared_pools"]:
+            L_.append(f"  shared pools: none computed ({sb['shared_pools_note']})")
     m = rep.get("multiplicity")
     if m:
         L_.append("\nMULTIPLICITY BLOCK (DEC-031 Amendment 3 item 3; QP R8)")
@@ -427,6 +508,8 @@ def build_report(bots: Sequence[str], ledger_root: str | os.PathLike, *, read_in
         rep["multiplicity"] = multiplicity_block(rep["books"], n_books=int(n_books), c=int(c), cells_total=cells_total, prior=prior, other_p=other_p, **tl)
     if books is not None:
         rep["books_file"] = {"path": getattr(books, "path", None), "sha256": getattr(books, "sha256", None), "ids": list(books)}
+        pools = {b: set(r.pop("_pools")) for b, r in rep["books"].items() if "_pools" in r}
+        rep["side_by_side"] = side_by_side(rep, list(bots), pools)
     return rep
 
 

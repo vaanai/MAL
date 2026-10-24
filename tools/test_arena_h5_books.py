@@ -160,7 +160,8 @@ class Q50Seal(Base):
         self.assertEqual(cm.exception.code, 2)  # argparse: not a choice without the books file (golden test pins the message)
         old = R.decide_book(TR.V1, self.ledger, read_instant_ms=b1["ri"], i_am_the_read=True, now_ms=b1["ri"] + 1000)
         new = R.decide_book(TR.V1, self.ledger, read_instant_ms=b1["ri"], i_am_the_read=True, now_ms=b1["ri"] + 1000, books=self.books())
-        self.assertEqual(old, new)  # an a1 book keeps its rule and file under the book list
+        self.assertEqual(sorted(set(new) - set(old)), ["_pools", "d3"])  # the book list adds only the D3 extras and the pool set of the side-by-side block
+        self.assertEqual(old, {k: v for k, v in new.items() if k not in ("_pools", "d3")})  # an a1 book keeps its rule, file and figures under the book list
 
     def test_cli_default_is_the_new_rule_list_and_the_taint_line_names_it(self):
         bk = self.make_book(Q50)
