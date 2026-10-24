@@ -20,8 +20,18 @@ the sell ladder, caps, write-ahead, STOP / HALT, counters). What this module cha
  8  Fidelity log: each decision row carries bot_id, frozen_sha, the trigger key (mint, pool, trigger_slot), decision_ms. Sells add send/landed slots and
     late_slots. No exit quote, no P&L is ever written by a dry run (outcome-blind).
 14  Soft halts, latched (names in ARENA_HALTS): see FidelityMonitor.
-FEED_NOTE_MERGED is False: until the EXP-024 declared-observation note for this executor is merged (scope item 17) the module reads no live feed.
-It only runs with config "replay_only": true (a fixture or replay dir). Flipping the constant is a code change and needs the md5 replay rerun.
+FEED_NOTE_MERGED is True since the EXP-024 "Note under Amendment 10" (PR #851, scope item 17) declared the real-time observation of this executor's dry and
+live outcomes, for the bot_ids in FEED_NOTE_BOOKS only (h5v1q50-boostfloor-a1; the a2 books ENDED, DEC-031 Am.10 item 4). Any other book reads replay
+inputs only ("replay_only": true) and is refused a live start. The md5 decision-equivalence replay is re-run at this flip's merge commit (QP-RULING-1024 (b)).
+
+Live entry (LIVE_BUILT True, QP-RULING-1023-wiring ruling 7 item 11): `main --live` with config "mode": "live". Every keyless check runs BEFORE the key is read,
+in this order, and any refusal is exit 2 (the unit does not restart on 2): the base start_refusal (no STOP/HALT/LIVE_OK/TIER path override, the shared
+/etc/mal-h5/LIVE_OK, EXP-024 Part 1 in the tree, end_ms set); live_entry_refusal (the C0 guard tripwire c0_guard_problem, FEED_NOTE_MERGED True, no
+replay_only, the arena's own root-owned /etc/mal-h5-arena/LIVE_OK naming exactly this bot_id, a configured A3 record, the v2 rule source for a v2 book);
+arena_start_refusal (priority pin, funded range, sell-builder pin, canary DEC owner line for this bot_id, exit-gap / twins / tie-out inputs, TIER exactly T1);
+the RPC env check; then harden_process and the key from the systemd credential only. The constructor re-runs arena_start_refusal (which includes
+live_entry_refusal) and the FINALIZED funded-balance check. /etc/mal-h5-arena/LIVE_OK is re-read before every live buy. No check is skipped or loosened
+by a live start. The flip opens no send by itself: a live start still needs both Helm-owned LIVE_OK files, TIER T1, the canary DEC line and the key drop-in.
 
 Not proven offline (see the PR body): decision equivalence on the real 2026-09-20 day (tools/h5_arena_exec_replay.py is the harness; the run is a host job),
 the live landing/exit gaps, the A3 pins_changed link, the Token-2022 screen on real mints.
@@ -33,6 +43,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 import sys
 from collections import deque
@@ -44,9 +55,10 @@ import base64
 from datetime import datetime, timezone
 
 from tools import h5_executor as h
+from tools import h5_arena_ladder as ld
 from tools import mint_account_fetch as mf
 from tools.arena_close_blocked import classify_record
-from tools.h5_arena_gates import HARD_ARENA_HALTS, TWIN_PIN_MISMATCH, LiveGates, ParityRecorder, v_band_refusal
+from tools.h5_arena_gates import EXIT_GAPS_NAME, HARD_ARENA_HALTS, TWIN_PIN_MISMATCH, ExitGapWriter, LiveGates, ParityRecorder, v_band_refusal
 from tools.h5_arena_gates import twin_run_stamp as gt_twin_run_stamp
 
 # --- the books (item 1). Values copied from the merged records: ARTIFACTS/lab/arena-records-2026-10-22.md (a2), qp-ruling-1022-q50.md and
@@ -65,8 +77,14 @@ V2_RULE_SHA256 = "5368cc7b757a2f7a6cb064c71193b4e0cd740583f7348a60cb9a864401c190
 V2_RULE_SOURCE = Path("/data/mal/hunt-1008/iter-r2/h5-boostclock-exit/FREEZE.md")  # (a test may point it elsewhere; the sha is the pin)
 CANARY_DEC_GLOB = "DEC-*canary*.md"  # canary records (copies of the DEC-032 template) live in DEC/. The template itself never counts.
 CANARY_OWNER_RE = re.compile(r"^[ \t]*OWNER_CANARY_CONFIRMED:[ \t]*bot_id=(\S+)[ \t]*$", re.M)  # the owner's line names the book: "OWNER_CANARY_CONFIRMED: bot_id=<bot_id>"
-FEED_NOTE_MERGED = False  # scope item 17: the EXP-024 note declaring this executor's observation. False = replay_only
-LIVE_BUILT = False  # this PR builds no live entry point
+FEED_NOTE_MERGED = True  # scope item 17: EXP-024 "Note under Amendment 10" (#851) declares this executor's observation. False = replay_only for every book
+FEED_NOTE_REF = "### Note under Amendment 10 (written 2026-10-24T01:27Z"  # the note's heading in EXP/EXP-024-h5-boostfloor-part1-prereg.md (a test checks it is in the tree)
+FEED_NOTE_BOOKS = frozenset({"h5v1q50-boostfloor-a1"})  # the bot_ids the note covers; every other book stays replay_only (QP-SCOPE item 17: "per bot_id")
+LIVE_BUILT = True  # the live entry point is main --live (QP-RULING-1023-wiring ruling 7 item 11); every live start passes live_entry_refusal first
+ARENA_LIVE_OK_PATH = Path("/etc/mal-h5-arena/LIVE_OK")  # the arena canary's OWN gate: root:root 0644 (base root_file_problem), content exactly the bot_id. Helm creates it.
+DEC032_C0 = {  # DEC-032 s3 C0 column, verbatim. C0_TIER may only be at or below these; c0_guard_problem refuses a live start otherwise.
+    "stake_lamports": 50_000_000, "max_open": 2, "max_trades_per_day": 30, "daily_loss_lamports": 100_000_000, "total_loss_lamports": 200_000_000,
+}
 C0_TIER = {  # DEC-032 s3, the C0 canary table, PINNED in code per canary book. The shared /etc/mal-h5/TIER (T0/T1/T2) and the config may only LOWER these.
     "stake_lamports": 50_000_000, "max_open": 2, "max_trades_per_day": 30, "daily_loss_lamports": 100_000_000, "total_loss_lamports": 200_000_000,
 }
@@ -199,15 +217,20 @@ H_STUCK2 = "two_stuck_sells"
 H_STRAND = "close_blocked_strand"
 H_TWIN_PIN = "twin_pin_mismatch"  # QP 10-23 blocker 2: the twin writer's run record carries a config_hash or code_sha256 other than the pinned one
 H_A3 = "a3_pins_changed"
+H_LADDER = "ladder_error"  # DEC-032 Am.2 wiring: a crash in the ladder step latches this (no buys) and never skips an exit (QP #862 condition 1)
 SIGNAL_AGE_MAX_MS = 5_000  # DEC-032 s3 "Buy guard": signal age at most 5 s (the base executor's own PRESEND_MAX_TRIGGER_AGE_MS is 3.5 s; the stricter of the two applies)
 H_BUY_UNREADABLE = "landed_buy_unreadable"  # QP 10-23 W2: a landed buy whose token or spend amount cannot be read (an open, flagged trip exists)
-ARENA_HALTS = frozenset({H_BUY_UNREADABLE, H_FEED_BREAK, H_ENTRY_GAP, H_LANDING, H_EXIT_GAP, H_LATE_SEND, H_STUCK2, H_STRAND, H_A3, H_TWIN_PIN})
+ARENA_HALTS = frozenset({H_BUY_UNREADABLE, H_FEED_BREAK, H_ENTRY_GAP, H_LANDING, H_EXIT_GAP, H_LATE_SEND, H_STUCK2, H_STRAND, H_A3, H_TWIN_PIN, H_LADDER})
 ENTRY_GAP_WINDOW = 20  # DEC-032 s5 P1: the first 10 eligible fills, then ROLLING over the last 20
 LANDING_WINDOW_N = 30  # DEC-032 s5 P2: rolling 30 buy attempts, judged once 30 exist
 ENTRY_GAP_BPS, ENTRY_GAP_MIN_N = 200.0, 10
 EXIT_GAP_BPS, EXIT_GAP_MIN_N = 200.0, 10
 LANDING_EXCESS_PP, LANDING_MIN_N = 10.0, 30
 LATE_SEND_SLOTS, LATE_SEND_TRIPS = 3, 2
+MARK_EXIT_GUARD_MS = 5_000  # no mark read from 5 s before a position's sell send onward (the exit path stays free of mark RPCs)
+MARKS_PER_TICK = 1  # at most one position marked (2 RPC calls) per exit tick
+LAST_MARK_LEAD_MS = 1_000  # the last mark is taken in the 1 s before a position's no-lookup window (it then ages normally: item 3 (a), 10 s)
+LAST_MARK_MIN_GAP_MS = 500  # ... at most twice a second
 REFUSAL_LOOK2 = "h5_look2_sealed"
 REFUSAL_S0_WINDOW = "s0_outside_book_window"
 REFUSAL_DECISION_WINDOW = "decision_outside_book_window"
@@ -259,10 +282,17 @@ def arena_start_refusal(book: Book, cfg: dict[str, Any], root: Path, live: bool)
         return why
     if cfg.get("pick_file") or cfg.get("pick_replay_files"):
         return "pick_file_set"  # the CAP-PICK oracle no longer exists (DEC-031 s3.5): a configured one is a wrong config, never silently ignored
-    if not FEED_NOTE_MERGED and cfg.get("replay_only") is not True:
-        return "feed_note_unmerged_replay_only"
     if live and not LIVE_BUILT:
         return "live_not_built"
+    if live:
+        why = live_entry_refusal(book, cfg)  # first for a live start: it refuses an unmerged feed note and any replay_only key itself
+        if why:
+            return why
+    if cfg.get("replay_only") is not True:
+        if not FEED_NOTE_MERGED:
+            return "feed_note_unmerged_replay_only"
+        if book.bot_id not in FEED_NOTE_BOOKS:
+            return "feed_note_not_covering_book_replay_only"  # an ended or undeclared book never reads the live feed
     why = funded_refusal(cfg, live)
     if why:
         return why
@@ -280,6 +310,8 @@ def arena_start_refusal(book: Book, cfg: dict[str, Any], root: Path, live: bool)
             return why
         if not cfg.get("exit_gap_file"):
             return "exit_gap_file_missing"  # the exit-gap feed (parity P6) is mandatory live: unset would mean no check at all
+        if cfg.get("state_dir") and str(cfg["exit_gap_file"]) != str(Path(cfg["state_dir"]) / "arena-parity" / EXIT_GAPS_NAME):
+            return "exit_gap_file_not_own_writer"  # live reads only the file its own ExitGapWriter fills (an empty file elsewhere would never fire)
         for key in ("parity_twins_file", "tieout_dir"):  # the parity tool's twins input and the tie-out results directory (DEC-032 s5, s6)
             if not cfg.get(key):
                 return f"{key}_missing"
@@ -287,6 +319,100 @@ def arena_start_refusal(book: Book, cfg: dict[str, Any], root: Path, live: bool)
     if book.exit_pin == h.EXIT_MODE_V2:
         return v2_start_refusal()
     return None
+
+
+def arena_live_ok_refusal(bot_id: str, path: Path | None = None) -> str | None:
+    """The arena's own LIVE_OK: the base file checks (regular root:root 0644 file, no symlink, root-owned parent not group/other writable) and its content
+    is exactly this bot_id (one line). Missing, unsafe, unreadable or naming another book is a refusal; the executor never creates it."""
+    p = path or ARENA_LIVE_OK_PATH
+    problem = h.root_file_problem(p)
+    if problem:
+        return f"arena_live_ok_{problem}"
+    try:
+        text = p.read_text()
+    except (OSError, UnicodeDecodeError):
+        return "arena_live_ok_unreadable"
+    return None if text.strip() == bot_id and len(text.strip().splitlines()) == 1 else "arena_live_ok_other_book"
+
+
+def c0_guard_problem() -> str | None:
+    """A tripwire run at every live start: the compiled C0 guards are still at least as strict as DEC-032 (s3 limits, s3 fail-closed 60 s, s3 signal age
+    5 s, s5 10-minute gap hold and P1/P2/exit thresholds, the T1 tier file, the p155 sell reserve) and every guard method is still the arena override.
+    None when all hold; else the first item that does not. It never loosens anything: it only refuses."""
+    from tools import h5_arena_gates as g
+    why = ld.ladder_guard_problem()  # DEC-032 Am.2 item 9.1: a live start refuses if any ladder constant is looser than item 3
+    if why:
+        return why
+    for k, cap in DEC032_C0.items():
+        v = C0_TIER.get(k)
+        if isinstance(v, bool) or not isinstance(v, int) or not 0 < v <= cap:
+            return f"c0_guard:{k}"
+    checks = (
+        ("gap_hold", GAP_HOLD_MS >= 600_000), ("signal_age", 0 < SIGNAL_AGE_MAX_MS <= 5_000), ("parity_interval", 0 < g.PARITY_INTERVAL_S_MAX <= 60),
+        ("funded_range", 350_000_000 <= FUNDED_MIN_LAMPORTS <= FUNDED_MAX_LAMPORTS <= 1_000_000_000),
+        ("floor_below_funded", 0 < FLOOR_BELOW_FUNDED_LAMPORTS <= 250_000_000), ("sell_reserve", SELL_RESERVE_FLOOR_LAMPORTS >= 1_600_000),
+        ("tier", ARENA_LIVE_TIER == "T1"), ("a3_max_age", 0 < A3_MAX_AGE_MS <= 36 * 3_600_000),
+        ("entry_gap", ENTRY_GAP_BPS <= 200.0 and ENTRY_GAP_MIN_N <= 10), ("exit_gap", EXIT_GAP_BPS <= 200.0 and EXIT_GAP_MIN_N <= 10),
+        ("landing", LANDING_EXCESS_PP <= 10.0 and LANDING_MIN_N <= 30 and PAPER_FAIL_RATE >= 0.15),
+        ("hard_halts", {H_FEED_BREAK, H_A3, H_STRAND, H_TWIN_PIN, H_BUY_UNREADABLE} <= g.HARD_ARENA_HALTS),
+        ("arena_halts", {H_BUY_UNREADABLE, H_FEED_BREAK, H_ENTRY_GAP, H_LANDING, H_EXIT_GAP, H_LATE_SEND, H_STUCK2, H_STRAND, H_A3, H_TWIN_PIN} <= ARENA_HALTS),
+        ("overrides", all(m in _ARENA_CLASS.__dict__ for m in GUARD_METHODS)),
+    )
+    for name, ok in checks:
+        if not ok:
+            return f"c0_guard:{name}"
+    return None
+
+
+def live_entry_refusal(book: Book, cfg: dict[str, Any]) -> str | None:
+    """The keyless conditions a LIVE start adds on top of arena_start_refusal (QP-RULING-1023-wiring rulings 7/8; DEC-032 s3, s8). Fail closed on each."""
+    why = c0_guard_problem()
+    if why:
+        return why
+    if not FEED_NOTE_MERGED:
+        return "live_feed_note_unmerged"
+    if book.bot_id not in FEED_NOTE_BOOKS:
+        return "live_feed_note_not_covering_book"  # scope item 17: no live feed is read until the EXP-024 observation note is merged and this constant flipped
+    if "replay_only" in cfg:
+        return "live_replay_only_set"  # a replay declaration in a live config is a wrong config, never silently ignored
+    if cfg.get("mode") != h.LIVE:
+        return "live_config_mode_not_live"
+    if not cfg.get("a3_record_file"):
+        return "a3_record_file_missing"  # the host's A3 daily record path is a declared input, never the research-0 default
+    if not cfg.get("intents_file"):
+        return "intents_file_missing"
+    why = arena_live_ok_refusal(book.bot_id)
+    if why:
+        return why
+    if book.exit_pin == h.EXIT_MODE_V2:
+        return v2_start_refusal()  # the v2 rule source by sha256, live too (it was checked on the dry path only)
+    return None
+
+
+FEED_HOUR_GLOB = "h5-shadow-????-??-??T??.jsonl"  # the base executor's own pattern (H5Executor._resolve_intents)
+
+
+def latest_start_record(intents: Path) -> dict[str, Any] | None:
+    """The newest `start` record of the book's feed (oldest hourly file first; the last one read wins), or None. The shadow writes its start record ONCE, into the
+    hour it started in, and the base tailer starts at the END of the newest hour (history is never replayed), so an executor started later never sees it by
+    tailing. Only lines that parse as a JSON object with type "start" are kept; every other line is skipped unread beyond a substring test."""
+    files = sorted(intents.glob(FEED_HOUR_GLOB)) if intents.is_dir() else [intents]
+    last = None
+    for f in files:
+        try:
+            with f.open("rb") as fh:
+                for raw in fh:
+                    if b'"start"' not in raw:
+                        continue
+                    try:
+                        row = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if isinstance(row, dict) and row.get("type") == "start":
+                        last = row
+        except OSError:
+            continue
+    return last
 
 
 def canary_record_refusal(bot_id: str, root: Path) -> str | None:
@@ -313,6 +439,8 @@ def arena_tier_refusal(path: Path | None = None) -> str | None:
     """A live start needs the arena's own tier file, with the base class' file checks (root-owned regular file, 0644, no symlink), to read exactly T1.
     The shared /etc/mal-h5/TIER is not read for arena books (ArenaExecutor._tier_path)."""
     tier, problem = h.read_tier(path or ARENA_TIER_PATH, root_checks=True)
+    if problem == "tier_file_invalid" and ld.read_ceiling(path or ARENA_TIER_PATH, root_checks=True) == ("C1", None):
+        return None  # DEC-032 Am.2 item 9.2: LADDER_C1 = ceiling C1 (the rung itself still starts at C0 and steps only per item 5)
     if problem:
         return f"arena_{problem}"
     return None if tier == ARENA_LIVE_TIER else f"arena_tier_not_{ARENA_LIVE_TIER.lower()}:{tier}"
@@ -513,16 +641,33 @@ class ArenaExecutor(h.H5Executor):
         self._pools_seen: set[str] = set()
         self._start_ms: int | None = None
         self.gates: LiveGates | None = None  # live only: parity recorder and the parity / tie-out gates
+        self._sends_noted: set[str] = set()  # signatures already written as an `arena_send` row (this process; the exporter de-duplicates across restarts)
         super().__init__(rpc, cfg, keypair, now_ms=now_ms, pick_oracle=None, root=root, rpc_label=rpc_label)
         if keypair is not None:
             gdir = Path(self.h5cfg["state_dir"]) / "arena-parity"
             interval = cfg.get("parity_interval_s")
             self.gates = LiveGates(gdir, ParityRecorder(gdir), str(cfg["parity_twins_file"]), str(cfg["tieout_dir"]), self.paths["stop"],
                                    self._parity_state, twin_pins=twin_pins(book), interval_s=interval if isinstance(interval, (int, float)) and interval > 0 else None)
+        self.ladder: ld.LadderLog | None = None
+        self._marks: dict[str, tuple[int, int]] = {}  # mint -> (marked value lamports, mark ms): item 3 (a)
+        self._trigger_day: str | None = None
+        self._ceiling_cached = "C0"  # refreshed before the buys of every tick (_ladder_pre_buy); C0 until read
+        self._c1_by_this_process = False  # C1 is honoured only after THIS process wrote the step_up (a record found at start is never trusted: reviewer #862 item 1)
+        if keypair is not None:
+            self.ladder = ld.LadderLog(Path(self.h5cfg["state_dir"]) / "arena-ladder" / "ladder.jsonl", owner_uid=os.geteuid())
+            why = self._ladder_start_problem()
+            if why:
+                raise SystemExit(f"arena executor start refused: {why}")
+        self.exit_gap_writer: ExitGapWriter | None = None
+        if keypair is not None:
+            try:
+                self.exit_gap_writer = ExitGapWriter(Path(str(self.cfg_exit_gap_file)))
+            except OSError as exc:
+                raise SystemExit(f"arena executor start refused: exit_gap_file_unusable ({type(exc).__name__})") from None
         if self.exit_mode != book.exit_pin:
             raise SystemExit("exit mode pin was not applied")
         if keypair is not None:
-            why = self._funded_balance_problem()
+            why = self._funded_balance_problem() or self._rescue_problem()
             if why:
                 raise SystemExit(f"arena executor start refused: {why}")
         got = (self.h5.buy_priority_lamports, self.h5.sell_priority_lamports, self.h5.escalated_priority_lamports)
@@ -535,6 +680,14 @@ class ArenaExecutor(h.H5Executor):
         constants; this is the only place a book's fee differs from them, and the start row's `limits` shows the result."""
         pr = self.abook.priority
         lim = replace(super().h5, buy_priority_lamports=pr.buy, sell_priority_lamports=pr.sell, escalated_priority_lamports=pr.escalated)
+        if self._rung() == "C1":  # DEC-032 Am.2 item 3: C1's own column (the base tier is T1 underneath, whose stake 0.10 would otherwise cap it)
+            r = ld.LADDER["C1"]
+            floor = max(lim.wallet_floor_lamports, h.MIN_WALLET_FLOOR_LAMPORTS, int(getattr(self, "funded_lamports", 0) or 0) - r.floor_below_deposits_lamports)
+            c1 = {"stake_lamports": r.stake_lamports, "max_open": r.max_open, "max_trades_per_day": r.max_trades_per_day,
+                  "daily_loss_lamports": r.daily_trigger_lamports, "total_loss_lamports": r.lifetime_cap_lamports}
+            cfg = self.h5cfg  # config may only tighten (reviewer #862 item 2), never raise a C1 field
+            c1 = {k: min(v, int(cfg[k])) if isinstance(cfg.get(k), int) and not isinstance(cfg.get(k), bool) else v for k, v in c1.items()}
+            return replace(lim, gap_hold_ms=max(lim.gap_hold_ms, GAP_HOLD_MS), wallet_floor_lamports=floor, **c1)
         # C0 (gap a): the pinned table is the ceiling whatever the shared TIER file says. T1 / T2 in the file cannot raise a single field; a lower tier
         # (T0) or a tighter config still lowers it, because this takes the minimum.
         return replace(lim, gap_hold_ms=max(lim.gap_hold_ms, GAP_HOLD_MS),
@@ -544,6 +697,26 @@ class ArenaExecutor(h.H5Executor):
     def _tier_path(self) -> Path:
         """Item 2 (QP 10-23): live reads the arena's own tier file, never /etc/mal-h5/TIER. A dry run keeps the base's <state_dir>/TIER."""
         return ARENA_TIER_PATH if not self.dry_run else super()._tier_path()
+
+    def _refresh_tier(self, now: int) -> None:
+        """Live: the arena TIER file may read LADDER_C1 (DEC-032 Am.2 item 9.2). For the BASE tier machinery that is T1 (the base tier stays T1 at every rung;
+        the rung's own limits come from the `h5` property). Only that one content is mapped; every other read is the base's own, unchanged. Dry: the base."""
+        if self.dry_run:
+            return super()._refresh_tier(now)
+        orig = h.read_tier
+        arena = self._tier_path()
+
+        def mapped(path: Path, root_checks: bool) -> tuple[str, str | None]:
+            tier, problem = orig(path, root_checks)
+            if Path(path) == arena and problem == "tier_file_invalid" and ld.read_ceiling(Path(path), root_checks) == ("C1", None):
+                return "T1", None
+            return tier, problem
+
+        h.read_tier = mapped  # swapped for this call only; the loop is single-threaded (the same pattern as intent_tick's tail_lines)
+        try:
+            super()._refresh_tier(now)
+        finally:
+            h.read_tier = orig
 
     def __repr__(self) -> str:
         return f"ArenaExecutor(book={self.abook.bot_id}, mode={self.run_mode})"
@@ -559,6 +732,211 @@ class ArenaExecutor(h.H5Executor):
         lost = max(0, -int(self.state.realized_lamports))
         f, tol = int(self.funded_lamports or 0), FUNDED_BALANCE_TOLERANCE_LAMPORTS
         return None if f - lost - tol <= bal <= f + tol else "funded_balance_mismatch"
+
+    # -- DEC-032 Amendment 2: the stake ladder (live only; a dry run is always C0 and touches none of this)
+    def _rung(self) -> str:
+        """min(the log's rung, the ceiling read before this tick's buys). C1 also needs: this process wrote the step_up, and funded_lamports >= C1's deposits.
+        Anything else is C0 (QP #861 condition 3: the log's `to` is clamped to LADDER)."""
+        lg = getattr(self, "ladder", None)
+        if lg is None or getattr(self, "dry_run", True) or lg.problem:
+            return "C0"
+        if lg.rung == "C1" and getattr(self, "_ceiling_cached", "C0") == "C1" and getattr(self, "_c1_by_this_process", False) \
+                and int(getattr(self, "funded_lamports", 0) or 0) >= ld.LADDER["C1"].deposits_min_lamports:
+            return "C1"
+        return "C0"
+
+    def _ceiling(self) -> str:
+        return ld.read_ceiling(ARENA_TIER_PATH)[0]
+
+    def _ladder_start_problem(self) -> str | None:
+        lg = self.ladder
+        assert lg is not None
+        if lg.problem:
+            return f"ladder_log_broken:{lg.problem}"  # the hash chain does not verify: Helm and the manager look before anything trades
+        self._ceiling_cached = self._ceiling()
+        if self._ceiling_cached == "C1" and self.abook.bot_id != ld.LADDER_BOOK:
+            return "ladder_ceiling_for_uncovered_book"
+        if lg.rung == "C1":
+            # A C1 record is never honoured at start (QP #862 condition 2, reviewer item 1): ceiling lowered, unlock not verified now, or the step-down
+            # inputs (trailing-30, chain deposits) not available -> step down before the first tick, so no round runs at 0.15.
+            why = ("ceiling_lowered" if self._ceiling_cached != "C1" else
+                   "unlock_not_verified_at_start" if not ld.verify_unlock(self.abook.bot_id)[0] else "c1_record_at_start_step_down_inputs_unavailable")
+            self._step(lg, "step_down", "C1", "C0", why)
+        today = h.day_key(self.now_ms())
+        if any(r.get("kind") in ("daily_trigger", "step_down") and r.get("day") == today and r.get("why") == "daily_trigger" for r in lg.records):
+            self._trigger_day = today  # a restart inside the day keeps the trigger (item 3 (a): it holds until 00:00Z)
+        return None
+
+    def _step(self, lg: "ld.LadderLog", kind: str, frm: str, to: str, why: str, **detail: Any) -> None:
+        rec = lg.append(kind, self.now_ms(), frm, to, why, day=h.day_key(self.now_ms()), realized_lamports=int(self.state.realized_lamports), **detail)
+        self._log("ladder_" + kind, "", rung_from=frm, rung_to=to, why=why, seq=rec["seq"])
+        if kind != "daily_trigger":
+            self._alert("ladder_" + kind, "", rung_from=frm, rung_to=to, why=why)
+
+    def _unlock_still_valid(self, step_up: dict[str, Any]) -> str | None:
+        ok, why = ld.verify_unlock(self.abook.bot_id)
+        if not ok:
+            return f"unlock_no_longer_valid:{why}"
+        try:
+            sha = hashlib.sha256(ld.UNLOCK_PATH.read_bytes()).hexdigest()
+        except OSError:
+            return "unlock_unreadable"
+        return None if sha == step_up.get("unlock_sha256") else "unlock_changed_since_step_up"
+
+    def _realized_today(self, now: int) -> int:
+        return int(self.counters.day(h.day_key(now)).get("realized") or 0)
+
+    def _ladder_buy_refusal(self) -> str | None:
+        if self.dry_run:
+            return None
+        now = self.now_ms()
+        if self._trigger_day == h.day_key(now):
+            return "daily_trigger_until_0000z"
+        rung = ld.LADDER[self._rung()]
+        st = self.state
+        worst = [self._position_worst_case(int(p.get("spend") or 0), int(p.get("extra_cost") or 0)) for p in st.open.values()]
+        worst += [self._position_worst_case(int(p.get("spend") or 0)) for p in st.pending.values() if p["kind"] == "buy"]
+        if ld.intraday_committed_lamports(self._realized_today(now), worst, self._position_worst_case(self.h5.stake_lamports)) > rung.intraday_cap_lamports:
+            return "intraday_cap"
+        return None
+
+    def _refresh_marks(self, now: int) -> None:
+        """Item 3 (a): every open position marked at its sell quote from the pool's current reserves, at least every 10 s. A failed read keeps the old mark,
+        which goes stale after 10 s and then counts the position at zero."""
+        done = 0
+        for mint, pos in list(self.state.open.items()):
+            old = self._marks.get(mint)
+            send, guard = self._exit_window_start(pos)
+            in_window = send is not None and now >= send - guard
+            if mint in self.state.pending or in_window:
+                continue  # never an RPC read in a position's exit window or while its sell is in flight (QP #862 condition 3)
+            last_chance = send is not None and now >= send - guard - LAST_MARK_LEAD_MS  # the last ticks before the window: refresh now, whatever the cadence
+            if old is not None and now - old[1] < ld.MARK_MAX_AGE_MS // 2 and not (last_chance and now - old[1] >= LAST_MARK_MIN_GAP_MS):
+                continue
+            if done >= MARKS_PER_TICK:
+                break
+            done += 1
+            try:
+                snap, _pool, _err = self._snapshot(mint, self.exit_commitment)
+                if snap is None:
+                    continue
+                q = h.pe.exit_check({**pos, "tokens": int(pos.get("tokens") or 0)}, snap, now, own_trade_in_state=True).get("quote_out")
+            except (Exception, SystemExit):  # noqa: BLE001 - a mark that cannot be read is a stale mark, never a crash
+                continue
+            if isinstance(q, int) and not isinstance(q, bool):
+                self._marks[mint] = (q, now)
+        for gone in set(self._marks) - set(self.state.open):
+            self._marks.pop(gone, None)
+
+    def _exit_window_start(self, pos: dict[str, Any]) -> tuple[int | None, int]:
+        """(the position's sell send instant or None, the no-lookup guard before it)."""
+        send = (((pos.get("h5") or {}).get("plan")) or {}).get("send_wall_ms")
+        guard = max(MARK_EXIT_GUARD_MS, int(self.h5.arm_lead_ms) + 3_000)  # never inside the arm-and-send window, whatever arm_lead_ms is configured to
+        return (send if isinstance(send, int) and not isinstance(send, bool) else None), guard
+
+    def daily_loss_now(self, now: int) -> int:
+        """Item 3 (a), literally: a mark older than 10 s (or none) counts the position at zero. No mark is ever treated as fresher than it is.
+        What avoids false triggers on normal exits is WHEN the last mark is taken: _refresh_marks forces one in the LAST_MARK_LEAD_MS (1 s) before a
+        position's no-lookup window, so at the sell-send instant the mark is guard + at most 1 s old (5 to 6 s with the default 2 s arm lead) and stays
+        valid until about send + 4 s, which covers a normal landing. A sell still open after that (stuck, failed) counts at zero, as item 3 (a) says.
+        With arm_lead_ms above 7 s the guard is above 10 s and the mark is already stale at the send instant (the position counts at zero: conservative).
+        The pre-send intraday cap still counts every open position at zero (unchanged)."""
+        positions = [{"cost_lamports": int(p.get("buy_cost_lamports") or p.get("spend") or 0) + int(p.get("extra_cost") or 0),
+                      "mark_value_lamports": (self._marks.get(m) or (None, None))[0], "mark_ms": (self._marks.get(m) or (None, None))[1]}
+                     for m, p in self.state.open.items()]
+        return ld.daily_loss_lamports(self._realized_today(now), positions, now)
+
+    def _ladder_guarded(self, fn: Any, now: int) -> None:
+        """Run one ladder step; an exception latches ladder_error (no buys) and is never raised into the loop or the exits (QP #862 condition 1)."""
+        try:
+            fn(now)
+        except Exception as exc:  # noqa: BLE001
+            self._ceiling_cached = "C0"
+            if H_LADDER not in self.counters.halts:
+                self._latch(H_LADDER, why=type(exc).__name__)
+
+    def _ladder_pre_buy(self, now: int) -> None:
+        """Before the buys of every tick: re-read the ceiling and run the trigger and step-down rules, so a lowered ceiling never gets a round at C1."""
+        if self.ladder is None or self.dry_run:
+            return
+        self._ceiling_cached = self._ceiling()
+        self.ladder_tick(now, marks=False, step_up=False)
+
+    def ladder_tick(self, now: int, marks: bool = True, step_up: bool = True) -> None:
+        """Live: marks, the daily trigger (a pause at C0, a step down at C1), the step-down rules at C1, and the step-up evaluation at C0 under a C1 ceiling."""
+        lg = self.ladder
+        if lg is None or self.dry_run:
+            return
+        if marks:
+            self._refresh_marks(now)
+        rung = self._rung()
+        today = h.day_key(now)
+        fired = self._trigger_day == today
+        if not fired and self.daily_loss_now(now) >= ld.LADDER[rung].daily_trigger_lamports:
+            if rung == "C0":
+                self._step(lg, "daily_trigger", "C0", "C0", "daily_trigger")  # persisted FIRST (reviewer #862 item 4); an append failure raises -> ladder_error latch
+            self._trigger_day, fired = today, True
+        if lg.rung == "C1" and self._c1_by_this_process:
+            entered = next((r for r in reversed(lg.records) if r.get("kind") == "step_up"), {})
+            since = int(self.state.realized_lamports) - int(entered.get("realized_lamports") or 0)
+            why = "ceiling_lowered" if self._ceiling_cached != "C1" else ld.step_down_reason(
+                "C1", soft_halts_latched=list(self.counters.halts), daily_trigger_fired=fired, realized_since_rung_lamports=since,
+                trailing_mean_d_bps=None, deposits_lamports=None)  # trailing-30 and chain deposits: not built yet -> a step down (fail closed)
+            if why is None and int(getattr(self, "funded_lamports", 0) or 0) < ld.LADDER["C1"].deposits_min_lamports:
+                why = "funded_below_c1_need"
+            if why is None:
+                why = self._unlock_still_valid(entered)  # reviewer nit on #862: the root evidence is re-checked at every tick while at C1
+            if why:
+                self._step(lg, "step_down", "C1", "C0", why)
+                self._c1_by_this_process = False
+            return
+        if lg.rung == "C1":  # a C1 record this process did not write (written at runtime by someone else): never honoured; step it down
+            self._step(lg, "step_down", "C1", "C0", "c1_record_not_written_by_this_process")
+            return
+        if step_up and self._ceiling() == "C1" and not lg.stepped_down and self.abook.bot_id == ld.LADDER_BOOK:
+            ok, res = ld.evaluate_step_up(self._step_up_inputs(now))
+            self._last_step_up_eval = {"at_ms": now, "ok": ok, "checks": res}
+            if ok:
+                unlock_sha = hashlib.sha256(ld.UNLOCK_PATH.read_bytes()).hexdigest()
+                self._step(lg, "step_up", "C0", "C1", "dec032_am2_item5_all_checks", checks=[n for n, _o, _w in res], unlock_sha256=unlock_sha)
+                self._c1_by_this_process = True
+
+    def _step_up_inputs(self, now: int) -> dict[str, Any]:
+        """Only the item 9.2 sources. Inputs that are not built yet (trailing-30, halt history, tie-out sign-offs, chain total, deposits, floor) are left OUT,
+        so evaluate_step_up fails them: C1 is unreachable until they are built, reviewed and merged."""
+        inp: dict[str, Any] = {"ceiling": self._ceiling(), "stepped_down": self.ladder.stepped_down if self.ladder else True,
+                               "unlock": ld.verify_unlock(self.abook.bot_id), "sell_pin": sell_pin_problem(), "ms_to_end": int(self.h5.end_ms or 0) - now}
+        if self.gates is not None:
+            try:
+                inp["parity"] = json.loads((self.gates.dir / "parity-result.json").read_text())
+            except (OSError, ValueError):
+                pass
+        return inp
+
+    def _rescue_problem(self) -> str | None:
+        """Live start: (1) a root rescue sent for a mint that is still open in the state (marker <state_dir>/RESCUE-<mint>.json, tools/h5_arena_sell_and_close.py)
+        refuses until the base --mark-closed reconciled it; (2) every reconciled `manual_close` row closes its parity trip at the trip's chain delta (QP #839
+        condition 1: a rescue-closed trip enters parity d and the tie-out, it is never a stuck exit_pending trip)."""
+        sd = Path(self.h5cfg["state_dir"])
+        try:
+            markers = sorted(sd.glob("RESCUE-*.json"))
+        except OSError:
+            return "rescue_marker_unreadable"
+        for m in markers:
+            if m.name[len("RESCUE-"):-len(".json")] in self.state.open:
+                return "rescue_reconcile_pending"
+        if self.gates is None:
+            return None
+        try:
+            rows = [json.loads(x) for x in Path(self.fills.path).read_text().splitlines() if '"manual_close"' in x]
+        except (OSError, ValueError):
+            return "ledger_unreadable_for_manual_close"
+        for r in rows:
+            if isinstance(r, dict) and r.get("kind") == "manual_close":
+                why = self.gates.recorder.on_manual_close(str(r.get("mint")), r)
+                if why:
+                    return why
+        return None
 
     def _parity_state(self, now: int) -> dict[str, Any]:
         """The parity tool's state.json: a stamp only for a read that succeeded just now; a missing stamp is P7 (no buy). The H5 executor has no hash-chained
@@ -578,6 +956,8 @@ class ArenaExecutor(h.H5Executor):
         if self.feed_verified and H_FEED_BREAK not in self.counters.halts:
             at["decision_chain"] = now
         tier, problem = h.read_tier(self._tier_path(), root_checks=not self.dry_run)
+        if problem == "tier_file_invalid" and not self.dry_run and ld.read_ceiling(self._tier_path())[1] is None:
+            problem = None  # LADDER_C1 is a valid arena TIER (DEC-032 Am.2 item 9.2)
         if h.live_ok_valid() is None and problem is None:
             at["control_files"] = now
         return {"at_ms": at, "unresolved_hard_halts": sorted(HARD_ARENA_HALTS & set(self.counters.halts))}
@@ -627,6 +1007,12 @@ class ArenaExecutor(h.H5Executor):
         return None if bal >= need else "balance_floor"
 
     def _live_buy(self, trg: h.H5Trigger, ps: Any, terms: dict[str, Any], plan: Any, now: int, drift: float | None, seen_ms: int | None) -> None:
+        why = arena_live_ok_refusal(self.abook.bot_id)  # Helm's gate for THIS book, re-read before every live buy (removing it stops new buys at once)
+        if why:
+            return self._refuse(trg, why)
+        why = self._ladder_buy_refusal()  # DEC-032 Am.2 items 3 and 4: the daily trigger (held to 00:00Z) and the intraday cap, at the current rung
+        if why:
+            return self._refuse(trg, why)
         why = self.committed_loss_refusal() or self._balance_refusal(self.now_ms())  # the last look before anything is built or signed
         if why:
             return self._refuse(trg, why)
@@ -649,6 +1035,13 @@ class ArenaExecutor(h.H5Executor):
             return self._refuse(trg, "stale_trigger_after_gates")
         super()._live_buy(trg, ps, terms, plan, now, drift, seen_ms)
 
+    def _live_gate(self) -> str | None:
+        """The base class's gate, read immediately before every live buy send and rebroadcast (h5_executor._send / _live_buy): the arena's OWN LIVE_OK first
+        (it must exist and name this bot_id), then the base checks (/etc/mal-h5/LIVE_OK, EXP-024 Part 1). Removing either file stops the next send."""
+        if self.dry_run:
+            return None
+        return arena_live_ok_refusal(self.abook.bot_id) or super()._live_gate()
+
     def _signal_age_limit_ms(self) -> int:
         return min(SIGNAL_AGE_MAX_MS, int(self.h5.max_trigger_age_ms))
 
@@ -666,8 +1059,21 @@ class ArenaExecutor(h.H5Executor):
                 return
         if not self.dry_run and p.get("kind") == "buy" and p.get("sends", 0) == 0:
             self._send_guarded(p, mint)  # the first send of a live buy: the age is judged once more at the sendTransaction call itself
+        else:
+            super()._send(p, mint)
+        self._note_send(p, mint)
+
+    def _note_send(self, p: dict[str, Any], mint: str) -> None:
+        """Live only: one `arena_send` ledger row per signature the executor handed to sendTransaction (the daily tie-out's `sends`, with the blockhash's
+        last valid height that decides a confirmed drop; tools/arena_tieout_ledger.py exports it). A send that was blocked before the socket (STOP, HALT, a
+        stale signal: the pending record is gone or no send was counted) is not one. Rebroadcasts of the same signature are not repeated."""
+        if self.dry_run or not p.get("sends") or (self.state.pending.get(mint) or {}).get("signature") != p.get("signature"):
             return
-        super()._send(p, mint)
+        sig = p.get("signature")
+        if not sig or sig in self._sends_noted:
+            return
+        self._sends_noted.add(sig)
+        self._log("arena_send", mint, signature=sig, side=p.get("kind"), last_valid_block_height=p.get("lvbh"), first_send_ms=p.get("first_send_ms"))
 
     def _send_guarded(self, p: dict[str, Any], mint: str) -> None:
         """QP 10-23 condition 5: tools/h5_executor.py and tools/probe_live.py stay untouched, so the last check is made at the one place the base class writes to the socket,
@@ -808,6 +1214,7 @@ class ArenaExecutor(h.H5Executor):
             return kept
 
         self.a3_tick(self.now_ms())
+        self._ladder_guarded(self._ladder_pre_buy, self.now_ms())  # before this tick's buys (QP #862 condition 2)
         h.tail_lines = screened  # swapped for this call only; the loop is single-threaded
         try:
             return super().intent_tick()
@@ -829,6 +1236,15 @@ class ArenaExecutor(h.H5Executor):
                     self._latch(H_BUY_UNREADABLE, position_mint=mint, signature=kw.get("signature"))
             else:
                 self.gates.recorder.on_sell(mint, kw, self.now_ms())
+
+    def prime_feed_start(self) -> str | None:
+        """Called by main() once, before the first tick (never by the replay harness, whose input starts with its start record): verify the feed's newest
+        start record through decide_row, exactly as if it had been tailed. A mismatch latches feed_break (hard). None = verified; else why buys stay refused."""
+        rec = latest_start_record(self.intents_path)
+        if rec is None:
+            return "feed_start_record_missing"  # buys stay refused (feed_unverified) until a start record is tailed
+        self.decide_row(rec)
+        return None if self.feed_verified else "feed_start_record_rejected"
 
     def _latch(self, name: str, **detail: Any) -> None:
         """The base `_latch` logs `halt_latched` through `_log(kind, mint, **kw)`, so a detail key called `mint` collides with its positional argument and the
@@ -859,6 +1275,19 @@ class ArenaExecutor(h.H5Executor):
         name = self.monitor.note_exit_gap(bps_worse)
         if name:
             self.latch_external(name, mint=mint, n=len(self.monitor.exit_gaps))
+
+    def write_exit_gaps(self) -> None:
+        """Live: append the exit gap of every newly closed eligible trip (live sell price against its priced twin's exit price) to the executor's own exit-gap file."""
+        if self.exit_gap_writer is None or self.gates is None:
+            return
+        try:
+            _n, problems = self.exit_gap_writer.write(self.gates.recorder.trips, self.gates.twins_file, self.now_ms())
+        except OSError:
+            self.latch_external(H_EXIT_GAP, why="exit_gap_writer_failed")  # fail closed: an exit we cannot record is not a clear
+            return
+        if problems:  # an exit that cannot be measured is never skipped silently (QP #847 conditions 1, 4)
+            why, trip_id = problems[0]
+            self.latch_external(H_EXIT_GAP, why=why, trip_id=trip_id, n_problems=len(problems))
 
     def exit_gap_tick(self) -> None:
         """Tail the parity join's exit-gap file (`exit_gap_file`, JSON lines {"mint", "exit_gap_bps"}); each new line goes through ingest_exit_gap."""
@@ -903,6 +1332,7 @@ class ArenaExecutor(h.H5Executor):
 
     def exit_tick(self, now: int) -> None:
         self.a3_tick(now)
+        self.write_exit_gaps()
         self.exit_gap_tick()
         if self.gates is not None:
             self.gates.maybe_run_parity(now)
@@ -920,6 +1350,7 @@ class ArenaExecutor(h.H5Executor):
                 self.save()
             if pos.get("close_blocked") or pos.get("strand"):
                 self._latch(H_STRAND, mint=mint, close_blocked=bool(pos.get("close_blocked")), strand=bool(pos.get("strand")), why=pos.get("close_blocked_why"))
+        self._ladder_guarded(self.ladder_tick, now)  # after every exit of this tick, and guarded: a ladder error never skips an exit (QP #862 condition 1)
 
     def _finish_buy(self, mint: str, p: dict[str, Any], m: dict[str, Any]) -> None:
         super()._finish_buy(mint, p, m)
@@ -943,21 +1374,113 @@ class ArenaExecutor(h.H5Executor):
             self._latch_name(self.monitor.note_attempt(False), mint=mint)
 
 
-def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="H5 arena executor (DRY ONLY in this build; no live entry point)")
+_ARENA_CLASS = ArenaExecutor  # the class the tripwire inspects (a name bound at import, so rebinding ArenaExecutor cannot hide a removed override)
+GUARD_METHODS = ("h5", "_tier_path", "_refresh_tier", "_ladder_buy_refusal", "ladder_tick", "_ladder_start_problem", "_ladder_pre_buy", "_ladder_guarded", "_unlock_still_valid", "daily_loss_now", "_refresh_marks", "_live_gate", "prime_feed_start", "_live_buy", "_send", "_send_guarded", "_note_send", "write_exit_gaps", "_rescue_problem", "_budget_stop", "_balance_refusal", "committed_loss_refusal", "_hard_refusal",
+                 "_parity_state", "decide_row", "intent_tick", "_latch", "exit_tick", "_fire_sell", "_finish_buy", "_resolve_expired", "_seal_reason")
+
+
+def _refused(why: str) -> int:
+    print(f"h5_arena_executor ALERT startup_refused {why}", flush=True)
+    return 2
+
+
+def live_status(cfg: dict[str, Any], root: Path | None = None) -> str:
+    """Keyless, read-only: the first live-start refusal this config would get now (or "none"), and the file facts behind it. Opens no key and no RPC."""
+    book = BOOKS.get(cfg.get("book_id"))  # type: ignore[arg-type]
+    if book is None:
+        return "live_start=book_id_unknown"
+    why = h.start_refusal(cfg, root) or arena_start_refusal(book, cfg, root or h.repo_root(), live=True)
+    tier, tp = h.read_tier(ARENA_TIER_PATH, root_checks=True)
+    return (f"live_start={why or 'none'} book={book.bot_id} live_built={LIVE_BUILT} feed_note_merged={FEED_NOTE_MERGED} "
+            f"arena_live_ok={arena_live_ok_refusal(book.bot_id) or 'valid'} ({ARENA_LIVE_OK_PATH}) shared_live_ok={h.live_ok_valid() or 'valid'} "
+            f"arena_tier={tier if tp is None else 'problem:' + tp} c0_guard={c0_guard_problem() or 'ok'} sell_pin={sell_pin_problem() or 'ok'}")
+
+
+def main(argv: list[str] | None = None, *, rpc_factory: Callable[[str | None, str, bool, float], Any] | None = None) -> int:
+    """The entry point. Dry run by default (keyless, public payer). Live needs ALL of: config "mode": "live", --live, and every keyless check of the
+    module docstring, in that order, BEFORE the key is read; the key comes only from the systemd credential (tools.probe_live.load_probe_key)."""
+    ap = argparse.ArgumentParser(description="H5 arena executor (dry run by default; live needs config mode AND --live AND every C0 check)")
     ap.add_argument("--config", required=True)
-    ap.add_argument("--live", action="store_true", help="refused: live is not built (needs the canary DEC and the owner's OK)")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--dry-run", action="store_true", help="the default: build and simulate, never sign or send")
+    g.add_argument("--live", action="store_true", help='also needs config "mode": "live", both LIVE_OK files, TIER T1, the canary DEC line, FEED_NOTE_MERGED')
+    ap.add_argument("--once", action="store_true", help="one tick, then exit")
+    ap.add_argument("--status", action="store_true", help="keyless: print the live-start check line and exit (no key, no RPC)")
+    ap.add_argument("--env-file", default=h.sim.DEFAULT_ENV_FILE)
+    ap.add_argument("--rpc-env", metavar="VARNAME", help="dry run only: the NAME of an environment variable holding the RPC URL. Refused with --live")
     args = ap.parse_args(argv)
-    if args.live:
-        print("h5_arena_executor ALERT startup_refused live_not_built", flush=True)
-        return 2
-    cfg = json.loads(Path(args.config).read_text())
-    why = arena_start_refusal(BOOKS[cfg["book_id"]], cfg, h.repo_root(), live=False) if cfg.get("book_id") in BOOKS else "book_id_unknown"
-    if why:
-        print(f"h5_arena_executor ALERT startup_refused {why}", flush=True)
-        return 2
-    print("h5_arena_executor: no network entry point in this build (replay and tests construct ArenaExecutor with a stub RPC)", flush=True)
-    return 0
+    if args.rpc_env and args.live:
+        ap.error("--rpc-env is allowed with --dry-run only: live reads HELIUS_API_KEY from the environment and never takes a URL")
+    if args.rpc_env and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", args.rpc_env):
+        ap.error("--rpc-env takes the NAME of an environment variable, not a URL")
+    try:
+        cfg = json.loads(Path(args.config).read_text())
+    except (OSError, ValueError):
+        return _refused("config_unreadable")
+    if not isinstance(cfg, dict):
+        return _refused("config_not_an_object")
+    book = BOOKS.get(cfg.get("book_id"))  # type: ignore[arg-type]
+    if book is None:
+        return _refused("book_id_unknown")
+    if args.status:
+        print(live_status(cfg), flush=True)
+        return 0
+    try:
+        h.H5Limits.from_config(cfg)
+        mode, warn = h.pe.resolve_mode(cfg.get("mode", h.DRYRUN), args.live and not args.dry_run)
+    except (ValueError, SystemExit) as exc:
+        return _refused(f"config_refused ({exc})")
+    if args.live and mode != h.LIVE:
+        return _refused("live_flag_without_config_mode_live")  # a canary never falls back to a silent dry run under a live unit
+    if warn:
+        print(f"h5_arena_executor WARNING {warn}", flush=True)
+    make_rpc = rpc_factory or (lambda url, env_file, use_env_file, rps: h.pe.LimitedRpc(h.pe.ProbeRpc(h.sim.load_rpc_url(url, env_file, use_env_file=use_env_file)),
+                                                                                         rps=rps, max_rps=h.H5_MAX_RPS))
+    rps = float(cfg.get("rps", 8.0))
+    lock_fd = h.acquire_lock(Path(cfg["state_dir"]) / "h5-executor.lock")  # the base executor's lock name: never two executors on one state dir
+    url: str | None = None
+    try:
+        if mode == h.LIVE:
+            why = h.start_refusal(cfg) or arena_start_refusal(book, cfg, h.repo_root(), live=True)  # arena_start_refusal runs live_entry_refusal first
+            if why:
+                return _refused(why)
+            rc = h.pe.startup_rpc_env_check(True)
+            if rc:
+                return rc
+            h.pl.harden_process()  # before the key is read
+            if "key_path" in cfg:
+                return _refused("key_path_set")  # the key comes from the systemd credential only
+            if not (os.environ.get("HELIUS_API_KEY") or "").strip():
+                return _refused("rpc_key_missing")
+            kp = h.pl.load_probe_key()
+            rpc = make_rpc(None, args.env_file, False, rps)
+            try:
+                ex = ArenaExecutor(rpc, cfg, kp)
+            except SystemExit as exc:  # the constructor's own refusals (funded balance, re-run start checks): exit 2, not a restart loop
+                return _refused(str(exc).replace("arena executor start refused: ", ""))
+        else:
+            why = arena_start_refusal(book, cfg, h.repo_root(), live=False)
+            if why:
+                return _refused(why)
+            url = (os.environ.get(args.rpc_env) or "").strip() if args.rpc_env else None
+            if args.rpc_env and not url:
+                return _refused(f"rpc_env_unset:{args.rpc_env}")
+            rpc = make_rpc(url, args.env_file, True, rps)
+            try:
+                ex = ArenaExecutor(rpc, cfg, None, rpc_label=h.url_label(url))
+            except SystemExit as exc:
+                return _refused(str(exc).replace("arena executor start refused: ", ""))
+        shown = f" rpc={h.url_label(url)}" if url else ""
+        print(f"h5_arena_executor mode={ex.run_mode} book={book.bot_id} frozen_sha={book.frozen_sha} user={ex.user}{shown} paths={ex.paths} limits={ex.h5}", flush=True)
+        feed = ex.prime_feed_start()
+        print(f"h5_arena_executor feed_start={feed or 'verified'} start_ms={ex._start_ms}", flush=True)  # not verified: every trigger is refused feed_unverified
+        if args.once:
+            ex.tick()
+            return 0
+        ex.run_loop()
+        return 0
+    finally:
+        os.close(lock_fd)
 
 
 if __name__ == "__main__":
