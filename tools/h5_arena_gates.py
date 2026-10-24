@@ -77,6 +77,71 @@ def load_twin_ids(twins_file: str, priced_only: bool = False) -> set[str] | None
         return None
 
 
+EXIT_GAPS_NAME = "exit-gaps.jsonl"  # the executor's own exit-gap file, in its parity dir; a live config must name exactly this path
+
+
+def load_twin_rows(twins_file: str) -> dict[str, dict[str, Any]] | None:
+    """trip_id -> the PRICED twin row (no price_failed, a finite pnl), or None when the file cannot be read (the same parse as load_twin_ids)."""
+    try:
+        rows: dict[str, dict[str, Any]] = {}
+        for line in Path(twins_file).read_text().splitlines():
+            if line.strip():
+                row = json.loads(line)
+                tid = row["trip_id"]
+                if row.get("price_failed") or not _finite_number(row.get("pnl_lamports")):
+                    continue
+                rows[tid] = row
+        return rows
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def exit_gap_bps_worse(live_sell_price: Any, twin_exit_price: Any) -> float | None:
+    """bps the live sell received BELOW the twin's exit price (positive = live worse; = -g_exit of DEC-032 s5). None unless both prices are finite and > 0."""
+    if not (_finite_number(live_sell_price) and _finite_number(twin_exit_price)) or live_sell_price <= 0 or twin_exit_price <= 0:
+        return None
+    return (1.0 - float(live_sell_price) / float(twin_exit_price)) * 1e4
+
+
+class ExitGapWriter:
+    """Appends one {trip_id, mint, exit_gap_bps} row per ELIGIBLE closed trip (exit landed, not `gap`, not `unreadable`, a priced twin with an exit price) to the
+    executor's own exit-gap file, which the executor's exit_gap_tick then reads (FidelityMonitor: mean above 200 bps after 10 rows latches exit_gap_gt_200bps).
+    This is the executor's own exit check on EVERY exit; the parity tool's P6 looks only at stop-loss exits, which an H5 timer book never has. A trip is written once
+    (the file is the record; ids already in it are skipped after a restart). An unreadable file or a failed write raises OSError: the caller latches (fail closed)."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.written: set[str] = set()
+        if path.exists():
+            for line in path.read_text().splitlines():  # OSError propagates
+                try:
+                    self.written.add(str(json.loads(line)["trip_id"]))
+                except (ValueError, KeyError, TypeError):
+                    continue  # not ours: the executor's reader (exit_gap_tick) latches on a bad row; the writer only needs the ids it wrote
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+
+    def write(self, trips: Mapping[str, Mapping[str, Any]], twins_file: str) -> int:
+        todo = [t for k, t in trips.items() if k not in self.written and t.get("exit_landed") and not t.get("gap") and not t.get("unreadable")]
+        if not todo:
+            return 0
+        twins = load_twin_rows(twins_file)
+        if twins is None:
+            return 0  # the twin gate (P7) already refuses buys on an unreadable twins file; the rows are written once it reads again
+        rows = []
+        for t in todo:
+            tw = twins.get(t["trip_id"])
+            g = exit_gap_bps_worse(t.get("live_sell_price"), (tw or {}).get("exit_price"))
+            if g is not None:
+                rows.append({"trip_id": t["trip_id"], "mint": t["trip_id"], "exit_gap_bps": round(g, 3)})
+        if rows:
+            with self.path.open("a") as fh:  # OSError propagates
+                fh.write("".join(json.dumps(r, sort_keys=True, allow_nan=False) + "\n" for r in rows))
+            self.written.update(r["trip_id"] for r in rows)
+        return len(rows)
+
+
 def twin_run_stamp(twins_file: str, trip_ids: Any) -> int | None:
     """The twin freshness stamp (QP 10-23 condition 1): the WRITER's own run time (run_ms), and only while its run record is valid: right schema, an int run_ms, covered_trip_ids
     holding EVERY live trip id now, and twins_sha256 equal to the sha256 of the twins file as it is now (the file is the one that run wrote). Anything else is None (no stamp,

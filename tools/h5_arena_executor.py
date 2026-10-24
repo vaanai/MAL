@@ -56,7 +56,7 @@ from datetime import datetime, timezone
 from tools import h5_executor as h
 from tools import mint_account_fetch as mf
 from tools.arena_close_blocked import classify_record
-from tools.h5_arena_gates import HARD_ARENA_HALTS, TWIN_PIN_MISMATCH, LiveGates, ParityRecorder, v_band_refusal
+from tools.h5_arena_gates import EXIT_GAPS_NAME, HARD_ARENA_HALTS, TWIN_PIN_MISMATCH, ExitGapWriter, LiveGates, ParityRecorder, v_band_refusal
 from tools.h5_arena_gates import twin_run_stamp as gt_twin_run_stamp
 
 # --- the books (item 1). Values copied from the merged records: ARTIFACTS/lab/arena-records-2026-10-22.md (a2), qp-ruling-1022-q50.md and
@@ -298,6 +298,8 @@ def arena_start_refusal(book: Book, cfg: dict[str, Any], root: Path, live: bool)
             return why
         if not cfg.get("exit_gap_file"):
             return "exit_gap_file_missing"  # the exit-gap feed (parity P6) is mandatory live: unset would mean no check at all
+        if cfg.get("state_dir") and str(cfg["exit_gap_file"]) != str(Path(cfg["state_dir"]) / "arena-parity" / EXIT_GAPS_NAME):
+            return "exit_gap_file_not_own_writer"  # live reads only the file its own ExitGapWriter fills (an empty file elsewhere would never fire)
         for key in ("parity_twins_file", "tieout_dir"):  # the parity tool's twins input and the tie-out results directory (DEC-032 s5, s6)
             if not cfg.get(key):
                 return f"{key}_missing"
@@ -627,6 +629,12 @@ class ArenaExecutor(h.H5Executor):
             interval = cfg.get("parity_interval_s")
             self.gates = LiveGates(gdir, ParityRecorder(gdir), str(cfg["parity_twins_file"]), str(cfg["tieout_dir"]), self.paths["stop"],
                                    self._parity_state, twin_pins=twin_pins(book), interval_s=interval if isinstance(interval, (int, float)) and interval > 0 else None)
+        self.exit_gap_writer: ExitGapWriter | None = None
+        if keypair is not None:
+            try:
+                self.exit_gap_writer = ExitGapWriter(Path(str(self.cfg_exit_gap_file)))
+            except OSError as exc:
+                raise SystemExit(f"arena executor start refused: exit_gap_file_unusable ({type(exc).__name__})") from None
         if self.exit_mode != book.exit_pin:
             raise SystemExit("exit mode pin was not applied")
         if keypair is not None:
@@ -1000,6 +1008,15 @@ class ArenaExecutor(h.H5Executor):
         if name:
             self.latch_external(name, mint=mint, n=len(self.monitor.exit_gaps))
 
+    def write_exit_gaps(self) -> None:
+        """Live: append the exit gap of every newly closed eligible trip (live sell price against its priced twin's exit price) to the executor's own exit-gap file."""
+        if self.exit_gap_writer is None or self.gates is None:
+            return
+        try:
+            self.exit_gap_writer.write(self.gates.recorder.trips, self.gates.twins_file)
+        except OSError:
+            self.latch_external(H_EXIT_GAP, why="exit_gap_writer_failed")  # fail closed: an exit we cannot record is not a clear
+
     def exit_gap_tick(self) -> None:
         """Tail the parity join's exit-gap file (`exit_gap_file`, JSON lines {"mint", "exit_gap_bps"}); each new line goes through ingest_exit_gap."""
         path = self.cfg_exit_gap_file
@@ -1043,6 +1060,7 @@ class ArenaExecutor(h.H5Executor):
 
     def exit_tick(self, now: int) -> None:
         self.a3_tick(now)
+        self.write_exit_gaps()
         self.exit_gap_tick()
         if self.gates is not None:
             self.gates.maybe_run_parity(now)
