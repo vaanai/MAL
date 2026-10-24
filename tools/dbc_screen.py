@@ -418,7 +418,7 @@ def validate_all(D: dict[str, Any]) -> dict[str, Any]:
     buy = A["side"] == 1
     out: dict[str, Any] = {"sol_trade_rows": n, "pools": D["n_pools"], "configs": D["n_configs"], "creates": D["creates"], "completed_pools": len(D["complete_slot"]),
                            "hook_pools": len(D["hook_pools"]), "good_hours": len(D["good_hours"]), "bad_hours": D["bad_hours"], "order_fix": D["order_stats"],
-                           "bad_rows": int(D["bad_row"].sum()), "curve": L.validate(A, d)}
+                           "bad_rows": int(D["bad_row"].sum()), "curve_all_rows": L.validate(A, d), "curve_excl_bad_rows": L.validate(A, d, exclude=D["bad_row"])}
     out["config_mode"] = {"configs_mode_input": int(len({int(c) for c in np.unique(A['cfg'][d['mode'] == 1])})), "configs_with_evidence": int(len(np.unique(A['cfg'][d['mode_known']]))),
                           "rows_mode_unknown": int((~d["mode_known"]).sum())}
     rate = d["rate"]
@@ -444,7 +444,7 @@ def capacity(D: dict[str, Any]) -> dict[str, Any]:
     for s, e in zip(starts, ends):
         P = Pool(D, slice(int(s), int(e)), int(pid[s]))
         cs = D["complete_slot"].get(P.pid)
-        tradable = (~P.hook) and P.mode_known and np.isfinite(P.thr[0]) and (P.thr[0] >= THR_MIN)
+        tradable = (not P.hook) and P.mode_known and np.isfinite(P.thr[0]) and (P.thr[0] >= THR_MIN)
         fin = np.isfinite(P.imp25) & (~P.bad)
         ok = universe(P, first_ok_bt, cs)
         dnum = (P.bt // 86400).astype(np.int64)

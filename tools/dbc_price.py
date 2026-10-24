@@ -202,7 +202,11 @@ def read_hour(path: str | os.PathLike, root: str = BACKFILL_ROOT) -> dict[str, A
     trades, creates, completes = [], [], []
     gap, ended = False, False
     for line in _zstd_lines(path, root):
-        if b'"type":"trade"' in line or b'"type": "trade"' in line:
+        if line.startswith(b'{"v":1,"venue":"meteora_dbc","type":"backfill_hour_end"'):
+            ended = True
+        elif b"backfill_incomplete" in line and not line.startswith(b'{"v":1,"venue":"meteora_dbc","slot"'):
+            gap = True
+        elif b'"type":"trade"' in line or b'"type": "trade"' in line:
             d = json.loads(line)
             if d.get("type") == "trade":
                 trades.append(d)
@@ -214,10 +218,6 @@ def read_hour(path: str | os.PathLike, root: str = BACKFILL_ROOT) -> dict[str, A
             d = json.loads(line)
             if d.get("type") == "create":
                 creates.append(d)
-        elif b"backfill_incomplete" in line:
-            gap = True
-        elif b"backfill_hour_end" in line:
-            ended = True
     return {"trades": trades, "creates": creates, "completes": completes, "incomplete": gap or not ended}
 
 
@@ -332,10 +332,12 @@ def ffill(x: np.ndarray, pid: np.ndarray, fallback: float) -> np.ndarray:
     return np.where(ok, x[np.maximum(idx, 0)], fallback)
 
 
-def validate(a: dict[str, np.ndarray], d: dict[str, np.ndarray]) -> dict[str, Any]:
+def validate(a: dict[str, np.ndarray], d: dict[str, np.ndarray], exclude: np.ndarray | None = None) -> dict[str, Any]:
     """Predict each trade's amount_out from its PRE state (S0, carried Lhat) and compare with the event. Only rows with a carried L and a known config mode."""
     buy = a["side"] == 1
     ok = np.isfinite(d["Lhat"]) & np.isfinite(d["S0"]) & d["mode_known"]
+    if exclude is not None:
+        ok = ok & ~exclude
     out: dict[str, Any] = {"rows": int(len(buy)), "rows_with_state": int(ok.sum()), "config_mode_known_share": float(d["mode_known"].mean())}
     with np.errstate(all="ignore"):
         mode = d["mode"]
