@@ -269,44 +269,55 @@ class TriggerAndCapTests(LadderCase):
 
 
 class ExitWindowMarkTests(LadderCase):
-    """QP observation on #862: a stale mark counted at zero inside the exit window fired the C0 trigger on two normal exits with no real loss."""
+    """QP observation on #862 + QP NOT-OK on 6d0b3e7f (DEC-032 Am.2 item 3 (a)): a mark older than 10 s counts at zero, always; the last mark is taken
+    in the 1 s before each position's no-lookup window, so a normal exit lands while its mark is still fresh."""
 
-    def two_positions(self, e, send_in_ms):
+    def positions(self, e, sends_in_ms):
         now = e.ex.now_ms()
         guard = max(ax.MARK_EXIT_GUARD_MS, int(e.ex.h5.arm_lead_ms) + 3_000)
-        for i in range(2):
+        out = []
+        for i, d in enumerate(sends_in_ms):
             m = f"Mint{i}" + "1" * 30
-            e.ex.state.open[m] = {"buy_cost_lamports": 50_150_000, "spend": 50_000_000, "h5": {"plan": {"send_wall_ms": now + send_in_ms + i * 4_000}}}
-        return now, guard
+            e.ex.state.open[m] = {"buy_cost_lamports": 50_150_000, "spend": 50_000_000, "h5": {"plan": {"send_wall_ms": now + d}}}
+            e.ex._marks[m] = (49_900_000, now + d - guard - 500)  # the last mark, taken in the 1 s lead before the window (a 0.25 % loss)
+            out.append((m, now + d))
+        return out, guard
 
-    def test_two_exits_within_10_s_do_not_fire_the_trigger_with_their_last_marks(self):
+    def test_two_exits_landing_normally_do_not_fire_the_trigger(self):
         e = self.q50(ceiling="T1")
-        now, guard = self.two_positions(e, 20_000)
-        for m, p in e.ex.state.open.items():  # the last marks, taken just before each window (cost 0.10015 vs value 0.0999: a 0.25 % loss)
-            e.ex._marks[m] = (49_900_000, p["h5"]["plan"]["send_wall_ms"] - guard - 1_000)
-        e.clock.t += 20_000 + 4_000 + 5_000  # both positions inside their windows (up to send + 10 s), the marks now more than 10 s old
+        (p0, s0), (p1, s1) = self.positions(e, [20_000, 23_000])[0]
+        e.clock.t = s1 + 1_000  # both inside their windows; position 0 one 4 s after its send, position 1 1 s after its send
         self.assertLess(e.ex.daily_loss_now(e.ex.now_ms()), ld.LADDER["C0"].daily_trigger_lamports)
+        self.assertEqual(e.ex.daily_loss_now(e.ex.now_ms()), 2 * 250_000)
         e.ex.ladder_tick(e.ex.now_ms())
         self.assertIsNone(e.ex._trigger_day)
 
-    def test_without_any_mark_they_still_count_at_zero_and_fire(self):
+    def test_a_stuck_sell_15_s_and_30_s_after_send_counts_at_zero(self):
         e = self.q50(ceiling="T1")
-        self.two_positions(e, 20_000)
+        (p0, s0), = self.positions(e, [20_000])[0]
+        for after in (15_000, 30_000):
+            e.clock.t = s0 + after
+            self.assertEqual(e.ex.daily_loss_now(e.ex.now_ms()), 50_150_000, after)
+
+    def test_no_mark_older_than_10_s_is_ever_used(self):
+        e = self.q50(ceiling="T1")
+        (p0, s0), = self.positions(e, [20_000])[0]
+        mark_ms = e.ex._marks[p0][1]
+        e.clock.t = mark_ms + ld.MARK_MAX_AGE_MS
+        self.assertEqual(e.ex.daily_loss_now(e.ex.now_ms()), 250_000)
+        e.clock.t = mark_ms + ld.MARK_MAX_AGE_MS + 1
+        self.assertEqual(e.ex.daily_loss_now(e.ex.now_ms()), 50_150_000)
+
+    def test_without_any_mark_they_count_at_zero_and_fire(self):
+        e = self.q50(ceiling="T1")
+        self.positions(e, [20_000, 23_000])
         e.ex._marks.clear()
-        e.clock.t += 30_000
+        e.clock.t += 24_000
         with mock.patch.object(e.ex, "_refresh_marks", lambda now: None):
             e.ex.ladder_tick(e.ex.now_ms())
-        self.assertEqual(e.ex._trigger_day, h.day_key(e.ex.now_ms()))  # 2 x 0.10015 counted at zero: conservative when nothing was ever marked
+        self.assertEqual(e.ex._trigger_day, h.day_key(e.ex.now_ms()))
 
-    def test_a_mark_taken_long_before_the_window_does_not_stand_for_it(self):
-        e = self.q50(ceiling="T1")
-        now, guard = self.two_positions(e, 60_000)
-        for m, p in e.ex.state.open.items():
-            e.ex._marks[m] = (49_900_000, now)  # 60 s before the send: not a last pre-window mark
-        e.clock.t += 60_000 + 4_000 - guard + 100
-        self.assertEqual(e.ex.daily_loss_now(e.ex.now_ms()), 2 * 50_150_000)
-
-    def test_the_last_mark_is_taken_just_before_the_window_and_never_inside_it(self):
+    def test_the_last_mark_is_taken_in_the_lead_and_never_inside_the_window(self):
         e = self.q50(ceiling="T1")
         pos = e.open_position()
         send = pos["h5"]["plan"]["send_wall_ms"]
@@ -315,8 +326,8 @@ class ExitWindowMarkTests(LadderCase):
         real = e.ex._snapshot
         e.ex._snapshot = lambda *a, **k: (calls.append(e.ex.now_ms()), real(*a, **k))[1]
         e.clock.t = send - guard - ax.LAST_MARK_LEAD_MS - 1
-        e.ex._marks[MINT] = (1, e.clock.t)  # fresh mark: the normal 5 s cadence would skip the next read
-        e.clock.t = send - guard - ax.LAST_MARK_LEAD_MS + 1_500  # inside the last-chance lead, 1.5 s after the mark
+        e.ex._marks[MINT] = (1, e.clock.t)  # fresh: the normal 5 s cadence would skip the next read
+        e.clock.t = send - guard - 300  # inside the 1 s lead, 0.7 s after the mark
         e.ex._refresh_marks(e.ex.now_ms())
         self.assertEqual(len(calls), 1)
         self.assertEqual(e.ex._marks[MINT][1], e.clock.t)
@@ -326,7 +337,8 @@ class ExitWindowMarkTests(LadderCase):
 
     def test_the_intraday_pre_send_cap_still_counts_open_positions_at_zero(self):
         e = self.q50(ceiling="T1")
-        now, guard = self.two_positions(e, 20_000)
+        self.positions(e, [20_000, 23_000])
+        now = e.ex.now_ms()
         for m in e.ex.state.open:
             e.ex._marks[m] = (50_150_000, now)  # perfectly marked: no unrealized loss at all
         worst = [e.ex._position_worst_case(int(p["spend"])) for p in e.ex.state.open.values()]
@@ -364,29 +376,3 @@ class UnlockReverifyTests(C1Helpers):
         self.assertEqual(e.ex._rung(), "C1")
 
 
-class CarryBoundTests(LadderCase):
-    two_positions = ExitWindowMarkTests.two_positions
-
-    def test_a_position_still_open_15_s_after_its_send_counts_at_zero(self):
-        e = self.q50(ceiling="T1")
-        now, guard = self.two_positions(e, 20_000)
-        m0 = next(iter(e.ex.state.open))
-        e.ex.state.open = {m0: e.ex.state.open[m0]}
-        send = e.ex.state.open[m0]["h5"]["plan"]["send_wall_ms"]
-        e.ex._marks[m0] = (49_900_000, send - guard - 1_000)
-        e.clock.t = send + 9_999
-        self.assertEqual(e.ex.daily_loss_now(e.ex.now_ms()), 250_000)  # carried until send + 10 s
-        e.clock.t = send + 15_000  # a stuck or failed sell: still open 15 s after its send instant
-        self.assertEqual(e.ex.daily_loss_now(e.ex.now_ms()), 50_150_000)
-
-    def test_a_mark_older_than_the_3_s_lead_at_window_open_is_not_carried(self):
-        e = self.q50(ceiling="T1")
-        now, guard = self.two_positions(e, 20_000)
-        m0 = next(iter(e.ex.state.open))
-        e.ex.state.open = {m0: e.ex.state.open[m0]}
-        send = e.ex.state.open[m0]["h5"]["plan"]["send_wall_ms"]
-        e.ex._marks[m0] = (49_900_000, send - guard - ax.LAST_MARK_LEAD_MS - 1)  # 1 ms before the lead: not a last pre-window mark
-        e.clock.t = send - guard + 11_000  # inside the window, the mark more than 10 s old
-        self.assertEqual(e.ex.daily_loss_now(e.ex.now_ms()), 50_150_000)
-        e.ex._marks[m0] = (49_900_000, send - guard - ax.LAST_MARK_LEAD_MS)  # exactly at the lead start: carried
-        self.assertEqual(e.ex.daily_loss_now(e.ex.now_ms()), 250_000)

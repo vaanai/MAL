@@ -229,9 +229,8 @@ LANDING_EXCESS_PP, LANDING_MIN_N = 10.0, 30
 LATE_SEND_SLOTS, LATE_SEND_TRIPS = 3, 2
 MARK_EXIT_GUARD_MS = 5_000  # no mark read from 5 s before a position's sell send onward (the exit path stays free of mark RPCs)
 MARKS_PER_TICK = 1  # at most one position marked (2 RPC calls) per exit tick
-LAST_MARK_LEAD_MS = 3_000  # the last mark is taken in the 3 s before a position's no-lookup window (and carried through the window)
-LAST_MARK_MIN_GAP_MS = 1_000  # ... at most once a second
-CARRY_AFTER_SEND_MS = 10_000  # the carried mark stands until the sell-send instant + 10 s; a position still open after that counts at zero
+LAST_MARK_LEAD_MS = 1_000  # the last mark is taken in the 1 s before a position's no-lookup window (it then ages normally: item 3 (a), 10 s)
+LAST_MARK_MIN_GAP_MS = 500  # ... at most twice a second
 REFUSAL_LOOK2 = "h5_look2_sealed"
 REFUSAL_S0_WINDOW = "s0_outside_book_window"
 REFUSAL_DECISION_WINDOW = "decision_outside_book_window"
@@ -836,20 +835,15 @@ class ArenaExecutor(h.H5Executor):
         return (send if isinstance(send, int) and not isinstance(send, bool) else None), guard
 
     def daily_loss_now(self, now: int) -> int:
-        """Item 3 (a). A position INSIDE its exit window (no mark reads there, QP #862 c.3) keeps its last mark, if that mark was taken in the
-        LAST_MARK_LEAD_MS (3 s) before the window opened, and only until its sell-send instant + CARRY_AFTER_SEND_MS (10 s); after that, a position still open
-        (a stuck or failed sell) counts at zero again, so a price collapse during a stuck exit is never hidden from the trigger. Without the carry otherwise every normal exit would read as a total loss and fire the C0 trigger with no real loss (QP observation
-        on #862). A position with no mark at all, or with a stale mark OUTSIDE its window, still counts at zero. The pre-send intraday cap still counts every
-        open position at zero (unchanged, conservative)."""
-        positions = []
-        for m, p in self.state.open.items():
-            mv, ms = self._marks.get(m) or (None, None)
-            send, guard = self._exit_window_start(p)
-            window = send is not None and send - guard <= now < send + CARRY_AFTER_SEND_MS
-            if mv is not None and isinstance(ms, int) and window and ms >= send - guard - LAST_MARK_LEAD_MS:
-                ms = now  # the last pre-window mark (taken in the LAST_MARK_LEAD_MS before the window opened) stands for the window, up to send + 10 s
-            positions.append({"cost_lamports": int(p.get("buy_cost_lamports") or p.get("spend") or 0) + int(p.get("extra_cost") or 0),
-                              "mark_value_lamports": mv, "mark_ms": ms})
+        """Item 3 (a), literally: a mark older than 10 s (or none) counts the position at zero. No mark is ever treated as fresher than it is.
+        What avoids false triggers on normal exits is WHEN the last mark is taken: _refresh_marks forces one in the LAST_MARK_LEAD_MS (1 s) before a
+        position's no-lookup window, so at the sell-send instant the mark is guard + at most 1 s old (5 to 6 s with the default 2 s arm lead) and stays
+        valid until about send + 4 s, which covers a normal landing. A sell still open after that (stuck, failed) counts at zero, as item 3 (a) says.
+        With arm_lead_ms above 7 s the guard is above 10 s and the mark is already stale at the send instant (the position counts at zero: conservative).
+        The pre-send intraday cap still counts every open position at zero (unchanged)."""
+        positions = [{"cost_lamports": int(p.get("buy_cost_lamports") or p.get("spend") or 0) + int(p.get("extra_cost") or 0),
+                      "mark_value_lamports": (self._marks.get(m) or (None, None))[0], "mark_ms": (self._marks.get(m) or (None, None))[1]}
+                     for m, p in self.state.open.items()]
         return ld.daily_loss_lamports(self._realized_today(now), positions, now)
 
     def _ladder_guarded(self, fn: Any, now: int) -> None:
