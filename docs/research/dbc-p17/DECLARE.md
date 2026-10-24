@@ -28,3 +28,10 @@ haircut), plus Swap3-specific: per-trade fee from the event incl. transfer-hook 
 Labels as P14 (MARGINAL = both fail models mean > 0, ex-top-3 > 0, ex-best-day > 0; otherwise FAIL). Gate-style numbers (fills >= 100, >= 5 days with a majority positive, CI lo > 0) are
 printed as exploration only. NO SENTENCE SAYS A CELL MAKES MONEY; a MARGINAL here would only justify a forward paper book that needs a fresh holdout (see REPORT).
 Declared at: 2026-10-24T06:52:06Z
+
+## ADDENDUM 1 (after a first screens run that returned 0 attempts for every cell: a BUG, no cell had any count to tune on)
+Cause: EvtSwap3 rows carry no migration_threshold, so thr = 0 and every row failed the thr >= 5 SOL universe rule. Fix: threshold read from the config account
+(migration_quote_threshold; equals the Swap2 event's migration_threshold for 755 of 755 configs checked on 10-14..15). In the same fix, pools whose config has a Token-2022 transfer
+fee (transfer_fee_basis_points > 0; 42 of 7,399 configs) are excluded like hook pools (the fee is not modelled). Nothing else changes: cells, rules, window, labels as above.
+The first run's output (screens_swap3/) is overwritten by the rerun; its only content was 11 x "0 attempts".
+Addendum 1 declared at: 2026-10-24T06:55:29Z

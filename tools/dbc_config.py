@@ -67,3 +67,17 @@ def decode_b64(s: str) -> dict[str, Any]:
 def curve_points(cfg: dict[str, Any]) -> list[tuple[int, int]]:
     """[(sqrt_price_upper, liquidity)] for the used segments (sqrt_price > 0). Segment i spans (prev upper, upper]; the first starts at sqrt_start_price."""
     return [(p["sqrt_price"], p["liquidity"]) for p in cfg["curve"] if p["sqrt_price"] > 0]
+
+
+def summary_map(raw: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """{config: {kind, thr (migration_quote_threshold, lamports of the quote mint), collect_fee_mode, token_type, transfer_fee_bps, quote_mint, hook}} from fetched raw accounts."""
+    out = {}
+    for k, v in raw.items():
+        try:
+            a = decode_b64(v["data_b64"])
+        except (ValueError, KeyError):
+            continue
+        c = a["config"]
+        out[k] = {"kind": a["kind"], "thr": c["migration_quote_threshold"], "collect_fee_mode": c["collect_fee_mode"], "token_type": c["token_type"],
+                  "transfer_fee_bps": c["transfer_fee_basis_points"], "quote_mint": c["quote_mint"], "hook": a["kind"] == "ConfigWithTransferHook"}
+    return out

@@ -103,6 +103,20 @@ def enable_swap3_pricing() -> None:
     SWAP3_IS_HOOK, FOB_EVIDENCE = False, True
 
 
+CFG_XFER: set[str] = set()  # P17: configs whose base mint carries a Token-2022 transfer fee (transfer_fee_basis_points > 0): not modelled, their pools are excluded like hook pools
+CFG_THR: dict[str, int] = {}  # P17: config -> migration_quote_threshold (EvtSwap3 rows do not carry migration_threshold; read from the config account)
+
+
+def load_config_thresholds(summary_path: str) -> int:
+    """Load {config: {thr, ...}} (tools.dbc_config.summary_map output as JSON) into CFG_THR. Used only for rows with no migration_threshold on the event."""
+    m = json.loads(open(summary_path).read())
+    CFG_THR.clear()
+    CFG_THR.update({k: int(v["thr"]) for k, v in m.items()})
+    CFG_XFER.clear()
+    CFG_XFER.update(k for k, v in m.items() if int(v.get("transfer_fee_bps") or 0) > 0)
+    return len(CFG_THR)
+
+
 def window() -> tuple[datetime, datetime, str]:
     """(start, end exclusive, root) the guard currently accepts."""
     if SPENT_ROOT is not None and not HOLDOUT_READ_ENABLED:
@@ -305,7 +319,7 @@ def rows_to_arrays(rows: Sequence[dict[str, Any]]) -> dict[str, np.ndarray]:
         a["side"][i] = 1 if r["side"] == "buy" else 0
         a["S1"][i] = float(int(r["next_sqrt_price"]))
         a["ain"][i], a["aout"][i], a["fee"][i] = int(r["amount_in"]), int(r["amount_out"]), row_fee(r)
-        a["qres"][i], a["thr"][i] = int(r.get("quote_reserve_post") or 0), int(r.get("migration_threshold") or 0)
+        a["qres"][i], a["thr"][i] = int(r.get("quote_reserve_post") or 0), int(r.get("migration_threshold") or CFG_THR.get(r.get("config"), 0))
     return a
 
 

@@ -118,7 +118,7 @@ def load_exploration(root: str | None = None, log=print, start: datetime | None 
             p = pid_of.setdefault(x["pool"], len(pid_of))
             a["pid"][i] = p
             a["cfg"][i] = cfg_of.setdefault(x["config"], len(cfg_of))
-            if L.hook_row(x):
+            if L.hook_row(x) or x.get("config") in L.CFG_XFER:
                 hook_pools.add(p)
         cols.append(a)
         sl, bt = a["slot"], a["bt"]
@@ -525,12 +525,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--root", default=None)
     ap.add_argument("--start", default="")
     ap.add_argument("--end", default="")
+    ap.add_argument("--cfg-summary", default="", help="P17: JSON from tools.dbc_config.summary_map (migration thresholds for EvtSwap3 rows)")
     ap.add_argument("--no-capacity", action="store_true", help="--validate: skip the capacity counts")
     ap.add_argument("--swap3", action="store_true", help="P17: price EvtSwap3 pools (only real transfer-hook pools excluded; fob flag as fee-mode evidence)")
     ap.add_argument("--spent-root", default="", help="P17: dir with hardlinks of ALL hours 10-14..10-23 (the m10 holdout is spent = disclosed exploration)")
     ns = ap.parse_args(argv)
     if ns.swap3:
         L.enable_swap3_pricing()
+    if ns.cfg_summary:
+        print("config thresholds loaded:", L.load_config_thresholds(ns.cfg_summary), flush=True)
     if ns.spent_root:
         L.enable_spent_exploration(ns.spent_root)
     out = Path(check_out_dir(ns.out))
