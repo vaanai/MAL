@@ -103,11 +103,19 @@ def exit_gap_bps_worse(live_sell_price: Any, twin_exit_price: Any) -> float | No
     return (1.0 - float(live_sell_price) / float(twin_exit_price)) * 1e4
 
 
+EXIT_GAP_TWIN_GRACE_MS = 300_000  # a closed eligible trip whose priced twin (with an exit price) is still missing this long after its exit landed: latch
+
+
 class ExitGapWriter:
-    """Appends one {trip_id, mint, exit_gap_bps} row per ELIGIBLE closed trip (exit landed, not `gap`, not `unreadable`, a priced twin with an exit price) to the
-    executor's own exit-gap file, which the executor's exit_gap_tick then reads (FidelityMonitor: mean above 200 bps after 10 rows latches exit_gap_gt_200bps).
-    This is the executor's own exit check on EVERY exit; the parity tool's P6 looks only at stop-loss exits, which an H5 timer book never has. A trip is written once
-    (the file is the record; ids already in it are skipped after a restart). An unreadable file or a failed write raises OSError: the caller latches (fail closed)."""
+    """Appends one {trip_id, mint, exit_gap_bps} row per ELIGIBLE closed trip (exit landed, not `gap`, not `unreadable`) to the executor's own exit-gap file,
+    which the executor's exit_gap_tick then reads (FidelityMonitor: mean above 200 bps after 10 rows latches exit_gap_gt_200bps). This is the executor's own
+    exit check on EVERY exit; the parity tool's P6 looks only at stop-loss exits, which an H5 timer book never has. A trip is written once (ids already in the
+    file are skipped after a restart). An unreadable file or a failed write raises OSError (the caller latches).
+
+    Nothing is skipped silently (QP 2026-10-24 #847 conditions 1, 4; reviewer note 2). `write` returns the problems the caller must latch on:
+      exit_gap_live_price_bad   a priced twin exists but the live sell price is not finite or not > 0 (the worst exit must not be skipped)
+      exit_gap_no_priced_twin   the trip's priced twin with an exit price > 0 (or a readable twins file) is still missing EXIT_GAP_TWIN_GRACE_MS after
+                                its exit landed (the twin writer runs every 20 s)"""
 
     def __init__(self, path: Path):
         self.path = path
@@ -122,24 +130,31 @@ class ExitGapWriter:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.touch()
 
-    def write(self, trips: Mapping[str, Mapping[str, Any]], twins_file: str) -> int:
+    def write(self, trips: Mapping[str, Mapping[str, Any]], twins_file: str, now_ms: int) -> tuple[int, list[tuple[str, str]]]:
+        """(rows written, [(problem, trip_id), ...])."""
         todo = [t for k, t in trips.items() if k not in self.written and t.get("exit_landed") and not t.get("gap") and not t.get("unreadable")]
         if not todo:
-            return 0
+            return 0, []
         twins = load_twin_rows(twins_file)
-        if twins is None:
-            return 0  # the twin gate (P7) already refuses buys on an unreadable twins file; the rows are written once it reads again
-        rows = []
+        rows, problems = [], []
         for t in todo:
-            tw = twins.get(t["trip_id"])
-            g = exit_gap_bps_worse(t.get("live_sell_price"), (tw or {}).get("exit_price"))
-            if g is not None:
-                rows.append({"trip_id": t["trip_id"], "mint": t["trip_id"], "exit_gap_bps": round(g, 3)})
+            tw = (twins or {}).get(t["trip_id"])
+            tex = (tw or {}).get("exit_price")
+            if tw is None or not _finite_number(tex) or tex <= 0:
+                landed = t.get("exit_landed_ms")
+                if not isinstance(landed, int) or isinstance(landed, bool) or now_ms - landed >= EXIT_GAP_TWIN_GRACE_MS:
+                    problems.append(("exit_gap_no_priced_twin", t["trip_id"]))
+                continue
+            g = exit_gap_bps_worse(t.get("live_sell_price"), tex)
+            if g is None:
+                problems.append(("exit_gap_live_price_bad", t["trip_id"]))
+                continue
+            rows.append({"trip_id": t["trip_id"], "mint": t["trip_id"], "exit_gap_bps": round(g, 3)})
         if rows:
             with self.path.open("a") as fh:  # OSError propagates
                 fh.write("".join(json.dumps(r, sort_keys=True, allow_nan=False) + "\n" for r in rows))
             self.written.update(r["trip_id"] for r in rows)
-        return len(rows)
+        return len(rows), problems
 
 
 def twin_run_stamp(twins_file: str, trip_ids: Any) -> int | None:

@@ -1013,9 +1013,13 @@ class ArenaExecutor(h.H5Executor):
         if self.exit_gap_writer is None or self.gates is None:
             return
         try:
-            self.exit_gap_writer.write(self.gates.recorder.trips, self.gates.twins_file)
+            _n, problems = self.exit_gap_writer.write(self.gates.recorder.trips, self.gates.twins_file, self.now_ms())
         except OSError:
             self.latch_external(H_EXIT_GAP, why="exit_gap_writer_failed")  # fail closed: an exit we cannot record is not a clear
+            return
+        if problems:  # an exit that cannot be measured is never skipped silently (QP #847 conditions 1, 4)
+            why, trip_id = problems[0]
+            self.latch_external(H_EXIT_GAP, why=why, trip_id=trip_id, n_problems=len(problems))
 
     def exit_gap_tick(self) -> None:
         """Tail the parity join's exit-gap file (`exit_gap_file`, JSON lines {"mint", "exit_gap_bps"}); each new line goes through ingest_exit_gap."""
@@ -1102,7 +1106,7 @@ class ArenaExecutor(h.H5Executor):
 
 
 _ARENA_CLASS = ArenaExecutor  # the class the tripwire inspects (a name bound at import, so rebinding ArenaExecutor cannot hide a removed override)
-GUARD_METHODS = ("h5", "_tier_path", "_live_gate", "prime_feed_start", "_live_buy", "_send", "_send_guarded", "_note_send", "_budget_stop", "_balance_refusal", "committed_loss_refusal", "_hard_refusal",
+GUARD_METHODS = ("h5", "_tier_path", "_live_gate", "prime_feed_start", "_live_buy", "_send", "_send_guarded", "_note_send", "write_exit_gaps", "_budget_stop", "_balance_refusal", "committed_loss_refusal", "_hard_refusal",
                  "_parity_state", "decide_row", "intent_tick", "_latch", "exit_tick", "_fire_sell", "_finish_buy", "_resolve_expired", "_seal_reason")
 
 

@@ -14,8 +14,11 @@ from tools import h5_arena_gates as g
 from tools.test_h5_arena_exec_wiring import LiveCase
 
 
+NOW = 10_000_000
+
+
 def trip(tid, sell=0.9, **kw):
-    t = {"trip_id": tid, "exit_landed": True, "gap": False, "live_sell_price": sell}
+    t = {"trip_id": tid, "exit_landed": True, "gap": False, "live_sell_price": sell, "exit_landed_ms": NOW - 1_000}
     t.update(kw)
     return t
 
@@ -50,18 +53,40 @@ def test_writer_writes_eligible_trips_once(tmp_path):
     out = tmp_path / "p" / "exit-gaps.jsonl"
     w = g.ExitGapWriter(out)
     assert out.exists() and out.read_text() == ""
-    tw = twins(tmp_path / "t.jsonl", [twin("a"), twin("g"), twin("u"), twin("o"), twin("pf", price_failed=True), twin("z", exit_price=0)])
-    trips = {"a": trip("a", 0.97), "g": trip("g", gap=True), "u": trip("u", unreadable=True), "o": trip("o", exit_landed=False),
-             "pf": trip("pf"), "nt": trip("nt"), "z": trip("z")}
-    assert w.write(trips, tw) == 1
+    tw = twins(tmp_path / "t.jsonl", [twin("a"), twin("g"), twin("u"), twin("o")])
+    trips = {"a": trip("a", 0.97), "g": trip("g", gap=True), "u": trip("u", unreadable=True), "o": trip("o", exit_landed=False)}
+    assert w.write(trips, tw, NOW) == (1, [])
     rows = [json.loads(x) for x in out.read_text().splitlines()]
     assert rows == [{"trip_id": "a", "mint": "a", "exit_gap_bps": 300.0}]
-    assert w.write(trips, tw) == 0  # once per trip
+    assert w.write(trips, tw, NOW) == (0, [])  # once per trip
     w2 = g.ExitGapWriter(out)  # a restart reads the ids back
-    assert w2.write(trips, tw) == 0
+    assert w2.write(trips, tw, NOW) == (0, [])
     out.write_text(out.read_text() + "not json\n" + '{"mint": "x", "exit_gap_bps": 1}\n')
     assert "a" in g.ExitGapWriter(out).written  # foreign rows are the reader's to latch on, not the writer's
-    assert w2.write({"a": trip("a")}, str(tmp_path / "missing.jsonl")) == 0  # unreadable twins: nothing now (P7 refuses buys meanwhile)
+
+
+@pytest.mark.parametrize("sell", [0, -1.0, math.nan, math.inf, None, "0.9", True])
+def test_a_bad_live_sell_price_against_a_priced_twin_is_a_problem_not_a_skip(tmp_path, sell):
+    w = g.ExitGapWriter(tmp_path / "e.jsonl")
+    tw = twins(tmp_path / "t.jsonl", [twin("a")])
+    assert w.write({"a": trip("a", sell)}, tw, NOW) == (0, [("exit_gap_live_price_bad", "a")])
+
+
+@pytest.mark.parametrize("rows", [[], [twin("a", price_failed=True)], [twin("a", exit_price=0)], [twin("a", exit_price=None)], [{"trip_id": "a", "pnl_lamports": None, "exit_price": 1.0}]])
+def test_a_missing_or_unpriced_twin_is_signalled_after_the_grace(tmp_path, rows):
+    w = g.ExitGapWriter(tmp_path / "e.jsonl")
+    tw = twins(tmp_path / "t.jsonl", rows)
+    assert w.write({"a": trip("a")}, tw, NOW) == (0, [])  # inside the grace: the twin writer runs every 20 s
+    late = NOW - 1_000 + g.EXIT_GAP_TWIN_GRACE_MS
+    assert w.write({"a": trip("a")}, tw, late) == (0, [("exit_gap_no_priced_twin", "a")])
+    assert w.write({"a": trip("a", exit_landed_ms=None)}, tw, NOW) == (0, [("exit_gap_no_priced_twin", "a")])  # no landing stamp: no grace
+
+
+def test_an_unreadable_twins_file_is_signalled_after_the_grace(tmp_path):
+    w = g.ExitGapWriter(tmp_path / "e.jsonl")
+    missing = str(tmp_path / "missing.jsonl")
+    assert w.write({"a": trip("a")}, missing, NOW) == (0, [])
+    assert w.write({"a": trip("a")}, missing, NOW + g.EXIT_GAP_TWIN_GRACE_MS) == (0, [("exit_gap_no_priced_twin", "a")])
 
 
 def test_writer_failures_raise(tmp_path):
@@ -73,7 +98,7 @@ def test_writer_failures_raise(tmp_path):
     tw = twins(tmp_path / "t.jsonl", [twin("a")])
     if os.geteuid() != 0:
         with pytest.raises(OSError):
-            w.write({"a": trip("a")}, tw)
+            w.write({"a": trip("a")}, tw, NOW)
 
 
 class ExecutorWiringTests(LiveCase):
@@ -114,6 +139,27 @@ class ExecutorWiringTests(LiveCase):
         with mock.patch.object(g.ExitGapWriter, "write", side_effect=OSError("disk")):
             e.ex.write_exit_gaps()
         self.assertEqual(e.ex.counters.halts[ax.H_EXIT_GAP]["why"], "exit_gap_writer_failed")
+
+    def test_a_bad_live_price_latches_in_the_executor(self):
+        e = self.live()
+        e.ex.gates.recorder.trips["m0"] = trip("m0", 0, exit_landed_ms=e.ex.now_ms())
+        twins(Path(e.conf["parity_twins_file"]), [twin("m0")])
+        e.ex.write_exit_gaps()
+        h = e.ex.counters.halts[ax.H_EXIT_GAP]
+        self.assertEqual((h["why"], h["trip_id"]), ("exit_gap_live_price_bad", "m0"))
+
+    def test_a_missing_twin_latches_after_the_grace(self):
+        e = self.live()
+        e.ex.gates.recorder.trips["m0"] = trip("m0", exit_landed_ms=e.ex.now_ms())
+        e.ex.write_exit_gaps()
+        self.assertNotIn(ax.H_EXIT_GAP, e.ex.counters.halts)
+        e.ex.gates.recorder.trips["m0"]["exit_landed_ms"] = e.ex.now_ms() - g.EXIT_GAP_TWIN_GRACE_MS
+        e.ex.write_exit_gaps()
+        self.assertEqual(e.ex.counters.halts[ax.H_EXIT_GAP]["why"], "exit_gap_no_priced_twin")
+
+    def test_the_writer_is_in_the_c0_tripwire(self):
+        self.assertIn("write_exit_gaps", ax.GUARD_METHODS)
+        self.assertIsNone(ax.c0_guard_problem())
 
     def test_dry_run_has_no_writer(self):
         e = self.env()
