@@ -14,7 +14,7 @@ Screen numbers on 7 disclosed-exploration days (2026-10-17..10-23; the m10 holdo
 ## 2. Validation (tests: tools/test_dbc_swap3.py, fixture tools/data/dbc_swap3_fixture.json = 110 real trades incl. 30 hook-config trades)
 - Vault deltas equal event amounts to the atom (buy: quote vault +amount_in, base vault -amount_out; sell mirrored); fees stay in the vault.
 - Integer-exact reproduction from the config curve (account decoded from the IDL, tools/dbc_config.py): BUY S1 = S0 + (q<<128)//L, base_gross = L(S1-S0)//(S0 S1), quote = ceil(L(S1-S0)/2^128);
-  SELL S1 = ceil(L S0/(L+b S0)), quote_gross = L(S0-S1)>>128. 110/110 fixture trades match on every leg (5,990 more in the first scan, 0 misses on single-segment trades); hook configs identical.
+  SELL S1 = ceil(L S0/(L+b S0)), quote_gross = L(S0-S1)>>128. 110/110 fixture trades match on every leg; a wider scan of 6,115 single-segment trades (19T12-13) matched every buy base/quote leg and every sell S1 and quote leg, except 9 of 2,664 fee-on-base buys whose forward S1 differs (not investigated); hook configs identical (294/294).
 - Fee side: buy `fee_on_base_token` == (config collect_fee_mode == 1); sells always on the quote output. Total fee = trading + protocol (+ referral), protocol = 20%.
 - Pricer on 4.74M Swap3 rows (tools/dbc_screen.py --validate): amount_out within 1 bp on 99.0% of buys and 99.3% of sells (bad-order rows excluded; P14 Swap2: 98.2% / 93.8%).
 - EvtSwap3 has no migration_threshold: read from the config (equal to the Swap2 event for 755/755 configs). A first screens run returned 0 attempts from this bug (DECLARE addendum 1).
