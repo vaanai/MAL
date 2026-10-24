@@ -32,6 +32,9 @@
   ],
   "min_universe_events": 100,
   "max_mismatch_share": 0.0,
+  "explained_exceptions_note": "QP ruling on PR #894 (comment 6388090983, item 3): the observed triple (lp 0, protocol 5, creator 0) with cashback 0 is a discount below every tier, seen under the UNCHANGED fees program (2 of 216 tested events in 1 of 6 live samples, 2026-10-24). It is counted apart (never a match) at any tier and FAILs above max_explained_share of tested events. Every other mismatch stays at max_mismatch_share 0.0. Disclosure: tools/paper_curve_math.py (the cost model) charges a creator leg 0.5 bp BELOW the chain at the five tiers from 54,030 SOL market cap up (27.5 vs 28, 22.5 vs 23, 17.5 vs 18, 12.5 vs 13, 7.5 vs 8 bp); this file holds the chain integers.",
+  "explained_exceptions": [[0, 5, 0]],
+  "max_explained_share": 0.02,
   "upgrade_authority_note": "Successor books only (same books-file flag): the bounded upgrade-write enumeration reads each programdata account (45 bytes: tag, slot, authority) and walks the UPGRADE AUTHORITY's signatures, not the programdata's (the PumpSwap programdata is in every swap; job #1545 hit the call cap). Authority read 2026-10-24T18:28:34Z, public RPC, 0 credits: identical on all three programdata accounts (pump B5MvUwXd... slot 458921440, pumpswap 6naEzKeU... slot 458921517, fees 75Uu23mq... slot 456132171). A different authority now, or a SetAuthority on the programdata during the walk, is ERROR.",
   "upgrade_authority": {"pump": "7gZufwwAo17y5kg8FMyJy2phgpvv9RSdzWtdXiWHjFr8", "pumpswap": "7gZufwwAo17y5kg8FMyJy2phgpvv9RSdzWtdXiWHjFr8", "fees": "7gZufwwAo17y5kg8FMyJy2phgpvv9RSdzWtdXiWHjFr8"}
 }
