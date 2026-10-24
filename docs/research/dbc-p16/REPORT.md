@@ -1,7 +1,7 @@
 # P16 DBC graduations (2026-10-24)
 
 Screen numbers on 3 exploration days (DBC 2026-10-14..16), not evidence, no gate. No sentence here says a strategy makes money. Rules: DECLARE.md (sha256 in SHA256SUMS.txt; "Declared at 2026-10-24T06:20:15Z",
-written before any price; erratum 1 before pricing; erratum 2 after a loader bug, only counts seen). Holdout hours never opened (code refuses them; post-migration history cut at 2026-10-17T00).
+written before any price; erratum 1 before pricing; erratum 2 after a loader bug, only counts seen). D1 hours [10-17T00, 10-24T00) never counted, screened or priced (code refuses them; post-migration history cut at 2026-10-17T00; one exception: see Disclosures below).
 Priced run: job #1515 (identical rules to #1514, plus entry-impact distribution and a post-hoc impact diagnostic); #1511 was a loader bug (counts only read), #1512 crashed on a missing attribute (no price).
 Numbers: grad.json. Baseline check: the P14 full-loss line of every strand cell reproduces screens_a2fix.json to the last digit.
 
@@ -56,5 +56,12 @@ checks above, so g3's number is a flag, not a result.
 
 ## Not done / disclosure
 - No quant-proof / reviewer pass yet. Not a promotion candidate; a DBC book has no executor, no measured migration-time leg, and the DAMM pressure-fail features (ssb/nearby) for strands are the DBC entry features.
-- The P14 cells are unchanged; only the strand leg differs. The multiplicity count stays 12 + 3 cells.
+- The P14 cells are unchanged; only the strand leg differs. The multiplicity is 26 cells: 23 DBC cells screened (P14 + P17) plus 3 D5 cells (QP count; an earlier draft said 12 + 3). m4 is the best of those 26, a winner's-curse pick.
 - Credits: 999,970 counted (+1,250 probe, + a handful of manual getTransaction/getAccountInfo calls while building the decoder, < 100 credits assumed).
+
+## QP conditions (2026-10-24, head 19cfb7ae)
+- Gate: not cleared, not claimed. 0 out-of-sample trades, 3 UTC days (gate needs 5), all in-sample on the Swap2-era exploration days 10-14..16. m4 re-priced: flat n 741, mean +0.0224, CI90 lo +0.0143, ex-top-3 +13.3, ex-best-day +7.7; pressure +0.0179 / CI90 lo +0.0111. m6: flat +0.0233 / CI lo +0.0152; pressure +0.0184 / +0.0116. Winner's curse: 2 of 6 re-priced cells, best of 26.
+- m4 and m6 share 193 of their 199 strand positions and their DAMM exit counts match exactly (82/55/39): one positive, not two. 10-16 holds only 52 of the trades. Neither has been priced on a Swap3 pool.
+- m4/m6 are D1 variants. Hours [10-17, 10-24) are spent for every D1 variant (QP-RULING-1024-dbc-m10-swap3). m4/m6 can be reached only if m10's pre-registered forward read (>= 2026-11-01T00:10Z) PASSes. A FAIL or NOT_DECIDABLE there ends all D1 on DBC. There is no holdout-read revive path.
+- Disclosure, smoke file: /data/mal/hunt-1008/push-1016/hunt28/p16/smoke/grad.json (06:53:11Z) holds re-priced strand P&L for m10 and ms30, priced on partial fetch data before "the one pricing run" (#1515). It is not listed in SHA256SUMS or above. No number in this report comes from it; it is not cited, and this report does not record that the lane read it.
+- Disclosure, probe: the uncommitted probe3.py used t0+86400 with no 10-17 cut, so probe_raw.json holds 2 DAMM v2 txs at or after 10-17T00Z (last 2026-10-17T01:36:33Z). That is decoder validation on the DAMM venue, not DBC hours and not a D1 count, screen or price. Nothing at or after 10-25T00Z was touched.
