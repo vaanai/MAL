@@ -65,6 +65,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from tools import arena_h5_books as B
 from tools import arena_h5_cost as cost
 from tools import arena_h5_legs as L  # the read-instant seal, the ledger loader and the cell helpers: imported, never copied
 from tools import arena_h5_score as h5s
@@ -182,34 +183,54 @@ def counts_and_checks(bot_id: str, ledger_root: str | os.PathLike, doc: Mapping[
     by_reason = dict(sorted(collections.Counter(led["refusals"].values()).items()))
     if by_reason != dict(doc.get("refused_by_reason_before") or {}):
         raise Refused(f"{bot_id}: the ledger's refusals by reason {by_reason} differ from the record's {doc.get('refused_by_reason_before')}")
-    decisions = [min(int(r["decision_ms"]) for r in rows if r["pool"] == p) for p in sorted(pools)] + [int(e["decision_ms"]) for e in excl.values()]
-    if h5s.read_instant(decisions, ri) != ri:
-        raise Refused(f"{bot_id}: the read instant recomputed from the ledger's decision timestamps differs from the recorded {ri}")
+    counted_dec = [min(int(r["decision_ms"]) for r in rows if r["pool"] == p) for p in sorted(pools)]
+    why_ri = B.check_recorded_instant(bot_id, doc, counted_dec, counted_dec + [int(e["decision_ms"]) for e in excl.values()], ri)  # THE instant rule of the book, one function
+    if why_ri is not None:
+        raise Refused(f"{bot_id}: the read instant recomputed from the ledger's decision timestamps differs from the recorded {ri}" + ("" if why_ri == "differs" else f" ({why_ri})"))
     dec_rows = [r for r in rows if f"{r['stake_sol']:.2f}" == DECIDING_STAKE]
     if len({r["pool"] for r in dec_rows}) != len(dec_rows) or {r["pool"] for r in dec_rows} != pools:
         raise Refused(f"{bot_id}: not every counted pool has exactly one row at the deciding stake {DECIDING_STAKE}")
     unpriced = sum(1 for r in dec_rows if r["legs"][f"flat_{DECIDING_SFX}"].get("net_lamports") is None or r["legs"][f"press_{DECIDING_SFX}"].get("net_lamports") is None)
     n_counted, n_excl = len(pools), len(excl)
     decided = n_counted + n_excl  # == attempts: the seal refuses while any attempt before the instant is open
-    return {"rows": rows, "dec_rows": dec_rows, "n_attempts": decided, "n_counted": n_counted, "n_excluded": n_excl, "excluded_share": n_excl / decided if decided else 0.0,
+    return {"rows": rows, "dec_rows": dec_rows, "pools": pools | set(excl), "n_attempts": decided, "n_counted": n_counted, "n_excluded": n_excl, "excluded_share": n_excl / decided if decided else 0.0,
             "excluded_by_reason": dict(sorted(collections.Counter(e["reason"] for e in excl.values()).items())), "n_refused": len(led["refusals"]), "refused_by_reason": by_reason,
             "n_unpriced_deciding_leg": unpriced, "attempt_definition": doc.get("attempt_definition")}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ one book
-def decide_book(bot_id: str, ledger_root: str | os.PathLike, *, read_instant_ms: int | None, i_am_the_read: bool, now_ms: int | None = None) -> dict[str, Any]:
-    """The deciding read of one H5 book. Raises Refused (before any ledger row is opened, for the seal's checks). Returns the verdict document."""
+def ended_book(bot_id: str, exit_rule: str, doc: Mapping[str, Any], fname: str, rec_sha: str) -> dict[str, Any]:
+    """DEC-031 Amendment 11 item 2: the Q50 book has no read instant by the end-seal. NOT_DECIDABLE, final, COUNTS ONLY from the write-once record; no ledger row is opened."""
+    n_att, n_exc = int(doc["attempts_before"]), int(doc["excluded_before"])
+    return {"bot_id": bot_id, "exit_rule": exit_rule, "read_instant_ms": None, "deciding_stake": DECIDING_STAKE, "deciding_leg": DECIDING_SFX, "deciding_rent_lamports": int(cost.RENT),
+            "rent_line": RENT_LINE, "screen_line": SCREEN_LINE,
+            "counts": {"n_attempts": n_att, "n_counted": int(doc["counted_before"]), "n_excluded": n_exc, "excluded_share": n_exc / n_att if n_att else 0.0,
+                       "excluded_by_reason": "not in the record (counts only)", "n_refused": int(doc["refused_before"]), "refused_by_reason": dict(doc.get("refused_by_reason_before") or {}),
+                       "n_unpriced_deciding_leg": None},
+            "attempt_definition": doc.get("attempt_definition"), "excluded_cap": MAX_EXCLUDED_SHARE, "provenance": dict(provenance(), **{fname: rec_sha}),
+            "reasons": [f"no read instant by the end-seal {doc['end_seal_ms']} (DEC-031 Amendment 11 item 2): {doc['counted_before']} counted trades on {doc['counted_dates']} dates"],
+            "status": "NOT_DECIDABLE", "final": True, "figures": "none: a NOT_DECIDABLE read prints counts only"}
+
+
+def decide_book(bot_id: str, ledger_root: str | os.PathLike, *, read_instant_ms: int | None, i_am_the_read: bool, now_ms: int | None = None,
+                books: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """The deciding read of one H5 book. Raises Refused (before any ledger row is opened, for the seal's checks). Returns the verdict document. `books`
+    (tools/arena_h5_books.load_books): the registered book list, Q50 included; the seal then keys on each book's own instant file (Q50: DEC-031 Amendment 11's)."""
     now = wall_ms() if now_ms is None else min(int(now_ms), wall_ms())  # the flag can only tighten the seal
-    doc = L.gate(bot_id, ledger_root, read_instant_ms, i_am_the_read, now)  # THE SEAL, arena_h5_legs' own
+    fname = h5s.READ_INSTANT_FILE if books is None else B.instant_file(bot_id)
+    try:
+        doc = L.gate(bot_id, ledger_root, read_instant_ms, i_am_the_read, now, books)  # THE SEAL, arena_h5_legs' own
+    except L.Ended as e:
+        return ended_book(bot_id, books[bot_id], e.doc, fname, sha256_file(Path(ledger_root) / bot_id / fname))
     ri = int(doc["read_instant_ms"])
     bot_dir = Path(ledger_root) / bot_id
     c = counts_and_checks(bot_id, ledger_root, doc)
     why: list[str] = []
-    out: dict[str, Any] = {"bot_id": bot_id, "exit_rule": h5s.BOTS[bot_id], "read_instant_ms": ri, "deciding_stake": DECIDING_STAKE, "deciding_leg": DECIDING_SFX,
+    out: dict[str, Any] = {"bot_id": bot_id, "exit_rule": (h5s.BOTS if books is None else books)[bot_id], "read_instant_ms": ri, "deciding_stake": DECIDING_STAKE, "deciding_leg": DECIDING_SFX,
                            "deciding_rent_lamports": int(cost.RENT), "rent_line": RENT_LINE, "screen_line": SCREEN_LINE,
                            "counts": {k: c[k] for k in ("n_attempts", "n_counted", "n_excluded", "excluded_share", "excluded_by_reason", "n_refused", "refused_by_reason", "n_unpriced_deciding_leg")},
                            "attempt_definition": c["attempt_definition"], "excluded_cap": MAX_EXCLUDED_SHARE,
-                           "provenance": dict(provenance(), **{"read-instant.json": sha256_file(bot_dir / h5s.READ_INSTANT_FILE)})}
+                           "provenance": dict(provenance(), **{fname: sha256_file(bot_dir / fname)})}
     if c["excluded_share"] > MAX_EXCLUDED_SHARE:  # 5% of NON-REFUSED attempts (Amendment 1); refusals are not in the denominator
         why.append(f"excluded {c['n_excluded']} of {c['n_attempts']} non-refused attempts = {c['excluded_share']:.2%} is above {MAX_EXCLUDED_SHARE:.0%} (DEC-031 section 1.4, Amendment 1): "
                    f"{c['excluded_by_reason']}")
@@ -296,7 +317,8 @@ def check_params(n_books: int | None, c: int | None, cells_total: int | None, pr
             raise Refused(f"--other-p {b}={p}: a p-value is in [0, 1]")
 
 
-def multiplicity_block(results: Mapping[str, Mapping[str, Any]], *, n_books: int, c: int, cells_total: int | None, prior: Mapping[str, str], other_p: Mapping[str, float]) -> dict[str, Any]:
+def multiplicity_block(results: Mapping[str, Mapping[str, Any]], *, n_books: int, c: int, cells_total: int | None, prior: Mapping[str, str], other_p: Mapping[str, float],
+                       taint_line: str = TAINT_LINE) -> dict[str, Any]:
     """The Amendment 3 item 3 block for this run's books, from the manager's parameters and the tool's own figures."""
     dup = sorted(set(prior) & set(results)) + sorted(set(other_p) & set(results))
     if dup:
@@ -314,7 +336,7 @@ def multiplicity_block(results: Mapping[str, Mapping[str, Any]], *, n_books: int
             "plain_line": f"If no book has an edge, the chance of at least one screen pass is up to 1 - 0.95^N = {math.ceil(100 * (1 - 0.95 ** n_books) * 100) / 100:.2f}% (rounded up) at N = {n_books}.",
             "c": c, "c_source": "supplied by the manager (--c); a running count: each confirmation read states its c", "confirmation_threshold_0.05_over_c": ALPHA / c,
             "screen_read_line": {b: holm[b] for b in sorted(holm) if b in results}, "holm_over_reads": sorted(holm), "holm_note": "report-only; Holm also needs every smaller rank to reject; neither decides on a screen read",
-            "screen_line": SCREEN_LINE, "rent_line": RENT_LINE, "taint_line": TAINT_LINE,
+            "screen_line": SCREEN_LINE, "rent_line": RENT_LINE, "taint_line": taint_line,
             "refusals_am1": {b: {"n_refused": r["counts"]["n_refused"], "by_reason": r["counts"]["refused_by_reason"], "sentence": r["attempt_definition"]} for b, r in sorted(results.items())},
             "synthetic_class": "no outcome is split by class and no pool class is read (EXP-024 Amendment 9 (d))"}
 
@@ -382,25 +404,48 @@ def render(rep: Mapping[str, Any]) -> str:
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ cli
+def books_taint_line(books: Sequence[str]) -> str:
+    return (f"Taints touched (Amendment 3 item 8): (e) siblings forward: {', '.join(books)} share the trigger family and the entry legs (DEC-031 Amendment 5 item 4.3), so the best of them at "
+            "the read is in-sample; a Q50 screen pass while v1-a2 fails is selection on a correlated sibling, not new evidence. Not touched by this tool's rule: (a) it decides on all four "
+            "sub-cells. The manager states any other taint.")
+
+
 def build_report(bots: Sequence[str], ledger_root: str | os.PathLike, *, read_instant_ms: int | None, i_am_the_read: bool, now_ms: int | None, n_books: int | None, c: int | None,
-                 cells_total: int | None = None, prior: Mapping[str, str] | None = None, other_p: Mapping[str, float] | None = None) -> dict[str, Any]:
+                 cells_total: int | None = None, prior: Mapping[str, str] | None = None, other_p: Mapping[str, float] | None = None,
+                 books: Mapping[str, str] | None = None) -> dict[str, Any]:
     prior, other_p = dict(prior or {}), dict(other_p or {})
     check_params(n_books, c, cells_total, prior, other_p)  # before any book is opened
     rep: dict[str, Any] = {"books": {}, "refused": {}}
+    kw = {} if books is None else {"books": books}
     for b in bots:
         try:
-            rep["books"][b] = decide_book(b, ledger_root, read_instant_ms=read_instant_ms, i_am_the_read=i_am_the_read, now_ms=now_ms)
+            rep["books"][b] = decide_book(b, ledger_root, read_instant_ms=read_instant_ms, i_am_the_read=i_am_the_read, now_ms=now_ms, **kw)
         except Refused as exc:
             rep["refused"][b] = str(exc)
     if rep["books"]:
-        rep["multiplicity"] = multiplicity_block(rep["books"], n_books=int(n_books), c=int(c), cells_total=cells_total, prior=prior, other_p=other_p)
+        tl = {} if books is None else {"taint_line": books_taint_line(list(bots))}
+        rep["multiplicity"] = multiplicity_block(rep["books"], n_books=int(n_books), c=int(c), cells_total=cells_total, prior=prior, other_p=other_p, **tl)
+    if books is not None:
+        rep["books_file"] = {"path": getattr(books, "path", None), "sha256": getattr(books, "sha256", None), "ids": list(books)}
     return rep
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    pre, _ = L.BOOKS_AP.parse_known_args(argv)
+    books = None
+    if pre.books_file:
+        try:
+            books = B.load_books(L.check_path(pre.books_file, "books file"), pre.books_sha256)
+        except (Refused, OSError) as exc:
+            print(f"REFUSED: {exc}", file=sys.stderr)
+            return 3
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--ledger-root", required=True)
-    ap.add_argument("--bot", action="append", choices=sorted(h5s.BOTS), help="default: both H5 books")
+    if books is None:
+        ap.add_argument("--bot", action="append", choices=sorted(h5s.BOTS), help="default: both H5 books")
+    else:
+        ap.add_argument("--bot", action="append", choices=sorted(books), help="default: the books file's new_rule_bot_ids")
+        L._add_books_args(ap)
     ap.add_argument("--read-instant", type=int, help="ms; must be at or after each book's recorded read instant")
     ap.add_argument("--i-am-the-read", action="store_true", help="only the read job sets this: the H5 outputs are sealed until then")
     ap.add_argument("--now-ms", type=int, help="clamped to the wall clock: it can only tighten the seal")
@@ -414,8 +459,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if a.json:
             L.check_path(a.json, "json output")
-        rep = build_report(a.bot or sorted(h5s.BOTS), a.ledger_root, read_instant_ms=a.read_instant, i_am_the_read=a.i_am_the_read, now_ms=a.now_ms, n_books=a.n_books, c=a.c,
-                           cells_total=a.cells_total, prior=parse_kv(a.prior_read, str, "--prior-read"), other_p=parse_kv(a.other_p, float, "--other-p"))
+        kw = {} if books is None else {"books": books}
+        rep = build_report(a.bot or (sorted(h5s.BOTS) if books is None else books.new_rule), a.ledger_root, read_instant_ms=a.read_instant, i_am_the_read=a.i_am_the_read, now_ms=a.now_ms,
+                           n_books=a.n_books, c=a.c, cells_total=a.cells_total, prior=parse_kv(a.prior_read, str, "--prior-read"), other_p=parse_kv(a.other_p, float, "--other-p"), **kw)
     except Refused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 3
