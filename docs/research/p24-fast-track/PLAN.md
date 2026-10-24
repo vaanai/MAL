@@ -200,9 +200,9 @@ That gives 12 h of work, plus up to 24 h of wait for the next 00:00Z, for 12–3
 
 ---
 
-## 3. Proposed DEC-031 Amendment 11: fast lane (DRAFT ONLY, not proposed for merge in this PR)
+## 3. Proposed DEC-031 Amendment <N> (draft, number assigned at merge): fast lane (DRAFT ONLY, not proposed for merge in this PR)
 
-> **Amendment 11 (DRAFT; records only; before the clock of any book it covers; outcome-blind; status: DRAFT until merge).** DEC-031 Amendment 11: the fast lane. A book may register through an approved registration template. quant-proof then reviews the book's declaration, its manifest and every difference from the template, not the whole pack. The promotion gate, §2's deciding cell, one read per `bot_id`, the outcome-blind read instant, the caps of §1.4 and Am.6 item 3, the multiplicity block and c of Am.3, every seal of §3, Am.3 item 1's P0 count and clock rule, and Am.6's smoke and integrity rules are unchanged.
+> **Amendment <N> (draft, number assigned at merge; records only; before the clock of any book it covers; outcome-blind; status: DRAFT until merge).** DEC-031 Amendment <N>: the fast lane. A book may register through an approved registration template. quant-proof then reviews the book's declaration, its manifest and every difference from the template, not the whole pack. The promotion gate, §2's deciding cell, one read per `bot_id`, the outcome-blind read instant, the caps of §1.4 and Am.6 item 3, the multiplicity block and c of Am.3, every seal of §3, Am.3 item 1's P0 count and clock rule, and Am.6's smoke and integrity rules are unchanged.
 >
 > 1. **Approved template.** A version of `tools/fasttrack_book.py` (and `tools/causal_harness.py`) at a commit on origin/main, named by its sha256 in a merged records PR with quant-proof's OK on the exact head and a reviewer verdict. A template change is a new template sha with its own OK. A book keeps the template sha it rendered with.
 > 2. **Eligibility.** A book is in the fast lane only if all of these hold:
