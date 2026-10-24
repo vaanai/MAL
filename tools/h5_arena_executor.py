@@ -55,6 +55,7 @@ import base64
 from datetime import datetime, timezone
 
 from tools import h5_executor as h
+from tools import h5_arena_ladder as ld
 from tools import mint_account_fetch as mf
 from tools.arena_close_blocked import classify_record
 from tools.h5_arena_gates import EXIT_GAPS_NAME, HARD_ARENA_HALTS, TWIN_PIN_MISMATCH, ExitGapWriter, LiveGates, ParityRecorder, v_band_refusal
@@ -216,15 +217,18 @@ H_STUCK2 = "two_stuck_sells"
 H_STRAND = "close_blocked_strand"
 H_TWIN_PIN = "twin_pin_mismatch"  # QP 10-23 blocker 2: the twin writer's run record carries a config_hash or code_sha256 other than the pinned one
 H_A3 = "a3_pins_changed"
+H_LADDER = "ladder_error"  # DEC-032 Am.2 wiring: a crash in the ladder step latches this (no buys) and never skips an exit (QP #862 condition 1)
 SIGNAL_AGE_MAX_MS = 5_000  # DEC-032 s3 "Buy guard": signal age at most 5 s (the base executor's own PRESEND_MAX_TRIGGER_AGE_MS is 3.5 s; the stricter of the two applies)
 H_BUY_UNREADABLE = "landed_buy_unreadable"  # QP 10-23 W2: a landed buy whose token or spend amount cannot be read (an open, flagged trip exists)
-ARENA_HALTS = frozenset({H_BUY_UNREADABLE, H_FEED_BREAK, H_ENTRY_GAP, H_LANDING, H_EXIT_GAP, H_LATE_SEND, H_STUCK2, H_STRAND, H_A3, H_TWIN_PIN})
+ARENA_HALTS = frozenset({H_BUY_UNREADABLE, H_FEED_BREAK, H_ENTRY_GAP, H_LANDING, H_EXIT_GAP, H_LATE_SEND, H_STUCK2, H_STRAND, H_A3, H_TWIN_PIN, H_LADDER})
 ENTRY_GAP_WINDOW = 20  # DEC-032 s5 P1: the first 10 eligible fills, then ROLLING over the last 20
 LANDING_WINDOW_N = 30  # DEC-032 s5 P2: rolling 30 buy attempts, judged once 30 exist
 ENTRY_GAP_BPS, ENTRY_GAP_MIN_N = 200.0, 10
 EXIT_GAP_BPS, EXIT_GAP_MIN_N = 200.0, 10
 LANDING_EXCESS_PP, LANDING_MIN_N = 10.0, 30
 LATE_SEND_SLOTS, LATE_SEND_TRIPS = 3, 2
+MARK_EXIT_GUARD_MS = 5_000  # no mark read from 5 s before a position's sell send onward (the exit path stays free of mark RPCs)
+MARKS_PER_TICK = 1  # at most one position marked (2 RPC calls) per exit tick
 REFUSAL_LOOK2 = "h5_look2_sealed"
 REFUSAL_S0_WINDOW = "s0_outside_book_window"
 REFUSAL_DECISION_WINDOW = "decision_outside_book_window"
@@ -334,6 +338,9 @@ def c0_guard_problem() -> str | None:
     5 s, s5 10-minute gap hold and P1/P2/exit thresholds, the T1 tier file, the p155 sell reserve) and every guard method is still the arena override.
     None when all hold; else the first item that does not. It never loosens anything: it only refuses."""
     from tools import h5_arena_gates as g
+    why = ld.ladder_guard_problem()  # DEC-032 Am.2 item 9.1: a live start refuses if any ladder constant is looser than item 3
+    if why:
+        return why
     for k, cap in DEC032_C0.items():
         v = C0_TIER.get(k)
         if isinstance(v, bool) or not isinstance(v, int) or not 0 < v <= cap:
@@ -430,6 +437,8 @@ def arena_tier_refusal(path: Path | None = None) -> str | None:
     """A live start needs the arena's own tier file, with the base class' file checks (root-owned regular file, 0644, no symlink), to read exactly T1.
     The shared /etc/mal-h5/TIER is not read for arena books (ArenaExecutor._tier_path)."""
     tier, problem = h.read_tier(path or ARENA_TIER_PATH, root_checks=True)
+    if problem == "tier_file_invalid" and ld.read_ceiling(path or ARENA_TIER_PATH, root_checks=True) == ("C1", None):
+        return None  # DEC-032 Am.2 item 9.2: LADDER_C1 = ceiling C1 (the rung itself still starts at C0 and steps only per item 5)
     if problem:
         return f"arena_{problem}"
     return None if tier == ARENA_LIVE_TIER else f"arena_tier_not_{ARENA_LIVE_TIER.lower()}:{tier}"
@@ -637,6 +646,16 @@ class ArenaExecutor(h.H5Executor):
             interval = cfg.get("parity_interval_s")
             self.gates = LiveGates(gdir, ParityRecorder(gdir), str(cfg["parity_twins_file"]), str(cfg["tieout_dir"]), self.paths["stop"],
                                    self._parity_state, twin_pins=twin_pins(book), interval_s=interval if isinstance(interval, (int, float)) and interval > 0 else None)
+        self.ladder: ld.LadderLog | None = None
+        self._marks: dict[str, tuple[int, int]] = {}  # mint -> (marked value lamports, mark ms): item 3 (a)
+        self._trigger_day: str | None = None
+        self._ceiling_cached = "C0"  # refreshed before the buys of every tick (_ladder_pre_buy); C0 until read
+        self._c1_by_this_process = False  # C1 is honoured only after THIS process wrote the step_up (a record found at start is never trusted: reviewer #862 item 1)
+        if keypair is not None:
+            self.ladder = ld.LadderLog(Path(self.h5cfg["state_dir"]) / "arena-ladder" / "ladder.jsonl", owner_uid=os.geteuid())
+            why = self._ladder_start_problem()
+            if why:
+                raise SystemExit(f"arena executor start refused: {why}")
         self.exit_gap_writer: ExitGapWriter | None = None
         if keypair is not None:
             try:
@@ -659,6 +678,14 @@ class ArenaExecutor(h.H5Executor):
         constants; this is the only place a book's fee differs from them, and the start row's `limits` shows the result."""
         pr = self.abook.priority
         lim = replace(super().h5, buy_priority_lamports=pr.buy, sell_priority_lamports=pr.sell, escalated_priority_lamports=pr.escalated)
+        if self._rung() == "C1":  # DEC-032 Am.2 item 3: C1's own column (the base tier is T1 underneath, whose stake 0.10 would otherwise cap it)
+            r = ld.LADDER["C1"]
+            floor = max(lim.wallet_floor_lamports, h.MIN_WALLET_FLOOR_LAMPORTS, int(getattr(self, "funded_lamports", 0) or 0) - r.floor_below_deposits_lamports)
+            c1 = {"stake_lamports": r.stake_lamports, "max_open": r.max_open, "max_trades_per_day": r.max_trades_per_day,
+                  "daily_loss_lamports": r.daily_trigger_lamports, "total_loss_lamports": r.lifetime_cap_lamports}
+            cfg = self.h5cfg  # config may only tighten (reviewer #862 item 2), never raise a C1 field
+            c1 = {k: min(v, int(cfg[k])) if isinstance(cfg.get(k), int) and not isinstance(cfg.get(k), bool) else v for k, v in c1.items()}
+            return replace(lim, gap_hold_ms=max(lim.gap_hold_ms, GAP_HOLD_MS), wallet_floor_lamports=floor, **c1)
         # C0 (gap a): the pinned table is the ceiling whatever the shared TIER file says. T1 / T2 in the file cannot raise a single field; a lower tier
         # (T0) or a tighter config still lowers it, because this takes the minimum.
         return replace(lim, gap_hold_ms=max(lim.gap_hold_ms, GAP_HOLD_MS),
@@ -668,6 +695,26 @@ class ArenaExecutor(h.H5Executor):
     def _tier_path(self) -> Path:
         """Item 2 (QP 10-23): live reads the arena's own tier file, never /etc/mal-h5/TIER. A dry run keeps the base's <state_dir>/TIER."""
         return ARENA_TIER_PATH if not self.dry_run else super()._tier_path()
+
+    def _refresh_tier(self, now: int) -> None:
+        """Live: the arena TIER file may read LADDER_C1 (DEC-032 Am.2 item 9.2). For the BASE tier machinery that is T1 (the base tier stays T1 at every rung;
+        the rung's own limits come from the `h5` property). Only that one content is mapped; every other read is the base's own, unchanged. Dry: the base."""
+        if self.dry_run:
+            return super()._refresh_tier(now)
+        orig = h.read_tier
+        arena = self._tier_path()
+
+        def mapped(path: Path, root_checks: bool) -> tuple[str, str | None]:
+            tier, problem = orig(path, root_checks)
+            if Path(path) == arena and problem == "tier_file_invalid" and ld.read_ceiling(Path(path), root_checks) == ("C1", None):
+                return "T1", None
+            return tier, problem
+
+        h.read_tier = mapped  # swapped for this call only; the loop is single-threaded (the same pattern as intent_tick's tail_lines)
+        try:
+            super()._refresh_tier(now)
+        finally:
+            h.read_tier = orig
 
     def __repr__(self) -> str:
         return f"ArenaExecutor(book={self.abook.bot_id}, mode={self.run_mode})"
@@ -683,6 +730,162 @@ class ArenaExecutor(h.H5Executor):
         lost = max(0, -int(self.state.realized_lamports))
         f, tol = int(self.funded_lamports or 0), FUNDED_BALANCE_TOLERANCE_LAMPORTS
         return None if f - lost - tol <= bal <= f + tol else "funded_balance_mismatch"
+
+    # -- DEC-032 Amendment 2: the stake ladder (live only; a dry run is always C0 and touches none of this)
+    def _rung(self) -> str:
+        """min(the log's rung, the ceiling read before this tick's buys). C1 also needs: this process wrote the step_up, and funded_lamports >= C1's deposits.
+        Anything else is C0 (QP #861 condition 3: the log's `to` is clamped to LADDER)."""
+        lg = getattr(self, "ladder", None)
+        if lg is None or getattr(self, "dry_run", True) or lg.problem:
+            return "C0"
+        if lg.rung == "C1" and getattr(self, "_ceiling_cached", "C0") == "C1" and getattr(self, "_c1_by_this_process", False) \
+                and int(getattr(self, "funded_lamports", 0) or 0) >= ld.LADDER["C1"].deposits_min_lamports:
+            return "C1"
+        return "C0"
+
+    def _ceiling(self) -> str:
+        return ld.read_ceiling(ARENA_TIER_PATH)[0]
+
+    def _ladder_start_problem(self) -> str | None:
+        lg = self.ladder
+        assert lg is not None
+        if lg.problem:
+            return f"ladder_log_broken:{lg.problem}"  # the hash chain does not verify: Helm and the manager look before anything trades
+        self._ceiling_cached = self._ceiling()
+        if self._ceiling_cached == "C1" and self.abook.bot_id != ld.LADDER_BOOK:
+            return "ladder_ceiling_for_uncovered_book"
+        if lg.rung == "C1":
+            # A C1 record is never honoured at start (QP #862 condition 2, reviewer item 1): ceiling lowered, unlock not verified now, or the step-down
+            # inputs (trailing-30, chain deposits) not available -> step down before the first tick, so no round runs at 0.15.
+            why = ("ceiling_lowered" if self._ceiling_cached != "C1" else
+                   "unlock_not_verified_at_start" if not ld.verify_unlock(self.abook.bot_id)[0] else "c1_record_at_start_step_down_inputs_unavailable")
+            self._step(lg, "step_down", "C1", "C0", why)
+        today = h.day_key(self.now_ms())
+        if any(r.get("kind") in ("daily_trigger", "step_down") and r.get("day") == today and r.get("why") == "daily_trigger" for r in lg.records):
+            self._trigger_day = today  # a restart inside the day keeps the trigger (item 3 (a): it holds until 00:00Z)
+        return None
+
+    def _step(self, lg: "ld.LadderLog", kind: str, frm: str, to: str, why: str, **detail: Any) -> None:
+        rec = lg.append(kind, self.now_ms(), frm, to, why, day=h.day_key(self.now_ms()), realized_lamports=int(self.state.realized_lamports), **detail)
+        self._log("ladder_" + kind, "", rung_from=frm, rung_to=to, why=why, seq=rec["seq"])
+        if kind != "daily_trigger":
+            self._alert("ladder_" + kind, "", rung_from=frm, rung_to=to, why=why)
+
+    def _realized_today(self, now: int) -> int:
+        return int(self.counters.day(h.day_key(now)).get("realized") or 0)
+
+    def _ladder_buy_refusal(self) -> str | None:
+        if self.dry_run:
+            return None
+        now = self.now_ms()
+        if self._trigger_day == h.day_key(now):
+            return "daily_trigger_until_0000z"
+        rung = ld.LADDER[self._rung()]
+        st = self.state
+        worst = [self._position_worst_case(int(p.get("spend") or 0), int(p.get("extra_cost") or 0)) for p in st.open.values()]
+        worst += [self._position_worst_case(int(p.get("spend") or 0)) for p in st.pending.values() if p["kind"] == "buy"]
+        if ld.intraday_committed_lamports(self._realized_today(now), worst, self._position_worst_case(self.h5.stake_lamports)) > rung.intraday_cap_lamports:
+            return "intraday_cap"
+        return None
+
+    def _refresh_marks(self, now: int) -> None:
+        """Item 3 (a): every open position marked at its sell quote from the pool's current reserves, at least every 10 s. A failed read keeps the old mark,
+        which goes stale after 10 s and then counts the position at zero."""
+        done = 0
+        for mint, pos in list(self.state.open.items()):
+            old = self._marks.get(mint)
+            if old is not None and now - old[1] < ld.MARK_MAX_AGE_MS // 2:
+                continue
+            plan = ((pos.get("h5") or {}).get("plan")) or {}
+            send = plan.get("send_wall_ms")
+            guard = max(MARK_EXIT_GUARD_MS, int(self.h5.arm_lead_ms) + 3_000)  # never inside the arm-and-send window, whatever arm_lead_ms is configured to
+            if mint in self.state.pending or (isinstance(send, int) and now >= send - guard):
+                continue  # never an RPC read in a position's exit window or while its sell is in flight (QP #862 condition 3); a missing mark counts at zero
+            if done >= MARKS_PER_TICK:
+                break
+            done += 1
+            try:
+                snap, _pool, _err = self._snapshot(mint, self.exit_commitment)
+                if snap is None:
+                    continue
+                q = h.pe.exit_check({**pos, "tokens": int(pos.get("tokens") or 0)}, snap, now, own_trade_in_state=True).get("quote_out")
+            except (Exception, SystemExit):  # noqa: BLE001 - a mark that cannot be read is a stale mark, never a crash
+                continue
+            if isinstance(q, int) and not isinstance(q, bool):
+                self._marks[mint] = (q, now)
+        for gone in set(self._marks) - set(self.state.open):
+            self._marks.pop(gone, None)
+
+    def daily_loss_now(self, now: int) -> int:
+        positions = [{"cost_lamports": int(p.get("buy_cost_lamports") or p.get("spend") or 0) + int(p.get("extra_cost") or 0),
+                      "mark_value_lamports": (self._marks.get(m) or (None, None))[0], "mark_ms": (self._marks.get(m) or (None, None))[1]}
+                     for m, p in self.state.open.items()]
+        return ld.daily_loss_lamports(self._realized_today(now), positions, now)
+
+    def _ladder_guarded(self, fn: Any, now: int) -> None:
+        """Run one ladder step; an exception latches ladder_error (no buys) and is never raised into the loop or the exits (QP #862 condition 1)."""
+        try:
+            fn(now)
+        except Exception as exc:  # noqa: BLE001
+            self._ceiling_cached = "C0"
+            if H_LADDER not in self.counters.halts:
+                self._latch(H_LADDER, why=type(exc).__name__)
+
+    def _ladder_pre_buy(self, now: int) -> None:
+        """Before the buys of every tick: re-read the ceiling and run the trigger and step-down rules, so a lowered ceiling never gets a round at C1."""
+        if self.ladder is None or self.dry_run:
+            return
+        self._ceiling_cached = self._ceiling()
+        self.ladder_tick(now, marks=False, step_up=False)
+
+    def ladder_tick(self, now: int, marks: bool = True, step_up: bool = True) -> None:
+        """Live: marks, the daily trigger (a pause at C0, a step down at C1), the step-down rules at C1, and the step-up evaluation at C0 under a C1 ceiling."""
+        lg = self.ladder
+        if lg is None or self.dry_run:
+            return
+        if marks:
+            self._refresh_marks(now)
+        rung = self._rung()
+        today = h.day_key(now)
+        fired = self._trigger_day == today
+        if not fired and self.daily_loss_now(now) >= ld.LADDER[rung].daily_trigger_lamports:
+            if rung == "C0":
+                self._step(lg, "daily_trigger", "C0", "C0", "daily_trigger")  # persisted FIRST (reviewer #862 item 4); an append failure raises -> ladder_error latch
+            self._trigger_day, fired = today, True
+        if lg.rung == "C1" and self._c1_by_this_process:
+            entered = next((r for r in reversed(lg.records) if r.get("kind") == "step_up"), {})
+            since = int(self.state.realized_lamports) - int(entered.get("realized_lamports") or 0)
+            why = "ceiling_lowered" if self._ceiling_cached != "C1" else ld.step_down_reason(
+                "C1", soft_halts_latched=list(self.counters.halts), daily_trigger_fired=fired, realized_since_rung_lamports=since,
+                trailing_mean_d_bps=None, deposits_lamports=None)  # trailing-30 and chain deposits: not built yet -> a step down (fail closed)
+            if why is None and int(getattr(self, "funded_lamports", 0) or 0) < ld.LADDER["C1"].deposits_min_lamports:
+                why = "funded_below_c1_need"
+            if why:
+                self._step(lg, "step_down", "C1", "C0", why)
+                self._c1_by_this_process = False
+            return
+        if lg.rung == "C1":  # a C1 record this process did not write (written at runtime by someone else): never honoured; step it down
+            self._step(lg, "step_down", "C1", "C0", "c1_record_not_written_by_this_process")
+            return
+        if step_up and self._ceiling() == "C1" and not lg.stepped_down and self.abook.bot_id == ld.LADDER_BOOK:
+            ok, res = ld.evaluate_step_up(self._step_up_inputs(now))
+            self._last_step_up_eval = {"at_ms": now, "ok": ok, "checks": res}
+            if ok:
+                unlock_sha = hashlib.sha256(ld.UNLOCK_PATH.read_bytes()).hexdigest()
+                self._step(lg, "step_up", "C0", "C1", "dec032_am2_item5_all_checks", checks=[n for n, _o, _w in res], unlock_sha256=unlock_sha)
+                self._c1_by_this_process = True
+
+    def _step_up_inputs(self, now: int) -> dict[str, Any]:
+        """Only the item 9.2 sources. Inputs that are not built yet (trailing-30, halt history, tie-out sign-offs, chain total, deposits, floor) are left OUT,
+        so evaluate_step_up fails them: C1 is unreachable until they are built, reviewed and merged."""
+        inp: dict[str, Any] = {"ceiling": self._ceiling(), "stepped_down": self.ladder.stepped_down if self.ladder else True,
+                               "unlock": ld.verify_unlock(self.abook.bot_id), "sell_pin": sell_pin_problem(), "ms_to_end": int(self.h5.end_ms or 0) - now}
+        if self.gates is not None:
+            try:
+                inp["parity"] = json.loads((self.gates.dir / "parity-result.json").read_text())
+            except (OSError, ValueError):
+                pass
+        return inp
 
     def _rescue_problem(self) -> str | None:
         """Live start: (1) a root rescue sent for a mint that is still open in the state (marker <state_dir>/RESCUE-<mint>.json, tools/h5_arena_sell_and_close.py)
@@ -727,6 +930,8 @@ class ArenaExecutor(h.H5Executor):
         if self.feed_verified and H_FEED_BREAK not in self.counters.halts:
             at["decision_chain"] = now
         tier, problem = h.read_tier(self._tier_path(), root_checks=not self.dry_run)
+        if problem == "tier_file_invalid" and not self.dry_run and ld.read_ceiling(self._tier_path())[1] is None:
+            problem = None  # LADDER_C1 is a valid arena TIER (DEC-032 Am.2 item 9.2)
         if h.live_ok_valid() is None and problem is None:
             at["control_files"] = now
         return {"at_ms": at, "unresolved_hard_halts": sorted(HARD_ARENA_HALTS & set(self.counters.halts))}
@@ -777,6 +982,9 @@ class ArenaExecutor(h.H5Executor):
 
     def _live_buy(self, trg: h.H5Trigger, ps: Any, terms: dict[str, Any], plan: Any, now: int, drift: float | None, seen_ms: int | None) -> None:
         why = arena_live_ok_refusal(self.abook.bot_id)  # Helm's gate for THIS book, re-read before every live buy (removing it stops new buys at once)
+        if why:
+            return self._refuse(trg, why)
+        why = self._ladder_buy_refusal()  # DEC-032 Am.2 items 3 and 4: the daily trigger (held to 00:00Z) and the intraday cap, at the current rung
         if why:
             return self._refuse(trg, why)
         why = self.committed_loss_refusal() or self._balance_refusal(self.now_ms())  # the last look before anything is built or signed
@@ -980,6 +1188,7 @@ class ArenaExecutor(h.H5Executor):
             return kept
 
         self.a3_tick(self.now_ms())
+        self._ladder_guarded(self._ladder_pre_buy, self.now_ms())  # before this tick's buys (QP #862 condition 2)
         h.tail_lines = screened  # swapped for this call only; the loop is single-threaded
         try:
             return super().intent_tick()
@@ -1115,6 +1324,7 @@ class ArenaExecutor(h.H5Executor):
                 self.save()
             if pos.get("close_blocked") or pos.get("strand"):
                 self._latch(H_STRAND, mint=mint, close_blocked=bool(pos.get("close_blocked")), strand=bool(pos.get("strand")), why=pos.get("close_blocked_why"))
+        self._ladder_guarded(self.ladder_tick, now)  # after every exit of this tick, and guarded: a ladder error never skips an exit (QP #862 condition 1)
 
     def _finish_buy(self, mint: str, p: dict[str, Any], m: dict[str, Any]) -> None:
         super()._finish_buy(mint, p, m)
@@ -1139,7 +1349,7 @@ class ArenaExecutor(h.H5Executor):
 
 
 _ARENA_CLASS = ArenaExecutor  # the class the tripwire inspects (a name bound at import, so rebinding ArenaExecutor cannot hide a removed override)
-GUARD_METHODS = ("h5", "_tier_path", "_live_gate", "prime_feed_start", "_live_buy", "_send", "_send_guarded", "_note_send", "write_exit_gaps", "_rescue_problem", "_budget_stop", "_balance_refusal", "committed_loss_refusal", "_hard_refusal",
+GUARD_METHODS = ("h5", "_tier_path", "_refresh_tier", "_ladder_buy_refusal", "ladder_tick", "_ladder_start_problem", "_ladder_pre_buy", "_ladder_guarded", "_live_gate", "prime_feed_start", "_live_buy", "_send", "_send_guarded", "_note_send", "write_exit_gaps", "_rescue_problem", "_budget_stop", "_balance_refusal", "committed_loss_refusal", "_hard_refusal",
                  "_parity_state", "decide_row", "intent_tick", "_latch", "exit_tick", "_fire_sell", "_finish_buy", "_resolve_expired", "_seal_reason")
 
 
