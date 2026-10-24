@@ -1,4 +1,4 @@
-# MAL manager handoff — manager15 (written 2026-10-24T03:02Z; §7 added 07:2xZ, from date -u)
+# MAL manager handoff — manager15 (written 2026-10-24T03:02Z, from date -u)
 
 Read this first, then the END block of the manager state log (memory note `push-1024-manager15`; copy at /data/mal/hunt-1008/ops/manager15/) and the latest MiScusi notebook entries. No book has cleared the promotion gate. Profit so far: 0.
 
