@@ -159,6 +159,10 @@ class StubExecutor:
         self.run_mode = h.LIVE if keypair is not None else h.DRYRUN
         self.user, self.paths, self.h5 = "pub", {}, "lim"
         self.ticks = 0
+        self._start_ms = None
+
+    def prime_feed_start(self):
+        return "feed_start_record_missing"
 
     def tick(self):
         self.ticks += 1
@@ -322,3 +326,48 @@ class MainTests(ACase):
         rc, out = self.capture(["--config", self.write_cfg(), "--status"], merged=True)
         self.assertIn("live_start=none", out)
         self.assertEqual(StubExecutor.built, [])
+
+
+class FeedStartTests(ACase):
+    """The shadow writes its start record once; the base tailer starts at the end of the newest hour. prime_feed_start finds the newest start record."""
+
+    def start_rec(self, **kw):
+        r = {"type": "start", "code_sha": ax.A2_SHA, "fresh_forward": "ARENA", "dirty": False, "tip_union": "off", "rule": ax.A2_RULE, "start_ms": 5}
+        r.update(kw)
+        return r
+
+    def feed(self, files: dict) -> Path:
+        d = self.tmp / "feed"
+        d.mkdir(exist_ok=True)
+        for name, rows in files.items():
+            (d / name).write_text("".join((r if isinstance(r, str) else json.dumps(r)) + "\n" for r in rows))
+        return d
+
+    def test_newest_start_record_across_hours(self):
+        d = self.feed({"h5-shadow-2026-10-22T00.jsonl": [self.start_rec(start_ms=1), {"type": "trigger", "note": "start"}],
+                       "h5-shadow-2026-10-22T01.jsonl": ["not json \"start\"", {"type": "gap"}],
+                       "h5-shadow-2026-10-23T05.jsonl": [self.start_rec(start_ms=2)], "h5-shadow-status.json": [self.start_rec(start_ms=99)]})
+        self.assertEqual(ax.latest_start_record(d)["start_ms"], 2)
+        self.assertIsNone(ax.latest_start_record(self.feed({"h5-shadow-2026-10-24T00.jsonl": [{"type": "trigger"}]}).parent / "nope"))
+
+    def env_on(self, d: Path):
+        e = self.env(verified=False, intents_file=str(d))
+        return e
+
+    def test_prime_verifies_the_books_start_record(self):
+        e = self.env_on(self.feed({"h5-shadow-2026-10-22T00.jsonl": [self.start_rec()]}))
+        self.assertFalse(e.ex.feed_verified)
+        self.assertIsNone(e.ex.prime_feed_start())
+        self.assertTrue(e.ex.feed_verified)
+        self.assertEqual(e.ex._start_ms, 5)
+
+    def test_prime_with_another_books_start_record_latches_feed_break(self):
+        e = self.env_on(self.feed({"h5-shadow-2026-10-22T00.jsonl": [self.start_rec(code_sha=ax.Q50_SHA)]}))
+        self.assertEqual(e.ex.prime_feed_start(), "feed_start_record_rejected")
+        self.assertFalse(e.ex.feed_verified)
+        self.assertIn(ax.H_FEED_BREAK, e.ex.counters.halts)
+
+    def test_prime_without_a_start_record_keeps_buys_refused(self):
+        e = self.env_on(self.feed({"h5-shadow-2026-10-22T05.jsonl": [{"type": "gap"}]}))
+        self.assertEqual(e.ex.prime_feed_start(), "feed_start_record_missing")
+        self.assertFalse(e.ex.feed_verified)

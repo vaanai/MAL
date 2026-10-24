@@ -370,6 +370,32 @@ def live_entry_refusal(book: Book, cfg: dict[str, Any]) -> str | None:
     return None
 
 
+FEED_HOUR_GLOB = "h5-shadow-????-??-??T??.jsonl"  # the base executor's own pattern (H5Executor._resolve_intents)
+
+
+def latest_start_record(intents: Path) -> dict[str, Any] | None:
+    """The newest `start` record of the book's feed (oldest hourly file first; the last one read wins), or None. The shadow writes its start record ONCE, into the
+    hour it started in, and the base tailer starts at the END of the newest hour (history is never replayed), so an executor started later never sees it by
+    tailing. Only lines that parse as a JSON object with type "start" are kept; every other line is skipped unread beyond a substring test."""
+    files = sorted(intents.glob(FEED_HOUR_GLOB)) if intents.is_dir() else [intents]
+    last = None
+    for f in files:
+        try:
+            with f.open("rb") as fh:
+                for raw in fh:
+                    if b'"start"' not in raw:
+                        continue
+                    try:
+                        row = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if isinstance(row, dict) and row.get("type") == "start":
+                        last = row
+        except OSError:
+            continue
+    return last
+
+
 def canary_record_refusal(bot_id: str, root: Path) -> str | None:
     """A live start needs a canary record in DEC/ whose owner line names THIS bot_id exactly (QP gap h). Regular files only (no symlink), the template
     file never counts, and a line naming another book does not cover this one."""
@@ -914,6 +940,15 @@ class ArenaExecutor(h.H5Executor):
             else:
                 self.gates.recorder.on_sell(mint, kw, self.now_ms())
 
+    def prime_feed_start(self) -> str | None:
+        """Called by main() once, before the first tick (never by the replay harness, whose input starts with its start record): verify the feed's newest
+        start record through decide_row, exactly as if it had been tailed. A mismatch latches feed_break (hard). None = verified; else why buys stay refused."""
+        rec = latest_start_record(self.intents_path)
+        if rec is None:
+            return "feed_start_record_missing"  # buys stay refused (feed_unverified) until a start record is tailed
+        self.decide_row(rec)
+        return None if self.feed_verified else "feed_start_record_rejected"
+
     def _latch(self, name: str, **detail: Any) -> None:
         """The base `_latch` logs `halt_latched` through `_log(kind, mint, **kw)`, so a detail key called `mint` collides with its positional argument and the
         latch raises TypeError (every arena halt passed mint=...: H_STRAND, H_STUCK2, H_LATE_SEND, H_LANDING, H_ENTRY_GAP never latched). Renamed once, here."""
@@ -1028,7 +1063,7 @@ class ArenaExecutor(h.H5Executor):
 
 
 _ARENA_CLASS = ArenaExecutor  # the class the tripwire inspects (a name bound at import, so rebinding ArenaExecutor cannot hide a removed override)
-GUARD_METHODS = ("h5", "_tier_path", "_live_buy", "_send", "_send_guarded", "_budget_stop", "_balance_refusal", "committed_loss_refusal", "_hard_refusal",
+GUARD_METHODS = ("h5", "_tier_path", "prime_feed_start", "_live_buy", "_send", "_send_guarded", "_budget_stop", "_balance_refusal", "committed_loss_refusal", "_hard_refusal",
                  "_parity_state", "decide_row", "intent_tick", "_latch", "exit_tick", "_fire_sell", "_finish_buy", "_resolve_expired", "_seal_reason")
 
 
@@ -1125,6 +1160,8 @@ def main(argv: list[str] | None = None, *, rpc_factory: Callable[[str | None, st
                 return _refused(str(exc).replace("arena executor start refused: ", ""))
         shown = f" rpc={h.url_label(url)}" if url else ""
         print(f"h5_arena_executor mode={ex.run_mode} book={book.bot_id} frozen_sha={book.frozen_sha} user={ex.user}{shown} paths={ex.paths} limits={ex.h5}", flush=True)
+        feed = ex.prime_feed_start()
+        print(f"h5_arena_executor feed_start={feed or 'verified'} start_ms={ex._start_ms}", flush=True)  # not verified: every trigger is refused feed_unverified
         if args.once:
             ex.tick()
             return 0
