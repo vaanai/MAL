@@ -239,6 +239,26 @@ def read_hour(path: str | os.PathLike, root: str = BACKFILL_ROOT) -> tuple[list[
     return rows, (gap or not ended)
 
 
+def count_migrate_ix(path: str | os.PathLike, root: str = BACKFILL_ROOT) -> tuple[int, int]:
+    """(migrate instruction rows, create rows) of one exploration hour (guarded). For the I5 fetch estimate only."""
+    check_hour_path(path, root)
+    p = subprocess.Popen(["zstd", "-dc", "-q", str(path)], stdout=subprocess.PIPE, stdin=subprocess.DEVNULL)
+    assert p.stdout is not None
+    mig = cre = 0
+    try:
+        for line in p.stdout:
+            if b'"ix"' in line and b"igrate" in line:
+                d = json.loads(line)
+                if d.get("type") == "ix" and any("igrate" in str(x) for x in d.get("ix") or []):
+                    mig += 1
+            elif b'"type": "create"' in line or b'"type":"create"' in line:
+                cre += 1
+    finally:
+        p.stdout.close()
+        p.wait()
+    return mig, cre
+
+
 def block_time_s(r: dict[str, Any]) -> float:
     return float(r.get("block_time") or (r["t_recv_ms"] / 1000.0))
 

@@ -212,7 +212,7 @@ def load_exploration(root: str = L.BACKFILL_ROOT, log=print) -> dict[str, Any]:
     A = {k: np.concatenate([c[k] for c in cols]) for k in cols[0]}
     order = np.argsort(A["pid"], kind="stable")
     A = {k: v[order] for k, v in A.items()}
-    return {"a": A, "bad_hours": sorted(bad), "good_hours": sorted(present), "slot_s": slot_s, "n_pools": len(pid_of), "pool_names": list(pid_of)}
+    return {"root": root, "a": A, "bad_hours": sorted(bad), "good_hours": sorted(present), "slot_s": slot_s, "n_pools": len(pid_of), "pool_names": list(pid_of)}
 
 
 def slot_s_for(slot_s: dict[int, float], hk: int) -> float:
@@ -420,6 +420,12 @@ def measure(D: dict[str, Any]) -> dict[str, Any]:
     fund = A["status"] == 0
     out["max_real_quote_after_fund_sol"] = float(A["rq1"][fund].max() / SOL) if fund.any() else None
     out["max_progress_fund"] = float((A["rb1"][fund] / A["tbs"][fund]).max()) if fund.any() else None
+    mig = cre = 0
+    for hk in D["good_hours"]:
+        h = datetime.fromtimestamp(hk * 3600, tz=timezone.utc)
+        m, c = L.count_migrate_ix(L.hour_file(h, D.get("root", L.BACKFILL_ROOT)), D.get("root", L.BACKFILL_ROOT))
+        mig, cre = mig + m, cre + c
+    out["migrate_ix_rows"], out["create_rows"], out["good_hours_scanned"] = mig, cre, len(D["good_hours"])
     out["slot_s_by_hour_median"] = float(np.median(list(D["slot_s"].values()))) if D["slot_s"] else None
     sizes = A["ain"][buy] / SOL
     out["buy_sol_quantiles_50_90_99"] = [float(v) for v in np.quantile(sizes, [0.5, 0.9, 0.99])]
