@@ -111,6 +111,7 @@ class ACase(Case):
         self.arena_tier.write_text("T1\n")
         os.chmod(self.arena_tier, 0o644)
         for patcher in (mock.patch.object(ax, "ARENA_TIER_PATH", self.arena_tier), mock.patch.object(ax, "ARENA_LIVE_OK_PATH", self.etc / "arena-LIVE_OK"),
+                        mock.patch.object(ax, "FEED_NOTE_BOOKS", frozenset(ax.BOOKS) | {"h5v1-p155-testbook"}),  # fixtures run every book; the real set is tested in test_h5_arena_feed_note
                         mock.patch.object(ax, "V2_RULE_SOURCE", self.tmp / "FREEZE.md"),
                         mock.patch.object(ax, "A3_RECORD_DEFAULT", str(self.tmp / "a3-default.jsonl"))):
             patcher.start()
@@ -169,7 +170,7 @@ class StartTests(ACase):
             self.assertIn("pick_file_set", str(cm.exception))
 
     def test_without_the_feed_note_only_replay_runs(self):
-        with self.assertRaises(SystemExit) as cm:
+        with mock.patch.object(ax, "FEED_NOTE_MERGED", False), self.assertRaises(SystemExit) as cm:
             self.env(replay_only=False)
         self.assertIn("feed_note_unmerged_replay_only", str(cm.exception))
 

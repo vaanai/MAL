@@ -20,8 +20,9 @@ the sell ladder, caps, write-ahead, STOP / HALT, counters). What this module cha
  8  Fidelity log: each decision row carries bot_id, frozen_sha, the trigger key (mint, pool, trigger_slot), decision_ms. Sells add send/landed slots and
     late_slots. No exit quote, no P&L is ever written by a dry run (outcome-blind).
 14  Soft halts, latched (names in ARENA_HALTS): see FidelityMonitor.
-FEED_NOTE_MERGED is False: until the EXP-024 declared-observation note for this executor is merged (scope item 17) the module reads no live feed.
-It only runs with config "replay_only": true (a fixture or replay dir). Flipping the constant is a code change and needs the md5 replay rerun.
+FEED_NOTE_MERGED is True since the EXP-024 "Note under Amendment 10" (PR #851, scope item 17) declared the real-time observation of this executor's dry and
+live outcomes, for the bot_ids in FEED_NOTE_BOOKS only (h5v1q50-boostfloor-a1; the a2 books ENDED, DEC-031 Am.10 item 4). Any other book reads replay
+inputs only ("replay_only": true) and is refused a live start. The md5 decision-equivalence replay is re-run at this flip's merge commit (QP-RULING-1024 (b)).
 
 Live entry (LIVE_BUILT True, QP-RULING-1023-wiring ruling 7 item 11): `main --live` with config "mode": "live". Every keyless check runs BEFORE the key is read,
 in this order, and any refusal is exit 2 (the unit does not restart on 2): the base start_refusal (no STOP/HALT/LIVE_OK/TIER path override, the shared
@@ -30,7 +31,7 @@ replay_only, the arena's own root-owned /etc/mal-h5-arena/LIVE_OK naming exactly
 arena_start_refusal (priority pin, funded range, sell-builder pin, canary DEC owner line for this bot_id, exit-gap / twins / tie-out inputs, TIER exactly T1);
 the RPC env check; then harden_process and the key from the systemd credential only. The constructor re-runs arena_start_refusal (which includes
 live_entry_refusal) and the FINALIZED funded-balance check. /etc/mal-h5-arena/LIVE_OK is re-read before every live buy. No check is skipped or loosened
-by a live start: with FEED_NOTE_MERGED False (this build) every live start is refused with live_feed_note_unmerged.
+by a live start. The flip opens no send by itself: a live start still needs both Helm-owned LIVE_OK files, TIER T1, the canary DEC line and the key drop-in.
 
 Not proven offline (see the PR body): decision equivalence on the real 2026-09-20 day (tools/h5_arena_exec_replay.py is the harness; the run is a host job),
 the live landing/exit gaps, the A3 pins_changed link, the Token-2022 screen on real mints.
@@ -75,7 +76,9 @@ V2_RULE_SHA256 = "5368cc7b757a2f7a6cb064c71193b4e0cd740583f7348a60cb9a864401c190
 V2_RULE_SOURCE = Path("/data/mal/hunt-1008/iter-r2/h5-boostclock-exit/FREEZE.md")  # (a test may point it elsewhere; the sha is the pin)
 CANARY_DEC_GLOB = "DEC-*canary*.md"  # canary records (copies of the DEC-032 template) live in DEC/. The template itself never counts.
 CANARY_OWNER_RE = re.compile(r"^[ \t]*OWNER_CANARY_CONFIRMED:[ \t]*bot_id=(\S+)[ \t]*$", re.M)  # the owner's line names the book: "OWNER_CANARY_CONFIRMED: bot_id=<bot_id>"
-FEED_NOTE_MERGED = False  # scope item 17: the EXP-024 note declaring this executor's observation. False = replay_only
+FEED_NOTE_MERGED = True  # scope item 17: EXP-024 "Note under Amendment 10" (#851) declares this executor's observation. False = replay_only for every book
+FEED_NOTE_REF = "### Note under Amendment 10 (written 2026-10-24T01:27Z"  # the note's heading in EXP/EXP-024-h5-boostfloor-part1-prereg.md (a test checks it is in the tree)
+FEED_NOTE_BOOKS = frozenset({"h5v1q50-boostfloor-a1"})  # the bot_ids the note covers; every other book stays replay_only (QP-SCOPE item 17: "per bot_id")
 LIVE_BUILT = True  # the live entry point is main --live (QP-RULING-1023-wiring ruling 7 item 11); every live start passes live_entry_refusal first
 ARENA_LIVE_OK_PATH = Path("/etc/mal-h5-arena/LIVE_OK")  # the arena canary's OWN gate: root:root 0644 (base root_file_problem), content exactly the bot_id. Helm creates it.
 DEC032_C0 = {  # DEC-032 s3 C0 column, verbatim. C0_TIER may only be at or below these; c0_guard_problem refuses a live start otherwise.
@@ -279,8 +282,11 @@ def arena_start_refusal(book: Book, cfg: dict[str, Any], root: Path, live: bool)
         why = live_entry_refusal(book, cfg)  # first for a live start: it refuses an unmerged feed note and any replay_only key itself
         if why:
             return why
-    if not FEED_NOTE_MERGED and cfg.get("replay_only") is not True:
-        return "feed_note_unmerged_replay_only"
+    if cfg.get("replay_only") is not True:
+        if not FEED_NOTE_MERGED:
+            return "feed_note_unmerged_replay_only"
+        if book.bot_id not in FEED_NOTE_BOOKS:
+            return "feed_note_not_covering_book_replay_only"  # an ended or undeclared book never reads the live feed
     why = funded_refusal(cfg, live)
     if why:
         return why
@@ -355,7 +361,9 @@ def live_entry_refusal(book: Book, cfg: dict[str, Any]) -> str | None:
     if why:
         return why
     if not FEED_NOTE_MERGED:
-        return "live_feed_note_unmerged"  # scope item 17: no live feed is read until the EXP-024 observation note is merged and this constant flipped
+        return "live_feed_note_unmerged"
+    if book.bot_id not in FEED_NOTE_BOOKS:
+        return "live_feed_note_not_covering_book"  # scope item 17: no live feed is read until the EXP-024 observation note is merged and this constant flipped
     if "replay_only" in cfg:
         return "live_replay_only_set"  # a replay declaration in a live config is a wrong config, never silently ignored
     if cfg.get("mode") != h.LIVE:
