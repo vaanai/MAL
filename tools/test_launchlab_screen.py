@@ -123,6 +123,10 @@ def test_incomplete_hour_marks_bad(tmp_path, monkeypatch):
     assert rows == [] and bad
 
 
+def test_universe():
+    pass
+
+
 def test_ffill():
     x = np.array([np.nan, 0.01, np.nan, 0.02])
     assert list(S._ffill(x, 0.5)) == [0.5, 0.01, 0.01, 0.02]

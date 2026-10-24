@@ -121,6 +121,12 @@ def _ffill(x: np.ndarray, fallback: float) -> np.ndarray:
     return out
 
 
+def _in_universe(P: "Pool") -> np.ndarray:
+    """Declared universe U (DECLARE amendment 1, after the measure step, before any count): the standard curve, total_base_sell = 793.1e12 atoms and virtual_quote in [20e9, 40e9].
+    The tape has no quote mint, so a quote of another token with a similar atom magnitude cannot be told apart (said in the report)."""
+    return (np.abs(P.tbs - 793.1e12) < 1e9) & (P.vq >= 20e9) & (P.vq <= 40e9)
+
+
 def triggers_for(cell: CellDef, P: Pool, first_ok_bt: float) -> list[int]:
     """Indices of prints at which the cell fires (before cooldown). Decides on rows <= the print only."""
     n = P.n
@@ -128,7 +134,7 @@ def triggers_for(cell: CellDef, P: Pool, first_ok_bt: float) -> list[int]:
         return []
     out: list[int] = []
     buy = P.side == 1
-    ok_entry = (P.status == 0) & (P.prog_post <= P_MAX_ENTRY) & (P.bt >= first_ok_bt) & (P.exact_in == 1)
+    ok_entry = _in_universe(P) & (P.status == 0) & (P.prog_post <= P_MAX_ENTRY) & (P.bt >= first_ok_bt) & (P.exact_in == 1)
     if cell.idea == "I1":
         N, S = cell.params
         cand = np.nonzero(buy & ok_entry & (P.prog_post >= 0.02) & (P.prog_post <= 0.35))[0]
@@ -217,7 +223,7 @@ def load_exploration(root: str = L.BACKFILL_ROOT, log=print) -> dict[str, Any]:
 
 def slot_s_for(slot_s: dict[int, float], hk: int) -> float:
     v = slot_s.get(hk)
-    return v if v and 0.3 <= v <= 0.6 else L.SLOT_S_FALLBACK
+    return v if v and 0.1 <= v <= 0.6 else L.SLOT_S_FALLBACK
 
 
 def k_slots(lat_s: float, ss: float) -> int:
