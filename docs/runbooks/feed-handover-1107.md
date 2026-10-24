@@ -79,6 +79,8 @@ Re-runs. If H is restarted after the marker exists (host reboot, MiScusi resume)
    - Expected log lines: `pins ok`; `feed processes=1 [<pid>] lock holders=1 [<same pid>]`; `window: not open yet`; `DRYRUN_OK old_pid=<pid>`.
    - Before 2026-10-26T02:00Z it also prints `DRYRUN note: a job started now would end ...`; that is expected.
    - It sends no signal, writes nothing and creates no dir. It reads `/proc`, `/proc/locks`, the status file's mtime and `df`. It reads no tape row.
+   - Real-layout rehearsal, 2026-10-24T18:59:38Z, by the worker. It ran from a clean worktree at f5bd26e7 on research-0 with the branch script, read-only: `pins ok`; `feed processes=1 [3359389] lock holders=1 [3359389]`; status age 56 s; disk 39.79% free; `DRYRUN_OK old_pid=3359389`; rc 0.
+   - The live feed's cwd is the MiScusi jobtree `/home/claude/.miscusi/jobtrees/vaanai__MAL@f5bd26e77974`, which is shared per commit. That tree was clean (0 tracked changes) with arena_feed.py 7a9d424b..., so H, at the same git_ref, passes the clean-checkout pin.
 3. Check `systemctl show user-1000.slice -p MemoryCurrent` (research-0). It is not a heavy job, but H reserves 2,253 MB for 12+ days.
 
 ## 5. Job specs (exact)
