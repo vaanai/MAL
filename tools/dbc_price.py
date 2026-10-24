@@ -86,14 +86,14 @@ def buy_fill(S0, L, stake, rate, mode):
 
 
 def sell_fill(S0, L, base_in, rate, mode):
-    """Sell `base_in` atoms at (S0, L). Returns (lamports_out_after_fee, S1). mode 0 = fee on output (quote), 1 = fee on input (base)."""
+    """Sell `base_in` atoms at (S0, L). Returns (lamports_out_after_fee, S1). The fee is ALWAYS taken from the quote output (measured on 59,747 mode-1 sell rows; `mode` is kept
+    in the signature for the callers and applies to buys only)."""
     base_in = np.asarray(base_in, float)
     rate = np.asarray(rate, float)
-    b_eff = np.where(np.asarray(mode) == 1, base_in * (1.0 - rate), base_in)
     with np.errstate(all="ignore"):
-        S1 = 1.0 / (1.0 / S0 + b_eff / L)
+        S1 = 1.0 / (1.0 / S0 + base_in / L)
         q_gross = L * (S0 - S1) / Q128
-        q_out = np.where(np.asarray(mode) == 1, q_gross, q_gross * (1.0 - rate))
+        q_out = q_gross * (1.0 - rate)
     return q_out, S1
 
 
@@ -273,9 +273,9 @@ def derive(a: dict[str, np.ndarray], pid: np.ndarray, cfg: np.ndarray, iso: np.n
         # buy: quote in = ain; output mode: quote_curve = ain, base_gross = aout+fee. input mode: quote_curve = ain-fee, base_gross = aout
         # sell: base in = ain; output mode: base_curve = ain, quote_gross = aout+fee. input mode: base_curve = ain-fee, quote_gross = aout
         q0 = np.where(buy, ain, aout + fee)  # mode 0 quote leg
-        q1 = np.where(buy, ain - fee, aout)  # mode 1
+        q1 = np.where(buy, ain - fee, aout + fee)  # mode 1 (A2 fix: a SELL always pays its fee in QUOTE on the OUTPUT, in both modes)
         b0 = np.where(buy, aout + fee, ain)
-        b1 = np.where(buy, aout, ain - fee)
+        b1 = np.where(buy, aout, ain)
         Lq0, Lq1 = q0 * Q128 / dS, q1 * Q128 / dS
         Lb0, Lb1 = b0 * S0 * S1 / dS, b1 * S0 * S1 / dS
         e0, e1 = np.abs(Lq0 / Lb0 - 1.0), np.abs(Lq1 / Lb1 - 1.0)
@@ -298,7 +298,7 @@ def derive(a: dict[str, np.ndarray], pid: np.ndarray, cfg: np.ndarray, iso: np.n
         L = qm * Q128 / dS
         gross_fee_side = np.where(mode == 1, np.where(buy, ain, ain), np.where(buy, aout + fee, aout + fee))
         # rate = fee / gross amount on the fee side: output mode buy: aout+fee (base), sell: aout+fee (quote); input mode buy: ain (quote), sell: ain (base)
-        rate = np.where(fee > 0, fee / np.where(mode == 1, ain, aout + fee), 0.0)
+        rate = np.where(fee > 0, fee / np.where((mode == 1) & buy, ain, aout + fee), 0.0)  # sells: fee / (amount_out + fee) in both modes
     qleg = qm
     good = same & np.isfinite(L) & (qleg >= MIN_L_QUOTE) & (L > 0)
     if iso is not None:

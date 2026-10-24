@@ -135,7 +135,7 @@ def load_exploration(root: str = L.BACKFILL_ROOT, log=print, start: datetime | N
     bad_row = badm[perm]
     d = L.derive(A, pid, cfg, ~bad_row)
     D = {"a": A, "d": d, "pid": pid, "bad_row": bad_row, "order_stats": ostats, "start_ts": hours[0].timestamp(), "root": root, "bad_hours": sorted(bad), "good_hours": sorted(present),
-         "slot_s": slot_s, "n_pools": len(pid_of), "n_configs": len(cfg_of), "hook_pools": hook_pools, "complete_slot": complete_slot, "creates": n_create}
+         "slot_s": slot_s, "pool_names": list(pid_of), "n_pools": len(pid_of), "n_configs": len(cfg_of), "hook_pools": hook_pools, "complete_slot": complete_slot, "creates": n_create}
     D["hook_row"] = np.isin(pid, np.array(sorted(hook_pools), np.int64))
     return D
 

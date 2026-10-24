@@ -22,8 +22,8 @@ def _raises(exc):
 FIX = Path(__file__).parent / "data" / "dbc_price_fixture.jsonl"
 
 
-def load():
-    rows = [json.loads(x) for x in FIX.read_text().splitlines()]
+def load(files=("dbc_price_fixture.jsonl", "dbc_price_fixture_mode1.jsonl")):
+    rows = [json.loads(x) for f in files for x in (FIX.parent / f).read_text().splitlines()]
     pids, cfgs = {}, {}
     pid = np.array([pids.setdefault(r["pool"], len(pids)) for r in rows])
     cfg = np.array([cfgs.setdefault(r["config"], len(cfgs)) for r in rows])
@@ -47,6 +47,17 @@ def test_curve_reproduces_real_rows():
     for side in ("buy", "sell"):
         assert v[side]["n"] > 50
         assert v[side]["within_1pct"] > 0.9
+
+
+def test_mode1_sell_fee_is_on_quote_output():
+    rows, a, d, pid, bad, st = load()
+    sell1 = (a["side"] == 0) & (d["mode"] == 1) & d["mode_known"] & (a["fee"] > 0) & ~bad
+    assert sell1.sum() > 20  # the mode-1 fixture pool (Fmf9UXb2..., config with fee on input for buys)
+    S0, Lq = 3.0e17, 4.0e31
+    assert L.sell_fill(S0, Lq, 1e13, 0.01, 1)[0] == L.sell_fill(S0, Lq, 1e13, 0.01, 0)[0]
+    r = d["rate"][sell1]
+    assert np.allclose(r, a["fee"][sell1] / (a["aout"][sell1] + a["fee"][sell1]))
+    assert np.median(r) > 1e-3  # not the ~0 bps of fee-lamports / base-atoms
 
 
 def test_order_fix_reorders_some_slots():
