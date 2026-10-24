@@ -53,7 +53,8 @@ class Rule(unittest.TestCase):
         later = counted + [day(5, 0), day(5, 1)]
         r = self.rule(later)
         self.assertEqual((r["status"], r["instant_ms"], r["counted_before"], r["dates"]), (qi.READ, CLOCK + 6 * DAY, 100, 6))
-        self.assertEqual(self.rule(counted + [day(5, 0)], now=FAR)["status"], qi.NOT_YET)  # 99 counted: still nothing
+        self.assertEqual(self.rule(counted + [day(5, 0)], now=END - 1)["status"], qi.NOT_YET)  # 99 counted: still nothing
+        self.assertEqual(self.rule(counted + [day(5, 0)], now=END)["status"], qi.ENDED)  # and at the end-seal: NOT_DECIDABLE, final
 
     def test_100_counted_on_5_dates_reads_at_that_boundary(self):
         r = self.rule(spread(100, 5))
@@ -72,11 +73,12 @@ class Rule(unittest.TestCase):
         # the open attempt decided on day 4 does not hold the day-5 boundary of a book that already qualifies there
         self.assertEqual(self.rule(spread(100, 5), open_=[day(5)])["instant_ms"], CLOCK + 5 * DAY)
         # the 5-date boundary would qualify, but an attempt decided on day 4 is still open: PENDING, never the 6-date boundary
-        r = self.rule(spread(110, 6), open_=[day(4)])
+        ok5 = spread(100, 5) + spread(10, 1, first=5)
+        r = self.rule(ok5, open_=[day(4)])
         self.assertEqual((r["status"], r["boundary_ms"]), (qi.PENDING, CLOCK + 5 * DAY))
         # once it closes: counted (moves nothing here) or excluded
-        self.assertEqual(self.rule(spread(110, 6) + [day(4, 999)])["instant_ms"], CLOCK + 5 * DAY)
-        self.assertEqual(self.rule(spread(110, 6))["instant_ms"], CLOCK + 5 * DAY)
+        self.assertEqual(self.rule(ok5 + [day(4, 999)])["instant_ms"], CLOCK + 5 * DAY)
+        self.assertEqual(self.rule(ok5)["instant_ms"], CLOCK + 5 * DAY)
 
     def test_a_decision_at_b_is_not_before_b(self):
         counted = spread(99, 5) + [CLOCK + 5 * DAY]
