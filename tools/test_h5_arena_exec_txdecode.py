@@ -94,7 +94,7 @@ class TxDecodeTests(ACase):
 
     def test_p155_book_155k_priority_160k_total_per_send(self):
         nb = dataclasses.replace(ax.BOOKS[A2], bot_id=NEW, priority=ax.PRIORITY_P155)
-        with mock.patch.dict(ax.BOOKS, {NEW: nb}):
+        with mock.patch.dict(ax.BOOKS, {NEW: nb}), mock.patch.object(ax, "FEED_NOTE_BOOKS", ax.FEED_NOTE_BOOKS | {NEW}):
             e, pos, buy, sell = self.run_trip(book_id=NEW, priority_pin=ax.PRIORITY_P155.as_dict())
         self.check_common(e, pos, buy, sell, 155_000)
         self.assertEqual((buy["total_fee"], sell["total_fee"]), (160_000, 160_000))

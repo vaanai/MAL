@@ -75,7 +75,7 @@ class LiveEntryRefusalTests(ACase):
     def test_feed_note_unmerged_refuses_first(self):
         self.lok(A2 + "\n")
         self.assertEqual(self.refusal(merged=False), "live_feed_note_unmerged")
-        self.assertFalse(ax.FEED_NOTE_MERGED)  # this build: every live start is refused until the EXP-024 note merges and the constant flips
+        self.assertTrue(ax.FEED_NOTE_MERGED)  # flipped after the EXP-024 Note under Amendment 10 (#851)
 
     def test_config_refusals(self):
         self.lok(A2 + "\n")
@@ -119,7 +119,8 @@ class LiveEntryRefusalTests(ACase):
         write_canary_record(self.tmp / "repo")
         self.lok(A2 + "\n")
         c = self.cfg(end_ms=1, funded_lamports=500_000_000)
-        self.assertEqual(ax.arena_start_refusal(ax.BOOKS[A2], c, self.tmp / "repo", live=True), "live_feed_note_unmerged")
+        with mock.patch.object(ax, "FEED_NOTE_MERGED", False):
+            self.assertEqual(ax.arena_start_refusal(ax.BOOKS[A2], c, self.tmp / "repo", live=True), "live_feed_note_unmerged")
         self.assertIsNone(ax.arena_start_refusal(ax.BOOKS[A2], {**c, "replay_only": True}, self.tmp / "repo", live=False))  # the dry path is unchanged
 
 
