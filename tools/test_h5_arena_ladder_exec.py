@@ -82,40 +82,92 @@ class StartAndCeilingTests(LadderCase):
         e.ex.ladder_tick(e.clock())  # a no-op
 
 
-class RungTests(LadderCase):
-    def test_rung_c1_has_c1_limits(self):
-        e = self.q50()
-        self.log(e).append("step_up", 1, "C0", "C1", "test", realized_lamports=0)
-        ex = self.rebuild(e)
-        self.set_ceiling("LADDER_C1")
-        lim = ex.h5
+class C1Helpers(LadderCase):
+    def up(self, e):
+        """Step up inside this process, with every check patched to pass (the real inputs are not built)."""
+        unlock = self.tmp / "LADDER_UNLOCK"
+        unlock.write_text("{}")
+        with mock.patch.object(ld, "evaluate_step_up", lambda inp: (True, [("x", True, "")])), mock.patch.object(ld, "UNLOCK_PATH", unlock):
+            e.ex.ladder_tick(e.ex.now_ms())
+
+    def c1(self, **kw):
+        e = self.q50(funded_lamports=1_000_000_000, **kw)
+        e.ex._ladder_pre_buy(e.ex.now_ms())
+        self.up(e)
+        return e
+
+
+class RungTests(C1Helpers):
+    def test_an_in_process_step_up_gives_c1_limits_and_records_the_unlock_sha(self):
+        e = self.c1()
+        self.assertEqual(e.ex._rung(), "C1")
+        lim = e.ex.h5
         self.assertEqual((lim.stake_lamports, lim.max_open, lim.max_trades_per_day, lim.daily_loss_lamports, lim.total_loss_lamports),
                          (150_000_000, 3, 40, 300_000_000, 700_000_000))
+        self.assertEqual(lim.wallet_floor_lamports, max(h.MIN_WALLET_FLOOR_LAMPORTS, 1_000_000_000 - 800_000_000))
+        rec = self.log(e).records[-1]
+        self.assertEqual((rec["kind"], rec["unlock_sha256"]), ("step_up", hashlib.sha256(b"{}").hexdigest()))
 
-    def test_a_lowered_ceiling_steps_c1_down_at_start_and_latches(self):
-        e = self.q50()
-        self.log(e).append("step_up", 1, "C0", "C1", "test", realized_lamports=0)
+    def test_config_can_only_tighten_c1(self):
+        e = self.c1(stake_lamports=100_000_000, max_open=2)
+        self.assertEqual((e.ex.h5.stake_lamports, e.ex.h5.max_open), (100_000_000, 2))
+
+    def test_c1_needs_funding_of_at_least_one_sol(self):
+        e = self.q50(funded_lamports=999_999_999)
+        e.ex._ladder_pre_buy(e.ex.now_ms())
+        self.up(e)
+        self.assertEqual(self.log(e).records[-1]["kind"], "step_up")
+        self.assertEqual(e.ex._rung(), "C0")
+        self.assertLessEqual(e.ex.h5.stake_lamports, ax.C0_TIER["stake_lamports"])
+
+    def test_a_lowered_ceiling_is_c0_before_the_next_buys(self):
+        e = self.c1()
         self.set_ceiling("T1")
-        ex = self.rebuild(e)
-        self.assertEqual(ex._rung(), "C0")
-        lg = self.log(e)
-        self.assertEqual((lg.records[-1]["kind"], lg.records[-1]["why"]), ("step_down", "ceiling_lowered"))
-        self.assertTrue(lg.stepped_down)
+        e.ex.intent_tick()  # the pre-buy ladder step runs first
+        self.assertEqual(e.ex._rung(), "C0")
+        self.assertLessEqual(e.ex.h5.stake_lamports, ax.C0_TIER["stake_lamports"])  # (the fixture's base tier is T0: 0.02; never C1's 0.15)
+        self.assertEqual(self.log(e).records[-1]["why"], "ceiling_lowered")
 
-    def test_at_c1_an_unbuilt_trailing_input_steps_down_at_once(self):
-        e = self.q50()
-        self.log(e).append("step_up", 1, "C0", "C1", "test", realized_lamports=0)
+    def test_at_c1_an_unbuilt_trailing_input_steps_down(self):
+        e = self.c1()
+        e.ex._ladder_pre_buy(e.ex.now_ms())
+        self.assertEqual(e.ex._rung(), "C0")
+        self.assertEqual(self.log(e).records[-1]["why"], "trailing_d_unknown")
+        self.assertTrue(self.log(e).stepped_down)
+
+    def test_a_c1_record_at_start_is_never_honoured(self):
+        e = self.q50(funded_lamports=1_000_000_000)
+        self.log(e).append("step_up", 1, "C0", "C1", "forged", realized_lamports=0)
         ex = self.rebuild(e)
         self.set_ceiling("LADDER_C1")
-        ex.ladder_tick(ex.now_ms())
         self.assertEqual(ex._rung(), "C0")
-        self.assertEqual(self.log(e).records[-1]["why"], "trailing_d_unknown")
+        self.assertEqual(self.log(e).records[-1]["why"], "unlock_not_verified_at_start")
+        with mock.patch.object(ld, "verify_unlock", lambda *a, **k: (True, None)):
+            self.log(e).append("step_up", 2, "C0", "C1", "forged again", realized_lamports=0)
+            self.rebuild(e)
+        self.assertEqual(self.log(e).records[-1]["why"], "c1_record_at_start_step_down_inputs_unavailable")
+
+    def test_a_lowered_ceiling_at_start_steps_down(self):
+        e = self.q50(funded_lamports=1_000_000_000)
+        self.log(e).append("step_up", 1, "C0", "C1", "x", realized_lamports=0)
+        self.set_ceiling("T1")
+        self.rebuild(e)
+        self.assertEqual(self.log(e).records[-1]["why"], "ceiling_lowered")
+
+    def test_a_c1_record_written_at_runtime_by_someone_else_is_stepped_down(self):
+        e = self.q50(funded_lamports=1_000_000_000)
+        e.ex._ladder_pre_buy(e.ex.now_ms())
+        e.ex.ladder.append("step_up", 1, "C0", "C1", "forged at runtime", realized_lamports=0)
+        self.assertEqual(e.ex._rung(), "C0")
+        e.ex._ladder_pre_buy(e.ex.now_ms())
+        self.assertEqual(self.log(e).records[-1]["why"], "c1_record_not_written_by_this_process")
 
 
-class StepUpTests(LadderCase):
+class StepUpTests(C1Helpers):
     def test_no_step_up_while_inputs_are_not_built_even_with_a_valid_unlock(self):
         e = self.q50()
         with mock.patch.object(ld, "verify_unlock", lambda bot, *a, **k: (True, None)):
+            e.ex._ladder_pre_buy(e.ex.now_ms())
             e.ex.ladder_tick(e.clock())
         self.assertEqual(e.ex._rung(), "C0")
         failed = {n for n, ok, _w in e.ex._last_step_up_eval["checks"] if not ok}
@@ -126,18 +178,48 @@ class StepUpTests(LadderCase):
         e.ex.ladder_tick(e.clock())
         self.assertFalse(hasattr(e.ex, "_last_step_up_eval"))
 
-    def test_when_every_check_passes_it_steps_up_once_and_never_back_up_after_a_step_down(self):
-        e = self.q50()
-        with mock.patch.object(ld, "evaluate_step_up", lambda inp: (True, [("x", True, "")])):
-            e.ex.ladder_tick(e.clock())
-        self.assertEqual(e.ex._rung(), "C1")
-        self.assertEqual(self.log(e).records[-1]["kind"], "step_up")
-        e.ex.ladder_tick(e.clock())  # at C1: trailing input not built -> step down
+    def test_no_step_back_up_after_a_step_down(self):
+        e = self.c1()
+        e.ex._ladder_pre_buy(e.ex.now_ms())  # trailing input not built -> step down
+        self.up(e)
         self.assertEqual(e.ex._rung(), "C0")
-        with mock.patch.object(ld, "evaluate_step_up", lambda inp: (True, [("x", True, "")])):
-            e.ex.ladder_tick(e.clock())
-        self.assertEqual(e.ex._rung(), "C0")  # latched: no automatic step back up
         self.assertEqual([r["kind"] for r in self.log(e).records], ["step_up", "step_down"])
+
+
+class SafetyTests(LadderCase):
+    def test_a_ladder_crash_latches_and_never_skips_an_exit(self):
+        e = self.q50(ceiling="T1")
+        e.open_position()
+        plan = e.plan()
+        with mock.patch.object(ax.ArenaExecutor, "ladder_tick", side_effect=OSError("disk full")):
+            e.at_slot(plan["send_slot"])
+        self.assertTrue(e.sent()[1:])  # the timed sell went out in the same tick
+        self.assertEqual(e.ex.counters.halts[ax.H_LADDER]["why"], "OSError")
+        self.assertEqual(e.ex._halted_arena(), ax.H_LADDER)
+
+    def test_the_trigger_day_is_persisted_before_it_is_set(self):
+        e = self.q50(ceiling="T1")
+        e.ex.counters.day(h.day_key(e.ex.now_ms()))["realized"] = -100_000_000
+        with mock.patch.object(ld.LadderLog, "append", side_effect=OSError("disk full")):
+            e.ex._ladder_guarded(e.ex.ladder_tick, e.ex.now_ms())
+        self.assertIsNone(e.ex._trigger_day)
+        self.assertIn(ax.H_LADDER, e.ex.counters.halts)  # no buys anyway
+
+    def test_marks_never_read_in_the_exit_window_and_at_most_one_per_tick(self):
+        e = self.q50(ceiling="T1")
+        pos = e.open_position()
+        e.ex._marks.clear()
+        calls = []
+        real = e.ex._snapshot
+        e.ex._snapshot = lambda *a, **k: (calls.append(1), real(*a, **k))[1]
+        send = pos["h5"]["plan"]["send_wall_ms"]
+        e.clock.t = send - ax.MARK_EXIT_GUARD_MS
+        e.ex._refresh_marks(e.ex.now_ms())
+        self.assertEqual(calls, [])
+        e.clock.t = send - ax.MARK_EXIT_GUARD_MS - 1
+        e.ex._refresh_marks(e.ex.now_ms())
+        self.assertEqual(len(calls), 1)
+        self.assertLessEqual(ax.MARKS_PER_TICK, 1)
 
 
 class TriggerAndCapTests(LadderCase):
