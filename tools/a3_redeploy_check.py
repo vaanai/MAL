@@ -98,6 +98,10 @@ BOOST_FLAGS = ("boost_disabled", "boost_share_low", "boost_last_slice_early", "b
 OTHER_FIVE = BOOST_FLAGS + ("synthetic_share_high",)
 ALL_HALT_FLAGS = ("pins_changed",) + OTHER_FIVE
 REQUIRED_EVENTS = ("TradeEvent", "BuyEvent", "SellEvent")
+# synthetic_share_high is decided here on a POOLED share, not on the monitor's single-run flag (a single run of ~19 graduations at base rate ~0.2 exceeds 0.35 by chance on ~16% of runs).
+SYN_POOL_K = 4  # newest evaluated records (this run included), ~2 days
+SYN_POOL_MIN_CHECKED = 60  # graduations with a found completing tx the pool needs before it may halt
+SYN_POOL_MAX = mon.SYNTHETIC_MAX  # 0.35: halt only if sum(n_synthetic)/sum(n_checked) is above it
 
 # IDL event -> {IDL field: key in the shadow decoder's row}. "side" is handled apart (is_buy). Checked against the live IDL on 2026-10-21 (see the PR body).
 EVENT_FIELDS: dict[str, dict[str, str]] = {
@@ -183,11 +187,48 @@ def _norm_flags(rec: Json) -> dict[str, dict[str, Any]]:
     return out
 
 
-def triage(rec: Json, pins: Json, prev: Json | None) -> dict[str, Any]:
+def _syn_counts(rec: Json) -> tuple[int, int] | None:
+    syn = ((rec.get("graduations") or {}).get("synthetic")) if isinstance(rec.get("graduations"), Mapping) else None
+    if not isinstance(syn, Mapping):
+        return None
+    n_chk, n_syn = syn.get("n_checked"), syn.get("n_synthetic")
+    if isinstance(n_chk, bool) or isinstance(n_syn, bool) or not isinstance(n_chk, int) or not isinstance(n_syn, int) or n_chk <= 0 or n_syn < 0 or n_syn > n_chk:
+        return None
+    return n_chk, n_syn
+
+
+def pooled_synthetic_flag(rec: Json, history: Sequence[Json]) -> dict[str, Any]:
+    """Pure. The synthetic_share_high decision: the pooled share over the newest SYN_POOL_K evaluated records with run_utc <= this run's (this record included, a later
+    record never counts, one record per run_utc). Halts only if the pool has >= SYN_POOL_MIN_CHECKED checked graduations AND sum(n_synthetic)/sum(n_checked) > SYN_POOL_MAX.
+    Fewer checked: evaluated, not halting (WARN in the reason). The single-run share is printed in the reason as a WARN. Outcome-blind: reads graduation counts only."""
+    cur = str(rec.get("run_utc", ""))
+    by_run: dict[str, tuple[int, int]] = {}
+    for r in history:
+        ru = str(r.get("run_utc", ""))
+        c = _syn_counts(r)
+        if ru and ru < cur and c is not None:
+            by_run[ru] = c
+    own = _syn_counts(rec)
+    if own is not None:
+        by_run[cur] = own
+    pool = [by_run[k] for k in sorted(by_run)[-SYN_POOL_K:]]
+    if not pool:
+        return {"halt": False, "evaluated": False, "reason": "no evaluated record with graduation counts in the pool"}
+    n_chk, n_syn = sum(c for c, _ in pool), sum(x for _, x in pool)
+    single = f"; single-run WARN {own[1]}/{own[0]} = {own[1] / own[0]:.3f}" if own is not None else "; this run has no counts"
+    share = n_syn / n_chk
+    desc = f"pooled PostCompleteBuyEvent {n_syn}/{n_chk} = {share:.3f} over the newest {len(pool)} of K={SYN_POOL_K} evaluated runs (halt above {SYN_POOL_MAX} with >= {SYN_POOL_MIN_CHECKED} checked){single}"
+    if n_chk < SYN_POOL_MIN_CHECKED:
+        return {"halt": False, "evaluated": True, "reason": "WARN only, pool too small: " + desc}
+    return {"halt": share > SYN_POOL_MAX, "evaluated": True, "reason": desc}
+
+
+def triage(rec: Json, pins: Json, prev: Json | None, history: Sequence[Json] = ()) -> dict[str, Any]:
     """Pure. Returns {action: none|redeploy|hard, run_ms, flag_halt_ms, hard_reasons, redeploys}.
     flag_halt_ms is set whenever ANY A3 halt flag is true, or the pins differ (the OLD rule's instant, run_utc): books still under the old rule halt there.
     The pins comparison (pins_diff) runs on EVERY record, whatever `pins_changed` says."""
     flags = _norm_flags(rec)
+    flags["synthetic_share_high"] = pooled_synthetic_flag(rec, history)  # replaces the monitor's single-run flag (the record is not changed)
     run_ms = utc_ms(rec["run_utc"])
     diff = pins_diff(rec, pins)
     any_halt = any(v["halt"] for v in flags.values()) or bool(diff)
@@ -920,7 +961,7 @@ def failclosed_bound_ms(name: str, rec: Json, mon_pins: Json, history: Sequence[
 
 def decide(rec: Json, prev: Json | None, mon_pins: Json, pins: Json, state_path: Path, *, client: Any, http_get: Callable, now_ms: Callable[[], int], job_id: str = "",
            history: Sequence[Json] = (), enum_client: Any = None) -> dict[str, Any]:
-    tri = triage(rec, mon_pins, prev)
+    tri = triage(rec, mon_pins, prev, history)
     v: dict[str, Any] = {"schema": SCHEMA, "run_utc": rec["run_utc"], "action": tri["action"], "verdict": "NONE", "reasons": [], "redeploys": [],
                          "flag_halt_ms": tri["flag_halt_ms"], "halt_at_ms": None, "record_only": False, "job_id": job_id}
     if tri["action"] == "none":
@@ -1161,7 +1202,7 @@ def main(argv: Sequence[str] | None = None, *, client: Any = None, http_get: Cal
             return 11
     try:
         if a.observe:
-            tri = triage(rec, mon_pins, prev)
+            tri = triage(rec, mon_pins, prev, recs[:-1])
             if not tri["redeploys"]:
                 print("no program redeploy in the newest record", file=sys.stderr)
                 return 11

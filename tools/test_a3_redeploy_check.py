@@ -598,13 +598,95 @@ def hard(rec, tmp_path, prev=None):
     return run(rec, tmp_path, prev=prev, client=cl, http=lambda *a: (_ for _ in ()).throw(AssertionError("no http")))
 
 
-@pytest.mark.parametrize("name", list(c.BOOST_FLAGS) + ["synthetic_share_high"])
-def test_boost_and_synthetic_flags_hard_halt_at_flag_instant(name, tmp_path):
+@pytest.mark.parametrize("name", list(c.BOOST_FLAGS))
+def test_boost_flags_hard_halt_at_flag_instant(name, tmp_path):
     rec = make_rec()
     rec["halt"]["flags"][name] = flag(True, reason="x")
     v = hard(rec, tmp_path)
     # B1: a hard flag in the same run as a not-yet-PASSed program redeploy ends the window at the REDEPLOY instant (earlier than the flag's)
     assert v["verdict"] == "HALT" and v["halt_at_ms"] == ms(DEPLOY_PUMP) < ms(RUN_UTC) and v["reasons"][0].startswith(name) and v["flag_halt_ms"] == ms(RUN_UTC)
+
+
+# ---- synthetic_share_high: pooled over the newest K evaluated records (QP-pinned constants c.SYN_POOL_K / SYN_POOL_MIN_CHECKED / SYN_POOL_MAX)
+def syn_rec(run_utc, n_syn, n_chk, single_flag=None, **kw):
+    rec = make_rec(redeploy=False, run_utc=run_utc, **kw)
+    rec["graduations"]["synthetic"] = {"n_checked": n_chk, "n_synthetic": n_syn, "share": n_syn / n_chk}
+    if single_flag is not None:
+        rec["halt"]["flags"]["synthetic_share_high"] = flag(single_flag, reason="single run")
+    return rec
+
+
+def syn_series(counts, tail="2026-10-22T19:10:00Z"):
+    """counts oldest first, the last one is the current run at `tail`; earlier runs 12 h apart. The monitor's single-run flag is set from the share, as the monitor does."""
+    from datetime import datetime, timedelta
+    end = datetime.strptime(tail, "%Y-%m-%dT%H:%M:%SZ")
+    n = len(counts)
+    return [syn_rec((end - timedelta(hours=12 * (n - 1 - i))).strftime("%Y-%m-%dT%H:%M:%SZ"), x, k, single_flag=x / k > 0.35) for i, (x, k) in enumerate(counts)]
+
+
+def syn_flag(recs):
+    return c.triage(recs[-1], MON_PINS, None, recs[:-1])
+
+
+def test_pooled_synthetic_constants():
+    assert (c.SYN_POOL_K, c.SYN_POOL_MIN_CHECKED, c.SYN_POOL_MAX) == (4, 60, 0.35)
+
+
+def test_1022_case_single_run_spike_does_not_halt():
+    recs = syn_series([(3, 20), (0, 20), (7, 20), (8, 19)])
+    assert recs[-1]["halt"]["flags"]["synthetic_share_high"]["halt"] is True  # the monitor's single-run flag fires
+    t = syn_flag(recs)
+    assert t["action"] == "none" and t["flag_halt_ms"] is None and not t["hard_reasons"]  # pooled 18/79 = 0.228
+    f = c.pooled_synthetic_flag(recs[-1], recs[:-1])
+    assert f["evaluated"] and not f["halt"] and "single-run WARN 8/19 = 0.421" in f["reason"]
+
+
+def test_sustained_synthetic_regime_halts():
+    recs = syn_series([(9, 20)] * 4)
+    t = syn_flag(recs)
+    assert t["action"] == "hard" and t["flag_halt_ms"] == ms(recs[-1]["run_utc"]) and t["hard_reasons"][0].startswith("synthetic_share_high")
+
+
+def test_pooled_exactly_at_threshold_does_not_halt():
+    assert not c.pooled_synthetic_flag(*(lambda r: (r[-1], r[:-1]))(syn_series([(7, 20)] * 4)))["halt"]  # 28/80 = 0.35
+
+
+def test_pool_below_min_checked_never_halts():
+    recs = syn_series([(10, 20), (10, 20)])  # 20/40 = 0.5 but only 40 checked
+    f = c.pooled_synthetic_flag(recs[-1], recs[:-1])
+    assert f["evaluated"] and not f["halt"] and f["reason"].startswith("WARN only")
+    assert syn_flag(recs)["action"] == "none"
+    assert c.pooled_synthetic_flag(*(lambda r: (r[-1], r[:-1]))(syn_series([(10, 59)])))["halt"] is False
+
+
+def test_pool_uses_only_newest_k():
+    recs = syn_series([(20, 20), (20, 20), (1, 20), (1, 20), (1, 20), (1, 20)])  # old spikes fall out of the window
+    f = c.pooled_synthetic_flag(recs[-1], recs[:-1])
+    assert not f["halt"] and "4/80" in f["reason"]
+
+
+def test_pool_ignores_records_after_the_current_run():
+    recs = syn_series([(1, 20), (1, 20), (1, 20), (1, 20)])
+    later = syn_rec("2026-10-23T07:10:00Z", 20, 20)
+    cur = recs[2]
+    f = c.pooled_synthetic_flag(cur, recs[:2] + [recs[3], later])
+    assert not f["halt"] and "3/60" in f["reason"]
+    # same run_utc in the history is the record itself: counted once
+    assert "3/60" in c.pooled_synthetic_flag(cur, recs[:3])["reason"]
+
+
+def test_unevaluated_records_are_skipped_in_the_pool():
+    recs = syn_series([(9, 20), (9, 20), (9, 20), (9, 20)])
+    del recs[1]["graduations"]["synthetic"]
+    recs = [syn_rec("2026-10-21T07:10:00Z", 9, 20)] + recs  # a fifth, older, evaluated record fills the window
+    f = c.pooled_synthetic_flag(recs[-1], recs[:-1])
+    assert f["halt"] and "36/80" in f["reason"]
+
+
+def test_no_counts_at_all_is_unevaluated_not_halt():
+    rec = make_rec(redeploy=False)
+    f = c.pooled_synthetic_flag(rec, [])
+    assert f == {"halt": False, "evaluated": False, "reason": f["reason"]}
 
 
 def test_boost_flag_alone_hard_halts(tmp_path):
