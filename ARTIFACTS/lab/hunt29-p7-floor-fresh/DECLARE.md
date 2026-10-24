@@ -1,0 +1,23 @@
+# P7 FLOOR-FRESH: DECLARE (written BEFORE any count or price on fresh-0903)
+
+Written `date -u` = see DECLARE.taken_utc (2026-10-24T00:53Z). Exploration sanity check, NEVER gate evidence. No sentence here or in the result says FLOOR makes money.
+
+## Question
+Does the frozen FLOOR v2 rule (tools/arena_rule_l1.py, registered sha 5e12f8f5; screened in kit form as hunt24 l4-audit/l1_rule.py + l1_rule_tpfix.py, cell `l1`, F0 control in hunt29/p3) hold up on an August/September exploration-pool block it has NEVER been screened on?
+
+## Block (the only one; one cell only, no variant)
+- fresh-0903 = `[2026-09-03T12, 2026-09-09T12)`, 144 h (w1 09-07T12..09-09T12, w2 09-05T12..09-07T12, w3 09-03T12..09-05T12). Ledger row "Fresh confirmation block": exploration pool since the 2026-10-06 ledger move (spent by EXP-012's one read, job #32); "never a confirmation holdout again". Not reserved, not sealed, not owned.
+- Data: hardlink clean view /data/mal/clean-view/fresh-0903/w{1,2,3}/{trades,creates,migrations} (432 files = 144 x 3, plain `*-<hour>.jsonl.zst` names) made from /data2/mal/blocks-clean/fresh-0903 (the `.deduped` files); VIEW.sha256 per worker; all 432 sha256 equal the EXP-012 dedupe manifests. Read through the kit only after the kit PR (claude/kit-add-fresh-0903) adds the root; no kit refusal is bypassed.
+- Considered and unavailable: exp011-0909 (kit word ban `exp011`, kept). FLOOR's own four blocks are excluded (already screened).
+- Prior readers of fresh-0903 (multiplicity, all disclosed in the kit PR): EXP-012 (one read), EXP-014/015/016/017/018/020 screens, EXP-024 H5 read, EXP-025 C1-NF, EXP-027, hunt-2/hunt-4 lines, bars_1m, cap-pick gate replay. The FLOOR rule itself was never run on it.
+
+## The one frozen cell (F0 exactly)
+- Rule: FLOOR v2 `l1` = hunt24 l4-audit `l1_rule_tpfix.py:L1Rule` (sha256 fba5dcc1...), via the P7 copies `l1_rule_p7.py` (sha256 1aaafd84...) and `l1_rule_tpfix_p7.py` (sha256 799d261a...), which differ from the originals by EXACTLY two lines (diff recorded in the PR): the block-key map gains `fresh-0903 -> aux_fresh0903.json` (otherwise a fresh-0903 block name would fall to the `explore` aux table), and the tpfix module imports the p7 copy. Entry, universe, exit, cooldown unchanged. Original l1_rule.py sha256 cefdc4c6....
+- Aux table: `aux_fresh0903.py` (sha256 0b4361df...) built with the same `counts.rd_mig` / `rd_cre` as hunt24 aux.py from fresh-0903 migrations and creates rows, no lookback (like explore-0814). Pools whose `complete` row is before 09-03T12 have no M and are excluded (block-edge exclusion, as at every other block start); reported.
+- Cost/kit: 160,000 lamports per send (DEC-031 Am.8, via run160.py sha256 029dd8c0..., which changes ONLY screen_cfg send), 1.9 s deciding leg, 0.25 SOL stake, rent 0 (Am.2), strand rule `total` deciding, V-map defaults, E1 floor, 360 s pool-age seal, both fail models (flat 15% and pressure, slope scale 1), kit defaults everywhere else, `--workers 2 --min-attempts-per-day 2.0 --declared-stake-sol 0.25 --no-screen-p` (reporting flags only, as F0/hunt28).
+- Run shape: one counts-only pass, then one priced pass, from the head of the P7 worktree branch with the kit-PR change (a single extra block may be priced alone; the kit's group stats `explore-0814 alone` and `september` are n/a). Label "kit PR unreviewed" unless QP OK arrives first.
+
+## The read (all from the kit's results.json, nothing else, no new metric after seeing numbers)
+trades/day (attempts/day), flat and pressure mean SOL per trade, ex-top-3 total (SOL), days positive / days, drop-best-day total (SOL), CI90 lower bound of mean SOL per trade (1,000 draws, seed 1, 5th percentile), flat and pressure SOL/day, impact at 0.25 SOL; per-block split = the three walker segments (09-03T12..09-05T12, ..09-07T12, ..09-09T12) from per-day totals if the kit output carries them, otherwise stated as not available. Compared with F0 in-sample (hunt28 l3 `l1`, 160k): 13.3 trades/day, flat +0.01605, pressure +0.01285 SOL/trade, ex-top-3 +4.405 / +3.490, days+ 18/19 both, drop-best-day +4.407 / +3.493, CI90 lo +0.01118 / +0.00861, impact 1.37% at 0.25 SOL.
+Report as numbers next to F0. No pass/fail verdict word, no money claim, no gate language. Disclosure: the same rule family and kit were tuned on neighbouring data (FLOOR was selected on explore-0814, the September blocks, and the kit's cell family); fresh-0903 lies between them in time, so it is a neighbour, not an independent test. Winner's curse and multiplicity apply.
+Nothing is re-tuned after a count or a price. A refusal or kit failure is reported as such.
