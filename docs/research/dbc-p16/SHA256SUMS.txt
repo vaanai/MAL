@@ -1,0 +1,1 @@
+32a05fc327e9bbafd5bfc087146fdbcf036c7dbfc8f77a340aefe13066e63910  DECLARE.md
