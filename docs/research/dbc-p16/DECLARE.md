@@ -45,3 +45,9 @@ Declared at: 2026-10-24T06:20:15Z
 The fetch order puts the 682 strand pools (pools where a P14 D1/D2 position was open at completion) first, so those pools are a selected, hot subset. D5 PRIMARY sample = migrated pools that are NOT strand
 pools (fetched in sha256(pool) order, a uniform subset of non-strand migrations; the share of all non-strand migrations covered is printed). D5 on all fetched pools (strand pools included) is printed beside it as a sensitivity and never changes a label.
 Erratum written at: 2026-10-24T06:52:08Z
+
+## Erratum 2 (pricing run #1511 was a loader bug; no P&L was read)
+Run #1511 (kit sha in its grad.json) used a sanity check that compared the first swap's implied liquidity with the EvtInitializePool liquidity; the migration adds a second position, so the pool's liquidity at the
+first swap is about 2x the init event's, and 152 of 200 sampled strand pools were wrongly set to `no_data` (D5 attempts 4-5). Only the printed counts were looked at; grad.json of #1511 was not opened. Fix: the
+sanity is now quote-leg vs base-leg liquidity agreement of the first swap, and the pre-first-swap liquidity is the first swap's implied L. No rule, parameter or universe changed. The second run is the priced run.
+Erratum written at: 2026-10-24T07:26:19Z

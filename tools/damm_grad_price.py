@@ -65,11 +65,10 @@ class Ser:
         if not self.ok:
             return
         st = dd.init_state(base64.b64decode(ini["payload_b64"]))
-        x0 = dd.liquidity_from_swap(st["sqrt_price"], tr[0])  # sanity: the init sqrt price and liquidity must reproduce the first swap (else this pool is not used)
-        if x0 is not None and abs(x0[0] / st["liquidity"] - 1) > 1e-3:
+        x0 = dd.liquidity_from_swap(st["sqrt_price"], tr[0])  # sanity: quote-leg and base-leg liquidity of the first swap (from the init sqrt price) must agree; the EvtInitializePool liquidity is NOT used
+        if x0 is not None and abs(x0[0] / x0[1] - 1) > 1e-3:  # (the migration adds a second position, so pool liquidity at the first swap is ~2x the init event's)
             self.ok = False
             return
-        self.mode = int(tr[0]["collect_fee_mode"])
         n = len(tr) + 1
         slot = np.empty(n, np.int64)
         bt = np.empty(n, float)
@@ -99,7 +98,9 @@ class Ser:
                 if x:
                     Lq[k] = x[0]
             prev = int(r["next_sqrt_price"])
-        # L carried (post-print), index 0 = init liquidity
+        # L carried (post-print); index 0 = liquidity implied by the first swap with a quote leg >= 0.01 SOL (init event liquidity if none)
+        if np.isfinite(Lq[1:]).any():
+            Lq[0] = Lq[1:][np.isfinite(Lq[1:])][0]
         idx = np.where(np.isfinite(Lq), np.arange(n), 0)
         np.maximum.accumulate(idx, out=idx)
         self.Lp = Lq[idx]
