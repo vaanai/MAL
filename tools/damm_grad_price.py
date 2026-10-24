@@ -69,6 +69,7 @@ class Ser:
         if x0 is not None and abs(x0[0] / x0[1] - 1) > 1e-3:  # (the migration adds a second position, so pool liquidity at the first swap is ~2x the init event's)
             self.ok = False
             return
+        self.mode = int(tr[0]["collect_fee_mode"])
         n = len(tr) + 1
         slot = np.empty(n, np.int64)
         bt = np.empty(n, float)
