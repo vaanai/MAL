@@ -12,6 +12,11 @@ score_book / summarize seams are replaced, and only for the duration of main(); 
 - A shadow dir feeds the book only if EVERY start record carries q_star_sol == 50.0, rule "H5-BOOSTFLOOR-Q50 v1" and the Q50 rule sha256 (otherwise a Q* = 40 run at the same
   sha could feed the Q50 id). Such a dir is refused by the scorer's own refusal path (refused_dirs, with the reason).
 - pv triggers whose s0_t_recv_ms is missing, not an integer, or below clock_start_ms + 60,000 ms are dropped before score_book (counted, never attempts), with the a2 split counters.
+- THE Q50 READ INSTANT (DEC-031 Amendment 11, QP-RULING-1024-q50-m1): on every `score` run the book's instant under Amendment 11 item 1 (counted trades, not attempts) is computed by
+  tools/arena_h5_q50_instant.instant_rule from the scorer's own BookResult of the run (decision timestamps and the counted / excluded / open / refused class only; no fill, exit, net,
+  leg or P&L field) and, unless --dry-run, recorded ONCE in <ledger>/h5v1q50-boostfloor-a1/q50-read-instant.json (O_CREAT | O_EXCL; item 2's NOT_DECIDABLE end at the end-seal is
+  recorded the same way). The summary line `q50_read_instant` carries its status. The scorer's own read-instant.json is still written by the unmodified scorer: for this book it is an
+  attempt-boundary record only, never the read instant, and no seal opens on it (tools/arena_h5_legs.gate keys the Q50 seal on q50-read-instant.json).
 """
 from __future__ import annotations
 
@@ -25,6 +30,7 @@ import time
 from pathlib import Path
 from typing import Iterator, Sequence
 
+from tools import arena_h5_q50_instant as qi
 from tools import arena_h5_score as sc
 from tools.arena_h5_score_a2 import DROP_KEYS, S0_MARGIN_MS, _bucket, _s0_ok
 
@@ -98,7 +104,8 @@ def q50_bots() -> Iterator[None]:
     before = dict(sc.BOTS)
     if before != A1_BOTS:
         raise RuntimeError(f"scorer BOTS is not the pinned a1 pair: {sorted(before)}")
-    orig_score, orig_summ = sc.score_book, sc.summarize
+    orig_score, orig_summ, orig_write = sc.score_book, sc.summarize, sc.write_ledger
+    seen: dict[str, dict] = {}  # bot -> the registry entry (score_book) and the ledger root / dry-run flag (write_ledger) of this run
 
     def score_book(bot, entry, dirs):
         if bot != Q50_ID:
@@ -107,12 +114,22 @@ def q50_bots() -> Iterator[None]:
         res = orig_score(bot, entry, fdirs)
         for k in DROP_KEYS:
             res.counts[k] += dropped[k]
+        seen[bot] = {"entry": entry}
         return res
+
+    def write_ledger(bot, rows, exclusions, ledger_root, counts, dry_run=False, **kw):
+        out = orig_write(bot, rows, exclusions, ledger_root, counts, dry_run=dry_run, **kw)
+        seen.setdefault(bot, {}).update(ledger_root=Path(ledger_root), dry_run=bool(dry_run))
+        return out
 
     def summarize(bot, res, now_ms):
         out = orig_summ(bot, res, now_ms)
         for k in DROP_KEYS:
             out[k] = res.counts[k]
+        st = seen.get(bot) or {}
+        if "entry" not in st or "ledger_root" not in st:
+            raise RuntimeError(f"{bot}: summarize before score_book and write_ledger: the Q50 read instant cannot be recorded")
+        out["q50_read_instant"] = q50_instant(bot, res, st["entry"], st["ledger_root"], int(now_ms), dry_run=st["dry_run"])
         return out
 
     try:
@@ -120,12 +137,31 @@ def q50_bots() -> Iterator[None]:
         sc.BOTS.update(Q50_BOTS)
         if sc.BOTS != Q50_BOTS or len(sc.BOTS) != 1:
             raise RuntimeError(f"BOTS is not exactly the Q50 id: {sorted(sc.BOTS)}")
-        sc.score_book, sc.summarize = score_book, summarize
+        sc.score_book, sc.summarize, sc.write_ledger = score_book, summarize, write_ledger
         yield
     finally:
-        sc.score_book, sc.summarize = orig_score, orig_summ
+        sc.score_book, sc.summarize, sc.write_ledger = orig_score, orig_summ, orig_write
         sc.BOTS.clear()
         sc.BOTS.update(before)
+
+
+def q50_instant(bot: str, res: sc.BookResult, entry: dict, ledger_root: Path, now_ms: int, *, dry_run: bool) -> dict:
+    """DEC-031 Amendment 11 items 1 and 2 on this run's BookResult (counts and instants only), recorded write-once unless dry_run. Returns the status for the summary line."""
+    cls = qi.classes_from_result(res)
+    r = qi.instant_rule(cls["counted"], cls["open"], start_ms=int(entry["clock_start_ms"]), end_ms=qi.END_SEAL_MS, now_ms=now_ms)
+    out = {"rule": qi.RULE, "status": r["status"], "instant_ms": r["instant_ms"], "boundary_ms": r["boundary_ms"], "file": qi.INSTANT_FILE}
+    n_ref = len(cls["refused"])
+    doc = qi.record_doc(bot, cls, clock_start_ms=int(entry["clock_start_ms"]), end_ms=qi.END_SEAL_MS, now_ms=now_ms,
+                        attempt_definition=sc.attempt_disclosure(n_ref, len(res.decisions) + n_ref))
+    if doc is None:
+        out["record"] = "not decided"
+    elif dry_run:
+        out["record"] = "dry run: not written"
+    else:
+        out["record"] = qi.record(Path(ledger_root) / bot, doc)
+        if out["record"] == "conflict":
+            res.counts["q50_read_instant_conflict"] += 1
+    return out
 
 
 def register_q50(path: Path, *, frozen_sha: str, sockets: int, endpoints: Sequence[str], host: str, clock_start_ms: int | None = None, now_ms: int | None = None) -> dict[str, dict]:
