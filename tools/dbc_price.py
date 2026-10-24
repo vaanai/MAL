@@ -94,7 +94,7 @@ def enable_spent_exploration(root: str) -> None:
 
 FWD_START = datetime(2026, 10, 25, 0, tzinfo=timezone.utc)
 FWD_END = datetime(2026, 11, 1, 0, tzinfo=timezone.utc)  # exclusive
-FWD_ROOT = "/data2/mal/venue-tape-backfill/meteora_dbc_fwd_v1"
+FWD_ROOT = "/data2/mal/venue-tape-backfill/fwdv1/meteora_dbc"  # tools/venue_backfill_dbc.py --out-dir /data2/mal/venue-tape-backfill/fwdv1 writes here
 FWD_ACTIVE: str | None = None
 
 
