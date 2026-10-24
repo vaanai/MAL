@@ -68,7 +68,9 @@ PROFILES: dict[str, dict[str, Any]] = {
         "status_marker": '"attempted"',
         "threshold_keys": ("tools/arena_hour_health.py", "THRESHOLD_KEYS"),
         "base_pins": ["tools/arena_feed.py", "tools/arena_paper.py", "tools/arena_score.py", "tools/arena_rules.py", "tools/arena_rules_v2.py",
-                      "tools/arena_stack.py", "tools/arena_hour_health.py", "scripts/research/arena-rules-v2-job.sh"],
+                      "tools/arena_stack.py", "scripts/research/arena-rules-v2-job.sh"],
+        # tools that run from their OWN commit, not the book's frozen_sha (the hour-health report tool, a P0 count tool): the manifest's tool_refs names it
+        "tool_pins": ["tools/arena_hour_health.py"],
     },
 }
 
@@ -219,6 +221,11 @@ def lint(m: dict, now_s: int | None = None) -> list[tuple[str, bool, str]]:
     pre = m.get("preconditions", list(DEFAULT_PRECONDITIONS))
     ck("M25_preconditions", set(DEFAULT_PRECONDITIONS) <= set(pre) and all(re.fullmatch(r"[a-z0-9-]+", x) for x in pre),
        f"register.sh refuses until PRECONDITION-<x>.ok exists for each of {sorted(pre)} (the defaults cannot be dropped)")
+    prof = PROFILES.get(m["host_profile"], {})
+    trefs = m.get("tool_refs", {})
+    need_t = [t for t in prof.get("tool_pins", []) if t not in trefs]
+    bad_t = [k for k, v in trefs.items() if not HEX40.match(str(v))]
+    ck("M26_tool_refs", not need_t and not bad_t, f"tools run at their own full commit: missing {need_t}, bad {bad_t}" if need_t or bad_t else f"{len(trefs)} tool refs, full shas")
     ck("M21_tests", isinstance(m["tests"], list) and len(m["tests"]) > 0, "tests listed (collected at frozen_sha by `pin`; an empty glob is a FAIL, FLOOR L3)")
     # LLM
     llm = m.get("llm")
@@ -286,7 +293,19 @@ def pin(m: dict, repo: str) -> dict:
         raise Refused(f"frozen_sha {sha} is on no origin branch (DEC-031 §1.2: a commit on origin)")
     on_main = subprocess.run(["git", "-C", repo, "merge-base", "--is-ancestor", sha, "origin/main"]).returncode == 0
     paths = sorted(set(prof["base_pins"]) | set(m.get("pins", [])) | set(m["tests"]))
-    pins = {p: hashlib.sha256(blob_at(repo, sha, p)).hexdigest() for p in paths}
+    pins = {}
+    for p in paths:
+        try:
+            pins[p] = hashlib.sha256(blob_at(repo, sha, p)).hexdigest()
+        except Refused:
+            raise Refused(f"{p} is not in frozen_sha {sha[:12]} (a tool that runs at another commit goes in tool_refs, with its own commit)") from None
+    trefs = m.get("tool_refs", {})
+    tool_pins = {}
+    for p, ref in sorted(trefs.items()):
+        git(repo, "cat-file", "-e", f"{ref}^{{commit}}")
+        if not [x for x in git(repo, "branch", "-r", "--contains", ref).splitlines() if x.strip()]:
+            raise Refused(f"tool ref {ref} for {p} is on no origin branch")
+        tool_pins[p] = {"commit": ref, "sha256": hashlib.sha256(blob_at(repo, ref, p)).hexdigest()}
     # host profile facts at the frozen sha
     reg_path, reg_name = prof["rule_registry"]
     registry = const_at(repo, sha, reg_path, reg_name)
@@ -296,7 +315,7 @@ def pin(m: dict, repo: str) -> dict:
     cad = {k: const_at(repo, sha, p, n) for k, (p, n) in prof["cadence"].items()}
     per_hour = 3_600_000 // (int(cad["tick_ms"]) * int(cad["status_every_ticks"]))
     tk_path, tk_name = prof["threshold_keys"]
-    tkeys = set(const_at(repo, sha, tk_path, tk_name))
+    tkeys = set(const_at(repo, trefs.get(tk_path, sha), tk_path, tk_name))
     unk = sorted(set(m["thresholds"]) - tkeys)
     if unk:
         raise Refused(f"threshold keys {unk} unknown to {tk_path} at {sha[:12]} (known {sorted(tkeys)})")
@@ -307,7 +326,7 @@ def pin(m: dict, repo: str) -> dict:
         if got != want:
             raise Refused(f"{c['path']}:{c['name']} = {got!r} at {sha[:12]}, manifest says {want!r} (DEC text vs code, FLOOR Am.9 item 9)")
         consts.append({"path": c["path"], "name": c["name"], "value": got})
-    return {"schema": SCHEMA, "frozen_sha": sha, "on_origin_main": on_main, "origin_branches": remotes[:5], "pins": pins,
+    return {"schema": SCHEMA, "frozen_sha": sha, "on_origin_main": on_main, "origin_branches": remotes[:5], "pins": pins, "tool_pins": tool_pins,
             "cadence": dict(cad, status_lines_per_hour=per_hour), "constants": consts, "template_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
 
 
@@ -489,6 +508,8 @@ exit "$FAIL"
         f"| thresholds.json sha256 | `{thr_sha}` |", f"| DEC refs | {', '.join(m.get('dec_refs', []))} |",
         "", "## Clocks (computed)", "", "| clock | register deadline | run start | END_H | book end | run job limit s |", "| --- | --- | --- | --- | --- | --- |", *clocks,
         "", "## Pins at frozen_sha (`git show <sha>:<path> | sha256sum`)", "", "| path | sha256 |", "| --- | --- |", *rows,
+        "", "Tools pinned at their own commits:", "", "| path | commit | sha256 |", "| --- | --- | --- |",
+        *[f"| `{p}` | `{v['commit']}` | `{v['sha256']}` |" for p, v in sorted(pins["tool_pins"].items())],
         "", f"Cadence from code: {pins['cadence']}.", f"Constants checked against the manifest: {pins['constants']}.",
         "", "## Hour-health thresholds (Am.6 item 2.3)", "", "| key | value | label |", "| --- | --- | --- |", *thr,
         "", "## Smoke blocking list", "", "```", files["blocking-list.txt"].rstrip(), "```",
@@ -520,6 +541,7 @@ def verify(pack: Path, repo: str) -> list[tuple[str, bool, str]]:
     try:
         now = pin(m, repo)
         diff = sorted(p for p in set(old["pins"]) | set(now["pins"]) if old["pins"].get(p) != now["pins"].get(p))
+        diff += sorted(p for p in set(old.get("tool_pins", {})) | set(now["tool_pins"]) if old.get("tool_pins", {}).get(p) != now["tool_pins"].get(p))
         R.append(("V2_pins_at_frozen_sha", not diff, f"differ: {diff}" if diff else f"{len(now['pins'])} pins match"))
     except Refused as ex:
         R.append(("V2_pins_at_frozen_sha", False, str(ex)))
