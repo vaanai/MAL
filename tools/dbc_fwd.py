@@ -472,3 +472,158 @@ def exit_fire(P: S.Pool, i: int, ss: float, lat_in: float = L.LAT_S) -> tuple[in
         if hit.any():
             fire_slot = int(P.slot[m0 + int(np.argmax(hit))])
     return fire_slot, float(P.bt[i]) + (fire_slot - sd) * ss
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ replay (recorded tape)
+def read_hour_ordered(path: str | os.PathLike, root: str | None = None) -> dict[str, Any]:
+    """One tape hour through the dbc_price data guard, keeping ARRIVAL order of trade and curve_complete rows (dbc_price.read_hour keeps them in two lists).
+    Line classification and `incomplete` are dbc_price.read_hour's, line for line."""
+    rows: list[dict[str, Any]] = []
+    gap, ended = False, False
+    for line in L._zstd_lines(path, root):
+        if line.startswith(b'{"v":1,"venue":"meteora_dbc","type":"backfill_hour_end"'):
+            ended = True
+        elif b"backfill_incomplete" in line and not line.startswith(b'{"v":1,"venue":"meteora_dbc","slot"'):
+            gap = True
+        elif b'"type":"trade"' in line or b'"type": "trade"' in line:
+            d = json.loads(line)
+            if d.get("type") == "trade":
+                rows.append(d)
+        elif b'"curve_complete"' in line:
+            d = json.loads(line)
+            if d.get("type") == "curve_complete":
+                rows.append(d)
+    return {"rows": rows, "incomplete": gap or not ended}
+
+
+def screen_keys(start: datetime, end: datetime, root: str | None = None) -> dict[str, Any]:
+    """The frozen screen on [start, end): trigger keys (dbc_screen.triggers_for, every pool, as cell_attempts calls it) and entry keys (dbc_screen.cell_attempts). Counts only."""
+    D = S.load_exploration(root, log=lambda *_: None, start=start, end=end)
+    A, pid = D["a"], D["pid"]
+    bounds = np.flatnonzero(np.diff(pid)) + 1
+    starts = np.concatenate([[0], bounds])
+    ends = np.concatenate([bounds, [len(pid)]])
+    first_ok_bt = D["start_ts"] + S.WARMUP_HOURS * 3600
+    names = D["pool_names"]
+    trig: list[str] = []
+    s_of: dict[int, int] = {}
+    for s, e in zip(starts, ends):
+        s_of[int(pid[s])] = int(s)
+        if e - s < 3:
+            continue
+        P = S.Pool(D, slice(int(s), int(e)), int(pid[s]))
+        for i in S.triggers_for(CELL, P, first_ok_bt, D["complete_slot"].get(P.pid)):
+            trig.append(key_of(names[P.pid], int(P.slot[i]), float(P.S1[i])))
+    att, refused, st = S.cell_attempts(CELL, D)
+    ent = [key_of(names[a["pid"]], int(A["slot"][s_of[a["pid"]] + a["i"]]), float(A["S1"][s_of[a["pid"]] + a["i"]])) for a in att]
+    cfg_mode: dict[str, int] = {}
+    for c, m, k in zip(A["cfg"], D["d"]["mode"], D["d"]["mode_known"]):
+        if k:
+            cfg_mode.setdefault(D["cfg_names"][int(c)], int(m))
+    return {"trigger_keys": trig, "entry_keys": ent, "refused": refused, "trigger_prints": st["trigger_prints"], "slot_s": D["slot_s"], "good_hours": D["good_hours"],
+            "bad_hours": D["bad_hours"], "start_ts": D["start_ts"], "cfg_mode": cfg_mode, "rows": int(len(pid)), "pools": D["n_pools"]}
+
+
+def replay(start: datetime, end: datetime, root: str | None = None, cfg_summary: str | None = None, log_root: str | None = None) -> dict[str, Any]:
+    """Equivalence replay on recorded hours [start, end) inside [2026-10-14T00, 2026-10-16T04). Runs the screen, then streams the same hours through the engine.
+    Returns counts and md5s only (nothing is priced)."""
+    replay_guard(start, end, root)
+    L.enable_swap3_pricing()
+    if cfg_summary:
+        L.load_config_thresholds(cfg_summary)
+    t0 = time.time()
+    scr = screen_keys(start, end, root)
+    t_screen = time.time() - t0
+    from tools.arena_declog import DecisionLog  # noqa: PLC0415
+
+    log = DecisionLog(log_root) if log_root else None
+    live_ss: dict[int, float] = {}
+    eng = Engine(scr["start_ts"] + S.WARMUP_HOURS * 3600, ss_live=lambda hk: S.slot_s_for(live_ss, hk), ss_screen=lambda hk: S.slot_s_for(scr["slot_s"], hk),
+                 good_hours=set(scr["good_hours"]), screen_policy=True, log=log, meta={"bt_src": "tape_block_time"})
+    if log is not None:
+        log.append(BOOK, int(scr["start_ts"] * 1000), {"type": "start", "book": BOOK, "mode": "replay", "window": [f"{start:%Y-%m-%dT%H}", f"{end:%Y-%m-%dT%H}"],
+                                                       "cell": "m10", "exit_rule": EXIT_RULE, "code_sha256": code_shas(), "schema": SCHEMA})
+    t1 = time.time()
+    hours_streamed = 0
+    for h in L.exploration_hours(start, end):
+        f = L.hour_file(h, root)
+        hk = int(h.timestamp() // 3600)
+        if not os.path.exists(f):
+            continue
+        r = read_hour_ordered(f, root)
+        if r["incomplete"]:
+            continue
+        hours_streamed += 1
+        for row in r["rows"]:
+            eng.on_row(row)
+        sol = [x for x in r["rows"] if x.get("type") == "trade" and L.usable_row(x)]
+        if sol:
+            v = slot_s_of(np.array([L.block_time_s(x) for x in sol]), np.array([int(x["slot"]) for x in sol]))
+            if v is not None:
+                live_ss[hk + 1] = v  # causal: the live policy uses the previous hour's measured slot length
+        if log is not None:
+            log.append(BOOK, int((h.timestamp() + 3600) * 1000) - 1, {"type": "hb", "book": BOOK, "hour": f"{h:%Y-%m-%dT%H}", "decisions": len(eng.decisions_live),
+                                                                       "trigger_prints": eng.stats["trigger_prints"], "sol_rows": eng.stats["sol_rows"]})
+        del r, sol
+    eng.finish()
+    t_engine = time.time() - t1
+    e_trig, e_ent = eng.trig_keys, [x["key"] for x in eng.entries_screen]
+    live = [x["key"] for x in eng.decisions_live]
+    mode_mis = sorted(c for c, m in scr["cfg_mode"].items() if eng.cfg_mode(c) != (m, True))
+    res: dict[str, Any] = {
+        "schema": SCHEMA, "window": [f"{start:%Y-%m-%dT%H}", f"{end:%Y-%m-%dT%H}"], "hours_streamed": hours_streamed, "good_hours": len(scr["good_hours"]), "bad_hours": scr["bad_hours"],
+        "screen": {"trigger_prints": len(scr["trigger_keys"]), "entries": len(scr["entry_keys"]), "md5_triggers": md5_keys(scr["trigger_keys"]), "md5_entries": md5_keys(scr["entry_keys"]),
+                   "refused": scr["refused"], "rows": scr["rows"], "pools": scr["pools"], "seconds": round(t_screen, 1)},
+        "engine": {"trigger_prints": len(e_trig), "entries_screen_policy": len(e_ent), "md5_triggers": md5_keys(e_trig), "md5_entries_screen_policy": md5_keys(e_ent),
+                   "refused_screen_policy": eng.screen_refused, "decisions_live_policy": len(live), "md5_decisions_live_policy": md5_keys(live), "stats": eng.stats,
+                   "seconds": round(t_engine, 1)},
+        "equal_triggers": md5_keys(e_trig) == md5_keys(scr["trigger_keys"]) and len(e_trig) == len(scr["trigger_keys"]),
+        "equal_entries": md5_keys(e_ent) == md5_keys(scr["entry_keys"]) and len(e_ent) == len(scr["entry_keys"]),
+        "diff": {"triggers_screen_only": sorted(set(scr["trigger_keys"]) - set(e_trig))[:20], "triggers_engine_only": sorted(set(e_trig) - set(scr["trigger_keys"]))[:20],
+                 "entries_screen_only": sorted(set(scr["entry_keys"]) - set(e_ent))[:20], "entries_engine_only": sorted(set(e_ent) - set(scr["entry_keys"]))[:20],
+                 "live_vs_screen_entries": {"live_only": len(set(live) - set(scr["entry_keys"])), "screen_only": len(set(scr["entry_keys"]) - set(live))}},
+        "config_mode_mismatch_engine_end_vs_screen": {"n": len(mode_mis), "first": mode_mis[:10]},
+        "code_sha256": code_shas(), "taken_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "note": "Decision equivalence only (keys = pool|slot|post sqrt price). Nothing priced. Not evidence that m10 makes money.",
+    }
+    if log is not None:
+        res["declog"] = {"md5": log.md5(), "head": list(log.verify(BOOK))}
+    return res
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap.add_argument("--replay", action="store_true", help="equivalence replay on recorded exploration hours (required; the live mode is a later PR)")
+    ap.add_argument("--start", required=True, help="YYYY-MM-DDTHH, >= 2026-10-14T00")
+    ap.add_argument("--end", required=True, help="YYYY-MM-DDTHH exclusive, <= 2026-10-16T04")
+    ap.add_argument("--root", default=None)
+    ap.add_argument("--cfg-summary", default=str(Path(__file__).resolve().parent.parent / "docs/research/dbc-p17/data/cfg_summary.json"))
+    ap.add_argument("--out", required=True)
+    ns = ap.parse_args(argv)
+    if not ns.replay:
+        print("REFUSED: only --replay exists in this build (no live feed is started by this tool)", file=sys.stderr)
+        return 2
+    pa = lambda v: datetime.strptime(v, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)  # noqa: E731
+    start, end = pa(ns.start), pa(ns.end)
+    try:
+        replay_guard(start, end, ns.root)
+    except ReplayRefused as e:
+        print(f"REFUSED: {e}", file=sys.stderr)
+        return 3
+    out = Path(S.check_out_dir(ns.out))
+    if out.exists() and any(out.iterdir()):
+        print(f"REFUSED: output dir not empty: {out}", file=sys.stderr)
+        return 4
+    out.mkdir(parents=True, exist_ok=True)
+    res = replay(start, end, ns.root, ns.cfg_summary, str(out / "declog"))
+    txt = json.dumps(res, indent=1, default=float)
+    (out / "equivalence.json").write_text(txt)
+    print(json.dumps({k: res[k] for k in ("window", "equal_triggers", "equal_entries")}))
+    print(json.dumps({"screen": {k: res["screen"][k] for k in ("trigger_prints", "entries", "md5_triggers", "md5_entries")},
+                      "engine": {k: res["engine"][k] for k in ("trigger_prints", "entries_screen_policy", "md5_triggers", "md5_entries_screen_policy", "decisions_live_policy")}}))
+    print("sha256 equivalence.json", hashlib.sha256(txt.encode()).hexdigest())
+    return 0 if (res["equal_triggers"] and res["equal_entries"]) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
