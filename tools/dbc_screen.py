@@ -89,6 +89,7 @@ def load_exploration(root: str | None = None, log=print, start: datetime | None 
     pid_of: dict[str, int] = {}
     cfg_of: dict[str, int] = {}
     hook_pools: set[int] = set()
+    excl: dict[str, set[int]] = {"hook": set(), "xfer": set(), "unmapped": set()}  # P17 reporting only: why a pool is excluded
     complete_slot: dict[int, int] = {}
     n_create = 0
     present, bad = [], []
@@ -118,8 +119,9 @@ def load_exploration(root: str | None = None, log=print, start: datetime | None 
             p = pid_of.setdefault(x["pool"], len(pid_of))
             a["pid"][i] = p
             a["cfg"][i] = cfg_of.setdefault(x["config"], len(cfg_of))
-            if L.hook_row(x) or x.get("config") in L.CFG_XFER:
+            if L.hook_row(x) or x.get("config") in L.CFG_XFER or x.get("config") in L.CFG_UNMAPPED:
                 hook_pools.add(p)
+                excl["hook" if L.hook_row(x) else ("xfer" if x.get("config") in L.CFG_XFER else "unmapped")].add(p)
         cols.append(a)
         sl, bt = a["slot"], a["bt"]
         if len(rows) > 50 and bt.max() > bt.min():
@@ -141,7 +143,7 @@ def load_exploration(root: str | None = None, log=print, start: datetime | None 
     bad_row = badm[perm]
     d = L.derive(A, pid, cfg, ~bad_row)
     D = {"a": A, "d": d, "pid": pid, "bad_row": bad_row, "order_stats": ostats, "start_ts": hours[0].timestamp(), "root": root, "bad_hours": sorted(bad), "good_hours": sorted(present),
-         "slot_s": slot_s, "pool_names": list(pid_of), "n_pools": len(pid_of), "n_configs": len(cfg_of), "hook_pools": hook_pools, "complete_slot": complete_slot, "creates": n_create}
+         "slot_s": slot_s, "pool_names": list(pid_of), "n_pools": len(pid_of), "n_configs": len(cfg_of), "hook_pools": hook_pools, "excl": excl, "cfg_names": list(cfg_of), "complete_slot": complete_slot, "creates": n_create}
     D["hook_row"] = np.isin(pid, np.array(sorted(hook_pools), np.int64))
     return D
 

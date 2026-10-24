@@ -92,6 +92,20 @@ def enable_spent_exploration(root: str) -> None:
     print("SPENT-HOLDOUT EXPLORATION ENABLED (disclosed exploration only): " + root, flush=True)
 
 
+FWD_START = datetime(2026, 10, 25, 0, tzinfo=timezone.utc)
+FWD_END = datetime(2026, 11, 1, 0, tzinfo=timezone.utc)  # exclusive
+FWD_ROOT = "/data2/mal/venue-tape-backfill/meteora_dbc_fwd_v1"
+FWD_ACTIVE: str | None = None
+
+
+def enable_forward_window(root: str = FWD_ROOT) -> None:
+    """Registered forward read (docs/research/dbc-m10-forward/REGISTRATION.md): the guard accepts ONLY hours [2026-10-25T00, 2026-11-01T00) directly under `root`. Called only by
+    tools/dbc_fwd_read.py after its time gate, preflight and marker claim. Every other hour (all earlier data) is refused."""
+    global FWD_ACTIVE
+    FWD_ACTIVE = root
+    print("FORWARD WINDOW ENABLED: data guard accepts only [2026-10-25T00, 2026-11-01T00) under " + root, flush=True)
+
+
 SWAP3_IS_HOOK = True  # legacy (P14): any EvtSwap3 row marks its pool a hook pool
 FOB_EVIDENCE = False  # legacy: fee mode only from the L-agreement inference
 
@@ -104,6 +118,7 @@ def enable_swap3_pricing() -> None:
 
 
 CFG_XFER: set[str] = set()  # P17: configs whose base mint carries a Token-2022 transfer fee (transfer_fee_basis_points > 0): not modelled, their pools are excluded like hook pools
+CFG_UNMAPPED: set[str] = set()  # P17 forward read: configs that could not be fetched/decoded (R4); their pools are excluded and counted
 CFG_THR: dict[str, int] = {}  # P17: config -> migration_quote_threshold (EvtSwap3 rows do not carry migration_threshold; read from the config account)
 
 
@@ -119,6 +134,8 @@ def load_config_thresholds(summary_path: str) -> int:
 
 def window() -> tuple[datetime, datetime, str]:
     """(start, end exclusive, root) the guard currently accepts."""
+    if FWD_ACTIVE is not None:
+        return (FWD_START, FWD_END, FWD_ACTIVE)
     if SPENT_ROOT is not None and not HOLDOUT_READ_ENABLED:
         return (EXPLORE_START, HOLDOUT_END, SPENT_ROOT)
     return (EXPLORE_END, HOLDOUT_END, HOLDOUT_ROOT) if HOLDOUT_READ_ENABLED else (EXPLORE_START, EXPLORE_END, BACKFILL_ROOT)
@@ -310,8 +327,10 @@ def rows_to_arrays(rows: Sequence[dict[str, Any]]) -> dict[str, np.ndarray]:
     a = {k: np.empty(n, np.float64) for k in ("bt", "S1", "ain", "aout", "fee", "qres", "thr")}
     a["slot"] = np.empty(n, np.int64)
     a["side"] = np.empty(n, np.int8)
+    a["sw3"] = np.zeros(n, np.int8)  # 1 = EvtSwap3 row (report only)
     a["fob"] = np.full(n, -1, np.int8)  # Swap3 BUY: fee_on_base_token (1/0); -1 = not available
     for i, r in enumerate(rows):
+        a["sw3"][i] = 1 if str(r.get("event")).startswith("EvtSwap3") else 0
         if r["side"] == "buy" and r.get("fee_on_base_token") is not None and str(r.get("event")).startswith("EvtSwap3"):
             a["fob"][i] = 1 if r["fee_on_base_token"] else 0
         a["slot"][i] = r["slot"]
