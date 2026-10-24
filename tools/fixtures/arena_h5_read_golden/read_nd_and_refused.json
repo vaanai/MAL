@@ -1,0 +1,84 @@
+{
+ "books": {
+  "h5v1-boostfloor-a1": {
+   "attempt_definition": "Attempt definition amended after the clock (DEC-031 Amendment 1, dfe7f018601633921f06668fd1af3aaff7b87bf00f321d1540e10b41f8ab6006, 2026-10-19T03:31:35Z), with counts only in view; refused 0 of 120 triggers.",
+   "bot_id": "h5v1-boostfloor-a1",
+   "counts": {
+    "excluded_by_reason": {
+     "gap_flag": 7
+    },
+    "excluded_share": 0.058333333333333334,
+    "n_attempts": 120,
+    "n_counted": 113,
+    "n_excluded": 7,
+    "n_refused": 0,
+    "n_unpriced_deciding_leg": 0,
+    "refused_by_reason": {}
+   },
+   "deciding_leg": "1p9",
+   "deciding_rent_lamports": 2039280,
+   "deciding_stake": "0.30",
+   "excluded_cap": 0.05,
+   "exit_rule": "v1",
+   "figures": "none: a NOT_DECIDABLE read prints counts only",
+   "provenance": {
+    "read-instant.json": "<sha256>",
+    "tools/arena_h5_cost.py": "<sha256>",
+    "tools/arena_h5_legs.py": "<sha256>",
+    "tools/arena_h5_read.py": "<sha256>",
+    "tools/arena_h5_score.py": "<sha256>",
+    "tools/arena_report_legs.py": "<sha256>",
+    "tools/arena_score.py": "<sha256>"
+   },
+   "read_instant_ms": 1772841600000,
+   "reasons": [
+    "excluded 7 of 120 non-refused attempts = 5.83% is above 5% (DEC-031 section 1.4, Amendment 1): {'gap_flag': 7}"
+   ],
+   "rent_line": "Rent (DEC-031 Amendment 2 items 9 and 10; QP R1 (h)): the H5 books decide RENT-CHARGED (2,039,280 lamports per filled trip). The rent-0 leg is report-only, added after the clock, never deciding. A book that passes only at rent 0 has FAILED its read.",
+   "screen_line": "A PASS is a SCREEN: the best of N arena books, in-sample for selection (winner's curse), not a promotion and not a profit claim. It allows only DEC-031 section 2 steps 1 to 3 (quant-proof's check on the exact files, the owner's OK, a live canary at its DEC's small limits). A stake above the canary's limits needs the confirmation of step 4.",
+   "status": "NOT_DECIDABLE"
+  }
+ },
+ "multiplicity": {
+  "N": 10,
+  "N_source": "supplied by the manager (--n-books)",
+  "books_read_with_verdicts": {
+   "h5v1-boostfloor-a1": "NOT_DECIDABLE"
+  },
+  "c": 3,
+  "c_source": "supplied by the manager (--c); a running count: each confirmation read states its c",
+  "cells_in_total": "NOT SUPPLIED (the manager states the total across hunt23, J3 and cohort 2)",
+  "cells_per_book": "1 deciding decision = a conjunction of 4 sub-cells (1.9 s x 0.30 SOL x flat/pressure x total/sc); 24 cells priced per book (3 stakes x 2 latencies x 4), the other 20 report-only (R8 item 2)",
+  "confirmation_threshold_0.05_over_c": 0.016666666666666666,
+  "holm_note": "report-only; Holm also needs every smaller rank to reject; neither decides on a screen read",
+  "holm_over_reads": [],
+  "n_books_read": 1,
+  "p_by_book": {
+   "h5v1-boostfloor-a1": null
+  },
+  "p_note": "EXP-028 section 3 item 3: sub-cell p = max(p_pct, p_null), p_pct = (1 + #{m_b <= 0}) / (1 + B), p_null = (1 + #{m_b - xbar >= xbar}) / (1 + B), B = 10,000, a fresh default_rng(1) per sub-cell; book p = the max over the four sub-cells; report-only",
+  "per_book_manager_states": [
+   "agent",
+   "DECLARE sha256 and notebook id",
+   "cells declared / killed / surviving",
+   "blocks",
+   "October hours used"
+  ],
+  "plain_line": "If no book has an edge, the chance of at least one screen pass is up to 1 - 0.95^N = 40.13% (rounded up) at N = 10.",
+  "refusals_am1": {
+   "h5v1-boostfloor-a1": {
+    "by_reason": {},
+    "n_refused": 0,
+    "sentence": "Attempt definition amended after the clock (DEC-031 Amendment 1, dfe7f018601633921f06668fd1af3aaff7b87bf00f321d1540e10b41f8ab6006, 2026-10-19T03:31:35Z), with counts only in view; refused 0 of 120 triggers."
+   }
+  },
+  "rent_line": "Rent (DEC-031 Amendment 2 items 9 and 10; QP R1 (h)): the H5 books decide RENT-CHARGED (2,039,280 lamports per filled trip). The rent-0 leg is report-only, added after the clock, never deciding. A book that passes only at rent 0 has FAILED its read.",
+  "screen_line": "A PASS is a SCREEN: the best of N arena books, in-sample for selection (winner's curse), not a promotion and not a profit claim. It allows only DEC-031 section 2 steps 1 to 3 (quant-proof's check on the exact files, the owner's OK, a live canary at its DEC's small limits). A stake above the canary's limits needs the confirmation of step 4.",
+  "screen_read_line": {},
+  "synthetic_class": "no outcome is split by class and no pool class is read (EXP-024 Amendment 9 (d))",
+  "taint_line": "Taints touched (Amendment 3 item 8): (e) siblings forward: h5v1-boostfloor-a1 and h5v2-boostclock-a1 share the trigger and the entry legs and differ in the exit, so the best of them at the read is in-sample. Not touched by this tool's rule: (a) it decides on all four sub-cells. The manager states any other taint."
+ },
+ "refused": {
+  "h5v2-boostclock-a1": "h5v2-boostclock-a1: no recorded read instant (read-instant.json absent): the score has not reached it, nothing is opened"
+ }
+}

@@ -1,0 +1,10 @@
+rc 2
+--- stdout
+
+--- stderr
+usage: prog [-h] --ledger-root LEDGER_ROOT
+            [--bot {h5v1-boostfloor-a1,h5v2-boostclock-a1}]
+            [--read-instant READ_INSTANT] [--i-am-the-read] [--now-ms NOW_MS]
+            [--n-books N_BOOKS] [--c C] [--cells-total CELLS_TOTAL]
+            [--prior-read BOT=VERDICT] [--other-p BOT=P] [--json JSON]
+prog: error: argument --bot: invalid choice: 'h5v1q50-boostfloor-a1' (choose from 'h5v1-boostfloor-a1', 'h5v2-boostclock-a1')
