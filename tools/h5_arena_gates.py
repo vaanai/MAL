@@ -311,6 +311,27 @@ class ParityRecorder:
         self._save()
 
 
+    def on_manual_close(self, mint: str, row: Mapping[str, Any]) -> str | None:
+        """A `manual_close` ledger row (the root rescue, reconciled by the base --mark-closed) closes the open trip at its CHAIN delta: live_net_lamports =
+        the row's pnl_lamports (the wallet's sell delta minus the buy cost minus earlier failed-sell fees, as a timed sell), live_sell_price = the sell's
+        proceeds (wallet delta + fee - rent refunded) per token sold, exit_reason "manual_close". None when applied or nothing to do; else why it cannot be read."""
+        t = self.trips.get(mint)
+        if t is None or t["exit_landed"]:
+            return None
+        vals = {k: row.get(k) for k in ("tokens_sold", "sol_delta_lamports", "fee_lamports", "rent_refunded_lamports", "pnl_lamports")}
+        if any(isinstance(v, bool) or not isinstance(v, int) for v in vals.values()) or vals["tokens_sold"] <= 0:
+            return "manual_close_unreadable"
+        proceeds = vals["sol_delta_lamports"] + vals["fee_lamports"] - vals["rent_refunded_lamports"]
+        bt = row.get("block_time")
+        landed_ms = bt * 1000 if isinstance(bt, int) and not isinstance(bt, bool) else int(row.get("ts_ms") or 0)
+        t.update(exit_landed=True, exit_landed_ms=landed_ms, closed_ms=landed_ms, exit_reason="manual_close", live_net_lamports=vals["pnl_lamports"],
+                 live_sell_price=proceeds / vals["tokens_sold"], sell_fee_lamports=vals["fee_lamports"])
+        self.last_landed_ms = max(self.last_landed_ms or 0, landed_ms)
+        self.seq += 1
+        self._save()
+        return None
+
+
 Runner = Callable[[list[str]], int]
 
 

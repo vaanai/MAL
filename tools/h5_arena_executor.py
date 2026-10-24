@@ -638,7 +638,7 @@ class ArenaExecutor(h.H5Executor):
         if self.exit_mode != book.exit_pin:
             raise SystemExit("exit mode pin was not applied")
         if keypair is not None:
-            why = self._funded_balance_problem()
+            why = self._funded_balance_problem() or self._rescue_problem()
             if why:
                 raise SystemExit(f"arena executor start refused: {why}")
         got = (self.h5.buy_priority_lamports, self.h5.sell_priority_lamports, self.h5.escalated_priority_lamports)
@@ -675,6 +675,31 @@ class ArenaExecutor(h.H5Executor):
         lost = max(0, -int(self.state.realized_lamports))
         f, tol = int(self.funded_lamports or 0), FUNDED_BALANCE_TOLERANCE_LAMPORTS
         return None if f - lost - tol <= bal <= f + tol else "funded_balance_mismatch"
+
+    def _rescue_problem(self) -> str | None:
+        """Live start: (1) a root rescue sent for a mint that is still open in the state (marker <state_dir>/RESCUE-<mint>.json, tools/h5_arena_sell_and_close.py)
+        refuses until the base --mark-closed reconciled it; (2) every reconciled `manual_close` row closes its parity trip at the trip's chain delta (QP #839
+        condition 1: a rescue-closed trip enters parity d and the tie-out, it is never a stuck exit_pending trip)."""
+        sd = Path(self.h5cfg["state_dir"])
+        try:
+            markers = sorted(sd.glob("RESCUE-*.json"))
+        except OSError:
+            return "rescue_marker_unreadable"
+        for m in markers:
+            if m.name[len("RESCUE-"):-len(".json")] in self.state.open:
+                return "rescue_reconcile_pending"
+        if self.gates is None:
+            return None
+        try:
+            rows = [json.loads(x) for x in Path(self.fills.path).read_text().splitlines() if '"manual_close"' in x]
+        except (OSError, ValueError):
+            return "ledger_unreadable_for_manual_close"
+        for r in rows:
+            if isinstance(r, dict) and r.get("kind") == "manual_close":
+                why = self.gates.recorder.on_manual_close(str(r.get("mint")), r)
+                if why:
+                    return why
+        return None
 
     def _parity_state(self, now: int) -> dict[str, Any]:
         """The parity tool's state.json: a stamp only for a read that succeeded just now; a missing stamp is P7 (no buy). The H5 executor has no hash-chained
@@ -1106,7 +1131,7 @@ class ArenaExecutor(h.H5Executor):
 
 
 _ARENA_CLASS = ArenaExecutor  # the class the tripwire inspects (a name bound at import, so rebinding ArenaExecutor cannot hide a removed override)
-GUARD_METHODS = ("h5", "_tier_path", "_live_gate", "prime_feed_start", "_live_buy", "_send", "_send_guarded", "_note_send", "write_exit_gaps", "_budget_stop", "_balance_refusal", "committed_loss_refusal", "_hard_refusal",
+GUARD_METHODS = ("h5", "_tier_path", "_live_gate", "prime_feed_start", "_live_buy", "_send", "_send_guarded", "_note_send", "write_exit_gaps", "_rescue_problem", "_budget_stop", "_balance_refusal", "committed_loss_refusal", "_hard_refusal",
                  "_parity_state", "decide_row", "intent_tick", "_latch", "exit_tick", "_fire_sell", "_finish_buy", "_resolve_expired", "_seal_reason")
 
 

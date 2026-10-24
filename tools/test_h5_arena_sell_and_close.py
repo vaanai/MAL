@@ -39,6 +39,7 @@ def position(user: Pubkey, **kw) -> dict:
 def setup(tmp: Path, kp: Keypair, pos: dict | None = None, *, open_: bool = True, raw: str | None = None, **kw) -> argparse.Namespace:
     sd = tmp / "state"
     (sd / "live").mkdir(parents=True, exist_ok=True)
+    (sd / rs.LOCK_NAME).touch()  # the executor created its lock file (the rescue never creates it)
     st = rs.live_state_path(str(sd))
     if raw is not None:
         st.write_text(raw)
@@ -93,11 +94,67 @@ def test_dry_run_builds_the_pinned_shape_and_sends_nothing(tmp_path):
     assert t.message.account_keys[0] == kp.pubkey()
 
 
-def test_send_confirms_and_prints_the_reconcile_step(tmp_path):
+def test_send_confirms_writes_the_marker_and_prints_the_reconcile_step_loudly(tmp_path):
     rc, rpc, lines, _ = go(tmp_path, send=True)
     assert rc == 0 and len(rpc.sent) == 1 and rpc.sent[0] == rpc.simulated[0]
-    assert any(x.startswith("signature: ") for x in lines)
-    assert any("--mark-closed" in x for x in lines)
+    sig = [x for x in lines if x.startswith("signature: ")][0].split(": ", 1)[1]
+    assert any("--mark-closed" in x and sig in x for x in lines)
+    assert any("REFUSES TO START" in x for x in lines)
+    m = json.loads((tmp_path / "state" / f"RESCUE-{MINT}.json").read_text())
+    assert (m["mint"], m["signature"]) == (MINT, sig)
+
+
+def test_dry_run_writes_no_marker(tmp_path):
+    go(tmp_path)
+    assert not list((tmp_path / "state").glob("RESCUE-*"))
+
+
+def test_an_open_position_with_a_pending_sell_is_refused(tmp_path):
+    kp = Keypair()
+    args = setup(tmp_path, kp)
+    st = rs.live_state_path(args.state_dir)
+    d = json.loads(st.read_text())
+    d["pending"] = {MINT: {"kind": "sell", "signature": "x"}}
+    st.write_text(json.dumps(d))
+    with pytest.raises(pw.Refuse, match="PENDING .*in-flight. sell"):
+        rs.run(args, SellRpc(kp.pubkey()), is_active=lambda u: False, out=lambda s: None, now_ms=lambda: LATE, check_location=False, sell_pin=lambda: None)
+
+
+def test_the_executor_lock_is_held_for_the_run_and_a_held_lock_refuses(tmp_path):
+    import fcntl
+    kp = Keypair()
+    args = setup(tmp_path, kp)
+    lock = Path(args.state_dir) / rs.LOCK_NAME
+    fd = os.open(lock, os.O_RDWR)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        with pytest.raises(pw.Refuse, match="lock is held"):
+            rs.run(args, SellRpc(kp.pubkey()), is_active=lambda u: False, out=lambda s: None, now_ms=lambda: LATE, check_location=False, sell_pin=lambda: None)
+    finally:
+        os.close(fd)
+    seen = []
+
+    def probe(*a, **k):  # while the tool runs, the lock is taken
+        fd2 = os.open(lock, os.O_RDWR)
+        try:
+            fcntl.flock(fd2, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            seen.append("free")
+        except OSError:
+            seen.append("held")
+        finally:
+            os.close(fd2)
+        return LATE
+    rs.run(args, SellRpc(kp.pubkey()), is_active=lambda u: False, out=lambda s: None, now_ms=probe, check_location=False, sell_pin=lambda: None)
+    assert seen and set(seen) == {"held"}
+
+
+def test_a_missing_lock_file_is_refused_and_never_created(tmp_path):
+    kp = Keypair()
+    args = setup(tmp_path, kp)
+    (Path(args.state_dir) / rs.LOCK_NAME).unlink()
+    with pytest.raises(pw.Refuse, match="lock .* cannot be opened"):
+        rs.run(args, SellRpc(kp.pubkey()), is_active=lambda u: False, out=lambda s: None, now_ms=lambda: LATE, check_location=False, sell_pin=lambda: None)
+    assert not (Path(args.state_dir) / rs.LOCK_NAME).exists()
 
 
 def test_levels_set_min_out_from_the_executors_ladder(tmp_path):
@@ -211,12 +268,17 @@ def test_key_location_is_checked_by_default(tmp_path):
         rs.run(args, SellRpc(kp.pubkey()), is_active=lambda u: False, out=lambda s: None, now_ms=lambda: LATE, sell_pin=lambda: None)
 
 
-def test_main_refuses_non_root(monkeypatch, capsys):
-    monkeypatch.delenv("MAL_LIVE_TEST", raising=False)
+def test_main_refuses_non_root_and_has_no_test_bypass(monkeypatch, capsys):
     if os.geteuid() == 0:
         pytest.skip("running as root")
-    assert rs.main(["--book-id", Q50, "--mint", MINT]) == 1
-    assert "root-only" in capsys.readouterr().err
+    for v in (None, "1"):
+        if v is None:
+            monkeypatch.delenv("MAL_LIVE_TEST", raising=False)
+        else:
+            monkeypatch.setenv("MAL_LIVE_TEST", v)  # the old bypass: gone from the shipped tool
+        assert rs.main(["--book-id", Q50, "--mint", MINT]) == 1
+        assert "root-only" in capsys.readouterr().err
+    assert "MAL_LIVE_TEST" not in Path(rs.__file__).read_text()
 
 
 def test_runs_as_a_file_from_the_pinned_root_without_tools_on_the_path(tmp_path):

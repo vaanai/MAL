@@ -22,8 +22,11 @@ mint's canonical pool; no token balance; no V-priced quote for a guarded sell; t
 Run it from the pinned arena tree, with the executor STOPPED (the base `--status` / Wind-down first):
     sudo /usr/local/lib/mal-h5-arena-exec/venv/bin/python -I -B -u /usr/local/lib/mal-h5-arena-exec/current/tools/h5_arena_sell_and_close.py \\
         --book-id <BOT> --mint <MINT> [--last-level | --emergency] [--send]
-After a send, the position is reconciled in the executor's state by the manager (the base `--mark-closed MINT --sig SIG` reconcile, with the unit
-stopped); this tool never edits the state file.
+The executor's flock (<state_dir>/h5-executor.lock) is held for the whole run. A mint with an in-flight (pending) sell is refused. After a send the tool
+writes <state_dir>/RESCUE-<mint>.json and prints a loud reconcile line: the arena executor refuses to start (rescue_reconcile_pending) while that mint is
+still open in its state. The reconcile is the base `h5_executor --mark-closed MINT --sig SIG` with the arena config, as mal-live, unit stopped (it books the
+chain delta in the state and ledgers `manual_close`); on its next start the arena executor closes the parity trip from that row (live_net = the trip's chain
+delta, exit_reason manual_close), and tools/arena_tieout_ledger.py exports it as a closed trip. This tool never edits the state file.
 """
 from __future__ import annotations
 
@@ -81,6 +84,8 @@ def read_position(state_path: Path, mint: str) -> dict[str, Any]:
     except (OSError, ValueError):
         raise Refuse("the executor's live state cannot be read as JSON") from None
     pos = (st.get("open") or {}).get(mint) if isinstance(st, dict) else None
+    if isinstance(pos, dict) and ((st.get("pending") or {}).get(mint)):
+        raise Refuse("this position has a PENDING (in-flight) sell in the executor's state: a rescue would race it; resolve the pending sell first")
     if not isinstance(pos, dict):
         pend = (st.get("pending") or {}).get(mint) if isinstance(st, dict) else None
         raise Refuse("this mint is a PENDING record, not an open position: reconcile the buy first" if pend else
@@ -163,6 +168,36 @@ def send_and_confirm(rpc: Callable, tx_b64: str, sleep: Callable[[float], None] 
         waited += 1.0
 
 
+LOCK_NAME = "h5-executor.lock"  # the executor's own single-instance lock (h5_executor.acquire_lock), in its state_dir
+RESCUE_MARKER_PREFIX = "RESCUE-"  # <state_dir>/RESCUE-<mint>.json after a send: the arena executor refuses to start while that mint is still open in its state
+
+
+def hold_executor_lock(state_dir: str) -> int:
+    """The executor's flock, non-blocking, held for the whole run, so the unit cannot start between the unit check and the send. The file must already exist
+    (the executor created it as mal-live); it is never created here, so a root-owned lock file can never lock the executor out."""
+    try:
+        fd = os.open(Path(state_dir) / LOCK_NAME, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
+    except OSError:
+        raise Refuse(f"the executor's lock {Path(state_dir) / LOCK_NAME} cannot be opened (missing or a symlink): no executor state to rescue") from None
+    try:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        raise Refuse("the executor's lock is held: an executor (or another rescue) is running; stop it first") from None
+    return fd
+
+
+def write_rescue_marker(state_dir: str, mint: str, sig: str, fill: dict[str, Any] | None, now_ms: int) -> Path:
+    p = Path(state_dir) / f"{RESCUE_MARKER_PREFIX}{mint}.json"
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps({"mint": mint, "signature": sig, "ts_ms": now_ms, "fill": fill,
+                               "next": "h5_executor --mark-closed MINT --sig SIG with the arena config, as mal-live, unit stopped"}, sort_keys=True))
+    os.chmod(tmp, 0o644)
+    os.replace(tmp, p)
+    return p
+
+
 def run(args: argparse.Namespace, rpc: Callable, *, is_active: Callable[[str], bool] = hs.unit_running, out: Callable[[str], None] = print,
         now_ms: Callable[[], int] = lambda: int(time.time() * 1000), sleep: Callable[[float], None] = time.sleep, check_location: bool = True,
         sell_pin: Callable[[], str | None] = ax.sell_pin_problem) -> int:
@@ -180,6 +215,15 @@ def run(args: argparse.Namespace, rpc: Callable, *, is_active: Callable[[str], b
     why = sell_pin()
     if why:
         raise Refuse(f"the pinned sell builder differs from the code on disk ({why}); nothing is built")
+    lock_fd = hold_executor_lock(args.state_dir)
+    try:
+        return _run_locked(args, rpc, book, mint, mint_pk, level, out=out, now_ms=now_ms, sleep=sleep, check_location=check_location)
+    finally:
+        os.close(lock_fd)
+
+
+def _run_locked(args: argparse.Namespace, rpc: Callable, book: ax.Book, mint: str, mint_pk: Pubkey, level: int, *, out: Callable[[str], None],
+                now_ms: Callable[[], int], sleep: Callable[[float], None], check_location: bool) -> int:
     pos = read_position(live_state_path(args.state_dir), mint)
     why = book_rule_refusal(pos, now_ms(), args.emergency)
     if why:
@@ -210,14 +254,16 @@ def run(args: argparse.Namespace, rpc: Callable, *, is_active: Callable[[str], b
     out(f"signature: {sig}")
     fill = hs.fetch_fill(rpc, sig, {"tokens": acct["amount"], "base_ata_lamports": acct["lamports"], "wsol_lamports": wsol_lamports}, sleep)
     out("fill: unavailable (confirmed; read it from the signature)" if fill is None else "fill: " + " ".join(f"{k}={v}" for k, v in fill.items()))
-    out("next: the manager reconciles the position in the executor's state (base --mark-closed with --sig) before the unit starts again")
+    marker = write_rescue_marker(args.state_dir, mint, sig, fill, now_ms())
+    out("!" * 100)
+    out(f"!! THE EXECUTOR'S STATE STILL SHOWS {mint} AS OPEN. The arena executor REFUSES TO START (rescue_reconcile_pending) until it is reconciled:")
+    out(f"!!   sudo -u mal-live <venv>/bin/python -B -m tools.h5_executor --config /etc/mal-h5-arena/live.json --mark-closed {mint} --sig {sig}")
+    out(f"!! marker: {marker}")
+    out("!" * 100)
     return 0
 
 
 def main(argv: list[str] | None = None) -> int:
-    if os.environ.get("MAL_LIVE_TEST") == "1" and os.geteuid() == 0:
-        print("MAL_LIVE_TEST is not allowed as root", file=sys.stderr)
-        return 1
     pw.harden_process()
     ap = argparse.ArgumentParser(description=__doc__, allow_abbrev=False, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--book-id", required=True)
@@ -230,12 +276,12 @@ def main(argv: list[str] | None = None) -> int:
     g.add_argument("--emergency", action="store_true", help="min_out = 1 lamport; only from the book's deadline (s0 + 400 s)")
     ap.add_argument("--send", action="store_true", help="send it (the default is to simulate only)")
     args = ap.parse_args(argv)
-    if os.geteuid() != 0 and os.environ.get("MAL_LIVE_TEST") != "1":
+    if os.geteuid() != 0:  # no test bypass in the shipped tool: tests call run() with their own stand-ins
         print("refusing: the arena sell-and-close is root-only", file=sys.stderr)
         return 1
     print(f"h5_arena_sell_and_close sha256={hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}", file=sys.stderr)
     try:
-        return run(args, pw.Rpc(pw.load_rpc_url(args.rpc_env)), check_location=os.environ.get("MAL_LIVE_TEST") != "1")
+        return run(args, pw.Rpc(pw.load_rpc_url(args.rpc_env)))
     except SystemExit as e:
         print(pw.redact(str(e.code)), file=sys.stderr)
         return 1
