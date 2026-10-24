@@ -167,23 +167,26 @@ def test_v2_preflight_and_marker_rules():
         H.MARKER, H.MARKER_V1 = old_m, old_m1
 
 
-def test_one_look_marker_is_global_and_atomic():
-    import tempfile
+def test_one_look_marker_is_global_and_atomic(tmp_path, monkeypatch):
+    # Hermetic: every marker path used here is under tmp_path; the real marker is never read, created or removed.
+    import os
     from tools import dbc_holdout_read as H
-    d = Path(tempfile.mkdtemp())
-    m = str(d / "HOLDOUT_READ_DONE")
+    real_v2, real_v1 = H.MARKER, H.MARKER_V1
+    assert real_v2.endswith('HOLDOUT_READ_DONE_v2') and real_v1.endswith('HOLDOUT_READ_DONE')  # names only, no filesystem access
+    m = str(tmp_path / "HOLDOUT_READ_DONE_v2")
+    # atomic claim: O_CREAT|O_EXCL, second claim fails
+    seen = []
+    real_open = os.open
+    monkeypatch.setattr(H.os, "open", lambda path, flags, *a, **k: (seen.append((str(path), flags)), real_open(path, flags, *a, **k))[1])
     assert H.claim_marker(m) is True
     assert H.claim_marker(m) is False
-    old = H.MARKER
-    H.MARKER = m
-    try:
-        fresh = Path(tempfile.mkdtemp()) / "fresh-out"  # a NEW --out must not allow a second look
-        assert H.run(fresh, root=str(_fake_root())) == 4  # preflight ok, existing v2 marker refuses
-        assert L.HOLDOUT_READ_ENABLED is False and not fresh.exists()
-    finally:
-        H.MARKER = old
-    # Path check only. Until 2026-10-24 this also asserted the real v2 marker did not exist; #1494 has since consumed the one look, so the real marker now exists (P17, QP swap3 ruling).
-    assert old.endswith('HOLDOUT_READ_DONE_v2')
+    assert seen and all(f & os.O_CREAT and f & os.O_EXCL for _, f in seen)
+    monkeypatch.undo()
+    # run() refuses on the (tmp) v2 marker even for a NEW --out
+    monkeypatch.setattr(H, "MARKER", m)
+    fresh = tmp_path / "fresh-out"
+    assert H.run(fresh, root=str(_fake_root())) == 4
+    assert L.HOLDOUT_READ_ENABLED is False and not fresh.exists()
 
 
 def test_verdict_p5():
