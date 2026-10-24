@@ -172,3 +172,9 @@ def liquidity_from_swap(prev_sqrt: int, r: dict[str, Any], wsol_is_b: bool = Tru
     if q == 0 or b == 0:
         return None
     return q * 2**128 / ds, b * prev_sqrt * s1 / ds
+
+
+def init_state(payload: bytes) -> dict[str, int]:
+    """EvtInitializePool payload (332 bytes): fixed tail read from the end (verified: sqrt_price and liquidity reproduce the first swap's quote and base legs to 1e-7)."""
+    o = len(payload)
+    return {"sqrt_price": int.from_bytes(payload[o - 59:o - 43], "little"), "liquidity": int.from_bytes(payload[o - 75:o - 59], "little")}

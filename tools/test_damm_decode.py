@@ -46,6 +46,18 @@ class Damm(unittest.TestCase):
         for r in rows:
             self.assertEqual(r["side"], "buy" if r["trade_direction"] == 1 else "sell")
 
+    def test_init_state_reproduces_first_swap(self):
+        import base64
+        for p in load():
+            m = dd.init_pool_from_migration_tx(p["migtx"])
+            rows = [r for tx in p["txs"] for r in dd.decode_tx(tx, p["pool"], m["wsol_is_b"])]
+            ini = next(r for r in rows if r.get("event") == "EvtInitializePool")
+            st = dd.init_state(base64.b64decode(ini["payload_b64"]))
+            first = next(r for r in rows if r["type"] == "trade")
+            lq, lb = dd.liquidity_from_swap(st["sqrt_price"], first)
+            self.assertAlmostEqual(lq / st["liquidity"], 1.0, places=5)
+            self.assertAlmostEqual(lb / st["liquidity"], 1.0, places=5)
+
 
 if __name__ == "__main__":
     unittest.main()
