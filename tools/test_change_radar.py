@@ -437,7 +437,9 @@ def _utc(text):
 
 def test_pinned_seals_file_floor_window():
     seals = cr.load_seals(cr.DEFAULT_SEALS)
-    assert seals["seals"] == [{"source": "arena", "lo": _utc("2026-10-22T21:00:00Z"), "hi": _utc("2026-10-26T21:00:00Z")}]
+    assert seals["seals"] == [{"source": "arena", "lo": _utc("2026-10-22T21:00:00Z"), "hi": _utc("2026-10-26T21:00:00Z")},
+                              {"source": "venue:meteora_dbc", "lo": _utc("2026-10-25T00:00:00Z"), "hi": _utc("2026-11-01T00:10:00Z")},
+                              {"source": "venue:launchlab", "lo": _utc("2026-10-17T00:00:00Z"), "hi": _utc("2026-10-24T00:00:00Z")}]
     assert cr.source_disabled(seals, "arena", _utc("2026-10-26T20:59:59Z"))
     assert not cr.source_disabled(seals, "arena", _utc("2026-10-26T21:00:00Z"))
     assert not cr.source_disabled(seals, "venue:meteora_dbc", NOW)
@@ -445,6 +447,10 @@ def test_pinned_seals_file_floor_window():
         ["2026-10-22", "2026-10-23", "2026-10-26"]
     assert cr.day_sealed(seals, "arena", "2026-10-24") and cr.day_sealed(seals, "arena", "2026-10-25")
     assert not cr.day_sealed(seals, "venue:meteora_dbc", "2026-10-23")
+    dbc = [f"2026-10-{i}" for i in range(24, 32)] + ["2026-11-01", "2026-11-02"]
+    assert [d for d in dbc if cr.day_sealed(seals, "venue:meteora_dbc", d)] == dbc[1:-1]  # 10-25 .. 11-01 (11-01 overlaps 00:00-00:10)
+    ll = [f"2026-10-{i}" for i in range(16, 26)]
+    assert [d for d in ll if cr.day_sealed(seals, "venue:launchlab", d)] == [f"2026-10-{i}" for i in range(17, 24)]
 
 
 def test_sealed_days_never_opened_and_never_recorded(tmp_path):
@@ -463,6 +469,33 @@ def test_sealed_days_never_opened_and_never_recorded(tmp_path):
     assert [r["day"] for r in recs] == ["2026-10-20", "2026-10-21", "2026-10-27"]
     assert set(opened) == {"2026-10-20", "2026-10-21", "2026-10-27"}
     assert skipped == [f"arena 2026-10-{i} sealed" for i in range(22, 27)]
+
+
+def test_venue_sealed_days_never_opened(tmp_path):
+    venue = tmp_path / "venue"
+    for i in range(16, 32):
+        write_day(venue / "launchlab", f"2026-10-{i}", 24, ['{"type": "create"}'])
+        write_day(venue / "meteora_dbc", f"2026-10-{i}", 24, dbc_rows("Swap2", 1))
+    write_day(venue / "meteora_dbc", "2026-11-01", 24, dbc_rows("Swap2", 1))
+    write_day(venue / "meteora_dbc", "2026-11-02", 24, dbc_rows("Swap2", 1))
+    opened = []
+
+    def counter(p):
+        opened.append((p.parent.name, p.name[5:15]))
+        return cr.count_venue_file(p)
+
+    srcs = {k: (root, counter) for k, (root, _) in cr.tape_sources(None, venue).items()}
+    skipped: list[str] = []
+    recs = cr.stage_tapes(srcs, set(), _utc("2026-11-03T01:00:00Z"), 40, [], cr.load_seals(cr.DEFAULT_SEALS), skipped)
+    got = {(r["source"], r["day"]) for r in recs}
+    ll_sealed = {f"2026-10-{i}" for i in range(17, 24)}
+    dbc_sealed = {f"2026-10-{i}" for i in range(25, 32)} | {"2026-11-01"}
+    assert not any(v == "launchlab" and d in ll_sealed for v, d in opened)
+    assert not any(v == "meteora_dbc" and d in dbc_sealed for v, d in opened)
+    assert ("venue:launchlab", "2026-10-16") in got and ("venue:launchlab", "2026-10-24") in got
+    assert ("venue:meteora_dbc", "2026-10-24") in got and ("venue:meteora_dbc", "2026-11-02") in got
+    assert not any(d in ll_sealed for s, d in got if s == "venue:launchlab") and not any(d in dbc_sealed for s, d in got if s == "venue:meteora_dbc")
+    assert len(skipped) == len(ll_sealed) + len(dbc_sealed)
 
 
 def test_arena_disabled_before_seal_end_not_even_listed(tmp_path, monkeypatch, capsys):
