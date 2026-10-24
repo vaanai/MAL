@@ -7,6 +7,7 @@ Run: /data/mal/venv/bin/python3 -m pytest -q tools/test_arena_h5_books.py
 
 from __future__ import annotations
 
+import collections
 import json
 from pathlib import Path
 from unittest import mock
@@ -16,6 +17,7 @@ from tools import arena_h5_legs as L
 from tools import arena_h5_q50_instant as qi
 from tools import arena_h5_read as R
 from tools import arena_h5_score as h5s
+from tools import test_arena_h5_legs as TL
 from tools import test_arena_h5_read as TR
 
 Q50 = qi.Q50_ID
@@ -256,6 +258,66 @@ class D3(Base):
         self.assertIn("BOOKS SIDE BY SIDE", out)
         self.assertIn(f"shared pools {A2V1}|{Q50}: 100", out)
         self.assertNotIn("_pools", json.loads(js.read_text())["books"][Q50])
+
+
+
+class Dec032Figure(TL.Base):
+    """The legs fixture (hand-picked worst-in-slot states, tools/test_arena_h5_legs.py) priced for the Q50 id, with an Am.11 record at the fixture's instant (legs reads the record; it
+    does not recompute the instant, the read tool does)."""
+
+    def q50_book(self, write_strips=True):
+        pools = TL.full_fixture_pools()
+        rows = []
+        for t, o, st in pools:
+            pr = h5s.price_trade(Q50, o, t, st, None, None, TL.START)
+            rows += h5s.ledger_rows(Q50, o, t, pr, TL.START, None, None)
+        h5s.write_ledger(Q50, rows, [], self.ledger, collections.Counter())
+        ri = (max(x["decision_ms"] for x in rows) // h5s.DAY_MS + 1) * h5s.DAY_MS
+        qi.record(self.ledger / Q50, {"bot_id": Q50, "rule": qi.RULE, "status": qi.READ, "read_instant_ms": ri, "boundary_ms": ri, "clock_start_ms": 0, "end_seal_ms": ri,
+                                      "counted_before": len(pools), "excluded_before": 0, "attempts_before": len(pools), "open_before_read": 0, "refused_before": 0,
+                                      "refused_by_reason_before": {}, "attempt_definition": "fixture"})
+        if write_strips:
+            self.shadow.mkdir(parents=True, exist_ok=True)
+            with open(self.shadow / "h5-shadow-2027-01-15T08.jsonl", "w") as fh:
+                fh.write(json.dumps(TL.START) + "\n")
+                for _, _, st in pools:
+                    fh.write(json.dumps(st) + "\n")
+        books = self.root / "a3-books.json"
+        books.write_text(V2_TEXT)
+        return ri, B.load_books(books)
+
+    def test_the_figure_is_the_lowest_deciding_sub_cell_of_the_lower_leg(self):
+        ri, books = self.q50_book()
+        rep = L.build_report(Q50, self.ledger, read_instant_ms=ri, i_am_the_read=True, shadow_dirs=[self.shadow], now_ms=ri + 1000, books=books)
+        g = rep["dec032_worst_in_slot"]
+        self.assertTrue(g["measured"])
+        cl = {k: v for k, v in rep["books"]["0.30"]["worst_in_slot"]["canary_lower"].items() if "_1p9_" in k}
+        self.assertEqual(sorted(cl), sorted(["flat_1p9_total", "press_1p9_total", "flat_1p9_sc", "press_1p9_sc"]))
+        self.assertEqual(g["wis_mean_sol"], min(v["mean_sol"] for v in cl.values()))
+        self.assertEqual(g["wis_ci90_lo_sol"], min(v["ci90_lo_sol"] for v in cl.values()))
+        self.assertEqual(g["not_proposed_mean_le_0"], g["wis_mean_sol"] <= 0)
+        w = rep["books"]["0.30"]["worst_in_slot"]
+        for k in cl:  # the lower of the two legs, cell by cell (#747 semantics)
+            self.assertLessEqual(cl[k]["mean_sol"], w["cells"][k]["mean_sol"])
+            self.assertLessEqual(cl[k]["mean_sol"], w["no_guard_rescue"]["cells"][k]["mean_sol"])
+        self.assertIn("DEC-032 WORST-IN-SLOT FIGURE", L.render(rep))
+
+    def test_not_measured_means_no_proposal_and_a1_mode_has_no_figure(self):
+        ri, books = self.q50_book(write_strips=False)
+        rep = L.build_report(Q50, self.ledger, read_instant_ms=ri, i_am_the_read=True, now_ms=ri + 1000, books=books)
+        g = rep["dec032_worst_in_slot"]
+        self.assertEqual((g["measured"], g["proposal"]), (False, "no proposal (worst-in-slot not measured)"))
+        self.assertIn("no --shadow-dir", g["why"])
+
+    def test_mean_at_or_below_zero_is_not_proposed(self):
+        mk = lambda m, lo: {"mean_sol": m, "ci90_lo_sol": lo, "leg_of_mean": "worst_in_slot"}  # noqa: E731
+        cells = {"flat_1p9_total": mk(0.01, -0.001), "press_1p9_total": mk(0.0, -0.002), "flat_1p9_sc": mk(0.02, 0.001), "press_1p9_sc": mk(0.005, None)}
+        rep = {"deciding_stake": "0.30", "deciding_leg": "1p9", "books": {"0.30": {"worst_in_slot": {"canary_lower": dict(cells, flat_1p3_total=mk(-9, -9))}}}}
+        g = L.dec032_figure(rep)
+        self.assertEqual((g["wis_mean_sol"], g["wis_mean_cell"], g["not_proposed_mean_le_0"], g["wis_ci90_lo_sol"]), (0.0, "press_1p9_total", True, None))  # a missing CI bound stays missing
+        del cells["press_1p9_sc"]
+        rep["books"]["0.30"]["worst_in_slot"]["canary_lower"] = cells
+        self.assertFalse(L.dec032_figure(rep)["measured"])
 
 
 if __name__ == "__main__":
