@@ -134,7 +134,7 @@ The manifest holds:
 - the LLM block, DEC refs and the pre-mortem.
 
 The commands:
-- `lint` runs 26 checks.
+- `lint` runs 27 checks (M00–M26).
 - `pin` reads `git show <sha>:<path>`. It requires the commit to be on an origin branch and records whether it is on origin/main (the DBC tags were not). It also checks rule names, cadence, threshold keys and DEC constants against the code at the sha.
 - `render` writes the pack, once:
   - MANIFEST, pins, thresholds and PINS.sha256;
