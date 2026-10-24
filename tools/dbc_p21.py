@@ -535,7 +535,7 @@ def advance(c: Cell, s: dict[str, Any], req: dict[str, Any] | None) -> dict[str,
         for blk in ("", "_E2"):
             st = s[mdl + blk]
             chk[f"{mdl}{blk or '_all'}_marginal_and_majority"] = bool(is_marginal(st) and st.get("pos_majority"))
-        chk[f"required_latency_{mdl}_mean_gt0"] = bool(req and req[mdl].get("n") and req[mdl]["mean"] > 0)
+        chk[f"required_latency_{mdl}_mean_gt0"] = bool(req and req.get(mdl, {}).get("n") and req[mdl]["mean"] > 0)
     return {"primary": c.primary, "checks": chk, "advances": bool(c.primary and all(chk.values()))}
 
 
