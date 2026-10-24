@@ -160,3 +160,18 @@ class TestExecutorSendRows(LiveCase):
         e = self.env()
         e.fire()
         assert self.sends(e) == []
+
+
+def test_the_send_log_is_part_of_the_c0_tripwire():
+    assert "_note_send" in ax.GUARD_METHODS and "_note_send" in ax.ArenaExecutor.__dict__
+    assert ax.c0_guard_problem() is None
+
+
+def test_a_landed_false_row_without_fail_class_exports_as_landed():
+    """QP #843 condition 2 (declared in the DEC copy item 15): a landed:false row whose fail_class is not "expired" (also none at all, e.g. an RPC
+    rejection that never reached chain) exports as landed. The tie-out then halts on landed_send_missing_on_chain: a false hard halt, never a false sign-off."""
+    rows = [send("x", "buy"), {"mode": "live", "kind": "buy", "mint": M1, "signature": "x", "landed": False}]
+    led = L.export(rows, {"open": {}})
+    assert led["sends"][0]["status"] == "landed"
+    r = T.reconcile([], led, TOK0, 0, bal(0), NAMED)
+    assert not r["signed_off"] and any(p.get("kind", p.get("name")) == "landed_send_missing_on_chain" or "landed_send_missing_on_chain" in json.dumps(p) for p in r["problems"])

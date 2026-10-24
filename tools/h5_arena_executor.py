@@ -1084,7 +1084,7 @@ class ArenaExecutor(h.H5Executor):
 
 
 _ARENA_CLASS = ArenaExecutor  # the class the tripwire inspects (a name bound at import, so rebinding ArenaExecutor cannot hide a removed override)
-GUARD_METHODS = ("h5", "_tier_path", "_live_gate", "prime_feed_start", "_live_buy", "_send", "_send_guarded", "_budget_stop", "_balance_refusal", "committed_loss_refusal", "_hard_refusal",
+GUARD_METHODS = ("h5", "_tier_path", "_live_gate", "prime_feed_start", "_live_buy", "_send", "_send_guarded", "_note_send", "_budget_stop", "_balance_refusal", "committed_loss_refusal", "_hard_refusal",
                  "_parity_state", "decide_row", "intent_tick", "_latch", "exit_tick", "_fire_sell", "_finish_buy", "_resolve_expired", "_seal_reason")
 
 
