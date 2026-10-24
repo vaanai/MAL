@@ -123,6 +123,24 @@ def test_holdout_read_refuses_without_flag_and_when_output_exists(tmp_path=None)
     assert L.HOLDOUT_READ_ENABLED is False
 
 
+def test_one_look_marker_is_global_and_atomic():
+    import tempfile
+    from tools import dbc_holdout_read as H
+    d = Path(tempfile.mkdtemp())
+    m = str(d / "HOLDOUT_READ_DONE")
+    assert H.claim_marker(m) is True
+    assert H.claim_marker(m) is False
+    old = H.MARKER
+    H.MARKER = m
+    try:
+        fresh = Path(tempfile.mkdtemp()) / "fresh-out"  # a NEW --out must not allow a second look
+        assert H.run(fresh) == 4
+        assert L.HOLDOUT_READ_ENABLED is False and not fresh.exists()
+    finally:
+        H.MARKER = old
+    assert not Path(old).exists()
+
+
 def test_verdict_p5():
     from tools import dbc_holdout_read as H
 

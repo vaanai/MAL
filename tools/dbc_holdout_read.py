@@ -3,7 +3,7 @@
 
     python -m tools.dbc_holdout_read --out DIR --confirm-one-look
 
-Rules enforced in code: (1) refuses to start if ANY output file already exists in DIR (one look; a FAIL ends m10); (2) the holdout switch tools.dbc_price.HOLDOUT_READ_ENABLED is False by
+Rules enforced in code: (1) refuses to start if ANY output file already exists in DIR, or if the fixed marker file MARKER exists (created atomically before the first holdout file is opened, regardless of --out); (2) the holdout switch tools.dbc_price.HOLDOUT_READ_ENABLED is False by
 default and is turned on here, explicitly, after the output check, and the run prints that it did; (3) while it is on the exploration hours are refused; (4) the cell is frozen (D1 m10 as in
 tools.dbc_screen.CELLS), no flag changes it; (5) more than 6 missing/incomplete hours = NOT_DECIDABLE (nothing priced); (6) the verdict is computed by `verdict()` below (P5) on the PRIMARY line
 (strand = full loss, deciding leg 1.9 s / 0.25 SOL / rent 0 / 160k sends) under BOTH fail models; sensitivities are report-only and never enter it. A PASS is exploration-to-forward evidence only, not a
@@ -21,6 +21,7 @@ if __package__ in (None, ""):
 import argparse
 import hashlib
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -34,6 +35,7 @@ from tools import dbc_price as L
 from tools import dbc_screen as S
 
 MAX_BAD_HOURS = 6
+MARKER = "/data/mal/hunt-1008/push-1016/hunt29/dbc/HOLDOUT_READ_DONE"  # fixed path OUTSIDE --out: one look per holdout, whatever --out is
 OUT_JSON = "holdout-m10.json"
 OUT_MD = "holdout-m10.md"
 CELL = "m10"
@@ -62,6 +64,17 @@ def verdict(primary: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def claim_marker(path: str) -> bool:
+    """Atomically create the one-look marker (O_CREAT|O_EXCL). False if it already exists. Called BEFORE the first holdout file is opened; never removed by this tool."""
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o640)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "w") as f:
+        f.write(datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ") + " holdout one-look claimed\n")
+    return True
+
+
 def sha(path: str | Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
@@ -88,6 +101,9 @@ def run(out_dir: Path, root: str | None = None) -> int:
         print(f"REFUSED: output already exists in {out_dir} (one look only)", file=sys.stderr)
         return 3
     out_dir = Path(S.check_out_dir(str(out_dir)))
+    if not claim_marker(MARKER):
+        print(f"REFUSED: one-look marker {MARKER} exists (the holdout was already read or claimed)", file=sys.stderr)
+        return 4
     out_dir.mkdir(parents=True, exist_ok=True)
     L.enable_holdout_read()
     cnt = L.count_hour_files(root)
