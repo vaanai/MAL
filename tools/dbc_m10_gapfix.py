@@ -11,7 +11,8 @@ G2: every listed gap hour, in label order, by the pinned tool from the clean tag
     into a FRESH staging dir per pass (same filesystem). The tool's per-hour progress lines (tx counts) are not passed through; MISCUSI_PROGRESS is unset for it.
 G3: success = the staging checkpoint has the label and its entry has no "gap": true. Then ONE rename(2) (os.rename: never a copy, EXDEV fails) of
     <stage>/meteora_dbc/tape-H.jsonl.zst over <main-out>/meteora_dbc/tape-H.jsonl.zst. On failure the gap file stays (a bad hour).
-G4: only an hour whose MAIN checkpoint entry still has "gap": true is replaced (re-read just before the rename). The main checkpoint is never written.
+G4: only an hour whose MAIN checkpoint entry still has "gap": true is replaced (re-read just before the rename). The main checkpoint is never written, so it keeps
+    "gap": true after a fix: G-STATE.json "replaced" records every replaced hour and a later pass never fetches or replaces it again.
 G5: at most 3 passes per hour, at least 30 min apart (state in <ops>/G-STATE.json); refuses while any venue_backfill_dbc process runs (main fetch or another pass).
 G6: G-LOG.md in <ops>: pass, job id, hour labels, rc, G credits of the pass, every mv line, date -u.
 The G budget is cumulative over all passes (sum of the staging checkpoints' credits_used); a pass gets what is left.
@@ -82,7 +83,7 @@ def tool_runner(wt: str) -> Callable[[list[str]], int]:
 def load_state(path: Path) -> dict[str, Any]:
     if path.is_file():
         return json.loads(path.read_text(encoding="utf-8"))
-    return {"passes": [], "hour_passes": {}, "credits_total": 0}
+    return {"passes": [], "hour_passes": {}, "credits_total": 0, "replaced": {}}
 
 
 def save_state(path: Path, st: dict[str, Any]) -> None:
@@ -105,6 +106,7 @@ def run_pass(n: int, *, main_out: str = MAIN_OUT, stage_root: str = STAGE_ROOT, 
     opsd.mkdir(parents=True, exist_ok=True)
     stp, glog = opsd / "G-STATE.json", opsd / "G-LOG.md"
     st = load_state(stp)
+    st.setdefault("replaced", {})
     if any(p["pass"] == n for p in st["passes"]):
         log(f"REFUSED: pass {n} is already recorded in {stp}")
         return EXIT_REFUSED
@@ -122,7 +124,9 @@ def run_pass(n: int, *, main_out: str = MAIN_OUT, stage_root: str = STAGE_ROOT, 
     todo, skipped = [], []
     for h in labels:
         past = st["hour_passes"].get(h, [])
-        if len(past) >= MAX_PASSES_PER_HOUR:
+        if h in st["replaced"]:  # the main checkpoint keeps "gap": true after a fix; a replaced hour is never fetched or replaced again
+            skipped.append(f"{h} (already replaced in pass {st['replaced'][h]})")
+        elif len(past) >= MAX_PASSES_PER_HOUR:
             skipped.append(f"{h} (3 passes done)")
         elif past and t - max(past) < MIN_GAP_S:
             skipped.append(f"{h} (last pass < 30 min ago)")
@@ -152,6 +156,8 @@ def run_pass(n: int, *, main_out: str = MAIN_OUT, stage_root: str = STAGE_ROOT, 
                     line = f"mv {src} {dst}"
                     rec["mv"].append(line)
                     rec["results"][h] = "replaced"
+                    st["replaced"][h] = n
+                    save_state(stp, st)
                     log(line)
                 except OSError as e:
                     rec["results"][h] = f"rename failed: {type(e).__name__}"
