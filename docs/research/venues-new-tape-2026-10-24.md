@@ -24,6 +24,7 @@ as arena_feed does: 0 Helius credits, no key; arena_feed refuses Helius URLs, ve
 |---|---|---|---|
 | LaunchLab | ~0.1 | ~12k rows, roughly 5k trades | quiet venue; 27 trades in 7 min |
 | Meteora DBC | ~25 | ~2.2M ix rows (~590 MB raw, ~60 MB zst) | ~28% of swap txs fail |
+LaunchLab undercount: the recorder's logsSubscribe rate (~5k trades/day) is an undercount. The Helius backfill of the same venue (#857 REPORT, job #1465) has 1,222,631 trade rows in 241 h, about 122k per day, roughly 25x more. The recorder was not measured against the backfill, so its capture rate is unknown until the two tapes are compared. A forward book fed by this recorder would see only part of the venue's flow; do not size one from the 5k figure.
 Launches/day and graduations/day: not measured yet; they come out of the tape (`create` rows, Migration ix rows) in the first days.
 
 ## Limits
