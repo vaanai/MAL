@@ -99,7 +99,7 @@ and the amendment says how many alerts per day the old setting gave.
   arena tape [2026-10-22T21:00:00Z, 2026-10-26T21:00:00Z), owner FLOOR. Changes go through the manager and QP.
 - **The radar is disabled for the arena tape before 2026-10-26T21:00:00Z** (`disabled_until` in the same file): before that instant the
   arena tape directory is not even listed. Because the sealed days are skipped for good, the arena baseline restarts from 2026-10-27.
-- Disclosure: the 2026-10-24 smoke runs (about 17:51Z and 18:05Z, written to a scratch directory, not `/data/mal/change-radar`) counted
+- Disclosure: the 2026-10-24 smoke runs (three, from about 17:52Z to 18:09Z, written to a scratch directory, not `/data/mal/change-radar`) counted
   arena rows for 2026-10-22 and 2026-10-23, including gap rows and hours present, before this rule existed. See the PR #889 body.
 
 ## 3. Output
