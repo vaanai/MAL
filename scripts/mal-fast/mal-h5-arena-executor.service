@@ -1,0 +1,62 @@
+[Unit]
+Description=MAL H5 arena canary executor (DEC-032), keyless dry-run base unit (no signing, no sending)
+Documentation=https://github.com/vaanai/MAL
+After=network-online.target
+Wants=network-online.target
+# Never two executors on the old probe wallet, and never the arena canary beside the stopped H5 canary unit: Conflicts= stops the other, After= orders it.
+After=mal-probe-executor.service mal-h5-executor.service
+Conflicts=mal-probe-executor.service mal-h5-executor.service
+
+[Service]
+Type=simple
+User=mal-live
+Nice=10
+WorkingDirectory=/usr/local/lib/mal-h5-arena-exec/current
+Environment=PYTHONUNBUFFERED=1
+Environment=LC_ALL=C.UTF-8
+Environment=LANG=C.UTF-8
+# Helius key: the SAME root-only copy the H5 unit uses (/etc/mal-probe-rpc root:root 0700, helius.env root:root 0600, only the HELIUS_API_KEY= line).
+# No "-" prefix: a missing file fails the start. The inline check is root-run ("+"); %% is systemd's escape for %.
+EnvironmentFile=/etc/mal-probe-rpc/helius.env
+ExecStartPre=+/usr/bin/env -i /bin/sh -c 'test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-probe-rpc)" = 0:0:700 && test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-probe-rpc/helius.env)" = 0:0:600'
+# The arena's own root dir must be root:root 0755 (LIVE_OK, TIER and the configs live there; this process can never write it).
+ExecStartPre=+/usr/bin/env -i /bin/sh -c 'test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-h5-arena)" = 0:0:755'
+# KEYLESS dry run: no --live, no LoadCredential. The live drop-in (mal-h5-arena-executor-live-pinned.conf) is the only thing that hands over a key.
+ExecStart=/usr/local/lib/mal-h5-arena-exec/venv/bin/python -I -B -u /usr/local/lib/mal-h5-arena-exec/current/launcher.py --config /etc/mal-h5-arena/dry.json
+Restart=on-failure
+RestartSec=10
+# Exit 2 is a deterministic start refusal (every live_entry_refusal / arena_start_refusal reason, rpc env, key): do not hot-loop.
+RestartPreventExitStatus=2
+NoNewPrivileges=true
+# Writes only /var/lib/mal-h5-arena (mal-live:claude 3770: setgid so files are group claude, sticky so the job user can add STOP but not remove the
+# executor's files). UMask 0027: trips/attempts are group-readable for the twin-writer job. /var/lib/mal-live (the old probe wallet's files, read by
+# the H5 precheck) stays read-only. /home is an empty tmpfs; the feed, twins, A3 and tie-out dirs are bound read-only by mal-h5-arena-executor-binds.conf.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mal-h5-arena
+ReadOnlyPaths=/usr/local/lib/mal-h5-arena-exec
+TemporaryFileSystem=/var/lib/mal:ro
+ProtectHome=tmpfs
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+CapabilityBoundingSet=
+PrivateDevices=true
+ProtectProc=invisible
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+RestrictNamespaces=true
+RestrictRealtime=true
+ProtectClock=true
+ProtectKernelLogs=true
+ProtectHostname=true
+UMask=0027
+LimitCORE=0
+MemoryMax=1500M
+MemorySwapMax=0
+
+[Install]
+WantedBy=multi-user.target
