@@ -74,6 +74,12 @@ CELLS: tuple[CellDef, ...] = (
     CellDef("D4", "c6", Exit(180, tp=1.10, sl=0.92), 120, (6, 4.0, 0.20)),
 )
 
+# P17 (2026-10-24): the new idea for the Swap3 universe, declared in docs/research/dbc-p17/DECLARE.md before any count or price. Run only with --swap3 (D1 cells are never run there).
+CELLS_P17: tuple[CellDef, ...] = (
+    CellDef("D6", "dbs1", Exit(180, tp=1.10, sl=0.92), 120, (1.0,)),
+    CellDef("D6", "dbs2", Exit(180, tp=1.10, sl=0.92), 120, (2.0,)),
+)
+
 
 # ------------------------------------------------------------------------------------------------------------------------------ loading
 def load_exploration(root: str | None = None, log=print, start: datetime | None = None, end: datetime | None = None) -> dict[str, Any]:
@@ -83,6 +89,7 @@ def load_exploration(root: str | None = None, log=print, start: datetime | None 
     pid_of: dict[str, int] = {}
     cfg_of: dict[str, int] = {}
     hook_pools: set[int] = set()
+    excl: dict[str, set[int]] = {"hook": set(), "xfer": set(), "unmapped": set()}  # P17 reporting only: why a pool is excluded
     complete_slot: dict[int, int] = {}
     n_create = 0
     present, bad = [], []
@@ -112,8 +119,9 @@ def load_exploration(root: str | None = None, log=print, start: datetime | None 
             p = pid_of.setdefault(x["pool"], len(pid_of))
             a["pid"][i] = p
             a["cfg"][i] = cfg_of.setdefault(x["config"], len(cfg_of))
-            if L.hook_row(x):
+            if L.hook_row(x) or x.get("config") in L.CFG_XFER or x.get("config") in L.CFG_UNMAPPED:
                 hook_pools.add(p)
+                excl["hook" if L.hook_row(x) else ("xfer" if x.get("config") in L.CFG_XFER else "unmapped")].add(p)
         cols.append(a)
         sl, bt = a["slot"], a["bt"]
         if len(rows) > 50 and bt.max() > bt.min():
@@ -135,7 +143,7 @@ def load_exploration(root: str | None = None, log=print, start: datetime | None 
     bad_row = badm[perm]
     d = L.derive(A, pid, cfg, ~bad_row)
     D = {"a": A, "d": d, "pid": pid, "bad_row": bad_row, "order_stats": ostats, "start_ts": hours[0].timestamp(), "root": root, "bad_hours": sorted(bad), "good_hours": sorted(present),
-         "slot_s": slot_s, "pool_names": list(pid_of), "n_pools": len(pid_of), "n_configs": len(cfg_of), "hook_pools": hook_pools, "complete_slot": complete_slot, "creates": n_create}
+         "slot_s": slot_s, "pool_names": list(pid_of), "n_pools": len(pid_of), "n_configs": len(cfg_of), "hook_pools": hook_pools, "excl": excl, "cfg_names": list(cfg_of), "complete_slot": complete_slot, "creates": n_create}
     D["hook_row"] = np.isin(pid, np.array(sorted(hook_pools), np.int64))
     return D
 
@@ -248,6 +256,10 @@ def triggers_for(cell: CellDef, P: Pool, first_ok_bt: float, comp_slot: int | No
             peak = max(float(P.p_pre[lo]), float(P.p_post[lo:i + 1].max()))
             if P.p_post[i] <= peak * (1.0 - dn):
                 out.append(int(i))
+    elif cell.idea == "D6":  # single big SELL that moved the spot down 2%..25%: buy the dip
+        (M,) = cell.params
+        imp = P.p_post / P.p_pre - 1.0
+        out = [int(i) for i in np.nonzero((~buy) & ok_entry & (P.sell_sol >= M * SOL) & (imp <= -0.02) & (imp >= -0.25) & (P.prog_post >= 0.05) & (P.prog_post <= 0.80))[0]]
     return out
 
 
@@ -515,7 +527,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--root", default=None)
     ap.add_argument("--start", default="")
     ap.add_argument("--end", default="")
+    ap.add_argument("--cfg-summary", default="", help="P17: JSON from tools.dbc_config.summary_map (migration thresholds for EvtSwap3 rows)")
+    ap.add_argument("--no-capacity", action="store_true", help="--validate: skip the capacity counts")
+    ap.add_argument("--swap3", action="store_true", help="P17: price EvtSwap3 pools (only real transfer-hook pools excluded; fob flag as fee-mode evidence)")
+    ap.add_argument("--spent-root", default="", help="P17: dir with hardlinks of ALL hours 10-14..10-23 (the m10 holdout is spent = disclosed exploration)")
     ns = ap.parse_args(argv)
+    if ns.swap3:
+        L.enable_swap3_pricing()
+    if ns.cfg_summary:
+        print("config thresholds loaded:", L.load_config_thresholds(ns.cfg_summary), flush=True)
+    if ns.spent_root:
+        L.enable_spent_exploration(ns.spent_root)
     out = Path(check_out_dir(ns.out))
     out.mkdir(parents=True, exist_ok=True)
     cnt = L.count_hour_files(ns.root)
@@ -524,14 +546,15 @@ def main(argv: list[str] | None = None) -> int:
     pa = lambda v: datetime.strptime(v, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc) if v else None  # noqa: E731
     D = load_exploration(ns.root, start=pa(ns.start), end=pa(ns.end))
     print(f"loaded {len(D['a']['slot'])} SOL trade rows, {D['n_pools']} pools, bad hours {len(D['bad_hours'])} in {time.time() - t0:.0f}s", flush=True)
-    meta = {"schema": SCHEMA, "taken_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "file_counts": cnt, "kit_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    meta = {"swap3_pricing": bool(ns.swap3), "spent_root": ns.spent_root, "schema": SCHEMA, "taken_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "file_counts": cnt, "kit_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "price_sha256": hashlib.sha256(Path(L.__file__).read_bytes()).hexdigest(), "bad_hours": D["bad_hours"], "block_args": [ns.start, ns.end]}
     if ns.validate:
-        res = {**meta, "validate": validate_all(D), "capacity": capacity(D)}
+        res = {**meta, "validate": validate_all(D), **({} if ns.no_capacity else {"capacity": capacity(D)})}
         (out / "validate.json").write_text(json.dumps(res, indent=1, default=float))
         print((out / "validate.json").read_text())
         return 0
-    cells = [c for c in CELLS if not ns.cells or c.name in ns.cells.split(",")]
+    pool_cells = ([c for c in CELLS if c.idea != "D1"] + list(CELLS_P17)) if ns.swap3 else list(CELLS)  # P17: D1 is ended on 10-17..10-24 and never run with --swap3
+    cells = [c for c in pool_cells if not ns.cells or c.name in ns.cells.split(",")]
     res: dict[str, Any] = {}
     nday = max(len(D["good_hours"]) / 24.0, 1e-9)
     for c in cells:

@@ -78,8 +78,66 @@ def enable_holdout_read() -> None:
     print("HOLDOUT READ ENABLED: data guard now accepts only [2026-10-17T00, 2026-10-24T00) under " + HOLDOUT_ROOT, flush=True)
 
 
+SPENT_ROOT: str | None = None
+SPENT_MARKER = "/data/mal/hunt-1008/push-1016/hunt29/dbc/HOLDOUT_READ_DONE_v2"
+
+
+def enable_spent_exploration(root: str) -> None:
+    """P17 (2026-10-24): the m10 one-look holdout [10-17T00, 10-24T00) was READ ONCE (marker SPENT_MARKER) and is now only disclosed exploration data. This switch accepts the whole
+    [10-14T00, 10-24T00) range from ONE directory `root` (hardlinks of both tape dirs). Refused unless the marker exists. Not reachable from the default path; sets no holdout flag."""
+    global SPENT_ROOT
+    if not os.path.exists(SPENT_MARKER):
+        raise Refused("holdout_not_spent_marker_missing")
+    SPENT_ROOT = root
+    print("SPENT-HOLDOUT EXPLORATION ENABLED (disclosed exploration only): " + root, flush=True)
+
+
+FWD_START = datetime(2026, 10, 25, 0, tzinfo=timezone.utc)
+FWD_END = datetime(2026, 11, 1, 0, tzinfo=timezone.utc)  # exclusive
+FWD_ROOT = "/data2/mal/venue-tape-backfill/fwdv1/meteora_dbc"  # tools/venue_backfill_dbc.py --out-dir /data2/mal/venue-tape-backfill/fwdv1 writes here
+FWD_ACTIVE: str | None = None
+
+
+def enable_forward_window(root: str = FWD_ROOT) -> None:
+    """Registered forward read (docs/research/dbc-m10-forward/REGISTRATION.md): the guard accepts ONLY hours [2026-10-25T00, 2026-11-01T00) directly under `root`. Called only by
+    tools/dbc_fwd_read.py after its time gate, preflight and marker claim. Every other hour (all earlier data) is refused."""
+    global FWD_ACTIVE
+    FWD_ACTIVE = root
+    print("FORWARD WINDOW ENABLED: data guard accepts only [2026-10-25T00, 2026-11-01T00) under " + root, flush=True)
+
+
+SWAP3_IS_HOOK = True  # legacy (P14): any EvtSwap3 row marks its pool a hook pool
+FOB_EVIDENCE = False  # legacy: fee mode only from the L-agreement inference
+
+
+def enable_swap3_pricing() -> None:
+    """P17: EvtSwap3 is the program's NEW generic swap event (emitted for every swap from 2026-10-16T04Z), not a transfer hook. Only real transfer-hook rows (event or ix name contains
+    'TransferHook') mark a hook pool, and a Swap3 BUY's `fee_on_base_token` flag is used as exact fee-mode evidence."""
+    global SWAP3_IS_HOOK, FOB_EVIDENCE
+    SWAP3_IS_HOOK, FOB_EVIDENCE = False, True
+
+
+CFG_XFER: set[str] = set()  # P17: configs whose base mint carries a Token-2022 transfer fee (transfer_fee_basis_points > 0): not modelled, their pools are excluded like hook pools
+CFG_UNMAPPED: set[str] = set()  # P17 forward read: configs that could not be fetched/decoded (R4); their pools are excluded and counted
+CFG_THR: dict[str, int] = {}  # P17: config -> migration_quote_threshold (EvtSwap3 rows do not carry migration_threshold; read from the config account)
+
+
+def load_config_thresholds(summary_path: str) -> int:
+    """Load {config: {thr, ...}} (tools.dbc_config.summary_map output as JSON) into CFG_THR. Used only for rows with no migration_threshold on the event."""
+    m = json.loads(open(summary_path).read())
+    CFG_THR.clear()
+    CFG_THR.update({k: int(v["thr"]) for k, v in m.items()})
+    CFG_XFER.clear()
+    CFG_XFER.update(k for k, v in m.items() if int(v.get("transfer_fee_bps") or 0) > 0)
+    return len(CFG_THR)
+
+
 def window() -> tuple[datetime, datetime, str]:
     """(start, end exclusive, root) the guard currently accepts."""
+    if FWD_ACTIVE is not None:
+        return (FWD_START, FWD_END, FWD_ACTIVE)
+    if SPENT_ROOT is not None and not HOLDOUT_READ_ENABLED:
+        return (EXPLORE_START, HOLDOUT_END, SPENT_ROOT)
     return (EXPLORE_END, HOLDOUT_END, HOLDOUT_ROOT) if HOLDOUT_READ_ENABLED else (EXPLORE_START, EXPLORE_END, BACKFILL_ROOT)
 
 
@@ -258,7 +316,9 @@ def usable_row(r: dict[str, Any]) -> bool:
 
 def hook_row(r: dict[str, Any]) -> bool:
     ev = str(r.get("event") or "")
-    return "TransferHook" in ev or ev == "EvtSwap3"
+    if SWAP3_IS_HOOK:
+        return "TransferHook" in ev or ev == "EvtSwap3"
+    return "TransferHook" in ev or "TransferHook" in str(r.get("ix") or "")
 
 
 def rows_to_arrays(rows: Sequence[dict[str, Any]]) -> dict[str, np.ndarray]:
@@ -267,13 +327,18 @@ def rows_to_arrays(rows: Sequence[dict[str, Any]]) -> dict[str, np.ndarray]:
     a = {k: np.empty(n, np.float64) for k in ("bt", "S1", "ain", "aout", "fee", "qres", "thr")}
     a["slot"] = np.empty(n, np.int64)
     a["side"] = np.empty(n, np.int8)
+    a["sw3"] = np.zeros(n, np.int8)  # 1 = EvtSwap3 row (report only)
+    a["fob"] = np.full(n, -1, np.int8)  # Swap3 BUY: fee_on_base_token (1/0); -1 = not available
     for i, r in enumerate(rows):
+        a["sw3"][i] = 1 if str(r.get("event")).startswith("EvtSwap3") else 0
+        if r["side"] == "buy" and r.get("fee_on_base_token") is not None and str(r.get("event")).startswith("EvtSwap3"):
+            a["fob"][i] = 1 if r["fee_on_base_token"] else 0
         a["slot"][i] = r["slot"]
         a["bt"][i] = block_time_s(r)
         a["side"][i] = 1 if r["side"] == "buy" else 0
         a["S1"][i] = float(int(r["next_sqrt_price"]))
         a["ain"][i], a["aout"][i], a["fee"][i] = int(r["amount_in"]), int(r["amount_out"]), row_fee(r)
-        a["qres"][i], a["thr"][i] = int(r.get("quote_reserve_post") or 0), int(r.get("migration_threshold") or 0)
+        a["qres"][i], a["thr"][i] = int(r.get("quote_reserve_post") or 0), int(r.get("migration_threshold") or CFG_THR.get(r.get("config"), 0))
     return a
 
 
@@ -309,6 +374,8 @@ def derive(a: dict[str, np.ndarray], pid: np.ndarray, cfg: np.ndarray, iso: np.n
         if iso is not None:
             big = big & iso  # evidence only from rows whose pre-state is certain (see order_fix)
         ev = np.where(big & (e0 < MODE_TOL) & (e1 >= MODE_TOL), 0, np.where(big & (e1 < MODE_TOL) & (e0 >= MODE_TOL), 1, -1))
+        if FOB_EVIDENCE and "fob" in a:  # exact: fee on the base (output) token = pricer mode 0; fee on the quote (input) = mode 1
+            ev = np.where(a["fob"] >= 0, 1 - a["fob"].astype(np.int64), ev)
     # config mode by majority of evidence
     mode = np.zeros(n, np.int8)
     known = np.zeros(n, bool)
