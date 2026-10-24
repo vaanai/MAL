@@ -620,6 +620,7 @@ class ArenaExecutor(h.H5Executor):
         self._pools_seen: set[str] = set()
         self._start_ms: int | None = None
         self.gates: LiveGates | None = None  # live only: parity recorder and the parity / tie-out gates
+        self._sends_noted: set[str] = set()  # signatures already written as an `arena_send` row (this process; the exporter de-duplicates across restarts)
         super().__init__(rpc, cfg, keypair, now_ms=now_ms, pick_oracle=None, root=root, rpc_label=rpc_label)
         if keypair is not None:
             gdir = Path(self.h5cfg["state_dir"]) / "arena-parity"
@@ -783,8 +784,21 @@ class ArenaExecutor(h.H5Executor):
                 return
         if not self.dry_run and p.get("kind") == "buy" and p.get("sends", 0) == 0:
             self._send_guarded(p, mint)  # the first send of a live buy: the age is judged once more at the sendTransaction call itself
+        else:
+            super()._send(p, mint)
+        self._note_send(p, mint)
+
+    def _note_send(self, p: dict[str, Any], mint: str) -> None:
+        """Live only: one `arena_send` ledger row per signature the executor handed to sendTransaction (the daily tie-out's `sends`, with the blockhash's
+        last valid height that decides a confirmed drop; tools/arena_tieout_ledger.py exports it). A send that was blocked before the socket (STOP, HALT, a
+        stale signal: the pending record is gone or no send was counted) is not one. Rebroadcasts of the same signature are not repeated."""
+        if self.dry_run or not p.get("sends") or (self.state.pending.get(mint) or {}).get("signature") != p.get("signature"):
             return
-        super()._send(p, mint)
+        sig = p.get("signature")
+        if not sig or sig in self._sends_noted:
+            return
+        self._sends_noted.add(sig)
+        self._log("arena_send", mint, signature=sig, side=p.get("kind"), last_valid_block_height=p.get("lvbh"), first_send_ms=p.get("first_send_ms"))
 
     def _send_guarded(self, p: dict[str, Any], mint: str) -> None:
         """QP 10-23 condition 5: tools/h5_executor.py and tools/probe_live.py stay untouched, so the last check is made at the one place the base class writes to the socket,
