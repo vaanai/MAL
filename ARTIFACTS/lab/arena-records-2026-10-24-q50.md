@@ -21,7 +21,7 @@ Written 2026-10-24 (UTC) by a worker agent from the manager's copied job outputs
 - G8 job #1417 (`j_mjM1h2TEA6qCzQ`), mal-fast-0, git 29e214ae, 1 GB, 0.1 cpu.
 
 ## 3. P0 (item 3)
-- Fixed-first notebook (G7a text + QP addendum + manager pre-submit check): **n_dYHDF5CZxV9Kbw**, posted about 2026-10-24T00:12Z (manager's note); the P0 job #1413 was submitted at 1792800742374 ms, after it. Exact creation instant from the notebook: not recorded here.
+- Fixed-first notebook (G7a text + QP addendum + manager pre-submit check): **n_dYHDF5CZxV9Kbw**, posted about 2026-10-24T00:12Z (manager's note); the P0 job #1413 was submitted at 1792800742374 ms, after it. The notebook tool does not expose creation instants. n_dYHDF5CZxV9Kbw was created by the manager after a `date -u` reading of 2026-10-24T00:10:59Z, and its write call returned before job #1413 was submitted at 1792800742374 ms (00:12:22.374Z); the submit call was made only after the notebook call completed (sequential tool calls in one session). Exact creation instant: not recorded.
 - Job **#1413** (`j_Af3reOXXEdqtjg`), mal-research-0, git 29e214ae, 16 GB, 16 h limit. Finished Sat Oct 24 00:17:51 UTC 2026.
 - COUNTER_SHA256 `8c6b490576690193934451af9d6dd4eff3ca649d066553bc172d31f1de2d2446` (checked inside the script; passed). `counter_rc=0`. Output `q50p0.json` sha256 `2d354bcedaeb068a0be138172951eb61ce962a89863c5217e8a74d88964999ae`.
 - Files 72; hours_listed 72; hours_match True; hours_without_own_rows []. gap_progs ['pumpfun', 'pumpswap']; unknown_progs [].
@@ -104,12 +104,13 @@ QP rulings (same directory as the sheet): QP-RULING-1022-q50.md sha256 `a0dcf391
 - No book has cleared the promotion gate. Nothing in this file says any book makes money. This file does not ask anyone to merge it.
 
 ## 10. A3 guard fix and redeploy (facts; 2026-10-24, before Q50's clock)
-Notebooks: n_5ob4j6rvho4xuQ (finding), n_fF-zfsZwsQyiag (QP ruling); the redeploy notebook entry id: not recorded.
+Notebooks: n_5ob4j6rvho4xuQ (finding), n_fF-zfsZwsQyiag (QP ruling); redeploy entry n_vPM3i2qr3yBuog.
 - Finding: the 2026-10-22T19:10:05Z A3 guard run was a HALT (`synthetic_share_high`, 8/19). It ended both a2 books before their clock. Q50 was under the same guard.
 - QP ruling `/data/mal/hunt-1008/push-1016/hunt29/a3fix/QP-RULING-1024-a3-synthetic.md`, final sha256 `0487fee28c6e36950947877fe0f1397a2b9fdb6e889327318b462b6fda8add29` (with Addenda 1-2).
 - PR #840 merged to main `79a93e94464e26d3f7246e637fac0ae58430e043`. DEC-031 Amendment 10 (PR #845) merged to main `024ee71423a8cdeb7a358401b7b30f81a72531d1`.
-- Guard pin tag `a3-guard-pin-1024` = `0ec7fae89abe00021871f35258a8bc659b3df6bd` (136cd98 + check tool + its tests); check tool sha256 `1f84072da673cc451f9e3a6baa8b25d6295b497305ffe7bc38fef42e3a710f70`; `h5_shadow.py` blob `23b9ccc2`. Tests at the pin on fast-0: job #1442, 168 passed.
-- Old guard loop #1318 and queued successor #1332 cancelled (ps check #1443: 0 guard processes). New loop #1446 and successor #1447 run at the pin.
+- Guard pin tag `a3-guard-pin-1024` = `0ec7fae89abe00021871f35258a8bc659b3df6bd` (136cd98 + check tool + its tests); check tool `tools/a3_redeploy_check.py` blob `4cf7e363b2bf9901e11310d101431b31202a43c3`, sha256 `1f84072da673cc451f9e3a6baa8b25d6295b497305ffe7bc38fef42e3a710f70`; tests `tools/test_a3_redeploy_check.py` blob `391c866d127eb57aa3a771a9f5959a99d2932dc2`, sha256 `0dc1f27809831cd0235e83e5d3e3f59cd42a7573c39a1773789326520e94f3fc`; `h5_shadow.py` blob `23b9ccc2562f4cb83113a8b9faa4cb8d9e86907f` (main has `f23cf492`). Tests at the pin on fast-0: job #1442, 168 passed.
+- Cancel order on 2026-10-24: queued successor #1332 cancelled first (confirmed cancelled), then loop #1318; ps check #1443 at 00:57:12Z showed 0 guard processes; new loop #1446 started 00:57:40Z, successor #1447 queued, both at the pin.
 - First OFFICIAL run at 2026-10-24T00:57:40Z: all RCs 0, verdict NONE, `A3_FLAGS` 6 evaluated, none halting, `A3_FLAGS_OK` (jobs #1448, #1449). **It replaces G9b (section 4, run at 136cd98) as Q50's pre-clock green run** (Am.10 item 5(4)).
 - a2 books: NOT_DECIDABLE (empty window, ended 2026-10-22T19:10:05Z before their clock), final. a2 shadow #1331, score #1344 and successors were cancelled at 00:50Z.
+- **Disclosure (precondition 3 lapse):** Q50-EXEC precondition 3 required the manager to record any a2 HALT before G8. The 2026-10-22T19:10:05Z A3 HALT that ended both a2 books was NOT recorded before G8: Q50 registered at 00:20:15Z; the HALT was found at about 00:45Z (notebook n_5ob4j6rvho4xuQ). The QP A3 ruling says this lapse does not void Q50 by itself.
 - Q50 remains governed by the A3 rule through the books file; any later HALT is not known at writing.
