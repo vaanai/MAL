@@ -967,6 +967,45 @@ def test_loophole_a_pricing_needs_each_of_the_four_blocks_once_and_whole(clean_t
                                               min_attempts_per_day=20.0, vmap=[str(vm)]))
 
 
+def _solo_tree(clean_tree, tape, monkeypatch):
+    root, vm = clean_tree
+    _, files = tape
+    monkeypatch.setattr(S, "EXTRA_SOLO_BLOCK_ROOTS", (str(root / "fresh-0903"),))
+    blk = root / "fresh-0903" / "w1" / "trades"
+    blk.mkdir(parents=True)
+    for _, f in files:
+        os.link(f, blk / Path(f).name)
+    return root, vm
+
+
+def test_fresh_0903_is_an_allowed_exploration_block_and_exp011_stays_banned():
+    assert S.EXTRA_SOLO_BLOCK_ROOTS == ("/data/mal/clean-view/fresh-0903",) and S.CANONICAL_BLOCKS == ("explore-0814",) + S.SEPTEMBER_BLOCKS  # the four-block screen is unchanged
+    assert S.BLOCK_ROOTS == tuple(f"/data/mal/clean-view/{b}" for b in S.CANONICAL_BLOCKS)
+    for p in ("/data/mal/clean-view/fresh-0903", "/data/mal/clean-view/fresh-0903/w2"):
+        for count_only in (True, False):
+            assert S.check_block_path(p, count_only) == "clean"
+    for p in ("/data/mal/blocks-clean/fresh-0903", "/data/mal/blocks/fresh-0903", "/data/mal/clean-view/fresh-09030", "/data/mal/clean-view/fresh-0903/../fresh-0828",
+              "/data/mal/clean-view/exp011-0909", "/data/mal/clean-view/exp011-0909/b"):
+        with pytest.raises(S.Refused):
+            S.check_block_path(p, True)
+    assert "exp011" in S.FORBIDDEN and "fresh-08" in S.FORBIDDEN
+
+
+def test_fresh_0903_is_priced_alone_and_whole_only(clean_tree, tape, tmp_path, monkeypatch):
+    root, vm = _solo_tree(clean_tree, tape, monkeypatch)
+    solo, four = str(root / "fresh-0903"), [str(root / b) for b in S.CANONICAL_BLOCKS]
+    o = tmp_path / "o"
+    assert cli(root, vm, tmp_path / "oc", "--count-only", blocks=[solo]) == 0
+    assert cli(root, vm, o, blocks=[solo]) == 0 and (o / "results.json").exists()  # alone and whole: priced
+    doc = json.loads((o / "results.json").read_text())
+    assert doc["meta"]["blocks"] == ["fresh-0903"] and doc["meta"]["full_screen_of_record"] is True and doc["meta"]["provenance"]["hours"]["fresh-0903"]
+    o2 = tmp_path / "o2"
+    assert cli(root, vm, o2, blocks=[str(root / "fresh-0903" / "w1")]) == 2  # a worker is not the block
+    assert cli(root, vm, o2, blocks=[solo] + four[:1]) == 2 and cli(root, vm, o2, blocks=[solo] + four) == 2  # never mixed with the four
+    assert cli(root, vm, o2, blocks=[solo, solo]) == 2  # repeated
+    assert not (o2 / "results.json").exists()
+
+
 def test_loophole_b_hours_subset_is_refused_when_pricing_and_marked_when_counting(clean_tree, tmp_path):
     root, vm = clean_tree
     o = tmp_path / "ob"
