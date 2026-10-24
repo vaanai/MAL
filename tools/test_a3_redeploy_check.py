@@ -678,7 +678,7 @@ def test_pool_ignores_records_after_the_current_run():
 def test_unevaluated_records_are_skipped_in_the_pool():
     recs = syn_series([(9, 20), (9, 20), (9, 20), (9, 20)])
     del recs[1]["graduations"]["synthetic"]
-    recs = [syn_rec("2026-10-21T07:10:00Z", 9, 20)] + recs  # a fifth, older, evaluated record fills the window
+    recs = [syn_rec("2026-10-20T19:10:00Z", 9, 20)] + recs  # a fifth, older, evaluated record fills the window
     f = c.pooled_synthetic_flag(recs[-1], recs[:-1])
     assert f["halt"] and "36/80" in f["reason"]
 
