@@ -62,3 +62,11 @@ Fill model notes: no haircut applied (none measured); the fee used for a fill is
   it identically with added diagnostics (concentration, strand-at-last-price), which were added after seeing #1479 and change no label.
 - The hook-pool exclusion removes most of 10-16; hook pools themselves are unpriced.
 - Not reviewed by quant-proof or reviewer.
+
+## CORRECTION 2026-10-24 (QP ruling A2; job #1488 at head d87d0010)
+Bug: for configs labelled mode 1 the sell fee was divided by base atoms (about 0 bps). Fix: a sell always pays its fee in quote on the output, rate = fee / (amount_out + fee); mode labels unchanged (test on real mode-1 rows: tools/test_dbc_price.py).
+All earlier fee lines (sell side and round trip) were understated; the table above is superseded by docs/research/dbc-p14/screens_a2fix.json. Deciding leg, flat / pressure mean per attempt, n, fills, strands:
+m4 -0.0347 / -0.0329 (741, 590, 194) FAIL; m6 -0.0413 / -0.0392 (654, 520, 193) FAIL; **m10 +0.02117 / +0.01638 (369, 242, 5)** MARGINAL, ex-top-3 +5.21, ex-best-day +3.56, trade CI90 lo +0.0108, 3/3 days (QP's own recompute: +0.02107 / +0.01626; the 1e-4 gap is L implied by sells);
+ms30/50/70 -0.1099 / -0.1223 / -0.1617 FAIL; bb1/bb2/bb4 -0.0059 / -0.0023 / -0.0009 FAIL; c3/c4/c6 -0.0100 / -0.0051 / -0.0006 FAIL.
+Fee paid at fills, round trip mean bps: m10 134 (buy 51, sell 83), m4 178, bb2 274, c3 128. The "0.5% round trip" hypothesis does not describe the trades these rules pick.
+A8 process note: smoke outputs were written to a scratch dir (smoke/) after the first full run's output dir had been created because the smoke ran m10 on a 5-hour subset right before the full job; the full run (#1479) is the only look at all 72 hours.
