@@ -78,8 +78,35 @@ def enable_holdout_read() -> None:
     print("HOLDOUT READ ENABLED: data guard now accepts only [2026-10-17T00, 2026-10-24T00) under " + HOLDOUT_ROOT, flush=True)
 
 
+SPENT_ROOT: str | None = None
+SPENT_MARKER = "/data/mal/hunt-1008/push-1016/hunt29/dbc/HOLDOUT_READ_DONE_v2"
+
+
+def enable_spent_exploration(root: str) -> None:
+    """P17 (2026-10-24): the m10 one-look holdout [10-17T00, 10-24T00) was READ ONCE (marker SPENT_MARKER) and is now only disclosed exploration data. This switch accepts the whole
+    [10-14T00, 10-24T00) range from ONE directory `root` (hardlinks of both tape dirs). Refused unless the marker exists. Not reachable from the default path; sets no holdout flag."""
+    global SPENT_ROOT
+    if not os.path.exists(SPENT_MARKER):
+        raise Refused("holdout_not_spent_marker_missing")
+    SPENT_ROOT = root
+    print("SPENT-HOLDOUT EXPLORATION ENABLED (disclosed exploration only): " + root, flush=True)
+
+
+SWAP3_IS_HOOK = True  # legacy (P14): any EvtSwap3 row marks its pool a hook pool
+FOB_EVIDENCE = False  # legacy: fee mode only from the L-agreement inference
+
+
+def enable_swap3_pricing() -> None:
+    """P17: EvtSwap3 is the program's NEW generic swap event (emitted for every swap from 2026-10-16T04Z), not a transfer hook. Only real transfer-hook rows (event or ix name contains
+    'TransferHook') mark a hook pool, and a Swap3 BUY's `fee_on_base_token` flag is used as exact fee-mode evidence."""
+    global SWAP3_IS_HOOK, FOB_EVIDENCE
+    SWAP3_IS_HOOK, FOB_EVIDENCE = False, True
+
+
 def window() -> tuple[datetime, datetime, str]:
     """(start, end exclusive, root) the guard currently accepts."""
+    if SPENT_ROOT is not None and not HOLDOUT_READ_ENABLED:
+        return (EXPLORE_START, HOLDOUT_END, SPENT_ROOT)
     return (EXPLORE_END, HOLDOUT_END, HOLDOUT_ROOT) if HOLDOUT_READ_ENABLED else (EXPLORE_START, EXPLORE_END, BACKFILL_ROOT)
 
 
@@ -258,7 +285,9 @@ def usable_row(r: dict[str, Any]) -> bool:
 
 def hook_row(r: dict[str, Any]) -> bool:
     ev = str(r.get("event") or "")
-    return "TransferHook" in ev or ev == "EvtSwap3"
+    if SWAP3_IS_HOOK:
+        return "TransferHook" in ev or ev == "EvtSwap3"
+    return "TransferHook" in ev or "TransferHook" in str(r.get("ix") or "")
 
 
 def rows_to_arrays(rows: Sequence[dict[str, Any]]) -> dict[str, np.ndarray]:
@@ -267,7 +296,10 @@ def rows_to_arrays(rows: Sequence[dict[str, Any]]) -> dict[str, np.ndarray]:
     a = {k: np.empty(n, np.float64) for k in ("bt", "S1", "ain", "aout", "fee", "qres", "thr")}
     a["slot"] = np.empty(n, np.int64)
     a["side"] = np.empty(n, np.int8)
+    a["fob"] = np.full(n, -1, np.int8)  # Swap3 BUY: fee_on_base_token (1/0); -1 = not available
     for i, r in enumerate(rows):
+        if r["side"] == "buy" and r.get("fee_on_base_token") is not None and str(r.get("event")).startswith("EvtSwap3"):
+            a["fob"][i] = 1 if r["fee_on_base_token"] else 0
         a["slot"][i] = r["slot"]
         a["bt"][i] = block_time_s(r)
         a["side"][i] = 1 if r["side"] == "buy" else 0
@@ -309,6 +341,8 @@ def derive(a: dict[str, np.ndarray], pid: np.ndarray, cfg: np.ndarray, iso: np.n
         if iso is not None:
             big = big & iso  # evidence only from rows whose pre-state is certain (see order_fix)
         ev = np.where(big & (e0 < MODE_TOL) & (e1 >= MODE_TOL), 0, np.where(big & (e1 < MODE_TOL) & (e0 >= MODE_TOL), 1, -1))
+        if FOB_EVIDENCE and "fob" in a:  # exact: fee on the base (output) token = pricer mode 0; fee on the quote (input) = mode 1
+            ev = np.where(a["fob"] >= 0, 1 - a["fob"].astype(np.int64), ev)
     # config mode by majority of evidence
     mode = np.zeros(n, np.int8)
     known = np.zeros(n, bool)

@@ -515,7 +515,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--root", default=None)
     ap.add_argument("--start", default="")
     ap.add_argument("--end", default="")
+    ap.add_argument("--swap3", action="store_true", help="P17: price EvtSwap3 pools (only real transfer-hook pools excluded; fob flag as fee-mode evidence)")
+    ap.add_argument("--spent-root", default="", help="P17: dir with hardlinks of ALL hours 10-14..10-23 (the m10 holdout is spent = disclosed exploration)")
     ns = ap.parse_args(argv)
+    if ns.swap3:
+        L.enable_swap3_pricing()
+    if ns.spent_root:
+        L.enable_spent_exploration(ns.spent_root)
     out = Path(check_out_dir(ns.out))
     out.mkdir(parents=True, exist_ok=True)
     cnt = L.count_hour_files(ns.root)
@@ -524,7 +530,7 @@ def main(argv: list[str] | None = None) -> int:
     pa = lambda v: datetime.strptime(v, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc) if v else None  # noqa: E731
     D = load_exploration(ns.root, start=pa(ns.start), end=pa(ns.end))
     print(f"loaded {len(D['a']['slot'])} SOL trade rows, {D['n_pools']} pools, bad hours {len(D['bad_hours'])} in {time.time() - t0:.0f}s", flush=True)
-    meta = {"schema": SCHEMA, "taken_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "file_counts": cnt, "kit_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+    meta = {"swap3_pricing": bool(ns.swap3), "spent_root": ns.spent_root, "schema": SCHEMA, "taken_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "file_counts": cnt, "kit_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
             "price_sha256": hashlib.sha256(Path(L.__file__).read_bytes()).hexdigest(), "bad_hours": D["bad_hours"], "block_args": [ns.start, ns.end]}
     if ns.validate:
         res = {**meta, "validate": validate_all(D), "capacity": capacity(D)}
