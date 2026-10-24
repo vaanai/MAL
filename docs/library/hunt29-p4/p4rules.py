@@ -19,8 +19,13 @@ KEEP_HOURS = 48
 class P4Rule:
     name = "p4_screens_v1"
 
+    def __init__(self, skip=()):
+        # AMEND-1: cells dropped by the declared rate bar (< 10 attempts/day in the counts-only job) are removed here, thresholds untouched
+        self.skip = set(skip)
+        self.drought = {k: v for k, v in DROUGHT.items() if k not in self.skip}
+
     def cells(self):
-        return [Cell(k, cooldown_s=COOL[k[0]]) for d in (FLUSH, WAKE, RANKUP, DROUGHT) for k in d]
+        return [Cell(k, cooldown_s=COOL[k[0]]) for d in (FLUSH, WAKE, RANKUP, self.drought) for k in d]
 
     # ------------------------------------------------------------------
     def triggers(self, hour, state):
@@ -274,13 +279,13 @@ class P4Rule:
         vs_s = np.where(has, cv[idx] - cv[lsc + 1], c_vs[pid] + cv[idx] - cv[pstart])
         clock = np.where(has, bt[lsc], c_clock[pid])
         dur = bt - clock
-        dmin = min(v[0] for v in DROUGHT.values())
+        dmin = min(x[0] for x in self.drought.values())
         base = isb & okv & (qp >= 10e9) & (dur >= dmin) & (nb_s >= 10) & (vs_s >= 3.0e9)
         out = []
         lastfire = sc.setdefault("dr_lastfire", {})
         for i in np.flatnonzero(base):
             pool = str(hour.pools[pid[i]])
-            for cell, (D, nn, S) in DROUGHT.items():
+            for cell, (D, nn, S) in self.drought.items():
                 if dur[i] >= D and nb_s[i] >= nn and vs_s[i] >= S:
                     k = (cell, pool)
                     if k in lastfire and bt[i] - lastfire[k] < 3600:

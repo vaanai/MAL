@@ -43,3 +43,7 @@ Best stake is read between 0.25 and 1.0 SOL as priced; 0.5 SOL impact is the lin
 
 ## Not run, with reasons
 DIAMOND hands (repeat of hunt25 A-HC-h60, re-priced -8.3% at 160k); Mayhem-graduate universe (kit V band has 0 such pools); creator-fee / unlock flows (no tape row); hold-time stratification (descriptive). See IDEAS.md.
+
+## AMEND-1 (2026-10-24, after the counts-only job #1429 and before any price)
+Counts-only (attempts/day, upper bound after overlap, 25 data days): f2 2079.5, f3 1311.9, f5 696.0, w1 137.9, w6 83.5, w24 33.2, k10 23.8, k25 50.6, k50 86.2, d30 141.0, d60 21.2, d120 6.2.
+d120 is under the 10/day bar (6.2; explore-0814 alone 7.1) and is DROPPED unpriced as declared. Implementation only: the rule takes skip=["d120"] (rule kwargs); no threshold, cell or exit changed. 11 cells are priced. Multiplicity stays 12 declared.
