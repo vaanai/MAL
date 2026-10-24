@@ -104,3 +104,13 @@ def test_sh_loop_runs_once(tmp_path):
     (tmp_path / "data" / "structure-monitor").symlink_to(out)
     r = subprocess.run(["sh", str(sh)], env=env, capture_output=True, text=True, timeout=60)
     assert r.returncode == 0 and "A3_BASELINE" in r.stdout and "A3_ALERT_JOB end reached" in r.stdout
+
+
+def test_sh_loop_exits_3_on_first_alert(tmp_path):
+    out, st = setup(tmp_path, [ap("2026-10-24T07:10:05Z", "HALT")])
+    repo = Path(__file__).resolve().parent.parent
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "A3_REPO": str(repo), "A3_PY": sys.executable, "A3_ALERT_UNTIL": "99999999999", "A3_ALERT_EVERY": "1"}
+    (tmp_path / "data").mkdir()
+    (tmp_path / "data" / "structure-monitor").symlink_to(out)
+    r = subprocess.run(["sh", str(repo / "scripts/mal-fast/a3-applied-alert.sh")], env=env, capture_output=True, text=True, timeout=60)
+    assert r.returncode == 3 and "ALERT A3_APPLIED_NEW verdict=HALT" in r.stdout
