@@ -26,6 +26,8 @@ new_rule_bot_ids, never one of FEES_CHECK_REFUSED_IDS). Without it (or with an e
 carries a valid `fees_check` sub-verdict (tools.a3_redeploy_check adds one only when the fees deploy slot is the record's ONLY change), the books of that list follow the sub-verdict
 instead of the main HALT: PASS = no end (record only); FAIL / ERROR = end at fees_check.halt_at_ms (never after the flag's instant). Every other new-rule book keeps the main HALT.
 A verdict without the sub-verdict ends the listed books with the main HALT, as now. A malformed sub-verdict is refused (nothing written).
+DEPLOY ORDER (QP, PR #894 comment 6388090983 (1)): the books file is SHARED ($HOME/data/arena/a3-books.json). An older a3_halt.py refuses a file with the third key (exit 2) and then
+applies NO halt to ANY book. Add `fees_check_bot_ids` only after Q50 has ended and its A3 loop and dead-man jobs run at a pin that contains this file (or after the full R9.2 replay).
 
 Exit codes: 0 applied / nothing to apply; 2 invalid input (nothing written); 12 registry or log write failed.
 """
