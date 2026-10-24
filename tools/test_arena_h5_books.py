@@ -188,6 +188,76 @@ class Q50Seal(Base):
             L.build_report(Q50, self.ledger, read_instant_ms=bk["ri"], i_am_the_read=True, now_ms=bk["ri"] + 1000)
 
 
+
+def mark_derived(pools: set[str]):
+    """A make_book `mutate` that sets the scorer's derived_last flag (meta.state_src of the 1.9 s leg: exit state after the pool's last print) on the rows of `pools`. Meta only."""
+    def mutate(rows):
+        for r in rows:
+            if r["pool"] in pools:
+                r["meta"]["state_src"]["1p9"] = [r["meta"]["state_src"]["1p9"][0], "post"]
+    return mutate
+
+
+class D3(Base):
+    def read(self, bk, bot=Q50):
+        return R.decide_book(bot, self.ledger, read_instant_ms=bk["ri"], i_am_the_read=True, now_ms=bk["ri"] + 1000, books=self.books())
+
+    def test_above_5pct_the_ex_derived_total_is_the_restatement_without_those_trades(self):
+        marked = {f"P{d}x{i:02d}" for d in range(5) for i in (0, 1)}  # 10 of 120 attempts = 8.33%
+        bk = self.make_book(Q50, mutate=mark_derived(marked))
+        q50_record(self.ledger)
+        res = self.read(bk)
+        d = res["d3"]
+        self.assertEqual((d["derived_last_deciding_leg"], d["attempts"], d["over_5pct"]), (10, 120, True))
+        self.assertAlmostEqual(d["share_of_attempts"], 10 / 120)
+        sel = [(k, TR.h5s.utc_day((TR.BT0 + dd * 86400 + i * 60) * 1000)) for dd, i, k, counted in bk["pools"] if counted and (TR.BT0 + dd * 86400 + i * 60) * 1000 < bk["ri"]
+               and f"P{dd}x{i:02d}" not in marked]
+        want = TR.expected_cells([k for k, _ in sel], [x for _, x in sel])
+        self.assertEqual(sorted(d["ex_derived"]), sorted(R.SUBCELLS))
+        for k, v in d["ex_derived"].items():
+            self.assertEqual(v["n"], 110)
+            self.assertAlmostEqual(v["total_sol"], want[k]["total_sol"], places=12)
+            self.assertAlmostEqual(v["mean_sol"], want[k]["mean_sol"], places=12)
+        self.assertEqual(res["status"], "PASS")  # the deciding cells are unchanged: D3 never decides
+        for v in res["subcells"].values():
+            self.assertEqual(v["n"], 120)
+
+    def test_at_or_below_5pct_only_the_count_is_printed(self):
+        marked = {f"P{d}x00" for d in range(5)} | {"P0x01"}  # 6 of 120 = exactly 5%: not above
+        bk = self.make_book(Q50, mutate=mark_derived(marked))
+        q50_record(self.ledger)
+        d = self.read(bk)["d3"]
+        self.assertEqual((d["derived_last_deciding_leg"], d["over_5pct"]), (6, False))
+        self.assertIn("not required", d["ex_derived"])
+
+    def test_not_decidable_prints_the_count_only(self):
+        bk = self.make_book(Q50, excluded={(0, i) for i in range(7)}, mutate=mark_derived({"P1x00"}))
+        q50_record(self.ledger)
+        res = self.read(bk)
+        self.assertEqual(res["status"], "NOT_DECIDABLE")
+        self.assertEqual(res["d3"]["derived_last_deciding_leg"], 1)
+        self.assertIn("counts only", res["d3"]["ex_derived"])
+        self.assertNotIn("subcells", res)
+
+    def test_books_side_by_side_with_the_shared_pool_count(self):
+        bq = self.make_book(Q50, mutate=mark_derived({"P0x00"}))
+        q50_record(self.ledger)
+        ba = self.make_book(A2V1, per_day=20, kind=lambda d, i: "flat")
+        ri = max(bq["ri"], ba["ri"])
+        js = self.root / "sbs.json"
+        rc, out, _ = self.cli(*self.bargs(ri, A2V1, A2V2, Q50, extra=("--json", str(js))))
+        self.assertEqual(rc, 3)  # v2-a2 has no record
+        sb = json.loads(js.read_text())["side_by_side"]
+        self.assertEqual(sorted(sb["books"]), sorted([A2V1, A2V2, Q50]))
+        self.assertEqual((sb["books"][A2V1]["status"], sb["books"][A2V1]["counted"], sb["books"][A2V1]["d3"]["derived_last_deciding_leg"]), ("FAIL", 100, 0))
+        self.assertEqual((sb["books"][Q50]["status"], sb["books"][Q50]["counted"], sb["books"][Q50]["d3"]["derived_last_deciding_leg"]), ("PASS", 120, 1))
+        self.assertEqual(sb["books"][A2V2]["status"], "REFUSED")
+        self.assertEqual(sb["shared_pools"], {f"{A2V1}|{Q50}": 100})
+        self.assertIn("BOOKS SIDE BY SIDE", out)
+        self.assertIn(f"shared pools {A2V1}|{Q50}: 100", out)
+        self.assertNotIn("_pools", json.loads(js.read_text())["books"][Q50])
+
+
 if __name__ == "__main__":
     import unittest
     unittest.main()
