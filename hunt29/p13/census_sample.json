@@ -1,0 +1,526 @@
+{
+ "elapsed_s": 600.116641998291,
+ "reconnect_events": [
+  [
+   72,
+   "ConnectionClosedError(None, Close(code=<CloseCode.PROTOCOL_ERROR: 1002>, reason="
+  ],
+  [
+   74,
+   "InvalidStatus(Response(status_code=429, reason_phrase='Too Many Requests', heade"
+  ],
+  [
+   191,
+   "ConnectionClosedError(None, Close(code=<CloseCode.PROTOCOL_ERROR: 1002>, reason="
+  ],
+  [
+   193,
+   "InvalidStatus(Response(status_code=429, reason_phrase='Too Many Requests', heade"
+  ],
+  [
+   336,
+   "ConnectionClosedError(None, Close(code=<CloseCode.PROTOCOL_ERROR: 1002>, reason="
+  ],
+  [
+   338,
+   "InvalidStatus(Response(status_code=429, reason_phrase='Too Many Requests', heade"
+  ],
+  [
+   448,
+   "ConnectionClosedError(None, Close(code=<CloseCode.PROTOCOL_ERROR: 1002>, reason="
+  ],
+  [
+   451,
+   "InvalidStatus(Response(status_code=429, reason_phrase='Too Many Requests', heade"
+  ],
+  [
+   540,
+   "ConnectionClosedError(None, Close(code=<CloseCode.PROTOCOL_ERROR: 1002>, reason="
+  ],
+  [
+   542,
+   "InvalidStatus(Response(status_code=429, reason_phrase='Too Many Requests', heade"
+  ],
+  [
+   582,
+   "ConnectionClosedError(None, Close(code=<CloseCode.PROTOCOL_ERROR: 1002>, reason="
+  ],
+  [
+   584,
+   "InvalidStatus(Response(status_code=429, reason_phrase='Too Many Requests', heade"
+  ]
+ ],
+ "url": "wss://api.mainnet-beta.solana.com",
+ "venues": {
+  "launchlab": {
+   "program": "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj",
+   "notices": 94,
+   "failed": 20,
+   "creates": 15,
+   "swaps": 61,
+   "swaps_within_2_slots_of_a_create": 15,
+   "top_ix": [
+    [
+     "TransferChecked",
+     140
+    ],
+    [
+     "SellExactIn",
+     38
+    ],
+    [
+     "UpdatePlatformCurveRule",
+     26
+    ],
+    [
+     "BuyExactIn",
+     23
+    ],
+    [
+     "SwapV2",
+     19
+    ],
+    [
+     "GetAccountDataSize",
+     17
+    ],
+    [
+     "InitializeImmutableOwner",
+     17
+    ],
+    [
+     "InitializeAccount3",
+     17
+    ],
+    [
+     "Swap",
+     14
+    ],
+    [
+     "Swap2",
+     7
+    ],
+    [
+     "RouteV2",
+     3
+    ],
+    [
+     "SwapTob",
+     3
+    ]
+   ],
+   "ex_logs": [
+    [
+     "Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL invoke [1]",
+     "Program log: CreateIdempotent",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 179 of 345694 compute units",
+     "Program return: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA pQAAAAAAAAA=",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+     "Program 11111111111111111111111111111111 invoke [2]",
+     "Program 11111111111111111111111111111111 success",
+     "Program log: Initialize the associated token account",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 37 of 340605 compute units",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success"
+    ],
+    [
+     "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+     "Program ComputeBudget111111111111111111111111111111 success",
+     "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+     "Program ComputeBudget111111111111111111111111111111 success",
+     "Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL invoke [1]",
+     "Program log: CreateIdempotent",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 179 of 394349 compute units",
+     "Program return: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA pQAAAAAAAAA=",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+     "Program 11111111111111111111111111111111 invoke [2]",
+     "Program 11111111111111111111111111111111 success"
+    ]
+   ]
+  },
+  "dbc": {
+   "program": "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN",
+   "notices": 3564,
+   "failed": 913,
+   "creates": 342,
+   "swaps": 3456,
+   "swaps_within_2_slots_of_a_create": 1842,
+   "top_ix": [
+    [
+     "Swap2",
+     3397
+    ],
+    [
+     "TransferChecked",
+     2591
+    ],
+    [
+     "InitializeAccount3",
+     443
+    ],
+    [
+     "GetAccountDataSize",
+     424
+    ],
+    [
+     "InitializeImmutableOwner",
+     424
+    ],
+    [
+     "Swap",
+     81
+    ],
+    [
+     "RouteV2",
+     21
+    ],
+    [
+     "SetAuthority",
+     16
+    ],
+    [
+     "CloseAccount",
+     12
+    ],
+    [
+     "InitializeMint2",
+     12
+    ],
+    [
+     "MintTo",
+     12
+    ],
+    [
+     "Swap2WithTransferHook",
+     9
+    ]
+   ],
+   "ex_logs": [
+    [
+     "Program FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9 invoke [1]",
+     "Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL invoke [2]",
+     "Program log: CreateIdempotent",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [3]",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 179 of 80936 compute units",
+     "Program return: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA pQAAAAAAAAA=",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+     "Program 11111111111111111111111111111111 invoke [3]",
+     "Program 11111111111111111111111111111111 success",
+     "Program log: Initialize the associated token account",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [3]",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 37 of 75847 compute units"
+    ],
+    [
+     "Program dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN invoke [1]",
+     "Program log: Instruction: CreateConfig",
+     "Program 11111111111111111111111111111111 invoke [2]",
+     "Program 11111111111111111111111111111111 success",
+     "Program dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN invoke [2]",
+     "Program dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN consumed 646 of 170584 compute units",
+     "Program dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN success",
+     "Program dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN invoke [2]",
+     "Program dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN consumed 646 of 164943 compute units",
+     "Program dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN success",
+     "Program dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN consumed 36144 of 200000 compute units",
+     "Program dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN success"
+    ]
+   ]
+  },
+  "heaven": {
+   "program": "HEAVENoP2qxoeuF8Dj2oT1GHEnu49U5mJYkdeC8BAX2o",
+   "notices": 0,
+   "failed": 0,
+   "creates": 0,
+   "swaps": 0,
+   "swaps_within_2_slots_of_a_create": 0,
+   "top_ix": [],
+   "ex_logs": []
+  },
+  "boop": {
+   "program": "boop8hVGQGqehUK2iVEMEnMrL5RbjywRzHKBmBE7ry4",
+   "notices": 0,
+   "failed": 0,
+   "creates": 0,
+   "swaps": 0,
+   "swaps_within_2_slots_of_a_create": 0,
+   "top_ix": [],
+   "ex_logs": []
+  },
+  "moonit": {
+   "program": "MoonCVVNZFSYkqNXP6bxHLPL6QQJiMagDL3qcqUQTrG",
+   "notices": 0,
+   "failed": 0,
+   "creates": 0,
+   "swaps": 0,
+   "swaps_within_2_slots_of_a_create": 0,
+   "top_ix": [],
+   "ex_logs": []
+  },
+  "whirlpool": {
+   "program": "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc",
+   "notices": 7911,
+   "failed": 2874,
+   "creates": 701,
+   "swaps": 5671,
+   "swaps_within_2_slots_of_a_create": 3303,
+   "top_ix": [
+    [
+     "TransferChecked",
+     5698
+    ],
+    [
+     "SwapV2",
+     4821
+    ],
+    [
+     "Swap",
+     3651
+    ],
+    [
+     "RouteV2",
+     1110
+    ],
+    [
+     "Route",
+     1093
+    ],
+    [
+     "Swap2",
+     986
+    ],
+    [
+     "InitializeAccount3",
+     578
+    ],
+    [
+     "GetAccountDataSize",
+     542
+    ],
+    [
+     "InitializeImmutableOwner",
+     542
+    ],
+    [
+     "SwapBaseInput",
+     367
+    ],
+    [
+     "SetTokenLedger",
+     365
+    ],
+    [
+     "GetFeesWithQuoteMint",
+     337
+    ]
+   ],
+   "ex_logs": [
+    [
+     "Program 11111111111111111111111111111111 invoke [1]",
+     "Program 11111111111111111111111111111111 success",
+     "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+     "Program ComputeBudget111111111111111111111111111111 success",
+     "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+     "Program ComputeBudget111111111111111111111111111111 success",
+     "Program BoobsBSMpFRBA91sNwKLYShRRQPH5GjoCH4NhLUt4yRo invoke [1]",
+     "Program log: Instruction: SwapOrcaWhirlpool",
+     "Program whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc invoke [2]",
+     "Program log: Instruction: Swap",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [3]",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 76 of 23688 compute units"
+    ],
+    [
+     "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+     "Program ComputeBudget111111111111111111111111111111 success",
+     "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+     "Program ComputeBudget111111111111111111111111111111 success",
+     "Program 11111111111111111111111111111111 invoke [1]",
+     "Program 11111111111111111111111111111111 success",
+     "Program proVF4pMXVaYqmy4NjniPh4pqKNfMmsihgd4wdkCX3u invoke [1]",
+     "Program log: Instruction: CreateTokenAccount",
+     "Program 11111111111111111111111111111111 invoke [2]",
+     "Program 11111111111111111111111111111111 success",
+     "Program 11111111111111111111111111111111 invoke [2]",
+     "Program 11111111111111111111111111111111 success"
+    ]
+   ]
+  },
+  "cpmm": {
+   "program": "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C",
+   "notices": 2637,
+   "failed": 875,
+   "creates": 516,
+   "swaps": 1793,
+   "swaps_within_2_slots_of_a_create": 1186,
+   "top_ix": [
+    [
+     "TransferChecked",
+     2246
+    ],
+    [
+     "SwapBaseInput",
+     1888
+    ],
+    [
+     "Swap",
+     684
+    ],
+    [
+     "SwapV2",
+     561
+    ],
+    [
+     "Swap2",
+     409
+    ],
+    [
+     "SwapTobEnhanced",
+     251
+    ],
+    [
+     "CreateTokenAccount",
+     219
+    ],
+    [
+     "InitializeAccount3",
+     200
+    ],
+    [
+     "SwapTobV3",
+     198
+    ],
+    [
+     "GetAccountDataSize",
+     198
+    ],
+    [
+     "InitializeImmutableOwner",
+     198
+    ],
+    [
+     "CreateAtaWithCloseAuthority",
+     197
+    ]
+   ],
+   "ex_logs": [
+    [
+     "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+     "Program ComputeBudget111111111111111111111111111111 success",
+     "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+     "Program ComputeBudget111111111111111111111111111111 success",
+     "Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL invoke [1]",
+     "Program log: CreateIdempotent",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 179 of 311749 compute units",
+     "Program return: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA pQAAAAAAAAA=",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+     "Program 11111111111111111111111111111111 invoke [2]",
+     "Program 11111111111111111111111111111111 success"
+    ],
+    [
+     "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+     "Program ComputeBudget111111111111111111111111111111 success",
+     "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+     "Program ComputeBudget111111111111111111111111111111 success",
+     "Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL invoke [1]",
+     "Program log: CreateIdempotent",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 179 of 310249 compute units",
+     "Program return: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA pQAAAAAAAAA=",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+     "Program 11111111111111111111111111111111 invoke [2]",
+     "Program 11111111111111111111111111111111 success"
+    ]
+   ]
+  },
+  "damm2": {
+   "program": "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG",
+   "notices": 15666,
+   "failed": 5238,
+   "creates": 1172,
+   "swaps": 10264,
+   "swaps_within_2_slots_of_a_create": 7591,
+   "top_ix": [
+    [
+     "TransferChecked",
+     13706
+    ],
+    [
+     "Swap2",
+     7903
+    ],
+    [
+     "Swap",
+     3710
+    ],
+    [
+     "InitializeAccount3",
+     1613
+    ],
+    [
+     "GetAccountDataSize",
+     1540
+    ],
+    [
+     "InitializeImmutableOwner",
+     1466
+    ],
+    [
+     "GetFeesWithQuoteMint",
+     817
+    ],
+    [
+     "Sell",
+     411
+    ],
+    [
+     "CloseAccount",
+     401
+    ],
+    [
+     "SellV2",
+     390
+    ],
+    [
+     "BuyExactQuoteIn",
+     384
+    ],
+    [
+     "BuyV2",
+     345
+    ]
+   ],
+   "ex_logs": [
+    [
+     "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+     "Program ComputeBudget111111111111111111111111111111 success",
+     "Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL invoke [1]",
+     "Program log: CreateIdempotent",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA consumed 179 of 292999 compute units",
+     "Program return: TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA pQAAAAAAAAA=",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA success",
+     "Program 11111111111111111111111111111111 invoke [2]",
+     "Program 11111111111111111111111111111111 success",
+     "Program log: Initialize the associated token account",
+     "Program TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA invoke [2]"
+    ],
+    [
+     "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+     "Program ComputeBudget111111111111111111111111111111 success",
+     "Program ComputeBudget111111111111111111111111111111 invoke [1]",
+     "Program ComputeBudget111111111111111111111111111111 success",
+     "Program H6BGrYHFtWpePAH73xAScizTMVmoNi6QaDANepF53G4t invoke [1]",
+     "Program log: Instruction: ArbProcess32Account",
+     "Program ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL invoke [2]",
+     "Program log: CreateIdempotent",
+     "Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb invoke [3]",
+     "Program log: Instruction: GetAccountDataSize",
+     "Program TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb consumed 1495 of 227216 compute units",
+     "Program return: TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb qgAAAAAAAAA="
+    ]
+   ]
+  }
+ }
+}
