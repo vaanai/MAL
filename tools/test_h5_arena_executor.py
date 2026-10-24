@@ -63,9 +63,11 @@ class AEnv(Env):
 
     def __init__(self, tmp: Path, live: bool = True, **cfg):
         if live:  # a live start needs these (QP 10-23): the exit-gap feed file, the twins file and the tie-out results dir
+            cfg.setdefault("exit_gap_file", str(tmp / "state" / "arena-parity" / "exit-gaps.jsonl"))  # the executor's own writer path (live start check)
             for key, name in (("exit_gap_file", "exit-gap.jsonl"), ("parity_twins_file", "twins.jsonl")):
                 cfg.setdefault(key, str(tmp / name))
                 if cfg[key]:
+                    Path(cfg[key]).parent.mkdir(parents=True, exist_ok=True)
                     Path(cfg[key]).touch()
             cfg.setdefault("tieout_dir", str(tmp / "tieout"))
             if cfg.get("parity_twins_file") and cfg.pop("pinned_twin_record", True):  # the writer has run once on the empty trips file (QP 10-23 blocker 3): a pinned, empty run record
