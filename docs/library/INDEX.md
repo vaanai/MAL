@@ -29,16 +29,16 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | --- | --- | --- | --- |
 | `live-canary` | 1 | 0 | 0 |
 | `forward-test` | 2 | 0 | 0 |
-| `explored-survivor-unconfirmed` | 8 | 0 | 0 |
+| `explored-survivor-unconfirmed` | 9 | 0 | 0 |
 | `parked` | 6 | 0 | 0 |
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 29 | 20 | 1 |
 | `desk-read` | 1 | 43 | 0 |
-| `explored-no-survivor` | 22 | 6 | 1 |
+| `explored-no-survivor` | 23 | 6 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 147 | 75 | 2 |
+| **all** | 149 | 75 | 2 |
 
-The file holds 474 rows: the 224 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 476 rows: the 226 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -62,6 +62,7 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `lib-c-L1` | FLOOR-OPTION v2 (G4-FLOORDIP successor; q0.5 cap, take-profit +50%) | 2026-10-13, judge-checked against iter-r1 logs: confirmation flat +4.4670 %, pressure +3.6409 %, n 112, 11 of 12 days; stacked stress flat +0.5157 %, CI lower bound -0.6684 %, 7 of 12 days, ex-top-3 -0.0413 SOL; median trade -1.6347 % (confirmation, flat); 46 of 112 exits are priced after the pool's last print. 2026-10-13, sell-cap judge pass (stronger model, declared before its runs … | Deciding legs: END and worst-in-slot, 1.9 s, exit lag 2 s, both fail models, rent refunded; gate n >= 100 and >= 10 dates, majority positive (library L1). |
 | `reprice-160k-l1` | FLOOR-OPTION v2 re-priced at 160,000 per send (arena_screen, 4 Aug/Sep blocks) | Not a fee stop: kit flags unchanged (event-triggered, excluded block-edge share 22.4% over 5%, worst-in-slot owed). Screen numbers at 160k: n 332, 13.3 trades/day, flat mean 6.42% (505k: 6.17%), flat +0.0161 SOL/trade, pressure +0.0129 SOL/trade, ex-top-3 +4.41 / +3.49 SOL, 18 of 19 days positive both models, trade-level CI90 lower bound +0.0112 / +0.0086 SOL/trade; impact 1.37% at 0.25 SOL, 5.48% at 1.0 SOL. … | quant-proof reads the 160k input; no gate claim from this row. |
 | `dbc-early-momentum` | Meteora DBC early-curve momentum (m4/m6/m10) | 3 days only (cannot meet the 5-day criterion). m4/m6 FAIL (flat -0.0341/-0.0406 SOL/trip; 194/193 of ~590/520 fills strand at curve completion = full loss). m10 MARGINAL: n=369 (243 fills), flat +0.0218, pressure +0.0169 SOL/trip, ex-top-3 +5.4 SOL, 3 of 3 days positive, trade CI90 lo +0.0117, but 12 cells looked at (winner's curse), the three days are one regime, and 5 strands only because m10 fires in … | Manager decides whether to fetch the holdout; DAMM v2 exit tape would remove the strand assumption. |
+| `dbc-strand-damm-continue` | DBC D1/D2 positions open at completion continue in the migrated DAMM v2 pool (same exit … | Screen only: re-priced strands flip m4/m6 (flat +0.022/+0.023 per attempt) and ms30 (+0.006), ms50 about 0, ms70 -0.006; 15-18 strands per cell unlinked stay full loss; 3 days; no migration-sniper competition modelled; the stranded sells land on a first DAMM price about 11% above the decision spot. | Measure DBC detection-to-landing and the first-DAMM-print sell latency before any book; quant-proof on the strand rule. |
 
 ## Parked and shelved, with what would reopen them
 
@@ -356,6 +357,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `dbc-cascade-fade` | Meteora DBC sell-cascade fade (c3/c4/c6) | `explored-no-survivor` | All 3 FAIL: flat -0.0091 / -0.0043 / +0.0006 SOL/trip (n 1097 / 735 / 522), ex-top-3 -10.8 / -3.8 / -0.4 SOL under both fail models. Closest: c6 (flat +0.0006, pressure -0.0016, ex-top-3 negative). |
 | `dbc-swap3-rescreen` | Meteora DBC D2/D3/D4 re-screen on the Swap3 universe (ms/bb/c, 10-17..10-23) | `explored-no-survivor` | All 9 FAIL on 7 disclosed-exploration days: flat mean per trip ms -0.115/-0.123/-0.153 (full-loss strands 605-1378), bb -0.0011/-0.0019/-0.0115, c -0.0110/-0.0067/-0.0059; round-trip fee 110-400 bps; best optimistic last-price bracket +0.0157 (bb1) is not a priced result. |
 | `dbc-dip-buy` | Meteora DBC single big-sell dip buy (dbs1/dbs2) | `explored-no-survivor` | Both FAIL on 7 disclosed-exploration days: flat mean -0.0135 / -0.0131 per trip (n 2487 / 1202), 0/7 positive days, round trip about 355 bps, even the optimistic bracket is negative. |
+| `dbc-d5-post-graduation-hold` | Buy a migrated DAMM v2 pool 1.9 s after migration, hold (tp +50%/23 h, +25%/6 h, time 1 h) | `explored-no-survivor` | Capacity: only 0.5% of migrated pools let a 0.25 SOL buy move the spot <= 2% (47% <= 5%, the rest far larger), so the declared universe has 6-8 attempts in 3 days (<3/day) and is dropped unpriced. Post-hoc at <=5% impact: tp+50%/23h flat +0.0081 but ex-best-day -9.2 and CI lo <0; tp+25%/6h -0.0075; time-only 1 h -0.204 (most pools collapse). Not a result. |
 
 ## Duplicate rows
 
