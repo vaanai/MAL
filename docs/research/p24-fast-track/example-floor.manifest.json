@@ -1,0 +1,154 @@
+{
+ "schema": "fasttrack_book_v1",
+ "note": "EXAMPLE ONLY. Mirrors the values of FLOOR's hand-written pack (hunt24/floor-1026: E3-register-v2, E4-run-v2, S1, L7) to show the template. It is not FLOOR's registration and changes nothing for FLOOR.",
+ "bot_id": "l1-floor-v2",
+ "host_profile": "arena_rules_v2",
+ "rule_names": [
+  "l1-floor-v2"
+ ],
+ "frozen_sha": "5e12f8f597571d6d5191a7ba38125c67ad723b7d",
+ "clock_iso": "2026-10-26T00:00:00Z",
+ "slip_days": [
+  0,
+  1
+ ],
+ "horizon_days": 12,
+ "exit_tail_h": 25,
+ "deciding_stake_sol": 0.25,
+ "feed_delay_slots": 7,
+ "register_lead_s": 900,
+ "startup_s": 900,
+ "start_margin_s": 600,
+ "host": "mal-research-0",
+ "python": "/data/mal/venv/bin/python",
+ "pack_dir": "/data/mal/hunt-1008/push-1016/p24-example/floor",
+ "paths": {
+  "root": "/data/mal/arena/rules-floor",
+  "ledger": "/data/mal/arena/ledger",
+  "registry": "/data/mal/arena/bots.json",
+  "tape": "/data/mal/arena/tape",
+  "smoke_root": "/data/mal/arena/_smoke-floor-p24"
+ },
+ "jobs": {
+  "mem_gb": {
+   "register": 1,
+   "smoke": 8,
+   "run": 8
+  },
+  "cpus": 1
+ },
+ "smoke": {
+  "hours": 2,
+  "rss_cap_mb": 8000
+ },
+ "thresholds": {
+  "max_gap_s": {
+   "value": 3600,
+   "label": "price-path"
+  },
+  "max_input_age_s": {
+   "value": 600,
+   "label": "decision-input"
+  },
+  "min_samples_per_hour": {
+   "value": 12,
+   "label": "decision-input"
+  },
+  "max_sample_gap_s": {
+   "value": 900,
+   "label": "decision-input"
+  },
+  "feed_max_nonnull_gap_s": {
+   "value": 900,
+   "label": "decision-input"
+  },
+  "feed_writing_paused": {
+   "value": 0,
+   "label": "decision-input"
+  },
+  "feed_pauses_delta": {
+   "value": 0,
+   "label": "decision-input"
+  },
+  "feed_rows_dropped_delta": {
+   "value": 0,
+   "label": "decision-input"
+  }
+ },
+ "caps": {
+  "feed_gap_pct": 5,
+  "excluded_hour_pct": 10
+ },
+ "cost": {
+  "venue": "pumpswap",
+  "send_lamports": 505000,
+  "rent_lamports": 0,
+  "pumpswap_virtual_reserve": true,
+  "reserve_convention": "pre-trade",
+  "latency_legs_s": [
+   1.3,
+   1.9
+  ],
+  "deciding_leg_s": 1.9,
+  "fail_models": [
+   "flat15",
+   "pressure"
+  ],
+  "e1_floor": true
+ },
+ "constants": [
+  {
+   "path": "tools/arena_stack.py",
+   "name": "SEND_FEE_DECIDING",
+   "expect": "$cost.send_lamports"
+  },
+  {
+   "path": "tools/arena_stack.py",
+   "name": "RENT_DECIDING",
+   "expect": "$cost.rent_lamports"
+  }
+ ],
+ "pins": [
+  "tools/arena_rule_l1.py",
+  "tools/arena_pool_table.py"
+ ],
+ "tests": [
+  "tools/test_arena_rule_l1.py",
+  "tools/test_arena_rules.py"
+ ],
+ "preconditions": [
+  "p0",
+  "gapcheck",
+  "smoke",
+  "md5",
+  "tests",
+  "qp",
+  "reviewer",
+  "dr1"
+ ],
+ "llm": null,
+ "dec_refs": [
+  "DEC-031 Am.6",
+  "DEC-031 Am.9",
+  "Am.9 Erratum 1",
+  "Am.9 Erratum 2"
+ ],
+ "premortem": {
+  "PM01_cost": "arena_stack deciding stack at frozen sha: 505,000 per send, rent 0 (Am.2), +26.08/-16 bps, PRE-trade PumpSwap reserves with V, own impact at 0.25 SOL, E1 floor.",
+  "PM02_fail_models": "arena_score decides on flat 15% and pressure, strand rules sc and total (four sub-cells).",
+  "PM03_exclusions": "5% / 10% caps; G1 gap check over the last closed window before E3 (counts only).",
+  "PM04_restart_feed": "One process for the window; run limit computed (M06); feed job #1516 end checked against END_H + 25 h; no planned restart.",
+  "PM05_day1_dry_score": "Day-1 counts-only score job chained after the clock, input dir /data/mal/arena/rules-floor, glob l1-floor-v2.",
+  "PM06_paper_live_equiv": "tools/floor_arena_executor.py over arena_live_bridge; md5 replay of the frozen decision log (C4(iii)).",
+  "PM07_seals": "L1 grid does not match C1-NF; no H5 V-range 360 s pool; no hour of [10-02T10, 10-16T01).",
+  "PM08_p0_count": "A2-v3 structure-only count: rate_att_lo >= 12.5/day on unseen days; NOT_DECIDABLE on a hard gap.",
+  "PM09_capacity": "~3-6 entries/day at 0.25 SOL; impact at 0.25/0.5/1.0 reported.",
+  "PM10_memory": "Smoke RSS slope x (12 d + 25 h) + R0 <= 8000 MB.",
+  "PM11_lookahead": "Rule runs in arena_rules_v2 (StateView, pure rule): causal by construction; screen-side check owed for new screens.",
+  "PM12_halt_alerts": "Host STOP and crash lines alert the manager via the MiScusi job state; daily table notebooked."
+ },
+ "tool_refs": {
+  "tools/arena_hour_health.py": "0a5aef86880370218fb288a3df40cb72a6084b20",
+  "tools/floor_p0_count.py": "9a403a39b6450b5fcd60c5816867ce2ec75ed403"
+ }
+}
