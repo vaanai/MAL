@@ -34,11 +34,11 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 32 | 20 | 1 |
 | `desk-read` | 1 | 43 | 0 |
-| `explored-no-survivor` | 36 | 6 | 1 |
+| `explored-no-survivor` | 38 | 6 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 167 | 75 | 2 |
+| **all** | 169 | 75 | 2 |
 
-The file holds 494 rows: the 244 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 496 rows: the 246 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -376,6 +376,8 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `dbc-swap3-rescreen` | Meteora DBC D2/D3/D4 re-screen on the Swap3 universe (ms/bb/c, 10-17..10-23) | `explored-no-survivor` | All 9 FAIL on 7 disclosed-exploration days: flat mean per trip ms -0.115/-0.123/-0.153 (full-loss strands 605-1378), bb -0.0011/-0.0019/-0.0115, c -0.0110/-0.0067/-0.0059; round-trip fee 110-400 bps; best optimistic last-price bracket +0.0157 (bb1) is not a priced result. |
 | `dbc-dip-buy` | Meteora DBC single big-sell dip buy (dbs1/dbs2) | `explored-no-survivor` | Both FAIL on 7 disclosed-exploration days: flat mean -0.0135 / -0.0131 per trip (n 2487 / 1202), 0/7 positive days, round trip about 355 bps, even the optimistic bracket is negative. |
 | `dbc-d5-post-graduation-hold` | Buy a migrated DAMM v2 pool 1.9 s after migration, hold (tp +50%/23 h, +25%/6 h, time 1 h) | `explored-no-survivor` | Capacity: only 0.5% of migrated pools let a 0.25 SOL buy move the spot <= 2% (47% <= 5%, the rest far larger), so the declared universe has 6-8 attempts in 3 days (<3/day) and is dropped unpriced. Post-hoc at <=5% impact: tp+50%/23h flat +0.0084 but ex-best-day -9.2 and CI lo <0; tp+25%/6h -0.0075; time-only 1 h -0.204 (most pools collapse). Not a result. |
+| `p20-dbc-start-floor` | DBC curve start-price floor option (buy pools back near sqrt_start_price, tp +50%) | `explored-no-survivor` | P21 exploration screen (E1 10-14..16 + E2 10-17..23 as disclosed exploration; m 26->32): 4 cells (band 1.02/1.05 x cap 6 h/24 h, prior peak >= 2x start, age >= 30 min, tp +50%) all FAIL. Primary d7_s105_h6: n 150, 1/10 days positive, flat -0.0070 (CI90 lo -0.0083, ex-top-3 -1.20), pressure -0.0058 (CI90 lo -0.0070). 97-100% of trips end at the time cap (dead pools, as … |
+| `p20-dbc-fee-floor-clock` | DBC/DAMM v2 anti-sniper fee-expiry clock: pre-signed buy landing at the fee-scheduler or … | `explored-no-survivor` | P21 exploration screen (E1 + E2 disclosed exploration; m 26->32): config fee schedule decoded and validated (non-dynamic configs 92-95% of tape fees within 1 bp); 634 of 7,399 configs have a schedule (modes linear/exponential; no rate limiter in candidates). 2 cells, time exit 60 s / 300 s, landing expiry + 2 slots: both FAIL. Primary d9_t60: n 123, 2/10 days positive, flat … |
 
 ## Duplicate rows
 
