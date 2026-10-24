@@ -311,6 +311,8 @@ def resolve(cell: CellDef, P: Pool, idx: list[int], D: dict[str, Any], comp_slot
             refused["bad_state"] += 1
             continue
         ended = bool(comp_slot is not None and comp_slot <= xe)
+        # DIAGNOSTIC only (added after the first look, does not change a label): the last on-curve state at or before the completion slot, for the strand sensitivity
+        jc = jx if not ended else max(int(np.searchsorted(P.slot, comp_slot, "right")) - 1, je)
         exit_bt = bt + (fire_slot - sd) * ss
         busy_until_bt = exit_bt + cell.cooldown_s
         lo2 = int(np.searchsorted(P.slot, x - int(round(2.0 / ss)), "left"))
@@ -320,7 +322,8 @@ def resolve(cell: CellDef, P: Pool, idx: list[int], D: dict[str, Any], comp_slot
             "pid": P.pid, "bt": bt, "date": day_of(bt), "i": i, "reason": reason, "ended": ended, "mode": int(P.mode[je]),
             "S_e": float(P.S1[je]), "L_e": float(P.Lp[je]), "spot": ref, "S_x": float(P.S1[jx]), "L_x": float(P.Lp[jx]),
             "fee_in": float(P.fee_buy[i]), "fee_out": float(P.fee_sell[jf]), "room": float(P.thr[je] - P.qres[je]),
-            "ssb": float(P.c_buy_n[hi2] - P.c_buy_n[ix]), "nearby": float(P.c_buy_sol[hi2] - P.c_buy_sol[lo2]), "hold_real_s": (fire_slot - sd) * ss, "prog": float(P.prog_post[i]),
+            "ssb": float(P.c_buy_n[hi2] - P.c_buy_n[ix]), "nearby": float(P.c_buy_sol[hi2] - P.c_buy_sol[lo2]), "hold_real_s": (fire_slot - sd) * ss, "prog": float(P.prog_post[i]), "thr": float(P.thr[i]),
+            "S_c": float(P.S1[jc]), "L_c": float(P.Lp[jc]) if np.isfinite(P.Lp[jc]) else float("nan"),
         })
     return out, refused
 
@@ -384,12 +387,31 @@ def stat(x: np.ndarray, dates: list[str]) -> dict[str, Any]:
     }
 
 
-def price_cell(att: list[dict[str, Any]], stake_sol: float, rent: int = L.RENT_DECIDING) -> dict[str, Any]:
+def concentration(att: list[dict[str, Any]], flat: np.ndarray) -> dict[str, Any]:
+    """DIAGNOSTIC (added after the first look): per-pool concentration and threshold bands of the flat-model pnl (SOL)."""
+    pids = np.array([a["pid"] for a in att])
+    thr = np.array([a["thr"] for a in att]) / SOL
+    up = np.unique(pids)
+    tot = np.array([flat[pids == u].sum() for u in up])
+    best = int(np.argmax(tot))
+    out = {"pools": int(len(up)), "best_pool_total": float(tot.max()), "total_ex_best_pool": float(flat.sum() - tot.max()), "best3_pools_total": float(np.sort(tot)[::-1][:3].sum()),
+           "attempts_in_best_pool": int((pids == up[best]).sum())}
+    for nm, m in (("thr<20", thr < 20), ("20<=thr<60", (thr >= 20) & (thr < 60)), ("thr>=60", thr >= 60)):
+        out[nm] = {"n": int(m.sum()), "mean": float(flat[m].mean()) if m.any() else None, "total": float(flat[m].sum())}
+    return out
+
+
+def price_cell(att: list[dict[str, Any]], stake_sol: float, rent: int = L.RENT_DECIDING, strand_at_last: bool = False) -> dict[str, Any]:
     g = lambda k: np.array([a[k] for a in att], float)  # noqa: E731
     stake = stake_sol * SOL
     mode = np.array([a["mode"] for a in att])
-    pnl, filled, stranded = L.round_trip(stake, g("S_e"), g("L_e"), g("spot"), g("fee_in"), mode, g("S_x"), g("L_x"), g("fee_out"), quote_room=g("room"),
-                                         rent=rent, ended=np.array([a["ended"] for a in att]), return_stranded=True)
+    ended = np.array([a["ended"] for a in att])
+    S_x, L_x = g("S_x"), g("L_x")
+    if strand_at_last:  # OPTIMISTIC sensitivity: a position whose curve completed is sold at the last on-curve state (ignores the migration, the new pool's fee and any latency)
+        S_x, L_x = np.where(ended, g("S_c"), S_x), np.where(ended, g("L_c"), L_x)
+        ended = np.zeros(len(att), bool)
+    pnl, filled, stranded = L.round_trip(stake, g("S_e"), g("L_e"), g("spot"), g("fee_in"), mode, S_x, L_x, g("fee_out"), quote_room=g("room"),
+                                         rent=rent, ended=ended, return_stranded=True)
     flat, press, c, p = F.fail_legs(pnl, filled, g("ssb"), g("nearby"), send=L.SEND_LAMPORTS)
     dates = [a["date"] for a in att]
     res = {"filled": int(filled.sum()), "stranded": int(stranded.sum()), "guard_unfilled": int((~filled).sum()), "press_intercept": c, "mean_p": float(p[filled].mean()) if filled.any() else None}
@@ -399,6 +421,7 @@ def price_cell(att: list[dict[str, Any]], stake_sol: float, rent: int = L.RENT_D
                            "round_trip_mean_bps": float((fi + fo).mean() * 1e4) if len(fi) else None, "share_rt_ge_100bps": float(((fi + fo) >= 0.01).mean()) if len(fi) else None}
     for name, v in (("flat", flat), ("press", press), ("nofail", pnl)):
         res[name] = stat(v / SOL, dates)
+    res["concentration"] = concentration(att, flat / SOL)
     return res
 
 
@@ -526,6 +549,7 @@ def main(argv: list[str] | None = None) -> int:
             entry["stake_1sol"] = price_cell(att, L.STAKE_BIG)
             entry["rent_charged"] = price_cell(att, L.STAKE_DECIDING, rent=L.RENT_REPORT)
             att2, _, _ = cell_attempts(c, D, L.LAT_S, L.EXIT_LAT_SENS_S)
+            entry["strand_at_last_price_OPTIMISTIC"] = price_cell(att, L.STAKE_DECIDING, strand_at_last=True)
             entry["exit_lag_3p4s"] = price_cell(att2, L.STAKE_DECIDING) if att2 else None
             entry["exits"] = {r: sum(1 for a in att if a["reason"] == r) for r in ("time", "tp", "sl", "trail")}
             entry["label"] = label(entry)
