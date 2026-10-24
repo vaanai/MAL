@@ -1,6 +1,7 @@
 # P15 DBC latency: can MAL see and land a Meteora DBC swap inside the 2.5 s line? (2026-10-24, DRAFT, measurement only)
 
-QP ruling (m10, flat mean per attempt by entry leg): 0.4 s +0.0302, 1.9 s +0.0218, 2.5 s +0.0141, 3.4 s +0.0020 (fail), 5.0 s -0.0033. QP stop line: over 2.5 s.
+QP ruling (m10, flat mean per attempt by entry leg; in-sample (Swap2-era exploration 2026-10-14T00Z..10-16T04Z), screen numbers from the best cell, winner's curse applies, not evidence): 0.4 s +0.0302, 1.9 s +0.0218, 2.5 s +0.0141, 3.4 s +0.0020 (fail), 5.0 s -0.0033. QP stop line: over 2.5 s.
+Windows and the DBC D1 hold-out: every latency window below is on 2026-10-24 UTC. The research-0 recorder #1453 tape starts at hour 2026-10-24T01 (the 02:00-04:00Z window is 2026-10-24T02:00Z..04:00Z, hours T02 and T03; detect-r0-0224-02-03h.json is that window, file name 0224 = 10-24). The 04:16-04:26Z window is 2026-10-24T04:16Z..04:26Z (detect-r0-window-0416-0426.json; the sampler job #1489 ran in the same minutes, first commit 2026-10-24 04:16Z). All are at or after 2026-10-24T00Z, so no DBC D1 hour in [2026-10-17, 2026-10-24) was read. The one CU sample hour, 2026-10-15T10, is exploration and outside D1.
 No trading, no keys, public RPC only, no paid credits. Tools: tools/dbc_latency_detect.py, dbc_latency_sampler.py, dbc_latency_cu.py. Job #1489 (mal-fast-0, 1 GB, background).
 
 ## 1. Detection lag (swap on chain -> MAL sees the notice)
