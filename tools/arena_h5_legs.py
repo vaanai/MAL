@@ -60,6 +60,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from tools import arena_h5_books as B
 from tools import arena_h5_cost as cost
 from tools import arena_h5_score as h5s
 from tools.arena_score import Refused, cell_stats, cell_verdict
@@ -96,20 +97,40 @@ def check_path(path: str | os.PathLike, what: str = "path") -> Path:
     return Path(path)
 
 
-def gate(bot_id: str, ledger_root: str | os.PathLike, read_instant_ms: int | None, i_am_the_read: bool, now_ms: int) -> dict[str, Any]:
-    """The seal. Raises Refused before any ledger row is opened; returns the recorded read-instant document (counts only)."""
+class Ended(Refused):
+    """The Q50 book ENDED NOT_DECIDABLE at the end-seal (DEC-031 Amendment 11 item 2): final, counts only, no ledger row is opened. `.doc` is the write-once record."""
+
+    def __init__(self, msg: str, doc: Mapping[str, Any]):
+        super().__init__(msg)
+        self.doc = dict(doc)
+
+
+def gate(bot_id: str, ledger_root: str | os.PathLike, read_instant_ms: int | None, i_am_the_read: bool, now_ms: int, books: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """The seal. Raises Refused before any ledger row is opened; returns the recorded read-instant document (counts only). `books` (tools/arena_h5_books.load_books) widens the
+    accepted ids to the registered books file; without it only the scorer's a1 BOTS are accepted, as before. The record is the book's own instant file
+    (arena_h5_books.instant_file): for Q50 the Amendment 11 write-once file, never the scorer's read-instant.json."""
     _check_text(bot_id, "bot_id")
-    if bot_id not in h5s.BOTS:
+    if books is None and bot_id not in h5s.BOTS:
         raise Refused(f"{bot_id!r} is not an H5 arena book {sorted(h5s.BOTS)}")
+    if books is not None and bot_id not in books:
+        raise Refused(f"{bot_id!r} is not in the books file {sorted(books)}")
     check_path(ledger_root, "ledger root")
     if not i_am_the_read:
         raise Refused("--i-am-the-read is required: the H5 outputs are sealed until the read job")
     if read_instant_ms is None:
         raise Refused("--read-instant is required: the H5 outputs are sealed until the book's recorded read instant")
-    rec = Path(ledger_root) / bot_id / h5s.READ_INSTANT_FILE
+    fname = h5s.READ_INSTANT_FILE if books is None else B.instant_file(bot_id)
+    rec = Path(ledger_root) / bot_id / fname
     if not rec.is_file():
-        raise Refused(f"{bot_id}: no recorded read instant ({h5s.READ_INSTANT_FILE} absent): the score has not reached it, nothing is opened")
+        raise Refused(f"{bot_id}: no recorded read instant ({fname} absent): the score has not reached it, nothing is opened")
     doc = json.loads(rec.read_text())
+    if fname == B.qi.INSTANT_FILE:
+        if doc.get("rule") != B.qi.RULE or doc.get("bot_id") != bot_id:
+            raise Refused(f"{bot_id}: {fname} is not an Amendment 11 record of this book")
+        if doc.get("status") == B.qi.ENDED:
+            raise Ended(f"{bot_id}: ENDED NOT_DECIDABLE at the end-seal (DEC-031 Amendment 11 item 2): no read instant, nothing is opened", doc)
+        if doc.get("status") != B.qi.READ:
+            raise Refused(f"{bot_id}: {fname} status {doc.get('status')!r} is not READ")
     ri = int(doc["read_instant_ms"])
     if int(read_instant_ms) < ri:
         raise Refused(f"--read-instant {int(read_instant_ms)} is before the book's recorded read instant {ri}: sealed")
@@ -347,9 +368,9 @@ def canary_lower(worst: Mapping[str, Mapping[str, Any]], ng: Mapping[str, Mappin
 
 # ------------------------------------------------------------------------------------------------------------------------------ one bot
 def build_report(bot_id: str, ledger_root: str | os.PathLike, *, read_instant_ms: int | None, i_am_the_read: bool, shadow_dirs: Sequence[str | os.PathLike] = (),
-                 now_ms: int | None = None) -> dict[str, Any]:
+                 now_ms: int | None = None, books: Mapping[str, str] | None = None) -> dict[str, Any]:
     now = int(time.time() * 1000) if now_ms is None else int(now_ms)
-    doc = gate(bot_id, ledger_root, read_instant_ms, i_am_the_read, now)  # the seal: before any row is opened
+    doc = gate(bot_id, ledger_root, read_instant_ms, i_am_the_read, now, books)  # the seal: before any row is opened
     for d in shadow_dirs:
         check_path(d, "shadow dir")
     rows = load_book_rows(bot_id, ledger_root, doc)
@@ -384,7 +405,33 @@ def build_report(bot_id: str, ledger_root: str | os.PathLike, *, read_instant_ms
         ic = {sfx: refit[f"{stake}|{sfx}"]["intercept"] for sfx in SFXS if f"{stake}|{sfx}" in refit}
         rep["books"][stake] = {"n_trades": len(rs), "as_scored_rent_charged": cells_of(items, ic), "rent_0": cells_of(items, ic, True),
                                "worst_in_slot": w["stakes"].get(stake) if w["measured"] else w["why"]}
+    if books is not None:
+        rep["dec032_worst_in_slot"] = dec032_figure(rep)
     return rep
+
+
+DEC032_NOTE = ("DEC-032 section 1 item 2: the worst-in-slot mean and its CI90 lower bound of the deciding cell (1.9 s leg at the deciding stake, rent-charged), quoted as R7's LOWER of the "
+               "worst-in-slot and no-guard-rescue legs, and the lowest over the four sub-cells (flat / pressure x total / sc). 'not measured' means no proposal; for an event-triggered book "
+               "(H5) a mean at or below 0 is not proposed. Report-only, never deciding; in-sample.")
+
+
+def dec032_figure(rep: Mapping[str, Any]) -> dict[str, Any]:
+    """The one worst-in-slot figure DEC-032 section 1 item 2 quotes, from this report's canary_lower cells (no new pricing)."""
+    b = rep["books"].get(rep["deciding_stake"])
+    w = None if b is None else b["worst_in_slot"]
+    if not isinstance(w, Mapping):
+        why = "no trade at the deciding stake" if b is None else w
+        return {"measured": False, "why": why, "proposal": "no proposal (worst-in-slot not measured)", "note": DEC032_NOTE}
+    cells = {k: dict(v) for k, v in w["canary_lower"].items() if f"_{rep['deciding_leg']}_" in k}
+    if len(cells) != 4:
+        return {"measured": False, "why": f"{len(cells)} of 4 deciding sub-cells have a worst-in-slot mean", "proposal": "no proposal (worst-in-slot not measured)", "note": DEC032_NOTE}
+    mk = min(cells, key=lambda k: (cells[k]["mean_sol"], k))
+    los = [v["ci90_lo_sol"] for v in cells.values()]
+    lk = None if any(x is None for x in los) else min(cells, key=lambda k: (cells[k]["ci90_lo_sol"], k))
+    mean = cells[mk]["mean_sol"]
+    return {"measured": True, "wis_mean_sol": mean, "wis_mean_cell": mk, "wis_ci90_lo_sol": None if lk is None else cells[lk]["ci90_lo_sol"], "wis_ci90_lo_cell": lk,
+            "not_proposed_mean_le_0": mean <= 0, "proposal": "not proposed (worst-in-slot mean <= 0)" if mean <= 0 else "worst-in-slot mean > 0 (one of DEC-032's conditions only)",
+            "cells": cells, "note": DEC032_NOTE}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ render
@@ -425,6 +472,14 @@ def render(rep: Mapping[str, Any]) -> str:
                     L.append(f"    {k:16s} {_f(g['mean_sol'])} / {_f(g['total_sol'])}" + ("" if g2 is None else f"    without derived_last ({w['n_derived_last']} trips): {_f(g2['mean_sol'])} / {_f(g2['total_sol'])}")
                              + f"    vs companion: {_f(g3['mean_sol'])} / {_f(g3['total_sol'])}")
             L.append(f"   pressure intercepts, as scored {w['intercepts']['as_scored']}; worst {w['intercepts']['worst']}; companion {w['intercepts']['companion']}")
+    g = rep.get("dec032_worst_in_slot")
+    if g:
+        if g["measured"]:
+            L.append(f"\n  DEC-032 WORST-IN-SLOT FIGURE (deciding cell, lower of the two legs, lowest sub-cell): mean {_f(g['wis_mean_sol'])} ({g['wis_mean_cell']})  "
+                     f"ci90lo {_f(g['wis_ci90_lo_sol'])} ({g['wis_ci90_lo_cell']})  -> {g['proposal']}")
+        else:
+            L.append(f"\n  DEC-032 WORST-IN-SLOT FIGURE: not measured ({g['why']}) -> {g['proposal']}")
+        L.append(f"  {g['note']}")
     d = rep.get("worst_in_slot_diag")
     if d:
         L.append(f"\n  worst-in-slot diagnostics: trips {d['trips']} legs {d['legs']} entry slot >1 print {d['entry_multi_print']} moved {d['entry_moved']}  exit slot >1 print {d['exit_multi_print']} "
@@ -436,6 +491,15 @@ def render(rep: Mapping[str, Any]) -> str:
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ cli
+def _add_books_args(ap: argparse.ArgumentParser) -> None:
+    ap.add_argument("--books-file", help="the registered books file (v2 schema): the read accepts its ids, Q50 included; without it only the a1 books (unchanged)")
+    ap.add_argument("--books-sha256", help=f"the books file's pinned sha256 (default {B.BOOKS_V2_SHA256}, the registered v2)")
+
+
+BOOKS_AP = argparse.ArgumentParser(add_help=False)
+_add_books_args(BOOKS_AP)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--bot", required=True)
@@ -445,11 +509,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--shadow-dir", action="append", default=[], help="the shadow dir(s) that fed the book; without one worst-in-slot prints 'not measured'")
     ap.add_argument("--json")
     ap.add_argument("--now-ms", type=int)
+    pre, _ = BOOKS_AP.parse_known_args(argv)
+    if pre.books_file:
+        _add_books_args(ap)
     a = ap.parse_args(argv)
     try:
         if a.json:
             check_path(a.json, "json output")
-        rep = build_report(a.bot, a.ledger_root, read_instant_ms=a.read_instant, i_am_the_read=a.i_am_the_read, shadow_dirs=a.shadow_dir, now_ms=a.now_ms)
+        books = B.load_books(check_path(a.books_file, "books file"), a.books_sha256) if pre.books_file else None
+        rep = build_report(a.bot, a.ledger_root, read_instant_ms=a.read_instant, i_am_the_read=a.i_am_the_read, shadow_dirs=a.shadow_dir, now_ms=a.now_ms, books=books)
     except Refused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 3

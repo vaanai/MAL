@@ -1,0 +1,26 @@
+{
+  "schema": "change_radar_watch.v1",
+  "note": "Public chain constants only (no key). Program ids checked 2026-10-24 with public getMultipleAccounts: present, executable, owner BPFLoaderUpgradeable. deploy_seen_utc is a note, not a pin: the radar's state.json is the baseline. Labels boop/heaven/moonshot are from memory (ids verified executable, product names not verified). Meteora DLMM left out: the id at hand was not a valid address. See docs/research/p23-change-radar/DESIGN.md.",
+  "programs": {
+    "pump": {"id": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "tier": "core", "vocab": true, "deploy_seen_utc": "2026-10-19T17:47:02Z"},
+    "pumpswap": {"id": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA", "tier": "core", "vocab": true, "deploy_seen_utc": "2026-10-19T17:47:20Z"},
+    "pump_fees": {"id": "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ", "tier": "core", "vocab": false, "deploy_seen_utc": "2026-10-12T17:40:24Z"},
+    "meteora_dbc": {"id": "dbcij3LWUppWqq96dh6gJWwBifmcGfLSB5D4DuSMaqN", "tier": "core", "vocab": true, "deploy_seen_utc": "2026-10-16T04:23:38Z"},
+    "meteora_damm_v2": {"id": "cpamdpZCGKUy5JxQXB4dcpGPiikHawvSWAd6mEn1sGG", "tier": "core", "vocab": true, "deploy_seen_utc": "2026-10-15T03:00:13Z"},
+    "raydium_launchlab": {"id": "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj", "tier": "core", "vocab": true, "deploy_seen_utc": "2026-09-11T18:11:14Z"},
+    "raydium_cpmm": {"id": "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C", "tier": "core", "vocab": true, "deploy_seen_utc": "2026-10-01T19:05:48Z"},
+    "meteora_damm_v1": {"id": "Eo7WjKq67rjJQSZxS6z3YkapzY3eMj6Xy8X5EQVn5UaB", "tier": "venue", "vocab": false, "deploy_seen_utc": "2026-10-15T13:02:29Z"},
+    "raydium_amm_v4": {"id": "675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8", "tier": "venue", "vocab": false, "deploy_seen_utc": "2026-09-10T01:52:56Z"},
+    "raydium_clmm": {"id": "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK", "tier": "venue", "vocab": false, "deploy_seen_utc": "2026-10-22T06:24:28Z"},
+    "moonshot": {"id": "MoonCVVNZFSYkqNXP6bxHLPL6QQJiMagDL3qcqUQTrG", "tier": "venue", "vocab": false, "deploy_seen_utc": "2025-06-30T13:15:10Z"},
+    "boop": {"id": "boop8hVGQGqehUK2iVEMEnMrL5RbjywRzHKBmBE7ry4", "tier": "venue", "vocab": false, "deploy_seen_utc": "2025-08-26T10:52:26Z"},
+    "heaven": {"id": "HEAVENoP2qxoeuF8Dj2oT1GHEnu49U5mJYkdeC8BAX2o", "tier": "venue", "vocab": false, "deploy_seen_utc": "2026-04-02T17:46:55Z"},
+    "jupiter_v6": {"id": "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4", "tier": "router", "vocab": false, "deploy_seen_utc": "2026-10-21T03:30:22Z"}
+  },
+  "accounts": {
+    "pump_global": {"address": "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf", "program": "pump"},
+    "pump_bonding_fee_config": {"address": "8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt", "program": "pump_fees"},
+    "pumpswap_fee_config": {"address": "5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx", "program": "pump_fees"},
+    "pumpswap_global_config": {"address": "ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw", "program": "pumpswap"}
+  }
+}

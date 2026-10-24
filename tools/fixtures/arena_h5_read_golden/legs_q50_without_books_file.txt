@@ -1,0 +1,5 @@
+rc 3
+--- stdout
+
+--- stderr
+REFUSED: 'h5v1q50-boostfloor-a1' is not an H5 arena book ['h5v1-boostfloor-a1', 'h5v2-boostclock-a1']

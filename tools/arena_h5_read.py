@@ -5,6 +5,13 @@ a screen (DEC-031 section 2), the best of N, in-sample for selection (winner's c
     python -m tools.arena_h5_read --ledger-root <arena>/ledger --read-instant MS --i-am-the-read --n-books N --c C [--bot BOT ...] [--cells-total K]
                                   [--prior-read BOT=VERDICT ...] [--other-p BOT=P ...] [--json OUT] [--now-ms MS]
 
+BOOK LIST (Audit B1; DEC-031 Amendments 5 and 11): `--books-file F [--books-sha256 H]` reads the registered books file (tools/arena_h5_books.py; default pin the v2 sha256 819c699d...)
+and accepts its ids, Q50 included; the default book set is then its new_rule_bot_ids. Each book's seal keys on its own instant file: the Q50 book's is DEC-031 Amendment 11's write-once
+q50-read-instant.json (never read-instant.json), recomputed by the Am.11 rule (arena_h5_books.check_recorded_instant, the one instant check); an Am.11 ENDED record is NOT_DECIDABLE,
+final, counts only. Book-list mode adds the D3 extras (derived_last_deciding_leg count, the ex-derived total above 5% of attempts, the books side by side with the shared-pool count),
+report-only. The worst-in-slot figure of DEC-032 section 1 item 2 is tools/arena_h5_legs.py's (`dec032_worst_in_slot`, same --books-file). Without --books-file nothing changes
+(tools/test_arena_h5_read_golden.py pins the a1 outputs).
+
 WHY A NEW TOOL. tools/arena_score.py cannot read an H5 ledger (its rows have no `calc` / `by_rule` / `stack`, tools/arena_h5_legs.py doc) and tools/arena_h5_legs.py prints the same cells as
 REPORT-ONLY lines with no verdict. tools/arena_h5_score.py prints counts only and, at the read, writes the refit (`refit`); its own docstring says "the gate itself is tools/arena_score.py's". So
 the verdict path is: this file, calling the gate's own functions.
@@ -65,6 +72,7 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
+from tools import arena_h5_books as B
 from tools import arena_h5_cost as cost
 from tools import arena_h5_legs as L  # the read-instant seal, the ledger loader and the cell helpers: imported, never copied
 from tools import arena_h5_score as h5s
@@ -182,43 +190,67 @@ def counts_and_checks(bot_id: str, ledger_root: str | os.PathLike, doc: Mapping[
     by_reason = dict(sorted(collections.Counter(led["refusals"].values()).items()))
     if by_reason != dict(doc.get("refused_by_reason_before") or {}):
         raise Refused(f"{bot_id}: the ledger's refusals by reason {by_reason} differ from the record's {doc.get('refused_by_reason_before')}")
-    decisions = [min(int(r["decision_ms"]) for r in rows if r["pool"] == p) for p in sorted(pools)] + [int(e["decision_ms"]) for e in excl.values()]
-    if h5s.read_instant(decisions, ri) != ri:
-        raise Refused(f"{bot_id}: the read instant recomputed from the ledger's decision timestamps differs from the recorded {ri}")
+    counted_dec = [min(int(r["decision_ms"]) for r in rows if r["pool"] == p) for p in sorted(pools)]
+    why_ri = B.check_recorded_instant(bot_id, doc, counted_dec, counted_dec + [int(e["decision_ms"]) for e in excl.values()], ri)  # THE instant rule of the book, one function
+    if why_ri is not None:
+        raise Refused(f"{bot_id}: the read instant recomputed from the ledger's decision timestamps differs from the recorded {ri}" + ("" if why_ri == "differs" else f" ({why_ri})"))
     dec_rows = [r for r in rows if f"{r['stake_sol']:.2f}" == DECIDING_STAKE]
     if len({r["pool"] for r in dec_rows}) != len(dec_rows) or {r["pool"] for r in dec_rows} != pools:
         raise Refused(f"{bot_id}: not every counted pool has exactly one row at the deciding stake {DECIDING_STAKE}")
     unpriced = sum(1 for r in dec_rows if r["legs"][f"flat_{DECIDING_SFX}"].get("net_lamports") is None or r["legs"][f"press_{DECIDING_SFX}"].get("net_lamports") is None)
     n_counted, n_excl = len(pools), len(excl)
     decided = n_counted + n_excl  # == attempts: the seal refuses while any attempt before the instant is open
-    return {"rows": rows, "dec_rows": dec_rows, "n_attempts": decided, "n_counted": n_counted, "n_excluded": n_excl, "excluded_share": n_excl / decided if decided else 0.0,
+    return {"rows": rows, "dec_rows": dec_rows, "pools": pools | set(excl), "n_attempts": decided, "n_counted": n_counted, "n_excluded": n_excl, "excluded_share": n_excl / decided if decided else 0.0,
             "excluded_by_reason": dict(sorted(collections.Counter(e["reason"] for e in excl.values()).items())), "n_refused": len(led["refusals"]), "refused_by_reason": by_reason,
             "n_unpriced_deciding_leg": unpriced, "attempt_definition": doc.get("attempt_definition")}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ one book
-def decide_book(bot_id: str, ledger_root: str | os.PathLike, *, read_instant_ms: int | None, i_am_the_read: bool, now_ms: int | None = None) -> dict[str, Any]:
-    """The deciding read of one H5 book. Raises Refused (before any ledger row is opened, for the seal's checks). Returns the verdict document."""
+def ended_book(bot_id: str, exit_rule: str, doc: Mapping[str, Any], fname: str, rec_sha: str) -> dict[str, Any]:
+    """DEC-031 Amendment 11 item 2: the Q50 book has no read instant by the end-seal. NOT_DECIDABLE, final, COUNTS ONLY from the write-once record; no ledger row is opened."""
+    n_att, n_exc = int(doc["attempts_before"]), int(doc["excluded_before"])
+    return {"bot_id": bot_id, "exit_rule": exit_rule, "read_instant_ms": None, "deciding_stake": DECIDING_STAKE, "deciding_leg": DECIDING_SFX, "deciding_rent_lamports": int(cost.RENT),
+            "rent_line": RENT_LINE, "screen_line": SCREEN_LINE,
+            "counts": {"n_attempts": n_att, "n_counted": int(doc["counted_before"]), "n_excluded": n_exc, "excluded_share": n_exc / n_att if n_att else 0.0,
+                       "excluded_by_reason": "not in the record (counts only)", "n_refused": int(doc["refused_before"]), "refused_by_reason": dict(doc.get("refused_by_reason_before") or {}),
+                       "n_unpriced_deciding_leg": None},
+            "attempt_definition": doc.get("attempt_definition"), "excluded_cap": MAX_EXCLUDED_SHARE, "provenance": dict(provenance(), **{fname: rec_sha}),
+            "reasons": [f"no read instant by the end-seal {doc['end_seal_ms']} (DEC-031 Amendment 11 item 2): {doc['counted_before']} counted trades on {doc['counted_dates']} dates"],
+            "status": "NOT_DECIDABLE", "final": True, "figures": "none: a NOT_DECIDABLE read prints counts only"}
+
+
+def decide_book(bot_id: str, ledger_root: str | os.PathLike, *, read_instant_ms: int | None, i_am_the_read: bool, now_ms: int | None = None,
+                books: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """The deciding read of one H5 book. Raises Refused (before any ledger row is opened, for the seal's checks). Returns the verdict document. `books`
+    (tools/arena_h5_books.load_books): the registered book list, Q50 included; the seal then keys on each book's own instant file (Q50: DEC-031 Amendment 11's)."""
     now = wall_ms() if now_ms is None else min(int(now_ms), wall_ms())  # the flag can only tighten the seal
-    doc = L.gate(bot_id, ledger_root, read_instant_ms, i_am_the_read, now)  # THE SEAL, arena_h5_legs' own
+    fname = h5s.READ_INSTANT_FILE if books is None else B.instant_file(bot_id)
+    try:
+        doc = L.gate(bot_id, ledger_root, read_instant_ms, i_am_the_read, now, books)  # THE SEAL, arena_h5_legs' own
+    except L.Ended as e:
+        return ended_book(bot_id, books[bot_id], e.doc, fname, sha256_file(Path(ledger_root) / bot_id / fname))
     ri = int(doc["read_instant_ms"])
     bot_dir = Path(ledger_root) / bot_id
     c = counts_and_checks(bot_id, ledger_root, doc)
     why: list[str] = []
-    out: dict[str, Any] = {"bot_id": bot_id, "exit_rule": h5s.BOTS[bot_id], "read_instant_ms": ri, "deciding_stake": DECIDING_STAKE, "deciding_leg": DECIDING_SFX,
+    out: dict[str, Any] = {"bot_id": bot_id, "exit_rule": (h5s.BOTS if books is None else books)[bot_id], "read_instant_ms": ri, "deciding_stake": DECIDING_STAKE, "deciding_leg": DECIDING_SFX,
                            "deciding_rent_lamports": int(cost.RENT), "rent_line": RENT_LINE, "screen_line": SCREEN_LINE,
                            "counts": {k: c[k] for k in ("n_attempts", "n_counted", "n_excluded", "excluded_share", "excluded_by_reason", "n_refused", "refused_by_reason", "n_unpriced_deciding_leg")},
                            "attempt_definition": c["attempt_definition"], "excluded_cap": MAX_EXCLUDED_SHARE,
-                           "provenance": dict(provenance(), **{"read-instant.json": sha256_file(bot_dir / h5s.READ_INSTANT_FILE)})}
+                           "provenance": dict(provenance(), **{fname: sha256_file(bot_dir / fname)})}
     if c["excluded_share"] > MAX_EXCLUDED_SHARE:  # 5% of NON-REFUSED attempts (Amendment 1); refusals are not in the denominator
         why.append(f"excluded {c['n_excluded']} of {c['n_attempts']} non-refused attempts = {c['excluded_share']:.2%} is above {MAX_EXCLUDED_SHARE:.0%} (DEC-031 section 1.4, Amendment 1): "
                    f"{c['excluded_by_reason']}")
     if c["n_unpriced_deciding_leg"]:
         why.append(f"{c['n_unpriced_deciding_leg']} counted trade(s) at the deciding stake without a deciding-leg (1.9 s flat / pressure) P&L (DEC-031 section 2, DEC-014 Amendment 1)")
     out["reasons"] = why
+    if books is not None:
+        out["_pools"] = sorted(c["pools"])  # for the side-by-side shared-pool count; popped by build_report
     if why:
         out["status"] = "NOT_DECIDABLE"
         out["figures"] = "none: a NOT_DECIDABLE read prints counts only"
+        if books is not None:
+            out["d3"] = d3_extras(c, None, None)
         return out
     refit = h5s.refit_cells(c["rows"])  # THE DECIDING INTERCEPT: refit at the read, per stake and latency leg
     key = f"{DECIDING_STAKE}|{DECIDING_SFX}"
@@ -267,7 +299,62 @@ def decide_book(bot_id: str, ledger_root: str | os.PathLike, *, read_instant_ms:
     if ok:
         out["not_measured_here"] = list(CANARY_NOT_MEASURED)
     out["passes_only_at_rent_0"] = (not ok) and all(v["rent_0"]["criteria_met"] for v in sub.values())
+    if books is not None:
+        out["d3"] = d3_extras(c, items, ic)
     return out
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ D3 (DEC-031 Am.5 4.3; records D3)
+D3_SHARE = 0.05
+D3_LINE = ("D3 (QP-RULING-1022-q50-P2; DEC-031 Amendment 5 item 4.3): the derived_last_deciding_leg count of every book side by side, plus the report-only total without those trades "
+           "when the count exceeds 5% of attempts; and the shared-pool count of the books (counts only). Report-only, never deciding.")
+
+
+def is_derived_last(row: Mapping[str, Any]) -> bool:
+    """The scorer's derived_last_deciding_leg flag of a row: the deciding (1.9 s) leg took a state after the pool's last print (meta.state_src; no P&L field is read)."""
+    return "post" in tuple(((row.get("meta") or {}).get("state_src") or {}).get(DECIDING_SFX) or ())
+
+
+def d3_extras(c: Mapping[str, Any], items: Sequence[Mapping[str, Any]] | None, ic: float | None) -> dict[str, Any]:
+    """The D3 extras of one book: the derived_last count over the counted trades at the deciding stake and its share of the book's attempts; when that share is above 5%, the
+    four deciding sub-cells WITHOUT those trades (n, total, mean; report-only, at the read's refit intercept; never passed to cell_verdict). items None (a NOT_DECIDABLE read):
+    the count only."""
+    n = sum(1 for r in c["dec_rows"] if is_derived_last(r))
+    att = c["n_attempts"]
+    share = n / att if att else 0.0
+    out: dict[str, Any] = {"report_only": True, "derived_last_deciding_leg": n, "attempts": att, "share_of_attempts": share, "over_5pct": share > D3_SHARE}
+    if items is None:
+        out["ex_derived"] = "not computed: a NOT_DECIDABLE read prints counts only"
+    elif share <= D3_SHARE:
+        out["ex_derived"] = f"not required: derived_last {n} of {att} attempts is not above {D3_SHARE:.0%}"
+    else:
+        keep = [it for it in items if not it["derived_last"]]
+        days = [it["day"] for it in keep]
+        cells = {}
+        for rule in RULES:
+            v = L.cell_values(keep, rule, ic)
+            for model in MODELS:
+                st = cell_stats(v[model], days)
+                cells[f"{model}_{DECIDING_SFX}_{rule}"] = {k: st[k] for k in ("n", "total_sol", "mean_sol")}
+        out["ex_derived"] = cells
+    return out
+
+
+def side_by_side(rep: Mapping[str, Any], bots: Sequence[str], pools: Mapping[str, set]) -> dict[str, Any]:
+    """Every book of the run on one block (status, counts, D3), and the shared-pool count of every pair of books that were read (attempted pools, counted or excluded, before each
+    book's own instant). Counts only."""
+    rows = {}
+    for b in bots:
+        if b in rep["books"]:
+            r = rep["books"][b]
+            k = r["counts"]
+            rows[b] = {"status": r.get("fail_label") or r["status"], "read_instant_ms": r["read_instant_ms"], "attempts": k["n_attempts"], "counted": k["n_counted"],
+                       "excluded": k["n_excluded"], "refused": k["n_refused"], "d3": r.get("d3", "not in the record (counts only)")}
+        else:
+            rows[b] = {"status": "REFUSED", "why": rep["refused"].get(b)}
+    read = [b for b in bots if b in pools]
+    shared = {f"{a}|{b}": len(pools[a] & pools[b]) for i, a in enumerate(read) for b in read[i + 1:]}
+    return {"line": D3_LINE, "books": rows, "shared_pools": shared, "shared_pools_note": "pairs of books read in this run; a REFUSED or ENDED book has no pool set here"}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ multiplicity (DEC-031 Amendment 3 item 3, QP R8)
@@ -296,7 +383,8 @@ def check_params(n_books: int | None, c: int | None, cells_total: int | None, pr
             raise Refused(f"--other-p {b}={p}: a p-value is in [0, 1]")
 
 
-def multiplicity_block(results: Mapping[str, Mapping[str, Any]], *, n_books: int, c: int, cells_total: int | None, prior: Mapping[str, str], other_p: Mapping[str, float]) -> dict[str, Any]:
+def multiplicity_block(results: Mapping[str, Mapping[str, Any]], *, n_books: int, c: int, cells_total: int | None, prior: Mapping[str, str], other_p: Mapping[str, float],
+                       taint_line: str = TAINT_LINE) -> dict[str, Any]:
     """The Amendment 3 item 3 block for this run's books, from the manager's parameters and the tool's own figures."""
     dup = sorted(set(prior) & set(results)) + sorted(set(other_p) & set(results))
     if dup:
@@ -314,7 +402,7 @@ def multiplicity_block(results: Mapping[str, Mapping[str, Any]], *, n_books: int
             "plain_line": f"If no book has an edge, the chance of at least one screen pass is up to 1 - 0.95^N = {math.ceil(100 * (1 - 0.95 ** n_books) * 100) / 100:.2f}% (rounded up) at N = {n_books}.",
             "c": c, "c_source": "supplied by the manager (--c); a running count: each confirmation read states its c", "confirmation_threshold_0.05_over_c": ALPHA / c,
             "screen_read_line": {b: holm[b] for b in sorted(holm) if b in results}, "holm_over_reads": sorted(holm), "holm_note": "report-only; Holm also needs every smaller rank to reject; neither decides on a screen read",
-            "screen_line": SCREEN_LINE, "rent_line": RENT_LINE, "taint_line": TAINT_LINE,
+            "screen_line": SCREEN_LINE, "rent_line": RENT_LINE, "taint_line": taint_line,
             "refusals_am1": {b: {"n_refused": r["counts"]["n_refused"], "by_reason": r["counts"]["refused_by_reason"], "sentence": r["attempt_definition"]} for b, r in sorted(results.items())},
             "synthetic_class": "no outcome is split by class and no pool class is read (EXP-024 Amendment 9 (d))"}
 
@@ -330,6 +418,14 @@ def render_book(r: Mapping[str, Any]) -> str:
           f"  attempts {c['n_attempts']} = counted {c['n_counted']} + excluded {c['n_excluded']} ({c['excluded_share']:.2%} of non-refused attempts; cap {r['excluded_cap']:.0%})  excluded by reason {c['excluded_by_reason']}",
           f"  refused (not attempts, DEC-031 Amendment 1) {c['n_refused']}  by reason {c['refused_by_reason']}", f"  {r['attempt_definition']}"]
     L_ += [f"  reason: {x}" for x in r["reasons"]]
+    if "d3" in r:
+        d = r["d3"]
+        L_.append(f"  D3 derived_last_deciding_leg {d['derived_last_deciding_leg']} of {d['attempts']} attempts ({d['share_of_attempts']:.2%}; report-only)")
+        if isinstance(d["ex_derived"], str):
+            L_.append(f"    ex-derived: {d['ex_derived']}")
+        else:
+            for k, v in d["ex_derived"].items():
+                L_.append(f"    ex-derived (report-only, never deciding) {k:16s} n {v['n']:4d} total {_f(v['total_sol'])} mean {_f(v['mean_sol'])}")
     if "subcells" not in r:
         return "\n".join(L_ + [f"  {r['figures']}"])
     rf = r["refit"]
@@ -363,6 +459,20 @@ def render(rep: Mapping[str, Any]) -> str:
     for b, why in rep["refused"].items():
         L_.append(f"REFUSED {b}: {why}")
     L_ += [render_book(r) for r in rep["books"].values()]
+    sb = rep.get("side_by_side")
+    if sb:
+        L_.append(f"\nBOOKS SIDE BY SIDE (books file sha256 {rep['books_file']['sha256']})  {sb['line']}")
+        for b, x in sb["books"].items():
+            if x["status"] == "REFUSED":
+                L_.append(f"  {b:24s} REFUSED: {x['why']}")
+                continue
+            d = x["d3"]
+            dl = d if isinstance(d, str) else f"derived_last {d['derived_last_deciding_leg']} ({d['share_of_attempts']:.2%} of attempts)"
+            L_.append(f"  {b:24s} {x['status']:22s} read instant {x['read_instant_ms']}  attempts {x['attempts']} counted {x['counted']} excluded {x['excluded']} refused {x['refused']}  {dl}")
+        for k, n in sb["shared_pools"].items():
+            L_.append(f"  shared pools {k}: {n}")
+        if not sb["shared_pools"]:
+            L_.append(f"  shared pools: none computed ({sb['shared_pools_note']})")
     m = rep.get("multiplicity")
     if m:
         L_.append("\nMULTIPLICITY BLOCK (DEC-031 Amendment 3 item 3; QP R8)")
@@ -382,25 +492,50 @@ def render(rep: Mapping[str, Any]) -> str:
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ cli
+def books_taint_line(books: Sequence[str]) -> str:
+    return (f"Taints touched (Amendment 3 item 8): (e) siblings forward: {', '.join(books)} share the trigger family and the entry legs (DEC-031 Amendment 5 item 4.3), so the best of them at "
+            "the read is in-sample; a Q50 screen pass while v1-a2 fails is selection on a correlated sibling, not new evidence. Not touched by this tool's rule: (a) it decides on all four "
+            "sub-cells. The manager states any other taint.")
+
+
 def build_report(bots: Sequence[str], ledger_root: str | os.PathLike, *, read_instant_ms: int | None, i_am_the_read: bool, now_ms: int | None, n_books: int | None, c: int | None,
-                 cells_total: int | None = None, prior: Mapping[str, str] | None = None, other_p: Mapping[str, float] | None = None) -> dict[str, Any]:
+                 cells_total: int | None = None, prior: Mapping[str, str] | None = None, other_p: Mapping[str, float] | None = None,
+                 books: Mapping[str, str] | None = None) -> dict[str, Any]:
     prior, other_p = dict(prior or {}), dict(other_p or {})
     check_params(n_books, c, cells_total, prior, other_p)  # before any book is opened
     rep: dict[str, Any] = {"books": {}, "refused": {}}
+    kw = {} if books is None else {"books": books}
     for b in bots:
         try:
-            rep["books"][b] = decide_book(b, ledger_root, read_instant_ms=read_instant_ms, i_am_the_read=i_am_the_read, now_ms=now_ms)
+            rep["books"][b] = decide_book(b, ledger_root, read_instant_ms=read_instant_ms, i_am_the_read=i_am_the_read, now_ms=now_ms, **kw)
         except Refused as exc:
             rep["refused"][b] = str(exc)
     if rep["books"]:
-        rep["multiplicity"] = multiplicity_block(rep["books"], n_books=int(n_books), c=int(c), cells_total=cells_total, prior=prior, other_p=other_p)
+        tl = {} if books is None else {"taint_line": books_taint_line(list(bots))}
+        rep["multiplicity"] = multiplicity_block(rep["books"], n_books=int(n_books), c=int(c), cells_total=cells_total, prior=prior, other_p=other_p, **tl)
+    if books is not None:
+        rep["books_file"] = {"path": getattr(books, "path", None), "sha256": getattr(books, "sha256", None), "ids": list(books)}
+        pools = {b: set(r.pop("_pools")) for b, r in rep["books"].items() if "_pools" in r}
+        rep["side_by_side"] = side_by_side(rep, list(bots), pools)
     return rep
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    pre, _ = L.BOOKS_AP.parse_known_args(argv)
+    books = None
+    if pre.books_file:
+        try:
+            books = B.load_books(L.check_path(pre.books_file, "books file"), pre.books_sha256)
+        except (Refused, OSError) as exc:
+            print(f"REFUSED: {exc}", file=sys.stderr)
+            return 3
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--ledger-root", required=True)
-    ap.add_argument("--bot", action="append", choices=sorted(h5s.BOTS), help="default: both H5 books")
+    if books is None:
+        ap.add_argument("--bot", action="append", choices=sorted(h5s.BOTS), help="default: both H5 books")
+    else:
+        ap.add_argument("--bot", action="append", choices=sorted(books), help="default: the books file's new_rule_bot_ids")
+        L._add_books_args(ap)
     ap.add_argument("--read-instant", type=int, help="ms; must be at or after each book's recorded read instant")
     ap.add_argument("--i-am-the-read", action="store_true", help="only the read job sets this: the H5 outputs are sealed until then")
     ap.add_argument("--now-ms", type=int, help="clamped to the wall clock: it can only tighten the seal")
@@ -414,8 +549,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if a.json:
             L.check_path(a.json, "json output")
-        rep = build_report(a.bot or sorted(h5s.BOTS), a.ledger_root, read_instant_ms=a.read_instant, i_am_the_read=a.i_am_the_read, now_ms=a.now_ms, n_books=a.n_books, c=a.c,
-                           cells_total=a.cells_total, prior=parse_kv(a.prior_read, str, "--prior-read"), other_p=parse_kv(a.other_p, float, "--other-p"))
+        kw = {} if books is None else {"books": books}
+        rep = build_report(a.bot or (sorted(h5s.BOTS) if books is None else books.new_rule), a.ledger_root, read_instant_ms=a.read_instant, i_am_the_read=a.i_am_the_read, now_ms=a.now_ms,
+                           n_books=a.n_books, c=a.c, cells_total=a.cells_total, prior=parse_kv(a.prior_read, str, "--prior-read"), other_p=parse_kv(a.other_p, float, "--other-p"), **kw)
     except Refused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 3

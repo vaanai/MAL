@@ -33,10 +33,14 @@ VERDICT="$A3_OUT/a3-verdict-latest.json"
 rm -f "$VERDICT"
 # A3_ENUM_ENV_FILE (optional): a KEY=VALUE env file holding an archival RPC URL (e.g. the Helius file on this host). The check reads it itself, never prints it, and uses it
 # ONLY for the upgrade-write enumeration; the samples stay on the public RPC.
+# --books: the check reads ONLY the optional fees_check_bot_ids list (successor books). Absent or empty = the check's verdict is the merged rule's, byte for byte; non-empty = the
+# fees-program sub-verdict and the bounded upgrade-write enumeration (DEC-031 amendment required before any book relies on it). Q50 runs its own loop at its guard pin, not this file.
+# DEPLOY ORDER: the books file is shared; an older tools/a3_halt.py refuses the third key (exit 2, no halt applied to ANY book). Add fees_check_bot_ids only after Q50 has ended and
+# its A3 loop and dead-man jobs run at a pin that has the new a3_halt.py (QP, PR #894 comment 6388090983 (1)).
 if [ -n "${A3_ENUM_ENV_FILE:-}" ]; then
-  "$A3_PY" -m tools.a3_redeploy_check --daily "$A3_DAILY" --state "$A3_STATE" --verdict-out "$VERDICT" --enum-rpc-env-file "$A3_ENUM_ENV_FILE"
+  "$A3_PY" -m tools.a3_redeploy_check --daily "$A3_DAILY" --state "$A3_STATE" --verdict-out "$VERDICT" --books "$A3_BOOKS" --enum-rpc-env-file "$A3_ENUM_ENV_FILE"
 else
-  "$A3_PY" -m tools.a3_redeploy_check --daily "$A3_DAILY" --state "$A3_STATE" --verdict-out "$VERDICT"
+  "$A3_PY" -m tools.a3_redeploy_check --daily "$A3_DAILY" --state "$A3_STATE" --verdict-out "$VERDICT" --books "$A3_BOOKS"
 fi
 rc_chk=$?
 echo "A3_CHECK_RC=$rc_chk"
