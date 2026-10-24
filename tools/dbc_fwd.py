@@ -142,12 +142,16 @@ class Engine:
 
     def __init__(self, first_ok_bt: float, *, ss_live: Callable[[int], float] | None = None, ss_screen: Callable[[int], float] | None = None,
                  good_hours: set[int] | None = None, screen_policy: bool = False, log: Any = None, log_name: str = BOOK,
-                 now_ms: Callable[[], int] | None = None, meta: dict[str, Any] | None = None) -> None:
+                 now_ms: Callable[[], int] | None = None, meta: dict[str, Any] | None = None, decide: bool = True,
+                 oracle_rows: dict[str, "PoolHist"] | None = None, oracle_mode: dict[str, tuple[tuple[int, bool], tuple[int, bool]]] | None = None) -> None:
         if not L.FOB_EVIDENCE:
             raise RuntimeError("dbc_fwd needs tools.dbc_price.enable_swap3_pricing() (registered Swap3 path; the config-mode injection uses the fob evidence switch)")
         self.first_ok_bt = float(first_ok_bt)
         self.pools: dict[str, PoolHist] = {}
-        self.cfg_ev: dict[str, list[int]] = {}  # config -> [count ev==0, count ev==1]
+        # config -> [count ev==0, count ev==1]. The screen computes the config fee mode TWICE (dbc_screen.load_exploration): mode0 from the evidence of isolated rows
+        # (derive(..., iso), used by the order fix) and the final mode from the evidence of not-bad rows in fixed order (derive(..., ~bad_row)). Both are kept here, causally.
+        self.cfg_ev0: dict[str, list[int]] = {}
+        self.cfg_ev: dict[str, list[int]] = {}
         self.cur_slot = -1
         self.open: dict[str, None] = {}  # pools with rows in the current (open) slot, insertion ordered
         self.heap: list[tuple[int, int, str]] = []  # (horizon slot, seq, pool) of pending resolutions
@@ -160,6 +164,11 @@ class Engine:
             raise ValueError("screen policy (parity) needs the replay's good hours (dbc_screen.resolve input)")
         self.log, self.log_name, self.now_ms = log, log_name, now_ms
         self.meta = meta or {}
+        # PROOF-ONLY oracles (never in the book): the screen's two lookahead inputs. oracle_rows: every recorded row of each pool (the screen's order fix and bad flags
+        # see the pool's later rows, QP "A3 lookahead"); oracle_mode: config -> ((mode0, known0), (mode, known)) as the screen's two derive calls computed them on all data.
+        self.decide = decide
+        self.oracle_rows = oracle_rows
+        self.oracle_mode = oracle_mode
         self.trig_keys: list[str] = []
         self.entries_screen: list[dict[str, Any]] = []
         self.decisions_live: list[dict[str, Any]] = []
@@ -179,7 +188,7 @@ class Engine:
     def advance(self, slot: int) -> None:
         """A row of `slot` arrived: every group of an earlier slot is closed and decided."""
         if slot > self.cur_slot:
-            if self.open:
+            if self.open and self.decide:
                 for name in list(self.open):
                     self._close(self.pools[name])
                 self.open.clear()
@@ -235,15 +244,21 @@ class Engine:
         self._resolve_due(1 << 62)
 
     # ---------------------------------------------------------------- slot close
-    def _arr(self, p: PoolHist, lo: int, hi: int) -> dict[str, np.ndarray]:
+    def _arr(self, p: PoolHist, lo: int, hi: int, extend: bool = False) -> dict[str, np.ndarray]:
+        if extend and self.oracle_rows is not None:  # proof-only: extend the decision pipeline input to the pool's last recorded row
+            p = self.oracle_rows[p.name]
+            hi = p.n()
         a = {k: np.frombuffer(p.cols[k], np.float64)[lo:hi].copy() for k in _COLS_F}
         a["slot"] = np.frombuffer(p.cols["slot"], np.int64)[lo:hi].copy()
         for k in ("side", "sw3", "fob"):
             a[k] = np.frombuffer(p.cols[k], np.int64)[lo:hi].astype(np.int8)
         return a
 
-    def cfg_mode(self, cfg: str) -> tuple[int, bool]:
-        c = self.cfg_ev.get(cfg)
+    def cfg_mode(self, cfg: str, first_pass: bool = False) -> tuple[int, bool]:
+        """(mode, known) by majority of the evidence seen so far (dbc_price.derive's rule: mode 1 iff count(ev==1) > count(ev==0); known iff any evidence)."""
+        if self.oracle_mode is not None:
+            return self.oracle_mode.get(cfg, ((0, False), (0, False)))[0 if first_pass else 1]
+        c = (self.cfg_ev0 if first_pass else self.cfg_ev).get(cfg)
         if not c:
             return 0, False
         return (1 if c[1] > c[0] else 0), (c[0] + c[1]) > 0
@@ -261,7 +276,7 @@ class Engine:
         d = L.derive(a, pid, pid, iso)
         k0 = p.closed - lo
         ev = d["mode_ev"][k0:]
-        c = self.cfg_ev.setdefault(p.config, [0, 0])
+        c = self.cfg_ev0.setdefault(p.config, [0, 0])
         c[0] += int((ev == 0).sum())
         c[1] += int((ev == 1).sum())
         buy = a["side"] == 1
@@ -274,6 +289,14 @@ class Engine:
         old_closed = p.closed
         p.closed = n
         self.stats["groups_closed"] += len(p.gstart) - gi
+        # final-pass evidence of the new rows: order fix on the tail from the last anchor, then derive(..., ~bad_row) with the REAL fob
+        if self.oracle_mode is None:
+            te = self._tail_start(p, old_closed)
+            _P, _perm, ev_fin = self._pipeline(p, te, n, want_ev=True)
+            ev_fin = ev_fin[old_closed - te:n - te]  # type: ignore[index]
+            c = self.cfg_ev.setdefault(p.config, [0, 0])
+            c[0] += int((ev_fin == 0).sum())
+            c[1] += int((ev_fin == 1).sum())
         # 3) cheap upper-bound prefilter, then the frozen rule on the tail
         if self._prefilter(p, old_closed, n):
             self.stats["prefilter_pass"] += 1
@@ -304,6 +327,13 @@ class Engine:
                 return True
         return False
 
+    def _flags(self, p: PoolHist) -> tuple[bool, int | None]:
+        """(hook, completion slot) of the pool: as seen so far, or (proof-only oracle) over all recorded rows."""
+        if self.oracle_rows is not None:
+            q = self.oracle_rows[p.name]
+            return q.hook, q.comp_slot
+        return p.hook, p.comp_slot
+
     def _tail_start(self, p: PoolHist, lo_min: int) -> int:
         j = bisect.bisect_right(p.anchors, lo_min) - 1
         if j < 0:
@@ -312,13 +342,16 @@ class Engine:
         g = bisect.bisect_right(p.gstart, r) - 1  # r's group (single row)
         return p.gstart[g - 1] if g >= 1 else 0
 
-    def _pipeline(self, p: PoolHist, t0: int, hi: int) -> tuple[S.Pool, np.ndarray]:
-        """dbc_screen.load_exploration's per-pool steps on rows [t0, hi), with the config fee mode injected: every row's fob is set to (1 - mode) so that derive's
-        config majority returns `mode` (FOB_EVIDENCE is on), and mode_known is set to the causal value afterwards. Returns (Pool, perm) with perm relative to t0."""
-        a = self._arr(p, t0, hi)
-        n = hi - t0
+    def _pipeline(self, p: PoolHist, t0: int, hi: int, want_ev: bool = False, extend: bool = False) -> tuple[S.Pool, np.ndarray, np.ndarray | None]:
+        """dbc_screen.load_exploration's per-pool steps on rows [t0, hi), with the config fee modes injected: every row's fob is set to (1 - mode) so that derive's
+        config majority returns `mode` (FOB_EVIDENCE is on): mode0 for the first derive (order fix), the final mode for the second; mode_known is set to the causal value
+        afterwards. Returns (Pool, perm relative to t0, final-pass evidence per fixed-order row with the REAL fob if want_ev)."""
+        a = self._arr(p, t0, hi, extend)
+        n = len(a["slot"])
+        real_fob = a["fob"]
+        mode0, _ = self.cfg_mode(p.config, first_pass=True)
         mode, known = self.cfg_mode(p.config)
-        a["fob"] = np.full(n, 1 - mode, np.int8)
+        a["fob"] = np.full(n, 1 - mode0, np.int8)
         pid = np.zeros(n, np.int64)
         cfg = np.zeros(n, np.int64)
         iso = L.isolated(pid, a["slot"])
@@ -327,22 +360,26 @@ class Engine:
         perm, _st, badm = L.order_fix(a, pid, d0)
         A = {k: v[perm] for k, v in a.items()}
         bad_row = badm[perm]
+        ev = None
+        if want_ev:
+            ev = L.derive({**A, "fob": real_fob[perm]}, pid, cfg, ~bad_row)["mode_ev"]
+        A["fob"] = np.full(n, 1 - mode, np.int8)
         d = L.derive(A, pid, cfg, ~bad_row)
         d["mode_known"] = np.full(n, known, bool)
-        D = {"a": A, "d": d, "bad_row": bad_row, "hook_row": np.full(n, p.hook, bool)}
+        D = {"a": A, "d": d, "bad_row": bad_row, "hook_row": np.full(n, self._flags(p)[0], bool)}
         self.stats["tail_evals"] += 1
         self.stats["tail_rows"] += n
         if t0 == 0:
             self.stats["full_evals"] += 1
-        return S.Pool(D, slice(0, n), 0), perm
+        return S.Pool(D, slice(0, n), 0), perm, ev
 
     def _decide(self, p: PoolHist, lo_new: int, hi: int) -> None:
         bt = p.cols["bt"]
         lo_min = bisect.bisect_left(bt, bt[lo_new] - WIN_S)
         t0 = self._tail_start(p, lo_min)
-        P, perm = self._pipeline(p, t0, hi)
-        idx = S.triggers_for(CELL, P, self.first_ok_bt, p.comp_slot)
-        new = [i for i in idx if t0 + int(perm[i]) >= lo_new]
+        P, perm, _ = self._pipeline(p, t0, hi, extend=True)
+        idx = S.triggers_for(CELL, P, self.first_ok_bt, self._flags(p)[1])
+        new = [i for i in idx if lo_new <= t0 + int(perm[i]) < hi]
         for i in new:
             o = t0 + int(perm[i])
             key = key_of(p.name, int(P.slot[i]), float(P.S1[i]))
@@ -417,7 +454,7 @@ class Engine:
                 continue
             lo_min = bisect.bisect_left(p.cols["bt"], t["bt"] - WIN_S)
             t0 = self._tail_start(p, min(lo_min, t["row"]))
-            P, perm = self._pipeline(p, t0, p.closed)
+            P, perm, _ = self._pipeline(p, t0, p.closed, extend=True)
             inv = np.empty_like(perm)
             inv[perm] = np.arange(len(perm))
             i = int(inv[t["row"] - t0])
@@ -430,7 +467,7 @@ class Engine:
                                                    "exit_slot": fire_slot + S.k_slots(L.LAT_S, ss), "busy_until_bt": p.busy_live})
             else:
                 Dx = {"slot_s": {int(t["bt"] // 3600): ss}, "good_hours": sorted(self.good_hours or [])}
-                att, ref = S.resolve(CELL, P, [i], Dx, p.comp_slot)
+                att, ref = S.resolve(CELL, P, [i], Dx, self._flags(p)[1])
                 for k, v in ref.items():
                     self.screen_refused[k] += v
                 if att:
@@ -497,8 +534,22 @@ def read_hour_ordered(path: str | os.PathLike, root: str | None = None) -> dict[
 
 
 def screen_keys(start: datetime, end: datetime, root: str | None = None) -> dict[str, Any]:
-    """The frozen screen on [start, end): trigger keys (dbc_screen.triggers_for, every pool, as cell_attempts calls it) and entry keys (dbc_screen.cell_attempts). Counts only."""
-    D = S.load_exploration(root, log=lambda *_: None, start=start, end=end)
+    """The frozen screen on [start, end): trigger keys (dbc_screen.triggers_for, every pool, as cell_attempts calls it) and entry keys (dbc_screen.cell_attempts). Counts only.
+    dbc_price.derive is wrapped for the duration of the load ONLY to record the two config fee-mode maps it computes (outputs unchanged); they are the proof-only oracle."""
+    calls: list[tuple[np.ndarray, np.ndarray, np.ndarray]] = []
+    orig = L.derive
+
+    def rec(a, pid, cfg, iso=None):  # noqa: ANN001
+        d = orig(a, pid, cfg, iso)
+        calls.append((np.asarray(cfg).copy(), d["mode"].copy(), d["mode_known"].copy()))
+        return d
+
+    L.derive = rec
+    try:
+        D = S.load_exploration(root, log=lambda *_: None, start=start, end=end)
+    finally:
+        L.derive = orig
+    assert len(calls) == 2, "load_exploration is expected to call derive twice (first pass with iso, final pass with ~bad_row)"
     A, pid = D["a"], D["pid"]
     bounds = np.flatnonzero(np.diff(pid)) + 1
     starts = np.concatenate([[0], bounds])
@@ -516,35 +567,20 @@ def screen_keys(start: datetime, end: datetime, root: str | None = None) -> dict
             trig.append(key_of(names[P.pid], int(P.slot[i]), float(P.S1[i])))
     att, refused, st = S.cell_attempts(CELL, D)
     ent = [key_of(names[a["pid"]], int(A["slot"][s_of[a["pid"]] + a["i"]]), float(A["S1"][s_of[a["pid"]] + a["i"]])) for a in att]
-    cfg_mode: dict[str, int] = {}
-    for c, m, k in zip(A["cfg"], D["d"]["mode"], D["d"]["mode_known"]):
-        if k:
-            cfg_mode.setdefault(D["cfg_names"][int(c)], int(m))
+    modes: list[dict[str, tuple[int, bool]]] = []
+    for cfg, m, k in calls:
+        mm: dict[str, tuple[int, bool]] = {}
+        for c, mv, kv in zip(cfg, m, k):
+            mm.setdefault(D["cfg_names"][int(c)], (int(mv), bool(kv)))
+        modes.append(mm)
+    oracle_mode = {c: (modes[0].get(c, (0, False)), modes[1].get(c, (0, False))) for c in set(modes[0]) | set(modes[1])}
     return {"trigger_keys": trig, "entry_keys": ent, "refused": refused, "trigger_prints": st["trigger_prints"], "slot_s": D["slot_s"], "good_hours": D["good_hours"],
-            "bad_hours": D["bad_hours"], "start_ts": D["start_ts"], "cfg_mode": cfg_mode, "rows": int(len(pid)), "pools": D["n_pools"]}
+            "bad_hours": D["bad_hours"], "start_ts": D["start_ts"], "oracle_mode": oracle_mode, "rows": int(len(pid)), "pools": D["n_pools"]}
 
 
-def replay(start: datetime, end: datetime, root: str | None = None, cfg_summary: str | None = None, log_root: str | None = None) -> dict[str, Any]:
-    """Equivalence replay on recorded hours [start, end) inside [2026-10-14T00, 2026-10-16T04). Runs the screen, then streams the same hours through the engine.
-    Returns counts and md5s only (nothing is priced)."""
-    replay_guard(start, end, root)
-    L.enable_swap3_pricing()
-    if cfg_summary:
-        L.load_config_thresholds(cfg_summary)
-    t0 = time.time()
-    scr = screen_keys(start, end, root)
-    t_screen = time.time() - t0
-    from tools.arena_declog import DecisionLog  # noqa: PLC0415
-
-    log = DecisionLog(log_root) if log_root else None
-    live_ss: dict[int, float] = {}
-    eng = Engine(scr["start_ts"] + S.WARMUP_HOURS * 3600, ss_live=lambda hk: S.slot_s_for(live_ss, hk), ss_screen=lambda hk: S.slot_s_for(scr["slot_s"], hk),
-                 good_hours=set(scr["good_hours"]), screen_policy=True, log=log, meta={"bt_src": "tape_block_time"})
-    if log is not None:
-        log.append(BOOK, int(scr["start_ts"] * 1000), {"type": "start", "book": BOOK, "mode": "replay", "window": [f"{start:%Y-%m-%dT%H}", f"{end:%Y-%m-%dT%H}"],
-                                                       "cell": "m10", "exit_rule": EXIT_RULE, "code_sha256": code_shas(), "schema": SCHEMA})
-    t1 = time.time()
-    hours_streamed = 0
+def stream_hours(eng: "Engine", start: datetime, end: datetime, root: str | None, live_ss: dict[int, float] | None = None, log: Any = None) -> int:
+    """Feed every complete recorded hour of [start, end) to `eng` in tape order (incomplete hours are skipped, as dbc_screen.load_exploration does). Returns hours streamed."""
+    n = 0
     for h in L.exploration_hours(start, end):
         f = L.hour_file(h, root)
         hk = int(h.timestamp() // 3600)
@@ -553,41 +589,78 @@ def replay(start: datetime, end: datetime, root: str | None = None, cfg_summary:
         r = read_hour_ordered(f, root)
         if r["incomplete"]:
             continue
-        hours_streamed += 1
+        n += 1
         for row in r["rows"]:
             eng.on_row(row)
-        sol = [x for x in r["rows"] if x.get("type") == "trade" and L.usable_row(x)]
-        if sol:
-            v = slot_s_of(np.array([L.block_time_s(x) for x in sol]), np.array([int(x["slot"]) for x in sol]))
+        if live_ss is not None:
+            sol = [x for x in r["rows"] if x.get("type") == "trade" and L.usable_row(x)]
+            v = slot_s_of(np.array([L.block_time_s(x) for x in sol]), np.array([int(x["slot"]) for x in sol])) if sol else None
             if v is not None:
                 live_ss[hk + 1] = v  # causal: the live policy uses the previous hour's measured slot length
-        if log is not None:
+        if log is not None and eng.decide:
             log.append(BOOK, int((h.timestamp() + 3600) * 1000) - 1, {"type": "hb", "book": BOOK, "hour": f"{h:%Y-%m-%dT%H}", "decisions": len(eng.decisions_live),
                                                                        "trigger_prints": eng.stats["trigger_prints"], "sol_rows": eng.stats["sol_rows"]})
-        del r, sol
-    eng.finish()
-    t_engine = time.time() - t1
-    e_trig, e_ent = eng.trig_keys, [x["key"] for x in eng.entries_screen]
-    live = [x["key"] for x in eng.decisions_live]
-    mode_mis = sorted(c for c, m in scr["cfg_mode"].items() if eng.cfg_mode(c) != (m, True))
-    res: dict[str, Any] = {
-        "schema": SCHEMA, "window": [f"{start:%Y-%m-%dT%H}", f"{end:%Y-%m-%dT%H}"], "hours_streamed": hours_streamed, "good_hours": len(scr["good_hours"]), "bad_hours": scr["bad_hours"],
-        "screen": {"trigger_prints": len(scr["trigger_keys"]), "entries": len(scr["entry_keys"]), "md5_triggers": md5_keys(scr["trigger_keys"]), "md5_entries": md5_keys(scr["entry_keys"]),
-                   "refused": scr["refused"], "rows": scr["rows"], "pools": scr["pools"], "seconds": round(t_screen, 1)},
-        "engine": {"trigger_prints": len(e_trig), "entries_screen_policy": len(e_ent), "md5_triggers": md5_keys(e_trig), "md5_entries_screen_policy": md5_keys(e_ent),
-                   "refused_screen_policy": eng.screen_refused, "decisions_live_policy": len(live), "md5_decisions_live_policy": md5_keys(live), "stats": eng.stats,
-                   "seconds": round(t_engine, 1)},
-        "equal_triggers": md5_keys(e_trig) == md5_keys(scr["trigger_keys"]) and len(e_trig) == len(scr["trigger_keys"]),
-        "equal_entries": md5_keys(e_ent) == md5_keys(scr["entry_keys"]) and len(e_ent) == len(scr["entry_keys"]),
-        "diff": {"triggers_screen_only": sorted(set(scr["trigger_keys"]) - set(e_trig))[:20], "triggers_engine_only": sorted(set(e_trig) - set(scr["trigger_keys"]))[:20],
-                 "entries_screen_only": sorted(set(scr["entry_keys"]) - set(e_ent))[:20], "entries_engine_only": sorted(set(e_ent) - set(scr["entry_keys"]))[:20],
-                 "live_vs_screen_entries": {"live_only": len(set(live) - set(scr["entry_keys"])), "screen_only": len(set(scr["entry_keys"]) - set(live))}},
-        "config_mode_mismatch_engine_end_vs_screen": {"n": len(mode_mis), "first": mode_mis[:10]},
-        "code_sha256": code_shas(), "taken_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "note": "Decision equivalence only (keys = pool|slot|post sqrt price). Nothing priced. Not evidence that m10 makes money.",
-    }
-    if log is not None:
-        res["declog"] = {"md5": log.md5(), "head": list(log.verify(BOOK))}
+        del r
+    if eng.decide:
+        eng.finish()
+    return n
+
+
+VARIANTS = (("oracle_rows+oracle_mode", True, True), ("oracle_mode_only", False, True), ("oracle_rows_only", True, False), ("causal", False, False))
+
+
+def replay(start: datetime, end: datetime, root: str | None = None, cfg_summary: str | None = None, log_root: str | None = None) -> dict[str, Any]:
+    """Equivalence replay on recorded hours [start, end) inside [2026-10-14T00, 2026-10-16T04). Runs the screen, then streams the same hours through the engine four times:
+    with both proof-only oracles (must equal the screen exactly: md5 of sorted trigger keys and of sorted entry keys), with one oracle each (attribution), and causal (the
+    book; its hash-chained decision log is written). Returns counts and md5s only; nothing is priced."""
+    replay_guard(start, end, root)
+    L.enable_swap3_pricing()
+    if cfg_summary:
+        L.load_config_thresholds(cfg_summary)
+    t0 = time.time()
+    scr = screen_keys(start, end, root)
+    res: dict[str, Any] = {"schema": SCHEMA, "window": [f"{start:%Y-%m-%dT%H}", f"{end:%Y-%m-%dT%H}"], "good_hours": len(scr["good_hours"]), "bad_hours": scr["bad_hours"],
+                           "screen": {"trigger_prints": len(scr["trigger_keys"]), "entries": len(scr["entry_keys"]), "md5_triggers": md5_keys(scr["trigger_keys"]),
+                                      "md5_entries": md5_keys(scr["entry_keys"]), "refused": scr["refused"], "rows": scr["rows"], "pools": scr["pools"],
+                                      "seconds": round(time.time() - t0, 1)}, "variants": {}}
+    first_ok = scr["start_ts"] + S.WARMUP_HOURS * 3600
+    coll = Engine(first_ok, decide=False)
+    stream_hours(coll, start, end, root)
+    from tools.arena_declog import DecisionLog  # noqa: PLC0415
+
+    for name, o_rows, o_mode in VARIANTS:
+        t1 = time.time()
+        log = DecisionLog(log_root) if (log_root and name == "causal") else None
+        live_ss: dict[int, float] = {}
+        eng = Engine(first_ok, ss_live=lambda hk, m=live_ss: S.slot_s_for(m, hk), ss_screen=lambda hk: S.slot_s_for(scr["slot_s"], hk),
+                     good_hours=set(scr["good_hours"]), screen_policy=True, log=log, meta={"bt_src": "tape_block_time"},
+                     oracle_rows=coll.pools if o_rows else None, oracle_mode=scr["oracle_mode"] if o_mode else None)
+        if log is not None:
+            log.append(BOOK, int(scr["start_ts"] * 1000), {"type": "start", "book": BOOK, "mode": "replay", "window": res["window"], "cell": "m10", "exit_rule": EXIT_RULE,
+                                                           "code_sha256": code_shas(), "schema": SCHEMA})
+        hs = stream_hours(eng, start, end, root, live_ss, log)
+        e_trig, e_ent = eng.trig_keys, [x["key"] for x in eng.entries_screen]
+        live = [x["key"] for x in eng.decisions_live]
+        st, se = set(scr["trigger_keys"]), set(scr["entry_keys"])
+        v = {"hours_streamed": hs, "trigger_prints": len(e_trig), "entries_screen_policy": len(e_ent), "decisions_live_policy": len(live),
+             "md5_triggers": md5_keys(e_trig), "md5_entries_screen_policy": md5_keys(e_ent), "md5_decisions_live_policy": md5_keys(live),
+             "equal_triggers": md5_keys(e_trig) == res["screen"]["md5_triggers"], "equal_entries": md5_keys(e_ent) == res["screen"]["md5_entries"],
+             "triggers_screen_only": len(st - set(e_trig)), "triggers_engine_only": len(set(e_trig) - st), "entries_screen_only": len(se - set(e_ent)),
+             "entries_engine_only": len(set(e_ent) - se), "live_decisions_not_screen_entries": len(set(live) - se), "screen_entries_not_live_decisions": len(se - set(live)),
+             "examples": {"triggers_screen_only": sorted(st - set(e_trig))[:5], "triggers_engine_only": sorted(set(e_trig) - st)[:5]},
+             "refused_screen_policy": eng.screen_refused, "stats": eng.stats, "seconds": round(time.time() - t1, 1)}
+        if o_mode is False:
+            v["config_mode_differs_from_screen_at_end"] = sum(1 for c, (m0, m1) in scr["oracle_mode"].items() if m1[1] and eng.cfg_mode(c) != m1)
+        if log is not None:
+            v["declog"] = {"md5": log.md5(), "head": list(log.verify(BOOK))}
+        res["variants"][name] = v
+        del eng
+    o = res["variants"]["oracle_rows+oracle_mode"]
+    res["equivalence_pass"] = bool(o["equal_triggers"] and o["equal_entries"])
+    res["code_sha256"] = code_shas()
+    res["taken_utc"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    res["note"] = ("Decision equivalence only (keys = pool|slot|post sqrt price as float64). Nothing priced. Not evidence that m10 makes money. The two oracles are the screen's "
+                   "lookahead inputs (A3: order fix / bad flags from the pool's later rows; config fee mode from all data); they are proof-only and never used by the book.")
     return res
 
 
@@ -618,11 +691,12 @@ def main(argv: list[str] | None = None) -> int:
     res = replay(start, end, ns.root, ns.cfg_summary, str(out / "declog"))
     txt = json.dumps(res, indent=1, default=float)
     (out / "equivalence.json").write_text(txt)
-    print(json.dumps({k: res[k] for k in ("window", "equal_triggers", "equal_entries")}))
-    print(json.dumps({"screen": {k: res["screen"][k] for k in ("trigger_prints", "entries", "md5_triggers", "md5_entries")},
-                      "engine": {k: res["engine"][k] for k in ("trigger_prints", "entries_screen_policy", "md5_triggers", "md5_entries_screen_policy", "decisions_live_policy")}}))
+    print(json.dumps({"window": res["window"], "equivalence_pass": res["equivalence_pass"], "screen": {k: res["screen"][k] for k in ("trigger_prints", "entries", "md5_triggers", "md5_entries")}}))
+    for k, v in res["variants"].items():
+        print(k, json.dumps({x: v[x] for x in ("trigger_prints", "entries_screen_policy", "decisions_live_policy", "md5_triggers", "md5_entries_screen_policy", "equal_triggers",
+                                               "equal_entries", "triggers_screen_only", "triggers_engine_only", "entries_screen_only", "entries_engine_only", "seconds")}))
     print("sha256 equivalence.json", hashlib.sha256(txt.encode()).hexdigest())
-    return 0 if (res["equal_triggers"] and res["equal_entries"]) else 1
+    return 0 if res["equivalence_pass"] else 1
 
 
 if __name__ == "__main__":
