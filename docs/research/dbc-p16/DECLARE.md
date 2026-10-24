@@ -40,3 +40,8 @@ Same fail models, stats, labels and ex-top-3 / ex-best-day as P14. Per day repor
 P14's 12 cells + 3 D5 cells = 15 priced cells; the strand re-pricing re-uses 6 of the 12 (a second price of the same cells under the new strand rule, not new cells; the P14 full-loss line and the P14
 last-price bracket remain printed). One pricing run after all fetched data exists; no re-tuning; diagnostics added after the first look are labelled as such.
 Declared at: 2026-10-24T06:20:15Z
+
+## Erratum 1 (before any pricing)
+The fetch order puts the 682 strand pools (pools where a P14 D1/D2 position was open at completion) first, so those pools are a selected, hot subset. D5 PRIMARY sample = migrated pools that are NOT strand
+pools (fetched in sha256(pool) order, a uniform subset of non-strand migrations; the share of all non-strand migrations covered is printed). D5 on all fetched pools (strand pools included) is printed beside it as a sensitivity and never changes a label.
+Erratum written at: 2026-10-24T06:52:08Z

@@ -325,6 +325,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--damm-dir", default="/data2/mal/venue-tape-backfill/meteora_damm_v2")
     ap.add_argument("--cells", default="")
+    ap.add_argument("--strand-json", default="/data/mal/hunt-1008/push-1016/hunt28/p16/strand_pools.json")
     a = ap.parse_args(argv)
     out = Path(S.check_out_dir(a.out))
     out.mkdir(parents=True, exist_ok=True)
@@ -333,7 +334,7 @@ def main(argv: list[str] | None = None) -> int:
     cp = json.loads((Path(a.damm_dir) / "checkpoint.json").read_text())
     res: dict[str, Any] = {"schema": "damm_grad_v1", "kit_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), "credits_used_counted": cp["credits_used"],
                            "migrations_resolved": len(cp["migs"]), "pools_fetched": len(cp["pools"]), "links": len(links), "stopped": cp.get("stopped"),
-                           "truncated_pools": sum(1 for v in cp["pools"].values() if v.get("truncated")), "strand": {}, "d5": {}}
+                           "truncated_pools": sum(1 for v in cp["pools"].values() if v.get("truncated")), "strand": {}, "d5": {}, "d5_all_fetched": {}}
     sl = pool_slices(D)
     cache: dict[str, Ser | None] = {}
     want = set(a.cells.split(",")) if a.cells else None
@@ -341,9 +342,13 @@ def main(argv: list[str] | None = None) -> int:
         if c.name in STRAND_CELLS and (not want or c.name in want):
             res["strand"][c.name] = strand_cell(c, D, sl, links, a.damm_dir, cache)
             print(c.name, json.dumps(res["strand"][c.name]["counts"]), flush=True)
+    strand_dbc = set(json.loads(Path(a.strand_json).read_text())["pools"])
+    rand_links = {k: v for k, v in links.items() if k not in strand_dbc}  # PRIMARY D5 sample: pools fetched in sha256 order, not chosen by DBC activity (erratum 1 in DECLARE.md)
+    res["d5_random_pools"], res["d5_strand_priority_pools"] = len(rand_links), len(links) - len(rand_links)
     for gc in G_CELLS:
         if not want or gc.name in want:
-            res["d5"][gc.name] = d5_cell(gc, D, links, a.damm_dir, cache)
+            res["d5"][gc.name] = d5_cell(gc, D, rand_links, a.damm_dir, cache)
+            res["d5_all_fetched"][gc.name] = d5_cell(gc, D, links, a.damm_dir, cache)
             print(gc.name, res["d5"][gc.name].get("attempts"), res["d5"][gc.name].get("label"), flush=True)
     (out / "grad.json").write_text(json.dumps(res, indent=1, default=float))
     return 0
