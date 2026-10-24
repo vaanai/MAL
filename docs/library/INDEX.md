@@ -34,11 +34,11 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 29 | 20 | 1 |
 | `desk-read` | 1 | 43 | 0 |
-| `explored-no-survivor` | 20 | 6 | 1 |
+| `explored-no-survivor` | 22 | 6 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 145 | 75 | 2 |
+| **all** | 147 | 75 | 2 |
 
-The file holds 472 rows: the 222 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 474 rows: the 224 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -354,6 +354,8 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `reprice-160k-hc-h60` | hunt25 A-HC-h60 re-priced at 160,000 per send | `explored-no-survivor` | STILL-DEAD: the fee saves about 0.26 pp leaving a flat deciding mean of about -8.3% (505k: -9.21%); ex-top-3 negative under both fail models. |
 | `dbc-bigbuy` | Meteora DBC large-buy follow (bb1/bb2/bb4) | `explored-no-survivor` | All 3 FAIL: flat -0.0043 / -0.0003 / +0.0007 SOL/trip (n 512 / 173 / 25), ex-top-3 -5.2 / -0.8 / -0.3 SOL. Round-trip fee paid at these trades averages 154-195 bps (young pools), not 50. |
 | `dbc-cascade-fade` | Meteora DBC sell-cascade fade (c3/c4/c6) | `explored-no-survivor` | All 3 FAIL: flat -0.0091 / -0.0043 / +0.0006 SOL/trip (n 1097 / 735 / 522), ex-top-3 -10.8 / -3.8 / -0.4 SOL under both fail models. Closest: c6 (flat +0.0006, pressure -0.0016, ex-top-3 negative). |
+| `dbc-swap3-rescreen` | Meteora DBC D2/D3/D4 re-screen on the Swap3 universe (ms/bb/c, 10-17..10-23) | `explored-no-survivor` | All 9 FAIL on 7 disclosed-exploration days: flat mean per trip ms -0.115/-0.123/-0.153 (full-loss strands 605-1378), bb -0.0011/-0.0019/-0.0115, c -0.0110/-0.0067/-0.0059; round-trip fee 110-400 bps; best optimistic last-price bracket +0.0157 (bb1) is not a priced result. |
+| `dbc-dip-buy` | Meteora DBC single big-sell dip buy (dbs1/dbs2) | `explored-no-survivor` | Both FAIL on 7 disclosed-exploration days: flat mean -0.0135 / -0.0131 per trip (n 2487 / 1202), 0/7 positive days, round trip about 355 bps, even the optimistic bracket is negative. |
 
 ## Duplicate rows
 
