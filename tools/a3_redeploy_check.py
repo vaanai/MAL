@@ -62,8 +62,12 @@ write its own redeploy, enumerated back to the pinned slot, state key `fees:<slo
        A BOOST keeper slice (user == PDA(["boost_vault", pool], PumpSwap)) is zero-fee by design: it must show (0, 0, 0) with cashback 0, and is not tier-tested. An unpriceable event
        (non-positive reserves or supply) counts as a mismatch. Mismatches / tested > max_mismatch_share (pinned 0.0: every event) is a FAIL; fewer than min_universe_events tested
        events is ERROR (no evidence). Non-WSOL, non-canonical and can_boost=false events are counted, not tested.
+       EXPLAINED EXCEPTIONS (QP, PR #894 comment 6388090983 item 3): an event whose raw (lp, protocol, creator) is EXACTLY a pinned `explained_exceptions` triple, with cashback 0,
+       at any tier, is tested but counted apart (never a match, never a mismatch); explained / tested > max_explained_share (pinned 0.02) is a FAIL. Pinned: (0, 5, 0), a discount
+       below every tier seen under the unchanged fees program. Any other triple, including a leg above its tier, stays a 0-tolerance mismatch.
   A write enumeration that fails or does not reach the pinned slot is ERROR, halting at the bound of "Enumeration that fails" (Am.4 1.6). The 24 h deadline (g) applies.
-  KNOWN LIMITS: bonding-curve (SOL-quoted) TradeEvents are not tier-tested; the market-cap formula is the lab's (EXP-024 P7, h5_upgrade_dryrun), not a specification; the check sees the
+  KNOWN LIMITS: bonding-curve (SOL-quoted) TradeEvents are not tier-tested (a separate H4a item, QP-reviewed; a PASS here is not H4a evidence for bonding); ExtendProgram changes the
+  programdata slot without an Upgrade, so the bounded enumeration ERRORs on it (fail closed, a possible false halt); the market-cap formula is the lab's (EXP-024 P7, h5_upgrade_dryrun), not a specification; the check sees the
   bps the fees program returned, not the fee amounts.
 
 Exit codes: 0 NONE or PASS; 10 HALT (verdict.halt_at_ms is set); 11 operational error that is NOT an A3 flag (stale or unreadable daily record, a state file that cannot be written): no halt
@@ -938,7 +942,16 @@ def validate_fee_pins(fp: Any, mon_pins: Json) -> dict[str, Any]:
     share = need(fp.get("max_mismatch_share"), "fees.max_mismatch_share")
     if isinstance(share, bool) or not isinstance(share, (int, float)) or not 0 <= share <= FEE_MAX_MISMATCH_SHARE_CAP:
         raise CheckError(f"pin invalid: fees.max_mismatch_share must be a number in [0, {FEE_MAX_MISMATCH_SHARE_CAP}]")
-    return {"canonical_tiers": [[t[0], list(t[1])] for t in tiers], "fee_config_sha256": sha, "min_universe_events": min_n, "max_mismatch_share": float(share)}
+    exc = need(fp.get("explained_exceptions"), "fees.explained_exceptions")
+    if not isinstance(exc, list) or not all(isinstance(t, list) and len(t) == 3 and all(_int(x) and 0 <= x <= 10_000 for x in t) for t in exc):
+        raise CheckError("pin invalid: fees.explained_exceptions must be a list of [lp, protocol, creator] bps triples")
+    if any(list(t) == list(tier[1]) for t in exc for tier in tiers):
+        raise CheckError("pin invalid: an explained exception equals a tier")
+    exc_share = need(fp.get("max_explained_share"), "fees.max_explained_share")
+    if isinstance(exc_share, bool) or not isinstance(exc_share, (int, float)) or not 0 <= exc_share <= FEE_MAX_MISMATCH_SHARE_CAP:
+        raise CheckError(f"pin invalid: fees.max_explained_share must be a number in [0, {FEE_MAX_MISMATCH_SHARE_CAP}]")
+    return {"canonical_tiers": [[t[0], list(t[1])] for t in tiers], "fee_config_sha256": sha, "min_universe_events": min_n, "max_mismatch_share": float(share),
+            "explained_exceptions": [list(t) for t in exc], "max_explained_share": float(exc_share)}
 
 
 def decode_fee_tiers(data: bytes) -> list[list[Any]]:
@@ -1025,10 +1038,13 @@ def fee_tier_index(tiers: Sequence[Sequence[Any]], mcap: int) -> int:
     return pick
 
 
-def classify_fee_events(events: Sequence[Mapping[str, Any]], pools: Mapping[str, Mapping[str, str] | None], tiers: Sequence[Sequence[Any]]) -> dict[str, Any]:
-    """Pure. Counts only (fee bps and tier indexes, no amount, price or address). See the module docstring, check (i)."""
+def classify_fee_events(events: Sequence[Mapping[str, Any]], pools: Mapping[str, Mapping[str, str] | None], tiers: Sequence[Sequence[Any]],
+                        explained: Sequence[Sequence[int]] = ()) -> dict[str, Any]:
+    """Pure. Counts only (fee bps and tier indexes, no amount, price or address). See the module docstring, check (i). `explained`: the pinned exception triples."""
     c: dict[str, Any] = {"n_events": len(events), "n_outside_non_wsol": 0, "n_outside_non_canonical": 0, "n_outside_no_boost": 0, "n_pool_unreadable": 0,
-                         "n_boost_slices": 0, "n_boost_slices_with_fee": 0, "n_tested": 0, "n_match": 0, "n_mismatch": 0, "n_unpriceable": 0}
+                         "n_boost_slices": 0, "n_boost_slices_with_fee": 0, "n_tested": 0, "n_match": 0, "n_mismatch": 0, "n_unpriceable": 0, "n_explained": 0}
+    explained_set = {tuple(t) for t in explained}
+    explained_by: dict[str, int] = {}
     covered: set[int] = set()
     patterns: dict[str, int] = {}
     canon: dict[str, str] = {}
@@ -1066,22 +1082,28 @@ def classify_fee_events(events: Sequence[Mapping[str, Any]], pools: Mapping[str,
             c["n_mismatch"] += 1
             continue
         idx = fee_tier_index(tiers, q * sup // b)
+        raw3 = (e["lp_fee_basis_points"], e["protocol_fee_basis_points"], e["coin_creator_fee_basis_points"])
         if obs == list(tiers[idx][1]):
             c["n_match"] += 1
             covered.add(idx)
+        elif raw3 in explained_set and e["cashback_fee_basis_points"] == 0:
+            c["n_explained"] += 1
+            key = f"tier {idx} observed {list(raw3)}"
+            explained_by[key] = explained_by.get(key, 0) + 1
         else:
             c["n_mismatch"] += 1
             key = f"tier {idx} expected {list(tiers[idx][1])} observed {obs}"
             patterns[key] = patterns.get(key, 0) + 1
     c["tiers_covered"] = sorted(covered)
     c["mismatch_patterns"] = dict(sorted(patterns.items(), key=lambda kv: (-kv[1], kv[0]))[:10])
+    c["explained_patterns"] = dict(sorted(explained_by.items(), key=lambda kv: (-kv[1], kv[0]))[:10])
     return c
 
 
 def fee_tier_evidence(client: Any, idls: Mapping[str, Json], blobs: Sequence[bytes], fee_pins: Json) -> dict[str, Any]:
     events, bad = fee_events(blobs, idls)
     pools = pool_accounts(client, sorted({e["pool"] for e in events})) if events else {}
-    out = classify_fee_events(events, pools, fee_pins["canonical_tiers"])
+    out = classify_fee_events(events, pools, fee_pins["canonical_tiers"], fee_pins["explained_exceptions"])
     out["n_idl_undecodable"] = bad
     return out
 
@@ -1098,6 +1120,9 @@ def fee_tier_failures(ft: Mapping[str, Any], fee_pins: Json) -> list[str]:
     if ft["n_mismatch"] / ft["n_tested"] > fee_pins["max_mismatch_share"]:
         fails.append(f"i: {ft['n_mismatch']} of {ft['n_tested']} in-universe WSOL trade events have fee bps != the pinned tier for their market cap "
                      f"(pinned max share {fee_pins['max_mismatch_share']}; unpriceable {ft['n_unpriceable']}; {ft['mismatch_patterns']})")
+    if ft["n_explained"] / ft["n_tested"] > fee_pins["max_explained_share"]:
+        fails.append(f"i: {ft['n_explained']} of {ft['n_tested']} in-universe WSOL trade events carry a pinned explained-exception triple, above the pinned max share "
+                     f"{fee_pins['max_explained_share']} ({ft['explained_patterns']})")
     return fails
 
 
