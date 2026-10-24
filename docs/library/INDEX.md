@@ -32,13 +32,13 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `explored-survivor-unconfirmed` | 9 | 0 | 0 |
 | `parked` | 8 | 0 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 32 | 20 | 1 |
+| `untested` | 42 | 20 | 1 |
 | `desk-read` | 1 | 43 | 0 |
 | `explored-no-survivor` | 36 | 6 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 167 | 75 | 2 |
+| **all** | 177 | 75 | 2 |
 
-The file holds 494 rows: the 244 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 504 rows: the 254 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -116,6 +116,16 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `census-cpmm-grad` | Raydium CPMM pools born from LaunchLab graduation | launchpad migration | Per-pool filter from LaunchLab migrate rows. |
 | `census-damm2-grad` | Meteora DAMM v2 pools born from DBC migration | launchpad migration | After P12 migration rows exist. |
 | `dbc-completion-hold` | Meteora DBC curve_complete then DAMM v2 hold (FLOOR-style) | DBC screens (P14, 2026-10-24) | Probe fetch, then its own DECLARE. |
+| `p20-dbc-start-floor` | DBC curve start-price floor option (buy pools back near sqrt_start_price, tp +50%) | P20 fresh ideas (2026-10-24) | Refetch ~7,400 DBC configs (74 getMultipleAccounts, <1,000 credits) for sqrt_start_price; DECLARE (floor band 1.02/1.05/1.10; tp +50%, 6 h/24 h cap; 0.1/0.25 SOL); counts then one priced screen. DBC hours [10-14T00,10-17T00) exploration; [10-17T00,10-24T00) only as disclosed exploration with QP OK (not a D1 variant); no DBC hour >= 2026-10-25T00 opened or registered before the m10 read (REGISTRATION R3/R12). |
+| `p20-dbc-completion-step` | DBC completing buy into the migration price step (buy at p >= 0.95, sell on first DAMM v2 … | P20 fresh ideas (2026-10-24) | Config refetch (migration_sqrt_price); step distribution on /data2/mal/venue-tape-backfill/meteora_damm_v2/pools (clipped before 10-17T00); then a DECLAREd cell on [10-14,10-17). DBC hours [10-14T00,10-17T00) exploration; [10-17T00,10-24T00) only as disclosed exploration with QP OK (not a D1 variant); no DBC hour >= 2026-10-25T00 opened or registered before the m10 read (REGISTRATION R3/R12). |
+| `p20-dbc-fee-floor-clock` | DBC/DAMM v2 anti-sniper fee-expiry clock: pre-signed buy landing at the fee-scheduler or … | P20 fresh ideas (2026-10-24) | Config refetch for BaseFeeConfig/MigratedPoolMarketCapFeeSchedulerParams; trigger = config-computed expiry (never the realized fee path); entry at expiry +0/+2 slots; random-time control. DBC hours [10-14T00,10-17T00) exploration; [10-17T00,10-24T00) only as disclosed exploration with QP OK (not a D1 variant); no DBC hour >= 2026-10-25T00 opened or registered before the m10 read (REGISTRATION R3/R12). |
+| `p20-wick-bid-zero-latency` | Resting-bid wick capture: one-sided bid liquidity filled at the dump print's own price … | P20 fresh ideas (2026-10-24) | Kill test: dump-absorb triggers in tools/arena_screen.py with entry at the sell's post-trade state, PumpSwap exploration blocks only (explore-0814, fresh-0903, exp011-0909, fast pre-cut, Oracle in-sample); 0 credits. |
+| `p20-dbc-segment-convexity` | DBC multi-segment curve: enter just before a thin-liquidity segment boundary | P20 fresh ideas (2026-10-24) | Config refetch (curve segments); DECLARE boundary bands 1%/3% of quote before the boundary. DBC hours [10-14T00,10-17T00) exploration; [10-17T00,10-24T00) only as disclosed exploration with QP OK (not a D1 variant); no DBC hour >= 2026-10-25T00 opened or registered before the m10 read (REGISTRATION R3/R12). |
+| `p20-atomic-xpool-bundle` | Atomic two-pool arbitrage in a revert-unless-surplus bundle (cross-program: PumpSwap vs … | P20 fresh ideas (2026-10-24) | Structure count at today's account state (getProgramAccounts by mint, ~30-60k credits assumed for 2,000 mints); then a forward public-logsSubscribe gap logger from a registered start. No October pump tape (ledger D2/D3). |
+| `p20-incentive-farming` | Trading-incentive farming: platform volume rewards vs round-trip cost on the cheapest … | P20 fresh ideas (2026-10-24) | Desk list of live Solana programmes with official terms (0 credits); owner policy check before any test. |
+| `p20-launch-allocation` | Launch-allocation underpricing: Meteora Alpha Vault / Metaplex Genesis pro-rata deposits | P20 fresh ideas (2026-10-24) | Program-account scan of Alpha Vault and Genesis (<10k credits); first-hours prices from the public GeckoTerminal API; no ledger block; forward record only from a registered start. |
+| `p20-listing-announce` | Exchange-listing announcement long (off-chain notice, on-chain buy within 2-4 s) | P20 fresh ideas (2026-10-24) | Public announcement archives (Binance, Upbit, Bithumb, Coinbase, Robinhood, Bybit, OKX) and GeckoTerminal minute OHLCV; 0 Helius credits; no ledger block. |
+| `p20-xstock-offhours` | Tokenized-stock (xStocks) off-hours fair-value reversion on Solana AMMs (not a meme coin) | P20 fresh ideas (2026-10-24) | Owner's say first; then xStock pool histories (~50-150k credits) and minute futures data; no ledger block. |
 
 ## Owner ideas
 
