@@ -32,6 +32,19 @@ Desk research and cheap public facts only. The lane ran no pricing, used no Heli
 - **Off-venue data** (exchange notices, GeckoTerminal OHLCV, program accounts read at today's state): no ledger block is involved. A forward test needs its own recorder from a pre-registered start, and no October pump tape.
 - Multiplicity: each new DBC cell adds to the 26 DBC/D5 cells already screened (P14 12, P17 11, P16 D5 3). Disclose that in each DECLARE.
 
+## Status after QP-RULING-1024-p20 and P21 (#876)
+
+Added 2026-10-24 after the merge of #876. The ranking table below is the original desk ranking and is left as written.
+
+| Rank | Idea | QP domain | Status now |
+|---|---|---|---|
+| 1 | p20-dbc-start-floor | D7 | Screened by P21 (#876, job #1527, exploration only). All 4 D7 cells FAIL. Primary d7_s105_h6: flat -0.0070 / pressure -0.0058 SOL per attempt, 1/10 days positive. 97-100% of trips end at the time cap. About 15 attempts/day, not the guessed 100. Not eligible for a registration. |
+| 2 | p20-dbc-completion-step | D8 | Not screened. QP-RULING-1024-p20 (a)2: a screen is allowed, but there is **no path to a book**. No DAMM v2 sell path exists, and the entry at p >= 0.95 breaks the p <= 0.85 universe rule and QP item 3. The P16 strand-pool subset may not be its primary sample. The library row was updated to match. |
+| 3 | p20-dbc-fee-floor-clock | D9 | Screened by P21 (#876). Both D9 cells FAIL. Primary d9_t60: flat -0.0058 / pressure -0.0050. It is negative even at the optimistic expiry + 0 landing. Not eligible for a registration. |
+| 4-10 | the remaining ideas | — | Ranks unchanged. P22 is running rank 4's latency-0 kill test (p20-wick-bid-zero-latency). |
+
+The multiplicity on DBC is now m = 32 (P21). The library rows for the D7 and D9 ideas are main's rows from #876.
+
 ## Ranking
 
 Score = (expected $/day × probability that a first screen survives) / days to the first screen. All three inputs are the lane's guesses. "Days to 100 trades" is the gate's minimum count at the guessed rate; the gate also needs at least 5 UTC days, so no row can be read in under 5 days.
