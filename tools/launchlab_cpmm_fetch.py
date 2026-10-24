@@ -197,15 +197,19 @@ def rows_for_cpmm_tx(tx: dict[str, Any], pool: str) -> list[dict[str, Any]]:
 
 
 # ------------------------------------------------------------------------------------------------------------------------ fetch
-def fetch_pool(call: Callable[[str, list[Any]], Any], credits: vb.Credits, pool: str, t0: int, t1: int, limit: int = 100) -> tuple[list[dict[str, Any]], dict[str, int]]:
+def fetch_pool(call: Callable[[str, list[Any]], Any], credits: vb.Credits, pool: str, t0: int, t1: int, limit: int = 100, max_pages: int = 10**9) -> tuple[list[dict[str, Any]], dict[str, int]]:
     """All succeeded transactions touching `pool` with blockTime in [t0, t1). Returns (rows, stats). Rows at/after the exploration end are dropped and counted."""
     end = int(L.EXPLORE_END.timestamp())
     t1 = min(t1, end)
     rows: list[dict[str, Any]] = []
     token = None
     pages = txs = dropped = 0
+    truncated = False
     seen: set[str] = set()
     while True:
+        if pages >= max_pages:
+            truncated = True
+            break
         credits.charge(COST_GTFA)
         opts: dict[str, Any] = {"transactionDetails": "full", "sortOrder": "asc", "limit": limit, "encoding": "json", "maxSupportedTransactionVersion": 1,
                                 "filters": {"blockTime": {"gte": t0, "lt": t1}, "status": "succeeded"}}
@@ -229,7 +233,8 @@ def fetch_pool(call: Callable[[str, list[Any]], Any], credits: vb.Credits, pool:
         if not token or not data:
             break
     rows.sort(key=lambda r: (r["slot"], r["signature"] or "", r.get("event_index") or 0))
-    return rows, {"pages": pages, "txs": txs, "dropped_outside": dropped, "rows": len(rows)}
+    last_bt = max((r["block_time"] for r in rows), default=None)
+    return rows, {"pages": pages, "txs": txs, "dropped_outside": dropped, "rows": len(rows), "truncated": truncated, "covered_to_bt": last_bt if truncated else t1}
 
 
 def resolve_migration(call: Callable[[str, list[Any]], Any], credits: vb.Credits, m: dict[str, Any]) -> dict[str, Any] | None:
@@ -260,13 +265,13 @@ def write_pool_file(out: Path, pool: str, rows: list[dict[str, Any]], compress: 
     return p
 
 
-def process_migration(out: Path, call, credits: vb.Credits, m: dict[str, Any]) -> dict[str, Any]:
+def process_migration(out: Path, call, credits: vb.Credits, m: dict[str, Any], max_pages: int = 10**9) -> dict[str, Any]:
     before = credits.used
     meta = resolve_migration(call, credits, m)
     if meta is None:
         return {"signature": m["signature"], "status": "no_cpmm_init", "credits": credits.used - before}
     t0 = m["block_time"]
-    rows, st = fetch_pool(call, credits, meta["cpmm_pool"], t0, t0 + HIST_S)
+    rows, st = fetch_pool(call, credits, meta["cpmm_pool"], t0, t0 + HIST_S, max_pages=max_pages)
     head = {"v": vt.SCHEMA_V, "venue": VENUE, "type": "pool_meta", "src": "backfill", "slot": m["slot"], "t_recv_ms": t0 * 1000, "block_time": t0, "signature": m["signature"],
             "event_index": 0, **meta, "window": [t0, min(t0 + HIST_S, int(L.EXPLORE_END.timestamp()))], **st}
     write_pool_file(out, meta["cpmm_pool"], [head, *rows])
@@ -296,6 +301,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--lockdir", default=vb.LOCKDIR)
     ap.add_argument("--rps", type=float, default=6.0)
     ap.add_argument("--credit-cap", type=int, default=1_000_000)
+    ap.add_argument("--max-pages", type=int, default=10**9, help="per-pool page cap (100 txs per page); a capped pool is marked truncated with covered_to_bt")
     ap.add_argument("--n", type=int, default=5, help="probe: number of migrations")
     ap.add_argument("--probe-from", default="2026-10-10T00", help="probe: take migrations at or after this hour")
     ap.add_argument("--wait-backfill", action="store_true", help="run: keep re-scanning until all 552 exploration hours exist (max --wait-h hours)")
@@ -331,7 +337,7 @@ def main(argv: list[str] | None = None) -> int:
             if m["signature"] in cp["migrations"]:
                 continue
             try:
-                r = process_migration(out, call, credits, m)
+                r = process_migration(out, call, credits, m, a.max_pages)
             except vb.CapReached:
                 cp["credits_used"] = credits.used
                 vb.save_cp(cpf, cp)
@@ -361,7 +367,7 @@ def main(argv: list[str] | None = None) -> int:
         call = vb.http_rpc(url, vb.Pacer(a.rps))
         res = []
         for m in ms:
-            r = process_migration(out, call, credits, m)
+            r = process_migration(out, call, credits, m, a.max_pages)
             res.append(r)
             print(json.dumps(r), flush=True)
         print(json.dumps({"probe_credits_assumed": credits.used, "pools": len(res), "per_pool": credits.used / max(len(res), 1)}))
