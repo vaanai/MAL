@@ -256,10 +256,11 @@ def strand_cell(cell: S.CellDef, D: dict[str, Any], sl, links: dict[str, dict[st
 
 
 # ------------------------------------------------------------------------------------------------------------------ D5
-def d5_cell(cell: GCell, D: dict[str, Any], links: dict[str, dict[str, Any]], damm_dir: str, cache: dict[str, Ser | None]) -> dict[str, Any]:
+def d5_cell(cell: GCell, D: dict[str, Any], links: dict[str, dict[str, Any]], damm_dir: str, cache: dict[str, Ser | None], impact_max: float = L.IMPACT_MAX) -> dict[str, Any]:
     stake = S.SOL * L.STAKE_DECIDING
     refused = {"no_data": 0, "not_u5": 0, "history_end": 0, "no_state": 0, "outside_window": 0, "not_wsol_b": 0}
     rows = []
+    imps: list[float] = []
     for dbc_pool, lk in links.items():
         key = lk["damm_pool"]
         if key not in cache:
@@ -284,7 +285,9 @@ def d5_cell(cell: GCell, D: dict[str, Any], links: dict[str, dict[str, Any]], da
         ref = float(s.p[j0])
         rate_in = float(s.fee_buy[je])
         imp = float(L.buy_impact(s.S1[je], s.Lp[je], stake, rate_in, s.mode))
-        if not np.isfinite(imp) or imp > L.IMPACT_MAX:
+        if np.isfinite(imp):
+            imps.append(imp)
+        if not np.isfinite(imp) or imp > impact_max:
             refused["not_u5"] += 1
             continue
         k_out = k_in
@@ -299,7 +302,9 @@ def d5_cell(cell: GCell, D: dict[str, Any], links: dict[str, dict[str, Any]], da
         rows.append({"bt": mig_bt, "date": S.day_of(mig_bt), "S_e": float(s.S1[je]), "L_e": float(s.Lp[je]), "spot": ref, "mode": s.mode, "fee_in": rate_in,
                      "S_x": float(s.S1[r["jx"]]), "L_x": float(s.Lp[r["jx"]]), "fee_out": float(s.fee_sell[r["jf"]]), "reason": r["reason"],
                      "ssb": float(s.c_buy_n[hi2] - s.c_buy_n[ix]), "nearby": float(s.c_buy_sol[hi2] - s.c_buy_sol[lo2])})
-    out: dict[str, Any] = {"attempts": len(rows), "refused": refused, "per_day_n": {d: sum(1 for a in rows if a["date"] == d) for d in sorted({a["date"] for a in rows})}}
+    out: dict[str, Any] = {"impact_max": impact_max, "attempts": len(rows), "refused": refused,
+                           "entry_impact_0p25sol_q10_25_50_75_90": [float(v) for v in np.quantile(imps, [0.1, 0.25, 0.5, 0.75, 0.9])] if imps else None,
+                           "share_impact_le_2_5_10_25pct": [float(np.mean(np.array(imps) <= t)) for t in (0.02, 0.05, 0.10, 0.25)] if imps else None, "per_day_n": {d: sum(1 for a in rows if a["date"] == d) for d in sorted({a["date"] for a in rows})}}
     ndays = 3.0
     out["attempts_per_day"] = len(rows) / ndays
     if not rows or len(rows) / ndays < S.MIN_ATTEMPTS_PER_DAY:
@@ -331,6 +336,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", required=True)
     ap.add_argument("--damm-dir", default="/data2/mal/venue-tape-backfill/meteora_damm_v2")
     ap.add_argument("--cells", default="")
+    ap.add_argument("--d5-diag-impacts", default="", help="POST-HOC diagnostic: also run D5 with these impact caps (comma list); never changes a label")
     ap.add_argument("--strand-json", default="/data/mal/hunt-1008/push-1016/hunt28/p16/strand_pools.json")
     a = ap.parse_args(argv)
     out = Path(S.check_out_dir(a.out))
@@ -356,6 +362,10 @@ def main(argv: list[str] | None = None) -> int:
             res["d5"][gc.name] = d5_cell(gc, D, rand_links, a.damm_dir, cache)
             res["d5_all_fetched"][gc.name] = d5_cell(gc, D, links, a.damm_dir, cache)
             print(gc.name, res["d5"][gc.name].get("attempts"), res["d5"][gc.name].get("label"), flush=True)
+    if a.d5_diag_impacts:
+        res["d5_diag_posthoc"] = {}
+        for t in [float(x) for x in a.d5_diag_impacts.split(",")]:
+            res["d5_diag_posthoc"][str(t)] = {gc.name: d5_cell(gc, D, rand_links, a.damm_dir, cache, t) for gc in G_CELLS}
     (out / "grad.json").write_text(json.dumps(res, indent=1, default=float))
     return 0
 
