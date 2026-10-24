@@ -1,0 +1,261 @@
+{
+ "schema": "dbc_fwd_v1",
+ "window": [
+  "2026-10-14T00",
+  "2026-10-16T04"
+ ],
+ "good_hours": 52,
+ "bad_hours": [],
+ "screen": {
+  "trigger_prints": 6374,
+  "entries": 400,
+  "md5_triggers": "6965028e46dba86f7293f4d27284a321",
+  "md5_entries": "074a827303e94e8049284f67aafe7471",
+  "refused": {
+   "bad_hour": 0,
+   "block_edge": 0,
+   "cooldown": 5879,
+   "no_state": 0,
+   "bad_state": 95,
+   "completed_before_entry": 0
+  },
+  "rows": 1598431,
+  "pools": 6822,
+  "seconds": 31.9
+ },
+ "variants": {
+  "oracle_rows+oracle_mode": {
+   "hours_streamed": 52,
+   "trigger_prints": 6374,
+   "entries_screen_policy": 400,
+   "decisions_live_policy": 406,
+   "md5_triggers": "6965028e46dba86f7293f4d27284a321",
+   "md5_entries_screen_policy": "074a827303e94e8049284f67aafe7471",
+   "md5_decisions_live_policy": "5a05df49361825d8ae47af7a3ce72070",
+   "equal_triggers": true,
+   "equal_entries": true,
+   "triggers_screen_only": 0,
+   "triggers_engine_only": 0,
+   "entries_screen_only": 0,
+   "entries_engine_only": 0,
+   "live_decisions_not_screen_entries": 10,
+   "screen_entries_not_live_decisions": 4,
+   "examples": {
+    "triggers_screen_only": [],
+    "triggers_engine_only": []
+   },
+   "refused_screen_policy": {
+    "bad_hour": 0,
+    "block_edge": 0,
+    "cooldown": 5879,
+    "no_state": 0,
+    "bad_state": 95,
+    "completed_before_entry": 0
+   },
+   "stats": {
+    "rows": 1639173,
+    "sol_rows": 1598431,
+    "completes": 4966,
+    "late_rows": 0,
+    "groups_closed": 722359,
+    "prefilter_pass": 13165,
+    "tail_evals": 14066,
+    "tail_rows": 2082102,
+    "full_evals": 12609,
+    "trigger_prints": 6374,
+    "live_cooldown": 5968,
+    "screen_cooldown": 5879,
+    "screen_late_decisions": 4,
+    "live_exits": 406
+   },
+   "seconds": 177.8
+  },
+  "oracle_mode_only": {
+   "hours_streamed": 52,
+   "trigger_prints": 5461,
+   "entries_screen_policy": 365,
+   "decisions_live_policy": 373,
+   "md5_triggers": "22d81f54b2b41ced10769e176391543b",
+   "md5_entries_screen_policy": "1bea33db46aa2ee8ba46ddc6b224ed92",
+   "md5_decisions_live_policy": "6c8f6c9285a1b62c6b6d9272a5a4d355",
+   "equal_triggers": false,
+   "equal_entries": false,
+   "triggers_screen_only": 913,
+   "triggers_engine_only": 0,
+   "entries_screen_only": 98,
+   "entries_engine_only": 63,
+   "live_decisions_not_screen_entries": 73,
+   "screen_entries_not_live_decisions": 100,
+   "examples": {
+    "triggers_screen_only": [
+     "23s25niNU2P9z9J2FziUqcGqfHM49q5K391nhNXytu1P|456884968|1.069055217240664e+17",
+     "2QqNRiS2AdMVnkwws1PnLzaubrwkrvmrQapzqDcmqhP9|457343646|1.1069095374821894e+17",
+     "2TDUW484XMPcJirbgkZKLhiECRv1xw8wyPDWodfS3F8P|457338846|4.258614990248305e+17",
+     "2TDUW484XMPcJirbgkZKLhiECRv1xw8wyPDWodfS3F8P|457338846|4.342112926432636e+17",
+     "2TDUW484XMPcJirbgkZKLhiECRv1xw8wyPDWodfS3F8P|457338847|4.393896481282641e+17"
+    ],
+    "triggers_engine_only": []
+   },
+   "refused_screen_policy": {
+    "bad_hour": 0,
+    "block_edge": 0,
+    "cooldown": 5004,
+    "no_state": 0,
+    "bad_state": 92,
+    "completed_before_entry": 0
+   },
+   "stats": {
+    "rows": 1639173,
+    "sol_rows": 1598431,
+    "completes": 4966,
+    "late_rows": 0,
+    "groups_closed": 722359,
+    "prefilter_pass": 13165,
+    "tail_evals": 13995,
+    "tail_rows": 1557780,
+    "full_evals": 12536,
+    "trigger_prints": 5461,
+    "live_cooldown": 5088,
+    "screen_cooldown": 5004,
+    "screen_late_decisions": 2,
+    "live_exits": 373
+   },
+   "seconds": 175.6
+  },
+  "oracle_rows_only": {
+   "hours_streamed": 52,
+   "trigger_prints": 5936,
+   "entries_screen_policy": 383,
+   "decisions_live_policy": 391,
+   "md5_triggers": "fc3c308e975e8a8e68dd44fe285f0434",
+   "md5_entries_screen_policy": "bf935730302a6aab0f9b815555b915f9",
+   "md5_decisions_live_policy": "528a94d87ae8617e1535529b7d104ffc",
+   "equal_triggers": false,
+   "equal_entries": false,
+   "triggers_screen_only": 447,
+   "triggers_engine_only": 9,
+   "entries_screen_only": 41,
+   "entries_engine_only": 24,
+   "live_decisions_not_screen_entries": 34,
+   "screen_entries_not_live_decisions": 43,
+   "examples": {
+    "triggers_screen_only": [
+     "2TDUW484XMPcJirbgkZKLhiECRv1xw8wyPDWodfS3F8P|457338846|4.258614990248305e+17",
+     "2TDUW484XMPcJirbgkZKLhiECRv1xw8wyPDWodfS3F8P|457338846|4.342112926432636e+17",
+     "2TDUW484XMPcJirbgkZKLhiECRv1xw8wyPDWodfS3F8P|457338847|4.393896481282641e+17",
+     "2TDUW484XMPcJirbgkZKLhiECRv1xw8wyPDWodfS3F8P|457338847|4.457353808257596e+17",
+     "2uwnB5sTkTLv56cdNRk1yV5E7QRJNzKYGBgv16Hthy67|457346037|1.1702201338893555e+17"
+    ],
+    "triggers_engine_only": [
+     "2y8JGUy7UgBzWBKXgGJ4sJmUDYJzs7dhYgnmzi6XAwjB|457345052|2.6335029709368493e+17",
+     "2y8JGUy7UgBzWBKXgGJ4sJmUDYJzs7dhYgnmzi6XAwjB|457345052|2.6335439133957888e+17",
+     "2y8JGUy7UgBzWBKXgGJ4sJmUDYJzs7dhYgnmzi6XAwjB|457345052|2.6375972168308234e+17",
+     "2y8JGUy7UgBzWBKXgGJ4sJmUDYJzs7dhYgnmzi6XAwjB|457345053|2.6376381592897632e+17",
+     "4h7Vz9QkcBo4UjxBULphdf7Y2UfN3g11aJuXqQDYA5qv|456946212|1.1366569250063187e+17"
+    ]
+   },
+   "refused_screen_policy": {
+    "bad_hour": 0,
+    "block_edge": 0,
+    "cooldown": 5460,
+    "no_state": 0,
+    "bad_state": 93,
+    "completed_before_entry": 0
+   },
+   "stats": {
+    "rows": 1639173,
+    "sol_rows": 1598431,
+    "completes": 4966,
+    "late_rows": 0,
+    "groups_closed": 722359,
+    "prefilter_pass": 13165,
+    "tail_evals": 736391,
+    "tail_rows": 55358293,
+    "full_evals": 131795,
+    "trigger_prints": 5936,
+    "live_cooldown": 5545,
+    "screen_cooldown": 5460,
+    "screen_late_decisions": 2,
+    "live_exits": 391
+   },
+   "seconds": 910.7,
+   "config_mode_differs_from_screen_at_end": 50
+  },
+  "causal": {
+   "hours_streamed": 52,
+   "trigger_prints": 5479,
+   "entries_screen_policy": 365,
+   "decisions_live_policy": 374,
+   "md5_triggers": "6638bfed37d936aab80e9b61167fbd08",
+   "md5_entries_screen_policy": "38b6c3dec57b0438f3e3b0743173ea95",
+   "md5_decisions_live_policy": "c25f759683a51699e4582f0657af712b",
+   "equal_triggers": false,
+   "equal_entries": false,
+   "triggers_screen_only": 904,
+   "triggers_engine_only": 9,
+   "entries_screen_only": 98,
+   "entries_engine_only": 63,
+   "live_decisions_not_screen_entries": 73,
+   "screen_entries_not_live_decisions": 99,
+   "examples": {
+    "triggers_screen_only": [
+     "23s25niNU2P9z9J2FziUqcGqfHM49q5K391nhNXytu1P|456884968|1.069055217240664e+17",
+     "2QqNRiS2AdMVnkwws1PnLzaubrwkrvmrQapzqDcmqhP9|457343646|1.1069095374821894e+17",
+     "2TDUW484XMPcJirbgkZKLhiECRv1xw8wyPDWodfS3F8P|457338846|4.258614990248305e+17",
+     "2TDUW484XMPcJirbgkZKLhiECRv1xw8wyPDWodfS3F8P|457338846|4.342112926432636e+17",
+     "2TDUW484XMPcJirbgkZKLhiECRv1xw8wyPDWodfS3F8P|457338847|4.393896481282641e+17"
+    ],
+    "triggers_engine_only": [
+     "2y8JGUy7UgBzWBKXgGJ4sJmUDYJzs7dhYgnmzi6XAwjB|457345052|2.6335029709368493e+17",
+     "2y8JGUy7UgBzWBKXgGJ4sJmUDYJzs7dhYgnmzi6XAwjB|457345052|2.6335439133957888e+17",
+     "2y8JGUy7UgBzWBKXgGJ4sJmUDYJzs7dhYgnmzi6XAwjB|457345052|2.6375972168308234e+17",
+     "2y8JGUy7UgBzWBKXgGJ4sJmUDYJzs7dhYgnmzi6XAwjB|457345053|2.6376381592897632e+17",
+     "4h7Vz9QkcBo4UjxBULphdf7Y2UfN3g11aJuXqQDYA5qv|456946212|1.1366569250063187e+17"
+    ]
+   },
+   "refused_screen_policy": {
+    "bad_hour": 0,
+    "block_edge": 0,
+    "cooldown": 5021,
+    "no_state": 0,
+    "bad_state": 93,
+    "completed_before_entry": 0
+   },
+   "stats": {
+    "rows": 1639173,
+    "sol_rows": 1598431,
+    "completes": 4966,
+    "late_rows": 0,
+    "groups_closed": 722359,
+    "prefilter_pass": 13165,
+    "tail_evals": 736356,
+    "tail_rows": 54840031,
+    "full_evals": 131760,
+    "trigger_prints": 5479,
+    "live_cooldown": 5105,
+    "screen_cooldown": 5021,
+    "screen_late_decisions": 1,
+    "live_exits": 374
+   },
+   "seconds": 924.9,
+   "config_mode_differs_from_screen_at_end": 50,
+   "declog": {
+    "md5": "d0f0f6fa1dba803323d77ed11246c960",
+    "head": [
+     "7eea479db745f61d18a32710cc6be7e44b3521f3189c21b08c793f0e565fb2c0",
+     800
+    ]
+   }
+  }
+ },
+ "equivalence_pass": true,
+ "code_sha256": {
+  "dbc_fwd.py": "b43e79558d997bb1852a0245d5a0d05220be57c6ea88b83548ad431f051b43f6",
+  "dbc_price.py": "7db0afdd7845c0d159f73ec438632dfb2ddc7ef45ab3ef971569625e1335a7eb",
+  "dbc_screen.py": "607e3173cae997b30972aef1f863c9355014bb01cee6f6622e352b42b4363b66",
+  "dbc_decode.py": "10a52a52ee382a56e13e03b3fa76c1a36cd690b414b83e2f91c8438f000f8535",
+  "arena_declog.py": "b4b67f8d203722a16b2d5238f4a0f2b38776995130cd4b5691ee649c043a0783"
+ },
+ "taken_utc": "2026-10-24T14:12:27Z",
+ "note": "Decision equivalence only (keys = pool|slot|post sqrt price as float64). Nothing priced. Not evidence that m10 makes money. The two oracles are the screen's lookahead inputs (A3: order fix / bad flags from the pool's later rows; config fee mode from all data); they are proof-only and never used by the book."
+}
