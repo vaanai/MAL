@@ -90,6 +90,9 @@ DAY_CLOSE_GRACE_S = 900  # a UTC day is counted once it ended at least 15 min ag
 SEVERITY_ORDER = {"high": 0, "med": 1, "low": 2}
 TIER_SEVERITY = {"core": "high", "venue": "med", "router": "low"}
 VOCAB_MAX_KEYS = 400  # per program, so a noisy program cannot grow the state without bound
+VOCAB_WARMUP_RUNS = 3  # a program's sampled vocabulary only seeds (no alert) on its first 3 successful runs
+# Process / bookkeeping row types of the tape writers: never a count rule (coverage is judged by hour files instead).
+INTERNAL_TYPES = frozenset({"hb", "gap", "gap_end", "start", "stop", "pool_info", "disk_pause", "disk_resume"})
 LOADER_UPGRADEABLE = "BPFLoaderUpgradeab1e11111111111111111111111"
 
 
@@ -202,6 +205,7 @@ def stage_programs(client: Any, watch: Mapping[str, Any], prev: Mapping[str, Any
             continue
         if p.get("deploy_slot") is None:
             o["first_seen"] = True
+            o["deploy_utc"] = _block_time(client, o["deploy_slot"], errors)
             continue
         if o["deploy_slot"] != p["deploy_slot"]:
             o["deploy_utc"] = _block_time(client, o["deploy_slot"], errors)
@@ -324,7 +328,9 @@ def vocab_from_tx(tx: Mapping[str, Any], program_id: str) -> set[str]:
 
 
 def stage_vocab(client: Any, watch: Mapping[str, Any], prev: Mapping[str, Any], prog_obs: Mapping[str, Any], n_txs: int,
-                errors: list[str]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+                errors: list[str], runs: Mapping[str, int] | None = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """`prev` = {program: seen keys}; `runs` = {program: successful earlier runs}. Alerts only after VOCAB_WARMUP_RUNS runs."""
+    runs = runs or {}
     progs: Mapping[str, Mapping[str, Any]] = watch.get("programs") or {}
     obs: dict[str, Any] = {}
     changes: list[dict[str, Any]] = []
@@ -359,8 +365,8 @@ def stage_vocab(client: Any, watch: Mapping[str, Any], prev: Mapping[str, Any], 
         p = prev.get(n)
         o = {"status": "ok" if n_ok else "empty", "txs": n_ok, "keys": sorted(seen)[:VOCAB_MAX_KEYS], "n_keys": len(seen)}
         obs[n] = o
-        if p is None:
-            o["first_seen"] = True
+        if p is None or runs.get(n, 0) < VOCAB_WARMUP_RUNS:
+            o["warmup"] = True
             continue
         new = sorted(k for k in seen if k not in set(p))
         if new:
@@ -370,14 +376,16 @@ def stage_vocab(client: Any, watch: Mapping[str, Any], prev: Mapping[str, Any], 
     return obs, changes
 
 
-def merge_vocab(prev: Mapping[str, Sequence[str]], obs: Mapping[str, Any]) -> dict[str, list[str]]:
+def merge_vocab(prev: Mapping[str, Sequence[str]], prev_runs: Mapping[str, int], obs: Mapping[str, Any]) -> tuple[dict[str, list[str]], dict[str, int]]:
     out = {k: list(v) for k, v in prev.items()}
+    runs = dict(prev_runs)
     for n, o in obs.items():
         if o.get("status") != "ok":
             continue
         merged = sorted(set(out.get(n, [])) | set(o.get("keys") or []))
         out[n] = merged[:VOCAB_MAX_KEYS]
-    return out
+        runs[n] = runs.get(n, 0) + 1
+    return out, runs
 
 
 # =============================================================================================================== W5 tapes
@@ -564,6 +572,8 @@ def tape_changes(new_recs: Sequence[Mapping[str, Any]], history: Sequence[Mappin
         counts: Mapping[str, int] = rec.get("counts") or {}
         keys = set(counts) | {k for b in base for k in (b.get("counts") or {})}
         for k in sorted(keys):
+            if k.rsplit("/", 1)[-1] in INTERNAL_TYPES:
+                continue
             n = counts.get(k, 0)
             brates = [_rate((b.get("counts") or {}).get(k, 0), b["hours"]) for b in base]
             if n >= NEW_KEY_MIN and all(x == 0 for x in brates):
@@ -743,7 +753,7 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p.add_argument("--arena-tape", default=DEFAULT_ARENA, help="'' to skip")
     p.add_argument("--venue-tape", default=DEFAULT_VENUE, help="'' to skip")
     p.add_argument("--monitor", default=DEFAULT_MONITOR, help="'' to skip")
-    p.add_argument("--vocab-txs", type=int, default=12)
+    p.add_argument("--vocab-txs", type=int, default=20)
     p.add_argument("--max-calls", type=int, default=300)
     p.add_argument("--lookback-days", type=int, default=8, help="only closed tape days that started within this many days are counted")
     p.add_argument("--no-rpc", action="store_true", help="skip W1-W4")
@@ -787,10 +797,10 @@ def run(a: argparse.Namespace, *, client: Any = None, now: float | None = None) 
             new_state["accounts"] = {**(state.get("accounts") or {}), **{n: {k: o[k] for k in ("address", "exists", "len", "sha256")} for n, o in aobs.items()}}
         except (*ITEM_ERRORS, RuntimeError, ValueError) as exc:
             errors.append(f"accounts: {type(exc).__name__}: {str(exc)[:160]}")
-        vobs, vch = stage_vocab(client, watch, state.get("vocab") or {}, stages.get("programs") or {}, a.vocab_txs, errors)
+        vobs, vch = stage_vocab(client, watch, state.get("vocab") or {}, stages.get("programs") or {}, a.vocab_txs, errors, state.get("vocab_runs") or {})
         stages["vocab"] = {n: {k: v for k, v in o.items() if k != "keys"} for n, o in vobs.items()}
         changes += vch
-        new_state["vocab"] = merge_vocab(state.get("vocab") or {}, vobs)
+        new_state["vocab"], new_state["vocab_runs"] = merge_vocab(state.get("vocab") or {}, state.get("vocab_runs") or {}, vobs)
     sources = tape_sources(arena, venue)
     done = {(r.get("source"), r.get("day")) for r in history}
     new_counts = stage_tapes(sources, done, now, a.lookback_days, errors)
