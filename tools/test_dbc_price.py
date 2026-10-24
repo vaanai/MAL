@@ -182,7 +182,8 @@ def test_one_look_marker_is_global_and_atomic():
         assert L.HOLDOUT_READ_ENABLED is False and not fresh.exists()
     finally:
         H.MARKER = old
-    assert old.endswith('HOLDOUT_READ_DONE_v2') and not Path(old).exists()
+    # Path check only. Until 2026-10-24 this also asserted the real v2 marker did not exist; #1494 has since consumed the one look, so the real marker now exists (P17, QP swap3 ruling).
+    assert old.endswith('HOLDOUT_READ_DONE_v2')
 
 
 def test_verdict_p5():
