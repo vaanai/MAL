@@ -2,7 +2,7 @@
 # usage: one.sh NAME LEG RULESPEC KWARGS_JSON [extra args]   (skips if results.json exists)
 set -eu
 NAME=$1; LEG=$2; RULE=$3; KWJ=$4; shift 4
-KIT=/data2/mal/wt/p6-latency; export KIT; LEG; export LEG
+KIT=/data2/mal/wt/p6-latency; export KIT LEG
 H=/data/mal/hunt-1008/push-1016; CV=/data/mal/clean-view
 OUT=$H/hunt29/p6/out/$NAME-$LEG; mkdir -p $OUT
 [ -f $OUT/results.json ] && { echo "skip $NAME $LEG (exists)"; exit 0; }
