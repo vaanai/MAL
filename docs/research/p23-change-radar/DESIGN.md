@@ -95,13 +95,19 @@ and the amendment says how many alerts per day the old setting gave.
 - The radar **never counts gap or health rows (or any other row) of a sealed window.** Row counts, gap rows and hours present are all
   information about a sealed window, so a UTC day of a tape that overlaps a sealed window is skipped as a whole: no hour file of it is
   opened and no record of it is written, now or after the window ends. Only the skip itself ("arena 2026-10-23 sealed") is recorded.
+- **Gap, heartbeat and other process rows are never counted at all** (gap, gap_end, hb, start, stop, pool_info, disk_pause, disk_resume),
+  in any window: they are feed-health data, not structure, and they never were rule inputs (QP-RULING-1024-seal2 r2).
 - The windows are a pinned config file, `tools/change_radar_seals.json` (fail closed: a missing or malformed file refuses the run). Start:
-  arena tape [2026-10-22T21:00:00Z, 2026-10-26T21:00:00Z), owner FLOOR; Meteora DBC venue tape [2026-10-25T00:00:00Z, 2026-11-01T00:10:00Z),
+  arena tape [2026-10-22T21:00:00Z, 2026-10-26T21:00:00Z), owner FLOOR; arena tape [2026-10-23T21:00:00Z, 2026-10-27T21:00:00Z), FLOOR slip; Meteora DBC venue tape [2026-10-25T00:00:00Z, 2026-11-01T00:10:00Z),
   the m10 forward window (Amendment 1 AM6 blind conditions); LaunchLab venue tape [2026-10-17T00:00:00Z, 2026-10-24T00:00:00Z), the reserved
   LaunchLab holdout (notebook n_b3bsp-Xrga1P7w). Changes go through the manager and QP.
-- **The radar is disabled for the arena tape before 2026-10-26T21:00:00Z** (`disabled_until` in the same file): before that instant the
-  arena tape directory is not even listed. Because the sealed days are skipped for good, the arena baseline restarts from 2026-10-27.
-- Disclosure: the 2026-10-24 smoke runs (three, from about 17:52Z to 18:09Z, written to a scratch directory, not `/data/mal/change-radar`) counted
+- **The radar is disabled for the arena tape before 2026-10-27T21:00:00Z, unconditionally** (`disabled_until` in the same file): before that
+  instant the arena tape directory is not even listed. Because the sealed days (10-22..10-27) are skipped for good, the arena baseline
+  starts from 2026-10-28. The 2026-10-24 smoke counts of 10-19..10-23 are not a baseline and never seed the daily job (empty out-dir).
+- Until the manager has checked the DBC m10 and LaunchLab records for a seal covering 2026-10-24T02 (QP-RULING-1024-seal2 Addendum 1 r6),
+  the daily job runs with `--venue-tape ''` (RPC stages only).
+- Hand benchmarks of tape files use hours before 2026-10-22T21Z only.
+- Disclosure (breaches of FLOOR condition 2e, ruled disclosure-only in QP-RULING-1024-seal2 and its Addendum 1): the 2026-10-24 smoke runs (three, from about 17:52Z to 18:09Z, written to a scratch directory, not `/data/mal/change-radar`) counted
   arena rows for 2026-10-22 and 2026-10-23, including gap rows and hours present, before this rule existed. While building the tool I also
   counted single hours by hand: arena tape-2026-10-24T15 (rows per prog/type incl. gap rows) and the first 200 lines of the open arena hour
   2026-10-24T17 (prog/type and key names), both inside the FLOOR window, and venue tape-2026-10-24T02 for LaunchLab and DBC (outside the

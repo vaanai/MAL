@@ -413,12 +413,15 @@ def _safe(key: str) -> str:
 
 
 def count_arena_file(path: Path) -> Counter:
-    """Rows per '<prog>/<type>' (plus 'bad_line'). Only the two leading keys are parsed on the fast path."""
+    """Rows per '<prog>/<type>' (plus 'bad_line'). Only the two leading keys are parsed on the fast path. Rows of INTERNAL_TYPES (gap, hb,
+    pool_info, ...) are never counted: a feed-health aggregate is not a structure count (QP-RULING-1024-seal2 r2)."""
     c: Counter = Counter()
     for ln in _iter_lines(path):
         m = ARENA_PREFIX.match(ln)
         if m:
-            c[f"{_safe(m.group(2).decode())}/{_safe(m.group(1).decode())}"] += 1
+            t = m.group(1).decode()
+            if t not in INTERNAL_TYPES:
+                c[f"{_safe(m.group(2).decode())}/{_safe(t)}"] += 1
             continue
         if not ln.strip():
             continue
@@ -429,6 +432,8 @@ def count_arena_file(path: Path) -> Counter:
             continue
         if not isinstance(r, dict):
             c["bad_line"] += 1
+            continue
+        if str(r.get("type")) in INTERNAL_TYPES:
             continue
         c[f"{_safe(str(r.get('prog')))}/{_safe(str(r.get('type')))}"] += 1
     return c
@@ -448,6 +453,8 @@ def count_venue_file(path: Path) -> Counter:
         if not isinstance(r, dict):
             c["bad_line"] += 1
             continue
+        if str(r.get("type")) in INTERNAL_TYPES:
+            continue  # gap / hb / start / stop rows are never counted (QP-RULING-1024-seal2 r2)
         t = _safe(str(r.get("type")))
         c[t] += 1
         if r.get("failed"):
