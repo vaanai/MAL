@@ -249,9 +249,12 @@ class Engine:
 
     # ---------------------------------------------------------------- slot close
     def _arr(self, p: PoolHist, lo: int, hi: int, extend: bool = False) -> dict[str, np.ndarray]:
-        if extend and self.oracle_rows is not None:  # proof-only: extend the decision pipeline input to the pool's last recorded row
+        if extend and self.oracle_rows is not None:
+            # proof-only: extend the decision pipeline input with the pool's LATER recorded rows, up to and including its first anchor at or after `hi` (the screen's
+            # back-filled reference L of a row is the L of the next isolated row, which lies at or before that anchor; rows after it cannot change rows < hi)
             p = self.oracle_rows[p.name]
-            hi = p.n()
+            j = bisect.bisect_left(p.anchors, hi)
+            hi = p.anchors[j] + 1 if j < len(p.anchors) else p.n()
         a = {k: np.frombuffer(p.cols[k], np.float64)[lo:hi].copy() for k in _COLS_F}
         a["slot"] = np.frombuffer(p.cols["slot"], np.int64)[lo:hi].copy()
         for k in ("side", "sw3", "fob"):
@@ -488,6 +491,24 @@ class Engine:
         return self.log.append(self.log_name, ms, body)
 
 
+def anchors_of(p: PoolHist) -> list[int]:
+    """Anchor rows of a whole pool history (the same definition `Engine._close` applies group by group): a single-row slot after a single-row slot, S1 != S0, and a quote leg
+    >= MIN_L_QUOTE under both fee modes."""
+    n = p.n()
+    if n < 2:
+        return []
+    a = {k: np.frombuffer(p.cols[k], np.float64) for k in ("S1", "ain", "aout", "fee")}
+    slot = np.frombuffer(p.cols["slot"], np.int64)
+    buy = np.frombuffer(p.cols["side"], np.int64) == 1
+    iso = L.isolated(np.zeros(n, np.int64), slot)
+    S0 = np.concatenate([[np.nan], a["S1"][:-1]])
+    q0 = np.where(buy, a["ain"], a["aout"] + a["fee"])
+    q1 = np.where(buy, a["ain"] - a["fee"], a["aout"] + a["fee"])
+    anc = iso & np.isfinite(S0) & (a["S1"] != S0) & (np.minimum(q0, q1) >= L.MIN_L_QUOTE)
+    anc[0] = False
+    return [int(i) for i in np.flatnonzero(anc)]
+
+
 def exit_fire(P: S.Pool, i: int, ss: float, lat_in: float = L.LAT_S) -> tuple[int, float]:
     """The exit slot of a trigger at pool index i: dbc_screen.resolve's exit block (sl/trail on the running peak from the decision spot, time cap), without its refusals.
     Returns (fire_slot, exit block time estimate = bt + (fire_slot - slot) * ss)."""
@@ -630,6 +651,8 @@ def replay(start: datetime, end: datetime, root: str | None = None, cfg_summary:
     first_ok = scr["start_ts"] + S.WARMUP_HOURS * 3600
     coll = Engine(first_ok, decide=False)
     stream_hours(coll, start, end, root)
+    for q in coll.pools.values():
+        q.anchors = anchors_of(q)
     from tools.arena_declog import DecisionLog  # noqa: PLC0415
 
     for name, o_rows, o_mode in VARIANTS:
