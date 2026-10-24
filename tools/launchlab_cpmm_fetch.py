@@ -42,7 +42,7 @@ from tools import venue_tape as vt
 CPMM = "CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C"
 LAUNCHLAB = vt.VENUES["launchlab"]["program"]
 WSOL = "So11111111111111111111111111111111111111112"
-INIT_DISC = hashlib.sha256(b"global:initialize").digest()[:8]
+INIT_DISCS = {hashlib.sha256(b"global:initialize").digest()[:8], hashlib.sha256(b"global:initialize_with_permission").digest()[:8]}  # LaunchLab migrates via the second
 SWAP_DISC = hashlib.sha256(b"event:SwapEvent").digest()[:8]
 VENUE = "raydium_cpmm"
 HIST_S = 24 * 3600
@@ -131,7 +131,7 @@ def instructions(tx: dict[str, Any]) -> list[tuple[str, list[str], bytes, int]]:
 
 def pool_from_migration_tx(tx: dict[str, Any]) -> dict[str, Any] | None:
     ixs = instructions(tx)
-    init = next(((a, d) for p, a, d, _ in ixs if p == CPMM and d[:8] == INIT_DISC and len(a) >= 12), None)
+    init = next(((a, d) for p, a, d, _ in ixs if p == CPMM and d[:8] in INIT_DISCS and len(a) >= 12), None)
     if init is None:
         return None
     a, _ = init
