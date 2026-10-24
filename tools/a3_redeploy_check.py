@@ -45,6 +45,31 @@ file is a RECORD of the programdata hashes the trailing set was derived from; no
 PINS (missing in tools/a3_redeploy_pins.json => ERROR => hard halt; fail closed): IDL sha256 x3, the trailing set, frozen blobs, required migrate events, InitBoost share, min InitBoost events
 (> 0), max_capped_share. `--observe` prints the observed values for the program-upgrade review to pin; it writes no pin and decides nothing.
 
+FEES-PROGRAM CHECK (QP-RULING-1024-redeploy item (2); SUCCESSOR books only, opt-in). Off unless `--books` names a books file whose `fees_check_bot_ids` list is non-empty; then, and
+only when the record's ONLY change is the fees program's deploy slot (no other pins difference, no other hard reason), the HALT verdict above is left exactly as it is and a sub-verdict
+`fees_check` is added beside it. tools.a3_halt applies the sub-verdict to the books in `fees_check_bot_ids` only; every other book keeps the HALT. Without `--books`, or with no such list,
+the verdict and the state file are byte-identical to the rule without this check. The sub-verdict is PASS (record only) / FAIL / ERROR, per upgrade write of the fees programdata (each
+write its own redeploy, enumerated back to the pinned slot, state key `fees:<slot>`, sticky like the others). A write PASSes only if ALL hold:
+  (a)-(h) as for a pump / PumpSwap write (samples start 150 slots after the fees write), except that the fees deploy slot in (b) is the trigger and is not compared;
+  (b') the three account sha256 values (bonding_fee_config, pumpswap_fee_config, pumpswap_global_config) equal the monitor pins (re-checked from the record), and the PumpSwap FeeConfig
+       re-read at check time hashes to its pin and decodes to the pinned tier table (tools/a3_fees_check_pins.json; a decode that differs from the table is ERROR);
+  (f') the pump_fees IDL is unchanged (part of (f));
+  (i)  NEW, fee tiers: every in-universe WSOL trade event of both samples carries the fee bps of the pinned tier for its market cap. In-universe = a PumpSwap BuyEvent / SellEvent on a
+       CANONICAL pump pool (pool == PDA(["pool", 0u16, PDA(["pool-authority", mint], pump), mint, WSOL], PumpSwap)) with quote WSOL and can_boost true (the H5 universe: BOOST pools);
+       a pool whose account cannot be read counts as in-universe (fail closed). Market cap (lamports) = (pool_quote_token_reserves + virtual_quote_reserves) * base_supply //
+       pool_base_token_reserves (pre-trade reserves and V, the event's own fields, independent IDL decode). Expected (lp, protocol, creator) = the LAST tier whose threshold <= market cap;
+       observed = (lp_fee_basis_points, protocol_fee_basis_points, coin_creator_fee_basis_points + cashback_fee_basis_points) (cashback coins move the creator leg to cashback).
+       A BOOST keeper slice (user == PDA(["boost_vault", pool], PumpSwap)) is zero-fee by design: it must show (0, 0, 0) with cashback 0, and is not tier-tested. An unpriceable event
+       (non-positive reserves or supply) counts as a mismatch. Mismatches / tested > max_mismatch_share (pinned 0.0: every event) is a FAIL; fewer than min_universe_events tested
+       events is ERROR (no evidence). Non-WSOL, non-canonical and can_boost=false events are counted, not tested.
+       EXPLAINED EXCEPTIONS (QP, PR #894 comment 6388090983 item 3): an event whose raw (lp, protocol, creator) is EXACTLY a pinned `explained_exceptions` triple, with cashback 0,
+       at any tier, is tested but counted apart (never a match, never a mismatch); explained / tested > max_explained_share (pinned 0.02) is a FAIL. Pinned: (0, 5, 0), a discount
+       below every tier seen under the unchanged fees program. Any other triple, including a leg above its tier, stays a 0-tolerance mismatch.
+  A write enumeration that fails or does not reach the pinned slot is ERROR, halting at the bound of "Enumeration that fails" (Am.4 1.6). The 24 h deadline (g) applies.
+  KNOWN LIMITS: bonding-curve (SOL-quoted) TradeEvents are not tier-tested (a separate H4a item, QP-reviewed; a PASS here is not H4a evidence for bonding); ExtendProgram changes the
+  programdata slot without an Upgrade, so the bounded enumeration ERRORs on it (fail closed, a possible false halt); the market-cap formula is the lab's (EXP-024 P7, h5_upgrade_dryrun), not a specification; the check sees the
+  bps the fees program returned, not the fee amounts.
+
 Exit codes: 0 NONE or PASS; 10 HALT (verdict.halt_at_ms is set); 11 operational error that is NOT an A3 flag (stale or unreadable daily record, a state file that cannot be written): no halt
 from this tool, the job is loud and tools.a3_halt's dead-man rule is the backstop.
 Counts and discriminators only: no price, mint, wallet or signature is written.
@@ -60,6 +85,7 @@ import math
 import os
 import re
 import statistics
+import struct
 import sys
 import time
 from datetime import datetime, timezone
@@ -105,6 +131,15 @@ SYN_MIN_RUN_CHECKED = 10  # a record with fewer checked graduations (or no valid
 SYN_P0 = 75 / 339  # pinned baseline synthetic share (18 post-redeploy runs, QP ruling 2026-10-24)
 SYN_PHI = 2.0  # pinned overdispersion (observed 1.70, rounded up)
 SYN_Z_HALT = 3.0902  # one-sided alpha 0.001 per evaluation: halt iff z = (x - n*p0) / sqrt(phi*n*p0*(1-p0)) > this
+# fees-program check (successor books only, opt-in through the books file; see the module docstring)
+FEES_ITEM = "fees"
+FEES_SCHEMA = "a3_fees_check.v1"
+FEES_BOOKS_KEY = "fees_check_bot_ids"
+DEFAULT_FEES_PINS = Path(__file__).with_name("a3_fees_check_pins.json")
+FEE_TIER_EVENTS = ("BuyEvent", "SellEvent")
+FEE_EVENT_FIELDS = ("pool", "user", "can_boost", "pool_quote_token_reserves", "virtual_quote_reserves", "pool_base_token_reserves", "base_supply",
+                    "lp_fee_basis_points", "protocol_fee_basis_points", "coin_creator_fee_basis_points", "cashback_fee_basis_points")
+FEE_MAX_MISMATCH_SHARE_CAP = 0.05  # a pinned tolerance above the 5% exclusion-cap level is refused (ERROR)
 
 # IDL event -> {IDL field: key in the shadow decoder's row}. "side" is handled apart (is_buy). Checked against the live IDL on 2026-10-21 (see the PR body).
 EVENT_FIELDS: dict[str, dict[str, str]] = {
@@ -630,7 +665,8 @@ def median(vals: Sequence[float]) -> float:
     return statistics.median(vals)
 
 
-def migrate_evidence(client: Any, idls: Mapping[str, Json], min_slot: int, now_s: float, ignored: Mapping[str, str] | None, trailing: Mapping[str, Sequence[int]] | None) -> dict[str, Any]:
+def migrate_evidence(client: Any, idls: Mapping[str, Json], min_slot: int, now_s: float, ignored: Mapping[str, str] | None, trailing: Mapping[str, Sequence[int]] | None,
+                     blob_sink: list[bytes] | None = None) -> dict[str, Any]:
     """C-1 and C-2: the post-deploy migrate sample decoded through the FROZEN path (mon.tx_event_blobs: log lines AND emit_cpi inner instructions, then the shadow's decoders),
     compared with the independent IDL decode, plus the BOOST evidence from the SAME graduations (all at or after min_slot). Not enough graduations => ERROR."""
     txs = migrate_sample(client, min_slot, now_s)
@@ -639,6 +675,8 @@ def migrate_evidence(client: Any, idls: Mapping[str, Json], min_slot: int, now_s
     grads = [g for _tx, g in txs]
     mon.annotate_mayhem(client, grads)
     ev = evaluate_blobs((b for tx, _g in txs for b in mon.tx_event_blobs(tx)), idls, ignored, trailing)
+    if blob_sink is not None:  # the fees-program check only: the same events, kept for the fee-tier test (i)
+        blob_sink.extend(b for tx, _g in txs for b in mon.tx_event_blobs(tx))
     ev["n_migrate_txs"] = len(txs)
     ev["migrate_skipped"] = dict(getattr(migrate_sample, "skipped", {}))
     ev["slot_min"], ev["slot_max"] = min(g["slot"] for g in grads), max(g["slot"] for g in grads)
@@ -784,8 +822,11 @@ def sample_failures(ev: Mapping[str, Any], label: str, pins: Json, fails: list[s
             fails.append(f"d: {label}: discriminator {h} length {lo}-{hi} outside pinned {pr['min_len']}-{pr['max_len']}")
 
 
-def check_redeploy(rec: Json, mon_pins: Json, pins: Json, tri: Json, *, client: Any, http_get: Callable, now_ms: Callable[[], int], deploy_ms: int) -> tuple[str, list[str], dict[str, Any]]:
-    """Returns (verdict PASS|FAIL, reasons, detail). Raises CheckError for ERROR. Does not look at the deadline; the caller does."""
+def check_redeploy(rec: Json, mon_pins: Json, pins: Json, tri: Json, *, client: Any, http_get: Callable, now_ms: Callable[[], int], deploy_ms: int,
+                   fee_check: Any = None) -> tuple[str, list[str], dict[str, Any]]:
+    """Returns (verdict PASS|FAIL, reasons, detail). Raises CheckError for ERROR. Does not look at the deadline; the caller does.
+    fee_check (the fees-program path only; None everywhere else): the raw fees-check pins. Then the fees deploy slot is not compared in (b) (it is the trigger), the FeeConfig is
+    re-read and tied to the pinned tier table (b'), and the fee-tier test (i) runs on both samples."""
     fails: list[str] = []
     flags = dict(((rec.get("halt") or {}).get("flags")) or {})
     # the record's single-run synthetic flag never decides: triage's POOLED decision replaces it (a missing one is a failure, not a pass)
@@ -810,8 +851,11 @@ def check_redeploy(rec: Json, mon_pins: Json, pins: Json, tri: Json, *, client: 
         elif obs["sha256"] != p.get("sha256"):
             fails.append(f"b: account {name} hash changed")
     fobs, fpin = (rec.get("programs") or {}).get("fees") or {}, (mon_pins.get("programs") or {}).get("fees") or {}
-    if fobs.get("deploy_slot") is None or fobs.get("deploy_slot") != fpin.get("deploy_slot"):
-        fails.append("b: fees program deploy slot unread or changed")
+    if fee_check is None:
+        if fobs.get("deploy_slot") is None or fobs.get("deploy_slot") != fpin.get("deploy_slot"):
+            fails.append("b: fees program deploy slot unread or changed")
+    else:  # the fees-program path: its deploy slot IS the trigger. The pins are validated before any RPC (ERROR when one is missing or inconsistent)
+        fee_pins = validate_fee_pins(fee_check, mon_pins)
     # C-3. the decoder files are the frozen book's
     frozen_guard(pins)
     # the pins every later step needs: ERROR before any RPC when one is missing
@@ -823,6 +867,8 @@ def check_redeploy(rec: Json, mon_pins: Json, pins: Json, tri: Json, *, client: 
     # f. IDL unchanged
     idls, idl_fails = fetch_idls(http_get, pins)
     fails += [f"f: {x}" for x in idl_fails]
+    if fee_check is not None:  # b'. the PumpSwap FeeConfig at check time: hash equal to its pin, decode equal to the pinned tier table
+        fails += fee_config_failures(client, mon_pins, fee_pins)
     ignored, trailing = pins.get("ignored_discs") or {}, validate_trailing_pins(pins.get("trailing_bytes"))
     idl_discs = set(idl_event_table(idls))
     start_slot = max(d["new"] for d in tri["redeploys"]) + SAMPLE_START_OFFSET_SLOTS
@@ -830,6 +876,7 @@ def check_redeploy(rec: Json, mon_pins: Json, pins: Json, tri: Json, *, client: 
     # c, d. the log sample
     sample, scanned = fetch_sample(client, start_slot)
     detail["slots_scanned"] = scanned
+    fee_blobs: list[bytes] | None = [raw for logs in sample for raw in program_data_events(logs)] if fee_check is not None else None
     if len(sample) < SAMPLE_MIN_TXS:
         fails.append(f"c: sample has {len(sample)} txs after {scanned} slots, need {SAMPLE_MIN_TXS}")
     ev = evaluate_sample(sample, idls, ignored, trailing)
@@ -840,7 +887,8 @@ def check_redeploy(rec: Json, mon_pins: Json, pins: Json, tri: Json, *, client: 
         if name not in ev["seen_events"]:
             fails.append(f"d: {name} not seen in the log sample")
     # C-1, C-2. the inner-instruction (migrate) sample and the BOOST evidence from the same post-deploy graduations
-    mv = migrate_evidence(client, idls, start_slot, now_ms() / 1000, ignored, trailing)
+    mv = migrate_evidence(client, idls, start_slot, now_ms() / 1000, ignored, trailing) if fee_check is None else \
+        migrate_evidence(client, idls, start_slot, now_ms() / 1000, ignored, trailing, blob_sink=fee_blobs)
     mv["_idl_discs"] = idl_discs
     detail["migrate_sample"] = {k: mv[k] for k in ("n_migrate_txs", "slot_min", "slot_max", "n_events", "seen_events", "n_init_boost", "trailing_seen", "n_nonmayhem_wsol",
                                                     "n_init_boost_graduations", "init_boost_share", "budget_sol_median", "slices_median", "migrate_skipped")}
@@ -858,7 +906,324 @@ def check_redeploy(rec: Json, mon_pins: Json, pins: Json, tri: Json, *, client: 
             raise CheckError(f"monitor pin missing: boost.{label}")
         if abs(cur / want - 1.0) > BOOST_TOL:
             fails.append(f"e: BOOST {label} median {cur} vs pin {want} beyond +/-{BOOST_TOL:.0%}")
+    if fee_check is not None:  # i. fee tiers on both samples
+        ft = fee_tier_evidence(client, idls, fee_blobs or [], fee_pins)
+        detail["fee_tiers"] = ft
+        fails += fee_tier_failures(ft, fee_pins)
     return ("FAIL" if fails else "PASS"), fails, detail
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ the fees-program check (opt-in)
+def _int(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def validate_fee_pins(fp: Any, mon_pins: Json) -> dict[str, Any]:
+    """The fees-check pins (tools/a3_fees_check_pins.json). Anything missing, malformed or inconsistent with the monitor pins is CheckError (ERROR), never a pass."""
+    if not isinstance(fp, Mapping):
+        raise CheckError("pin missing: fees-check pins file unreadable or not an object")
+    tiers = need(fp.get("canonical_tiers"), "fees.canonical_tiers")
+    ok = isinstance(tiers, list) and len(tiers) > 0 and all(
+        isinstance(t, list) and len(t) == 2 and _int(t[0]) and t[0] >= 0 and isinstance(t[1], list) and len(t[1]) == 3 and all(_int(x) and 0 <= x <= 10_000 for x in t[1])
+        for t in tiers)
+    if not ok:
+        raise CheckError("pin invalid: fees.canonical_tiers must be a non-empty list of [threshold_lamports, [lp, protocol, creator]]")
+    thr = [t[0] for t in tiers]
+    if thr[0] != 0 or any(b <= a for a, b in zip(thr, thr[1:])):
+        raise CheckError("pin invalid: fees.canonical_tiers thresholds must start at 0 and strictly ascend")
+    acct = need(fp.get("fee_config_account"), "fees.fee_config_account")
+    sha = need(fp.get("fee_config_sha256"), "fees.fee_config_sha256")
+    mon_sha = ((mon_pins.get("accounts") or {}).get(acct) or {}).get("sha256")
+    if acct != "pumpswap_fee_config" or sha != mon_sha:
+        raise CheckError("pin inconsistent: fees.fee_config_sha256 is not the monitor's pumpswap_fee_config pin")
+    min_n = need(fp.get("min_universe_events"), "fees.min_universe_events")
+    if not _int(min_n) or min_n < 1:
+        raise CheckError("pin invalid: fees.min_universe_events must be an integer >= 1")
+    share = need(fp.get("max_mismatch_share"), "fees.max_mismatch_share")
+    if isinstance(share, bool) or not isinstance(share, (int, float)) or not 0 <= share <= FEE_MAX_MISMATCH_SHARE_CAP:
+        raise CheckError(f"pin invalid: fees.max_mismatch_share must be a number in [0, {FEE_MAX_MISMATCH_SHARE_CAP}]")
+    exc = need(fp.get("explained_exceptions"), "fees.explained_exceptions")
+    if not isinstance(exc, list) or not all(isinstance(t, list) and len(t) == 3 and all(_int(x) and 0 <= x <= 10_000 for x in t) for t in exc):
+        raise CheckError("pin invalid: fees.explained_exceptions must be a list of [lp, protocol, creator] bps triples")
+    if any(list(t) == list(tier[1]) for t in exc for tier in tiers):
+        raise CheckError("pin invalid: an explained exception equals a tier")
+    exc_share = need(fp.get("max_explained_share"), "fees.max_explained_share")
+    if isinstance(exc_share, bool) or not isinstance(exc_share, (int, float)) or not 0 <= exc_share <= FEE_MAX_MISMATCH_SHARE_CAP:
+        raise CheckError(f"pin invalid: fees.max_explained_share must be a number in [0, {FEE_MAX_MISMATCH_SHARE_CAP}]")
+    return {"canonical_tiers": [[t[0], list(t[1])] for t in tiers], "fee_config_sha256": sha, "min_universe_events": min_n, "max_mismatch_share": float(share),
+            "explained_exceptions": [list(t) for t in exc], "max_explained_share": float(exc_share)}
+
+
+def decode_fee_tiers(data: bytes) -> list[list[Any]]:
+    """The FIRST tier vector of a FeeConfig account (disc 8, bump 1, admin 32, flat 3 x u64, then u32 n and n x [u128 threshold, 3 x u64 bps]; the layout of
+    pump_structure_monitor.decode_fee_config and h5_upgrade_dryrun.parse_fee_config). A short or malformed account is CheckError."""
+    try:
+        o = 8 + 1 + 32 + 24
+        n = struct.unpack_from("<I", data, o)[0]
+        o += 4
+        if not 0 < n <= 64:
+            raise CheckError(f"FeeConfig tier count {n} out of range")
+        out = []
+        for _ in range(n):
+            lo, hi = struct.unpack_from("<QQ", data, o)
+            out.append([(hi << 64) + lo, list(struct.unpack_from("<3Q", data, o + 16))])
+            o += 40
+    except struct.error as exc:
+        raise CheckError("FeeConfig shorter than its tier vector") from exc
+    return out
+
+
+def fee_config_failures(client: Any, mon_pins: Json, fee_pins: Json) -> list[str]:
+    """b'. One getAccountInfo of the PumpSwap FeeConfig at check time. Hash != pin: FAIL. Hash == pin but its decode != the pinned table: ERROR (the pins file is wrong)."""
+    addr = need(((mon_pins.get("accounts") or {}).get("pumpswap_fee_config") or {}).get("address"), "monitor pin accounts.pumpswap_fee_config.address")
+    res = client.call("getAccountInfo", [addr, {"encoding": "base64", "commitment": "finalized"}])
+    data = mon._account_bytes((res or {}).get("value")) if (res or {}).get("value") else None
+    if data is None:
+        raise CheckError("pumpswap_fee_config unreadable at check time")
+    if hashlib.sha256(data).hexdigest() != fee_pins["fee_config_sha256"]:
+        return ["b: pumpswap_fee_config read at check time differs from its pin"]
+    if decode_fee_tiers(data) != fee_pins["canonical_tiers"]:
+        raise CheckError("pin inconsistent: fees.canonical_tiers differ from the tiers decoded from the pinned pumpswap_fee_config bytes")
+    return []
+
+
+def canonical_pool(base_mint: str) -> str:
+    """The migrated pump.fun pool of a mint (tools.pumpswap_tx.canonical_pool, in pure Python): PDA(["pool", 0u16, PDA(["pool-authority", mint], pump), mint, WSOL], PumpSwap)."""
+    mint = mon.b58decode(base_mint)
+    auth = mon.find_program_address([b"pool-authority", mint], td.PUMP_BONDING_PROGRAM)[0]
+    return mon.find_program_address([b"pool", (0).to_bytes(2, "little"), mon.b58decode(auth), mint, mon.b58decode(mon.WSOL_MINT)], td.PUMPSWAP_PROGRAM)[0]
+
+
+def fee_events(blobs: Iterable[bytes], idls: Mapping[str, Json]) -> tuple[list[dict[str, Any]], int]:
+    """(PumpSwap Buy/Sell events with FEE_EVENT_FIELDS from the INDEPENDENT IDL decode, number that could not be decoded)."""
+    table = idl_event_table(idls)
+    out: list[dict[str, Any]] = []
+    bad = 0
+    for raw in blobs:
+        entry = table.get(raw[:8]) if len(raw) >= 8 else None
+        if entry is None or entry[0] not in FEE_TIER_EVENTS:
+            continue
+        try:
+            d = idl_decode(raw, entry, FEE_EVENT_FIELDS)
+        except CheckError:
+            bad += 1
+            continue
+        d["name"] = entry[0]
+        out.append(d)
+    return out, bad
+
+
+def pool_accounts(client: Any, pools: Sequence[str]) -> dict[str, dict[str, str] | None]:
+    """{pool: {base_mint, quote_mint} | None (unreadable)}; getMultipleAccounts in chunks of 100."""
+    out: dict[str, dict[str, str] | None] = {}
+    for i in range(0, len(pools), 100):
+        chunk = list(pools[i:i + 100])
+        res = client.call("getMultipleAccounts", [chunk, {"encoding": "base64", "commitment": "finalized"}])
+        vals = list((res or {}).get("value") or [])
+        for j, pool in enumerate(chunk):
+            entry = vals[j] if j < len(vals) else None
+            data = mon._account_bytes(entry) if entry else None
+            out[pool] = td.decode_pool_account(data) if data else None
+    return out
+
+
+def fee_tier_index(tiers: Sequence[Sequence[Any]], mcap: int) -> int:
+    """Index of the LAST tier whose threshold <= mcap (0 below all of them; the pinned table starts at 0)."""
+    pick = 0
+    for i, (thr, _bps) in enumerate(tiers):
+        if mcap >= thr:
+            pick = i
+        else:
+            break
+    return pick
+
+
+def classify_fee_events(events: Sequence[Mapping[str, Any]], pools: Mapping[str, Mapping[str, str] | None], tiers: Sequence[Sequence[Any]],
+                        explained: Sequence[Sequence[int]] = ()) -> dict[str, Any]:
+    """Pure. Counts only (fee bps and tier indexes, no amount, price or address). See the module docstring, check (i). `explained`: the pinned exception triples."""
+    c: dict[str, Any] = {"n_events": len(events), "n_outside_non_wsol": 0, "n_outside_non_canonical": 0, "n_outside_no_boost": 0, "n_pool_unreadable": 0,
+                         "n_boost_slices": 0, "n_boost_slices_with_fee": 0, "n_tested": 0, "n_match": 0, "n_mismatch": 0, "n_unpriceable": 0, "n_explained": 0}
+    explained_set = {tuple(t) for t in explained}
+    explained_by: dict[str, int] = {}
+    covered: set[int] = set()
+    patterns: dict[str, int] = {}
+    canon: dict[str, str] = {}
+    for e in events:
+        pool = e["pool"]
+        info = pools.get(pool)
+        if info is None:
+            c["n_pool_unreadable"] += 1  # fail closed: in the universe, assumed canonical WSOL
+        elif info.get("quote_mint") != mon.WSOL_MINT:
+            c["n_outside_non_wsol"] += 1
+            continue
+        else:
+            bm = info.get("base_mint") or ""
+            if bm not in canon:
+                try:
+                    canon[bm] = canonical_pool(bm)
+                except (ValueError, KeyError):
+                    canon[bm] = ""
+            if canon[bm] != pool:
+                c["n_outside_non_canonical"] += 1
+                continue
+        if e.get("can_boost") is not True:
+            c["n_outside_no_boost"] += 1
+            continue
+        obs = [e["lp_fee_basis_points"], e["protocol_fee_basis_points"], e["coin_creator_fee_basis_points"] + e["cashback_fee_basis_points"]]
+        if e["user"] == mon.boost_vault_authority(pool):
+            c["n_boost_slices"] += 1
+            if obs != [0, 0, 0] or e["cashback_fee_basis_points"] != 0:
+                c["n_boost_slices_with_fee"] += 1
+            continue
+        c["n_tested"] += 1
+        q, b, sup = e["pool_quote_token_reserves"] + e["virtual_quote_reserves"], e["pool_base_token_reserves"], e["base_supply"]
+        if q <= 0 or b <= 0 or sup <= 0:
+            c["n_unpriceable"] += 1
+            c["n_mismatch"] += 1
+            continue
+        idx = fee_tier_index(tiers, q * sup // b)
+        raw3 = (e["lp_fee_basis_points"], e["protocol_fee_basis_points"], e["coin_creator_fee_basis_points"])
+        if obs == list(tiers[idx][1]):
+            c["n_match"] += 1
+            covered.add(idx)
+        elif raw3 in explained_set and e["cashback_fee_basis_points"] == 0:
+            c["n_explained"] += 1
+            key = f"tier {idx} observed {list(raw3)}"
+            explained_by[key] = explained_by.get(key, 0) + 1
+        else:
+            c["n_mismatch"] += 1
+            key = f"tier {idx} expected {list(tiers[idx][1])} observed {obs}"
+            patterns[key] = patterns.get(key, 0) + 1
+    c["tiers_covered"] = sorted(covered)
+    c["mismatch_patterns"] = dict(sorted(patterns.items(), key=lambda kv: (-kv[1], kv[0]))[:10])
+    c["explained_patterns"] = dict(sorted(explained_by.items(), key=lambda kv: (-kv[1], kv[0]))[:10])
+    return c
+
+
+def fee_tier_evidence(client: Any, idls: Mapping[str, Json], blobs: Sequence[bytes], fee_pins: Json) -> dict[str, Any]:
+    events, bad = fee_events(blobs, idls)
+    pools = pool_accounts(client, sorted({e["pool"] for e in events})) if events else {}
+    out = classify_fee_events(events, pools, fee_pins["canonical_tiers"], fee_pins["explained_exceptions"])
+    out["n_idl_undecodable"] = bad
+    return out
+
+
+def fee_tier_failures(ft: Mapping[str, Any], fee_pins: Json) -> list[str]:
+    """(i). Too few tested events is ERROR (CheckError); a keeper slice with a fee, an undecodable Buy/Sell or a mismatch share above the pin is a FAIL."""
+    fails: list[str] = []
+    if ft["n_idl_undecodable"]:
+        fails.append(f"i: {ft['n_idl_undecodable']} PumpSwap Buy/Sell events not decodable by the IDL field list for the fee test")
+    if ft["n_boost_slices_with_fee"]:
+        fails.append(f"i: {ft['n_boost_slices_with_fee']} of {ft['n_boost_slices']} BOOST keeper slices carry a non-zero fee bps")
+    if ft["n_tested"] < fee_pins["min_universe_events"]:
+        raise CheckError(f"fee tiers: {ft['n_tested']} in-universe WSOL trade events tested, need {fee_pins['min_universe_events']}")
+    if ft["n_mismatch"] / ft["n_tested"] > fee_pins["max_mismatch_share"]:
+        fails.append(f"i: {ft['n_mismatch']} of {ft['n_tested']} in-universe WSOL trade events have fee bps != the pinned tier for their market cap "
+                     f"(pinned max share {fee_pins['max_mismatch_share']}; unpriceable {ft['n_unpriceable']}; {ft['mismatch_patterns']})")
+    if ft["n_explained"] / ft["n_tested"] > fee_pins["max_explained_share"]:
+        fails.append(f"i: {ft['n_explained']} of {ft['n_tested']} in-universe WSOL trade events carry a pinned explained-exception triple, above the pinned max share "
+                     f"{fee_pins['max_explained_share']} ({ft['explained_patterns']})")
+    return fails
+
+
+def load_fees_books(path: str | None) -> list[str]:
+    """The books file's fees_check_bot_ids, or [] when there is no path, no such key, or the file cannot be read (then the check is OFF and every book keeps the HALT:
+    fail closed; tools.a3_halt refuses a broken books file on its own). Never raises."""
+    if not path:
+        return []
+    try:
+        books = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        print("A3_FEES_CHECK_OFF books file unreadable", file=sys.stderr)
+        return []
+    ids = books.get(FEES_BOOKS_KEY) if isinstance(books, dict) else None
+    if not isinstance(ids, list) or not all(isinstance(x, str) and x for x in ids):
+        return []
+    return list(ids)
+
+
+def fees_only_trigger(tri: Json, rec: Json, mon_pins: Json) -> dict[str, Any] | None:
+    """The fees-program item when it is the ONLY change of the record (exactly one pins difference, the fees deploy slot, and no other hard reason), else None."""
+    if tri.get("action") != "hard" or tri.get("redeploys") or len(tri.get("hard_reasons") or ()) != 1:
+        return None
+    diff = pins_diff(rec, mon_pins)
+    if len(diff) != 1 or diff[0]["kind"] != "program" or diff[0]["name"] != FEES_ITEM:
+        return None
+    return diff[0]
+
+
+def decide_fees(rec: Json, mon_pins: Json, pins: Json, fee_pins: Any, state_path: Path, tri: Json, d: Json, *, client: Any, http_get: Callable,
+                now_ms: Callable[[], int], job_id: str = "", history: Sequence[Json] = (), enum_client: Any = None, bounded_enum: bool = False,
+                upgrade_auth: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """The fees_check sub-verdict for a fees-only trigger: {schema, verdict PASS|FAIL|ERROR, halt_at_ms (None on PASS), reasons, redeploys, record_only, ...}.
+    Same memory and order as the pump / PumpSwap path: every upgrade write of the fees programdata since the pinned slot is its own redeploy (state key fees:<slot>), a PASSed
+    write is covered, a non-PASS write is sticky, the EARLIEST unreviewed write sets the instant, the 24 h deadline counts from it."""
+    run_ms = tri["run_ms"]
+    fv: dict[str, Any] = {"schema": FEES_SCHEMA, "verdict": "ERROR", "halt_at_ms": None, "reasons": [], "redeploys": [], "record_only": False}
+    state = read_state(state_path)
+
+    def bound() -> int:
+        try:
+            return min(failclosed_bound_ms(FEES_ITEM, rec, mon_pins, history, state), run_ms)
+        except CheckError:
+            return run_ms
+
+    def remember(w: Json, verdict: str, reasons: list[str]) -> None:
+        if state.get(redeploy_key(w)) is None:
+            append_state(state_path, {"key": redeploy_key(w), "program": w["name"], "slot": w["new"], "deploy_utc": w.get("deploy_utc"), "verdict": verdict,
+                                      "reasons": reasons[:20], "checked_ms": now_ms(), "run_utc": rec["run_utc"], "job_id": job_id})
+
+    try:
+        writes = expand_writes(enum_client or client, rec, [d], bounded=bounded_enum, upgrade_auth=upgrade_auth)
+    except Exception as exc:  # noqa: BLE001 - the enumeration failed or did not reach the pinned slot: ERROR at the fail-closed bound (Am.4 1.6)
+        b = bound()
+        reasons = [f"write enumeration failed for {FEES_ITEM} ({type(exc).__name__}: {str(exc)[:160]}): bound {iso_ms(b)}"]
+        remember(d, "ERROR", reasons)
+        fv.update(verdict="ERROR", halt_at_ms=b, reasons=reasons, redeploys=[{"name": d["name"], "slot": d["new"], "deploy_utc": d.get("deploy_utc")}])
+        return fv
+    fv["redeploys"] = [{"name": w["name"], "slot": w["new"], "deploy_utc": w.get("deploy_utc")} for w in writes]
+    unresolved = [w for w in writes if state.get(redeploy_key(w)) is None or state[redeploy_key(w)]["verdict"] != "PASS"]
+    if not unresolved:
+        fv.update(verdict="PASS", record_only=True, reasons=["covered: every fees write already PASSed"], covered=True)
+        return fv
+    first_ms = min(min(redeploy_instant_ms([w]) for w in unresolved), run_ms)
+    failed = [state[redeploy_key(w)] for w in writes if state.get(redeploy_key(w)) and state[redeploy_key(w)]["verdict"] != "PASS"]
+    if failed:
+        bad = failed[0]
+        fv.update(verdict=bad["verdict"], halt_at_ms=first_ms, reasons=[f"state: {bad['key']} was {bad['verdict']} ({'; '.join(bad.get('reasons', []))[:300]})"])
+        return fv
+    pending = sorted(unresolved, key=lambda w: (redeploy_instant_ms([w]), w["new"]))
+    deadline = first_ms + CHECK_WINDOW_S * 1000
+    fv["redeploy_utc"], fv["deadline_utc"] = iso_ms(first_ms), iso_ms(deadline)
+    if now_ms() > deadline:
+        reasons = [f"timeout: check started {iso_ms(now_ms())}, after the deadline {iso_ms(deadline)}"]
+        for w in pending:
+            remember(w, "FAIL", reasons)
+        fv.update(verdict="FAIL", halt_at_ms=first_ms, reasons=reasons)
+        return fv
+    per_write: dict[str, str] = {}
+    all_reasons: list[str] = []
+    detail: dict[str, Any] = {}
+    for i, w in enumerate(pending):
+        w_ms = redeploy_instant_ms([w])
+        try:
+            verdict, reasons, detail = check_redeploy(rec, mon_pins, pins, dict(tri, redeploys=[w]), client=client, http_get=http_get, now_ms=now_ms, deploy_ms=w_ms,
+                                                      fee_check=fee_pins if fee_pins is not None else {})
+        except Exception as exc:  # noqa: BLE001 - ANY failure of the check is ERROR, recorded in the state
+            verdict, reasons, detail = "ERROR", [f"{type(exc).__name__}: {str(exc)[:200]}"], {}
+        if verdict == "PASS" and now_ms() > deadline:
+            verdict, reasons = "FAIL", [f"timeout: finished {iso_ms(now_ms())}, after the deadline {iso_ms(deadline)}"]
+        per_write[redeploy_key(w)] = verdict
+        remember(w, verdict, reasons)
+        if verdict != "PASS":
+            for later in pending[i + 1:]:
+                remember(later, verdict, [f"not evaluated: earlier write {redeploy_key(w)} {verdict}"])
+                per_write[redeploy_key(later)] = f"not evaluated ({verdict})"
+            fv.update(verdict=verdict, halt_at_ms=min(w_ms, run_ms), reasons=[f"{redeploy_key(w)}: {r}" for r in reasons], per_write=per_write, detail=detail)
+            return fv
+        all_reasons += reasons
+    fv.update(verdict="PASS", record_only=True, reasons=all_reasons, per_write=per_write, detail=detail)
+    return fv
 
 
 def append_state(path: Path, entry: Json) -> None:
@@ -955,13 +1320,106 @@ def list_upgrade_writes(client: Any, name: str, programdata: str, pinned_slot: i
     return out
 
 
-def expand_writes(client: Any, rec: Json, redeploys: Sequence[Json]) -> list[dict[str, Any]]:
+LOADER_SET_AUTHORITY_TAGS = (4, 7)  # UpgradeableLoaderInstruction::SetAuthority, SetAuthorityChecked
+
+
+def read_programdata_header(client: Any, programdata: str) -> tuple[int, str | None]:
+    """(last deploy slot, upgrade authority or None) from the first 45 bytes of a programdata account (tag 3, slot u64 at 4, Option<Pubkey> at 12). Unreadable = CheckError."""
+    res = client.call("getAccountInfo", [programdata, {"encoding": "base64", "dataSlice": {"offset": 0, "length": 45}, "commitment": "finalized"}])
+    val = (res or {}).get("value")
+    data = mon._account_bytes(val) if val else None
+    if data is None or len(data) < 13 or int.from_bytes(data[:4], "little") != 3:
+        raise CheckError(f"programdata {programdata[:8]} unreadable or not a ProgramData account")
+    auth = mon.b58encode(data[13:45]) if data[12] == 1 and len(data) >= 45 else None
+    return int.from_bytes(data[4:12], "little"), auth
+
+
+def list_upgrade_writes_bounded(client: Any, name: str, programdata: str, pinned_slot: int, newest_slot: int, authority_pin: str | None) -> list[dict[str, Any]]:
+    """SUCCESSOR books only (books-file flag). The same answer as list_upgrade_writes (every successful upgrade write after the pinned slot, oldest first) without walking the
+    programdata's signature list, which on PumpSwap is the whole trading history (job #1545: call cap 300 reached). Bounded steps, each fail closed (CheckError):
+      1. read the programdata header: its upgrade authority must equal the pin, and its deploy slot must equal the record's newest slot;
+      2. deploy slot == pinned slot: zero writes, no further call;
+      3. else page getSignaturesForAddress(UPGRADE AUTHORITY) back to the pinned slot (MAX_WRITE_PAGES pages; not reached = CheckError). A write is a successful tx with a loader
+         `Upgrade` (top-level or inner) whose first account is THIS programdata (the authority upgrades other programs too). A loader SetAuthority / SetAuthorityChecked on this
+         programdata inside the walk is CheckError (an upgrade signed by another authority would not be on this list). The newest write must be the header's slot."""
+    if not authority_pin:
+        raise CheckError(f"pin missing: upgrade_authority.{name}")
+    cur, auth = read_programdata_header(client, programdata)
+    if auth != authority_pin:
+        raise CheckError(f"{name}: upgrade authority {str(auth)[:8]} != pinned {authority_pin[:8]} (authority changed: fail closed)")
+    if cur != newest_slot:
+        raise CheckError(f"{name}: programdata deploy slot {cur} != the record's deploy slot {newest_slot}")
+    if cur == pinned_slot:
+        return []
+    if cur < pinned_slot:
+        raise CheckError(f"{name}: programdata deploy slot {cur} is before the pinned slot {pinned_slot}")
+    cands: list[dict[str, Any]] = []
+    before = None
+    reached = False
+    n_read = 0
+    for _ in range(MAX_WRITE_PAGES):
+        opts: dict[str, Any] = {"limit": 1000, "commitment": "finalized"}
+        if before:
+            opts["before"] = before
+        sigs = client.call("getSignaturesForAddress", [authority_pin, opts]) or []
+        n_read += len(sigs)
+        for sg in sigs:
+            before = sg["signature"]
+            if sg["slot"] <= pinned_slot:
+                reached = True
+            elif sg.get("err") is None:
+                cands.append(sg)
+        if reached or len(sigs) < 1000:  # a list that ends before the pinned slot is NOT reached (the authority's history must cover the pin)
+            break
+    if not reached:
+        raise CheckError(f"{name}: the pinned deploy slot {pinned_slot} was not reached in the upgrade authority's signature list after reading {n_read} signatures (fail closed)")
+    out: list[dict[str, Any]] = []
+    for sg in sorted(cands, key=lambda x: x["slot"]):
+        tx, tries = fetch_tx_retry(client, sg["signature"])
+        if tx is None:
+            raise CheckError(f"{name}: authority tx {sg['signature'][:12]} unreadable after {tries} tries (fail closed)")
+        keys = mon.tx_keys(tx)
+        ixs = list(((tx.get("transaction") or {}).get("message") or {}).get("instructions") or [])
+        for grp in (tx.get("meta") or {}).get("innerInstructions") or []:
+            ixs += list(grp.get("instructions") or [])
+        is_upgrade = False
+        for ix in ixs:
+            idx = ix.get("programIdIndex")
+            if idx is None or idx >= len(keys) or keys[idx] != LOADER_PROGRAM:
+                continue
+            accts = ix.get("accounts") or []
+            if not accts or not isinstance(accts[0], int) or accts[0] >= len(keys) or keys[accts[0]] != programdata:
+                continue
+            try:
+                data = mon.b58decode(ix.get("data") or "")
+            except ValueError:
+                raise CheckError(f"{name}: undecodable loader instruction on the programdata (fail closed)") from None
+            tag = int.from_bytes(data[:4], "little") if len(data) >= 4 else None
+            if tag == LOADER_UPGRADE_TAG:
+                is_upgrade = True
+            elif tag in LOADER_SET_AUTHORITY_TAGS:
+                raise CheckError(f"{name}: SetAuthority on the programdata at slot {sg['slot']} (authority changed: fail closed)")
+        if not is_upgrade:
+            continue
+        bt = sg.get("blockTime") or tx.get("blockTime")
+        if bt is None:
+            raise CheckError(f"{name}: write at slot {sg['slot']} has no block time")
+        out.append({"kind": "program", "name": name, "old": pinned_slot, "new": int(tx.get("slot", sg["slot"])), "deploy_utc": mon.iso(bt), "sig": sg["signature"]})
+    if not out or out[-1]["new"] != cur:
+        raise CheckError(f"{name}: newest enumerated write {out[-1]['new'] if out else None} != the programdata deploy slot {cur}")
+    return out
+
+
+def expand_writes(client: Any, rec: Json, redeploys: Sequence[Json], *, bounded: bool = False, upgrade_auth: Mapping[str, str] | None = None) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for d in redeploys:
         pdata = ((rec.get("programs") or {}).get(d["name"]) or {}).get("programdata")
         if not pdata:
             raise CheckError(f"record has no programdata address for {d['name']}")
-        out += list_upgrade_writes(client, d["name"], pdata, d["old"], d["new"])
+        if bounded:  # successor books only (books-file flag)
+            out += list_upgrade_writes_bounded(client, d["name"], pdata, d["old"], d["new"], (upgrade_auth or {}).get(d["name"]))
+        else:
+            out += list_upgrade_writes(client, d["name"], pdata, d["old"], d["new"])
     return sorted(out, key=lambda w: (w["new"], w["name"]))
 
 
@@ -988,7 +1446,11 @@ def failclosed_bound_ms(name: str, rec: Json, mon_pins: Json, history: Sequence[
 
 
 def decide(rec: Json, prev: Json | None, mon_pins: Json, pins: Json, state_path: Path, *, client: Any, http_get: Callable, now_ms: Callable[[], int], job_id: str = "",
-           history: Sequence[Json] = (), enum_client: Any = None) -> dict[str, Any]:
+           history: Sequence[Json] = (), enum_client: Any = None, fees_check: bool = False, fee_pins: Any = None, bounded_enum: bool = False,
+           upgrade_auth: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """fees_check (default False): only when a books file opts a successor book into the fees-program check. With it False the verdict is the rule's without that check.
+    bounded_enum (default False; set together with fees_check by main): upgrade writes are enumerated by list_upgrade_writes_bounded (authority signatures), not by the
+    programdata's signature list. Both False = the rule as merged, byte for byte."""
     tri = triage(rec, mon_pins, prev, history)
     v: dict[str, Any] = {"schema": SCHEMA, "run_utc": rec["run_utc"], "action": tri["action"], "verdict": "NONE", "reasons": [], "redeploys": [],
                          "flag_halt_ms": tri["flag_halt_ms"], "halt_at_ms": None, "record_only": False, "job_id": job_id}
@@ -1001,7 +1463,8 @@ def decide(rec: Json, prev: Json | None, mon_pins: Json, pins: Json, state_path:
     state = read_state(state_path)
     for d in tri["redeploys"]:
         try:
-            redeploys += expand_writes(enum_client or client, rec, [d])
+            redeploys += expand_writes(enum_client or client, rec, [d]) if not bounded_enum else \
+                expand_writes(enum_client or client, rec, [d], bounded=True, upgrade_auth=upgrade_auth)
         except Exception as exc:  # noqa: BLE001
             try:
                 bound = failclosed_bound_ms(d["name"], rec, mon_pins, history, state)
@@ -1026,6 +1489,14 @@ def decide(rec: Json, prev: Json | None, mon_pins: Json, pins: Json, state_path:
                 pass
         v.update(verdict="HALT", reasons=tri["hard_reasons"] + [f"write enumeration failed for {u['d']['name']} ({type(u['err']).__name__}: {str(u['err'])[:120]}): bound {iso_ms(u['bound_ms'])}" for u in unenum],
                  halt_at_ms=halt_at)
+        fd = fees_only_trigger(tri, rec, mon_pins) if fees_check else None
+        if fd is not None:  # the HALT above stands for every book; the sub-verdict is for the opted-in successor books only (tools.a3_halt)
+            try:
+                v["fees_check"] = decide_fees(rec, mon_pins, pins, fee_pins, state_path, tri, fd, client=client, http_get=http_get, now_ms=now_ms, job_id=job_id,
+                                              history=history, enum_client=enum_client, bounded_enum=bounded_enum, upgrade_auth=upgrade_auth)
+            except Exception as exc:  # noqa: BLE001 - e.g. the state could not be written: the sub-verdict fails closed, the main HALT is still delivered
+                v["fees_check"] = {"schema": FEES_SCHEMA, "verdict": "ERROR", "halt_at_ms": halt_at, "reasons": [f"{type(exc).__name__}: {str(exc)[:200]}"], "redeploys": [],
+                                   "record_only": False}
         return v
     # redeploy-only: a write that already PASSed is covered and no longer sets the instant, the deadline or the sample
     failed = [state[redeploy_key(d)] for d in redeploys if state.get(redeploy_key(d)) and state[redeploy_key(d)]["verdict"] != "PASS"]
@@ -1184,7 +1655,11 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p.add_argument("--programdata", help="programdata account address for --enum-only")
     p.add_argument("--pinned-slot", type=int, help="pinned deploy slot for --enum-only")
     p.add_argument("--newest-slot", type=int, help="the record's newest deploy slot for --enum-only")
+    p.add_argument("--bounded", action="store_true", help="with --enum-only: the bounded enumeration of successor books (programdata header + the upgrade authority's signatures; "
+                   "authority from --fees-pins upgrade_authority)")
     p.add_argument("--observe", action="store_true", help="print the values the pins file should hold from the newest record's redeploy; decide nothing")
+    p.add_argument("--books", help="the A3 books file; only a non-empty fees_check_bot_ids list in it turns the fees-program check on (successor books only)")
+    p.add_argument("--fees-pins", default=str(DEFAULT_FEES_PINS), help="fees-program check pins (default tools/a3_fees_check_pins.json)")
     return p.parse_args(argv)
 
 
@@ -1200,9 +1675,16 @@ def main(argv: Sequence[str] | None = None, *, client: Any = None, http_get: Cal
             if not (a.programdata and a.pinned_slot and a.newest_slot):
                 raise CheckError("--enum-only needs --programdata, --pinned-slot and --newest-slot")
             t0 = time.time()
-            ws = list_upgrade_writes(ecl0, a.enum_only, a.programdata, a.pinned_slot, a.newest_slot)
-            print(json.dumps({"program": a.enum_only, "writes": [{k: w[k] for k in ("new", "deploy_utc", "sig")} for w in ws], "rpc_calls": getattr(ecl0, "total_calls", None),
-                              "seconds": round(time.time() - t0), "separate_rpc": bool(a.enum_rpc_env_file or enum_client)}, sort_keys=True))
+            if a.bounded:
+                auth = ((load_json(Path(a.fees_pins)).get("upgrade_authority") or {}).get(a.enum_only))
+                ws = list_upgrade_writes_bounded(ecl0, a.enum_only, a.programdata, a.pinned_slot, a.newest_slot, auth)
+            else:
+                ws = list_upgrade_writes(ecl0, a.enum_only, a.programdata, a.pinned_slot, a.newest_slot)
+            out = {"program": a.enum_only, "writes": [{k: w[k] for k in ("new", "deploy_utc", "sig")} for w in ws], "rpc_calls": getattr(ecl0, "total_calls", None),
+                   "seconds": round(time.time() - t0), "separate_rpc": bool(a.enum_rpc_env_file or enum_client)}
+            if a.bounded:
+                out["bounded"] = True
+            print(json.dumps(out, sort_keys=True))
             return 0
         except Exception as exc:  # noqa: BLE001
             print(f"A3_ENUM_ERROR {type(exc).__name__}: {str(exc)[:240]}", file=sys.stderr)
@@ -1239,7 +1721,15 @@ def main(argv: Sequence[str] | None = None, *, client: Any = None, http_get: Cal
             out["upgrade_writes"] = [{k: w[k] for k in ("name", "new", "deploy_utc")} for w in writes]
             print(json.dumps(out, sort_keys=True))
             return 0
-        v = decide(rec, prev, mon_pins, pins, Path(a.state), client=cl, http_get=get, now_ms=clock, job_id=a.job_id, history=recs[:-1], enum_client=ecl)
+        fees_on = bool(load_fees_books(a.books))
+        fee_pins = None
+        if fees_on:
+            try:
+                fee_pins = load_json(Path(a.fees_pins))
+            except Exception:  # noqa: BLE001 - an unreadable pins file is the sub-verdict's ERROR (validate_fee_pins), never a pass
+                fee_pins = None
+        v = decide(rec, prev, mon_pins, pins, Path(a.state), client=cl, http_get=get, now_ms=clock, job_id=a.job_id, history=recs[:-1], enum_client=ecl,
+                   fees_check=fees_on, fee_pins=fee_pins, bounded_enum=fees_on, upgrade_auth=(fee_pins or {}).get("upgrade_authority") if fees_on else None)
         text = json.dumps(v, sort_keys=True)
         print(text)
         if a.verdict_out:
