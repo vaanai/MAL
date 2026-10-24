@@ -56,6 +56,7 @@ import base64
 import binascii
 import hashlib
 import json
+import math
 import os
 import re
 import statistics
@@ -99,9 +100,11 @@ OTHER_FIVE = BOOST_FLAGS + ("synthetic_share_high",)
 ALL_HALT_FLAGS = ("pins_changed",) + OTHER_FIVE
 REQUIRED_EVENTS = ("TradeEvent", "BuyEvent", "SellEvent")
 # synthetic_share_high is decided here on a POOLED share, not on the monitor's single-run flag (a single run of ~19 graduations at base rate ~0.2 exceeds 0.35 by chance on ~16% of runs).
-SYN_POOL_K = 4  # newest evaluated records (this run included), ~2 days
-SYN_POOL_MIN_CHECKED = 60  # graduations with a found completing tx the pool needs before it may halt
-SYN_POOL_MAX = mon.SYNTHETIC_MAX  # 0.35: halt only if sum(n_synthetic)/sum(n_checked) is above it
+SYN_POOL_K = 4  # newest evaluated, non-overlapping records (this run included), ~2 days
+SYN_MIN_RUN_CHECKED = 10  # a record with fewer checked graduations (or no valid counts) is UNEVALUATED for this flag
+SYN_P0 = 75 / 339  # pinned baseline synthetic share (18 post-redeploy runs, QP ruling 2026-10-24)
+SYN_PHI = 2.0  # pinned overdispersion (observed 1.70, rounded up)
+SYN_Z_HALT = 3.0902  # one-sided alpha 0.001 per evaluation: halt iff z = (x - n*p0) / sqrt(phi*n*p0*(1-p0)) > this
 
 # IDL event -> {IDL field: key in the shadow decoder's row}. "side" is handled apart (is_buy). Checked against the live IDL on 2026-10-21 (see the PR body).
 EVENT_FIELDS: dict[str, dict[str, str]] = {
@@ -188,39 +191,57 @@ def _norm_flags(rec: Json) -> dict[str, dict[str, Any]]:
 
 
 def _syn_counts(rec: Json) -> tuple[int, int] | None:
+    """(n_checked, n_synthetic) of a record, or None when absent/invalid or n_checked < SYN_MIN_RUN_CHECKED."""
     syn = ((rec.get("graduations") or {}).get("synthetic")) if isinstance(rec.get("graduations"), Mapping) else None
     if not isinstance(syn, Mapping):
         return None
     n_chk, n_syn = syn.get("n_checked"), syn.get("n_synthetic")
-    if isinstance(n_chk, bool) or isinstance(n_syn, bool) or not isinstance(n_chk, int) or not isinstance(n_syn, int) or n_chk <= 0 or n_syn < 0 or n_syn > n_chk:
+    if isinstance(n_chk, bool) or isinstance(n_syn, bool) or not isinstance(n_chk, int) or not isinstance(n_syn, int) or n_chk < SYN_MIN_RUN_CHECKED or n_syn < 0 or n_syn > n_chk:
         return None
     return n_chk, n_syn
 
 
+def _slot_range(rec: Json) -> tuple[int, int] | None:
+    g = rec.get("graduations") if isinstance(rec.get("graduations"), Mapping) else {}
+    lo, hi = g.get("slot_min"), g.get("slot_max")
+    if isinstance(lo, int) and isinstance(hi, int) and not isinstance(lo, bool) and not isinstance(hi, bool) and lo <= hi:
+        return lo, hi
+    return None
+
+
+def synthetic_z(n_syn: int, n_chk: int) -> float:
+    return (n_syn - n_chk * SYN_P0) / math.sqrt(SYN_PHI * n_chk * SYN_P0 * (1.0 - SYN_P0))
+
+
 def pooled_synthetic_flag(rec: Json, history: Sequence[Json]) -> dict[str, Any]:
-    """Pure. The synthetic_share_high decision: the pooled share over the newest SYN_POOL_K evaluated records with run_utc <= this run's (this record included, a later
-    record never counts, one record per run_utc). Halts only if the pool has >= SYN_POOL_MIN_CHECKED checked graduations AND sum(n_synthetic)/sum(n_checked) > SYN_POOL_MAX.
-    Fewer checked: evaluated, not halting (WARN in the reason). The single-run share is printed in the reason as a WARN. Outcome-blind: reads graduation counts only."""
+    """Pure. The synthetic_share_high decision. THIS record must have valid counts (n_checked >= SYN_MIN_RUN_CHECKED), else UNEVALUATED (the two-consecutive rule then applies).
+    Pool: this record plus the newest earlier records (run_utc strictly before this run's, newest first) with valid counts, up to SYN_POOL_K, DEDUPED BY SAMPLE: an earlier
+    record whose [slot_min, slot_max] overlaps an already included newer record is skipped (graduations are counted once). Halt iff z > SYN_Z_HALT with the pinned p0 and phi.
+    The single-run share is printed as a WARN and never decides. Outcome-blind: graduation counts and slot ranges only."""
     cur = str(rec.get("run_utc", ""))
-    by_run: dict[str, tuple[int, int]] = {}
-    for r in history:
-        ru = str(r.get("run_utc", ""))
-        c = _syn_counts(r)
-        if ru and ru < cur and c is not None:
-            by_run[ru] = c
     own = _syn_counts(rec)
-    if own is not None:
-        by_run[cur] = own
-    pool = [by_run[k] for k in sorted(by_run)[-SYN_POOL_K:]]
-    if not pool:
-        return {"halt": False, "evaluated": False, "reason": "no evaluated record with graduation counts in the pool"}
+    if own is None:
+        return {"halt": False, "evaluated": False, "reason": f"this run has no valid synthetic counts (need n_checked >= {SYN_MIN_RUN_CHECKED})"}
+    pool = [own]
+    ranges = [r for r in [_slot_range(rec)] if r is not None]
+    older = sorted((r for r in history if str(r.get("run_utc", "")) and str(r.get("run_utc", "")) < cur), key=lambda r: str(r["run_utc"]), reverse=True)
+    for r in older:
+        if len(pool) >= SYN_POOL_K:
+            break
+        c = _syn_counts(r)
+        if c is None:
+            continue
+        sr = _slot_range(r)
+        if sr is not None and any(sr[0] <= hi and lo <= sr[1] for lo, hi in ranges):
+            continue
+        pool.append(c)
+        if sr is not None:
+            ranges.append(sr)
     n_chk, n_syn = sum(c for c, _ in pool), sum(x for _, x in pool)
-    single = f"; single-run WARN {own[1]}/{own[0]} = {own[1] / own[0]:.3f}" if own is not None else "; this run has no counts"
-    share = n_syn / n_chk
-    desc = f"pooled PostCompleteBuyEvent {n_syn}/{n_chk} = {share:.3f} over the newest {len(pool)} of K={SYN_POOL_K} evaluated runs (halt above {SYN_POOL_MAX} with >= {SYN_POOL_MIN_CHECKED} checked){single}"
-    if n_chk < SYN_POOL_MIN_CHECKED:
-        return {"halt": False, "evaluated": True, "reason": "WARN only, pool too small: " + desc}
-    return {"halt": share > SYN_POOL_MAX, "evaluated": True, "reason": desc}
+    z = synthetic_z(n_syn, n_chk)
+    desc = (f"pooled PostCompleteBuyEvent {n_syn}/{n_chk} = {n_syn / n_chk:.3f} over {len(pool)} non-overlapping runs (K={SYN_POOL_K}); z = {z:.2f} vs p0 {SYN_P0:.4f} phi {SYN_PHI} "
+            f"(halt above z {SYN_Z_HALT}); single-run WARN {own[1]}/{own[0]} = {own[1] / own[0]:.3f}")
+    return {"halt": z > SYN_Z_HALT, "evaluated": True, "reason": desc, "z": round(z, 4), "pooled_n": n_chk, "pooled_x": n_syn}
 
 
 def triage(rec: Json, pins: Json, prev: Json | None, history: Sequence[Json] = ()) -> dict[str, Any]:
@@ -232,7 +253,8 @@ def triage(rec: Json, pins: Json, prev: Json | None, history: Sequence[Json] = (
     run_ms = utc_ms(rec["run_utc"])
     diff = pins_diff(rec, pins)
     any_halt = any(v["halt"] for v in flags.values()) or bool(diff)
-    out: dict[str, Any] = {"run_utc": rec["run_utc"], "run_ms": run_ms, "flag_halt_ms": run_ms if any_halt else None, "hard_reasons": [], "redeploys": [], "action": "none"}
+    out: dict[str, Any] = {"run_utc": rec["run_utc"], "run_ms": run_ms, "flag_halt_ms": run_ms if any_halt else None, "hard_reasons": [], "redeploys": [], "action": "none",
+           "synthetic_flag": flags["synthetic_share_high"]}
     hard = out["hard_reasons"]
     for k, v in flags.items():
         if k in BOOST_FLAGS + ("synthetic_share_high",) or k not in ALL_HALT_FLAGS:
@@ -244,6 +266,7 @@ def triage(rec: Json, pins: Json, prev: Json | None, history: Sequence[Json] = (
             pflags = _norm_flags(prev)
         except CheckError:  # a broken PREVIOUS record is all-unevaluated: it must never discard a valid halt found today
             pflags = {k: {"halt": False, "evaluated": False, "reason": "previous record broken"} for k in ALL_HALT_FLAGS}
+        pflags["synthetic_share_high"] = {"halt": False, "evaluated": _syn_counts(prev) is not None, "reason": "previous run synthetic counts"}
         for k in ALL_HALT_FLAGS:
             if not flags[k]["evaluated"] and not pflags[k]["evaluated"]:
                 hard.append(f"{k}: unevaluated on two consecutive daily runs")
@@ -764,7 +787,12 @@ def sample_failures(ev: Mapping[str, Any], label: str, pins: Json, fails: list[s
 def check_redeploy(rec: Json, mon_pins: Json, pins: Json, tri: Json, *, client: Any, http_get: Callable, now_ms: Callable[[], int], deploy_ms: int) -> tuple[str, list[str], dict[str, Any]]:
     """Returns (verdict PASS|FAIL, reasons, detail). Raises CheckError for ERROR. Does not look at the deadline; the caller does."""
     fails: list[str] = []
-    flags = ((rec.get("halt") or {}).get("flags")) or {}
+    flags = dict(((rec.get("halt") or {}).get("flags")) or {})
+    # the record's single-run synthetic flag never decides: triage's POOLED decision replaces it (a missing one is a failure, not a pass)
+    if isinstance(tri.get("synthetic_flag"), Mapping):
+        flags["synthetic_share_high"] = tri["synthetic_flag"]
+    else:
+        flags.pop("synthetic_share_high", None)
     # a. the other five flags: clear and evaluated
     for k in OTHER_FIVE:
         f = flags.get(k)
