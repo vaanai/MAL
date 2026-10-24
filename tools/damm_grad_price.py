@@ -65,6 +65,10 @@ class Ser:
         if not self.ok:
             return
         st = dd.init_state(base64.b64decode(ini["payload_b64"]))
+        x0 = dd.liquidity_from_swap(st["sqrt_price"], tr[0])  # sanity: the init sqrt price and liquidity must reproduce the first swap (else this pool is not used)
+        if x0 is not None and abs(x0[0] / st["liquidity"] - 1) > 1e-3:
+            self.ok = False
+            return
         self.mode = int(tr[0]["collect_fee_mode"])
         n = len(tr) + 1
         slot = np.empty(n, np.int64)

@@ -58,6 +58,15 @@ class Damm(unittest.TestCase):
             self.assertAlmostEqual(lq / st["liquidity"], 1.0, places=5)
             self.assertAlmostEqual(lb / st["liquidity"], 1.0, places=5)
 
+    def test_plain_initialize_variant(self):
+        with gzip.open(Path(__file__).parent / "fixtures" / "damm_v2_migtx_initialize_pool.json.gz", "rt") as fh:
+            tx = json.load(fh)
+        m = dd.init_pool_from_migration_tx(tx)
+        self.assertEqual(m["init_variant"], "plain")
+        self.assertTrue(m["index_ok"])
+        self.assertTrue(m["wsol_is_b"])
+        self.assertEqual(m["damm_pool"][:6], "9NWPMF")
+
 
 if __name__ == "__main__":
     unittest.main()

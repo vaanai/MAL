@@ -29,6 +29,7 @@ VENUE = "meteora_damm_v2"
 SCHEMA_V = 1
 WSOL = "So11111111111111111111111111111111111111112"
 INIT_IX = hashlib.sha256(b"global:initialize_pool_with_dynamic_config").digest()[:8]
+INIT_IX_PLAIN = hashlib.sha256(b"global:initialize_pool").digest()[:8]  # 109 of 6,458 migrations use this variant (no pool_creator_authority account)
 _EV = {hashlib.sha256(b"event:" + n.encode()).digest()[:8]: n for n in (
     "EvtSwap", "EvtSwap2", "EvtInitializePool", "EvtLiquidityChange", "EvtAddLiquidity", "EvtRemoveLiquidity", "EvtClaimPositionFee", "EvtCreatePosition",
     "EvtClosePosition", "EvtLockPosition", "EvtPermanentLockPosition", "EvtSplitPosition", "EvtSplitPosition2", "EvtClaimReward", "EvtFundReward", "EvtClaimProtocolFee",
@@ -75,11 +76,13 @@ def init_pool_from_migration_tx(tx: dict[str, Any]) -> dict[str, Any] | None:
             except KeyError:
                 continue
             acc = ix.get("accounts") or []
-            if data[:8] == INIT_IX and len(acc) >= 13:
+            if data[:8] in (INIT_IX, INIT_IX_PLAIN) and len(acc) >= 12:
                 a = [keys[i] for i in acc]
-                return {"damm_pool": a[7], "dbc_pool_check": dbc_pool, "index_ok": dbc_pool == a[7], "pool_authority": a[6], "config": a[5], "position_nft_mint": a[1],
-                        "token_a_mint": a[9], "token_b_mint": a[10], "vault_a": a[11], "vault_b": a[12], "wsol_is_b": a[10] == WSOL, "wsol_in_pool": WSOL in (a[9], a[10]),
-                        "token_mint": a[9] if a[10] == WSOL else a[10]}
+                o = 1 if data[:8] == INIT_IX else 0  # the dynamic-config variant has one extra account (pool_creator_authority) before config
+                pool, ma, mb = a[6 + o], a[8 + o], a[9 + o]
+                return {"damm_pool": pool, "dbc_pool_check": dbc_pool, "index_ok": dbc_pool == pool, "pool_authority": a[5 + o], "config": a[4 + o], "position_nft_mint": a[1],
+                        "token_a_mint": ma, "token_b_mint": mb, "vault_a": a[10 + o], "vault_b": a[11 + o], "wsol_is_b": mb == WSOL, "wsol_in_pool": WSOL in (ma, mb),
+                        "token_mint": ma if mb == WSOL else mb, "init_variant": "dynamic_config" if o else "plain"}
     return None
 
 

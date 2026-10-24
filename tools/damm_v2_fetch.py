@@ -220,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         n = 0
         for m in migs:
-            if m["signature"] in cp["migs"]:
+            if m["signature"] in cp["migs"] and cp["migs"][m["signature"]].get("status") != "no_damm_init":
                 continue
             try:
                 r = resolve(call, credits, m)
