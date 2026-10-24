@@ -1,0 +1,16 @@
+# Hashed pins for the PINNED H5 ARENA executor venv (Python 3.12, linux x86_64 = mal-fast-0), /usr/local/lib/mal-h5-arena-exec/venv.
+# The arena closure (tools.h5_arena_executor -> h5_arena_gates -> arena_stack, arena_live_parity, arena_paper) needs numpy on top of the H5 executor's
+# solders (+ jsonalias, typing_extensions). The three solders pins are identical to requirements-probe-exec.txt (a test checks it).
+# Install ONLY with: pip install --require-hashes --only-binary=:all: --no-deps --no-cache-dir -r this-file
+# numpy: sha256 of numpy-2.5.3-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl from pypi.org/pypi/numpy/2.5.3/json (uploaded 2026-09-06),
+# read 2026-10-24; 2.5.3 is the research-0 venv's version, the one the tests ran on. QP #838 condition 4: the sha256 was also checked against the
+# DOWNLOADED wheel (pip download --only-binary=:all: --platform manylinux_2_28_x86_64 --python-version 3.12 --abi cp312 numpy==2.5.3): equal.
+# A fresh python3.12 venv built from this file with --require-hashes holds exactly these four, and imports the arena closure (2026-10-24, research-0).
+solders==0.29.0 \
+    --hash=sha256:00524baf575ae5edb2ba43cdb1d80491c59efdc16b48fec96a6f929c0401d0e4
+jsonalias==0.1.1 \
+    --hash=sha256:a56d2888e6397812c606156504e861e8ec00e188005af149f003c787db3d3f18
+typing_extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
+numpy==2.5.3 \
+    --hash=sha256:b7e18c623bb5c95acb3b3328861272816ba199fb531921c5d6d0b675f1fde9e3
