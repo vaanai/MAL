@@ -73,7 +73,18 @@ class AEnv(Env):
                 Path(cfg["parity_twins_file"] + ".run.json").write_text(json.dumps({"schema": "arena_twin_run_v1", "run_ms": 0, "covered_trip_ids": [], "twin_rows": 0,
                     "twins_sha256": hashlib.sha256(b"").hexdigest(), "config_hash": ch, "code_sha256": cs}))
             (tmp / "etc-mal-h5" / "arena-TIER").write_text("T1\n")
-        super().__init__(tmp, live=live, **cfg)
+            # the live entry (live_entry_refusal): mode live, no replay_only, a declared A3 record, the arena LIVE_OK naming this book, FEED_NOTE_MERGED
+            cfg.pop("replay_only", None)
+            cfg.setdefault("a3_record_file", str(tmp / "a3-default.jsonl"))
+            lok = ax.ARENA_LIVE_OK_PATH
+            assert str(lok).startswith(str(tmp)), lok  # a test never writes the host's /etc/mal-h5-arena
+            if cfg.pop("arena_live_ok", True):
+                lok.write_text(cfg.get("book_id", A2) + "\n")
+                os.chmod(lok, 0o644)
+            with mock.patch.object(ax, "FEED_NOTE_MERGED", True):
+                super().__init__(tmp, live=live, **cfg)
+        else:
+            super().__init__(tmp, live=live, **cfg)
         if live:  # the start check saw T1 (the file's content at construction); the older fixtures below test base-tier semantics, so they run on at T0
             (tmp / "etc-mal-h5" / "arena-TIER").write_text("T0\n")
 
@@ -97,7 +108,7 @@ class ACase(Case):
         self.arena_tier = self.etc / "arena-TIER"  # stand-in for /etc/mal-h5-arena/TIER (owned by the test's uid, which the patched root uid matches)
         self.arena_tier.write_text("T1\n")
         os.chmod(self.arena_tier, 0o644)
-        for patcher in (mock.patch.object(ax, "ARENA_TIER_PATH", self.arena_tier),
+        for patcher in (mock.patch.object(ax, "ARENA_TIER_PATH", self.arena_tier), mock.patch.object(ax, "ARENA_LIVE_OK_PATH", self.etc / "arena-LIVE_OK"),
                         mock.patch.object(ax, "V2_RULE_SOURCE", self.tmp / "FREEZE.md"),
                         mock.patch.object(ax, "A3_RECORD_DEFAULT", str(self.tmp / "a3-default.jsonl"))):
             patcher.start()
@@ -164,9 +175,10 @@ class StartTests(ACase):
         with self.assertRaises(SystemExit):
             self.env(book_id="h5v1-boostfloor-a1")
 
-    def test_live_is_not_built(self):
-        with self.assertRaises(SystemExit) as cm:
-            self.env(live=True)
+    def test_live_not_built_switch_still_refuses_when_off(self):
+        """LIVE_BUILT is True since the live-entry PR; the switch itself still refuses every keyed start when it is off (tools/test_h5_arena_live_entry.py covers the entry)."""
+        with mock.patch.object(ax, "LIVE_BUILT", False), self.assertRaises(SystemExit) as cm:
+            self.env(live=True, funded_lamports=500_000_000)
         self.assertIn("live_not_built", str(cm.exception))
 
     def test_end_ms_is_clamped_to_the_book_seal_end(self):
@@ -1243,9 +1255,11 @@ class StartChecksTests(ACase):
             self.assertEqual(ax.sell_pin_problem(bad), f"sell_builder_pin_mismatch:{k}")
         write_canary_record(self.tmp / "repo")
         bad = {**ax.SELL_BUILDER_PIN, "symbol_sha256": "0" * 64}
-        with mock.patch.object(ax, "LIVE_BUILT", True), mock.patch.object(ax, "SELL_BUILDER_PIN", bad):
-            self.assertEqual(ax.arena_start_refusal(ax.BOOKS[A2], {"book_id": A2, "replay_only": True, "end_ms": 1, "funded_lamports": 500_000_000},
-                                                    self.tmp / "repo", live=True), "sell_builder_pin_mismatch:symbol_sha256")
+        ax.ARENA_LIVE_OK_PATH.write_text(A2 + "\n")  # the live entry's own checks pass, so the sell pin is what refuses
+        os.chmod(ax.ARENA_LIVE_OK_PATH, 0o644)
+        live_cfg = {"book_id": A2, "mode": "live", "a3_record_file": "/x", "intents_file": "/x", "end_ms": 1, "funded_lamports": 500_000_000}
+        with mock.patch.object(ax, "FEED_NOTE_MERGED", True), mock.patch.object(ax, "SELL_BUILDER_PIN", bad):
+            self.assertEqual(ax.arena_start_refusal(ax.BOOKS[A2], live_cfg, self.tmp / "repo", live=True), "sell_builder_pin_mismatch:symbol_sha256")
 
     def test_p1_entry_gap_is_the_price_ratio_and_200_bps_reads_200(self):
         self.assertAlmostEqual(ax.entry_gap_bps(10_200, 10_000), 200.0)  # 2% fewer tokens for the same stake is a 2% higher price

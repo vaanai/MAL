@@ -23,6 +23,15 @@ the sell ladder, caps, write-ahead, STOP / HALT, counters). What this module cha
 FEED_NOTE_MERGED is False: until the EXP-024 declared-observation note for this executor is merged (scope item 17) the module reads no live feed.
 It only runs with config "replay_only": true (a fixture or replay dir). Flipping the constant is a code change and needs the md5 replay rerun.
 
+Live entry (LIVE_BUILT True, QP-RULING-1023-wiring ruling 7 item 11): `main --live` with config "mode": "live". Every keyless check runs BEFORE the key is read,
+in this order, and any refusal is exit 2 (the unit does not restart on 2): the base start_refusal (no STOP/HALT/LIVE_OK/TIER path override, the shared
+/etc/mal-h5/LIVE_OK, EXP-024 Part 1 in the tree, end_ms set); live_entry_refusal (the C0 guard tripwire c0_guard_problem, FEED_NOTE_MERGED True, no
+replay_only, the arena's own root-owned /etc/mal-h5-arena/LIVE_OK naming exactly this bot_id, a configured A3 record, the v2 rule source for a v2 book);
+arena_start_refusal (priority pin, funded range, sell-builder pin, canary DEC owner line for this bot_id, exit-gap / twins / tie-out inputs, TIER exactly T1);
+the RPC env check; then harden_process and the key from the systemd credential only. The constructor re-runs arena_start_refusal (which includes
+live_entry_refusal) and the FINALIZED funded-balance check. /etc/mal-h5-arena/LIVE_OK is re-read before every live buy. No check is skipped or loosened
+by a live start: with FEED_NOTE_MERGED False (this build) every live start is refused with live_feed_note_unmerged.
+
 Not proven offline (see the PR body): decision equivalence on the real 2026-09-20 day (tools/h5_arena_exec_replay.py is the harness; the run is a host job),
 the live landing/exit gaps, the A3 pins_changed link, the Token-2022 screen on real mints.
 """
@@ -33,6 +42,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 import sys
 from collections import deque
@@ -66,7 +76,11 @@ V2_RULE_SOURCE = Path("/data/mal/hunt-1008/iter-r2/h5-boostclock-exit/FREEZE.md"
 CANARY_DEC_GLOB = "DEC-*canary*.md"  # canary records (copies of the DEC-032 template) live in DEC/. The template itself never counts.
 CANARY_OWNER_RE = re.compile(r"^[ \t]*OWNER_CANARY_CONFIRMED:[ \t]*bot_id=(\S+)[ \t]*$", re.M)  # the owner's line names the book: "OWNER_CANARY_CONFIRMED: bot_id=<bot_id>"
 FEED_NOTE_MERGED = False  # scope item 17: the EXP-024 note declaring this executor's observation. False = replay_only
-LIVE_BUILT = False  # this PR builds no live entry point
+LIVE_BUILT = True  # the live entry point is main --live (QP-RULING-1023-wiring ruling 7 item 11); every live start passes live_entry_refusal first
+ARENA_LIVE_OK_PATH = Path("/etc/mal-h5-arena/LIVE_OK")  # the arena canary's OWN gate: root:root 0644 (base root_file_problem), content exactly the bot_id. Helm creates it.
+DEC032_C0 = {  # DEC-032 s3 C0 column, verbatim. C0_TIER may only be at or below these; c0_guard_problem refuses a live start otherwise.
+    "stake_lamports": 50_000_000, "max_open": 2, "max_trades_per_day": 30, "daily_loss_lamports": 100_000_000, "total_loss_lamports": 200_000_000,
+}
 C0_TIER = {  # DEC-032 s3, the C0 canary table, PINNED in code per canary book. The shared /etc/mal-h5/TIER (T0/T1/T2) and the config may only LOWER these.
     "stake_lamports": 50_000_000, "max_open": 2, "max_trades_per_day": 30, "daily_loss_lamports": 100_000_000, "total_loss_lamports": 200_000_000,
 }
@@ -259,10 +273,14 @@ def arena_start_refusal(book: Book, cfg: dict[str, Any], root: Path, live: bool)
         return why
     if cfg.get("pick_file") or cfg.get("pick_replay_files"):
         return "pick_file_set"  # the CAP-PICK oracle no longer exists (DEC-031 s3.5): a configured one is a wrong config, never silently ignored
-    if not FEED_NOTE_MERGED and cfg.get("replay_only") is not True:
-        return "feed_note_unmerged_replay_only"
     if live and not LIVE_BUILT:
         return "live_not_built"
+    if live:
+        why = live_entry_refusal(book, cfg)  # first for a live start: it refuses an unmerged feed note and any replay_only key itself
+        if why:
+            return why
+    if not FEED_NOTE_MERGED and cfg.get("replay_only") is not True:
+        return "feed_note_unmerged_replay_only"
     why = funded_refusal(cfg, live)
     if why:
         return why
@@ -287,6 +305,95 @@ def arena_start_refusal(book: Book, cfg: dict[str, Any], root: Path, live: bool)
     if book.exit_pin == h.EXIT_MODE_V2:
         return v2_start_refusal()
     return None
+
+
+def arena_live_ok_refusal(bot_id: str, path: Path | None = None) -> str | None:
+    """The arena's own LIVE_OK: the base file checks (regular root:root 0644 file, no symlink, root-owned parent not group/other writable) and its content
+    is exactly this bot_id (one line). Missing, unsafe, unreadable or naming another book is a refusal; the executor never creates it."""
+    p = path or ARENA_LIVE_OK_PATH
+    problem = h.root_file_problem(p)
+    if problem:
+        return f"arena_live_ok_{problem}"
+    try:
+        text = p.read_text()
+    except (OSError, UnicodeDecodeError):
+        return "arena_live_ok_unreadable"
+    return None if text.strip() == bot_id and len(text.strip().splitlines()) == 1 else "arena_live_ok_other_book"
+
+
+def c0_guard_problem() -> str | None:
+    """A tripwire run at every live start: the compiled C0 guards are still at least as strict as DEC-032 (s3 limits, s3 fail-closed 60 s, s3 signal age
+    5 s, s5 10-minute gap hold and P1/P2/exit thresholds, the T1 tier file, the p155 sell reserve) and every guard method is still the arena override.
+    None when all hold; else the first item that does not. It never loosens anything: it only refuses."""
+    from tools import h5_arena_gates as g
+    for k, cap in DEC032_C0.items():
+        v = C0_TIER.get(k)
+        if isinstance(v, bool) or not isinstance(v, int) or not 0 < v <= cap:
+            return f"c0_guard:{k}"
+    checks = (
+        ("gap_hold", GAP_HOLD_MS >= 600_000), ("signal_age", 0 < SIGNAL_AGE_MAX_MS <= 5_000), ("parity_interval", 0 < g.PARITY_INTERVAL_S_MAX <= 60),
+        ("funded_range", 350_000_000 <= FUNDED_MIN_LAMPORTS <= FUNDED_MAX_LAMPORTS <= 1_000_000_000),
+        ("floor_below_funded", 0 < FLOOR_BELOW_FUNDED_LAMPORTS <= 250_000_000), ("sell_reserve", SELL_RESERVE_FLOOR_LAMPORTS >= 1_600_000),
+        ("tier", ARENA_LIVE_TIER == "T1"), ("a3_max_age", 0 < A3_MAX_AGE_MS <= 36 * 3_600_000),
+        ("entry_gap", ENTRY_GAP_BPS <= 200.0 and ENTRY_GAP_MIN_N <= 10), ("exit_gap", EXIT_GAP_BPS <= 200.0 and EXIT_GAP_MIN_N <= 10),
+        ("landing", LANDING_EXCESS_PP <= 10.0 and LANDING_MIN_N <= 30 and PAPER_FAIL_RATE >= 0.15),
+        ("hard_halts", {H_FEED_BREAK, H_A3, H_STRAND, H_TWIN_PIN, H_BUY_UNREADABLE} <= g.HARD_ARENA_HALTS),
+        ("arena_halts", {H_BUY_UNREADABLE, H_FEED_BREAK, H_ENTRY_GAP, H_LANDING, H_EXIT_GAP, H_LATE_SEND, H_STUCK2, H_STRAND, H_A3, H_TWIN_PIN} <= ARENA_HALTS),
+        ("overrides", all(m in _ARENA_CLASS.__dict__ for m in GUARD_METHODS)),
+    )
+    for name, ok in checks:
+        if not ok:
+            return f"c0_guard:{name}"
+    return None
+
+
+def live_entry_refusal(book: Book, cfg: dict[str, Any]) -> str | None:
+    """The keyless conditions a LIVE start adds on top of arena_start_refusal (QP-RULING-1023-wiring rulings 7/8; DEC-032 s3, s8). Fail closed on each."""
+    why = c0_guard_problem()
+    if why:
+        return why
+    if not FEED_NOTE_MERGED:
+        return "live_feed_note_unmerged"  # scope item 17: no live feed is read until the EXP-024 observation note is merged and this constant flipped
+    if "replay_only" in cfg:
+        return "live_replay_only_set"  # a replay declaration in a live config is a wrong config, never silently ignored
+    if cfg.get("mode") != h.LIVE:
+        return "live_config_mode_not_live"
+    if not cfg.get("a3_record_file"):
+        return "a3_record_file_missing"  # the host's A3 daily record path is a declared input, never the research-0 default
+    if not cfg.get("intents_file"):
+        return "intents_file_missing"
+    why = arena_live_ok_refusal(book.bot_id)
+    if why:
+        return why
+    if book.exit_pin == h.EXIT_MODE_V2:
+        return v2_start_refusal()  # the v2 rule source by sha256, live too (it was checked on the dry path only)
+    return None
+
+
+FEED_HOUR_GLOB = "h5-shadow-????-??-??T??.jsonl"  # the base executor's own pattern (H5Executor._resolve_intents)
+
+
+def latest_start_record(intents: Path) -> dict[str, Any] | None:
+    """The newest `start` record of the book's feed (oldest hourly file first; the last one read wins), or None. The shadow writes its start record ONCE, into the
+    hour it started in, and the base tailer starts at the END of the newest hour (history is never replayed), so an executor started later never sees it by
+    tailing. Only lines that parse as a JSON object with type "start" are kept; every other line is skipped unread beyond a substring test."""
+    files = sorted(intents.glob(FEED_HOUR_GLOB)) if intents.is_dir() else [intents]
+    last = None
+    for f in files:
+        try:
+            with f.open("rb") as fh:
+                for raw in fh:
+                    if b'"start"' not in raw:
+                        continue
+                    try:
+                        row = json.loads(raw)
+                    except ValueError:
+                        continue
+                    if isinstance(row, dict) and row.get("type") == "start":
+                        last = row
+        except OSError:
+            continue
+    return last
 
 
 def canary_record_refusal(bot_id: str, root: Path) -> str | None:
@@ -627,6 +734,9 @@ class ArenaExecutor(h.H5Executor):
         return None if bal >= need else "balance_floor"
 
     def _live_buy(self, trg: h.H5Trigger, ps: Any, terms: dict[str, Any], plan: Any, now: int, drift: float | None, seen_ms: int | None) -> None:
+        why = arena_live_ok_refusal(self.abook.bot_id)  # Helm's gate for THIS book, re-read before every live buy (removing it stops new buys at once)
+        if why:
+            return self._refuse(trg, why)
         why = self.committed_loss_refusal() or self._balance_refusal(self.now_ms())  # the last look before anything is built or signed
         if why:
             return self._refuse(trg, why)
@@ -648,6 +758,13 @@ class ArenaExecutor(h.H5Executor):
         if self._signal_age_ms(trg) > self._signal_age_limit_ms():  # W3: the gates and the mint screen above can take seconds; the age is judged AFTER them, not before
             return self._refuse(trg, "stale_trigger_after_gates")
         super()._live_buy(trg, ps, terms, plan, now, drift, seen_ms)
+
+    def _live_gate(self) -> str | None:
+        """The base class's gate, read immediately before every live buy send and rebroadcast (h5_executor._send / _live_buy): the arena's OWN LIVE_OK first
+        (it must exist and name this bot_id), then the base checks (/etc/mal-h5/LIVE_OK, EXP-024 Part 1). Removing either file stops the next send."""
+        if self.dry_run:
+            return None
+        return arena_live_ok_refusal(self.abook.bot_id) or super()._live_gate()
 
     def _signal_age_limit_ms(self) -> int:
         return min(SIGNAL_AGE_MAX_MS, int(self.h5.max_trigger_age_ms))
@@ -830,6 +947,15 @@ class ArenaExecutor(h.H5Executor):
             else:
                 self.gates.recorder.on_sell(mint, kw, self.now_ms())
 
+    def prime_feed_start(self) -> str | None:
+        """Called by main() once, before the first tick (never by the replay harness, whose input starts with its start record): verify the feed's newest
+        start record through decide_row, exactly as if it had been tailed. A mismatch latches feed_break (hard). None = verified; else why buys stay refused."""
+        rec = latest_start_record(self.intents_path)
+        if rec is None:
+            return "feed_start_record_missing"  # buys stay refused (feed_unverified) until a start record is tailed
+        self.decide_row(rec)
+        return None if self.feed_verified else "feed_start_record_rejected"
+
     def _latch(self, name: str, **detail: Any) -> None:
         """The base `_latch` logs `halt_latched` through `_log(kind, mint, **kw)`, so a detail key called `mint` collides with its positional argument and the
         latch raises TypeError (every arena halt passed mint=...: H_STRAND, H_STUCK2, H_LATE_SEND, H_LANDING, H_ENTRY_GAP never latched). Renamed once, here."""
@@ -943,21 +1069,113 @@ class ArenaExecutor(h.H5Executor):
             self._latch_name(self.monitor.note_attempt(False), mint=mint)
 
 
-def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="H5 arena executor (DRY ONLY in this build; no live entry point)")
+_ARENA_CLASS = ArenaExecutor  # the class the tripwire inspects (a name bound at import, so rebinding ArenaExecutor cannot hide a removed override)
+GUARD_METHODS = ("h5", "_tier_path", "_live_gate", "prime_feed_start", "_live_buy", "_send", "_send_guarded", "_budget_stop", "_balance_refusal", "committed_loss_refusal", "_hard_refusal",
+                 "_parity_state", "decide_row", "intent_tick", "_latch", "exit_tick", "_fire_sell", "_finish_buy", "_resolve_expired", "_seal_reason")
+
+
+def _refused(why: str) -> int:
+    print(f"h5_arena_executor ALERT startup_refused {why}", flush=True)
+    return 2
+
+
+def live_status(cfg: dict[str, Any], root: Path | None = None) -> str:
+    """Keyless, read-only: the first live-start refusal this config would get now (or "none"), and the file facts behind it. Opens no key and no RPC."""
+    book = BOOKS.get(cfg.get("book_id"))  # type: ignore[arg-type]
+    if book is None:
+        return "live_start=book_id_unknown"
+    why = h.start_refusal(cfg, root) or arena_start_refusal(book, cfg, root or h.repo_root(), live=True)
+    tier, tp = h.read_tier(ARENA_TIER_PATH, root_checks=True)
+    return (f"live_start={why or 'none'} book={book.bot_id} live_built={LIVE_BUILT} feed_note_merged={FEED_NOTE_MERGED} "
+            f"arena_live_ok={arena_live_ok_refusal(book.bot_id) or 'valid'} ({ARENA_LIVE_OK_PATH}) shared_live_ok={h.live_ok_valid() or 'valid'} "
+            f"arena_tier={tier if tp is None else 'problem:' + tp} c0_guard={c0_guard_problem() or 'ok'} sell_pin={sell_pin_problem() or 'ok'}")
+
+
+def main(argv: list[str] | None = None, *, rpc_factory: Callable[[str | None, str, bool, float], Any] | None = None) -> int:
+    """The entry point. Dry run by default (keyless, public payer). Live needs ALL of: config "mode": "live", --live, and every keyless check of the
+    module docstring, in that order, BEFORE the key is read; the key comes only from the systemd credential (tools.probe_live.load_probe_key)."""
+    ap = argparse.ArgumentParser(description="H5 arena executor (dry run by default; live needs config mode AND --live AND every C0 check)")
     ap.add_argument("--config", required=True)
-    ap.add_argument("--live", action="store_true", help="refused: live is not built (needs the canary DEC and the owner's OK)")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--dry-run", action="store_true", help="the default: build and simulate, never sign or send")
+    g.add_argument("--live", action="store_true", help='also needs config "mode": "live", both LIVE_OK files, TIER T1, the canary DEC line, FEED_NOTE_MERGED')
+    ap.add_argument("--once", action="store_true", help="one tick, then exit")
+    ap.add_argument("--status", action="store_true", help="keyless: print the live-start check line and exit (no key, no RPC)")
+    ap.add_argument("--env-file", default=h.sim.DEFAULT_ENV_FILE)
+    ap.add_argument("--rpc-env", metavar="VARNAME", help="dry run only: the NAME of an environment variable holding the RPC URL. Refused with --live")
     args = ap.parse_args(argv)
-    if args.live:
-        print("h5_arena_executor ALERT startup_refused live_not_built", flush=True)
-        return 2
-    cfg = json.loads(Path(args.config).read_text())
-    why = arena_start_refusal(BOOKS[cfg["book_id"]], cfg, h.repo_root(), live=False) if cfg.get("book_id") in BOOKS else "book_id_unknown"
-    if why:
-        print(f"h5_arena_executor ALERT startup_refused {why}", flush=True)
-        return 2
-    print("h5_arena_executor: no network entry point in this build (replay and tests construct ArenaExecutor with a stub RPC)", flush=True)
-    return 0
+    if args.rpc_env and args.live:
+        ap.error("--rpc-env is allowed with --dry-run only: live reads HELIUS_API_KEY from the environment and never takes a URL")
+    if args.rpc_env and not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", args.rpc_env):
+        ap.error("--rpc-env takes the NAME of an environment variable, not a URL")
+    try:
+        cfg = json.loads(Path(args.config).read_text())
+    except (OSError, ValueError):
+        return _refused("config_unreadable")
+    if not isinstance(cfg, dict):
+        return _refused("config_not_an_object")
+    book = BOOKS.get(cfg.get("book_id"))  # type: ignore[arg-type]
+    if book is None:
+        return _refused("book_id_unknown")
+    if args.status:
+        print(live_status(cfg), flush=True)
+        return 0
+    try:
+        h.H5Limits.from_config(cfg)
+        mode, warn = h.pe.resolve_mode(cfg.get("mode", h.DRYRUN), args.live and not args.dry_run)
+    except (ValueError, SystemExit) as exc:
+        return _refused(f"config_refused ({exc})")
+    if args.live and mode != h.LIVE:
+        return _refused("live_flag_without_config_mode_live")  # a canary never falls back to a silent dry run under a live unit
+    if warn:
+        print(f"h5_arena_executor WARNING {warn}", flush=True)
+    make_rpc = rpc_factory or (lambda url, env_file, use_env_file, rps: h.pe.LimitedRpc(h.pe.ProbeRpc(h.sim.load_rpc_url(url, env_file, use_env_file=use_env_file)),
+                                                                                         rps=rps, max_rps=h.H5_MAX_RPS))
+    rps = float(cfg.get("rps", 8.0))
+    lock_fd = h.acquire_lock(Path(cfg["state_dir"]) / "h5-executor.lock")  # the base executor's lock name: never two executors on one state dir
+    url: str | None = None
+    try:
+        if mode == h.LIVE:
+            why = h.start_refusal(cfg) or arena_start_refusal(book, cfg, h.repo_root(), live=True)  # arena_start_refusal runs live_entry_refusal first
+            if why:
+                return _refused(why)
+            rc = h.pe.startup_rpc_env_check(True)
+            if rc:
+                return rc
+            h.pl.harden_process()  # before the key is read
+            if "key_path" in cfg:
+                return _refused("key_path_set")  # the key comes from the systemd credential only
+            if not (os.environ.get("HELIUS_API_KEY") or "").strip():
+                return _refused("rpc_key_missing")
+            kp = h.pl.load_probe_key()
+            rpc = make_rpc(None, args.env_file, False, rps)
+            try:
+                ex = ArenaExecutor(rpc, cfg, kp)
+            except SystemExit as exc:  # the constructor's own refusals (funded balance, re-run start checks): exit 2, not a restart loop
+                return _refused(str(exc).replace("arena executor start refused: ", ""))
+        else:
+            why = arena_start_refusal(book, cfg, h.repo_root(), live=False)
+            if why:
+                return _refused(why)
+            url = (os.environ.get(args.rpc_env) or "").strip() if args.rpc_env else None
+            if args.rpc_env and not url:
+                return _refused(f"rpc_env_unset:{args.rpc_env}")
+            rpc = make_rpc(url, args.env_file, True, rps)
+            try:
+                ex = ArenaExecutor(rpc, cfg, None, rpc_label=h.url_label(url))
+            except SystemExit as exc:
+                return _refused(str(exc).replace("arena executor start refused: ", ""))
+        shown = f" rpc={h.url_label(url)}" if url else ""
+        print(f"h5_arena_executor mode={ex.run_mode} book={book.bot_id} frozen_sha={book.frozen_sha} user={ex.user}{shown} paths={ex.paths} limits={ex.h5}", flush=True)
+        feed = ex.prime_feed_start()
+        print(f"h5_arena_executor feed_start={feed or 'verified'} start_ms={ex._start_ms}", flush=True)  # not verified: every trigger is refused feed_unverified
+        if args.once:
+            ex.tick()
+            return 0
+        ex.run_loop()
+        return 0
+    finally:
+        os.close(lock_fd)
 
 
 if __name__ == "__main__":
