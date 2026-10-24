@@ -268,7 +268,7 @@ def save_cp(path: Path, cp: dict[str, Any]) -> None:
 
 def run_hours(out: Path, hours: list[int], call: Callable[[str, list[Any]], Any], credits: Credits, compact: Callable[[Path], Any] | None,
               progress: Callable[[str], None] = lambda s: None, max_tries: int = 3) -> int:
-    """Newest hour first is NOT used: oldest first, so a stop leaves a contiguous prefix. Returns 0, or EXIT_CAP."""
+    """Hours are walked in the order given (main passes newest first, so a cap stop leaves the most recent contiguous block). Returns 0, or EXIT_CAP."""
     out.mkdir(parents=True, exist_ok=True)
     cpf = out / "checkpoint.json"
     cp = load_cp(cpf)
@@ -395,7 +395,7 @@ def main(argv: list[str] | None = None) -> int:
             except OSError:
                 pass
 
-    rc = run_hours(out, hours_between(t0, parse_hour(a.end)), call, credits, None if a.no_compress else compact_file, progress)
+    rc = run_hours(out, hours_between(t0, parse_hour(a.end))[::-1], call, credits, None if a.no_compress else compact_file, progress)
     progress(f"done rc={rc} credits_used={credits.used}")
     return rc
 
