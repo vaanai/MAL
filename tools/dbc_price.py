@@ -230,9 +230,14 @@ def row_fee(r: dict[str, Any]) -> int:
 
 
 def usable_row(r: dict[str, Any]) -> bool:
-    """Declared universe filter at row level: SOL quote, exact-in (swap_mode 0), no transfer hook (EvtSwap3 / *WithTransferHook not validated), no USDC etc."""
+    """Row-level filter: SOL-quoted swaps. ALL swap modes stay in the state chain (partial-fill rows from routers are 4% of rows and move the price like any swap).
+    Pools with a transfer-hook or EvtSwap3 row are excluded from signals at pool level (`hook_pool`), see tools/dbc_screen.py."""
+    return r.get("quote_mint") == WSOL
+
+
+def hook_row(r: dict[str, Any]) -> bool:
     ev = str(r.get("event") or "")
-    return (r.get("quote_mint") == WSOL and int(r.get("swap_mode") or 0) == 0 and "TransferHook" not in ev and ev != "EvtSwap3")
+    return "TransferHook" in ev or ev == "EvtSwap3"
 
 
 def rows_to_arrays(rows: Sequence[dict[str, Any]]) -> dict[str, np.ndarray]:
@@ -251,7 +256,7 @@ def rows_to_arrays(rows: Sequence[dict[str, Any]]) -> dict[str, np.ndarray]:
     return a
 
 
-def derive(a: dict[str, np.ndarray], pid: np.ndarray, cfg: np.ndarray) -> dict[str, np.ndarray]:
+def derive(a: dict[str, np.ndarray], pid: np.ndarray, cfg: np.ndarray, iso: np.ndarray | None = None) -> dict[str, np.ndarray]:
     """Per-trade derived columns. Requires rows sorted by (pid, tape order). Adds S0 (prev post sqrt price in the pool), mode evidence, config mode, rate, L (implied), Lhat
     (carried, causal = from earlier trades of the pool), q_leg. cfg = config id per row (int)."""
     n = len(pid)
@@ -275,6 +280,8 @@ def derive(a: dict[str, np.ndarray], pid: np.ndarray, cfg: np.ndarray) -> dict[s
         Lb0, Lb1 = b0 * S0 * S1 / dS, b1 * S0 * S1 / dS
         e0, e1 = np.abs(Lq0 / Lb0 - 1.0), np.abs(Lq1 / Lb1 - 1.0)
         big = (np.minimum(q0, q1) >= MIN_L_QUOTE) & (fee > 0)
+        if iso is not None:
+            big = big & iso  # evidence only from rows whose pre-state is certain (see order_fix)
         ev = np.where(big & (e0 < MODE_TOL) & (e1 >= MODE_TOL), 0, np.where(big & (e1 < MODE_TOL) & (e0 >= MODE_TOL), 1, -1))
     # config mode by majority of evidence
     mode = np.zeros(n, np.int8)
@@ -294,6 +301,8 @@ def derive(a: dict[str, np.ndarray], pid: np.ndarray, cfg: np.ndarray) -> dict[s
         rate = np.where(fee > 0, fee / np.where(mode == 1, ain, aout + fee), 0.0)
     qleg = qm
     good = same & np.isfinite(L) & (qleg >= MIN_L_QUOTE) & (L > 0)
+    if iso is not None:
+        good = good & iso
     # carried L: last good L strictly BEFORE the row (causal), reset at pool change
     idx = np.where(good, np.arange(n), -1)
     np.maximum.accumulate(idx, out=idx)
@@ -350,3 +359,79 @@ def validate(a: dict[str, np.ndarray], d: dict[str, np.ndarray]) -> dict[str, An
             "post_sqrt_price_rel_err_median": float(np.median(np.abs(s1err[mm]))) if mm.any() else None,
         }
     return out
+
+
+# ----------------------------------------------------------------------------------------------------------------------- within-slot order
+def isolated(pid: np.ndarray, slot: np.ndarray) -> np.ndarray:
+    """Rows whose (pool, slot) group has one row AND whose previous row's group has one row: their pre-state (the previous row's post price) is certain.
+    The tape order inside a slot is NOT the execution order (measured: P14 REPORT), so a row after a multi-row slot has an uncertain pre-state."""
+    n = len(pid)
+    key_new = np.ones(n, bool)
+    key_new[1:] = (pid[1:] != pid[:-1]) | (slot[1:] != slot[:-1])
+    gid = np.cumsum(key_new) - 1
+    gsz = np.bincount(gid)
+    single = gsz[gid] == 1
+    prev_single = np.zeros(n, bool)
+    prev_single[1:] = single[:-1] & (pid[1:] == pid[:-1])
+    return single & prev_single
+
+
+def order_fix(a: dict[str, np.ndarray], pid: np.ndarray, d: dict[str, np.ndarray], tol: float = 0.05) -> tuple[np.ndarray, dict[str, int], np.ndarray]:
+    """Permutation of rows (within each (pool, slot) group) so that each row's pre-state equals the previous row's post price. S moves linearly in the signed quote leg:
+    S1 = S0 +/- q * 2^128 / L (exact on both sides), so with a reference L (carried from isolated rows) every row's S0 = S1 -/+ q*2^128/L is known, and the chain is
+    the sequence S1_i -> S0_j. Groups that do not chain uniquely keep the tape order and are counted."""
+    n = len(pid)
+    buy = a["side"] == 1
+    S1 = a["S1"]
+    Lref = ffill(np.where(d["same"] & np.isfinite(d["L"]) & (d["qleg"] >= MIN_L_QUOTE) & d["iso"], d["L"], np.nan), pid, np.nan)
+    # back fill rows before the pool's first isolated L
+    rev = ffill(np.where(d["same"] & np.isfinite(d["L"]) & (d["qleg"] >= MIN_L_QUOTE) & d["iso"], d["L"], np.nan)[::-1], pid[::-1], np.nan)[::-1]
+    Lref = np.where(np.isfinite(Lref), Lref, rev)
+    with np.errstate(all="ignore"):
+        dd = np.where(buy, 1.0, -1.0) * d["qleg"] * Q128 / Lref  # S1 - S0
+    S0d = S1 - dd
+    key_new = np.ones(n, bool)
+    key_new[1:] = (pid[1:] != pid[:-1]) | (a["slot"][1:] != a["slot"][:-1])
+    starts = np.flatnonzero(key_new)
+    ends = np.concatenate([starts[1:], [n]])
+    perm = np.arange(n)
+    bad = np.zeros(n, bool)  # rows of groups that did not chain, and the row right after them (pre-state uncertain)
+    st = {"groups_multi": 0, "reordered": 0, "chain_failed": 0}
+    for s0, e0 in zip(starts, ends):
+        k = e0 - s0
+        if k < 2:
+            continue
+        st["groups_multi"] += 1
+        idx = np.arange(s0, e0)
+        if not np.all(np.isfinite(S0d[idx])):
+            st["chain_failed"] += 1
+            bad[s0:e0] = True
+            continue
+        succ = {}
+        has_pred = set()
+        ok = True
+        for j in idx:
+            diff = np.abs(S1[idx] - S0d[j])
+            diff[j - s0] = np.inf
+            i = int(np.argmin(diff))
+            if diff[i] <= tol * abs(dd[j]) and (idx[i] not in succ):
+                succ[idx[i]] = j
+                has_pred.add(j)
+        starts_ = [j for j in idx if j not in has_pred]
+        if len(starts_) != 1:
+            st["chain_failed"] += 1
+            bad[s0:e0] = True
+            continue
+        order, cur = [], starts_[0]
+        while cur is not None and len(order) <= k:
+            order.append(cur)
+            cur = succ.get(cur)
+        if len(order) != k:
+            st["chain_failed"] += 1
+            bad[s0:e0] = True
+            continue
+        if order != list(idx):
+            st["reordered"] += 1
+        perm[s0:e0] = order
+    bad[1:] |= bad[:-1] & (pid[1:] == pid[:-1])
+    return perm, st, bad
