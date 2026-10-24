@@ -36,6 +36,11 @@ LADDER_BOOK = "h5v1q50-boostfloor-a1"  # Am.2 item 1: the only book the ladder c
 MARK_MAX_AGE_MS = 10_000  # item 3 (a): a mark older than 10 s counts the position at zero
 TRAILING_N = 30
 STEP_UP_MIN_ELIGIBLE = 100
+# QP #861 condition 1 and the reviewer: c and the confirmation report are PINNED IN CODE, never read from the unlock file. They are set by a reviewed PR
+# only after the DEC-031 §2 step 4 confirmation read is merged with QP OK: c = the number of arena books that had entered a confirmation by that read,
+# and the report's exact sha256. While they are None, no LADDER_UNLOCK verifies (C1 is unreachable: fail closed).
+CONFIRMATION_C: int | None = None
+CONFIRMATION_REPORT_SHA256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -87,6 +92,8 @@ def ladder_guard_problem() -> str | None:
             return f"ladder_guard:{name}.wallet"
         if r.intraday_cap_lamports > r.lifetime_cap_lamports and name != "C0":
             return f"ladder_guard:{name}.intraday_above_lifetime"
+        if r.floor_below_deposits_lamports != r.lifetime_cap_lamports + r.slack_lamports:
+            return f"ladder_guard:{name}.floor_not_worst_case"  # item 3: floor = deposits - worst case, worst case = lifetime cap + slack
     if set(LADDER) != {"C0", "C1"}:
         return "ladder_guard:rungs"  # C2 is successor-only (item 12)
     return None
@@ -129,9 +136,12 @@ def verify_unlock(bot_id: str, path: Path | None = None, report_dir: Path | None
         return False, "unlock_other_book"
     if u.get("verdict") != "PASS":
         return False, "unlock_verdict_not_pass"
+    pinned_c = CONFIRMATION_C
+    if isinstance(pinned_c, bool) or not isinstance(pinned_c, int) or pinned_c < 1 or not isinstance(CONFIRMATION_REPORT_SHA256, str):
+        return False, "unlock_confirmation_not_pinned_in_code"  # c and the report sha come from a reviewed code pin, never from this file
     c, p_val, alpha = u.get("c"), u.get("p"), u.get("alpha")
-    if isinstance(c, bool) or not isinstance(c, int) or c < 1 or not _num(alpha) or abs(alpha - 0.05 / c) > 1e-12:
-        return False, "unlock_alpha_not_0.05_over_c"
+    if c != pinned_c or isinstance(c, bool) or not _num(alpha) or abs(alpha - 0.05 / pinned_c) > 1e-12:
+        return False, "unlock_alpha_not_0.05_over_pinned_c"
     if not _num(p_val) or not 0 <= p_val <= alpha:
         return False, "unlock_p_above_alpha"
     cells = u.get("cells")
@@ -155,6 +165,8 @@ def verify_unlock(bot_id: str, path: Path | None = None, report_dir: Path | None
     rp = u.get("report_path")
     if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha) or not isinstance(rp, str):
         return False, "unlock_report_fields"
+    if sha != CONFIRMATION_REPORT_SHA256:
+        return False, "unlock_report_sha_not_pinned"
     rpath = Path(rp)
     if not rpath.is_absolute() or ".." in rpath.parts or rpath.parent != rd:
         return False, "unlock_report_not_in_ladder_dir"
@@ -166,10 +178,7 @@ def verify_unlock(bot_id: str, path: Path | None = None, report_dir: Path | None
     except OSError:
         return False, "unlock_report_unreadable"
     if hashlib.sha256(data).hexdigest() != sha:
-        return False, "unlock_report_sha_mismatch"
-    text = data.decode("utf-8", "replace")
-    if bot_id not in text or "PASS" not in text:
-        return False, "unlock_report_does_not_name_book_and_pass"
+        return False, "unlock_report_sha_mismatch"  # the root copy's exact bytes equal the pinned sha256 (no substring test)
     return True, None
 
 
@@ -179,10 +188,17 @@ class LadderLog:
 
     GENESIS = "0" * 64
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, owner_uid: int | None = None):
+        """`owner_uid` (live: the executor's own euid) turns on the ownership check: the log dir and file must be owned by that uid and not group- or
+        other-writable, and the dir must not be a symlink. The sha256 chain has no key, so it only catches naive edits; THIS check is the control that
+        nobody but the executor's user (mal-live) can write the records (QP #861 condition 2). Helm's install verifies it too (HELM-SHEET)."""
         self.path = path
         self.records: list[dict[str, Any]] = []
         self.problem: str | None = None
+        if owner_uid is not None:
+            self.problem = self._ownership_problem(owner_uid)
+            if self.problem:
+                return
         try:
             lines = path.read_text().splitlines() if path.exists() else []
         except OSError:
@@ -201,6 +217,26 @@ class LadderLog:
             prev = hashlib.sha256(line.encode()).hexdigest()
             self.records.append(rec)
         self._last = prev
+
+    def _ownership_problem(self, uid: int) -> str | None:
+        import stat as st
+        d = self.path.parent
+        try:
+            d.mkdir(mode=0o750, parents=False, exist_ok=True)
+            dl = os.lstat(d)
+        except OSError:
+            return "ladder_log_dir_unusable"
+        if st.S_ISLNK(dl.st_mode) or not st.S_ISDIR(dl.st_mode) or dl.st_uid != uid or dl.st_mode & 0o022:
+            return "ladder_log_dir_not_own"
+        try:
+            fl = os.lstat(self.path)
+        except FileNotFoundError:
+            return None
+        except OSError:
+            return "ladder_log_unreadable"
+        if st.S_ISLNK(fl.st_mode) or not st.S_ISREG(fl.st_mode) or fl.st_uid != uid or fl.st_mode & 0o022:
+            return "ladder_log_file_not_own"
+        return None
 
     @property
     def rung(self) -> str:
@@ -223,10 +259,13 @@ class LadderLog:
         rec = {"seq": len(self.records), "ts_ms": ts_ms, "kind": kind, "from": frm, "to": to, "why": why, "prev_sha256": self._last, **detail}
         line = json.dumps(rec, sort_keys=True, separators=(",", ":"), allow_nan=False)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with self.path.open("a") as fh:
-            fh.write(line + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
+        fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o640)
+        try:
+            os.fchmod(fd, 0o640)  # whatever the umask: owner-writable only (the ownership check refuses a group/other-writable log)
+            os.write(fd, (line + "\n").encode())
+            os.fsync(fd)
+        finally:
+            os.close(fd)
         self._last = hashlib.sha256(line.encode()).hexdigest()
         self.records.append(rec)
         return rec

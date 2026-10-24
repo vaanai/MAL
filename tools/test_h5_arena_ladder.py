@@ -64,6 +64,7 @@ def test_the_table_rows_are_in_the_merged_dec_text():
     ("intraday_cap_lamports", 550_000_001, "C1.intraday_cap_lamports"), ("lifetime_cap_lamports", 700_000_001, "C1.lifetime_cap_lamports"),
     ("slack_lamports", 100_000_001, "C1.slack_lamports"), ("max_open", 4, "C1.counts"), ("max_trades_per_day", 41, "C1.counts"),
     ("deposits_min_lamports", 999_999_999, "C1.wallet"), ("floor_below_deposits_lamports", 800_000_001, "C1.wallet"), ("stake_lamports", 0, "C1.stake_lamports"),
+    ("floor_below_deposits_lamports", 790_000_000, "C1.floor_not_worst_case"), ("slack_lamports", 90_000_000, "C1.floor_not_worst_case"),
 ])
 def test_guard_refuses_every_looser_c1_constant(field, bad, why):
     import dataclasses
@@ -108,6 +109,14 @@ def good_unlock(etc: Path, **over):
     return put(etc / "LADDER_UNLOCK", json.dumps(u)), u
 
 
+@pytest.fixture(autouse=True)
+def pinned(monkeypatch):
+    """The code pin a reviewed PR sets after the confirmation read: c = 3 and the report's exact sha256 (the report text below)."""
+    text = f"Confirmation read {Q50}: PASS (p 0.004 <= 0.05/c, c = 3)\n"
+    monkeypatch.setattr(L, "CONFIRMATION_C", 3)
+    monkeypatch.setattr(L, "CONFIRMATION_REPORT_SHA256", hashlib.sha256(text.encode()).hexdigest())
+
+
 def test_a_good_unlock_verifies(root_ok):
     p, _ = good_unlock(root_ok)
     assert L.verify_unlock(Q50, p, root_ok / "ladder") == (True, None)
@@ -127,11 +136,12 @@ def test_unlock_file_refusals(root_ok):
 
 @pytest.mark.parametrize("over, why", [
     ({"schema": "x"}, "unlock_schema"), ({"bot_id": "h5v1-boostfloor-a2"}, "unlock_other_book"), ({"verdict": "pass"}, "unlock_verdict_not_pass"),
-    ({"verdict": "NOT_DECIDABLE"}, "unlock_verdict_not_pass"), ({"c": 0}, "unlock_alpha_not_0.05_over_c"), ({"c": True}, "unlock_alpha_not_0.05_over_c"),
-    ({"alpha": 0.05}, "unlock_alpha_not_0.05_over_c"), ({"p": 0.02}, "unlock_p_above_alpha"), ({"p": -0.1}, "unlock_p_above_alpha"),
+    ({"verdict": "NOT_DECIDABLE"}, "unlock_verdict_not_pass"), ({"c": 0}, "unlock_alpha_not_0.05_over_pinned_c"),
+    ({"c": 1, "alpha": 0.05}, "unlock_alpha_not_0.05_over_pinned_c"), ({"c": True}, "unlock_alpha_not_0.05_over_pinned_c"),
+    ({"alpha": 0.05}, "unlock_alpha_not_0.05_over_pinned_c"), ({"p": 0.02}, "unlock_p_above_alpha"), ({"p": -0.1}, "unlock_p_above_alpha"),
     ({"p": float("nan")}, "unlock_p_above_alpha"), ({"cells": {}}, "unlock_cell_missing:0.10:flat"), ({"qp_comment": "abc"}, "unlock_qp_comment"),
     ({"qp_comment": 6378329934}, "unlock_qp_comment"), ({"merged_pr": 0}, "unlock_merged_pr"), ({"merged_pr": "901"}, "unlock_merged_pr"),
-    ({"report_sha256": "0" * 64}, "unlock_report_sha_mismatch"), ({"report_sha256": "XYZ"}, "unlock_report_fields"),
+    ({"report_sha256": "0" * 64}, "unlock_report_sha_not_pinned"), ({"report_sha256": "XYZ"}, "unlock_report_fields"),
 ])
 def test_unlock_field_refusals(root_ok, over, why):
     p, _ = good_unlock(root_ok, **over)
@@ -150,16 +160,32 @@ def test_every_cell_under_both_fail_models_must_pass(root_ok, stake, model, fiel
     assert L.verify_unlock(Q50, p, root_ok / "ladder") == (False, f"unlock_cell_fails:{stake}:{model}:{why}")
 
 
-def test_report_location_and_content(root_ok, tmp_path):
-    other = put(tmp_path / "rep.md", f"{Q50} PASS")
-    p, _ = good_unlock(root_ok, report_path=str(other), report_sha256=hashlib.sha256(other.read_bytes()).hexdigest())
+def test_report_location_and_exact_bytes(root_ok, tmp_path):
+    other = put(tmp_path / "rep.md", f"Confirmation read {Q50}: PASS (p 0.004 <= 0.05/c, c = 3)\n")
+    p, _ = good_unlock(root_ok, report_path=str(other))
     assert L.verify_unlock(Q50, p, root_ok / "ladder") == (False, "unlock_report_not_in_ladder_dir")
     p, u = good_unlock(root_ok)
     os.chmod(u["report_path"], 0o666)
     assert L.verify_unlock(Q50, p, root_ok / "ladder") == (False, "unlock_report_unsafe")
-    rep = put(root_ok / "ladder" / "r2.md", "a report about something else")
-    p, _ = good_unlock(root_ok, report_path=str(rep), report_sha256=hashlib.sha256(rep.read_bytes()).hexdigest())
-    assert L.verify_unlock(Q50, p, root_ok / "ladder") == (False, "unlock_report_does_not_name_book_and_pass")
+    p, u = good_unlock(root_ok)
+    put(Path(u["report_path"]), f"Confirmation read {Q50}: PASS (p 0.004 <= 0.05/c, c = 3) \n")  # one byte more: not the pinned report
+    assert L.verify_unlock(Q50, p, root_ok / "ladder") == (False, "unlock_report_sha_mismatch")
+
+
+def test_nothing_verifies_until_c_and_the_report_are_pinned_in_code(root_ok, monkeypatch):
+    p, _ = good_unlock(root_ok)
+    assert L.verify_unlock(Q50, p, root_ok / "ladder") == (True, None)
+    monkeypatch.setattr(L, "CONFIRMATION_C", None)
+    assert L.verify_unlock(Q50, p, root_ok / "ladder") == (False, "unlock_confirmation_not_pinned_in_code")
+    monkeypatch.setattr(L, "CONFIRMATION_C", 3)
+    monkeypatch.setattr(L, "CONFIRMATION_REPORT_SHA256", None)
+    assert L.verify_unlock(Q50, p, root_ok / "ladder") == (False, "unlock_confirmation_not_pinned_in_code")
+
+
+def test_the_shipped_pins_are_unset():
+    import importlib
+    fresh = importlib.reload(L)
+    assert fresh.CONFIRMATION_C is None and fresh.CONFIRMATION_REPORT_SHA256 is None
 
 
 def test_unlock_for_another_book_never_verifies(root_ok):
@@ -288,3 +314,23 @@ def test_c0_never_steps_down():
 ])
 def test_c1_step_down_rules(kw, why):
     assert L.step_down_reason("C1", **down(**kw)) == why
+
+
+def test_ownership_check_of_the_log(tmp_path):
+    uid = os.getuid()
+    d = tmp_path / "arena-ladder"
+    lg = L.LadderLog(d / "ladder.jsonl", owner_uid=uid)
+    assert lg.problem is None and d.is_dir()
+    lg.append("step_up", 1, "C0", "C1", "x")
+    assert L.LadderLog(d / "ladder.jsonl", owner_uid=uid).problem is None
+    os.chmod(d, 0o770)
+    assert L.LadderLog(d / "ladder.jsonl", owner_uid=uid).problem == "ladder_log_dir_not_own"
+    os.chmod(d, 0o750)
+    os.chmod(d / "ladder.jsonl", 0o664)
+    bad = L.LadderLog(d / "ladder.jsonl", owner_uid=uid)
+    assert bad.problem == "ladder_log_file_not_own" and bad.rung == "C0" and bad.stepped_down
+    os.chmod(d / "ladder.jsonl", 0o640)
+    assert L.LadderLog(d / "ladder.jsonl", owner_uid=uid + 1).problem == "ladder_log_dir_not_own"
+    link = tmp_path / "linked"
+    link.symlink_to(d)
+    assert L.LadderLog(link / "ladder.jsonl", owner_uid=uid).problem == "ladder_log_dir_not_own"
