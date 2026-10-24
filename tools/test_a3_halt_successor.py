@@ -146,3 +146,17 @@ def test_cli_apply_with_the_field(tmp_path):
     assert rc == 0 and ends(p)[SUCC] is None and ends(p)["h5v1-q50-a2"] == run_ms and now > 0
     line = json.loads((tmp_path / "ap.jsonl").read_text().splitlines()[-1])
     assert line["verdict"] == "HALT" and SUCC not in json.dumps(line["ended"])
+
+
+def test_daily_script_accepts_a_books_file_with_the_field(tmp_path):
+    """The whole daily (monitor stubbed) on a clean record with fees_check_bot_ids present: both tools read the books file, nothing is ended, exit 0."""
+    import time
+    from tools.test_a3_halt import fresh_record, run_script
+    p = make_registry(tmp_path, reg_ms=int(time.time() * 1000) - 60_000)
+    bots = sc.load_registry(p)
+    bots[SUCC] = copy.deepcopy(bots["h5v1-boostfloor-a2"])
+    sc._atomic_write_json(p, {"bots": bots})
+    _run_utc, rec = fresh_record()
+    r, out = run_script(tmp_path, rec, books(), p.parent)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "A3_CHECK_RC=0" in r.stdout and all(v is None for k, v in ends(p).items() if k != "h5v1-boostfloor-a1")
