@@ -175,7 +175,7 @@ def http_rpc(url: str, pacer: Pacer, timeout: float = 90.0) -> Callable[[str, li
                 if e.get("code") == 429:
                     time.sleep(0.5 * 2**attempt)
                     continue
-                msg = _KEY_RE.sub("api-key=X", str(e.get("message"))[:160])
+                msg = _KEY_RE.sub("api-key=X", str(e.get("message"))[:300])
                 raise RuntimeError(f"{method} rpc {e.get('code')} {msg}")
             return payload.get("result")
         raise RuntimeError(f"{method} gave up ({last})")
@@ -185,16 +185,17 @@ def http_rpc(url: str, pacer: Pacer, timeout: float = 90.0) -> Callable[[str, li
 
 def gtfa_params(t0: int, t1: int, token: str | None, limit: int) -> list[Any]:
     opts: dict[str, Any] = {"transactionDetails": "full", "sortOrder": "asc", "limit": limit, "encoding": "json",
-                            "maxSupportedTransactionVersion": 0,
+                            "maxSupportedTransactionVersion": 1,
                             "filters": {"blockTime": {"gte": t0, "lt": t1}, "status": "succeeded"}}
     if token:
         opts["paginationToken"] = token
     return [PROGRAM, opts]
 
 
-def fetch_hour(call: Callable[[str, list[Any]], Any], credits: Credits, t0: int, limit: int = 100) -> tuple[list[dict[str, Any]], int]:
-    """All succeeded program transactions with blockTime in [t0, t0+3600). Returns (txs, pages). Raises CapReached before an unaffordable call."""
-    txs: list[dict[str, Any]] = []
+def fetch_hour(call: Callable[[str, list[Any]], Any], credits: Credits, t0: int, limit: int = 100) -> tuple[list[tuple[Any, Any, list[dict[str, Any]]]], int]:
+    """All succeeded program transactions with blockTime in [t0, t0+3600), converted to rows as each page arrives (memory: rows, not raw txs).
+    Returns ([(signature, blockTime, rows)], pages). Raises CapReached before an unaffordable call."""
+    items: list[tuple[Any, Any, list[dict[str, Any]]]] = []
     token: str | None = None
     pages = 0
     while True:
@@ -202,28 +203,24 @@ def fetch_hour(call: Callable[[str, list[Any]], Any], credits: Credits, t0: int,
         res = call("getTransactionsForAddress", gtfa_params(t0, t0 + 3600, token, limit))
         pages += 1
         data = (res or {}).get("data") or []
-        txs.extend(data)
+        for tx in data:
+            items.append((((tx.get("transaction") or {}).get("signatures") or [None])[0], tx.get("blockTime"), rows_from_tx(tx)))
         token = (res or {}).get("paginationToken")
         if not token or not data:
-            return txs, pages
+            return items, pages
 
 
 # ---------------------------------------------------------------------------------------------------------------------- output
-def build_hour_rows(t0: int, txs: list[dict[str, Any]], pages: int, credits_spent: int) -> list[dict[str, Any]]:
+def build_hour_rows(t0: int, items: list[tuple[Any, Any, list[dict[str, Any]]]], pages: int, credits_spent: int) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    seen: set[Any] = set()
     dup = 0
-    for tx in txs:
-        sig = ((tx.get("transaction") or {}).get("signatures") or [None])[0]
-        if sig in seen:
-            dup += 1
+    for sig, bt, trs in items:
+        if sig in seen or (bt is not None and not (t0 <= int(bt) < t0 + 3600)):
+            dup += 1  # repeated across pages, or outside the hour: ignored and counted
             continue
         seen.add(sig)
-        bt = tx.get("blockTime")
-        if bt is not None and not (t0 <= int(bt) < t0 + 3600):
-            dup += 1  # outside the hour: ignore (counted)
-            continue
-        rows.extend(rows_from_tx(tx))
+        rows.extend(trs)
     rows.sort(key=sort_key)
     head = {"v": vt.SCHEMA_V, "venue": VENUE, "type": "backfill_hour", "src": "backfill", "slot": 0, "t_recv_ms": t0 * 1000, "signature": None,
             "event_index": None, "hour": hour_label(t0), "txs": len(seen), "dropped_dup_or_outside": dup, "pages": pages,
@@ -272,6 +269,7 @@ def save_cp(path: Path, cp: dict[str, Any]) -> None:
 def run_hours(out: Path, hours: list[int], call: Callable[[str, list[Any]], Any], credits: Credits, compact: Callable[[Path], Any] | None,
               progress: Callable[[str], None] = lambda s: None, max_tries: int = 3) -> int:
     """Newest hour first is NOT used: oldest first, so a stop leaves a contiguous prefix. Returns 0, or EXIT_CAP."""
+    out.mkdir(parents=True, exist_ok=True)
     cpf = out / "checkpoint.json"
     cp = load_cp(cpf)
     credits.used = max(credits.used, int(cp["credits_used"]))
@@ -283,7 +281,7 @@ def run_hours(out: Path, hours: list[int], call: Callable[[str, list[Any]], Any]
         while True:
             before = credits.used
             try:
-                txs, pages = fetch_hour(call, credits, t0)
+                items, pages = fetch_hour(call, credits, t0)
             except CapReached:
                 cp["credits_used"] = credits.used
                 save_cp(cpf, cp)
@@ -301,12 +299,12 @@ def run_hours(out: Path, hours: list[int], call: Callable[[str, list[Any]], Any]
                 time.sleep(2.0)
                 continue
             spent = credits.used - before
-            rows = build_hour_rows(t0, txs, pages, spent)
+            rows = build_hour_rows(t0, items, pages, spent)
             write_hour(out, t0, rows, compact)
-            cp["hours"][lab] = {"txs": len(txs), "pages": pages, "rows": len(rows) - 2, "credits": spent}
+            cp["hours"][lab] = {"txs": len(items), "pages": pages, "rows": len(rows) - 2, "credits": spent}
             cp["credits_used"] = credits.used
             save_cp(cpf, cp)
-            progress(f"{lab} txs={len(txs)} credits={credits.used}")
+            progress(f"{lab} txs={len(items)} credits={credits.used}")
             break
     return 0
 
