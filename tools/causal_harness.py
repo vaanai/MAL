@@ -17,8 +17,10 @@ THREE ENTRY POINTS
        (a) TRUNCATED: on the rows with t_ms <= c only, and
        (b) PERTURBED: on all rows, with every numeric non-key field of the rows with t_ms > c scaled by a seeded factor,
      and its decisions with decision_ms <= c must be identical (canonical JSON) to the full run's decisions with decision_ms <= c. Any difference means a decision at or
-     before c depends on a row after c: LOOKAHEAD. This catches a full-series quantile or z-score, an end-of-window aggregate, a `shift(-1)` / next-row peek, a decision
-     stamped earlier than the data it used, and a label column joined in from the future (the perturbation changes it).
+     before c depends on a row after c: LOOKAHEAD. This catches a full-series quantile or z-score, an end-of-window aggregate (DBC L2), a back-fill from later rows
+     (DBC L1), a `shift(-1)` / next-row peek, a refusal that reads the exit row (DBC L3), and a decision stamped earlier than the data it used.
+     LIMIT: a future value already stored in a PAST row (a column precomputed outside the screen, e.g. a joined forward return) is invisible to both probes. Screens
+     therefore take raw tape rows and compute every feature inside `screen`; `check_fields` refuses outcome-looking column names as a second guard.
   3. `stream_batch_equivalence(decide, screen, rows)`: md5 of the canonical decision list from (1) and from (2)'s full run. Equal md5 = the batch screen is
      decision-equivalent to the causal stream on these rows (the lab's md5 decision-equivalence form).
 
