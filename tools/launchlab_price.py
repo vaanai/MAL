@@ -213,6 +213,32 @@ def read_hour_rows(path: str | os.PathLike) -> Iterable[dict[str, Any]]:
         raise RuntimeError(f"zstd -dc exited {rc} for {path}")
 
 
+def read_hour(path: str | os.PathLike, root: str = BACKFILL_ROOT) -> tuple[list[dict[str, Any]], bool]:
+    """(trade rows, incomplete) of one exploration hour. incomplete = the file carries a `backfill_incomplete` gap row, or has no `backfill_hour_end` row."""
+    check_hour_path(path, root)
+    p = subprocess.Popen(["zstd", "-dc", "-q", str(path)], stdout=subprocess.PIPE, stdin=subprocess.DEVNULL)
+    assert p.stdout is not None
+    rows: list[dict[str, Any]] = []
+    gap = False
+    ended = False
+    try:
+        for line in p.stdout:
+            if b'"trade"' in line:
+                d = json.loads(line)
+                if d.get("type") == "trade":
+                    rows.append(d)
+            elif b"backfill_incomplete" in line:
+                gap = True
+            elif b"backfill_hour_end" in line:
+                ended = True
+    finally:
+        p.stdout.close()
+        rc = p.wait()
+    if rc != 0:
+        raise RuntimeError(f"zstd -dc exited {rc} for {path}")
+    return rows, (gap or not ended)
+
+
 def block_time_s(r: dict[str, Any]) -> float:
     return float(r.get("block_time") or (r["t_recv_ms"] / 1000.0))
 
