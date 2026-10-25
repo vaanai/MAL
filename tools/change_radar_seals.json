@@ -1,21 +1,7 @@
 {
   "schema": "change_radar_seals.v1",
-  "note": "Pinned sealed windows for the change radar's tape counts (QP verdict on PR #889, 2026-10-24, relayed by manager15). A UTC day of a source that overlaps any window here is never counted, now or later: no hour file of it is opened and no record of it is written. disabled_until: the source is not touched at all (no listing, no file opened) before that instant. Times are [start, end) UTC. Changes to this file go through the manager and QP. r1 of QP-RULING-1024-seal2: FLOOR slip window sealed, arena disabled until 2026-10-27T21:00:00Z unconditionally.",
+  "note": "Pinned sealed windows for the change radar's tape counts (QP verdict on PR #889, 2026-10-24, relayed by manager15). A UTC day of a source that overlaps any window here is never counted, now or later: no hour file of it is opened and no record of it is written. disabled_until: the source is not touched at all before that instant (none set). Times are [start, end) UTC. Changes to this file go through the manager and QP. 2026-10-25: the two FLOOR arena windows and the arena disable until 2026-10-27T21:00:00Z were dropped under QP-RULING-1025-seal-lift item (2d) (sha256 b04a57eb4bd05c168eaf0f52e90a38c91b2663a4d418d6bf958fcdbabe14aa52; L0 notebook n_cuTE-bRvYIfCWA, 2026-10-25T12:18:48Z). Remaining: DBC forward window, LaunchLab holdout. The 10-19..10-23 smoke counts are never a baseline (r5).",
   "seals": [
-    {
-      "source": "arena",
-      "start": "2026-10-22T21:00:00Z",
-      "end": "2026-10-26T21:00:00Z",
-      "owner": "FLOOR",
-      "ref": "QP verdict on #889 (manager15, 2026-10-24)"
-    },
-    {
-      "source": "arena",
-      "start": "2026-10-23T21:00:00Z",
-      "end": "2026-10-27T21:00:00Z",
-      "owner": "FLOOR slip",
-      "ref": "QP-RULING-1024-seal2 r1"
-    },
     {
       "source": "venue:meteora_dbc",
       "start": "2026-10-25T00:00:00Z",
@@ -31,7 +17,5 @@
       "ref": "QP verdict on #889 at 43ac92b7 (manager15, 2026-10-24)"
     }
   ],
-  "disabled_until": {
-    "arena": "2026-10-27T21:00:00Z"
-  }
+  "disabled_until": {}
 }
