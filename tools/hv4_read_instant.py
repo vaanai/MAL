@@ -14,8 +14,10 @@ INPUTS (the only fields used): the lines arena_score.load_decisions reads (files
 '{"kind":"refused"'; only the kind and decision_ms.entry are parsed); the notebooked Am.6 hour tables with their shas; the restart gaps (--restarts, required).
 No close, exclusion class, fill, exit, leg, price or P&L is ever parsed.
 
-OUTPUT: only status, boundary, O, R, margin and the count of distinct O dates, plus input shas. No per-day figure, no P&L, no price. --out writes the record
-ONCE (O_CREAT | O_EXCL, mode 0444); NOT_READY writes nothing. Exit 0 status printed, 2 refused.
+OUTPUT (stdout): NOT_READY prints only the status and the last boundary tested (no running O, R, margin, dates or sha: QP-VERDICT-915 item 3). READ_INSTANT and
+NOT_DECIDABLE print the status, boundary, O, R, margin, the count of distinct O dates and input shas. No P&L, no price, ever. --out writes the record ONCE
+(O_CREAT | O_EXCL, mode 0444) and only for READ_INSTANT or NOT_DECIDABLE: the per-date O / R counts and the dropped-hour count appear ONLY in that record written at
+B (or at END), never before. A NOT_READY result writes no file (write_once refuses it), so no running count is ever on disk. Exit 0 status printed, 2 refused.
 The CLI accepts only the nine HV4 bot_ids and clock 1792886400000. This tool fixes the instant only; it does not score (see tools/hv4_am15_read.py).
 """
 from __future__ import annotations
@@ -207,6 +209,8 @@ def find_instant(rows: Sequence[tuple[str, int]], start_ms: int, end_h_ms: int, 
 # ------------------------------------------------------------------------------------------------------------------------------ record
 def write_once(path: str | Path, rec: Mapping) -> str:
     """Write the record with O_CREAT | O_EXCL (refused if the path exists), mode 0444, fsync. Returns the sha256 of the bytes written."""
+    if rec.get("status") == ST_NOT_READY:
+        raise Refused("only a READ_INSTANT or NOT_DECIDABLE record is written; a NOT_READY result leaves no file (no running counts before B)")
     data = (canon(rec) + "\n").encode()
     try:
         fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o444)

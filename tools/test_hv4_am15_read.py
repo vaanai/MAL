@@ -13,13 +13,14 @@ import pytest
 
 from tools import arena_am6_exclusions as X
 from tools import arena_am6_read as R
-from tools import arena_score as S
+from tools import arena_am6_cut as C
 from tools import hv4_am15_read as W
 from tools import hv4_read_instant as F
 from tools.arena_paper import TEST_ENV, Ledger
 from tools.test_arena_score import DAY, DAY0, good_pnls, open_row, refused_row, register_bot, start_row, trade_row
 
 os.environ[TEST_ENV] = "1"
+S = W.pinned_score()  # the scorer under test is the pinned blob (a508ed79) loaded from the frozen-sha commit, not the disk copy
 H = 3_600_000
 AS_OF = DAY0 + 30 * DAY
 REPO = Path(__file__).resolve().parent.parent
@@ -136,7 +137,7 @@ def test_record_carries_the_am15_block_and_is_write_once(tmp_path):
     am15 = rec["am15"]
     assert am15["read_instant_ms"] == B_NEW and am15["unamended_boundary_ms"] == B_OLD
     assert am15["instant_file_sha256"] == hashlib.sha256(Path(ip).read_bytes()).hexdigest()
-    assert am15["arena_am6_read_sha256"] == F.PINNED_AM6_READ_SHA256 and am15["arena_score_sha256"] in W.ARENA_SCORE_SHA256_KNOWN
+    assert am15["arena_am6_read_sha256"] == F.PINNED_AM6_READ_SHA256 and am15["arena_score_sha256"] == W.PINNED_ARENA_SCORE_SHA256 and "9ed4c5ff" in am15["arena_score_source"]
     with pytest.raises(S.Refused, match="already recorded"):
         wrun(tmp_path, root, reg, ip, record=True, reads_dir=str(rd))
 
@@ -183,9 +184,11 @@ def test_pins_are_checked(tmp_path, monkeypatch):
     with pytest.raises(W.Refused, match="arena_am6_read"):
         wrun(tmp_path, root, reg, ip)
     monkeypatch.setattr(W, "ARENA_AM6_READ_SHA256", F.PINNED_AM6_READ_SHA256)
-    monkeypatch.setattr(W, "ARENA_SCORE_SHA256_KNOWN", ("0" * 64,))
-    with pytest.raises(W.Refused, match="arena_score"):
-        wrun(tmp_path, root, reg, ip)
+    assert W.check_pins()["arena_score_sha256"] == "a508ed79ed1cc425af0aa7dcd08e3ef5f8599dd6a45cb5e47cc8a779c6a0cd34"
+    with pytest.raises(W.Refused, match="not the pinned"):
+        W.load_pinned_score_from(W.PINNED_COMMIT, "0" * 64)
+    with pytest.raises(W.Refused, match="cannot read the pinned"):
+        W.load_pinned_score_from("0" * 40, W.PINNED_ARENA_SCORE_SHA256)
 
 
 def test_not_decidable_instant_never_calls_the_scorer(tmp_path, monkeypatch):
@@ -277,3 +280,21 @@ def test_record_and_settle_are_required_outside_test_mode(tmp_path, monkeypatch)
     with pytest.raises(W.Refused, match="B \\+ 24 h"):
         W.run(ip, root, reg, "hv4-CON-F", [health()[0]], [health()[1]], B_NEW + S.SETTLE_MS - 1, "", record=True, reads_dir=str(tmp_path / "r"))
     assert not (tmp_path / "r").exists()
+
+
+def test_scoring_uses_the_pinned_blob_not_the_disk_copy_and_is_restored(tmp_path, monkeypatch):
+    from tools import arena_score as DISK
+    assert S is not DISK and S.__file__.startswith("git:9ed4c5ff")
+    root, reg = setup(tmp_path, book())
+    ip, _ = instant(tmp_path, root)
+    seen = []
+    real = R.run
+
+    def spy(*a, **k):
+        seen.append((R.S is S, C.S is S))
+        return real(*a, **k)
+
+    monkeypatch.setattr(R, "run", spy)
+    code, lines, res = wrun(tmp_path, root, reg, ip)
+    assert seen == [(True, True)] and R.S is DISK and C.S is DISK  # patched inside, restored after
+    assert any("a508ed79" in x and "git blob 9ed4c5ff" in x for x in lines)  # the pinned sha used is printed

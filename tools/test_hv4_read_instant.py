@@ -435,3 +435,24 @@ def test_not_ready_render_is_status_and_last_boundary_only(tmp_path):
     write_ledger(tmp_path / "b", spread(110, [0, 1, 2, 3, 4]))
     ok = run(tmp_path / "b", as_of=CLOCK + 5 * DAY)
     assert ok["status"] == "READ_INSTANT" and any("margin" in x for x in F.render(dict(ok, tool_sha256="x", am6_exclusions_sha256="y")))
+
+
+def test_not_ready_leaves_no_file_and_ready_record_carries_the_counts(tmp_path):
+    import pytest as _pt
+    write_ledger(tmp_path / "L", spread(104, [0, 1, 2, 3, 4]))
+    h, r = _cli_files(tmp_path)
+    out = tmp_path / "nr.json"
+    assert F.main(_argv(tmp_path, h, r, CLOCK + 5 * DAY, out=out), now_ms=END_H + DAY) == 0
+    assert not out.exists() and not list(tmp_path.glob("nr*"))  # NOT_READY: nothing on disk, so no running per-date counts
+    nr = run(tmp_path / "L", as_of=CLOCK + 5 * DAY)
+    assert nr["status"] == "NOT_READY"
+    with _pt.raises(F.Refused, match="NOT_READY"):
+        F.write_once(tmp_path / "direct.json", nr)
+    assert not (tmp_path / "direct.json").exists()
+    write_ledger(tmp_path / "M", spread(110, [0, 1, 2, 3, 4]))
+    h2, r2 = _cli_files(tmp_path)
+    out2 = tmp_path / "ready.json"
+    assert F.main(["--mode", "screen", "--ledger-root", str(tmp_path / "M"), "--bot", BOT, "--health", str(h2), "--health-sha", FULL_HEALTH[1], "--restarts", str(r2),
+                   "--as-of-ms", str(CLOCK + 5 * DAY), "--out", str(out2)], now_ms=END_H + DAY) == 0
+    rec = json.loads(out2.read_text())
+    assert rec["status"] == "READ_INSTANT" and sum(rec["kept_open_by_utc_date"].values()) == rec["O"] == 110  # per-date counts only in the READY record

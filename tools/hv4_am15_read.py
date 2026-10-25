@@ -35,15 +35,46 @@ import sys
 from pathlib import Path
 from typing import Any, Iterator, Sequence
 
+import functools
+import subprocess
+import types
+
+from tools import arena_am6_cut as C
 from tools import arena_am6_read as R
-from tools import arena_score as S
+from tools import arena_score as S_DISK  # main's copy: used only for CLI defaults (paths); never for scoring
 from tools import hv4_read_instant as F
 import os
 
 from tools.arena_paper import TEST_ENV, load_registry
 
 ARENA_AM6_READ_SHA256 = F.PINNED_AM6_READ_SHA256
-ARENA_SCORE_SHA256_KNOWN = (F.PINNED_ARENA_SCORE_SHA256, "c4859323622794f5f97a131eb32256c905ca2ab6c1adf8ab21568fc2a98f27f3")
+# arena_score is NOT taken from disk (main's copy is c4859323, not HV4's pin). It is loaded from the git blob the HV4 record names: tools/arena_score.py at the frozen sha
+# (ARTIFACTS/lab/hv4-registration-1023.md section 2.1: a508ed79...). arena_am6_read (ef6e4555) did not exist at that sha; its pin is the file on disk.
+PINNED_COMMIT = "9ed4c5ff63935696b2a89150e13565e123047754"
+PINNED_ARENA_SCORE_SHA256 = F.PINNED_ARENA_SCORE_SHA256
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def load_pinned_score_from(commit: str, expect_sha256: str, repo: str | Path = REPO_ROOT) -> types.ModuleType:
+    try:
+        blob = subprocess.run(["git", "-C", str(repo), "show", f"{commit}:tools/arena_score.py"], capture_output=True, check=True).stdout
+    except (OSError, subprocess.CalledProcessError) as ex:
+        raise Refused(f"cannot read the pinned tools/arena_score.py at {commit} from git: {ex}") from None
+    got = hashlib.sha256(blob).hexdigest()
+    if got != expect_sha256:
+        raise Refused(f"tools/arena_score.py at {commit} has sha256 {got}, not the pinned {expect_sha256}")
+    mod = types.ModuleType("tools.arena_score_pinned")
+    mod.__package__ = "tools"
+    mod.__file__ = f"git:{commit}:tools/arena_score.py"
+    exec(compile(blob, mod.__file__, "exec"), mod.__dict__)
+    mod.PINNED_BLOB_SHA256 = got
+    return mod
+
+
+@functools.lru_cache(maxsize=1)
+def pinned_score() -> types.ModuleType:
+    """arena_score at a508ed79, from the git blob at the HV4 frozen sha; refused if the sha differs."""
+    return load_pinned_score_from(PINNED_COMMIT, PINNED_ARENA_SCORE_SHA256)
 
 
 class Refused(Exception):
@@ -67,18 +98,17 @@ def load_instant(path: str | Path) -> tuple[dict, str]:
 
 def check_pins() -> dict[str, str]:
     am6 = _sha(R.__file__)
-    sc = _sha(S.__file__)
     if am6 != ARENA_AM6_READ_SHA256:
         raise Refused(f"tools/arena_am6_read.py sha256 {am6} is not the pinned {ARENA_AM6_READ_SHA256}")
-    if sc not in ARENA_SCORE_SHA256_KNOWN:
-        raise Refused(f"tools/arena_score.py sha256 {sc} is not a known copy {ARENA_SCORE_SHA256_KNOWN}")
-    return {"arena_am6_read_sha256": am6, "arena_score_sha256": sc, "hv4_read_instant_sha256": _sha(F.__file__), "hv4_am15_read_sha256": _sha(__file__)}
+    sc = pinned_score().PINNED_BLOB_SHA256
+    return {"arena_am6_read_sha256": am6, "arena_score_sha256": sc, "arena_score_source": f"git blob {PINNED_COMMIT}:tools/arena_score.py", "hv4_read_instant_sha256": _sha(F.__file__), "hv4_am15_read_sha256": _sha(__file__)}
 
 
 @contextlib.contextmanager
 def am15_boundary(clock_ms: int, b_ms: int, am15_block: dict) -> Iterator[dict]:
     """In this process only: arena_score.blind_read_instant returns b_ms for clock_ms (the original for any other clock), and arena_score.record_read adds the
     am15 block. The first call's unamended value is kept in the yielded dict. Restored on exit."""
+    S = pinned_score()
     orig_bri, orig_rec = S.blind_read_instant, S.record_read
     seen: dict[str, Any] = {}
 
@@ -93,9 +123,12 @@ def am15_boundary(clock_ms: int, b_ms: int, am15_block: dict) -> Iterator[dict]:
         return orig_rec(reads_dir, dict(res, am15=dict(am15_block, unamended_boundary_ms=seen.get("unamended_boundary_ms"))))
 
     S.blind_read_instant, S.record_read = bri, rec
+    orig_mods = (R.S, C.S)
+    R.S = C.S = S  # the unchanged readers score with the pinned module in this process
     try:
         yield seen
     finally:
+        R.S, C.S = orig_mods
         S.blind_read_instant, S.record_read = orig_bri, orig_rec
 
 
@@ -135,8 +168,8 @@ def run(instant_path: str, ledger_root: str, registry: str, bot: str, health_tex
     if os.environ.get(TEST_ENV) != "1":  # QP-VERDICT-915 item 2: the first scored output is the one recorded read, no preview, no PENDING view
         if not record:
             raise Refused("--record is required: an unrecorded run prints an outcome preview (DEC-031 Am.15 item 4)")
-        if as_of_ms < b + S.SETTLE_MS:
-            raise Refused(f"--as-of-ms is before B + {S.SETTLE_MS // 3_600_000} h: no pending or preview output; run at or after B + 24 h")
+        if as_of_ms < b + pinned_score().SETTLE_MS:
+            raise Refused(f"--as-of-ms is before B + {pinned_score().SETTLE_MS // 3_600_000} h: no pending or preview output; run at or after B + 24 h")
     try:
         again = F.compute(ledger_root, bot, clock, "screen", health_texts, health_shas, restarts_text, as_of_ms)
     except F.Refused as ex:
@@ -165,14 +198,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--instant", required=True, help="hv4_read_instant's write-once screen record")
     ap.add_argument("--bot", required=True, choices=F.BOT_IDS)
-    ap.add_argument("--ledger-root", default=S.LEDGER_ROOT)
-    ap.add_argument("--registry", default=S.REGISTRY_PATH)
+    ap.add_argument("--ledger-root", default=S_DISK.LEDGER_ROOT)
+    ap.add_argument("--registry", default=S_DISK.REGISTRY_PATH)
     ap.add_argument("--health", required=True, action="append")
     ap.add_argument("--health-sha", required=True, action="append")
     ap.add_argument("--restarts", required=True)
     ap.add_argument("--as-of-ms", required=True, type=int)
     ap.add_argument("--record", action="store_true")
-    ap.add_argument("--reads-dir", default=S.READS_DIR)
+    ap.add_argument("--reads-dir", default=S_DISK.READS_DIR)
     ap.add_argument("--excl-out")
     ap.add_argument("--json")
     a = ap.parse_args(argv)
