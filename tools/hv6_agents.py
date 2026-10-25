@@ -66,8 +66,23 @@ GEN_SPEC = PersonaSpec(
                  "trail_arms_after_pct": 50.0})
 
 
+# DESIGN section 2 (G5 table), row "X cap, X exit": HV6 v0 = 2/h, -8 / +20 / 60 min. Frozen before P0. No trail: the trail arms only after
+# +50%, so under a +20 target it is inert; pinned here as None so the runner cannot invent one. X takes ITS exit from this constant.
+X_EXIT = {"stop_pct": -8.0, "target_pct": 20.0, "trail_pct": None, "time_min": 60}
+X_ENTRIES_PER_H = 2
+# READING: GEN's own plan_defaults (BIG-style -25 / +100 / trail 30 / 360) are used for SKIP PRICING ONLY (what a skipped card would have
+# done). They are not X's exit and not a plan the model inherits (a model BUY writes all four plan keys).
+SKIP_PRICING_PLAN = dict(GEN_SPEC.plan_defaults)
+# max_tokens per call kind: HV4's table has no `regime` key. 1,200 is the DESIGN section 6 assumed output size of a regime review.
+MAX_TOKENS = {**MAX_TOKENS, "regime": 1200}
+
+
 def knob_names() -> tuple[str, ...]:
     return ("min_conviction", *GEN_SPEC.plan_keys)
+
+
+def x_exit() -> dict:
+    return dict(X_EXIT)
 
 
 def v0_knobs() -> dict:
@@ -161,6 +176,9 @@ GLOBAL_DAY_CAP_USD = 3.00
 # 200 USD pot shared with HV4 is summed by the manager; this module does not read HV4's ledger.
 MONTH_GUARD_USD = 40.0
 MIN_CALL_USD = b4.MIN_CALL_USD
+# DESIGN section 8.2 deny tokens. A guard root containing one is refused: a mis-passed HV4 root would read HV4's sealed per-arm ledgers.
+DENY_ROOT_TOKENS = ("hv4", "haiku-v4", "q50", "bots.json", "shadow", "canary", "forward-", "truth-", "fresh-08", "exp011-",
+                    "tip-tape-archive", "/var/lib/mal/sealed", "meta-capture", "blocks/forward-1016")
 
 
 def day_cap_usd(ledger: str) -> float:
@@ -248,6 +266,10 @@ class BudgetGuard:
                  min_call_usd: float = MIN_CALL_USD):
         if global_cap_usd > GLOBAL_DAY_CAP_USD + 1e-12:
             raise ValueError("global_cap_usd may only be lowered")
+        low = str(root).lower()
+        bad = next((tok for tok in DENY_ROOT_TOKENS if tok in low), None)
+        if bad is not None:
+            raise ValueError(f"guard root contains the deny token {bad!r}")
         self.root = Path(root)
         self.global_cap_usd = float(global_cap_usd)
         self.month_limit_usd = float(month_limit_usd)
@@ -348,10 +370,27 @@ class BudgetGuard:
         """Halt entries for every LLM arm (and X, in step) until 00:00Z. Idempotent."""
         day = b4.utc_day(now_ms)
         if self.persisted_level(day)[0] < DEGRADE_STEPS:
-            self._mark(day, DEGRADE_STEPS, reason, self.group_spent(day), now_ms)
+            try:
+                spent = self.group_spent(day)
+            except (LedgerError, OSError):
+                spent = -1.0                    # unknown: the mark must still be written
+            self._mark(day, DEGRADE_STEPS, reason, spent, now_ms)
 
     def x_entries_halted(self, now_ms: int) -> bool:
-        return self.policy(now_ms).x_entries_halted
+        """Fail closed, never raises. X halts with the group (T8), and also whenever any ledger this guard reads (the four arms, the
+        reviewers, the regime reviews, the month's earlier days) cannot be read: that marks the group halted with `ledger_unreadable`."""
+        try:
+            day = b4.utc_day(now_ms)
+            halted = self.policy(now_ms).x_entries_halted
+            self.day_spent(day)
+            self.month_spent(b4.month_of(day))
+            return halted
+        except Exception:                       # noqa: BLE001 - LedgerError, OSError, anything: X must not trade on a day we cannot account
+            try:
+                self.halt_group(now_ms, "ledger_unreadable")
+            except Exception:                   # noqa: BLE001
+                pass
+            return True
 
     # the gate in front of every call
     def preflight(self, arm: str, kind: str, now_ms: int) -> Preflight:
@@ -370,7 +409,9 @@ class BudgetGuard:
             month_spent = self.month_spent(b4.month_of(day))
             if group is not None and self.policy(now_ms).entries_halted:
                 return deny("group_halted")
-        except LedgerError:
+        except (LedgerError, OSError):
+            if group is not None:
+                self.halt_group(now_ms, "ledger_unreadable")      # the four LLM arms and X stop together (T8)
             return deny("ledger_unreadable")      # fail closed
         month_room = self.month_limit_usd - month_spent
         if month_room < self.min_call_usd:
@@ -398,17 +439,19 @@ class BudgetGuard:
         reason = "month_guard" if pf.month_limited else "global_day_cap" if pf.global_limited else f"cap:{pf.arm}"
         self.halt_group(now_ms, reason)
 
-    def day_report(self, day: str) -> dict:
-        """Spend and caps per ledger, group state, global state. Reads only. This is the shape the manager may see (summed spend and
-        cap-state flags); per-arm spend is sealed until each read (DESIGN section 8 item 4), so callers must publish only `summary`."""
-        rows = {n: {"spent_usd": round(self.spent(n, day), 8), "cap_usd": day_cap_usd(n)} for n in all_ledgers()}
+    def day_report(self, day: str, *, include_per_arm: bool = False) -> dict:
+        """Default: the summed spend and cap-state flags only, the shape the manager may see. Per-ledger spend is sealed until each
+        read (DESIGN section 8 item 4); it is returned only with include_per_arm=True, a read-time flag no manager-facing tool passes."""
         total = round(self.day_spent(day), 8)
         level, reason = self.persisted_level(day)
-        return {"day": day, "ledgers": rows, "group": {"marked_level": level, "reason": reason,
-                                                      "spent_usd": round(self.group_spent(day), 8), "budget_usd": self.group_budget()},
-                "summary": {"day_spent_usd": total, "global_cap_usd": self.global_cap_usd, "global_cap_hit": total + self.min_call_usd > self.global_cap_usd,
-                            "group_halted": level >= DEGRADE_STEPS},
-                "month_spent_usd": round(self.month_spent(b4.month_of(day)), 8), "month_limit_usd": self.month_limit_usd}
+        out = {"day": day, "summary": {"day_spent_usd": total, "global_cap_usd": self.global_cap_usd,
+                                       "global_cap_hit": total + self.min_call_usd > self.global_cap_usd,
+                                       "group_halted": level >= DEGRADE_STEPS, "group_level": level, "halt_reason": reason},
+               "month_spent_usd": round(self.month_spent(b4.month_of(day)), 8), "month_limit_usd": self.month_limit_usd}
+        if include_per_arm:
+            out["ledgers"] = {n: {"spent_usd": round(self.spent(n, day), 8), "cap_usd": day_cap_usd(n)} for n in all_ledgers()}
+            out["group"] = {"spent_usd": round(self.group_spent(day), 8), "budget_usd": self.group_budget()}
+        return out
 
 
 # ---------------------------------------------------------------------------------------------------------------- models
@@ -541,6 +584,10 @@ USABLE_STATUS = ("ok", "partial")
 TIGHTER_SIGN = {"min_conviction": 1, "stop_pct": 1, "target_pct": -1, "trail_pct": -1, "time_min": -1}
 # READING: "<= 1 knob step" needs a step size the DESIGN does not give. These are code constants for QP to confirm; a change is a new sha.
 PROBE_STEP = {"min_conviction": 1, "stop_pct": 5.0, "target_pct": 10.0, "trail_pct": 5.0, "time_min": 30}
+TIGHTENING_TARGETS = ("stop_pct", "time_min")        # plus local_veto; DESIGN section 3 "(stop, time, local veto; TTL <= 72 h)"
+# READING: "at most 1 extra entry/h" is a TOTAL: across one review's accepted probes, and across probes still active (see
+# probe_extra_entries_allowed, which the item-4 runner must call and test).
+MAX_EXTRA_ENTRIES_TOTAL = 1
 FORBIDDEN_TARGETS = frozenset({"scanner", "veto", "vetoes", "hard_veto", "risk", "risk_facts", "limits", "hard_stop_pct", "max_hold_min",
                                "max_open", "entries_per_h", "day_loss_stop_sol", "fills", "fill", "costs", "fee", "scorer", "gate",
                                "model", "reviewer_prompt", "prompt", "embargo", "controls", "control", "size", "stake"})
@@ -594,7 +641,9 @@ def validate_regime_rule(change, *, knobs: Mapping, block: Mapping | None, now_m
     as_of = block.get("as_of_ms")
     if isinstance(as_of, bool) or not isinstance(as_of, int) or as_of >= now_ms:
         return no("block_not_before_write")
-    present = {e.get("id") for e in block.get("events", ()) if isinstance(e, Mapping)}
+    events = block.get("events")
+    events = events if isinstance(events, (list, tuple)) else ()
+    present = {e["id"] for e in events if isinstance(e, Mapping) and isinstance(e.get("id"), str)}      # a non-string id never matches
     ev = change["evidence_ids"]
     if not isinstance(ev, list) or not 1 <= len(ev) <= MAX_EVIDENCE_IDS or not all(isinstance(i, str) and RG_ID.fullmatch(i) for i in ev):
         return no("bad_evidence_ids")
@@ -647,7 +696,9 @@ def validate_regime_rule(change, *, knobs: Mapping, block: Mapping | None, now_m
     if delta == 0:
         return no("no_change")
     out["new"] = new
-    if delta > 0:                                                  # tightening: always allowed
+    if delta > 0:                                                  # tightening
+        if target not in TIGHTENING_TARGETS:
+            return no("tightening_not_allowed_for_knob")           # DESIGN: tightening is stop, time, local veto only
         if keys & PROBE_KEYS:
             return no("tighten_has_probe_keys")
         return RegimeRuleVerdict(True, None, out, "tighten", None, expires, True)
@@ -665,20 +716,44 @@ def validate_regime_rule(change, *, knobs: Mapping, block: Mapping | None, now_m
     return RegimeRuleVerdict(True, None, out, "probe", "regime_probe", expires, True)
 
 
+def active_extra_entries(active_probes: Sequence[Mapping], now_ms: int) -> int:
+    """Extra entries/h held by probes not yet expired. Each probe is a mapping with extra_entries_per_h and expires_ms."""
+    total = 0
+    for p in active_probes:
+        e, x = p.get("extra_entries_per_h"), p.get("expires_ms")
+        if isinstance(e, int) and not isinstance(e, bool) and isinstance(x, int) and not isinstance(x, bool) and x > now_ms:
+            total += e
+    return total
+
+
+def probe_extra_entries_allowed(active_probes: Sequence[Mapping], new_extra: int, now_ms: int) -> bool:
+    """Runner-facing: may a probe adding `new_extra` entries/h start now? The total over active probes plus it must be <= 1."""
+    if isinstance(new_extra, bool) or not isinstance(new_extra, int) or new_extra < 0:
+        return False
+    return active_extra_entries(active_probes, now_ms) + new_extra <= MAX_EXTRA_ENTRIES_TOTAL
+
+
 def validate_regime_rules(changes, *, knobs: Mapping, block: Mapping | None, now_ms: int, universe: Mapping[str, float] | None = None,
-                          vetoes: Sequence[str] = ()) -> list[RegimeRuleVerdict]:
+                          vetoes: Sequence[str] = (), active_probes: Sequence[Mapping] = ()) -> list[RegimeRuleVerdict]:
     """A review's regime_rule changes. More than 3 refuses the whole list (as HV4's reviewer does); one change per target."""
     if not isinstance(changes, (list, tuple)):
         return [RegimeRuleVerdict(False, "not_a_list")]
     if len(changes) > MAX_REGIME_CHANGES:
         return [RegimeRuleVerdict(False, "too_many_changes") for _ in changes]
     out, seen = [], set()
+    extra_total = active_extra_entries(active_probes, now_ms)
     for c in changes:
         key = c.get("target") if isinstance(c, dict) and isinstance(c.get("target"), str) else None
         if key is not None and key in seen:
             out.append(RegimeRuleVerdict(False, "duplicate_target"))
             continue
         v = validate_regime_rule(c, knobs=knobs, block=block, now_ms=now_ms, universe=universe, vetoes=vetoes)
+        if v.ok and v.mode == "probe":
+            extra = v.change["extra_entries_per_h"]
+            if extra_total + extra > MAX_EXTRA_ENTRIES_TOTAL:
+                out.append(RegimeRuleVerdict(False, "extra_entries_over_total"))
+                continue
+            extra_total += extra
         if v.ok:
             seen.add(key)
         out.append(v)
