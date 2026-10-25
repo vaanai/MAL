@@ -124,3 +124,31 @@ A counts-only dry pass (tools/p29_keeper_coverage.py, reads signatures, times an
 3. Build the P29 rule in the kit as a MiScusi job (sh, mem <= 6 GB, <= 2 CPU, notebook entry first, one heavy job at a time, 0 Helius, md5 pin check of section 0 files). A counts-only real-layout pass first (events, controls, skips, refusals and the filter count of section 9), then the one OOS look.
 4. Seals as in the hunt30 SEALS-BRIEF: no HV4/Q50/DBC forward/arena/meta-capture contact; no hour >= 2026-10-02T10 from any source.
 5. The result goes to a lab note with every kill line and every sub-cell; no sentence that a book made money before quant-proof on the exact head.
+
+## Coverage dry pass result (job #1619, 2026-10-25; counts only, no price read; raw: coverage.json)
+Ratio = tape rows carrying a keeper fill signature / keeper fill txs that day (rule 2 of DECLARE.md). Events = >= 3 DISTINCT SL fill signatures in one mint-or-pool within 60 s, all venues, before the PumpSwap-only, d >= 3% and 360 s filters (a count of times only).
+
+| Block (role) | Day | Keeper fills | Tape rows | Ratio | Events |
+| --- | --- | --- | --- | --- | --- |
+| fresh-0903 (in-sample) | 09-04 | 2,087 | 1,868 | 0.895 | 96 |
+| | 09-05 | 2,312 | 2,216 | 0.959 | 150 |
+| | 09-06 | 3,397 | 3,139 | 0.924 | 227 |
+| | 09-07 | 4,545 | 4,231 | 0.931 | 276 |
+| | 09-08 | 5,251 | 4,883 | 0.930 | 356 |
+| | median | | | **0.930** | |
+| exp011-0909 (OOS) | 09-10 | 2,488 | 2,401 | 0.965 | 143 |
+| | 09-11 | 1,984 | 1,830 | 0.922 | 118 |
+| | 09-12 | 1,957 | 1,815 | 0.927 | 100 |
+| | 09-13 | 2,762 | 2,434 | 0.881 | 170 |
+| | 09-14 | 1,849 | 1,715 | 0.928 | 84 |
+| | median | | | **0.927** | |
+| fast-pool-0918 (OOS) | 09-19 | 4,311 | 3,784 | 0.878 | 223 |
+| | 09-20 | 4,179 | 3,777 | 0.904 | 225 |
+| | 09-21 | 3,930 | 3,514 | 0.894 | 232 |
+| | median | | | **0.894** | |
+| oracle-insample-0922 (OOS) | 09-22 | 4,114 | 3,736 | 0.908 | 250 |
+| | 09-23 | 4,747 | 4,374 | 0.921 | 291 |
+| | 09-24 | 5,372 | 4,766 | 0.887 | 321 |
+| | median | | | **0.908** | |
+
+No block is below the 0.85 median bar, so none is dropped. OOS: 11 days, 2,157 events before the PumpSwap-only, d >= 3% and 360 s filters. The distinct-signature ratio is within 0.002 of the row ratio, except oracle-insample (0.884-0.917). The lowest single days are 09-19 (0.878) and 09-13 (0.881). The expected n after the price-based filters is still to be counted (section 9, after the QP re-check). The listener tapes score higher than their 2026-10-01 chain coverage (84.8% / 66.2%) would suggest; September coverage may differ from 10-01, and this is not explained here.
