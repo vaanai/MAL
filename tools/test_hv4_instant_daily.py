@@ -52,9 +52,13 @@ def test_dry_run_plan(tmp_path):
     assert not (rec / "hv4-CON-F.instant.json").exists()
 
 
-def test_refuses_without_restarts_or_shas(tmp_path):
+def test_refuses_without_restarts(tmp_path):
     r = run({"DRY": "1"}, tmp_path)
-    assert r.returncode == 2 and "REFUSED" in r.stdout
+    assert r.returncode == 2 and "RESTARTS" in r.stdout
+
+
+def test_default_run_time_is_0130():
+    assert "HM=${HM:-01:30}" in SCRIPT.read_text()
 
 
 def test_stub_run_prints_status_only_and_no_counts(tmp_path):
@@ -66,8 +70,7 @@ def test_stub_run_prints_status_only_and_no_counts(tmp_path):
     tables.mkdir()
     t = tables / f"hour-table-{yday}-final.jsonl"
     t.write_text('{"fake":1}\n')
-    shas = tmp_path / "shas.txt"
-    shas.write_text(f"{yday} {hashlib.sha256(t.read_bytes()).hexdigest()}\n")
+    good = hashlib.sha256(t.read_bytes()).hexdigest()
     restarts = tmp_path / "r.jsonl"
     restarts.write_text("")
     rec = tmp_path / "rec"
@@ -78,20 +81,35 @@ def test_stub_run_prints_status_only_and_no_counts(tmp_path):
                     'if [ "$B" = hv4-CON-F ]; then echo "HV4 READ INSTANT head"; echo "READ_INSTANT 2026-11-01T00:00:00Z (1)"; echo "O 120  R 5  margin 114"; '
                     'echo "recorded $O sha256 abc123"; else echo "HV4 READ INSTANT head"; echo "NOT_READY: no boundary yet (last tested none)"; echo "NOT_READY: nothing written"; fi\n')
     stub.chmod(0o755)
-    env = {"FIRST": today, "LAST": today, "HM": hm, "TABLE_FIRST": yday, "RESTARTS": str(restarts), "SHAS_FILE": str(shas), "TABLE_DIR": str(tables),
+    env = {"FIRST": today, "LAST": today, "HM": hm, "TABLE_FIRST": yday, "RESTARTS": str(restarts), "TABLE_DIR": str(tables),
            "RECORD_DIR": str(rec), "LEDGER": str(tmp_path / "ledger"), "PY": str(stub)}
     r = run(env, tmp_path)
     assert r.returncode == 0, r.stdout + r.stderr
     assert "RECORD bot=hv4-CON-F READ_INSTANT 2026-11-01T00:00:00Z (1) record_sha256=abc123" in r.stdout
     assert "margin" not in r.stdout and "O 120" not in r.stdout
     assert r.stdout.count("NOT_READY: no boundary yet") == 8
-    # a sha mismatch is refused
-    shas.write_text(f"{yday} {'0' * 64}\n")
+    # the job itself recorded the table sha (no session step), once
+    shas = rec / "health-shas.txt"
+    assert shas.read_text() == f"{yday} {good}\n"
+    # a second run does not append again and still passes
+    assert run(env, tmp_path).returncode == 0
+    assert shas.read_text() == f"{yday} {good}\n"
+    # a table with a leftover .tmp is not complete: exit 3
+    tmpf = tables / f"hour-table-{yday}-final.jsonl.tmp"
+    tmpf.write_text("x")
+    assert run({**env, "TABLE_WAIT_S": "0"}, tmp_path).returncode == 3
+    tmpf.unlink()
+    # a table changed after its sha was recorded is refused
+    t.write_text('{"fake":2}\n')
     r = run(env, tmp_path)
     assert r.returncode == 2 and "differs from the recorded sha" in r.stdout
+    t.write_text('{"fake":1}\n')
+    # the SHAS_FILE override is honoured
+    alt = tmp_path / "alt-shas.txt"
+    assert run({**env, "SHAS_FILE": str(alt)}, tmp_path).returncode == 0
+    assert alt.read_text() == f"{yday} {good}\n"
     # a tool exit 2 fails the job
     stub.write_text("#!/bin/sh\necho 'REFUSED: x' >&2\nexit 2\n")
-    shas.write_text(f"{yday} {hashlib.sha256(t.read_bytes()).hexdigest()}\n")
     r = run(env, tmp_path)
     assert r.returncode == 2 and "tool exit 2" in r.stdout
     # a missing table fails the job (exit 3) after the wait
