@@ -34,6 +34,16 @@ def test_bounds_change_no_decision_on_the_hv4_style_tape(tmp_path_factory):
     assert not on.hook_errors
 
 
+def test_streaming_scan_changes_no_decision(tmp_path_factory):
+    out = {}
+    for stream in (True, False):
+        run = make(tmp_path_factory.mktemp("r6memst"), cfg_kw={"stream_scan": stream, "bound_memory": False})
+        run.run(T0 + 9 * MIN + 2000, T0 + 110 * MIN)
+        out[stream] = _digest(run)
+        assert not run.hook_errors
+    assert out[True] == out[False] and any(out[True]["entries"][a] for a in ("L", "F", "X"))
+
+
 def test_bounds_change_no_decision_on_a_scaled_synthetic_tape(tmp_path_factory, monkeypatch):
     tape_dir = tmp_path_factory.mktemp("r6memsc")
     MS.write_tape(tape_dir / "tape", MS.T0, 3, 1.0, 12_000, seed=3, pre_hours=3)

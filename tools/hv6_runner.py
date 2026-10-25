@@ -497,6 +497,10 @@ class RunnerConfig:
     # QuoteHistory forgets pools the state no longer holds, and the engine's print history is trimmed to what a later buy can read (ArenaEngine.trim_history, the
     # HV4 bound, proved equivalent there). Off only in the tests that prove it changes nothing.
     bound_memory: bool = True
+    # Scan memory (Runner.scan): True = the scan feeds H.scan one pool at a time (snapshot, filters, features, then the snapshot is dropped) and re-reads the
+    # snapshot of a pool that needs a card; False = the old path that holds every pool's full snapshot (360 candles each) until the scan ends. The state does not
+    # change between the two reads (nothing polls inside a scan), so the cards are identical; a test compares the decision logs byte for byte.
+    stream_scan: bool = True
 
 
 _OPS = {"<": lambda a, b: a < b, "<=": lambda a, b: a <= b, ">": lambda a, b: a > b, ">=": lambda a, b: a >= b}
@@ -848,14 +852,32 @@ class Runner:
     # -- scan, cards
     def scan(self, T: int) -> None:
         tp = self.tp or self._begin_tick(T)
-        items, snap_of, prints_of = [], {}, {}
-        for p in self.state.pools_wsol(lambda p: p.prog == "pumpswap"):
-            snap = self.state.snapshot(p.id)
-            if snap is None:
-                continue
-            prints = list(p.events)
-            items.append((snap, prints))
-            snap_of[p.id], prints_of[p.id] = snap, prints
+        stream = self.cfg.stream_scan
+        pools = self.state.pools_wsol(lambda p: p.prog == "pumpswap")
+        snap_of: dict[str, Any] = {}
+        prints_of: dict[str, list] = {}
+        if stream:
+            def gen():
+                for p in pools:
+                    snap = self.state.snapshot(p.id)
+                    if snap is not None:
+                        yield snap, list(p.events)
+
+            items: Any = gen()
+        else:
+            items = []
+            for p in pools:
+                snap = self.state.snapshot(p.id)
+                if snap is None:
+                    continue
+                prints = list(p.events)
+                items.append((snap, prints))
+                snap_of[p.id], prints_of[p.id] = snap, prints
+
+        def snap_prints(pid: str) -> tuple[Mapping, list]:
+            if not stream:
+                return snap_of[pid], prints_of[pid]
+            return self.state.snapshot(pid), list(self.state.pool(pid).events)  # same state, same bytes as the scan's own read
         # DEVIATION from HV4 (recorded in the PR table): H.scan records the GEN cooldown for every tag it passes on, even one whose card is then refused (HV4's
         # rule). Here the scan runs on a scratch copy and the real cooldown is recorded only for a tag that got a card.
         scratch = C.SetupLimiter()
@@ -867,17 +889,20 @@ class Runner:
             top = sorted(res.candidates, key=lambda q: (-(res.feats[q].get("vol_60m") or 0.0), q))[:25]
             hot = tagged_all | set(res.board) | set(top)
             ranked = sorted(res.candidates, key=lambda q: (q not in hot, -(res.feats[q].get("vol_60m") or 0.0), q))[:max(WATCH_MAX_POOLS, len(hot))]  # hot pools always in
-            watch([(q, snap_of[q].get("mint")) for q in ranked], hot, self._now(T), vols={q: res.feats[q].get("vol_60m") or 0.0 for q in ranked})
+            mint_of = (lambda q: self.state.pool(q).mint) if stream else (lambda q: snap_of[q].get("mint"))
+            watch([(q, mint_of(q)) for q in ranked], hot, self._now(T), vols={q: res.feats[q].get("vol_60m") or 0.0 for q in ranked})
         cards: dict[str, dict] = {}
         carded_tags = []
         for t in res.tags:
-            c = self._card(t.pool_id, T, snap_of[t.pool_id], prints_of[t.pool_id], t, res.feats[t.pool_id])
+            sn, pr = snap_prints(t.pool_id)
+            c = self._card(t.pool_id, T, sn, pr, t, res.feats[t.pool_id])
             if c is not None:
                 cards[t.pool_id] = c
                 carded_tags.append(t)
                 self.limiter.record(t.pool_id, H.PERSONA, T)
         for pid in res.board:
-            c = self._card(pid, T, snap_of[pid], prints_of[pid], None, res.feats[pid])
+            sn, pr = snap_prints(pid)
+            c = self._card(pid, T, sn, pr, None, res.feats[pid])
             if c is not None:
                 cards[pid] = c
         self.log.append("SCAN", T, {"kind": "scan", "as_of_slot": self.slot, "counts": dict(res.counts), "n_cards": len(cards), "level": tp.level,
