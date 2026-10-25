@@ -171,7 +171,40 @@ def one_run(rd: RealDrill, tag: str, start: int, end: int) -> dict:
             "counters": dict(sorted(run.counters.items())), "scans": len(walls), "scan_ms_p50": round(pct(walls, 0.5), 2), "scan_ms_p95": round(pct(walls, 0.95), 2)}
 
 
-def run_real(days: list[str], drill_id: str, sha: str, *, rss_cap_mb: float = RSS_CAP_MB, tape_dir: str | None = None, base: Path | None = None, _window: tuple[int, int] | None = None) -> dict:
+def child_one_run(tag: str, days: list[str], drill_id: str, sha: str) -> int:
+    """One replay in ITS OWN process (run1 and run2 never share a heap: QP/OOM #1596). Writes <drill root>/<tag>.json (counts, md5s, this process's peak RSS)."""
+    base = Path(H.HV6_ROOT) / "drill" / drill_id
+    if not ID_RE.fullmatch(drill_id) or tag not in ("real-a", "real-b") or not D.RR.is_drill_root(base):
+        return 2
+    start, end = day_ms(days[0]), day_ms(days[-1]) + 86_400_000
+    assert end <= day_ms(END_EXCLUSIVE)
+    rd = RealDrill(base, Path(REAL_TAPE), sha, days)
+    try:
+        res = one_run(rd, tag, start, end)
+        res["peak_rss_mb"] = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 1)
+    except Exception as e:  # noqa: BLE001 - the class name only
+        res = {"error_class": type(e).__name__}
+    (base / f"{tag}.json").write_text(json.dumps(res, sort_keys=True, separators=(",", ":")) + "\n")
+    return 0 if "error_class" not in res else 3
+
+
+def _isolated_run(tag: str, days: list[str], drill_id: str, sha: str, base: Path) -> dict:
+    import subprocess
+
+    root = Path(__file__).resolve().parent.parent
+    r = subprocess.run([sys.executable, "-m", "tools.drill_hv6_real_layout", "--one-run", tag, "--days", ",".join(days), "--drill-id", drill_id, "--sha", sha],
+                       cwd=str(root), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    f = base / f"{tag}.json"
+    if r.returncode != 0 or not f.exists():
+        raise RuntimeError(f"child_{tag}_rc{r.returncode}")  # a fixed string: the class and return code only
+    res = json.loads(f.read_text())
+    if "error_class" in res:
+        raise RuntimeError("child_error_" + str(res["error_class"])[:40])
+    return res
+
+
+def run_real(days: list[str], drill_id: str, sha: str, *, rss_cap_mb: float = RSS_CAP_MB, tape_dir: str | None = None, base: Path | None = None, _window: tuple[int, int] | None = None,
+             isolate: bool = False) -> dict:
     tape_dir = REAL_TAPE if tape_dir is None else tape_dir
     if tape_dir != REAL_TAPE:
         raise Refused("tape_dir_not_allowed")
@@ -191,15 +224,23 @@ def run_real(days: list[str], drill_id: str, sha: str, *, rss_cap_mb: float = RS
     D.out({"real_layout": "start", "sha": sha, "days": len(days), "first_day": days[0], "last_day": days[-1], **view_info, "model": "StubModel", "api_calls": 0,
            "chain": "fake_stamped_before_scan",
            "rows_by_program": count_programs(src, days), "orders_only_on": "pumpswap", "pass_rule": PASS_RULE, "rss_cap_mb": rss_cap_mb})
-    a = one_run(rd, "real-a", start, end)
-    b = one_run(rd, "real-b", start, end)
+    if isolate:  # production: each replay in its own subprocess; the peak is the larger of the two processes' peaks
+        a = _isolated_run("real-a", days, drill_id, sha, base)
+        b = _isolated_run("real-b", days, drill_id, sha, base)
+        rss_mb = max(a.pop("peak_rss_mb"), b.pop("peak_rss_mb"))
+    else:
+        a = one_run(rd, "real-a", start, end)
+        b = one_run(rd, "real-b", start, end)
+        rss_mb = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 1)
     equal = a["log_md5"] == b["log_md5"] and a["cards_md5"] == b["cards_md5"] and a["entries"] == b["entries"]
-    rss_mb = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 1)
     p95 = max(a["scan_ms_p95"], b["scan_ms_p95"])
     ok = equal and rss_mb < rss_cap_mb and p95 < SCAN_P95_CAP_MS
     res = {"real_layout": "end", "result": "PASS" if ok else "FAIL", "pass_rule": PASS_RULE, "md5_equal": equal, "rss_ok": rss_mb < rss_cap_mb, "scan_p95_ok": p95 < SCAN_P95_CAP_MS,
            "run1_log_md5": a["log_md5"], "run2_log_md5": b["log_md5"], "run1": {k: v for k, v in a.items() if k != "log_md5"},
-           "run2_counts_equal": {k: a[k] == b[k] for k in ("cards", "entries", "closes", "refusals_by_class")}, "peak_rss_mb": rss_mb, "rss_cap_mb": rss_cap_mb}
+           "run2_counts_equal": {k: a[k] == b[k] for k in ("cards", "entries", "closes", "refusals_by_class")}, "peak_rss_mb": rss_mb, "rss_cap_mb": rss_cap_mb,
+           # QP 930: the watch-set cap (WATCH_MAX_POOLS) is a changed value unless it never bound on these days
+           "max_candidates_per_scan": max(a["counters"].get("max_candidates_per_scan", 0), b["counters"].get("max_candidates_per_scan", 0)),
+           "scans_cap_bound": max(a["counters"].get("scans_cap_bound", 0), b["counters"].get("scans_cap_bound", 0))}
     D.out(res)
     # Seal: the result file goes into the drill root, then the whole root is made read-only (priced pre-clock hours, never read) and the file's sha256 is printed.
     rf = base / "real-layout-result.json"
@@ -225,10 +266,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--drill-id", required=True)
     ap.add_argument("--sha", required=True)
     ap.add_argument("--rss-cap-mb", type=float, default=RSS_CAP_MB)
+    ap.add_argument("--one-run", default=None, help="internal: run one replay (real-a or real-b) in this process and write its result file")
     a = ap.parse_args(argv)
     try:
         days = parse_days(a.days)
-        res = run_real(days, a.drill_id, a.sha, rss_cap_mb=a.rss_cap_mb)
+        if a.one_run:
+            return child_one_run(a.one_run, days, a.drill_id, a.sha)
+        res = run_real(days, a.drill_id, a.sha, rss_cap_mb=a.rss_cap_mb, isolate=True)
     except Refused as e:
         print(json.dumps({"real_layout": "refused", "why": str(e)}), file=sys.stderr)
         return 2
