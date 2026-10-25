@@ -5,7 +5,7 @@ PAPER only. StubModel only: no API call, no key, no RPC. SYNTHETIC tape (tools.t
 fake chains: no real arena hour is read, so no seal is touched. Every file is written under <HV6_ROOT>/drill/<drill-id>/ (a refused path otherwise); the
 production root, bots.json, the real engine ledger and the live chain state are never opened.
 
-It prints canonical-JSON lines of md5 and COUNTS only. It never prints a mint, pool, price, P&L figure or per-pool row. Exit 0 only if all six drills PASS.
+It prints canonical-JSON lines of md5 and COUNTS only. It never prints a mint, pool, price, P&L figure or per-pool row. Exit 0 only if all nine drills PASS.
 Nothing here is an edge claim: the tape is synthetic.
 
   1 md5      two independent runs, same code: byte-identical decision-log md5.
@@ -152,7 +152,8 @@ class Drill:
         self.tape = self.base / "tape"
         write_tape(self.tape, trade_rows())
 
-    def new_run(self, tag: str, *, chain: Any = None, script: Any = None, model_wrap: Any = None, strict: bool = False, fresh_engine: bool = True) -> R.Runner:
+    def new_run(self, tag: str, *, chain: Any = None, script: Any = None, model_wrap: Any = None, strict: bool = False, fresh_engine: bool = True,
+                review: bool = False) -> R.Runner:
         d = self.base / tag
         root = d / "v6"
         guard = A.BudgetGuard(root)
@@ -166,7 +167,8 @@ class Drill:
                 register_bot(R.bot_id(a), self.sha[:13], T0 - 60 * MIN, str(reg), deciding_stake=0.25, model_ids=[A.MODEL_ID] if A.ARMS[a].llm else [],
                              now_ms=T0 - 61 * MIN, verify_sha=False)
         cfg = R.RunnerConfig(root=str(root), frozen_sha=self.sha[:13], clock_start_ms=T0 - 60 * MIN, strict_leakage=strict)
-        return R.Runner(cfg, ArenaState(self.tape, start_ms=0), eng, model, chain if chain is not None else FakeChain(), guard)
+        kw = {"review_root": root, "allow_drill_root": True} if review else {}  # versions: the drill root is the ONLY place a drill root is ever allowed
+        return R.Runner(cfg, ArenaState(self.tape, start_ms=0), eng, model, chain if chain is not None else FakeChain(), guard, **kw)
 
 
 def _tagged(req: Any) -> set:
@@ -505,7 +507,113 @@ def drill_regime(D: Drill) -> dict:
             "is_drill_root": RR.is_drill_root(root), "stub_model": True}
 
 
-DRILLS = (("md5", drill_md5), ("leakage", drill_leakage), ("chain", drill_chain), ("restart", drill_restart), ("order", drill_order), ("regime", drill_regime))
+# ------------------------------------------------------------------------------------------------------------------------ reviewer versions (QP #922 P1)
+V_WRITTEN = T0 - 25 * MIN                    # an intraday line written here is in force from + 30 min = T0 + 5 min
+V_EFF = V_WRITTEN + 30 * MIN
+V_START, V_MID_BEFORE, V_MID_AFTER, V_END = T0 - 10 * MIN + 2000, T0 + 4 * MIN + 2000, T0 + 6 * MIN + 2000, T0 + 30 * MIN
+V_BLOCK = {"schema": "hv6_regime.v1", "radar_status": "ok", "as_of_ms": V_WRITTEN - 1000,
+           "events": [{"id": "RG-0123abcd", "sev": "HIGH", "relevance": "direct", "kind": "program_upgrade", "program": "pump"}]}
+V_TIGHTEN = {"type": "regime_rule", "target": "stop_pct", "new": -10, "ttl_h": 24, "evidence_ids": ["RG-0123abcd"], "why": "pump program redeploy"}
+V_PROBE = {"type": "regime_rule", "target": "stop_pct", "new": -30, "ttl_h": 24, "stake": 0.25, "extra_entries_per_h": 1, "evidence_ids": ["RG-0123abcd"],
+           "why": "pump program redeploy"}
+
+
+def seed_versions(D: Drill, run_tag: str, rule: dict) -> None:
+    """Genesis lines for L, L-nr, P and one intraday regime line (the rule) for L and P under the run's own drill root. Idempotent (a restart reuses it)."""
+    root = D.base / run_tag / "v6"
+    commit = D.sha if len(D.sha) == 40 else (D.sha + "0" * 40)[:40]
+    cut = RR.RV.day_start_ms(utc_day(T0))
+    old = RR.wall_ms
+    RR.wall_ms = lambda: V_WRITTEN
+    try:
+        for arm in ("L", "L-nr", "P"):
+            if not RR.read_manifests(root, arm):
+                row, _ = RR.genesis_manifest(arm, cut, commit)
+                RR.append_manifest(root, arm, row, None, None)
+        for arm in ("L", "P"):
+            if len(RR.read_manifests(root, arm)) < 2:
+                RR.regime_review(arm, utc_day(T0), root=root, ledger_root=None, model=A.StubModel(lambda req: json.dumps([rule])), now_ms=V_WRITTEN, commit=commit,
+                                 block=V_BLOCK, records=[])
+    finally:
+        RR.wall_ms = old
+
+
+def version_run(D: Drill, tag: str, rule: dict, stop: int | None = None, resume_at: int | None = None) -> R.Runner:
+    """One run over the version window; with stop/resume_at: stop at `stop`, build a NEW runner over the same dirs, resume() and go on."""
+    seed_versions(D, tag, rule)
+    r = D.new_run(tag, review=True)
+    if stop is None:
+        r.run(V_START, V_END)
+        return r
+    r.run(V_START, stop)
+    del r
+    r2 = D.new_run(tag, review=True)
+    r2.resume()
+    r2.run(stop, V_END)
+    return r2
+
+
+def _versions_ok(run: R.Runner, rule: dict) -> tuple[bool, dict]:
+    vl, vp, vn = rows(run, "L", "version"), rows(run, "P", "version"), rows(run, "L-nr", "version")
+    ent = rows(run, "L", "entry")
+    first_ent_seq = ent[0]["seq"] if ent else None
+    ok = ([v["version"] for v in vl] == [0, 1] and [v["version"] for v in vp] == [0, 1] and [v["version"] for v in vn] == [0]
+          and vl[1]["ms"] >= V_EFF and vl[1]["ms"] - V_EFF < MIN and bool(ent) and first_ent_seq is not None and vl[1]["seq"] < first_ent_seq
+          and all(e["ms"] >= V_EFF for e in ent) and ent[0]["plan"]["stop_pct"] == rule["new"]
+          and not any(rows(run, a, "version") for a in ("F", "X")) and run.playbooks["F"].sha256 == A.load_playbook("v0").sha256)
+    return ok, {"versions_L": [v["version"] for v in vl], "versions_P": [v["version"] for v in vp], "versions_L_nr": [v["version"] for v in vn],
+                "switch_lag_ms": (vl[1]["ms"] - V_EFF) if len(vl) > 1 else None, "version_row_before_first_entry": bool(ent) and vl[1]["seq"] < first_ent_seq,
+                "L_entries": len(ent), "F_X_version_rows": sum(len(rows(run, a, "version")) for a in ("F", "X"))}
+
+
+def drill_version(D: Drill) -> dict:
+    a = version_run(D, "ver-a", V_TIGHTEN)
+    b = version_run(D, "ver-b", V_TIGHTEN)
+    ok, info = _versions_ok(a, V_TIGHTEN)
+    ma, mb = log_md5(a.cfg.root), log_md5(b.cfg.root)
+    D.ver_ref_md5 = ma
+    return {"drill": "version", "result": "PASS" if ok and ma == mb else "FAIL", "run1_log_md5": ma, "run2_log_md5": mb, **info}
+
+
+def drill_version_restart(D: Drill) -> dict:
+    if not hasattr(D, "ver_ref_md5"):
+        drill_version(D)
+    res, ok = {}, True
+    for name, mid in (("before_switch", V_MID_BEFORE), ("after_switch", V_MID_AFTER)):
+        r = version_run(D, f"ver-rs-{name}", V_TIGHTEN, stop=mid)
+        m = log_md5(r.cfg.root)
+        v_ok, _ = _versions_ok(r, V_TIGHTEN)
+        for x in (*R.ARM_ORDER, "SCAN"):
+            r.log.verify(x)
+        res[name] = {"log_md5": m, "equal_to_uninterrupted": m == D.ver_ref_md5, "versions_ok": v_ok, "L_version_rows": len(rows(r, "L", "version"))}
+        ok = ok and m == D.ver_ref_md5 and v_ok and len(rows(r, "L", "version")) == 2
+    return {"drill": "version_restart", "result": "PASS" if ok else "FAIL", "uninterrupted_log_md5": D.ver_ref_md5, **res}
+
+
+def drill_probe_restart(D: Drill) -> dict:
+    ref = version_run(D, "probe-ref", V_PROBE)
+    ref_md5 = log_md5(ref.cfg.root)
+    seed_versions(D, "probe-rs", V_PROBE)
+    r1 = D.new_run("probe-rs", review=True)
+    r1.run(V_START, V_MID_AFTER)
+    active_before = r1.probes.active("L", V_MID_AFTER)
+    entries_before = len(rows(r1, "L", "entry"))
+    del r1
+    r2 = D.new_run("probe-rs", review=True)
+    r2.resume()
+    restored = r2.probes.active("L", V_MID_AFTER) and r2.probes.extra_entries("L", V_MID_AFTER) == 1 and not r2.probes.active("L-nr", V_MID_AFTER)
+    r2.run(V_MID_AFTER, V_END)
+    ent = rows(r2, "L", "entry")
+    m = log_md5(r2.cfg.root)
+    ok = (active_before and entries_before == 0 and restored and bool(ent) and all(e["tag"] == "regime_probe" and e["size"] <= A.PROBE_STAKE for e in ent)
+          and ent[0]["plan"]["stop_pct"] == V_PROBE["new"] and all(e["tag"] is None for e in rows(r2, "F", "entry")) and m == ref_md5)
+    return {"drill": "probe_restart", "result": "PASS" if ok else "FAIL", "probe_active_before_stop": active_before, "L_entries_before_stop": entries_before,
+            "probe_restored_after_resume": restored, "L_entries_after": len(ent), "L_entries_tagged_regime_probe": sum(e["tag"] == "regime_probe" for e in ent),
+            "max_probe_stake": max((e["size"] for e in ent), default=None), "log_md5": m, "uninterrupted_log_md5": ref_md5, "equal_to_uninterrupted": m == ref_md5}
+
+
+DRILLS = (("md5", drill_md5), ("leakage", drill_leakage), ("chain", drill_chain), ("restart", drill_restart), ("order", drill_order), ("regime", drill_regime),
+          ("version", drill_version), ("version_restart", drill_version_restart), ("probe_restart", drill_probe_restart))
 
 
 def main(argv: list[str] | None = None) -> int:
