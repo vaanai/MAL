@@ -111,6 +111,8 @@ class Config:
             if d.get(k) in (None, ""):
                 raise ValueError(f"config {k} is required")
         t = TIERS[tier]
+        if str(d["bot_id"]).startswith("hv4-") and d.get("profile") != c0.PROFILE:
+            raise ValueError("hv4_c0 refused: an hv4- bot_id needs profile hv4_c0 (arm rules apply in every mode)")
         kw: dict[str, Any] = {k: d[k] for k in ("bot_id", "frozen_sha", "root", "state_dir")}
         if d.get("profile", "") not in ("", c0.PROFILE):
             raise ValueError(f"config profile must be '{c0.PROFILE}' or absent")
@@ -983,15 +985,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.live and raw.get("mode") != LIVE:
         print("arena_live_bridge: --live given but config mode is not live: running DRY", flush=True)
     raw = {**raw, "mode": LIVE if want_live else DRY}
-    cfg = Config.from_dict(raw)
+    try:
+        cfg = Config.from_dict(raw)
+    except ValueError as exc:
+        print(f"arena_live_bridge ALERT startup_refused {exc}", flush=True)
+        return 2
     if cfg.profile == c0.PROFILE:
+        # Seal: R2.1 of QP-RULING-1025-hv4-read-rule. No hv4_c0 start, dry or live, until a read-record gate exists, except on a synthetic fixture root.
+        why = c0.start_refusal(cfg.root, want_live)
+        if why:
+            print(f"arena_live_bridge ALERT startup_refused {why}", flush=True)
+            return 2
         why = c0.guard_problem()
         if why:
             print(f"arena_live_bridge ALERT startup_refused {why}", flush=True)
             return 2
-    if cfg.profile == c0.PROFILE and want_live:
-        print(f"arena_live_bridge ALERT startup_refused {c0.LIVE_REFUSAL}", flush=True)  # nothing sends on this profile until a later PR removes this
-        return 2
     if not want_live:
         port: OrderPort = DryPort(cfg.dry_balance_lamports)
     else:

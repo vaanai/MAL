@@ -142,6 +142,23 @@ def c0_stake(row: Mapping[str, Any], cap_lamports: int = C0_LIMITS["stake_lampor
 LIVE_REFUSAL = "hv4_c0_incomplete"  # a live start of this profile is refused until a later PR (sell escalation, parity pricing) removes it
 
 
+SYNTHETIC_MARKER = "SYNTHETIC_FIXTURE_ROOT"
+SEALED_ROOT_PREFIX = "/data/mal/arena"
+
+
+def start_refusal(root: str, live: bool) -> str | None:
+    """CLI start gate (QP-RULING-1025 R2.1: no bridge process, dry or live, reads an HV4 decision row before a recorded read PASS; no gate exists yet).
+    Refuse every start, except a dry start on a root that carries the explicit marker file and is not under /data/mal/arena (allowlist; a resolved
+    path under the arena is always refused, marker or not). Only checks paths; it opens nothing in the root."""
+    import os
+    real = os.path.realpath(root)
+    if real == SEALED_ROOT_PREFIX or real.startswith(SEALED_ROOT_PREFIX + "/") or os.path.realpath(os.path.abspath(root)).startswith(SEALED_ROOT_PREFIX + "/"):
+        return LIVE_REFUSAL
+    if live or not os.path.isfile(os.path.join(real, SYNTHETIC_MARKER)):
+        return LIVE_REFUSAL
+    return None
+
+
 def position_worst_case_lamports(stake: int, rent_reserve: int) -> int:
     """One position's worst case, the terms the wallet-floor check uses (`TRIP_FEE_RESERVE_LAMPORTS`, the bridge's rent reserve,
     `SELL_FEE_RESERVE_LAMPORTS`): stake at zero + buy fee + rent reserve + reserved sell fee. Applies to an open, pending or in-flight buy and to the new buy."""

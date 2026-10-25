@@ -297,6 +297,49 @@ class BridgeC0Tests(TmpCase):
         self.assertEqual([c for c in e2.port.calls if c[0] == "buy"], [])
         self.assertEqual(e2.log_rows("entry_refused")[-1]["why"], "total_loss_committed")
 
+    def _main(self, e, live=False, root=None, marker=False):
+        import contextlib, io, json
+        full = {k: v for k, v in e.raw.items() if k not in ("stop_file", "halt_file")}
+        if root:
+            full["root"] = root
+        elif marker:
+            Path(full["root"]).mkdir(parents=True, exist_ok=True)
+            (Path(full["root"]) / c0.SYNTHETIC_MARKER).write_text("")
+        cfgp = Path(self.tmp) / "cfg_main.json"
+        cfgp.write_text(json.dumps({**full, "mode": "live" if live else "dry"}))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = alb.main(["--config", str(cfgp), "--once"] + (["--live"] if live else []))
+        return rc, buf.getvalue()
+
+    def test_dry_start_without_marker_refused(self):
+        rc, out = self._main(Hv4Env(self.tmp))
+        self.assertEqual(rc, 2)
+        self.assertIn("hv4_c0_incomplete", out)
+
+    def test_dry_start_on_marked_synthetic_root_allowed_but_live_never(self):
+        rc, out = self._main(Hv4Env(self.tmp), marker=True)
+        self.assertEqual(rc, 0, out)
+        rc, out = self._main(Hv4Env(self.tmp), live=True, marker=True)
+        self.assertEqual(rc, 2)
+
+    def test_arena_root_always_refused_without_touching_it(self):
+        for root in ("/data/mal/arena", "/data/mal/arena/haiku-v4", "/data/mal/arena/../arena/x", "/data/mal/arena/nonexistent-synth"):
+            for live in (False, True):
+                rc, out = self._main(Hv4Env(self.tmp), live=live, root=root)
+                self.assertEqual(rc, 2, (root, live))
+                self.assertIn("hv4_c0_incomplete", out)
+        self.assertEqual(c0.start_refusal("/data/mal/arena/x", False), "hv4_c0_incomplete")
+
+    def test_hv4_bot_needs_profile_every_arm_every_mode(self):
+        for name in hv4_arms.ARMS:
+            for mode in ("dry", "live"):
+                base = {"bot_id": "hv4-" + name, "frozen_sha": "a" * 64, "root": "/nonexistent-synth", "state_dir": "/nonexistent-synth/s", "end_ms": 1, "max_hold_ms": 1, "mode": mode}
+                with self.assertRaises(ValueError, msg=(name, mode)):
+                    alb.Config.from_dict(base)
+                with self.assertRaises(ValueError):
+                    alb.Config.from_dict({**base, "profile": ""})
+
     def test_live_start_refused_hv4_c0_incomplete(self):
         import contextlib, io, json
         cfgp = Path(self.tmp) / "cfg.json"
