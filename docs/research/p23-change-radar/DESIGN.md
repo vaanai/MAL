@@ -97,13 +97,16 @@ and the amendment says how many alerts per day the old setting gave.
   opened and no record of it is written, now or after the window ends. Only the skip itself ("arena 2026-10-23 sealed") is recorded.
 - **Gap, heartbeat and other process rows are never counted at all** (gap, gap_end, hb, start, stop, pool_info, disk_pause, disk_resume),
   in any window: they are feed-health data, not structure, and they never were rule inputs (QP-RULING-1024-seal2 r2).
-- The windows are a pinned config file, `tools/change_radar_seals.json` (fail closed: a missing or malformed file refuses the run). Start:
-  arena tape [2026-10-22T21:00:00Z, 2026-10-26T21:00:00Z), owner FLOOR; arena tape [2026-10-23T21:00:00Z, 2026-10-27T21:00:00Z), FLOOR slip; Meteora DBC venue tape [2026-10-25T00:00:00Z, 2026-11-01T00:10:00Z),
+- The windows are a pinned config file, `tools/change_radar_seals.json` (fail closed: a missing or malformed file refuses the run). Now:
+  Meteora DBC venue tape [2026-10-25T00:00:00Z, 2026-11-01T00:10:00Z),
   the m10 forward window (Amendment 1 AM6 blind conditions); LaunchLab venue tape [2026-10-17T00:00:00Z, 2026-10-24T00:00:00Z), the reserved
   LaunchLab holdout (notebook n_b3bsp-Xrga1P7w). Changes go through the manager and QP.
-- **The radar is disabled for the arena tape before 2026-10-27T21:00:00Z, unconditionally** (`disabled_until` in the same file): before that
-  instant the arena tape directory is not even listed. Because the sealed days (10-22..10-27) are skipped for good, the arena baseline
-  starts from 2026-10-28. The 2026-10-24 smoke counts of 10-19..10-23 are not a baseline and never seed the daily job (empty out-dir).
+- **FLOOR seal lifted for the arena tape (2026-10-25).** The two FLOOR arena windows and the arena `disabled_until` (2026-10-27T21:00:00Z) were
+  removed under QP-RULING-1025-seal-lift item (2d) (sha256 b04a57eb4bd05c168eaf0f52e90a38c91b2663a4d418d6bf958fcdbabe14aa52; L0 notebook
+  n_cuTE-bRvYIfCWA, 2026-10-25T12:18:48Z). r2 (gap/hb/process rows never counted) stands. The 10-19..10-23 smoke counts are never a baseline (r5)
+  and never seed the daily job (empty out-dir). The DBC forward and LaunchLab holdout windows remain. The tape-dir refusal list also covers
+  `hv4`, `q50`, `decision` and `score` path tokens (with `ledger`, `bots.json`), so HV4/Q50 ledgers, decision logs, bots.json and score output
+  are never an input; the monitor path is checked the same way.
 - Until the manager has checked the DBC m10 and LaunchLab records for a seal covering 2026-10-24T02 (QP-RULING-1024-seal2 Addendum 1 r6),
   the daily job runs with `--venue-tape ''` (RPC stages only).
 - Hand benchmarks of tape files use hours before 2026-10-22T21Z only.
