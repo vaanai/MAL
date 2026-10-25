@@ -167,6 +167,17 @@ def default_ledger_root(root: str | os.PathLike) -> str:
     return str(base / "engine-ledger")
 
 
+def _mkdirs(d: Path) -> None:
+    """Create missing directories with mode 0700 (every new level, not just the leaf; umask-proof)."""
+    todo = []
+    while not d.exists():
+        todo.append(d)
+        d = d.parent
+    for x in reversed(todo):
+        os.mkdir(x, PERM_DIR)
+        os.chmod(x, PERM_DIR)
+
+
 def _read_jsonl(path: Path) -> list[dict]:
     return RV._jsonl(Path(_guard(path, "r")))
 
@@ -183,7 +194,7 @@ def _write_once(path: Path, data: bytes) -> None:
         if path.read_bytes() != data:
             raise ManifestRefused("file_exists_with_other_content")
         return
-    path.parent.mkdir(parents=True, exist_ok=True, mode=PERM_DIR)
+    _mkdirs(path.parent)
     tmp = path.with_suffix(path.suffix + ".tmp")
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, PERM_FILE)
     try:
@@ -196,7 +207,7 @@ def _write_once(path: Path, data: bytes) -> None:
 def log_event(root: str | os.PathLike, event: Mapping) -> None:
     """One JSON line in <root>/logs/review-events.jsonl (0600, under the HV6 root, never printed)."""
     path = Path(_guard(Path(root) / "logs" / "review-events.jsonl", "w"))
-    path.parent.mkdir(parents=True, exist_ok=True, mode=PERM_DIR)
+    _mkdirs(path.parent)
     fd = os.open(str(path), os.O_WRONLY | os.O_APPEND | os.O_CREAT, PERM_FILE)
     try:
         os.write(fd, canon(dict(event)).encode() + b"\n")
@@ -920,7 +931,7 @@ def append_manifest(root: str | os.PathLike, arm: str, row: Mapping, playbook_te
     if audit_bytes is not None:
         _write_once(bdir / f"{stem}.audit.json", audit_bytes)
     _guard(mpath, "w")
-    mpath.parent.mkdir(parents=True, exist_ok=True, mode=PERM_DIR)
+    _mkdirs(mpath.parent)
     fd = os.open(str(mpath), os.O_WRONLY | os.O_APPEND | os.O_CREAT, PERM_FILE)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
