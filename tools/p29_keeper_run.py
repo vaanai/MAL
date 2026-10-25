@@ -1,0 +1,343 @@
+"""P29 runner: counts-only pass (default) and the pricing look (REFUSED unless authorised for the exact head). PAPER ONLY, 0 Helius, no key.
+
+    python3 -m tools.p29_keeper_run --keeper KEEPER.jsonl --out DIR [--blocks fresh-0903 exp011-0909 ...] [--coverage coverage.json]
+    python3 -m tools.p29_keeper_run ... --price      # needs env P29_PRICE_AUTH == this repo's HEAD sha (set by the manager after reviewer verdict + QP OK on the code); one pooled look
+
+Data access is P29's OWN allowlist (tools.p29_keeper_coverage.BLOCKS: exactly the declared blocks; hours = the block's hours up to the end of its last declared day; warm-up hours are
+loaded but their events are neither recorded nor priced). The kit's CLI guard is not used and not changed. Still refused here: every kit FORBIDDEN token except 'exp011' (the manager line
+in PRICING-DECLARE s4 covers it), any hour >= 2026-10-02T10 (kit SEALED_HOURS), anything outside the allowlisted directories after realpath, any arena / meta-capture path. The cost and
+fail stack is the kit's (imported) at send 160,000 (DEC-031 Am.8); its sha256 pins (PRICING-DECLARE s0) are checked before anything is read.
+"""
+from __future__ import annotations
+
+import argparse
+import collections
+import hashlib
+import json
+import os
+import re
+import statistics
+import subprocess
+import sys
+import time
+import zlib
+from datetime import datetime, timezone
+from pathlib import Path
+
+import numpy as np
+
+from tools import arena_screen as K
+from tools.p29_keeper_coverage import BLOCKS, KEEPER_CUTOFF, fill_map
+from tools.p29_keeper_rule import P29KeeperRule, landing_disagree, match_controls
+
+REPO = Path(__file__).resolve().parent.parent
+PINS = {  # sha256 at main 6669c4cc7be1a76c51abc201374c1dab5178c632 (PRICING-DECLARE s0); the run refuses if any differs
+    "tools/arena_screen.py": "b37282c7d23d3bfca310f2574b8bc2b9b0981e0e73ee2537e118f779244fbb57",
+    "tools/arena_stack.py": "a39b2ba68dd46b7d3a555fb8e06580718300f354020c1f91280ab7a0e0856778",
+    "tools/arena_paper.py": "9d2fdb04a3da9bb38de9e30c91154f5a9ab2de513e6f4d7936c1eb1a54863514",
+    "tools/arena_score.py": "c4859323622794f5f97a131eb32256c905ca2ab6c1adf8ab21568fc2a98f27f3",
+    "tools/arena_report_legs.py": "65f4d471e3ad19308a038c4d6563f22322134013f09c0afe2d64c648964a0d8b",
+    "tools/arena_stack_v2.py": "95876c94d7e029e3959d8a3aed05ee64f1d461bc002ec62d035e74763587acb3",
+    "tools/arena_rules.py": "048dd78901c52e0c14fe9b1611f354c49ac6d0bb37fad8e5be3e27c756e3e2af",
+}
+FORBIDDEN = tuple(w for w in K.FORBIDDEN if w != "exp011") + ("arena", "meta-capture")
+MIN_COVERAGE = 0.85
+SEND = 160_000  # DEC-031 Amendment 8 stack (arena_rules.stack_config_v2), passed explicitly
+
+
+class Refused(Exception):
+    pass
+
+
+def sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def check_pins() -> dict:
+    out = {}
+    for rel, want in PINS.items():
+        got = sha256(REPO / rel)
+        out[rel] = got
+        if got != want:
+            raise Refused(f"pin_mismatch {rel}: {got} != {want}")
+    return out
+
+
+def hour_name(fn: str) -> str | None:
+    m = re.fullmatch(r"trades-(\d{4}-\d{2}-\d{2}T\d{2})(?:\.deduped)?\.jsonl\.zst", fn)
+    return m.group(1) if m else None
+
+
+def block_role(label: str) -> str:
+    return next(b for b in BLOCKS if b[0] == label)[1]
+
+
+def list_hours(label: str) -> dict[str, list[str]]:
+    """{hour: [paths]} for the declared block: every hour from the block's start through the last declared day; allowlisted dirs only."""
+    _, _, dirs, days = next(b for b in BLOCKS if b[0] == label)
+    last = max(days) + "T23"
+    out: dict[str, list[str]] = collections.defaultdict(list)
+    for d in dirs:
+        real = os.path.realpath(d)
+        if not real.startswith(K.CLEAN_VIEW + "/"):
+            raise Refused(f"outside_clean_view: {d}")
+        for q in (d, real):
+            for w in FORBIDDEN:
+                if w in q.lower():
+                    raise Refused(f"forbidden_word:{w}: {q}")
+        for fn in sorted(os.listdir(real)):
+            h = hour_name(fn)
+            if h is None or h > last:
+                continue
+            t = datetime.strptime(h, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)
+            if t >= K.SEALED_HOURS[0]:
+                raise Refused(f"sealed_hour: {h}")
+            out[h].append(os.path.join(real, fn))
+    dup = [h for h, v in out.items() if len(v) > 1]
+    if dup:
+        raise Refused(f"duplicate_hour_in_block {label}: {dup[:3]}")
+    return {h: v for h, v in sorted(out.items())}
+
+
+class FileTagger:
+    """tagger(block, hour) -> {pool: {(slot, is_buy, sol_lamports, token_raw): (signature, kind)}} for PumpSwap rows whose signature is a keeper fill."""
+
+    def __init__(self, fills: dict, files: dict) -> None:
+        self.fills, self.files = fills, files
+
+    def __call__(self, block: str, hour: str) -> dict:
+        res: dict = {}
+        for path in self.files.get(block, {}).get(hour, ()):
+            p = subprocess.Popen(["zstd", "-dc", "-q", path], stdout=subprocess.PIPE, text=True)
+            for line in p.stdout:
+                i = line.find('"signature":"')
+                if i < 0:
+                    continue
+                sig = line[i + 13:line.find('"', i + 13)]
+                kind = self.fills.get(sig)
+                if kind is None or '"pumpswap"' not in line:
+                    continue
+                r = json.loads(line)
+                if not r.get("pool") or r.get("side") not in ("buy", "sell"):
+                    continue
+                res.setdefault(r["pool"], {})[(int(r["slot"]), r["side"] == "buy", int(r["sol_lamports"]), int(r["token_raw"]))] = (sig, kind)
+            p.wait()
+        return res
+
+
+class P29Screen(K.Screen):
+    """The kit's Screen at the DEC-031 Am.8 stack (send 160,000, passed explicitly), plus report-only captures in the priced look: per-trip lamports of the four deciding sub-cells keyed
+    by (crc32(pool), decision slot) for the placebo pairing; gross edge per filled trip (exit spot / entry spot - 1 on the kit's own landing states, before fees and tx cost); and the
+    share of entry and exit landing slots where consecutive pool prints disagree on reserves (no outcome)."""
+
+    def __init__(self, *a, **k) -> None:
+        super().__init__(*a, **k)
+        self.cfg = {K.RENT_DECIDING: K.screen_cfg(K.RENT_DECIDING, send=SEND), K.RENT_CHARGED: K.screen_cfg(K.RENT_CHARGED, send=SEND)}
+        self.disagree = {"entry": collections.Counter(), "exit": collections.Counter()}
+        self.gross: list[float] = []
+        self.trips: dict = {}
+
+    def _price_store(self, s, pool, bi, seg_end, clk) -> None:  # noqa: ANN001
+        before = len(self.acc[0]) if self.acc else 0
+        chunks = list(s.chunks)
+        super()._price_store(s, pool, bi, seg_end, clk)
+        if self.count_only or not self.acc or len(self.acc[0]) <= before or not chunks:
+            return
+        a = {k: np.concatenate([c[k] for c in chunks]) for k in chunks[0]}
+        a["ib"] = a["ib"].astype(bool)
+        part = self.acc[0][-1]
+        name = self.blocks[bi]
+        rate_by_T = {int(clk["T"][i]): clk["rate"][i] for i in clk["T"]}
+        for sd, xs, T in zip(part["sd"].tolist(), part["xs"].tolist(), part["T"].tolist()):
+            sps = 1.0 / rate_by_T[int(T)]
+            e_land = sd + K.D + int(K.F.k_slots_vec(K.LAT_DECIDING, sps, "ceil")) + 1
+            x_land = xs + K.D + int(K.F.exit_lag_vec(np.array([sps]))[0]) + 1
+            for tag, slot in (("entry", e_land), ("exit", x_land)):
+                r = landing_disagree(a, slot)
+                if r is not None:
+                    self.disagree[tag][(name, r)] += 1
+        Qe, Be, Qx, Bx = part["Qe"][K.LAT_DECIDING], part["Be"][K.LAT_DECIDING], part["Qx"], part["Bx"]
+        ok = (Be > 0) & (Bx > 0) & (Qe > 0)
+        self.gross.extend((((Qx / Bx) / (Qe / Be)) - 1.0)[ok].tolist())
+
+    def _cell_result(self, ci, names, ndays):  # noqa: ANN001
+        parts = self.acc[ci]
+        if parts:
+            st = K._cat(parts)
+            day = st["T"] // 86400
+            for rule, fail in K.SUB_CELLS:
+                L = K.legs(st, K.STAKE_SOL * 1e9, K.LAT_DECIDING, rule, self.cfg[K.RENT_DECIDING])
+                self.trips[f"{rule}|{fail}"] = {"pool": st["pool"].tolist(), "sd": st["sd"].tolist(), "day": day.tolist(), "blk": st["blk"].tolist(), "lam": np.asarray(L[fail], float).tolist()}
+        return super()._cell_result(ci, names, ndays)
+
+
+def p29_verdict(cell: dict, gross_median: float | None) -> dict:
+    """PRICING-DECLARE s5, kills 1-9 on all four sub-cells. The kit's own kill reasons that refer to its four canonical blocks / the explore-0814 group do not apply to P29 and are not used."""
+    why = []
+    for rule, fail in K.SUB_CELLS:
+        s, tag = (cell.get("stats") or {}).get(f"{K.LAT_DECIDING}|{rule}|rent0|{fail}"), f"{rule}/{fail}"
+        if s is None:
+            why.append(f"{tag}: no trips")
+            continue
+        for ok, msg in ((s["mean"] > 0, "1 mean<=0"), (s["ci_lo_trade"] > 0, "2 trade CI90 lo<=0"), (s["ci_lo"] > 0, "3 date-cluster CI90 lo<=0"), (s["ex_top3"] > 0, "4 ex-top3<=0"),
+                        (s["ex_best_day"] > 0, "5 ex-best-day<=0")):
+            if not ok:
+                why.append(f"{tag}: {msg}")
+        if s["days"] < K.MIN_DAYS:
+            why.append(f"{tag}: NOT_DECIDABLE traded days {s['days']} < {K.MIN_DAYS}")
+        elif not 2 * s["pos_days"] > s["days"]:
+            why.append(f"{tag}: 6 not a strict majority of days positive")
+        if s["n"] < K.MIN_N:
+            why.append(f"{tag}: 7 n {s['n']} < {K.MIN_N}")
+    if gross_median is None or not gross_median > 0.01:
+        why.append(f"8 median gross edge {gross_median} <= 1% (spot to spot, before fees and tx cost)")
+    wis = cell.get("worst_in_slot") or {}
+    measured = bool(wis.get("measured"))
+    if measured:
+        for rule, fail in K.SUB_CELLS:
+            if not wis["sub_cells"][f"{rule}|{fail}"]["lower"]["mean_sol"] > 0:
+                why.append(f"{rule}/{fail}: 9 worst-in-slot lower mean<=0")
+    status = "KILL" if why else ("NO_KILL_YET (placebo and coverage gates still decide)" if measured else "PROVISIONAL-BLOCKED")
+    return {"kill_reasons": why, "killed": bool(why), "worst_in_slot_measured": measured, "status": status}
+
+
+def paired_test(tag_trips: dict, ctl_trips: dict, pairs: list) -> dict:
+    """Paired tagged-minus-control net SOL per trade on the type (ii) pairs, per deciding sub-cell; trade-level bootstrap CI90 lower bound (kit boot_lo, 1,000 draws, seed 1)."""
+    out = {}
+    for key, tt in tag_trips.items():
+        ct = ctl_trips.get(key)
+        if ct is None:
+            out[key] = None
+            continue
+        tmap = {(p, s): l for p, s, l in zip(tt["pool"], tt["sd"], tt["lam"])}
+        cmap = {(p, s): l for p, s, l in zip(ct["pool"], ct["sd"], ct["lam"])}
+        d = []
+        for (ep, es), (cp, cs) in pairs:
+            a, b = tmap.get((zlib.crc32(ep.encode()), es)), cmap.get((zlib.crc32(cp.encode()), cs))
+            if a is not None and b is not None:
+                d.append((a - b) / 1e9)
+        x = np.asarray(d, float)
+        out[key] = {"pairs_priced": int(len(x)), "mean_diff_sol": float(x.mean()) if len(x) else None, "ci_lo": float(K.F.boot_lo(x)) if len(x) else None}
+    return out
+
+
+def load_fills(keeper: str) -> dict:
+    rows = []
+    for l in open(keeper):
+        r = json.loads(l)
+        if r["bt"] and r["bt"] < KEEPER_CUTOFF:
+            rows.append(r)
+    return fill_map(rows)
+
+
+def run_blocks(scr, labels, files, vmap) -> None:
+    for bi, lb in enumerate(labels):
+        flist = [(datetime.strptime(h, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc), v[0]) for h, v in files[lb].items()]
+        scr.run_block(bi, lb, K.iter_hours(flist, lb, "backfill", vmap, 1))
+
+
+def run(args) -> dict:
+    pins = check_pins()
+    if args.price:
+        head = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+        if os.environ.get("P29_PRICE_AUTH") != head:
+            raise Refused("price_not_authorised: P29_PRICE_AUTH must equal the exact HEAD sha (reviewer verdict + QP OK on the code first)")
+    labels = [b[0] for b in BLOCKS if (args.blocks is None or b[0] in args.blocks)]
+    if args.price:
+        labels = [b[0] for b in BLOCKS if b[1] == "OOS"]
+    dropped = []
+    if args.coverage:
+        cov = json.load(open(args.coverage))
+        for lb in list(labels):
+            if block_role(lb) == "OOS" and cov["blocks"][lb]["median_ratio_rows"] < MIN_COVERAGE:
+                dropped.append(lb)
+                labels.remove(lb)
+    fills = load_fills(args.keeper)
+    files = {lb: list_hours(lb) for lb in labels}
+    allowed = {lb: set(next(b for b in BLOCKS if b[0] == lb)[3]) for lb in labels}
+    tagger = FileTagger(fills, files)
+    vmap = K.VMap(K.check_vmap_paths(K.VMAP_DEFAULT))
+    out = Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
+    res: dict = {"pins": pins, "mode": "price" if args.price else "count-only", "dropped_blocks_coverage": dropped, "blocks": {}}
+    rule = P29KeeperRule(tagger, "tagged", allowed_days=allowed)
+    scr = P29Screen(rule, count_only=not args.price, screen_p=bool(args.price))
+    for bi, lb in enumerate(labels):
+        n0, t0 = len(rule.events), time.time()
+        run_blocks_one(scr, bi, lb, files, vmap)
+        res["blocks"][lb] = {"hours": len(files[lb]), "events": len(rule.events) - n0, "wall_s": round(time.time() - t0, 1)}
+    ev, cands = rule.events, rule.cands
+    pairs, un = match_controls(ev, cands)
+    per, cdays = collections.defaultdict(collections.Counter), collections.defaultdict(collections.Counter)
+    for e in ev:
+        c = per[(e["block"], e["day"])]
+        c["tagged_events"] += 1
+        c["after_price_filters"] += bool(e.get("price_pass"))
+        c["after_universe"] += bool(e["pass"])
+        if not e["pass"]:
+            c["skip_" + str(e["reason"])] += 1
+    for c in cands:
+        d = cdays[(c["block"], c["day"])]
+        d["untagged_bursts"] += 1
+        d["after_price_filters"] += bool(c.get("price_pass"))
+        d["after_universe"] += bool(c["pass"])
+    res["per_block_day"] = {f"{b}|{d}": dict(c) for (b, d), c in sorted(per.items())}
+    res["untagged_per_block_day"] = {f"{b}|{d}": dict(c) for (b, d), c in sorted(cdays.items())}
+    oos = [e for e in ev if e["pass"] and block_role(e["block"]) == "OOS"]
+    oos_days = sorted({f"{e['block']}|{e['day']}" for e in oos})
+    oos_pairs = [p for p in pairs if block_role(p[0]["block"]) == "OOS"]
+    oos_un = [e for e in un if block_role(e["block"]) == "OOS"]
+    share_un = len(oos_un) / max(1, len(oos))
+    res["controls"] = {"pairs_all_blocks": len(pairs), "unmatched_all_blocks": len(un), "oos_pairs": len(oos_pairs), "oos_unmatched": len(oos_un), "oos_unmatched_share": round(share_un, 4)}
+    res["rule_counters"] = dict(rule.counters)
+    res["kit_counters"] = {k: int(v) for k, v in scr.counters.items() if k.startswith("refused") or k in ("triggers_raw", "overlap_dropped")}
+    res["kit_validated_triggers_per_day"] = {scr._d(d): int(n) for d, n in sorted(scr.cnt[0].items())}
+    res["oos_events_after_universe"], res["oos_event_days"] = len(oos), len(oos_days)
+    stops = []
+    if len(oos_days) < 5 or len(oos) < 100:
+        stops.append(f"NOT_DECIDABLE: OOS events after universe {len(oos)} (need >= 100) over {len(oos_days)} days (need >= 5)")
+    if len(oos_pairs) < 100 or share_un > 0.20:
+        stops.append(f"PLACEBO_NOT_DECIDABLE: matched OOS pairs {len(oos_pairs)} (need >= 100), unmatched share {share_un:.3f} (max 0.20)")
+    res["stops"] = stops
+    json.dump({"pairs": [[[e["pool"], e["slot"]], [c["pool"], c["slot"]]] for e, c in oos_pairs]}, open(out / "controls.json", "w"))
+    json.dump(ev, open(out / "events.json", "w"))
+    json.dump(cands, open(out / "cands.json", "w"))
+    if args.price:
+        cells = scr.results()
+        res["priced"] = cells
+        res["gross_edge_median"] = statistics.median(scr.gross) if scr.gross else None
+        res["p29_verdict"] = p29_verdict(cells.get("p29", {}), res["gross_edge_median"])
+        res["landing_disagreement"] = {t: {b: {"disagree": cnt.get((b, True), 0), "agree": cnt.get((b, False), 0)} for b in sorted({k[0] for k in cnt})} for t, cnt in scr.disagree.items()}
+        rule_c = P29KeeperRule(tagger, "control", control_keys={(c["pool"], c["slot"]) for _, c in oos_pairs}, allowed_days=allowed)
+        scr_c = P29Screen(rule_c, count_only=False, screen_p=False)
+        for bi, lb in enumerate(labels):
+            run_blocks_one(scr_c, bi, lb, files, vmap)
+        scr_c.results()
+        res["placebo_paired"] = paired_test(scr.trips, scr_c.trips, [((e["pool"], e["decision_slot"]), (c["pool"], c["decision_slot"])) for e, c in oos_pairs])
+    json.dump(res, open(out / ("result_price.json" if args.price else "counts_pass.json"), "w"), indent=1, default=float)
+    return res
+
+
+def run_blocks_one(scr, bi, lb, files, vmap) -> None:
+    flist = [(datetime.strptime(h, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc), v[0]) for h, v in files[lb].items()]
+    scr.run_block(bi, lb, K.iter_hours(flist, lb, "backfill", vmap, 1))
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--keeper", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--blocks", nargs="*")
+    ap.add_argument("--coverage")
+    ap.add_argument("--price", action="store_true")
+    args = ap.parse_args(argv)
+    try:
+        run(args)
+    except Refused as e:
+        print("REFUSED:", e, file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
