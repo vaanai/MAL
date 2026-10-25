@@ -1211,7 +1211,7 @@
    "id": "FLOOR",
    "title": "FLOOR",
    "stage": "smoke S1/S2 running; clock 2026-10-26T00:00Z if A1/A2/G1/DR1 pass",
-   "note": "Fixed-first entry posted 13:00Z (notebook n_CBfWkrs5XZDl5A); smoke jobs #1521/#1522. Same sign on fresh-0903 (a much-read exploration block) but about 55% smaller (flat +0.0073 vs +0.0161 SOL/trade); exploration screen numbers, not evidence. No book has cleared the promotion gate.",
+   "note": "Fixed-first entry posted 13:00Z (notebook n_CBfWkrs5XZDl5A); smoke jobs #1521/#1522. On fresh-0903 (a much-read exploration block) flat +0.0073 vs +0.0161 SOL/trade, not confirmed: n 62 (under 100), CI90 lower bound below 0 under both models (flat -0.0032, pressure -0.0047), pressure ex-top-3 -0.065 SOL, kit verdict KILLED/NOT_DECIDABLE; it neither confirms nor refutes F0; in-sample screen (not evidence). FLOOR's 10-26 registration did not happen (A2 floor FAIL, rate_att_lo 6.0 < 12.5/day; notebook n_27eIzN61qHjZwQ). No book has cleared the promotion gate.",
    "tag": {
     "text": "clock 10-26T00Z",
     "tone": "accent"
@@ -1821,7 +1821,7 @@
    "id": "s-20261024-manager15-screens",
    "from": "claude",
    "kind": "result",
-   "text": "Research (exploration screen numbers, not evidence): exit variants (P3): none beat baseline. Four new high-rate ideas (P4): all negative. FLOOR on fresh-0903 (a much-read exploration block) (P7): same sign but about 55% smaller (flat +0.0073 vs +0.0161 SOL/trade). Stacked FLOOR+H5 model (P5): about $29/$43/$59 a day at 1/2/5 SOL on paper, $10/$16/$27 at half edge. New venue tape recording started (Raydium LaunchLab, Meteora DBC). No book has cleared the promotion gate.",
+   "text": "Research (exploration screen numbers, not evidence): exit variants (P3): none beat baseline. Four new high-rate ideas (P4): all negative. FLOOR on fresh-0903 (a much-read exploration block) (P7): flat +0.0073 vs +0.0161 SOL/trade, not confirmed: n 62 (under 100), CI90 lower bound below 0 under both models (flat -0.0032, pressure -0.0047), pressure ex-top-3 -0.065 SOL, kit verdict KILLED/NOT_DECIDABLE; it neither confirms nor refutes F0. Stacked FLOOR+H5 model (P5): about $29/$43/$59 a day at 1/2/5 SOL, in-sample screen (not evidence; best-of-N, winner's curse; a zero or negative true edge is fully consistent with these numbers), $10/$16/$27 at half edge. FLOOR's 10-26 registration did not happen (A2 floor FAIL, rate_att_lo 6.0 < 12.5/day; notebook n_27eIzN61qHjZwQ). New venue tape recording started (Raydium LaunchLab, Meteora DBC). No book has cleared the promotion gate.",
    "atUtc": "2026-10-24T01:45:00Z"
   },
   {
