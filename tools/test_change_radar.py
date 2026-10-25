@@ -103,7 +103,8 @@ def test_rpc_url_public_ok():
 
 
 @pytest.mark.parametrize("p", ["/data/mal/holdout/x", "/data/fwdv1/tape", "/data/mal/h5-shadow", "/x/probe", "/data2/mal/venue-tape-backfill",
-                               "/data/sealed", "/x/HOLDOUT_LEDGER"])
+                               "/data/sealed", "/x/HOLDOUT_LEDGER", "/x/hv4/ledger", "/x/HV4-arena", "/x/q50-feed", "/x/h5v1q50-boostfloor-a1/bots.json",
+                               "/x/decision_log", "/x/arena_score_out"])
 def test_tape_dir_refused(p):
     with pytest.raises(cr.RadarError):
         cr.check_tape_dir(p)
@@ -435,19 +436,14 @@ def _utc(text):
     return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
 
 
-def test_pinned_seals_file_floor_window():
+def test_pinned_seals_file_floor_lifted():
     seals = cr.load_seals(cr.DEFAULT_SEALS)
-    assert seals["seals"] == [{"source": "arena", "lo": _utc("2026-10-22T21:00:00Z"), "hi": _utc("2026-10-26T21:00:00Z")},
-                              {"source": "arena", "lo": _utc("2026-10-23T21:00:00Z"), "hi": _utc("2026-10-27T21:00:00Z")},
-                              {"source": "venue:meteora_dbc", "lo": _utc("2026-10-25T00:00:00Z"), "hi": _utc("2026-11-01T00:10:00Z")},
+    assert seals["seals"] == [{"source": "venue:meteora_dbc", "lo": _utc("2026-10-25T00:00:00Z"), "hi": _utc("2026-11-01T00:10:00Z")},
                               {"source": "venue:launchlab", "lo": _utc("2026-10-17T00:00:00Z"), "hi": _utc("2026-10-24T00:00:00Z")}]
-    assert cr.source_disabled(seals, "arena", _utc("2026-10-27T20:59:59Z"))
-    assert not cr.source_disabled(seals, "arena", _utc("2026-10-27T21:00:00Z"))
-    assert seals["disabled_until"] == {"arena": _utc("2026-10-27T21:00:00Z")}
+    assert seals["disabled_until"] == {}
+    assert not cr.source_disabled(seals, "arena", _utc("2026-10-25T13:00:00Z"))
+    assert not any(cr.day_sealed(seals, "arena", f"2026-10-{i}") for i in range(17, 31))
     assert not cr.source_disabled(seals, "venue:meteora_dbc", NOW)
-    assert [d for d in ("2026-10-21", "2026-10-22", "2026-10-23", "2026-10-26", "2026-10-27", "2026-10-28") if cr.day_sealed(seals, "arena", d)] == \
-        ["2026-10-22", "2026-10-23", "2026-10-26", "2026-10-27"]
-    assert cr.day_sealed(seals, "arena", "2026-10-24") and cr.day_sealed(seals, "arena", "2026-10-25")
     assert not cr.day_sealed(seals, "venue:meteora_dbc", "2026-10-23")
     dbc = [f"2026-10-{i}" for i in range(24, 32)] + ["2026-11-01", "2026-11-02"]
     assert [d for d in dbc if cr.day_sealed(seals, "venue:meteora_dbc", d)] == dbc[1:-1]  # 10-25 .. 11-01 (11-01 overlaps 00:00-00:10)
@@ -469,9 +465,19 @@ def test_sealed_days_never_opened_and_never_recorded(tmp_path):
     now = _utc("2026-10-28T01:00:00Z")
     write_day(root, "2026-10-27", 24, arena_rows(1, 1))
     recs = cr.stage_tapes({"arena": (root, counter)}, set(), now, 8, [], cr.load_seals(cr.DEFAULT_SEALS), skipped)
-    assert [r["day"] for r in recs] == ["2026-10-20", "2026-10-21"]
-    assert set(opened) == {"2026-10-20", "2026-10-21"}
-    assert skipped == [f"arena 2026-10-{i} sealed" for i in range(22, 28)]
+    assert [r["day"] for r in recs] == [f"2026-10-{i}" for i in range(20, 28)]
+    assert set(opened) == {f"2026-10-{i}" for i in range(20, 28)}
+    assert skipped == []
+
+
+def test_sealed_arena_day_still_skipped_with_synthetic_window(tmp_path):
+    root = tmp_path / "arena"
+    for i in (20, 21, 22):
+        write_day(root, f"2026-10-{i}", 2, arena_rows(1, 1))
+    seals = cr.load_seals_dict({"seals": [{"source": "arena", "start": "2026-10-21T00:00:00Z", "end": "2026-10-22T00:00:00Z"}], "disabled_until": {}})
+    skipped: list[str] = []
+    recs = cr.stage_tapes({"arena": (root, cr.count_arena_file)}, set(), _utc("2026-10-23T01:00:00Z"), 8, [], seals, skipped)
+    assert [r["day"] for r in recs] == ["2026-10-20", "2026-10-22"] and skipped == ["arena 2026-10-21 sealed"]
 
 
 def test_venue_sealed_days_never_opened(tmp_path):
@@ -501,7 +507,7 @@ def test_venue_sealed_days_never_opened(tmp_path):
     assert len(skipped) == len(ll_sealed) + len(dbc_sealed)
 
 
-def test_arena_disabled_before_seal_end_not_even_listed(tmp_path, monkeypatch, capsys):
+def test_arena_listed_and_counted_after_floor_lift(tmp_path, monkeypatch, capsys):
     arena, venue = tmp_path / "arena", tmp_path / "venue"
     for i in range(18, 24):
         write_day(arena, f"2026-10-{i}", 24, arena_rows(3, 5))
@@ -511,9 +517,10 @@ def test_arena_disabled_before_seal_end_not_even_listed(tmp_path, monkeypatch, c
     monkeypatch.setattr(cr, "tape_days", lambda root: listed.append(Path(root).name) or real(root))
     rc = cr.main(_args(tmp_path, arena, venue, "", ["--no-rpc"], seals=None), now=NOW)
     out = capsys.readouterr().out
-    assert rc == 0 and "arena" not in listed and listed == ["launchlab"]
+    assert rc == 0 and "arena" in listed
     counts = cr.load_jsonl(tmp_path / "out" / "daily-counts.jsonl")
-    assert [r["source"] for r in counts] == ["venue:launchlab"] and "tape skipped 1" in out
+    assert {r["source"] for r in counts} >= {"arena"} and "arena" not in out.split("tape skipped")[-1]
+    assert not any(r["source"] == "arena" and r["day"] not in {f"2026-10-{i}" for i in range(18, 24)} for r in counts)
 
 
 @pytest.mark.parametrize("body", [None, "not json", json.dumps({"seals": [{"source": "arena", "start": "2026-10-26T21:00:00Z", "end": "2026-10-22T21:00:00Z"}]}),
@@ -536,9 +543,8 @@ def test_stage_tapes_requires_seals(tmp_path):
 
 # ===================================================================================================== QP-RULING-1024-seal2 r2 / r3
 SHIPPED_SEALS = {
-    "seals": [("arena", "2026-10-22T21:00:00Z", "2026-10-26T21:00:00Z"), ("arena", "2026-10-23T21:00:00Z", "2026-10-27T21:00:00Z"),
-              ("venue:meteora_dbc", "2026-10-25T00:00:00Z", "2026-11-01T00:10:00Z"), ("venue:launchlab", "2026-10-17T00:00:00Z", "2026-10-24T00:00:00Z")],
-    "disabled_until": {"arena": "2026-10-27T21:00:00Z"},
+    "seals": [("venue:meteora_dbc", "2026-10-25T00:00:00Z", "2026-11-01T00:10:00Z"), ("venue:launchlab", "2026-10-17T00:00:00Z", "2026-10-24T00:00:00Z")],
+    "disabled_until": {},
 }
 
 
