@@ -225,28 +225,29 @@ def cmd_analyze(a) -> int:
         sc[r["mint"]][r["call"]] = r
     # B4/B5: exploration creates only, same block (tokens.parquet create columns; no outcome column is selected)
     con = duckdb.connect()
-    cr = con.execute(f"SELECT mint, block, create_ms, creator, lower(name), lower(symbol) FROM read_parquet('{TOKENS}') "
-                     f"WHERE has_create IS TRUE").fetchall()
-    byblock = defaultdict(list)
-    for m, b, t, c, nm, sy in cr:
-        if t is not None:
-            byblock[b].append((t, m, c, nm, sy))
+    need = set(sc)
     dup, prior = {}, {}
-    for b, lst in byblock.items():
-        lst.sort(key=lambda x: x[0])
+    for b in BLOCKS:  # one block at a time to bound memory
+        cur = con.execute(f"SELECT mint, create_ms, creator, lower(name), lower(symbol) FROM read_parquet('{TOKENS}') "
+                          f"WHERE has_create IS TRUE AND create_ms IS NOT NULL AND block = ? ORDER BY create_ms", [b])
         names, syms, creators = defaultdict(list), defaultdict(list), Counter()
-        for t, m, c, nm, sy in lst:
-            lo = t - 86400000
-            dn = len(names[nm]) - bisect.bisect_left(names[nm], lo) if nm else 0
-            ds = len(syms[sy]) - bisect.bisect_left(syms[sy], lo) if sy else 0
-            dup[m] = dn + ds
-            prior[m] = creators[c] if c else 0
-            if nm:
-                names[nm].append(t)
-            if sy:
-                syms[sy].append(t)
-            if c:
-                creators[c] += 1
+        while True:
+            chunk = cur.fetchmany(50000)
+            if not chunk:
+                break
+            for m, t, c, nm, sy in chunk:
+                lo = t - 86400000
+                if m in need:
+                    dn = len(names[nm]) - bisect.bisect_left(names[nm], lo) if nm else 0
+                    ds = len(syms[sy]) - bisect.bisect_left(syms[sy], lo) if sy else 0
+                    dup[m] = dn + ds
+                    prior[m] = creators[c] if c else 0
+                if nm:
+                    names[nm].append(t)
+                if sy:
+                    syms[sy].append(t)
+                if c:
+                    creators[c] += 1
     rows, dropped = [], 0
     for m, cs in sc.items():
         if len(cs) < 2 or not all(c["ok"] for c in cs.values()):
