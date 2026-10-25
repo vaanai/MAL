@@ -298,3 +298,16 @@ def test_scoring_uses_the_pinned_blob_not_the_disk_copy_and_is_restored(tmp_path
     code, lines, res = wrun(tmp_path, root, reg, ip)
     assert seen == [(True, True)] and R.S is DISK and C.S is DISK  # patched inside, restored after
     assert any("a508ed79" in x and "git blob 9ed4c5ff" in x for x in lines)  # the pinned sha used is printed
+
+
+def test_refuses_unless_cut_and_exclusions_match_their_pins(tmp_path, monkeypatch):
+    root, reg = setup(tmp_path, book())
+    ip, _ = instant(tmp_path, root)
+    pins = W.check_pins()
+    assert pins["arena_am6_cut_sha256"] == F.PINNED_AM6_CUT_SHA256 and pins["arena_am6_exclusions_sha256"] == F.PINNED_AM6_EXCLUSIONS_SHA256
+    monkeypatch.setattr(R, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("am6 read called")))
+    for name, m in (("PINNED_AM6_CUT_SHA256", "arena_am6_cut"), ("PINNED_AM6_EXCLUSIONS_SHA256", "arena_am6_exclusions")):
+        with monkeypatch.context() as mc:
+            mc.setattr(F, name, "0" * 64)
+            with pytest.raises(W.Refused, match=m):
+                wrun(tmp_path, root, reg, ip)

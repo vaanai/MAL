@@ -45,6 +45,9 @@ MIN_O_DATES = 5
 CAP_DIV = 20  # floor(0.05 x n) == n // 20 for integer n >= 0
 PINNED_ARENA_SCORE_SHA256 = "a508ed79ed1cc425af0aa7dcd08e3ef5f8599dd6a45cb5e47cc8a779c6a0cd34"  # load_decisions read from here (blob at 9ed4c5ff, the HV4 frozen sha)
 PINNED_AM6_READ_SHA256 = "ef6e4555bc9e49272a5764bd75e1510f210af669a7a974cc68042b7eaaef32b3"
+# HV4 record section 0 pins (ARTIFACTS/lab/hv4-registration-1023.md section 2.1); the on-disk files must match or the tool refuses (QP, #915).
+PINNED_AM6_CUT_SHA256 = "c9b5cf1d18ff2cddc3171b38d63ed1aeffc1d7c3577029c60c2551cf99efa421"
+PINNED_AM6_EXCLUSIONS_SHA256 = "dfcc5cd6af1655deff20484a1353e3e7a2a236663232068eb6c1bf122f85fcfb"
 OPEN_PREFIX = '{"kind":"open"'
 REFUSED_PREFIX = '{"kind":"refused"'
 ST_READY, ST_NOT_READY, ST_ND = "READ_INSTANT", "NOT_READY", "NOT_DECIDABLE"
@@ -239,10 +242,21 @@ def load_screen_record(path: str | Path, clock_ms: int, bot_id: str) -> int:
     return b1
 
 
+def check_pins() -> dict:
+    from tools import arena_am6_cut as C
+    cut, exc = file_sha256(C.__file__), file_sha256(X.__file__)
+    if cut != PINNED_AM6_CUT_SHA256:
+        raise Refused(f"tools/arena_am6_cut.py sha256 {cut} is not the pinned {PINNED_AM6_CUT_SHA256}")
+    if exc != PINNED_AM6_EXCLUSIONS_SHA256:
+        raise Refused(f"tools/arena_am6_exclusions.py sha256 {exc} is not the pinned {PINNED_AM6_EXCLUSIONS_SHA256}")
+    return {"arena_am6_cut_sha256": cut, "arena_am6_exclusions_sha256": exc}
+
+
 def compute(ledger_root: str, bot_id: str, clock_ms: int, mode: str, health_texts: Sequence[str], health_shas: Sequence[str], restarts_text: str,
             as_of_ms: int, screen_b_ms: int | None = None) -> dict:
     if mode not in ("screen", "confirm"):
         raise Refused(f"mode {mode!r}")
+    check_pins()
     if bot_id not in BOT_IDS:
         raise Refused(f"{bot_id!r} is not one of the nine HV4 bot_ids")
     if clock_ms != CLOCK_MS:
@@ -289,7 +303,7 @@ def render(res: Mapping) -> list[str]:
     return [head, st,
             f"O {res['O']}  R {res['R']}  margin {res['margin']} (need >= {MIN_MARGIN})  O dates {res['o_dates']} (need >= {MIN_O_DATES})",
             f"attempts_sha256 {res['attempts_sha256']}  health {','.join(res['health_table_sha256'])}  merged {res['health_merged_sha256']}  restarts {res['restarts_sha256']}",
-            f"tool sha256 {res.get('tool_sha256')}  arena_am6_exclusions sha256 {res.get('am6_exclusions_sha256')}"]
+            f"tool sha256 {res.get('tool_sha256')}  arena_am6_exclusions sha256 {res.get('am6_exclusions_sha256')}  arena_am6_cut sha256 {res.get('am6_cut_sha256')}"]
 
 
 def main(argv: Sequence[str] | None = None, now_ms: int | None = None) -> int:
@@ -320,6 +334,7 @@ def main(argv: Sequence[str] | None = None, now_ms: int | None = None) -> int:
                       a.as_of_ms, b1)
         res["tool_sha256"] = file_sha256(__file__)
         res["am6_exclusions_sha256"] = file_sha256(X.__file__)
+        res["am6_cut_sha256"] = check_pins()["arena_am6_cut_sha256"]
         res["computed_at_ms"] = now
         lines = render(res)
         if a.out:

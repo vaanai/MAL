@@ -100,8 +100,13 @@ def check_pins() -> dict[str, str]:
     am6 = _sha(R.__file__)
     if am6 != ARENA_AM6_READ_SHA256:
         raise Refused(f"tools/arena_am6_read.py sha256 {am6} is not the pinned {ARENA_AM6_READ_SHA256}")
+    try:
+        pins_cx = F.check_pins()
+    except F.Refused as ex:
+        raise Refused(str(ex)) from None
+    #  arena_am6_cut and arena_am6_exclusions on disk must equal the HV4 record section 0 pins
     sc = pinned_score().PINNED_BLOB_SHA256
-    return {"arena_am6_read_sha256": am6, "arena_score_sha256": sc, "arena_score_source": f"git blob {PINNED_COMMIT}:tools/arena_score.py", "hv4_read_instant_sha256": _sha(F.__file__), "hv4_am15_read_sha256": _sha(__file__)}
+    return {"arena_am6_read_sha256": am6, "arena_score_sha256": sc, "arena_score_source": f"git blob {PINNED_COMMIT}:tools/arena_score.py", **pins_cx, "hv4_read_instant_sha256": _sha(F.__file__), "hv4_am15_read_sha256": _sha(__file__)}
 
 
 @contextlib.contextmanager

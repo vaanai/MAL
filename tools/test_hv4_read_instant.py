@@ -456,3 +456,16 @@ def test_not_ready_leaves_no_file_and_ready_record_carries_the_counts(tmp_path):
                    "--as-of-ms", str(CLOCK + 5 * DAY), "--out", str(out2)], now_ms=END_H + DAY) == 0
     rec = json.loads(out2.read_text())
     assert rec["status"] == "READ_INSTANT" and sum(rec["kept_open_by_utc_date"].values()) == rec["O"] == 110  # per-date counts only in the READY record
+
+
+def test_refuses_unless_cut_and_exclusions_match_their_pins(tmp_path, monkeypatch, capsys):
+    assert F.PINNED_AM6_CUT_SHA256.startswith("c9b5cf1d") and F.PINNED_AM6_EXCLUSIONS_SHA256.startswith("dfcc5cd6")
+    write_ledger(tmp_path / "L", spread(110, [0, 1, 2, 3, 4]))
+    h, r = _cli_files(tmp_path)
+    assert F.main(_argv(tmp_path, h, r, CLOCK + 5 * DAY), now_ms=END_H + DAY) == 0
+    assert "arena_am6_cut sha256 " + F.PINNED_AM6_CUT_SHA256 in capsys.readouterr().out
+    for name in ("PINNED_AM6_CUT_SHA256", "PINNED_AM6_EXCLUSIONS_SHA256"):
+        with monkeypatch.context() as m:
+            m.setattr(F, name, "0" * 64)
+            assert F.main(_argv(tmp_path, h, r, CLOCK + 5 * DAY), now_ms=END_H + DAY) == 2
+            assert "not the pinned" in capsys.readouterr().err
