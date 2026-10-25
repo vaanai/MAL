@@ -1,8 +1,8 @@
-# HV6: a general Haiku 5.5 trader with a regime channel (design v2, 2026-10-25)
+# HV6: a general Haiku 5.5 trader with a regime channel (design v3, 2026-10-25)
 
 Design worker, records only. **Nothing here says the trader makes money.** HV6 has 0 out-of-sample trades and no clock. No book has cleared
 the promotion gate. Paper only. No API call, job, tape read or HV4/Q50 output was used. Every trades/day, token, sd and edge figure below
-is an assumption or arithmetic, not evidence. v2 applies QP-RULING-1025-hv5-design (CHANGES, items 1-12); the ruling's "R/S/G/T/C" ids are cited.
+is an assumption or arithmetic, not evidence. v3 applies QP-RULING-1025-hv5-design (CHANGES, items 1-12), its ADDENDUM 1 (V2-1 to V2-8; G1 route (a); regime-day rule; S2 widening struck) and ADDENDUM 2 (OK with K1-K4) plus the reviewer's 5 items; the ruling's "R/S/G/T/C" ids are cited.
 
 ## 0. Name, and how this relates to #777 and #814
 
@@ -64,7 +64,7 @@ P&L, attempt count, shakedown or smoke report of HV4.
 **Trades/day (assumption).** With #777's August setup supply, the board (<= 576 cards/day) is binding, not supply. A SKIP-by-default model
 taking 3-5% of cards gives **L about 17-29/day; planning figure 20, range 10-35**. X (2/h cap, <= 48/day) is cap-bound if October has >= 2
 gated setups/h. P0 replaces these guesses (section 10) and changes no value. **Deciding arm = L.** S5: for LLM arms P0's would-be attempt is the card shown (an
-upper bound), so H = 14 (Am.4 2.2: H = min(90, max(14, ceil(150/rate)))). L's real rate is unknown; if it is under about 7/day, L ends
+upper bound), so H = 14 by the formula (Am.4 2.2: H = min(90, max(14, ceil(150/rate)))), **capped by the window end: the pinned H = min(14, days from T0 to 2026-11-11T00Z) = 12 for a 10-30 clock** (section 4). L's real rate is unknown; if it is under about 7/day, L ends
 NOT_DECIDABLE at T0 + H. X is judged on its own P0 rate and floor.
 
 ## 3. Regime channel
@@ -124,8 +124,8 @@ version hashed and logged before its first decision (DEC-031 section 1.3); the m
 `max_input_close_ms` rule is replaced for HV6 by these three).
 
 **Latency, honestly (R7).** The radar is a daily job (about 07:11Z). Change-to-version latency = radar cadence + digest + the review run + 30
-min. From the digest record: about 30-45 min. From the on-chain change instant: up to about one radar cycle plus that (the 2026-10-19 pump
-redeploy, deploy 17:47:02Z, was flagged by the 10-20 07:11Z run, 13.4 h after; source: `docs/research/p23-change-radar/DESIGN.md` section 0, to be
+min. From the digest record: about 30-45 min. From the on-chain change instant: up to about one radar cycle plus that (a **structure-monitor stand-in, not a radar measurement**: the P23 radar did not run then; the 2026-10-19 pump
+redeploy, deploy 17:47:02Z, was flagged by the structure monitor's daily A3 run at 10-20T07:11Z, 13.4 h after; source: `docs/research/p23-change-radar/DESIGN.md` section 0, to be
 re-cited from the radar record or notebook id in the registration). Registration states both numbers; "about 2 h" is withdrawn.
 
 **Validator for `regime_rule`.** Must cite a present `RG-` id. Tightening is always allowed (stop, time, local veto; TTL <= 72 h). Note: a
@@ -310,6 +310,8 @@ under its own bot_ids with its own clock, P0, smoke and gate read.
 6. **DBC.** No venue tape, no DBC row, no fwdv1; 10-17..10-24 is spent: nothing priced there.
 7. **Arena tape.** Live arena feed in the forward window only; research reads are counts and creates only (P0). Nothing is joined to HV4/Q50
    output. Hours before T0, including [10-25T00Z, T0), are never OOS for HV6 and never counted; **no HV6 rule is priced on [10-25T00Z, T0)** (G6).
+   Disclosure (DEC-030 section 2 R1; QP Addendum 1 section 4): per HOLDOUT_LEDGER, arena results count for no walk-2 read and are walk-2-hour
+   information. HV6's P0 counts and every later HV6 result are such information; any future Forward walk 2 registration discloses that they existed.
 8. **Pre-clock replays (G6).** The md5 decision-equivalence replay and the drill use arena-tape hours before 2026-10-25T00:00Z that the manager
    confirms are free in `docs/HOLDOUT_LEDGER.md` (D2/D3 check before pricing any October pool), or synthetic tape; outputs md5 and counts only.
 9. **OOS answer.** Counted hours at or after T0 are forward and OOS for each HV6 bot_id as a whole system (versions included), provided G1-G8
@@ -347,13 +349,13 @@ Helm approve; nothing is done here). Confirmation (100 attempts on 5 more dates,
   nothing is changed.
 - S3 prints, per UTC day and hour, counts only: filter-pass pools per scan (p50/min/max), newly passing pools/h, setups by GEN type, board cards after cooldown (age 2-24 h vs >= 24 h), X would-be attempts at 2/h, hour files present/missing, gap and data_loss seconds.
 - S4 never prints a mint, pool, signature, trader or wallet, a price, reserve, return, volume level or price-derived distribution, a per-pool row, or anything run with HV4's persona configs (that would rebuild sealed HV4-X would-be attempts). Nothing is joined to HV4/Q50 output.
-- S5: H = 14 for LLM arms (section 2). S6: the Am.6 smoke reports take counts and token/latency figures, never which pools; pricing off or its ledger never opened; any changed value is a new sha and smoke. S7: before the job a notebook entry with the QP ruling's sha256, the fixed-first text, day list, command and job id; a MiScusi job with MemoryMax; afterwards the output sha256 in the notebook and counts in the registration record.
+- S5: H = 14 by formula for LLM arms, pinned as min(14, days to the window end) = 12 for a 10-30 clock (sections 2 and 4). S6: the Am.6 smoke reports take counts and token/latency figures, never which pools; pricing off or its ledger never opened; any changed value is a new sha and smoke. S7: before the job a notebook entry with the QP ruling's sha256, the fixed-first text, day list, command and job id; a MiScusi job with MemoryMax; afterwards the output sha256 in the notebook and counts in the registration record.
 
 | # | Item | Who | Depends on | Done by |
 |---|---|---|---|---|
-| 0 | QP re-ruling on v2; G1 registry route; ruling on #814 adoption | manager + QP | this PR | 10-26 |
+| 0 | QP OK on the exact head (V2-1..V2-8 in text; G1 route (a) decided); K1-K4 recorded before the clock | manager + QP | this PR | 10-26 |
 | 1 | `hv6_cards.py` (GEN scanner over unmodified hv4 cards, 2 h guard, blob-sha test) | builder | 0 | 10-27 |
-| 2 | `hv6_agents.py` (playbook v0 from #814 wording, validators incl. `regime_rule`, per-arm ledgers, 3.00 cap, Stub) | builder | 0, #814 merged | 10-27 |
+| 2 | `hv6_agents.py` (playbook v0 from #814 wording, validators incl. `regime_rule`, per-arm ledgers, 3.00 cap, Stub) | builder | 0, #814 merged with a QP OK on its exact head | 10-27 |
 | 3 | `hv6_regime_block.py` (real kinds, radar.jsonl as-of source, byte copy, exclusions, determinism, injection tests) | builder | 0 | 10-27 |
 | 3b | `tools/hv6_register.py` + its a3 synthetic-registry test (a1-a7) | builder | 0 | 10-27 |
 | 4 | `hv6_runner.py` (5 arms, X halts in step, allowlist guard, log chain, intraday trigger, MiScusi job) | builder | 1-3 | 10-28 |
@@ -361,13 +363,18 @@ Helm approve; nothing is done here). Confirmation (100 attempts on 5 more dates,
 | 6 | md5 replay + drill (pre-10-25 free hours or synthetic) | manager | 4, 5 | 10-28 |
 | 7 | **P0 count job at the final sha** (S1-S7), then real-model smoke (Am.6) | manager | 6 | 10-29 |
 | 8 | Registration pack (`fasttrack_book.py`), G1 registration, QP OK on exact head, reviewer verdict | manager + QP + reviewer | 7 | 10-29 |
-| 9 | **Clock T0** | manager | 8 | **2026-10-30T00:00Z**, fallbacks 10-31, 11-01 |
+| 9 | **Clock T0** | manager | 8 | **2026-10-30T00:00Z** only (see fallback rule) |
 | 10 | `hv6_read.py` (sign-flip, V1/V2, 16 cells, N block, regime-day table, R-null manifest) | builder | before 11-07 | 11-05 |
 | 11 | Live readiness (parity, tie-out, executor spec) | builder + manager | after a screen pass | later |
 
+**Fallback-clock rule (reviewer item 3; honest option).** D = 12 with the window ending by 2026-11-11T00Z holds **only for a 10-30 clock**. For a
+10-31 or 11-01 clock, D = 12 would end 11-12 / 11-13, past the API horizon, and cutting to 11-11 gives D = 11 / 10, which breaks the 6/6 split and the
+>= 6-day learning minimum. So for a later clock the registration, before the clock, either (a) quotes an owner spend line covering T0 + 12 d
+verbatim (then D = 12, the window ends at T0 + 12 d, pinned H = 12, and the read instant moves with it), or (b) declares learning, outcome-information
+and regime contrasts NOT_DECIDABLE in advance and runs only the gate read and V1/V2 (window [T0, T0 + 7 d), unaffected). D is never changed after the clock.
 Dates assume zero slip; a slipped day moves the clock a day. Owner: the HV6 spend line (<= 3.00 USD/day inside the shared 200 USD to 11-11), recorded verbatim in the registration before the clock.
 **OWNER SPEND LINE: pending (manager asking 2026-10-25).** Manager checks before registering: LAB_STATE for a kill-review week that forbids new forward books; the ledger for replay hours.
-Earliest reads for a 10-30 clock: V1/V2 2026-11-07T00Z; learning/regime 2026-11-12T01:00Z at the earliest (T0 + D + 13 h); gate at its mechanical boundary (about 11-04 at 20/day).
+Earliest reads for a 10-30 clock: V1/V2 2026-11-07T00Z; learning/regime 2026-11-11T13:00Z at the earliest (T0 + D + 13 h; T0 + 12 d = 11-11T00Z); gate at its mechanical boundary (about 11-04 at 20/day).
 
 ## 11. Biggest risks
 
