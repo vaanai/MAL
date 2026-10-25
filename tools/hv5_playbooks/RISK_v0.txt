@@ -11,7 +11,7 @@ The card is one JSON object about one pool, built by code at the instant as_of_m
 OUTPUT
 Reply with one JSON array holding one object, and nothing else: no prose, no code fence.
 {"id":"<id>","grade":"pass","flags":[],"max_size":0.25,"why":"<=20 words"}
-grade is pass, caution or reject. flags is a list drawn only from CREATOR_SELLING, SNIPER_OVERHANG, WASH_SUSPECT, THIN_EXIT, DRAIN_RISK, FLOW_FADING, COPYCAT, UNKNOWN_COVERAGE, OTHER. max_size is always one of 0.25, 0.5 or 1.0, also for a reject (code ignores it for a reject; write 0.25). why is at most 20 words, counted by spaces; code rejects an answer whose why is far over. A reject hides the pool from every trader for 60 minutes. A caution caps the stake at 0.25. No other keys are accepted and every key shown is required.
+grade is pass, caution or reject. flags is a list drawn only from CREATOR_SELLING, SNIPER_OVERHANG, WASH_SUSPECT, THIN_EXIT, DRAIN_RISK, FLOW_FADING, COPYCAT, UNKNOWN_COVERAGE, OTHER. max_size is always one of 0.25, 0.5 or 1.0, also for a reject (code ignores it for a reject; write 0.25). why is at most 20 words, counted as words (a lone dash or bar is not a word); code trims a why that is somewhat over and rejects an answer whose why is far over. A reject hides the pool from every trader for 60 minutes. A caution caps the stake at 0.25. No other keys are accepted and every key shown is required.
 
 HONESTY
 Your grade is not calibrated and no result so far says you add value. Do not claim a field says something it does not. When coverage is incomplete, say UNKNOWN_COVERAGE.

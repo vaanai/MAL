@@ -152,6 +152,9 @@ def test_reject_without_or_with_zero_max_size_is_valid():
     del item["max_size"]
     assert rk(card, item).action == "reject"
     assert rk(card, risk_item(card["id"], grade="reject", max_size=0), mod=v4).invalid
+    # never store a size the model did not write
+    assert rk(card, risk_item(card["id"], grade="reject", max_size=None)).fields["max_size"] == 0.0
+    assert rk(card, risk_item(card["id"], grade="reject", max_size=0.5)).fields["max_size"] == 0.5
 
 
 def test_pass_and_caution_still_need_a_real_max_size():
@@ -190,7 +193,50 @@ def test_recheck_long_why_trimmed_hold_still_works():
     assert v5.validate_recheck(ModelReply(text="x", stop_reason="end_turn"), positions=pos, received_ms=NOW)[0].invalid
 
 
+def _recheck(why, action="EXIT"):
+    pos = [{"id": "P1", "stop_pct": -7.0, "target_pct": 12.0, "mark_ret_pct": 1.0, "as_of_ms": T0_MS}]
+    text = json.dumps([{"id": "P1", "action": action, "why": why}])
+    return v5.validate_recheck(ModelReply(text=text, stop_reason="end_turn"), positions=pos, received_ms=NOW)[0], pos, text
+
+
+def test_recheck_separators_do_not_count_as_words():
+    words = " ".join(f"w{i}" for i in range(24))
+    out, pos, text = _recheck(words + " - | -")
+    assert out.action == "EXIT" and not out.invalid and out.fields["why"] == words
+    assert v4.validate_recheck(ModelReply(text=text, stop_reason="end_turn"), positions=pos, received_ms=NOW)[0].reasons == ("bounds:why_words",)
+    out, _, _ = _recheck(" - ".join(f"w{i}" for i in range(20)))
+    assert out.action == "EXIT" and not out.invalid
+    # over the soft limit and with separators: trimmed to 25 words, separators removed, still EXIT
+    out, _, _ = _recheck(" - ".join(f"w{i}" for i in range(30)))
+    assert out.action == "EXIT" and not out.invalid and out.reasons == ("why_trimmed",) and len(out.fields["why"].split()) == 25
+    # TIGHTEN too
+    pos = [{"id": "P1", "stop_pct": -7.0, "target_pct": 12.0, "mark_ret_pct": 1.0, "as_of_ms": T0_MS}]
+    text = json.dumps([{"id": "P1", "action": "TIGHTEN", "new_stop_pct": -3.0, "why": " - ".join(["w"] * 20)}])
+    assert not v5.validate_recheck(ModelReply(text=text, stop_reason="end_turn"), positions=pos, received_ms=NOW)[0].invalid
+
+
+def test_recheck_only_separators_or_hard_over_is_invalid_hold():
+    assert _recheck("- | -")[0].invalid
+    out = _recheck(" ".join(["w"] * 51))[0]
+    assert out.action == "HOLD" and out.invalid and out.reasons == ("bounds:why_words",)
+
+
+def test_trimmed_entry_why_names_the_trim_in_the_reason():
+    c = make_cards(1)
+    out = ent(c, reply(buy(c[0]["id"], why=" ".join(["filler"] * 30) + " net_flow_60m ret_15m")))
+    assert out[0].action == "PARSE_ERROR" and out[0].reasons == ("why:names_fewer_than_two_card_fields_after_trim",)
+
+
+def test_bst_has_no_hv5_playbook():
+    from tools import hv5_prompts
+    with pytest.raises(Exception):
+        hv5_prompts.load_playbook("BST")
+
+
 # ---- HV4 untouched
+
+FROZEN_SHA = "9ed4c5ff63935696b2a89150e13565e123047754"
+
 
 HV4_FILES = ["tools/hv4_validate.py", "tools/hv4_prompts.py", "tools/hv4_arms.py", "tools/hv4_runner.py",
              "tools/hv4_templates/entry_user.txt", "tools/hv4_templates/risk_user.txt", "tools/hv4_templates/recheck_user.txt",
@@ -207,3 +253,11 @@ def test_hv4_blobs_identical_to_main():
     for f in HV4_FILES:
         want = subprocess.run(["git", "-C", str(root), "show", f"{base}:{f}"], capture_output=True, check=True).stdout
         assert hashlib.sha256((root / f).read_bytes()).hexdigest() == hashlib.sha256(want).hexdigest(), f
+    # and byte-identical to the frozen sha itself (the merge-base alone follows main if main changes HV4 files)
+    try:
+        subprocess.run(["git", "-C", str(root), "cat-file", "-e", FROZEN_SHA], check=True, capture_output=True)
+    except (subprocess.CalledProcessError, OSError):
+        pytest.skip("frozen sha not in this clone")
+    for f in HV4_FILES:
+        want = subprocess.run(["git", "-C", str(root), "show", f"{FROZEN_SHA}:{f}"], capture_output=True, check=True).stdout
+        assert hashlib.sha256((root / f).read_bytes()).hexdigest() == hashlib.sha256(want).hexdigest(), f"{f} differs from {FROZEN_SHA}"

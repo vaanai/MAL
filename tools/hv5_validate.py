@@ -21,10 +21,12 @@ What changed against hv4_validate (each item is a mechanism fix, none is tuned o
    that, or over MAX_WHY_CHARS, it is still invalid. The two-card-fields rule for BUY/WATCH stays. A field written as
    `impact_0.25` matches `impact_025`.
 3. Risk reply: for grade reject, max_size is ignored by code (effective 0.0), so a missing, null or 0 max_size on a reject is
-   accepted (HV4: enum:max_size / schema:missing_max_size, which held the pool). Repeated flags are de-duplicated instead of
+   accepted and stored as 0.0 (meaning "no size given"; fields["max_size"] is a model-written size only when it is > 0) (HV4: enum:max_size / schema:missing_max_size, which held the pool). Repeated flags are de-duplicated instead of
    voiding the grade. Everything else is as in HV4: a bad grade, an unknown flag, an extra key, a size that is not 0.25/0.5/1.0 on
    a pass or caution is invalid and holds the pool.
 4. A SKIP may carry a `why`; if it does, it gets the same soft word limit.
+
+Persona BST has no HV5 playbook (out of scope: load_playbook("BST") raises); BST keeps HV4's playbook and validator unchanged.
 
 What did NOT change: ids that were not sent void the reply, extra keys are invalid, plan bounds are never clipped, the WATCH
 grammar, the stale limit, conviction bounds. A stale or below-minimum card is never promoted to an entry.
@@ -61,6 +63,12 @@ def _trim_words(text: str, limit: int) -> str:
     return " ".join(out)
 
 
+def strip_separators(text: str) -> str:
+    """Drop the tokens with no letter or digit (a lone "-", "|", "+", an em dash). HV4 counts words with split(); handing it a why
+    without bare separators makes its count equal word_count."""
+    return " ".join(t for t in text.split() if any(ch.isalnum() for ch in t))
+
+
 def _names(w: str) -> set[str]:
     names = set()
     for t in v4._TOKEN.findall(w):
@@ -89,7 +97,8 @@ def _why5(item: dict, *, max_words: int, card: Mapping | None, required: bool = 
         w = _trim_words(w, max_words)
         reasons = ("why_trimmed",)
     if card is not None and len(_names(w) & v4.card_field_names(card)) < 2:
-        return None, (), "why:names_fewer_than_two_card_fields"
+        # a trimmed why may have lost the field names that sat past the limit: say so, not "never named them"
+        return None, (), ("why:names_fewer_than_two_card_fields_after_trim" if reasons else "why:names_fewer_than_two_card_fields")
     return w, reasons, None
 
 
@@ -202,7 +211,8 @@ def wanted_rate(verdicts: Sequence[Verdict]) -> dict:
 
 def validate_recheck(reply: ModelReply, *, positions: Sequence[Mapping], received_ms: int) -> list[Verdict]:
     """As HV4, except: the soft why limit, and a defect is action HOLD with invalid=True (a position is never left without an answer,
-    and HOLD is what code does on any defect), with PARSE_ERROR visible in the reason prefix `parse_error:`."""
+    and HOLD is what code does on any defect), with the reason code of the defect as HV4 gives it (no `parse_error:` prefix is added; a re-check defect is told apart from a
+    model HOLD by invalid=True)."""
     ids = [p["id"] for p in positions]
     by_id, err = v4._parse_items(reply, ids)
     if err:
@@ -215,13 +225,15 @@ def validate_recheck(reply: ModelReply, *, positions: Sequence[Mapping], receive
 
 
 def _recheck_item(item: dict, pos: Mapping, received_ms: int) -> Verdict:
-    # The why of an EXIT/TIGHTEN is soft-checked here; everything else is HV4's code on a copy with the why replaced.
+    # The why of an EXIT/TIGHTEN is soft-checked here, then HV4's code runs on a copy whose why is trimmed AND has bare separators
+    # removed (HV4 counts split() tokens, so " - " would otherwise count as words). The stored why is therefore the model's words
+    # without bare separators. A why with no word at all becomes "" so HV4 voids it (schema:why_text).
     w = item.get("why")
     reasons: tuple = ()
     if isinstance(w, str):
         why, reasons, r = _why5({"why": w}, max_words=arms.WHY_MAX_WORDS, card=None)
         if r is None and why is not None:
-            item = {**item, "why": why}
+            item = {**item, "why": strip_separators(why)}
     out = v4._recheck_item(item, pos, received_ms)
     return Verdict(out.id, out.action, out.fields, out.reasons + (reasons if not out.invalid else ()), out.invalid)
 
@@ -261,7 +273,7 @@ def _risk_item(item: dict, pid: str) -> Verdict:
     flags = list(dict.fromkeys(flags))                 # repeated flags: de-duplicated, not a defect
     size = item.get("max_size")
     if reject and (size is None or size == 0) and not isinstance(size, bool):
-        size = arms.SIZES[0]                           # ignored by code (a reject is stake 0); stored as the lowest allowed size
+        size = 0.0         # ignored by code (a reject is stake 0). Stored as 0.0 = "no size given", never a size the model did not write
     elif not v4._is_num(size) or float(size) not in arms.SIZES:
         return bad("enum:max_size")
     why, wr, r = _why5(item, max_words=arms.RISK_WHY_MAX_WORDS, card=None)
