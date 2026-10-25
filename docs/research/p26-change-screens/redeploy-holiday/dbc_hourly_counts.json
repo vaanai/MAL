@@ -1,0 +1,940 @@
+{
+ "2026-10-14T00": {
+  "events": {
+   "EvtSwap2": 12315,
+   "EvtSwap2WithTransferHook": 148
+  },
+  "undecoded": 216,
+  "creates": 119,
+  "trades": 12463,
+  "pools_with_trade5": 105,
+  "median_signers5": 1,
+  "mean_signers5": 1.773,
+  "distinct_signers": 2756
+ },
+ "2026-10-14T01": {
+  "events": {
+   "EvtSwap2WithTransferHook": 121,
+   "EvtSwap2": 33800
+  },
+  "undecoded": 287,
+  "creates": 170,
+  "trades": 33921,
+  "pools_with_trade5": 154,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.771,
+  "distinct_signers": 3261
+ },
+ "2026-10-14T02": {
+  "events": {
+   "EvtSwap2": 19488,
+   "EvtSwap2WithTransferHook": 153
+  },
+  "undecoded": 238,
+  "creates": 119,
+  "trades": 19641,
+  "pools_with_trade5": 109,
+  "median_signers5": 1,
+  "mean_signers5": 1.353,
+  "distinct_signers": 2622
+ },
+ "2026-10-14T03": {
+  "events": {
+   "EvtSwap2": 19254,
+   "EvtSwap2WithTransferHook": 85
+  },
+  "undecoded": 178,
+  "creates": 103,
+  "trades": 19339,
+  "pools_with_trade5": 93,
+  "median_signers5": 1,
+  "mean_signers5": 1.282,
+  "distinct_signers": 1690
+ },
+ "2026-10-14T04": {
+  "events": {
+   "EvtSwap2": 30345,
+   "EvtSwap2WithTransferHook": 109
+  },
+  "undecoded": 245,
+  "creates": 141,
+  "trades": 30454,
+  "pools_with_trade5": 132,
+  "median_signers5": 1,
+  "mean_signers5": 1.645,
+  "distinct_signers": 3325
+ },
+ "2026-10-14T05": {
+  "events": {
+   "EvtSwap2": 35156,
+   "EvtSwap2WithTransferHook": 44
+  },
+  "undecoded": 235,
+  "creates": 152,
+  "trades": 35200,
+  "pools_with_trade5": 149,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.849,
+  "distinct_signers": 3958
+ },
+ "2026-10-14T06": {
+  "events": {
+   "EvtSwap2": 37483,
+   "EvtSwap2WithTransferHook": 70
+  },
+  "undecoded": 247,
+  "creates": 150,
+  "trades": 37553,
+  "pools_with_trade5": 142,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.74,
+  "distinct_signers": 3636
+ },
+ "2026-10-14T07": {
+  "events": {
+   "EvtSwap2": 36321,
+   "EvtSwap2WithTransferHook": 38
+  },
+  "undecoded": 236,
+  "creates": 138,
+  "trades": 36359,
+  "pools_with_trade5": 123,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.543,
+  "distinct_signers": 3491
+ },
+ "2026-10-14T08": {
+  "events": {
+   "EvtSwap2": 21344,
+   "EvtSwap2WithTransferHook": 38
+  },
+  "undecoded": 217,
+  "creates": 105,
+  "trades": 21382,
+  "pools_with_trade5": 95,
+  "median_signers5": 1,
+  "mean_signers5": 1.429,
+  "distinct_signers": 2998
+ },
+ "2026-10-14T09": {
+  "events": {
+   "EvtSwap2": 22680,
+   "EvtSwap2WithTransferHook": 46
+  },
+  "undecoded": 217,
+  "creates": 93,
+  "trades": 22726,
+  "pools_with_trade5": 88,
+  "median_signers5": 1,
+  "mean_signers5": 1.387,
+  "distinct_signers": 2849
+ },
+ "2026-10-14T10": {
+  "events": {
+   "EvtSwap2": 25003,
+   "EvtSwap2WithTransferHook": 48
+  },
+  "undecoded": 192,
+  "creates": 108,
+  "trades": 25051,
+  "pools_with_trade5": 102,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.546,
+  "distinct_signers": 2499
+ },
+ "2026-10-14T11": {
+  "events": {
+   "EvtSwap2": 18693,
+   "EvtSwap2WithTransferHook": 62
+  },
+  "undecoded": 176,
+  "creates": 115,
+  "trades": 18755,
+  "pools_with_trade5": 100,
+  "median_signers5": 1,
+  "mean_signers5": 1.357,
+  "distinct_signers": 1632
+ },
+ "2026-10-14T12": {
+  "events": {
+   "EvtSwap2": 37417,
+   "EvtSwap2WithTransferHook": 103
+  },
+  "undecoded": 256,
+  "creates": 158,
+  "trades": 37520,
+  "pools_with_trade5": 150,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.627,
+  "distinct_signers": 3559
+ },
+ "2026-10-14T13": {
+  "events": {
+   "EvtSwap2": 54087,
+   "EvtSwap2WithTransferHook": 76
+  },
+  "undecoded": 300,
+  "creates": 165,
+  "trades": 54163,
+  "pools_with_trade5": 155,
+  "median_signers5": 1,
+  "mean_signers5": 1.988,
+  "distinct_signers": 3378
+ },
+ "2026-10-14T14": {
+  "events": {
+   "EvtSwap2": 46354,
+   "EvtSwap2WithTransferHook": 161
+  },
+  "undecoded": 368,
+  "creates": 200,
+  "trades": 46515,
+  "pools_with_trade5": 175,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.855,
+  "distinct_signers": 4464
+ },
+ "2026-10-14T15": {
+  "events": {
+   "EvtSwap2": 25759,
+   "EvtSwap2WithTransferHook": 182
+  },
+  "undecoded": 328,
+  "creates": 162,
+  "trades": 25941,
+  "pools_with_trade5": 147,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.975,
+  "distinct_signers": 3517
+ },
+ "2026-10-14T16": {
+  "events": {
+   "EvtSwap2": 36276,
+   "EvtSwap2WithTransferHook": 463
+  },
+  "undecoded": 345,
+  "creates": 166,
+  "trades": 36739,
+  "pools_with_trade5": 148,
+  "median_signers5": 1.0,
+  "mean_signers5": 2.151,
+  "distinct_signers": 3104
+ },
+ "2026-10-14T17": {
+  "events": {
+   "EvtSwap2": 40680,
+   "EvtSwap2WithTransferHook": 299
+  },
+  "undecoded": 452,
+  "creates": 220,
+  "trades": 40979,
+  "pools_with_trade5": 194,
+  "median_signers5": 2.0,
+  "mean_signers5": 2.377,
+  "distinct_signers": 3914
+ },
+ "2026-10-14T18": {
+  "events": {
+   "EvtSwap2": 58844,
+   "EvtSwap2WithTransferHook": 203
+  },
+  "undecoded": 680,
+  "creates": 262,
+  "trades": 59047,
+  "pools_with_trade5": 227,
+  "median_signers5": 2.0,
+  "mean_signers5": 2.385,
+  "distinct_signers": 3947
+ },
+ "2026-10-14T19": {
+  "events": {
+   "EvtSwap2": 37756,
+   "EvtSwap2WithTransferHook": 154
+  },
+  "undecoded": 390,
+  "creates": 170,
+  "trades": 37910,
+  "pools_with_trade5": 153,
+  "median_signers5": 2.0,
+  "mean_signers5": 2.424,
+  "distinct_signers": 3836
+ },
+ "2026-10-14T20": {
+  "events": {
+   "EvtSwap2": 47067,
+   "EvtSwap2WithTransferHook": 568
+  },
+  "undecoded": 460,
+  "creates": 198,
+  "trades": 47635,
+  "pools_with_trade5": 181,
+  "median_signers5": 2.0,
+  "mean_signers5": 2.783,
+  "distinct_signers": 4167
+ },
+ "2026-10-14T21": {
+  "events": {
+   "EvtSwap2": 44514,
+   "EvtSwap2WithTransferHook": 281
+  },
+  "undecoded": 384,
+  "creates": 182,
+  "trades": 44795,
+  "pools_with_trade5": 155,
+  "median_signers5": 2.0,
+  "mean_signers5": 2.143,
+  "distinct_signers": 3920
+ },
+ "2026-10-14T22": {
+  "events": {
+   "EvtSwap2": 31120,
+   "EvtSwap2WithTransferHook": 78
+  },
+  "undecoded": 257,
+  "creates": 140,
+  "trades": 31198,
+  "pools_with_trade5": 132,
+  "median_signers5": 2.0,
+  "mean_signers5": 2.579,
+  "distinct_signers": 3776
+ },
+ "2026-10-14T23": {
+  "events": {
+   "EvtSwap2": 30911,
+   "EvtSwap2WithTransferHook": 76
+  },
+  "undecoded": 242,
+  "creates": 106,
+  "trades": 30987,
+  "pools_with_trade5": 99,
+  "median_signers5": 2.0,
+  "mean_signers5": 2.557,
+  "distinct_signers": 2884
+ },
+ "2026-10-15T00": {
+  "events": {
+   "EvtSwap2": 17868,
+   "EvtSwap2WithTransferHook": 201
+  },
+  "undecoded": 220,
+  "creates": 103,
+  "trades": 18069,
+  "pools_with_trade5": 92,
+  "median_signers5": 1,
+  "mean_signers5": 2.291,
+  "distinct_signers": 3339
+ },
+ "2026-10-15T01": {
+  "events": {
+   "EvtSwap2": 49841,
+   "EvtSwap2WithTransferHook": 179
+  },
+  "undecoded": 376,
+  "creates": 183,
+  "trades": 50020,
+  "pools_with_trade5": 173,
+  "median_signers5": 2,
+  "mean_signers5": 2.503,
+  "distinct_signers": 4586
+ },
+ "2026-10-15T02": {
+  "events": {
+   "EvtSwap2": 47902,
+   "EvtSwap2WithTransferHook": 48
+  },
+  "undecoded": 254,
+  "creates": 120,
+  "trades": 47950,
+  "pools_with_trade5": 115,
+  "median_signers5": 2.0,
+  "mean_signers5": 2.542,
+  "distinct_signers": 4231
+ },
+ "2026-10-15T03": {
+  "events": {
+   "EvtSwap2": 49644,
+   "EvtSwap2WithTransferHook": 68
+  },
+  "undecoded": 222,
+  "creates": 112,
+  "trades": 49712,
+  "pools_with_trade5": 107,
+  "median_signers5": 4.0,
+  "mean_signers5": 3.482,
+  "distinct_signers": 3082
+ },
+ "2026-10-15T04": {
+  "events": {
+   "EvtSwap2": 22417,
+   "EvtSwap2WithTransferHook": 30
+  },
+  "undecoded": 186,
+  "creates": 68,
+  "trades": 22447,
+  "pools_with_trade5": 66,
+  "median_signers5": 3.0,
+  "mean_signers5": 2.618,
+  "distinct_signers": 2462
+ },
+ "2026-10-15T05": {
+  "events": {
+   "EvtSwap2": 25468,
+   "EvtSwap2WithTransferHook": 29
+  },
+  "undecoded": 166,
+  "creates": 76,
+  "trades": 25497,
+  "pools_with_trade5": 67,
+  "median_signers5": 1.0,
+  "mean_signers5": 2.263,
+  "distinct_signers": 2896
+ },
+ "2026-10-15T06": {
+  "events": {
+   "EvtSwap2": 10512,
+   "EvtSwap2WithTransferHook": 40
+  },
+  "undecoded": 193,
+  "creates": 67,
+  "trades": 10552,
+  "pools_with_trade5": 59,
+  "median_signers5": 1,
+  "mean_signers5": 1.791,
+  "distinct_signers": 2127
+ },
+ "2026-10-15T07": {
+  "events": {
+   "EvtSwap2": 6740,
+   "EvtSwap2WithTransferHook": 35
+  },
+  "undecoded": 206,
+  "creates": 34,
+  "trades": 6775,
+  "pools_with_trade5": 31,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.706,
+  "distinct_signers": 2085
+ },
+ "2026-10-15T08": {
+  "events": {
+   "EvtSwap2WithTransferHook": 48,
+   "EvtSwap2": 19178
+  },
+  "undecoded": 236,
+  "creates": 59,
+  "trades": 19226,
+  "pools_with_trade5": 56,
+  "median_signers5": 2,
+  "mean_signers5": 2.627,
+  "distinct_signers": 2236
+ },
+ "2026-10-15T09": {
+  "events": {
+   "EvtSwap2": 20815,
+   "EvtSwap2WithTransferHook": 37
+  },
+  "undecoded": 167,
+  "creates": 66,
+  "trades": 20852,
+  "pools_with_trade5": 58,
+  "median_signers5": 2.0,
+  "mean_signers5": 2.212,
+  "distinct_signers": 2622
+ },
+ "2026-10-15T10": {
+  "events": {
+   "EvtSwap2": 30646,
+   "EvtSwap2WithTransferHook": 23
+  },
+  "undecoded": 247,
+  "creates": 99,
+  "trades": 30669,
+  "pools_with_trade5": 95,
+  "median_signers5": 2,
+  "mean_signers5": 2.323,
+  "distinct_signers": 3414
+ },
+ "2026-10-15T11": {
+  "events": {
+   "EvtSwap2": 36828,
+   "EvtSwap2WithTransferHook": 28
+  },
+  "undecoded": 302,
+  "creates": 123,
+  "trades": 36856,
+  "pools_with_trade5": 114,
+  "median_signers5": 2,
+  "mean_signers5": 1.902,
+  "distinct_signers": 3196
+ },
+ "2026-10-15T12": {
+  "events": {
+   "EvtSwap2": 34935,
+   "EvtSwap2WithTransferHook": 59
+  },
+  "undecoded": 300,
+  "creates": 102,
+  "trades": 34994,
+  "pools_with_trade5": 95,
+  "median_signers5": 2.0,
+  "mean_signers5": 1.824,
+  "distinct_signers": 3736
+ },
+ "2026-10-15T13": {
+  "events": {
+   "EvtSwap2WithTransferHook": 46,
+   "EvtSwap2": 28270
+  },
+  "undecoded": 371,
+  "creates": 140,
+  "trades": 28316,
+  "pools_with_trade5": 116,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.45,
+  "distinct_signers": 3468
+ },
+ "2026-10-15T14": {
+  "events": {
+   "EvtSwap2": 16302,
+   "EvtSwap2WithTransferHook": 173
+  },
+  "undecoded": 302,
+  "creates": 114,
+  "trades": 16475,
+  "pools_with_trade5": 98,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.5,
+  "distinct_signers": 2651
+ },
+ "2026-10-15T15": {
+  "events": {
+   "EvtSwap2": 21705,
+   "EvtSwap2WithTransferHook": 77
+  },
+  "undecoded": 481,
+  "creates": 124,
+  "trades": 21782,
+  "pools_with_trade5": 108,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.895,
+  "distinct_signers": 3137
+ },
+ "2026-10-15T16": {
+  "events": {
+   "EvtSwap2": 45867,
+   "EvtSwap2WithTransferHook": 303
+  },
+  "undecoded": 496,
+  "creates": 191,
+  "trades": 46170,
+  "pools_with_trade5": 170,
+  "median_signers5": 2,
+  "mean_signers5": 2.042,
+  "distinct_signers": 4293
+ },
+ "2026-10-15T17": {
+  "events": {
+   "EvtSwap2": 36583,
+   "EvtSwap2WithTransferHook": 215
+  },
+  "undecoded": 337,
+  "creates": 157,
+  "trades": 36798,
+  "pools_with_trade5": 127,
+  "median_signers5": 2,
+  "mean_signers5": 2.433,
+  "distinct_signers": 3050
+ },
+ "2026-10-15T18": {
+  "events": {
+   "EvtSwap2": 24855,
+   "EvtSwap2WithTransferHook": 60
+  },
+  "undecoded": 488,
+  "creates": 187,
+  "trades": 24915,
+  "pools_with_trade5": 142,
+  "median_signers5": 1,
+  "mean_signers5": 1.845,
+  "distinct_signers": 2891
+ },
+ "2026-10-15T19": {
+  "events": {
+   "EvtSwap2": 22808,
+   "EvtSwap2WithTransferHook": 264
+  },
+  "undecoded": 382,
+  "creates": 158,
+  "trades": 23072,
+  "pools_with_trade5": 129,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.373,
+  "distinct_signers": 2932
+ },
+ "2026-10-15T20": {
+  "events": {
+   "EvtSwap2": 35589,
+   "EvtSwap2WithTransferHook": 46
+  },
+  "undecoded": 570,
+  "creates": 162,
+  "trades": 35635,
+  "pools_with_trade5": 128,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.383,
+  "distinct_signers": 3279
+ },
+ "2026-10-15T21": {
+  "events": {
+   "EvtSwap2": 22906,
+   "EvtSwap2WithTransferHook": 120
+  },
+  "undecoded": 321,
+  "creates": 128,
+  "trades": 23026,
+  "pools_with_trade5": 109,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.828,
+  "distinct_signers": 2807
+ },
+ "2026-10-15T22": {
+  "events": {
+   "EvtSwap2": 43474,
+   "EvtSwap2WithTransferHook": 170
+  },
+  "undecoded": 326,
+  "creates": 147,
+  "trades": 43644,
+  "pools_with_trade5": 126,
+  "median_signers5": 1,
+  "mean_signers5": 1.701,
+  "distinct_signers": 3558
+ },
+ "2026-10-15T23": {
+  "events": {
+   "EvtSwap2": 37424,
+   "EvtSwap2WithTransferHook": 75
+  },
+  "undecoded": 240,
+  "creates": 122,
+  "trades": 37499,
+  "pools_with_trade5": 109,
+  "median_signers5": 2.0,
+  "mean_signers5": 2.025,
+  "distinct_signers": 3014
+ },
+ "2026-10-16T00": {
+  "events": {
+   "EvtSwap2": 30764,
+   "EvtSwap2WithTransferHook": 61
+  },
+  "undecoded": 253,
+  "creates": 102,
+  "trades": 30825,
+  "pools_with_trade5": 94,
+  "median_signers5": 2.0,
+  "mean_signers5": 2.265,
+  "distinct_signers": 3542
+ },
+ "2026-10-16T01": {
+  "events": {
+   "EvtSwap2": 34914,
+   "EvtSwap2WithTransferHook": 104
+  },
+  "undecoded": 344,
+  "creates": 118,
+  "trades": 35018,
+  "pools_with_trade5": 107,
+  "median_signers5": 2.0,
+  "mean_signers5": 2.042,
+  "distinct_signers": 3884
+ },
+ "2026-10-16T02": {
+  "events": {
+   "EvtSwap2": 30103,
+   "EvtSwap2WithTransferHook": 269
+  },
+  "undecoded": 339,
+  "creates": 109,
+  "trades": 30372,
+  "pools_with_trade5": 94,
+  "median_signers5": 2,
+  "mean_signers5": 1.982,
+  "distinct_signers": 2748
+ },
+ "2026-10-16T03": {
+  "events": {
+   "EvtSwap2": 25645,
+   "EvtSwap2WithTransferHook": 89
+  },
+  "undecoded": 311,
+  "creates": 87,
+  "trades": 25734,
+  "pools_with_trade5": 81,
+  "median_signers5": 2,
+  "mean_signers5": 1.943,
+  "distinct_signers": 2298
+ },
+ "2026-10-16T04": {
+  "events": {
+   "EvtSwap2": 7036,
+   "EvtSwap2WithTransferHook": 16,
+   "EvtSwap3": 23810,
+   "EvtSwap3WithTransferHook": 29
+  },
+  "undecoded": 408,
+  "creates": 134,
+  "trades": 30891,
+  "pools_with_trade5": 98,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.366,
+  "distinct_signers": 2724
+ },
+ "2026-10-16T05": {
+  "events": {
+   "EvtSwap3": 19305,
+   "EvtSwap3WithTransferHook": 24
+  },
+  "undecoded": 454,
+  "creates": 189,
+  "trades": 19329,
+  "pools_with_trade5": 131,
+  "median_signers5": 1,
+  "mean_signers5": 1.127,
+  "distinct_signers": 3326
+ },
+ "2026-10-16T06": {
+  "events": {
+   "EvtSwap3": 18894,
+   "EvtSwap3WithTransferHook": 42
+  },
+  "undecoded": 426,
+  "creates": 137,
+  "trades": 18936,
+  "pools_with_trade5": 115,
+  "median_signers5": 1,
+  "mean_signers5": 1.161,
+  "distinct_signers": 2584
+ },
+ "2026-10-16T07": {
+  "events": {
+   "EvtSwap3": 26425,
+   "EvtSwap3WithTransferHook": 18
+  },
+  "undecoded": 445,
+  "creates": 125,
+  "trades": 26443,
+  "pools_with_trade5": 107,
+  "median_signers5": 1,
+  "mean_signers5": 1.408,
+  "distinct_signers": 2856
+ },
+ "2026-10-16T08": {
+  "events": {
+   "EvtSwap3": 20471,
+   "EvtSwap3WithTransferHook": 27
+  },
+  "undecoded": 310,
+  "creates": 70,
+  "trades": 20498,
+  "pools_with_trade5": 65,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.571,
+  "distinct_signers": 2753
+ },
+ "2026-10-16T09": {
+  "events": {
+   "EvtSwap3": 28705,
+   "EvtSwap3WithTransferHook": 48
+  },
+  "undecoded": 402,
+  "creates": 88,
+  "trades": 28753,
+  "pools_with_trade5": 84,
+  "median_signers5": 2.0,
+  "mean_signers5": 2.205,
+  "distinct_signers": 2782
+ },
+ "2026-10-16T10": {
+  "events": {
+   "EvtSwap3": 40358,
+   "EvtSwap3WithTransferHook": 28
+  },
+  "undecoded": 376,
+  "creates": 93,
+  "trades": 40386,
+  "pools_with_trade5": 83,
+  "median_signers5": 2,
+  "mean_signers5": 1.871,
+  "distinct_signers": 2995
+ },
+ "2026-10-16T11": {
+  "events": {
+   "EvtSwap3": 28083,
+   "EvtSwap3WithTransferHook": 47
+  },
+  "undecoded": 570,
+  "creates": 108,
+  "trades": 28130,
+  "pools_with_trade5": 93,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.454,
+  "distinct_signers": 2750
+ },
+ "2026-10-16T12": {
+  "events": {
+   "EvtSwap3": 53963,
+   "EvtSwap3WithTransferHook": 51
+  },
+  "undecoded": 596,
+  "creates": 114,
+  "trades": 54014,
+  "pools_with_trade5": 104,
+  "median_signers5": 2.0,
+  "mean_signers5": 1.781,
+  "distinct_signers": 3768
+ },
+ "2026-10-16T13": {
+  "events": {
+   "EvtSwap3": 45584,
+   "EvtSwap3WithTransferHook": 84
+  },
+  "undecoded": 548,
+  "creates": 132,
+  "trades": 45668,
+  "pools_with_trade5": 116,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.485,
+  "distinct_signers": 4234
+ },
+ "2026-10-16T14": {
+  "events": {
+   "EvtSwap3": 31275,
+   "EvtSwap3WithTransferHook": 60
+  },
+  "undecoded": 297,
+  "creates": 122,
+  "trades": 31335,
+  "pools_with_trade5": 101,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.5,
+  "distinct_signers": 3641
+ },
+ "2026-10-16T15": {
+  "events": {
+   "EvtSwap3": 27573,
+   "EvtSwap3WithTransferHook": 65
+  },
+  "undecoded": 759,
+  "creates": 139,
+  "trades": 27638,
+  "pools_with_trade5": 123,
+  "median_signers5": 2,
+  "mean_signers5": 2.029,
+  "distinct_signers": 3721
+ },
+ "2026-10-16T16": {
+  "events": {
+   "EvtSwap3": 31959,
+   "EvtSwap3WithTransferHook": 227
+  },
+  "undecoded": 654,
+  "creates": 145,
+  "trades": 32186,
+  "pools_with_trade5": 121,
+  "median_signers5": 2,
+  "mean_signers5": 1.662,
+  "distinct_signers": 3507
+ },
+ "2026-10-16T17": {
+  "events": {
+   "EvtSwap3": 27372,
+   "EvtSwap3WithTransferHook": 63
+  },
+  "undecoded": 346,
+  "creates": 135,
+  "trades": 27435,
+  "pools_with_trade5": 113,
+  "median_signers5": 1,
+  "mean_signers5": 1.385,
+  "distinct_signers": 2881
+ },
+ "2026-10-16T18": {
+  "events": {
+   "EvtSwap3": 30200,
+   "EvtSwap3WithTransferHook": 50
+  },
+  "undecoded": 485,
+  "creates": 136,
+  "trades": 30250,
+  "pools_with_trade5": 125,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.441,
+  "distinct_signers": 2951
+ },
+ "2026-10-16T19": {
+  "events": {
+   "EvtSwap3": 25961,
+   "EvtSwap3WithTransferHook": 242
+  },
+  "undecoded": 406,
+  "creates": 137,
+  "trades": 26203,
+  "pools_with_trade5": 119,
+  "median_signers5": 1,
+  "mean_signers5": 1.474,
+  "distinct_signers": 3180
+ },
+ "2026-10-16T20": {
+  "events": {
+   "EvtSwap3": 72552,
+   "EvtSwap3WithTransferHook": 103
+  },
+  "undecoded": 581,
+  "creates": 270,
+  "trades": 72655,
+  "pools_with_trade5": 243,
+  "median_signers5": 1.0,
+  "mean_signers5": 2.019,
+  "distinct_signers": 4906
+ },
+ "2026-10-16T21": {
+  "events": {
+   "EvtSwap3": 28570,
+   "EvtSwap3WithTransferHook": 37
+  },
+  "undecoded": 395,
+  "creates": 153,
+  "trades": 28607,
+  "pools_with_trade5": 126,
+  "median_signers5": 1,
+  "mean_signers5": 2.281,
+  "distinct_signers": 3431
+ },
+ "2026-10-16T22": {
+  "events": {
+   "EvtSwap3": 31680,
+   "EvtSwap3WithTransferHook": 101
+  },
+  "undecoded": 473,
+  "creates": 133,
+  "trades": 31781,
+  "pools_with_trade5": 118,
+  "median_signers5": 1,
+  "mean_signers5": 1.609,
+  "distinct_signers": 2958
+ },
+ "2026-10-16T23": {
+  "events": {
+   "EvtSwap3": 34194,
+   "EvtSwap3WithTransferHook": 86
+  },
+  "undecoded": 283,
+  "creates": 112,
+  "trades": 34280,
+  "pools_with_trade5": 91,
+  "median_signers5": 1.0,
+  "mean_signers5": 1.348,
+  "distinct_signers": 2632
+ }
+}
