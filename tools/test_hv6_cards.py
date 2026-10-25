@@ -319,3 +319,10 @@ class ImportGuard(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_import_guard_refuses_arena_readers():
+    from tools import hv6_cards as H6
+
+    src = "from tools import arena_score\nimport tools.arena_am6_read\nfrom tools.arena_report_legs import x\nfrom tools import arena_worst_gaps, arena_paper, arena_declog, arena_state\n"
+    assert sorted(H6.forbidden_imports(src)) == ["arena_am6_read", "arena_report_legs", "arena_score", "arena_worst_gaps"]
