@@ -254,3 +254,26 @@ def test_hv4_read_book_is_not_a_gate_read_path(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(HR, "read_book", lambda *a, **k: called.append(1))
     assert HR.main(["book", "--bot", "CON-L"]) == 3 and not called
     assert "not a gate-read path" in capsys.readouterr().err
+
+
+def test_v12_and_learning_are_refused_like_book(monkeypatch, capsys):
+    from tools import hv4_read as HR
+    monkeypatch.delenv("MAL_ARENA_TEST", raising=False)
+    called = []
+    monkeypatch.setattr(HR, "read_book", lambda *a, **k: called.append(1))
+    monkeypatch.setattr(HR, "read_learning", lambda *a, **k: called.append(2))
+    assert HR.main(["v12", "--bot", "CON-L"]) == 3 and HR.main(["learning"]) == 3 and not called
+    assert capsys.readouterr().err.count("not a gate-read path") == 2
+
+
+def test_record_and_settle_are_required_outside_test_mode(tmp_path, monkeypatch):
+    root, reg = setup(tmp_path, book())
+    ip, _ = instant(tmp_path, root)
+    monkeypatch.setattr(S, "score_bot", lambda *a, **k: (_ for _ in ()).throw(AssertionError("scorer called")))
+    monkeypatch.setattr(R, "run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("am6 read called")))
+    monkeypatch.delenv(TEST_ENV)
+    with pytest.raises(W.Refused, match="--record is required"):
+        wrun(tmp_path, root, reg, ip)  # AS_OF is far past B + 24 h, but there is no --record
+    with pytest.raises(W.Refused, match="B \\+ 24 h"):
+        W.run(ip, root, reg, "hv4-CON-F", [health()[0]], [health()[1]], B_NEW + S.SETTLE_MS - 1, "", record=True, reads_dir=str(tmp_path / "r"))
+    assert not (tmp_path / "r").exists()

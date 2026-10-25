@@ -1,6 +1,6 @@
 """hv4_read_instant (DEC-031 Am.12 items 1, 3, 6): the attempt-margin read instant of hv4-CON-F. Synthetic ledgers and hour tables only.
 Covers the margin arithmetic and the 100-106 boundary cases with refusals, the O-only date rule, the Am.6 excluded-hour drop (table and restart gaps), the
-horizon, the confirmation window, the write-once record, and parity with the pinned arena_score.load_decisions (a508ed79, read from git at 5e12f8f5) and with
+horizon, the confirmation window, the write-once record, and parity with the pinned arena_score.load_decisions (a508ed79, read from git at 9ed4c5ff) and with
 arena_am6_exclusions.classify's class S_10."""
 from __future__ import annotations
 
@@ -89,11 +89,11 @@ def run(root: Path, start: int = CLOCK, as_of: int = END_H, health=FULL_HEALTH, 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the pinned scorer's functions
 def pinned_arena_score():
-    """load_decisions, blind_read_instant and their constants, extracted from tools/arena_score.py at 5e12f8f5 (sha256 a508ed79) and executed alone."""
+    """load_decisions, blind_read_instant and their constants, extracted from tools/arena_score.py at 9ed4c5ff (sha256 a508ed79) and executed alone."""
     try:
-        blob = subprocess.run(["git", "-C", str(REPO), "show", "5e12f8f5:tools/arena_score.py"], capture_output=True, check=True).stdout
+        blob = subprocess.run(["git", "-C", str(REPO), "show", "9ed4c5ff:tools/arena_score.py"], capture_output=True, check=True).stdout
     except (OSError, subprocess.CalledProcessError):
-        pytest.skip("git history with 5e12f8f5 not available")
+        pytest.skip("git history with 9ed4c5ff not available")
     assert hashlib.sha256(blob).hexdigest() == F.PINNED_ARENA_SCORE_SHA256
     tree = ast.parse(blob)
     want_fn, want_const = {"load_decisions", "blind_read_instant"}, {"DAY_MS", "MIN_N", "MIN_DAYS"}
@@ -373,7 +373,10 @@ def test_cli_screen_confirm_and_refusals(tmp_path, capsys):
     now = END_H + DAY
     out = tmp_path / "screen.json"
     assert F.main(_argv(tmp_path, h, r, CLOCK + 4 * DAY, out=out), now_ms=now) == 0
-    assert not out.exists() and "NOT_READY" in capsys.readouterr().out
+    txt = capsys.readouterr().out
+    assert not out.exists() and "NOT_READY" in txt
+    for bad in ("O ", "R ", "margin", "attempts_sha256", "dates", "kept_"):  # QP-VERDICT-915 item 3: no running counts before B
+        assert bad not in txt.replace("READ INSTANT", "").replace("NOT_READY", "").replace("END_H", "")
     assert F.main(_argv(tmp_path, h, r, CLOCK + 5 * DAY, out=out), now_ms=now) == 0
     rec = json.loads(out.read_text())
     assert rec["status"] == "READ_INSTANT" and rec["read_instant_ms"] == CLOCK + 5 * DAY and rec["mode"] == "screen" and rec["bot_id"] == BOT
@@ -419,3 +422,16 @@ def test_output_has_counts_only(tmp_path):
     for bad in ("pnl", "price", "legs", "by_utc_date", "dropped"):
         assert bad not in text
     assert res["status"] == "READ_INSTANT" and f"O {res['O']}  R {res['R']}" in text
+
+
+def test_not_ready_render_is_status_and_last_boundary_only(tmp_path):
+    write_ledger(tmp_path, spread(104, [0, 1, 2, 3, 4]))
+    res = run(tmp_path, as_of=CLOCK + 5 * DAY)
+    assert res["status"] == "NOT_READY"
+    lines = F.render(dict(res, tool_sha256="x", am6_exclusions_sha256="y"))
+    assert len(lines) == 2 and "last tested" in lines[1]
+    assert not any(k in "\n".join(lines) for k in ("margin", "attempts_sha256", "O 10", "kept_"))
+    # READ_INSTANT keeps its counts
+    write_ledger(tmp_path / "b", spread(110, [0, 1, 2, 3, 4]))
+    ok = run(tmp_path / "b", as_of=CLOCK + 5 * DAY)
+    assert ok["status"] == "READ_INSTANT" and any("margin" in x for x in F.render(dict(ok, tool_sha256="x", am6_exclusions_sha256="y")))

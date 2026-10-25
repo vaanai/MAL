@@ -38,7 +38,9 @@ from typing import Any, Iterator, Sequence
 from tools import arena_am6_read as R
 from tools import arena_score as S
 from tools import hv4_read_instant as F
-from tools.arena_paper import load_registry
+import os
+
+from tools.arena_paper import TEST_ENV, load_registry
 
 ARENA_AM6_READ_SHA256 = F.PINNED_AM6_READ_SHA256
 ARENA_SCORE_SHA256_KNOWN = (F.PINNED_ARENA_SCORE_SHA256, "c4859323622794f5f97a131eb32256c905ca2ab6c1adf8ab21568fc2a98f27f3")
@@ -124,12 +126,17 @@ def run(instant_path: str, ledger_root: str, registry: str, bot: str, health_tex
         raise Refused(f"registry clock {clock} is not the HV4 clock {F.CLOCK_MS}")
     head = f"AM15 READ  bot {bot}  instant_file_sha256 {isha}  status {rec.get('status')}"
     if rec.get("status") == F.ST_ND:
-        return 0, [head, "NOT_DECIDABLE: no Amendment 15 boundary by END_H (Am.9 item 3): final for the bot_id, counts only; the scorer is not called"], None
+        return 0, [head, "NOT_DECIDABLE: no Amendment 15 boundary by END_H (DEC-031 Am.15 item 1): final for the bot_id, counts only; the scorer is not called"], None
     if rec.get("status") != F.ST_READY or not isinstance(rec.get("read_instant_ms"), int):
         raise Refused(f"instant file status {rec.get('status')!r} is not READ_INSTANT")
     b = rec["read_instant_ms"]
     if as_of_ms < b:
         raise Refused("--as-of-ms is before the instant B")
+    if os.environ.get(TEST_ENV) != "1":  # QP-VERDICT-915 item 2: the first scored output is the one recorded read, no preview, no PENDING view
+        if not record:
+            raise Refused("--record is required: an unrecorded run prints an outcome preview (DEC-031 Am.15 item 4)")
+        if as_of_ms < b + S.SETTLE_MS:
+            raise Refused(f"--as-of-ms is before B + {S.SETTLE_MS // 3_600_000} h: no pending or preview output; run at or after B + 24 h")
     try:
         again = F.compute(ledger_root, bot, clock, "screen", health_texts, health_shas, restarts_text, as_of_ms)
     except F.Refused as ex:

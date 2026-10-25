@@ -41,7 +41,7 @@ HOUR_MS = X.HOUR_MS
 MIN_MARGIN = 100
 MIN_O_DATES = 5
 CAP_DIV = 20  # floor(0.05 x n) == n // 20 for integer n >= 0
-PINNED_ARENA_SCORE_SHA256 = "a508ed79ed1cc425af0aa7dcd08e3ef5f8599dd6a45cb5e47cc8a779c6a0cd34"  # load_decisions read from here (blob at 5e12f8f5)
+PINNED_ARENA_SCORE_SHA256 = "a508ed79ed1cc425af0aa7dcd08e3ef5f8599dd6a45cb5e47cc8a779c6a0cd34"  # load_decisions read from here (blob at 9ed4c5ff, the HV4 frozen sha)
 PINNED_AM6_READ_SHA256 = "ef6e4555bc9e49272a5764bd75e1510f210af669a7a974cc68042b7eaaef32b3"
 OPEN_PREFIX = '{"kind":"open"'
 REFUSED_PREFIX = '{"kind":"refused"'
@@ -280,6 +280,8 @@ def render(res: Mapping) -> list[str]:
         st = f"{ST_ND}: no 00:00Z boundary <= END_H meets the margin; final for the bot_id, N + 1"
     else:
         st = f"{ST_NOT_READY}: no boundary yet (last tested {utc(res['last_boundary_tested_ms']) if res['last_boundary_tested_ms'] else 'none'})"
+    if res["status"] == ST_NOT_READY:  # QP-VERDICT-915 item 3: no running attempt counts before B
+        return [head, st]
     return [head, st,
             f"O {res['O']}  R {res['R']}  margin {res['margin']} (need >= {MIN_MARGIN})  O dates {res['o_dates']} (need >= {MIN_O_DATES})",
             f"attempts_sha256 {res['attempts_sha256']}  health {','.join(res['health_table_sha256'])}  merged {res['health_merged_sha256']}  restarts {res['restarts_sha256']}",
