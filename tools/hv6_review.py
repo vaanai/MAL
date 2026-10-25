@@ -692,7 +692,10 @@ def load_version(root: str | os.PathLike, arm: str, row: Mapping, *, verify_bund
             text = (pdir / f"v{row['version']}.txt").read_text(encoding="utf-8")
         except OSError:
             raise ManifestRefused("playbook_file_missing") from None
-        pb = pr.playbook_from_text(ag.PERSONA, f"v{row['version']}", text)
+        try:
+            pb = pr.playbook_from_text(ag.PERSONA, f"v{row['version']}", text)
+        except pr.PromptError:
+            raise ManifestRefused("playbook_unparseable") from None
     if pb.sha256 != row["playbook_sha256"] or pb.header_sha256 != row["playbook_header_sha256"]:
         raise ManifestRefused("playbook_hash")
     if RV.check_playbook_paragraph_rules(pb, base):
