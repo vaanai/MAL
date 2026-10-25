@@ -120,11 +120,19 @@ def stage_s(out):
     print("samples", len(samples))
 
 
-def rpc_tx(sig, tries=6):
+WIRE = {"n": 0}
+WIRE_CAP = 1950  # total HTTP attempts, retries included (declared cap < 2,000)
+WIRE_PRIOR = 600  # pessimistic attempts of the first F run (no wire counter; cancelled with 217 extracts, 8 failures)
+
+
+def rpc_tx(sig, tries=4):
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getTransaction",
                        "params": [sig, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0, "commitment": "finalized"}]}).encode()
     err = "x"
     for i in range(tries):
+        if WIRE["n"] >= WIRE_CAP:
+            return {"_err": "wire_cap"}
+        WIRE["n"] += 1
         try:
             req = urllib.request.Request(RPC, body, {"content-type": "application/json"})
             with urllib.request.urlopen(req, timeout=30) as r:
@@ -184,6 +192,9 @@ def stage_f(out):
     if os.path.exists(path):
         done = {json.loads(l)["sig"] for l in open(path)}
     calls = len(done)
+    wp = os.path.join(out, "wire.txt")
+    WIRE["n"] = int(open(wp).read()) if os.path.exists(wp) else WIRE_PRIOR
+    random.Random(SEED).shuffle(samples)
     with open(path, "a") as f:
         for s in samples:
             if s["sig"] in done:
@@ -195,9 +206,12 @@ def stage_f(out):
             rec.update(extract(rpc_tx(s["sig"]), s["trader"]))
             f.write(json.dumps(rec) + "\n")
             f.flush()
+            open(wp, "w").write(str(WIRE["n"]))
             calls += 1
-            time.sleep(0.25)
-    print("tx calls total", calls)
+            if rec.get("why") == "wire_cap":
+                break
+            time.sleep(0.5)
+    print("tx extracts", calls, "wire attempts (incl. prior estimate)", WIRE["n"])
 
 
 def wilson(k, n, z=1.96):
