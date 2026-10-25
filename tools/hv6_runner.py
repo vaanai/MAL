@@ -34,6 +34,7 @@ if __package__ in (None, ""):
     _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 import argparse
+import dataclasses
 import bisect
 import hashlib
 import json
@@ -49,6 +50,7 @@ from typing import Any, Callable, Mapping, Sequence
 from tools import hv4_cards as C
 from tools import hv6_agents as A
 from tools import hv6_cards as H
+from tools import hv6_review as RVW
 from tools.arena_declog import GENESIS, DecisionLog, LogChainError, sha256_hex, utc_day  # noqa: F401
 from tools.arena_paper import ArenaRefused, canon
 from tools.arena_state import WSOL_MINT, ArenaState
@@ -479,9 +481,37 @@ class RunnerConfig:
     strict_leakage: bool = False
 
 
+_OPS = {"<": lambda a, b: a < b, "<=": lambda a, b: a <= b, ">": lambda a, b: a > b, ">=": lambda a, b: a >= b}
+
+
+def local_veto(vetoes: Any, card: Mapping[str, Any]) -> str | None:
+    """The first local veto (a WATCH-grammar predicate the reviewer or a tightening regime rule added; it only blocks) that holds on the card, else None.
+    A veto that cannot be parsed against this card never fires (as hv4_runner.local_veto)."""
+    nums = A.v4.numeric_fields(card)
+    for v in vetoes or ():
+        try:
+            terms = A.v4.parse_watch_predicate(v, nums)
+        except A.v4.PredicateError:
+            continue
+        if all(f in nums and _OPS[op](nums[f], n) for f, op, n in terms):
+            return v
+    return None
+
+
 class Runner:
     def __init__(self, cfg: RunnerConfig, state: Any, engine: Any, model: Any, chain: Any, guard: Any = None, now_fn: Callable[[], int] | None = None,
-                 regime_review_fn: Callable[[str, Mapping, int], Any] | None = None) -> None:
+                 regime_review_fn: Callable[[str, Mapping, int], Any] | None = None, review_root: str | os.PathLike | None = None,
+                 version_kw: Mapping[str, Any] | None = None, allow_drill_root: bool = False) -> None:
+        # review_root: where tools/hv6_review keeps the manifests (None = no reviewer wiring: every arm stays on playbook v0 and v0 knobs). Production passes the
+        # HV6 root. A drill root (<HV6_ROOT>/drill/... or a marked synthetic root) is refused unless the drill tool asks for it (QP C2: drill/ is never an input).
+        self.review_root = Path(H.check(review_root, "r")) if review_root is not None else None
+        if self.review_root is not None and RVW.is_drill_root(self.review_root) and not allow_drill_root:
+            raise RuntimeError("a drill root is never an input in production")
+        if version_kw is None:
+            version_kw = {"reviewer_sha": RVW.reviewer_sha256(), "regime_sha": RVW.regime_template_sha256()}
+            if RVW.COMMIT_RE.fullmatch(str(cfg.frozen_sha).lower()):
+                version_kw["frozen_sha"] = cfg.frozen_sha
+        self.version_kw = dict(version_kw)
         self.cfg, self.state, self.engine, self.model, self.chain, self.guard = cfg, state, engine, model, chain, guard
         self.now_fn = now_fn or (lambda: time.time_ns() // 1_000_000)
         self.root = Path(H.check(cfg.root, "w"))
@@ -499,6 +529,11 @@ class Runner:
         self.knobs = {a: A.Knobs.v0() for a in self.llm_arm_names}
         self.plans = {a: dict(A.GEN_SPEC.plan_defaults) for a in self.llm_arm_names}
         self.playbooks = {a: A.load_playbook("v0") for a in self.llm_arm_names}
+        self.overrides: dict[str, dict] = {a: {} for a in self.llm_arm_names}    # plan knobs a reviewer version / active regime rule sets (L, L-nr, P only)
+        self.vetoes: dict[str, tuple] = {a: () for a in self.llm_arm_names}
+        self.vstate: dict[str, dict] = {}
+        self._logged_sig: dict[str, str] = {}
+        self.arm_halt: dict[str, str] = {}
         self.calls: dict[tuple[str, str], list[int]] = {}
         self.seq: dict[tuple[str, str], int] = {}
         self.regime_triggers: dict[str, int] = {}
@@ -510,6 +545,7 @@ class Runner:
         self.tp: TickPolicy | None = None
         self._sell_next: dict[str, int] = {}
         self._pend_sell: dict[str, tuple] = {}
+        self._logged_ms: dict[str, int] = {}
         self._replay_pos: dict[str, Pos] = {}
         self._stop = False
         if not cfg.live and hasattr(engine, "now_fn"):
@@ -559,6 +595,7 @@ class Runner:
                 n["rows"] += 1
                 self._replay_row(name, r)
         self._pend_sell.clear()
+        self._restore_versions()
         self.engine.recover()  # as HV4: the engine rebuilds the pre-restart positions from its ledger
         # A sell the log shows as sent that the engine never priced leaves an open engine position nothing would close (a restart orphan makes the read
         # NOT_DECIDABLE): put it back in the book so it is sold again.
@@ -585,6 +622,10 @@ class Runner:
             return
         b = self.books.get(name)
         if b is None:
+            return
+        if k == "version":
+            self._logged_sig[name] = r["sig"]
+            self._logged_ms[name] = r["ms"]
             return
         if k == "llm_call":
             self.seq[(name, day)] = self.seq.get((name, day), 0) + 1
@@ -631,6 +672,87 @@ class Runner:
             pos = b.open[r["pid"]]
             pos.stop_pct = r["stop_pct"] if r.get("stop_pct") is not None else pos.stop_pct
             pos.target_pct = r["target_pct"] if r.get("target_pct") is not None else pos.target_pct
+
+    # -- reviewer versions (L, L-nr, P only; F and X stay on v0 for ever)
+    def _restore_versions(self) -> None:
+        """After a restart: the version and the probes in force at the last logged version row of each arm (nothing is logged again)."""
+        if self.review_root is None:
+            return
+        for arm, ms in sorted(self._logged_ms.items()):
+            try:
+                av = RVW.active_version(self.review_root, arm, ms, **self.version_kw)
+            except (RVW.ManifestRefused, RVW.ReviewError, OSError, ValueError) as e:
+                self.arm_halt[arm] = "restore:" + type(e).__name__
+                continue
+            if av is not None:
+                self._apply_version(arm, av, ms, log=False)
+
+    def refresh_versions(self, T: int) -> None:
+        """At each minute tick (so at every nightly and intraday effective_from, to the next scan): load the version in force for L, L-nr and P through
+        hv6_review.active_version (the whole manifest chain is verified), apply it, and log it BEFORE the first decision under it. A refused chain stops the
+        entries of the whole group (the symmetric rule of a refused manifest), with a class-name-only row; exits go on."""
+        if self.review_root is None:
+            return
+        for arm in A.reviewer_arms():
+            try:
+                av = RVW.active_version(self.review_root, arm, T, **self.version_kw)
+            except RVW.ManifestRefused as e:
+                if str(e) == "no_version_in_force":
+                    continue  # before the genesis line's effective instant: v0
+                self._version_refused(arm, T, type(e).__name__ + ":" + str(e)[:40])
+                continue
+            except (RVW.ReviewError, OSError, ValueError) as e:
+                self._version_refused(arm, T, type(e).__name__)
+                continue
+            if av is not None:
+                self.arm_halt.pop(arm, None)
+                self._apply_version(arm, av, T, log=True)
+        if self.arm_halt and self.tp is not None and not self.tp.entries_halted:
+            self.tp = dataclasses.replace(self.tp, entries_halted=True, x_halted=True, reason="manifest_refused:" + sorted(self.arm_halt.values())[0])
+
+    def _version_refused(self, arm: str, T: int, code: str) -> None:
+        if self.arm_halt.get(arm) != code:
+            self.arm_halt[arm] = code
+            self.log.append(arm, T, {"kind": "version_refused", "code": code})
+
+    def _apply_version(self, arm: str, av: Any, T: int, log: bool) -> None:
+        m, st = av.manifest, av.state
+        rules = sorted((dict(r) for r in av.regime_rules), key=lambda r: (str(r["target"]), str(r["new"]), r["expires_ms"]))
+        v0 = A.v0_knobs()
+        knobs = dict(st.knobs)
+        overrides = {k: knobs[k] for k in A.GEN_SPEC.plan_keys if k in knobs and knobs[k] != v0[k]}  # a plan knob the reviewer moved off v0
+        min_conv = int(knobs["min_conviction"])
+        vetoes = list(st.vetoes)
+        probes: list[dict] = []
+        for r in rules:
+            tgt, new = r["target"], r["new"]
+            if tgt == "local_veto":
+                vetoes.append(new)
+                continue
+            if tgt == "min_conviction":
+                min_conv = int(new)
+            elif tgt in A.GEN_SPEC.plan_keys:
+                overrides[tgt] = new
+            if r.get("mode") == "probe":
+                probes.append(r)
+        try:
+            knobs_obj = A.Knobs(min_conv)
+        except ValueError:
+            self._version_refused(arm, T, "knobs_out_of_bounds")
+            return
+        self.playbooks[arm], self.knobs[arm] = st.playbook, knobs_obj
+        self.overrides[arm], self.vetoes[arm] = overrides, tuple(vetoes)
+        self.probes.by_arm[arm] = []
+        for r in probes:  # only accepted regime_rule lines of a verified manifest; ProbeBook.add re-checks expiry and the extra-entry total
+            self.probes.add(arm, A.RegimeRuleVerdict(True, None, r, "probe", "regime_probe", r["expires_ms"], True), T)
+        sig = sha256_hex(canon({"manifest": m["sha256"], "rules": rules}))
+        self.vstate[arm] = {"version": m["version"], "manifest_sha256": m["sha256"], "sig": sig}
+        if log and self._logged_sig.get(arm) != sig:
+            self.log.append(arm, T, {"kind": "version", "version": m["version"], "manifest_kind": m["kind"], "manifest_sha256": m["sha256"],
+                                     "effective_from_ms": m["effective_from_ms"], "playbook_sha256": m["playbook_sha256"], "knobs_sha256": m["knobs_sha256"],
+                                     "vetoes_sha256": m["vetoes_sha256"], "n_rules": len(rules), "n_probes": len(probes), "sig": sig,
+                                     "plan_overrides": overrides, "min_conviction": min_conv})
+            self._logged_sig[arm] = sig
 
     # -- the group policy: once per tick
     def _begin_tick(self, T: int) -> TickPolicy:
@@ -896,12 +1018,18 @@ class Runner:
         if self.probes.active(arm, recv):  # DESIGN section 3: a loosened-knob trade is a probe: stake <= 0.25 and tagged
             size = min(size, A.PROBE_STAKE)
         gates = self._gates(arm, card["id"], size, card["f"].get("age_tier") != "established", recv)
+        if self.vetoes.get(arm):
+            hit = local_veto(self.vetoes[arm], card)
+            gates["local_veto"] = {"value": hit, "need": "no local veto holds", "ok": hit is None}
         if not all(g["ok"] for g in gates.values()):
             self._skip(arm, card, recv, [k for k, g in gates.items() if not g["ok"]], gates)
             return
         # QP 918 (5): only the validated model plan is executed; a key the model left out is a knob that is OFF (never filled from plan_defaults).
         plan = dict(v.fields.get("plan") or {})
-        self._open(arm, card, size, plan, recv, gates, {"conviction": v.fields.get("conviction"), "size_asked": asked})
+        ov = self.overrides.get(arm) or {}
+        plan.update(ov)  # a plan knob set by the arm's reviewer version or an active regime rule replaces the model's value; logged on the row
+        self._open(arm, card, size, plan, recv, gates, {"conviction": v.fields.get("conviction"), "size_asked": asked,
+                                                         **({"plan_overrides": ov} if ov else {})})
 
     # -- exits
     def exits(self, T: int) -> None:
@@ -1103,6 +1231,7 @@ class Runner:
         self.poll_to(T)
         self.exits(T)
         if (T // 1000) % 60 == H.SCAN_SECOND_MS // 1000:
+            self.refresh_versions(T)
             self.scan(T)
             self.watches(T)
             self.rechecks(T)
@@ -1155,6 +1284,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--feed-delay-slots", type=int, required=True)
     ap.add_argument("--stub", action="store_true")
     ap.add_argument("--end-ms", type=int, default=None)
+    ap.add_argument("--review-root", default=None, help="where hv6_review keeps the manifests; default = --root. A drill root is refused.")
     a = ap.parse_args(argv)
     try:
         refuse_hv4_chain_state()
@@ -1172,7 +1302,12 @@ def main(argv: list[str] | None = None) -> int:
     chain = live_chain_source(a.root)
     chain.prefetch.start()  # facts are fetched off the scan path, stamped before the scan instant; the hourly spend (1,000) is persisted under the root
     cfg = RunnerConfig(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True)
-    run = Runner(cfg, ArenaState(a.tape_dir), ArenaEngine(ledger_root, a.registry, cfg=stack_config(a.feed_delay_slots)), model, chain, guard)
+    try:
+        run = Runner(cfg, ArenaState(a.tape_dir), ArenaEngine(ledger_root, a.registry, cfg=stack_config(a.feed_delay_slots)), model, chain, guard,
+                     review_root=a.review_root or a.root)
+    except (RuntimeError, PermissionError) as e:
+        print(f"hv6_runner: refused: {type(e).__name__}", file=sys.stderr)
+        return 2
     signal.signal(signal.SIGTERM, run.request_stop)
     print(canon({"resumed": run.resume()}))
     start = max(a.clock_start_ms, int(time.time() * 1000))
