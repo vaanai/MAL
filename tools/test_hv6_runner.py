@@ -59,19 +59,19 @@ def script(req):
     return A.m4.default_reply(req)
 
 
-def make(tmp: Path, *, guard_cls=CountingGuard):
+def make(tmp: Path, *, guard_cls=CountingGuard, chain=None, model_script=None):
     tape = tmp / "tape"
     if not tape.exists():
         write_tape(tape, trade_rows())
     root = tmp / "v6"
     guard = guard_cls(root)
-    model = A.StubModel(script, guard=guard, latency_ms=50)
+    model = A.StubModel(model_script or script, guard=guard, latency_ms=50)
     engine = ArenaEngine(tmp / "eng", tmp / "reg.json", cfg=R.stack_config(FEED_DELAY_SLOTS), sps_fn=lambda: 0.4)
     for a in R.ARM_ORDER:
         register_bot(R.bot_id(a), "abcdef1234567", T0 - 60 * MIN, str(tmp / "reg.json"), deciding_stake=0.25,
                      model_ids=[A.MODEL_ID] if A.ARMS[a].llm else [], now_ms=T0 - 61 * MIN, verify_sha=False)
     cfg = R.RunnerConfig(root=str(root), frozen_sha="abcdef1234567", clock_start_ms=T0 - 60 * MIN)
-    return R.Runner(cfg, ArenaState(tape, start_ms=0), engine, model, FakeChain(), guard)
+    return R.Runner(cfg, ArenaState(tape, start_ms=0), engine, model, chain if chain is not None else FakeChain(), guard)
 
 
 def rows_of(run, arm, kind=None):
