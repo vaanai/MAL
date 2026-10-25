@@ -26,3 +26,14 @@ def test_fill_slots_and_cluster():
     assert c.cluster_times(ev, 3, 60, 60) == [120, 420]
     assert c.impact_ok(30e9, 0.0) and not c.impact_ok(10e9, 0.0)
     assert c.impact_ok(10e9, 17.584e9)
+
+
+def test_coverage_distinct_and_allowlist():
+    from tools import p29_keeper_coverage as cv
+    # same signature three times is ONE distinct fill: no event; three distinct sigs: one event
+    assert cv.events_distinct([(1, "a"), (2, "a"), (3, "a")]) == []
+    assert cv.events_distinct([(1, "a"), (2, "b"), (3, "c"), (4, "d")]) == [3]
+    forbidden = ("probe", "shadow", "canary", "forward-", "fresh-08", "truth-", "tip-tape", "sealed", "arena", "meta-capture")
+    for label, role, dirs, days in cv.BLOCKS:
+        assert all(not any(f in d for f in forbidden) for d in dirs)
+        assert all("2026-09-04" <= d <= "2026-09-24" for d in days)
