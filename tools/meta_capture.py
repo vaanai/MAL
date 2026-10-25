@@ -740,6 +740,11 @@ class Collector:
         self.recorded: dict[tuple[str, int], float] = {}  # (mint, attempt) with a row written
         self.inflight_rec: dict[tuple[str, int], dict[str, Any]] = {}
         self.inflight = {"local": 0, "public": 0}
+        # Second create source (--arena-tape-dir / backfill). Off by default: rows then carry no `src` and no dedup runs,
+        # so a default run writes exactly what it wrote before.
+        self.multi_source = False
+        self.seen_mints: set[str] = set()
+        self.src_counts: dict[str, int] = {}
 
     def rss_ok(self) -> bool:
         if self.rss_fn() > self.max_rss_mb:
@@ -761,18 +766,27 @@ class Collector:
             self._add_meta(int(row["t_recv_ms"]), {
                 "mint": str(row["mint"]), "attempt": attempt, "status": "dropped_backlog",
                 "t_attempt_ms": self.clock_ms(), "uri_kind": uri_kind(str(row.get("uri") or "")),
-                "gateway": None, "bytes": 0, "sha256": None}, None)
+                "gateway": None, "bytes": 0, "sha256": None,
+                **({"src": row["src"]} if "src" in row else {})}, None)
             return
         self.seq += 1
         due = int(row["t_recv_ms"]) + SCHEDULE_MS[attempt]  # fixed at receive time
         heapq.heappush(self.heap, (due, self.seq, attempt, row))
 
-    def on_message(self, payload: Mapping[str, Any], t_recv_ms: int) -> None:
+    def on_message(self, payload: Mapping[str, Any], t_recv_ms: int, src: str | None = None) -> None:
         row = create_row(payload, t_recv_ms)
         if row is None:
             return
+        if self.multi_source:
+            if row["mint"] in self.seen_mints:  # one row per mint across the sources
+                self.src_counts["dup_" + (src or "pumpportal")] = self.src_counts.get("dup_" + (src or "pumpportal"), 0) + 1
+                return
+            row["src"] = src or "pumpportal"
         if not self.store.add_create(row):
             return
+        if self.multi_source:
+            self.seen_mints.add(row["mint"])
+            self.src_counts[row["src"]] = self.src_counts.get(row["src"], 0) + 1
         self.creates_received += 1
         self.last_create_mono = self.mono()
         if self.rss_ok():
@@ -793,6 +807,7 @@ class Collector:
                     done.add(str(m.get("mint")))
             for row in _read_jsonl(self.store.creates_path(hk)):
                 mint = str(row.get("mint"))
+                self.seen_mints.add(mint)
                 if mint in done or int(row["t_recv_ms"]) + SCHEDULE_MS[-1] < now - 60_000:
                     continue
                 # Only the lowest missing attempt; _attempt chains the rest, so a
@@ -936,6 +951,8 @@ class Collector:
                                "t_attempt_ms": self.clock_ms(), "uri_kind": uri_kind(uri),
                                **ipf.host_fields(ipf.classify_uri(uri)),
                                "gateway": None, "status": "http_0", "bytes": 0, "sha256": None}
+        if "src" in row:
+            rec["src"] = row["src"]
         png: bytes | None = None
         self.inflight_rec[(mint, attempt)] = rec
         status, body, gateway, wait_ms, refused = await self._fetch(uri, MAX_JSON_BYTES)
@@ -1099,7 +1116,8 @@ async def worker_loop(col: Collector, done: Callable[[], bool]) -> None:
 
 async def run(ws_url: str, col: Collector, stop: asyncio.Event, duration_s: float | None,
               drain_timeout_s: float = DRAIN_TIMEOUT_S, watchdog_s: float = WATCHDOG_S,
-              heartbeat_s: float = HEARTBEAT_S, stall_window_s: float = STALL_WINDOW_S) -> int:
+              heartbeat_s: float = HEARTBEAT_S, stall_window_s: float = STALL_WINDOW_S,
+              arena: tuple[Any, Callable[[str], str | None]] | None = None) -> int:
     import websockets
     from websockets.exceptions import ConnectionClosed, WebSocketException
 
@@ -1121,6 +1139,10 @@ async def run(ws_url: str, col: Collector, stop: asyncio.Event, duration_s: floa
     sup = Supervisor(lambda: worker_loop(col, done))
     mtask = asyncio.ensure_future(monitor(col, sup, stop, flags, watchdog_s=watchdog_s,
                                           heartbeat_s=heartbeat_s, stall_window_s=stall_window_s))
+    atask = None
+    if arena is not None:
+        col.multi_source = True
+        atask = asyncio.ensure_future(arena_loop(col, arena[0], arena[1], done))
     backoff, max_backoff = 1.0, 60.0
     while not done():
         try:
@@ -1158,11 +1180,168 @@ async def run(ws_url: str, col: Collector, stop: asyncio.Event, duration_s: floa
     except Exception:  # noqa: BLE001 - a dead worker is already logged by the supervisor
         pass
     mtask.cancel()
+    if atask is not None:
+        atask.cancel()
     log.info("stopped pending=%d dropped=%d local_gateway=%s source_counts=%s", len(col.heap),
              col.dropped, col.store.local_gateway, json.dumps(col.source_counts, sort_keys=True))
     if flags["stalled"]:
         return EXIT_STALL
     return EXIT_RSS if col.rss_exceeded else 0
+
+
+ARENA_POLL_S = 2.0
+ARENA_RESOLVE_CONCURRENCY = 4
+ARENA_RESOLVE_TRIES = 3
+SRC_ARENA = "arena"
+SRC_BACKFILL = "arena-backfill"
+
+
+async def _resolve_and_feed(col: Collector, payload: dict[str, Any], t_ms: int, resolver: Callable[[str], str | None],
+                            sem: asyncio.Semaphore, src: str) -> bool:
+    """signature -> uri (blocking tx lookup in a thread), then the same collector path as a PumpPortal create. False = try again."""
+    sig = payload.get("signature")
+    if not isinstance(sig, str) or not sig:
+        col.src_counts["arena_no_signature"] = col.src_counts.get("arena_no_signature", 0) + 1
+        return True
+    async with sem:
+        try:
+            uri = await asyncio.to_thread(resolver, sig)
+        except Exception as exc:  # noqa: BLE001 - class name only: the exception text can carry the lookup URL
+            name = "resolve_" + type(exc).__name__
+            col.store.error_counts[name] = col.store.error_counts.get(name, 0) + 1
+            return False
+    if not uri:
+        col.src_counts["arena_no_uri"] = col.src_counts.get("arena_no_uri", 0) + 1
+        return False
+    col.on_message({**payload, "uri": uri}, t_ms, src=src)
+    return True
+
+
+async def arena_loop(col: Collector, tailer: Any, resolver: Callable[[str], str | None], done: Callable[[], bool],
+                     poll_s: float = ARENA_POLL_S) -> None:
+    """Live second source. Any failure here is counted by type and retried; it never touches the websocket task."""
+    sem = asyncio.Semaphore(ARENA_RESOLVE_CONCURRENCY)
+    retry: dict[str, tuple[dict[str, Any], int, int]] = {}
+    while not done():
+        try:
+            await arena_round(col, tailer, resolver, sem, retry)
+        except Exception as exc:  # noqa: BLE001
+            name = "arena_loop_" + type(exc).__name__
+            col.store.error_counts[name] = col.store.error_counts.get(name, 0) + 1
+        await asyncio.sleep(poll_s)
+
+
+async def arena_round(col: Collector, tailer: Any, resolver: Callable[[str], str | None], sem: asyncio.Semaphore,
+                      retry: dict[str, tuple[dict[str, Any], int, int]]) -> None:
+    for payload, t_ms in tailer.poll():
+        if payload["mint"] not in col.seen_mints:
+            retry.setdefault(payload["mint"], (payload, t_ms, 0))
+    items = list(retry.items())
+    results = await asyncio.gather(*(
+        _resolve_and_feed(col, p, t, resolver, sem, SRC_ARENA) for _m, (p, t, _n) in items))
+    for (mint, (p, t, n)), ok in zip(items, results):
+        if ok or n + 1 >= ARENA_RESOLVE_TRIES:
+            retry.pop(mint, None)
+        else:
+            retry[mint] = (p, t, n + 1)
+
+
+# --------------------------------------------------------------- backfill
+BACKFILL_SUBDIR = "arena-backfill"
+BACKFILL_MAX_QUEUE = 500
+
+
+class BackfillStore(Store):
+    """Own out dir (<out>/arena-backfill). Never seals and has no manifest chain: the live process owns the sealed
+    chain of <out>, and a backfill row for an old hour must not be sealed before its retries finish. The manager
+    hashes the finished backfill dir once, after the run."""
+
+    def seal_due(self, now_ms: int) -> list[str]:
+        return []
+
+    def process_start(self, t_ms: int) -> None:
+        return None
+
+
+def hours_between(a: str, b: str) -> list[str]:
+    """[a, b) as YYYY-MM-DDTHH keys."""
+    for h in (a, b):
+        if not HOUR_RE.fullmatch(h):
+            raise ValueError("hours must look like 2026-10-25T11")
+    out, t, end = [], hour_start_ms(a), hour_start_ms(b)
+    while t < end:
+        out.append(hour_key(t))
+        t += 3_600_000
+    return out
+
+
+def existing_mints(dirs: list[Path], hours: list[str]) -> set[str]:
+    """Mints already in creates/ or meta/ of the given out dirs, for the hours and one hour either side."""
+    if not hours:
+        return set()
+    lo, hi = hour_start_ms(hours[0]) - 3_600_000, hour_start_ms(hours[-1]) + 3_600_000
+    keys = []
+    t = lo
+    while t <= hi:
+        keys.append(hour_key(t))
+        t += 3_600_000
+    seen: set[str] = set()
+    for d in dirs:
+        for sub in ("creates", "meta"):
+            for hk in keys:
+                for r in _read_jsonl(d / sub / f"{hk}.jsonl"):
+                    m = r.get("mint")
+                    if isinstance(m, str):
+                        seen.add(m)
+    return seen
+
+
+async def backfill_run(col: Collector, tape_dir: Path, hours: list[str], main_out: Path,
+                       resolver: Callable[[str], str | None], now_ms: int,
+                       stop: asyncio.Event | None = None) -> dict[str, int]:
+    """Read create rows of CLOSED tape hours, skip mints already captured, fetch the rest. Same collector, rate limits
+    and concurrency caps as a live run. Returns counts."""
+    from tools import meta_arena_source as mas
+    stop = stop or asyncio.Event()
+    open_hour = hour_key(now_ms)
+    if any(h >= open_hour for h in hours):
+        raise ValueError("backfill range includes the open hour; use closed hours only")
+    col.multi_source = True
+    col.seen_mints |= existing_mints([main_out, col.store.out], hours)
+    counts = {"rows": 0, "skipped_existing": 0, "fed": 0, "unresolved": 0}
+    sem = asyncio.Semaphore(ARENA_RESOLVE_CONCURRENCY)
+    finished = asyncio.Event()
+
+    def done() -> bool:
+        return finished.is_set() or stop.is_set() or not col.rss_ok()
+
+    worker = asyncio.ensure_future(worker_loop(col, done))
+    try:
+        for p in mas.hour_files(tape_dir, hours):
+            for payload, t_ms in mas.iter_creates(p):
+                if done():
+                    break
+                counts["rows"] += 1
+                if payload["mint"] in col.seen_mints:
+                    counts["skipped_existing"] += 1
+                    continue
+                while len(col.heap) >= BACKFILL_MAX_QUEUE and not done():
+                    await asyncio.sleep(0.2)
+                ok = False
+                for _ in range(ARENA_RESOLVE_TRIES):
+                    if await _resolve_and_feed(col, payload, t_ms, resolver, sem, SRC_BACKFILL):
+                        ok = True
+                        break
+                counts["fed" if ok else "unresolved"] += 1
+        while (col.heap or col.inflight_rec) and not done():
+            await asyncio.sleep(0.2)
+    finally:
+        finished.set()
+        try:
+            await asyncio.wait_for(worker, timeout=DRAIN_TIMEOUT_S)
+        except Exception:  # noqa: BLE001
+            pass
+    return counts
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1187,6 +1366,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--segment2-first-hour", default=None,
                    help="YYYY-MM-DDTHH; required the first time (no MANIFEST-2.chain yet): opens chain "
                         "segment 2 and re-hashes sealed hours from this hour onward")
+    p.add_argument("--arena-tape-dir", type=Path, default=None,
+                   help="second live create source: tail the newest arena tape hour files for pump.fun create rows; "
+                        "the metadata URI is resolved from the create tx (needs --tx-url-env). Off by default")
+    p.add_argument("--backfill-from-arena", action="store_true",
+                   help="read create rows of closed arena tape hours [--from, --to) (needs --arena-tape-dir and "
+                        "--tx-url-env), skip mints already in --out, write to <out>/arena-backfill with its own lock")
+    p.add_argument("--from", dest="from_hour", default=None, help="backfill start hour YYYY-MM-DDTHH (inclusive)")
+    p.add_argument("--to", dest="to_hour", default=None, help="backfill end hour YYYY-MM-DDTHH (exclusive, must be closed)")
+    p.add_argument("--tx-url-env", default=None,
+                   help="NAME of an env var holding the https URL used to read the create tx; the URL is never printed")
     p.add_argument("--max-rss-mb", type=float, default=1500)
     p.add_argument("--min-free-gb", type=float, default=50)
     p.add_argument("--duration-s", type=float, default=None)
@@ -1200,6 +1389,35 @@ def main(argv: list[str] | None = None) -> int:
               file=sys.stderr)
         return 2
     configure_logging(args.log_level)
+    if args.backfill_from_arena or args.arena_tape_dir:
+        if not args.arena_tape_dir or not args.arena_tape_dir.is_dir():
+            print("--arena-tape-dir must be an existing directory", file=sys.stderr)
+            return 2
+        from tools import meta_arena_source as mas
+        try:
+            mas.resolver_from_env(args.tx_url_env)  # validates only; the URL is never printed
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    if args.backfill_from_arena:
+        if not (args.from_hour and args.to_hour):
+            print("--backfill-from-arena needs --from and --to", file=sys.stderr)
+            return 2
+        try:
+            hours_between(args.from_hour, args.to_hour)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        bdir = args.out / BACKFILL_SUBDIR
+        try:
+            lock_fd = acquire_single_instance(bdir)  # its own lock: never the live process's <out>/.lock
+        except AlreadyRunning:
+            print("another arena backfill holds the lock on <out>/arena-backfill; refusing to start", file=sys.stderr)
+            return EXIT_LOCKED
+        try:
+            return _main_backfill(args, bdir)
+        finally:
+            os.close(lock_fd)
     try:
         lock_fd = acquire_single_instance(args.out)  # held until the process exits
     except AlreadyRunning:
@@ -1244,10 +1462,49 @@ def _main_locked(args: argparse.Namespace) -> int:
                     http_get=make_http_get(local.origin if local else None), local=local,
                     concurrency=args.concurrency or (ipf.LOCAL_CONCURRENCY if local else 4), max_rss_mb=args.max_rss_mb,
                     min_free_gb=args.min_free_gb)
+    arena = None
+    if args.arena_tape_dir:
+        from tools import meta_arena_source as mas
+        arena = (mas.Tailer(args.arena_tape_dir), mas.resolver_from_env(args.tx_url_env))
     try:
-        return loop.run_until_complete(run(args.ws_url, col, stop, args.duration_s))
+        return loop.run_until_complete(run(args.ws_url, col, stop, args.duration_s, arena=arena))
     finally:
         loop.close()
+
+
+def _main_backfill(args: argparse.Namespace, bdir: Path) -> int:
+    from tools import meta_arena_source as mas
+    store = BackfillStore(bdir, args.git_ref or git_ref_of(Path(__file__).resolve().parent))
+    local = None
+    if args.local_gateway:
+        try:
+            local = ipf.parse_local_gateway(args.local_gateway, args.local_rps, args.local_burst,
+                                            args.local_json_timeout_s, args.local_image_timeout_s,
+                                            args.local_breaker_base_s, args.local_breaker_max_s)
+        except ValueError as exc:
+            print(f"--local-gateway refused: {exc}", file=sys.stderr)
+            return 2
+    gateways = tuple(args.gateway or DEFAULT_GATEWAYS)
+    col = Collector(store, gateways, pool=ipf.GatewayPool(gateways, args.gateway_rps, args.gateway_burst),
+                    http_get=make_http_get(local.origin if local else None), local=local,
+                    concurrency=args.concurrency or (ipf.LOCAL_CONCURRENCY if local else 4),
+                    max_rss_mb=args.max_rss_mb, min_free_gb=args.min_free_gb)
+    if not col.disk_ok():
+        print("min-free-gb guard: refusing to start", file=sys.stderr)
+        return 2
+    loop = asyncio.new_event_loop()
+    stop = asyncio.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, stop.set)
+    try:
+        counts = loop.run_until_complete(backfill_run(
+            col, args.arena_tape_dir, hours_between(args.from_hour, args.to_hour), args.out,
+            mas.resolver_from_env(args.tx_url_env), col.clock_ms(), stop))
+    finally:
+        loop.close()
+    log.info("backfill_done counts=%s attempts=%s errors=%s", json.dumps(counts, sort_keys=True),
+             json.dumps(col.attempt_counts, sort_keys=True), json.dumps(store.error_counts, sort_keys=True))
+    return EXIT_RSS if col.rss_exceeded else 0
 
 
 if __name__ == "__main__":

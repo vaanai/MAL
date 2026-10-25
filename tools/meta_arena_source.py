@@ -15,6 +15,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import os
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -154,3 +155,11 @@ def make_rpc_resolver(rpc_url: str, timeout: float = 15.0) -> Callable[[str], st
         logs = ((res or {}).get("meta") or {}).get("logMessages") or []
         return uri_from_logs(logs)
     return resolve
+
+
+def resolver_from_env(name: str | None) -> Callable[[str], str | None]:
+    """Resolver whose https URL sits in the env var called `name`. ValueError (never containing the URL) when unusable."""
+    url = os.environ.get(name or "", "")
+    if not name or not url.startswith("https://"):
+        raise ValueError("--tx-url-env must name an env var holding an https:// URL")
+    return make_rpc_resolver(url)
