@@ -9,6 +9,22 @@ What the block holds: enums, hex ids, UTC instants and small integers, all produ
 lookup key in an exact-match table (hit -> table value, miss -> OTHER / other) or after a strict regex check (instants, day). So no
 free text reaches the reviewer and a hostile string in a radar field has no path into the block.
 
+Block spec (hv6_regime.v1). Top-level keys: schema, as_of_ms, as_of_utc, pins, pin_mismatch, input, counts, events, summary, radar_status.
+Event fields (all enums, RG ids or strict UTC instants): id, kind (12 real radar kinds), sev (HIGH/MED/LOW), tier (core/venue/router/none),
+program (14 watch-file names or OTHER), relevance (direct/adjacent), change_utc, change_basis (at_utc/day/run_utc), key_class (swap/create/
+complete/pool_create/other), first_run_utc, hours_since. Beyond DESIGN s3's field table: the fourth tier value `none` (OTHER programs and
+monitor_*), `change_basis`, and `first_run_utc`.
+Bad-line policy (QP accepts): a malformed or wrong-schema line BEFORE the first record with run_utc >= as_of makes radar_status `absent` for
+that block (and every later block); a bad line at or after that point never changes the block. A line whose run_utc cannot be parsed is placed
+by position. A torn last line (no newline) is ignored.
+Event ids: `RG-` + sha256(kind|program|when)[:8]; when = at_utc, else `day`, else the date of the run that first carried a condition. A
+condition with neither (program_gone, authority_change, account_closed, config_change, new_vocab, monitor_*) that fires on consecutive radar
+run days keeps ONE id (the first date of the unbroken run; QP rule (i)). A record dated between two sightings that lacks the condition breaks
+the run; a day with no record does not. A standing monitor HALT is therefore one event, not a new regime day every day.
+first_run_utc / t_e = the first run_utc at which the id is carried with its final (highest) severity.
+Pins: the registration pins the radar job's own code, seals and watch PATHS and shas, the out-dir and venue tape. All three paths and the
+out-dir are required arguments. A radar record carries no code sha, so a change made and reverted between two blocks is not visible.
+
 Commands:
   block        build the block for --as-of-ms, snapshot the consumed bytes, write block-<as_of_ms>.json beside the copy.
   regime-days  from HV6's saved copies, write the E list and regime-day list once (write-once file).
@@ -18,6 +34,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import sys
 from datetime import datetime, timedelta, timezone
@@ -32,7 +49,7 @@ RADAR_SCHEMA = "change_radar.v1"
 PINNED_SEALS_SHA256 = "5a2f8979c8493f7a3b200dd879f6f54c92a3bf383054af432c2fc35a8e10ca61"
 PINNED_OUT_DIR = "/data/mal/change-radar-arena1"
 PINNED_VENUE_TAPE = ""
-PIN_KEYS = ("radar_code_sha256", "seals_sha256", "watch_sha256", "out_dir", "venue_tape")
+PIN_KEYS = ("radar_code_path", "radar_code_sha256", "seals_path", "seals_sha256", "watch_path", "watch_sha256", "out_dir", "venue_tape")
 
 STALE_HOURS = 36  # latest record older than this before as_of_ms -> stale
 LOOKBACK_DAYS = 7  # events listed in the block: first record carrying them within this window
@@ -187,8 +204,9 @@ def make_id(kind: str, program: str, change_utc: str, basis: str) -> str:
 
 
 def parse_records(raw: bytes, as_of: datetime | None) -> tuple[list[tuple[bytes, dict[str, Any]]], int]:
-    """Whole, newline-terminated lines only (a torn last line is not yet written). Returns ([(line_bytes, rec)] with run_utc < as_of in file
-    order, n_bad). A bad line is a whole-record schema failure."""
+    """Whole, newline-terminated lines only (a torn last line is not yet written). Walks the file in order and STOPS at the first valid record
+    with run_utc >= as_of: nothing at or after that point can change the block. Returns ([(line_bytes, rec)] in file order, n_bad) where n_bad
+    counts only malformed / wrong-schema lines before that stop. With as_of None the whole file is read."""
     out: list[tuple[bytes, dict[str, Any]]] = []
     bad = 0
     end = raw.rfind(b"\n")
@@ -206,15 +224,20 @@ def parse_records(raw: bytes, as_of: datetime | None) -> tuple[list[tuple[bytes,
         if (not isinstance(rec, dict) or rec.get("schema") != RADAR_SCHEMA or t is None or not isinstance(rec.get("changes"), list)):
             bad += 1
             continue
-        if as_of is None or t < as_of:
-            out.append((ln + b"\n", rec))
+        if as_of is not None and t >= as_of:
+            break
+        out.append((ln + b"\n", rec))
     return out, bad
 
 
 def extract_events(records: Sequence[tuple[bytes, Mapping[str, Any]]], programs: Mapping[str, str], accounts: Mapping[str, str]) -> tuple[dict[str, dict[str, Any]], dict[str, int]]:
-    """Deduplicated events by RG id (highest sev wins, then first seen) and drop counters."""
+    """Deduplicated events by RG id and drop counters. Highest sev wins; first_run_utc is the first run at which the id is carried with that
+    final sev. Conditions with neither at_utc nor day that fire on consecutive radar run days share one id (see module docstring)."""
+    records = sorted(records, key=lambda t: t[1]["run_utc"])  # stable: ties keep file order
+    record_dates = sorted({r["run_utc"][:10] for _, r in records})
     events: dict[str, dict[str, Any]] = {}
-    first_run: dict[str, str] = {}
+    first_sev: dict[tuple[str, str], str] = {}
+    streak: dict[tuple, tuple[str, str]] = {}  # key -> (last date seen, first run_utc of the unbroken run)
     stats = {"n_dropped_unknown": 0, "n_other_mapped": 0}
     for _, rec in records:
         run_utc = rec["run_utc"]
@@ -231,20 +254,29 @@ def extract_events(records: Sequence[tuple[bytes, Mapping[str, Any]]], programs:
             if other:
                 stats["n_other_mapped"] += 1
             change_utc, basis = event_when(ch, run_utc)
+            if basis == "run_utc":
+                subj = ch.get("subject") if isinstance(ch.get("subject"), str) else None  # dict key only, never emitted
+                sk = (kind, program, key_class, subj)
+                d = run_utc[:10]
+                last = streak.get(sk)
+                if last is not None and (last[0] == d or not any(last[0] < x < d for x in record_dates)):
+                    change_utc = last[1]
+                streak[sk] = (d, change_utc)
             rid = make_id(kind, program, change_utc, basis)
             tier = programs.get(program, "none") if program != "OTHER" else "none"
             if tier not in ("core", "venue", "router"):
                 tier = "none"
+            first_sev.setdefault((rid, sev_u), run_utc)
             ev = {
                 "id": rid, "kind": kind, "sev": sev_u, "tier": tier, "program": program,
                 "relevance": "direct" if (program in DIRECT_PROGRAMS or kind.startswith("monitor_")) else "adjacent",
                 "change_utc": change_utc, "change_basis": basis, "key_class": key_class, "first_run_utc": run_utc,
             }
-            first_run.setdefault(rid, run_utc)
             cur = events.get(rid)
             if cur is None or SEV_RANK[sev_u] < SEV_RANK[cur["sev"]]:
-                ev["first_run_utc"] = first_run[rid]
                 events[rid] = ev
+    for rid, ev in events.items():
+        ev["first_run_utc"] = first_sev[(rid, ev["sev"])]
     return events, stats
 
 
@@ -312,8 +344,12 @@ def build_block(radar_bytes: bytes, as_of_ms: int, watch_bytes: bytes, pins_expe
 
 
 def observe_pins(radar_code: Path, seals: Path, watch: Path, out_dir: str, venue_tape: str) -> dict[str, Any]:
-    return {"radar_code_sha256": sha256_hex(radar_code.read_bytes()), "seals_sha256": sha256_hex(seals.read_bytes()),
-            "watch_sha256": sha256_hex(watch.read_bytes()), "out_dir": out_dir, "venue_tape": venue_tape}
+    """Observe the radar job's own files (absolute paths as given; never a default beside this checkout)."""
+    ap = os.path.abspath
+    return {"radar_code_path": ap(radar_code), "radar_code_sha256": sha256_hex(radar_code.read_bytes()),
+            "seals_path": ap(seals), "seals_sha256": sha256_hex(seals.read_bytes()),
+            "watch_path": ap(watch), "watch_sha256": sha256_hex(watch.read_bytes()),
+            "out_dir": os.path.abspath(out_dir), "venue_tape": venue_tape}
 
 
 def write_once(path: Path, data: bytes) -> None:
@@ -322,9 +358,18 @@ def write_once(path: Path, data: bytes) -> None:
         if path.read_bytes() != data:
             raise SystemExit(f"refuse: {path} exists with different bytes")
         return
+    create_exclusive_ro(path, data)
+
+
+def create_exclusive_ro(path: Path, data: bytes) -> None:
+    """O_EXCL create, then mode 0444. Never overwrites."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "xb") as fh:
-        fh.write(data)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o444)
+    try:
+        os.write(fd, data)
+        os.fchmod(fd, 0o444)
+    finally:
+        os.close(fd)
 
 
 def run_block(a: argparse.Namespace) -> int:
@@ -381,8 +426,13 @@ def degraded_days(blocks: Sequence[tuple[int, Mapping[str, Any]]], t0: datetime,
     return out
 
 
-def regime_days(copy_dir: Path, t0: datetime, n_days: int, programs: Mapping[str, str], accounts: Mapping[str, str]) -> dict[str, Any]:
+def regime_days(copy_dir: Path, t0: datetime, n_days: int, programs: Mapping[str, str], accounts: Mapping[str, str],
+                pins_expected: Mapping[str, Any] | None = None) -> dict[str, Any]:
     saved = load_saved(copy_dir)
+    if pins_expected is not None:
+        for ms_, blk, _ in saved:
+            if blk["pins"] != {k: pins_expected.get(k) for k in PIN_KEYS} and blk["radar_status"] != "absent":
+                raise SystemExit(f"refuse: block {ms_} carries pins that differ from the registered pins but is not absent")
     eligible_records: list[tuple[bytes, dict[str, Any]]] = []
     for _, blk, data in saved:
         if blk["radar_status"] in ("ok", "partial") and data:
@@ -420,12 +470,13 @@ def run_regime_days(a: argparse.Namespace) -> int:
     if t0 is None:
         raise SystemExit("refuse: --t0 must be YYYY-MM-DDTHH:MM:SSZ")
     programs, accounts = load_watch(Path(a.watch).read_bytes())
-    doc = regime_days(Path(a.copy_dir), t0, int(a.days), programs, accounts)
+    doc = regime_days(Path(a.copy_dir), t0, int(a.days), programs, accounts, json.loads(Path(a.pins).read_text()))
     data = dumps(doc).encode()
     out = Path(a.out)
-    if out.exists():
+    try:
+        create_exclusive_ro(out, data)  # truly write-once: no overwrite, not even identical bytes
+    except FileExistsError:
         raise SystemExit(f"refuse: {out} already exists (the regime-day list is written once)")
-    write_once(out, data)
     print(sha256_hex(data))
     return 0
 
@@ -435,19 +486,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     b = sub.add_parser("block")
     b.add_argument("--as-of-ms", required=True)
-    b.add_argument("--out-dir", default=PINNED_OUT_DIR)
+    b.add_argument("--out-dir", required=True, help="the radar job's out-dir (must equal the pinned one)")
     b.add_argument("--venue-tape", default=PINNED_VENUE_TAPE)
     b.add_argument("--copy-dir", required=True)
-    b.add_argument("--pins", required=True, help="JSON with the registered radar_code_sha256, seals_sha256, watch_sha256, out_dir, venue_tape")
-    b.add_argument("--radar-code", default=str(Path(__file__).with_name("change_radar.py")))
-    b.add_argument("--seals", default=str(Path(__file__).with_name("change_radar_seals.json")))
-    b.add_argument("--watch", default=str(Path(__file__).with_name("change_radar_watch.json")))
+    b.add_argument("--pins", required=True, help="JSON with every key in PIN_KEYS (paths, shas, out_dir, venue_tape)")
+    b.add_argument("--radar-code", required=True, help="path the radar job runs; never defaulted to this checkout")
+    b.add_argument("--seals", required=True)
+    b.add_argument("--watch", required=True)
     b.set_defaults(fn=run_block)
     r = sub.add_parser("regime-days")
     r.add_argument("--copy-dir", required=True)
     r.add_argument("--t0", required=True)
     r.add_argument("--days", required=True)
-    r.add_argument("--watch", default=str(Path(__file__).with_name("change_radar_watch.json")))
+    r.add_argument("--watch", required=True)
+    r.add_argument("--pins", required=True)
     r.add_argument("--out", required=True)
     r.set_defaults(fn=run_regime_days)
     a = ap.parse_args(argv)

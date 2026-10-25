@@ -16,7 +16,8 @@ from tools import hv6_regime_block as hb
 
 WATCH_BYTES = cr.DEFAULT_WATCH.read_bytes()
 WATCH = json.loads(WATCH_BYTES)
-PINS = {"radar_code_sha256": "c" * 64, "seals_sha256": hb.PINNED_SEALS_SHA256, "watch_sha256": "w" * 64,
+PINS = {"radar_code_path": "/opt/radar/change_radar.py", "radar_code_sha256": "c" * 64, "seals_path": "/opt/radar/change_radar_seals.json",
+        "seals_sha256": hb.PINNED_SEALS_SHA256, "watch_path": "/opt/radar/change_radar_watch.json", "watch_sha256": "w" * 64,
         "out_dir": hb.PINNED_OUT_DIR, "venue_tape": ""}
 T = datetime(2026, 10, 30, 7, 11, tzinfo=timezone.utc)
 
@@ -190,7 +191,8 @@ class TestBlock(unittest.TestCase):
 
     def test_pin_change_is_absent_and_not_consumed(self):
         raw = jl(rec(T, [ch("high", "program_gone", "pump")]))
-        for k, v in (("radar_code_sha256", "d" * 64), ("watch_sha256", "e" * 64), ("out_dir", "/data/mal/change-radar"), ("seals_sha256", "f" * 64)):
+        for k, v in (("radar_code_sha256", "d" * 64), ("watch_sha256", "e" * 64), ("out_dir", "/data/mal/change-radar"), ("seals_sha256", "f" * 64),
+                     ("radar_code_path", "/home/x/MAL/tools/change_radar.py"), ("seals_path", "/x/seals.json"), ("watch_path", "/x/watch.json")):
             b, cons = block(raw, T + timedelta(hours=1), {**PINS, k: v})
             self.assertEqual(b["radar_status"], "absent", k)
             self.assertEqual(b["pin_mismatch"], [k], k)
@@ -213,7 +215,7 @@ class TestBlock(unittest.TestCase):
         r2 = rec(T + timedelta(hours=24), [ch("high", "program_gone", "pump", at_utc=at)])
         b, _ = block(jl(r1, r2), T + timedelta(hours=30))
         self.assertEqual(len(b["events"]), 1)
-        self.assertEqual((b["events"][0]["sev"], b["events"][0]["first_run_utc"]), ("HIGH", ts(T)))
+        self.assertEqual((b["events"][0]["sev"], b["events"][0]["first_run_utc"]), ("HIGH", ts(T + timedelta(hours=24))))  # first HIGH run, not the MED sighting
 
     def test_lookback_window(self):
         b, _ = block(jl(rec(T - timedelta(days=8), [ch("high", "program_gone", "pump")]), rec(T, [])), T + timedelta(hours=1))
@@ -371,7 +373,8 @@ class TestRegimeDays(unittest.TestCase):
             out_dir = td / "radar"
             out_dir.mkdir()
             (out_dir / "radar.jsonl").write_bytes(jl(rec(ev + timedelta(hours=5), [ch("high", "program_gone", "pump")])))
-            pins = {**PINS, "radar_code_sha256": hb.sha256_hex(code.read_bytes()), "watch_sha256": hb.sha256_hex(watch.read_bytes()), "out_dir": str(out_dir)}
+            pins = {**PINS, "radar_code_path": str(code), "radar_code_sha256": hb.sha256_hex(code.read_bytes()), "seals_path": str(seals),
+                    "watch_path": str(watch), "watch_sha256": hb.sha256_hex(watch.read_bytes()), "out_dir": str(out_dir)}
             (td / "pins.json").write_text(json.dumps(pins))
             copy = td / "regime"
             argv = ["block", "--as-of-ms", str(ms(ev + timedelta(hours=8))), "--out-dir", str(out_dir), "--copy-dir", str(copy),
@@ -388,12 +391,122 @@ class TestRegimeDays(unittest.TestCase):
             with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(SystemExit):
                 hb.main(argv)
             out = td / "days.json"
-            rdargv = ["regime-days", "--copy-dir", str(copy), "--t0", ts(ev), "--days", "12", "--watch", str(watch), "--out", str(out)]
+            rdargv = ["regime-days", "--copy-dir", str(copy), "--t0", ts(ev), "--days", "12", "--watch", str(watch), "--pins", str(td / "pins.json"), "--out", str(out)]
             with contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(hb.main(rdargv), 0)
             self.assertEqual(json.loads(out.read_text())["regime_days"], ["2026-10-30", "2026-10-31", "2026-11-01", "2026-11-02"])
+            self.assertEqual(out.stat().st_mode & 0o777, 0o444)
             with self.assertRaises(SystemExit):
                 hb.main(rdargv)
+            self.assertEqual(json.loads(out.read_text())["regime_days"], ["2026-10-30", "2026-10-31", "2026-11-01", "2026-11-02"])
+            # required arguments: no default radar code / seals / watch / out-dir
+            for drop in ("--radar-code", "--seals", "--watch", "--out-dir"):
+                av = list(argv)
+                i = av.index(drop)
+                del av[i:i + 2]
+                with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+                    hb.main(av)
+            # a sibling copy of the same bytes at another path: absent, nothing consumed
+            sib = td / "sib"
+            sib.mkdir()
+            (sib / "change_radar.py").write_bytes(code.read_bytes())
+            av = list(argv)
+            av[av.index("--radar-code") + 1] = str(sib / "change_radar.py")
+            av[av.index("--copy-dir") + 1] = str(td / "regime2")
+            buf2 = io.StringIO()
+            with contextlib.redirect_stdout(buf2):
+                hb.main(av)
+            b2 = json.loads(buf2.getvalue())
+            self.assertEqual((b2["radar_status"], b2["pin_mismatch"], b2["input"]["sha256"]), ("absent", ["radar_code_path"], None))
+            self.assertEqual(list((td / "regime2").glob("radar-*")), [])
+
+
+class TestReviewFixes(unittest.TestCase):
+    T0 = TestRegimeDays.T0
+
+    def test_future_bad_line_does_not_change_block(self):
+        r1 = rec(datetime(2026, 10, 20, 7, 11, tzinfo=timezone.utc), [ch("high", "program_gone", "pump")])
+        asof = datetime(2026, 10, 21, tzinfo=timezone.utc)
+        base = block(jl(r1), asof)
+        later = jl(rec(datetime(2026, 10, 22, tzinfo=timezone.utc), []))
+        for tail in (b"garbage\n", b'{"schema":"other.v9","run_utc":"2026-10-22T00:00:00Z","changes":[]}\n',
+                     b'{"schema":"change_radar.v1","run_utc":"nope","changes":[]}\n'):
+            b, cons = block(jl(r1) + later + tail, asof)
+            self.assertEqual((hb.dumps(b), cons), (hb.dumps(base[0]), base[1]))
+            self.assertEqual(b["input"]["n_bad_records"], 0)
+        # a bad line BEFORE as_of still fails closed
+        b, _ = block(b"garbage\n" + jl(r1), asof)
+        self.assertEqual((b["radar_status"], b["input"]["n_bad_records"]), ("absent", 1))
+
+    def test_t_e_is_first_high_not_first_med(self):
+        at = ts(self.T0 - timedelta(hours=1))
+        r1 = rec(self.T0 + timedelta(hours=5), [ch("med", "program_upgrade", "pump", at_utc=at)])
+        r2 = rec(self.T0 + timedelta(days=1, hours=5), [ch("high", "program_upgrade", "pump", at_utc=at)])
+        progs, accts = hb.load_watch(WATCH_BYTES)
+        ev, _ = hb.extract_events([(b"", r1), (b"", r2)], progs, accts)
+        (e,) = ev.values()
+        self.assertEqual((e["sev"], e["first_run_utc"]), ("HIGH", r2["run_utc"]))
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            TestRegimeDays().save(d, jl(r1, r2), self.T0 + timedelta(days=2))
+            out = TestRegimeDays().rd(d)
+        self.assertEqual([x["t_e"] for x in out["E"]], [r2["run_utc"]])
+        self.assertEqual(out["regime_days"][0], "2026-10-31")
+
+    def halts(self, days, skip=()):
+        return [rec(self.T0 + timedelta(days=i, hours=7, minutes=11), [] if i in skip else [ch("high", "monitor_halt", "flagx")]) for i in range(days)]
+
+    def test_standing_halt_is_one_id_and_not_every_day(self):
+        recs = self.halts(12)
+        progs, accts = hb.load_watch(WATCH_BYTES)
+        ev, _ = hb.extract_events([(b"", r) for r in recs], progs, accts)
+        self.assertEqual(len(ev), 1)
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            TestRegimeDays().save(d, jl(*recs), self.T0 + timedelta(days=12))
+            out = TestRegimeDays().rd(d)
+        self.assertEqual(len(out["E"]), 1)
+        self.assertEqual(out["E"][0]["t_e"], recs[0]["run_utc"])
+        self.assertEqual(out["regime_days"], ["2026-10-30", "2026-10-31", "2026-11-01", "2026-11-02"])  # 07:11Z + 72 h reaches 11-02; days 5-12 are placebo days
+
+    def test_gap_day_breaks_run_but_missing_record_does_not(self):
+        progs, accts = hb.load_watch(WATCH_BYTES)
+        broken = self.halts(6, skip={2})  # a record on day 2 exists but lacks the halt -> new id on day 3
+        ev, _ = hb.extract_events([(b"", r) for r in broken], progs, accts)
+        self.assertEqual(sorted(e["first_run_utc"][:10] for e in ev.values()), ["2026-10-30", "2026-11-02"])
+        no_rec = [r for i, r in enumerate(self.halts(6)) if i != 2]  # no radar record at all on day 2
+        ev, _ = hb.extract_events([(b"", r) for r in no_rec], progs, accts)
+        self.assertEqual(len(ev), 1)
+
+    def test_distinct_flags_are_distinct_runs(self):
+        r = [rec(self.T0 + timedelta(hours=7), [ch("high", "monitor_halt", "a")]),
+             rec(self.T0 + timedelta(days=1, hours=7), [ch("high", "monitor_halt", "a"), ch("high", "monitor_halt", "b")])]
+        progs, accts = hb.load_watch(WATCH_BYTES)
+        ev, _ = hb.extract_events([(b"", x) for x in r], progs, accts)
+        self.assertEqual(sorted(e["first_run_utc"][:10] for e in ev.values()), ["2026-10-30", "2026-10-31"])
+
+    def test_regime_days_refuses_foreign_pins(self):
+        raw = jl(rec(self.T0 + timedelta(hours=5), [ch("high", "program_gone", "pump")]))
+        progs, accts = hb.load_watch(WATCH_BYTES)
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            TestRegimeDays().save(d, raw, self.T0 + timedelta(hours=6), {**PINS, "out_dir": "/tmp/drill"})  # absent by pin: allowed, reported
+            self.assertEqual(hb.regime_days(d, self.T0, 3, progs, accts, PINS)["E"], [])
+            f = next(d.glob("block-*.json"))
+            b = json.loads(f.read_text())
+            b["radar_status"] = "ok"  # a drill block claiming ok under other pins
+            f.write_text(hb.dumps(b))
+            with self.assertRaises(SystemExit):
+                hb.regime_days(d, self.T0, 3, progs, accts, PINS)
+
+    def test_days_file_exclusive_and_read_only(self):
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "sub" / "days.json"
+            hb.create_exclusive_ro(p, b"x")
+            self.assertEqual(p.stat().st_mode & 0o777, 0o444)
+            with self.assertRaises(FileExistsError):
+                hb.create_exclusive_ro(p, b"x")
+            self.assertEqual(p.read_bytes(), b"x")
 
 
 if __name__ == "__main__":
