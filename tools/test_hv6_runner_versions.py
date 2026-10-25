@@ -65,8 +65,8 @@ def test_version_switch_at_effective_from_logged_before_first_decision(tmp_path_
     assert ent and all(e["ms"] >= EFF for e in ent)
     seqs = {r["kind"] + str(r.get("version", "")): r["seq"] for r in run.log.rows("L") if r["kind"] == "version"}
     assert seqs["version1"] < ent[0]["seq"]                                   # the version hash is in the log before the first decision under it
-    assert ent[0]["plan"]["stop_pct"] == -10 and ent[0]["plan_overrides"] == {"stop_pct": -10}
-    assert run.vstate["L"]["version"] == 1 and run.overrides["L"] == {"stop_pct": -10}
+    assert ent[0]["plan"]["stop_pct"] == -10 and ent[0]["plan_tighten"] == {"stop_pct": -10} and "plan_overrides" not in ent[0]
+    assert run.vstate["L"]["version"] == 1 and run.tighten["L"] == {"stop_pct": -10} and run.overrides["L"] == {}
     assert rows_of(run, "F", "entry") and rows_of(run, "F", "entry")[0]["plan"]["stop_pct"] == -25  # F: the model's own plan, v0 procedure
 
 
@@ -102,7 +102,7 @@ def test_restart_across_a_version_switch_has_the_same_md5(tmp_path_factory, monk
         r2 = new_run(tmp, root)
         r2.resume()
         if mid == MID_AFTER:
-            assert r2.vstate["L"]["version"] == 1 and r2.overrides["L"]["stop_pct"] == rule["new"]
+            assert r2.vstate["L"]["version"] == 1 and (r2.overrides["L"] | r2.tighten["L"])["stop_pct"] == rule["new"]
         r2.run(mid, END)
         assert r2.log.md5() == ref_md5
         for a in (*R.ARM_ORDER, "SCAN"):
@@ -166,3 +166,30 @@ def test_local_veto_gate(tmp_path_factory):
     assert R.local_veto(["ret_15m < 1000000"], card) == "ret_15m < 1000000" or R.local_veto(["ret_15m < 1000000"], card) is None
     assert R.local_veto(["not a predicate"], card) is None
     assert R.local_veto([], card) is None
+
+
+def _pos_of(r, arm, pool):
+    return next(v for v in r.books[arm].open.values() if v.pool == pool)
+
+
+def test_tightening_rule_never_loosens_the_model_plan(tmp_path_factory):
+    from tools.test_hv6_runner_qp918 import CARD, fake_runner, verdict
+
+    r = fake_runner(tmp_path_factory.mktemp("r6v8"))
+    r.tighten["L"] = {"stop_pct": -10.0, "time_min": 60}
+    r._on_verdict("L", verdict("BUY", size=0.25, conviction=4, plan={"stop_pct": -5.0, "target_pct": 20.0, "time_min": 30}), CARD, T0)  # model already tighter
+    p1 = _pos_of(r, "L", "POOLX")
+    assert (p1.stop_pct, p1.time_min) == (-5.0, 30)
+    r._on_verdict("L", verdict("BUY", size=0.25, conviction=4, plan={"stop_pct": -25.0, "target_pct": 20.0, "time_min": 360}), {**CARD, "id": "POOLY"}, T0)
+    p2 = _pos_of(r, "L", "POOLY")
+    assert (p2.stop_pct, p2.time_min) == (-10.0, 60)                                                     # model looser: tightened
+    r._on_verdict("L", verdict("BUY", size=0.25, conviction=4, plan={"target_pct": 20.0}), {**CARD, "id": "POOLZ"}, T0)
+    p3 = _pos_of(r, "L", "POOLZ")
+    assert (p3.stop_pct, p3.time_min) == (-10.0, 60)                                                     # key absent: the rule's value
+    assert r.overrides["L"] == {} and all(e["tag"] is None for e in rows_of(r, "L", "entry"))             # not a probe, not a replacement
+
+
+def test_main_refuses_a_non_hex_frozen_sha(tmp_path_factory):
+    base = tmp_path_factory.mktemp("r6v9")
+    for bad in ("not-hex!", "abc", "g" * 12, "a" * 41, ""):
+        assert R.main(["--root", str(base / "v6"), "--frozen-sha", bad, "--clock-start-ms", "1", "--feed-delay-slots", "2", "--stub"]) == 2

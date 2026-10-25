@@ -40,6 +40,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import signal
 import sys
 import time
@@ -529,6 +530,7 @@ class Runner:
         self.knobs = {a: A.Knobs.v0() for a in self.llm_arm_names}
         self.plans = {a: dict(A.GEN_SPEC.plan_defaults) for a in self.llm_arm_names}
         self.playbooks = {a: A.load_playbook("v0") for a in self.llm_arm_names}
+        self.tighten: dict[str, dict] = {a: {} for a in self.llm_arm_names}     # tightening regime rules: the TIGHTER of the model's value and the rule's
         self.overrides: dict[str, dict] = {a: {} for a in self.llm_arm_names}    # plan knobs a reviewer version / active regime rule sets (L, L-nr, P only)
         self.vetoes: dict[str, tuple] = {a: () for a in self.llm_arm_names}
         self.vstate: dict[str, dict] = {}
@@ -724,6 +726,7 @@ class Runner:
         min_conv = int(knobs["min_conviction"])
         vetoes = list(st.vetoes)
         probes: list[dict] = []
+        tighten: dict[str, float] = {}
         for r in rules:
             tgt, new = r["target"], r["new"]
             if tgt == "local_veto":
@@ -732,7 +735,12 @@ class Runner:
             if tgt == "min_conviction":
                 min_conv = int(new)
             elif tgt in A.GEN_SPEC.plan_keys:
-                overrides[tgt] = new
+                if r.get("mode") == "probe":
+                    overrides[tgt] = new           # a loosened knob: only as a tagged probe, stake capped at 0.25
+                else:                              # a tightening rule never loosens: it is applied as min/max against the model's own value
+                    sign = A.TIGHTER_SIGN[tgt]
+                    old = tighten.get(tgt)
+                    tighten[tgt] = new if old is None else (max(old, new) if sign > 0 else min(old, new))
             if r.get("mode") == "probe":
                 probes.append(r)
         try:
@@ -741,7 +749,7 @@ class Runner:
             self._version_refused(arm, T, "knobs_out_of_bounds")
             return
         self.playbooks[arm], self.knobs[arm] = st.playbook, knobs_obj
-        self.overrides[arm], self.vetoes[arm] = overrides, tuple(vetoes)
+        self.overrides[arm], self.vetoes[arm], self.tighten[arm] = overrides, tuple(vetoes), tighten
         self.probes.by_arm[arm] = []
         for r in probes:  # only accepted regime_rule lines of a verified manifest; ProbeBook.add re-checks expiry and the extra-entry total
             self.probes.add(arm, A.RegimeRuleVerdict(True, None, r, "probe", "regime_probe", r["expires_ms"], True), T)
@@ -751,7 +759,7 @@ class Runner:
             self.log.append(arm, T, {"kind": "version", "version": m["version"], "manifest_kind": m["kind"], "manifest_sha256": m["sha256"],
                                      "effective_from_ms": m["effective_from_ms"], "playbook_sha256": m["playbook_sha256"], "knobs_sha256": m["knobs_sha256"],
                                      "vetoes_sha256": m["vetoes_sha256"], "n_rules": len(rules), "n_probes": len(probes), "sig": sig,
-                                     "plan_overrides": overrides, "min_conviction": min_conv})
+                                     "plan_overrides": overrides, "plan_tighten": tighten, "min_conviction": min_conv})
             self._logged_sig[arm] = sig
 
     # -- the group policy: once per tick
@@ -1027,9 +1035,13 @@ class Runner:
         # QP 918 (5): only the validated model plan is executed; a key the model left out is a knob that is OFF (never filled from plan_defaults).
         plan = dict(v.fields.get("plan") or {})
         ov = self.overrides.get(arm) or {}
-        plan.update(ov)  # a plan knob set by the arm's reviewer version or an active regime rule replaces the model's value; logged on the row
+        plan.update(ov)  # a plan knob set by the arm's reviewer version or an active PROBE replaces the model's value; logged on the row
+        tt = self.tighten.get(arm) or {}
+        for k, rv in tt.items():  # a tightening rule: the tighter of the model's value and the rule's (stop closer to entry, time shorter); never loosens
+            cur = plan.get(k)
+            plan[k] = rv if cur is None else (max(cur, rv) if A.TIGHTER_SIGN[k] > 0 else min(cur, rv))
         self._open(arm, card, size, plan, recv, gates, {"conviction": v.fields.get("conviction"), "size_asked": asked,
-                                                         **({"plan_overrides": ov} if ov else {})})
+                                                         **({"plan_overrides": ov} if ov else {}), **({"plan_tighten": tt} if tt else {})})
 
     # -- exits
     def exits(self, T: int) -> None:
@@ -1286,6 +1298,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--end-ms", type=int, default=None)
     ap.add_argument("--review-root", default=None, help="where hv6_review keeps the manifests; default = --root. A drill root is refused.")
     a = ap.parse_args(argv)
+    if not re.fullmatch(r"[0-9a-fA-F]{7,40}", a.frozen_sha or ""):
+        print("hv6_runner: refused: --frozen-sha must be 7 to 40 hex characters", file=sys.stderr)
+        return 2
     try:
         refuse_hv4_chain_state()
         H.check(a.root, "w")
