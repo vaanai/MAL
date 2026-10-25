@@ -167,7 +167,11 @@ class SellPinTests(unittest.TestCase):
 
     def test_pin_recomputes(self):
         self.assertIsNone(c0.sell_pin_problem())
-        self.assertEqual(set(c0.SELL_BUILDER_PIN), {"path", "symbol", "symbol_sha256", "close_token_account_sha256", "sell_instructions_sha256"})
+        want = {"path", "symbol", "symbol_sha256", "_sign_sha256", "ptx.constants_sha256"}
+        want |= {f"{n}_sha256" for n in c0.CALLEES_PL} | {f"ptx.{n}_sha256" for n in c0.CALLEES_PTX}
+        self.assertEqual(set(c0.SELL_BUILDER_PIN), want)
+        for n in ("sell_data", "ata", "create_ata_idempotent", "sync_native", "close_account", "swap_accounts", "compute_budget_ixs"):
+            self.assertIn(f"ptx.{n}_sha256", c0.SELL_BUILDER_PIN)
 
     def test_pin_matches_independent_recompute(self):
         import hashlib
@@ -176,16 +180,48 @@ class SellPinTests(unittest.TestCase):
         from tools import probe_live as pl
         from tools import pumpswap_tx as ptx
         sha = lambda o: hashlib.sha256(inspect.getsource(o).encode()).hexdigest()  # noqa: E731
-        self.assertEqual(sha(pl.LiveExecutor._start_sell), c0.SELL_BUILDER_PIN["symbol_sha256"])
-        self.assertEqual(sha(pl.close_token_account), c0.SELL_BUILDER_PIN["close_token_account_sha256"])
-        self.assertEqual(sha(ptx.sell_instructions), c0.SELL_BUILDER_PIN["sell_instructions_sha256"])
+        pin = c0.SELL_BUILDER_PIN
+        self.assertEqual(sha(pl.LiveExecutor._start_sell), pin["symbol_sha256"])
+        self.assertEqual(sha(pl.close_token_account), pin["close_token_account_sha256"])
+        self.assertEqual(sha(ptx.sell_instructions), pin["ptx.sell_instructions_sha256"])
+        self.assertEqual(sha(ptx.sell_data), pin["ptx.sell_data_sha256"])
+        self.assertEqual(sha(ptx.ata), pin["ptx.ata_sha256"])
 
-    def test_any_field_mismatch_is_named(self):
-        for k in ("symbol_sha256", "close_token_account_sha256", "sell_instructions_sha256"):
+    def test_every_pin_field_mismatch_is_named(self):
+        for k in c0.SELL_BUILDER_PIN:
+            if k in ("path", "symbol"):
+                continue
             bad = {**c0.SELL_BUILDER_PIN, k: "0" * 64}
-            self.assertEqual(c0.sell_pin_problem(bad), f"sell_builder_pin_mismatch:{k}")
-        gone = {k: v for k, v in c0.SELL_BUILDER_PIN.items() if k != "sell_instructions_sha256"}
-        self.assertEqual(c0.sell_pin_problem(gone), "sell_builder_pin_mismatch:sell_instructions_sha256")
+            self.assertEqual(c0.sell_pin_problem(bad), f"sell_builder_pin_mismatch:{k}", k)
+            gone = {kk: v for kk, v in c0.SELL_BUILDER_PIN.items() if kk != k}
+            self.assertEqual(c0.sell_pin_problem(gone), f"sell_builder_pin_mismatch:{k}", k)
+
+    def test_editing_any_callee_trips_the_pin(self):
+        """An actual code edit (the function object replaced by one with different source), not just a doctored hash."""
+        from unittest import mock
+
+        from tools import probe_live as pl
+        from tools import pumpswap_tx as ptx
+
+        def edited(*a, **k):  # different source from every pinned function
+            return b"edited"
+
+        for n in c0.CALLEES_PTX:
+            with self.subTest(callee=n), mock.patch.object(ptx, n, edited):
+                self.assertEqual(c0.sell_pin_problem(), f"sell_builder_pin_mismatch:ptx.{n}_sha256")
+        for n in c0.CALLEES_PL:
+            with self.subTest(callee=n), mock.patch.object(pl, n, edited):
+                self.assertEqual(c0.sell_pin_problem(), f"sell_builder_pin_mismatch:{n}_sha256")
+        with mock.patch.object(pl.LiveExecutor, "_start_sell", edited):
+            self.assertEqual(c0.sell_pin_problem(), "sell_builder_pin_mismatch:symbol_sha256")
+        with mock.patch.object(pl.LiveExecutor, "_sign", edited):
+            self.assertEqual(c0.sell_pin_problem(), "sell_builder_pin_mismatch:_sign_sha256")
+        for n in c0.CONSTANTS_PTX:  # a changed constant (discriminator, program id, CU limit)
+            old = getattr(ptx, n)
+            new = old + 1 if isinstance(old, int) else (b"\x00" + old if isinstance(old, bytes) else (ptx.TOKEN_PROGRAM if old != ptx.TOKEN_PROGRAM else ptx.WSOL_MINT))
+            with self.subTest(constant=n), mock.patch.object(ptx, n, new):
+                self.assertEqual(c0.sell_pin_problem(), "sell_builder_pin_mismatch:ptx.constants_sha256")
+        self.assertIsNone(c0.sell_pin_problem())  # patches undone
 
     def test_main_live_refuses_on_pin_then_incomplete(self):
         import contextlib, io, json, tempfile
