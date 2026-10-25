@@ -43,7 +43,7 @@ Other: walk 2 #1036 (r4-b, gate #1289 → #1290 on 11-03); EXP-025 Look 2 #1287 
   - the owner's own OK recorded before any send.
 - **C0 limits (DEC-032 §3):** S ≤ 0.05 SOL; max open 2; 30 buys per UTC day; daily stop 0.10 SOL; total stop 0.20 SOL including open exposure; wallet funded 0.35–1.00 SOL; at most 14 days. Every canary report is labelled "unpromoted execution measurement".
 - **C0→C1** needs the confirmation read PASS AND §5 "live fills match paper" (≥100 eligible trips, CI90 lower bound of mean d_i ≥ −100 bps, landing p50 ≤ 1.9 s). C1 stays locked until a reviewed PR sets the c/report pins. The owner's ladder pre-approval does not skip any of these.
-- **Ops chain** after all of the above: a QP-checked live.json with the C0 values (stake 0.05 SOL; priority fee at the p155 pin from the fee-arm record, per HELM-REPLY-1024-2 §F) → Helm installs → owner funding (~0.5 SOL) and the owner's line.
+- **Ops chain** after all of the above: a QP-checked live.json with the C0 values (stake 0.05 SOL; priority fee at the p155 pin from the fee-arm record ARTIFACTS/lab/feearm-landing-2026-10-23.md) → Helm installs → owner funding (~0.5 SOL) and the owner's line.
 - HV4 live adapter and a DBC live paper book (P18 PRs 2–4) are not built. Build them only if a read PASSes.
 
 ## 5. Fixed instants: host-side MiScusi jobs (no session needed)
@@ -65,6 +65,7 @@ Other: walk 2 #1036 (r4-b, gate #1289 → #1290 on 11-03); EXP-025 Look 2 #1287 
 - **11-01T00:10Z:** DBC READ job (`scripts/research/dbc-m10-read-job.sh A <GiB>`, after F and the last G pass, ~10 GiB). A confirmation only (§1).
   - R2's read tool is tools/dbc_fwd_read_am1.py at tag dbc-m10-forward-v1-am1. tools/dbc_fwd_read.py is retained only as an imported library. Any invocation of it as a program or of its run() against FWD_ROOT is forbidden; a marker v3 claim by it ends m10 (AM6 class, licenses nothing).
   - Pre-claim refusals are not looks and not failures: rc 2/3/5/6/7, no "LOOK CONSUMED" line, marker v3 still absent. Record each in READ-ATTEMPTS.log. Once "LOOK CONSUMED" prints, anything other than rc 0 with fwd-m10-am1.json written is NOT_DECIDABLE and ends m10 and every D1 variant: no re-run, no v4 marker, no new tag.
+  - Never run `python3 -m tools.test_dbc_m10_read_hardening` (or any #890 test file) on or after 2026-10-31T00:00:00Z. From 11-01T00:10Z only the tagged time gate and the wrapper's TEST_* refusal stand between that test and the real marker v3 and out dir (QP verdict on #890 at 86b0e3d1, READ condition).
 - **From 2026-10-30T00Z at the earliest,** at the instant each book's pinned count rule sets (§1): HV4 and Q50 gate reads with QP. HV4 first needs its attempts-vs-trades read rule (own QP ruling). A PASS → C0 canary only after every DEC-032 §1 item (§4); for Q50 that includes the EXP-024 Look-2 seal question. Owed for HV4: the live adapter.
 - **Fee model:** disclose at every read that the creator fee is 0.5 bp below chain at the five PumpSwap tiers ≥ 54,030 SOL mcap.
 - **Ideas:** keep a P-lane running (P26 parked both rows; the idea library has 45 untested). Radar alerts → change playbook.
