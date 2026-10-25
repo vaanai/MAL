@@ -1,0 +1,4 @@
+Review bundle for the book's next day (JSON, one object):
+{{BUNDLE}}
+Call {{NONCE}}
+Reply with one JSON array of at most 3 changes, or [].
