@@ -30,15 +30,15 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `live-canary` | 1 | 0 | 0 |
 | `forward-test` | 2 | 0 | 0 |
 | `explored-survivor-unconfirmed` | 9 | 0 | 0 |
-| `parked` | 10 | 0 | 0 |
+| `parked` | 10 | 1 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 45 | 20 | 1 |
+| `untested` | 45 | 19 | 1 |
 | `desk-read` | 1 | 43 | 0 |
 | `explored-no-survivor` | 39 | 6 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
 | **all** | 185 | 75 | 2 |
 
-The file holds 512 rows: the 262 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 513 rows: the 262 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -265,7 +265,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
-| `w2-mayhem-grads-1` | Mayhem-mode complete graduates as candidate universe | `untested` | Price convention not trusted (step 2 STOP): first PumpSwap price median 0.001013 of pinned seed, 14 of 6,081 within 1%, 0 in-band Mayhem V; no +6 min table built. |
+| `w2-mayhem-grads-1` | Mayhem-mode complete graduates as candidate universe | `parked` | 2026-10-25 P27 counts-only on fresh-0903 [2026-09-03T12, 2026-09-09T12) (exploration pool), counted days 09-05..09-08, no price after any decision, no outcome, no P&L: MAYHEM-GRAD6 decisions/day 337, 285, 273, 323 (median ~304; lower bound, mints created before 09-03T12 unseen). Impact at 0.25 SOL: 133% on raw quote … |
 
 ### mgr-1013-gap-flag (1)
 
