@@ -8,7 +8,7 @@ Sheet: `HELM-SHEET.md` (hunt29/p1) section F, which is the authority; this draft
 1. The Q50 DEC-031 gate read is a PASS, with QP's OK on the exact files, and the Q50 DEC-032 copy has merged with QP OK and a reviewer verdict on head `<FILL:head_sha>`, containing `OWNER_CANARY_CONFIRMED: bot_id=h5v1q50-boostfloor-a1` (the executor refuses a live start without it in `DEC/DEC-*canary*.md`).
 2. QP's seal statement for the EXP-024 Look-2 seal is in the OK (see readiness note section 2).
 3. The owner has, in his own message: said yes to the C0 ask, funded the wallet, and told Helm to act. The standing line (DEC-032 Am.1 item 3) covers the OK; it does not cover the funding transfer or the install.
-4. Install sha `<FILL:install_sha>` = a main merge that has the executor, ladder (#861/#862) and the FEED_NOTE flip; md5 replay EQUAL at that sha; p155-or-default decision recorded (readiness note section 3).
+4. Install sha `<FILL:install_sha>` = a main merge that has the executor, ladder (#861/#862) and the FEED_NOTE flip; md5 replay EQUAL at that sha; fee decided: the compiled default 55,000 / 55,000 / 150,000 (readiness note §2b item 1; QP ruling section 5), so 0526d5cd with md5 EQUAL job #1481 qualifies, and any other sha needs its own EQUAL replay (C2).
 
 ## Ask (to Helm, through the owner)
 Please, on mal-fast-0, in this order, each step only on the owner's instruction:
