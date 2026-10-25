@@ -5,18 +5,24 @@ A release = one frozen bundle (code sha, reviewer prompt sha, validator threshol
 forward-registered under its own bot_ids with its own clock. This module builds, checks and writes the release record and refuses what DESIGN s7 forbids.
 
 Rules enforced here (each one a refusal code, never a warning):
-  1. No v6.(N+1) clock starts before v6.N's comparison window ends (clock >= prev clock + D days, D = 12 by default).          window_not_over
-  2. (V2-3) v6.(N+1) is registered only if v6.0's F and X keep running through its window; the caller states when they run until.   fx_not_continuing
+  1. No v6.(N+1) clock starts before v6.N's comparison window ends (clock >= prev clock + D days). D is PINNED to 12 (WINDOW_DAYS): any other
+     window_days is refused (window_not_pinned), and the check uses the constant, never a value stored in the previous record.     window_not_over
+  2. (V2-3) v6.(N+1) is registered only if v6.0's F and X keep running through its window. The caller states when they run until AND names the
+     owner spend-line notebook id that pays for F's calls (fx_spend_line_notebook_id, required beside it).        fx_not_continuing / fx_spend_line_missing
      No F or X copy is ever registered by a release (a second frozen copy is forbidden, DEC-031 Am.3 item 5).                         no_new_fx_copies
      v6.0 itself registers all five arms; it is not blocked by this rule.
   3. A release registers ONLY the arms whose procedure changed (L, L-nr, P as applicable): reviewer prompt sha changes touch all three, a regime
      prompt / block-spec change touches L and P, a params change touches all three. An empty set or a wrong arm list is refused.      arms_not_changed_set
+     A regime-only release registers L and P without L-nr, so every contrast with an arm missing from the release (e.g. L - L-nr, the regime test)
+     is written into the record as NOT_DECIDABLE (`not_decidable_contrasts`).
   4. Release inputs are non-outcome metrics only (invalid-reply rate, schema/bounds rejects, token cost, latency, block coverage). The whitelist is
      closed: P&L, any arm gap, "effect of claimed sign not met" rejects and the change-acceptance rate are refused by name, and so is any unlisted key.
                                                                                                                                         outcome_metric_refused
      The changeable registry is hv6_review.REGISTRY (min-match in {8, 10, 15}, skip count, max changes/night, TTL <= 72 h, evidence window). Anything
      else is a human-written PR with QP review: a params value outside the registry is refused.                                         params_not_in_registry
-  5. A data-only release (same code sha) needs a manifest pin (64 hex); a code change needs the md5 decision-equivalence replay proof (32 hex).
+  5. Bot ids come from hv6_review.bot_id(release, arm) = hv6.<N>-<arm> (v6.0 -> hv6.0-L, the runner's ledger names) and nowhere else.
+     A genesis clock is a 00:00Z boundary after the epoch (the same check as the manifest genesis).
+  6. A data-only release (same code sha) needs a manifest pin (64 hex); a code change needs the md5 decision-equivalence replay proof (32 hex).
 Self-seal: metric values and per-arm results are written only in the release record under the HV6 root; the CLI prints only the record's sha256.
 """
 from __future__ import annotations
@@ -42,19 +48,21 @@ from tools import hv6_review as rv
 from tools.hv4_review import DAY_MS, GENESIS, ReviewError, canon, sha256_hex
 
 SCHEMA = "hv6-release-1"
-WINDOW_DAYS = 12                                   # DESIGN s4/s7: D = 12
+WINDOW_DAYS = 12                                   # DESIGN s4/s7: D = 12 (pinned)
 CHANGEABLE_ARMS = ("L", "L-nr", "P")
 ALL_ARMS = tuple(ag.ARMS)
 ALLOWED_METRICS = ("invalid_reply_rate", "schema_rejects", "bounds_rejects", "token_cost_usd", "latency_ms_p50", "latency_ms_p95", "block_coverage")
 # reject codes that exist independent of any outcome (fixed grammar and bounds checks). Everything else (the 10-match rule, no_contrast, effect_sign_mismatch,
 # duplicate_target against past changes) depends on outcomes and never enters a release input.
-SCHEMA_CODES = frozenset({"bad_keys", "bad_type", "bad_claim", "bad_why", "bad_evidence_ids", "unknown_evidence_id", "bad_target", "bad_new", "bad_paragraph",
+SCHEMA_CODES = frozenset({"bad_keys", "bad_type", "bad_claim", "bad_why", "bad_evidence_ids", "bad_target", "bad_new", "bad_paragraph",
                           "bad_or_frozen_target", "neutral_field", "not_json", "not_an_array", "item_not_object", "empty_reply", "reply_too_long",
-                          "too_many_changes", "veto_claim_must_be_worse", "veto_differs_from_predicate", "bad_ttl", "bad_keys"})
+                          "too_many_changes", "veto_claim_must_be_worse", "veto_differs_from_predicate", "bad_ttl"})
 BOUNDS_CODES = frozenset({"knob_out_of_bounds", "knob_unknown", "knob_not_number", "knob_not_integer", "probe_stake_not_0.25", "probe_extra_entries",
-                          "probe_more_than_one_step", "ttl_over_release_cap", "veto_cap", "block_unusable", "block_not_before_write"})
+                          "probe_more_than_one_step", "ttl_over_release_cap", "block_unusable", "block_not_before_write"})
+# NOT in either set: veto_cap and unknown_evidence_id. veto_cap depends on how many vetoes were accepted before (the acceptance rate, T10(c)); unknown_evidence_id
+# depends on the size of the outcome set.
 OUTCOME_NAME = re.compile(r"pnl|p_l|profit|net|sol|gap|effect|accept|sign|win|loss|ret|edge|diff|outcome", re.I)
-RELEASE_RE = re.compile(r"v6\.(0|[1-9][0-9]?)")
+NOTEBOOK_ID_RE = re.compile(r"[A-Za-z0-9_\-]{3,64}")
 SHA64 = re.compile(r"[0-9a-f]{64}")
 MD5 = re.compile(r"[0-9a-f]{32}")
 
@@ -68,16 +76,16 @@ def _no(code: str):
 
 
 def release_number(release: str) -> int:
-    m = RELEASE_RE.fullmatch(release or "")
-    if not m:
+    try:
+        return rv.release_n(release)
+    except ReviewError:
         _no("bad_release_id")
-    return int(m.group(1))
 
 
 def bot_ids(release: str, arms: Sequence[str]) -> dict[str, str]:
-    """v6.0 -> hv6-<arm> (the ledger name the reviewer reads); v6.N -> hv6r<N>-<arm>."""
-    n = release_number(release)
-    return {a: (f"hv6-{a}" if n == 0 else f"hv6r{n}-{a}") for a in arms}
+    """hv6.<N>-<arm> from hv6_review.bot_id: the one function the reviewer, the runner's ledger names and this record share."""
+    release_number(release)
+    return {a: rv.bot_id(release, a) for a in arms}
 
 
 def release_root(root: str | Path, release: str) -> Path:
@@ -139,19 +147,32 @@ def changed_arms(prev: Mapping | None, params: rv.Params) -> tuple[str, ...]:
     return tuple(a for a in CHANGEABLE_ARMS if cur[a] != old.get(a))
 
 
+def not_decidable(registered: Sequence[str]) -> list[str]:
+    """Contrasts among L, L-nr and P (same-release comparisons) that lack an arm in this release: NOT_DECIDABLE by rule."""
+    reg = set(registered)
+    pairs = [("L", "L-nr"), ("L", "P"), ("L-nr", "P")]
+    return [f"{a} - {b}" for a, b in pairs if not (a in reg and b in reg)]
+
+
 def record_hash(rec: Mapping) -> str:
     return sha256_hex(canon({k: v for k, v in rec.items() if k != "sha256"}))
 
 
 def build_release(release: str, *, commit: str, clock_ms: int, written_ms: int, params: rv.Params = rv.V60_PARAMS, prev: Mapping | None = None,
                   arms: Sequence[str] | None = None, metrics: Mapping | None = None, fx_run_until_ms: int | None = None, window_days: int = WINDOW_DAYS,
-                  manifest_pin: str | None = None, replay_md5: str | None = None) -> dict:
+                  manifest_pin: str | None = None, replay_md5: str | None = None, fx_spend_line_notebook_id: str | None = None) -> dict:
     """The release record, or ReleaseRefused(code). `prev` is the previous release's record (None for v6.0)."""
     n = release_number(release)
     if not rv.COMMIT_RE.fullmatch(str(commit).lower()):
         _no("commit_format")
     if not (isinstance(clock_ms, int) and isinstance(written_ms, int)) or written_ms >= clock_ms:
         _no("record_not_before_clock")
+    try:
+        rv.check_clock(clock_ms)
+    except ReviewError:
+        _no("clock_not_a_utc_midnight")
+    if window_days != WINDOW_DAYS:
+        _no("window_not_pinned")
     metrics = check_metrics(metrics or {})
     if n == 0:
         if prev is not None:
@@ -164,12 +185,14 @@ def build_release(release: str, *, commit: str, clock_ms: int, written_ms: int, 
             _no("prev_release_missing")
         if prev["sha256"] != record_hash(prev):
             _no("prev_hash")
-        window_end = prev["clock_ms"] + prev["window_days"] * DAY_MS
+        window_end = prev["clock_ms"] + WINDOW_DAYS * DAY_MS
         if clock_ms < window_end:
             _no("window_not_over")
         # V2-3: v6.0's F and X must keep running through THIS release's window (clock + D)
-        if not isinstance(fx_run_until_ms, int) or isinstance(fx_run_until_ms, bool) or fx_run_until_ms < clock_ms + window_days * DAY_MS:
+        if not isinstance(fx_run_until_ms, int) or isinstance(fx_run_until_ms, bool) or fx_run_until_ms < clock_ms + WINDOW_DAYS * DAY_MS:
             _no("fx_not_continuing")
+        if not isinstance(fx_spend_line_notebook_id, str) or not NOTEBOOK_ID_RE.fullmatch(fx_spend_line_notebook_id):
+            _no("fx_spend_line_missing")
         if arms is not None and any(a in ("F", "X") for a in arms):
             _no("no_new_fx_copies")
         reg = changed_arms(prev, params)
@@ -186,7 +209,8 @@ def build_release(release: str, *, commit: str, clock_ms: int, written_ms: int, 
            "window_days": window_days, "params": asdict(params), "params_sha256": params.sha256(), "reviewer_sha256": rv.reviewer_sha256(),
            "regime_spec_sha256": regime_spec_sha256(), "bundle_spec_sha256": bundle_spec_sha256(), "playbook_seed_sha256": ag.load_playbook("v0").sha256,
            "procedure": procedure(params), "arms": list(reg), "bot_ids": bot_ids(release, reg), "metrics": metrics,
-           "fx_run_until_ms": fx_run_until_ms if n else None, "manifest_pin": manifest_pin if n else None, "replay_md5": replay_md5 if n else None,
+           "not_decidable_contrasts": not_decidable(reg) if n else [],
+           "fx_run_until_ms": fx_run_until_ms if n else None, "fx_spend_line_notebook_id": fx_spend_line_notebook_id if n else None, "manifest_pin": manifest_pin if n else None, "replay_md5": replay_md5 if n else None,
            "prev_release_sha256": GENESIS if prev is None else prev["sha256"]}
     rec["sha256"] = record_hash(rec)
     return rec
@@ -194,6 +218,7 @@ def build_release(release: str, *, commit: str, clock_ms: int, written_ms: int, 
 
 def read_release(root: str | Path, release: str) -> dict | None:
     f = Path(root) / "release-records" / f"{release}.json"
+    f = Path(rv._guard(f, "r"))
     return json.loads(f.read_text(encoding="utf-8")) if f.is_file() else None
 
 
@@ -203,7 +228,7 @@ def write_release(root: str | Path, rec: Mapping) -> Path:
     if rec.get("sha256") != record_hash(rec):
         _no("record_hash")
     path = Path(root) / "release-records" / f"{rec['release']}.json"
-    rv.RV._write_once(path, canon(rec).encode("utf-8"))
+    rv._write_once(path, canon(rec).encode("utf-8"))
     params = rv.Params(**rec["params"])
     for arm in rec["arms"]:
         if ag.ARMS[arm].reviewer:
@@ -231,13 +256,14 @@ def _main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--metrics-json", default="{}")
     ap.add_argument("--fx-run-until-ms", type=int, default=None)
     ap.add_argument("--manifest-pin", default=None)
+    ap.add_argument("--fx-spend-line-id", default=None, help="owner spend-line notebook id (required with --fx-run-until-ms)")
     ap.add_argument("--replay-md5", default=None)
     a = ap.parse_args(argv)
     n = release_number(a.release)
     prev = read_release(a.root, f"v6.{n - 1}") if n else None
     params = rv.Params(**{**asdict(rv.V60_PARAMS), **json.loads(a.params_json)})
     rec = build_release(a.release, commit=a.commit, clock_ms=a.clock_ms, written_ms=a.written_ms, params=params, prev=prev, metrics=json.loads(a.metrics_json),
-                        fx_run_until_ms=a.fx_run_until_ms, manifest_pin=a.manifest_pin, replay_md5=a.replay_md5)
+                        fx_run_until_ms=a.fx_run_until_ms, manifest_pin=a.manifest_pin, replay_md5=a.replay_md5, fx_spend_line_notebook_id=a.fx_spend_line_id)
     write_release(a.root, rec)
     print(canon({"release": rec["release"], "sha256": rec["sha256"]}))
     return 0

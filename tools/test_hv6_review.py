@@ -2,8 +2,11 @@
 /data/mal/arena, HV4 or Q50 output is read (seals: hunt30/SEALS-BRIEF.md). Nothing here says the trader makes money or that a reviewer learns anything."""
 from __future__ import annotations
 
+import inspect
 import io
 import json
+import os
+import stat
 import subprocess
 import sys
 from contextlib import redirect_stdout
@@ -13,10 +16,12 @@ import pytest
 
 from tools import hv4_review as RV
 from tools import hv6_agents as ag
+from tools import hv6_cards as HC
 from tools import hv6_review as R
 from tools.hv4_model import ModelReply
 from tools.hv4_testkit import make_card
 
+ORIG_READ, ORIG_WRITE = HC.READ_ROOTS, HC.WRITE_ROOTS
 TOOLS = Path(__file__).resolve().parent
 DAY = "2026-11-02"
 CUT = R.day_start_ms(DAY)
@@ -27,6 +32,21 @@ COMMIT = "a" * 40
 BLOCK = {"schema": "hv6_regime.v1", "radar_status": "ok", "as_of_ms": CUT - 3 * H,
          "events": [{"id": "RG-0123abcd", "sev": "HIGH", "relevance": "direct", "kind": "program_upgrade", "program": "pump"},
                     {"id": "RG-89abcdef", "sev": "LOW", "relevance": "adjacent", "kind": "new_vocab", "program": "OTHER"}]}
+
+
+@pytest.fixture(autouse=True)
+def _sandbox(tmp_path, monkeypatch):
+    """The guard's allowlist is the test's tmp dir; the wall clock is a fixed instant before every effective_from (R6 append rule)."""
+    real = os.path.realpath(tmp_path)
+    monkeypatch.setattr(HC, "READ_ROOTS", (real,))
+    monkeypatch.setattr(HC, "WRITE_ROOTS", (real,))
+    monkeypatch.setattr(R, "wall_ms", lambda: T0 + 1)
+
+
+def blk(i=0):
+    """A block with its own direct HIGH event id (each intraday review needs a NEW one)."""
+    ev = {"id": f"RG-{i:08x}", "sev": "HIGH", "relevance": "direct", "kind": "program_upgrade", "program": "pump"}
+    return {**BLOCK, "events": [ev, *BLOCK["events"][1:]]}
 
 
 def rec(i, *, kind="trade", net=1.0, ret=0.0, reason="target", hold=300, close=None, entry=None):
@@ -216,7 +236,7 @@ def test_night_accepts_change_and_chains(tmp_path):
     row = R.review_night("L", DAY, root=tmp_path, ledger_root=tmp_path, model=stub(json.dumps([KNOB])), now_ms=NOW, commit=COMMIT, records=history(), block=BLOCK)
     assert row["kind"] == "nightly" and row["version"] == 1 and len(row["changes"]) == 1 and row["knobs"]["min_conviction"] == 4
     assert row["max_input_close_ms"] < CUT and row["block_as_of_ms"] < row["written_ms"]
-    assert row["effective_from_ms"] == max(CUT + RV.EFFECTIVE_OFFSET_MS, NOW)
+    assert row["effective_from_ms"] == max(CUT + RV.EFFECTIVE_OFFSET_MS, NOW + R.APPEND_MARGIN_MS) and row["trigger_ids"] == []
     rows = R.verify_chain(tmp_path, "L", reviewer_sha=R.reviewer_sha256(), frozen_sha=COMMIT)
     assert rows[1]["prev_manifest_sha256"] == rows[0]["sha256"]
     again = R.review_night("L", DAY, root=tmp_path, ledger_root=tmp_path, model=stub("[]"), now_ms=NOW + 1, commit=COMMIT, records=history())
@@ -274,7 +294,7 @@ def test_regime_review_intraday_line(tmp_path):
     assert req.kind == "regime" and req.max_tokens == ag.MAX_TOKENS["regime"] == 1200
     body = json.loads(req.user_text[req.user_text.index("{"):req.user_text.rindex("}") + 1])
     assert "trades" not in body and "skips" not in body and "regime_evidence" in body
-    assert row["kind"] == "intraday" and row["intraday_n"] == 1 and row["effective_from_ms"] == t + RV.EFFECTIVE_OFFSET_MS
+    assert row["trigger_ids"] == ["RG-0123abcd"] and row["kind"] == "intraday" and row["intraday_n"] == 1 and row["effective_from_ms"] == t + RV.EFFECTIVE_OFFSET_MS
     assert row["block_as_of_ms"] < row["written_ms"] and row["max_input_close_ms"] < CUT
     assert row["playbook_sha256"] and len(row["regime_rules"]) == 1 and row["version"] == 2
     R.verify_chain(tmp_path, "L", reviewer_sha=R.reviewer_sha256(), regime_sha=R.regime_template_sha256(), frozen_sha=COMMIT)
@@ -282,31 +302,52 @@ def test_regime_review_intraday_line(tmp_path):
 
 def test_regime_review_caps_and_guards(tmp_path):
     setup(tmp_path)
-    kw = dict(root=tmp_path, ledger_root=tmp_path, commit=COMMIT, block=BLOCK, records=history())
-    with pytest.raises(RV.ReviewError, match="nights_review_first"):
-        R.regime_review("L", DAY, model=stub("[]"), now_ms=NOW, **kw)
-    R.review_night("L", DAY, root=tmp_path, ledger_root=tmp_path, model=stub("[]"), now_ms=NOW, commit=COMMIT, records=history(), block=BLOCK)
-    R.regime_review("L", DAY, model=stub("[]"), now_ms=NOW + H, **kw)
-    R.regime_review("L", DAY, model=stub("[]"), now_ms=NOW + 2 * H, **kw)
+    kw = dict(root=tmp_path, ledger_root=tmp_path, commit=COMMIT, records=history())
+    # a missed nightly line does NOT block the day's intraday review; it is logged
+    R.regime_review("L", DAY, model=stub("[]"), now_ms=NOW, block=blk(1), **kw)
+    ev = [json.loads(x) for x in (tmp_path / "logs" / "review-events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert ev[0]["kind"] == "nightly_missing_for_intraday"
+    R.review_night("L", DAY, root=tmp_path, ledger_root=tmp_path, model=stub("[]"), now_ms=NOW + 1, commit=COMMIT, records=history(), block=BLOCK)
+    R.regime_review("L", DAY, model=stub("[]"), now_ms=NOW + H, block=blk(2), **kw)
     with pytest.raises(RV.ReviewError, match="intraday_cap"):
-        R.regime_review("L", DAY, model=stub("[]"), now_ms=NOW + 3 * H, **kw)
+        R.regime_review("L", DAY, model=stub("[]"), now_ms=NOW + 2 * H, block=blk(3), **kw)
     with pytest.raises(RV.ReviewError, match="block_not_before_write"):
-        R.regime_review("P", DAY, model=stub("[]"), now_ms=NOW, **{**kw, "block": {**BLOCK, "as_of_ms": NOW + 1}})
+        R.regime_review("P", DAY, model=stub("[]"), now_ms=NOW, **{**kw, "block": {**blk(4), "as_of_ms": NOW + 1}})
     with pytest.raises(RV.ReviewError, match="no_regime_review"):
-        R.regime_review("L-nr", DAY, model=stub("[]"), now_ms=NOW, **kw)
+        R.regime_review("L-nr", DAY, model=stub("[]"), now_ms=NOW, block=blk(5), **kw)
+
+
+def test_intraday_only_on_a_new_direct_high_event(tmp_path):
+    setup(tmp_path)
+    R.review_night("L", DAY, root=tmp_path, ledger_root=tmp_path, model=stub("[]"), now_ms=NOW, commit=COMMIT, records=history(), block=BLOCK)
+    kw = dict(root=tmp_path, ledger_root=tmp_path, commit=COMMIT, records=history())
+    no_direct = {**BLOCK, "events": BLOCK["events"][1:]}
+    with pytest.raises(RV.ReviewError, match="no_new_direct_high"):
+        R.regime_review("L", DAY, model=stub("[]"), now_ms=NOW + H, block=no_direct, **kw)
+    with pytest.raises(RV.ReviewError, match="no_new_direct_high"):
+        R.regime_review("L", DAY, model=stub("[]"), now_ms=NOW + H, block={**BLOCK, "radar_status": "stale"}, **kw)
+    R.regime_review("L", DAY, model=stub("[]"), now_ms=NOW + H, block=BLOCK, **kw)
+    with pytest.raises(RV.ReviewError, match="no_new_direct_high"):                    # the same event id again
+        R.regime_review("L", DAY, model=stub("[]"), now_ms=NOW + 2 * H, block=BLOCK, **kw)
+    rows = R.read_manifests(tmp_path, "L")
+    again = {**rows[-1], "seq": rows[-1]["seq"] + 1, "version": rows[-1]["version"] + 1, "intraday_n": 2, "prev_manifest_sha256": rows[-1]["sha256"],
+             "written_ms": NOW + 2 * H, "effective_from_ms": NOW + 2 * H + RV.EFFECTIVE_OFFSET_MS}
+    again["sha256"] = R.manifest_hash(again)
+    with pytest.raises(RV.ManifestRefused, match="intraday_trigger"):
+        R.check_manifest(again, rows, "L")
 
 
 def test_regime_review_truncated_is_abstain_and_only_regime(tmp_path):
     setup(tmp_path)
     R.review_night("L", DAY, root=tmp_path, ledger_root=tmp_path, model=stub("[]"), now_ms=NOW, commit=COMMIT, records=history(), block=BLOCK)
-    kw = dict(root=tmp_path, ledger_root=tmp_path, commit=COMMIT, block=BLOCK, records=history())
-    row = R.regime_review("L", DAY, model=stub(json.dumps([REGIME]), stop_reason="max_tokens"), now_ms=NOW + H, **kw)
+    kw = dict(root=tmp_path, ledger_root=tmp_path, commit=COMMIT, block=blk(1), records=history())
+    row = R.regime_review("L", DAY, model=stub(json.dumps([REGIME]), stop_reason="max_tokens"), now_ms=NOW + H, **{**kw, "block": blk(1)})
     assert row["review_error"] == "truncated" and row["changes"] == [] and row["regime_rules"] == []
-    row2 = R.regime_review("L", DAY, model=stub(json.dumps([KNOB])), now_ms=NOW + 2 * H, **kw)
+    row2 = R.regime_review("L", DAY, model=stub(json.dumps([KNOB])), now_ms=NOW + 2 * H, **{**kw, "block": blk(2)})
     assert row2["changes"] == [] and row2["rejected"] == [[0, "not_a_regime_rule"]] and row2["knobs"] == row["knobs"]
 
 
-def test_direct_high_trigger_and_latest_block(tmp_path):
+def test_direct_high_trigger_and_latest_block_x(tmp_path):
     assert R.direct_high_ids(BLOCK) == ["RG-0123abcd"]
     assert R.new_direct_high(BLOCK, ["RG-0123abcd"]) == []
     assert R.direct_high_ids({**BLOCK, "radar_status": "stale"}) == [] and R.direct_high_ids(None) == []
@@ -329,11 +370,14 @@ def test_check_manifest_negatives(tmp_path):
     night = rows[1]
     bad(night, rows[:1], "input_after_cutoff", max_input_close_ms=CUT)
     bad(night, rows[:1], "block_not_before_write", block_as_of_ms=night["written_ms"])
-    bad(night, rows[:1], "effective_from", effective_from_ms=night["written_ms"] - 1)
     bad(night, rows[:1], "params_changed", params_sha256="0" * 64)
     bad(night, rows[:1], "intraday_n", intraday_n=1)
     bad(night, rows[:1], "regime_rule_expired_or_malformed", regime_rules=[{"expires_ms": 1}], changes=[])
     intra = R.regime_review("L", DAY, root=tmp_path, ledger_root=tmp_path, model=stub("[]"), now_ms=NOW + H, commit=COMMIT, block=BLOCK, records=history())
+    bad(intra, rows, "intraday_trigger", trigger_ids=[])
+    bad(night, rows[:1], "trigger_ids", trigger_ids=["RG-0123abcd"])
+    bad(intra, rows, "written_backdated", written_ms=night["written_ms"] - 1)
+    bad(night, rows[:1], "effective_from", effective_from_ms=night["written_ms"] + R.APPEND_MARGIN_MS - 1 if night["written_ms"] + R.APPEND_MARGIN_MS > CUT + RV.EFFECTIVE_OFFSET_MS else CUT)
     bad(intra, rows, "intraday_changed_permanent_state", knobs={**intra["knobs"], "stop_pct": -20.0}, knobs_sha256=RV.sha256_hex(RV.canon({**intra["knobs"], "stop_pct": -20.0})))
     bad(intra, rows, "effective_from", effective_from_ms=intra["written_ms"])
     bad(intra, rows, "intraday_without_block", block_sha256=None, block_as_of_ms=None)
@@ -343,7 +387,7 @@ def test_check_manifest_negatives(tmp_path):
 def _write_world(tmp, t0):
     root, led = tmp / "hv6root", tmp / "ledger"
     (root / "decisions" / "L").mkdir(parents=True)
-    (led / "hv6-L").mkdir(parents=True)
+    (led / "hv6.0-L").mkdir(parents=True)
 
     def pair(pid, entry, exit_, net):
         e = {"kind": "entry", "pos": True, "order_id": pid, "ms": entry, "size": 0.25, "conviction": 4, "plan": {"stop_pct": -25}, "why": "ok", "card": make_card(pid, entry)}
@@ -352,7 +396,7 @@ def _write_world(tmp, t0):
         return e, t
     rows = [pair("A" * 40, t0 + 1000, t0 + 400_000, 0.1), pair("B" * 40, t0 - 5000, t0 + 400_000, 0.1), pair("C" * 40, CUT - 1000, CUT + 1000, 0.1)]
     (root / "decisions" / "L" / "2026-11-01.jsonl").write_text("\n".join(json.dumps(e) for e, _t in rows) + "\n", encoding="utf-8")
-    (led / "hv6-L" / "trades-1.jsonl").write_text("\n".join(json.dumps(t) for _e, t in rows) + "\n", encoding="utf-8")
+    (led / "hv6.0-L" / "trades-1.jsonl").write_text("\n".join(json.dumps(t) for _e, t in rows) + "\n", encoding="utf-8")
     return root, led
 
 
@@ -364,12 +408,203 @@ def test_loader_g4_t0_filter_and_cutoff(tmp_path):
     assert open_n == 2                                                  # A's exit has no sell row here; C is open at the cutoff; B is pre-T0
 
 
-def test_roots_with_deny_tokens_are_refused(tmp_path):
-    for bad in ("/data/mal/arena/haiku-v4", str(tmp_path / "q50"), str(tmp_path / "bots.json")):
-        with pytest.raises(RV.ReviewError):
+def test_roots_with_deny_tokens_symlinks_and_outside_allowlist_are_refused(tmp_path):
+    (tmp_path / "hv4real").mkdir()
+    (tmp_path / "innocent").symlink_to(tmp_path / "hv4real")               # the raw string is clean, the real path is not
+    for bad in ("/data/mal/arena/haiku-v4", str(tmp_path / "q50"), str(tmp_path / "bots.json"), str(tmp_path / "innocent"), "/etc", "relative/x"):
+        with pytest.raises(RV.ReviewError, match="path_refused"):
             R.load_trade_records("L", bad, tmp_path, CUT, T0)
-        with pytest.raises(RV.ReviewError):
+        with pytest.raises(RV.ReviewError, match="path_refused"):
             R.verify_chain(bad, "L")
+    with pytest.raises(RV.ReviewError, match="path_refused"):                 # the shared engine ledger is not on the allowlist
+        R.load_trade_records("L", tmp_path, "/data/mal/arena/ledger", CUT, T0)
+
+
+def test_symlinked_file_and_ledger_dir_are_refused(tmp_path):
+    root, led = _write_world(tmp_path, T0)
+    (tmp_path / "hv4-elsewhere").mkdir()
+    (tmp_path / "hv4-elsewhere" / "trades-1.jsonl").write_text("{}\n", encoding="utf-8")
+    (led / "hv6.1-L").symlink_to(tmp_path / "hv4-elsewhere")
+    with pytest.raises(RV.ReviewError, match="path_refused"):
+        R.load_trade_records("L", root, led, CUT, T0, "v6.1")
+    (root / "decisions" / "L" / "2026-11-01.jsonl").rename(tmp_path / "moved.jsonl")
+    (root / "decisions" / "L" / "2026-11-01.jsonl").symlink_to(tmp_path / "hv4-elsewhere" / "trades-1.jsonl")
+    with pytest.raises(RV.ReviewError, match="path_refused"):
+        R.load_trade_records("L", root, led, CUT, T0)
+
+
+def test_guard_allows_the_defaults_on_the_real_allowlist(monkeypatch):
+    monkeypatch.setattr(HC, "READ_ROOTS", ORIG_READ)
+    monkeypatch.setattr(HC, "WRITE_ROOTS", ORIG_WRITE)
+    led = R.default_ledger_root(R.HV6_ROOT)
+    assert led == "/data/mal/arena/haiku-v6/engine-ledger" and R._guard(led) == led
+    assert R.default_ledger_root("/data/mal/arena/haiku-v6/releases/v6.1") == led
+    with pytest.raises(RV.ReviewError):
+        R._guard("/data/mal/arena/ledger")
+
+
+def test_bot_id_is_one_function_and_loader_has_no_prefix_param():
+    assert R.bot_id("v6.0", "L") == "hv6.0-L" and R.bot_id("v6.1", "L-nr") == "hv6.1-L-nr"
+    for bad in ("6.0", "v7.0", "hv6.0", ""):
+        with pytest.raises(RV.ReviewError):
+            R.bot_id(bad, "L")
+    assert "bot_prefix" not in inspect.signature(R.load_trade_records).parameters
+    src = inspect.getsource(R)
+    assert src.count('f"hv6.{') == 1 and 'hv6-{' not in src and 'hv6-L' not in src                    # the only place a bot id is built
+
+
+def test_loader_opens_only_the_release_bot_dir(tmp_path):
+    root, led = _write_world(tmp_path, T0)
+    assert len(R.load_trade_records("L", root, led, CUT, T0, "v6.0")[0]) == 1
+    (led / "hv6.1-L").mkdir()                                                # v6.1 has its own (empty) dir: v6.0's rows are not joined
+    assert R.load_trade_records("L", root, led, CUT, T0, "v6.1")[0] == []
+
+
+def test_missing_ledger_dir_with_sell_rows_is_a_refusal_not_an_empty_book(tmp_path):
+    root, led = _write_world(tmp_path, T0)
+    with (root / "decisions" / "L" / "2026-11-01.jsonl").open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"kind": "sell", "pid": "A" * 40, "ms": T0 + 400_000, "reason": "target"}) + "\n")
+    assert R.load_trade_records("L", root, led, CUT, T0)[0]
+    with pytest.raises(RV.ReviewError, match="ledger_dir_missing"):
+        R.load_trade_records("L", root, tmp_path / "nowhere", CUT, T0)
+    assert R.load_trade_records("L", tmp_path / "emptyroot", tmp_path / "nowhere", CUT, T0) == ([], 0)    # no decision rows: nothing to refuse
+
+
+# ------------------------------------------------------------------------------------------------ block files
+def _put_block(d, ms, **over):
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"block-{ms}.json"
+    f.write_text(json.dumps({**BLOCK, "as_of_ms": ms, **over}), encoding="utf-8")
+    return f
+
+
+def test_read_block_file_checks(tmp_path):
+    d = tmp_path / "regime"
+    good = _put_block(d, 100)
+    blk0, raw = R.read_block_file(good, root=tmp_path)
+    assert blk0["as_of_ms"] == 100 and raw == good.read_bytes()
+    for name, over, code in (("drill", {"drill": True}, "block_is_drill_or_synthetic"), ("syn", {"synthetic": 1}, "block_is_drill_or_synthetic"),
+                             ("schema", {"schema": "other"}, "block_schema")):
+        f = _put_block(tmp_path / name / "regime", 200, **over)
+        with pytest.raises(RV.ReviewError, match=code):
+            R.read_block_file(f)
+    renamed = d / "block-999.json"
+    renamed.write_text(json.dumps({**BLOCK, "as_of_ms": 100}), encoding="utf-8")                 # name does not carry the block's as_of_ms
+    with pytest.raises(RV.ReviewError, match="block_filename"):
+        R.read_block_file(renamed)
+    elsewhere = _put_block(tmp_path / "other", 300)
+    with pytest.raises(RV.ReviewError, match="block_not_under_regime_dir"):
+        R.read_block_file(elsewhere, root=tmp_path)
+    link = d / "block-400.json"
+    link.symlink_to(elsewhere)
+    with pytest.raises(RV.ReviewError):
+        R.read_block_file(link, root=tmp_path)
+
+
+def test_block_radar_byte_copy_must_match(tmp_path):
+    d = tmp_path / "regime"
+    copy = b'{"x":1}\n'
+    f = _put_block(d, 500, input={"sha256": RV.sha256_hex(copy)})
+    with pytest.raises(RV.ReviewError, match="radar_copy_mismatch"):
+        R.read_block_file(f)
+    (d / "radar-500.jsonl").write_bytes(copy)
+    assert R.read_block_file(f)[0]["as_of_ms"] == 500
+    (d / "radar-500.jsonl").write_bytes(copy + b" ")
+    with pytest.raises(RV.ReviewError, match="radar_copy_mismatch"):
+        R.read_block_file(f)
+
+
+def test_latest_block_skips_invalid_files_and_night_stores_a_byte_copy(tmp_path):
+    d = tmp_path / "regime"
+    _put_block(d, CUT - 2 * H)
+    _put_block(d, CUT - H, drill=True)                                      # newer but a drill: skipped
+    assert R.latest_block(d, NOW)["as_of_ms"] == CUT - 2 * H
+    setup(tmp_path)
+    row = R.review_night("L", DAY, root=tmp_path, ledger_root=None, model=stub("[]"), now_ms=NOW, commit=COMMIT, records=history())
+    assert row["block_as_of_ms"] == CUT - 2 * H
+    assert (tmp_path / "bundles" / "L" / f"{DAY}.block.json").read_bytes() == (d / f"block-{CUT - 2 * H}.json").read_bytes()
+
+
+def test_cli_regime_block_must_come_from_the_regime_dir(tmp_path, capsys):
+    setup(tmp_path)
+    out = _put_block(tmp_path / "elsewhere", CUT - H)
+    rc = R.main(["regime", "--root", str(tmp_path), "--arm", "L", "--day", DAY, "--commit", COMMIT, "--now-ms", str(NOW), "--stub", "--block", str(out)])
+    assert rc == 1 and "block_not_under_regime_dir" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------------------------------------ T0, R6
+def test_genesis_clock_must_be_a_utc_midnight():
+    for bad in (0, -86_400_000, T0 + 1, 12345, True, None):
+        with pytest.raises(RV.ReviewError, match="clock_not_a_utc_midnight"):
+            R.genesis_manifest("L", bad, COMMIT)
+    row, _ = R.genesis_manifest("L", T0, COMMIT)
+    for forged in (0, T0 + 1):
+        r = {**row, "effective_from_ms": forged, "written_ms": forged}
+        r["sha256"] = R.manifest_hash(r)
+        with pytest.raises(RV.ManifestRefused, match="clock_not_a_utc_midnight"):
+            R.check_manifest(r, [], "L")
+
+
+def test_cli_genesis_has_no_clock_default(tmp_path):
+    with pytest.raises(SystemExit):
+        R.main(["genesis", "--root", str(tmp_path), "--arm", "L", "--commit", COMMIT])
+    assert R.main(["genesis", "--root", str(tmp_path), "--arm", "L", "--commit", COMMIT, "--clock-start-ms", "0"]) == 1
+
+
+def test_append_after_effective_from_is_refused(tmp_path, monkeypatch):
+    setup(tmp_path)
+    monkeypatch.setattr(R, "wall_ms", lambda: CUT + 10 * H)               # the model call was so slow the line is appended after it is in force
+    with pytest.raises(RV.ManifestRefused, match="appended_after_effective"):
+        R.review_night("L", DAY, root=tmp_path, ledger_root=tmp_path, model=stub("[]"), now_ms=NOW, commit=COMMIT, records=history(), block=BLOCK)
+    assert len(R.read_manifests(tmp_path, "L")) == 1 and not (tmp_path / "replies").exists()
+    monkeypatch.setattr(R, "wall_ms", lambda: NOW + 1)
+    row = R.review_night("L", DAY, root=tmp_path, ledger_root=tmp_path, model=stub("[]"), now_ms=NOW, commit=COMMIT, records=history(), block=BLOCK)
+    assert row["effective_from_ms"] > NOW + 1
+
+
+def test_now_cannot_backdate(tmp_path):
+    setup(tmp_path)
+    R.review_night("L", DAY, root=tmp_path, ledger_root=tmp_path, model=stub("[]"), now_ms=NOW + H, commit=COMMIT, records=history(), block=BLOCK)
+    with pytest.raises(RV.ReviewError, match="now_backdated"):
+        R.regime_review("L", DAY, root=tmp_path, ledger_root=tmp_path, model=stub("[]"), now_ms=NOW, commit=COMMIT, block=BLOCK, records=history())
+    d2 = "2026-11-03"
+    c2 = R.day_start_ms(d2)
+    R.regime_review("L", d2, root=tmp_path, ledger_root=tmp_path, model=stub("[]"), now_ms=c2 + H, commit=COMMIT, block=blk(7), records=history())
+    with pytest.raises(RV.ReviewError, match="now_backdated"):
+        R.review_night("L", d2, root=tmp_path, ledger_root=tmp_path, model=stub("[]"), now_ms=c2 + 5 * 60_000, commit=COMMIT, records=history())
+
+
+def test_cli_now_must_be_the_wall_clock_outside_test_mode(tmp_path, monkeypatch, capsys):
+    setup(tmp_path, "L-nr")
+    monkeypatch.setattr(R, "wall_ms", lambda: NOW + 1)
+    base = ["run", "--root", str(tmp_path), "--arm", "L-nr", "--day", DAY, "--commit", COMMIT]
+    assert R.main(base + ["--now-ms", str(NOW - 120_000)]) == 1 and "now_ms_not_wall_clock" in capsys.readouterr().err
+    assert R.main(base + ["--now-ms", str(NOW - 120_000), "--stub"]) == 0                  # test mode
+
+
+# ------------------------------------------------------------------------------------------------ glue and perms
+def test_make_regime_review_fn_adapts_the_runner_hook(tmp_path):
+    setup(tmp_path)
+    m = ag.StubModel(lambda req: json.dumps([REGIME]))
+    fn = R.make_regime_review_fn(root=tmp_path, ledger_root=None, model=m, commit=COMMIT)
+    assert fn("L", None, NOW) is None                                      # an arm without a block is logged, not an error
+    row = fn("L", BLOCK, NOW + H)                                          # no nightly line for the day: logged, review still runs
+    assert row["kind"] == "intraday" and len(row["regime_rules"]) == 1
+    with pytest.raises(RV.ReviewError, match="no_new_direct_high"):
+        fn("L", BLOCK, NOW + 2 * H)
+    kinds = [json.loads(x)["kind"] for x in (tmp_path / "logs" / "review-events.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert kinds == ["regime_review_skipped_no_block", "nightly_missing_for_intraday", "regime_review_refused"]
+
+
+def test_sealed_files_are_0600_and_dirs_0700(tmp_path):
+    setup(tmp_path)
+    R.review_night("L", DAY, root=tmp_path, ledger_root=tmp_path, model=stub(json.dumps([KNOB])), now_ms=NOW, commit=COMMIT, records=history(), block=BLOCK)
+    R.regime_review("L", DAY, root=tmp_path, ledger_root=tmp_path, model=stub("[]"), now_ms=NOW + H, commit=COMMIT, block=BLOCK, records=history())
+    files = [f for f in tmp_path.rglob("*") if f.is_file()]
+    assert files and all(stat.S_IMODE(f.stat().st_mode) == 0o600 for f in files)
+    for d in ("replies", "validator", "bundles", "playbooks", "manifests", "logs"):
+        if (tmp_path / d).exists():
+            assert stat.S_IMODE((tmp_path / d).stat().st_mode) == 0o700
 
 
 # ------------------------------------------------------------------------------------------------ self-seal and hygiene
@@ -388,7 +623,7 @@ def test_replies_sealed_under_root_and_cli_prints_only_hashes(tmp_path, capsys):
     assert set(p) == {"manifest_chain", "decision_log_sha256"} and len(p["manifest_chain"]["L"]) == 2 and len(p["manifest_chain"]["P"]) == 1
     flat = json.dumps(p)
     assert "ret_15m" not in flat and "min_conviction" not in flat
-    rc = R.main(["run", "--root", str(out), "--ledger-root", str(tmp_path), "--arm", "L-nr", "--day", DAY, "--commit", COMMIT, "--now-ms", str(NOW), "--stub"])
+    rc = R.main(["run", "--root", str(out), "--arm", "L-nr", "--day", DAY, "--commit", COMMIT, "--now-ms", str(NOW), "--stub"])
     cap = capsys.readouterr().out
     assert rc == 0 and set(json.loads(cap)) == {"manifest_chain", "decision_log_sha256"}
 
