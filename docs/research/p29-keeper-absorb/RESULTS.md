@@ -40,3 +40,6 @@ Trigger (library row): tagged sells >= 100/day AND >= 20 clusters/day under the 
 
 ## 6. Frozen pricing rule to run next (proposal, not run)
 See the PR body: a new DECLARE before any price path is read.
+
+## 7. Disclosure (QP item 14)
+`counts.json` `keeper_per_day` and the keeper-history totals run to 2026-10-25, which lies inside the HV4 counted hours (>= 2026-10-25T00Z) and the DBC forward window, and the per-day rows for 2026-10-02..10-25 include days inside the D2/D3 sealed hours [10-02T10, 10-16T01). They are PUBLIC keeper signature counts (signatures, memo kinds, slots, errors) from public RPC only. They were never joined to any tape, price or outcome, and no October keeper count may be joined to a tape or used to tune any rule. The tape join in section 3 used September hours only (fresh-0903). The coverage dry pass of PRICING-DECLARE section 9 loads keeper rows only before 2026-09-25T00Z.

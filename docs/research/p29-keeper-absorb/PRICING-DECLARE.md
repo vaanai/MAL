@@ -1,75 +1,126 @@
-# P29 PRICING-DECLARE: keeper stop-loss absorb. FROZEN BEFORE ANY PRICE PATH IS READ. NOT PRICED.
+# P29 PRICING-DECLARE v2: keeper stop-loss absorb. FROZEN BEFORE ANY PRICE PATH IS READ. NOT PRICED.
 
-Declared 2026-10-25 (lane P29, branch claude/p29-keeper-absorb, follows RESULTS.md: revive trigger met on counts). Exploration, paper only, 0 Helius. Awaits a quant-proof ruling before any run. Nothing here is an edge claim; no book has cleared the promotion gate.
+v1 was e0009fe6; this v2 applies all 15 required changes of the quant-proof ruling on #931 (/data/mal/hunt-1008/push-1016/hunt30/p29/QP-RULING-1025-p29-pricing.md, CHANGES at e0009fe6). A QP re-check on the exact new head is required before any price is read. Paper only, 0 Helius. Nothing here is an edge claim; no book has cleared the promotion gate. A met revive trigger is a count, not evidence of an edge.
 
-Not read before this file: any price, exit, return or P&L of any tagged or untagged cluster; no `price_sol`, `quote_reserve` path after a cluster has been looked at for this rule. Counts in RESULTS.md used `quote_reserve` of the last tagged sell only for the 2% bar.
+Not read before this file: any price, quantity, reserve, exit, return or P&L of any tagged or untagged cluster. The only tape reads so far are RESULTS.md counts (signatures, block_time, venue, and the last tagged sell's reserve for the 2% bar) and the tag-coverage dry pass (section 9), which reads signatures, times and mints only.
+
+## 0. Build route (QP item 7)
+P29 is built as a rule inside the arena lab kit (tools/arena_screen.py), not as a new pricing path, so it inherits the kit's constants and checks: D = 7 feed-delay slots, LAT_DECIDING = 1.9, STAKE_SOL = 0.25, send = 160,000 (DEC-031 Am.8 stack, `arena_rules.stack_config_v2`, passed explicitly), E1 floor (`arena_paper.E1_FLOOR_PER_005`), STRAND_RULES (total, sc), FAILS (flat, press), SUB_CELLS, the pressure intercept refit, worst-in-slot (tools/arena_report_legs.py, QP-approved #747, `REPORT_LEGS_PIN` 65f4d471...), MIN_POOL_AGE_S = 360, the V map (VMAP_DEFAULT) and the block guard. The cost and fail stack is pinned by file sha256 at main 6669c4cc7be1a76c51abc201374c1dab5178c632:
+
+| File | sha256 |
+| --- | --- |
+| tools/arena_screen.py | b37282c7d23d3bfca310f2574b8bc2b9b0981e0e73ee2537e118f779244fbb57 |
+| tools/arena_stack.py | a39b2ba68dd46b7d3a555fb8e06580718300f354020c1f91280ab7a0e0856778 |
+| tools/arena_paper.py | 9d2fdb04a3da9bb38de9e30c91154f5a9ab2de513e6f4d7936c1eb1a54863514 |
+| tools/arena_score.py | c4859323622794f5f97a131eb32256c905ca2ab6c1adf8ab21568fc2a98f27f3 |
+| tools/arena_report_legs.py | 65f4d471e3ad19308a038c4d6563f22322134013f09c0afe2d64c648964a0d8b |
+
+The runner records these hashes in its output and refuses to run if any differs. The kit's own guard is NOT changed (item 10): P29's data access is a separate tool-level allowlist of exactly the declared blocks and days (section 4); `tools/p29_keeper_coverage.py` already has it, the P29 runner copies the same list.
+
+Venue scope (QP item 7): the arena cost stack and live path have no bonding-curve pricing. **Deciding cell = PumpSwap only.** Bonding-curve events are counted and report-only (priced only if a bonding pricing rule with fees and a pressure model is added by a later reviewed amendment; none is declared here). A PASS is therefore for the PumpSwap-only book, which is also what the arena/live path can trade. **Pool age >= 360 s** (kit MIN_POOL_AGE_S; the EXP-024 Look-2 seal until 2026-11-14T00Z) is applied to every entry: younger pools are skipped and counted.
 
 ## 1. Event (frozen)
-- Tag: RESULTS.md rule (keeper fill signature from the keeper's public history). Kind SL only; TP and `mixed` slots excluded (TP mirror is a separate family).
-- Event: >= 3 DISTINCT tagged SL fill signatures with sell rows in one mint (PumpSwap or pump_bonding) within 60 s (block_time); event closes at the 3rd distinct signature; then a 60 s refractory per mint. The "last tagged sell" is the row of that 3rd distinct signature (later tagged SL rows of the mint before the entry print are ignored for timing; the entry is not delayed by them).
-- Pre-drop price P_pre = `price_sol` of the last print of the mint at or before (first tagged sell of the event minus 60 s). P_last = `price_sol` at the last tagged sell. Drop d = (P_pre - P_last) / P_pre. **Skip the event if d < 3%** (frozen).
-- Skip unless the 2% impact bar at 0.25 SOL passes on the reserves at the entry print (PRE-trade reserves for PumpSwap with V per pool added, POST-trade for bonding; V from the pool V map, a pool with no V is skipped and counted, never V = 0).
+- Tag: RESULTS.md rule (keeper fill signature from the keeper's public history), kind SL only; TP and `mixed` slots excluded (TP mirror is a separate family).
+- Event: >= 3 DISTINCT tagged SL fill signatures with sell rows in ONE PumpSwap pool within 60 s (block_time); closes at the 3rd distinct signature; 60 s refractory per pool. The "last tagged sell" is the row (slot) of that 3rd distinct signature; later tagged rows before the entry are ignored for timing.
+- Pool choice: a mint with several PumpSwap pools is traded in the pool that holds the event (the pool of the 3rd signature); if the 3 signatures span pools, the event is skipped and counted.
+- Pre-drop price P_pre = V-priced price of the pool (`(quote_reserve + V) / base_reserve`, the kit's PumpSwap basis) at its last print at or before (first tagged sell of the event minus 60 s). **If there is no print in that look-back, skip and count.** P_last = V-priced price at the last tagged sell's post-sell state. Drop d = (P_pre - P_last)/P_pre. Skip if d < 3%. All of P_pre, P_last, the reversion target and the stop use the same V-priced basis (never raw vault price).
+- V handling: a pool absent from the V map is skipped and counted ("missing V"). A pool whose map entry is a real 0 (or negative) V is used as that value. The two counts are reported separately.
 
-## 2. Timing (corrected per coordinator)
-### 2.1 Why not the earlier "L = 2 slots"
-MAL's measured entry latency is 1.9 s and the lab prices deciding cells at realistic cost. A keeper fill is visible to MAL only after the fact (same-slot Jito bundle), so the entry cannot be 2 slots after the sell.
-### 2.2 Decision instant
-- D = t(last tagged sell print) + T_tag. **T_tag = 1.0 s (declared).** Basis, from tools/arena_feed.py: the live feed is public logsSubscribe of the two pump programs, decoded from logs only; it carries the signature but NOT the fee payer or signer, and its current subscriptions do not include the keeper. Live tagging therefore needs one extra logsSubscribe with `mentions: [keeper]` (the keeper is fee payer of both txs, so both appear), delivered on the same confirmed-commitment path as the pump logs, no getTransaction; the create tx's memo line in its logs gives SL/TP. The tag arrives in the same notification wave as the sell; T_tag covers pairing the keeper-mention notification with the pump log row and the memo (the two txs are separate notifications) and the 1 s block_time quantisation. This is an estimate, not a measurement: the keeper subscription does not exist in the feed and no tag latency has been measured. Stress leg uses T_tag = 3.0 s.
-- Feed delay of the tape (confirmed commitment lag) is separate and already part of the 1.9 s landing figure MAL uses; not added twice. QP to rule whether this is right.
-### 2.3 Legs
-- **PRIMARY (deciding): entry at the first print of the mint whose time is >= D + 1.9 s** (time from the slot clock: each day's seconds per slot = the median of 1-s block_time differences over that day's slots, computed from the tape, fixed by rule; entry slot = last tagged slot + ceil((1.0 + 1.9) / s_day)). Exit legs use the same 1.9 s lag after the exit trigger is seen.
-- **STRESS (deciding for kill only, not for pass): entry at the first print >= D + 12 slots**, with T_tag = 3.0 s on the exit side. Read as a robustness report; a PASS requires the primary; a stress-leg sign flip is reported.
-- **Report-only best case:** entry 2 slots after the last tagged sell. Never used to decide.
+## 2. Timing (QP item 1, 2, 3)
+- Kit constants: D = 7 slots (feed delay, held separately from the 1.9 s send-to-land leg; the 1.9 s does NOT include the feed delay), LAT_DECIDING = 1.9 s. sps (seconds per slot) is the kit's per-hour clock `1 / slots_per_s` from the hour loader (tools/arena_screen.py `sps_of`), not a block_time difference.
+- **T_tag = 1.0 s, declared, UNMEASURED.** Basis: tools/arena_feed.py is public logsSubscribe of the two pump programs decoded from logs only; it carries the signature but not the fee payer or signer and has no keeper subscription. Live tagging needs one added `logsSubscribe` with `mentions: [keeper]`, no getTransaction; T_tag covers pairing the keeper-mention notification with the pump log row and the create memo.
+- **PRIMARY entry slot = last tagged slot + D + ceil((T_tag + 1.9) / sps)** = last tagged slot + 7 + ceil(2.9 / sps). Priced at the pool state at the landing slot (the kit's convention, one convention for the venue; QP item 4): the entry lands at that slot and takes that slot's reserves, with the kit's within-slot ordering, the V adapter, and the stack's fees, send 160,000, E1 floor and impact.
+- **Exit slot = trigger slot + D + ceil(1.9 / sps)**, same landing-slot-state pricing (the tag is not needed on exits).
+- **STRESS leg (report only, never decides, never a kill):** identical to the primary except T_tag = 3.0 s on the ENTRY (entry slot = last tagged slot + 7 + ceil(4.9 / sps)); exits as in the primary. A stress sign flip (mean <= 0) is stated in the headline of any result.
+- **Best case (report only):** entry at last tagged slot + 2. Never used to decide.
+- **Forward book (QP item 3):** the forward arena book measures, before its clock starts, the p90 over its live feed of (keeper-mention notification arrival minus pump-log arrival of the same signature) and uses T_tag(forward) = max(1.0 s, that measured p90). A measured p90 above 1.0 s makes this exploration result NON-TRANSFERABLE; the forward book is then a new cell with its own registration.
 
 ## 3. Trade (frozen)
-- Entry: buy 0.25 SOL at the entry print, priced by the repository's realistic-cost paper pricing at the 1.9 s leg (curve math, PumpSwap virtual-reserve adapter, fee tiers, creator fee, tx fee; the same pricing module the H5 arena read uses, tools/arena_h5_cost.py / tools/paper_curve_math.py, pinned at QP time by commit; its outputs were not read).
-- Exit, first of: (a) reversion: price >= P_last + 0.5 x (P_pre - P_last); (b) time cap 120 s after the entry print; (c) stop: price <= 0.90 x entry fill price. Exit fill at the first print >= trigger time + 1.9 s, priced with full sell costs and impact.
-- No re-entry on the same mint inside the refractory. One position per mint. No parameter other than those written here.
+- Entry: buy 0.25 SOL (STAKE_SOL) at the landing slot above. The entry is skipped and counted if the 2% impact bar fails on the landing-slot state, if the pool is younger than 360 s, if the pool has an open P29 position (overlap: new events while a position is open are skipped and counted), or if the kit's guard refuses.
+- Reversion target R = P_last + 0.5 x (P_pre - P_last) (V-priced). Stop S = 0.90 x entry fill price, where the stop is measured on the V-priced pool spot (post-slot state) against the entry fill (average price), as the kit's stop exits are. Time cap: 120 s after the entry landing slot.
+- **Edge cases (QP item 8), all frozen:**
+  1. Entry-state price already >= R at the landing slot: skip, count ("target already met").
+  2. Entry-state price already <= S-equivalent (spot <= 0.90 x the pre-entry spot): skip, count.
+  3. Exit trigger = first slot after entry at which spot >= R (reversion), spot <= S (stop), or the cap; if two fire in the same slot the STOP wins (conservative).
+  4. No print after the trigger within the kit's GRACE_SLOTS: the position is STRANDED and treated per the kit's strand rules (sub-cells "total" and "sc"); both are read as separate sub-cells (section 5).
+  5. Migration is not a case for a PumpSwap-only book (the pool exists already); a pool closed or drained during the hold is a stranded exit.
+  6. A pool whose V changes mid-hold is repriced at the landing-slot V (kit behaviour).
+  7. Overlap: see section 3 entry rule.
+- No re-entry inside the refractory; one position per pool; no other parameter.
 
-## 4. Days (fixed before any return)
-Ledger check (docs/HOLDOUT_LEDGER.md): September exploration-pool blocks, all with data under /data/mal/blocks-clean/. The app and the keeper exist from about 2026-09-02, so explore-0814 has none.
+## 4. Days, paths, exp011 (QP items 9, 10)
+All data are exploration-pool hours per docs/HOLDOUT_LEDGER.md (none is a holdout). Paths are under /data/mal/clean-view/.
 
-| Block | Hours | Ledger owner | Use here |
-| --- | --- | --- | --- |
-| fresh-0903 | [09-03T12, 09-09T12) | exploration pool (spent by EXP-012) | **In-sample, report only:** full days 09-04..09-08 (5). Counts already taken here. No retune is planned, so this is a sanity run; its numbers cannot rescue a failed OOS. |
-| exp011-0909 | [09-09T12, 09-15T12) | exploration pool since 2026-10-06 (EXP-011 closed NOT_DECIDABLE, never scored) | **OOS look:** full days 09-10..09-14 (5) |
-| fast-pool-0918 | [09-18T23, 09-22T00) | exploration pool (pre-cut + EXP-009 exclusion hours) | **OOS look:** full days 09-19, 09-20, 09-21 (3) |
-| oracle-insample-0922 | [09-22T00, 09-25T06) | exploration pool ("seen" for the migrate-direct 972-cell grid) | **OOS look:** full days 09-22, 09-23, 09-24 (3) |
-| oracle-live-0925 | [09-25T07, 09-28T00) | exploration pool, not a holdout; contains the void window 09-25T19 to 09-27T06:58 of forward-paper rows | **Excluded** (void-window adjacency, partial days). Reserve for a later confirmation. |
-| Excluded | Fast EXP-009 block [09-15T12, 09-19T01) (owned by EXP-009); fresh-0828 (reserved: bank-cohort confirmation, EXP-028); everything >= 2026-10-04 (forward walks, kill review, HV4/Q50/DBC seals, arena, meta-capture) | | Not read. |
+| Block | Path | Ledger status | Role | Days |
+| --- | --- | --- | --- | --- |
+| fresh-0903 (getBlock walk) | /data/mal/clean-view/fresh-0903/w{1,2,3} | exploration pool, spent by EXP-012 | in-sample, report only | 09-04..09-08 |
+| exp011-0909 (getBlock walk) | /data/mal/clean-view/exp011-0909/{b,c} | exploration pool since 2026-10-06 (four preconditions recorded) | OOS look | 09-10..09-14 |
+| fast-pool-0918 (listener tape) | /data/mal/clean-view/fast-pool-2026-09-18T23_2026-09-22T00 | exploration pool | OOS look | 09-19..09-21 |
+| oracle-insample-0922 (listener tape) | /data/mal/clean-view/oracle-insample-2026-09-22_25 | exploration pool ("seen" by the 972-cell grid) | OOS look | 09-22..09-24 |
 
-- **Single OOS look:** the 11 full days 09-10..09-14, 09-19..09-21, 09-22..09-24 are read once, together, after this file is merged and QP-ruled. No interim peeks, no per-block reads before the pooled one. Expected trades: >= 100 (counts: about 100-350 passing clusters a day on fresh-0903 alone; QP to confirm that the d >= 3% and distinct-signature filters leave >= 100 over 11 days).
-- Caveat stated now: these are exploration-pool days, not sealed holdouts. They are out-of-sample only for THIS rule (never priced here; the 09-04..09-08 counts used no returns). A PASS is "exploration-OOS PASS", not a promotion: C0/live also needs the forward confirmation on the reserved Forward walk 2 block and DEC-032 preconditions. No D2/D3 domain seal covers September hours (those cover October graduation pools); checked against the ledger text, to be confirmed by QP.
-- Multiplicity: one primary cell (k = 1: primary leg, this event, this exit), so the single bootstrap applies (1,000 draws, seed 1). The stress and best-case legs and the placebo are not in k.
+Excluded and not read: oracle-live-0925 (void-window adjacency, partial days), the EXP-009 block [09-15T12, 09-19T01), fresh-0828 (reserved), explore-0814 (no keeper before 09-02), everything >= 2026-10-02T10 (D2/D3 sealed hours [10-02T10, 10-16T01) and all later hours), arena tape, meta-capture, HV4/Q50/DBC windows. The D2/D3 seals cover October hours only; September hours are outside them (confirmed against the ledger text and the kit's SEALED_HOURS).
 
-## 5. Kill set (all frozen), under BOTH flat 15% fail and pressure-fail slope scale 1
-The book is KILLED (not promoted) if, on the OOS look at the primary leg, under either fail model, ANY of:
+**Manager line on exp011 (required by the QP item 10; to be recorded by the manager before the run):** the lab kit refuses any path containing "exp011" (tools/arena_screen.py FORBIDDEN) and hunt23 RULES.md says "Never open ... exp011-*". The manager records, as an explicit ruling, that those rules do not bind P29 because docs/HOLDOUT_LEDGER.md (the authority) lists exp011-0909 as exploration pool since 2026-10-06. The coordinator has recorded this as ALLOWED in the notebook. The P29 tool keeps its own explicit allowlist of exactly the blocks and days in the table; the kit's FORBIDDEN is not modified. If this line is not on record at run time, exp011-0909 is dropped from the OOS set (6 days remain, and the NOT_DECIDABLE rule below applies if < 5 days or < 100 events remain).
+
+**Single OOS look:** the OOS days of the blocks that survive section 9 are read ONCE, pooled, after this file is merged and QP-ruled on its exact head. No interim peeks, no per-block reads. Days count only if they have >= 1 trade; >= 5 such days are needed.
+
+## 5. Kill set (all frozen) (QP items 5, 6)
+Evaluated on the primary leg, on ALL FOUR deciding sub-cells {flat 15%, pressure slope 1} x {strand total, strand sc}. The result is KILL if ANY of the following holds on ANY of the four sub-cells:
 1. mean SOL per trade <= 0;
-2. CI90 lower bound of mean SOL per trade <= 0 (1,000 bootstrap draws, seed 1, 5th percentile);
-3. total SOL <= 0 after removing the top 3 trades;
-4. total SOL <= 0 after removing the best UTC day;
-5. fewer than half of the OOS UTC days positive (needs >= 5 days; here 11);
-6. fewer than 100 OOS trades;
-7. median gross edge per trade (before fees and tx cost, from fill to exit fill) <= 1% at the primary leg (the earlier "median-gross-edge kill").
-PASS = none of 1-7 fires under both fail models AND the placebo test (section 6) passes. Winner's-curse note: there is no grid, so no selection correction is needed beyond k = 1; the stress leg flipping sign is reported and weakens the reading but is not a kill.
+2. trade-level CI90 lower bound of the mean <= 0 (1,000 bootstrap draws, seed 1, 5th percentile);
+3. **date-cluster CI90 lower bound <= 0** (resampling UTC dates, the kit's date-cluster resampler, seed 1, 1,000 draws);
+4. total SOL <= 0 after removing the top 3 trades;
+5. total SOL <= 0 after removing the best UTC day;
+6. NOT a strict majority of the traded UTC days positive (exactly half is a KILL; days with >= 1 trade; and fewer than 5 traded days is not a kill but NOT_DECIDABLE);
+7. fewer than 100 OOS trades (NOT_DECIDABLE, not a kill, when caused by coverage or count, see section 9);
+8. median gross edge per trade (before fees and tx cost, fill to exit fill) <= 1%;
+9. **worst-in-slot**: the lower mean (kit `end_minus_worst` / worst-in-slot leg, QP-approved #747) <= 0 on any of the four sub-cells is a KILL; if the worst-in-slot leg cannot be measured on the P29 rule, the result is **PROVISIONAL-BLOCKED**, not PASS.
+PASS = none of 1-9 fires on any of the four sub-cells AND the placebo (section 6) PASSES AND the dry-pass gates (section 9) hold. Stress, best-case, in-sample, bonding (report-only) and the placebo arms other than (ii) never rescue a kill.
 
-## 6. Placebo (frozen)
-Question: does the keeper tag carry information beyond "a sell burst"?
-- Control events: for each tagged event, the matched UNTAGGED burst = >= 3 sell rows in one mint within 60 s, none of whose signatures is in the fill set, distinct signatures, d >= 3%, same 2% bar, that (i) occur in the SAME pool/mint at a different time (>= 10 min from any tagged event of that mint), else (ii) the same venue and the same UTC day with the nearest quote-reserve decile, nearest total sold SOL in the burst (within +-25%), nearest drop d (within +-2 pts). One control per tagged event, no reuse; unmatched tagged events are dropped from the paired test and counted.
-- Control events run through the identical entry, exit, cost and fail models.
-- Test: paired difference (tagged minus control) of net SOL per trade, bootstrap 1,000 draws seed 1, under both fail models. The tag carries information only if the paired mean difference > 0 AND its CI90 lower bound > 0. If the untagged control is itself positive with a similar mean, the finding is "a sell-burst effect", not a keeper effect, and the book is reported as such (the idea family dump-absorb-1..6 / hunt29-flush-1 already failed on untagged cascades).
+## 6. Placebo (QP item 12)
+Question: does the keeper tag carry information beyond "a sell burst"? Control events are untagged bursts: >= 3 distinct-signature sell rows in one PumpSwap pool within 60 s, none of whose signatures is in the fill set, d >= 3%, same bar, same 360 s age rule.
+- Matching: each tagged event gets at most one control, no reuse. Match variables: total sold SOL in the burst (within +-25%), burst duration (first to last sell, within +-15 s), number of distinct sellers (traders) (within +-1), drop d (within +-2 pts), the pool's quote-reserve decile. Tie-break: smallest sum of normalised absolute differences over the five variables; ties go to the earliest event time, then to the lexicographically smallest pool id. Deterministic, no randomness.
+- **Type (ii), deciding: cross-pool control**, same venue, same UTC day, a DIFFERENT pool, not within 10 min of any tagged event of that pool.
+- **Type (i), report only: same-pool, other time** (>= 10 min from any tagged event). Reported separately. It confounds with lifecycle phase (before/after a cascade, dead pools) and is not deciding.
+- Test (deciding, type (ii)): paired difference (tagged minus control) of net SOL per trade, bootstrap 1,000 draws seed 1, under both fail models; PASS needs mean > 0 and CI90 lower bound > 0.
+- **NOT_DECIDABLE (no PASS possible) if fewer than 100 matched type (ii) pairs, or more than 20% of tagged events unmatched.**
+- Disclosures: (a) the untagged-cascade family was already priced on these September days (hunt29-flush-1: "0 of 24 days positive", "after a stop-out cascade the pool keeps drifting"), so the controls are already known to be negative there and passing the placebo adds less than it seems to; kills 1-9 still decide. (b) Keeper fills with no create in their slot are untagged by the rule and can sit in the control pool; this contaminates the controls in the conservative direction (it makes the controls look more like tagged events).
 
-## 7. Capacity line (arithmetic, not a result)
-Trades per day N <= about 225 (median full-day SL60 clusters passing the 2% bar, before the distinct-signature and d >= 3% filters; realistic N is lower, plan on 100). Daily SOL = N x 0.25 SOL x net edge per trade e.
-| e (net, after all costs) | N = 100/day | N = 225/day |
+## 7. Multiplicity and winner's curse (QP item 11)
+- Deciding cell count k = 1: one event, one exit, one leg (primary), PumpSwap only. The fail models and the strand sub-cells are conjunctive (all must hold), not extra cells. Stress, best case, in-sample, bonding and the placebo arms other than the deciding one are report-only and are not in k.
+- Family: at least 16 earlier fade/absorb cells have already failed: dump-absorb-1..6, flush f2/f3/f5, ll-cascade-fade c3/c4/c6, dbc-cascade-fade c3/c4/c6, drain-escape-2. P29 is about the 17th. This is a family of dump-buying rules; the chance that one of 17 passes by luck is not small, and a k = 1 bootstrap does not price that.
+- hunt29-flush-1 already priced a stop-out cascade fade on fast-pool-0918 and oracle-insample-0922 (6 of the 11 OOS days; those two are kit canonical screen blocks). The stop -10% and short hold were written with that result in view; this is a disclosed design contamination.
+- After the single look, ALL 11 OOS days and the 5 in-sample days are IN-SAMPLE for every later keeper-tag rule (TP mirror, exit or lag variants, a bonding variant). A later keeper-tag rule needs new days.
+- Label: a PASS is an "exploration-OOS PASS", not a promotion (section 10).
+
+## 8. Capacity (arithmetic, not a result) (QP item 13)
+N = trades per day, stake 0.25 SOL, net edge e per trade after all costs. Upper bound N <= about 225/day (median full-day SL60 clusters passing the 2% bar on fresh-0903, before the distinct-signature, PumpSwap-only, d >= 3% and 360 s filters; the real N is lower and is set by section 9).
+| e | N = 100/day | N = 225/day |
 | --- | --- | --- |
 | 0.5% | 0.125 SOL | 0.28 SOL |
 | 1% | 0.25 SOL | 0.56 SOL |
 | 2% | 0.50 SOL | 1.1 SOL |
-Against the owner's cash-flow ask ($25-40/day, about 0.17-0.27 SOL at $150) the book needs about e >= 1% on >= 100 trades/day at 0.25 SOL. A 0.25 SOL buy costs roughly 0.6-1.7% of impact on bonding reserves before exit costs, so a net 1% needs a gross reversion well above that; the median-gross-edge kill (7) is set at 1% for that reason. Impact also halves edges at larger stake (capacity-first rule): a size ladder is not part of this declaration.
+- **C0-capped line (DEC-032 s3): stake 0.05 SOL, at most 2 open, at most 30 buys a day.** At e = 1% that is at most 30 x 0.05 x 1% = 0.015 SOL/day (about $2 at SOL = $150), far below the owner's cash-flow ask ($25-40/day). The book is a capacity-limited one at C0; scale needs the DEC-031 s2 step-4 confirmation and a size ladder, which this file does not declare.
+- A 0.25 SOL buy costs roughly 0.6-1.7% impact before exit costs on thin pools; kill 8 (median gross edge > 1%) is set for that reason. Impact is larger at larger stake (capacity-first rule).
+- **Concurrency report (report only):** from the priced events, the maximum and the 95th percentile of simultaneously open positions per UTC day, and the implied wallet need at 0.25 SOL stake against the owner's wallet (1.29 SOL total capital on 2026-10-09); a day whose peak concurrency x 0.25 SOL exceeds the wallet is flagged.
 
-## 8. Process
-1. QP ruling on this file (timing T_tag, the control construction, the day split, the cost module pin).
-2. Merge this DECLARE; build the runner as a MiScusi job (sh, mem <= 6 GB, <= 2 CPU, notebook entry first, 0 Helius, one heavy job at a time), with a counts-only dry pass on the real layout first (events, matched controls, skips, refusals), no prices.
-3. One OOS look, then in-sample report. Seals as in hunt30 SEALS-BRIEF: no HV4/Q50/DBC forward/arena/meta-capture contact; no hour >= 2026-10-25T00Z.
-4. Result is written to a lab note with every kill line; no sentence that a book made money before quant-proof on the exact head.
+## 9. Data coverage gates (QP item 9)
+A counts-only dry pass (tools/p29_keeper_coverage.py, reads signatures, times and mints only; no price, quantity or reserve) reports per block and per full UTC day: keeper fill txs; tape rows with a fill signature; distinct fill signatures on tape; ratio = tape rows with a fill signature / keeper fill txs (and the distinct-signature ratio); and the count of events with >= 3 distinct SL fill signatures in 60 s. Listener tapes (fast-pool, oracle-insample) covered 84.8% and 66.2% of chain rows on 2026-10-01 (tape-coverage-chain-2026-10-01.md); a rule needing 3 tagged signatures loses roughly coverage^3 of its events and has gappy paths.
+- A block whose **median full-day ratio < 0.85 is dropped from the OOS look** (reported, not read for price).
+- If fewer than 100 events or fewer than 5 days remain after dropping, the read is **NOT_DECIDABLE** (no price is read).
+- The expected n after the d >= 3%, PumpSwap-only, 360 s-age filters needs a price (drop d); it is computed only in the first step of the real-layout pass, after the QP re-check, as a COUNT (no returns, no entry/exit), and if it leaves < 100 events or < 5 days the read is NOT_DECIDABLE.
+- Dry-pass result: see "Coverage dry pass result" at the end of this file.
+
+## 10. Forward path (QP item 15)
+- A PASS here only PERMITS registering P29 as an arena book (DEC-031 s1.2 `bot_id`). It does not qualify a canary.
+- C0 needs that book's DEC-031 s2 gate read PASS (first 00:00Z with >= 100 counted attempts over >= 5 UTC dates; deciding cell: 1.9 s leg at the pinned stake, flat and pressure, strand rules sc and total; worst-in-slot per DEC-031 Am.15 item 6) AND all of DEC-032 s1. Stake above C0 needs the DEC-031 s2 step-4 confirmation.
+- The keeper-mention subscription is a feed/runner change; it needs its md5 decision-equivalence replay proof before deploy (repo rule) and the tag-lag measurement of section 2.
+- A forward book refuses V-range pools younger than 360 s in October until EXP-024 Look-2 ends (first 2026-11-14T00Z); the kit's MIN_POOL_AGE_S = 360 is mandatory.
+- The screen universe equals what can be registered: PumpSwap, pool age >= 360 s.
+
+## 11. Process
+1. QP re-check on the exact head of this file.
+2. Manager records the exp011 line (section 4). Merge this DECLARE.
+3. Build the P29 rule in the kit as a MiScusi job (sh, mem <= 6 GB, <= 2 CPU, notebook entry first, one heavy job at a time, 0 Helius, md5 pin check of section 0 files). A counts-only real-layout pass first (events, controls, skips, refusals and the filter count of section 9), then the one OOS look.
+4. Seals as in the hunt30 SEALS-BRIEF: no HV4/Q50/DBC forward/arena/meta-capture contact; no hour >= 2026-10-02T10 from any source.
+5. The result goes to a lab note with every kill line and every sub-cell; no sentence that a book made money before quant-proof on the exact head.
