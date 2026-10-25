@@ -1210,11 +1210,11 @@
   {
    "id": "FLOOR",
    "title": "FLOOR",
-   "stage": "smoke S1/S2 running; clock 2026-10-26T00:00Z if A1/A2/G1/DR1 pass",
+   "stage": "not registered for 10-26 (A2 floor FAIL 6.0 < 12.5/day; N not spent)",
    "note": "Fixed-first entry posted 13:00Z (notebook n_CBfWkrs5XZDl5A); smoke jobs #1521/#1522. On fresh-0903 (a much-read exploration block) flat +0.0073 vs +0.0161 SOL/trade, not confirmed: n 62 (under 100), CI90 lower bound below 0 under both models (flat -0.0032, pressure -0.0047), pressure ex-top-3 -0.065 SOL, kit verdict KILLED/NOT_DECIDABLE; it neither confirms nor refutes F0; in-sample screen (not evidence). FLOOR's 10-26 registration did not happen (A2 floor FAIL, rate_att_lo 6.0 < 12.5/day; notebook n_27eIzN61qHjZwQ). No book has cleared the promotion gate.",
    "tag": {
-    "text": "clock 10-26T00Z",
-    "tone": "accent"
+    "text": "not registered",
+    "tone": "muted"
    }
   },
   {
