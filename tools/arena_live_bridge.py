@@ -538,9 +538,9 @@ class Bridge:
                 why = size_map["refused"]
             if s_c0 is not None:
                 stake = s_c0
-            if not why:  # committed loss: realized loss plus every open/pending stake plus this one
+            if not why:  # DEC-032 s3 committed loss: realized loss + every open/pending/in-flight position's worst case + this buy's (same terms as the floor)
                 opens = self.open_orders(scope)
-                why = c0.total_stop_problem(max(0, -self.state.realized_lamports), sum(o["stake_lamports"] for o in opens.values()), stake)
+                why = c0.total_stop_problem(max(0, -self.state.realized_lamports), [o["stake_lamports"] for o in opens.values()], stake, RENT_RESERVE_LAMPORTS)
         if not why:
             why = self.floor_problem(stake, self.port.balance(), scope)
         if why:
@@ -989,6 +989,9 @@ def main(argv: list[str] | None = None) -> int:
         if why:
             print(f"arena_live_bridge ALERT startup_refused {why}", flush=True)
             return 2
+    if cfg.profile == c0.PROFILE and want_live:
+        print(f"arena_live_bridge ALERT startup_refused {c0.LIVE_REFUSAL}", flush=True)  # nothing sends on this profile until a later PR removes this
+        return 2
     if not want_live:
         port: OrderPort = DryPort(cfg.dry_balance_lamports)
     else:

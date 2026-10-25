@@ -171,14 +171,26 @@ class StakeTests(unittest.TestCase):
         self.assertEqual(c0.c0_stake({"size": 0.5})[0], 50_000_000)
 
     def test_total_stop_committed(self):
-        self.assertIsNone(c0.total_stop_problem(0, 100_000_000, 50_000_000))
-        self.assertIsNone(c0.total_stop_problem(100_000_000, 50_000_000, 50_000_000))  # exactly 0.20
-        self.assertEqual(c0.total_stop_problem(100_000_000, 50_000_000, 50_000_001), "total_loss_committed")
-        self.assertEqual(c0.total_stop_problem(150_000_000, 50_000_000, 1), "total_loss_committed")
-        self.assertEqual(c0.committed_loss_lamports(-5, 10), 10)  # a realized gain does not offset exposure
+        R = alb.RENT_RESERVE_LAMPORTS
+        w = lambda st: c0.position_worst_case_lamports(st, R)
+        self.assertEqual(w(50_000_000), 50_000_000 + c0.TRIP_FEE_RESERVE_LAMPORTS + R + c0.SELL_FEE_RESERVE_LAMPORTS)
+        tot = c0.C0_LIMITS["total_loss_lamports"]
+        # realized term: exactly 0.20 passes, one lamport over refuses
+        self.assertIsNone(c0.total_stop_problem(tot - w(1), [], 1, R))
+        self.assertEqual(c0.total_stop_problem(tot - w(1) + 1, [], 1, R), "total_loss_committed")
+        # open-position term (stake + buy fee + rent + sell fee each), then the new buy's own worst case
+        stake_ok = tot - w(50_000_000) - w(0)  # new stake such that committed + new worst case == total
+        self.assertIsNone(c0.total_stop_problem(0, [50_000_000], stake_ok, R))
+        self.assertEqual(c0.total_stop_problem(0, [50_000_000], stake_ok + 1, R), "total_loss_committed")
+        # each position adds exactly its own worst case: moving 1 lamport of stake from open to open changes nothing
+        self.assertEqual(c0.committed_loss_lamports(0, [10, 20], R), w(10) + w(20))
+        # new-buy term: fee + rent + sell reserve are counted for the new buy too
+        self.assertIsNone(c0.total_stop_problem(0, [], tot - w(0), R))
+        self.assertEqual(c0.total_stop_problem(0, [], tot - w(0) + 1, R), "total_loss_committed")
+        # the old stake-only arithmetic would have admitted this
+        self.assertEqual(c0.total_stop_problem(100_000_000, [50_000_000], 50_000_000, R), "total_loss_committed")
+        self.assertEqual(c0.committed_loss_lamports(-5, [], R), 0)  # a realized gain does not offset exposure
 
-
-class ConfigWiringTests(unittest.TestCase):
     def base(self, **over):
         return {"bot_id": "hv4-CON-F", "frozen_sha": "a" * 64, "root": "/r", "state_dir": "/s", "end_ms": 1, "max_hold_ms": 1, **raw(**over)}
 
@@ -256,10 +268,46 @@ class BridgeC0Tests(TmpCase):
         e.entry_sz("o1", pool="P1")
         e.entry_sz("o2", pool="P2")
         b = e.bridge()
-        b.state.realized_lamports = -100_000_001  # realized + 2 open stakes would be over 0.20
+        w = c0.position_worst_case_lamports(50_000_000, alb.RENT_RESERVE_LAMPORTS)
+        # first buy: realized + w == 0.20 exactly is allowed; the second then adds another w and is refused (open term, an order still buy_sent/open)
+        b.state.realized_lamports = -(c0.C0_LIMITS["total_loss_lamports"] - w)
         b.tick()
-        self.assertEqual(len([c for c in e.port.calls if c[0] == "buy"]), 1)  # 100_000_001 + 50M = ok; second adds 50M more > 0.20
+        self.assertEqual(len([c for c in e.port.calls if c[0] == "buy"]), 1)
         self.assertEqual(e.log_rows("entry_refused")[-1]["why"], "total_loss_committed")
+
+    def test_total_stop_one_lamport_over_refused_and_pending_counts(self):
+        e = Hv4Env(self.tmp)
+        e.start()
+        e.entry_sz("o1", pool="P1")
+        b = e.bridge()
+        w = c0.position_worst_case_lamports(50_000_000, alb.RENT_RESERVE_LAMPORTS)
+        b.state.realized_lamports = -(c0.C0_LIMITS["total_loss_lamports"] - w + 1)
+        b.tick()
+        self.assertEqual([c for c in e.port.calls if c[0] == "buy"], [])
+        self.assertEqual(e.log_rows("entry_refused")[-1]["why"], "total_loss_committed")
+        # a pending (buy_sending, in-flight) order is inside committed loss
+        (Path(self.tmp) / "p").mkdir()
+        e2 = Hv4Env(str(Path(self.tmp) / "p"))
+        e2.start()
+        e2.entry_sz("o1", pool="P1")
+        b2 = e2.bridge()
+        b2.state.orders["x"] = {"order_id": "x", "pool": "PX", "mint": "MX", "status": "buy_sending", "stake_lamports": 50_000_000, "live": False}
+        b2.state.realized_lamports = -(c0.C0_LIMITS["total_loss_lamports"] - 2 * w + 1)
+        b2.tick()
+        self.assertEqual([c for c in e2.port.calls if c[0] == "buy"], [])
+        self.assertEqual(e2.log_rows("entry_refused")[-1]["why"], "total_loss_committed")
+
+    def test_live_start_refused_hv4_c0_incomplete(self):
+        import contextlib, io, json
+        cfgp = Path(self.tmp) / "cfg.json"
+        e = Hv4Env(self.tmp)
+        full = {k: v for k, v in e.raw.items() if k not in ("stop_file", "halt_file")}
+        cfgp.write_text(json.dumps({**full, "mode": "live"}))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = alb.main(["--config", str(cfgp), "--live"])
+        self.assertEqual(rc, 2)
+        self.assertIn("hv4_c0_incomplete", buf.getvalue())
 
     def test_floor_uses_pin_reserves(self):
         e = Hv4Env(self.tmp)

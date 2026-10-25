@@ -15,7 +15,7 @@ p155; it equals h5_executor.H5_DEFAULT and a test asserts that). A config naming
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 PROFILE = "hv4_c0"
 TIER_NAME = "T1"  # the TIER file must read exactly this for a C0 start (as the arena H5 canary)
@@ -139,11 +139,24 @@ def c0_stake(row: Mapping[str, Any], cap_lamports: int = C0_LIMITS["stake_lampor
     return s, rec
 
 
-def committed_loss_lamports(realized_loss: int, open_stakes: int) -> int:
-    """Total-stop measure: realized loss (>= 0) plus the stakes of open and pending positions, valued at zero."""
-    return max(0, int(realized_loss)) + max(0, int(open_stakes))
+LIVE_REFUSAL = "hv4_c0_incomplete"  # a live start of this profile is refused until a later PR (sell escalation, parity pricing) removes it
 
 
-def total_stop_problem(realized_loss: int, open_stakes: int, new_stake: int) -> str | None:
-    """Refuse a buy if committed loss including this stake would exceed the total stop."""
-    return "total_loss_committed" if committed_loss_lamports(realized_loss, open_stakes) + new_stake > C0_LIMITS["total_loss_lamports"] else None
+def position_worst_case_lamports(stake: int, rent_reserve: int) -> int:
+    """One position's worst case, the terms the wallet-floor check uses (`TRIP_FEE_RESERVE_LAMPORTS`, the bridge's rent reserve,
+    `SELL_FEE_RESERVE_LAMPORTS`): stake at zero + buy fee + rent reserve + reserved sell fee. Applies to an open, pending or in-flight buy and to the new buy."""
+    return int(stake) + TRIP_FEE_RESERVE_LAMPORTS + int(rent_reserve) + SELL_FEE_RESERVE_LAMPORTS
+
+
+def committed_loss_lamports(realized_loss: int, open_stakes: Iterable[int], rent_reserve: int) -> int:
+    """DEC-032 s3 (Total stop includes open exposure), quoted: "committed loss = realized loss since the first send (floored at 0) + every open or
+    pending position's stake at zero + its buy fee + rent reserve + reserved sell fees + every in-flight buy's worst case." Open and in-flight
+    orders are one list here (the bridge's `open_orders` includes buy_sending), each at `position_worst_case_lamports`."""
+    return max(0, int(realized_loss)) + sum(position_worst_case_lamports(s, rent_reserve) for s in open_stakes)
+
+
+def total_stop_problem(realized_loss: int, open_stakes: Iterable[int], new_stake: int, rent_reserve: int) -> str | None:
+    """DEC-032 s3, quoted: "No new buy is sent unless committed loss plus that buy's worst case is at most the total stop." (0.20 SOL at C0.)
+    The daily stop is not touched: DEC-032 s3 defines it as "realized loss in a UTC day" only, which the bridge already checks."""
+    need = committed_loss_lamports(realized_loss, open_stakes, rent_reserve) + position_worst_case_lamports(new_stake, rent_reserve)
+    return "total_loss_committed" if need > C0_LIMITS["total_loss_lamports"] else None
