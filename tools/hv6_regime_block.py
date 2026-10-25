@@ -215,7 +215,7 @@ def extract_events(records: Sequence[tuple[bytes, Mapping[str, Any]]], programs:
     """Deduplicated events by RG id (highest sev wins, then first seen) and drop counters."""
     events: dict[str, dict[str, Any]] = {}
     first_run: dict[str, str] = {}
-    stats = {"n_dropped_unknown": 0, "n_subject_other": 0}
+    stats = {"n_dropped_unknown": 0, "n_other_mapped": 0}
     for _, rec in records:
         run_utc = rec["run_utc"]
         for ch in rec["changes"]:
@@ -229,7 +229,7 @@ def extract_events(records: Sequence[tuple[bytes, Mapping[str, Any]]], programs:
                 continue
             program, key_class, other = map_subject(kind, ch.get("subject"), ch.get("keys"), programs, accounts)
             if other:
-                stats["n_subject_other"] += 1
+                stats["n_other_mapped"] += 1
             change_utc, basis = event_when(ch, run_utc)
             rid = make_id(kind, program, change_utc, basis)
             tier = programs.get(program, "none") if program != "OTHER" else "none"
@@ -273,7 +273,7 @@ def build_block(radar_bytes: bytes, as_of_ms: int, watch_bytes: bytes, pins_expe
         "schema": BLOCK_SCHEMA, "as_of_ms": as_of_ms, "as_of_utc": fmt_ts(as_of),
         "pins": {k: pins_observed.get(k) for k in PIN_KEYS}, "pin_mismatch": pin_diff,
         "input": {"sha256": None, "n_bytes": 0, "n_records": 0, "n_bad_records": 0, "latest_run_utc": None},
-        "counts": {"n_dropped_unknown": 0, "n_subject_other": 0, "n_events": 0},
+        "counts": {"n_dropped_unknown": 0, "n_other_mapped": 0, "n_events": 0},
         "events": [], "summary": {"n_high_core_7d": 0, "hours_since_last_high_direct": None}, "radar_status": "absent",
     }
     if pin_diff:
