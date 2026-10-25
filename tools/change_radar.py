@@ -15,7 +15,7 @@ Stages (each one fails alone; a failed stage is an error in the record, never a 
                   instruction name, undecoded discriminator) from the venue tape. Counts only: no price, amount, reserve, mint, pool or wallet
                   value is copied into any output. Shift / new key / gone key / share rules from DESIGN section 2.
                   Sealed windows (tools/change_radar_seals.json, pinned, fail closed): a day overlapping a window is never counted, and a
-                  source with disabled_until is not touched before that instant (arena tape: 2026-10-26T21:00:00Z, FLOOR seal).
+                  source with disabled_until is not touched before that instant (none set since QP-RULING-1025-seal-lift 2d).
   W7 monitor      local file. The newest pump_structure_monitor record's true HALT (high) and WARN (low) flags, once per monitor run.
 
 Outputs under --out-dir: radar.jsonl (one record per run), state.json (baseline), daily-counts.jsonl (one record per source and day),
@@ -75,7 +75,8 @@ DEFAULT_WATCH = Path(__file__).with_name("change_radar_watch.json")
 DEFAULT_SEALS = Path(__file__).with_name("change_radar_seals.json")  # pinned sealed windows; a missing or bad file refuses the run
 
 # A tape dir whose path holds any of these is refused (sealed, owned or bot-output data is never an input).
-FORBIDDEN_PATH_TOKENS = ("holdout", "fwdv1", "shadow", "probe", "sealed", "ledger", "bots.json", "backfill")
+FORBIDDEN_PATH_TOKENS = ("holdout", "fwdv1", "shadow", "probe", "sealed", "ledger", "bots.json", "backfill",
+                         "hv4", "q50", "decision", "score")  # HV4/Q50 ledgers, decision logs, bots.json and score output are never an input
 TAPE_NAME = re.compile(r"^tape-(\d{4}-\d{2}-\d{2})T(\d{2})\.jsonl(\.zst)?$")
 ARENA_PREFIX = re.compile(rb'^\{"v":\d+,"type":"([A-Za-z0-9_]+)","prog":"([A-Za-z0-9_]+)"')
 SAFE_KEY = re.compile(r"^[A-Za-z0-9_:.\-]{1,64}$")
@@ -882,7 +883,7 @@ def run(a: argparse.Namespace, *, client: Any = None, now: float | None = None) 
     all_hist = history + new_counts
     changes += tape_changes(new_counts, all_hist) + share_changes(new_counts, all_hist)
     if a.monitor:
-        minfo, mch = stage_monitor(Path(a.monitor), state.get("monitor_last_run_utc"))
+        minfo, mch = stage_monitor(check_tape_dir(a.monitor), state.get("monitor_last_run_utc"))
         stages["monitor"] = minfo
         changes += mch
         if minfo.get("status") == "ok":
