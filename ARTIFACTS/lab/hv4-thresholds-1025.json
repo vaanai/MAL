@@ -1,0 +1,47 @@
+{
+  "_DRAFT": "NOT PINNED. Proposal for DEC-031 Am.6 item 2.3 thresholds (L7). Pinned form = this file without every key starting with an underscore and with max_input_age_s.value replaced by X, made mechanically by t0-1025/C2-l7-finalize.sh (canonical JSON, sha256 printed). Tool: tools/arena_hour_health.py@0a5aef86, sha256 227f92be466fec0bd6c6502bcece6b2e7755d0a675a30d08a2dd79d6353903b5. As written the file is REFUSED by the tool on purpose (max_input_age_s.value is null). SUPERSEDED for pinning by hv4-thresholds-FINAL-1025.json once X is known.",
+  "_not_in_this_file": [
+    "tape-hour file present with size > 0 (price-path): not a threshold; the tool treats a missing or zero-size tape hour as a tape-level failure carrying both labels.",
+    "Holders/prefetch age is stamped by HV4's own process: report-only, never excludes (Am.6 2.2, QP 6349425527). No threshold."
+  ],
+  "max_gap_s": {
+    "value": 3600,
+    "label": "price-path",
+    "_note": "Longest data_loss gap span (seconds) overlapping the hour. 3600 is the value in ADDENDUM 3 Q2 (P0 gap check). The ruling L7 says only 'the number is pinned'; QP confirms 3600 for the book window or gives another."
+  },
+  "max_sample_gap_s": {
+    "value": 900,
+    "label": "price-path",
+    "_note": "Seconds between the sampler's OWN consecutive samples (clipped to the hour), not between non-null feed-status samples (that is feed_max_nonnull_gap_s). QP pack item 2."
+  },
+  "min_samples_per_hour": {
+    "value": 12,
+    "label": "price-path",
+    "_note": "12 normally (300 s sampler sleeps to wall-clock multiples); only a missing sample gives 11 and must fail the hour (Am.6 2.2). QP pack item 2: stays 12."
+  },
+  "max_input_age_s": {
+    "value": null,
+    "label": "decision-input",
+    "_FILL": "X = max(A, 120). A = ceil to 10 s of the P99 (nearest rank) of the per-hour longest pumpswap data-row silence over CLEAN hours of 2026-10-21T00..10-23T23 (no tape-level failure, no failed/unmeasurable check, prev_hour_unknown false, data_loss_rows 0); < 60 clean hours = no X, ask QP; A > 600 = no X, ask QP; 120 = 2 x HB_S (arena_feed.py:94); Bc (sampler leg, smoke hours) printed only, Bc > 120 = ask QP. Job t0-1025/C-l6-dryrun-xrule.sh then C2-l7-finalize.sh. QP-RULING-1023-pack item 2."
+  },
+  "feed_max_nonnull_gap_s": {
+    "value": 900,
+    "label": "price-path",
+    "_note": "QP 6350625135"
+  },
+  "feed_writing_paused": {
+    "value": 0,
+    "label": "price-path",
+    "_note": "QP 6350625135"
+  },
+  "feed_pauses_delta": {
+    "value": 0,
+    "label": "price-path",
+    "_note": "QP 6350625135"
+  },
+  "feed_rows_dropped_delta": {
+    "value": 0,
+    "label": "price-path",
+    "_note": "QP 6350625135"
+  }
+}
