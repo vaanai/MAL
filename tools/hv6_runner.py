@@ -589,6 +589,10 @@ class Runner:
         if k == "llm_call":
             self.seq[(name, day)] = self.seq.get((name, day), 0) + 1
             self.calls.setdefault((name, r["call"]), []).append(r["ms"])
+            if r["call"] == "recheck" and r.get("error") not in DENIED:  # item 6, as live: only a DENIED reply returns before the update; an API error / refusal marks every position sent (validate_recheck holds all)
+                for pos in b.open.values():
+                    if pos.pool in (r.get("ids") or ()) and isinstance(r.get("as_of_ms"), int):
+                        pos.last_recheck_ms = r["as_of_ms"]
         elif k == "entry" and r.get("pos"):
             p = Pos(**r["pos"])
             b.open[p.pid] = p
@@ -623,6 +627,10 @@ class Runner:
             b.watches = [w for w in b.watches if w["id"] != r["id"]]
         elif k == "peak" and r["pid"] in b.open:
             b.open[r["pid"]].peak = max(b.open[r["pid"]].peak, float(r["peak"]))
+        elif k == "tighten" and r.get("pid") in b.open:  # item 6: a restart must keep a tightened plan
+            pos = b.open[r["pid"]]
+            pos.stop_pct = r["stop_pct"] if r.get("stop_pct") is not None else pos.stop_pct
+            pos.target_pct = r["target_pct"] if r.get("target_pct") is not None else pos.target_pct
 
     # -- the group policy: once per tick
     def _begin_tick(self, T: int) -> TickPolicy:
@@ -1090,6 +1098,7 @@ class Runner:
 
     # -- the tick
     def tick(self, T: int) -> None:
+        self.sim_now = max(self.sim_now, T)  # sim mode: the engine's clock is the sim instant (HV4 does the same); without it X's buys and every exit were refused as future_decision
         self._begin_tick(T)  # the ONLY place the group policy is computed
         self.poll_to(T)
         self.exits(T)
