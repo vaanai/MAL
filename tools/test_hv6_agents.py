@@ -233,6 +233,9 @@ def test_stub_flow_and_per_arm_ledgers(tmp_path):
     assert a.validate_entry(r1, cards=cards, knobs=a.Knobs.v0(), received_ms=DAY_MS + 2500)[0].action == "SKIP"
     rep = g.day_report(DAY)
     assert rep["summary"]["day_spent_usd"] == pytest.approx(0.02) and not rep["summary"]["group_halted"]
+    assert "ledgers" not in rep and "group" not in rep
+    full = g.day_report(DAY, include_per_arm=True)
+    assert full["ledgers"]["L"]["spent_usd"] == pytest.approx(0.01)
 
 
 def test_arm_day_cap_halts_whole_group_and_x(tmp_path):
@@ -391,11 +394,18 @@ def vr(change, **kw):
 
 
 def test_tightening_allowed_per_knob():
-    cases = [("stop_pct", -20), ("target_pct", 60), ("trail_pct", 25), ("time_min", 120), ("min_conviction", 4)]
+    cases = [("stop_pct", -20), ("time_min", 120)]
     for target, new in cases:
         v = vr(rr(target=target, new=new))
         assert v.ok and v.mode == "tighten" and v.tag is None and v.match_rule_waived and v.change["new"] == new, (target, v)
         assert v.expires_ms == NOW + 48 * 3_600_000
+
+
+def test_target_trail_conviction_tightening_refused():
+    for target, new in (("target_pct", 60), ("trail_pct", 25), ("min_conviction", 4)):
+        v = vr(rr(target=target, new=new))
+        assert not v.ok and v.reason == "tightening_not_allowed_for_knob", target
+    assert a.TIGHTENING_TARGETS == ("stop_pct", "time_min")
 
 
 def test_no_change_and_wrong_direction_without_probe_keys():
@@ -489,16 +499,104 @@ def test_why_and_shape():
 
 
 def test_list_limits():
-    ch = [rr(target="stop_pct", new=-20), rr(target="target_pct", new=60), rr(target="time_min", new=120)]
-    assert [x.ok for x in a.validate_regime_rules(ch, knobs=KNOBS, block=BLOCK, now_ms=NOW)] == [True] * 3
-    four = ch + [rr(target="trail_pct", new=25)]
-    assert [x.reason for x in a.validate_regime_rules(four, knobs=KNOBS, block=BLOCK, now_ms=NOW)] == ["too_many_changes"] * 4
+    ch = [rr(target="stop_pct", new=-20), rr(target="time_min", new=120), rr(target="local_veto", new="ret_15m < -3")]
+    assert [x.ok for x in a.validate_regime_rules(ch, knobs=KNOBS, block=BLOCK, now_ms=NOW, universe=UNI)] == [True] * 3
+    four = ch + [rr(target="time_min", new=100)]
+    assert [x.reason for x in a.validate_regime_rules(four, knobs=KNOBS, block=BLOCK, now_ms=NOW, universe=UNI)] == ["too_many_changes"] * 4
     dup = [rr(new=-20), rr(new=-15)]
-    assert [x.ok for x in a.validate_regime_rules(dup, knobs=KNOBS, block=BLOCK, now_ms=NOW)] == [True, False]
-    assert a.validate_regime_rules("x", knobs=KNOBS, block=BLOCK, now_ms=NOW)[0].reason == "not_a_list"
+    assert [x.ok for x in a.validate_regime_rules(dup, knobs=KNOBS, block=BLOCK, now_ms=NOW, universe=UNI)] == [True, False]
+    assert a.validate_regime_rules("x", knobs=KNOBS, block=BLOCK, now_ms=NOW, universe=UNI)[0].reason == "not_a_list"
 
 
 def test_no_secret_or_hv4_output_paths_in_module():
     src = open(a.__file__, encoding="utf-8").read()
-    assert not re.search(r"ANTHROPIC_API_KEY|sk-ant|bots\.json|haiku-v4|/var/lib/mal", src)
+    assert not re.search(r"ANTHROPIC_API_KEY|sk-ant|/data/mal/arena/haiku-v4|/var/lib/mal/anthropic|getenv", src)
     assert str(a.DEFAULT_ROOT) == "/data/mal/arena/haiku-v6"
+
+
+# ------------------------------------------------------------------------------------------------ PR 917 changes (reviewer + QP)
+def test_x_exit_is_pinned_and_separate_from_skip_pricing():
+    assert a.X_EXIT == {"stop_pct": -8.0, "target_pct": 20.0, "trail_pct": None, "time_min": 60}
+    assert a.X_ENTRIES_PER_H == 2 and a.x_exit() == a.X_EXIT and a.x_exit() is not a.X_EXIT
+    assert a.SKIP_PRICING_PLAN == {"stop_pct": -25.0, "target_pct": 100.0, "trail_pct": 30.0, "time_min": 360}
+    assert a.X_EXIT["trail_pct"] is None and a.X_EXIT["target_pct"] < a.GEN_SPEC.code_limits["trail_arms_after_pct"]
+    lo, hi = a.GEN_SPEC.plan_bounds["stop_pct"]
+    assert lo <= a.X_EXIT["stop_pct"] <= hi and a.GEN_SPEC.plan_bounds["time_min"][0] <= a.X_EXIT["time_min"]
+
+
+def _damage(path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not json\n")
+
+
+def test_ledger_failure_halts_group_and_x_failclosed_reviewer_ledger(tmp_path):
+    g = a.BudgetGuard(tmp_path)
+    _damage(g.ledger_path("REV-L", DAY))
+    assert g.preflight("F", "entry", DAY_MS + 10).reason == "ledger_unreadable"
+    assert g.persisted_level(DAY)[0] == 4 and g.persisted_level(DAY)[1] == "ledger_unreadable"
+    assert g.x_entries_halted(DAY_MS + 20) is True
+
+
+def test_ledger_failure_earlier_day_of_month(tmp_path):
+    g = a.BudgetGuard(tmp_path)
+    _damage(g.ledger_path("L", "2026-11-01"))
+    assert g.x_entries_halted(DAY_MS + 20) is True            # month_spent reads it; no preflight happened first
+    assert g.persisted_level(DAY) == (4, "ledger_unreadable")
+    assert g.preflight("L-nr", "entry", DAY_MS + 30).reason in ("ledger_unreadable", "group_halted")
+
+
+def test_ledger_failure_today_x_does_not_raise(tmp_path):
+    g = a.BudgetGuard(tmp_path)
+    _damage(g.ledger_path("L", DAY))
+    assert g.x_entries_halted(DAY_MS + 20) is True
+    assert g.persisted_level(DAY) == (4, "ledger_unreadable")
+
+
+def test_x_halted_false_when_healthy(tmp_path):
+    assert a.BudgetGuard(tmp_path).x_entries_halted(DAY_MS + 20) is False
+
+
+def test_regime_probe_extra_entries_are_a_total():
+    k = {**KNOBS, "stop_pct": -10.0, "time_min": 120}
+    p1 = rr(target="stop_pct", new=-15, stake=0.25, extra_entries_per_h=1)
+    p2 = rr(target="time_min", new=150, stake=0.25, extra_entries_per_h=1)
+    p3 = rr(target="target_pct", new=110, stake=0.25, extra_entries_per_h=0)
+    out = a.validate_regime_rules([p1, p2, p3], knobs=k, block=BLOCK, now_ms=NOW)
+    assert [x.ok for x in out] == [True, False, True] and out[1].reason == "extra_entries_over_total"
+    # already-active probes count; an expired one does not
+    live = [{"extra_entries_per_h": 1, "expires_ms": NOW + 1000}]
+    assert [x.reason for x in a.validate_regime_rules([p1], knobs=k, block=BLOCK, now_ms=NOW, active_probes=live)] == ["extra_entries_over_total"]
+    dead = [{"extra_entries_per_h": 1, "expires_ms": NOW}]
+    assert a.validate_regime_rules([p1], knobs=k, block=BLOCK, now_ms=NOW, active_probes=dead)[0].ok
+
+
+def test_runner_helper_caps_extra_entries_across_active_probes():
+    live = [{"extra_entries_per_h": 1, "expires_ms": NOW + 5}]
+    assert a.active_extra_entries(live, NOW) == 1 and a.active_extra_entries(live, NOW + 5) == 0
+    assert not a.probe_extra_entries_allowed(live, 1, NOW) and a.probe_extra_entries_allowed(live, 0, NOW)
+    assert a.probe_extra_entries_allowed([], 1, NOW) and not a.probe_extra_entries_allowed([], 2, NOW)
+    assert not a.probe_extra_entries_allowed([], True, NOW) and not a.probe_extra_entries_allowed([], -1, NOW)
+    junk = [{"extra_entries_per_h": "1", "expires_ms": NOW + 5}, {}]
+    assert a.active_extra_entries(junk, NOW) == 0
+
+
+@pytest.mark.parametrize("bad", ["/data/mal/arena/haiku-v4", "/x/hv4/y", "/x/Q50", "/x/shadow-1", "/x/canary", "/x/forward-1016",
+                                 "/data/mal/fresh-08", "/var/lib/mal/sealed", "/x/meta-capture", "/x/bots.json"])
+def test_guard_refuses_denied_roots(bad):
+    with pytest.raises(ValueError):
+        a.BudgetGuard(bad)
+
+
+def test_guard_accepts_hv6_root():
+    a.BudgetGuard(a.DEFAULT_ROOT)
+
+
+def test_regime_max_tokens_and_unhashable_event_id():
+    assert a.MAX_TOKENS["regime"] == 1200 and a.MAX_TOKENS["entry"] == 400 and a.MAX_TOKENS["review"] == 4000
+    assert "regime" not in hv4_arms.MAX_TOKENS                                    # HV4's table is untouched
+    for eid in ([], {}, None, 5, ["RG-0a1b2c3d"]):
+        blk = {**BLOCK, "events": [{"id": eid}, {"id": RG}]}
+        assert vr(rr(), block=blk).ok
+        assert vr(rr(evidence_ids=[RG]), block={**BLOCK, "events": [{"id": eid}]}).reason == "unknown_evidence_id"
+    assert vr(rr(), block={**BLOCK, "events": "RG-0a1b2c3d"}).reason == "unknown_evidence_id"
+    assert vr(rr(), block={**BLOCK, "events": None}).reason == "unknown_evidence_id"
