@@ -234,7 +234,7 @@ def guarded_open(path: str | os.PathLike, mode: str = "r", *args: Any, **kw: Any
 # ---------------------------------------------------------------------------------------------------------------------------------------
 # Import guard: HV6 code may import only hv4_cards / hv4_chain from HV4; modules that read outputs are refused
 # ---------------------------------------------------------------------------------------------------------------------------------------
-HV4_IMPORT_ALLOWED = frozenset({"hv4_cards", "hv4_chain"})
+HV4_IMPORT_ALLOWED = frozenset({"hv4_cards", "hv4_chain", "hv4_prefetch"})  # hv4_prefetch: pure code, imports hv4_cards only, I/O only on the paths it is given
 # QP (PR #911 C3, runner binding): arena modules that READ outputs (ledgers, fills, scores, gaps) are refused too. The runner imports arena_paper (the pricing
 # engine), arena_state (the tape reader) and arena_declog (the pure hash-chain log), which read no output of another book.
 ARENA_READER_MODULES = frozenset({"arena_score", "arena_am6_read", "arena_report_legs", "arena_worst_gaps"})

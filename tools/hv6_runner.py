@@ -129,6 +129,13 @@ class CardSink:
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ chain client
+CHAIN_SPEND_FILE = "chain-prefetch-spend.json"
+RPC_CALLS_PER_H = 1_000  # DESIGN section 6: "its own chain cache and a 1,000 calls/h cap"
+RPC_CALLS_PER_DAY = 24 * RPC_CALLS_PER_H
+WATCH_MAX_PER_ARM = 10  # = hv4_arms.WATCH_MAX_PER_ARM (a test pins it)
+PROVIDERS = ("public", "helius")
+
+
 def refuse_hv4_chain_state(env: Mapping[str, str] | None = None) -> None:
     """QP C1: a default-built HV4Chain takes its state file from MAL_HV4_CHAIN_STATE; if it is set HV6 could read or write HV4's chain counters."""
     e = os.environ if env is None else env
@@ -140,34 +147,81 @@ def chain_state_path(root: str | os.PathLike) -> Path:
     return Path(H.check(Path(root) / CHAIN_CREDITS_FILE, "w"))
 
 
-def live_chain_source(root: str | os.PathLike, env: Mapping[str, str] | None = None) -> "ChainSource":
-    """HV6's own RpcClient (state under the HV6 root) in an HV4Chain passed explicitly (so MAL_HV4_CHAIN_STATE is never consulted)."""
-    refuse_hv4_chain_state(env)
-    from tools.hv4_chain import HV4Chain, RpcClient, RpcConfig
-
-    return ChainSource(HV4Chain(RpcClient(RpcConfig.from_env(env), state_path=chain_state_path(root))))
+def pinned_provider(env: Mapping[str, str] | None = None) -> str:
+    """The RPC provider is pinned by MAL_HV4_RPC = public | helius and must be SET (the holder block needs helius); the registration records it."""
+    e = os.environ if env is None else env
+    sel = (e.get("MAL_HV4_RPC") or "").strip().lower()
+    if sel not in PROVIDERS:
+        raise RuntimeError("MAL_HV4_RPC must be set to public or helius (the provider is pinned in the registration)")
+    return sel
 
 
 class ChainSource:
-    """chain_part(pool, mint, now_ms, slot) -> dict | None, fetched at card time (no prefetcher). None = no card (fail closed)."""
+    """The card's chain dict. In run mode `prefetch` is a tools.hv4_prefetch.ChainPrefetcher (policy v2, passed explicitly): the scan only READS facts stamped
+    strictly before T (no RPC in the scan). Without a prefetcher the facts are fetched at card time (tests and replay only: a wall-clock fetch is stamped after T).
+    `compose` and `_ext_values` are HV4ChainSource's, byte for byte (a test compares them on the same inputs)."""
 
-    def __init__(self, chain: Any) -> None:
-        self.chain = chain
+    def __init__(self, chain: Any, prefetch: Any = None) -> None:
+        self.chain, self.prefetch = chain, prefetch
+
+    @property
+    def holders_max_age_ms(self) -> int:
+        return C.holders_max_age_ms(getattr(self.prefetch, "policy", None))
+
+    def credit_report(self) -> dict:
+        rep = self.chain.credit_report()
+        return {**rep, "prefetch": self.prefetch.stats()} if self.prefetch is not None else rep
+
+    def watch(self, items: Any, hot: Any, now_ms: int, vols: Any = None) -> None:
+        if self.prefetch is not None:
+            self.prefetch.watch(items, hot, now_ms, vols=vols)
+
+    @staticmethod
+    def _ext_values(mf: Any) -> dict[str, Any]:
+        out: dict[str, Any] = {}
+        for k, v in dict(getattr(mf, "ext_info", {}) or {}).items():
+            key = str(k).lower().replace("_", "")
+            if "transferfee" in key and isinstance(v, Mapping):
+                bps = [x for x in (v.get("older_bps"), v.get("newer_bps")) if isinstance(x, int)]
+                if bps:
+                    out["transfer_fee_bps"] = max(bps)
+            if "defaultaccountstate" in key and isinstance(v, Mapping) and isinstance(v.get("state"), str):
+                out["default_account_state"] = v["state"]
+        return out
+
+    @classmethod
+    def compose(cls, mf: Any, mh: Any, hd: Any) -> dict[str, Any]:
+        facts: dict[str, Any] = {"as_of_ms": mf.as_of_ms, "as_of_slot": mf.as_of_slot, "mint_authority": mf.mint_authority,
+                                 "freeze_authority": mf.freeze_authority, "token_program": mf.token_program_id, "extensions": list(mf.extensions),
+                                 "mayhem": mh.is_mayhem, **cls._ext_values(mf)}
+        if hd is not None and hd.ok and hd.as_of_ms is not None:
+            facts.update({"top1_frac": hd.top1_frac, "top10_frac": hd.top10_frac, "holders_as_of_ms": hd.as_of_ms})
+        return facts
 
     def chain_part(self, pool_id: str, mint: str | None, now_ms: int, slot: int) -> dict | None:
         if not mint:
             return None
+        if self.prefetch is not None:
+            return self.prefetch.part_at(pool_id, mint, now_ms, slot)
         mf = self.chain.mint_facts(mint)
         if not mf.ok or mf.as_of_ms is None or mf.as_of_slot is None:
             return None
         mh = self.chain.mayhem_flag(mint, pool=pool_id)
-        hd = self.chain.largest_holders(mint, token_program=mf.token_program_id, pool=pool_id, max_age_s=900.0)
-        facts: dict[str, Any] = {"as_of_ms": mf.as_of_ms, "as_of_slot": mf.as_of_slot, "mint_authority": mf.mint_authority,
-                                 "freeze_authority": mf.freeze_authority, "token_program": mf.token_program_id, "extensions": list(mf.extensions),
-                                 "mayhem": mh.is_mayhem}
-        if hd is not None and hd.ok and hd.as_of_ms is not None:
-            facts.update({"top1_frac": hd.top1_frac, "top10_frac": hd.top10_frac, "holders_as_of_ms": hd.as_of_ms})
-        return facts
+        hd = self.chain.largest_holders(mint, token_program=mf.token_program_id, pool=pool_id, max_age_s=self.holders_max_age_ms / 1000.0)
+        return self.compose(mf, mh, hd)
+
+
+def live_chain_source(root: str | os.PathLike, env: Mapping[str, str] | None = None) -> ChainSource:
+    """HV6's own RpcClient (state under the HV6 root, 1,000 calls/h = 24,000/day, provider pinned) in an HV4Chain passed explicitly, and a policy-v2 prefetcher
+    (passed explicitly: MAL_HV4_PREFETCH_POLICY is never read) whose spend file is under the HV6 root and whose hourly budget is 1,000. The thread is not started here."""
+    refuse_hv4_chain_state(env)
+    pinned_provider(env)
+    from tools.hv4_chain import HV4Chain, RpcClient, RpcConfig
+    from tools.hv4_prefetch import ChainPrefetcher
+
+    chain = HV4Chain(RpcClient(RpcConfig.from_env(env), state_path=chain_state_path(root), daily_call_cap=RPC_CALLS_PER_DAY))
+    spend = Path(H.check(Path(root) / CHAIN_SPEND_FILE, "w"))
+    return ChainSource(chain, ChainPrefetcher(chain, ChainSource.compose, spend_path=spend, policy="v2", hourly_budget=RPC_CALLS_PER_H))
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ per-tick policy
@@ -231,6 +285,13 @@ class ProbeBook:
             return False
         active.append(rec)
         return True
+
+    def active(self, arm: str, now_ms: int) -> bool:
+        """True while the arm holds an unexpired probe, or ANY malformed record (fail closed: a trade is then capped and tagged, never loosened)."""
+        for r in self.by_arm.get(arm, []):
+            if not _probe_record_ok(r) or r["expires_ms"] > now_ms:
+                return True
+        return False
 
     def extra_entries(self, arm: str, now_ms: int) -> int:
         recs = self.by_arm.get(arm, [])
@@ -406,6 +467,7 @@ class Book:
     entries_ms: list[int] = field(default_factory=list)
     pool_last_ms: dict[str, int] = field(default_factory=dict)
     realized: dict[str, float] = field(default_factory=dict)
+    watches: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -447,6 +509,8 @@ class Runner:
         self.sim_now = 0
         self.tp: TickPolicy | None = None
         self._sell_next: dict[str, int] = {}
+        self._pend_sell: dict[str, tuple] = {}
+        self._replay_pos: dict[str, Pos] = {}
         self._stop = False
         if not cfg.live and hasattr(engine, "now_fn"):
             engine.now_fn = lambda: self.sim_now
@@ -488,12 +552,22 @@ class Runner:
     # -- resume
     def resume(self) -> dict[str, int]:
         """Verify every hash chain (a break raises LogChainError and the runner does not start) and rebuild positions, caps and the setup cooldown."""
-        n = {"rows": 0, "open": 0}
+        n = {"rows": 0, "open": 0, "reopened": 0}
         for name in (*ARM_ORDER, "SCAN"):
             self.log.verify(name)
             for r in self.log.rows(name):
                 n["rows"] += 1
                 self._replay_row(name, r)
+        self._pend_sell.clear()
+        self.engine.recover()  # as HV4: the engine rebuilds the pre-restart positions from its ledger
+        # A sell the log shows as sent that the engine never priced leaves an open engine position nothing would close (a restart orphan makes the read
+        # NOT_DECIDABLE): put it back in the book so it is sold again.
+        held = getattr(self.engine, "positions", {})
+        for pid, pos in sorted(self._replay_pos.items()):
+            b = self.books[pos.arm]
+            if pid not in b.open and pid in held:
+                b.open[pid] = pos
+                n["reopened"] += 1
         n["open"] = sum(len(b.open) for b in self.books.values())
         return n
 
@@ -518,6 +592,7 @@ class Runner:
         elif k == "entry" and r.get("pos"):
             p = Pos(**r["pos"])
             b.open[p.pid] = p
+            self._replay_pos[p.pid] = p
             b.entries_ms.append(r["ms"])
             b.pool_last_ms[p.pool] = r["ms"]
             if name == "X":
@@ -530,8 +605,22 @@ class Runner:
                 if name == "X" and p.entry_ms in self.xcap.entries_ms:
                     self.xcap.entries_ms.remove(p.entry_ms)
         elif k == "sell":
-            b.open.pop(r["pid"], None)
+            # The row is written BEFORE the engine call, so a refused attempt is followed by an order_refused row that undoes this one (HV4's rule):
+            # P&L is counted once per pid however many retry rows there are, and a refused sell never closes the position.
+            self._pend_sell[r["pid"]] = (b.open.pop(r["pid"], None), b.realized.get(day), day)
             b.realized[day] = b.realized.get(day, 0.0) + float(r.get("est_pnl_sol") or 0.0)
+        elif k == "order_refused" and r.get("side") == "sell":
+            p, prev, d0 = self._pend_sell.pop(r["order_id"], (None, None, day))
+            if prev is None:
+                b.realized.pop(d0, None)
+            else:
+                b.realized[d0] = prev
+            if p is not None and not r.get("engine_drop"):
+                b.open[p.pid] = p
+        elif k == "watch_add":
+            b.watches.append(dict(r["watch"]))
+        elif k == "watch_end":
+            b.watches = [w for w in b.watches if w["id"] != r["id"]]
         elif k == "peak" and r["pid"] in b.open:
             b.open[r["pid"]].peak = max(b.open[r["pid"]].peak, float(r["peak"]))
 
@@ -594,20 +683,33 @@ class Runner:
             prints = list(p.events)
             items.append((snap, prints))
             snap_of[p.id], prints_of[p.id] = snap, prints
-        res = H.scan(items, as_of_ms=T, limiter=self.limiter, x_cap=self.xcap, board_on=tp.board_on)
+        # DEVIATION from HV4 (recorded in the PR table): H.scan records the GEN cooldown for every tag it passes on, even one whose card is then refused (HV4's
+        # rule). Here the scan runs on a scratch copy and the real cooldown is recorded only for a tag that got a card.
+        scratch = C.SetupLimiter()
+        scratch._last = dict(self.limiter._last)
+        res = H.scan(items, as_of_ms=T, limiter=scratch, x_cap=self.xcap, board_on=tp.board_on)
+        watch = getattr(self.chain, "watch", None)  # a chain source with a background prefetch learns the watchlist (no RPC in the scan)
+        if watch is not None:
+            tagged_all = {t.pool_id for t in res.tags}
+            top = sorted(res.candidates, key=lambda q: (-(res.feats[q].get("vol_60m") or 0.0), q))[:25]
+            watch([(q, snap_of[q].get("mint")) for q in res.candidates], tagged_all | set(res.board) | set(top), self._now(T),
+                  vols={q: res.feats[q].get("vol_60m") or 0.0 for q in res.candidates})
         cards: dict[str, dict] = {}
+        carded_tags = []
         for t in res.tags:
             c = self._card(t.pool_id, T, snap_of[t.pool_id], prints_of[t.pool_id], t, res.feats[t.pool_id])
             if c is not None:
                 cards[t.pool_id] = c
+                carded_tags.append(t)
+                self.limiter.record(t.pool_id, H.PERSONA, T)
         for pid in res.board:
             c = self._card(pid, T, snap_of[pid], prints_of[pid], None, res.feats[pid])
             if c is not None:
                 cards[pid] = c
         self.log.append("SCAN", T, {"kind": "scan", "as_of_slot": self.slot, "counts": dict(res.counts), "n_cards": len(cards), "level": tp.level,
-                                    "tagged": sorted(t.pool_id for t in res.tags), "card_shas": sorted(A.p4.card_sha256(c) for c in cards.values())})
+                                    "tagged": sorted(t.pool_id for t in carded_tags), "card_shas": sorted(A.p4.card_sha256(c) for c in cards.values())})
         self._x_round(res.x_tags, cards, T, tp)
-        order = [cards[t.pool_id] for t in res.tags if t.pool_id in cards] + [cards[p] for p in res.board if p in cards]
+        order = [cards[t.pool_id] for t in carded_tags] + [cards[p] for p in res.board if p in cards]
         self._llm_entry_round(order, T, tp)
 
     def _card(self, pool: str, T: int, snap: Mapping, prints: list, tag: Any, feats: Mapping) -> dict | None:
@@ -629,7 +731,8 @@ class Runner:
         self.token_of[pool] = {k: part[k] for k in ("token_program", "extensions") if k in part}
         try:
             C.assert_as_of(snap, T, prints=prints, chain=chain, as_of_slot=self.slot)
-            return H.build_card(snap, prints, chain, as_of_ms=T, as_of_slot=self.slot, setup=tag, feats=feats)
+            return H.build_card(snap, prints, chain, as_of_ms=T, as_of_slot=self.slot, setup=tag, feats=feats,
+                                holders_max_age_ms=getattr(self.chain, "holders_max_age_ms", None))
         except C.LeakageError as e:
             self._count("leakage_refused")
             self.log.append("SCAN", T, {"kind": "as_of_refusal", "pool": pool, "detail": str(e)[:160]})
@@ -681,7 +784,9 @@ class Runner:
         bot = bot_id(arm)
         pid = position_id(bot, card["id"], dec_ms, self.slot)
         b = self.books[arm]
-        used_probe = arm != "X" and len([t for t in b.entries_ms if t > dec_ms - 60 * MIN_MS]) >= lim["entries_per_h"]
+        used_probe = arm != "X" and (self.probes.active(arm, dec_ms) or len([t for t in b.entries_ms if t > dec_ms - 60 * MIN_MS]) >= lim["entries_per_h"])
+        if used_probe:
+            size = min(size, A.PROBE_STAKE)
         pos = Pos(arm=arm, pid=pid, pool=card["id"], mint=card.get("mint") or (snap or {}).get("mint"), size=size, entry_ms=dec_ms,
                   entry_price=float(price or 0.0), tokens_eq=(size / float(price)) if price else 0.0, stop_pct=plan.get("stop_pct"),
                   target_pct=plan.get("target_pct"), trail_pct=plan.get("trail_pct"), time_min=plan.get("time_min"), hard_stop_pct=lim["hard_stop_pct"],
@@ -693,7 +798,7 @@ class Runner:
         try:
             got = self.engine.buy(bot, card["id"], size, dec_ms, self.slot, meta={"arm": arm, "card_sha256": A.p4.card_sha256(card), "order_id": pid})
         except ArenaRefused as e:
-            self.log.append(arm, dec_ms, {"kind": "order_refused", "order_id": pid, "side": "buy", "reason": str(e).split(":")[0], "detail": str(e)[:160]})
+            self.log.append(arm, dec_ms, {"kind": "order_refused", "order_id": pid, "side": "buy", "reason": "arena_refused", "error_class": type(e).__name__})
             self._count("order_refused")
             return None
         assert got == pid, "engine position id differs from the logged order id"
@@ -752,24 +857,42 @@ class Runner:
             for a in members:
                 self.log.append(a, replies[a][1], {"kind": "symmetry_abstain", "errors": {m: replies[m][0].error for m in members}})
             return
+        # QP 918 (3): the calls run one after another, so the arms' own receive instants differ by arm ORDER. Every member is validated (STALE) and decided at ONE
+        # common instant, the latest receive instant of the chunk, so no arm is favoured by where it stands in the order.
+        common = max(recv for _, recv in replies.values())
         for a in members:
-            reply, recv = replies[a]
-            for v, card in zip(A.validate_entry(reply, cards=chunk, knobs=self.knobs[a], received_ms=recv), chunk):
+            reply, _ = replies[a]
+            for v, card in zip(A.validate_entry(reply, cards=chunk, knobs=self.knobs[a], received_ms=common), chunk):
                 self.invalid[a][0] += int(v.invalid)
                 self.invalid[a][1] += 1
-                self._on_verdict(a, v, card, recv)
+                self._on_verdict(a, v, card, common, T)
 
-    def _on_verdict(self, arm: str, v: Any, card: dict, recv: int) -> None:
+    def _on_verdict(self, arm: str, v: Any, card: dict, recv: int, T: int | None = None) -> None:
+        if v.action == "WATCH" and not v.invalid:
+            b = self.books[arm]
+            if len(b.watches) >= WATCH_MAX_PER_ARM:
+                self._skip(arm, card, recv, ["watch_cap"])
+                return
+            wf = v.fields["watch"]
+            ttl_from = recv if T is None else T
+            w = {"id": sha256_hex(f"{arm}|{card['id']}|{recv}")[:16], "pool": card["id"], "terms": [list(t) for t in wf["terms"]], "when": wf["when"],
+                 "expires_ms": ttl_from + int(wf["ttl_min"]) * MIN_MS, "card_sha256": A.p4.card_sha256(card)}
+            b.watches.append(w)
+            self.log.append(arm, recv, {"kind": "watch_add", "watch": w})
+            return
         if not A.is_entry(v):
             self._skip(arm, card, recv, [v.action, *v.reasons] if v.action != "SKIP" else list(v.reasons) or ["SKIP"])
             return
         asked = A.model_written_size(v) or 0.0
         size = self._cap_size(card, asked)
+        if self.probes.active(arm, recv):  # DESIGN section 3: a loosened-knob trade is a probe: stake <= 0.25 and tagged
+            size = min(size, A.PROBE_STAKE)
         gates = self._gates(arm, card["id"], size, card["f"].get("age_tier") != "established", recv)
         if not all(g["ok"] for g in gates.values()):
             self._skip(arm, card, recv, [k for k, g in gates.items() if not g["ok"]], gates)
             return
-        plan = {**A.GEN_SPEC.plan_defaults, **(v.fields.get("plan") or {})}
+        # QP 918 (5): only the validated model plan is executed; a key the model left out is a knob that is OFF (never filled from plan_defaults).
+        plan = dict(v.fields.get("plan") or {})
         self._open(arm, card, size, plan, recv, gates, {"conviction": v.fields.get("conviction"), "size_asked": asked})
 
     # -- exits
@@ -799,7 +922,16 @@ class Runner:
             return False
         dec = T if dec_ms is None else dec_ms
         est = (ret or 0.0) * pos.size
-        self.log.append(pos.arm, dec, {"kind": "sell", "pid": pos.pid, "pool": pos.pool, "reason": why, "est_ret": ret, "est_pnl_sol": est, "decision_slot": self.slot})
+        flag: dict[str, Any] = {}
+        try:  # logged only, as HV4. With no creator fact (HV6 supplies none) check (b) counts ALL sellers: looser than HV4 lane G (recorded in the PR table)
+            snap = self.state.snapshot(pos.pool)
+            prints = list(self.state.pool(pos.pool).events)
+            C.assert_as_of(snap, T, prints=prints, as_of_slot=self.slot)
+            flag = C.sell_route(snap, prints, pos.token, as_of_ms=T, stake=pos.size)
+        except Exception as e:  # noqa: BLE001 - class name only
+            flag = {"ok": False, "reason": type(e).__name__}
+        self.log.append(pos.arm, dec, {"kind": "sell", "pid": pos.pid, "pool": pos.pool, "reason": why, "est_ret": ret, "est_pnl_sol": est, "decision_slot": self.slot,
+                                       "sell_route_flag": (None if flag.get("ok") else flag)})
         try:
             self.engine.sell(bot_id(pos.arm), pos.pid, 1.0, dec, self.slot, reason=why)
         except ArenaRefused as e:
@@ -807,8 +939,11 @@ class Runner:
             if not early:
                 pos.sell_tries += 1
             self._count("sell_refused")
-            self.log.append(pos.arm, dec, {"kind": "order_refused", "order_id": pos.pid, "side": "sell", "reason": str(e).split(":")[0], "detail": str(e)[:160]})
-            if any(k in str(e) for k in SELL_ENGINE_DROPS):
+            drop = any(k in str(e) for k in SELL_ENGINE_DROPS)
+            # QP 918 (7): the engine reads bots.json in-process, so its exception text is never logged: class name and fixed flags only
+            self.log.append(pos.arm, dec, {"kind": "order_refused", "order_id": pos.pid, "side": "sell", "reason": "arena_refused", "error_class": type(e).__name__,
+                                           "early": early, "engine_drop": drop})
+            if drop:
                 b.open.pop(pos.pid, None)
                 self._count("sell_orphan")
             else:
@@ -877,6 +1012,56 @@ class Runner:
                 pos.target_pct = v.fields.get("new_target_pct", pos.target_pct)
                 self.log.append(arm, recv, {"kind": "tighten", "pid": pos.pid, "stop_pct": pos.stop_pct, "target_pct": pos.target_pct})
 
+    def _fresh_card(self, pool: str, T: int) -> dict | None:
+        snap = self.state.snapshot(pool)
+        p = self.state.pool(pool)
+        if snap is None or p is None:
+            return None
+        prints = list(p.events)
+        try:
+            feats = C.features(snap, C.norm_prints(prints), as_of_ms=T)
+        except C.LeakageError:
+            self._count("leakage_refused")
+            return None
+        return self._card(pool, T, snap, prints, None, feats)
+
+    # -- watches (the prompt promises "code builds a fresh card when the predicate holds and asks you once more": implemented as HV4's path)
+    def watches(self, T: int) -> None:
+        tp = self.tp or self._begin_tick(T)
+        for arm in self.llm_arm_names:
+            b = self.books[arm]
+            for w in list(b.watches):
+                if T >= w["expires_ms"]:
+                    b.watches.remove(w)
+                    self.log.append(arm, T, {"kind": "watch_end", "id": w["id"], "why": "expired"})
+                    continue
+                if tp.entries_halted:
+                    continue
+                card = self._fresh_card(w["pool"], T)
+                if card is None:
+                    continue
+                nums = A.v4.numeric_fields(card)
+                ops = {">": lambda x, y: x > y, ">=": lambda x, y: x >= y, "<": lambda x, y: x < y, "<=": lambda x, y: x <= y}
+                if not all(f in nums and ops[op](nums[f], n) for f, op, n in w["terms"]):
+                    continue
+                b.watches.remove(w)
+                self.log.append(arm, T, {"kind": "watch_end", "id": w["id"], "why": "fired", "card_sha256": A.p4.card_sha256(card)})
+                if not self._call_ok([arm], "entry", T):
+                    self._count("entry_call_cap")
+                    continue
+                self.cards.put(card, T)
+                req = A.build_entry_request(arm, self.playbooks[arm], [card], self.seq.get((arm, utc_day(T)), 0), max_cards=1)
+                reply, recv = self._call(arm, req, T)
+                if reply.error in DENIED:
+                    continue
+                v = A.validate_entry(reply, cards=[card], knobs=self.knobs[arm], received_ms=recv)[0]
+                self.invalid[arm][0] += int(v.invalid)
+                self.invalid[arm][1] += 1
+                if v.action == "WATCH":  # a second WATCH on a fired watch is a skip (no chains of watches)
+                    self._skip(arm, card, recv, ["watch_again"])
+                else:
+                    self._on_verdict(arm, v, card, recv, T)
+
     # -- the intraday regime trigger
     def regime_round(self, T: int) -> list[str]:
         """A new radar HIGH event with relevance direct in the newest block (as_of before T) triggers one review call each for L and P through
@@ -910,6 +1095,7 @@ class Runner:
         self.exits(T)
         if (T // 1000) % 60 == H.SCAN_SECOND_MS // 1000:
             self.scan(T)
+            self.watches(T)
             self.rechecks(T)
             self.regime_round(T)
 
@@ -925,6 +1111,19 @@ class Runner:
 
     def request_stop(self, *_a: Any) -> None:
         self._stop = True
+
+    def summary(self) -> dict[str, Any]:
+        """Run summary: counters, the days' max degrade level, entries per arm, invalid fractions, and the chain/Helius credit report of this process."""
+        out: dict[str, Any] = {"counters": dict(self.counters), "day_level": {d: dict(v) for d, v in sorted(self.day_level.items())},
+                               "entries": {a: len(b.entries_ms) for a, b in self.books.items()}, "invalid": {a: list(v) for a, v in self.invalid.items()},
+                               "regime_refused_blocks": self.regime.refused}
+        rep = getattr(self.chain, "credit_report", None)
+        if rep is not None:
+            try:
+                out["chain_credits"] = rep()
+            except Exception as e:  # noqa: BLE001
+                out["chain_credits"] = {"error": type(e).__name__}
+        return out
 
 
 def stack_config(feed_delay_slots: int) -> Any:
@@ -962,12 +1161,20 @@ def main(argv: list[str] | None = None) -> int:
     guard = A.BudgetGuard(a.root)
     model = A.StubModel(guard=guard) if a.stub else A.CallerModel(guard)
     chain = live_chain_source(a.root)
+    chain.prefetch.start()  # facts are fetched off the scan path, stamped before the scan instant; the hourly spend (1,000) is persisted under the root
     cfg = RunnerConfig(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True)
     run = Runner(cfg, ArenaState(a.tape_dir), ArenaEngine(ledger_root, a.registry, cfg=stack_config(a.feed_delay_slots)), model, chain, guard)
     signal.signal(signal.SIGTERM, run.request_stop)
     print(canon({"resumed": run.resume()}))
     start = max(a.clock_start_ms, int(time.time() * 1000))
-    run.run(start - start % TICK_MS, a.end_ms or 2 ** 62)
+    try:
+        run.run(start - start % TICK_MS, a.end_ms or 2 ** 62)
+    finally:
+        chain.prefetch.stop()
+        summ = run.summary()
+        summ["provider"] = getattr(getattr(chain.chain, "rpc", None), "provider", None)
+        run.log.append("SCAN", int(time.time() * 1000), {"kind": "run_summary", **summ})
+        print(canon({"summary": summ}))
     return 0
 
 

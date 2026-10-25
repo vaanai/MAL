@@ -494,9 +494,13 @@ def check_min_age(cards: Sequence[Mapping]) -> None:
     """A card with no numeric age_h, or one under 2 hours, is refused before anything is built (fail closed)."""
     for c in cards:
         age = c.get("age_h")
-        if age is None and isinstance(c.get("f"), Mapping):  # a real hv4-card-1 card carries f.age_s (seconds), not age_h
+        if isinstance(c.get("f"), Mapping):  # a real hv4-card-1 card carries f.age_s (seconds); when both exist the SMALLER age decides (fail closed)
             s = c["f"].get("age_s")
-            age = s / 3600.0 if isinstance(s, (int, float)) and not isinstance(s, bool) else None
+            from_s = s / 3600.0 if isinstance(s, (int, float)) and not isinstance(s, bool) and math.isfinite(s) else None
+            if "age_s" in c["f"] and from_s is None:
+                age = None
+            elif from_s is not None:
+                age = from_s if (age is None or isinstance(age, bool) or not isinstance(age, (int, float)) or not math.isfinite(age)) else min(age, from_s)
         if isinstance(age, bool) or not isinstance(age, (int, float)) or not math.isfinite(age) or age < MIN_AGE_H:
             raise PromptError(f"every card needs age_h >= {MIN_AGE_H}")
 
