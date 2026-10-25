@@ -101,6 +101,7 @@ and the amendment says how many alerts per day the old setting gave.
   Meteora DBC venue tape [2026-10-25T00:00:00Z, 2026-11-01T00:10:00Z),
   the m10 forward window (Amendment 1 AM6 blind conditions); LaunchLab venue tape [2026-10-17T00:00:00Z, 2026-10-24T00:00:00Z), the reserved
   LaunchLab holdout (notebook n_b3bsp-Xrga1P7w). Changes go through the manager and QP.
+- **FLOOR revival windows (draft, 2026-10-25, DEC-031 Am.15 item 9).** Two arena windows are added again, effective on merge of the revival PR: [2026-10-25T18:30:00Z, 2026-11-02T00:00:00Z) and [2026-11-04T21:00:00Z, 2026-11-09T21:00:00Z). They cover the fresh P0 days and the gap/DR1 evidence and slip windows of the possible clocks; ops monitoring of the arena tape is paused for them (QP-RULING-1025-seal-lift (3) f3).
 - **FLOOR seal lifted for the arena tape (2026-10-25).** The two FLOOR arena windows and the arena `disabled_until` (2026-10-27T21:00:00Z) were
   removed under QP-RULING-1025-seal-lift item (2d) (sha256 b04a57eb4bd05c168eaf0f52e90a38c91b2663a4d418d6bf958fcdbabe14aa52; L0 notebook
   n_cuTE-bRvYIfCWA, 2026-10-25T12:18:48Z). r2 (gap/hb/process rows never counted) stands. The 10-19..10-23 smoke counts are never a baseline (r5)

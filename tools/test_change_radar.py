@@ -436,13 +436,17 @@ def _utc(text):
     return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp()
 
 
-def test_pinned_seals_file_floor_lifted():
+def test_pinned_seals_file_floor_revival_windows():
     seals = cr.load_seals(cr.DEFAULT_SEALS)
-    assert seals["seals"] == [{"source": "venue:meteora_dbc", "lo": _utc("2026-10-25T00:00:00Z"), "hi": _utc("2026-11-01T00:10:00Z")},
+    assert seals["seals"] == [{"source": "arena", "lo": _utc("2026-10-25T18:30:00Z"), "hi": _utc("2026-11-02T00:00:00Z")},
+                              {"source": "arena", "lo": _utc("2026-11-04T21:00:00Z"), "hi": _utc("2026-11-09T21:00:00Z")},
+                              {"source": "venue:meteora_dbc", "lo": _utc("2026-10-25T00:00:00Z"), "hi": _utc("2026-11-01T00:10:00Z")},
                               {"source": "venue:launchlab", "lo": _utc("2026-10-17T00:00:00Z"), "hi": _utc("2026-10-24T00:00:00Z")}]
     assert seals["disabled_until"] == {}
     assert not cr.source_disabled(seals, "arena", _utc("2026-10-25T13:00:00Z"))
-    assert not any(cr.day_sealed(seals, "arena", f"2026-10-{i}") for i in range(17, 31))
+    arena = [f"2026-10-{i}" for i in range(23, 32)] + [f"2026-11-0{i}" for i in range(1, 10)] + ["2026-11-10"]
+    sealed = [d for d in arena if cr.day_sealed(seals, "arena", d)]
+    assert sealed == ["2026-10-25"] + [f"2026-10-{i}" for i in range(26, 32)] + ["2026-11-01", "2026-11-04", "2026-11-05", "2026-11-06", "2026-11-07", "2026-11-08", "2026-11-09"]
     assert not cr.source_disabled(seals, "venue:meteora_dbc", NOW)
     assert not cr.day_sealed(seals, "venue:meteora_dbc", "2026-10-23")
     dbc = [f"2026-10-{i}" for i in range(24, 32)] + ["2026-11-01", "2026-11-02"]
@@ -465,9 +469,9 @@ def test_sealed_days_never_opened_and_never_recorded(tmp_path):
     now = _utc("2026-10-28T01:00:00Z")
     write_day(root, "2026-10-27", 24, arena_rows(1, 1))
     recs = cr.stage_tapes({"arena": (root, counter)}, set(), now, 8, [], cr.load_seals(cr.DEFAULT_SEALS), skipped)
-    assert [r["day"] for r in recs] == [f"2026-10-{i}" for i in range(20, 28)]
-    assert set(opened) == {f"2026-10-{i}" for i in range(20, 28)}
-    assert skipped == []
+    assert [r["day"] for r in recs] == [f"2026-10-{i}" for i in range(20, 25)]
+    assert set(opened) == {f"2026-10-{i}" for i in range(20, 25)}
+    assert skipped == [f"arena 2026-10-{i} sealed" for i in range(25, 28)]
 
 
 def test_sealed_arena_day_still_skipped_with_synthetic_window(tmp_path):
@@ -543,7 +547,7 @@ def test_stage_tapes_requires_seals(tmp_path):
 
 # ===================================================================================================== QP-RULING-1024-seal2 r2 / r3
 SHIPPED_SEALS = {
-    "seals": [("venue:meteora_dbc", "2026-10-25T00:00:00Z", "2026-11-01T00:10:00Z"), ("venue:launchlab", "2026-10-17T00:00:00Z", "2026-10-24T00:00:00Z")],
+    "seals": [("arena", "2026-10-25T18:30:00Z", "2026-11-02T00:00:00Z"), ("arena", "2026-11-04T21:00:00Z", "2026-11-09T21:00:00Z"), ("venue:meteora_dbc", "2026-10-25T00:00:00Z", "2026-11-01T00:10:00Z"), ("venue:launchlab", "2026-10-17T00:00:00Z", "2026-10-24T00:00:00Z")],
     "disabled_until": {},
 }
 
