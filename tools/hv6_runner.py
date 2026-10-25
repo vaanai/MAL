@@ -884,11 +884,22 @@ class Runner:
         scratch._last = dict(self.limiter._last)
         res = H.scan(items, as_of_ms=T, limiter=scratch, x_cap=self.xcap, board_on=tp.board_on)
         watch = getattr(self.chain, "watch", None)  # a chain source with a background prefetch learns the watchlist (no RPC in the scan)
+        # The watch set is capped at WATCH_MAX_POOLS, but a pool the book still needs facts for is NEVER cut (QP 930): tagged, board and top-25-by-volume pools, every
+        # candidate holding an open (so pending or retrying) position in any arm, and every candidate with an active arm watch. Only cold candidates can be cut.
+        tagged_all = {t.pool_id for t in res.tags}
+        top = sorted(res.candidates, key=lambda q: (-(res.feats[q].get("vol_60m") or 0.0), q))[:25]
+        held = {pos.pool for b in self.books.values() for pos in b.open.values()} | {w["pool"] for b in self.books.values() for w in b.watches}
+        keep = tagged_all | set(res.board) | set(top) | held
+        ranked = sorted(res.candidates, key=lambda q: (q not in keep, -(res.feats[q].get("vol_60m") or 0.0), q))[:max(WATCH_MAX_POOLS, len(keep & set(res.candidates)))]
+        capped = len(res.candidates) - len(ranked)
+        self.counters["max_candidates_per_scan"] = max(self.counters.get("max_candidates_per_scan", 0), len(res.candidates))
+        if capped > 0:
+            self._count("scans_cap_bound")
+            self._count("watch_capped", capped)
         if watch is not None:
-            tagged_all = {t.pool_id for t in res.tags}
-            top = sorted(res.candidates, key=lambda q: (-(res.feats[q].get("vol_60m") or 0.0), q))[:25]
-            hot = tagged_all | set(res.board) | set(top)
-            ranked = sorted(res.candidates, key=lambda q: (q not in hot, -(res.feats[q].get("vol_60m") or 0.0), q))[:max(WATCH_MAX_POOLS, len(hot))]  # hot pools always in
+            hot = tagged_all | set(res.board) | set(top)  # the prefetcher's refresh priority is unchanged by held pools
+            rset = set(ranked)
+            ranked = [q for q in res.candidates if q in rset]  # candidate order, as the uncapped call
             mint_of = (lambda q: self.state.pool(q).mint) if stream else (lambda q: snap_of[q].get("mint"))
             watch([(q, mint_of(q)) for q in ranked], hot, self._now(T), vols={q: res.feats[q].get("vol_60m") or 0.0 for q in ranked})
         cards: dict[str, dict] = {}
@@ -905,7 +916,7 @@ class Runner:
             c = self._card(pid, T, sn, pr, None, res.feats[pid])
             if c is not None:
                 cards[pid] = c
-        self.log.append("SCAN", T, {"kind": "scan", "as_of_slot": self.slot, "counts": dict(res.counts), "n_cards": len(cards), "level": tp.level,
+        self.log.append("SCAN", T, {"kind": "scan", "as_of_slot": self.slot, "counts": dict(res.counts), "n_cards": len(cards), "level": tp.level, "watch_capped": capped,
                                     "tagged": sorted(t.pool_id for t in carded_tags), "card_shas": sorted(A.p4.card_sha256(c) for c in cards.values())})
         self._x_round(res.x_tags, cards, T, tp)
         order = [cards[t.pool_id] for t in carded_tags] + [cards[p] for p in res.board if p in cards]

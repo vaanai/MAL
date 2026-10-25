@@ -237,7 +237,10 @@ def run_real(days: list[str], drill_id: str, sha: str, *, rss_cap_mb: float = RS
     ok = equal and rss_mb < rss_cap_mb and p95 < SCAN_P95_CAP_MS
     res = {"real_layout": "end", "result": "PASS" if ok else "FAIL", "pass_rule": PASS_RULE, "md5_equal": equal, "rss_ok": rss_mb < rss_cap_mb, "scan_p95_ok": p95 < SCAN_P95_CAP_MS,
            "run1_log_md5": a["log_md5"], "run2_log_md5": b["log_md5"], "run1": {k: v for k, v in a.items() if k != "log_md5"},
-           "run2_counts_equal": {k: a[k] == b[k] for k in ("cards", "entries", "closes", "refusals_by_class")}, "peak_rss_mb": rss_mb, "rss_cap_mb": rss_cap_mb}
+           "run2_counts_equal": {k: a[k] == b[k] for k in ("cards", "entries", "closes", "refusals_by_class")}, "peak_rss_mb": rss_mb, "rss_cap_mb": rss_cap_mb,
+           # QP 930: the watch-set cap (WATCH_MAX_POOLS) is a changed value unless it never bound on these days
+           "max_candidates_per_scan": max(a["counters"].get("max_candidates_per_scan", 0), b["counters"].get("max_candidates_per_scan", 0)),
+           "scans_cap_bound": max(a["counters"].get("scans_cap_bound", 0), b["counters"].get("scans_cap_bound", 0))}
     D.out(res)
     # Seal: the result file goes into the drill root, then the whole root is made read-only (priced pre-clock hours, never read) and the file's sha256 is printed.
     rf = base / "real-layout-result.json"
