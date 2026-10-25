@@ -1383,7 +1383,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--log-level", default="INFO", choices=("DEBUG", "INFO", "WARNING", "ERROR"))
     args = p.parse_args(argv)
     try:
-        import websockets  # noqa: F401
+        if not args.backfill_from_arena:  # the backfill never opens the socket
+            import websockets  # noqa: F401
     except ImportError:
         print("websockets missing: pip install -r scripts/mal-core/requirements-fast-create.txt",
               file=sys.stderr)
