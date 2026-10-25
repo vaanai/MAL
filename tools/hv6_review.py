@@ -160,6 +160,22 @@ def _deny_root(p: str | os.PathLike) -> None:     # kept name: read-check of a r
     _guard(p, "r")
 
 
+DRILL_MARKER = "SYNTHETIC_FIXTURE_ROOT"
+
+
+def is_drill_root(root: str | os.PathLike) -> bool:
+    """True for <HV6_ROOT>/drill/... or a root outside the HV6 tree that carries a SYNTHETIC_FIXTURE_ROOT marker file. A marker inside the production tree
+    (anywhere outside drill/) does not count. --stub and --now-ms are allowed only on such roots."""
+    real = os.path.realpath(root)
+    prod = os.path.realpath(HV6_ROOT)
+    drill = os.path.join(prod, "drill")
+    if real == drill or real.startswith(drill + os.sep):
+        return True
+    if real == prod or real.startswith(prod + os.sep):
+        return False
+    return os.path.isfile(os.path.join(real, DRILL_MARKER))
+
+
 def default_ledger_root(root: str | os.PathLike) -> str:
     """The runner's default: <HV6 root>/engine-ledger. A release root <root>/releases/vN shares its parent's engine ledger (bot ids carry the release)."""
     r = Path(root)
@@ -921,8 +937,12 @@ def append_manifest(root: str | os.PathLike, arm: str, row: Mapping, playbook_te
     if any(r["sha256"] == row["sha256"] for r in rows):
         return
     check_manifest(row, rows, arm, **kw)
-    if row["kind"] != "genesis" and (wall if wall is not None else wall_ms()) >= row["effective_from_ms"]:
-        raise ManifestRefused("appended_after_effective")
+    if row["kind"] != "genesis":
+        now = wall if wall is not None else wall_ms()
+        if row["written_ms"] > now + NOW_SLACK_MS:
+            raise ManifestRefused("written_in_future")        # a future-dated line would make every later real line 'backdated': it silences the arm
+        if now >= row["effective_from_ms"]:
+            raise ManifestRefused("appended_after_effective")
     stem = row["review_day"] if row["kind"] == "nightly" else f"{row['review_day']}.i{row['intraday_n']}"
     if playbook_text is not None and row["version"] > 0:
         _write_once(pdir / f"v{row['version']}.txt", playbook_text.encode("utf-8"))
@@ -1159,8 +1179,8 @@ def _main(argv: Sequence[str] | None = None) -> int:
     a = ap.parse_args(argv)
     wall = wall_ms()
     now = a.now_ms if a.now_ms is not None else wall
-    if a.now_ms is not None and not a.stub and abs(a.now_ms - wall) > NOW_SLACK_MS:
-        raise ReviewError("now_ms_not_wall_clock")          # outside test mode (--stub) the instant is the wall clock +-60 s: no backdating
+    if (a.stub or a.now_ms is not None) and not is_drill_root(a.root):
+        raise ReviewError("stub_or_now_only_in_drill_roots")   # a stub or backdated line on a production chain would be a discretionary change to one arm (R8)
     day = a.day or utc_day(now)
     if not COMMIT_RE.fullmatch(a.commit.lower()):
         ap.error("--commit must be the frozen git sha (7 to 40 hex chars)")
