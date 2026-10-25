@@ -32,9 +32,9 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `explored-survivor-unconfirmed` | 9 | 0 | 0 |
 | `parked` | 14 | 0 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 47 | 20 | 1 |
+| `untested` | 45 | 20 | 1 |
 | `desk-read` | 1 | 43 | 0 |
-| `explored-no-survivor` | 40 | 6 | 1 |
+| `explored-no-survivor` | 42 | 6 | 1 |
 | `dead-as-frozen` | 77 | 4 | 0 |
 | **all** | 193 | 75 | 2 |
 
@@ -135,8 +135,6 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `p25-quote-drift-completion` | Custom-pair curves whose SOL cost to complete falls with their quote asset | P25 change-capture (2026-10-24) | Counts on fast [09-09T12, 09-15T12) with public external quote prices; pump-coin parents only via the oct-pregrad-d1 role and only while the parent is on its curve (graduated-parent prices are D2/D3, sealed); 0 Helius. |
 | `p25-t22-fee-epoch-clock` | Token-2022 transfer-fee cut public epochs before it binds (DBC transfer-fee mints) | P25 change-capture (2026-10-24) | Public getMultipleAccounts / getSignaturesForAddress on the 42 configs' mints (0 Helius); priced looks only on DBC [10-17, 10-24) as disclosed exploration with QP's OK (not D1); nothing >= 2026-10-25T00Z for DBC/DAMM before the m10 read; a forward recorder after 2026-11-01T00:10Z. |
 | `p25-prestock-quote-band` | PreStock quote-leg dislocation against an external anchor | P25 change-capture (2026-10-24) | Owner's say first; then public mint/pool lists and anchor prices (GeckoTerminal), one declared day of forward gap logging; 0 Helius; any pump-side book is arena-only. |
-| `p28-callsync` | CALL-SYNC: many distinct buyers inside one 2-slot bucket on aged boosted pools | P28 new screens (2026-10-25) | Declare cs_k12 plus the not-yet-priced selector, kit fail models, drop-best-date and ex-top-3 on exploration blocks only; QP before any claim. |
-| `p28-sizeskew` | SIZE-SKEW: mean buy size >= 3x mean sell size over 30 min, both sides active | P28 new screens (2026-10-25) | Declare ss_r5 plus a depth/age selector, or test the mirror as a veto on an existing book's exploration entries; QP before any claim. |
 
 ## Owner ideas
 
@@ -401,6 +399,8 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `p20-dbc-fee-floor-clock` | DBC/DAMM v2 anti-sniper fee-expiry clock: pre-signed buy landing at the fee-scheduler or … | `explored-no-survivor` | P21 exploration screen (E1 + E2 disclosed exploration; m 26->32): config fee schedule decoded and validated (non-dynamic configs 92-95% of tape fees within 1 bp); 634 of 7,399 configs have a schedule (modes linear/exponential; no rate limiter in candidates). 2 cells, time exit 60 s / 300 s, landing expiry + 2 slots: both FAIL. Primary d9_t60: n 123, 2/10 days positive, flat … |
 | `p20-wick-bid-zero-latency` | Resting-bid wick capture: one-sided bid liquidity filled at the dump print's own price … | `explored-no-survivor` | Latency-0 upper bound DEAD (P22, 2026-10-24, declared rule): entering at the sell's post-trade state on dump-absorb D8/D15 triggers, exploration blocks explore-0814/fresh-0903/exp011-0909 (28 days), pooled net of 25 bps and 505k-lamport sends, flat 15%: D8-300 mean -0.0208 SOL/trade at 0.1 SOL (n 336,648, CI90 lo -0.0210, 0 of 28 days positive), D15-300 -0.0316 (n 87,282). … |
 | `p28-preset` | PRESET-SURGE: exact-amount app-preset buy burst | `explored-no-survivor` | Counts: exact-1e6-lamport buys are 0.088% (explore-0814) and 0.058% (fresh-0903) of 26.9M / 25.5M in-universe buys, at chance (0.1%); surge cell 15 triggers / 0. The signature is not on the tape. Killed on structure by its own declared rule (base share <= 0.2%). |
+| `p28-callsync` | CALL-SYNC: many distinct buyers inside one 2-slot bucket on aged boosted pools | `explored-no-survivor` | KILL by the declared rules. cs_k12 + price-lag selector (m <= 2%): n 2,421 over 15 UTC dates (161/day), flat15 mean -0.00549 SOL/trade (-2.19%), pressure -0.00466 (-1.86%), CI90 lo (trade) -0.00614 / -0.00525, ex-top-3 -13.5 / -11.4 SOL, 0 of 15 dates positive, median entry slip 0.77% (under the 2% kill). Controls: no selector n 4,424 flat -0.00565; complement n 2,758 flat … |
+| `p28-sizeskew` | SIZE-SKEW: mean buy size >= 3x mean sell size over 30 min, both sides active | `explored-no-survivor` | Mirror veto (<= 1/3, 30 min rolling, both sides >= 10) on hunt29 FLUSH f2, explore-0814: VETO KILLED by the share rule (flags 3,753 of 50,759 = 7.4% < 10%). Lift over a random veto at matched share is positive but tiny: flat +0.00034 SOL/trade (D CI90 lo +0.00023), pressure +0.00027 (lo +0.00018). Kept book still loses: flat -0.00658 (-2.63%), pressure -0.00555, 0 of 15 dates … |
 | `p28-glut` | GRAD-GLUT: newly boosted pools per hour as a venue-supply regime sleeve | `dead-as-frozen` | Counts: 62-155 new in-band pools per hour (p10-p90); hours at >= 2x or <= 0.5x of the trailing 24 h median are 1 of 48 (explore) and 0 of 48 (fresh), under the declared 5% bar. Killed on counts: the regime hardly varies. Any join to H5 outcomes is behind the D3 / EXP-024 Look-2 seal to 2026-11-14. |
 
 ## Duplicate rows
