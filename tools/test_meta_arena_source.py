@@ -86,6 +86,42 @@ class DedupTests(unittest.TestCase):
                              {"pumpportal", "arena"})
 
 
+class EmptyUriDedupTests(unittest.TestCase):
+    def test_empty_uri_pumpportal_does_not_claim_mint(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, _ = make(d)
+            col.multi_source = True
+            col.on_message(create_payload(uri=""), HOUR0 + 100)
+            col.on_message(create_payload(mint="MintN", uri=None), HOUR0 + 101)
+            self.assertFalse(col.store.creates_path(HK0).exists())
+            self.assertNotIn(MINT, col.seen_mints)
+            self.assertEqual(col.src_counts["empty_uri_deferred"], 2)
+            col.on_message(create_payload(), HOUR0 + 150, src="arena")
+            rows = creates_rows(col)
+            self.assertEqual([(r["mint"], r["src"], r["uri"]) for r in rows], [(MINT, "arena", URI)])
+            self.assertEqual(len(col.heap), 1)
+            self.assertNotIn("dup_arena", col.src_counts)
+
+    def test_uri_pumpportal_then_arena_still_dropped(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, _ = make(d)
+            col.multi_source = True
+            col.on_message(create_payload(), HOUR0 + 100)
+            col.on_message(create_payload(), HOUR0 + 150, src="arena")
+            self.assertEqual([r["src"] for r in creates_rows(col)], ["pumpportal"])
+            self.assertEqual(col.src_counts["dup_arena"], 1)
+            self.assertNotIn("empty_uri_deferred", col.src_counts)
+
+    def test_default_mode_empty_uri_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, _ = make(d)
+            col.on_message(create_payload(uri=""), HOUR0 + 100)
+            rows = creates_rows(col)
+            self.assertEqual(len(rows), 1)
+            self.assertNotIn("src", rows[0])
+            self.assertEqual(col.src_counts, {})
+
+
 class TailerTests(unittest.TestCase):
     def test_tail_skips_existing_then_reads_new_whole_lines_of_creates_only(self) -> None:
         with tempfile.TemporaryDirectory() as d:
