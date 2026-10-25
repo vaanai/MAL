@@ -114,6 +114,15 @@ def _clean_scalar(key: str, value: Any) -> Any:
     return None
 
 
+def tag_src(rec: dict[str, Any], row: Mapping[str, Any]) -> dict[str, Any]:
+    """Second-source rows only: carry `src` (and backfill: true) onto an attempt row. No-op in default mode."""
+    if "src" in row:
+        rec["src"] = row["src"]
+        if row["src"] == "arena-backfill":
+            rec["backfill"] = True
+    return rec
+
+
 def create_row(payload: Mapping[str, Any], t_recv_ms: int) -> dict[str, Any] | None:
     """Allowlisted create row. txType is read only to filter, never stored."""
     tx = payload.get("txType")
@@ -745,6 +754,7 @@ class Collector:
         self.multi_source = False
         self.seen_mints: set[str] = set()
         self.src_counts: dict[str, int] = {}
+        self.tx_limiter: Any = None  # meta_arena_source.RateLimiter for the create-tx lookups (second source only)
 
     def rss_ok(self) -> bool:
         if self.rss_fn() > self.max_rss_mb:
@@ -763,14 +773,14 @@ class Collector:
     def _schedule(self, row: dict[str, Any], attempt: int) -> None:
         if len(self.heap) >= self.max_pending:
             self.dropped += 1
-            self._add_meta(int(row["t_recv_ms"]), {
+            self._add_meta(int(row["t_recv_ms"]), tag_src({
                 "mint": str(row["mint"]), "attempt": attempt, "status": "dropped_backlog",
                 "t_attempt_ms": self.clock_ms(), "uri_kind": uri_kind(str(row.get("uri") or "")),
-                "gateway": None, "bytes": 0, "sha256": None,
-                **({"src": row["src"]} if "src" in row else {})}, None)
+                "gateway": None, "bytes": 0, "sha256": None}, row), None)
             return
         self.seq += 1
-        due = int(row["t_recv_ms"]) + SCHEDULE_MS[attempt]  # fixed at receive time
+        # fixed at receive time; a backfill row is scheduled from the moment it is fed (t_fed_ms), spaced like live
+        due = int(row.get("t_fed_ms", row["t_recv_ms"])) + SCHEDULE_MS[attempt]
         heapq.heappush(self.heap, (due, self.seq, attempt, row))
 
     def on_message(self, payload: Mapping[str, Any], t_recv_ms: int, src: str | None = None) -> None:
@@ -782,6 +792,9 @@ class Collector:
                 self.src_counts["dup_" + (src or "pumpportal")] = self.src_counts.get("dup_" + (src or "pumpportal"), 0) + 1
                 return
             row["src"] = src or "pumpportal"
+            if row["src"] == SRC_BACKFILL:
+                row["backfill"] = True
+                row["t_fed_ms"] = self.clock_ms()
         if not self.store.add_create(row):
             return
         if self.multi_source:
@@ -884,10 +897,10 @@ class Collector:
             rec["img_status"] = status
             self._add_meta(int(row["t_recv_ms"]), rec, None)
             return
-        stored = self._add_meta(int(row["t_recv_ms"]), {
+        stored = self._add_meta(int(row["t_recv_ms"]), tag_src({
             "mint": str(row["mint"]), "attempt": attempt, "scheduled_ms": due,
             "t_attempt_ms": self.clock_ms(), "uri_kind": uri_kind(str(row.get("uri") or "")),
-            "gateway": None, "status": status, "bytes": 0, "sha256": None}, None)
+            "gateway": None, "status": status, "bytes": 0, "sha256": None}, row), None)
         if stored and schedule and attempt + 1 < len(SCHEDULE_MS):
             self._schedule(row, attempt + 1)
 
@@ -951,8 +964,7 @@ class Collector:
                                "t_attempt_ms": self.clock_ms(), "uri_kind": uri_kind(uri),
                                **ipf.host_fields(ipf.classify_uri(uri)),
                                "gateway": None, "status": "http_0", "bytes": 0, "sha256": None}
-        if "src" in row:
-            rec["src"] = row["src"]
+        tag_src(rec, row)
         png: bytes | None = None
         self.inflight_rec[(mint, attempt)] = rec
         status, body, gateway, wait_ms, refused = await self._fetch(uri, MAX_JSON_BYTES)
@@ -1191,7 +1203,12 @@ async def run(ws_url: str, col: Collector, stop: asyncio.Event, duration_s: floa
 
 ARENA_POLL_S = 2.0
 ARENA_RESOLVE_CONCURRENCY = 4
-ARENA_RESOLVE_TRIES = 3
+ARENA_RETRY_DELAYS_S = (2.0, 5.0, 10.0, 15.0, 30.0)  # live: a not-yet-visible tx is retried over ~62 s, with backoff
+ARENA_RESOLVE_TRIES = len(ARENA_RETRY_DELAYS_S) + 1
+TX_RPS_LIVE = 5.0
+TX_RPS_BACKFILL = 2.0
+BACKFILL_FLOOR = "2026-10-25T00"   # --from may not be earlier (QP-RULING-1025-meta-arena)
+BACKFILL_CLOSE_MARGIN_MS = 300_000  # an hour counts as closed 5 min after it ends
 SRC_ARENA = "arena"
 SRC_BACKFILL = "arena-backfill"
 
@@ -1205,7 +1222,10 @@ async def _resolve_and_feed(col: Collector, payload: dict[str, Any], t_ms: int, 
         return True
     async with sem:
         try:
-            uri = await asyncio.to_thread(resolver, sig)
+            if col.tx_limiter is not None:
+                await col.tx_limiter.acquire()
+            from tools import meta_arena_source as mas
+            uri = await asyncio.get_running_loop().run_in_executor(mas.resolver_pool(), resolver, sig)
         except Exception as exc:  # noqa: BLE001 - class name only: the exception text can carry the lookup URL
             name = "resolve_" + type(exc).__name__
             col.store.error_counts[name] = col.store.error_counts.get(name, 0) + 1
@@ -1221,7 +1241,7 @@ async def arena_loop(col: Collector, tailer: Any, resolver: Callable[[str], str 
                      poll_s: float = ARENA_POLL_S) -> None:
     """Live second source. Any failure here is counted by type and retried; it never touches the websocket task."""
     sem = asyncio.Semaphore(ARENA_RESOLVE_CONCURRENCY)
-    retry: dict[str, tuple[dict[str, Any], int, int]] = {}
+    retry: dict[str, tuple[dict[str, Any], int, int, float]] = {}
     while not done():
         try:
             await arena_round(col, tailer, resolver, sem, retry)
@@ -1232,18 +1252,21 @@ async def arena_loop(col: Collector, tailer: Any, resolver: Callable[[str], str 
 
 
 async def arena_round(col: Collector, tailer: Any, resolver: Callable[[str], str | None], sem: asyncio.Semaphore,
-                      retry: dict[str, tuple[dict[str, Any], int, int]]) -> None:
+                      retry: dict[str, tuple[dict[str, Any], int, int, float]],
+                      now: Callable[[], float] = time.monotonic) -> None:
+    """One poll + the lookups that are due. A failed lookup is retried after ARENA_RETRY_DELAYS_S[n] (backoff)."""
     for payload, t_ms in tailer.poll():
         if payload["mint"] not in col.seen_mints:
-            retry.setdefault(payload["mint"], (payload, t_ms, 0))
-    items = list(retry.items())
+            retry.setdefault(payload["mint"], (payload, t_ms, 0, 0.0))
+    t_now = now()
+    items = [(m, v) for m, v in retry.items() if v[3] <= t_now]
     results = await asyncio.gather(*(
-        _resolve_and_feed(col, p, t, resolver, sem, SRC_ARENA) for _m, (p, t, _n) in items))
-    for (mint, (p, t, n)), ok in zip(items, results):
+        _resolve_and_feed(col, p, t, resolver, sem, SRC_ARENA) for _m, (p, t, _n, _d) in items))
+    for (mint, (p, t, n, _d)), ok in zip(items, results):
         if ok or n + 1 >= ARENA_RESOLVE_TRIES:
             retry.pop(mint, None)
         else:
-            retry[mint] = (p, t, n + 1)
+            retry[mint] = (p, t, n + 1, now() + ARENA_RETRY_DELAYS_S[n])
 
 
 # --------------------------------------------------------------- backfill
@@ -1303,9 +1326,8 @@ async def backfill_run(col: Collector, tape_dir: Path, hours: list[str], main_ou
     and concurrency caps as a live run. Returns counts."""
     from tools import meta_arena_source as mas
     stop = stop or asyncio.Event()
-    open_hour = hour_key(now_ms)
-    if any(h >= open_hour for h in hours):
-        raise ValueError("backfill range includes the open hour; use closed hours only")
+    if any(hour_start_ms(h) + 3_600_000 + BACKFILL_CLOSE_MARGIN_MS > now_ms for h in hours):
+        raise ValueError("backfill range includes an hour that closed less than 5 min ago; use closed hours only")
     col.multi_source = True
     col.seen_mints |= existing_mints([main_out, col.store.out], hours)
     counts = {"rows": 0, "skipped_existing": 0, "fed": 0, "unresolved": 0}
@@ -1328,10 +1350,12 @@ async def backfill_run(col: Collector, tape_dir: Path, hours: list[str], main_ou
                 while len(col.heap) >= BACKFILL_MAX_QUEUE and not done():
                     await asyncio.sleep(0.2)
                 ok = False
-                for _ in range(ARENA_RESOLVE_TRIES):
+                for n in range(ARENA_RESOLVE_TRIES):
                     if await _resolve_and_feed(col, payload, t_ms, resolver, sem, SRC_BACKFILL):
                         ok = True
                         break
+                    if n < len(ARENA_RETRY_DELAYS_S):
+                        await asyncio.sleep(ARENA_RETRY_DELAYS_S[n])  # backoff, never a back-to-back retry
                 counts["fed" if ok else "unresolved"] += 1
         while (col.heap or col.inflight_rec) and not done():
             await asyncio.sleep(0.2)
@@ -1376,6 +1400,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--to", dest="to_hour", default=None, help="backfill end hour YYYY-MM-DDTHH (exclusive, must be closed)")
     p.add_argument("--tx-url-env", default=None,
                    help="NAME of an env var holding the https URL used to read the create tx; the URL is never printed")
+    p.add_argument("--tx-rps", type=float, default=None,
+                   help="rate limit of the create-tx lookups (default 5 live, 2 backfill)")
     p.add_argument("--max-rss-mb", type=float, default=1500)
     p.add_argument("--min-free-gb", type=float, default=50)
     p.add_argument("--duration-s", type=float, default=None)
@@ -1396,6 +1422,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         from tools import meta_arena_source as mas
         try:
+            mas.check_tape_dir(args.arena_tape_dir)  # first: before the lock, the dir listing or any read
             mas.resolver_from_env(args.tx_url_env)  # validates only; the URL is never printed
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
@@ -1405,7 +1432,11 @@ def main(argv: list[str] | None = None) -> int:
             print("--backfill-from-arena needs --from and --to", file=sys.stderr)
             return 2
         try:
-            hours_between(args.from_hour, args.to_hour)
+            hours = hours_between(args.from_hour, args.to_hour)
+            if args.from_hour < BACKFILL_FLOOR:
+                raise ValueError(f"--from may not be earlier than {BACKFILL_FLOOR}")
+            if hours and hour_start_ms(hours[-1]) + 3_600_000 + BACKFILL_CLOSE_MARGIN_MS > time.time() * 1000:
+                raise ValueError("--to: the last hour must have closed at least 5 minutes ago")
         except ValueError as exc:
             print(str(exc), file=sys.stderr)
             return 2
@@ -1467,6 +1498,7 @@ def _main_locked(args: argparse.Namespace) -> int:
     if args.arena_tape_dir:
         from tools import meta_arena_source as mas
         arena = (mas.Tailer(args.arena_tape_dir), mas.resolver_from_env(args.tx_url_env))
+        col.tx_limiter = mas.RateLimiter(args.tx_rps if args.tx_rps is not None else TX_RPS_LIVE)
     try:
         return loop.run_until_complete(run(args.ws_url, col, stop, args.duration_s, arena=arena))
     finally:
@@ -1493,6 +1525,7 @@ def _main_backfill(args: argparse.Namespace, bdir: Path) -> int:
     if not col.disk_ok():
         print("min-free-gb guard: refusing to start", file=sys.stderr)
         return 2
+    col.tx_limiter = mas.RateLimiter(args.tx_rps if args.tx_rps is not None else TX_RPS_BACKFILL)
     loop = asyncio.new_event_loop()
     stop = asyncio.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):

@@ -14,8 +14,11 @@ from __future__ import annotations
 
 import base64
 import json
+import asyncio
 import logging
 import os
+import time
+from concurrent.futures import ThreadPoolExecutor
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Iterator
@@ -24,10 +27,60 @@ from tools.pump_history_backfill import _CREATE_DISC, _read_string
 
 log = logging.getLogger("mal.meta_arena")
 
+# Path guard (QP-RULING-1025-meta-arena C1). Mirrors tools/change_radar.py FORBIDDEN_PATH_TOKENS plus sealed/smoke dirs.
+FORBIDDEN_PATH_TOKENS = ("holdout", "fwdv1", "shadow", "probe", "sealed", "ledger", "bots.json", "backfill",
+                         "hv4", "q50", "decision", "score",
+                         "_shakedown", "smoke", "haiku-v4", "haiku_v4")
+ALLOWED_TAPE_DIRS = ("/data/mal/arena/tape",)  # exactly the live tape dir; nothing else is accepted
+
+
+def check_tape_dir(path: str | Path) -> Path:
+    """Refuse any dir whose raw or resolved path holds a forbidden token, then accept only the allowlisted live tape dir."""
+    raw = str(path).lower()
+    resolved = os.path.realpath(str(path))
+    for tok in FORBIDDEN_PATH_TOKENS:
+        if tok in raw or tok in resolved.lower():
+            raise ValueError(f"--arena-tape-dir refused (path contains '{tok}')")
+    if os.path.normpath(str(path)) not in ALLOWED_TAPE_DIRS or resolved not in ALLOWED_TAPE_DIRS:
+        raise ValueError("--arena-tape-dir refused (only the live tape dir /data/mal/arena/tape is allowed)")
+    return Path(path)
+
+
+class TxLookupError(Exception):
+    """The lookup endpoint answered with a JSON-RPC error body (e.g. a rate limit inside HTTP 200): transient."""
+
+
+class RateLimiter:
+    """Token bucket for the lookup calls (burst 1)."""
+
+    def __init__(self, rps: float, clock=time.monotonic) -> None:
+        self.interval = 1.0 / rps if rps > 0 else 0.0
+        self.clock, self.next_t = clock, 0.0
+
+    async def acquire(self) -> None:
+        if not self.interval:
+            return
+        now = self.clock()
+        wait = max(0.0, self.next_t - now)
+        self.next_t = max(now, self.next_t) + self.interval
+        if wait:
+            await asyncio.sleep(wait)
+
+
+_POOL: ThreadPoolExecutor | None = None
+
+
+def resolver_pool() -> ThreadPoolExecutor:
+    """The resolver's own thread pool, so lookups never take the loop's default executor from other work."""
+    global _POOL
+    if _POOL is None:
+        _POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="tx-resolve")
+    return _POOL
+
 
 def hour_files(tape_dir: Path, hours: list[str] | None = None) -> list[Path]:
     """Plain tape-<hour>.jsonl files (sorted); with `hours`, only those hours, and .jsonl.zst is accepted too."""
-    out: list[Path] = []
+    out: dict[str, Path] = {}
     for p in sorted(tape_dir.glob("tape-*.jsonl*")):
         name = p.name
         if name.endswith(".tmp"):
@@ -38,8 +91,9 @@ def hour_files(tape_dir: Path, hours: list[str] | None = None) -> list[Path]:
                 continue
         elif not name.endswith(".jsonl"):
             continue
-        out.append(p)
-    return out
+        if hk not in out or name.endswith(".zst"):  # both present for an hour: read only the .zst
+            out[hk] = p
+    return [out[k] for k in sorted(out)]
 
 
 def create_payload(line: str) -> tuple[dict[str, Any], int] | None:
@@ -151,6 +205,8 @@ def make_rpc_resolver(rpc_url: str, timeout: float = 15.0) -> Callable[[str], st
         req = urllib.request.Request(rpc_url, data=body, headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310 - https URL from the operator's env
             doc = json.loads(resp.read(4_000_000))
+        if isinstance(doc, dict) and doc.get("error") is not None:
+            raise TxLookupError("rpc_error")  # a rate limit inside a 200 response is transient, not "no URI"
         res = doc.get("result") if isinstance(doc, dict) else None
         logs = ((res or {}).get("meta") or {}).get("logMessages") or []
         return uri_from_logs(logs)

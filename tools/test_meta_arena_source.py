@@ -132,11 +132,15 @@ class FailoverTests(unittest.TestCase):
                 fh.write(tape_row("A1", HOUR0 + 10))
             sem = asyncio.Semaphore(2)
             retry: dict = {}
-            run(mc.arena_round(col, tailer, flaky, sem, retry))
+            now = {"t": 100.0}
+            run(mc.arena_round(col, tailer, flaky, sem, retry, now=lambda: now["t"]))
             self.assertEqual(col.store.error_counts, {"resolve_OSError": 1})   # type only, never the message
             self.assertIn("A1", retry)
             col.on_message(create_payload(), HOUR0 + 20)                        # the websocket source still works meanwhile
-            run(mc.arena_round(col, tailer, flaky, sem, retry))
+            run(mc.arena_round(col, tailer, flaky, sem, retry, now=lambda: now["t"]))
+            self.assertEqual(len(calls), 1)                                     # backoff: no immediate retry
+            now["t"] += mc.ARENA_RETRY_DELAYS_S[0] + 0.1
+            run(mc.arena_round(col, tailer, flaky, sem, retry, now=lambda: now["t"]))
             self.assertNotIn("A1", retry)
             self.assertEqual({r["mint"]: r["src"] for r in creates_rows(col)}, {MINT: "pumpportal", "A1": "arena"})
 
@@ -212,6 +216,12 @@ class BackfillTests(unittest.TestCase):
 
 
 class BackfillLockTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._p = None
+
+    def _allow(self, tape: Path):
+        return unittest.mock.patch.object(mas, "ALLOWED_TAPE_DIRS", (os.path.realpath(tape),))
+
     def _argv(self, out: Path, tape: Path, frm: str, to: str) -> list[str]:
         return ["--out", str(out), "--arena-tape-dir", str(tape), "--backfill-from-arena", "--from", frm, "--to", to,
                 "--tx-url-env", "TEST_TX_URL"]
@@ -222,7 +232,8 @@ class BackfillLockTests(unittest.TestCase):
             tape.mkdir()
             fd = mc.acquire_single_instance(out / mc.BACKFILL_SUBDIR)
             try:
-                self.assertEqual(mc.main(self._argv(out, tape, HK0, mc.hour_key(HOUR0 + 3_600_000))), mc.EXIT_LOCKED)
+                with self._allow(tape):
+                    self.assertEqual(mc.main(self._argv(out, tape, "2026-10-25T00", "2026-10-25T01")), mc.EXIT_LOCKED)
             finally:
                 os.close(fd)
 
@@ -234,7 +245,8 @@ class BackfillLockTests(unittest.TestCase):
             tape.mkdir()
             live = mc.acquire_single_instance(out)
             try:
-                self.assertEqual(mc.main(self._argv(out, tape, HK0, HK0)), 0)
+                with self._allow(tape):
+                    self.assertEqual(mc.main(self._argv(out, tape, "2026-10-25T00", "2026-10-25T00")), 0)
                 self.assertTrue((out / mc.BACKFILL_SUBDIR / ".lock").exists())
                 self.assertFalse((out / "creates").exists())
             finally:
@@ -245,9 +257,156 @@ class BackfillLockTests(unittest.TestCase):
             out, tape = Path(d) / "out", Path(d) / "tape"
             tape.mkdir()
             os.environ.pop("TEST_TX_URL", None)
-            self.assertEqual(mc.main(self._argv(out, tape, HK0, HK0)), 2)
+            with self._allow(tape):
+                self.assertEqual(mc.main(self._argv(out, tape, "2026-10-25T00", "2026-10-25T00")), 2)
             with unittest.mock.patch.dict("sys.modules", {"websockets": unittest.mock.MagicMock()}):
                 self.assertEqual(mc.main(["--out", str(out), "--arena-tape-dir", str(tape), "--tx-url-env", "X"]), 2)
+
+
+class GuardTests(unittest.TestCase):
+    def test_forbidden_tokens_and_non_allowlisted_dirs_refused(self) -> None:
+        for bad in ("/data/mal/arena/haiku-v4", "/data/mal/arena/ledger/tape", "/data/mal/arena/tape_shakedown",
+                    "/data/mal/arena/smoke", "/data/mal/arena/shadow/tape", "/x/fwdv1", "/x/holdout/tape", "/data/mal/arena/tape-copy",
+                    "/data/mal/arena", "/tmp"):
+            with self.assertRaises(ValueError, msg=bad):
+                mas.check_tape_dir(bad)
+        self.assertEqual(mas.check_tape_dir("/data/mal/arena/tape"), Path("/data/mal/arena/tape"))
+
+    def test_resolved_symlink_is_checked(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            real = Path(d) / "ledger"
+            real.mkdir()
+            link = Path(d) / "plain"
+            link.symlink_to(real)
+            with unittest.mock.patch.object(mas, "ALLOWED_TAPE_DIRS", (str(link),)):
+                with self.assertRaises(ValueError):
+                    mas.check_tape_dir(link)
+
+    def test_cli_refuses_before_any_read(self) -> None:
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"TEST_TX_URL": "https://example.invalid"}):
+            tape = Path(d) / "tape"
+            tape.mkdir()
+            out = Path(d) / "out"
+            argv = ["--out", str(out), "--arena-tape-dir", str(tape), "--tx-url-env", "TEST_TX_URL"]
+            self.assertEqual(mc.main(argv), 2)           # not allowlisted
+            self.assertFalse(out.exists())               # nothing created, no lock
+
+
+class BackfillRangeTests(unittest.TestCase):
+    def _run(self, frm: str, to: str) -> int:
+        with tempfile.TemporaryDirectory() as d, unittest.mock.patch.dict(os.environ, {"TEST_TX_URL": "https://example.invalid"}):
+            tape = Path(d) / "tape"
+            tape.mkdir()
+            out = Path(d) / "out"
+            with unittest.mock.patch.object(mas, "ALLOWED_TAPE_DIRS", (os.path.realpath(tape),)):
+                rc = mc.main(["--out", str(out), "--arena-tape-dir", str(tape), "--backfill-from-arena", "--from", frm,
+                              "--to", to, "--tx-url-env", "TEST_TX_URL"])
+            self.assertFalse((out / mc.BACKFILL_SUBDIR / ".lock").exists() and rc == 2, "no lock before a refused range")
+            return rc
+
+    def test_from_before_floor_refused(self) -> None:
+        self.assertEqual(mc.BACKFILL_FLOOR, "2026-10-25T00")
+        self.assertEqual(self._run("2026-10-24T23", "2026-10-25T01"), 2)
+
+    def test_open_or_just_closed_hour_refused_cleanly(self) -> None:
+        self.assertEqual(self._run("2026-10-25T00", "2099-01-01T00"), 2)
+
+    def test_floor_hour_accepted(self) -> None:
+        self.assertEqual(self._run("2026-10-25T00", "2026-10-25T00"), 0)
+
+
+class BackfillRowsTests(unittest.TestCase):
+    def test_failed_rows_carry_src_and_backfill_and_schedule_is_from_feed_time(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, clock = make(d, clock=Clock(HOUR0 + 2 * 3_600_000))        # every gateway fails
+            col.store = mc.BackfillStore(Path(d) / "bf", "g")
+            col.on_message(create_payload(), HOUR0 + 100, src="arena-backfill") if False else None
+            col.multi_source = True
+            col.on_message(create_payload(), HOUR0 + 100, src="arena-backfill")
+            row = json.loads(col.store.creates_path(HK0).read_text().splitlines()[0])
+            self.assertTrue(row["backfill"])
+            self.assertEqual(row["t_fed_ms"], HOUR0 + 2 * 3_600_000)
+            self.assertEqual(col.heap[0][0], HOUR0 + 2 * 3_600_000)         # due from feed time, not the old receive time
+            run(col.step())
+            self.assertEqual(col.heap[0][0], HOUR0 + 2 * 3_600_000 + 30_000)  # next attempt +30 s, like live
+            m = [json.loads(x) for x in col.store.meta_path(HK0).read_text().splitlines()]
+            self.assertTrue(all(r["src"] == "arena-backfill" and r["backfill"] is True for r in m))
+            self.assertNotEqual(m[0]["status"], "ok")
+
+    def test_default_failed_rows_have_no_src(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, _ = make(d)
+            col.on_message(create_payload(), HOUR0 + 100)
+            run(col.step())
+            for x in col.store.meta_path(HK0).read_text().splitlines():
+                self.assertNotIn("src", json.loads(x))
+
+
+class ResolverTests(unittest.TestCase):
+    def _fake(self, body: dict):
+        class R:
+            def __enter__(s): return s
+            def __exit__(s, *a): return False
+            def read(s, n): return json.dumps(body).encode()
+        return unittest.mock.patch("urllib.request.urlopen", lambda *a, **k: R())
+
+    def test_jsonrpc_error_in_200_is_transient_not_no_uri(self) -> None:
+        r = mas.make_rpc_resolver("https://example.invalid")
+        with self._fake({"error": {"code": 429, "message": "rate limited"}}):
+            with self.assertRaises(mas.TxLookupError):
+                r("sig")
+        with self._fake({"result": None}):
+            self.assertIsNone(r("sig"))
+
+    def test_error_body_backs_off_in_live_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            col, _ = make(d)
+            col.multi_source = True
+            calls = []
+
+            def res(sig):
+                calls.append(sig)
+                raise mas.TxLookupError("rpc_error")
+            retry = {"M": ({"mint": "M", "signature": "s"}, HOUR0, 0, 0.0)}
+
+            class T:
+                def poll(self): return []
+            run(mc.arena_round(col, T(), res, asyncio.Semaphore(1), retry, now=lambda: 10.0))
+            run(mc.arena_round(col, T(), res, asyncio.Semaphore(1), retry, now=lambda: 10.5))
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(col.store.error_counts, {"resolve_TxLookupError": 1})
+            self.assertGreater(retry["M"][3], 10.5)
+
+    def test_live_retry_window_is_about_a_minute(self) -> None:
+        self.assertGreaterEqual(sum(mc.ARENA_RETRY_DELAYS_S), 60)
+
+    def test_rate_limiter_spaces_calls(self) -> None:
+        slept = []
+        clock = {"t": 0.0}
+
+        async def fake_sleep(x):
+            slept.append(x)
+            clock["t"] += x
+        lim = mas.RateLimiter(2.0, clock=lambda: clock["t"])
+        with unittest.mock.patch.object(mas.asyncio, "sleep", fake_sleep):
+            async def go():
+                for _ in range(3):
+                    await lim.acquire()
+            run(go())
+        self.assertEqual(slept, [0.5, 0.5])
+
+    def test_resolver_uses_its_own_pool(self) -> None:
+        self.assertIsNot(mas.resolver_pool(), None)
+        self.assertTrue(mas.resolver_pool()._thread_name_prefix.startswith("tx-resolve"))
+
+
+class HourFilesTests(unittest.TestCase):
+    def test_zst_preferred_when_both_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            tape = Path(d)
+            (tape / f"tape-{HK0}.jsonl").write_text("")
+            (tape / f"tape-{HK0}.jsonl.zst").write_bytes(b"")
+            self.assertEqual([p.name for p in mas.hour_files(tape, [HK0])], [f"tape-{HK0}.jsonl.zst"])
 
 
 if __name__ == "__main__":
