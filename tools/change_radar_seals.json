@@ -1,7 +1,21 @@
 {
   "schema": "change_radar_seals.v1",
-  "note": "Pinned sealed windows for the change radar's tape counts (QP verdict on PR #889, 2026-10-24, relayed by manager15). A UTC day of a source that overlaps any window here is never counted, now or later: no hour file of it is opened and no record of it is written. disabled_until: the source is not touched at all before that instant (none set). Times are [start, end) UTC. Changes to this file go through the manager and QP. 2026-10-25: the two FLOOR arena windows and the arena disable until 2026-10-27T21:00:00Z were dropped under QP-RULING-1025-seal-lift item (2d) (sha256 b04a57eb4bd05c168eaf0f52e90a38c91b2663a4d418d6bf958fcdbabe14aa52; L0 notebook n_cuTE-bRvYIfCWA, 2026-10-25T12:18:48Z). Remaining: DBC forward window, LaunchLab holdout. The 10-19..10-23 smoke counts are never a baseline (r5).",
+  "note": "Pinned sealed windows for the change radar's tape counts (QP verdict on PR #889, 2026-10-24, relayed by manager15). A UTC day of a source that overlaps any window here is never counted, now or later: no hour file of it is opened and no record of it is written. disabled_until: the source is not touched at all before that instant (none set). Times are [start, end) UTC. Changes to this file go through the manager and QP. 2026-10-25: the two FLOOR arena windows and the arena disable until 2026-10-27T21:00:00Z were dropped under QP-RULING-1025-seal-lift item (2d) (sha256 b04a57eb4bd05c168eaf0f52e90a38c91b2663a4d418d6bf958fcdbabe14aa52; L0 notebook n_cuTE-bRvYIfCWA, 2026-10-25T12:18:48Z). Remaining: DBC forward window, LaunchLab holdout. The 10-19..10-23 smoke counts are never a baseline (r5). 2026-10-25 (claude/floor-revival-long-h, DEC-031 Amendment 15 item 9, QP-RULING-1025-seal-lift (3) f3): two arena windows are added for the FLOOR revival (draft, effective on merge): the fresh P0 days plus the gap/DR1 evidence and slip windows of the two possible clocks. They may only be shortened after the revival's G1.",
   "seals": [
+    {
+      "source": "arena",
+      "start": "2026-10-25T18:30:00Z",
+      "end": "2026-11-02T00:00:00Z",
+      "owner": "FLOOR revival (Am.15) window A: P0 days d+1..d+3 and evidence/slip windows of clocks 2026-10-31 / 2026-11-01",
+      "ref": "QP-RULING-1025-seal-lift (3) f3; DEC-031 Am.15 item 9"
+    },
+    {
+      "source": "arena",
+      "start": "2026-11-04T21:00:00Z",
+      "end": "2026-11-09T21:00:00Z",
+      "owner": "FLOOR revival (Am.15) window B: evidence/slip windows of clocks 2026-11-08 / 2026-11-09",
+      "ref": "QP-RULING-1025-seal-lift (3) f3; DEC-031 Am.15 item 9"
+    },
     {
       "source": "venue:meteora_dbc",
       "start": "2026-10-25T00:00:00Z",
