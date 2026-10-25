@@ -1,0 +1,329 @@
+"""Offline tests for tools/hv4_live_c0.py and its wiring in tools/arena_live_bridge.py. Synthetic fixtures only: no HV4 ledger, decision row, bots.json
+or job log is read, no network, no key."""
+
+from __future__ import annotations
+
+import unittest
+from pathlib import Path
+
+from tools import arena_live_bridge as alb
+from tools import hv4_arms
+from tools import hv4_live_c0 as c0
+from tools.test_arena_live_bridge import Env, StubPort, TmpCase, T0
+
+ARM = "hv4-CON-X"
+FUNDED = 600_000_000
+
+
+def raw(**over):
+    return {"profile": c0.PROFILE, "funded_lamports": FUNDED, **over}
+
+
+class Hv4Env(Env):
+    """Env whose bot_id is an HV4 F/X arm and whose config carries the C0 profile."""
+
+    def __init__(self, tmp, live=False, bot=ARM, **over):
+        super().__init__(tmp, live=live, **{"bot_id": bot, "profile": c0.PROFILE, "funded_lamports": FUNDED, **over})
+        self.bot = bot
+        self.declog_bot = bot
+
+    def row(self, body, ms=None):
+        return self.declog.append(self.bot, self.clock.t - 100 if ms is None else ms, body)
+
+    def entry_sz(self, oid, pool="P1", stake_sol=0.05, size=None):
+        b = {"kind": "entry", "order_id": oid, "pool": pool, "meta": {}, "decision_slot": 1000, "stake_sol": stake_sol, "attempt_key": None}
+        if size is not None:
+            b["size"] = size
+        return self.row(b)
+
+    def start(self, sha="a" * 64):
+        self.row({"kind": "start", "binding": "b", "frozen_sha": sha, "rules": [self.bot]})
+
+
+class ConstantTests(unittest.TestCase):
+    def test_table_matches_dec032_c0(self):
+        self.assertEqual(c0.C0_LIMITS, {"stake_lamports": 50_000_000, "max_open": 2, "max_trades_per_day": 30,
+                                        "daily_loss_lamports": 100_000_000, "total_loss_lamports": 200_000_000})
+        self.assertEqual((c0.FUNDED_MIN_LAMPORTS, c0.FUNDED_MAX_LAMPORTS), (350_000_000, 1_000_000_000))
+        self.assertEqual(c0.TIER_NAME, "T1")
+        self.assertIsNone(c0.guard_problem())
+
+    def test_sizes_mirror_hv4_arms(self):
+        self.assertEqual(c0.HV4_SIZES, tuple(hv4_arms.SIZES))
+
+    def test_pin_equals_executor_default(self):
+        try:
+            from tools import h5_executor as h5
+        except ModuleNotFoundError as e:  # solders is not installed in every checkout
+            self.skipTest(str(e))
+        d = h5.H5_DEFAULT
+        self.assertEqual((c0.PRIORITY_PIN["buy"], c0.PRIORITY_PIN["sell"], c0.PRIORITY_PIN["escalated"]),
+                         (d["buy_priority_lamports"], d["sell_priority_lamports"], d["escalated_priority_lamports"]))
+
+    def test_reserve_sums(self):
+        self.assertEqual(c0.TRIP_FEE_RESERVE_LAMPORTS, 60_000 + 155_000)
+        self.assertEqual(c0.SELL_FEE_RESERVE_LAMPORTS, 155_000)
+        self.assertLess(c0.TRIP_FEE_RESERVE_LAMPORTS, alb.FEE_RESERVE_LAMPORTS)  # the old 500,000-priority reserve was 1,010,000
+
+    def test_guard_trips_on_loosened_constant(self):
+        old = dict(c0.C0_LIMITS)
+        try:
+            c0.C0_LIMITS["stake_lamports"] = 50_000_001
+            self.assertEqual(c0.guard_problem(), "c0_guard:stake_lamports")
+            c0.C0_LIMITS.update(old)
+            c0.C0_LIMITS["total_loss_lamports"] = 200_000_001
+            self.assertEqual(c0.guard_problem(), "c0_guard:total_loss_lamports")
+            c0.C0_LIMITS.update(old)
+            c0.C0_LIMITS["daily_loss_lamports"] = 200_000_000
+            c0.C0_LIMITS["total_loss_lamports"] = 150_000_000
+            self.assertIsNotNone(c0.guard_problem())
+        finally:
+            c0.C0_LIMITS.update(old)
+
+
+class RefusalTests(unittest.TestCase):
+    def test_arms(self):
+        for ok in ("hv4-CON-F", "hv4-BIG-X", "hv4-CON-X"):
+            self.assertIsNone(c0.arm_refusal(ok), ok)
+        for name in hv4_arms.ARMS:  # every registered arm name (code constants only): refused exactly when its role is not F or X
+            self.assertEqual(c0.arm_refusal("hv4-" + name) is None, name.endswith(("-F", "-X")), name)
+        for bad in ("hv4-CON-L", "hv4-BIG-L", "hv4-CON-P", "hv4-BIG-R", "hv4-CON-R"):
+            self.assertEqual(c0.arm_refusal(bad), "arm_not_canary_candidate", bad)
+        self.assertEqual(c0.arm_refusal("bot-x"), "arm_not_hv4")
+        self.assertEqual(c0.arm_refusal("hv4-CON-Q"), "arm_not_f_or_x")
+        self.assertEqual(c0.arm_refusal(None), "arm_not_hv4")
+
+    def test_funded_range_edges(self):
+        self.assertIsNone(c0.funded_refusal(350_000_000))
+        self.assertIsNone(c0.funded_refusal(1_000_000_000))
+        self.assertEqual(c0.funded_refusal(349_999_999), "funded_lamports_out_of_range")
+        self.assertEqual(c0.funded_refusal(1_000_000_001), "funded_lamports_out_of_range")
+        self.assertEqual(c0.funded_refusal(None), "funded_lamports_missing")
+        self.assertEqual(c0.funded_refusal(True), "funded_lamports_out_of_range")
+        self.assertEqual(c0.funded_refusal(5e8), "funded_lamports_out_of_range")
+
+    def test_floor(self):
+        self.assertEqual(c0.wallet_floor_lamports(350_000_000), 100_000_000)
+        self.assertEqual(c0.wallet_floor_lamports(1_000_000_000), 750_000_000)
+        self.assertEqual(c0.wallet_floor_lamports(600_000_000, 500_000_000), 500_000_000)  # raise only
+        self.assertEqual(c0.wallet_floor_lamports(600_000_000, 1), 350_000_000)  # never lowered
+        self.assertGreaterEqual(c0.wallet_floor_lamports(300_000_000), c0.MIN_WALLET_FLOOR_LAMPORTS)
+
+    def test_fee_pin(self):
+        base = {"bot_id": "hv4-CON-F", "funded_lamports": FUNDED}
+        self.assertIsNone(c0.config_refusal(base, live=True))
+        self.assertIsNone(c0.config_refusal({**base, "priority_pin": dict(c0.PRIORITY_PIN)}, live=True))
+        self.assertIsNone(c0.config_refusal({**base, "buy_priority_lamports": 55_000}, live=True))
+        p155 = {"profile": "p155", "buy": 155_000, "sell": 155_000, "escalated": 155_000}
+        self.assertEqual(c0.config_refusal({**base, "priority_pin": p155}, live=True), "priority_pin_mismatch")
+        self.assertEqual(c0.config_refusal({**base, "priority_pin": {**c0.PRIORITY_PIN, "buy": 55_001}}, live=True), "priority_pin_mismatch")
+        self.assertEqual(c0.config_refusal({**base, "buy_priority_lamports": 500_000}, live=True), "buy_priority_lamports_not_pin")
+        self.assertEqual(c0.config_refusal({**base, "priority_lamports": 500_000}, live=True), "priority_lamports_not_pin")
+        self.assertEqual(c0.config_refusal({**base, "sell_priority_lamports": 55_000}, live=True), "sell_priority_lamports_not_configurable")
+        self.assertEqual(c0.config_refusal({**base, "escalated_priority_lamports": 150_000}, live=True), "escalated_priority_lamports_not_configurable")
+
+    def test_funded_required_when_live(self):
+        self.assertEqual(c0.config_refusal({"bot_id": "hv4-CON-X"}, live=True), "funded_lamports_missing")
+        self.assertIsNone(c0.config_refusal({"bot_id": "hv4-CON-X"}, live=False))
+
+    def test_live_ok_names_bot(self):
+        self.assertIsNone(c0.live_ok_problem("hv4-CON-F\n", "hv4-CON-F"))
+        self.assertEqual(c0.live_ok_problem("hv4-CON-X\n", "hv4-CON-F"), "live_ok_other_book")
+        self.assertEqual(c0.live_ok_problem("hv4-CON-F\nextra\n", "hv4-CON-F"), "live_ok_other_book")
+        self.assertEqual(c0.live_ok_problem("", "hv4-CON-F"), "live_ok_other_book")
+
+
+class StakeTests(unittest.TestCase):
+    def test_size_mapping_all_sizes(self):
+        for size in hv4_arms.SIZES:
+            s, rec = c0.c0_stake({"stake_sol": size, "size": size})
+            self.assertEqual(s, min(int(size * 1e9), 50_000_000), size)
+            self.assertEqual(rec["twin_stake_lamports"], s)
+        s, rec = c0.c0_stake({"stake_sol": 0.25, "size": 0.25})
+        self.assertEqual(s, 50_000_000)
+        self.assertTrue(rec["clamped"])
+
+    def test_edges_at_cap_and_one_over(self):
+        s, rec = c0.c0_stake({"stake_sol": 0.05})
+        self.assertEqual((s, rec["clamped"]), (50_000_000, False))
+        s, rec = c0.c0_stake({"stake_sol": 0.050000001})
+        self.assertEqual((s, rec["clamped"]), (50_000_000, True))
+        s, _ = c0.c0_stake({"stake_sol": 0.049999999})
+        self.assertEqual(s, 49_999_999)
+
+    def test_smaller_card_stake_is_kept(self):
+        s, rec = c0.c0_stake({"stake_sol": 0.01, "size": 0.25})
+        self.assertEqual(s, 10_000_000)
+
+    def test_cap_argument_only_tightens(self):
+        self.assertEqual(c0.c0_stake({"stake_sol": 0.5}, 20_000_000)[0], 20_000_000)
+        self.assertEqual(c0.c0_stake({"stake_sol": 0.5}, 90_000_000)[0], 50_000_000)
+
+    def test_invalid_rows_refused(self):
+        self.assertEqual(c0.c0_stake({"stake_sol": 0.05, "size": 0.3})[1]["refused"], "size_invalid")
+        self.assertEqual(c0.c0_stake({"size": True, "stake_sol": 0.05})[1]["refused"], "size_invalid")
+        for bad in (None, 0, -0.05, float("nan"), "0.05", True):
+            s, rec = c0.c0_stake({"stake_sol": bad})
+            self.assertIsNone(s, bad)
+            self.assertEqual(rec["refused"], "card_stake_invalid")
+
+    def test_size_only_row_uses_size_as_card(self):
+        self.assertEqual(c0.c0_stake({"size": 0.5})[0], 50_000_000)
+
+    def test_total_stop_committed(self):
+        self.assertIsNone(c0.total_stop_problem(0, 100_000_000, 50_000_000))
+        self.assertIsNone(c0.total_stop_problem(100_000_000, 50_000_000, 50_000_000))  # exactly 0.20
+        self.assertEqual(c0.total_stop_problem(100_000_000, 50_000_000, 50_000_001), "total_loss_committed")
+        self.assertEqual(c0.total_stop_problem(150_000_000, 50_000_000, 1), "total_loss_committed")
+        self.assertEqual(c0.committed_loss_lamports(-5, 10), 10)  # a realized gain does not offset exposure
+
+
+class ConfigWiringTests(unittest.TestCase):
+    def base(self, **over):
+        return {"bot_id": "hv4-CON-F", "frozen_sha": "a" * 64, "root": "/r", "state_dir": "/s", "end_ms": 1, "max_hold_ms": 1, **raw(**over)}
+
+    def test_defaults_are_c0(self):
+        cfg = alb.Config.from_dict(self.base())
+        self.assertEqual((cfg.stake_lamports, cfg.max_open, cfg.max_trades_per_day, cfg.daily_loss_lamports, cfg.total_loss_lamports),
+                         (50_000_000, 2, 30, 100_000_000, 200_000_000))
+        self.assertEqual(cfg.wallet_floor_lamports, FUNDED - 250_000_000)
+
+    def test_config_only_tightens(self):
+        cfg = alb.Config.from_dict(self.base(stake_lamports=90_000_000, max_open=5, max_trades_per_day=31, daily_loss_lamports=10**9, total_loss_lamports=10**9))
+        self.assertEqual((cfg.stake_lamports, cfg.max_open, cfg.max_trades_per_day, cfg.daily_loss_lamports, cfg.total_loss_lamports),
+                         (50_000_000, 2, 30, 100_000_000, 200_000_000))
+        cfg = alb.Config.from_dict(self.base(stake_lamports=10_000_000, max_open=1))
+        self.assertEqual((cfg.stake_lamports, cfg.max_open), (10_000_000, 1))
+
+    def test_refusals_raise(self):
+        for over, why in (({"bot_id": "hv4-CON-L"}, "arm_not_canary_candidate"), ({"bot_id": "hv4-BIG-P"}, "arm_not_canary_candidate"),
+                          ({"bot_id": "hv4-BIG-R"}, "arm_not_canary_candidate"), ({"bot_id": "bot-x"}, "arm_not_hv4"),
+                          ({"priority_lamports": 500_000}, "priority_lamports_not_pin"),
+                          ({"priority_pin": {"profile": "p155", "buy": 155_000, "sell": 155_000, "escalated": 155_000}}, "priority_pin_mismatch")):
+            with self.assertRaises(ValueError) as cm:
+                alb.Config.from_dict(self.base(**over))
+            self.assertIn(why, str(cm.exception))
+        with self.assertRaises(ValueError):
+            alb.Config.from_dict(self.base(mode="live", funded_lamports=349_999_999))
+        d = self.base(mode="live")
+        del d["funded_lamports"]
+        with self.assertRaises(ValueError):
+            alb.Config.from_dict(d)
+
+    def test_plain_config_rejects_c0_keys(self):
+        d = {k: v for k, v in self.base().items() if k != "profile"}
+        with self.assertRaises(ValueError):
+            alb.Config.from_dict(d)
+        with self.assertRaises(ValueError):
+            alb.Config.from_dict({**self.base(), "profile": "other"})
+
+
+class BridgeC0Tests(TmpCase):
+    def test_entry_sized_to_s_and_mapping_logged(self):
+        e = Hv4Env(self.tmp)
+        e.start()
+        e.entry_sz("o1", stake_sol=0.25, size=0.25)
+        b = e.bridge()
+        b.tick()
+        self.assertEqual([c[3] for c in e.port.calls if c[0] == "buy"], [50_000_000])
+        sent = e.log_rows("buy_sent")[0]
+        self.assertEqual(sent["stake_lamports"], 50_000_000)
+        o = next(iter(b.state.orders.values()))
+        self.assertEqual(o["size_map"]["twin_stake_lamports"], o["stake_lamports"])
+        self.assertTrue(o["size_map"]["clamped"])
+
+    def test_invalid_size_refused(self):
+        e = Hv4Env(self.tmp)
+        e.start()
+        e.entry_sz("o1", stake_sol=0.05, size=0.3)
+        e.bridge().tick()
+        self.assertEqual([c for c in e.port.calls if c[0] == "buy"], [])
+        self.assertEqual(e.log_rows("entry_refused")[0]["why"], "size_invalid")
+
+    def test_max_open_and_daily_edges(self):
+        e = Hv4Env(self.tmp)
+        e.start()
+        for i in range(3):
+            e.entry_sz(f"o{i}", pool=f"P{i}")
+        b = e.bridge()
+        b.tick()
+        self.assertEqual(len([c for c in e.port.calls if c[0] == "buy"]), 2)  # exactly 2 open, the third refused
+        self.assertEqual(e.log_rows("entry_refused")[-1]["why"], "max_open")
+
+    def test_total_stop_counts_open_exposure(self):
+        e = Hv4Env(self.tmp)
+        e.start()
+        e.entry_sz("o1", pool="P1")
+        e.entry_sz("o2", pool="P2")
+        b = e.bridge()
+        b.state.realized_lamports = -100_000_001  # realized + 2 open stakes would be over 0.20
+        b.tick()
+        self.assertEqual(len([c for c in e.port.calls if c[0] == "buy"]), 1)  # 100_000_001 + 50M = ok; second adds 50M more > 0.20
+        self.assertEqual(e.log_rows("entry_refused")[-1]["why"], "total_loss_committed")
+
+    def test_floor_uses_pin_reserves(self):
+        e = Hv4Env(self.tmp)
+        b = e.bridge()
+        fl = b.cfg.wallet_floor_lamports  # 0.35 SOL
+        need = fl + 50_000_000 + c0.TRIP_FEE_RESERVE_LAMPORTS + alb.RENT_RESERVE_LAMPORTS + alb.BUFFER_LAMPORTS
+        self.assertIsNone(b.floor_problem(50_000_000, need))
+        self.assertEqual(b.floor_problem(50_000_000, need - 1), "wallet_floor")
+
+    def test_tier_t1_and_live_ok_naming_bot(self):
+        e = Hv4Env(self.tmp, live=True)
+        b = e.bridge()
+        self.assertEqual(b.tier_limits()[2], "tier_file_missing")
+        e.tier.write_text("T0\n")
+        self.assertEqual(b.tier_limits()[2], "tier_file_invalid")
+        e.tier.write_text("T1\n")
+        tier, lim, prob = b.tier_limits()
+        self.assertEqual((tier, prob, lim["stake_lamports"]), ("T1", None, 50_000_000))
+        e.live_ok.write_text("hv4-other-X\n")
+        self.assertEqual(b.effective_live(), (False, "live_ok_other_book"))
+        e.live_ok.write_text(ARM + "\n")
+        self.assertEqual(b.effective_live(), (True, None))
+
+    def test_live_entry_refused_without_t1(self):
+        e = Hv4Env(self.tmp, live=True)
+        e.live_ok.write_text(ARM + "\n")
+        e.start()
+        e.entry_sz("o1")
+        e.bridge().tick()
+        self.assertEqual([c for c in e.port.calls if c[0] == "buy"], [])
+        self.assertEqual(e.log_rows("entry_refused")[0]["why"], "tier_file_missing")
+
+
+class H5PathUnchangedTests(TmpCase):
+    def test_default_config_has_no_c0_fields(self):
+        e = Env(self.tmp)
+        cfg = e.bridge().cfg
+        self.assertEqual((cfg.profile, cfg.funded_lamports), ("", None))
+        self.assertEqual((cfg.stake_lamports, cfg.total_loss_lamports, cfg.wallet_floor_lamports), (20_000_000, 150_000_000, alb.DEFAULT_WALLET_FLOOR))
+        self.assertEqual(alb.TIERS["T0"]["stake_lamports"], 20_000_000)
+        self.assertEqual((alb.FEE_RESERVE_LAMPORTS, alb.SELL_FEE_RESERVE_LAMPORTS), (1_010_000, 505_000))
+
+    def test_t0_tier_unchanged_and_no_size_map(self):
+        e = Env(self.tmp)
+        e.start()
+        e.entry("o1")
+        b = e.bridge()
+        b.tick()
+        self.assertEqual(b.tier_limits()[0:3:2], ("T0", "tier_file_missing"))
+        o = next(iter(b.state.orders.values()))
+        self.assertNotIn("size_map", o)
+        self.assertEqual(o["stake_lamports"], 20_000_000)
+        e.tier.write_text("T1\n")
+        self.assertEqual(b.tier_limits()[0:3:2], ("T0", "tier_file_invalid"))  # T1 still not a T0-bridge tier
+
+    def test_plain_live_ok_content_not_inspected(self):
+        e = Env(self.tmp, live=True)
+        e.live_ok.write_text("anything\n")
+        self.assertEqual(e.bridge().effective_live(), (True, None))
+
+    def test_live_priority_still_500k_for_plain(self):
+        src = Path(alb.__file__).read_text()
+        self.assertIn('else 500_000, "max_open"', src)
+
+
+if __name__ == "__main__":
+    unittest.main()

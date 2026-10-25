@@ -41,6 +41,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from tools.arena_declog import GENESIS, DecisionLog, LogChainError, sha256_hex, utc_day
+from tools import hv4_live_c0 as c0
 from tools.arena_paper import canon
 
 SCHEMA = "arena_live_bridge_v1"
@@ -101,6 +102,8 @@ class Config:
     dry_balance_lamports: int = 600_000_000  # dry mode only: no RPC, so the balance is a config number
     stop_file: str = "/var/lib/mal-live/STOP"
     halt_file: str = "/var/lib/mal-live/HALT"
+    profile: str = ""  # "" = the T0 bridge (H5-path behaviour unchanged); "hv4_c0" = the compiled C0 table of tools/hv4_live_c0
+    funded_lamports: int | None = None  # hv4_c0 only: what the wallet was funded with; the floor is derived from it
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any], tier: str = "T0") -> "Config":
@@ -109,6 +112,17 @@ class Config:
                 raise ValueError(f"config {k} is required")
         t = TIERS[tier]
         kw: dict[str, Any] = {k: d[k] for k in ("bot_id", "frozen_sha", "root", "state_dir")}
+        if d.get("profile", "") not in ("", c0.PROFILE):
+            raise ValueError(f"config profile must be '{c0.PROFILE}' or absent")
+        if d.get("profile") == c0.PROFILE:
+            why = c0.config_refusal(d, live=d.get("mode") == LIVE)
+            if why:
+                raise ValueError(f"hv4_c0 refused: {why}")
+            t = c0.C0_LIMITS
+            kw["profile"] = c0.PROFILE
+            kw["funded_lamports"] = d.get("funded_lamports")
+        elif "funded_lamports" in d or "priority_pin" in d:
+            raise ValueError("funded_lamports and priority_pin belong to the hv4_c0 profile")
         for k in ("end_ms", "max_hold_ms"):
             v = d[k]
             if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v <= 0:
@@ -127,6 +141,8 @@ class Config:
         if isinstance(fl, bool) or not isinstance(fl, (int, float)) or fl != fl:
             raise ValueError("config wallet_floor_lamports must be a number")
         kw["wallet_floor_lamports"] = max(int(fl), MIN_WALLET_FLOOR)  # raise only
+        if kw.get("funded_lamports") is not None:
+            kw["wallet_floor_lamports"] = c0.wallet_floor_lamports(kw["funded_lamports"], kw["wallet_floor_lamports"] if "wallet_floor_lamports" in d else 0)
         sl = d.get("sl_backstop", DEFAULT_SL_BACKSTOP)
         if isinstance(sl, bool) or not isinstance(sl, (int, float)) or not 0 < sl <= MAX_SL_BACKSTOP:
             raise ValueError(f"config sl_backstop must be in (0, {MAX_SL_BACKSTOP}]")
@@ -280,7 +296,7 @@ def root_ok_problem(path: Path) -> str | None:
     return h5.root_file_problem(path)
 
 
-def read_tier(path: Path, root_checks: bool) -> tuple[str, str | None]:
+def read_tier(path: Path, root_checks: bool, allowed: Mapping[str, Any] | tuple[str, ...] | None = None) -> tuple[str, str | None]:
     """(tier, problem). Only tiers in TIERS exist here; anything else (including H5's T1/T2) is T0 with a reason."""
     if root_checks:
         why = root_ok_problem(path)
@@ -298,7 +314,7 @@ def read_tier(path: Path, root_checks: bool) -> tuple[str, str | None]:
         return "T0", "tier_file_unreadable"
     finally:
         os.close(fd)
-    return (text, None) if text in TIERS else ("T0", "tier_file_invalid")
+    return (text, None) if text in (TIERS if allowed is None else allowed) else ("T0", "tier_file_invalid")
 
 
 # --- the bridge -------------------------------------------------------------------------------------------------------------------
@@ -405,9 +421,18 @@ class Bridge:
         if self.cfg.mode != LIVE:
             return False, "mode_dry"
         why = root_ok_problem(self.live_ok_path) if self.root_checks else (None if self.live_ok_path.exists() else "missing")
+        if not why and self.cfg.profile == c0.PROFILE:  # the C0 LIMITS file names the bot_id
+            try:
+                why = c0.live_ok_problem(self.live_ok_path.read_text(), self.cfg.bot_id)
+            except OSError:
+                why = "unreadable"
+            why = why[len("live_ok_"):] if why and why.startswith("live_ok_") else why
         return (False, f"live_ok_{why}") if why else (True, None)
 
     def tier_limits(self) -> tuple[str, dict[str, int], str | None]:
+        if self.cfg.profile == c0.PROFILE:  # the C0 table is compiled; the TIER file must read exactly T1 (a live start), config only tightens
+            tier, prob = read_tier(self.tier_path, self.root_checks and self.cfg.mode == LIVE, allowed=(c0.TIER_NAME,))
+            return c0.TIER_NAME, {k: min(getattr(self.cfg, k), v) for k, v in c0.C0_LIMITS.items()}, prob
         tier, prob = read_tier(self.tier_path, self.root_checks and self.cfg.mode == LIVE)
         t = TIERS[tier]
         return tier, {k: min(getattr(self.cfg, k), v) for k, v in t.items()}, prob
@@ -426,8 +451,9 @@ class Bridge:
             return "balance_unreadable"
         opens = self.open_orders(scope)
         open_stakes = sum(o["stake_lamports"] for o in opens.values())
-        projected = (bal - open_stakes - stake - FEE_RESERVE_LAMPORTS - RENT_RESERVE_LAMPORTS - BUFFER_LAMPORTS
-                     - SELL_FEE_RESERVE_LAMPORTS * len(opens))
+        fee, sell_fee = (c0.TRIP_FEE_RESERVE_LAMPORTS, c0.SELL_FEE_RESERVE_LAMPORTS) if self.cfg.profile == c0.PROFILE else (FEE_RESERVE_LAMPORTS, SELL_FEE_RESERVE_LAMPORTS)
+        projected = (bal - open_stakes - stake - fee - RENT_RESERVE_LAMPORTS - BUFFER_LAMPORTS
+                     - sell_fee * len(opens))
         return "wallet_floor" if projected < self.cfg.wallet_floor_lamports else None
 
     def entry_refusal(self, row: Mapping[str, Any], now: int, lim: dict[str, int], scope: bool = True) -> str | None:
@@ -503,6 +529,18 @@ class Bridge:
         if not why:
             why = self.port.universe_problem(pool, mint)  # type: ignore[arg-type]
         stake = lim["stake_lamports"]
+        size_map: dict[str, Any] | None = None
+        if self.cfg.profile == c0.PROFILE:
+            if not why and tier_prob and self.cfg.mode == LIVE:
+                why = tier_prob  # a live-config C0 entry needs the TIER file to read T1
+            s_c0, size_map = c0.c0_stake(row, stake)
+            if not why and s_c0 is None:
+                why = size_map["refused"]
+            if s_c0 is not None:
+                stake = s_c0
+            if not why:  # committed loss: realized loss plus every open/pending stake plus this one
+                opens = self.open_orders(scope)
+                why = c0.total_stop_problem(max(0, -self.state.realized_lamports), sum(o["stake_lamports"] for o in opens.values()), stake)
         if not why:
             why = self.floor_problem(stake, self.port.balance(), scope)
         if why:
@@ -511,6 +549,8 @@ class Bridge:
         order = {"order_id": oid, "pool": pool, "mint": mint, "status": "buy_sending", "stake_lamports": stake, "paper_stake_sol": row.get("stake_sol"),
                  "decision_ms": int(row["ms"]), "decision_slot": row.get("decision_slot"), "entry_seq": row["seq"], "live": live, "tier": tier,
                  "dry_reason": why_dry, "t_open_ms": None}
+        if size_map is not None:
+            order["size_map"] = size_map  # logged mapping: card stake / size -> S; the paper twin is priced at the same S
         self.state.orders[oid] = order
         self.state.bought.append(mint)  # type: ignore[arg-type]
         self.state.attempts += 1
@@ -851,7 +891,7 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
             pcfg = {
                 "signals_dir": str(Path(cfg.state_dir) / "sig"), "state_dir": str(Path(cfg.state_dir) / "probe"), "fill_log": str(Path(cfg.state_dir) / "probe" / "fills.jsonl"),
                 "stop_file": cfg.stop_file, "halt_file": cfg.halt_file, "mode": "live", "book": f"arena:{cfg.bot_id}", "poll_s": 5.0,
-                "size_lamports": cfg.stake_lamports, "priority_lamports": 500_000, "max_open": cfg.max_open, "max_attempts": 60,
+                "size_lamports": cfg.stake_lamports, "priority_lamports": c0.PRIORITY_PIN["buy"] if cfg.profile == c0.PROFILE else 500_000, "max_open": cfg.max_open, "max_attempts": 60,
                 "loss_cap_lamports": cfg.total_loss_lamports, "max_signal_age_s": MAX_DECISION_AGE_MS / 1000.0, "exit_poll_ms": cfg.warm_ms,
                 "min_balance_buffer_lamports": BUFFER_LAMPORTS,
             }
@@ -944,6 +984,11 @@ def main(argv: list[str] | None = None) -> int:
         print("arena_live_bridge: --live given but config mode is not live: running DRY", flush=True)
     raw = {**raw, "mode": LIVE if want_live else DRY}
     cfg = Config.from_dict(raw)
+    if cfg.profile == c0.PROFILE:
+        why = c0.guard_problem()
+        if why:
+            print(f"arena_live_bridge ALERT startup_refused {why}", flush=True)
+            return 2
     if not want_live:
         port: OrderPort = DryPort(cfg.dry_balance_lamports)
     else:
