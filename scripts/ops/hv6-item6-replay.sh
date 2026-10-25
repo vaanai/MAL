@@ -1,7 +1,7 @@
 #!/bin/sh
 # HV6 build item 6: md5 decision-equivalence replay + drill. POSIX sh (MiScusi runs jobs under sh).
 # PAPER only. StubModel, SYNTHETIC tape dated 2026-09-25, fake chains: no API, no RPC, no real arena hour (so no seal is touched).
-# Writes only under /data/mal/arena/haiku-v6/drill/<drill-id>/. Prints md5 and counts only. Exit 0 only if all six drills PASS.
+# Writes only under /data/mal/arena/haiku-v6/drill/<drill-id>/. Prints md5 and counts only. Exit 0 only if all nine drills PASS.
 # Usage: sh scripts/ops/hv6-item6-replay.sh [drill-id]      (run from the repo checkout at the sha under test)
 set -eu
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
