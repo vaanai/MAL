@@ -23,7 +23,7 @@ class Hv4Env(Env):
     """Env whose bot_id is an HV4 F/X arm and whose config carries the C0 profile."""
 
     def __init__(self, tmp, live=False, bot=ARM, **over):
-        super().__init__(tmp, live=live, **{"bot_id": bot, "profile": c0.PROFILE, "funded_lamports": FUNDED, **over})
+        super().__init__(tmp, live=live, **{"bot_id": bot, "frozen_sha": c0.FROZEN_SHA, "profile": c0.PROFILE, "funded_lamports": FUNDED, **over})
         self.bot = bot
         self.declog_bot = bot
 
@@ -36,7 +36,7 @@ class Hv4Env(Env):
             b["size"] = size
         return self.row(b)
 
-    def start(self, sha="a" * 64):
+    def start(self, sha=c0.FROZEN_SHA):
         self.row({"kind": "start", "binding": "b", "frozen_sha": sha, "rules": [self.bot]})
 
 
@@ -110,7 +110,7 @@ class RefusalTests(unittest.TestCase):
         self.assertGreaterEqual(c0.wallet_floor_lamports(300_000_000), c0.MIN_WALLET_FLOOR_LAMPORTS)
 
     def test_fee_pin(self):
-        base = {"bot_id": "hv4-CON-F", "funded_lamports": FUNDED}
+        base = {"bot_id": "hv4-CON-F", "frozen_sha": c0.FROZEN_SHA, "funded_lamports": FUNDED}
         self.assertIsNone(c0.config_refusal(base, live=True))
         self.assertIsNone(c0.config_refusal({**base, "priority_pin": dict(c0.PRIORITY_PIN)}, live=True))
         self.assertIsNone(c0.config_refusal({**base, "buy_priority_lamports": 55_000}, live=True))
@@ -123,8 +123,8 @@ class RefusalTests(unittest.TestCase):
         self.assertEqual(c0.config_refusal({**base, "escalated_priority_lamports": 150_000}, live=True), "escalated_priority_lamports_not_configurable")
 
     def test_funded_required_when_live(self):
-        self.assertEqual(c0.config_refusal({"bot_id": "hv4-CON-X"}, live=True), "funded_lamports_missing")
-        self.assertIsNone(c0.config_refusal({"bot_id": "hv4-CON-X"}, live=False))
+        self.assertEqual(c0.config_refusal({"bot_id": "hv4-CON-X", "frozen_sha": c0.FROZEN_SHA}, live=True), "funded_lamports_missing")
+        self.assertIsNone(c0.config_refusal({"bot_id": "hv4-CON-X", "frozen_sha": c0.FROZEN_SHA}, live=False))
 
     def test_live_ok_names_bot(self):
         self.assertIsNone(c0.live_ok_problem("hv4-CON-F\n", "hv4-CON-F"))
@@ -192,7 +192,7 @@ class StakeTests(unittest.TestCase):
         self.assertEqual(c0.committed_loss_lamports(-5, [], R), 0)  # a realized gain does not offset exposure
 
     def base(self, **over):
-        return {"bot_id": "hv4-CON-F", "frozen_sha": "a" * 64, "root": "/r", "state_dir": "/s", "end_ms": 1, "max_hold_ms": 1, **raw(**over)}
+        return {"bot_id": "hv4-CON-F", "frozen_sha": c0.FROZEN_SHA, "root": "/r", "state_dir": "/s", "end_ms": 1, "max_hold_ms": 1, **raw(**over)}
 
     def test_defaults_are_c0(self):
         cfg = alb.Config.from_dict(self.base())

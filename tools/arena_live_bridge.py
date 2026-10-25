@@ -69,7 +69,7 @@ WARM_MS_MIN, WARM_MS_MAX, WARM_MS_DEFAULT = 500, 2_000, 1_000
 SELL_RETRY_MS = 5_000
 UNIVERSE_V_RANGE = (17_500_000_000, 17_700_000_000)  # Am.2 item 6: V in [17.5e9, 17.7e9], WSOL quote
 
-LATCHES = ("chain_break", "frozen_sha_mismatch", "total_loss_cap", "per_trade_loss_cap", "stuck_sell")
+LATCHES = ("sealed_path", "chain_break", "frozen_sha_mismatch", "total_loss_cap", "per_trade_loss_cap", "stuck_sell")
 
 
 # --- config -----------------------------------------------------------------------------------------------------------------------
@@ -344,6 +344,7 @@ class Bridge:
         self.log_path = self.sd / f"bridge-log-{cfg.mode}.jsonl"
         self.state = BridgeState.load(self.state_path, cfg.mode)
         self.dlog = DecisionLog(cfg.root)
+        self.guarded = cfg.profile == c0.PROFILE  # hv4_c0: every decision-log read is path-guarded (symlink, hard link, swap, arena realpath), in the object itself
         self._last_warm = 0
         self._last_sell_try: dict[str, int] = {}
         self._verify_at_start()
@@ -374,8 +375,37 @@ class Bridge:
     def _verify_at_start(self) -> None:
         """Full chain check of what exists now. A break latches chain_break (the bridge then never buys). The cursor is set only on a clean pass; a
         restart resumes from the saved cursor, so rows already handled are not replayed (order_id idempotency covers the crash window)."""
+        if self.guarded:
+            try:
+                names = c0.guarded_listdir(self.cfg.root, self.cfg.bot_id)
+                datas = [c0.guarded_read(self.cfg.root, self.cfg.bot_id, n) for n in names]
+            except c0.SealedPath as exc:
+                return self._latch("sealed_path", str(exc))
+            self._verify_bytes(datas, names)
+            return
         try:
             self.dlog.verify(self.cfg.bot_id)
+        except LogChainError as exc:
+            self._latch("chain_break", str(exc)[:160])
+
+    def _verify_bytes(self, datas: list[bytes], names: list[str]) -> None:
+        """DecisionLog.verify's rule over bytes this object already read through the guard (so the verified bytes are the guarded bytes)."""
+        prev, seq = GENESIS, -1
+        try:
+            for name, data in zip(names, datas):
+                if data and not data.endswith(b"\n"):
+                    raise LogChainError(f"{self.cfg.bot_id}: torn last line in {name}")
+                for line in data.splitlines():
+                    if not line.strip():
+                        continue
+                    try:
+                        row = json.loads(line)
+                        sha = row.pop("sha")
+                    except (ValueError, KeyError):
+                        raise LogChainError(f"{self.cfg.bot_id}: unreadable row in {name}") from None
+                    if row.get("prev") != prev or row.get("seq") != seq + 1 or sha256_hex(prev + canon(row)) != sha:
+                        raise LogChainError(f"{self.cfg.bot_id}: chain broken at seq {seq + 1} in {name}")
+                    prev, seq = sha, row["seq"]
         except LogChainError as exc:
             self._latch("chain_break", str(exc)[:160])
 
@@ -383,12 +413,20 @@ class Bridge:
     def read_new_rows(self) -> list[dict[str, Any]]:
         """New complete rows after the cursor, each checked against the chain (prev, seq+1, sha). A break latches and stops the read."""
         out: list[dict[str, Any]] = []
-        if "chain_break" in self.state.latches:
+        if "chain_break" in self.state.latches or "sealed_path" in self.state.latches:
             return out
         st = self.state
-        for f in self.dlog.files(self.cfg.bot_id):
+        if self.guarded:  # check and read every file first (all or nothing): a hit latches sealed_path and no row of this call is used
+            try:
+                gfiles = [(Path(n), c0.guarded_read(self.cfg.root, self.cfg.bot_id, n)) for n in c0.guarded_listdir(self.cfg.root, self.cfg.bot_id)]
+            except c0.SealedPath as exc:
+                self._latch("sealed_path", str(exc))
+                return out
+        else:
+            gfiles = [(f, None) for f in self.dlog.files(self.cfg.bot_id)]
+        for f, gdata in gfiles:
             off = st.cursor.get(f.name, 0)
-            data = f.read_bytes()
+            data = gdata if gdata is not None else f.read_bytes()
             if len(data) <= off:
                 continue
             chunk = data[off:]
@@ -545,6 +583,11 @@ class Bridge:
                 why = c0.total_stop_problem(max(0, -self.state.realized_lamports), [o["stake_lamports"] for o in opens.values()], stake, RENT_RESERVE_LAMPORTS)
         if not why:
             why = self.floor_problem(stake, self.port.balance(), scope)
+        if why and self.cfg.profile == c0.PROFILE and why in c0.SKIP_UNIVERSE_LABELS:
+            # A universe skip is not a cap and not a refusal: it is its own count and log kind, so the canary's narrower band can be told apart from limits.
+            self._count("universe_skip")
+            self._log("universe_skip", order_id=row["order_id"], why=why, decision_ms=row["ms"], seq=row["seq"], v_range=list(c0.UNIVERSE_V_RANGE))
+            return
         if why:
             return self._refuse(row, why, tier=tier, tier_problem=tier_prob)
         # Write-ahead: the order exists on disk BEFORE the first send, so a crash cannot produce a second buy.
@@ -806,6 +849,11 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
     from tools import probe_live as pl
     from tools import pumpswap_tx as tx_mod
 
+    if cfg.profile == c0.PROFILE:
+        pin_why = c0.sell_pin_problem()
+        if pin_why:
+            raise RuntimeError(f"hv4_c0 live port refused: {pin_why}")
+
     class BridgeExecutor(pl.LiveExecutor):
         """The probe's send path with no signal tail and no probe exit rules: buys come from `buy`, sells from the bridge (exit_reason is set by the
         bridge only), and the open-position poll prices only positions the bridge asked to sell. Everything else (write-ahead, rebroadcast,
@@ -820,6 +868,22 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
             self.events: list[dict[str, Any]] = []
             self.last_skip: str | None = None
             self.warm_snaps: dict[str, tuple[Any, int]] = {}
+
+        def _priority(self, mint: str) -> int:
+            """hv4_c0 only: the pinned 55,000 buy / 55,000 first sell / 150,000 escalated sell schedule. Any other profile keeps the base class
+            (the configured limit for every send)."""
+            if cfg.profile != c0.PROFILE:
+                return super()._priority(mint)
+            pend, pos = self.state.pending.get(mint), self.state.open.get(mint)
+            if pend is not None and pend.get("kind") == "buy":
+                return c0.PRIORITY_PIN["buy"]
+            if pend is not None or pos is not None:  # a sell in flight, or the sell being built (position open, nothing pending yet)
+                src = pos if pos is not None else {}
+                now = self.now_ms()
+                if pos is not None:
+                    pos.setdefault("c0_first_sell_ms", now)  # the time bound runs from the first sell build (persisted with the position)
+                return c0.sell_priority(src.get("sell_attempts", 0), bool(src.get("stuck")), now - src["c0_first_sell_ms"] if "c0_first_sell_ms" in src else None)
+            return c0.PRIORITY_PIN["buy"]
 
         def _skip(self, sig: dict[str, Any], reason: str, **kw: Any) -> None:
             self.last_skip = reason
@@ -919,6 +983,8 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
             snap, _pool, err = self.ex._snapshot(mint)
             if snap is None:
                 return f"pool_unreadable:{err}"
+            if cfg.profile == c0.PROFILE:
+                return c0.universe_problem(snap.ps.quote_mint, snap.v)
             if snap.ps.quote_mint != tx_mod.WSOL_MINT:
                 return "quote_not_wsol"
             if snap.v is None or not UNIVERSE_V_RANGE[0] <= snap.v <= UNIVERSE_V_RANGE[1]:
@@ -992,7 +1058,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if cfg.profile == c0.PROFILE:
         # Seal: R2.1 of QP-RULING-1025-hv4-read-rule. No hv4_c0 start, dry or live, until a read-record gate exists, except on a synthetic fixture root.
-        why = c0.start_refusal(cfg.root, want_live)
+        why = c0.start_refusal(cfg.root, want_live, cfg.bot_id)
         if why:
             print(f"arena_live_bridge ALERT startup_refused {why}", flush=True)
             return 2
@@ -1010,6 +1076,11 @@ def main(argv: list[str] | None = None) -> int:
         if not (os.environ.get("HELIUS_API_KEY") or "").strip():
             print("arena_live_bridge ALERT startup_refused rpc_key_missing", flush=True)
             return 2
+        if cfg.profile == c0.PROFILE:
+            why = c0.sell_pin_problem()
+            if why:
+                print(f"arena_live_bridge ALERT startup_refused {why}", flush=True)
+                return 2
         pl.harden_process()
         kp = pl.load_probe_key()
         rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(None, None, use_env_file=False)), rps=float(raw.get("rps", pe.MAX_RPS)), max_rps=pl.LIVE_MAX_RPS)
