@@ -16,4 +16,4 @@ fi
 ID=${2:-real-$(printf %s "$SHA" | cut -c1-10)-$(date -u +%Y%m%dT%H%M%SZ)}
 echo "{\"real_layout\":\"job\",\"sha\":\"$SHA\",\"drill_id\":\"$ID\",\"started_utc\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}"
 unset ANTHROPIC_API_KEY MAL_HV4_CHAIN_STATE MAL_HV4_RPC || true
-exec python3 -m tools.drill_hv6_real_layout --days "$DAYS" --drill-id "$ID" --sha "$SHA"
+exec /data/mal/venv/bin/python -m tools.drill_hv6_real_layout --days "$DAYS" --drill-id "$ID" --sha "$SHA"
