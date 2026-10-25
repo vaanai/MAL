@@ -187,6 +187,22 @@ class SellPinTests(unittest.TestCase):
         gone = {k: v for k, v in c0.SELL_BUILDER_PIN.items() if k != "sell_instructions_sha256"}
         self.assertEqual(c0.sell_pin_problem(gone), "sell_builder_pin_mismatch:sell_instructions_sha256")
 
+    def test_main_live_refuses_on_pin_then_incomplete(self):
+        import contextlib, io, json, tempfile
+        from unittest import mock
+
+        with tempfile.TemporaryDirectory() as d:
+            e = Hv4Env(d)
+            full = {k: v for k, v in e.raw.items() if k not in ("stop_file", "halt_file")}
+            cp = Path(d) / "cfg.json"
+            cp.write_text(json.dumps({**full, "mode": "live"}))
+            for pin, want in (({**c0.SELL_BUILDER_PIN, "symbol_sha256": "0" * 64}, "sell_builder_pin_mismatch:symbol_sha256"), (c0.SELL_BUILDER_PIN, c0.LIVE_REFUSAL)):
+                buf = io.StringIO()
+                with mock.patch.object(c0, "SELL_BUILDER_PIN", pin), contextlib.redirect_stdout(buf):
+                    rc = alb.main(["--config", str(cp), "--live"])
+                self.assertEqual(rc, 2)
+                self.assertIn(want, buf.getvalue())
+
     def test_make_live_port_refuses_on_pin_mismatch(self):
         from unittest import mock
 

@@ -1015,6 +1015,10 @@ def main(argv: list[str] | None = None) -> int:
             print(f"arena_live_bridge ALERT startup_refused {why}", flush=True)
             return 2
     if cfg.profile == c0.PROFILE and want_live:
+        why = c0.sell_pin_problem()  # item 9: the sell builder pin is checked first, so a drifted builder is named even while the profile is incomplete
+        if why:
+            print(f"arena_live_bridge ALERT startup_refused {why}", flush=True)
+            return 2
         print(f"arena_live_bridge ALERT startup_refused {c0.LIVE_REFUSAL}", flush=True)  # nothing sends on this profile until a later PR removes this
         return 2
     if not want_live:
