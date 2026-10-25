@@ -24,11 +24,11 @@ tools.hv6_agents.validate_regime_rule (cites present RG- ids of a usable block w
 TTL changes, DESIGN s3) and only for the arms that have a regime block (L, P). L-nr: a regime_rule is refused.
 
 Manifest chain (<root>/manifests/<arm>.jsonl, one hash-chained line per version). Kinds: genesis, nightly, intraday.
-  Rules (nightly): max_input_close_ms < cutoff; block_as_of_ms < written_ms; effective_from = max(cutoff + 30 min, written_ms).
+  Rules (nightly): max_input_close_ms < cutoff; block_as_of_ms < written_ms; effective_from = max(cutoff + 30 min, written_ms + 60 s); written_ms never decreases; the append instant (wall clock) must be before effective_from (R6).
   Intraday rules (DESIGN s3 R6, frozen): outcome inputs at or before the day's 00:01Z freeze (here: the line's max_input_close_ms < that day's
   cutoff, so inside the freeze); block as_of_ms strictly before written_ms; the version is hashed and logged before its first decision
   (effective_from_ms = written_ms + 30 min, the latency's last term). An intraday line never changes playbook, knobs or vetoes (only TTL'd regime rules),
-  belongs to the day of the latest nightly line, at most 2 per arm per day. HV4's `max_input_close_ms` rule is replaced by these three.
+  needs a NEW direct HIGH event (trigger_ids stored), at most 2 per arm per day; a missed nightly line does not block it. HV4's `max_input_close_ms` rule is replaced by these three.
 
 Self-seal (G3). Reviewer replies, playbook versions, the change log, validator results and per-arm spend are written only under the HV6 root and
 never printed. The CLI prints only the manifests' sha256 chain and the decision-log sha256.
