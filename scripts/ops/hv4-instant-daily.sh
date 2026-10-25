@@ -9,13 +9,16 @@
 # Environment (RESTARTS is required):
 #   RESTARTS    restart-gap JSONL (notebooked; an empty file is allowed)             required
 #   SHAS_FILE   optional override (default $RECORD_DIR/health-shas.txt). Kept by the JOB, append-only, write-once per date: on first sight of each complete FINAL
-#               table it appends "YYYY-MM-DD <sha256>"; on every later run it re-hashes the table and refuses on a mismatch with the recorded line.
+#               table it appends "YYYY-MM-DD <TOOL_SHA> <FILE_SHA>". TOOL_SHA is the sha256 in the table's own last line (D3's tool_final_sha256), verified by the
+#               pinned arena_am6_exclusions.load_health; it is what --health-sha takes. FILE_SHA is sha256sum of the whole file. Every later run recomputes both
+#               and refuses if either differs from the recorded line.
 #   TABLE_DIR   dir holding hour-table-<D>-final.jsonl (default: the D3 output dir)
 #   LEDGER      ledger root (default /data/mal/arena/ledger)     RECORD_DIR (default /data/mal/arena/reads/am15)
 #   TABLE_FIRST (default 2026-10-25, first FINAL table)
 #   PY (default /data/mal/arena/venv-hv4/bin/python)   FIRST LAST HM   TABLE_WAIT_S (default 1500: wait this long past HM for the table + sha)
 #   DRY=1       print the planned command lines (fake paths for tables/shas), run nothing, sleep nothing, write nothing.
-# Exit: 0 done; 2 refused or the tool exited non-zero; 3 FINAL table for some day up to D-1 not complete in time.
+# Exit: 0 done; 2 refused or the tool exited non-zero (ends the job at once); 3 at the END if any day failed because a FINAL table was not complete in time.
+#       A missing or late table fails THAT DAY ONLY: it is logged ("DAY FAILED"), the loop goes on to the next day.
 # Output: only the tool's own stdout. NOT_READY = status line only. On a written record: bot, the status line (B or END) and the record sha256, no counts.
 set -u
 DRY=${DRY:-0}
@@ -47,16 +50,26 @@ else
   echo "DRY=1: planned command lines only (fake paths for tables and shas)"
 fi
 
-sha_of() { awk -v d="$1" '$1==d && s=="" {s=$2} END {print s}' "$SHAS_FILE"; }   # first recorded line wins
+rec_of() { awk -v d="$1" '$1==d && s=="" {s=$2 " " $3} END {print s}' "$SHAS_FILE"; }   # "TOOL_SHA FILE_SHA" of the first recorded line for the date
+# The sha the table's own last line carries, verified by the pinned arena_am6_exclusions.load_health (the sha tools.hv4_read_instant expects as --health-sha).
+tool_sha_of() {
+  "$PY" -c 'import sys
+from tools import arena_am6_exclusions as X
+try:
+    print(X.load_health(open(sys.argv[1]).read())[1])
+except X.Refused as ex:
+    sys.stderr.write("load_health refused: %s\n" % ex)
+    sys.exit(1)' "$1"
+}
 table_ready() {   # $1 date; 0 when the FINAL table is complete (final name present, no .tmp beside it)
   [ -f "$TABLE_DIR/hour-table-$1-final.jsonl" ] && [ ! -e "$TABLE_DIR/hour-table-$1-final.jsonl.tmp" ]
 }
 
-D=$FIRST
+D=$FIRST; NFAIL=0
 while :; do
   T=$(date -u -d "${D}T${HM}:00Z" +%s) || refuse "bad date $D"
   PREV=$(date -u -d "$D -1 day" +%F)
-  [ "$PREV" \< "$TABLE_FIRST" ] && refuse "no FINAL table before $D (first table $TABLE_FIRST)"
+  [ "$(date -u -d "$PREV" +%s)" -ge "$(date -u -d "$TABLE_FIRST" +%s)" ] || refuse "no FINAL table before $D (first table $TABLE_FIRST)"
   if [ "$DRY" = 1 ]; then
     echo "== plan run $D at ${D}T${HM}:00Z (tables $TABLE_FIRST..$PREV)"
   elif [ "$(date -u +%s)" -gt $((T + TABLE_WAIT_S + 600)) ]; then
@@ -68,29 +81,40 @@ while :; do
     echo "== run $D at $(date -u +%FT%TZ)"
   fi
   # health args: every FINAL table TABLE_FIRST..PREV with its own recorded sha
-  HARGS=""
+  HARGS=""; DAYFAIL=0
   X=$TABLE_FIRST
   while :; do
     if [ "$DRY" = 1 ]; then
-      HARGS="$HARGS --health $TABLE_DIR/hour-table-$X-final.jsonl --health-sha <recorded-sha-$X>"
+      HARGS="$HARGS --health $TABLE_DIR/hour-table-$X-final.jsonl --health-sha <recorded-tool-sha-$X>"
     else
       W=0
       until table_ready "$X"; do
-        [ "$W" -ge "$TABLE_WAIT_S" ] && { echo "FINAL table or recorded sha for $X not complete after ${TABLE_WAIT_S}s: not running $D"; exit 3; }
+        if [ "$W" -ge "$TABLE_WAIT_S" ]; then
+          echo "DAY FAILED $D: FINAL table for $X not complete after ${TABLE_WAIT_S}s; not running $D, continuing with the next day"
+          DAYFAIL=1; break 2
+        fi
         sleep 20; W=$((W + 20))
       done
-      REC=$(sha_of "$X"); GOT=$(sha256sum "$TABLE_DIR/hour-table-$X-final.jsonl" | cut -c1-64)
-      if [ -z "$REC" ]; then   # first sight: record it (append-only, once per date)
-        echo "$X $GOT" >> "$SHAS_FILE" || refuse "cannot append to SHAS_FILE"
-        echo "recorded table sha $X $GOT"
-        REC=$GOT
+      TF="$TABLE_DIR/hour-table-$X-final.jsonl"
+      TSHA=$(tool_sha_of "$TF") || refuse "table $X is refused by the pinned load_health"
+      FSHA=$(sha256sum "$TF" | cut -c1-64)
+      REC=$(rec_of "$X")
+      if [ -z "$REC" ]; then   # first sight: record both shas (append-only, once per date)
+        echo "$X $TSHA $FSHA" >> "$SHAS_FILE" || refuse "cannot append to SHAS_FILE"
+        echo "recorded table shas $X tool $TSHA file $FSHA"
+        REC="$TSHA $FSHA"
       fi
-      [ "$GOT" = "$REC" ] || refuse "table $X sha256 differs from the recorded sha"
-      HARGS="$HARGS --health $TABLE_DIR/hour-table-$X-final.jsonl --health-sha $REC"
+      [ "$REC" = "$TSHA $FSHA" ] || refuse "table $X changed since first sight (tool sha or file sha differs from the recorded line)"
+      HARGS="$HARGS --health $TF --health-sha $TSHA"
     fi
     [ "$X" = "$PREV" ] && break
     X=$(date -u -d "$X +1 day" +%F)
   done
+  if [ "$DAYFAIL" = 1 ]; then
+    NFAIL=$((NFAIL + 1))
+    [ "$D" = "$LAST" ] && break
+    D=$(date -u -d "$D +1 day" +%F); continue
+  fi
   if [ "$DRY" = 1 ]; then ASOF="<now-ms>"; else ASOF="$(date -u +%s)000"; fi
   for B in $BOTS; do
     OUT="$RECORD_DIR/$B.instant.json"
@@ -116,4 +140,5 @@ while :; do
   [ "$D" = "$LAST" ] && break
   D=$(date -u -d "$D +1 day" +%F)
 done
-echo "JOB done $(date -u +%FT%TZ)"
+echo "JOB done $(date -u +%FT%TZ) failed_days=$NFAIL"
+[ "$NFAIL" -eq 0 ] || exit 3
