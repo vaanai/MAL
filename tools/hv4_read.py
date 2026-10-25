@@ -9,6 +9,11 @@ and gates nothing itself: every cell below is an arena_score cell.
     python -m tools.hv4_read learning             [--extra-registry PATH@SHA256 ...]   (D14 only)
     python -m tools.hv4_read table [--json F]     [--extra-registry PATH@SHA256 ...]   (assembles the recorded reads; computes nothing new)
 
+NOT A GATE-READ PATH (DEC-031 Amendment 15 item 4; QP-RULING-1025-hv4-read-rule R1): `book` runs arena_score directly at the UNAMENDED attempt boundary, which the
+HV4 record section 0 forbids for a covered bot. The nine HV4 books' gate read is tools/hv4_am15_read.py at the instant tools/hv4_read_instant.py wrote. `book` is
+refused outside MAL_ARENA_TEST=1 until its own reviewed fix; it may be used only for the V1/V2/table steps after the gate read is recorded. (Its 25-cell / 13-arm
+text below is stale.)
+
 ONE STORE OF RECORDED GATE READS (manager ruling on #718): arena_score's record (`record_read`, `<arena-reads-dir>/<bot_id>.json`, default /data/mal/arena/reads).
 `book` records the gate read THERE through `arena_score.record_read` (or, when `arena_score --record` already ran, verifies that the stored read equals the fresh
 scoring and uses it), and the learning screen rule reads that store. The out-dir holds only comparison outputs (`<ID>.hv4.json`), `<ID>.result.json` and
@@ -1169,6 +1174,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise Refused(f"--arena-reads-dir other than {ARENA_READS_DIR} is a test-only override (a fresh store would allow a second read): refused")
             if settle != AS.SETTLE_MS:
                 raise Refused(f"--settle-hours other than {AS.SETTLE_MS / 3_600_000:g} is a test-only override (it moves the pending/orphan split and the V1/V2 instant): refused")
+        if a.what == "book" and os.environ.get(TEST_ENV) != "1":
+            raise Refused("`hv4_read book` is not a gate-read path (DEC-031 Am.15 item 4): it scores at the unamended attempt boundary. Use tools/hv4_am15_read.py")
         if a.what == "table":
             t = build_table(a.out_dir, a.registry, a.now_ms, a.arena_reads_dir, a.extra_registry)
             print(render_table(t))
