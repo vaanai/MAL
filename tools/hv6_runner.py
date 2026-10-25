@@ -379,6 +379,15 @@ class QuoteHistory:
                 del ts[:i]
                 del qs[:i]
 
+    def sweep(self, now_ms: int, idle_ms: int, *, held: Callable[[str], bool]) -> int:
+        """Forget pools whose newest row is more than `idle_ms` old AND that `held(pool)` says the state no longer holds (a card reads a pool's quotes only
+        through a state snapshot, so a history the state dropped can never be read). Returns how many were dropped."""
+        dead = [k for k, ts in self.t.items() if (not ts or ts[-1] < now_ms - idle_ms) and not held(k)]
+        for k in dead:
+            del self.t[k]
+            del self.q[k]
+        return len(dead)
+
     def _at(self, pool: str, b: int) -> float | None:
         ts = self.t.get(pool)
         if not ts:
@@ -473,6 +482,10 @@ class Book:
     watches: list[dict] = field(default_factory=list)
 
 
+HOUSEKEEP_EVERY_MS = 5 * MIN_MS      # memory bounds run every 5 minutes of TAPE time (t_recv_ms of the rows), so warm-up, live and replay prune alike
+WATCH_MAX_POOLS = 2_000              # the prefetcher's watch set: tagged + board pools always, then the top pools by 60-min volume, never more than this many
+
+
 @dataclass
 class RunnerConfig:
     root: str = H.HV6_ROOT
@@ -480,6 +493,10 @@ class RunnerConfig:
     clock_start_ms: int = 0
     live: bool = False
     strict_leakage: bool = False
+    # Memory bound (Runner._housekeep), decision-neutral by construction and by test (tools/test_hv6_runner_mem.py: byte-identical decision logs on and off):
+    # QuoteHistory forgets pools the state no longer holds, and the engine's print history is trimmed to what a later buy can read (ArenaEngine.trim_history, the
+    # HV4 bound, proved equivalent there). Off only in the tests that prove it changes nothing.
+    bound_memory: bool = True
 
 
 _OPS = {"<": lambda a, b: a < b, "<=": lambda a, b: a <= b, ">": lambda a, b: a > b, ">=": lambda a, b: a >= b}
@@ -553,6 +570,7 @@ class Runner:
         if not cfg.live and hasattr(engine, "now_fn"):
             engine.now_fn = lambda: self.sim_now
         self.hook_errors: list[str] = []
+        self._housekeep_at = 0  # tape instant (t_recv_ms) of the next memory housekeeping
         orig = state.apply
 
         def apply(row: dict) -> None:
@@ -583,6 +601,23 @@ class Runner:
                     self.quotes.add(p.id, int(row["t_recv_ms"]), p.q_real / 1e9)
         except Exception as e:  # noqa: BLE001 - recorded, never swallowed silently
             self.hook_errors.append(type(e).__name__)
+        t = row.get("t_recv_ms")
+        if self.cfg.bound_memory and isinstance(t, int) and not isinstance(t, bool) and t >= self._housekeep_at:
+            try:  # its own try: a housekeeping failure must never skip a row's engine feed
+                self._housekeep(t)
+            except Exception as e:  # noqa: BLE001
+                self.hook_errors.append("housekeep:" + type(e).__name__)
+
+    def _housekeep(self, t: int) -> None:
+        """Driven by the tape clock. (1) QuoteHistory forgets pools idle past the state's eviction horizon that the state no longer holds. (2) The engine trims the
+        print history of every pool with no open, pending or retrying position to the prints a later buy can read (ArenaEngine.trim_history: it never drops a pool,
+        never touches a pool's scalar state, changes no price, slot, fill, V source or exclusion; a pool with a position keeps all its prints). The state's own
+        6 h eviction (ArenaState.sweep) is the spec and is untouched: evicting earlier would change the age a revived pool shows."""
+        self._housekeep_at = t - t % HOUSEKEEP_EVERY_MS + HOUSEKEEP_EVERY_MS
+        self._count("quote_pools_swept", self.quotes.sweep(t, self.state.evict_idle_ms, held=lambda k: self.state.pool(k) is not None))
+        if hasattr(self.engine, "trim_history"):
+            self._count("engine_trims")
+            self._count("engine_prints_trimmed", int(self.engine.trim_history() or 0))
 
     def poll_to(self, T: int) -> None:
         self.state.poll(until_ms=T - 1)
@@ -830,8 +865,9 @@ class Runner:
         if watch is not None:
             tagged_all = {t.pool_id for t in res.tags}
             top = sorted(res.candidates, key=lambda q: (-(res.feats[q].get("vol_60m") or 0.0), q))[:25]
-            watch([(q, snap_of[q].get("mint")) for q in res.candidates], tagged_all | set(res.board) | set(top), self._now(T),
-                  vols={q: res.feats[q].get("vol_60m") or 0.0 for q in res.candidates})
+            hot = tagged_all | set(res.board) | set(top)
+            ranked = sorted(res.candidates, key=lambda q: (q not in hot, -(res.feats[q].get("vol_60m") or 0.0), q))[:max(WATCH_MAX_POOLS, len(hot))]  # hot pools always in
+            watch([(q, snap_of[q].get("mint")) for q in ranked], hot, self._now(T), vols={q: res.feats[q].get("vol_60m") or 0.0 for q in ranked})
         cards: dict[str, dict] = {}
         carded_tags = []
         for t in res.tags:
