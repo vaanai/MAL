@@ -108,6 +108,8 @@ def is_count_only(bot_res: dict) -> bool:
 
 def run(instant_path: str, ledger_root: str, registry: str, bot: str, health_texts: Sequence[str], health_shas: Sequence[str], as_of_ms: int, restarts_text: str,
         excl_out: str | None = None, record: bool = False, reads_dir: str | None = None) -> tuple[int, list[str], dict | None]:
+    if bot not in F.BOT_IDS:
+        raise Refused(f"{bot!r} is not one of the nine HV4 bot_ids")
     pins = check_pins()
     rec, isha = load_instant(instant_path)
     reg = load_registry(registry)
@@ -118,8 +120,6 @@ def run(instant_path: str, ledger_root: str, registry: str, bot: str, health_tex
         raise Refused(f"instant file is for {rec.get('bot_id')} clock {rec.get('clock_ms')}, the registry has {bot} clock {clock}")
     if rec.get("mode") != "screen":
         raise Refused("only a screen instant is read here; the confirmation read (section 2 step 4, with its bootstrap p <= 0.05 / c) is not implemented")
-    if bot not in F.BOT_IDS:
-        raise Refused(f"{bot!r} is not one of the nine HV4 bot_ids")
     if clock != F.CLOCK_MS:
         raise Refused(f"registry clock {clock} is not the HV4 clock {F.CLOCK_MS}")
     head = f"AM15 READ  bot {bot}  instant_file_sha256 {isha}  status {rec.get('status')}"

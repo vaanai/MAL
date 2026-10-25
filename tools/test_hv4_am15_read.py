@@ -229,8 +229,12 @@ def test_refuses_to_run_before_the_instant_file_exists(tmp_path, monkeypatch):
                    "--restarts", str(rp), "--as-of-ms", str(AS_OF)]) == 2
 
 
-def test_other_bot_and_real_constants_and_count_only_label(tmp_path):
+def test_real_constants(monkeypatch):
+    monkeypatch.undo()
     assert F.CLOCK_MS == 1_792_886_400_000 and F.CLOCK_MS + F.H_DAYS * DAY == 1_794_096_000_000 and len(F.BOT_IDS) == 9
+
+
+def test_other_bot_and_count_only_label(tmp_path):
     root, reg = setup(tmp_path, book())
     ip, _ = instant(tmp_path, root)
     with pytest.raises(W.Refused, match="nine HV4"):
