@@ -28,6 +28,6 @@ Follow-up edit at the first send (not in this PR): docs/HANDOFF.md §2 and the S
 
 **Sell-simulate mints (C7).** From outside the Look-2 class (a September graduation or a non-V-range pool). Pass/fail and instruction decode only, not proceeds.
 
-**OPEN, to be settled before parity is used for C0 -> C1 (declare with bps, or fix):** the twin does not remove the canary's own trades from the paper pool states, so it double-counts their impact. QP estimate (not measured): about 20 bps per side at 0.05 SOL, about 40 bps of stake per round trip in live's favour, loosening the -100 bps match test by about 40%.
+**Twin double-count. This paragraph is the §11 declaration (with the bps) that goes into the DEC copy before the first send, unless the twin fix has merged by then (a reviewed PR to a pinned tool dropping the canary's own signatures).** Only the use of parity for C0 -> C1 additionally waits on settling it. The finding: the twin does not remove the canary's own trades from the paper pool states, so it double-counts their impact. QP estimate (not measured): about 20 bps per side at 0.05 SOL, about 40 bps of stake per round trip in live's favour, loosening the -100 bps match test by about 40%.
 
 **Disclosure line for the Q50 confirmation read.** From the first send, the twin rows are observable in real time under the EXP-024 Note under Amendment 10 (a), so the confirmation read is no longer blind to those positions. Declared and allowed (DEC-032 §7; DEC-031 Am.3 item 6 "In parallel"); it does not change the read. The owner is told.
