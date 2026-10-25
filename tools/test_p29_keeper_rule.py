@@ -214,6 +214,14 @@ def test_cost_stack_is_the_am8_stack():
     assert diff <= {"rent"}, diff
 
 
+def test_exp011_only_report_filters_one_block():
+    lam = [5e7, -1e7, 3e7, 2e7, 1e7, 4e7]
+    trips = {"total|flat": {"blk": [0, 0, 1, 1, 1, 1], "day": [10, 11, 12, 13, 14, 15], "lam": lam}}
+    out = RUN.exp011_only(trips, ["fast", "exp011-0909"])
+    assert out["total|flat"]["n"] == 4 and out["total|flat"]["total"] == pytest.approx(0.1)
+    assert RUN.exp011_only(trips, ["fast"]) is None
+
+
 def test_verdict_kills_on_any_sub_cell_and_blocks_without_wis():
     good = {"mean": 0.01, "ci_lo_trade": 0.001, "ci_lo": 0.001, "ex_top3": 1.0, "ex_best_day": 1.0, "days": 8, "pos_days": 6, "n": 150}
     cell = {"stats": {f"1.9|{r}|rent0|{f}": dict(good) for r, f in K.SUB_CELLS}, "worst_in_slot": {"measured": False}}

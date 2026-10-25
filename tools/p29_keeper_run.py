@@ -221,6 +221,18 @@ def paired_test(tag_trips: dict, ctl_trips: dict, pairs: list) -> dict:
     return out
 
 
+def exp011_only(trips: dict, labels: list) -> dict | None:
+    """Report only: the kit's stat() (mean, CI90 lower bounds, ex-top-3, ex-best-day, positive days) on the exp011-0909 trips ALONE, on all four deciding sub-cells."""
+    if "exp011-0909" not in labels:
+        return None
+    bi, out = labels.index("exp011-0909"), {}
+    for key, t in trips.items():
+        blk = np.asarray(t["blk"])
+        m = blk == bi
+        out[key] = K.stat(np.asarray(t["lam"], float)[m], np.asarray(t["day"])[m], blk[m], labels) if m.any() else None
+    return out
+
+
 def load_fills(keeper: str) -> dict:
     rows = []
     for l in open(keeper):
@@ -307,6 +319,7 @@ def run(args) -> dict:
         res["priced"] = cells
         res["gross_edge_median"] = statistics.median(scr.gross) if scr.gross else None
         res["p29_verdict"] = p29_verdict(cells.get("p29", {}), res["gross_edge_median"])
+        res["exp011_only"] = exp011_only(scr.trips, labels)  # report only, beside the pooled result in the headline
         res["landing_disagreement"] = {t: {b: {"disagree": cnt.get((b, True), 0), "agree": cnt.get((b, False), 0)} for b in sorted({k[0] for k in cnt})} for t, cnt in scr.disagree.items()}
         rule_c = P29KeeperRule(tagger, "control", control_keys={(c["pool"], c["slot"]) for _, c in oos_pairs}, allowed_days=allowed)
         scr_c = P29Screen(rule_c, count_only=False, screen_p=False)
