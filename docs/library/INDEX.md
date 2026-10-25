@@ -32,13 +32,13 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `explored-survivor-unconfirmed` | 9 | 0 | 0 |
 | `parked` | 10 | 0 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 45 | 20 | 1 |
-| `desk-read` | 1 | 43 | 0 |
-| `explored-no-survivor` | 39 | 6 | 1 |
+| `untested` | 46 | 20 | 1 |
+| `desk-read` | 2 | 43 | 0 |
+| `explored-no-survivor` | 40 | 6 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 185 | 75 | 2 |
+| **all** | 188 | 75 | 2 |
 
-The file holds 512 rows: the 262 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 515 rows: the 265 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -131,6 +131,8 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `p25-quote-drift-completion` | Custom-pair curves whose SOL cost to complete falls with their quote asset | P25 change-capture (2026-10-24) | Counts on fast [09-09T12, 09-15T12) with public external quote prices; pump-coin parents only via the oct-pregrad-d1 role and only while the parent is on its curve (graduated-parent prices are D2/D3, sealed); 0 Helius. |
 | `p25-t22-fee-epoch-clock` | Token-2022 transfer-fee cut public epochs before it binds (DBC transfer-fee mints) | P25 change-capture (2026-10-24) | Public getMultipleAccounts / getSignaturesForAddress on the 42 configs' mints (0 Helius); priced looks only on DBC [10-17, 10-24) as disclosed exploration with QP's OK (not D1); nothing >= 2026-10-25T00Z for DBC/DAMM before the m10 read; a forward recorder after 2026-11-01T00:10Z. |
 | `p25-prestock-quote-band` | PreStock quote-leg dislocation against an external anchor | P25 change-capture (2026-10-24) | Owner's say first; then public mint/pool lists and anchor prices (GeckoTerminal), one declared day of forward gap logging; 0 Helius; any pump-side book is arena-only. |
+| `p31-relayer-program-flows` | Relayer-program sell flows (FLASHX8D..., Gygj9QQb... via MAyhSmzX..., AgmLJBMD... via … | P31 forced-flow census (2026-10-25) | Count signatures per day of Gygj9QQb... (one getSignaturesForAddress page) to size the paging; if feasible, join to fresh-0903 and test timing structure, counts only. |
+| `p31-creator-claim-then-sell` | Creator-fee claim followed by an immediate sell | P31 forced-flow census (2026-10-25) | Count claim txs for a sample of 200 fresh-0903 creators via getSignaturesForAddress on the creator vault (cost: 200 calls) and the share followed by a sell within 60 s. |
 
 ## Owner ideas
 
@@ -394,6 +396,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `p20-dbc-start-floor` | DBC curve start-price floor option (buy pools back near sqrt_start_price, tp +50%) | `explored-no-survivor` | P21 exploration screen (E1 10-14..16 + E2 10-17..23 as disclosed exploration; m 26->32): 4 cells (band 1.02/1.05 x cap 6 h/24 h, prior peak >= 2x start, age >= 30 min, tp +50%) all FAIL. Primary d7_s105_h6: n 150, 1/10 days positive, flat -0.0070 (CI90 lo -0.0083, ex-top-3 -1.20), pressure -0.0058 (CI90 lo -0.0070). 97-100% of trips end at the time cap (dead pools, as … |
 | `p20-dbc-fee-floor-clock` | DBC/DAMM v2 anti-sniper fee-expiry clock: pre-signed buy landing at the fee-scheduler or … | `explored-no-survivor` | P21 exploration screen (E1 + E2 disclosed exploration; m 26->32): config fee schedule decoded and validated (non-dynamic configs 92-95% of tape fees within 1 bp); 634 of 7,399 configs have a schedule (modes linear/exponential; no rate limiter in candidates). 2 cells, time exit 60 s / 300 s, landing expiry + 2 slots: both FAIL. Primary d9_t60: n 123, 2/10 days positive, flat … |
 | `p20-wick-bid-zero-latency` | Resting-bid wick capture: one-sided bid liquidity filled at the dump print's own price … | `explored-no-survivor` | Latency-0 upper bound DEAD (P22, 2026-10-24, declared rule): entering at the sell's post-trade state on dump-absorb D8/D15 triggers, exploration blocks explore-0814/fresh-0903/exp011-0909 (28 days), pooled net of 25 bps and 505k-lamport sends, flat 15%: D8-300 mean -0.0208 SOL/trade at 0.1 SOL (n 336,648, CI90 lo -0.0210, 0 of 28 days positive), D15-300 -0.0316 (n 87,282). … |
+| `p31-bot-keeper-census` | Find other on-chain order keepers (Axiom, Photon, BullX, GMGN, Trojan, BonkBot, Maestro) … | `explored-no-survivor` | Sample of 1,021 fresh-0903 sell signatures (643 decoded in the uniform stratum): 0 order memos, no fee-wallet destination recurring in even 10 of 932 txs (best 7), no bot named by program. 94.4% of sells are wallet-signed (fee payer == trader). The design can only see flows above about 0.3% of sells (about 35,000 rows/day) against 12M sells/day, so it cannot find rare keepers … |
 
 ## Duplicate rows
 
