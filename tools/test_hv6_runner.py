@@ -59,7 +59,7 @@ def script(req):
     return A.m4.default_reply(req)
 
 
-def make(tmp: Path, *, guard_cls=CountingGuard, chain=None, model_script=None, **runner_kw):
+def make(tmp: Path, *, guard_cls=CountingGuard, chain=None, model_script=None, cfg_kw=None, **runner_kw):
     tape = tmp / "tape"
     if not tape.exists():
         write_tape(tape, trade_rows())
@@ -70,7 +70,7 @@ def make(tmp: Path, *, guard_cls=CountingGuard, chain=None, model_script=None, *
     for a in R.ARM_ORDER:
         register_bot(R.bot_id(a), "abcdef1234567", T0 - 60 * MIN, str(tmp / "reg.json"), deciding_stake=0.25,
                      model_ids=[A.MODEL_ID] if A.ARMS[a].llm else [], now_ms=T0 - 61 * MIN, verify_sha=False)
-    cfg = R.RunnerConfig(root=str(root), frozen_sha="abcdef1234567", clock_start_ms=T0 - 60 * MIN)
+    cfg = R.RunnerConfig(root=str(root), frozen_sha="abcdef1234567", clock_start_ms=T0 - 60 * MIN, **(cfg_kw or {}))
     return R.Runner(cfg, ArenaState(tape, start_ms=0), engine, model, chain if chain is not None else FakeChain(), guard, **runner_kw)
 
 

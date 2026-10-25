@@ -379,6 +379,15 @@ class QuoteHistory:
                 del ts[:i]
                 del qs[:i]
 
+    def sweep(self, now_ms: int, idle_ms: int, *, held: Callable[[str], bool]) -> int:
+        """Forget pools whose newest row is more than `idle_ms` old AND that `held(pool)` says the state no longer holds (a card reads a pool's quotes only
+        through a state snapshot, so a history the state dropped can never be read). Returns how many were dropped."""
+        dead = [k for k, ts in self.t.items() if (not ts or ts[-1] < now_ms - idle_ms) and not held(k)]
+        for k in dead:
+            del self.t[k]
+            del self.q[k]
+        return len(dead)
+
     def _at(self, pool: str, b: int) -> float | None:
         ts = self.t.get(pool)
         if not ts:
@@ -473,6 +482,10 @@ class Book:
     watches: list[dict] = field(default_factory=list)
 
 
+HOUSEKEEP_EVERY_MS = 5 * MIN_MS      # memory bounds run every 5 minutes of TAPE time (t_recv_ms of the rows), so warm-up, live and replay prune alike
+WATCH_MAX_POOLS = 2_000              # the prefetcher's watch set: tagged + board pools always, then the top pools by 60-min volume, never more than this many
+
+
 @dataclass
 class RunnerConfig:
     root: str = H.HV6_ROOT
@@ -480,6 +493,14 @@ class RunnerConfig:
     clock_start_ms: int = 0
     live: bool = False
     strict_leakage: bool = False
+    # Memory bound (Runner._housekeep), decision-neutral by construction and by test (tools/test_hv6_runner_mem.py: byte-identical decision logs on and off):
+    # QuoteHistory forgets pools the state no longer holds, and the engine's print history is trimmed to what a later buy can read (ArenaEngine.trim_history, the
+    # HV4 bound, proved equivalent there). Off only in the tests that prove it changes nothing.
+    bound_memory: bool = True
+    # Scan memory (Runner.scan): True = the scan feeds H.scan one pool at a time (snapshot, filters, features, then the snapshot is dropped) and re-reads the
+    # snapshot of a pool that needs a card; False = the old path that holds every pool's full snapshot (360 candles each) until the scan ends. The state does not
+    # change between the two reads (nothing polls inside a scan), so the cards are identical; a test compares the decision logs byte for byte.
+    stream_scan: bool = True
 
 
 _OPS = {"<": lambda a, b: a < b, "<=": lambda a, b: a <= b, ">": lambda a, b: a > b, ">=": lambda a, b: a >= b}
@@ -553,6 +574,7 @@ class Runner:
         if not cfg.live and hasattr(engine, "now_fn"):
             engine.now_fn = lambda: self.sim_now
         self.hook_errors: list[str] = []
+        self._housekeep_at = 0  # tape instant (t_recv_ms) of the next memory housekeeping
         orig = state.apply
 
         def apply(row: dict) -> None:
@@ -583,6 +605,23 @@ class Runner:
                     self.quotes.add(p.id, int(row["t_recv_ms"]), p.q_real / 1e9)
         except Exception as e:  # noqa: BLE001 - recorded, never swallowed silently
             self.hook_errors.append(type(e).__name__)
+        t = row.get("t_recv_ms")
+        if self.cfg.bound_memory and isinstance(t, int) and not isinstance(t, bool) and t >= self._housekeep_at:
+            try:  # its own try: a housekeeping failure must never skip a row's engine feed
+                self._housekeep(t)
+            except Exception as e:  # noqa: BLE001
+                self.hook_errors.append("housekeep:" + type(e).__name__)
+
+    def _housekeep(self, t: int) -> None:
+        """Driven by the tape clock. (1) QuoteHistory forgets pools idle past the state's eviction horizon that the state no longer holds. (2) The engine trims the
+        print history of every pool with no open, pending or retrying position to the prints a later buy can read (ArenaEngine.trim_history: it never drops a pool,
+        never touches a pool's scalar state, changes no price, slot, fill, V source or exclusion; a pool with a position keeps all its prints). The state's own
+        6 h eviction (ArenaState.sweep) is the spec and is untouched: evicting earlier would change the age a revived pool shows."""
+        self._housekeep_at = t - t % HOUSEKEEP_EVERY_MS + HOUSEKEEP_EVERY_MS
+        self._count("quote_pools_swept", self.quotes.sweep(t, self.state.evict_idle_ms, held=lambda k: self.state.pool(k) is not None))
+        if hasattr(self.engine, "trim_history"):
+            self._count("engine_trims")
+            self._count("engine_prints_trimmed", int(self.engine.trim_history() or 0))
 
     def poll_to(self, T: int) -> None:
         self.state.poll(until_ms=T - 1)
@@ -813,38 +852,71 @@ class Runner:
     # -- scan, cards
     def scan(self, T: int) -> None:
         tp = self.tp or self._begin_tick(T)
-        items, snap_of, prints_of = [], {}, {}
-        for p in self.state.pools_wsol(lambda p: p.prog == "pumpswap"):
-            snap = self.state.snapshot(p.id)
-            if snap is None:
-                continue
-            prints = list(p.events)
-            items.append((snap, prints))
-            snap_of[p.id], prints_of[p.id] = snap, prints
+        stream = self.cfg.stream_scan
+        pools = self.state.pools_wsol(lambda p: p.prog == "pumpswap")
+        snap_of: dict[str, Any] = {}
+        prints_of: dict[str, list] = {}
+        if stream:
+            def gen():
+                for p in pools:
+                    snap = self.state.snapshot(p.id)
+                    if snap is not None:
+                        yield snap, list(p.events)
+
+            items: Any = gen()
+        else:
+            items = []
+            for p in pools:
+                snap = self.state.snapshot(p.id)
+                if snap is None:
+                    continue
+                prints = list(p.events)
+                items.append((snap, prints))
+                snap_of[p.id], prints_of[p.id] = snap, prints
+
+        def snap_prints(pid: str) -> tuple[Mapping, list]:
+            if not stream:
+                return snap_of[pid], prints_of[pid]
+            return self.state.snapshot(pid), list(self.state.pool(pid).events)  # same state, same bytes as the scan's own read
         # DEVIATION from HV4 (recorded in the PR table): H.scan records the GEN cooldown for every tag it passes on, even one whose card is then refused (HV4's
         # rule). Here the scan runs on a scratch copy and the real cooldown is recorded only for a tag that got a card.
         scratch = C.SetupLimiter()
         scratch._last = dict(self.limiter._last)
         res = H.scan(items, as_of_ms=T, limiter=scratch, x_cap=self.xcap, board_on=tp.board_on)
         watch = getattr(self.chain, "watch", None)  # a chain source with a background prefetch learns the watchlist (no RPC in the scan)
+        # The watch set is capped at WATCH_MAX_POOLS, but a pool the book still needs facts for is NEVER cut (QP 930): tagged, board and top-25-by-volume pools, every
+        # candidate holding an open (so pending or retrying) position in any arm, and every candidate with an active arm watch. Only cold candidates can be cut.
+        tagged_all = {t.pool_id for t in res.tags}
+        top = sorted(res.candidates, key=lambda q: (-(res.feats[q].get("vol_60m") or 0.0), q))[:25]
+        held = {pos.pool for b in self.books.values() for pos in b.open.values()} | {w["pool"] for b in self.books.values() for w in b.watches}
+        keep = tagged_all | set(res.board) | set(top) | held
+        ranked = sorted(res.candidates, key=lambda q: (q not in keep, -(res.feats[q].get("vol_60m") or 0.0), q))[:max(WATCH_MAX_POOLS, len(keep & set(res.candidates)))]
+        capped = len(res.candidates) - len(ranked)
+        self.counters["max_candidates_per_scan"] = max(self.counters.get("max_candidates_per_scan", 0), len(res.candidates))
+        if capped > 0:
+            self._count("scans_cap_bound")
+            self._count("watch_capped", capped)
         if watch is not None:
-            tagged_all = {t.pool_id for t in res.tags}
-            top = sorted(res.candidates, key=lambda q: (-(res.feats[q].get("vol_60m") or 0.0), q))[:25]
-            watch([(q, snap_of[q].get("mint")) for q in res.candidates], tagged_all | set(res.board) | set(top), self._now(T),
-                  vols={q: res.feats[q].get("vol_60m") or 0.0 for q in res.candidates})
+            hot = tagged_all | set(res.board) | set(top)  # the prefetcher's refresh priority is unchanged by held pools
+            rset = set(ranked)
+            ranked = [q for q in res.candidates if q in rset]  # candidate order, as the uncapped call
+            mint_of = (lambda q: self.state.pool(q).mint) if stream else (lambda q: snap_of[q].get("mint"))
+            watch([(q, mint_of(q)) for q in ranked], hot, self._now(T), vols={q: res.feats[q].get("vol_60m") or 0.0 for q in ranked})
         cards: dict[str, dict] = {}
         carded_tags = []
         for t in res.tags:
-            c = self._card(t.pool_id, T, snap_of[t.pool_id], prints_of[t.pool_id], t, res.feats[t.pool_id])
+            sn, pr = snap_prints(t.pool_id)
+            c = self._card(t.pool_id, T, sn, pr, t, res.feats[t.pool_id])
             if c is not None:
                 cards[t.pool_id] = c
                 carded_tags.append(t)
                 self.limiter.record(t.pool_id, H.PERSONA, T)
         for pid in res.board:
-            c = self._card(pid, T, snap_of[pid], prints_of[pid], None, res.feats[pid])
+            sn, pr = snap_prints(pid)
+            c = self._card(pid, T, sn, pr, None, res.feats[pid])
             if c is not None:
                 cards[pid] = c
-        self.log.append("SCAN", T, {"kind": "scan", "as_of_slot": self.slot, "counts": dict(res.counts), "n_cards": len(cards), "level": tp.level,
+        self.log.append("SCAN", T, {"kind": "scan", "as_of_slot": self.slot, "counts": dict(res.counts), "n_cards": len(cards), "level": tp.level, "watch_capped": capped,
                                     "tagged": sorted(t.pool_id for t in carded_tags), "card_shas": sorted(A.p4.card_sha256(c) for c in cards.values())})
         self._x_round(res.x_tags, cards, T, tp)
         order = [cards[t.pool_id] for t in carded_tags] + [cards[p] for p in res.board if p in cards]
