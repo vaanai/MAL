@@ -120,7 +120,7 @@ def cmd_score(a) -> int:
             for call in (1, 2):
                 if (card["id"], call) in done:
                     continue
-                res = caller.call(system=system, max_tokens=MAX_TOKENS, temperature=0,
+                res = caller.call(system=system, max_tokens=MAX_TOKENS,
                                   messages=[{"role": "user", "content": user_text(card, call == 2)}])
                 o = parse_obj(res.text)
                 row = {"id": card["id"], "mint": mint, "call": call, "ok": o is not None,
