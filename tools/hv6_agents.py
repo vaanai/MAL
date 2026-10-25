@@ -494,6 +494,9 @@ def check_min_age(cards: Sequence[Mapping]) -> None:
     """A card with no numeric age_h, or one under 2 hours, is refused before anything is built (fail closed)."""
     for c in cards:
         age = c.get("age_h")
+        if age is None and isinstance(c.get("f"), Mapping):  # a real hv4-card-1 card carries f.age_s (seconds), not age_h
+            s = c["f"].get("age_s")
+            age = s / 3600.0 if isinstance(s, (int, float)) and not isinstance(s, bool) else None
         if isinstance(age, bool) or not isinstance(age, (int, float)) or not math.isfinite(age) or age < MIN_AGE_H:
             raise PromptError(f"every card needs age_h >= {MIN_AGE_H}")
 

@@ -22,7 +22,7 @@ BINDING QP CONDITIONS (comments on #911, #917) and where they are met
 
 NOT HERE (stated, not hidden): the reviewer and release (item 5), the prompt of the intraday regime review (the runner detects the trigger and calls
 `regime_review_fn`; with none set it logs `regime_review_pending`), the chain prefetcher (tools/hv4_prefetch is outside the import allowlist: facts are
-fetched at card time), WATCH replies (logged as a skip), the scan prescreen speed path, the quote-history facts of HV4's tape_facts.
+fetched at card time), WATCH replies (logged as a skip), the scan prescreen speed path, HV4's creator/sniper tape facts (holder_count and the quote facts are kept).
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ if __package__ in (None, ""):
     _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 import argparse
+import bisect
 import hashlib
 import json
 import math
@@ -50,7 +51,7 @@ from tools import hv6_agents as A
 from tools import hv6_cards as H
 from tools.arena_declog import GENESIS, DecisionLog, LogChainError, sha256_hex, utc_day  # noqa: F401
 from tools.arena_paper import ArenaRefused, canon
-from tools.arena_state import ArenaState
+from tools.arena_state import WSOL_MINT, ArenaState
 
 MIN_MS = 60_000
 TICK_MS = 1_000
@@ -129,7 +130,7 @@ class CardSink:
 
 # ------------------------------------------------------------------------------------------------------------------------------ chain client
 def refuse_hv4_chain_state(env: Mapping[str, str] | None = None) -> None:
-    """QP C1: HV4Chain() takes its state file from MAL_HV4_CHAIN_STATE; if it is set HV6 could read or write HV4's chain counters."""
+    """QP C1: a default-built HV4Chain takes its state file from MAL_HV4_CHAIN_STATE; if it is set HV6 could read or write HV4's chain counters."""
     e = os.environ if env is None else env
     if (e.get("MAL_HV4_CHAIN_STATE") or "").strip():
         raise RuntimeError("MAL_HV4_CHAIN_STATE is set: refused (HV6 keeps its own chain state under its own root; unset the variable)")
@@ -295,6 +296,51 @@ class RegimeChannel:
         return sorted(out)
 
 
+class QuoteHistory:
+    """Real quote (SOL) of each verified-WSOL PumpSwap pool, for the card's quote_sol_15m_ago and quote_sol_peak facts (a function of the tape alone, read at
+    the minute boundaries at :02; the sample at boundary b is the quote after the last row with t <= b - 1). The same rule as HV4's, written out here."""
+
+    def __init__(self, keep_ms: int = 65 * MIN_MS, min_rows: int = 64) -> None:
+        self.keep_ms, self.min_rows = keep_ms, min_rows
+        self.t: dict[str, list[int]] = {}
+        self.q: dict[str, list[float]] = {}
+
+    def add(self, pool: str, t_ms: int, q_sol: float) -> None:
+        ts, qs = self.t.setdefault(pool, []), self.q.setdefault(pool, [])
+        ts.append(t_ms)
+        qs.append(q_sol)
+        if len(ts) > self.min_rows and ts[0] < t_ms - 2 * self.keep_ms:
+            i = bisect.bisect_left(ts, t_ms - 2 * self.keep_ms) - 1
+            if i > 0:
+                del ts[:i]
+                del qs[:i]
+
+    def _at(self, pool: str, b: int) -> float | None:
+        ts = self.t.get(pool)
+        if not ts:
+            return None
+        i = bisect.bisect_right(ts, b - 1) - 1
+        return self.q[pool][i] if i >= 0 else None
+
+    @staticmethod
+    def _boundaries(lo: int, hi: int) -> range:
+        first = (lo - H.SCAN_SECOND_MS + MIN_MS - 1) // MIN_MS * MIN_MS + H.SCAN_SECOND_MS
+        return range(first, hi, MIN_MS)
+
+    def ref(self, pool: str, t_ms: int) -> tuple[float, int] | None:
+        want = t_ms - C.QUOTE_REF_AGE_MS
+        best = None
+        for b in self._boundaries(want - C.QUOTE_REF_TOL_MS, min(want + C.QUOTE_REF_TOL_MS + 1, t_ms)):
+            v = self._at(pool, b)
+            if v is not None and (best is None or abs(b - want) < best[0]):
+                best = (abs(b - want), b, v)
+        return None if best is None else (best[2], best[1])
+
+    def peak(self, pool: str, t_ms: int) -> float | None:
+        vals = [v for b in self._boundaries(t_ms - self.keep_ms, t_ms) if (v := self._at(pool, b)) is not None]
+        return max(vals) if vals else None
+
+
 # ------------------------------------------------------------------------------------------------------------------------------ positions
 @dataclass
 class Pos:
@@ -386,6 +432,7 @@ class Runner:
         self.llm_arm_names = tuple(a for a in ARM_ORDER if A.ARMS[a].llm)
         self.books = {a: Book(a) for a in ARM_ORDER}
         self.limiter = C.SetupLimiter()
+        self.quotes = QuoteHistory()
         self.xcap = H.XCap()
         self.knobs = {a: A.Knobs.v0() for a in self.llm_arm_names}
         self.plans = {a: dict(A.GEN_SPEC.plan_defaults) for a in self.llm_arm_names}
@@ -403,6 +450,14 @@ class Runner:
         self._stop = False
         if not cfg.live and hasattr(engine, "now_fn"):
             engine.now_fn = lambda: self.sim_now
+        self.hook_errors: list[str] = []
+        orig = state.apply
+
+        def apply(row: dict) -> None:
+            orig(row)
+            self._on_row(row)
+
+        state.apply = apply  # poll() calls self.apply: the engine sees exactly the rows the state sees, in order
 
     # -- plumbing
     def _count(self, k: str, n: int = 1) -> None:
@@ -414,9 +469,21 @@ class Runner:
     def _dec_ms(self, T: int, reply: Any = None) -> int:
         return self.now_fn() if self.cfg.live else T + int(getattr(reply, "latency_ms", 0) or 0)
 
+    def _on_row(self, row: dict) -> None:
+        try:
+            s = row.get("slot")
+            if row.get("type") == "trade" and isinstance(s, int) and s > self.slot:
+                self.slot = s
+            self.engine.on_row(row)
+            if row.get("type") == "trade" and row.get("prog") == "pumpswap" and row.get("pool"):
+                p = self.state.pool(row["pool"])
+                if p is not None and p.quote_mint == WSOL_MINT and p.q_real is not None:
+                    self.quotes.add(p.id, int(row["t_recv_ms"]), p.q_real / 1e9)
+        except Exception as e:  # noqa: BLE001 - recorded, never swallowed silently
+            self.hook_errors.append(type(e).__name__)
+
     def poll_to(self, T: int) -> None:
         self.state.poll(until_ms=T - 1)
-        self.slot = max(self.slot, int(getattr(self.state, "slot", 0) or 0))
 
     # -- resume
     def resume(self) -> dict[str, int]:
@@ -494,12 +561,10 @@ class Runner:
         return True
 
     def _call(self, name: str, req: Any, T: int) -> tuple[Any, int]:
-        from tools.hv4_model import ModelReply
-
         try:
             reply = self.model.complete(req, self._now(T))
         except Exception:  # noqa: BLE001 - any preflight/guard/model-path exception is a deny for this tick
-            reply = ModelReply(error="preflight_exception")
+            reply = A.ModelReply(error="preflight_exception")
             self._count("preflight_exception")
             if self.guard is not None:
                 try:
@@ -553,6 +618,12 @@ class Runner:
             return None
         p = self.state.pool(pool)
         chain = dict(part)
+        ref = self.quotes.ref(pool, T)
+        if ref is not None:
+            chain.update({"quote_sol_15m_ago": ref[0], "quote_sol_15m_ago_as_of_ms": ref[1]})
+        pk = self.quotes.peak(pool, T)
+        if pk is not None:
+            chain["quote_sol_peak"] = pk
         chain["holder_count"] = sum(1 for v in p.net.values() if v > 0) if p is not None and hasattr(p, "net") else None
         self.token_of = getattr(self, "token_of", {})
         self.token_of[pool] = {k: part[k] for k in ("token_program", "extensions") if k in part}
