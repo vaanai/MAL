@@ -378,5 +378,67 @@ class H5PathUnchangedPr2Tests(TmpCase):
         self.assertEqual(cfg.frozen_sha, "d" * 64)
 
 
+class DecisionsSymlinkTests(SubDirCase):
+    """QP PR1 condition 1. A scratch dir under the test tmp stands in for /data/mal/arena (SEALED_ROOT_PREFIX is patched to it); no real arena path is touched."""
+
+    def _setup(self):
+        import os
+        stand_in = Path(os.path.realpath(self._sub("arena_stand_in")))
+        root = Path(self._sub("marked_root"))
+        (root / c0.SYNTHETIC_MARKER).write_text("")
+        (root / "decisions").mkdir()
+        return stand_in, root
+
+    def _patched(self, stand_in):
+        from unittest import mock
+        return mock.patch.object(c0, "SEALED_ROOT_PREFIX", str(stand_in))
+
+    def test_clean_marked_root_is_allowed(self):
+        stand_in, root = self._setup()
+        (root / "decisions" / ARM).mkdir()
+        (root / "decisions" / ARM / "2026-10-06.jsonl").write_text("")
+        with self._patched(stand_in):
+            self.assertIsNone(c0.start_refusal(str(root), False, ARM))
+            self.assertIsNone(c0.start_refusal(str(root), False))  # no bot_id: path check skipped, marker rule only
+
+    def test_symlinked_bot_dir_into_the_arena_is_refused(self):
+        stand_in, root = self._setup()
+        (stand_in / ARM).mkdir()
+        (root / "decisions" / ARM).symlink_to(stand_in / ARM)
+        with self._patched(stand_in):
+            self.assertEqual(c0.start_refusal(str(root), False, ARM), c0.LIVE_REFUSAL)
+
+    def test_symlinked_day_file_into_the_arena_is_refused(self):
+        stand_in, root = self._setup()
+        (root / "decisions" / ARM).mkdir()
+        (stand_in / "day.jsonl").write_text("")
+        (root / "decisions" / ARM / "2026-10-06.jsonl").symlink_to(stand_in / "day.jsonl")
+        (root / "decisions" / ARM / "2026-10-07.jsonl").write_text("")
+        with self._patched(stand_in):
+            self.assertEqual(c0.start_refusal(str(root), False, ARM), c0.LIVE_REFUSAL)
+
+    def test_main_refuses_a_symlinked_decisions_dir(self):
+        import contextlib, io, json
+        from unittest import mock
+        stand_in, root = self._setup()
+        (stand_in / ARM).mkdir()
+        (root / "decisions" / ARM).symlink_to(stand_in / ARM)
+        e = Hv4Env(self.tmp)
+        full = {k: v for k, v in e.raw.items() if k not in ("stop_file", "halt_file")}
+        cp = Path(self.tmp) / "cfg_sym.json"
+        cp.write_text(json.dumps({**full, "root": str(root), "mode": "dry"}))
+        buf = io.StringIO()
+        with self._patched(stand_in), contextlib.redirect_stdout(buf):
+            rc = alb.main(["--config", str(cp), "--once"])
+        self.assertEqual(rc, 2)
+        self.assertIn(c0.LIVE_REFUSAL, buf.getvalue())
+        (root / "decisions" / ARM).unlink()  # control: same root without the link starts
+        (root / "decisions" / ARM).mkdir()
+        buf = io.StringIO()
+        with self._patched(stand_in), contextlib.redirect_stdout(buf):
+            rc = alb.main(["--config", str(cp), "--once"])
+        self.assertEqual(rc, 0, buf.getvalue())
+
+
 if __name__ == "__main__":
     unittest.main()

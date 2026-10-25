@@ -1017,7 +1017,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if cfg.profile == c0.PROFILE:
         # Seal: R2.1 of QP-RULING-1025-hv4-read-rule. No hv4_c0 start, dry or live, until a read-record gate exists, except on a synthetic fixture root.
-        why = c0.start_refusal(cfg.root, want_live)
+        why = c0.start_refusal(cfg.root, want_live, cfg.bot_id)
         if why:
             print(f"arena_live_bridge ALERT startup_refused {why}", flush=True)
             return 2

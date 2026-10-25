@@ -241,7 +241,30 @@ SYNTHETIC_MARKER = "SYNTHETIC_FIXTURE_ROOT"
 SEALED_ROOT_PREFIX = "/data/mal/arena"
 
 
-def start_refusal(root: str, live: bool) -> str | None:
+def _under_sealed(path: str) -> bool:
+    import os
+    real = os.path.realpath(path)
+    return real == SEALED_ROOT_PREFIX or real.startswith(SEALED_ROOT_PREFIX + "/")
+
+
+def decisions_path_refusal(root: str, bot_id: str | None) -> str | None:
+    """QP PR1 condition 1: a marked synthetic root can still hold a symlink into the arena. Refuse when the realpath of `<root>/decisions/<bot_id>`, or of
+    any day file in it, lies under the sealed arena prefix (no PASS is recorded; none exists yet). Reads directory entry names and resolves links only;
+    it opens no file. Fail closed: an unlistable decisions dir is not a pass."""
+    import os
+    if not bot_id:
+        return None
+    d = os.path.join(root, "decisions", bot_id)
+    if _under_sealed(d):
+        return LIVE_REFUSAL
+    try:
+        names = os.listdir(d) if os.path.isdir(d) else []
+    except OSError:
+        return LIVE_REFUSAL
+    return LIVE_REFUSAL if any(_under_sealed(os.path.join(d, n)) for n in names) else None
+
+
+def start_refusal(root: str, live: bool, bot_id: str | None = None) -> str | None:
     """CLI start gate (QP-RULING-1025 R2.1: no bridge process, dry or live, reads an HV4 decision row before a recorded read PASS; no gate exists yet).
     Refuse every start, except a dry start on a root that carries the explicit marker file and is not under /data/mal/arena (allowlist; a resolved
     path under the arena is always refused, marker or not). Only checks paths; it opens nothing in the root."""
@@ -251,7 +274,7 @@ def start_refusal(root: str, live: bool) -> str | None:
         return LIVE_REFUSAL
     if live or not os.path.isfile(os.path.join(real, SYNTHETIC_MARKER)):
         return LIVE_REFUSAL
-    return None
+    return decisions_path_refusal(real, bot_id)
 
 
 def position_worst_case_lamports(stake: int, rent_reserve: int) -> int:
