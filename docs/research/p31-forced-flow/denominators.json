@@ -1,0 +1,74 @@
+{
+ "denominators": {
+  "2026-09-03": {
+   "sell_rows": 6769041,
+   "sell_rows_pump_bonding": 982068,
+   "sell_rows_pumpswap": 5786973,
+   "burst_rows": 6328891,
+   "burst_rows_pump_bonding": 862851,
+   "burst_rows_pumpswap": 5466040
+  },
+  "2026-09-04": {
+   "sell_rows": 11825273,
+   "sell_rows_pump_bonding": 1391828,
+   "sell_rows_pumpswap": 10433445,
+   "burst_rows": 11058389,
+   "burst_rows_pump_bonding": 1211362,
+   "burst_rows_pumpswap": 9847027
+  },
+  "2026-09-05": {
+   "sell_rows": 12370873,
+   "sell_rows_pumpswap": 11259746,
+   "sell_rows_pump_bonding": 1111127,
+   "burst_rows": 11678361,
+   "burst_rows_pumpswap": 10710071,
+   "burst_rows_pump_bonding": 968290
+  },
+  "2026-09-06": {
+   "sell_rows": 12104957,
+   "sell_rows_pumpswap": 11098239,
+   "sell_rows_pump_bonding": 1006718,
+   "burst_rows": 11347678,
+   "burst_rows_pumpswap": 10503319,
+   "burst_rows_pump_bonding": 844359
+  },
+  "2026-09-07": {
+   "sell_rows": 13928156,
+   "sell_rows_pumpswap": 12519286,
+   "sell_rows_pump_bonding": 1408870,
+   "burst_rows": 13158438,
+   "burst_rows_pumpswap": 11927778,
+   "burst_rows_pump_bonding": 1230660
+  },
+  "2026-09-08": {
+   "sell_rows": 15439429,
+   "sell_rows_pumpswap": 14030350,
+   "sell_rows_pump_bonding": 1409079,
+   "burst_rows": 14658510,
+   "burst_rows_pumpswap": 13429277,
+   "burst_rows_pump_bonding": 1229233
+  },
+  "2026-09-09": {
+   "sell_rows": 7758826,
+   "sell_rows_pump_bonding": 644369,
+   "sell_rows_pumpswap": 7114457,
+   "burst_rows": 7422782,
+   "burst_rows_pump_bonding": 566496,
+   "burst_rows_pumpswap": 6856286
+  }
+ },
+ "pop_A": {
+  "2026-09-04": 11642316,
+  "2026-09-05": 12152018,
+  "2026-09-06": 11863212,
+  "2026-09-07": 13684360,
+  "2026-09-08": 15189984
+ },
+ "pop_B": {
+  "2026-09-04": 10876683,
+  "2026-09-05": 11460548,
+  "2026-09-06": 11107331,
+  "2026-09-07": 12915817,
+  "2026-09-08": 14409999
+ }
+}

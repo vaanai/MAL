@@ -1,0 +1,254 @@
+{
+ "n_extracts": 1021,
+ "n_ok": 932,
+ "unreachable": {
+  "HTTPError": 88,
+  "wire_cap": 1
+ },
+ "payer_is_trader": {
+  "A": [
+   607,
+   643
+  ],
+  "B": [
+   278,
+   289
+  ]
+ },
+ "tags": [
+  {
+   "type": "K1",
+   "key": "Gygj9QQby4j2jryqyqBHvLP7ctv2SaANgh4sCb69BUpA",
+   "A": 17,
+   "B": 6,
+   "nA": 643,
+   "nB": 289,
+   "share_A": 0.0264,
+   "wilson95_A": [
+    0.0166,
+    0.0419
+   ],
+   "tagged_per_day_median": 248717,
+   "tagged_per_day_wilson_hi": 518721,
+   "tagged_per_day_wilson_lo": 205001,
+   "tagged_in_burst_per_day_median": 212334,
+   "pumpswap_share": 0.0,
+   "example": {
+    "memos": [],
+    "progs": [
+     "MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e"
+    ],
+    "n_signers": 1,
+    "ix": [
+     "GetFees",
+     "Sell",
+     "TransferChecked"
+    ]
+   }
+  },
+  {
+   "type": "K1",
+   "key": "AgmLJBMDCqWynYnQiPCuj9ewsNNsBJXyzoUhD9LJzN51",
+   "A": 6,
+   "B": 2,
+   "nA": 643,
+   "nB": 289,
+   "share_A": 0.0093,
+   "wilson95_A": [
+    0.0043,
+    0.0202
+   ],
+   "tagged_per_day_median": 128662,
+   "tagged_per_day_wilson_hi": 249982,
+   "tagged_per_day_wilson_lo": 52989,
+   "tagged_in_burst_per_day_median": 0,
+   "pumpswap_share": 0.75,
+   "example": {
+    "memos": [],
+    "progs": [
+     "DF1ow4tspfHX9JwWJsAb9epbkA8hmpSEAtxXy1V27QBH",
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+    ],
+    "n_signers": 2,
+    "ix": [
+     "CloseUserVolumeAccumulator",
+     "GetFees",
+     "InitUserVolumeAccumulator",
+     "Sell",
+     "Swap",
+     "SwapV3Dyn"
+    ]
+   }
+  },
+  {
+   "type": "K4",
+   "key": "ClaimCashback",
+   "A": 1,
+   "B": 0,
+   "nA": 643,
+   "nB": 289,
+   "share_A": 0.0016,
+   "wilson95_A": [
+    0.0003,
+    0.0088
+   ],
+   "tagged_per_day_median": 0,
+   "tagged_per_day_wilson_hi": 108324,
+   "tagged_per_day_wilson_lo": 3397,
+   "tagged_in_burst_per_day_median": 0,
+   "pumpswap_share": 1.0,
+   "example": {
+    "memos": [],
+    "progs": [
+     "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+     "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4",
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+    ],
+    "n_signers": 1,
+    "ix": [
+     "ClaimCashback",
+     "CloseUserVolumeAccumulator",
+     "GetFees",
+     "RouteV2",
+     "Sell",
+     "TransferChecked"
+    ]
+   }
+  },
+  {
+   "type": "K5",
+   "key": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL|TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA|pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "A": 501,
+   "B": 235,
+   "nA": 643,
+   "nB": 289,
+   "share_A": 0.7792,
+   "wilson95_A": [
+    0.7455,
+    0.8095
+   ],
+   "tagged_per_day_median": 9948683,
+   "tagged_per_day_wilson_hi": 10014379,
+   "tagged_per_day_wilson_lo": 9222384,
+   "tagged_in_burst_per_day_median": 10103801,
+   "pumpswap_share": 1.0,
+   "example": {
+    "memos": [],
+    "progs": [
+     "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL",
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
+    ],
+    "n_signers": 1,
+    "ix": [
+     "BuyExactQuoteIn",
+     "GetFees",
+     "Sell",
+     "TransferChecked"
+    ]
+   }
+  },
+  {
+   "type": "K5",
+   "key": "FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9",
+   "A": 20,
+   "B": 10,
+   "nA": 643,
+   "nB": 289,
+   "share_A": 0.0311,
+   "wilson95_A": [
+    0.0202,
+    0.0476
+   ],
+   "tagged_per_day_median": 334348,
+   "tagged_per_day_wilson_hi": 588287,
+   "tagged_per_day_wilson_lo": 250186,
+   "tagged_in_burst_per_day_median": 234972,
+   "pumpswap_share": 0.233,
+   "example": {
+    "memos": [],
+    "progs": [
+     "FLASHX8DrLbgeR8FcfNV1F5krxYcYMUdBkrP1EPBtxB9"
+    ],
+    "n_signers": 1,
+    "ix": [
+     "GetFees",
+     "Sell",
+     "TransferChecked"
+    ]
+   }
+  }
+ ],
+ "denominators": {
+  "2026-09-03": {
+   "sell_rows": 6769041,
+   "sell_rows_pump_bonding": 982068,
+   "sell_rows_pumpswap": 5786973,
+   "burst_rows": 6328891,
+   "burst_rows_pump_bonding": 862851,
+   "burst_rows_pumpswap": 5466040
+  },
+  "2026-09-04": {
+   "sell_rows": 11825273,
+   "sell_rows_pump_bonding": 1391828,
+   "sell_rows_pumpswap": 10433445,
+   "burst_rows": 11058389,
+   "burst_rows_pump_bonding": 1211362,
+   "burst_rows_pumpswap": 9847027
+  },
+  "2026-09-05": {
+   "sell_rows": 12370873,
+   "sell_rows_pumpswap": 11259746,
+   "sell_rows_pump_bonding": 1111127,
+   "burst_rows": 11678361,
+   "burst_rows_pumpswap": 10710071,
+   "burst_rows_pump_bonding": 968290
+  },
+  "2026-09-06": {
+   "sell_rows": 12104957,
+   "sell_rows_pumpswap": 11098239,
+   "sell_rows_pump_bonding": 1006718,
+   "burst_rows": 11347678,
+   "burst_rows_pumpswap": 10503319,
+   "burst_rows_pump_bonding": 844359
+  },
+  "2026-09-07": {
+   "sell_rows": 13928156,
+   "sell_rows_pumpswap": 12519286,
+   "sell_rows_pump_bonding": 1408870,
+   "burst_rows": 13158438,
+   "burst_rows_pumpswap": 11927778,
+   "burst_rows_pump_bonding": 1230660
+  },
+  "2026-09-08": {
+   "sell_rows": 15439429,
+   "sell_rows_pumpswap": 14030350,
+   "sell_rows_pump_bonding": 1409079,
+   "burst_rows": 14658510,
+   "burst_rows_pumpswap": 13429277,
+   "burst_rows_pump_bonding": 1229233
+  },
+  "2026-09-09": {
+   "sell_rows": 7758826,
+   "sell_rows_pump_bonding": 644369,
+   "sell_rows_pumpswap": 7114457,
+   "burst_rows": 7422782,
+   "burst_rows_pump_bonding": 566496,
+   "burst_rows_pumpswap": 6856286
+  }
+ },
+ "pop_A": {
+  "2026-09-04": 11642316,
+  "2026-09-05": 12152018,
+  "2026-09-06": 11863212,
+  "2026-09-07": 13684360,
+  "2026-09-08": 15189984
+ },
+ "pop_B": {
+  "2026-09-04": 10876683,
+  "2026-09-05": 11460548,
+  "2026-09-06": 11107331,
+  "2026-09-07": 12915817,
+  "2026-09-08": 14409999
+ }
+}
