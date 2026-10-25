@@ -2,18 +2,31 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
+from tools import hv6_cards as HC
 from tools import hv6_release as RL
 from tools import hv6_review as R
 
 DAY_MS = 86_400_000
-CLOCK0 = 1_793_000_000_000
+CLOCK0 = R.day_start_ms("2026-10-30")
 COMMIT = "a" * 40
 COMMIT2 = "b" * 40
 PIN = "c" * 64
 MD5 = "d" * 32
+
+
+@pytest.fixture(autouse=True)
+def _sandbox(tmp_path, monkeypatch):
+    real = os.path.realpath(tmp_path)
+    monkeypatch.setattr(HC, "READ_ROOTS", (real,))
+    monkeypatch.setattr(HC, "WRITE_ROOTS", (real,))
+    monkeypatch.setattr(R, "wall_ms", lambda: CLOCK0 + 1)
+
+
+SPEND = "owner-spend-line-1025"
 
 
 def v60():
@@ -22,7 +35,7 @@ def v60():
 
 def v61(prev, **kw):
     base = dict(commit=COMMIT, clock_ms=CLOCK0 + 12 * DAY_MS, written_ms=CLOCK0 + 11 * DAY_MS, params=R.Params(min_matches=15), prev=prev,
-                fx_run_until_ms=CLOCK0 + 24 * DAY_MS, manifest_pin=PIN)
+                fx_run_until_ms=CLOCK0 + 24 * DAY_MS, manifest_pin=PIN, fx_spend_line_notebook_id=SPEND)
     base.update(kw)
     return RL.build_release("v6.1", **base)
 
@@ -35,17 +48,20 @@ def code(fn):
 
 def test_v60_registers_all_five_with_ledger_names():
     r = v60()
-    assert r["arms"] == ["L", "L-nr", "F", "P", "X"] and r["bot_ids"]["L"] == "hv6-L" and r["fx_run_until_ms"] is None
+    assert r["arms"] == ["L", "L-nr", "F", "P", "X"] and r["bot_ids"]["L"] == "hv6.0-L" and r["bot_ids"]["L-nr"] == "hv6.0-L-nr" and r["fx_run_until_ms"] is None
     assert r["sha256"] == RL.record_hash(r) and r["prev_release_sha256"] == "0" * 64
     assert code(lambda: RL.build_release("v6.0", commit=COMMIT, clock_ms=CLOCK0, written_ms=CLOCK0 - 1, arms=["L"])) == "v60_registers_all_five"
     assert code(lambda: RL.build_release("v6.0", commit=COMMIT, clock_ms=CLOCK0, written_ms=CLOCK0)) == "record_not_before_clock"
     assert code(lambda: RL.release_number("v7.0")) == "bad_release_id"
+    for bad_clock in (0, CLOCK0 + 1):
+        assert code(lambda: RL.build_release("v6.0", commit=COMMIT, clock_ms=bad_clock, written_ms=-5 if bad_clock == 0 else bad_clock - 1)) == "clock_not_a_utc_midnight"
+    assert RL.bot_ids("v6.3", ["P"]) == {"P": R.bot_id("v6.3", "P")} == {"P": "hv6.3-P"}
 
 
 def test_v61_registers_only_changed_arms_never_f_x():
     r = v61(v60())
     assert r["arms"] == ["L", "L-nr", "P"] and "F" not in r["bot_ids"] and "X" not in r["bot_ids"]
-    assert r["bot_ids"]["L"] == "hv6r1-L" and r["params"]["min_matches"] == 15
+    assert r["bot_ids"]["L"] == "hv6.1-L" and r["params"]["min_matches"] == 15
     assert code(lambda: v61(v60(), arms=["L", "F"])) == "no_new_fx_copies"
     assert code(lambda: v61(v60(), arms=["L"])) == "arms_not_changed_set"
 
@@ -55,12 +71,44 @@ def test_nothing_changed_is_refused():
 
 
 def test_window_must_be_over():
-    assert code(lambda: v61(v60(), clock_ms=CLOCK0 + 12 * DAY_MS - 1, written_ms=CLOCK0)) == "window_not_over"
+    assert code(lambda: v61(v60(), clock_ms=CLOCK0 + 11 * DAY_MS, written_ms=CLOCK0)) == "window_not_over"
 
 
 def test_refuses_unless_v60_f_and_x_continue():
     assert code(lambda: v61(v60(), fx_run_until_ms=None)) == "fx_not_continuing"
     assert code(lambda: v61(v60(), fx_run_until_ms=CLOCK0 + 24 * DAY_MS - 1)) == "fx_not_continuing"
+
+
+def test_window_is_pinned_to_12_days():
+    assert code(lambda: RL.build_release("v6.0", commit=COMMIT, clock_ms=CLOCK0, written_ms=CLOCK0 - 1, window_days=1)) == "window_not_pinned"
+    assert code(lambda: RL.build_release("v6.0", commit=COMMIT, clock_ms=CLOCK0, written_ms=CLOCK0 - 1, window_days=30)) == "window_not_pinned"
+    p = {**v60(), "window_days": 1}                                      # a forged short window in the previous record changes nothing: the constant is used
+    p["sha256"] = RL.record_hash(p)
+    assert code(lambda: v61(p, clock_ms=CLOCK0 + 2 * DAY_MS, written_ms=CLOCK0)) == "window_not_over"
+
+
+def test_fx_continuation_needs_the_owner_spend_line_id():
+    for bad in (None, "", "x", "has space"):
+        assert code(lambda: v61(v60(), fx_spend_line_notebook_id=bad)) == "fx_spend_line_missing"
+    assert v61(v60())["fx_spend_line_notebook_id"] == SPEND
+
+
+def test_regime_only_release_marks_contrasts_not_decidable():
+    prev = v60()
+    both = v61(prev)                                                     # params change: L, L-nr, P together
+    assert both["not_decidable_contrasts"] == []
+    regime_only = {**prev, "procedure": {**prev["procedure"], "L": {**prev["procedure"]["L"], "regime": "old"}, "P": {**prev["procedure"]["P"], "regime": "old"}}}
+    regime_only["sha256"] = RL.record_hash(regime_only)
+    r = v61(regime_only, params=R.V60_PARAMS)
+    assert r["arms"] == ["L", "P"] and r["not_decidable_contrasts"] == ["L - L-nr", "L-nr - P"]
+    assert RL.not_decidable(["L", "L-nr", "P"]) == [] and RL.not_decidable(["L-nr"]) == ["L - L-nr", "L - P", "L-nr - P"]
+
+
+def test_outcome_dependent_codes_are_not_release_inputs():
+    assert "veto_cap" not in RL.BOUNDS_CODES | RL.SCHEMA_CODES and "unknown_evidence_id" not in RL.BOUNDS_CODES | RL.SCHEMA_CODES
+    rows = [{"kind": "nightly", "reply_error": None, "review_error": None, "block_sha256": None,
+             "rejected": [[0, "veto_cap"], [1, "unknown_evidence_id"], [2, "bad_keys"]]}]
+    assert RL.metrics_from_manifests(rows)["schema_rejects"] == 1 and RL.metrics_from_manifests(rows)["bounds_rejects"] == 0
 
 
 def test_prev_chain_checks():
@@ -124,7 +172,8 @@ def test_tampered_record_refused(tmp_path):
 
 
 def test_cli_prints_only_the_record_sha(tmp_path, capsys):
-    args = ["--root", str(tmp_path), "--release", "v6.0", "--commit", COMMIT, "--clock-ms", str(CLOCK0), "--written-ms", str(CLOCK0 - 1),
+    clock = str(CLOCK0)
+    args = ["--root", str(tmp_path), "--release", "v6.0", "--commit", COMMIT, "--clock-ms", clock, "--written-ms", str(CLOCK0 - 1),
             "--metrics-json", json.dumps({"token_cost_usd": 0.5})]
     assert RL.main(args) == 0
     out = json.loads(capsys.readouterr().out)
