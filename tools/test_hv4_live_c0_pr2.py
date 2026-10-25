@@ -223,7 +223,8 @@ class SellPinTests(unittest.TestCase):
                 self.assertEqual(c0.sell_pin_problem(), "sell_builder_pin_mismatch:ptx.constants_sha256")
         self.assertIsNone(c0.sell_pin_problem())  # patches undone
 
-    def test_main_live_refuses_on_pin_then_incomplete(self):
+    def test_main_live_start_stays_refused_by_start_refusal_first(self):
+        # PR1's start_refusal is the outermost gate: a live start is refused as hv4_c0_incomplete whatever the pin says (the pin check sits behind it)
         import contextlib, io, json, tempfile
         from unittest import mock
 
@@ -232,7 +233,7 @@ class SellPinTests(unittest.TestCase):
             full = {k: v for k, v in e.raw.items() if k not in ("stop_file", "halt_file")}
             cp = Path(d) / "cfg.json"
             cp.write_text(json.dumps({**full, "mode": "live"}))
-            for pin, want in (({**c0.SELL_BUILDER_PIN, "symbol_sha256": "0" * 64}, "sell_builder_pin_mismatch:symbol_sha256"), (c0.SELL_BUILDER_PIN, c0.LIVE_REFUSAL)):
+            for pin, want in (({**c0.SELL_BUILDER_PIN, "symbol_sha256": "0" * 64}, c0.LIVE_REFUSAL), (c0.SELL_BUILDER_PIN, c0.LIVE_REFUSAL)):
                 buf = io.StringIO()
                 with mock.patch.object(c0, "SELL_BUILDER_PIN", pin), contextlib.redirect_stdout(buf):
                     rc = alb.main(["--config", str(cp), "--live"])
