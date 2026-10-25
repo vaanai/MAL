@@ -195,7 +195,7 @@ def run(args: argparse.Namespace) -> dict:
     scr.run_block(0, name, S.iter_hours(files, name, "backfill", vmap, args.workers))
     S.check_loaded_modules(before)
     cells = scr.results()
-    meta = {"schema": "p30_laneg_v1", "blocks": [name], "count_only": args.count_only, "hours": scr.hours, "rows_kept": scr.rows, "hours_subset": list(args.hours) if args.hours else None,
+    meta = {"schema": "p30_laneg_v1", "rule": "p30_laneg", "blocks": [name], "count_only": args.count_only, "hours": scr.hours, "rows_kept": scr.rows, "hours_subset": list(args.hours) if args.hours else None,
             "rule_sha256": rule_sha, "kit": S.kit_provenance(), "only": only or None, "validation": bool(args.validation), "counters": dict(scr.counters), "rule_counters": rule.state_ref.scratch.get("c"),
             "wall_s": time.time() - t0, "written_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "vmap": [{"path": v, "sha256": S.file_sha256(v)} for v in vpaths]}
