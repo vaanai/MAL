@@ -90,9 +90,16 @@ ALLOWED_ARM_SUFFIXES = ("-F", "-X")
 _CONFIG_FORBIDDEN = ("sell_priority_lamports", "escalated_priority_lamports")
 
 
-def sell_priority(sell_attempts: int, stuck: bool = False) -> int:
-    """Priority lamports for a sell: the first attempt is 55,000; any retry (a failed or expired sell, or a stuck position) is the escalated 150,000."""
-    return PRIORITY_PIN["escalated"] if (stuck or int(sell_attempts) >= 1) else PRIORITY_PIN["sell"]
+ESCALATE_AFTER_REVERTS = 2  # DEC-032 s3: "after 2 reverts or a time bound"
+ESCALATE_AFTER_MS = 345_000  # the time bound: s3 names none; C0 takes h5_executor.ESCALATE_S (345 s) from the first sell attempt, a declared choice
+
+
+def sell_priority(sell_attempts: int, stuck: bool = False, elapsed_ms: int | None = None) -> int:
+    """Priority lamports for a sell, aligned with DEC-032 s3: 55,000 until the sell has reverted/expired twice (sell_attempts >= 2) or ESCALATE_AFTER_MS
+    have passed since the first sell attempt (elapsed_ms), whichever comes first; then the escalated 150,000. A stuck position is escalated too
+    (stuck needs more attempts than 2, so it is a backstop). The first retry after ONE revert stays at 55,000."""
+    late = elapsed_ms is not None and int(elapsed_ms) >= ESCALATE_AFTER_MS
+    return PRIORITY_PIN["escalated"] if (stuck or late or int(sell_attempts) >= ESCALATE_AFTER_REVERTS) else PRIORITY_PIN["sell"]
 
 
 def universe_problem(quote_mint: Any, v_lamports: Any) -> str | None:
@@ -262,6 +269,78 @@ def decisions_path_refusal(root: str, bot_id: str | None) -> str | None:
     except OSError:
         return LIVE_REFUSAL
     return LIVE_REFUSAL if any(_under_sealed(os.path.join(d, n)) for n in names) else None
+
+
+class SealedPath(Exception):
+    """A decision-log read hit a path that could be an alias of the sealed arena (symlink, hard link, swapped directory or inode, realpath under the arena)."""
+
+
+def guard_dir(root: str, bot_id: str) -> str:
+    """Check `<root>/decisions/<bot_id>` before listing or reading it: realpath not under the sealed prefix, and neither `decisions` nor the bot dir is
+    a symlink (lstat) or anything but a directory. Returns the dir path. Missing is fine (nothing to read); raises SealedPath otherwise."""
+    import os
+    import stat
+    dec = os.path.join(root, "decisions")
+    d = os.path.join(dec, bot_id)
+    if _under_sealed(d):
+        raise SealedPath("realpath_under_arena")
+    for x in (dec, d):
+        try:
+            st = os.lstat(x)
+        except FileNotFoundError:
+            return d
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            raise SealedPath("symlink_or_not_dir")
+    return d
+
+
+def guarded_listdir(root: str, bot_id: str) -> list[str]:
+    """Sorted `*.jsonl` names in the bot dir, after `guard_dir`. Names only; no file is opened."""
+    import os
+    d = guard_dir(root, bot_id)
+    try:
+        return sorted(n for n in os.listdir(d) if n.endswith(".jsonl"))
+    except FileNotFoundError:
+        return []
+
+
+def guarded_read(root: str, bot_id: str, name: str) -> bytes:
+    """Read one day file, running EVERY check on EVERY read (QP #913): dir guard; lstat must be a regular file, not a symlink, with st_nlink == 1 (a
+    hard link to an arena file has 2); realpath not under the sealed prefix; open with O_NOFOLLOW and compare fstat (dev, ino, nlink) with the lstat,
+    so a swap between the check and the open is caught. Raises SealedPath on any hit; reads through the fd it checked."""
+    import os
+    import stat
+    d = guard_dir(root, bot_id)
+    path = os.path.join(d, name)
+    if _under_sealed(path):
+        raise SealedPath("realpath_under_arena")
+    try:
+        ls = os.lstat(path)
+    except FileNotFoundError:
+        return b""
+    if stat.S_ISLNK(ls.st_mode):
+        raise SealedPath("symlink")
+    if not stat.S_ISREG(ls.st_mode):
+        raise SealedPath("not_regular")
+    if ls.st_nlink != 1:
+        raise SealedPath("hardlink")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        raise SealedPath("open_nofollow_failed") from None
+    try:
+        fs = os.fstat(fd)
+        if (fs.st_dev, fs.st_ino) != (ls.st_dev, ls.st_ino) or fs.st_nlink != 1 or not stat.S_ISREG(fs.st_mode):
+            raise SealedPath("inode_swapped")
+        chunks = []
+        while True:
+            b = os.read(fd, 1 << 20)
+            if not b:
+                break
+            chunks.append(b)
+        return b"".join(chunks)
+    finally:
+        os.close(fd)
 
 
 def start_refusal(root: str, live: bool, bot_id: str | None = None) -> str | None:

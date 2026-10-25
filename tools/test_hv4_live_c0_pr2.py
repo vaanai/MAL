@@ -287,9 +287,15 @@ class SellPriorityScheduleTests(unittest.TestCase):
     def test_pure_schedule(self):
         self.assertEqual(c0.sell_priority(0), 55_000)
         self.assertEqual(c0.sell_priority(0, stuck=False), c0.PRIORITY_PIN["sell"])
-        self.assertEqual(c0.sell_priority(1), 150_000)
+        self.assertEqual(c0.sell_priority(1), 55_000)  # one revert: still 55,000 (DEC-032 s3: after 2 reverts)
+        self.assertEqual(c0.sell_priority(2), 150_000)
         self.assertEqual(c0.sell_priority(7), 150_000)
         self.assertEqual(c0.sell_priority(0, stuck=True), 150_000)
+        self.assertEqual((c0.ESCALATE_AFTER_REVERTS, c0.ESCALATE_AFTER_MS), (2, 345_000))
+        self.assertEqual(c0.sell_priority(0, elapsed_ms=344_999), 55_000)  # time bound, whichever comes first
+        self.assertEqual(c0.sell_priority(0, elapsed_ms=345_000), 150_000)
+        self.assertEqual(c0.sell_priority(1, elapsed_ms=345_000), 150_000)
+        self.assertEqual(c0.sell_priority(2, elapsed_ms=0), 150_000)
 
 
 class LivePortScheduleTests(TmpCase):
@@ -328,15 +334,37 @@ class LivePortScheduleTests(TmpCase):
         ok, why = port.sell({"mint": mint}, "book_exit")
         self.assertTrue(ok, why)
         self.assertEqual(priority_lamports(decode_tx(rpc.sent[-1][1])), 55_000)  # first sell attempt
-        land_sell(port.ex, rpc, proceeds=0, err={"InstructionError": [3, {"Custom": 6004}]}, fee=60_000)  # landed failed: sell_attempts 1
+        fail = {"InstructionError": [3, {"Custom": 6004}]}
+        land_sell(port.ex, rpc, proceeds=0, err=fail, fee=60_000)  # revert 1
         n = len(rpc.sent)
-        port.poll()  # the failed sell leaves the bridge's exit_reason set: the executor re-sends at once, now at the escalated level
+        port.poll()  # the failed sell leaves the bridge's exit_reason set: the executor re-sends at once
         self.assertEqual(port.ex.state.open[mint]["sell_attempts"], 1)
         self.assertGreater(len(rpc.sent), n)
+        self.assertEqual(priority_lamports(decode_tx(rpc.sent[-1][1])), 55_000)  # first retry, one revert: still 55,000
+        land_sell(port.ex, rpc, proceeds=0, err=fail, fee=60_000)  # revert 2
+        n = len(rpc.sent)
+        port.poll()
+        self.assertEqual(port.ex.state.open[mint]["sell_attempts"], 2)
+        self.assertGreater(len(rpc.sent), n)
         msg = decode_tx(rpc.sent[-1][1])
-        self.assertEqual(priority_lamports(msg), 150_000)  # escalated retry; validate_message passed at the same cap, so the cap follows the schedule
+        self.assertEqual(priority_lamports(msg), 150_000)  # after 2 reverts: escalated; validate_message passed at the same cap
         keys = list(msg.account_keys)
         self.assertEqual(str(keys[msg.instructions[-1].program_id_index]), str(port.ex.state.open[mint]["base_tp"]))  # sell + base ATA close in one tx
+
+    def test_time_bound_escalates_a_first_retry(self):
+        from tools.test_probe_live import land_sell
+        port, rpc, clock, cfg = self._port(True)
+        mint, _ = self._buy(port, rpc, clock, cfg)
+        port.sell({"mint": mint}, "book_exit")
+        self.assertEqual(priority_lamports(decode_tx(rpc.sent[-1][1])), 55_000)
+        self.assertIn("c0_first_sell_ms", port.ex.state.open[mint])
+        land_sell(port.ex, rpc, proceeds=0, err={"InstructionError": [3, {"Custom": 6004}]}, fee=60_000)
+        clock.t += c0.ESCALATE_AFTER_MS  # the bound passes with only ONE revert
+        n = len(rpc.sent)
+        port.poll()
+        self.assertEqual(port.ex.state.open[mint]["sell_attempts"], 1)
+        self.assertGreater(len(rpc.sent), n)
+        self.assertEqual(priority_lamports(decode_tx(rpc.sent[-1][1])), 150_000)
 
     def test_stuck_position_sells_at_escalated(self):
         port, rpc, clock, cfg = self._port(True)
@@ -438,6 +466,179 @@ class DecisionsSymlinkTests(SubDirCase):
         with self._patched(stand_in), contextlib.redirect_stdout(buf):
             rc = alb.main(["--config", str(cp), "--once"])
         self.assertEqual(rc, 0, buf.getvalue())
+
+
+class ReadPathGuardTests(SubDirCase):
+    """QP #913: the sealed-path check runs on EVERY decision-log read inside the Bridge object (not only in main). A scratch dir stands in for the arena
+    (SEALED_ROOT_PREFIX patched); no real arena path is touched."""
+
+    def setUp(self):
+        import os
+        from unittest import mock
+        super().setUp()
+        self.stand_in = Path(os.path.realpath(self._sub("arena_stand_in")))
+        (self.stand_in / "x.jsonl").write_text("")
+        self.scratch = Path(self._sub("scratch"))
+        (self.scratch / "y.jsonl").write_text("")
+        p = mock.patch.object(c0, "SEALED_ROOT_PREFIX", str(self.stand_in))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def _env(self):
+        e = Hv4Env(self._sub("env"))
+        e.start()
+        return e
+
+    def _dir(self, e):
+        return e.tmp / "arena" / "decisions" / ARM
+
+    def _buys(self, e):
+        return [c for c in e.port.calls if c[0] == "buy"]
+
+    def _run_clean_then(self, e, mutate, expect_reason):
+        b = e.bridge()
+        b.tick()
+        self.assertEqual(b.state.latches, {})
+        mutate()
+        e.entry_sz("o_after")
+        b.tick()
+        self.assertIn("sealed_path", b.state.latches)
+        self.assertIn(expect_reason, b.state.latches["sealed_path"])
+        self.assertEqual(self._buys(e), [])  # nothing read after the hit, nothing bought
+        n_rows = b.state.seq
+        e.entry_sz("o_after2", pool="P2")
+        b.tick()
+        self.assertEqual((b.state.seq, self._buys(e)), (n_rows, []))  # latched: reads nothing more
+
+    def test_day_file_symlink_added_after_start(self):
+        e = self._env()
+        self._run_clean_then(e, lambda: (self._dir(e) / "2099-01-01.jsonl").symlink_to(self.scratch / "y.jsonl"), "symlink")
+
+    def test_day_file_symlink_into_arena_added_after_start(self):
+        e = self._env()
+        self._run_clean_then(e, lambda: (self._dir(e) / "2099-01-01.jsonl").symlink_to(self.stand_in / "x.jsonl"), "realpath_under_arena")
+
+    def test_hard_link_added_after_start(self):
+        import os
+        e = self._env()
+        self._run_clean_then(e, lambda: os.link(self.stand_in / "x.jsonl", self._dir(e) / "2099-01-01.jsonl"), "hardlink")
+
+    def test_hard_link_of_a_non_arena_file_also_refused(self):
+        import os
+        e = self._env()
+        self._run_clean_then(e, lambda: os.link(self.scratch / "y.jsonl", self._dir(e) / "2099-01-01.jsonl"), "hardlink")
+
+    def test_bot_dir_swapped_for_a_symlink_after_start(self):
+        import os
+        e = self._env()
+
+        def swap():
+            d = self._dir(e)
+            os.rename(d, d.parent / "moved")
+            d.symlink_to(d.parent / "moved")
+
+        self._run_clean_then(e, swap, "symlink_or_not_dir")
+
+    def test_bot_dir_swapped_for_an_arena_symlink_after_start(self):
+        import os
+        e = self._env()
+
+        def swap():
+            d = self._dir(e)
+            os.rename(d, d.parent / "moved")
+            (self.stand_in / ARM).mkdir()
+            d.symlink_to(self.stand_in / ARM)
+
+        self._run_clean_then(e, swap, "realpath_under_arena")
+
+    def test_decisions_dir_symlink_after_start(self):
+        import os
+        e = self._env()
+
+        def swap():
+            dec = e.tmp / "arena" / "decisions"
+            os.rename(dec, e.tmp / "arena" / "decisions_moved")
+            dec.symlink_to(e.tmp / "arena" / "decisions_moved")
+
+        self._run_clean_then(e, swap, "symlink_or_not_dir")
+
+    def test_inode_swap_between_check_and_open(self):
+        import os
+        from unittest import mock
+        e = self._env()
+        f = self._dir(e)
+        name = next(iter(os.listdir(f)))
+        real_open = os.open
+
+        def swap_then_open(path, flags, *a, **k):
+            if str(path).endswith(name):
+                tmp = Path(str(path) + ".new")
+                tmp.write_bytes(b"")
+                os.replace(tmp, path)  # a different inode now sits at the checked path
+            return real_open(path, flags, *a, **k)
+
+        with mock.patch.object(os, "open", swap_then_open):
+            with self.assertRaises(c0.SealedPath) as cm:
+                c0.guarded_read(str(e.tmp / "arena"), ARM, name)
+        self.assertEqual(str(cm.exception), "inode_swapped")
+
+    def test_o_nofollow_on_a_symlink_made_after_lstat(self):
+        import os
+        from unittest import mock
+        e = self._env()
+        f = self._dir(e)
+        name = next(iter(os.listdir(f)))
+        real_open = os.open
+
+        def link_then_open(path, flags, *a, **k):
+            if str(path).endswith(name):
+                os.unlink(path)
+                os.symlink(self.scratch / "y.jsonl", path)
+            return real_open(path, flags, *a, **k)
+
+        with mock.patch.object(os, "open", link_then_open):
+            with self.assertRaises(c0.SealedPath) as cm:
+                c0.guarded_read(str(e.tmp / "arena"), ARM, name)
+        self.assertEqual(str(cm.exception), "open_nofollow_failed")
+
+    def test_directly_constructed_bridge_with_a_hard_link_present_latches_at_construction(self):
+        import os
+        e = self._env()
+        os.link(self.stand_in / "x.jsonl", self._dir(e) / "2099-01-01.jsonl")
+        e.entry_sz("o1")
+        b = e.bridge()  # Bridge(...) built directly, no main
+        self.assertIn("hardlink", b.state.latches.get("sealed_path", ""))
+        b.tick()
+        self.assertEqual(self._buys(e), [])
+
+    def test_directly_constructed_bridge_with_a_symlinked_bot_dir_latches(self):
+        import os
+        e = self._env()
+        d = self._dir(e)
+        os.rename(d, d.parent / "moved")
+        d.symlink_to(self.stand_in)
+        b = e.bridge()
+        self.assertIn("sealed_path", b.state.latches)
+        b.tick()
+        self.assertEqual(self._buys(e), [])
+
+    def test_clean_files_are_read_normally(self):
+        e = self._env()
+        e.entry_sz("o1")
+        b = e.bridge()
+        b.tick()
+        self.assertEqual(b.state.latches, {})
+        self.assertEqual(len(self._buys(e)), 1)
+
+    def test_plain_profile_does_not_use_the_guard(self):
+        import os
+        e = Env(self._sub("plain"))
+        e.start()
+        e.entry("o1")
+        os.link(self.stand_in / "x.jsonl", e.tmp / "arena" / "decisions" / BOT / "2099-01-01.jsonl")
+        b = e.bridge()
+        self.assertFalse(b.guarded)
+        self.assertNotIn("sealed_path", b.state.latches)
 
 
 if __name__ == "__main__":
