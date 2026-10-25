@@ -792,6 +792,11 @@ class Collector:
                 self.src_counts["dup_" + (src or "pumpportal")] = self.src_counts.get("dup_" + (src or "pumpportal"), 0) + 1
                 return
             row["src"] = src or "pumpportal"
+            if row["src"] == SRC_PUMPPORTAL and not str(row.get("uri") or "").strip():
+                # PumpPortal sent an empty uri (2026-10-25 ~17Z onward). Do not claim the mint: the arena row for it
+                # carries the real uri. Counted, no create row written.
+                self.src_counts["empty_uri_deferred"] = self.src_counts.get("empty_uri_deferred", 0) + 1
+                return
             if row["src"] == SRC_BACKFILL:
                 row["backfill"] = True
                 row["t_fed_ms"] = self.clock_ms()
@@ -1209,6 +1214,7 @@ TX_RPS_LIVE = 5.0
 TX_RPS_BACKFILL = 2.0
 BACKFILL_FLOOR = "2026-10-25T00"   # --from may not be earlier (QP-RULING-1025-meta-arena)
 BACKFILL_CLOSE_MARGIN_MS = 300_000  # an hour counts as closed 5 min after it ends
+SRC_PUMPPORTAL = "pumpportal"
 SRC_ARENA = "arena"
 SRC_BACKFILL = "arena-backfill"
 
