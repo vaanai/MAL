@@ -545,6 +545,11 @@ class Bridge:
                 why = c0.total_stop_problem(max(0, -self.state.realized_lamports), [o["stake_lamports"] for o in opens.values()], stake, RENT_RESERVE_LAMPORTS)
         if not why:
             why = self.floor_problem(stake, self.port.balance(), scope)
+        if why and self.cfg.profile == c0.PROFILE and why in c0.SKIP_UNIVERSE_LABELS:
+            # A universe skip is not a cap and not a refusal: it is its own count and log kind, so the canary's narrower band can be told apart from limits.
+            self._count("universe_skip")
+            self._log("universe_skip", order_id=row["order_id"], why=why, decision_ms=row["ms"], seq=row["seq"], v_range=list(c0.UNIVERSE_V_RANGE))
+            return
         if why:
             return self._refuse(row, why, tier=tier, tier_problem=tier_prob)
         # Write-ahead: the order exists on disk BEFORE the first send, so a crash cannot produce a second buy.
@@ -806,6 +811,11 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
     from tools import probe_live as pl
     from tools import pumpswap_tx as tx_mod
 
+    if cfg.profile == c0.PROFILE:
+        pin_why = c0.sell_pin_problem()
+        if pin_why:
+            raise RuntimeError(f"hv4_c0 live port refused: {pin_why}")
+
     class BridgeExecutor(pl.LiveExecutor):
         """The probe's send path with no signal tail and no probe exit rules: buys come from `buy`, sells from the bridge (exit_reason is set by the
         bridge only), and the open-position poll prices only positions the bridge asked to sell. Everything else (write-ahead, rebroadcast,
@@ -820,6 +830,19 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
             self.events: list[dict[str, Any]] = []
             self.last_skip: str | None = None
             self.warm_snaps: dict[str, tuple[Any, int]] = {}
+
+        def _priority(self, mint: str) -> int:
+            """hv4_c0 only: the pinned 55,000 buy / 55,000 first sell / 150,000 escalated sell schedule. Any other profile keeps the base class
+            (the configured limit for every send)."""
+            if cfg.profile != c0.PROFILE:
+                return super()._priority(mint)
+            pend, pos = self.state.pending.get(mint), self.state.open.get(mint)
+            if pend is not None and pend.get("kind") == "buy":
+                return c0.PRIORITY_PIN["buy"]
+            if pend is not None or pos is not None:  # a sell in flight, or the sell being built (position open, nothing pending yet)
+                src = pos or {}
+                return c0.sell_priority(src.get("sell_attempts", 0), bool(src.get("stuck")))
+            return c0.PRIORITY_PIN["buy"]
 
         def _skip(self, sig: dict[str, Any], reason: str, **kw: Any) -> None:
             self.last_skip = reason
@@ -919,6 +942,8 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
             snap, _pool, err = self.ex._snapshot(mint)
             if snap is None:
                 return f"pool_unreadable:{err}"
+            if cfg.profile == c0.PROFILE:
+                return c0.universe_problem(snap.ps.quote_mint, snap.v)
             if snap.ps.quote_mint != tx_mod.WSOL_MINT:
                 return "quote_not_wsol"
             if snap.v is None or not UNIVERSE_V_RANGE[0] <= snap.v <= UNIVERSE_V_RANGE[1]:
@@ -1010,6 +1035,11 @@ def main(argv: list[str] | None = None) -> int:
         if not (os.environ.get("HELIUS_API_KEY") or "").strip():
             print("arena_live_bridge ALERT startup_refused rpc_key_missing", flush=True)
             return 2
+        if cfg.profile == c0.PROFILE:
+            why = c0.sell_pin_problem()
+            if why:
+                print(f"arena_live_bridge ALERT startup_refused {why}", flush=True)
+                return 2
         pl.harden_process()
         kp = pl.load_probe_key()
         rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(None, None, use_env_file=False)), rps=float(raw.get("rps", pe.MAX_RPS)), max_rps=pl.LIVE_MAX_RPS)
