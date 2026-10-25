@@ -30,15 +30,15 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `live-canary` | 1 | 0 | 0 |
 | `forward-test` | 2 | 0 | 0 |
 | `explored-survivor-unconfirmed` | 9 | 0 | 0 |
-| `parked` | 10 | 0 | 0 |
+| `parked` | 14 | 0 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 45 | 20 | 1 |
+| `untested` | 47 | 20 | 1 |
 | `desk-read` | 1 | 43 | 0 |
-| `explored-no-survivor` | 39 | 6 | 1 |
-| `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 185 | 75 | 2 |
+| `explored-no-survivor` | 40 | 6 | 1 |
+| `dead-as-frozen` | 77 | 4 | 0 |
+| **all** | 193 | 75 | 2 |
 
-The file holds 512 rows: the 262 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 520 rows: the 270 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -80,6 +80,10 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `dbc-milestone` | Meteora DBC curve-progress milestones (ms30/ms50/ms70) | `parked` | Result decided by an assumption the tape cannot settle: a position still open when the curve completes is priced as a full loss (strand): flat -0.1095/-0.1221/-0.1618 SOL/trip, 230/243/642 strands. If it is instead sold at the last on-curve price (optimistic bound) the means are +0.011/+0.0095/+0.0094. The bracket is … | Post-completion tape (D5: Meteora DAMM v2 pool swaps after migration) so a completed-curve exit can be priced. |
 | `p25-pump-order-keeper-absorb` | Absorb tagged pump app stop-loss sell clusters | `parked` | P26 counts-only pass (fresh-0903, exploration pool, 144 h, docs/research/p26-change-screens/keeper-absorb/): NO TAG RULE EXISTS. One public web query found no source on how pump app stop-loss orders execute on chain, and no app-order signature is known to read. Untagged upper bound (>=3 sells in one mint within 10 s … | A tag rule exists (executor signer, program, fee transfer or memo) from pump docs or <= 2,000 public getTransaction reads of known app-order txs, AND tagged sells on fresh-0903 are >= 100/day with >= 20 clusters/day … |
 | `p25-redeploy-holiday` | Trade the competition gap after a layout-changing venue redeploy | `parked` | P26 counts-only pass, DBC leg (E1 [10-14T00, 10-17T00), 72 h, docs/research/p26-change-screens/redeploy-holiday/): Swap3 switch located at 2026-10-16T04 (mixed hour; EvtSwap3 only from T05), Swap3 rows ARE decoded so signers exist. New pools/day 3,642 / 2,842 / 3,088 (10-14/15/16). DECLARED RESULT (first): under … | POST-COUNT AMENDMENT (written after the DBC counts; not the declared trigger, which was a >=25% drop in median first-5-slot distinct signers for >=3 h after >=2 of 3 changes): the D0 job (role oct-structure-d0, unsigned … |
+| `p28-tierstep` | TIER-STEP: dynamic fee tier crossing as a cost-universe selector | `parked` | Not counted: backfill rows carry no fee fields (lp_fee null). Adjacent to lib-a-A27 and lib-c-L4.5; merge into A27. Cost lever, not an edge; measurable only on closed arena hours under a QP ruling. | A QP ruling allowing a fee-field structure count on closed arena hours. |
+| `p28-atrtrail` | ATR-TRAIL: exit trail scaled to the pool's own 30 min range | `parked` | Not run. An exit cannot create edge without an entry edge. Parked until an entry has a positive in-sample cell; then test as an exit upgrade next to exit-upgrade-3/4. | A declared entry with a positive in-sample cell. |
+| `p28-redeploy-fieldcheck` | POST-REDEPLOY FIELD AUDIT: fee_recipient_zero pools and stored V | `parked` | Not counted (arena tape structure count needs a QP ruling). Pricing-honesty check, not a strategy. | QP ruling for an arena-tape structure count; if > 1% of trades, add a V correction to the screen kit. |
+| `p28-sellpreset` | SELL-PRESET: equal-fraction sell bursts as a distribution wave | `parked` | Not countable without wallet-level inventory (FIFO). Veto-only; creator/early-exit rows are dead (A18). | A wallet-inventory table on exploration blocks. |
 
 ## Never tested
 
@@ -131,6 +135,8 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `p25-quote-drift-completion` | Custom-pair curves whose SOL cost to complete falls with their quote asset | P25 change-capture (2026-10-24) | Counts on fast [09-09T12, 09-15T12) with public external quote prices; pump-coin parents only via the oct-pregrad-d1 role and only while the parent is on its curve (graduated-parent prices are D2/D3, sealed); 0 Helius. |
 | `p25-t22-fee-epoch-clock` | Token-2022 transfer-fee cut public epochs before it binds (DBC transfer-fee mints) | P25 change-capture (2026-10-24) | Public getMultipleAccounts / getSignaturesForAddress on the 42 configs' mints (0 Helius); priced looks only on DBC [10-17, 10-24) as disclosed exploration with QP's OK (not D1); nothing >= 2026-10-25T00Z for DBC/DAMM before the m10 read; a forward recorder after 2026-11-01T00:10Z. |
 | `p25-prestock-quote-band` | PreStock quote-leg dislocation against an external anchor | P25 change-capture (2026-10-24) | Owner's say first; then public mint/pool lists and anchor prices (GeckoTerminal), one declared day of forward gap logging; 0 Helius; any pump-side book is arena-only. |
+| `p28-callsync` | CALL-SYNC: many distinct buyers inside one 2-slot bucket on aged boosted pools | P28 new screens (2026-10-25) | Declare cs_k12 plus the not-yet-priced selector, kit fail models, drop-best-date and ex-top-3 on exploration blocks only; QP before any claim. |
+| `p28-sizeskew` | SIZE-SKEW: mean buy size >= 3x mean sell size over 30 min, both sides active | P28 new screens (2026-10-25) | Declare ss_r5 plus a depth/age selector, or test the mirror as a veto on an existing book's exploration entries; QP before any claim. |
 
 ## Owner ideas
 
@@ -394,6 +400,8 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `p20-dbc-start-floor` | DBC curve start-price floor option (buy pools back near sqrt_start_price, tp +50%) | `explored-no-survivor` | P21 exploration screen (E1 10-14..16 + E2 10-17..23 as disclosed exploration; m 26->32): 4 cells (band 1.02/1.05 x cap 6 h/24 h, prior peak >= 2x start, age >= 30 min, tp +50%) all FAIL. Primary d7_s105_h6: n 150, 1/10 days positive, flat -0.0070 (CI90 lo -0.0083, ex-top-3 -1.20), pressure -0.0058 (CI90 lo -0.0070). 97-100% of trips end at the time cap (dead pools, as … |
 | `p20-dbc-fee-floor-clock` | DBC/DAMM v2 anti-sniper fee-expiry clock: pre-signed buy landing at the fee-scheduler or … | `explored-no-survivor` | P21 exploration screen (E1 + E2 disclosed exploration; m 26->32): config fee schedule decoded and validated (non-dynamic configs 92-95% of tape fees within 1 bp); 634 of 7,399 configs have a schedule (modes linear/exponential; no rate limiter in candidates). 2 cells, time exit 60 s / 300 s, landing expiry + 2 slots: both FAIL. Primary d9_t60: n 123, 2/10 days positive, flat … |
 | `p20-wick-bid-zero-latency` | Resting-bid wick capture: one-sided bid liquidity filled at the dump print's own price … | `explored-no-survivor` | Latency-0 upper bound DEAD (P22, 2026-10-24, declared rule): entering at the sell's post-trade state on dump-absorb D8/D15 triggers, exploration blocks explore-0814/fresh-0903/exp011-0909 (28 days), pooled net of 25 bps and 505k-lamport sends, flat 15%: D8-300 mean -0.0208 SOL/trade at 0.1 SOL (n 336,648, CI90 lo -0.0210, 0 of 28 days positive), D15-300 -0.0316 (n 87,282). … |
+| `p28-preset` | PRESET-SURGE: exact-amount app-preset buy burst | `explored-no-survivor` | Counts: exact-1e6-lamport buys are 0.088% (explore-0814) and 0.058% (fresh-0903) of 26.9M / 25.5M in-universe buys, at chance (0.1%); surge cell 15 triggers / 0. The signature is not on the tape. Killed on structure by its own declared rule (base share <= 0.2%). |
+| `p28-glut` | GRAD-GLUT: newly boosted pools per hour as a venue-supply regime sleeve | `dead-as-frozen` | Counts: 62-155 new in-band pools per hour (p10-p90); hours at >= 2x or <= 0.5x of the trailing 24 h median are 1 of 48 (explore) and 0 of 48 (fresh), under the declared 5% bar. Killed on counts: the regime hardly varies. Any join to H5 outcomes is behind the D3 / EXP-024 Look-2 seal to 2026-11-14. |
 
 ## Duplicate rows
 
