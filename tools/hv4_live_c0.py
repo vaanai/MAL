@@ -1,7 +1,8 @@
 """hv4_live_c0: the compiled DEC-032 C0 canary limits, stake rule and fee pin for an HV4 arm on `tools/arena_live_bridge`. PR 1 of the HV4 live adapter.
 
 Pure functions and constants. No network, no key, no file read, no HV4 ledger. Installs nothing. The limits are CODE CONSTANTS: a config may only
-restate or tighten them (`config_refusal`), never loosen. Scope doc: ARTIFACTS/lab/c0-readiness-2026-10-25.md section 7, items 1 to 3.
+restate or tighten them (`config_refusal`), never loosen. Scope doc: ARTIFACTS/lab/c0-readiness-2026-10-25.md section 7, items 1 to 5 and 9 (PR 2 adds the frozen_sha pin, the universe check, the
+sell builder pin and the sell priority escalation).
 
 Arms: only F or X arms are canary candidates (the L arms rewrite their playbook nightly = a prompt change = a new bot_id under DEC-032 s1.4). A bot_id
 ending in -L, -P or -R is refused.
@@ -15,6 +16,8 @@ p155; it equals h5_executor.H5_DEFAULT and a test asserts that). A config naming
 
 from __future__ import annotations
 
+import hashlib
+import inspect
 from typing import Any, Iterable, Mapping
 
 PROFILE = "hv4_c0"
@@ -39,9 +42,63 @@ PRIORITY_PIN: dict[str, Any] = {"profile": "default", "buy": 55_000, "sell": 55_
 TRIP_FEE_RESERVE_LAMPORTS = (PRIORITY_PIN["buy"] + BASE_FEE_LAMPORTS) + (PRIORITY_PIN["escalated"] + BASE_FEE_LAMPORTS)
 SELL_FEE_RESERVE_LAMPORTS = PRIORITY_PIN["escalated"] + BASE_FEE_LAMPORTS
 
+FROZEN_SHA = "9ed4c5ff63935696b2a89150e13565e123047754"  # the HV4 runner checkout the decision code runs at; the `start` row must repeat it (else latch frozen_sha_mismatch)
+UNIVERSE_V_RANGE = (17_500_000_000, 17_700_000_000)  # lamports; same band as tools/arena_live_bridge.UNIVERSE_V_RANGE (a test compares them)
+WSOL_MINT = "So11111111111111111111111111111111111111112"
+SKIP_UNIVERSE_LABELS = ("universe_v_out_of_range", "quote_not_wsol")  # a universe skip is a SKIP (logged `universe_skip`), never a cap or a refusal count
+
+# The sell + close of the token ATA in ONE transaction is built by the unmodified probe_live.LiveExecutor._start_sell (tx.sell_instructions: budget,
+# WSOL ATA, PumpSwap sell, WSOL close; then probe_live.close_token_account(base_ata, user, base_tp) with base_tp = the mint's own token program).
+# Pinned by sha256 of the source of each piece; `sell_pin_problem` recomputes them and a live hv4_c0 start refuses on any mismatch. The file sha of
+# probe_live.py is NOT pinned (an unrelated probe edit must not break the canary); only the three symbols the sell path runs through are.
+SELL_BUILDER_PIN: dict[str, str] = {
+    "path": "tools/probe_live.py", "symbol": "LiveExecutor._start_sell",
+    "symbol_sha256": "a1931a785fe17f130aa18751229e1f7ee2358e9678a3626c7757b8b992deb57e",
+    "close_token_account_sha256": "93119b2ea159bcb9defcb5e7d2424a5635df432f7ffc9b18d07355d2f364895a",  # tools/probe_live.py close_token_account
+    "sell_instructions_sha256": "ad40960ef8cc18260f0682cf83989be8ab36f7366354cada1a84367194757eeb",  # tools/pumpswap_tx.py sell_instructions
+}
+
 REFUSED_ARM_SUFFIXES = ("-L", "-P", "-R")
 ALLOWED_ARM_SUFFIXES = ("-F", "-X")
 _CONFIG_FORBIDDEN = ("sell_priority_lamports", "escalated_priority_lamports")
+
+
+def sell_priority(sell_attempts: int, stuck: bool = False) -> int:
+    """Priority lamports for a sell: the first attempt is 55,000; any retry (a failed or expired sell, or a stuck position) is the escalated 150,000."""
+    return PRIORITY_PIN["escalated"] if (stuck or int(sell_attempts) >= 1) else PRIORITY_PIN["sell"]
+
+
+def universe_problem(quote_mint: Any, v_lamports: Any) -> str | None:
+    """WSOL quote and stored V inside the band. Labels are in SKIP_UNIVERSE_LABELS. HV4's own `filters` check PumpSwap + WSOL only, so the canary's
+    universe (this band) is NARROWER than the read's: a DEC copy must declare the subset."""
+    if str(quote_mint) != WSOL_MINT:
+        return "quote_not_wsol"
+    if isinstance(v_lamports, bool) or not isinstance(v_lamports, (int, float)) or not UNIVERSE_V_RANGE[0] <= v_lamports <= UNIVERSE_V_RANGE[1]:
+        return "universe_v_out_of_range"
+    return None
+
+
+def frozen_sha_refusal(cfg: Mapping[str, Any]) -> str | None:
+    return None if cfg.get("frozen_sha") == FROZEN_SHA else "frozen_sha_not_pinned"
+
+
+def sell_pin_problem(pin: Mapping[str, str] | None = None) -> str | None:
+    """Recompute SELL_BUILDER_PIN from the code on disk. None when all match; else the first item that differs. Imports the solana stack, so a dry
+    bridge never calls it."""
+    from tools import probe_live as pl
+    from tools import pumpswap_tx as ptx
+    pin = pin or SELL_BUILDER_PIN
+    sha = lambda b: hashlib.sha256(b).hexdigest()  # noqa: E731
+    got = {"symbol_sha256": lambda: sha(inspect.getsource(pl.LiveExecutor._start_sell).encode()),
+           "close_token_account_sha256": lambda: sha(inspect.getsource(pl.close_token_account).encode()),
+           "sell_instructions_sha256": lambda: sha(inspect.getsource(ptx.sell_instructions).encode())}
+    for k, fn in got.items():
+        try:
+            if fn() != pin.get(k):
+                return f"sell_builder_pin_mismatch:{k}"
+        except (OSError, TypeError):
+            return f"sell_builder_pin_unreadable:{k}"
+    return None
 
 
 def arm_refusal(bot_id: Any) -> str | None:
@@ -83,7 +140,7 @@ def priority_refusal(cfg: Mapping[str, Any]) -> str | None:
 
 def config_refusal(cfg: Mapping[str, Any], live: bool) -> str | None:
     """The first reason a C0 config is refused, else None. `funded_lamports` is required when live."""
-    why = arm_refusal(cfg.get("bot_id")) or priority_refusal(cfg)
+    why = arm_refusal(cfg.get("bot_id")) or frozen_sha_refusal(cfg) or priority_refusal(cfg)
     if why:
         return why
     if live or cfg.get("funded_lamports") is not None:
@@ -104,6 +161,7 @@ def guard_problem() -> str | None:
         ("tier", TIER_NAME == "T1"),
         ("priority_pin", (PRIORITY_PIN["buy"], PRIORITY_PIN["sell"], PRIORITY_PIN["escalated"]) == (55_000, 55_000, 150_000)),
         ("fee_reserve", TRIP_FEE_RESERVE_LAMPORTS == 215_000 and SELL_FEE_RESERVE_LAMPORTS == 155_000),
+        ("frozen_sha", isinstance(FROZEN_SHA, str) and len(FROZEN_SHA) == 40 and FROZEN_SHA.startswith("9ed4c5ff")),
         ("daily_le_total", C0_LIMITS["daily_loss_lamports"] <= C0_LIMITS["total_loss_lamports"]),
     )
     for name, ok in checks:
