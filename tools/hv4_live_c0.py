@@ -49,13 +49,40 @@ SKIP_UNIVERSE_LABELS = ("universe_v_out_of_range", "quote_not_wsol")  # a univer
 
 # The sell + close of the token ATA in ONE transaction is built by the unmodified probe_live.LiveExecutor._start_sell (tx.sell_instructions: budget,
 # WSOL ATA, PumpSwap sell, WSOL close; then probe_live.close_token_account(base_ata, user, base_tp) with base_tp = the mint's own token program).
-# Pinned by sha256 of the source of each piece; `sell_pin_problem` recomputes them and a live hv4_c0 start refuses on any mismatch. The file sha of
-# probe_live.py is NOT pinned (an unrelated probe edit must not break the canary); only the three symbols the sell path runs through are.
+# Pinned by sha256 of the source of each piece AND of every callee that shapes the transaction: the pumpswap_tx helpers (CALLEES_PTX: sell_data, ata,
+# pda, create_ata_idempotent, sync_native, close_account, compute_budget_ixs, priority_price_for_total, swap_accounts and its PDA helpers,
+# min_out_with_slippage), the pumpswap_tx program/discriminator/CU constants, and probe_live's signing guard (_sign, validate_message).
+# `sell_pin_problem` recomputes them; it is checked at STARTUP only (a live hv4_c0 start refuses on any mismatch), not per send: code is not edited
+# under a running process, and a changed tree needs a restart, which re-checks. A decode test is the backstop for what the pin cannot see.
+# The file sha of probe_live.py is NOT pinned (an unrelated probe edit must not break the canary).
+CALLEES_PTX = ("sell_instructions", "sell_data", "ata", "pda", "create_ata_idempotent", "sync_native", "close_account", "compute_budget_ixs",
+               "priority_price_for_total", "swap_accounts", "_m", "creator_vault_authority", "event_authority", "fee_config", "pool_v2", "min_out_with_slippage")
+CALLEES_PL = ("close_token_account", "validate_message")  # module-level functions of tools/probe_live.py
+CONSTANTS_PTX = ("PUMPSWAP_PROGRAM", "FEE_PROGRAM", "GLOBAL_CONFIG", "WSOL_MINT", "TOKEN_PROGRAM", "TOKEN_2022_PROGRAM", "ATA_PROGRAM", "SYSTEM_PROGRAM",
+                 "PUMP_PROGRAM", "DISC_SELL", "DEFAULT_SELL_CU_LIMIT")
 SELL_BUILDER_PIN: dict[str, str] = {
     "path": "tools/probe_live.py", "symbol": "LiveExecutor._start_sell",
     "symbol_sha256": "a1931a785fe17f130aa18751229e1f7ee2358e9678a3626c7757b8b992deb57e",
-    "close_token_account_sha256": "93119b2ea159bcb9defcb5e7d2424a5635df432f7ffc9b18d07355d2f364895a",  # tools/probe_live.py close_token_account
-    "sell_instructions_sha256": "ad40960ef8cc18260f0682cf83989be8ab36f7366354cada1a84367194757eeb",  # tools/pumpswap_tx.py sell_instructions
+    "_sign_sha256": "7cd13e70d5b27dd80c960b412de1b4ea8ae9cd48a95f8c4541677ff7fc9b6e5c",
+    "close_token_account_sha256": "93119b2ea159bcb9defcb5e7d2424a5635df432f7ffc9b18d07355d2f364895a",
+    "validate_message_sha256": "13e59229628a516a63e5439228bebb9b11cab4c69b6c3db4eb6b04ac72ce487b",
+    "ptx.sell_instructions_sha256": "ad40960ef8cc18260f0682cf83989be8ab36f7366354cada1a84367194757eeb",
+    "ptx.sell_data_sha256": "78fa481df272f366949b4d5e3d75e882ded7e7a7cbbf57ec9985cd3b94c6ac97",
+    "ptx.ata_sha256": "c52d59af62f7820795964c0388b8c3780805ced454aa301bcc5a3b1823a64854",
+    "ptx.pda_sha256": "b7296ab8ade148933f9684036d10ffaa2b9e713fb8422cd900fd77f0167532f3",
+    "ptx.create_ata_idempotent_sha256": "8a242b5d7bb266d3b3f7e847d78f14d8b46a48971bf7917c59d0dddb86e5522e",
+    "ptx.sync_native_sha256": "42c0ed957f2b7df26c6d76eb3f1c96fdb7e350f59e0149b8f371fd32bd6315f6",
+    "ptx.close_account_sha256": "cd6c205f3612bdd1409ad6d1e634b0a6409c5f2a6bbff70033271f9962eb3756",
+    "ptx.compute_budget_ixs_sha256": "0de51d40730bd5199a56d7bde0f8f291961cb6813b4a665de5119717461a969c",
+    "ptx.priority_price_for_total_sha256": "2c9a5e350f7de92a43e6100e836175502600deadb833754eef90c481da3e286d",
+    "ptx.swap_accounts_sha256": "88c8d26585820fe3799cf7859128b0236b0d07b3dc4512d1ec2b491e768ad090",
+    "ptx._m_sha256": "ccac4adaa98ed9c14820cb6f8414e25d1296b188c159e2c32c9824875cb5e279",
+    "ptx.creator_vault_authority_sha256": "ee4e434cdda7771de94cdb1eb6dc739258cf37a54f84b97ba06492ba65bf2ec2",
+    "ptx.event_authority_sha256": "f1ad7f6331bd48abd3189647c4df915f1a34d03f5eacf720df725a0ec8b9ac8e",
+    "ptx.fee_config_sha256": "6a7ab50d4dc406713f471e492c212ee9b05312b5ef7a5e9eb488448a878434de",
+    "ptx.pool_v2_sha256": "28a04b8884d924854d997a7fbcad0c6aac8f36644ca52f6f2bf78a41fa81a40f",
+    "ptx.min_out_with_slippage_sha256": "0573c7e1c465a744cbd3d843f6271a109c04f2e21e64bb36d3636e2e71a1c49f",
+    "ptx.constants_sha256": "e2b66274132a760ee6d440ae8cbd03294bb0ba29f97a0d8b6aecd2b286dbe79c",
 }
 
 REFUSED_ARM_SUFFIXES = ("-L", "-P", "-R")
@@ -69,8 +96,9 @@ def sell_priority(sell_attempts: int, stuck: bool = False) -> int:
 
 
 def universe_problem(quote_mint: Any, v_lamports: Any) -> str | None:
-    """WSOL quote and stored V inside the band. Labels are in SKIP_UNIVERSE_LABELS. HV4's own `filters` check PumpSwap + WSOL only, so the canary's
-    universe (this band) is NARROWER than the read's: a DEC copy must declare the subset."""
+    """WSOL quote and stored V inside the band. Labels are in SKIP_UNIVERSE_LABELS. At the frozen sha 9ed4c5ff, hv4_cards `filters` apply the same
+    v_band [17.5e9, 17.7e9] (inclusive) and a separate `v_missing`, so the canary universe equals the read's. One residual difference: a missing V is
+    `v_missing` in HV4 but `universe_v_out_of_range` here (also a logged skip)."""
     if str(quote_mint) != WSOL_MINT:
         return "quote_not_wsol"
     if isinstance(v_lamports, bool) or not isinstance(v_lamports, (int, float)) or not UNIVERSE_V_RANGE[0] <= v_lamports <= UNIVERSE_V_RANGE[1]:
@@ -82,21 +110,30 @@ def frozen_sha_refusal(cfg: Mapping[str, Any]) -> str | None:
     return None if cfg.get("frozen_sha") == FROZEN_SHA else "frozen_sha_not_pinned"
 
 
-def sell_pin_problem(pin: Mapping[str, str] | None = None) -> str | None:
-    """Recompute SELL_BUILDER_PIN from the code on disk. None when all match; else the first item that differs. Imports the solana stack, so a dry
-    bridge never calls it."""
+def _sell_pin_items() -> dict[str, Any]:
+    """name -> callable returning the sha256 of the current code. Imports the solana stack."""
     from tools import probe_live as pl
     from tools import pumpswap_tx as ptx
-    pin = pin or SELL_BUILDER_PIN
     sha = lambda b: hashlib.sha256(b).hexdigest()  # noqa: E731
-    got = {"symbol_sha256": lambda: sha(inspect.getsource(pl.LiveExecutor._start_sell).encode()),
-           "close_token_account_sha256": lambda: sha(inspect.getsource(pl.close_token_account).encode()),
-           "sell_instructions_sha256": lambda: sha(inspect.getsource(ptx.sell_instructions).encode())}
-    for k, fn in got.items():
+    items: dict[str, Any] = {"symbol_sha256": lambda: sha(inspect.getsource(pl.LiveExecutor._start_sell).encode()),
+                             "_sign_sha256": lambda: sha(inspect.getsource(pl.LiveExecutor._sign).encode())}
+    for n in CALLEES_PL:
+        items[f"{n}_sha256"] = (lambda n=n: sha(inspect.getsource(getattr(pl, n)).encode()))
+    for n in CALLEES_PTX:
+        items[f"ptx.{n}_sha256"] = (lambda n=n: sha(inspect.getsource(getattr(ptx, n)).encode()))
+    items["ptx.constants_sha256"] = lambda: sha(repr([(n, getattr(ptx, n)) for n in CONSTANTS_PTX]).encode())
+    return items
+
+
+def sell_pin_problem(pin: Mapping[str, str] | None = None) -> str | None:
+    """Recompute SELL_BUILDER_PIN from the code on disk. None when all match; else the first item that differs (also an item missing from the pin).
+    Imports the solana stack, so a dry bridge never calls it. Startup check only."""
+    pin = pin or SELL_BUILDER_PIN
+    for k, fn in _sell_pin_items().items():
         try:
             if fn() != pin.get(k):
                 return f"sell_builder_pin_mismatch:{k}"
-        except (OSError, TypeError):
+        except (OSError, TypeError, AttributeError):
             return f"sell_builder_pin_unreadable:{k}"
     return None
 
