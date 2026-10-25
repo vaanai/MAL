@@ -40,7 +40,15 @@ def _sandbox(tmp_path, monkeypatch):
     real = os.path.realpath(tmp_path)
     monkeypatch.setattr(HC, "READ_ROOTS", (real,))
     monkeypatch.setattr(HC, "WRITE_ROOTS", (real,))
-    monkeypatch.setattr(R, "wall_ms", lambda: T0 + 1)
+    clk = [T0 + 1]
+    monkeypatch.setattr(R, "wall_ms", lambda: clk[0])
+    orig_call = R._call
+
+    def _call(model, req, now_ms):                      # the model call happens "now": the wall clock is the instant the test passed in
+        clk[0] = now_ms
+        return orig_call(model, req, now_ms)
+
+    monkeypatch.setattr(R, "_call", _call)
 
 
 def blk(i=0):
@@ -525,7 +533,13 @@ def test_latest_block_skips_invalid_files_and_night_stores_a_byte_copy(tmp_path)
     assert (tmp_path / "bundles" / "L" / f"{DAY}.block.json").read_bytes() == (d / f"block-{CUT - 2 * H}.json").read_bytes()
 
 
+def mark(root):
+    Path(root).mkdir(parents=True, exist_ok=True)
+    (Path(root) / R.DRILL_MARKER).write_text("", encoding="utf-8")
+
+
 def test_cli_regime_block_must_come_from_the_regime_dir(tmp_path, capsys):
+    mark(tmp_path)
     setup(tmp_path)
     out = _put_block(tmp_path / "elsewhere", CUT - H)
     rc = R.main(["regime", "--root", str(tmp_path), "--arm", "L", "--day", DAY, "--commit", COMMIT, "--now-ms", str(NOW), "--stub", "--block", str(out)])
@@ -574,12 +588,43 @@ def test_now_cannot_backdate(tmp_path):
         R.review_night("L", d2, root=tmp_path, ledger_root=tmp_path, model=stub("[]"), now_ms=c2 + 5 * 60_000, commit=COMMIT, records=history())
 
 
-def test_cli_now_must_be_the_wall_clock_outside_test_mode(tmp_path, monkeypatch, capsys):
-    setup(tmp_path, "L-nr")
-    monkeypatch.setattr(R, "wall_ms", lambda: NOW + 1)
-    base = ["run", "--root", str(tmp_path), "--arm", "L-nr", "--day", DAY, "--commit", COMMIT]
-    assert R.main(base + ["--now-ms", str(NOW - 120_000)]) == 1 and "now_ms_not_wall_clock" in capsys.readouterr().err
-    assert R.main(base + ["--now-ms", str(NOW - 120_000), "--stub"]) == 0                  # test mode
+def test_future_dated_line_is_refused(tmp_path, monkeypatch):
+    setup(tmp_path, "P")
+    monkeypatch.setattr(R, "wall_ms", lambda: NOW - 2 * H)                     # the wall clock is 2 h behind the instant the caller claims
+    monkeypatch.setattr(R, "_call", lambda m, req, now: ("[]", None, None))
+    with pytest.raises(RV.ManifestRefused, match="written_in_future"):
+        R.review_night("P", DAY, root=tmp_path, ledger_root=tmp_path, model=stub("[]"), now_ms=NOW, commit=COMMIT, records=history(), block=BLOCK)
+    assert len(R.read_manifests(tmp_path, "P")) == 1                            # nothing written: later real lines are not silenced
+    monkeypatch.setattr(R, "wall_ms", lambda: NOW - 30_000)                     # inside the 60 s slack
+    assert R.review_night("P", DAY, root=tmp_path, ledger_root=tmp_path, model=stub("[]"), now_ms=NOW, commit=COMMIT, records=history(), block=BLOCK)["kind"] == "nightly"
+
+
+def test_stub_and_now_ms_refused_on_a_production_chain(tmp_path, monkeypatch, capsys):
+    prod = tmp_path / "haiku-v6"
+    monkeypatch.setattr(R, "HV6_ROOT", str(prod))
+    for root in (prod, prod / "releases" / "v6.1", tmp_path / "unmarked"):
+        setup(root, "L-nr")
+        base = ["run", "--root", str(root), "--arm", "L-nr", "--day", DAY, "--commit", COMMIT]
+        for extra in (["--stub"], ["--now-ms", str(NOW)], ["--stub", "--now-ms", str(NOW)]):
+            assert R.main(base + extra) == 1 and "stub_or_now_only_in_drill_roots" in capsys.readouterr().err
+        assert len(R.read_manifests(root, "L-nr")) == 1
+    mark(prod)                                                                   # a marker inside the production tree does not count
+    assert R.main(["run", "--root", str(prod), "--arm", "L-nr", "--day", DAY, "--commit", COMMIT, "--stub"]) == 1
+    assert not R.is_drill_root(prod) and not R.is_drill_root(prod / "releases" / "v6.1")
+
+
+def test_drill_roots_allow_stub_and_now_ms(tmp_path, monkeypatch, capsys):
+    prod = tmp_path / "haiku-v6"
+    monkeypatch.setattr(R, "HV6_ROOT", str(prod))
+    drill = prod / "drill" / "d1"
+    marked = tmp_path / "fixture"
+    mark(marked)
+    for root in (drill, marked):
+        assert R.is_drill_root(root)
+        setup(root, "L-nr")
+        assert R.main(["run", "--root", str(root), "--arm", "L-nr", "--day", DAY, "--commit", COMMIT, "--now-ms", str(NOW), "--stub"]) == 0
+        assert len(R.read_manifests(root, "L-nr")) == 2
+        capsys.readouterr()
 
 
 # ------------------------------------------------------------------------------------------------ glue and perms
@@ -610,6 +655,7 @@ def test_sealed_files_are_0600_and_dirs_0700(tmp_path):
 # ------------------------------------------------------------------------------------------------ self-seal and hygiene
 def test_replies_sealed_under_root_and_cli_prints_only_hashes(tmp_path, capsys):
     out = tmp_path / "root"
+    mark(out)
     for arm in ("L", "L-nr", "P"):
         row, _ = R.genesis_manifest(arm, T0, COMMIT)
         R.append_manifest(out, arm, row, None, None)
@@ -641,3 +687,75 @@ def test_no_r4b_l3_laya_and_no_hv4_paths_in_source():
     assert out.stdout.strip() == "[]"
     src = (TOOLS / "hv6_review.py").read_text(encoding="utf-8")
     assert "haiku-v4" not in src and "bots.json" not in src and "ANTHROPIC" not in src
+
+
+# ------------------------------------------------------------------------------------------------ import guard over every HV6 file
+def _hv6_sources():
+    files = sorted(TOOLS.glob("hv6_*.py"))
+    assert {f.name for f in files} >= {"hv6_agents.py", "hv6_cards.py", "hv6_regime_block.py", "hv6_release.py", "hv6_review.py", "hv6_runner.py"}
+    return files
+
+
+def test_import_guard_runs_over_every_hv6_file_with_an_enumerated_code_only_set():
+    assert HC.HV4_CODE_ONLY == frozenset({"hv4_arms", "hv4_budget", "hv4_model", "hv4_prompts", "hv4_review", "hv4_validate"})
+    used = set()
+    for f in _hv6_sources():
+        src = f.read_text(encoding="utf-8")
+        assert HC.forbidden_imports(src, HC.HV4_CODE_ONLY) == [], f.name
+        used |= set(HC.forbidden_imports(src))
+    assert used <= set(HC.HV4_CODE_ONLY)                                         # every exemption is one HV6 really imports
+    assert HC.forbidden_imports("from tools import hv4_review") == ["hv4_review"]            # the default stays strict
+    assert HC.forbidden_imports("import tools.hv4_runner", HC.HV4_CODE_ONLY) and HC.forbidden_imports("from tools import hv4_read", HC.HV4_CODE_ONLY)
+    assert HC.forbidden_imports("from tools import arena_score", HC.HV4_CODE_ONLY)
+
+
+HV4_OUTPUT_NAMES = {"load_trade_records", "review_night", "verify_chain", "active_version", "append_manifest", "read_manifests", "main", "genesis_manifest",
+                    "make_manifest", "check_manifest", "load_version"}
+HV4_OUTPUT_MODULES = {"hv4_runner", "hv4_read", "hv4_shakedown_report", "hv4_p0_count", "hv4_review_replay", "hv4_review_bench", "hv4_live_c0", "arena_score",
+                      "arena_am6_read", "arena_report_legs", "arena_worst_gaps"}
+
+
+def test_no_hv6_file_calls_hv4_chain_ledger_or_output_functions():
+    import ast
+    for f in _hv6_sources():
+        tree = ast.parse(f.read_text(encoding="utf-8"))
+        aliases = {"RV"}
+        wrappers = 0
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                mod = (node.module or "").split(".")[-1]
+                names = {a.name for a in node.names}
+                assert mod not in HV4_OUTPUT_MODULES and not names & HV4_OUTPUT_MODULES, f.name
+                if mod == "hv4_review":
+                    assert not names & (HV4_OUTPUT_NAMES | {"load_skip_records"}), f.name
+                aliases |= {a.asname or a.name for a in node.names if a.name == "hv4_review"}
+            elif isinstance(node, ast.Import):
+                assert not {n.name.split(".")[-1] for n in node.names} & HV4_OUTPUT_MODULES, f.name
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Attribute) and node.attr in HV4_OUTPUT_NAMES | {"load_skip_records"}:
+                v = node.value
+                base = v.id if isinstance(v, ast.Name) else (v.attr if isinstance(v, ast.Attribute) else None)
+                if base in aliases:
+                    assert node.attr == "load_skip_records", f"{f.name}: reaches hv4_review.{node.attr}"
+                    wrappers += 1
+        if f.name == "hv6_review.py":                                            # RV.load_skip_records only inside the guarded wrapper
+            fn = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "load_skip_records")
+            inside = [n for n in ast.walk(fn) if isinstance(n, ast.Attribute) and n.attr == "load_skip_records"]
+            assert wrappers == len(inside) == 1
+        else:
+            assert wrappers == 0, f.name
+        if f.name not in ("hv6_agents.py", "hv6_cards.py"):                       # those two hold the deny-token list
+            assert "haiku-v4" not in f.read_text(encoding="utf-8"), f.name
+
+
+# ------------------------------------------------------------------------------------------------ pre-registration: the runner on main
+def test_runner_names_equal_the_reviewers():
+    from tools import hv6_runner as RUN
+    for arm in ag.ARMS:
+        assert RUN.bot_id(arm) == R.bot_id("v6.0", arm)                         # the engine-ledger dir name
+    src = (TOOLS / "hv6_runner.py").read_text(encoding="utf-8")
+    assert 'Path(a.root) / "engine-ledger"' in src and R.default_ledger_root("/x/haiku-v6") == "/x/haiku-v6/engine-ledger"
+    assert 'self.dir = Path(root) / "decisions"' in (TOOLS / "arena_declog.py").read_text(encoding="utf-8")        # decisions/<arm>/<day>.jsonl
+    assert "self.log.append(arm," in src
+    # the runner has no release concept: it hard-codes hv6.0-, so no v6.N >= 1 can register until it takes the release from the registration
+    assert "releases" not in src and RUN.BOT_PREFIX == "hv6.0-"
