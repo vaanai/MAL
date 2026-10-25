@@ -12,7 +12,7 @@ This book was first drafted as "HV5". Two older, still-open PRs already use that
 | PR | What it is | Relation to HV6 |
 |---|---|---|
 | #777 `hv5: DECLARE + counts-only cohort builder` (2026-10-21) | "V5-A delta-veto / V5-B exit manager": a model that may only veto/halve/manage entries that a **code rule book** already made (BASE-1 H5 BOOSTFLOOR, BASE-2 HV4 PULLBACK), priced on explore-0814. Counts only so far. | Different book. HV6's model chooses entries among scanner cards; it is not a veto layer. #777 stays "HV5". HV6 uses none of its cells, and no H5 entries (those are < 360 s, section 8). |
-| #814 `hv5: validator + prompt fixes` (2026-10-23) | New files `hv5_validate.py`, `hv5_prompts.py`, `hv5_playbooks/`, `hv5_templates/` fixing two HV4 defects: risk "why" word count (33/144 invalid) and entry over-skip (0 LLM entries in 4 h; SKIP anchors in the prompt; parse/stale/below-min all labelled SKIP). Not wired into a runner. | HV6 **adopts those fixes** (symmetric SKIP wording, PARSE_ERROR / NO_OUTPUT / STALE / BELOW_MIN actions, `wanted_rate`, soft why limit) by copying into `hv6_*` after #814 is merged and QP-reviewed; until then HV6 cannot reach the take rate it assumes. HV6 has no risk LLM call, so the risk fixes are moot. |
+| #814 `hv5: validator + prompt fixes` (2026-10-23) | New files `hv5_validate.py`, `hv5_prompts.py`, `hv5_playbooks/`, `hv5_templates/` fixing two HV4 defects: risk "why" word count (33/144 invalid) and entry over-skip (0 LLM entries in 4 h; SKIP anchors in the prompt; parse/stale/below-min all labelled SKIP). Not wired into a runner. | HV6 **adopts those fixes** (symmetric SKIP wording, PARSE_ERROR / NO_OUTPUT / STALE / BELOW_MIN actions, `wanted_rate`, soft why limit) by copying into `hv6_*` only after #814 merges with a QP OK on its exact head (the registration discloses that #814's evidence is HV4 pre-clock smoke notes: decision counts, no prices, "0 LLM-arm entries in 4 h", risk invalid 33/144, and that "no entry rate was targeted"); until then HV6 cannot reach the take rate it assumes. HV6 has no risk LLM call, so the risk fixes are moot. |
 
 **Real counts from #777** (COUNTS.md; explore-0814, Aug 14-28, 1-minute bars, setups through HV4 predicates, **before ranking, entry caps and
 any veto; signers are upper bounds; in-sample; not HV6's GEN definitions**): CON_PULLBACK 6,718 attempts = 488.6/day (min day 47, worst 7-day
@@ -63,7 +63,7 @@ P&L, attempt count, shakedown or smoke report of HV4.
 
 **Trades/day (assumption).** With #777's August setup supply, the board (<= 576 cards/day) is binding, not supply. A SKIP-by-default model
 taking 3-5% of cards gives **L about 17-29/day; planning figure 20, range 10-35**. X (2/h cap, <= 48/day) is cap-bound if October has >= 2
-gated setups/h. P0 replaces these guesses (section 10). **Deciding arm = L.** S5: for LLM arms P0's would-be attempt is the card shown (an
+gated setups/h. P0 replaces these guesses (section 10) and changes no value. **Deciding arm = L.** S5: for LLM arms P0's would-be attempt is the card shown (an
 upper bound), so H = 14 (Am.4 2.2: H = min(90, max(14, ceil(150/rate)))). L's real rate is unknown; if it is under about 7/day, L ends
 NOT_DECIDABLE at T0 + H. X is judged on its own P0 rate and floor.
 
@@ -101,6 +101,11 @@ skipped. A whole-record schema failure gives `absent`. Stale = latest record > 3
 | `change_utc`, `hours_since` | from the structured `at_utc` / `day` |
 | `key_class` | enum swap, create, complete, pool_create, other, mapped from `keys` by a fixed table |
 
+**Subject mapping (V2-4).** For new_key, gone_key, count_shift and share_shift the key sits only in the structured `subject` string
+(`"<src> <prog>/<type>"`). `program` and `key_class` come from an exact-match table over that string; an unknown string maps to `OTHER` / `other`
+and is counted; `subject` itself is never emitted. Tested against `change_radar.py`. (Kinds whose mapping gives `OTHER` are `adjacent` and never
+trigger an intraday review.)
+
 Summary: `n_high_core_7d`, `hours_since_last_high_direct`, `radar_status`. **`ratio` and `n_writes` are dropped from v1 (R2):** they exist only
 inside the free-text `detail`, and no regex on `detail` is allowed. A later release may add them only after a radar PR makes them structured
 (new pin, QP OK). **Excluded (R5):** `detail`, `title`, `subject` (raw key/instruction names), `keys` (only mapped to `key_class`),
@@ -120,7 +125,8 @@ version hashed and logged before its first decision (DEC-031 section 1.3); the m
 
 **Latency, honestly (R7).** The radar is a daily job (about 07:11Z). Change-to-version latency = radar cadence + digest + the review run + 30
 min. From the digest record: about 30-45 min. From the on-chain change instant: up to about one radar cycle plus that (the 2026-10-19 pump
-redeploy was flagged by the 10-20 07:11Z run, 13.4 h after). Registration states both numbers; "about 2 h" is withdrawn.
+redeploy, deploy 17:47:02Z, was flagged by the 10-20 07:11Z run, 13.4 h after; source: `docs/research/p23-change-radar/DESIGN.md` section 0, to be
+re-cited from the radar record or notebook id in the registration). Registration states both numbers; "about 2 h" is withdrawn.
 
 **Validator for `regime_rule`.** Must cite a present `RG-` id. Tightening is always allowed (stop, time, local veto; TTL <= 72 h). Note: a
 "smaller size" tightening is a **no-op in the flat-stake deciding cell**; stop, time and local-veto changes do act there (R8). Loosening only as a
@@ -160,9 +166,12 @@ required before any canary proposal. NOT_DECIDABLE / NOT EVALUABLE routes: DEC-0
 
 **Comparison windows (T2), calendar terms, write-once (`<bot_id>.v12.json` pattern), independent of B.** T0 = clock (target 2026-10-30T00Z).
 - V1/V2: window [T0, T0 + 7 d), decided at T0 + 8 d (2026-11-07T00Z).
-- Learning and regime: window [T0, T0 + D), **D = 12** (ends 2026-11-11T00Z = the API horizon), 6/6 week split, decided at T0 + D + 1 h or when the R-null job ends.
-- D, H and the budget horizon agree: if the owner gives a spend line through T0 + 14, D becomes 14; otherwise D = 12 and arms halt at 11-11 as a
-  budget stop. H = 14 is the formula minimum; a book whose boundary is not reached by the halt is NOT_DECIDABLE.
+- Learning and regime: window [T0, T0 + D), **D = 12** (ends 2026-11-11T00Z = the API horizon), 6/6 week split. Decided after every attempt decided in
+  the window has exited: **at the earliest T0 + D + 13 h** (max hold 12 h), or when the R-null job ends if later.
+- **D is fixed in the registration before the clock.** A later owner line never changes D and never extends a running window. At 2026-11-11T00Z
+  entries halt and code exits (stop/target/time, no LLM, since the budget drop order ends re-checks) run to completion.
+- The window end 2026-11-11T00Z caps H (Am.4 2.2, "capped by any window end"). The capped H is pinned with D in the notebook copy and the records PR
+  (Am.7). A boundary not reached by then is NOT_DECIDABLE.
 
 **Contrasts.** Each is A1's exact one-sided sign-flip on daily differences at stake 0.25 (A1 items 1-6; a day with no trade in either arm counts as 0), in all four sub-cells, on both legs. A1 item 6 (a rare large loss can pass a symmetric test) is quoted in the registration.
 
@@ -172,7 +181,19 @@ required before any canary proposal. NOT_DECIDABLE / NOT EVALUABLE routes: DEC-0
 | V1 | primary ex-top-3 of L, L-nr, F above the p95 of the 200-seed R null | null must verify (below) |
 | Learning (a conjunction) | (L-nr - F, p <= 0.025) AND (L-nr - P, p <= 0.025) AND week-2 >= week-1 | >= 6 days |
 | Outcome information | L - P | p <= 0.025, >= 6 days |
-| Regime | L - L-nr on regime days | p <= 0.025 one-sided, >= 6 non-zero regime days; the regime-day set (72 h after each direct HIGH event) is fixed mechanically from the pinned radar records **before any HV6 outcome is opened** |
+| Regime | L - L-nr on regime days (rule below) | p <= 0.025 one-sided in each of the four sub-cells; >= 6 non-zero regime days in each sub-cell, else NOT_DECIDABLE |
+
+**Regime-day rule (QP Addendum 1 section 3; fixed in the registration text, computed by frozen `hv6_read` code).**
+- **E (events):** every event in HV6's own pinned regime byte-copies (`/data/mal/arena/haiku-v6/regime/`, the bytes L actually saw) with sev HIGH and
+  relevance `direct`, from a record whose `radar_status` is ok or partial (never absent or stale), deduplicated by `RG-` id.
+- **t_e:** the `run_utc` of the first radar record carrying that `RG-` id, i.e. the first instant the block could hold it. Not the on-chain
+  `at_utc`, which is reported beside it.
+- e counts if t_e is in [T0, T0 + D). **Regime days** are the UTC dates d in [T0, T0 + D) such that [d 00:00Z, d + 24 h) overlaps [t_e, t_e + 72 h)
+  for some e in E, as a union, each date once.
+- Report-only placebo line: the same L - L-nr statistic on the non-regime days. If it is as large as on regime days, the read says the difference
+  is not attributable to the regime channel.
+- The E list (RG id, t_e, at_utc) and the regime-day list are written once to a write-once file whose sha256 is notebooked **before any HV6 outcome
+  is opened**. Days with the block absent or stale for more than 12 h are listed but do not change the set.
 
 **R null (T7).** Not a live arm: 200 seeds replayed at the registered sha; R's instants and sizes come from L's hash-chained decision log,
 verified against its daily notebooked sha256. Anchors replacing "seed 1 reproduces the live R arm": (i) two independent seed-1 replays are
@@ -186,7 +207,7 @@ read on days where only X kept trading.
 little power. Pre-registered expectation: **NOT_DECIDABLE or not shown.** If learning is not shown the reviewer stays off the next window.
 
 **Cells and multiplicity (T4).** Counted by HV4's N2 convention (book x stake; fail legs and strand rules are sub-cells): 4 books x 3 stakes
-(0.25 primary, 0.5, 1.0) = 12, plus 3 **as-sized** cells (L, L-nr, F; size drops and the 2-24 h cap make them real) = 15. Each read carries the Am.3
+(0.25 primary, 0.5, 1.0) = 12, plus 4 **as-sized** cells (L, L-nr, F and X; the impact size-drop and the 2-24 h cap apply to X too) = 16. Each read carries the Am.3
 item 3 block: N = every book with a clock before the read (HV4's 9, Q50, the H5 books, hunt23/cohort books, HV6's own 5 incl. P, stopped and
 NOT_DECIDABLE included, counted from notebook copies), the total cells, the plain line 1 - 0.95^N, and the report-only p (10,000 draws, seed
 1, larger of the two fail models) with its Holm rank. c (0.05/c) applies only to a later confirmation.
@@ -238,7 +259,11 @@ A release = one frozen bundle (code sha, reviewer prompt, validator thresholds, 
 under its own bot_ids with its own clock, P0, smoke and gate read.
 1. **No v6.(N+1) clock starts before v6.N's comparison window ends.** v6.N keeps all five arms to the end of D. With D = 12 the earliest v6.1 clock
    is T0 + 12 d; releases are therefore about fortnightly, not weekly.
-2. A release registers **only the arms whose procedure changed** (L, L-nr, P as applicable). F and X are not re-registered (a second frozen copy
+2. (V2-3) A v6.(N+1) is registered only if v6.N's F and X keep running through its window, which needs an owner spend line past 11-11 for F's LLM
+   calls; otherwise its L/L-nr/P contrasts against F and X are NOT_DECIDABLE by rule. Each card's sha is logged in both processes (one process per
+   frozen_sha) and a cross-process card-identity check is a precondition of every cross-release contrast; a mismatch rate above 1% of cards makes it
+   NOT_DECIDABLE. This blocks v6.1 only, not v6.0.
+   A release registers **only the arms whose procedure changed** (L, L-nr, P as applicable). F and X are not re-registered (a second frozen copy
    is forbidden, DEC-031 Am.3 item 5); the new arms are compared with the continuing v6.0 F and X on the same stream.
 3. Release inputs (frozen `tools/hv6_release.py`) are **non-outcome metrics only**: invalid-reply rate, schema/bounds rejects, token cost,
    latency, block coverage. Not allowed: P&L, any arm gap, "effect of claimed sign not met" rejects and the change-acceptance rate (they depend
@@ -259,14 +284,26 @@ under its own bot_ids with its own clock, P0, smoke and gate read.
    `forward-*`, `truth-*`, `fresh-08*`, `exp011-*`, `tip-tape-archive`, `/var/lib/mal/sealed`, `meta-capture`, `blocks/forward-1016`. The bare
    tokens `ledger`, `decision`, `score` are **not** used (they would block HV6's own files and force a mid-window code change). No file is
    named with "probe". Tested at the frozen sha with HV6's real path names; an import guard blocks modules that read outputs.
-3. **Registry (G1).** DEC-031 section 1.2 needs HV6 lines in `/data/mal/arena/bots.json`, but `register_bot` reads the whole file and the seal-lift
-   ruling seals it. **Proposal for the QP ruling to choose, recorded in the registration:** (a) an append-only registration that prints and
-   returns only HV6's own lines, with a test that no other line's content leaves the process, run once by the manager (the guard exempts only
-   that call); fallback (b) an HV6 registry file plus a DEC-031 records amendment. N at the read comes from notebook copies, never from opening
-   bots.json while HV4 is unread. No build starts before the choice.
+3. **Registry (G1): route (a), decided by QP Addendum 1.** Append-only registration into `/data/mal/arena/bots.json` (DEC-031 section 1.2's single
+   registry) through `tools/hv6_register.py`, under a1-a7:
+   - a1: `tools/arena_paper.register_bot` unmodified at its pinned sha (editing a shared engine file while books run is taint 8(i)). The wrapper
+     registers exactly HV6's five hard-coded bot_ids, each starting `hv6.` (`hv6.0-L`, `-L-nr`, `-F`, `-P`, `-X`, or the registered spelling).
+   - a2: it prints and returns only the dicts `register_bot` returns for those ids. On any exception it prints only the exception class and the
+     HV6 bot_id, never the message text, and exits non-zero. It never prints, logs or writes any other line, count or id from the file.
+   - a3: a test on a synthetic registry with foreign register lines, a foreign stop line and a malformed line asserts that stdout, stderr, the
+     return value and every file written contain no foreign bot_id, sha, clock, stake, model id or stop instant.
+   - a4: the manager runs it once, after the smoke passes at the final sha (Am.6 1.4); the command goes verbatim in the registration notebook
+     entry with its `date -u` instant; the notebook copy of the five lines (section 1.2) and the records PR within 24 h follow.
+   - a5: the runner never opens bots.json (the guard token stays). Later HV6 tools read their own clock or stake from the notebook copy or the
+     records PR; if one must use the registry it goes through a view function with the a2/a3 properties and the same test. `hv6_read` counts N from notebook copies.
+   - a6: the registration states "bots.json was read in-process by pinned unmodified `register_bot`; no line other than HV6's own left the process
+     (test name)". That is not a seal contact; a later-found failure of a2 or a3 is, and is disclosed in every read it touches.
+   - a7: retries are allowed; `register_bot` is idempotent for an identical line and refuses a changed one, which then means a new bot_id, never an edit.
 4. **Self-seal (G3).** Until each bot_id's read, HV6's ledgers, fills, P&L, decision rows, attempt counts (except the pinned count tool) and score
-   output are sealed from the manager, the release author and the owner-facing Console. **Only decision-log sha256 and the Am.6 hour table are
-   notebooked daily.** No daily P&L to console.json or the notebook (this overrides the HV4 section 4 pattern).
+   output are sealed from the manager, the release author and the owner-facing Console. Also sealed until each read (V2-2): playbook and knob versions, reviewer
+   and regime-review replies, the change log and its measured effects, validator accept/reject results, `regime_probe` trade lists, and per-arm
+   API spend (the manager sees only HV6's summed daily spend and cap-state flags). **Only the decision-log sha256, the manifests' sha256 chain and the
+   Am.6 hour table are notebooked nightly.** No daily P&L to console.json or the notebook (this overrides the HV4 section 4 pattern).
 5. **Q50 / EXP-024 Look-2** (no H5 outcome on any October V-range pool in its first 360 s): excluded by construction. Universe age >= 2 h, a hard
    code check refuses any card under 2 h, no H5 trigger, no lane H, no classified H5 feed, bundles hold only HV6 trades. #777's H5F entries
    (< 360 s) are not used.
@@ -305,7 +342,9 @@ Helm approve; nothing is done here). Confirmation (100 attempts on 5 more dates,
 
 **P0 = counts only, DEC-031 Am.3 item 1 / Am.4 item 2.1** (>= 3 full closed UTC days, floor 2.0/day, no zero day; hard-gap or data_loss > 1 h = NOT_DECIDABLE).
 - S1: whole closed UTC days of `/data/mal/arena/tape` only, inside [2026-10-20T00:00Z, job start). In-clock days (>= 10-25) are allowed for structure counts. Not 10-19 (partial tape, redeploy day), nothing earlier, no other directory (never a shakedown, smoke, venue, forward, holdout, meta-capture or haiku-v4 path). The day list (>= 3, preferably the latest 4-5) is written in the fixed-first notebook entry before the job and never extended or swapped.
-- S2: runs at HV6's registration-candidate sha, counts-only: the GEN scanner, the 2 h guard, setups, cooldown/board, X's 2/h cap. No engine, exit, LLM or paper fill. Counts are pre-chain-veto upper bounds and are labelled so. Any later scanner/board/cap change is a new sha and P0 re-runs. "If gated setups < 25/day, widen the X cap/board" is allowed only as a count-to-value mapping written in the fixed-first entry, applied mechanically.
+- S2: runs at HV6's registration-candidate sha, counts-only: the GEN scanner, the 2 h guard, setups, cooldown/board, X's 2/h cap. No engine, exit, LLM or paper fill. Counts are pre-chain-veto upper bounds and are labelled so. Any later scanner/board/cap change is a new sha and P0 re-runs. **P0 decides only registration (Am.4 2.1 floor, >= 2.0/day, no zero day, gap rule) and H.** Every scanner, board and cap value stays at the frozen v0 (the
+  count-to-value widening rule is struck, QP Addendum 1 section 3). If P0 shows X below 25/day, the registration states it and revises X's planning figure;
+  nothing is changed.
 - S3 prints, per UTC day and hour, counts only: filter-pass pools per scan (p50/min/max), newly passing pools/h, setups by GEN type, board cards after cooldown (age 2-24 h vs >= 24 h), X would-be attempts at 2/h, hour files present/missing, gap and data_loss seconds.
 - S4 never prints a mint, pool, signature, trader or wallet, a price, reserve, return, volume level or price-derived distribution, a per-pool row, or anything run with HV4's persona configs (that would rebuild sealed HV4-X would-be attempts). Nothing is joined to HV4/Q50 output.
 - S5: H = 14 for LLM arms (section 2). S6: the Am.6 smoke reports take counts and token/latency figures, never which pools; pricing off or its ledger never opened; any changed value is a new sha and smoke. S7: before the job a notebook entry with the QP ruling's sha256, the fixed-first text, day list, command and job id; a MiScusi job with MemoryMax; afterwards the output sha256 in the notebook and counts in the registration record.
@@ -316,18 +355,19 @@ Helm approve; nothing is done here). Confirmation (100 attempts on 5 more dates,
 | 1 | `hv6_cards.py` (GEN scanner over unmodified hv4 cards, 2 h guard, blob-sha test) | builder | 0 | 10-27 |
 | 2 | `hv6_agents.py` (playbook v0 from #814 wording, validators incl. `regime_rule`, per-arm ledgers, 3.00 cap, Stub) | builder | 0, #814 merged | 10-27 |
 | 3 | `hv6_regime_block.py` (real kinds, radar.jsonl as-of source, byte copy, exclusions, determinism, injection tests) | builder | 0 | 10-27 |
+| 3b | `tools/hv6_register.py` + its a3 synthetic-registry test (a1-a7) | builder | 0 | 10-27 |
 | 4 | `hv6_runner.py` (5 arms, X halts in step, allowlist guard, log chain, intraday trigger, MiScusi job) | builder | 1-3 | 10-28 |
 | 5 | `hv6_review.py`, `hv6_release.py` (bundle, placebo, manifest chain incl. intraday rule) | builder | 2, 3 | 10-28 |
 | 6 | md5 replay + drill (pre-10-25 free hours or synthetic) | manager | 4, 5 | 10-28 |
 | 7 | **P0 count job at the final sha** (S1-S7), then real-model smoke (Am.6) | manager | 6 | 10-29 |
 | 8 | Registration pack (`fasttrack_book.py`), G1 registration, QP OK on exact head, reviewer verdict | manager + QP + reviewer | 7 | 10-29 |
 | 9 | **Clock T0** | manager | 8 | **2026-10-30T00:00Z**, fallbacks 10-31, 11-01 |
-| 10 | `hv6_read.py` (sign-flip, V1/V2, 15 cells, N block, regime-day table, R-null manifest) | builder | before 11-07 | 11-05 |
+| 10 | `hv6_read.py` (sign-flip, V1/V2, 16 cells, N block, regime-day table, R-null manifest) | builder | before 11-07 | 11-05 |
 | 11 | Live readiness (parity, tie-out, executor spec) | builder + manager | after a screen pass | later |
 
-Dates assume zero slip; a slipped day moves the clock a day. Owner: the HV6 spend line (<= 3.00 USD/day inside the shared 200 USD to 11-11, or a
-line through T0 + 14). Manager checks before registering: LAB_STATE for a kill-review week that forbids new forward books; the ledger for replay hours.
-Earliest reads for a 10-30 clock: V1/V2 2026-11-07T00Z; learning/regime 2026-11-11T00Z; gate at its mechanical boundary (about 11-04 at 20/day).
+Dates assume zero slip; a slipped day moves the clock a day. Owner: the HV6 spend line (<= 3.00 USD/day inside the shared 200 USD to 11-11), recorded verbatim in the registration before the clock.
+**OWNER SPEND LINE: pending (manager asking 2026-10-25).** Manager checks before registering: LAB_STATE for a kill-review week that forbids new forward books; the ledger for replay hours.
+Earliest reads for a 10-30 clock: V1/V2 2026-11-07T00Z; learning/regime 2026-11-12T01:00Z at the earliest (T0 + D + 13 h); gate at its mechanical boundary (about 11-04 at 20/day).
 
 ## 11. Biggest risks
 
