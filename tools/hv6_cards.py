@@ -240,7 +240,12 @@ HV4_IMPORT_ALLOWED = frozenset({"hv4_cards", "hv4_chain", "hv4_prefetch"})  # hv
 ARENA_READER_MODULES = frozenset({"arena_score", "arena_am6_read", "arena_report_legs", "arena_worst_gaps"})
 
 
-def forbidden_imports(source: str) -> list[str]:
+# HV4 modules HV6 imports as CODE ONLY (pure functions and constants; none is called on an HV4 ledger, chain output or score). Enumerated, checked over every
+# tools/hv6_*.py by tools/test_hv6_review.py through forbidden_imports(src, HV4_CODE_ONLY); the default (no exemption) is unchanged. May conflict with PR #918 (it widens this guard too); the second PR to merge rebases.
+HV4_CODE_ONLY = frozenset({"hv4_arms", "hv4_budget", "hv4_model", "hv4_prompts", "hv4_review", "hv4_validate"})
+
+
+def forbidden_imports(source: str, code_only: frozenset = frozenset()) -> list[str]:
     """HV4 modules imported by `source` other than hv4_cards / hv4_chain (e.g. hv4_read, hv4_runner, hv4_shakedown_report, hv4_p0_count, hv4_review*, which
     read ledgers or outputs). Catches `import tools.hv4_x`, `from tools import hv4_x` and `from tools.hv4_x import y`."""
     bad: list[str] = []
@@ -253,6 +258,6 @@ def forbidden_imports(source: str) -> list[str]:
             parts += (node.module or "").split(".")
             parts += [a.name for a in node.names]
         for seg in parts:
-            if ((seg.startswith("hv4_") and seg not in HV4_IMPORT_ALLOWED) or seg in ARENA_READER_MODULES) and seg not in bad:
+            if ((seg.startswith("hv4_") and seg not in HV4_IMPORT_ALLOWED and seg not in code_only) or seg in ARENA_READER_MODULES) and seg not in bad:
                 bad.append(seg)
     return bad

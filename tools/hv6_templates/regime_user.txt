@@ -1,0 +1,4 @@
+Regime review bundle (JSON, one object):
+{{BUNDLE}}
+Call {{NONCE}}
+Reply with one JSON array of at most 3 regime_rule changes, or [].
