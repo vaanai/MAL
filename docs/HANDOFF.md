@@ -58,7 +58,7 @@ No book has cleared the promotion gate. Profit so far: 0. Nothing trades real SO
 
 ## 5. Open PRs
 - **Ready to merge after QP:**
-  - **#941**, ledger rows (DBC holdout + #1494, m10 forward, LaunchLab) and the HV4 #712 disclosure. Reviewer APPROVE (6421572285). **QP CHANGES at 95093533** (comment 6421648194): ledger items L1–L6 and disclosure items H1–H3. The most serious is L1: the read is `scripts/research/dbc-m10-read-job.sh A|B`, never `tools/dbc_fwd_read.py` run as a program. H1 adds `dd_ath` (card = 1 − price/ath, a fraction) as a 4th mismatch. Fix, then QP re-checks the text diff, then the reviewer, then merge.
+  - **#941**, ledger rows (DBC holdout + #1494, m10 forward, LaunchLab) and the HV4 #712 disclosure. Reviewer APPROVE (6421572285). **QP CHANGES at 95093533** (comment 6421648194): ledger items L1–L6 and disclosure items H1–H3. The most serious is L1: the read is `scripts/research/dbc-m10-read-job.sh A|B`, never `tools/dbc_fwd_read.py` run as a program. H1 adds `dd_ath` (card = 1 − price/ath, a fraction) as a 4th mismatch. Fix, then QP re-checks the text diff, then the reviewer, then merge. Ruling file: /data/mal/hunt-1008/push-1016/hunt30/QP-RULING-1026-pr941-dbc-launchlab-hv4.md. The same agent kept #926 (1180b3dd) and #927 (7fcec805) at QP OK. The Job A lag cron stays suspended until the capture heartbeat reports lag or a pinned counts tool gets a QP OK.
   - this hand-off PR (claude/handoff-manager16-1026).
 - **In progress:**
   - **#940**, HV6 pack;
