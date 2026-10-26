@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import json
 from typing import Any, Iterable, Mapping
 
 PROFILE = "hv4_c0"
@@ -83,6 +84,8 @@ SELL_BUILDER_PIN: dict[str, str] = {
     "ptx.pool_v2_sha256": "28a04b8884d924854d997a7fbcad0c6aac8f36644ca52f6f2bf78a41fa81a40f",
     "ptx.min_out_with_slippage_sha256": "0573c7e1c465a744cbd3d843f6271a109c04f2e21e64bb36d3636e2e71a1c49f",
     "ptx.constants_sha256": "e2b66274132a760ee6d440ae8cbd03294bb0ba29f97a0d8b6aecd2b286dbe79c",
+    "pe.exit_check_sha256": "7dcd289631cfe0418439df90f4b0901518d813dfd474f0cb2a6c660e3a51eb00",  # PR 3: the quote_out that min_out is a share of
+    "c0.ladder_sha256": "06123a941d5a842fe9eccaed4277b898fe8c88ba7681c0feee5f059b397f3233",  # PR 3: the compiled 0.85 / 0.65 rungs and their escalation point (this module's own ladder source)
 }
 
 REFUSED_ARM_SUFFIXES = ("-L", "-P", "-R")
@@ -94,12 +97,74 @@ ESCALATE_AFTER_REVERTS = 2  # DEC-032 s3: "after 2 reverts or a time bound"
 ESCALATE_AFTER_MS = 345_000  # the time bound: s3 names none; C0 takes h5_executor.ESCALATE_S (345 s) from the first sell attempt, a declared choice
 
 
+def sell_escalated(sell_attempts: int, stuck: bool = False, elapsed_ms: int | None = None) -> bool:
+    """The ONE escalation point of a C0 sell (DEC-032 s3): after 2 reverts/expiries, or ESCALATE_AFTER_MS after the first sell build, whichever comes
+    first; a stuck position is escalated too (a backstop). The priority and the min_out ladders both read this, so they step together."""
+    late = elapsed_ms is not None and int(elapsed_ms) >= ESCALATE_AFTER_MS
+    return bool(stuck or late or int(sell_attempts) >= ESCALATE_AFTER_REVERTS)
+
+
 def sell_priority(sell_attempts: int, stuck: bool = False, elapsed_ms: int | None = None) -> int:
     """Priority lamports for a sell, aligned with DEC-032 s3: 55,000 until the sell has reverted/expired twice (sell_attempts >= 2) or ESCALATE_AFTER_MS
     have passed since the first sell attempt (elapsed_ms), whichever comes first; then the escalated 150,000. A stuck position is escalated too
     (stuck needs more attempts than 2, so it is a backstop). The first retry after ONE revert stays at 55,000."""
-    late = elapsed_ms is not None and int(elapsed_ms) >= ESCALATE_AFTER_MS
-    return PRIORITY_PIN["escalated"] if (stuck or late or int(sell_attempts) >= ESCALATE_AFTER_REVERTS) else PRIORITY_PIN["sell"]
+    return PRIORITY_PIN["escalated"] if sell_escalated(sell_attempts, stuck, elapsed_ms) else PRIORITY_PIN["sell"]
+
+
+# DEC-032 s3 sell rule: min_out = 0.85 of the quote at the first build; 0.65 at the escalation point (higher priority); NEVER 0. Compiled constants, in bps of
+# the quote that must still be received (the executor's `slip_bps` = 10,000 minus these). Nothing in config can reach them (see `_CONFIG_FORBIDDEN`).
+SELL_MIN_OUT_KEEP_BPS: dict[str, int] = {"first": 8_500, "escalated": 6_500}
+# DECLARED RESIDUAL (DEC copy): the pinned builder computes quote_out * keep // 10000, so a quote_out of exactly 1 lamport gives min_out 0 at the 0.85 rung. Dust only; the pinned builder is not touched.
+SELL_MIN_OUT_FLOOR_BPS = SELL_MIN_OUT_KEEP_BPS["escalated"]  # no sell is ever built below 0.65 of the quote
+
+
+def sell_keep_bps(sell_attempts: int, stuck: bool = False, elapsed_ms: int | None = None) -> int:
+    """Share of the quote (bps) the sell must still receive: 8,500 until the escalation point, then 6,500. Never below SELL_MIN_OUT_FLOOR_BPS, never 0."""
+    return SELL_MIN_OUT_KEEP_BPS["escalated" if sell_escalated(sell_attempts, stuck, elapsed_ms) else "first"]
+
+
+def sell_slip_bps(sell_attempts: int, stuck: bool = False, elapsed_ms: int | None = None) -> int:
+    """The `slip_bps` the pinned sell builder takes (`tx.min_out_with_slippage(quote_out, slip_bps)`): 1,500 first, 3,500 escalated."""
+    return 10_000 - sell_keep_bps(sell_attempts, stuck, elapsed_ms)
+
+
+def ladder_pin_sha256() -> str:
+    """sha256 of the ladder's compiled source and constants. It sits inside the sell pin (SELL_BUILDER_PIN['c0.ladder_sha256']): editing a rung is a reviewed change."""
+    src = "".join(inspect.getsource(f) for f in (sell_escalated, sell_keep_bps, sell_slip_bps)) + repr((SELL_MIN_OUT_KEEP_BPS, ESCALATE_AFTER_REVERTS, ESCALATE_AFTER_MS))
+    return hashlib.sha256(src.encode()).hexdigest()
+
+
+# --- the paper twin (DEC-032 s5 "Twin comparator"): arena_twin_writer re-prices the book's paper position at S, nofail leg, 1.9 s, E1 excluded, at the fees
+# the trip actually sent (landed buy fee; landed sell fee plus earlier failed sells, escalated resends included). The pins below are what its run record must carry.
+HV4_STACK_PIN = {"e1_floor_per_005": 384022, "exit_lag_s": 0.55, "feed_delay_slots": 7, "guard": 1.15, "h_in": 0.002608, "h_out": 0.0016, "k_rounding": "ceil",
+                 "portal_ppm": 0, "press_intercept_provisional": -1.4197242838379789, "rent": 0, "send": 505000, "strand_rule": "both"}  # StackConfig.as_dict() at 9ed4c5ff, delay 7
+CONFIG_PIN_SHA256 = "1e611a5a636dfe6bd563ab5258f6b498cdb8906500ee8bf2f0264a2621621986"  # sha256 of HV4_STACK_PIN, sort_keys, compact separators (ARTIFACTS/lab/hv4-registration-1023.md 2.3)
+TWIN_WRITER_SHA256 = "1e9cb00e08ec69df269b19b9774d02feed7d3e91a61c7f727b7abbdc5fe560bb"  # sha256 of tools/arena_twin_writer.py (the same writer the H5 arena canary pins)
+
+
+def stack_sha256(stack: Mapping[str, Any]) -> str:
+    """The twin writer's `stack_hash` rule: canonical JSON of the stack block without the per-position `sps_*` slot rates."""
+    core = {k: v for k, v in stack.items() if not str(k).startswith("sps_")}
+    return hashlib.sha256(json.dumps(core, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+
+
+def config_pin_problem(stack: Any) -> str | None:
+    """None when `stack` hashes to the registered HV4 config pin (every key, value for value)."""
+    try:
+        return None if isinstance(stack, Mapping) and stack_sha256(stack) == CONFIG_PIN_SHA256 else "config_pin_mismatch"
+    except (TypeError, ValueError):
+        return "config_pin_mismatch"
+
+
+def twin_pins() -> tuple[str, str]:
+    """(config_hash, code_sha256) the twin writer's run record must carry for a C0 book."""
+    return CONFIG_PIN_SHA256, TWIN_WRITER_SHA256
+
+
+def fees_sent(buy_sends: int, sell_priorities: Iterable[int]) -> tuple[int, int]:
+    """The twin's per-trip fees from the schedule actually sent: (buy fee, sell fee). A send costs its priority plus the 5,000 base. `buy_sends` is 1 for the
+    landed buy (earlier failed buy sends are not part of the trip, as arena_twin_writer's FEE_BASIS says). Every sell send counts, escalated resends included."""
+    return buy_sends * (PRIORITY_PIN["buy"] + BASE_FEE_LAMPORTS), sum(int(p) + BASE_FEE_LAMPORTS for p in sell_priorities)
 
 
 def universe_problem(quote_mint: Any, v_lamports: Any) -> str | None:
@@ -120,6 +185,7 @@ def frozen_sha_refusal(cfg: Mapping[str, Any]) -> str | None:
 def _sell_pin_items() -> dict[str, Any]:
     """name -> callable returning the sha256 of the current code. Imports the solana stack."""
     from tools import probe_live as pl
+    from tools import probe_executor as pe
     from tools import pumpswap_tx as ptx
     sha = lambda b: hashlib.sha256(b).hexdigest()  # noqa: E731
     items: dict[str, Any] = {"symbol_sha256": lambda: sha(inspect.getsource(pl.LiveExecutor._start_sell).encode()),
@@ -128,6 +194,8 @@ def _sell_pin_items() -> dict[str, Any]:
         items[f"{n}_sha256"] = (lambda n=n: sha(inspect.getsource(getattr(pl, n)).encode()))
     for n in CALLEES_PTX:
         items[f"ptx.{n}_sha256"] = (lambda n=n: sha(inspect.getsource(getattr(ptx, n)).encode()))
+    items["pe.exit_check_sha256"] = lambda: sha(inspect.getsource(pe.exit_check).encode())
+    items["c0.ladder_sha256"] = ladder_pin_sha256
     items["ptx.constants_sha256"] = lambda: sha(repr([(n, getattr(ptx, n)) for n in CONSTANTS_PTX]).encode())
     return items
 
