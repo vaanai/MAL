@@ -32,9 +32,9 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `explored-survivor-unconfirmed` | 9 | 0 | 0 |
 | `parked` | 9 | 0 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 46 | 20 | 1 |
+| `untested` | 45 | 20 | 1 |
 | `desk-read` | 1 | 43 | 0 |
-| `explored-no-survivor` | 39 | 6 | 1 |
+| `explored-no-survivor` | 40 | 6 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
 | **all** | 185 | 75 | 2 |
 
@@ -100,7 +100,6 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `lib-c-L4.2` | postgrad-rank-rugsafe (round-2 idea 2) | post-graduation ranking (iter-r1 §5) | Run the pending l3 xs10 VERIFY first (library L4 item 2). |
 | `lib-c-L4.4` | dump-hazard-enabler, scoped down (round-2 idea 4) | rug filter input (iter-r1 §5) | not in source |
 | `lib-c-L4.6` | ensembles and meta-labelling on FLOOR ranking (9b/9d) | FLOOR ranking (iter-r1 §5) | not in source |
-| `lib-c-N3` | exit-side loss control: exit on observed BOOST end (PDA) | H5 loss control (h5-lossfilter) | not in source |
 | `lib-c-Q1.EXP-026` | EXP-026 H5-BOOSTCLOCK v2 (forward paper read, draft) | repo forward books (Q1) | Window cap 336 h; last W0 2026-10-23T00; alpha route M1 (library Q1). |
 | `lib-c-Q2.9` | EXP-013 (pre-pass refused) | V maps (LAB_STATE, Q2) | not in source |
 | `lib-c-Q2.10` | EXP-015 pooled retrain | retrain (LAB_STATE, Q2) | is ready to screen once the pin lands |
@@ -349,6 +348,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `lib-c-L3` | H5 SELL-BUDGET EXIT (W60 c0.5) | `dead-as-frozen` | "DEAD in discovery (its own kill rule fired)". Paired flat total -3.3928 SOL, daily CI90 [-0.4171, -0.0622]. Cause (a) [inferred] relative to H5 v1's timer. |
 | `lib-c-M2` | fixed H5 exit timers F300, F315, F320, F325 | `dead-as-frozen` | "DEAD (fail C2; F300 fails D1 on pressure at discovery)". Cause (g) FAILED CONFIRMATION: paired daily CI90 entirely below 0 unstressed. |
 | `lib-c-N1` | H5 big-loser anatomy and three entry-filter families (flow, BOOST/pool state, holders) | `dead-as-frozen` | "ALL THREE FAIL OR ARE NOT BIG-LOSER FILTERS". Cause (a) [inferred] for flow and BOOST; (d) TOO FEW TRADES plus (f) DATA not available live for holders. Disagreement: holders verdict "survives" (confirmation +14.639%) vs the report's own §5 "No". |
+| `lib-c-N3` | exit-side loss control: exit on observed BOOST end (PDA) | `explored-no-survivor` | P55 2026-10-26: KILL. Pre-registered trade-tape proxy (R<=1.0 SOL or 36 s without a causal BOOST buy), exit lag 2, 2,826 exploration trades: mean delta -1.7024 pp (flat 15%) and -1.4554 pp (pressure-fail slope 1) vs the frozen exit; wrong sign in discovery and confirmation. Event field not on the tape, so the real boost_vault_remaining trigger is untested. |
 | `lib-c-Q2.1` | fast-entry retail thesis (sniper route) | `dead-as-frozen` | "the fast-entry retail thesis is refuted at MAL's latency"; owner O7: "the sniper route is closed for now." Cause (c) LATENCY, from the repo's own numbers. Librarian's status choice: dead-as-frozen. |
 | `lib-c-Q2.2` | EXP-012 one-shot PASS (backward holdout, 451 trades) | `dead-as-frozen` | "RETIRED" (Console ladder). Cause (b) COSTS/SLIPPAGE [inferred]. Disagreement inside source: one-shot PASS vs RETIRED; "+6.973% at k1 START without V, against +0.145% flat at k6 END, V, lag 2 and haircut." |
 | `lib-c-Q2.3` | 10-05 read of 8 Holm-family books (laya_0.6, laya_0.7 named) | `explored-no-survivor` | "NOT_DECIDABLE all 8" (PROMOTE none, KILL none). Mapped to explored-no-survivor by librarian choice: the read was done and none promoted. |
