@@ -167,8 +167,9 @@ class SellPinTests(unittest.TestCase):
 
     def test_pin_recomputes(self):
         self.assertIsNone(c0.sell_pin_problem())
-        want = {"path", "symbol", "symbol_sha256", "_sign_sha256", "ptx.constants_sha256"}
+        want = {"path", "symbol", "symbol_sha256", "_sign_sha256", "ptx.constants_sha256", "pe.exit_check_sha256", "c0.ladder_sha256"}
         want |= {f"{n}_sha256" for n in c0.CALLEES_PL} | {f"ptx.{n}_sha256" for n in c0.CALLEES_PTX}
+        want |= {k for k in c0.SELL_BUILDER_PIN if k.startswith(("pe.", "bridge.", "x."))}  # PR 5a keys are listed in test_hv4_live_c0_pr5a
         self.assertEqual(set(c0.SELL_BUILDER_PIN), want)
         for n in ("sell_data", "ata", "create_ata_idempotent", "sync_native", "close_account", "swap_accounts", "compute_budget_ixs"):
             self.assertIn(f"ptx.{n}_sha256", c0.SELL_BUILDER_PIN)
@@ -232,10 +233,12 @@ class SellPinTests(unittest.TestCase):
             e = Hv4Env(d)
             full = {k: v for k, v in e.raw.items() if k not in ("stop_file", "halt_file")}
             cp = Path(d) / "cfg.json"
-            cp.write_text(json.dumps({**full, "mode": "live"}))
+            from tools.test_hv4_live_c0 import live_main_env
+            paths, st = live_main_env(d, full["bot_id"])
+            cp.write_text(json.dumps({**full, **paths, "mode": "live"}))
             for pin, want in (({**c0.SELL_BUILDER_PIN, "symbol_sha256": "0" * 64}, c0.LIVE_REFUSAL), (c0.SELL_BUILDER_PIN, c0.LIVE_REFUSAL)):
                 buf = io.StringIO()
-                with mock.patch.object(c0, "SELL_BUILDER_PIN", pin), contextlib.redirect_stdout(buf):
+                with mock.patch.object(c0, "SELL_BUILDER_PIN", pin), contextlib.redirect_stdout(buf), live_main_env(d, full["bot_id"])[1]:
                     rc = alb.main(["--config", str(cp), "--live"])
                 self.assertEqual(rc, 2)
                 self.assertIn(want, buf.getvalue())

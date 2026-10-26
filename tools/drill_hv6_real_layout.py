@@ -158,9 +158,11 @@ def stats(xs: list[float]) -> dict:
     return {"p50": round(pct(xs, 0.5), 2), "p95": round(pct(xs, 0.95), 2), "max": round(max(xs), 2) if xs else 0.0, "n": len(xs)}
 
 
-def one_run(rd: RealDrill, tag: str, start: int, end: int, fast: bool = True) -> dict:
+def one_run(rd: RealDrill, tag: str, start: int, end: int, fast: bool = True, phantom: bool = True) -> dict:
     run = rd.new_run(tag)
     run.cfg.fast_scan = fast
+    if not phantom:  # drill-only switch (the runner's hook reads run.phantom on every row); production keeps RunnerConfig.phantom_filter = True
+        run.phantom = None
     walls: list[float] = []
     tick_walls: list[float] = []
     scan_tick_walls: list[float] = []   # the :02 tick of each minute: version refresh, scan, watches, re-checks, regime (everything tick() does at the scan second)
@@ -194,10 +196,11 @@ def one_run(rd: RealDrill, tag: str, start: int, end: int, fast: bool = True) ->
     return {"log_md5": D.log_md5(run.cfg.root), "cards_md5": D.cards_md5(run.cfg.root), "cards": D.n_cards(run), "entries": D.entries(run),
             "closes": pos["distinct_closed"], "positions": pos["positions"], "open_at_end": pos["open_now"], "refusals_by_class": D.refusal_kinds(run),
             "counters": dict(sorted(run.counters.items())), "scans": len(walls), "scan_ms_p50": round(pct(walls, 0.5), 2), "scan_ms_p95": round(pct(walls, 0.95), 2),
-            "tick_ms": stats(tick_walls), "scan_tick_ms": stats(scan_tick_walls), "fast_scan": fast}
+            "tick_ms": stats(tick_walls), "scan_tick_ms": stats(scan_tick_walls), "fast_scan": fast,
+            "phantom_filter": phantom, "phantom_drops": dict(run.phantom.counts) if run.phantom is not None else None}
 
 
-def child_one_run(tag: str, days: list[str], drill_id: str, sha: str) -> int:
+def child_one_run(tag: str, days: list[str], drill_id: str, sha: str, phantom: bool = True) -> int:
     """One replay in ITS OWN process (run1 and run2 never share a heap: QP/OOM #1596). Writes <drill root>/<tag>.json (counts, md5s, this process's peak RSS)."""
     base = Path(H.HV6_ROOT) / "drill" / drill_id
     if not ID_RE.fullmatch(drill_id) or tag not in RUNS or not D.RR.is_drill_root(base):
@@ -206,7 +209,7 @@ def child_one_run(tag: str, days: list[str], drill_id: str, sha: str) -> int:
     assert end <= day_ms(END_EXCLUSIVE)
     rd = RealDrill(base, Path(REAL_TAPE), sha, days)
     try:
-        res = one_run(rd, tag, start, end, fast=(tag != "real-c"))
+        res = one_run(rd, tag, start, end, fast=(tag != "real-c"), phantom=phantom)
         res["peak_rss_mb"] = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 1)
     except Exception as e:  # noqa: BLE001 - the class name only
         res = {"error_class": type(e).__name__}
@@ -214,11 +217,12 @@ def child_one_run(tag: str, days: list[str], drill_id: str, sha: str) -> int:
     return 0 if "error_class" not in res else 3
 
 
-def _isolated_run(tag: str, days: list[str], drill_id: str, sha: str, base: Path) -> dict:
+def _isolated_run(tag: str, days: list[str], drill_id: str, sha: str, base: Path, phantom: bool = True) -> dict:
     import subprocess
 
     root = Path(__file__).resolve().parent.parent
-    r = subprocess.run([sys.executable, "-m", "tools.drill_hv6_real_layout", "--one-run", tag, "--days", ",".join(days), "--drill-id", drill_id, "--sha", sha],
+    r = subprocess.run([sys.executable, "-m", "tools.drill_hv6_real_layout", "--one-run", tag, "--days", ",".join(days), "--drill-id", drill_id, "--sha", sha,
+                        "--phantom-filter", "on" if phantom else "off"],
                        cwd=str(root), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     f = base / f"{tag}.json"
     if r.returncode != 0 or not f.exists():
@@ -230,7 +234,7 @@ def _isolated_run(tag: str, days: list[str], drill_id: str, sha: str, base: Path
 
 
 def run_real(days: list[str], drill_id: str, sha: str, *, rss_cap_mb: float = RSS_CAP_MB, tape_dir: str | None = None, base: Path | None = None, _window: tuple[int, int] | None = None,
-             isolate: bool = False) -> dict:
+             isolate: bool = False, phantom: bool = True, compare_off: str | None = None) -> dict:
     tape_dir = REAL_TAPE if tape_dir is None else tape_dir
     if tape_dir != REAL_TAPE:
         raise Refused("tape_dir_not_allowed")
@@ -251,14 +255,14 @@ def run_real(days: list[str], drill_id: str, sha: str, *, rss_cap_mb: float = RS
            "chain": "fake_stamped_before_scan",
            "rows_by_program": count_programs(src, days), "orders_only_on": "pumpswap", "pass_rule": PASS_RULE, "rss_cap_mb": rss_cap_mb})
     if isolate:  # production: each replay in its own subprocess; the peak is the largest of the three processes' peaks
-        a = _isolated_run("real-a", days, drill_id, sha, base)
-        b = _isolated_run("real-b", days, drill_id, sha, base)
-        c = _isolated_run("real-c", days, drill_id, sha, base)
+        a = _isolated_run("real-a", days, drill_id, sha, base, phantom)
+        b = _isolated_run("real-b", days, drill_id, sha, base, phantom)
+        c = _isolated_run("real-c", days, drill_id, sha, base, phantom)
         rss_mb = max(a.pop("peak_rss_mb"), b.pop("peak_rss_mb"), c.pop("peak_rss_mb"))
     else:
-        a = one_run(rd, "real-a", start, end)
-        b = one_run(rd, "real-b", start, end)
-        c = one_run(rd, "real-c", start, end, fast=False)
+        a = one_run(rd, "real-a", start, end, phantom=phantom)
+        b = one_run(rd, "real-b", start, end, phantom=phantom)
+        c = one_run(rd, "real-c", start, end, fast=False, phantom=phantom)
         rss_mb = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 1)
     equal12 = a["log_md5"] == b["log_md5"] and a["cards_md5"] == b["cards_md5"] and a["entries"] == b["entries"]
     equal3 = c["log_md5"] == a["log_md5"] and c["cards_md5"] == a["cards_md5"]  # fast_scan on and off give the same decisions on the real layout
@@ -268,6 +272,12 @@ def run_real(days: list[str], drill_id: str, sha: str, *, rss_cap_mb: float = RS
     tick_rule_applies = p95 >= SCAN_P95_TICK_TRIGGER_MS
     tick_ok = (tick_p95 < TICK_P95_CAP_MS) if tick_rule_applies else True
     ok = equal and rss_mb < rss_cap_mb and p95 < SCAN_P95_CAP_MS and tick_ok
+    drops = {k: max(a["phantom_drops"][k], b["phantom_drops"][k]) for k in a["phantom_drops"]} if a.get("phantom_drops") else None
+    total_drops = sum(drops.values()) if drops else 0
+    cmp_res = None
+    if compare_off is not None:
+        cmp_res = compare_with_off(compare_off, a, rss_mb, total_drops)
+        ok = ok and cmp_res["compare_ok"]
     res = {"real_layout": "end", "result": "PASS" if ok else "FAIL", "pass_rule": PASS_RULE, "md5_equal": equal, "rss_ok": rss_mb < rss_cap_mb, "scan_p95_ok": p95 < SCAN_P95_CAP_MS,
            "md5_equal_run1_run2": equal12, "md5_equal_run3_fast_scan_off": equal3, "tick_rule_applies": tick_rule_applies, "scan_tick_p95_ok": tick_ok,
            "run1_log_md5": a["log_md5"], "run2_log_md5": b["log_md5"], "run3_log_md5": c["log_md5"], "run3_cards_md5": c["cards_md5"],
@@ -277,7 +287,9 @@ def run_real(days: list[str], drill_id: str, sha: str, *, rss_cap_mb: float = RS
            "run2_counts_equal": {k: a[k] == b[k] for k in ("cards", "entries", "closes", "refusals_by_class")}, "peak_rss_mb": rss_mb, "rss_cap_mb": rss_cap_mb,
            # QP 930: the watch-set cap (WATCH_MAX_POOLS) is a changed value unless it never bound on these days
            "max_candidates_per_scan": max(a["counters"].get("max_candidates_per_scan", 0), b["counters"].get("max_candidates_per_scan", 0)),
-           "scans_cap_bound": max(a["counters"].get("scans_cap_bound", 0), b["counters"].get("scans_cap_bound", 0))}
+           "scans_cap_bound": max(a["counters"].get("scans_cap_bound", 0), b["counters"].get("scans_cap_bound", 0)),
+           "phantom_filter": "on" if phantom else "off", "phantom_drops_by_kind": drops, "phantom_drops_total": total_drops,
+           "run1_cards_md5": a["cards_md5"], "compare_with_off": cmp_res}
     D.out(res)
     # Seal: the result file goes into the drill root, then the whole root is made read-only (priced pre-clock hours, never read) and the file's sha256 is printed.
     rf = base / "real-layout-result.json"
@@ -286,6 +298,27 @@ def run_real(days: list[str], drill_id: str, sha: str, *, rss_cap_mb: float = RS
     seal_read_only(base)
     D.out({"real_layout": "sealed", "root_read_only": True, "result_file": "real-layout-result.json", "result_sha256": digest})
     return res
+
+
+def compare_with_off(off_id: str, a: dict, rss_mb: float, total_drops: int) -> dict:
+    """Filter-ON run vs the sealed result of an earlier filter-OFF run of the same days (counts only). FAIL if the decision-log md5 differs while the total drop
+    count is 0 (a filter that drops nothing must decide as the off run). Differences are on minus off."""
+    if not ID_RE.fullmatch(off_id) or off_id in (".", ".."):
+        raise Refused("compare_off_id")
+    f = Path(H.HV6_ROOT) / "drill" / off_id / "real-layout-result.json"
+    off = json.loads(f.read_text())
+    if off.get("phantom_filter") != "off":
+        raise Refused("compare_off_not_an_off_run")
+    r1 = off["run1"]
+    md5_same = off["run1_log_md5"] == a["log_md5"]
+    out = {"off_drill_id": off_id, "log_md5_equal_to_off": md5_same, "cards_md5_equal_to_off": off.get("run1_cards_md5") == a["cards_md5"],
+           "entries_equal_to_off": r1["entries"] == a["entries"], "entries_on": a["entries"], "entries_off": r1["entries"],
+           "cards_diff": a["cards"] - r1["cards"], "closes_diff": a["closes"] - r1["closes"], "positions_diff": a["positions"] - r1["positions"],
+           "entries_diff": {k: a["entries"].get(k, 0) - r1["entries"].get(k, 0) for k in sorted(set(a["entries"]) | set(r1["entries"]))} if isinstance(a["entries"], dict) else None,
+           "peak_rss_mb_diff": round(rss_mb - off["peak_rss_mb"], 1), "total_drops": total_drops,
+           "differences_explained_by_drops": md5_same or total_drops > 0}
+    out["compare_ok"] = md5_same or total_drops > 0   # md5 differs with zero drops -> FAIL
+    return out
 
 
 def seal_read_only(base: Path) -> None:
@@ -303,13 +336,15 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--drill-id", required=True)
     ap.add_argument("--sha", required=True)
     ap.add_argument("--rss-cap-mb", type=float, default=RSS_CAP_MB)
+    ap.add_argument("--phantom-filter", choices=("on", "off"), default="on", help="drill-only: off turns the HV6 phantom-row filter off in the replay (equivalence proof against aa270efc)")
+    ap.add_argument("--compare-off", default=None, metavar="DRILL_ID", help="with --phantom-filter on: the drill id of an earlier OFF run of the same days; prints on-vs-off counts, FAIL if md5 differs with 0 drops")
     ap.add_argument("--one-run", default=None, help="internal: run one replay (real-a or real-b) in this process and write its result file")
     a = ap.parse_args(argv)
     try:
         days = parse_days(a.days)
         if a.one_run:
-            return child_one_run(a.one_run, days, a.drill_id, a.sha)
-        res = run_real(days, a.drill_id, a.sha, rss_cap_mb=a.rss_cap_mb, isolate=True)
+            return child_one_run(a.one_run, days, a.drill_id, a.sha, a.phantom_filter == "on")
+        res = run_real(days, a.drill_id, a.sha, rss_cap_mb=a.rss_cap_mb, isolate=True, phantom=a.phantom_filter == "on", compare_off=a.compare_off)
     except Refused as e:
         print(json.dumps({"real_layout": "refused", "why": str(e)}), file=sys.stderr)
         return 2

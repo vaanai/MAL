@@ -95,3 +95,45 @@ def test_two_runs_equal_md5_prints_counts_only(tmp_path, _sandbox, capsys):
     assert not any(p in out for p in pools)  # no pool or mint ever printed
     for line in out.splitlines():
         json.loads(line)
+
+
+def _mk(tmp_path, name):
+    base = tmp_path / "drill" / name
+    base.mkdir(parents=True)
+    (base / "SYNTHETIC_FIXTURE_ROOT").write_text("")
+    return base
+
+
+def test_phantom_filter_flag_off_on_compare(tmp_path, _sandbox, capsys, monkeypatch):
+    monkeypatch.setattr(H, "HV6_ROOT", str(tmp_path))
+    write_layout(_sandbox, shifted_rows("2026-10-21"))
+    t0 = RL.day_ms("2026-10-21") + 6 * HOUR
+    win = (t0 + 9 * MIN + 2000, t0 + 70 * MIN)
+    off = RL.run_real(["2026-10-21"], "toff", "a" * 40, base=_mk(tmp_path, "toff"), _window=win, phantom=False)
+    on = RL.run_real(["2026-10-21"], "ton", "a" * 40, base=_mk(tmp_path, "ton"), _window=win, phantom=True, compare_off="toff")
+    capsys.readouterr()
+    assert off["phantom_filter"] == "off" and off["phantom_drops_by_kind"] is None and off["run1"]["phantom_drops"] is None
+    assert on["phantom_filter"] == "on" and on["phantom_drops_by_kind"] == {"sig_ones": 0, "signer": 0, "repeat_slot": 0} and on["phantom_drops_total"] == 0
+    c = on["compare_with_off"]
+    assert c["log_md5_equal_to_off"] and c["cards_md5_equal_to_off"] and c["entries_equal_to_off"] and c["compare_ok"] and on["result"] == "PASS"
+    assert c["cards_diff"] == 0 and c["closes_diff"] == 0 and "peak_rss_mb_diff" in c and off["run1_log_md5"] == on["run1_log_md5"]
+    # md5 differs while nothing was dropped -> compare fails; with drops it is accepted
+    f = tmp_path / "drill" / "toff" / "real-layout-result.json"
+    f.chmod(0o644)
+    d = json.loads(f.read_text())
+    d["run1_log_md5"] = "0" * 32
+    f.write_text(json.dumps(d))
+    run1 = {"log_md5": on["run1_log_md5"], "cards_md5": on["run1_cards_md5"], "cards": on["run1"]["cards"], "closes": on["run1"]["closes"],
+            "positions": on["run1"]["positions"], "entries": on["run1"]["entries"]}
+    assert RL.compare_with_off("toff", run1, 1.0, 0)["compare_ok"] is False
+    assert RL.compare_with_off("toff", run1, 1.0, 5)["compare_ok"] is True
+    with pytest.raises(RL.Refused):
+        RL.compare_with_off("../x", run1, 1.0, 0)
+
+
+def test_phantom_filter_cli_flag_parses():
+    import argparse  # the flag exists on the tool and defaults to on
+    src = Path(RL.__file__).read_text()
+    assert '"--phantom-filter", choices=("on", "off"), default="on"' in src and '"--compare-off"' in src
+    sh = (Path(RL.__file__).resolve().parent.parent / "scripts/ops/hv6-real-layout-replay.sh").read_text()
+    assert '--phantom-filter "$PF"' in sh and "--compare-off" in sh and argparse

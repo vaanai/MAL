@@ -3,6 +3,8 @@ or job log is read, no network, no key."""
 
 from __future__ import annotations
 
+import json
+import os
 import unittest
 from pathlib import Path
 
@@ -19,15 +21,77 @@ def raw(**over):
     return {"profile": c0.PROFILE, "funded_lamports": FUNDED, **over}
 
 
+def read_record(bot, **over):
+    """A synthetic recorded read (the keys arena_score.record_read writes that the gate reads). No real record is ever opened."""
+    rec = {"bot_id": bot, "status": "PASS", "read_boundary_ms": 1_700_000_000_000, "attempts": 120, "model_ids": [c0.MODEL_ID] if bot.endswith("-F") else [],
+           "am15": {"rule": "synthetic"}, "frozen_sha": c0.FROZEN_SHA}
+    rec.update(over)
+    return rec
+
+
+def write_read_record(reads_dir, bot, **over):
+    d = Path(reads_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    os.chmod(d, 0o755)
+    f = d / f"{bot}.json"
+    f.write_text(json.dumps(read_record(bot, **over), sort_keys=True) + "\n")
+    os.chmod(f, 0o644)
+
+
+def owner_fixture(tmp, bot):
+    """A synthetic stand-in for /etc/mal-hv4-c0/CANARY_DEC.md. Returns (path, sha256 of its bytes)."""
+    import hashlib
+    d = Path(tmp) / "etc-c0"
+    d.mkdir(exist_ok=True)
+    p = d / "CANARY_DEC.md"
+    p.write_text("synthetic owner decision\n" + c0.OWNER_LINE_FMT.format(bot_id=bot) + "\n")
+    return p, hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def live_main_env(tmp, bot):
+    """(extra config keys, context manager) so a LIVE main() reaches the later gates: the three parity paths, the owner file and its pin (synthetic, patched).
+    The patches start only when the context manager is entered."""
+    import contextlib
+    from unittest import mock
+    p, sha = owner_fixture(tmp, bot)
+    paths = {"parity_dir": str(Path(tmp) / "par"), "twins_file": str(Path(tmp) / "twins.jsonl"), "tieout_dir": str(Path(tmp) / "tie")}
+
+    @contextlib.contextmanager
+    def patches():
+        with mock.patch.object(c0, "OWNER_DEC_PATH", str(p)), mock.patch.object(c0, "CANARY_DEC_SHA256", sha), mock.patch.object(alb, "root_ok_problem", lambda _p: None):
+            yield
+
+    return paths, patches()
+
+
 class Hv4Env(Env):
     """Env whose bot_id is an HV4 F/X arm and whose config carries the C0 profile."""
 
     def __init__(self, tmp, live=False, bot=ARM, **over):
-        super().__init__(tmp, live=live, **{"bot_id": bot, "frozen_sha": c0.FROZEN_SHA, "profile": c0.PROFILE, "funded_lamports": FUNDED, **over})
+        reads = os.path.realpath(str(Path(tmp) / "reads"))
+        win = os.path.realpath(str(Path(tmp) / "window"))
+        os.makedirs(win, exist_ok=True)
+        os.chmod(win, 0o755)
+        c0.READS_DIR_CANON, c0.WINDOW_DIR = reads, win  # test-only: the latest env's dirs are the "canonical" ones (module globals, reset by the next env)
+        self.a3_file = str(Path(tmp) / "a3" / "daily.jsonl")
+        super().__init__(tmp, live=live, **{"bot_id": bot, "frozen_sha": c0.FROZEN_SHA, "profile": c0.PROFILE, "funded_lamports": FUNDED, "reads_dir": reads,
+                                            "a3_record_file": self.a3_file, **over})
+        write_read_record(reads, bot)
         self.bot = bot
         self.declog_bot = bot
+        self.refresh_halt_inputs()
+
+    def refresh_halt_inputs(self):
+        """A fresh, connected feed status and a clean A3 record at the test clock (the halts tests overwrite them on purpose)."""
+        write_feed(self.raw["root"], self.bot, self.clock.t)
+        write_a3(self.a3_file, self.clock.t)
+
+    def bridge(self):
+        self.refresh_halt_inputs()
+        return super().bridge()
 
     def row(self, body, ms=None):
+        write_feed(self.raw["root"], self.bot, self.clock.t)  # a fresh feed at the time of every row; halt tests overwrite it after the rows are written
         return self.declog.append(self.bot, self.clock.t - 100 if ms is None else ms, body)
 
     def entry_sz(self, oid, pool="P1", stake_sol=0.05, size=None):
@@ -38,6 +102,32 @@ class Hv4Env(Env):
 
     def start(self, sha=c0.FROZEN_SHA):
         self.row({"kind": "start", "binding": "b", "frozen_sha": sha, "rules": [self.bot]})
+
+
+def write_feed(root, bot_id, now_ms, state="connected", **over):
+    """A synthetic forwarder status file (decision_forwarder_v1 format) at <root>/transport/<bot>.status.json."""
+    d = Path(root) / "transport"
+    d.mkdir(parents=True, exist_ok=True)
+    st = {"schema": c0.FEED_SCHEMA, "bot": bot_id, "state": state, "ms": now_ms, "last_frame_ms": now_ms, "last_remote_ms": now_ms, "seq": 1, "f": "x.jsonl", "o": 0,
+          "rows": 1, "gaps": 0, "stall_ms": 2000, "pid": 1}
+    st.update(over)
+    f = d / f"{bot_id}.status.json"
+    f.write_text(json.dumps(st, sort_keys=True) + "\n")
+    return f
+
+
+def write_a3(path, now_ms, halt=False, guard="NONE", **over):
+    """A synthetic A3 daily record (one line; the newest line is the state). DEC-032 Am.3: also the pooled guard's applied line for the SAME run_utc
+    (<dir>/a3-applied.jsonl) with verdict `guard`; guard=None writes none."""
+    from datetime import datetime, timezone
+    run = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rec = {"run_utc": run, "halt": {"flags": {"pins_changed": {"halt": halt, "evaluated": True}, "boost_disabled": {"halt": False, "evaluated": True}}},
+           "warn": {"flags": {"program_changed": {"warn": False}}}}
+    rec.update(over)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(json.dumps(rec) + "\n")
+    if guard is not None:
+        (Path(path).parent / c0.A3_APPLIED_NAME).write_text(json.dumps({"run_utc": rec["run_utc"], "verdict": guard}) + "\n")
 
 
 class ConstantTests(unittest.TestCase):
@@ -305,10 +395,13 @@ class BridgeC0Tests(TmpCase):
         elif marker:
             Path(full["root"]).mkdir(parents=True, exist_ok=True)
             (Path(full["root"]) / c0.SYNTHETIC_MARKER).write_text("")
+        paths, st = live_main_env(self.tmp, full["bot_id"])
+        if live:
+            full.update(paths)
         cfgp = Path(self.tmp) / "cfg_main.json"
         cfgp.write_text(json.dumps({**full, "mode": "live" if live else "dry"}))
         buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
+        with contextlib.redirect_stdout(buf), st:
             rc = alb.main(["--config", str(cfgp), "--once"] + (["--live"] if live else []))
         return rc, buf.getvalue()
 
@@ -345,9 +438,10 @@ class BridgeC0Tests(TmpCase):
         cfgp = Path(self.tmp) / "cfg.json"
         e = Hv4Env(self.tmp)
         full = {k: v for k, v in e.raw.items() if k not in ("stop_file", "halt_file")}
-        cfgp.write_text(json.dumps({**full, "mode": "live"}))
+        paths, st = live_main_env(self.tmp, full["bot_id"])
+        cfgp.write_text(json.dumps({**full, **paths, "mode": "live"}))
         buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
+        with contextlib.redirect_stdout(buf), st:
             rc = alb.main(["--config", str(cfgp), "--live"])
         self.assertEqual(rc, 2)
         self.assertIn("hv4_c0_incomplete", buf.getvalue())
@@ -372,6 +466,9 @@ class BridgeC0Tests(TmpCase):
         e.live_ok.write_text("hv4-other-X\n")
         self.assertEqual(b.effective_live(), (False, "live_ok_other_book"))
         e.live_ok.write_text(ARM + "\n")
+        self.assertEqual(b.effective_live(), (False, "live_ok_owner_dec_pin_unset"))  # no pin, no live send
+        op, sha = owner_fixture(self.tmp, ARM)
+        b.owner_dec_path, b.owner_pin = op, sha
         self.assertEqual(b.effective_live(), (True, None))
 
     def test_live_entry_refused_without_t1(self):

@@ -491,7 +491,7 @@ def _check_llm_arm(arm: str, playbook: p4.Playbook) -> None:
 
 
 def check_min_age(cards: Sequence[Mapping]) -> None:
-    """A card with no numeric age_h, or one under 2 hours, is refused before anything is built (fail closed)."""
+    """A card with no numeric f.age_s (the legacy top-level age_h is only a fallback that can lower the age), or one under 2 hours, is refused before anything is built (fail closed)."""
     for c in cards:
         age = c.get("age_h")
         if isinstance(c.get("f"), Mapping):  # a real hv4-card-1 card carries f.age_s (seconds); when both exist the SMALLER age decides (fail closed)
@@ -502,7 +502,7 @@ def check_min_age(cards: Sequence[Mapping]) -> None:
             elif from_s is not None:
                 age = from_s if (age is None or isinstance(age, bool) or not isinstance(age, (int, float)) or not math.isfinite(age)) else min(age, from_s)
         if isinstance(age, bool) or not isinstance(age, (int, float)) or not math.isfinite(age) or age < MIN_AGE_H:
-            raise PromptError(f"every card needs age_h >= {MIN_AGE_H}")
+            raise PromptError(f"every card needs f.age_s >= {MIN_AGE_H * 3600:g} ({MIN_AGE_H:g} h)")
 
 
 def build_entry_request(arm: str, playbook: p4.Playbook, cards, seq: int, *, max_cards: int = ENTRY_MAX_CARDS) -> Request:
@@ -608,7 +608,7 @@ class RegimeRuleVerdict:
     mode: str | None = None            # "tighten" | "probe"
     tag: str | None = None             # "regime_probe" for a probe: the runner tags every trade it opens
     expires_ms: int | None = None
-    match_rule_waived: bool = False    # True for TTL'd changes: the 10-match rule is waived for TTL changes only, DESIGN section 3
+    match_rule_waived: bool = False    # True: waived for the first regime_rule on a key; a later regime_rule on the same key needs >= min_matches post-change trades (hv6_review.validate_reply)
 
 
 def _is_real(v) -> bool:
