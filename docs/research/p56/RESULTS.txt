@@ -1,0 +1,16 @@
+P56 results (lib-a-A27, PumpSwap fee tier by market cap). Exploration only. No book has cleared the promotion gate. Verdict: KILL for the one rule priced.
+Pre-statement and kill lines: docs/research/p56/PREREG.md (committed 89f8be87 before pricing).
+Raw outputs: momo_stats_output.txt, tier_summary_output.txt (re-run of the stats steps on the saved trades/counts files; nothing re-priced).
+
+1. Sim fee: correct. tools/paper_curve_math.py PUMPSWAP_SOL_FEE_TIERS (12,500 ppm at 0 SOL, 12,000 at 420, 9,500 at 9,820, 5,000 at 58,940, ...) matches the chain FeeConfig read in ARTIFACTS/lab/fee-audit-2026-09-27.md (0.00 points on checked legs; 0.5 bp per side off in five tiers above 54,030 SOL). Bonding is a flat 125 bps. Non-canonical pools charge a flat 0.30% and are not modelled (not our universe).
+
+2. Capacity (counts only), block [2026-09-03T12, 2026-09-09T12) (exploration pool), 7 UTC days incl. 2 partial; see tier_summary_output.txt for the table (trades/day, SOL volume/day, pools trading/day, quote depth p10/p50/p90 per tier group).
+
+3. One rule: momentum +3% over 60 s, mcap >= 9,820 SOL, depth >= 400 SOL, enter +8 slots, hold 150 slots, 0.25 SOL. 4,267 closed trades, 340-839 signals/day (kill line 1 not hit).
+ Tiered fee, flat-15% fail model: mean -0.004107835180322226 SOL/trade, CI90 lo -0.00480287561550148, total -17.528132714434935, ex-top-3 -17.976515760014376, 0/7 days positive. Without fail model mean -0.0048045119768496776.
+ Flat 1.25% control: mean -0.00639362461039262, CI90 lo -0.007076602969643634.
+ Tier saves 1.0828 points per round trip; gross before fees -0.377% per trade.
+ Kill line 2 hit under the flat-15% model. The pressure-fail model was not run; the claim that it is harsher is an assumption (QP note), which does not change this KILL.
+
+Not measured: pressure-fail model, other signals/horizons/stakes, other blocks, bot-flow filtering.
+Seals: only the fresh-0903 clean view was read.

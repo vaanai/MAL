@@ -1,0 +1,19 @@
+Running as unit: run-ra499f330a3b04c0d97d1e234207e1d12.scope; invocation ID: 4bd32a5200694f24a60af19954042c2c
+rows 2826 train 1702 test 1124 features 86
+dropped constants: ['f_mayhem']
+
+cut (20th pct of train OOF preds) = -3.1837 pp; kept 994 of 1124 = 0.8843
+train OOF corr(pred,y) = 0.005  test corr(pred,y) = 0.0663
+[flat] all 12.5381  kept 13.4458  improvement 0.9076 pp | ex-top3 1.5669 | ex-best-day(2026-09-10) 0.7418 | day-boot 5th pct -0.7381 | skipped mean 5.5982, skipped<=-50%: 3 of 25 total <=-50% trades
+[press] all 10.9866  kept 11.6056  improvement 0.6191 pp | ex-top3 1.2726 | ex-best-day(2026-09-03) 0.3110 | day-boot 5th pct -0.9121 | skipped mean 6.2532, skipped<=-50%: 0 of 11 total <=-50% trades
+[flat] train OOF improvement -0.9753 pp (kept 0.800)
+[press] train OOF improvement -0.8338 pp (kept 0.800)
+placebo[flat] mean 0.4060 sd 1.4854 max 3.9172; placebos >= real: 10/20; real 0.9076
+placebo[press] mean 0.3154 sd 1.1308 max 3.0002; placebos >= real: 10/20; real 0.6191
+capacity[flat]: 21 confirmation days; kept 47.333 trades/day x 0.1 SOL x kept mean net 13.4458% = 0.636433 SOL/day (all-trades baseline 53.524/day -> 0.671088 SOL/day)
+capacity[press]: 21 confirmation days; kept 47.333 trades/day x 0.1 SOL x kept mean net 11.6056% = 0.549334 SOL/day (all-trades baseline 53.524/day -> 0.588044 SOL/day)
+
+top gain features: {'f_creator_prior_completes_tape': 2480992.2, 'f_max_single_sell_sol': 1702671.8, 'f_bond_dur_s': 1489148.8, 'f_buy_sol_nonboost_5s': 1335144.7, 'f_n_buyers_30s': 1304072.5, 'f_top1_holder_rem_frac_Bpost': 1231887.5, 'f_n_buyers_15s': 1207971.2, 'f_t_trig_slots': 1141680.7}
+
+KILL lines hit: ['1 improvement<+1.0pp (flat)', '1 improvement<+1.0pp (press)', '2 does not survive drop (press: top3 1.273, bestday 0.311)', '4 placebo mean 0.315 >= half real 0.619 (press)']
+VERDICT: KILL

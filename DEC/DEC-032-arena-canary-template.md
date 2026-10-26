@@ -533,9 +533,15 @@ How to read these figures:
 
    This amendment does not pre-approve any of it.
 
-## Amendment 3: in every DEC-032 C0 canary (Q50, HV4, HV6), `synthetic_share_high` is decided by the DEC-031 Am.10 pooled guard, not by the raw daily record (DRAFT)
+## Amendment 3: in every DEC-032 C0 canary (Q50, HV4, HV6), `synthetic_share_high` is decided by the DEC-031 Am.10 pooled guard, not by the raw daily record (text in force; applies per canary)
 
-**Status: DRAFT, NOT IN FORCE.**
+**Status: TEXT IN FORCE from 433fe06c (merged 2026-10-26, PR #971); applies to a canary only when condition (b) holds for that canary.** Updated 2026-10-26 (`date -u` 19:19Z), records only. A canary whose install sha does not contain item 5, or (Q50) lacks item 8's re-install proofs, runs under §5 item 1 as written.
+- **(a) MET.** This text merged as 433fe06c from PR #971 at head 7b2fcf85. Quant-proof OK: comment 6424806553. Reviewer APPROVE: 6424819933.
+- **(b) code merged; per-canary part NOT MET.**
+  - Code 5b (Q50 / `tools/h5_arena_executor.py`) merged as 4646e542 from PR #972. QP OK 6425036235, reviewer APPROVE 6424980798.
+  - Code 5a (HV4/HV6 C0 / `tools/hv4_live_c0.py`, `tools/arena_live_bridge.py`) merged as bcc0bd2f from PR #977. QP OK 6425156767, reviewer APPROVE 6425105976.
+  - Still open, so no canary is covered yet: no canary's install sha is recorded as containing 4646e542 / bcc0bd2f. Not done, as far as this record knows: the Q50 re-install at X with item 8's md5 replay (EQUAL at X, 137/137 and 101/101) and 1 h dry run; the HV4/HV6 install-sha replay and dry run; the `FILL:a3_guard_source` fill per canary (loop job, guard pin, alert job) with the item 7 precondition jobs (loop job 3, alert #1540 extension or successor, dead-man job 3) submitted. Those job ids and limits were not looked up for this record.
+- Nothing here is a profit claim. No book has cleared the promotion gate.
 - Written 2026-10-26 (`date -u` 18:44:05Z at start) by a builder agent for manager17. Extended at 18:47Z, on manager17's decision, to cover the Q50 (H5) C0 canary too. Revised at about 18:58Z for quant-proof's comment 6424657511 at 588c5b9d (text fixes F1 to F5), and again for comment 6424749534 at 321d7981 (F6 and the dead-man lines, QP's replacement text). Records only.
 - Basis: quant-proof's comment 6424350003 on PR #969 (head 733dd371), ruling (b). It found that the HV4 C0 bridge's A3 check reads the raw daily record, as §5 item 1 says and line for line as `h5_arena_executor.a3_record_problem`. Under the raw synthetic flag a 14-day C0 is likely to halt on sampling noise. `h5_arena_executor.a3_record_problem`, which is the Q50 C0 path, uses the same raw rule.
 - Outcome-blind. In view when this was written: that QP comment, quant-proof's pre-ruling `/data/mal/hunt-1008/push-1016/hunt30/q50-c0/QP-PRERULING-1026-n2-n4.md` (N2), this DEC, DEC-031 Am.4, Am.10 and Am.15, and the code of `tools/a3_redeploy_check.py`, `tools/a3_halt.py`, `tools/a3_applied_alert.py`, `scripts/ops/a3-daily.sh`, `tools/pump_structure_monitor.py`, `tools/h5_arena_executor.py` and `tools/hv4_live_c0.py` / `tools/arena_live_bridge.py` at PR #969 head aa925782. Not opened: any A3 daily record, verdict or applied log, `a3-books.json`, any HV4 or Q50 output, decision row, ledger, `bots.json`, or job status or log.
