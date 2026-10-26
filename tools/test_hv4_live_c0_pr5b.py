@@ -367,6 +367,16 @@ class TripEndToEndTests(TmpCase):
         with self.assertRaises(ValueError):
             b.export_tieout(ato.utc_day_str(e.clock()))  # the day has not ended
 
+    def test_latch_names_are_hard_and_a_landed_buy_without_an_order_is_a_stake_mismatch(self):
+        for name in ("tieout_mismatch", c0.FEED_BREAK_LATCH, c0.A3_LATCH):
+            self.assertIn(name, alb.LATCHES)
+            self.assertIn(name, c0p.HARD_LATCHES)
+        e, b, o, mint, rows = self._setup()
+        e.port.ledger = [("buy", "NO-SUCH-MINT", {k: v for k, v in rows[0].items() if k not in ("kind", "mint", "ts_ms", "book")})]
+        b.feed_ledger()
+        self.assertIn("stake_mismatch", b.state.latches)
+        self.assertIn("landed_buy_without_order", b.state.latches["stake_mismatch"])
+
     def test_removal_precondition_still_refuses(self):
         self.assertEqual(c0.start_refusal("/nonexistent-root", True, ARM), "hv4_c0_incomplete")
 
