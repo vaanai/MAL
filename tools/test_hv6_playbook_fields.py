@@ -90,10 +90,10 @@ def test_playbook_definitions(card):
     assert "non-negative fraction from" not in t and "also a non-negative" not in t
     assert "1 - quote/peak" in t and "last 65 minutes" in t and "negative when the quote is above that peak" in t
     assert "of the round trip" not in t and "FRACTION of the stake" in t
-    assert "are null or plain numbers" in t and "null on HV6 cards except" not in t
-    assert "risk.creator_sold_frac, risk.same_slot_supply and risk.sniper_share are always null" in t
+    assert "null on HV6 cards except" not in t
+    assert "f.creator_net_sol_life, risk.creator_sold_frac, risk.same_slot_supply and risk.sniper_share are numbers or null; on HV6 the last three are always null" in t
     assert "risk.top10_frac is null unless the holder lookup succeeded" in t
-    assert "f.creator_net_sol_life is the SOL the creator took out of the pool minus what it put in" in t and "not the on-chain holder count" in t
+    assert "are numbers or null" in t and "not the on-chain holder count" in t
     assert "so f.ret_1m can cover only a few seconds" in t
     assert "f.close_vs_hi_6h is a ratio (price divided by the 6 hour high" in t and "not a drawdown" in t
     assert "counts are counts" in t and "fractions or SOL" not in t
