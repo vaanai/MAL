@@ -62,7 +62,7 @@ No book has cleared the promotion gate. Profit so far: 0. Nothing trades real SO
   - this hand-off PR (claude/handoff-manager16-1026).
 - **In progress:**
   - **#940**, HV6 pack, WIP head 1c36c5af. Status comment 6421687235. Done: the reviewer-smoke driver `tools/hv6_review_smoke.py` (7 tests), the smoke refusal limit (>5% of cards), and the sha as a required argument in the P0 and smoke tools. Still open, all in the pack text: QP changes 1–5, 6 (pack part), 7 and 8; sha placeholders; the playbook changed-values row; QP's route ruling text. Change 3 needs request `n_rlKSXVDAwRj6TQ` pasted verbatim (the agent could not find it; search the notebook).
-  - `claude/hv6-playbook-fields`, owner fix, builder running.
+  - **#943**, `claude/hv6-playbook-fields`, owner fix items 1–4 plus `dd_ath`, head b8d5640d. New hashes: GEN_v0 0dcd3041…, reviewer_sha256 c5f0bfe0…, regime_template_sha256 91ea5d7d…. Test file `tools/test_hv6_playbook_fields.py` (8 tests). Reviewer and QP passes were launched 10-26 ~16:5xZ; they post `REVIEWER VERDICT` and `QP VERDICT` comments on the PR, and QP also writes hunt30/hv6/QP-VERDICT-1026-pr943.md. If they are missing, re-run both. Merge after both verdicts; the merge sha is HV6's final sha.
 - **Records/draft PRs to batch-review or merge:** #909, #916, #928, #929, #932, #933, #934, #935, #937. Library rows to update: P29 → explored-no-survivor.
 
 ## 6. Fixed instants (host-side jobs)
