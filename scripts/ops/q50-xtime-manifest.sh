@@ -6,7 +6,7 @@
 #   X  full 40-hex sha on origin/main (the merge sha of Q50's DEC copy)
 # Exit 0 only if: the 43-path list sha256 is 244f9e85...; exactly ONE pinned path differs from the reviewed install 0526d5cd, and it is tools/h5_arena_executor.py
 # with blob 70d789ff... (the 5b merge 4646e542); the other 42 paths are identical. Any other outcome: PINNED_SET_CHANGED / refusal, exit non-zero, no install.
-# It does NOT check the canary DEC copy (QP step 3): that file does not exist until the Q50 copy PR merges. Run `--check-canary-record` then (see end of file).
+# It does NOT check the canary DEC copy (QP step 3): that file does not exist until the Q50 copy PR merges. That check is a separate checklist step (row s8.3, 'canary record check at X'), run and recorded by the manager.
 set -u
 REVIEWED=0526d5cd7ab6e1bfbc05e295185c37f7c31d72f1
 M5B=4646e5428f3663af863eeefc00ce05a38aa685b7
@@ -22,7 +22,8 @@ die() { echo "REFUSED: $*" >&2; exit 2; }
 X=$1; ARCH=1; [ "${2:-}" = "--no-archive" ] && ARCH=0
 printf '%s' "$X" | grep -Eq '^[0-9a-f]{40}$' || die "X must be a full 40-hex sha"
 g() { git -C "$REPO" "$@"; }
-g cat-file -e "$X^{commit}" 2>/dev/null || { g fetch -q origin 2>/dev/null; g cat-file -e "$X^{commit}" 2>/dev/null || die "X not in repo"; }
+g fetch -q origin || die "git fetch origin failed (the ancestor checks need a fresh origin/main)"
+g cat-file -e "$X^{commit}" 2>/dev/null || die "X not in repo"
 # step 1: X on origin/main, and the reviewed install and the 5b merge are its ancestors
 g merge-base --is-ancestor "$X" origin/main || die "X is not on origin/main"
 for a in $REVIEWED $M5B 556f7d8c e2471186; do g merge-base --is-ancestor "$a" "$X" || die "$a is not an ancestor of X"; done
@@ -44,7 +45,7 @@ echo "executor blob at X=$b sha256=$s (expected $EXEC_BLOB / $EXEC_SHA256; old s
 [ "$b" = "$EXEC_BLOB" ] && [ "$s" = "$EXEC_SHA256" ] || { echo "PINNED_SET_CHANGED: executor is not the 5b blob"; exit 3; }
 echo "RESULT (a): exactly ONE changed pinned path vs $REVIEWED: $EXEC_PATH = 5b blob. The other $((N-1)) paths are identical."
 # step 5: whole-tree path diff (not only the pinned set), reviewed install vs X
-g diff --name-status "$REVIEWED" "$X" > "${TMPDIR:-/tmp}/q50-xtime-treediff.$$"
+g diff --name-status "$REVIEWED" "$X" > "${TMPDIR:-/tmp}/q50-xtime-treediff.$$" || die "git diff failed"
 echo "step5: whole-tree changes $REVIEWED..$X; pinned-path changes listed below (FULL=1 lists every path):"
 while read -r st path rest; do
   m=" "; case " $PINNED " in *" $path "*) m=P ;; esac
