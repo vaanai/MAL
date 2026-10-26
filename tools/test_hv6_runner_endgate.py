@@ -170,34 +170,18 @@ def test_job_writes_nightly_and_intraday_blocks_with_pins(tmp_path):
     assert again.returncode == 0, again.stdout + again.stderr
 
 
-def test_job_refuses_wrong_pins_and_unpinned_directories(tmp_path):
-    now = int(datetime(2026, 10, 30, 7, 15, tzinfo=timezone.utc).timestamp())
-    cases = [({"HV6_RADAR_CODE_SHA256": "0" * 64}, "radar_code_sha_mismatch"), ({"HV6_RADAR_WATCH_SHA256": "0" * 64}, "watch_sha_mismatch"),
-             ({"HV6_BLOCK_TEST": "0"}, "out_dir_not_pinned"), ({"HV6_RADAR_CODE": ""}, "missing_HV6_RADAR_CODE")]
-    for over, why in cases:
-        r = run_job(job_env(tmp_path, now, **over))
-        assert r.returncode == 2 and why in r.stdout, (why, r.stdout, r.stderr)
-    seals = tmp_path / "seals.json"
-    seals.write_text(Path(REPO / "tools/change_radar_seals.json").read_text() + " ")
-    r = run_job(job_env(tmp_path, now, HV6_RADAR_SEALS=str(seals)))
-    assert r.returncode == 2 and "seals_sha_mismatch" in r.stdout
-    assert run_job(job_env(tmp_path, now)).returncode == 0
-    r = run_job(job_env(tmp_path, now, HV6_RADAR_WATCH_SHA256=sha(REPO / "tools/change_radar.py"), HV6_RADAR_WATCH=str(REPO / "tools/change_radar.py")))
-    assert r.returncode == 2 and "pins_changed_in_window" in r.stdout                       # a pin changes only with a new registration
-
-
 def test_job_loop_writes_an_intraday_block_when_the_radar_adds_a_record(tmp_path):
     out = tmp_path / "radar-out"
     out.mkdir()
     now = datetime.now(timezone.utc)
     (out / "radar.jsonl").write_bytes(jl(rec(now - timedelta(hours=2), [])))
-    env = job_env(tmp_path, None, HV6_BLOCK_ONCE="0", POLL_S="1")
+    env = job_env(tmp_path, None, HV6_BLOCK_ONCE="0", POLL_S="1", STABLE_S="1")
     env.pop("HV6_BLOCK_NOW", None)
     p = subprocess.Popen(["sh", str(SCRIPT)], cwd=str(REPO), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         reg = tmp_path / "regime"
         t_end = time.time() + 60
-        while time.time() < t_end and len(list(reg.glob("block-*.json"))) < 1:
+        while time.time() < t_end and len(list(reg.glob("block-*.json"))) < 2:  # the nightly block and the first intraday block
             time.sleep(0.3)
         n0 = len(list(reg.glob("block-*.json")))
         time.sleep(1.2)

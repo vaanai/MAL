@@ -52,6 +52,7 @@ from tools import hv4_cards as C
 from tools import hv6_agents as A
 from tools import hv6_cards as H
 from tools import hv6_review as RVW
+from tools.hv6_regime_block import block_for_use
 from tools.arena_declog import GENESIS, DecisionLog, LogChainError, sha256_hex, utc_day  # noqa: F401
 from tools.arena_paper import ArenaRefused, canon
 from tools.arena_state import CANDLE_MIN as STATE_CANDLE_MIN
@@ -345,7 +346,8 @@ class RegimeChannel:
             blk = self._load(p)
             if blk is not None and blk["as_of_ms"] < T and (best is None or blk["as_of_ms"] > best["as_of_ms"]):
                 best = blk
-        return best
+        # a block more than 36 h old at this tick is `stale` whatever it said when it was built: the trigger ignores it
+        return dict(block_for_use(best, T)) if best is not None else None
 
     @staticmethod
     def block_for(arm: str, block: Mapping | None) -> Mapping | None:

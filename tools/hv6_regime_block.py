@@ -352,6 +352,16 @@ def observe_pins(radar_code: Path, seals: Path, watch: Path, out_dir: str, venue
             "out_dir": os.path.abspath(out_dir), "venue_tape": venue_tape}
 
 
+def block_for_use(block: Mapping[str, Any], use_ms: int) -> Mapping[str, Any]:
+    """The block as a CONSUMER must read it at `use_ms`: a block whose as_of_ms is more than STALE_HOURS before the use instant is `stale` (R1), even if it was `ok`
+    when it was built, so a stopped producer cannot leave an old `ok` block in force. The input block is not changed; a usable block that is too old comes back as
+    a copy with radar_status = "stale". Used by the runner's trigger, the reviewer's REGIME EVIDENCE and (as spans) the regime-day computation."""
+    ms = block.get("as_of_ms")
+    if isinstance(ms, int) and not isinstance(ms, bool) and use_ms - ms > STALE_HOURS * 3_600_000 and block.get("radar_status") in ("ok", "partial"):
+        return {**block, "radar_status": "stale"}
+    return block
+
+
 def write_once(path: Path, data: bytes) -> None:
     """Create `path` with `data`; an existing file with identical bytes is fine, different bytes refuse (copies and lists are never rewritten)."""
     if path.exists():
@@ -402,14 +412,23 @@ def load_saved(copy_dir: Path) -> list[tuple[int, dict[str, Any], bytes]]:
 
 
 def degraded_days(blocks: Sequence[tuple[int, Mapping[str, Any]]], t0: datetime, n_days: int) -> list[str]:
-    """Days where the block was absent or stale for more than DEGRADED_HOURS. Each block applies from its as_of to the next block's as_of;
-    before the first block the status is absent. Report-only: these days never change the regime-day set."""
+    """Days where the block was absent or stale for more than DEGRADED_HOURS. Each block applies from its as_of to the NEXT block's as_of but at most
+    STALE_HOURS (36 h): after as_of + 36 h with no newer block the status is `stale` (a producer gap counts). Before the first block the status is absent.
+    Report-only: these days never change the regime-day set."""
     out = []
     for i in range(n_days):
         d0 = t0 + timedelta(days=i)
         d1 = d0 + timedelta(days=1)
         bad = 0.0
-        pts = [(ms_to_dt(ms), b["radar_status"]) for ms, b in blocks]
+        pts = sorted([(ms_to_dt(ms), b["radar_status"]) for ms, b in blocks], key=lambda x: x[0])
+        # a block's span ends at the next block or at as_of + STALE_HOURS: add an explicit `stale` point at as_of + 36 h unless a newer block arrives first
+        pts2 = []
+        for i, (t, s) in enumerate(pts):
+            pts2.append((t, s))
+            end = t + timedelta(hours=STALE_HOURS)
+            if s in ("ok", "partial") and (i + 1 == len(pts) or pts[i + 1][0] > end):
+                pts2.append((end, "stale"))
+        pts = sorted(pts2, key=lambda x: x[0])
         cur = "absent"
         edges = [(d0, None)] + [(t, s) for t, s in pts if d0 < t < d1]
         for t, s in pts:
