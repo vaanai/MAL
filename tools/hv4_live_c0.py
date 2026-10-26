@@ -342,6 +342,54 @@ def end_cap_problem(end_ms: int, first_start_ms: int) -> str | None:
     return "end_ms_over_14d" if int(end_ms) > window_cap_ms(first_start_ms) else None
 
 
+WINDOW_DIR = "/var/lib/mal-hv4-c0/window"  # write-once `<bot_id>.json` per bot, outside the bridge's state dir: a new state dir, a deleted state file or a mode switch cannot reset it
+
+
+def window_start_ms(bot_id: str, now_ms: int, create: bool) -> tuple[int | None, str | None]:
+    """(first start ms, problem). The first start of this bot_id, kept in WINDOW_DIR/<bot_id>.json (created O_EXCL, 0444; the dir must exist and be owned by
+    root or the running user, not group/other writable). `create=False` (main's pre-check) returns (None, None) when there is no file yet."""
+    import os
+    import stat
+    if not isinstance(bot_id, str) or "/" in bot_id or bot_id.startswith("."):
+        return None, "window_bot_id"
+    try:
+        if not _owner_mode_ok(os.stat(WINDOW_DIR)):
+            return None, "window_dir_owner_mode"
+    except OSError:
+        return None, "window_dir_missing"
+    path = os.path.join(WINDOW_DIR, f"{bot_id}.json")
+    for attempt in (0, 1):
+        try:
+            ls = os.lstat(path)
+        except FileNotFoundError:
+            if not create:
+                return None, None
+            try:
+                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o444)
+            except FileExistsError:
+                continue
+            except OSError:
+                return None, "window_file_unwritable"
+            with os.fdopen(fd, "w") as fh:
+                fh.write(json.dumps({"bot_id": bot_id, "first_start_ms": int(now_ms)}, sort_keys=True) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            return int(now_ms), None
+        except OSError:
+            return None, "window_file_unreadable"
+        if stat.S_ISLNK(ls.st_mode) or not stat.S_ISREG(ls.st_mode) or ls.st_nlink != 1 or not _owner_mode_ok(ls):
+            return None, "window_file_unsafe"
+        try:
+            rec = json.loads(open(path, "rb").read())
+        except (OSError, ValueError):
+            return None, "window_file_unreadable"
+        v = rec.get("first_start_ms") if isinstance(rec, dict) else None
+        if not isinstance(rec, dict) or rec.get("bot_id") != bot_id or isinstance(v, bool) or not isinstance(v, int):
+            return None, "window_file_unreadable"
+        return v, None
+    return None, "window_file_unreadable"
+
+
 def model_problem(bot_id: str, model_ids: Any) -> str | None:
     """F arm: the recorded model_ids must be exactly [claude-haiku-5-5]. X arm: empty, or every id that single model. Anything else is refused."""
     ok = isinstance(model_ids, list) and all(isinstance(m, str) for m in model_ids)
@@ -364,8 +412,11 @@ def _alias_of_sealed(path: str, extra: Iterable[str] = ()) -> bool:
     for sp in (SEALED_ROOT_PREFIX, *extra):
         try:
             sealed.append(os.stat(sp))
+        except (FileNotFoundError, NotADirectoryError):
+            if sp == SEALED_ROOT_PREFIX:
+                return True  # fail closed: without the prefix's identity no alias can be ruled out
         except OSError:
-            continue
+            return True  # fail closed: a sealed path that cannot be stat-ed is not a pass
     cur = os.path.realpath(path)
     while True:
         try:
@@ -380,14 +431,37 @@ def _alias_of_sealed(path: str, extra: Iterable[str] = ()) -> bool:
         cur = parent
 
 
-def read_record_problem(reads_dir: Any, bot_id: Any, pinned: Mapping[str, Any] | None = None) -> tuple[str | None, dict[str, Any]]:
+def _owner_mode_ok(st: Any) -> bool:
+    """Owned by root or by the running user, and not writable by group or other."""
+    import os
+    return st.st_uid in (0, os.geteuid()) and not (st.st_mode & 0o022)
+
+
+def synthetic_root(root: Any) -> bool:
+    """A root that carries SYNTHETIC_MARKER (a regular file) and does not resolve to, or alias, the sealed prefix."""
+    import os
+    import stat
+    try:
+        if _under_sealed(str(root)):
+            return False
+        return stat.S_ISREG(os.lstat(os.path.join(os.path.realpath(str(root)), SYNTHETIC_MARKER)).st_mode)
+    except OSError:
+        return False
+
+
+def read_record_problem(reads_dir: Any, bot_id: Any, pinned: Mapping[str, Any] | None = None, synthetic_ok: bool = False) -> tuple[str | None, dict[str, Any]]:
     """The gate before ANY decision row of an hv4- bot is read (QP #913): a recorded PASS read for THIS bot (arena_score.record_read output,
     `<reads_dir>/<bot_id>.json`, canonical JSON with bot_id, status PASS, read_boundary_ms, attempts, model_ids, not boundary_source forced, am15 block).
     Returns (problem or None, identity). The identity {path, dev, ino, sha256} of the first good read is passed back as `pinned` on every later check, and the
     file must still be the same inode with the same bytes (a swap, a rewrite or an unlink after the first pass is a refusal).
     Checks: reads_dir absolute; the record's realpath equals reads_dir realpath + name (no symlink hop); lstat regular, not a symlink, st_nlink == 1;
     opened O_NOFOLLOW and fstat (dev, ino) equal the lstat; the realpath is not under the sealed arena prefix except exactly READS_DIR_CANON, and no ancestor
-    is the same (st_dev, st_ino) as the sealed prefix (a /data2/mal bind or alias); then the content. Applies to any hv4- bot_id."""
+    is the same (st_dev, st_ino) as the sealed prefix (a /data2/mal bind or alias); then the content. Applies to any hv4- bot_id.
+    PROVENANCE (QP #965 B1): the record must be the pinned scorer's write-once file, so realpath(reads_dir) must EQUAL READS_DIR_CANON; the only exception is
+    `synthetic_ok` (a DRY start on a root with SYNTHETIC_MARKER; the caller decides). The record's `frozen_sha` must equal FROZEN_SHA, and the reads dir and the
+    record must be owned by root or the running user and not writable by group or other.
+    RUNBOOK NOTE (QP N9): the identity is also persisted in the bridge state. Rewriting or replacing the record (a new inode or other bytes) latches `read_record`
+    and halts the bridge FOR GOOD: only the manager clears a latch, with the bridge stopped. That is correct, not a bug."""
     import os
     import stat
     ident: dict[str, Any] = {}
@@ -400,14 +474,20 @@ def read_record_problem(reads_dir: Any, bot_id: Any, pinned: Mapping[str, Any] |
     under = real_dir == SEALED_ROOT_PREFIX or real_dir.startswith(SEALED_ROOT_PREFIX + "/")
     if under and real_dir != READS_DIR_CANON:
         return "read_record_dir_sealed", ident
+    if real_dir != os.path.realpath(READS_DIR_CANON) and not synthetic_ok:
+        return "read_record_dir_not_canonical", ident
     if real_dir != READS_DIR_CANON and _alias_of_sealed(real_dir, (READS_DIR_CANON,)):
         return "read_record_dir_sealed_alias", ident
     try:
+        if not _owner_mode_ok(os.stat(real_dir)):
+            return "read_record_dir_owner_mode", ident
         ls = os.lstat(path)
     except OSError:
         return "read_record_missing", ident
     if stat.S_ISLNK(ls.st_mode) or not stat.S_ISREG(ls.st_mode):
         return "read_record_not_regular", ident
+    if not _owner_mode_ok(ls):
+        return "read_record_owner_mode", ident
     if ls.st_nlink != 1:
         return "read_record_hardlink", ident
     if os.path.realpath(path) != path:
@@ -440,6 +520,8 @@ def read_record_problem(reads_dir: Any, bot_id: Any, pinned: Mapping[str, Any] |
         return "read_record_unreadable", ident
     if rec["bot_id"] != bot_id:
         return "read_record_other_bot", ident
+    if rec.get("frozen_sha") != FROZEN_SHA:
+        return "read_record_frozen_sha", ident
     if rec["status"] != "PASS" or rec.get("fail_label") or rec.get("boundary_source") == "forced" or rec.get("pending"):
         return "read_record_not_pass", ident
     if isinstance(rec["read_boundary_ms"], bool) or not isinstance(rec["read_boundary_ms"], int) or not isinstance(rec.get("am15"), dict):
@@ -495,7 +577,7 @@ def start_row_fields() -> dict[str, Any]:
 def _under_sealed(path: str) -> bool:
     import os
     real = os.path.realpath(path)
-    return real == SEALED_ROOT_PREFIX or real.startswith(SEALED_ROOT_PREFIX + "/")
+    return real == SEALED_ROOT_PREFIX or real.startswith(SEALED_ROOT_PREFIX + "/") or _alias_of_sealed(path)  # realpath OR the same (st_dev, st_ino): one rule for every caller
 
 
 def decisions_path_refusal(root: str, bot_id: str | None) -> str | None:

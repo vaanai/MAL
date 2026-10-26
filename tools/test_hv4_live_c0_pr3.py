@@ -173,10 +173,13 @@ class TwinFeesTests(unittest.TestCase):
         seen = []
         with mock.patch.object(W, "main", side_effect=lambda a: seen.append(a) or 0):
             self.assertEqual(tw.main(["--trips=t", "--out=o", f"--ledger-dir={d}", f"--bot-id={ARM}", "--now-ms=5"]), 0)
-        self.assertEqual(seen[0][seen[0].index("--ledger-dir") + 1], str(d))
-        self.assertEqual(seen[0].count("--ledger-dir"), 1)
-        self.assertEqual(seen[0][seen[0].index("--config-hash") + 1], c0.CONFIG_PIN_SHA256)
-        self.assertEqual(seen[0][seen[0].index("--now-ms") + 1], "5")
+        argv = seen[0]
+        opts = dict(x.split("=", 1) for x in argv)  # every option is forwarded as --opt=value (N4)
+        self.assertTrue(all(x.startswith("--") and "=" in x for x in argv), argv)
+        self.assertEqual(opts["--ledger-dir"], str(d))
+        self.assertEqual(sum(x.startswith("--ledger-dir=") for x in argv), 1)
+        self.assertEqual(opts["--config-hash"], c0.CONFIG_PIN_SHA256)
+        self.assertEqual(opts["--now-ms"], "5")
 
     def test_cli_refusals(self):
         d = self._ledger()

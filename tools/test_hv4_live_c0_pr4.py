@@ -19,6 +19,13 @@ from tools.test_arena_live_bridge import TmpCase
 from tools.test_hv4_live_c0 import ARM, FUNDED, Hv4Env, live_main_env, owner_fixture, read_record, write_read_record
 from tools.test_hv4_live_c0_pr2 import LivePortScheduleTests, decode_tx
 
+def rrp(*a, **k):
+    """read_record_problem with the synthetic exception on (dirs other than the canonical one are allowed): the sealed-prefix, alias and content checks still run.
+    Provenance tests call c0.read_record_problem directly."""
+    k.setdefault("synthetic_ok", True)
+    return c0.read_record_problem(*a, **k)
+
+
 DAY = 86_400_000
 FARM = "hv4-CON-F"
 
@@ -50,7 +57,7 @@ class ReadRecordPureTests(TmpCase):
     def test_good_record_passes_and_returns_identity(self):
         d = self._dir()
         write_read_record(d, ARM)
-        why, ident = c0.read_record_problem(d, ARM)
+        why, ident = rrp(d, ARM)
         self.assertIsNone(why)
         self.assertEqual(set(ident), {"path", "dev", "ino", "sha256"})
         self.assertEqual(ident["path"], os.path.join(d, ARM + ".json"))
@@ -58,11 +65,11 @@ class ReadRecordPureTests(TmpCase):
     def test_applies_to_any_hv4_bot_id_and_refuses_the_rest(self):
         d = self._dir()
         for bot in ("hv4-CON-F", "hv4-BST-X", "hv4-BIG-L"):
-            self.assertEqual(c0.read_record_problem(d, bot)[0], "read_record_missing", bot)
+            self.assertEqual(rrp(d, bot)[0], "read_record_missing", bot)
         for bad in ("rule1", "", None, "hv4-../x", ".hv4-x", 5):
-            self.assertEqual(c0.read_record_problem(d, bad)[0], "read_record_bot_id", bad)
+            self.assertEqual(rrp(d, bad)[0], "read_record_bot_id", bad)
         for bad in (None, "", "relative/reads", 3):
-            self.assertEqual(c0.read_record_problem(bad, ARM)[0], "read_record_dir_missing", bad)
+            self.assertEqual(rrp(bad, ARM)[0], "read_record_dir_missing", bad)
 
     def test_content_must_be_a_recorded_pass_for_this_bot(self):
         d = self._dir()
@@ -75,44 +82,44 @@ class ReadRecordPureTests(TmpCase):
             for over in overs:
                 os.path.exists(os.path.join(d, ARM + ".json")) and os.unlink(os.path.join(d, ARM + ".json"))
                 write_read_record(d, ARM, **over)
-                self.assertEqual(c0.read_record_problem(d, ARM)[0], label, over)
+                self.assertEqual(rrp(d, ARM)[0], label, over)
         p = Path(d) / (ARM + ".json")
         for junk in ("not json", "[]", json.dumps({"bot_id": ARM}), ""):
             p.write_text(junk)
-            self.assertEqual(c0.read_record_problem(d, ARM)[0], "read_record_unreadable", junk)
+            self.assertEqual(rrp(d, ARM)[0], "read_record_unreadable", junk)
 
     def test_symlink_and_hardlink_tricks(self):
         d = self._dir()
         other = self._dir("other")
         write_read_record(other, ARM)
         os.symlink(os.path.join(other, ARM + ".json"), os.path.join(d, ARM + ".json"))  # record file is a symlink
-        self.assertEqual(c0.read_record_problem(d, ARM)[0], "read_record_not_regular")
+        self.assertEqual(rrp(d, ARM)[0], "read_record_not_regular")
         os.unlink(os.path.join(d, ARM + ".json"))
         os.link(os.path.join(other, ARM + ".json"), os.path.join(d, ARM + ".json"))  # record file is a hard link (nlink 2)
-        self.assertEqual(c0.read_record_problem(d, ARM)[0], "read_record_hardlink")
+        self.assertEqual(rrp(d, ARM)[0], "read_record_hardlink")
         os.unlink(os.path.join(d, ARM + ".json"))
         d2 = os.path.join(self.tmp, "symdir")  # a directory symlink to a clean dir resolves by realpath and is judged where it lands
         os.symlink(other, d2)
-        self.assertIsNone(c0.read_record_problem(d2, ARM)[0])
+        self.assertIsNone(rrp(d2, ARM)[0])
 
     def test_sealed_prefix_dir_refused_except_the_canonical_reads_dir(self):
         with ScratchArena(self.tmp) as a:
             write_read_record(os.path.join(a.root, "reads"), ARM)
-            self.assertIsNone(c0.read_record_problem(os.path.join(a.root, "reads"), ARM)[0])  # exactly the canonical dir
+            self.assertIsNone(rrp(os.path.join(a.root, "reads"), ARM)[0])  # exactly the canonical dir
             os.makedirs(os.path.join(a.root, "decisions"))
             write_read_record(os.path.join(a.root, "decisions"), ARM)
-            self.assertEqual(c0.read_record_problem(os.path.join(a.root, "decisions"), ARM)[0], "read_record_dir_sealed")
-            self.assertEqual(c0.read_record_problem(a.root, ARM)[0], "read_record_dir_sealed")
+            self.assertEqual(rrp(os.path.join(a.root, "decisions"), ARM)[0], "read_record_dir_sealed")
+            self.assertEqual(rrp(a.root, ARM)[0], "read_record_dir_sealed")
             link = os.path.join(self.tmp, "alias-of-decisions")  # a symlink that lands under the prefix
             os.symlink(os.path.join(a.root, "decisions"), link)
-            self.assertEqual(c0.read_record_problem(link, ARM)[0], "read_record_dir_sealed")
-            self.assertEqual(c0.read_record_problem(os.path.join(a.root, "reads", "..", "decisions"), ARM)[0], "read_record_dir_sealed")
+            self.assertEqual(rrp(link, ARM)[0], "read_record_dir_sealed")
+            self.assertEqual(rrp(os.path.join(a.root, "reads", "..", "decisions"), ARM)[0], "read_record_dir_sealed")
 
     def test_bind_alias_of_the_sealed_prefix_is_caught_by_st_dev_st_ino(self):
         with ScratchArena(self.tmp) as a:
             alias = self._dir("data2-alias")  # a different name; a bind mount would show the SAME (st_dev, st_ino) as the prefix
             write_read_record(alias, ARM)
-            self.assertIsNone(c0.read_record_problem(alias, ARM)[0])
+            self.assertIsNone(rrp(alias, ARM)[0])
             real_stat = os.stat
 
             def fake(path, *args, **kw):
@@ -120,34 +127,34 @@ class ReadRecordPureTests(TmpCase):
                 return st
 
             with mock.patch("os.stat", fake):
-                self.assertEqual(c0.read_record_problem(alias, ARM)[0], "read_record_dir_sealed_alias")
+                self.assertEqual(rrp(alias, ARM)[0], "read_record_dir_sealed_alias")
             real_reads = os.path.join(a.root, "reads")
 
             def fake2(path, *args, **kw):
                 return real_stat(real_reads if os.fspath(path) == alias else path, *args, **kw)
 
             with mock.patch("os.stat", fake2):  # an alias of the canonical reads dir under another name is refused as well
-                self.assertEqual(c0.read_record_problem(alias, ARM)[0], "read_record_dir_sealed_alias")
+                self.assertEqual(rrp(alias, ARM)[0], "read_record_dir_sealed_alias")
 
     def test_identity_pin_catches_rewrite_swap_and_unlink(self):
         d = self._dir()
         write_read_record(d, ARM)
-        why, ident = c0.read_record_problem(d, ARM)
+        why, ident = rrp(d, ARM)
         self.assertIsNone(why)
-        self.assertIsNone(c0.read_record_problem(d, ARM, ident)[0])  # unchanged
+        self.assertIsNone(rrp(d, ARM, ident)[0])  # unchanged
         p = Path(d) / (ARM + ".json")
         p.write_text(p.read_text().replace("120", "121"))  # same inode, other bytes
-        self.assertEqual(c0.read_record_problem(d, ARM, ident)[0], "read_record_changed")
+        self.assertEqual(rrp(d, ARM, ident)[0], "read_record_changed")
         write_read_record(d, ARM)
-        why, ident = c0.read_record_problem(d, ARM)
+        why, ident = rrp(d, ARM)
         raw = p.read_bytes()
         fresh = Path(d) / "fresh.tmp"
         fresh.write_bytes(raw)  # created while the old file still exists: a different inode
         os.replace(fresh, p)  # same bytes, new inode
         self.assertNotEqual(os.stat(p).st_ino, ident["ino"])
-        self.assertEqual(c0.read_record_problem(d, ARM, ident)[0], "read_record_changed")
+        self.assertEqual(rrp(d, ARM, ident)[0], "read_record_changed")
         p.unlink()
-        self.assertEqual(c0.read_record_problem(d, ARM, ident)[0], "read_record_missing")
+        self.assertEqual(rrp(d, ARM, ident)[0], "read_record_missing")
 
 
 class ModelIdTests(TmpCase):
@@ -167,9 +174,9 @@ class ModelIdTests(TmpCase):
     def test_record_with_wrong_model_fails_the_gate(self):
         d = os.path.realpath(self.tmp)
         write_read_record(d, FARM)
-        self.assertIsNone(c0.read_record_problem(d, FARM)[0])
+        self.assertIsNone(rrp(d, FARM)[0])
         write_read_record(d, "hv4-BIG-F", model_ids=["claude-haiku-4-5"])
-        self.assertEqual(c0.read_record_problem(d, "hv4-BIG-F")[0], "model_id_not_pinned")
+        self.assertEqual(rrp(d, "hv4-BIG-F")[0], "model_id_not_pinned")
 
 
 class GuardAliasTests(TmpCase):

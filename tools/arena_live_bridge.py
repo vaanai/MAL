@@ -294,7 +294,8 @@ class BridgeState:
     latches: dict[str, str] = field(default_factory=dict)
     counts: dict[str, int] = field(default_factory=dict)
     start_seen: bool = False
-    first_start_ms: int | None = None  # hv4_c0: when this state was first created; the 14-day window runs from here and a restart does not move it
+    first_start_ms: int | None = None  # unused since #965 N2: the 14-day window start is the write-once file c0.WINDOW_DIR/<bot_id>.json, outside this state
+    read_pin: dict[str, Any] | None = None  # hv4_c0: identity {path, dev, ino, sha256} of the recorded read, pinned at the first good check and compared on every run
 
     def save(self, path: Path) -> None:
         _atomic_write(path, self.__dict__)
@@ -369,12 +370,12 @@ class Bridge:
         self.owner_pin = owner_pin
         self._read_ident: dict[str, Any] = {}
         if cfg.profile == c0.PROFILE:
-            if self.state.first_start_ms is None:
-                self.state.first_start_ms = self.now_ms()
-                self.state.save(self.state_path)
-            why = c0.end_cap_problem(cfg.end_ms, self.state.first_start_ms)
+            first, why = c0.window_start_ms(cfg.bot_id, self.now_ms(), create=True)
+            why = why or c0.end_cap_problem(cfg.end_ms, first)
             if why:
                 raise SystemExit(f"hv4_c0 refused: {why}")
+            self.window_start_ms = first
+            self._read_ident = dict(self.state.read_pin or {})
         self.guarded = cfg.profile == c0.PROFILE  # hv4_c0: every decision-log read is path-guarded (symlink, hard link, swap, arena realpath), in the object itself
         self._last_warm = 0
         self._bal_ms: int | None = None  # hv4_c0: when the wallet balance was last read successfully
@@ -419,11 +420,14 @@ class Bridge:
             return True
         if "read_record" in self.state.latches:
             return False
-        why, ident = c0.read_record_problem(self.cfg.reads_dir, self.cfg.bot_id, self._read_ident or None)
+        why, ident = c0.read_record_problem(self.cfg.reads_dir, self.cfg.bot_id, self._read_ident or None, self.cfg.mode == DRY and c0.synthetic_root(self.cfg.root))
         if why:
             self._latch("read_record", why)
             return False
         self._read_ident = ident
+        if self.state.read_pin is None:  # persisted: a restart, a new process or a swapped record is compared with THIS identity
+            self.state.read_pin = dict(ident)
+            self._save()
         return True
 
     def _verify_at_start(self) -> None:
@@ -998,6 +1002,7 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
             # The profile's own end (dec019: 2026-10-12) is replaced by the bridge's end_ms: the executor's check_buy soft stop (end_instant) then
             # enforces it at send time too, and the Bridge re-checks it right before the send.
             object.__setattr__(self.limits, "end_ms", int(end_ms))
+            self.sent_priority: dict[str, int] = {}
             self.events: list[dict[str, Any]] = []
             self.ledger: list[tuple[str, str, dict[str, Any]]] = []
             self.last_skip: str | None = None
@@ -1058,9 +1063,15 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
                     d = bytes(ix.data)
                     if str(keys[ix.program_id_index]) == str(tx_mod.PUMPSWAP_PROGRAM) and d[:8] == bytes(tx_mod.DISC_SELL) and int.from_bytes(d[16:24], "little") <= 0:
                         raise RuntimeError("c0_min_out_zero")
+            if cfg.profile == c0.PROFILE:  # N7: remember the priority of the tx actually signed, so the fill row logs what was SENT (the base class recomputes
+                # `_priority` at landing, when the pending entry is gone); the pinned base `_sign` runs unchanged with that same value
+                priority = self._priority(mint) if priority is None else priority
+                self.sent_priority[mint] = priority
             return super()._sign(msg, ps, mint, priority)
 
         def _log(self, kind: str, mint: str, **kw: Any) -> None:
+            if cfg.profile == c0.PROFILE and kind in ("buy", "sell") and "priority_lamports" in kw and mint in getattr(self, "sent_priority", {}):
+                kw["priority_lamports"] = self.sent_priority[mint]  # the priority of the last tx signed for this mint, not a recomputation
             super()._log(kind, mint, **kw)
             if cfg.profile == c0.PROFILE and kind in ("buy", "sell"):
                 self.ledger.append((kind, mint, dict(kw)))  # the parity recorder reads the executor's own fill rows (drained by the port)
@@ -1253,10 +1264,11 @@ def main(argv: list[str] | None = None) -> int:
                 why = c0.owner_line_problem(c0.OWNER_DEC_PATH, cfg.bot_id, None, root_ok_problem)
         else:
             why = None
-        why = why or c0.read_record_problem(cfg.reads_dir, cfg.bot_id)[0]
+        st0 = BridgeState.load(Path(cfg.state_dir) / f"bridge-state-{cfg.mode}.json", cfg.mode)
+        why = why or c0.read_record_problem(cfg.reads_dir, cfg.bot_id, st0.read_pin, (not want_live) and c0.synthetic_root(cfg.root))[0]
         if not why:
-            st0 = BridgeState.load(Path(cfg.state_dir) / f"bridge-state-{cfg.mode}.json", cfg.mode)
-            why = c0.end_cap_problem(cfg.end_ms, st0.first_start_ms if st0.first_start_ms is not None else int(time.time() * 1000))
+            first, why = c0.window_start_ms(cfg.bot_id, int(time.time() * 1000), create=False)
+            why = why or c0.end_cap_problem(cfg.end_ms, first if first is not None else int(time.time() * 1000))
         if why:
             print(f"arena_live_bridge ALERT startup_refused {why}", flush=True)
             return 2

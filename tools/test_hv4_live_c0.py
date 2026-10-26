@@ -4,6 +4,7 @@ or job log is read, no network, no key."""
 from __future__ import annotations
 
 import json
+import os
 import unittest
 from pathlib import Path
 
@@ -23,7 +24,7 @@ def raw(**over):
 def read_record(bot, **over):
     """A synthetic recorded read (the keys arena_score.record_read writes that the gate reads). No real record is ever opened."""
     rec = {"bot_id": bot, "status": "PASS", "read_boundary_ms": 1_700_000_000_000, "attempts": 120, "model_ids": [c0.MODEL_ID] if bot.endswith("-F") else [],
-           "am15": {"rule": "synthetic"}}
+           "am15": {"rule": "synthetic"}, "frozen_sha": c0.FROZEN_SHA}
     rec.update(over)
     return rec
 
@@ -31,7 +32,10 @@ def read_record(bot, **over):
 def write_read_record(reads_dir, bot, **over):
     d = Path(reads_dir)
     d.mkdir(parents=True, exist_ok=True)
-    (d / f"{bot}.json").write_text(json.dumps(read_record(bot, **over), sort_keys=True) + "\n")
+    os.chmod(d, 0o755)
+    f = d / f"{bot}.json"
+    f.write_text(json.dumps(read_record(bot, **over), sort_keys=True) + "\n")
+    os.chmod(f, 0o644)
 
 
 def owner_fixture(tmp, bot):
@@ -64,7 +68,11 @@ class Hv4Env(Env):
     """Env whose bot_id is an HV4 F/X arm and whose config carries the C0 profile."""
 
     def __init__(self, tmp, live=False, bot=ARM, **over):
-        reads = str(Path(tmp) / "reads")
+        reads = os.path.realpath(str(Path(tmp) / "reads"))
+        win = os.path.realpath(str(Path(tmp) / "window"))
+        os.makedirs(win, exist_ok=True)
+        os.chmod(win, 0o755)
+        c0.READS_DIR_CANON, c0.WINDOW_DIR = reads, win  # test-only: the latest env's dirs are the "canonical" ones (module globals, reset by the next env)
         super().__init__(tmp, live=live, **{"bot_id": bot, "frozen_sha": c0.FROZEN_SHA, "profile": c0.PROFILE, "funded_lamports": FUNDED, "reads_dir": reads, **over})
         write_read_record(reads, bot)
         self.bot = bot
