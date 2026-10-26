@@ -39,3 +39,8 @@ def test_full_days_and_verdict():
     assert C.verdict(s, 30) == ("ADVANCE-TO-PRICING-DECLARE", [])
     assert C.verdict(dict(s, median_triggers_per_full_day=2.5), 30) == ("KILL", ["K0"])
     assert C.verdict(s, 4)[0] == "NOT_DECIDABLE"
+
+
+def test_p_days_inside_windows():
+    allx = C.full_days("B") + C.full_days("C")
+    assert all(d in allx for d in C.P_DAYS) and len(C.P_DAYS) == 8

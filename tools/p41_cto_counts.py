@@ -9,6 +9,8 @@ import argparse, bisect, collections, datetime as dt, json, statistics, sys
 U = lambda s: int(dt.datetime.strptime(s, "%Y-%m-%dT%H").replace(tzinfo=dt.timezone.utc).timestamp())
 WINDOWS = {"A": ("2026-08-14T12", "2026-08-28T12"), "B": ("2026-09-03T12", "2026-09-15T12"), "C": ("2026-09-18T23", "2026-09-25T07")}
 H = 3600
+# DECLARE Amendment 1: set P (admin_cto only) covers the full UTC days after the 2026-09-12 switch-over
+P_DAYS = ["2026-09-13", "2026-09-14"] + [f"2026-09-{d}" for d in range(19, 25)]
 
 
 def full_days(win):
@@ -78,7 +80,7 @@ def summarize(rows, days_by_win):
     alldays = [d for w in days_by_win for d in days_by_win[w]]
     s["triggers_per_full_day"] = {d: per_day.get(d, 0) for d in alldays}
     s["median_triggers_per_full_day"] = statistics.median([per_day.get(d, 0) for d in alldays]) if alldays else None
-    s["median_by_window"] = {w: statistics.median([per_day.get(d, 0) for d in days_by_win[w]]) for w in days_by_win}
+    s["median_by_window"] = {w: statistics.median([per_day.get(d, 0) for d in days_by_win[w]]) for w in days_by_win if days_by_win[w]}
     s["venue_t"] = dict(collections.Counter(r["venue_t"] for r in trig))
     for v in ("pumpswap", "pump_bonding"):
         s[f"quote_t_sol_{v}"] = qstats([r["quote_t_sol"] for r in trig if r["venue_t"] == v and r["quote_t_sol"] is not None])
@@ -119,14 +121,20 @@ def main(argv=None):
         for r in load(n): by[n][r["mint"]].append(r)
     for rs in by["trades"].values(): rs.sort(key=lambda r: (r["block_time"], r["slot"], r.get("event_index") or 0))
     rows = [label(e, by["trades"].get(e["mint"], []), by["creates"].get(e["mint"], []), by["migrations"].get(e["mint"], [])) for e in ev]
-    days = {w: full_days(w) for w in WINDOWS}
-    res = {"primary_all_admin_cto": summarize(rows, days),
-           "subset_new_creator": summarize([r for r in rows if r["kind"] == "new_creator"], days)}
-    nd = sum(len(v) for v in days.values())
-    res["covered_full_days"] = nd
-    for k in ("primary_all_admin_cto", "subset_new_creator"):
-        res[k]["verdict"], res[k]["kill_rules_hit"] = verdict(res[k], nd)
-    res["kinds"] = dict(collections.Counter(r["kind"] for r in rows))
+    for r, e in zip(rows, ev): r["op"] = e.get("op", "admin_cto")
+    days_s = {w: full_days(w) for w in WINDOWS}
+    days_p = {w: [d for d in days_s[w] if d in P_DAYS] for w in WINDOWS}
+    rows_p = [r for r in rows if r["op"] == "admin_cto"]
+    res = {"set_P": summarize(rows_p, days_p), "set_S": summarize(rows, days_s),
+           "set_P_new_creator": summarize([r for r in rows_p if r["kind"] == "new_creator"], days_p),
+           "set_S_new_creator": summarize([r for r in rows if r["kind"] == "new_creator"], days_s)}
+    res["covered_full_days"] = {"P": sum(len(v) for v in days_p.values()), "S": sum(len(v) for v in days_s.values())}
+    for k in ("set_P", "set_S"):
+        res[k]["verdict"], res[k]["kill_rules_hit"] = verdict(res[k], res["covered_full_days"][k[-1]])
+    vs = (res["set_P"]["verdict"], res["set_S"]["verdict"])
+    res["lane_verdict"] = ("ADVANCE-TO-PRICING-DECLARE" if vs == ("ADVANCE-TO-PRICING-DECLARE",) * 2 else
+                           "NOT_DECIDABLE" if "NOT_DECIDABLE" in vs and "KILL" not in vs else "KILL")
+    res["kinds"] = {f"{a}/{b}": n for (a, b), n in collections.Counter((r["op"], r["kind"]) for r in rows).items()}
     res["rows"] = rows
     json.dump(res, sys.stdout, indent=1)
 
