@@ -567,6 +567,44 @@ class Section52GapHaltTests(TmpCase):
         self.assertFalse(b.state.latches)
 
 
+class DeadRunnerTests(TmpCase):
+    def test_runner_silence_refuses_buys_after_the_bound(self):
+        self.assertIsNone(c0.runner_silent_problem(None, 1000, 1000 + c0.RUNNER_SILENT_MS))
+        self.assertEqual(c0.runner_silent_problem(None, 1000, 1001 + c0.RUNNER_SILENT_MS), "runner_silent")
+        self.assertIsNone(c0.runner_silent_problem(5000, 1000, 5000 + c0.RUNNER_SILENT_MS))
+        self.assertEqual(c0.runner_silent_problem(5000, 1000, 5001 + c0.RUNNER_SILENT_MS), "runner_silent")
+        self.assertIsNone(c0.runner_silent_problem(None, 5000, 1000))  # backward clock: no verdict
+
+    def test_bridge_refuses_after_silence_and_a_new_row_proves_life(self):
+        e = Hv4Env(self.tmp)
+        b = e.bridge()
+        e.start()
+        b.tick()
+        e.clock.t += c0.RUNNER_SILENT_MS + 1
+        e.refresh_halt_inputs()
+        self.assertEqual(b.feed_refusal(e.clock.t), "runner_silent")
+        e.entry_sz("o1")  # a row arrives: the runner is alive
+        b.tick()
+        self.assertEqual([c[1] for c in e.port.calls if c[0] == "buy"], ["o1"])
+
+    def test_open_position_is_closed_by_the_time_stop_backstop_with_no_runner_exit_row(self):
+        """Dead runner: the feed still reads connected (the forwarder is alive), no exit row ever comes. The bridge's own backstop sells."""
+        e = Hv4Env(self.tmp)
+        b = e.bridge()
+        e.start()
+        e.entry_sz("o1")
+        b.tick()
+        e.port.events.append({"order_id": "o1", "event": "buy_landed", "landed_slot": 1002})
+        b.tick()
+        self.assertEqual(b.state.orders["o1"]["status"], "open")
+        e.clock.t += b.cfg.max_hold_ms + alb.BACKSTOP_EXTRA_MS + 1  # no row of any kind since; the transport keeps saying connected
+        write_feed(e.raw["root"], e.bot, e.clock.t)
+        write_a3(e.a3_file, e.clock.t)
+        b.tick()
+        self.assertEqual(e.port.calls[-1], ("sell", "o1", "time_stop_backstop"))
+        self.assertEqual(c0.feed_gap_problem(str(Path(e.raw["root"]) / "transport" / f"{e.bot}.status.json"), e.bot, e.clock.t), None)
+
+
 class A3EquivalenceTests(TmpCase):
     def test_equal_to_the_h5_executor_check_on_a_matrix_of_records(self):
         try:
