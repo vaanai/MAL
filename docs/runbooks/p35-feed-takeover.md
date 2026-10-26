@@ -67,7 +67,8 @@ Steps, modelled on feed-handover-1107:
    - Before 2026-11-11T14:00Z the module refuses the production tape.
    - It refuses unpinned thresholds.
    - It stops only the single lock holder whose argv has `tools.arena_feed[_v2]` and `--out-dir /data/mal/arena/tape`.
-2. A post-check job at the instant + 25 min runs `feed_handover_proof seam --tape /data/mal/arena/tape --expect-takeover --qp-ruling <the ruling
+2. A post-check job at the instant + 25 min runs `feed_handover_proof seam` with `--pad-s` reaching back past the standby's `cover_from_ms` (QP N3:
+   `n_old` is recomputed only over the rows read, and a window that misses part of the overlap fails closed). It runs `--tape /data/mal/arena/tape --expect-takeover --qp-ruling <the ruling
    naming the window> ...` over [instant - 10 min, instant + 10 min]. It prints counts only.
 3. If the standby aborts (exit 5, not ready, or exit 3, a lock race), the old feed is untouched or another writer holds the tape. Then H' runs
    to its limit, and the manager runs the plain f5bd26e7 fallback (DESIGN 4.1) before H' ends.

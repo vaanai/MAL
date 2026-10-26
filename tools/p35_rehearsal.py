@@ -219,7 +219,9 @@ def run(root: Path, *, phase1_s: int, phase2_s: int, seam_gap_s: int, warm_s: in
             proofs.append({"k": s["k"], "verdict": "NO_TAKEOVER"})
             continue
         lo, hi = s["lock_ms"] - SEAM_PAD_S * 1000, s["lock_ms"] + SEAM_PAD_S * 1000
-        sm = P.seam_report(ho, lo, hi, expect_takeover=True, max_disagree_rate=mdr, min_overlap_rows=mor)
+        # QP N3: n_old is recomputed only over the rows read ([lo - pad, hi + pad)); the standby's cover_from_ms is about warm_s before the
+        # takeover, so the read pad must reach back past it, or the check fails closed on a mismatch.
+        sm = P.seam_report(ho, lo, hi, expect_takeover=True, max_disagree_rate=mdr, min_overlap_rows=mor, pad_s=float(max(3600, warm_s + 2 * SEAM_PAD_S)))
         par = P.parity_report(ho, ctrl, s["lock_ms"] - PARITY_HALF_S * 1000, s["lock_ms"] + PARITY_HALF_S * 1000, seam_ms=s["lock_ms"], seam_pad_s=SEAM_PAD_S)
         proofs.append({"k": s["k"], "seam_verdict": sm["verdict"], "seam_failed": sm["failed"], "hard_gaps": sm["checks"]["hard_gaps"]["value"],
                        "parity_buckets": par["buckets"], "seam_miss_rate_not_above_control": par["seam_miss_rate_not_above_control"]})
