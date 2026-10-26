@@ -397,6 +397,7 @@ class Bridge:
             self.gates = c0p.build_gates(cfg.parity_dir, cfg.twins_file, cfg.tieout_dir, cfg.stop_file, self._parity_state, runner=parity_runner)
         self._last_sell_try: dict[str, int] = {}
         self._a3_polled_ms: int | None = None
+        self._a3_refuse: str | None = None  # DEC-032 Am.3: a pending pooled guard refuses new buys (no latch)
         self._started_ms = self.now_ms()
         self._last_row_ms: int | None = None  # hv4_c0: the newest decision row consumed (any kind)
         if cfg.profile == c0.PROFILE:
@@ -667,6 +668,9 @@ class Bridge:
         on a root without SYNTHETIC_MARKER needs it too."""
         if self.cfg.profile != c0.PROFILE:
             return None
+        if self._a3_refuse:
+            self._count("a3_guard_pending_refusal")
+            return self._a3_refuse
         why = c0.runner_silent_problem(self._last_row_ms, self._started_ms, now)
         if why:
             self._count("runner_silent_refusal")
@@ -721,14 +725,14 @@ class Bridge:
             return False
 
     def a3_tick(self, now: int) -> None:
-        """hv4_c0 A3 halt: poll the A3 daily record (throttled) and latch a3_pins_changed on any halt flag (pins_changed included) or a record that cannot be
+        """hv4_c0 A3 halt: poll the A3 daily record (throttled) and latch a3_pins_changed on any halt flag (pins_changed included; synthetic_share_high is the pooled guard's, DEC-032 Am.3) or a record that cannot be
         read. A latch refuses new buys only; exits keep running. Live needs a configured record (main refuses a live start without it)."""
         if self.cfg.profile != c0.PROFILE or (not self.cfg.a3_record_file and self.cfg.mode != LIVE):
             return
         if self._a3_polled_ms is not None and 0 <= now - self._a3_polled_ms < c0.A3_POLL_MS:
             return
         self._a3_polled_ms = now
-        why = c0.a3_halt_problem(self.cfg.a3_record_file, now) if self.cfg.a3_record_file else "a3_record_file_missing"
+        why, self._a3_refuse = c0.a3_problem(self.cfg.a3_record_file, now) if self.cfg.a3_record_file else ("a3_record_file_missing", None)
         if why:
             self._latch(c0.A3_LATCH, why)
 
