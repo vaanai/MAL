@@ -121,8 +121,51 @@ class TwinFeesTests(unittest.TestCase):
                          [*ok, "--bot-id", "hv4-CON-L", "--ledger-dir", str(d)],
                          [*ok, "--ledger-dir", str(d), "--config-hash=x"],
                          [*ok, "--ledger-dir", str(d), "--buy-send=1"],
-                         [*ok, "--ledger-dir", str(d), "--shadow-dir", "x"]):
+                         [*ok, "--ledger-dir", str(d), "--shadow-dir", "x"],
+                         [*ok, "--ledger-dir", str(d), "--shadow-dir=/data/mal/arena/s"],
+                         [*ok, "--ledger-dir", str(d), "--frozen-root=/data/mal/arena/s"],
+                         [*ok, "--ledger-dir", str(d), "--trips", "u"],  # duplicate trips
+                         [*ok, "--ledger-dir", str(d), "--sell-send=1"]):
                 self.assertEqual(tw.main(argv), 2, argv)
+
+    def test_per_file_links_into_the_arena_are_refused(self):
+        import os
+        from unittest import mock
+        d = self._ledger()
+        trips = self.tmp / "trips.jsonl"
+        trips.write_text(json.dumps(trip(buy_fee_lamports=60_000, sell_fee_lamports=60_000)) + "\n")
+        argv = ["--trips", str(trips), "--ledger-dir", str(d), "--bot-id", ARM, "--out", str(self.tmp / "o.jsonl")]
+        with mock.patch.object(W, "main", return_value=0) as m:
+            self.assertEqual(tw.main(argv), 0)  # a clean synthetic input passes
+            m.reset_mock()
+            f = next(d.iterdir())
+            link = d / "trades-2099-01-01.jsonl"
+            os.symlink(f, link)  # a symlink in the ledger dir
+            self.assertEqual(tw.main(argv), 2)
+            link.unlink()
+            os.link(f, link)  # a hard link
+            self.assertEqual(tw.main(argv), 2)
+            link.unlink()
+            tl = self.tmp / "tlink.jsonl"
+            os.symlink(trips, tl)  # --trips through a symlink
+            self.assertEqual(tw.main([*argv[:1], str(tl), *argv[2:]]), 2)
+            # a file whose realpath is under the (patched) sealed prefix
+            with mock.patch.object(c0, "SEALED_ROOT_PREFIX", str(self.tmp)):
+                self.assertEqual(tw.main(argv), 2)
+            m.assert_not_called()
+
+    def test_trip_without_the_fees_sent_is_refused(self):
+        from unittest import mock
+        d = self._ledger()
+        out = str(self.tmp / "o.jsonl")
+        for t in (trip(), trip(buy_fee_lamports=60_000), trip(buy_fee_lamports=60_000, exit_landed=True)):
+            tp = self.tmp / "t.jsonl"
+            tp.write_text(json.dumps(t) + "\n")
+            with mock.patch.object(W, "main", side_effect=AssertionError("must not run")):
+                self.assertEqual(tw.main(["--trips", str(tp), "--ledger-dir", str(d), "--bot-id", ARM, "--out", out]), 2, t)
+        tp.write_text(json.dumps(trip(buy_fee_lamports=60_000, exit_landed=False)) + "\n")  # open trip: the sell fee is not due yet
+        with mock.patch.object(W, "main", return_value=0):
+            self.assertEqual(tw.main(["--trips", str(tp), "--ledger-dir", str(d), "--bot-id", ARM, "--out", out]), 0)
 
     def test_forwarded_argv_is_exactly_the_parsed_values_plus_pins(self):
         from unittest import mock
@@ -224,6 +267,21 @@ class SellLadderLiveTests(LivePortScheduleTests):
         with mock.patch.object(pl.LiveExecutor, "_start_sell", build):
             port.ex._start_sell(mint, pos, None, "book_exit", clock())
         self.assertEqual((got["slip"], got["prio"]), (1500, 55_000))
+
+    def test_a_sell_with_min_out_zero_is_never_signed(self):
+        from unittest import mock
+        from tools import probe_executor as pe
+        port, rpc, clock, cfg = self._port(True)
+        mint, _ = self._buy(port, rpc, clock, cfg)
+        n = len(rpc.sent)
+        real = pe.exit_check
+        with mock.patch.object(pe, "exit_check", lambda *a, **k: {**real(*a, **k), "quote_out": 1}):  # 1-lamport quote: 0.85 x 1 // 1 = 0
+            port.sell({"mint": mint}, "book_exit")
+        self.assertEqual(len(rpc.sent), n)  # nothing signed or sent
+        self.assertNotIn(mint, port.ex.state.pending)
+        self.assertNotIn("c0_first_sell_ms", port.ex.state.open[mint])
+        port.sell({"mint": mint}, "book_exit")  # a normal quote still sells
+        self.assertGreater(len(rpc.sent), n)
 
     def test_time_bound_moves_the_rung_with_the_priority(self):
         from tools.test_probe_live import land_sell

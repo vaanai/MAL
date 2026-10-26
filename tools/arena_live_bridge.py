@@ -1010,6 +1010,17 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
                 if (self.state.pending.get(mint) or {}).get("kind") == "sell":
                     pos.setdefault("c0_first_sell_ms", now)
 
+        def _sign(self, msg: Any, ps: Any, mint: str, priority: int | None = None) -> Any:
+            """hv4_c0: a SELL whose decoded min_out is 0 (a 1-lamport quote rounds 0.85 x quote down to 0) is never signed: the raise is caught by the base builder's
+            own build-error path (alert sell_build_error, nothing pending, nothing sent). The pinned base `_sign` runs unchanged after the check."""
+            if cfg.profile == c0.PROFILE and getattr(self, "_c0_building", False):
+                keys = list(msg.account_keys)
+                for ix in msg.instructions:
+                    d = bytes(ix.data)
+                    if str(keys[ix.program_id_index]) == str(tx_mod.PUMPSWAP_PROGRAM) and d[:8] == bytes(tx_mod.DISC_SELL) and int.from_bytes(d[16:24], "little") <= 0:
+                        raise RuntimeError("c0_min_out_zero")
+            return super()._sign(msg, ps, mint, priority)
+
         def _log(self, kind: str, mint: str, **kw: Any) -> None:
             super()._log(kind, mint, **kw)
             if cfg.profile == c0.PROFILE and kind in ("buy", "sell"):
