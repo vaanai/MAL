@@ -2,6 +2,8 @@
 
 **Final sha.** `aa270efc8d80d99cd73119bfef7fca185355ed17` is the merge commit of PR #943 (HV6 playbook/template field-name fix), merged 2026-10-26T17:58Z (notebook `n_4mFC22Uw-2KeIQ`). It was filled into this file on 2026-10-26 with one sed over the earlier placeholder. `5071e29a` (the #939 merge, this PR's base) stays in this file only as the label of the superseded item-6 figures and as history.
 
+**HOLD (2026-10-26): HV6 registration is HELD** pending the urgent QP ruling on phantom arena-tape rows (notebook `n_rrQ2JFKO2cfmzw`; P48, PR #973). HV6 reads `/data/mal/arena/tape`, so no a4 `register_bot` call, genesis or runner job before that ruling. Outcome and any required fix sha: `<PHANTOM_ROWS_RULING>` (MANAGER fills). If the ruling requires a code fix, it lands at a new sha and section 6 step 0 restarts from (0a).
+
 **No book has cleared the gate. This is a registration pack, not a result.** HV6 has 0 out-of-sample trades. Nothing here says HV6 makes money. Paper only.
 
 Written by a worker in its own worktree from: `docs/research/hv6/DESIGN.md` (main at 5071e29a; #943 does not touch it), QP-RULING-1025-hv5-design (original, ADDENDA 1-3), and the QP and reviewer comments on PRs #911 #914 #917 #918 #921 #923 #930 #936 (read with `gh`). Not opened: anything under `/data/mal/arena`, `bots.json`, any HV4/Q50 output, any job status or log, `/data/mal/meta-capture/`. Attestation by this worker: no HV4 output, Console or notebook P&L, attempt count, shakedown or smoke report was seen. The manager attests the same for the manager before registering (DESIGN section 2, G5 paragraph).
@@ -56,9 +58,13 @@ The same entry records the manager's reading, verbatim: "K1 is met: HV6 is appro
 
 > "HV6 spend check (K1). HV6 runs 2026-10-30T00:00Z to 2026-11-11T00:00Z (12 days) on claude-haiku-5-5. Code caps: 3.00 USD per day for all five arms and the reviewers together, and a 40.0 USD month guard. The pre-clock smokes are capped at 0.50 + 0.10 USD. Worst case is about 36.60 USD (3.00 x 12 + 0.60), inside the 200 USD Anthropic budget to 11-11. Do you approve up to 3.00 USD/day for HV6 to 11-11, or do you want a lower cap?"
 
-**The owner's answer (K1), verbatim.** Notebook `<OWNER_K1_NOTEBOOK_ID>`, instant `<OWNER_K1_INSTANT>` (`date -u`):
+**The owner's answer (K1), verbatim.** Notebook `n_XpA1PK4KfXvB1Q`, instant 2026-10-26T19:10:48Z (`date -u` at receipt), in the manager session, answering the request above (`n_SKc9nAjzXsleUQ`):
 
-> "<OWNER_K1_LINE>"
+> "I approved everything"
+
+This is the binding owner text. It is a bare yes to the quoted request, which carries the numbers (3.00 USD/day, 10-30 to 11-11, 40.0 USD month guard, smokes <= 0.50 + 0.10 USD); QP interim item 1 rules such an answer acceptable.
+
+**Supporting relay (not the binding text).** `HELM-REPLY-1026-1` (`/data/mal/hunt-1008/push-1016/hunt29/p1/HELM-REPLY-1026-1.md`, sha256 `6f91a4b973168aa5c41ae6a3c50043b52c9eac7879688d66c9a8f6aa61923a67`, 2026-10-26 about 19:07Z, notebook `n_Hh5i5QRbTV6-cg`), line 5: "1. HV6 spend cap: APPROVED. Up to 3.00 USD/day, from 10-30 through 11-11. HV6 may register for 10-30." It is a relay through Helm and is recorded beside the owner's line only as support.
 
 An acceptable answer names the cap or says yes to it in the owner's words; a bare "ok" is also acceptable, because the request quoted above carries the numbers (QP interim item 1). **No a4 `register_bot` call before the answer is quoted here and in the registration notebook entry.** If the owner names a lower cap, that is a code change at a new sha and section 6 step 0 restarts from (0a). The pre-clock smokes (<= 0.50 + 0.10 USD) do not wait for this line: the owner's 10-25 "80ish to do more testing" covers them (smoke condition (s4)).
 
@@ -329,6 +335,7 @@ The only difference is the gate. (Job status prints memory, CPU, limit, command 
 - **D14 Seal state:** HV6 touches no HV4/Q50 output, no meta-capture, no DBC/fwdv1, no LaunchLab holdout, no D1; the radar out-dir is read by the block builder only (DESIGN section 8). This worker's own PR read none of them.
 - **D15 Feed events in the clock:** one planned in-clock feed restart, F1 (2026-11-07T11:50-11:58Z, #1516 to H' #1652, f5bd26e7, feed 7a9d424b), excluded mechanically and counted toward the 5% cap; no event at 11-09 (H' #1652, spec identical to the cancelled #1584 except the gate, runs to `<H_PRIME_END>`; if H' has not started with its log lines by 2026-10-29T22:00Z the fallback applies and the pack gets no QP OK); no `arena_feed_v2` in the clock. One restart with 6 open positions in an arm can make that arm's read NOT_DECIDABLE (section 9c).
 - **D16 Drill log md5 at the final sha:** drills #1658 (j_rLOxkd-llttU0g) at `aa270efc8d80d99cd73119bfef7fca185355ed17` give log md5 `7bdde7645bddecb5acfed85485ca8538`, not 5071e29a's `b5e4f17e02bee46a5b38f6a6a95d8aa0`. The difference is ONLY in hash/id fields (`.request_sha256`, `.sha`, `.prev`; ledger `code_head`, `engine_id`, `frozen_sha`), with identical decisions; cards md5 `ab923e6b8cc226d5031abce2bcd7ba36` is equal at both shas (notebook `n_QCk8n0w2ejH-AQ`, the manager's comparison). The request hashes move because the prompt bytes changed (#943); the drills use StubModel, so they cannot show whether the prompt change is neutral for the LLM arms (D5).
+- **D17 Offline prompt rehearsal (before T0; notebook `n_-pn6x44cliJfQg`, #940 comment 6424959590):** HV6's final prompts at `aa270efc` (GEN_v0 `eb8ccc75…`) on 48 real pre-clock cards (10-21..23, 5071e29a drill cards, the cards file only, not an `hv6_read` input), 12 calls of 4 cards to Claude-plan Haiku subagents, scored with `hv6_agents.validate_entry`: 12/12 requests parsed, 45/48 cards valid; verdicts BUY 0, WATCH 29.2%, SKIP 64.6%, PARSE_ERROR 6.2% (all `why:names_fewer_than_two_card_fields`, the HV4-copied why rule); 0 refusals, 0 truncation. PARSE_ERROR is **not** in the smoke FAIL rule, so this about 6% why-rule loss is disclosed here. Caveats: the drill cards carry fake chain facts; subagents are not the API path; n = 48. The smoke (7b) stays authoritative. Counts only; not an edge claim.
 
 ## 11. Checklist of every "before registration / registration must" condition
 
@@ -338,7 +345,7 @@ Status: MET (where) / MANAGER (a step for the manager, with the spot in this pac
 
 | Cond. | Status | Where |
 |---|---|---|
-| K1 owner spend line verbatim with notebook id before the a4 call | **K1: fresh owner line required (QP interim).** Request quoted (`n_SKc9nAjzXsleUQ`, `q_NLvnMwJHKryStQ`); the owner's answer is `<OWNER_K1_LINE>` / `<OWNER_K1_NOTEBOOK_ID>` / `<OWNER_K1_INSTANT>` (MANAGER fills) | section 3 |
+| K1 owner spend line verbatim with notebook id before the a4 call | **K1: fresh owner line required (QP interim).** Request quoted (`n_SKc9nAjzXsleUQ`, `q_NLvnMwJHKryStQ`); owner's answer "I approved everything" (`n_XpA1PK4KfXvB1Q`, 2026-10-26T19:10:48Z), a bare yes to the quoted request (acceptable per QP interim item 1); relay HELM-REPLY-1026-1 (`n_Hh5i5QRbTV6-cg`) as support. **MET (text); QP to check on this head** | section 3 |
 | K2 learning/regime earliest 2026-11-11T13:00Z; pin the single computed instant; `hv6_read` refuses to decide before it | pinned in section 2; `hv6_read` is LATER (item 10, before 11-07) | section 2 |
 | K3 R7 wording as a structure-monitor stand-in; re-cite source | MET: text in D11; source re-cited as `docs/research/p23-change-radar/DESIGN.md` line 13 at `aa270efc8d80d99cd73119bfef7fca185355ed17` (sha256 `7062113b…`) | D11 |
 | K4 standing items (#814, LAB_STATE check, ledger confirmation, P0, smoke, route a) | see section 4 | section 4 |
@@ -415,7 +422,7 @@ Status: MET (where) / MANAGER (a step for the manager, with the spot in this pac
 | #940 (s1)-(s5) | P0 first, producer running, mal-research-0, pinned entry before the job, smoke root never an input | MANAGER (procedure); (s3) in code | section 7b, D6 |
 | #940 change 1 | row 19: `sell_route` is a hard entry veto plus an exit log; creator source | MET (text) | row 19 |
 | #940 change 2 | last nightly 2026-11-10T00:05Z, 11 nights, 33 jobs; MANAGER question removed | MET (text) | sections 2, 8 |
-| #940 change 3 | K1: manager's request quoted with id beside the owner's line | **K1: fresh owner line required (QP interim).** New request quoted verbatim with its ids; owner answer placeholders for the MANAGER | section 3 |
+| #940 change 3 | K1: manager's request quoted with id beside the owner's line | **K1: fresh owner line required (QP interim).** New request quoted verbatim with its ids; owner answer "I approved everything" (`n_XpA1PK4KfXvB1Q`, 19:10:48Z) and the Helm relay quoted | section 3 |
 | #940 change 4 | interpreter `/data/mal/venv/bin/python` in register, runner, genesis, nightly-review and verify | MET (text) | sections 6, 8, 9 |
 | #940 change 5 | item-6 figures and the section-1 label | MET as superseded 5071e29a figures; final-sha re-runs #1658/#1659 #1658 PASS, #1659 pending (`<RESULT_1659>`) | section 1, rows 26 and 28, D5, D7, #914 Item 6 row |
 | #940 change 6 | real-model reviewer smoke required | tool built (`tools/hv6_review_smoke.py`); pack section 7c; MANAGER runs it | section 7c |
@@ -428,6 +435,7 @@ Status: MET (where) / MANAGER (a step for the manager, with the spot in this pac
 | #943 QP OK (214b7cd6, 6423495847) non-blocking items | frozen sha = #943 merge or later; both `X_EXIT` dicts pinned; digest recipe named; G5 rows 33 (NEUTRAL FIELDS wording, EXITS drop) and 34 (ruling A); D1 cites `renewal_fewer_than_10_post_change_trades`; QP reference pins at 214b7cd6 | MET: final values computed at `aa270efc8d80d99cd73119bfef7fca185355ed17`, all equal QP's | sections 1, 5, D1 |
 | #943 (b)(iii) | every 5071e29a citation moves to the final sha | MET: `aa270efc8d80d99cd73119bfef7fca185355ed17` everywhere a final sha belongs; 5071e29a stays only as the superseded label | whole pack |
 | p35 Q6 (QP-RULING-1026-p35-design, 2e53ed9a) | declare every feed event in HV6's clock before T0 (instant, job ids, sha, exclusion rule; no exemption; counted toward the 5% cap; NOT_DECIDABLE arithmetic; radar reads the same tape; no v2 feed code in the clock) | text MET; `<H_PRIME_START>` / `<H_PRIME_END>` MANAGER fills at about 10-29T00:4xZ | section 9c, D15 |
+| Phantom arena-tape rows (P48, PR #973; notebook `n_rrQ2JFKO2cfmzw`) | urgent QP ruling before registration; any fix lands at a new sha | **HELD**: `<PHANTOM_ROWS_RULING>` (MANAGER fills) | HOLD note at the top |
 | #943 (d) | re-run at the final sha: 9 drills + halt drill, 3-run real-layout, P0, smoke; any pre-merge smoke, genesis or release manifest void for the LLM arms | MANAGER | section 6 step 0 |
 
 ## 12. Unmet items (stop-and-decide list)
@@ -437,7 +445,7 @@ None of the earlier code gaps is open. #939 (merged as 5071e29a, the base of #94
 - **U2 (QP #918 (c)) CLOSED:** the `start` row carries the frozen sha, the pinned provider and `entries_halt_ms` before the first decision.
 - **U3 CLOSED:** `watch_added/fired/expired/no_card.<arm>` counters; the smoke prints them.
 
-**Still open, not code:** the real-layout re-run result at the final sha (`<RESULT_1659>`, section 11; drills #1658 PASSED); P0, the smoke and the reviewer smoke at that sha; the stable radar worktree (9b P2) if not yet made; H' #1652's start, start-log lines and limit end (`<H_PRIME_START>`, `<H_PRIME_START_LOG_LINES>`, `<H_PRIME_END>`, section 9c); the owner's K1 answer (`<OWNER_K1_LINE>`, `<OWNER_K1_NOTEBOOK_ID>`, `<OWNER_K1_INSTANT>`, section 3); QP OK on this head and a reviewer verdict. Done: fallback clock = option (b); LAB_STATE line; feed delay 7 confirmed; K3 re-cited; drills #1658 PASS; #943 merged as `aa270efc8d80d99cd73119bfef7fca185355ed17`, the (0b) scope check (0 lines, 17:58Z) and the section-1 pins (18:00Z, all equal QP's).
+**Still open, not code:** the real-layout re-run result at the final sha (`<RESULT_1659>`, section 11; drills #1658 PASSED); P0, the smoke and the reviewer smoke at that sha; the stable radar worktree (9b P2) if not yet made; H' #1652's start, start-log lines and limit end (`<H_PRIME_START>`, `<H_PRIME_START_LOG_LINES>`, `<H_PRIME_END>`, section 9c); QP OK on this head and a reviewer verdict. **HELD:** the phantom arena-tape rows ruling (`<PHANTOM_ROWS_RULING>`, see the HOLD note at the top). Done: owner K1 answer (`n_XpA1PK4KfXvB1Q`); fallback clock = option (b); LAB_STATE line; feed delay 7 confirmed; K3 re-cited; drills #1658 PASS; #943 merged as `aa270efc8d80d99cd73119bfef7fca185355ed17`, the (0b) scope check (0 lines, 17:58Z) and the section-1 pins (18:00Z, all equal QP's).
 
 **QP's route ruling (QP #940, comment 6421493435, section (1), at 35690dd6; the sha it names is updated here to the final sha):** "the first route is ACCEPTED." The runner registers at the final sha; P0 and the smokes use this PR's tools, which import the rule code from `--repo` (a clean checkout at the final sha), refuse any other sha or a dirty tree, and add nothing the runner imports. Conditions:
 - (a) The runner, the genesis, nightly-review and verify commands, and the regime producer all run from the clean detached checkout `/data2/mal/wt/hv6-final` at the final sha, never from `main` after #940 merges. The engine stamps `code_head` on every open row, and it must equal the registered `frozen_sha`.
