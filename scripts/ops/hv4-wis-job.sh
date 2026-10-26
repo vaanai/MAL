@@ -12,13 +12,17 @@
 #   TAPE_DIR     the arena tape dir arena_worst_gaps reads (local files only)             required
 #   HEALTH_LIST  file, one line per FINAL daily hour table: "<table path> <tool sha>"     required: exactly the set the recorded read used
 #   RESTARTS     the notebooked restart-gap file (empty file = none)                      required: the one the recorded read used
-#   AS_OF_MS     the read's --as-of-ms (default: now); must be >= B + 24 h
+#   AS_OF_MS     the read's own --as-of-ms (from the read's notebook entry or command; the recorded read does not store it)   required, >= B + 24 h
 #   READS_DIR (default /data/mal/arena/reads)  OUT_DIR (default /data/mal/arena/reads/am15)  INSTANT (default $OUT_DIR/$BOT.instant.json)
 #   LEDGER (default /data/mal/arena/ledger)  REGISTRY (default: the tool's own)  PY (default /data/mal/arena/venv-hv4/bin/python)
 #   DRY=1        print the planned command line, run nothing, write nothing.
+# The job changes directory to the repo root (this script's grandparent directory) first: the git checks and `python -m tools...` need it. The checkout must be
+# a full clone containing 9ed4c5ff.
+# The tape dir must resolve to /data/mal/arena/tape (the tool refuses any other). The .wis.json records the selected tape files with sha256 and size.
 # Exit: 0 done (or already written); 2 refused or the tool exited non-zero.
 # Output: only the tool's own stdout (B, n, sub-cells, the worst-in-slot figure, the file shas). The manager notebooks the bot, the wis.json sha256 and the credits (0).
 set -u
+cd "$(dirname "$0")/../.." || { echo "REFUSED: cannot cd to the repo root"; exit 2; }
 DRY=${DRY:-0}
 READS_DIR=${READS_DIR:-/data/mal/arena/reads}
 OUT_DIR=${OUT_DIR:-/data/mal/arena/reads/am15}
@@ -38,7 +42,8 @@ git cat-file -e 9ed4c5ff^{commit} 2>/dev/null || refuse "checkout does not conta
 grep -q '^### Amendment 15 ' DEC/DEC-031-forward-paper-arena.md 2>/dev/null || refuse "DEC-031 Amendment 15 is not on the checked-out tree"
 [ -r tools/hv4_wis_export.py ] || refuse "tools/hv4_wis_export.py missing"
 [ -r "$HEALTH_LIST" ] || refuse "HEALTH_LIST not readable"
-AS_OF_MS=${AS_OF_MS:-$(( $(date -u +%s) * 1000 ))}
+AS_OF_MS=${AS_OF_MS:-}
+[ -n "$AS_OF_MS" ] || refuse "AS_OF_MS is required: the as-of of the recorded read"
 
 # 1. the recorded read must exist and be PASS (the tool checks again; this refusal comes before any other work)
 REC="$READS_DIR/$BOT.json"

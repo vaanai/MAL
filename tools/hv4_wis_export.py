@@ -36,9 +36,15 @@ from typing import Any, Iterator, Sequence
 from tools import arena_score as S_DISK  # disk copy: worst_in_slot_cells, load_worst_gaps. Never used to score the read.
 from tools import hv4_am15_read as W
 from tools import hv4_read_instant as F
+from tools.arena_paper import TEST_ENV
 
 SCHEMA = "hv4_wis_v1"
 ARENA_SCORE_DISK_SHA256 = "c4859323622794f5f97a131eb32256c905ca2ab6c1adf8ab21568fc2a98f27f3"
+PROD_TAPE_ROOT = "/data/mal/arena/tape"  # arena_worst_gaps HARDLINKS note (QP re-check 6368647431 (c)): the wrapper reads tapes only from the expected root
+PAD_HOURS, MARGIN_SLOTS = 2.0, 2000  # arena_worst_gaps defaults, passed explicitly and recorded
+HOUR_MS = 3_600_000
+DISCLOSURE_TAPE = ("The tape files selected reach up to 2 h before the first entry (pad), so up to 2 h of pre-clock tape can be touched. Tape rows and the "
+                   "forward-1016/arena rows used are walk-2-hour information (DEC-030 section 2 R1) and any result built on them is disclosed as such.")
 REPO_ROOT = Path(__file__).resolve().parent.parent
 GAPS_CMD = (sys.executable, "-m", "tools.arena_worst_gaps")
 
@@ -134,6 +140,8 @@ def reproduce(rec: dict, instant_path: str, ledger_root: str, registry: str, bot
     for name, v in (("instant file", ins.get("read_instant_ms")), ("am15 block", rec["am15"]["read_instant_ms"]), ("am6 block", (rec.get("am6") or {}).get("read_boundary_ms"))):
         if v != b:
             raise Refused(f"B mismatch: recorded read boundary {b}, {name} {v}")
+    if isha != rec["am15"].get("instant_file_sha256"):
+        raise Refused(f"the instant file sha256 {isha} is not the recorded read's am15.instant_file_sha256 {rec['am15'].get('instant_file_sha256')}")
     with capture_deciding_trades(want["stake"]) as got:
         try:
             code, _lines, res = W.run(instant_path, ledger_root, registry, bot, list(health_texts), list(health_shas), as_of_ms, restarts_text, None, True, str(Path(os.devnull)))
@@ -146,7 +154,7 @@ def reproduce(rec: dict, instant_path: str, ledger_root: str, registry: str, bot
     dk = str(want["stake"])
     fbook = fresh["books"][dk]
     checks = {"status_pass": fresh.get("status") == "PASS", "B_equal": fresh.get("read_boundary_ms") == b, "n_equal": len(trades) == want["n"] == fbook["n_trades"],
-              "rules_equal": got["rules"] == want["rules"], "captured_cells_are_the_scored_cells": got["cells"] == fbook["cells"],
+              "rules_equal": got["rules"] == want["rules"], "captured_cells_are_the_scored_cells": got["cells"] == fbook["cells"], "book_cells_calls_two": got.get("calls") == 2,
               "cut_sha_equal": (fresh.get("am6") or {}).get("cut_sha256") == want["cut_sha256"],
               "exclusions_sha_equal": (fresh.get("am6") or {}).get("exclusions_sha256") == want["exclusions_sha256"]}
     sub_ok = {}
@@ -178,9 +186,24 @@ def write_trades_once(path: Path, trades: Sequence[dict]) -> str:
     return _sha_bytes(data)
 
 
+def tape_inputs(trades: Sequence[dict], tape_dir: str) -> dict[str, Any]:
+    """The tape files arena_worst_gaps selects for these trades (the same call and window as its main()), each with sha256 and size, and one sha over the sorted list."""
+    from tools.arena_report_legs import tape_files
+    lo = min(r["decision_ms"]["entry"] for r in trades)
+    hi = max((r["decision_ms"]["exit"] or r["decision_ms"]["entry"]) for r in trades)
+    pad = int(PAD_HOURS * HOUR_MS)
+    files = []
+    for f in tape_files(Path(tape_dir), lo - pad, hi + pad):
+        b = f.read_bytes()
+        files.append({"name": f.name, "sha256": _sha_bytes(b), "size": len(b)})
+    return {"tape_dir": str(Path(tape_dir).resolve()), "pad_hours": PAD_HOURS, "margin_slots": MARGIN_SLOTS, "window_lo_ms": lo - pad, "window_hi_ms": hi + pad,
+            "files": files, "n_files": len(files), "files_sha256": _sha_bytes(canon(files).encode())}
+
+
 def run_gaps(trades_path: Path, tape_dir: str, out_dir: Path, bot: str, cmd: Sequence[str] = GAPS_CMD, cwd: Path = REPO_ROOT) -> tuple[Path, Path, int]:
     gaps, detail = out_dir / f"{bot}.wis-gaps.json", out_dir / f"{bot}.wis-detail.json"
-    argv = [*cmd, "--trades", str(trades_path), "--tape-dir", tape_dir, "--out", str(gaps), "--detail", str(detail)]
+    argv = [*cmd, "--trades", str(trades_path), "--tape-dir", tape_dir, "--out", str(gaps), "--detail", str(detail),
+            "--pad-hours", str(PAD_HOURS), "--margin-slots", str(MARGIN_SLOTS)]
     p = subprocess.run(argv, cwd=str(cwd), capture_output=True, text=True)
     if p.returncode != 0:
         tail = (p.stdout.strip().splitlines() or [""])[-1][:200]
@@ -193,6 +216,8 @@ def build(bot: str, reads_dir: str, instant_path: str, ledger_root: str, registr
     if bot not in F.BOT_IDS:
         raise Refused(f"{bot!r} is not one of the nine HV4 bot_ids")
     rec, rec_sha = load_recorded_pass(reads_dir, bot)
+    if os.environ.get(TEST_ENV) != "1" and os.path.realpath(tape_dir) != PROD_TAPE_ROOT:
+        raise Refused(f"--tape-dir {tape_dir!r} resolves to {os.path.realpath(tape_dir)!r}, not {PROD_TAPE_ROOT}: refused (arena_worst_gaps requires the expected tape root)")
     od = Path(out_dir)
     wis = od / f"{bot}.wis.json"
     if wis.exists():
@@ -203,6 +228,7 @@ def build(bot: str, reads_dir: str, instant_path: str, ledger_root: str, registr
     od.mkdir(parents=True, exist_ok=True)
     tpath = od / f"{bot}.wis-trades.jsonl"
     tsha = write_trades_once(tpath, trades)
+    tapes = tape_inputs(trades, tape_dir)
     gpath, dpath, rc = run_gaps(tpath, tape_dir, od, bot, gaps_cmd)
     gaps = S_DISK.load_worst_gaps(gpath)
     missing = [r["trade_id"] for r in trades if r["trade_id"] not in gaps]
@@ -219,7 +245,7 @@ def build(bot: str, reads_dir: str, instant_path: str, ledger_root: str, registr
            "trade_export": {"file": tpath.name, "sha256": tsha, "n": len(trades)},
            "gaps": {"file": gpath.name, "sha256": _sha_file(gpath), "arena_worst_gaps_rc": rc, "measured": detail["measured"], "left_out": len(detail["left_out"]),
                     "nonzero": detail["nonzero"], "clipped_negative": detail["clipped_negative"]},
-           "worst_in_slot": figure,
+           "tape": tapes, "worst_in_slot": figure,
            "item6": {"measured": True, "mean_sol_positive": bool(mean is not None and mean > 0), "ci90_lo_sol_positive": bool(lo is not None and lo > 0),
                      "canary_proposal_blocked_by_item6": not (mean is not None and mean > 0),
                      "note": "DEC-031 Am.15 item 6: a worst-in-slot mean <= 0 means no proposal. Report-only. The CI bound is quoted in a proposal (R7), it is not an item 6 test."},
@@ -227,7 +253,7 @@ def build(bot: str, reads_dir: str, instant_path: str, ledger_root: str, registr
            "tools": {"hv4_wis_export_sha256": _sha_file(__file__), "arena_worst_gaps_sha256": _sha_file(REPO_ROOT / "tools" / "arena_worst_gaps.py"),
                      "arena_score_disk_sha256": ARENA_SCORE_DISK_SHA256, "arena_score_pinned_sha256": W.PINNED_ARENA_SCORE_SHA256,
                      "hv4_am15_read_sha256": _sha_file(W.__file__)},
-           "disclosure": "Winner's curse and the sibling-selection caveat of DEC-031 Am.15 item 8 apply. No book has cleared the promotion gate."}
+           "disclosure_tape": DISCLOSURE_TAPE, "disclosure": "Winner's curse and the sibling-selection caveat of DEC-031 Am.15 item 8 apply. No book has cleared the promotion gate."}
     data = (canon(out) + "\n").encode()
     write_once(wis, data)
     out["wis_file"], out["wis_sha256"] = str(wis), _sha_bytes(data)
@@ -262,6 +288,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     print(f"WIS {out['bot_id']}  B {out['read_boundary_ms']}  n {out['n']}  reproduced {reproduced(out['reproduction'])}")
     print("subcells " + canon(out["subcells"]))
     print(f"worst-in-slot mean_sol {w['mean_sol']}  ci90_lo_sol {w['ci90_lo_sol']}  worst_cell {w['worst_cell']}  gaps measured {out['gaps']['measured']} nonzero {out['gaps']['nonzero']}")
+    print("tape " + canon({k: out["tape"][k] for k in ("tape_dir", "n_files", "files_sha256", "pad_hours", "margin_slots")}))
+    print("DISCLOSURE: " + DISCLOSURE_TAPE)
     print(f"item6 canary_proposal_blocked_by_item6 {out['item6']['canary_proposal_blocked_by_item6']}  credits helius 0 rpc 0")
     print(f"wrote {out['wis_file']} sha256 {out['wis_sha256']}; trades sha256 {out['trade_export']['sha256']}; recorded read sha256 {out['recorded_read_sha256']}")
     return 0

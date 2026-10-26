@@ -310,3 +310,57 @@ def test_real_gaps_tool_measures_the_exported_trade_bytes(tmp_path):
     gaps, detail, rc = X.run_gaps(tp, str(tape), out, BOT)
     g = S_DISK.load_worst_gaps(gaps)
     assert rc == 0 and len(g) == len(trades) == json.loads(detail.read_text())["measured"] and any(v > 0 for v in g.values())
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ QP-960 changes
+def test_wis_records_the_tape_inputs_and_one_changed_byte_changes_the_sha(tmp_path):
+    from tools.test_arena_report_legs import make_ledger, tape_rows
+    from tools.test_arena_worst_gaps import write_tape
+    trades = make_ledger(tmp_path / "led")
+    tape = write_tape(tmp_path / "tp", tape_rows())
+    a = X.tape_inputs(trades, str(tape))
+    assert a["tape_dir"] == str(tape.resolve()) and a["pad_hours"] == 2.0 and a["margin_slots"] == 2000 and a["n_files"] == len(a["files"]) >= 1
+    f = tape / a["files"][0]["name"]
+    assert a["files"][0]["size"] == f.stat().st_size and a["files"][0]["sha256"] == X._sha_file(f)
+    f.write_bytes(f.read_bytes() + b" ")
+    b = X.tape_inputs(trades, str(tape))
+    assert b["files"][0]["sha256"] != a["files"][0]["sha256"] and b["files_sha256"] != a["files_sha256"]
+
+
+def test_build_writes_the_tape_block_and_passes_pad_and_margin_to_the_tool(w):
+    out = w.build()
+    t = json.loads((w.od / f"{BOT}.wis.json").read_text())["tape"]
+    assert t["tape_dir"] == str(w.tape.resolve()) and t["pad_hours"] == 2.0 and t["margin_slots"] == 2000 and t["files"] == [] and out["reproduction"]["book_cells_calls_two"] is True
+    assert "pre-clock" in json.loads((w.od / f"{BOT}.wis.json").read_text())["disclosure_tape"] and "walk-2-hour" in X.DISCLOSURE_TAPE
+
+
+def test_production_refuses_any_tape_dir_but_the_arena_tape(w, monkeypatch):
+    monkeypatch.delenv(TEST_ENV)
+    with pytest.raises(X.Refused, match="not /data/mal/arena/tape"):
+        w.build()
+    link = w.tmp / "lnk"
+    link.symlink_to(w.tape)
+    with pytest.raises(X.Refused, match="not /data/mal/arena/tape"):
+        w.build(tape_dir=str(link))
+    assert not w.od.exists()
+    monkeypatch.setenv(TEST_ENV, "1")  # tests may override
+    assert w.build()["worst_in_slot"]["measured"]
+
+
+def test_instant_file_sha_must_match_the_recorded_read(w):
+    p = w.rd / f"{BOT}.json"
+    rec = json.loads(p.read_text())
+    rec["am15"]["instant_file_sha256"] = "0" * 64
+    p.chmod(0o644)
+    p.write_text(json.dumps(rec))
+    with pytest.raises(X.Refused, match="instant file sha256"):
+        w.build()
+
+
+def test_job_requires_as_of_and_runs_from_any_cwd(w, tmp_path):
+    hp = tmp_path / "h.jsonl"
+    p = job(w, tmp_path, AS_OF_MS="")
+    assert p.returncode == 2 and "AS_OF_MS is required" in p.stdout
+    q = subprocess.run(["sh", str(SCRIPT)], cwd=str(tmp_path), env={"PATH": os.environ["PATH"], "BOT": BOT, "DRY": "1", "TAPE_DIR": "x", "HEALTH_LIST": str(tmp_path / "nope"), "RESTARTS": "r", "AS_OF_MS": "1"},
+                       capture_output=True, text=True)
+    assert "HEALTH_LIST not readable" in q.stdout  # got past the git checks, so it changed into the repo root
