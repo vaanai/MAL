@@ -23,7 +23,7 @@ def test_main_path_isolates_each_run_and_reports_the_larger_peak(tmp_path, _sand
     base.mkdir(parents=True)
     (base / "SYNTHETIC_FIXTURE_ROOT").write_text("")
     tags = []
-    monkeypatch.setattr(RL, "_isolated_run", lambda tag, days, did, sha, b: (tags.append(tag), _fake(tag, 1000.0 if tag == "real-a" else 2500.0))[1])
+    monkeypatch.setattr(RL, "_isolated_run", lambda tag, days, did, sha, b, phantom=True: (tags.append(tag), _fake(tag, 1000.0 if tag == "real-a" else 2500.0))[1])
     monkeypatch.setattr(RL, "one_run", lambda *a, **k: (_ for _ in ()).throw(AssertionError("the parent process must not hold a replay")))
     res = RL.run_real(["2026-10-21"], "iso", "a" * 40, base=base, isolate=True)
     assert tags == ["real-a", "real-b", "real-c"] and res["peak_rss_mb"] == 2500.0 and res["md5_equal"] and res["result"] == "PASS"
@@ -70,7 +70,7 @@ def _run(tmp_path, _sandbox, monkeypatch, capsys, fakes, name):
     base = tmp_path / "drill" / name
     base.mkdir(parents=True)
     (base / "SYNTHETIC_FIXTURE_ROOT").write_text("")
-    monkeypatch.setattr(RL, "_isolated_run", lambda tag, days, did, sha, b: dict(fakes[tag]))
+    monkeypatch.setattr(RL, "_isolated_run", lambda tag, days, did, sha, b, phantom=True: dict(fakes[tag]))
     res = RL.run_real(["2026-10-21"], name, "a" * 40, base=base, isolate=True)
     capsys.readouterr()
     return res
@@ -112,3 +112,18 @@ def test_one_run_times_every_tick_and_the_scan_minute_tick(tmp_path, _sandbox):
     a = RL.one_run(rd, "real-a2", t0 + 9 * MIN + 2000, t0 + 14 * MIN + 2000)
     c = RL.one_run(rd, "real-c2", t0 + 9 * MIN + 2000, t0 + 14 * MIN + 2000, fast=False)
     assert a["log_md5"] == c["log_md5"] and a["cards_md5"] == c["cards_md5"]
+
+
+def test_phantom_filter_value_is_passed_to_each_isolated_run(tmp_path, _sandbox, monkeypatch, capsys):
+    if not _sandbox.exists() or not any(_sandbox.iterdir()):
+        write_layout(_sandbox, shifted_rows("2026-10-21"))
+    seen = []
+    monkeypatch.setattr(RL, "_isolated_run", lambda tag, days, did, sha, b, phantom=True: (seen.append((tag, phantom)), _fake(tag, 1000.0))[1])
+    for name, kw, want in (("ph_def", {}, True), ("ph_off", {"phantom": False}, False), ("ph_on", {"phantom": True}, True)):
+        base = tmp_path / "drill" / name
+        base.mkdir(parents=True)
+        (base / "SYNTHETIC_FIXTURE_ROOT").write_text("")
+        seen.clear()
+        RL.run_real(["2026-10-21"], name, "a" * 40, base=base, isolate=True, **kw)
+        capsys.readouterr()
+        assert seen == [("real-a", want), ("real-b", want), ("real-c", want)]
