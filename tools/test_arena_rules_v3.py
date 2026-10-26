@@ -50,7 +50,7 @@ def rule():
 ROWS = scenario_rows(make_rule())
 
 
-def host(tmp: Path, **kw) -> HostV3:
+def host(tmp: Path, live: bool = False, **kw) -> HostV3:
     tape = tmp / "tape"
     if not tape.exists():
         write_tape(tape, ROWS)
@@ -60,7 +60,7 @@ def host(tmp: Path, **kw) -> HostV3:
         R.register_rules(rules, str(reg), SHA, CLOCK, now_ms=T0 - 1, verify_sha=False)
     state = StateCkpt(tape, start_ms=0)
     engine = EngineCkpt(tmp / "ledger", reg, cfg=R.stack_config(7), sps_fn=lambda: 0.4, code_state_fn=lambda: (SHA40, False))
-    cfg = R.HostConfig(root=str(tmp / "rules"), registry=str(reg), frozen_sha=SHA, clock_start_ms=CLOCK, live=False)
+    cfg = R.HostConfig(root=str(tmp / "rules"), registry=str(reg), frozen_sha=SHA, clock_start_ms=CLOCK, live=live)
     return HostV3(cfg, rules, state, engine, **kw)
 
 
@@ -159,6 +159,10 @@ def test_exit_in_d_is_handoff_down_and_the_rest_identical(tmp_path, reference, d
     kinds = collections.Counter(r["kind"] for r in rows)
     if delay:
         assert kinds["handoff_stale_switch"] == 1  # 4.9 s alone would be live_lag; the slow dispatch makes D's first row stale -> probe
+        sw = next(r for r in rows if r["kind"] == "handoff_stale_switch")
+        first_d_row = min(r["t_recv_ms"] for r in ROWS if HO_SELL <= r["t_recv_ms"] < HO_SELL + d_ms)
+        assert sw["at_row_ms"] == first_d_row and sw["rows_dispatched_before"] == 0 and sw["age_ms"] > 10_000  # the switch is at the first stale row
+        assert b.d_rows_live == 0
     pid = a_pid(b)
     assert [r["order_id"] for r in rows if r["kind"] == "handoff_down_exit"] == [pid]
     led_b, led_r = by_pid(ledger(b)), by_pid(ledger(reference))
@@ -241,3 +245,50 @@ def test_tick_decision_at_exactly_ho_uses_the_carried_host_state(tmp_path, refer
     ex = [r for r in decisions(b) if r["kind"] == "exit" and r["order_id"] == e_entry["order_id"]]
     assert ex and ex[0]["ms"] == ho
     assert md5(decisions(b)) == md5(decisions(reference)) and ledger(b) == ledger(reference)
+
+
+def test_stale_switch_mid_d_never_dispatches_a_stale_row(tmp_path, reference):
+    """QP condition 4: the dispatch of D's rows stalls part-way (simulated): rows before the stall are a live lag (<= 10 s old), the first row that
+    would be older than 10 s switches the rest of D to the probe, the position whose exit falls after the switch is handoff_down, and the scorer's
+    exclusion accounting includes it."""
+    ho, d = HO_SELL, 4_900
+    stall_from = ho + 1_500  # rows received from here on are dispatched 9 s later than the resume: (ho + 4.9 s + 9 s) - t > 10 s for t < ho + 3.9 s
+
+    def clock(t):
+        return ho + d + (9_000 if t >= stall_from else 0)
+
+    _, b = split(tmp_path, ho, resume_ms=ho + d, dispatch_clock=clock)
+    rows = b.log.rows(BOT)
+    sw = [r for r in rows if r["kind"] == "handoff_stale_switch"]
+    d_rows = sorted(r["t_recv_ms"] for r in ROWS if ho <= r["t_recv_ms"] < ho + d)
+    first_stale = min(t for t in d_rows if clock(t) - t > 10_000)
+    assert len(sw) == 1 and sw[0]["at_row_ms"] == first_stale and sw[0]["rows_dispatched_before"] == sum(1 for t in d_rows if t < first_stale) > 0
+    assert 0 < b.d_max_live_age_ms <= 10_000  # no row of D was dispatched live more than stale_row_ms old
+    summary = [r for r in rows if r["kind"] == "handoff_down_missed"][0]
+    assert summary["d_rows_live"] == sw[0]["rows_dispatched_before"] and summary["d_max_live_age_ms"] <= 10_000
+    pid = a_pid(b)
+    assert [r["order_id"] for r in rows if r["kind"] == "handoff_down_exit"] == [pid]  # the wallet sell at SELL_A falls after the switch
+    # the scorer's exclusion accounting (tools.arena_score._score_bot step 3) counts handoff_down like any exclusion, toward the 5% cap
+    from tools import arena_score as S
+
+    led = b.engine.ledger.read_bot(BOT)
+    reg = {BOT: {"frozen_sha": SHA, "clock_start_ms": CLOCK, "deciding_stake": 0.25, "model_ids": [], "stopped_at_ms": None, "time_source": "test_override"}}
+    import unittest.mock as um
+
+    with um.patch.object(S, "check_bot_rows", lambda *a, **k: {}), um.patch.object(S, "blind_read_instant", lambda *a, **k: (T0 // 86_400_000 + 1) * 86_400_000):
+        out = S.score_bot(BOT, reg, led, now_ms=T0 + 10 * 86_400_000)
+    ex = out["books"]["0.25"]["excluded"]
+    assert ex.get("handoff_down") == 1 and out["books"]["0.25"]["excluded_share"] > 0
+
+
+def test_live_host_refuses_an_unpinned_d_max(tmp_path):
+    with pytest.raises(R.HostError, match="unpinned"):
+        host(tmp_path, live=True)
+
+
+def test_replay_without_d_max_logs_it_unpinned(tmp_path):
+    _, b = split(tmp_path, T0 + 390_000)
+    res = [r for r in b.log.rows(BOT) if r["kind"] == "segment_resume"][0]
+    assert res["d_max_ms"] == 5_000 and res["d_max_pinned"] is False
+    _, c = split(tmp_path / "p", T0 + 390_000, d_max_ms=2_000)
+    assert [r for r in c.log.rows(BOT) if r["kind"] == "segment_resume"][0]["d_max_pinned"] is True
