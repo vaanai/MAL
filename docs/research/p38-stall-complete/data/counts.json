@@ -1,0 +1,569 @@
+{
+ "declare": "docs/research/p38-stall-complete/DECLARE.md",
+ "hours_limit": 0,
+ "coverage": [
+  {
+   "block": "explore-0814",
+   "hours": 336,
+   "first_hour": "2026-08-14T12",
+   "last_hour": "2026-08-28T11",
+   "missing_files": [],
+   "lenient_files": [],
+   "bonding_rows": 54562967,
+   "complete_rows": 16331,
+   "complete_rows_without_bonding_prints": 0,
+   "cov_complete_eligible": 1395,
+   "cov_complete_chain_ok": 1180,
+   "cov_complete_final_print": 1395,
+   "block_end": 1787918400
+  },
+  {
+   "block": "fresh-0903",
+   "hours": 144,
+   "first_hour": "2026-09-03T12",
+   "last_hour": "2026-09-09T11",
+   "missing_files": [],
+   "lenient_files": [],
+   "bonding_rows": 16774677,
+   "complete_rows": 6423,
+   "complete_rows_without_bonding_prints": 0,
+   "cov_complete_eligible": 217,
+   "cov_complete_chain_ok": 187,
+   "cov_complete_final_print": 217,
+   "block_end": 1788955200
+  },
+  {
+   "block": "exp011-0909",
+   "hours": 144,
+   "first_hour": "2026-09-09T12",
+   "last_hour": "2026-09-15T11",
+   "missing_files": [],
+   "lenient_files": [
+    "/data/mal/clean-view/exp011-0909/b/trades/trades-2026-09-15T03.jsonl.zst",
+    "/data/mal/clean-view/exp011-0909/c/creates/creates-2026-09-12T07.jsonl.zst",
+    "/data/mal/clean-view/exp011-0909/c/trades/trades-2026-09-12T07.jsonl.zst"
+   ],
+   "bonding_rows": 17257236,
+   "complete_rows": 6588,
+   "complete_rows_without_bonding_prints": 1,
+   "cov_complete_eligible": 183,
+   "cov_complete_chain_ok": 140,
+   "cov_complete_final_print": 183,
+   "block_end": 1789473600
+  }
+ ],
+ "per_block": {
+  "explore-0814": {
+   "triggers": 34,
+   "censored": 1,
+   "uncensored": 33,
+   "completed_6h": 17,
+   "p_complete_6h": 0.5151515151515151,
+   "completed_by_block_end": 27,
+   "triggers_per_full_day": {
+    "2026-08-15": 3,
+    "2026-08-16": 0,
+    "2026-08-17": 4,
+    "2026-08-18": 3,
+    "2026-08-19": 3,
+    "2026-08-20": 2,
+    "2026-08-21": 3,
+    "2026-08-22": 2,
+    "2026-08-23": 1,
+    "2026-08-24": 4,
+    "2026-08-25": 1,
+    "2026-08-26": 1,
+    "2026-08-27": 5
+   },
+   "median_triggers_per_full_day": 3,
+   "min_triggers_per_full_day": 0,
+   "max_triggers_per_full_day": 5,
+   "ttc_s_q1_med_q3": [
+    1659.0,
+    3768,
+    7028.0
+   ],
+   "ttc_share_le_1h": 0.47058823529411764,
+   "p_at_t_q1_med_q3": [
+    0.9077445000000001,
+    0.915049,
+    0.9318489999999999
+   ],
+   "cov_stall_ok": 34,
+   "cov_follow_eligible": 16,
+   "cov_follow_ok": 16,
+   "later_115_no_complete": 2,
+   "per_day": {
+    "2026-08-14": {
+     "triggers": 1,
+     "uncensored": 1,
+     "completed_6h": 0,
+     "p_complete_6h": 0.0
+    },
+    "2026-08-15": {
+     "triggers": 3,
+     "uncensored": 3,
+     "completed_6h": 1,
+     "p_complete_6h": 0.3333333333333333
+    },
+    "2026-08-17": {
+     "triggers": 4,
+     "uncensored": 4,
+     "completed_6h": 2,
+     "p_complete_6h": 0.5
+    },
+    "2026-08-18": {
+     "triggers": 3,
+     "uncensored": 3,
+     "completed_6h": 3,
+     "p_complete_6h": 1.0
+    },
+    "2026-08-19": {
+     "triggers": 3,
+     "uncensored": 3,
+     "completed_6h": 3,
+     "p_complete_6h": 1.0
+    },
+    "2026-08-20": {
+     "triggers": 2,
+     "uncensored": 2,
+     "completed_6h": 1,
+     "p_complete_6h": 0.5
+    },
+    "2026-08-21": {
+     "triggers": 3,
+     "uncensored": 3,
+     "completed_6h": 2,
+     "p_complete_6h": 0.6666666666666666
+    },
+    "2026-08-22": {
+     "triggers": 2,
+     "uncensored": 2,
+     "completed_6h": 1,
+     "p_complete_6h": 0.5
+    },
+    "2026-08-23": {
+     "triggers": 1,
+     "uncensored": 1,
+     "completed_6h": 1,
+     "p_complete_6h": 1.0
+    },
+    "2026-08-24": {
+     "triggers": 4,
+     "uncensored": 4,
+     "completed_6h": 1,
+     "p_complete_6h": 0.25
+    },
+    "2026-08-25": {
+     "triggers": 1,
+     "uncensored": 1,
+     "completed_6h": 0,
+     "p_complete_6h": 0.0
+    },
+    "2026-08-26": {
+     "triggers": 1,
+     "uncensored": 1,
+     "completed_6h": 0,
+     "p_complete_6h": 0.0
+    },
+    "2026-08-27": {
+     "triggers": 5,
+     "uncensored": 5,
+     "completed_6h": 2,
+     "p_complete_6h": 0.4
+    },
+    "2026-08-28": {
+     "triggers": 1,
+     "uncensored": 0,
+     "completed_6h": 0,
+     "p_complete_6h": null
+    }
+   },
+   "race_4.4s": 0,
+   "race_share_4.4s": 0.0,
+   "race_1.9s": 0,
+   "race_share_1.9s": 0.0
+  },
+  "fresh-0903": {
+   "triggers": 10,
+   "censored": 0,
+   "uncensored": 10,
+   "completed_6h": 3,
+   "p_complete_6h": 0.3,
+   "completed_by_block_end": 5,
+   "triggers_per_full_day": {
+    "2026-09-04": 2,
+    "2026-09-05": 1,
+    "2026-09-06": 1,
+    "2026-09-07": 2,
+    "2026-09-08": 1
+   },
+   "median_triggers_per_full_day": 1,
+   "min_triggers_per_full_day": 1,
+   "max_triggers_per_full_day": 2,
+   "ttc_s_q1_med_q3": [
+    5568.5,
+    10948,
+    11173.0
+   ],
+   "ttc_share_le_1h": 0.3333333333333333,
+   "p_at_t_q1_med_q3": [
+    0.911364,
+    0.91543,
+    0.92039125
+   ],
+   "cov_stall_ok": 10,
+   "cov_follow_eligible": 7,
+   "cov_follow_ok": 6,
+   "later_115_no_complete": 0,
+   "per_day": {
+    "2026-09-03": {
+     "triggers": 2,
+     "uncensored": 2,
+     "completed_6h": 0,
+     "p_complete_6h": 0.0
+    },
+    "2026-09-04": {
+     "triggers": 2,
+     "uncensored": 2,
+     "completed_6h": 1,
+     "p_complete_6h": 0.5
+    },
+    "2026-09-05": {
+     "triggers": 1,
+     "uncensored": 1,
+     "completed_6h": 0,
+     "p_complete_6h": 0.0
+    },
+    "2026-09-06": {
+     "triggers": 1,
+     "uncensored": 1,
+     "completed_6h": 0,
+     "p_complete_6h": 0.0
+    },
+    "2026-09-07": {
+     "triggers": 2,
+     "uncensored": 2,
+     "completed_6h": 1,
+     "p_complete_6h": 0.5
+    },
+    "2026-09-08": {
+     "triggers": 1,
+     "uncensored": 1,
+     "completed_6h": 0,
+     "p_complete_6h": 0.0
+    },
+    "2026-09-09": {
+     "triggers": 1,
+     "uncensored": 1,
+     "completed_6h": 1,
+     "p_complete_6h": 1.0
+    }
+   },
+   "race_4.4s": 0,
+   "race_share_4.4s": 0.0,
+   "race_1.9s": 0,
+   "race_share_1.9s": 0.0
+  },
+  "exp011-0909": {
+   "triggers": 13,
+   "censored": 1,
+   "uncensored": 12,
+   "completed_6h": 7,
+   "p_complete_6h": 0.5833333333333334,
+   "completed_by_block_end": 7,
+   "triggers_per_full_day": {
+    "2026-09-10": 2,
+    "2026-09-11": 5,
+    "2026-09-12": 1,
+    "2026-09-13": 0,
+    "2026-09-14": 1
+   },
+   "median_triggers_per_full_day": 1,
+   "min_triggers_per_full_day": 0,
+   "max_triggers_per_full_day": 5,
+   "ttc_s_q1_med_q3": [
+    3642.0,
+    6566,
+    8964.5
+   ],
+   "ttc_share_le_1h": 0.2857142857142857,
+   "p_at_t_q1_med_q3": [
+    0.924282,
+    0.95662,
+    0.990971
+   ],
+   "cov_stall_ok": 13,
+   "cov_follow_eligible": 5,
+   "cov_follow_ok": 5,
+   "later_115_no_complete": 0,
+   "per_day": {
+    "2026-09-09": {
+     "triggers": 1,
+     "uncensored": 1,
+     "completed_6h": 0,
+     "p_complete_6h": 0.0
+    },
+    "2026-09-10": {
+     "triggers": 2,
+     "uncensored": 2,
+     "completed_6h": 2,
+     "p_complete_6h": 1.0
+    },
+    "2026-09-11": {
+     "triggers": 5,
+     "uncensored": 5,
+     "completed_6h": 4,
+     "p_complete_6h": 0.8
+    },
+    "2026-09-12": {
+     "triggers": 1,
+     "uncensored": 1,
+     "completed_6h": 0,
+     "p_complete_6h": 0.0
+    },
+    "2026-09-14": {
+     "triggers": 1,
+     "uncensored": 1,
+     "completed_6h": 0,
+     "p_complete_6h": 0.0
+    },
+    "2026-09-15": {
+     "triggers": 3,
+     "uncensored": 2,
+     "completed_6h": 1,
+     "p_complete_6h": 0.5
+    }
+   },
+   "race_4.4s": 0,
+   "race_share_4.4s": 0.0,
+   "race_1.9s": 0,
+   "race_share_1.9s": 0.0
+  }
+ },
+ "pooled": {
+  "triggers": 57,
+  "censored": 2,
+  "uncensored": 55,
+  "completed_6h": 27,
+  "p_complete_6h": 0.4909090909090909,
+  "completed_by_block_end": 39,
+  "triggers_per_full_day": {
+   "2026-08-15": 3,
+   "2026-08-16": 0,
+   "2026-08-17": 4,
+   "2026-08-18": 3,
+   "2026-08-19": 3,
+   "2026-08-20": 2,
+   "2026-08-21": 3,
+   "2026-08-22": 2,
+   "2026-08-23": 1,
+   "2026-08-24": 4,
+   "2026-08-25": 1,
+   "2026-08-26": 1,
+   "2026-08-27": 5,
+   "2026-09-04": 2,
+   "2026-09-05": 1,
+   "2026-09-06": 1,
+   "2026-09-07": 2,
+   "2026-09-08": 1,
+   "2026-09-09": 2,
+   "2026-09-10": 2,
+   "2026-09-11": 5,
+   "2026-09-12": 1,
+   "2026-09-13": 0,
+   "2026-09-14": 1
+  },
+  "median_triggers_per_full_day": 2.0,
+  "min_triggers_per_full_day": 0,
+  "max_triggers_per_full_day": 5,
+  "ttc_s_q1_med_q3": [
+   2519.5,
+   3833,
+   8108.0
+  ],
+  "ttc_share_le_1h": 0.4074074074074074,
+  "p_at_t_q1_med_q3": [
+   0.9107,
+   0.917287,
+   0.955426
+  ],
+  "cov_stall_ok": 57,
+  "cov_follow_eligible": 28,
+  "cov_follow_ok": 27,
+  "later_115_no_complete": 2,
+  "per_day": {
+   "2026-08-14": {
+    "triggers": 1,
+    "uncensored": 1,
+    "completed_6h": 0,
+    "p_complete_6h": 0.0
+   },
+   "2026-08-15": {
+    "triggers": 3,
+    "uncensored": 3,
+    "completed_6h": 1,
+    "p_complete_6h": 0.3333333333333333
+   },
+   "2026-08-17": {
+    "triggers": 4,
+    "uncensored": 4,
+    "completed_6h": 2,
+    "p_complete_6h": 0.5
+   },
+   "2026-08-18": {
+    "triggers": 3,
+    "uncensored": 3,
+    "completed_6h": 3,
+    "p_complete_6h": 1.0
+   },
+   "2026-08-19": {
+    "triggers": 3,
+    "uncensored": 3,
+    "completed_6h": 3,
+    "p_complete_6h": 1.0
+   },
+   "2026-08-20": {
+    "triggers": 2,
+    "uncensored": 2,
+    "completed_6h": 1,
+    "p_complete_6h": 0.5
+   },
+   "2026-08-21": {
+    "triggers": 3,
+    "uncensored": 3,
+    "completed_6h": 2,
+    "p_complete_6h": 0.6666666666666666
+   },
+   "2026-08-22": {
+    "triggers": 2,
+    "uncensored": 2,
+    "completed_6h": 1,
+    "p_complete_6h": 0.5
+   },
+   "2026-08-23": {
+    "triggers": 1,
+    "uncensored": 1,
+    "completed_6h": 1,
+    "p_complete_6h": 1.0
+   },
+   "2026-08-24": {
+    "triggers": 4,
+    "uncensored": 4,
+    "completed_6h": 1,
+    "p_complete_6h": 0.25
+   },
+   "2026-08-25": {
+    "triggers": 1,
+    "uncensored": 1,
+    "completed_6h": 0,
+    "p_complete_6h": 0.0
+   },
+   "2026-08-26": {
+    "triggers": 1,
+    "uncensored": 1,
+    "completed_6h": 0,
+    "p_complete_6h": 0.0
+   },
+   "2026-08-27": {
+    "triggers": 5,
+    "uncensored": 5,
+    "completed_6h": 2,
+    "p_complete_6h": 0.4
+   },
+   "2026-08-28": {
+    "triggers": 1,
+    "uncensored": 0,
+    "completed_6h": 0,
+    "p_complete_6h": null
+   },
+   "2026-09-03": {
+    "triggers": 2,
+    "uncensored": 2,
+    "completed_6h": 0,
+    "p_complete_6h": 0.0
+   },
+   "2026-09-04": {
+    "triggers": 2,
+    "uncensored": 2,
+    "completed_6h": 1,
+    "p_complete_6h": 0.5
+   },
+   "2026-09-05": {
+    "triggers": 1,
+    "uncensored": 1,
+    "completed_6h": 0,
+    "p_complete_6h": 0.0
+   },
+   "2026-09-06": {
+    "triggers": 1,
+    "uncensored": 1,
+    "completed_6h": 0,
+    "p_complete_6h": 0.0
+   },
+   "2026-09-07": {
+    "triggers": 2,
+    "uncensored": 2,
+    "completed_6h": 1,
+    "p_complete_6h": 0.5
+   },
+   "2026-09-08": {
+    "triggers": 1,
+    "uncensored": 1,
+    "completed_6h": 0,
+    "p_complete_6h": 0.0
+   },
+   "2026-09-09": {
+    "triggers": 2,
+    "uncensored": 2,
+    "completed_6h": 1,
+    "p_complete_6h": 0.5
+   },
+   "2026-09-10": {
+    "triggers": 2,
+    "uncensored": 2,
+    "completed_6h": 2,
+    "p_complete_6h": 1.0
+   },
+   "2026-09-11": {
+    "triggers": 5,
+    "uncensored": 5,
+    "completed_6h": 4,
+    "p_complete_6h": 0.8
+   },
+   "2026-09-12": {
+    "triggers": 1,
+    "uncensored": 1,
+    "completed_6h": 0,
+    "p_complete_6h": 0.0
+   },
+   "2026-09-14": {
+    "triggers": 1,
+    "uncensored": 1,
+    "completed_6h": 0,
+    "p_complete_6h": 0.0
+   },
+   "2026-09-15": {
+    "triggers": 3,
+    "uncensored": 2,
+    "completed_6h": 1,
+    "p_complete_6h": 0.5
+   }
+  },
+  "race_4.4s": 0,
+  "race_share_4.4s": 0.0,
+  "race_1.9s": 0,
+  "race_share_1.9s": 0.0
+ },
+ "kill_rules": {
+  "K0": "FAIL",
+  "K0b": "pass",
+  "K0c": "FAIL",
+  "verdict": "KILL",
+  "failed": [
+   "K0",
+   "K0c"
+  ],
+  "cov_stall_share": 1.0
+ }
+}
