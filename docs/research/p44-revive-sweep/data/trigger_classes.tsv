@@ -1,0 +1,304 @@
+id	status	class	revive_trigger
+lib-a-A2	dead-as-frozen	DEPENDS	re-read edge-scan #7 before any use (library reading, inferred)
+lib-a-A3	dead-as-frozen	NOW	a USDC-quoted BOOST flow observed again in the forward tape (library, inferred from EXP-023 title)
+lib-a-A16	dead-as-frozen	CAPABILITY	an entry faster than 1.3-1.9 s (library reading, inferred)
+lib-a-A40	explored-survivor-unconfirmed	PROCEDURAL	the gate has not been run on it (library, A40)
+lib-b-B2	explored-survivor-unconfirmed	DEPENDS	P0 (as quoted in the library from JUDGE.md section 2.2): "Withdraw H2 if 4XWC649w... has fewer than 30 distinct-mint buys in [2026-10-02T15, 2026-10-09T00)". Note: this text is a withdrawal rule, not a revive rule.
+lib-b-C1	explored-survivor-unconfirmed	DEPENDS	Judge's own trigger (JUDGE-2 section 2.1): a counted read. The capped-book version needs a successor (see lib-b-C2).
+lib-b-C3	dead-as-frozen	PROCEDURAL	JUDGE-2 section 4 idea 6: whale >= 2,900 SOL / sellers <= 3 lead, with a live-pool guard (Q >= 1,000 SOL) and a crash stop. Kill rule: October crash share by 210 min above September's 0.372.
+lib-b-C4	dead-as-frozen	PROCEDURAL	JUDGE-2 section 4 idea 3 dump/collapse hazard model as a veto on Rule M; needs a collapse share under about 7.2% (12.6% observed).
+lib-b-C6	dead-as-frozen	PROCEDURAL	JUDGE-2 section 4 idea 3, the shared dump/collapse hazard model (strict label: single-print loss below -50%). No October-observable trigger is stated for G5 itself.
+lib-b-C8	dead-as-frozen	PROCEDURAL	JUDGE-2 section 2.3 steps 1-3: count R' firing on H5 trigger prints on explore-0814 first (kill if R' fires on fewer than 2% of H5 trades or the lift is <= 0). Judge's rule: never veto trades on the live canary.
+lib-b-C9	dead-as-frozen	DEPENDS	JUDGE-2 section 4 idea 3 dump-hazard veto: needs a dump rate under about 2.9%.
+lib-b-C10	dead-as-frozen	PROCEDURAL	JUDGE-2 section 4 idea 7: O1's fresh-creator and no-snipe component as a paired selector on H5, G4 or the L1 pool entries (a component test, not a re-test of O1).
+lib-b-C11	dead-as-frozen	PROCEDURAL	JUDGE-2 section 3 overlay table: "O2 new-wallet share <= 0.25 (veto)", listed as a decision-time test on H5 (a component test, not a re-test of O2).
+lib-b-C12	dead-as-frozen	DEPENDS	JUDGE-2 section 4 idea 8, universe hygiene, report-only: exclude the create-slot wash farm above 4,500 SOL PumpSwap market cap (O2); instant launch rings (O3).
+lib-b-C13	dead-as-frozen	DEPENDS	JUDGE-2 section 2.2 step 1: count H5 September trade times to see whether a 1 SOL bankroll at 0.25 SOL hits 4 open positions. Allocation priority only, never a skip rule.
+lib-b-D2	explored-no-survivor	PROCEDURAL	Per JUDGE-3 section 3: a pre-registered read on forward-1002 [2026-10-02T16:00Z, 2026-10-14T01:00Z) after the 10-16 FINAL. Refusals in section 3.8: window hours present; PDA pool match >= 95%; pool-entry decisions >= 300; no day with creates but 0 decisions.
+lib-b-D4	dead-as-frozen	PROCEDURAL	JUDGE-3 section 4 idea 3: a strict rug classifier (quote drain in one transaction or a gap of -70% or worse) gating entries, with LambdaRank on hourly groups. No numeric trigger reported for re-test.
+lib-b-D5	explored-survivor-unconfirmed	PROCEDURAL	VERIFY list in JUDGE-3 section 3.10: re-derive from raw tape; feature leakage check on since-seed and ATH features; drop mint 16894 and 09-11; re-score at 505k per send.
+lib-b-D6	dead-as-frozen	PROCEDURAL	JUDGE-3 section 4 idea 2: two-stage pre-graduation model (P(graduate) and E[payoff | graduate]); freeze only a cell positive on most leave-one-day-out or rolling-origin folds over all DISCOVERY days, never one 5-day split.
+lib-b-E1	explored-no-survivor	PROCEDURAL	The analog-boost ensemble (lib-b-E19) with kill criteria; a fresh read is blocked until EXP-022's read ends (JUDGE-4 section 1).
+lib-b-E2	explored-no-survivor	DEPENDS	The walk-forward retrain variant (lib-b-E3) and the crash-bounce-wf leaf (JUDGE-4 section 4 leaf 8).
+lib-b-E4	explored-no-survivor	PROCEDURAL	JUDGE-4 section 4 leaf 7: pregrad-tail-cut, lower-variance rules; kill if the median trade stays below -20% or the held-out slice's date-cluster CI90 lo is 0 or less.
+lib-b-E5	dead-as-frozen	PROCEDURAL	The non-farm subset (lib-b-E6, C1-NF). As frozen, none stated in source.
+lib-b-E7	dead-as-frozen	NONE	none stated in source for the ride; the veto is lib-b-E8.
+lib-b-E10	dead-as-frozen	PROCEDURAL	Source names no numeric trigger for the score. The library cites the ingredient "losers buy from skilled sellers" (lib-b-E16) and tree rule F6d.
+lib-b-E11	dead-as-frozen	NONE	none stated in source; 'clone-family graduation' is an ingredient (lib-b-E18), and 'clone exclusion' changed F3d to INGREDIENT (JUDGE-4 section 2).
+lib-b-E12	dead-as-frozen	NONE	none stated in source; the tree's F2e baseline is the in-flight LightGBM/kNN (STRATEGY-TREE.md).
+lib-b-E13	dead-as-frozen	DEPENDS	JUDGE-4 section 4 leaves 4 and 2: the overhang-impact stratum as a veto stratum, and the quintile at entry.
+lib-b-E14	dead-as-frozen	NONE	none stated in source.
+lib-b-E15	dead-as-frozen	PROCEDURAL	Operator-cluster hazard (JUDGE-4 section 4 leaf 6): "It is a veto, never a book." Kill if the out-of-time AUC is below 0.65 on the strict label.
+lib-c-F1	dead-as-frozen	NONE	none - dead on mechanism (library: "none - dead on mechanism" for the re-arm itself)
+lib-c-F2	dead-as-frozen	DEPENDS	Only the parked C-BX / EXP-026 work remains. (JUDGE-6 §2)
+lib-c-F3	dead-as-frozen	DEPENDS	see F7 (successor r7-c1nf-freshwallet-rule) [library text; the successor is in F5 and G2]
+lib-c-G1	dead-as-frozen	NONE	none for the declared family (library G1)
+lib-c-G2	dead-as-frozen	NONE	none for the successor (library G2)
+lib-c-H2	untested	PROCEDURAL	H5 T1. Cell 2 (CURVE-DEPTH) is the only check of H5's frozen Q* 40 SOL and seed x 1.15 guard on October's curve (library H2)
+lib-c-H3	untested	PROCEDURAL	not in source (kill: none; it is prep)
+lib-c-I1	explored-no-survivor	DEPENDS	r13-veto-ceiling (library I1); that veto is DEAD in J1
+lib-c-I2	dead-as-frozen	NONE	none (library I2: do not re-run ladders, runners, trails, ATR, break-even or BOOST-aware exits on H5 or MIG on explore-0814)
+lib-c-I3	dead-as-frozen	NONE	none for the runner (library I3); stop-gap facts feed r13-veto-ceiling
+lib-c-I4	dead-as-frozen	NONE	none for the postgrad runner; drop list in I7 (library I4)
+lib-c-I5	dead-as-frozen	NONE	none stated for the gross line; any re-test needs gross EV above +5% on a bracket (library I5)
+lib-c-J2	parked	LATER	a forward test of kinds P / B on post-11-06 tape (library J2, JUDGE-14)
+lib-c-J3	explored-no-survivor	DEPENDS	Only as part of the QSINK line (bonding-curve parents); no J3 PumpSwap-parent variant is planned.
+lib-c-K3	dead-as-frozen	NONE	none; dead on mechanism (library K3)
+lib-c-K4	dead-as-frozen	NONE	none stated (library K4)
+lib-c-K5	dead-as-frozen	NONE	n/a (library K5)
+lib-c-L1	explored-survivor-unconfirmed	LATER	a DEC for a fourth alpha slot (DEC-021 Am.3); Window B preferred: block [11-06T02, 11-22T02), read about 11-22T03Z; Window A alternative: decisions [10-18T00, 11-01T00), read about 11-02
+lib-c-L2	dead-as-frozen	DEPENDS	cluster-level fingerprinting only: "Fingerprinting has to be cluster-level (funding graph), not single-wallet."
+lib-c-L3	dead-as-frozen	NONE	none stated (library L3)
+lib-c-M1	parked	NOW	(i) realized October last-slice shift of about 8 s or more against September's 343-347 s; (ii) DEC-027 reopening of C-BX; (iii) a paired window of about 660 pairs (library M1)
+lib-c-M2	dead-as-frozen	NONE	none (library M2): "They buy robustness by giving up return."
+lib-c-N1	dead-as-frozen	NONE	none on the holder rule until a live holder-share feed exists; a fresh filing needs about 5,715 fresh trades (library N1)
+lib-c-N3	untested	DEPENDS	an outcome-blind PDA-based BOOST-end rule written before discovery on explore data (library N3)
+lib-c-O1	shelved	PROCEDURAL	a race-free entry slice (r4-c, report-only) with an outcome-blind pre-registration (library O1)
+lib-c-P1	shelved	LATER	Revive at >=10 kept trades/day on 2 days (library TOC row 13)
+lib-c-R2.SB-H5	parked	NOW	not in source
+web-forced-flows-1	shelved	EXTERNAL	Official page publishes DCA program id and includes Token-2022 mints in scope, or an on-chain count of pump-origin DCA rounds becomes available.
+web-forced-flows-2	desk-read	EXTERNAL	Boop publishes graduation condition and payout schedule, and distribution transfers are observable on-chain.
+web-forced-flows-3	desk-read	EXTERNAL	Official page states automatic release to market, or pump-origin cliff counts show at least 5 cliffs a week.
+web-forced-flows-4	desk-read	EXTERNAL	Official reserve list includes a pump-origin mint.
+web-forced-flows-5	desk-read	EXTERNAL	Official Drift market list shows a pump-origin perp market.
+web-forced-flows-6	desk-read	EXTERNAL	Official page states that payouts buy the token on market.
+web-forced-flows-7	desk-read	EXTERNAL	Official statement of a rule with trigger, size and cadence.
+web-forced-flows-8	desk-read	EXTERNAL	Official page publishes on-chain trigger storage.
+web-forced-flows-9	desk-read	EXTERNAL	Official on-chain buyback announcement with a cadence.
+web-forced-flows-10	desk-read	EXTERNAL	Official treasury schedule that resolves the size conflict.
+web-forced-flows-11	desk-read	EXTERNAL	Official doc showing on-chain execution.
+web-forced-flows-13	desk-read	EXTERNAL	Official schedule for MET buybacks.
+web-forced-flows-14	desk-read	DEPENDS	Payout route changes to token buys.
+web-forced-flows-15	desk-read	EXTERNAL	Repeat announcement on a Solana pump-origin token.
+web-crosschain-1	desk-read	EXTERNAL	Executor address and window settings found in an official Virtuals source or on-chain, with at least one buyback observed in slices.
+web-crosschain-2	desk-read	DEPENDS	A fee-clocked or timed buy path found on-chain at a known block.
+web-crosschain-3	desk-read	EXTERNAL	A Flap buy or burn-purchase path with a published schedule.
+web-crosschain-4	desk-read	EXTERNAL	Official Virtuals source giving the share and a buyback log.
+web-crosschain-5	desk-read	EXTERNAL	A buyer tied to the release found in an official source.
+web-crosschain-6	desk-read	EXTERNAL	A Zora buy path found in official docs.
+web-crosschain-7	desk-read	DEPENDS	A launchpad-token buy path added to the fund.
+web-crosschain-8	desk-read	EXTERNAL	A launch-token buy path on SunPump with a published schedule.
+web-crosschain-9	desk-read	EXTERNAL	A scheduled or fee-clocked buy path on Pons pools.
+web-crosschain-10	desk-read	EXTERNAL	Official four.meme lifecycle page with LP handling.
+web-llm-traders-1	untested	DEPENDS	tests 1 to 3 pass on explore-0814 and a measured round trip keeps entries inside the book's entry window
+web-llm-traders-2	explored-no-survivor	PROCEDURAL	a prompt declared before any run with N counted, and a BUY share above 2 percent
+web-llm-traders-4	explored-no-survivor	DEPENDS	a veto that keeps at least 95% of winners and adds at least +3% mean over the unvetoed set (card b bar)
+web-llm-traders-5	untested	PROCEDURAL	Haiku top-10 beats LightGBM top-10 on explore-0814 with CI90 lower bound above 0 on mean SOL per trade
+web-llm-traders-6	untested	PROCEDURAL	label improves out-of-fold mean SOL per trade with CI90 lower bound above 0 across at least 5 UTC days
+web-llm-traders-7	untested	PROCEDURAL	at least 3 proposals beat the baseline CI90 lower bound on a second August split
+web-llm-traders-8	untested	PROCEDURAL	veto removes big losers (at or below -68%) at a higher rate than winners, with total SOL not below the unvetoed set and ex-top-3 total positive
+web-llm-traders-9	untested	PROCEDURAL	beats the LightGBM/kNN baseline on explore-0814 with CI90 lower bound above 0
+web-llm-traders-10	untested	PROCEDURAL	Test 1 kill bar passes on explore-0814 under leave-one-day-out
+web-llm-traders-11	desk-read	PROCEDURAL	a trading replay with frozen memory scored on out-of-sample days under the gate
+web-llm-traders-12	desk-read	PROCEDURAL	frozen pool scored on out-of-sample trading days under the gate
+web-llm-traders-13	desk-read	PROCEDURAL	a label-free update that beats its frozen base on out-of-sample days
+web-llm-traders-14	desk-read	DEPENDS	risk setting fixed on training days only, scored on fresh days
+web-llm-traders-15	desk-read	PROCEDURAL	frozen beliefs scored on fresh days under costs
+web-llm-traders-16	desk-read	PROCEDURAL	cost-adjusted out-of-sample run with the gate's day counts
+web-llm-traders-17	desk-read	PROCEDURAL	a costed run with the gate's day counts
+web-llm-traders-18	desk-read	EXTERNAL	official results page readable
+web-llm-traders-19	desk-read	PROCEDURAL	full paper read with per-model trade counts
+web-llm-traders-20	desk-read	PROCEDURAL	lab reproduces the anonymised run on its own blind prompts
+web-llm-traders-21	desk-read	PROCEDURAL	any Haiku prompt set before its first out-of-sample day
+w2-entry6-table-1	explored-no-survivor	PROCEDURAL	a new DECLARE on months not used here, with its own kill bar; these buckets are not re-cut
+w2-entry6-table-2	explored-no-survivor	PROCEDURAL	a new DECLARE on months not used here, with its own kill bar; these buckets are not re-cut
+w2-entry6-table-3	explored-no-survivor	PROCEDURAL	a new DECLARE on months not used here, with its own kill bar; these buckets are not re-cut
+w2-mayhem-grads-1	untested	PROCEDURAL	Quote identity (SOL or other) and V for Mayhem pools confirmed from a source outside hunt-shared, and the seed check passing on a declared Mayhem subset with at least 100 priced entries per UTC day.
+web-capacity-2	desk-read	NONE	Not a strategy. Use as a latency/competition cost input for any entry at slot+1 or later.
+web-capacity-4	untested	EXTERNAL	Official migration destination for 2026 graduations, and a measured price gap at matched slots on the tape.
+web-capacity-5	untested	EXTERNAL	An official perp listing for a pump-origin mint, with its funding and open interest published.
+web-capacity-6	untested	EXTERNAL	Published contract terms or on-chain identification of a market maker wallet with per-day fill counts.
+bc-bigwin-1	explored-no-survivor	PROCEDURAL	sub-minute per-print tape so the stop and fill are testable at seconds latency, and a new pre-registered DECLARE
+bc-bigwin-2	untested	CAPABILITY	resolution of the 0-reserve and sub-100-SOL completes on the tape
+bc-flow-1	explored-no-survivor	PROCEDURAL	Intra-minute trade timing and MAL latency replay that changes the sign; a new DECLARE before any return.
+bc-flow-2	explored-no-survivor	DEPENDS	As bc-flow-1.
+bc-flow-3	explored-no-survivor	DEPENDS	As bc-flow-1.
+bc-flow-4	explored-no-survivor	DEPENDS	As bc-flow-1.
+bc-runup-1	explored-no-survivor	PROCEDURAL	Print-level curve data covering the 30 min before complete with at least 90% coverage, and a stop executable at print resolution; re-test as a new frozen rule on October data.
+deep-pools-1	explored-no-survivor	PROCEDURAL	Only a materially different trigger or subset with a positive mean gross return.
+deep-pools-2	explored-no-survivor	PROCEDURAL	Positive mean gross under a declared subset.
+deep-pools-3	explored-no-survivor	PROCEDURAL	Positive mean gross under a declared subset.
+deep-pools-4	explored-no-survivor	PROCEDURAL	Positive mean gross under a declared subset.
+deep-pools-5	explored-no-survivor	PROCEDURAL	Positive mean gross under a declared subset.
+deep-pools-6	explored-no-survivor	PROCEDURAL	Positive mean gross under a declared subset.
+web-cross-venue-3	untested	EXTERNAL	Program layout and ID confirmed, and the tape covers LaunchLab, with depth at 0.5-1 SOL computable (virtual reserves not published).
+web-cross-venue-6	parked	NOW	Pools active again.
+library-capacity-1	untested	PROCEDURAL	A declared run showing impact-adjusted edge above 0 at 0.25 SOL, with the ex-best-block bar.
+library-capacity-2	untested	PROCEDURAL	Fee-adjusted mean above 0 with a CI lower bound above 0.
+library-capacity-3	untested	NOW	Realized October last-slice shift of about 8 s or more against 343-347 s.
+survivors-1	explored-no-survivor	PROCEDURAL	Fresh-block pass at mean net >= +1.5% at >= 0.25 SOL with ex-top-3, ex-best-day and every block positive, under declared costs
+survivors-2	explored-no-survivor	PROCEDURAL	Fresh-block pass at mean net >= +1.5% at >= 0.25 SOL with ex-top-3, ex-best-day and every block positive, under declared costs
+survivors-3	explored-no-survivor	PROCEDURAL	Fresh-block pass at mean net >= +1.5% at >= 0.25 SOL with ex-top-3, ex-best-day and every block positive, under declared costs
+survivors-4	explored-no-survivor	PROCEDURAL	Fresh-block pass at mean net >= +1.5% at >= 0.25 SOL with ex-top-3, ex-best-day and every block positive, under declared costs
+survivors-5	explored-no-survivor	PROCEDURAL	Fresh-block pass at mean net >= +1.5% at >= 0.25 SOL with ex-top-3, ex-best-day and every block positive, under declared costs
+survivors-6	explored-no-survivor	PROCEDURAL	Fresh-block pass at mean net >= +1.5% at >= 0.25 SOL with ex-top-3, ex-best-day and every block positive, under declared costs
+tod-regime-1	explored-no-survivor	PROCEDURAL	A regime cell positive on both halves and ex-top-3 and ex-best-day, after cost at 0.25 SOL.
+tod-regime-2	explored-no-survivor	DEPENDS	A regime or block positive on both halves after removing the top 3 trades and the best day.
+tod-regime-3	explored-no-survivor	PROCEDURAL	A filter (not a time regime) with positive ex-top-3 and ex-best-day on both halves.
+tod-regime-4	explored-no-survivor	PROCEDURAL	A regime positive on both halves and ex-top-3 and ex-best-day, with a non-generic base that is positive first.
+exit-upgrade-1	explored-no-survivor	PROCEDURAL	new frozen longer-horizon family (declared before compute); X3/X4 tests
+exit-upgrade-2	explored-no-survivor	PROCEDURAL	new frozen longer-horizon family (declared before compute); X3/X4 tests
+drain-predictor-1	explored-no-survivor	PROCEDURAL	new features that move kept mean above the cost floor on an unread block
+drain-predictor-2	explored-no-survivor	PROCEDURAL	a decay predictor with kept mean above +1.5% per trade
+drain-predictor-3	untested	DEPENDS	an unread data block exists
+drain-escape-1	explored-no-survivor	PROCEDURAL	A non-generic entry with a positive held base, or an entry filter that cuts the drain rate.
+winner-class-1	explored-no-survivor	PROCEDURAL	A round-trip-only filter (sold <= 1.01x bought on pool) that stays positive in every block ex-top-3 and at buys of 0.25 SOL or more after the cost floor.
+winner-class-2	explored-no-survivor	NONE	None at MAL latency; revive only if a sub-second feed is approved.
+winner-class-3	desk-read	PROCEDURAL	A pre-declared as-of signal that identifies these wallets before s0.
+winner-class-4	explored-no-survivor	PROCEDURAL	Positive ex-top-3 at 0.25 SOL or more after the floor.
+dump-absorb-1	explored-no-survivor	PROCEDURAL	fails median and every block; positive means come from 3.46% of trades with return >100%
+dump-absorb-2	explored-no-survivor	PROCEDURAL	median negative in all five blocks (-4.5, -12.8, -17.4, -1.8, -54.5); means outlier-dominated
+dump-absorb-3	explored-no-survivor	PROCEDURAL	median negative in every block; n per day low (~1,242 candidates per day, not capacity checked)
+dump-absorb-4	explored-no-survivor	PROCEDURAL	median below zero; per-block medians <=0; mean positive only via outliers in explore-0814 and fresh-0903
+dump-absorb-5	explored-no-survivor	PROCEDURAL	median negative; no block positive on median
+dump-absorb-6	explored-no-survivor	PROCEDURAL	median negative in every block; drains dominate the long hold
+dev-events-1	dead-as-frozen	PROCEDURAL	New DECLARE with an entry-quote floor, written before any return is computed.
+dev-events-2	dead-as-frozen	PROCEDURAL	New DECLARE only.
+dev-events-3	dead-as-frozen	PROCEDURAL	New DECLARE with entry-quote floor only.
+dev-events-4	dead-as-frozen	PROCEDURAL	New DECLARE only.
+dev-events-5	dead-as-frozen	PROCEDURAL	New DECLARE only.
+dev-events-6	dead-as-frozen	NONE	Not a strategy; baseline for any future dev rule.
+dev-events-7	untested	PROCEDURAL	Its own DECLARE with a return split, written before any return.
+speed-route-1	desk-read	PROCEDURAL	k<3 sweep shows lo>0 and ex-top-3>0 at haircut cost
+speed-route-2	explored-survivor-unconfirmed	CAPABILITY	landing test shows start-of-slot landing at lean fee
+speed-route-3	parked	CAPABILITY	shred-level detection shows same-slot reaction
+speed-route-5	untested	EXTERNAL	owner go after fee-arm probe closes 2026-10-22
+mayhem-flow-1	explored-no-survivor	DEPENDS	side or size shown to depend on pool state
+mayhem-flow-2	untested	PROCEDURAL	mayhem curve k model verified
+mayhem-flow-3	untested	PROCEDURAL	lift present in recent data
+boost-universe-1	explored-survivor-unconfirmed	NOW	quote mint and fee schedule of these pools known from a chain read; at least 20 trades/day
+boost-universe-2	explored-survivor-unconfirmed	NOW	same as boost-universe-1
+boost-universe-4	explored-no-survivor	LATER	October-class data allowed under the EXP-024 seal end state
+boost-custom-v2-1	explored-survivor-unconfirmed	NOW	October count of BOOSTed custom-pair graduations per day with USDC/PUMP quote reaches several per day
+boost-custom-v2-3	untested	NOW-NOT-RUN	pool-account fee config read
+crash-bounce-v2-1	dead-as-frozen	PROCEDURAL	a new family with cost-inclusive worst-fill labels, declared before any return
+crash-bounce-v2-3	untested	DEPENDS	END-to-worst gap under half the END mean
+pump-buyback-1	explored-no-survivor	DEPENDS	A confirmed buyback address with a fixed daily or weekly clock.
+pump-buyback-2	untested	DEPENDS	Same hour positive in held-out blocks.
+h5-tail-1	explored-no-survivor	PROCEDURAL	A feature set with TEST AUC >= 0.7 for the tail
+h5-exit-sd-1	explored-no-survivor	PROCEDURAL	A fresh forward block read pre-registered with the rule frozen
+day-sigma-1	explored-no-survivor	EXTERNAL	A selector whose gross 1 h return beats the control row (cost floor plus drift): -5.187% at 0.25 SOL; not a rule re-tune.
+day-sigma-2	explored-no-survivor	DEPENDS	Same as day-sigma-1: gross edge above the cost floor, shown outside the exploration window.
+day-sigma-3	desk-read	DEPENDS	A positive-mean candidate; then use sigma_d to size the days needed.
+haiku-v3-1	explored-survivor-unconfirmed	PROCEDURAL	A later gate-eligible overlay window where it beats both BASE and a frozen numeric dead-pool veto at the same veto share (QP-REVIEW section 5)
+haiku-v3-2	explored-no-survivor	PROCEDURAL	A later gate-eligible overlay window where it beats both BASE and a frozen numeric dead-pool veto at the same veto share (QP-REVIEW section 5)
+haiku-v3-3	untested	PROCEDURAL	Learning V1 shows a gain over PLACEBO and a numeric dead-pool veto; QP-REVIEW 2026-10-17 found none (day-bootstrap P 0.38 vs PLACEBO_3)
+second-book-1	dead-as-frozen	PROCEDURAL	a new DECLARE with a different feature family
+second-book-2	dead-as-frozen	NONE	none
+second-book-3	dead-as-frozen	PROCEDURAL	a filter that does not raise turnover
+second-book-4	dead-as-frozen	NONE	none
+r4b-depth-1	explored-survivor-unconfirmed	EXTERNAL	r4-b passes the gate (EXP-027); owner adds capital
+r4b-depth-2	untested	PROCEDURAL	fresh out-of-sample days available
+indep-mech-4	explored-no-survivor	DEPENDS	a gross-positive count over more days
+indep-mech-5	untested	EXTERNAL	owner allows an r4-b overlay test
+kalshi-pubnum-2	dead-as-frozen	PROCEDURAL	A model with a probability edge against the book ask, measured on recorded order books and frozen before any row is read; it would be a new rule with its own row.
+kalshi-weather-mm-1	parked	PROCEDURAL	An attainable rule (queue-aware, tested on a forward order book) reproduces the sign, frozen before its window.
+kalshi-weather-mm-4	dead-as-frozen	PROCEDURAL	A newly declared multi-anchor version (M4-multi: NO bid on brackets with mid <= 0.15 at 3 frozen local anchors, 500-contract cap, 15% unfilled) is frozen before its window and passes there; kill it if the CI90 lower bound is <= 0 or the worst-3 total is negative.
+kalshi-lip-1	forward-test	NONE	not applicable: running. The frozen kill condition (DECLARE-FORWARD section 10) stops it as dead-as-frozen.
+kalshi-crypto-1	dead-as-frozen	CAPABILITY	a sub-second price source or a non-maker mechanism
+kalshi-lip-2	forward-test	NONE	not applicable: running. Book C has no kill condition and is never stopped early because of anything it shows (DECLARE-FORWARD-CAPACITY-1 section 2); its recorder obrec-1019e is stopped only if it degrades LIP-F1's recorders (DECLARE-FORWARD-CAPACITY-2, P3).
+hunt23-a-slow-A	explored-no-survivor	PROCEDURAL	A pool-death early warning (a pre-decision predictor with a stated hazard) declared before a new screen; or an LP-event feed, since the tape cannot say rugged from abandoned (REPORT, next steps 1 and 3).
+hunt23-a-slow-B	explored-no-survivor	PROCEDURAL	A new declared rule with about +3 points more gross edge, on a fresh split (REPORT, next step 2: any new rule needs a new declaration).
+hunt23-a-slow-C	explored-no-survivor	PROCEDURAL	A death predictor at the +10 min mark that is not LAYA, r4b or C1-NF (the C1-NF line is DEC-031 section 3.7); the REPORT names a pool-death early warning as the missing piece.
+hunt23-a-slow-D	explored-no-survivor	PROCEDURAL	As hunt23-a-slow-B: a new declared rule with about +3 points more gross edge on a fresh split.
+hunt23-b-flow-A	explored-no-survivor	PROCEDURAL	A new gross-path feature that lifts the mean above +2.5% at 10 min (the agent's wording).
+hunt23-b-flow-B	explored-no-survivor	CAPABILITY	Latency under about 2 s for the follow-on, which is closed at MAL latency (the agent's wording).
+hunt23-b-flow-C	explored-no-survivor	PROCEDURAL	A condition that moves the gross median above +3% (the agent's wording).
+hunt23-b-flow-D	explored-no-survivor	NONE	Not expected to reopen as a long entry (the agent's wording).
+hunt23-b-flow-E	explored-no-survivor	DEPENDS	Not as a long entry; see hunt23-b-flow-V1 (the same states used as a veto).
+hunt23-b-flow-V1	untested	DEPENDS	Any long book whose losers overlap these states in its own exploration data.
+hunt23-c-7	explored-no-survivor	NONE	None while the hunt25 A-HC-h60 re-price stays at about -8.3% (160k). The earlier trigger (a looser rule giving >= 20 attempts per day) would only re-test a priced rule.
+hunt23-c-8	untested	DEPENDS	A larger wallet history (a longer block or tape) so that a stricter tier meets the budget (the agent's wording).
+kalshi-crypto-fv-1	explored-no-survivor	EXTERNAL	A frozen DECLARE for H1 (or the full M3 rule) read on a forward paper window, after the Kalshi pause (owner, about 2026-10-19T19:30Z, about two weeks; approximate). The REPORT's own arithmetic: H1 at the observed +4.94c needs about 139 events, at a true +2c about 840 events (about 50 days); the full rule at +1.21c needs about 1,480 events (60-70 days).
+hunt23-w2-quiet-1	explored-no-survivor	CAPABILITY	A source of at least +3 points gross, such as an LP-event or removal feed that tells dead pools from quiet ones; the report says this tape cannot supply it.
+hunt23-w2-quiet-2	explored-no-survivor	CAPABILITY	A source of at least +3 points gross, such as an LP-event or removal feed that tells dead pools from quiet ones; the report says this tape cannot supply it.
+hunt23-w2-death-1	explored-no-survivor	PROCEDURAL	A strand-only predictor (sell cannot land, proceeds < one send) with its own label and features that exist live, declared before a new screen (report, next step 2); that was then run as W2b-S, see hunt23-w2b-strand-1.
+hunt23-w2-death-2	explored-no-survivor	PROCEDURAL	A strand-only predictor (sell cannot land, proceeds < one send) with its own label and features that exist live, declared before a new screen (report, next step 2); that was then run as W2b-S, see hunt23-w2b-strand-1 and hunt23-w2b-strand-2.
+hunt23-w2b-strand-1	explored-no-survivor	EXTERNAL	Use the strand score as an ingredient on a future base that is positive under sc but negative under total (report, next step 2). Before any use, split kit strands by state and check whether they are real non-landable sells; the k-drift question overlaps W3-L.
+hunt23-w3-qsink-1	untested	LATER	Not a stopped idea. The full K0 on the 120 files of 2026-10-20 .. 10-24 (run once after 2026-10-25T00:40Z) plus a P0 PASS on at least one LAUNCH cell earns only a written R9(d) DECLARE proposal to the manager: arena-only, at most 12 cells, lineage "none" (COUNTS-PLAN-2, section 6).
+hunt23-w3-burn-1	explored-no-survivor	PROCEDURAL	A new plan with a mechanism that sees burns or a named buyer wallet (new DECLARE and amendment); a bare re-run of plan 2 on more days is not new.
+hunt23-w3-pump-sink-1	untested	NOW	Not a stopped idea. Dead if the hourly share of PUMP-pool buy SOL inside multi-hop child-buy signatures is < 5% (scout test).
+hunt23-w2f-SD	explored-no-survivor	PROCEDURAL	A base with a positive gross edge at a 1 h hold, declared before the exit rule is added.
+hunt23-w2f-FH	explored-no-survivor	PROCEDURAL	A gross-edge signal for quiet post-crash pools that survives explore-0814 alone before any exit rule.
+hunt23-w2f-exit-lesson	explored-no-survivor	PROCEDURAL	A pool-death or no-exit predictor declared before screening, so the exit can be short and still not strand.
+mech-buyer-scout-1	explored-no-survivor	NOW	Buys of 0.5 SOL or more into one pool on at least 13 events/day (the wave-3 bar); the scout puts this at roughly 40 times the current count of such events (1 in 3 days against 13 per day). Recheck the count with the same scripts.
+mech-buyer-scout-2	explored-no-survivor	EXTERNAL	A published or traced address for the top-coin flywheel, showing launch-coin buys of 0.5 SOL or more on at least 5 coins/day.
+mech-buyer-scout-3	untested	EXTERNAL	A wallet or program id for the flywheel from a public explorer.
+w4s-short-cex-listing-watch	untested	NOW-NOT-RUN	At least 1 pump-origin perp listing per day for 7 days, or a venue listing within 48 h at least weekly.
+w4s-short-hl-funding-cost	explored-no-survivor	NOW-NOT-RUN	A pump-origin coin listed on Hyperliquid or a HIP-3 dex within 48 h of pool creation.
+w4s-short-borrow-short	explored-no-survivor	EXTERNAL	A lending market lists a coin under 7 days old with borrow enabled, or a Save permissionless market is created for a window coin.
+w4-gap-xpool-1	explored-no-survivor	PROCEDURAL	A cross-venue feed (Raydium/Meteora second pool of a pump mint) with a measured same-slot gap, or a new rule with a lower sibling-depth floor (new DECLARE).
+l3-boost-h5q50-1	untested	LATER	A dated EXP-024 declared-observation amendment for the rule_id (owner + QP, Am.9 form), or the clock after 2026-11-14T00Z; and the a2 books and the A3 amendment first, per the QP ruling.
+l3-boost-offband-1	untested	NOW	A count of 20 or more triggers a day on at least 3 full closed days for an off-band rule, or a change of the arena P0 floor (DEC-031 amendment).
+l3-boost-custompair-1	untested	NOW	An engine model for quote-conversion legs under a DEC amendment, plus 20 or more triggers a day on 3 full closed days at a declared rule.
+hunt28-breadth-1	explored-no-survivor	PROCEDURAL	A different exit or entry delay model that makes the no-fail mean positive; as stated, none.
+hunt28-accum-1	explored-no-survivor	PROCEDURAL	A wallet-quality label with a causal source (A20/A23 are dead as frozen); none today.
+hunt28-revive-1	explored-no-survivor	PROCEDURAL	A materially different exit (for example a time-only hold) or a quality filter, registered as new variants with the multiplicity counted.
+hunt28-sellabs-1	explored-no-survivor	NONE	None; the confirmation does not rescue the A13/A14 reversion lines at 1.9 s latency.
+reprice-160k-l1	explored-survivor-unconfirmed	CAPABILITY	FLOOR keeps its registered route (records #810/#811); the 160k cost input is for the fee-arm landing verdict.
+reprice-160k-w2-family	explored-no-survivor	NONE	none from the fee alone.
+reprice-160k-hc-h60	explored-no-survivor	NONE	none from the fee alone.
+hunt29-flush-1	explored-no-survivor	NONE	none from the fee alone; a different exit or a quality filter would be a new variant with a new multiplicity count.
+hunt29-wake-1	explored-no-survivor	NONE	none from the fee alone; a different exit or a quality filter would be a new variant with a new multiplicity count.
+hunt29-rankup-1	explored-no-survivor	NONE	none from the fee alone; a different exit or a quality filter would be a new variant with a new multiplicity count.
+hunt29-drought-1	explored-no-survivor	NONE	none from the fee alone; a different exit or a quality filter would be a new variant with a new multiplicity count.
+p6-latency-reprice	explored-no-survivor	PROCEDURAL	a mechanism that is entered in the first seconds after an event (speed-route-1/2) or a measured feed-delay cut, priced with its own screen.
+census-cpmm-grad	untested	PROCEDURAL	Per-pool filter from LaunchLab migrate rows.
+census-damm2-grad	untested	LATER	After P12 migration rows exist.
+census-orca-whirlpool	parked	PROCEDURAL	A launch-specific signal.
+census-heaven-boop-moonit	parked	NOW	Recheck monthly or when an official id is found.
+p3-floor-exits	explored-no-survivor	NONE	none from exits; the FLOOR line is carried by the entry and the 24 h tail.
+p3-g4k-exits	explored-no-survivor	PROCEDURAL	entry equivalence with the registered port measured and the baseline ex-top-3 positive.
+p3-revive-exits	explored-no-survivor	PROCEDURAL	only a quality filter on the entry; exits do not rescue it.
+ll-early-momentum	explored-no-survivor	CAPABILITY	quote mint on the tape (separates SOL pools) or a cheaper fee tier; a different rule class on LaunchLab; not a re-run of this rule.
+ll-milestone	explored-no-survivor	CAPABILITY	quote mint on the tape (separates SOL pools) or a cheaper fee tier; a different rule class on LaunchLab; not a re-run of this rule.
+ll-bigbuy	explored-no-survivor	CAPABILITY	quote mint on the tape (separates SOL pools) or a cheaper fee tier; a different rule class on LaunchLab; not a re-run of this rule.
+ll-cascade-fade	explored-no-survivor	CAPABILITY	quote mint on the tape (separates SOL pools) or a cheaper fee tier; a different rule class on LaunchLab; not a re-run of this rule.
+ll-grad-floor	explored-no-survivor	NONE	none from this rule; a different post-graduation rule would need the same 24 h CPMM tape (/data2/mal/venue-tape-backfill/launchlab_cpmm).
+dbc-early-momentum	explored-survivor-unconfirmed	LATER	Holdout hours 10-17..10-24 read once by the manager on a frozen m10, with a post-completion exit model.
+dbc-milestone	parked	LATER	Post-completion tape (D5: Meteora DAMM v2 pool swaps after migration) so a completed-curve exit can be priced.
+dbc-bigbuy	explored-no-survivor	NONE	none from the fee alone.
+dbc-cascade-fade	explored-no-survivor	NONE	none from the fee alone.
+dbc-completion-hold	untested	DEPENDS	Manager approves a 5-pool probe fetch (<= ~5,000 credits assumed).
+dbc-swap3-rescreen	explored-no-survivor	DEPENDS	A fee regime change or a sub-universe with round trip < 100 bps and no strands; or a measured post-migration (DAMM v2) hold price.
+dbc-dip-buy	explored-no-survivor	NONE	none from the fee alone.
+dbc-strand-damm-continue	explored-survivor-unconfirmed	LATER	m4/m6 are D1 variants: reachable only if m10's pre-registered forward read (>= 2026-11-01T00:10Z) PASSes; a FAIL or NOT_DECIDABLE there ends all D1 on DBC. [10-17, 10-24) is spent for every D1 variant; no holdout read.
+dbc-d5-post-graduation-hold	explored-no-survivor	LATER	Deeper migrated pools (migration quote threshold much larger than 10 SOL) in a later regime.
+p20-dbc-start-floor	explored-no-survivor	PROCEDURAL	A new floor mechanism with a different trigger (not this D7 rule): e.g. a measured revival signal on floor pools with fee <= 50 bps round trip. A D7 variant on DBC is not eligible for registration (primary did not advance).
+p20-dbc-fee-floor-clock	explored-no-survivor	PROCEDURAL	A DAMM v2 market-cap fee-scheduler variant (not screened here) or a measured landing at the expiry slot ahead of same-slot buyers; a D9 variant on DBC is not eligible for registration (primary did not advance).
+p20-dbc-completion-step	untested	PROCEDURAL	A DAMM v2 sell path is built and the p > 0.85 universe change is accepted in writing (QP); only then can a screen lead to a non-D1 registration on hours >= 2026-11-01T00Z.
+p20-wick-bid-zero-latency	explored-no-survivor	PROCEDURAL	Only a venue-specific fill model that avoids drains (a rule that excludes continuing sells), shown positive at latency 0 first; the bound itself is negative.
+p20-dbc-segment-convexity	untested	PROCEDURAL	Count of pools with a sharp L drop below p 0.85 >= 10/day and a priced exploration screen positive under both fail models.
+p20-atomic-xpool-bundle	untested	PROCEDURAL	Gaps above fees + tip persisting >= 5-6 slots at least 10 times/day in a pre-registered forward gap log.
+p20-incentive-farming	untested	EXTERNAL	A desk list shows at least one live programme with official terms whose reward per SOL traded exceeds the round trip.
+p20-launch-allocation	untested	PROCEDURAL	An event study on all past vaults found on chain shows a positive mean and ex-top-3 of first-hours price over allocation price, after fees.
+p20-listing-announce	untested	PROCEDURAL	An event study with entry at +2 s/+10 s/+60 s after the notice gives a positive mean and ex-top-3 net of fees and impact.
+p20-xstock-offhours	untested	EXTERNAL	Owner approval for a non-meme line, then off-hours gaps above round-trip cost persisting minutes in a pool-history study.
+p25-alpenglow-send-cost	untested	EXTERNAL	Public fee percentiles show 160k or less landing within 6 slots at p75, and a live send test (owner OK) confirms it.
+p25-pump-order-keeper-absorb	untested	MET-EARLIER	A tag rule exists (executor signer, program, fee transfer or memo) from pump docs or <= 2,000 public getTransaction reads of known app-order txs, AND tagged sells on fresh-0903 are >= 100/day with >= 20 clusters/day under the 2% bar. Until a tag exists, do not price.
+p25-redeploy-holiday	parked	LATER	POST-COUNT AMENDMENT (written after the DBC counts; not the declared trigger, which was a >=25% drop in median first-5-slot distinct signers for >=3 h after >=2 of 3 changes): the D0 job (role oct-structure-d0, unsigned distinct-trader counts in slots 0-5 of new pump creates around 10-08T16:20Z and 10-13T15:40Z against 10-07 and 10-12 controls) shows a >=25% drop for >=3 h after BOTH pump changes AND beats a placebo of non-change day pairs.
+p25-app-fee-retail-tag	untested	PROCEDURAL	Tagged share >= 5% of pump trade txs on a declared day, then an arena-only screen under DEC-031 Am.4 item 4 that survives.
+p25-pump-bridge-lead	untested	EXTERNAL	Forward log shows p50 origin-to-fill lag >= 1.5 s and >= 20 fills/day >= 0.5 SOL, and the owner accepts the policy.
+p25-quote-drift-completion	untested	PROCEDURAL	>= 2 decisions/day for a declared trigger (quote -10% in 60 min, progress >= 0.6) and a surviving exploration screen.
+p25-t22-fee-epoch-clock	untested	PROCEDURAL	>= 1 pending cut/day found by account counts, then a disclosed-exploration screen with QP's OK.
+p25-prestock-quote-band	untested	EXTERNAL	Owner's say, then >= 10 minutes/day with a pool-anchor gap above band + fees on a declared forward day.
+p37-damm-lp	untested	CAPABILITY	IDL check passes (positions permissionless, fee in swap event) and >= 10 pools/day with fee >= 0.25% and 6 h turnover >= 2 on DBC [10-14T00, 10-17T00).
+p37-damm-compound-hold	untested	DEPENDS	p37-damm-lp counts show compounding pools with 6 h turnover x fee x share >= 10%.
+p37-curve-floor	untested	PROCEDURAL	Median >= 20 clean-curve triggers/day on explore-0814/fresh-0903/exp011-0909 and < 95% of priced trips ending at the time cap.
+p37-stall-to-complete	untested	PROCEDURAL	Coverage >= 50% of triggers, median >= 8 triggers/day, race share <= 10%, P(complete <= 6 h | trigger) >= 0.5 on Aug/Sep exploration.
+p37-floor-lowfee-custom	untested	CAPABILITY	A quote-conversion route under 0.5 pp per round trip and >= 6 custom-pool FLOOR triggers/day.
+p37-dbc-stall-migrate	untested	LATER	A DBC m10 PASS plus a stall feature that separates completions from failures on E1 counts.
+p37-qsink-lock-24h	untested	DEPENDS	hunt23-w3-qsink-1 counts show net parent lock that persists >= 24 h.
+p37-cto-hold	untested	PROCEDURAL	Discriminator coverage on explore-0814 shows >= 3 admin-signed CTO redirects/day.
+p37-mayhem-end	untested	DEPENDS	Evidence that the agent's tokens sit in the pool or that its last-hour flow is one-sided.
+p37-fee-sweep	untested	DEPENDS	A sweep shown to move the pool price.
+p37-dbc-lock-expiry	untested	PROCEDURAL	A DBC hold book that needs an exit timer.
+p37-exit-hour	untested	DEPENDS	A day-hold book at >= 25 trades/day.
+p37-tpsl-map	untested	DEPENDS	Open order accounts found on chain with trigger prices.
+p37-listing-hold-open	untested	NOW-NOT-RUN	>= 2 pump-origin listings/day.
+p37-scheduled-catalyst	untested	EXTERNAL	A public archive of coin pages with timestamps covering an exploration block.
+p37-launch-house	untested	EXTERNAL	Owner decision only.
+p37-cex-dex-gap	untested	EXTERNAL	Owner approves a CEX account and >= 5 suspension windows/week.
+p37-meme-index	untested	EXTERNAL	A meme basket with a published schedule and >= 50 SOL per rebalance.
+p37-callout-follow	untested	EXTERNAL	An on-chain or archived callout feed and a measured follower lag of minutes.
+p37-pred-market	untested	EXTERNAL	Owner resumes Kalshi and >= 3 pump-metric markets/week.
