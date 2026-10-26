@@ -45,16 +45,19 @@ def owner_fixture(tmp, bot):
 
 
 def live_main_env(tmp, bot):
-    """(extra config keys, context manager) so a LIVE main() reaches the later gates: the three parity paths, the owner file and its pin (synthetic, patched)."""
+    """(extra config keys, context manager) so a LIVE main() reaches the later gates: the three parity paths, the owner file and its pin (synthetic, patched).
+    The patches start only when the context manager is entered."""
     import contextlib
     from unittest import mock
     p, sha = owner_fixture(tmp, bot)
     paths = {"parity_dir": str(Path(tmp) / "par"), "twins_file": str(Path(tmp) / "twins.jsonl"), "tieout_dir": str(Path(tmp) / "tie")}
-    st = contextlib.ExitStack()
-    st.enter_context(mock.patch.object(c0, "OWNER_DEC_PATH", str(p)))
-    st.enter_context(mock.patch.object(c0, "CANARY_DEC_SHA256", sha))
-    st.enter_context(mock.patch.object(alb, "root_ok_problem", lambda _p: None))
-    return paths, st
+
+    @contextlib.contextmanager
+    def patches():
+        with mock.patch.object(c0, "OWNER_DEC_PATH", str(p)), mock.patch.object(c0, "CANARY_DEC_SHA256", sha), mock.patch.object(alb, "root_ok_problem", lambda _p: None):
+            yield
+
+    return paths, patches()
 
 
 class Hv4Env(Env):
