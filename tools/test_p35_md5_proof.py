@@ -75,3 +75,19 @@ def test_refusals(tmp_path, tape, capsys, monkeypatch):
     monkeypatch.delenv("MAL_ARENA_TEST")
     assert M.main(["ckpt", "--scratch", str(tmp_path / "s4"), "--test", "--tape-src", str(tape)]) == 2
     assert "MAL_ARENA_TEST" in capsys.readouterr().err
+
+
+def test_host_proof_passes_with_a_d30_probe(tmp_path, tape, capsys):
+    from tools.arena_rules_testkit import at
+
+    cfg = dict(CFG, r3_ho=(at("sell_A") // 1000) * 1000 - 2_000)  # put the followed wallet's sell inside the 30 s down interval
+    rc, s, out = run(tmp_path, tape, capsys, mode="host", cfg=cfg)
+    assert rc == 0 and s["verdict"] == "PASS", s.get("error") or s["result"]["checks"]
+    r = s["result"]
+    assert r["C"]["decision_md5"] == r["R0"]["decision_md5"] and all(x["equal_R0"] for x in r["segments"])
+    assert [x["open_at_ho"] for x in r["segments"]] == [1, 1] and r["ho_steps"] == 0
+    v = r["R3"]["vs_R0"]
+    assert r["R3"]["seg2"]["handoff"]["path"] == "probe" and v["n_handoff_down"] == 1 and v["n_unexplained"] == 0 and v["handoff_down_rows_ok"]
+    assert r["R3"]["seg2"]["excluded_by_reason"] == {"handoff_down": 3}
+    assert [p for p in (tmp_path / "scratch").rglob("*")] == [tmp_path / "scratch" / "summary.json"]
+    assert "Pool" not in out and "Mint" not in out
