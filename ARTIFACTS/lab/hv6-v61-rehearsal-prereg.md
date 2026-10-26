@@ -46,3 +46,19 @@ Rationale for the text: `docs/research/hv6/V61-PROMPT.md`. It was written before
    - a BUY is not an edge.
 5. A failed or partial call (error, refusal, truncation) is counted as it is (NO_OUTPUT / PARSE_ERROR). It is NOT re-sent, unless a call returned no reply at all because of a transport error. Any re-send is listed with its chunk_id.
 6. Reading the `why` texts is allowed only after the counts are written and notebooked. It is for reporting compliance with "say it is a hypothesis", never for editing.
+
+## Build record (appended after the build, 2026-10-26T23:24Z; no model call made)
+
+- Built once at `4eba9ddb2648b498b8737b32dfad0adcf7cdcc78`, which is the commit that added this file and the builder. Checkout `/data2/mal/wt/hv6-v61-build`, detached and clean after the build.
+- Sample: n 192. By day: 64 / 64 / 64. By setup: 48 each. Distinct pools 132. Overlap with the 240 prior cards: 0. Arm equality 192/192 for L, L-nr, P and F (system equal, user equal except the nonce line).
+- `manifest.json` sha256 `e28bed9af9414944f29a83fc931bba130637e899811469f2b42b596486a5d5b1`.
+- `batch-A..H.jsonl` sha256:
+  - A `23db310e7d46d6ba54304acda60e8d70f1f20903d3589559b48ac22836514038`
+  - B `eda81365a2bf50c6e0f59c50226ede03fb25ab7b95bc169001a22beafc1ef62f`
+  - C `091965fca6d2fe10b388bf08f7852e99d1aaec9515eb831754974c6467d144c2`
+  - D `9de8b7ed23fc684bc31cde98f9b075b847ab10f32ec4936e7bb15fa4a9f7e027`
+  - E `72116582953df657e048be2e72f0bd3947b4c7599581af4d3cd43a263ad5c63d`
+  - F `aaddd0374bb8b47fe9a8f486888c7e967a26340ab394dc9d10dc89dfa8deb964`
+  - G `dd8594db3a5861c32c5fae335a5a3ea47352139dce70fc475544ae9c33b5990d`
+  - H `3a6644a31685305d3c96a151861f9c08272b027e50090fd9258fc8f81e2fcfe7`
+- `cards-sample.jsonl` sha256 `a6891f98590316ebe8e5f836f3e749ae484794f68bb7be4ec2191b0134e0b775`.
