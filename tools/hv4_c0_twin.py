@@ -11,6 +11,8 @@ A thin wrapper over `tools.arena_twin_writer` (nofail leg, 1.9 s, the trip's own
     old flat path-string refusal. Without `--reads-dir` or without the record the run is refused.
   * `--out` and `--run-record` (the writer's files; default `<out>.run.json`) are seal-checked: not a symlink, not a hard link, and neither the file nor its
     parent directory may resolve under or alias the arena.
+  * the --ledger-dir that passed the checks is resolved to its realpath ONCE and that path (not the original string) is what the writer gets (QP N-E);
+  * a bot_id with '/', a backslash, '..', NUL or a leading '.' is refused before anything else (QP N-G).
 Exit codes are the writer's (0 written, 2 refused / unusable input). Nothing here says a book makes money.
 """
 
@@ -30,16 +32,17 @@ from tools import hv4_live_c0 as c0
 
 
 def refusal(bot_id: str, ledger_dir: str, reads_dir: str | None = None) -> str | None:
-    why = c0.arm_refusal(bot_id)
+    """`ledger_dir` is used as given for the checks and is expected to be the ONE realpath main() resolved (QP N-E)."""
+    why = c0.bot_id_problem(bot_id) or c0.arm_refusal(bot_id)  # QP N-G: a '/' or '..' in the bot_id is refused before anything else
     if why:
         return why
     if hashlib.sha256(Path(W.__file__).read_bytes()).hexdigest() != c0.TWIN_WRITER_SHA256:
         return "twin_writer_sha_mismatch"
-    real = os.path.realpath(ledger_dir)
+    real = ledger_dir
     from tools import hv4_read_instant as _F
     others = tuple(os.path.join(c0.SEALED_ROOT_PREFIX, "ledger", x) for x in _F.BOT_IDS)  # an inode alias (bind) of ANY HV4 bot's ledger dir counts as sealed
     if c0._under_sealed(real) or c0._under_sealed(os.path.abspath(ledger_dir)) or c0._alias_of_sealed(ledger_dir, others):
-        if os.path.realpath(ledger_dir) != os.path.realpath(os.path.join(c0.SEALED_ROOT_PREFIX, "ledger", bot_id)):
+        if ledger_dir != os.path.realpath(os.path.join(c0.SEALED_ROOT_PREFIX, "ledger", bot_id)):
             return "ledger_dir_not_this_bot"  # a PASS for one bot opens only ITS ledger dir; another bot's dir, or any alias of it, is refused
         why = c0.read_record_problem(reads_dir, bot_id)[0]  # the gate decides; a missing reads dir is its own refusal
         if why:
@@ -142,20 +145,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     except (SystemExit, argparse.ArgumentError) as exc:
         print(f"hv4_c0_twin: REFUSED unusable arguments ({exc})", file=sys.stderr)
         return 2
-    why = refusal(a.bot_id, a.ledger_dir, a.reads_dir)
+    ledger_real = os.path.realpath(a.ledger_dir)  # QP N-E: resolved ONCE, before refusal(); refusal, the input checks and the writer all see this path
+    why = refusal(a.bot_id, ledger_real, a.reads_dir)
     if not why:
         for w in (a.out, a.run_record or a.out + ".run.json"):
             why = why or (f"write:{w}:{x}" if (x := write_problem(w)) else None)
     if why:
         print(f"hv4_c0_twin: REFUSED {why}", file=sys.stderr)
         return 2
-    sealed_ledger = c0._under_sealed(os.path.realpath(a.ledger_dir)) or c0._under_sealed(os.path.abspath(a.ledger_dir))  # only reachable past the gate
-    why = input_problem(a.trips, a.ledger_dir, ledger_sealed_ok=sealed_ledger)
+    # QP N-E: resolve ONCE. Every later check and the writer both get this realpath, never the original string (a symlink swapped after the check cannot redirect the writer).
+    sealed_ledger = c0._under_sealed(ledger_real)  # only reachable past the gate
+    why = input_problem(a.trips, ledger_real, ledger_sealed_ok=sealed_ledger)
     if why:
         print(f"hv4_c0_twin: REFUSED {why}", file=sys.stderr)
         return 2
     # --opt=value: a value that starts with "-" can never be parsed as another option by the writer's argparse
-    fwd = [f"--trips={a.trips}", f"--ledger-dir={a.ledger_dir}", f"--bot-id={a.bot_id}", f"--out={a.out}",
+    fwd = [f"--trips={a.trips}", f"--ledger-dir={ledger_real}", f"--bot-id={a.bot_id}", f"--out={a.out}",
            f"--config-hash={c0.CONFIG_PIN_SHA256}", f"--buy-send={c0.PRIORITY_PIN['buy'] + c0.BASE_FEE_LAMPORTS}",
            f"--sell-send={c0.PRIORITY_PIN['sell'] + c0.BASE_FEE_LAMPORTS}"]
     for name, v in (("--run-record", a.run_record), ("--join-tol-ms", a.join_tol_ms), ("--now-ms", a.now_ms)):

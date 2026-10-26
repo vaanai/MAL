@@ -73,12 +73,25 @@ class Hv4Env(Env):
         os.makedirs(win, exist_ok=True)
         os.chmod(win, 0o755)
         c0.READS_DIR_CANON, c0.WINDOW_DIR = reads, win  # test-only: the latest env's dirs are the "canonical" ones (module globals, reset by the next env)
-        super().__init__(tmp, live=live, **{"bot_id": bot, "frozen_sha": c0.FROZEN_SHA, "profile": c0.PROFILE, "funded_lamports": FUNDED, "reads_dir": reads, **over})
+        self.a3_file = str(Path(tmp) / "a3" / "daily.jsonl")
+        super().__init__(tmp, live=live, **{"bot_id": bot, "frozen_sha": c0.FROZEN_SHA, "profile": c0.PROFILE, "funded_lamports": FUNDED, "reads_dir": reads,
+                                            "a3_record_file": self.a3_file, **over})
         write_read_record(reads, bot)
         self.bot = bot
         self.declog_bot = bot
+        self.refresh_halt_inputs()
+
+    def refresh_halt_inputs(self):
+        """A fresh, connected feed status and a clean A3 record at the test clock (the halts tests overwrite them on purpose)."""
+        write_feed(self.raw["root"], self.bot, self.clock.t)
+        write_a3(self.a3_file, self.clock.t)
+
+    def bridge(self):
+        self.refresh_halt_inputs()
+        return super().bridge()
 
     def row(self, body, ms=None):
+        write_feed(self.raw["root"], self.bot, self.clock.t)  # a fresh feed at the time of every row; halt tests overwrite it after the rows are written
         return self.declog.append(self.bot, self.clock.t - 100 if ms is None else ms, body)
 
     def entry_sz(self, oid, pool="P1", stake_sol=0.05, size=None):
@@ -89,6 +102,29 @@ class Hv4Env(Env):
 
     def start(self, sha=c0.FROZEN_SHA):
         self.row({"kind": "start", "binding": "b", "frozen_sha": sha, "rules": [self.bot]})
+
+
+def write_feed(root, bot_id, now_ms, state="connected", **over):
+    """A synthetic forwarder status file (decision_forwarder_v1 format) at <root>/transport/<bot>.status.json."""
+    d = Path(root) / "transport"
+    d.mkdir(parents=True, exist_ok=True)
+    st = {"schema": c0.FEED_SCHEMA, "bot": bot_id, "state": state, "ms": now_ms, "last_frame_ms": now_ms, "last_remote_ms": now_ms, "seq": 1, "f": "x.jsonl", "o": 0,
+          "rows": 1, "gaps": 0, "stall_ms": 2000, "pid": 1}
+    st.update(over)
+    f = d / f"{bot_id}.status.json"
+    f.write_text(json.dumps(st, sort_keys=True) + "\n")
+    return f
+
+
+def write_a3(path, now_ms, halt=False, **over):
+    """A synthetic A3 daily record (one line; the newest line is the state)."""
+    from datetime import datetime, timezone
+    run = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    rec = {"run_utc": run, "halt": {"flags": {"pins_changed": {"halt": halt, "evaluated": True}, "boost_disabled": {"halt": False, "evaluated": True}}},
+           "warn": {"flags": {"program_changed": {"warn": False}}}}
+    rec.update(over)
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    Path(path).write_text(json.dumps(rec) + "\n")
 
 
 class ConstantTests(unittest.TestCase):

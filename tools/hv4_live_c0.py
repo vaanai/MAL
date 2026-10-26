@@ -23,6 +23,24 @@ The paper twin is priced at the same S.
 
 Fee: the pin is the compiled default 55,000 buy / 55,000 sell / 150,000 escalated priority (manager decision 2026-10-25: C0 uses the default, not
 p155; it equals h5_executor.H5_DEFAULT and a test asserts that). A config naming any other fee is refused.
+
+PR 5a notes (still `hv4_c0_incomplete`: nothing here removes the live refusal).
+  * WINDOW FILE RECOVERY is manual. `window_file_unsafe` (the write-once window file is a link, hard-linked, not a regular file or has the wrong owner/mode)
+    and `window_file_unwritable` (including a stale `.<bot_id>.<pid>.tmp` left by a crashed start) stop the start; the refusal text says MANUAL RECOVERY. The
+    bridge never deletes or recreates the file; the owner restores the ORIGINAL first_start_ms. A tmp this process created is unlinked on a write/fsync failure.
+  * HALT TIMING: in practice the feed halt fires at the forwarder's own `stalled` state (2,000 ms, QP), before the bridge's 5,000 ms frame bound; the bridge bound is
+    the backstop for a forwarder that stops updating its status.
+  * PRECONDITION 7 IS NOT MET FOR TAPE GAPS. What is built is the CONSUMER: the `feed_break` latch (hard), its clear (10 minutes counted from the END of the gap AND a
+    root-owned review file naming EXACTLY the newest gap instant) and the recorder's `gap` marking. The PRODUCER of the book's own tape gap records (data_loss,
+    process_restart, feed_restart, start, takeover, gap_silence_ms breaches): the frozen HV4 runner (9ed4c5ff) emits none and must not change, so a separate read-only
+    relay, tools/hv4_gap_relay.py (kind and instant only), is built in this PR but NOT installed or carried to the bridge host, and its slot-jump (gap_slots) rule is not
+    covered. Until it runs, `feed_break` is fed only by the forwarder's TRANSPORT gap log
+    (stall, disconnect, reconnect, mismatch, error, torn tail) and a forwarder `stopped_mismatch`; that is a stricter extra guard, not the §5.2 halt.
+  * `transport_stall:<why>` refuses new buys while the forwarder status is not live (no latch; clears by itself; an extra guard). `a3_pins_changed` latches on any
+    A3 halt flag, an unreadable/stale record, or a missing record file in live (cleared only by the manager). Exits keep running under all of them.
+  * RUNNER LIVENESS: `runner_silent` is INERT for buys in practice (the entry row that arrives resets it before it is judged; a stuck runner's old rows are refused by
+    MAX_DECISION_AGE_MS). A dead runner is handled by the bridge's own time-stop and sl backstops, which need no runner row (DeadRunnerTests). Owed in the install pack:
+    a host-side dead-man on the runner job and on SCAN-log `tick_timing` staleness, and a C0 read that flags every backstop-closed trade during runner silence.
 """
 
 from __future__ import annotations
@@ -30,6 +48,9 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import os
+import stat
+from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 PROFILE = "hv4_c0"
@@ -97,7 +118,106 @@ SELL_BUILDER_PIN: dict[str, str] = {
     "ptx.constants_sha256": "e2b66274132a760ee6d440ae8cbd03294bb0ba29f97a0d8b6aecd2b286dbe79c",
     "pe.exit_check_sha256": "7dcd289631cfe0418439df90f4b0901518d813dfd474f0cb2a6c660e3a51eb00",  # PR 3: the quote_out that min_out is a share of
     "c0.ladder_sha256": "06123a941d5a842fe9eccaed4277b898fe8c88ba7681c0feee5f059b397f3233",  # PR 3: the compiled 0.85 / 0.65 rungs and their escalation point (this module's own ladder source)
+    # PR 5a (QP removal precondition 2): the exit snapshot builder and the decoders / quote helpers it calls
+    "pe.fetch_snapshot_sha256": "e0c0d598b99a92864d401b32a99f2f70550565c03a3618df975484cd47f49b74",
+    "pe.entry_quote_sha256": "5d231ffbfb421cfc00c6208d45a3cf3f7be3284c37c12f0ee9b290fdc8741582",
+    "pe.fee_ppm_for_sha256": "0417a9705faf7613bfd59cf623da1aa6e0ce7b0b910c61f8625ab482a8a67ca8",
+    "pe.drift_vs_seed_sha256": "4021191cb90890acbd2f88f1ac2d555c968e493b985ca6b86f0f90169a5a34db",
+    "pe.Snapshot.quote_priced_sha256": "efc1086ec946039fdeb6fc36625256037ed4eeffb66008f1c21766743ab077cb",
+    "pe.StaticCache.get_sha256": "36048129769ae36c91d2f7f02eef0603c0fa9d3ff36e9b799bc0ba15f15b8213",
+    "pe.StaticCache.put_sha256": "2a5c113f7be7b6833bd58df43fc2d91a493fb837ee9bf65bc3c93208041ed3af",
+    "pe.StaticCache.refresh_sha256": "667e8dc300b1bd4a91848f5014433dedf6a9a751221a059a9a502d224021a6f7",
+    "pe.Executor._snapshot_sha256": "b28fde5ad695f8844779ca1367ee8f4cf98ee414d1acfc51181a5141e0852d66",
+    "pe.Executor._batched_exit_snapshots_sha256": "79ef509391ec9507c2cdfd6412cb9dfd2981951b50400471546555ae36094490",
+    "pe.Executor._batch_stale_sha256": "e5424c20aa1befd27ecf5011b55d7cd748e4e7d9934d45140dc1495b91c6c7de",
+    "pe.Executor._exit_snapshot_sha256": "a89e0d70519630cd5644e5a538e10deabb4588502b35a983f4ce68dae33607a6",
+    "pe.Executor._batch_err_sha256": "563007db5c3aed08681bce766ef45813143384223a9231dbbfcfc7e193648a0c",
+    "pe.Executor.poll_positions_sha256": "d050b315227c996d7832ececcd176cc2b0c4a581b9579fd5e972effc62c0cf17",
+    "pe.constants_sha256": "55cb78be6737a4e4fef4f1eec0baca8fd2f15af18a983b609b7cf55239e4171d",
+    "x.pumpswap_simulate._b64_sha256": "8f0715ae3b80b9cbd49d4bac7031bc47f8f794ace4c4b84efdbaa6c92d571263",
+    "x.pumpswap_simulate.token_amount_sha256": "98738db24cacf2ed0addbbcc3e1d429090c97164169f42778f7467b2d415f36b",
+    "x.pumpswap_tx.parse_pool_account_sha256": "3224308a1e95ba96128331817eb423b49099e6a414f88600cdb08bf408771f64",
+    "x.pumpswap_tx.parse_global_config_sha256": "c7cfdbb98d3536d23ddbdc9416464986e6efbfff849bda53207bd4be9a6dfa1a",
+    "x.pumpswap_tx.pool_state_from_accounts_sha256": "5b33bef7ba3782bc676f6d6f082cbdd12036ffdb2368560fcc43c710b19a17c6",
+    "x.pumpswap_tx.PoolState_sha256": "a9af1c9cf6f1238eedf063cfd72f8b339263004922b48124c0c712e8d04a7d48",
+    "x.pumpswap_tx.cp_buy_out_sha256": "9ffbd3c9b5347bdd52856f409a12c8a18999fbb98c98d3777b5f4e33d854c07e",
+    "x.pumpswap_tx.cp_sell_out_sha256": "68b3fd36ddd0bbd9af359201b3af74bb6166021e60c8477ce992b73a4e51e7ce",
+    "x.pumpswap_tx.canonical_pool_sha256": "5033af0e9b5a5ecf82f90fc5f6d1d788858dd114f2a6abb3e4854f96e5067e1d",
+    "x.paper_curve_math.pumpswap_sol_fee_ppm_sha256": "79ffb58c440ea0fd26e89fb3f714936212e05dae693d517cb312c6a7aa5ab0cb",
+    "x.paper_curve_math.market_cap_sol_sha256": "be7992d9ab49d48969617a8770444880f9e824890e6930dc69c92836c850760e",
+    "x.paper_curve_math.spot_sol_per_ui_sha256": "9f3f81e0175d809c659de6e13915ee57031080646919de3def07af03a118dbf5",
+    "x.paper_curve_math.reserves_with_our_buy_sha256": "4af4a1a8b790c3c9d069d6d541f4e69fc1e7e289f7031221490a35852f8cc052",
+    "x.probe_executor.Snapshot_sha256": "91e9dc9a404e80d7c8e8026ebbf06eccf4f1082cfffbe6d80ac678c562cd5e7d",
+    "x.probe_executor.check_sell_sha256": "91cd1bc48470e8fff032d5194c20c10ec3374de49e9552fd52e4138988c34e31",
+    "x.probe_executor.check_halt_file_sha256": "04cf031902a941ef7797a0c183db4aeb2c08ebfa98e79b0553c69abc0ce94817",
+    "x.probe_executor.Executor._prio_sha256": "4795b5b6c8d819de85779dbf66bb1e5a8996d712643105c86d1cede92fd2197a",
+    "x.probe_executor.Executor._exit_prio_sha256": "fd3448f1bc88d4c4cee0396403f6ae0fc371e742a2cb7c2c8993cb28436833d6",
+    "x.pumpswap_tx.parse_virtual_signed_sha256": "2636cf5c1ce25d493d96aa5a19646870f2af9245eb17ba330e6313dd4d4ceff7",
+    "x.pumpswap_tx.global_volume_accumulator_sha256": "6640e41412852a01e05ca9bf304671b9c461cf78a53f4b7f29174f68eb725aea",
+    "x.pumpswap_tx.user_volume_accumulator_sha256": "36da371bf169495396c3482111e1795f0f617e2951a947d8f12cdd9d123f33f3",
+    "x.probe_executor.critical_sha256": "5202b98f88c7fd5999bb29e592f79a6909d449f05079084238871d7ccfea8f47",
+    "x.probe_live.LiveExecutor._send_sha256": "0c8f34a313e985b85788ee94425ff32bfdf56e5fa1913eaf8ac9528bc567b91c",
+    "x.probe_live.LiveExecutor._exit_candidates_sha256": "b77a23adb146cf51b559126431d1991fe7da477006312e7812736ce88ea03f37",
+    "bridge.poll_positions_sha256": "b52b3d4778e16d0619c9749d186aa36361e70916372ffe932e2c3051ef87524d",
+    "bridge.refresh_warm_sha256": "c3b7ced0776059708aa75d8dbc134149dbd8ed0eae27a1984e3a533f7b25c8f8",
 }
+
+# QP removal precondition 2 (#959): the EXIT SNAPSHOT builder is inside the pin too. min_out is a share of the quote that the snapshot yields, so the batched, single and
+# full-fetch paths, the quote and the cached V rule, the two age bounds and the bridge's poll_positions / refresh_warm all shape the number that is signed.
+PE_FUNCS = ("fetch_snapshot", "entry_quote", "fee_ppm_for", "drift_vs_seed")  # module-level functions of tools/probe_executor.py
+PE_METHODS = (("Snapshot", "quote_priced"), ("StaticCache", "get"), ("StaticCache", "put"), ("StaticCache", "refresh"),
+              ("Executor", "_snapshot"), ("Executor", "_batched_exit_snapshots"), ("Executor", "_batch_stale"), ("Executor", "_exit_snapshot"),
+              ("Executor", "_batch_err"), ("Executor", "poll_positions"))
+PE_CONSTANTS = ("EXIT_RULE", "UNPRICED_GRACE_MS", "BATCH_MAX_AGE_MS", "STATIC_TTL_MS", "STATIC_REFRESH_MS", "BATCH_ERR_LOG_EVERY_MS", "V_SEED_LAMPORTS", "V_SEED_TOLERANCE")
+# Callees that DECODE the pool / vault / global-config data and compute the quote that min_out is a share of (reviewer + QP on #969), and the helpers the snapshot
+# paths call. Spec "module:qualname" (a function, a class or a method); key `x.<module>.<qualname>_sha256`. tools/test_hv4_live_c0_pr5a.py walks the call graph
+# of every pinned function and fails on a tools.* callee that is neither pinned nor on its reviewed allowlist.
+PIN_EXTRA = ("pumpswap_simulate:_b64", "pumpswap_simulate:token_amount",
+             "pumpswap_tx:parse_pool_account", "pumpswap_tx:parse_global_config", "pumpswap_tx:pool_state_from_accounts", "pumpswap_tx:PoolState",
+             "pumpswap_tx:cp_buy_out", "pumpswap_tx:cp_sell_out", "pumpswap_tx:canonical_pool",
+             "paper_curve_math:pumpswap_sol_fee_ppm", "paper_curve_math:market_cap_sol", "paper_curve_math:spot_sol_per_ui", "paper_curve_math:reserves_with_our_buy",
+             "probe_executor:Snapshot", "probe_executor:check_sell", "probe_executor:check_halt_file",
+             "probe_executor:Executor._prio", "probe_executor:Executor._exit_prio",
+             "pumpswap_tx:parse_virtual_signed", "pumpswap_tx:global_volume_accumulator", "pumpswap_tx:user_volume_accumulator",
+             "probe_live:LiveExecutor._send", "probe_live:LiveExecutor._exit_candidates",
+             "probe_executor:critical")  # critical: the @pe.critical wrapper around _start_sell (inspect.getsource unwraps it, so it needs its own key)
+BRIDGE_METHODS = ("poll_positions", "refresh_warm")  # BridgeExecutor, nested in make_live_port: read by AST from the file on disk
+
+
+def _fget(o: Any) -> Any:
+    return o.fget if isinstance(o, property) else o
+
+
+def extra_key(spec: str) -> str:
+    return "x." + spec.replace(":", ".") + "_sha256"
+
+
+def resolve_spec(spec: str) -> Any:
+    """'module:qualname' under tools/ -> the live object (function, class or method)."""
+    import importlib
+    mod, qual = spec.split(":")
+    obj: Any = importlib.import_module(f"tools.{mod}")
+    for part in qual.split("."):
+        obj = getattr(obj, part)
+    return obj
+
+
+def bridge_method_source(name: str, path: str | None = None) -> str:
+    """Source text of `BridgeExecutor.<name>` (a class nested inside make_live_port), taken from the bridge file by AST. Raises KeyError when it is absent."""
+    import ast
+    src = Path(path or Path(__file__).with_name("arena_live_bridge.py")).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    for fn in ast.walk(tree):
+        if isinstance(fn, ast.FunctionDef) and fn.name == "make_live_port":
+            for cls in ast.walk(fn):
+                if isinstance(cls, ast.ClassDef) and cls.name == "BridgeExecutor":
+                    for m in cls.body:
+                        if isinstance(m, ast.FunctionDef) and m.name == name:
+                            seg = ast.get_source_segment(src, m)
+                            if seg is not None:
+                                return seg
+    raise KeyError(name)
+
 
 REFUSED_ARM_SUFFIXES = ("-L", "-P", "-R")
 ALLOWED_ARM_SUFFIXES = ("-F", "-X")
@@ -206,6 +326,15 @@ def _sell_pin_items() -> dict[str, Any]:
     for n in CALLEES_PTX:
         items[f"ptx.{n}_sha256"] = (lambda n=n: sha(inspect.getsource(getattr(ptx, n)).encode()))
     items["pe.exit_check_sha256"] = lambda: sha(inspect.getsource(pe.exit_check).encode())
+    for n in PE_FUNCS:
+        items[f"pe.{n}_sha256"] = (lambda n=n: sha(inspect.getsource(getattr(pe, n)).encode()))
+    for cn, mn in PE_METHODS:
+        items[f"pe.{cn}.{mn}_sha256"] = (lambda cn=cn, mn=mn: sha(inspect.getsource(_fget(getattr(getattr(pe, cn), mn))).encode()))
+    items["pe.constants_sha256"] = lambda: sha(repr([(n, getattr(pe, n)) for n in PE_CONSTANTS]).encode())
+    for spec in PIN_EXTRA:
+        items[extra_key(spec)] = (lambda spec=spec: sha(inspect.getsource(_fget(resolve_spec(spec))).encode()))
+    for n in BRIDGE_METHODS:
+        items[f"bridge.{n}_sha256"] = (lambda n=n: sha(bridge_method_source(n).encode()))
     items["c0.ladder_sha256"] = ladder_pin_sha256
     items["ptx.constants_sha256"] = lambda: sha(repr([(n, getattr(ptx, n)) for n in CONSTANTS_PTX]).encode())
     return items
@@ -219,7 +348,7 @@ def sell_pin_problem(pin: Mapping[str, str] | None = None) -> str | None:
         try:
             if fn() != pin.get(k):
                 return f"sell_builder_pin_mismatch:{k}"
-        except (OSError, TypeError, AttributeError):
+        except (OSError, TypeError, AttributeError, KeyError, SyntaxError):
             return f"sell_builder_pin_unreadable:{k}"
     return None
 
@@ -357,6 +486,27 @@ WINDOW_UNREADABLE = "window_file_unreadable_manual_recovery"  # empty or damaged
 WINDOW_DIR = "/var/lib/mal-hv4-c0/window"  # write-once `<bot_id>.json` per bot, outside the bridge's state dir: a new state dir, a deleted state file or a mode switch cannot reset it
 
 
+WINDOW_MANUAL_RECOVERY = ("window_file_unsafe", "window_file_unwritable")
+WINDOW_MANUAL_NOTE = ("MANUAL RECOVERY: do not delete or recreate the window file to get a start. The owner inspects WINDOW_DIR (a window file that is a link, not a regular "
+                      "root/service-owned file, or hard-linked; or a stale .<bot_id>.<pid>.tmp left by a crashed start) and restores the ORIGINAL first_start_ms; "
+                      "a new first start would restart the 14-day cap")
+
+
+def refusal_text(why: str) -> str:
+    """The label, plus the manual-recovery note for the two window labels that must never be cleared by the bridge."""
+    return f"{why} ({WINDOW_MANUAL_NOTE})" if why in WINDOW_MANUAL_RECOVERY else why
+
+
+def bot_id_problem(bot_id: Any) -> str | None:
+    """A bot_id is a path component (decisions/<bot_id>, window/<bot_id>.json, status files). Refuse a non-string, an empty one, '/', a backslash, '..', NUL, or a
+    leading '.'."""
+    if not isinstance(bot_id, str) or not bot_id or len(bot_id) > 128:
+        return "bot_id_invalid"
+    if "/" in bot_id or "\\" in bot_id or ".." in bot_id or "\x00" in bot_id or bot_id.startswith(".") or bot_id != bot_id.strip():
+        return "bot_id_invalid"
+    return None
+
+
 def window_start_ms(bot_id: str, now_ms: int, create: bool) -> tuple[int | None, str | None]:
     """(first start ms, problem). The first start of this bot_id, kept in WINDOW_DIR/<bot_id>.json (created O_EXCL, 0444; the dir must exist and be owned by
     root or the running user, not group/other writable). `create=False` (main's pre-check) returns (None, None) when there is no file yet."""
@@ -377,8 +527,10 @@ def window_start_ms(bot_id: str, now_ms: int, create: bool) -> tuple[int | None,
             if not create:
                 return None, None
             tmp = os.path.join(WINDOW_DIR, f".{bot_id}.{os.getpid()}.tmp")  # atomic: write + fsync a private tmp, then link it into place (fails if it exists)
+            made = False
             try:
-                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o444)
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o444)  # an existing tmp (a crashed run with this pid) refuses: manual recovery
+                made = True
                 with os.fdopen(fd, "w") as fh:
                     fh.write(json.dumps({"bot_id": bot_id, "first_start_ms": int(now_ms)}, sort_keys=True) + "\n")
                     fh.flush()
@@ -389,6 +541,7 @@ def window_start_ms(bot_id: str, now_ms: int, create: bool) -> tuple[int | None,
                     continue
                 finally:
                     os.unlink(tmp)
+                    made = False
                 dfd = os.open(WINDOW_DIR, os.O_RDONLY)
                 try:
                     os.fsync(dfd)
@@ -396,6 +549,12 @@ def window_start_ms(bot_id: str, now_ms: int, create: bool) -> tuple[int | None,
                     os.close(dfd)
             except OSError:
                 return None, "window_file_unwritable"
+            finally:
+                if made:  # a write / fsync / link failure leaves no stale tmp behind (only a tmp this call created is removed)
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
             return int(now_ms), None
         except OSError:
             return None, WINDOW_UNREADABLE
@@ -583,6 +742,202 @@ def owner_line_problem(path: Any, bot_id: str, pin: str | None = None, root_chec
         return "owner_dec_sha_mismatch"
     want = OWNER_LINE_FMT.format(bot_id=bot_id)
     return None if sum(1 for ln in data.decode("utf-8", "replace").split("\n") if ln == want) == 1 else "owner_line_missing"
+
+
+# --- halts (QP removal precondition 7): FEED-GAP and A3. Both stop NEW buys only; exits keep running. ---------------------------------------------------------
+FEED_STATUS_MAX_AGE_MS = 10_000  # the forwarder rewrites <bot_id>.status.json every 250 ms; a status older than this means the forwarder itself is down
+FEED_FRAME_MAX_MS = 5_000  # decision stream silence bound: no frame (a row or the forwarder's 500 ms remote heartbeat) for this long refuses buys. A pinned choice, 2.5x the forwarder's own 2,000 ms stall
+RUNNER_SILENT_MS = 1_800_000  # 30 min: no decision row of ANY kind in the bot's log for this long = the runner is presumed dead (see runner_silent_problem). A pinned choice
+FEED_SKEW_MS = 5_000  # a status stamped this far in the future is a wrong clock, not a fresh feed
+FEED_STATUS_MAX_BYTES = 65_536
+FEED_SCHEMA = "decision_forwarder_v1"  # tools/decision_forwarder.py (PR #967), status file format
+A3_LATCH = "a3_pins_changed"  # the name tools/h5_arena_gates.HARD_ARENA_HALTS already carries, so the parity state counts it as an unresolved hard halt
+A3_MAX_AGE_MS = 36 * 3_600_000  # same bound as tools/h5_arena_executor.A3_MAX_AGE_MS: the monitor writes daily
+A3_FUTURE_SKEW_MS = 300_000
+A3_POLL_MS = 60_000
+
+
+def feed_status_path(root: str, bot_id: str) -> str:
+    return os.path.join(root, "transport", f"{bot_id}.status.json")
+
+
+def feed_gap_problem(path: str, bot_id: str, now_ms: int) -> str | None:
+    """None when the forwarder's status file says the feed is live; else the reason (a refusal of new buys, never a latch: a stall that resumes clears itself).
+    Fails closed: a missing, unreadable, linked, oversize, malformed, foreign-bot, stale, future-stamped or non-`connected` status is a gap. The format is
+    decision_forwarder.write_status: {schema, bot, state, ms, last_frame_ms, last_remote_ms, seq, ...}; `ms` is the write instant, `last_frame_ms` the newest frame."""
+    try:
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            return "feed_status_not_regular"
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            if os.fstat(fd).st_ino != st.st_ino:
+                return "feed_status_swapped"
+            data = os.read(fd, FEED_STATUS_MAX_BYTES + 1)
+        finally:
+            os.close(fd)
+    except FileNotFoundError:
+        return "feed_status_missing"
+    except OSError:
+        return "feed_status_unreadable"
+    if len(data) > FEED_STATUS_MAX_BYTES:
+        return "feed_status_oversize"
+    try:
+        rec = json.loads(data)
+    except ValueError:
+        return "feed_status_malformed"
+    if not isinstance(rec, dict) or rec.get("schema") != FEED_SCHEMA or rec.get("bot") != bot_id:
+        return "feed_status_foreign"
+    ms, last = rec.get("ms"), rec.get("last_frame_ms")
+    if any(isinstance(v, bool) or not isinstance(v, int) for v in (ms, last)):
+        return "feed_status_malformed"
+    sm = rec.get("stall_ms")
+    if isinstance(sm, bool) or not isinstance(sm, int) or sm > FEED_MAX_STALL_MS or sm <= 0:
+        return "feed_stall_ms_not_pinned"
+    if rec.get("state") != "connected":
+        return f"feed_state_{str(rec.get('state'))[:24]}"
+    if ms - now_ms > FEED_SKEW_MS or last - now_ms > FEED_SKEW_MS:
+        return "feed_status_future"
+    if now_ms - ms > FEED_STATUS_MAX_AGE_MS:
+        return "feed_status_stale"
+    if last <= 0 or now_ms - last > FEED_FRAME_MAX_MS:
+        return "feed_silent"
+    return None
+
+
+# --- DEC-032 s5.2 FEED-GAP HALT: the book's OWN gap records. A hard latch `feed_break` (already in HARD_ARENA_HALTS). Restart needs 10 gap-free minutes AND the manager's
+# written review, as a root-owned clear file. Only the KIND and INSTANT of a gap record are read (QP seal ruling): no other field, no join to any outcome.
+GAP_FREE_MS = 600_000
+GAP_BREAK_KINDS = ("stall", "disconnect", "reconnect", "mismatch", "local_torn_trimmed", "error", "gap", "data_loss", "resubscribe", "silence", "process_restart", "feed_restart", "feed_start", "start", "takeover", "gap_silence")  # forwarder kinds + the s5.2 list; "resume" is not a gap
+GAP_CLEAR_DIR = "/etc/mal-hv4-c0/gap-clear"  # <bot_id>.json: {"bot_id": ..., "reviewed_gap_ms": N}; root-owned (h5.root_file_problem), N == the newest gap instant
+FEED_BREAK_LATCH = "feed_break"
+FEED_MAX_STALL_MS = 2_000  # a forwarder status that reports a larger stall_ms is refused: a misconfigured forwarder must not widen the bound (QP ruling a)
+
+
+GAP_LOG_MAX_BYTES = 8_000_000
+
+
+def gap_log_ms(path: str) -> tuple[list[int], list[int], str | None]:
+    """(gap instants, resume instants, problem) from the forwarder's <bot_id>.gaps.jsonl. Reads ONLY `kind` and `ms` of each line. A missing file is no gaps; a link, an
+    unreadable file, a file over GAP_LOG_MAX_BYTES (never silently truncated) or a COMPLETE line that is not an object with an int ms is a problem (fail closed).
+    Bytes after the last newline are a write in progress and are ignored."""
+    try:
+        ls = os.lstat(path)
+    except FileNotFoundError:
+        return [], [], None
+    except OSError:
+        return [], [], "gap_log_unreadable"
+    if not stat.S_ISREG(ls.st_mode) or ls.st_nlink != 1:
+        return [], [], "gap_log_not_regular"
+    if ls.st_size > GAP_LOG_MAX_BYTES:
+        return [], [], "gap_log_too_large"
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as fh:
+            data = fh.read(GAP_LOG_MAX_BYTES + 1)
+    except OSError:
+        return [], [], "gap_log_unreadable"
+    if len(data) > GAP_LOG_MAX_BYTES:
+        return [], [], "gap_log_too_large"
+    gaps: list[int] = []
+    resumes: list[int] = []
+    lines = data.split(b"\n")
+    lines.pop()  # the torn tail (or the empty string after the last newline)
+    for ln in lines:
+        if not ln.strip():
+            continue
+        try:
+            r = json.loads(ln)
+        except ValueError:
+            return gaps, resumes, "gap_log_malformed"  # a COMPLETE (newline-ended) malformed line latches
+        if not isinstance(r, dict) or isinstance(r.get("ms"), bool) or not isinstance(r.get("ms"), int) or not isinstance(r.get("kind"), str):
+            return gaps, resumes, "gap_log_malformed"
+        if r["kind"] in GAP_BREAK_KINDS:
+            gaps.append(r["ms"])
+        elif r["kind"] == "resume":
+            resumes.append(r["ms"])
+    return gaps, resumes, None
+
+
+def gap_records_ms(path: str) -> tuple[list[int], str | None]:
+    g, _r, bad = gap_log_ms(path)
+    return g, bad
+
+
+def gap_clear_problem(path: str, bot_id: str, last_gap_ms: int, now_ms: int, root_check: Any = None, free_since_ms: int | None = None) -> str | None:
+    """None when (1) the feed has been gap-free for GAP_FREE_MS counted from the END of the gap (`free_since_ms`: the newest gap OR resume instant; default the
+    gap instant) and (2) the manager's root-owned review file names EXACTLY the newest gap instant (equality: a blanket or future-dated review never clears a later
+    gap, DEC-032 s5.2 "the manager has seen the gap record"). Else the reason the latch stays."""
+    since = last_gap_ms if free_since_ms is None else max(free_since_ms, last_gap_ms)
+    if now_ms - since < GAP_FREE_MS:
+        return "gap_free_window_not_elapsed"
+    if root_check is not None:
+        why = root_check(path)
+        if why:
+            return f"gap_clear_{why}"
+    try:
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            return "gap_clear_not_regular"
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as fh:
+            rec = json.loads(fh.read(4096))
+    except FileNotFoundError:
+        return "gap_clear_missing"
+    except (OSError, ValueError):
+        return "gap_clear_unreadable"
+    v = rec.get("reviewed_gap_ms") if isinstance(rec, dict) else None
+    if not isinstance(rec, dict) or rec.get("bot_id") != bot_id or isinstance(v, bool) or not isinstance(v, int):
+        return "gap_clear_malformed"
+    return None if v == last_gap_ms else "gap_not_reviewed"
+
+
+def runner_silent_problem(last_row_ms: int | None, started_ms: int, now_ms: int) -> str | None:
+    """RUNNER LIVENESS (QP on #967, item 6): the forwarder's heartbeat proves the SERVER is alive, not the HV4 runner. The bridge measures silence from the newest
+    decision row it consumed (any kind), or from its own start when it has seen none. FROM CODE (tools/hv4_runner.py): the runner's periodic rows (`scan`, `scan_timing`,
+    `tick_timing`, every 5 min / 1 min) go to the SCAN log, NOT to decisions/<bot_id>; the bot's own log carries entry / exit / skip / halt / llm_call rows only,
+    so a quiet bot and a dead runner look the same here. Hence the bound is long and the rule is conservative (it can only withhold buys). A dead runner writes no
+    entry rows anyway, so the rule is a belt; the PROTECTION for an open position whose exit row never comes is the bridge's own time-stop backstop
+    (max_hold + BACKSTOP_EXTRA_MS) and the sl backstop, which need no runner row (tested with a dead-runner log). Open item: a forwarded runner heartbeat (SCAN-log tick_timing)."""
+    base = started_ms if last_row_ms is None else max(last_row_ms, started_ms)
+    if now_ms < base:
+        return None
+    return "runner_silent" if now_ms - base > RUNNER_SILENT_MS else None
+
+
+def a3_halt_problem(path: str, now_ms: int) -> str | None:
+    """None when the NEWEST line of the A3 daily record (tools/pump_structure_monitor.py output, the file tools/h5_arena_executor.a3_record_problem reads) shows no halt.
+    Else the reason: `pins_changed` (or any other `halt.flags.*.halt` true, or a flag not evaluated or malformed), `program_changed` warn, or a record that is
+    missing, unreadable, flag-less, stale (36 h) or future-stamped. Fail closed; the bridge latches A3_LATCH on any return value."""
+    from datetime import datetime, timezone
+    try:
+        ls = os.lstat(path)
+        if not stat.S_ISREG(ls.st_mode) or ls.st_nlink != 1:
+            return "a3_record_not_regular"  # a link or hard link is not the monitor's own file
+        if ls.st_uid not in (0, os.getuid()) or ls.st_mode & 0o002:
+            return "a3_record_owner_mode"  # root or the running user, not world-writable
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as fh:
+            lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+        rec = json.loads(lines[-1])
+    except (OSError, ValueError, IndexError):
+        return "a3_record_unreadable"
+    flags = ((rec.get("halt") or {}).get("flags")) if isinstance(rec, dict) and isinstance(rec.get("halt"), dict) else None
+    if not isinstance(flags, dict) or not flags:
+        return "a3_record_no_halt_flags"
+    try:
+        run_ms = int(datetime.strptime(rec["run_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp() * 1000)
+    except (KeyError, ValueError, TypeError):
+        return "a3_record_no_run_utc"
+    if run_ms - now_ms > A3_FUTURE_SKEW_MS:
+        return "a3_record_future"
+    if now_ms - run_ms > A3_MAX_AGE_MS:
+        return "a3_record_stale"
+    why = sorted(k for k, v in flags.items() if not (isinstance(v, dict) and isinstance(v.get("halt"), bool)) or v["halt"] or v.get("evaluated") is False)
+    pc = (((rec.get("warn") or {}).get("flags") or {}).get("program_changed")) if isinstance(rec.get("warn"), dict) else None
+    if isinstance(pc, dict) and pc.get("warn") is True:
+        why.append("program_changed")
+    return ("a3_flags:" + ",".join(why)) if why else None
 
 
 def start_row_fields() -> dict[str, Any]:
