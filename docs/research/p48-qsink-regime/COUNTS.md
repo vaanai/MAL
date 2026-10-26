@@ -38,7 +38,7 @@ All code is in this directory. Outputs are on mal-research-0 in `/data/mal/hunt-
 | pass 1 | `p48_extract.py pass1` | create rows with a non-WSOL quote (children), pool_create, complete | inline scope (MemoryMax 8G), 59 s |
 | pass 2 | `p48_extract.py pass2` | trades of children (tape creates, plus any pump.fun curve trade with `zero_sol`, which covers children created before the tape start) and of PUMP; plus every PumpSwap trade sharing a signature with a child trade (the parent leg) | inline scope, 1 min 57 s, 7,141,440 rows |
 | pass 3 | `p48_extract.py pass3` | every row of the 713 PUMP/WSOL buys >= 0.5 SOL (discovery only) | inline scope |
-| pass 4 | `p48_extract.py pass4` | every PumpSwap trade of the 42 parents with >= 500 SOL routed buys on the raw tape (92.07% of routed buy SOL), plus PUMP and USDC | inline scope, 36 s, 2,946,846 rows |
+| pass 4 | `p48_extract.py pass4` | every PumpSwap trade of 42 parent mints: those with >= 500 SOL routed buys on the raw tape, with PUMP and USDC added if missing (together 92.07% of raw routed buy SOL) | inline scope, 36 s, 2,946,846 rows |
 | group | `p48_group.py` | one record per transaction holding a child trade: child rows, SOL legs (PumpSwap, WSOL quote, mint not a traded child) | inline scope, 1 min 34 s, 5,445,646 records |
 | labels | `p48_analyze.py` | landing class, routed legs, parent pool volume, reversal labels, child cohorts, seal guard | MiScusi job **#1676** (`j_hjEHAoVutgHhrA`, @215fe184, peak 2.9 GB, 49 s) |
 
@@ -58,7 +58,7 @@ Output `data/p48_counts.json` sha256 `4fc30bf1c047be10ce157b7d28667605926f5a70ea
   - Child buy rows on the tape: 4,393 / 6,568 / 14,635 / 17,333 / 23,040 / 19,917 per day, on 999 / 1,462 / 1,604 / 1,689 / 1,699 / 1,250 distinct children. Children span PreStocks, xStocks, USDC, PUMP and pump coins.
   - First buy after create, p50: 18.6 / 33.6 / 29.2 / 18.3 / 12.0 / 10.3 s.
   - Never the child's creator (0 of its 66,298 buys of tape-created children).
-  - It was already present on 10-19..10-21 (5 / 6 / 4 PUMP buys >= 0.5 SOL). From 10-22 a larger share of its rows went to PUMP children, after its 10-21 rows went to `CSocnzcR...pump` (1,353 buys, 37,986.4 SOL, also phantom).
+  - It was already present on 10-19..10-21 (5 / 6 / 4 PUMP buys >= 0.5 SOL). From 10-22 a larger share of its rows went to PUMP children, after its 10-21 rows went to `CSocnzcR...pump` (1,353 buys, 37,986.4 SOL; its pump-coin-leg buys sampled 0 of 20 found).
 - PUMP-child creators are spread out: 252 / 401 / 700 / 887 / 638 / 469 distinct per day, with a top creator share of 0.475 (partial 10-19), then 0.1978 / 0.0925 / 0.0542 / 0.0631 / 0.0759. The creating program is pump.fun itself (6 sampled create txs on 10-20, 10-22 and 10-23).
 - Web (10-20..10-23): no pump.fun or PumpSwap announcement found. The custom-pair launch is dated 2026-09-10 (tokenized stocks and RWAs; Bankless, FXStreet). The library has pump-coin parents since 2026-10-08 (`p25-quote-drift-completion`). [web, unverified]
 
