@@ -32,13 +32,13 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `explored-survivor-unconfirmed` | 9 | 0 | 0 |
 | `parked` | 9 | 0 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 46 | 20 | 1 |
+| `untested` | 46 | 26 | 1 |
 | `desk-read` | 1 | 43 | 0 |
 | `explored-no-survivor` | 39 | 6 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 185 | 75 | 2 |
+| **all** | 185 | 81 | 2 |
 
-The file holds 512 rows: the 262 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 518 rows: the 268 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -272,6 +272,42 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `mgr-1013-gap-flag-audit` | Audit of the H5 shadow's feed-gap flag | `untested` | Counted once, interim, not the deciding read (job #962, 2026-10-13, at the +36 h instant; PR #610 comment 6156947862): of 762 slot-jump records, 469 have 30 to 59 missed slots, 271 have 60 to 149 and 22 have 150 to 599; of 1,973 socket-reconnect records, 30 flagged pools; of 1,132 pool closes, 558 carry the gap flag … |
+
+### p60-slot-clock (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p60-slot-clock-decay` | Slot clock vs wall clock: do latency-bound edges decay in slots or in seconds? (200 ms natural … | `untested` | Untested. Capacity guess: not a book. It re-opens or confirms-closed existing latency-bound lines. If one reopened at 20 trades/day x 0.05 SOL x +2% net = 0.02 SOL/day (guess). Kill risk: pump-side bot reaction is dominated by block production so scales with slots; the old and new eras differ in the 7-slot charge and … |
+
+### p60-feeshare-commit (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p60-feeshare-commit-tag` | Creator fee-sharing / one-redirect lock as a creator-commitment label for the rug filter | `untested` | Untested. Capacity guess: a veto on an existing book's entries: if it removes 10% of entries that carry 25% of losses, on a 20 trades/day x 0.1 SOL book that is up to 0.05 SOL/day of avoided loss (arithmetic on invented shares, not a measurement). Kill risk: most pump coins never configure sharing, so the label is … |
+
+### p60-t22-quote-pnl (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p60-t22-quote-pnl-audit` | Transfer-fee quote pools: paper-fill P&L audit (cost honesty, not a book) | `untested` | Untested. Capacity: none (it removes a possible overstatement). Value guess: if 1% of paper entries land in such pools and the fee is 3%, the bias is 0.03 bps of notional per trade on average but concentrates in the few pools, where it can turn a winner into a loser. Kill risk: the non-zero bytes might not mean a fee … |
+
+### p60-sybil-cost (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p60-sybil-cost-step` | Rent cut (SIMD-0437) lowers wallet-farm cost: drift watch on distinct-buyer features | `untested` | Untested. Capacity guess: protective, not a book: if a distinct-buyer gate in any live or forward book is one of its inputs, a 20% loss of its precision on 10 trades/day x 0.05 SOL costs about 0.01 SOL/day at an assumed 10% edge (invented numbers). Kill risk: wallet cost was never the binding cost (SOL funding and … |
+
+### p60-pump-buyback (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p60-pump-buyback-cadence` | PUMP token buyback cadence (50% of net revenue) as a scheduled buyer | `untested` | Untested. Capacity guess: PUMP is deep, so stake is not the limit: 2 setups/day x 5 SOL x +0.3% net of 1.25%-class costs (PUMP pools charge less, assumed) = 0.03 SOL/day, with a large uncertainty. Kill risk: the buyer is public and tracked by on-chain analysts, so pros pre-trade it; execution windows may be … |
+
+### p60-bam-preconf (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p60-bam-preconf-race` | Jito BAM preconfirmations (Helius/Triton) as an early-transaction signal -- CLOSED, speed race | `untested` | CLOSED on arrival: the advantage is 5-10 ms against our 1-2 s entry latency and 7-slot charge. Listed so the next lane does not re-derive it. Capacity: 0 at our latency. |
 
 ## Dead as frozen, and explored with no survivor
 
