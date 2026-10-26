@@ -57,7 +57,9 @@ def test_playbook_states_units():
     t = PLAYBOOK.read_text(encoding="utf-8")
     assert "FRACTION" in t and "-0.05 is -5%" in t and "SECONDS" in t
     for name in ("review_system.txt", "regime_system.txt"):
-        assert "fractions or SOL, not percent" in (ROOT / "hv6_templates" / name).read_text(encoding="utf-8"), name
+        s = (ROOT / "hv6_templates" / name).read_text(encoding="utf-8")
+        assert "are not percent" in s and "ages are seconds, counts are counts" in s, name
+        assert "fractions or SOL" not in s, name
     assert "net percent" in (ROOT / "hv6_templates" / "review_system.txt").read_text(encoding="utf-8")
 
 
@@ -80,3 +82,40 @@ def test_watch_example_parses_and_evaluates(card):
     # the same predicate through the runner's own local-veto function
     assert R.local_veto([when], hot) == when
     assert R.local_veto([when], card) is None
+
+
+def test_playbook_definitions(card):
+    """Pin definitions that the name check cannot see (QP 2026-10-26 on #943)."""
+    t = PLAYBOOK.read_text(encoding="utf-8")
+    assert "non-negative fraction from" not in t and "also a non-negative" not in t
+    assert "1 - quote/peak" in t and "last 65 minutes" in t and "negative when the quote is above that peak" in t
+    assert "of the round trip" not in t and "FRACTION of the stake" in t
+    assert "null on HV6" not in t and "are null or plain numbers" in t and "not the on-chain holder count" in t
+    assert "so f.ret_1m can cover only a few seconds" in t
+    assert "counts are counts" in t and "fractions or SOL" not in t
+    rev = (ROOT / "hv6_templates" / "review_system.txt").read_text(encoding="utf-8")
+    assert "of the round trip" not in rev and "0.64% of the stake" in rev
+
+
+def test_quote_dd_peak_can_be_negative(card):
+    """quote_dd_peak = 1 - q/peak with peak a sampled minute-mark maximum, so a quote above it gives a negative value."""
+    snap, prints = T.base_snap(), T.base_prints()
+    q = card["f"]["quote_sol"]
+    chain = dict(T.base_chain(), quote_sol_peak=q / 2.0)
+    c = hc.build_card(snap, prints, chain, as_of_ms=T.T, as_of_slot=T.SLOT,
+                      setup=hc.SetupTag(pool_id=snap["id"], type="PULLBACK", persona="CON", vol_15m=9.0, z=1.5))
+    assert c["risk"]["quote_dd_peak"] == pytest.approx(-1.0, abs=1e-6)
+    assert c["risk"]["quote_dd_peak"] < 0
+    assert "negative when the quote is above that peak" in PLAYBOOK.read_text(encoding="utf-8")
+
+
+def test_quote_history_peak_is_a_65_minute_minute_mark_max():
+    mn = 60_000
+    qh = R.QuoteHistory()
+    assert qh.keep_ms == 65 * mn
+    t0 = 1_000_000 * mn
+    qh.add("P", t0, 5.0)  # old high, outside the 65-minute window at t0 + 70 min
+    for i in range(1, 70):
+        qh.add("P", t0 + i * mn, 2.0)
+    now = t0 + 70 * mn + 30_000
+    assert qh.peak("P", now) == 2.0  # the 5.0 is older than 65 minutes: not a lifetime peak
