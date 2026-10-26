@@ -1,6 +1,9 @@
 > **TEMPLATE DRAFT, NOT A DEC, NOT IN FORCE. Lives in `ARTIFACTS/lab/c0-drafts/` on purpose: the executor and bridge glob `DEC/` for the owner line, so a placeholder must never sit in `DEC/`. Drafted 2026-10-26 (records only; READINESS N8, H7). Nothing here is a result. No HV4 output, ledger, decision row, `bots.json`, job log or status was opened; no book has cleared the promotion gate. This template says nothing about whether any HV4 arm makes money.**
 >
-> **How to use.** After a recorded PASS for one arm (and only then), a builder copies this file to `DEC/DEC-<next>-hv4-<arm>-canary.md`, keeps the variant that applies (delete the other), fills the markers, and opens a PR. Text that says "DEC-032 §x" means the copy of DEC-032 is carried verbatim; this file is the overlay of declarations that DEC-032 and the #908 QP conditions require in the copy before the first send. QP OK on the exact head and a reviewer verdict on the PR come before the merge; workers do not merge.
+> **MERGE AS `DEC/DEC-0NN-hv4-<arm>-c0-canary.md`** (for example `DEC-0NN-hv4-con-x-c0-canary.md`; the name must contain "canary" and must not contain "template"). The H5 executor's rule (`canary_record_refusal`, `tools/h5_arena_executor.py:418`) is the model: glob `DEC/DEC-*canary*.md`, regular file, and a bare line `OWNER_CANARY_CONFIRMED: bot_id=<ARM>` (own line, no bullet, no backticks, nothing after the id).
+> **How the HV4 adapter finds it: NOT BUILT.** `tools/arena_live_bridge.py` and `tools/hv4_live_c0.py` at main contain no canary-record lookup and do not read `DEC/`. QP-PRERULING-1026 says that for the HV4 adapter "a root-file design from the start is acceptable", and PR 4 of the adapter is reading the record from a root-owned file instead. Both must be satisfied until PR 4 is final: keep the file in `DEC/` under the name above (the manager and reviewers read it there) and, if PR 4 reads a root-owned copy, Helm installs a byte-identical copy at the path PR 4 names, with its sha256 recorded here: `<AT-EVENT: PR 4 path, and the sha256 of the DEC file at the merge sha>`. Do not assume either mechanism until PR 4 merges.
+>
+> **How to use.** After a recorded PASS for one arm (and only then), a builder copies this file to `DEC/DEC-0NN-hv4-<arm>-c0-canary.md`, keeps the variant that applies (delete the other), fills the markers, and opens a PR. Text that says "DEC-032 §x" means the copy of DEC-032 is carried verbatim; this file is the overlay of declarations that DEC-032 and the #908 QP conditions require in the copy before the first send. QP OK on the exact head and a reviewer verdict on the PR come before the merge; workers do not merge.
 >
 > **Markers.**
 > - `<FILL at PASS>`: a figure from that arm's read (read instant, n, dates, mean, CI, p, ex-best-day, worst-in-slot, N, Holm).
@@ -79,7 +82,7 @@ Fail closed, files, paper twin, halts (DEC-032 §5), parity P1 to P7 and the dai
 ## 6. Owner lines (recorded verbatim from the owner's own message; nobody else fills them)
 A. The standing C0 OK (DEC-032 Am.1 item 3), quoted verbatim, then on a line of its own with nothing after the id, the line the bridge matches exactly:
 
-OWNER_CANARY_CONFIRMED: bot_id=<AT-EVENT: the arm's bot_id exactly, written only when the manager uses the standing line for this arm>
+OWNER_CANARY_CONFIRMED: <AT-EVENT: at the merge, replace this ENTIRE line with the bare line OWNER_CANARY_CONFIRMED: bot_id=<ARM> (own line, no bullet, no backticks, nothing after the id), only when the manager uses the standing line for this arm>
 
 B. **The owner's fee line.** `<AT-EVENT: the owner's own words naming the fee: buy 55,000 / sell 55,000 / escalated 150,000 lamports of priority plus the 5,000 base fee per send, and that this replaces the executor's installed 500,000. Notebook id.>` Without this line no live send.
 
