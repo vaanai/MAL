@@ -8,7 +8,7 @@ A row is counted once, under the first kind that matches, in the order sig_ones,
 
 The signature history is bounded: three generations of GEN_MS of tape time each (drop the oldest when a new one starts), so a signature is remembered for at
 least 2 * GEN_MS = 2 h and at most 3 * GEN_MS. A key is an 8-byte blake2b digest of the signature (a collision needs two different signatures that also differ
-in slot; about 1e-7 for two million live keys). The history is in memory only: a runner restart starts it empty (disclosed).
+in slot; about 1e-7 for two million live keys). The history is in memory only. The runner replays 365 min of tape before its first decision (manager17, 2026-10-26), so after a start or restart the history is rebuilt from that replay and covers the 2 h window before the first decision.
 """
 
 from __future__ import annotations
