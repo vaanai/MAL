@@ -169,6 +169,7 @@ class SellPinTests(unittest.TestCase):
         self.assertIsNone(c0.sell_pin_problem())
         want = {"path", "symbol", "symbol_sha256", "_sign_sha256", "ptx.constants_sha256", "pe.exit_check_sha256", "c0.ladder_sha256"}
         want |= {f"{n}_sha256" for n in c0.CALLEES_PL} | {f"ptx.{n}_sha256" for n in c0.CALLEES_PTX}
+        want |= {k for k in c0.SELL_BUILDER_PIN if k.startswith(("pe.", "bridge."))}  # PR 5a keys are listed in test_hv4_live_c0_pr5a
         self.assertEqual(set(c0.SELL_BUILDER_PIN), want)
         for n in ("sell_data", "ata", "create_ata_idempotent", "sync_native", "close_account", "swap_accounts", "compute_budget_ixs"):
             self.assertIn(f"ptx.{n}_sha256", c0.SELL_BUILDER_PIN)

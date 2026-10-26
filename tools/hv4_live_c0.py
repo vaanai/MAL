@@ -30,6 +30,7 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 PROFILE = "hv4_c0"
@@ -97,7 +98,56 @@ SELL_BUILDER_PIN: dict[str, str] = {
     "ptx.constants_sha256": "e2b66274132a760ee6d440ae8cbd03294bb0ba29f97a0d8b6aecd2b286dbe79c",
     "pe.exit_check_sha256": "7dcd289631cfe0418439df90f4b0901518d813dfd474f0cb2a6c660e3a51eb00",  # PR 3: the quote_out that min_out is a share of
     "c0.ladder_sha256": "06123a941d5a842fe9eccaed4277b898fe8c88ba7681c0feee5f059b397f3233",  # PR 3: the compiled 0.85 / 0.65 rungs and their escalation point (this module's own ladder source)
+    # PR 5a (QP removal precondition 2): the exit snapshot builder
+    "pe.fetch_snapshot_sha256": "e0c0d598b99a92864d401b32a99f2f70550565c03a3618df975484cd47f49b74",
+    "pe.entry_quote_sha256": "5d231ffbfb421cfc00c6208d45a3cf3f7be3284c37c12f0ee9b290fdc8741582",
+    "pe.fee_ppm_for_sha256": "0417a9705faf7613bfd59cf623da1aa6e0ce7b0b910c61f8625ab482a8a67ca8",
+    "pe.drift_vs_seed_sha256": "4021191cb90890acbd2f88f1ac2d555c968e493b985ca6b86f0f90169a5a34db",
+    "pe.Snapshot.quote_priced_sha256": "efc1086ec946039fdeb6fc36625256037ed4eeffb66008f1c21766743ab077cb",
+    "pe.StaticCache.get_sha256": "36048129769ae36c91d2f7f02eef0603c0fa9d3ff36e9b799bc0ba15f15b8213",
+    "pe.StaticCache.put_sha256": "2a5c113f7be7b6833bd58df43fc2d91a493fb837ee9bf65bc3c93208041ed3af",
+    "pe.StaticCache.refresh_sha256": "667e8dc300b1bd4a91848f5014433dedf6a9a751221a059a9a502d224021a6f7",
+    "pe.Executor._snapshot_sha256": "b28fde5ad695f8844779ca1367ee8f4cf98ee414d1acfc51181a5141e0852d66",
+    "pe.Executor._batched_exit_snapshots_sha256": "79ef509391ec9507c2cdfd6412cb9dfd2981951b50400471546555ae36094490",
+    "pe.Executor._batch_stale_sha256": "e5424c20aa1befd27ecf5011b55d7cd748e4e7d9934d45140dc1495b91c6c7de",
+    "pe.Executor._exit_snapshot_sha256": "a89e0d70519630cd5644e5a538e10deabb4588502b35a983f4ce68dae33607a6",
+    "pe.Executor._batch_err_sha256": "563007db5c3aed08681bce766ef45813143384223a9231dbbfcfc7e193648a0c",
+    "pe.Executor.poll_positions_sha256": "d050b315227c996d7832ececcd176cc2b0c4a581b9579fd5e972effc62c0cf17",
+    "pe.constants_sha256": "418af928fbf6c77ce0dbe7f0987aaa80ad19ec0890ae03d6e8dc2e04bc6d4783",
+    "bridge.poll_positions_sha256": "b52b3d4778e16d0619c9749d186aa36361e70916372ffe932e2c3051ef87524d",
+    "bridge.refresh_warm_sha256": "c3b7ced0776059708aa75d8dbc134149dbd8ed0eae27a1984e3a533f7b25c8f8",
 }
+
+# QP removal precondition 2 (#959): the EXIT SNAPSHOT builder is inside the pin too. min_out is a share of the quote that the snapshot yields, so the batched, single and
+# full-fetch paths, the quote and the cached V rule, the two age bounds and the bridge's poll_positions / refresh_warm all shape the number that is signed.
+PE_FUNCS = ("fetch_snapshot", "entry_quote", "fee_ppm_for", "drift_vs_seed")  # module-level functions of tools/probe_executor.py
+PE_METHODS = (("Snapshot", "quote_priced"), ("StaticCache", "get"), ("StaticCache", "put"), ("StaticCache", "refresh"),
+              ("Executor", "_snapshot"), ("Executor", "_batched_exit_snapshots"), ("Executor", "_batch_stale"), ("Executor", "_exit_snapshot"),
+              ("Executor", "_batch_err"), ("Executor", "poll_positions"))
+PE_CONSTANTS = ("BATCH_MAX_AGE_MS", "STATIC_TTL_MS", "STATIC_REFRESH_MS", "BATCH_ERR_LOG_EVERY_MS", "V_SEED_LAMPORTS", "V_SEED_TOLERANCE")
+BRIDGE_METHODS = ("poll_positions", "refresh_warm")  # BridgeExecutor, nested in make_live_port: read by AST from the file on disk
+
+
+def _fget(o: Any) -> Any:
+    return o.fget if isinstance(o, property) else o
+
+
+def bridge_method_source(name: str, path: str | None = None) -> str:
+    """Source text of `BridgeExecutor.<name>` (a class nested inside make_live_port), taken from the bridge file by AST. Raises KeyError when it is absent."""
+    import ast
+    src = Path(path or Path(__file__).with_name("arena_live_bridge.py")).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    for fn in ast.walk(tree):
+        if isinstance(fn, ast.FunctionDef) and fn.name == "make_live_port":
+            for cls in ast.walk(fn):
+                if isinstance(cls, ast.ClassDef) and cls.name == "BridgeExecutor":
+                    for m in cls.body:
+                        if isinstance(m, ast.FunctionDef) and m.name == name:
+                            seg = ast.get_source_segment(src, m)
+                            if seg is not None:
+                                return seg
+    raise KeyError(name)
+
 
 REFUSED_ARM_SUFFIXES = ("-L", "-P", "-R")
 ALLOWED_ARM_SUFFIXES = ("-F", "-X")
@@ -206,6 +256,13 @@ def _sell_pin_items() -> dict[str, Any]:
     for n in CALLEES_PTX:
         items[f"ptx.{n}_sha256"] = (lambda n=n: sha(inspect.getsource(getattr(ptx, n)).encode()))
     items["pe.exit_check_sha256"] = lambda: sha(inspect.getsource(pe.exit_check).encode())
+    for n in PE_FUNCS:
+        items[f"pe.{n}_sha256"] = (lambda n=n: sha(inspect.getsource(getattr(pe, n)).encode()))
+    for cn, mn in PE_METHODS:
+        items[f"pe.{cn}.{mn}_sha256"] = (lambda cn=cn, mn=mn: sha(inspect.getsource(_fget(getattr(getattr(pe, cn), mn))).encode()))
+    items["pe.constants_sha256"] = lambda: sha(repr([(n, getattr(pe, n)) for n in PE_CONSTANTS]).encode())
+    for n in BRIDGE_METHODS:
+        items[f"bridge.{n}_sha256"] = (lambda n=n: sha(bridge_method_source(n).encode()))
     items["c0.ladder_sha256"] = ladder_pin_sha256
     items["ptx.constants_sha256"] = lambda: sha(repr([(n, getattr(ptx, n)) for n in CONSTANTS_PTX]).encode())
     return items
@@ -219,7 +276,7 @@ def sell_pin_problem(pin: Mapping[str, str] | None = None) -> str | None:
         try:
             if fn() != pin.get(k):
                 return f"sell_builder_pin_mismatch:{k}"
-        except (OSError, TypeError, AttributeError):
+        except (OSError, TypeError, AttributeError, KeyError, SyntaxError):
             return f"sell_builder_pin_unreadable:{k}"
     return None
 
