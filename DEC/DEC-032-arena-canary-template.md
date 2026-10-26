@@ -532,3 +532,149 @@ How to read these figures:
    - its **own** owner line naming C2 (`rungs=C1,C2`, `helm_ceiling=C2`, deposits 2.00 SOL).
 
    This amendment does not pre-approve any of it.
+
+## Amendment 3: in an HV4 or HV6 C0 canary, `synthetic_share_high` is decided by the DEC-031 Am.10 pooled guard, not by the raw daily record (DRAFT)
+
+**Status: DRAFT, NOT IN FORCE.**
+- Written 2026-10-26 (`date -u` 18:44:05Z at start) by a builder agent for manager17. Records only.
+- Basis: quant-proof's comment 6424350003 on PR #969 (head 733dd371), ruling (b). It found that the HV4 C0 bridge's A3 check reads the raw daily record, as §5 item 1 says and line for line as `h5_arena_executor.a3_record_problem`. Under the raw synthetic flag a 14-day C0 is likely to halt on sampling noise.
+- Outcome-blind. In view when this was written: that QP comment, this DEC, DEC-031 Am.4 and Am.10, and the code of `tools/a3_redeploy_check.py`, `tools/a3_halt.py`, `tools/a3_applied_alert.py`, `scripts/ops/a3-daily.sh`, `tools/pump_structure_monitor.py`, `tools/h5_arena_executor.py` and `tools/hv4_live_c0.py` / `tools/arena_live_bridge.py` at PR #969 head aa925782. Not opened: any A3 daily record, verdict or applied log, `a3-books.json`, any HV4 or Q50 output, decision row, ledger, `bots.json`, or job status or log.
+- No book has cleared the promotion gate. Nothing here is a profit claim.
+
+**It takes effect only when all of these hold:**
+- (a) this text merges, with quant-proof's OK on the exact head and a reviewer verdict on the PR;
+- (b) the code of item 5 merges in its own PR (QP OK on the exact head and a reviewer verdict), and the canary's install sha contains it.
+
+Until then §5 item 1 stands as written: any raw A3 halt flag latches. A canary started on a head without item 5 runs under §5 item 1 as written for its whole run.
+
+**Scope.**
+- C0 live canaries run through `tools/arena_live_bridge.py` with the `hv4_c0` profile (the HV4 arms that DEC-031 Am.15 item 5 allows), and a future HV6 C0 that calls `tools/hv4_live_c0.py`'s A3 functions unchanged.
+- An HV6 copy uses this item only if it declares it in its own copy, with the FILL of item 6.
+- It does not cover the H5 executor path (`tools/h5_arena_executor.py`, the Q50 C0). That path keeps the raw rule. See "Open points" below.
+
+**Does not amend.**
+- The promotion gate and its thresholds.
+- Any registered paper book or read. HV4 is frozen at 9ed4c5ff; its read rule (DEC-031 §2, Am.15) does not change. No read, window end or count of any book changes.
+- DEC-031 Am.10 and its item 3. The guard still never ends an HV4 or FLOOR window. No id is added to `a3-books.json`. The canary only READS the guard's applied log.
+- The other A3 flags, `pins_changed`, `program_changed`, the 36 h stale bound, the 300 s future bound and fail closed.
+- §5's rule that A3 is an (O) halt, and that a canary does not use DEC-031 Am.4's automatic upgrade check.
+- §3 limits, P1 to P7, §6, §7, Amendments 1 and 2.
+
+### 1. The rule (replaces §5 item 1's words "Any A3 halt flag" for the canaries in scope)
+New buys stop, and `a3_pins_changed` latches, if ANY of these holds. Exits keep running, as now.
+1. **Raw record, unchanged except synthetic.** The newest line of the A3 daily record (`FILL:a3_source`) shows any halt flag other than `synthetic_share_high` set, malformed or not evaluated. Or `program_changed` warns. Or the record is missing, unreadable, flag-less, older than 36 h or stamped more than 300 s in the future. This is exactly the check of PR #969, with one change: the key `synthetic_share_high` is skipped.
+2. **The guard's verdict for the same run is not clear.** The newest line of the guard's applied log (`a3-applied.jsonl`, written by `tools/a3_halt.py apply` in `scripts/ops/a3-daily.sh`) has the same `run_utc` as the record's newest line, and its `verdict` is `HALT`, `FAIL` or `ERROR`. Only `NONE` and `PASS` are clear.
+3. **The guard's log is missing or wrong.** It is missing, unreadable, a link, oversize, or its newest line has no valid `run_utc` or an unknown verdict. Or its newest `run_utc` is later than the record's. Or it is earlier than the record's for more than `A3_GUARD_LAG_MS` = 2 h, counted from when the record line was written (the record file's mtime, and never before its `run_utc`).
+
+While the guard's newest `run_utc` is earlier than the record's, and inside that 2 h bound, new buys are **refused** (`a3_guard_pending`). This is a refusal, not a latch. It is counted, and it clears when the guard's line for that run arrives clear.
+
+**What this means for `synthetic_share_high`:**
+- The canary halts on it only through the guard's pooled z-test (DEC-031 Am.10 item 1: K = 4, p0 = 75/339, phi = 2.0, halt iff z > 3.0902).
+- The single-run share (> 0.35) no longer decides.
+- A synthetic flag that is not evaluated halts only when it is unevaluated on two consecutive runs. The guard's existing rule makes that a HALT verdict. Under the raw rule it halts on the first run.
+
+**What does not change:**
+- `pins_changed` (any item) and `program_changed` latch from the raw record, exactly as now.
+- A guard `PASS` (a program-only redeploy that DEC-031 Am.4 records as record-only) never clears a raw `pins_changed`. The canary still does not use Am.4's automatic upgrade check.
+- Resume after any A3 latch is still the manager's upgrade review plus the owner's line (O).
+
+**The guard is a stricter backstop for every other reason too.** A guard HALT for any reason latches: a boost flag, a degraded record whose pins differ from the pins file while the flag is not set, a failed redeploy check, or a two-run unevaluated flag. The raw rule did not see the degraded-record case.
+
+### 2. False-trip probability under each rule (DEC-031 Am.10 item 2's figures)
+The Am.10 figures assume the pooled base rate 0.2212 and come from structure counts. They are simulated under a fitted beta-binomial null, not observed on new data.
+
+| | Raw single-run flag (§5 item 1 as written) | Pooled guard (this amendment) |
+| --- | --- | --- |
+| Per run | about 0.10 (binomial); **0.157** under the beta-binomial fitted to the observed overdispersion (matches 3 of 18 observed runs above 0.35) | **0.0014** (20,000 simulated paths) |
+| Over 24 runs (Am.10's 12-day window at two runs a day) | about **0.98** | **0.023** |
+| Over 28 runs (a full 14-day C0 at two runs a day; this amendment's arithmetic, not an Am.10 figure) | 1 - (1 - 0.157)^28 = 0.9916 (assumes independent runs; 0.9477 at 0.10) | at most 28 x 0.0014 = 0.0392 (union bound; holds under any dependence between runs) |
+
+**Detection (Am.10 item 2).**
+- A sustained synthetic share of 0.45 for 2 days trips with probability 0.62.
+- A sustained 0.60 for 2 days trips with probability 0.99.
+- A sustained 0.45 over the window trips with probability 1.00.
+- The pooled rule is therefore slower than the raw flag, by up to about 2 days (K = 4 runs).
+
+**What the flag protects.** Am.10 calls it "a regime alarm (a sustained shift in how graduations happen), not a per-trade protection". Am.10 says that for H5 books, after Amendment 4's per-pool exclusion of synthetic and unclassified pools. This amendment does not claim that HV4's rule excludes synthetic pools per pool. For the canary the flag stays a regime alarm, and the slower detection is the cost accepted here.
+
+**Not measured.**
+- How often the raw synthetic flag is not evaluated (n_checked below the monitor's minimum of 5). Under the raw rule that latches on the first run. Neither Am.10 nor this amendment gives a rate.
+- How long the guard's apply takes after the monitor writes its line. The 2 h bound is a declared choice, not a measurement. Past it the canary latches, so the bound can never let a buy through.
+
+### 3. New dependencies, all fail closed
+- **The guard loop must run for the canary's whole life.** This is the `a3-daily.sh` loop on mal-fast-0 that writes the record and the applied log into the same directory (`A3_OUT`, default `$HOME/data/structure-monitor`, with `A3_APPLIED` at its default).
+  - If the loop stops, the record goes stale (36 h) and the canary latches, as now.
+  - If the monitor writes but the apply does not run, the canary refuses buys for up to 2 h, then latches `a3_guard_missing`. For example, `a3_halt.py` exits 2 on a refused books file, or a `PartialApply` happens because a rule's book list is empty. The raw rule did not see this case.
+- **The loop runs at a guard pin that implements Am.10.** That is the check tool sha256 `1f84072da673cc451f9e3a6baa8b25d6295b497305ffe7bc38fef42e3a710f70` at tag `a3-guard-pin-1024` (0ec7fae8), or a later pin with quant-proof's OK that keeps item 1's constants byte for byte. The copy names it (item 6).
+- **The loop outlives the canary.** Am.10 item 5(3) says the loop is resumable, runs 13 days and is then followed by a new successor at the new pin. Its life was planned around Q50, not around a canary. The copy names the loop job and its successor plan. If no loop covers `end_ms`, the canary ends at the latch, not at a manual override.
+- **Same directory.** The applied log is read only as `dirname(a3_record_file)/a3-applied.jsonl`. No separate path is configured, so the record and the verdict come from the same loop.
+
+### 4. Not a read change
+- This amendment touches only the live bridge's halt rule.
+- No HV4 or HV6 paper decision, row, window, exclusion, count or read changes. The guard never writes to an HV4 or HV6 registry entry.
+- The md5 decision-equivalence proof of the canary install (§2 checklist) is unaffected, because a halt only withholds buys. It is still re-run at the install sha that contains item 5.
+
+### 5. The code change (a separate PR after this merges; `tools/hv4_live_c0.py` at PR #969 head, and four lines of wiring in `tools/arena_live_bridge.py`)
+**`tools/hv4_live_c0.py`, new constants** (next to `A3_LATCH`):
+```python
+A3_GUARD_FLAGS = ("synthetic_share_high",)  # DEC-032 Am.3: decided by the DEC-031 Am.10 pooled guard (a3-applied.jsonl), never by the raw record
+A3_APPLIED_NAME = "a3-applied.jsonl"  # scripts/ops/a3-daily.sh: $A3_OUT/a3-applied.jsonl, the same directory as the daily record
+A3_GUARD_VERDICTS = ("NONE", "PASS", "HALT", "FAIL", "ERROR")  # == tools.a3_halt.VERDICTS (pinned by a test)
+A3_GUARD_CLEAR = ("NONE", "PASS")  # PASS never clears a raw pins_changed: the raw check runs first and latches on it
+A3_GUARD_LAG_MS = 2 * 3_600_000  # declared choice, not measured: a pending guard refuses buys; past this it latches
+A3_APPLIED_MAX_BYTES = 16 * 1024 * 1024
+```
+**`a3_halt_problem`: one change.** Skip the guard's flags in the raw flag scan, and change nothing else:
+```python
+    why = sorted(k for k, v in flags.items() if k not in A3_GUARD_FLAGS
+                 and (not (isinstance(v, dict) and isinstance(v.get("halt"), bool)) or v["halt"] or v.get("evaluated") is False))
+```
+**New `a3_problem(record_path, now_ms) -> (latch, refuse)`.** It returns the raw reason if there is one. Otherwise it reads the newest line of `os.path.join(os.path.dirname(record_path), A3_APPLIED_NAME)`. The read is lstat regular, `st_nlink == 1`, `O_NOFOLLOW`, an inode re-check and the size cap, the same safe read as `feed_gap_problem`. Then, in this order:
+- a missing or unreadable line gives `a3_guard_unreadable`;
+- no valid `run_utc`, or a verdict not in `A3_GUARD_VERDICTS`, gives `a3_guard_malformed`;
+- the applied `run_utc` is later than the record's: `a3_guard_ahead`;
+- it is earlier: `(None, "a3_guard_pending")` while `now_ms - max(record run_ms, record file mtime_ms) <= A3_GUARD_LAG_MS`, else `a3_guard_missing`;
+- they are equal and the verdict is not in `A3_GUARD_CLEAR`: `a3_guard:<verdict>`;
+- otherwise `(None, None)`.
+
+A prototype of exactly this logic was run on synthetic fixtures only (no host file); its eleven cases are the first eleven tests below.
+
+**`tools/arena_live_bridge.py`, wiring only:**
+- `a3_tick` calls `c0.a3_problem` and latches `c0.A3_LATCH` on `latch`.
+- It stores `refuse` until the next poll.
+- The buy gate refuses on a stored `refuse` and counts it as `a3_guard_pending_refusal`, in the same place as `feed_gap`.
+- `main`'s live start check is unchanged: `a3_record_file` stays required, and the applied path is derived from it.
+- Any pinned function hash that covers these functions is re-pinned in the same PR.
+
+**Tests the code PR must carry** (synthetic fixtures only):
+1. raw synthetic halt with guard NONE for the same run: no latch, no refusal;
+2. raw synthetic not evaluated with guard NONE: no latch;
+3. raw clear with guard HALT, FAIL or ERROR: latch `a3_guard:<verdict>`;
+4. raw `pins_changed` with guard PASS: latch on `pins_changed`;
+5. raw `program_changed` warn with guard NONE: latch;
+6. guard behind, inside the bound: refusal only;
+7. guard behind, past the bound: latch `a3_guard_missing`;
+8. guard ahead: latch;
+9. guard log missing: latch;
+10. unknown verdict: latch;
+11. raw stale or future: latch as now;
+12. guard log is a symlink, has a second hard link or is oversize: latch;
+13. **equivalence with the H5 path:** over a fixture corpus, the reasons of `c0.a3_halt_problem` equal those of `h5_arena_executor.a3_record_problem` minus `synthetic_share_high`, and the problems are equal. This replaces QP (b)'s "pin to `a3_record_problem`" test;
+14. `A3_GUARD_VERDICTS == tools.a3_halt.VERDICTS`, and the pooled constants of `tools.a3_redeploy_check` (`SYN_POOL_K` 4, `SYN_P0` 75/339, `SYN_PHI` 2.0, `SYN_Z_HALT` 3.0902) equal item 1's;
+15. the bridge test: a pending guard refuses buys while exits keep running, and a guard HALT latches `a3_pins_changed`.
+
+### 6. FILL for a copy that uses this amendment
+| Field | Meaning |
+| --- | --- |
+| `FILL:a3_guard_source` | `dirname(FILL:a3_source)/a3-applied.jsonl` on mal-fast-0; the `a3-daily.sh` loop job id and its guard pin (check tool sha256 as item 3); the successor job plan that covers `end_ms`; the alert job (`tools/a3_applied_alert.py`). The manager's brief names job #1446 (loop) and #1540 (alert); those ids are not checked here and the copy records them from the job list. |
+
+The copy's owner notice (§2) is unchanged in words: "It halts by itself on a pump program redeploy" stays true.
+
+### 7. Disclosure
+- **Direction.** This lowers the chance of a halt. It is a liveness change. The safety halts on real program or account changes are kept as they are, and the guard adds latch reasons the raw rule did not have. Under the null, the synthetic regime alarm's per-run false-trip rate goes from 0.157 to 0.0014, and it detects a real shift later (item 2).
+- **Chosen from DEC text and code only.** No A3 record, verdict or applied line was read for this amendment. Am.10's figures were chosen on structure counts (18 post-redeploy runs, pooled 75/339). No HV4 or Q50 outcome exists in any input.
+- **QP (b)'s other owed items stand.** These are link and owner checks on `a3_record_file`, the dependencies in the install pack (precondition 14), and the equivalence test, now in the form of test 13.
+
+**Open points.**
+- **The Q50 C0 path.** `h5_arena_executor.a3_record_problem` reads the same raw record with the same rule. By Am.10's figures its false-trip exposure over 24 runs is the same, about 0.98. This amendment does not change it. Extending it is a separate item, for the manager to decide.
+- **The lag bound.** The 2 h `A3_GUARD_LAG_MS` is for quant-proof to confirm or tighten.
