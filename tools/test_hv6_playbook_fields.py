@@ -95,6 +95,7 @@ def test_playbook_definitions(card):
     assert "risk.top10_frac is null unless the holder lookup succeeded" in t
     assert "f.creator_net_sol_life is the SOL the creator took out of the pool minus what it put in" in t and "not the on-chain holder count" in t
     assert "so f.ret_1m can cover only a few seconds" in t
+    assert "f.close_vs_hi_6h is a ratio (price divided by the 6 hour high" in t and "not a drawdown" in t
     assert "counts are counts" in t and "fractions or SOL" not in t
     rev = (ROOT / "hv6_templates" / "review_system.txt").read_text(encoding="utf-8")
     assert "of the round trip" not in rev and "0.64% of the stake" in rev
@@ -117,11 +118,15 @@ def test_quote_history_peak_is_a_65_minute_minute_mark_max():
     qh = R.QuoteHistory()
     assert qh.keep_ms == 65 * mn
     t0 = 1_000_000 * mn
-    qh.add("P", t0, 5.0)  # old high, outside the 65-minute window at t0 + 70 min
-    for i in range(1, 70):
-        qh.add("P", t0 + i * mn, 2.0)
+    qh.add("P", t0, 9.0)  # superseded before the window opens: must not count
+    qh.add("P", t0 + mn, 2.5)
+    qh.add("P", t0 + 10 * mn, 2.0)
+    qh.add("P", t0 + 30 * mn, 4.0)  # the highest sample in the window, NOT the latest
+    qh.add("P", t0 + 50 * mn, 3.0)
+    qh.add("P", t0 + 69 * mn, 1.0)  # the latest sample
     now = t0 + 70 * mn + 30_000
-    assert qh.peak("P", now) == 2.0  # the 5.0 is older than 65 minutes: not a lifetime peak
+    assert qh.peak("P", now) == 4.0  # not 9.0 (lifetime peak), not 1.0 (latest)
+
 
 
 def test_hv6_chain_never_sets_three_neutral_fields_and_sets_top10_on_success():
