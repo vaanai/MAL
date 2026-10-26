@@ -237,7 +237,9 @@ The checkpoint is written by segment 1 **after** the last tick before HO and bef
    - (a) **D is mechanical.** D = resume_ms - HO, from the `segment_end` and `segment_resume` instants the host logs itself, with no human
      input. The path taken (`live_lag` or `probe`) is decided by code and logged in `segment_resume`.
    - (b) **Any stale-drop sends it to the probe.** If any row with t_recv_ms in D would be older than `stale_row_ms` (10 s) at its
-     dispatch, the probe path is taken whatever D is. The host counts `stale_rows` in D; > 0 means probe.
+     dispatch, the probe path is taken whatever D is. As implemented in #962, the check runs per row at dispatch. The first such row switches
+     the rest of D (its rows and ticks) to the probe, and the switch is logged `handoff_stale_switch`. No row of D is ever dropped stale or
+     decided stale. Rows of D dispatched before the switch were within 10 s, i.e. a live lag. QP to confirm that this per-row form meets (b).
    - (c) **D_MAX = min(5 s, B-P3's measured live dispatch-lag p99 at S)**, pinned in the amendment.
    - **If D <= D_MAX and no stale-drop:** every row and tick in D still reaches the rule, at most D_MAX late. That is the same as a live lag
      spike: decision rows are written live, with the write instant as the engine's decision instant (arena_paper.py:15-20). Nothing is
@@ -272,7 +274,7 @@ The checkpoint is written by segment 1 **after** the last tick before HO and bef
 
 | ID | What | Pass |
 |---|---|---|
-| B-T1 | `EngineCkpt` and `ArenaState` checkpoint unit tests: checkpoint -> restore in a **fresh process** (subprocess) reproduces each `state_digest`. Engine: positions, pending sells, priced/late-print lists, gaps, slot clock, trims. ArenaState: never-pruned gap fields, keys older than 6 h with live `net`/`events`, candles, the tape cursor. A tampered checkpoint (sha256 or log-head mismatch) falls back to `engine_restart` | green |
+| B-T1 | `EngineCkpt` and `ArenaState` checkpoint unit tests: checkpoint -> restore in a **fresh process** (subprocess) reproduces each `state_digest`. Engine: positions, pending sells, priced/late-print lists, gaps, slot clock, trims. ArenaState: never-pruned gap fields, keys older than 6 h with live `net`/`events`, candles, the tape cursor. A tampered checkpoint (sha256 or log-head mismatch) is refused: HostError, loud; with `allow_fallback` (an explicit operator choice) the plain restart path books every open position `engine_restart` | green |
 | B-T2 | Synthetic md5 equivalence: synthetic tape + a toy deterministic rule (TP on a print, time exit) through the real `HostV3` and `EngineCkpt`. R0 continuous vs R1 seg1 + seg2 at HO_TEST with D = 0 | decision-row md5 equal; ledger md5 equal; state digests at HO equal |
 | B-T3 | D boundaries: D = 4.9 s and D = 5.1 s with D_MAX = 5 s; D = 4.9 s with one injected stale-drop; D = 30 s (> stale_row_ms); positions whose time or TP exit falls in D | 4.9 s with no stale-drop: path `live_lag`, nothing excluded. 5.1 s, 4.9 s with a stale-drop, and 30 s: path `probe`, exactly those pids are `handoff_down`, every other row is identical, missed entries are counted, and `handoff_down` is counted in the scorer's exclusion total |
 | B-T4 | Lock: seg 2 started while seg 1 holds the book lock appends nothing | green |
@@ -335,8 +337,8 @@ FLOOR has 0 OOS trades.
 | 2 (#952) | `tools/arena_feed_v2.py` (standby, takeover, dedup, continuity, fail-closed, counter carry, mint warm-up) + fake-socket tests A-T1, A-T2, A-T3; schema doc row; reader-ignores-`takeover` tests; arena_feed.py sha pin test | 1 | 1.5 |
 | 3a (#954) | `tools/p35_rehearsal.py` (phase-1 rates fix T_p / MIN_OVERLAP_ROWS; two v2 seams; seam + parity proofs) + `docs/runbooks/p35-feed-takeover.md` (A-P1 job spec on mal-fast-0, sampler/table overlap); run A-P1 | 2 | 0.5 + 9 h run |
 | 3b | `scripts/research/feed-takeover-v2.sh` (pinned instant, v2 sha, thresholds, post-check) once A-P1 is ruled | 3a + QP | 0.5 |
-| 4 | `tools/arena_paper_ckpt.py` (`EngineCkpt`: checkpoint, restore, state_digest, handoff recover) + `tools/arena_state_ckpt.py` (ArenaState checkpoint/restore at a tape cursor) + B-T1; pin tests for the unchanged arena modules | none | 2.0 |
-| 5 | `tools/arena_rules_v3.py` (`HostV3`: book lock, `--segment-end-ms`, segment_end / segment_resume, D rule, probe) + scorer support for `handoff` records + B-T2, B-T3, B-T4 | 4 | 1.5 |
+| 4 (#957) | `tools/arena_paper_ckpt.py` (`EngineCkpt`: checkpoint, restore, state_digest, handoff recover) + `tools/arena_state_ckpt.py` (ArenaState checkpoint/restore at a tape cursor) + B-T1; pin tests for the unchanged arena modules | none | 2.0 |
+| 5 (#962) | `tools/arena_rules_v3.py` (`HostV3`: book lock, `--segment-end-ms`, segment_end / segment_resume, D rule, probe) + scorer support for `handoff` records + B-T2, B-T3, B-T4 | 4 | 1.5 |
 | 6 | `tools/longbook_handoff_proof.py` + synthetic run in tests; QP-pinned real-slice job B-P1 and timing B-P3 | 5 | 1.0 |
 | 7 | Records: FLOOR-SLOW amendment (R1-R13 applied; schedule 4.1; both feed shas; switch instant; S; bot_id); manager + QP | 3, 6 | 0.5 |
 
