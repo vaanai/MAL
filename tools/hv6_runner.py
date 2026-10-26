@@ -52,6 +52,7 @@ from tools import hv4_cards as C
 from tools import hv6_agents as A
 from tools import hv6_cards as H
 from tools import hv6_review as RVW
+from tools.hv6_regime_block import block_for_use
 from tools.arena_declog import GENESIS, DecisionLog, LogChainError, sha256_hex, utc_day  # noqa: F401
 from tools.arena_paper import ArenaRefused, canon
 from tools.arena_state import CANDLE_MIN as STATE_CANDLE_MIN
@@ -345,7 +346,8 @@ class RegimeChannel:
             blk = self._load(p)
             if blk is not None and blk["as_of_ms"] < T and (best is None or blk["as_of_ms"] > best["as_of_ms"]):
                 best = blk
-        return best
+        # a block more than 36 h old at this tick is `stale` whatever it said when it was built: the trigger ignores it
+        return dict(block_for_use(best, T)) if best is not None else None
 
     @staticmethod
     def block_for(arm: str, block: Mapping | None) -> Mapping | None:
@@ -507,6 +509,10 @@ class RunnerConfig:
     # snapshot, then a cheap prints-in-15-min count) are not snapshotted, and the pools that pass are read once without candles (the candle series comes straight
     # from the Pool, prints are normalised once) as HV4's runner does. Counted into the same SCAN counts. False = the stream path above.
     fast_scan: bool = True
+    # The window end (DESIGN section 4/10, QP V2-1): from this tick on ALL entries halt (the five arms), no LLM re-check or watch call is made, and code exits
+    # (stop/target/time/hard stop/max hold, no LLM) run to completion; the runner then stops by itself once no position is open. A pinned value taken from the
+    # registration (main requires --entries-halt-ms); there is no default here other than "off" for library use and tests.
+    entries_halt_ms: int | None = None
 
 
 _OPS = {"<": lambda a, b: a < b, "<=": lambda a, b: a <= b, ">": lambda a, b: a > b, ">=": lambda a, b: a >= b}
@@ -602,6 +608,8 @@ class Runner:
         self.tp: TickPolicy | None = None
         self._sell_next: dict[str, int] = {}
         self._pend_sell: dict[str, tuple] = {}
+        self._entries_halt_logged = False
+        self._complete_logged = False
         self._logged_ms: dict[str, int] = {}
         self._replay_pos: dict[str, Pos] = {}
         self._stop = False
@@ -690,6 +698,10 @@ class Runner:
             if k == "scan":
                 for pool in r.get("tagged", []):
                     self.limiter.record(pool, H.PERSONA, r["ms"])
+            elif k == "entries_halt":
+                self._entries_halt_logged = True
+            elif k == "run_complete":
+                self._complete_logged = True
             elif k == "day_level":
                 self.day_level[day] = {"max_level": r["max_level"], "first_ms": r.get("first_ms"), "reason": r.get("reason")}
             elif k == "regime_trigger":
@@ -837,8 +849,16 @@ class Runner:
             self._logged_sig[arm] = sig
 
     # -- the group policy: once per tick
+    def entries_halted_at(self, T: int) -> bool:
+        return self.cfg.entries_halt_ms is not None and T >= self.cfg.entries_halt_ms
+
     def _begin_tick(self, T: int) -> TickPolicy:
         tp = compute_tick_policy(self.guard, self._now(T))
+        if self.entries_halted_at(T):  # the registered window end: group halted for entries and LLM re-checks, X in step; exits are not part of the policy
+            tp = dataclasses.replace(tp, entries_halted=True, x_halted=True, rechecks_halted=True, board_on=False, reason="entries_halt")
+            if not self._entries_halt_logged:
+                self._entries_halt_logged = True
+                self.log.append("SCAN", T, {"kind": "entries_halt", "halt_ms": self.cfg.entries_halt_ms, "open_positions": sum(len(b.open) for b in self.books.values())})
         self.tp = tp
         day = utc_day(T)
         cur = self.day_level.get(day)
@@ -1190,6 +1210,7 @@ class Runner:
             w = {"id": sha256_hex(f"{arm}|{card['id']}|{recv}")[:16], "pool": card["id"], "terms": [list(t) for t in wf["terms"]], "when": wf["when"],
                  "expires_ms": ttl_from + int(wf["ttl_min"]) * MIN_MS, "card_sha256": A.p4.card_sha256(card)}
             b.watches.append(w)
+            self._count(f"watch_added.{arm}")
             self.log.append(arm, recv, {"kind": "watch_add", "watch": w})
             return
         if not A.is_entry(v):
@@ -1355,18 +1376,21 @@ class Runner:
             for w in list(b.watches):
                 if T >= w["expires_ms"]:
                     b.watches.remove(w)
+                    self._count(f"watch_expired.{arm}")
                     self.log.append(arm, T, {"kind": "watch_end", "id": w["id"], "why": "expired"})
                     continue
                 if tp.entries_halted:
                     continue
                 card = self._fresh_card(w["pool"], T)
                 if card is None:
+                    self._count(f"watch_no_card.{arm}")  # the pool had no card this minute (no snapshot, chain facts missing or a veto); the watch stays
                     continue
                 nums = A.v4.numeric_fields(card)
                 ops = {">": lambda x, y: x > y, ">=": lambda x, y: x >= y, "<": lambda x, y: x < y, "<=": lambda x, y: x <= y}
                 if not all(f in nums and ops[op](nums[f], n) for f, op, n in w["terms"]):
                     continue
                 b.watches.remove(w)
+                self._count(f"watch_fired.{arm}")
                 self.log.append(arm, T, {"kind": "watch_end", "id": w["id"], "why": "fired", "card_sha256": A.p4.card_sha256(card)})
                 if not self._call_ok([arm], "entry", T):
                     self._count("entry_call_cap")
@@ -1416,6 +1440,13 @@ class Runner:
         self._begin_tick(T)  # the ONLY place the group policy is computed
         self.poll_to(T)
         self.exits(T)
+        if self.entries_halted_at(T):  # after the window end only code exits run (above); nothing else, and the runner ends once every position is closed
+            if not any(b.open for b in self.books.values()):
+                if not self._complete_logged:
+                    self._complete_logged = True
+                    self.log.append("SCAN", T, {"kind": "run_complete", "reason": "entries_halt_and_no_open_position"})
+                self._stop = True
+            return
         if (T // 1000) % 60 == H.SCAN_SECOND_MS // 1000:
             self.refresh_versions(T)
             self.scan(T)
@@ -1432,6 +1463,11 @@ class Runner:
                     sleep(wait)
             self.tick(T)
             T += TICK_MS
+
+    def log_start(self, provider: str | None) -> None:
+        """The START row (QP #918 (c)): the frozen sha, the pinned RPC provider and the window end, before the first decision of this process. Written by main()."""
+        self.log.append("SCAN", self.sim_now or self.now_fn(), {"kind": "start", "frozen_sha": self.cfg.frozen_sha, "provider": provider, "entries_halt_ms": self.cfg.entries_halt_ms,
+                                                              "clock_start_ms": self.cfg.clock_start_ms, "live": bool(self.cfg.live)})
 
     def request_stop(self, *_a: Any) -> None:
         self._stop = True
@@ -1470,8 +1506,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--feed-delay-slots", type=int, required=True)
     ap.add_argument("--stub", action="store_true")
     ap.add_argument("--end-ms", type=int, default=None)
+    ap.add_argument("--entries-halt-ms", type=int, default=None, help="REQUIRED (refused when missing: no default). The registered window end (ms): entries and LLM calls stop, code exits run to completion (2026-11-11T00Z = 1794355200000 for the 10-30 clock)")
     ap.add_argument("--review-root", default=None, help="where hv6_review keeps the manifests; default = --root. A drill root is refused.")
     a = ap.parse_args(argv)
+    if a.entries_halt_ms is None:
+        print("hv6_runner: refused: --entries-halt-ms is required (the registered window end; there is no default)", file=sys.stderr)
+        return 2
     if not re.fullmatch(r"[0-9a-fA-F]{7,40}", a.frozen_sha or ""):
         print("hv6_runner: refused: --frozen-sha must be 7 to 40 hex characters", file=sys.stderr)
         return 2
@@ -1490,7 +1530,10 @@ def main(argv: list[str] | None = None) -> int:
     model = A.StubModel(guard=guard) if a.stub else A.CallerModel(guard)
     chain = live_chain_source(a.root)
     chain.prefetch.start()  # facts are fetched off the scan path, stamped before the scan instant; the hourly spend (1,000) is persisted under the root
-    cfg = RunnerConfig(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True)
+    if a.entries_halt_ms <= a.clock_start_ms:
+        print("hv6_runner: refused: --entries-halt-ms must be after --clock-start-ms", file=sys.stderr)
+        return 2
+    cfg = RunnerConfig(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True, entries_halt_ms=a.entries_halt_ms)
     try:
         run = Runner(cfg, ArenaState(a.tape_dir), ArenaEngine(ledger_root, a.registry, cfg=stack_config(a.feed_delay_slots)), model, chain, guard,
                      review_root=a.review_root or a.root)
@@ -1499,6 +1542,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     signal.signal(signal.SIGTERM, run.request_stop)
     print(canon({"resumed": run.resume()}))
+    run.log_start(getattr(getattr(chain.chain, "rpc", None), "provider", None))
     start = max(a.clock_start_ms, int(time.time() * 1000))
     try:
         run.run(start - start % TICK_MS, a.end_ms or 2 ** 62)

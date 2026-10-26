@@ -5,7 +5,7 @@ PAPER only. StubModel only: no API call, no key, no RPC. SYNTHETIC tape (tools.t
 fake chains: no real arena hour is read, so no seal is touched. Every file is written under <HV6_ROOT>/drill/<drill-id>/ (a refused path otherwise); the
 production root, bots.json, the real engine ledger and the live chain state are never opened.
 
-It prints canonical-JSON lines of md5 and COUNTS only. It never prints a mint, pool, price, P&L figure or per-pool row. Exit 0 only if all nine drills PASS.
+It prints canonical-JSON lines of md5 and COUNTS only. It never prints a mint, pool, price, P&L figure or per-pool row. Exit 0 only if all ten drills PASS.
 Nothing here is an edge claim: the tape is synthetic.
 
   1 md5      two independent runs, same code: byte-identical decision-log md5.
@@ -612,8 +612,35 @@ def drill_probe_restart(D: Drill) -> dict:
             "max_probe_stake": max((e["size"] for e in ent), default=None), "log_md5": m, "uninterrupted_log_md5": ref_md5, "equal_to_uninterrupted": m == ref_md5}
 
 
+def drill_halt(D: Drill) -> dict:
+    """The window end mid-replay (V2-1): entries halt at a registered instant while positions are open; code exits run to completion; nothing enters; the runner ends by
+    itself. Rows before the halt are byte-identical to the uninterrupted reference run."""
+    if not hasattr(D, "ref"):
+        drill_md5(D)
+    ref = D.ref
+    first = min(r["ms"] for a in R.ARM_ORDER for r in rows(ref, a, "entry"))
+    halt = first + 60_000                      # one minute after the first entry: positions are open
+    run = D.new_run("halt")
+    run.cfg.entries_halt_ms = halt
+    run.run(START, END)
+    strip = lambda rs: [{k: v for k, v in r.items() if k not in ("seq", "prev", "sha")} for r in rs]  # noqa: E731
+    before_equal = all(strip(r for r in rows(run, x) if r["ms"] < halt) == strip(r for r in rows(ref, x) if r["ms"] < halt) for x in (*R.ARM_ORDER, "SCAN"))
+    halt_row = rows(run, "SCAN", "entries_halt")
+    entries_after = sum(1 for a in R.ARM_ORDER for r in rows(run, a, "entry") if r["ms"] >= halt)
+    llm_after = sum(1 for a in R.ARM_ORDER for r in rows(run, a) if r["ms"] >= halt and r["kind"] in ("llm_call", "watch_add"))
+    sells_after = sum(1 for a in R.ARM_ORDER for r in rows(run, a, "sell") if r["ms"] >= halt)
+    open_at_end = sum(len(b.open) for b in run.books.values())
+    for x in (*R.ARM_ORDER, "SCAN"):
+        run.log.verify(x)
+    ok = (before_equal and len(halt_row) == 1 and halt_row[0]["open_positions"] > 0 and entries_after == 0 and llm_after == 0 and sells_after > 0 and open_at_end == 0
+          and len(rows(run, "SCAN", "run_complete")) == 1 and run._stop)
+    return {"drill": "halt", "result": "PASS" if ok else "FAIL", "halt_after_first_entry_ms": 60_000, "rows_before_halt_equal_to_reference": before_equal,
+            "open_positions_at_halt": halt_row[0]["open_positions"] if halt_row else None, "entries_after_halt": entries_after, "llm_rows_after_halt": llm_after,
+            "exits_after_halt": sells_after, "open_at_end": open_at_end, "run_complete_rows": len(rows(run, "SCAN", "run_complete"))}
+
+
 DRILLS = (("md5", drill_md5), ("leakage", drill_leakage), ("chain", drill_chain), ("restart", drill_restart), ("order", drill_order), ("regime", drill_regime),
-          ("version", drill_version), ("version_restart", drill_version_restart), ("probe_restart", drill_probe_restart))
+          ("version", drill_version), ("version_restart", drill_version_restart), ("probe_restart", drill_probe_restart), ("halt", drill_halt))
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -325,6 +325,7 @@ def test_watch_fires_into_a_fresh_card_and_can_buy(tmp_path_factory):
     run.run(T0 + 9 * MIN + 2000, T0 + 40 * MIN)
     assert rows_of(run, "L", "watch_add") and any(r["why"] == "fired" for r in rows_of(run, "L", "watch_end"))
     assert rows_of(run, "L", "entry"), "the watch's second look bought"
+    assert run.counters["watch_added.L"] >= 1 and run.counters["watch_fired.L"] >= 1
 
 
 # ------------------------------------------------------------------------------------------------------------------------ 8. cooldown, min age

@@ -669,9 +669,10 @@ def latest_block_file(regime_dir: str | os.PathLike, before_ms: int) -> tuple[di
             cands.append((ms, f))
     for ms, f in sorted(cands, reverse=True):
         try:
-            return read_block_file(f)
+            blk, data = read_block_file(f)
         except ReviewError:
             continue
+        return dict(rb.block_for_use(blk, before_ms)), data  # more than 36 h old at the use instant: `stale` in REGIME EVIDENCE and for the validator
     return None
 
 
