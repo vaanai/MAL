@@ -118,6 +118,23 @@ class ExporterUnitTests(TmpCase):
         with self.assertRaises(tie.TieoutMismatch):
             tie.build(rows, self._state(), T0 + DAY_MS, {"NOPE": good["M1"]})
 
+    def test_a_missing_parity_trip_field_is_a_mismatch_one_per_field(self):
+        rows = trip_rows("M1", T0, T0)
+        good = {"trip_id": "M1", "stake_lamports": S, "buy_fee_lamports": BUY_FEE, "sell_fee_lamports": SELL_FEE_TOTAL, "exit_landed": True}
+        for k in ("buy_fee_lamports", "stake_lamports", "exit_landed", "sell_fee_lamports"):
+            t = {x: v for x, v in good.items() if x != k}
+            with self.assertRaises(tie.TieoutMismatch, msg=k):
+                tie.build(rows, self._state(), T0 + DAY_MS, {"M1": t})
+        with self.assertRaises(tie.TieoutMismatch):  # exit_landed false while the rows have a landed sell
+            tie.build(rows, self._state(), T0 + DAY_MS, {"M1": {**good, "exit_landed": False}})
+        with self.assertRaises(tie.TieoutMismatch):  # exit_landed true with no landed sell in the rows
+            tie.build(rows[:3], self._state(status="open"), T0 + DAY_MS, {"M1": good})
+
+    def test_module_doc_declares_the_priority_residual(self):
+        self.assertNotIn("not recomputed", tie.__doc__)
+        for w in ("DECLARED RESIDUAL", "FALSE `tieout_mismatch`", "last_valid_block_height", "unresolved_hard_halts == []"):
+            self.assertIn(w, tie.__doc__)
+
     def test_unusable_inputs_are_refused(self):
         with self.assertRaises(atl.BadLedger):
             tie.build(trip_rows("M1", T0, T0), {"latches": {}}, T0 + DAY_MS)

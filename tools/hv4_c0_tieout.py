@@ -6,14 +6,21 @@ It writes the bridge's book (positions, fills with the fees actually signed, lat
 fill rows (`<state_dir>/probe/fills.jsonl`: `buy` / `sell` rows with a signature) into the rows that exporter reads, and adds a `bridge` block the tie-out ignores:
 
     bridge.positions   the bridge's orders that hold a position (order_id, mint, status, stake_lamports)
-    bridge.fills       one entry per fill row: kind, mint, signature, landed, fee_lamports, priority_lamports (the value SIGNED, not recomputed), spend / received
+    bridge.fills       one entry per fill row: kind, mint, signature, landed, fee_lamports, priority_lamports (AS LOGGED on the row; see the DECLARED RESIDUAL below: it is not guaranteed to be the value signed), spend / received
     bridge.trip_fees   per mint: buy_fee_lamports, sell_fee_lamports (every sell send, escalated resends included), sell_priorities
     bridge.latches     the bridge's latches at export time
+
+DECLARED RESIDUAL (QP #970, N7 / N-D, still open): tools/probe_live.py lines 669 and 831 log `priority_lamports=self._priority(mint)`, recomputed when the send RESOLVES, not
+the value signed. The C0 override remembers the priority of the LAST tx signed per mint, so when an earlier rung lands after the bridge escalated, the logged priority (and
+the fee audit) can differ from what that send paid: the consequence is a FALSE `tieout_mismatch` latch (fail closed, never a false pass). Owed before removal: log the priority
+actually signed per send (a pinned diff plus an md5 decision-equivalence replay). Also owed: every send row carries `last_valid_block_height` from probe_live `p["lvbh"]` (via
+`_timing()`), with a test where a confirmed drop lets the day sign off (pinned diff plus md5 replay); until then an expired send exports pending and the day does not sign off.
+The C0 read / install pack must check `unresolved_hard_halts == []` AND `match` in the parity result, not rc 0 alone (a hard latch does not change the parity exit code).
 
 FEE AUDIT (fail closed, `TieoutMismatch`). The twin is priced at the fees actually sent, so the exporter checks, per row, fee_lamports == priority_lamports + 5,000;
 that a buy was signed at the pinned buy priority; that each sell was signed at a pinned priority (55,000 or 150,000) and never below the schedule for its attempt
 index (`sell_priority(i)`); that a landed buy spent the order's S; and, when the parity trips file is given, that its buy_fee_lamports, sell_fee_lamports and
-stake_lamports equal the ones recomputed from the rows. Any difference raises; the bridge turns it into the hard latch `tieout_mismatch`.
+stake_lamports equal the ones recomputed from the rows; every one of those fields, and exit_landed, must be present on every parity trip (a missing field is a mismatch). Any difference raises; the bridge turns it into the hard latch `tieout_mismatch`.
 
 DAILY, WRITE-ONCE. `LEDGER-<day>.json` in the tie-out directory, created with O_EXCL, only for a CLOSED UTC day, from the rows with ts_ms before the end of that day
 (the fetcher cuts the window itself). A rerun with an identical core is a no-op ("same"); a different core never overwrites ("conflict", rc 4). The `bridge.latches`
@@ -103,7 +110,7 @@ def audit_fees(fills: list[dict[str, Any]], stakes: Mapping[str, int], parity_tr
         if "landed" not in r:
             continue
         kind, mint, landed = r["kind"], r["mint"], r["landed"]
-        t = per.setdefault(mint, {"buy_fee_lamports": None, "sell_fee_lamports": 0, "sell_priorities": [], "stake_lamports": None})
+        t = per.setdefault(mint, {"buy_fee_lamports": None, "sell_fee_lamports": 0, "sell_priorities": [], "stake_lamports": None, "sell_landed": False})
         if kind == "sell":
             i = sell_idx.get(mint, 0)
             sell_idx[mint] = i + 1
@@ -128,6 +135,7 @@ def audit_fees(fills: list[dict[str, Any]], stakes: Mapping[str, int], parity_tr
             if prio < c0.sell_priority(i):
                 raise TieoutMismatch(f"sell attempt {i} for {mint} signed at {prio}, below the schedule {c0.sell_priority(i)}")
             t["sell_fee_lamports"] += fee
+            t["sell_landed"] = t["sell_landed"] or bool(landed)
             t["sell_priorities"].append(prio)
     if parity_trips is not None:
         for mint, pt in parity_trips.items():
@@ -135,10 +143,19 @@ def audit_fees(fills: list[dict[str, Any]], stakes: Mapping[str, int], parity_tr
             if t is None or t["buy_fee_lamports"] is None:
                 raise TieoutMismatch(f"parity trip {mint} has no landed buy in the fill rows")
             for key, mine in (("buy_fee_lamports", t["buy_fee_lamports"]), ("stake_lamports", t["stake_lamports"])):
-                if pt.get(key, mine) != mine:
+                if not _isint(pt.get(key)):  # a missing or non-integer field is a mismatch, never a pass (QP R1)
+                    raise TieoutMismatch(f"parity trip {mint}: {key} is missing or not an integer")
+                if pt[key] != mine:
                     raise TieoutMismatch(f"parity trip {mint}: {key} {pt.get(key)} != fill rows {mine}")
-            if pt.get("exit_landed") and pt.get("sell_fee_lamports") != t["sell_fee_lamports"]:
-                raise TieoutMismatch(f"parity trip {mint}: sell_fee_lamports {pt.get('sell_fee_lamports')} != fill rows {t['sell_fee_lamports']}")
+            if not isinstance(pt.get("exit_landed"), bool):
+                raise TieoutMismatch(f"parity trip {mint}: exit_landed is missing or not a bool")
+            if pt["exit_landed"] != t["sell_landed"]:
+                raise TieoutMismatch(f"parity trip {mint}: exit_landed {pt['exit_landed']} but the fill rows have a landed sell: {t['sell_landed']}")
+            if pt["exit_landed"]:
+                if not _isint(pt.get("sell_fee_lamports")):
+                    raise TieoutMismatch(f"parity trip {mint}: sell_fee_lamports is missing or not an integer")
+                if pt["sell_fee_lamports"] != t["sell_fee_lamports"]:
+                    raise TieoutMismatch(f"parity trip {mint}: sell_fee_lamports {pt['sell_fee_lamports']} != fill rows {t['sell_fee_lamports']}")
     return per
 
 
