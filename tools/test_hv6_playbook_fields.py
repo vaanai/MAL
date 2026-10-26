@@ -49,7 +49,7 @@ def test_every_named_field_is_on_a_real_card(path, card):
     for n in names:
         assert n in have, f"{path.name} names {n}, not on a build_card card"
     if path == PLAYBOOK:  # the playbook must name the fields it describes
-        for n in ("f.ret_15m", "f.vol_15m", "f.quote_sol", "f.quote_eff_sol", "f.impact_rt_025", "f.impact_rt_050", "f.impact_rt_100", "f.age_s"):
+        for n in ("f.ret_15m", "f.vol_15m", "f.quote_sol", "f.quote_eff_sol", "f.impact_rt_025", "f.impact_rt_050", "f.impact_rt_100", "f.age_s", "f.dd_ath", "risk.quote_dd_peak"):
             assert n in names, n
 
 
