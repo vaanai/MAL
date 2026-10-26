@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import tempfile
@@ -13,6 +14,10 @@ from tools import arena_live_bridge as alb
 from tools import hv4_live_c0 as c0
 from tools.test_arena_live_bridge import TmpCase
 from tools.test_hv4_live_c0 import ARM, Hv4Env, write_a3, write_feed
+
+
+class EditedClass:
+    """Replaces a pinned class: different source."""
 
 
 def edited(*a, **k):  # source differs from every pinned function
@@ -41,7 +46,7 @@ class ExitSnapshotPinTests(unittest.TestCase):
         self.assertIsNone(c0.sell_pin_problem())
 
     def test_every_new_key_mismatch_is_named(self):
-        for k in [k for k in c0.SELL_BUILDER_PIN if k.startswith(("pe.", "bridge."))]:
+        for k in [k for k in c0.SELL_BUILDER_PIN if k.startswith(("pe.", "bridge.", "x."))]:
             with self.subTest(k=k):
                 self.assertEqual(c0.sell_pin_problem({**c0.SELL_BUILDER_PIN, k: "0" * 64}), f"sell_builder_pin_mismatch:{k}")
                 self.assertEqual(c0.sell_pin_problem({kk: v for kk, v in c0.SELL_BUILDER_PIN.items() if kk != k}), f"sell_builder_pin_mismatch:{k}")
@@ -56,10 +61,33 @@ class ExitSnapshotPinTests(unittest.TestCase):
                 self.assertEqual(c0.sell_pin_problem(), f"sell_builder_pin_mismatch:pe.{cn}.{mn}_sha256")
         self.assertIsNone(c0.sell_pin_problem())
 
+    def test_editing_any_extra_callee_breaks_the_pin(self):
+        """The decoders and quote helpers (sim._b64, token_amount, parse_pool_account, parse_global_config, pool_state_from_accounts, Snapshot, _prio, check_sell ...)."""
+        for spec in c0.PIN_EXTRA:
+            mod, qual = spec.split(":")
+            from tools import probe_live  # noqa: F401
+            import importlib
+            m = importlib.import_module(f"tools.{mod}")
+            parts = qual.split(".")
+            holder = m if len(parts) == 1 else getattr(m, parts[0])
+            attr = parts[-1]
+            is_cls = isinstance(getattr(holder, attr), type)
+            with self.subTest(spec=spec), mock.patch.object(holder, attr, EditedClass if is_cls else edited):
+                if is_cls:  # a replaced class also breaks the keys that read its members, so only "some pin item fails" is asserted
+                    self.assertTrue((c0.sell_pin_problem() or "").startswith("sell_builder_pin_"))
+                    continue
+                self.assertEqual(c0.sell_pin_problem(), f"sell_builder_pin_mismatch:{c0.extra_key(spec)[:-len('_sha256')]}_sha256")
+        for must in ("pumpswap_simulate:_b64", "pumpswap_simulate:token_amount", "pumpswap_tx:parse_pool_account", "pumpswap_tx:parse_global_config",
+                     "pumpswap_tx:pool_state_from_accounts", "probe_executor:Snapshot", "probe_executor:Executor._prio", "probe_executor:Executor._exit_prio",
+                     "probe_executor:check_sell"):
+            self.assertIn(must, c0.PIN_EXTRA)
+
     def test_changing_a_constant_breaks_the_pin(self):
         from tools import probe_executor as pe
         for n in c0.PE_CONSTANTS:
-            with self.subTest(const=n), mock.patch.object(pe, n, getattr(pe, n) + 1):
+            old = getattr(pe, n)
+            new = dataclasses.replace(old, tp=old.tp + 0.01) if dataclasses.is_dataclass(old) else old + 1
+            with self.subTest(const=n), mock.patch.object(pe, n, new):
                 self.assertEqual(c0.sell_pin_problem(), "sell_builder_pin_mismatch:pe.constants_sha256")
         for n in ("BATCH_MAX_AGE_MS", "STATIC_TTL_MS"):
             self.assertIn(n, c0.PE_CONSTANTS)
@@ -220,15 +248,35 @@ class HaltBridgeTests(TmpCase):
         b.tick()
         self.assertEqual([c for c in e.port.calls if c[0] == "buy"], [])
 
-    def test_live_requires_a_status_file_dry_does_not(self):
+    def test_missing_status_refuses_everywhere_except_a_marked_synthetic_dry_root(self):
         e = Hv4Env(self.tmp)
-        os.unlink(Path(e.raw["root"]) / "transport" / f"{e.bot}.status.json")
+        status = Path(e.raw["root"]) / "transport" / f"{e.bot}.status.json"
+        os.unlink(status)
         br = alb.Bridge(alb.Config.from_dict(e.raw), e.port, now_ms=e.clock, live_ok_path=e.live_ok, tier_path=e.tier, root_checks=False)
-        self.assertIsNone(br.feed_refusal(e.clock.t))
+        self.assertEqual(br.feed_refusal(e.clock.t), "feed_gap:feed_status_missing")  # dry, no marker: refused
+        (Path(e.raw["root"]) / c0.SYNTHETIC_MARKER).write_text("")
+        self.assertIsNone(br.feed_refusal(e.clock.t))  # dry, synthetic marker: allowed
         live = Hv4Env(tempfile.mkdtemp(dir=self.tmp), live=True)
         lb = live.bridge()
         os.unlink(Path(live.raw["root"]) / "transport" / f"{live.bot}.status.json")
-        self.assertEqual(lb.feed_refusal(live.clock.t), "feed_gap:feed_status_missing")
+        (Path(live.raw["root"]) / c0.SYNTHETIC_MARKER).write_text("")
+        self.assertEqual(lb.feed_refusal(live.clock.t), "feed_gap:feed_status_missing")  # live never takes the marker exemption
+
+    def test_presend_rechecks_the_feed_after_the_rpcs(self):
+        e = Hv4Env(self.tmp)
+        b = e.bridge()
+        e.start()
+        e.entry_sz("o1")
+        real = e.port.balance
+
+        def balance_then_stall():
+            v = real()
+            write_feed(e.raw["root"], e.bot, e.clock.t, state="stalled")  # the feed stalls while the RPCs run
+            return v
+        e.port.balance = balance_then_stall
+        b.tick()
+        self.assertEqual([c for c in e.port.calls if c[0] == "buy"], [])
+        self.assertTrue(any(r.get("presend") and r["why"].startswith("feed_gap:") for r in e.log_rows("entry_refused")), e.log_rows("entry_refused"))
 
     def test_a3_pins_changed_latches_stops_buys_exits_run(self):
         e = Hv4Env(self.tmp)

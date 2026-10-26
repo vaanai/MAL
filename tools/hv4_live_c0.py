@@ -107,7 +107,7 @@ SELL_BUILDER_PIN: dict[str, str] = {
     "ptx.constants_sha256": "e2b66274132a760ee6d440ae8cbd03294bb0ba29f97a0d8b6aecd2b286dbe79c",
     "pe.exit_check_sha256": "7dcd289631cfe0418439df90f4b0901518d813dfd474f0cb2a6c660e3a51eb00",  # PR 3: the quote_out that min_out is a share of
     "c0.ladder_sha256": "06123a941d5a842fe9eccaed4277b898fe8c88ba7681c0feee5f059b397f3233",  # PR 3: the compiled 0.85 / 0.65 rungs and their escalation point (this module's own ladder source)
-    # PR 5a (QP removal precondition 2): the exit snapshot builder
+    # PR 5a (QP removal precondition 2): the exit snapshot builder and the decoders / quote helpers it calls
     "pe.fetch_snapshot_sha256": "e0c0d598b99a92864d401b32a99f2f70550565c03a3618df975484cd47f49b74",
     "pe.entry_quote_sha256": "5d231ffbfb421cfc00c6208d45a3cf3f7be3284c37c12f0ee9b290fdc8741582",
     "pe.fee_ppm_for_sha256": "0417a9705faf7613bfd59cf623da1aa6e0ce7b0b910c61f8625ab482a8a67ca8",
@@ -122,7 +122,30 @@ SELL_BUILDER_PIN: dict[str, str] = {
     "pe.Executor._exit_snapshot_sha256": "a89e0d70519630cd5644e5a538e10deabb4588502b35a983f4ce68dae33607a6",
     "pe.Executor._batch_err_sha256": "563007db5c3aed08681bce766ef45813143384223a9231dbbfcfc7e193648a0c",
     "pe.Executor.poll_positions_sha256": "d050b315227c996d7832ececcd176cc2b0c4a581b9579fd5e972effc62c0cf17",
-    "pe.constants_sha256": "418af928fbf6c77ce0dbe7f0987aaa80ad19ec0890ae03d6e8dc2e04bc6d4783",
+    "pe.constants_sha256": "55cb78be6737a4e4fef4f1eec0baca8fd2f15af18a983b609b7cf55239e4171d",
+    "x.pumpswap_simulate._b64_sha256": "8f0715ae3b80b9cbd49d4bac7031bc47f8f794ace4c4b84efdbaa6c92d571263",
+    "x.pumpswap_simulate.token_amount_sha256": "98738db24cacf2ed0addbbcc3e1d429090c97164169f42778f7467b2d415f36b",
+    "x.pumpswap_tx.parse_pool_account_sha256": "3224308a1e95ba96128331817eb423b49099e6a414f88600cdb08bf408771f64",
+    "x.pumpswap_tx.parse_global_config_sha256": "c7cfdbb98d3536d23ddbdc9416464986e6efbfff849bda53207bd4be9a6dfa1a",
+    "x.pumpswap_tx.pool_state_from_accounts_sha256": "5b33bef7ba3782bc676f6d6f082cbdd12036ffdb2368560fcc43c710b19a17c6",
+    "x.pumpswap_tx.PoolState_sha256": "a9af1c9cf6f1238eedf063cfd72f8b339263004922b48124c0c712e8d04a7d48",
+    "x.pumpswap_tx.cp_buy_out_sha256": "9ffbd3c9b5347bdd52856f409a12c8a18999fbb98c98d3777b5f4e33d854c07e",
+    "x.pumpswap_tx.cp_sell_out_sha256": "68b3fd36ddd0bbd9af359201b3af74bb6166021e60c8477ce992b73a4e51e7ce",
+    "x.pumpswap_tx.canonical_pool_sha256": "5033af0e9b5a5ecf82f90fc5f6d1d788858dd114f2a6abb3e4854f96e5067e1d",
+    "x.paper_curve_math.pumpswap_sol_fee_ppm_sha256": "79ffb58c440ea0fd26e89fb3f714936212e05dae693d517cb312c6a7aa5ab0cb",
+    "x.paper_curve_math.market_cap_sol_sha256": "be7992d9ab49d48969617a8770444880f9e824890e6930dc69c92836c850760e",
+    "x.paper_curve_math.spot_sol_per_ui_sha256": "9f3f81e0175d809c659de6e13915ee57031080646919de3def07af03a118dbf5",
+    "x.paper_curve_math.reserves_with_our_buy_sha256": "4af4a1a8b790c3c9d069d6d541f4e69fc1e7e289f7031221490a35852f8cc052",
+    "x.probe_executor.Snapshot_sha256": "91e9dc9a404e80d7c8e8026ebbf06eccf4f1082cfffbe6d80ac678c562cd5e7d",
+    "x.probe_executor.check_sell_sha256": "91cd1bc48470e8fff032d5194c20c10ec3374de49e9552fd52e4138988c34e31",
+    "x.probe_executor.check_halt_file_sha256": "04cf031902a941ef7797a0c183db4aeb2c08ebfa98e79b0553c69abc0ce94817",
+    "x.probe_executor.Executor._prio_sha256": "4795b5b6c8d819de85779dbf66bb1e5a8996d712643105c86d1cede92fd2197a",
+    "x.probe_executor.Executor._exit_prio_sha256": "fd3448f1bc88d4c4cee0396403f6ae0fc371e742a2cb7c2c8993cb28436833d6",
+    "x.pumpswap_tx.parse_virtual_signed_sha256": "2636cf5c1ce25d493d96aa5a19646870f2af9245eb17ba330e6313dd4d4ceff7",
+    "x.pumpswap_tx.global_volume_accumulator_sha256": "6640e41412852a01e05ca9bf304671b9c461cf78a53f4b7f29174f68eb725aea",
+    "x.pumpswap_tx.user_volume_accumulator_sha256": "36da371bf169495396c3482111e1795f0f617e2951a947d8f12cdd9d123f33f3",
+    "x.probe_live.LiveExecutor._send_sha256": "0c8f34a313e985b85788ee94425ff32bfdf56e5fa1913eaf8ac9528bc567b91c",
+    "x.probe_live.LiveExecutor._exit_candidates_sha256": "b77a23adb146cf51b559126431d1991fe7da477006312e7812736ce88ea03f37",
     "bridge.poll_positions_sha256": "b52b3d4778e16d0619c9749d186aa36361e70916372ffe932e2c3051ef87524d",
     "bridge.refresh_warm_sha256": "c3b7ced0776059708aa75d8dbc134149dbd8ed0eae27a1984e3a533f7b25c8f8",
 }
@@ -133,12 +156,37 @@ PE_FUNCS = ("fetch_snapshot", "entry_quote", "fee_ppm_for", "drift_vs_seed")  # 
 PE_METHODS = (("Snapshot", "quote_priced"), ("StaticCache", "get"), ("StaticCache", "put"), ("StaticCache", "refresh"),
               ("Executor", "_snapshot"), ("Executor", "_batched_exit_snapshots"), ("Executor", "_batch_stale"), ("Executor", "_exit_snapshot"),
               ("Executor", "_batch_err"), ("Executor", "poll_positions"))
-PE_CONSTANTS = ("BATCH_MAX_AGE_MS", "STATIC_TTL_MS", "STATIC_REFRESH_MS", "BATCH_ERR_LOG_EVERY_MS", "V_SEED_LAMPORTS", "V_SEED_TOLERANCE")
+PE_CONSTANTS = ("EXIT_RULE", "UNPRICED_GRACE_MS", "BATCH_MAX_AGE_MS", "STATIC_TTL_MS", "STATIC_REFRESH_MS", "BATCH_ERR_LOG_EVERY_MS", "V_SEED_LAMPORTS", "V_SEED_TOLERANCE")
+# Callees that DECODE the pool / vault / global-config data and compute the quote that min_out is a share of (reviewer + QP on #969), and the helpers the snapshot
+# paths call. Spec "module:qualname" (a function, a class or a method); key `x.<module>.<qualname>_sha256`. tools/test_hv4_live_c0_pr5a.py walks the call graph
+# of every pinned function and fails on a tools.* callee that is neither pinned nor on its reviewed allowlist.
+PIN_EXTRA = ("pumpswap_simulate:_b64", "pumpswap_simulate:token_amount",
+             "pumpswap_tx:parse_pool_account", "pumpswap_tx:parse_global_config", "pumpswap_tx:pool_state_from_accounts", "pumpswap_tx:PoolState",
+             "pumpswap_tx:cp_buy_out", "pumpswap_tx:cp_sell_out", "pumpswap_tx:canonical_pool",
+             "paper_curve_math:pumpswap_sol_fee_ppm", "paper_curve_math:market_cap_sol", "paper_curve_math:spot_sol_per_ui", "paper_curve_math:reserves_with_our_buy",
+             "probe_executor:Snapshot", "probe_executor:check_sell", "probe_executor:check_halt_file",
+             "probe_executor:Executor._prio", "probe_executor:Executor._exit_prio",
+             "pumpswap_tx:parse_virtual_signed", "pumpswap_tx:global_volume_accumulator", "pumpswap_tx:user_volume_accumulator",
+             "probe_live:LiveExecutor._send", "probe_live:LiveExecutor._exit_candidates")
 BRIDGE_METHODS = ("poll_positions", "refresh_warm")  # BridgeExecutor, nested in make_live_port: read by AST from the file on disk
 
 
 def _fget(o: Any) -> Any:
     return o.fget if isinstance(o, property) else o
+
+
+def extra_key(spec: str) -> str:
+    return "x." + spec.replace(":", ".") + "_sha256"
+
+
+def resolve_spec(spec: str) -> Any:
+    """'module:qualname' under tools/ -> the live object (function, class or method)."""
+    import importlib
+    mod, qual = spec.split(":")
+    obj: Any = importlib.import_module(f"tools.{mod}")
+    for part in qual.split("."):
+        obj = getattr(obj, part)
+    return obj
 
 
 def bridge_method_source(name: str, path: str | None = None) -> str:
@@ -270,6 +318,8 @@ def _sell_pin_items() -> dict[str, Any]:
     for cn, mn in PE_METHODS:
         items[f"pe.{cn}.{mn}_sha256"] = (lambda cn=cn, mn=mn: sha(inspect.getsource(_fget(getattr(getattr(pe, cn), mn))).encode()))
     items["pe.constants_sha256"] = lambda: sha(repr([(n, getattr(pe, n)) for n in PE_CONSTANTS]).encode())
+    for spec in PIN_EXTRA:
+        items[extra_key(spec)] = (lambda spec=spec: sha(inspect.getsource(_fget(resolve_spec(spec))).encode()))
     for n in BRIDGE_METHODS:
         items[f"bridge.{n}_sha256"] = (lambda n=n: sha(bridge_method_source(n).encode()))
     items["c0.ladder_sha256"] = ladder_pin_sha256

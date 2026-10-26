@@ -660,12 +660,12 @@ class Bridge:
     def feed_refusal(self, now: int) -> str | None:
         """hv4_c0 FEED-GAP halt: new buys stop while the forwarder's status file (<root>/transport/<bot_id>.status.json) is missing, stale, not `connected` or
         silent past tools.hv4_live_c0.FEED_FRAME_MAX_MS. Not a latch: it clears when the feed resumes. Exits are unaffected. LIVE always checks it; a DRY bridge
-        checks it only when a status file exists (the research-0 direct path has none)."""
+        on a root without SYNTHETIC_MARKER needs it too."""
         if self.cfg.profile != c0.PROFILE:
             return None
         path = c0.feed_status_path(self.cfg.root, self.cfg.bot_id)
-        if self.cfg.mode != LIVE and not os.path.lexists(path):
-            return None
+        if self.cfg.mode != LIVE and not os.path.lexists(path) and c0.synthetic_root(self.cfg.root):
+            return None  # only a synthetic fixture root may run without a forwarder status; any other root (dry included) refuses
         why = c0.feed_gap_problem(path, self.cfg.bot_id, now)
         if why:
             self._count("feed_gap_refusal")
@@ -773,7 +773,7 @@ class Bridge:
         if late:
             order["status"] = "refused"
             order["refused"] = late
-            self._count("refused_" + late)
+            self._count("refused_" + late.split(":")[0])
             self._log("entry_refused", order_id=oid, why=late, decision_ms=row["ms"], seq=row["seq"], presend=True)
             self._save()
             return
@@ -795,6 +795,9 @@ class Bridge:
             return "halt_file"
         if stop:
             return "stop_file"
+        why = self.feed_refusal(now)  # the feed can stall during the RPCs above (hv4_c0 only; None for every other profile)
+        if why:
+            return why
         if now >= self.cfg.end_ms:
             return "end_ms"
         if now - int(row["ms"]) > MAX_DECISION_AGE_MS:
