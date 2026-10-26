@@ -605,6 +605,90 @@ class DeadRunnerTests(TmpCase):
         self.assertEqual(c0.feed_gap_problem(str(Path(e.raw["root"]) / "transport" / f"{e.bot}.status.json"), e.bot, e.clock.t), None)
 
 
+class GapWindowTests(Section52GapHaltTests):
+    """QP R4-R7 on 4c4c41a8."""
+
+    def test_r1_the_critical_wrapper_is_pinned(self):
+        try:
+            from tools import probe_executor as pe
+        except ModuleNotFoundError as e:
+            self.skipTest(str(e))
+        self.assertIn("probe_executor:critical", c0.PIN_EXTRA)
+        with mock.patch.object(pe, "critical", edited):
+            self.assertEqual(c0.sell_pin_problem(), "sell_builder_pin_mismatch:x.probe_executor.critical_sha256")
+
+    def test_r4_the_ten_minutes_count_from_the_end_of_a_long_stall(self):
+        e, b = self.env()
+        t0 = e.clock.t
+        self.gaps(e, {"kind": "stall", "ms": t0})
+        b.tick()
+        self.review(e, t0)
+        e.clock.t = t0 + 15 * 60_000  # a 15-minute stall; the feed comes back now
+        self.gaps(e, {"kind": "stall", "ms": t0}, {"kind": "resume", "ms": e.clock.t, "gap_ms": 15 * 60_000})
+        e.refresh_halt_inputs()
+        b.tick()
+        self.assertIn(c0.FEED_BREAK_LATCH, b.state.latches)  # gap-free for 0 minutes
+        e.clock.t += c0.GAP_FREE_MS - 1
+        e.refresh_halt_inputs()
+        b.tick()
+        self.assertIn(c0.FEED_BREAK_LATCH, b.state.latches)
+        e.clock.t += 2
+        e.refresh_halt_inputs()
+        b.tick()
+        self.assertNotIn(c0.FEED_BREAK_LATCH, b.state.latches)
+
+    def test_r5_the_review_must_equal_the_newest_gap_instant(self):
+        e, b = self.env()
+        t0 = e.clock.t
+        self.gaps(e, {"kind": "stall", "ms": t0})
+        b.tick()
+        e.clock.t = t0 + c0.GAP_FREE_MS + 1
+        e.refresh_halt_inputs()
+        for ms in (t0 + 10 ** 12, t0 + 1, t0 - 1):
+            self.review(e, ms)
+            b.tick()
+            self.assertIn(c0.FEED_BREAK_LATCH, b.state.latches, ms)
+        self.review(e, t0)
+        b.tick()
+        self.assertNotIn(c0.FEED_BREAK_LATCH, b.state.latches)
+
+    def test_r6_the_noted_gap_is_persisted_and_a_restart_cannot_clear_on_an_older_review(self):
+        e, b = self.env()
+        t0 = e.clock.t
+        self.gaps(e, {"kind": "stall", "ms": t0 - 20 * 60_000})
+        self.review(e, t0 - 20 * 60_000)  # an older, matching review of the gap-log gap
+        e.start()
+        e.row({"kind": "gap"}, ms=t0 - 1000)  # a newer gap in the decision stream
+        b.tick()
+        self.assertEqual(b.state.gap_noted_ms, t0 - 1000)
+        e.clock.t = t0 + c0.GAP_FREE_MS + 1
+        e.refresh_halt_inputs()
+        b2 = alb.Bridge(alb.Config.from_dict(e.raw), e.port, now_ms=e.clock, live_ok_path=e.live_ok, tier_path=e.tier, root_checks=False, gap_clear_dir=e.clear_dir)
+        self.assertEqual(b2.state.gap_noted_ms, t0 - 1000)
+        self.assertIn(c0.FEED_BREAK_LATCH, b2.state.latches)
+        b2.tick()
+        self.assertIn(c0.FEED_BREAK_LATCH, b2.state.latches)  # the review names an older instant: no clear
+        self.review(e, t0 - 1000)
+        b2.tick()
+        self.assertNotIn(c0.FEED_BREAK_LATCH, b2.state.latches)
+
+    def test_r7_an_oversize_gap_log_is_refused_not_truncated(self):
+        e, b = self.env()
+        d = Path(e.raw["root"]) / "transport"
+        d.mkdir(exist_ok=True)
+        f = d / f"{e.bot}.gaps.jsonl"
+        with mock.patch.object(c0, "GAP_LOG_MAX_BYTES", 100):
+            f.write_text((json.dumps({"kind": "resume", "ms": 1}) + "\n") * 20)
+            self.assertEqual(c0.gap_log_ms(str(f)), ([], [], "gap_log_too_large"))
+            b.tick()
+        self.assertIn(c0.FEED_BREAK_LATCH, b.state.latches)
+        self.assertEqual(b.state.latches[c0.FEED_BREAK_LATCH], "gap_log_too_large")
+
+    def test_module_doc_says_precondition_7_is_not_met_for_tape_gaps(self):
+        self.assertIn("PRECONDITION 7 IS NOT MET FOR TAPE GAPS", c0.__doc__)
+        self.assertNotIn("`feed_gap:<why>`", c0.__doc__)
+
+
 class RootCheckPathTypeTests(TmpCase):
     """Reviewer blocker on 2519c0f5: root_ok_problem got a str and h5.root_file_problem does p.parent. Every call site, with root_checks=True and a real tmp dir."""
 

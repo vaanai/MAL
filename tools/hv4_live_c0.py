@@ -29,9 +29,17 @@ PR 5a notes (still `hv4_c0_incomplete`: nothing here removes the live refusal).
     and `window_file_unwritable` (including a stale `.<bot_id>.<pid>.tmp` left by a crashed start) stop the start; the refusal text says MANUAL RECOVERY. The
     bridge never deletes or recreates the file; the owner restores the ORIGINAL first_start_ms. A tmp this process created is unlinked on a write/fsync failure.
   * HALT TIMING: in practice the feed halt fires at the forwarder's own `stalled` state (2,000 ms, QP), before the bridge's 5,000 ms frame bound; the bridge bound is
-    the backstop for a forwarder that stops updating its status. `runner_silent` (30 min without any decision row) withholds buys; see runner_silent_problem.
-  * HALTS: `feed_gap:<why>` refuses new buys while the forwarder status is not live (no latch; it clears when the feed resumes). `a3_pins_changed` latches on any
-    A3 halt flag, an unreadable/stale record, or a missing record file in live (cleared only by the manager). Exits keep running under both.
+    the backstop for a forwarder that stops updating its status.
+  * PRECONDITION 7 IS NOT MET FOR TAPE GAPS. What is built is the CONSUMER: the `feed_break` latch (hard), its clear (10 minutes counted from the END of the gap AND a
+    root-owned review file naming EXACTLY the newest gap instant) and the recorder's `gap` marking. The PRODUCER of the book's own tape gap records (data_loss,
+    process_restart, feed_restart, start, takeover, gap_silence_ms breaches) does not exist: the frozen HV4 runner (9ed4c5ff) emits none and must not change; a separate
+    read-only relay (tools/hv4_gap_relay.py, kind and instant only) is owed in its own PR. Until then `feed_break` is fed only by the forwarder's TRANSPORT gap log
+    (stall, disconnect, reconnect, mismatch, error, torn tail) and a forwarder `stopped_mismatch`; that is a stricter extra guard, not the §5.2 halt.
+  * `transport_stall:<why>` refuses new buys while the forwarder status is not live (no latch; clears by itself; an extra guard). `a3_pins_changed` latches on any
+    A3 halt flag, an unreadable/stale record, or a missing record file in live (cleared only by the manager). Exits keep running under all of them.
+  * RUNNER LIVENESS: `runner_silent` is INERT for buys in practice (the entry row that arrives resets it before it is judged; a stuck runner's old rows are refused by
+    MAX_DECISION_AGE_MS). A dead runner is handled by the bridge's own time-stop and sl backstops, which need no runner row (DeadRunnerTests). Owed in the install pack:
+    a host-side dead-man on the runner job and on SCAN-log `tick_timing` staleness, and a C0 read that flags every backstop-closed trade during runner silence.
 """
 
 from __future__ import annotations
@@ -146,6 +154,7 @@ SELL_BUILDER_PIN: dict[str, str] = {
     "x.pumpswap_tx.parse_virtual_signed_sha256": "2636cf5c1ce25d493d96aa5a19646870f2af9245eb17ba330e6313dd4d4ceff7",
     "x.pumpswap_tx.global_volume_accumulator_sha256": "6640e41412852a01e05ca9bf304671b9c461cf78a53f4b7f29174f68eb725aea",
     "x.pumpswap_tx.user_volume_accumulator_sha256": "36da371bf169495396c3482111e1795f0f617e2951a947d8f12cdd9d123f33f3",
+    "x.probe_executor.critical_sha256": "5202b98f88c7fd5999bb29e592f79a6909d449f05079084238871d7ccfea8f47",
     "x.probe_live.LiveExecutor._send_sha256": "0c8f34a313e985b85788ee94425ff32bfdf56e5fa1913eaf8ac9528bc567b91c",
     "x.probe_live.LiveExecutor._exit_candidates_sha256": "b77a23adb146cf51b559126431d1991fe7da477006312e7812736ce88ea03f37",
     "bridge.poll_positions_sha256": "b52b3d4778e16d0619c9749d186aa36361e70916372ffe932e2c3051ef87524d",
@@ -169,7 +178,8 @@ PIN_EXTRA = ("pumpswap_simulate:_b64", "pumpswap_simulate:token_amount",
              "probe_executor:Snapshot", "probe_executor:check_sell", "probe_executor:check_halt_file",
              "probe_executor:Executor._prio", "probe_executor:Executor._exit_prio",
              "pumpswap_tx:parse_virtual_signed", "pumpswap_tx:global_volume_accumulator", "pumpswap_tx:user_volume_accumulator",
-             "probe_live:LiveExecutor._send", "probe_live:LiveExecutor._exit_candidates")
+             "probe_live:LiveExecutor._send", "probe_live:LiveExecutor._exit_candidates",
+             "probe_executor:critical")  # critical: the @pe.critical wrapper around _start_sell (inspect.getsource unwraps it, so it needs its own key)
 BRIDGE_METHODS = ("poll_positions", "refresh_warm")  # BridgeExecutor, nested in make_live_port: read by AST from the file on disk
 
 
@@ -798,49 +808,67 @@ def feed_gap_problem(path: str, bot_id: str, now_ms: int) -> str | None:
 # written review, as a root-owned clear file. Only the KIND and INSTANT of a gap record are read (QP seal ruling): no other field, no join to any outcome.
 GAP_FREE_MS = 600_000
 GAP_BREAK_KINDS = ("stall", "disconnect", "reconnect", "mismatch", "local_torn_trimmed", "error", "gap", "data_loss", "resubscribe", "silence")  # forwarder kinds + the s5.2 list; "resume" is not a gap
-GAP_CLEAR_DIR = "/etc/mal-hv4-c0/gap-clear"  # <bot_id>.json: {"bot_id": ..., "reviewed_gap_ms": N}; root-owned (h5.root_file_problem), N >= the newest gap instant
+GAP_CLEAR_DIR = "/etc/mal-hv4-c0/gap-clear"  # <bot_id>.json: {"bot_id": ..., "reviewed_gap_ms": N}; root-owned (h5.root_file_problem), N == the newest gap instant
 FEED_BREAK_LATCH = "feed_break"
 FEED_MAX_STALL_MS = 2_000  # a forwarder status that reports a larger stall_ms is refused: a misconfigured forwarder must not widen the bound (QP ruling a)
 
 
-def gap_records_ms(path: str) -> tuple[list[int], str | None]:
-    """(instants of gap records, problem) from the forwarder's <bot_id>.gaps.jsonl. Reads ONLY `kind` and `ms` of each line. A missing file is no gaps; a link, an
-    unreadable file or a line that is not an object with an int ms is a problem (fail closed)."""
+GAP_LOG_MAX_BYTES = 8_000_000
+
+
+def gap_log_ms(path: str) -> tuple[list[int], list[int], str | None]:
+    """(gap instants, resume instants, problem) from the forwarder's <bot_id>.gaps.jsonl. Reads ONLY `kind` and `ms` of each line. A missing file is no gaps; a link, an
+    unreadable file, a file over GAP_LOG_MAX_BYTES (never silently truncated) or a COMPLETE line that is not an object with an int ms is a problem (fail closed).
+    Bytes after the last newline are a write in progress and are ignored."""
     try:
         ls = os.lstat(path)
     except FileNotFoundError:
-        return [], None
+        return [], [], None
     except OSError:
-        return [], "gap_log_unreadable"
+        return [], [], "gap_log_unreadable"
     if not stat.S_ISREG(ls.st_mode) or ls.st_nlink != 1:
-        return [], "gap_log_not_regular"
+        return [], [], "gap_log_not_regular"
+    if ls.st_size > GAP_LOG_MAX_BYTES:
+        return [], [], "gap_log_too_large"
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
         with os.fdopen(fd, "rb") as fh:
-            data = fh.read(8_000_000)
+            data = fh.read(GAP_LOG_MAX_BYTES + 1)
     except OSError:
-        return [], "gap_log_unreadable"
-    out: list[int] = []
+        return [], [], "gap_log_unreadable"
+    if len(data) > GAP_LOG_MAX_BYTES:
+        return [], [], "gap_log_too_large"
+    gaps: list[int] = []
+    resumes: list[int] = []
     lines = data.split(b"\n")
-    torn_tail = lines.pop() if lines else b""  # bytes after the last newline: the forwarder is mid-write, ignored until the newline arrives
-    del torn_tail
+    lines.pop()  # the torn tail (or the empty string after the last newline)
     for ln in lines:
         if not ln.strip():
             continue
         try:
             r = json.loads(ln)
         except ValueError:
-            return out, "gap_log_malformed"  # a COMPLETE (newline-ended) malformed line latches
+            return gaps, resumes, "gap_log_malformed"  # a COMPLETE (newline-ended) malformed line latches
         if not isinstance(r, dict) or isinstance(r.get("ms"), bool) or not isinstance(r.get("ms"), int) or not isinstance(r.get("kind"), str):
-            return out, "gap_log_malformed"
+            return gaps, resumes, "gap_log_malformed"
         if r["kind"] in GAP_BREAK_KINDS:
-            out.append(r["ms"])
-    return out, None
+            gaps.append(r["ms"])
+        elif r["kind"] == "resume":
+            resumes.append(r["ms"])
+    return gaps, resumes, None
 
 
-def gap_clear_problem(path: str, bot_id: str, last_gap_ms: int, now_ms: int, root_check: Any = None) -> str | None:
-    """None when the manager's review covers the newest gap and the feed has been gap-free for GAP_FREE_MS. Else the reason the latch stays."""
-    if now_ms - last_gap_ms < GAP_FREE_MS:
+def gap_records_ms(path: str) -> tuple[list[int], str | None]:
+    g, _r, bad = gap_log_ms(path)
+    return g, bad
+
+
+def gap_clear_problem(path: str, bot_id: str, last_gap_ms: int, now_ms: int, root_check: Any = None, free_since_ms: int | None = None) -> str | None:
+    """None when (1) the feed has been gap-free for GAP_FREE_MS counted from the END of the gap (`free_since_ms`: the newest gap OR resume instant; default the
+    gap instant) and (2) the manager's root-owned review file names EXACTLY the newest gap instant (equality: a blanket or future-dated review never clears a later
+    gap, DEC-032 s5.2 "the manager has seen the gap record"). Else the reason the latch stays."""
+    since = last_gap_ms if free_since_ms is None else max(free_since_ms, last_gap_ms)
+    if now_ms - since < GAP_FREE_MS:
         return "gap_free_window_not_elapsed"
     if root_check is not None:
         why = root_check(path)
@@ -860,7 +888,7 @@ def gap_clear_problem(path: str, bot_id: str, last_gap_ms: int, now_ms: int, roo
     v = rec.get("reviewed_gap_ms") if isinstance(rec, dict) else None
     if not isinstance(rec, dict) or rec.get("bot_id") != bot_id or isinstance(v, bool) or not isinstance(v, int):
         return "gap_clear_malformed"
-    return None if v >= last_gap_ms else "gap_not_reviewed"
+    return None if v == last_gap_ms else "gap_not_reviewed"
 
 
 def runner_silent_problem(last_row_ms: int | None, started_ms: int, now_ms: int) -> str | None:

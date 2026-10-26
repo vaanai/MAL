@@ -24,6 +24,7 @@ ALLOW = {
     "probe_live:LiveExecutor._alert": "prints an alert line; no value flows back",
     "probe_live:LiveExecutor._sell_failed": "records a failed sell (state and alert); builds nothing that is signed",
     "probe_live:LiveExecutor._fa_send_blocked": "feearm spend-cap check of a BUY send (returns False when fa is None); never on the sell path",
+    "probe_executor:RpcError": "exception type raised on an RPC failure inside _start_sell; the raise is a refusal, nothing signed flows from it",
     "probe_live:UnsafeTx": "exception type raised by validate_message (pinned); raising is the refusal",
     "probe_executor:Executor._exit_fields": "builds the logged exit_snapshot fields only",
 }
@@ -57,17 +58,44 @@ def tools_module(obj) -> str | None:
     return m[len("tools."):] if m.startswith("tools.") else None
 
 
-def callees(src: str, glob: dict, owner_cls):
-    """Yield (label, resolved object) for every call in `src` that resolves to an object defined in tools.*."""
+def local_names(tree) -> set[str]:
+    """Parameters and every name bound inside the source (assignments, loops, with/except/import aliases, nested defs, comprehensions)."""
+    out: set[str] = set()
+    for n in ast.walk(tree):
+        if isinstance(n, ast.arg):
+            out.add(n.arg)
+        elif isinstance(n, ast.Name) and isinstance(n.ctx, (ast.Store, ast.Del)):
+            out.add(n.id)
+        elif isinstance(n, (ast.FunctionDef, ast.ClassDef, ast.AsyncFunctionDef)):
+            out.add(n.name)
+        elif isinstance(n, (ast.Import, ast.ImportFrom)):
+            out.update((a.asname or a.name).split(".")[0] for a in n.names)
+        elif isinstance(n, ast.ExceptHandler) and n.name:
+            out.add(n.name)
+    return out
+
+
+def analyze(src: str, glob: dict, owner_cls):
+    """(resolved tools.* objects, unresolved plain-name callees). Walks Call nodes AND decorator expressions. A plain-name callee that is a local / parameter, a builtin,
+    or resolves in `glob` is fine; one that is none of these is reported as unresolved (reviewer + QP: a walker that cannot see a call must say so)."""
     tree = ast.parse(textwrap.dedent(src))
+    local = local_names(tree)
+    targets = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call):
-            continue
-        f = node.func
+        if isinstance(node, ast.Call):
+            targets.append(node.func)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            targets += [d.func if isinstance(d, ast.Call) else d for d in node.decorator_list]
+    found, unresolved = [], []
+    for f in targets:
         obj = None
         if isinstance(f, ast.Name):
-            obj = glob.get(f.id)
-            if obj is None and hasattr(builtins, f.id):
+            if f.id in glob:
+                obj = glob[f.id]
+            elif f.id in local or hasattr(builtins, f.id):
+                continue
+            else:
+                unresolved.append(f.id)
                 continue
         elif isinstance(f, ast.Attribute):
             if isinstance(f.value, ast.Name) and f.value.id in ("self", "cls") and owner_cls is not None:
@@ -81,7 +109,16 @@ def callees(src: str, glob: dict, owner_cls):
         if isinstance(obj, property):
             obj = obj.fget
         if (inspect.isfunction(obj) or inspect.isclass(obj)) and tools_module(obj):
-            yield obj
+            found.append(obj)
+    return found, unresolved
+
+
+def callees(src: str, glob: dict, owner_cls):
+    yield from analyze(src, glob, owner_cls)[0]
+
+
+# Plain-name callees the walker cannot resolve, each reviewed: {name: reason}. Empty means none exist at this head.
+UNRESOLVED_ALLOW: dict[str, str] = {}
 
 
 def label_of(obj) -> str:
@@ -118,7 +155,7 @@ class CallGraphTests(unittest.TestCase):
                 for _n, m in inspect.getmembers(o, inspect.isfunction):
                     if m.__qualname__.startswith(o.__qualname__):
                         try:
-                            seen[id(m)] = (label_of(m), inspect.getsource(m), m.__globals__, o)
+                            seen[id(m)] = (label_of(m), inspect.getsource(m), inspect.unwrap(m).__globals__, o)
                         except OSError:  # generated dataclass methods have no source
                             pass
                 continue
@@ -129,7 +166,7 @@ class CallGraphTests(unittest.TestCase):
                 if owner is None:
                     mod = inspect.getmodule(o)
                     owner = getattr(mod, q.split(".")[0], None)
-            seen[id(o)] = (label_of(o), inspect.getsource(o), o.__globals__, owner)
+            seen[id(o)] = (label_of(o), inspect.getsource(o), inspect.unwrap(o).__globals__, owner)
         for n in c0.BRIDGE_METHODS:
             seen[("bridge", n)] = (f"bridge:{n}", c0.bridge_method_source(n), vars(alb), pl.LiveExecutor)
         return pinned, list(seen.values())
@@ -145,11 +182,17 @@ class CallGraphTests(unittest.TestCase):
             except (AttributeError, ImportError):
                 self.fail(f"allowlist entry does not resolve: {spec}")
         missing: dict[str, set[str]] = {}
+        unresolved: dict[str, set[str]] = {}
         for label, src, glob, owner in targets:
-            for obj in callees(src, glob, owner):
+            found, unres = analyze(src, glob, owner)
+            for name in unres:
+                if name not in UNRESOLVED_ALLOW:
+                    unresolved.setdefault(name, set()).add(label)
+            for obj in found:
                 if id(obj) in pinned or id(obj) in allowed_ids:
                     continue
                 missing.setdefault(label_of(obj), set()).add(label)
+        self.assertEqual({}, {k: sorted(v) for k, v in unresolved.items()}, "plain-name callees the walker cannot resolve: fix the resolution or add a reasoned UNRESOLVED_ALLOW entry")
         self.assertEqual({}, {k: sorted(v) for k, v in missing.items()}, "unpinned callees: pin them (PIN_EXTRA) or add a reviewed ALLOW entry with a reason")
 
     def test_the_walker_catches_a_new_helper(self):
@@ -159,6 +202,28 @@ class CallGraphTests(unittest.TestCase):
         found = list(callees(src, {"pe": pe}, None))
         self.assertEqual(label_of(found[0]), "probe_executor:StaticCache")
         self.assertNotIn(id(pe.StaticCache), pinned_objects())
+
+    def test_decorated_start_sell_resolves_names_in_probe_live_not_the_wrapper_module(self):
+        """R2: _start_sell's __globals__ is probe_executor's (the @pe.critical wrapper); the unwrapped function's is probe_live's."""
+        from tools import probe_live as pl
+        _p, targets = self.targets()
+        glob = next(g for label, _s, g, _o in targets if label == "probe_live:LiveExecutor._start_sell")
+        self.assertIs(glob, pl.__dict__)
+        self.assertIsNot(pl.LiveExecutor._start_sell.__globals__, pl.__dict__)  # the trap
+
+    def test_a_new_probe_live_helper_is_reported_and_decorators_are_walked(self):
+        from tools import probe_live as pl
+        helper = next(o for n, o in vars(pl).items() if inspect.isfunction(o) and o.__module__ == pl.__name__ and id(o) not in pinned_objects() and not n.startswith("__"))
+        src = f"@pe.critical\ndef f(self, x):\n    return {helper.__name__}(x)\n"
+        found, unres = analyze(src, {**vars(pl)}, None)
+        self.assertIn(helper, found)
+        self.assertEqual(unres, [])
+        self.assertIn(__import__("tools.probe_executor", fromlist=["critical"]).critical, analyze("@pe.critical\ndef g(self):\n    pass\n", {"pe": __import__("tools.probe_executor", fromlist=["x"])}, None)[0])
+
+    def test_an_unresolvable_plain_name_call_is_reported(self):
+        found, unres = analyze("def f(self):\n    return mystery_helper(1)\n", {}, None)
+        self.assertEqual(unres, ["mystery_helper"])
+        self.assertEqual(analyze("def f(self, rpc):\n    g = rpc\n    return rpc(1) + g(2) + len([])\n", {}, None)[1], [])
 
     def test_allowlist_reasons_are_written(self):
         for k, v in ALLOW.items():

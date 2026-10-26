@@ -303,6 +303,7 @@ class BridgeState:
     counts: dict[str, int] = field(default_factory=dict)
     start_seen: bool = False
     first_start_ms: int | None = None  # unused since #965 N2: the 14-day window start is the write-once file c0.WINDOW_DIR/<bot_id>.json, outside this state
+    gap_noted_ms: int = 0  # hv4_c0: the newest gap instant seen (persisted: a restart must not clear against an older review)
     read_pin: dict[str, Any] | None = None  # hv4_c0: identity {path, dev, ino, sha256} of the recorded read, pinned at the first good check and compared on every run
 
     def save(self, path: Path) -> None:
@@ -379,7 +380,6 @@ class Bridge:
         self.owner_dec_path = Path(owner_dec_path) if owner_dec_path is not None else Path(c0.OWNER_DEC_PATH)
         self.owner_pin = owner_pin
         self.gap_clear_dir = str(gap_clear_dir) if gap_clear_dir is not None else c0.GAP_CLEAR_DIR
-        self._gap_noted_ms = 0
         self._read_ident: dict[str, Any] = {}
         if cfg.profile == c0.PROFILE:
             first, why = c0.window_start_ms(cfg.bot_id, self.now_ms(), create=True)
@@ -681,39 +681,40 @@ class Bridge:
 
     def _note_gap(self, gap_ms: int, why: str) -> None:
         """One gap record (kind and instant only): open trades are marked `gap` (DEC-032 s5.2) and feed_break latches."""
-        if gap_ms > self._gap_noted_ms:
-            self._gap_noted_ms = gap_ms
+        if gap_ms > self.state.gap_noted_ms:
+            self.state.gap_noted_ms = gap_ms
             if self.gates is not None:
                 self.gates.recorder.note_gap(gap_ms)
         self._latch(c0.FEED_BREAK_LATCH, why)
+        self._save()
 
     def gap_tick(self, now: int) -> None:
-        """hv4_c0 DEC-032 s5.2: a gap record in the book's own feed (the forwarder's gap log, or a `gap` row in the decision stream) latches feed_break; a forwarder
-        `stopped_mismatch` (a chain or offset break) latches it too. The latch is removed ONLY when the feed has been gap-free for 10 minutes AND the manager's
-        root-owned review file covers the newest gap. Exits keep running."""
+        """hv4_c0 feed_break (DEC-032 s5.2 consumer). A gap record in the forwarder's gap log or a `gap` row in the decision stream latches feed_break; a forwarder
+        `stopped_mismatch` latches it too. NOTE: no producer of the book's own TAPE gap records exists yet (see the hv4_live_c0 doc). The latch is removed ONLY when
+        the feed has been gap-free for 10 minutes counted from the END of the gap AND the manager's root-owned review file names exactly the newest gap instant."""
         if self.cfg.profile != c0.PROFILE:
             return
-        gaps, bad = c0.gap_records_ms(os.path.join(self.cfg.root, "transport", f"{self.cfg.bot_id}.gaps.jsonl"))
+        gaps, resumes, bad = c0.gap_log_ms(os.path.join(self.cfg.root, "transport", f"{self.cfg.bot_id}.gaps.jsonl"))
         if bad:
-            self._latch(c0.FEED_BREAK_LATCH, bad)  # an unreadable gap log is not a clear
-        last = max([*gaps, self._gap_noted_ms]) if (gaps or self._gap_noted_ms) else None
-        if gaps and not (last is not None and self._gap_cleared(last, now) and c0.FEED_BREAK_LATCH not in self.state.latches):
-            newest = max(gaps)
-            if newest > self._gap_noted_ms:
-                self._note_gap(newest, f"gap record at {newest}")
+            self._latch(c0.FEED_BREAK_LATCH, bad)  # an unreadable, oversize or malformed gap log is not a clear
+        newest = max([*gaps, self.state.gap_noted_ms]) if (gaps or self.state.gap_noted_ms) else None
+        since = max([*gaps, *resumes, self.state.gap_noted_ms]) if newest is not None else None
+        if gaps and max(gaps) > self.state.gap_noted_ms:
+            self._note_gap(max(gaps), f"gap record at {max(gaps)}")
         sp = c0.feed_status_path(self.cfg.root, self.cfg.bot_id)
-        if os.path.lexists(sp) and c0.feed_gap_problem(sp, self.cfg.bot_id, now) == "feed_state_stopped_mismatch":
+        status_why = c0.feed_gap_problem(sp, self.cfg.bot_id, now) if os.path.lexists(sp) else "feed_status_missing"
+        if status_why == "feed_state_stopped_mismatch":
             self._latch(c0.FEED_BREAK_LATCH, "forwarder_stopped_mismatch")
-        if c0.FEED_BREAK_LATCH in self.state.latches and last is not None and not bad:
-            if self._gap_cleared(last, now) and c0.feed_gap_problem(sp, self.cfg.bot_id, now) is None:
+        if c0.FEED_BREAK_LATCH in self.state.latches and newest is not None and not bad and status_why is None:
+            if self._gap_cleared(newest, now, since):
                 del self.state.latches[c0.FEED_BREAK_LATCH]
-                self._log("latch_cleared", latch=c0.FEED_BREAK_LATCH, reviewed_gap_ms=last)
+                self._log("latch_cleared", latch=c0.FEED_BREAK_LATCH, reviewed_gap_ms=newest)
                 self._save()
 
-    def _gap_cleared(self, last: int, now: int) -> bool:
+    def _gap_cleared(self, last: int, now: int, since: int | None = None) -> bool:
         p = Path(self.gap_clear_dir) / f"{self.cfg.bot_id}.json"
         try:
-            return c0.gap_clear_problem(str(p), self.cfg.bot_id, last, now, root_ok_problem if self.root_checks else None) is None
+            return c0.gap_clear_problem(str(p), self.cfg.bot_id, last, now, root_ok_problem if self.root_checks else None, since) is None
         except Exception:  # noqa: BLE001 - any failure refuses the clear; it must never propagate into tick() (exits keep running)
             return False
 
