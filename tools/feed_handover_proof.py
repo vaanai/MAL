@@ -66,7 +66,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterator, Sequence
+from typing import Any, Callable, Iterator, Sequence
 
 SCHEMA = "feed_handover_proof_v1"
 DATA_TYPES = frozenset({"trade", "create", "complete", "pool_create"})
@@ -172,8 +172,12 @@ def iter_lines(p: Path) -> Iterator[bytes]:
             yield ln.rstrip(b"\n")
 
 
-def read_rows(tape: Path, lo_ms: int, hi_ms: int, win: tuple[int, int]) -> dict[str, Any]:
-    """Rows of the selected hours in append order, each with its file index. Bad lines are counted per file (only files overlapping `win` count)."""
+SLIM_KEYS = ("v", "type", "prog", "slot", "t_recv_ms", "signature", "event_index")
+
+
+def read_rows(tape: Path, lo_ms: int, hi_ms: int, win: tuple[int, int], *, slim: bool = False) -> dict[str, Any]:
+    """Rows of the selected hours in append order, each with its file index. Bad lines are counted per file (only files overlapping `win` count).
+    slim=True keeps only SLIM_KEYS of data and hb rows (memory: a real tape hour is about 0.34 GB of JSON); gap and marker rows are kept whole."""
     rows: list[tuple[int, dict[str, Any]]] = []
     bad_in_window = 0
     files = select_hours(tape, lo_ms, hi_ms)
@@ -190,6 +194,8 @@ def read_rows(tape: Path, lo_ms: int, hi_ms: int, win: tuple[int, int]) -> dict[
             if not isinstance(r, dict) or not isinstance(r.get("t_recv_ms"), int) or not isinstance(r.get("type"), str):
                 bad_in_window += overlaps
                 continue
+            if slim and (r["type"] in DATA_TYPES or r["type"] == "hb"):
+                r = {k: r.get(k) for k in SLIM_KEYS}
             rows.append((fi, r))
     return {"rows": rows, "files": len(files), "bad_lines": bad_in_window}
 
@@ -225,7 +231,7 @@ def seam_report(tape: Path, t0: int, t1: int, *, programs: Sequence[str] = PROGR
                 expect_takeover: bool = False, pad_s: float = PAD_S_DEFAULT, max_disagree_rate: dict[str, float] | None = None,
                 min_overlap_rows: dict[str, int] | None = None) -> dict[str, Any]:
     pad = int(pad_s * 1000)
-    rd = read_rows(tape, t0 - pad, t1 + pad, (t0, t1))
+    rd = read_rows(tape, t0 - pad, t1 + pad, (t0, t1), slim=True)
     rows = rd["rows"]
     inwin = lambda t: t0 <= t < t1  # noqa: E731
 
@@ -371,38 +377,51 @@ def seam_report(tape: Path, t0: int, t1: int, *, programs: Sequence[str] = PROGR
 
 
 # ---- parity ---------------------------------------------------------------------------------------------------
-def _index(rows: list[tuple[int, dict[str, Any]]]) -> tuple[dict[tuple, dict[str, Any]], int]:
-    out: dict[tuple, dict[str, Any]] = {}
-    dups = 0
-    for _, r in rows:
-        k = data_key(r)
-        if k is None:
-            continue
-        if k in out:
-            dups += 1
-            continue
-        out[k] = r
-    return out, dups
+def _stream_index(tape: Path, lo_ms: int, hi_ms: int, win: tuple[int, int], keep: Callable[[int], bool], ignore: set[str]) -> dict[str, Any]:
+    """key -> (t_recv_ms, canonical JSON of the row without the ignored fields) for data rows with keep(t); streamed (no row list is held)."""
+    out: dict[tuple, tuple[int, str]] = {}
+    dups = bad = 0
+    files = select_hours(tape, lo_ms, hi_ms)
+    for h, p in files:
+        overlaps = h + HOUR_MS > win[0] and h < win[1]
+        for ln in iter_lines(p):
+            if not ln.strip():
+                continue
+            try:
+                r = json.loads(ln)
+            except ValueError:
+                bad += overlaps
+                continue
+            if not isinstance(r, dict) or not isinstance(r.get("t_recv_ms"), int):
+                bad += overlaps
+                continue
+            k = data_key(r)
+            if k is None or not keep(r["t_recv_ms"]):
+                continue
+            if k in out:
+                dups += 1
+                continue
+            out[k] = (r["t_recv_ms"], json.dumps({f: v for f, v in r.items() if f not in ignore}, sort_keys=True, separators=(",", ":")))
+    return {"index": out, "dups": dups, "bad_lines": bad, "files": len(files)}
 
 
 def parity_report(tape_a: Path, tape_b: Path, t0: int, t1: int, *, ignore: Sequence[str] = ("t_recv_ms",), seam_ms: int | None = None,
                   seam_pad_s: float = 300.0, pad_s: float = 60.0) -> dict[str, Any]:
     pad = int(pad_s * 1000)
     hour_pad = max(pad, HOUR_MS)  # rows can sit in a later hour's file
-    ra = read_rows(tape_a, t0 - hour_pad, t1 + hour_pad, (t0, t1))
-    rb = read_rows(tape_b, t0 - hour_pad, t1 + hour_pad, (t0, t1))
-    near = lambda r: t0 - pad <= r["t_recv_ms"] < t1 + pad  # noqa: E731
-    ia, da = _index([x for x in ra["rows"] if near(x[1])])
-    ib, db = _index([x for x in rb["rows"] if near(x[1])])
-    inwin = lambda r: r is not None and t0 <= r["t_recv_ms"] < t1  # noqa: E731
-    scope = {k for k, r in ia.items() if inwin(r)} | {k for k, r in ib.items() if inwin(r)}
     ign = set(ignore)
+    near = lambda t: t0 - pad <= t < t1 + pad  # noqa: E731
+    ra = _stream_index(tape_a, t0 - hour_pad, t1 + hour_pad, (t0, t1), near, ign)
+    rb = _stream_index(tape_b, t0 - hour_pad, t1 + hour_pad, (t0, t1), near, ign)
+    ia, da, ib, db = ra["index"], ra["dups"], rb["index"], rb["dups"]
+    inwin = lambda e: e is not None and t0 <= e[0] < t1  # noqa: E731
+    scope = {k for k, e in ia.items() if inwin(e)} | {k for k, e in ib.items() if inwin(e)}
     sp = int(seam_pad_s * 1000)
 
     def bucket(k: tuple) -> str:
         if seam_ms is None:
             return "all"
-        t = min(r["t_recv_ms"] for r in (ia.get(k), ib.get(k)) if r is not None)
+        t = min(e[0] for e in (ia.get(k), ib.get(k)) if e is not None)
         return "seam" if seam_ms - sp <= t <= seam_ms + sp else "control"
 
     stats: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
@@ -419,7 +438,10 @@ def parity_report(tape_a: Path, tape_b: Path, t0: int, t1: int, *, ignore: Seque
             s["n_b"] += 1
         if a_r is not None and b_r is not None:
             s["both"] += 1
-            diff = sorted(f for f in set(a_r) | set(b_r) if f not in ign and a_r.get(f) != b_r.get(f))
+            diff: list[str] = []
+            if a_r[1] != b_r[1]:
+                ja, jb = json.loads(a_r[1]), json.loads(b_r[1])
+                diff = sorted(f for f in set(ja) | set(jb) if ja.get(f) != jb.get(f))
             if diff:
                 s["mismatched_rows"] += 1
                 fields.update(diff)
