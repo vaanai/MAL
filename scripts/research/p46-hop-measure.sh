@@ -12,7 +12,9 @@ python3 tools/decision_forwarder.py measure --ssh-host mal-research-0 --remote-d
 echo "end=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 rm -rf "$HOME/scratch/p46-transport-hop"
 echo "cleanup check (expect no dir, no process):"
-ssh -o BatchMode=yes mal-research-0 'ls -d ~/scratch/p46-transport-hop 2>&1; pgrep -fa "p46-transport-hop" || echo no-remote-process'
+ssh -o BatchMode=yes mal-research-0 'ls -d ~/scratch/p46-transport-hop 2>&1' || true
+# separate call, and the [p] pattern does not match pgrep's own shell command line
+ssh -o BatchMode=yes mal-research-0 'pgrep -fa "[p]46-transport-hop" || echo no-remote-process'
 ls -d "$HOME/scratch/p46-transport-hop" 2>&1 || true
 python3 - "$OUT/hop.json" <<'PY'
 import json, os, sys
