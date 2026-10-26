@@ -86,6 +86,8 @@ class Pools(unittest.TestCase):
             self.assertGreater(c["Q_mig"], 0)
             self.assertTrue(0.19 <= c["protocol_share_p50"] <= 0.21, c["protocol_share_p50"])
             self.assertIsNotNone(c["q_check_ratio"])
+            self.assertGreaterEqual(c["post_hoc"]["q_max_before_e"], c["Q_e"])
+            self.assertEqual(c["post_hoc"]["pulled_10m"], c["Q_e"] < 0.01 * c["post_hoc"]["q_max_before_e"])
             self.assertEqual(c["day"][:8], "2026-10-")
             for w, x in c["win"].items():
                 if x is not None:

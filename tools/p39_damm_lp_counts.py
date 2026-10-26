@@ -150,6 +150,12 @@ def pool_counts(rows: list[dict[str, Any]], strand: bool) -> dict[str, Any]:
     out["Q_mig"] = Q(t_m)
     out["tvl_mig"] = 2 * out["Q_mig"]
     out["Q_e"] = Q(t_e)
+    # POST-HOC diagnostics (added after the first run's counts were read; never change K0, K-BE or the verdict): pool state at the first trade and the largest
+    # quote reserve seen before t_e, the carried-L ratio t_e / first trade, and a "pulled in 10 min" flag (Q_e < 1% of that maximum).
+    i_e = last_idx(t_e)
+    q_pre_max = max([tf[0]["q_pre_sol"]] + [tf[k]["q_post_sol"] for k in range(0, i_e + 1)])
+    out["post_hoc"] = {"tvl_first_trade": 2 * tf[0]["q_pre_sol"], "q_max_before_e": q_pre_max, "L_ratio_e_first": float(s.Lp[i_e + 1] / s.Lp[1]) if s.Lp[1] > 0 else None,
+                       "pulled_10m": bool(out["Q_e"] < 0.01 * q_pre_max)}
     # cross-check: reserve-based Q vs L*S/2^128 at the first trade
     out["q_check_ratio"] = float(tf[0]["q_post_sol"] / (Lpre[0] * float(s.S1[1]) / Q128 / SOL)) if np.isfinite(Lpre[0]) and Lpre[0] > 0 else None
     out["f_first"] = float(f[0]) if np.isfinite(f[0]) else None
@@ -205,6 +211,11 @@ def dists(P: list[dict[str, Any]]) -> dict[str, Any]:
     d: dict[str, Any] = {"n_pools": len(P)}
     for k in ("tvl_mig", "Q_e", "f_first", "f_e", "f_1h", "f_6h", "decay_6h", "turnover_6h", "t_first", "q_check_ratio", "liq_events_after_mig", "n_trades"):
         d[k] = qtl([p.get(k) for p in P])
+    ph = [p["post_hoc"] for p in P]
+    d["post_hoc"] = {"tvl_first_trade": qtl([x["tvl_first_trade"] for x in ph]), "q_max_before_e": qtl([x["q_max_before_e"] for x in ph]),
+                     "L_ratio_e_first": qtl([x["L_ratio_e_first"] for x in ph]), "pulled_10m": sum(1 for x in ph if x["pulled_10m"]),
+                     "pulled_10m_of_q_max_ge_1sol": sum(1 for x in ph if x["pulled_10m"] and x["q_max_before_e"] >= 1),
+                     "q_max_ge_1sol": sum(1 for x in ph if x["q_max_before_e"] >= 1)}
     d["vol_h"] = {h: {**qtl([p["vol_h"][h] for p in P]), "censored": sum(1 for p in P if p["vol_h"][h] is None)} for h in map(str, VOL_H)}
     d["win"] = {}
     for w in map(str, HOLD_H):
