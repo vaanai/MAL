@@ -2,7 +2,7 @@
 Am.3 tests 1 to 12 and 13 to 14 are the H5 side only (tools/hv4_live_c0.py is a separate PR and carries the other side); 16, 17 and 17b are here."""
 from __future__ import annotations
 
-import ast
+import dataclasses
 import json
 import os
 from datetime import datetime, timezone
@@ -44,6 +44,11 @@ class Fx:
 
     def check(self, now_ms: int | None = None):
         return ax.a3_guard_problem(self.rec, RUN_MS + 60_000 if now_ms is None else now_ms)
+
+
+# _hard_refusal for the fixture trigger set below, captured by running the pre-change tools/h5_arena_executor.py (origin/main 433fe06c) on the same fixture
+PRE_CHANGE_VALUES = {"normal": None, "q_over_qstar": "q_above_book_q_star", "q_over_40": "q_above_book_q_star",
+                     "before_window": "decision_outside_book_window", "after_end": "decision_outside_book_window"}
 
 
 class GuardProblemTests(ACase):
@@ -242,14 +247,12 @@ class TickTests(ACase):
             "normal": trig(c),
             "q_over_qstar": trig(c, q_lamports=e.ex.abook.q_star_lamports + 1),
             "q_over_40": trig(c, q_lamports=41 * 10**9),
-            "before_window": trig(c, decision_ms=e.ex.abook.clock_start_ms - 1),
-            "after_end": trig(c, decision_ms=e.ex.abook.end_ms_seal),
+            "before_window": dataclasses.replace(trig(c), decision_ms=e.ex.abook.clock_start_ms - 1),
+            "after_end": dataclasses.replace(trig(c), decision_ms=e.ex.abook.end_ms_seal),
         }
 
     def values(self, e):
         return {k: e.ex._hard_refusal(t, e.clock()) for k, t in self.triggers(e).items()}
-
-    PRE_CHANGE = None  # filled below
 
     def test_17_no_record_configured_reads_no_file_and_refusals_are_unchanged(self):
         e = self.env()
@@ -276,4 +279,3 @@ class TickTests(ACase):
         self.assertEqual(self.values(e), PRE_CHANGE_VALUES)
 
 
-PRE_CHANGE_VALUES: dict = {}
