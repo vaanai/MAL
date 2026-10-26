@@ -122,7 +122,7 @@ def test_output_pass_rule_seal_and_no_per_position_fields(tmp_path, _sandbox, ca
     out = capsys.readouterr().out
     lines = [json.loads(x) for x in out.splitlines()]
     start, end, sealed = lines[0], lines[-2], lines[-1]
-    assert start["rows_by_program"][DAY]["pumpswap"] > 0 and start["orders_only_on"] == "pumpswap" and "scan_ms_p95 (max of both runs) < 1000" in start["pass_rule"]
+    assert start["rows_by_program"][DAY]["pumpswap"] > 0 and start["orders_only_on"] == "pumpswap" and "scan_ms_p95 (max of runs 1 and 2; run 3 excluded) < 1000" in start["pass_rule"] and "fast_scan=False" in start["pass_rule"] and "whole-tick p95" in start["pass_rule"]
     assert end["result"] == "PASS" and end["md5_equal"] and end["rss_ok"] and end["scan_p95_ok"]
     assert not (set(walk_keys(lines)) & FORBIDDEN_KEYS)
     # the root is read-only and the printed sha256 is the result file's

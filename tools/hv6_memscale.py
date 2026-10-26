@@ -24,6 +24,7 @@ import os
 import random
 import shutil
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -49,7 +50,7 @@ def hour_name(t: int) -> str:
     return "tape-" + datetime.fromtimestamp(t // 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H") + ".jsonl"
 
 
-def write_tape(d: Path, start_ms: int, hours: int, pools_per_min: float, prints_per_hour: int, seed: int = 1, pre_hours: int = 8, mean_life_h: float = 10.0) -> dict:
+def write_tape(d: Path, start_ms: int, hours: int, pools_per_min: float, prints_per_hour: int, seed: int = 1, pre_hours: int = 8, mean_life_h: float = 10.0, sigma: float = 1.2) -> dict:
     """Synthetic PumpSwap tape, one hour file at a time (never the whole tape in memory). Pools are born at `pools_per_min`, live an exponential time, and trade with
     log-normal weights; `prints_per_hour` is split among the pools alive that hour. Starts `pre_hours` before start_ms so pools are old enough to be carded."""
     rnd = random.Random(seed)
@@ -67,7 +68,7 @@ def write_tape(d: Path, start_ms: int, hours: int, pools_per_min: float, prints_
                 i = len(pools)
                 t = h0 + m * MIN + rnd.randrange(MIN)
                 pools.append({"i": i, "pool": f"Pxx{i:07d}" + "1" * 33, "mint": f"Mnt{i:07d}" + "1" * 33, "born": t, "dies": t + int(rnd.expovariate(1.0 / mean_life_h) * HOUR),
-                              "w": math.exp(rnd.gauss(0, 1.2)), "price": 1e-6 * math.exp(rnd.gauss(0, 0.3))})
+                              "w": math.exp(rnd.gauss(0, sigma)), "price": 1e-6 * math.exp(rnd.gauss(0, 0.3))})
                 n_sig += 1
                 rows.append((t, {"v": 1, "type": "pool_create", "prog": "pumpswap", "slot": 399_000_000 + (t - t_begin) // 400, "t_recv_ms": t, "signature": f"pc{n_sig}",
                                  "event_index": 0, "pool": pools[-1]["pool"], "mint": pools[-1]["mint"], "quote_mint": WSOL}))
@@ -133,6 +134,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--prints-per-hour", type=int, default=100_000)
     ap.add_argument("--mean-life-h", type=float, default=10.0)
     ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--sigma", type=float, default=1.2, help="log-normal spread of per-pool print weights (larger = fewer pools carry the volume)")
+    ap.add_argument("--pre-hours", type=int, default=8)
     ap.add_argument("--no-bound", action="store_true", help="the runner without its memory bound (the 'before' configuration)")
     ap.add_argument("--keep", action="store_true")
     a = ap.parse_args(argv)
@@ -146,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     H.READ_ROOTS = H.WRITE_ROOTS = (os.path.realpath(out),)  # this tool's own synthetic dir is its only allowlist; production roots are never added
     start = T0
     tape = out / "tape"
-    gen = write_tape(tape, start, a.hours, a.pools_per_min, a.prints_per_hour, a.seed, mean_life_h=a.mean_life_h)
+    gen = write_tape(tape, start, a.hours, a.pools_per_min, a.prints_per_hour, a.seed, pre_hours=a.pre_hours, mean_life_h=a.mean_life_h, sigma=a.sigma)
     print(json.dumps({"memscale": "start", "hours": a.hours, "pools_per_min": a.pools_per_min, "prints_per_hour": a.prints_per_hour, "bound": not a.no_bound, "generated": gen,
                       "rss_after_generate_mb": rss_mb(), "tape": "synthetic"}), flush=True)
     base = out / "run"
@@ -164,8 +167,26 @@ def main(argv: list[str] | None = None) -> int:
             last[0] = h
             print(json.dumps(sample(run, int(h))), flush=True)
 
+    walls: list[float] = []
+    cands: list[int] = []
+    orig_scan = run.scan
+
+    def scan(T: int) -> None:
+        t = time.perf_counter()
+        try:
+            orig_scan(T)
+        finally:
+            walls.append((time.perf_counter() - t) * 1000.0)
+
+    run.scan = scan
     run.tick = tick
     run.run(start + 2000, start + a.hours * HOUR)
+    rows_ = [r for r in run.log.rows("SCAN") if r["kind"] == "scan"]
+    cands = [r["counts"]["candidates"] for r in rows_]
+    w = sorted(walls[1:] or walls)  # the first scan reads the whole warm-up and is excluded
+    pc = lambda q: round(w[max(0, math.ceil(q * len(w)) - 1)], 1) if w else None  # noqa: E731
+    print(json.dumps({"scan_timing": "end", "scans": len(walls), "scan_ms_p50": pc(0.5), "scan_ms_p95": pc(0.95), "scan_ms_max": pc(1.0),
+                      "candidates_p50": sorted(cands)[len(cands) // 2] if cands else None, "candidates_max": max(cands, default=None)}), flush=True)
     print(json.dumps({**sample(run, a.hours), "memscale": "end", "peak_rss_mb": peak[0], "entries": {k: len(b.entries_ms) for k, b in run.books.items()}}), flush=True)
     if not a.keep:
         shutil.rmtree(out, ignore_errors=True)

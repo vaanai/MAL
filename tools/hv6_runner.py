@@ -54,6 +54,8 @@ from tools import hv6_cards as H
 from tools import hv6_review as RVW
 from tools.arena_declog import GENESIS, DecisionLog, LogChainError, sha256_hex, utc_day  # noqa: F401
 from tools.arena_paper import ArenaRefused, canon
+from tools.arena_state import CANDLE_MIN as STATE_CANDLE_MIN
+from tools.arena_state import LAMPORTS as STATE_LAMPORTS
 from tools.arena_state import WSOL_MINT, ArenaState
 
 MIN_MS = 60_000
@@ -501,6 +503,10 @@ class RunnerConfig:
     # snapshot of a pool that needs a card; False = the old path that holds every pool's full snapshot (360 candles each) until the scan ends. The state does not
     # change between the two reads (nothing polls inside a scan), so the cards are identical; a test compares the decision logs byte for byte.
     stream_scan: bool = True
+    # Scan speed (Runner.scan), decision-neutral by construction and by test: pools that certainly fail the filters (hv4_cards.prescreen on a window-free "lite"
+    # snapshot, then a cheap prints-in-15-min count) are not snapshotted, and the pools that pass are read once without candles (the candle series comes straight
+    # from the Pool, prints are normalised once) as HV4's runner does. Counted into the same SCAN counts. False = the stream path above.
+    fast_scan: bool = True
 
 
 _OPS = {"<": lambda a, b: a < b, "<=": lambda a, b: a <= b, ">": lambda a, b: a > b, ">=": lambda a, b: a >= b}
@@ -518,6 +524,34 @@ def local_veto(vetoes: Any, card: Mapping[str, Any]) -> str | None:
         if all(f in nums and _OPS[op](nums[f], n) for f, op, n in terms):
             return v
     return None
+
+
+def lite_snapshot(p: Any, now_ms: int) -> dict[str, Any]:
+    """The window-free keys of `ArenaState.snapshot(p.id, candles=False)` for a PumpSwap pool, built from the Pool's attributes with the same expressions as
+    ArenaState.snapshot (SCAN SPEED ONLY: hv4_cards.prescreen reads it). Same text as tools/hv4_runner.lite_snapshot; tools/test_hv6_scan_speed.py pins every key
+    against the real snapshot. `now_ms` is the state clock (ArenaState.now_ms)."""
+    created, q, lt = p.created_ms, p.q_real, p.last_trade
+    return {"now_ms": now_ms, "last_ms": p.last_ms, "ath_ms": p.ath_ms, "created_ms": created, "complete_ms": p.complete_ms, "origin_create_ms": p.origin_create_ms,
+            "last_trade_ms": lt.get("t_ms") if isinstance(lt, Mapping) else None, "created_known": created is not None,
+            "age_s": (now_ms - created) / 1000.0 if created is not None else None, "age_since_first_seen_s": (now_ms - p.first_seen_ms) / 1000.0,
+            "reserves": {"quote_sol": q / STATE_LAMPORTS if q is not None else None, "v_sol": p.v / STATE_LAMPORTS,
+                         "quote_eff_sol": (q + p.v) / STATE_LAMPORTS if q is not None else None}}
+
+
+def prints_15m_short(events: Any, now_ms: int, need: int) -> bool:
+    """True when fewer than `need` of a pool's prints fall in the last 15 minutes of the state clock: the prints_15m filter check certainly fails (the count
+    ArenaState.windows makes for its 15m window, stopping at `need`). SCAN SPEED ONLY."""
+    cut60, cut15 = now_ms - 60 * MIN_MS, now_ms - 15 * MIN_MS
+    n = 0
+    for ev in reversed(events):
+        t = ev[0]
+        if t < cut60:
+            break
+        if t >= cut15:
+            n += 1
+            if n >= need:
+                return False
+    return True
 
 
 class Runner:
@@ -575,6 +609,7 @@ class Runner:
             engine.now_fn = lambda: self.sim_now
         self.hook_errors: list[str] = []
         self._housekeep_at = 0  # tape instant (t_recv_ms) of the next memory housekeeping
+        self._norm: dict[str, Any] = {}  # pool id -> its normalised 60-min print list, kept between scans and updated by the events added / expired since (fast_scan)
         orig = state.apply
 
         def apply(row: dict) -> None:
@@ -850,13 +885,70 @@ class Runner:
         return reply, recv
 
     # -- scan, cards
+    def _norm_events(self, p: Any) -> Any:
+        """`C.norm_prints(list(p.events))`, without re-validating the whole 60-minute deque at every scan. SCAN SPEED ONLY. ArenaState only appends to the right of a
+        pool's deque and pops from its left, so the cached normalised list is brought up to date by dropping the expired front and validating only the NEW events
+        (the exact per-item test `hv4_cards._norm_prints` applies). The result must have the deque's length, first and last objects; anything else (a cache miss, a
+        new event that is not the exact shape) rebuilds through `C.norm_prints`, which also raises as before. tools/test_hv6_scan_speed.py compares it with
+        `C.norm_prints(list(p.events))` for every candidate of every scan."""
+        ev = p.events
+        lst = self._norm.get(p.id)
+        if lst and ev:
+            last = lst[-1]
+            new: list = []
+            found = False
+            for e in reversed(ev):
+                if e is last:
+                    found = True
+                    break
+                new.append(e)
+            if found:
+                new.reverse()
+                first, k, n_old = ev[0], 0, len(lst)
+                while k < n_old and lst[k] is not first:
+                    k += 1  # cached prints older than the deque's first have expired
+                if k < n_old and all(type(q) is tuple and len(q) == 4 and type(q[0]) is int and type(q[1]) is int and q[1] >= 0 and type(q[2]) is bool
+                                     and type(q[3]) is str for q in new):
+                    del lst[:k]
+                    lst.extend(new)
+                    if len(lst) == len(ev) and lst[0] is ev[0] and lst[-1] is ev[-1]:
+                        return lst
+        out = C.norm_prints(list(ev))
+        self._norm[p.id] = out
+        return out
+
     def scan(self, T: int) -> None:
         tp = self.tp or self._begin_tick(T)
         stream = self.cfg.stream_scan
+        fast = self.cfg.fast_scan and stream
         pools = self.state.pools_wsol(lambda p: p.prog == "pumpswap")
         snap_of: dict[str, Any] = {}
         prints_of: dict[str, list] = {}
-        if stream:
+        used_norm: set[str] = set()
+        pre = [0]  # pools the prescreen failed: counted into the scan's pools / filter_fail as the full path would have counted them
+        kept: dict[str, tuple] = {}  # fast path: pools that were read, as (candle-less snapshot, normalised prints)
+        if fast:
+            state_now = self.state.now_ms
+
+            def gen_fast():
+                for p in pools:
+                    verdict = C.prescreen(lite_snapshot(p, state_now), as_of_ms=T)
+                    if verdict == C.PRESCREEN_GO and prints_15m_short(p.events, state_now, C.PRINTS_15M_MIN):
+                        verdict = C.PRESCREEN_FAIL
+                    if verdict == C.PRESCREEN_FAIL:
+                        pre[0] += 1
+                        continue
+                    snap = self.state.snapshot(p.id, candles=False)
+                    if snap is None:
+                        continue
+                    prints = self._norm_events(p)
+                    used_norm.add(p.id)
+                    series = C.series_from_pool_candles(p.candles, state_now // MIN_MS, STATE_CANDLE_MIN, STATE_LAMPORTS)
+                    kept[p.id] = (snap, prints)
+                    yield snap, prints, series
+
+            items: Any = gen_fast()
+        elif stream:
             def gen():
                 for p in pools:
                     snap = self.state.snapshot(p.id)
@@ -875,6 +967,11 @@ class Runner:
                 snap_of[p.id], prints_of[p.id] = snap, prints
 
         def snap_prints(pid: str) -> tuple[Mapping, list]:
+            if fast:
+                sn, pr = kept[pid]
+                sn = dict(sn)
+                sn["candles"] = self.state.candles(self.state.pool(pid))  # snapshot(pid) == snapshot(pid, candles=False) + candles (pinned by test)
+                return sn, pr
             if not stream:
                 return snap_of[pid], prints_of[pid]
             return self.state.snapshot(pid), list(self.state.pool(pid).events)  # same state, same bytes as the scan's own read
@@ -891,6 +988,11 @@ class Runner:
         held = {pos.pool for b in self.books.values() for pos in b.open.values()} | {w["pool"] for b in self.books.values() for w in b.watches}
         keep = tagged_all | set(res.board) | set(top) | held
         ranked = sorted(res.candidates, key=lambda q: (q not in keep, -(res.feats[q].get("vol_60m") or 0.0), q))[:max(WATCH_MAX_POOLS, len(keep & set(res.candidates)))]
+        if fast:
+            for k in [k for k in self._norm if k not in used_norm]:
+                del self._norm[k]  # only pools read in this scan keep a cache entry (bounded by the candidate count)
+        res.counts["pools"] += pre[0]
+        res.counts["filter_fail"] += pre[0]
         capped = len(res.candidates) - len(ranked)
         self.counters["max_candidates_per_scan"] = max(self.counters.get("max_candidates_per_scan", 0), len(res.candidates))
         if capped > 0:

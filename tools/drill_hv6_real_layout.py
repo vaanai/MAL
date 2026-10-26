@@ -81,7 +81,12 @@ PROG_RE = re.compile(rb'"prog"\s*:\s*"([A-Za-z0-9_-]{1,32})"')
 ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,80}")
 RSS_CAP_MB = 12_288.0
 SCAN_P95_CAP_MS = 1000.0
-PASS_RULE = "PASS iff md5_equal AND peak_rss_mb < rss_cap_mb AND scan_ms_p95 (max of both runs) < 1000"
+SCAN_P95_TICK_TRIGGER_MS = 500.0   # fixed 2026-10-26, before any outcome at the merged sha: at or above this scan p95 the :02 whole-tick p95 must also be < TICK_P95_CAP_MS
+TICK_P95_CAP_MS = 1000.0
+RUNS = ("real-a", "real-b", "real-c")  # real-c runs fast_scan=False (the stream path): its decision-log and cards md5 must equal real-a's; its timing is printed, never tested
+PASS_RULE = ("PASS iff md5_equal (run1 == run2, and run3 [fast_scan=False] decision-log md5 and cards md5 == run1's) AND peak_rss_mb (max of the three processes) < rss_cap_mb "
+             "AND scan_ms_p95 (max of runs 1 and 2; run 3 excluded) < 1000 AND (if that scan p95 >= 500: the :02 whole-tick p95 (max of runs 1 and 2) < 1000; "
+             "otherwise the whole-tick figures are report-only)")
 
 
 def count_programs(src: Path, days: list[str]) -> dict:
@@ -149,9 +154,29 @@ class RealDrill(D.Drill):
         return run
 
 
-def one_run(rd: RealDrill, tag: str, start: int, end: int) -> dict:
+def stats(xs: list[float]) -> dict:
+    return {"p50": round(pct(xs, 0.5), 2), "p95": round(pct(xs, 0.95), 2), "max": round(max(xs), 2) if xs else 0.0, "n": len(xs)}
+
+
+def one_run(rd: RealDrill, tag: str, start: int, end: int, fast: bool = True) -> dict:
     run = rd.new_run(tag)
+    run.cfg.fast_scan = fast
     walls: list[float] = []
+    tick_walls: list[float] = []
+    scan_tick_walls: list[float] = []   # the :02 tick of each minute: version refresh, scan, watches, re-checks, regime (everything tick() does at the scan second)
+    orig_tick = run.tick
+
+    def tick(T):
+        t = time.perf_counter()
+        try:
+            return orig_tick(T)
+        finally:
+            ms = (time.perf_counter() - t) * 1000.0
+            tick_walls.append(ms)
+            if (T // 1000) % 60 == H.SCAN_SECOND_MS // 1000:
+                scan_tick_walls.append(ms)
+
+    run.tick = tick
     orig = run.scan
 
     def scan(T):
@@ -168,19 +193,20 @@ def one_run(rd: RealDrill, tag: str, start: int, end: int) -> dict:
     pos = D.positions(run)
     return {"log_md5": D.log_md5(run.cfg.root), "cards_md5": D.cards_md5(run.cfg.root), "cards": D.n_cards(run), "entries": D.entries(run),
             "closes": pos["distinct_closed"], "positions": pos["positions"], "open_at_end": pos["open_now"], "refusals_by_class": D.refusal_kinds(run),
-            "counters": dict(sorted(run.counters.items())), "scans": len(walls), "scan_ms_p50": round(pct(walls, 0.5), 2), "scan_ms_p95": round(pct(walls, 0.95), 2)}
+            "counters": dict(sorted(run.counters.items())), "scans": len(walls), "scan_ms_p50": round(pct(walls, 0.5), 2), "scan_ms_p95": round(pct(walls, 0.95), 2),
+            "tick_ms": stats(tick_walls), "scan_tick_ms": stats(scan_tick_walls), "fast_scan": fast}
 
 
 def child_one_run(tag: str, days: list[str], drill_id: str, sha: str) -> int:
     """One replay in ITS OWN process (run1 and run2 never share a heap: QP/OOM #1596). Writes <drill root>/<tag>.json (counts, md5s, this process's peak RSS)."""
     base = Path(H.HV6_ROOT) / "drill" / drill_id
-    if not ID_RE.fullmatch(drill_id) or tag not in ("real-a", "real-b") or not D.RR.is_drill_root(base):
+    if not ID_RE.fullmatch(drill_id) or tag not in RUNS or not D.RR.is_drill_root(base):
         return 2
     start, end = day_ms(days[0]), day_ms(days[-1]) + 86_400_000
     assert end <= day_ms(END_EXCLUSIVE)
     rd = RealDrill(base, Path(REAL_TAPE), sha, days)
     try:
-        res = one_run(rd, tag, start, end)
+        res = one_run(rd, tag, start, end, fast=(tag != "real-c"))
         res["peak_rss_mb"] = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 1)
     except Exception as e:  # noqa: BLE001 - the class name only
         res = {"error_class": type(e).__name__}
@@ -224,19 +250,30 @@ def run_real(days: list[str], drill_id: str, sha: str, *, rss_cap_mb: float = RS
     D.out({"real_layout": "start", "sha": sha, "days": len(days), "first_day": days[0], "last_day": days[-1], **view_info, "model": "StubModel", "api_calls": 0,
            "chain": "fake_stamped_before_scan",
            "rows_by_program": count_programs(src, days), "orders_only_on": "pumpswap", "pass_rule": PASS_RULE, "rss_cap_mb": rss_cap_mb})
-    if isolate:  # production: each replay in its own subprocess; the peak is the larger of the two processes' peaks
+    if isolate:  # production: each replay in its own subprocess; the peak is the largest of the three processes' peaks
         a = _isolated_run("real-a", days, drill_id, sha, base)
         b = _isolated_run("real-b", days, drill_id, sha, base)
-        rss_mb = max(a.pop("peak_rss_mb"), b.pop("peak_rss_mb"))
+        c = _isolated_run("real-c", days, drill_id, sha, base)
+        rss_mb = max(a.pop("peak_rss_mb"), b.pop("peak_rss_mb"), c.pop("peak_rss_mb"))
     else:
         a = one_run(rd, "real-a", start, end)
         b = one_run(rd, "real-b", start, end)
+        c = one_run(rd, "real-c", start, end, fast=False)
         rss_mb = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 1)
-    equal = a["log_md5"] == b["log_md5"] and a["cards_md5"] == b["cards_md5"] and a["entries"] == b["entries"]
-    p95 = max(a["scan_ms_p95"], b["scan_ms_p95"])
-    ok = equal and rss_mb < rss_cap_mb and p95 < SCAN_P95_CAP_MS
+    equal12 = a["log_md5"] == b["log_md5"] and a["cards_md5"] == b["cards_md5"] and a["entries"] == b["entries"]
+    equal3 = c["log_md5"] == a["log_md5"] and c["cards_md5"] == a["cards_md5"]  # fast_scan on and off give the same decisions on the real layout
+    equal = equal12 and equal3
+    p95 = max(a["scan_ms_p95"], b["scan_ms_p95"])  # run 3 (the slow path) is never part of this test
+    tick_p95 = max(a["scan_tick_ms"]["p95"], b["scan_tick_ms"]["p95"])
+    tick_rule_applies = p95 >= SCAN_P95_TICK_TRIGGER_MS
+    tick_ok = (tick_p95 < TICK_P95_CAP_MS) if tick_rule_applies else True
+    ok = equal and rss_mb < rss_cap_mb and p95 < SCAN_P95_CAP_MS and tick_ok
     res = {"real_layout": "end", "result": "PASS" if ok else "FAIL", "pass_rule": PASS_RULE, "md5_equal": equal, "rss_ok": rss_mb < rss_cap_mb, "scan_p95_ok": p95 < SCAN_P95_CAP_MS,
-           "run1_log_md5": a["log_md5"], "run2_log_md5": b["log_md5"], "run1": {k: v for k, v in a.items() if k != "log_md5"},
+           "md5_equal_run1_run2": equal12, "md5_equal_run3_fast_scan_off": equal3, "tick_rule_applies": tick_rule_applies, "scan_tick_p95_ok": tick_ok,
+           "run1_log_md5": a["log_md5"], "run2_log_md5": b["log_md5"], "run3_log_md5": c["log_md5"], "run3_cards_md5": c["cards_md5"],
+           "run3_timing_report_only": {"scan_ms_p50": c["scan_ms_p50"], "scan_ms_p95": c["scan_ms_p95"], "tick_ms": c["tick_ms"], "scan_tick_ms": c["scan_tick_ms"]},
+           "whole_tick_ms": {"run1": {"tick": a["tick_ms"], "scan_tick": a["scan_tick_ms"]}, "run2": {"tick": b["tick_ms"], "scan_tick": b["scan_tick_ms"]}},
+           "run1": {k: v for k, v in a.items() if k != "log_md5"},
            "run2_counts_equal": {k: a[k] == b[k] for k in ("cards", "entries", "closes", "refusals_by_class")}, "peak_rss_mb": rss_mb, "rss_cap_mb": rss_cap_mb,
            # QP 930: the watch-set cap (WATCH_MAX_POOLS) is a changed value unless it never bound on these days
            "max_candidates_per_scan": max(a["counters"].get("max_candidates_per_scan", 0), b["counters"].get("max_candidates_per_scan", 0)),
