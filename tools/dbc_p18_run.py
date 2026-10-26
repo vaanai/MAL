@@ -7,6 +7,9 @@ What this module adds around the pinned engine (QP ruling 2026-10-26, p33 Q1/Q4)
   before the tail start that no later call reads (anchor logic of dbc_fwd._tail_start; the 60 s window, the previous group and every pending position's own window are kept,
   prefix sums stay absolute); (2) DROP of a completed pool (dbc_screen.universe needs slot < complete slot, so it cannot trigger again) once it has no open position and no
   unclosed row. A pool that is merely idle is never dropped (it can still trigger); a pool with an open position is never touched. Proof-only oracle variants are not supported.
+* drop margin: a completed pool is dropped only DROP_MARGIN_SLOTS (600) slots after its completion slot, so a late row that still belongs to the pool's pre-completion
+  slots reaches the pinned engine. Rows of a dropped pool (any slot, in particular slot >= comp_slot) are NOT given to the engine: they skip the fee-mode evidence and the
+  pool history and are only counted (`rows_after_drop`, expected 0; late rows with slot < comp_slot after the margin are likewise only counted).
 * start guard: no live process, probe or decision log before the m10 read printed "LOOK CONSUMED" (the claim of the one-look marker, checked by lstat only: the marker is never
   opened) AND not before 2026-11-01T00:10Z. `--test` runs only on synthetic fixtures or on exploration tape hours [2026-10-14T00, 2026-10-17T00) and never opens a socket.
 * live decision rows carry t_recv_ms (receive time of the trigger row), t_decide_ms and max_slot_seen; counters read DECISION rows only (never exit rows).
@@ -52,6 +55,8 @@ EARLIEST_LIVE = datetime(2026, 11, 1, 0, 10, tzinfo=timezone.utc)
 MARKER = "/data/mal/hunt-1008/push-1016/hunt29/dbc/HOLDOUT_READ_DONE_v3"  # tools.dbc_fwd_read.MARKER (a test pins equality); lstat only, never opened
 TEST_MIN = datetime(2026, 10, 14, 0, tzinfo=timezone.utc)
 TEST_MAX = datetime(2026, 10, 17, 0, tzinfo=timezone.utc)  # exclusive
+FIXTURE_DIR = os.path.realpath(str(Path(__file__).resolve().parent / "fixtures"))
+WATCHDOG_S = 5.0  # RSS check period (live)
 MEM_BAR_MIB = 1536.0  # QP bar: RSS < 1.5 GiB
 EXIT_REFUSED, EXIT_MEM = 2, 6
 WARMUP_S = 3600.0
@@ -65,7 +70,7 @@ class StartRefused(Exception):
 
 # ------------------------------------------------------------------------------------------------------------------------------ guard
 def start_guard(*, live: bool, test: bool, now: datetime, marker_exists: Callable[[str], bool] | None = None, marker: str = MARKER, paths: tuple[str, ...] = (),
-                hours: tuple[datetime, datetime] | None = None, fixture: bool = False) -> None:
+                hours: tuple[datetime, datetime] | None = None, fixture: bool | str = False) -> None:
     """Raise StartRefused unless the start is allowed. live and test are exclusive. Test: synthetic fixture, or tape hours inside the exploration window; never a socket."""
     if live == test:
         raise StartRefused("exactly one of --live / --test is required")
@@ -80,6 +85,8 @@ def start_guard(*, live: bool, test: bool, now: datetime, marker_exists: Callabl
                 raise StartRefused(f"test hours [{a:%Y-%m-%dT%H}, {b:%Y-%m-%dT%H}) are not inside the exploration window [2026-10-14T00, 2026-10-17T00)")
         elif not fixture:
             raise StartRefused("--test needs --fixture (synthetic) or --hours (exploration)")
+        elif isinstance(fixture, str) and not os.path.realpath(fixture).startswith(FIXTURE_DIR + os.sep):
+            raise StartRefused(f"--fixture must live under {FIXTURE_DIR}")
         return
     if now < EARLIEST_LIVE:
         raise StartRefused(f"live refused before {EARLIEST_LIVE:%Y-%m-%dT%H:%MZ} (now {now:%Y-%m-%dT%H:%M:%SZ})")
@@ -96,6 +103,11 @@ class PrunedEngine(F.Engine):
     TRIM_MIN_ROWS = 256
     TRIM_MARGIN_S = 60.0
     SWEEP_SLOTS = 600
+    # A completed pool is dropped only when cur_slot > comp_slot + DROP_MARGIN_SLOTS. In a live feed a LATE row (slot < comp_slot, arriving after later slots) can still
+    # trigger in the pinned engine, so the margin must exceed the late-row tail. Measured on tape (72 h exploration): slot-close wait p50 1 / p90 3 / p99 16 / max 124 slots
+    # (MEASURE.md M-a), tape late_rows 0; no live late-row tail is measured yet. 600 slots (about 130 s) is 4.8x that max and costs only the completed pools of the last
+    # ~2 minutes (a few dozen pools), so memory is not the constraint.
+    DROP_MARGIN_SLOTS = 600
 
     def __init__(self, *a: Any, live_fields: bool = False, **kw: Any) -> None:
         if kw.get("oracle_rows") is not None or kw.get("oracle_mode") is not None:
@@ -192,7 +204,7 @@ class PrunedEngine(F.Engine):
             if p is None:
                 del self.comp_names[name]
                 continue
-            if (p.comp_slot is None or p.comp_slot >= self.cur_slot or name in self.open or p.closed < p.n() or p.pend_live is not None
+            if (p.comp_slot is None or p.comp_slot + self.DROP_MARGIN_SLOTS >= self.cur_slot or name in self.open or p.closed < p.n() or p.pend_live is not None
                     or p.pend_screen is not None or p.q_screen):
                 continue
             self.dead[name] = p.comp_slot
@@ -442,10 +454,13 @@ async def run_live(out: str, env_file: str, credit_cap: float | None, prune: boo
     stop = asyncio.Event()
 
     async def watchdog() -> None:
+        n = 0
         while not stop.is_set():
-            await asyncio.sleep(30)
+            await asyncio.sleep(WATCHDOG_S)
             st = run.tick()
-            print(json.dumps({k: st.get(k) for k in ("utc", "rss_mib", "pools", "rows_retained", "decisions", "feed")}), flush=True)
+            n += 1
+            if n % int(60 / WATCHDOG_S) == 0:
+                print(json.dumps({k: st.get(k) for k in ("utc", "rss_mib", "pools", "rows_retained", "decisions", "feed")}), flush=True)
             if run.mem_exceeded:
                 stop.set()
 
@@ -478,7 +493,7 @@ def main(argv: list[str] | None = None) -> int:
     pa = lambda v: datetime.strptime(v, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)  # noqa: E731
     hours = (pa(ns.hours[0]), pa(ns.hours[1])) if ns.hours else None
     try:
-        start_guard(live=ns.live, test=ns.test, now=datetime.now(timezone.utc), paths=tuple(p for p in (ns.fixture, ns.root or "", ns.out) if p), hours=hours, fixture=bool(ns.fixture))
+        start_guard(live=ns.live, test=ns.test, now=datetime.now(timezone.utc), paths=tuple(p for p in (ns.fixture, ns.root or "", ns.out) if p), hours=hours, fixture=ns.fixture or False)
     except StartRefused as e:
         print(f"REFUSED: {e}", file=sys.stderr)
         return EXIT_REFUSED

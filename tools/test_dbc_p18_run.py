@@ -131,10 +131,49 @@ def test_dropped_pool_rows_are_counted_not_revived():
     e = Tiny(0.0)
     base = {"v": 1, "venue": "meteora_dbc", "type": "curve_complete", "slot": 10, "t_recv_ms": 1000, "pool": "X", "config": "c"}
     e.on_row(base)
-    e.advance(100)  # sweep: nothing open, completed before the slot
+    e.advance(10 + e.DROP_MARGIN_SLOTS)
+    assert "X" in e.pools and "X" not in e.dead, "dropped inside the margin"
+    e.advance(10 + e.DROP_MARGIN_SLOTS + 1)
     assert "X" in e.dead and "X" not in e.pools
     e.on_row({**base, "slot": 11})
     assert e.stats["rows_after_drop"] == 1 and "X" not in e.pools
+
+
+def _late_tape():
+    """Synthetic tape where pool E's trigger print (the last print before its completion) arrives LATE: after the completion row and after a row of a slot three later (so a sweep has run)."""
+    from tools.test_dbc_fwd import synth_rows
+    rows = synth_rows()
+    ci = next(i for i, r in enumerate(rows) if r["type"] == "curve_complete")
+    comp = rows[ci]["slot"]
+    ti = max(i for i, r in enumerate(rows[:ci]) if r["pool"] == "PoolEeee" and r["type"] == "trade")
+    late = rows.pop(ti)
+    ci -= 1
+    j = next(i for i in range(ci, len(rows)) if rows[i]["slot"] >= comp + 3)
+    rows.insert(j + 1, late)
+    return rows, late
+
+
+class NoMargin(Tiny):
+    DROP_MARGIN_SLOTS = 0
+
+
+def test_late_row_after_a_sweep_still_gives_the_pinned_engines_decision():
+    rows, late = _late_tape()
+    with tape_root(rows):
+        e0, m0, k0, r0 = _run(F.Engine)
+        e1, m1, k1, r1 = _run(Tiny)  # sweep every slot, default 600-slot margin
+        e2, m2, k2, r2 = _run(NoMargin)  # control: no margin loses the late row
+    assert e0.stats["late_rows"] >= 1
+    d0 = [r["key"] for r in r0 if r["type"] == "decision" and r["pool"] == "PoolEeee"]
+    assert d0, "the pinned engine must decide pool E from the late print"
+    assert m0 == m1 and r0 == r1 and e1.stats["rows_after_drop"] == 0
+    assert e2.stats["rows_after_drop"] >= 1 and [r["key"] for r in r2 if r["type"] == "decision" and r["pool"] == "PoolEeee"] != d0, "control does not bite"
+
+
+def test_fixture_must_live_under_tools_fixtures():
+    P.start_guard(live=False, test=True, now=D(2026, 10, 26), fixture=str(FIX))
+    with _raises(P.StartRefused):
+        P.start_guard(live=False, test=True, now=D(2026, 10, 26), fixture="/tmp/x.json.gz")
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ runner
