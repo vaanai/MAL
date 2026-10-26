@@ -134,7 +134,7 @@ The forwarder is pure stdlib, except for the read gate it imports for a sealed r
 
 **Latency definition.** The latency is from the moment `DecisionLog.append` returned on research-0 (after its fsync) to the moment the same line was fsynced into the fast-0 file. That is "visible" to the bridge, which then polls every 50 ms.
 
-**Results** (at code `ea413aad`, flag form `--start-file/--start-offset` on claude's full-shell key. The review fixes since then change no hop step: the same ssh pipe, one frame per line, one fsync per row. I did not re-run the measurement on the revised code or the forced-command form.)
+**Results** (at code `ea413aad`, flag form `--start-file/--start-offset` on claude's full-shell key. The review fixes since then change no hop step: the same ssh pipe, one frame per line, one fsync per row. A re-run at `31f816f2` in the forced-command form is below, under **Re-run**.)
 
 | Measure | p50 | p90 | p99 | max | n |
 |---|---|---|---|---|---|
@@ -152,7 +152,23 @@ The forwarder is pure stdlib, except for the read gate it imports for a sealed r
 - **Clocks:** both hosts use systemd-timesyncd against ntp.ubuntu.com. research-0 showed offset +1.715 ms and root distance 4.783 ms. fast-0 (job #1664) showed offset −4.741 ms and root distance 5.644 ms. The two clocks agree to within about ±10 ms, so the true one-way figure lies between the two latency rows above.
 - **Cleanup:** `~/scratch/p46-transport-hop` was removed on both hosts and no forwarder process is left. I checked research-0 by hand and fast-0 in the job log.
 
-**Bar: added p90 ≤ 300 ms.** It was chosen as under 1/6 of the 1.9 s leg and 6% of the 5 s age cap. Measured: p90 21.33 to 36.22 ms, and max ≤ 118.08 ms on either clock method. **The bar is met with a wide margin.** Against the 500 ms warm exit poll that READINESS suggests for HV4, the hop adds about 1/14 to the exit lag at p90.
+**Re-run** (job #1672, `j_bvEAIag4fzXoKw`, code `31f816f2`, 2026-10-26T18:42:21Z to 18:52:07Z, same plan and seed):
+
+- **Path:** serve ran in the forced-command form (`serve --from-env`, `SSH_ORIGINAL_COMMAND` = the puller's `{resume}`, starting from an empty dst).
+- **Integrity:** 570 of 570 rows forwarded, puller exit code 0, md5 equal (`638e69f8f0c7e359807cb7477e15faac`), no gap rows.
+- **Connect:** serve connect took 1,392 ms.
+- **Cleanup:** the cleanup check printed `no-remote-process` and no dirs.
+
+| Measure | p50 | p90 | p99 | max | n |
+|---|---|---|---|---|---|
+| append → visible, echo offset (−0.603104 ms, ±13.890929 ms) | 17.365253 ms | 22.753946 ms | 48.161801 ms | 123.538018 ms | 570 |
+| same, NTP clocks taken as equal (+0.603104 ms) | 17.968357 ms | 23.35705 ms | 48.764905 ms | 124.141122 ms | 570 |
+| row `ms` → visible, echo offset | 23.24704 ms | 27.499891 ms | 53.802957 ms | 126.804129 ms | 570 |
+| echo RTT (clock-free) | 29.685462 ms | 35.171889 ms | 68.872953 ms | 1275.715615 ms* | 564 |
+
+The two runs' echo offsets differ by 14.288173 ms. That is within the stated ±13.6 to ±13.9 ms bounds of each run, so the one-way p50 is only bracketed, not pinned. Taking both runs and both clock methods, p90 lies between 21.332367 and 36.223644 ms.
+
+**Bar: added p90 ≤ 300 ms.** It was chosen as under 1/6 of the 1.9 s leg and 6% of the 5 s age cap. Measured over both runs and both clock methods: p90 21.33 to 36.22 ms, and max ≤ 124.14 ms. **The bar is met with a wide margin.** Against the 500 ms warm exit poll that READINESS suggests for HV4, the hop adds about 1/14 to the exit lag at p90.
 
 **Not measured:**
 
