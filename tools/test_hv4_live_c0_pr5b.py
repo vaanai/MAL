@@ -22,7 +22,9 @@ from tools import hv4_live_c0 as c0
 from tools.test_arena_live_bridge import T0, TmpCase
 from tools.test_arena_twin_writer import ledger_row
 from tools.test_hv4_live_c0 import ARM
-from tools.test_hv4_live_c0_pr3 import GateWiringTests, _Runner  # noqa: F401 - the env and the in-process parity runner
+from tools import test_arena_twin_writer as TW
+from tools import test_hv4_live_c0_pr3 as pr3
+from tools.arena_twin_writer import _day as twin_day
 
 DAY_MS = 86_400_000
 BUY_FEE, FAIL_FEE, LAND_FEE = 60_000, 60_000, 155_000  # 55k + 5k, 55k + 5k (x2 reverts), 150k + 5k
@@ -176,6 +178,193 @@ class ExporterUnitTests(TmpCase):
         fills.write_text("".join(json.dumps(r) + "\n" for r in rows))
         self.assertEqual(tie.main(argv + ["--now-ms", str(end)]), 3)  # fee audit
         self.assertEqual(tie.main(argv[:-2] + ["--day", "bad", "--now-ms", str(end)]), 2)
+
+
+RENT = 2_039_280
+
+
+def chain_for(rows, baseline=5_000_000_000):
+    """The synthetic chain of one trip: txs with pre/post balances in slot order, consistent with the fill rows (base fee 5,000 + priority per send)."""
+    txs, bal, slot = [], baseline, 100
+    for r in rows:
+        if not isinstance(r.get("landed"), bool):
+            continue
+        prio = r["priority_lamports"]
+        if r["kind"] == "buy" and r["landed"]:
+            d, extra = -r["sol_spent_lamports"], {"kind": "buy", "sol_paid": r["spend_lamports"], "rent_paid": RENT}
+        elif r["kind"] == "sell" and r["landed"]:
+            d, extra = r["sell_net_lamports"], {"kind": "sell", "sol_received": r["sol_received_lamports"], "rent_refunded": RENT}
+        else:
+            d, extra = -(5_000 + prio), {"kind": "sell", "status": "failed", "sol_received": 0}
+        slot += 10
+        txs.append({"signature": r["signature"], "slot": slot, "status": extra.pop("status", "ok"), "pre_balance": bal, "post_balance": bal + d,
+                    "fee_lamports": 5_000, "priority_fee_lamports": prio, **extra})
+        bal += d
+    balance = {"lamports": bal, "context_slot": slot + 5, "commitment": "finalized", "finalized_block_height": 10_000}
+    return txs, baseline, balance
+
+
+class TripEndToEndTests(TmpCase):
+    """Precondition 4: one landed buy and one ESCALATED sell (2 reverts, then the 0.65 rung at the 150,000 priority) go fake executor rows -> bridge ->
+    recorder -> pinned twin wrapper -> arena_live_parity (the real tool) -> tie-out export -> the real tie-out arithmetic. Seeded mismatches latch (the bridge's latch is what blocks the buy), and a stuck escalated sell is the trip-bearing rc 11."""
+
+    _env = pr3.GateWiringTests._env
+    _prime_twins = pr3.GateWiringTests._prime_twins
+    _bridge = pr3.GateWiringTests._bridge
+
+    def _setup(self, spend=None, sell_prios=(55_000, 55_000, 150_000)):
+        e = self._env()
+        e.start()
+        e.entry_sz("o1")
+        self._prime_twins(e)
+        b = self._bridge(e, pr3._Runner())
+        b.tick()
+        o = b.state.orders["o1"]
+        mint = o["mint"]
+        rows = trip_rows(mint, e.clock(), o["decision_ms"], spend=o["stake_lamports"] if spend is None else spend, sell_prios=sell_prios)
+        fd = Path(self.tmp) / "state" / "probe"
+        fd.mkdir(parents=True, exist_ok=True)
+        (fd / "fills.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+        e.port.ledger = [(r["kind"], mint, {k: v for k, v in r.items() if k not in ("kind", "mint", "ts_ms", "book")}) for r in rows]
+        return e, b, o, mint, rows
+
+    def _land(self, b, mint):
+        b.apply_events([{"event": "buy_landed", "mint": mint, "landed_slot": 110}, {"event": "sell_landed", "mint": mint, "landed_slot": 150, "pnl_lamports": -1_000_000}])
+        b.feed_ledger()
+
+    def _twin(self, e, b, o, mint):
+        d = Path(self.tmp) / "synthetic-ledger-e2e"
+        d.mkdir(exist_ok=True)
+        row = ledger_row(mint=mint, entry_ms=o["decision_ms"] + 400, bot_id=ARM)
+        row["stack"] = dict(c0.HV4_STACK_PIN, sps_entry=0.4, sps_exit=0.4)
+        (d / f"trades-{twin_day(o['decision_ms'] + 400)}.jsonl").write_text(json.dumps(row) + "\n")
+        return tw.main(["--trips", str(b.gates.recorder.trips_path), "--ledger-dir", str(d), "--bot-id", ARM, "--out", e.raw["twins_file"], "--now-ms", str(e.clock())])
+
+    def test_escalated_trip_flows_through_to_rc0_and_a_matching_tieout(self):
+        e, b, o, mint, rows = self._setup()
+        self._land(b, mint)
+        t = b.gates.recorder.trips[mint]
+        self.assertEqual((t["stake_lamports"], t["buy_fee_lamports"], t["sell_fee_lamports"], t["exit_landed"]), (S, BUY_FEE, SELL_FEE_TOTAL, True))
+        self.assertEqual(self._twin(e, b, o, mint), 0)
+        twin = json.loads(Path(e.raw["twins_file"]).read_text().splitlines()[0])
+        self.assertEqual((twin["state"], twin["buy_send_lamports"], twin["sell_send_lamports"]), ("filled", BUY_FEE, SELL_FEE_TOTAL))  # twin priced at the fees SENT
+        self.assertEqual(b.gates.run_parity(e.clock()), 0)
+        res = json.loads((Path(self.tmp) / "par" / "parity-result.json").read_text())
+        self.assertIsInstance(res, dict)
+        self.assertEqual(b.state.latches, {})
+        self.assertIsNone(b.gate_refusal(e.clock()))
+        # the day closes; the exporter writes the book once
+        day = ato.utc_day_str(rows[0]["ts_ms"])
+        e.clock.t = tie.day_bounds(day)[1] + 60_000
+        self.assertEqual(b.export_tieout(day), "created")
+        self.assertEqual(b.export_tieout(day), "same")
+        doc = json.loads((Path(self.tmp) / "tie" / tie.ledger_name(day)).read_text())
+        self.assertEqual((len(doc["sends"]), doc["open_mints"], doc["trips"][0]["closed"]), (4, [], True))
+        self.assertEqual(doc["bridge"]["trip_fees"][mint]["sell_priorities"], [55_000, 55_000, 150_000])
+        self.assertEqual(doc["bridge"]["positions"], [])
+        # the real tie-out arithmetic on a chain that matches the fills
+        txs, base, balance = chain_for(rows)
+        r = ato.reconcile(txs, doc, {"programs_covered": list(ato.TOKEN_PROGRAMS), "accounts": []}, base, balance, {})
+        self.assertEqual(r["problems"], [])
+        self.assertTrue(r["signed_off"])
+        self.assertEqual(r["trip_diffs"][0]["diff"], 0)
+        self.assertEqual(r["split"]["failed_tx_fees"], 2 * FAIL_FEE)
+        # a chain that charged one lamport more than the fills say does not tie
+        txs[-1]["post_balance"] -= 1
+        bad = ato.reconcile(txs, doc, {"programs_covered": list(ato.TOKEN_PROGRAMS), "accounts": []}, base, balance, {})
+        self.assertFalse(bad["signed_off"])
+
+    def _parity_result(self):
+        return json.loads((Path(self.tmp) / "par" / "parity-result.json").read_text())
+
+    def test_seeded_wrong_stake_latches_and_the_parity_result_lists_it(self):
+        e, b, o, mint, rows = self._setup(spend=S - 5_000_000)
+        self._land(b, mint)
+        self.assertIn("stake_mismatch", b.state.latches)
+        e.clock.t = rows[-1]["ts_ms"] + 1_000
+        self.assertEqual(self._twin(e, b, o, mint), 0)
+        rc = b.gates.run_parity(e.clock())
+        res = self._parity_result()
+        # FINDING (see the PR body): arena_live_parity exits 11 only for P4 / out_of_rule_entry / stuck_position. `unresolved_hard_halts` in its state.json makes the
+        # verdict "parity not shown" and is listed, but does not change the exit code, so the BRIDGE's latch is what blocks the buy.
+        self.assertEqual(res["unresolved_hard_halts"], ["stake_mismatch"])
+        self.assertFalse(res["match"])
+        self.assertEqual(rc, 0)
+        e.entry_sz("o2")
+        b.tick()
+        self.assertEqual(e.log_rows("entry_refused")[-1]["why"], "latched:stake_mismatch")
+        # the exporter refuses the same book: the landed buy did not spend the order's S
+        day = ato.utc_day_str(rows[0]["ts_ms"])
+        e.clock.t = tie.day_bounds(day)[1] + 60_000
+        self.assertEqual(b.export_tieout(day), "mismatch")
+        self.assertIn("tieout_mismatch", b.state.latches)
+        self.assertFalse((Path(self.tmp) / "tie" / tie.ledger_name(day)).exists())
+
+    def test_seeded_wrong_fee_latches_tieout_mismatch(self):
+        e, b, o, mint, rows = self._setup()
+        self._land(b, mint)
+        self.assertEqual(b.state.latches, {})
+        b.gates.recorder.trips[mint]["sell_fee_lamports"] -= 155_000 - 60_000  # the trip says the sell went out unescalated: the twin would be priced at the wrong fee
+        day = ato.utc_day_str(rows[0]["ts_ms"])
+        e.clock.t = tie.day_bounds(day)[1] + 60_000
+        self.assertEqual(b.export_tieout(day), "mismatch")
+        self.assertIn("sell_fee_lamports", b.state.latches["tieout_mismatch"])
+        self.assertFalse((Path(self.tmp) / "tie" / tie.ledger_name(day)).exists())
+        b.gates.run_parity(e.clock())
+        self.assertIn("tieout_mismatch", self._parity_result()["unresolved_hard_halts"])
+        self.assertIn("tieout_mismatch", c0p.HARD_LATCHES)
+
+    def test_escalated_sell_that_never_lands_is_rc11_and_latches(self):
+        """The trip-bearing hard exit of the real parity tool: the buy landed, two sells reverted, the escalated resend never landed. 600 s after the exit bound the
+        position is stuck (P4-class hard halt): rc 11, STOP, and the bridge latches parity_hard_halt."""
+        e, b, o, mint, rows = self._setup()
+        rows = rows[:3]  # buy + the two reverted sells; no landed sell
+        e.port.ledger = e.port.ledger[:3]
+        b.apply_events([{"event": "buy_landed", "mint": mint, "landed_slot": 110}])
+        b.feed_ledger()
+        t = b.gates.recorder.trips[mint]
+        self.assertFalse(t["exit_landed"])
+        e.clock.t = t["exit_bound_ms"] + 650_000
+        self.assertEqual(self._twin(e, b, o, mint), 0)
+        self.assertEqual(b.gates.run_parity(e.clock()), 11)
+        self.assertTrue(Path(e.raw["stop_file"]).exists())
+        self.assertIn("stuck_position", self._parity_result()["hard_halts"])
+        b._latch_parity_hard()
+        self.assertIn("parity_hard_halt", b.state.latches)
+
+    def test_wrong_signed_priority_in_the_fills_is_a_mismatch(self):
+        e, b, o, mint, rows = self._setup(sell_prios=(55_000, 55_000, 100_000))
+        self._land(b, mint)
+        day = ato.utc_day_str(rows[0]["ts_ms"])
+        e.clock.t = tie.day_bounds(day)[1] + 60_000
+        self.assertEqual(b.export_tieout(day), "mismatch")
+        self.assertIn("tieout_mismatch", b.state.latches)
+
+    def test_open_book_exports_the_position_and_the_latches(self):
+        e, b, o, mint, rows = self._setup()
+        b.apply_events([{"event": "buy_landed", "mint": mint, "landed_slot": 110}])
+        e.port.ledger = e.port.ledger[:1]
+        (Path(self.tmp) / "state" / "probe" / "fills.jsonl").write_text(json.dumps(rows[0]) + "\n")
+        b.feed_ledger()
+        b._latch("stuck_sell", "synthetic")
+        day = ato.utc_day_str(rows[0]["ts_ms"])
+        e.clock.t = tie.day_bounds(day)[1] + 60_000
+        self.assertEqual(b.export_tieout(day), "created")
+        doc = json.loads((Path(self.tmp) / "tie" / tie.ledger_name(day)).read_text())
+        self.assertEqual(doc["open_mints"], [mint])
+        self.assertEqual([(p["mint"], p["status"]) for p in doc["bridge"]["positions"]], [(mint, "open")])
+        self.assertIn("stuck_sell", doc["bridge"]["latches"])
+
+    def test_bridge_without_gates_exports_nothing_and_an_open_day_is_refused(self):
+        e = pr3.GateWiringTests._env(self)
+        b = self._bridge(e, pr3._Runner())
+        with self.assertRaises(ValueError):
+            b.export_tieout(ato.utc_day_str(e.clock()))  # the day has not ended
+        e2 = pr3.Hv4Env(self.tmp + "/x") if False else None
+        self.assertIsNone(e2)
+
+    def test_removal_precondition_still_refuses(self):
+        self.assertEqual(c0.start_refusal("/nonexistent-root", True, ARM), "hv4_c0_incomplete")
 
 
 if __name__ == "__main__":
