@@ -109,10 +109,9 @@ print("md5-replay RUN A equal=%s n_scorer=%s synthetic_unconfirmed scorer/execut
 print("md5-replay RUN B equal=%s n_scorer=%s attempts scorer/executor=%s/%s synthetic_unconfirmed scorer/executor=%s/%s" % (b_ok, b.get("n_scorer"), b.get("attempts_scorer"), b.get("attempts_executor"), b.get("synthetic_unconfirmed_scorer"), b.get("synthetic_unconfirmed_executor")))
 for side in ("scorer", "executor"):
     print("md5-replay reasons %s A=%s B=%s never_A=%s never_B=%s" % (side, a.get("reason_counts_" + side), b.get("reason_counts_" + side), a.get("reasons_never_in_" + side), b.get("reasons_never_in_" + side)))
-ct = (a.get("attempts_scorer"), a.get("attempts_executor"), b.get("attempts_scorer"), b.get("attempts_executor"))
 a_ok = a_ok and a.get("n_scorer") == 137 and a.get("n_executor") == 137
 b_ok = b_ok and b.get("attempts_scorer") == 101 and b.get("attempts_executor") == 101
-print("md5-replay #1481 counts required: A 137/137, B 101/101, B synthetic_unconfirmed 0/0; got A n_scorer=%s B attempts=%s/%s" % (a.get("n_scorer"), b.get("attempts_scorer"), b.get("attempts_executor")))
+print("md5-replay #1481 counts required: A 137/137, B 101/101, B synthetic_unconfirmed 0/0; got A n_scorer/n_executor=%s/%s B attempts=%s/%s" % (a.get("n_scorer"), a.get("n_executor"), b.get("attempts_scorer"), b.get("attempts_executor")))
 ok = a_ok and b_ok and rw_ok
 print("md5-replay VERDICT:", "EQUAL" if ok else "DIFFERENT_OR_EMPTY")
 sys.exit(0 if ok else 4)
