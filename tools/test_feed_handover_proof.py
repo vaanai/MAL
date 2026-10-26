@@ -470,3 +470,12 @@ def test_arena_feed_v1_untouched():
 
     p = Path(__file__).resolve().parent / "arena_feed.py"
     assert hashlib.sha256(p.read_bytes()).hexdigest().startswith("7a9d424b")
+
+
+def test_slim_read_keeps_markers_whole_and_drops_trade_bodies(tmp_path):
+    d = write(tmp_path / "t", takeover_rows())
+    rd = P.read_rows(d, W0, W1, (W0, W1), slim=True)
+    tr = next(r for _, r in rd["rows"] if r["type"] == "trade")
+    tk = next(r for _, r in rd["rows"] if r["type"] == "takeover")
+    assert set(tr) == set(P.SLIM_KEYS) and "mint" not in tr
+    assert "agreement" in tk and "dedup" in tk
