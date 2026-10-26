@@ -18,7 +18,7 @@ Full table: `output/SUMMARY.md`; raw: `output/*/results.json`. Discovery = explo
 
 ## Verdicts (prereg lines)
 - **A40: DROP.** Line 1 (delta >= +1.0 pp both models on confirmation) FAIL by about 8 pp in the wrong direction; line 2 (ex-top-3 > 0) FAIL; line 3 (ex-best-day > 0) FAIL; line 5 (discovery delta > 0) FAIL; line 4 (attempts/day) nominally PASS only because the cap shortens the cooldown (332 -> 786 attempts pooled; tp hits 35 -> 10). Mechanism: FLOOR's profit is the +50% take-profit on a 24 h hold; a 300 s cap cuts most of them off and sells at about the entry price minus costs.
-- **A41: DROP, REDUNDANT.** The FLOOR pricer already applies `GUARD = 1.15` (`tools/arena_stack.py:27`), the same rule as the library's source (h4-boostmid RULE.md:26). Nothing to add. Guard-off ablation shows the existing guard is worth about +0.09 pp (Aug) and 0 (Sep).
+- **A41: DROP, REDUNDANT.** The FLOOR pricer already applies `GUARD = 1.15` (`tools/arena_stack.py:27`), the same rule as the library's source (h4-boostmid RULE.md:26). Nothing to add. Guard-off ablation: the existing guard is worth +0.1000 pp flat / +0.0843 pp pressure on Aug, and 0 on Sep (the pooled flat figure is +0.0925 pp).
 - **A40+A41:** same as A40.
 
 ## Notes the manager needs
@@ -29,3 +29,9 @@ Full table: `output/SUMMARY.md`; raw: `output/*/results.json`. Discovery = explo
 
 ## Not measured
 Any FLOOR G1 / forward / arena output, any October hour, other cap lengths or guard ratios (not tuned by design), worst-in-slot legs for the overlays.
+
+## Corrections and disclosures (added after QP and reviewer CHANGES on #994)
+- **Guard-off label.** The August guard-off figures are -0.1000 pp (flat) and -0.0843 pp (pressure) versus base. The 0.0925 pp figure is the POOLED flat difference (6.4206% vs 6.3281%), not an August figure.
+- **Prereg deviation.** PREREG section 3 listed +A41 and +both as priced variants. They were not priced separately: A41 is already active in the base (`GUARD = 1.15`, `tools/arena_stack.py:27`), so +A41 equals base and +both equals +A40 by construction. Only base, +A40 and guard-off were run.
+- **Trade-set disclosure.** The kit marks the base KILLED / not decidable in-sample: excluded block-edge share 22.4% (> 5%), 96 block-edge trades excluded. A40 excludes 0.63%. Every delta in this note therefore mixes the overlay's effect with a change in which trades were kept (n 332 vs 786 pooled). The direction of the A40 result is large enough that this does not change the DROP, but the deltas are not a clean paired effect.
+- **Seal disclosure.** The 09-25..09-28 block (`oracle-live-2026-09-25_27`) overlaps about 36 of its 65 hours with the forward-paper stale-fill void. It is an exploration-pool block (HOLDOUT_LEDGER line 59), not a confirmation holdout. "Confirmation" in P59 means the Aug/Sep split only.

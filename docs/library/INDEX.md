@@ -32,13 +32,13 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `explored-survivor-unconfirmed` | 9 | 0 | 0 |
 | `parked` | 9 | 0 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 46 | 20 | 1 |
-| `desk-read` | 1 | 43 | 0 |
-| `explored-no-survivor` | 39 | 6 | 1 |
+| `untested` | 44 | 20 | 1 |
+| `desk-read` | 1 | 49 | 0 |
+| `explored-no-survivor` | 41 | 6 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 185 | 75 | 2 |
+| **all** | 185 | 81 | 2 |
 
-The file holds 512 rows: the 262 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 518 rows: the 268 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -54,8 +54,8 @@ Each of these was positive on data the lab had already seen and has no clean for
 
 | Id | Idea | Where it stands | Next step |
 | --- | --- | --- | --- |
-| `lib-a-A40` | Wall-clock caps: 300 s cap | "POS-EXPL" (tree row 10a): positive in exploration only; not gate evidence. d07 the only robust exit of 89; g_reachable holding to 420 s cost -9.337% of stake. | not in source |
-| `lib-a-A41` | Entry price guard: seed x 1.15 on chain | "POS-EXPL" (tree row 10b): g_reachable +1.047 pp per attempt; not gate evidence. | not in source |
+| `lib-a-A40` | Wall-clock caps: 300 s cap | 2026-10-26 P59 (exploration, not gate evidence; PREREG docs/research/p59/PREREG.md written before pricing): applied to FLOOR (l1_rule_tpfix, 160,000 per send, 4 Aug/Sep blocks, 300 s cap with tp 1.5 kept) it is DROP. Confirmation (Sep, n 25 base vs 135 with cap): mean flat -2.1287% vs base +5.6212% (delta -7.7500 pp), pressure -1.7964% vs +4.7240% (delta -6.5203 pp), 0 of 7 days positive; discovery (Aug) delta … | not in source |
+| `lib-a-A41` | Entry price guard: seed x 1.15 on chain | 2026-10-26 P59 (exploration, not gate evidence): already part of FLOOR's priced path. tools/arena_stack.py:27 GUARD = 1.15 (buy reverts and pays one send if exec price > 1.15 x decision spot, the same rule as h4-boostmid RULE.md:26). Adding it to FLOOR-SLOW changes nothing: DROP as REDUNDANT. Diagnostic guard-OFF ablation on FLOOR's 4 blocks: pooled flat 6.4206% -> 6.3281%, pressure 5.1417% -> 5.0637% (the guard is … | not in source |
 | `lib-b-B2` | H2 wallet copy, Book A (frozen 50-wallet list) | "promising, single wallet (verifier: not refuted; the method does not generalize)". Cause: "not dead". Open issue (d) TOO FEW TRADES / CONCENTRATED. | Deciding read: P0 activity precondition on the one wallet (earliest 2026-10-09); deciding read on walk 2 or forward-1002 (JUDGE.md section 2.2). |
 | `lib-b-C1` | G4-FLOORDIP v1 (hunt-2 g4-survivors) | 2026-10-24 hunt29 P9: kit-form G0 (160k/send) on fresh-0903 (much-read exploration block with many prior readers, NOT held-out; kit PR #848 unreviewed, numbers stand only if #848 merges byte-identical): n 79, 11.3/day, flat +0.00138 / pressure +0.00061 SOL/trade (in-sample P3: +0.00448 / +0.00334), ex-top-3 -0.21 / -0.22 SOL, 3/5 days, CI90 lo -0.0068 / -0.0071; block-edge exclusion 30.7%. Rent-charged 1.9 s leg … | Deciding read: no sealed block (power 0.002, JUDGE-2 section 2.0); forward-1002 after the FINAL, or walk 2 from 10-16T01 (about 10-25 to 10-31 per JUDGE-2 section 2.0). |
 | `lib-b-D5` | l3 hourly top-10 cross-sectional (xs10, _v2) (hunt-3) | 2026-10-13: the rebuilt run does not reproduce the 10-08 run (n 2,986 against 3,002). Cause found (swarm-1013/w2-r4b-repro/REPORT.md): prints with a null tx_index tie in the sort order and come back in a different order on each load, which changes a few feature and label values; the model amplifies it. Not reproducible by recipe; a deterministic variant would be a new variant with new numbers. | quant-proof VERIFY first (JUDGE-3 section 3.10); a pre-registration candidate only if the VERIFY passes it. |
@@ -86,7 +86,6 @@ Each of these was positive on data the lab had already seen and has no clean for
 | --- | --- | --- | --- |
 | `lib-a-A21` | Competitor census (who holds our seat) | F6 wallet intelligence | not in source |
 | `lib-a-A24` | Operator and sybil cluster detection | F6 wallet intelligence | not in source |
-| `lib-a-A27` | Cost-aware universe: PumpSwap fee tier falls with market cap | F7 market structure and regime | not in source |
 | `lib-a-A29` | Attention concentration | F7 market structure and regime | not in source |
 | `lib-a-A35` | Synthetic inventory market making on aged pools | F8 liquidity, carry and off-pump venues | Combine the two parts only if either is positive (tree row 8e). |
 | `lib-a-A38` | Sizing overlays: fractional Kelly, concurrency caps, daily stops | F9 portfolio and payoff | Apply only after a positive book (tree row 9c, condition). |
@@ -100,7 +99,6 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `lib-c-L4.2` | postgrad-rank-rugsafe (round-2 idea 2) | post-graduation ranking (iter-r1 §5) | Run the pending l3 xs10 VERIFY first (library L4 item 2). |
 | `lib-c-L4.4` | dump-hazard-enabler, scoped down (round-2 idea 4) | rug filter input (iter-r1 §5) | not in source |
 | `lib-c-L4.6` | ensembles and meta-labelling on FLOOR ranking (9b/9d) | FLOOR ranking (iter-r1 §5) | not in source |
-| `lib-c-N3` | exit-side loss control: exit on observed BOOST end (PDA) | H5 loss control (h5-lossfilter) | not in source |
 | `lib-c-Q1.EXP-026` | EXP-026 H5-BOOSTCLOCK v2 (forward paper read, draft) | repo forward books (Q1) | Window cap 336 h; last W0 2026-10-23T00; alpha route M1 (library Q1). |
 | `lib-c-Q2.9` | EXP-013 (pre-pass refused) | V maps (LAB_STATE, Q2) | not in source |
 | `lib-c-Q2.10` | EXP-015 pooled retrain | retrain (LAB_STATE, Q2) | is ready to screen once the pin lands |
@@ -273,6 +271,42 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | --- | --- | --- | --- |
 | `mgr-1013-gap-flag-audit` | Audit of the H5 shadow's feed-gap flag | `untested` | Counted once, interim, not the deciding read (job #962, 2026-10-13, at the +36 h instant; PR #610 comment 6156947862): of 762 slot-jump records, 469 have 30 to 59 missed slots, 271 have 60 to 149 and 22 have 150 to 599; of 1,973 socket-reconnect records, 30 flagged pools; of 1,132 pool closes, 558 carry the gap flag … |
 
+### p60-slot-clock (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p60-slot-clock-decay` | Slot clock vs wall clock: do latency-bound edges decay in slots or in seconds? (200 ms natural … | `desk-read` | Untested. Capacity guess: not a book. It re-opens or confirms-closed existing latency-bound lines. If one reopened at 20 trades/day x 0.05 SOL x +2% net = 0.02 SOL/day (guess). Kill risk: pump-side bot reaction is dominated by block production so scales with slots; the old and new eras differ in the 7-slot charge and … |
+
+### p60-feeshare-commit (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p60-feeshare-commit-tag` | Creator fee-sharing / one-redirect lock as a creator-commitment label for the rug filter | `desk-read` | Untested. Capacity guess: a veto on an existing book's entries: if it removes 10% of entries that carry 25% of losses, on a 20 trades/day x 0.1 SOL book that is up to 0.05 SOL/day of avoided loss (arithmetic on invented shares, not a measurement). Kill risk: most pump coins never configure sharing, so the label is … |
+
+### p60-t22-quote-pnl (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p60-t22-quote-pnl-audit` | Transfer-fee quote pools: paper-fill P&L audit (cost honesty, not a book) | `desk-read` | Untested. Capacity: none (it removes a possible overstatement). Value guess: if 1% of paper entries land in such pools and the fee is 3%, the bias is 3 bps of notional per trade on average (1% x 3%) but concentrates in the few pools, where it can turn a winner into a loser. Kill risk: the non-zero bytes might not mean … |
+
+### p60-sybil-cost (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p60-sybil-cost-step` | Rent cut (SIMD-0437) lowers wallet-farm cost: drift watch on distinct-buyer features | `desk-read` | Untested. Capacity guess: protective, not a book: if a distinct-buyer gate in any live or forward book is one of its inputs, a 20% loss of its precision on 10 trades/day x 0.05 SOL costs about 0.01 SOL/day at an assumed 10% edge (invented numbers). Kill risk: wallet cost was never the binding cost (SOL funding and … |
+
+### p60-pump-buyback (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p60-pump-buyback-cadence` | PUMP token buyback cadence (50% of net revenue) as a scheduled buyer | `desk-read` | Untested. Capacity guess: PUMP is deep, so stake is not the limit: 2 setups/day x 5 SOL x +0.3% net of 1.25%-class costs (PUMP pools charge less, assumed) = 0.03 SOL/day, with a large uncertainty. Kill risk: the buyer is public and tracked by on-chain analysts, so pros pre-trade it; execution windows may be … |
+
+### p60-bam-preconf (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p60-bam-preconf-race` | Jito BAM preconfirmations (Helius/Triton) as an early-transaction signal -- CLOSED, speed race | `desk-read` | CLOSED on arrival: the advantage is 5-10 ms against our 1-2 s entry latency and 7-slot charge. Listed so the next lane does not re-derive it. Capacity: 0 at our latency. |
+
 ## Dead as frozen, and explored with no survivor
 
 "Dead" means that frozen version failed. A changed version is a new row with its own test.
@@ -295,6 +329,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `lib-a-A22` | Creator reputation: count-based recurrence | `dead-as-frozen` | "DEAD" (count-based) (tree row 6c): "Serial creators are monotonically worse". Outcome-based version "UNTESTED", a feature for 2e/5c, not a strategy on its own. |
 | `lib-a-A25` | Regime gates: 11 causal indicators, hour of day, weekend, SOL trend | `dead-as-frozen` | "DEAD / IN FLIGHT" (tree row 7a); d14 2/66 out-of-sample cells, about chance. Marks: systematic "DEAD at the gross level" (F3b/F7a). |
 | `lib-a-A26` | Venue and structure arbitrage | `dead-as-frozen` | "DEAD" (tree row 7b). Cause not reported beyond DEAD. |
+| `lib-a-A27` | Cost-aware universe: PumpSwap fee tier falls with market cap | `explored-no-survivor` | P56 exploration 2026-10-26: one rule (momentum +3%/60s, hold 60s, 0.25 SOL) on pools with mcap >= 9,820 SOL and depth >= 400 SOL, fresh-0903 exploration block, 4,267 closed trades. Tiered-fee mean net -0.0041078 SOL/trade (flat-15% model), CI90 lo -0.0048029, 0 of 7 days positive. The tier saves 1.0828 points per round trip but gross before fees is -0.377% per trade. Nothing … |
 | `lib-a-A31` | Funding carry on HL meme-perp | `explored-no-survivor` | Note: 2026-10-13 (reviewer's check, not confirmed): row 8c of the strategy tree reads like a desk estimate with no data run, so this status may overstate what was tested. "WEAK" (tree row 8c): a risk premium (+0.02-0.04 SOL per 2 months on 5 SOL). T3 paper tracker optional. Cause not classified. |
 | `lib-a-A32` | Short new CEX perps; margin shorts on pump tokens | `dead-as-frozen` | "WEAK / DEAD" (tree row 8d). Which part is DEAD is not stated; cause not reported. |
 | `lib-a-A33` | PumpSwap liquidity provision | `dead-as-frozen` | "DEAD" (tree row 8a; d15 S4). Cause not reported beyond DEAD. |
@@ -349,6 +384,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `lib-c-L3` | H5 SELL-BUDGET EXIT (W60 c0.5) | `dead-as-frozen` | "DEAD in discovery (its own kill rule fired)". Paired flat total -3.3928 SOL, daily CI90 [-0.4171, -0.0622]. Cause (a) [inferred] relative to H5 v1's timer. |
 | `lib-c-M2` | fixed H5 exit timers F300, F315, F320, F325 | `dead-as-frozen` | "DEAD (fail C2; F300 fails D1 on pressure at discovery)". Cause (g) FAILED CONFIRMATION: paired daily CI90 entirely below 0 unstressed. |
 | `lib-c-N1` | H5 big-loser anatomy and three entry-filter families (flow, BOOST/pool state, holders) | `dead-as-frozen` | "ALL THREE FAIL OR ARE NOT BIG-LOSER FILTERS". Cause (a) [inferred] for flow and BOOST; (d) TOO FEW TRADES plus (f) DATA not available live for holders. Disagreement: holders verdict "survives" (confirmation +14.639%) vs the report's own §5 "No". |
+| `lib-c-N3` | exit-side loss control: exit on observed BOOST end (PDA) | `explored-no-survivor` | P55 2026-10-26: KILL. Pre-registered trade-tape proxy (R<=1.0 SOL or 36 s without a causal BOOST buy), exit lag 2, 2,826 exploration trades: mean delta -1.7024 pp (flat 15%) and -1.4554 pp (pressure-fail slope 1) vs the frozen exit; wrong sign in discovery and confirmation. Event field not on the tape, so the real boost_vault_remaining trigger is untested. |
 | `lib-c-Q2.1` | fast-entry retail thesis (sniper route) | `dead-as-frozen` | "the fast-entry retail thesis is refuted at MAL's latency"; owner O7: "the sniper route is closed for now." Cause (c) LATENCY, from the repo's own numbers. Librarian's status choice: dead-as-frozen. |
 | `lib-c-Q2.2` | EXP-012 one-shot PASS (backward holdout, 451 trades) | `dead-as-frozen` | "RETIRED" (Console ladder). Cause (b) COSTS/SLIPPAGE [inferred]. Disagreement inside source: one-shot PASS vs RETIRED; "+6.973% at k1 START without V, against +0.145% flat at k6 END, V, lag 2 and haircut." |
 | `lib-c-Q2.3` | 10-05 read of 8 Holm-family books (laya_0.6, laya_0.7 named) | `explored-no-survivor` | "NOT_DECIDABLE all 8" (PROMOTE none, KILL none). Mapped to explored-no-survivor by librarian choice: the read was done and none promoted. |

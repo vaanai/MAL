@@ -1,0 +1,8 @@
+signals/day {'20703': 744, '20704': 832, '20705': 340, '20701': 568, '20702': 839, '20699': 376, '20700': 573} unclosed [1, 1, 3] closed trades 4267
+net_tier n 4267 mean SOL (no fail) -0.0048045119768496776 | flat15 mean -0.004107835180322226 CI90 lo -0.00480287561550148 | total -17.528132714434935 ex-top3 -17.976515760014376 | days+ 0 / 7
+net_flat n 4267 mean SOL (no fail) -0.007493676012226612 | flat15 mean -0.00639362461039262 CI90 lo -0.007076602969643634 | total -27.28159621254531 ex-top3 -27.71943287637399 | days+ 0 / 7
+fee in: min/median/max ppm 0.003 0.0085 0.0125
+median entry quote depth SOL 907.609114275 median mcap 23810.492473326307
+median net_tier % -1.3341670501823544 share net_tier>0 0.26529177408015
+mean round-trip fee (tier) 0.014171783454417624 vs flat 0.025; mean fee saving 0.010828216545582378
+mean gross-before-fee approx (net_tier + rt fee + send) -0.0037662644529810867
