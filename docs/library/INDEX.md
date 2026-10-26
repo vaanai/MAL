@@ -32,13 +32,13 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `explored-survivor-unconfirmed` | 9 | 0 | 0 |
 | `parked` | 9 | 0 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 46 | 20 | 1 |
+| `untested` | 66 | 20 | 1 |
 | `desk-read` | 1 | 43 | 0 |
 | `explored-no-survivor` | 39 | 6 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 185 | 75 | 2 |
+| **all** | 205 | 75 | 2 |
 
-The file holds 512 rows: the 262 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 532 rows: the 282 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -131,6 +131,26 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `p25-quote-drift-completion` | Custom-pair curves whose SOL cost to complete falls with their quote asset | P25 change-capture (2026-10-24) | Counts on fast [09-09T12, 09-15T12) with public external quote prices; pump-coin parents only via the oct-pregrad-d1 role and only while the parent is on its curve (graduated-parent prices are D2/D3, sealed); 0 Helius. |
 | `p25-t22-fee-epoch-clock` | Token-2022 transfer-fee cut public epochs before it binds (DBC transfer-fee mints) | P25 change-capture (2026-10-24) | Public getMultipleAccounts / getSignaturesForAddress on the 42 configs' mints (0 Helius); priced looks only on DBC [10-17, 10-24) as disclosed exploration with QP's OK (not D1); nothing >= 2026-10-25T00Z for DBC/DAMM before the m10 read; a forward recorder after 2026-11-01T00:10Z. |
 | `p25-prestock-quote-band` | PreStock quote-leg dislocation against an external anchor | P25 change-capture (2026-10-24) | Owner's say first; then public mint/pool lists and anchor prices (GeckoTerminal), one declared day of forward gap logging; 0 Helius; any pump-side book is arena-only. |
+| `p37-damm-lp` | Passive LP on DBC-migrated Meteora DAMM v2 pools (fee capture, hours hold) | P37 non-racing sprint (2026-10-26) | Desk IDL check; then counts (fee rate, collect mode, 6 h turnover per fetched pool) and one declared pricing on the P16 DAMM v2 histories clipped at 10-17T00 (disclosed exploration). No DBC/DAMM hour >= 2026-10-25T00Z before 2026-11-01T00:10Z. Kill rules K0-K2 in IDEAS.md §3.1. |
+| `p37-damm-compound-hold` | Hold base on Compounding-mode DAMM v2 pools (fee ratchet in the price) | P37 non-racing sprint (2026-10-26) | None alone; the collect mode is a count field in p37-damm-lp. |
+| `p37-curve-floor` | Pump curve start-price floor: buy curves back at <= 1% progress after a >= 30% peak, hold … | P37 non-racing sprint (2026-10-26) | Counts after the bc-bigwin-2 clean-curve filter, then one declared pricing on explore-0814, fresh-0903, exp011-0909 (both fail models, 160,000 lamports/send). Kill rules in IDEAS.md §3.3. |
+| `p37-stall-to-complete` | Stalled near-complete pump curve held into graduation, exit after BOOST | P37 non-racing sprint (2026-10-26) | Data-quality and count gates on explore-0814, fresh-0903, exp011-0909, then one declared pricing; QP ruling on first-360 s contact before any forward book. Kill rules in IDEAS.md §3.2. |
+| `p37-floor-lowfee-custom` | Frozen FLOOR v2 rule on PUMP-quoted custom pools (0.32-0.42% fee) | P37 non-racing sprint (2026-10-26) | None. |
+| `p37-dbc-stall-migrate` | DBC curve stalled at p 0.6-0.85, held into the DAMM v2 opening step | P37 non-racing sprint (2026-10-26) | None. |
+| `p37-qsink-lock-24h` | 24 h hold on a parent pump coin ranked by float locked in children's curves | P37 non-racing sprint (2026-10-26) | None; QSINK counts belong to hunt23-w3-qsink-1. |
+| `p37-cto-hold` | 24 h hold after an admin-signed creator-fee redirect (community takeover) | P37 non-racing sprint (2026-10-26) | Discriminator counts on explore-0814 (as web-competitors-3's next step), split by signer (admin vs creator). |
+| `p37-mayhem-end` | Mayhem 24 h window end (burn of unsold agent tokens) | P37 non-racing sprint (2026-10-26) | None. |
+| `p37-fee-sweep` | Permissionless pump/PumpSwap fee sweeps as a price event | P37 non-racing sprint (2026-10-26) | None. |
+| `p37-dbc-lock-expiry` | DBC minimum 1-day LP lock and LP vesting expiry as a known instant | P37 non-racing sprint (2026-10-26) | Fold into any DBC/DAMM hold book as an exit-before-expiry rule, declared in that book. |
+| `p37-exit-hour` | UTC-hour timing of 24 h hold exits | P37 non-racing sprint (2026-10-26) | None. |
+| `p37-tpsl-map` | Read pump app TP/SL order levels ahead of trigger (entry veto) | P37 non-racing sprint (2026-10-26) | None. |
+| `p37-listing-hold-open` | Late entry after a CEX listing notice, exit at the scheduled open | P37 non-racing sprint (2026-10-26) | None. |
+| `p37-scheduled-catalyst` | Haiku extraction of stated-time catalysts from public coin pages | P37 non-racing sprint (2026-10-26) | None. |
+| `p37-launch-house` | MAL as coin creator, earning creator fees from bots that buy every create | P37 non-racing sprint (2026-10-26) | None. |
+| `p37-cex-dex-gap` | MEXC/Gate spot vs PumpSwap gap during CEX deposit suspensions | P37 non-racing sprint (2026-10-26) | None. |
+| `p37-meme-index` | Front-run scheduled rebalances of on-chain meme index baskets | P37 non-racing sprint (2026-10-26) | None. |
+| `p37-callout-follow` | Follow pump app callouts on an hours hold after the 10-10 reward change | P37 non-racing sprint (2026-10-26) | None. |
+| `p37-pred-market` | Prediction markets resolving on pump metrics, priced from MAL's counts | P37 non-racing sprint (2026-10-26) | None. |
 
 ## Owner ideas
 
