@@ -8,6 +8,7 @@ from pathlib import Path
 
 from tools import dbc_fwd as F
 from tools import dbc_fwd_read as R
+from tools import dbc_p18_equiv as EQ
 from tools import dbc_p18_run as P
 from tools import dbc_price as L
 from tools import dbc_screen as S
@@ -76,14 +77,17 @@ class Tiny(P.PrunedEngine):
     SWEEP_SLOTS = 1
 
 
-def _run(cls, **kw):
+def _run(cls, signals=0, **kw):
     L.enable_swap3_pricing()
     with tempfile.TemporaryDirectory() as td:
         log = DecisionLog(td)
         live_ss: dict = {}
         eng = cls(T0 + 3600.0, ss_live=lambda hk, m=live_ss: S.slot_s_for(m, hk), log=log, meta={"bt_src": "tape_block_time"}, **kw)
         log.append(F.BOOK, T0 * 1000, {"type": "start", "book": F.BOOK})
-        F.stream_hours(eng, START, END, None, live_ss, log)
+        closer = P.SlotCloser(eng, log) if signals else None
+        feed = EQ.SignalFeed(closer, signals) if closer else eng
+        F.stream_hours(feed, START, END, None, live_ss, log)
+        eng.closer_stats = closer.stats if closer else None
         return eng, log.md5(), sorted(eng.trig_keys), log.rows(F.BOOK)
 
 
@@ -276,3 +280,74 @@ def test_slot_signal_hook_closes_a_slot_and_counts_later_rows_as_late():
             late = {**tr[0], "signature": "sig-late"}
             run.on_row(late)
             assert run.eng.stats["late_rows"] == 1
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ slot close (decision neutrality, late rows)
+def test_slot_signals_synthesised_from_the_tape_leave_the_decision_log_unchanged():
+    with tape_root():
+        e0, m0, k0, r0 = _run(F.Engine)
+        e1, m1, k1, r1 = _run(Tiny, signals=1)
+        e2, m2, k2, r2 = _run(Tiny, signals=2)
+    assert len([r for r in r0 if r["type"] == "decision"]) >= 3
+    assert m0 == m1 == m2 and r0 == r1 == r2 and k0 == k1 == k2
+    for e in (e1, e2):
+        assert e.closer_stats["late_after_close"] == 0 and e.closer_stats["signals_advanced"] > 0 and e.stats["late_rows"] == 0
+    assert e2.closer_stats["signals_clamped"] > 0  # empty-slot signals are clamped, not forwarded as a jump
+
+
+def test_signal_decides_a_slot_without_a_later_row():
+    with tape_root():
+        eng = P.PrunedEngine(0.0)
+        eng.decide = True
+        rows = [r for r in F.read_hour_ordered(str(Path(L.BACKFILL_ROOT) / "tape-2026-10-14T00.jsonl.zst"))["rows"] if r["type"] == "trade"]
+        c = P.SlotCloser(eng)
+        c.on_row(rows[0])
+        s0 = rows[0]["slot"]
+        assert eng.open and eng.stats["groups_closed"] == 0  # the pinned engine waits for a later row
+        assert c.signal(s0) is True
+        assert not eng.open and eng.stats["groups_closed"] == 1 and eng.cur_slot == s0 + 1
+
+
+def test_signal_guards_stale_clamped_and_before_any_row():
+    L.enable_swap3_pricing()
+    eng = P.PrunedEngine(0.0)
+    c = P.SlotCloser(eng)
+    assert c.signal(50) is False and c.stats["signals_ignored"] == 1 and eng.cur_slot == -1  # nothing seen yet: nothing to close, engine untouched
+    base = {"v": 1, "venue": "meteora_dbc", "type": "curve_complete", "slot": 100, "t_recv_ms": 1000, "pool": "X", "config": "c"}
+    c.on_row(base)
+    assert c.signal(10_000) is True and c.stats["signals_clamped"] == 1 and eng.cur_slot == 101  # a skewed far-future signal never moves the engine past its data
+    assert c.signal(100) is False and c.signal(10_000) is False and c.stats["signals_ignored"] == 3
+    assert eng.cur_slot == 101
+
+
+def test_late_row_after_an_early_close_is_counted_logged_and_forwarded():
+    with tape_root():
+        with tempfile.TemporaryDirectory() as td:
+            run = P.Runner(td, live=False, bt_src="tape_block_time", start_ts=float(T0))
+            rows = F.read_hour_ordered(str(Path(L.BACKFILL_ROOT) / "tape-2026-10-14T00.jsonl.zst"))["rows"]
+            tr = [r for r in rows if r["type"] == "trade"]
+            run.on_row(tr[0])
+            n0 = run.eng.stats["sol_rows"]
+            run.on_slot_signal(tr[0]["slot"])
+            late = {**tr[0], "signature": "sig-late"}
+            run.on_row(late)
+            assert run.closer.stats["late_after_close"] == 1 and run.eng.stats["late_rows"] == 1
+            assert run.eng.stats["sol_rows"] == n0 + 1  # forwarded: the pinned engine's late-row behaviour, not a silent drop
+            lr = [r for r in DecisionLog(td + "/declog").rows(F.BOOK) if r["type"] == "late_after_close"]
+            assert len(lr) == 1 and lr[0]["signature"] == "sig-late" and lr[0]["slot"] == tr[0]["slot"] and lr[0]["closed_through"] == tr[0]["slot"]
+            DecisionLog(td + "/declog").verify(F.BOOK)
+            assert run.tick()["slot_close"]["late_after_close"] == 1
+
+
+def test_late_rows_after_early_close_never_change_a_decision_silently():
+    rows, late = _late_tape()
+    with tape_root(rows):
+        e0, m0, k0, r0 = _run(F.Engine)
+        e1, m1, k1, r1 = _run(Tiny, signals=1)
+    assert e1.closer_stats["late_after_close"] >= 1 and e1.stats["late_rows"] >= 1
+    marks = [r for r in r1 if r["type"] == "late_after_close"]
+    assert marks and any(r["signature"] == late["signature"] for r in marks)
+    dec = lambda rs: [(r["type"], r.get("key")) for r in rs if r["type"] in ("decision", "exit")]  # noqa: E731
+    if dec(r0) != dec(r1) or m0 != m1:
+        assert marks  # any divergence from the pinned engine is accompanied by a logged late_after_close row
+    assert m0 != m1, "a late row after an early close must leave a trace in the chained log"
