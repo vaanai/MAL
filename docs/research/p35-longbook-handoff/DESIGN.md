@@ -331,9 +331,10 @@ FLOOR has 0 OOS trades.
 
 | PR | Content | Depends | Effort (worker-days) |
 |---|---|---|---|
-| 1 (this) | DESIGN.md; `tools/feed_handover_proof.py` (seam + parity, counts only); `tools/test_feed_handover_proof.py` on synthetic tape | none | 0.5 |
-| 2 | `tools/arena_feed_v2.py` (standby, takeover, dedup, continuity, fail-closed, counter carry, mint warm-up) + fake-socket tests A-T1, A-T2, A-T3; schema doc row; reader-ignores-`takeover` tests; arena_feed.py sha pin test | 1 | 1.5 |
-| 3 | `scripts/research/feed-takeover-v2.sh` (pinned instant, process checks, as 1107) + runbook + rehearsal job spec (mal-fast-0, scratch) + sampler/table successor jobs; run A-P1 | 2 | 1.0 + 6 h run |
+| 1 (#945) | DESIGN.md; `tools/feed_handover_proof.py` (seam + parity, counts only); `tools/test_feed_handover_proof.py` on synthetic tape | none | 0.5 |
+| 2 (#952) | `tools/arena_feed_v2.py` (standby, takeover, dedup, continuity, fail-closed, counter carry, mint warm-up) + fake-socket tests A-T1, A-T2, A-T3; schema doc row; reader-ignores-`takeover` tests; arena_feed.py sha pin test | 1 | 1.5 |
+| 3a (#954) | `tools/p35_rehearsal.py` (phase-1 rates fix T_p / MIN_OVERLAP_ROWS; two v2 seams; seam + parity proofs) + `docs/runbooks/p35-feed-takeover.md` (A-P1 job spec on mal-fast-0, sampler/table overlap); run A-P1 | 2 | 0.5 + 9 h run |
+| 3b | `scripts/research/feed-takeover-v2.sh` (pinned instant, v2 sha, thresholds, post-check) once A-P1 is ruled | 3a + QP | 0.5 |
 | 4 | `tools/arena_paper_ckpt.py` (`EngineCkpt`: checkpoint, restore, state_digest, handoff recover) + `tools/arena_state_ckpt.py` (ArenaState checkpoint/restore at a tape cursor) + B-T1; pin tests for the unchanged arena modules | none | 2.0 |
 | 5 | `tools/arena_rules_v3.py` (`HostV3`: book lock, `--segment-end-ms`, segment_end / segment_resume, D rule, probe) + scorer support for `handoff` records + B-T2, B-T3, B-T4 | 4 | 1.5 |
 | 6 | `tools/longbook_handoff_proof.py` + synthetic run in tests; QP-pinned real-slice job B-P1 and timing B-P3 | 5 | 1.0 |
