@@ -315,6 +315,182 @@ SYNTHETIC_MARKER = "SYNTHETIC_FIXTURE_ROOT"
 SEALED_ROOT_PREFIX = "/data/mal/arena"
 
 
+# --- PR4 gates: read record, owner line, model id, per-trade loss, 14-day window ---------------------------------------------------------------------------
+MODEL_ID = "claude-haiku-5-5"  # the one model id an F arm may have been read under (the read record's `model_ids`)
+OWNER_DEC_PATH = "/etc/mal-hv4-c0/CANARY_DEC.md"  # ROOT-OWNED, outside the installed tree (the Q50 re-install problem: a DEC/ file in the tree is overwritten by a deploy)
+CANARY_DEC_SHA256 = ""  # sha256 of the owner's CANARY_DEC.md blob; set by the reviewed PR that records the owner's confirmation (empty = unset = no live send, ever)
+OWNER_LINE_FMT = "OWNER_CANARY_CONFIRMED: bot_id={bot_id}"
+PER_TRADE_LOSS_PCT = 30  # per-trade loss latch: 30% of the order's own S (integer lamports, floor)
+MAX_WINDOW_MS = 14 * 86_400_000  # a C0 canary window is 14 days from the first start; end_ms may not reach past it
+READS_DIR_CANON = "/data/mal/arena/reads"  # where arena_score.record_read writes `<bot_id>.json`; the only place under the sealed prefix a record may be read from
+READ_RECORD_KEYS = ("bot_id", "status", "read_boundary_ms", "attempts", "model_ids")
+
+
+def per_trade_loss_lamports(stake: int, configured: int | None = None) -> int:
+    """30% of S (floor). A config value may only tighten it."""
+    cap = int(stake) * PER_TRADE_LOSS_PCT // 100
+    return cap if configured is None else min(cap, int(configured))
+
+
+def window_cap_ms(first_start_ms: int) -> int:
+    return int(first_start_ms) + MAX_WINDOW_MS
+
+
+def end_cap_problem(end_ms: int, first_start_ms: int) -> str | None:
+    """end_ms may not be later than the first start + 14 days (the first start is persisted in the bridge state, so a restart does not extend it)."""
+    return "end_ms_over_14d" if int(end_ms) > window_cap_ms(first_start_ms) else None
+
+
+def model_problem(bot_id: str, model_ids: Any) -> str | None:
+    """F arm: the recorded model_ids must be exactly [claude-haiku-5-5]. X arm: empty, or every id that single model. Anything else is refused."""
+    ok = isinstance(model_ids, list) and all(isinstance(m, str) for m in model_ids)
+    if not ok:
+        return "model_ids_unreadable"
+    if str(bot_id).endswith("-F"):
+        return None if model_ids == [MODEL_ID] else "model_id_not_pinned"
+    return None if all(m == MODEL_ID for m in model_ids) else "model_id_not_pinned"
+
+
+def _same_inode(a: Any, b: Any) -> bool:
+    return (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino)
+
+
+def _alias_of_sealed(path: str, extra: Iterable[str] = ()) -> bool:
+    """True when `path`, or any ancestor of its realpath, is the SAME (st_dev, st_ino) as the sealed prefix or one of `extra` sealed paths (a bind mount or
+    a hard-linked directory shows the sealed inode under a /data2 or other name; realpath alone cannot see it). Stat only, nothing is listed or opened."""
+    import os
+    sealed = []
+    for sp in (SEALED_ROOT_PREFIX, *extra):
+        try:
+            sealed.append(os.stat(sp))
+        except OSError:
+            continue
+    cur = os.path.realpath(path)
+    while True:
+        try:
+            st = os.stat(cur)
+            if any(_same_inode(st, x) for x in sealed):
+                return True
+        except OSError:
+            pass
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return False
+        cur = parent
+
+
+def read_record_problem(reads_dir: Any, bot_id: Any, pinned: Mapping[str, Any] | None = None) -> tuple[str | None, dict[str, Any]]:
+    """The gate before ANY decision row of an hv4- bot is read (QP #913): a recorded PASS read for THIS bot (arena_score.record_read output,
+    `<reads_dir>/<bot_id>.json`, canonical JSON with bot_id, status PASS, read_boundary_ms, attempts, model_ids, not boundary_source forced, am15 block).
+    Returns (problem or None, identity). The identity {path, dev, ino, sha256} of the first good read is passed back as `pinned` on every later check, and the
+    file must still be the same inode with the same bytes (a swap, a rewrite or an unlink after the first pass is a refusal).
+    Checks: reads_dir absolute; the record's realpath equals reads_dir realpath + name (no symlink hop); lstat regular, not a symlink, st_nlink == 1;
+    opened O_NOFOLLOW and fstat (dev, ino) equal the lstat; the realpath is not under the sealed arena prefix except exactly READS_DIR_CANON, and no ancestor
+    is the same (st_dev, st_ino) as the sealed prefix (a /data2/mal bind or alias); then the content. Applies to any hv4- bot_id."""
+    import os
+    import stat
+    ident: dict[str, Any] = {}
+    if not isinstance(bot_id, str) or not bot_id.startswith("hv4-") or "/" in bot_id or bot_id.startswith("."):
+        return "read_record_bot_id", ident
+    if not isinstance(reads_dir, str) or not reads_dir or not os.path.isabs(reads_dir):
+        return "read_record_dir_missing", ident
+    real_dir = os.path.realpath(reads_dir)
+    path = os.path.join(real_dir, f"{bot_id}.json")
+    under = real_dir == SEALED_ROOT_PREFIX or real_dir.startswith(SEALED_ROOT_PREFIX + "/")
+    if under and real_dir != READS_DIR_CANON:
+        return "read_record_dir_sealed", ident
+    if real_dir != READS_DIR_CANON and _alias_of_sealed(real_dir, (READS_DIR_CANON,)):
+        return "read_record_dir_sealed_alias", ident
+    try:
+        ls = os.lstat(path)
+    except OSError:
+        return "read_record_missing", ident
+    if stat.S_ISLNK(ls.st_mode) or not stat.S_ISREG(ls.st_mode):
+        return "read_record_not_regular", ident
+    if ls.st_nlink != 1:
+        return "read_record_hardlink", ident
+    if os.path.realpath(path) != path:
+        return "read_record_path_alias", ident
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return "read_record_unreadable", ident
+    try:
+        fs = os.fstat(fd)
+        if not _same_inode(fs, ls) or fs.st_nlink != 1 or not stat.S_ISREG(fs.st_mode):
+            return "read_record_swapped", ident
+        chunks = []
+        while True:
+            b = os.read(fd, 1 << 20)
+            if not b:
+                break
+            chunks.append(b)
+        data = b"".join(chunks)
+    finally:
+        os.close(fd)
+    ident = {"path": path, "dev": fs.st_dev, "ino": fs.st_ino, "sha256": hashlib.sha256(data).hexdigest()}
+    if pinned and {k: pinned.get(k) for k in ident} != ident:
+        return "read_record_changed", ident
+    try:
+        rec = json.loads(data)
+    except ValueError:
+        return "read_record_unreadable", ident
+    if not isinstance(rec, dict) or any(k not in rec for k in READ_RECORD_KEYS):
+        return "read_record_unreadable", ident
+    if rec["bot_id"] != bot_id:
+        return "read_record_other_bot", ident
+    if rec["status"] != "PASS" or rec.get("fail_label") or rec.get("boundary_source") == "forced" or rec.get("pending"):
+        return "read_record_not_pass", ident
+    if isinstance(rec["read_boundary_ms"], bool) or not isinstance(rec["read_boundary_ms"], int) or not isinstance(rec.get("am15"), dict):
+        return "read_record_not_pass", ident
+    why = model_problem(bot_id, rec["model_ids"])
+    return (why, ident)
+
+
+def owner_line_problem(path: Any, bot_id: str, pin: str | None = None, root_check: Any = None) -> str | None:
+    """The owner's confirmation: the exact line `OWNER_CANARY_CONFIRMED: bot_id=<id>` in a ROOT-OWNED file (OWNER_DEC_PATH) whose sha256 equals the pinned
+    blob. NOT a file of the installed tree. `root_check(path)` is the bridge's root:root check (None = not run, tests only). The file is opened O_NOFOLLOW and
+    hashed from the bytes that are then searched. Exactly one line may equal the wanted line; a prefix or another bot's line never matches."""
+    import os
+    pin = CANARY_DEC_SHA256 if pin is None else pin
+    if not (isinstance(pin, str) and len(pin) == 64 and all(c in "0123456789abcdef" for c in pin)):
+        return "owner_dec_pin_unset"
+    if root_check is not None:
+        why = root_check(path)
+        if why:
+            return f"owner_dec_{why}"
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return "owner_dec_missing"
+    except OSError:
+        return "owner_dec_unreadable"
+    try:
+        data = b""
+        while True:
+            b = os.read(fd, 1 << 20)
+            if not b:
+                break
+            data += b
+    finally:
+        os.close(fd)
+    if hashlib.sha256(data).hexdigest() != pin:
+        return "owner_dec_sha_mismatch"
+    want = OWNER_LINE_FMT.format(bot_id=bot_id)
+    return None if sum(1 for ln in data.decode("utf-8", "replace").split("\n") if ln == want) == 1 else "owner_line_missing"
+
+
+def start_row_fields() -> dict[str, Any]:
+    """Pins the bridge writes into its own START log row (`bridge_start`). The key `frozen_sha` is the key the HV4 runner's own `start` row uses
+    (tools/hv4_runner.py: {"kind": "start", "binding", "frozen_sha", "lane_h"}); the runner row carries no config or ladder sha (the runner is frozen), so
+    these pins live in the bridge's row."""
+    return {"frozen_sha": FROZEN_SHA, "config_sha256": CONFIG_PIN_SHA256, "ladder_sha256": ladder_pin_sha256(), "twin_writer_sha256": TWIN_WRITER_SHA256,
+            "sell_pin_sha256": hashlib.sha256(json.dumps(SELL_BUILDER_PIN, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+            "priority_pin": dict(PRIORITY_PIN), "model_id": MODEL_ID, "window_ms": MAX_WINDOW_MS, "per_trade_loss_pct": PER_TRADE_LOSS_PCT}
+
+
+
+
 def _under_sealed(path: str) -> bool:
     import os
     real = os.path.realpath(path)
@@ -349,7 +525,7 @@ def guard_dir(root: str, bot_id: str) -> str:
     import stat
     dec = os.path.join(root, "decisions")
     d = os.path.join(dec, bot_id)
-    if _under_sealed(d):
+    if _under_sealed(d) or _alias_of_sealed(d, (SEALED_ROOT_PREFIX + "/decisions", SEALED_ROOT_PREFIX + "/decisions/" + bot_id)):
         raise SealedPath("realpath_under_arena")
     for x in (dec, d):
         try:
@@ -399,6 +575,12 @@ def guarded_read(root: str, bot_id: str, name: str) -> bytes:
         fs = os.fstat(fd)
         if (fs.st_dev, fs.st_ino) != (ls.st_dev, ls.st_ino) or fs.st_nlink != 1 or not stat.S_ISREG(fs.st_mode):
             raise SealedPath("inode_swapped")
+        try:  # a bind or alias of an arena day file: same (st_dev, st_ino) as the sealed counterpart of this name
+            sealed_file = os.stat(os.path.join(SEALED_ROOT_PREFIX, "decisions", bot_id, name))
+            if (sealed_file.st_dev, sealed_file.st_ino) == (fs.st_dev, fs.st_ino):
+                raise SealedPath("inode_is_arena_file")
+        except OSError:
+            pass
         chunks = []
         while True:
             b = os.read(fd, 1 << 20)
