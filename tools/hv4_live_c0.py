@@ -28,6 +28,8 @@ PR 5a notes (still `hv4_c0_incomplete`: nothing here removes the live refusal).
   * WINDOW FILE RECOVERY is manual. `window_file_unsafe` (the write-once window file is a link, hard-linked, not a regular file or has the wrong owner/mode)
     and `window_file_unwritable` (including a stale `.<bot_id>.<pid>.tmp` left by a crashed start) stop the start; the refusal text says MANUAL RECOVERY. The
     bridge never deletes or recreates the file; the owner restores the ORIGINAL first_start_ms. A tmp this process created is unlinked on a write/fsync failure.
+  * HALT TIMING: in practice the feed halt fires at the forwarder's own `stalled` state (2,000 ms, QP), before the bridge's 5,000 ms frame bound; the bridge bound is
+    the backstop for a forwarder that stops updating its status. `runner_silent` (30 min without any decision row) withholds buys; see runner_silent_problem.
   * HALTS: `feed_gap:<why>` refuses new buys while the forwarder status is not live (no latch; it clears when the feed resumes). `a3_pins_changed` latches on any
     A3 halt flag, an unreadable/stale record, or a missing record file in live (cleared only by the manager). Exits keep running under both.
 """
@@ -734,6 +736,7 @@ def owner_line_problem(path: Any, bot_id: str, pin: str | None = None, root_chec
 # --- halts (QP removal precondition 7): FEED-GAP and A3. Both stop NEW buys only; exits keep running. ---------------------------------------------------------
 FEED_STATUS_MAX_AGE_MS = 10_000  # the forwarder rewrites <bot_id>.status.json every 250 ms; a status older than this means the forwarder itself is down
 FEED_FRAME_MAX_MS = 5_000  # decision stream silence bound: no frame (a row or the forwarder's 500 ms remote heartbeat) for this long refuses buys. A pinned choice, 2.5x the forwarder's own 2,000 ms stall
+RUNNER_SILENT_MS = 1_800_000  # 30 min: no decision row of ANY kind in the bot's log for this long = the runner is presumed dead (see runner_silent_problem). A pinned choice
 FEED_SKEW_MS = 5_000  # a status stamped this far in the future is a wrong clock, not a fresh feed
 FEED_STATUS_MAX_BYTES = 65_536
 FEED_SCHEMA = "decision_forwarder_v1"  # tools/decision_forwarder.py (PR #967), status file format
@@ -786,6 +789,19 @@ def feed_gap_problem(path: str, bot_id: str, now_ms: int) -> str | None:
     if last <= 0 or now_ms - last > FEED_FRAME_MAX_MS:
         return "feed_silent"
     return None
+
+
+def runner_silent_problem(last_row_ms: int | None, started_ms: int, now_ms: int) -> str | None:
+    """RUNNER LIVENESS (QP on #967, item 6): the forwarder's heartbeat proves the SERVER is alive, not the HV4 runner. The bridge measures silence from the newest
+    decision row it consumed (any kind), or from its own start when it has seen none. FROM CODE (tools/hv4_runner.py): the runner's periodic rows (`scan`, `scan_timing`,
+    `tick_timing`, every 5 min / 1 min) go to the SCAN log, NOT to decisions/<bot_id>; the bot's own log carries entry / exit / skip / halt / llm_call rows only,
+    so a quiet bot and a dead runner look the same here. Hence the bound is long and the rule is conservative (it can only withhold buys). A dead runner writes no
+    entry rows anyway, so the rule is a belt; the PROTECTION for an open position whose exit row never comes is the bridge's own time-stop backstop
+    (max_hold + BACKSTOP_EXTRA_MS) and the sl backstop, which need no runner row (tested with a dead-runner log). Open item: a forwarded runner heartbeat (SCAN-log tick_timing)."""
+    base = started_ms if last_row_ms is None else max(last_row_ms, started_ms)
+    if now_ms < base:
+        return None
+    return "runner_silent" if now_ms - base > RUNNER_SILENT_MS else None
 
 
 def a3_halt_problem(path: str, now_ms: int) -> str | None:

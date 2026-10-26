@@ -395,6 +395,8 @@ class Bridge:
             self.gates = c0p.build_gates(cfg.parity_dir, cfg.twins_file, cfg.tieout_dir, cfg.stop_file, self._parity_state, runner=parity_runner)
         self._last_sell_try: dict[str, int] = {}
         self._a3_polled_ms: int | None = None
+        self._started_ms = self.now_ms()
+        self._last_row_ms: int | None = None  # hv4_c0: the newest decision row consumed (any kind)
         if cfg.profile == c0.PROFILE:
             self._log("bridge_start", **c0.start_row_fields())  # the pins this process runs under (key frozen_sha as in the runner's own `start` row)
         self._verify_at_start()
@@ -663,6 +665,10 @@ class Bridge:
         on a root without SYNTHETIC_MARKER needs it too."""
         if self.cfg.profile != c0.PROFILE:
             return None
+        why = c0.runner_silent_problem(self._last_row_ms, self._started_ms, now)
+        if why:
+            self._count("runner_silent_refusal")
+            return why
         path = c0.feed_status_path(self.cfg.root, self.cfg.bot_id)
         if self.cfg.mode != LIVE and not os.path.lexists(path) and c0.synthetic_root(self.cfg.root):
             return None  # only a synthetic fixture root may run without a forwarder status; any other root (dry included) refuses
@@ -992,6 +998,8 @@ class Bridge:
             rows = self.read_new_rows()
             if "chain_break" not in self.state.latches and "sealed_path" not in self.state.latches:
                 self._chain_ok_ms = self.now_ms()  # the log was read and verified just now (the parity state's decision_chain stamp), before any entry in it is handled
+            if rows and self.cfg.profile == c0.PROFILE:
+                self._last_row_ms = self.now_ms()  # a row arrived: the runner wrote just now (the row's own ms is the decision instant, not the arrival)
             for row in rows:
                 n += 1
                 self.handle_row(row)
