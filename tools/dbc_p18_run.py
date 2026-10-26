@@ -43,6 +43,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+import resource
 import numpy as np
 
 from tools import dbc_fwd as F
@@ -285,6 +286,15 @@ def xcheck(live_keys: set[str], backfill_keys: set[str], explained: set[str] = f
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ runner
+def feed_row(meter: FF.Meter) -> dict[str, Any]:
+    """Meter row with the credits figure labelled: a byte-based ESTIMATE of Helius credits (researched rule, not a billed or measured number)."""
+    return {**meter.row(), "credits_basis": "byte-based estimate, not billed credits"}
+
+
+def peak_rss_mib() -> float:
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
+
+
 def rss_mib() -> float:
     with open("/proc/self/statm") as f:
         return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 1048576.0
@@ -396,12 +406,12 @@ class Runner:
         if mem > self.mem_bar:
             self.mem_exceeded = True
         st: dict[str, Any] = {"pid": os.getpid(), "utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "rss_mib": round(mem, 1), "mem_bar_mib": self.mem_bar,
-                              "mem_exceeded": self.mem_exceeded, "uptime_s": round(time.time() - self.t_started, 1)}
+                              "peak_rss_mib": round(peak_rss_mib(), 1), "mem_exceeded": self.mem_exceeded, "uptime_s": round(time.time() - self.t_started, 1)}
         if self.eng is not None:
-            st.update({"pools": len(self.eng.pools), "rows_retained": sum(p.n() for p in self.eng.pools.values()), "stats": dict(self.eng.stats),
+            st.update({"pools": len(self.eng.pools), "rows_retained": sum(p.n() for p in self.eng.pools.values()), "stats": {k: v for k, v in self.eng.stats.items() if k != "live_exits"},
                        "late_rows": late_rows_ok(self.eng.stats), "decisions": len(self.eng.decisions_live)})
         if self.meter is not None:
-            st["feed"] = self.meter.row()
+            st["feed"] = feed_row(self.meter)
         tmp = self.out / "status.json.tmp"
         tmp.write_text(json.dumps(st, default=float))
         os.replace(tmp, self.out / "status.json")
@@ -473,8 +483,8 @@ async def run_live(out: str, env_file: str, credit_cap: float | None, prune: boo
     if run.mem_exceeded and rc == 0:
         rc = EXIT_MEM
     reason = {0: "stop", FF.EXIT_CAP: "credit_cap", EXIT_MEM: "memory_bar"}.get(rc, "stop")
-    run.log.append(F.BOOK, run.clock_ms(), {"type": "stop", "reason": reason, **meter.row(), "rss_mib": round(run.rss(), 1)})
-    print(json.dumps({"stop": reason, "feed": meter.row(), "rss_mib": round(run.rss(), 1)}), flush=True)
+    run.log.append(F.BOOK, run.clock_ms(), {"type": "stop", "reason": reason, **feed_row(meter), "rss_mib": round(run.rss(), 1), "peak_rss_mib": round(peak_rss_mib(), 1)})
+    print(json.dumps({"stop": reason, "feed": feed_row(meter), "rss_mib": round(run.rss(), 1)}), flush=True)
     return rc
 
 

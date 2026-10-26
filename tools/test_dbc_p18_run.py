@@ -212,7 +212,7 @@ def test_memory_bar_flags_and_status_prints_credits():
         m.add(250_000)
         run = P.Runner(td, start_ts=T0, rss=lambda: 1600.0, meter=m)
         st = run.tick()
-        assert run.mem_exceeded and st["mem_exceeded"] and st["feed"]["credits_est"] == 5.0 and P.MEM_BAR_MIB == 1536.0
+        assert run.mem_exceeded and st["mem_exceeded"] and st["feed"]["credits_est"] == 5.0 and "estimate" in st["feed"]["credits_basis"] and "live_exits" not in st["stats"] and st["peak_rss_mib"] > 0 and P.MEM_BAR_MIB == 1536.0
         assert json.loads((Path(td) / "status.json").read_text())["feed"]["bytes"] == 250_000
         ok = P.Runner(td + "/b", start_ts=T0, rss=lambda: 900.0)
         ok.tick()

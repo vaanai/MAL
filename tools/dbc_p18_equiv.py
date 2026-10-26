@@ -50,6 +50,19 @@ def window_guard(start: datetime, end: datetime, root: str | None, out: str) -> 
         raise F.ReplayRefused("a non-default dbc_price data window is enabled")
 
 
+def code_record() -> dict[str, Any]:
+    """sha256 of the code that ran and the git head (so a proof is tied to its sha)."""
+    import subprocess  # noqa: PLC0415
+
+    here = Path(__file__).resolve().parent
+    try:
+        head = subprocess.run(["git", "-C", str(here), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=20).stdout.strip() or None
+        dirty = bool(subprocess.run(["git", "-C", str(here), "status", "--porcelain", "--", "tools"], capture_output=True, text=True, timeout=20).stdout.strip())
+    except Exception:  # noqa: BLE001
+        head, dirty = None, None
+    return {"git_head": head, "tools_dirty": dirty, "sha256": {f: F.sha256_file(here / f) for f in ("dbc_fwd.py", "dbc_p18_run.py", "dbc_p18_equiv.py")}}
+
+
 def rss_mib() -> float:
     with open("/proc/self/statm") as f:
         return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 1048576.0
@@ -89,7 +102,7 @@ def run(start: datetime, end: datetime, prune: bool, out: Path, root: str | None
     rows_kept = sum(q.n() for q in eng.pools.values())
     res = {"prune": prune, "window": [f"{start:%Y-%m-%dT%H}", f"{end:%Y-%m-%dT%H}"], "hours_streamed": hs, "decisions_live": len(eng.decisions_live), "stats": eng.stats,
            "cfg_thresholds": n_cfg, "pools_end": len(eng.pools), "pools_dead": len(getattr(eng, "dead", {})), "rows_retained_end": rows_kept, "wall_s": round(time.time() - t0, 1),
-           "peak_rss_mib": round(peak, 1), "rss_series": series, "declog": {"md5": log.md5(), "head": list(log.verify(F.BOOK))},
+           "peak_rss_mib": round(peak, 1), "peak_rss_source": "resource.ru_maxrss", "code": code_record(), "rss_series": series, "declog": {"md5": log.md5(), "head": list(log.verify(F.BOOK))},
            "decision_exit_key_md5": F.md5_keys(f"{r['type']}|{r.get('key')}|{r.get('fire_slot')}|{r.get('exit_slot')}" for r in log.rows(F.BOOK) if r["type"] in ("decision", "exit")),
            "taken_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
     (out / "equiv.json").write_text(json.dumps(res, indent=1, default=float))
