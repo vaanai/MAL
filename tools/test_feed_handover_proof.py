@@ -86,17 +86,29 @@ OLD_LAST = {"pumpswap": SEAM - 2000, "pumpfun": SEAM - 1500}
 LOCK = SEAM + 300
 
 
-def takeover_rows(*, continuity=None, old_last=None, cover=None, stop=True, dup=False, overlap_min_s=120) -> list[dict]:
-    """Old writer to SEAM - 1500 ms, its stop row, the takeover row at LOCK, the rows the old writer missed (buffer order), then the new writer live."""
+MDR = {p: 0.01 for p in PROGS}  # pinned T_p for the tests
+MOR = {p: 500 for p in PROGS}  # pinned minimum n_old for the tests
+
+
+def takeover_rows(*, continuity=None, old_last=None, cover=None, stop=True, dup=False, overlap_min_s=120, dedup=None, agreement=None, recon=None,
+                  thresholds=None, drop=()) -> list[dict]:
+    """Old writer to SEAM - 1500 ms, its stop row, the takeover row at LOCK, the rows the old writer missed (buffer order), then the new writer live.
+    The takeover row's counts are consistent with the tape unless a test overrides them; `drop` pops takeover fields."""
     old = by_time(stream(H0, SEAM - 1499) + hbs(H0, SEAM - 1000))
     if stop:
         old.append(meta("stop", SEAM - 1000, lines_written=len(old)))
     cover = cover if cover is not None else {p: SEAM - 10 * MIN for p in PROGS}
+    n_old = {p: sum(1 for r in old if r["type"] == "trade" and r["prog"] == p and cover[p] <= r["t_recv_ms"] <= OLD_LAST[p]) for p in PROGS}
     tk = meta("takeover", LOCK, schema="arena_tape_v1", handover_v=1, code_sha="0" * 40, pid=2, prev_pid=1, standby_started_ms=SEAM - 11 * MIN,
               old_stop_ms=SEAM - 1000, lock_acquired_ms=LOCK, cover_from_ms=cover, old_last_data_ms=old_last if old_last is not None else dict(OLD_LAST),
               continuity=continuity if continuity is not None else {p: "proven" for p in PROGS},
-              dedup={"buffered": 1200, "dropped_dup": 1197, "written_missed": 3, "shared_sigs": {p: 600 for p in PROGS}},
+              dedup=dedup if dedup is not None else {"buffered": 1200, "dropped_dup": 1197, "written_missed": 3, "buffer_overflow": False},
+              agreement=agreement if agreement is not None else {p: {"n_old": n_old[p], "only_old": 2} for p in PROGS},
+              standby_reconnects_in_overlap=recon if recon is not None else {p: 0 for p in PROGS},
+              thresholds=thresholds if thresholds is not None else {"max_disagree_rate": dict(MDR), "min_overlap_rows": dict(MOR)},
               counter_base={"pauses": 0, "rows_dropped_total": 0}, overlap_min_s=overlap_min_s)
+    for k in drop:
+        tk.pop(k, None)
     missed = stream(SEAM - 1499, LOCK + 1)  # nominal t in (old last, lock]: the old writer never wrote them
     if dup:
         missed = [trade("pumpswap", OLD_LAST["pumpswap"])] + missed  # a row the old writer already wrote: dedup failed
@@ -109,6 +121,8 @@ def takeover_rows(*, continuity=None, old_last=None, cover=None, stop=True, dup=
 
 
 def seam(d: Path, **kw) -> dict:
+    kw.setdefault("max_disagree_rate", dict(MDR))
+    kw.setdefault("min_overlap_rows", dict(MOR))
     return P.seam_report(d, W0, W1, **kw)
 
 
@@ -126,6 +140,7 @@ def test_takeover_seam_passes(tmp_path):
     tk = out["checks"]["takeover"]["rows"][0]
     assert tk["old_stop_row"] and all(v["claim_matches_tape"] and v["overlap_ok"] for v in tk["programs"].values())
     assert tk["programs"]["pumpswap"]["overlap_ms"] == OLD_LAST["pumpswap"] - (SEAM - 10 * MIN)
+    assert tk["dedup"]["written_missed_tape"] == 3 and tk["programs"]["pumpfun"]["n_old_tape"] == 599 and tk["failed"] == []
     assert out["markers_in_window"] == {"stop": 1, "takeover": 1}
     assert out["checks"]["hb_gap"]["programs"]["pumpswap"]["value"] <= 75_000
 
@@ -250,6 +265,109 @@ def test_zst_hour_and_jsonl_preferred(tmp_path):
     assert {"bad_lines", "hb_gap", "silence", "slot_step"} <= set(seam(d)["failed"])
 
 
+def tk_fail(tmp_path, **kw) -> list[str]:
+    seam_kw = {k: kw.pop(k) for k in ("max_disagree_rate", "min_overlap_rows", "overlap_min_s_cli") if k in kw}
+    if "overlap_min_s_cli" in seam_kw:
+        seam_kw["overlap_min_s"] = seam_kw.pop("overlap_min_s_cli")
+    out = seam(write(tmp_path / "t", takeover_rows(**kw)), expect_takeover=True, **seam_kw)
+    assert out["failed"] == ["takeover"], out["failed"]
+    return out["checks"]["takeover"]["rows"][0]["failed"]
+
+
+def test_buffer_overflow_fails(tmp_path):
+    assert tk_fail(tmp_path, dedup={"buffered": 1200, "dropped_dup": 1197, "written_missed": 3, "buffer_overflow": True}) == ["overflow_false"]
+
+
+def test_overflow_flag_missing_fails(tmp_path):
+    assert tk_fail(tmp_path, dedup={"buffered": 1200, "dropped_dup": 1197, "written_missed": 3}) == ["overflow_false"]
+
+
+def test_dedup_sum_mismatch_fails(tmp_path):
+    assert tk_fail(tmp_path, dedup={"buffered": 1201, "dropped_dup": 1197, "written_missed": 3, "buffer_overflow": False}) == ["sum_ok"]
+
+
+def test_written_missed_not_matching_tape_fails(tmp_path):
+    f = tk_fail(tmp_path, dedup={"buffered": 1199, "dropped_dup": 1197, "written_missed": 2, "buffer_overflow": False})
+    assert f == ["written_missed_matches_tape"]
+
+
+def test_n_old_not_matching_tape_fails(tmp_path):
+    f = tk_fail(tmp_path, agreement={"pumpswap": {"n_old": 598, "only_old": 2}, "pumpfun": {"n_old": 599, "only_old": 2}})
+    assert f == ["n_old_matches_tape"]
+
+
+def test_disagreement_above_pinned_rate_fails(tmp_path):
+    f = tk_fail(tmp_path, agreement={"pumpswap": {"n_old": 599, "only_old": 7}, "pumpfun": {"n_old": 599, "only_old": 2}})
+    assert f == ["disagree_ok"]  # 7 / 599 = 1.17% > 1%
+
+
+def test_twenty_shared_of_many_no_longer_passes(tmp_path):
+    # the old rule (>= 20 shared signatures) would pass a standby that saw 20 of 599 rows; the agreement rate refuses it
+    f = tk_fail(tmp_path, agreement={p: {"n_old": 599, "only_old": 579} for p in PROGS})
+    assert f == ["disagree_ok"]
+
+
+def test_too_few_overlap_rows_fails(tmp_path):
+    f = tk_fail(tmp_path, min_overlap_rows={p: 600 for p in PROGS}, thresholds={"max_disagree_rate": dict(MDR), "min_overlap_rows": {p: 600 for p in PROGS}})
+    assert f == ["n_old_ok"]
+
+
+def test_standby_reconnect_in_overlap_fails(tmp_path):
+    assert tk_fail(tmp_path, recon={"pumpswap": 0, "pumpfun": 1}) == ["no_standby_reconnect"]
+    assert tk_fail(tmp_path / "b", drop=("standby_reconnects_in_overlap",)) == ["no_standby_reconnect"]
+
+
+def test_unpinned_thresholds_fail(tmp_path):
+    out = P.seam_report(write(tmp_path / "t", takeover_rows()), W0, W1, expect_takeover=True)
+    assert out["failed"] == ["takeover"]
+    f = out["checks"]["takeover"]["rows"][0]["failed"]
+    assert "thresholds_unpinned" in f
+
+
+def test_row_thresholds_differing_from_pinned_fail(tmp_path):
+    f = tk_fail(tmp_path, thresholds={"max_disagree_rate": {p: 0.5 for p in PROGS}, "min_overlap_rows": dict(MOR)})
+    assert f == ["thresholds_differ_from_row"]
+
+
+def test_overlap_floor_cannot_be_lowered_by_row(tmp_path):
+    cover = {p: OLD_LAST[p] - 100_000 for p in PROGS}  # 100 s of overlap; the row claims a 60 s minimum, the floor is 120 s
+    n_old = {p: 101 for p in PROGS}
+    f = tk_fail(tmp_path, cover=cover, overlap_min_s=60, agreement={p: {"n_old": n_old[p], "only_old": 0} for p in PROGS},
+                min_overlap_rows={p: 100 for p in PROGS}, thresholds={"max_disagree_rate": dict(MDR), "min_overlap_rows": {p: 100 for p in PROGS}})
+    assert f == ["overlap_ok"]
+
+
+def test_parse_per_prog():
+    assert P.parse_per_prog("0.01", float, PROGS) == {"pumpswap": 0.01, "pumpfun": 0.01}
+    assert P.parse_per_prog("pumpswap=0.01,pumpfun=0.02", float, PROGS) == {"pumpswap": 0.01, "pumpfun": 0.02}
+    assert P.parse_per_prog(None, int, PROGS) is None
+    with pytest.raises(ValueError):
+        P.parse_per_prog("pumpswap=", float, PROGS)
+
+
+def test_hard_kinds_cover_engine_hard_gap_kinds():
+    """QP-RULING-1026 C1: every kind arena_paper treats as a hard gap is a hard gap here too."""
+    try:
+        from tools import arena_paper
+
+        engine_kinds = set(arena_paper.HARD_GAP_KINDS)
+    except Exception:  # noqa: BLE001 - a bare env without numpy: read the literal from the source
+        import ast
+
+        src = (Path(__file__).resolve().parent / "arena_paper.py").read_text()
+        node = next(n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.Assign) and any(getattr(t, "id", "") == "HARD_GAP_KINDS" for t in n.targets))
+        engine_kinds = set(ast.literal_eval(node.value))
+    assert engine_kinds and engine_kinds <= P.HARD_KINDS
+    assert "feed_start" in P.HARD_KINDS
+
+
+def test_feed_start_gap_row_is_hard(tmp_path):
+    rows = continuous()
+    rows.append(meta("gap", SEAM, kind="feed_start", data_loss=False, from_ms=SEAM - 1000, to_ms=SEAM))
+    out = seam(write(tmp_path / "t", by_time(rows)))
+    assert "hard_gaps" in out["failed"] and out["checks"]["hard_gaps"]["kinds"] == {"feed_start": 1}
+
+
 # ---- parity mode ----------------------------------------------------------------------------------------------
 def reference(shift: int = 3) -> list[dict]:
     rows = continuous()
@@ -303,8 +421,11 @@ def iso(ms: int) -> str:
 
 def test_cli_pass_fail_and_counts_only(tmp_path):
     d = write(tmp_path / "t", takeover_rows())
-    rc, out, _ = run_cli("seam", "--tape", str(d), "--from", iso(W0), "--to", str(W1), "--expect-takeover")
+    rc, out, _ = run_cli("seam", "--tape", str(d), "--from", iso(W0), "--to", str(W1), "--expect-takeover", "--max-disagree-rate", "0.01",
+                         "--min-overlap-rows", "pumpswap=500,pumpfun=500")
     assert rc == 0 and json.loads(out)["verdict"] == "PASS"
+    rc, out, _ = run_cli("seam", "--tape", str(d), "--from", iso(W0), "--to", str(W1), "--expect-takeover")  # unpinned thresholds
+    assert rc == 1 and "thresholds_unpinned" in out
     assert "sig-" not in out and "mint-" not in out  # never a signature or mint in the output
     d2 = write(tmp_path / "t2", takeover_rows(dup=True))
     rc, out, _ = run_cli("seam", "--tape", str(d2), "--from", iso(W0), "--to", iso(W1))
