@@ -113,9 +113,9 @@ def capture_deciding_trades(stake: float) -> Iterator[dict]:
     def bc(trades, rules):
         out = orig_bc(trades, rules)
         if trades and float(trades[0]["stake_sol"]) == float(stake):
-            if "trades" in got:
-                raise Refused("two books at the deciding stake in one read")
-            got["trades"], got["rules"] = [dict(r) for r in trades], list(rules)
+            # The Am.6 parity guard also calls score_bot (on the unfiltered-by-status rows) before the scored call; the LAST call is the scored one, and
+            # reproduce() checks that its cells are exactly the scored book's cells.
+            got["trades"], got["rules"], got["cells"], got["calls"] = [dict(r) for r in trades], list(rules), out, got.get("calls", 0) + 1
         return out
 
     S.book_cells, S.record_read = bc, (lambda reads_dir, res: Path(os.devnull))
@@ -146,7 +146,7 @@ def reproduce(rec: dict, instant_path: str, ledger_root: str, registry: str, bot
     dk = str(want["stake"])
     fbook = fresh["books"][dk]
     checks = {"status_pass": fresh.get("status") == "PASS", "B_equal": fresh.get("read_boundary_ms") == b, "n_equal": len(trades) == want["n"] == fbook["n_trades"],
-              "rules_equal": got["rules"] == want["rules"],
+              "rules_equal": got["rules"] == want["rules"], "captured_cells_are_the_scored_cells": got["cells"] == fbook["cells"],
               "cut_sha_equal": (fresh.get("am6") or {}).get("cut_sha256") == want["cut_sha256"],
               "exclusions_sha_equal": (fresh.get("am6") or {}).get("exclusions_sha256") == want["exclusions_sha256"]}
     sub_ok = {}
