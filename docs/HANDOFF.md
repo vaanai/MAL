@@ -61,7 +61,7 @@ No book has cleared the promotion gate. Profit so far: 0. Nothing trades real SO
   - **#941**, ledger rows (DBC holdout + #1494, m10 forward, LaunchLab) and the HV4 #712 disclosure. Reviewer APPROVE (6421572285). **QP CHANGES at 95093533** (comment 6421648194): ledger items L1–L6 and disclosure items H1–H3. The most serious is L1: the read is `scripts/research/dbc-m10-read-job.sh A|B`, never `tools/dbc_fwd_read.py` run as a program. H1 adds `dd_ath` (card = 1 − price/ath, a fraction) as a 4th mismatch. Fix, then QP re-checks the text diff, then the reviewer, then merge. Ruling file: /data/mal/hunt-1008/push-1016/hunt30/QP-RULING-1026-pr941-dbc-launchlab-hv4.md. The same agent kept #926 (1180b3dd) and #927 (7fcec805) at QP OK. The Job A lag cron stays suspended until the capture heartbeat reports lag or a pinned counts tool gets a QP OK.
   - this hand-off PR (claude/handoff-manager16-1026).
 - **In progress:**
-  - **#940**, HV6 pack;
+  - **#940**, HV6 pack, WIP head 1c36c5af. Status comment 6421687235. Done: the reviewer-smoke driver `tools/hv6_review_smoke.py` (7 tests), the smoke refusal limit (>5% of cards), and the sha as a required argument in the P0 and smoke tools. Still open, all in the pack text: QP changes 1–5, 6 (pack part), 7 and 8; sha placeholders; the playbook changed-values row; QP's route ruling text. Change 3 needs request `n_rlKSXVDAwRj6TQ` pasted verbatim (the agent could not find it; search the notebook).
   - `claude/hv6-playbook-fields`, owner fix, builder running.
 - **Records/draft PRs to batch-review or merge:** #909, #916, #928, #929, #932, #933, #934, #935, #937. Library rows to update: P29 → explored-no-survivor.
 
