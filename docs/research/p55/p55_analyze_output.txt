@@ -1,0 +1,30 @@
+rows 2826 sets {'frozen_disc': 1702, 'frozen_conf': 1124}
+validation: max |repriced frozen pnl - stored pnl| lamports 0.0 n>1 lamport 0
+validation: stored flat reproduces 0.0 press 0.0
+
+=== PRIMARY E1 or E2 (exit lag 2 slots; delta = new - frozen exit, pp of the 0.1 SOL stake) ===
+trades with changed exit: 590 of 2826 (20.878%) E1 fired 417 E2 fired 198
+flat {'mean_pp': np.float64(-1.7024), 'total_pp': np.float64(-4810.9436), 'ex_top3_mean': np.float64(-2.0209), 'ex_top3_total': np.float64(-5705.1313), 'best_day': '2026-08-14', 'ex_bestday_mean': np.float64(-1.9199), 'ex_bestday_total': np.float64(-5302.8663), 'disc_mean': np.float64(-1.493), 'conf_mean': np.float64(-2.0194), 'boot_ci5_mean': np.float64(-3.0376), 'mean_on_changed': np.float64(-8.1541), 'base_mean_pct': np.float64(11.9689), 'new_mean_pct': np.float64(10.2665), 'trades<=-50% base': 91, 'of which exit changed': 25, 'winners made worse': 114, 'winners': 1248}
+  kill lines hit: ['1 mean<+1.0pp', '2 top3', '3 one-day', '4 sign']
+press {'mean_pp': np.float64(-1.4554), 'total_pp': np.float64(-4113.0907), 'ex_top3_mean': np.float64(-1.7012), 'ex_top3_total': np.float64(-4802.3671), 'best_day': '2026-08-14', 'ex_bestday_mean': np.float64(-1.6118), 'ex_bestday_total': np.float64(-4451.6683), 'disc_mean': np.float64(-1.5826), 'conf_mean': np.float64(-1.2629), 'boot_ci5_mean': np.float64(-2.5561), 'mean_on_changed': np.float64(-6.9713), 'base_mean_pct': np.float64(10.7511), 'new_mean_pct': np.float64(9.2956), 'trades<=-50% base': 31, 'of which exit changed': 14, 'winners made worse': 114, 'winners': 1247}
+  kill lines hit: ['1 mean<+1.0pp', '2 top3', '3 one-day', '4 sign']
+
+=== sensitivity E1 only (exit lag 2 slots; delta = new - frozen exit, pp of the 0.1 SOL stake) ===
+trades with changed exit: 590 of 2826 (20.878%) E1 fired 417 E2 fired 198
+flat {'mean_pp': np.float64(0.1889), 'total_pp': np.float64(533.8361), 'ex_top3_mean': np.float64(0.1326), 'ex_top3_total': np.float64(374.469), 'best_day': '2026-08-18', 'ex_bestday_mean': np.float64(0.1581), 'ex_bestday_total': np.float64(432.3093), 'disc_mean': np.float64(0.214), 'conf_mean': np.float64(0.1509), 'boot_ci5_mean': np.float64(0.0919), 'mean_on_changed': np.float64(0.9048), 'base_mean_pct': np.float64(11.9689), 'new_mean_pct': np.float64(12.1578), 'trades<=-50% base': 91, 'of which exit changed': 25, 'winners made worse': 50, 'winners': 1248}
+  kill lines hit: ['1 mean<+1.0pp', '2 top3', '3 one-day']
+press {'mean_pp': np.float64(0.1682), 'total_pp': np.float64(475.4166), 'ex_top3_mean': np.float64(0.1159), 'ex_top3_total': np.float64(327.123), 'best_day': '2026-08-18', 'ex_bestday_mean': np.float64(0.1432), 'ex_bestday_total': np.float64(391.5813), 'disc_mean': np.float64(0.1838), 'conf_mean': np.float64(0.1446), 'boot_ci5_mean': np.float64(0.0808), 'mean_on_changed': np.float64(0.8058), 'base_mean_pct': np.float64(10.7511), 'new_mean_pct': np.float64(10.9193), 'trades<=-50% base': 31, 'of which exit changed': 14, 'winners made worse': 50, 'winners': 1247}
+  kill lines hit: ['1 mean<+1.0pp', '2 top3', '3 one-day']
+
+=== sensitivity E2 only (exit lag 2 slots; delta = new - frozen exit, pp of the 0.1 SOL stake) ===
+trades with changed exit: 590 of 2826 (20.878%) E1 fired 417 E2 fired 198
+flat {'mean_pp': np.float64(-1.8913), 'total_pp': np.float64(-5344.9133), 'ex_top3_mean': np.float64(-2.2101), 'ex_top3_total': np.float64(-6239.1009), 'best_day': '2026-08-14', 'ex_bestday_mean': np.float64(-2.1014), 'ex_bestday_total': np.float64(-5804.0244), 'disc_mean': np.float64(-1.7093), 'conf_mean': np.float64(-2.167), 'boot_ci5_mean': np.float64(-3.1927), 'mean_on_changed': np.float64(-9.0592), 'base_mean_pct': np.float64(11.9689), 'new_mean_pct': np.float64(10.0776), 'trades<=-50% base': 91, 'of which exit changed': 25, 'winners made worse': 66, 'winners': 1248}
+  kill lines hit: ['1 mean<+1.0pp', '2 top3', '3 one-day', '4 sign']
+press {'mean_pp': np.float64(-1.6239), 'total_pp': np.float64(-4589.0909), 'ex_top3_mean': np.float64(-1.8698), 'ex_top3_total': np.float64(-5278.3673), 'best_day': '2026-08-14', 'ex_bestday_mean': np.float64(-1.7737), 'ex_bestday_total': np.float64(-4898.882), 'disc_mean': np.float64(-1.769), 'conf_mean': np.float64(-1.4041), 'boot_ci5_mean': np.float64(-2.7149), 'mean_on_changed': np.float64(-7.7781), 'base_mean_pct': np.float64(10.7511), 'new_mean_pct': np.float64(9.1272), 'trades<=-50% base': 31, 'of which exit changed': 14, 'winners made worse': 66, 'winners': 1247}
+  kill lines hit: ['1 mean<+1.0pp', '2 top3', '3 one-day', '4 sign']
+
+sensitivity frozen lag 0.55 s flat mean delta pp -1.6879 total -4769.9714
+
+sensitivity frozen lag 0.55 s press mean delta pp -1.4367 total -4060.1672
+
+changed-exit trades: exit advance seconds describe {'count': 590.0, 'mean': 74.85, 'std': 106.22, 'min': 0.26, '25%': 3.47, '50%': 8.23, '75%': 193.57, 'max': 293.22}
