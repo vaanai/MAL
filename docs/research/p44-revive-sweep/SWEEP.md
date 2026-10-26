@@ -1,6 +1,6 @@
 # P44 revive-trigger sweep
 
-Status: plan fixed 2026-10-26T17:47Z (`date -u`), before the count run of record. Results are added below the plan in a later commit.
+Status: plan fixed 2026-10-26T17:47Z (`date -u`) in f8df962b, before the count run of record (job #1656). Results below were added after the run, at about 18:05Z.
 
 ## Plan (fixed before the count run)
 
