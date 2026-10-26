@@ -72,6 +72,43 @@ def label(e, tr, creates, migs):
     return out
 
 
+def _key(r):
+    return (r["block_time"], r.get("slot") or 0, r.get("event_index") or 0)
+
+
+def reduce_trades(ev, path):
+    """Stream the trades file once and keep, per event, only the rows label() needs: the first row, the first
+    pumpswap row, the last row at or before t, one row in [t, t+1h), the last row at or before t+24h and one row in
+    [t+23h, t+25h). Also the exact count of rows in [t, t+1h). Memory is O(events), not O(rows)."""
+    by_mint = collections.defaultdict(list)
+    st = []
+    for i, e in enumerate(ev):
+        by_mint[e["mint"]].append(i)
+        st.append({"first": None, "first_ps": None, "prev": None, "in1h": None, "later": None, "alive": None, "n1h": 0})
+    with open(path) as f:
+        for line in f:
+            r = json.loads(line)
+            idx = by_mint.get(r["mint"])
+            if not idx: continue
+            k = _key(r)
+            for i in idx:
+                t = ev[i]["blockTime"]; s = st[i]
+                if s["first"] is None or k < _key(s["first"]): s["first"] = r
+                if r["venue"] == "pumpswap" and (s["first_ps"] is None or k < _key(s["first_ps"])): s["first_ps"] = r
+                bt = r["block_time"]
+                if bt <= t and (s["prev"] is None or k > _key(s["prev"])): s["prev"] = r
+                if t <= bt < t + H:
+                    s["n1h"] += 1
+                    if s["in1h"] is None: s["in1h"] = r
+                if bt <= t + 24 * H and (s["later"] is None or k > _key(s["later"])): s["later"] = r
+                if t + 23 * H <= bt < t + 25 * H and s["alive"] is None: s["alive"] = r
+    out = []
+    for s in st:
+        rows = {id(x): x for x in (s["first"], s["first_ps"], s["prev"], s["in1h"], s["later"], s["alive"]) if x is not None}
+        out.append({"rows": sorted(rows.values(), key=_key), "n1h": s["n1h"]})
+    return out
+
+
 def summarize(rows, days_by_win):
     s = {"events": len(rows), "distinct_mints": len({r["mint"] for r in rows})}
     trig = [r for r in rows if r["trigger"]]
@@ -116,11 +153,15 @@ def main(argv=None):
     a = ap.parse_args(argv)
     ev = json.load(open(a.events))
     load = lambda n: [json.loads(l) for l in open(f"{a.scan}/{n}.jsonl")]
-    by = {n: collections.defaultdict(list) for n in ("trades", "creates", "migrations")}
-    for n in by:
-        for r in load(n): by[n][r["mint"]].append(r)
-    for rs in by["trades"].values(): rs.sort(key=lambda r: (r["block_time"], r["slot"], r.get("event_index") or 0))
-    rows = [label(e, by["trades"].get(e["mint"], []), by["creates"].get(e["mint"], []), by["migrations"].get(e["mint"], [])) for e in ev]
+    small = {n: collections.defaultdict(list) for n in ("creates", "migrations")}
+    for n in small:
+        for r in load(n): small[n][r["mint"]].append(r)
+    red = reduce_trades(ev, f"{a.scan}/trades.jsonl")
+    rows = []
+    for i, e in enumerate(ev):
+        rr = label(e, red[i]["rows"], small["creates"].get(e["mint"], []), small["migrations"].get(e["mint"], []))
+        rr["trades_1h_after"] = red[i]["n1h"]  # exact count from the stream (label saw only a sample)
+        rows.append(rr)
     for r, e in zip(rows, ev): r["op"] = e.get("op", "admin_cto")
     days_s = {w: full_days(w) for w in WINDOWS}
     days_p = {w: [d for d in days_s[w] if d in P_DAYS] for w in WINDOWS}

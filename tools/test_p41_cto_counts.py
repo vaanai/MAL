@@ -44,3 +44,25 @@ def test_full_days_and_verdict():
 def test_p_days_inside_windows():
     allx = C.full_days("B") + C.full_days("C")
     assert all(d in allx for d in C.P_DAYS) and len(C.P_DAYS) == 8
+
+
+def test_streaming_reducer_matches_full_label(tmp_path):
+    import json, random
+    random.seed(1)
+    rows = []
+    for k in range(400):
+        h = random.uniform(-30, 40)
+        rows.append(dict(tr(h, random.uniform(5, 80), random.choice(["pumpswap", "pump_bonding"])), mint="M", slot=k, event_index=0))
+    p = tmp_path / "trades.jsonl"
+    random.shuffle(rows)
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    e = ev(blockTime=T0, win="B")
+    e["blockTime"] = C.U("2026-09-06T00")
+    shift = e["blockTime"] - T0
+    for r in rows: r["block_time"] += shift
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    full = C.label(e, sorted(rows, key=C._key), [], [])
+    red = C.reduce_trades([e], str(p))[0]
+    part = C.label(e, red["rows"], [], [])
+    part["trades_1h_after"] = red["n1h"]
+    assert part == full
