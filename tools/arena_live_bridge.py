@@ -71,7 +71,7 @@ SELL_RETRY_MS = 5_000
 UNIVERSE_V_RANGE = (17_500_000_000, 17_700_000_000)  # Am.2 item 6: V in [17.5e9, 17.7e9], WSOL quote
 
 LATCHES = ("sealed_path", "chain_break", "frozen_sha_mismatch", "total_loss_cap", "per_trade_loss_cap", "stuck_sell",
-           "parity_hard_halt", "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch", "read_record", c0.A3_LATCH, c0.FEED_BREAK_LATCH)  # twin_pin_mismatch and the two before: hv4_c0 parity wiring; read_record: no recorded PASS read for the bot (hv4_c0): hv4_c0 parity wiring (tools/hv4_c0_parity.py)
+           "parity_hard_halt", "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch", "read_record", "tieout_mismatch", c0.A3_LATCH, c0.FEED_BREAK_LATCH)  # twin_pin_mismatch and the two before: hv4_c0 parity wiring; read_record: no recorded PASS read for the bot (hv4_c0): hv4_c0 parity wiring (tools/hv4_c0_parity.py)
 
 
 # --- config -----------------------------------------------------------------------------------------------------------------------
@@ -564,6 +564,24 @@ class Bridge:
             self._latch("twin_pin_mismatch", why)
         return why
 
+    def export_tieout(self, day: str) -> str | None:
+        """hv4_c0 only (precondition 8): write the bridge's book for the CLOSED UTC `day` to <tieout_dir>/LEDGER-<day>.json for the daily tie-out (tools/hv4_c0_tieout.py;
+        write-once). A fee or stake that does not match the schedule, the order or the parity trips file latches `tieout_mismatch` (a hard halt). Returns "created",
+        "same", or None when this bridge has no tie-out directory; raises ValueError on an unusable input or a conflicting earlier file."""
+        if self.gates is None or not self.cfg.tieout_dir:
+            return None
+        from tools import arena_tieout_ledger as atl
+        from tools import hv4_c0_tieout as tie
+
+        self._save()
+        try:
+            return tie.export_day(self.sd / "probe" / "fills.jsonl", self.state_path, self.cfg.tieout_dir, day, self.now_ms(), self.gates.recorder.trips_path)
+        except tie.TieoutMismatch as exc:
+            self._latch("tieout_mismatch", str(exc)[:300])
+            return "mismatch"
+        except (atl.BadLedger, tie.WriteConflict, OSError) as exc:
+            raise ValueError(f"tieout_export_refused: {exc}") from exc
+
     def _latch_parity_hard(self) -> None:
         run = self.gates.parity_run if self.gates is not None else None
         if run is not None and run.get("rc") == c0p.RC_HARD:
@@ -582,7 +600,7 @@ class Bridge:
             o = by_mint.get(mint)
             if kind == "buy":
                 bound = c0p.exit_bound_ms(o["decision_ms"], self.cfg.max_hold_ms, BACKSTOP_EXTRA_MS) if o else None
-                bad = c0p.stake_problem(kw, o["stake_lamports"]) if o else None
+                bad = c0p.stake_problem(kw, o["stake_lamports"]) if o else ("stake_mismatch:landed_buy_without_order" if kw.get("landed") else None)  # a landed buy with no order is a stake mismatch, not a skip
                 if bad:
                     self._latch("stake_mismatch", bad)
                 err = self.gates.recorder.on_buy(mint, kw, now, bound, stake_fallback=o["stake_lamports"] if o else None)
