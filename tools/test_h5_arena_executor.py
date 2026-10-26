@@ -107,6 +107,7 @@ class ACase(Case):
     def setUp(self):
         super().setUp()
         (self.tmp / "a3-default.jsonl").write_text(json.dumps(a3_rec()) + "\n")  # never the host's real file
+        (self.tmp / ax.A3_APPLIED_NAME).write_text(json.dumps({"run_utc": a3_rec()["run_utc"], "verdict": "NONE"}) + "\n")  # DEC-032 Am.3: the pooled guard's line for the same run, clear
         self.arena_tier = self.etc / "arena-TIER"  # stand-in for /etc/mal-h5-arena/TIER (owned by the test's uid, which the patched root uid matches)
         self.arena_tier.write_text("T1\n")
         os.chmod(self.arena_tier, 0o644)
