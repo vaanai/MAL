@@ -116,8 +116,9 @@ def write_feed(root, bot_id, now_ms, state="connected", **over):
     return f
 
 
-def write_a3(path, now_ms, halt=False, **over):
-    """A synthetic A3 daily record (one line; the newest line is the state)."""
+def write_a3(path, now_ms, halt=False, guard="NONE", **over):
+    """A synthetic A3 daily record (one line; the newest line is the state). DEC-032 Am.3: also the pooled guard's applied line for the SAME run_utc
+    (<dir>/a3-applied.jsonl) with verdict `guard`; guard=None writes none."""
     from datetime import datetime, timezone
     run = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     rec = {"run_utc": run, "halt": {"flags": {"pins_changed": {"halt": halt, "evaluated": True}, "boost_disabled": {"halt": False, "evaluated": True}}},
@@ -125,6 +126,8 @@ def write_a3(path, now_ms, halt=False, **over):
     rec.update(over)
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps(rec) + "\n")
+    if guard is not None:
+        (Path(path).parent / c0.A3_APPLIED_NAME).write_text(json.dumps({"run_utc": rec["run_utc"], "verdict": guard}) + "\n")
 
 
 class ConstantTests(unittest.TestCase):

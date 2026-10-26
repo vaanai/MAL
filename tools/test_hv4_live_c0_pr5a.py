@@ -781,31 +781,7 @@ class GapLogParsingTests(TmpCase):
 
 
 class A3EquivalenceTests(TmpCase):
-    def test_equal_to_the_h5_executor_check_on_a_matrix_of_records(self):
-        try:
-            from tools import h5_arena_executor as h5x
-        except ModuleNotFoundError as e:
-            self.skipTest(str(e))
-        now = 1_800_000_000_000
-        p = Path(self.tmp) / "a3.jsonl"
-        recs = []
-        write_a3(p, now)
-        base = json.loads(p.read_text())
-        import copy
-        for mut in (lambda r: None, lambda r: r["halt"]["flags"]["pins_changed"].update(halt=True),
-                    lambda r: r["halt"]["flags"]["boost_disabled"].update(evaluated=False),
-                    lambda r: r["halt"]["flags"].update(x="bad"), lambda r: r["warn"]["flags"]["program_changed"].update(warn=True),
-                    lambda r: r.update(run_utc="2020-01-01T00:00:00Z"), lambda r: r.update(run_utc="2099-01-01T00:00:00Z"),
-                    lambda r: r.pop("run_utc"), lambda r: r["halt"].update(flags={}), lambda r: r.pop("halt")):
-            r = copy.deepcopy(base)
-            mut(r)
-            recs.append(r)
-        for r in recs:
-            p.write_text(json.dumps(r) + "\n")
-            os.chmod(p, 0o644)
-            why, problem = h5x.a3_record_problem(p, now)
-            theirs = problem or (("a3_flags:" + ",".join(why)) if why else None)
-            self.assertEqual(c0.a3_halt_problem(str(p), now), theirs, r)
+    # The equality test against h5_arena_executor.a3_record_problem moved to tools/test_hv4_a3_pooled.py (DEC-032 Am.3: equality with the Q50 pooled-guard path).
 
     def test_link_and_owner_checks_on_the_record_file(self):
         now = 1_800_000_000_000

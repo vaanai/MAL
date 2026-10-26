@@ -37,7 +37,7 @@ PR 5a notes (still `hv4_c0_incomplete`: nothing here removes the live refusal).
     covered. Until it runs, `feed_break` is fed only by the forwarder's TRANSPORT gap log
     (stall, disconnect, reconnect, mismatch, error, torn tail) and a forwarder `stopped_mismatch`; that is a stricter extra guard, not the §5.2 halt.
   * `transport_stall:<why>` refuses new buys while the forwarder status is not live (no latch; clears by itself; an extra guard). `a3_pins_changed` latches on any
-    A3 halt flag, an unreadable/stale record, or a missing record file in live (cleared only by the manager). Exits keep running under all of them.
+    A3 halt flag other than synthetic_share_high (DEC-032 Am.3: that one is decided by the pooled guard's a3-applied.jsonl, see a3_problem), an unreadable/stale record, or a missing record file in live (cleared only by the manager). Exits keep running under all of them.
   * RUNNER LIVENESS: `runner_silent` is INERT for buys in practice (the entry row that arrives resets it before it is judged; a stuck runner's old rows are refused by
     MAX_DECISION_AGE_MS). A dead runner is handled by the bridge's own time-stop and sl backstops, which need no runner row (DeadRunnerTests). Owed in the install pack:
     a host-side dead-man on the runner job and on SCAN-log `tick_timing` staleness, and a C0 read that flags every backstop-closed trade during runner silence.
@@ -755,6 +755,12 @@ A3_LATCH = "a3_pins_changed"  # the name tools/h5_arena_gates.HARD_ARENA_HALTS a
 A3_MAX_AGE_MS = 36 * 3_600_000  # same bound as tools/h5_arena_executor.A3_MAX_AGE_MS: the monitor writes daily
 A3_FUTURE_SKEW_MS = 300_000
 A3_POLL_MS = 60_000
+A3_GUARD_FLAGS = ("synthetic_share_high",)  # DEC-032 Am.3: decided by the DEC-031 Am.10 pooled guard (a3-applied.jsonl), never by the raw record
+A3_APPLIED_NAME = "a3-applied.jsonl"  # scripts/ops/a3-daily.sh: $A3_OUT/a3-applied.jsonl, the same directory as the daily record
+A3_GUARD_VERDICTS = ("NONE", "PASS", "HALT", "FAIL", "ERROR")  # == tools.a3_halt.VERDICTS (pinned by a test)
+A3_GUARD_CLEAR = ("NONE", "PASS")  # PASS never clears a raw pins_changed: the raw check runs first and latches on it
+A3_GUARD_LAG_MS = 2 * 3_600_000  # declared choice, not measured: a pending guard refuses buys; past this it latches
+A3_APPLIED_MAX_BYTES = 16 * 1024 * 1024
 
 
 def feed_status_path(root: str, bot_id: str) -> str:
@@ -933,11 +939,73 @@ def a3_halt_problem(path: str, now_ms: int) -> str | None:
         return "a3_record_future"
     if now_ms - run_ms > A3_MAX_AGE_MS:
         return "a3_record_stale"
-    why = sorted(k for k, v in flags.items() if not (isinstance(v, dict) and isinstance(v.get("halt"), bool)) or v["halt"] or v.get("evaluated") is False)
+    why = sorted(k for k, v in flags.items() if k not in A3_GUARD_FLAGS
+                 and (not (isinstance(v, dict) and isinstance(v.get("halt"), bool)) or v["halt"] or v.get("evaluated") is False))
     pc = (((rec.get("warn") or {}).get("flags") or {}).get("program_changed")) if isinstance(rec.get("warn"), dict) else None
     if isinstance(pc, dict) and pc.get("warn") is True:
         why.append("program_changed")
     return ("a3_flags:" + ",".join(why)) if why else None
+
+
+def _iso_ms(v: Any) -> int:
+    from datetime import datetime, timezone
+    return int(datetime.strptime(v, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp() * 1000)
+
+
+def a3_problem(record_path: str, now_ms: int) -> tuple[str | None, str | None]:
+    """(latch, refuse) under DEC-032 Am.3. The raw record is checked first (a3_halt_problem: every flag but synthetic_share_high, program_changed, stale,
+    future, unreadable): a raw reason is the latch. Otherwise the newest line of dirname(record)/a3-applied.jsonl (the DEC-031 Am.10 pooled guard) for the SAME
+    run_utc decides: HALT / FAIL / ERROR latch, NONE / PASS clear. A guard behind the record by at most A3_GUARD_LAG_MS refuses buys only (a3_guard_pending, no
+    latch); a missing, unreadable, linked, oversize, malformed or ahead log, or a guard behind for longer, latches."""
+    raw = a3_halt_problem(record_path, now_ms)
+    if raw:
+        return raw, None
+    try:
+        with open(record_path, "rb") as fh:
+            lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+        rec_ms = _iso_ms(json.loads(lines[-1])["run_utc"])
+        rec_mtime_ms = int(os.stat(record_path).st_mtime * 1000)
+    except (OSError, ValueError, IndexError, KeyError, TypeError):
+        return "a3_record_unreadable", None
+    ap = os.path.join(os.path.dirname(record_path), A3_APPLIED_NAME)
+    try:
+        st = os.lstat(ap)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_size > A3_APPLIED_MAX_BYTES:
+            return "a3_guard_unreadable", None
+        fd = os.open(ap, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            st2 = os.fstat(fd)
+            if (st2.st_ino, st2.st_dev) != (st.st_ino, st.st_dev) or st2.st_size > A3_APPLIED_MAX_BYTES:
+                return "a3_guard_unreadable", None
+            data = b""
+            while len(data) <= A3_APPLIED_MAX_BYTES:
+                chunk = os.read(fd, 1 << 20)
+                if not chunk:
+                    break
+                data += chunk
+        finally:
+            os.close(fd)
+        if len(data) > A3_APPLIED_MAX_BYTES:
+            return "a3_guard_unreadable", None
+        line = json.loads([ln for ln in data.splitlines() if ln.strip()][-1])
+    except (OSError, ValueError, IndexError):
+        return "a3_guard_unreadable", None
+    try:
+        app_ms = _iso_ms(line["run_utc"])
+        verdict = line.get("verdict")
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return "a3_guard_malformed", None
+    if verdict not in A3_GUARD_VERDICTS:
+        return "a3_guard_malformed", None
+    if app_ms > rec_ms:
+        return "a3_guard_ahead", None
+    if app_ms < rec_ms:
+        if now_ms - max(rec_ms, rec_mtime_ms) <= A3_GUARD_LAG_MS:
+            return None, "a3_guard_pending"
+        return "a3_guard_missing", None
+    if verdict not in A3_GUARD_CLEAR:
+        return "a3_guard:" + str(verdict), None
+    return None, None
 
 
 def start_row_fields() -> dict[str, Any]:
