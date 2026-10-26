@@ -28,7 +28,8 @@ A log that does not end in `segment_end` (a crash) takes the plain restart path,
 
 DOWN INTERVAL D = [HO, resume_ms) (QP-RULING-1026 Q2):
   (a) D = resume_ms - HO from the host's own instants: live = the wall clock when resume() ends; replay = the `resume_ms` given (a simulation).
-  (c) d_max_ms = min(5000, the measured dispatch-lag p99, B-P3), given by the caller and logged.
+  (c) d_max_ms = min(5000, the measured dispatch-lag p99, B-P3), given by the caller and logged. A LIVE host refuses an unpinned d_max_ms (HostError);
+      a replay without one uses 5000 and logs d_max_pinned false.
   path `live_lag` if D <= d_max_ms: rows and ticks of D reach the rules as a live lag. But (b): a row of D whose age at dispatch would exceed
       stale_row_ms (10 s) switches the rest of D to the probe at that row (logged `handoff_stale_switch`). It is never dropped silently and never
       decided stale.
@@ -75,13 +76,22 @@ def _sha_file(p: Path) -> str:
 class HostV3(V2.HostV2):
     def __init__(self, cfg: R.HostConfig, rules: Sequence[R.Rule], state: Any, engine: Any, now_fn: Callable[[], int] | None = None,
                  binding: Mapping[str, Any] | None = None, table_path: str | os.PathLike | None = None, table: Any = None, *,
-                 ckpt_dir: str | os.PathLike | None = None, d_max_ms: int = D_MAX_MS_CAP, resume_ms: int | None = None, dispatch_delay_ms: int = 0,
-                 allow_fallback: bool = False) -> None:
+                 ckpt_dir: str | os.PathLike | None = None, d_max_ms: int | None = None, resume_ms: int | None = None, dispatch_delay_ms: int = 0,
+                 allow_fallback: bool = False, dispatch_clock: Callable[[int], int] | None = None) -> None:
+        # D_MAX is pinned from B-P3 (QP-RULING-1026 Q2 (c)). A LIVE host refuses an unpinned value: it is never silently 5 s (QP OK on #945, #962 item).
+        # A replay (tests, B-P1) without one uses the 5 s cap and logs d_max_pinned false.
+        if d_max_ms is None and cfg.live:
+            raise R.HostError("a live HostV3 needs a pinned d_max_ms (B-P3's dispatch-lag p99, at most 5000): refusing an unpinned D_MAX")
+        self.d_max_pinned = d_max_ms is not None
+        d_max_ms = D_MAX_MS_CAP if d_max_ms is None else d_max_ms
         if not 0 <= int(d_max_ms) <= D_MAX_MS_CAP:
             raise R.HostError(f"d_max_ms must be in [0, {D_MAX_MS_CAP}] (QP-RULING-1026 Q2 (c))")
         super().__init__(cfg, rules, state, engine, now_fn, binding, table_path, table)
         self.ckpt_dir = Path(ckpt_dir) if ckpt_dir else Path(cfg.root) / "handoff"
         self.d_max_ms, self.sim_resume_ms, self.dispatch_delay_ms, self.allow_fallback = int(d_max_ms), resume_ms, int(dispatch_delay_ms), allow_fallback
+        self.dispatch_clock = dispatch_clock  # replay only: t_recv_ms of a row of D -> its simulated dispatch instant (tests of the stale switch)
+        self.d_rows_live = 0  # rows of D dispatched live (before any switch)
+        self.d_max_live_age_ms = 0  # the oldest row of D dispatched live: never above stale_row_ms
         self.handoff: dict[str, Any] | None = None
         self._probe_from: int | None = None
         self._down_exits: list[str] = []
@@ -211,7 +221,8 @@ class HostV3(V2.HostV2):
         dec = max(self._now(int(s["ho_ms"])), int(s["ho_ms"]))
         for r in self.rules:
             self.log.append(r.bot_id, dec, {"kind": SEGMENT_RESUME, "ho_ms": int(s["ho_ms"]), "resume_ms": h.get("resume_ms"), "d_ms": h.get("d_ms"),
-                                            "d_max_ms": self.d_max_ms, "path": path, "engine_digest": ed, "state_digest": sd, **extra})
+                                            "d_max_ms": self.d_max_ms, "d_max_pinned": self.d_max_pinned, "path": path, "engine_digest": ed,
+                                            "state_digest": sd, **extra})
 
     # -- the down interval
     def _in_d(self, t: int) -> bool:
@@ -219,17 +230,25 @@ class HostV3(V2.HostV2):
         return h is not None and h["ho_ms"] <= t < h["resume_ms"]
 
     def _dispatch_now(self, t: int) -> int:
-        return int(self.now_fn()) if self.cfg.live else int(self.handoff["resume_ms"]) + self.dispatch_delay_ms
+        if self.cfg.live:
+            return int(self.now_fn())
+        if self.dispatch_clock is not None:
+            return int(self.dispatch_clock(t))
+        return int(self.handoff["resume_ms"]) + self.dispatch_delay_ms
 
     def _on_row(self, row: dict) -> None:
         t = row.get("t_recv_ms")
         if self._dispatch and isinstance(t, int) and self._in_d(t) and self.fatal is None:
-            if self._probe_from is None and self._dispatch_now(t) - t > self.cfg.stale_row_ms:
+            age = self._dispatch_now(t) - t
+            if self._probe_from is None and age > self.cfg.stale_row_ms:
                 self._probe_from = t  # QP-RULING-1026 Q2 (b): this row would be stale at dispatch; the rest of D goes to the probe
                 self._count("handoff_stale_switch")
                 for r in self.rules:
-                    self.log.append(r.bot_id, self._now(t), {"kind": "handoff_stale_switch", "at_row_ms": t, "ho_ms": self.handoff["ho_ms"],
-                                                             "age_ms": self._dispatch_now(t) - t, "stale_row_ms": self.cfg.stale_row_ms})
+                    self.log.append(r.bot_id, self._now(t), {"kind": "handoff_stale_switch", "at_row_ms": t, "ho_ms": self.handoff["ho_ms"], "age_ms": age,
+                                                             "stale_row_ms": self.cfg.stale_row_ms, "rows_dispatched_before": self.d_rows_live})
+            if self._probe_from is None:
+                self.d_rows_live += 1
+                self.d_max_live_age_ms = max(self.d_max_live_age_ms, age)
             if self._probe_from is not None and t >= self._probe_from:
                 self._dispatch = False
                 try:
@@ -276,6 +295,7 @@ class HostV3(V2.HostV2):
             book.touch()
             missed = sorted(k for k in self._down_missed if k.startswith(rule.bot_id + "|"))
             self.log.append(rule.bot_id, dec, {"kind": "handoff_down_missed", "n_exits": len(pids), "n_missed_entries": len(missed),
+                                               "d_rows_live": self.d_rows_live, "d_max_live_age_ms": self.d_max_live_age_ms,
                                                "missed_key_sha256": [hashlib.sha256(k.encode()).hexdigest()[:16] for k in missed],
                                                "probe_from_ms": self._probe_from, "resume_ms": self.handoff["resume_ms"]})
 
