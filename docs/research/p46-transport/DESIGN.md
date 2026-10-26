@@ -29,7 +29,7 @@ The constraints any transport must meet:
 | The read's book = the live book | yes. Bytes are identical (md5 equal, §4), so "orders equal rows" ties out against the counted log | yes | **no.** A second runner sees its own feed timing and makes its own model calls, so it writes different rows from the registered book. The read would license one log, and live would trade another |
 | Capacity | trivial (59 MB peak, 1 CPU, §4) | the bridge is small | HV4 is registered with MemoryMax 45,000 MB (`ARTIFACTS/lab/hv4-registration-1023.md`). fast-0 has ~23 GiB RAM and MiScusi caps a job there at 17 GB, "light jobs only". F arms would also need the Anthropic key on fast-0 |
 | Install | a forwarder unit on fast-0, plus a forced-command ssh key on research-0 (Helm or owner, §5) | Helm installs the bridge, probe executor and key on research-0. Policy change | a new frozen-sha install, its own md5 replay, and a feed on fast-0 |
-| Seal fit | serves exactly one `bot_id` dir. Refuses a root under `/data/mal/arena` before `--after-read-ms` (R2.1). Siblings never leave research-0 (R2.2(c)) | R2.2(c) bind on the same host | not the registered book |
+| Seal fit | serves exactly one `bot_id` dir. Refuses a root under `/data/mal/arena` (or an inode alias of it) until the bot's recorded PASS read passes the bridge's own gate, `hv4_live_c0.read_record_problem` (R2.1). Siblings never leave research-0 (R2.2(c)) | R2.2(c) bind on the same host | not the registered book |
 
 **Recommendation: (a), in pull form.** fast-0 dials research-0 over the ssh path that already exists (claude@fast-0 → `ssh mal-research-0`, Cloudflare Access) and runs `decision_forwarder serve` there.
 
@@ -39,47 +39,80 @@ The constraints any transport must meet:
 
 ## 3. What is built (`tools/decision_forwarder.py`)
 
-The forwarder is pure stdlib. `canon` and `sha256_hex` are copied, and a test proves `canon` is byte-equal to `tools.arena_paper.canon`, so the forwarder does not need numpy on fast-0.
+The forwarder is pure stdlib, except for the read gate it imports for a sealed root. `canon` and `sha256_hex` are copied, and a test proves `canon` is byte-equal to `tools.arena_paper.canon`, so the puller does not need numpy on fast-0.
 
 **`serve`** runs on research-0. In production it is the forced command.
 
-- It tails `<root>/decisions/<bot_id>/*.jsonl`. Files are taken in sorted order, as the bridge reads them.
+- It tails `<root>/decisions/<bot_id>/*.jsonl`, taking files in sorted order as the bridge reads them. It starts a later file only when the earlier one is fully sent.
 - It emits only complete lines, as JSON frames:
   - `row`: file, byte offset, line text;
-  - `hello`;
-  - `hb` every 500 ms when idle.
-- It polls every 10 ms.
-- It refuses:
+  - `hello` and `hb` (every 500 ms when idle): the remote's position (file, bytes sent).
+- It polls every 10 ms. One pass reads at most 1 MiB (`MAX_PASS_BYTES`), so a long catch-up runs over several passes with bounded memory.
+- It refuses, before opening any decision file:
   - a bad `bot_id`;
-  - a root under `/data/mal/arena` unless `--after-read-ms` is given and has passed (R2.1);
-  - in `--from-env` mode, any `SSH_ORIGINAL_COMMAND` other than `resume <YYYY-MM-DD.jsonl> <offset>`.
+  - a root under `/data/mal/arena`, or a path with an ancestor that has the arena's inode (a bind mount or alias). The exception is when `--reads-dir` is given and the bot's **recorded** PASS read passes `tools.hv4_live_c0.read_record_problem`, the bridge's own gate from #965, with its provenance rules: canonical reads dir, write-once record, nlink 1, owner/mode, frozen_sha, PASS.
+    - No instant is configured by hand, so nothing can be pre-staged with a planned read time (QP #967 item 4).
+    - The gate is hv4-only, so an HV6 root is refused until HV6 has its own gate (N10).
+    - If the gate cannot be imported, serve refuses (`read_record_gate_unavailable`).
+  - in `--from-env` mode, any `SSH_ORIGINAL_COMMAND` other than empty, `resume` (start at the beginning: what the puller sends from an empty local dir), or `resume <YYYY-MM-DD.jsonl> <offset>`.
+- It stops with a loud `bad` frame on each of these, and the puller stops on it:
+  - a source file that is not regular, has `st_nlink != 1` (a hard-linked copy of arena files placed under another root), or is swapped between lstat and open;
+  - a source file that shrinks below what was already sent (the log is append-only);
+  - a single line longer than 1 MiB;
+  - a line that is not UTF-8.
 
 **`pull`** runs on fast-0.
 
-- It runs the serve command and checks every row with the DecisionLog chain rule.
-- It checks that the frame's offset equals the local file size, then appends the same bytes plus a newline (O_APPEND, flock, fsync).
-- The local log therefore verifies with `DecisionLog.verify` and passes `guarded_read`. Its md5 and day sha256 equal the source's, so tie-out tools see one log.
-- Side files go under `<dst>/transport/`, never under `decisions/`:
-  - `<bot_id>.status.json`: state (`connected` / `stalled` / `disconnected` / `stopped_mismatch`), the last frame instant, the last remote heartbeat, seq, file and offset;
-  - `<bot_id>.gaps.jsonl`: one row per `stall` (no frame for 2,000 ms), `resume` (with `gap_ms`), `disconnect`, `reconnect`, `mismatch` and `local_torn_trimmed`.
-- A chain, offset, unreadable-frame or remote-refusal mismatch stops the puller with exit 2. Nothing unverified is appended, so the bridge sees no new rows. Open positions then close only by the bridge's time-stop and stop-loss backstops, as after a `chain_break`.
-- On a disconnect it reconnects with backoff of 0.5, 1, 2 and then 5 s. It resumes at (last local file, local size).
-- On restart it re-verifies the local log first. Only its own torn tail is trimmed; the source resends that row.
+- **Production command:** `pull --ssh-host mal-research-0 --dst <root> --bot-id <arm>`. This runs `ssh -o BatchMode=yes -o ServerAliveInterval=5 -o ServerAliveCountMax=3 mal-research-0 {resume}`, so ssh itself drops a dead tunnel after about 15 s. `--cmd-json` exists for tests only.
+- **Single writer:** it holds an exclusive non-blocking `flock` on `<dst>/transport/<bot_id>.lock` for its whole life. A second puller on the same destination exits refused (`dst_locked`). This guards against the 10-17 triple-writer class.
+- **Row check:** it checks every row with the DecisionLog chain rule. It checks that the frame's offset equals the local file size, then appends the same bytes plus a newline (O_APPEND, flock, fsync). A new day file also gets a directory fsync. The chain head (`prev`, `seq`) in memory moves only after the fsync.
+- **Position check:** it compares every `hello`/`hb` position with the local (file, offset). Frames are ordered, so any difference is a mismatch.
+- **Bounded receive:** the receive buffer is capped at 8 MiB without a newline (`frame_too_long`).
+- **Tie-out:** the local log verifies with `DecisionLog.verify` and passes `guarded_read`. Its md5 and day sha256 equal the source's, so tie-out tools see one log.
+- **Side files** go under `<dst>/transport/`, never under `decisions/`:
+  - `<bot_id>.status.json`, format `decision_forwarder_v1` (read by #969). The keys are unchanged: `schema, bot, state, ms, last_frame_ms, last_remote_ms, seq, f, o, rows, gaps, stall_ms, pid`. It is rewritten every 250 ms while connected. The state is one of `init`, `connecting`, `connected`, `stalled`, `disconnected`, `stopped`, `stopped_mismatch`, or `stopped_error` (new in this revision: an unexpected exception). SIGTERM and SIGINT end with `stopped`, so the file never stays `connected` after the puller is gone. #969 treats every state except `connected` as a gap, so the new value needs no change there.
+  - `<bot_id>.gaps.jsonl`, with one row per event:
+    - `stall` (no frame for 2,000 ms);
+    - `resume` (with `gap_ms`);
+    - `disconnect` (with `why`: `eof`, `connect_timeout`, or `silent_reconnect`);
+    - `reconnect`;
+    - `mismatch`;
+    - `local_torn_trimmed`;
+    - `error`.
+- **Mismatch:** a chain, offset, position, unreadable-frame, oversize-frame or remote-refusal mismatch stops the puller with exit 2. Nothing unverified is appended, so the bridge sees no new rows. Open positions then close only by the bridge's time-stop and stop-loss backstops, as after a `chain_break`.
+- **Half-open connection:** a connected feed that is silent for 10,000 ms (`--reconnect-silence-ms`; serve heartbeats every 500 ms) is killed and reconnected (`silent_reconnect`). This does not wait for ssh to notice.
+- **Reconnect:** on a disconnect it reconnects with backoff of 0.5, 1, 2 and then 5 s. It resumes at (last local file, local size).
+- **Restart:** it re-verifies the local log first. Only its own torn tail is trimmed; the source resends that row.
 
-**`synth`** and **`measure`** exist only for the hop test (§4). `synth` refuses a sealed root, and every row carries `"synthetic": true`.
+**`synth`** and **`measure`** exist only for the hop test (§4). `synth` refuses a sealed root, and every row carries `"synthetic": true`. `measure` shell-quotes every remote string, keeping `~/` expansion. It runs serve in the forced-command form (`serve --from-env`, `SSH_ORIGINAL_COMMAND={resume}`) and removes both scratch dirs in a `finally` block.
 
-**Tests:** `tools/test_decision_forwarder.py`, 18 tests, all pass (`/data/mal/venv/bin/python -m pytest -q tools/test_decision_forwarder.py`, 7.58 s). They cover:
+**Tests:** `tools/test_decision_forwarder.py` has 35 tests, all passing (`/data/mal/venv/bin/python -m pytest -q tools/test_decision_forwarder.py`). They also pass when run inside a tree of current main, which has #965's gate. They cover:
 
 - byte identity over two day files;
 - `DecisionLog.verify` and `md5()` equal on both ends;
 - `guarded_listdir`/`guarded_read` accepting the forwarded files;
 - live tail;
 - restart resume with no duplicate;
-- tamper → mismatch stop with nothing appended;
+- tamper: a mismatch stop with nothing appended;
 - offset mismatch;
 - torn-tail trim;
-- stall → `stall` + `resume` gap rows;
-- disconnect → reconnect;
+- stall: `stall` + `resume` gap rows;
+- disconnect, then reconnect;
+- the forced-command form (`--from-env`) from an empty dst, through a dropped connection and a reconnect that sends `resume <file> <offset>`;
+- a silent half-open connection: `stall`, then `disconnect` (`silent_reconnect`), then `reconnect`;
+- two pullers on one dst: the second is refused, in-process and over the CLI;
+- heartbeat position mismatch;
+- the bounded and ordered serve pass;
+- line too long;
+- shrinking source;
+- hard-linked source;
+- inode-alias detection of the sealed prefix;
+- the read gate wiring, mocked: refused without `--reads-dir`, refused when the gate fails or cannot be imported;
+- the capped receive buffer;
+- the chain head moving only after the fsync;
+- the directory fsync on a new day file;
+- SIGTERM leaving status `stopped`;
+- an unexpected error leaving `stopped_error` with the v1 keys unchanged;
 - the sealed-root refusal over the CLI and remotely;
 - resume-string parsing;
 - the percentile and clock-offset helpers;
@@ -101,7 +134,7 @@ The forwarder is pure stdlib. `canon` and `sha256_hex` are copied, and a test pr
 
 **Latency definition.** The latency is from the moment `DecisionLog.append` returned on research-0 (after its fsync) to the moment the same line was fsynced into the fast-0 file. That is "visible" to the bridge, which then polls every 50 ms.
 
-**Results**
+**Results** (at code `ea413aad`, flag form `--start-file/--start-offset` on claude's full-shell key. The review fixes since then change no hop step: the same ssh pipe, one frame per line, one fsync per row. I did not re-run the measurement on the revised code or the forced-command form.)
 
 | Measure | p50 | p90 | p99 | max | n |
 |---|---|---|---|---|---|
@@ -132,10 +165,23 @@ One 10-minute sample is not a service level. The `status.json` and gap rows exis
 
 ## 5. Open items before any live use (not done here)
 
-1. **Bridge reads `transport/<bot_id>.status.json` as a feed-gap halt** (READINESS N6 item 10). With state not `connected`, or `last_frame_ms` older than `stall_ms`, it refuses new buys, and exits keep running. This is a pinned-code change to the bridge, so it needs its own tests and md5 replay. The 5 s age cap already refuses stale entries, so a stall cannot cause a late entry. A stall only delays exits.
-2. **Forced-command key (Helm or owner).** This needs a dedicated key for the fast-0 forwarder user, with one line in research-0's `authorized_keys`: `restrict,command="python3 -u <pinned path>/decision_forwarder.py serve --from-env --root /data/mal/arena/haiku-v4 --bot-id <arm> --after-read-ms <read instant>"`. The measurement used claude's existing full-shell key, which is fine for a test but not the production posture. SSH access config is Helm's, so it was not touched.
-3. **systemd unit on fast-0.** It runs `pull` with `--dst` under a root outside `/data/mal/arena` (for example `/var/lib/mal-arena-feed/hv4`). The bridge's `root` points at that root. It belongs in the N9 HELM-SHEET. Start it only after the arm's read is recorded, never before (R2.1). A keyless dry run can use a synthetic root now.
+1. **Bridge feed-gap halt on `transport/<bot_id>.status.json`.** This is in #969, which needs its own QP pass and md5 replay.
+   - #969 halts new buys on any state other than `connected`. It also halts on a status older than 10,000 ms (`FEED_STATUS_MAX_AGE_MS`), or a `last_frame_ms` older than 5,000 ms (`FEED_FRAME_MAX_MS`).
+   - In practice the halt fires first when the puller flips the state to `stalled`, after 2,000 ms without a frame (`STALL_MS_DEFAULT`). The 5,000 ms frame cap is the backstop.
+   - Exits keep running. The 5 s entry age cap already refuses stale entries, so a stall cannot cause a late entry; it only delays exits.
+2. **Forced-command key (Helm or owner).** This needs a dedicated key for the fast-0 forwarder user, with one line in research-0's `authorized_keys`: `restrict,command="cd <pinned install> && PYTHONPATH=. python3 -u tools/decision_forwarder.py serve --from-env --root /data/mal/arena/haiku-v4 --bot-id <arm> --reads-dir /data/mal/arena/reads"`.
+   - Serve then opens nothing until `/data/mal/arena/reads/<arm>.json` is a recorded PASS for that arm. Nobody types an instant.
+   - The measurement used claude's existing full-shell key, which is fine for a test but not the production posture.
+   - SSH access config is Helm's, so it was not touched.
+   - **HELM-SHEET note:** do not place copies or hard links of HV4 day files under any other root. Serve refuses hard links (nlink > 1), but a byte copy under a non-arena root would not be gated.
+3. **systemd unit on fast-0.**
+   - It runs `pull --ssh-host mal-research-0 --dst <root> --bot-id <arm>`, with `--dst` under a root outside `/data/mal/arena` (for example `/var/lib/mal-arena-feed/hv4`). The bridge's `root` points at that root.
+   - Run one instance. The lock enforces this.
+   - It belongs in the N9 HELM-SHEET. Start it only after the arm's read is recorded (serve refuses before that anyway).
+   - A keyless dry run can use a synthetic root now.
 4. **Pinned install of the forwarder** at the bridge install sha, with the md5 "orders equal rows" proof covering the forwarded log. Because the bytes are identical, the proof can compare against the research-0 log directly.
-5. **HV6:** the same forwarder with `--root /data/mal/arena/haiku-v6` and the `hv6_c0` bot ids (N10).
+5. **HV6:** a recorded-read gate for HV6 bot ids, then the same forwarder with `--root /data/mal/arena/haiku-v6` (N10). Today's gate is hv4-only, so serve refuses an HV6 root.
+6. **Runner liveness for exits (QP).** Heartbeats prove that serve is alive, not that the runner is. A dead runner leaves the status `connected` with no exit rows. Entries are covered by the 5 s age cap, but exits need a bridge-side guard: the time stop, plus a runner-liveness check.
+7. **A longer measurement** that includes a real Access drop, and the forced-command form on the revised code.
 
 Files: `tools/decision_forwarder.py`, `tools/test_decision_forwarder.py`, `scripts/research/p46-hop-measure.sh`.
