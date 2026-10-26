@@ -70,7 +70,7 @@ Counters, all sha256-pinned and run unchanged:
 - `qsink_count_day.py` (`c291cf2b...18cc`): `--k0` and `--day` for 10-20..10-24;
 - `qsink_netflow_day_v2.py` (`6bea86e9...2e6a`): `--day` for 10-20..10-24.
 
-Jobs #1694 (K0 and census), #1695 (day), #1700 (netflow2). Every `--off` output equals the original file in `w3-qsink/out/` (sha256 in the job logs).
+Jobs #1694 (K0 and census), #1695 (day), #1700 (netflow2). Every `--off` output (12 files) equals the original file in `w3-qsink/out/` (sha256 in the job logs).
 
 - **Census K0-R (10-19): PROVISIONAL_PASS -> PROVISIONAL_PASS (unchanged).** C1r 924.0, C1t 1117.96, C2 0.071, n_children 648, all unchanged. Child-buy signatures with a certain-SOL parent buy: 14,451 (4,587.965229950 SOL) -> 14,442 (4,532.797569074 SOL). MultiHop signatures / legs: 54,266 / 91,813 -> 54,260 / 91,801. Child bond buys: 15,962 -> 15,890.
 - **K0 on 10-20..10-24: NOT_DECIDABLE -> NOT_DECIDABLE (unchanged).** Full days are still only 10-23 and 10-24, with 6 bad hours, C1 1551.5, C2 0.1878. Hour quality comes from gap and hb rows, which the filter does not touch. Only `create_WSOL` changes: 10-20 22,899 -> 22,897 and 10-21 22,406 -> 22,405.
@@ -99,7 +99,19 @@ Jobs #1694 (K0 and census), #1695 (day), #1700 (netflow2). Every `--off` output 
 | 10-24 | 15,506.021283489 | 15,074.486755609 |
 
   On 10-21, more than half of the gross parent buying was phantom-class.
-- Net flow v2 (plans 2a and 2b, not deciding): see the netflow2 section below.
+- **Net flow v2 (COUNTS-PLAN-2a/2b; report-only, "no verdict of their own", "change no COUNTS-PLAN-2 verdict"). The sign changes.** Job #1700. Net parent SOL, before -> after:
+
+| day | net, all parents | out/in, all parents | net, universe U | out/in, U |
+|---|---|---|---|---|
+| 10-20 | +1548.6742 -> **-43.8238** | 0.9453 -> 1.0016 | -193.4867 -> -193.4867 | 1.0754 -> 1.0754 |
+| 10-21 | +38161.6355 -> **-835.3403** | 0.4836 -> 1.0239 | +11225.0215 -> **-496.4807** | 0.341 -> 1.0935 |
+| 10-22 | +17.0244 -> **-425.5542** | 0.9985 -> 1.0383 | -128.2142 -> -128.2142 | 1.0793 -> 1.0793 |
+| 10-23 | +2073.4029 -> +84.5943 | 0.8989 -> 0.9954 | -227.3417 -> -229.9524 | 1.1771 -> 1.1795 |
+| 10-24 | +547.7425 -> +115.5745 | 0.9647 -> 0.9923 | -115.3582 -> -120.7661 | 1.0905 -> 1.0952 |
+
+  - Out SOL barely moves. The positive net inflow was phantom-class buy rows.
+  - After the filter, parent flow is about flat over all parents (out/in 0.9923 to 1.0383), and net negative in U on every day.
+  - In-window U split (P_neg_given_neg / P_pos_given_pos / lag1_pearson): it moves only on 10-21 (0.68 / 0.3 / 0.0258 -> 0.6863 / 0.2821 / 0.168), and slightly on 10-23 and 10-24.
 
 ## Changed verdicts
 
@@ -114,6 +126,7 @@ Changed descriptions:
 - The P44 pump-sink "regime shift to >= 1 SOL buys from 10-22" is phantom. After the filter there are 0 child-leg buys >= 0.25 SOL on any day, and about 0.6 to 2.4 SOL a day of child-leg buying.
 - The QSINK gross parent buy SOL on 10-21 falls from 73,739.6 to 34,867.0.
 - The QSINK LOCK cells' attempt counts fall.
+- The QSINK net parent flow (plan 2a, report-only) was positive on all 5 days. After the filter it is about flat or negative: negative on 10-20, 10-21 and 10-22, and negative in U on every day.
 
 ## Not measured
 
