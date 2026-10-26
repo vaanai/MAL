@@ -4,7 +4,7 @@
 # = the sha256 of tools/hv6_smoke.py, instant, month-to-date API spend) and the P0 count (item 7a) is done at the same final sha.
 #
 # Usage: sh scripts/ops/hv6-smoke.sh REPO TAG [HOURS]
-#   REPO   a CLEAN checkout at the final sha 646f61a64621c8b543b2a2bf87ae626facae558b
+#   REPO   a CLEAN checkout at the final sha 5071e29afe473b6c9ff1f753bf045345e722b0f6
 #   TAG    fresh name; the smoke dir is /data/mal/arena/haiku-v6/smoke/<TAG> (refused if it exists)
 #   HOURS  default 2 (at most 4)
 # The API key is read at run time from /var/lib/mal/anthropic/anthropic.env into the child's environment only; it is never echoed, logged or passed on a command line.
@@ -12,7 +12,7 @@
 # FEED_DELAY_SLOTS must equal the value the registered runner job will use (HV4's Am.2 value is 7; the registration pack pins it).
 # Submit as a MiScusi job with memory >= 8 GB (MemoryMax); the runner peaked at 2.7 GB in the real-layout replay (#1640). One heavy job at a time on mal-fast-0.
 set -eu
-FINAL=646f61a64621c8b543b2a2bf87ae626facae558b
+FINAL=5071e29afe473b6c9ff1f753bf045345e722b0f6
 KEYFILE=/var/lib/mal/anthropic/anthropic.env
 if [ $# -lt 2 ] || [ $# -gt 3 ]; then echo '{"hv6_smoke":"refused","why":"usage_REPO_TAG_[HOURS]"}'; exit 2; fi
 REPO=$1; TAG=$2; HOURS=${3:-2}
@@ -35,4 +35,4 @@ export MAL_HV4_RPC
 set -a
 . "$KEYFILE"
 set +a
-exec /data/mal/venv/bin/python -I "$TOOL" --repo "$REPO" --smk "$SMK" --hours "$HOURS" --cap-usd 0.50 --feed-delay-slots "${FEED_DELAY_SLOTS:-7}"
+exec /data/mal/venv/bin/python -I "$TOOL" --repo "$REPO" --smk "$SMK" --hours "$HOURS" --cap-usd 0.50 --regime-dir "${HV6_ROOT:-/data/mal/arena/haiku-v6}/regime" --feed-delay-slots "${FEED_DELAY_SLOTS:-7}"

@@ -1,17 +1,17 @@
-# HV6 registration pack, DRAFT for T0 2026-10-30T00:00:00Z at frozen sha 646f61a64621c8b543b2a2bf87ae626facae558b (written 2026-10-26; nothing is registered, no clock exists)
+# HV6 registration pack, DRAFT for T0 2026-10-30T00:00:00Z at frozen sha 5071e29afe473b6c9ff1f753bf045345e722b0f6 (written 2026-10-26, rebased 2026-10-26 onto main at #939; nothing is registered, no clock exists)
 
 **No book has cleared the gate. This is a registration pack, not a result.** HV6 has 0 out-of-sample trades. Nothing here says HV6 makes money. Paper only.
 
-Written by a worker in its own worktree from: `docs/research/hv6/DESIGN.md` (main at 646f61a6), QP-RULING-1025-hv5-design (original, ADDENDA 1-3), and the QP and reviewer comments on PRs #911 #914 #917 #918 #921 #923 #930 #936 (read with `gh`). Not opened: anything under `/data/mal/arena`, `bots.json`, any HV4/Q50 output, any job status or log, `/data/mal/meta-capture/`. Attestation by this worker: no HV4 output, Console or notebook P&L, attempt count, shakedown or smoke report was seen. The manager attests the same for the manager before registering (DESIGN section 2, G5 paragraph).
+Written by a worker in its own worktree from: `docs/research/hv6/DESIGN.md` (main at 5071e29a), QP-RULING-1025-hv5-design (original, ADDENDA 1-3), and the QP and reviewer comments on PRs #911 #914 #917 #918 #921 #923 #930 #936 (read with `gh`). Not opened: anything under `/data/mal/arena`, `bots.json`, any HV4/Q50 output, any job status or log, `/data/mal/meta-capture/`. Attestation by this worker: no HV4 output, Console or notebook P&L, attempt count, shakedown or smoke report was seen. The manager attests the same for the manager before registering (DESIGN section 2, G5 paragraph).
 
-Items marked **UNMET** below block registration until fixed or ruled by QP. Items marked **MANAGER** are steps this pack cannot do.
+Items marked **UNMET** below block registration until fixed or ruled by QP (none is open since #939; section 12 lists the one open question for QP). Items marked **MANAGER** are steps this pack cannot do.
 
 ## 1. Constants and pins (QP #914 R4)
 
 | Item | Value |
 |---|---|
-| Frozen (final) sha | `646f61a64621c8b543b2a2bf87ae626facae558b` (main, #936). Every job below runs from a clean checkout at this sha. This PR adds only scripts, tools for items 7a/7b, one test and this file; none of them is run by the runner. |
-| Blob shas | `tools/hv4_cards.py` `747fd996fcb8a665a8a2dcf994dc92ff3ad011c7`; `tools/hv4_chain.py` `95556d4360695f47c8a76d92d34e13accc2cfb4f`; `tools/arena_paper.py` `5eef156bb617138a4c04fca6779f9ff4c5215b13`; `tools/hv4_prefetch.py` `1fb4d2f4c6cd3f9a59954f403b1f31beddc8ff57` (checked with `git hash-object` at 646f61a6) |
+| Frozen (final) sha | `5071e29afe473b6c9ff1f753bf045345e722b0f6` (main, #936). Every job below runs from a clean checkout at this sha. This PR adds only scripts, tools for items 7a/7b, one test and this file; none of them is run by the runner. |
+| Blob shas | `tools/hv4_cards.py` `747fd996fcb8a665a8a2dcf994dc92ff3ad011c7`; `tools/hv4_chain.py` `95556d4360695f47c8a76d92d34e13accc2cfb4f`; `tools/arena_paper.py` `5eef156bb617138a4c04fca6779f9ff4c5215b13`; `tools/hv4_prefetch.py` `1fb4d2f4c6cd3f9a59954f403b1f31beddc8ff57` (checked with `git hash-object` at 5071e29a) |
 | Clock T0 | 2026-10-30T00:00:00Z = `1793318400000` ms (`date -u -d 2026-10-30T00:00:00Z +%s` = 1793318400). Rule: DEC-031 Am.6 item 1.4, the first 00:00Z after the smoke has passed and this record is notebooked. |
 | Bot ids | `hv6.0-L`, `hv6.0-L-nr`, `hv6.0-F`, `hv6.0-P`, `hv6.0-X`; `deciding_stake` 0.25; model ids `["claude-haiku-5-5"]` for L, L-nr, F, P and `[]` for X |
 | D | 12 days, fixed before the clock, never changed or extended. Window [T0, T0 + 12 d) = [2026-10-30T00Z, 2026-11-11T00Z) |
@@ -22,7 +22,7 @@ Items marked **UNMET** below block registration until fixed or ruled by QP. Item
 | params v6.0 (QP #921 C4) | min_matches 10, skip_count 60, max_changes 3, ttl_h_max 72, evidence_days 7; `params_sha256` `d5d41e9dd82015ace620b64fb607eaf805a1579fa0ae0adcd88a7c13ad2ccb02`; registry min {8,10,15}, skip {20,40,60}, max changes {1,2,3}, TTL cap {24,48,72} h, evidence days {3,5,7} |
 | Spec shas (QP #921 C4) | `reviewer_sha256` `de25aaa09985fc52cd4b44ce50339f0ad3097cc1319edf2b2c9ac34eee58c266`; `regime_template_sha256` `6580f92331e6f025cf9db2452a525e4965b479f99efb8e22377ba05491bdb321`; `bundle_spec_sha256` `82848deb4a534ac501604f77c06deb7fdd9e2c85a2915627f91675955c07fd4c`; `regime_spec_sha256` `daefba8828f24eb481021b806527fd5ae93551f7df645c799729b9447f472c84`; playbook GEN v0 sha256 `9ee29f482241333459aa9b0e93185c0585615f104339b8712f19cc8fe6677d34` (re-checked here with `sha256sum tools/hv6_playbooks/GEN_v0.txt`) |
 | Manifest rules (C4) | nightly `effective_from` = max(cutoff + 30 min, written + 60 s); intraday `effective_from` = written + 30 min; append rules: wall < `effective_from`, `written <= wall + 60 s`; `max_tokens` review 4000, regime 1200; freeze 60,000 ms (00:01Z); intraday cap 2 per arm per day; ledger root `<HV6 root>/engine-ledger`; release whitelist: invalid_reply_rate, schema_rejects, bounds_rejects, token_cost_usd, latency_ms_p50, latency_ms_p95, block_coverage (veto_cap and unknown_evidence_id excluded) |
-| Radar pins (DESIGN section 3) | out-dir `/data/mal/change-radar-arena1`; `tools/change_radar_seals.json` sha256 `5a2f8979c8493f7a3b200dd879f6f54c92a3bf383054af432c2fc35a8e10ca61`; `--venue-tape ''`. **MANAGER:** the radar code sha the daily job runs and the watch-file sha are not in git here; fill both before the clock. |
+| Radar pins (DESIGN section 3) | out-dir `/data/mal/change-radar-arena1`; `tools/change_radar_seals.json` sha256 `5a2f8979c8493f7a3b200dd879f6f54c92a3bf383054af432c2fc35a8e10ca61`; `--venue-tape ''`. radar code `tools/change_radar.py` sha256 `0f5279b3b7276da10a73438dbd5d663139e8ef8e7671828e9ec1dbbd0a418331` and watch file `tools/change_radar_watch.json` sha256 `23838d1cf20d02a9c048855c99981a968a43e8e2014ec65874decc7ec55241cc` (both equal at b4a0f0d5 and at this PR's base; radar job **#1577** runs `python -m tools.change_radar --out-dir /data/mal/change-radar-arena1 --venue-tape ''` from a checkout at `b4a0f0d5cc71`, after `sha256sum -c` of the seals file `5a2f8979...ca61`). **MANAGER:** the producer needs the ABSOLUTE paths of those three files in the checkout job #1577 runs from; its working directory is not in the job status, read it from the job record. |
 | HV6 root | `/data/mal/arena/haiku-v6/` (decision log `decisions/<arm>/<day>.jsonl`, `engine-ledger/`, `regime/`, `manifests/`, `chain-credits.json`, `chain-prefetch-spend.json`) |
 | Registry route | (a), append-only into `/data/mal/arena/bots.json`, a1-a7, through `tools/hv6_register.py` |
 
@@ -33,7 +33,7 @@ Items marked **UNMET** below block registration until fixed or ruled by QP. Item
 | Window start T0 | 2026-10-30T00:00Z (1793318400000) | |
 | V1/V2 | 2026-11-07T00Z (T0 + 8 d, 1794009600000) over [T0, T0 + 7 d) | calendar |
 | Gate read (B) | the first 00:00Z boundary with >= 100 counted attempts on >= 5 UTC dates (about 2026-11-04T00Z at 20/day), run once after those attempts have exited (max hold 12 h) | mechanical; NOT_DECIDABLE if not reached by T0 + H = 2026-11-11T00Z |
-| Entries halt, window end | 2026-11-11T00Z (1794355200000); code exits (stop/target/time, no LLM) run to completion | V2-1. **UNMET in code, see section 9 U1.** |
+| Entries halt, window end | 2026-11-11T00Z (1794355200000); code exits (stop/target/time, no LLM) run to completion | V2-1. Implemented by #939: the required `--entries-halt-ms 1794355200000` stops entries and LLM calls for all five arms at that tick; code exits run to completion (`tools/test_hv6_runner_endgate.py`). |
 | Learning / regime | **2026-11-11T13:00:00Z** = 1794402000000 ms = T0 + D + 13 h (or the R-null job's end if later). `hv6_read` refuses to decide earlier (build item 10, before 11-07). | K2 |
 | First nightly review | 2026-10-31T00:05Z (none on 10-30: no closed trade before T0) | follows HV4's pattern |
 | Last nightly review | 2026-11-11T00:05Z (**MANAGER:** the owner line says "until nov 11"; confirm this last night is inside it, otherwise the last one is 11-10T00:05Z) | |
@@ -90,7 +90,7 @@ Also recorded per QP #917 and DESIGN section 8: #814's evidence is HV4 pre-clock
 | 23 | Version loading | n.a. | versions apply at the minute tick (up to 60 s after `effective_from`; drill `switch_lag_ms` 2000); L, L-nr, P only; F and X never read a manifest; a refused version halts entries for ALL five arms (written stop: manifest integrity) | | QP #923 (2), reviewer #923 note |
 | 24 | Reviewer-moved plan knob, probe value | n.a. | replaces the model's value; a key the model omitted takes it | | QP #923 ruling (1) |
 | 25 | Tightening rule | n.a. | the tighter of the model's value and the rule's (stop = max, time = min); new entries only; open positions keep their plan (rechecks may still tighten them) | | QP #923 change 1 |
-| 26 | `WATCH_MAX_POOLS` | n.a. | 2,000. Kept set: tagged, board, top-25 by 60-min volume, every pool with an open/pending/retrying position in any arm, every pool with an active arm watch. Only cold candidates can be cut. **Real-layout replay #1640 (days 2026-10-21..23): `scans_cap_bound` 0, so the cap was inert on those days** (`max_candidates_per_scan` is in the #1640 notebook entry). Each read reports the count of SCAN rows with `watch_capped > 0` (sealed until the read). | | QP #930 binding 1 |
+| 26 | `WATCH_MAX_POOLS` | n.a. | 2,000. Kept set: tagged, board, top-25 by 60-min volume, every pool with an open/pending/retrying position in any arm, every pool with an active arm watch. Only cold candidates can be cut. **Real-layout replay at 5071e29a, job #1643 (days 2026-10-21..23): `scans_cap_bound` and `max_candidates_per_scan` to fill when it finishes (MANAGER). At 646f61a6 (job #1640, superseded baseline) `scans_cap_bound` was 0, i.e. the cap was inert on those days; the registration quotes only the #1643 figures.** If `scans_cap_bound` > 0 the cap is a disclosed changed value, not a neutral bound. Each read reports the count of SCAN rows with `watch_capped > 0` (sealed until the read). | | QP #930 binding 1 |
 | 27 | Housekeeping | n.a. | 5-tape-minute quote sweep and engine `trim_history`: decision-neutral (`tools/test_hv6_runner_mem.py`: `test_bounds_change_no_decision_on_the_hv4_style_tape`, `test_streaming_scan_changes_no_decision`, `test_bounds_change_no_decision_on_a_scaled_synthetic_tape`, `test_quote_history_sweep_keeps_held_and_recent_pools`). ArenaState's 6 h eviction is kept and `engine.prune()` is not called, as HV4. | | QP #930 binding 2 |
 | 28 | Replay PASS rule | n.a. | md5 equal (run1 == run2 and run3 == run1) AND peak RSS < 12,288 MB AND scan p95 (runs 1-2) < 1,000 ms AND (if scan p95 >= 500 ms: :02 tick p95 < 1,000 ms). Extension fixed 2026-10-26, before any outcome at the merged sha. | | QP #936 |
 | 29 | Smoke limits (pre-registered here) | n.a. | smoke FAIL if STALE > 5% of LLM entry verdicts or chunk-latency p95 > 8 s (QP #918 6402258796); **proposed here, QP confirms on this head:** FAIL if as_of_refusal or chain-staleness/unavailability card refusals exceed 5% of cards (QP #914 says "a small fraction"); INCOMPLETE under 30 error-free LLM calls | | QP #914, #918 |
@@ -100,11 +100,11 @@ Also recorded per QP #917 and DESIGN section 8: #814's evidence is HV4 pre-clock
 
 ## 6. Registration procedure and the exact command (a1-a7; manager runs ONCE, after smoke PASS)
 
-Order: (1) P0 count (section 7a) and read of its counts; (2) smoke (7b) PASS and its counts read by QP; (3) K1 line and this pack's blanks filled; (4) QP OK on this pack's exact head and a reviewer verdict on the PR (R6); (5) the registration notebook entry with the command below verbatim and its `date -u` instant (R5, a4); (6) run the command; (7) notebook copy of the five lines and the records PR within 24 h (R5); (8) `genesis` for L, L-nr, P (section 8); (9) submit the runner job (section 9).
+Order: (1) P0 count (section 7a) and read of its counts; (2) smoke (7b) PASS and its counts read by QP; (3) K1 line and this pack's blanks filled; (4) QP OK on this pack's exact head and a reviewer verdict on the PR (R6); (5) the registration notebook entry with the command below verbatim and its `date -u` instant (R5, a4); (6) run the command; (7) notebook copy of the five lines and the records PR within 24 h (R5); (8) `genesis` for L, L-nr, P (section 8); (9) submit the runner job (section 9). The regime producer (section 9b) is started before step 2, so the smoke sees blocks.
 
 ```
-cd <clean checkout at 646f61a64621c8b543b2a2bf87ae626facae558b> && git status --porcelain   # must print nothing
-python3 -m tools.hv6_register --sha 646f61a64621c8b543b2a2bf87ae626facae558b --clock-start-ms 1793318400000 --live-registry --confirm REGISTER-HV6-FIVE-BOOKS
+cd <clean checkout at 5071e29afe473b6c9ff1f753bf045345e722b0f6> && git status --porcelain   # must print nothing
+python3 -m tools.hv6_register --sha 5071e29afe473b6c9ff1f753bf045345e722b0f6 --clock-start-ms 1793318400000 --live-registry --confirm REGISTER-HV6-FIVE-BOOKS
 ```
 
 stdout is five lines, one per bot id, each only the dict `register_bot` returned for that id. On any exception only `<ExceptionClass> <hv6 bot id>` goes to stderr and the exit code is 1 (a2). A partial run is possible (ids are registered one at a time); a retry with the identical command is a no-op for ids already registered (a7); a refused changed line means a new bot id, never an edit. `register_bot` verifies the sha on origin (`verify_sha_on_origin`, untested live per reviewer #914): run it from a host with network access to origin, and expect it to refuse a clock earlier than the registration instant (T0 is days ahead, so it does not).
@@ -122,25 +122,25 @@ S1 day list (the manager fixes it in the notebook BEFORE the job and never exten
 Fixed-first notebook entry (S7), before the job: the QP ruling's sha256, the fixed-first text, the day list, the command, the job id. Save the text to `FF=/data/mal/arena/haiku-v6/p0/fixed-first-<id>.txt` (it must name every day string; its sha256 is printed).
 
 ```
-git worktree add --detach /data2/mal/wt/hv6-final 646f61a64621c8b543b2a2bf87ae626facae558b      # once; clean checkout at the final sha
+git worktree add --detach /data2/mal/wt/hv6-final 5071e29afe473b6c9ff1f753bf045345e722b0f6      # once; clean checkout at the final sha
 # MiScusi job, memory >= 8 GB (MemoryMax), resumable false, on the host that holds /data/mal/arena, one heavy job at a time:
 sh scripts/ops/hv6-p0-count.sh /data/mal/arena/haiku-v6/p0/fixed-first-<id>.txt 2026-10-22,2026-10-23,2026-10-24,2026-10-25 /data2/mal/wt/hv6-final
 ```
 
-Output: stdout and `/data/mal/arena/haiku-v6/p0/p0-646f61a64621-<stamp>.jsonl`; exit 0 all days OK, 1 a day FAILED (tape hours missing), 2 refused. Afterwards: output sha256 in the notebook, counts in this record (S7). Tool sha256 at this PR's head: see `sha256sum tools/hv6_p0_count.py` (pin it in the fixed-first entry).
+Output: stdout and `/data/mal/arena/haiku-v6/p0/p0-5071e29afe47-<stamp>.jsonl`; exit 0 all days OK, 1 a day FAILED (tape hours missing), 2 refused. Afterwards: output sha256 in the notebook, counts in this record (S7). Tool sha256 at this PR's head: see `sha256sum tools/hv6_p0_count.py` (pin it in the fixed-first entry).
 
 ### 7b. Real-model smoke (Am.6 style)
 
 Tool `tools/hv6_smoke.py`, wrapper `scripts/ops/hv6-smoke.sh`. Runs the final-sha runner with the real caller (claude-haiku-5-5; key read by the caller from `ANTHROPIC_API_KEY`, which the wrapper takes from `/var/lib/mal/anthropic/anthropic.env` into the child's environment only, never printed), `MAL_HV4_RPC=helius` pinned, a global API cap of 0.50 USD (BudgetGuard cap, lowered only), the live arena tape read-only, for `HOURS` (default 2, at most 4). It writes ONLY under `/data/mal/arena/haiku-v6/smoke/<TAG>/` (fresh dir; `root/`, `engine-ledger/`, `smoke-registry.json` made by the unmodified `register_bot` via `hv6_register.register_all` with the next whole minute + 1 as clock, `report.json`); never the production root and never `/data/mal/arena/bots.json`. The engine ledger is never opened; decision rows are read through a whitelist projection. Report: take / WATCH / STALE (and PARSE_ERROR, NO_OUTPUT, BELOW_MIN) counts per arm, pooled STALE share, chunk-latency p50/p95/max, call latency, tokens and USD from the budget ledgers, chain calls/h (max and mean against 1,000) and Helius credits (the chain counter snapshot, numbers only, and `chain-credits.json`), card-refusal reason counts, watches added/fired/expired, runner counters. Verdict: FAIL if STALE > 5% or chunk p95 > 8 s (QP #918 6402258796) or refusals above 5% of cards (proposed, section 5 row 29) or a run error or spend above the cap; INCOMPLETE under 30 error-free LLM calls; else PASS. Exit 0 PASS, 1 FAIL/INCOMPLETE, 2 refused. A FAIL is fixed by code at a new sha (and P0 and item 6 re-run), never by tuning a limit.
 
-Pinned notebook entry before the smoke (Am.6 L5 pattern): blocking list, sha256 of `tools/hv6_smoke.py`, instant, month-to-date API spend (owner console), root `…/smoke/<TAG>`, the registration instant. The smoke is never counted, is not in N, never an input to any read. Disclosure to record: the smoke prices paper fills on live tape hours before T0 (including [2026-10-25T00Z, T0)); no HV6 rule is priced on them and its ledger is never opened.
+Pinned notebook entry before the smoke (Am.6 L5 pattern): blocking list, sha256 of `tools/hv6_smoke.py`, instant, month-to-date API spend (owner console), root `…/smoke/<TAG>`, the registration instant. The smoke is never counted, is not in N, never an input to any read. The smoke links `<smoke>/root/regime` read-only to the producer's `/data/mal/arena/haiku-v6/regime/` (`--regime-dir`, set by the wrapper), so L and P see real blocks and the report prints `regime_blocks_visible` (a count; None = no producer). The producer writes only its own dir; the smoke never writes there. Disclosure to record: the smoke prices paper fills on live tape hours before T0 (including [2026-10-25T00Z, T0)); no HV6 rule is priced on them and its ledger is never opened.
 
 ```
-# MiScusi job, memory >= 8 GB (MemoryMax; the runner peaked at 2.7 GB in #1640), resumable false, after the P0 job, one heavy job at a time:
+# MiScusi job, memory >= 8 GB (MemoryMax; the runner peaked at 2.7 GB in the 646f61a6 replay #1640), resumable false, after the P0 job AND with the regime producer (section 9b) already running, one heavy job at a time:
 FEED_DELAY_SLOTS=7 sh scripts/ops/hv6-smoke.sh /data2/mal/wt/hv6-final smoke-1026a 2
 ```
 
-Not smoked by this script: the nightly reviewer and the intraday regime review (HV4's smoke ran the reviewer once per learning arm). They are pre-covered by drills #1639 and by section 8's `genesis`/`verify`. **MANAGER/QP:** say whether a one-night reviewer smoke on the smoke root is required (it would need `hv6_review genesis`/`run` on that root with a dated `--clock-start-ms` and a ~0.015 USD call per arm).
+Not smoked by this script: the nightly reviewer and the intraday regime review (HV4's smoke ran the reviewer once per learning arm). They are covered by the drills (job #1642) and by section 8's `genesis`/`verify`. **MANAGER/QP:** say whether a one-night reviewer smoke on the smoke root is required (it would need `hv6_review genesis`/`run` on that root with a dated `--clock-start-ms` and a ~0.015 USD call per arm).
 
 ## 8. Nightly reviewer and genesis job specs
 
@@ -148,29 +148,48 @@ Reviewers exist for L, L-nr and P (`ag.reviewer_arms()`); F and X have none. Mem
 
 ```
 # once, before T0, after registration (manifest chain genesis; prints only the sha chain):
-python3 -m tools.hv6_review genesis --arm L    --clock-start-ms 1793318400000 --commit 646f61a64621c8b543b2a2bf87ae626facae558b
-python3 -m tools.hv6_review genesis --arm L-nr --clock-start-ms 1793318400000 --commit 646f61a64621c8b543b2a2bf87ae626facae558b
-python3 -m tools.hv6_review genesis --arm P    --clock-start-ms 1793318400000 --commit 646f61a64621c8b543b2a2bf87ae626facae558b
+python3 -m tools.hv6_review genesis --arm L    --clock-start-ms 1793318400000 --commit 5071e29afe473b6c9ff1f753bf045345e722b0f6
+python3 -m tools.hv6_review genesis --arm L-nr --clock-start-ms 1793318400000 --commit 5071e29afe473b6c9ff1f753bf045345e722b0f6
+python3 -m tools.hv6_review genesis --arm P    --clock-start-ms 1793318400000 --commit 5071e29afe473b6c9ff1f753bf045345e722b0f6
 
 # nightly at 00:05Z from 2026-10-31 to 2026-11-11 (cutoff = that day 00:00Z; --day defaults to today UTC); one job per arm:
-sh -c 'cd /data2/mal/wt/hv6-final && set -a && . /var/lib/mal/anthropic/anthropic.env && set +a && exec python3 -m tools.hv6_review run --arm <L|L-nr|P> --commit 646f61a64621c8b543b2a2bf87ae626facae558b'
+sh -c 'cd /data2/mal/wt/hv6-final && set -a && . /var/lib/mal/anthropic/anthropic.env && set +a && exec python3 -m tools.hv6_review run --arm <L|L-nr|P> --commit 5071e29afe473b6c9ff1f753bf045345e722b0f6'
 # verify the chain any time (no key):
-python3 -m tools.hv6_review verify --arm <arm> --commit 646f61a64621c8b543b2a2bf87ae626facae558b
+python3 -m tools.hv6_review verify --arm <arm> --commit 5071e29afe473b6c9ff1f753bf045345e722b0f6
 ```
 
-Run from the clean checkout at the final sha, cwd = that checkout, default `--root /data/mal/arena/haiku-v6`. `--stub` and `--now-ms` are refused outside a drill root. The CLI prints only the manifest sha256 chain and the decision-log sha256; those two are what is notebooked nightly with the Am.6 hour table (no daily P&L, G3). Regime block production: the manager runs `python3 -m tools.hv6_regime_block block --as-of-ms <ms> --out-dir /data/mal/change-radar-arena1 --copy-dir /data/mal/arena/haiku-v6/regime --pins <json with PIN_KEYS> --radar-code <the path the radar job runs> --seals tools/change_radar_seals.json --watch <watch file> --venue-tape ''` after each radar record; **MANAGER: this producer job and its pins JSON are not specified anywhere in git; without blocks the runner and reviewer run with `radar_status = absent` and the regime test is NOT_DECIDABLE (L equals L-nr in information).**
+Run from the clean checkout at the final sha, cwd = that checkout, default `--root /data/mal/arena/haiku-v6`. `--stub` and `--now-ms` are refused outside a drill root. The CLI prints only the manifest sha256 chain and the decision-log sha256; those two are what is notebooked nightly with the Am.6 hour table (no daily P&L, G3). Regime blocks come from the producer job in section 9b (started before the smoke and before T0). Without blocks the runner and reviewer run with `radar_status = absent` and the regime test is NOT_DECIDABLE (L equals L-nr in information).
 
 ## 9. Runner job spec
 
 ```
-# MiScusi job on the host that holds /data/mal/arena, memory MemoryMax >= 6 GB (#1640 peak 2.7 GB; 4 GB is the stated floor), resumable true (it resumes from its own hash-chained log),
+# MiScusi job on the host that holds /data/mal/arena, memory MemoryMax >= 6 GB (the 646f61a6 replay peaked at 2.7 GB; #1643 at 5071e29a gives the figure to cite; 4 GB is the stated floor), resumable true (it resumes from its own hash-chained log),
 # time limit < 14 d (one segment: T0 + 12 d window plus the 12 h exit tail is about 12.6 d), submitted after registration, before 2026-10-30T00Z (it waits for the clock):
-sh -c 'cd /data2/mal/wt/hv6-final && set -a && . /var/lib/mal/anthropic/anthropic.env && set +a && MAL_HV4_RPC=helius exec python3 -m tools.hv6_runner --frozen-sha 646f61a64621c8b543b2a2bf87ae626facae558b --clock-start-ms 1793318400000 --feed-delay-slots 7'
+sh -c 'cd /data2/mal/wt/hv6-final && set -a && . /var/lib/mal/anthropic/anthropic.env && set +a && MAL_HV4_RPC=helius exec python3 -m tools.hv6_runner --frozen-sha 5071e29afe473b6c9ff1f753bf045345e722b0f6 --clock-start-ms 1793318400000 --entries-halt-ms 1794355200000 --feed-delay-slots 7'
 ```
 
 SIGTERM stops it cleanly. `MAL_HV4_CHAIN_STATE` must be unset (the runner refuses to start otherwise). Any restart is recorded in LAB_STATE. Helius credits are reported per job from `chain-credits.json` and the run summary's `chain_credits` (also the daily ops line: calls/h, served_none, stale-served and `chain_stale` counts). Never open the decision rows, ledgers or report files before each bot id's read (G3).
 
-**U1 and U2 below are code gaps in this runner.**
+`--entries-halt-ms` is REQUIRED (no default; the runner refuses without it and refuses a value not after `--clock-start-ms`): 1794355200000 = 2026-11-11T00:00:00Z. At that tick entries and LLM calls stop for all five arms and code exits (stop/target/time, no LLM) run to completion. The runner writes a `start` row (frozen sha, pinned provider, `entries_halt_ms`) before its first decision, and counts `watch_added.<arm>`, `watch_fired.<arm>`, `watch_expired.<arm>` and `watch_no_card.<arm>` (all from #939).
+
+### 9b. Regime-block producer job (`scripts/ops/hv6-regime-block-job.sh`, from #939)
+
+A MiScusi job (`resumable: true`), **started before T0** (and before the smoke, so the smoke sees blocks), on the host that holds `/data/mal/arena` and `/data/mal/change-radar-arena1`, run from the clean checkout at the final sha. It polls every 60 s: a nightly block with `as_of` = 00:02:00Z of each UTC day (before the 00:05Z reviews) and an intraday block whenever `radar.jsonl` has a new record, writing `/data/mal/arena/haiku-v6/regime/block-<as_of_ms>.json` and `radar-<as_of_ms>.jsonl` (the exact bytes read). It reads only the radar out-dir and the pinned radar files; it never reads `drill/`, HV4/Q50 output or any tape.
+
+Rules for the job:
+- never set `HV6_BLOCK_TEST`, `HV6_BLOCK_NOW`, `HV6_BLOCK_NOW_FILE` or `HV6_BLOCK_ONCE` (they are test-only; `HV6_BLOCK_TEST` lifts the directory pins);
+- **no restart between 00:00Z and 00:10Z** (the nightly block is write-once at 00:02:00Z; a restart in that window risks a late or missing nightly block that the 00:05Z reviews would use). A restart at another time is safe (the loop is idempotent) and is recorded in LAB_STATE;
+- the registered pins are written once to `/data/mal/arena/haiku-v6/regime/pins.json` (read-only). A later change of a pinned file or env is never a refusal: the builder then writes `absent` blocks with `pin_mismatch` from that instant, which the read discloses (DESIGN section 3).
+
+```
+# MiScusi job, resumable true, memory 1 GB is enough (python builder per poll); the radar pins are those of radar job #1577 (command read with miscusi_job_status #1577):
+#   radar code  = tools/change_radar.py of the checkout #1577 runs from (checkout at b4a0f0d5cc71), sha256 0f5279b3b7276da10a73438dbd5d663139e8ef8e7671828e9ec1dbbd0a418331
+#   seals       = tools/change_radar_seals.json of the same checkout, sha256 5a2f8979c8493f7a3b200dd879f6f54c92a3bf383054af432c2fc35a8e10ca61 (the script pins it itself)
+#   watch file  = tools/change_radar_watch.json of the same checkout, sha256 23838d1cf20d02a9c048855c99981a968a43e8e2014ec65874decc7ec55241cc
+sh -c 'cd /data2/mal/wt/hv6-final && HV6_RADAR_CODE=<abs path of change_radar.py in the #1577 checkout> HV6_RADAR_CODE_SHA256=0f5279b3b7276da10a73438dbd5d663139e8ef8e7671828e9ec1dbbd0a418331 HV6_RADAR_SEALS=<abs path of change_radar_seals.json there> HV6_RADAR_WATCH=<abs path of change_radar_watch.json there> HV6_RADAR_WATCH_SHA256=23838d1cf20d02a9c048855c99981a968a43e8e2014ec65874decc7ec55241cc exec sh scripts/ops/hv6-regime-block-job.sh'
+```
+
+The three absolute paths are the one value this pack cannot fill (the #1577 job status shows the command and the commit `b4a0f0d5cc71`, not the working directory): **MANAGER** takes them from the job record. The pins must be those the radar JOB runs (R3/R4); the registration notebook entry records the producer job id, its command with the filled paths, the shas above and `pins.json`'s sha256.
 
 ## 10. Disclosures (record verbatim in the registration)
 
@@ -178,7 +197,7 @@ SIGTERM stops it cleanly. `MAL_HV4_CHAIN_STATE` must be unset (the runner refuse
 - **D2 Nightly timing:** the nightly review runs at 00:05Z; a nightly written after 00:29Z must finish its model call within 60 s or it fails closed (QP #921 C3).
 - **D3 Walk-2-hour information:** per `docs/HOLDOUT_LEDGER.md` arena results count for no walk-2 read and are walk-2-hour information (DEC-030 section 2 R1; QP Addendum 1 section 4). HV6's P0 counts and every later HV6 result are such information; any future Forward walk 2 registration discloses that they existed. Forward-1016 and arena tape are walk-2-hour information (SEALS-BRIEF).
 - **D4 Walk-2-hour / in-clock hours:** hours before T0, including [2026-10-25T00Z, T0), are never OOS for HV6 and never counted; no HV6 rule is priced on them (G6). The smoke and any drill use such hours or synthetic tape; outputs are md5 and counts only.
-- **D5 Replay and P0 day overlap:** the real-layout replay (#1640) used arena-tape days 2026-10-21..23 (72 of 72 hours present, StubModel, fake chain stamped before each scan, md5 and counts only); the P0 day list overlaps them (counts only). Job #1596 (OOM at 7 GB) is a NON-RESULT, its drill root sealed by hand; job #1616 FAILED on scan speed only at 6669c4cc and is recorded as a FAIL at its sha (code fix #936, md5s not comparable); #1594/#1597/#1615 are earlier-sha baselines, never cited for registration.
+- **D5 Replay and P0 day overlap:** the real-layout replay (job #1643 at 5071e29a; the same days were used by the superseded #1640 at 646f61a6) used arena-tape days 2026-10-21..23 (72 of 72 hours present, StubModel, fake chain stamped before each scan, md5 and counts only); the P0 day list overlaps them (counts only). Job #1596 (OOM at 7 GB) is a NON-RESULT, its drill root sealed by hand; job #1616 FAILED on scan speed only at 6669c4cc and is recorded as a FAIL at its sha (code fix #936, md5s not comparable); #1594/#1597/#1615 and, since #939, #1639/#1640 (both PASS at 646f61a6) are earlier-sha baselines, never cited for registration.
 - **D6 Drill root never read:** `<HV6_ROOT>/drill/` is never an input to any count, read or regime-day list; `hv6_read`, the Am.6 hour table and the decision-log sha256 read only production paths; drill lines are never notebooked as HV6 versions (QP #921 C2). The drill output (including C2: the real-layout drill roots holding priced pre-clock hours) has never been opened for price, fill, exit or P&L.
 - **D7 `scans_cap_bound` 0 on 10-21..23:** `WATCH_MAX_POOLS` was inert on the replay days (QP #930 binding 1). Each read reports the count of SCAN rows with `watch_capped > 0`.
 - **D8 HV4 sibling (G7):** HV6 GEN/X and HV4 CON/BIG (L, F, X) share universe, setups, scanner code and model on overlapping days (DEC-031 Am.3 8(e)); the best of them at any read is in-sample. Each HV6 read lists HV4's 9 arms beside it (verdicts once read, counts only before) and the internal siblings L, L-nr, P, and never treats an HV4 pass and an HV6 pass on the same days as independent confirmations. Siblings enter N.
@@ -207,7 +226,7 @@ Status: MET (where) / MANAGER (a step for the manager, with the spot in this pac
 | a5 runner never opens bots.json; later tools read the notebook copy | MET for the runner; `hv6_read` counts N from notebook copies: LATER | section 6 |
 | a6 sentence names both in-process readers with test names | text provided | section 6 |
 | a7 idempotent retry; a changed line is a new id | MET | `test_retry_is_idempotent` |
-| V2-1 windows and exits: decide at T0 + D + 13 h; D fixed; entries halt 11-11T00Z with code-only exits; H capped by 11-11 and pinned | D, H, instant pinned (sections 1-2). **Entries halt and exits-only after 11-11T00Z: UNMET in the runner (U1)** | section 12 |
+| V2-1 windows and exits: decide at T0 + D + 13 h; D fixed; entries halt 11-11T00Z with code-only exits; H capped by 11-11 and pinned | MET: D, H, instant pinned (sections 1-2); the runner takes the required `--entries-halt-ms 1794355200000` (#939, `tools/test_hv6_runner_endgate.py`) | sections 2, 9 |
 | V2-2 self-seal scope (versions, replies, change log, validator results, regime_probe lists, per-arm spend sealed until each read; manager sees summed spend and cap flags; sha chains notebooked nightly) | MET in code (`day_report` default, CLIs print sha chains only); procedure MANAGER | sections 8-9 |
 | V2-3 releases: v6.(N+1) only if F/X keep running; cross-process card identity; > 1% mismatch NOT_DECIDABLE | LATER (v6.1 only, does not block v6.0); QP #921 C1: no v6.N with N >= 1 registers until the runner takes the release from the registration and runs `releases/v6.N/`, the test is updated and QP OKs | n/a for v6.0 |
 | V2-8 R7 source, X as-sized cell (16 cells), #814 evidence disclosure, spend line | text in sections 3, 4, 10; cells are `hv6_read` (LATER) | |
@@ -231,7 +250,7 @@ Status: MET (where) / MANAGER (a step for the manager, with the spot in this pac
 | #914 R6 | QP OK on this pack's exact head; reviewer verdict on the PR | MANAGER | this PR |
 | #914 | after the rebase, a test that `HV6_MODELS` equals `hv6_agents.MODEL_ID` for every arm with `ARMS[a].llm` and `[]` for X | **MET by this PR** | `tools/test_hv6_register_models.py` |
 | #914 | first live registration only after the smoke; partial run disclosed | MANAGER; D13 | |
-| #914 Item 6 (drill/replay at a sha with every #918 change; free hours or synthetic; md5 and counts only; two runs equal; planted future print raises LeakageError; ChainSource + prefetcher not FakeChain; restart equal; arm permutation equal; regime drill) | MET | notebook "HV6 item 6: 9-drill job #1639" (PASS at 646f61a6, exit 0, log md5 `b5e4f17e02bee46a5b38f6a6a95d8aa0`, peak 68 MB) and "HV6 real-layout replay #1640" (PASS, 3 runs md5 equal incl. fast_scan off, RSS 2,664 MB, scan p95 484 ms, days 2026-10-21..23, 72/72 hours); cite the output sha256s from those entries |
+| #914 Item 6 (drill/replay at a sha with every #918 change; free hours or synthetic; md5 and counts only; two runs equal; planted future print raises LeakageError; ChainSource + prefetcher not FakeChain; restart equal; arm permutation equal; regime drill) | **PENDING (MANAGER fills)** | at the final sha 5071e29a: 9-drill job **#1642** (placeholder: exit code, log md5, peak RSS, output sha256 once it finishes) and real-layout replay **#1643** (placeholder: PASS/FAIL under the PASS rule in row 28, 3 runs md5 equal incl. fast_scan off, peak RSS, scan p95, :02 tick p95, `max_candidates_per_scan`, `scans_cap_bound`, 72/72 hours, output sha256). #1639/#1640 passed at 646f61a6 and are superseded by #939. A FAIL is a code fix at a new sha, never a limit change. |
 | #914 Item 7 | P0 at the final sha under S1-S7, day list fixed first, MiScusi job with MemoryMax; later scanner/board/cap change = new sha and P0 again | MANAGER | section 7a |
 | #914 Item 7 | smoke reports take, WATCH and STALE counts, token and latency figures, chain calls/h vs 1,000, Helius credits; never names pools; pricing off or its ledger never opened; as_of_refusal or chain_stale above a small fraction = failed smoke | tool built | section 7b |
 | #917 | registration carries every constant in #917 (incl. regime max_tokens 1,200 = assumed output) and the "example BUY anchors toward the wide plan" note | MET | section 5 rows 10-16 |
@@ -242,10 +261,10 @@ Status: MET (where) / MANAGER (a step for the manager, with the spot in this pac
 | #917 | all values in the changes and readings in the table with source "design choice / arithmetic, no data at or after 2026-10-25T00Z" | MET | section 5 |
 | #918 (a) | registration pre-registers STALE > 10% of LLM entry verdicts in a read window = NOT EVALUABLE, per-arm and per-chunk STALE reported (sealed until the read), states the coupling | MET (text) | section 5 rows 22 and 30 |
 | #918 (a) | smoke FAILS if STALE > 5% of LLM entry verdicts (pooled) or chunk-latency p95 > 8 s | MET in the tool | section 7b |
-| #918 (b) | watched pools in the prefetcher's watch set; count watches added / fired / expired / no-card in the smoke | in-set MET; the smoke reports added/fired/expired; **a "no-card" watch is not separately counted by the runner** (a fresh-card None is silent): report-only gap, the `card_refused`/`chain_none` counters stand in | section 7b |
+| #918 (b) | watched pools in the prefetcher's watch set; count watches added / fired / expired / no-card in the smoke | in-set MET; #939 adds the counters `watch_added/fired/expired/no_card.<arm>`, which the smoke report prints in `runner_counters` | section 7b |
 | #918 (b) | HV6 additions in the G5 table (second WATCH, fired call in the 12/h cap, per-arm fired card, watches pause while halted) | MET | section 5 row 17 |
 | #918 (c) | registration pins `MAL_HV4_RPC=helius`, the command and its environment verbatim | MET (text) | sections 1, 9 |
-| #918 (c) | **the runner writes the provider in a start row before item 6's drill** | **UNMET (U2)** | section 12 |
+| #918 (c) | the runner writes the provider in a start row | MET by #939 (`start` row: frozen sha, pinned provider, `entries_halt_ms`) | section 9 |
 | #918 (c) | G5 row: HV4 prefetched at 2,000/h and 48,000/day, HV6 at 1,000/h and 24,000/day | MET | row 21 |
 | #918 (c) | smoke and each daily ops line report calls/h, served_none, stale-served, `chain_stale` and Helius credits from `chain-credits.json` | smoke MET; daily ops line MANAGER | sections 7b, 9 |
 | #918 | cooldown rule changed (a refused card does not burn the cooldown); P0 unaffected | MET | row 20 |
@@ -256,18 +275,22 @@ Status: MET (where) / MANAGER (a step for the manager, with the spot in this pac
 | #921 C3 | P's residual information; the file at the frozen sha that enforces each deferred rule; nightly at 00:05Z | text provided; function names MANAGER to confirm | D1, D2, section 8 |
 | #921 C4 | the values table | MET | section 1 |
 | #923 | G5 rows: reviewer-moved knob replaces the model's value; tightening takes the tighter; refused version halts all five arms (written stop); versions apply at the minute tick; list manifest-refused days beside L - X and F - X in each read | rows MET; the read listing LATER | rows 23-25, 31 |
-| #923 | the 9-drill job re-runs at the final registration sha; the real-layout replay runs at that same sha; registration cites both job ids, the sha and the output sha256s | MET at 646f61a6 (#1639, #1640); the output sha256s: MANAGER pastes from the two notebook entries | |
-| #930 | G5 row `WATCH_MAX_POOLS` with kept set and the replay's `max_candidates_per_scan` / `scans_cap_bound`; each read reports the count of SCAN rows with `watch_capped > 0` | MET (text; `scans_cap_bound` 0); `max_candidates_per_scan` from #1640 (MANAGER pastes the number) | row 26, D7 |
+| #923 | the 9-drill job re-runs at the final registration sha; the real-layout replay runs at that same sha; registration cites both job ids, the sha and the output sha256s | PENDING: jobs #1642 (drills) and #1643 (real-layout) at 5071e29a; MANAGER cites job ids, sha and output sha256s once they finish | |
+| #930 | G5 row `WATCH_MAX_POOLS` with kept set and the replay's `max_candidates_per_scan` / `scans_cap_bound`; each read reports the count of SCAN rows with `watch_capped > 0` | text MET; `scans_cap_bound` is pending #1643; both figures from job #1643 (MANAGER pastes them) | row 26, D7 |
 | #930 | quote sweep and engine trim listed as decision-neutral with test names; 6 h eviction and no `engine.prune()` stated | MET | row 27 |
-| #930/#936 | both item-6 jobs re-run at the merged final sha (9 drills; real-layout at 16 GB, 3 runs) | MET at 646f61a6 | |
+| #930/#936 | both item-6 jobs re-run at the merged final sha (9 drills; real-layout at 16 GB, 3 runs) | MET at 5071e29a | |
 | #936 | `fast_scan` recorded as decision-neutral by test names plus run 3 md5 equality; PASS-rule extension with its 2026-10-26 fixing date; full PASS rule quoted verbatim | MET | rows 18, 28 |
 | #936 | #1616's FAIL stays recorded as a FAIL at its sha | MET | D5 |
 
 ## 12. Unmet items (stop-and-decide list)
 
-- **U1 (V2-1, DESIGN section 4 and 10): the runner has no entries-halt at 2026-11-11T00Z.** `tools/hv6_runner.py` has no window-end constant; `run()` loops until `end_ms` (`--end-ms` stops everything, exits included) or SIGTERM. DESIGN and QP require: at 2026-11-11T00Z entries halt for all five arms and code exits (stop/target/time, no LLM) run to completion. Without it the arms keep entering past the API horizon (spend past the owner's 11-11 line), or a manual stop abandons open positions as orphans (restart orphans make the read NOT_DECIDABLE). Needs a small runner PR (an `--entries-end-ms` taken from the registration, entries and LLM rechecks halted from that tick, tests, md5 equivalence), which moves the final sha: item 6 (9 drills and the real-layout replay), P0 and the smoke then re-run at the new sha, and every `646f61a6` in this pack is replaced. Alternatively QP may rule on a manual procedure; none is known that keeps exits running without code.
-- **U2 (QP #918 (c)): the runner writes the provider only in the end-of-run summary, not in a start row.** QP asked for the start row "before item 6's drill". It belongs to the same runner PR as U1 (cheap there). If QP accepts the job spec's `MAL_HV4_RPC=helius` and the chain counter's provider in the run summary instead, record that ruling.
-- **U3 (report-only gap): "no-card" watches are not counted separately** (see #918 (b) row). Fold into the U1 PR or accept the stand-in counters.
-- Not code: radar block producer job and pins JSON (section 8), radar code sha and watch-file sha (section 1), LAB_STATE check line, fallback-clock choice line, full K1 text, feed-delay confirmation, QP OK on this head and a reviewer verdict.
+None of the earlier code gaps is open. #939 (final sha 5071e29a) closed them:
+- **U1 (V2-1) CLOSED:** required `--entries-halt-ms` (1794355200000 = 2026-11-11T00:00Z); entries and LLM calls stop for all five arms, code exits run to completion.
+- **U2 (QP #918 (c)) CLOSED:** the `start` row carries the frozen sha, the pinned provider and `entries_halt_ms` before the first decision.
+- **U3 CLOSED:** `watch_added/fired/expired/no_card.<arm>` counters; the smoke prints them.
+
+**Still open, not code:** the item-6 results at 5071e29a (jobs #1642 and #1643, section 11), the three absolute paths of the radar files in the #1577 checkout (section 9b), LAB_STATE check line, fallback-clock choice line, full K1 text, feed-delay confirmation, QP OK on this head and a reviewer verdict.
+
+**OPEN QUESTION FOR QP (tooling sha).** The runner registers at the final sha `5071e29afe473b6c9ff1f753bf045345e722b0f6`. The P0 count tool, the smoke tool, their wrappers and this pack live in PR #938, which adds files only and no runner code (a diff of this branch against 5071e29a shows only new tools, scripts, tests and this pack, plus the smoke wrapper and tool pins on `scripts/ops/hv6-*.sh` and `tools/hv6_smoke.py`/`hv6_p0_count.py`, all new in this PR). Both tools take the rule code from a clean checkout at 5071e29a (`--repo`) and refuse any other sha, so the P0 counts and the smoke exercise exactly the registered runner code; the tools themselves only count (P0) or wrap the same `Runner` (smoke). Question: is it acceptable that the runner registers at 5071e29a while P0 and the smoke run from this PR's head (tools pinned by sha256 in the fixed-first and smoke notebook entries), or must #938 merge first and the registration sha become that merge commit? The second route moves the sha: item 6 (#1642/#1643), P0 and the smoke would re-run at the merge commit and every sha in this pack changes again. Until QP rules, this pack assumes the first route.
 
 No edge claim. HV6 has 0 out-of-sample trades and no clock. No book has cleared the promotion gate. Paper only.

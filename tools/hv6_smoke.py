@@ -36,7 +36,8 @@ from typing import Any, Callable
 
 HV6_ROOT = "/data/mal/arena/haiku-v6"
 SMOKE_PARENT = HV6_ROOT + "/smoke"
-FINAL_SHA = "646f61a64621c8b543b2a2bf87ae626facae558b"
+REGIME_DIR = HV6_ROOT + "/regime"  # the producer job writes block-<as_of_ms>.json here; the smoke root links to it READ-ONLY (blocks hold radar enums, no outcomes)
+FINAL_SHA = "5071e29afe473b6c9ff1f753bf045345e722b0f6"
 CAP_USD_MAX = 0.50
 STALE_FAIL_FRAC = 0.05
 CHUNK_P95_FAIL_MS = 8_000
@@ -257,6 +258,11 @@ def run_smoke(R: SimpleNamespace, a: argparse.Namespace, *, model: Any = None, c
         H.check(p, "w")
     root.mkdir(parents=True)
     eng.mkdir(parents=True)
+    rdir = Path(getattr(a, "regime_dir", None) or REGIME_DIR)
+    n_blocks = None
+    if rdir.is_dir():
+        os.symlink(rdir, root / "regime")  # the runner and reviewer read only <root>/regime/block-*.json; nothing is ever written there by the smoke
+        n_blocks = len(list(rdir.glob("block-*.json")))
     now = int(time.time() * 1000) if start_ms is None else start_ms
     clock = (now // MIN_MS + 2) * MIN_MS  # the next whole minute after the registration, plus one: register_bot refuses a clock before the registration instant
     R.REG.register_all(a.frozen_sha, clock, str(reg), now_ms=now, repo=R.repo, out=open(os.devnull, "w"))
@@ -299,6 +305,7 @@ def run_smoke(R: SimpleNamespace, a: argparse.Namespace, *, model: Any = None, c
     rep = report(root, samples_calls_h=samples, chain_credits=summ.get("chain_credits"), run_error=err, window_ms=(t_start, t_end), cap_usd=a.cap_usd)
     rep["provider"] = os.environ.get("MAL_HV4_RPC") if chain is not None else None
     rep["frozen_sha"] = a.frozen_sha
+    rep["regime_blocks_visible"] = n_blocks  # count only; None = no regime dir (no producer running)
     rep["runner_counters"] = _num_only(summ.get("counters"))
     (smk / "report.json").write_text(render(rep))
     return rep
@@ -311,6 +318,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--hours", type=float, default=2.0)
     ap.add_argument("--cap-usd", type=float, default=CAP_USD_MAX)
     ap.add_argument("--feed-delay-slots", type=int, required=True)
+    ap.add_argument("--regime-dir", default=REGIME_DIR, help="the producer job's block dir, linked read-only as <smk>/root/regime")
     ap.add_argument("--expect-sha", default=FINAL_SHA, help="TEST ONLY (MAL_ARENA_TEST=1)")
     a = ap.parse_args(argv)
     if a.expect_sha != FINAL_SHA and os.environ.get("MAL_ARENA_TEST") != "1":

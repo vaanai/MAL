@@ -133,6 +133,7 @@ def test_spend_above_cap_fails(tmp_path):
 
 
 def args(smk, **kw):
+    kw.setdefault("regime_dir", str(Path(str(smk)).parent / "no-such-regime-dir"))
     return argparse.Namespace(smk=str(smk), hours=1.0, cap_usd=0.5, feed_delay_slots=2, frozen_sha="abcdef1234567", **kw)
 
 
@@ -194,6 +195,18 @@ def test_run_on_synthetic_tape_writes_only_under_smk(tmp_path, smoke_parent):
     assert MARK not in (smk / "report.json").read_text()
 
 
+def test_regime_dir_is_linked_read_only_and_counted(tmp_path, smoke_parent):
+    tape = tmp_path / "tape"
+    write_tape(tape, trade_rows())
+    rd = tmp_path / "regime"
+    rd.mkdir()
+    smk = smoke_parent / "t2"
+    rep = S.run_smoke(R, args(smk, regime_dir=str(rd)), model=lambda g: A.StubModel(script, guard=g, latency_ms=50), chain=FakeChain(), tape_dir=str(tape), live=False,
+                      state_start_ms=0, start_ms=T0 + 6 * MIN, end_ms=T0 + 20 * MIN)
+    assert rep["regime_blocks_visible"] == 0 and (smk / "root" / "regime").is_symlink()
+    assert list(rd.iterdir()) == []
+
+
 def test_main_refuses_expect_sha_without_env(monkeypatch, capsys):
     monkeypatch.delenv("MAL_ARENA_TEST", raising=False)
     assert S.main(["--repo", "x", "--smk", "/x", "--feed-delay-slots", "7", "--expect-sha", "abc"]) == 2
@@ -201,5 +214,5 @@ def test_main_refuses_expect_sha_without_env(monkeypatch, capsys):
 
 
 def test_pinned_constants():
-    assert S.FINAL_SHA == "646f61a64621c8b543b2a2bf87ae626facae558b" and S.CAP_USD_MAX == 0.50
+    assert S.FINAL_SHA == "5071e29afe473b6c9ff1f753bf045345e722b0f6" and S.CAP_USD_MAX == 0.50
     assert (S.STALE_FAIL_FRAC, S.CHUNK_P95_FAIL_MS, S.RPC_CALLS_PER_H) == (0.05, 8000, 1000)

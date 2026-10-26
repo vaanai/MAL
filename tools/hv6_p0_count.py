@@ -37,7 +37,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-FINAL_SHA = "646f61a64621c8b543b2a2bf87ae626facae558b"  # main at item 6 COMPLETE (drills #1639, real-layout #1640); the job refuses any other sha
+FINAL_SHA = "5071e29afe473b6c9ff1f753bf045345e722b0f6"  # main at item 6 COMPLETE (drills #1639, real-layout #1640); the job refuses any other sha
 HV6_ROOT = "/data/mal/arena/haiku-v6"
 MIN_MS, HOUR_MS, DAY_MS = 60_000, 3_600_000, 86_400_000
 SCAN_EVERY_MS = MIN_MS  # DESIGN section 2: the scanner ticks every minute at :02

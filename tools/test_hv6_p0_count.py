@@ -188,4 +188,4 @@ def test_verify_repo_refuses_dirty_and_wrong_sha(tmp_path):
 
 
 def test_final_sha_pinned():
-    assert P.FINAL_SHA == "646f61a64621c8b543b2a2bf87ae626facae558b"
+    assert P.FINAL_SHA == "5071e29afe473b6c9ff1f753bf045345e722b0f6"

@@ -7,11 +7,11 @@
 # Usage: sh scripts/ops/hv6-p0-count.sh FIXED_FIRST_FILE DAYS REPO
 #   FIXED_FIRST_FILE  the notebook text, e.g. /data/mal/arena/haiku-v6/p0/fixed-first-<id>.txt (its sha256 goes into the report header)
 #   DAYS              comma-separated, >= 3, e.g. 2026-10-22,2026-10-23,2026-10-24,2026-10-25 (prefer the latest 4-5; from 10-21 so the 6 h warm-up is in range)
-#   REPO              a CLEAN checkout at the final sha 646f61a64621c8b543b2a2bf87ae626facae558b (e.g. git worktree add --detach /data2/mal/wt/hv6-final 646f61a6)
+#   REPO              a CLEAN checkout at the final sha 5071e29afe473b6c9ff1f753bf045345e722b0f6 (e.g. git worktree add --detach /data2/mal/wt/hv6-final 5071e29a)
 # The tool file is taken from THIS checkout (the registration PR branch); the rule code (hv4_cards, hv6_cards, hv6_runner, arena_state) from REPO.
 # Submit as a MiScusi job with memory >= 8 GB (MemoryMax), resumable false; one heavy job at a time on mal-fast-0.
 set -eu
-FINAL=646f61a64621c8b543b2a2bf87ae626facae558b
+FINAL=5071e29afe473b6c9ff1f753bf045345e722b0f6
 if [ $# -ne 3 ]; then echo '{"hv6_p0":"refused","why":"usage_FIXED_FIRST_FILE_DAYS_REPO"}'; exit 2; fi
 FF=$1; DAYS=$2; REPO=$3
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)

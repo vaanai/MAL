@@ -10,7 +10,7 @@ import pytest
 ROOT = Path(__file__).resolve().parent.parent
 P0 = ROOT / "scripts" / "ops" / "hv6-p0-count.sh"
 SMOKE = ROOT / "scripts" / "ops" / "hv6-smoke.sh"
-FINAL = "646f61a64621c8b543b2a2bf87ae626facae558b"
+FINAL = "5071e29afe473b6c9ff1f753bf045345e722b0f6"
 
 
 def sh(script: Path, *args: str, env: dict | None = None):
