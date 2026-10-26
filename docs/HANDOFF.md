@@ -22,7 +22,7 @@ No book has cleared the promotion gate. Profit so far: 0. Nothing trades real SO
 
 ## 2. HV6: the critical path to the 10-30 clock
 - **Code:** main 5071e29a (#939). Item 6 PASSED there: drills #1642 (log md5 b5e4f17e) and real-layout #1643 (md5 1ba56097 in all 3 runs; RSS 2,665 MB; scan p95 480 ms; scans_cap_bound 0).
-- **BUT** the owner ordered the playbook/template field-name fix: builder on branch `claude/hv6-playbook-fields`. GEN_v0 and the review templates must use the build_card names and units (fractions, f.impact_rt_*, f.quote_sol / f.quote_eff_sol, f.age_s), with a WATCH example in dotted fractions and a field-existence test. This **moves the final sha**.
+- **BUT** the owner ordered the playbook/template field-name fix: builder on branch `claude/hv6-playbook-fields`. GEN_v0 and the review templates must use the build_card names and units (fractions, f.impact_rt_*, f.quote_sol / f.quote_eff_sol, f.age_s), with a WATCH example in dotted fractions and a field-existence test. Also `dd_ath` (QP H1 on #941; the builder was told). This **moves the final sha**.
 - **Steps after that fix merges** (QP + reviewer verified on the PR):
   1. Re-run item 6 at the new merge: `sh scripts/ops/hv6-item6-replay.sh` (4 GB), then `sh scripts/ops/hv6-real-layout-replay.sh 2026-10-21,2026-10-22,2026-10-23 real-<sha8>-r16g-<date>` (16 GB, 12 h, chained after). PASS rule: notebook n_O823KsA43vx5iQ.
   2. Pack PR **#940** (`claude/hv6-registration-b`): the pack agent is applying QP's 8 text changes (comment 6421493435). It re-pins every sha to the new merge and adds the playbook changed-values row. It includes the **real-model reviewer smoke** (L, L-nr, P nightly; L and P regime).
@@ -58,7 +58,7 @@ No book has cleared the promotion gate. Profit so far: 0. Nothing trades real SO
 
 ## 5. Open PRs
 - **Ready to merge after QP:**
-  - **#941**, ledger rows (DBC holdout + #1494, m10 forward, LaunchLab) and the HV4 #712 disclosure. Reviewer APPROVE (6421572285); QP pending.
+  - **#941**, ledger rows (DBC holdout + #1494, m10 forward, LaunchLab) and the HV4 #712 disclosure. Reviewer APPROVE (6421572285). **QP CHANGES at 95093533** (comment 6421648194): ledger items L1–L6 and disclosure items H1–H3. The most serious is L1: the read is `scripts/research/dbc-m10-read-job.sh A|B`, never `tools/dbc_fwd_read.py` run as a program. H1 adds `dd_ath` (card = 1 − price/ath, a fraction) as a 4th mismatch. Fix, then QP re-checks the text diff, then the reviewer, then merge.
   - this hand-off PR (claude/handoff-manager16-1026).
 - **In progress:**
   - **#940**, HV6 pack;
