@@ -8,6 +8,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -52,6 +53,7 @@ class ReadRecordPureTests(TmpCase):
     def _dir(self, name="reads"):
         d = os.path.realpath(os.path.join(self.tmp, name))
         os.makedirs(d, exist_ok=True)
+        os.chmod(d, 0o755)
         return d
 
     def test_good_record_passes_and_returns_identity(self):
@@ -149,7 +151,8 @@ class ReadRecordPureTests(TmpCase):
         why, ident = rrp(d, ARM)
         raw = p.read_bytes()
         fresh = Path(d) / "fresh.tmp"
-        fresh.write_bytes(raw)  # created while the old file still exists: a different inode
+        fresh.write_bytes(raw)
+        os.chmod(fresh, 0o644)  # created while the old file still exists: a different inode
         os.replace(fresh, p)  # same bytes, new inode
         self.assertNotEqual(os.stat(p).st_ino, ident["ino"])
         self.assertEqual(rrp(d, ARM, ident)[0], "read_record_changed")
@@ -516,30 +519,52 @@ class WindowCapTests(TmpCase):
         self.assertEqual(c0.end_cap_problem(1001 + 14 * DAY, 1000), "end_ms_over_14d")
 
     def test_bridge_refuses_an_end_past_14_days_and_persists_the_first_start(self):
-        e = Hv4Env(self.tmp, end_ms=0)
-        t = e.clock.t
+        t = Hv4Env(self.tmp, end_ms=0).clock.t
         for end, ok in ((t + 14 * DAY, True), (t + 14 * DAY + 1, False)):
-            sub = tempfile.mkdtemp(dir=self.tmp)
-            e = Hv4Env(sub, end_ms=end)
+            e = Hv4Env(tempfile.mkdtemp(dir=self.tmp), end_ms=end)
             if ok:
-                self.assertEqual(e.bridge().state.first_start_ms, e.clock.t)
+                self.assertEqual(e.bridge().window_start_ms, e.clock.t)
+                self.assertEqual(c0.window_start_ms(ARM, 0, create=False), (e.clock.t, None))
             else:
                 with self.assertRaises(SystemExit) as cm:
                     e.bridge()
                 self.assertIn("end_ms_over_14d", str(cm.exception))
 
-    def test_restart_does_not_move_the_window(self):
+    def test_window_survives_deleted_state_new_state_dir_and_mode_switch(self):
         e = Hv4Env(self.tmp, end_ms=0)
         t0 = e.clock.t
-        e = Hv4Env(tempfile.mkdtemp(dir=self.tmp), end_ms=t0 + 13 * DAY)
-        b = e.bridge()
-        self.assertEqual(b.state.first_start_ms, t0)
-        e.clock.t = t0 + 10 * DAY  # a restart ten days in: a window that would reach t0 + 24 d from now is NOT allowed
-        e.raw["end_ms"] = t0 + 14 * DAY
-        e.bridge()
-        e.raw["end_ms"] = t0 + 14 * DAY + 1
+        e.raw["end_ms"] = t0 + 13 * DAY
+        self.assertEqual(e.bridge().window_start_ms, t0)
+        shutil.rmtree(e.raw["state_dir"])  # state deleted
+        e.clock.t = t0 + 10 * DAY
+        self.assertEqual(e.bridge().window_start_ms, t0)
+        e.raw["state_dir"] = str(Path(self.tmp) / "other-state")  # a new state dir
+        self.assertEqual(e.bridge().window_start_ms, t0)
+        e.raw["end_ms"] = t0 + 14 * DAY + 1  # would be fine from "now", not from the first start
         with self.assertRaises(SystemExit):
             e.bridge()
+        e2 = Hv4Env(self.tmp, live=True, end_ms=t0 + 14 * DAY + 1)  # a live (other-mode) bridge of the same bot_id reads the same file
+        with self.assertRaises(SystemExit):
+            e2.bridge()
+
+    def test_window_file_is_write_once_and_must_be_safe(self):
+        Hv4Env(self.tmp)
+        self.assertEqual(c0.window_start_ms(ARM, 5, create=True), (5, None))
+        self.assertEqual(c0.window_start_ms(ARM, 99, create=True), (5, None))  # a second create does not overwrite
+        self.assertEqual(c0.window_start_ms("hv4-BIG-X", 0, create=False), (None, None))
+        p = Path(c0.WINDOW_DIR) / (ARM + ".json")
+        os.chmod(p, 0o666)
+        self.assertEqual(c0.window_start_ms(ARM, 5, create=False), (None, "window_file_unsafe"))
+        os.chmod(p, 0o444)
+        os.chmod(c0.WINDOW_DIR, 0o777)
+        self.assertEqual(c0.window_start_ms(ARM, 5, create=False), (None, "window_dir_owner_mode"))
+        os.chmod(c0.WINDOW_DIR, 0o755)
+        with mock.patch.object(c0, "WINDOW_DIR", str(Path(self.tmp) / "nowhere")):
+            self.assertEqual(c0.window_start_ms(ARM, 5, create=True), (None, "window_dir_missing"))
+        p.unlink()
+        p.write_text("[]")
+        os.chmod(p, 0o444)
+        self.assertEqual(c0.window_start_ms(ARM, 5, create=False), (None, "window_file_unreadable"))
 
     def test_main_checks_the_cap_against_the_saved_state(self):
         e = Hv4Env(self.tmp)
@@ -601,6 +626,222 @@ class MainPathChecksTests(TmpCase):
             self.assertIn("read_record_missing", out)
             self.assertNotIn(c0.LIVE_REFUSAL, out)
             os.unlink(os.path.join(self.tmp, "cfg.json"))
+
+
+class ProvenanceTests(TmpCase):
+    """QP #965 B1: the gate checks where the record came from, not only what it says."""
+
+    def _forged(self, name="forge", **over):
+        d = os.path.realpath(os.path.join(self.tmp, name))
+        write_read_record(d, FARM, **over)
+        return d
+
+    def test_forged_pass_in_a_scratch_dir_is_refused_unless_synthetic(self):
+        d = self._forged(frozen_sha="deadbeef")
+        self.assertEqual(c0.read_record_problem(d, FARM)[0], "read_record_dir_not_canonical")  # strict: not the canonical dir
+        d2 = self._forged("forge2")  # a record that says everything right, in a non-canonical dir
+        self.assertEqual(c0.read_record_problem(d2, FARM)[0], "read_record_dir_not_canonical")
+        self.assertIsNone(c0.read_record_problem(d2, FARM, synthetic_ok=True)[0])  # only the explicit synthetic exception lets it through
+
+    def test_wrong_frozen_sha_is_refused_even_in_the_canonical_dir(self):
+        d = os.path.realpath(os.path.join(self.tmp, "canon"))
+        with mock.patch.object(c0, "READS_DIR_CANON", d):
+            for bad in ("deadbeef", None, c0.FROZEN_SHA[:8], "a" * 40):
+                write_read_record(d, FARM) if False else None
+                os.path.exists(os.path.join(d, FARM + ".json")) and os.unlink(os.path.join(d, FARM + ".json"))
+                write_read_record(d, FARM, frozen_sha=bad)
+                self.assertEqual(c0.read_record_problem(d, FARM)[0], "read_record_frozen_sha", bad)
+            os.unlink(os.path.join(d, FARM + ".json"))
+            write_read_record(d, FARM)
+            self.assertIsNone(c0.read_record_problem(d, FARM)[0])  # canonical dir, right sha: strict pass
+
+    def test_owner_and_mode(self):
+        d = os.path.realpath(os.path.join(self.tmp, "canon"))
+        with mock.patch.object(c0, "READS_DIR_CANON", d):
+            write_read_record(d, FARM)
+            f = os.path.join(d, FARM + ".json")
+            for mode in (0o664, 0o646, 0o666, 0o620):
+                os.chmod(f, mode)
+                self.assertEqual(c0.read_record_problem(d, FARM)[0], "read_record_owner_mode", oct(mode))
+            os.chmod(f, 0o644)
+            for mode in (0o775, 0o757, 0o777):
+                os.chmod(d, mode)
+                self.assertEqual(c0.read_record_problem(d, FARM)[0], "read_record_dir_owner_mode", oct(mode))
+            os.chmod(d, 0o755)
+            self.assertIsNone(c0.read_record_problem(d, FARM)[0])
+            with mock.patch("os.geteuid", lambda: os.stat(f).st_uid + 1):  # owned by someone who is neither root nor the running user
+                self.assertEqual(c0.read_record_problem(d, FARM)[0], "read_record_dir_owner_mode")
+
+    def test_bridge_dry_unmarked_root_and_live_refuse_a_forged_dir_marked_dry_root_allows(self):
+        forged = self._forged("forge3")
+        for mark, live, want in ((False, False, "read_record_dir_not_canonical"), (True, True, "read_record_dir_not_canonical"), (True, False, None)):
+            sub = tempfile.mkdtemp(dir=self.tmp)
+            e = Hv4Env(sub, live=live, reads_dir=forged)
+            c0.READS_DIR_CANON = os.path.join(sub, "reads-canon-elsewhere")  # the env's canon is not where the forged record is
+            if mark:
+                Path(e.raw["root"]).mkdir(parents=True, exist_ok=True)
+                (Path(e.raw["root"]) / c0.SYNTHETIC_MARKER).write_text("")
+            e.raw["bot_id"] = FARM if False else e.raw["bot_id"]
+            write_read_record(forged, ARM)
+            b = e.bridge()
+            self.assertEqual(b.state.latches.get("read_record"), want, (mark, live))
+
+    def test_main_refuses_a_forged_record_dir(self):
+        forged = self._forged("forge4")
+        write_read_record(forged, ARM)
+        e = Hv4Env(self.tmp, reads_dir=forged)
+        c0.READS_DIR_CANON = os.path.join(self.tmp, "elsewhere")
+        full = {k: v for k, v in e.raw.items() if k not in ("stop_file", "halt_file")}
+        cp = Path(self.tmp) / "cfg.json"
+        cp.write_text(json.dumps({**full, "mode": "dry"}))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = alb.main(["--config", str(cp), "--once"])
+        self.assertEqual((rc, "read_record_dir_not_canonical" in buf.getvalue()), (2, True))
+
+
+class FailClosedAndPinTests(TmpCase):
+    def test_alias_check_fails_closed_when_the_sealed_stat_fails(self):
+        with ScratchArena(self.tmp) as a:
+            probe = os.path.join(self.tmp, "somewhere")
+            os.makedirs(probe)
+            self.assertFalse(c0._alias_of_sealed(probe))
+            real = os.stat
+
+            def deny(path, *x, **k):
+                if os.fspath(path) == a.root:
+                    raise PermissionError("denied")
+                return real(path, *x, **k)
+
+            with mock.patch("os.stat", deny):
+                self.assertTrue(c0._alias_of_sealed(probe))
+                self.assertTrue(c0._under_sealed(probe))
+        with mock.patch.object(c0, "SEALED_ROOT_PREFIX", os.path.join(self.tmp, "no-such-prefix")):
+            self.assertTrue(c0._alias_of_sealed(self.tmp))  # prefix missing: no alias can be ruled out
+            # an optional sealed path that does not exist yet (a bot dir with no rows) is not a hit by itself
+        with ScratchArena(self.tmp):
+            self.assertFalse(c0._alias_of_sealed(self.tmp, (os.path.join(self.tmp, "arena", "decisions", "none"),)))
+
+    def test_pin_is_persisted_and_a_swapped_record_halts_the_next_run(self):
+        e = Hv4Env(self.tmp)
+        e.start()
+        b = e.bridge()
+        self.assertEqual(b.state.latches, {})
+        saved = json.loads((Path(e.raw["state_dir"]) / "bridge-state-dry.json").read_text())
+        self.assertEqual(set(saved["read_pin"]), {"path", "dev", "ino", "sha256"})
+        self.assertEqual(b.state.read_pin, saved["read_pin"])
+        p = Path(e.raw["reads_dir"]) / (ARM + ".json")
+        raw = p.read_bytes()
+        fresh = Path(e.raw["reads_dir"]) / "fresh.tmp"
+        fresh.write_bytes(raw)
+        os.chmod(fresh, 0o644)
+        os.replace(fresh, p)  # identical bytes, new inode: a "legitimate" rewrite
+        b2 = e.bridge()  # a restart (new process) loads the pin from the state
+        self.assertEqual(b2.state.latches.get("read_record"), "read_record_changed")
+        e.entry_sz("o1")
+        b2.tick()
+        self.assertEqual([c for c in e.port.calls if c[0] == "buy"], [])
+
+
+class TwinGateTests(TmpCase):
+    def test_write_problem_seal_checks(self):
+        from tools import hv4_c0_twin as tw
+        with ScratchArena(self.tmp) as a:
+            clean = os.path.join(self.tmp, "out.jsonl")
+            self.assertIsNone(tw.write_problem(clean))
+            self.assertEqual(tw.write_problem(os.path.join(a.root, "twins.jsonl")), "write_path_sealed")
+            sub = os.path.join(a.root, "sub")
+            os.makedirs(sub)
+            link = os.path.join(self.tmp, "link-dir")
+            os.symlink(sub, link)
+            self.assertEqual(tw.write_problem(os.path.join(link, "x.jsonl")), "write_path_sealed")  # parent resolves into the arena
+            tgt = os.path.join(self.tmp, "tgt")
+            Path(tgt).write_text("")
+            os.symlink(tgt, os.path.join(self.tmp, "symout"))
+            self.assertEqual(tw.write_problem(os.path.join(self.tmp, "symout")), "file_is_symlink")
+            os.link(tgt, os.path.join(self.tmp, "hardout"))
+            self.assertEqual(tw.write_problem(os.path.join(self.tmp, "hardout")), "file_hard_linked")
+
+    def test_main_checks_out_and_run_record_and_never_calls_the_writer(self):
+        from tools import hv4_c0_twin as tw
+        from tools import arena_twin_writer as W
+        with ScratchArena(self.tmp) as a:
+            led = os.path.join(self.tmp, "led")
+            os.makedirs(led)
+            base = ["--trips", "t", "--ledger-dir", led, "--bot-id", ARM]
+            with mock.patch.object(W, "main", side_effect=AssertionError("must not run")):
+                self.assertEqual(tw.main([*base, "--out", os.path.join(a.root, "o.jsonl")]), 2)
+                self.assertEqual(tw.main([*base, "--out", os.path.join(self.tmp, "o.jsonl"), "--run-record", os.path.join(a.root, "r.json")]), 2)
+                self.assertEqual(tw.main([*base, "--out", os.path.join(a.root, "o.jsonl")]), 2)  # default <out>.run.json is checked as well
+
+    def test_sealed_ledger_is_read_only_after_the_read_record_gate(self):
+        from tools import hv4_c0_twin as tw
+        with ScratchArena(self.tmp) as a:
+            led = os.path.join(a.root, "ledger")
+            os.makedirs(led)
+            self.assertEqual(tw.refusal(ARM, led), "ledger_dir_sealed:read_record_dir_missing")
+            forged = os.path.join(self.tmp, "forged")
+            write_read_record(forged, ARM)
+            self.assertEqual(tw.refusal(ARM, led, forged), "ledger_dir_sealed:read_record_dir_not_canonical")
+            write_read_record(os.path.join(a.root, "reads"), ARM, frozen_sha="deadbeef")
+            os.unlink(os.path.join(a.root, "reads", ARM + ".json"))
+            write_read_record(os.path.join(a.root, "reads"), ARM, frozen_sha="deadbeef")
+            self.assertEqual(tw.refusal(ARM, led, os.path.join(a.root, "reads")), "ledger_dir_sealed:read_record_frozen_sha")
+            os.unlink(os.path.join(a.root, "reads", ARM + ".json"))
+            write_read_record(os.path.join(a.root, "reads"), ARM)
+            self.assertIsNone(tw.refusal(ARM, led, os.path.join(a.root, "reads")))
+            # a clean (unsealed) ledger dir needs no record
+            self.assertIsNone(tw.refusal(ARM, os.path.join(self.tmp, "clean")))
+
+    def test_forwarded_options_use_equals_form(self):
+        from tools import hv4_c0_twin as tw
+        from tools import arena_twin_writer as W
+        led = os.path.join(self.tmp, "led")
+        os.makedirs(led)
+        seen = []
+        with mock.patch.object(W, "main", side_effect=lambda a: seen.append(a) or 0):
+            tw.main(["--trips=-t", f"--ledger-dir={led}", f"--bot-id={ARM}", "--out=-o"])
+        self.assertTrue(all("=" in x and x.startswith("--") for x in seen[0]), seen)
+        self.assertIn("--out=-o", seen[0])  # a value that starts with '-' stays a value
+
+
+class SentPriorityTests(TmpCase):
+    _port = LivePortScheduleTests._port
+
+    def test_fill_rows_log_the_priority_actually_sent(self):
+        from tools.test_probe_live import land_sell
+        port, rpc, clock, cfg = self._port(True)
+        from tools.test_probe_executor import MINT
+        from tools.test_probe_live import land_buy
+        ok, why = port.buy({"order_id": "o1", "mint": MINT, "decision_ms": clock(), "stake_lamports": cfg.stake_lamports})
+        self.assertTrue(ok, why)
+        land_buy(port.ex, rpc)
+        port.poll()
+        port.sell({"mint": MINT}, "book_exit")
+        fail = {"InstructionError": [3, {"Custom": 6004}]}
+        land_sell(port.ex, rpc, proceeds=0, err=fail, fee=60_000)
+        port.poll()
+        land_sell(port.ex, rpc, proceeds=0, err=fail, fee=60_000)
+        port.poll()  # third send: escalated
+        self.assertEqual(decode_prio(rpc.sent[-1][1]), 150_000)
+        land_sell(port.ex, rpc, proceeds=50_000_000, fee=155_000)
+        port.poll()
+        rows = port.drain_ledger()
+        buys = [kw for k, _m, kw in rows if k == "buy"]
+        sells = [kw for k, _m, kw in rows if k == "sell"]
+        self.assertTrue(buys and sells, rows)
+        self.assertEqual(buys[-1]["priority_lamports"], 55_000)
+        self.assertEqual(sells[-1]["priority_lamports"], 150_000)  # a recomputation at landing (pending gone, position closed) would say 55,000
+
+
+def decode_prio(b64):
+    from tools.test_hv4_live_c0_pr2 import priority_lamports
+    return priority_lamports(decode_tx(b64))
+
+
+class ModuleDocTests(unittest.TestCase):
+    def test_runbook_note_on_record_rewrite_is_in_the_module(self):
+        self.assertIn("halts the bridge FOR GOOD", c0.read_record_problem.__doc__)
 
 
 if __name__ == "__main__":

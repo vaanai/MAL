@@ -4,6 +4,10 @@ Pure functions and constants. No network, no key, no file read, no HV4 ledger. I
 restate or tighten them (`config_refusal`), never loosen. Scope doc: ARTIFACTS/lab/c0-readiness-2026-10-25.md section 7, items 1 to 5 and 9 (PR 2 adds the frozen_sha pin, the universe check, the
 sell builder pin and the sell priority escalation).
 
+Read-record gate runbook note (QP N9): the bot's recorded read is pinned (path, st_dev, st_ino, sha256) in the bridge state at the first good check. Rewriting or
+replacing that record, even with identical bytes, latches `read_record` and halts the bridge FOR GOOD; only the manager clears a latch, with the bridge stopped.
+The 14-day window start is the write-once file WINDOW_DIR/<bot_id>.json (shared by dry and live of the same bot_id).
+
 Arms: only F or X arms are canary candidates (the L arms rewrite their playbook nightly = a prompt change = a new bot_id under DEC-032 s1.4). A bot_id
 ending in -L, -P or -R is refused.
 
