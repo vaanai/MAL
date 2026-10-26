@@ -148,7 +148,9 @@ def scan(items: Iterable[tuple[Mapping[str, Any], Iterable[Any] | None]], *, as_
     for k in ("pools", "filter_fail", "age_guard", "leaks", "setups", "cooldown_blocked"):
         cnt[k] = 0
     raw: list[C.SetupTag] = []
-    for snap, prints in items:
+    for item in items:
+        snap, prints = item[0], item[1]
+        series = item[2] if len(item) > 2 else None  # SCAN SPEED ONLY: the runner's fast path hands over the candle series it built straight from the Pool (== _series(snapshot))
         cnt["pools"] += 1
         pid = snap.get("id")
         try:
@@ -161,7 +163,7 @@ def scan(items: Iterable[tuple[Mapping[str, Any], Iterable[Any] | None]], *, as_
             except C.CardRefused:
                 cnt["age_guard"] += 1
                 continue
-            feats = C.features(snap, C.norm_prints(prints), as_of_ms=as_of_ms)
+            feats = C.features(snap, C.norm_prints(prints), as_of_ms=as_of_ms, series=series)
         except C.LeakageError:
             cnt["leaks"] += 1
             continue
