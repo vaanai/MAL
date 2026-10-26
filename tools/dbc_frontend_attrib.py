@@ -302,7 +302,8 @@ def pool_metrics(p: dict[str, Any], win_end_ts: float, payer: str | None = None,
             "others01": len({b["signer"] for b in early}), "buyers_win": len({b["signer"] for b in ext}), "n_buys_in_create": len(in_create),
             "launcher_buys_win": sum(1 for b in p["buys"] if b["sig"] != csig and b["signer"] in launch),
             "grad_eligible": t0 + grad_s <= win_end_ts, "grad24": bool(comp and comp["dt"] <= grad_s),
-            "grad_in_create": bool(comp and comp["sig"] == csig), "quote_trade": Counter(b["quote"] for b in p["buys"]).most_common(1)[0][0] if p["buys"] else None}
+            "grad_in_create": bool(comp and comp["sig"] == csig), "complete_dt": comp["dt"] if comp else None, "n_trades_win": p["n_trades_win"],
+            "creator": c.get("creator"), "quote_trade": Counter(b["quote"] for b in p["buys"]).most_common(1)[0][0] if p["buys"] else None}
 
 
 # ----------------------------------------------------------------------------------------------------------------------- labels
@@ -350,6 +351,29 @@ def frontend_map(cache: dict[str, Any], creates: list[dict[str, Any]]) -> dict[s
     return out
 
 
+# ----------------------------------------------------------------------------------------------------------------------- partner classes (descriptive, POST HOC)
+ONE_TRADE_S = 5.0
+CLASS_MIN = 0.8
+FAST_GRAD_S = 600.0
+
+
+def partner_class(ms: list[dict[str, Any]]) -> str:
+    """Descriptive class of one partner's pools, defined AFTER the first table was seen (post hoc, disclosed):
+    'one-trade completer'  : >= 80% of its pools complete <= 5 s after the create;
+    'all-graduate fast'    : >= 80% complete within 24 h (eligible pools) and the median completion is <= 600 s;
+    'launchpad-like'       : everything else."""
+    n = len(ms)
+    if not n:
+        return "launchpad-like"
+    if sum(1 for m in ms if m.get("complete_dt") is not None and m["complete_dt"] <= ONE_TRADE_S) / n >= CLASS_MIN:
+        return "one-trade completer"
+    ge = [m for m in ms if m["grad_eligible"]]
+    dts = [m["complete_dt"] for m in ms if m.get("complete_dt") is not None]
+    if ge and sum(m["grad24"] for m in ge) / len(ge) >= CLASS_MIN and dts and statistics.median(dts) <= FAST_GRAD_S:
+        return "all-graduate fast"
+    return "launchpad-like"
+
+
 # ----------------------------------------------------------------------------------------------------------------------- table + verdict
 def r1_verdict(per_day: float, share: float | None, med_others: float | None) -> str:
     """P36 R1 screen, exactly as declared. 'drop' = bots-are-here bin; 'candidate' = >= 200 creates/day and share < 10%; else 'neither'."""
@@ -383,7 +407,17 @@ def build_table(metrics: list[dict[str, Any]], label_of: dict[str, str], quote_o
                      "frac_any_other01": (sum(1 for m in w if m["others01"] > 0) / len(w)) if w else None,
                      "grad24": (sum(m["grad24"] for m in ge) / len(ge)) if ge else None, "n_grad_eligible": len(ge),
                      "grad_in_create": (sum(m["grad_in_create"] for m in ms) / len(ms)), "buys_in_create": sum(m["n_buys_in_create"] > 0 for m in ms) / len(ms),
+                     "complete_le5s": sum(1 for m in ms if m.get("complete_dt") is not None and m["complete_dt"] <= 5) / len(ms),
+                     "median_complete_s": statistics.median(dts) if (dts := [m["complete_dt"] for m in ms if m.get("complete_dt") is not None]) else None,
+                     "median_buyers_win": statistics.median([m.get("buyers_win", 0) for m in w]) if w else None,
+                     "median_trades_win": statistics.median([m.get("n_trades_win", 0) for m in w]) if w else None,
+                     "n_creators": len({m.get("creator") for m in ms}),
                      "verdict": r1_verdict(per_day, share, med)})
+    tot = Counter()
+    for r in rows:
+        tot[r["front_end"]] += r["creates"]
+    for r in rows:
+        r["per_day_all_quotes"] = round(tot[r["front_end"]] / n_days, 1)
     rows.sort(key=lambda r: -r["creates"])
     return rows
 
@@ -485,6 +519,19 @@ def table(out: Path, log=print) -> dict[str, Any]:
     metrics = [pool_metrics(p, tape["win_end_ts"], payer_of.get(p["create"]["signature"]), bad_hour_idx=bad) for p in tape["pools"].values()]
     n_days = (L.EXPLORE_END - L.EXPLORE_START).total_seconds() / 86400.0
     rows = build_table(metrics, label_of, quote_of, n_days)
+    by_partner = defaultdict(list)
+    for m in metrics:
+        by_partner[(cache["configs"].get(m["config"]) or {}).get("fee_claimer") or "UNKNOWN-CONFIG"].append(m)
+    pclass = {fc: partner_class(ms) for fc, ms in by_partner.items()}
+    for fc, v in fmap.items():
+        v["class"] = pclass.get(fc)
+    lab_class = defaultdict(Counter)
+    for fc, ms in by_partner.items():
+        lab_class[fmap[fc]["label"]][pclass[fc]] += len(ms)
+    for r in rows:
+        r["partner_classes"] = lab_class[r["front_end"]].most_common()
+    class_of = {m["config"]: "CLASS " + pclass[(cache["configs"].get(m["config"]) or {}).get("fee_claimer") or "UNKNOWN-CONFIG"] for m in metrics}
+    class_rows = build_table(metrics, class_of, quote_of, n_days)
     fee = defaultdict(list)
     for c in creates:
         ci = cache["configs"].get(c["config"])
@@ -500,7 +547,7 @@ def table(out: Path, log=print) -> dict[str, Any]:
         r["fee"] = fees.get(r["front_end"])
     res = {"generated_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "window": [L.EXPLORE_START.isoformat(), L.EXPLORE_END.isoformat()],
            "n_creates": len(creates), "bad_hours": tape["bad_hours"], "n_txs_sampled": sum(1 for t in cache["txs"].values() if t.get("create")),
-           "rows": rows, "partners": sorted(({"fee_claimer": k, **v} for k, v in fmap.items()), key=lambda d: -d["n_creates"])}
+           "rows": rows, "class_rows": class_rows, "partners": sorted(({"fee_claimer": k, **v} for k, v in fmap.items()), key=lambda d: -d["n_creates"])}
     (out / "table.json").write_text(json.dumps(res, indent=1, sort_keys=True, default=list))
     return res
 

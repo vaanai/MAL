@@ -191,3 +191,25 @@ def test_guard_refuses_non_default_mode(monkeypatch):
     monkeypatch.setattr(A.L, "window", lambda: (A.L.FWD_START, A.L.FWD_END, A.L.FWD_ROOT))
     with pytest.raises(A.Refused):
         A.load_tape(log=lambda *a: None)
+
+
+def _m(dt, grad_eligible=True, grad24=None):
+    return {"complete_dt": dt, "grad_eligible": grad_eligible, "grad24": (dt is not None and dt <= 86400) if grad24 is None else grad24}
+
+
+def test_partner_class_rules():
+    assert A.partner_class([_m(0.0)] * 8 + [_m(None)] * 2) == "one-trade completer"
+    assert A.partner_class([_m(0.0)] * 7 + [_m(None)] * 3) == "launchpad-like"
+    assert A.partner_class([_m(60.0)] * 9 + [_m(None)]) == "all-graduate fast"
+    assert A.partner_class([_m(700.0)] * 10) == "launchpad-like"
+    assert A.partner_class([]) == "launchpad-like"
+
+
+def test_build_table_all_quotes_total_and_completion():
+    base = {"day": "2026-10-14", "win_ok": True, "vol_win": 1, "vol01": 0, "others01": 0, "grad_eligible": True, "grad_in_create": False, "n_buys_in_create": 0,
+            "quote_trade": SOL, "buyers_win": 1, "n_trades_win": 2, "creator": "c"}
+    ms = [dict(base, config="A", grad24=True, complete_dt=1.0), dict(base, config="A", grad24=False, complete_dt=None), dict(base, config="B", grad24=False, complete_dt=None)]
+    rows = A.build_table(ms, {"A": "X", "B": "X"}, {"A": SOL, "B": "other"}, n_days=1.0)
+    assert {r["per_day_all_quotes"] for r in rows} == {3.0}
+    a = [r for r in rows if r["quote"] == "SOL"][0]
+    assert a["complete_le5s"] == 0.5 and a["median_complete_s"] == 1.0 and a["median_buyers_win"] == 1
