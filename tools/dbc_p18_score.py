@@ -57,6 +57,10 @@ SCHEMA = "dbc_p18_score_v1"
 EARLIEST_CLOCK = datetime(2026, 11, 1, 0, 10, tzinfo=timezone.utc)  # a P18 clock before the m10 read can have finished is refused
 TEST_MIN = datetime(2026, 10, 14, 0, tzinfo=timezone.utc)
 TEST_MAX = datetime(2026, 10, 17, 0, tzinfo=timezone.utc)  # exclusive
+GUARD_FLOOR = datetime(2026, 11, 1, 1, tzinfo=timezone.utc)  # no loader window may start before this: the 11-01T00 hour holds 00:00-00:10Z of the sealed DBC forward window
+LEAD_H = 1  # hour(s) loaded before the clock's hour so a decision in the clock's first 120 s has its lead state (S.resolve needs the hour of bt - 120 s); clamped to GUARD_FLOOR
+BAD_HOUR_NOTE = ("bad_hour_excluded = decisions whose lead hour (bt - 120 s) is not a loaded good hour; the lead hour before the clock is loaded (LEAD_H) unless the clamp to "
+                 "GUARD_FLOOR (2026-11-01T01Z) applies, in which case clock-hour decisions in the first 120 s are excluded here")
 TAIL_H = 1  # hours loaded past B so every decision before B has its exit (hold 600 s + 2 legs + 30 s < 1 h): block_edge_excluded is expected to be 0
 MIN_TRADES = 100
 MIN_DAYS = 5
@@ -164,10 +168,29 @@ def patched(mod: Any, name: str, value: Any) -> Iterator[None]:
 def p18_window(root: str, start: datetime, end: datetime) -> Iterator[None]:
     """Drive dbc_price's forward-window guard for the P18 hours [start, end) under `root`, then restore its globals. Refuses anything touching the m10 window
     (before 2026-11-01T00Z) and anything that is not whole hours. The pinned file is not edited."""
-    if start < L.FWD_END:
-        raise ScoreRefused(f"window start {start:%Y-%m-%dT%H} overlaps the m10 forward window / earlier data (guard: >= {L.FWD_END:%Y-%m-%dT%H})")
+    if start < GUARD_FLOOR:
+        raise ScoreRefused(f"window start {start:%Y-%m-%dT%H} overlaps the m10 forward window / earlier data (guard: >= {GUARD_FLOOR:%Y-%m-%dT%H})")
+    with _window(root, start, end):
+        yield
+
+
+def _whole_hours(start: datetime, end: datetime) -> None:
     if end <= start or start.minute or start.second or end.minute or end.second:
         raise ScoreRefused("window must be whole hours with end > start")
+
+
+@contextlib.contextmanager
+def test_window(root: str, start: datetime, end: datetime) -> Iterator[None]:
+    """TEST-ONLY loader window, wholly inside the exploration hours [TEST_MIN, TEST_MAX) = [10-14T00, 10-17T00). Any hour of [10-17T00, 11-01T01) (spent, sealed, forward) refuses."""
+    if start < TEST_MIN or end > TEST_MAX:
+        raise ScoreRefused(f"test window [{start:%Y-%m-%dT%H}, {end:%Y-%m-%dT%H}) is not inside the exploration hours [{TEST_MIN:%Y-%m-%dT%H}, {TEST_MAX:%Y-%m-%dT%H})")
+    with _window(root, start, end):
+        yield
+
+
+@contextlib.contextmanager
+def _window(root: str, start: datetime, end: datetime) -> Iterator[None]:
+    _whole_hours(start, end)
     old = (L.FWD_ACTIVE, L.FWD_START, L.FWD_END)
     L.FWD_ACTIVE, L.FWD_START, L.FWD_END = root, start, end
     try:
@@ -261,6 +284,7 @@ def score(dec: dict[str, Any], clock: datetime, now: datetime, price_fn: Callabl
         "deciding": {"n_decisions": len(items), "md5_keys": hashlib.md5("\n".join(sorted(k for k, _ in items)).encode()).hexdigest(), "primary_1p9s": p19,
                      "entry_2p5s": {m: p25[m] for m in ("flat", "press")}, "not_found_share": nf,
                      "attempts_by_day": {u: sum(1 for _, t in items if S.day_of(t) == u) for u in sorted({S.day_of(t) for _, t in items})}},
+        "bad_hour_note": BAD_HOUR_NOTE,
         "strand_rule": "DECIDING: full loss (stake + buy send + stranded rent); the immediate-DAMM-sell line below is REPORT-ONLY",
     }
     rep: dict[str, Any] = {"REPORT_ONLY": True}
@@ -300,7 +324,7 @@ def write(out_dir: Path, res: dict[str, Any]) -> str:
         md.append(f"- checks: {json.dumps(res.get('checks'))}")
         sl = res["report_only"]["strand_immediate_damm_sell"]
         md.append(f"- REPORT-ONLY immediate DAMM sell: {sl['status']}" + (f", covers {sl['strands_covered']} of {sl['strands_total']} strands" if sl["strands_covered"] is not None else f" ({sl['strands_total']} strands, deciding line: full loss)"))
-        md.append(f"- decisions excluded before the clock: {res['log']['excluded_pre_clock']}; block_edge_excluded {p['counts'].get('block_edge_excluded')}, bad_hour_excluded {p['counts'].get('bad_hour_excluded')}")
+        md.append(f"- decisions excluded before the clock: {res['log']['excluded_pre_clock']}; block_edge_excluded {p['counts'].get('block_edge_excluded')}, bad_hour_excluded {p['counts'].get('bad_hour_excluded')} ({BAD_HOUR_NOTE})")
         md.append(f"- k per hour (1.9 s): {json.dumps(res.get('k_by_hour'))}; backfill: {json.dumps(res.get('backfill'))}")
     if res.get("reason"):
         md.append(f"- reason: {res['reason']}")
@@ -310,8 +334,8 @@ def write(out_dir: Path, res: dict[str, Any]) -> str:
 
 
 def window_hours(clock: datetime, B: datetime) -> tuple[datetime, datetime]:
-    """Hours loaded for pricing: [the clock's hour, B + TAIL_H hours). The tail gives every decision before B its exit (no block_edge exclusion)."""
-    return clock.replace(minute=0, second=0, microsecond=0), B + timedelta(hours=TAIL_H)
+    """Hours loaded for pricing: [the clock's hour - LEAD_H (clamped to GUARD_FLOOR), B + TAIL_H hours). The tail gives every decision before B its exit (no block_edge exclusion)."""
+    return max(clock.replace(minute=0, second=0, microsecond=0) - timedelta(hours=LEAD_H), GUARD_FLOOR), B + timedelta(hours=TAIL_H)
 
 
 def backfill_preflight(root: str, clock: datetime, B: datetime, now: float | None = None, min_age_s: int = R.MIN_AGE_S) -> tuple[bool, str]:
@@ -336,13 +360,14 @@ def backfill_preflight(root: str, clock: datetime, B: datetime, now: float | Non
     return True, "ok"
 
 
-def default_load(root: str, clock: datetime, B: datetime, base_map: str, fetch: Callable[[list[str]], dict[str, Any]], out_dir: Path) -> dict[str, Any]:
+def default_load(root: str, clock: datetime, B: datetime, base_map: str, fetch: Callable[[list[str]], dict[str, Any]], out_dir: Path,
+                 test_hours: tuple[datetime, datetime] | None = None) -> dict[str, Any]:
     """Real-tape loader: backfill hours [clock hour, B + tail) under `root` through the scoped window guard, config map as in the m10 read (R4). The final config map is
     written INSIDE `out_dir` (never next to the backfill tree, which dbc_screen.check_out_dir forbids). More than R.MAX_BAD_HOURS missing or incomplete hours refuses
     (NOT_DECIDABLE after the claim, as in the m10 read); the bad hours are carried in D and printed."""
-    start, end = window_hours(clock, B)
+    start, end = window_hours(clock, B) if test_hours is None else test_hours  # test_hours: dry_real_layout only, guarded by test_window
     L.enable_swap3_pricing()
-    with p18_window(root, start, end):
+    with (p18_window(root, start, end) if test_hours is None else test_window(root, start, end)):
         counts = R.scan_configs(root)
         final, rep = R.resolve_configs(counts, json.loads(Path(base_map).read_text()), fetch)
         cfg_path = Path(out_dir) / "cfg_map_final.json"
@@ -360,6 +385,34 @@ def default_load(root: str, clock: datetime, B: datetime, base_map: str, fetch: 
         if len(D["bad_hours"]) > R.MAX_BAD_HOURS:
             raise ScoreRefused(f"{len(D['bad_hours'])} hours missing/incomplete (> {R.MAX_BAD_HOURS}): {sorted(D['bad_hours'])}")
         return D
+
+
+def dry_real_layout(root: str, clock: datetime, test_start: datetime, test_end: datetime, base_map: str, fetch: Callable[[list[str]], dict[str, Any]] | None = None) -> dict[str, Any]:
+    """COUNTS-ONLY dry pass of the real loader and pricer on exploration hours inside [10-14T00, 10-17T00). TEST ONLY: refuses a real clock (>= EARLIEST_CLOCK) and any hour outside the
+    exploration range. Runs scan_configs/resolve_configs (no network unless `fetch` is given), load_exploration, the Pricer's key index (dbc_fwd.key_of) and resolve_set on a spread of keys.
+    Prints no P&L, no prices and no outcome fields: only hour, pool, key and exclusion-bucket counts. Nothing is written but a temp cfg map."""
+    import tempfile
+
+    if clock >= EARLIEST_CLOCK:
+        raise ScoreRefused("dry-real-layout refuses a real clock")
+    if not (TEST_MIN <= clock < TEST_MAX):
+        raise ScoreRefused("dry-real-layout clock must lie inside the exploration hours")
+    with tempfile.TemporaryDirectory() as td:
+        D = default_load(root, clock, test_end, base_map, fetch or (lambda ks: {}), Path(td), test_hours=(test_start, test_end))
+    pr = X.Pricer(D)
+    a = D["a"]
+    n = len(a["bt"])
+    pick = sorted(set(int(i) for i in np.linspace(0, n - 1, min(n, 300)))) if n else []
+    items = []
+    for i in pick:
+        p = int(D["pid"][i])
+        items.append((F.key_of(D["pool_names"][p], int(a["slot"][i]), float(a["S1"][i])), float(a["bt"][i])))
+    cnt = pr.resolve_set(items, L.LAT_S)["counts"] if items else {}
+    keep = ("attempts", "completed_before_entry", "no_state", "block_edge_excluded", "bad_hour_excluded", "key_not_found_full_loss", "key_duplicate", "other_refusal")
+    return {"schema": SCHEMA + "_dry_real_layout", "test_only": True, "window": [f"{test_start:%Y-%m-%dT%H}", f"{test_end:%Y-%m-%dT%H}"], "hours_needed": D["hours_needed"],
+            "good_hours": len(D["good_hours"]), "bad_hours": len(D["bad_hours"]), "n_pools": D["n_pools"], "n_configs": D["n_configs"], "n_rows": n, "n_index_keys": len(pr.index),
+            "n_dup_keys": len(pr.dup), "n_items_resolved": len(items), "resolve_counts": {k: cnt.get(k) for k in keep}, "cross_check_key_of": "dbc_fwd.key_of",
+            "outcome_fields_read": False, "pnl_printed": False}
 
 
 def write_once(path: Path, text: str) -> None:
@@ -466,9 +519,20 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--rows-after-drop-explained")
     ap.add_argument("--base-map", default=R.BASE_MAP)
     ap.add_argument("--now", help="override (tests)")
+    ap.add_argument("--dry-real-layout", action="store_true", help="TEST ONLY, needs --counts-only and --test-window: real loader and pricer on exploration hours, counts only")
+    ap.add_argument("--test-window", nargs=2, metavar=("START", "END"), help="TEST ONLY exploration window inside [10-14T00, 10-17T00); only with --counts-only --dry-real-layout")
     ap.add_argument("--test-exploration", action="store_true", help="counts-only dry pass on exploration-hour decisions [10-14T00, 10-17T00) only; moves the clock floor to 10-14T00")
     a = ap.parse_args(argv)
     clock = parse_utc(a.clock)
+    if a.dry_real_layout or a.test_window:
+        if not (a.counts_only and a.dry_real_layout and a.test_window and a.backfill_root):
+            ap.error("--test-window and --dry-real-layout need each other, --counts-only and --backfill-root")
+        try:
+            print(json.dumps(dry_real_layout(a.backfill_root, clock, parse_utc(a.test_window[0]), parse_utc(a.test_window[1]), a.base_map), indent=1))
+        except ScoreRefused as e:
+            print(f"REFUSED: {e}", file=sys.stderr)
+            return 6
+        return 0
     if a.counts_only:
         try:
             print(json.dumps(counts_only(a.log_root, clock, a.test_exploration), indent=1))
