@@ -536,7 +536,7 @@ How to read these figures:
 ## Amendment 3: in every DEC-032 C0 canary (Q50, HV4, HV6), `synthetic_share_high` is decided by the DEC-031 Am.10 pooled guard, not by the raw daily record (DRAFT)
 
 **Status: DRAFT, NOT IN FORCE.**
-- Written 2026-10-26 (`date -u` 18:44:05Z at start) by a builder agent for manager17. Extended at 18:47Z, on manager17's decision, to cover the Q50 (H5) C0 canary too. Revised at about 18:58Z for quant-proof's comment 6424657511 at 588c5b9d (text fixes F1 to F5). Records only.
+- Written 2026-10-26 (`date -u` 18:44:05Z at start) by a builder agent for manager17. Extended at 18:47Z, on manager17's decision, to cover the Q50 (H5) C0 canary too. Revised at about 18:58Z for quant-proof's comment 6424657511 at 588c5b9d (text fixes F1 to F5), and again for comment 6424749534 at 321d7981 (F6 and the dead-man lines, QP's replacement text). Records only.
 - Basis: quant-proof's comment 6424350003 on PR #969 (head 733dd371), ruling (b). It found that the HV4 C0 bridge's A3 check reads the raw daily record, as §5 item 1 says and line for line as `h5_arena_executor.a3_record_problem`. Under the raw synthetic flag a 14-day C0 is likely to halt on sampling noise. `h5_arena_executor.a3_record_problem`, which is the Q50 C0 path, uses the same raw rule.
 - Outcome-blind. In view when this was written: that QP comment, quant-proof's pre-ruling `/data/mal/hunt-1008/push-1016/hunt30/q50-c0/QP-PRERULING-1026-n2-n4.md` (N2), this DEC, DEC-031 Am.4, Am.10 and Am.15, and the code of `tools/a3_redeploy_check.py`, `tools/a3_halt.py`, `tools/a3_applied_alert.py`, `scripts/ops/a3-daily.sh`, `tools/pump_structure_monitor.py`, `tools/h5_arena_executor.py` and `tools/hv4_live_c0.py` / `tools/arena_live_bridge.py` at PR #969 head aa925782. Not opened: any A3 daily record, verdict or applied log, `a3-books.json`, any HV4 or Q50 output, decision row, ledger, `bots.json`, or job status or log.
 - No book has cleared the promotion gate. Nothing here is a profit claim.
@@ -616,16 +616,16 @@ The Am.10 figures assume the pooled base rate 0.2212 and come from structure cou
 ### 3. New dependencies, all fail closed
 - **The guard loop must run for the canary's whole life.** This is the `a3-daily.sh` loop on mal-fast-0 that writes the record and the applied log into the same directory (`A3_OUT`, default `$HOME/data/structure-monitor`, with `A3_APPLIED` at its default).
   - If the loop stops, the record goes stale (36 h) and the canary latches, as now.
-  - If the monitor writes but the apply does not run, the canary refuses buys for up to 2 h, then latches `a3_guard_missing`. For example, `a3_halt.py` exits 2 on a refused books file, or a `PartialApply` happens because a rule's book list is empty. The raw rule did not see this case.
+  - If the monitor writes but the apply does not run, the canary refuses buys for up to 2 h, then latches `a3_guard_missing`. For example, a PartialApply (an A3 flag with legacy_bot_ids empty, or a HARD verdict with new_rule_bot_ids empty): apply runs the valid rule's halts, writes no applied line and exits 2. The raw rule did not see this case.
 - **The loop runs at a guard pin that implements Am.10.** That is the check tool sha256 `1f84072da673cc451f9e3a6baa8b25d6295b497305ffe7bc38fef42e3a710f70` at tag `a3-guard-pin-1024` (0ec7fae8), or a later pin with quant-proof's OK that keeps item 1's constants byte for byte. The copy names it (item 6).
-- **The H5-arena books file and registry stay intact** (F3). `tools/a3_halt.py apply` refuses, writes no applied line and exits 2 on any of these:
-  - a registered `h5*` book that is in neither list of `a3-books.json`;
-  - a listed id that is not registered;
-  - no books registered at all;
-  - a HARD verdict while `new_rule_bot_ids` is empty;
-  - a flag instant while `legacy_bot_ids` is empty (the `PartialApply` case).
+- **The H5-arena books file and registry stay intact** (F3). Five cases stop the guard. Cases 1 to 3 fail in tools/a3_halt.py's _check, which runs first in the deadman step of every a3-daily.sh run. That step exits 2 before the monitor runs, so no new record is written. Cases 4 and 5 are PartialApply in apply: a new record is written, but no applied line.
+  1. a registered `h5*` book that is in neither list of `a3-books.json`;
+  2. a listed id that is not registered;
+  3. no books registered at all;
+  4. a HARD verdict while `new_rule_bot_ids` is empty;
+  5. a flag instant while `legacy_bot_ids` is empty.
 
-  Each case refuses buys for 2 h and then latches the canary (`a3_guard_missing`). That is safe, because it fails closed. But H5-arena registry hygiene now decides C0 liveness, for HV4 and HV6 as well as Q50. So while any canary runs:
+  Cases 1 to 3: the canary keeps acting on the last record and its guard line until that record is 36 h old, then latches a3_record_stale. This is the same exposure as under the raw rule. Cases 4 and 5: the canary refuses buys for 2 h, then latches a3_guard_missing. Both paths fail closed. But H5-arena registry hygiene now decides C0 liveness, for HV4 and HV6 as well as Q50. So while any canary runs:
   - `a3-books.json` and the arena registry (`bots.json`) are not archived, moved or emptied;
   - every new `h5*` registration is added to a list of the books file at the same time;
   - an edit to either file is checked against the cases above before it lands (item 7).
@@ -731,20 +731,20 @@ The copy's owner notice (§2) is unchanged in words: "It halts by itself on a pu
 - Loop #1446 ends about 2026-11-06T18Z.
 - #1447 runs `after` #1446 with a 13 d limit, so it ends about 2026-11-19T18Z. An `after` job starts when its predecessor ends, so it ends earlier if #1446 dies early.
 - Alert #1540 ends about 2026-11-08T13Z.
-- The dead-man job: no id or limit has been named yet.
+- Dead-man loop #1319 (a3-daily.sh deadman at 13:10Z, pin 136cd98) ends about 2026-11-03T21Z. #1333 runs after it with a 13 d limit, so it ends about 2026-11-16T21Z, and earlier if #1319 dies early.
 - Q50 alone (E <= 2026-11-06T00Z) is covered by #1446, with only about 18 h of margin. #1447 stays queued.
 
 **Before each canary's first send** (a precondition, recorded in `FILL:a3_guard_source`):
 1. The manager records the running loop job, its pin and its time limit, and every queued successor with its `after` link and time limit.
 2. **The one rule (48 h)** (F5). Every chain job whose limit is before `E` is either:
    - extended (`miscusi_job_extend`) to cover `E`; or
-   - given a successor `after` it, at the same guard pin with the same header sha checks, resumable, 13 d.
+   - given a successor `after` it, at its predecessor's pin with the same header sha checks, resumable, 13 d. For the loop chain that is the guard pin of item 3. For the dead-man chain it is 136cd98 or the guard pin (see below).
 
    This is done at least **48 h before that job's actual limit**. A queued successor's limit is computed from its real start, not from the nominal chain. The same rule is applied again whenever `E` moves later, that is when a new canary is approved or the owner extends one.
 3. **Required now, from the facts above:**
    - **Loop job 3:** `after` #1447, pin 0ec7fae8 with the same header sha checks, resumable, 13 d. It is submitted before the first HV4 C0 send, as a `FILL:a3_guard_source` precondition. If no HV4 C0 is approved, it is still submitted at least 48 h before #1447's actual limit. An HV4 `E` can reach about 2026-11-22T00Z, at least about 2.25 days past #1447.
    - **Alert #1540:** extended, or given a successor, before the first HV4 send, and at the latest by 2026-11-06T13Z.
-   - **Dead-man job:** the manager names it, with its limit (TBD at writing), and covers `E` by the same rule.
+   - **Dead-man job 3:** after #1333, resumable, 13 d, at pin 136cd98 or the guard pin. tools/a3_halt.py, tools/arena_h5_score.py and scripts/ops/a3-daily.sh are byte-identical between the two. It is submitted before the first HV4 C0 send, and at the latest 48 h before #1333's actual limit. An HV4 E of about 2026-11-22T00Z is about 5 days past #1333.
 
 **Nothing the guard depends on is stopped or emptied while any canary runs.** That covers the loop, the alert job, the dead-man job, `a3-books.json` and the arena registry (item 3, F3). This holds even if Q50's paper book ends (window end, A3 or dead-man end). The Q50 lane's step that stops the loop, or archives its files, is gated on "no canary running".
 
@@ -786,4 +786,6 @@ Quant-proof's pre-ruling N2 (`QP-PRERULING-1026-n2-n4.md`, verdict (a)) already 
 
 **Open points.**
 - **The lag bound.** The 2 h `A3_GUARD_LAG_MS` was confirmed as written by quant-proof (comment 6424657511 §3). The clock runs from the later of the record's `run_utc` and the record file's mtime. Once past the bound the canary latches; a newer line does not reset the clock.
-- **Item 7.** The manager records the guard-loop, alert and dead-man job ids and their actual limits from the job list, and submits loop job 3.
+- **Item 7.** The job ids and limits in item 7 are the manager's facts. Neither quant-proof nor this writer checked them. The actual running and queued jobs, their pins and their limits are recorded in the C0 DEC copy at first send (`FILL:a3_guard_source`), where quant-proof checks them.
+  - Latest submit times under the 48 h rule, on those facts: loop job 3 about 2026-11-17T18Z; dead-man job 3 about 2026-11-14T21Z; alert #1540, extension or successor, 2026-11-06T13Z.
+  - All three move earlier if a predecessor ends early, and all three are preconditions of the first HV4 send.
