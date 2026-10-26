@@ -1,0 +1,1 @@
+86980aea4426e461d2cdb31a01b559d0ee82efa51f22c475077589fed44aeeb4  docs/research/p33-dbc-p18/DECLARE.md
