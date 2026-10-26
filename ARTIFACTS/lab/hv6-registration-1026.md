@@ -4,7 +4,7 @@
 
 **No book has cleared the gate. This is a registration pack, not a result.** HV6 has 0 out-of-sample trades. Nothing here says HV6 makes money. Paper only.
 
-Written by a worker in its own worktree from: `docs/research/hv6/DESIGN.md` (main at 5071e29a), QP-RULING-1025-hv5-design (original, ADDENDA 1-3), and the QP and reviewer comments on PRs #911 #914 #917 #918 #921 #923 #930 #936 (read with `gh`). Not opened: anything under `/data/mal/arena`, `bots.json`, any HV4/Q50 output, any job status or log, `/data/mal/meta-capture/`. Attestation by this worker: no HV4 output, Console or notebook P&L, attempt count, shakedown or smoke report was seen. The manager attests the same for the manager before registering (DESIGN section 2, G5 paragraph).
+Written by a worker in its own worktree from: `docs/research/hv6/DESIGN.md` (main at 5071e29a; #943 does not touch it), QP-RULING-1025-hv5-design (original, ADDENDA 1-3), and the QP and reviewer comments on PRs #911 #914 #917 #918 #921 #923 #930 #936 (read with `gh`). Not opened: anything under `/data/mal/arena`, `bots.json`, any HV4/Q50 output, any job status or log, `/data/mal/meta-capture/`. Attestation by this worker: no HV4 output, Console or notebook P&L, attempt count, shakedown or smoke report was seen. The manager attests the same for the manager before registering (DESIGN section 2, G5 paragraph).
 
 Items marked **UNMET** below block registration until fixed or ruled by QP (none is open since #939; QP's route ruling on #940 is recorded in section 12). Items marked **MANAGER** are steps this pack cannot do.
 
@@ -205,7 +205,7 @@ Run from the clean checkout at the final sha, cwd = that checkout, default `--ro
 ## 9. Runner job spec
 
 ```
-# MiScusi job on the host that holds /data/mal/arena, memory MemoryMax >= 6 GB (the superseded 5071e29a replay #1643 peaked at 2,664.6 MB; cite the final-sha re-run's figure; 4 GB is the stated floor), resumable true (it resumes from its own hash-chained log),
+# MiScusi job on mal-research-0 (the host that holds /data/mal/arena), memory MemoryMax >= 6 GB (the superseded 5071e29a replay #1643 peaked at 2,664.6 MB; cite the final-sha re-run's figure; 4 GB is the stated floor), resumable true (it resumes from its own hash-chained log),
 # time limit < 14 d (one segment: T0 + 12 d window plus the 12 h exit tail is about 12.6 d), submitted after registration, before 2026-10-30T00Z (it waits for the clock):
 sh -c 'cd /data2/mal/wt/hv6-final && set -a && . /var/lib/mal/anthropic/anthropic.env && set +a && MAL_HV4_RPC=helius exec /data/mal/venv/bin/python -m tools.hv6_runner --frozen-sha <FINAL_SHA_AFTER_943> --clock-start-ms 1793318400000 --entries-halt-ms 1794355200000 --feed-delay-slots 7'
 ```
@@ -277,7 +277,7 @@ Status: MET (where) / MANAGER (a step for the manager, with the spot in this pac
 
 | Cond. | Status | Where |
 |---|---|---|
-| K1 owner spend line verbatim with notebook id before the a4 call | MANAGER | section 3 (paste full text; confirm 3.00/day and D = 12 are covered) |
+| K1 owner spend line verbatim with notebook id before the a4 call | owner line quoted in full (`n_dTJO1xRvneLeUA`); **the manager's request text is not recoverable** (`n_rlKSXVDAwRj6TQ` not found): **QP rules** whether the manager's reading plus "until nov 11" suffices (QP #940 change 3) | section 3 |
 | K2 learning/regime earliest 2026-11-11T13:00Z; pin the single computed instant; `hv6_read` refuses to decide before it | pinned in section 2; `hv6_read` is LATER (item 10, before 11-07) | section 2 |
 | K3 R7 wording as a structure-monitor stand-in; re-cite source | text MET in D11; re-cite the source row/notebook id: MANAGER | D11 |
 | K4 standing items (#814, LAB_STATE check, ledger confirmation, P0, smoke, route a) | see section 4 | section 4 |
@@ -311,9 +311,9 @@ Status: MET (where) / MANAGER (a step for the manager, with the spot in this pac
 | #914 R6 | QP OK on this pack's exact head; reviewer verdict on the PR | MANAGER | this PR |
 | #914 | after the rebase, a test that `HV6_MODELS` equals `hv6_agents.MODEL_ID` for every arm with `ARMS[a].llm` and `[]` for X | **MET by this PR** | `tools/test_hv6_register_models.py` |
 | #914 | first live registration only after the smoke; partial run disclosed | MANAGER; D13 | |
-| #914 Item 6 (drill/replay at a sha with every #918 change; free hours or synthetic; md5 and counts only; two runs equal; planted future print raises LeakageError; ChainSource + prefetcher not FakeChain; restart equal; arm permutation equal; regime drill) | **PENDING (MANAGER fills)** | at the final sha 5071e29a: 9-drill job **#1642** (placeholder: exit code, log md5, peak RSS, output sha256 once it finishes) and real-layout replay **#1643** (placeholder: PASS/FAIL under the PASS rule in row 28, 3 runs md5 equal incl. fast_scan off, peak RSS, scan p95, :02 tick p95, `max_candidates_per_scan`, `scans_cap_bound`, 72/72 hours, output sha256). #1639/#1640 passed at 646f61a6 and are superseded by #939. A FAIL is a code fix at a new sha, never a limit change. |
+| #914 Item 6 (drill/replay at a sha with every #918 change; free hours or synthetic; md5 and counts only; two runs equal; planted future print raises LeakageError; ChainSource + prefetcher not FakeChain; restart equal; arm permutation equal; regime drill) | **PENDING: re-run at `<FINAL_SHA_AFTER_943>` (MANAGER fills)** | **Will be re-run at the final sha** (QP #943 post-merge conditions): 9 drills plus the halt drill, job #____: exit ____, log md5 ____, cards md5 ____, peak ____ MB, output sha256 ____; then the 3-run real-layout replay, job #____: PASS/FAIL ____ under row 28, md5 r1 = r2 = r3 ____ (run 3 fast_scan off), cards md5 ____, peak RSS ____ MB, scan p95 ____ ms, :02-tick p95 ____ ms, `max_candidates_per_scan` ____, `scans_cap_bound` ____, hours ____/72, output sha256 ____. **Superseded at 5071e29a, kept on record (QP #940 change 5 figures):** #1642 (drill id item6-5071e29afe-20261026T114657Z) PASS, exit 0, log md5 `b5e4f17e02bee46a5b38f6a6a95d8aa0`, cards md5 `ab923e6b8cc226d5031abce2bcd7ba36`, peak 69 MB; #1643 (drill id real-5071e29a-r16g-20261026) PASS, exit 0, log md5 `1ba56097a51e8902bc5a16d4f1e2c341` in runs 1, 2 and 3, cards md5 `120dbe2aba1c4e66e44f5825b2df589a`, peak RSS 2,664.6 MB, scan p95 479.51 ms (< 500: the :02-tick rule report-only; :02-tick p95 502.27 ms), `max_candidates_per_scan` 130, `scans_cap_bound` 0, 72/72 hours. Output sha256s: neither job printed one (its log lines carry md5s and counts only); the drill ids name the outputs. #1639/#1640 passed at 646f61a6 and are superseded too. A FAIL is a code fix at a new sha, never a limit change. |
 | #914 Item 7 | P0 at the final sha under S1-S7, day list fixed first, MiScusi job with MemoryMax; later scanner/board/cap change = new sha and P0 again | MANAGER | section 7a |
-| #914 Item 7 | smoke reports take, WATCH and STALE counts, token and latency figures, chain calls/h vs 1,000, Helius credits; never names pools; pricing off or its ledger never opened; as_of_refusal or chain_stale above a small fraction = failed smoke | tool built | section 7b |
+| #914 Item 7 | smoke reports take, WATCH and STALE counts, token and latency figures, chain calls/h vs 1,000, Helius credits; never names pools; pricing off or its ledger never opened; as_of_refusal or chain_stale above a small fraction = failed smoke | tool built; the limit is the combined 5% of cards attempted (QP #940 (s3)) | section 7b, row 29 |
 | #917 | registration carries every constant in #917 (incl. regime max_tokens 1,200 = assumed output) and the "example BUY anchors toward the wide plan" note | MET | section 5 rows 10-16 |
 | #917 | list `ledger_unreadable` among the written stops (R8) | MET | section 5 row 31 |
 | #917 R-a | group policy once per tick for all five arms | MET (QP #918 OK) | |
@@ -332,26 +332,53 @@ Status: MET (where) / MANAGER (a step for the manager, with the spot in this pac
 | #918 7 | a6 sentence names the runner's engine; `order_refused` logs class only; no `start_all` | MET | section 6 |
 | #918 (reviewer) | G2 path test at the frozen sha; Helius env file outside the guard disclosed | MET; D10 | |
 | #921 C1 | no v6.N (N >= 1) registers until the runner takes the release from the registration and runs `releases/v6.N/` | LATER (v6.0 not blocked) | |
-| #921 C2 | `<HV6_ROOT>/drill/` never an input to any count/read/regime-day list | MET (text) | D6 |
+| #921 C2 | `<HV6_ROOT>/drill/` never an input to any count/read/regime-day list | MET (text); extended to `smoke/` (QP #940 change 8) | D6 |
 | #921 C3 | P's residual information; the file at the frozen sha that enforces each deferred rule; nightly at 00:05Z | text provided; function names MANAGER to confirm | D1, D2, section 8 |
 | #921 C4 | the values table | MET | section 1 |
 | #923 | G5 rows: reviewer-moved knob replaces the model's value; tightening takes the tighter; refused version halts all five arms (written stop); versions apply at the minute tick; list manifest-refused days beside L - X and F - X in each read | rows MET; the read listing LATER | rows 23-25, 31 |
-| #923 | the 9-drill job re-runs at the final registration sha; the real-layout replay runs at that same sha; registration cites both job ids, the sha and the output sha256s | PENDING: jobs #1642 (drills) and #1643 (real-layout) at 5071e29a; MANAGER cites job ids, sha and output sha256s once they finish | |
-| #930 | G5 row `WATCH_MAX_POOLS` with kept set and the replay's `max_candidates_per_scan` / `scans_cap_bound`; each read reports the count of SCAN rows with `watch_capped > 0` | text MET; `scans_cap_bound` is pending #1643; both figures from job #1643 (MANAGER pastes them) | row 26, D7 |
+| #923 | the 9-drill job re-runs at the final registration sha; the real-layout replay runs at that same sha; registration cites both job ids, the sha and the output sha256s | PENDING: both re-run at `<FINAL_SHA_AFTER_943>` (#1642/#1643 at 5071e29a are superseded); MANAGER cites the new job ids, the sha and the output sha256s | #914 Item 6 row |
+| #930 | G5 row `WATCH_MAX_POOLS` with kept set and the replay's `max_candidates_per_scan` / `scans_cap_bound`; each read reports the count of SCAN rows with `watch_capped > 0` | text MET; the final-sha re-run's figures to fill (MANAGER); superseded #1643 at 5071e29a: 130 and 0 | row 26, D7 |
 | #930 | quote sweep and engine trim listed as decision-neutral with test names; 6 h eviction and no `engine.prune()` stated | MET | row 27 |
-| #930/#936 | both item-6 jobs re-run at the merged final sha (9 drills; real-layout at 16 GB, 3 runs) | MET at 5071e29a | |
+| #930/#936 | both item-6 jobs re-run at the merged final sha (9 drills; real-layout at 16 GB, 3 runs) | PENDING at `<FINAL_SHA_AFTER_943>` (were MET at 5071e29a, now superseded by the sha move) | #914 Item 6 row |
 | #936 | `fast_scan` recorded as decision-neutral by test names plus run 3 md5 equality; PASS-rule extension with its 2026-10-26 fixing date; full PASS rule quoted verbatim | MET | rows 18, 28 |
 | #936 | #1616's FAIL stays recorded as a FAIL at its sha | MET | D5 |
 
+### QP #940 (verdict CHANGES at 35690dd6, comment 6421493435) and QP #943 (CHANGES at b8d5640d, comment 6422223387)
+
+| Item | Condition | Status | Where |
+|---|---|---|---|
+| #940 route (1) | register at the final sha; P0 and both smokes run this PR's tools against the clean checkout at that sha | ACCEPTED by QP; text recorded | section 12 |
+| #940 route (a) | every job from `/data2/mal/wt/hv6-final` at the final sha; engine `code_head` = registered `frozen_sha` | MANAGER (procedure) | sections 6-9 |
+| #940 route (b) | P0 and smoke notebook entries pin this PR's head sha and the sha256 of the three tools and three wrappers | MANAGER; sha256s listed | section 7 |
+| #940 route (c) | merging #940 later is records-only | text | section 12 |
+| #940 (s1)-(s5) | P0 first, producer running, mal-research-0, pinned entry before the job, smoke root never an input | MANAGER (procedure); (s3) in code | section 7b, D6 |
+| #940 change 1 | row 19: `sell_route` is a hard entry veto plus an exit log; creator source | MET (text) | row 19 |
+| #940 change 2 | last nightly 2026-11-10T00:05Z, 11 nights, 33 jobs; MANAGER question removed | MET (text) | sections 2, 8 |
+| #940 change 3 | K1: manager's request quoted with id beside the owner's full line | **PARTLY: owner line in full; request text not recoverable; QP to rule** | section 3 |
+| #940 change 4 | interpreter `/data/mal/venv/bin/python` in register, runner, genesis, nightly-review and verify | MET (text) | sections 6, 8, 9 |
+| #940 change 5 | item-6 figures and the section-1 label | MET as superseded 5071e29a figures; final-sha re-run blanks for the MANAGER | section 1, rows 26 and 28, D5, D7, #914 Item 6 row |
+| #940 change 6 | real-model reviewer smoke required | tool built (`tools/hv6_review_smoke.py`); pack section 7c; MANAGER runs it | section 7c |
+| #940 change 7 | radar successor keeps looping after an alert; each read lists dates with no radar run | MET: job #1647 | section 9b P1 |
+| #940 change 8 | D6 extended to `smoke/`; `hv6_read` refuses `smoke/` and `drill/` (item 10 test) | text MET; the test is LATER (build item 10) | D6 |
+| #943 (b)(i) | G5 changed-values row for the prompt rewrite | MET (text) | row 33 |
+| #943 (b)(ii) | re-pin GEN_v0, playbook header, review/regime templates, reviewer, regime template, regime spec (and bundle spec), procedure per arm, at the final sha | **TODO pins (MANAGER)** | section 1 |
+| #943 (b)(iii) | every 5071e29a citation moves to the final sha | MET: `<FINAL_SHA_AFTER_943>` everywhere a final sha belongs; 5071e29a stays only as the superseded label | whole pack |
+| #943 (d) | re-run at the final sha: 9 drills + halt drill, 3-run real-layout, P0, smoke; any pre-merge smoke, genesis or release manifest void for the LLM arms | MANAGER | section 6 step 0 |
+
 ## 12. Unmet items (stop-and-decide list)
 
-None of the earlier code gaps is open. #939 (final sha 5071e29a) closed them:
+None of the earlier code gaps is open. #939 (merged as 5071e29a, the base of #943 and of this PR) closed them:
 - **U1 (V2-1) CLOSED:** required `--entries-halt-ms` (1794355200000 = 2026-11-11T00:00Z); entries and LLM calls stop for all five arms, code exits run to completion.
 - **U2 (QP #918 (c)) CLOSED:** the `start` row carries the frozen sha, the pinned provider and `entries_halt_ms` before the first decision.
 - **U3 CLOSED:** `watch_added/fired/expired/no_card.<arm>` counters; the smoke prints them.
 
-**Still open, not code:** the item-6 results at 5071e29a (jobs #1642 and #1643, section 11), the radar successor job (9b P1) and the stable radar worktree (9b P2), LAB_STATE check line, fallback-clock choice line, full K1 text, feed-delay confirmation, QP OK on this head and a reviewer verdict.
+**Still open, not code:** #943's merge and the sed for `<FINAL_SHA_AFTER_943>`; the section-1 TODO pins at that sha; the item-6 re-runs at that sha (section 11); P0, the smoke and the reviewer smoke at that sha; the stable radar worktree (9b P2) if not yet made; the LAB_STATE check line; the fallback-clock choice line; QP's ruling on K1 (the manager's request text is not recoverable, section 3); feed-delay confirmation; QP OK on this head and a reviewer verdict.
 
-**OPEN QUESTION FOR QP (tooling sha).** The runner registers at the final sha `5071e29afe473b6c9ff1f753bf045345e722b0f6`. The P0 count tool, the smoke tool, their wrappers and this pack live in PR #938, which adds files only and no runner code (a diff of this branch against 5071e29a shows only new tools, scripts, tests and this pack, plus the smoke wrapper and tool pins on `scripts/ops/hv6-*.sh` and `tools/hv6_smoke.py`/`hv6_p0_count.py`, all new in this PR). Both tools take the rule code from a clean checkout at 5071e29a (`--repo`) and refuse any other sha, so the P0 counts and the smoke exercise exactly the registered runner code; the tools themselves only count (P0) or wrap the same `Runner` (smoke). Question: is it acceptable that the runner registers at 5071e29a while P0 and the smoke run from this PR's head (tools pinned by sha256 in the fixed-first and smoke notebook entries), or must #938 merge first and the registration sha become that merge commit? The second route moves the sha: item 6 (#1642/#1643), P0 and the smoke would re-run at the merge commit and every sha in this pack changes again. Until QP rules, this pack assumes the first route.
+**QP's route ruling (QP #940, comment 6421493435, section (1), at 35690dd6; the sha it names is updated here to the final sha):** "the first route is ACCEPTED." The runner registers at the final sha; P0 and the smokes use this PR's tools, which import the rule code from `--repo` (a clean checkout at the final sha), refuse any other sha or a dirty tree, and add nothing the runner imports. Conditions:
+- (a) The runner, the genesis, nightly-review and verify commands, and the regime producer all run from the clean detached checkout `/data2/mal/wt/hv6-final` at the final sha, never from `main` after #940 merges. The engine stamps `code_head` on every open row, and it must equal the registered `frozen_sha`.
+- (b) The P0 and smoke notebook entries pin this PR's head sha and the sha256 of `tools/hv6_p0_count.py`, `tools/hv6_smoke.py`, `tools/hv6_review_smoke.py` and the three wrappers (section 7; QP named the first two tools and their two wrappers, and the reviewer-smoke tool and wrapper, added after 35690dd6 for change 6, are pinned the same way). If any of those blobs changes before registration, that step re-runs. Pack-text edits do not count.
+- (c) Merging #940 later is records-only and changes no registered value.
+
+QP's ruling named 5071e29a as the final sha and said "no fourth item-6 run". The sha has since moved to the #943 merge (owner's playbook/template fix, 2026-10-26; QP #943 verdict), so item 6 does re-run at `<FINAL_SHA_AFTER_943>`, together with P0 and both smokes (section 6 step 0). **QP to confirm on this head that the route ruling carries over to the moved sha.**
 
 No edge claim. HV6 has 0 out-of-sample trades and no clock. No book has cleared the promotion gate. Paper only.
