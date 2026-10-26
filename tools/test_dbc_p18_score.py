@@ -402,7 +402,7 @@ def test_default_load_on_a_synthetic_backfill_layout(monkeypatch):
         try:
             Dd = P.default_load(str(root), CLOCK, D(2026, 11, 2, 2), str(bm), lambda ks: fetched.append(ks) or {}, out)
             assert (out / "cfg_map_final.json").exists() and not fetched and P.R.scan_configs.__name__  # map written INSIDE the out dir; every config was in the base map
-            assert len(Dd["good_hours"]) == 3 and not Dd["bad_hours"] and len(Dd["pool_names"]) >= 3
+            assert len(Dd["good_hours"]) == 3 and len(Dd["bad_hours"]) == 1 and Dd["hours_needed"] == 4 and len(Dd["pool_names"]) >= 3
             assert (L.FWD_ACTIVE, L.FWD_START, L.FWD_END) == old
             pf = P.make_price_fn(Dd)  # the pricer runs on the loaded window; keys that do not exist are full loss (AM2 counts), nothing raises
             r = pf([("nokey", D(2026, 11, 2, 1).timestamp())], 1.9)
@@ -452,11 +452,11 @@ def test_backfill_preflight_mirrors_the_m10_rule_and_runs_before_the_claim():
         root = Path(td) / "bf"
         root.mkdir()
         s0, e0 = P.window_hours(clock, B)
-        assert (s0, e0) == (D(2026, 11, 2), D(2026, 11, 2, 3))  # one tail hour past B
+        assert (s0, e0) == (D(2026, 11, 1, 23), D(2026, 11, 2, 3))  # one lead hour before the clock, one tail hour past B
         ok, why = P.backfill_preflight(str(root), clock, B)
-        assert not ok and "missing_3_of_3" in why
-        for h in range(3):
-            (root / f"tape-2026-11-02T{h:02d}.jsonl.zst").write_text("x")
+        assert not ok and "missing_4_of_4" in why
+        for n in ["2026-11-01T23"] + [f"2026-11-02T{h:02d}" for h in range(3)]:
+            (root / f"tape-{n}.jsonl.zst").write_text("x")
         t = time.time()
         ok, why = P.backfill_preflight(str(root), clock, B, now=t)
         assert not ok and "newest_mtime_only" in why  # a writer may still be active
@@ -471,12 +471,53 @@ def test_backfill_preflight_mirrors_the_m10_rule_and_runs_before_the_claim():
         assert rc == 5 and not Path(marker).exists() and not out.exists()
 
 
-def test_default_load_bar_on_bad_hours(monkeypatch):
-    from tools import dbc_fwd_read as RR
-    monkeypatch.setattr(RR, "MAX_BAD_HOURS", 0)  # 3 present hours but one extra needed hour missing -> over the bar
-    saved = (dict(L.CFG_THR), set(L.CFG_XFER), set(L.CFG_UNMAPPED))
+def _seven_bad_hours(monkeypatch, n_bad=7):
+    """default_load with the real window/guard code but a stubbed config scan and a stubbed load_exploration that returns `n_bad` bad hours (R.MAX_BAD_HOURS is 6)."""
     monkeypatch.setattr(L, "SWAP3_IS_HOOK", L.SWAP3_IS_HOOK)
     monkeypatch.setattr(L, "FOB_EVIDENCE", L.FOB_EVIDENCE)
+    monkeypatch.setattr(L, "CFG_THR", dict(L.CFG_THR))
+    monkeypatch.setattr(L, "CFG_XFER", set(L.CFG_XFER))
+    monkeypatch.setattr(L, "CFG_UNMAPPED", set(L.CFG_UNMAPPED))
+    monkeypatch.setattr(R, "scan_configs", lambda root: {})
+    monkeypatch.setattr(R, "resolve_configs", lambda counts, base, fetch: ({}, {"unmapped": [], "unmapped_row_share": 0.0}))
+    monkeypatch.setattr(S, "load_exploration", lambda root=None, log=print, start=None, end=None: {"bad_hours": list(range(n_bad)), "good_hours": [99]})
+
+
+def test_default_load_refuses_seven_bad_hours_and_accepts_six(monkeypatch):
+    assert R.MAX_BAD_HOURS == 6
+    _seven_bad_hours(monkeypatch, 7)
+    with tmp() as td:
+        bm = Path(td) / "b.json"
+        bm.write_text("{}")
+        out = Path(td) / "o"
+        out.mkdir()
+        with pytest.raises(P.ScoreRefused, match=r"7 hours missing/incomplete"):
+            P.default_load(td, CLOCK, D(2026, 11, 2, 2), str(bm), lambda ks: {}, out)
+        assert L.FWD_ACTIVE is None  # window globals restored
+        monkeypatch.setattr(S, "load_exploration", lambda root=None, log=print, start=None, end=None: {"bad_hours": list(range(6)), "good_hours": [99]})
+        assert P.default_load(td, CLOCK, D(2026, 11, 2, 2), str(bm), lambda ks: {}, out)["bad_hours"] == list(range(6))  # exactly at the bar passes
+
+
+def test_run_with_seven_bad_hours_claims_the_marker_and_writes_not_decidable(monkeypatch):
+    _seven_bad_hours(monkeypatch, 7)
+    with tmp() as td:
+        root, out, marker, st = _wired(td)
+        bm = Path(td) / "b.json"
+        bm.write_text("{}")
+        load = lambda c, B, od: P.default_load(td, c, B, str(bm), lambda ks: {}, od)  # noqa: E731
+        rc = P.run(str(root), CLOCK, out, D(2026, 11, 8), str(st), marker=marker, load_fn=load, base_map=str(bm), price_fn_factory=lambda D_, c, B: fake_price(pnl_wave))
+        assert rc == 0 and Path(marker).exists()  # the look is consumed
+        rec = json.loads((out / P.OUT_JSON).read_text())
+        assert rec["verdict"] == "NOT_DECIDABLE" and "7 hours missing/incomplete" in rec["reason"] and "deciding" not in rec
+        assert "NOT_DECIDABLE" in (out / P.OUT_MD).read_text()
+
+
+def test_default_load_with_no_hour_files_refuses_as_no_usable_hours(monkeypatch):
+    monkeypatch.setattr(L, "SWAP3_IS_HOOK", L.SWAP3_IS_HOOK)
+    monkeypatch.setattr(L, "FOB_EVIDENCE", L.FOB_EVIDENCE)
+    monkeypatch.setattr(L, "CFG_THR", dict(L.CFG_THR))
+    monkeypatch.setattr(L, "CFG_XFER", set(L.CFG_XFER))
+    monkeypatch.setattr(L, "CFG_UNMAPPED", set(L.CFG_UNMAPPED))
     with tmp() as td:
         root = Path(td) / "bf"
         root.mkdir()
@@ -484,11 +525,98 @@ def test_default_load_bar_on_bad_hours(monkeypatch):
         bm.write_text("{}")
         out = Path(td) / "o"
         out.mkdir()
-        try:
-            with _raises(P.ScoreRefused):  # no hour file at all: refuses (no usable hours), globals restored
-                P.default_load(str(root), CLOCK, D(2026, 11, 2, 2), str(bm), lambda ks: {}, out)
-        finally:
-            L.CFG_THR.clear(); L.CFG_THR.update(saved[0]); L.CFG_XFER.clear(); L.CFG_XFER.update(saved[1]); L.CFG_UNMAPPED.clear(); L.CFG_UNMAPPED.update(saved[2])
+        with pytest.raises(P.ScoreRefused, match="no usable backfill hours"):  # this is load_exploration's refusal, NOT the bad-hour bar
+            P.default_load(str(root), CLOCK, D(2026, 11, 2, 2), str(bm), lambda ks: {}, out)
+    assert L.FWD_ACTIVE is None
+
+
+def test_guard_floor_is_11_01_01():
+    assert P.GUARD_FLOOR == D(2026, 11, 1, 1)
+    for s_ in (D(2026, 11, 1), D(2026, 11, 1, 0), D(2026, 10, 31, 23)):
+        with _raises(P.ScoreRefused):
+            with P.p18_window("/x", s_, D(2026, 11, 2)):
+                pass
+    with P.p18_window("/x", D(2026, 11, 1, 1), D(2026, 11, 2)):
+        assert L.FWD_START == D(2026, 11, 1, 1)
+    assert L.FWD_ACTIVE is None
+
+
+def test_lead_hour_is_loaded_before_the_clock_and_clamped_to_the_floor():
+    assert P.window_hours(D(2026, 11, 6), D(2026, 11, 10)) == (D(2026, 11, 5, 23), D(2026, 11, 10, 1))
+    assert P.window_hours(D(2026, 11, 1, 1, 30), D(2026, 11, 5))[0] == D(2026, 11, 1, 1)  # clamped: the 00 hour is never loaded
+    assert P.window_hours(D(2026, 11, 1, 0, 10), D(2026, 11, 5))[0] == D(2026, 11, 1, 1)
+    assert "first 120 s" in P.BAD_HOUR_NOTE
+
+
+def test_bad_hour_reason_is_printed():
+    with tmp() as td:
+        write_log(td, days(5, 20))
+        r = P.score(P.load_decisions(td, CLOCK), CLOCK, D(2026, 11, 8), fake_price(pnl_wave), 0)
+        assert r["bad_hour_note"] == P.BAD_HOUR_NOTE
+        assert "bad_hour_excluded" in P.write(Path(td), r) and "lead hour" in (Path(td) / P.OUT_MD).read_text()
+
+
+def test_test_window_only_inside_exploration_hours():
+    for s_, e_ in ((D(2026, 10, 16, 23), D(2026, 10, 17, 1)), (D(2026, 10, 17), D(2026, 10, 18)), (D(2026, 10, 24), D(2026, 10, 25)), (D(2026, 10, 25), D(2026, 11, 1, 1)),
+                   (D(2026, 11, 1), D(2026, 11, 2)), (D(2026, 11, 2), D(2026, 11, 3)), (D(2026, 10, 13, 23), D(2026, 10, 14, 2)), (D(2026, 10, 14, 0, 30), D(2026, 10, 15))):
+        with _raises(P.ScoreRefused):
+            with P.test_window("/x", s_, e_):
+                pass
+    with P.test_window("/x", D(2026, 10, 14), D(2026, 10, 17)):
+        assert (L.FWD_ACTIVE, L.FWD_START, L.FWD_END) == ("/x", D(2026, 10, 14), D(2026, 10, 17))
+    assert L.FWD_ACTIVE is None
+    with _raises(P.ScoreRefused):  # default_load with test hours outside the exploration range refuses too
+        P.default_load("/x", D(2026, 10, 15), D(2026, 10, 18), "/nope", lambda ks: {}, Path("/nonexistent"), test_hours=(D(2026, 10, 16), D(2026, 10, 18)))
+    assert L.FWD_ACTIVE is None
+
+
+def test_dry_real_layout_refuses_real_clock_and_sealed_hours(monkeypatch):
+    for clock, win in ((P.EARLIEST_CLOCK, (D(2026, 10, 14), D(2026, 10, 15))), (D(2026, 11, 6), (D(2026, 10, 14), D(2026, 10, 15))), (D(2026, 10, 17), (D(2026, 10, 17), D(2026, 10, 18))),
+                       (D(2026, 10, 16), (D(2026, 10, 16), D(2026, 10, 18))), (D(2026, 10, 13), (D(2026, 10, 14), D(2026, 10, 15)))):
+        with _raises(P.ScoreRefused):
+            P.dry_real_layout("/x", clock, win[0], win[1], "/nope")
+
+
+def test_dry_real_layout_cli_needs_all_flags_and_prints_counts_only(monkeypatch, capsys):
+    for argv in (["--test-window", "2026-10-14T00:00:00Z", "2026-10-15T00:00:00Z"], ["--dry-real-layout", "--counts-only"], ["--dry-real-layout", "--test-window", "2026-10-14T00:00:00Z", "2026-10-15T00:00:00Z"],
+                 ["--counts-only", "--test-window", "2026-10-14T00:00:00Z", "2026-10-15T00:00:00Z", "--backfill-root", "/x"]):
+        with pytest.raises(SystemExit):
+            P.main(["--log-root", "/x", "--clock", "2026-10-14T00:00:00Z", *argv])
+    # sealed window through main: refused (rc 6), nothing loaded
+    assert P.main(["--log-root", "/x", "--clock", "2026-10-17T00:00:00Z", "--counts-only", "--dry-real-layout", "--test-window", "2026-10-17T00:00:00Z", "2026-10-18T00:00:00Z", "--backfill-root", "/x"]) == 6
+    # a synthetic layout inside the exploration hours: counts only, no money fields
+    from tools import test_dbc_fwd as T
+    import subprocess
+    monkeypatch.setattr(L, "SWAP3_IS_HOOK", L.SWAP3_IS_HOOK)
+    monkeypatch.setattr(L, "FOB_EVIDENCE", L.FOB_EVIDENCE)
+    monkeypatch.setattr(L, "CFG_THR", dict(L.CFG_THR))
+    monkeypatch.setattr(L, "CFG_XFER", set(L.CFG_XFER))
+    monkeypatch.setattr(L, "CFG_UNMAPPED", set(L.CFG_UNMAPPED))
+    delta = int(D(2026, 10, 15).timestamp()) - T.T0
+    with tmp() as td:
+        root = Path(td) / "bf"
+        root.mkdir()
+        rows = T.synth_rows()
+        for h in range(3):
+            lo, hi = (T.T0 + 3600 * h) * 1000, (T.T0 + 3600 * (h + 1)) * 1000
+            lines = [json.dumps({"v": 1, "venue": "meteora_dbc", "type": "backfill_hour", "hour": h}, separators=(",", ":"))]
+            for r in rows:
+                if lo <= r["t_recv_ms"] < hi:
+                    lines.append(json.dumps({**r, "config": CFG_NAMES.get(r["config"], r["config"]), **({"block_time": r["block_time"] + delta} if "block_time" in r else {}), "t_recv_ms": r["t_recv_ms"] + delta * 1000}, separators=(",", ":")))
+            lines.append(json.dumps({"v": 1, "venue": "meteora_dbc", "type": "backfill_hour_end"}, separators=(",", ":")))
+            name = root / f"tape-2026-10-15T{h:02d}.jsonl"
+            name.write_text("\n".join(lines) + "\n")
+            subprocess.run(["zstd", "-q", "--rm", "-f", str(name), "-o", str(name) + ".zst"], check=True)
+        bm = Path(td) / "base.json"
+        bm.write_text(json.dumps({c: {"thr": 85 * 10**9, "transfer_fee_bps": 0} for c in CFG_NAMES.values()}))
+        rc = P.main(["--log-root", "/x", "--clock", "2026-10-15T00:00:00Z", "--counts-only", "--dry-real-layout", "--test-window", "2026-10-15T00:00:00Z", "2026-10-15T03:00:00Z",
+                     "--backfill-root", str(root), "--base-map", str(bm)])
+        out = capsys.readouterr().out
+        assert rc == 0
+        j = json.loads(out[out.index("{\n"):])  # the loader logs per-hour row counts first
+        assert j["test_only"] and j["outcome_fields_read"] is False and j["pnl_printed"] is False and j["good_hours"] == 3 and j["n_index_keys"] > 0 and j["n_items_resolved"] > 0
+        for bad in ("pnl", "mean", "total", "verdict", "fills"):
+            assert not [k for k in j if bad in k and k != "pnl_printed"] and bad not in json.dumps(j["resolve_counts"])
     assert L.FWD_ACTIVE is None
 
 
