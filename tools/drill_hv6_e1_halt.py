@@ -13,6 +13,7 @@ from typing import Any
 from tools import drill_hv6_item6 as D6
 from tools import hv6_runner as R
 
+E = D6.START - 2 * D6.MIN   # the synthetic tape's one entry tick when the replay starts at START - 3 min (X at it, the LLM arms 50 ms later by the stub latency)
 _STRIP = ("seq", "prev", "sha")
 
 
@@ -20,45 +21,49 @@ def _strip(rs) -> list[dict]:
     return [{k: v for k, v in r.items() if k not in _STRIP} for r in rs]
 
 
-def drill_e1_halt(D: D6.Drill) -> dict:
-    ref = D.new_run("e1ref")                       # the uninterrupted run, no halt
-    ref.run(D6.START, D6.END)
-    ents = sorted((r["ms"], a) for a in R.ARM_ORDER for r in D6.rows(ref, a, "entry"))
-    after_stop = [e for e in ents if e[0] >= D6.MID]
-    if len(after_stop) < 2:
-        return {"drill": "e1_halt", "result": "FAIL", "why": "reference_has_fewer_than_2_entries_after_stop", "ref_entries_after_stop": len(after_stop)}
-    halt = after_stop[len(after_stop) // 2][0]     # strictly inside the entries that follow the stop: some enter before it, some would enter at/after it
-    if halt <= D6.MID:
-        halt = after_stop[-1][0]
-    r1 = D.new_run("e1")
-    r1.run(D6.START, D6.MID)
+def _case(D: D6.Drill, ref: R.Runner, tag: str, stop: int, halt: int) -> dict:
+    """Run to `stop`, drop the runner, build a NEW one over the same dirs, set the earlier entries-halt, resume(), run to the window end."""
+    r1 = D.new_run(tag)
+    r1.run(D6.START - 3 * D6.MIN, stop)
     open_at_stop = sum(len(b.open) for b in r1.books.values())
     del r1
-    r2 = D.new_run("e1")                           # new Runner over the same logs and ledger, as a host restart would be
+    r2 = D.new_run(tag)                            # new Runner over the same logs and ledger, as a host restart would be
     r2.cfg.entries_halt_ms = halt                  # the restart flag --entries-halt-ms (earlier than the window end END)
     res = r2.resume()
-    r2.run(D6.MID, D6.END)
+    r2.run(stop, D6.END)
     for x in (*R.ARM_ORDER, "SCAN"):
         r2.log.verify(x)                           # raises LogChainError on a break
-    per = {a: {"entries_after_halt": sum(1 for r in D6.rows(r2, a, "entry") if r["ms"] >= halt),
-               "llm_rows_after_halt": sum(1 for r in D6.rows(r2, a) if r["ms"] >= halt and r["kind"] in ("llm_call", "watch_add")),
-               "entries_stop_to_halt": sum(1 for r in D6.rows(r2, a, "entry") if D6.MID <= r["ms"] < halt),
-               "ref_entries_stop_to_halt": sum(1 for r in D6.rows(ref, a, "entry") if D6.MID <= r["ms"] < halt)} for a in R.ARM_ORDER}
+    per = {}
+    for a in R.ARM_ORDER:
+        mine, theirs = D6.rows(r2, a, "entry"), D6.rows(ref, a, "entry")
+        per[a] = {"entries_after_halt": sum(1 for r in mine if r["ms"] >= halt),
+                  "llm_rows_after_halt": sum(1 for r in D6.rows(r2, a) if r["ms"] >= halt and r["kind"] in ("llm_call", "watch_add")),
+                  "entries_before_halt": sum(1 for r in mine if r["ms"] < halt), "ref_entries_before_halt": sum(1 for r in theirs if r["ms"] < halt)}
     ref_after = sum(1 for a in R.ARM_ORDER for r in D6.rows(ref, a, "entry") if r["ms"] >= halt)
-    llm_arms = [a for a in R.ARM_ORDER if R.A.ARMS[a].llm]
-    before_equal = all(_strip(r for r in D6.rows(r2, x) if r["ms"] < halt) == _strip(r for r in D6.rows(ref, x) if r["ms"] < halt) for x in (*R.ARM_ORDER, "SCAN"))
+    ref_before_x = per["X"]["ref_entries_before_halt"]
     p = D6.positions(r2)
-    halt_rows = D6.rows(r2, "SCAN", "entries_halt")
-    ok = (before_equal and ref_after > 0
-          and all(per[a]["entries_after_halt"] == 0 and per[a]["llm_rows_after_halt"] == 0 for a in R.ARM_ORDER)
-          and per["X"]["entries_stop_to_halt"] == per["X"]["ref_entries_stop_to_halt"] and per["X"]["entries_stop_to_halt"] > 0   # X continued until the halt, as the reference
-          and all(per[a]["entries_stop_to_halt"] == per[a]["ref_entries_stop_to_halt"] for a in llm_arms)
-          and len(halt_rows) == 1 and len(D6.rows(r2, "SCAN", "run_complete")) == 1
-          and p["positions"] == p["distinct_positions"] and p["sell_rows"] == p["distinct_closed"] and p["positions"] == p["distinct_closed"] + p["open_now"]
-          and p["positions"] > 0 and p["open_now"] == 0)
-    return {"drill": "e1_halt", "result": "PASS" if ok else "FAIL", "halt_ms_after_stop": halt - D6.MID, "window_end_minus_halt_ms": D6.END - halt,
-            "ref_entries_at_or_after_halt": ref_after, "rows_before_halt_equal_to_reference": before_equal, "open_at_stop": open_at_stop, "resume": res,
-            "per_arm": per, "positions": p, "log_md5": D6.log_md5(r2.cfg.root), "api_calls": 0}
+    return {"case": tag, "halt_minus_entry_tick_ms": halt - E, "stop_minus_entry_tick_ms": stop - E, "ref_entries_at_or_after_halt": ref_after,
+            "ref_x_entries_before_halt": ref_before_x, "open_at_stop": open_at_stop, "resume": res, "per_arm": per, "positions": p, "halt_rows": len(D6.rows(r2, "SCAN", "entries_halt")),
+            "run_complete_rows": len(D6.rows(r2, "SCAN", "run_complete")), "log_md5": D6.log_md5(r2.cfg.root),
+            "entries_after_halt_total": sum(v["entries_after_halt"] for v in per.values()), "llm_rows_after_halt_total": sum(v["llm_rows_after_halt"] for v in per.values()),
+            "arms_equal_ref_before_halt": all(v["entries_before_halt"] == v["ref_entries_before_halt"] for v in per.values()),
+            "chain_ok": True, "positions_ok": (p["positions"] == p["distinct_positions"] and p["sell_rows"] == p["distinct_closed"]
+                                              and p["positions"] == p["distinct_closed"] + p["open_now"] and p["open_now"] == 0)}
+
+
+def drill_e1_halt(D: D6.Drill) -> dict:
+    """Two restarts of the same replay. The synthetic tape gives one entry tick (all arms at the first tick; X at it, the LLM arms 50 ms later by the stub latency).
+    A: stop before it, resume with halt = the entry tick: nobody may enter (the reference has entries at/after this halt, so the check is not vacuous).
+    B: stop before it, resume with halt = entry tick + 500 ms: X and the LLM arms enter exactly as the reference (they continue up to the halt), and nothing after it."""
+    ref = D.new_run("e1ref")                       # the uninterrupted run, no halt
+    ref.run(D6.START - 3 * D6.MIN, D6.END)
+    A = _case(D, ref, "e1a", E - 1000, E)
+    B = _case(D, ref, "e1b", E - 1000, E + 500)
+    okA = (A["ref_entries_at_or_after_halt"] > 0 and A["entries_after_halt_total"] == 0 and A["llm_rows_after_halt_total"] == 0 and A["halt_rows"] == 1
+           and A["run_complete_rows"] == 1 and A["positions_ok"])
+    okB = (B["ref_x_entries_before_halt"] > 0 and B["arms_equal_ref_before_halt"] and B["entries_after_halt_total"] == 0 and B["llm_rows_after_halt_total"] == 0
+           and B["halt_rows"] == 1 and B["run_complete_rows"] == 1 and B["positions_ok"] and B["positions"]["positions"] > 0)
+    return {"drill": "e1_halt", "result": "PASS" if okA and okB else "FAIL", "caseA_ok": okA, "caseB_ok": okB, "A": A, "B": B, "api_calls": 0}
 
 
 def main(argv: list[str] | None = None) -> int:
