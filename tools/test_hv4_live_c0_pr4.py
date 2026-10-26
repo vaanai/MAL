@@ -141,10 +141,10 @@ class ReadRecordPureTests(TmpCase):
         write_read_record(d, ARM)
         why, ident = c0.read_record_problem(d, ARM)
         raw = p.read_bytes()
-        p.unlink()
-        p.write_bytes(raw)  # same bytes, new inode
-        if (os.stat(p).st_ino) == ident["ino"]:
-            self.skipTest("filesystem reused the inode")
+        fresh = Path(d) / "fresh.tmp"
+        fresh.write_bytes(raw)  # created while the old file still exists: a different inode
+        os.replace(fresh, p)  # same bytes, new inode
+        self.assertNotEqual(os.stat(p).st_ino, ident["ino"])
         self.assertEqual(c0.read_record_problem(d, ARM, ident)[0], "read_record_changed")
         p.unlink()
         self.assertEqual(c0.read_record_problem(d, ARM, ident)[0], "read_record_missing")
