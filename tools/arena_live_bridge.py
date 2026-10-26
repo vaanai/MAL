@@ -370,6 +370,8 @@ class Bridge:
             self.gates = c0p.build_gates(cfg.parity_dir, cfg.twins_file, cfg.tieout_dir, cfg.stop_file, self._parity_state, runner=parity_runner)
         self._last_sell_try: dict[str, int] = {}
         self._verify_at_start()
+        if "chain_break" not in self.state.latches and "sealed_path" not in self.state.latches:
+            self._chain_ok_ms = self.now_ms()  # verified just now
         self.reconcile()
 
     # -- plumbing
@@ -520,7 +522,7 @@ class Bridge:
         if not rows:
             return
         now = self.now_ms()
-        by_mint = {o["mint"]: o for o in self.state.orders.values() if o.get("live")}
+        by_mint = {o["mint"]: o for o in self.state.orders.values()}
         for kind, mint, kw in rows:
             o = by_mint.get(mint)
             if kind == "buy":
@@ -899,11 +901,12 @@ class Bridge:
         self._poll_ports()
         n = 0
         if not Path(self.cfg.halt_file).exists():
-            for row in self.read_new_rows():
+            rows = self.read_new_rows()
+            if "chain_break" not in self.state.latches and "sealed_path" not in self.state.latches:
+                self._chain_ok_ms = self.now_ms()  # the log was read and verified just now (the parity state's decision_chain stamp), before any entry in it is handled
+            for row in rows:
                 n += 1
                 self.handle_row(row)
-            if "chain_break" not in self.state.latches and "sealed_path" not in self.state.latches:
-                self._chain_ok_ms = self.now_ms()  # the log was read and verified just now (the parity state's decision_chain stamp)
             if n or self.state.latches:
                 self._save()
             self.backstops()
@@ -917,7 +920,8 @@ class Bridge:
             self.apply_events(self.dry_port.poll())
         if self.gates is not None:
             self.feed_ledger()
-            self.gates.maybe_run_parity(self.now_ms())  # off the hot path: every interval and after every landed buy or closed trip
+            if self._chain_ok_ms is not None:  # never before the first verified read: a stamp-less run would write a STOP file for nothing
+                self.gates.maybe_run_parity(self.now_ms())  # off the hot path: every interval and after every landed buy or closed trip
             self._latch_parity_hard()
 
     def run(self, poll_s: float = 0.05, once: bool = False, sleep: Callable[[float], None] = time.sleep) -> None:
