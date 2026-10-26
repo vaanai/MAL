@@ -106,6 +106,35 @@ class TwinFeesTests(unittest.TestCase):
         self.assertIsNone(twin_pin_problem(str(out), *c0.twin_pins()))
         self.assertEqual(json.loads(out.read_text().splitlines()[0])["sell_send_lamports"], 215_000)
 
+    def test_bypass_forms_are_refused_and_the_writer_is_never_called(self):
+        from unittest import mock
+        d = self._ledger()
+        ok = ["--trips", "t", "--out", "o", "--bot-id", ARM]
+        arena = "/data/mal/arena/zz"
+        with mock.patch.object(W, "main", side_effect=AssertionError("writer must not run")):
+            for argv in ([*ok, f"--ledger-dir={arena}"],
+                         [*ok, "--ledger-dir", str(d), "--ledger-dir", arena],
+                         [*ok, "--ledger-dir", arena, "--ledger-dir", str(d)],
+                         [*ok, "--ledger-dir", str(d), f"--ledger-dir={arena}"],
+                         [*ok, "--ledger-dir", str(d), "--ledger-di", arena],  # abbreviation
+                         ["--trips", "t", "--out", "o", "--bot-id=hv4-CON-L", f"--ledger-dir={d}"],
+                         [*ok, "--bot-id", "hv4-CON-L", "--ledger-dir", str(d)],
+                         [*ok, "--ledger-dir", str(d), "--config-hash=x"],
+                         [*ok, "--ledger-dir", str(d), "--buy-send=1"],
+                         [*ok, "--ledger-dir", str(d), "--shadow-dir", "x"]):
+                self.assertEqual(tw.main(argv), 2, argv)
+
+    def test_forwarded_argv_is_exactly_the_parsed_values_plus_pins(self):
+        from unittest import mock
+        d = self._ledger()
+        seen = []
+        with mock.patch.object(W, "main", side_effect=lambda a: seen.append(a) or 0):
+            self.assertEqual(tw.main(["--trips=t", "--out=o", f"--ledger-dir={d}", f"--bot-id={ARM}", "--now-ms=5"]), 0)
+        self.assertEqual(seen[0][seen[0].index("--ledger-dir") + 1], str(d))
+        self.assertEqual(seen[0].count("--ledger-dir"), 1)
+        self.assertEqual(seen[0][seen[0].index("--config-hash") + 1], c0.CONFIG_PIN_SHA256)
+        self.assertEqual(seen[0][seen[0].index("--now-ms") + 1], "5")
+
     def test_cli_refusals(self):
         d = self._ledger()
         base = ["--trips", "t", "--out", "o"]
@@ -159,6 +188,42 @@ class SellLadderLiveTests(LivePortScheduleTests):
         self.assertEqual(port.ex.slip_bps, 3500)
         port.ex._c0_sell_slip = None
         self.assertEqual(port.ex.slip_bps, base)
+
+    def test_clock_starts_only_when_a_sell_is_built(self):
+        from unittest import mock
+        from tools import probe_live as pl
+        port, rpc, clock, cfg = self._port(True)
+        mint, _ = self._buy(port, rpc, clock, cfg)
+        pos = port.ex.state.open[mint]
+        with mock.patch.object(pl.LiveExecutor, "_start_sell", return_value=None):
+            port.ex._start_sell(mint, pos, None, "book_exit", clock())  # an early return: nothing built
+        self.assertNotIn("c0_first_sell_ms", pos)
+        t0 = clock()
+
+        def build(self_, m, p, snap, reason, now, snapshot="full"):
+            self_.state.pending[m] = {"kind": "sell"}
+
+        with mock.patch.object(pl.LiveExecutor, "_start_sell", build):
+            port.ex._start_sell(mint, pos, None, "book_exit", t0)
+        self.assertEqual(pos["c0_first_sell_ms"], t0)
+        port.ex.state.pending.pop(mint)
+
+    def test_one_clock_value_for_rung_and_priority_at_the_boundary(self):
+        from unittest import mock
+        from tools import probe_live as pl
+        port, rpc, clock, cfg = self._port(True)
+        mint, _ = self._buy(port, rpc, clock, cfg)
+        pos = port.ex.state.open[mint]
+        pos["c0_first_sell_ms"] = clock() - c0.ESCALATE_AFTER_MS + 1  # one ms short of the bound at `now`
+        got = {}
+
+        def build(self_, m, p, snap, reason, now, snapshot="full"):
+            clock.t += 5  # the clock moves during the build; the priority must still follow the value the rung used
+            got["slip"], got["prio"] = self_.slip_bps, self_._priority(m)
+
+        with mock.patch.object(pl.LiveExecutor, "_start_sell", build):
+            port.ex._start_sell(mint, pos, None, "book_exit", clock())
+        self.assertEqual((got["slip"], got["prio"]), (1500, 55_000))
 
     def test_time_bound_moves_the_rung_with_the_priority(self):
         from tools.test_probe_live import land_sell
@@ -321,6 +386,15 @@ class GateWiringTests(TmpCase):
         b.feed_ledger()
         self.assertEqual(b.gates.recorder.trips[mint]["sell_fee_lamports"], 155_000 + 120_000)
         self.assertTrue(b.gates.recorder.trips[mint]["exit_landed"])
+
+    def test_decision_chain_stamp_goes_stale_when_the_reader_stalls(self):
+        e = self._env()
+        e.start()
+        b = self._bridge(e, lambda argv: 0)
+        b.tick()
+        self.assertIn("decision_chain", b._parity_state(e.clock())["at_ms"])
+        e.clock.t += c0p.CHAIN_FRESH_MS + 1  # no tick (no verified read) since
+        self.assertNotIn("decision_chain", b._parity_state(e.clock())["at_ms"])
 
     def test_dry_port_has_no_ledger_and_h5_path_has_no_gates(self):
         self.assertEqual(alb.DryPort(1).drain_ledger(), [])

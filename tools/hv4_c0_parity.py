@@ -20,6 +20,7 @@ from tools import hv4_live_c0 as c0
 from tools.h5_arena_gates import HARD_ARENA_HALTS, LiveGates, ParityRecorder, Runner, twin_run_stamp
 
 PATH_KEYS = ("parity_dir", "twins_file", "tieout_dir")
+CHAIN_FRESH_MS = 5_000  # the decision_chain stamp needs a verified read this young; a stalled reader loses the stamp (P7) instead of being stamped `now`
 RC_HARD = 11  # tools.arena_live_parity: a hard halt (P4); cleared only by the manager's written review and the owner
 RC_SOFT = 10
 # Latches that the Bridge treats as unresolved hard halts for the parity state (the tool's `unresolved_hard_halts`).

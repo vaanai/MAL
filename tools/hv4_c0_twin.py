@@ -13,6 +13,7 @@ Exit codes are the writer's (0 written, 2 refused / unusable input). Nothing her
 
 from __future__ import annotations
 
+import argparse
 import hashlib
 import os
 import sys
@@ -35,22 +36,45 @@ def refusal(bot_id: str, ledger_dir: str) -> str | None:
     return None
 
 
+class _Once(argparse.Action):
+    """Each option once. A repeat (in any spelling) is refused: the writer's argparse would take the LAST one, the guard must see the same value."""
+
+    def __call__(self, parser, ns, values, option_string=None):
+        if getattr(ns, "_seen", None) is None:
+            ns._seen = set()
+        if self.dest in ns._seen:
+            parser.error(f"{option_string} given twice")
+        ns._seen.add(self.dest)
+        setattr(ns, self.dest, values)
+
+
+def _parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="hv4_c0_twin", allow_abbrev=False, exit_on_error=False)
+    for a in ("trips", "ledger-dir", "bot-id", "out", "run-record"):
+        ap.add_argument(f"--{a}", action=_Once, required=a not in ("run-record",))
+    for a in ("join-tol-ms", "now-ms"):
+        ap.add_argument(f"--{a}", action=_Once, type=int)
+    return ap  # the writer's H5-only options and every pinned option (--config-hash, --buy-send, --sell-send) are unknown here: argparse refuses them
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    args = list(sys.argv[1:] if argv is None else argv)
-
-    def val(name: str) -> str | None:
-        return args[args.index(name) + 1] if name in args and args.index(name) + 1 < len(args) else None
-
-    why = refusal(val("--bot-id") or "", val("--ledger-dir") or "")
+    """Parse ONCE; the refusal runs on the parsed values and exactly those values are forwarded to the writer (no second parse of the raw argv)."""
+    try:
+        a = _parser().parse_args(list(sys.argv[1:] if argv is None else argv))
+    except (SystemExit, argparse.ArgumentError) as exc:
+        print(f"hv4_c0_twin: REFUSED unusable arguments ({exc})", file=sys.stderr)
+        return 2
+    why = refusal(a.bot_id, a.ledger_dir)
     if why:
         print(f"hv4_c0_twin: REFUSED {why}", file=sys.stderr)
         return 2
-    fixed = ["--config-hash", c0.CONFIG_PIN_SHA256, "--buy-send", str(c0.PRIORITY_PIN["buy"] + c0.BASE_FEE_LAMPORTS),
-             "--sell-send", str(c0.PRIORITY_PIN["sell"] + c0.BASE_FEE_LAMPORTS)]
-    if any(a in args for a in ("--config-hash", "--buy-send", "--sell-send", "--shadow-dir", "--frozen-root")):
-        print("hv4_c0_twin: REFUSED pinned option given", file=sys.stderr)
-        return 2
-    return W.main(args + fixed)
+    fwd = ["--trips", a.trips, "--ledger-dir", a.ledger_dir, "--bot-id", a.bot_id, "--out", a.out,
+           "--config-hash", c0.CONFIG_PIN_SHA256, "--buy-send", str(c0.PRIORITY_PIN["buy"] + c0.BASE_FEE_LAMPORTS),
+           "--sell-send", str(c0.PRIORITY_PIN["sell"] + c0.BASE_FEE_LAMPORTS)]
+    for name, v in (("--run-record", a.run_record), ("--join-tol-ms", a.join_tol_ms), ("--now-ms", a.now_ms)):
+        if v is not None:
+            fwd += [name, str(v)]
+    return W.main(fwd)
 
 
 if __name__ == "__main__":
