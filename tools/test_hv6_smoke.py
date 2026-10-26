@@ -4,7 +4,7 @@
   * the report names no pool, card, price (a marker pool id in the rows never reaches the output);
   * run_smoke(): refuses an existing smoke dir, a dir outside <HV6_ROOT>/smoke, a cap above 0.50, a missing key / RPC pin, MAL_HV4_CHAIN_STATE;
     on a synthetic tape it writes only under the smoke dir (decision log, registry, report.json), never the production registry path;
-  * main(): refuses --expect-sha without MAL_ARENA_TEST.
+  * main(): the sha is a required argument and must be 40 hex.
 """
 from __future__ import annotations
 
@@ -207,12 +207,11 @@ def test_regime_dir_is_linked_read_only_and_counted(tmp_path, smoke_parent):
     assert list(rd.iterdir()) == []
 
 
-def test_main_refuses_expect_sha_without_env(monkeypatch, capsys):
-    monkeypatch.delenv("MAL_ARENA_TEST", raising=False)
+def test_main_refuses_a_bad_sha(monkeypatch, capsys):
     assert S.main(["--repo", "x", "--smk", "/x", "--feed-delay-slots", "7", "--expect-sha", "abc"]) == 2
-    assert "MAL_ARENA_TEST" in capsys.readouterr().err
+    assert "40 hex" in capsys.readouterr().err
 
 
 def test_pinned_constants():
-    assert S.FINAL_SHA == "5071e29afe473b6c9ff1f753bf045345e722b0f6" and S.CAP_USD_MAX == 0.50
+    assert not hasattr(S, "FINAL_SHA") and S.CAP_USD_MAX == 0.50
     assert (S.STALE_FAIL_FRAC, S.CHUNK_P95_FAIL_MS, S.RPC_CALLS_PER_H) == (0.05, 8000, 1000)

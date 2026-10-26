@@ -122,7 +122,7 @@ def _cli(tmp_path, monkeypatch, tape, days, fixed_text):
     ff = tmp_path / "fixed-first.txt"
     ff.write_text(fixed_text)
     out = tmp_path / "out.jsonl"
-    argv = ["--repo", "x", "--tape-dir", str(tape), "--days", days, "--fixed-first", str(ff), "--out", str(out), "--warmup-min", "360"]
+    argv = ["--repo", "x", "--tape-dir", str(tape), "--days", days, "--fixed-first", str(ff), "--out", str(out), "--warmup-min", "360", "--expect-sha", "a" * 40]
     return argv, out, ff
 
 
@@ -154,9 +154,11 @@ def test_cli_refuses_fixed_first_missing_a_day(tmp_path, monkeypatch, capsys):
     assert "fixed_first_text_does_not_name_every_day" in capsys.readouterr().err
 
 
-def test_cli_refuses_test_overrides_without_env(monkeypatch, capsys):
+def test_cli_refuses_a_bad_sha_and_a_test_clock_without_env(monkeypatch, capsys):
     monkeypatch.delenv("MAL_ARENA_TEST", raising=False)
     assert P.main(["--repo", "x", "--days", "2026-10-21,2026-10-22,2026-10-23", "--fixed-first", "f", "--expect-sha", "abc"]) == 2
+    assert "40 hex" in capsys.readouterr().err
+    assert P.main(["--repo", "x", "--days", "2026-10-21,2026-10-22,2026-10-23", "--fixed-first", "f", "--expect-sha", "a" * 40], now_ms=1) == 2
     assert "MAL_ARENA_TEST" in capsys.readouterr().err
 
 
@@ -187,5 +189,7 @@ def test_verify_repo_refuses_dirty_and_wrong_sha(tmp_path):
         P.verify_repo(str(tmp_path), head)
 
 
-def test_final_sha_pinned():
-    assert P.FINAL_SHA == "5071e29afe473b6c9ff1f753bf045345e722b0f6"
+def test_sha_is_a_required_argument():
+    assert not hasattr(P, "FINAL_SHA")
+    with pytest.raises(SystemExit):
+        P.main(["--repo", "x", "--days", "a", "--fixed-first", "f"])

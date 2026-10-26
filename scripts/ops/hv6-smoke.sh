@@ -3,8 +3,8 @@
 # (MAL_HV4_RPC=helius, <= 1,000 calls/h). DO NOT RUN until the manager has pinned the smoke in a notebook entry (blocking list, counts script sha256
 # = the sha256 of tools/hv6_smoke.py, instant, month-to-date API spend) and the P0 count (item 7a) is done at the same final sha.
 #
-# Usage: sh scripts/ops/hv6-smoke.sh REPO TAG [HOURS]
-#   REPO   a CLEAN checkout at the final sha 5071e29afe473b6c9ff1f753bf045345e722b0f6
+# Usage: HV6_FINAL_SHA=<sha> sh scripts/ops/hv6-smoke.sh REPO TAG [HOURS]
+#   REPO   a CLEAN checkout at the final sha (HV6_FINAL_SHA, 40 hex, required in the environment)
 #   TAG    fresh name; the smoke dir is /data/mal/arena/haiku-v6/smoke/<TAG> (refused if it exists)
 #   HOURS  default 2 (at most 4)
 # The API key is read at run time from /var/lib/mal/anthropic/anthropic.env into the child's environment only; it is never echoed, logged or passed on a command line.
@@ -12,7 +12,9 @@
 # FEED_DELAY_SLOTS must equal the value the registered runner job will use (HV4's Am.2 value is 7; the registration pack pins it).
 # Submit as a MiScusi job with memory >= 8 GB (MemoryMax); the runner peaked at 2.7 GB in the real-layout replay (#1640). One heavy job at a time on mal-fast-0.
 set -eu
-FINAL=5071e29afe473b6c9ff1f753bf045345e722b0f6
+FINAL=${HV6_FINAL_SHA:-}   # the registered final sha (the playbook-fields merge commit), REQUIRED in the environment: no default
+case "$FINAL" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) : ;; *) echo '{"refused":"HV6_FINAL_SHA_required"}'; exit 2;; esac
+[ "${#FINAL}" = 40 ] || { echo '{"refused":"HV6_FINAL_SHA_must_be_40_hex"}'; exit 2; }
 KEYFILE=/var/lib/mal/anthropic/anthropic.env
 if [ $# -lt 2 ] || [ $# -gt 3 ]; then echo '{"hv6_smoke":"refused","why":"usage_REPO_TAG_[HOURS]"}'; exit 2; fi
 REPO=$1; TAG=$2; HOURS=${3:-2}
@@ -35,4 +37,4 @@ export MAL_HV4_RPC
 set -a
 . "$KEYFILE"
 set +a
-exec /data/mal/venv/bin/python -I "$TOOL" --repo "$REPO" --smk "$SMK" --hours "$HOURS" --cap-usd 0.50 --regime-dir "${HV6_ROOT:-/data/mal/arena/haiku-v6}/regime" --feed-delay-slots "${FEED_DELAY_SLOTS:-7}"
+exec /data/mal/venv/bin/python -I "$TOOL" --repo "$REPO" --smk "$SMK" --hours "$HOURS" --cap-usd 0.50 --expect-sha "$FINAL" --regime-dir "${HV6_ROOT:-/data/mal/arena/haiku-v6}/regime" --feed-delay-slots "${FEED_DELAY_SLOTS:-7}"

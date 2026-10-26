@@ -37,7 +37,7 @@ from typing import Any, Callable
 HV6_ROOT = "/data/mal/arena/haiku-v6"
 SMOKE_PARENT = HV6_ROOT + "/smoke"
 REGIME_DIR = HV6_ROOT + "/regime"  # the producer job writes block-<as_of_ms>.json here; the smoke root links to it READ-ONLY (blocks hold radar enums, no outcomes)
-FINAL_SHA = "5071e29afe473b6c9ff1f753bf045345e722b0f6"
+SHA_RE = "0123456789abcdef"  # the registered final sha is a REQUIRED argument (--expect-sha, 40 hex); the repo HEAD must equal it
 CAP_USD_MAX = 0.50
 STALE_FAIL_FRAC = 0.05
 CHUNK_P95_FAIL_MS = 8_000
@@ -319,18 +319,18 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cap-usd", type=float, default=CAP_USD_MAX)
     ap.add_argument("--feed-delay-slots", type=int, required=True)
     ap.add_argument("--regime-dir", default=REGIME_DIR, help="the producer job's block dir, linked read-only as <smk>/root/regime")
-    ap.add_argument("--expect-sha", default=FINAL_SHA, help="TEST ONLY (MAL_ARENA_TEST=1)")
+    ap.add_argument("--expect-sha", required=True, help="the registered final sha (40 hex)")
     a = ap.parse_args(argv)
-    if a.expect_sha != FINAL_SHA and os.environ.get("MAL_ARENA_TEST") != "1":
-        print("hv6_smoke: refused: --expect-sha needs MAL_ARENA_TEST=1", file=sys.stderr)
+    a.frozen_sha = a.expect_sha.strip().lower()
+    if len(a.frozen_sha) != 40 or any(ch not in SHA_RE for ch in a.frozen_sha):
+        print("hv6_smoke: refused: --expect-sha must be 40 hex characters", file=sys.stderr)
         return 2
-    a.frozen_sha = a.expect_sha
     try:
         import subprocess  # noqa: PLC0415
 
         head = subprocess.run(["git", "-C", a.repo, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=60).stdout.strip()
         dirty = subprocess.run(["git", "-C", a.repo, "status", "--porcelain"], capture_output=True, text=True, timeout=60).stdout.strip()
-        if head != a.expect_sha or dirty:
+        if head != a.frozen_sha or dirty:
             raise Refused("repo_not_at_final_sha_or_dirty")
         R = load_rules(a.repo)
         rep = run_smoke(R, a)

@@ -37,7 +37,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-FINAL_SHA = "5071e29afe473b6c9ff1f753bf045345e722b0f6"  # main at item 6 COMPLETE (drills #1639, real-layout #1640); the job refuses any other sha
+SHA_RE = "0123456789abcdef"  # the registered final sha is a REQUIRED argument (--expect-sha, 40 hex), never a default: the repo HEAD must equal it
 HV6_ROOT = "/data/mal/arena/haiku-v6"
 MIN_MS, HOUR_MS, DAY_MS = 60_000, 3_600_000, 86_400_000
 SCAN_EVERY_MS = MIN_MS  # DESIGN section 2: the scanner ticks every minute at :02
@@ -420,7 +420,7 @@ def run(a: argparse.Namespace, R: SimpleNamespace, repo_sha: str, fixed_sha: str
     global _GAP_EXTRA
     _GAP_EXTRA = tuple(R.AS.GAP_EXTRA)
     State = make_state_class(R.AS)
-    header = {"kind": "header", "tool": "hv6_p0_count", "tool_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), "repo_sha": repo_sha, "frozen_sha": FINAL_SHA,
+    header = {"kind": "header", "tool": "hv6_p0_count", "tool_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), "repo_sha": repo_sha, "frozen_sha": repo_sha,
               "fixed_first_sha256": fixed_sha, "days": a.days, "warmup_min": a.warmup_min, "warmup_clip_utc": "2026-10-20T00:00Z", "scan_every_ms": SCAN_EVERY_MS,
               "scan_second_ms": SCAN_SECOND_MS, "top_k_per_scan": R.H.TOP_K_PER_SCAN, "board_size": R.H.BOARD_SIZE, "board_every_ms": R.H.BOARD_EVERY_MS,
               "x_cap_per_h": R.H.X_CAP_PER_H, "min_age_s": R.H.MIN_AGE_S, "as_of": "poll(until_ms=T-1); assert state.now_ms < T",
@@ -463,14 +463,18 @@ def main(argv: list[str] | None = None, now_ms: int | None = None) -> int:
     ap.add_argument("--fixed-first", required=True, help="the fixed-first notebook text file written before the job; must name every day; its sha256 is printed")
     ap.add_argument("--warmup-min", type=int, default=365)
     ap.add_argument("--out", default=None, help="also write the report here (must be under <HV6_ROOT>/p0/)")
-    ap.add_argument("--expect-sha", default=FINAL_SHA, help="TEST ONLY (needs MAL_ARENA_TEST=1)")
+    ap.add_argument("--expect-sha", required=True, help="the registered final sha (40 hex); the repo HEAD must equal it")
     ap.add_argument("--no-prescreen", action="store_true", help="full filters on every pool (the equivalence check)")
     a = ap.parse_args(argv)
     a.days = [d for d in a.days.split(",") if d]
     test = os.environ.get("MAL_ARENA_TEST") == "1"
     start_ms = now_ms if now_ms is not None else int(time.time() * 1000)
-    if (a.expect_sha != FINAL_SHA or now_ms is not None) and not test:
-        print("hv6_p0_count: refused: --expect-sha / test clock need MAL_ARENA_TEST=1", file=sys.stderr)
+    a.expect_sha = a.expect_sha.strip().lower()
+    if len(a.expect_sha) != 40 or any(ch not in SHA_RE for ch in a.expect_sha):
+        print("hv6_p0_count: refused: --expect-sha must be 40 hex characters", file=sys.stderr)
+        return 2
+    if now_ms is not None and not test:
+        print("hv6_p0_count: refused: a test clock needs MAL_ARENA_TEST=1", file=sys.stderr)
         return 2
     try:
         a.days = check_days(a.days, start_ms)
