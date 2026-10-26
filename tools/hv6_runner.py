@@ -51,6 +51,7 @@ from typing import Any, Callable, Mapping, Sequence
 from tools import hv4_cards as C
 from tools import hv6_agents as A
 from tools import hv6_cards as H
+from tools.hv6_phantom import ALL_ONES_SIG, PHANTOM_SIGNERS, PhantomFilter  # noqa: F401
 from tools import hv6_review as RVW
 from tools.hv6_regime_block import block_for_use
 from tools.arena_declog import GENESIS, DecisionLog, LogChainError, sha256_hex, utc_day  # noqa: F401
@@ -513,6 +514,9 @@ class RunnerConfig:
     # (stop/target/time/hard stop/max hold, no LLM) run to completion; the runner then stops by itself once no position is open. A pinned value taken from the
     # registration (main requires --entries-halt-ms); there is no default here other than "off" for library use and tests.
     entries_halt_ms: int | None = None
+    # Phantom-row filter (tools/hv6_phantom.py, QP ruling 2026-10-26): rows with an all-'1' signature, rows of a signature already seen at another slot, and trade
+    # rows of two pinned signers are dropped before the state and the engine, counted by kind. Off only for the equivalence proof.
+    phantom_filter: bool = True
 
 
 _OPS = {"<": lambda a, b: a < b, "<=": lambda a, b: a <= b, ">": lambda a, b: a > b, ">=": lambda a, b: a >= b}
@@ -619,8 +623,18 @@ class Runner:
         self._housekeep_at = 0  # tape instant (t_recv_ms) of the next memory housekeeping
         self._norm: dict[str, Any] = {}  # pool id -> its normalised 60-min print list, kept between scans and updated by the events added / expired since (fast_scan)
         orig = state.apply
+        self.phantom = PhantomFilter() if cfg.phantom_filter else None
 
         def apply(row: dict) -> None:
+            if self.phantom is not None:
+                try:
+                    kind = self.phantom.check(row)
+                except Exception as e:  # noqa: BLE001 - a filter failure keeps the row (never silently drops) and is recorded
+                    kind = None
+                    self.hook_errors.append("phantom:" + type(e).__name__)
+                if kind is not None:
+                    self._count("phantom_drop_" + kind)
+                    return
             orig(row)
             self._on_row(row)
 
@@ -1039,7 +1053,8 @@ class Runner:
             if c is not None:
                 cards[pid] = c
         self.log.append("SCAN", T, {"kind": "scan", "as_of_slot": self.slot, "counts": dict(res.counts), "n_cards": len(cards), "level": tp.level, "watch_capped": capped,
-                                    "tagged": sorted(t.pool_id for t in carded_tags), "card_shas": sorted(A.p4.card_sha256(c) for c in cards.values())})
+                                    "tagged": sorted(t.pool_id for t in carded_tags), "card_shas": sorted(A.p4.card_sha256(c) for c in cards.values()),
+                                    **self._phantom_fields()})
         self._x_round(res.x_tags, cards, T, tp)
         order = [cards[t.pool_id] for t in carded_tags] + [cards[p] for p in res.board if p in cards]
         self._llm_entry_round(order, T, tp)
@@ -1467,14 +1482,21 @@ class Runner:
     def log_start(self, provider: str | None) -> None:
         """The START row (QP #918 (c)): the frozen sha, the pinned RPC provider and the window end, before the first decision of this process. Written by main()."""
         self.log.append("SCAN", self.sim_now or self.now_fn(), {"kind": "start", "frozen_sha": self.cfg.frozen_sha, "provider": provider, "entries_halt_ms": self.cfg.entries_halt_ms,
-                                                              "clock_start_ms": self.cfg.clock_start_ms, "live": bool(self.cfg.live)})
+                                                              "clock_start_ms": self.cfg.clock_start_ms, "live": bool(self.cfg.live),
+                                                              "phantom_filter": sorted(PHANTOM_SIGNERS) if self.phantom is not None else None})
+
+    def _phantom_fields(self) -> dict[str, Any]:
+        """Cumulative drop counts for the SCAN row; empty while nothing was dropped, so a tape without phantom rows logs the bytes it logged before the filter."""
+        if self.phantom is None or not self.phantom.total():
+            return {}
+        return {"phantom_drops": dict(self.phantom.counts)}
 
     def request_stop(self, *_a: Any) -> None:
         self._stop = True
 
     def summary(self) -> dict[str, Any]:
         """Run summary: counters, the days' max degrade level, entries per arm, invalid fractions, and the chain/Helius credit report of this process."""
-        out: dict[str, Any] = {"counters": dict(self.counters), "day_level": {d: dict(v) for d, v in sorted(self.day_level.items())},
+        out: dict[str, Any] = {"counters": dict(self.counters), "phantom_drops": dict(self.phantom.counts) if self.phantom is not None else None, "day_level": {d: dict(v) for d, v in sorted(self.day_level.items())},
                                "entries": {a: len(b.entries_ms) for a, b in self.books.items()}, "invalid": {a: list(v) for a, v in self.invalid.items()},
                                "regime_refused_blocks": self.regime.refused}
         rep = getattr(self.chain, "credit_report", None)
