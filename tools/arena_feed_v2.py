@@ -212,9 +212,9 @@ class FeedV2(af.Feed):
     def __init__(self, out_dir: Path, ws_urls: Sequence[str], sockets: dict[str, int], commitment: str = "confirmed", *, standby: bool = True,
                  overlap_min_s: float = OVERLAP_MIN_S_FLOOR, min_overlap_rows: dict[str, int] | None = None,
                  max_disagree_rate: dict[str, float] | None = None, buffer_max: int = af.QUEUE_MAX, **kw: Any) -> None:
-        super().__init__(out_dir, ws_urls, sockets, commitment, **kw)
-        if overlap_min_s < OVERLAP_MIN_S_FLOOR:
+        if overlap_min_s < OVERLAP_MIN_S_FLOOR:  # checked before anything is created
             raise ValueError(f"overlap_min_s {overlap_min_s} is below the floor {OVERLAP_MIN_S_FLOOR} (QP-RULING-1026 Q1)")
+        super().__init__(out_dir, ws_urls, sockets, commitment, **kw)
         self.mode = "standby" if standby else "live"
         self.overlap_min_s, self.min_overlap_rows, self.max_disagree_rate = float(overlap_min_s), min_overlap_rows, max_disagree_rate
         self.buffer_max = int(buffer_max)
