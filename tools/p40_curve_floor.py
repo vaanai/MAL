@@ -69,12 +69,12 @@ def clean(q, b, hi, lo):
     return q_eq(hi) <= Q_HI and q_eq(lo) >= Q_LO
 
 
-def find_trigger(m, hi, lo, q, b, seg_end, complete_ms, peak_on_close=False):
+def find_trigger(m, hi, lo, q, b, seg_end, complete_ms, peak_on_close=False, require_clean_start=True):
     """First qualifying decision instant T (ms) or (None, reason). Bars sorted by minute m."""
     n = len(m)
     if n == 0:
         return None, "no_bars"
-    if not (29.5e9 <= q[0] <= 31e9):
+    if require_clean_start and not (29.5e9 <= q[0] <= 31e9):
         return None, "unclean_start"
     peak = -1.0
     peak_end = None
@@ -184,7 +184,7 @@ def run(bars_root="/data/mal/hunt-shared/bars_1m", tokens_path="/data/mal/hunt-s
     tok, bars = load(con, bars_root, tokens_path)
     tok = tok.set_index("mint")
     excl = dict(cand_mints=int(len(tok)), no_create=0, create_outside=0, mayhem=0)
-    res, res_close = [], 0
+    res, res_close, posthoc = [], 0, []
     reasons = {}
     for mint, g in bars.groupby("mint", sort=False):
         r = tok.loc[mint] if mint in tok.index else None
@@ -211,6 +211,13 @@ def run(bars_root="/data/mal/hunt-shared/bars_1m", tokens_path="/data/mal/hunt-s
         T2, _ = find_trigger(m, hi, lo, q, b, e, cms, peak_on_close=True)
         if T2 is not None:
             res_close += 1
+        if why == "unclean_start":
+            # POST-HOC DESCRIPTIVE ONLY (not in DECLARE, never deciding): the same rule
+            # on mints whose first bar is not a clean start (every bar still k-clean).
+            T3, _ = find_trigger(m, hi, lo, q, b, e, cms, require_clean_start=False)
+            if T3 is not None:
+                guard_ms(T3)
+                posthoc.append(labels(T3, m, hi, lo, q, b, cl, e, cms))
         if T is None:
             continue
         guard_ms(T)
@@ -220,6 +227,12 @@ def run(bars_root="/data/mal/hunt-shared/bars_1m", tokens_path="/data/mal/hunt-s
         L["mint"] = mint
         res.append(L)
     summary = summarize(res, excl, reasons, res_close)
+    ph = shares(posthoc)
+    summary["posthoc_unclean_start_descriptive"] = {
+        k: ph[k] for k in ("triggers", "censored", "path_invalid_uncensored", "valid_uncensored", "tp_touch",
+                           "time_cap", "time_cap_share", "p30", "grad", "rebound")}
+    summary["posthoc_unclean_start_descriptive"]["note"] = (
+        "POST-HOC, written after the declared verdict was seen; not in DECLARE; never deciding")
     if out:
         json.dump(summary, open(out, "w"), indent=1, sort_keys=True)
     return summary, res
