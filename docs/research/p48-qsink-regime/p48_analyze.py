@@ -7,7 +7,9 @@ Landing marker (tape-only). PumpSwap tape reserves are PRE-trade. For each WSOL-
 (pass 4), the next print in that pool (ordered by slot, receive time, event index) should show the quote reserve moved by
 this print's pool_quote_amount (+ for a buy, - for a sell). A print is "applied" when the move is within 25% of the
 expected move plus 0.002 SOL, else "not applied". Rows of transactions that never landed carry the pre-state and do not
-move the next print. Public-RPC getSignatureStatuses samples check the marker (COUNTS.md section 0).
+move the next print. Public-RPC samples show the marker is noisy in busy pools (57 of 60 sampled "not applied" rows
+landed), so the deciding split is by signer: "phantom" for the PHANTOM signers below, "landed" for every other signer.
+Reversal labels, trader shares and child cohorts use landed-class legs only (COUNTS.md section 0).
 
 Seal guard: a leg in a WSOL pool whose pool_create is on the tape, with virtual quote reserve in [17.5e9, 17.7e9], within
 360 s of that pool_create, is dropped and counted (EXP-024 Look-2 seal). No G0 trigger, BOOST test or outcome is computed.
@@ -19,6 +21,10 @@ WSOL = "So11111111111111111111111111111111111111112"
 PUMPTOK = "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn"
 USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 BAND = (17_500_000_000, 17_700_000_000)
+# Signers whose tape rows do not land on chain (public-RPC getSignatureStatuses with searchTransactionHistory: BUpWiWy8
+# 0 of 60 routed buys >= 0.5 SOL and 0 of 20 child buys found; oi1ewFJP 0 of 10 found; controls 240 of 240 found).
+# Their reserve marker is 99.1% and 98.5% not applied. Every other signer is "landed" class (sampled, not proven).
+PHANTOM = frozenset({"BUpWiWy8Tqed4jy86dr7ZpoaE747DpQsrGnwmtpMwfBr", "oi1ewFJP7HikgdbjhnUboCzuWXHanAe4Wtvy8UFEnd6"})
 END_MS = 1792886400000  # 2026-10-25T00:00Z, end of the read data
 H = {"1h": 3_600_000, "6h": 21_600_000, "24h": 86_400_000}
 
@@ -60,7 +66,7 @@ def main(d, out):
         r = json.loads(l)
         if r[5] != WSOL:
             continue
-        r[11] = r[12] = None  # trader and ix_name are not used here (memory)
+        r[12] = None  # ix_name is not used here (memory)
         bypool[r[6]].append(r)
     mark = {}
     for pool, rs in bypool.items():
@@ -78,6 +84,9 @@ def main(d, out):
             tag = "applied" if ok else ("not_applied" if ok is False else "unmarked")
             vol[(mm, dd)][f"{a[7]}_n_{tag}"] += 1
             vol[(mm, dd)][f"{a[7]}_sol_{tag}"] += a[8] or 0
+            tag2 = "phantom" if a[11] in PHANTOM else "landed"
+            vol[(mm, dd)][f"{a[7]}_n_{tag2}"] += 1
+            vol[(mm, dd)][f"{a[7]}_sol_{tag2}"] += a[8] or 0
             if dup:
                 vol[(mm, dd)]["dup_sig_rows"] += 1
     del bypool
@@ -111,12 +120,14 @@ def main(d, out):
                         break
             tag = "applied" if ok else ("not_applied" if ok is False else "unmarked")
             big = "ge0.5" if sol >= 500_000_000 else "lt0.5"
-            for key, cnt in ((R[(pclass(m), dd)], None), (RP[(m, dd)], None)):
-                key[f"{side}_n_{tag}"] += 1
-                key[f"{side}_sol_{tag}"] += sol
-                key[f"{side}_{big}_n_{tag}"] += 1
-                key[f"{side}_{big}_sol_{tag}"] += sol
-            if ok:
+            tag2 = "phantom" if tr in PHANTOM else "landed"
+            for key in (R[(pclass(m), dd)], RP[(m, dd)]):
+                for tg in (tag, tag2):
+                    key[f"{side}_n_{tg}"] += 1
+                    key[f"{side}_sol_{tg}"] += sol
+                    key[f"{side}_{big}_n_{tg}"] += 1
+                    key[f"{side}_{big}_sol_{tg}"] += sol
+            if tag2 == "landed":
                 if side == "buy":
                     trader_buy[(pclass(m), dd)][tr] += sol
                     kids_routed[(pclass(m), dd)].add(kid)
@@ -170,7 +181,7 @@ def main(d, out):
 
     top_parents = collections.Counter()
     for (m, dd), c in RP.items():
-        top_parents[m] += c["buy_sol_applied"]
+        top_parents[m] += c["buy_sol_landed"]
     res = {
         "end_ms": END_MS,
         "creates": creates,
@@ -178,7 +189,7 @@ def main(d, out):
         "routed_top_parents": {m: {dd: lam(RP[(m, dd)]) for dd in sorted({k[1] for k in RP if k[0] == m})} for m, _ in top_parents.most_common(15)},
         "parent_pool_volume": {f"{m}|{dd}": lam(v) for (m, dd), v in sorted(vol.items()) if m in dict(top_parents.most_common(15)) or m in (PUMPTOK, USDC)},
         "routed_children_distinct": {f"{k[0]}|{k[1]}": len(v) for k, v in sorted(kids_routed.items())},
-        "top_trader_share_applied_buy_sol": {f"{k[0]}|{k[1]}": {"traders": len(v), "top": v.most_common(1)[0][0], "top_share": round(v.most_common(1)[0][1] / sum(v.values()), 4), "top3_share": round(sum(x for _, x in v.most_common(3)) / sum(v.values()), 4)} for k, v in sorted(trader_buy.items()) if sum(v.values()) > 0},
+        "top_trader_share_landed_buy_sol": {f"{k[0]}|{k[1]}": {"traders": len(v), "top": v.most_common(1)[0][0], "top_share": round(v.most_common(1)[0][1] / sum(v.values()), 4), "top3_share": round(sum(x for _, x in v.most_common(3)) / sum(v.values()), 4)} for k, v in sorted(trader_buy.items()) if sum(v.values()) > 0},
         "reversal_same_trader_child": {f"{k[0]}|{k[1]}": lam(v) for k, v in sorted(REV.items())},
         "child_cohort_flows": {f"{k[0]}|{k[1]}": lam(v) for k, v in sorted(COH.items())},
         "seal_guard_dropped_legs": dict(seal_drop),
