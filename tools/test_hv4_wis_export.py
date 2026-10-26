@@ -238,3 +238,60 @@ def test_cli_exit_codes_and_output(w, capsys, tmp_path):
         assert "written once" in capsys.readouterr().err
     finally:
         X.build.__defaults__ = X.build.__defaults__[:-1] + (orig,)
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ the host job script
+import subprocess  # noqa: E402
+
+SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "ops" / "hv4-wis-job.sh"
+REPO = Path(__file__).resolve().parent.parent
+
+
+def job(w, tmp_path, **env):
+    hp = tmp_path / "h.jsonl"
+    hp.write_text(w.hl[0])
+    hl = tmp_path / "health-list.txt"
+    hl.write_text(f"{hp} {w.hl[1]}\n")
+    rp = tmp_path / "r.jsonl"
+    rp.write_text("")
+    e = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), TEST_ENV: "1", "BOT": BOT, "TAPE_DIR": str(w.tape), "HEALTH_LIST": str(hl), "RESTARTS": str(rp), "AS_OF_MS": str(AS_OF),
+         "READS_DIR": str(w.rd), "OUT_DIR": str(w.od), "INSTANT": w.ip, "LEDGER": w.root, "REGISTRY": w.reg, "PY": sys.executable}
+    e.update(env)
+    return subprocess.run(["sh", str(SCRIPT)], cwd=REPO, env=e, capture_output=True, text=True, timeout=300)
+
+
+def test_job_dry_prints_the_plan_and_writes_nothing(w, tmp_path):
+    p = job(w, tmp_path, DRY="1")
+    assert p.returncode == 0 and "tools.hv4_wis_export --bot hv4-CON-F" in p.stdout and "--as-of-ms" in p.stdout and not w.od.exists()
+
+
+def test_job_refuses_without_a_recorded_pass(w, tmp_path):
+    rec = w.rd / f"{BOT}.json"
+    for status in ("FAIL", "NOT_DECIDABLE"):
+        rec.chmod(0o644)
+        rec.write_text(json.dumps({"bot_id": BOT, "status": status}))
+        p = job(w, tmp_path)
+        assert p.returncode == 2 and f"status {status}, not PASS" in p.stdout and not w.od.exists()
+    rec.unlink()
+    p = job(w, tmp_path)
+    assert p.returncode == 2 and "no recorded read" in p.stdout and not w.od.exists()
+
+
+def test_job_refuses_bad_inputs(w, tmp_path):
+    assert job(w, tmp_path, BOT="botA").returncode == 2
+    assert job(w, tmp_path, TAPE_DIR="").returncode == 2
+    assert job(w, tmp_path, HEALTH_LIST="").returncode == 2
+    assert not w.od.exists()
+
+
+def test_job_exits_zero_when_the_wis_record_exists(w, tmp_path):
+    w.od.mkdir()
+    (w.od / f"{BOT}.wis.json").write_text("{}")
+    p = job(w, tmp_path)
+    assert p.returncode == 0 and "write-once" in p.stdout and (w.od / f"{BOT}.wis.json").read_text() == "{}"
+
+
+def test_job_passes_a_tool_refusal_through_as_exit_2_and_writes_nothing(w, tmp_path):
+    # in a subprocess the synthetic clock patch is absent, so the real tool refuses the synthetic registry (the HV4 clock is a pinned constant): exit 2, no wis.json
+    p = job(w, tmp_path)
+    assert p.returncode == 2 and "is not the HV4 clock" in p.stderr and not (w.od / f"{BOT}.wis.json").exists()
