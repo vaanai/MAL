@@ -90,7 +90,10 @@ def test_playbook_definitions(card):
     assert "non-negative fraction from" not in t and "also a non-negative" not in t
     assert "1 - quote/peak" in t and "last 65 minutes" in t and "negative when the quote is above that peak" in t
     assert "of the round trip" not in t and "FRACTION of the stake" in t
-    assert "are null or plain numbers" in t and "null on HV6 cards except risk.holder_count" in t and "not the on-chain holder count" in t
+    assert "are null or plain numbers" in t and "null on HV6 cards except" not in t
+    assert "risk.creator_sold_frac, risk.same_slot_supply and risk.sniper_share are always null" in t
+    assert "risk.top10_frac is null unless the holder lookup succeeded" in t
+    assert "f.creator_net_sol_life is the SOL the creator took out of the pool minus what it put in" in t and "not the on-chain holder count" in t
     assert "so f.ret_1m can cover only a few seconds" in t
     assert "counts are counts" in t and "fractions or SOL" not in t
     rev = (ROOT / "hv6_templates" / "review_system.txt").read_text(encoding="utf-8")
@@ -119,3 +122,16 @@ def test_quote_history_peak_is_a_65_minute_minute_mark_max():
         qh.add("P", t0 + i * mn, 2.0)
     now = t0 + 70 * mn + 30_000
     assert qh.peak("P", now) == 2.0  # the 5.0 is older than 65 minutes: not a lifetime peak
+
+
+def test_hv6_chain_never_sets_three_neutral_fields_and_sets_top10_on_success():
+    """Pins the playbook's definitions to ChainSource.compose: top1/top10 only from a successful holder call; the other three never."""
+    mf = type("MF", (), dict(as_of_ms=1, as_of_slot=2, mint_authority=None, freeze_authority=None, token_program_id="p", extensions=[], ext_info={}))()
+    mh = type("MH", (), dict(is_mayhem=False))()
+    ok = type("HD", (), dict(ok=True, as_of_ms=5, top1_frac=0.1, top10_frac=0.4))()
+    bad = type("HD", (), dict(ok=False, as_of_ms=None, top1_frac=None, top10_frac=None))()
+    c_ok, c_bad = R.ChainSource.compose(mf, mh, ok), R.ChainSource.compose(mf, mh, bad)
+    assert c_ok["top10_frac"] == 0.4 and "top10_frac" not in c_bad
+    for c in (c_ok, c_bad):
+        for k in ("creator_sold_frac", "same_slot_supply", "sniper_share"):
+            assert k not in c
