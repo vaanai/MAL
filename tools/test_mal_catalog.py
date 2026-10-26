@@ -36,7 +36,7 @@ def _check(blocks: list[Block], role: str, host: str, start: str, end: str, exp_
 
 def test_parse_real_ledger_has_expected_rows(blocks: list[Block]) -> None:
     by_name = {b.name: b for b in blocks}
-    assert len(blocks) == 15
+    assert len(blocks) == 18
     assert by_name["Fast EXP-009 block"].owner == "EXP-009"
     assert by_name["Fast EXP-009 exclusion"].explicit_hours == ("2026-09-18T23", "2026-09-19T00")
     assert by_name["Forward paper, kill review"].host == "oracle-forward"
@@ -49,6 +49,12 @@ def test_parse_real_ledger_has_expected_rows(blocks: list[Block]) -> None:
     assert fast_0909[0].end_hour_exclusive == "2026-09-15T12"
     assert fast_0909[0].owner == "exploration-pool"
     assert not [b for b in blocks if b.owner == "EXP-011"]
+    # 2026-10-26: three venue-tape rows; `reserved` owners deny every role, and each tape has its own host key.
+    assert by_name["Meteora DBC holdout"].owner == "reserved" and by_name["Meteora DBC holdout"].host == "meteora_dbc"
+    assert by_name["Meteora DBC holdout"].start_hour == "2026-10-17T00" and by_name["Meteora DBC holdout"].end_hour_exclusive == "2026-10-24T00"
+    assert by_name["Meteora DBC m10 forward window"].start_hour == "2026-10-25T00"
+    assert by_name["Meteora DBC m10 forward window"].end_hour_exclusive == "2026-11-01T00"
+    assert by_name["LaunchLab holdout"].owner == "reserved" and by_name["LaunchLab holdout"].host == "launchlab"
     unassigned = by_name["Future fast backfill"]
     assert unassigned.owner == "unassigned"
     assert unassigned.start_hour is None
@@ -283,7 +289,7 @@ def test_build_catalog_validates_and_is_deterministic() -> None:
     assert doc1["schema_version"] == "catalog.v1"
     assert doc1["ledger_sha256"] == doc2["ledger_sha256"]
     assert len(doc1["ledger_sha256"]) == 64
-    assert len(doc1["blocks"]) == 15
+    assert len(doc1["blocks"]) == 18
     assert doc1["walkers"] == []
 
     def _stable(d: dict) -> dict:
