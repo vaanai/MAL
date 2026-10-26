@@ -25,9 +25,15 @@ from typing import Any, Callable
 
 import numpy as np
 
+from tools import arena_stack as F
 from tools.arena_screen import Cell, ExitSpec, HourRows, MIN_POOL_AGE_S, RunState, V_HI, V_LO, post_price
 
 T_TAG_S = 1.0
+LAT_S = 1.9  # the kit's deciding send-to-land leg
+ENTRY_PRIMARY_S = T_TAG_S + LAT_S  # 2.9 s after the last tagged slot (plus the kit's D = 7)
+ENTRY_STRESS_S = 3.0 + LAT_S  # 4.9 s: report-only stress leg (T_tag = 3.0 s on the entry)
+BEST_CASE_SLOTS = 2  # report-only best case: entry lands 2 slots after the last tagged slot (plus D)
+ENTRY_MODES = ("primary", "stress", "best")
 N_DISTINCT = 3
 WINDOW_S = 60
 REFRACTORY_S = 60
@@ -64,9 +70,10 @@ def _pool_arrays(hr: HourRows, i: int) -> dict:
 class P29KeeperRule:
     name = "p29-keeper-sl-absorb"
 
-    def __init__(self, tagger: Callable[[str, str], dict], mode: str = "tagged", control_keys: set | None = None, allowed_days: dict | None = None) -> None:
-        if mode not in ("tagged", "control"):
+    def __init__(self, tagger: Callable[[str, str], dict], mode: str = "tagged", control_keys: set | None = None, allowed_days: dict | None = None, entry_mode: str = "primary") -> None:
+        if mode not in ("tagged", "control") or entry_mode not in ENTRY_MODES:
             raise ValueError("mode")
+        self.entry_mode = entry_mode
         self.tagger, self.mode, self.control_keys = tagger, mode, set(control_keys or ())
         self.allowed_days = allowed_days  # {block: {"YYYY-MM-DD"}}; events closing on any other day (warm-up hours) are neither recorded nor emitted. None = all days.
         self.events: list[dict] = []  # tagged events with every filter outcome
@@ -85,7 +92,7 @@ class P29KeeperRule:
         prev_tags = state.scratch.get("prev_tags", {}) if state.prev is not None else {}
         out: list[tuple[str, int, ExitSpec]] = []
         rate = hour.slots_per_s
-        k_dec = int(math.ceil(T_TAG_S * rate)) if rate > 0 else 0
+        k_dec = rate  # slots per second of this hour; the decision slot is computed per event by decision_offset()
         for i, pool in enumerate(hour.pools.tolist()):
             cur = _pool_arrays(hour, i)
             first_bt = min(int(state.first_seen.get(pool, 10**18)), int(cur["bt"][0])) if len(cur["bt"]) else 0
@@ -146,7 +153,7 @@ class P29KeeperRule:
         c[f"{kind}_bursts_raw"] += 1
         bt_first = int(a["bt"][win[0]])
         s3 = int(a["sl"][rc])
-        dec = s3 + k_dec
+        dec = s3 + decision_offset(k_dec, self.entry_mode)
         rec = {"kind": kind, "block": hour.block, "pool": pool, "slot": s3, "decision_slot": dec, "bt": int(a["bt"][rc]), "day": day_of(a["bt"][rc]),
                "total_sol": float(a["so"][win].sum()) / 1e9, "duration_s": int(a["bt"][rc]) - bt_first, "sellers": len(set(a["tr"][win].tolist())), "pass": False, "price_pass": False, "reason": None}
         # pre-drop print: the last print at or before first-sell - 60 s
@@ -157,7 +164,11 @@ class P29KeeperRule:
             p_pre, p_last = float(pp[jp]), float(pp[rc])
             d = (p_pre - p_last) / p_pre if p_pre > 0 else float("nan")
             rec["d"] = d
-            jd = int(np.searchsorted(a["sl"], dec, "right")) - 1
+            jd = int(np.searchsorted(a["sl"], dec, "left")) - 1  # the kit's reference: the last print strictly before the decision slot
+            if jd < 0:
+                rec["reason"] = "no_pre_print"
+                self._finish(out, kind, pool, rec, s3, dec)
+                return
             qpost = a["q"][jd] + a["so"][jd] * 0.99 if a["ib"][jd] else a["q"][jd] - a["so"][jd] * 1.01
             res_sol = float(qpost + a["v"][jd]) / 1e9
             rec["reserve_sol"] = res_sol
@@ -185,10 +196,28 @@ class P29KeeperRule:
                         rec["reason"] = "pool_age_lt_360s"
                     else:
                         rec["pass"] = True
-        c[f"{kind}_{'pass' if rec['pass'] else 'skip_' + str(rec['reason'])}"] += 1
+        self._finish(out, kind, pool, rec, s3, dec)
+
+    def _finish(self, out: list, kind: str, pool: str, rec: dict, s3: int, dec: int | None = None) -> None:
+        dec = rec["decision_slot"] if dec is None else dec
+        self.counters[f"{kind}_{'pass' if rec['pass'] else 'skip_' + str(rec['reason'])}"] += 1
         (self.events if kind == "tagged" else self.cands).append(rec)
         if rec["pass"] and ((self.mode == "tagged" and kind == "tagged") or (self.mode == "control" and kind == "control" and (pool, s3) in self.control_keys)):
             out.append((pool, dec, ExitSpec(HOLD_S, tp=rec["tp"], sl=STOP, cell=CELL)))
+
+
+def decision_offset(rate: float, entry_mode: str = "primary") -> int:
+    """Slots from the last tagged slot to the decision slot such that the kit's entry (decision + D + ceil(1.9 / sps)) lands EXACTLY at the declared slot:
+    primary: last tagged slot + D + ceil(2.9 / sps); stress: ... + ceil(4.9 / sps); best (report only): last tagged slot + D + 2. sps = 1 / rate."""
+    sps = 1.0 / rate
+    k = int(F.k_slots_vec(LAT_S, sps, "ceil"))
+    if entry_mode == "primary":
+        return int(F.k_slots_vec(ENTRY_PRIMARY_S, sps, "ceil")) - k
+    if entry_mode == "stress":
+        return int(F.k_slots_vec(ENTRY_STRESS_S, sps, "ceil")) - k
+    if entry_mode == "best":
+        return BEST_CASE_SLOTS - k
+    raise ValueError(entry_mode)
 
 
 # ------------------------------------------------------------------------------------------------------------------------------------- placebo matcher
@@ -200,43 +229,85 @@ def decile(x: float, edges: np.ndarray) -> int:
     return int(np.searchsorted(edges, x, "right"))
 
 
-def match_controls(events: list[dict], cands: list[dict]) -> tuple[list[tuple[dict, dict]], list[dict]]:
-    """Type (ii) cross-pool control, deterministic. events/cands: passing records (pass True). One control per event, no reuse. Constraints: same UTC day, a DIFFERENT pool, candidate
-    not within 600 s of any tagged event of ITS OWN pool, total sold SOL within +-25%, duration within +-15 s, distinct sellers within +-1, d within +-2 pts, same reserve decile (deciles
-    over the pooled events + candidates). Score = |tot/etot - 1|/0.25 + |dur diff|/15 + |seller diff| + |dd|/0.02; ties: earliest bt, then smallest pool id. Events are taken in (bt, pool) order.
-    Returns (pairs, unmatched events)."""
-    ev = sorted([e for e in events if e["pass"]], key=lambda e: (e["bt"], e["pool"]))
+D_TOL = 0.05  # matcher v2: drop within +-5 pts (v1 was +-2 pts and left 96% of OOS events unmatched; v2 is the ONE recount, there is no v3)
+DUR_TOL_S = 15
+TOT_TOL = 0.25
+MIN_SELLERS = 3
+REUSE_MAX = 3
+OWN_POOL_EXCL_S = 600
+SMD_MAX = 0.25
+BALANCE_VARS = ("total_sol", "duration_s", "sellers", "d", "reserve_decile")
+
+
+def match_controls(tagged_all: list[dict], cands: list[dict]) -> tuple[list[tuple[dict, dict]], list[dict]]:
+    """Matcher v2 (PRICING-DECLARE s6), cross-pool, deterministic, greedy in (bt, pool) order. `tagged_all` = EVERY tagged event of the run (filtered or not): the own-pool exclusion applies to
+    any tagged event of the candidate's pool. Events matched are the passing ones. Constraints: same UTC day, a DIFFERENT pool, candidate >= 600 s from every tagged event of its own pool,
+    total sold SOL within +-25%, duration within +-15 s, candidate distinct traders >= 3, drop d within +-5 pts, same reserve decile (deciles over the pooled passing events + candidates), each
+    control used at most 3 times. Score = |tot/etot - 1|/0.25 + |dur diff|/15 + |seller diff| + |dd|/0.05; ties: earliest bt, then smallest pool id, then smallest slot.
+    Returns (pairs [(event, control)], unmatched events). Each event record gets `reserve_decile`."""
+    ev = sorted([e for e in tagged_all if e["pass"]], key=lambda e: (e["bt"], e["pool"], e["slot"]))
     cs = [c for c in cands if c["pass"]]
     edges = decile_edges([r["reserve_sol"] for r in ev + cs])
+    for r in ev + cs:
+        r["reserve_decile"] = decile(r["reserve_sol"], edges)
     own_t: dict[str, list[int]] = {}
-    for e in ev:
+    for e in tagged_all:  # filtered or not
         own_t.setdefault(e["pool"], []).append(e["bt"])
     by_day: dict[str, list[dict]] = {}
     for c in cs:
-        if any(abs(c["bt"] - t) < 600 for t in own_t.get(c["pool"], ())):
+        if c["sellers"] < MIN_SELLERS or any(abs(c["bt"] - t) < OWN_POOL_EXCL_S for t in own_t.get(c["pool"], ())):
             continue
         by_day.setdefault(c["day"], []).append(c)
-    used: set = set()
+    used: Counter = Counter()
     pairs, un = [], []
     for e in ev:
         best, bkey = None, None
-        ed = decile(e["reserve_sol"], edges)
         for c in by_day.get(e["day"], ()):
             ck = (c["pool"], c["slot"])
-            if ck in used or c["pool"] == e["pool"] or decile(c["reserve_sol"], edges) != ed:
+            if used[ck] >= REUSE_MAX or c["pool"] == e["pool"] or c["reserve_decile"] != e["reserve_decile"]:
                 continue
-            if e["total_sol"] <= 0 or abs(c["total_sol"] / e["total_sol"] - 1) > 0.25 or abs(c["duration_s"] - e["duration_s"]) > 15 or abs(c["sellers"] - e["sellers"]) > 1 or abs(c["d"] - e["d"]) > 0.02:
+            if e["total_sol"] <= 0 or abs(c["total_sol"] / e["total_sol"] - 1) > TOT_TOL or abs(c["duration_s"] - e["duration_s"]) > DUR_TOL_S or abs(c["d"] - e["d"]) > D_TOL:
                 continue
-            score = abs(c["total_sol"] / e["total_sol"] - 1) / 0.25 + abs(c["duration_s"] - e["duration_s"]) / 15 + abs(c["sellers"] - e["sellers"]) + abs(c["d"] - e["d"]) / 0.02
-            key = (score, c["bt"], c["pool"])
+            score = abs(c["total_sol"] / e["total_sol"] - 1) / TOT_TOL + abs(c["duration_s"] - e["duration_s"]) / DUR_TOL_S + abs(c["sellers"] - e["sellers"]) + abs(c["d"] - e["d"]) / D_TOL
+            key = (score, c["bt"], c["pool"], c["slot"])
             if bkey is None or key < bkey:
                 best, bkey = c, key
         if best is None:
             un.append(e)
         else:
-            used.add((best["pool"], best["slot"]))
+            used[(best["pool"], best["slot"])] += 1
             pairs.append((e, best))
     return pairs, un
+
+
+def balance(pairs: list[tuple[dict, dict]]) -> dict:
+    """Standardised mean difference of the 5 match variables over the matched pairs (control rows counted once per pair): (mean_t - mean_c) / sqrt((var_t + var_c) / 2).
+    Gate: any |SMD| > 0.25 -> the placebo is NOT_DECIDABLE."""
+    out = {}
+    for v in BALANCE_VARS:
+        t = np.array([float(p[0][v]) for p in pairs])
+        c = np.array([float(p[1][v]) for p in pairs])
+        if len(t) < 2:
+            out[v] = None
+            continue
+        sd = math.sqrt((t.var(ddof=1) + c.var(ddof=1)) / 2)
+        out[v] = float((t.mean() - c.mean()) / sd) if sd > 0 else 0.0
+    ok = all(x is not None and abs(x) <= SMD_MAX for x in out.values())
+    return {"smd": out, "max_abs_smd": max((abs(x) for x in out.values() if x is not None), default=None), "balanced": bool(ok)}
+
+
+def cluster_boot_lo(diffs, groups, B: int = 1000, seed: int = 1) -> float | None:
+    """5th percentile of the mean paired difference, resampling pairs that share a control (`groups`, the control id) as ONE unit. Seed 1, 1,000 draws."""
+    d = np.asarray(diffs, float)
+    if len(d) == 0:
+        return None
+    ids = {g: i for i, g in enumerate(dict.fromkeys(groups))}
+    gi = np.array([ids[g] for g in groups])
+    sums, cnts = np.bincount(gi, weights=d), np.bincount(gi).astype(float)
+    rng = np.random.default_rng(seed)
+    pick = rng.integers(0, len(sums), size=(B, len(sums)))
+    means = sums[pick].sum(1) / cnts[pick].sum(1)
+    return float(np.percentile(means, 5))
 
 
 def landing_disagree(a: dict, landing_slot: int, tol: float = 0.005) -> bool | None:

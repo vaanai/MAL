@@ -28,7 +28,7 @@ import numpy as np
 
 from tools import arena_screen as K
 from tools.p29_keeper_coverage import BLOCKS, KEEPER_CUTOFF, fill_map
-from tools.p29_keeper_rule import P29KeeperRule, landing_disagree, match_controls
+from tools.p29_keeper_rule import ENTRY_MODES, P29KeeperRule, balance, cluster_boot_lo, landing_disagree, match_controls
 
 REPO = Path(__file__).resolve().parent.parent
 PINS = {  # sha256 at main 6669c4cc7be1a76c51abc201374c1dab5178c632 (PRICING-DECLARE s0); the run refuses if any differs
@@ -43,6 +43,10 @@ PINS = {  # sha256 at main 6669c4cc7be1a76c51abc201374c1dab5178c632 (PRICING-DEC
 FORBIDDEN = tuple(w for w in K.FORBIDDEN if w != "exp011") + ("arena", "meta-capture")
 MIN_COVERAGE = 0.85
 SEND = 160_000  # DEC-031 Amendment 8 stack (arena_rules.stack_config_v2), passed explicitly
+DECLARED_EXIT_LAT_S = 1.9
+LOCK_DEFAULT = "/data/mal/hunt-1008/push-1016/hunt30/p29/PRICE_READ.lock"
+P29_FILES = ("tools/p29_keeper_rule.py", "tools/p29_keeper_run.py", "tools/p29_keeper_coverage.py")
+COVERAGE_AT_HEAD = "docs/research/p29-keeper-absorb/coverage.json"
 
 
 class Refused(Exception):
@@ -87,11 +91,13 @@ def list_hours(label: str) -> dict[str, list[str]]:
                     raise Refused(f"forbidden_word:{w}: {q}")
         for fn in sorted(os.listdir(real)):
             h = hour_name(fn)
-            if h is None or h > last:
+            if h is None:
                 continue
             t = datetime.strptime(h, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)
             if t >= K.SEALED_HOURS[0]:
-                raise Refused(f"sealed_hour: {h}")
+                raise Refused(f"sealed_hour: {h}")  # REFUSED, never skipped: any hour >= 2026-10-02T10 in an allowlisted directory stops the run
+            if h > last:
+                continue  # an hour past the last declared day of a block is not opened (it is a different part of the same exploration view)
             out[h].append(os.path.join(real, fn))
     dup = [h for h, v in out.items() if len(v) > 1]
     if dup:
@@ -125,6 +131,11 @@ class FileTagger:
         return res
 
 
+def exit_shift(sps: float) -> int:
+    """Slots added to the kit's exit decision slot so that the sell lands at trigger + D + ceil(1.9 / sps) (declared): the kit adds D + its own exit lag ceil(0.55 / sps) afterwards."""
+    return int(K.F.k_slots_vec(DECLARED_EXIT_LAT_S, sps, "ceil")) - int(K.F.exit_lag_vec(np.array([sps]))[0])
+
+
 class P29Screen(K.Screen):
     """The kit's Screen at the DEC-031 Am.8 stack (send 160,000, passed explicitly), plus report-only captures in the priced look: per-trip lamports of the four deciding sub-cells keyed
     by (crc32(pool), decision slot) for the placebo pairing; gross edge per filled trip (exit spot / entry spot - 1 on the kit's own landing states, before fees and tx cost); and the
@@ -136,11 +147,32 @@ class P29Screen(K.Screen):
         self.disagree = {"entry": collections.Counter(), "exit": collections.Counter()}
         self.gross: list[float] = []
         self.trips: dict = {}
+        self.both_fired = 0
+        self.exit_trips = 0
 
     def _price_store(self, s, pool, bi, seg_end, clk) -> None:  # noqa: ANN001
         before = len(self.acc[0]) if self.acc else 0
         chunks = list(s.chunks)
-        super()._price_store(s, pool, bi, seg_end, clk)
+        orig = K.resolve_exit
+
+        def declared_exit(a, pp, sd, spec, rate, sps):  # noqa: ANN001
+            """The kit's exit decision, shifted so that the sell lands at trigger slot + D + ceil(1.9 / sps) (declared) instead of the kit's + D + ceil(0.55 / sps): the kit then adds D and its own
+            exit lag to the shifted slot. Also counts (report only) trips whose exit slot held both a tp-hit and an sl-hit print (the kit's rule: the earliest print wins)."""
+            xs, why, clamped = orig(a, pp, sd, spec, rate, sps)
+            jd = int(np.searchsorted(a["sl"], sd, "left"))
+            spot0 = pp[max(jd - 1, 0)]
+            m = a["sl"] == xs
+            self.exit_trips += 1
+            if m.any() and spec.tp is not None and spec.sl is not None:
+                ph = pp[m]
+                self.both_fired += bool((ph >= spec.tp * spot0).any() and (ph <= spec.sl * spot0).any())
+            return xs + exit_shift(sps), why, clamped
+
+        K.resolve_exit = declared_exit
+        try:
+            super()._price_store(s, pool, bi, seg_end, clk)
+        finally:
+            K.resolve_exit = orig
         if self.count_only or not self.acc or len(self.acc[0]) <= before or not chunks:
             return
         a = {k: np.concatenate([c[k] for c in chunks]) for k in chunks[0]}
@@ -167,28 +199,29 @@ class P29Screen(K.Screen):
             day = st["T"] // 86400
             for rule, fail in K.SUB_CELLS:
                 L = K.legs(st, K.STAKE_SOL * 1e9, K.LAT_DECIDING, rule, self.cfg[K.RENT_DECIDING])
-                self.trips[f"{rule}|{fail}"] = {"pool": st["pool"].tolist(), "sd": st["sd"].tolist(), "day": day.tolist(), "blk": st["blk"].tolist(), "lam": np.asarray(L[fail], float).tolist()}
+                self.trips[f"{rule}|{fail}"] = {"pool": st["pool"].tolist(), "sd": st["sd"].tolist(), "day": day.tolist(), "blk": st["blk"].tolist(), "xs": st["xs"].tolist(), "lam": np.asarray(L[fail], float).tolist()}
         return super()._cell_result(ci, names, ndays)
 
 
 def p29_verdict(cell: dict, gross_median: float | None) -> dict:
-    """PRICING-DECLARE s5, kills 1-9 on all four sub-cells. The kit's own kill reasons that refer to its four canonical blocks / the explore-0814 group do not apply to P29 and are not used."""
-    why = []
+    """PRICING-DECLARE s5, kills 1-9 on all four sub-cells. Fewer than 5 traded days or fewer than 100 trades is NOT_DECIDABLE (never a KILL). The kit's own kill reasons that refer to its
+    four canonical blocks / the explore-0814 group do not apply to P29 and are not used."""
+    why, nd = [], []
     for rule, fail in K.SUB_CELLS:
         s, tag = (cell.get("stats") or {}).get(f"{K.LAT_DECIDING}|{rule}|rent0|{fail}"), f"{rule}/{fail}"
         if s is None:
-            why.append(f"{tag}: no trips")
+            nd.append(f"{tag}: no trips")
             continue
+        if s["days"] < K.MIN_DAYS:
+            nd.append(f"{tag}: traded days {s['days']} < {K.MIN_DAYS}")
+        if s["n"] < K.MIN_N:
+            nd.append(f"{tag}: trades {s['n']} < {K.MIN_N}")
         for ok, msg in ((s["mean"] > 0, "1 mean<=0"), (s["ci_lo_trade"] > 0, "2 trade CI90 lo<=0"), (s["ci_lo"] > 0, "3 date-cluster CI90 lo<=0"), (s["ex_top3"] > 0, "4 ex-top3<=0"),
                         (s["ex_best_day"] > 0, "5 ex-best-day<=0")):
             if not ok:
                 why.append(f"{tag}: {msg}")
-        if s["days"] < K.MIN_DAYS:
-            why.append(f"{tag}: NOT_DECIDABLE traded days {s['days']} < {K.MIN_DAYS}")
-        elif not 2 * s["pos_days"] > s["days"]:
+        if s["days"] >= K.MIN_DAYS and not 2 * s["pos_days"] > s["days"]:
             why.append(f"{tag}: 6 not a strict majority of days positive")
-        if s["n"] < K.MIN_N:
-            why.append(f"{tag}: 7 n {s['n']} < {K.MIN_N}")
     if gross_median is None or not gross_median > 0.01:
         why.append(f"8 median gross edge {gross_median} <= 1% (spot to spot, before fees and tx cost)")
     wis = cell.get("worst_in_slot") or {}
@@ -197,12 +230,18 @@ def p29_verdict(cell: dict, gross_median: float | None) -> dict:
         for rule, fail in K.SUB_CELLS:
             if not wis["sub_cells"][f"{rule}|{fail}"]["lower"]["mean_sol"] > 0:
                 why.append(f"{rule}/{fail}: 9 worst-in-slot lower mean<=0")
-    status = "KILL" if why else ("NO_KILL_YET (placebo and coverage gates still decide)" if measured else "PROVISIONAL-BLOCKED")
-    return {"kill_reasons": why, "killed": bool(why), "worst_in_slot_measured": measured, "status": status}
+    if nd:
+        status = "NOT_DECIDABLE"
+    elif why:
+        status = "KILL"
+    else:
+        status = "NO_KILL_YET (placebo and coverage gates still decide)" if measured else "PROVISIONAL-BLOCKED"
+    return {"kill_reasons": why, "not_decidable_reasons": nd, "killed": status == "KILL", "worst_in_slot_measured": measured, "status": status}
 
 
 def paired_test(tag_trips: dict, ctl_trips: dict, pairs: list) -> dict:
-    """Paired tagged-minus-control net SOL per trade on the type (ii) pairs, per deciding sub-cell; trade-level bootstrap CI90 lower bound (kit boot_lo, 1,000 draws, seed 1)."""
+    """Paired tagged-minus-control net SOL per trade on the matched pairs, per deciding sub-cell. Controls may be reused (<= 3x): the bootstrap resamples pairs that share a control as ONE unit
+    (cluster bootstrap on the control id, 1,000 draws, seed 1; 5th percentile). pairs: [((event pool, event decision slot), (control pool, control decision slot))]."""
     out = {}
     for key, tt in tag_trips.items():
         ct = ctl_trips.get(key)
@@ -211,13 +250,33 @@ def paired_test(tag_trips: dict, ctl_trips: dict, pairs: list) -> dict:
             continue
         tmap = {(p, s): l for p, s, l in zip(tt["pool"], tt["sd"], tt["lam"])}
         cmap = {(p, s): l for p, s, l in zip(ct["pool"], ct["sd"], ct["lam"])}
-        d = []
+        d, g = [], []
         for (ep, es), (cp, cs) in pairs:
             a, b = tmap.get((zlib.crc32(ep.encode()), es)), cmap.get((zlib.crc32(cp.encode()), cs))
             if a is not None and b is not None:
                 d.append((a - b) / 1e9)
+                g.append((cp, cs))
         x = np.asarray(d, float)
-        out[key] = {"pairs_priced": int(len(x)), "mean_diff_sol": float(x.mean()) if len(x) else None, "ci_lo": float(K.F.boot_lo(x)) if len(x) else None}
+        out[key] = {"pairs_priced": int(len(x)), "mean_diff_sol": float(x.mean()) if len(x) else None, "ci_lo_cluster": cluster_boot_lo(d, g)}
+    return out
+
+
+def concurrency(trips: dict, stake_sol: float = 0.25) -> dict:
+    """Report only: per UTC day the maximum and the 95th percentile of simultaneously open positions (slot intervals [decision, exit decision] of the primary leg) and the wallet need at stake."""
+    t = trips.get("total|flat")
+    if not t:
+        return {}
+    byday: dict = collections.defaultdict(list)
+    for sd, xs, day in zip(t["sd"], t["xs"], t["day"]):
+        byday[day].append((sd, xs))
+    out = {}
+    for day, iv in byday.items():
+        iv.sort()
+        starts = np.array([a for a, _ in iv])
+        ends = np.array([b for _, b in iv])
+        conc = np.array([int(((starts <= s) & (ends > s)).sum()) for s in starts])
+        out[datetime.fromtimestamp(day * 86400, tz=timezone.utc).strftime("%Y-%m-%d")] = {"trades": len(iv), "max_concurrent": int(conc.max()), "p95_concurrent": float(np.percentile(conc, 95)),
+                                                                                           "wallet_need_sol_at_max": float(conc.max() * stake_sol)}
     return out
 
 
@@ -248,12 +307,58 @@ def run_blocks(scr, labels, files, vmap) -> None:
         scr.run_block(bi, lb, K.iter_hours(flist, lb, "backfill", vmap, 1))
 
 
+HEADLINE_REPORT_ONLY = ("keeper-tagged SL-cascade absorb; the keeper tag is the detector; whether the tag carries information beyond a fast deep dump is UNTESTED (placebo not decidable)")
+
+
+def git_out(*a: str) -> str:
+    return subprocess.run(["git", "-C", str(REPO), *a], capture_output=True, text=True).stdout.strip()
+
+
+def p29_hashes() -> dict:
+    return {rel: sha256(REPO / rel) for rel in P29_FILES}
+
+
+def price_gates(args) -> dict:
+    """Every gate of the pricing look, in this order, BEFORE any price is read. A refusal here reads nothing. The lock is taken last and is never released: a crash after it is NOT_DECIDABLE."""
+    head = git_out("rev-parse", "HEAD")
+    if os.environ.get("P29_PRICE_AUTH") != head:
+        raise Refused("price_not_authorised: P29_PRICE_AUTH must equal the exact HEAD sha (reviewer verdict + QP OK on the code first)")
+    if git_out("status", "--porcelain"):
+        raise Refused("dirty_working_tree: git status --porcelain must be empty for the pricing look")
+    if not args.coverage:
+        raise Refused("coverage_required: --coverage must be given in price mode")
+    if sha256(Path(args.coverage)) != sha256(REPO / COVERAGE_AT_HEAD):
+        raise Refused(f"coverage_mismatch: --coverage must be byte-identical to {COVERAGE_AT_HEAD} at HEAD")
+    lock = getattr(args, "lock", None) or LOCK_DEFAULT
+    os.makedirs(os.path.dirname(lock), exist_ok=True)
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o640)
+    except FileExistsError:
+        raise Refused(f"price_lock_exists: {lock} (one look only; a crash after the lock is NOT_DECIDABLE, not a re-run)")
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps({"head": head, "utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "job": os.environ.get("MISCUSI_JOB_ID", "n/a")}) + "\n")
+    return {"head": head, "lock": lock}
+
+
+def placebo_status(oos_pairs: list, oos_unmatched: int, n_oos: int, bal: dict) -> dict:
+    share = oos_unmatched / max(1, n_oos)
+    reasons = []
+    if len(oos_pairs) < 100:
+        reasons.append(f"pairs {len(oos_pairs)} < 100")
+    if share > 0.20:
+        reasons.append(f"unmatched share {share:.3f} > 0.20")
+    if not bal["balanced"]:
+        reasons.append(f"balance: max |SMD| {bal['max_abs_smd']} > 0.25")
+    decidable = not reasons
+    return {"decidable": decidable, "reasons": reasons, "unmatched_share": round(share, 4),
+            "branch": "DECIDING conjunct (PASS needs the cluster-bootstrap paired CI lower bound > 0 on both fail models)" if decidable else "REPORT-ONLY (fallback)",
+            "headline_label": None if decidable else HEADLINE_REPORT_ONLY}
+
+
 def run(args) -> dict:
     pins = check_pins()
-    if args.price:
-        head = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
-        if os.environ.get("P29_PRICE_AUTH") != head:
-            raise Refused("price_not_authorised: P29_PRICE_AUTH must equal the exact HEAD sha (reviewer verdict + QP OK on the code first)")
+    gate = price_gates(args) if args.price else None
+    hashes = p29_hashes()
     labels = [b[0] for b in BLOCKS if (args.blocks is None or b[0] in args.blocks)]
     if args.price:
         labels = [b[0] for b in BLOCKS if b[1] == "OOS"]
@@ -271,7 +376,8 @@ def run(args) -> dict:
     vmap = K.VMap(K.check_vmap_paths(K.VMAP_DEFAULT))
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    res: dict = {"pins": pins, "mode": "price" if args.price else "count-only", "dropped_blocks_coverage": dropped, "blocks": {}}
+    res: dict = {"pins": pins, "p29_module_sha256": hashes, "head": git_out("rev-parse", "HEAD"), "price_gate": gate, "mode": "price" if args.price else "count-only",
+                 "dropped_blocks_coverage": dropped, "blocks": {}}
     rule = P29KeeperRule(tagger, "tagged", allowed_days=allowed)
     scr = P29Screen(rule, count_only=not args.price, screen_p=bool(args.price))
     for bi, lb in enumerate(labels):
@@ -299,8 +405,11 @@ def run(args) -> dict:
     oos_days = sorted({f"{e['block']}|{e['day']}" for e in oos})
     oos_pairs = [p for p in pairs if block_role(p[0]["block"]) == "OOS"]
     oos_un = [e for e in un if block_role(e["block"]) == "OOS"]
-    share_un = len(oos_un) / max(1, len(oos))
-    res["controls"] = {"pairs_all_blocks": len(pairs), "unmatched_all_blocks": len(un), "oos_pairs": len(oos_pairs), "oos_unmatched": len(oos_un), "oos_unmatched_share": round(share_un, 4)}
+    bal = balance(oos_pairs)
+    reuse = collections.Counter((c["pool"], c["slot"]) for _, c in oos_pairs)
+    res["matcher_v2"] = {"pairs_all_blocks": len(pairs), "unmatched_all_blocks": len(un), "oos_pairs": len(oos_pairs), "oos_unmatched": len(oos_un), "oos_distinct_controls": len(reuse),
+                         "max_control_reuse": max(reuse.values()) if reuse else 0, "balance": bal}
+    res["placebo"] = placebo_status(oos_pairs, len(oos_un), len(oos), bal)
     res["rule_counters"] = dict(rule.counters)
     res["kit_counters"] = {k: int(v) for k, v in scr.counters.items() if k.startswith("refused") or k in ("triggers_raw", "overlap_dropped")}
     res["kit_validated_triggers_per_day"] = {scr._d(d): int(n) for d, n in sorted(scr.cnt[0].items())}
@@ -308,8 +417,6 @@ def run(args) -> dict:
     stops = []
     if len(oos_days) < 5 or len(oos) < 100:
         stops.append(f"NOT_DECIDABLE: OOS events after universe {len(oos)} (need >= 100) over {len(oos_days)} days (need >= 5)")
-    if len(oos_pairs) < 100 or share_un > 0.20:
-        stops.append(f"PLACEBO_NOT_DECIDABLE: matched OOS pairs {len(oos_pairs)} (need >= 100), unmatched share {share_un:.3f} (max 0.20)")
     res["stops"] = stops
     json.dump({"pairs": [[[e["pool"], e["slot"]], [c["pool"], c["slot"]]] for e, c in oos_pairs]}, open(out / "controls.json", "w"))
     json.dump(ev, open(out / "events.json", "w"))
@@ -320,6 +427,8 @@ def run(args) -> dict:
         res["gross_edge_median"] = statistics.median(scr.gross) if scr.gross else None
         res["p29_verdict"] = p29_verdict(cells.get("p29", {}), res["gross_edge_median"])
         res["exp011_only"] = exp011_only(scr.trips, labels)  # report only, beside the pooled result in the headline
+        res["exit_slots_both_tp_and_sl_hit"] = {"trips": scr.exit_trips, "both": scr.both_fired}  # report only (kit rule: the earliest print wins)
+        res["concurrency_report"] = concurrency(scr.trips)
         res["landing_disagreement"] = {t: {b: {"disagree": cnt.get((b, True), 0), "agree": cnt.get((b, False), 0)} for b in sorted({k[0] for k in cnt})} for t, cnt in scr.disagree.items()}
         rule_c = P29KeeperRule(tagger, "control", control_keys={(c["pool"], c["slot"]) for _, c in oos_pairs}, allowed_days=allowed)
         scr_c = P29Screen(rule_c, count_only=False, screen_p=False)
@@ -327,6 +436,14 @@ def run(args) -> dict:
             run_blocks_one(scr_c, bi, lb, files, vmap)
         scr_c.results()
         res["placebo_paired"] = paired_test(scr.trips, scr_c.trips, [((e["pool"], e["decision_slot"]), (c["pool"], c["decision_slot"])) for e, c in oos_pairs])
+        res["report_only_legs"] = {}
+        for mode in ("stress", "best"):  # report only: never decides, never rescues a kill; a stress sign flip is stated in the headline
+            r_m = P29KeeperRule(tagger, "tagged", allowed_days=allowed, entry_mode=mode)
+            s_m = P29Screen(r_m, count_only=False, screen_p=False)
+            for bi, lb in enumerate(labels):
+                run_blocks_one(s_m, bi, lb, files, vmap)
+            cm = s_m.results().get("p29", {})
+            res["report_only_legs"][mode] = {"stats": {k: v for k, v in (cm.get("stats") or {}).items() if k.startswith(f"{K.LAT_DECIDING}|") and "rent0" in k}, "gross_edge_median": statistics.median(s_m.gross) if s_m.gross else None}
     json.dump(res, open(out / ("result_price.json" if args.price else "counts_pass.json"), "w"), indent=1, default=float)
     return res
 
@@ -343,6 +460,7 @@ def main(argv=None) -> int:
     ap.add_argument("--blocks", nargs="*")
     ap.add_argument("--coverage")
     ap.add_argument("--price", action="store_true")
+    ap.add_argument("--lock", default=LOCK_DEFAULT)
     args = ap.parse_args(argv)
     try:
         run(args)
