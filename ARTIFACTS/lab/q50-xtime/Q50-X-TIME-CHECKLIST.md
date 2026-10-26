@@ -7,10 +7,10 @@ Status words: DONE (evidence cited), OWED (action named), BLOCKED-ON (owner / He
 ## A. The four X-time items from the brief
 | # | Item | Status | Evidence or action |
 | --- | --- | --- | --- |
-| a | Install manifest shows exactly ONE changed path vs the reviewed install | tool DONE, run at X OWED | `sh scripts/ops/q50-xtime-manifest.sh X` on mal-fast-0 in ~/MAL. Dry-tested here only against main a8070b41 (pinned set: 43 paths, list sha256 244f9e85...; one changed path, `tools/h5_arena_executor.py`, blob 70d789ff = 4646e542, sha256 ef8ae931...; the other 42 identical). It exits 3 `PINNED_SET_CHANGED` on any other result. Steps 1, 2, 4, 5 of QP-PRERULING-1026-n2-n4 (c). Step 3 (canary record check) is not in the tool: see C3. |
-| b | HELM-SHEET s.A re-pinned to sha256 ef8ae931 | patch DONE, applied to the sheet OWED (manager) | `ARTIFACTS/lab/q50-xtime/HELM-SHEET-A-repin.patch` (11 lines; applies cleanly to hunt29/p1/HELM-SHEET.md sha256 0dc7597e...). Only the executor hash line changes. The sheet's other `0526d5cd`, manifest path and manifest sha256 lines (s.A item 2/3, s.C, s.F) move to X when X exists (QP N2 (c) "Also re-pin to X"); the manifest sha256 comes from the tool in (a). |
+| a | Install manifest shows exactly ONE changed path vs the reviewed install | tool DONE, run at X OWED | `sh scripts/ops/q50-xtime-manifest.sh X` on mal-fast-0 in ~/MAL. Dry-tested here only against main a8070b41 (pinned set: 43 paths, list sha256 244f9e85...; one changed path, `tools/h5_arena_executor.py`, blob 70d789ff = 4646e542, sha256 ef8ae931...; the other 42 identical). It exits 3 `PINNED_SET_CHANGED` on any other result. Steps 1, 2, 4, 5 of QP-PRERULING-1026-n2-n4 (c). Step 3 (canary record check) is not in the tool: it is its own checklist step, row s8.3a in section C. |
+| b | HELM-SHEET s.A re-pinned to sha256 ef8ae931 | patch DONE, applied to the sheet OWED (manager) | `ARTIFACTS/lab/q50-xtime/HELM-SHEET-A-repin.patch` (11 lines; applies cleanly to hunt29/p1/HELM-SHEET.md sha256 0dc7597e...). Only the executor hash line changes; the patch passes `git apply --check -p0` on a copy of the sheet. **Never apply it alone**: after it the sheet still names install 0526d5cd, '#1481 EQUAL at this sha', the 0526d5cd manifest (1576 lines, sha256 5299a3c4...) and 0526d5cd in the §C/§F commands, and a 0526d5cd tree has executor sha256 c451a615, not ef8ae931. The whole sheet is re-pinned to X in ONE records PR. The sheet's other `0526d5cd`, manifest path and manifest sha256 lines (s.A item 2/3, s.C, s.F) move to X when X exists (QP N2 (c) "Also re-pin to X"); the manifest sha256 comes from the tool in (a). |
 | c | md5 replay reproduces #1481: A 137/137, B 101/101, synthetic_unconfirmed 0/0 | scripts DONE, run OWED | Job command in section D. The wrapper makes a fresh copy of the 24-hour 2026-09-20 shadow replay, verifies hour-file sha256, runs the replay script from X's own tree, and exits 4 `DIFFERENT_OR_EMPTY` on any other count. No job #1481 is in the MiScusi job list this session can see, so its original command was reconstructed from `hunt29/p1/jobs/md5-replay-q50-install0526.sh` (SHA256SUMS e54bc996...) and not compared with the job record. |
-| d | 1 h dry run at X with the A3 guard read | OWED, Helm + manager | Section E. Not a MiScusi job: it is Helm's keyless unit (HELM-SHEET s.E). `dry.json` already carries `a3_record_file`. |
+| d | 1 h dry run at X with the A3 guard read; pass rule includes **0 build errors** (Am.2 §2 item 3) | OWED, Helm + manager | Section E. Not a MiScusi job: it is Helm's keyless unit (HELM-SHEET s.E). `dry.json` already carries `a3_record_file`. |
 
 ## B. Static facts to re-verify at X (OWED, manager, cheap)
 1. Tests 1 to 17 and 17b green at X on mal-fast-0's Python (Am.3 s8 item 3). Not run here (the PR touches no code). QP opened a different set: 454 passed at 791b82f9 on this host.
@@ -24,10 +24,13 @@ QP's #979 nit: the "Still open" list was shorter than s7-s9. This table is the c
 | --- | --- | --- | --- |
 | s7 | Confirmation read PASS at p <= 0.05/c on the SAME bot_id, >= 100 attempts after the screen instant on >= 5 further UTC dates, one read at the outcome-blind instant | BLOCKED-ON the read | Not read here (sealed). Kill/clock dates: Q50 read per DEC-031 Am.3; EXP-024 Look-2 seal to 2026-11-14. |
 | s7 | A canary may run inside the confirmation window; live results never enter the paper read; label "unpromoted execution measurement" on every report, note, Console entry | OWED (labels) | Apply to every canary record. |
+| s7 | Concurrent-observation disclosure: the confirmation report carries it (wallet is public and watched in real time; results can influence later owner choices, never the formal read) | OWED (report text) | |
+| s7 | A confirmation FAIL or NOT_DECIDABLE ends the book's canary at the next 00:00Z (owner may extend for execution measurement only) | KNOWN rule; OWED to be quoted in the copy's owner notice | |
 | s7 | Step C0 to C1 needs read PASS, "live fills match paper" (>= 100 eligible trips, CI90 lo of mean d_i >= -100 bps, landing p50 <= 1.9 s, P7 off), no unresolved halt, >= 5 signed daily tie-outs with residual 0, impact re-price at C1 stake, unchanged sell builder, owner's dated line, wallet funded to 1.00 SOL, Helm writes `TIER` | OUT OF SCOPE for C0 (C1 locked: `CONFIRMATION_C` unset in code, HELM-SHEET s.A item 2). Listed so nothing is read as pre-approved. |
 | s8.1 | Manager and scorer: read PASS, multiplicity block, ex-best-day, worst-in-slot | BLOCKED-ON gate read | |
 | s8.2 | quant-proof on the read, seals, taints, c; forced verdict as a plain agent | BLOCKED-ON gate read | |
 | s8.3 | Builder: copy template to the numbered DEC, fill s9, PR with QP OK on head and reviewer verdict | OWED | Desk copy exists (hunt29/p1). QP N2 item 5: the merged file must be named `DEC/DEC-0NN-...canary....md` (no "template" in the name; the desk name `DEC-copy-h5v1q50-boostfloor-a1.md` does not match the `DEC-*canary*.md` glob and a live start would refuse `canary_record_for_bot_id_missing`) and carry the bare line `OWNER_CANARY_CONFIRMED: bot_id=h5v1q50-boostfloor-a1` (no bullet, no backticks, nothing after the id). Also `desk copy`: `ARTIFACTS/lab/c0-drafts/DEC-copy-q50-corrections.md` exists; its application status NOT CHECKED. |
+| s8.3a | Canary record check at X (QP N2 (c) step 3): exactly one `DEC/DEC-*canary*.md` without 'template' in git at X (mode 100644) holding the bare `OWNER_CANARY_CONFIRMED: bot_id=h5v1q50-boostfloor-a1` line, no `<FILL` left; print its path and blob sha256 (= `FILL:dec_copy_sha`) | OWED at X, manager (no tool) | Run and record the result in the copy's records PR. |
 | s8.4 | Mint fetch of traded mints, sell-builder pin and simulate output | OWED / NOT CHECKED | QP N4 (same pre-ruling): #821 does NOT meet C7 as recorded; rerun with mints from outside the Look-2 class. `FILL:mint_fetch`, `FILL:simulate_ref`, `FILL:builder_path@sha256`. Chain proofs: `hunt29/p1/CHAIN-PROOFS.md` (not re-read here). |
 | s8.5 | Owner ask through `miscusi_ask` (s2 text), only after items 1 to 5 | BLOCKED-ON items 1-4 | Pre-owner standing OK for a C0 canary after a PASS exists (owner 10-23 15:00Z); keys, wallet and go-live need the owner's word at the time. |
 | s8.6 | Parity and tie-out tools; executor installed DRY; 1 h dry run; md5 replay | OWED at X | Items (c) and (d) above. Tools: `tools/arena_live_parity.py`, `tools/arena_tieout.py` in the pinned set. `tieout-daily.sh` and `twin-writer-loop.sh` re-pin to X (new SHA256SUMS lines; QP N2 (c)). Scheduled reconciliation job id = `FILL:tie_out_job`, OWED. |
@@ -43,7 +46,7 @@ Status of each is OWED unless noted. The 10-25 readiness note (`ARTIFACTS/lab/c0
 - `seal_status`, `universe`, `venue_exit_rule`, `feed_gap_source`, `a3_source`: from the copy.
 - `book_stake`, `canary_stake` (S = min(book stake, 0.05 SOL)), `fund`, `start_balance`, `floor` (max(0.05, funded - 0.25)), `worst_case` (0.25), `wallet_address`, `withdraw_holder` (Helm), `daily_stop` 0.10, `total_stop` 0.20, `days`, `end_ms`: BLOCKED-ON owner funding.
 - `fee`, `twin_tool`, `twin_leg` ("nofail, 1.9 s"), `twin_e1` ("E1 excluded decides"), `builder_path@sha256`, `simulate_ref`, `mint_fetch` (job id, counts, close-blocked share, credits used), `tie_out_tool`, `tie_out_job`, `alert_target`.
-- `dryrun_job`, `md5_proof`: the results of (d) and (c) at X.
+- `dryrun_job`, `md5_proof`: the results of (d) and (c) at X. `md5_proof` must state the source of the required counts: HELM-SHEET line 18 and `ARTIFACTS/lab/c0-readiness-2026-10-25.md:42`, because the #1481 job record was not found; and that the replay script was read from X's own tree (blob id printed by the wrapper).
 - `owner_line`: only from the owner's own message.
 - `a3_guard_source` (Am.3 s6): `dirname(a3_source)/a3-applied.jsonl` on mal-fast-0, the loop job id and its pin, time limits and the successor chain past the later `end_ms`, alert job.
 
@@ -69,7 +72,7 @@ Looking up job status of the A3 chain jobs is not sealed, but this session did n
 ## G. Commands for the manager (nothing was submitted or run heavy by this lane)
 (c) md5 replay, MiScusi job on mal-research-0 (the 09-20 shadow replay dirs and the audit tape are on this host; #1481's host was not confirmed). The replay script and input are on this host. Run only after X exists and `git fetch` has X and the pack branch:
 - machine: mal-research-0; memory 8 GB (one heavy job at a time); no network; resumable false; run under sh.
-- git_ref: X (full 40-hex; the wrapper reads its replay script from X's tree, falling back to `origin/claude/q50-xtime-pack` only until this PR merges, which is a deviation from "no inheritance" to state in the proof).
+- git_ref: X (full 40-hex). The wrapper reads the replay script from X's own tree and REFUSES if X lacks `scripts/ops/q50-xtime-md5-replay.sh` (no fallback): this pack must be merged before X. It prints the script's blob and sha256. A failed run removes its own copy and `-rpc` sibling; after a hard kill, the cleanup `rm -rf` line is in the wrapper header.
 - command: `sh /home/claude/.miscusi/repos/vaanai/MAL/scripts/ops/q50-xtime-md5-job.sh <X>` (needs this PR merged into the checkout, or substitute the path of a worktree at X).
 - pass: last line `md5-replay VERDICT: EQUAL` plus the line `#1481 counts required: A 137/137, B 101/101 ...`. Any other output: STOP, no install.
 - The refusal "dir contains an October date or arena" must not trip: the copy path is `.../shadow-2026-09-20-q50-a5f4137-rolling-install<X8>`.
@@ -77,7 +80,22 @@ Looking up job status of the A3 chain jobs is not sealed, but this session did n
 (a) manifest, mal-fast-0 in ~/MAL (never Helm's clone), after `git pull --ff-only` on a ref at X:
 - job: `sh scripts/ops/q50-xtime-manifest.sh <X>`; memory 1 GB; git_ref X. Writes `~/h5-arena-manifest-<X>.txt` and prints its sha256 for Helm (sheet s.A item 3 / s.C).
 
-(d) 1 h dry run: Helm's s.E sequence with `/etc/mal-h5-arena/dry.json` as in sheet s.D; the sheet's counts command, plus these two counts for the guard read: `journalctl -u mal-h5-arena-executor --no-pager | grep -c a3_guard_unreadable` (must be 0) and the ledger counts by (kind, reason) filtered to reasons starting `a3_` (report `a3_guard_pending` and any latch as counts only; open no outcome field). The manager sends QP the table. This is not a MiScusi job unless the manager wraps Helm's output collection.
+(d) 1 h dry run: Helm's s.E sequence with `/etc/mal-h5-arena/dry.json` as in sheet s.D; the sheet's counts command, plus these two counts for the guard read: `journalctl -u mal-h5-arena-executor --no-pager | grep -c a3_guard_unreadable` (must be 0), zero `build_error` / `simulate_error` alerts in the journal (0 build errors, Am.2 §2.3), and the ledger counts by (kind, reason) filtered to reasons starting `a3_` (report `a3_guard_pending` and any latch as counts only; open no outcome field). The manager sends QP the table. This is not a MiScusi job unless the manager wraps Helm's output collection.
 
 ## H. What this pack does not show
 No replay, dry run, install or manifest at X has run. No claim about any book's results. Gate unchanged.
+
+## I. QP go-live blocker list, verbatim (QP comment 6429311048 on PR #990, at d38e215d)
+
+**Go-live blockers (none of them blocks this merge).**
+1. The DEC-031 gate read PASS on the deciding cell, with the multiplicity block and QP on the read (§8.1–8.2, Am.2 §2.1).
+2. The DEC copy merged as `DEC/DEC-0NN-…canary….md` with the bare `OWNER_CANARY_CONFIRMED: bot_id=h5v1q50-boostfloor-a1` line, every FILL filled, QP OK on its head and a reviewer verdict. The canary record check at X is run and recorded.
+3. The N4 mint rerun with mints from outside the Look-2 class, plus the sell-builder pin and simulate output.
+4. The manifest tool run at X (rc 0, one changed path, list 244f9e85…). Its manifest sha256 is given to Helm, and the whole HELM-SHEET is re-pinned to X in one records PR.
+5. The md5 replay at X prints `VERDICT: EQUAL` with A 137/137, B 101/101 and B synthetic_unconfirmed 0/0, the script is taken from X's own tree (gap 2), and the source of the counts is disclosed (gap 1).
+6. Tests 1–17 and 17b green at X on mal-fast-0's Python.
+7. A 1 h dry run at X with `a3_record_file` set: 0 build errors, `a3_guard_unreadable` = 0, and `a3_guard_pending`/latch counts reported.
+8. The Am.3 §7 guard-chain facts recorded from the job list (#1446/#1447/#1540/#1319/#1333, with their pins and limits).
+9. The owner ask (§2), the owner's yes and funding, and Helm's install, `TIER` T0 and `LIVE_OK`.
+10. The manager reviews the dry run and sets `end_ms` ≤ 2026-11-06T00Z.
+11. The "unpromoted execution measurement" label on every canary record.
