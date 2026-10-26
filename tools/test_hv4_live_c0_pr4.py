@@ -564,7 +564,7 @@ class WindowCapTests(TmpCase):
         p.unlink()
         p.write_text("[]")
         os.chmod(p, 0o444)
-        self.assertEqual(c0.window_start_ms(ARM, 5, create=False), (None, "window_file_unreadable"))
+        self.assertEqual(c0.window_start_ms(ARM, 5, create=False), (None, c0.WINDOW_UNREADABLE))
 
     def test_main_checks_the_cap_against_the_saved_state(self):
         e = Hv4Env(self.tmp)
@@ -777,7 +777,7 @@ class TwinGateTests(TmpCase):
     def test_sealed_ledger_is_read_only_after_the_read_record_gate(self):
         from tools import hv4_c0_twin as tw
         with ScratchArena(self.tmp) as a:
-            led = os.path.join(a.root, "ledger")
+            led = os.path.join(a.root, "ledger", ARM)
             os.makedirs(led)
             self.assertEqual(tw.refusal(ARM, led), "ledger_dir_sealed:read_record_dir_missing")
             forged = os.path.join(self.tmp, "forged")
@@ -803,6 +803,50 @@ class TwinGateTests(TmpCase):
             tw.main(["--trips=-t", f"--ledger-dir={led}", f"--bot-id={ARM}", "--out=-o"])
         self.assertTrue(all("=" in x and x.startswith("--") for x in seen[0]), seen)
         self.assertIn("--out=-o", seen[0])  # a value that starts with '-' stays a value
+
+
+class TwinBotTieTests(TmpCase):
+    def test_a_pass_for_one_bot_does_not_open_another_bots_ledger(self):
+        from tools import hv4_c0_twin as tw
+        F, X = "hv4-CON-F", "hv4-CON-X"
+        with ScratchArena(self.tmp) as a:
+            for b in (F, X):
+                os.makedirs(os.path.join(a.root, "ledger", b))
+            reads = os.path.join(a.root, "reads")
+            write_read_record(reads, F)  # a PASS for F only
+            self.assertIsNone(tw.refusal(F, os.path.join(a.root, "ledger", F), reads))
+            self.assertEqual(tw.refusal(F, os.path.join(a.root, "ledger", X), reads), "ledger_dir_not_this_bot")  # X's ledger under F's PASS
+            self.assertEqual(tw.refusal(F, os.path.join(a.root, "ledger"), reads), "ledger_dir_not_this_bot")
+            self.assertEqual(tw.refusal(X, os.path.join(a.root, "ledger", X), reads), "ledger_dir_sealed:read_record_missing")  # X has no PASS
+            alias = os.path.join(self.tmp, "alias-of-x")  # a symlink to X's dir, and the sealed prefix itself, are refused for F
+            os.symlink(os.path.join(a.root, "ledger", X), alias)
+            self.assertEqual(tw.refusal(F, alias, reads), "ledger_dir_not_this_bot")
+            self.assertEqual(tw.refusal(F, os.path.join(a.root, "ledger", F, "..", X), reads), "ledger_dir_not_this_bot")
+            real = os.stat
+
+            def inode_alias(path, *x, **k):  # a bind of X's dir under another name has X's (st_dev, st_ino)
+                return real(os.path.join(a.root, "ledger", X) if os.fspath(path) == os.path.join(self.tmp, "bind") else path, *x, **k)
+
+            os.makedirs(os.path.join(self.tmp, "bind"))
+            with mock.patch("os.stat", inode_alias):
+                self.assertEqual(tw.refusal(F, os.path.join(self.tmp, "bind"), reads), "ledger_dir_not_this_bot")
+
+
+class WindowAtomicTests(TmpCase):
+    def test_no_tmp_left_and_a_damaged_file_gives_the_recovery_label(self):
+        Hv4Env(self.tmp)
+        self.assertEqual(c0.window_start_ms(ARM, 7, create=True), (7, None))
+        self.assertEqual(sorted(os.listdir(c0.WINDOW_DIR)), [ARM + ".json"])
+        p = Path(c0.WINDOW_DIR) / (ARM + ".json")
+        os.chmod(p, 0o644)
+        p.write_text("")  # what a crash between create and write used to leave
+        os.chmod(p, 0o444)
+        self.assertEqual(c0.window_start_ms(ARM, 7, create=True), (None, "window_file_unreadable_manual_recovery"))
+        self.assertIn("manual_recovery", c0.WINDOW_UNREADABLE)
+
+    def test_install_notes_are_in_the_module_doc(self):
+        for n in ("N-A", "N-B", "N-C", "N-D"):
+            self.assertIn(n, c0.__doc__)
 
 
 class SentPriorityTests(TmpCase):

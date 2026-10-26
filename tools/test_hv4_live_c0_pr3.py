@@ -187,7 +187,7 @@ class TwinFeesTests(unittest.TestCase):
         self.assertEqual(tw.main(["--bot-id", "hv4-CON-L", "--ledger-dir", str(d), *base]), 2)  # L arm
         self.assertEqual(tw.main(["--bot-id", ARM, "--ledger-dir", "/data/mal/arena/haiku-v4/ledger", *base]), 2)  # sealed, no read-record gate yet
         self.assertEqual(tw.main(["--bot-id", ARM, "--ledger-dir", str(d), "--config-hash", "x", *base]), 2)  # pinned option
-        self.assertIn("sealed", tw.refusal(ARM, "/data/mal/arena/x") or "")
+        self.assertIn("ledger_dir", tw.refusal(ARM, "/data/mal/arena/x") or "")  # sealed: not this bot's ledger dir
 
 
 class SellLadderLiveTests(LivePortScheduleTests):

@@ -8,6 +8,13 @@ Read-record gate runbook note (QP N9): the bot's recorded read is pinned (path, 
 replacing that record, even with identical bytes, latches `read_record` and halts the bridge FOR GOOD; only the manager clears a latch, with the bridge stopped.
 The 14-day window start is the write-once file WINDOW_DIR/<bot_id>.json (shared by dry and live of the same bot_id).
 
+PR5 install notes (QP re-check of #965; NOT implemented here):
+  N-A  no bridge or agent account may write to the reads dir; the record's sha256 can additionally be pinned outside it (e.g. in CANARY_DEC.md).
+  N-B  root creates the window file, or sets chattr +i on it.
+  N-C  a dry rehearsal with a real bot_id starts the 14-day clock as soon as the window dir exists (the file is shared by dry and live).
+  N-D  the logged priority is the one signed last for the mint; it may not be the priority of the tx that landed (a rebroadcast of an earlier tx can land).
+A window file left empty or damaged (crash) is written atomically now (tmp + fsync + link), and an existing bad one refuses with window_file_unreadable_manual_recovery.
+
 Arms: only F or X arms are canary candidates (the L arms rewrite their playbook nightly = a prompt change = a new bot_id under DEC-032 s1.4). A bot_id
 ending in -L, -P or -R is refused.
 
@@ -346,6 +353,7 @@ def end_cap_problem(end_ms: int, first_start_ms: int) -> str | None:
     return "end_ms_over_14d" if int(end_ms) > window_cap_ms(first_start_ms) else None
 
 
+WINDOW_UNREADABLE = "window_file_unreadable_manual_recovery"  # empty or damaged window file (e.g. a crash mid-write): the start refuses until the manager inspects and removes it
 WINDOW_DIR = "/var/lib/mal-hv4-c0/window"  # write-once `<bot_id>.json` per bot, outside the bridge's state dir: a new state dir, a deleted state file or a mode switch cannot reset it
 
 
@@ -368,30 +376,40 @@ def window_start_ms(bot_id: str, now_ms: int, create: bool) -> tuple[int | None,
         except FileNotFoundError:
             if not create:
                 return None, None
+            tmp = os.path.join(WINDOW_DIR, f".{bot_id}.{os.getpid()}.tmp")  # atomic: write + fsync a private tmp, then link it into place (fails if it exists)
             try:
-                fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o444)
-            except FileExistsError:
-                continue
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o444)
+                with os.fdopen(fd, "w") as fh:
+                    fh.write(json.dumps({"bot_id": bot_id, "first_start_ms": int(now_ms)}, sort_keys=True) + "\n")
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                try:
+                    os.link(tmp, path)
+                except FileExistsError:
+                    continue
+                finally:
+                    os.unlink(tmp)
+                dfd = os.open(WINDOW_DIR, os.O_RDONLY)
+                try:
+                    os.fsync(dfd)
+                finally:
+                    os.close(dfd)
             except OSError:
                 return None, "window_file_unwritable"
-            with os.fdopen(fd, "w") as fh:
-                fh.write(json.dumps({"bot_id": bot_id, "first_start_ms": int(now_ms)}, sort_keys=True) + "\n")
-                fh.flush()
-                os.fsync(fh.fileno())
             return int(now_ms), None
         except OSError:
-            return None, "window_file_unreadable"
+            return None, WINDOW_UNREADABLE
         if stat.S_ISLNK(ls.st_mode) or not stat.S_ISREG(ls.st_mode) or ls.st_nlink != 1 or not _owner_mode_ok(ls):
             return None, "window_file_unsafe"
         try:
             rec = json.loads(open(path, "rb").read())
         except (OSError, ValueError):
-            return None, "window_file_unreadable"
+            return None, WINDOW_UNREADABLE
         v = rec.get("first_start_ms") if isinstance(rec, dict) else None
         if not isinstance(rec, dict) or rec.get("bot_id") != bot_id or isinstance(v, bool) or not isinstance(v, int):
-            return None, "window_file_unreadable"
+            return None, WINDOW_UNREADABLE
         return v, None
-    return None, "window_file_unreadable"
+    return None, WINDOW_UNREADABLE
 
 
 def model_problem(bot_id: str, model_ids: Any) -> str | None:

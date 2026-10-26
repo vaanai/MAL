@@ -7,7 +7,7 @@ A thin wrapper over `tools.arena_twin_writer` (nofail leg, 1.9 s, the trip's own
   * the writer's file must hash to hv4_live_c0.TWIN_WRITER_SHA256;
   * the config pin is hv4_live_c0.CONFIG_PIN_SHA256 (every ledger row's stack block must hash to it, else the writer refuses the whole run);
   * a ledger directory that resolves under, or is an inode alias of, /data/mal/arena is read ONLY after the read-record gate passes
-    (hv4_live_c0.read_record_problem on `--reads-dir`: the canonical write-once record, PASS, frozen_sha, owner/mode; QP-RULING-1025 R2.1). This replaces the
+    (for THAT bot only: the dir must be <arena>/ledger/<bot_id>; hv4_live_c0.read_record_problem on `--reads-dir`: the canonical write-once record, PASS, frozen_sha, owner/mode; QP-RULING-1025 R2.1). This replaces the
     old flat path-string refusal. Without `--reads-dir` or without the record the run is refused.
   * `--out` and `--run-record` (the writer's files; default `<out>.run.json`) are seal-checked: not a symlink, not a hard link, and neither the file nor its
     parent directory may resolve under or alias the arena.
@@ -36,7 +36,11 @@ def refusal(bot_id: str, ledger_dir: str, reads_dir: str | None = None) -> str |
     if hashlib.sha256(Path(W.__file__).read_bytes()).hexdigest() != c0.TWIN_WRITER_SHA256:
         return "twin_writer_sha_mismatch"
     real = os.path.realpath(ledger_dir)
-    if c0._under_sealed(real) or c0._under_sealed(os.path.abspath(ledger_dir)):
+    from tools import hv4_read_instant as _F
+    others = tuple(os.path.join(c0.SEALED_ROOT_PREFIX, "ledger", x) for x in _F.BOT_IDS)  # an inode alias (bind) of ANY HV4 bot's ledger dir counts as sealed
+    if c0._under_sealed(real) or c0._under_sealed(os.path.abspath(ledger_dir)) or c0._alias_of_sealed(ledger_dir, others):
+        if os.path.realpath(ledger_dir) != os.path.realpath(os.path.join(c0.SEALED_ROOT_PREFIX, "ledger", bot_id)):
+            return "ledger_dir_not_this_bot"  # a PASS for one bot opens only ITS ledger dir; another bot's dir, or any alias of it, is refused
         why = c0.read_record_problem(reads_dir, bot_id)[0]  # the gate decides; a missing reads dir is its own refusal
         if why:
             return f"ledger_dir_sealed:{why}"
