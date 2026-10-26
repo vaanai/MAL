@@ -3,6 +3,7 @@ or job log is read, no network, no key."""
 
 from __future__ import annotations
 
+import json
 import unittest
 from pathlib import Path
 
@@ -19,11 +20,50 @@ def raw(**over):
     return {"profile": c0.PROFILE, "funded_lamports": FUNDED, **over}
 
 
+def read_record(bot, **over):
+    """A synthetic recorded read (the keys arena_score.record_read writes that the gate reads). No real record is ever opened."""
+    rec = {"bot_id": bot, "status": "PASS", "read_boundary_ms": 1_700_000_000_000, "attempts": 120, "model_ids": [c0.MODEL_ID] if bot.endswith("-F") else [],
+           "am15": {"rule": "synthetic"}}
+    rec.update(over)
+    return rec
+
+
+def write_read_record(reads_dir, bot, **over):
+    d = Path(reads_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{bot}.json").write_text(json.dumps(read_record(bot, **over), sort_keys=True) + "\n")
+
+
+def owner_fixture(tmp, bot):
+    """A synthetic stand-in for /etc/mal-hv4-c0/CANARY_DEC.md. Returns (path, sha256 of its bytes)."""
+    import hashlib
+    d = Path(tmp) / "etc-c0"
+    d.mkdir(exist_ok=True)
+    p = d / "CANARY_DEC.md"
+    p.write_text("synthetic owner decision\n" + c0.OWNER_LINE_FMT.format(bot_id=bot) + "\n")
+    return p, hashlib.sha256(p.read_bytes()).hexdigest()
+
+
+def live_main_env(tmp, bot):
+    """(extra config keys, context manager) so a LIVE main() reaches the later gates: the three parity paths, the owner file and its pin (synthetic, patched)."""
+    import contextlib
+    from unittest import mock
+    p, sha = owner_fixture(tmp, bot)
+    paths = {"parity_dir": str(Path(tmp) / "par"), "twins_file": str(Path(tmp) / "twins.jsonl"), "tieout_dir": str(Path(tmp) / "tie")}
+    st = contextlib.ExitStack()
+    st.enter_context(mock.patch.object(c0, "OWNER_DEC_PATH", str(p)))
+    st.enter_context(mock.patch.object(c0, "CANARY_DEC_SHA256", sha))
+    st.enter_context(mock.patch.object(alb, "root_ok_problem", lambda _p: None))
+    return paths, st
+
+
 class Hv4Env(Env):
     """Env whose bot_id is an HV4 F/X arm and whose config carries the C0 profile."""
 
     def __init__(self, tmp, live=False, bot=ARM, **over):
-        super().__init__(tmp, live=live, **{"bot_id": bot, "frozen_sha": c0.FROZEN_SHA, "profile": c0.PROFILE, "funded_lamports": FUNDED, **over})
+        reads = str(Path(tmp) / "reads")
+        super().__init__(tmp, live=live, **{"bot_id": bot, "frozen_sha": c0.FROZEN_SHA, "profile": c0.PROFILE, "funded_lamports": FUNDED, "reads_dir": reads, **over})
+        write_read_record(reads, bot)
         self.bot = bot
         self.declog_bot = bot
 
@@ -305,10 +345,13 @@ class BridgeC0Tests(TmpCase):
         elif marker:
             Path(full["root"]).mkdir(parents=True, exist_ok=True)
             (Path(full["root"]) / c0.SYNTHETIC_MARKER).write_text("")
+        paths, st = live_main_env(self.tmp, full["bot_id"])
+        if live:
+            full.update(paths)
         cfgp = Path(self.tmp) / "cfg_main.json"
         cfgp.write_text(json.dumps({**full, "mode": "live" if live else "dry"}))
         buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
+        with contextlib.redirect_stdout(buf), st:
             rc = alb.main(["--config", str(cfgp), "--once"] + (["--live"] if live else []))
         return rc, buf.getvalue()
 
@@ -345,9 +388,10 @@ class BridgeC0Tests(TmpCase):
         cfgp = Path(self.tmp) / "cfg.json"
         e = Hv4Env(self.tmp)
         full = {k: v for k, v in e.raw.items() if k not in ("stop_file", "halt_file")}
-        cfgp.write_text(json.dumps({**full, "mode": "live"}))
+        paths, st = live_main_env(self.tmp, full["bot_id"])
+        cfgp.write_text(json.dumps({**full, **paths, "mode": "live"}))
         buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
+        with contextlib.redirect_stdout(buf), st:
             rc = alb.main(["--config", str(cfgp), "--live"])
         self.assertEqual(rc, 2)
         self.assertIn("hv4_c0_incomplete", buf.getvalue())
@@ -372,6 +416,9 @@ class BridgeC0Tests(TmpCase):
         e.live_ok.write_text("hv4-other-X\n")
         self.assertEqual(b.effective_live(), (False, "live_ok_other_book"))
         e.live_ok.write_text(ARM + "\n")
+        self.assertEqual(b.effective_live(), (False, "live_ok_owner_dec_pin_unset"))  # no pin, no live send
+        op, sha = owner_fixture(self.tmp, ARM)
+        b.owner_dec_path, b.owner_pin = op, sha
         self.assertEqual(b.effective_live(), (True, None))
 
     def test_live_entry_refused_without_t1(self):
