@@ -147,6 +147,8 @@ def test_takeover_is_gapless_and_equals_one_continuous_writer(tmp_path):
     assert par["verdict"] == "PARITY_EXACT", par
     seam = P.seam_report(tmp_path / "ho", W0, W1, expect_takeover=True, max_disagree_rate=MDR, min_overlap_rows=MOR)
     assert seam["verdict"] == "PASS", (seam["failed"], seam["checks"]["takeover"])
+    tk_row = next(r for r in rows if r["type"] == "takeover")
+    assert tk_row["thresholds"] == {"max_disagree_rate": MDR, "min_overlap_rows": MOR}  # QP N2: the writer always writes the field
     tk = info["dedup"]
     assert tk["buffered"] == tk["dropped_dup"] + tk["written_missed"] and tk["written_missed"] > 0 and tk["buffer_overflow"] is False
     assert info["agreement"]["pumpswap"]["only_old"] == 0 and info["agreement"]["pumpswap"]["n_old"] >= MOR["pumpswap"]
@@ -213,6 +215,8 @@ def test_disagreement_above_rate_is_unproven(tmp_path):
 def test_unpinned_thresholds_are_unproven(tmp_path):
     _, info = run_handover(tmp_path / "t", min_overlap_rows=None, max_disagree_rate=None)
     assert_unproven(tmp_path / "t", info, "thresholds_unpinned")
+    gap = next(r for r in rows_of(tmp_path / "t") if r["type"] == "gap" and r["kind"] == "process_restart")
+    assert gap["handover"]["thresholds"] == {"max_disagree_rate": {"pumpswap": None, "pumpfun": None}, "min_overlap_rows": {"pumpswap": None, "pumpfun": None}}
 
 
 def test_too_few_overlap_rows_is_unproven(tmp_path):
@@ -375,8 +379,36 @@ def test_standby_lock_refuses_a_second_standby(tmp_path):
     os.close(fd)
 
 
-def test_cli_standby_needs_instants():
+def test_cli_standby_needs_instants(monkeypatch, capsys):
+    monkeypatch.setattr(v2.socket, "gethostname", lambda: "mal-fast-0")
     assert v2.main(["--standby", "--out-dir", "/tmp/p35-never-created"]) == 2
+    assert "needs --takeover-at-ms" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("argv", [["--out-dir", "/tmp/p35-never-created"], ["--standby", "--out-dir", "/tmp/p35-never-created", "--takeover-at-ms", "1",
+                                                                          "--takeover-deadline-ms", "2"]])
+def test_research0_refused_in_every_mode_before_hv6_end(monkeypatch, capsys, argv):
+    monkeypatch.setattr(v2.socket, "gethostname", lambda: "mal-research-0")
+    monkeypatch.setattr(v2.af, "now_ms", lambda: v2.RESEARCH0_WS_EARLIEST_MS - 1)
+    assert v2.main(argv) == 2 and "research-0" in capsys.readouterr().err
+    assert not Path("/tmp/p35-never-created").exists()
+    v2.check_host(v2.RESEARCH0_WS_EARLIEST_MS, "mal-research-0")  # from the instant on, allowed
+    v2.check_host(0, "mal-fast-0")
+
+
+def test_plain_v2_on_the_production_tape_refused_before_the_window(monkeypatch, capsys):
+    monkeypatch.setattr(v2.socket, "gethostname", lambda: "mal-fast-0")
+    monkeypatch.setattr(v2.af, "now_ms", lambda: v2.EARLIEST_PRODUCTION_MS - 1)
+    assert v2.main(["--out-dir", v2.PRODUCTION_TAPE]) == 2 and "production tape" in capsys.readouterr().err
+    with pytest.raises(ValueError):
+        v2.check_production(Path(v2.PRODUCTION_TAPE), v2.EARLIEST_PRODUCTION_MS - 1, True, standby=False)
+    v2.check_production(Path(v2.PRODUCTION_TAPE), v2.EARLIEST_PRODUCTION_MS, False, standby=False)
+
+
+def test_research0_guard_is_after_hv6_read():
+    from datetime import datetime, timezone
+
+    assert v2.RESEARCH0_WS_EARLIEST_MS == int(datetime(2026, 11, 11, 13, tzinfo=timezone.utc).timestamp() * 1000) < v2.EARLIEST_PRODUCTION_MS
 
 
 def test_parse_per_prog():
