@@ -608,7 +608,7 @@ class RegimeRuleVerdict:
     mode: str | None = None            # "tighten" | "probe"
     tag: str | None = None             # "regime_probe" for a probe: the runner tags every trade it opens
     expires_ms: int | None = None
-    match_rule_waived: bool = False    # True for TTL'd changes: the 10-match rule is waived for TTL changes only, DESIGN section 3
+    match_rule_waived: bool = False    # True: waived for the first regime_rule on a key; a later regime_rule on the same key needs >= min_matches post-change trades (hv6_review.validate_reply)
 
 
 def _is_real(v) -> bool:

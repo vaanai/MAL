@@ -21,7 +21,7 @@ a night gives the same bytes). P sees the REAL block; only outcomes are shuffled
 Validators. <= params.max_changes (<= 3) changes in all per reply; playbook_edit/knob/local_veto need a predicate matching >= params.min_matches (8, 10
 or 15) past trades or skips, a claim whose sign agrees with the mean difference, 1-20 evidence ids that exist; regime_rule goes through
 tools.hv6_agents.validate_regime_rule (cites present RG- ids of a usable block with as_of_ms before the write instant; the match rule is waived for
-TTL changes, DESIGN s3) and only for the arms that have a regime block (L, P). L-nr: a regime_rule is refused.
+the first regime_rule on a key; a later regime_rule on the same key needs >= params.min_matches post-change trades, DESIGN s3) and only for the arms that have a regime block (L, P). L-nr: a regime_rule is refused.
 
 Manifest chain (<root>/manifests/<arm>.jsonl, one hash-chained line per version). Kinds: genesis, nightly, intraday.
   Rules (nightly): max_input_close_ms < cutoff; block_as_of_ms < written_ms; effective_from = max(cutoff + 30 min, written_ms + 60 s); written_ms never decreases; the append instant (wall clock) must be before effective_from (R6).
@@ -372,10 +372,31 @@ class ChangeResult:
     regime_rules: tuple[dict, ...] = ()      # the accepted regime_rule changes, as stored in the manifest (a subset of `accepted`)
 
 
+def prior_regime_starts(rows: Sequence[Mapping]) -> dict[tuple[str, Any], int]:
+    """For every regime_rule change carried by a manifest line with seq >= 1: the key (target, new if target == "local_veto" else None) mapped to the
+    earliest effective_from_ms of the lines that carry it. Pure."""
+    out: dict[tuple[str, Any], int] = {}
+    for r in rows:
+        if r.get("seq", 0) < 1:
+            continue
+        for c in r.get("changes", []):
+            if c.get("type") != ag.REGIME_TYPE:
+                continue
+            k = (c["target"], c["new"] if c["target"] == "local_veto" else None)
+            e = r["effective_from_ms"]
+            if k not in out or e < out[k]:
+                out[k] = e
+    return out
+
+
 def validate_reply(reply_text: Any, state: RV.ArmState, evidence: Sequence[Mapping], *, params: Params = V60_PARAMS, arm: str, block: Mapping | None = None,
-                   now_ms: int = 0, active_rules: Sequence[Mapping] = (), base: pr.Playbook | None = None, only_regime: bool = False) -> ChangeResult:
+                   now_ms: int = 0, active_rules: Sequence[Mapping] = (), base: pr.Playbook | None = None, only_regime: bool = False,
+                   prior_regime: Mapping[tuple[str, Any], int] = {}) -> ChangeResult:
     """Parse, test and apply the reply. More than params.max_changes items refuse the whole reply. `evidence` is every record of the arm closed before
-    the cutoff (shuffled already for P). `only_regime` (the intraday review) refuses any other change type."""
+    the cutoff (shuffled already for P). `only_regime` (the intraday review) refuses any other change type. `prior_regime` is prior_regime_starts(manifest
+    rows): the first regime_rule on a key is waived from the match rule; a later one on the same key (expired, or live with another value) needs >=
+    params.min_matches closed trades (regime_probe included) entered at or after the key's first effective_from_ms, else
+    renewal_fewer_than_<min_matches>_post_change_trades, and stores renewal {since_ms, n_post}."""
     base = base or ag.load_playbook("v0")
     try:
         changes = RV.parse_changes(reply_text)
@@ -405,6 +426,14 @@ def validate_reply(reply_text: Any, state: RV.ArmState, evidence: Sequence[Mappi
             if (v.change["ttl_h"]) > params.ttl_h_max:
                 rejected.append((i, "ttl_over_release_cap"))
                 continue
+            pk = (v.change["target"], v.change["new"] if v.change["target"] == "local_veto" else None)
+            renewal = None
+            if pk in prior_regime:
+                n_post = sum(1 for r in evidence if r["kind"] == "trade" and r["entry_ms"] >= prior_regime[pk])
+                if n_post < params.min_matches:
+                    rejected.append((i, f"renewal_fewer_than_{params.min_matches}_post_change_trades"))
+                    continue
+                renewal = {"since_ms": prior_regime[pk], "n_post": n_post}
             key = ("regime_rule", v.change["target"] if v.change["target"] != "local_veto" else v.change["new"])
             if key in used or any((r["target"], r["new"]) == (v.change["target"], v.change["new"]) for r in live):
                 rejected.append((i, "duplicate_target"))
@@ -413,6 +442,8 @@ def validate_reply(reply_text: Any, state: RV.ArmState, evidence: Sequence[Mappi
             ch = {**v.change, "expires_ms": v.expires_ms, "mode": v.mode}
             if v.tag:
                 ch["tag"] = v.tag
+            if renewal is not None:
+                ch["renewal"] = renewal
             accepted.append(ch)
             regime.append(ch)
             continue
@@ -1053,7 +1084,8 @@ def review_night(arm: str, day: str, *, root: str | os.PathLike, ledger_root: st
     if err:
         result = ChangeResult((), (), state, None)
     else:
-        result = validate_reply(text, state, bundle.evidence, params=params, arm=arm, block=block, now_ms=now_ms, active_rules=rules)
+        result = validate_reply(text, state, bundle.evidence, params=params, arm=arm, block=block, now_ms=now_ms, active_rules=rules,
+                                prior_regime=prior_regime_starts(rows))
     nv = head["version"] + 1
     nxt = _next_state(head, result, nv)
     carried = [r for r in rules]
@@ -1107,7 +1139,8 @@ def regime_review(arm: str, day: str, *, root: str | os.PathLike, ledger_root: s
     if err:
         result = ChangeResult((), (), state, None)
     else:
-        result = validate_reply(text, state, bundle.evidence, params=params, arm=arm, block=block, now_ms=now_ms, active_rules=rules, only_regime=True)
+        result = validate_reply(text, state, bundle.evidence, params=params, arm=arm, block=block, now_ms=now_ms, active_rules=rules, only_regime=True,
+                                prior_regime=prior_regime_starts(rows))
     nv = head["version"] + 1
     nxt = RV.ArmState(ag.PERSONA, nv, pr.playbook_from_text(ag.PERSONA, f"v{nv}", state.playbook.text), state.knobs, state.vetoes)
     row = make_manifest(arm, "intraday", day, n, head, nxt, bundle, result, written_ms=now_ms, commit=commit, response_sha256=rsha, review_error=err,
