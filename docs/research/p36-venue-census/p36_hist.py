@@ -33,6 +33,7 @@ import p36_rpc as R  # noqa: E402
 PUMP = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 PUMPSWAP = "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA"
 LAUNCHLAB = "LanMV9sAd7wArD4vJFi2qDdfnVhFxYSUg6eADduJ3uj"
+GENERIC_MINT: dict = {}  # pool -> base mint, filled from --launch-list for venue "generic"
 PUMP_MINT_AUTH = "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM"  # pump.fun mint authority PDA: appears in create txs only
 PUMP_MIGRATOR = "39azUYFWPz3VHgKCf3VChUwbpURdCHRxjWVowf5jUJjg"  # signs pump.fun MigrateV2 (checked 2026-10-26)
 WINDOW_S = 30
@@ -93,6 +94,16 @@ def buys_in_tx(venue: str, tx: dict, sig: str, key: str) -> list[dict]:
                 out.append({"trader": r.get("trader"), "amt": amt})
             if venue == "pumpswap" and r.get("prog") == "pumpswap" and r.get("pool") == key:
                 out.append({"trader": r.get("trader"), "amt": int(r.get("sol_lamports") or 0)})
+    elif venue == "generic":
+        # venue without a decoder (meme.fun): buyer = fee payer; a buy = the payer's balance of the base mint rises;
+        # amount = the payer's lamport decrease minus the tx fee (includes any ATA rent, ~0.002 SOL: disclosed bias)
+        mint = GENERIC_MINT.get(key)
+        payer = fee_payer(tx)
+        pre = sum(float(b["uiTokenAmount"]["amount"]) for b in tx["meta"].get("preTokenBalances") or [] if b.get("owner") == payer and b["mint"] == mint)
+        post = sum(float(b["uiTokenAmount"]["amount"]) for b in tx["meta"].get("postTokenBalances") or [] if b.get("owner") == payer and b["mint"] == mint)
+        if post > pre and tx["meta"]["err"] is None:
+            lam = tx["meta"]["preBalances"][0] - tx["meta"]["postBalances"][0] - tx["meta"]["fee"]
+            out.append({"trader": payer, "amt": max(int(lam), 0)})
     elif venue == "launchlab":
         from tools.venue_tape import decode_ll_event, program_events
         pe = program_events(tx["meta"]["logMessages"] or [], LAUNCHLAB)
@@ -243,7 +254,7 @@ def pick_migrations(t_target: int, n: int, rng: random.Random) -> tuple[list[str
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--venue", required=True, choices=["pump", "pumpswap", "launchlab"])
+    ap.add_argument("--venue", required=True, choices=["pump", "pumpswap", "launchlab", "generic"])
     ap.add_argument("--n", type=int, default=20)
     ap.add_argument("--out", required=True)
     ap.add_argument("--t-target", type=int, default=None, help="pumpswap: unix time of the sample (September 2026 only)")
@@ -259,6 +270,16 @@ def main() -> int:
     elif a.venue == "pumpswap":
         launches_s, rate = pick_migrations(a.t_target, a.n, rng)
         launches = [(s, None) for s in launches_s]
+    elif a.venue == "generic":
+        # launch list = [{pool, mint}] from GeckoTerminal; the launch tx = the pool's oldest signature
+        perf = R.rpc("getRecentPerformanceSamples", [5], "generic slot rate")
+        rate = sum(p["samplePeriodSecs"] for p in perf) / sum(p["numSlots"] for p in perf)
+        launches = []
+        for x in json.load(open(a.launch_list))[: a.n]:
+            GENERIC_MINT[x["pool"]] = x["mint"]
+            lst = R.sigs(x["pool"], "generic pool oldest sig")
+            if isinstance(lst, list) and lst and len(lst) < 1000:
+                launches.append((lst[-1]["signature"], x["pool"]))
     else:
         perf = R.rpc("getRecentPerformanceSamples", [5], "launchlab slot rate")
         rate = sum(p["samplePeriodSecs"] for p in perf) / sum(p["numSlots"] for p in perf)
