@@ -9,6 +9,11 @@ writes its hash-chained decision log under OUT/declog plus OUT/equiv.json (md5 o
     python3 -m tools.dbc_p18_equiv run --prune 0 --out DIR0
     python3 -m tools.dbc_p18_equiv run --prune 1 --out DIR1
     python3 -m tools.dbc_p18_equiv compare DIR0 DIR1
+
+Slot-close case (`--signals`): the pruned engine is wrapped in `dbc_p18_run.SlotCloser` and slot signals are SYNTHESISED from the tape's own slot sequence. `--signals 1`: after
+the last row of slot s (i.e. just before the first row of a later slot) signal(s). `--signals 2`: additionally signal(t) for every empty slot t between s and the next row
+slot (what a slot subscription would deliver; clamped, so these are no-ops for the engine). The decision-log md5 must equal the `--prune 1 --signals 0` log (and the pinned
+engine's): `compare` does that. Any late_after_close row would change the md5 (it is logged), so it cannot hide.
 """
 
 from __future__ import annotations
@@ -33,7 +38,7 @@ from typing import Any
 from tools import dbc_fwd as F
 from tools import dbc_price as L
 from tools import dbc_screen as S
-from tools.dbc_p18_run import PrunedEngine
+from tools.dbc_p18_run import PrunedEngine, SlotCloser
 
 START = datetime(2026, 10, 14, 0, tzinfo=timezone.utc)
 END = datetime(2026, 10, 17, 0, tzinfo=timezone.utc)  # exclusive: exploration hours only; [10-17, 10-24) is spent, >= 10-25 sealed
@@ -68,7 +73,28 @@ def rss_mib() -> float:
         return int(f.read().split()[1]) * os.sysconf("SC_PAGE_SIZE") / 1048576.0
 
 
-def run(start: datetime, end: datetime, prune: bool, out: Path, root: str | None = None, rss_every_s: float = 10.0) -> dict[str, Any]:
+class SignalFeed:
+    """Engine proxy for the proof: forwards everything to a SlotCloser and synthesises slot signals from the rows' own slot sequence (mode 1 or 2, see module doc)."""
+
+    def __init__(self, closer: SlotCloser, mode: int) -> None:
+        self._c, self._mode, self._last = closer, mode, None
+
+    def on_row(self, r: dict[str, Any]) -> None:
+        s = SlotCloser.row_slot(r)
+        if s is not None and self._last is not None and s > self._last:
+            self._c.signal(self._last)
+            if self._mode == 2:
+                for t in range(self._last + 1, s):
+                    self._c.signal(t)
+        if s is not None and (self._last is None or s > self._last):
+            self._last = s
+        self._c.on_row(r)
+
+    def __getattr__(self, k: str) -> Any:
+        return getattr(self._c.eng, k)
+
+
+def run(start: datetime, end: datetime, prune: bool, out: Path, root: str | None = None, rss_every_s: float = 10.0, signals: int = 0) -> dict[str, Any]:
     from tools.arena_declog import DecisionLog  # noqa: PLC0415
 
     window_guard(start, end, root, str(out))
@@ -95,12 +121,13 @@ def run(start: datetime, end: datetime, prune: bool, out: Path, root: str | None
 
     th = threading.Thread(target=sampler, daemon=True)
     th.start()
-    hs = F.stream_hours(eng, start, end, root, live_ss, log)
+    closer = SlotCloser(eng, log) if signals else None
+    hs = F.stream_hours(SignalFeed(closer, signals) if closer else eng, start, end, root, live_ss, log)
     stop.set()
     th.join()
     peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0
     rows_kept = sum(q.n() for q in eng.pools.values())
-    res = {"prune": prune, "window": [f"{start:%Y-%m-%dT%H}", f"{end:%Y-%m-%dT%H}"], "hours_streamed": hs, "decisions_live": len(eng.decisions_live), "stats": eng.stats,
+    res = {"prune": prune, "signals": signals, "slot_close": dict(closer.stats) if closer else None, "window": [f"{start:%Y-%m-%dT%H}", f"{end:%Y-%m-%dT%H}"], "hours_streamed": hs, "decisions_live": len(eng.decisions_live), "stats": eng.stats,
            "cfg_thresholds": n_cfg, "pools_end": len(eng.pools), "pools_dead": len(getattr(eng, "dead", {})), "rows_retained_end": rows_kept, "wall_s": round(time.time() - t0, 1),
            "peak_rss_mib": round(peak, 1), "peak_rss_source": "resource.ru_maxrss", "code": code_record(), "rss_series": series, "declog": {"md5": log.md5(), "head": list(log.verify(F.BOOK))},
            "decision_exit_key_md5": F.md5_keys(f"{r['type']}|{r.get('key')}|{r.get('fire_slot')}|{r.get('exit_slot')}" for r in log.rows(F.BOOK) if r["type"] in ("decision", "exit")),
@@ -113,7 +140,7 @@ def compare(a: Path, b: Path) -> dict[str, Any]:
     ra, rb = json.loads((a / "equiv.json").read_text()), json.loads((b / "equiv.json").read_text())
     same = ra["declog"]["md5"] == rb["declog"]["md5"] and ra["declog"]["head"] == rb["declog"]["head"] and ra["window"] == rb["window"]
     return {"identical": bool(same), "md5": [ra["declog"]["md5"], rb["declog"]["md5"]], "head": [ra["declog"]["head"], rb["declog"]["head"]], "decisions": [ra["decisions_live"], rb["decisions_live"]],
-            "prune": [ra["prune"], rb["prune"]], "peak_rss_mib": [ra["peak_rss_mib"], rb["peak_rss_mib"]], "rows_after_drop": rb["stats"].get("rows_after_drop"),
+            "prune": [ra["prune"], rb["prune"]], "signals": [ra.get("signals", 0), rb.get("signals", 0)], "slot_close": [ra.get("slot_close"), rb.get("slot_close")], "peak_rss_mib": [ra["peak_rss_mib"], rb["peak_rss_mib"]], "rows_after_drop": rb["stats"].get("rows_after_drop"),
             "trim_window_clamped": rb["stats"].get("trim_window_clamped"), "trim_rows": rb["stats"].get("trim_rows"), "pools_dropped": rb["stats"].get("pools_dropped")}
 
 
@@ -124,21 +151,27 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--prune", type=int, choices=(0, 1), required=True)
     r.add_argument("--out", required=True)
     r.add_argument("--root", default=None)
+    r.add_argument("--signals", type=int, choices=(0, 1, 2), default=0, help="0 none; 1 signal after each slot; 2 also every empty slot (needs --prune 1)")
     r.add_argument("--limit-hours", type=int, default=72)
     c = sub.add_parser("compare")
     c.add_argument("a")
     c.add_argument("b")
+    c.add_argument("--expect-md5", default=None, help="also require both logs to have this md5 (e.g. the #1670 baseline 5053b05c3ff0446c1a07b692f15a3430)")
     ns = ap.parse_args(argv)
     if ns.cmd == "compare":
         res = compare(Path(ns.a), Path(ns.b))
+        if ns.expect_md5:
+            res["expect_md5"], res["identical"] = ns.expect_md5, bool(res["identical"] and res["md5"] == [ns.expect_md5, ns.expect_md5])
         print(json.dumps(res))
         return 0 if res["identical"] else 1
+    if ns.signals and not ns.prune:
+        ap.error("--signals needs --prune 1")
     try:
-        res = run(START, min(END, START + timedelta(hours=ns.limit_hours)), bool(ns.prune), Path(ns.out), ns.root)
+        res = run(START, min(END, START + timedelta(hours=ns.limit_hours)), bool(ns.prune), Path(ns.out), ns.root, signals=ns.signals)
     except F.ReplayRefused as e:
         print(f"REFUSED: {e}", file=sys.stderr)
         return 3
-    print(json.dumps({k: res[k] for k in ("prune", "hours_streamed", "decisions_live", "peak_rss_mib", "wall_s", "declog", "pools_end", "pools_dead", "rows_retained_end")}))
+    print(json.dumps({k: res[k] for k in ("prune", "signals", "slot_close", "hours_streamed", "decisions_live", "peak_rss_mib", "wall_s", "declog", "pools_end", "pools_dead", "rows_retained_end")}))
     print(json.dumps(res["stats"]))
     return 0
 

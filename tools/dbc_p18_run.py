@@ -15,9 +15,12 @@ What this module adds around the pinned engine (QP ruling 2026-10-26, p33 Q1/Q4)
 * live decision rows carry t_recv_ms (receive time of the trigger row), t_decide_ms and max_slot_seen; counters read DECISION rows only (never exit rows).
 * memory bar: RSS above 1.5 GiB stops the process (exit 6, stop row); feed credits are printed (status.json, stdout, stop row).
 * restart: a start row quoting the previous head (seq, sha) and the decisions with no exit row (their engine state is lost: open positions are not resumed).
-* slot-close TODO: the engine decides a slot only when a row of a LATER slot arrives (p90 3 slots measured). `Runner.on_slot_signal` is the hook for closing on a separate
-  next-slot signal; it is NOT wired to any subscription in this PR. `late_rows` (rows that arrive after their slot was decided) and the live-vs-backfill cross-check are the
-  guards a later wiring needs, and are counted here.
+* slot-close signal: the pinned engine decides a slot only when a row of a LATER slot arrives (p90 3 slots measured). `SlotCloser` / `Runner.on_slot_signal(slot)` close slots
+  <= `slot` on a separate wall-clock / slot-subscription signal, without a later row. Decision-neutral on tape (md5 proof: tools/dbc_p18_equiv.py `--signals 1|2`). The signal is
+  clamped to the highest row slot seen (a skewed or early signal never advances the engine past data it has, so it cannot resolve an exit early). A row of a slot already
+  declared closed (slot <= the highest signal) is LATE: counted (`late_after_close`), written to the chained log as a `late_after_close` row (never silent), and still given to the
+  engine (pinned late-row behaviour; the engine also counts it in `late_rows` when slot < its cur_slot). It is NOT wired to any subscription in this PR: nothing calls
+  `on_slot_signal` in the live loop yet. `late_rows` (<= 1% bar) and the live-vs-backfill cross-check stay the guards of that later wiring.
 
     python3 -m tools.dbc_p18_run --test --fixture tools/fixtures/dbc_txs_2026-10-14T12.json.gz --out DIR
     python3 -m tools.dbc_p18_run --test --hours 2026-10-14T00 2026-10-14T08 --out DIR
@@ -285,6 +288,63 @@ def xcheck(live_keys: set[str], backfill_keys: set[str], explained: set[str] = f
             "unexplained": len(diff), "share": share, "bar": bar, "ok": (share <= bar) if share is not None else None}
 
 
+# ------------------------------------------------------------------------------------------------------------------------------ slot close
+class SlotCloser:
+    """Wraps an engine: rows pass through (`on_row`), `signal(slot)` closes slots <= slot without waiting for a later row. Decision-neutral on a slot-ordered tape.
+    Engine side effect of a signal is exactly `engine.advance(m + 1)` with m = min(slot, highest row slot seen): the same close + exit resolution a row of slot m+1 triggers,
+    on the same data (no row exists between m and the next row on tape). Guards: (1) clamp (above); (2) a signal at or below the highest earlier signal is ignored; (3) a row
+    whose slot <= the highest signal is late: counted, logged as a `late_after_close` row, and still forwarded unchanged."""
+
+    def __init__(self, eng: F.Engine, log: Any = None, book: str = F.BOOK) -> None:
+        self.eng, self.log, self.book = eng, log, book
+        self.max_row_slot: int | None = None
+        self.closed_through: int | None = None
+        self.stats = {"signals": 0, "signals_advanced": 0, "signals_ignored": 0, "signals_clamped": 0, "late_after_close": 0}
+
+    @staticmethod
+    def row_slot(r: dict[str, Any]) -> int | None:
+        """Slot of a row the engine would `advance` on (usable trade, curve_complete), else None."""
+        t = r.get("type")
+        if t == "trade" and L.usable_row(r):
+            return int(r["slot"])
+        if t == "curve_complete":
+            return int(r["slot"])
+        return None
+
+    def on_row(self, r: dict[str, Any]) -> None:
+        s = self.row_slot(r)
+        if s is not None:
+            if self.closed_through is not None and s <= self.closed_through:
+                self.stats["late_after_close"] += 1
+                if self.log is not None:
+                    self.log.append(self.book, int(L.block_time_s(r) * 1000) if r.get("type") == "trade" else int(time.time() * 1000),
+                                    {"type": "late_after_close", "book": self.book, "row_type": r.get("type"), "pool": r.get("pool"), "slot": s, "signature": r.get("signature"),
+                                     "closed_through": self.closed_through, "max_row_slot": self.max_row_slot})
+            if self.max_row_slot is None or s > self.max_row_slot:
+                self.max_row_slot = s
+        self.eng.on_row(r)
+
+    def signal(self, slot: int) -> bool:
+        """Close every slot <= `slot`. True if the engine was advanced."""
+        slot = int(slot)
+        self.stats["signals"] += 1
+        if self.closed_through is not None and slot <= self.closed_through:
+            self.stats["signals_ignored"] += 1
+            return False
+        self.closed_through = slot
+        if self.max_row_slot is None:
+            self.stats["signals_ignored"] += 1  # nothing seen yet: nothing to close
+            return False
+        m = min(slot, self.max_row_slot)
+        if m < slot:
+            self.stats["signals_clamped"] += 1
+        before = self.eng.cur_slot
+        self.eng.advance(m + 1)
+        adv = self.eng.cur_slot > before
+        self.stats["signals_advanced"] += int(adv)
+        return adv
+
+
 # ------------------------------------------------------------------------------------------------------------------------------ runner
 def feed_row(meter: FF.Meter) -> dict[str, Any]:
     """Meter row with the credits figure labelled: a byte-based ESTIMATE of Helius credits (researched rule, not a billed or measured number)."""
@@ -315,6 +375,7 @@ class Runner:
         L.load_config_thresholds(cfg_summary or str(Path(__file__).resolve().parent.parent / "docs/research/dbc-p17/data/cfg_summary.json"))
         self.start_ts = start_ts
         self.eng: PrunedEngine | F.Engine | None = None
+        self.closer: SlotCloser | None = None
         self.live_ss: dict[int, float] = {}
         self.cur_hk: int | None = None
         self.hr: dict[str, Any] = {}
@@ -348,6 +409,7 @@ class Runner:
         kw: dict[str, Any] = dict(ss_live=lambda hk: S.slot_s_for(self.live_ss, hk), screen_policy=False, log=self.log, meta=meta,
                                   now_ms=self.clock_ms if self.live else None)
         self.eng = PrunedEngine(first_ok, live_fields=self.live, **kw) if self.prune else F.Engine(first_ok, **kw)
+        self.closer = SlotCloser(self.eng, self.log)
         self._start_row(t_s)
 
     # -- rows
@@ -372,8 +434,8 @@ class Runner:
             h["bt0"], h["bt1"] = min(h.get("bt0", bt), bt), max(h.get("bt1", bt), bt)
             sl = int(r["slot"])
             h["s0"], h["s1"] = min(h.get("s0", sl), sl), max(h.get("s1", sl), sl)
-        assert self.eng is not None
-        self.eng.on_row(r)
+        assert self.closer is not None
+        self.closer.on_row(r)
 
     def _roll_hour(self) -> None:
         h, hk = self.hr, self.cur_hk
@@ -384,13 +446,13 @@ class Runner:
         st = self.eng.stats
         self.log.append(F.BOOK, (hk + 1) * 3600 * 1000 - 1, {"type": "hb", "book": F.BOOK, "hour": datetime.fromtimestamp(hk * 3600, timezone.utc).strftime("%Y-%m-%dT%H"),
                                                               "decisions": len(self.eng.decisions_live), "trigger_prints": st["trigger_prints"], "sol_rows": st["sol_rows"],
-                                                              "late_rows": st["late_rows"]})
+                                                              "late_rows": st["late_rows"],
+                                                              "late_after_close": self.closer.stats["late_after_close"] if self.closer else 0})
         self.tick()
 
-    def on_slot_signal(self, slot: int) -> None:
-        """TODO (not wired): close `slot` on a separate next-slot signal instead of the next DBC row. A row of the closed slot that arrives later is counted in late_rows."""
-        if self.eng is not None:
-            self.eng.advance(int(slot) + 1)
+    def on_slot_signal(self, slot: int) -> bool:
+        """Close slots <= `slot` on a wall-clock / slot-subscription signal (see SlotCloser). Not called by the live loop yet. Returns True if the engine advanced."""
+        return self.closer.signal(slot) if self.closer is not None else False
 
     def finish(self) -> None:
         """Test modes only: resolve pending positions with the data present. Never called by the live loop."""
@@ -410,6 +472,8 @@ class Runner:
         if self.eng is not None:
             st.update({"pools": len(self.eng.pools), "rows_retained": sum(p.n() for p in self.eng.pools.values()), "stats": {k: v for k, v in self.eng.stats.items() if k != "live_exits"},
                        "late_rows": late_rows_ok(self.eng.stats), "decisions": len(self.eng.decisions_live)})
+            if self.closer is not None:
+                st["slot_close"] = dict(self.closer.stats)
         if self.meter is not None:
             st["feed"] = feed_row(self.meter)
         tmp = self.out / "status.json.tmp"
