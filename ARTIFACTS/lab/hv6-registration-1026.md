@@ -22,7 +22,7 @@ Items marked **UNMET** below block registration until fixed or ruled by QP (none
 | params v6.0 (QP #921 C4) | min_matches 10, skip_count 60, max_changes 3, ttl_h_max 72, evidence_days 7; `params_sha256` `d5d41e9dd82015ace620b64fb607eaf805a1579fa0ae0adcd88a7c13ad2ccb02`; registry min {8,10,15}, skip {20,40,60}, max changes {1,2,3}, TTL cap {24,48,72} h, evidence days {3,5,7} |
 | Spec shas (QP #921 C4) | `reviewer_sha256` `de25aaa09985fc52cd4b44ce50339f0ad3097cc1319edf2b2c9ac34eee58c266`; `regime_template_sha256` `6580f92331e6f025cf9db2452a525e4965b479f99efb8e22377ba05491bdb321`; `bundle_spec_sha256` `82848deb4a534ac501604f77c06deb7fdd9e2c85a2915627f91675955c07fd4c`; `regime_spec_sha256` `daefba8828f24eb481021b806527fd5ae93551f7df645c799729b9447f472c84`; playbook GEN v0 sha256 `9ee29f482241333459aa9b0e93185c0585615f104339b8712f19cc8fe6677d34` (re-checked here with `sha256sum tools/hv6_playbooks/GEN_v0.txt`) |
 | Manifest rules (C4) | nightly `effective_from` = max(cutoff + 30 min, written + 60 s); intraday `effective_from` = written + 30 min; append rules: wall < `effective_from`, `written <= wall + 60 s`; `max_tokens` review 4000, regime 1200; freeze 60,000 ms (00:01Z); intraday cap 2 per arm per day; ledger root `<HV6 root>/engine-ledger`; release whitelist: invalid_reply_rate, schema_rejects, bounds_rejects, token_cost_usd, latency_ms_p50, latency_ms_p95, block_coverage (veto_cap and unknown_evidence_id excluded) |
-| Radar pins (DESIGN section 3) | out-dir `/data/mal/change-radar-arena1`; `tools/change_radar_seals.json` sha256 `5a2f8979c8493f7a3b200dd879f6f54c92a3bf383054af432c2fc35a8e10ca61`; `--venue-tape ''`. radar code `tools/change_radar.py` sha256 `0f5279b3b7276da10a73438dbd5d663139e8ef8e7671828e9ec1dbbd0a418331` and watch file `tools/change_radar_watch.json` sha256 `23838d1cf20d02a9c048855c99981a968a43e8e2014ec65874decc7ec55241cc` (both equal at b4a0f0d5 and at this PR's base; radar job **#1577** runs `python -m tools.change_radar --out-dir /data/mal/change-radar-arena1 --venue-tape ''` from a checkout at `b4a0f0d5cc71`, after `sha256sum -c` of the seals file `5a2f8979...ca61`). **MANAGER:** the producer needs the ABSOLUTE paths of those three files in the checkout job #1577 runs from; its working directory is not in the job status, read it from the job record. |
+| Radar pins (DESIGN section 3) | out-dir `/data/mal/change-radar-arena1`; `tools/change_radar_seals.json` sha256 `5a2f8979c8493f7a3b200dd879f6f54c92a3bf383054af432c2fc35a8e10ca61`; `--venue-tape ''`. radar code `tools/change_radar.py` sha256 `0f5279b3b7276da10a73438dbd5d663139e8ef8e7671828e9ec1dbbd0a418331` and watch file `tools/change_radar_watch.json` sha256 `23838d1cf20d02a9c048855c99981a968a43e8e2014ec65874decc7ec55241cc` (both equal at b4a0f0d5 and at this PR's base; radar job **#1577** runs `python -m tools.change_radar --out-dir /data/mal/change-radar-arena1 --venue-tape ''` from a checkout at `b4a0f0d5cc71`, after `sha256sum -c` of the seals file `5a2f8979...ca61`). The manager verified these three hashes. The producer pins a STABLE worktree, not the job tree (section 9b, steps P1-P3). |
 | HV6 root | `/data/mal/arena/haiku-v6/` (decision log `decisions/<arm>/<day>.jsonl`, `engine-ledger/`, `regime/`, `manifests/`, `chain-credits.json`, `chain-prefetch-spend.json`) |
 | Registry route | (a), append-only into `/data/mal/arena/bots.json`, a1-a7, through `tools/hv6_register.py` |
 
@@ -181,15 +181,35 @@ Rules for the job:
 - **no restart between 00:00Z and 00:10Z** (the nightly block is write-once at 00:02:00Z; a restart in that window risks a late or missing nightly block that the 00:05Z reviews would use). A restart at another time is safe (the loop is idempotent) and is recorded in LAB_STATE;
 - the registered pins are written once to `/data/mal/arena/haiku-v6/regime/pins.json` (read-only). A later change of a pinned file or env is never a refusal: the builder then writes `absent` blocks with `pin_mismatch` from that instant, which the read discloses (DESIGN section 3).
 
+**Required pre-clock steps (manager; added after the manager's check of the radar pins):**
+
+**P1. Radar successor job (GAP: #1577 is "daily 07:40Z x7", ending about 2026-11-01, but HV6 runs to 2026-11-11).** Without radar records after 11-01 the producer writes stale/`absent` blocks for the last 10 days. Submit a successor MiScusi job at the SAME commit `b4a0f0d5cc71`, with the SAME command and out-dir (`/data/mal/change-radar-arena1`), covering through at least 2026-11-12, chained `after` #1577 (or started by a sleep gate that waits for #1577 to end). It runs from the stable worktree of P2 so it does not depend on the job tree. 12 runs from the first 07:40Z after #1577's last run cover 11-02 .. 11-13; if #1577 ends earlier or later, count so the last run is on or after 2026-11-12 (the daily loop skips to the next 07:40Z, so there is no double run):
+
 ```
-# MiScusi job, resumable true, memory 1 GB is enough (python builder per poll); the radar pins are those of radar job #1577 (command read with miscusi_job_status #1577):
-#   radar code  = tools/change_radar.py of the checkout #1577 runs from (checkout at b4a0f0d5cc71), sha256 0f5279b3b7276da10a73438dbd5d663139e8ef8e7671828e9ec1dbbd0a418331
-#   seals       = tools/change_radar_seals.json of the same checkout, sha256 5a2f8979c8493f7a3b200dd879f6f54c92a3bf383054af432c2fc35a8e10ca61 (the script pins it itself)
-#   watch file  = tools/change_radar_watch.json of the same checkout, sha256 23838d1cf20d02a9c048855c99981a968a43e8e2014ec65874decc7ec55241cc
-sh -c 'cd /data2/mal/wt/hv6-final && HV6_RADAR_CODE=<abs path of change_radar.py in the #1577 checkout> HV6_RADAR_CODE_SHA256=0f5279b3b7276da10a73438dbd5d663139e8ef8e7671828e9ec1dbbd0a418331 HV6_RADAR_SEALS=<abs path of change_radar_seals.json there> HV6_RADAR_WATCH=<abs path of change_radar_watch.json there> HV6_RADAR_WATCH_SHA256=23838d1cf20d02a9c048855c99981a968a43e8e2014ec65874decc7ec55241cc exec sh scripts/ops/hv6-regime-block-job.sh'
+# MiScusi job, code vaanai/MAL @ b4a0f0d5cc71, 2 GB, 1 CPU, limit >= 300h, `after` #1577:
+cd /data2/mal/wt/radar-b4a0f0d5 && echo '5a2f8979c8493f7a3b200dd879f6f54c92a3bf383054af432c2fc35a8e10ca61  tools/change_radar_seals.json' | sha256sum -c - || exit 1; i=0; while [ $i -lt 12 ]; do now=$(date -u +%s); t=$(date -u -d "$(date -u +%F) 07:40" +%s); [ $now -ge $t ] && t=$((t+86400)); sleep $((t-now)); out=$(/data/mal/venv/bin/python -m tools.change_radar --out-dir /data/mal/change-radar-arena1 --venue-tape '' 2>&1); rc=$?; echo "$out" | tail -20; echo "radar_rc=$rc"; if echo "$out" | grep -q '^CHANGES' && ! echo "$out" | grep -q '^CHANGES none'; then echo "RADAR ALERT: changes found"; exit 3; fi; i=$((i+1)); done
 ```
 
-The three absolute paths are the one value this pack cannot fill (the #1577 job status shows the command and the commit `b4a0f0d5cc71`, not the working directory): **MANAGER** takes them from the job record. The pins must be those the radar JOB runs (R3/R4); the registration notebook entry records the producer job id, its command with the filled paths, the shas above and `pins.json`'s sha256.
+This is #1577's command verbatim except the `cd` into the stable worktree and 12 iterations instead of 7. #1577 exits 3 on a CHANGES alert, which would end it early and leave a gap; the successor behaves the same, so the manager checks that a radar run exists for each date and resubmits after an alert (a missing run makes the block `stale` after 36 h, which the read discloses). The radar record carries no code sha, so the pins in P3 (and the unchanged shas of the files both jobs run) are the evidence that the successor ran the same code.
+
+**P2. Stable checkout instead of the job tree.** The job tree `/home/claude/.miscusi/jobtrees/vaanai__MAL@b4a0f0d5cc71/` may vanish when #1577 ends. Create a worktree from the commit once (same file shas as the job tree, verified by the manager: change_radar.py `0f5279b3...`, seals `5a2f8979...`, watch `23838d1c...`):
+
+```
+git -C /home/claude/.miscusi/repos/vaanai/MAL worktree add --detach /data2/mal/wt/radar-b4a0f0d5 b4a0f0d5cc71
+sha256sum /data2/mal/wt/radar-b4a0f0d5/tools/change_radar.py /data2/mal/wt/radar-b4a0f0d5/tools/change_radar_seals.json /data2/mal/wt/radar-b4a0f0d5/tools/change_radar_watch.json   # must print 0f5279b3b727..., 5a2f8979c849..., 23838d1cf20d...
+```
+
+Never check out another commit in it and never edit it (a change makes the producer's builder emit `absent` blocks with `pin_mismatch`).
+
+**P3. Producer job (started before T0 and before the smoke), with the stable paths:**
+
+```
+# MiScusi job, resumable true, memory 1 GB:
+sh -c 'cd /data2/mal/wt/hv6-final && HV6_RADAR_CODE=/data2/mal/wt/radar-b4a0f0d5/tools/change_radar.py HV6_RADAR_CODE_SHA256=0f5279b3b7276da10a73438dbd5d663139e8ef8e7671828e9ec1dbbd0a418331 HV6_RADAR_SEALS=/data2/mal/wt/radar-b4a0f0d5/tools/change_radar_seals.json HV6_RADAR_WATCH=/data2/mal/wt/radar-b4a0f0d5/tools/change_radar_watch.json HV6_RADAR_WATCH_SHA256=23838d1cf20d02a9c048855c99981a968a43e8e2014ec65874decc7ec55241cc exec sh scripts/ops/hv6-regime-block-job.sh'
+# the seals sha 5a2f8979c8493f7a3b200dd879f6f54c92a3bf383054af432c2fc35a8e10ca61 is pinned inside the script itself.
+```
+
+The pins are the files the radar jobs (#1577 and its successor) run, by sha256; the paths in `pins.json` are the stable worktree paths. The registration notebook entry records the successor job id, the producer job id, its command above, the shas and `pins.json`'s sha256.
 
 ## 10. Disclosures (record verbatim in the registration)
 
@@ -289,7 +309,7 @@ None of the earlier code gaps is open. #939 (final sha 5071e29a) closed them:
 - **U2 (QP #918 (c)) CLOSED:** the `start` row carries the frozen sha, the pinned provider and `entries_halt_ms` before the first decision.
 - **U3 CLOSED:** `watch_added/fired/expired/no_card.<arm>` counters; the smoke prints them.
 
-**Still open, not code:** the item-6 results at 5071e29a (jobs #1642 and #1643, section 11), the three absolute paths of the radar files in the #1577 checkout (section 9b), LAB_STATE check line, fallback-clock choice line, full K1 text, feed-delay confirmation, QP OK on this head and a reviewer verdict.
+**Still open, not code:** the item-6 results at 5071e29a (jobs #1642 and #1643, section 11), the radar successor job (9b P1) and the stable radar worktree (9b P2), LAB_STATE check line, fallback-clock choice line, full K1 text, feed-delay confirmation, QP OK on this head and a reviewer verdict.
 
 **OPEN QUESTION FOR QP (tooling sha).** The runner registers at the final sha `5071e29afe473b6c9ff1f753bf045345e722b0f6`. The P0 count tool, the smoke tool, their wrappers and this pack live in PR #938, which adds files only and no runner code (a diff of this branch against 5071e29a shows only new tools, scripts, tests and this pack, plus the smoke wrapper and tool pins on `scripts/ops/hv6-*.sh` and `tools/hv6_smoke.py`/`hv6_p0_count.py`, all new in this PR). Both tools take the rule code from a clean checkout at 5071e29a (`--repo`) and refuse any other sha, so the P0 counts and the smoke exercise exactly the registered runner code; the tools themselves only count (P0) or wrap the same `Runner` (smoke). Question: is it acceptable that the runner registers at 5071e29a while P0 and the smoke run from this PR's head (tools pinned by sha256 in the fixed-first and smoke notebook entries), or must #938 merge first and the registration sha become that merge commit? The second route moves the sha: item 6 (#1642/#1643), P0 and the smoke would re-run at the merge commit and every sha in this pack changes again. Until QP rules, this pack assumes the first route.
 
