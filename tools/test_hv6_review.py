@@ -229,6 +229,72 @@ def test_regime_rule_waives_match_rule_and_counts_in_the_three():
     assert validate(json.dumps([REGIME, REGIME, KNOB, KNOB])).reply_error == "too_many_changes"
 
 
+# ------------------------------------------------------------------------------------------------ regime renewal (QP #943: 10-match post-change)
+E_CHG = CUT - 2 * H
+
+
+def renewal_recs(n_pre, n_post, probes=0):
+    out = [rec(i, entry=E_CHG - (i + 1) * 60_000) for i in range(n_pre)]
+    for j in range(n_post):
+        r = rec(100 + j, entry=E_CHG + j * 1000)
+        if j < probes:
+            r = {**r, "tag": "regime_probe"}
+        out.append(r)
+    return out
+
+
+def renew(text, recs, arm="L", active=(), prior=None, params=R.V60_PARAMS):
+    ev = RV.before_cutoff(recs, CUT)
+    prior = {("stop_pct", None): E_CHG} if prior is None else prior
+    return R.validate_reply(text, state(), ev, params=params, arm=arm, block=BLOCK, now_ms=NOW, active_rules=active, prior_regime=prior)
+
+
+def test_regime_renewal_after_ttl_needs_post_change_trades():
+    bad = renew(json.dumps([REGIME]), renewal_recs(30, 9))
+    assert bad.rejected == ((0, "renewal_fewer_than_10_post_change_trades"),) and not bad.accepted
+    ok = renew(json.dumps([REGIME]), renewal_recs(30, 10, probes=4))
+    assert len(ok.accepted) == 1 and ok.accepted[0]["renewal"] == {"since_ms": E_CHG, "n_post": 10}
+    first = renew(json.dumps([REGIME]), renewal_recs(30, 0), prior={})
+    assert len(first.accepted) == 1 and "renewal" not in first.accepted[0]  # a fresh key stays waived
+
+
+def test_regime_same_key_while_live_counts_as_renewal():
+    live = [{"target": "stop_pct", "new": -8, "expires_ms": NOW + H, "type": "regime_rule"}]
+    r = renew(json.dumps([REGIME]), renewal_recs(30, 9), active=live)
+    assert r.rejected == ((0, "renewal_fewer_than_10_post_change_trades"),)
+    assert len(renew(json.dumps([REGIME]), renewal_recs(30, 10), active=live).accepted) == 1
+
+
+def test_regime_veto_renewal_keyed_by_predicate():
+    veto = {**REGIME, "target": "local_veto", "new": "ret_15m < -5"}
+    other = {**REGIME, "target": "local_veto", "new": "ret_15m < -9"}
+    prior = {("local_veto", "ret_15m < -5"): E_CHG}
+    assert renew(json.dumps([veto]), renewal_recs(30, 9), prior=prior).rejected == ((0, "renewal_fewer_than_10_post_change_trades"),)
+    assert len(renew(json.dumps([veto]), renewal_recs(30, 10), prior=prior).accepted) == 1
+    assert len(renew(json.dumps([other]), renewal_recs(30, 0), prior=prior).accepted) == 1
+
+
+def test_prior_regime_starts_uses_earliest_effective_from():
+    def line(seq, eff, *chs):
+        return {"seq": seq, "effective_from_ms": eff, "changes": list(chs)}
+    rg = {"type": "regime_rule", "target": "stop_pct", "new": -10}
+    vt = {"type": "regime_rule", "target": "local_veto", "new": "f.ret_15m < -0.05"}
+    rows = [line(0, 1, rg), line(1, 500, {**rg, "new": -12}, KNOB), line(2, 300, rg, vt), line(3, 900, rg)]
+    assert R.prior_regime_starts(rows) == {("stop_pct", None): 300, ("local_veto", "f.ret_15m < -0.05"): 300}
+    assert R.prior_regime_starts([]) == {}
+
+
+def test_regime_renewal_same_for_l_and_p():
+    recs = renewal_recs(30, 9)
+    shuffled = RV.shuffle_outcomes(recs, "P", DAY)
+    assert sorted(r["entry_ms"] for r in shuffled) == sorted(r["entry_ms"] for r in recs)
+    for n, want in ((9, "renewal_fewer_than_10_post_change_trades"), (10, None)):
+        rs = renewal_recs(30, n)
+        a = renew(json.dumps([REGIME]), rs, arm="L")
+        b = renew(json.dumps([REGIME]), RV.shuffle_outcomes(rs, "P", DAY), arm="P")
+        assert (a.rejected[0][1] if a.rejected else None) == (b.rejected[0][1] if b.rejected else None) == want
+
+
 # ------------------------------------------------------------------------------------------------ manifest chain and nights
 def test_genesis_and_chain_verify(tmp_path):
     setup(tmp_path)
