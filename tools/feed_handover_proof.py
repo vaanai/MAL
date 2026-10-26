@@ -9,7 +9,8 @@ MODES
   seam    one tape dir, one window [from, to). Checks, each reported as {"ok", value, threshold}:
             duplicates      no (signature, type, event_index) key of a data row (trade, create, complete, pool_create) appears twice in the read hours,
                             counting keys with at least one copy inside the window
-            hard_gaps       no gap span overlapping the window that has data_loss true, or a kind in HARD_KINDS (process_restart, feed_restart, handover)
+            hard_gaps       no gap span overlapping the window that has data_loss true, or a kind in HARD_KINDS (process_restart, feed_restart, feed_start,
+                            handover; a superset of tools.arena_paper.HARD_GAP_KINDS, pinned by a test)
                             (open/closed twins collapse by (prog, kind, from_ms)); soft gaps (data_loss false) are counted, not failed
             start_rows      no `start` row in the window (every arena engine books a start row as a hard gap, arena_paper.py on_row)
             bad_lines       no unparseable line in a read hour that overlaps the window
@@ -17,10 +18,21 @@ MODES
             silence         per program, the longest interval without a data row inside [from, to] (edges included) <= --max-silence-s
             slot_step       per program, the largest step between consecutive distinct data-row slots in the window <= --max-slot-step (<= 0: report only)
             hb_gap          per program, the longest interval between hb rows over the window (one hb before and after it included) <= --max-hb-gap-s
-            takeover        for every `takeover` row in the window (written by tools/arena_feed_v2.py, P35 PR 2): continuity "proven" for every program;
-                            a `stop` row of the old writer earlier in append order, after the previous writer marker; the row's old_last_data_ms equals
-                            the last data row of that program on the tape before the takeover row (recomputed here, append order); and
-                            cover_from_ms <= old_last_data_ms - overlap_min_s. With --expect-takeover exactly one takeover row must be in the window.
+            takeover        for every `takeover` row in the window (written by tools/arena_feed_v2.py, P35 PR 2; schema in DESIGN.md 2.1):
+                              * continuity "proven" for every program, and a `stop` row of the old writer earlier in append order (after the previous
+                                writer marker);
+                              * old_last_data_ms equals the last data row of that program on the tape before the takeover row (append order);
+                              * cover_from_ms <= old_last_data_ms - overlap_min_s, where overlap_min_s = max(the row's value, --overlap-min-s) (a floor);
+                              * dedup: buffer_overflow is false; buffered = dropped_dup + written_missed; written_missed equals the data rows written after
+                                the takeover row with t_recv_ms <= lock_acquired_ms (recomputed);
+                              * agreement (QP-RULING-1026 Q1), per program: agreement.n_old equals the old writer's data rows with t_recv in
+                                [cover_from_ms, old_last_data_ms] (recomputed); 0 <= only_old <= n_old; n_old >= --min-overlap-rows;
+                                only_old / n_old <= --max-disagree-rate; standby_reconnects_in_overlap is 0; the row's own thresholds, if present, equal
+                                the pinned ones. Without pinned thresholds (both CLI options) the check FAILS as `thresholds_unpinned`.
+                            With --expect-takeover exactly one takeover row must be in the window.
+                            LIMIT: cover_from_ms, only_old and standby_reconnects_in_overlap are SELF-REPORTED by the new writer (its buffer and socket
+                            state are not on the tape). This tool checks them for consistency and against the thresholds, not for truth; their truth
+                            rests on arena_feed_v2's tests and on the live rehearsal's parity against an independent tape.
           PASS iff every check is ok.
   parity  two tape dirs A (e.g. a scratch takeover tape) and B (the reference), one window. Data rows are matched by (signature, type, event_index);
           a key is in scope when its copy in A or in B has t_recv_ms in the window (each tape is read over the window +- --pad-s, so a row whose two
@@ -58,7 +70,7 @@ from typing import Any, Iterator, Sequence
 
 SCHEMA = "feed_handover_proof_v1"
 DATA_TYPES = frozenset({"trade", "create", "complete", "pool_create"})
-HARD_KINDS = frozenset({"process_restart", "feed_restart", "handover"})
+HARD_KINDS = frozenset({"process_restart", "feed_restart", "feed_start", "handover"})
 PROGRAMS_DEFAULT = ("pumpswap", "pumpfun")
 GAP_SLOTS = 30  # = tools.h5_shadow.GAP_SLOTS (test pins it)
 SILENCE_S = 20.0  # = tools.h5_shadow.SILENCE_S (test pins it)
@@ -210,7 +222,8 @@ def _max_interval(ts: Sequence[int], lo: int | None = None, hi: int | None = Non
 # ---- seam -----------------------------------------------------------------------------------------------------
 def seam_report(tape: Path, t0: int, t1: int, *, programs: Sequence[str] = PROGRAMS_DEFAULT, max_silence_s: float = SILENCE_S,
                 max_slot_step: int = GAP_SLOTS, max_hb_gap_s: float = HB_GAP_S_DEFAULT, overlap_min_s: float = OVERLAP_MIN_S_DEFAULT,
-                expect_takeover: bool = False, pad_s: float = PAD_S_DEFAULT) -> dict[str, Any]:
+                expect_takeover: bool = False, pad_s: float = PAD_S_DEFAULT, max_disagree_rate: dict[str, float] | None = None,
+                min_overlap_rows: dict[str, int] | None = None) -> dict[str, Any]:
     pad = int(pad_s * 1000)
     rd = read_rows(tape, t0 - pad, t1 + pad, (t0, t1))
     rows = rd["rows"]
@@ -278,29 +291,66 @@ def seam_report(tape: Path, t0: int, t1: int, *, programs: Sequence[str] = PROGR
         hb_gap[p] = _check(g is not None and g <= max_hb_gap_s * 1000, g, int(max_hb_gap_s * 1000), hb_rows=len(hw))
 
     # takeover rows
+    pinned = max_disagree_rate is not None and min_overlap_rows is not None and all(p in max_disagree_rate and p in min_overlap_rows for p in programs)
     tk_checks: list[dict[str, Any]] = []
     for i, (_, r) in enumerate(rows):
         if r["type"] != "takeover" or not inwin(r["t_recv_ms"]):
             continue
         prev_marker = max((j for j in range(i) if rows[j][1]["type"] in ("start", "takeover")), default=-1)
-        stop_ok = any(rows[j][1]["type"] == "stop" for j in range(prev_marker + 1, i))
+        next_marker = min((j for j in range(i + 1, len(rows)) if rows[j][1]["type"] in ("start", "takeover", "stop")), default=len(rows))
+        old_seg = [rows[j][1] for j in range(prev_marker + 1, i)]
+        stop_ok = any(x["type"] == "stop" for x in old_seg)
         cont = r.get("continuity") or {}
         claimed_last = r.get("old_last_data_ms") or {}
         cover = r.get("cover_from_ms") or {}
-        om = float(r.get("overlap_min_s", overlap_min_s))
+        agree = r.get("agreement") or {}
+        recon = r.get("standby_reconnects_in_overlap") or {}
+        row_thr = r.get("thresholds") or {}
+        om = max(float(r.get("overlap_min_s") or 0.0), overlap_min_s)
+        # dedup counts
+        dd = r.get("dedup") or {}
+        lock = r.get("lock_acquired_ms")
+        missed_tape = sum(1 for j in range(i + 1, next_marker) if rows[j][1]["type"] in DATA_TYPES and isinstance(lock, int)
+                          and rows[j][1]["t_recv_ms"] <= lock)
+        ints = all(isinstance(dd.get(k), int) for k in ("buffered", "dropped_dup", "written_missed"))
+        dedup = {
+            "overflow_false": dd.get("buffer_overflow") is False,
+            "sum_ok": ints and dd["buffered"] == dd["dropped_dup"] + dd["written_missed"],
+            "written_missed_matches_tape": ints and isinstance(lock, int) and dd["written_missed"] == missed_tape,
+            "written_missed_tape": missed_tape,
+        }
+        thr_match = all((row_thr.get("max_disagree_rate") or {}).get(p, (max_disagree_rate or {}).get(p)) == (max_disagree_rate or {}).get(p)
+                        and (row_thr.get("min_overlap_rows") or {}).get(p, (min_overlap_rows or {}).get(p)) == (min_overlap_rows or {}).get(p)
+                        for p in programs) if pinned else False
         per = {}
         for p in programs:
-            last = max((rows[j][1]["t_recv_ms"] for j in range(prev_marker + 1, i)
-                        if rows[j][1]["type"] in DATA_TYPES and rows[j][1].get("prog") == p), default=None)
+            data_p = [x["t_recv_ms"] for x in old_seg if x["type"] in DATA_TYPES and x.get("prog") == p]
+            last = max(data_p, default=None)
             c, cl = cover.get(p), claimed_last.get(p)
+            a = agree.get(p) or {}
+            n_old, only_old = a.get("n_old"), a.get("only_old")
+            n_tape = sum(1 for t in data_p if isinstance(c, int) and last is not None and c <= t <= last)
+            have = isinstance(n_old, int) and isinstance(only_old, int) and 0 <= only_old <= n_old and n_old > 0
+            rate = (only_old / n_old) if have else None
             per[p] = {
                 "continuity_proven": cont.get(p) == "proven",
                 "claim_matches_tape": last is not None and cl == last,
                 "overlap_ok": last is not None and isinstance(c, int) and c <= last - int(om * 1000),
                 "overlap_ms": (last - c) if (last is not None and isinstance(c, int)) else None,
+                "n_old_matches_tape": have and n_old == n_tape,
+                "n_old_tape": n_tape,
+                "n_old_ok": have and pinned and n_old >= int(min_overlap_rows[p]),
+                "disagree_rate": rate,
+                "disagree_ok": have and pinned and rate <= float(max_disagree_rate[p]),
+                "no_standby_reconnect": recon.get(p) == 0,
             }
-        ok = stop_ok and all(v["continuity_proven"] and v["claim_matches_tape"] and v["overlap_ok"] for v in per.values())
-        tk_checks.append({"ok": ok, "old_stop_row": stop_ok, "overlap_min_s": om, "programs": per})
+        bools = ("continuity_proven", "claim_matches_tape", "overlap_ok", "n_old_matches_tape", "n_old_ok", "disagree_ok", "no_standby_reconnect")
+        ok = (stop_ok and pinned and thr_match and all(v for k, v in dedup.items() if k != "written_missed_tape")
+              and all(all(v[k] for k in bools) for v in per.values()))
+        fails = sorted({k for v in per.values() for k in bools if not v[k]} | {k for k, v in dedup.items() if k != "written_missed_tape" and not v}
+                       | ({"thresholds_unpinned"} if not pinned else set()) | ({"thresholds_differ_from_row"} if pinned and not thr_match else set())
+                       | ({"old_stop_row"} if not stop_ok else set()))
+        tk_checks.append({"ok": ok, "old_stop_row": stop_ok, "overlap_min_s": om, "dedup": dedup, "programs": per, "failed": fails})
     n_tk = len(tk_checks)
     tk_ok = all(c["ok"] for c in tk_checks) and (n_tk == 1 if expect_takeover else True)
 
@@ -402,6 +452,22 @@ def parity_report(tape_a: Path, tape_b: Path, t0: int, t1: int, *, ignore: Seque
 
 
 # ---- cli ------------------------------------------------------------------------------------------------------
+def parse_per_prog(arg: str | None, cast, programs: Sequence[str]) -> dict[str, Any] | None:
+    """'0.01' -> {p: 0.01 for p in programs}; 'pumpswap=0.01,pumpfun=0.02' -> per program. None stays None (unpinned)."""
+    if arg is None:
+        return None
+    arg = str(arg).strip()
+    if "=" not in arg:
+        return {p: cast(arg) for p in programs}
+    out: dict[str, Any] = {}
+    for part in arg.split(","):
+        k, _, v = part.partition("=")
+        if not k.strip() or not v.strip():
+            raise ValueError(f"bad per-program value {part!r}")
+        out[k.strip()] = cast(v.strip())
+    return out
+
+
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="Arena feed hand-off proof: no gap, no duplicate (counts only)")
     sub = ap.add_subparsers(dest="mode", required=True)
@@ -422,7 +488,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--max-silence-s", type=float, default=SILENCE_S)
     s.add_argument("--max-slot-step", type=int, default=GAP_SLOTS)
     s.add_argument("--max-hb-gap-s", type=float, default=HB_GAP_S_DEFAULT)
-    s.add_argument("--overlap-min-s", type=float, default=OVERLAP_MIN_S_DEFAULT, help="used when a takeover row does not carry overlap_min_s")
+    s.add_argument("--overlap-min-s", type=float, default=OVERLAP_MIN_S_DEFAULT, help="floor of the takeover overlap (a row's own value can only raise it)")
+    s.add_argument("--max-disagree-rate", default=None, help="pinned T_p: one number, or prog=rate,prog=rate (QP-RULING-1026 Q1); absent = unpinned = takeover FAILS")
+    s.add_argument("--min-overlap-rows", default=None, help="pinned minimum n_old: one integer, or prog=n,prog=n; absent = unpinned = takeover FAILS")
     s.add_argument("--expect-takeover", action="store_true", help="exactly one takeover row must be in the window")
     s.add_argument("--pad-s", type=float, default=PAD_S_DEFAULT)
     return ap
@@ -436,9 +504,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             raise Refused("window: from must be before to")
         if args.mode == "seam":
             tape = check_path(args.tape, args.qp_ruling)
-            out = seam_report(tape, t0, t1, programs=[x for x in args.programs.split(",") if x], max_silence_s=args.max_silence_s,
+            progs = [x for x in args.programs.split(",") if x]
+            out = seam_report(tape, t0, t1, programs=progs, max_silence_s=args.max_silence_s,
                               max_slot_step=args.max_slot_step, max_hb_gap_s=args.max_hb_gap_s, overlap_min_s=args.overlap_min_s,
-                              expect_takeover=args.expect_takeover, pad_s=args.pad_s)
+                              expect_takeover=args.expect_takeover, pad_s=args.pad_s,
+                              max_disagree_rate=parse_per_prog(args.max_disagree_rate, float, progs),
+                              min_overlap_rows=parse_per_prog(args.min_overlap_rows, int, progs))
             rc = 0 if out["verdict"] == "PASS" else 1
         else:
             ta, tb = check_path(args.tape_a, args.qp_ruling), check_path(args.tape_b, args.qp_ruling)
