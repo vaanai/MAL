@@ -324,7 +324,7 @@ def root_ok_problem(path: Path) -> str | None:
     pulls the solana stack, and a pure-dry bridge does not need it until a live check is asked for."""
     from tools import h5_executor as h5
 
-    return h5.root_file_problem(path)
+    return h5.root_file_problem(Path(path))  # a str is accepted (callers pass both); root_file_problem needs .parent
 
 
 def read_tier(path: Path, root_checks: bool, allowed: Mapping[str, Any] | tuple[str, ...] | None = None) -> tuple[str, str | None]:
@@ -711,8 +711,11 @@ class Bridge:
                 self._save()
 
     def _gap_cleared(self, last: int, now: int) -> bool:
-        p = os.path.join(self.gap_clear_dir, f"{self.cfg.bot_id}.json")
-        return c0.gap_clear_problem(p, self.cfg.bot_id, last, now, root_ok_problem if self.root_checks else None) is None
+        p = Path(self.gap_clear_dir) / f"{self.cfg.bot_id}.json"
+        try:
+            return c0.gap_clear_problem(str(p), self.cfg.bot_id, last, now, root_ok_problem if self.root_checks else None) is None
+        except Exception:  # noqa: BLE001 - any failure refuses the clear; it must never propagate into tick() (exits keep running)
+            return False
 
     def a3_tick(self, now: int) -> None:
         """hv4_c0 A3 halt: poll the A3 daily record (throttled) and latch a3_pins_changed on any halt flag (pins_changed included) or a record that cannot be

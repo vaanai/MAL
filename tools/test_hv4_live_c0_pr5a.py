@@ -554,7 +554,7 @@ class Section52GapHaltTests(TmpCase):
         e, b = self.env()
         d = Path(e.raw["root"]) / "transport"
         d.mkdir(exist_ok=True)
-        (d / f"{e.bot}.gaps.jsonl").write_text("{torn")
+        (d / f"{e.bot}.gaps.jsonl").write_text("{torn\n")  # a complete malformed line latches
         b.tick()
         self.assertIn(c0.FEED_BREAK_LATCH, b.state.latches)
         self.assertEqual(c0.gap_clear_problem(str(e.clear_dir / "x.json"), e.bot, 0, 10 ** 12), "gap_clear_missing")
@@ -603,6 +603,97 @@ class DeadRunnerTests(TmpCase):
         b.tick()
         self.assertEqual(e.port.calls[-1], ("sell", "o1", "time_stop_backstop"))
         self.assertEqual(c0.feed_gap_problem(str(Path(e.raw["root"]) / "transport" / f"{e.bot}.status.json"), e.bot, e.clock.t), None)
+
+
+class RootCheckPathTypeTests(TmpCase):
+    """Reviewer blocker on 2519c0f5: root_ok_problem got a str and h5.root_file_problem does p.parent. Every call site, with root_checks=True and a real tmp dir."""
+
+    def setUp(self):
+        super().setUp()
+        try:
+            from tools import h5_executor  # noqa: F401
+        except ModuleNotFoundError as e:
+            self.skipTest(str(e))
+
+    def test_root_ok_problem_takes_str_and_path(self):
+        d = Path(self.tmp) / "x"
+        d.mkdir()
+        for arg in (str(d / "nope"), d / "nope"):
+            self.assertEqual(alb.root_ok_problem(arg), "missing")
+        (d / "f").write_text("x")
+        for arg in (str(d / "f"), d / "f"):
+            self.assertIn(alb.root_ok_problem(arg), ("unsafe",))  # not root-owned
+
+    def test_gap_clear_with_real_root_checks_never_raises(self):
+        e = Hv4Env(self.tmp)
+        cd = Path(self.tmp) / "gc"
+        cd.mkdir()
+        b = alb.Bridge(alb.Config.from_dict(e.raw), e.port, now_ms=e.clock, live_ok_path=e.live_ok, tier_path=e.tier, root_checks=True, gap_clear_dir=cd)
+        t0 = e.clock.t
+        d = Path(e.raw["root"]) / "transport"
+        d.mkdir(exist_ok=True)
+        (d / f"{e.bot}.gaps.jsonl").write_text(json.dumps({"kind": "stall", "ms": t0}) + "\n")
+        b.tick()
+        self.assertIn(c0.FEED_BREAK_LATCH, b.state.latches)
+        e.clock.t = t0 + c0.GAP_FREE_MS + 1
+        e.refresh_halt_inputs()
+        b.tick()  # the newest gap is > 10 min old: the clear is evaluated (file missing) and must not raise
+        self.assertIn(c0.FEED_BREAK_LATCH, b.state.latches)
+        self.assertEqual(c0.gap_clear_problem(str(cd / f"{e.bot}.json"), e.bot, t0, e.clock.t, alb.root_ok_problem), "gap_clear_missing")
+        (cd / f"{e.bot}.json").write_text(json.dumps({"bot_id": e.bot, "reviewed_gap_ms": t0}))
+        self.assertEqual(c0.gap_clear_problem(str(cd / f"{e.bot}.json"), e.bot, t0, e.clock.t, alb.root_ok_problem), "gap_clear_unsafe")  # not root-owned
+        b.tick()
+        self.assertIn(c0.FEED_BREAK_LATCH, b.state.latches)
+
+    def test_a_raising_root_check_refuses_the_clear_and_never_propagates(self):
+        e = Hv4Env(self.tmp)
+        b = alb.Bridge(alb.Config.from_dict(e.raw), e.port, now_ms=e.clock, live_ok_path=e.live_ok, tier_path=e.tier, root_checks=True, gap_clear_dir=Path(self.tmp))
+        with mock.patch.object(alb, "root_ok_problem", side_effect=AttributeError("boom")):
+            self.assertFalse(b._gap_cleared(1, 10 ** 13))
+        t0 = e.clock.t
+        d = Path(e.raw["root"]) / "transport"
+        d.mkdir(exist_ok=True)
+        (d / f"{e.bot}.gaps.jsonl").write_text(json.dumps({"kind": "stall", "ms": t0}) + "\n")
+        e.clock.t = t0 + c0.GAP_FREE_MS + 1
+        e.refresh_halt_inputs()
+        with mock.patch.object(alb, "root_ok_problem", side_effect=AttributeError("boom")):
+            b.tick()
+        self.assertIn(c0.FEED_BREAK_LATCH, b.state.latches)
+
+    def test_owner_line_with_real_root_checks_takes_a_str_path(self):
+        p = Path(self.tmp) / "dec.md"
+        p.write_text(c0.OWNER_LINE_FMT.format(bot_id=ARM) + "\n")
+        why = c0.owner_line_problem(str(p), ARM, None, alb.root_ok_problem)
+        self.assertNotIn("AttributeError", str(why))
+        self.assertTrue(why)  # refused (not root-owned / pin unset), never an exception
+
+    def test_live_ok_and_tier_call_sites_take_paths(self):
+        e = Hv4Env(self.tmp, live=True)
+        b = alb.Bridge(alb.Config(**{**alb.Config.from_dict({**{k: v for k, v in e.raw.items() if k not in ("stop_file", "halt_file")}, "mode": "live"}).__dict__,
+                                     "stop_file": e.raw["stop_file"], "halt_file": e.raw["halt_file"]}), e.port, now_ms=e.clock, live_ok_path=e.live_ok, tier_path=e.tier, root_checks=True)
+        self.assertEqual(b.effective_live()[0], False)  # missing / unsafe, no exception
+        self.assertTrue(b.tier_limits()[2])
+
+
+class GapLogParsingTests(TmpCase):
+    def test_torn_tail_is_ignored_complete_malformed_line_is_a_problem(self):
+        f = Path(self.tmp) / "g.jsonl"
+        f.write_text(json.dumps({"kind": "stall", "ms": 5}) + "\n" + '{"kind": "dis')
+        self.assertEqual(c0.gap_records_ms(str(f)), ([5], None))
+        f.write_text(json.dumps({"kind": "stall", "ms": 5}) + "\n{bad\n")
+        self.assertEqual(c0.gap_records_ms(str(f)), ([5], "gap_log_malformed"))
+
+    def test_gap_kinds_equal_the_forwarders(self):
+        import re
+        import subprocess
+        try:
+            src = subprocess.run(["git", "show", "origin/claude/p46-transport:tools/decision_forwarder.py"], capture_output=True, text=True, check=True,
+                                 cwd=str(Path(c0.__file__).resolve().parent.parent)).stdout
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            self.skipTest("origin/claude/p46-transport is not available (merged or not fetched)")
+        kinds = set(re.findall(r'self\.gap\("(\w+)"', src)) - {"resume"}
+        self.assertTrue(kinds)
+        self.assertTrue(kinds <= set(c0.GAP_BREAK_KINDS), kinds - set(c0.GAP_BREAK_KINDS))
 
 
 class A3EquivalenceTests(TmpCase):

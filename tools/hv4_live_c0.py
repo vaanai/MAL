@@ -797,7 +797,7 @@ def feed_gap_problem(path: str, bot_id: str, now_ms: int) -> str | None:
 # --- DEC-032 s5.2 FEED-GAP HALT: the book's OWN gap records. A hard latch `feed_break` (already in HARD_ARENA_HALTS). Restart needs 10 gap-free minutes AND the manager's
 # written review, as a root-owned clear file. Only the KIND and INSTANT of a gap record are read (QP seal ruling): no other field, no join to any outcome.
 GAP_FREE_MS = 600_000
-GAP_BREAK_KINDS = ("stall", "disconnect", "reconnect", "mismatch", "local_torn_trimmed", "gap", "data_loss", "resubscribe", "silence")  # forwarder kinds + the s5.2 list; "resume" is not a gap
+GAP_BREAK_KINDS = ("stall", "disconnect", "reconnect", "mismatch", "local_torn_trimmed", "error", "gap", "data_loss", "resubscribe", "silence")  # forwarder kinds + the s5.2 list; "resume" is not a gap
 GAP_CLEAR_DIR = "/etc/mal-hv4-c0/gap-clear"  # <bot_id>.json: {"bot_id": ..., "reviewed_gap_ms": N}; root-owned (h5.root_file_problem), N >= the newest gap instant
 FEED_BREAK_LATCH = "feed_break"
 FEED_MAX_STALL_MS = 2_000  # a forwarder status that reports a larger stall_ms is refused: a misconfigured forwarder must not widen the bound (QP ruling a)
@@ -821,13 +821,16 @@ def gap_records_ms(path: str) -> tuple[list[int], str | None]:
     except OSError:
         return [], "gap_log_unreadable"
     out: list[int] = []
-    for ln in data.splitlines():
+    lines = data.split(b"\n")
+    torn_tail = lines.pop() if lines else b""  # bytes after the last newline: the forwarder is mid-write, ignored until the newline arrives
+    del torn_tail
+    for ln in lines:
         if not ln.strip():
             continue
         try:
             r = json.loads(ln)
         except ValueError:
-            return out, "gap_log_malformed"  # a torn last line is possible while the forwarder writes; the caller treats it as a gap
+            return out, "gap_log_malformed"  # a COMPLETE (newline-ended) malformed line latches
         if not isinstance(r, dict) or isinstance(r.get("ms"), bool) or not isinstance(r.get("ms"), int) or not isinstance(r.get("kind"), str):
             return out, "gap_log_malformed"
         if r["kind"] in GAP_BREAK_KINDS:
