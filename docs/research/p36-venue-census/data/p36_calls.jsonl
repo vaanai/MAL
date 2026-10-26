@@ -1,0 +1,1145 @@
+{"t":0,"m":"getRecentPerformanceSamples","tag":"manual-curl"}
+{"t":0,"m":"getSignaturesForAddress","tag":"manual-curl TSL 100"}
+{"t": 1793034348, "m": "getTransaction", "tag": "check TSL create-only", "attempt": 0}
+{"t": 1793034348, "m": "getTransaction", "tag": "check TSL create-only", "attempt": 0}
+{"t": 1793034354, "m": "getTransaction", "tag": "check TSL create-only", "attempt": 0}
+{"t": 1793034361, "m": "getTransaction", "tag": "check TSL create-only", "attempt": 0}
+{"t": 1793034362, "m": "getTransaction", "tag": "check TSL create-only", "attempt": 0}
+{"t": 1793034362, "m": "getTransaction", "tag": "check TSL create-only", "attempt": 0}
+{"t": 1793034382, "m": "getSignaturesForAddress", "tag": "migrator check", "attempt": 0}
+{"t": 1793034382, "m": "getTransaction", "tag": "migrator check tx", "attempt": 0}
+{"t": 1793034483, "m": "getRecentPerformanceSamples", "tag": "pump slot rate", "attempt": 0}
+{"t": 1793034483, "m": "getSignaturesForAddress", "tag": "pump create list", "attempt": 0}
+{"t": 1793034484, "m": "getTransaction", "tag": "pump 0 launch tx", "attempt": 0}
+{"t": 1793034485, "m": "getBlock", "tag": "pump 0 window-end block", "attempt": 0}
+{"t": 1793034486, "m": "getSignaturesForAddress", "tag": "pump 0 window sigs", "attempt": 0}
+{"t": 1793034491, "m": "getTransaction", "tag": "pump 1 launch tx", "attempt": 0}
+{"t": 1793034492, "m": "getBlock", "tag": "pump 1 window-end block", "attempt": 0}
+{"t": 1793034492, "m": "getSignaturesForAddress", "tag": "pump 1 window sigs", "attempt": 0}
+{"t": 1793034492, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034493, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034493, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034494, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034499, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 1}
+{"t": 1793034499, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034504, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 1}
+{"t": 1793034505, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034505, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034510, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 1}
+{"t": 1793034521, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 2}
+{"t": 1793034521, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034521, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034522, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034522, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034523, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034523, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034524, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034524, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034525, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034525, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034530, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 1}
+{"t": 1793034540, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 2}
+{"t": 1793034541, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034541, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034542, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034561, "m": "getSignaturesForAddress", "tag": "debug", "attempt": 0}
+{"t": 1793034561, "m": "getTransaction", "tag": "debug tx", "attempt": 0}
+{"t": 1793034573, "m": "getSignaturesForAddress", "tag": "debug2", "attempt": 0}
+{"t": 1793034578, "m": "getTransaction", "tag": "debug create", "attempt": 0}
+{"t": 1793034615, "m": "getSlot", "tag": "pumpswap cursor", "attempt": 0}
+{"t": 1793034615, "m": "getBlockTime", "tag": "pumpswap cursor", "attempt": 0}
+{"t": 1793034615, "m": "getBlockTime", "tag": "pumpswap cursor", "attempt": 0}
+{"t": 1793034617, "m": "getBlockTime", "tag": "pumpswap cursor", "attempt": 0}
+{"t": 1793034618, "m": "getBlockTime", "tag": "pumpswap cursor", "attempt": 0}
+{"t": 1793034620, "m": "getBlockTime", "tag": "pumpswap cursor", "attempt": 0}
+{"t": 1793034621, "m": "getBlockTime", "tag": "pumpswap cursor", "attempt": 0}
+{"t": 1793034622, "m": "getBlockTime", "tag": "pumpswap cursor", "attempt": 0}
+{"t": 1793034624, "m": "getBlock", "tag": "pumpswap cursor", "attempt": 0}
+{"t": 1793034626, "m": "getBlockTime", "tag": "pumpswap slot rate", "attempt": 0}
+{"t": 1793034627, "m": "getBlockTime", "tag": "pumpswap slot rate", "attempt": 0}
+{"t": 1793034628, "m": "getSignaturesForAddress", "tag": "pumpswap migration list", "attempt": 0}
+{"t": 1793034630, "m": "getTransaction", "tag": "pumpswap 0 launch tx", "attempt": 0}
+{"t": 1793034632, "m": "getBlock", "tag": "pumpswap 0 window-end block", "attempt": 0}
+{"t": 1793034632, "m": "getSignaturesForAddress", "tag": "pumpswap 0 window sigs p0", "attempt": 0}
+{"t": 1793034636, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793034638, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793034639, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793034643, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793034645, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793034647, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793034649, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793034654, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 1}
+{"t": 1793034656, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793034658, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793034663, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 1}
+{"t": 1793034666, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793034671, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 1}
+{"t": 1793034673, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793034678, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 1}
+{"t": 1793034680, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793034685, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 1}
+{"t": 1793034715, "m": "getRecentPerformanceSamples", "tag": "pump slot rate", "attempt": 0}
+{"t": 1793034716, "m": "getSignaturesForAddress", "tag": "pump create list", "attempt": 0}
+{"t": 1793034716, "m": "getTransaction", "tag": "pump 0 launch tx", "attempt": 0}
+{"t": 1793034717, "m": "getBlock", "tag": "pump 0 window-end block", "attempt": 0}
+{"t": 1793034717, "m": "getSignaturesForAddress", "tag": "pump 0 window sigs p0", "attempt": 0}
+{"t": 1793034720, "m": "getTransaction", "tag": "pump 1 launch tx", "attempt": 0}
+{"t": 1793034721, "m": "getBlock", "tag": "pump 1 window-end block", "attempt": 0}
+{"t": 1793034721, "m": "getSignaturesForAddress", "tag": "pump 1 window sigs p0", "attempt": 0}
+{"t": 1793034722, "m": "getSignaturesForAddress", "tag": "pump 1 window sigs p1", "attempt": 0}
+{"t": 1793034726, "m": "getSignaturesForAddress", "tag": "activity heaven", "attempt": 0}
+{"t": 1793034727, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034728, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034728, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034729, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034729, "m": "getSignaturesForAddress", "tag": "activity boop", "attempt": 0}
+{"t": 1793034729, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034730, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034733, "m": "getSignaturesForAddress", "tag": "activity moonit", "attempt": 0}
+{"t": 1793034735, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 1}
+{"t": 1793034735, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034736, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034736, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034741, "m": "getTransaction", "tag": "activity tx moonit", "attempt": 0}
+{"t": 1793034741, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 1}
+{"t": 1793034746, "m": "getTransaction", "tag": "activity tx moonit", "attempt": 1}
+{"t": 1793034751, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 2}
+{"t": 1793034756, "m": "getTransaction", "tag": "activity tx moonit", "attempt": 2}
+{"t": 1793034767, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 3}
+{"t": 1793034771, "m": "getTransaction", "tag": "activity tx moonit", "attempt": 3}
+{"t": 1793034771, "m": "getTransaction", "tag": "activity tx moonit", "attempt": 0}
+{"t": 1793034772, "m": "getTransaction", "tag": "activity tx heaven", "attempt": 0}
+{"t": 1793034772, "m": "getTransaction", "tag": "activity tx heaven", "attempt": 0}
+{"t": 1793034787, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 4}
+{"t": 1793034787, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034788, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034793, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 1}
+{"t": 1793034803, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 2}
+{"t": 1793034803, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034804, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034804, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034805, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034805, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034805, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034806, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034811, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 1}
+{"t": 1793034821, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 2}
+{"t": 1793034822, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034822, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034822, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034823, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034828, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 1}
+{"t": 1793034829, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034829, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034829, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034830, "m": "getTransaction", "tag": "pump 1 window tx", "attempt": 0}
+{"t": 1793034830, "m": "getTransaction", "tag": "pump 2 launch tx", "attempt": 0}
+{"t": 1793034831, "m": "getBlock", "tag": "pump 2 window-end block", "attempt": 0}
+{"t": 1793034831, "m": "getSignaturesForAddress", "tag": "pump 2 window sigs p0", "attempt": 0}
+{"t": 1793034834, "m": "getTransaction", "tag": "pump 3 launch tx", "attempt": 0}
+{"t": 1793034834, "m": "getBlock", "tag": "pump 3 window-end block", "attempt": 0}
+{"t": 1793034835, "m": "getSignaturesForAddress", "tag": "pump 3 window sigs p0", "attempt": 0}
+{"t": 1793034838, "m": "getTransaction", "tag": "pump 4 launch tx", "attempt": 0}
+{"t": 1793034838, "m": "getBlock", "tag": "pump 4 window-end block", "attempt": 0}
+{"t": 1793034839, "m": "getSignaturesForAddress", "tag": "pump 4 window sigs p0", "attempt": 0}
+{"t": 1793034842, "m": "getTransaction", "tag": "pump 5 launch tx", "attempt": 0}
+{"t": 1793034844, "m": "getBlock", "tag": "pump 5 window-end block", "attempt": 0}
+{"t": 1793034844, "m": "getSignaturesForAddress", "tag": "pump 5 window sigs p0", "attempt": 0}
+{"t": 1793034848, "m": "getTransaction", "tag": "pump 5 window tx", "attempt": 0}
+{"t": 1793034849, "m": "getTransaction", "tag": "pump 5 window tx", "attempt": 0}
+{"t": 1793034849, "m": "getTransaction", "tag": "pump 5 window tx", "attempt": 0}
+{"t": 1793034850, "m": "getTransaction", "tag": "pump 5 window tx", "attempt": 0}
+{"t": 1793034850, "m": "getTransaction", "tag": "pump 5 window tx", "attempt": 0}
+{"t": 1793034851, "m": "getTransaction", "tag": "pump 5 window tx", "attempt": 0}
+{"t": 1793034851, "m": "getTransaction", "tag": "pump 5 window tx", "attempt": 0}
+{"t": 1793034851, "m": "getTransaction", "tag": "pump 5 window tx", "attempt": 0}
+{"t": 1793034852, "m": "getTransaction", "tag": "pump 5 window tx", "attempt": 0}
+{"t": 1793034852, "m": "getTransaction", "tag": "pump 5 window tx", "attempt": 0}
+{"t": 1793034853, "m": "getTransaction", "tag": "pump 5 window tx", "attempt": 0}
+{"t": 1793034853, "m": "getTransaction", "tag": "pump 5 window tx", "attempt": 0}
+{"t": 1793034854, "m": "getTransaction", "tag": "pump 6 launch tx", "attempt": 0}
+{"t": 1793034854, "m": "getBlock", "tag": "pump 6 window-end block", "attempt": 0}
+{"t": 1793034855, "m": "getSignaturesForAddress", "tag": "pump 6 window sigs p0", "attempt": 0}
+{"t": 1793034858, "m": "getTransaction", "tag": "pump 6 window tx", "attempt": 0}
+{"t": 1793034858, "m": "getTransaction", "tag": "pump 6 window tx", "attempt": 0}
+{"t": 1793034858, "m": "getTransaction", "tag": "pump 6 window tx", "attempt": 0}
+{"t": 1793034864, "m": "getTransaction", "tag": "pump 6 window tx", "attempt": 1}
+{"t": 1793034864, "m": "getTransaction", "tag": "pump 6 window tx", "attempt": 0}
+{"t": 1793034865, "m": "getTransaction", "tag": "pump 6 window tx", "attempt": 0}
+{"t": 1793034865, "m": "getTransaction", "tag": "pump 6 window tx", "attempt": 0}
+{"t": 1793034866, "m": "getTransaction", "tag": "pump 6 window tx", "attempt": 0}
+{"t": 1793034866, "m": "getTransaction", "tag": "pump 6 window tx", "attempt": 0}
+{"t": 1793034866, "m": "getTransaction", "tag": "pump 6 window tx", "attempt": 0}
+{"t": 1793034867, "m": "getTransaction", "tag": "pump 6 window tx", "attempt": 0}
+{"t": 1793034867, "m": "getTransaction", "tag": "pump 6 window tx", "attempt": 0}
+{"t": 1793034868, "m": "getTransaction", "tag": "pump 6 window tx", "attempt": 0}
+{"t": 1793034868, "m": "getTransaction", "tag": "pump 6 window tx", "attempt": 0}
+{"t": 1793034873, "m": "getTransaction", "tag": "pump 6 window tx", "attempt": 1}
+{"t": 1793034874, "m": "getTransaction", "tag": "pump 6 window tx", "attempt": 0}
+{"t": 1793034874, "m": "getTransaction", "tag": "pump 6 window tx", "attempt": 0}
+{"t": 1793034875, "m": "getTransaction", "tag": "pump 7 launch tx", "attempt": 0}
+{"t": 1793034880, "m": "getTransaction", "tag": "pump 7 launch tx", "attempt": 1}
+{"t": 1793034880, "m": "getBlock", "tag": "pump 7 window-end block", "attempt": 0}
+{"t": 1793034881, "m": "getSignaturesForAddress", "tag": "pump 7 window sigs p0", "attempt": 0}
+{"t": 1793034884, "m": "getTransaction", "tag": "pump 7 window tx", "attempt": 0}
+{"t": 1793034885, "m": "getTransaction", "tag": "pump 7 window tx", "attempt": 0}
+{"t": 1793034885, "m": "getTransaction", "tag": "pump 8 launch tx", "attempt": 0}
+{"t": 1793034886, "m": "getBlock", "tag": "pump 8 window-end block", "attempt": 0}
+{"t": 1793034886, "m": "getSignaturesForAddress", "tag": "pump 8 window sigs p0", "attempt": 0}
+{"t": 1793034887, "m": "getSignaturesForAddress", "tag": "pump 8 window sigs p1", "attempt": 0}
+{"t": 1793034887, "m": "getSignaturesForAddress", "tag": "pump 8 window sigs p2", "attempt": 0}
+{"t": 1793034891, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034891, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034892, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034892, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034893, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034893, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034894, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034894, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034899, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 1}
+{"t": 1793034900, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034900, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034901, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034906, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 1}
+{"t": 1793034906, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034911, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 1}
+{"t": 1793034912, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034912, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034913, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034918, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 1}
+{"t": 1793034928, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 2}
+{"t": 1793034928, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034929, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034929, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034930, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034930, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034931, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034931, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034931, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034932, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034937, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 1}
+{"t": 1793034937, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034938, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034939, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034940, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034940, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034942, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034942, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034943, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034943, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034944, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034944, "m": "getTransaction", "tag": "pump 8 window tx", "attempt": 0}
+{"t": 1793034945, "m": "getTransaction", "tag": "pump 9 launch tx", "attempt": 0}
+{"t": 1793034945, "m": "getBlock", "tag": "pump 9 window-end block", "attempt": 0}
+{"t": 1793034946, "m": "getSignaturesForAddress", "tag": "pump 9 window sigs p0", "attempt": 0}
+{"t": 1793034949, "m": "getTransaction", "tag": "pump 9 window tx", "attempt": 0}
+{"t": 1793034949, "m": "getTransaction", "tag": "pump 9 window tx", "attempt": 0}
+{"t": 1793034950, "m": "getTransaction", "tag": "pump 9 window tx", "attempt": 0}
+{"t": 1793034950, "m": "getTransaction", "tag": "pump 9 window tx", "attempt": 0}
+{"t": 1793034950, "m": "getTransaction", "tag": "pump 9 window tx", "attempt": 0}
+{"t": 1793034951, "m": "getTransaction", "tag": "pump 10 launch tx", "attempt": 0}
+{"t": 1793034951, "m": "getBlock", "tag": "pump 10 window-end block", "attempt": 0}
+{"t": 1793034952, "m": "getSignaturesForAddress", "tag": "pump 10 window sigs p0", "attempt": 0}
+{"t": 1793034954, "m": "getTransaction", "tag": "pump 10 window tx", "attempt": 0}
+{"t": 1793034955, "m": "getTransaction", "tag": "pump 10 window tx", "attempt": 0}
+{"t": 1793034955, "m": "getTransaction", "tag": "pump 11 launch tx", "attempt": 0}
+{"t": 1793034956, "m": "getBlock", "tag": "pump 11 window-end block", "attempt": 0}
+{"t": 1793034956, "m": "getSignaturesForAddress", "tag": "pump 11 window sigs p0", "attempt": 0}
+{"t": 1793034959, "m": "getTransaction", "tag": "pump 12 launch tx", "attempt": 0}
+{"t": 1793034959, "m": "getBlock", "tag": "pump 12 window-end block", "attempt": 0}
+{"t": 1793034961, "m": "getSignaturesForAddress", "tag": "pump 12 window sigs p0", "attempt": 0}
+{"t": 1793034964, "m": "getTransaction", "tag": "pump 12 window tx", "attempt": 0}
+{"t": 1793034964, "m": "getTransaction", "tag": "pump 12 window tx", "attempt": 0}
+{"t": 1793034965, "m": "getTransaction", "tag": "pump 12 window tx", "attempt": 0}
+{"t": 1793034965, "m": "getTransaction", "tag": "pump 12 window tx", "attempt": 0}
+{"t": 1793034966, "m": "getTransaction", "tag": "pump 12 window tx", "attempt": 0}
+{"t": 1793034967, "m": "getTransaction", "tag": "pump 12 window tx", "attempt": 0}
+{"t": 1793034972, "m": "getTransaction", "tag": "pump 12 window tx", "attempt": 1}
+{"t": 1793034972, "m": "getTransaction", "tag": "pump 12 window tx", "attempt": 0}
+{"t": 1793034973, "m": "getTransaction", "tag": "pump 12 window tx", "attempt": 0}
+{"t": 1793034973, "m": "getTransaction", "tag": "pump 12 window tx", "attempt": 0}
+{"t": 1793034974, "m": "getTransaction", "tag": "pump 12 window tx", "attempt": 0}
+{"t": 1793034974, "m": "getTransaction", "tag": "pump 12 window tx", "attempt": 0}
+{"t": 1793034979, "m": "getTransaction", "tag": "pump 12 window tx", "attempt": 1}
+{"t": 1793034980, "m": "getTransaction", "tag": "pump 12 window tx", "attempt": 0}
+{"t": 1793034980, "m": "getTransaction", "tag": "pump 12 window tx", "attempt": 0}
+{"t": 1793034980, "m": "getTransaction", "tag": "pump 12 window tx", "attempt": 0}
+{"t": 1793034981, "m": "getTransaction", "tag": "pump 12 window tx", "attempt": 0}
+{"t": 1793034981, "m": "getTransaction", "tag": "pump 12 window tx", "attempt": 0}
+{"t": 1793034982, "m": "getTransaction", "tag": "pump 12 window tx", "attempt": 0}
+{"t": 1793034982, "m": "getTransaction", "tag": "pump 13 launch tx", "attempt": 0}
+{"t": 1793034983, "m": "getBlock", "tag": "pump 13 window-end block", "attempt": 0}
+{"t": 1793034983, "m": "getSignaturesForAddress", "tag": "pump 13 window sigs p0", "attempt": 0}
+{"t": 1793034988, "m": "getTransaction", "tag": "pump 13 window tx", "attempt": 0}
+{"t": 1793034989, "m": "getTransaction", "tag": "pump 13 window tx", "attempt": 0}
+{"t": 1793034989, "m": "getTransaction", "tag": "pump 13 window tx", "attempt": 0}
+{"t": 1793034990, "m": "getTransaction", "tag": "pump 13 window tx", "attempt": 0}
+{"t": 1793034995, "m": "getTransaction", "tag": "pump 13 window tx", "attempt": 1}
+{"t": 1793035005, "m": "getTransaction", "tag": "pump 13 window tx", "attempt": 2}
+{"t": 1793035005, "m": "getTransaction", "tag": "pump 13 window tx", "attempt": 0}
+{"t": 1793035006, "m": "getTransaction", "tag": "pump 13 window tx", "attempt": 0}
+{"t": 1793035006, "m": "getTransaction", "tag": "pump 13 window tx", "attempt": 0}
+{"t": 1793035007, "m": "getTransaction", "tag": "pump 13 window tx", "attempt": 0}
+{"t": 1793035007, "m": "getTransaction", "tag": "pump 13 window tx", "attempt": 0}
+{"t": 1793035008, "m": "getTransaction", "tag": "pump 13 window tx", "attempt": 0}
+{"t": 1793035013, "m": "getTransaction", "tag": "pump 13 window tx", "attempt": 1}
+{"t": 1793035013, "m": "getTransaction", "tag": "pump 13 window tx", "attempt": 0}
+{"t": 1793035014, "m": "getTransaction", "tag": "pump 13 window tx", "attempt": 0}
+{"t": 1793035014, "m": "getTransaction", "tag": "pump 14 launch tx", "attempt": 0}
+{"t": 1793035015, "m": "getBlock", "tag": "pump 14 window-end block", "attempt": 0}
+{"t": 1793035015, "m": "getSignaturesForAddress", "tag": "pump 14 window sigs p0", "attempt": 0}
+{"t": 1793035019, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035019, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035020, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035025, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 1}
+{"t": 1793035025, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035026, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035026, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035026, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035027, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035032, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 1}
+{"t": 1793035033, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035038, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 1}
+{"t": 1793035038, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035039, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035039, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035039, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035040, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035045, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 1}
+{"t": 1793035045, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035046, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035046, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035047, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035052, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 1}
+{"t": 1793035062, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 2}
+{"t": 1793035062, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035068, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 1}
+{"t": 1793035068, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035068, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035069, "m": "getTransaction", "tag": "pump 14 window tx", "attempt": 0}
+{"t": 1793035069, "m": "getTransaction", "tag": "pump 15 launch tx", "attempt": 0}
+{"t": 1793035070, "m": "getBlock", "tag": "pump 15 window-end block", "attempt": 0}
+{"t": 1793035070, "m": "getSignaturesForAddress", "tag": "pump 15 window sigs p0", "attempt": 0}
+{"t": 1793035075, "m": "getTransaction", "tag": "pump 15 window tx", "attempt": 0}
+{"t": 1793035076, "m": "getTransaction", "tag": "pump 15 window tx", "attempt": 0}
+{"t": 1793035076, "m": "getTransaction", "tag": "pump 16 launch tx", "attempt": 0}
+{"t": 1793035077, "m": "getBlock", "tag": "pump 16 window-end block", "attempt": 0}
+{"t": 1793035077, "m": "getSignaturesForAddress", "tag": "pump 16 window sigs p0", "attempt": 0}
+{"t": 1793035081, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 0}
+{"t": 1793035081, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 0}
+{"t": 1793035082, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 0}
+{"t": 1793035082, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 0}
+{"t": 1793035083, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 0}
+{"t": 1793035084, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 0}
+{"t": 1793035084, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 0}
+{"t": 1793035084, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 0}
+{"t": 1793035090, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 1}
+{"t": 1793035090, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 0}
+{"t": 1793035095, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 1}
+{"t": 1793035105, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 2}
+{"t": 1793035106, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 0}
+{"t": 1793035106, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 0}
+{"t": 1793035107, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 0}
+{"t": 1793035107, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 0}
+{"t": 1793035112, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 1}
+{"t": 1793035113, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 0}
+{"t": 1793035118, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 1}
+{"t": 1793035128, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 2}
+{"t": 1793035143, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 3}
+{"t": 1793035144, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 0}
+{"t": 1793035149, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 1}
+{"t": 1793035149, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 0}
+{"t": 1793035150, "m": "getTransaction", "tag": "pump 16 window tx", "attempt": 0}
+{"t": 1793035150, "m": "getTransaction", "tag": "pump 17 launch tx", "attempt": 0}
+{"t": 1793035150, "m": "getBlock", "tag": "pump 17 window-end block", "attempt": 0}
+{"t": 1793035151, "m": "getSignaturesForAddress", "tag": "pump 17 window sigs p0", "attempt": 0}
+{"t": 1793035151, "m": "getSignaturesForAddress", "tag": "pump 17 window sigs p1", "attempt": 0}
+{"t": 1793035152, "m": "getSignaturesForAddress", "tag": "pump 17 window sigs p2", "attempt": 0}
+{"t": 1793035152, "m": "getSignaturesForAddress", "tag": "pump 17 window sigs p3", "attempt": 0}
+{"t": 1793035153, "m": "getTransaction", "tag": "pump 17 window tx", "attempt": 0}
+{"t": 1793035153, "m": "getTransaction", "tag": "pump 17 window tx", "attempt": 0}
+{"t": 1793035154, "m": "getTransaction", "tag": "pump 17 window tx", "attempt": 0}
+{"t": 1793035154, "m": "getTransaction", "tag": "pump 17 window tx", "attempt": 0}
+{"t": 1793035159, "m": "getTransaction", "tag": "pump 17 window tx", "attempt": 1}
+{"t": 1793035160, "m": "getTransaction", "tag": "pump 17 window tx", "attempt": 0}
+{"t": 1793035160, "m": "getTransaction", "tag": "pump 17 window tx", "attempt": 0}
+{"t": 1793035161, "m": "getTransaction", "tag": "pump 17 window tx", "attempt": 0}
+{"t": 1793035161, "m": "getTransaction", "tag": "pump 17 window tx", "attempt": 0}
+{"t": 1793035161, "m": "getTransaction", "tag": "pump 17 window tx", "attempt": 0}
+{"t": 1793035162, "m": "getTransaction", "tag": "pump 17 window tx", "attempt": 0}
+{"t": 1793035162, "m": "getTransaction", "tag": "pump 17 window tx", "attempt": 0}
+{"t": 1793035163, "m": "getTransaction", "tag": "pump 17 window tx", "attempt": 0}
+{"t": 1793035168, "m": "getTransaction", "tag": "pump 17 window tx", "attempt": 1}
+{"t": 1793035168, "m": "getTransaction", "tag": "pump 18 launch tx", "attempt": 0}
+{"t": 1793035174, "m": "getTransaction", "tag": "pump 18 launch tx", "attempt": 1}
+{"t": 1793035184, "m": "getTransaction", "tag": "pump 18 launch tx", "attempt": 2}
+{"t": 1793035199, "m": "getTransaction", "tag": "pump 18 launch tx", "attempt": 3}
+{"t": 1793035199, "m": "getBlock", "tag": "pump 18 window-end block", "attempt": 0}
+{"t": 1793035200, "m": "getSignaturesForAddress", "tag": "pump 18 window sigs p0", "attempt": 0}
+{"t": 1793035200, "m": "getTransaction", "tag": "pump 18 window tx", "attempt": 0}
+{"t": 1793035201, "m": "getTransaction", "tag": "pump 18 window tx", "attempt": 0}
+{"t": 1793035201, "m": "getTransaction", "tag": "pump 19 launch tx", "attempt": 0}
+{"t": 1793035202, "m": "getBlock", "tag": "pump 19 window-end block", "attempt": 0}
+{"t": 1793035202, "m": "getSignaturesForAddress", "tag": "pump 19 window sigs p0", "attempt": 0}
+{"t": 1793035203, "m": "getTransaction", "tag": "pump 19 window tx", "attempt": 0}
+{"t": 1793035204, "m": "getTransaction", "tag": "pump 19 window tx", "attempt": 0}
+{"t": 1793035204, "m": "getTransaction", "tag": "pump 19 window tx", "attempt": 0}
+{"t": 1793035205, "m": "getTransaction", "tag": "pump 19 window tx", "attempt": 0}
+{"t": 1793035205, "m": "getTransaction", "tag": "pump 19 window tx", "attempt": 0}
+{"t": 1793035206, "m": "getTransaction", "tag": "pump 19 window tx", "attempt": 0}
+{"t": 1793035206, "m": "getTransaction", "tag": "pump 19 window tx", "attempt": 0}
+{"t": 1793035206, "m": "getTransaction", "tag": "pump 19 window tx", "attempt": 0}
+{"t": 1793035207, "m": "getTransaction", "tag": "pump 19 window tx", "attempt": 0}
+{"t": 1793035207, "m": "getTransaction", "tag": "pump 19 window tx", "attempt": 0}
+{"t": 1793035208, "m": "getTransaction", "tag": "pump 19 window tx", "attempt": 0}
+{"t": 1793035208, "m": "getTransaction", "tag": "pump 19 window tx", "attempt": 0}
+{"t": 1793035208, "m": "getSlot", "tag": "pumpswap cursor", "attempt": 0}
+{"t": 1793035209, "m": "getBlockTime", "tag": "pumpswap cursor", "attempt": 0}
+{"t": 1793035209, "m": "getBlockTime", "tag": "pumpswap cursor", "attempt": 0}
+{"t": 1793035210, "m": "getBlockTime", "tag": "pumpswap cursor", "attempt": 0}
+{"t": 1793035210, "m": "getBlockTime", "tag": "pumpswap cursor", "attempt": 0}
+{"t": 1793035211, "m": "getBlockTime", "tag": "pumpswap cursor", "attempt": 0}
+{"t": 1793035211, "m": "getBlockTime", "tag": "pumpswap cursor", "attempt": 0}
+{"t": 1793035212, "m": "getBlockTime", "tag": "pumpswap cursor", "attempt": 0}
+{"t": 1793035212, "m": "getBlock", "tag": "pumpswap cursor", "attempt": 0}
+{"t": 1793035212, "m": "getBlockTime", "tag": "pumpswap slot rate", "attempt": 0}
+{"t": 1793035213, "m": "getBlockTime", "tag": "pumpswap slot rate", "attempt": 0}
+{"t": 1793035213, "m": "getSignaturesForAddress", "tag": "pumpswap migration list", "attempt": 0}
+{"t": 1793035214, "m": "getTransaction", "tag": "pumpswap 0 launch tx", "attempt": 0}
+{"t": 1793035215, "m": "getBlock", "tag": "pumpswap 0 window-end block", "attempt": 0}
+{"t": 1793035215, "m": "getSignaturesForAddress", "tag": "pumpswap 0 window sigs p0", "attempt": 0}
+{"t": 1793035215, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793035216, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793035216, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793035217, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793035217, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793035223, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 1}
+{"t": 1793035223, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793035224, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793035229, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 1}
+{"t": 1793035229, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793035235, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 1}
+{"t": 1793035245, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 2}
+{"t": 1793035260, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 3}
+{"t": 1793035280, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 4}
+{"t": 1793035281, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793035281, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793035282, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793035287, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 1}
+{"t": 1793035297, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 2}
+{"t": 1793035312, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 3}
+{"t": 1793035313, "m": "getTransaction", "tag": "pumpswap 0 window tx", "attempt": 0}
+{"t": 1793035313, "m": "getTransaction", "tag": "pumpswap 1 launch tx", "attempt": 0}
+{"t": 1793035318, "m": "getTransaction", "tag": "pumpswap 1 launch tx", "attempt": 1}
+{"t": 1793035329, "m": "getTransaction", "tag": "pumpswap 1 launch tx", "attempt": 2}
+{"t": 1793035330, "m": "getBlock", "tag": "pumpswap 1 window-end block", "attempt": 0}
+{"t": 1793035330, "m": "getSignaturesForAddress", "tag": "pumpswap 1 window sigs p0", "attempt": 0}
+{"t": 1793035330, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035331, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035331, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035332, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035332, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035333, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035334, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035334, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035334, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035335, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035335, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035336, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035337, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035342, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 1}
+{"t": 1793035343, "m": "getAccountInfo", "tag": "owner hadron", "attempt": 0}
+{"t": 1793035343, "m": "getAccountInfo", "tag": "owner memefun", "attempt": 0}
+{"t": 1793035343, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035343, "m": "getAccountInfo", "tag": "owner stonkfun", "attempt": 0}
+{"t": 1793035348, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 1}
+{"t": 1793035350, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035351, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035353, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035355, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035356, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035358, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035361, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035362, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035364, "m": "getSignaturesForAddress", "tag": "activity memefun", "attempt": 0}
+{"t": 1793035367, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 1}
+{"t": 1793035378, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 2}
+{"t": 1793035380, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035382, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035387, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 1}
+{"t": 1793035391, "m": "getRecentPerformanceSamples", "tag": "generic slot rate", "attempt": 0}
+{"t": 1793035391, "m": "getSignaturesForAddress", "tag": "generic pool oldest sig", "attempt": 0}
+{"t": 1793035395, "m": "getSignaturesForAddress", "tag": "generic pool oldest sig", "attempt": 0}
+{"t": 1793035398, "m": "getSignaturesForAddress", "tag": "generic pool oldest sig", "attempt": 0}
+{"t": 1793035398, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 2}
+{"t": 1793035399, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035401, "m": "getSignaturesForAddress", "tag": "generic pool oldest sig", "attempt": 0}
+{"t": 1793035401, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035405, "m": "getSignaturesForAddress", "tag": "generic pool oldest sig", "attempt": 0}
+{"t": 1793035406, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 1}
+{"t": 1793035412, "m": "getSignaturesForAddress", "tag": "generic pool oldest sig", "attempt": 0}
+{"t": 1793035415, "m": "getSignaturesForAddress", "tag": "generic pool oldest sig", "attempt": 0}
+{"t": 1793035417, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 2}
+{"t": 1793035418, "m": "getSignaturesForAddress", "tag": "generic pool oldest sig", "attempt": 0}
+{"t": 1793035418, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035420, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035420, "m": "getSignaturesForAddress", "tag": "generic pool oldest sig", "attempt": 0}
+{"t": 1793035422, "m": "getTransaction", "tag": "pumpswap 1 window tx", "attempt": 0}
+{"t": 1793035423, "m": "getSignaturesForAddress", "tag": "generic pool oldest sig", "attempt": 0}
+{"t": 1793035424, "m": "getTransaction", "tag": "pumpswap 2 launch tx", "attempt": 0}
+{"t": 1793035426, "m": "getTransaction", "tag": "pumpswap 3 launch tx", "attempt": 0}
+{"t": 1793035426, "m": "getTransaction", "tag": "generic 0 launch tx", "attempt": 0}
+{"t": 1793035427, "m": "getBlock", "tag": "generic 0 window-end block", "attempt": 0}
+{"t": 1793035427, "m": "getSignaturesForAddress", "tag": "generic 0 window sigs p0", "attempt": 0}
+{"t": 1793035427, "m": "getBlock", "tag": "pumpswap 3 window-end block", "attempt": 0}
+{"t": 1793035429, "m": "getSignaturesForAddress", "tag": "pumpswap 3 window sigs p0", "attempt": 0}
+{"t": 1793035431, "m": "getTransaction", "tag": "generic 0 window tx", "attempt": 0}
+{"t": 1793035431, "m": "getTransaction", "tag": "generic 0 window tx", "attempt": 0}
+{"t": 1793035432, "m": "getTransaction", "tag": "generic 0 window tx", "attempt": 0}
+{"t": 1793035432, "m": "getTransaction", "tag": "pumpswap 3 window tx", "attempt": 0}
+{"t": 1793035432, "m": "getTransaction", "tag": "generic 0 window tx", "attempt": 0}
+{"t": 1793035433, "m": "getTransaction", "tag": "generic 0 window tx", "attempt": 0}
+{"t": 1793035433, "m": "getTransaction", "tag": "generic 0 window tx", "attempt": 0}
+{"t": 1793035434, "m": "getTransaction", "tag": "generic 0 window tx", "attempt": 0}
+{"t": 1793035434, "m": "getTransaction", "tag": "pumpswap 3 window tx", "attempt": 0}
+{"t": 1793035434, "m": "getTransaction", "tag": "generic 0 window tx", "attempt": 0}
+{"t": 1793035434, "m": "getTransaction", "tag": "generic 0 window tx", "attempt": 0}
+{"t": 1793035435, "m": "getTransaction", "tag": "pumpswap 3 window tx", "attempt": 0}
+{"t": 1793035437, "m": "getTransaction", "tag": "pumpswap 3 window tx", "attempt": 0}
+{"t": 1793035440, "m": "getTransaction", "tag": "generic 0 window tx", "attempt": 1}
+{"t": 1793035442, "m": "getTransaction", "tag": "pumpswap 3 window tx", "attempt": 1}
+{"t": 1793035450, "m": "getTransaction", "tag": "generic 0 window tx", "attempt": 2}
+{"t": 1793035450, "m": "getTransaction", "tag": "generic 0 window tx", "attempt": 0}
+{"t": 1793035451, "m": "getTransaction", "tag": "generic 0 window tx", "attempt": 0}
+{"t": 1793035451, "m": "getTransaction", "tag": "generic 0 window tx", "attempt": 0}
+{"t": 1793035451, "m": "getTransaction", "tag": "generic 1 launch tx", "attempt": 0}
+{"t": 1793035452, "m": "getTransaction", "tag": "pumpswap 3 window tx", "attempt": 2}
+{"t": 1793035455, "m": "getTransaction", "tag": "pumpswap 3 window tx", "attempt": 0}
+{"t": 1793035457, "m": "getTransaction", "tag": "generic 1 launch tx", "attempt": 1}
+{"t": 1793035457, "m": "getTransaction", "tag": "pumpswap 4 launch tx", "attempt": 0}
+{"t": 1793035459, "m": "getTransaction", "tag": "pumpswap 5 launch tx", "attempt": 0}
+{"t": 1793035465, "m": "getTransaction", "tag": "pumpswap 5 launch tx", "attempt": 1}
+{"t": 1793035466, "m": "getBlock", "tag": "pumpswap 5 window-end block", "attempt": 0}
+{"t": 1793035467, "m": "getTransaction", "tag": "generic 1 launch tx", "attempt": 2}
+{"t": 1793035467, "m": "getBlock", "tag": "generic 1 window-end block", "attempt": 0}
+{"t": 1793035467, "m": "getSignaturesForAddress", "tag": "pumpswap 5 window sigs p0", "attempt": 0}
+{"t": 1793035468, "m": "getSignaturesForAddress", "tag": "generic 1 window sigs p0", "attempt": 0}
+{"t": 1793035470, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 0}
+{"t": 1793035471, "m": "getTransaction", "tag": "generic 1 window tx", "attempt": 0}
+{"t": 1793035472, "m": "getTransaction", "tag": "generic 1 window tx", "attempt": 0}
+{"t": 1793035474, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 0}
+{"t": 1793035476, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 0}
+{"t": 1793035477, "m": "getTransaction", "tag": "generic 1 window tx", "attempt": 1}
+{"t": 1793035481, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 1}
+{"t": 1793035487, "m": "getTransaction", "tag": "generic 1 window tx", "attempt": 2}
+{"t": 1793035492, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 2}
+{"t": 1793035494, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 0}
+{"t": 1793035499, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 1}
+{"t": 1793035501, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 0}
+{"t": 1793035502, "m": "getTransaction", "tag": "generic 1 window tx", "attempt": 3}
+{"t": 1793035504, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 0}
+{"t": 1793035509, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 1}
+{"t": 1793035511, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 0}
+{"t": 1793035513, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 0}
+{"t": 1793035516, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 0}
+{"t": 1793035518, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 0}
+{"t": 1793035520, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 0}
+{"t": 1793035522, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 0}
+{"t": 1793035523, "m": "getTransaction", "tag": "generic 1 window tx", "attempt": 4}
+{"t": 1793035523, "m": "getTransaction", "tag": "generic 1 window tx", "attempt": 0}
+{"t": 1793035524, "m": "getTransaction", "tag": "generic 1 window tx", "attempt": 0}
+{"t": 1793035524, "m": "getTransaction", "tag": "generic 1 window tx", "attempt": 0}
+{"t": 1793035524, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 0}
+{"t": 1793035524, "m": "getTransaction", "tag": "generic 1 window tx", "attempt": 0}
+{"t": 1793035525, "m": "getTransaction", "tag": "generic 1 window tx", "attempt": 0}
+{"t": 1793035525, "m": "getTransaction", "tag": "generic 2 launch tx", "attempt": 0}
+{"t": 1793035529, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 1}
+{"t": 1793035530, "m": "getTransaction", "tag": "generic 2 launch tx", "attempt": 1}
+{"t": 1793035539, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 2}
+{"t": 1793035541, "m": "getTransaction", "tag": "generic 2 launch tx", "attempt": 2}
+{"t": 1793035541, "m": "getBlock", "tag": "generic 2 window-end block", "attempt": 0}
+{"t": 1793035541, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 0}
+{"t": 1793035541, "m": "getSignaturesForAddress", "tag": "generic 2 window sigs p0", "attempt": 0}
+{"t": 1793035543, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 0}
+{"t": 1793035545, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 0}
+{"t": 1793035546, "m": "getTransaction", "tag": "generic 2 window tx", "attempt": 0}
+{"t": 1793035547, "m": "getTransaction", "tag": "generic 2 window tx", "attempt": 0}
+{"t": 1793035547, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 0}
+{"t": 1793035552, "m": "getTransaction", "tag": "generic 2 window tx", "attempt": 1}
+{"t": 1793035552, "m": "getTransaction", "tag": "pumpswap 5 window tx", "attempt": 1}
+{"t": 1793035552, "m": "getTransaction", "tag": "generic 2 window tx", "attempt": 0}
+{"t": 1793035553, "m": "getTransaction", "tag": "generic 2 window tx", "attempt": 0}
+{"t": 1793035553, "m": "getTransaction", "tag": "generic 2 window tx", "attempt": 0}
+{"t": 1793035553, "m": "getTransaction", "tag": "generic 2 window tx", "attempt": 0}
+{"t": 1793035554, "m": "getTransaction", "tag": "pumpswap 6 launch tx", "attempt": 0}
+{"t": 1793035556, "m": "getTransaction", "tag": "pumpswap 7 launch tx", "attempt": 0}
+{"t": 1793035558, "m": "getBlock", "tag": "pumpswap 7 window-end block", "attempt": 0}
+{"t": 1793035559, "m": "getTransaction", "tag": "generic 2 window tx", "attempt": 1}
+{"t": 1793035559, "m": "getSignaturesForAddress", "tag": "pumpswap 7 window sigs p0", "attempt": 0}
+{"t": 1793035559, "m": "getTransaction", "tag": "generic 2 window tx", "attempt": 0}
+{"t": 1793035559, "m": "getTransaction", "tag": "generic 3 launch tx", "attempt": 0}
+{"t": 1793035560, "m": "getBlock", "tag": "generic 3 window-end block", "attempt": 0}
+{"t": 1793035560, "m": "getSignaturesForAddress", "tag": "generic 3 window sigs p0", "attempt": 0}
+{"t": 1793035563, "m": "getTransaction", "tag": "pumpswap 7 window tx", "attempt": 0}
+{"t": 1793035565, "m": "getTransaction", "tag": "pumpswap 7 window tx", "attempt": 0}
+{"t": 1793035565, "m": "getTransaction", "tag": "generic 3 window tx", "attempt": 0}
+{"t": 1793035566, "m": "getTransaction", "tag": "generic 3 window tx", "attempt": 0}
+{"t": 1793035566, "m": "getTransaction", "tag": "generic 3 window tx", "attempt": 0}
+{"t": 1793035567, "m": "getTransaction", "tag": "generic 3 window tx", "attempt": 0}
+{"t": 1793035567, "m": "getTransaction", "tag": "generic 3 window tx", "attempt": 0}
+{"t": 1793035567, "m": "getTransaction", "tag": "pumpswap 7 window tx", "attempt": 0}
+{"t": 1793035567, "m": "getTransaction", "tag": "generic 3 window tx", "attempt": 0}
+{"t": 1793035570, "m": "getTransaction", "tag": "pumpswap 7 window tx", "attempt": 0}
+{"t": 1793035573, "m": "getTransaction", "tag": "generic 3 window tx", "attempt": 1}
+{"t": 1793035575, "m": "getTransaction", "tag": "pumpswap 7 window tx", "attempt": 1}
+{"t": 1793035583, "m": "getTransaction", "tag": "generic 3 window tx", "attempt": 2}
+{"t": 1793035583, "m": "getTransaction", "tag": "generic 3 window tx", "attempt": 0}
+{"t": 1793035584, "m": "getTransaction", "tag": "generic 4 launch tx", "attempt": 0}
+{"t": 1793035584, "m": "getBlock", "tag": "generic 4 window-end block", "attempt": 0}
+{"t": 1793035585, "m": "getSignaturesForAddress", "tag": "generic 4 window sigs p0", "attempt": 0}
+{"t": 1793035585, "m": "getTransaction", "tag": "pumpswap 7 window tx", "attempt": 2}
+{"t": 1793035587, "m": "getTransaction", "tag": "pumpswap 7 window tx", "attempt": 0}
+{"t": 1793035589, "m": "getTransaction", "tag": "pumpswap 7 window tx", "attempt": 0}
+{"t": 1793035590, "m": "getTransaction", "tag": "generic 4 window tx", "attempt": 0}
+{"t": 1793035590, "m": "getTransaction", "tag": "generic 4 window tx", "attempt": 0}
+{"t": 1793035591, "m": "getTransaction", "tag": "generic 4 window tx", "attempt": 0}
+{"t": 1793035591, "m": "getTransaction", "tag": "generic 4 window tx", "attempt": 0}
+{"t": 1793035591, "m": "getTransaction", "tag": "generic 4 window tx", "attempt": 0}
+{"t": 1793035592, "m": "getTransaction", "tag": "pumpswap 7 window tx", "attempt": 0}
+{"t": 1793035592, "m": "getTransaction", "tag": "generic 4 window tx", "attempt": 0}
+{"t": 1793035594, "m": "getTransaction", "tag": "pumpswap 7 window tx", "attempt": 0}
+{"t": 1793035596, "m": "getTransaction", "tag": "pumpswap 7 window tx", "attempt": 0}
+{"t": 1793035597, "m": "getTransaction", "tag": "generic 4 window tx", "attempt": 1}
+{"t": 1793035597, "m": "getTransaction", "tag": "generic 4 window tx", "attempt": 0}
+{"t": 1793035598, "m": "getTransaction", "tag": "pumpswap 7 window tx", "attempt": 0}
+{"t": 1793035601, "m": "getTransaction", "tag": "pumpswap 7 window tx", "attempt": 0}
+{"t": 1793035603, "m": "getTransaction", "tag": "generic 4 window tx", "attempt": 1}
+{"t": 1793035603, "m": "getTransaction", "tag": "pumpswap 7 window tx", "attempt": 0}
+{"t": 1793035603, "m": "getTransaction", "tag": "generic 5 launch tx", "attempt": 0}
+{"t": 1793035603, "m": "getBlock", "tag": "generic 5 window-end block", "attempt": 0}
+{"t": 1793035604, "m": "getSignaturesForAddress", "tag": "generic 5 window sigs p0", "attempt": 0}
+{"t": 1793035605, "m": "getTransaction", "tag": "pumpswap 7 window tx", "attempt": 0}
+{"t": 1793035608, "m": "getTransaction", "tag": "pumpswap 7 window tx", "attempt": 0}
+{"t": 1793035609, "m": "getTransaction", "tag": "generic 5 window tx", "attempt": 0}
+{"t": 1793035609, "m": "getTransaction", "tag": "generic 5 window tx", "attempt": 0}
+{"t": 1793035610, "m": "getTransaction", "tag": "generic 5 window tx", "attempt": 0}
+{"t": 1793035610, "m": "getTransaction", "tag": "pumpswap 8 launch tx", "attempt": 0}
+{"t": 1793035610, "m": "getTransaction", "tag": "generic 5 window tx", "attempt": 0}
+{"t": 1793035610, "m": "getTransaction", "tag": "generic 5 window tx", "attempt": 0}
+{"t": 1793035611, "m": "getTransaction", "tag": "generic 5 window tx", "attempt": 0}
+{"t": 1793035611, "m": "getTransaction", "tag": "generic 6 launch tx", "attempt": 0}
+{"t": 1793035612, "m": "getTransaction", "tag": "pumpswap 9 launch tx", "attempt": 0}
+{"t": 1793035614, "m": "getBlock", "tag": "pumpswap 9 window-end block", "attempt": 0}
+{"t": 1793035615, "m": "getSignaturesForAddress", "tag": "pumpswap 9 window sigs p0", "attempt": 0}
+{"t": 1793035616, "m": "getTransaction", "tag": "generic 6 launch tx", "attempt": 1}
+{"t": 1793035617, "m": "getBlock", "tag": "generic 6 window-end block", "attempt": 0}
+{"t": 1793035617, "m": "getTransaction", "tag": "pumpswap 9 window tx", "attempt": 0}
+{"t": 1793035617, "m": "getSignaturesForAddress", "tag": "generic 6 window sigs p0", "attempt": 0}
+{"t": 1793035618, "m": "getTransaction", "tag": "pumpswap 9 window tx", "attempt": 0}
+{"t": 1793035619, "m": "getTransaction", "tag": "pumpswap 9 window tx", "attempt": 0}
+{"t": 1793035620, "m": "getTransaction", "tag": "generic 6 window tx", "attempt": 0}
+{"t": 1793035620, "m": "getTransaction", "tag": "generic 6 window tx", "attempt": 0}
+{"t": 1793035621, "m": "getTransaction", "tag": "pumpswap 9 window tx", "attempt": 0}
+{"t": 1793035621, "m": "getTransaction", "tag": "generic 6 window tx", "attempt": 0}
+{"t": 1793035621, "m": "getTransaction", "tag": "generic 6 window tx", "attempt": 0}
+{"t": 1793035622, "m": "getTransaction", "tag": "pumpswap 9 window tx", "attempt": 0}
+{"t": 1793035622, "m": "getTransaction", "tag": "generic 6 window tx", "attempt": 0}
+{"t": 1793035623, "m": "getTransaction", "tag": "generic 6 window tx", "attempt": 0}
+{"t": 1793035623, "m": "getTransaction", "tag": "generic 6 window tx", "attempt": 0}
+{"t": 1793035624, "m": "getTransaction", "tag": "generic 6 window tx", "attempt": 0}
+{"t": 1793035624, "m": "getTransaction", "tag": "pumpswap 9 window tx", "attempt": 0}
+{"t": 1793035624, "m": "getTransaction", "tag": "generic 7 launch tx", "attempt": 0}
+{"t": 1793035625, "m": "getBlock", "tag": "generic 7 window-end block", "attempt": 0}
+{"t": 1793035625, "m": "getSignaturesForAddress", "tag": "generic 7 window sigs p0", "attempt": 0}
+{"t": 1793035625, "m": "getTransaction", "tag": "pumpswap 9 window tx", "attempt": 0}
+{"t": 1793035627, "m": "getTransaction", "tag": "generic 7 window tx", "attempt": 0}
+{"t": 1793035630, "m": "getTransaction", "tag": "pumpswap 9 window tx", "attempt": 1}
+{"t": 1793035631, "m": "getTransaction", "tag": "pumpswap 9 window tx", "attempt": 0}
+{"t": 1793035632, "m": "getTransaction", "tag": "generic 7 window tx", "attempt": 1}
+{"t": 1793035632, "m": "getTransaction", "tag": "pumpswap 9 window tx", "attempt": 0}
+{"t": 1793035632, "m": "getTransaction", "tag": "generic 7 window tx", "attempt": 0}
+{"t": 1793035637, "m": "getTransaction", "tag": "pumpswap 9 window tx", "attempt": 1}
+{"t": 1793035637, "m": "getTransaction", "tag": "generic 7 window tx", "attempt": 1}
+{"t": 1793035638, "m": "getTransaction", "tag": "generic 7 window tx", "attempt": 0}
+{"t": 1793035643, "m": "getTransaction", "tag": "generic 7 window tx", "attempt": 1}
+{"t": 1793035643, "m": "getTransaction", "tag": "generic 7 window tx", "attempt": 0}
+{"t": 1793035644, "m": "getTransaction", "tag": "generic 7 window tx", "attempt": 0}
+{"t": 1793035647, "m": "getTransaction", "tag": "pumpswap 9 window tx", "attempt": 2}
+{"t": 1793035648, "m": "getTransaction", "tag": "pumpswap 9 window tx", "attempt": 0}
+{"t": 1793035649, "m": "getTransaction", "tag": "generic 7 window tx", "attempt": 1}
+{"t": 1793035653, "m": "getTransaction", "tag": "pumpswap 9 window tx", "attempt": 1}
+{"t": 1793035654, "m": "getTransaction", "tag": "pumpswap 9 window tx", "attempt": 0}
+{"t": 1793035655, "m": "getTransaction", "tag": "pumpswap 9 window tx", "attempt": 0}
+{"t": 1793035656, "m": "getTransaction", "tag": "pumpswap 9 window tx", "attempt": 0}
+{"t": 1793035657, "m": "getTransaction", "tag": "pumpswap 10 launch tx", "attempt": 0}
+{"t": 1793035658, "m": "getBlock", "tag": "pumpswap 10 window-end block", "attempt": 0}
+{"t": 1793035659, "m": "getSignaturesForAddress", "tag": "pumpswap 10 window sigs p0", "attempt": 0}
+{"t": 1793035659, "m": "getTransaction", "tag": "generic 7 window tx", "attempt": 2}
+{"t": 1793035660, "m": "getTransaction", "tag": "generic 7 window tx", "attempt": 0}
+{"t": 1793035660, "m": "getTransaction", "tag": "generic 7 window tx", "attempt": 0}
+{"t": 1793035661, "m": "getTransaction", "tag": "generic 7 window tx", "attempt": 0}
+{"t": 1793035661, "m": "getTransaction", "tag": "pumpswap 10 window tx", "attempt": 0}
+{"t": 1793035661, "m": "getTransaction", "tag": "generic 7 window tx", "attempt": 0}
+{"t": 1793035661, "m": "getTransaction", "tag": "pumpswap 10 window tx", "attempt": 0}
+{"t": 1793035661, "m": "getTransaction", "tag": "generic 7 window tx", "attempt": 0}
+{"t": 1793035666, "m": "getTransaction", "tag": "pumpswap 10 window tx", "attempt": 1}
+{"t": 1793035667, "m": "getTransaction", "tag": "generic 7 window tx", "attempt": 1}
+{"t": 1793035667, "m": "getTransaction", "tag": "generic 8 launch tx", "attempt": 0}
+{"t": 1793035672, "m": "getTransaction", "tag": "generic 8 launch tx", "attempt": 1}
+{"t": 1793035673, "m": "getBlock", "tag": "generic 8 window-end block", "attempt": 0}
+{"t": 1793035673, "m": "getSignaturesForAddress", "tag": "generic 8 window sigs p0", "attempt": 0}
+{"t": 1793035673, "m": "getTransaction", "tag": "generic 8 window tx", "attempt": 0}
+{"t": 1793035674, "m": "getTransaction", "tag": "generic 8 window tx", "attempt": 0}
+{"t": 1793035674, "m": "getTransaction", "tag": "generic 8 window tx", "attempt": 0}
+{"t": 1793035675, "m": "getTransaction", "tag": "generic 8 window tx", "attempt": 0}
+{"t": 1793035675, "m": "getTransaction", "tag": "generic 9 launch tx", "attempt": 0}
+{"t": 1793035676, "m": "getBlock", "tag": "generic 9 window-end block", "attempt": 0}
+{"t": 1793035676, "m": "getSignaturesForAddress", "tag": "generic 9 window sigs p0", "attempt": 0}
+{"t": 1793035676, "m": "getTransaction", "tag": "pumpswap 10 window tx", "attempt": 2}
+{"t": 1793035677, "m": "getTransaction", "tag": "generic 9 window tx", "attempt": 0}
+{"t": 1793035692, "m": "getTransaction", "tag": "pumpswap 10 window tx", "attempt": 3}
+{"t": 1793035712, "m": "getTransaction", "tag": "pumpswap 10 window tx", "attempt": 4}
+{"t": 1793035712, "m": "getTransaction", "tag": "pumpswap 10 window tx", "attempt": 0}
+{"t": 1793035713, "m": "getTransaction", "tag": "pumpswap 10 window tx", "attempt": 0}
+{"t": 1793035713, "m": "getTransaction", "tag": "pumpswap 10 window tx", "attempt": 0}
+{"t": 1793035714, "m": "getTransaction", "tag": "pumpswap 10 window tx", "attempt": 0}
+{"t": 1793035719, "m": "getTransaction", "tag": "pumpswap 10 window tx", "attempt": 1}
+{"t": 1793035729, "m": "getTransaction", "tag": "pumpswap 10 window tx", "attempt": 2}
+{"t": 1793035730, "m": "getTransaction", "tag": "pumpswap 10 window tx", "attempt": 0}
+{"t": 1793035730, "m": "getTransaction", "tag": "pumpswap 10 window tx", "attempt": 0}
+{"t": 1793035731, "m": "getTransaction", "tag": "pumpswap 10 window tx", "attempt": 0}
+{"t": 1793035736, "m": "getTransaction", "tag": "pumpswap 10 window tx", "attempt": 1}
+{"t": 1793035737, "m": "getTransaction", "tag": "pumpswap 10 window tx", "attempt": 0}
+{"t": 1793035737, "m": "getTransaction", "tag": "pumpswap 10 window tx", "attempt": 0}
+{"t": 1793035738, "m": "getTransaction", "tag": "pumpswap 10 window tx", "attempt": 0}
+{"t": 1793035743, "m": "getTransaction", "tag": "pumpswap 10 window tx", "attempt": 1}
+{"t": 1793035744, "m": "getTransaction", "tag": "pumpswap 11 launch tx", "attempt": 0}
+{"t": 1793035745, "m": "getBlock", "tag": "pumpswap 11 window-end block", "attempt": 0}
+{"t": 1793035745, "m": "getSignaturesForAddress", "tag": "pumpswap 11 window sigs p0", "attempt": 0}
+{"t": 1793035746, "m": "getTransaction", "tag": "pumpswap 11 window tx", "attempt": 0}
+{"t": 1793035751, "m": "getTransaction", "tag": "pumpswap 11 window tx", "attempt": 1}
+{"t": 1793035751, "m": "getTransaction", "tag": "pumpswap 11 window tx", "attempt": 0}
+{"t": 1793035752, "m": "getTransaction", "tag": "pumpswap 11 window tx", "attempt": 0}
+{"t": 1793035757, "m": "getTransaction", "tag": "pumpswap 11 window tx", "attempt": 1}
+{"t": 1793035757, "m": "getTransaction", "tag": "pumpswap 11 window tx", "attempt": 0}
+{"t": 1793035763, "m": "getTransaction", "tag": "pumpswap 11 window tx", "attempt": 1}
+{"t": 1793035773, "m": "getTransaction", "tag": "pumpswap 11 window tx", "attempt": 2}
+{"t": 1793035773, "m": "getTransaction", "tag": "pumpswap 11 window tx", "attempt": 0}
+{"t": 1793035774, "m": "getTransaction", "tag": "pumpswap 11 window tx", "attempt": 0}
+{"t": 1793035779, "m": "getTransaction", "tag": "pumpswap 11 window tx", "attempt": 1}
+{"t": 1793035779, "m": "getTransaction", "tag": "pumpswap 11 window tx", "attempt": 0}
+{"t": 1793035780, "m": "getTransaction", "tag": "pumpswap 11 window tx", "attempt": 0}
+{"t": 1793035780, "m": "getTransaction", "tag": "pumpswap 11 window tx", "attempt": 0}
+{"t": 1793035781, "m": "getTransaction", "tag": "pumpswap 11 window tx", "attempt": 0}
+{"t": 1793035781, "m": "getTransaction", "tag": "pumpswap 11 window tx", "attempt": 0}
+{"t": 1793035782, "m": "getTransaction", "tag": "pumpswap 11 window tx", "attempt": 0}
+{"t": 1793035787, "m": "getTransaction", "tag": "pumpswap 11 window tx", "attempt": 1}
+{"t": 1793035797, "m": "getTransaction", "tag": "pumpswap 11 window tx", "attempt": 2}
+{"t": 1793035797, "m": "getTransaction", "tag": "pumpswap 11 window tx", "attempt": 0}
+{"t": 1793035798, "m": "getTransaction", "tag": "pumpswap 11 window tx", "attempt": 0}
+{"t": 1793035798, "m": "getTransaction", "tag": "pumpswap 12 launch tx", "attempt": 0}
+{"t": 1793035799, "m": "getTransaction", "tag": "pumpswap 13 launch tx", "attempt": 0}
+{"t": 1793035799, "m": "getBlock", "tag": "pumpswap 13 window-end block", "attempt": 0}
+{"t": 1793035800, "m": "getSignaturesForAddress", "tag": "pumpswap 13 window sigs p0", "attempt": 0}
+{"t": 1793035801, "m": "getSignaturesForAddress", "tag": "pumpswap 13 window sigs p1", "attempt": 0}
+{"t": 1793035801, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 0}
+{"t": 1793035802, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 0}
+{"t": 1793035803, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 0}
+{"t": 1793035809, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 1}
+{"t": 1793035810, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 0}
+{"t": 1793035815, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 1}
+{"t": 1793035815, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 0}
+{"t": 1793035820, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 1}
+{"t": 1793035830, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 2}
+{"t": 1793035845, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 3}
+{"t": 1793035846, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 0}
+{"t": 1793035846, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 0}
+{"t": 1793035851, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 1}
+{"t": 1793035862, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 2}
+{"t": 1793035863, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 0}
+{"t": 1793035863, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 0}
+{"t": 1793035864, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 0}
+{"t": 1793035865, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 0}
+{"t": 1793035865, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 0}
+{"t": 1793035866, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 0}
+{"t": 1793035867, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 0}
+{"t": 1793035867, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 0}
+{"t": 1793035868, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 0}
+{"t": 1793035873, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 1}
+{"t": 1793035873, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 0}
+{"t": 1793035879, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 1}
+{"t": 1793035889, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 2}
+{"t": 1793035890, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 0}
+{"t": 1793035892, "m": "getTransaction", "tag": "pumpswap 13 window tx", "attempt": 0}
+{"t": 1793035894, "m": "getTransaction", "tag": "pumpswap 14 launch tx", "attempt": 0}
+{"t": 1793035895, "m": "getTransaction", "tag": "pumpswap 15 launch tx", "attempt": 0}
+{"t": 1793035896, "m": "getBlock", "tag": "pumpswap 15 window-end block", "attempt": 0}
+{"t": 1793035897, "m": "getSignaturesForAddress", "tag": "pumpswap 15 window sigs p0", "attempt": 0}
+{"t": 1793035897, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 0}
+{"t": 1793035900, "m": "getRecentPerformanceSamples", "tag": "launchlab slot rate", "attempt": 0}
+{"t": 1793035900, "m": "getTransaction", "tag": "launchlab 0 launch tx", "attempt": 0}
+{"t": 1793035900, "m": "getBlock", "tag": "launchlab 0 window-end block", "attempt": 0}
+{"t": 1793035901, "m": "getSignaturesForAddress", "tag": "launchlab 0 window sigs p0", "attempt": 0}
+{"t": 1793035903, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 1}
+{"t": 1793035903, "m": "getTransaction", "tag": "launchlab 1 launch tx", "attempt": 0}
+{"t": 1793035904, "m": "getBlock", "tag": "launchlab 1 window-end block", "attempt": 0}
+{"t": 1793035904, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 0}
+{"t": 1793035904, "m": "getSignaturesForAddress", "tag": "launchlab 1 window sigs p0", "attempt": 0}
+{"t": 1793035908, "m": "getTransaction", "tag": "launchlab 1 window tx", "attempt": 0}
+{"t": 1793035909, "m": "getTransaction", "tag": "launchlab 1 window tx", "attempt": 0}
+{"t": 1793035909, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 1}
+{"t": 1793035909, "m": "getTransaction", "tag": "launchlab 2 launch tx", "attempt": 0}
+{"t": 1793035910, "m": "getBlock", "tag": "launchlab 2 window-end block", "attempt": 0}
+{"t": 1793035910, "m": "getSignaturesForAddress", "tag": "launchlab 2 window sigs p0", "attempt": 0}
+{"t": 1793035911, "m": "getSignaturesForAddress", "tag": "launchlab 2 window sigs p1", "attempt": 0}
+{"t": 1793035913, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 0}
+{"t": 1793035914, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 0}
+{"t": 1793035914, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 0}
+{"t": 1793035919, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 2}
+{"t": 1793035920, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 1}
+{"t": 1793035920, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 0}
+{"t": 1793035920, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 0}
+{"t": 1793035921, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 0}
+{"t": 1793035922, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 0}
+{"t": 1793035926, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 1}
+{"t": 1793035926, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 0}
+{"t": 1793035927, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 1}
+{"t": 1793035929, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 0}
+{"t": 1793035930, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 0}
+{"t": 1793035931, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 1}
+{"t": 1793035932, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 0}
+{"t": 1793035932, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 0}
+{"t": 1793035932, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 0}
+{"t": 1793035937, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 1}
+{"t": 1793035937, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 1}
+{"t": 1793035938, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 0}
+{"t": 1793035938, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 0}
+{"t": 1793035943, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 1}
+{"t": 1793035944, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 0}
+{"t": 1793035947, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 2}
+{"t": 1793035949, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 0}
+{"t": 1793035949, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 1}
+{"t": 1793035949, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 0}
+{"t": 1793035950, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 0}
+{"t": 1793035950, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 0}
+{"t": 1793035951, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 0}
+{"t": 1793035951, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 0}
+{"t": 1793035954, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 0}
+{"t": 1793035956, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 1}
+{"t": 1793035959, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 1}
+{"t": 1793035966, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 2}
+{"t": 1793035969, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 2}
+{"t": 1793035981, "m": "getTransaction", "tag": "launchlab 2 window tx", "attempt": 3}
+{"t": 1793035981, "m": "getTransaction", "tag": "launchlab 3 launch tx", "attempt": 0}
+{"t": 1793035982, "m": "getBlock", "tag": "launchlab 3 window-end block", "attempt": 0}
+{"t": 1793035982, "m": "getSignaturesForAddress", "tag": "launchlab 3 window sigs p0", "attempt": 0}
+{"t": 1793035984, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 3}
+{"t": 1793035989, "m": "getTransaction", "tag": "launchlab 3 window tx", "attempt": 0}
+{"t": 1793035994, "m": "getTransaction", "tag": "launchlab 3 window tx", "attempt": 1}
+{"t": 1793036004, "m": "getTransaction", "tag": "launchlab 3 window tx", "attempt": 2}
+{"t": 1793036005, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 4}
+{"t": 1793036005, "m": "getTransaction", "tag": "launchlab 3 window tx", "attempt": 0}
+{"t": 1793036005, "m": "getTransaction", "tag": "launchlab 3 window tx", "attempt": 0}
+{"t": 1793036006, "m": "getTransaction", "tag": "launchlab 3 window tx", "attempt": 0}
+{"t": 1793036006, "m": "getTransaction", "tag": "launchlab 3 window tx", "attempt": 0}
+{"t": 1793036007, "m": "getTransaction", "tag": "launchlab 3 window tx", "attempt": 0}
+{"t": 1793036007, "m": "getTransaction", "tag": "launchlab 3 window tx", "attempt": 0}
+{"t": 1793036008, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 0}
+{"t": 1793036013, "m": "getTransaction", "tag": "launchlab 3 window tx", "attempt": 1}
+{"t": 1793036013, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 1}
+{"t": 1793036016, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 0}
+{"t": 1793036022, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 1}
+{"t": 1793036023, "m": "getTransaction", "tag": "launchlab 3 window tx", "attempt": 2}
+{"t": 1793036024, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 0}
+{"t": 1793036029, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 1}
+{"t": 1793036038, "m": "getTransaction", "tag": "launchlab 3 window tx", "attempt": 3}
+{"t": 1793036038, "m": "getTransaction", "tag": "launchlab 3 window tx", "attempt": 0}
+{"t": 1793036039, "m": "getTransaction", "tag": "launchlab 3 window tx", "attempt": 0}
+{"t": 1793036039, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 2}
+{"t": 1793036039, "m": "getTransaction", "tag": "launchlab 3 window tx", "attempt": 0}
+{"t": 1793036040, "m": "getTransaction", "tag": "launchlab 3 window tx", "attempt": 0}
+{"t": 1793036040, "m": "getTransaction", "tag": "launchlab 3 window tx", "attempt": 0}
+{"t": 1793036041, "m": "getTransaction", "tag": "launchlab 3 window tx", "attempt": 0}
+{"t": 1793036041, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 0}
+{"t": 1793036041, "m": "getTransaction", "tag": "launchlab 4 launch tx", "attempt": 0}
+{"t": 1793036044, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 0}
+{"t": 1793036046, "m": "getTransaction", "tag": "launchlab 4 launch tx", "attempt": 1}
+{"t": 1793036046, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 0}
+{"t": 1793036047, "m": "getBlock", "tag": "launchlab 4 window-end block", "attempt": 0}
+{"t": 1793036048, "m": "getSignaturesForAddress", "tag": "launchlab 4 window sigs p0", "attempt": 0}
+{"t": 1793036048, "m": "getSignaturesForAddress", "tag": "launchlab 4 window sigs p1", "attempt": 0}
+{"t": 1793036052, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 1}
+{"t": 1793036054, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 0}
+{"t": 1793036055, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 0}
+{"t": 1793036057, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 0}
+{"t": 1793036059, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 0}
+{"t": 1793036060, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 1}
+{"t": 1793036061, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 0}
+{"t": 1793036061, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 0}
+{"t": 1793036062, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 0}
+{"t": 1793036065, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 1}
+{"t": 1793036067, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 1}
+{"t": 1793036075, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 2}
+{"t": 1793036077, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 2}
+{"t": 1793036078, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 0}
+{"t": 1793036083, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 1}
+{"t": 1793036090, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 3}
+{"t": 1793036093, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 2}
+{"t": 1793036094, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 0}
+{"t": 1793036094, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 0}
+{"t": 1793036095, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 0}
+{"t": 1793036100, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 1}
+{"t": 1793036100, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 0}
+{"t": 1793036105, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 1}
+{"t": 1793036106, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 0}
+{"t": 1793036106, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 0}
+{"t": 1793036107, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 0}
+{"t": 1793036107, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 0}
+{"t": 1793036110, "m": "getTransaction", "tag": "pumpswap 15 window tx", "attempt": 4}
+{"t": 1793036112, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 1}
+{"t": 1793036113, "m": "getTransaction", "tag": "pumpswap 16 launch tx", "attempt": 0}
+{"t": 1793036113, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 0}
+{"t": 1793036113, "m": "getTransaction", "tag": "launchlab 4 window tx", "attempt": 0}
+{"t": 1793036114, "m": "getTransaction", "tag": "launchlab 5 launch tx", "attempt": 0}
+{"t": 1793036115, "m": "getBlock", "tag": "pumpswap 16 window-end block", "attempt": 0}
+{"t": 1793036117, "m": "getSignaturesForAddress", "tag": "pumpswap 16 window sigs p0", "attempt": 0}
+{"t": 1793036119, "m": "getTransaction", "tag": "launchlab 5 launch tx", "attempt": 1}
+{"t": 1793036121, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 0}
+{"t": 1793036124, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 0}
+{"t": 1793036126, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 0}
+{"t": 1793036128, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 0}
+{"t": 1793036129, "m": "getTransaction", "tag": "launchlab 5 launch tx", "attempt": 2}
+{"t": 1793036129, "m": "getBlock", "tag": "launchlab 5 window-end block", "attempt": 0}
+{"t": 1793036130, "m": "getSignaturesForAddress", "tag": "launchlab 5 window sigs p0", "attempt": 0}
+{"t": 1793036131, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 0}
+{"t": 1793036136, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 1}
+{"t": 1793036136, "m": "getTransaction", "tag": "launchlab 5 window tx", "attempt": 0}
+{"t": 1793036137, "m": "getTransaction", "tag": "launchlab 5 window tx", "attempt": 0}
+{"t": 1793036137, "m": "getTransaction", "tag": "launchlab 6 launch tx", "attempt": 0}
+{"t": 1793036137, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 0}
+{"t": 1793036138, "m": "getBlock", "tag": "launchlab 6 window-end block", "attempt": 0}
+{"t": 1793036138, "m": "getSignaturesForAddress", "tag": "launchlab 6 window sigs p0", "attempt": 0}
+{"t": 1793036140, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 0}
+{"t": 1793036143, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 0}
+{"t": 1793036144, "m": "getTransaction", "tag": "launchlab 7 launch tx", "attempt": 0}
+{"t": 1793036148, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 1}
+{"t": 1793036149, "m": "getTransaction", "tag": "launchlab 7 launch tx", "attempt": 1}
+{"t": 1793036158, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 2}
+{"t": 1793036160, "m": "getTransaction", "tag": "launchlab 7 launch tx", "attempt": 2}
+{"t": 1793036173, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 3}
+{"t": 1793036175, "m": "getTransaction", "tag": "launchlab 7 launch tx", "attempt": 3}
+{"t": 1793036193, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 4}
+{"t": 1793036195, "m": "getTransaction", "tag": "launchlab 7 launch tx", "attempt": 4}
+{"t": 1793036218, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 0}
+{"t": 1793036220, "m": "getTransaction", "tag": "launchlab 8 launch tx", "attempt": 0}
+{"t": 1793036221, "m": "getBlock", "tag": "launchlab 8 window-end block", "attempt": 0}
+{"t": 1793036221, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 0}
+{"t": 1793036221, "m": "getSignaturesForAddress", "tag": "launchlab 8 window sigs p0", "attempt": 0}
+{"t": 1793036223, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 0}
+{"t": 1793036226, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 0}
+{"t": 1793036229, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 1}
+{"t": 1793036231, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 0}
+{"t": 1793036231, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 1}
+{"t": 1793036232, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 0}
+{"t": 1793036232, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 0}
+{"t": 1793036233, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 0}
+{"t": 1793036233, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 0}
+{"t": 1793036238, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 1}
+{"t": 1793036238, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 1}
+{"t": 1793036238, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 0}
+{"t": 1793036243, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 1}
+{"t": 1793036244, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 0}
+{"t": 1793036248, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 2}
+{"t": 1793036249, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 1}
+{"t": 1793036251, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 0}
+{"t": 1793036256, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 1}
+{"t": 1793036259, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 2}
+{"t": 1793036260, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 0}
+{"t": 1793036265, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 1}
+{"t": 1793036265, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 0}
+{"t": 1793036266, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 2}
+{"t": 1793036270, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 1}
+{"t": 1793036281, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 2}
+{"t": 1793036281, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 0}
+{"t": 1793036281, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 3}
+{"t": 1793036282, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 0}
+{"t": 1793036282, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 0}
+{"t": 1793036283, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 0}
+{"t": 1793036283, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 0}
+{"t": 1793036285, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 0}
+{"t": 1793036289, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 1}
+{"t": 1793036290, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 1}
+{"t": 1793036293, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 0}
+{"t": 1793036295, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 0}
+{"t": 1793036300, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 2}
+{"t": 1793036300, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 0}
+{"t": 1793036300, "m": "getTransaction", "tag": "launchlab 8 window tx", "attempt": 0}
+{"t": 1793036301, "m": "getTransaction", "tag": "pumpswap 16 window tx", "attempt": 1}
+{"t": 1793036301, "m": "getTransaction", "tag": "launchlab 9 launch tx", "attempt": 0}
+{"t": 1793036303, "m": "getTransaction", "tag": "pumpswap 17 launch tx", "attempt": 0}
+{"t": 1793036306, "m": "getTransaction", "tag": "launchlab 9 launch tx", "attempt": 1}
+{"t": 1793036308, "m": "getTransaction", "tag": "pumpswap 17 launch tx", "attempt": 1}
+{"t": 1793036316, "m": "getTransaction", "tag": "launchlab 9 launch tx", "attempt": 2}
+{"t": 1793036317, "m": "getTransaction", "tag": "launchlab 10 launch tx", "attempt": 0}
+{"t": 1793036318, "m": "getTransaction", "tag": "pumpswap 17 launch tx", "attempt": 2}
+{"t": 1793036320, "m": "getBlock", "tag": "pumpswap 17 window-end block", "attempt": 0}
+{"t": 1793036321, "m": "getSignaturesForAddress", "tag": "pumpswap 17 window sigs p0", "attempt": 0}
+{"t": 1793036322, "m": "getTransaction", "tag": "launchlab 10 launch tx", "attempt": 1}
+{"t": 1793036325, "m": "getTransaction", "tag": "pumpswap 17 window tx", "attempt": 0}
+{"t": 1793036330, "m": "getTransaction", "tag": "pumpswap 17 window tx", "attempt": 1}
+{"t": 1793036332, "m": "getTransaction", "tag": "pumpswap 17 window tx", "attempt": 0}
+{"t": 1793036332, "m": "getTransaction", "tag": "launchlab 10 launch tx", "attempt": 2}
+{"t": 1793036337, "m": "getTransaction", "tag": "pumpswap 17 window tx", "attempt": 1}
+{"t": 1793036347, "m": "getTransaction", "tag": "pumpswap 17 window tx", "attempt": 2}
+{"t": 1793036348, "m": "getTransaction", "tag": "launchlab 10 launch tx", "attempt": 3}
+{"t": 1793036348, "m": "getBlock", "tag": "launchlab 10 window-end block", "attempt": 0}
+{"t": 1793036348, "m": "getSignaturesForAddress", "tag": "launchlab 10 window sigs p0", "attempt": 0}
+{"t": 1793036349, "m": "getTransaction", "tag": "pumpswap 17 window tx", "attempt": 0}
+{"t": 1793036351, "m": "getTransaction", "tag": "pumpswap 17 window tx", "attempt": 0}
+{"t": 1793036353, "m": "getTransaction", "tag": "launchlab 11 launch tx", "attempt": 0}
+{"t": 1793036356, "m": "getTransaction", "tag": "pumpswap 17 window tx", "attempt": 1}
+{"t": 1793036358, "m": "getTransaction", "tag": "launchlab 11 launch tx", "attempt": 1}
+{"t": 1793036366, "m": "getTransaction", "tag": "pumpswap 17 window tx", "attempt": 2}
+{"t": 1793036368, "m": "getTransaction", "tag": "launchlab 11 launch tx", "attempt": 2}
+{"t": 1793036368, "m": "getBlock", "tag": "launchlab 11 window-end block", "attempt": 0}
+{"t": 1793036369, "m": "getSignaturesForAddress", "tag": "launchlab 11 window sigs p0", "attempt": 0}
+{"t": 1793036372, "m": "getTransaction", "tag": "launchlab 11 window tx", "attempt": 0}
+{"t": 1793036373, "m": "getTransaction", "tag": "launchlab 12 launch tx", "attempt": 0}
+{"t": 1793036373, "m": "getBlock", "tag": "launchlab 12 window-end block", "attempt": 0}
+{"t": 1793036374, "m": "getSignaturesForAddress", "tag": "launchlab 12 window sigs p0", "attempt": 0}
+{"t": 1793036379, "m": "getTransaction", "tag": "launchlab 13 launch tx", "attempt": 0}
+{"t": 1793036379, "m": "getBlock", "tag": "launchlab 13 window-end block", "attempt": 0}
+{"t": 1793036380, "m": "getSignaturesForAddress", "tag": "launchlab 13 window sigs p0", "attempt": 0}
+{"t": 1793036381, "m": "getTransaction", "tag": "pumpswap 17 window tx", "attempt": 3}
+{"t": 1793036384, "m": "getTransaction", "tag": "launchlab 13 window tx", "attempt": 0}
+{"t": 1793036389, "m": "getTransaction", "tag": "launchlab 13 window tx", "attempt": 1}
+{"t": 1793036399, "m": "getTransaction", "tag": "launchlab 13 window tx", "attempt": 2}
+{"t": 1793036399, "m": "getTransaction", "tag": "launchlab 13 window tx", "attempt": 0}
+{"t": 1793036400, "m": "getTransaction", "tag": "launchlab 13 window tx", "attempt": 0}
+{"t": 1793036400, "m": "getTransaction", "tag": "launchlab 13 window tx", "attempt": 0}
+{"t": 1793036401, "m": "getTransaction", "tag": "launchlab 13 window tx", "attempt": 0}
+{"t": 1793036401, "m": "getTransaction", "tag": "pumpswap 17 window tx", "attempt": 4}
+{"t": 1793036401, "m": "getTransaction", "tag": "launchlab 13 window tx", "attempt": 0}
+{"t": 1793036404, "m": "getTransaction", "tag": "pumpswap 17 window tx", "attempt": 0}
+{"t": 1793036406, "m": "getTransaction", "tag": "launchlab 13 window tx", "attempt": 1}
+{"t": 1793036407, "m": "getTransaction", "tag": "launchlab 14 launch tx", "attempt": 0}
+{"t": 1793036407, "m": "getTransaction", "tag": "pumpswap 17 window tx", "attempt": 0}
+{"t": 1793036407, "m": "getBlock", "tag": "launchlab 14 window-end block", "attempt": 0}
+{"t": 1793036408, "m": "getSignaturesForAddress", "tag": "launchlab 14 window sigs p0", "attempt": 0}
+{"t": 1793036410, "m": "getTransaction", "tag": "pumpswap 17 window tx", "attempt": 0}
+{"t": 1793036413, "m": "getTransaction", "tag": "pumpswap 17 window tx", "attempt": 0}
+{"t": 1793036415, "m": "getTransaction", "tag": "launchlab 14 window tx", "attempt": 0}
+{"t": 1793036415, "m": "getTransaction", "tag": "pumpswap 17 window tx", "attempt": 0}
+{"t": 1793036415, "m": "getTransaction", "tag": "launchlab 14 window tx", "attempt": 0}
+{"t": 1793036417, "m": "getTransaction", "tag": "pumpswap 18 launch tx", "attempt": 0}
+{"t": 1793036420, "m": "getBlock", "tag": "pumpswap 18 window-end block", "attempt": 0}
+{"t": 1793036421, "m": "getTransaction", "tag": "launchlab 14 window tx", "attempt": 1}
+{"t": 1793036421, "m": "getSignaturesForAddress", "tag": "pumpswap 18 window sigs p0", "attempt": 0}
+{"t": 1793036426, "m": "getTransaction", "tag": "pumpswap 18 window tx", "attempt": 0}
+{"t": 1793036428, "m": "getTransaction", "tag": "pumpswap 18 window tx", "attempt": 0}
+{"t": 1793036430, "m": "getTransaction", "tag": "pumpswap 18 window tx", "attempt": 0}
+{"t": 1793036431, "m": "getTransaction", "tag": "launchlab 14 window tx", "attempt": 2}
+{"t": 1793036431, "m": "getTransaction", "tag": "launchlab 14 window tx", "attempt": 0}
+{"t": 1793036432, "m": "getTransaction", "tag": "launchlab 14 window tx", "attempt": 0}
+{"t": 1793036432, "m": "getTransaction", "tag": "pumpswap 18 window tx", "attempt": 0}
+{"t": 1793036435, "m": "getTransaction", "tag": "pumpswap 18 window tx", "attempt": 0}
+{"t": 1793036437, "m": "getTransaction", "tag": "pumpswap 19 launch tx", "attempt": 0}
+{"t": 1793036437, "m": "getTransaction", "tag": "launchlab 14 window tx", "attempt": 1}
+{"t": 1793036437, "m": "getTransaction", "tag": "launchlab 14 window tx", "attempt": 0}
+{"t": 1793036438, "m": "getTransaction", "tag": "launchlab 14 window tx", "attempt": 0}
+{"t": 1793036438, "m": "getTransaction", "tag": "launchlab 14 window tx", "attempt": 0}
+{"t": 1793036439, "m": "getTransaction", "tag": "launchlab 14 window tx", "attempt": 0}
+{"t": 1793036439, "m": "getBlock", "tag": "pumpswap 19 window-end block", "attempt": 0}
+{"t": 1793036439, "m": "getTransaction", "tag": "launchlab 14 window tx", "attempt": 0}
+{"t": 1793036440, "m": "getSignaturesForAddress", "tag": "pumpswap 19 window sigs p0", "attempt": 0}
+{"t": 1793036444, "m": "getTransaction", "tag": "pumpswap 19 window tx", "attempt": 0}
+{"t": 1793036444, "m": "getTransaction", "tag": "launchlab 14 window tx", "attempt": 1}
+{"t": 1793036449, "m": "getTransaction", "tag": "pumpswap 19 window tx", "attempt": 1}
+{"t": 1793036451, "m": "getTransaction", "tag": "pumpswap 19 window tx", "attempt": 0}
+{"t": 1793036452, "m": "getTransaction", "tag": "pumpswap 19 window tx", "attempt": 0}
+{"t": 1793036454, "m": "getTransaction", "tag": "launchlab 14 window tx", "attempt": 2}
+{"t": 1793036455, "m": "getTransaction", "tag": "pumpswap 19 window tx", "attempt": 0}
+{"t": 1793036455, "m": "getTransaction", "tag": "launchlab 14 window tx", "attempt": 0}
+{"t": 1793036455, "m": "getTransaction", "tag": "launchlab 14 window tx", "attempt": 0}
+{"t": 1793036456, "m": "getTransaction", "tag": "launchlab 14 window tx", "attempt": 0}
+{"t": 1793036456, "m": "getTransaction", "tag": "launchlab 15 launch tx", "attempt": 0}
+{"t": 1793036456, "m": "getTransaction", "tag": "pumpswap 19 window tx", "attempt": 0}
+{"t": 1793036457, "m": "getBlock", "tag": "launchlab 15 window-end block", "attempt": 0}
+{"t": 1793036457, "m": "getSignaturesForAddress", "tag": "launchlab 15 window sigs p0", "attempt": 0}
+{"t": 1793036461, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 0}
+{"t": 1793036462, "m": "getTransaction", "tag": "pumpswap 19 window tx", "attempt": 1}
+{"t": 1793036464, "m": "getTransaction", "tag": "pumpswap 19 window tx", "attempt": 0}
+{"t": 1793036466, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 1}
+{"t": 1793036466, "m": "getTransaction", "tag": "pumpswap 19 window tx", "attempt": 0}
+{"t": 1793036467, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 0}
+{"t": 1793036467, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 0}
+{"t": 1793036468, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 0}
+{"t": 1793036468, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 0}
+{"t": 1793036468, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 0}
+{"t": 1793036469, "m": "getTransaction", "tag": "pumpswap 19 window tx", "attempt": 0}
+{"t": 1793036469, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 0}
+{"t": 1793036471, "m": "getTransaction", "tag": "pumpswap 19 window tx", "attempt": 0}
+{"t": 1793036474, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 1}
+{"t": 1793036475, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 0}
+{"t": 1793036475, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 0}
+{"t": 1793036476, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 0}
+{"t": 1793036476, "m": "getTransaction", "tag": "pumpswap 19 window tx", "attempt": 1}
+{"t": 1793036476, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 0}
+{"t": 1793036476, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 0}
+{"t": 1793036477, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 0}
+{"t": 1793036477, "m": "getTransaction", "tag": "pumpswap 19 window tx", "attempt": 0}
+{"t": 1793036477, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 0}
+{"t": 1793036478, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 0}
+{"t": 1793036478, "m": "getTransaction", "tag": "pumpswap 19 window tx", "attempt": 0}
+{"t": 1793036480, "m": "getTransaction", "tag": "pumpswap 19 window tx", "attempt": 0}
+{"t": 1793036483, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 1}
+{"t": 1793036483, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 0}
+{"t": 1793036484, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 0}
+{"t": 1793036486, "m": "getTransaction", "tag": "pumpswap 19 window tx", "attempt": 1}
+{"t": 1793036489, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 1}
+{"t": 1793036489, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 0}
+{"t": 1793036490, "m": "getTransaction", "tag": "launchlab 15 window tx", "attempt": 0}
+{"t": 1793036490, "m": "getTransaction", "tag": "launchlab 16 launch tx", "attempt": 0}
+{"t": 1793036491, "m": "getBlock", "tag": "launchlab 16 window-end block", "attempt": 0}
+{"t": 1793036491, "m": "getSignaturesForAddress", "tag": "launchlab 16 window sigs p0", "attempt": 0}
+{"t": 1793036498, "m": "getTransaction", "tag": "launchlab 16 window tx", "attempt": 0}
+{"t": 1793036498, "m": "getTransaction", "tag": "launchlab 16 window tx", "attempt": 0}
+{"t": 1793036503, "m": "getTransaction", "tag": "launchlab 16 window tx", "attempt": 1}
+{"t": 1793036504, "m": "getTransaction", "tag": "launchlab 16 window tx", "attempt": 0}
+{"t": 1793036504, "m": "getTransaction", "tag": "launchlab 16 window tx", "attempt": 0}
+{"t": 1793036505, "m": "getTransaction", "tag": "launchlab 16 window tx", "attempt": 0}
+{"t": 1793036510, "m": "getTransaction", "tag": "launchlab 16 window tx", "attempt": 1}
+{"t": 1793036510, "m": "getTransaction", "tag": "launchlab 16 window tx", "attempt": 0}
+{"t": 1793036511, "m": "getTransaction", "tag": "launchlab 16 window tx", "attempt": 0}
+{"t": 1793036511, "m": "getTransaction", "tag": "launchlab 17 launch tx", "attempt": 0}
+{"t": 1793036516, "m": "getTransaction", "tag": "launchlab 17 launch tx", "attempt": 1}
+{"t": 1793036517, "m": "getBlock", "tag": "launchlab 17 window-end block", "attempt": 0}
+{"t": 1793036517, "m": "getSignaturesForAddress", "tag": "launchlab 17 window sigs p0", "attempt": 0}
+{"t": 1793036523, "m": "getTransaction", "tag": "launchlab 17 window tx", "attempt": 0}
+{"t": 1793036523, "m": "getTransaction", "tag": "launchlab 17 window tx", "attempt": 0}
+{"t": 1793036524, "m": "getTransaction", "tag": "launchlab 17 window tx", "attempt": 0}
+{"t": 1793036524, "m": "getTransaction", "tag": "launchlab 17 window tx", "attempt": 0}
+{"t": 1793036525, "m": "getTransaction", "tag": "launchlab 17 window tx", "attempt": 0}
+{"t": 1793036525, "m": "getTransaction", "tag": "launchlab 17 window tx", "attempt": 0}
+{"t": 1793036530, "m": "getTransaction", "tag": "launchlab 17 window tx", "attempt": 1}
+{"t": 1793036540, "m": "getTransaction", "tag": "launchlab 17 window tx", "attempt": 2}
+{"t": 1793036541, "m": "getTransaction", "tag": "launchlab 17 window tx", "attempt": 0}
+{"t": 1793036541, "m": "getTransaction", "tag": "launchlab 17 window tx", "attempt": 0}
+{"t": 1793036542, "m": "getTransaction", "tag": "launchlab 17 window tx", "attempt": 0}
+{"t": 1793036542, "m": "getTransaction", "tag": "launchlab 17 window tx", "attempt": 0}
+{"t": 1793036543, "m": "getTransaction", "tag": "launchlab 17 window tx", "attempt": 0}
+{"t": 1793036543, "m": "getTransaction", "tag": "launchlab 17 window tx", "attempt": 0}
+{"t": 1793036544, "m": "getTransaction", "tag": "launchlab 17 window tx", "attempt": 0}
+{"t": 1793036544, "m": "getTransaction", "tag": "launchlab 18 launch tx", "attempt": 0}
+{"t": 1793036544, "m": "getBlock", "tag": "launchlab 18 window-end block", "attempt": 0}
+{"t": 1793036545, "m": "getSignaturesForAddress", "tag": "launchlab 18 window sigs p0", "attempt": 0}
+{"t": 1793036550, "m": "getTransaction", "tag": "launchlab 18 window tx", "attempt": 0}
+{"t": 1793036551, "m": "getTransaction", "tag": "launchlab 18 window tx", "attempt": 0}
+{"t": 1793036556, "m": "getTransaction", "tag": "launchlab 18 window tx", "attempt": 1}
+{"t": 1793036566, "m": "getTransaction", "tag": "launchlab 18 window tx", "attempt": 2}
+{"t": 1793036566, "m": "getTransaction", "tag": "launchlab 19 launch tx", "attempt": 0}
+{"t": 1793036567, "m": "getBlock", "tag": "launchlab 19 window-end block", "attempt": 0}
+{"t": 1793036568, "m": "getSignaturesForAddress", "tag": "launchlab 19 window sigs p0", "attempt": 0}
+{"t": 1793036572, "m": "getTransaction", "tag": "launchlab 19 window tx", "attempt": 0}
+{"t": 1793036573, "m": "getTransaction", "tag": "launchlab 19 window tx", "attempt": 0}
+{"t": 1793036573, "m": "getTransaction", "tag": "launchlab 19 window tx", "attempt": 0}

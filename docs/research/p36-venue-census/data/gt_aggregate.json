@@ -1,0 +1,379 @@
+{
+ "source": "GeckoTerminal public API /networks/solana/dexes/{dex}/pools?sort=h24_volume_usd_desc, up to 10 pages of 20; stop when page tail h24 < 200 USD",
+ "fetched_utc": "2026-10-26T17:19:32Z",
+ "calls": 87,
+ "note": "aggregates only; per-pool rows not kept in git (DBC pools of the sealed forward window are among them)",
+ "dexes": {
+  "pump-fun": {
+   "pools_listed": 200,
+   "sum_h24_volume_usd_listed": 23942417,
+   "pools_created_after_2026-10-25T17Z": 186,
+   "h24_buys_listed": 301593,
+   "h24_sells_listed": 242811,
+   "top_quotes": [
+    [
+     "So11111111111111111111111111111111111111112",
+     140
+    ],
+    [
+     "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn",
+     20
+    ],
+    [
+     "Pren1FvFX6J3E4kXhJuCiAD5aDmGEb7qJRncwA8Lkhw",
+     7
+    ],
+    [
+     "DJTu7vi8norVzdVAffgvb39VP7wjKeTsgaMBJrzfxvoF",
+     5
+    ]
+   ]
+  },
+  "pumpswap": {
+   "pools_listed": 200,
+   "sum_h24_volume_usd_listed": 960385054,
+   "pools_created_after_2026-10-25T17Z": 173,
+   "h24_buys_listed": 2533527,
+   "h24_sells_listed": 1643474,
+   "top_quotes": [
+    [
+     "So11111111111111111111111111111111111111112",
+     195
+    ],
+    [
+     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+     1
+    ],
+    [
+     "Xs8S1uUs1zvS2p7iwtsG3b6fkhpvmwz4GYU3gWAmWHZ",
+     1
+    ],
+    [
+     "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh",
+     1
+    ]
+   ]
+  },
+  "meteora-dbc": {
+   "pools_listed": 200,
+   "sum_h24_volume_usd_listed": 4960760,
+   "pools_created_after_2026-10-25T17Z": 195,
+   "h24_buys_listed": 138413,
+   "h24_sells_listed": 147988,
+   "top_quotes": [
+    [
+     "So11111111111111111111111111111111111111112",
+     196
+    ],
+    [
+     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+     1
+    ],
+    [
+     "gFYM6u2rWHHcC3u9x2pzChTEXCU1a1nmNrZFRHWSoLe",
+     1
+    ],
+    [
+     "CARDSccUMFKoPRZxt5vt3ksUbxEFEcnZ3H2pd3dKxYjp",
+     1
+    ]
+   ]
+  },
+  "raydium-launchlab": {
+   "pools_listed": 200,
+   "sum_h24_volume_usd_listed": 1973084,
+   "pools_created_after_2026-10-25T17Z": 195,
+   "h24_buys_listed": 28521,
+   "h24_sells_listed": 14714,
+   "top_quotes": [
+    [
+     "So11111111111111111111111111111111111111112",
+     131
+    ],
+    [
+     "AhBidGAgv6QbKSWfrSCegGrzFLcBx4E5FNYTKHNQQj6C",
+     49
+    ],
+    [
+     "4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R",
+     5
+    ],
+    [
+     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+     3
+    ]
+   ]
+  },
+  "letsbonk-fun": {
+   "pools_listed": 60,
+   "sum_h24_volume_usd_listed": 210919,
+   "pools_created_after_2026-10-25T17Z": 51,
+   "h24_buys_listed": 2252,
+   "h24_sells_listed": 1574,
+   "top_quotes": [
+    [
+     "So11111111111111111111111111111111111111112",
+     30
+    ],
+    [
+     "DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263",
+     21
+    ],
+    [
+     "Dz9mQ9NzkBcCsuGPFJ3r1bS4wgqKMHBPiVuniW8Mbonk",
+     5
+    ],
+    [
+     "USD1ttGY1N17NEEHLmELoaybftRBUSErhqYiQzvEmuB",
+     2
+    ]
+   ]
+  },
+  "bags-fm": {
+   "pools_listed": 160,
+   "sum_h24_volume_usd_listed": 218340,
+   "pools_created_after_2026-10-25T17Z": 138,
+   "h24_buys_listed": 13158,
+   "h24_sells_listed": 3527,
+   "top_quotes": [
+    [
+     "So11111111111111111111111111111111111111112",
+     158
+    ],
+    [
+     "Xs3oZwbHvqis4NYcf4YKWmEia2eC84wSiVrcYcTqpH8",
+     2
+    ]
+   ]
+  },
+  "heaven": {
+   "pools_listed": 0,
+   "sum_h24_volume_usd_listed": 0,
+   "pools_created_after_2026-10-25T17Z": 0,
+   "h24_buys_listed": 0,
+   "h24_sells_listed": 0,
+   "top_quotes": []
+  },
+  "boop-fun": {
+   "pools_listed": 20,
+   "sum_h24_volume_usd_listed": 1,
+   "pools_created_after_2026-10-25T17Z": 0,
+   "h24_buys_listed": 34,
+   "h24_sells_listed": 1,
+   "top_quotes": [
+    [
+     "So11111111111111111111111111111111111111112",
+     20
+    ]
+   ]
+  },
+  "moonit": {
+   "pools_listed": 20,
+   "sum_h24_volume_usd_listed": 164,
+   "pools_created_after_2026-10-25T17Z": 14,
+   "h24_buys_listed": 15,
+   "h24_sells_listed": 20,
+   "top_quotes": [
+    [
+     "So11111111111111111111111111111111111111112",
+     20
+    ]
+   ]
+  },
+  "moonshot": {
+   "pools_listed": 20,
+   "sum_h24_volume_usd_listed": 4734,
+   "pools_created_after_2026-10-25T17Z": 9,
+   "h24_buys_listed": 155,
+   "h24_sells_listed": 65,
+   "top_quotes": [
+    [
+     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+     20
+    ]
+   ]
+  },
+  "stonkfun": {
+   "pools_listed": 200,
+   "sum_h24_volume_usd_listed": 6326102,
+   "pools_created_after_2026-10-25T17Z": 176,
+   "h24_buys_listed": 70371,
+   "h24_sells_listed": 54712,
+   "top_quotes": [
+    [
+     "6GmAFSYs4gk3FDao5FzzySQpPZaWsa4rUJHacpMpUNgx",
+     75
+    ],
+    [
+     "So11111111111111111111111111111111111111112",
+     71
+    ],
+    [
+     "AhBidGAgv6QbKSWfrSCegGrzFLcBx4E5FNYTKHNQQj6C",
+     8
+    ],
+    [
+     "6s2umN1sqM8mS8ERRmt9cqcFwAoWu5ofma7DN3KfFiue",
+     4
+    ]
+   ]
+  },
+  "clanker-solana": {
+   "pools_listed": 1,
+   "sum_h24_volume_usd_listed": 0,
+   "pools_created_after_2026-10-25T17Z": 0,
+   "h24_buys_listed": 0,
+   "h24_sells_listed": 0,
+   "top_quotes": [
+    [
+     "So11111111111111111111111111111111111111112",
+     1
+    ]
+   ]
+  },
+  "printr-v2": {
+   "pools_listed": 19,
+   "sum_h24_volume_usd_listed": 0,
+   "pools_created_after_2026-10-25T17Z": 0,
+   "h24_buys_listed": 1,
+   "h24_sells_listed": 2,
+   "top_quotes": [
+    [
+     "So11111111111111111111111111111111111111112",
+     19
+    ]
+   ]
+  },
+  "zora": {
+   "pools_listed": 0,
+   "sum_h24_volume_usd_listed": 0,
+   "pools_created_after_2026-10-25T17Z": 0,
+   "h24_buys_listed": 0,
+   "h24_sells_listed": 0,
+   "top_quotes": []
+  },
+  "memefun": {
+   "pools_listed": 20,
+   "sum_h24_volume_usd_listed": 173232,
+   "pools_created_after_2026-10-25T17Z": 15,
+   "h24_buys_listed": 603,
+   "h24_sells_listed": 578,
+   "top_quotes": [
+    [
+     "So11111111111111111111111111111111111111112",
+     20
+    ]
+   ]
+  },
+  "wavebreak": {
+   "pools_listed": 2,
+   "sum_h24_volume_usd_listed": 0,
+   "pools_created_after_2026-10-25T17Z": 0,
+   "h24_buys_listed": 0,
+   "h24_sells_listed": 0,
+   "top_quotes": [
+    [
+     "So11111111111111111111111111111111111111112",
+     2
+    ]
+   ]
+  },
+  "token-mill": {
+   "pools_listed": 3,
+   "sum_h24_volume_usd_listed": 1,
+   "pools_created_after_2026-10-25T17Z": 0,
+   "h24_buys_listed": 1,
+   "h24_sells_listed": 0,
+   "top_quotes": [
+    [
+     "So11111111111111111111111111111111111111112",
+     3
+    ]
+   ]
+  },
+  "daos-fun": {
+   "pools_listed": 6,
+   "sum_h24_volume_usd_listed": 10,
+   "pools_created_after_2026-10-25T17Z": 0,
+   "h24_buys_listed": 6,
+   "h24_sells_listed": 1,
+   "top_quotes": [
+    [
+     "So11111111111111111111111111111111111111112",
+     6
+    ]
+   ]
+  },
+  "virtuals-solana": {
+   "pools_listed": 0,
+   "sum_h24_volume_usd_listed": 0,
+   "pools_created_after_2026-10-25T17Z": 0,
+   "h24_buys_listed": 0,
+   "h24_sells_listed": 0,
+   "top_quotes": []
+  },
+  "easya-kickstart": {
+   "pools_listed": 0,
+   "sum_h24_volume_usd_listed": 0,
+   "pools_created_after_2026-10-25T17Z": 0,
+   "h24_buys_listed": 0,
+   "h24_sells_listed": 0,
+   "top_quotes": []
+  },
+  "hadron": {
+   "pools_listed": 40,
+   "sum_h24_volume_usd_listed": 2855530,
+   "pools_created_after_2026-10-25T17Z": 15,
+   "h24_buys_listed": 14974,
+   "h24_sells_listed": 14936,
+   "top_quotes": [
+    [
+     "So11111111111111111111111111111111111111112",
+     21
+    ],
+    [
+     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+     15
+    ],
+    [
+     "XsCPL9dNWBMvFtTmwcCA5v3xWPSMEBCszbQdiLLq6aN",
+     2
+    ],
+    [
+     "SPCXxcqXj6e5dJDVNovHN8744zkbhM2bYudU45BimGb",
+     2
+    ]
+   ]
+  },
+  "metadao": {
+   "pools_listed": 20,
+   "sum_h24_volume_usd_listed": 464560,
+   "pools_created_after_2026-10-25T17Z": 0,
+   "h24_buys_listed": 1078,
+   "h24_sells_listed": 551,
+   "top_quotes": [
+    [
+     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+     20
+    ]
+   ]
+  },
+  "meteora-damm-v2": {
+   "pools_listed": 200,
+   "sum_h24_volume_usd_listed": 248495535,
+   "pools_created_after_2026-10-25T17Z": 190,
+   "h24_buys_listed": 733567,
+   "h24_sells_listed": 453514,
+   "top_quotes": [
+    [
+     "So11111111111111111111111111111111111111112",
+     199
+    ],
+    [
+     "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+     1
+    ]
+   ]
+  }
+ }
+}
