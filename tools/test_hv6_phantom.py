@@ -121,3 +121,14 @@ def test_filter_on_equals_filter_off_when_no_phantom_rows(tmp_path_factory):
     assert out[True][0] == out[False][0] and any(out[True][0]["entries"].values())
     assert out[True][1].phantom.total() == 0 and not any(k.startswith("phantom") for k in out[True][1].counters)
     assert R.RunnerConfig().phantom_filter is True
+
+
+def test_decision_slot_is_the_highest_slot_seen_even_when_a_late_pumpfun_print_arrives_last(tmp_path_factory):
+    """QP feed-lag ruling 2026-10-26: the engine's slot clock anchors to the latest received row; the runner must pass the highest slot, not that row's slot."""
+    run = make(tmp_path_factory.mktemp("ph_slot"))
+    base = {"type": "trade", "t_recv_ms": T0, "event_index": 0, "trader": "w", "side": "buy"}
+    run._on_row({**base, "prog": "pumpswap", "slot": 500, "signature": "a"})
+    run._on_row({**base, "prog": "pumpfun", "slot": 200, "signature": "b"})   # a late bonding-curve print, 300 slots behind the head
+    assert run.slot == 500
+    run._on_row({**base, "prog": "pumpfun", "slot": 501, "signature": "c"})
+    assert run.slot == 501
