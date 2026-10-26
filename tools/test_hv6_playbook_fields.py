@@ -90,7 +90,7 @@ def test_playbook_definitions(card):
     assert "non-negative fraction from" not in t and "also a non-negative" not in t
     assert "1 - quote/peak" in t and "last 65 minutes" in t and "negative when the quote is above that peak" in t
     assert "of the round trip" not in t and "FRACTION of the stake" in t
-    assert "null on HV6" not in t and "are null or plain numbers" in t and "not the on-chain holder count" in t
+    assert "are null or plain numbers" in t and "null on HV6 cards except risk.holder_count" in t and "not the on-chain holder count" in t
     assert "so f.ret_1m can cover only a few seconds" in t
     assert "counts are counts" in t and "fractions or SOL" not in t
     rev = (ROOT / "hv6_templates" / "review_system.txt").read_text(encoding="utf-8")
