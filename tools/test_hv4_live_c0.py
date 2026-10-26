@@ -104,14 +104,14 @@ class Hv4Env(Env):
         self.row({"kind": "start", "binding": "b", "frozen_sha": sha, "rules": [self.bot]})
 
 
-def write_feed(root, bot, now_ms, state="connected", **over):
+def write_feed(root, bot_id, now_ms, state="connected", **over):
     """A synthetic forwarder status file (decision_forwarder_v1 format) at <root>/transport/<bot>.status.json."""
     d = Path(root) / "transport"
     d.mkdir(parents=True, exist_ok=True)
-    st = {"schema": c0.FEED_SCHEMA, "bot": bot, "state": state, "ms": now_ms, "last_frame_ms": now_ms, "last_remote_ms": now_ms, "seq": 1, "f": "x.jsonl", "o": 0,
+    st = {"schema": c0.FEED_SCHEMA, "bot": bot_id, "state": state, "ms": now_ms, "last_frame_ms": now_ms, "last_remote_ms": now_ms, "seq": 1, "f": "x.jsonl", "o": 0,
           "rows": 1, "gaps": 0, "stall_ms": 2000, "pid": 1}
     st.update(over)
-    f = d / f"{bot}.status.json"
+    f = d / f"{bot_id}.status.json"
     f.write_text(json.dumps(st, sort_keys=True) + "\n")
     return f
 
