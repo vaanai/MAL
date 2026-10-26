@@ -165,3 +165,45 @@ def test_a_failing_builder_does_not_advance_the_marker_and_retries_with_a_visibl
     assert len(intraday) >= 3                                                              # the same file state was retried on each poll, the marker did not move
     assert any(x.get("hv6_regime_block_job") == "giving_up" and x.get("until") == "radar_file_changes" for x in lines)   # and the cap is a visible line
     assert len(intraday) == 3                                                              # after the cap it stops retrying until the radar file changes
+
+
+def test_nightly_tries_are_counted_per_day_a_give_up_on_day_n_does_not_poison_day_n_plus_1(tmp_path):
+    day_n = datetime(2026, 10, 30, tzinfo=timezone.utc)
+    day_n1 = day_n + timedelta(days=1)
+    nightly = lambda d: int(d.timestamp()) * 1000 + 120_000  # noqa: E731
+    cnt = tmp_path / "cnt"
+    cnt.mkdir()
+    (cnt / f"limit-{nightly(day_n)}").write_text("1000")      # day N: the builder always fails
+    (cnt / f"limit-{nightly(day_n1)}").write_text("9")        # day N+1: it fails 9 times and then works
+    fake = tmp_path / "fakepy2.sh"
+    fake.write_text('#!/bin/sh\nasof=""\nprev=""\nfor a in "$@"; do [ "$prev" = "--as-of-ms" ] && asof=$a; prev=$a; done\n'
+                    f'C="{cnt}"\n'
+                    'if [ -f "$C/limit-$asof" ]; then\n  n=$(cat "$C/n-$asof" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$C/n-$asof"\n'
+                    '  [ "$n" -le "$(cat "$C/limit-$asof")" ] && exit 1\nfi\n'
+                    'exec /data/mal/venv/bin/python "$@"\n')
+    fake.chmod(0o755)
+    clock = tmp_path / "now"
+    clock.write_text(str(int((day_n + timedelta(minutes=3)).timestamp())))
+    (tmp_path / "radar-out").mkdir()
+    (tmp_path / "radar-out" / "radar.jsonl").write_bytes(jl(rec(day_n - timedelta(hours=5), [])))
+    env = job_env(tmp_path, None, HV6_BLOCK_ONCE="0", POLL_S="0.2", STABLE_S="0.1", MAX_RETRY="10", HV6_PYTHON=str(fake), HV6_BLOCK_NOW_FILE=str(clock))
+    env.pop("HV6_BLOCK_NOW", None)
+    p = subprocess.Popen(["sh", str(SCRIPT)], cwd=str(REPO), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    reg = tmp_path / "regime"
+    try:
+        t_end = time.time() + 60
+        while time.time() < t_end and int((cnt / f"n-{nightly(day_n)}").read_text() or 0 if (cnt / f"n-{nightly(day_n)}").exists() else 0) < 10:
+            time.sleep(0.2)
+        time.sleep(1.5)                                                                     # day N is given up on: no further attempts
+        assert (cnt / f"n-{nightly(day_n)}").read_text().strip() == "10" and not (reg / f"block-{nightly(day_n)}.json").exists()
+        clock.write_text(str(int((day_n1 + timedelta(minutes=3)).timestamp())))
+        t_end = time.time() + 60
+        while time.time() < t_end and not (reg / f"block-{nightly(day_n1)}.json").exists():
+            time.sleep(0.2)
+        assert (reg / f"block-{nightly(day_n1)}.json").exists()                              # day N+1 failed 9 times and then wrote its block
+        assert (cnt / f"n-{nightly(day_n1)}").read_text().strip() == "10"
+    finally:
+        p.kill()
+        out, _ = p.communicate()
+    gave_up = [json.loads(x) for x in out.splitlines() if '"giving_up"' in x and '"as_of_ms"' in x]
+    assert [g["as_of_ms"] for g in gave_up] == [nightly(day_n)]                                # only day N gave up

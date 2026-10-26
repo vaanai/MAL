@@ -24,7 +24,7 @@
 #   HV6_RADAR_WATCH           absolute path of the watch file the radar job runs
 #   HV6_RADAR_WATCH_SHA256    its REGISTERED sha256
 # Optional: HV6_RADAR_OUT_DIR (must be /data/mal/change-radar-arena1), HV6_REGIME_DIR (must be /data/mal/arena/haiku-v6/regime), POLL_S, STABLE_S (default 2),
-#   HV6_PYTHON (default /data/mal/venv/bin/python), HV6_BLOCK_ONCE=1 (one pass then exit), HV6_BLOCK_NOW=<unix seconds> (tests), HV6_BLOCK_TEST=1 (tests only:
+#   HV6_PYTHON (default /data/mal/venv/bin/python), HV6_BLOCK_NOW_FILE=<file with unix seconds> (tests), HV6_BLOCK_ONCE=1 (one pass then exit), HV6_BLOCK_NOW=<unix seconds> (tests), HV6_BLOCK_TEST=1 (tests only:
 #   lifts the two directory checks).
 # Usage (from the repo checkout at the registration sha):  sh scripts/ops/hv6-regime-block-job.sh
 set -eu
@@ -104,12 +104,14 @@ build() {  # $1 = as_of_ms; 0 = a block is in place (usable, or absent for a pin
 }
 MAX_RETRY=${MAX_RETRY:-10}   # a radar line that stays unparseable: after this many failed attempts for one file state, stop retrying (visible line) until the file changes
 LAST=-1
-TRIES=0; TRIES_SZ=-1; NIGHT_TRIES=0; NIGHT_GAVE_UP=0
+TRIES=0; TRIES_SZ=-1; NIGHT_TRIES=0; NIGHT_FOR=0; NIGHT_GAVE_UP=0
 echo "{\"hv6_regime_block_job\":\"start\",\"regime_dir\":\"$RDIR\",\"out_dir\":\"$OUT\",\"poll_s\":$POLL_S}"
 while :; do
   NOW=${HV6_BLOCK_NOW:-$(date -u +%s)}
+  [ -z "${HV6_BLOCK_NOW_FILE:-}" ] || NOW=$(cat "$HV6_BLOCK_NOW_FILE")   # tests only: a clock the test moves between days
   DAY0=$(( NOW / 86400 * 86400 ))
   NIGHT=$(( (DAY0 + 120) * 1000 ))
+  if [ "$NIGHT" != "$NIGHT_FOR" ]; then NIGHT_FOR=$NIGHT; NIGHT_TRIES=0; fi   # tries are counted per nightly instant: a new day starts again at zero
   if [ "$NOW" -ge $(( DAY0 + 120 )) ] && [ ! -f "$RDIR/block-$NIGHT.json" ] && [ "$NIGHT_GAVE_UP" != "$NIGHT" ]; then
     if stable; then
       if build "$NIGHT"; then NIGHT_TRIES=0; else
