@@ -525,7 +525,8 @@ class Bridge:
             self._bal_ms = now
         loss_ok = True  # the committed loss is computed from the state this process holds; it cannot fail to read
         control_ok = self.cfg.mode == DRY or (self.effective_live()[0] and self.tier_limits()[2] is None)
-        chain_ok = self._chain_ok_ms is not None and "chain_break" not in self.state.latches and "sealed_path" not in self.state.latches
+        chain_ok = (self._chain_ok_ms is not None and 0 <= now - self._chain_ok_ms <= c0p.CHAIN_FRESH_MS
+                    and "chain_break" not in self.state.latches and "sealed_path" not in self.state.latches)
         return c0p.parity_state(now, loss_ok=loss_ok, balance_ms=self._bal_ms if bal is not None else None, twins_file=self.cfg.twins_file,
                                 trip_ids=self.gates.recorder.trips, chain_ok=chain_ok, control_ok=bool(control_ok), hard_halts=self.state.latches)
 
@@ -1012,10 +1013,11 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
                 return c0.PRIORITY_PIN["buy"]
             if pend is not None or pos is not None:  # a sell in flight, or the sell being built (position open, nothing pending yet)
                 src = pos if pos is not None else {}
-                now = self.now_ms()
-                if pos is not None:
-                    pos.setdefault("c0_first_sell_ms", now)  # the time bound runs from the first sell build (persisted with the position)
-                return c0.sell_priority(src.get("sell_attempts", 0), bool(src.get("stuck")), now - src["c0_first_sell_ms"] if "c0_first_sell_ms" in src else None)
+                if getattr(self, "_c0_building", False):
+                    elapsed = self._c0_elapsed  # the SAME elapsed value the min_out rung used (one clock read per build)
+                else:
+                    elapsed = self.now_ms() - src["c0_first_sell_ms"] if "c0_first_sell_ms" in src else None
+                return c0.sell_priority(src.get("sell_attempts", 0), bool(src.get("stuck")), elapsed)
             return c0.PRIORITY_PIN["buy"]
 
         @property
@@ -1033,12 +1035,30 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
             """hv4_c0: set the sell's min_out rung from the SAME escalation predicate as the priority, then run the pinned base builder unchanged."""
             if cfg.profile != c0.PROFILE:
                 return super()._start_sell(mint, pos, snap, reason, now, exit_snapshot)
-            first = pos.setdefault("c0_first_sell_ms", now)
-            self._c0_sell_slip = c0.sell_slip_bps(pos.get("sell_attempts", 0), bool(pos.get("stuck")), now - first)
+            # One clock value (`now`) feeds both the rung and the priority at the 345 s boundary. The 345 s clock starts only when a sell is actually
+            # built (a pending sell exists after the call), not on a call that returns early (balance error, zero quote, build error).
+            first = pos.get("c0_first_sell_ms")
+            self._c0_elapsed = None if first is None else now - first
+            self._c0_building = True
+            self._c0_sell_slip = c0.sell_slip_bps(pos.get("sell_attempts", 0), bool(pos.get("stuck")), self._c0_elapsed)
             try:
                 return super()._start_sell(mint, pos, snap, reason, now, exit_snapshot)
             finally:
                 self._c0_sell_slip = None
+                self._c0_building = False
+                if (self.state.pending.get(mint) or {}).get("kind") == "sell":
+                    pos.setdefault("c0_first_sell_ms", now)
+
+        def _sign(self, msg: Any, ps: Any, mint: str, priority: int | None = None) -> Any:
+            """hv4_c0: a SELL whose decoded min_out is 0 (a 1-lamport quote rounds 0.85 x quote down to 0) is never signed: the raise is caught by the base builder's
+            own build-error path (alert sell_build_error, nothing pending, nothing sent). The pinned base `_sign` runs unchanged after the check."""
+            if cfg.profile == c0.PROFILE and getattr(self, "_c0_building", False):
+                keys = list(msg.account_keys)
+                for ix in msg.instructions:
+                    d = bytes(ix.data)
+                    if str(keys[ix.program_id_index]) == str(tx_mod.PUMPSWAP_PROGRAM) and d[:8] == bytes(tx_mod.DISC_SELL) and int.from_bytes(d[16:24], "little") <= 0:
+                        raise RuntimeError("c0_min_out_zero")
+            return super()._sign(msg, ps, mint, priority)
 
         def _log(self, kind: str, mint: str, **kw: Any) -> None:
             super()._log(kind, mint, **kw)

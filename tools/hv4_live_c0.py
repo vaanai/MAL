@@ -114,6 +114,7 @@ def sell_priority(sell_attempts: int, stuck: bool = False, elapsed_ms: int | Non
 # DEC-032 s3 sell rule: min_out = 0.85 of the quote at the first build; 0.65 at the escalation point (higher priority); NEVER 0. Compiled constants, in bps of
 # the quote that must still be received (the executor's `slip_bps` = 10,000 minus these). Nothing in config can reach them (see `_CONFIG_FORBIDDEN`).
 SELL_MIN_OUT_KEEP_BPS: dict[str, int] = {"first": 8_500, "escalated": 6_500}
+# DECLARED RESIDUAL (DEC copy): the pinned builder computes quote_out * keep // 10000, so a quote_out of exactly 1 lamport gives min_out 0 at the 0.85 rung. Dust only; the pinned builder is not touched.
 SELL_MIN_OUT_FLOOR_BPS = SELL_MIN_OUT_KEEP_BPS["escalated"]  # no sell is ever built below 0.65 of the quote
 
 
