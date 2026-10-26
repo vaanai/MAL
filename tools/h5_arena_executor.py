@@ -45,6 +45,7 @@ import json
 import math
 import os
 import re
+import stat
 import sys
 from collections import deque
 from dataclasses import dataclass, replace
@@ -94,6 +95,12 @@ FUNDED_MIN_LAMPORTS, FUNDED_MAX_LAMPORTS = 350_000_000, 1_000_000_000  # DEC-032
 FLOOR_BELOW_FUNDED_LAMPORTS = 250_000_000  # DEC-032 s3: floor = max(0.05 SOL, funded - 0.25 SOL)
 A3_RECORD_DEFAULT = "/data/mal/structure-monitor/daily.jsonl"  # tools/pump_structure_monitor.py DEFAULT_OUT: one JSON record per line, the newest is the state
 A3_POLL_MS = 60_000
+A3_GUARD_FLAGS = ("synthetic_share_high",)  # DEC-032 Am.3: decided by the DEC-031 Am.10 pooled guard (a3-applied.jsonl), never by the raw record
+A3_APPLIED_NAME = "a3-applied.jsonl"  # scripts/ops/a3-daily.sh: $A3_OUT/a3-applied.jsonl, the same directory as the daily record
+A3_GUARD_VERDICTS = ("NONE", "PASS", "HALT", "FAIL", "ERROR")  # == tools.a3_halt.VERDICTS (pinned by a test)
+A3_GUARD_CLEAR = ("NONE", "PASS")  # PASS never clears a raw pins_changed: the raw check runs first and latches on it
+A3_GUARD_LAG_MS = 2 * 3_600_000  # declared choice, not measured: a pending guard refuses buys; past this it latches
+A3_APPLIED_MAX_BYTES = 16 * 1024 * 1024
 A3_FUTURE_SKEW_MS = 300_000  # a run_utc more than 5 min ahead of the executor's clock is not a fresh record, it is a wrong one: latch
 ARENA_TIER_PATH = Path("/etc/mal-h5-arena/TIER")  # the arena canary's OWN tier file (root:root 0644 like the base TIER); the shared /etc/mal-h5/TIER is ignored for arena books
 ARENA_LIVE_TIER = "T1"  # a live start needs this file to read exactly T1 (the C0 stake 0.05 SOL needs T1's stake ceiling)
@@ -528,11 +535,76 @@ def a3_record_problem(path: Path, now_ms: int | None = None) -> tuple[list[str],
         if now_ms - run_ms > A3_MAX_AGE_MS:
             return [], "a3_record_stale"
     # a flag counts when it is set, malformed, or NOT evaluated (halt false with evaluated false is "unknown", not "clear")
-    why = sorted(k for k, v in flags.items() if not (isinstance(v, dict) and isinstance(v.get("halt"), bool)) or v["halt"] or v.get("evaluated") is False)
+    why = sorted(k for k, v in flags.items() if k not in A3_GUARD_FLAGS
+                 and (not (isinstance(v, dict) and isinstance(v.get("halt"), bool)) or v["halt"] or v.get("evaluated") is False))
     pc = (((rec.get("warn") or {}).get("flags") or {}).get("program_changed")) if isinstance(rec.get("warn"), dict) else None
     if isinstance(pc, dict) and pc.get("warn") is True:
         why.append("program_changed")
     return why, None
+
+
+def a3_guard_problem(record_path: Path, now_ms: int) -> tuple[str | None, str | None]:
+    """(latch, refuse) from the DEC-031 Am.10 pooled guard's applied log for the SAME run as the daily record (DEC-032 Am.3 item 1). The raw record
+    is checked first (pins_changed, program_changed, stale, future, every flag but synthetic_share_high): a raw reason is returned as the latch. Otherwise
+    the newest line of `dirname(record)/a3-applied.jsonl` decides: HALT / FAIL / ERROR latch; NONE / PASS clear; a guard behind the record by at most
+    A3_GUARD_LAG_MS refuses buys only (a3_guard_pending); a missing, unreadable, linked, oversize, malformed or ahead log, or a guard behind for longer, latches."""
+    record_path = Path(record_path)
+    why, problem = a3_record_problem(record_path, now_ms)
+    if problem:
+        return problem, None
+    if why:
+        return "a3_flags:" + ",".join(why), None
+    try:
+        with record_path.open("rb") as fh:
+            rec_lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+        rec = json.loads(rec_lines[-1])
+        rec_mtime_ms = int(os.stat(record_path).st_mtime * 1000)
+    except (OSError, ValueError, IndexError):
+        return "a3_record_unreadable", None
+    try:
+        rec_ms = int(datetime.strptime(rec["run_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp() * 1000)
+    except (KeyError, ValueError, TypeError):
+        return "a3_record_no_run_utc", None
+    ap = record_path.parent / A3_APPLIED_NAME
+    try:
+        st = os.lstat(ap)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1 or st.st_size > A3_APPLIED_MAX_BYTES:
+            return "a3_guard_unreadable", None
+        fd = os.open(ap, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            st2 = os.fstat(fd)
+            if (st2.st_ino, st2.st_dev) != (st.st_ino, st.st_dev) or st2.st_size > A3_APPLIED_MAX_BYTES:
+                return "a3_guard_unreadable", None
+            data = b""
+            while len(data) <= A3_APPLIED_MAX_BYTES:
+                chunk = os.read(fd, 1 << 20)
+                if not chunk:
+                    break
+                data += chunk
+        finally:
+            os.close(fd)
+        if len(data) > A3_APPLIED_MAX_BYTES:
+            return "a3_guard_unreadable", None
+        lines = [ln for ln in data.splitlines() if ln.strip()]
+        line = json.loads(lines[-1])
+    except (OSError, ValueError, IndexError):
+        return "a3_guard_unreadable", None
+    try:
+        app_ms = int(datetime.strptime(line["run_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp() * 1000)
+        verdict = line.get("verdict")
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return "a3_guard_malformed", None
+    if verdict not in A3_GUARD_VERDICTS:
+        return "a3_guard_malformed", None
+    if app_ms > rec_ms:
+        return "a3_guard_ahead", None
+    if app_ms < rec_ms:
+        if now_ms - max(rec_ms, rec_mtime_ms) <= A3_GUARD_LAG_MS:
+            return None, "a3_guard_pending"
+        return "a3_guard_missing", None
+    if verdict not in A3_GUARD_CLEAR:
+        return "a3_guard:" + str(verdict), None
+    return None, None
 
 
 def mint_screen_record(rpc: Callable[[str, list], Any], mint: str) -> dict[str, Any]:
@@ -630,6 +702,7 @@ class ArenaExecutor(h.H5Executor):
         self.cfg_a3_file = cfg.get("a3_record_file") or (A3_RECORD_DEFAULT if keypair is not None else None)
         self.cfg_exit_gap_file = cfg.get("exit_gap_file")
         self._a3_polled_ms = -A3_POLL_MS
+        self._a3_refuse: str | None = None  # DEC-032 Am.3: a pending pooled guard refuses buys (not a latch)
         self._exit_gap_off = 0
         self.mint_screens: dict[str, str | None] = {}  # mint -> close-blocked reason (None = clear), written by the pre-send screen
         self.close_blocked_refused = 0
@@ -1117,6 +1190,8 @@ class ArenaExecutor(h.H5Executor):
         why = self._halted_arena()
         if why:
             return why
+        if self._a3_refuse:
+            return self._a3_refuse
         if not self.feed_verified:
             return REFUSAL_UNVERIFIED
         if self.abook.exit_pin == h.EXIT_MODE_V2 and self.slices_taken == 0:
@@ -1265,10 +1340,16 @@ class ArenaExecutor(h.H5Executor):
             return
         self._a3_polled_ms = now
         why, problem = a3_record_problem(Path(path), now)
+        self._a3_refuse = None
         if problem:
             self.latch_external(H_A3, why=problem)
         elif why:
             self.latch_external(H_A3, why="a3_flags", flags=why)
+        else:
+            latch, refuse = a3_guard_problem(Path(path), now)
+            if latch:
+                self.latch_external(H_A3, why=latch)
+            self._a3_refuse = refuse
 
     def ingest_exit_gap(self, bps_worse: float, mint: str = "") -> None:
         """One exit gap (bps the live sell received below its paper twin) from the parity join; the rolling-free check of FidelityMonitor decides."""
