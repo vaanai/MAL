@@ -123,6 +123,35 @@ def pass3(out_dir):
             print("p3", f[-23:], n, file=sys.stderr, flush=True)
 
 
+def _p4_file(args):
+    f, out_dir = args
+    rows = []
+    for r in stream(f, ["-F", "-f", f"{out_dir}/p48_patterns_parents.txt"]):
+        if r.get("type") != "trade" or r.get("prog") != "pumpswap":
+            continue
+        rows.append([r["t_recv_ms"], r["slot"], r["signature"], r.get("event_index"), r["mint"], r.get("quote_mint"), r["pool"],
+                     r["side"], r.get("sol_lamports"), r.get("pool_quote_amount"), r.get("quote_reserve"), r["trader"], r.get("ix_name")])
+    return f, rows
+
+
+def pass4(out_dir, workers=4):
+    """Every PumpSwap trade row of the top parents (p48_parents_top.txt): the parent-pool volume denominators and the
+    reserve-consistency marker (does the next print's PRE-trade quote reserve move by this print's quote amount?).
+    Reserves are read only for that landing check; no price is computed."""
+    import multiprocessing as mp
+    mints = [m.strip() for m in open(f"{out_dir}/p48_parents_top.txt") if m.strip()]
+    with open(f"{out_dir}/p48_patterns_parents.txt", "w") as w:
+        for m in mints:
+            w.write(f'"mint":"{m}"\n')
+    n = 0
+    with open(f"{out_dir}/p48_pass4.jsonl", "w") as w, mp.Pool(workers) as pool:
+        for f, rows in pool.imap(_p4_file, [(f, out_dir) for f in files()]):
+            for r in rows:
+                w.write(json.dumps(r, separators=(",", ":")) + "\n")
+            n += len(rows)
+            print("p4", f[-23:], n, file=sys.stderr, flush=True)
+
+
 if __name__ == "__main__":
     os.makedirs(sys.argv[2], exist_ok=True)
-    {"pass1": pass1, "pass2": pass2, "pass3": pass3}[sys.argv[1]](sys.argv[2])
+    {"pass1": pass1, "pass2": pass2, "pass3": pass3, "pass4": pass4}[sys.argv[1]](sys.argv[2])
