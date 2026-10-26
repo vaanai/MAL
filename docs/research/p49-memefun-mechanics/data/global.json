@@ -1,0 +1,20 @@
+{
+ "global_pda": "GxaaVK4syzWYAHc88QBR8q1a3TP9t1aQmQuQ1Vx9wkK7",
+ "owner": "MEME4gfGe6itEpxgM1xaBVmiFF5XuCTc4oVXUE5w56F",
+ "data_len": 144,
+ "admin": "55cVpLhERp4aJZqZ1hAV6rSApu661ErwtBTCpbb8KACb",
+ "fee_recipient": "7BRjUvfDZ2Vyhzv1ajsj12nnFFkbqJcz4GXtEk51hT6F",
+ "config": {
+  "initial_virtual_sol": 33348857143,
+  "drain_alpha_bps": 4000,
+  "fee_tier_threshold_lamports": 350000000000,
+  "curve_shape": 1,
+  "creator_fee_bps_low": 98,
+  "protocol_fee_bps_low": 20,
+  "lp_fee_bps_low": 0,
+  "creator_fee_bps_high": 0,
+  "protocol_fee_bps_high": 5,
+  "lp_fee_bps_high": 25
+ },
+ "slot": 461775811
+}

@@ -1,0 +1,112 @@
+{"n": 1, "t": "2026-10-26T19:03:55Z", "ep": "https://solana-rpc.publicnode.com", "method": "getAccountInfo", "ok": true, "err": null, "s": 0.093}
+{"n": 2, "t": "2026-10-26T19:04:15Z", "ep": "https://solana-rpc.publicnode.com", "method": "getProgramAccounts", "ok": false, "err": "<HTTPError 403: 'Forbidden'>", "s": 0.084}
+{"n": 3, "t": "2026-10-26T19:04:21Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getProgramAccounts", "ok": true, "err": null, "s": 0.278}
+{"n": 4, "t": "2026-10-26T19:05:09Z", "ep": "https://solana-rpc.publicnode.com", "method": "getBlockTime", "ok": false, "err": {"code": -32001, "message": "Block 440758269 cleaned up, does not exist on node. First available block: 461146724"}, "s": 0.306}
+{"n": 5, "t": "2026-10-26T19:05:10Z", "ep": "https://solana-rpc.publicnode.com", "method": "getBlockTime", "ok": false, "err": {"code": -32001, "message": "Block 454297511 cleaned up, does not exist on node. First available block: 461146724"}, "s": 0.508}
+{"n": 6, "t": "2026-10-26T19:05:11Z", "ep": "https://solana-rpc.publicnode.com", "method": "getBlockTime", "ok": false, "err": {"code": -32001, "message": "Block 454395453 cleaned up, does not exist on node. First available block: 461146724"}, "s": 1.342}
+{"n": 7, "t": "2026-10-26T19:05:12Z", "ep": "https://solana-rpc.publicnode.com", "method": "getBlockTime", "ok": false, "err": {"code": -32001, "message": "Block 454410919 cleaned up, does not exist on node. First available block: 461146724"}, "s": 0.488}
+{"n": 8, "t": "2026-10-26T19:05:13Z", "ep": "https://solana-rpc.publicnode.com", "method": "getBlockTime", "ok": false, "err": {"code": -32001, "message": "Block 454676526 cleaned up, does not exist on node. First available block: 461146724"}, "s": 0.488}
+{"n": 9, "t": "2026-10-26T19:05:14Z", "ep": "https://solana-rpc.publicnode.com", "method": "getBlockTime", "ok": false, "err": {"code": -32001, "message": "Block 454709739 cleaned up, does not exist on node. First available block: 461146724"}, "s": 0.964}
+{"n": 10, "t": "2026-10-26T19:05:15Z", "ep": "https://solana-rpc.publicnode.com", "method": "getBlockTime", "ok": false, "err": {"code": -32001, "message": "Block 460221920 cleaned up, does not exist on node. First available block: 461146724"}, "s": 0.5}
+{"n": 11, "t": "2026-10-26T19:05:15Z", "ep": "https://solana-rpc.publicnode.com", "method": "getBlockTime", "ok": false, "err": {"code": -32001, "message": "Block 460545898 cleaned up, does not exist on node. First available block: 461146724"}, "s": 0.087}
+{"n": 12, "t": "2026-10-26T19:05:15Z", "ep": "https://solana-rpc.publicnode.com", "method": "getBlockTime", "ok": false, "err": {"code": -32001, "message": "Block 460567489 cleaned up, does not exist on node. First available block: 461146724"}, "s": 0.06}
+{"n": 13, "t": "2026-10-26T19:05:16Z", "ep": "https://solana-rpc.publicnode.com", "method": "getBlockTime", "ok": false, "err": {"code": -32001, "message": "Block 460575985 cleaned up, does not exist on node. First available block: 461146724"}, "s": 0.062}
+{"n": 14, "t": "2026-10-26T19:05:16Z", "ep": "https://solana-rpc.publicnode.com", "method": "getBlockTime", "ok": false, "err": {"code": -32001, "message": "Block 460583191 cleaned up, does not exist on node. First available block: 461146724"}, "s": 0.092}
+{"n": 15, "t": "2026-10-26T19:05:17Z", "ep": "https://solana-rpc.publicnode.com", "method": "getBlockTime", "ok": false, "err": {"code": -32001, "message": "Block 460591131 cleaned up, does not exist on node. First available block: 461146724"}, "s": 1.158}
+{"n": 16, "t": "2026-10-26T19:05:18Z", "ep": "https://solana-rpc.publicnode.com", "method": "getBlockTime", "ok": true, "err": null, "s": 0.075}
+{"n": 17, "t": "2026-10-26T19:05:27Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 0.911}
+{"n": 18, "t": "2026-10-26T19:05:29Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 2.257}
+{"n": 19, "t": "2026-10-26T19:05:31Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.882}
+{"n": 20, "t": "2026-10-26T19:05:33Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.426}
+{"n": 21, "t": "2026-10-26T19:05:34Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.054}
+{"n": 22, "t": "2026-10-26T19:05:35Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 0.854}
+{"n": 23, "t": "2026-10-26T19:05:36Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 0.683}
+{"n": 24, "t": "2026-10-26T19:05:38Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.113}
+{"n": 25, "t": "2026-10-26T19:05:39Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.098}
+{"n": 26, "t": "2026-10-26T19:05:40Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 0.959}
+{"n": 27, "t": "2026-10-26T19:05:42Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.384}
+{"n": 28, "t": "2026-10-26T19:05:43Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.043}
+{"n": 29, "t": "2026-10-26T19:05:44Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 0.166}
+{"n": 30, "t": "2026-10-26T19:05:59Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.215}
+{"n": 31, "t": "2026-10-26T19:06:00Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 0.778}
+{"n": 32, "t": "2026-10-26T19:06:02Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.539}
+{"n": 33, "t": "2026-10-26T19:06:05Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 2.107}
+{"n": 34, "t": "2026-10-26T19:06:06Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.21}
+{"n": 35, "t": "2026-10-26T19:06:08Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.422}
+{"n": 36, "t": "2026-10-26T19:06:09Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.235}
+{"n": 37, "t": "2026-10-26T19:06:13Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 3.034}
+{"n": 38, "t": "2026-10-26T19:06:14Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.487}
+{"n": 39, "t": "2026-10-26T19:06:17Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 2.053}
+{"n": 40, "t": "2026-10-26T19:06:19Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.78}
+{"n": 41, "t": "2026-10-26T19:06:20Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.13}
+{"n": 42, "t": "2026-10-26T19:06:23Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 2.676}
+{"n": 43, "t": "2026-10-26T19:06:25Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.749}
+{"n": 44, "t": "2026-10-26T19:06:27Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.861}
+{"n": 45, "t": "2026-10-26T19:06:28Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.046}
+{"n": 46, "t": "2026-10-26T19:06:30Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.0}
+{"n": 47, "t": "2026-10-26T19:06:31Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.227}
+{"n": 48, "t": "2026-10-26T19:06:33Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.38}
+{"n": 49, "t": "2026-10-26T19:06:36Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 2.694}
+{"n": 50, "t": "2026-10-26T19:06:39Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 3.177}
+{"n": 51, "t": "2026-10-26T19:06:41Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.786}
+{"n": 52, "t": "2026-10-26T19:06:43Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.264}
+{"n": 53, "t": "2026-10-26T19:06:44Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.258}
+{"n": 54, "t": "2026-10-26T19:06:46Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.177}
+{"n": 55, "t": "2026-10-26T19:06:47Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.525}
+{"n": 56, "t": "2026-10-26T19:06:49Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.17}
+{"n": 57, "t": "2026-10-26T19:06:51Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.699}
+{"n": 58, "t": "2026-10-26T19:06:52Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.28}
+{"n": 59, "t": "2026-10-26T19:06:54Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.26}
+{"n": 60, "t": "2026-10-26T19:06:56Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.638}
+{"n": 61, "t": "2026-10-26T19:06:59Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 3.323}
+{"n": 62, "t": "2026-10-26T19:07:01Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.54}
+{"n": 63, "t": "2026-10-26T19:07:03Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 2.242}
+{"n": 64, "t": "2026-10-26T19:07:05Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 0.801}
+{"n": 65, "t": "2026-10-26T19:07:06Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 1.018}
+{"n": 66, "t": "2026-10-26T19:07:07Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 0.853}
+{"n": 67, "t": "2026-10-26T19:07:08Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 0.967}
+{"n": 68, "t": "2026-10-26T19:07:08Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 0.119}
+{"n": 69, "t": "2026-10-26T19:07:09Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 0.181}
+{"n": 70, "t": "2026-10-26T19:07:09Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 0.111}
+{"n": 71, "t": "2026-10-26T19:07:42Z", "ep": "https://solana-rpc.publicnode.com", "method": "getSignaturesForAddress", "ok": true, "err": null, "s": 0.358}
+{"n": 72, "t": "2026-10-26T19:07:43Z", "ep": "https://solana-rpc.publicnode.com", "method": "getSignaturesForAddress", "ok": true, "err": null, "s": 0.296}
+{"n": 73, "t": "2026-10-26T19:08:02Z", "ep": "https://solana-rpc.publicnode.com", "method": "getSignaturesForAddress", "ok": true, "err": null, "s": 0.104}
+{"n": 74, "t": "2026-10-26T19:08:02Z", "ep": "https://solana-rpc.publicnode.com", "method": "getSignaturesForAddress", "ok": true, "err": null, "s": 0.093}
+{"n": 75, "t": "2026-10-26T19:08:02Z", "ep": "https://solana-rpc.publicnode.com", "method": "getSignaturesForAddress", "ok": true, "err": null, "s": 0.089}
+{"n": 76, "t": "2026-10-26T19:08:03Z", "ep": "https://solana-rpc.publicnode.com", "method": "getSignaturesForAddress", "ok": true, "err": null, "s": 0.084}
+{"n": 77, "t": "2026-10-26T19:08:03Z", "ep": "https://solana-rpc.publicnode.com", "method": "getSignaturesForAddress", "ok": true, "err": null, "s": 0.173}
+{"n": 78, "t": "2026-10-26T19:08:03Z", "ep": "https://solana-rpc.publicnode.com", "method": "getSignaturesForAddress", "ok": true, "err": null, "s": 0.162}
+{"n": 79, "t": "2026-10-26T19:08:04Z", "ep": "https://solana-rpc.publicnode.com", "method": "getSignaturesForAddress", "ok": true, "err": null, "s": 0.078}
+{"n": 80, "t": "2026-10-26T19:08:04Z", "ep": "https://solana-rpc.publicnode.com", "method": "getSignaturesForAddress", "ok": true, "err": null, "s": 0.077}
+{"n": 81, "t": "2026-10-26T19:08:04Z", "ep": "https://solana-rpc.publicnode.com", "method": "getSignaturesForAddress", "ok": true, "err": null, "s": 0.076}
+{"n": 82, "t": "2026-10-26T19:08:05Z", "ep": "https://solana-rpc.publicnode.com", "method": "getSignaturesForAddress", "ok": true, "err": null, "s": 0.075}
+{"n": 83, "t": "2026-10-26T19:08:05Z", "ep": "https://solana-rpc.publicnode.com", "method": "getSignaturesForAddress", "ok": true, "err": null, "s": 0.076}
+{"n": 84, "t": "2026-10-26T19:08:05Z", "ep": "https://solana-rpc.publicnode.com", "method": "getSignaturesForAddress", "ok": true, "err": null, "s": 0.073}
+{"n": 85, "t": "2026-10-26T19:08:06Z", "ep": "https://solana-rpc.publicnode.com", "method": "getSignaturesForAddress", "ok": true, "err": null, "s": 0.085}
+{"n": 86, "t": "2026-10-26T19:08:06Z", "ep": "https://solana-rpc.publicnode.com", "method": "getSignaturesForAddress", "ok": true, "err": null, "s": 0.08}
+{"n": 87, "t": "2026-10-26T19:08:06Z", "ep": "https://solana-rpc.publicnode.com", "method": "getSignaturesForAddress", "ok": true, "err": null, "s": 0.126}
+{"n": 88, "t": "2026-10-26T19:08:07Z", "ep": "https://solana-rpc.publicnode.com", "method": "getSignaturesForAddress", "ok": true, "err": null, "s": 0.068}
+{"n": 89, "t": "2026-10-26T19:08:20Z", "ep": "https://solana-rpc.publicnode.com", "method": "getSignaturesForAddress", "ok": true, "err": null, "s": 0.117}
+{"n": 90, "t": "2026-10-26T19:08:20Z", "ep": "https://solana-rpc.publicnode.com", "method": "getTransaction", "ok": true, "err": null, "s": 0.086}
+{"n": 91, "t": "2026-10-26T19:08:20Z", "ep": "https://solana-rpc.publicnode.com", "method": "getTransaction", "ok": true, "err": null, "s": 0.068}
+{"n": 92, "t": "2026-10-26T19:08:21Z", "ep": "https://solana-rpc.publicnode.com", "method": "getTransaction", "ok": true, "err": null, "s": 0.069}
+{"n": 93, "t": "2026-10-26T19:08:21Z", "ep": "https://solana-rpc.publicnode.com", "method": "getTransaction", "ok": true, "err": null, "s": 0.065}
+{"n": 94, "t": "2026-10-26T19:08:21Z", "ep": "https://solana-rpc.publicnode.com", "method": "getTransaction", "ok": true, "err": null, "s": 0.074}
+{"n": 95, "t": "2026-10-26T19:08:22Z", "ep": "https://solana-rpc.publicnode.com", "method": "getTransaction", "ok": true, "err": null, "s": 0.064}
+{"n": 96, "t": "2026-10-26T19:08:22Z", "ep": "https://solana-rpc.publicnode.com", "method": "getTransaction", "ok": true, "err": null, "s": 0.089}
+{"n": 97, "t": "2026-10-26T19:08:32Z", "ep": "https://solana-rpc.publicnode.com", "method": "getTransaction", "ok": true, "err": null, "s": 0.101}
+{"n": 98, "t": "2026-10-26T19:08:39Z", "ep": "https://solana-rpc.publicnode.com", "method": "getTransaction", "ok": true, "err": null, "s": 0.085}
+{"n": 99, "t": "2026-10-26T19:08:54Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getAccountInfo", "ok": true, "err": null, "s": 0.125}
+{"n": 100, "t": "2026-10-26T19:08:54Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getAccountInfo", "ok": true, "err": null, "s": 0.124}
+{"n": 101, "t": "2026-10-26T19:08:55Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getAccountInfo", "ok": true, "err": null, "s": 0.116}
+{"n": 102, "t": "2026-10-26T19:08:56Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getBlockTime", "ok": true, "err": null, "s": 0.918}
+{"n": 103, "t": "2026-10-26T19:09:12Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getSignaturesForAddress", "ok": true, "err": null, "s": 1.622}
+{"n": 104, "t": "2026-10-26T19:09:14Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getSignaturesForAddress", "ok": true, "err": null, "s": 2.176}
+{"n": 105, "t": "2026-10-26T19:09:16Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getTransaction", "ok": true, "err": null, "s": 1.399}
+{"n": 106, "t": "2026-10-26T19:09:18Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getTransaction", "ok": true, "err": null, "s": 1.611}
+{"n": 107, "t": "2026-10-26T19:09:19Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getTransaction", "ok": true, "err": null, "s": 1.37}
+{"n": 108, "t": "2026-10-26T19:09:21Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getTransaction", "ok": true, "err": null, "s": 1.652}
+{"n": 109, "t": "2026-10-26T19:09:25Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getTransaction", "ok": true, "err": null, "s": 3.085}
+{"n": 110, "t": "2026-10-26T19:09:27Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getTransaction", "ok": true, "err": null, "s": 1.672}
+{"n": 111, "t": "2026-10-26T19:09:29Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getTransaction", "ok": true, "err": null, "s": 2.268}
+{"n": 112, "t": "2026-10-26T19:09:34Z", "ep": "https://api.mainnet-beta.solana.com", "method": "getTransaction", "ok": true, "err": null, "s": 4.149}

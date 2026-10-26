@@ -1,0 +1,532 @@
+[
+ {
+  "mint": "6UKMperYZQ38TmhsSyejmyfa4yRZu9bR6wimjyHmeme",
+  "curve": "HnhAPxb4ZP1XL5pDNaeiuoS8hWpjDLdbCnPTPhotgGvd",
+  "created": "2026-10-26T01:30:20Z",
+  "created_slot": 461478183,
+  "n_sigs": 3,
+  "truncated": false,
+  "fail_6001_offsets": [],
+  "fail_6001_dt": [],
+  "other_fail": {},
+  "first_ok_after_create": [
+   [
+    169,
+    37
+   ]
+  ],
+  "ok_in_create_slot": 2,
+  "rsol": 3e-09
+ },
+ {
+  "mint": "3tyTV3QW8g4WLFPjqEkssDzXvdft5Bw8JFvjiAyWmeme",
+  "curve": "Bteon1gucknV68Dd3ZG9YRHuicW4oGXRicEwDigfuk2K",
+  "created": "2026-10-26T03:45:21Z",
+  "created_slot": 461516269,
+  "n_sigs": 12,
+  "truncated": false,
+  "fail_6001_offsets": [],
+  "fail_6001_dt": [],
+  "other_fail": {},
+  "first_ok_after_create": [
+   [
+    735,
+    158
+   ],
+   [
+    735,
+    158
+   ],
+   [
+    11679,
+    2487
+   ]
+  ],
+  "ok_in_create_slot": 2,
+  "rsol": 3e-08
+ },
+ {
+  "mint": "FU8mHmvDfEiATwrFAM1DyosTvZj9bNH71EjPQnZ2meme",
+  "curve": "CkiXkzuGgte1p7gpSivtkaAy1ZnToyMHtCucYdHKcp8H",
+  "created": "2026-10-26T03:52:59Z",
+  "created_slot": 461518414,
+  "n_sigs": 3,
+  "truncated": false,
+  "fail_6001_offsets": [],
+  "fail_6001_dt": [],
+  "other_fail": {},
+  "first_ok_after_create": [
+   [
+    163,
+    36
+   ]
+  ],
+  "ok_in_create_slot": 2,
+  "rsol": 3e-09
+ },
+ {
+  "mint": "D6UiiX1f6JNqbwYFaHPrkeVkTgTvCCi4kwBrc6K4meme",
+  "curve": "5h2Wy4k4r6aHF6xvuRyv3fM3wZ76MU64i7fYPcXwz1yQ",
+  "created": "2026-10-26T05:33:55Z",
+  "created_slot": 461546919,
+  "n_sigs": 12,
+  "truncated": false,
+  "fail_6001_offsets": [],
+  "fail_6001_dt": [],
+  "other_fail": {},
+  "first_ok_after_create": [
+   [
+    10,
+    2
+   ],
+   [
+    10,
+    2
+   ],
+   [
+    93,
+    20
+   ]
+  ],
+  "ok_in_create_slot": 2,
+  "rsol": 3e-08
+ },
+ {
+  "mint": "6fAJ5V4C5wvvqBBtvj72BiR75AgjVmLf1WGpfTsUmeme",
+  "curve": "GGHQ6QASbB83hBVxcsb1WfPXKy6iMX7uxDLiB3wLcVEU",
+  "created": "2026-10-26T14:18:17Z",
+  "created_slot": 461694971,
+  "n_sigs": 592,
+  "truncated": false,
+  "fail_6001_offsets": [],
+  "fail_6001_dt": [],
+  "other_fail": {
+   "6009": 1
+  },
+  "first_ok_after_create": [
+   [
+    10,
+    2
+   ],
+   [
+    17,
+    3
+   ],
+   [
+    23,
+    5
+   ]
+  ],
+  "ok_in_create_slot": 1,
+  "rsol": 0.001156942
+ },
+ {
+  "mint": "7suWrrJcRAGwdCGaBGbMzTc8jLnru1SWYdrSEzEPmeme",
+  "curve": "EQeeyN4NfumVaAzCianfZN75sdQ9rW9szG1UZ4qXGkKZ",
+  "created": "2026-10-26T14:38:02Z",
+  "created_slot": 461700526,
+  "n_sigs": 327,
+  "truncated": false,
+  "fail_6001_offsets": [],
+  "fail_6001_dt": [],
+  "other_fail": {},
+  "first_ok_after_create": [
+   [
+    10,
+    3
+   ],
+   [
+    31,
+    7
+   ],
+   [
+    54,
+    12
+   ]
+  ],
+  "ok_in_create_slot": 1,
+  "rsol": 3.8e-07
+ },
+ {
+  "mint": "zxA2Eni4Pen7z45mhwvGvFeBnwKnuatNueMxcosmeme",
+  "curve": "GyJFQ4ewGVEHia2fkDRK1x2Xk66q5aXaruPRi8AcQxL7",
+  "created": "2026-10-26T14:45:44Z",
+  "created_slot": 461702693,
+  "n_sigs": 2,
+  "truncated": false,
+  "fail_6001_offsets": [],
+  "fail_6001_dt": [],
+  "other_fail": {},
+  "first_ok_after_create": [
+   [
+    48,
+    10
+   ]
+  ],
+  "ok_in_create_slot": 1,
+  "rsol": 3e-09
+ },
+ {
+  "mint": "85tBmiHLL6Re7DWdSgP51Et83NcCXmESaqAiNAzZe2CN",
+  "curve": "H7eV723XYX4dQEhzVACAqDGEukFYpDwUMGNcqHV383HT",
+  "created": "2026-10-26T14:50:09Z",
+  "created_slot": 461703949,
+  "n_sigs": 31,
+  "truncated": false,
+  "fail_6001_offsets": [],
+  "fail_6001_dt": [],
+  "other_fail": {},
+  "first_ok_after_create": [
+   [
+    8,
+    2
+   ],
+   [
+    17,
+    4
+   ],
+   [
+    40,
+    8
+   ]
+  ],
+  "ok_in_create_slot": 1,
+  "rsol": 5e-08
+ },
+ {
+  "mint": "2giKs4vxZrdKDJbNv1mVicWLsMPpS992hop6jTDouQdC",
+  "curve": "GLpfsJUKUo92RBSTVLTMJG5Dt1bPzWfwARbtePJDKzae",
+  "created": "2026-10-26T14:50:21Z",
+  "created_slot": 461704007,
+  "n_sigs": 33,
+  "truncated": false,
+  "fail_6001_offsets": [],
+  "fail_6001_dt": [],
+  "other_fail": {},
+  "first_ok_after_create": [
+   [
+    7,
+    2
+   ],
+   [
+    16,
+    4
+   ],
+   [
+    39,
+    9
+   ]
+  ],
+  "ok_in_create_slot": 1,
+  "rsol": 5.8e-08
+ },
+ {
+  "mint": "6R9EbYsV8ogh44mP71PhZhJLPQdWGrFjQKcSy6Db2xg4",
+  "curve": "4GFKrXuFtyKBr1YPCwR8z3x6yfb88ZzfPhJATLVuE131",
+  "created": "2026-10-26T14:50:36Z",
+  "created_slot": 461704073,
+  "n_sigs": 35,
+  "truncated": false,
+  "fail_6001_offsets": [],
+  "fail_6001_dt": [],
+  "other_fail": {},
+  "first_ok_after_create": [
+   [
+    7,
+    1
+   ],
+   [
+    16,
+    3
+   ],
+   [
+    40,
+    8
+   ]
+  ],
+  "ok_in_create_slot": 1,
+  "rsol": 5.4e-08
+ },
+ {
+  "mint": "GLJ85PpnDdTnR9ak2TGhLDAud4Cob3ciMJicm37fWobH",
+  "curve": "Hd61frzaXfq1kaDAKBbgGZd5c68nnzmGggQo2LWZPVqn",
+  "created": "2026-10-26T14:51:42Z",
+  "created_slot": 461704386,
+  "n_sigs": 13,
+  "truncated": false,
+  "fail_6001_offsets": [],
+  "fail_6001_dt": [],
+  "other_fail": {},
+  "first_ok_after_create": [
+   [
+    8,
+    2
+   ],
+   [
+    17,
+    4
+   ],
+   [
+    39,
+    9
+   ]
+  ],
+  "ok_in_create_slot": 1,
+  "rsol": 2.5e-08
+ },
+ {
+  "mint": "FKFXSmgWgcegDazNx5Hj1Fn6At4vRbSfYYjkgRFDGSYs",
+  "curve": "4vebtcNLq3kJx3XaMXJXTvUV6ZkN6HB5VwFNCegyXkg1",
+  "created": "2026-10-26T14:52:02Z",
+  "created_slot": 461704476,
+  "n_sigs": 5,
+  "truncated": false,
+  "fail_6001_offsets": [],
+  "fail_6001_dt": [],
+  "other_fail": {},
+  "first_ok_after_create": [
+   [
+    8,
+    2
+   ],
+   [
+    19,
+    4
+   ],
+   [
+    26,
+    5
+   ]
+  ],
+  "ok_in_create_slot": 1,
+  "rsol": 5e-09
+ },
+ {
+  "mint": "9sJzth8PojfzZ7EYqmwnxsDjDBto6yBEujwkgXXUmeme",
+  "curve": "Hjeru8nkau419thCFSd55k51sdk2QBYNSHMhgS8BSG7q",
+  "created": "2026-10-26T15:12:44Z",
+  "created_slot": 461710365,
+  "n_sigs": 81,
+  "truncated": false,
+  "fail_6001_offsets": [],
+  "fail_6001_dt": [],
+  "other_fail": {
+   "6008": 1
+  },
+  "first_ok_after_create": [
+   [
+    7,
+    2
+   ],
+   [
+    30,
+    6
+   ],
+   [
+    54,
+    12
+   ]
+  ],
+  "ok_in_create_slot": 1,
+  "rsol": 1.5e-07
+ },
+ {
+  "mint": "8vtTjMHXmsM8T5cZu7QUq2U2Bhsgpga668KGGpH4meme",
+  "curve": "ATNqgh1omxygJbVbKjtNik8xpUb3sfyRBV9FepFjb7Fi",
+  "created": "2026-10-26T15:59:12Z",
+  "created_slot": 461723563,
+  "n_sigs": 64,
+  "truncated": false,
+  "fail_6001_offsets": [],
+  "fail_6001_dt": [],
+  "other_fail": {},
+  "first_ok_after_create": [
+   [
+    7,
+    1
+   ],
+   [
+    29,
+    6
+   ],
+   [
+    53,
+    11
+   ]
+  ],
+  "ok_in_create_slot": 1,
+  "rsol": 1.06e-07
+ },
+ {
+  "mint": "RFVyEip2X4TcQChwDTfYB1e3q9fx8kiwKhRAFQ4meme",
+  "curve": "4FYyiCA6xbxc1reP3gE7vB45eRggetLfk7oyiH5CbLKA",
+  "created": "2026-10-26T17:06:10Z",
+  "created_slot": 461742599,
+  "n_sigs": 371,
+  "truncated": false,
+  "fail_6001_offsets": [],
+  "fail_6001_dt": [],
+  "other_fail": {
+   "6009": 1
+  },
+  "first_ok_after_create": [
+   [
+    1,
+    0
+   ],
+   [
+    10,
+    2
+   ],
+   [
+    12,
+    2
+   ]
+  ],
+  "ok_in_create_slot": 1,
+  "rsol": 54.043078811
+ },
+ {
+  "mint": "3N99AqAyfBChSTbZrarE2YFMRgL9hbY2rbHvvicxNVej",
+  "curve": "2YTyvT4SFtKT73viH6QyQdAqq4QBdpa7SDSqXPguiNkb",
+  "created": "2026-10-26T18:10:00Z",
+  "created_slot": 461760634,
+  "n_sigs": 83,
+  "truncated": false,
+  "fail_6001_offsets": [
+   81,
+   81,
+   81,
+   81,
+   81,
+   81,
+   81,
+   81,
+   94,
+   94,
+   94,
+   94,
+   98,
+   99,
+   99,
+   101,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   220,
+   222,
+   222,
+   222,
+   222,
+   222,
+   222,
+   222,
+   222,
+   222,
+   222
+  ],
+  "fail_6001_dt": [
+   17,
+   17,
+   17,
+   17,
+   17,
+   17,
+   17,
+   17,
+   20,
+   20,
+   20,
+   20,
+   21,
+   21,
+   21,
+   22,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47,
+   47
+  ],
+  "other_fail": {
+   "6009": 1
+  },
+  "first_ok_after_create": [
+   [
+    4,
+    1
+   ],
+   [
+    4,
+    1
+   ],
+   [
+    8,
+    2
+   ]
+  ],
+  "ok_in_create_slot": 2,
+  "rsol": 4.1e-08
+ }
+]
