@@ -17,7 +17,7 @@ Written by `tools/arena_feed.py`, read by `tools/arena_state.py`, the arena pape
 
 `v` (1), `type`, `prog`, `slot`, `t_recv_ms`, `signature`, `event_index`.
 
-- `type`: `trade`, `create`, `complete`, `pool_create`, `pool_info`, `gap`, `hb`, `start`, `stop`.
+- `type`: `trade`, `create`, `complete`, `pool_create`, `pool_info`, `gap`, `hb`, `start`, `stop`, and `takeover` (v2 hand-off only).
 - `prog`: `pumpswap` or `pumpfun` (the bonding-curve program), or `all` for `start` / `stop` / disk gaps. A row's `prog` follows the event's venue,
   not the socket that delivered it.
 - `slot`: the notice's slot. For `gap` / `hb` rows it is the program's last slot (0 if none yet); for `start` / `stop` it is 0.
@@ -156,6 +156,25 @@ that a peer socket covered (the tape is then complete as far as the feed can tel
 
 An hour with a `data_loss` gap, or with fewer than 60 `hb` rows per program, is a bad hour for any consumer that needs a complete tape. A process that
 exits non-zero (exit code 4: writes failing for 120 s, or a core task ended) is restarted by its supervisor and the restart writes a `process_restart`.
+
+## `takeover` (prog `all`; written only by `tools/arena_feed_v2.py`, P35)
+
+When a v2 standby takes the tape over from a running writer and proves continuity for BOTH programs, it writes ONE `takeover` row instead of `start` +
+`process_restart`. Its fields are listed in docs/research/p35-longbook-handoff/DESIGN.md section 2.1:
+- `cover_from_ms`, `old_last_data_ms`, `continuity` (per program);
+- `dedup` (`buffered`, `dropped_dup`, `written_missed`, `buffer_overflow`);
+- `agreement` (`n_old`, `only_old` per program);
+- `standby_reconnects_in_overlap`, `thresholds`, `counter_base`, `overlap_min_s`;
+- `prev_pid`, `pid`, `code_sha`, `lock_acquired_ms`, `old_stop_ms`.
+
+What follows it:
+- The old writer's `stop` row precedes it.
+- The rows the old writer missed follow it, with their own (earlier) `t_recv_ms`.
+- Then the new writer is live.
+
+Readers that do not know the type ignore it: `ArenaState.apply`, `ArenaEngine.on_row` and `arena_hour_health` (tested in
+`tools/test_arena_feed_v2.py`). If continuity is NOT proven, the v2 writer writes exactly v1's restart rows instead: a `start` row and a
+`process_restart` gap with `reason` `handover_unproven` and the failed conditions. `tools/feed_handover_proof.py seam` checks a seam.
 
 ## `hb`, `start`, `stop`
 
