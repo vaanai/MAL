@@ -9,7 +9,7 @@
 #   DAYS              comma-separated, >= 3, e.g. 2026-10-22,2026-10-23,2026-10-24,2026-10-25 (prefer the latest 4-5; from 10-21 so the 6 h warm-up is in range)
 #   REPO              a CLEAN checkout at the final sha (HV6_FINAL_SHA, 40 hex, required in the environment) (e.g. git worktree add --detach /data2/mal/wt/hv6-final <sha>)
 # The tool file is taken from THIS checkout (the registration PR branch); the rule code (hv4_cards, hv6_cards, hv6_runner, arena_state) from REPO.
-# Submit as a MiScusi job with memory >= 8 GB (MemoryMax), resumable false; one heavy job at a time on mal-fast-0.
+# Submit as a MiScusi job with memory >= 8 GB (MemoryMax), resumable false; one heavy job at a time on mal-research-0.
 set -eu
 FINAL=${HV6_FINAL_SHA:-}   # the registered final sha (the playbook-fields merge commit), REQUIRED in the environment: no default
 case "$FINAL" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) : ;; *) echo '{"refused":"HV6_FINAL_SHA_required"}'; exit 2;; esac

@@ -17,7 +17,7 @@ refusal reason counts; watches added / fired / expired. It never names a pool, m
 never opened and the decision rows are read through a whitelist projection (kind, reasons[0], ms, as_of_ms, ids length, latency, error).
 
 VERDICT (pre-declared; a FAIL is fixed by code at a new sha, never by tuning a limit): FAIL if STALE > 5% of pooled LLM entry verdicts, or the p95 of the chunk
-latency > 8,000 ms (QP #918 6402258796 (a)), or the share of cards refused for leakage (as_of_refusal) or chain staleness / unavailability exceeds 5% of cards
+latency > 8,000 ms (QP #918 6402258796 (a)), or as_of_refusal + chain_stale + chain_unavailable + holders_stale card refusals exceed 5% of cards ATTEMPTED (built + refused; QP #940 s3, no carve-out for first-sight chain_unavailable)
 (QP #914 item 7 "a small fraction"; 5% is proposed here, QP confirms it on the registration pack head), or the run raised. INCOMPLETE if fewer than 30 LLM
 calls returned without error. Otherwise PASS. Exit 0 PASS, 1 FAIL or INCOMPLETE, 2 refused before any call.
 """
@@ -120,7 +120,7 @@ def report(root: str | os.PathLike, *, samples_calls_h: list[int] | None = None,
                     chunks[key] = max(chunks.get(key, 0), r["ms"])
                     asof[key] = r["as_of_ms"]
     chunk_lat = [float(chunks[k] - asof[k]) for k in chunks]
-    scans = cards = asof_ref = chain_ref = 0
+    scans = cards = asof_ref = chain_ref = refused_rows = 0
     reasons_n: dict[str, int] = {}
     w_add = w_fired = w_exp = 0
     for r in _rows(root, "SCAN"):
@@ -131,10 +131,11 @@ def report(root: str | os.PathLike, *, samples_calls_h: list[int] | None = None,
         elif k == "as_of_refusal":
             asof_ref += 1
         elif k == "card_refused":
-            for x in r.get("reasons") or []:
-                if isinstance(x, str):
-                    reasons_n[x] = reasons_n.get(x, 0) + 1
-                    chain_ref += int(x in CHAIN_REASONS)
+            refused_rows += 1
+            rs = [x for x in (r.get("reasons") or []) if isinstance(x, str)]
+            for x in rs:
+                reasons_n[x] = reasons_n.get(x, 0) + 1
+            chain_ref += int(any(x in CHAIN_REASONS for x in rs))  # one refused card counts once
     for a in LLM_ARMS:
         for r in _rows(root, a):
             if r.get("kind") == "watch_end":
@@ -167,17 +168,17 @@ def report(root: str | os.PathLike, *, samples_calls_h: list[int] | None = None,
         cred_file = {}
     samples = list(samples_calls_h or [])
     p95 = _pct(chunk_lat, 0.95)
-    asof_frac = asof_ref / cards if cards else 0.0
-    chain_frac = chain_ref / cards if cards else 0.0
+    attempted = cards + refused_rows + asof_ref  # cards attempted = built + refused (QP #940 s3)
+    asof_frac = asof_ref / attempted if attempted else 0.0
+    chain_frac = chain_ref / attempted if attempted else 0.0
+    combined_frac = (asof_ref + chain_ref) / attempted if attempted else 0.0
     fails = []
     if stale_frac > STALE_FAIL_FRAC:
         fails.append("stale_share_above_5pct")
     if p95 is not None and p95 > CHUNK_P95_FAIL_MS:
         fails.append("chunk_latency_p95_above_8s")
-    if asof_frac > REFUSAL_FAIL_FRAC:
-        fails.append("as_of_refusal_above_5pct_of_cards")
-    if chain_frac > REFUSAL_FAIL_FRAC:
-        fails.append("chain_refusal_above_5pct_of_cards")
+    if combined_frac > REFUSAL_FAIL_FRAC:  # as_of_refusal + chain_stale + chain_unavailable + holders_stale, first-sight chain_unavailable included (no carve-out)
+        fails.append("card_refusals_above_5pct_of_attempted")
     if run_error:
         fails.append("run_error")
     if usd > cap_usd + 1e-9:
@@ -191,7 +192,7 @@ def report(root: str | os.PathLike, *, samples_calls_h: list[int] | None = None,
             "chunk_latency_ms": {"n": len(chunk_lat), "p50": _pct(chunk_lat, 0.5), "p95": p95, "max": max(chunk_lat) if chunk_lat else None, "limit_p95": CHUNK_P95_FAIL_MS},
             "llm_calls": {"n": n_calls, "ok": ok_calls, "latency_ms_p50": _pct(call_lat, 0.5), "latency_ms_p95": _pct(call_lat, 0.95)},
             "tokens": tok, "spend_usd": round(usd, 6), "cap_usd": cap_usd,
-            "as_of_refusals": asof_ref, "as_of_refusal_share": round(asof_frac, 6), "chain_refused_cards": chain_ref, "chain_refusal_share": round(chain_frac, 6),
+            "cards_attempted": attempted, "as_of_refusals": asof_ref, "refusal_share_combined": round(combined_frac, 6), "as_of_refusal_share": round(asof_frac, 6), "chain_refused_cards": chain_ref, "chain_refusal_share": round(chain_frac, 6),
             "refusal_reason_counts": dict(sorted(reasons_n.items())),
             "chain_calls_per_h": {"samples": len(samples), "max": max(samples) if samples else None, "mean": round(sum(samples) / len(samples), 2) if samples else None,
                                   "cap": RPC_CALLS_PER_H, "above_cap": bool(samples and max(samples) > RPC_CALLS_PER_H)},

@@ -114,10 +114,13 @@ def test_chunk_latency_is_the_chunk_maximum_across_arms(tmp_path):
 
 def test_refusals_over_5pct_fail(tmp_path):
     fill(tmp_path, cards=100, asof=6)
-    assert "as_of_refusal_above_5pct_of_cards" in S.report(tmp_path)["fail_reasons"]
+    assert "card_refusals_above_5pct_of_attempted" in S.report(tmp_path)["fail_reasons"]
     t2 = tmp_path / "b"
     fill(t2, cards=100, chain_ref=6)
-    assert "chain_refusal_above_5pct_of_cards" in S.report(t2)["fail_reasons"]
+    assert "card_refusals_above_5pct_of_attempted" in S.report(t2)["fail_reasons"]
+    t3 = tmp_path / "c"
+    fill(t3, cards=100, asof=2, chain_ref=3)  # 5 / 105 = 4.76%: combined, under the limit
+    assert "card_refusals_above_5pct_of_attempted" not in S.report(t3)["fail_reasons"]
 
 
 def test_few_ok_calls_is_incomplete_and_run_error_is_fail(tmp_path):
