@@ -1,0 +1,3295 @@
+[
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 29/29",
+  "fee_claimer": "CtNKS1hARwNwArgAGDjoF8xPHjapGj2qaHfY8LW2bfzn",
+  "hosts": [
+   [
+    "ipfs.io",
+    29
+   ]
+  ],
+  "label": "unattributed partner CtNKS1",
+  "n_configs": 1,
+  "n_creates": 401,
+  "payer_is_creator": {
+   "true": 29
+  },
+  "top_suffix": [
+   [
+    "k7Ty",
+    1
+   ],
+   [
+    "wAbW",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    29
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 23/23",
+  "fee_claimer": "J7yBcg2AmJ1Cm9kssQqG5sX6mZ9HiJ298Ak9YHeFXX4g",
+  "hosts": [
+   [
+    "ipfs.io",
+    23
+   ]
+  ],
+  "label": "unattributed partner J7yBcg",
+  "n_configs": 1,
+  "n_creates": 293,
+  "payer_is_creator": {
+   "true": 23
+  },
+  "top_suffix": [
+   [
+    "d626",
+    1
+   ],
+   [
+    "2Hnt",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    23
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host gateway.pinata.cloud 24/24",
+  "fee_claimer": "8TPACXaKotSZ7WXktfmKDRhgoypyGXNzo1ctr2YBzxLc",
+  "hosts": [
+   [
+    "gateway.pinata.cloud",
+    24
+   ]
+  ],
+  "label": "unattributed partner 8TPACX",
+  "n_configs": 6,
+  "n_creates": 288,
+  "payer_is_creator": {
+   "true": 24
+  },
+  "top_suffix": [
+   [
+    "qxjK",
+    1
+   ],
+   [
+    "8m9n",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    24
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 19/19",
+  "fee_claimer": "HyhosNdZU56dCn5TekzyW82p1mtngXAfgVAomBq1FfJa",
+  "hosts": [
+   [
+    "ipfs.io",
+    19
+   ]
+  ],
+  "label": "unattributed partner HyhosN",
+  "n_configs": 1,
+  "n_creates": 244,
+  "payer_is_creator": {
+   "true": 19
+  },
+  "top_suffix": [
+   [
+    "Qtd3",
+    1
+   ],
+   [
+    "gErA",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    19
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 28/28",
+  "fee_claimer": "94TgdYa6bGDGa4Qa7PFNTDe7NiZQmd9XuxrGMpyNj8FQ",
+  "hosts": [
+   [
+    "ipfs.io",
+    28
+   ]
+  ],
+  "label": "unattributed partner 94TgdY",
+  "n_configs": 1,
+  "n_creates": 238,
+  "payer_is_creator": {
+   "true": 28
+  },
+  "top_suffix": [
+   [
+    "9k9g",
+    1
+   ],
+   [
+    "pv8j",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    28
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 26/26",
+  "fee_claimer": "AqUCiEBR9yW54V8At8CDfTMgi4qQmdPKNGAkBqvYUrAu",
+  "hosts": [
+   [
+    "ipfs.io",
+    26
+   ]
+  ],
+  "label": "unattributed partner AqUCiE",
+  "n_configs": 1,
+  "n_creates": 233,
+  "payer_is_creator": {
+   "true": 26
+  },
+  "top_suffix": [
+   [
+    "AJ9H",
+    1
+   ],
+   [
+    "VhW4",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    26
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "generic uri host ipfs.io 14/25",
+  "fee_claimer": "DZWnZvvJojxGA8Bfxr8rxTHKPknBdFNEDEN4ygtWa87C",
+  "hosts": [
+   [
+    "ipfs.io",
+    14
+   ],
+   [
+    "metadata.j7tracker.io",
+    8
+   ],
+   [
+    "pump.mypinata.cloud",
+    2
+   ]
+  ],
+  "label": "unattributed partner DZWnZv",
+  "n_configs": 1,
+  "n_creates": 230,
+  "payer_is_creator": {
+   "true": 25
+  },
+  "top_suffix": [
+   [
+    "L2kc",
+    1
+   ],
+   [
+    "S8rC",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    25
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 26/26",
+  "fee_claimer": "4LbbPNg5VfVx57VktL4myijgWQnwQpo4tdv7v2f465sp",
+  "hosts": [
+   [
+    "ipfs.io",
+    26
+   ]
+  ],
+  "label": "unattributed partner 4LbbPN",
+  "n_configs": 1,
+  "n_creates": 220,
+  "payer_is_creator": {
+   "true": 26
+  },
+  "top_suffix": [
+   [
+    "CnEq",
+    1
+   ],
+   [
+    "eKz5",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    26
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 26/26",
+  "fee_claimer": "YYvredabgoWmtkAyzbYu7ACYmPcWFafkNjmTj96Lter",
+  "hosts": [
+   [
+    "ipfs.io",
+    26
+   ]
+  ],
+  "label": "unattributed partner YYvred",
+  "n_configs": 1,
+  "n_creates": 219,
+  "payer_is_creator": {
+   "true": 26
+  },
+  "top_suffix": [
+   [
+    "GLYr",
+    1
+   ],
+   [
+    "Xz4Y",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    26
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "generic uri host ipfs.io 11/25",
+  "fee_claimer": "FSUTuAFdA2epaW454pN76EM31MvgEACH4CDquZgLNJYD",
+  "hosts": [
+   [
+    "ipfs.io",
+    11
+   ],
+   [
+    "metadata.j7tracker.io",
+    10
+   ],
+   [
+    "meta.uxento.io",
+    2
+   ]
+  ],
+  "label": "unattributed partner FSUTuA",
+  "n_configs": 1,
+  "n_creates": 214,
+  "payer_is_creator": {
+   "true": 25
+  },
+  "top_suffix": [
+   [
+    "XgmT",
+    1
+   ],
+   [
+    "1sG6",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    25
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "generic uri host ipfs.io 18/18",
+  "fee_claimer": "ENyc6mcY8QPs4PHxip9r9mFdnGxJLb16hsPz6QvFD8yK",
+  "hosts": [
+   [
+    "ipfs.io",
+    18
+   ]
+  ],
+  "label": "unattributed partner ENyc6m",
+  "n_configs": 1,
+  "n_creates": 191,
+  "payer_is_creator": {
+   "true": 18
+  },
+  "top_suffix": [
+   [
+    "tR8f",
+    1
+   ],
+   [
+    "SXip",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    18
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "generic uri host ipfs.io 6/22",
+  "fee_claimer": "DwP6ZrPUTYdK9Yz7PLS6dY75WBLZC3gJ2DU2u6kqwCcv",
+  "hosts": [
+   [
+    "ipfs.io",
+    6
+   ],
+   [
+    "metadata.j7tracker.io",
+    6
+   ],
+   [
+    "meta.uxento.io",
+    3
+   ]
+  ],
+  "label": "unattributed partner DwP6Zr",
+  "n_configs": 1,
+  "n_creates": 189,
+  "payer_is_creator": {
+   "true": 22
+  },
+  "top_suffix": [
+   [
+    "f3tm",
+    1
+   ],
+   [
+    "PKnv",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    22
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 20/20",
+  "fee_claimer": "5oTzDLNA2ZGG3vuvGe9Kn2ZdE873GgcnEeBLAXUUSXMf",
+  "hosts": [
+   [
+    "ipfs.io",
+    20
+   ]
+  ],
+  "label": "unattributed partner 5oTzDL",
+  "n_configs": 1,
+  "n_creates": 188,
+  "payer_is_creator": {
+   "true": 20
+  },
+  "top_suffix": [
+   [
+    "EjWd",
+    1
+   ],
+   [
+    "F1jS",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    20
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "mint suffix pump 127/169",
+  "fee_claimer": "FNr2N7wG2pZDdjRrqGr6v8wvLK8LVkLPfRQo7mwpEen2",
+  "hosts": [
+   [
+    "ipfs.io",
+    12
+   ]
+  ],
+  "label": "mint suffix pump",
+  "n_configs": 1,
+  "n_creates": 169,
+  "payer_is_creator": {
+   "true": 12
+  },
+  "top_suffix": [
+   [
+    "pump",
+    127
+   ],
+   [
+    "BAGS",
+    15
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    12
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 24/24",
+  "fee_claimer": "7bBBrP4bYvx7mRMtCiTqrhCwwVjTCzJ2arPbf8LzzcnE",
+  "hosts": [
+   [
+    "ipfs.io",
+    24
+   ]
+  ],
+  "label": "unattributed partner 7bBBrP",
+  "n_configs": 1,
+  "n_creates": 166,
+  "payer_is_creator": {
+   "true": 24
+  },
+  "top_suffix": [
+   [
+    "XTrp",
+    1
+   ],
+   [
+    "s9sE",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    24
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "generic uri host ipfs.io 13/13",
+  "fee_claimer": "6mJvFpEp4hTuNTyR6kZJ4s3YvPkHhKPEyukKhaenpnh4",
+  "hosts": [
+   [
+    "ipfs.io",
+    13
+   ]
+  ],
+  "label": "unattributed partner 6mJvFp",
+  "n_configs": 1,
+  "n_creates": 154,
+  "payer_is_creator": {
+   "true": 13
+  },
+  "top_suffix": [
+   [
+    "nYFh",
+    1
+   ],
+   [
+    "Zzrb",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    13
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "mint suffix pump 125/145",
+  "fee_claimer": "BFBLa1V41yDNKuSQH2XfNH9W2KH8W8KFjwM9LG8ScBU6",
+  "hosts": [
+   [
+    "ipfs.io",
+    15
+   ]
+  ],
+  "label": "mint suffix pump",
+  "n_configs": 1,
+  "n_creates": 145,
+  "payer_is_creator": {
+   "true": 15
+  },
+  "top_suffix": [
+   [
+    "pump",
+    125
+   ],
+   [
+    "bonk",
+    8
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    15
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 13/13",
+  "fee_claimer": "DNrh3usMy87MiYeCHNJfRbbDGrjjLG2Pg9sJwzso2mNa",
+  "hosts": [
+   [
+    "ipfs.io",
+    13
+   ]
+  ],
+  "label": "unattributed partner DNrh3u",
+  "n_configs": 1,
+  "n_creates": 142,
+  "payer_is_creator": {
+   "true": 13
+  },
+  "top_suffix": [
+   [
+    "aW33",
+    1
+   ],
+   [
+    "9XG8",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    13
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "mint suffix pump 114/140",
+  "fee_claimer": "2ZjcuuveK6PXCh4hKXiKt9s3imWTYWHL8GfR32osvJAy",
+  "hosts": [
+   [
+    "ipfs.io",
+    12
+   ]
+  ],
+  "label": "mint suffix pump",
+  "n_configs": 1,
+  "n_creates": 140,
+  "payer_is_creator": {
+   "true": 12
+  },
+  "top_suffix": [
+   [
+    "pump",
+    114
+   ],
+   [
+    "BAGS",
+    9
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    12
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "partner_metadata name (website https://bingan.app)",
+  "fee_claimer": "9RaoVypDNRDgy7tLLVPrJRzuR219P5ZxZ46F2TmzJpYc",
+  "hosts": [
+   [
+    "amber-decisive-lobster-442.mypinata.cloud",
+    12
+   ]
+  ],
+  "label": "bingan",
+  "n_configs": 2,
+  "n_creates": 139,
+  "payer_is_creator": {
+   "true": 12
+  },
+  "top_suffix": [
+   [
+    "5gan",
+    9
+   ],
+   [
+    "ngan",
+    7
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    12
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "mint suffix pump 133/133",
+  "fee_claimer": "GUH2TiEJ6Fs7EWh6UreYXFd6BuineZCzQ58zcuYFHbR",
+  "hosts": [
+   [
+    "ipfs.io",
+    18
+   ]
+  ],
+  "label": "mint suffix pump",
+  "n_configs": 1,
+  "n_creates": 133,
+  "payer_is_creator": {
+   "true": 18
+  },
+  "top_suffix": [
+   [
+    "pump",
+    133
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    18
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 16/16",
+  "fee_claimer": "bTUgLcWQRSBLt3uTyqogVBRvTkgYoiUmSep4Uguxk1z",
+  "hosts": [
+   [
+    "ipfs.io",
+    16
+   ]
+  ],
+  "label": "unattributed partner bTUgLc",
+  "n_configs": 1,
+  "n_creates": 130,
+  "payer_is_creator": {
+   "true": 16
+  },
+  "top_suffix": [
+   [
+    "tDTV",
+    1
+   ],
+   [
+    "tWEu",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    16
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 13/13",
+  "fee_claimer": "CkU1cp9gLr7Mr9tJknUgg5jbnBWoeXEwL4eraZp9qbzf",
+  "hosts": [
+   [
+    "ipfs.io",
+    13
+   ]
+  ],
+  "label": "unattributed partner CkU1cp",
+  "n_configs": 1,
+  "n_creates": 118,
+  "payer_is_creator": {
+   "true": 13
+  },
+  "top_suffix": [
+   [
+    "j8Mh",
+    1
+   ],
+   [
+    "nkcQ",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    13
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "generic uri host ipfs.io 9/9",
+  "fee_claimer": "AhXeFw5WYczTeDRbbhjj99hUMdrZxJQ7UoxN6XRrfSyM",
+  "hosts": [
+   [
+    "ipfs.io",
+    9
+   ]
+  ],
+  "label": "unattributed partner AhXeFw",
+  "n_configs": 1,
+  "n_creates": 112,
+  "payer_is_creator": {
+   "true": 9
+  },
+  "top_suffix": [
+   [
+    "2LXk",
+    1
+   ],
+   [
+    "JAMY",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    9
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "generic uri host gateway.pinata.cloud 13/13",
+  "fee_claimer": "5cwmaYNgkfo42NAZXpzNDZvxPzBMsAh87ZjD9vcioMET",
+  "hosts": [
+   [
+    "gateway.pinata.cloud",
+    13
+   ]
+  ],
+  "label": "unattributed partner 5cwmaY",
+  "n_configs": 11,
+  "n_creates": 111,
+  "payer_is_creator": {
+   "true": 13
+  },
+  "top_suffix": [
+   [
+    "APhR",
+    1
+   ],
+   [
+    "yfAK",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    13
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 13/13",
+  "fee_claimer": "ECmYUuUMZHcRxB2Rk3AAcLVrC9qvZXyoX2pHxpjnH51P",
+  "hosts": [
+   [
+    "ipfs.io",
+    13
+   ]
+  ],
+  "label": "unattributed partner ECmYUu",
+  "n_configs": 1,
+  "n_creates": 95,
+  "payer_is_creator": {
+   "true": 13
+  },
+  "top_suffix": [
+   [
+    "c5mg",
+    1
+   ],
+   [
+    "8th1",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    13
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 12/12",
+  "fee_claimer": "ZCnajfpW314pk5sjHd5nt1CagUgtHT9WLgkgb9fX9Mg",
+  "hosts": [
+   [
+    "ipfs.io",
+    12
+   ]
+  ],
+  "label": "unattributed partner ZCnajf",
+  "n_configs": 1,
+  "n_creates": 93,
+  "payer_is_creator": {
+   "true": 12
+  },
+  "top_suffix": [
+   [
+    "MFWN",
+    1
+   ],
+   [
+    "2bHJ",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    12
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "uri host 8/8 sampled create txs",
+  "fee_claimer": "E8QjCz3aX31Qk6ieEYzfVsfqmT3dbTaTEABwUUgZVGWL",
+  "hosts": [
+   [
+    "static-create.jup.ag",
+    8
+   ]
+  ],
+  "label": "uri:static-create.jup.ag",
+  "n_configs": 88,
+  "n_creates": 88,
+  "payer_is_creator": {
+   "true": 8
+  },
+  "top_suffix": [
+   [
+    "jupx",
+    69
+   ],
+   [
+    "jups",
+    19
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    8
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 11/11",
+  "fee_claimer": "C1G5h4bdCCWmnhYYBHrTcMKEBskiSQvepmKuV79rvbSE",
+  "hosts": [
+   [
+    "ipfs.io",
+    11
+   ]
+  ],
+  "label": "unattributed partner C1G5h4",
+  "n_configs": 1,
+  "n_creates": 87,
+  "payer_is_creator": {
+   "true": 11
+  },
+  "top_suffix": [
+   [
+    "g5fd",
+    1
+   ],
+   [
+    "r3wr",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    11
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 9/9",
+  "fee_claimer": "ot5c4M7yjPHXKJmNHufoE5CVc6Lq5mZ4h63H4Q7bz4z",
+  "hosts": [
+   [
+    "ipfs.io",
+    9
+   ]
+  ],
+  "label": "unattributed partner ot5c4M",
+  "n_configs": 1,
+  "n_creates": 86,
+  "payer_is_creator": {
+   "true": 9
+  },
+  "top_suffix": [
+   [
+    "gJf1",
+    1
+   ],
+   [
+    "E2cX",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    9
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "uri host 13/13 sampled create txs",
+  "fee_claimer": "5wkyL2FLEcyUUgc3UeGntHTAfWfzDrVuxMnaMm7792Gk",
+  "hosts": [
+   [
+    "cdn.moonshot.com",
+    13
+   ]
+  ],
+  "label": "uri:cdn.moonshot.com",
+  "n_configs": 1,
+  "n_creates": 80,
+  "payer_is_creator": {
+   "false": 13
+  },
+  "top_suffix": [
+   [
+    "moon",
+    80
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    13
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 9/9",
+  "fee_claimer": "FJMgrtQCgpnVtieBzTWwLZgKcHGYzw3CJWL8PrYYVvpG",
+  "hosts": [
+   [
+    "ipfs.io",
+    9
+   ]
+  ],
+  "label": "unattributed partner FJMgrt",
+  "n_configs": 1,
+  "n_creates": 79,
+  "payer_is_creator": {
+   "true": 9
+  },
+  "top_suffix": [
+   [
+    "ekun",
+    1
+   ],
+   [
+    "RrmJ",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    9
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "generic uri host ipfs.io 9/9",
+  "fee_claimer": "311WfdyexQm6VsfdkMjdPvw4PhSwLjrvwrMHG2QsKNEZ",
+  "hosts": [
+   [
+    "ipfs.io",
+    9
+   ]
+  ],
+  "label": "unattributed partner 311Wfd",
+  "n_configs": 2,
+  "n_creates": 77,
+  "payer_is_creator": {
+   "true": 9
+  },
+  "top_suffix": [
+   [
+    "3QAd",
+    1
+   ],
+   [
+    "QbF2",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    9
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "generic uri host ipfs.io 8/8",
+  "fee_claimer": "confiACK1n88XSwa9RiTtcGcNtD5GcDEptN2Qrsztwm",
+  "hosts": [
+   [
+    "ipfs.io",
+    8
+   ]
+  ],
+  "label": "unattributed partner confiA",
+  "n_configs": 76,
+  "n_creates": 76,
+  "payer_is_creator": {
+   "true": 8
+  },
+  "top_suffix": [
+   [
+    "wn1W",
+    1
+   ],
+   [
+    "FuTX",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    8
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 12/12",
+  "fee_claimer": "BASsPFrHeCznWnJo4mpNitf9kMx3GL5697pywscZy57",
+  "hosts": [
+   [
+    "ipfs.io",
+    12
+   ]
+  ],
+  "label": "unattributed partner BASsPF",
+  "n_configs": 1,
+  "n_creates": 73,
+  "payer_is_creator": {
+   "true": 12
+  },
+  "top_suffix": [
+   [
+    "nLS2",
+    1
+   ],
+   [
+    "XNZB",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    12
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "generic uri host ipfs.io 9/9",
+  "fee_claimer": "8fu25YgQZsjEJhVCBTBAJSiyKPjADVdfBiakZM32veV2",
+  "hosts": [
+   [
+    "ipfs.io",
+    9
+   ]
+  ],
+  "label": "unattributed partner 8fu25Y",
+  "n_configs": 2,
+  "n_creates": 66,
+  "payer_is_creator": {
+   "true": 9
+  },
+  "top_suffix": [
+   [
+    "Zmmd",
+    1
+   ],
+   [
+    "QKgu",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    9
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 10/10",
+  "fee_claimer": "BSnaWSNB8j9bNG8JG8U8R1PTkGHP8DXy9Wd8nDPmF8Ao",
+  "hosts": [
+   [
+    "ipfs.io",
+    10
+   ]
+  ],
+  "label": "unattributed partner BSnaWS",
+  "n_configs": 1,
+  "n_creates": 65,
+  "payer_is_creator": {
+   "true": 10
+  },
+  "top_suffix": [
+   [
+    "ur8k",
+    1
+   ],
+   [
+    "HMbw",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    10
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 9/9",
+  "fee_claimer": "2avB1qKWaTVCqgqLby4XcteVqgqP6tSF8R6tezv4Ndtn",
+  "hosts": [
+   [
+    "ipfs.io",
+    9
+   ]
+  ],
+  "label": "unattributed partner 2avB1q",
+  "n_configs": 1,
+  "n_creates": 65,
+  "payer_is_creator": {
+   "true": 9
+  },
+  "top_suffix": [
+   [
+    "Shyb",
+    1
+   ],
+   [
+    "Y3jy",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    9
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 7/7",
+  "fee_claimer": "49FxoTvWMD6LbY7ytE5L4JmbkVWWXzExwDCERNrdnsH4",
+  "hosts": [
+   [
+    "ipfs.io",
+    7
+   ]
+  ],
+  "label": "unattributed partner 49FxoT",
+  "n_configs": 1,
+  "n_creates": 58,
+  "payer_is_creator": {
+   "true": 7
+  },
+  "top_suffix": [
+   [
+    "DgR9",
+    1
+   ],
+   [
+    "SspT",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    7
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "generic uri host ipfs.io 10/10",
+  "fee_claimer": "CGwEV5G9hzZzLCsD85ymSW6zRrWNp68A6HDFSyNdAp3h",
+  "hosts": [
+   [
+    "ipfs.io",
+    10
+   ]
+  ],
+  "label": "unattributed partner CGwEV5",
+  "n_configs": 1,
+  "n_creates": 48,
+  "payer_is_creator": {
+   "true": 10
+  },
+  "top_suffix": [
+   [
+    "FvWG",
+    1
+   ],
+   [
+    "246T",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    10
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "generic uri host ipfs.io 6/6",
+  "fee_claimer": "9RjtvMud5ohNC9h98BDjNwTQbUPTGqUwNqchMdnLQ4Lz",
+  "hosts": [
+   [
+    "ipfs.io",
+    6
+   ]
+  ],
+  "label": "unattributed partner 9RjtvM",
+  "n_configs": 1,
+  "n_creates": 47,
+  "payer_is_creator": {
+   "true": 6
+  },
+  "top_suffix": [
+   [
+    "QaqM",
+    1
+   ],
+   [
+    "Kpdm",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    6
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 12/12",
+  "fee_claimer": "6tp4As5uVhNRqurtoQuUV5eKumhzfnobP5Yrz8tdH29P",
+  "hosts": [
+   [
+    "ipfs.io",
+    12
+   ]
+  ],
+  "label": "unattributed partner 6tp4As",
+  "n_configs": 1,
+  "n_creates": 45,
+  "payer_is_creator": {
+   "true": 12
+  },
+  "top_suffix": [
+   [
+    "X6EG",
+    1
+   ],
+   [
+    "W4Yo",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    12
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "uri host 10/10 sampled create txs",
+  "fee_claimer": "JCPepA43enAj47NU3AzXDLLVTQqTXgxcfbh4QJ6vYCzX",
+  "hosts": [
+   [
+    "media.launchpad.capx.ai",
+    10
+   ]
+  ],
+  "label": "uri:media.launchpad.capx.ai",
+  "n_configs": 1,
+  "n_creates": 44,
+  "payer_is_creator": {
+   "true": 10
+  },
+  "top_suffix": [
+   [
+    "capx",
+    44
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    10
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "uri host 8/8 sampled create txs",
+  "fee_claimer": "ANvsEBu7b3ehFnGbTkL8gDaaXs2MdyXtg7HRNUAEg3Ur",
+  "hosts": [
+   [
+    "whaletails.fun",
+    8
+   ]
+  ],
+  "label": "uri:whaletails.fun",
+  "n_configs": 4,
+  "n_creates": 43,
+  "payer_is_creator": {
+   "false": 8
+  },
+  "top_suffix": [
+   [
+    "bZni",
+    1
+   ],
+   [
+    "GPvq",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    8
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 7/7",
+  "fee_claimer": "3HABWnUHz1K9XuWnqAsDMKb2m1x91guS74df3MTwTxY7",
+  "hosts": [
+   [
+    "ipfs.io",
+    7
+   ]
+  ],
+  "label": "unattributed partner 3HABWn",
+  "n_configs": 1,
+  "n_creates": 37,
+  "payer_is_creator": {
+   "true": 7
+  },
+  "top_suffix": [
+   [
+    "i2Y2",
+    1
+   ],
+   [
+    "7NUm",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    7
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 7/7",
+  "fee_claimer": "8WHi69d3z6H6dZpWZE4LE7McHgXKJs36CtFxyerb1v7y",
+  "hosts": [
+   [
+    "ipfs.io",
+    7
+   ]
+  ],
+  "label": "unattributed partner 8WHi69",
+  "n_configs": 1,
+  "n_creates": 36,
+  "payer_is_creator": {
+   "true": 7
+  },
+  "top_suffix": [
+   [
+    "cMLj",
+    1
+   ],
+   [
+    "bTYi",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    7
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 7/7",
+  "fee_claimer": "4Ph5q33TnZ3dRnxDt4xHuAdu2wdJq4NjtRLZFwiDVnoP",
+  "hosts": [
+   [
+    "ipfs.io",
+    7
+   ]
+  ],
+  "label": "unattributed partner 4Ph5q3",
+  "n_configs": 1,
+  "n_creates": 35,
+  "payer_is_creator": {
+   "true": 7
+  },
+  "top_suffix": [
+   [
+    "GvhF",
+    1
+   ],
+   [
+    "yMba",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    7
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "generic uri host ipfs.io 7/7",
+  "fee_claimer": "UpAHuSfwaeXhyB3QGYFUKFYJ6aSAPUvkJ1fy3Qg8oXX",
+  "hosts": [
+   [
+    "ipfs.io",
+    7
+   ]
+  ],
+  "label": "unattributed partner UpAHuS",
+  "n_configs": 1,
+  "n_creates": 34,
+  "payer_is_creator": {
+   "true": 7
+  },
+  "top_suffix": [
+   [
+    "huUk",
+    1
+   ],
+   [
+    "n7nM",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    7
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "generic uri host ipfs.io 5/5",
+  "fee_claimer": "35kX5wrm97n4UuG2iyHHVWdLyHBRuiMGkqtpjA9wJe1T",
+  "hosts": [
+   [
+    "ipfs.io",
+    5
+   ]
+  ],
+  "label": "unattributed partner 35kX5w",
+  "n_configs": 1,
+  "n_creates": 34,
+  "payer_is_creator": {
+   "true": 5
+  },
+  "top_suffix": [
+   [
+    "w7RM",
+    1
+   ],
+   [
+    "scNb",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    5
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 6/6",
+  "fee_claimer": "GaNM9XJB4vYMq7MFQ2hrwdBEgFXjJGZKHP86LuQB4iuK",
+  "hosts": [
+   [
+    "ipfs.io",
+    6
+   ]
+  ],
+  "label": "unattributed partner GaNM9X",
+  "n_configs": 1,
+  "n_creates": 33,
+  "payer_is_creator": {
+   "true": 6
+  },
+  "top_suffix": [
+   [
+    "R7rm",
+    1
+   ],
+   [
+    "TBSd",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    6
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 8/8",
+  "fee_claimer": "CFQzqAignvt3sE9gjzMk3KaxZGdDC2ZQruBEydBsxQ3W",
+  "hosts": [
+   [
+    "ipfs.io",
+    8
+   ]
+  ],
+  "label": "unattributed partner CFQzqA",
+  "n_configs": 1,
+  "n_creates": 31,
+  "payer_is_creator": {
+   "true": 8
+  },
+  "top_suffix": [
+   [
+    "mMYj",
+    1
+   ],
+   [
+    "uVWN",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    8
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "uri host 7/7 sampled create txs",
+  "fee_claimer": "9rHYpiomWrMNhMb76BabYWzCVMYudBXqhHuQqJBRMrcR",
+  "hosts": [
+   [
+    "oneonly.lol",
+    7
+   ]
+  ],
+  "label": "uri:oneonly.lol",
+  "n_configs": 1,
+  "n_creates": 30,
+  "payer_is_creator": {
+   "true": 7
+  },
+  "top_suffix": [
+   [
+    "8y3R",
+    1
+   ],
+   [
+    "hmu4",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    7
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "uri host 6/6 sampled create txs",
+  "fee_claimer": "2D2T6kQDFUsQx65yCYRtJmfEjR8cG6M5AuzW78r1xuvZ",
+  "hosts": [
+   [
+    "hiie.arthurlabs.net",
+    6
+   ]
+  ],
+  "label": "uri:hiie.arthurlabs.net",
+  "n_configs": 29,
+  "n_creates": 29,
+  "payer_is_creator": {
+   "true": 6
+  },
+  "top_suffix": [
+   [
+    "dHpM",
+    1
+   ],
+   [
+    "MaNe",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    6
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "uri host 6/6 sampled create txs",
+  "fee_claimer": "6pdsnYdpLyrWGSSucaZBui9izxQ7Ubg7bYesa8RQbZ7X",
+  "hosts": [
+   [
+    "souvenir.finance",
+    6
+   ]
+  ],
+  "label": "uri:souvenir.finance",
+  "n_configs": 14,
+  "n_creates": 28,
+  "payer_is_creator": {
+   "true": 6
+  },
+  "top_suffix": [
+   [
+    "z54n",
+    1
+   ],
+   [
+    "ZZPb",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    6
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "uri host 5/7 sampled create txs",
+  "fee_claimer": "CM7HhJo1gqE6jWhYWJiXjwfdaZDviWav7bSqJj6RgaNV",
+  "hosts": [
+   [
+    "brown-left-cougar-435.mypinata.cloud",
+    5
+   ],
+   [
+    "gateway.pinata.cloud",
+    2
+   ]
+  ],
+  "label": "uri:brown-left-cougar-435.mypinata.cloud",
+  "n_configs": 4,
+  "n_creates": 26,
+  "payer_is_creator": {
+   "true": 7
+  },
+  "top_suffix": [
+   [
+    "1hAz",
+    1
+   ],
+   [
+    "vhU2",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    7
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "generic uri host ipfs:// 5/5",
+  "fee_claimer": "GZjYfGyUNQfDChcQ66Gc3ZMcQqPEisyRYe1nPyQhP9bp",
+  "hosts": [
+   [
+    "ipfs://",
+    5
+   ]
+  ],
+  "label": "unattributed partner GZjYfG",
+  "n_configs": 26,
+  "n_creates": 26,
+  "payer_is_creator": {
+   "true": 5
+  },
+  "top_suffix": [
+   [
+    "yGbj",
+    1
+   ],
+   [
+    "zf8R",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    5
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "uri host 5/5 sampled create txs",
+  "fee_claimer": "GZjW8Zq9KmfWKFrRfvbGyRLvMov1GXybFYZV6UwKLjyQ",
+  "hosts": [
+   [
+    "xstok.fun",
+    5
+   ]
+  ],
+  "label": "uri:xstok.fun",
+  "n_configs": 26,
+  "n_creates": 26,
+  "payer_is_creator": {
+   "true": 5
+  },
+  "top_suffix": [
+   [
+    "4o7p",
+    1
+   ],
+   [
+    "bXzg",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    5
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "generic uri host ipfs.io 6/6",
+  "fee_claimer": "3rUoLMwNhiLUBGCfT28vaiZ8mdG8fKtBr5x9tQYiokhn",
+  "hosts": [
+   [
+    "ipfs.io",
+    6
+   ]
+  ],
+  "label": "unattributed partner 3rUoLM",
+  "n_configs": 1,
+  "n_creates": 25,
+  "payer_is_creator": {
+   "true": 6
+  },
+  "top_suffix": [
+   [
+    "gzw2",
+    1
+   ],
+   [
+    "f2MQ",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    6
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "uri host 5/5 sampled create txs",
+  "fee_claimer": "4o9txL3vZUR6UHCeb5AntbZJhryXLtMWzAdPoucG1bj4",
+  "hosts": [
+   [
+    "rex.fun",
+    5
+   ]
+  ],
+  "label": "uri:rex.fun",
+  "n_configs": 24,
+  "n_creates": 24,
+  "payer_is_creator": {
+   "true": 5
+  },
+  "top_suffix": [
+   [
+    "JzV1",
+    1
+   ],
+   [
+    "EwZu",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    5
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 5/5",
+  "fee_claimer": "BTWtzGgc3QKo41piXPTH4JEF5He7NyfhPm15SUKVFPsi",
+  "hosts": [
+   [
+    "ipfs.io",
+    5
+   ]
+  ],
+  "label": "unattributed partner BTWtzG",
+  "n_configs": 1,
+  "n_creates": 24,
+  "payer_is_creator": {
+   "true": 5
+  },
+  "top_suffix": [
+   [
+    "wEZ7",
+    1
+   ],
+   [
+    "8qDs",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    5
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "generic uri host ipfs.io 6/6",
+  "fee_claimer": "CwvyvNt9DrvcVjtaPCmkdhsquoNshxFRta7HyzJxSVEw",
+  "hosts": [
+   [
+    "ipfs.io",
+    6
+   ]
+  ],
+  "label": "unattributed partner CwvyvN",
+  "n_configs": 5,
+  "n_creates": 23,
+  "payer_is_creator": {
+   "true": 6
+  },
+  "top_suffix": [
+   [
+    "ETCH",
+    23
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    6
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "generic uri host gateway.pinata.cloud 2/5",
+  "fee_claimer": "6LuTrLyKRA2EV57NUWnDuzFCf9JH9mfpMXp2fRbqULqZ",
+  "hosts": [
+   [
+    "gateway.pinata.cloud",
+    2
+   ],
+   [
+    "vamp.trading",
+    1
+   ],
+   [
+    "ventrion.fun",
+    1
+   ]
+  ],
+  "label": "unattributed partner 6LuTrL",
+  "n_configs": 6,
+  "n_creates": 23,
+  "payer_is_creator": {
+   "true": 5
+  },
+  "top_suffix": [
+   [
+    "TyKg",
+    1
+   ],
+   [
+    "w8kL",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    5
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "generic uri host ipfs.io 6/6",
+  "fee_claimer": "CRDP9xTxY2gJySkUFHuLMx5CEBb8DzrTWbaf8xoHD83V",
+  "hosts": [
+   [
+    "ipfs.io",
+    6
+   ]
+  ],
+  "label": "unattributed partner CRDP9x",
+  "n_configs": 1,
+  "n_creates": 22,
+  "payer_is_creator": {
+   "true": 6
+  },
+  "top_suffix": [
+   [
+    "soSr",
+    1
+   ],
+   [
+    "oBnY",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    6
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 6/6",
+  "fee_claimer": "aQc7zU8XvjBnTFCqCMPpby7DtbVWLHdBH4bWNgeKEDy",
+  "hosts": [
+   [
+    "ipfs.io",
+    6
+   ]
+  ],
+  "label": "unattributed partner aQc7zU",
+  "n_configs": 1,
+  "n_creates": 22,
+  "payer_is_creator": {
+   "true": 6
+  },
+  "top_suffix": [
+   [
+    "5NaN",
+    1
+   ],
+   [
+    "12sX",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    6
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "generic uri host ipfs.io 6/6",
+  "fee_claimer": "C4i8uCXeE1FWdR1E16xVeWG4vvLdQqthKgUDvfGNUQr1",
+  "hosts": [
+   [
+    "ipfs.io",
+    6
+   ]
+  ],
+  "label": "unattributed partner C4i8uC",
+  "n_configs": 1,
+  "n_creates": 21,
+  "payer_is_creator": {
+   "true": 6
+  },
+  "top_suffix": [
+   [
+    "KGk5",
+    1
+   ],
+   [
+    "HB2T",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    6
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "generic uri host gateway.pinata.cloud 3/6",
+  "fee_claimer": "Bpbg21i5U46fWwGzYTmHcETsFNZwAq6QS8kg7QeKQ5md",
+  "hosts": [
+   [
+    "gateway.pinata.cloud",
+    3
+   ],
+   [
+    "ipfs.io",
+    2
+   ],
+   [
+    "pub-51db99f8a6db4458a8d0a2465a8d2366.r2.dev",
+    1
+   ]
+  ],
+  "label": "unattributed partner Bpbg21",
+  "n_configs": 6,
+  "n_creates": 21,
+  "payer_is_creator": {
+   "true": 6
+  },
+  "top_suffix": [
+   [
+    "Ywi4",
+    1
+   ],
+   [
+    "pK49",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    6
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "uri host 7/7 sampled create txs",
+  "fee_claimer": "5y8iwkrKmr3a9zUnUEuAFBrzSDqhbHiB7Nva1s2PPyvY",
+  "hosts": [
+   [
+    "gomofamily.life",
+    7
+   ]
+  ],
+  "label": "uri:gomofamily.life",
+  "n_configs": 16,
+  "n_creates": 20,
+  "payer_is_creator": {
+   "true": 7
+  },
+  "top_suffix": [
+   [
+    "9kax",
+    1
+   ],
+   [
+    "s5Dj",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    7
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 2/2",
+  "fee_claimer": "A83Fbeuxfmtk8Y3fgVDihQ8SXGFvg9sWANf18CN47DjH",
+  "hosts": [
+   [
+    "ipfs.io",
+    2
+   ]
+  ],
+  "label": "unattributed partner A83Fbe",
+  "n_configs": 1,
+  "n_creates": 18,
+  "payer_is_creator": {
+   "true": 2
+  },
+  "top_suffix": [
+   [
+    "AYY1",
+    1
+   ],
+   [
+    "CMtk",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    2
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "generic uri host gateway.irys.xyz 1/1",
+  "fee_claimer": "2oXT6oMgNPfToahWG48QTBPWS9UJ8a7TSSeEoeoSLMGt",
+  "hosts": [
+   [
+    "gateway.irys.xyz",
+    1
+   ]
+  ],
+  "label": "unattributed partner 2oXT6o",
+  "n_configs": 18,
+  "n_creates": 18,
+  "payer_is_creator": {
+   "true": 1
+  },
+  "top_suffix": [
+   [
+    "hevi",
+    1
+   ],
+   [
+    "ThEz",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    1
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "no sample",
+  "fee_claimer": "2GGsDvbmsmgRPSKWa27QrmXA7wverp1qez4DcikdEK4k",
+  "hosts": [],
+  "label": "unattributed partner 2GGsDv",
+  "n_configs": 2,
+  "n_creates": 18,
+  "payer_is_creator": {},
+  "top_suffix": [
+   [
+    "ECdD",
+    1
+   ],
+   [
+    "ukYo",
+    1
+   ]
+  ],
+  "wrappers": []
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "uri host 1/1 sampled create txs",
+  "fee_claimer": "DHHK344eJeSfzzcY2F4wqYL17TFXJNM62uJFkkRt7F3U",
+  "hosts": [
+   [
+    "hiie.arthurlabs.net",
+    1
+   ]
+  ],
+  "label": "uri:hiie.arthurlabs.net",
+  "n_configs": 6,
+  "n_creates": 18,
+  "payer_is_creator": {
+   "true": 1
+  },
+  "top_suffix": [
+   [
+    "oxgA",
+    1
+   ],
+   [
+    "oCdG",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    1
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 3/3",
+  "fee_claimer": "DwH2j4QcwXKCbV9eGRoLuwiaeEe4ojKuq1EWJbghdSt6",
+  "hosts": [
+   [
+    "ipfs.io",
+    3
+   ]
+  ],
+  "label": "unattributed partner DwH2j4",
+  "n_configs": 1,
+  "n_creates": 17,
+  "payer_is_creator": {
+   "true": 3
+  },
+  "top_suffix": [
+   [
+    "8DDc",
+    1
+   ],
+   [
+    "g91V",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    3
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "generic uri host ipfs.io 1/2",
+  "fee_claimer": "7tXi4mbvppPBgYgTVj2NpYq9K1KYYQvHv6tfCpJv9kMT",
+  "hosts": [
+   [
+    "ipfs.io",
+    1
+   ],
+   [
+    "www.vortexdeployer.com",
+    1
+   ]
+  ],
+  "label": "unattributed partner 7tXi4m",
+  "n_configs": 1,
+  "n_creates": 17,
+  "payer_is_creator": {
+   "true": 2
+  },
+  "top_suffix": [
+   [
+    "B22j",
+    1
+   ],
+   [
+    "Ayq3",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    2
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "uri host 1/1 sampled create txs",
+  "fee_claimer": "DXFqi6tXYGjavSCXEV7NHGYwsaWMqSszrx6VKcg6yUNq",
+  "hosts": [
+   [
+    "spec-fun-production.up.railway.app",
+    1
+   ]
+  ],
+  "label": "uri:spec-fun-production.up.railway.app",
+  "n_configs": 16,
+  "n_creates": 16,
+  "payer_is_creator": {
+   "true": 1
+  },
+  "top_suffix": [
+   [
+    "Bkxu",
+    1
+   ],
+   [
+    "zBid",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    1
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "generic uri host gateway.pinata.cloud 1/1",
+  "fee_claimer": "GpywScDzQDY3ocqQ3iXfi5eWBAmt3yhj2W9jHLTkss5p",
+  "hosts": [
+   [
+    "gateway.pinata.cloud",
+    1
+   ]
+  ],
+  "label": "unattributed partner GpywSc",
+  "n_configs": 6,
+  "n_creates": 15,
+  "payer_is_creator": {
+   "true": 1
+  },
+  "top_suffix": [
+   [
+    "xQf2",
+    1
+   ],
+   [
+    "MF8u",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    1
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "no sample",
+  "fee_claimer": "E444ijMJx9sQhTEiXVy7YAmnthmKt8t4FG4Sc2RaRNyw",
+  "hosts": [],
+  "label": "unattributed partner E444ij",
+  "n_configs": 2,
+  "n_creates": 15,
+  "payer_is_creator": {},
+  "top_suffix": [
+   [
+    "ZoGh",
+    1
+   ],
+   [
+    "pqBk",
+    1
+   ]
+  ],
+  "wrappers": []
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "generic uri host gateway.pinata.cloud 1/1",
+  "fee_claimer": "BqEFaFahxGaz5RrW8hHRRP69QZJR31F8CkXuU8tQ37ca",
+  "hosts": [
+   [
+    "gateway.pinata.cloud",
+    1
+   ]
+  ],
+  "label": "unattributed partner BqEFaF",
+  "n_configs": 1,
+  "n_creates": 14,
+  "payer_is_creator": {
+   "true": 1
+  },
+  "top_suffix": [
+   [
+    "We1V",
+    1
+   ],
+   [
+    "FEXD",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    1
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "no sample",
+  "fee_claimer": "8hfY5HH6wmeiV35y3tC8wnSPxXzK8RVGWTtfnU1QLohd",
+  "hosts": [],
+  "label": "unattributed partner 8hfY5H",
+  "n_configs": 1,
+  "n_creates": 13,
+  "payer_is_creator": {},
+  "top_suffix": [
+   [
+    "j8Wr",
+    1
+   ],
+   [
+    "n9Vn",
+    1
+   ]
+  ],
+  "wrappers": []
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "partner_metadata name (website https://farmfun.farm)",
+  "fee_claimer": "3N4mNNm7WNqnhPhkuMMxBkJjxbaaCg5QWRG2kCaFfarm",
+  "hosts": [],
+  "label": "FarmFun",
+  "n_configs": 10,
+  "n_creates": 13,
+  "payer_is_creator": {},
+  "top_suffix": [
+   [
+    "BgVX",
+    1
+   ],
+   [
+    "kgnb",
+    1
+   ]
+  ],
+  "wrappers": []
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "no sample",
+  "fee_claimer": "2x6PYcdfQu97kDwGfMT5aKEfjXcQiim6bWZwfozNLtsm",
+  "hosts": [],
+  "label": "unattributed partner 2x6PYc",
+  "n_configs": 1,
+  "n_creates": 13,
+  "payer_is_creator": {},
+  "top_suffix": [
+   [
+    "FYif",
+    1
+   ],
+   [
+    "5buR",
+    1
+   ]
+  ],
+  "wrappers": []
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "generic uri host ipfs.io 1/1",
+  "fee_claimer": "qe4N2Fz7wcqXhSheThzN7jxNgJEWiQxkT2hkCy1KbQ9",
+  "hosts": [
+   [
+    "ipfs.io",
+    1
+   ]
+  ],
+  "label": "unattributed partner qe4N2F",
+  "n_configs": 1,
+  "n_creates": 13,
+  "payer_is_creator": {
+   "true": 1
+  },
+  "top_suffix": [
+   [
+    "pPwq",
+    1
+   ],
+   [
+    "r1MR",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    1
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "no sample",
+  "fee_claimer": "DYgjRcvCHbgG1pJi9ygptZ6xywvToD1d1JNLFWHaFsaq",
+  "hosts": [],
+  "label": "unattributed partner DYgjRc",
+  "n_configs": 1,
+  "n_creates": 13,
+  "payer_is_creator": {},
+  "top_suffix": [
+   [
+    "9ty7",
+    1
+   ],
+   [
+    "YWFH",
+    1
+   ]
+  ],
+  "wrappers": []
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "generic uri host ipfs.io 1/1",
+  "fee_claimer": "BrivTwfdPLJhWufm4TYWz75sLhSnnyupCBRAiTibu8xb",
+  "hosts": [
+   [
+    "ipfs.io",
+    1
+   ]
+  ],
+  "label": "unattributed partner BrivTw",
+  "n_configs": 1,
+  "n_creates": 13,
+  "payer_is_creator": {
+   "true": 1
+  },
+  "top_suffix": [
+   [
+    "bq4e",
+    1
+   ],
+   [
+    "RRhP",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    1
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "uri host 1/1 sampled create txs",
+  "fee_claimer": "36n97AWii918JDNmWka4b2WwDFNq2QF1ZUEPYppGNkKK",
+  "hosts": [
+   [
+    "100kdaily.top",
+    1
+   ]
+  ],
+  "label": "uri:100kdaily.top",
+  "n_configs": 4,
+  "n_creates": 13,
+  "payer_is_creator": {
+   "true": 1
+  },
+  "top_suffix": [
+   [
+    "yz8v",
+    1
+   ],
+   [
+    "fs2u",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    1
+   ]
+  ]
+ },
+ {
+  "class": "all-graduate fast",
+  "evidence": "no sample",
+  "fee_claimer": "Ei7b4hgDNVghaYuYqzveQyyeoYhK74G1hK9XQXttzMgs",
+  "hosts": [],
+  "label": "unattributed partner Ei7b4h",
+  "n_configs": 1,
+  "n_creates": 12,
+  "payer_is_creator": {},
+  "top_suffix": [
+   [
+    "gdpC",
+    1
+   ],
+   [
+    "n91H",
+    1
+   ]
+  ],
+  "wrappers": []
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "partner_metadata name (website https://bots.family)",
+  "fee_claimer": "GtCM9nvszTZ3XUv3JFfdricLVSL2m6A6wmo2D17giUF1",
+  "hosts": [
+   [
+    "ruujjdmcvwkcdninabnx.supabase.co",
+    1
+   ]
+  ],
+  "label": "Bots Family",
+  "n_configs": 1,
+  "n_creates": 12,
+  "payer_is_creator": {
+   "false": 1
+  },
+  "top_suffix": [
+   [
+    "i3Hk",
+    1
+   ],
+   [
+    "fxc6",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    1
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "no sample",
+  "fee_claimer": "AQbBhrGXkTsmCEW8x7GHybQANen2miVU1tDc7Rpgmu3U",
+  "hosts": [],
+  "label": "unattributed partner AQbBhr",
+  "n_configs": 1,
+  "n_creates": 12,
+  "payer_is_creator": {},
+  "top_suffix": [
+   [
+    "zPGa",
+    1
+   ],
+   [
+    "mc5P",
+    1
+   ]
+  ],
+  "wrappers": []
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "no sample",
+  "fee_claimer": "8KXqQwtrgtKxNfTWYsN34XNKXVQQR78JZfgbLorNL2n1",
+  "hosts": [],
+  "label": "unattributed partner 8KXqQw",
+  "n_configs": 12,
+  "n_creates": 12,
+  "payer_is_creator": {},
+  "top_suffix": [
+   [
+    "pppN",
+    1
+   ],
+   [
+    "kzLZ",
+    1
+   ]
+  ],
+  "wrappers": []
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "no sample",
+  "fee_claimer": "9RbbFf3re3DDpewEXP7TPENerY6kjV5oLEC6epsMNKAc",
+  "hosts": [],
+  "label": "unattributed partner 9RbbFf",
+  "n_configs": 1,
+  "n_creates": 11,
+  "payer_is_creator": {},
+  "top_suffix": [
+   [
+    "TP6T",
+    1
+   ],
+   [
+    "Uur3",
+    1
+   ]
+  ],
+  "wrappers": []
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "uri host 2/2 sampled create txs",
+  "fee_claimer": "GYpY6MW9kaXfKLqKTJA7Rzx8vivQGUBcHDQACgGyJPhy",
+  "hosts": [
+   [
+    "doubletap.fun",
+    2
+   ]
+  ],
+  "label": "uri:doubletap.fun",
+  "n_configs": 1,
+  "n_creates": 11,
+  "payer_is_creator": {
+   "true": 2
+  },
+  "top_suffix": [
+   [
+    "X54i",
+    1
+   ],
+   [
+    "8S6W",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    2
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "generic uri host arweave.net 2/2",
+  "fee_claimer": "F3swKL7FKLtNfo9ckummnkrjnoQna2UCGzAErx5VBcLU",
+  "hosts": [
+   [
+    "arweave.net",
+    2
+   ]
+  ],
+  "label": "unattributed partner F3swKL",
+  "n_configs": 6,
+  "n_creates": 10,
+  "payer_is_creator": {
+   "true": 2
+  },
+  "top_suffix": [
+   [
+    "AJ58",
+    1
+   ],
+   [
+    "GitW",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    2
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "uri host 1/1 sampled create txs",
+  "fee_claimer": "GiJQuXtS3QT8a9ptjpEFgiBWr1UzrZ4wBdaTo5HMEVgL",
+  "hosts": [
+   [
+    "xstok.fun",
+    1
+   ]
+  ],
+  "label": "uri:xstok.fun",
+  "n_configs": 10,
+  "n_creates": 10,
+  "payer_is_creator": {
+   "true": 1
+  },
+  "top_suffix": [
+   [
+    "k4GG",
+    1
+   ],
+   [
+    "6p5j",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    1
+   ]
+  ]
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "generic uri host ipfs.io 1/1",
+  "fee_claimer": "GdP4UudYTu5szGeEEL63JVsn3g1HXCdGTYVHxhUmRDNF",
+  "hosts": [
+   [
+    "ipfs.io",
+    1
+   ]
+  ],
+  "label": "unattributed partner GdP4Uu",
+  "n_configs": 1,
+  "n_creates": 10,
+  "payer_is_creator": {
+   "true": 1
+  },
+  "top_suffix": [
+   [
+    "tSr2",
+    1
+   ],
+   [
+    "z5oW",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    1
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "uri host 2/2 sampled create txs",
+  "fee_claimer": "DGjmjAoCdGSrF4dk6yNsbRykF2MaR3Kihx5zRVwQv4k2",
+  "hosts": [
+   [
+    "ivory-adorable-octopus-471.mypinata.cloud",
+    2
+   ]
+  ],
+  "label": "uri:ivory-adorable-octopus-471.mypinata.cloud",
+  "n_configs": 1,
+  "n_creates": 10,
+  "payer_is_creator": {
+   "true": 2
+  },
+  "top_suffix": [
+   [
+    "hpos",
+    10
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    2
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "no sample",
+  "fee_claimer": "8Cpu5vopGtMyfgNtvLNmRRmFytCnyj1SQCpmAcedJ9Gf",
+  "hosts": [],
+  "label": "unattributed partner 8Cpu5v",
+  "n_configs": 10,
+  "n_creates": 10,
+  "payer_is_creator": {},
+  "top_suffix": [
+   [
+    "Lr3g",
+    1
+   ],
+   [
+    "Xjg8",
+    1
+   ]
+  ],
+  "wrappers": []
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "no sample",
+  "fee_claimer": "CbNEEWqkQ8vLLh9mNYT5t3wHG7AbRK4VmZW4pcDMA929",
+  "hosts": [],
+  "label": "unattributed partner CbNEEW",
+  "n_configs": 10,
+  "n_creates": 10,
+  "payer_is_creator": {},
+  "top_suffix": [
+   [
+    "Q83r",
+    1
+   ],
+   [
+    "wug4",
+    1
+   ]
+  ],
+  "wrappers": []
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "no sample",
+  "fee_claimer": "FY12FizQ5bfZJkREpgJDX6DLLgMzWTj2GXhN4Xfk9Ah7",
+  "hosts": [],
+  "label": "unattributed partner FY12Fi",
+  "n_configs": 1,
+  "n_creates": 10,
+  "payer_is_creator": {},
+  "top_suffix": [
+   [
+    "nM9X",
+    1
+   ],
+   [
+    "PBL4",
+    1
+   ]
+  ],
+  "wrappers": []
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "no sample",
+  "fee_claimer": "4wYGg1KxUroz6Aitgmca64c5wqZW5q1cULCTRJ8dxhyL",
+  "hosts": [],
+  "label": "unattributed partner 4wYGg1",
+  "n_configs": 10,
+  "n_creates": 10,
+  "payer_is_creator": {},
+  "top_suffix": [
+   [
+    "H416",
+    1
+   ],
+   [
+    "wNyn",
+    1
+   ]
+  ],
+  "wrappers": []
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "no sample",
+  "fee_claimer": "6yaUK1K7Kt1ve1L9hwjASHdZe5qvN9jgNx27KhGsMBy",
+  "hosts": [],
+  "label": "unattributed partner 6yaUK1",
+  "n_configs": 1,
+  "n_creates": 10,
+  "payer_is_creator": {},
+  "top_suffix": [
+   [
+    "NeUp",
+    1
+   ],
+   [
+    "jTXn",
+    1
+   ]
+  ],
+  "wrappers": []
+ },
+ {
+  "class": "one-trade completer",
+  "evidence": "generic uri host ipfs.io 1/1",
+  "fee_claimer": "AeXLK61ToeAQg96BY2M41cA9j4Yza19DCVDSZAVSetwF",
+  "hosts": [
+   [
+    "ipfs.io",
+    1
+   ]
+  ],
+  "label": "unattributed partner AeXLK6",
+  "n_configs": 10,
+  "n_creates": 10,
+  "payer_is_creator": {
+   "true": 1
+  },
+  "top_suffix": [
+   [
+    "QZMb",
+    1
+   ],
+   [
+    "aSTM",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    1
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "uri host 1/1 sampled create txs",
+  "fee_claimer": "4oYGm46bsiuqZvVgiXuA4Gx4AW4wp3FcgYVvxPpDoaB5",
+  "hosts": [
+   [
+    "olive-cheerful-crayfish-253.mypinata.cloud",
+    1
+   ]
+  ],
+  "label": "uri:olive-cheerful-crayfish-253.mypinata.cloud",
+  "n_configs": 2,
+  "n_creates": 10,
+  "payer_is_creator": {
+   "true": 1
+  },
+  "top_suffix": [
+   [
+    "xfhG",
+    1
+   ],
+   [
+    "w68W",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    1
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "no sample",
+  "fee_claimer": "HW4S7HSjrfMS7BzePVJQR7jsN1E7n3EST4Sud92dUPGT",
+  "hosts": [],
+  "label": "unattributed partner HW4S7H",
+  "n_configs": 10,
+  "n_creates": 10,
+  "payer_is_creator": {},
+  "top_suffix": [
+   [
+    "wEeX",
+    1
+   ],
+   [
+    "EpMF",
+    1
+   ]
+  ],
+  "wrappers": []
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "uri host 1/1 sampled create txs",
+  "fee_claimer": "t7Tykso8ZfZRv6CQxpLRggYLiugxWYhJS2TARe3zwRm",
+  "hosts": [
+   [
+    "media.launchpad.capx.ai",
+    1
+   ]
+  ],
+  "label": "uri:media.launchpad.capx.ai",
+  "n_configs": 6,
+  "n_creates": 10,
+  "payer_is_creator": {
+   "true": 1
+  },
+  "top_suffix": [
+   [
+    "PJqk",
+    1
+   ],
+   [
+    "ykGr",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    1
+   ]
+  ]
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "no sample",
+  "fee_claimer": "sc4owrKXsJrJbNxWEYFEcuVYUJeQhp2pQqzf5YdCCBc",
+  "hosts": [],
+  "label": "unattributed partner sc4owr",
+  "n_configs": 4,
+  "n_creates": 10,
+  "payer_is_creator": {},
+  "top_suffix": [
+   [
+    "PMyu",
+    1
+   ],
+   [
+    "7Nwm",
+    1
+   ]
+  ],
+  "wrappers": []
+ },
+ {
+  "class": "launchpad-like",
+  "evidence": "uri host 1/2 sampled create txs",
+  "fee_claimer": "CLvnuRqzHZRAe4zNE9vR1F6HjXERws8reME2x4PTZpG2",
+  "hosts": [
+   [
+    "xstok.fun",
+    1
+   ],
+   [
+    "tanzo.trade",
+    1
+   ]
+  ],
+  "label": "uri:xstok.fun",
+  "n_configs": 6,
+  "n_creates": 10,
+  "payer_is_creator": {
+   "true": 2
+  },
+  "top_suffix": [
+   [
+    "9X94",
+    1
+   ],
+   [
+    "GzUZ",
+    1
+   ]
+  ],
+  "wrappers": [
+   [
+    "(top-level DBC)",
+    2
+   ]
+  ]
+ }
+]
