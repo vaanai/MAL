@@ -31,8 +31,12 @@ STANDBY (--standby). A new process that takes over the tape from a running write
   9. status counters carry over: lines_written, gaps, disk_reserve.pauses and rows_dropped_total start from the old writer's last status, so a
      sampler never sees a counter go down. The first hb rows are written right after the takeover row.
 
-PRODUCTION GUARD. The production tape /data/mal/arena/tape is refused in standby mode before EARLIEST_PRODUCTION_MS (2026-11-11T14:00Z: after
-HV6's last in-clock instant, QP-RULING-1026 Q5) and whenever the thresholds are not pinned. Tests and rehearsals use another out-dir.
+GUARDS (main(), before any lock, directory or socket):
+  * research-0: every mode is refused on a host named *research* before RESEARCH0_WS_EARLIEST_MS (2026-11-11T13:00Z, HV6's last in-clock instant):
+    its public websockets would share the in-clock feed's IP (DESIGN 2.4; QP OK on #945, item 3).
+  * production tape /data/mal/arena/tape: refused in EVERY mode before EARLIEST_PRODUCTION_MS (2026-11-11T14:00Z; QP-RULING-1026 Q5), and in standby
+    mode whenever the thresholds are not pinned. Tests and rehearsals use another out-dir.
+The takeover row always carries `thresholds` (QP N2).
 
 EXIT CODES: v1's (0, 2, 3, 4) plus 5: the takeover did not happen by its deadline (nothing written, the old writer untouched or, if the stop
 was sent, said so on stderr).
@@ -53,6 +57,7 @@ import fcntl
 import json
 import os
 import signal
+import socket
 import sys
 import time
 from datetime import datetime, timezone
@@ -68,6 +73,9 @@ STANDBY_LOCK_NAME = ".arena-feed.standby.lock"
 STANDBY_STATUS_NAME = "arena-feed-standby-status.json"
 PRODUCTION_TAPE = "/data/mal/arena/tape"
 EARLIEST_PRODUCTION_MS = int(datetime(2026, 11, 11, 14, tzinfo=timezone.utc).timestamp() * 1000)
+# QP OK on #945 (comment 6424863148) item 3: no public websocket from research-0 before about HV6's last in-clock instant (its read, 11-11T13:00Z):
+# extra sockets would share the IP of the in-clock feed (DESIGN 2.4). Any mode of this module, any out-dir.
+RESEARCH0_WS_EARLIEST_MS = int(datetime(2026, 11, 11, 13, tzinfo=timezone.utc).timestamp() * 1000)
 OVERLAP_MIN_S_FLOOR = 120.0
 READY_MARGIN = 1.10  # the standby waits for min_overlap_rows x this many buffered rows before it stops the old writer
 WARM_HOURS = 2
@@ -452,7 +460,9 @@ class FeedV2(af.Feed):
                 "dedup": {"buffered": buffered, "dropped_dup": dropped, "written_missed": len(out_rows), "buffer_overflow": self.overflow},
                 "agreement": {p: {"n_old": a["n_old"], "only_old": a["only_old"]} for p, a in agree.items()},
                 "standby_reconnects_in_overlap": {p: a["reconnects"] for p, a in agree.items()},
-                "thresholds": {"max_disagree_rate": dict(self.max_disagree_rate or {}), "min_overlap_rows": dict(self.min_overlap_rows or {})},
+                # always written (QP N2): the pinned per-program values, or null per program when unpinned (then continuity is unproven anyway)
+                "thresholds": {"max_disagree_rate": {p: (self.max_disagree_rate or {}).get(p) for p in af.PROG_PROGRAM},
+                               "min_overlap_rows": {p: (self.min_overlap_rows or {}).get(p) for p in af.PROG_PROGRAM}},
                 "counter_base": dict(self.counter_base), "overlap_min_s": self.overlap_min_s}
         if proven:
             self.emit_safe(af._row("takeover", "all", 0, lock_ms, None, None, info))
@@ -534,11 +544,20 @@ def parse_per_prog(arg: str | None, cast) -> dict[str, Any] | None:
     return out
 
 
-def check_production(out_dir: Path, now_ms: int, pinned: bool) -> None:
+def check_host(now_ms: int, hostname: str | None = None) -> None:
+    """Refuse to open any public websocket from mal-research-0 before RESEARCH0_WS_EARLIEST_MS (both modes, any out-dir)."""
+    h = (hostname if hostname is not None else socket.gethostname()).lower()
+    if "research" in h and now_ms < RESEARCH0_WS_EARLIEST_MS:
+        raise ValueError("arena_feed_v2 is refused on mal-research-0 before 2026-11-11T13:00Z (shared public-RPC IP with the in-clock HV6 feed; DESIGN 2.4)")
+
+
+def check_production(out_dir: Path, now_ms: int, pinned: bool, standby: bool = True) -> None:
+    """The production tape: refused before EARLIEST_PRODUCTION_MS in EVERY mode (a plain v2 writer is a feed-pin change too), and in standby mode
+    whenever the thresholds are unpinned."""
     if str(out_dir.resolve()) == PRODUCTION_TAPE or str(out_dir) == PRODUCTION_TAPE:
         if now_ms < EARLIEST_PRODUCTION_MS:
-            raise ValueError("standby on the production tape is refused before 2026-11-11T14:00Z (no v2 inside HV6's clock, QP-RULING-1026 Q5)")
-        if not pinned:
+            raise ValueError("arena_feed_v2 on the production tape is refused before 2026-11-11T14:00Z (no v2 inside HV6's clock, QP-RULING-1026 Q5)")
+        if standby and not pinned:
             raise ValueError("standby on the production tape needs pinned --max-disagree-rate and --min-overlap-rows (QP-RULING-1026 Q1)")
 
 
@@ -610,6 +629,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    try:
+        now = af.now_ms()
+        check_host(now)
+        check_production(af.check_out_dir(args.out_dir), now, args.max_disagree_rate is not None and args.min_overlap_rows is not None, standby=args.standby)
+    except ValueError as exc:
+        print(f"arena_feed_v2: {exc}", file=sys.stderr)
+        return 2
     if not args.standby:
         return af.main([a for a in (argv if argv is not None else sys.argv[1:])])
     if args.takeover_at_ms is None or args.takeover_deadline_ms is None or args.takeover_deadline_ms <= args.takeover_at_ms:
