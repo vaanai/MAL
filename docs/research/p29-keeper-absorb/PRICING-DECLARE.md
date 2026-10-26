@@ -208,3 +208,22 @@ The 3% drop filter, the 2% bar and the reversion multiple read post-trade prices
 - **Stops**: NOT_DECIDABLE (events < 100 or days < 5) does NOT fire: 1,107 OOS events over 11 days. No block is dropped on coverage (all medians >= 0.85, section "Coverage dry pass result").
 - **Placebo: PLACEBO_NOT_DECIDABLE under the declared matching rule.** Untagged candidates are plentiful (about 8,000-13,000 per block-day pass the same filters) but only 44 OOS tagged events (71 over all blocks) get a cross-pool control: 1,063 of 1,107 OOS events (96.0%) are unmatched (cap 20%; need >= 100 pairs). Cause, from the feature distributions (counts and price-derived drop only): the keeper events are fast and deep (median 8 s from first to last sell, exactly 3 distinct sellers at the 10th to 90th percentile, median drop d 28%, 90th percentile 53%), while untagged bursts are slow and shallow (median 56 s, median d 8%, 10th percentile of d 3.7%). Of the 1,755 tagged events, 521 have any candidate within +-2 pts of d (with total sold SOL, duration and sellers already within tolerance) before the one-control-per-event, same-decile and no-reuse rules. The declared matching tolerances were frozen before this; they are NOT changed here. By the declare the book cannot PASS while the placebo is NOT_DECIDABLE. Options for the manager and QP (a new amendment, not applied): widen the d tolerance (e.g. +-5 pts), allow control reuse, or match on d-quantile instead of a fixed band, then re-count (still counts only); or run the priced look report-only without a PASS route.
 - Observation, not a result: a median 28% drop inside 60 s of three keeper stop-loss fills means these events are mostly deep dumps in already-falling pools, which is the regime where the earlier untagged cascade fades (hunt29-flush-1) kept drifting down. This is a feature distribution only; no price after the event was read.
+
+## Matcher-v2 recount (job #1630, code head 0176d622, 2026-10-26; counts only, the ONE recount; raw: counts_pass.json in this folder, which replaces the v1 file of job #1628)
+Module hashes recorded in the output: p29_keeper_rule.py 45e70ca0..., p29_keeper_run.py 971d0b7e..., p29_keeper_coverage.py b02348a5.... Timing is the exact declared one (entry = last tagged slot + D + ceil(2.9/sps)), so the event table is recomputed: OOS triggers after the universe 1,106 (v1 timing: 1,107) over 11 days; NOT_DECIDABLE on events or days does not fire; no block dropped on coverage.
+
+| Matcher v2 (OOS) | Result | Gate |
+| --- | --- | --- |
+| OOS passing events | 1,106 | |
+| Matched pairs | **119** (115 distinct controls, max reuse 2) | needs >= 100: met |
+| Unmatched | 987 = **89.2%** | needs <= 20%: **FAILED** |
+| SMD total sold SOL | +0.001 | <= 0.25: ok |
+| SMD duration | -0.241 | <= 0.25: ok (just) |
+| SMD distinct sellers | **-0.344** | <= 0.25: **FAILED** |
+| SMD drop d | +0.107 | ok |
+| SMD reserve decile | 0.000 | ok |
+| Placebo verdict | **NOT_DECIDABLE** (unmatched share and the balance gate) | |
+
+Per the declare (section 6, Branch B) the placebo is therefore REPORT-ONLY, and the headline of any result carries exactly: "keeper-tagged SL-cascade absorb; the keeper tag is the detector; whether the tag carries information beyond a fast deep dump is UNTESTED (placebo not decidable)". There is no matcher v3. v2 moved the match from 44 to 119 OOS pairs, but 89% of tagged events still have no control inside the tolerances (the keeper bursts are deep and fast, the untagged ones are not), and the 119 that matched have more distinct sellers than their tagged partners.
+
+OOS events by block after the universe (v2 timing): exp011-0909 332, fast-pool-0918 347, oracle-insample-0922 427 (fresh-0903 in-sample 650). Skips (all blocks): pool age 323, V out of band 29, no pre-print 64, drop < 3% 72, target already met 15 (tagged bursts raw 2,259 -> 1,756 triggers).

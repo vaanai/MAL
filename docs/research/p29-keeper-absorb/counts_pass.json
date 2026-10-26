@@ -8,28 +8,35 @@
   "tools/arena_stack_v2.py": "95876c94d7e029e3959d8a3aed05ee64f1d461bc002ec62d035e74763587acb3",
   "tools/arena_rules.py": "048dd78901c52e0c14fe9b1611f354c49ac6d0bb37fad8e5be3e27c756e3e2af"
  },
+ "p29_module_sha256": {
+  "tools/p29_keeper_rule.py": "45e70ca0752cc85aa209ede8b91239904940dd4f7e7105c1d7b84c67d7cb401d",
+  "tools/p29_keeper_run.py": "971d0b7e3556adc80009a11374b63d665dac23f7bcd4168c8834ef5958d185b8",
+  "tools/p29_keeper_coverage.py": "b02348a548b9feae06107392ef0b28ca27df754298da402a8ffa0a312ea747f9"
+ },
+ "head": "0176d622b4718aab23c8e9bea7aec0679159739a",
+ "price_gate": null,
  "mode": "count-only",
  "dropped_blocks_coverage": [],
  "blocks": {
   "fresh-0903": {
    "hours": 132,
    "events": 796,
-   "wall_s": 1156.5
+   "wall_s": 1178.4
   },
   "exp011-0909": {
    "hours": 132,
    "events": 434,
-   "wall_s": 1313.9
+   "wall_s": 1371.2
   },
   "fast-pool-0918": {
    "hours": 73,
    "events": 471,
-   "wall_s": 595.5
+   "wall_s": 612.6
   },
   "oracle-insample-0922": {
    "hours": 72,
    "events": 558,
-   "wall_s": 553.0
+   "wall_s": 571.7
   }
  },
  "per_block_day": {
@@ -70,75 +77,73 @@
   },
   "exp011-0909|2026-09-14": {
    "tagged_events": 50,
-   "after_price_filters": 44,
-   "after_universe": 38,
+   "after_price_filters": 45,
+   "after_universe": 39,
    "skip_no_pre_print": 2,
    "skip_pool_age_lt_360s": 6,
-   "skip_drop_lt_3pct": 3,
-   "skip_target_already_met": 1
+   "skip_drop_lt_3pct": 3
   },
   "fast-pool-0918|2026-09-19": {
    "tagged_events": 160,
    "after_price_filters": 147,
-   "after_universe": 126,
+   "after_universe": 125,
    "skip_no_pre_print": 6,
-   "skip_pool_age_lt_360s": 21,
-   "skip_drop_lt_3pct": 6,
-   "skip_target_already_met": 1
+   "skip_target_already_met": 1,
+   "skip_pool_age_lt_360s": 22,
+   "skip_drop_lt_3pct": 6
   },
   "fast-pool-0918|2026-09-20": {
    "tagged_events": 168,
-   "after_price_filters": 151,
-   "after_universe": 125,
+   "after_price_filters": 150,
+   "after_universe": 123,
    "skip_drop_lt_3pct": 6,
    "skip_no_pre_print": 9,
-   "skip_pool_age_lt_360s": 26,
-   "skip_target_already_met": 2
+   "skip_pool_age_lt_360s": 27,
+   "skip_target_already_met": 3
   },
   "fast-pool-0918|2026-09-21": {
    "tagged_events": 143,
-   "after_price_filters": 121,
+   "after_price_filters": 122,
    "after_universe": 99,
-   "skip_pool_age_lt_360s": 22,
-   "skip_target_already_met": 2,
+   "skip_pool_age_lt_360s": 23,
    "skip_no_pre_print": 10,
-   "skip_drop_lt_3pct": 10
+   "skip_drop_lt_3pct": 10,
+   "skip_target_already_met": 1
   },
   "fresh-0903|2026-09-04": {
    "tagged_events": 84,
-   "after_price_filters": 82,
-   "after_universe": 79,
+   "after_price_filters": 83,
+   "after_universe": 80,
    "skip_v_out_of_band": 2,
    "skip_drop_lt_3pct": 1,
-   "skip_pool_age_lt_360s": 1,
-   "skip_target_already_met": 1
+   "skip_pool_age_lt_360s": 1
   },
   "fresh-0903|2026-09-05": {
    "tagged_events": 104,
-   "after_price_filters": 99,
-   "after_universe": 85,
+   "after_price_filters": 100,
+   "after_universe": 86,
    "skip_drop_lt_3pct": 2,
    "skip_v_out_of_band": 5,
    "skip_pool_age_lt_360s": 9,
-   "skip_no_pre_print": 2,
-   "skip_target_already_met": 1
+   "skip_no_pre_print": 2
   },
   "fresh-0903|2026-09-06": {
    "tagged_events": 134,
-   "after_price_filters": 126,
-   "after_universe": 105,
+   "after_price_filters": 127,
+   "after_universe": 106,
    "skip_pool_age_lt_360s": 19,
    "skip_v_out_of_band": 2,
    "skip_drop_lt_3pct": 5,
-   "skip_target_already_met": 2,
+   "skip_target_already_met": 1,
    "skip_no_pre_print": 1
   },
   "fresh-0903|2026-09-07": {
    "tagged_events": 203,
-   "after_price_filters": 198,
-   "after_universe": 157,
+   "after_price_filters": 197,
+   "after_universe": 156,
    "skip_pool_age_lt_360s": 40,
    "skip_no_pre_print": 4,
+   "skip_target_already_met": 1,
    "skip_v_out_of_band": 1,
    "skip_drop_lt_3pct": 1
   },
@@ -153,164 +158,182 @@
   },
   "oracle-insample-0922|2026-09-22": {
    "tagged_events": 154,
-   "after_price_filters": 145,
-   "after_universe": 111,
+   "after_price_filters": 146,
+   "after_universe": 112,
    "skip_pool_age_lt_360s": 34,
    "skip_no_pre_print": 5,
-   "skip_target_already_met": 1,
    "skip_drop_lt_3pct": 3
   },
   "oracle-insample-0922|2026-09-23": {
    "tagged_events": 195,
-   "after_price_filters": 186,
-   "after_universe": 156,
-   "skip_pool_age_lt_360s": 28,
-   "skip_target_already_met": 1,
+   "after_price_filters": 185,
+   "after_universe": 154,
+   "skip_pool_age_lt_360s": 29,
    "skip_no_pre_print": 4,
    "skip_drop_lt_3pct": 4,
+   "skip_target_already_met": 2,
    "skip_v_out_of_band": 2
   },
   "oracle-insample-0922|2026-09-24": {
    "tagged_events": 209,
-   "after_price_filters": 186,
-   "after_universe": 159,
+   "after_price_filters": 190,
+   "after_universe": 161,
    "skip_drop_lt_3pct": 9,
-   "skip_pool_age_lt_360s": 27,
-   "skip_no_pre_print": 10,
-   "skip_target_already_met": 4
+   "skip_pool_age_lt_360s": 29,
+   "skip_no_pre_print": 10
   }
  },
  "untagged_per_block_day": {
   "exp011-0909|2026-09-10": {
    "untagged_bursts": 106503,
-   "after_price_filters": 9990,
-   "after_universe": 8915
+   "after_price_filters": 10035,
+   "after_universe": 8950
   },
   "exp011-0909|2026-09-11": {
    "untagged_bursts": 95943,
-   "after_price_filters": 8708,
-   "after_universe": 7272
+   "after_price_filters": 8750,
+   "after_universe": 7308
   },
   "exp011-0909|2026-09-12": {
    "untagged_bursts": 97574,
-   "after_price_filters": 8576,
-   "after_universe": 7613
+   "after_price_filters": 8607,
+   "after_universe": 7634
   },
   "exp011-0909|2026-09-13": {
    "untagged_bursts": 110066,
-   "after_price_filters": 8830,
-   "after_universe": 7656
+   "after_price_filters": 8886,
+   "after_universe": 7704
   },
   "exp011-0909|2026-09-14": {
    "untagged_bursts": 115795,
-   "after_price_filters": 9928,
-   "after_universe": 8597
+   "after_price_filters": 10001,
+   "after_universe": 8656
   },
   "fast-pool-0918|2026-09-19": {
    "untagged_bursts": 128120,
-   "after_price_filters": 14067,
-   "after_universe": 12984
+   "after_price_filters": 14150,
+   "after_universe": 13047
   },
   "fast-pool-0918|2026-09-20": {
    "untagged_bursts": 123428,
-   "after_price_filters": 13119,
-   "after_universe": 11913
+   "after_price_filters": 13183,
+   "after_universe": 11966
   },
   "fast-pool-0918|2026-09-21": {
    "untagged_bursts": 123304,
-   "after_price_filters": 13309,
-   "after_universe": 12047
+   "after_price_filters": 13371,
+   "after_universe": 12096
   },
   "fresh-0903|2026-09-04": {
    "untagged_bursts": 113743,
-   "after_price_filters": 10588,
-   "after_universe": 9313
+   "after_price_filters": 10653,
+   "after_universe": 9359
   },
   "fresh-0903|2026-09-05": {
    "untagged_bursts": 108874,
-   "after_price_filters": 9162,
-   "after_universe": 8067
+   "after_price_filters": 9229,
+   "after_universe": 8122
   },
   "fresh-0903|2026-09-06": {
    "untagged_bursts": 115512,
-   "after_price_filters": 10717,
-   "after_universe": 9518
+   "after_price_filters": 10774,
+   "after_universe": 9567
   },
   "fresh-0903|2026-09-07": {
    "untagged_bursts": 126782,
-   "after_price_filters": 14322,
-   "after_universe": 12933
+   "after_price_filters": 14415,
+   "after_universe": 13011
   },
   "fresh-0903|2026-09-08": {
    "untagged_bursts": 126211,
-   "after_price_filters": 14254,
-   "after_universe": 12962
+   "after_price_filters": 14324,
+   "after_universe": 13018
   },
   "oracle-insample-0922|2026-09-22": {
    "untagged_bursts": 112892,
-   "after_price_filters": 11863,
-   "after_universe": 10626
+   "after_price_filters": 11931,
+   "after_universe": 10681
   },
   "oracle-insample-0922|2026-09-23": {
    "untagged_bursts": 113264,
-   "after_price_filters": 12393,
-   "after_universe": 11260
+   "after_price_filters": 12478,
+   "after_universe": 11323
   },
   "oracle-insample-0922|2026-09-24": {
    "untagged_bursts": 115803,
-   "after_price_filters": 12659,
-   "after_universe": 11461
+   "after_price_filters": 12724,
+   "after_universe": 11509
   }
  },
- "controls": {
-  "pairs_all_blocks": 71,
-  "unmatched_all_blocks": 1684,
-  "oos_pairs": 44,
-  "oos_unmatched": 1063,
-  "oos_unmatched_share": 0.9603
+ "matcher_v2": {
+  "pairs_all_blocks": 202,
+  "unmatched_all_blocks": 1554,
+  "oos_pairs": 119,
+  "oos_unmatched": 987,
+  "oos_distinct_controls": 115,
+  "max_control_reuse": 2,
+  "balance": {
+   "smd": {
+    "total_sol": 0.0007085622544128427,
+    "duration_s": -0.2412877132761639,
+    "sellers": -0.34368234119364477,
+    "d": 0.10711840012895989,
+    "reserve_decile": 0.0
+   },
+   "max_abs_smd": 0.34368234119364477,
+   "balanced": false
+  }
+ },
+ "placebo": {
+  "decidable": false,
+  "reasons": [
+   "unmatched share 0.892 > 0.20",
+   "balance: max |SMD| 0.34368234119364477 > 0.25"
+  ],
+  "unmatched_share": 0.8924,
+  "branch": "REPORT-ONLY (fallback)",
+  "headline_label": "keeper-tagged SL-cascade absorb; the keeper tag is the detector; whether the tag carries information beyond a fast deep dump is UNTESTED (placebo not decidable)"
  },
  "rule_counters": {
   "outside_declared_days": 130231,
   "control_bursts_raw": 1833814,
   "control_skip_drop_lt_3pct": 1593532,
-  "control_pass": 163137,
-  "control_skip_impact_bar_2pct": 22706,
-  "control_skip_v_out_of_band": 8489,
+  "control_pass": 163951,
+  "control_skip_impact_bar_2pct": 22595,
+  "control_skip_v_out_of_band": 8517,
   "tagged_bursts_raw": 2259,
-  "tagged_pass": 1755,
-  "control_skip_target_already_met": 2956,
+  "tagged_pass": 1756,
+  "control_skip_target_already_met": 2041,
   "control_skip_no_pre_print": 32135,
-  "control_skip_pool_age_lt_360s": 10859,
+  "control_skip_pool_age_lt_360s": 11043,
   "tagged_skip_v_out_of_band": 29,
   "tagged_skip_drop_lt_3pct": 72,
-  "tagged_skip_pool_age_lt_360s": 317,
-  "tagged_skip_target_already_met": 22,
-  "tagged_skip_no_pre_print": 64
+  "tagged_skip_pool_age_lt_360s": 323,
+  "tagged_skip_no_pre_print": 64,
+  "tagged_skip_target_already_met": 15
  },
  "kit_counters": {
-  "triggers_raw": 1755
+  "triggers_raw": 1756
  },
  "kit_validated_triggers_per_day": {
-  "2026-09-04": 79,
-  "2026-09-05": 85,
-  "2026-09-06": 105,
-  "2026-09-07": 157,
+  "2026-09-04": 80,
+  "2026-09-05": 86,
+  "2026-09-06": 106,
+  "2026-09-07": 156,
   "2026-09-08": 222,
   "2026-09-10": 73,
   "2026-09-11": 56,
   "2026-09-12": 58,
   "2026-09-13": 106,
-  "2026-09-14": 38,
-  "2026-09-19": 126,
-  "2026-09-20": 125,
+  "2026-09-14": 39,
+  "2026-09-19": 125,
+  "2026-09-20": 123,
   "2026-09-21": 99,
-  "2026-09-22": 111,
-  "2026-09-23": 156,
-  "2026-09-24": 159
+  "2026-09-22": 112,
+  "2026-09-23": 154,
+  "2026-09-24": 161
  },
- "oos_events_after_universe": 1107,
+ "oos_events_after_universe": 1106,
  "oos_event_days": 11,
- "stops": [
-  "PLACEBO_NOT_DECIDABLE: matched OOS pairs 44 (need >= 100), unmatched share 0.960 (max 0.20)"
- ]
+ "stops": []
 }
