@@ -24,7 +24,7 @@ CHAIN_FRESH_MS = 5_000  # the decision_chain stamp needs a verified read this yo
 RC_HARD = 11  # tools.arena_live_parity: a hard halt (P4); cleared only by the manager's written review and the owner
 RC_SOFT = 10
 # Latches that the Bridge treats as unresolved hard halts for the parity state (the tool's `unresolved_hard_halts`).
-HARD_LATCHES = frozenset({"parity_hard_halt", "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch", "stuck_sell", "chain_break", "sealed_path",
+HARD_LATCHES = frozenset({"parity_hard_halt", "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch", "stuck_sell", "chain_break", "sealed_path", "read_record",
                           "frozen_sha_mismatch"}) | HARD_ARENA_HALTS
 
 

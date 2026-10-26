@@ -71,7 +71,7 @@ SELL_RETRY_MS = 5_000
 UNIVERSE_V_RANGE = (17_500_000_000, 17_700_000_000)  # Am.2 item 6: V in [17.5e9, 17.7e9], WSOL quote
 
 LATCHES = ("sealed_path", "chain_break", "frozen_sha_mismatch", "total_loss_cap", "per_trade_loss_cap", "stuck_sell",
-           "parity_hard_halt", "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch")  # the last three: hv4_c0 parity wiring (tools/hv4_c0_parity.py)
+           "parity_hard_halt", "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch", "read_record")  # twin_pin_mismatch and the two before: hv4_c0 parity wiring; read_record: no recorded PASS read for the bot (hv4_c0): hv4_c0 parity wiring (tools/hv4_c0_parity.py)
 
 
 # --- config -----------------------------------------------------------------------------------------------------------------------
@@ -109,6 +109,7 @@ class Config:
     parity_dir: str = ""  # hv4_c0 only: where the trips/attempts files and the parity result are written
     twins_file: str = ""  # hv4_c0 only: the paper twins file (tools/hv4_c0_twin.py writes it, with its .run.json record)
     tieout_dir: str = ""  # hv4_c0 only: the daily tie-out results directory (arena_tieout --check-last-day)
+    reads_dir: str = ""  # hv4_c0 only: the directory that holds the bot's recorded read (`<bot_id>.json`); no decision row is read without a recorded PASS there
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any], tier: str = "T0") -> "Config":
@@ -128,6 +129,7 @@ class Config:
             t = c0.C0_LIMITS
             kw["profile"] = c0.PROFILE
             kw["funded_lamports"] = d.get("funded_lamports")
+            kw["reads_dir"] = str(d.get("reads_dir") or "")
             given = [k for k in c0p.PATH_KEYS if d.get(k)]
             if given and len(given) != len(c0p.PATH_KEYS):
                 raise ValueError("hv4_c0 refused: parity_dir, twins_file and tieout_dir are set together or not at all")
@@ -136,8 +138,8 @@ class Config:
                 if why:
                     raise ValueError(f"hv4_c0 refused: {why}")
                 kw.update({k: str(d[k]) for k in c0p.PATH_KEYS})
-        elif "funded_lamports" in d or "priority_pin" in d or any(k in d for k in c0p.PATH_KEYS):
-            raise ValueError("funded_lamports, priority_pin and the parity paths belong to the hv4_c0 profile")
+        elif "funded_lamports" in d or "priority_pin" in d or any(k in d for k in c0p.PATH_KEYS) or "reads_dir" in d:
+            raise ValueError("funded_lamports, priority_pin, reads_dir and the parity paths belong to the hv4_c0 profile")
         for k in ("end_ms", "max_hold_ms"):
             v = d[k]
             if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v <= 0:
@@ -292,6 +294,8 @@ class BridgeState:
     latches: dict[str, str] = field(default_factory=dict)
     counts: dict[str, int] = field(default_factory=dict)
     start_seen: bool = False
+    first_start_ms: int | None = None  # unused since #965 N2: the 14-day window start is the write-once file c0.WINDOW_DIR/<bot_id>.json, outside this state
+    read_pin: dict[str, Any] | None = None  # hv4_c0: identity {path, dev, ino, sha256} of the recorded read, pinned at the first good check and compared on every run
 
     def save(self, path: Path) -> None:
         _atomic_write(path, self.__dict__)
@@ -342,7 +346,8 @@ def read_tier(path: Path, root_checks: bool, allowed: Mapping[str, Any] | tuple[
 class Bridge:
     def __init__(self, cfg: Config, port: OrderPort, *, now_ms: Callable[[], int] | None = None,
                  live_ok_path: Path = LIVE_OK_PATH, tier_path: Path = TIER_PATH, root_checks: bool = True,
-                 close_blocked: Callable[[str], bool | None] | None = None, parity_runner: Callable[[list[str]], int] | None = None) -> None:
+                 close_blocked: Callable[[str], bool | None] | None = None, parity_runner: Callable[[list[str]], int] | None = None,
+                 owner_dec_path: Path | str | None = None, owner_pin: str | None = None) -> None:
         """close_blocked: optional S3 hook, mint -> True (blocked) | False (ok). Interface only here. When set, a True, a None or a raise all refuse."""
         self.cfg = cfg
         self.close_blocked = close_blocked
@@ -361,6 +366,16 @@ class Bridge:
         self.log_path = self.sd / f"bridge-log-{cfg.mode}.jsonl"
         self.state = BridgeState.load(self.state_path, cfg.mode)
         self.dlog = DecisionLog(cfg.root)
+        self.owner_dec_path = Path(owner_dec_path) if owner_dec_path is not None else Path(c0.OWNER_DEC_PATH)
+        self.owner_pin = owner_pin
+        self._read_ident: dict[str, Any] = {}
+        if cfg.profile == c0.PROFILE:
+            first, why = c0.window_start_ms(cfg.bot_id, self.now_ms(), create=True)
+            why = why or c0.end_cap_problem(cfg.end_ms, first)
+            if why:
+                raise SystemExit(f"hv4_c0 refused: {why}")
+            self.window_start_ms = first
+            self._read_ident = dict(self.state.read_pin or {})
         self.guarded = cfg.profile == c0.PROFILE  # hv4_c0: every decision-log read is path-guarded (symlink, hard link, swap, arena realpath), in the object itself
         self._last_warm = 0
         self._bal_ms: int | None = None  # hv4_c0: when the wallet balance was last read successfully
@@ -369,8 +384,10 @@ class Bridge:
         if cfg.profile == c0.PROFILE and cfg.parity_dir:  # parity, twin and tie-out gates (DEC-032 s5): hv4_c0 only, active when the paths are configured
             self.gates = c0p.build_gates(cfg.parity_dir, cfg.twins_file, cfg.tieout_dir, cfg.stop_file, self._parity_state, runner=parity_runner)
         self._last_sell_try: dict[str, int] = {}
+        if cfg.profile == c0.PROFILE:
+            self._log("bridge_start", **c0.start_row_fields())  # the pins this process runs under (key frozen_sha as in the runner's own `start` row)
         self._verify_at_start()
-        if "chain_break" not in self.state.latches and "sealed_path" not in self.state.latches:
+        if not {"chain_break", "sealed_path", "read_record"} & set(self.state.latches):
             self._chain_ok_ms = self.now_ms()  # verified just now
         self.reconcile()
 
@@ -396,10 +413,29 @@ class Bridge:
             print(f"arena_live_bridge ALERT latch={name} why={why}", flush=True)
             self._save()
 
+    def _read_gate(self) -> bool:
+        """hv4_c0: before ANY decision row is read, the bot's recorded PASS read must exist (c0.read_record_problem; any hv4- bot_id). Checked on every read
+        against the identity (dev, ino, sha256) of the first good one. A hit latches read_record and nothing is read."""
+        if self.cfg.profile != c0.PROFILE:
+            return True
+        if "read_record" in self.state.latches:
+            return False
+        why, ident = c0.read_record_problem(self.cfg.reads_dir, self.cfg.bot_id, self._read_ident or None, self.cfg.mode == DRY and c0.synthetic_root(self.cfg.root))
+        if why:
+            self._latch("read_record", why)
+            return False
+        self._read_ident = ident
+        if self.state.read_pin is None:  # persisted: a restart, a new process or a swapped record is compared with THIS identity
+            self.state.read_pin = dict(ident)
+            self._save()
+        return True
+
     def _verify_at_start(self) -> None:
         """Full chain check of what exists now. A break latches chain_break (the bridge then never buys). The cursor is set only on a clean pass; a
         restart resumes from the saved cursor, so rows already handled are not replayed (order_id idempotency covers the crash window)."""
         if self.guarded:
+            if not self._read_gate():
+                return
             try:
                 names = c0.guarded_listdir(self.cfg.root, self.cfg.bot_id)
                 datas = [c0.guarded_read(self.cfg.root, self.cfg.bot_id, n) for n in names]
@@ -437,9 +473,11 @@ class Bridge:
     def read_new_rows(self) -> list[dict[str, Any]]:
         """New complete rows after the cursor, each checked against the chain (prev, seq+1, sha). A break latches and stops the read."""
         out: list[dict[str, Any]] = []
-        if "chain_break" in self.state.latches or "sealed_path" in self.state.latches:
+        if "chain_break" in self.state.latches or "sealed_path" in self.state.latches or "read_record" in self.state.latches:
             return out
         st = self.state
+        if self.guarded and not self._read_gate():
+            return out
         if self.guarded:  # check and read every file first (all or nothing): a hit latches sealed_path and no row of this call is used
             try:
                 gfiles = [(Path(n), c0.guarded_read(self.cfg.root, self.cfg.bot_id, n)) for n in c0.guarded_listdir(self.cfg.root, self.cfg.bot_id)]
@@ -551,6 +589,8 @@ class Bridge:
             except OSError:
                 why = "unreadable"
             why = why[len("live_ok_"):] if why and why.startswith("live_ok_") else why
+            if not why:  # the owner's line in a ROOT-OWNED file outside the installed tree, whose sha256 is the pinned blob
+                why = c0.owner_line_problem(self.owner_dec_path, self.cfg.bot_id, self.owner_pin, root_ok_problem if self.root_checks else None)
         return (False, f"live_ok_{why}") if why else (True, None)
 
     def tier_limits(self) -> tuple[str, dict[str, int], str | None]:
@@ -817,7 +857,10 @@ class Bridge:
         self.state.realized_lamports += pnl
         d = self.state.days.setdefault(utc_day(self.now_ms()), {"trades": 0, "realized": 0})
         d["realized"] += pnl
-        if pnl <= -self.cfg.per_trade_loss_lamports:
+        limit = self.cfg.per_trade_loss_lamports
+        if self.cfg.profile == c0.PROFILE and isinstance(o.get("stake_lamports"), int):
+            limit = c0.per_trade_loss_lamports(o["stake_lamports"], limit)  # 30% of THIS order's S, config may only tighten
+        if pnl <= -limit:
             self._latch("per_trade_loss_cap", f"{o['order_id']} pnl {pnl}")
         if self.state.realized_lamports <= -self.cfg.total_loss_lamports:
             self._latch("total_loss_cap", f"realized {self.state.realized_lamports}")
@@ -959,6 +1002,7 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
             # The profile's own end (dec019: 2026-10-12) is replaced by the bridge's end_ms: the executor's check_buy soft stop (end_instant) then
             # enforces it at send time too, and the Bridge re-checks it right before the send.
             object.__setattr__(self.limits, "end_ms", int(end_ms))
+            self.sent_priority: dict[str, int] = {}
             self.events: list[dict[str, Any]] = []
             self.ledger: list[tuple[str, str, dict[str, Any]]] = []
             self.last_skip: str | None = None
@@ -1019,9 +1063,15 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
                     d = bytes(ix.data)
                     if str(keys[ix.program_id_index]) == str(tx_mod.PUMPSWAP_PROGRAM) and d[:8] == bytes(tx_mod.DISC_SELL) and int.from_bytes(d[16:24], "little") <= 0:
                         raise RuntimeError("c0_min_out_zero")
+            if cfg.profile == c0.PROFILE:  # N7: remember the priority of the tx actually signed, so the fill row logs what was SENT (the base class recomputes
+                # `_priority` at landing, when the pending entry is gone); the pinned base `_sign` runs unchanged with that same value
+                priority = self._priority(mint) if priority is None else priority
+                self.sent_priority[mint] = priority
             return super()._sign(msg, ps, mint, priority)
 
         def _log(self, kind: str, mint: str, **kw: Any) -> None:
+            if cfg.profile == c0.PROFILE and kind in ("buy", "sell") and "priority_lamports" in kw and mint in getattr(self, "sent_priority", {}):
+                kw["priority_lamports"] = self.sent_priority[mint]  # the priority of the last tx signed for this mint, not a recomputation
             super()._log(kind, mint, **kw)
             if cfg.profile == c0.PROFILE and kind in ("buy", "sell"):
                 self.ledger.append((kind, mint, dict(kw)))  # the parity recorder reads the executor's own fill rows (drained by the port)
@@ -1137,6 +1187,11 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
 
         def buy(self, order: Mapping[str, Any]) -> tuple[bool, str | None]:
             self.ex.last_skip = None
+            if cfg.profile == c0.PROFILE:  # the live port sends the ORDER's S (twin stake = S), never cfg.stake_lamports; larger than the table is refused
+                s = order.get("stake_lamports")
+                if isinstance(s, bool) or not isinstance(s, int) or not 0 < s <= min(cfg.stake_lamports, c0.C0_LIMITS["stake_lamports"]):
+                    return False, "stake_not_s"
+                object.__setattr__(self.ex.limits, "size_lamports", s)
             sig = {"mint": order["mint"], "decision_t_ms": order["decision_ms"], "score": None, "seen_ms": self.now()}
             with self.ex._prio():
                 self.ex.handle_signal(sig)
@@ -1202,6 +1257,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"arena_live_bridge ALERT startup_refused {exc}", flush=True)
         return 2
     if cfg.profile == c0.PROFILE:
+        # PR4 gates, before anything else is touched (the order below is the order of the labels a start prints).
+        if want_live:
+            why = c0p.paths_refusal(raw)  # a live start needs all three parity paths, absolute
+            if not why:
+                why = c0.owner_line_problem(c0.OWNER_DEC_PATH, cfg.bot_id, None, root_ok_problem)
+        else:
+            why = None
+        st0 = BridgeState.load(Path(cfg.state_dir) / f"bridge-state-{cfg.mode}.json", cfg.mode)
+        why = why or c0.read_record_problem(cfg.reads_dir, cfg.bot_id, st0.read_pin, (not want_live) and c0.synthetic_root(cfg.root))[0]
+        if not why:
+            first, why = c0.window_start_ms(cfg.bot_id, int(time.time() * 1000), create=False)
+            why = why or c0.end_cap_problem(cfg.end_ms, first if first is not None else int(time.time() * 1000))
+        if why:
+            print(f"arena_live_bridge ALERT startup_refused {why}", flush=True)
+            return 2
         # Seal: R2.1 of QP-RULING-1025-hv4-read-rule. No hv4_c0 start, dry or live, until a read-record gate exists, except on a synthetic fixture root.
         why = c0.start_refusal(cfg.root, want_live, cfg.bot_id)
         if why:

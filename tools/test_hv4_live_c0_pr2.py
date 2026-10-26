@@ -232,10 +232,12 @@ class SellPinTests(unittest.TestCase):
             e = Hv4Env(d)
             full = {k: v for k, v in e.raw.items() if k not in ("stop_file", "halt_file")}
             cp = Path(d) / "cfg.json"
-            cp.write_text(json.dumps({**full, "mode": "live"}))
+            from tools.test_hv4_live_c0 import live_main_env
+            paths, st = live_main_env(d, full["bot_id"])
+            cp.write_text(json.dumps({**full, **paths, "mode": "live"}))
             for pin, want in (({**c0.SELL_BUILDER_PIN, "symbol_sha256": "0" * 64}, c0.LIVE_REFUSAL), (c0.SELL_BUILDER_PIN, c0.LIVE_REFUSAL)):
                 buf = io.StringIO()
-                with mock.patch.object(c0, "SELL_BUILDER_PIN", pin), contextlib.redirect_stdout(buf):
+                with mock.patch.object(c0, "SELL_BUILDER_PIN", pin), contextlib.redirect_stdout(buf), live_main_env(d, full["bot_id"])[1]:
                     rc = alb.main(["--config", str(cp), "--live"])
                 self.assertEqual(rc, 2)
                 self.assertIn(want, buf.getvalue())

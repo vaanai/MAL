@@ -173,10 +173,13 @@ class TwinFeesTests(unittest.TestCase):
         seen = []
         with mock.patch.object(W, "main", side_effect=lambda a: seen.append(a) or 0):
             self.assertEqual(tw.main(["--trips=t", "--out=o", f"--ledger-dir={d}", f"--bot-id={ARM}", "--now-ms=5"]), 0)
-        self.assertEqual(seen[0][seen[0].index("--ledger-dir") + 1], str(d))
-        self.assertEqual(seen[0].count("--ledger-dir"), 1)
-        self.assertEqual(seen[0][seen[0].index("--config-hash") + 1], c0.CONFIG_PIN_SHA256)
-        self.assertEqual(seen[0][seen[0].index("--now-ms") + 1], "5")
+        argv = seen[0]
+        opts = dict(x.split("=", 1) for x in argv)  # every option is forwarded as --opt=value (N4)
+        self.assertTrue(all(x.startswith("--") and "=" in x for x in argv), argv)
+        self.assertEqual(opts["--ledger-dir"], str(d))
+        self.assertEqual(sum(x.startswith("--ledger-dir=") for x in argv), 1)
+        self.assertEqual(opts["--config-hash"], c0.CONFIG_PIN_SHA256)
+        self.assertEqual(opts["--now-ms"], "5")
 
     def test_cli_refusals(self):
         d = self._ledger()
@@ -184,7 +187,7 @@ class TwinFeesTests(unittest.TestCase):
         self.assertEqual(tw.main(["--bot-id", "hv4-CON-L", "--ledger-dir", str(d), *base]), 2)  # L arm
         self.assertEqual(tw.main(["--bot-id", ARM, "--ledger-dir", "/data/mal/arena/haiku-v4/ledger", *base]), 2)  # sealed, no read-record gate yet
         self.assertEqual(tw.main(["--bot-id", ARM, "--ledger-dir", str(d), "--config-hash", "x", *base]), 2)  # pinned option
-        self.assertIn("sealed", tw.refusal(ARM, "/data/mal/arena/x") or "")
+        self.assertIn("ledger_dir", tw.refusal(ARM, "/data/mal/arena/x") or "")  # sealed: not this bot's ledger dir
 
 
 class SellLadderLiveTests(LivePortScheduleTests):
