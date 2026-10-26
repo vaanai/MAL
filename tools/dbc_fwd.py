@@ -61,9 +61,6 @@ BOOK = "dbc-m10-paper"
 CELL = next(c for c in S.CELLS if c.name == "m10")
 SOL = 1e9
 WIN_S = 60.0  # m10 window (dbc_screen.triggers_for D1)
-TRIM_MIN_ROWS = 256  # pruning: a pool is considered for a front trim only past this many retained rows
-TRIM_MARGIN_S = 60.0  # pruning: extra seconds kept before the 60 s window (safety against a non-monotone bt)
-SWEEP_SLOTS = 600  # pruning: completed-pool sweep period in slots (about 2 min)
 EXIT_RULE = "sl0.90|trail0.90|time600|cooldown600"
 REPLAY_MIN = datetime(2026, 10, 14, 0, tzinfo=timezone.utc)
 REPLAY_MAX = datetime(2026, 10, 16, 4, tzinfo=timezone.utc)  # exclusive: Swap2-era exploration only
@@ -115,7 +112,7 @@ def slot_s_of(bt: np.ndarray, sl: np.ndarray) -> float | None:
 # ------------------------------------------------------------------------------------------------------------------------------ per pool state
 class PoolHist:
     __slots__ = ("name", "config", "cols", "sig", "gstart", "anchors", "closed", "hook", "comp_slot", "q_screen", "pend_screen", "busy_screen", "pend_live", "busy_live",
-                 "sum_buy_ain", "sum_sell_q", "n_buy", "pre0", "trimmed")
+                 "sum_buy_ain", "sum_sell_q", "n_buy")
 
     def __init__(self, name: str, config: str) -> None:
         self.name, self.config = name, config
@@ -135,8 +132,6 @@ class PoolHist:
         self.sum_buy_ain = array("d")  # prefix sums for the cheap upper-bound prefilter
         self.sum_sell_q = array("d")
         self.n_buy = array("q")
-        self.pre0: tuple[float, float, int] = (0.0, 0.0, 0)  # prefix sums BEFORE index 0 (non-zero only after a front trim; the sums stay absolute so differences are bit-identical)
-        self.trimmed = 0  # rows trimmed off the front (pruning only)
 
     def n(self) -> int:
         return len(self.sig)
@@ -152,7 +147,7 @@ class Engine:
     def __init__(self, first_ok_bt: float, *, ss_live: Callable[[int], float] | None = None, ss_screen: Callable[[int], float] | None = None,
                  good_hours: set[int] | None = None, screen_policy: bool = False, log: Any = None, log_name: str = BOOK,
                  now_ms: Callable[[], int] | None = None, meta: dict[str, Any] | None = None, decide: bool = True,
-                 oracle_rows: dict[str, "PoolHist"] | None = None, oracle_mode: dict[str, tuple[tuple[int, bool], tuple[int, bool]]] | None = None, prune: bool = False) -> None:
+                 oracle_rows: dict[str, "PoolHist"] | None = None, oracle_mode: dict[str, tuple[tuple[int, bool], tuple[int, bool]]] | None = None) -> None:
         if not L.FOB_EVIDENCE:
             raise RuntimeError("dbc_fwd needs tools.dbc_price.enable_swap3_pricing() (registered Swap3 path; the config-mode injection uses the fob evidence switch)")
         self.first_ok_bt = float(first_ok_bt)
@@ -185,15 +180,6 @@ class Engine:
                       "trigger_prints": 0, "live_cooldown": 0, "screen_cooldown": 0, "screen_late_decisions": 0, "live_exits": 0}
         self.screen_refused = {"bad_hour": 0, "block_edge": 0, "cooldown": 0, "no_state": 0, "bad_state": 0, "completed_before_entry": 0}
         self.sealed_slots: dict[int, None] = {}
-        # POOL PRUNING (P18 B1; decision-neutral, proven by md5 on the exploration hours; off by default so replay/parity runs are untouched). Two exact reductions:
-        # (1) front trim: rows of a pool before the tail start that no future call can read (see `_trim`); (2) completed pools: a pool whose curve completed cannot trigger
-        # again (dbc_screen.universe needs slot < complete slot), so once it has no open position and no unclosed row its state is dropped. Nothing else is pruned: a pool
-        # that is merely idle can still trigger, and a pool with a pending (open) position is never touched. Proof-only oracle variants never prune (their indices are absolute).
-        self.prune = bool(prune) and oracle_rows is None and oracle_mode is None
-        self.comp_names: dict[str, None] = {}  # completed pools not yet dropped
-        self.dead: dict[str, int] = {}  # dropped completed pools -> completion slot
-        self._next_sweep = 0
-        self.stats.update({"trim_calls": 0, "trim_rows": 0, "trim_window_clamped": 0, "pools_dropped": 0, "rows_after_drop": 0})
 
     # ---------------------------------------------------------------- input
     def on_row(self, r: dict[str, Any]) -> None:
@@ -212,23 +198,15 @@ class Engine:
                 self.open.clear()
             self.cur_slot = slot
             self._resolve_due(slot)
-            if self.prune and self.comp_names and slot >= self._next_sweep:
-                self._next_sweep = slot + SWEEP_SLOTS
-                self._sweep_completed()
 
     def on_complete(self, r: dict[str, Any]) -> None:
         self.stats["completes"] += 1
         self.advance(int(r["slot"]))
-        if r["pool"] in self.dead:
-            self.stats["rows_after_drop"] += 1
-            return
         p = self.pools.get(r["pool"])
         if p is None:
             p = self.pools[r["pool"]] = PoolHist(r["pool"], r.get("config") or "")
         s = int(r["slot"])
         p.comp_slot = s if p.comp_slot is None else min(p.comp_slot, s)
-        if self.prune:
-            self.comp_names[p.name] = None
 
     def on_trade(self, r: dict[str, Any]) -> None:
         self.stats["rows"] += 1
@@ -241,9 +219,6 @@ class Engine:
         self.advance(slot)
         p = self.pools.get(r["pool"])
         if p is None:
-            if r["pool"] in self.dead:
-                self.stats["rows_after_drop"] += 1  # a dropped completed pool printed again: its evidence is not counted (reported; expected 0)
-                return
             p = self.pools[r["pool"]] = PoolHist(r["pool"], r.get("config") or "")
         if not p.config:
             p.config = r.get("config") or ""
@@ -259,7 +234,7 @@ class Engine:
             p.cols[k].append(int(a[k][0]))
         p.sig.append(r.get("signature") or "")
         buy = int(a["side"][0]) == 1
-        prev = (p.sum_buy_ain[-1], p.sum_sell_q[-1], p.n_buy[-1]) if i else p.pre0
+        prev = (p.sum_buy_ain[-1], p.sum_sell_q[-1], p.n_buy[-1]) if i else (0.0, 0.0, 0)
         p.sum_buy_ain.append(prev[0] + (float(a["ain"][0]) if buy else 0.0))
         p.sum_sell_q.append(prev[1] + (0.0 if buy else float(a["aout"][0] + a["fee"][0])))
         p.n_buy.append(prev[2] + (1 if buy else 0))
@@ -333,57 +308,6 @@ class Engine:
         if self._prefilter(p, old_closed, n):
             self.stats["prefilter_pass"] += 1
             self._decide(p, old_closed, n)
-        if self.prune:
-            self._trim(p)
-
-    def _sweep_completed(self) -> None:
-        """Drop the state of completed pools that can no longer trigger and hold nothing open (see the pruning note in __init__)."""
-        for name in list(self.comp_names):
-            p = self.pools.get(name)
-            if p is None:
-                del self.comp_names[name]
-                continue
-            if (p.comp_slot is None or p.comp_slot >= self.cur_slot or name in self.open or p.closed < p.n() or p.pend_live is not None
-                    or p.pend_screen is not None or p.q_screen):
-                continue
-            self.dead[name] = p.comp_slot
-            del self.pools[name]
-            del self.comp_names[name]
-            self.stats["pools_dropped"] += 1
-
-    def _trim(self, p: PoolHist) -> None:
-        """Drop the rows of `p` that no later call can read. Every later read starts at `_tail_start(p, x)` for some x >= R below, or at the previous group (_close); the tail start
-        only moves forward. R = the smallest row any future call can ask about: the 60 s window start of the NEXT new row (bt is non-decreasing, plus a TRIM_MARGIN_S safety
-        margin) and, for each pending (open) position, its own window start and row. Rows before the tail start of R, and anchors before it, are dropped and every stored
-        index shifts. Prefix sums stay absolute (`pre0`). Nothing here depends on wall-clock time."""
-        n = p.n()
-        if n < TRIM_MIN_ROWS or p.closed < n:
-            return
-        bt = p.cols["bt"]
-        ref = bisect.bisect_left(bt, bt[n - 1] - WIN_S - TRIM_MARGIN_S)
-        for t in [p.pend_live, p.pend_screen, *p.q_screen]:
-            if t is not None:
-                ref = min(ref, bisect.bisect_left(bt, t["bt"] - WIN_S - TRIM_MARGIN_S), int(t["row"]))
-        t0 = self._tail_start(p, ref)
-        if t0 < max(TRIM_MIN_ROWS // 2, n // 2):
-            return  # amortise: copy only when at least half of the retained rows go
-        pre = (p.sum_buy_ain[t0 - 1], p.sum_sell_q[t0 - 1], p.n_buy[t0 - 1])
-        for k in p.cols:
-            p.cols[k] = p.cols[k][t0:]
-        p.sig = p.sig[t0:]
-        p.sum_buy_ain, p.sum_sell_q, p.n_buy = p.sum_buy_ain[t0:], p.sum_sell_q[t0:], p.n_buy[t0:]
-        p.pre0 = pre
-        gi = bisect.bisect_left(p.gstart, t0)
-        assert gi < len(p.gstart) and p.gstart[gi] == t0, "trim point is not a group start"
-        p.gstart = [g - t0 for g in p.gstart[gi:]]
-        p.anchors = [a - t0 for a in p.anchors if a >= t0]
-        p.closed -= t0
-        for t in [p.pend_live, p.pend_screen, *p.q_screen]:
-            if t is not None:
-                t["row"] = int(t["row"]) - t0
-        p.trimmed += t0
-        self.stats["trim_calls"] += 1
-        self.stats["trim_rows"] += t0
 
     def _prefilter(self, p: PoolHist, lo_new: int, hi: int) -> bool:
         """True if some new BUY row could fire m10. Never false for a row that fires: buys over the window incl. the whole new group is an upper bound of the count;
@@ -401,13 +325,11 @@ class Engine:
             if not (0.02 <= prog <= 0.35):
                 continue
             w = bisect.bisect_left(bt, bt[i] - WIN_S)
-            if p.trimmed and w == 0 and bt[0] > bt[i] - WIN_S:
-                self.stats["trim_window_clamped"] += 1  # must stay 0: a trimmed pool's retained rows no longer cover the 60 s window
-            nb = p.n_buy[hi - 1] - (p.n_buy[w - 1] if w else p.pre0[2])
+            nb = p.n_buy[hi - 1] - (p.n_buy[w - 1] if w else 0)
             if nb < CELL.params[0]:
                 continue
-            buy_up = p.sum_buy_ain[hi - 1] - (p.sum_buy_ain[w - 1] if w else p.pre0[0])
-            sell_lo = (p.sum_sell_q[g0 - 1] if g0 else p.pre0[1]) - (p.sum_sell_q[w - 1] if w else p.pre0[1]) if g0 > w else 0.0
+            buy_up = p.sum_buy_ain[hi - 1] - (p.sum_buy_ain[w - 1] if w else 0.0)
+            sell_lo = (p.sum_sell_q[g0 - 1] if g0 else 0.0) - (p.sum_sell_q[w - 1] if w else 0.0) if g0 > w else 0.0
             if buy_up - sell_lo >= CELL.params[1] * SOL * (1 - 1e-9) - 1:
                 return True
         return False
@@ -461,8 +383,6 @@ class Engine:
     def _decide(self, p: PoolHist, lo_new: int, hi: int) -> None:
         bt = p.cols["bt"]
         lo_min = bisect.bisect_left(bt, bt[lo_new] - WIN_S)
-        if p.trimmed and lo_min == 0 and bt[0] > bt[lo_new] - WIN_S:
-            self.stats["trim_window_clamped"] += 1
         t0 = self._tail_start(p, lo_min)
         P, perm, _ = self._pipeline(p, t0, hi, extend=True)
         idx = S.triggers_for(CELL, P, self.first_ok_bt, self._flags(p)[1])
