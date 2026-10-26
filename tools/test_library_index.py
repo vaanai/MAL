@@ -157,3 +157,15 @@ def test_main_returns_2_on_a_bad_library(tmp_path):
     (tmp_path / "ideas.jsonl").write_text(json.dumps(row(status="winning")) + "\n", encoding="utf-8")
     (tmp_path / "META.json").write_text(json.dumps(META), encoding="utf-8")
     assert li.main(["--dir", str(tmp_path)]) == 2
+
+
+def test_inbox_2026_10_27_is_a_known_section_and_counts_as_inbox():
+    assert "inbox-2026-10-27" in li.SECTIONS
+    rows = [row(id="p60-x", section="inbox-2026-10-27", status="desk-read"),
+            row(id="main-1", status="untested")]
+    li.validate(rows)
+    page = li.render(rows, META)
+    assert "| **all** | 1 | 1 | 0 |" in page
+    bad = [row(id="p60-y", section="inbox-2026-10-28")]
+    with pytest.raises(li.LibraryError):
+        li.validate(bad)
