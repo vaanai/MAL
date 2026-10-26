@@ -298,5 +298,115 @@ class HaltBridgeTests(TmpCase):
             alb.Config.from_dict({**Env(tempfile.mkdtemp(dir=self.tmp)).raw, "a3_record_file": "/x/a3.jsonl"})
 
 
+class TwinRealpathTests(TmpCase):
+    def test_the_realpath_that_was_checked_is_what_the_writer_gets(self):
+        from tools import arena_twin_writer as W
+        from tools import hv4_c0_twin as tw
+        real = Path(self.tmp) / "real-ledger"
+        real.mkdir()
+        link = Path(self.tmp) / "link-ledger"
+        os.symlink(real, link)
+        trips = Path(self.tmp) / "t.jsonl"
+        trips.write_text("")
+        seen = []
+        with mock.patch.object(W, "main", side_effect=lambda a: seen.append(a) or 0):
+            rc = tw.main(["--trips", str(trips), f"--ledger-dir={link}", "--bot-id", ARM, "--out", str(Path(self.tmp) / "o.jsonl")])
+        self.assertEqual(rc, 0)
+        opts = dict(x.split("=", 1) for x in seen[0])
+        self.assertEqual(opts["--ledger-dir"], os.path.realpath(real))
+        self.assertNotEqual(opts["--ledger-dir"], str(link))
+        self.assertEqual(sum(x.startswith("--ledger-dir=") for x in seen[0]), 1)
+
+    def test_a_dir_swapped_after_the_parse_cannot_redirect_the_writer(self):
+        from tools import arena_twin_writer as W
+        from tools import hv4_c0_twin as tw
+        good, evil = Path(self.tmp) / "good", Path(self.tmp) / "evil"
+        good.mkdir(), evil.mkdir()
+        link = Path(self.tmp) / "ledger"
+        os.symlink(good, link)
+        trips = Path(self.tmp) / "t.jsonl"
+        trips.write_text("")
+
+        def swap(argv):  # the swap happens at the writer's call, after the check; the forwarded path is already the real one
+            link.unlink()
+            os.symlink(evil, link)
+            seen.append(argv)
+            return 0
+        seen = []
+        with mock.patch.object(W, "main", side_effect=swap):
+            tw.main(["--trips", str(trips), "--ledger-dir", str(link), "--bot-id", ARM, "--out", str(Path(self.tmp) / "o.jsonl")])
+        self.assertIn(f"--ledger-dir={os.path.realpath(good)}", seen[0])
+
+
+class BotIdTests(TmpCase):
+    BAD = ("hv4-../x-F", "hv4-a/b-F", "../hv4-CON-F", "hv4-CON-F/", "hv4-a\\b-F", ".hv4-CON-F", "hv4-CON-F\x00", "", " hv4-CON-F", "hv4-" + "a" * 130 + "-F", None, 5, ["hv4-CON-F"])
+
+    def test_problem_function(self):
+        for b in self.BAD:
+            self.assertEqual(c0.bot_id_problem(b), "bot_id_invalid", repr(b))
+        for ok in (ARM, "hv4-CON-F", "rule1", "h5v1q50-boostfloor-a1", "hv4-A.b_c-X"):
+            self.assertIsNone(c0.bot_id_problem(ok), ok)
+
+    def test_wrapper_refuses_first(self):
+        from tools import hv4_c0_twin as tw
+        d = Path(self.tmp) / "led"
+        d.mkdir()
+        for b in ("hv4-../x-F", "hv4-a/b-F", "hv4-CON-F/.."):
+            self.assertEqual(tw.refusal(b, str(d)), "bot_id_invalid", b)
+            self.assertEqual(tw.main(["--trips", "t", "--out", str(Path(self.tmp) / "o"), "--ledger-dir", str(d), "--bot-id", b]), 2, b)
+
+    def test_bridge_entry_refuses(self):
+        e = Hv4Env(self.tmp)
+        for b in ("hv4-../x-F", "hv4-a/b-F"):
+            with self.assertRaises(ValueError) as cm:
+                alb.Config.from_dict({**e.raw, "bot_id": b})
+            self.assertIn("bot_id_invalid", str(cm.exception))
+        plain = {"bot_id": "../x", "frozen_sha": "a" * 40, "root": "/r", "state_dir": "/s", "end_ms": 1, "max_hold_ms": 1}
+        with self.assertRaises(ValueError):
+            alb.Config.from_dict(plain)  # not only the hv4_c0 profile
+        cfg = alb.Config.from_dict(e.raw)
+        bad = alb.Config(**{**cfg.__dict__, "bot_id": "hv4-a/b-F"})  # a Config built without from_dict
+        with self.assertRaises(SystemExit):
+            alb.Bridge(bad, e.port, now_ms=e.clock, live_ok_path=e.live_ok, tier_path=e.tier, root_checks=False)
+
+
+class WindowManualRecoveryTests(TmpCase):
+    def test_labels_and_text(self):
+        for lab in ("window_file_unsafe", "window_file_unwritable"):
+            self.assertIn(lab, c0.WINDOW_MANUAL_RECOVERY)
+            self.assertIn("MANUAL RECOVERY", c0.refusal_text(lab))
+            self.assertTrue(c0.refusal_text(lab).startswith(lab))
+        self.assertEqual(c0.refusal_text("window_dir_missing"), "window_dir_missing")
+        doc = (Path(c0.__file__).resolve().parent.parent / "tools" / "hv4_live_c0.py").read_text()
+        self.assertIn("window_file_unsafe", doc)
+
+    def test_bridge_start_prints_the_recovery_text(self):
+        e = Hv4Env(self.tmp)
+        self.assertEqual(c0.window_start_ms(ARM, 5, create=True), (5, None))
+        os.chmod(Path(c0.WINDOW_DIR) / f"{ARM}.json", 0o666)
+        with self.assertRaises(SystemExit) as cm:
+            e.bridge()
+        self.assertIn("window_file_unsafe", str(cm.exception))
+        self.assertIn("MANUAL RECOVERY", str(cm.exception))
+
+    def test_stale_tmp_is_unwritable_and_left_for_the_owner(self):
+        Hv4Env(self.tmp)
+        stale = Path(c0.WINDOW_DIR) / f".{ARM}.{os.getpid()}.tmp"
+        stale.write_text("old")
+        self.assertEqual(c0.window_start_ms(ARM, 5, create=True), (None, "window_file_unwritable"))
+        self.assertEqual(stale.read_text(), "old")  # not ours: not removed, not trusted
+        self.assertFalse((Path(c0.WINDOW_DIR) / f"{ARM}.json").exists())
+
+    def test_tmp_is_removed_when_write_or_fsync_fails(self):
+        Hv4Env(self.tmp)
+        tmp = Path(c0.WINDOW_DIR) / f".{ARM}.{os.getpid()}.tmp"
+        with mock.patch.object(os, "fsync", side_effect=OSError("disk")):
+            self.assertEqual(c0.window_start_ms(ARM, 5, create=True), (None, "window_file_unwritable"))
+        self.assertFalse(tmp.exists())
+        self.assertFalse((Path(c0.WINDOW_DIR) / f"{ARM}.json").exists())
+        self.assertEqual(c0.window_start_ms(ARM, 7, create=True), (7, None))  # the next start works: nothing stale was left
+        self.assertFalse(tmp.exists())
+
+
 if __name__ == "__main__":
     unittest.main()

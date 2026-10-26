@@ -23,6 +23,13 @@ The paper twin is priced at the same S.
 
 Fee: the pin is the compiled default 55,000 buy / 55,000 sell / 150,000 escalated priority (manager decision 2026-10-25: C0 uses the default, not
 p155; it equals h5_executor.H5_DEFAULT and a test asserts that). A config naming any other fee is refused.
+
+PR 5a notes (still `hv4_c0_incomplete`: nothing here removes the live refusal).
+  * WINDOW FILE RECOVERY is manual. `window_file_unsafe` (the write-once window file is a link, hard-linked, not a regular file or has the wrong owner/mode)
+    and `window_file_unwritable` (including a stale `.<bot_id>.<pid>.tmp` left by a crashed start) stop the start; the refusal text says MANUAL RECOVERY. The
+    bridge never deletes or recreates the file; the owner restores the ORIGINAL first_start_ms. A tmp this process created is unlinked on a write/fsync failure.
+  * HALTS: `feed_gap:<why>` refuses new buys while the forwarder status is not live (no latch; it clears when the feed resumes). `a3_pins_changed` latches on any
+    A3 halt flag, an unreadable/stale record, or a missing record file in live (cleared only by the manager). Exits keep running under both.
 """
 
 from __future__ import annotations
@@ -416,6 +423,27 @@ WINDOW_UNREADABLE = "window_file_unreadable_manual_recovery"  # empty or damaged
 WINDOW_DIR = "/var/lib/mal-hv4-c0/window"  # write-once `<bot_id>.json` per bot, outside the bridge's state dir: a new state dir, a deleted state file or a mode switch cannot reset it
 
 
+WINDOW_MANUAL_RECOVERY = ("window_file_unsafe", "window_file_unwritable")
+WINDOW_MANUAL_NOTE = ("MANUAL RECOVERY: do not delete or recreate the window file to get a start. The owner inspects WINDOW_DIR (a window file that is a link, not a regular "
+                      "root/service-owned file, or hard-linked; or a stale .<bot_id>.<pid>.tmp left by a crashed start) and restores the ORIGINAL first_start_ms; "
+                      "a new first start would restart the 14-day cap")
+
+
+def refusal_text(why: str) -> str:
+    """The label, plus the manual-recovery note for the two window labels that must never be cleared by the bridge."""
+    return f"{why} ({WINDOW_MANUAL_NOTE})" if why in WINDOW_MANUAL_RECOVERY else why
+
+
+def bot_id_problem(bot_id: Any) -> str | None:
+    """A bot_id is a path component (decisions/<bot_id>, window/<bot_id>.json, status files). Refuse a non-string, an empty one, '/', a backslash, '..', NUL, or a
+    leading '.'."""
+    if not isinstance(bot_id, str) or not bot_id or len(bot_id) > 128:
+        return "bot_id_invalid"
+    if "/" in bot_id or "\\" in bot_id or ".." in bot_id or "\x00" in bot_id or bot_id.startswith(".") or bot_id != bot_id.strip():
+        return "bot_id_invalid"
+    return None
+
+
 def window_start_ms(bot_id: str, now_ms: int, create: bool) -> tuple[int | None, str | None]:
     """(first start ms, problem). The first start of this bot_id, kept in WINDOW_DIR/<bot_id>.json (created O_EXCL, 0444; the dir must exist and be owned by
     root or the running user, not group/other writable). `create=False` (main's pre-check) returns (None, None) when there is no file yet."""
@@ -436,8 +464,10 @@ def window_start_ms(bot_id: str, now_ms: int, create: bool) -> tuple[int | None,
             if not create:
                 return None, None
             tmp = os.path.join(WINDOW_DIR, f".{bot_id}.{os.getpid()}.tmp")  # atomic: write + fsync a private tmp, then link it into place (fails if it exists)
+            made = False
             try:
-                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o444)
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o444)  # an existing tmp (a crashed run with this pid) refuses: manual recovery
+                made = True
                 with os.fdopen(fd, "w") as fh:
                     fh.write(json.dumps({"bot_id": bot_id, "first_start_ms": int(now_ms)}, sort_keys=True) + "\n")
                     fh.flush()
@@ -448,6 +478,7 @@ def window_start_ms(bot_id: str, now_ms: int, create: bool) -> tuple[int | None,
                     continue
                 finally:
                     os.unlink(tmp)
+                    made = False
                 dfd = os.open(WINDOW_DIR, os.O_RDONLY)
                 try:
                     os.fsync(dfd)
@@ -455,6 +486,12 @@ def window_start_ms(bot_id: str, now_ms: int, create: bool) -> tuple[int | None,
                     os.close(dfd)
             except OSError:
                 return None, "window_file_unwritable"
+            finally:
+                if made:  # a write / fsync / link failure leaves no stale tmp behind (only a tmp this call created is removed)
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
             return int(now_ms), None
         except OSError:
             return None, WINDOW_UNREADABLE

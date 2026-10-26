@@ -11,6 +11,8 @@ A thin wrapper over `tools.arena_twin_writer` (nofail leg, 1.9 s, the trip's own
     old flat path-string refusal. Without `--reads-dir` or without the record the run is refused.
   * `--out` and `--run-record` (the writer's files; default `<out>.run.json`) are seal-checked: not a symlink, not a hard link, and neither the file nor its
     parent directory may resolve under or alias the arena.
+  * the --ledger-dir that passed the checks is resolved to its realpath ONCE and that path (not the original string) is what the writer gets (QP N-E);
+  * a bot_id with '/', a backslash, '..', NUL or a leading '.' is refused before anything else (QP N-G).
 Exit codes are the writer's (0 written, 2 refused / unusable input). Nothing here says a book makes money.
 """
 
@@ -30,7 +32,7 @@ from tools import hv4_live_c0 as c0
 
 
 def refusal(bot_id: str, ledger_dir: str, reads_dir: str | None = None) -> str | None:
-    why = c0.arm_refusal(bot_id)
+    why = c0.bot_id_problem(bot_id) or c0.arm_refusal(bot_id)  # QP N-G: a '/' or '..' in the bot_id is refused before anything else
     if why:
         return why
     if hashlib.sha256(Path(W.__file__).read_bytes()).hexdigest() != c0.TWIN_WRITER_SHA256:
@@ -149,13 +151,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     if why:
         print(f"hv4_c0_twin: REFUSED {why}", file=sys.stderr)
         return 2
-    sealed_ledger = c0._under_sealed(os.path.realpath(a.ledger_dir)) or c0._under_sealed(os.path.abspath(a.ledger_dir))  # only reachable past the gate
-    why = input_problem(a.trips, a.ledger_dir, ledger_sealed_ok=sealed_ledger)
+    # QP N-E: resolve ONCE. Every later check and the writer both get this realpath, never the original string (a symlink swapped after the check cannot redirect the writer).
+    ledger_real = os.path.realpath(a.ledger_dir)
+    sealed_ledger = c0._under_sealed(ledger_real) or c0._under_sealed(os.path.abspath(a.ledger_dir))  # only reachable past the gate
+    why = input_problem(a.trips, ledger_real, ledger_sealed_ok=sealed_ledger)
     if why:
         print(f"hv4_c0_twin: REFUSED {why}", file=sys.stderr)
         return 2
     # --opt=value: a value that starts with "-" can never be parsed as another option by the writer's argparse
-    fwd = [f"--trips={a.trips}", f"--ledger-dir={a.ledger_dir}", f"--bot-id={a.bot_id}", f"--out={a.out}",
+    fwd = [f"--trips={a.trips}", f"--ledger-dir={ledger_real}", f"--bot-id={a.bot_id}", f"--out={a.out}",
            f"--config-hash={c0.CONFIG_PIN_SHA256}", f"--buy-send={c0.PRIORITY_PIN['buy'] + c0.BASE_FEE_LAMPORTS}",
            f"--sell-send={c0.PRIORITY_PIN['sell'] + c0.BASE_FEE_LAMPORTS}"]
     for name, v in (("--run-record", a.run_record), ("--join-tol-ms", a.join_tol_ms), ("--now-ms", a.now_ms)):

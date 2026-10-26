@@ -117,6 +117,9 @@ class Config:
         for k in ("bot_id", "frozen_sha", "root", "state_dir", "end_ms", "max_hold_ms"):
             if d.get(k) in (None, ""):
                 raise ValueError(f"config {k} is required")
+        why = c0.bot_id_problem(d["bot_id"])  # QP N-G: the bot_id is a path component of the decision log, the window file and the feed status
+        if why:
+            raise ValueError(f"config bot_id refused: {why}")
         t = TIERS[tier]
         if str(d["bot_id"]).startswith("hv4-") and d.get("profile") != c0.PROFILE:
             raise ValueError("hv4_c0 refused: an hv4- bot_id needs profile hv4_c0 (arm rules apply in every mode)")
@@ -354,6 +357,8 @@ class Bridge:
                  close_blocked: Callable[[str], bool | None] | None = None, parity_runner: Callable[[list[str]], int] | None = None,
                  owner_dec_path: Path | str | None = None, owner_pin: str | None = None) -> None:
         """close_blocked: optional S3 hook, mint -> True (blocked) | False (ok). Interface only here. When set, a True, a None or a raise all refuse."""
+        if c0.bot_id_problem(cfg.bot_id):
+            raise SystemExit(f"bridge refused: {c0.bot_id_problem(cfg.bot_id)}")
         self.cfg = cfg
         self.close_blocked = close_blocked
         self.port = port
@@ -378,7 +383,7 @@ class Bridge:
             first, why = c0.window_start_ms(cfg.bot_id, self.now_ms(), create=True)
             why = why or c0.end_cap_problem(cfg.end_ms, first)
             if why:
-                raise SystemExit(f"hv4_c0 refused: {why}")
+                raise SystemExit(f"hv4_c0 refused: {c0.refusal_text(why)}")
             self.window_start_ms = first
             self._read_ident = dict(self.state.read_pin or {})
         self.guarded = cfg.profile == c0.PROFILE  # hv4_c0: every decision-log read is path-guarded (symlink, hard link, swap, arena realpath), in the object itself
@@ -1308,7 +1313,7 @@ def main(argv: list[str] | None = None) -> int:
             first, why = c0.window_start_ms(cfg.bot_id, int(time.time() * 1000), create=False)
             why = why or c0.end_cap_problem(cfg.end_ms, first if first is not None else int(time.time() * 1000))
         if why:
-            print(f"arena_live_bridge ALERT startup_refused {why}", flush=True)
+            print(f"arena_live_bridge ALERT startup_refused {c0.refusal_text(why)}", flush=True)
             return 2
         # Seal: R2.1 of QP-RULING-1025-hv4-read-rule. No hv4_c0 start, dry or live, until a read-record gate exists, except on a synthetic fixture root.
         why = c0.start_refusal(cfg.root, want_live, cfg.bot_id)
