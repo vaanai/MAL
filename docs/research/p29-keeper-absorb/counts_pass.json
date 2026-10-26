@@ -1,0 +1,316 @@
+{
+ "pins": {
+  "tools/arena_screen.py": "b37282c7d23d3bfca310f2574b8bc2b9b0981e0e73ee2537e118f779244fbb57",
+  "tools/arena_stack.py": "a39b2ba68dd46b7d3a555fb8e06580718300f354020c1f91280ab7a0e0856778",
+  "tools/arena_paper.py": "9d2fdb04a3da9bb38de9e30c91154f5a9ab2de513e6f4d7936c1eb1a54863514",
+  "tools/arena_score.py": "c4859323622794f5f97a131eb32256c905ca2ab6c1adf8ab21568fc2a98f27f3",
+  "tools/arena_report_legs.py": "65f4d471e3ad19308a038c4d6563f22322134013f09c0afe2d64c648964a0d8b",
+  "tools/arena_stack_v2.py": "95876c94d7e029e3959d8a3aed05ee64f1d461bc002ec62d035e74763587acb3",
+  "tools/arena_rules.py": "048dd78901c52e0c14fe9b1611f354c49ac6d0bb37fad8e5be3e27c756e3e2af"
+ },
+ "mode": "count-only",
+ "dropped_blocks_coverage": [],
+ "blocks": {
+  "fresh-0903": {
+   "hours": 132,
+   "events": 796,
+   "wall_s": 1156.5
+  },
+  "exp011-0909": {
+   "hours": 132,
+   "events": 434,
+   "wall_s": 1313.9
+  },
+  "fast-pool-0918": {
+   "hours": 73,
+   "events": 471,
+   "wall_s": 595.5
+  },
+  "oracle-insample-0922": {
+   "hours": 72,
+   "events": 558,
+   "wall_s": 553.0
+  }
+ },
+ "per_block_day": {
+  "exp011-0909|2026-09-10": {
+   "tagged_events": 98,
+   "after_price_filters": 96,
+   "after_universe": 73,
+   "skip_pool_age_lt_360s": 22,
+   "skip_no_pre_print": 2,
+   "skip_v_out_of_band": 1
+  },
+  "exp011-0909|2026-09-11": {
+   "tagged_events": 82,
+   "after_price_filters": 80,
+   "after_universe": 56,
+   "skip_v_out_of_band": 15,
+   "skip_pool_age_lt_360s": 9,
+   "skip_no_pre_print": 1,
+   "skip_drop_lt_3pct": 1
+  },
+  "exp011-0909|2026-09-12": {
+   "tagged_events": 73,
+   "after_price_filters": 66,
+   "after_universe": 58,
+   "skip_pool_age_lt_360s": 8,
+   "skip_no_pre_print": 1,
+   "skip_target_already_met": 1,
+   "skip_drop_lt_3pct": 5
+  },
+  "exp011-0909|2026-09-13": {
+   "tagged_events": 131,
+   "after_price_filters": 126,
+   "after_universe": 106,
+   "skip_pool_age_lt_360s": 19,
+   "skip_drop_lt_3pct": 3,
+   "skip_no_pre_print": 2,
+   "skip_v_out_of_band": 1
+  },
+  "exp011-0909|2026-09-14": {
+   "tagged_events": 50,
+   "after_price_filters": 44,
+   "after_universe": 38,
+   "skip_no_pre_print": 2,
+   "skip_pool_age_lt_360s": 6,
+   "skip_drop_lt_3pct": 3,
+   "skip_target_already_met": 1
+  },
+  "fast-pool-0918|2026-09-19": {
+   "tagged_events": 160,
+   "after_price_filters": 147,
+   "after_universe": 126,
+   "skip_no_pre_print": 6,
+   "skip_pool_age_lt_360s": 21,
+   "skip_drop_lt_3pct": 6,
+   "skip_target_already_met": 1
+  },
+  "fast-pool-0918|2026-09-20": {
+   "tagged_events": 168,
+   "after_price_filters": 151,
+   "after_universe": 125,
+   "skip_drop_lt_3pct": 6,
+   "skip_no_pre_print": 9,
+   "skip_pool_age_lt_360s": 26,
+   "skip_target_already_met": 2
+  },
+  "fast-pool-0918|2026-09-21": {
+   "tagged_events": 143,
+   "after_price_filters": 121,
+   "after_universe": 99,
+   "skip_pool_age_lt_360s": 22,
+   "skip_target_already_met": 2,
+   "skip_no_pre_print": 10,
+   "skip_drop_lt_3pct": 10
+  },
+  "fresh-0903|2026-09-04": {
+   "tagged_events": 84,
+   "after_price_filters": 82,
+   "after_universe": 79,
+   "skip_v_out_of_band": 2,
+   "skip_drop_lt_3pct": 1,
+   "skip_pool_age_lt_360s": 1,
+   "skip_target_already_met": 1
+  },
+  "fresh-0903|2026-09-05": {
+   "tagged_events": 104,
+   "after_price_filters": 99,
+   "after_universe": 85,
+   "skip_drop_lt_3pct": 2,
+   "skip_v_out_of_band": 5,
+   "skip_pool_age_lt_360s": 9,
+   "skip_no_pre_print": 2,
+   "skip_target_already_met": 1
+  },
+  "fresh-0903|2026-09-06": {
+   "tagged_events": 134,
+   "after_price_filters": 126,
+   "after_universe": 105,
+   "skip_pool_age_lt_360s": 19,
+   "skip_v_out_of_band": 2,
+   "skip_drop_lt_3pct": 5,
+   "skip_target_already_met": 2,
+   "skip_no_pre_print": 1
+  },
+  "fresh-0903|2026-09-07": {
+   "tagged_events": 203,
+   "after_price_filters": 198,
+   "after_universe": 157,
+   "skip_pool_age_lt_360s": 40,
+   "skip_no_pre_print": 4,
+   "skip_v_out_of_band": 1,
+   "skip_drop_lt_3pct": 1
+  },
+  "fresh-0903|2026-09-08": {
+   "tagged_events": 271,
+   "after_price_filters": 248,
+   "after_universe": 222,
+   "skip_pool_age_lt_360s": 26,
+   "skip_no_pre_print": 5,
+   "skip_drop_lt_3pct": 13,
+   "skip_target_already_met": 5
+  },
+  "oracle-insample-0922|2026-09-22": {
+   "tagged_events": 154,
+   "after_price_filters": 145,
+   "after_universe": 111,
+   "skip_pool_age_lt_360s": 34,
+   "skip_no_pre_print": 5,
+   "skip_target_already_met": 1,
+   "skip_drop_lt_3pct": 3
+  },
+  "oracle-insample-0922|2026-09-23": {
+   "tagged_events": 195,
+   "after_price_filters": 186,
+   "after_universe": 156,
+   "skip_pool_age_lt_360s": 28,
+   "skip_target_already_met": 1,
+   "skip_no_pre_print": 4,
+   "skip_drop_lt_3pct": 4,
+   "skip_v_out_of_band": 2
+  },
+  "oracle-insample-0922|2026-09-24": {
+   "tagged_events": 209,
+   "after_price_filters": 186,
+   "after_universe": 159,
+   "skip_drop_lt_3pct": 9,
+   "skip_pool_age_lt_360s": 27,
+   "skip_no_pre_print": 10,
+   "skip_target_already_met": 4
+  }
+ },
+ "untagged_per_block_day": {
+  "exp011-0909|2026-09-10": {
+   "untagged_bursts": 106503,
+   "after_price_filters": 9990,
+   "after_universe": 8915
+  },
+  "exp011-0909|2026-09-11": {
+   "untagged_bursts": 95943,
+   "after_price_filters": 8708,
+   "after_universe": 7272
+  },
+  "exp011-0909|2026-09-12": {
+   "untagged_bursts": 97574,
+   "after_price_filters": 8576,
+   "after_universe": 7613
+  },
+  "exp011-0909|2026-09-13": {
+   "untagged_bursts": 110066,
+   "after_price_filters": 8830,
+   "after_universe": 7656
+  },
+  "exp011-0909|2026-09-14": {
+   "untagged_bursts": 115795,
+   "after_price_filters": 9928,
+   "after_universe": 8597
+  },
+  "fast-pool-0918|2026-09-19": {
+   "untagged_bursts": 128120,
+   "after_price_filters": 14067,
+   "after_universe": 12984
+  },
+  "fast-pool-0918|2026-09-20": {
+   "untagged_bursts": 123428,
+   "after_price_filters": 13119,
+   "after_universe": 11913
+  },
+  "fast-pool-0918|2026-09-21": {
+   "untagged_bursts": 123304,
+   "after_price_filters": 13309,
+   "after_universe": 12047
+  },
+  "fresh-0903|2026-09-04": {
+   "untagged_bursts": 113743,
+   "after_price_filters": 10588,
+   "after_universe": 9313
+  },
+  "fresh-0903|2026-09-05": {
+   "untagged_bursts": 108874,
+   "after_price_filters": 9162,
+   "after_universe": 8067
+  },
+  "fresh-0903|2026-09-06": {
+   "untagged_bursts": 115512,
+   "after_price_filters": 10717,
+   "after_universe": 9518
+  },
+  "fresh-0903|2026-09-07": {
+   "untagged_bursts": 126782,
+   "after_price_filters": 14322,
+   "after_universe": 12933
+  },
+  "fresh-0903|2026-09-08": {
+   "untagged_bursts": 126211,
+   "after_price_filters": 14254,
+   "after_universe": 12962
+  },
+  "oracle-insample-0922|2026-09-22": {
+   "untagged_bursts": 112892,
+   "after_price_filters": 11863,
+   "after_universe": 10626
+  },
+  "oracle-insample-0922|2026-09-23": {
+   "untagged_bursts": 113264,
+   "after_price_filters": 12393,
+   "after_universe": 11260
+  },
+  "oracle-insample-0922|2026-09-24": {
+   "untagged_bursts": 115803,
+   "after_price_filters": 12659,
+   "after_universe": 11461
+  }
+ },
+ "controls": {
+  "pairs_all_blocks": 71,
+  "unmatched_all_blocks": 1684,
+  "oos_pairs": 44,
+  "oos_unmatched": 1063,
+  "oos_unmatched_share": 0.9603
+ },
+ "rule_counters": {
+  "outside_declared_days": 130231,
+  "control_bursts_raw": 1833814,
+  "control_skip_drop_lt_3pct": 1593532,
+  "control_pass": 163137,
+  "control_skip_impact_bar_2pct": 22706,
+  "control_skip_v_out_of_band": 8489,
+  "tagged_bursts_raw": 2259,
+  "tagged_pass": 1755,
+  "control_skip_target_already_met": 2956,
+  "control_skip_no_pre_print": 32135,
+  "control_skip_pool_age_lt_360s": 10859,
+  "tagged_skip_v_out_of_band": 29,
+  "tagged_skip_drop_lt_3pct": 72,
+  "tagged_skip_pool_age_lt_360s": 317,
+  "tagged_skip_target_already_met": 22,
+  "tagged_skip_no_pre_print": 64
+ },
+ "kit_counters": {
+  "triggers_raw": 1755
+ },
+ "kit_validated_triggers_per_day": {
+  "2026-09-04": 79,
+  "2026-09-05": 85,
+  "2026-09-06": 105,
+  "2026-09-07": 157,
+  "2026-09-08": 222,
+  "2026-09-10": 73,
+  "2026-09-11": 56,
+  "2026-09-12": 58,
+  "2026-09-13": 106,
+  "2026-09-14": 38,
+  "2026-09-19": 126,
+  "2026-09-20": 125,
+  "2026-09-21": 99,
+  "2026-09-22": 111,
+  "2026-09-23": 156,
+  "2026-09-24": 159
+ },
+ "oos_events_after_universe": 1107,
+ "oos_event_days": 11,
+ "stops": [
+  "PLACEBO_NOT_DECIDABLE: matched OOS pairs 44 (need >= 100), unmatched share 0.960 (max 0.20)"
+ ]
+}

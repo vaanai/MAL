@@ -176,3 +176,22 @@ Ratio = tape rows carrying a keeper fill signature / keeper fill txs that day (r
 | | median | | | **0.908** | |
 
 No block is below the 0.85 median bar, so none is dropped. OOS: 11 days, 2,157 events before the PumpSwap-only, d >= 3% and 360 s filters. The distinct-signature ratio is within 0.002 of the row ratio, except oracle-insample (0.884-0.917). The lowest single days are 09-19 (0.878) and 09-13 (0.881). The expected n after the price-based filters is still to be counted (section 9, after the QP re-check). The listener tapes score higher than their 2026-10-01 chain coverage (84.8% / 66.2%) would suggest; September coverage may differ from 10-01, and this is not explained here.
+
+## Counts-only pass on the real layout (job #1628, code head b83a9c54, 2026-10-26; no entry, exit, fill or return was computed; raw: counts_pass.json)
+The 3% drop filter, the 2% bar and the reversion multiple read post-trade prices as COUNT FILTERS only. Warm-up hours were loaded (fresh-0903 from 09-03T12, exp011-0909 from 09-09T12, fast-pool from 09-18T23); only declared days are counted.
+
+| Block (role) | Declared days | Tagged SL events | After price filters (no pre-print, drop < 3%, 2% bar, target already met) | After kit universe (V band, pool age >= 360 s) = triggers | Skipped: pool age < 360 s | no pre-print | drop < 3% | target already met | V out of band | V unknown |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| fresh-0903 (in-sample) | 5 | 796 | 753 | 648 | 95 | 12 | 22 | 9 | 10 | 0 |
+| exp011-0909 (OOS) | 5 | 434 | 412 | 331 | 64 | 8 | 12 | 2 | 17 | 0 |
+| fast-pool-0918 (OOS) | 3 | 471 | 419 | 350 | 69 | 25 | 22 | 5 | 0 | 0 |
+| oracle-insample-0922 (OOS) | 3 | 558 | 517 | 426 | 89 | 19 | 16 | 6 | 2 | 0 |
+| **OOS total** | 11 | 1,463 | 1,348 | **1,107** | 222 | 52 | 50 | 13 | 19 | 0 |
+
+- The 2% bar skipped 0 tagged events at the decision-slot state (all tagged pools have reserve >= 25 SOL; median 109 SOL).
+- Tagged events per OOS day (after universe): 73, 56, 58, 106, 38 (exp011); 126, 125, 99 (fast-pool); 111, 156, 159 (oracle-insample). Minimum 38, so every OOS day has trades; the kit's validated trigger count per day equals these numbers.
+- Missing-V vs real-V: no tagged event hit a pool absent from the V map (`v_unknown` 0); 19 OOS events (29 over all blocks) hit a pool whose real V is outside the Am.2 band (kit refuses). No bonding rows are loaded (PumpSwap only).
+- Rule counters: tagged bursts raw 2,259 (all blocks incl. in-sample, declared days) -> 1,755 triggers.
+- **Stops**: NOT_DECIDABLE (events < 100 or days < 5) does NOT fire: 1,107 OOS events over 11 days. No block is dropped on coverage (all medians >= 0.85, section "Coverage dry pass result").
+- **Placebo: PLACEBO_NOT_DECIDABLE under the declared matching rule.** Untagged candidates are plentiful (about 8,000-13,000 per block-day pass the same filters) but only 44 OOS tagged events (71 over all blocks) get a cross-pool control: 1,063 of 1,107 OOS events (96.0%) are unmatched (cap 20%; need >= 100 pairs). Cause, from the feature distributions (counts and price-derived drop only): the keeper events are fast and deep (median 8 s from first to last sell, exactly 3 distinct sellers at the 10th to 90th percentile, median drop d 28%, 90th percentile 53%), while untagged bursts are slow and shallow (median 56 s, median d 8%, 10th percentile of d 3.7%). Of the 1,755 tagged events, 521 have any candidate within +-2 pts of d (with total sold SOL, duration and sellers already within tolerance) before the one-control-per-event, same-decile and no-reuse rules. The declared matching tolerances were frozen before this; they are NOT changed here. By the declare the book cannot PASS while the placebo is NOT_DECIDABLE. Options for the manager and QP (a new amendment, not applied): widen the d tolerance (e.g. +-5 pts), allow control reuse, or match on d-quantile instead of a fixed band, then re-count (still counts only); or run the priced look report-only without a PASS route.
+- Observation, not a result: a median 28% drop inside 60 s of three keeper stop-loss fills means these events are mostly deep dumps in already-falling pools, which is the regime where the earlier untagged cascade fades (hunt29-flush-1) kept drifting down. This is a feature distribution only; no price after the event was read.
