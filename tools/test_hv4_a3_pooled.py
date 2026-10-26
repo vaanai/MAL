@@ -1,18 +1,15 @@
 """DEC-032 Amendment 3 (HV4/HV6 C0 half): tools/hv4_live_c0.a3_problem and its bridge wiring. Synthetic fixtures only: no host file, no A3 record, no applied log,
-no a3-books.json, no HV4 or Q50 output. Am.3 tests 1 to 12, the c0 half of 13, 14 (constants) and 15 (bridge). The equality test against the Q50 implementation
-(PR #972, branch claude/am3-q50-a3-pooled) loads that branch's file from git and SKIPS when the branch is absent."""
+no a3-books.json, no HV4 or Q50 output. Am.3 tests 1 to 12, the c0 half of 13, 14 (constants) and 15 (bridge). The equality test is against tools.h5_arena_executor (PR #972, merged), imported from the tree."""
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
-import subprocess
-import sys
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
 from tools import a3_halt, a3_redeploy_check
+from tools import h5_arena_executor as h5x
 from tools import hv4_live_c0 as c0
 from tools.test_arena_live_bridge import TmpCase
 from tools.test_hv4_live_c0 import Hv4Env, write_a3, write_feed
@@ -20,8 +17,6 @@ from tools.test_hv4_live_c0 import Hv4Env, write_a3, write_feed
 RUN = "2026-10-26T12:00:00Z"
 RUN_MS = int(datetime.strptime(RUN, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp() * 1000)
 H = 3_600_000
-REPO = Path(__file__).resolve().parent.parent
-Q50_REF = "origin/claude/am3-q50-a3-pooled"
 
 
 def iso(ms: int) -> str:
@@ -162,31 +157,9 @@ class PooledGuardTests(TmpCase):
         self.assertNotIn("n_checked", Path(c0.__file__).read_text())  # the executor never evaluates synthetic counts itself
 
 
-def q50_module():
-    """The Q50 implementation (PR #972) loaded from git; None when the ref is absent."""
-    try:
-        src = subprocess.run(["git", "show", f"{Q50_REF}:tools/h5_arena_executor.py"], capture_output=True, text=True, check=True, cwd=str(REPO)).stdout
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return None
-    if "def a3_guard_problem" not in src:
-        return None
-    spec = importlib.util.spec_from_loader("tools._h5_arena_executor_q50", loader=None)
-    mod = importlib.util.module_from_spec(spec)
-    mod.__file__ = str(REPO / "tools" / "h5_arena_executor.py")
-    sys.modules[spec.name] = mod
-    try:
-        exec(compile(src, f"{Q50_REF}:tools/h5_arena_executor.py", "exec"), mod.__dict__)
-    except ImportError:
-        sys.modules.pop(spec.name, None)
-        return None
-    return mod
-
-
 class Q50EquivalenceTests(TmpCase):
     def test_same_answer_as_the_q50_implementation_on_a_fixture_corpus(self):
-        q = q50_module()
-        if q is None:
-            self.skipTest(f"SKIPPED, NOT A PASS: {Q50_REF} (PR #972) is not available; the c0/Q50 equality is unproven in this run")
+        q = h5x  # the Q50 implementation on this tree (PR #972, merged): no skip path
         n = 0
         recs = [dict(), dict(syn="halt"), dict(syn="unevaluated"), dict(pins_changed=True), dict(program=True), dict(boost_disabled=True), dict(boost_share_low=True),
                 dict(run=iso(RUN_MS - 40 * H)), dict(run=iso(RUN_MS + 2 * H)), dict(mtime_ms=RUN_MS + 90 * 60_000)]
