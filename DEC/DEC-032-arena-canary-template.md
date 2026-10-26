@@ -536,7 +536,7 @@ How to read these figures:
 ## Amendment 3: in every DEC-032 C0 canary (Q50, HV4, HV6), `synthetic_share_high` is decided by the DEC-031 Am.10 pooled guard, not by the raw daily record (DRAFT)
 
 **Status: DRAFT, NOT IN FORCE.**
-- Written 2026-10-26 (`date -u` 18:44:05Z at start) by a builder agent for manager17. Extended at 18:47Z, on manager17's decision, to cover the Q50 (H5) C0 canary too. Records only.
+- Written 2026-10-26 (`date -u` 18:44:05Z at start) by a builder agent for manager17. Extended at 18:47Z, on manager17's decision, to cover the Q50 (H5) C0 canary too. Revised at about 18:58Z for quant-proof's comment 6424657511 at 588c5b9d (text fixes F1 to F5). Records only.
 - Basis: quant-proof's comment 6424350003 on PR #969 (head 733dd371), ruling (b). It found that the HV4 C0 bridge's A3 check reads the raw daily record, as §5 item 1 says and line for line as `h5_arena_executor.a3_record_problem`. Under the raw synthetic flag a 14-day C0 is likely to halt on sampling noise. `h5_arena_executor.a3_record_problem`, which is the Q50 C0 path, uses the same raw rule.
 - Outcome-blind. In view when this was written: that QP comment, quant-proof's pre-ruling `/data/mal/hunt-1008/push-1016/hunt30/q50-c0/QP-PRERULING-1026-n2-n4.md` (N2), this DEC, DEC-031 Am.4, Am.10 and Am.15, and the code of `tools/a3_redeploy_check.py`, `tools/a3_halt.py`, `tools/a3_applied_alert.py`, `scripts/ops/a3-daily.sh`, `tools/pump_structure_monitor.py`, `tools/h5_arena_executor.py` and `tools/hv4_live_c0.py` / `tools/arena_live_bridge.py` at PR #969 head aa925782. Not opened: any A3 daily record, verdict or applied log, `a3-books.json`, any HV4 or Q50 output, decision row, ledger, `bots.json`, or job status or log.
 - No book has cleared the promotion gate. Nothing here is a profit claim.
@@ -559,7 +559,10 @@ Until then §5 item 1 stands as written: any raw A3 halt flag latches. A canary 
   - HV4 is frozen at 9ed4c5ff, and its read rule (DEC-031 §2, Am.15) does not change.
   - Q50's paper book, its frozen shadow (a5f4137), its read rule and its A3 rule do not change. Q50's paper window runs under the Am.10 guard (per the manager's brief; the books file was not opened here). So the canary and the paper book now act on the same synthetic decision.
   - No read, window end, count or decision of any book changes.
-- DEC-031 Am.10 and its item 3. The guard still never ends an HV4 or FLOOR window. No id is added to or removed from `a3-books.json`. The canaries only READ the guard's applied log.
+- DEC-031 Am.10 and its item 3. Item 3 ("HV4 and FLOOR do not use the guard … This amendment touches nothing they run") stays true for the HV4 and FLOOR paper books and for HV4's frozen code at 9ed4c5ff. The guard still never ends an HV4 or FLOOR window, and no id is added to or removed from `a3-books.json`.
+  - **Two disclosed exceptions to item 3's literal words** (F1):
+    - (i) The HV4 (and HV6) C0 canary, which is live code and not the frozen book, now depends read-only on the guard's `a3-applied.jsonl` (item 1).
+    - (ii) Test 14 imports `tools.a3_halt` and `tools.a3_redeploy_check` in an HV4 test file under `tools/`. QP ruling 3.1's grep would match it. That is a test-only import: no HV4 runtime module imports either.
 - The other A3 flags, `pins_changed`, `program_changed`, the 36 h stale bound, the 300 s future bound and fail closed.
 - §5's rule that A3 is an (O) halt, and that a canary does not use DEC-031 Am.4's automatic upgrade check.
 - §3 limits, P1 to P7, §6, §7, Amendments 1 and 2.
@@ -575,7 +578,11 @@ While the guard's newest `run_utc` is earlier than the record's, and inside that
 **What this means for `synthetic_share_high`:**
 - The canary halts on it only through the guard's pooled z-test (DEC-031 Am.10 item 1: K = 4, p0 = 75/339, phi = 2.0, halt iff z > 3.0902).
 - The single-run share (> 0.35) no longer decides.
-- A synthetic flag that is not evaluated halts only when it is unevaluated on two consecutive runs. The guard's existing rule makes that a HALT verdict. Under the raw rule it halts on the first run.
+- **When it counts as unevaluated.** The guard treats synthetic as unevaluated when this run has no valid counts or `n_checked` < 10 (`SYN_MIN_RUN_CHECKED` = 10, DEC-031 Am.10 item 1). That is not the monitor's own minimum of 5.
+- **When an unevaluated flag halts.** Only on two consecutive runs; the guard's existing rule then gives a HARD verdict. Under the raw rule:
+  - a run with `n_checked` < 5 latches at once;
+  - a run with 5 <= `n_checked` < 10 is evaluated against 0.35.
+- **New liveness cost, not a safety cost** (F2). Two consecutive runs with 5 <= `n_checked` < 10 now latch the canary through the guard's HARD verdict. The raw rule would have evaluated both runs.
 
 **What does not change:**
 - `pins_changed` (any item) and `program_changed` latch from the raw record, exactly as now.
@@ -603,7 +610,7 @@ The Am.10 figures assume the pooled base rate 0.2212 and come from structure cou
 **What the flag protects.** Am.10 calls it "a regime alarm (a sustained shift in how graduations happen), not a per-trade protection". Am.10 says that for H5 books, after Amendment 4's per-pool exclusion of synthetic and unclassified pools. Q50 is an H5 book, so that per-pool exclusion applies to it. This amendment does not claim that HV4's or HV6's rule excludes synthetic pools per pool. For every canary the flag stays a regime alarm, and the slower detection is the cost accepted here.
 
 **Not measured.**
-- How often the raw synthetic flag is not evaluated (n_checked below the monitor's minimum of 5). Under the raw rule that latches on the first run. Neither Am.10 nor this amendment gives a rate.
+- How often a run has `n_checked` below 5, which the raw rule latches on the first run. Also how often two consecutive runs have `n_checked` below 10, which the guard latches (F2). Neither Am.10 nor this amendment gives a rate for either.
 - How long the guard's apply takes after the monitor writes its line. The 2 h bound is a declared choice, not a measurement. Past it the canary latches, so the bound can never let a buy through.
 
 ### 3. New dependencies, all fail closed
@@ -611,6 +618,17 @@ The Am.10 figures assume the pooled base rate 0.2212 and come from structure cou
   - If the loop stops, the record goes stale (36 h) and the canary latches, as now.
   - If the monitor writes but the apply does not run, the canary refuses buys for up to 2 h, then latches `a3_guard_missing`. For example, `a3_halt.py` exits 2 on a refused books file, or a `PartialApply` happens because a rule's book list is empty. The raw rule did not see this case.
 - **The loop runs at a guard pin that implements Am.10.** That is the check tool sha256 `1f84072da673cc451f9e3a6baa8b25d6295b497305ffe7bc38fef42e3a710f70` at tag `a3-guard-pin-1024` (0ec7fae8), or a later pin with quant-proof's OK that keeps item 1's constants byte for byte. The copy names it (item 6).
+- **The H5-arena books file and registry stay intact** (F3). `tools/a3_halt.py apply` refuses, writes no applied line and exits 2 on any of these:
+  - a registered `h5*` book that is in neither list of `a3-books.json`;
+  - a listed id that is not registered;
+  - no books registered at all;
+  - a HARD verdict while `new_rule_bot_ids` is empty;
+  - a flag instant while `legacy_bot_ids` is empty (the `PartialApply` case).
+
+  Each case refuses buys for 2 h and then latches the canary (`a3_guard_missing`). That is safe, because it fails closed. But H5-arena registry hygiene now decides C0 liveness, for HV4 and HV6 as well as Q50. So while any canary runs:
+  - `a3-books.json` and the arena registry (`bots.json`) are not archived, moved or emptied;
+  - every new `h5*` registration is added to a list of the books file at the same time;
+  - an edit to either file is checked against the cases above before it lands (item 7).
 - **The loop outlives the later canary.** See item 7.
 - **Same directory.** The applied log is read only as `dirname(a3_record_file)/a3-applied.jsonl`. No separate path is configured, so the record and the verdict come from the same loop.
 
@@ -688,6 +706,9 @@ A prototype of exactly this logic was run on synthetic fixtures only (no host fi
 15. the bridge test: a pending guard refuses buys while exits keep running, and a guard HALT latches `a3_pins_changed`;
 16. the H5 executor test, the same as 15: a pending guard makes `_hard_refusal` return `a3_guard_pending` while exits run, and a guard HALT latches `H_A3`;
 17. H5 with no `a3_record_file`: `a3_tick` reads no file, and `_hard_refusal` returns what it returned before the change for a fixture trigger set. This is the replay case.
+17b. H5 with `a3_record_file` set, the raw record clear and the guard `NONE` for the same `run_utc`: `a3_tick` latches nothing, `_a3_refuse` is `None`, and `_hard_refusal` returns the pre-change value for the fixture trigger set. This is the live, guard-clear case (item 8.3 (a)).
+
+The 5b PR also prints item 8.3 (b)'s per-function source-identity list.
 
 ### 6. FILL for a copy that uses this amendment
 | Field | Meaning |
@@ -704,18 +725,28 @@ The copy's owner notice (§2) is unchanged in words: "It halts by itself on a pu
 
 **What must hold.** The `a3-daily.sh` loop and its successor chain run without a missed twice-daily run until at least `E`. The loop is the job that writes `daily.jsonl` and `a3-applied.jsonl` at the guard pin of item 3.
 
-**Am.10 item 5(3) design.** The loop is resumable, runs 13 days, and is then followed by a new successor at the guard pin. The manager names the chain as #1446, then successor #1447.
+**Am.10 item 5(3) design.** The loop is resumable, runs 13 days, and is then followed by a new successor at the guard pin.
+
+**The facts, as the manager gives them** (quant-proof did not verify them, and neither did this writer):
+- Loop #1446 ends about 2026-11-06T18Z.
+- #1447 runs `after` #1446 with a 13 d limit, so it ends about 2026-11-19T18Z. An `after` job starts when its predecessor ends, so it ends earlier if #1446 dies early.
+- Alert #1540 ends about 2026-11-08T13Z.
+- The dead-man job: no id or limit has been named yet.
+- Q50 alone (E <= 2026-11-06T00Z) is covered by #1446, with only about 18 h of margin. #1447 stays queued.
 
 **Before each canary's first send** (a precondition, recorded in `FILL:a3_guard_source`):
 1. The manager records the running loop job, its pin and its time limit, and every queued successor with its `after` link and time limit.
-2. If the chain's last time limit is before `E`, the manager does one of these:
-   - extends the running or queued job (`miscusi_job_extend`) so that it covers `E`;
-   - submits a further successor `after` the last one, at the same guard pin. This must be submitted at least 24 h before the last job's limit, so a job that dies early is not followed by an unchained gap.
-3. The same check applies to the alert job (#1540 per the manager) and to the guard's dead-man job. Those two serve the paper books, but the canary relies on their alerts.
+2. **The one rule (48 h)** (F5). Every chain job whose limit is before `E` is either:
+   - extended (`miscusi_job_extend`) to cover `E`; or
+   - given a successor `after` it, at the same guard pin with the same header sha checks, resumable, 13 d.
 
-**Again, whenever `E` moves later** (a new canary is approved, or the owner extends a canary), and at the latest 48 h before any chain job's limit: extend or resubmit as in item 2.
+   This is done at least **48 h before that job's actual limit**. A queued successor's limit is computed from its real start, not from the nominal chain. The same rule is applied again whenever `E` moves later, that is when a new canary is approved or the owner extends one.
+3. **Required now, from the facts above:**
+   - **Loop job 3:** `after` #1447, pin 0ec7fae8 with the same header sha checks, resumable, 13 d. It is submitted before the first HV4 C0 send, as a `FILL:a3_guard_source` precondition. If no HV4 C0 is approved, it is still submitted at least 48 h before #1447's actual limit. An HV4 `E` can reach about 2026-11-22T00Z, at least about 2.25 days past #1447.
+   - **Alert #1540:** extended, or given a successor, before the first HV4 send, and at the latest by 2026-11-06T13Z.
+   - **Dead-man job:** the manager names it, with its limit (TBD at writing), and covers `E` by the same rule.
 
-**The loop is not stopped while any canary runs.** This holds even if Q50's paper book ends (window end, A3 or dead-man end). The Q50 lane's step that stops the loop is gated on "no canary running".
+**Nothing the guard depends on is stopped or emptied while any canary runs.** That covers the loop, the alert job, the dead-man job, `a3-books.json` and the arena registry (item 3, F3). This holds even if Q50's paper book ends (window end, A3 or dead-man end). The Q50 lane's step that stops the loop, or archives its files, is gated on "no canary running".
 
 **What a lapse costs.** A missed run is not silent:
 - if the record goes stale (36 h), the canary latches `a3_record_stale`;
@@ -736,11 +767,14 @@ Quant-proof's pre-ruling N2 (`QP-PRERULING-1026-n2-n4.md`, verdict (a)) already 
    - HELM-SHEET §A's hash of `./tools/h5_arena_executor.py` (`c451a615...`) is re-pinned to the new blob.
    - The test files are not in the pinned set.
 2. **The md5 replay at X must still reproduce #1481's counts exactly:** Run A 137/137, Run B 101/101 attempts, Run B `synthetic_unconfirmed` 0/0. Any other count is STOP, no install.
-3. **Why it should reproduce them.** The A3 check is a live halt and start gate, not a decision path.
-   - The replay harness (`tools/h5_arena_exec_replay.py`) configures no `a3_record_file`. A grep at writing finds no `a3` in it.
-   - So `a3_tick` returns before any read, `_a3_refuse` stays `None`, and `_hard_refusal` returns what it returned before for every trigger.
-   - `decide_row`, the replay script's SCOPE, is not touched. The only changed lines run when a record file is configured, which is live or a dry run with a record.
-   - Test 17 pins this. **QP must confirm this reasoning before the replay is counted.**
+3. **What the replay proves, and what it does not** (F4).
+   - `h5_arena_exec_replay.executor_verdicts` builds `ArenaExecutor(StubRpc(), cfg, None, ...)` with no `a3_record_file`, and calls only `decide_row`.
+   - `decide_row` never reaches `a3_tick` or `_hard_refusal`. `_hard_refusal`'s one caller is the base buy path (`tools/h5_executor.py` `_handle_trigger`), which the replay does not run.
+   - So the replay EQUAL shows that `decide_row` and its callees are unchanged. It does **not** exercise any 5b line. It stays the STOP gate as written.
+   - The 5b changes are proven by two further items, both required on the 5b PR:
+     - **(a) Test 17b, live and guard clear.** With `a3_record_file` set, the raw record clear and the guard `NONE` for the same `run_utc`: `a3_tick` latches nothing, `_a3_refuse` is `None`, and `_hard_refusal` returns the pre-change value for the fixture trigger set. Test 17 covers the no-record case.
+     - **(b) Diff confinement, printed on the 5b PR.** A per-function source-identity list (an AST or `inspect.getsource` sha256 per top-level function and method) of `tools/h5_arena_executor.py` at 0526d5cd and at the 5b head. Every function and method is identical except the named ones: the new constants, `a3_record_problem`, `a3_guard_problem`, `a3_tick`, `_hard_refusal`, and the `_a3_refuse` init line. `decide_row` and everything it calls must be in the identical set.
+   - **Before the replay counts at X** (quant-proof, comment 6424657511 §5): QP OK on the 5b PR's exact head and a reviewer verdict on that PR, with (a) and (b); the manifest showing exactly one `PINNED_SET_CHANGED` path and the list sha256 still 244f9e85…; the re-pins (new blob id and sha256 from the 5b merge commit, HELM-SHEET §A) in the Q50 copy's records PR; and tests 1 to 17 and 17b green at the 5b head on mal-fast-0's Python.
 4. **The bind mount already covers the applied log.** `scripts/mal-fast/mal-h5-arena-executor-binds.conf` (in the pinned set, unchanged) binds the whole guard output directory read-only: `BindReadOnlyPaths=__A3_DIR__:/srv/mal-h5-arena/a3`, with `a3_record_file` at `/srv/mal-h5-arena/a3/daily.jsonl`. So the derived path `/srv/mal-h5-arena/a3/a3-applied.jsonl` is visible with no unit change. The dry run must show the guard read succeeding through that bind; `a3_guard_unreadable` there is a STOP. The HV4 install pack needs the same: the whole directory bound, not the single file.
 5. **The 1 h dry run at X** is configured with `a3_record_file` set to the fast-0 record, so the guard read runs. It reports the number of `a3_guard_pending` refusals and any A3 latch, counts only.
 6. **No switch mid-run.** If 5b is not in X, Q50's C0 runs under §5 item 1 as written (the raw rule) for its whole run. Moving it later needs another install with its own replay and dry run.
@@ -751,6 +785,5 @@ Quant-proof's pre-ruling N2 (`QP-PRERULING-1026-n2-n4.md`, verdict (a)) already 
 - **QP (b)'s other owed items stand.** These are link and owner checks on `a3_record_file`, the dependencies in the install pack (precondition 14), and the equivalence test, now in the form of test 13.
 
 **Open points.**
-- **The lag bound.** The 2 h `A3_GUARD_LAG_MS` is for quant-proof to confirm or tighten.
-- **Item 8 item 3.** Quant-proof must confirm that 5b leaves the md5 replay's decisions unchanged.
-- **Item 7.** The manager records the guard-loop job ids and limits.
+- **The lag bound.** The 2 h `A3_GUARD_LAG_MS` was confirmed as written by quant-proof (comment 6424657511 §3). The clock runs from the later of the record's `run_utc` and the record file's mtime. Once past the bound the canary latches; a newer line does not reset the clock.
+- **Item 7.** The manager records the guard-loop, alert and dead-man job ids and their actual limits from the job list, and submits loop job 3.
