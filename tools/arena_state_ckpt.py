@@ -174,3 +174,26 @@ class StateCkpt(ArenaState):
             raise CheckpointInvalid("restored state does not reproduce the digest")
         self.restored_from = {"state_digest": got, "sha256": _sha(data), "meta": env.get("meta")}
         return got
+
+
+def main(argv: list[str] | None = None) -> int:
+    """`digest <ckpt> --tape-dir D`: restore an ArenaState checkpoint in THIS (fresh) process and print its state digest."""
+    import argparse
+
+    ap = argparse.ArgumentParser(description="restore an ArenaState checkpoint in a fresh process and print the digest")
+    ap.add_argument("mode", choices=["digest"])
+    ap.add_argument("ckpt")
+    ap.add_argument("--tape-dir", required=True)
+    args = ap.parse_args(argv)
+    st = StateCkpt(args.tape_dir, start_ms=0)
+    try:
+        d = st.restore(args.ckpt)
+    except CheckpointInvalid as exc:
+        print(json.dumps({"refused": str(exc)}))
+        return 3
+    print(json.dumps({"state_digest": d, "keys": len(st)}))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
