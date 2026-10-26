@@ -780,6 +780,9 @@ def feed_gap_problem(path: str, bot_id: str, now_ms: int) -> str | None:
     ms, last = rec.get("ms"), rec.get("last_frame_ms")
     if any(isinstance(v, bool) or not isinstance(v, int) for v in (ms, last)):
         return "feed_status_malformed"
+    sm = rec.get("stall_ms")
+    if isinstance(sm, bool) or not isinstance(sm, int) or sm > FEED_MAX_STALL_MS or sm <= 0:
+        return "feed_stall_ms_not_pinned"
     if rec.get("state") != "connected":
         return f"feed_state_{str(rec.get('state'))[:24]}"
     if ms - now_ms > FEED_SKEW_MS or last - now_ms > FEED_SKEW_MS:
@@ -789,6 +792,72 @@ def feed_gap_problem(path: str, bot_id: str, now_ms: int) -> str | None:
     if last <= 0 or now_ms - last > FEED_FRAME_MAX_MS:
         return "feed_silent"
     return None
+
+
+# --- DEC-032 s5.2 FEED-GAP HALT: the book's OWN gap records. A hard latch `feed_break` (already in HARD_ARENA_HALTS). Restart needs 10 gap-free minutes AND the manager's
+# written review, as a root-owned clear file. Only the KIND and INSTANT of a gap record are read (QP seal ruling): no other field, no join to any outcome.
+GAP_FREE_MS = 600_000
+GAP_BREAK_KINDS = ("stall", "disconnect", "reconnect", "mismatch", "local_torn_trimmed", "gap", "data_loss", "resubscribe", "silence")  # forwarder kinds + the s5.2 list; "resume" is not a gap
+GAP_CLEAR_DIR = "/etc/mal-hv4-c0/gap-clear"  # <bot_id>.json: {"bot_id": ..., "reviewed_gap_ms": N}; root-owned (h5.root_file_problem), N >= the newest gap instant
+FEED_BREAK_LATCH = "feed_break"
+FEED_MAX_STALL_MS = 2_000  # a forwarder status that reports a larger stall_ms is refused: a misconfigured forwarder must not widen the bound (QP ruling a)
+
+
+def gap_records_ms(path: str) -> tuple[list[int], str | None]:
+    """(instants of gap records, problem) from the forwarder's <bot_id>.gaps.jsonl. Reads ONLY `kind` and `ms` of each line. A missing file is no gaps; a link, an
+    unreadable file or a line that is not an object with an int ms is a problem (fail closed)."""
+    try:
+        ls = os.lstat(path)
+    except FileNotFoundError:
+        return [], None
+    except OSError:
+        return [], "gap_log_unreadable"
+    if not stat.S_ISREG(ls.st_mode) or ls.st_nlink != 1:
+        return [], "gap_log_not_regular"
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as fh:
+            data = fh.read(8_000_000)
+    except OSError:
+        return [], "gap_log_unreadable"
+    out: list[int] = []
+    for ln in data.splitlines():
+        if not ln.strip():
+            continue
+        try:
+            r = json.loads(ln)
+        except ValueError:
+            return out, "gap_log_malformed"  # a torn last line is possible while the forwarder writes; the caller treats it as a gap
+        if not isinstance(r, dict) or isinstance(r.get("ms"), bool) or not isinstance(r.get("ms"), int) or not isinstance(r.get("kind"), str):
+            return out, "gap_log_malformed"
+        if r["kind"] in GAP_BREAK_KINDS:
+            out.append(r["ms"])
+    return out, None
+
+
+def gap_clear_problem(path: str, bot_id: str, last_gap_ms: int, now_ms: int, root_check: Any = None) -> str | None:
+    """None when the manager's review covers the newest gap and the feed has been gap-free for GAP_FREE_MS. Else the reason the latch stays."""
+    if now_ms - last_gap_ms < GAP_FREE_MS:
+        return "gap_free_window_not_elapsed"
+    if root_check is not None:
+        why = root_check(path)
+        if why:
+            return f"gap_clear_{why}"
+    try:
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            return "gap_clear_not_regular"
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as fh:
+            rec = json.loads(fh.read(4096))
+    except FileNotFoundError:
+        return "gap_clear_missing"
+    except (OSError, ValueError):
+        return "gap_clear_unreadable"
+    v = rec.get("reviewed_gap_ms") if isinstance(rec, dict) else None
+    if not isinstance(rec, dict) or rec.get("bot_id") != bot_id or isinstance(v, bool) or not isinstance(v, int):
+        return "gap_clear_malformed"
+    return None if v >= last_gap_ms else "gap_not_reviewed"
 
 
 def runner_silent_problem(last_row_ms: int | None, started_ms: int, now_ms: int) -> str | None:
@@ -810,7 +879,13 @@ def a3_halt_problem(path: str, now_ms: int) -> str | None:
     missing, unreadable, flag-less, stale (36 h) or future-stamped. Fail closed; the bridge latches A3_LATCH on any return value."""
     from datetime import datetime, timezone
     try:
-        with open(path, "rb") as fh:
+        ls = os.lstat(path)
+        if not stat.S_ISREG(ls.st_mode) or ls.st_nlink != 1:
+            return "a3_record_not_regular"  # a link or hard link is not the monitor's own file
+        if ls.st_uid not in (0, os.getuid()) or ls.st_mode & 0o002:
+            return "a3_record_owner_mode"  # root or the running user, not world-writable
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as fh:
             lines = [ln for ln in fh.read().splitlines() if ln.strip()]
         rec = json.loads(lines[-1])
     except (OSError, ValueError, IndexError):

@@ -210,7 +210,7 @@ class HaltBridgeTests(TmpCase):
         self.assertIn(c0.A3_LATCH, c0p.HARD_LATCHES)
 
     def test_feed_gap_stops_new_buys_but_exits_run(self):
-        for bad in ({"state": "stalled"}, {"last_frame_ms": 1}, {"state": "stopped_mismatch"}):
+        for bad in ({"state": "stalled"}, {"last_frame_ms": 1}, {"stall_ms": 5000}):
             with self.subTest(bad=bad):
                 e = Hv4Env(tempfile.mkdtemp(dir=self.tmp), live=False)
                 b = e.bridge()
@@ -221,7 +221,7 @@ class HaltBridgeTests(TmpCase):
                 b.tick()
                 self.assertEqual([c[:2] for c in e.port.calls], [("buy", "o1"), ("sell", "o1")])  # the exit ran, the new entry did not
                 ref = [r for r in e.log_rows("entry_refused") if r.get("order_id") == "o2" or r.get("why", "").startswith("feed_gap")]
-                self.assertTrue(ref and ref[0]["why"].startswith("feed_gap:"), ref)
+                self.assertTrue(ref and ref[0]["why"].startswith("transport_stall:"), ref)
                 self.assertNotIn("o2", b.state.orders)
                 self.assertFalse(b.state.latches)  # not a latch
 
@@ -253,14 +253,14 @@ class HaltBridgeTests(TmpCase):
         status = Path(e.raw["root"]) / "transport" / f"{e.bot}.status.json"
         os.unlink(status)
         br = alb.Bridge(alb.Config.from_dict(e.raw), e.port, now_ms=e.clock, live_ok_path=e.live_ok, tier_path=e.tier, root_checks=False)
-        self.assertEqual(br.feed_refusal(e.clock.t), "feed_gap:feed_status_missing")  # dry, no marker: refused
+        self.assertEqual(br.feed_refusal(e.clock.t), "transport_stall:feed_status_missing")  # dry, no marker: refused
         (Path(e.raw["root"]) / c0.SYNTHETIC_MARKER).write_text("")
         self.assertIsNone(br.feed_refusal(e.clock.t))  # dry, synthetic marker: allowed
         live = Hv4Env(tempfile.mkdtemp(dir=self.tmp), live=True)
         lb = live.bridge()
         os.unlink(Path(live.raw["root"]) / "transport" / f"{live.bot}.status.json")
         (Path(live.raw["root"]) / c0.SYNTHETIC_MARKER).write_text("")
-        self.assertEqual(lb.feed_refusal(live.clock.t), "feed_gap:feed_status_missing")  # live never takes the marker exemption
+        self.assertEqual(lb.feed_refusal(live.clock.t), "transport_stall:feed_status_missing")  # live never takes the marker exemption
 
     def test_presend_rechecks_the_feed_after_the_rpcs(self):
         e = Hv4Env(self.tmp)
@@ -276,7 +276,7 @@ class HaltBridgeTests(TmpCase):
         e.port.balance = balance_then_stall
         b.tick()
         self.assertEqual([c for c in e.port.calls if c[0] == "buy"], [])
-        self.assertTrue(any(r.get("presend") and r["why"].startswith("feed_gap:") for r in e.log_rows("entry_refused")), e.log_rows("entry_refused"))
+        self.assertTrue(any(r.get("presend") and r["why"].startswith("transport_stall:") for r in e.log_rows("entry_refused")), e.log_rows("entry_refused"))
 
     def test_a3_pins_changed_latches_stops_buys_exits_run(self):
         e = Hv4Env(self.tmp)
@@ -454,6 +454,203 @@ class WindowManualRecoveryTests(TmpCase):
         self.assertFalse((Path(c0.WINDOW_DIR) / f"{ARM}.json").exists())
         self.assertEqual(c0.window_start_ms(ARM, 7, create=True), (7, None))  # the next start works: nothing stale was left
         self.assertFalse(tmp.exists())
+
+
+class Section52GapHaltTests(TmpCase):
+    """DEC-032 s5.2: the book's own gap records latch feed_break (hard); restart needs 10 gap-free minutes AND the manager's root-owned review file."""
+
+    def env(self):
+        e = Hv4Env(self.tmp)
+        e.clear_dir = Path(self.tmp) / "gapclear"
+        e.clear_dir.mkdir()
+        b = alb.Bridge(alb.Config.from_dict(e.raw), e.port, now_ms=e.clock, live_ok_path=e.live_ok, tier_path=e.tier, root_checks=False, gap_clear_dir=e.clear_dir)
+        return e, b
+
+    def gaps(self, e, *rows):
+        d = Path(e.raw["root"]) / "transport"
+        d.mkdir(exist_ok=True)
+        (d / f"{e.bot}.gaps.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+    def review(self, e, ms):
+        (e.clear_dir / f"{e.bot}.json").write_text(json.dumps({"bot_id": e.bot, "reviewed_gap_ms": ms}))
+
+    def test_gap_record_latches_hard_marks_open_trips_and_exits_run(self):
+        from tools import hv4_c0_parity as c0p
+        e, b = self.env()
+        e.start()
+        e.entry_sz("o1")
+        b.tick()
+        e.port.events.append({"order_id": "o1", "event": "buy_landed", "landed_slot": 1002})
+        b.tick()
+        e.exit("o1")
+        self.gaps(e, {"kind": "stall", "ms": e.clock.t, "bot": e.bot, "f": "secret-field"})
+        b.tick()
+        self.assertIn(c0.FEED_BREAK_LATCH, b.state.latches)
+        self.assertIn(c0.FEED_BREAK_LATCH, c0p.HARD_LATCHES)
+        self.assertEqual([c[:2] for c in e.port.calls], [("buy", "o1"), ("sell", "o1")])
+        e.entry_sz("o2")
+        b.tick()
+        self.assertNotIn("o2", b.state.orders)
+
+    def test_resume_row_is_not_a_gap_and_only_kind_and_ms_are_read(self):
+        e, b = self.env()
+        self.gaps(e, {"kind": "resume", "ms": e.clock.t, "gap_ms": 5})
+        b.tick()
+        self.assertNotIn(c0.FEED_BREAK_LATCH, b.state.latches)
+        ms, bad = c0.gap_records_ms(str(Path(e.raw["root"]) / "transport" / f"{e.bot}.gaps.jsonl"))
+        self.assertEqual((ms, bad), ([], None))
+
+    def test_clear_needs_ten_gap_free_minutes_and_a_review_file(self):
+        e, b = self.env()
+        t0 = e.clock.t
+        self.gaps(e, {"kind": "disconnect", "ms": t0})
+        b.tick()
+        self.assertIn(c0.FEED_BREAK_LATCH, b.state.latches)
+        e.clock.t = t0 + c0.GAP_FREE_MS + 1  # 10 minutes pass, no review file
+        e.refresh_halt_inputs()
+        b.tick()
+        self.assertIn(c0.FEED_BREAK_LATCH, b.state.latches)
+        self.review(e, t0 - 1)  # a review that does not cover the gap
+        b.tick()
+        self.assertIn(c0.FEED_BREAK_LATCH, b.state.latches)
+        self.review(e, t0)
+        e.clock.t = t0 + c0.GAP_FREE_MS - 1  # reviewed, but the window has not elapsed
+        e.refresh_halt_inputs()
+        b.gap_tick(e.clock.t)
+        self.assertIn(c0.FEED_BREAK_LATCH, b.state.latches)
+        e.clock.t = t0 + c0.GAP_FREE_MS + 1
+        e.refresh_halt_inputs()
+        b.tick()
+        self.assertNotIn(c0.FEED_BREAK_LATCH, b.state.latches)
+        b.tick()
+        self.assertNotIn(c0.FEED_BREAK_LATCH, b.state.latches)  # the old gap does not relatch
+
+    def test_a_newer_gap_after_the_review_latches_again(self):
+        e, b = self.env()
+        t0 = e.clock.t
+        self.gaps(e, {"kind": "stall", "ms": t0})
+        self.review(e, t0)
+        e.clock.t = t0 + c0.GAP_FREE_MS + 1
+        e.refresh_halt_inputs()
+        b.tick()
+        self.assertNotIn(c0.FEED_BREAK_LATCH, b.state.latches)
+        self.gaps(e, {"kind": "stall", "ms": t0}, {"kind": "reconnect", "ms": e.clock.t})
+        b.tick()
+        self.assertIn(c0.FEED_BREAK_LATCH, b.state.latches)
+
+    def test_gap_row_in_the_decision_stream_and_forwarder_mismatch_latch(self):
+        e, b = self.env()
+        e.start()
+        e.row({"kind": "gap", "secret": "x"}, ms=e.clock.t - 10)
+        b.tick()
+        self.assertIn(c0.FEED_BREAK_LATCH, b.state.latches)
+        e2 = Hv4Env(tempfile.mkdtemp(dir=self.tmp))
+        b2 = e2.bridge()
+        write_feed(e2.raw["root"], e2.bot, e2.clock.t, state="stopped_mismatch")
+        b2.tick()
+        self.assertIn(c0.FEED_BREAK_LATCH, b2.state.latches)
+
+    def test_unreadable_gap_log_and_review_file_checks_fail_closed(self):
+        e, b = self.env()
+        d = Path(e.raw["root"]) / "transport"
+        d.mkdir(exist_ok=True)
+        (d / f"{e.bot}.gaps.jsonl").write_text("{torn")
+        b.tick()
+        self.assertIn(c0.FEED_BREAK_LATCH, b.state.latches)
+        self.assertEqual(c0.gap_clear_problem(str(e.clear_dir / "x.json"), e.bot, 0, 10 ** 12), "gap_clear_missing")
+        self.assertEqual(c0.gap_clear_problem(str(e.clear_dir / "x.json"), e.bot, 0, 10 ** 12, lambda _p: "not_root_owned"), "gap_clear_not_root_owned")
+
+    def test_transport_stall_is_only_an_extra_guard_and_is_named_so(self):
+        e, b = self.env()
+        write_feed(e.raw["root"], e.bot, e.clock.t, state="stalled")
+        self.assertEqual(b.feed_refusal(e.clock.t), "transport_stall:feed_state_stalled")
+        self.assertFalse(b.state.latches)
+
+
+class A3EquivalenceTests(TmpCase):
+    def test_equal_to_the_h5_executor_check_on_a_matrix_of_records(self):
+        try:
+            from tools import h5_arena_executor as h5x
+        except ModuleNotFoundError as e:
+            self.skipTest(str(e))
+        now = 1_800_000_000_000
+        p = Path(self.tmp) / "a3.jsonl"
+        recs = []
+        write_a3(p, now)
+        base = json.loads(p.read_text())
+        import copy
+        for mut in (lambda r: None, lambda r: r["halt"]["flags"]["pins_changed"].update(halt=True),
+                    lambda r: r["halt"]["flags"]["boost_disabled"].update(evaluated=False),
+                    lambda r: r["halt"]["flags"].update(x="bad"), lambda r: r["warn"]["flags"]["program_changed"].update(warn=True),
+                    lambda r: r.update(run_utc="2020-01-01T00:00:00Z"), lambda r: r.update(run_utc="2099-01-01T00:00:00Z"),
+                    lambda r: r.pop("run_utc"), lambda r: r["halt"].update(flags={}), lambda r: r.pop("halt")):
+            r = copy.deepcopy(base)
+            mut(r)
+            recs.append(r)
+        for r in recs:
+            p.write_text(json.dumps(r) + "\n")
+            os.chmod(p, 0o644)
+            why, problem = h5x.a3_record_problem(p, now)
+            theirs = problem or (("a3_flags:" + ",".join(why)) if why else None)
+            self.assertEqual(c0.a3_halt_problem(str(p), now), theirs, r)
+
+    def test_link_and_owner_checks_on_the_record_file(self):
+        now = 1_800_000_000_000
+        real = Path(self.tmp) / "real.jsonl"
+        write_a3(real, now)
+        link = Path(self.tmp) / "link.jsonl"
+        os.symlink(real, link)
+        self.assertEqual(c0.a3_halt_problem(str(link), now), "a3_record_not_regular")
+        hard = Path(self.tmp) / "hard.jsonl"
+        os.link(real, hard)
+        self.assertEqual(c0.a3_halt_problem(str(real), now), "a3_record_not_regular")
+        hard.unlink()
+        os.chmod(real, 0o666)
+        self.assertEqual(c0.a3_halt_problem(str(real), now), "a3_record_owner_mode")
+        os.chmod(real, 0o644)
+        self.assertIsNone(c0.a3_halt_problem(str(real), now))
+
+
+class QuotePathRegressionTests(unittest.TestCase):
+    """QP edited one statement of each of these and sell_pin_problem() stayed None (#969 B2)."""
+
+    def test_a_body_edit_of_each_cross_module_callee_trips_the_pin(self):
+        try:
+            from tools import probe_live  # noqa: F401
+        except ModuleNotFoundError as e:
+            self.skipTest(str(e))
+        import tools.paper_curve_math as pcm
+        import tools.pumpswap_tx as ptx
+        for mod, name, key in ((ptx, "cp_sell_out", "x.pumpswap_tx.cp_sell_out_sha256"), (ptx, "parse_pool_account", "x.pumpswap_tx.parse_pool_account_sha256"),
+                               (pcm, "pumpswap_sol_fee_ppm", "x.paper_curve_math.pumpswap_sol_fee_ppm_sha256"),
+                               (ptx, "parse_global_config", "x.pumpswap_tx.parse_global_config_sha256"), (ptx, "canonical_pool", "x.pumpswap_tx.canonical_pool_sha256"),
+                               (ptx, "pool_state_from_accounts", "x.pumpswap_tx.pool_state_from_accounts_sha256")):
+            with self.subTest(fn=name), mock.patch.object(mod, name, edited):
+                self.assertEqual(c0.sell_pin_problem(), f"sell_builder_pin_mismatch:{key}")
+
+
+class StallMsTests(TmpCase):
+    def test_a_status_with_a_larger_stall_ms_is_refused(self):
+        now = 10_000_000
+        for sm in (2001, 5000, 0, True, "2000", None):
+            f = write_feed(self.tmp, ARM, now, stall_ms=sm)
+            self.assertEqual(c0.feed_gap_problem(str(f), ARM, now), "feed_stall_ms_not_pinned", sm)
+        f = write_feed(self.tmp, ARM, now, stall_ms=2000)
+        self.assertIsNone(c0.feed_gap_problem(str(f), ARM, now))
+
+
+class N_E_Tests(TmpCase):
+    def test_refusal_is_given_the_resolved_path(self):
+        from tools import hv4_c0_twin as tw
+        real = Path(self.tmp) / "real"
+        real.mkdir()
+        link = Path(self.tmp) / "link"
+        os.symlink(real, link)
+        seen = []
+        orig = tw.refusal
+        with mock.patch.object(tw, "refusal", side_effect=lambda b, l, r=None: seen.append(l) or orig(b, l, r)):
+            tw.main(["--trips", "t", "--ledger-dir", str(link), "--bot-id", ARM, "--out", str(Path(self.tmp) / "o")])
+        self.assertEqual(seen, [os.path.realpath(real)])
 
 
 if __name__ == "__main__":

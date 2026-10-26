@@ -71,7 +71,7 @@ SELL_RETRY_MS = 5_000
 UNIVERSE_V_RANGE = (17_500_000_000, 17_700_000_000)  # Am.2 item 6: V in [17.5e9, 17.7e9], WSOL quote
 
 LATCHES = ("sealed_path", "chain_break", "frozen_sha_mismatch", "total_loss_cap", "per_trade_loss_cap", "stuck_sell",
-           "parity_hard_halt", "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch", "read_record", c0.A3_LATCH)  # twin_pin_mismatch and the two before: hv4_c0 parity wiring; read_record: no recorded PASS read for the bot (hv4_c0): hv4_c0 parity wiring (tools/hv4_c0_parity.py)
+           "parity_hard_halt", "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch", "read_record", c0.A3_LATCH, c0.FEED_BREAK_LATCH)  # twin_pin_mismatch and the two before: hv4_c0 parity wiring; read_record: no recorded PASS read for the bot (hv4_c0): hv4_c0 parity wiring (tools/hv4_c0_parity.py)
 
 
 # --- config -----------------------------------------------------------------------------------------------------------------------
@@ -355,7 +355,7 @@ class Bridge:
     def __init__(self, cfg: Config, port: OrderPort, *, now_ms: Callable[[], int] | None = None,
                  live_ok_path: Path = LIVE_OK_PATH, tier_path: Path = TIER_PATH, root_checks: bool = True,
                  close_blocked: Callable[[str], bool | None] | None = None, parity_runner: Callable[[list[str]], int] | None = None,
-                 owner_dec_path: Path | str | None = None, owner_pin: str | None = None) -> None:
+                 owner_dec_path: Path | str | None = None, owner_pin: str | None = None, gap_clear_dir: Path | str | None = None) -> None:
         """close_blocked: optional S3 hook, mint -> True (blocked) | False (ok). Interface only here. When set, a True, a None or a raise all refuse."""
         if c0.bot_id_problem(cfg.bot_id):
             raise SystemExit(f"bridge refused: {c0.bot_id_problem(cfg.bot_id)}")
@@ -378,6 +378,8 @@ class Bridge:
         self.dlog = DecisionLog(cfg.root)
         self.owner_dec_path = Path(owner_dec_path) if owner_dec_path is not None else Path(c0.OWNER_DEC_PATH)
         self.owner_pin = owner_pin
+        self.gap_clear_dir = str(gap_clear_dir) if gap_clear_dir is not None else c0.GAP_CLEAR_DIR
+        self._gap_noted_ms = 0
         self._read_ident: dict[str, Any] = {}
         if cfg.profile == c0.PROFILE:
             first, why = c0.window_start_ms(cfg.bot_id, self.now_ms(), create=True)
@@ -660,7 +662,7 @@ class Bridge:
         return None
 
     def feed_refusal(self, now: int) -> str | None:
-        """hv4_c0 FEED-GAP halt: new buys stop while the forwarder's status file (<root>/transport/<bot_id>.status.json) is missing, stale, not `connected` or
+        """hv4_c0 TRANSPORT guard (an EXTRA guard, NOT the DEC-032 s5.2 halt, which is the `feed_break` latch in gap_tick): new buys stop while the forwarder's status file (<root>/transport/<bot_id>.status.json) is missing, stale, not `connected` or
         silent past tools.hv4_live_c0.FEED_FRAME_MAX_MS. Not a latch: it clears when the feed resumes. Exits are unaffected. LIVE always checks it; a DRY bridge
         on a root without SYNTHETIC_MARKER needs it too."""
         if self.cfg.profile != c0.PROFILE:
@@ -674,8 +676,43 @@ class Bridge:
             return None  # only a synthetic fixture root may run without a forwarder status; any other root (dry included) refuses
         why = c0.feed_gap_problem(path, self.cfg.bot_id, now)
         if why:
-            self._count("feed_gap_refusal")
-        return f"feed_gap:{why}" if why else None
+            self._count("transport_stall_refusal")
+        return f"transport_stall:{why}" if why else None
+
+    def _note_gap(self, gap_ms: int, why: str) -> None:
+        """One gap record (kind and instant only): open trades are marked `gap` (DEC-032 s5.2) and feed_break latches."""
+        if gap_ms > self._gap_noted_ms:
+            self._gap_noted_ms = gap_ms
+            if self.gates is not None:
+                self.gates.recorder.note_gap(gap_ms)
+        self._latch(c0.FEED_BREAK_LATCH, why)
+
+    def gap_tick(self, now: int) -> None:
+        """hv4_c0 DEC-032 s5.2: a gap record in the book's own feed (the forwarder's gap log, or a `gap` row in the decision stream) latches feed_break; a forwarder
+        `stopped_mismatch` (a chain or offset break) latches it too. The latch is removed ONLY when the feed has been gap-free for 10 minutes AND the manager's
+        root-owned review file covers the newest gap. Exits keep running."""
+        if self.cfg.profile != c0.PROFILE:
+            return
+        gaps, bad = c0.gap_records_ms(os.path.join(self.cfg.root, "transport", f"{self.cfg.bot_id}.gaps.jsonl"))
+        if bad:
+            self._latch(c0.FEED_BREAK_LATCH, bad)  # an unreadable gap log is not a clear
+        last = max([*gaps, self._gap_noted_ms]) if (gaps or self._gap_noted_ms) else None
+        if gaps and not (last is not None and self._gap_cleared(last, now) and c0.FEED_BREAK_LATCH not in self.state.latches):
+            newest = max(gaps)
+            if newest > self._gap_noted_ms:
+                self._note_gap(newest, f"gap record at {newest}")
+        sp = c0.feed_status_path(self.cfg.root, self.cfg.bot_id)
+        if os.path.lexists(sp) and c0.feed_gap_problem(sp, self.cfg.bot_id, now) == "feed_state_stopped_mismatch":
+            self._latch(c0.FEED_BREAK_LATCH, "forwarder_stopped_mismatch")
+        if c0.FEED_BREAK_LATCH in self.state.latches and last is not None and not bad:
+            if self._gap_cleared(last, now) and c0.feed_gap_problem(sp, self.cfg.bot_id, now) is None:
+                del self.state.latches[c0.FEED_BREAK_LATCH]
+                self._log("latch_cleared", latch=c0.FEED_BREAK_LATCH, reviewed_gap_ms=last)
+                self._save()
+
+    def _gap_cleared(self, last: int, now: int) -> bool:
+        p = os.path.join(self.gap_clear_dir, f"{self.cfg.bot_id}.json")
+        return c0.gap_clear_problem(p, self.cfg.bot_id, last, now, root_ok_problem if self.root_checks else None) is None
 
     def a3_tick(self, now: int) -> None:
         """hv4_c0 A3 halt: poll the A3 daily record (throttled) and latch a3_pins_changed on any halt flag (pins_changed included) or a record that cannot be
@@ -696,6 +733,9 @@ class Bridge:
             self.state.start_seen = True
             if row.get("frozen_sha") != self.cfg.frozen_sha:
                 self._latch("frozen_sha_mismatch", f"book {str(row.get('frozen_sha'))[:12]} pinned {self.cfg.frozen_sha[:12]}")
+        elif k == "gap" and self.cfg.profile == c0.PROFILE:
+            if isinstance(row.get("ms"), int) and not isinstance(row.get("ms"), bool):  # kind and instant only; no other field is read
+                self._note_gap(int(row["ms"]), f"gap row at {row['ms']}")
         elif k == "entry":
             self.handle_entry(row)
         elif k == "exit":
@@ -992,6 +1032,7 @@ class Bridge:
     def tick(self) -> int:
         """One pass: port events, rows, backstops, warm plan. Returns rows consumed."""
         self.a3_tick(self.now_ms())
+        self.gap_tick(self.now_ms())
         self._poll_ports()
         n = 0
         if not Path(self.cfg.halt_file).exists():
