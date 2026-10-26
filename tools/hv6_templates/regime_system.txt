@@ -11,4 +11,5 @@ OUTPUT
 Reply with one JSON array and nothing else: no prose, no code fence. At most 3 objects, each with exactly these keys:
 {"type":"regime_rule","target":"stop_pct|time_min|min_conviction|target_pct|trail_pct|local_veto","new":<number, or a predicate when target is local_veto>,"ttl_h":1..72,"evidence_ids":["RG-xxxxxxxx",...],"why":"<=40 words"}
 evidence_ids are RG- ids present in regime_evidence.events. The rule expires after ttl_h hours. Tightening (a larger stop_pct such as -10 over -25, a shorter time_min, a higher min_conviction, a local_veto) is allowed. Loosening is only a probe that also carries "stake":0.25 and "extra_entries_per_h":0 or 1 and moves a knob by at most one step.
+A local_veto predicate uses the dotted card field names and the field's own unit: card fields are fractions or SOL, not percent (f.ret_15m of -0.05 is -5%, f.age_s is seconds), while trade results are net percent and the knobs are percent.
 Not allowed, and dropped by code: any change to the scanner, shared vetoes, risk agent, code limits, fills, costs, scorer, stakes above 0.25, model, these instructions, the controls, the playbook text or the frozen header.
