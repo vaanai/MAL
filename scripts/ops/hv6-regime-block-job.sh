@@ -86,9 +86,15 @@ b = json.load(open(sys.argv[1]))
 sys.exit(0 if (b.get("radar_status") == "absent" and not b.get("pin_mismatch") and (b.get("input") or {}).get("n_bad_records", 0) > 0) else 1)
 PYEOF
 }
-build() {  # $1 = as_of_ms; 0 = a usable block (or an absent one for a pin reason) is in place, 1 = retry on the next poll
+build() {  # $1 = as_of_ms; 0 = a block is in place (usable, or absent for a pin reason), 1 = nothing kept: the caller must NOT advance its marker (retry on the next poll)
+  # The builder's status is captured explicitly: build is called from `if` / `||` contexts, where `set -e` is off and a failure would look like success.
+  rc=0
   "$PY" -m tools.hv6_regime_block block --as-of-ms "$1" --out-dir "$OUT" --venue-tape '' --copy-dir "$RDIR" --pins "$PINS" \
-    --radar-code "$HV6_RADAR_CODE" --seals "$HV6_RADAR_SEALS" --watch "$HV6_RADAR_WATCH" > /dev/null
+    --radar-code "$HV6_RADAR_CODE" --seals "$HV6_RADAR_SEALS" --watch "$HV6_RADAR_WATCH" > /dev/null || rc=$?
+  if [ "$rc" -ne 0 ] || [ ! -f "$RDIR/block-$1.json" ]; then
+    echo "{\"hv6_regime_block_job\":\"builder_failed\",\"as_of_ms\":$1,\"exit\":$rc}"
+    return 1
+  fi
   if parse_absent "$1"; then
     rm -f "$RDIR/block-$1.json" "$RDIR/radar-$1.jsonl"
     echo "{\"hv6_regime_block_job\":\"retry\",\"as_of_ms\":$1,\"why\":\"absent_parse\"}"
@@ -96,19 +102,35 @@ build() {  # $1 = as_of_ms; 0 = a usable block (or an absent one for a pin reaso
   fi
   echo "{\"hv6_regime_block_job\":\"block\",\"as_of_ms\":$1}"
 }
+MAX_RETRY=${MAX_RETRY:-10}   # a radar line that stays unparseable: after this many failed attempts for one file state, stop retrying (visible line) until the file changes
 LAST=-1
+TRIES=0; TRIES_SZ=-1; NIGHT_TRIES=0; NIGHT_GAVE_UP=0
 echo "{\"hv6_regime_block_job\":\"start\",\"regime_dir\":\"$RDIR\",\"out_dir\":\"$OUT\",\"poll_s\":$POLL_S}"
 while :; do
   NOW=${HV6_BLOCK_NOW:-$(date -u +%s)}
   DAY0=$(( NOW / 86400 * 86400 ))
   NIGHT=$(( (DAY0 + 120) * 1000 ))
-  if [ "$NOW" -ge $(( DAY0 + 120 )) ] && [ ! -f "$RDIR/block-$NIGHT.json" ]; then
-    if stable; then build "$NIGHT" || true; else echo '{"hv6_regime_block_job":"wait","why":"radar_file_not_stable"}'; fi
+  if [ "$NOW" -ge $(( DAY0 + 120 )) ] && [ ! -f "$RDIR/block-$NIGHT.json" ] && [ "$NIGHT_GAVE_UP" != "$NIGHT" ]; then
+    if stable; then
+      if build "$NIGHT"; then NIGHT_TRIES=0; else
+        NIGHT_TRIES=$(( NIGHT_TRIES + 1 ))
+        if [ "$NIGHT_TRIES" -ge "$MAX_RETRY" ]; then echo "{\"hv6_regime_block_job\":\"giving_up\",\"as_of_ms\":$NIGHT,\"tries\":$NIGHT_TRIES}"; NIGHT_GAVE_UP=$NIGHT; fi
+      fi
+    else echo '{"hv6_regime_block_job":"wait","why":"radar_file_not_stable"}'; fi
   fi
   SZ=$(size)
   if [ "$SZ" != "$LAST" ]; then
+    if [ "$SZ" != "$TRIES_SZ" ]; then TRIES=0; TRIES_SZ=$SZ; fi
     if stable; then
-      if build $(( NOW * 1000 )); then LAST=$SZ; fi   # LAST moves only after a block was kept: a torn or parse-absent attempt is retried
+      if build $(( NOW * 1000 )); then
+        LAST=$SZ   # the marker moves only after a block was kept: a torn, parse-absent or failed attempt is retried
+      else
+        TRIES=$(( TRIES + 1 ))
+        if [ "$TRIES" -ge "$MAX_RETRY" ]; then
+          echo "{\"hv6_regime_block_job\":\"giving_up\",\"size\":$SZ,\"tries\":$TRIES,\"until\":\"radar_file_changes\"}"
+          LAST=$SZ
+        fi
+      fi
     else
       echo '{"hv6_regime_block_job":"wait","why":"radar_file_not_stable"}'
     fi

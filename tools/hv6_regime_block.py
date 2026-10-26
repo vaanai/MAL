@@ -423,10 +423,10 @@ def degraded_days(blocks: Sequence[tuple[int, Mapping[str, Any]]], t0: datetime,
         pts = sorted([(ms_to_dt(ms), b["radar_status"]) for ms, b in blocks], key=lambda x: x[0])
         # a block's span ends at the next block or at as_of + STALE_HOURS: add an explicit `stale` point at as_of + 36 h unless a newer block arrives first
         pts2 = []
-        for i, (t, s) in enumerate(pts):
+        for k, (t, s) in enumerate(pts):
             pts2.append((t, s))
             end = t + timedelta(hours=STALE_HOURS)
-            if s in ("ok", "partial") and (i + 1 == len(pts) or pts[i + 1][0] > end):
+            if s in ("ok", "partial") and (k + 1 == len(pts) or pts[k + 1][0] > end):
                 pts2.append((end, "stale"))
         pts = sorted(pts2, key=lambda x: x[0])
         cur = "absent"

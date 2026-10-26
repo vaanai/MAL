@@ -128,3 +128,40 @@ def test_regime_days_spans_end_at_36h_so_a_producer_gap_counts():
     assert RB.block_for_use({"as_of_ms": 0, "radar_status": "ok"}, 36 * H1 + 1)["radar_status"] == "stale"
     assert RB.block_for_use({"as_of_ms": 0, "radar_status": "ok"}, 36 * H1)["radar_status"] == "ok"
     assert RB.block_for_use({"as_of_ms": 0, "radar_status": "absent"}, 10 ** 12)["radar_status"] == "absent"
+
+
+# ------------------------------------------------------------------------------------------------------------------------ a failing builder is never a success (reviewer blocker)
+def failing_python(tmp_path: Path) -> str:
+    f = tmp_path / "fakepy.sh"
+    f.write_text("#!/bin/sh\nexit 1\n")
+    f.chmod(0o755)
+    return str(f)
+
+
+def test_a_failing_builder_is_reported_and_keeps_nothing_nightly_and_intraday(tmp_path):
+    day = datetime(2026, 10, 30, tzinfo=timezone.utc)
+    now = int((day + timedelta(hours=7, minutes=15)).timestamp())
+    (tmp_path / "radar-out").mkdir()
+    (tmp_path / "radar-out" / "radar.jsonl").write_bytes(jl(rec(day + timedelta(hours=7, minutes=11), [])))
+    r = run_job(job_env(tmp_path, now, STABLE_S="1", HV6_PYTHON=failing_python(tmp_path)))
+    nightly, intraday = int(day.timestamp()) * 1000 + 120_000, now * 1000
+    assert r.returncode == 0
+    assert f'"builder_failed","as_of_ms":{nightly},"exit":1' in r.stdout and f'"builder_failed","as_of_ms":{intraday},"exit":1' in r.stdout, r.stdout
+    assert '"hv6_regime_block_job":"block"' not in r.stdout and not list((tmp_path / "regime").glob("block-*.json"))
+
+
+def test_a_failing_builder_does_not_advance_the_marker_and_retries_with_a_visible_cap(tmp_path):
+    day = datetime.now(timezone.utc)
+    (tmp_path / "radar-out").mkdir()
+    (tmp_path / "radar-out" / "radar.jsonl").write_bytes(jl(rec(day - timedelta(hours=1), [])))
+    env = job_env(tmp_path, None, HV6_BLOCK_ONCE="0", POLL_S="1", STABLE_S="1", HV6_PYTHON=failing_python(tmp_path), MAX_RETRY="3")
+    env.pop("HV6_BLOCK_NOW", None)
+    p = subprocess.Popen(["sh", str(SCRIPT)], cwd=str(REPO), env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    time.sleep(14)
+    p.kill()
+    out, _ = p.communicate()
+    lines = [json.loads(x) for x in out.splitlines() if x.startswith("{")]
+    intraday = [x for x in lines if x.get("hv6_regime_block_job") == "builder_failed" and x["as_of_ms"] % 86_400_000 != 120_000]
+    assert len(intraday) >= 3                                                              # the same file state was retried on each poll, the marker did not move
+    assert any(x.get("hv6_regime_block_job") == "giving_up" and x.get("until") == "radar_file_changes" for x in lines)   # and the cap is a visible line
+    assert len(intraday) == 3                                                              # after the cap it stops retrying until the radar file changes
