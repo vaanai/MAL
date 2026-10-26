@@ -20,7 +20,12 @@ MODES
            * R1's decision md5 and ledger md5 equal R0's (writing checkpoints changes no decision);
            * a FRESH process restoring each checkpoint reproduces its state digest (`python -m tools.arena_paper_ckpt digest`,
              `python -m tools.arena_state_ckpt digest`).
-         The downstream decision equivalence after a restore needs the host's hand-off (HostV3): that is mode `host` of #962.
+         The downstream decision equivalence after a restore needs the host's hand-off (HostV3): that is mode `host`.
+  host   (#962) R0 = the registered HostV2 (as above). C = HostV3 + EngineCkpt + StateCkpt, continuous, no segment end: md5s == R0.
+         For each HO_TEST, D = 0: segment 1 HostV3 to HO with segment_end, then a FRESH process resumes and runs to the end: md5s == R0.
+         Stepping rule: if no HO_TEST has an open position, the second steps +1 h, at most 12 times (open counts from R0, counts only).
+         R3 at the first HO with >= 1 open position, D = 30 s (> stale_row_ms): the probe path. Every position whose rows differ from R0 must be a
+         listed handoff_down position, an entry R0 decided inside D, or a later entry on such a pool (the cascade); counts and pid hashes only.
 OUTPUT: one JSON summary (stdout and <scratch>/summary.json). It holds md5s, counts, open-position counts at the HOs and digests: never a pool, mint,
 price, fill or P&L. After the md5s, the job DELETES every ledger, decision log, pool table and checkpoint under <scratch>, and prints the deletion line.
 SCRATCH: must be a new directory under /data2/mal/p35/bp1/; it is created with mode 0700.
@@ -199,8 +204,10 @@ def run_continuous(run_dir: Path, tape: Path, cfgd: dict[str, Any], *, ckpt: boo
     opens: dict[str, int] = {}
     cks: list[dict[str, Any]] = []
 
+    watch = {int(h) + j * HOUR_MS for h in cfgd.get("ho", []) for j in range(13)}  # the HO_TEST pins and their +1 h steps (the stepping rule)
+
     def on_step(host: Any, T: int) -> None:
-        if T % HOUR_MS == 0:
+        if T in watch:
             opens[str(T)] = open_count(host, bot)
         if T in ckpt_at:
             e = host.engine.checkpoint(run_dir / f"engine-{T}.ckpt", at_ms=T)
@@ -214,7 +221,7 @@ def run_continuous(run_dir: Path, tape: Path, cfgd: dict[str, Any], *, ckpt: boo
     h.run(cfgd["t0"], cfgd["end"])
     dec, led = decision_rows(run_dir / "rules", bot), ledger_rows(run_dir / "ledger", bot)
     return {"decision_md5": md5_rows(dec), "ledger_md5": md5_rows(led), "decisions": counts(dec), "ledger": counts(led),
-            "excluded_by_reason": counts([r for r in led if r.get("kind") == "excluded"], "exclusion_reason"), "open_at_hour": opens,
+            "excluded_by_reason": counts([r for r in led if r.get("kind") == "excluded"], "exclusion_reason"), "open_at_ho_candidates": opens,
             "checkpoints": cks, "wall_s": round(time.monotonic() - t_wall, 1), "hook_errors": len(getattr(h, "hook_errors", []))}
 
 
@@ -318,7 +325,128 @@ def ckpt_mode(scratch: Path, tape: Path, cfgd: dict[str, Any]) -> dict[str, Any]
                        "fresh_restores_reproduce_digests": all(x["engine_ok"] and x["state_ok"] for x in restores)}}
 
 
-MODES: dict[str, Callable[[Path, Path, dict[str, Any]], dict[str, Any]]] = {"ckpt": ckpt_mode}
+# ---- host mode (#962) ---------------------------------------------------------------------------------------------------
+def _v3_build(spec: dict[str, Any], **host_kw: Any):
+    from tools.arena_rules_v3 import HostV3
+
+    return build(Path(spec["run_dir"]), Path(spec["tape"]), spec["cfgd"], ckpt=True, host_cls=HostV3, host_kw=host_kw)
+
+
+def run_v3_continuous(spec: dict[str, Any]) -> dict[str, Any]:
+    run_dir = Path(spec["run_dir"])
+    run_dir.mkdir(parents=True, exist_ok=False)
+    h = _v3_build(spec)
+    h.resume()
+    h.run(spec["cfgd"]["t0"], spec["cfgd"]["end"])
+    h.close()
+    return _summ(h, run_dir)
+
+
+def run_seg1(spec: dict[str, Any]) -> dict[str, Any]:
+    run_dir = Path(spec["run_dir"])
+    run_dir.mkdir(parents=True, exist_ok=False)
+    h = _v3_build(spec)
+    h.resume()
+    h.run(spec["cfgd"]["t0"], spec["cfgd"]["end"], segment_end_ms=int(spec["ho"]))
+    seg = [r for r in h.log.rows(h.rules[0].bot_id) if r.get("kind") == "segment_end"][-1]
+    return {"ho_ms": seg["ho_ms"], "open_positions": seg["engine"]["positions"], "engine_sha256": seg["engine"]["sha256"],
+            "state_sha256": seg["state"]["sha256"], "table_sha256": seg["table"]["sha256"]}
+
+
+def run_seg2(spec: dict[str, Any]) -> dict[str, Any]:
+    run_dir = Path(spec["run_dir"])
+    h = _v3_build(spec, resume_ms=int(spec["resume_ms"]))
+    h.resume()
+    h.run(int(spec["ho"]), spec["cfgd"]["end"])
+    h.close()
+    out = _summ(h, run_dir)
+    rows = h.log.rows(h.rules[0].bot_id)
+    res = [r for r in rows if r.get("kind") == "segment_resume"][-1]
+    miss = [r for r in rows if r.get("kind") == "handoff_down_missed"]
+    out["handoff"] = {"path": res["path"], "d_ms": res["d_ms"], "d_max_ms": res["d_max_ms"], "d_max_pinned": res.get("d_max_pinned"),
+                      "engine_digest_ok": res.get("engine_digest") is not None, "stale_switches": sum(1 for r in rows if r.get("kind") == "handoff_stale_switch"),
+                      "handoff_down_pid_hashes": sorted(pid_hash(r["order_id"]) for r in rows if r.get("kind") == "handoff_down_exit"),
+                      "missed_entries": sum(int(r.get("n_missed_entries") or 0) for r in miss)}
+    return out
+
+
+def _summ(h: Any, run_dir: Path) -> dict[str, Any]:
+    bot = h.rules[0].bot_id
+    dec, led = decision_rows(run_dir / "rules", bot), ledger_rows(run_dir / "ledger", bot)
+    return {"decision_md5": md5_rows(dec), "ledger_md5": md5_rows(led), "decisions": counts(dec), "ledger": counts(led),
+            "excluded_by_reason": counts([r for r in led if r.get("kind") == "excluded"], "exclusion_reason"), "hook_errors": len(getattr(h, "hook_errors", []))}
+
+
+SPEC_KINDS.update({"v3_continuous": run_v3_continuous, "seg1": run_seg1, "seg2": run_seg2})
+
+
+def _by_pid(rows: Sequence[dict], key: str) -> dict[Any, list[dict]]:
+    out: dict[Any, list[dict]] = {}
+    for r in rows:
+        out.setdefault(r.get(key), []).append(r)
+    return out
+
+
+def compare_d30(r0_dir: Path, r3_dir: Path, bot: str, ho: int, d_ms: int) -> dict[str, Any]:
+    """R3 (D = 30 s) against R0: every position whose rows differ must be explained by the down interval. Allowed differences:
+    (1) a handoff_down position (an exit the probe found in D), whose R3 rows are its open row plus `excluded` rows with reason handoff_down only;
+    (2) an R0 entry decided inside [HO, HO + D) (a missed entry);
+    (3) a later position on a pool of (1) or (2), entered at or after HO (the cascade: the pool's re-entry timing moved by at most D).
+    Everything else must be identical. Output: counts and pid hashes only."""
+    from tools.arena_declog import DecisionLog
+
+    led0, led3 = _by_pid(ledger_rows(r0_dir / "ledger", bot), "position_id"), _by_pid(ledger_rows(r3_dir / "ledger", bot), "position_id")
+    dec0, dec3 = _by_pid(decision_rows(r0_dir / "rules", bot), "order_id"), _by_pid(decision_rows(r3_dir / "rules", bot), "order_id")
+    raw3 = DecisionLog(r3_dir / "rules").rows(bot)
+    down = {r["order_id"] for r in raw3 if r.get("kind") == "handoff_down_exit"}
+    entry = {pid: rs[0] for d in (dec0, dec3) for pid, rs in d.items() if pid is not None and rs and rs[0].get("kind") == "entry"}
+    in_d = {pid for pid, rs in dec0.items() if pid is not None and rs and rs[0].get("kind") == "entry" and ho <= int(rs[0]["ms"]) < ho + d_ms}
+    pools = {entry[p]["pool"] for p in down | in_d if p in entry}
+    diff = {p for p in set(led0) | set(led3) | set(dec0) | set(dec3) if led0.get(p) != led3.get(p) or dec0.get(p) != dec3.get(p)}
+    cascade = {p for p in diff - down - in_d if p in entry and entry[p]["pool"] in pools and int(entry[p]["ms"]) >= ho}
+    unexplained = diff - down - in_d - cascade
+    down_ok = all({r["kind"] for r in led3.get(p, [])} <= {"open", "excluded"} and {r.get("exclusion_reason") for r in led3.get(p, []) if r["kind"] == "excluded"} == {"handoff_down"}
+                  for p in down)
+    return {"n_diff_positions": len(diff), "n_handoff_down": len(down), "n_missed_in_d": len(in_d), "n_cascade": len(cascade), "n_unexplained": len(unexplained),
+            "handoff_down_rows_ok": down_ok, "handoff_down_pid_hashes": sorted(pid_hash(p) for p in down),
+            "unexplained_pid_hashes": sorted(pid_hash(str(p)) for p in unexplained), "ok": not unexplained and down_ok}
+
+
+def host_mode(scratch: Path, tape: Path, cfgd: dict[str, Any]) -> dict[str, Any]:
+    base = {"tape": str(tape), "cfgd": cfgd}
+    r0 = run_fresh(scratch, "R0", {**base, "kind": "continuous", "run_dir": str(scratch / "R0"), "ckpt": False})
+    c = run_fresh(scratch, "C", {**base, "kind": "v3_continuous", "run_dir": str(scratch / "C")})
+    # HO_TEST pins; the stepping rule (QP-RULING-1026 Q4): if no pin has an open position, step the second +1 h, at most 12 times (counts only)
+    hos = [int(x) for x in cfgd["ho"]]
+    opens = {int(k): v for k, v in r0["open_at_ho_candidates"].items()}
+    steps = 0
+    while not any(opens.get(h, 0) >= 1 for h in hos) and steps < 12 and hos[-1] + HOUR_MS < int(cfgd["end"]):
+        hos[-1] += HOUR_MS
+        steps += 1
+    segs = []
+    for i, ho in enumerate(hos, start=1):
+        d = scratch / f"S{i}"
+        s1 = run_fresh(scratch, f"S{i}a", {**base, "kind": "seg1", "run_dir": str(d), "ho": ho})
+        s2 = run_fresh(scratch, f"S{i}b", {**base, "kind": "seg2", "run_dir": str(d), "ho": ho, "resume_ms": ho})
+        segs.append({"ho_ms": ho, "open_at_ho": s1["open_positions"], "seg2": s2,
+                     "equal_R0": s2["decision_md5"] == r0["decision_md5"] and s2["ledger_md5"] == r0["ledger_md5"]})
+    with_open = [s["ho_ms"] for s in segs if s["open_at_ho"] >= 1]
+    r3 = None
+    ho3 = int(cfgd["r3_ho"]) if cfgd.get("r3_ho") is not None else (with_open[0] if with_open else None)
+    if ho3 is not None:
+        d = scratch / "R3"
+        s1 = run_fresh(scratch, "R3a", {**base, "kind": "seg1", "run_dir": str(d), "ho": ho3})
+        s2 = run_fresh(scratch, "R3b", {**base, "kind": "seg2", "run_dir": str(d), "ho": ho3, "resume_ms": ho3 + 30_000})
+        bot = load_rules(cfgd)[0].bot_id
+        r3 = {"ho_ms": ho3, "open_at_ho": s1["open_positions"], "seg2": s2, "vs_R0": compare_d30(scratch / "R0", d, bot, ho3, 30_000)}
+    checks = {"C_equals_R0": c["decision_md5"] == r0["decision_md5"] and c["ledger_md5"] == r0["ledger_md5"],
+              "D0_handoffs_equal_R0": all(s["equal_R0"] for s in segs), "an_HO_with_an_open_position": bool(with_open),
+              "D30_only_listed_differences": bool(r3 and r3["vs_R0"]["ok"] and r3["seg2"]["handoff"]["path"] == "probe"),
+              "no_hook_errors": all(x["hook_errors"] == 0 for x in [r0, c] + [s["seg2"] for s in segs] + ([r3["seg2"]] if r3 else []))}
+    return {"R0": r0, "C": c, "ho_steps": steps, "segments": segs, "R3": r3, "checks": checks, "verdict": "PASS" if all(checks.values()) else "FAIL"}
+
+
+MODES: dict[str, Callable[[Path, Path, dict[str, Any]], dict[str, Any]]] = {"ckpt": ckpt_mode, "host": host_mode}
 
 
 def main(argv: Sequence[str] | None = None) -> int:

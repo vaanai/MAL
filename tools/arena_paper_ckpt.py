@@ -109,6 +109,7 @@ def engine_state(eng: ArenaEngine) -> dict[str, Any]:
         "counters": [[k, v] for k, v in eng.counters.items()],
         "last_error": [[k, v] for k, v in eng.last_error.items()],
         "halted": [[k, v] for k, v in eng.halted.items()],
+        "handoff_down": sorted(getattr(eng, "handoff_down", set())),
     }
 
 
@@ -127,6 +128,8 @@ def restore_engine(eng: ArenaEngine, st: dict[str, Any]) -> None:
     eng.counters = {k: v for k, v in st["counters"]}
     eng.last_error = {k: v for k, v in st["last_error"]}
     eng.halted = {k: v for k, v in st["halted"]}
+    if hasattr(eng, "handoff_down"):
+        eng.handoff_down = set(st.get("handoff_down") or [])
 
 
 def state_digest(eng: ArenaEngine) -> str:
@@ -149,7 +152,27 @@ def _atomic_write(path: Path, data: bytes) -> None:
 
 
 class EngineCkpt(ArenaEngine):
-    """ArenaEngine plus checkpoint / restore. Behaviour is otherwise identical (no method of ArenaEngine is overridden)."""
+    """ArenaEngine plus checkpoint / restore, and the `handoff_down` exclusion (DESIGN 3.2 step 5). Pricing is otherwise identical: the only
+    override is _write_excluded, which renames the reason of a position marked handoff_down."""
+
+    def __init__(self, *a: Any, **k: Any) -> None:
+        super().__init__(*a, **k)
+        self.handoff_down: set[str] = set()
+
+    def mark_handoff_down(self, position_id: str) -> bool:
+        """A position whose exit the probe found inside the hand-off's down interval: its sell is booked EXCLUDED (reason handoff_down), never priced
+        (QP-RULING-1025 (iii): a trigger in the down interval is never decided after the fact). It reuses the engine's restarted path."""
+        pos = self.positions.get(position_id)
+        if pos is None:
+            return False
+        self.handoff_down.add(position_id)
+        pos.restarted = True
+        return True
+
+    def _write_excluded(self, pos: Position, reason: str, src: str | None) -> None:
+        if reason == "engine_restart" and pos.position_id in self.handoff_down:
+            reason = "handoff_down"
+        super()._write_excluded(pos, reason, src)
 
     def checkpoint(self, path: str | os.PathLike, **meta: Any) -> dict[str, Any]:
         st = engine_state(self)
