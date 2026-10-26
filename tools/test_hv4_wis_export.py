@@ -295,3 +295,18 @@ def test_job_passes_a_tool_refusal_through_as_exit_2_and_writes_nothing(w, tmp_p
     # in a subprocess the synthetic clock patch is absent, so the real tool refuses the synthetic registry (the HV4 clock is a pinned constant): exit 2, no wis.json
     p = job(w, tmp_path)
     assert p.returncode == 2 and "is not the HV4 clock" in p.stderr and not (w.od / f"{BOT}.wis.json").exists()
+
+
+def test_real_gaps_tool_measures_the_exported_trade_bytes(tmp_path):
+    # the trade export is canon-serialised ledger rows; the REAL arena_worst_gaps (rc 0) reads exactly those bytes against a synthetic tape (fixtures of test_arena_worst_gaps)
+    from tools.test_arena_report_legs import make_ledger, tape_rows
+    from tools.test_arena_worst_gaps import write_tape
+    trades = make_ledger(tmp_path / "led")
+    tape = write_tape(tmp_path / "tp", tape_rows())
+    out = tmp_path / "o"
+    out.mkdir()
+    tp = out / f"{BOT}.wis-trades.jsonl"
+    X.write_trades_once(tp, trades)
+    gaps, detail, rc = X.run_gaps(tp, str(tape), out, BOT)
+    g = S_DISK.load_worst_gaps(gaps)
+    assert rc == 0 and len(g) == len(trades) == json.loads(detail.read_text())["measured"] and any(v > 0 for v in g.values())
