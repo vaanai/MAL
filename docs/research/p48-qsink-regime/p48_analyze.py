@@ -60,6 +60,7 @@ def main(d, out):
         r = json.loads(l)
         if r[5] != WSOL:
             continue
+        r[11] = r[12] = None  # trader and ix_name are not used here (memory)
         bypool[r[6]].append(r)
     mark = {}
     for pool, rs in bypool.items():
