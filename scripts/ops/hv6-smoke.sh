@@ -10,7 +10,7 @@
 # The API key is read at run time from /var/lib/mal/anthropic/anthropic.env into the child's environment only; it is never echoed, logged or passed on a command line.
 # Writes ONLY under <HV6_ROOT>/smoke/<TAG>/. The production root, the real registry (/data/mal/arena/bots.json) and every HV4/Q50 path are never touched.
 # FEED_DELAY_SLOTS must equal the value the registered runner job will use (HV4's Am.2 value is 7; the registration pack pins it).
-# Submit as a MiScusi job with memory >= 8 GB (MemoryMax); the runner peaked at 2.7 GB in the real-layout replay (#1640). One heavy job at a time on mal-fast-0.
+# Submit as a MiScusi job with memory >= 8 GB (MemoryMax); the runner peaked at 2.7 GB in the real-layout replay (#1640). One heavy job at a time on mal-research-0 (QP #940 s2).
 set -eu
 FINAL=${HV6_FINAL_SHA:-}   # the registered final sha (the playbook-fields merge commit), REQUIRED in the environment: no default
 case "$FINAL" in [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) : ;; *) echo '{"refused":"HV6_FINAL_SHA_required"}'; exit 2;; esac
