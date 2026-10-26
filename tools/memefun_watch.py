@@ -45,7 +45,7 @@ SCHEMA_V = 1
 PROGRAM = "MEME4gfGe6itEpxgM1xaBVmiFF5XuCTc4oVXUE5w56F"
 VENUE = "memefun"
 DEFAULT_OUT = "/data/mal/memefun-watch"
-DEFAULT_WS = ["wss://api.mainnet-beta.solana.com", "wss://public.rpc.solanavibestation.com"]
+DEFAULT_WS = ["wss://api.mainnet-beta.solana.com"]  # venue_tape's second endpoint (solanavibestation) answered HTTP 429 on every attempt 2026-10-26; two sockets on one url dedup
 SILENCE_S = 1800  # ~390 program txs/hour were seen on day 0; half an hour of nothing is a gap
 MAX_UNDECODED_B64 = 1400
 MAX_STR = 400
@@ -148,14 +148,14 @@ def rows_for_notice(note: Any) -> list[dict[str, Any]]:
 
 
 class Monitor:
-    """Gap bookkeeping: socket reconnects and long silence become explicit gap / gap_end rows (same row shapes as venue_tape)."""
+    """Gap bookkeeping: long silence becomes explicit gap / gap_end rows (same row shapes as venue_tape); reconnects are counted only."""
 
     def __init__(self, writer: TapeWriter, silence_s: int = SILENCE_S, now_ms: int | None = None) -> None:
         self.w = writer
         self.silence_s = silence_s
         self.last_ms = now_ms if now_ms is not None else int(time.time() * 1000)
         self.in_silence: int | None = None
-        self.seen_reconnects: dict[int, int] = {}
+        self.reconnects = 0
         self.gaps = 0
 
     def saw(self, t_ms: int) -> None:
@@ -165,12 +165,10 @@ class Monitor:
             self.w.write_all({"type": "gap_end", "reason": "silence", "target": VENUE, "start_ms": s, "end_ms": t_ms})
 
     def tick(self, now_ms: int, socket_reconnects: dict[int, int]) -> None:
-        for i, n in socket_reconnects.items():
-            prev = self.seen_reconnects.get(i, 0)
-            if n > prev:
-                self.gaps += 1
-                self.w.write_all({"type": "gap", "reason": "socket_reconnect", "socket": i, "reconnects_total": n, "new": n - prev})
-            self.seen_reconnects[i] = n
+        """Reconnects are NOT gap rows: the shared ws client drops a socket after 30 s without a message (ws_idle) and this venue is quiet, so each
+        socket reconnects about twice a minute and two staggered sockets cover each other. They are counted (self.reconnects, hb rows, status).
+        A gap row is written only for silence longer than silence_s."""
+        self.reconnects = sum(socket_reconnects.values())
         if self.in_silence is None and now_ms - self.last_ms > self.silence_s * 1000:
             self.in_silence = self.last_ms
             self.gaps += 1
@@ -228,7 +226,7 @@ async def run(args: argparse.Namespace) -> int:
         write_status(sp, {
             "t_ms": int(now * 1000), "uptime_s": int(now - t0), "final": final, "program": PROGRAM, "free_fraction": round(w.free, 4),
             "paused": w.paused, "dropped_while_paused": w.dropped_while_paused, "rows_written": w.rows_written, "counts_this_run": counts,
-            "counts_total": total, "gaps": mon.gaps, "last_slot": src.stats.last_slot, "notices": src.stats.notes,
+            "counts_total": total, "gaps": mon.gaps, "reconnects": mon.reconnects, "last_slot": src.stats.last_slot, "notices": src.stats.notes,
             "dedup_dropped": src.stats.dedup_dropped, "sockets": src.stats.socket_rows(), "torn_lines_ended": w.torn_lines_ended,
         })
 
@@ -243,7 +241,7 @@ async def run(args: argparse.Namespace) -> int:
             n += 1
             if n % 12 == 0:
                 status()
-                w.write_all({"type": "hb", "rows": dict(w.rows_written), "last_slot": src.stats.last_slot})
+                w.write_all({"type": "hb", "rows": dict(w.rows_written), "last_slot": src.stats.last_slot, "reconnects": mon.reconnects})
 
     tk = asyncio.create_task(ticker())
     try:

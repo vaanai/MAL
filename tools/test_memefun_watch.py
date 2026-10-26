@@ -139,15 +139,15 @@ class FakeWriter:
         self.rows.append(body)
 
 
-def test_monitor_silence_and_reconnect_gaps():
+def test_monitor_silence_gap_once_and_reconnects_only_counted():
     w = FakeWriter()
     m = mw.Monitor(w, silence_s=10, now_ms=0)
-    m.tick(5_000, {0: 0})
-    assert w.rows == []
-    m.tick(11_000, {0: 1})
-    assert [r["reason"] for r in w.rows] == ["socket_reconnect", "silence"]
-    m.tick(12_000, {0: 1})
-    assert len(w.rows) == 2  # one gap row per silence
+    m.tick(5_000, {0: 3, 1: 4})
+    assert w.rows == [] and m.reconnects == 7  # reconnects never write gap rows
+    m.tick(11_000, {0: 4, 1: 4})
+    assert [r["reason"] for r in w.rows] == ["silence"] and m.gaps == 1
+    m.tick(12_000, {0: 4, 1: 4})
+    assert len(w.rows) == 1  # one gap row per silence
     m.saw(13_000)
     assert w.rows[-1]["type"] == "gap_end" and w.rows[-1]["start_ms"] == 0
 
