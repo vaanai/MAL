@@ -30,6 +30,8 @@ from __future__ import annotations
 import hashlib
 import inspect
 import json
+import os
+import stat
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
@@ -640,6 +642,92 @@ def owner_line_problem(path: Any, bot_id: str, pin: str | None = None, root_chec
         return "owner_dec_sha_mismatch"
     want = OWNER_LINE_FMT.format(bot_id=bot_id)
     return None if sum(1 for ln in data.decode("utf-8", "replace").split("\n") if ln == want) == 1 else "owner_line_missing"
+
+
+# --- halts (QP removal precondition 7): FEED-GAP and A3. Both stop NEW buys only; exits keep running. ---------------------------------------------------------
+FEED_STATUS_MAX_AGE_MS = 10_000  # the forwarder rewrites <bot_id>.status.json every 250 ms; a status older than this means the forwarder itself is down
+FEED_FRAME_MAX_MS = 5_000  # decision stream silence bound: no frame (a row or the forwarder's 500 ms remote heartbeat) for this long refuses buys. A pinned choice, 2.5x the forwarder's own 2,000 ms stall
+FEED_SKEW_MS = 5_000  # a status stamped this far in the future is a wrong clock, not a fresh feed
+FEED_STATUS_MAX_BYTES = 65_536
+FEED_SCHEMA = "decision_forwarder_v1"  # tools/decision_forwarder.py (PR #967), status file format
+A3_LATCH = "a3_pins_changed"  # the name tools/h5_arena_gates.HARD_ARENA_HALTS already carries, so the parity state counts it as an unresolved hard halt
+A3_MAX_AGE_MS = 36 * 3_600_000  # same bound as tools/h5_arena_executor.A3_MAX_AGE_MS: the monitor writes daily
+A3_FUTURE_SKEW_MS = 300_000
+A3_POLL_MS = 60_000
+
+
+def feed_status_path(root: str, bot_id: str) -> str:
+    return os.path.join(root, "transport", f"{bot_id}.status.json")
+
+
+def feed_gap_problem(path: str, bot_id: str, now_ms: int) -> str | None:
+    """None when the forwarder's status file says the feed is live; else the reason (a refusal of new buys, never a latch: a stall that resumes clears itself).
+    Fails closed: a missing, unreadable, linked, oversize, malformed, foreign-bot, stale, future-stamped or non-`connected` status is a gap. The format is
+    decision_forwarder.write_status: {schema, bot, state, ms, last_frame_ms, last_remote_ms, seq, ...}; `ms` is the write instant, `last_frame_ms` the newest frame."""
+    try:
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            return "feed_status_not_regular"
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            if os.fstat(fd).st_ino != st.st_ino:
+                return "feed_status_swapped"
+            data = os.read(fd, FEED_STATUS_MAX_BYTES + 1)
+        finally:
+            os.close(fd)
+    except FileNotFoundError:
+        return "feed_status_missing"
+    except OSError:
+        return "feed_status_unreadable"
+    if len(data) > FEED_STATUS_MAX_BYTES:
+        return "feed_status_oversize"
+    try:
+        rec = json.loads(data)
+    except ValueError:
+        return "feed_status_malformed"
+    if not isinstance(rec, dict) or rec.get("schema") != FEED_SCHEMA or rec.get("bot") != bot_id:
+        return "feed_status_foreign"
+    ms, last = rec.get("ms"), rec.get("last_frame_ms")
+    if any(isinstance(v, bool) or not isinstance(v, int) for v in (ms, last)):
+        return "feed_status_malformed"
+    if rec.get("state") != "connected":
+        return f"feed_state_{str(rec.get('state'))[:24]}"
+    if ms - now_ms > FEED_SKEW_MS or last - now_ms > FEED_SKEW_MS:
+        return "feed_status_future"
+    if now_ms - ms > FEED_STATUS_MAX_AGE_MS:
+        return "feed_status_stale"
+    if last <= 0 or now_ms - last > FEED_FRAME_MAX_MS:
+        return "feed_silent"
+    return None
+
+
+def a3_halt_problem(path: str, now_ms: int) -> str | None:
+    """None when the NEWEST line of the A3 daily record (tools/pump_structure_monitor.py output, the file tools/h5_arena_executor.a3_record_problem reads) shows no halt.
+    Else the reason: `pins_changed` (or any other `halt.flags.*.halt` true, or a flag not evaluated or malformed), `program_changed` warn, or a record that is
+    missing, unreadable, flag-less, stale (36 h) or future-stamped. Fail closed; the bridge latches A3_LATCH on any return value."""
+    from datetime import datetime, timezone
+    try:
+        with open(path, "rb") as fh:
+            lines = [ln for ln in fh.read().splitlines() if ln.strip()]
+        rec = json.loads(lines[-1])
+    except (OSError, ValueError, IndexError):
+        return "a3_record_unreadable"
+    flags = ((rec.get("halt") or {}).get("flags")) if isinstance(rec, dict) and isinstance(rec.get("halt"), dict) else None
+    if not isinstance(flags, dict) or not flags:
+        return "a3_record_no_halt_flags"
+    try:
+        run_ms = int(datetime.strptime(rec["run_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp() * 1000)
+    except (KeyError, ValueError, TypeError):
+        return "a3_record_no_run_utc"
+    if run_ms - now_ms > A3_FUTURE_SKEW_MS:
+        return "a3_record_future"
+    if now_ms - run_ms > A3_MAX_AGE_MS:
+        return "a3_record_stale"
+    why = sorted(k for k, v in flags.items() if not (isinstance(v, dict) and isinstance(v.get("halt"), bool)) or v["halt"] or v.get("evaluated") is False)
+    pc = (((rec.get("warn") or {}).get("flags") or {}).get("program_changed")) if isinstance(rec.get("warn"), dict) else None
+    if isinstance(pc, dict) and pc.get("warn") is True:
+        why.append("program_changed")
+    return ("a3_flags:" + ",".join(why)) if why else None
 
 
 def start_row_fields() -> dict[str, Any]:

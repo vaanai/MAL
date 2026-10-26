@@ -71,7 +71,7 @@ SELL_RETRY_MS = 5_000
 UNIVERSE_V_RANGE = (17_500_000_000, 17_700_000_000)  # Am.2 item 6: V in [17.5e9, 17.7e9], WSOL quote
 
 LATCHES = ("sealed_path", "chain_break", "frozen_sha_mismatch", "total_loss_cap", "per_trade_loss_cap", "stuck_sell",
-           "parity_hard_halt", "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch", "read_record")  # twin_pin_mismatch and the two before: hv4_c0 parity wiring; read_record: no recorded PASS read for the bot (hv4_c0): hv4_c0 parity wiring (tools/hv4_c0_parity.py)
+           "parity_hard_halt", "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch", "read_record", c0.A3_LATCH)  # twin_pin_mismatch and the two before: hv4_c0 parity wiring; read_record: no recorded PASS read for the bot (hv4_c0): hv4_c0 parity wiring (tools/hv4_c0_parity.py)
 
 
 # --- config -----------------------------------------------------------------------------------------------------------------------
@@ -109,6 +109,7 @@ class Config:
     parity_dir: str = ""  # hv4_c0 only: where the trips/attempts files and the parity result are written
     twins_file: str = ""  # hv4_c0 only: the paper twins file (tools/hv4_c0_twin.py writes it, with its .run.json record)
     tieout_dir: str = ""  # hv4_c0 only: the daily tie-out results directory (arena_tieout --check-last-day)
+    a3_record_file: str = ""  # hv4_c0 only: the A3 daily record (newest line). A halt flag latches a3_pins_changed (new buys stop; exits run). A live start needs it
     reads_dir: str = ""  # hv4_c0 only: the directory that holds the bot's recorded read (`<bot_id>.json`); no decision row is read without a recorded PASS there
 
     @classmethod
@@ -130,6 +131,10 @@ class Config:
             kw["profile"] = c0.PROFILE
             kw["funded_lamports"] = d.get("funded_lamports")
             kw["reads_dir"] = str(d.get("reads_dir") or "")
+            a3f = d.get("a3_record_file") or ""
+            if a3f and (not isinstance(a3f, str) or not Path(a3f).is_absolute()):
+                raise ValueError("hv4_c0 refused: a3_record_file must be an absolute path")
+            kw["a3_record_file"] = str(a3f)
             given = [k for k in c0p.PATH_KEYS if d.get(k)]
             if given and len(given) != len(c0p.PATH_KEYS):
                 raise ValueError("hv4_c0 refused: parity_dir, twins_file and tieout_dir are set together or not at all")
@@ -138,8 +143,8 @@ class Config:
                 if why:
                     raise ValueError(f"hv4_c0 refused: {why}")
                 kw.update({k: str(d[k]) for k in c0p.PATH_KEYS})
-        elif "funded_lamports" in d or "priority_pin" in d or any(k in d for k in c0p.PATH_KEYS) or "reads_dir" in d:
-            raise ValueError("funded_lamports, priority_pin, reads_dir and the parity paths belong to the hv4_c0 profile")
+        elif "funded_lamports" in d or "priority_pin" in d or any(k in d for k in c0p.PATH_KEYS) or "reads_dir" in d or "a3_record_file" in d:
+            raise ValueError("funded_lamports, priority_pin, reads_dir, a3_record_file and the parity paths belong to the hv4_c0 profile")
         for k in ("end_ms", "max_hold_ms"):
             v = d[k]
             if isinstance(v, bool) or not isinstance(v, (int, float)) or v != v or v <= 0:
@@ -384,6 +389,7 @@ class Bridge:
         if cfg.profile == c0.PROFILE and cfg.parity_dir:  # parity, twin and tie-out gates (DEC-032 s5): hv4_c0 only, active when the paths are configured
             self.gates = c0p.build_gates(cfg.parity_dir, cfg.twins_file, cfg.tieout_dir, cfg.stop_file, self._parity_state, runner=parity_runner)
         self._last_sell_try: dict[str, int] = {}
+        self._a3_polled_ms: int | None = None
         if cfg.profile == c0.PROFILE:
             self._log("bridge_start", **c0.start_row_fields())  # the pins this process runs under (key frozen_sha as in the runner's own `start` row)
         self._verify_at_start()
@@ -628,6 +634,9 @@ class Bridge:
             return "halt_file"
         if stop:
             return "stop_file"
+        why = self.feed_refusal(now)
+        if why:
+            return why
         if now >= self.cfg.end_ms:
             return "end_ms"
         if now - int(row["ms"]) > MAX_DECISION_AGE_MS:
@@ -642,6 +651,32 @@ class Bridge:
         if self.state.realized_lamports <= -lim["total_loss_lamports"]:
             return "total_loss_cap"
         return None
+
+    def feed_refusal(self, now: int) -> str | None:
+        """hv4_c0 FEED-GAP halt: new buys stop while the forwarder's status file (<root>/transport/<bot_id>.status.json) is missing, stale, not `connected` or
+        silent past tools.hv4_live_c0.FEED_FRAME_MAX_MS. Not a latch: it clears when the feed resumes. Exits are unaffected. LIVE always checks it; a DRY bridge
+        checks it only when a status file exists (the research-0 direct path has none)."""
+        if self.cfg.profile != c0.PROFILE:
+            return None
+        path = c0.feed_status_path(self.cfg.root, self.cfg.bot_id)
+        if self.cfg.mode != LIVE and not os.path.lexists(path):
+            return None
+        why = c0.feed_gap_problem(path, self.cfg.bot_id, now)
+        if why:
+            self._count("feed_gap_refusal")
+        return f"feed_gap:{why}" if why else None
+
+    def a3_tick(self, now: int) -> None:
+        """hv4_c0 A3 halt: poll the A3 daily record (throttled) and latch a3_pins_changed on any halt flag (pins_changed included) or a record that cannot be
+        read. A latch refuses new buys only; exits keep running. Live needs a configured record (main refuses a live start without it)."""
+        if self.cfg.profile != c0.PROFILE or (not self.cfg.a3_record_file and self.cfg.mode != LIVE):
+            return
+        if self._a3_polled_ms is not None and 0 <= now - self._a3_polled_ms < c0.A3_POLL_MS:
+            return
+        self._a3_polled_ms = now
+        why = c0.a3_halt_problem(self.cfg.a3_record_file, now) if self.cfg.a3_record_file else "a3_record_file_missing"
+        if why:
+            self._latch(c0.A3_LATCH, why)
 
     # -- decisions
     def handle_row(self, row: dict[str, Any]) -> None:
@@ -942,6 +977,7 @@ class Bridge:
     # -- loop
     def tick(self) -> int:
         """One pass: port events, rows, backstops, warm plan. Returns rows consumed."""
+        self.a3_tick(self.now_ms())
         self._poll_ports()
         n = 0
         if not Path(self.cfg.halt_file).exists():
@@ -1260,6 +1296,8 @@ def main(argv: list[str] | None = None) -> int:
         # PR4 gates, before anything else is touched (the order below is the order of the labels a start prints).
         if want_live:
             why = c0p.paths_refusal(raw)  # a live start needs all three parity paths, absolute
+            if not why and not cfg.a3_record_file:
+                why = "a3_record_file_missing"
             if not why:
                 why = c0.owner_line_problem(c0.OWNER_DEC_PATH, cfg.bot_id, None, root_ok_problem)
         else:
