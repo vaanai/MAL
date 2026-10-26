@@ -32,10 +32,10 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `explored-survivor-unconfirmed` | 9 | 0 | 0 |
 | `parked` | 9 | 0 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 46 | 20 | 1 |
+| `untested` | 45 | 20 | 1 |
 | `desk-read` | 1 | 43 | 0 |
 | `explored-no-survivor` | 39 | 6 | 1 |
-| `dead-as-frozen` | 76 | 4 | 0 |
+| `dead-as-frozen` | 77 | 4 | 0 |
 | **all** | 185 | 75 | 2 |
 
 The file holds 512 rows: the 262 above and 55 rows kept only as duplicates of another row (listed at the end).
@@ -86,7 +86,6 @@ Each of these was positive on data the lab had already seen and has no clean for
 | --- | --- | --- | --- |
 | `lib-a-A21` | Competitor census (who holds our seat) | F6 wallet intelligence | not in source |
 | `lib-a-A24` | Operator and sybil cluster detection | F6 wallet intelligence | not in source |
-| `lib-a-A27` | Cost-aware universe: PumpSwap fee tier falls with market cap | F7 market structure and regime | not in source |
 | `lib-a-A29` | Attention concentration | F7 market structure and regime | not in source |
 | `lib-a-A35` | Synthetic inventory market making on aged pools | F8 liquidity, carry and off-pump venues | Combine the two parts only if either is positive (tree row 8e). |
 | `lib-a-A38` | Sizing overlays: fractional Kelly, concurrency caps, daily stops | F9 portfolio and payoff | Apply only after a positive book (tree row 9c, condition). |
@@ -295,6 +294,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `lib-a-A22` | Creator reputation: count-based recurrence | `dead-as-frozen` | "DEAD" (count-based) (tree row 6c): "Serial creators are monotonically worse". Outcome-based version "UNTESTED", a feature for 2e/5c, not a strategy on its own. |
 | `lib-a-A25` | Regime gates: 11 causal indicators, hour of day, weekend, SOL trend | `dead-as-frozen` | "DEAD / IN FLIGHT" (tree row 7a); d14 2/66 out-of-sample cells, about chance. Marks: systematic "DEAD at the gross level" (F3b/F7a). |
 | `lib-a-A26` | Venue and structure arbitrage | `dead-as-frozen` | "DEAD" (tree row 7b). Cause not reported beyond DEAD. |
+| `lib-a-A27` | Cost-aware universe: PumpSwap fee tier falls with market cap | `dead-as-frozen` | P56 exploration 2026-10-26: momentum continuation (+3%/60s, hold 60s, 0.25 SOL) on pools with mcap >= 9,820 SOL and depth >= 400 SOL, fresh-0903 exploration block, 4,267 closed trades: tiered-fee mean net -0.004108 SOL/trade (flat-15% model), CI90 lo -0.004803, 0 of 7 days positive; the fee tier saves 1.0828 points per round trip but gross before fees is -0.377% per trade. … |
 | `lib-a-A31` | Funding carry on HL meme-perp | `explored-no-survivor` | Note: 2026-10-13 (reviewer's check, not confirmed): row 8c of the strategy tree reads like a desk estimate with no data run, so this status may overstate what was tested. "WEAK" (tree row 8c): a risk premium (+0.02-0.04 SOL per 2 months on 5 SOL). T3 paper tracker optional. Cause not classified. |
 | `lib-a-A32` | Short new CEX perps; margin shorts on pump tokens | `dead-as-frozen` | "WEAK / DEAD" (tree row 8d). Which part is DEAD is not stated; cause not reported. |
 | `lib-a-A33` | PumpSwap liquidity provision | `dead-as-frozen` | "DEAD" (tree row 8a; d15 S4). Cause not reported beyond DEAD. |
