@@ -32,8 +32,9 @@ PR 5a notes (still `hv4_c0_incomplete`: nothing here removes the live refusal).
     the backstop for a forwarder that stops updating its status.
   * PRECONDITION 7 IS NOT MET FOR TAPE GAPS. What is built is the CONSUMER: the `feed_break` latch (hard), its clear (10 minutes counted from the END of the gap AND a
     root-owned review file naming EXACTLY the newest gap instant) and the recorder's `gap` marking. The PRODUCER of the book's own tape gap records (data_loss,
-    process_restart, feed_restart, start, takeover, gap_silence_ms breaches) does not exist: the frozen HV4 runner (9ed4c5ff) emits none and must not change; a separate
-    read-only relay (tools/hv4_gap_relay.py, kind and instant only) is owed in its own PR. Until then `feed_break` is fed only by the forwarder's TRANSPORT gap log
+    process_restart, feed_restart, start, takeover, gap_silence_ms breaches): the frozen HV4 runner (9ed4c5ff) emits none and must not change, so a separate read-only
+    relay, tools/hv4_gap_relay.py (kind and instant only), is built in this PR but NOT installed or carried to the bridge host, and its slot-jump (gap_slots) rule is not
+    covered. Until it runs, `feed_break` is fed only by the forwarder's TRANSPORT gap log
     (stall, disconnect, reconnect, mismatch, error, torn tail) and a forwarder `stopped_mismatch`; that is a stricter extra guard, not the §5.2 halt.
   * `transport_stall:<why>` refuses new buys while the forwarder status is not live (no latch; clears by itself; an extra guard). `a3_pins_changed` latches on any
     A3 halt flag, an unreadable/stale record, or a missing record file in live (cleared only by the manager). Exits keep running under all of them.
@@ -807,7 +808,7 @@ def feed_gap_problem(path: str, bot_id: str, now_ms: int) -> str | None:
 # --- DEC-032 s5.2 FEED-GAP HALT: the book's OWN gap records. A hard latch `feed_break` (already in HARD_ARENA_HALTS). Restart needs 10 gap-free minutes AND the manager's
 # written review, as a root-owned clear file. Only the KIND and INSTANT of a gap record are read (QP seal ruling): no other field, no join to any outcome.
 GAP_FREE_MS = 600_000
-GAP_BREAK_KINDS = ("stall", "disconnect", "reconnect", "mismatch", "local_torn_trimmed", "error", "gap", "data_loss", "resubscribe", "silence")  # forwarder kinds + the s5.2 list; "resume" is not a gap
+GAP_BREAK_KINDS = ("stall", "disconnect", "reconnect", "mismatch", "local_torn_trimmed", "error", "gap", "data_loss", "resubscribe", "silence", "process_restart", "feed_restart", "feed_start", "start", "takeover", "gap_silence")  # forwarder kinds + the s5.2 list; "resume" is not a gap
 GAP_CLEAR_DIR = "/etc/mal-hv4-c0/gap-clear"  # <bot_id>.json: {"bot_id": ..., "reviewed_gap_ms": N}; root-owned (h5.root_file_problem), N == the newest gap instant
 FEED_BREAK_LATCH = "feed_break"
 FEED_MAX_STALL_MS = 2_000  # a forwarder status that reports a larger stall_ms is refused: a misconfigured forwarder must not widen the bound (QP ruling a)

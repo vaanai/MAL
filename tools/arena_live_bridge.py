@@ -695,6 +695,8 @@ class Bridge:
         if self.cfg.profile != c0.PROFILE:
             return
         gaps, resumes, bad = c0.gap_log_ms(os.path.join(self.cfg.root, "transport", f"{self.cfg.bot_id}.gaps.jsonl"))
+        tgaps, _tres, tbad = c0.gap_log_ms(os.path.join(self.cfg.root, "transport", f"{self.cfg.bot_id}.tapegaps.jsonl"))  # tools/hv4_gap_relay.py: the book's own TAPE gaps
+        gaps, bad = [*gaps, *tgaps], bad or tbad
         if bad:
             self._latch(c0.FEED_BREAK_LATCH, bad)  # an unreadable, oversize or malformed gap log is not a clear
         newest = max([*gaps, self.state.gap_noted_ms]) if (gaps or self.state.gap_noted_ms) else None
