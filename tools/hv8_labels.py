@@ -7,7 +7,10 @@ read-only. So no rating can be made after any outcome exists, and the order is a
 
 PRICING: the SAME replay as the dump (tools.hv8_dump.make_runner: 7-day warm-up, event-based created_known, HV7 screen, FakeChain) with a real ArenaEngine, arm U only
 (every screened card is bought at t_e = t_d + 45 s, 0.25 SOL, HV6 X exit: stop -8%, target +20%, 60 min), the 1.9 s leg, tape end 2026-08-28T12:00:00Z EXCLUSIVE.
-Replay constants are HV7's drill constants (feed delay 2 slots, 0.4 s/slot), not measured for August. The replayed sets must equal the dump's cards.jsonl exactly.
+LATENCY IS A REQUIRED ARGUMENT (no default): --feed-delay-slots and --sps. DESIGN amendment (C3 QP, 2026-10-27) registers 7 slots (the arena's U setting,
+ARTIFACTS/lab/arena-records-2026-10-18.md line 62) and 0.368 s per slot (P69's August figure, cited, not re-measured here). Both go into labels-manifest.json.
+--sensitivity reruns the pricing at 2 slots / 0.4 s (report-only) and writes labels-sensitivity.json: how many y flip and how many censoring outcomes change.
+check_pin's read-only test covers the ratings dir and its top-level files (the dir is flat). --out must be under /data2/mal/hv8-train. The replayed sets must equal the dump's cards.jsonl exactly.
 Return = flat-15% leg net lamports / stake lamports (`ret`); the pressure-fail leg is `ret_press`, report-only. A card with no priced trade row, an excluded or refused
 row, or an exit that would need a row at or after the tape end is CENSORED (ret null) and counted by reason, never extended.
 y = 1 if ret is above the median of the set's known returns, 0 if below; ties and censored cards get y null (counted). Relative label: the hour's market move cancels.
@@ -40,13 +43,14 @@ from tools import hv8_calib as CAL  # noqa: E402
 from tools import hv8_dump as D  # noqa: E402
 from tools import hv8_rate as H8  # noqa: E402
 from tools.arena_paper import ArenaEngine, register_bot, rules_of  # noqa: E402
-from tools.drill_hv7_real_layout import FEED_DELAY_SLOTS, script  # noqa: E402
+from tools.drill_hv7_real_layout import script  # noqa: E402
 
 Refused = D.Refused
 STAKE_SOL = R.STAKE_SOL
 LEG = "1p9"
 EXIT_LEG_MS = 1900
-SPS = 0.4
+SENS_DELAY, SENS_SPS = 2, 0.4          # report-only sensitivity: HV7's drill constants
+NOTE_ORDER_REFUSED = ("order_refused in runner_counters comes from the unregistered L, R and S arms (only U is registered); it is not a U fault")
 
 
 # ---------------------------------------------------------------- the pin gate
@@ -116,13 +120,16 @@ def read_ledger(root: Path, bot: str) -> list[dict]:
     return rows
 
 
-def price(tape: Path, scratch: Path, cards: list[dict], win: D.Window, rule: str | None = None, t_ds: list[int] | None = None) -> dict[str, Any]:
+def price(tape: Path, scratch: Path, cards: list[dict], win: D.Window, *, feed_delay_slots: int, sps: float, rule: str | None = None,
+          t_ds: list[int] | None = None) -> dict[str, Any]:
+    if isinstance(feed_delay_slots, bool) or not isinstance(feed_delay_slots, int) or feed_delay_slots < 0 or not isinstance(sps, (int, float)) or not 0.1 <= sps <= 1.0:
+        raise Refused("latency_arguments_invalid")
     scratch = D.check_path(scratch)
     D.allow_roots(scratch)
     guard = R.Hv7Guard(scratch / "v7")
     model = A.StubModel(script, guard=guard, latency_ms=50)          # the L arm's stub: no API call, no key
     reg = scratch / "reg.json"
-    eng = ArenaEngine(scratch / "engine-ledger", reg, cfg=R.stack_config(FEED_DELAY_SLOTS), sps_fn=lambda: SPS)
+    eng = ArenaEngine(scratch / "engine-ledger", reg, cfg=R.stack_config(feed_delay_slots), sps_fn=lambda: float(sps))
     bot = R.bot_id("U")
     register_bot(bot, "abcdef1234567", win.block_start_ms, str(reg), deciding_stake=STAKE_SOL, model_ids=[], now_ms=win.block_start_ms - 60_000, verify_sha=False)
     run, info = D.make_runner(tape, scratch, win, t_ds=t_ds, engine=eng, model=model, guard=guard)
@@ -162,17 +169,32 @@ def price(tape: Path, scratch: Path, cards: list[dict], win: D.Window, rule: str
         t_e = D.iso_ms(c["t_d"]) + 45_000
         out[c["card_sha"]] = classify(by_key.get((c["pool"], t_e), []), win.end_ms, rule)
     return {"returns": out, "counters": dict(sorted(run.counters.items())), "hook_errors": len(run.hook_errors), "engine_counters": dict(sorted(eng.counters.items())),
-            "rule": rule}
+            "rule": rule, "feed_delay_slots": feed_delay_slots, "sps": sps}
+
+
+def sensitivity(base: dict[str, dict], alt: dict[str, dict], cards: list[dict]) -> dict[str, Any]:
+    """Report-only: label flips and censoring changes between the registered latency and the alternative."""
+    lb = median_labels([(c["t_d"], c["card_sha"], base[c["card_sha"]]["ret"]) for c in cards])
+    la = median_labels([(c["t_d"], c["card_sha"], alt[c["card_sha"]]["ret"]) for c in cards])
+    both = [c["card_sha"] for c in cards if lb[c["card_sha"]]["y"] is not None and la[c["card_sha"]]["y"] is not None]
+    return {"y_flips": sum(1 for k in both if lb[k]["y"] != la[k]["y"]), "compared": len(both),
+            "status_changes": sum(1 for k in lb if lb[k]["status"] != la[k]["status"]),
+            "censoring_changes": sum(1 for c in cards if (base[c["card_sha"]]["censored"] is None) != (alt[c["card_sha"]]["censored"] is None))}
 
 
 def run_labels(dump_dir: Path, ratings_dir: Path, manifest_sha: str, tape: Path, scratch: Path, out_dir: Path, win: D.Window = D.DEFAULT,
-               pin_path: Path | None = None) -> dict[str, Any]:
+               pin_path: Path | None = None, *, feed_delay_slots: int, sps: float, sens: tuple[int, float] | None = None,
+               out_root: str | None = D.OUT_ROOT) -> dict[str, Any]:
     check_pin(ratings_dir, dump_dir, manifest_sha, pin_path)          # first: nothing else is opened before this passes
-    out_dir = Path(out_dir)
+    out_dir = Path(os.path.abspath(out_dir))
+    if out_root is not None:
+        real, root = os.path.realpath(out_dir), os.path.realpath(out_root)
+        if ".." in Path(os.fspath(out_dir)).parts or not real.startswith(root + os.sep):
+            raise Refused("out_not_under_root")
     if out_dir.exists() and (not out_dir.is_dir() or any(out_dir.iterdir())):
         raise Refused("out_not_empty")
     cards = [json.loads(x) for x in (Path(dump_dir) / "cards.jsonl").read_text().splitlines() if x.strip()]
-    res = price(Path(tape), Path(scratch), cards, win)
+    res = price(Path(tape), Path(scratch), cards, win, feed_delay_slots=feed_delay_slots, sps=sps)
     rets = res["returns"]
     lab = median_labels([(c["t_d"], c["card_sha"], rets[c["card_sha"]]["ret"]) for c in cards])
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -190,9 +212,15 @@ def run_labels(dump_dir: Path, ratings_dir: Path, manifest_sha: str, tape: Path,
     man = {"hv8_labels": "manifest", "ratings_manifest_sha256": manifest_sha, "cards": len(cards), **st, "censored_reasons": dict(sorted(reasons.items())),
            "tape_end_excl": D.iso_s(win.end_ms), "rule": res["rule"], "leg": LEG, "stake_sol": STAKE_SOL, "labels_sha256": hashlib.sha256(body).hexdigest(),
            "runner_counters": res["counters"], "engine_counters": res["engine_counters"], "hook_errors": res["hook_errors"], "api_calls": 0,
-           "replay_constants": {"feed_delay_slots": FEED_DELAY_SLOTS, "sps": SPS}}
+           "feed_delay_slots": feed_delay_slots, "sps": sps, "note": NOTE_ORDER_REFUSED}
+    if sens is not None:
+        alt = price(Path(tape), Path(str(scratch) + "-sens"), cards, win, feed_delay_slots=sens[0], sps=sens[1])
+        rep = {"report_only": True, "registered": [feed_delay_slots, sps], "alternative": [sens[0], sens[1]], **sensitivity(rets, alt["returns"], cards)}
+        (out_dir / "labels-sensitivity.json").write_text(json.dumps(rep, sort_keys=True, indent=1) + "\n")
+        man["sensitivity"] = rep
     (out_dir / "labels-manifest.json").write_text(json.dumps(man, sort_keys=True, indent=1) + "\n")
-    return {k: man[k] for k in ("hv8_labels", "cards", "kept", "tied", "censored", "censored_reasons", "labels_sha256", "api_calls")}
+    return {k: man[k] for k in ("hv8_labels", "cards", "kept", "tied", "censored", "censored_reasons", "labels_sha256", "api_calls", "feed_delay_slots", "sps")} | (
+        {"sensitivity": man["sensitivity"]} if "sensitivity" in man else {})
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -203,9 +231,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--tape", required=True)
     ap.add_argument("--scratch", required=True)
     ap.add_argument("--out", required=True)
+    ap.add_argument("--feed-delay-slots", type=int, required=True, help="registered: 7 (the arena's U setting)")
+    ap.add_argument("--sps", type=float, required=True, help="registered: 0.368 s per slot (P69, August)")
+    ap.add_argument("--sensitivity", action="store_true", help="report-only rerun at 2 slots / 0.4 s")
     a = ap.parse_args(argv)
     try:
-        res = run_labels(Path(a.dump), Path(a.ratings), a.manifest_sha, Path(a.tape), Path(a.scratch), Path(a.out))
+        res = run_labels(Path(a.dump), Path(a.ratings), a.manifest_sha, Path(a.tape), Path(a.scratch), Path(a.out), feed_delay_slots=a.feed_delay_slots, sps=a.sps,
+                         sens=(SENS_DELAY, SENS_SPS) if a.sensitivity else None)
     except (Refused, CAL.CalibError) as e:
         print(json.dumps({"hv8_labels": "refused", "why": str(e)}), file=sys.stderr)
         return 2

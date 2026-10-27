@@ -124,3 +124,11 @@ def test_write_final_returns_the_manifest_sha_and_refuses_a_second_write(tmp_pat
         V.write_final(d, r, res)
     with pytest.raises(V.ValidationError, match="final files"):
         V.validate(d, r)
+
+
+def test_a_rerun_is_allowed_when_the_first_reply_is_missing_entirely(tmp_path):
+    d, plan, firsts, _ = make_dump(tmp_path)
+    r = write_batches(tmp_path, plan, skip={(firsts[3], 0)})
+    (r / f"batch-{plan[-1]['batch'] + 1:02d}.jsonl").write_text(json.dumps({"card_sha": firsts[3], "seq": 2, "reply": reply()}) + "\n")
+    res = V.validate(d, r)
+    assert res["missing_first"] == 1 and res["reruns"] == 1 and res["bar1"]["valid_first"] == 100

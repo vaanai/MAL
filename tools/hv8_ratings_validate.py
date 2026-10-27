@@ -6,7 +6,7 @@ Inputs: the dump dir (manifest.json with the batch plan) and a ratings dir holdi
 Batches 1..B come from the plan (first-rating batches, then retest batches); batch B+1 is the re-run batch (re-runs only for first cards whose seq 0 was unrated).
 REFUSES (ValidationError, nothing written): a duplicate (card_sha, seq), a card_sha twice in one file, a card_sha not in that batch of the plan, a wrong seq for the
 batch kind, an unknown batch file, a reply count above the cap (first + retest + 5% re-runs), more re-runs than the allowance.
-Bar 1 (parse): valid first ratings (seq 0, or the seq 2 re-run of an unrated seq 0) >= ceil(0.95 x first-rating calls). A first card without a reply counts as unrated.
+Bar 1 (parse): valid first ratings (seq 0, or the seq 2 re-run of an unrated seq 0) >= ceil(0.95 x first-rating calls). A first card without a reply counts as an empty (unrated) first reply and may take a re-run.
 Bars 2 and 3 use tools.hv8_calib (kappa on first vs retest pairs; degenerate-item share). Retest ratings feed bar 2 only.
 `write_final` writes first.jsonl, retest.jsonl and manifest.json INTO the ratings dir (refused if any exists); the manager then makes the dir read-only and pins the manifest sha256.
 Nothing here says HV8 makes money.
@@ -101,7 +101,7 @@ def validate(dump_dir: Path, ratings_dir: Path) -> dict:
         raise ValidationError("more replies than the call cap")
     for sha_, _q in reruns:
         v0 = verdicts.get((sha_, 0))
-        if v0 is None or v0.rated:
+        if v0 is not None and v0.rated:       # a first card with no reply at all is an empty, i.e. unrated, first reply
             raise ValidationError("re-run for a card whose first rating was not an unrated reply")
     first_ratings: dict[str, tuple] = {}
     for sha in plan["first"]:

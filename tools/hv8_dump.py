@@ -12,6 +12,12 @@ HARD REFUSALS (raise Refused, write nothing): an input hour file at or after the
 any row whose t_recv_ms, event_ts or block_time is at or after the window end; a t_d outside the 167-instant grid; a path under fresh-08*, arena, meta-capture.
 created_known: a card requires a graduation (`complete`) or `pool_create` event OBSERVED in the block, at or after the block start and strictly before t_d, for its
 mint / pool. First print never sets it. Pools without one are dropped before the top-8 cut (counted; expected non-zero).
+
+RUN CONDITION (QP, C3): the adapter must run with NO --lookback, and adapter_report.json must show preamble_rows 0, first_hour 2026-08-14T12 and last_hour
+2026-08-28T11. Otherwise STOP and go back to QP (scripts/ops/hv8-offline.sh checks it). Preamble rows are stamped LATER than they happened, never earlier, but a
+pre-block graduation stamped at the block start would count as "observed in block".
+DISCLOSURE: the adapter writes no pool_create rows and `create` rows are ignored, so created_known is GRADUATION-ONLY on this tape (the pool_create path in Known is dead
+on adapter output); PumpSwap pools that did not come from a pump.fun graduation are always dropped. The drop count is reported with this note.
 Nothing here says HV8 makes money. HV8 has 0 trades.
 """
 from __future__ import annotations
@@ -169,7 +175,7 @@ def prescan_tail(files: list[tuple[int, Path]], win: Window = DEFAULT) -> int:
 
 
 class Known:
-    """created_known from OBSERVED events only: a `complete` row (by mint) or a `pool_create` row (by pool and by mint)."""
+    """(pool_create is a dead path on adapter output: the adapter writes none.) created_known from OBSERVED events only: a `complete` row (by mint) or a `pool_create` row (by pool and by mint)."""
 
     def __init__(self, win: Window) -> None:
         self.win, self.mint_t, self.pool_t = win, {}, {}
@@ -331,7 +337,7 @@ def write_dump(res: dict[str, Any], out_dir: Path, *, head: str, win: Window = D
                 "batch_plan": {"first_batches": sum(1 for b in plan if b["kind"] == "first"), "retest_batches": sum(1 for b in plan if b["kind"] == "retest"),
                                "rerun_batch": 1, "max_per_batch": H8.BATCH_MAX, "order_seed": "sha256('hv8-batch|' + card_sha)"},
                 "batches": batches, "files": files, "cards_sha256": hashlib.sha256(cbody).hexdigest(), "playbook_sha256": pb.sha256, "template_sha256": tp.sha256,
-                "created_known": {"rule": "complete or pool_create observed in block, >= block start, < t_d", "dropped_instances": res["dropped_instances"],
+                "created_known": {"rule": "complete or pool_create observed in block, >= block start, < t_d", "graduation_only_on_adapter_tape": True, "dropped_instances": res["dropped_instances"],
                                   "dropped_pools": res["dropped_pools"]},
                 "screen_counters": res["counters"], "api_calls": 0, "outcome_free": True, "git_head": head}
     (out_dir / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=1) + "\n")
@@ -341,7 +347,7 @@ def write_dump(res: dict[str, Any], out_dir: Path, *, head: str, win: Window = D
 def count_only(res: dict[str, Any]) -> dict[str, Any]:
     n = sum(len(c) for _t, c in res["sets"])
     return {"hv8_dump": "count_only", "periods": res["periods"], "sets": len(res["sets"]), "cards": n, "caps": H8.call_caps(n),
-            "created_unknown_dropped_instances": res["dropped_instances"], "created_unknown_dropped_pools": res["dropped_pools"],
+            "created_unknown_dropped_instances": res["dropped_instances"], "created_unknown_dropped_pools": res["dropped_pools"], "created_known_note": "graduation-only on adapter tape (no pool_create rows)",
             "screen_counters": res["counters"], "tail_rows_scanned": res["tail_rows_scanned"], "api_calls": 0}
 
 

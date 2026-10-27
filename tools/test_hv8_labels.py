@@ -15,6 +15,7 @@ from tools import hv8_labels as L
 from tools.test_hv4_runner import write_tape
 from tools.test_hv7_runner import HOUR, T0, _env, tape_rows  # noqa: F401 - _env is an autouse fixture
 
+LAT = {"feed_delay_slots": 7, "sps": 0.368}
 WIN = D.Window(block_start_ms=T0 - 3 * HOUR, first_h_ms=T0 + HOUR, last_h_excl_ms=T0 + 4 * HOUR, end_ms=T0 + 5 * HOUR)
 
 
@@ -98,7 +99,7 @@ def test_no_pin_file_means_no_labels_and_the_tape_is_never_opened(tmp_path):
     try:
         pin.unlink()
         with pytest.raises(CAL.CalibError, match="does not exist"):
-            L.run_labels(dump, rd, sha, tmp_path / "no-such-tape", tmp_path / "sc", tmp_path / "out", WIN, pin_path=pin)
+            L.run_labels(dump, rd, sha, tmp_path / "no-such-tape", tmp_path / "sc", tmp_path / "out", WIN, pin_path=pin, **LAT)
     finally:
         unlock(rd)
     assert not (tmp_path / "out").exists() and not (tmp_path / "sc").exists()
@@ -108,24 +109,24 @@ def test_wrong_pin_wrong_argument_writable_dir_and_wrong_dump_are_refused(tmp_pa
     tape, dump, rd, sha, pin = fixture(tmp_path)
     args = (dump, rd, sha, tmp_path / "no-such-tape", tmp_path / "sc", tmp_path / "out", WIN)
     with pytest.raises(L.Refused, match="not_read_only"):
-        L.run_labels(*args, pin_path=pin)                                 # still writable
+        L.run_labels(*args, pin_path=pin, **LAT)                                 # still writable
     lock(rd)
     try:
         with pytest.raises(L.Refused, match="argument_differs"):
-            L.run_labels(dump, rd, "0" * 64, *args[3:], pin_path=pin)
+            L.run_labels(dump, rd, "0" * 64, *args[3:], pin_path=pin, **LAT)
         pin.write_text("manifest_sha256: " + "1" * 64 + "\n")
         with pytest.raises(L.Refused, match="argument_differs"):
-            L.run_labels(*args, pin_path=pin)
+            L.run_labels(*args, pin_path=pin, **LAT)
         pin.write_text("manifest_sha256: " + "1" * 64 + "\n")
         with pytest.raises(L.Refused, match="differs_from_the_pin"):
-            L.run_labels(dump, rd, "1" * 64, *args[3:], pin_path=pin)     # arg == pin but the manifest does not hash to it
+            L.run_labels(dump, rd, "1" * 64, *args[3:], pin_path=pin, **LAT)     # arg == pin but the manifest does not hash to it
         pin.write_text(f"manifest_sha256: {sha}\n")
         (dump / "manifest.json").write_text("{}")
         with pytest.raises(L.Refused, match="dump_manifest_differs"):
-            L.run_labels(*args, pin_path=pin)
+            L.run_labels(*args, pin_path=pin, **LAT)
         pin.write_text("junk")
         with pytest.raises(CAL.CalibError):
-            L.run_labels(*args, pin_path=pin)
+            L.run_labels(*args, pin_path=pin, **LAT)
     finally:
         unlock(rd)
 
@@ -133,7 +134,7 @@ def test_wrong_pin_wrong_argument_writable_dir_and_wrong_dump_are_refused(tmp_pa
 def test_main_returns_2_without_a_pin(tmp_path, capsys, monkeypatch):
     monkeypatch.setattr(CAL, "PIN_PATH", tmp_path / "missing-pin.md")
     assert L.main(["--dump", str(tmp_path), "--ratings", str(tmp_path), "--manifest-sha", "0" * 64, "--tape", str(tmp_path), "--scratch", str(tmp_path / "s"),
-                   "--out", str(tmp_path / "o")]) == 2
+                   "--out", str(tmp_path / "o"), "--feed-delay-slots", "7", "--sps", "0.368"]) == 2
 
 
 # ---------------------------------------------------------------- full pricing on synthetic tape
@@ -141,12 +142,14 @@ def test_pipeline_prices_every_dumped_card_and_counts_the_censored(tmp_path):
     tape, dump, rd, sha, pin = fixture(tmp_path)
     lock(rd)
     try:
-        res = L.run_labels(dump, rd, sha, tape, tmp_path / "sc", tmp_path / "out", WIN, pin_path=pin)
+        res = L.run_labels(dump, rd, sha, tape, tmp_path / "sc", tmp_path / "out", WIN, pin_path=pin, **LAT, out_root=None, sens=(2, 0.4))
     finally:
         unlock(rd)
     man = json.loads((tmp_path / "out" / "labels-manifest.json").read_text())
     n = json.loads((dump / "manifest.json").read_text())["cards"]
     assert res["cards"] == n == man["cards"] and man["kept"] + man["tied"] + man["censored"] == n
+    assert man["feed_delay_slots"] == 7 and man["sps"] == 0.368 and "unregistered" in man["note"]
+    assert {"y_flips", "compared", "censoring_changes"} <= set(man["sensitivity"]) and (tmp_path / "out" / "labels-sensitivity.json").exists()
     assert man["api_calls"] == 0 and man["tape_end_excl"] == D.iso_s(WIN.end_ms)
     rows = [json.loads(x) for x in (tmp_path / "out" / "labels.jsonl").read_text().splitlines()]
     assert len(rows) == n and sum(1 for r in rows if r["censored"]) == man["censored"]
@@ -169,7 +172,7 @@ def test_labels_do_not_look_past_the_exit_horizon(tmp_path):
     outs = []
     for tag, tp in (("full", tape), ("cut", cut)):
         win = WIN if tag == "full" else D.Window(WIN.block_start_ms, WIN.first_h_ms, WIN.first_h_ms + HOUR, cut_ms)
-        r = L.price(tp, tmp_path / f"sc-{tag}", [c for c in one], win, t_ds=[first_td])
+        r = L.price(tp, tmp_path / f"sc-{tag}", [c for c in one], win, t_ds=[first_td], **LAT)
         outs.append({k: v for k, v in r["returns"].items()})
     assert outs[0] == outs[1] and any(v["ret"] is not None for v in outs[0].values())
 
@@ -179,4 +182,33 @@ def test_replay_that_differs_from_the_dump_is_refused(tmp_path):
     cards = [json.loads(x) for x in (dump / "cards.jsonl").read_text().splitlines()]
     cards[0]["card_sha"] = "f" * 64
     with pytest.raises(L.Refused, match="differ_from_the_dump"):
-        L.price(tape, tmp_path / "sc", cards, WIN)
+        L.price(tape, tmp_path / "sc", cards, WIN, **LAT)
+
+
+def test_latency_arguments_are_required_and_validated(tmp_path):
+    with pytest.raises(SystemExit):
+        L.main(["--dump", "d", "--ratings", "r", "--manifest-sha", "0" * 64, "--tape", "t", "--scratch", "s", "--out", "o"])
+    with pytest.raises(TypeError):
+        L.price(tmp_path, tmp_path / "s", [], WIN)
+    for bad in ({"feed_delay_slots": -1, "sps": 0.4}, {"feed_delay_slots": 7, "sps": 0.0}, {"feed_delay_slots": True, "sps": 0.4}):
+        with pytest.raises(L.Refused, match="latency_arguments_invalid"):
+            L.price(tmp_path, tmp_path / "s", [], WIN, **bad)
+
+
+def test_out_must_be_under_the_train_root(tmp_path):
+    tape, dump, rd, sha, pin = fixture(tmp_path)
+    lock(rd)
+    try:
+        with pytest.raises(L.Refused, match="out_not_under_root"):
+            L.run_labels(dump, rd, sha, tape, tmp_path / "sc", tmp_path / "out", WIN, pin_path=pin, **LAT)
+    finally:
+        unlock(rd)
+    assert not (tmp_path / "sc").exists()
+
+
+def test_sensitivity_counts_flips():
+    cards = [{"t_d": "h", "card_sha": c} for c in "abc"]
+    mk = lambda *r: {c["card_sha"]: {"ret": v, "censored": None if v is not None else "no_row"} for c, v in zip(cards, r)}  # noqa: E731
+    r = L.sensitivity(mk(0.1, 0.2, 0.3), mk(0.3, 0.2, 0.1), cards)
+    assert r["y_flips"] == 2 and r["compared"] == 2 and r["censoring_changes"] == 0
+    assert L.sensitivity(mk(0.1, 0.2, 0.3), mk(0.1, 0.2, None), cards)["censoring_changes"] == 1
