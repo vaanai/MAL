@@ -32,13 +32,13 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `explored-survivor-unconfirmed` | 10 | 0 | 0 |
 | `parked` | 9 | 2 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 45 | 25 | 1 |
+| `untested` | 45 | 24 | 1 |
 | `desk-read` | 1 | 49 | 0 |
-| `explored-no-survivor` | 42 | 12 | 1 |
+| `explored-no-survivor` | 42 | 14 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 188 | 94 | 2 |
+| **all** | 188 | 95 | 2 |
 
-The file holds 534 rows: the 284 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 535 rows: the 285 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -337,7 +337,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
-| `p67-knn-case-memory` | kNN retrieval of similar past pools with outcomes as few-shot context | `untested` | not run; writes outcomes into prompts (HV7 forbids), leakage risk if memory spans test days, and a plain numeric kNN would be the honest comparator |
+| `p67-knn-case-memory` | kNN retrieval of similar past pools with outcomes as few-shot context | `explored-no-survivor` | The LLM-free numeric comparator is KILLED as a book (mean <= 0 under both fail models); the rank IC and the R / U / S baselines are the deliverable for HV7 and HV8. Still not run: any LLM case-memory ranker (writes outcomes into prompts; HV7 forbids it). |
 
 ### p67-llm-rule-writer (1)
 
@@ -381,11 +381,17 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | --- | --- | --- | --- |
 | `p78-cost-floor-tiers` | Cheapest PumpSwap fee band (market cap >= 98,240 SOL, 0.30% per leg): frozen P72 absorb, P71 copy … | `explored-no-survivor` | P72 absorb KILL (mean -17.91992% flat, 0/28 days); 15-min momentum KILL (-5.69432% flat, 0/28 days); P71 copy KILL under P71's frozen lines 2 and 3 (ex-top-3 -0.01328 SOL flat; ex-best-wallet -0.1347 SOL flat, best wallet 195% of total), although its mean is +0.13175% flat and +0.14068% pressure at 0.1 SOL; retention … |
 
+### p92-haiku-vs (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p92-haiku-vs-knn` | Haiku forced ranking vs numeric kNN on P86 cards (offline, Claude-plan Haiku) | `explored-no-survivor` | Haiku adds nothing over kNN on these cards; ensemble does not beat kNN, so no lead. |
+
 ### p88-knn-c (1)
 
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
-| `p88-knn-c-forward` | KNN-C: cost-gated numeric kNN ranker (P86, k = 25, 10 tape features) as a forward arena paper book | `untested` | not built; needs QP OK on the P86 leakage audit (PR #1043; this lane flags a 00:02-hour memory leak in P86's day < D rule), then builder chunks K0-K3, P0 and a smoke before any clock |
+| `p88-knn-c-forward` | KNN-C: cost-gated numeric kNN ranker (P86, k = 25, 10 tape features) as a forward arena paper book | `untested` | SHELVED / REDESIGN by manager17 on 2026-10-27 after QP CHANGES 6446421063 and reviewer CHANGES 6446421595 on PR #1046: expected gate FAIL with near certainty (the cost gate would need to lift L by about 11-12 pp), and with -100% labels m likely binds at 0, so a stop at the 7.2-a-day P0 kill line is likelier; K1-K5 not … |
 
 ## Dead as frozen, and explored with no survivor
 

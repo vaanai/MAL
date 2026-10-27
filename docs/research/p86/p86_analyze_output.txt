@@ -1,0 +1,65 @@
+candidates 4600 hours 618 | explore (memory start): 2549 cands, 333 hours, 15 days | test: 2051 cands, 285 hours, 13 days
+explore no-fail mean y -0.07939  test no-fail mean y -0.08469
+test memory size min/max: 2549 4517
+
+RANK IC per hour (kNN score vs no-fail 60-min label, test): hours 285  mean 0.27814  t 11.294  day-block t 11.893 (days 13)
+single-feature rank IC per hour (report-only, no selection; sign as computed, + = higher feature, higher label):
+  log_vol60      hours 285  mean -0.20605  t -8.564  day-block t -7.536
+  ret_5m         hours 285  mean +0.12323  t +4.379  day-block t +3.480
+  ret_15m        hours 285  mean +0.09293  t +3.269  day-block t +2.513
+  ret_60m        hours 285  mean +0.09242  t +3.194  day-block t +2.070
+  flow60         hours 285  mean +0.18008  t +7.150  day-block t +5.547
+  log_signers15  hours 285  mean +0.06739  t +2.574  day-block t +2.439
+  log_age        hours 285  mean -0.05465  t -2.048  day-block t -1.934
+  top3_60m       hours 285  mean +0.21765  t +9.896  day-block t +9.397
+  close_vs_hi    hours 285  mean +0.21480  t +8.379  day-block t +7.936
+  log_qeff       hours 285  mean +0.19892  t +8.530  day-block t +9.358
+  vol60          hours 285  mean -0.20605  t -8.564  day-block t -7.536
+
+=== fail model: flat (0.25 SOL, exit lag 2) ===
+  kNN top pick (book a)        n  285 mean/trade -0.002821 SOL (-1.128 pp)  total -0.8040  ex-top3 total -1.3720 mean -1.946 pp  ex-best-day(2026-09-11) total -1.0558 mean -1.618 pp  days+ 7/13  CI90lo(trade) -0.009768  CI90lo(day-block) -0.009347  trades/day 21.92
+  R random pick (seed 1)       n  285 mean/trade -0.019993 SOL (-7.997 pp)  total -5.6981  ex-top3 total -6.7907 mean -9.632 pp  ex-best-day(2026-09-10) total -5.9771 mean -9.160 pp  days+ 1/13  CI90lo(trade) -0.028790  CI90lo(day-block) -0.027863  trades/day 21.92
+  S vol_60m top                n  285 mean/trade -0.045214 SOL (-18.086 pp)  total -12.8861  ex-top3 total -13.5054 mean -19.157 pp  ex-best-day(2026-09-08) total -12.8284 mean -19.660 pp  days+ 0/13  CI90lo(trade) -0.054936  CI90lo(day-block) -0.054485  trades/day 21.92
+  U mean of all candidates     hours 285  mean/hour-trade -0.018734 SOL (-7.493 pp)
+  book - R: +6.869 pp
+  book - U: +6.365 pp
+  book - S: +16.957 pp
+  book - U per-day mean diff: mean +6.892 pp, days>0 10/13
+
+=== fail model: press (0.25 SOL, exit lag 2) ===
+  kNN top pick (book a)        n  285 mean/trade -0.001640 SOL (-0.656 pp)  total -0.4674  ex-top3 total -0.9697 mean -1.375 pp  ex-best-day(2026-09-11) total -0.6862 mean -1.052 pp  days+ 7/13  CI90lo(trade) -0.007363  CI90lo(day-block) -0.006774  trades/day 21.92
+  R random pick (seed 1)       n  285 mean/trade -0.015797 SOL (-6.319 pp)  total -4.5022  ex-top3 total -5.4638 mean -7.750 pp  ex-best-day(2026-09-10) total -4.7299 mean -7.249 pp  days+ 1/13  CI90lo(trade) -0.023088  CI90lo(day-block) -0.022217  trades/day 21.92
+  S vol_60m top                n  285 mean/trade -0.034678 SOL (-13.871 pp)  total -9.8832  ex-top3 total -10.4165 mean -14.775 pp  ex-best-day(2026-09-08) total -9.8517 mean -15.098 pp  days+ 0/13  CI90lo(trade) -0.042231  CI90lo(day-block) -0.042330  trades/day 21.92
+  U mean of all candidates     hours 285  mean/hour-trade -0.014824 SOL (-5.930 pp)
+  book - R: +5.663 pp
+  book - U: +5.274 pp
+  book - S: +13.215 pp
+  book - U per-day mean diff: mean +5.733 pp, days>0 10/13
+
+=== capacity line (book picks repriced at 1.0 SOL, same fail models) ===
+  book @1.0 SOL flat100        n  285 mean/trade -0.010963 SOL (-1.096 pp)  total -3.1243  ex-top3 total -5.3943 mean -1.913 pp  ex-best-day(2026-09-11) total -4.1391 mean -1.586 pp  days+ 7/13  CI90lo(trade) -0.038749  CI90lo(day-block) -0.037056  trades/day 21.92
+  S @1.0 SOL flat100           n  285 mean/trade -0.180496 SOL (-18.050 pp)  total -51.4413  ex-top3 total -53.9160 mean -19.119 pp  ex-best-day(2026-09-08) total -51.2156 mean -19.623 pp  days+ 0/13  CI90lo(trade) -0.219363  CI90lo(day-block) -0.217594  trades/day 21.92
+  book @1.0 SOL press100       n  285 mean/trade -0.006262 SOL (-0.626 pp)  total -1.7847  ex-top3 total -3.7921 mean -1.345 pp  ex-best-day(2026-09-11) total -2.6670 mean -1.022 pp  days+ 7/13  CI90lo(trade) -0.029149  CI90lo(day-block) -0.026797  trades/day 21.92
+  S @1.0 SOL press100          n  285 mean/trade -0.138392 SOL (-13.839 pp)  total -39.4417  ex-top3 total -41.5721 mean -14.742 pp  ex-best-day(2026-09-08) total -39.3204 mean -15.065 pp  days+ 0/13  CI90lo(trade) -0.168588  CI90lo(day-block) -0.168954  trades/day 21.92
+  flat: trades/day 21.92 x 0.25 SOL x net edge -1.128 pp = -0.06184 SOL/day (0.25 SOL stake)
+  press: trades/day 21.92 x 0.25 SOL x net edge -0.656 pp = -0.03595 SOL/day (0.25 SOL stake)
+hours with top kNN score > 0 (variant b count only): 261 of 285
+book picks == S pick: 23 of 285 | mean N per hour 7.2
+
+per-day book total SOL (flat):
+                sum  count
+2026-09-03  0.06850     10
+2026-09-04 -0.65589     24
+2026-09-05  0.23057     24
+2026-09-06 -0.49178     24
+2026-09-07 -0.17315     24
+2026-09-08  0.18341     24
+2026-09-09 -0.18956     24
+2026-09-10 -0.09089     24
+2026-09-11  0.25187     24
+2026-09-12  0.02815     24
+2026-09-13 -0.44961     24
+2026-09-14  0.24282     24
+2026-09-15  0.24161     11
+
+KILL LINE (book mean <= 0 under either model, or book - R < +1 pp or book - U < +1 pp under either model): KILL
