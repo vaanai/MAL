@@ -423,3 +423,74 @@ def test_verify_reads_no_reserve_or_ts_bytes():
             raw[89:121] = b"\xaa" * 32
         ix["data"] = td.b58encode(p98.M.EVENT_CPI_TAG + bytes(raw))
     assert p98.verify_identity(a, "v") == p98.verify_identity(b, "v")
+
+
+# ---- fetch fix: User-Agent and tx version 1 / -32015 retry ----------------------------------------------------
+class _R:
+    def __init__(self, body):
+        self.body = json.dumps(body).encode()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return self.body
+
+
+def _scripted_fetch(responses):
+    now = [10.0]
+    seen = []
+
+    def opener(req, timeout):
+        seen.append((json.loads(req.data)["params"][1]["maxSupportedTransactionVersion"], req.get_header("User-agent"), now[0]))
+        return _R(responses.pop(0))
+
+    def sleep(x):
+        now[0] += x
+
+    return p98.make_rpc_fetch("https://rpc.example.org", clock=lambda: now[0], sleep=sleep, opener=opener), seen
+
+
+HINT = ("Transaction version (2) is not supported by the requesting client. Please try the request again with the following "
+        "configuration parameter: \"maxSupportedTransactionVersion\": 2")
+
+
+def test_user_agent_explicit_and_start_version_one():
+    ok = {"result": {"meta": {"err": None, "logMessages": ["x"], "innerInstructions": []}, "transaction": {"message": {"accountKeys": []}}}}
+    f, seen = _scripted_fetch([ok])
+    assert f("a") is not None
+    assert seen[0][0] == 1 and seen[0][1] == "MAL-p98/1 (+research)" and "curl" not in seen[0][1].lower()
+
+
+def test_32015_retries_once_at_named_version_and_stays_paced():
+    ok = {"result": {"meta": {"err": None, "logMessages": ["x"], "innerInstructions": []}, "transaction": {"message": {"accountKeys": []}}}}
+    f, seen = _scripted_fetch([{"error": {"code": -32015, "message": HINT}}, ok])
+    assert f("a") is not None
+    assert [v for v, _, _ in seen] == [1, 2] and seen[1][2] - seen[0][2] >= 1.0
+
+
+def test_32015_hint_not_followed_above_cap_or_without_code():
+    f, seen = _scripted_fetch([{"error": {"code": -32015, "message": HINT.replace("2", "9")}}] * 3)
+    assert f("a") is None and {v for v, _, _ in seen} == {1}
+    f, seen = _scripted_fetch([{"error": {"code": -32000, "message": HINT}}] * 3)
+    assert f("a") is None and {v for v, _, _ in seen} == {1}
+
+
+def test_version1_shaped_tx_with_loaded_addresses_decodes_cpi_event():
+    # v1 json response: same accountKeys / meta shape as v0; an inner program index may point into loadedAddresses
+    resp = {"result": {"version": 1, "transaction": {"message": {"accountKeys": ["Signer", "Other"], "header": {}, "instructions": [],
+                                                                  "recentBlockhash": "h", "transactionConfig": {}}},
+                       "meta": {"err": None, "logMessages": ["Program log: x"], "loadedAddresses": {"writable": [], "readonly": [PUMP]},
+                                "innerInstructions": [{"index": 0, "instructions": [cpi_ix(raw_event(quote_in=11, base_out=22), pid_idx=2)]}],
+                                "fee": 5, "preBalances": [1], "postBalances": [1], "preTokenBalances": [], "postTokenBalances": [],
+                                "computeUnitsConsumed": 1, "costUnits": 1, "rewards": [], "status": {"Ok": None}}}}
+    tx = p98.tx_from_response(resp)
+    c = p98.classify_tx(tx)
+    assert c["cls"] == "synthetic" and c["quote_in"] == 11 and c["base_out"] == 22
+    assert set(tx["meta"]) == {"err", "logMessages", "innerInstructions", "loadedAddresses"}
+    # without loadedAddresses the program index cannot be resolved: unclassified, never normal
+    resp["result"]["meta"]["loadedAddresses"] = None
+    assert p98.classify_tx(p98.tx_from_response(resp))["why"] == "inner_program_unresolved"
