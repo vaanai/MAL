@@ -1106,7 +1106,8 @@ def fetch_snapshot(rpc: Callable[[str, list], dict], pool: str, commitment: str,
         p = tx.parse_pool_account(pdata)
     except ValueError:
         return "no_pool"
-    cfg = static.get(now_ms) if static is not None else None
+    mayhem = tx.pool_is_mayhem(pdata)
+    cfg = static.get(now_ms) if static is not None and not mayhem else None  # a mayhem pool needs the raw global config bytes: bypass the parsed cache
     keys = [str(p["base_mint"]), str(p["base_vault"]), str(p["quote_vault"])]
     if cfg is None:
         keys.insert(0, str(tx.GLOBAL_CONFIG))
@@ -1116,14 +1117,19 @@ def fetch_snapshot(rpc: Callable[[str, list], dict], pool: str, commitment: str,
     mint, bv, qv = vals
     if not (gc and mint and bv and qv):
         return "missing_accounts"
+    gcb = None
     if cfg is None:
-        cfg = tx.parse_global_config(sim._b64(multi["value"][0]))
+        gcb = sim._b64(multi["value"][0])
+        cfg = tx.parse_global_config(gcb)
         if static is not None:
             static.put(cfg, now_ms)
-    recips = [r for r in cfg["protocol_fee_recipients"] if r != user]
+    try:
+        fee_to = tx.fee_recipient(gcb if gcb is not None else cfg, pdata, user)
+    except ValueError as e:
+        return f"mayhem_refused:{e}"
     ps = tx.pool_state_from_accounts(
         pk, pdata, base_token_program=Pubkey.from_string(mint["owner"]),
-        protocol_fee_recipient=recips[1] if len(recips) > 1 else recips[0],
+        protocol_fee_recipient=fee_to,
         buyback_fee_recipient=cfg["buyback_fee_recipients"][0],
     )
     v = p.get("virtual_quote_reserves")

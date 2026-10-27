@@ -47,3 +47,8 @@ KILL if every rule has mean net <= 0 under at least one fail model in the cheape
 ## Seals
 
 Aug/Sep exploration clean views only; no HV4/Q50 output or job, no DBC window, no meta-capture, no arena tape, no October hour; EXP-024 Look-2 seal, FLOOR G1, LaunchLab holdout and D1 untouched. Reads of the clean views print counts and hashes only until this file is pushed.
+
+## Notes added after the fact (2026-10-27, no rule or threshold changed)
+
+- QP and reviewer on PR #1041 ruled that P71's own frozen kill lines (docs/research/p71/PREREG.md lines 2 and 3) govern the P71 verdict, so P71 in B7 is KILL, not LEAD. The mean-only line above is looser and is kept as written.
+- The B7 band proved to be mostly quiet or pegged pools (see REPORT composition section); the tier choice rule above was applied as written.

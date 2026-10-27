@@ -1,0 +1,3 @@
+Running as unit: run-rdf987c432030426aa0938b01b9ba468a.scope; invocation ID: 934ee4d490fd4deba361d7210a1e73b2
+fit intercept -2.3239321112613753 mean p 0.28900000000000003
+{'mints': 30631, 'not_observed': 7888, 'completed_before_entry': 4603, 'buy_refused': 0, 'q0_path': 791, 'censored': 0, 'cap_hit': 154, 'no_ps': 1}

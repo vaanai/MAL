@@ -22,7 +22,7 @@ B7 tradeable pool-hours, price down >= 8% over >= 15 min, net buy flow > 0 over 
 | days positive | 11/26 (no majority) | 13/26 (no majority) |
 | CI90 lower bound (%) | -0.78277 | -0.65536 |
 
-Median trade +1.78167% (flat), mean negative: many small wins at the +6% target (193 tp), 134 stops, 114 timers (39 censored by the retention cut, which flatters). Tail share (flat loss > 50%): 0.00454 (2 trades). The 15% deep-tail of P78-M is absent because of the -8% stop.
+Median trade +1.78167% (flat), mean negative: many small wins at the +6% target (193 tp), 134 stops, 114 timers (39 truncated by the retention cut; such exits flatter the result on average, not in every case). Tail share (flat loss > 50%): 0.00454 (2 trades). The 15% deep-tail of P78-M is absent because of the -8% stop.
 Capacity: 0.25 SOL: 15.75 x 0.25 x -0.43635% = -0.01718 SOL/day. 1 SOL (same entries, own impact at 1 SOL): mean -0.40564% flat / -0.34016% pressure, capacity -0.06389 SOL/day.
 
 ## Per block
@@ -34,6 +34,6 @@ Capacity: 0.25 SOL: 15.75 x 0.25 x -0.43635% = -0.01718 SOL/day. 1 SOL (same ent
 1 SOL per block and the CI90s are in `p87_price_output.txt`. Every block is negative under both models.
 
 ## Verdict
-KILL by the frozen line: mean <= 0 under both fail models, pooled and in every block. (Trades/day 15.75 clears the 5/day line; the top-3 line is moot since the total is negative anyway.) A rule with a median trade of +1.8% and a negative mean is the pattern of stop/target asymmetry plus fees (0.6% floor) and lag: +6%/-8% with 44% target hits is not enough. Not measured: other thresholds (deliberately no grid), the sub-9,820 SOL tape (positions censored at the retention cut are flattered, so the true result is no better), any block outside Aug/Sep exploration. Run note: priced under a 16 GB scope (8 GB was OOM-killed on the big days), single process.
+KILL by the frozen line: mean <= 0 under both fail models, pooled and in every block. (Trades/day 15.75 clears the 5/day line; the top-3 line is moot since the total is negative anyway.) A rule with a median trade of +1.8% and a negative mean is the pattern of stop/target asymmetry plus fees (0.6% floor) and lag: +6%/-8% with 44% target hits is not enough. Not measured: other thresholds (deliberately no grid), the sub-9,820 SOL tape (positions censored at the retention cut are flattered on average). QP's bounds on the pooled no-fail mean for the 39 truncated timer exits: -9.35% if all 39 are at -100%; -1.22% if all 39 are at the stop; +0.02% if all 39 hit the target (not credible). The KILL holds on any realistic bound. Also not measured: any block outside Aug/Sep exploration. Run note: priced under a 16 GB scope (8 GB was OOM-killed on the big days), single process.
 
 Seals: only the three exploration clean views' slim rows (P78) were read. No October hour, arena, DBC, LaunchLab, FLOOR G1, meta-capture, HV4/HV6/HV7/Q50.

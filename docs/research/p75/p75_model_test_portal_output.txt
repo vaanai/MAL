@@ -1,0 +1,50 @@
+priced entries by block: {'explore-0814': 12529, 'fresh-0903': 2580, 'exp011-0909': 2014}  days: {'exp011-0909': 7, 'explore-0814': 15, 'fresh-0903': 7}
+age_min missing share by block: {'exp011-0909': 0.013902681231380337, 'explore-0814': 0.050203527815468114, 'fresh-0903': 0.027131782945736434}
+label y base rate by block: {'exp011-0909': 0.34309831181727907, 'explore-0814': 0.38031766302178943, 'fresh-0903': 0.34108527131782945}
+weights (intercept, then standardised ['vel60', 'vel300', 'buyers300', 'flow300', 'age_min'] ): [-0.5075, 0.0489, -0.0391, -0.2626, 0.3211, 0.0041]
+AUC train explore-0814: 0.6023
+AUC fresh-0903: 0.6031
+CUTOFF (fresh-0903 90th pct of scores): 0.4797386738824719
+
+=== fresh-0903 ALL (unselected): trades 2580, days 7, trades/day 368.57
+exit kinds: {'stop': 1823, 'a99': 409, 'migration': 238, 'time': 103, 'sell_reverts': 7}  impact mean 0.3191%
+[flat] mean/trade -0.016567 SOL (-6.627%) total -42.7441 ex-top3 -43.7647 ex-best-day -40.9309 (best 2026-09-03) positive days 0/7 CI90lo -0.020381
+     capacity 0.25: 368.57/day x 0.25 x -0.06627 = -6.10630 SOL/day
+[press] mean/trade -0.015043 SOL (-6.017%) total -38.8114 ex-top3 -39.7600 ex-best-day -37.7453 (best 2026-09-03) positive days 0/7 CI90lo -0.018537
+     capacity 0.25: 368.57/day x 0.25 x -0.06017 = -5.54449 SOL/day
+[flat100] 1 SOL: n 2575 mean/trade -0.068968 SOL (-6.897%) total -177.5930  capacity -25.37042 SOL/day
+[press100] 1 SOL: n 2575 mean/trade -0.062499 SOL (-6.250%) total -160.9349  capacity -22.99071 SOL/day
+migration share 0.0922
+
+=== fresh-0903 top10% (cutoff set here): trades 258, days 7, trades/day 36.86
+exit kinds: {'stop': 113, 'a99': 93, 'migration': 47, 'time': 3, 'sell_reverts': 2}  impact mean 0.2696%
+[flat] mean/trade -0.014767 SOL (-5.907%) total -3.8100 ex-top3 -4.4639 ex-best-day -4.0141 (best 2026-09-04) positive days 1/7 CI90lo -0.026202
+     capacity 0.25: 36.86/day x 0.25 x -0.05907 = -0.54428 SOL/day
+[press] mean/trade -0.009575 SOL (-3.830%) total -2.4704 ex-top3 -3.1049 ex-best-day -2.8187 (best 2026-09-04) positive days 1/7 CI90lo -0.019160
+     capacity 0.25: 36.86/day x 0.25 x -0.03830 = -0.35291 SOL/day
+[flat100] 1 SOL: n 256 mean/trade -0.063173 SOL (-6.317%) total -16.1723  capacity -2.31032 SOL/day
+[press100] 1 SOL: n 256 mean/trade -0.041318 SOL (-4.132%) total -10.5774  capacity -1.51105 SOL/day
+migration share 0.1822
+
+AUC exp011-0909 TEST: 0.6196
+
+=== exp011-0909 ALL (unselected): trades 2014, days 7, trades/day 287.71
+exit kinds: {'stop': 1425, 'a99': 330, 'migration': 156, 'time': 102, 'sell_reverts': 1}  impact mean 0.2979%
+[flat] mean/trade -0.016182 SOL (-6.473%) total -32.5899 ex-top3 -35.2437 ex-best-day -30.4595 (best 2026-09-14) positive days 0/7 CI90lo -0.020745
+     capacity 0.25: 287.71/day x 0.25 x -0.06473 = -4.65570 SOL/day
+[press] mean/trade -0.014609 SOL (-5.844%) total -29.4233 ex-top3 -31.3557 ex-best-day -27.5520 (best 2026-09-13) positive days 0/7 CI90lo -0.018581
+     capacity 0.25: 287.71/day x 0.25 x -0.05844 = -4.20333 SOL/day
+[flat100] 1 SOL: n 2011 mean/trade -0.067450 SOL (-6.745%) total -135.6426  capacity -19.37751 SOL/day
+[press100] 1 SOL: n 2011 mean/trade -0.060769 SOL (-6.077%) total -122.2073  capacity -17.45818 SOL/day
+migration share 0.0775
+
+=== exp011-0909 TEST top (score >= fresh cutoff): trades 210, days 7, trades/day 30.00
+exit kinds: {'stop': 94, 'a99': 71, 'migration': 40, 'time': 5}  impact mean 0.2716%
+[flat] mean/trade -0.004888 SOL (-1.955%) total -1.0265 ex-top3 -1.8936 ex-best-day -1.7267 (best 2026-09-10) positive days 2/7 CI90lo -0.019090
+     capacity 0.25: 30.00/day x 0.25 x -0.01955 = -0.14664 SOL/day
+[press] mean/trade -0.001693 SOL (-0.677%) total -0.3555 ex-top3 -1.0821 ex-best-day -1.1865 (best 2026-09-10) positive days 4/7 CI90lo -0.014406
+     capacity 0.25: 30.00/day x 0.25 x -0.00677 = -0.05078 SOL/day
+[flat100] 1 SOL: n 207 mean/trade -0.024317 SOL (-2.432%) total -5.0336  capacity -0.71908 SOL/day
+[press100] 1 SOL: n 207 mean/trade -0.010200 SOL (-1.020%) total -2.1114  capacity -0.30162 SOL/day
+migration share 0.1905
+share of exp011 selected: 0.10427010923535253
