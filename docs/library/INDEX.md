@@ -32,13 +32,13 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `explored-survivor-unconfirmed` | 10 | 0 | 0 |
 | `parked` | 9 | 2 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 43 | 24 | 1 |
+| `untested` | 45 | 24 | 1 |
 | `desk-read` | 1 | 49 | 0 |
-| `explored-no-survivor` | 41 | 9 | 1 |
+| `explored-no-survivor` | 42 | 9 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 185 | 90 | 2 |
+| **all** | 188 | 90 | 2 |
 
-The file holds 527 rows: the 277 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 530 rows: the 280 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -129,6 +129,8 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `p25-quote-drift-completion` | Custom-pair curves whose SOL cost to complete falls with their quote asset | P25 change-capture (2026-10-24) | Counts on fast [09-09T12, 09-15T12) with public external quote prices; pump-coin parents only via the oct-pregrad-d1 role and only while the parent is on its curve (graduated-parent prices are D2/D3, sealed); 0 Helius. |
 | `p25-t22-fee-epoch-clock` | Token-2022 transfer-fee cut public epochs before it binds (DBC transfer-fee mints) | P25 change-capture (2026-10-24) | Public getMultipleAccounts / getSignaturesForAddress on the 42 configs' mints (0 Helius); priced looks only on DBC [10-17, 10-24) as disclosed exploration with QP's OK (not D1); nothing >= 2026-10-25T00Z for DBC/DAMM before the m10 read; a forward recorder after 2026-11-01T00:10Z. |
 | `p25-prestock-quote-band` | PreStock quote-leg dislocation against an external anchor | P25 change-capture (2026-10-24) | Owner's say first; then public mint/pool lists and anchor prices (GeckoTerminal), one declared day of forward gap logging; 0 Helius; any pump-side book is arena-only. |
+| `p81-cashback-floor` | CASHBACK-FLOOR: re-cost frozen H5 trades on cashback coins (creator leg refunded to the … | P81 cost-floor receipts (2026-10-27) | Step 0: getMultipleAccounts over distinct H5 pools (about 20 calls of 100) for is_cashback_coin; 20-tx getTransaction check that cashback_fee_basis_points is paid on PumpSwap sells; then one repricing with the P55 code. |
+| `p81-holder-carry` | HOLDER-CARRY: multi-day hold of high-turnover holder-rewards coins paid the creator fee | P81 cost-floor receipts (2026-10-27) | Count holder-reward coins created 09-12..09-25 by BondingCurve flag; sample holder payout via getSignaturesForAddress; report drift alone first. |
 
 ## Owner ideas
 
@@ -484,6 +486,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `p20-dbc-start-floor` | DBC curve start-price floor option (buy pools back near sqrt_start_price, tp +50%) | `explored-no-survivor` | P21 exploration screen (E1 10-14..16 + E2 10-17..23 as disclosed exploration; m 26->32): 4 cells (band 1.02/1.05 x cap 6 h/24 h, prior peak >= 2x start, age >= 30 min, tp +50%) all FAIL. Primary d7_s105_h6: n 150, 1/10 days positive, flat -0.0070 (CI90 lo -0.0083, ex-top-3 -1.20), pressure -0.0058 (CI90 lo -0.0070). 97-100% of trips end at the time cap (dead pools, as … |
 | `p20-dbc-fee-floor-clock` | DBC/DAMM v2 anti-sniper fee-expiry clock: pre-signed buy landing at the fee-scheduler or … | `explored-no-survivor` | P21 exploration screen (E1 + E2 disclosed exploration; m 26->32): config fee schedule decoded and validated (non-dynamic configs 92-95% of tape fees within 1 bp); 634 of 7,399 configs have a schedule (modes linear/exponential; no rate limiter in candidates). 2 cells, time exit 60 s / 300 s, landing expiry + 2 slots: both FAIL. Primary d9_t60: n 123, 2/10 days positive, flat … |
 | `p20-wick-bid-zero-latency` | Resting-bid wick capture: one-sided bid liquidity filled at the dump print's own price … | `explored-no-survivor` | Latency-0 upper bound DEAD (P22, 2026-10-24, declared rule): entering at the sell's post-trade state on dump-absorb D8/D15 triggers, exploration blocks explore-0814/fresh-0903/exp011-0909 (28 days), pooled net of 25 bps and 505k-lamport sends, flat 15%: D8-300 mean -0.0208 SOL/trade at 0.1 SOL (n 336,648, CI90 lo -0.0210, 0 of 28 days positive), D15-300 -0.0316 (n 87,282). … |
+| `p81-volume-accrual` | VOLUME-ACCRUAL: pump's own PUMP-token volume incentive (claim_token_incentives) against … | `explored-no-survivor` | P83 2026-10-27T14:16Z: INACTIVE. Public getAccountInfo of both GlobalVolumeAccumulator PDAs (pump Hq2wp8uJ9jCPsYgNHex8RtqdvMPfVGoYwjvF1ATiwn2Y, AMM C2aFPdENg4A2HQsmrd5rTw5TaYBX5Ku887cWjbFKtZpw): initialised, all zeros (mint = system program, total_token_supply[30] and sol_volumes[30] all 0). Reward per SOL 0 against a round-trip floor of about 70 bps (0.60% fees + 0.10% … |
 
 ## Duplicate rows
 
