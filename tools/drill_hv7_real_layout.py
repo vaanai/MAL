@@ -14,12 +14,19 @@ THREE RUNS, each in its OWN process (own heap, own peak RSS):
   real-c  PYTHONHASHSEED=<other>, slow path           ("any fast path off"). hv7_runner has NO fast path (it never passes the candle series to hv6_cards.scan; the
           HV6 fast_scan switch does not exist in it, and a test pins that), so there is nothing to switch off; run 3 instead varies the string-hash seed,
           which exposes any decision that depends on set/dict-of-string iteration order.
-PASS iff md5_equal (run1 == run2 == run3 on the decision-log md5 and on the cards md5, and the entry counts) AND periods_ge3 > 0 (not a vacuous pass) AND
+PASS iff md5_equal (run1 == run2 == run3 on the decision-log md5 and on the cards md5, and the entry counts) AND, in EACH of the three runs, the stub invariants
+hold (hook_errors == 0; leakage_refused, model_exception, ledger_unreadable, cost_mismatch and late_reply all 0; fallbacks == 0; entries L == R == S ==
+periods_ge3 and U >= periods_ge3; periods_ge3 > 0, so not a vacuous pass) AND
 peak_rss_mb (max of the three processes) < rss_cap_mb AND the per-period loop time is OK: p95 of (tick at t_d + tick at t_e), runs 1 and 2, < PERIOD_P95_CAP_MS,
 AND the p95 of every one-second tick < TICK_P95_CAP_MS. Run 3's timing is printed, never tested. The caps were written down before any run.
 
 PRINTS ONLY: md5s, counts (periods, periods with >= 3 screened candidates, entries per arm, fallbacks, exclusions, counters), peak RSS, timings.
-Never a pool, mint, signature, price, P&L or per-pool row. The engine ledger sits in the drill root and is never read by a person. Pre-clock structure, not
+Never a pool, mint, signature, price, P&L or per-pool row.
+
+DISCLOSURES. (1) Run 3 is NOT a fast-path-off run (hv7_runner has none). It changes PYTHONHASHSEED, which only reorders iteration of sets of str (dict order
+does not depend on the seed), so it is a weak stand-in; the stronger third leg is the E1 restart/resume replay (tools/test_hv7_resume.py, hv7-e1-drill.sh).
+(2) DESIGN's "two seed-1 replays" meant two replays with the same seed; the code uses PYTHONHASHSEED=0 for runs 1 and 2, not 1. (3) The card md5 equivalence with
+HV6 (DESIGN C3) is a separate tool: tools/hv7_card_equiv.py. The engine ledger sits in the drill root and is never read by a person. Pre-clock structure, not
 evidence. No outcome, exit or P&L is printed; sell/close counts are not printed either.
 """
 from __future__ import annotations
@@ -51,7 +58,7 @@ from tools import hv7_runner as R  # noqa: E402
 from tools.arena_paper import ArenaEngine, register_bot  # noqa: E402
 from tools.arena_state import ArenaState  # noqa: E402
 from tools.drill_hv6_item6 import FakeChain, cards_md5, log_md5, md5_bytes, out  # noqa: E402,F401
-from tools.drill_hv6_real_layout import day_ms, hour_scan, pct, seal_read_only  # noqa: E402
+from tools.drill_hv6_real_layout import HOUR_RE, day_ms, pct, seal_read_only  # noqa: E402
 
 REAL_TAPE = H.TAPE_ROOT
 ALLOWED_DAYS = ("2026-10-21", "2026-10-22", "2026-10-23")   # pre-clock days only; nothing else is ever opened
@@ -64,8 +71,14 @@ PERIOD_P95_CAP_MS = 15_000.0     # tick at t_d (screen + cards) plus tick at t_e
 TICK_P95_CAP_MS = 1_000.0        # every one-second tick must be able to keep up with the clock
 FEED_DELAY_SLOTS = 2
 HASHSEEDS = {"real-a": "0", "real-b": "0", "real-c": "1234567"}
+FAULT_COUNTERS = ("leakage_refused", "model_exception", "ledger_unreadable", "cost_mismatch", "late_reply")
+# Counters that may be printed: screen and card keys only. sell_refused, shutdown_in_flight, restart_after_t_e and anything else are never printed.
+PRINT_COUNTERS = frozenset(FAULT_COUNTERS) | {"card_refused", "chain_none", "call_cut_off"}
+PRINT_COUNTER_PREFIXES = ("card_refused:", "phantom_drop_")
 RUNS = tuple(HASHSEEDS)
-PASS_RULE = ("PASS iff md5_equal (decision-log md5 and cards md5 of run1 == run2 == run3, and equal entry counts) AND periods_ge3 > 0 AND peak_rss_mb (max of the three "
+PASS_RULE = ("PASS iff md5_equal (decision-log md5 and cards md5 of run1 == run2 == run3, and equal entry counts) AND in each run: hook_errors == 0, leakage_refused / "
+             "model_exception / ledger_unreadable / cost_mismatch / late_reply == 0, fallbacks == 0, entries L == R == S == periods_ge3 and U >= periods_ge3, periods_ge3 > 0 "
+             "AND peak_rss_mb (max of the three "
              "processes) < rss_cap_mb AND period_ms_p95 (max of runs 1 and 2; tick at t_d + tick at t_e) < 15000 AND tick_ms_p95 (max of runs 1 and 2) < 1000; run 3 "
              "(other PYTHONHASHSEED; hv7_runner has no fast path to switch off) is tested for md5 only, its timing is report-only")
 
@@ -93,6 +106,19 @@ def is_drill_root(path: str | os.PathLike) -> bool:
     real = os.path.realpath(path)
     drill = os.path.realpath(DRILL_ROOT)
     return real.startswith(drill + os.sep)
+
+
+def hour_scan(src: Path, days: list[str]) -> dict:
+    """Names only (a directory listing): which hour files of the chosen days exist. No file is opened. The cutoff is HV7's END_EXCLUSIVE."""
+    want, present = set(days), set()
+    for p in sorted(src.iterdir()):
+        m = HOUR_RE.fullmatch(p.name)
+        if m and m.group(1) in want:
+            key = f"{m.group(1)}T{m.group(2)}"
+            if key >= END_EXCLUSIVE:
+                raise Refused("hour_at_or_after_cutoff")
+            present.add(key)
+    return {"hours_present": len(present), "hours_expected": 24 * len(days), "hours_missing": 24 * len(days) - len(present)}
 
 
 def script(req: Any) -> str:
@@ -126,12 +152,12 @@ def summarize(run: R.Hv7Runner) -> dict:
             "periods_no_trade": sum(1 for r in per if r.get("no_trade")),
             "periods_with_ge3_raw_candidates": sum(1 for r in per if int(r.get("n_candidates", 0)) >= RK.N_MIN),
             "entries": {a: sum(1 for r in run.log.rows(a) if r.get("kind") == "entry") for a in R.ARM_ORDER},
-            "order_refused": sum(1 for a in R.ARM_ORDER for r in run.log.rows(a) if r.get("kind") == "order_refused"),
+            "order_refused": sum(1 for a in R.ARM_ORDER for r in run.log.rows(a) if r.get("kind") == "order_refused" and r.get("side") == "buy"),     # buy side only
             "rank_rows": sum(1 for r in ranks if not r.get("excluded")),
             "fallbacks": sum(1 for r in ranks if r.get("fallback") is True and not r.get("excluded")),
             "exclusions": sum(1 for r in scan if r.get("kind") == "period_excluded"),
             "gaps": sum(1 for r in scan if r.get("kind") == "gap"),
-            "counters": dict(sorted(run.counters.items())), "hook_errors": len(run.hook_errors)}
+            "counters": {k: v for k, v in sorted(run.counters.items()) if k in PRINT_COUNTERS or k.startswith(PRINT_COUNTER_PREFIXES)}, "hook_errors": len(run.hook_errors)}
 
 
 def one_run(base: Path, tag: str, sha: str, days: list[str], tape: Path, *, start_ms: int | None = None, end_ms: int | None = None) -> dict:
@@ -200,15 +226,30 @@ def _isolated_run(tag: str, days: list[str], drill_id: str, sha: str, base: Path
     return res
 
 
+def invariants(x: dict) -> list[str]:
+    """Names of the stub invariants a run breaks (empty = clean). Under the StubModel nothing may fall back, fault or be refused as a leak."""
+    bad = []
+    if x.get("hook_errors") != 0:
+        bad.append("hook_errors")
+    bad += [k for k in FAULT_COUNTERS if x.get("counters", {}).get(k, 0) != 0]
+    if x.get("fallbacks") != 0:
+        bad.append("fallbacks")
+    e, n = x.get("entries", {}), x.get("periods_ge3", 0)
+    if not (n > 0 and e.get("L") == e.get("R") == e.get("S") == n and e.get("U", 0) >= n):
+        bad.append("entries")
+    return bad
+
+
 def verdict(a: dict, b: dict, c: dict, rss_mb: float, rss_cap_mb: float) -> dict:
     equal12 = a["log_md5"] == b["log_md5"] and a["cards_md5"] == b["cards_md5"] and a["entries"] == b["entries"]
     equal3 = c["log_md5"] == a["log_md5"] and c["cards_md5"] == a["cards_md5"] and c["entries"] == a["entries"]
     period_p95 = max(a["period_ms_p95"], b["period_ms_p95"])
     tick_p95 = max(a["tick_ms_p95"], b["tick_ms_p95"])
     non_vacuous = a["periods_ge3"] > 0
-    ok = equal12 and equal3 and non_vacuous and rss_mb < rss_cap_mb and period_p95 < PERIOD_P95_CAP_MS and tick_p95 < TICK_P95_CAP_MS
+    broken = {t: invariants(x) for t, x in (("run1", a), ("run2", b), ("run3", c)) if invariants(x)}
+    ok = equal12 and equal3 and non_vacuous and not broken and rss_mb < rss_cap_mb and period_p95 < PERIOD_P95_CAP_MS and tick_p95 < TICK_P95_CAP_MS
     return {"result": "PASS" if ok else "FAIL", "pass_rule": PASS_RULE, "md5_equal": equal12 and equal3, "md5_equal_run1_run2": equal12, "md5_equal_run3_other_hashseed": equal3,
-            "non_vacuous": non_vacuous, "rss_ok": rss_mb < rss_cap_mb, "period_p95_ok": period_p95 < PERIOD_P95_CAP_MS, "tick_p95_ok": tick_p95 < TICK_P95_CAP_MS,
+            "non_vacuous": non_vacuous, "invariants_ok": not broken, "invariants_broken": broken, "rss_ok": rss_mb < rss_cap_mb, "period_p95_ok": period_p95 < PERIOD_P95_CAP_MS, "tick_p95_ok": tick_p95 < TICK_P95_CAP_MS,
             "period_ms_p95": period_p95, "tick_ms_p95": tick_p95, "peak_rss_mb": rss_mb, "rss_cap_mb": rss_cap_mb}
 
 

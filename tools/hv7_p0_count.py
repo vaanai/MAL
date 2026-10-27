@@ -11,8 +11,9 @@ raw candidates >= 3 (before the vol/card/impact steps). Totals, mean per day, mi
   hourly_mean_lt_10_7        -> DESIGN: below 10.7/day the registration switches to 30-min periods
   hourly_any_day_lt_5        -> kill line: any P0 day under 5 attempts
   chosen_period / chosen_mean / chosen_min_day / chosen_meets_10 / chosen_any_day_lt_5   (chosen = hourly unless hourly_mean_lt_10_7, else 30-min)
-Pools created before the first day are unknown to the pass (the loader starts at 2026-10-21T00Z), so the first hours of the first day undercount: the mean
-excluding the first day is printed too.
+Pools created before the first day are unknown to the pass (the loader starts at 2026-10-21T00Z), so the first hours of the first day undercount. Declared BEFORE
+the count: the FULL-day mean (all days, first day included; conservative, it biases toward the 30-min switch and the kill line) decides; hourly_mean_excl_first_day
+is report-only. DESIGN names tools/hv7_count.py for the B/E1 decision-timestamp count and slot histogram; that is not in this tool.
 """
 from __future__ import annotations
 
@@ -37,7 +38,7 @@ from tools import hv7_rank as RK  # noqa: E402
 from tools import hv7_runner as R  # noqa: E402
 from tools.arena_state import ArenaState  # noqa: E402
 from tools.drill_hv6_item6 import FakeChain  # noqa: E402
-from tools.drill_hv7_real_layout import ALLOWED_DAYS, DRILL_ROOT, END_EXCLUSIVE, ID_RE, Refused, day_ms, hour_scan, parse_days  # noqa: E402
+from tools.drill_hv7_real_layout import ALLOWED_DAYS, DRILL_ROOT, END_EXCLUSIVE, ID_RE, Refused, day_ms, hour_scan, is_drill_root, parse_days  # noqa: E402
 
 REAL_TAPE = H.TAPE_ROOT
 HALF_MS = R.HOUR_MS // 2
@@ -119,6 +120,8 @@ def run_p0(days: list[str], drill_id: str, *, tape_dir: str | None = None, root:
     if not ID_RE.fullmatch(drill_id):
         raise Refused("drill_id")
     root = Path(root) if root is not None else DRILL_ROOT / drill_id
+    if not is_drill_root(root):
+        raise Refused("not_a_drill_root")
     R.check_path(root / "x", "w")
     root.mkdir(parents=True, exist_ok=True)
     info = hour_scan(Path(tape_dir), days)
