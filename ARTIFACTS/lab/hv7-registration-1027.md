@@ -345,8 +345,15 @@ author) and after HV6's rehearsal counts; neither carries an outcome.
 | P0 entry-rate count | #1711, rule n_iFuATT5Ci0AsKw | mean 23.33 periods/day with >= 3 candidates; minimum 22 |
 | RESULT_EQUIV_1D | jobs #1739 and #1743, plan n_SJvHB7-DU2QY9w | OPEN |
 | RESULT_F_3D | job #1744 | OPEN |
-| RESULT_E1 | `scripts/ops/hv7-e1-drill.sh` at `HV7_FINAL_SHA` | OPEN |
-| Offline rehearsal | n_jDI1FRScLVaBEA | PASS: 140/140 valid, slot-1 share 0.1214, A/B agreement 0.70 against a bar of 0.2080 |
+| RESULT_E1 | `scripts/ops/hv7-e1-drill.sh`, job #1749, notebook n_c2uZR1cPRF8I7A | PASS. Job #1749, `sh scripts/ops/hv7-e1-drill.sh` at 687c77c64a777b91aba2514744287304ae1969ac, 62 tests, 0 API calls. A resume/restart drill, not a production-halt drill (section 3c). Valid only if `HV7_FINAL_SHA` = `687c77c6`; otherwise re-run at the final sha |
+| RESULT_UNIT | unit tests at `HV7_FINAL_SHA` (Am.6 item 1.2) | OPEN (MANAGER) |
+| RESULT_SMOKE | real-model smoke of at least 2 h (section 3d) | OPEN (MANAGER) |
+| C2 pricing independence, one pool, one instant, all bots (every leg, both fail models, all stakes) | `tools/test_hv7_runner.py::test_pricing_independence_one_pool_one_instant_all_bots` | test exists at 687c77c6; green run at the final sha is `RESULT_UNIT` |
+| C2 pricing independence inside the loop | `tools/test_hv7_runner.py::test_pricing_independence_inside_the_loop` | as above |
+| C2 U holds all N open positions (8), one entry per arm at `t_e` | `tools/test_hv7_runner.py::test_one_entry_per_arm_at_t_e_and_u_holds_all_n` | as above |
+| C2 1.9 s leg mapping from `t_e` (landing slot = corrected slot + `engine._k(1.9, 0.4)`, same for every bot, decision instant `t_e`) | `tools/test_hv7_runner.py::test_pricing_independence_one_pool_one_instant_all_bots` (the 1.9 s leg assertions) | as above; DESIGN section 4 says the registration states it, and this row is that statement |
+| Offline rehearsal, run 2 (of record) | n_jDI1FRScLVaBEA; `/data2/mal/hv7-rehearsal/run2-judged/` | PASS (`tools.hv7_rehearsal_validate`): 70 sets, 140 calls (not 72/144), valid 140/140 (needed 133), slot-1 share 0.12142857142857143 (bar 0.25), every other slot ok, A/B top-1 agreement 0.7 over 70 sets (bar 0.20800978857941996), chi-square 5.828571428571429 (report only), `content_driven_report_only` true (report-only), `outcome_free` true. Manifest sha256 `547fb525ff5a8fce8bc1f3f7bb2fabb7760785bdaa4d439cb0f53e7cf4d92c9e` |
+| Offline rehearsal, run 1 | `/data2/mal/hv7-rehearsal/run1-4c69462c/` | **VOID** (section 7) |
 | HV7_FINAL_SHA | | OPEN |
 
 Rehearsal caveats: the subagent calls were not independent, and the agents mistyped ids and self-corrected in 5 of 28 groups. The rehearsal measures parse, position bias and A/B agreement under random display order. It is not a skill test (no outcome is joined). The bar is a kill-only floor (DESIGN section 7).
