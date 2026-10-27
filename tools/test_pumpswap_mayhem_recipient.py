@@ -42,7 +42,7 @@ class MayhemFixtures(unittest.TestCase):
         self.assertEqual(len(set(res)), 8)
         cfg = tx.parse_global_config(GC)
         self.assertFalse(set(res) & set(cfg["protocol_fee_recipients"]))  # disjoint sets: a protocol recipient is never valid on a mayhem pool
-        self.assertEqual(str(cfg["buyback_fee_recipients"][0]), "9M4giFFMxmFGXtc3feFzRai56WbBqehoSeRE5GK7gf7")  # offset 675 still holds (IDL order shifted by one pubkey)
+        self.assertEqual(str(cfg["buyback_fee_recipients"][0]), "9M4giFFMxmFGXtc3feFzRai56WbBqehoSeRE5GK7gf7")  # offset 675 is IDL buyback_fee_recipients[1] (the array starts at 643); parse_global_config reads from 675 and only [0] is used
 
 
 import base64  # noqa: E402
