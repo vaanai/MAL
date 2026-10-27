@@ -25,6 +25,26 @@ class N4Test(unittest.TestCase):
         self.assertFalse(r["ok"])
         self.assertTrue(r["refusal"].startswith("s0_not_september"))
 
+    def test_cross_check(self):
+        s0 = n4.parse_utc("2026-09-12T03:00:00Z"); ts = int(s0.timestamp())
+        tape = n4.TAPE_SOURCE
+        self.assertEqual(n4.s0_cross_check(s0, "rpc-oldest-signature", None, 5, False), "walk_capped_needs_tape_source_with_migration_slot")
+        self.assertEqual(n4.s0_cross_check(s0, tape, None, 5, False), "walk_capped_needs_tape_source_with_migration_slot")
+        self.assertIsNone(n4.s0_cross_check(s0, tape, 123456, 5, False))
+        self.assertIsNone(n4.s0_cross_check(s0, "rpc-oldest-signature", None, ts + 100, True))
+        self.assertTrue(n4.s0_cross_check(s0, tape, 1, ts + 121, True).startswith("s0_mismatch"))
+        self.assertTrue(n4.s0_cross_check(s0, tape, 1, ts - 3600, True).startswith("s0_mismatch"))
+        self.assertTrue(n4.s0_cross_check(s0, tape, 1, ts + 40 * 86400, True).startswith("rpc_oldest_not_september"))
+        self.assertEqual(n4.s0_cross_check(s0, tape, 1, None, True), "rpc_no_signatures")
+
+    def test_capped_walk_refused_before_simulate(self):
+        page = [{"signature": f"s{i}", "blockTime": 1788000000 - i} for i in range(1000)]
+        def rpc(m, p):
+            assert m == "getSignaturesForAddress", m
+            return page
+        r = n4.check_one(rpc, "token", "M", "P", "2026-09-12T03:00:00Z", "rpc-oldest-signature", "Token", None)
+        self.assertFalse(r["ok"]); self.assertTrue(r["refusal"].startswith("walk_capped"))
+
 
 if __name__ == "__main__":
     unittest.main()

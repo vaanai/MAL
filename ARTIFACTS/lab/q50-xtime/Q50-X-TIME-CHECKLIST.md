@@ -96,6 +96,6 @@ No replay, dry run, install or manifest at X has run. No claim about any book's 
 6. Tests 1–17 and 17b green at X on mal-fast-0's Python.
 7. A 1 h dry run at X with `a3_record_file` set: 0 build errors, `a3_guard_unreadable` = 0, and `a3_guard_pending`/latch counts reported.
 8. The Am.3 §7 guard-chain facts recorded from the job list (#1446/#1447/#1540/#1319/#1333, with their pins and limits).
-9. The owner ask (§2), the owner's yes and funding, and Helm's install, `TIER` T0 and `LIVE_OK`.
+9. The owner ask (§2), the owner's yes and funding, and Helm's install, `TIER` T1 (ARENA_LIVE_TIER; the arena reads its own /etc/mal-h5-arena/TIER) and `LIVE_OK`. (Corrected from the verbatim QP text, which said T0: the code requires T1.)
 10. The manager reviews the dry run and sets `end_ms` ≤ 2026-11-06T00Z.
 11. The "unpromoted execution measurement" label on every canary record.

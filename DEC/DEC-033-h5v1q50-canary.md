@@ -152,8 +152,8 @@ Only steps 1 to 5 and 8 are the lab's. Step 7 needs the owner and Helm.
 | `FILL:mean`, `FILL:ci_lo`, `FILL:p`, `FILL:ex_best_day`, `FILL:wis_mean`, `FILL:wis_lo` | in-sample read figures, labelled in-sample |
 | `FILL:N`, `FILL:holm` | multiplicity block at the screen read. c is not a fill: it is computed at the confirmation read by DEC-031 §2 step 4 |
 | `FILL:qp_comment`, `FILL:reviewer_comment`, `FILL:head_sha` | review ids and head sha of the DEC copy's PR |
-| `FILL:install_sha` | FILL:gate-read (the sha X that the Q50 X-time pack installs; it must contain #851, #852, #972 (Am.3 item 5b) and the Am.3 item 8 re-install proofs; 0526d5cd contains #851/#852 but predates #972, so it is not the install sha; every path:line below is cited at X) |
-| `FILL:seal_status` | see section 11 item 9 (corrected text, QP-RULING-1025-q50-seal-live ruling 4 and C8); the checked-date and install-sha fields stay FILL:gate-read |
+| `FILL:install_sha` | the sha Helm installs; every executor path:line is cited at it |
+| `FILL:seal_status` | which seals apply and the declared observation covering live outcomes |
 | `FILL:book_stake` | the stake pinned in `bots.json` (S = min of it and 0.05 SOL) |
 | `FILL:canary_stake` | S |
 | `FILL:universe` | the rule's pool universe and the path:line@frozen_sha of the check (V band, WSOL) |
@@ -161,8 +161,8 @@ Only steps 1 to 5 and 8 are the lab's. Step 7 needs the owner and Helm.
 | `FILL:executor` | `h5_executor` profile or `arena_live_bridge`, config sha256, manifest |
 | `FILL:c0_constants` | path:line@install_sha of the C0 limits (new code: h5_executor's T0 tier is 0.02 stake with a closed-only total stop) |
 | `FILL:builder_path@sha256` | pinned sell+close-ATA builder |
-| `FILL:simulate_ref` | FILL:gate-read (job id and output of `tools/arena_sell_simulate.py` / the N4 rerun script `scripts/ops/q50_n4_sell_simulate.py`, mints from outside the Look-2 class, sigVerify false, no keys; this PR's section "N4 rerun" gives the command; blocker 3) |
-| `FILL:fee` | buy 55,000, sell 55,000, escalated 150,000 lamports of priority plus the 5,000 base fee per send, cited at `tools/h5_executor.py:267-268@X` (X = FILL:gate-read, the install sha) and `PRIORITY_DEFAULT` in `tools/h5_arena_executor.py`. Manager decision: C0 uses the compiled default (the HANDOFF "p155 pin" is stale for Q50). Declared gap to the registered DEC-031-rev2 stack (505,000 per send): section 11 item 6 |
+| `FILL:simulate_ref` | reference to the sell simulate output |
+| `FILL:fee` | executor buy, sell and escalated priority, path:line@install_sha (section 4) and the declared gap to the registered stack in bps |
 | `FILL:twin_tool` | the paper twin and parity tool, path@sha256 |
 | `FILL:twin_leg`, `FILL:twin_e1` | pinned "nofail, 1.9 s" and "E1 excluded decides" (section 5); changed only by amendment |
 | `FILL:fund`, `FILL:start_balance`, `FILL:floor`, `FILL:worst_case` | funding (0.35 to 1.00 SOL), starting balance baseline, floor (funded - 0.25, not below 0.05), worst case (0.25) |
@@ -171,7 +171,6 @@ Only steps 1 to 5 and 8 are the lab's. Step 7 needs the owner and Helm.
 | `FILL:days`, `FILL:end_ms` | at most 14 days; explicit end |
 | `FILL:feed_gap_source` | the book's gap log (arena tape gap records, or `h5_shadow` `gap` records) |
 | `FILL:a3_source` | the A3 monitor or pin source for pump program changes |
-| `FILL:a3_guard_source` | per Am.3 section 6: `dirname(FILL:a3_source)/a3-applied.jsonl` on mal-fast-0; guard loop job and alert job ids with pins and time limits from the job list (the manager names #1446, successor #1447 loop and #1540 alert; not looked up by this drafter): FILL:gate-read (checklist blocker 8) |
 | `FILL:mint_fetch` | job id, counts, close-blocked share, credits used |
 | `FILL:tie_out_tool`, `FILL:tie_out_job` | tie-out tool path@sha256; scheduled reconciliation job id |
 | `FILL:dryrun_job`, `FILL:md5_proof` | dry-run job id; md5 decision-equivalence replay proof reference |
@@ -201,7 +200,7 @@ Everything else in this template stays as written. A copy that changes a limit u
 | `FILL:qp_comment` | FILL:gate-read |
 | `FILL:reviewer_comment` | FILL:gate-read |
 | `FILL:head_sha` | FILL:gate-read |
-| `FILL:install_sha` | FILL:gate-read (the sha X that the Q50 X-time pack installs; it must contain #851, #852, #972 (Am.3 item 5b) and the Am.3 item 8 re-install proofs; 0526d5cd contains #851/#852 but predates #972, so it is not the install sha; every path:line below is cited at X) |
+| `FILL:install_sha` | FILL:gate-read (the sha X that the Q50 X-time pack installs; it must contain this merged DEC/DEC-033 file, because the executor checks the canary record in DEC/ of the INSTALLED tree (`tools/h5_arena_executor.py:315`, `canary_record_refusal`) and 0526d5cd has no DEC-033; it must also contain #851 and #852. Whether X also contains #972 (Am.3 item 5b) is a manager choice: Am.3 allows §5 item 1 without it. Every path:line below is cited at X) |
 | `FILL:seal_status` | see section 11 item 9 (corrected text, QP-RULING-1025-q50-seal-live ruling 4 and C8); the checked-date and install-sha fields stay FILL:gate-read |
 | `FILL:book_stake` | 0.30 SOL deciding stake (scorer STAKES 0.10/0.25/0.30 at a5f4137; confirm the pinned stake from the registry at PASS) |
 | `FILL:canary_stake` | 0.05 SOL (50,000,000 lamports; S = min(book stake, 0.05); `C0_TIER.stake_lamports`) |
@@ -210,7 +209,7 @@ Everything else in this template stays as written. A copy that changes a limit u
 | `FILL:executor` | `h5_executor` subclass `tools/h5_arena_executor.py` ArenaExecutor, book `h5v1q50-boostfloor-a1` (compiled BOOKS row; priority profile `default`), unit `mal-h5-arena-executor` with live drop-in, config `/etc/mal-h5-arena/live.json` sha256 FILL:gate-read, install manifest FILL:gate-read |
 | `FILL:c0_constants` | tools/h5_arena_executor.py `C0_TIER` and `DEC032_C0` @install_sha (stake 0.05 SOL, max open 2, 30 buys a day, daily stop 0.10 SOL, total stop 0.20 SOL); a live start refuses if any is looser (`c0_guard_problem`) |
 | `FILL:builder_path@sha256` | tools/h5_executor.py `H5Executor._arm_sell`: file sha256 bc4c957c11caa536e107fc9b944fc33d13397039fcaf74cba45c8c2c603d5c17, symbol 3c4bf3f8a748afcbc2a991a9126988f023acf9692c20d8009a69f3d37764effb; tools/probe_live.py `close_token_account` 93119b2ee...; tools/pumpswap_tx.py `sell_instructions` ad40960e... (`SELL_BUILDER_PIN`, rechecked at every live start by `sell_pin_problem`) |
-| `FILL:simulate_ref` | FILL:gate-read (job id and output of `tools/arena_sell_simulate.py` / the N4 rerun script `scripts/ops/q50_n4_sell_simulate.py`, mints from outside the Look-2 class, sigVerify false, no keys; this PR's section "N4 rerun" gives the command; blocker 3) |
+| `FILL:simulate_ref` | FILL:gate-read (MiScusi job id, output dir and `q50-n4-summary.json` sha256 of `tools/q50_n4_rerun.py` at the merged sha: one Token and one Token-2022 mint with s0 in September 2026, `--priority default`, unsigned, sigVerify false, no keys; blocker 3) |
 | `FILL:fee` | buy 55,000, sell 55,000, escalated 150,000 lamports of priority plus the 5,000 base fee per send, cited at `tools/h5_executor.py:267-268@X` (X = FILL:gate-read, the install sha) and `PRIORITY_DEFAULT` in `tools/h5_arena_executor.py`. Manager decision: C0 uses the compiled default (the HANDOFF "p155 pin" is stale for Q50). Declared gap to the registered DEC-031-rev2 stack (505,000 per send): section 11 item 6 |
 | `FILL:twin_tool` | tools/arena_twin_writer.py sha256 1e9cb00e08ec69df269b19b9774d02feed7d3e91a61c7f727b7abbdc5fe560bb (`TWIN_WRITER_SHA256`), run by hunt29/p1/jobs/twin-writer-loop.sh sha256 7147c73830390ce8d140bf17fe171d9935303fe175332b193ec5888f6e6c68c4 (GIT_REF re-pinned at install); parity `tools/arena_live_parity.py` @install_sha |
 | `FILL:twin_leg` | nofail, 1.9 s |
@@ -234,7 +233,7 @@ Everything else in this template stays as written. A copy that changes a limit u
 | `FILL:dryrun_job` | FILL:gate-read (Helm's 1 h dry run, HELM-SHEET section D) |
 | `FILL:md5_proof` | job #1481 at install sha 0526d5cd: VERDICT EQUAL, Run A 137/137, Run B 101/101 (QP-RULING corrections 2026-10-25). Any other install sha needs its own EQUAL replay: FILL:gate-read (job at X, checklist blocker 5) |
 | `FILL:alert_target` | FILL:gate-read |
-| `FILL:owner_line` | the OWNER_CANARY_STANDING_OK line of DEC-032 Amendment 1 item 3, quoted verbatim in section 10a |
+| `FILL:owner_line` | the OWNER_CANARY_STANDING_OK line of DEC-032 Amendment 1 item 3, quoted verbatim in section 10a; the owner's answer to the §2 notice, ids and any funding line: FILL:owner |
 
 ## 11. Book-specific declarations (QP-RULING-1023-wiring rulings 7/8, DEC-copy text items)
 Each item below is a declaration the copy makes before the first send. None is a result. quant-proof's OK on the merged head of this copy is the binding; until then each item is a draft.
@@ -274,7 +273,7 @@ Each item below is a declaration the copy makes before the first send. None is a
 16. **Stake impact.** C0 runs at 0.05 SOL; the deciding stake is 0.30 SOL deciding stake (scorer STAKES 0.10/0.25/0.30 at a5f4137; confirm the pinned stake from the registry at PASS). Impact at the deciding stake is NOT tested; the twin is priced at 0.05 SOL from the same pool states after a 1-lamport self-check at a recorded stake (#830).
 
 17. **Impact disclosure (C8 (c)).** EXP-024 §3's tape-impact bullet named DEC-024's 0.02 SOL. A C0 buy of 0.05 SOL is about 0.1% of Q and about 0.2% in price on a pool with Q of about 45 SOL (QP estimate). It is chain truth, disclosed and not corrected.
-18. **Sell-simulate mints (C7).** From outside the Look-2 class (a September graduation or a non-V-range pool); see the QP pre-ruling and this PR's N4 script. Pass/fail and instruction decode only, not proceeds.
+18. **Sell-simulate mints (C7).** From outside the Look-2 class (a September graduation or a non-V-range pool); see the QP pre-ruling and `tools/q50_n4_rerun.py`. Pass/fail and instruction decode only, not proceeds.
 19. **Twin double-count.** The twin does not remove the canary's own trades from the paper pool states, so it double-counts their impact. QP estimate (not measured): about 20 bps per side at 0.05 SOL, about 40 bps of stake per round trip in live's favour, loosening the -100 bps match test by about 40%. This is the section 11 declaration (with the bps) required before the first send, unless the twin fix has merged by then (a reviewed PR to a pinned tool dropping the canary's own signatures). Using parity for C0 -> C1 additionally waits on settling it.
 20. **Disclosure line for the Q50 confirmation read.** From the first send, the twin rows are observable in real time under the EXP-024 Note under Amendment 10 (a), so the confirmation read is no longer blind to those positions. Declared and allowed (DEC-032 §7; DEC-031 Am.3 item 6 "In parallel"); it does not change the read. The owner is told.
 21. **Label.** Every canary record, report, notebook and Console entry carries "unpromoted execution measurement".

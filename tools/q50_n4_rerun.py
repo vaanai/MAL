@@ -23,6 +23,8 @@ from tools import h5_arena_executor as ax
 SEPT_START = datetime(2026, 9, 1, tzinfo=timezone.utc)
 SEPT_END = datetime(2026, 10, 1, tzinfo=timezone.utc)  # exclusive; the Look-2 class starts on October hours
 MAX_PAGES = 30
+S0_TOLERANCE_S = 120  # |caller s0 - RPC oldest blockTime| when the walk reaches the pool's first signature
+TAPE_SOURCE = "sept-audit-tape-migrations"
 
 
 def parse_utc(s: str) -> datetime:
@@ -49,20 +51,36 @@ def oldest_block_time(rpc: Callable[[str, list], Any], pool: str, max_pages: int
     return oldest, False
 
 
-def check_one(rpc, kind: str, mint: str, pool: str, s0_utc: str, s0_source: str, expect_program: str, out_dir: Path) -> dict[str, Any]:
+def s0_cross_check(s0: datetime, source: str, slot: int | None, oldest: int | None, reached: bool) -> str | None:
+    """Refusal reason or None. Walk capped: only the Sept audit tape with a migration slot is accepted. Walk complete: the found s0 must match."""
+    if not reached:
+        if source != TAPE_SOURCE or slot is None:
+            return "walk_capped_needs_tape_source_with_migration_slot"
+        return None
+    if oldest is None:
+        return "rpc_no_signatures"
+    if not (SEPT_START.timestamp() <= oldest < SEPT_END.timestamp()):
+        return f"rpc_oldest_not_september:{oldest}"
+    if abs(oldest - s0.timestamp()) > S0_TOLERANCE_S:
+        return f"s0_mismatch:caller={int(s0.timestamp())},rpc={oldest},tol={S0_TOLERANCE_S}"
+    return None
+
+
+def check_one(rpc, kind: str, mint: str, pool: str, s0_utc: str, s0_source: str, expect_program: str, out_dir: Path, migration_slot: int | None = None) -> dict[str, Any]:
     s0 = parse_utc(s0_utc)
     prob = s0_problem(s0)
     if prob:
         return {"kind": kind, "mint": mint, "pool": pool, "ok": False, "refusal": prob}
     oldest, reached = oldest_block_time(rpc, pool)
-    if reached and oldest is not None and not (SEPT_START.timestamp() <= oldest < SEPT_END.timestamp()):
-        return {"kind": kind, "mint": mint, "pool": pool, "ok": False, "refusal": f"rpc_oldest_not_september:{oldest}"}
+    bad = s0_cross_check(s0, s0_source, migration_slot, oldest, reached)
+    if bad:
+        return {"kind": kind, "mint": mint, "pool": pool, "ok": False, "refusal": bad}
     rec = ss.holder_run(rpc, mint, pool, ax.PRIORITY_DEFAULT)
     out = out_dir / f"q50-n4-{kind}-{mint[:8]}.json"
     sha = ss.write_record(rec, out)
     v = rec["verdict"]
     ok = bool(v["full_sell_ok"]) and bool(v["control_reverts_at_base_close"]) and rec["token_program"] == expect_program
-    return {"kind": kind, "mint": mint, "pool": pool, "s0_utc": s0_utc, "s0_source": s0_source, "rpc_oldest_blocktime": oldest, "rpc_oldest_reached_end": reached,
+    return {"kind": kind, "mint": mint, "pool": pool, "s0_utc": s0_utc, "s0_source": s0_source, "migration_slot": migration_slot, "rpc_oldest_blocktime": oldest, "rpc_oldest_reached_end": reached,
             "token_program": rec["token_program"], "expected_program": expect_program, "full_sell_ok": v["full_sell_ok"],
             "control_reverts_at_base_close": v["control_reverts_at_base_close"],
             "shape": rec["runs"]["full_balance"]["shape"], "record": str(out), "record_sha256": sha, "ok": ok}
@@ -74,7 +92,8 @@ def main(argv: list[str] | None = None, rpc_factory: Callable[[str], Any] | None
         ap.add_argument(f"--{k}-mint", required=True)
         ap.add_argument(f"--{k}-pool", required=True)
         ap.add_argument(f"--{k}-s0-utc", required=True, help="pool create blockTime, UTC, YYYY-MM-DDTHH:MM:SSZ, September 2026")
-        ap.add_argument(f"--{k}-s0-source", required=True, help="where s0 came from: sept-audit-tape-migrations | rpc-oldest-signature")
+        ap.add_argument(f"--{k}-s0-source", required=True, help="sept-audit-tape-migrations | rpc-oldest-signature")
+        ap.add_argument(f"--{k}-migration-slot", type=int, default=None, help="required when the oldest-signature walk hits its cap")
     ap.add_argument("--rpc", default=ss.DEFAULT_RPC)
     ap.add_argument("--out-dir", required=True, type=Path)
     a = ap.parse_args(argv)
@@ -85,8 +104,8 @@ def main(argv: list[str] | None = None, rpc_factory: Callable[[str], Any] | None
         print(json.dumps({"verdict": "REFUSED", "refusal": f"sell_builder_pin:{pin}"}))
         return 2
     rpc = (rpc_factory or ss.RateLimitedRpc)(a.rpc)
-    res = [check_one(rpc, "token", a.token_mint, a.token_pool, a.token_s0_utc, a.token_s0_source, "Token", a.out_dir),
-           check_one(rpc, "token2022", a.token2022_mint, a.token2022_pool, a.token2022_s0_utc, a.token2022_s0_source, "Token-2022", a.out_dir)]
+    res = [check_one(rpc, "token", a.token_mint, a.token_pool, a.token_s0_utc, a.token_s0_source, "Token", a.out_dir, a.token_migration_slot),
+           check_one(rpc, "token2022", a.token2022_mint, a.token2022_pool, a.token2022_s0_utc, a.token2022_s0_source, "Token-2022", a.out_dir, a.token2022_migration_slot)]
     summary = {"kind": "q50_n4_rerun.v1", "builder_pin": ax.SELL_BUILDER_PIN, "builder_pin_problem": None, "priority": ax.PRIORITY_DEFAULT.as_dict(),
                "rpc_host": a.rpc.split("/")[2], "signed": False, "results": res, "verdict": "PASS" if all(r["ok"] for r in res) else "FAIL",
                "not_measured": ["proceeds", "min_out", "landing", "any signed or sent transaction"]}
