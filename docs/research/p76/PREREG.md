@@ -22,3 +22,8 @@ Written before any pricing. Counts below were taken first; no return of this rul
 2. Hour 16 not in the top 2 of 24 on the placebo.
 Also reported: total without the top 3 trades; without the best day; days with a majority positive (one trade per day, so a day is positive or not); CI90 lower bound (1,000 bootstrap draws, seed 1, 5th percentile); capacity = trades/day x stake x net edge, at 0.25 and 1 SOL.
 Verdict vocabulary: KILL, LEAD, NOT_DECIDABLE. Gate-level claims need at least 100 trades and 5 days; 14 trades cannot clear it, so the best possible outcome is LEAD.
+
+## Post-result corrections (2026-10-27; the body above is unchanged)
+- 2uF4X is proven PUMP/USDC (QP read the pool account; quote mint EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v), not merely inferred.
+- The 0.35% fee on 2uF4X was taken from PUMP-quoted pools in boost-custom-v2; the measured median on 2uF4X is 0.3000% over 64,536 sells. The registered rule used 0.35%.
+- The source's s4.py hour returns start 09-03, but its s2.py and s3.py read 08-14..09-25; "held-out" means unread by s4.py only.
