@@ -37,7 +37,7 @@ from tools import pump_structure_monitor as m
 
 SCHEMA = "boost_watch.v1"
 DEFAULT_LOG_DIR = "~/mal-data/boost-watch"
-DEFAULT_IDL = "/data/mal/hunt-1008/swarm-1013/w2-pump-idl/raw/idl_pump_amm.json"
+DEFAULT_IDL = str(Path(__file__).parent / "fixtures" / "boost_watch" / "idl_pump_amm.json")  # copy of swarm-1013/w2-pump-idl/raw/idl_pump_amm.json (pump-public-docs)
 CONFIG_ADDRESS = m.PUMPSWAP_GLOBAL_CONFIG
 PROGRAM = m.PUMPSWAP_PROGRAM
 ADMIN_OFFSET = 8  # after the 8-byte Anchor discriminator (IDL GlobalConfig.admin)
