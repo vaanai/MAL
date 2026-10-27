@@ -1,0 +1,89 @@
+n 2826 cashback 1000 unknown 0
+baseline repro (frozen lag) max abs diff lamports: 0.0
+stored fail-model reproduce max diff: 0.0 0.0
+
+== cashback share ==
+                      trades   cb     share
+blk                                        
+exp011-0909              291   22  0.075601
+explore-0814            1702  911  0.535253
+fast-pool-0918           233    0  0.000000
+fresh-0903               307   66  0.214984
+oracle-insample-0922     293    1  0.003413
+         trades   cb     share
+month                         
+2026-08    1702  911  0.535253
+2026-09    1124   89  0.079181
+pools share (distinct == trades): 0.35385704175513094
+by week:
+          trades     share
+wk                        
+2026-W33     206  0.524272
+2026-W34     781  0.542894
+2026-W35     715  0.530070
+2026-W36     142  0.345070
+2026-W37     377  0.103448
+2026-W38     221  0.000000
+2026-W39     384  0.002604
+
+== re-cost table ==
+             exit          refund      set  model     n  base_mean_pp  new_mean_pp  delta_pp  new_ex3_SOL  base_ex3_SOL  new_exbest_SOL  base_exbest_SOL maj_pos_days base_maj_pos  ci90_lo_pp  base_ci90_lo_pp
+0   primary el=2     refund full     disc   flat  1702       11.5930      11.9234    0.3304      15.9442       15.4108         16.3168          15.8109        13/15        13/15      8.1382           7.8287
+1   primary el=2     refund full     disc  press  1702       10.5955      10.8614    0.2659      14.9613       14.5208         14.7361          14.3320        15/15        15/15      7.7408           7.4801
+2   primary el=2     refund full     conf   flat  1124       12.5381      12.5858    0.0476      10.1488       10.0952         11.3132          11.2728        18/21        18/21      8.0305           7.9804
+3   primary el=2     refund full     conf  press  1124       10.9866      11.0240    0.0374       8.9937        8.9516          9.7273           9.6973        17/21        17/21      7.2743           7.2331
+4   primary el=2     refund full      all   flat  2826       11.9689      12.1869    0.2180      29.8683       29.2686         30.4632          29.9037        31/36        31/36      9.2326           9.0240
+5   primary el=2     refund full      all  press  2826       10.7511      10.9261    0.1750      27.0459       26.5633         27.1270          26.6810        32/36        32/36      8.4621           8.2887
+6   primary el=2     refund full  cb-only   flat  1000        7.8841       8.5000    0.6160       4.7962        4.2178          5.8193           5.2597        14/26        14/26      3.3049           2.7309
+7   primary el=2     refund full  cb-only  press  1000        7.5445       8.0391    0.4946       5.0776        4.6132          5.5882           5.1421        15/26        14/26      3.8965           3.4346
+8   primary el=2     refund full    noncb   flat  1826       14.2059      14.2059    0.0000      21.6300       21.6300         22.9599          22.9599        31/36        31/36     10.6152          10.6152
+9   primary el=2     refund full    noncb  press  1826       12.5071      12.5071    0.0000      19.1678       19.1678         20.0379          20.0379        30/36        30/36      9.5354           9.5354
+10  primary el=2  claim 5k/trade     disc   flat  1702       11.5930      11.9212    0.3282      15.9403       15.4108         16.3132          15.8109        13/15        13/15      8.1359           7.8287
+11  primary el=2  claim 5k/trade     disc  press  1702       10.5955      10.8596    0.2641      14.9582       14.5208         14.7332          14.3320        15/15        15/15      7.7389           7.4801
+12  primary el=2  claim 5k/trade     conf   flat  1124       12.5381      12.5854    0.0473      10.1484       10.0952         11.3129          11.2728        18/21        18/21      8.0302           7.9804
+13  primary el=2  claim 5k/trade     conf  press  1124       10.9866      11.0237    0.0372       8.9934        8.9516          9.7270           9.6973        17/21        17/21      7.2740           7.2331
+14  primary el=2  claim 5k/trade      all   flat  2826       11.9689      12.1854    0.2165      29.8640       29.2686         30.4593          29.9037        31/36        31/36      9.2311           9.0240
+15  primary el=2  claim 5k/trade      all  press  2826       10.7511      10.9249    0.1738      27.0425       26.5633         27.1239          26.6810        32/36        32/36      8.4608           8.2887
+16  primary el=2  claim 5k/trade  cb-only   flat  1000        7.8841       8.4958    0.6117       4.7919        4.2178          5.8153           5.2597        14/26        14/26      3.3007           2.7309
+17  primary el=2  claim 5k/trade  cb-only  press  1000        7.5445       8.0357    0.4912       5.0742        4.6132          5.5850           5.1421        15/26        14/26      3.8931           3.4346
+18  primary el=2  claim 5k/trade    noncb   flat  1826       14.2059      14.2059    0.0000      21.6300       21.6300         22.9599          22.9599        31/36        31/36     10.6152          10.6152
+19  primary el=2  claim 5k/trade    noncb  press  1826       12.5071      12.5071    0.0000      19.1678       19.1678         20.0379          20.0379        30/36        30/36      9.5354           9.5354
+20    frozen lag     refund full     disc   flat  1702       11.5930      11.9234    0.3304      15.9442       15.4108         16.3168          15.8109        13/15        13/15      8.1382           7.8287
+21    frozen lag     refund full     disc  press  1702       10.5955      10.8614    0.2659      14.9613       14.5208         14.7361          14.3320        15/15        15/15      7.7408           7.4801
+22    frozen lag     refund full     conf   flat  1124       12.4546      12.5023    0.0476      10.0550       10.0014         11.2194          11.1790        17/21        17/21      7.9564           7.8842
+23    frozen lag     refund full     conf  press  1124       10.8818      10.9192    0.0374       8.8759        8.8339          9.6095           9.5795        17/21        17/21      7.1600           7.1257
+24    frozen lag     refund full      all   flat  2826       11.9357      12.1537    0.2180      29.7744       29.1748         30.3694          29.8099        30/36        30/36      9.1938           8.9769
+25    frozen lag     refund full      all  press  2826       10.7094      10.8844    0.1750      26.9281       26.4455         27.0093          26.5632        32/36        32/36      8.4128           8.2433
+26    frozen lag     refund full  cb-only   flat  1000        7.8841       8.5000    0.6160       4.7962        4.2178          5.8193           5.2597        14/26        14/26      3.3049           2.7309
+27    frozen lag     refund full  cb-only  press  1000        7.5445       8.0391    0.4946       5.0776        4.6132          5.5882           5.1421        15/26        14/26      3.8965           3.4346
+28    frozen lag     refund full    noncb   flat  1826       14.1546      14.1546    0.0000      21.5362       21.5362         22.8660          22.8660        30/36        30/36     10.5700          10.5700
+29    frozen lag     refund full    noncb  press  1826       12.4426      12.4426    0.0000      19.0500       19.0500         19.9202          19.9202        30/36        30/36      9.4979           9.4979
+30    frozen lag  claim 5k/trade     disc   flat  1702       11.5930      11.9212    0.3282      15.9403       15.4108         16.3132          15.8109        13/15        13/15      8.1359           7.8287
+31    frozen lag  claim 5k/trade     disc  press  1702       10.5955      10.8596    0.2641      14.9582       14.5208         14.7332          14.3320        15/15        15/15      7.7389           7.4801
+32    frozen lag  claim 5k/trade     conf   flat  1124       12.4546      12.5020    0.0473      10.0546       10.0014         11.2190          11.1790        17/21        17/21      7.9561           7.8842
+33    frozen lag  claim 5k/trade     conf  press  1124       10.8818      10.9190    0.0372       8.8756        8.8339          9.6093           9.5795        17/21        17/21      7.1597           7.1257
+34    frozen lag  claim 5k/trade      all   flat  2826       11.9357      12.1522    0.2165      29.7702       29.1748         30.3654          29.8099        30/36        30/36      9.1923           8.9769
+35    frozen lag  claim 5k/trade      all  press  2826       10.7094      10.8832    0.1738      26.9247       26.4455         27.0061          26.5632        32/36        32/36      8.4116           8.2433
+36    frozen lag  claim 5k/trade  cb-only   flat  1000        7.8841       8.4958    0.6117       4.7919        4.2178          5.8153           5.2597        14/26        14/26      3.3007           2.7309
+37    frozen lag  claim 5k/trade  cb-only  press  1000        7.5445       8.0357    0.4912       5.0742        4.6132          5.5850           5.1421        15/26        14/26      3.8931           3.4346
+38    frozen lag  claim 5k/trade    noncb   flat  1826       14.1546      14.1546    0.0000      21.5362       21.5362         22.8660          22.8660        30/36        30/36     10.5700          10.5700
+39    frozen lag  claim 5k/trade    noncb  press  1826       12.4426      12.4426    0.0000      19.0500       19.0500         19.9202          19.9202        30/36        30/36      9.4979           9.4979
+
+== subset quality (before refund), flat model mean pp, primary ==
+cb 1000 7.8841
+noncb 1826 14.2059
+
+== refund size, cashback trades, SOL at 0.1 stake (primary) ==
+count    1000.0000
+mean        0.7247
+std         1.1219
+min         0.3372
+25%         0.4869
+50%         0.5573
+75%         0.6488
+max        19.1627
+
+== live economics == frozen days with trades 36, calendar span 43, trades/day (trade days) 78.50, (calendar) 65.72
+stake 0.1 SOL: refund total 0.7247 SOL; SOL/day per trade-day 0.02013, per calendar day 0.01685; flat base mean 11.9689% of stake -> 12.1869% (delta 0.2180 pp of stake)
+stake 0.25 SOL: refund total 1.8107 SOL; SOL/day per trade-day 0.05030, per calendar day 0.04211; flat base mean 11.9816% of stake -> 12.1994% (delta 0.2178 pp of stake)
+stake 1.0 SOL: refund total 7.2239 SOL; SOL/day per trade-day 0.20066, per calendar day 0.16800; flat base mean 11.7760% of stake -> 11.9933% (delta 0.2173 pp of stake)

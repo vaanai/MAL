@@ -34,11 +34,11 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 43 | 24 | 1 |
 | `desk-read` | 1 | 49 | 0 |
-| `explored-no-survivor` | 41 | 8 | 1 |
+| `explored-no-survivor` | 41 | 9 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 185 | 89 | 2 |
+| **all** | 185 | 90 | 2 |
 
-The file holds 526 rows: the 276 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 527 rows: the 277 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -354,6 +354,12 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `p80-h5-rug-veto` | Learned rug / big-loser veto (top 15% of a 6-feature logistic) on the frozen H5 book | `parked` | Independent training sample is empty: all 1,702 explore-0814 pools that meet the H5 entry trigger are H5 trades; 0 of 9,470 other pools trigger. No pnl or veto read. |
+
+### p82-cashback (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p82-cashback-floor` | CASHBACK-FLOOR result: refund of the creator leg on cashback pools, frozen H5 book re-costed | `explored-no-survivor` | KILL: cashback pools are 1,000 of 2,826 (35.39%) but the share falls from 53.5% (explore-0814) to 0.3% and 0% in the last two blocks; mean delta over all trades +0.2180 pp (flat) and +0.1750 pp (pressure-fail), below the +0.3 pp kill line; confirmation set +0.0476 / +0.0374 pp. Cashback subset is worse before refund … |
 
 ## Dead as frozen, and explored with no survivor
 

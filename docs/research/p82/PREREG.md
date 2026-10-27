@@ -27,7 +27,7 @@ Primary credits the refund in full and at once. Sensitivity (report-only, not se
 
 Fail models as P55: flat `0.85 x pnl + 0.15 x (-55,000)`; pressure-fail `(1-p) x pnl + p x (-55,000)` with the stored per-trade p. A failed send gets no refund (the fail-model formulas are applied to the refunded pnl, as for any pnl; the -55,000 branch has no refund).
 
-Reported for discovery, confirmation and pooled, both models, on all 2,826 trades and on the cashback subset: delta per trade (pp of the 0.1 SOL stake), new mean, total ex-top-3 trades, total ex-best-day, number of days with a majority of trades positive, CI90 lower bound of the mean (1,000 bootstrap draws, seed 1, trade-level, 5th percentile). Also: baseline mean for cashback vs non-cashback pools (is the subset a pure cost effect).
+Majority-positive days = days whose total P&L is positive (gate wording; counted of days with trades). Reported for discovery, confirmation and pooled, both models, on all 2,826 trades and on the cashback subset: delta per trade (pp of the 0.1 SOL stake), new mean, total ex-top-3 trades, total ex-best-day, number of days with a majority of trades positive, CI90 lower bound of the mean (1,000 bootstrap draws, seed 1, trade-level, 5th percentile). Also: baseline mean for cashback vs non-cashback pools (is the subset a pure cost effect).
 
 ## Kill line
 
