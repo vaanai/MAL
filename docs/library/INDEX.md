@@ -34,11 +34,11 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 45 | 24 | 1 |
 | `desk-read` | 1 | 49 | 0 |
-| `explored-no-survivor` | 42 | 10 | 1 |
+| `explored-no-survivor` | 42 | 11 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 188 | 91 | 2 |
+| **all** | 188 | 92 | 2 |
 
-The file holds 531 rows: the 281 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 532 rows: the 282 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -368,6 +368,12 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `p82-cashback-floor` | CASHBACK-FLOOR result: refund of the creator leg on cashback pools, frozen H5 book re-costed | `explored-no-survivor` | KILL: cashback pools are 1,000 of 2,826 (35.39%) but the share falls from 53.5% (explore-0814) to 0.3% and 0% in the last two blocks; mean delta over all trades +0.2180 pp (flat) and +0.1750 pp (pressure-fail), below the +0.3 pp kill line; confirmation set +0.0476 / +0.0374 pp. Cashback subset is worse before refund … |
+
+### p84-h5-regime (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p84-h5-regime-switch` | Prior-day graduation count as a day-level on/off switch on the frozen H5 binding book | `explored-no-survivor` | KILL by line 4: 0 on-days in confirmation (graduations fall from 7,444/day on the first complete day, Aug 15 (Aug 14 is a 12-hour partial) to ~2,000/day in Sep, so every Sep prior day is below T=4525). Discovery: switch delta -0.0005 pp flat, +0.2584 pp pressure, placebo p 0.506/0.471. Report-only block-median variant … |
 
 ## Dead as frozen, and explored with no survivor
 
