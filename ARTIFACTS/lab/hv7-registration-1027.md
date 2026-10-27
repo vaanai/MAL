@@ -93,6 +93,8 @@ is optional, and adds no arm or cell.
 | Contrast window and read | `t_e` in [`1793491200000`, `1794355200000`); read not before 2026-11-11T01:01:00Z = `1794358860000` |
 | Where H lives (Am.7) | the `hv7_halt` registry line carries the halt instant; the notebook copy (`REGISTRATION_NOTEBOOK_ID`) carries H = 10 too |
 | C5 read tool | PR #1021 (`tools/hv7_read.py`), still under fix: flags may change. Invocation to pin: `--horizon-days 10` (or `--rate` with the P0 mean). **Re-check after #1021 merges.** |
+| Binding read (QP re-check of #1021, 6443512785) | `hv7_read`'s once-only record is THE binding gate read for `hv7.0-L` and `hv7.0-S`. Any `arena_score --record` read of those bots is not a registered read and is never quoted. |
+| Outage blind spot (same re-check) | A runner outage of whole hours writes no rows, so DESIGN's 10% excluded-period cap cannot see it (the cap counts `period_excluded` rows, and an outage writes none). Disclosed. The read prints a report-only coverage line: hours with no runner rows, per arm. It gates nothing. |
 
 ### 3b. DESIGN section 3, quoted in full (fallback rule, `why` rule, display permutation, prompt-sentence replacements)
 
@@ -202,7 +204,17 @@ E1 is checked at 2026-11-03T00:00:00Z (`1793664000000`) by the outcome-blind cou
 - INCOMPLETE under 30 error-free ranker calls;
 - else PASS.
 
-A FAIL is fixed by code at a new sha, never by tuning a limit. The pinned notebook entry (blocking list, tool sha256s, this PR's head sha, instant, month-to-date API spend) precedes the job. **Open point for the manager:** `tools/hv7_*.py` at 687c77c6 has no smoke tool, and at hourly periods a 2 h live run makes about 2 ranker calls, so the 30-call INCOMPLETE floor needs a smoke driver that makes at least 30 ranker calls inside the 2 h (periods compressed in the smoke root only). That tool and its sha256 are `RESULT_SMOKE` prerequisites and are not claimed here.
+A FAIL is fixed by code at a new sha, never by tuning a limit. The pinned notebook entry (blocking list, tool sha256s, this PR's head sha, instant, month-to-date API spend) precedes the job.
+
+**Smoke tool (resolves the open point).** `tools/hv7_smoke.py` (sha256 `028448eb4796bb287b7e977216c6d5a79f140175621c2b83e17a72d87937e8a5`) and wrapper `scripts/ops/hv7-smoke.sh` (sha256 `735e7e2406219f11113d43fde92541e3a1ca824d7e2ff16cf5f974cd67143bb9`), both from this branch (checked with `sha256sum`; the pin is void if either file changes). Period compression edits no frozen file: `Hv7Runner.tick` fires the screen only at `T % HOUR_MS == T_D_OFFSET_MS` and `Hv7Config` has no period parameter, so the tool does not call `tick`; it drives the public `poll_to`, `exits`, `screen(T)` and `enter(T)` in `tick`'s order, with `t_d` on a 4-minute grid: 31 periods, first t_d 8 min after the start, 120 min from the first t_d to the last, last t_e 45 s later, about 2 h 9 min wall. Each call is the runner's own `_ask` on the real RANK_v0 request bytes. Differences from the hourly run, stated: `seq = T // HOUR_MS` repeats inside an hour (cards differ with as_of); and `hv7_runner.main` never starts a chain prefetcher or calls `chain.watch`, and `hv6_runner.live_chain_source` is refused by HV6's path allowlist under the HV7 root, so the smoke builds the chain source from the same classes with state under the smoke dir and feeds the watchlist once a minute from the runner's own scan. **The manager should check whether the registered live `hv7_runner.main` has the same gap** (it was never run); the smoke does not test that path. Spend: a hard stop at 0.10 USD over all RANK-L day files before each call, plus the frozen guard's per-day cap lowered to 0.10 (the caller's worst-case reserve is the last fence). The tool prints counts only (calls, valid permutations, FALLBACK, model refusals, latency p50/p95/max, tokens, USD from the cost ledger); it never opens the engine ledger and names no pool or price. Tests: `tools/test_hv7_smoke.py`, 22 tests, fake caller, no API.
+
+Exact job command (run only after the notebook pin; `<ID>` fresh, `<REPO>` a clean checkout at `HV7_FINAL_SHA`; memory >= 8 GB):
+
+`HV7_FINAL_SHA=<HV7_FINAL_SHA> FEED_DELAY_SLOTS=7 sh scripts/ops/hv7-smoke.sh <REPO> <ID>`
+
+which execs `/data/mal/venv/bin/python -I tools/hv7_smoke.py --repo <REPO> --smk /data/mal/arena/haiku-v7/smoke/<ID> --cap-usd 0.10 --expect-sha <HV7_FINAL_SHA> --periods 31 --period-min 4 --warmup-min 8 --feed-delay-slots 7` with `MAL_HV4_RPC=helius` and the key sourced from `/var/lib/mal/anthropic/anthropic.env` into the child only.
+
+`RESULT_SMOKE`: PLACEHOLDER (not run).
 
 **Data-integrity tool (item 2).** `tools/arena_hour_health.py`, sha256 `227f92be466fec0bd6c6502bcece6b2e7755d0a675a30d08a2dd79d6353903b5` (checked with `sha256sum` on this branch; PR #805, merged `0a5aef86`; the same pin as HV4's L6/L7). HV6's pack names the tool and thresholds only by reference to HV4 L7; HV7 pins the HV4 L7 FINAL thresholds file `ARTIFACTS/lab/hv4-thresholds-FINAL-1025.json`, sha256 `da13ccc28457eaab2906548f318f76ce5c4598ecf7c007affcc3d8e7bd8b2eed` (verified with `sha256sum`), one value per check per UTC hour:
 
