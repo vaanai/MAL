@@ -32,13 +32,13 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `explored-survivor-unconfirmed` | 10 | 0 | 0 |
 | `parked` | 9 | 1 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 43 | 24 | 1 |
+| `untested` | 46 | 24 | 1 |
 | `desk-read` | 1 | 49 | 0 |
 | `explored-no-survivor` | 41 | 8 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 185 | 88 | 2 |
+| **all** | 188 | 88 | 2 |
 
-The file holds 525 rows: the 275 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 528 rows: the 278 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -129,6 +129,9 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `p25-quote-drift-completion` | Custom-pair curves whose SOL cost to complete falls with their quote asset | P25 change-capture (2026-10-24) | Counts on fast [09-09T12, 09-15T12) with public external quote prices; pump-coin parents only via the oct-pregrad-d1 role and only while the parent is on its curve (graduated-parent prices are D2/D3, sealed); 0 Helius. |
 | `p25-t22-fee-epoch-clock` | Token-2022 transfer-fee cut public epochs before it binds (DBC transfer-fee mints) | P25 change-capture (2026-10-24) | Public getMultipleAccounts / getSignaturesForAddress on the 42 configs' mints (0 Helius); priced looks only on DBC [10-17, 10-24) as disclosed exploration with QP's OK (not D1); nothing >= 2026-10-25T00Z for DBC/DAMM before the m10 read; a forward recorder after 2026-11-01T00:10Z. |
 | `p25-prestock-quote-band` | PreStock quote-leg dislocation against an external anchor | P25 change-capture (2026-10-24) | Owner's say first; then public mint/pool lists and anchor prices (GeckoTerminal), one declared day of forward gap logging; 0 Helius; any pump-side book is arena-only. |
+| `p81-cashback-floor` | CASHBACK-FLOOR: re-cost frozen H5 trades on cashback coins (creator leg refunded to the … | P81 cost-floor receipts (2026-10-27) | Step 0: getMultipleAccounts over distinct H5 pools (about 20 calls of 100) for is_cashback_coin; 20-tx getTransaction check that cashback_fee_basis_points is paid on PumpSwap sells; then one repricing with the P55 code. |
+| `p81-volume-accrual` | VOLUME-ACCRUAL: pump's own PUMP-token volume incentive (claim_token_incentives) against … | P81 cost-floor receipts (2026-10-27) | Decode global_volume_accumulator PDA of pump and pump AMM (2 getAccountInfo); PUMP/SOL price from the 2uF4X PUMP/USDC pool and SOL/USDC; compare with P78's cost floor of the cheapest band. |
+| `p81-holder-carry` | HOLDER-CARRY: multi-day hold of high-turnover holder-rewards coins paid the creator fee | P81 cost-floor receipts (2026-10-27) | Count holder-reward coins created 09-12..09-25 by BondingCurve flag; sample holder payout via getSignaturesForAddress; report drift alone first. |
 
 ## Owner ideas
 
