@@ -73,7 +73,8 @@ from tools.arena_paper import ArenaRefused
 from tools.arena_state import WSOL_MINT, ArenaState
 from tools.haiku_caller import Ledger, LedgerError
 from tools.hv6_phantom import PhantomFilter
-from tools.hv6_runner import HOUSEKEEP_EVERY_MS, Pos, QuoteHistory, exit_reason, mark_ret, position_id, stack_config  # noqa: F401
+from tools.hv6_runner import (CHAIN_CREDITS_FILE, CHAIN_SPEND_FILE, HOUSEKEEP_EVERY_MS, ChainSource, Pos, QuoteHistory, exit_reason, mark_ret,  # noqa: F401
+                              pinned_provider, position_id, refuse_hv4_chain_state, stack_config)
 
 MIN_MS = 60_000
 HOUR_MS = 3_600_000
@@ -102,6 +103,12 @@ CARD_NESTED = {"f": CARD_F_KEYS, "risk": CARD_RISK_KEYS, "tops": frozenset({"buy
 
 READ_ROOTS = (H.TAPE_ROOT, HV7_ROOT)
 WRITE_ROOTS = (HV7_ROOT,)
+
+# Live chain client. HV7 has its own RPC budget so it does not compete with HV6's 1,000 calls/h; state and spend files sit under HV7_ROOT.
+HV7_RPC_CALLS_PER_H = 500
+HV7_RPC_CALLS_PER_DAY = 24 * HV7_RPC_CALLS_PER_H     # 12,000
+WATCH_MAX = 2_000                                     # = hv6_runner.WATCH_MAX_POOLS: the prefetcher's watch set, top pools by vol_60m
+WATCH_HOT_MAX = 32                                    # the pools whose card was tried this screen (the screened N <= 8 first) are hot, never more than this many
 
 
 # Owner cost-line reference: a MiScusi notebook id (n_...) or a MiScusi question id (q_...). real ids contain "-" and "_" (e.g. q_6_kzYJva9XXuYQ), so the body is 12-20 of [A-Za-z0-9_-];
@@ -180,6 +187,22 @@ def check_card_keys(card: Mapping[str, Any]) -> None:
             bad += [f"{k}.{x}" for x in sorted(set(sub) - allowed)]
     if bad:
         raise CardAllowlistError(f"card keys outside the allowlist: {bad}")
+
+
+def live_chain_source(root: str | os.PathLike, env: Mapping[str, str] | None = None) -> ChainSource:
+    """HV6's ChainSource (compose and chain_part are HV6's, byte for byte) over an HV4Chain whose RpcClient state file and whose policy-v2 prefetcher spend file are
+    under the HV7 root, every path through HV7's check_path (H.check is bound to HV6's roots). Provider pinned and HV4's chain state refused, as in HV6. The thread
+    is not started here."""
+    refuse_hv4_chain_state(env)
+    pinned_provider(env)
+    from tools.hv4_chain import HV4Chain, RpcClient, RpcConfig
+    from tools.hv4_prefetch import ChainPrefetcher
+
+    state = check_path(Path(root) / CHAIN_CREDITS_FILE, "w")
+    spend = check_path(Path(root) / CHAIN_SPEND_FILE, "w")
+    os.makedirs(os.path.dirname(state), exist_ok=True)
+    chain = HV4Chain(RpcClient(RpcConfig.from_env(env), state_path=state, daily_call_cap=HV7_RPC_CALLS_PER_DAY))
+    return ChainSource(chain, ChainPrefetcher(chain, ChainSource.compose, spend_path=Path(spend), policy="v2", hourly_budget=HV7_RPC_CALLS_PER_H))
 
 
 class Hv7DecisionLog(DecisionLog):
@@ -471,6 +494,20 @@ class Hv7Runner:
         check_card_keys(card)       # raises: a key outside the allowlist is a fault, not a skip
         return card
 
+    def _watch(self, T: int, res: Any, screened: Sequence[str], tried: Sequence[str]) -> None:
+        """Tell a chain source with a background prefetcher the watch set (no RPC here, no effect on the decision path; a fake chain has no `watch`).
+        hot = the screened pools, then the other pools whose card was tried this screen (a pool with no facts yet has no card and must still be prefetched),
+        at most WATCH_HOT_MAX. items = the screened and tried pools, then the top candidates by vol_60m, at most WATCH_MAX."""
+        watch = getattr(self.chain, "watch", None)
+        if watch is None:
+            return
+        hot = list(dict.fromkeys([*screened, *tried]))[:WATCH_HOT_MAX]
+        vol = {q: res.feats[q].get("vol_60m") or 0.0 for q in res.candidates}
+        in_hot = set(hot)
+        rest = sorted((q for q in res.candidates if q not in in_hot), key=lambda q: (-float(vol[q]), q))
+        ranked = (hot + rest)[:max(WATCH_MAX, len(hot))]
+        watch([(q, self.state.pool(q).mint) for q in ranked], hot, self._now(T), vols={q: vol[q] for q in ranked})
+
     def screen(self, T: int, rebuild: Mapping[str, Any] | None = None, rank_row: Mapping[str, Any] | None = None) -> None:
         """rebuild: the logged period row of a resumed period. The screen is re-run from the replayed tape and must equal the logged one; no new SCAN row. rank_row: the L rank row already logged for it (a fallback written at shutdown): L's pick is taken from it, the model is not asked."""
         t_d = R.iso_from_ms(T)
@@ -488,9 +525,11 @@ class Hv7Runner:
         order = sorted((pid for pid in res.candidates if R._vol_ok(vol[pid])), key=lambda q: (-float(vol[q]), q))
         cards: dict[str, dict] = {}
         vetoed: list[str] = []
+        tried: list[str] = []
         for pid in order:
             if len(cards) >= self.cfg.n:
                 break
+            tried.append(pid)
             snap, prints = self.state.snapshot(pid), list(self.state.pool(pid).events)
             card = self._card(pid, T, snap, prints, res.feats[pid])
             if card is None:
@@ -501,6 +540,7 @@ class Hv7Runner:
                 continue
             cards[pid] = card
         scr = R.screen_set(list(cards), vol, n=self.cfg.n, n_min=self.cfg.n_min)
+        self._watch(T, res, scr.ids, tried)
         shas = tuple(A.p4.card_sha256(cards[i]) for i in scr.ids)
         base = {"kind": "period", "t_d": t_d, "t_e": R.iso_from_ms(T - T_D_OFFSET_MS + T_E_OFFSET_MS), "counts": dict(res.counts), "n_candidates": len(res.candidates),
                 "vetoed": sorted(vetoed), "screen": list(scr.ids), "card_shas": list(shas), "no_trade": scr.no_trade, "reason": scr.reason, "as_of_slot": self.slot}
@@ -878,8 +918,6 @@ def main(argv: list[str] | None = None, *, _stub: Mapping[str, Any] | None = Non
             run.shutdown()
         return 0
     from tools.hv6_agents import CallerModel
-    from tools.hv6_runner import live_chain_source
-
     engine = ArenaEngine(cfg=stack_config(a.feed_delay_slots))
     run = Hv7Runner(Hv7Config(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True, entries_halt_ms=a.entries_halt_ms),
                     ArenaState(check_path(a.tape, "r"), start_ms=0), engine, CallerModel(guard), live_chain_source(a.root), guard)
@@ -892,9 +930,11 @@ def main(argv: list[str] | None = None, *, _stub: Mapping[str, Any] | None = Non
     else:
         run.log_start()
         start = now
+    run.chain.prefetch.start()      # facts are fetched off the scan path, stamped before the scan instant
     try:
         run.run(start, 1 << 62)
     finally:
+        run.chain.prefetch.stop()
         run.shutdown()
     return 0
 
