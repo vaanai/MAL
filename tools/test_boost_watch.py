@@ -39,10 +39,11 @@ def tx(data: bytes, inner: bool = False, program: str = bw.PROGRAM) -> dict:
 
 class Fake:
     def __init__(self, account=RAW, sigs=None, txs=None, fail=False):
-        self.account, self.sigs, self.txs, self.fail, self.calls = account, sigs or {}, txs or {}, fail, []
+        self.account, self.sigs, self.txs, self.fail, self.log, self.calls = account, sigs or {}, txs or {}, fail, [], 0
 
     def call(self, method, params):
-        self.calls.append(method)
+        self.log.append(method)
+        self.calls += 1
         if self.fail:
             raise m.RpcUnreachable("down")
         if method == "getAccountInfo":
@@ -152,7 +153,7 @@ def test_config_fetch_is_capped(tmp_path):
     ids = [f"s{i}" for i in range(20)]
     f = Fake(sigs={bw.CONFIG_ADDRESS: ids[::-1] + ["a"]}, txs={i: cfg_tx(False) for i in ids})
     assert bw.run(args(tmp_path), client=f) == 0
-    assert f.calls.count("getTransaction") == bw.MAX_CONFIG_FETCH
+    assert f.log.count("getTransaction") == bw.MAX_TX_FETCH
 
 
 @pytest.mark.parametrize("loaded", [False, True])
@@ -190,4 +191,101 @@ def test_read_failures_exit_4_not_3(tmp_path):
 def test_log_has_no_secret_fields(tmp_path):
     bw.run(args(tmp_path), client=Fake())
     assert set(lines(tmp_path)[0]) == {"schema", "utc", "boost_enabled", "config_sha256", "admin", "boost_authority", "layout_ok", "baseline",
-                                       "new_txs", "change", "status"}
+                                       "new_txs", "change", "status", "rpc", "calls_per_poll"}
+
+
+# ---- RPC client: backoff, budget, key hygiene (fake transport, no network) ----
+SECRET = "SEKRET-KEY-12345"
+
+
+def transport_script(statuses, ok_result=None):
+    """Fake transport returning scripted HTTP statuses, then a 200 with ok_result. Answers getSignaturesForAddress with an empty list."""
+    seq = list(statuses)
+
+    def t(url, body, timeout):
+        if json.loads(body)["method"] == "getSignaturesForAddress" and not seq:
+            return 200, {}, json.dumps({"result": []}).encode()
+        st = seq.pop(0) if seq else 200
+        return st, {}, json.dumps({"jsonrpc": "2.0", "id": 1, "result": ok_result}).encode()
+    return t
+
+
+ACCOUNT_OK = {"value": {"data": [ACC["data"][0], "base64"]}}
+
+
+def test_429_then_success_is_not_a_fail():
+    sleeps = []
+    c = bw.WatchRpc("https://x/?k=" + SECRET, transport=transport_script([429, 503], {"value": 1}), sleep=sleeps.append, rand=lambda: 0.5)
+    assert c.call("getAccountInfo", ["a"]) == {"value": 1}
+    assert c.calls == 3 and sleeps == [1.0, 2.0]  # exponential: base*2^(n-1), jitter factor 0.5+0.5 = 1
+
+
+def test_backoff_is_exponential_with_jitter_and_capped():
+    sleeps = []
+    c = bw.WatchRpc("u", retries=6, cap=5.0, transport=transport_script([429] * 7), sleep=sleeps.append, rand=lambda: 1.0)
+    with pytest.raises(m.RpcUnreachable):
+        c.call("x", [])
+    assert sleeps == [1.5, 3.0, 6.0, 7.5, 7.5, 7.5] and c.calls == 7
+
+
+def test_429_recovered_inside_poll_counts_no_fail_in_run(tmp_path):
+    c = bw.WatchRpc("https://x/?k=" + SECRET, transport=transport_script([429], ACCOUNT_OK), sleep=lambda s: None)
+    assert bw.run(args(tmp_path, "--max-fail", "1"), client=c) == 0
+    last = lines(tmp_path)[-1]
+    assert last["status"] == "OK" and last["rpc"] == "public"
+    assert last["calls_per_poll"] == 5  # 1 retry + 1 account + 3 signature calls (no new txs on the first poll)
+
+
+def test_exhausted_retries_count_one_fail(tmp_path):
+    c = bw.WatchRpc("https://x/?k=" + SECRET, retries=2, transport=transport_script([429] * 9), sleep=lambda s: None)
+    assert bw.run(args(tmp_path, "--max-fail", "1"), client=c) == 4
+    assert lines(tmp_path)[-1]["status"] == "READ_FAIL"
+
+
+def test_key_never_in_log_stdout_or_repr(tmp_path, capsys):
+    env = tmp_path / "helius.env"
+    env.write_text(f"# comment\nHELIUS_API_KEY={SECRET}\n")
+    url = bw.rpc_from_env_file(env)
+    assert url.endswith(SECRET)
+    c = bw.WatchRpc(url, retries=1, transport=transport_script([429] * 9), sleep=lambda s: None)
+    assert SECRET not in repr(c)
+    assert bw.run(args(tmp_path, "--rpc-env", str(env), "--max-fail", "1"), client=c) == 4
+    out = capsys.readouterr()
+    log = (tmp_path / "boost_watch.log").read_text()
+    assert SECRET not in log + out.out + out.err and '"rpc": "helius"' in log
+
+
+def test_key_not_logged_on_success(tmp_path, capsys):
+    env = tmp_path / "helius.env"
+    env.write_text(f"HELIUS_API_KEY={SECRET}\n")
+    c = bw.WatchRpc(bw.rpc_from_env_file(env), transport=transport_script([], ACCOUNT_OK), sleep=lambda s: None)
+    assert bw.run(args(tmp_path, "--rpc-env", str(env)), client=c) == 0
+    assert SECRET not in (tmp_path / "boost_watch.log").read_text() + (tmp_path / "state.json").read_text()
+
+
+def test_exception_text_has_no_url():
+    c = bw.WatchRpc("https://x/?api-key=" + SECRET, retries=0, transport=transport_script([500]), sleep=lambda s: None)
+    with pytest.raises(m.RpcUnreachable) as e:
+        c.call("getAccountInfo", [])
+    assert SECRET not in str(e.value)
+
+
+def test_env_file_url_form_and_bad_file(tmp_path, capsys):
+    f = tmp_path / "e"
+    f.write_text("export RPC_URL='https://h.example/?api-key=" + SECRET + "'\n")
+    assert bw.rpc_from_env_file(f) == "https://h.example/?api-key=" + SECRET
+    f.write_text("NOTHING=1\n")
+    with pytest.raises(ValueError):
+        bw.rpc_from_env_file(f)
+    assert bw.run(args(tmp_path, "--rpc-env", str(f))) == 2
+    assert SECRET not in capsys.readouterr().err
+
+
+def test_admin_backlog_deferred_not_lost(tmp_path):
+    assert bw.run(args(tmp_path), client=Fake(sigs={ADMIN: ["b"]})) == 0
+    ids = [f"a{i}" for i in range(5)]
+    f = Fake(sigs={ADMIN: ids[::-1] + ["b"]}, txs={i: tx(b"\x01" * 16) for i in ids})
+    assert bw.run(args(tmp_path), client=f) == 0
+    assert f.log.count("getTransaction") == bw.MAX_TX_FETCH
+    assert bw.run(args(tmp_path), client=f) == 0
+    assert f.log.count("getTransaction") == 5  # the remaining two are fetched next poll

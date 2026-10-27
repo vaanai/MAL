@@ -24,6 +24,8 @@ Any transaction that writes the config account is an alert (swaps only read it, 
 from __future__ import annotations
 
 import argparse
+import http.client
+import random
 import base64
 import json
 import os
@@ -49,7 +51,8 @@ PINNED = {
 }
 WATCHED_NAMES = ("toggle_boost", "set_boost_authority", "update_admin", "update_fee_config", "update_buyback_config", "disable",
                  "toggle_mayhem_mode", "toggle_cashback_enabled", "update_creator_fee_config", "create_config", "admin_update_token_incentives")
-SIG_LIMIT = 25
+SIG_LIMIT = 10  # small: three signature calls per poll
+MAX_TX_FETCH = 3  # getTransaction calls per poll, all addresses together
 
 
 def load_idl_discriminators(path: str | os.PathLike) -> dict[bytes, str]:
@@ -112,13 +115,82 @@ def writable_keys(tx: Mapping[str, Any] | None) -> set[str]:
     return out
 
 
-MAX_CONFIG_FETCH = 10  # swaps list the config read-only and are many per minute: fetch at most this many per poll, the hash covers the rest
 
 
 def new_sigs(sigs: list[Mapping[str, Any]], seen: list[str]) -> list[str]:
     """Signatures (oldest first) from getSignaturesForAddress (newest first) not yet in `seen`."""
     s = set(seen)
     return [x["signature"] for x in reversed(sigs) if x["signature"] not in s]
+
+
+RETRY_STATUS = (403, 429, 500, 502, 503, 504)  # 403: the public endpoint answers rate-limited clients with it
+
+
+class WatchRpc:
+    """Minimal JSON-RPC client: exponential backoff with jitter on 429/403/5xx/network errors INSIDE one call, so a poll counts as failed only after
+    the retries are used up. `calls` counts HTTP attempts (retries included). The URL (which may hold an API key) is never put in an exception,
+    a log line or a repr."""
+
+    def __init__(self, url: str, *, retries: int = 4, base: float = 1.0, cap: float = 20.0, timeout: float = 30.0,
+                 transport: Callable[..., Any] = m.urllib_transport, sleep: Callable[[float], None] = time.sleep,
+                 rand: Callable[[], float] = random.random) -> None:
+        self._url, self.retries, self.base, self.cap, self.timeout = url, retries, base, cap, timeout
+        self._transport, self._sleep, self._rand = transport, sleep, rand
+        self.calls = 0
+
+    def __repr__(self) -> str:
+        return "WatchRpc(<redacted>)"
+
+    def call(self, method: str, params: list[Any]) -> Any:
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": list(params)}).encode()
+        last = "no attempt"
+        for attempt in range(self.retries + 1):
+            if attempt:
+                self._sleep(min(self.cap, self.base * 2 ** (attempt - 1)) * (0.5 + self._rand()))
+            self.calls += 1
+            try:
+                status, _headers, payload = self._transport(self._url, body, self.timeout)
+            except (OSError, http.client.HTTPException) as exc:
+                last = f"network {type(exc).__name__}"
+                continue
+            if status in RETRY_STATUS:
+                last = f"http {status}"
+                continue
+            if status != 200:
+                raise m.RpcError(f"http {status} on {method}")
+            try:
+                obj = json.loads(payload)
+            except ValueError:
+                last = "undecodable body"
+                continue
+            err = obj.get("error") if isinstance(obj, dict) else None
+            if err:
+                code = err.get("code") if isinstance(err, dict) else None
+                if code in (-32005, -32429):  # node busy / rate limit
+                    last = f"rpc {code}"
+                    continue
+                raise m.RpcError(f"rpc error {code} on {method}")
+            return obj.get("result") if isinstance(obj, dict) else None
+        raise m.RpcUnreachable(f"{method}: {last} after {self.retries + 1} attempts")
+
+
+def rpc_from_env_file(path: str | os.PathLike) -> str:
+    """RPC URL from an env file (KEY=VALUE lines, # comments, optional quotes, optional `export`). Prefers a variable whose value is an http(s) URL;
+    else a variable whose name contains KEY becomes a Helius URL. Names and values are never printed."""
+    vals: dict[str, str] = {}
+    for line in Path(path).expanduser().read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        vals[k.removeprefix("export ").strip()] = v.strip().strip("'\"")
+    for v in vals.values():
+        if v.startswith(("http://", "https://")):
+            return v
+    for k, v in vals.items():
+        if "KEY" in k.upper() and v:
+            return "https://mainnet.helius-rpc.com/?api-key=" + v
+    raise ValueError("no RPC URL or API key variable found in the env file")
 
 
 def now_utc() -> str:
@@ -145,22 +217,27 @@ def poll(client: Any, state: Mapping[str, Any], watched: Mapping[bytes, str]) ->
         for k in ("sha256", "admin", "boost_authority"):
             if cfg[k] != base[k]:
                 reasons.append(f"{k}_changed")
-    addrs = {"config": CONFIG_ADDRESS}
-    for k in ("admin", "boost_authority"):
+    addrs = {}
+    for k in ("admin", "boost_authority"):  # rare and decisive: first in line for the fetch budget
         if cfg[k]:
             addrs[k] = cfg[k]
+    addrs["config"] = CONFIG_ADDRESS
     new_txs: list[dict[str, Any]] = []
     seen = st.setdefault("seen", {})
+    fetched = 0
     for label, addr in addrs.items():
         sigs = client.call("getSignaturesForAddress", [addr, {"limit": SIG_LIMIT, "commitment": "finalized"}]) or []
         if addr not in seen:  # first sight of an address: record history, do not alert on it
             seen[addr] = [x["signature"] for x in sigs]
             continue
         todo = new_sigs(sigs, seen[addr])
-        if label == "config" and len(todo) > MAX_CONFIG_FETCH:
-            seen[addr] = (seen[addr] + todo[:-MAX_CONFIG_FETCH])[-200:]  # oldest are marked seen unfetched; account hash/bytes cover them
-            todo = todo[-MAX_CONFIG_FETCH:]
+        if label == "config" and len(todo) > MAX_TX_FETCH:  # swaps: many per minute, read-only; the rest are marked seen (hash/bytes cover them)
+            seen[addr] = (seen[addr] + todo[:-MAX_TX_FETCH])[-200:]
+            todo = todo[-MAX_TX_FETCH:]
         for sig in todo:
+            if fetched >= MAX_TX_FETCH:
+                break  # budget used: admin/authority sigs stay unseen and are fetched next poll
+            fetched += 1
             tx = client.call("getTransaction", [sig, {"encoding": "json", "commitment": "finalized", "maxSupportedTransactionVersion": 0}])
             if tx is None:
                 break  # not retrievable yet: stays unseen, retried next poll (order kept)
@@ -185,6 +262,7 @@ def poll(client: Any, state: Mapping[str, Any], watched: Mapping[bytes, str]) ->
 def run(argv: list[str] | None = None, *, client: Any | None = None, sleep: Callable[[float], None] = time.sleep) -> int:
     ap = argparse.ArgumentParser(description="BOOST-off early warning (Q50). Exit 3 on a change.")
     ap.add_argument("--rpc", default=os.environ.get("BOOST_WATCH_RPC", m.DEFAULT_RPC))
+    ap.add_argument("--rpc-env", help="env file holding the Helius RPC URL or API key (e.g. /var/lib/mal/fast-listener/helius.env on mal-fast-0); never printed or logged")
     ap.add_argument("--log-dir", default=DEFAULT_LOG_DIR)
     ap.add_argument("--idl", default=DEFAULT_IDL)
     ap.add_argument("--loop", action="store_true", help="poll every --interval s until exit 3 or 4")
@@ -204,11 +282,19 @@ def run(argv: list[str] | None = None, *, client: Any | None = None, sleep: Call
         print("alert and baseline cleared; the next poll re-baselines")
         return 0
     watched = load_idl_discriminators(a.idl)
-    client = client or m.RpcClient(a.rpc, min_interval=1.0, max_calls=10**9)
+    rpc_label = "helius" if a.rpc_env else "public"  # the only RPC identity that is ever logged
+    if client is None:
+        try:
+            url = rpc_from_env_file(a.rpc_env) if a.rpc_env else a.rpc
+        except (OSError, ValueError) as exc:
+            print(f"rpc-env unusable: {type(exc).__name__}", file=sys.stderr)  # type only: never the path contents
+            return 2
+        client = WatchRpc(url, sleep=sleep)
     fails = n = 0
     while True:
         n += 1
         state = json.loads(sp.read_text()) if sp.exists() else {}
+        calls0 = getattr(client, "calls", 0)
         try:
             line, new_state = poll(client, state, watched)
         except (*m.ITEM_ERRORS, ValueError, KeyError, IndexError, TypeError) as exc:
@@ -216,6 +302,8 @@ def run(argv: list[str] | None = None, *, client: Any | None = None, sleep: Call
             line, new_state = {"schema": SCHEMA, "utc": now_utc(), "status": "READ_FAIL", "error": type(exc).__name__, "consecutive_fail": fails}, None
         else:
             fails = 0
+        line["rpc"] = rpc_label
+        line["calls_per_poll"] = getattr(client, "calls", 0) - calls0
         with lp.open("a") as f:
             f.write(json.dumps(line) + "\n")
         if new_state is not None:
