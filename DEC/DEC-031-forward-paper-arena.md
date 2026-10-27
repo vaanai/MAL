@@ -649,7 +649,7 @@ DEC-031 Amendment 18: the registration path of the 2026-11-06 successor of `h5v1
 11. **Disclosure.** In view: DEC-031 through Amendment 15 at origin/main `c8fcf761`, DEC-032, DEC-033, EXP-024 Amendments 9 and 10 and their Notes, QP-RULING-1024-successor, `docs/research/q50-successor/PLAYBOOK.md`, the S\* tag and its diff, `docs/HANDOFF.md`, and the code of `tools/h5_shadow.py`, `tools/h5_arena_executor.py`, `tools/h5_arena_ladder.py`, `tools/h5_arena_exec_replay.py`, `tools/arena_h5_score.py`, `tools/arena_h5_score_q50.py`, `tools/arena_h5_q50_instant.py`, `tools/arena_h5_books.py` and `tools/a3_halt.py`. `docs/HANDOFF.md` §1 quotes Q50's day-1 dry-score counts (disclosed in #897); they were in view as text and were used for nothing here. Not opened: any Q50 or HV4 shadow output, trigger, decision log, ledger, `bots.json`, score output, count file, read-instant file, A3 daily record, verdict or applied log, job status or log, or any fill, exit or P&L. Q50's outcomes have been observable in real time since 2026-10-25 under EXP-024 Amendment 10 (a); this writer looked at none. Winner's curse: Q* = 50 is a discarded discovery cell, and any successor pass is best of N. No book has cleared the promotion gate, and nothing here is a profit claim.
 
 
-### Amendment 19 (DRAFT; number = the next free DEC-031 amendment at merge, Amendment 16 is held by open PR #1019, a renumber is a fill; written 2026-10-27T21:21:00Z, revised 2026-10-27T21:32:12Z on quant-proof's comment 6454061741 (B1 to B6, rulings (a) to (f)), both from `date -u` on mal-research-0; records only; before the registration, P0 count and clock of the book it covers, and before any outcome of that book exists; outcome-blind; status: DRAFT until merge, QP OK on the exact head and a reviewer verdict)
+### Amendment 19 (DRAFT; number = the next free DEC-031 amendment at merge, Amendment 16 is held by open PR #1019, a renumber is a fill; written 2026-10-27T21:21:00Z, revised 2026-10-27T21:32:12Z on quant-proof's comment 6454061741 (B1 to B6, rulings (a) to (f)) and its B1 correction 6454095235, both from `date -u` on mal-research-0; records only; before the registration, P0 count and clock of the book it covers, and before any outcome of that book exists; outcome-blind; status: DRAFT until merge, QP OK on the exact head and a reviewer verdict)
 DEC-031 Amendment 19: the decision to register the Q* = 60 sibling `h5v1q60-boostfloor-a1` (rule `H5-BOOSTFLOOR-Q60 v1`; library row `l3-boost-h5q50-1` variant B) as its own arena book on its own clock, and the rules it runs under. Scope: this book, plus one report-only print line in the successor `h5v1q50-boostfloor-s1`'s read (item 7). No book has cleared the promotion gate.
 
 Q* = 60 is a discarded discovery cell. Discovery was monotone, with smaller Q\* better, so 60 is the worst of {40, 50, 60}. No Q60 edge figure exists, and none exists for Q50 either. Nothing here is a profit claim.
@@ -682,16 +682,13 @@ Companion texts:
    - (f) An AST identity test of every other function against S\*.
    - (g) A decode identity test.
    - (h) The seal grid at Q\* 60 on synthetic 2026 times.
+   - (i) `compare_frozen` refuses when no frozen row matches the level (quant-proof's MINOR latent defect in comment 6454095235: at Q\* != 40 it silently returns 0 rows), with a test. This fix is on the `q60-base-1` tag only, never in the pinned `tools/h5_shadow.py` on main.
 
    It is built on S\*, not F50, because F50's fresh-forward seal ends every pool at 2026-11-06T00Z (QP-RULING-1024-successor R7(a)). Q\* = 60 cannot be set by config: `check_q_star` refuses it, and a Q\* != 40 start record carries Q50's rule fields (`tools/h5_shadow.py` lines 200 to 202 and 3287 to 3288 at F50; 3290 to 3291 at S\*). A commit with any other diff is a new `bot_id`.
 
    **Built and proven before the clock** (target: tagged by 2026-11-02T00:00Z). The proofs:
    - **(i)** Runs A (default) and B (`--q-star-sol 50`) of the 2026-09-20 md5 decision-equivalence give exactly #1548's md5s at S\*.
-   - **(ii) Run C (B1), at `--q-star-sol 60` in replay mode, with `compare_frozen` against the discovery output.** The reference file is `/data/mal/hunt-1008/h5-flows/out/boostdip_disc_v2.parquet`, sha256 `24e381917bc73a7682c316a52bf5b7e56ee6b4c334163fb31c53e011fd646128`. It is the only frozen output with `D == 60` rows; `boostdip_frozen_conf.parquet`, which covers 09-20, has only `D == 40`.
-     - **The day is 2026-08-15**: the first full UTC day of explore-0814 (`[08-14T12, 08-28T12)`), chosen by that calendar rule alone. No count, price or outcome of any day was looked at to choose it. 08-14 is partial, and every `D == 60` row lies on days 08-14 to 08-28 (QP's column check).
-     - **Before the run**, a counts-only check confirms that `D == 60` rows exist on 08-15 (the `D` and `day` columns only). The day's tape must be admitted by `refuse_replay`: no `FORBIDDEN` token in its path, before `Q50_REPLAY_CUTOFF_HOUR` 2026-10-01T00, and outside VOID.
-     - **Fallback.** If either check fails, the fallback reference is declared in a notebook entry before the run. It uses trigger fields only (pool, trigger slot, trigger print index), with no P&L, fill or exit printed, and the next full explore-0814 day by the same calendar rule.
-     - **Result.** EQUAL, or every difference explained with quant-proof ruling on it before registration.
+   - **(ii) Run C (B1, as corrected by quant-proof's comment 6454095235): the Q50 precedent of #789.** A fresh, unmodified `s14_boostdip.py` run (sha256 `70becfb7…`, the file #789 used) with env DS=60 TMIN=0 TMAX=300 TEND=330 NOBOOSTREQ=0 on the exploration day 2026-09-20 (fast-pool-0918; outside every counted window and seal), compared with the shadow's replay at `--q-star-sol 60` through `parity_v2.py`, as #789 did at DS=50 (output sha256 `a02cd8f7…`; s14 138 vs shadow 137). It is judged against the same 2 residual pools diagnosed in D1 of `ARTIFACTS/lab/arena-records-2026-10-24-q50.md` (`F9fckcTp…`, a parity-driver window cut; `7j99BJ9h…`, a replay-only optimistic effect), each disclosed if it recurs. **Any other difference is a STOP**: no registration until quant-proof rules. Run C prints counts and pool ids of differences only, never P&L. No frozen discovery rows are used: `boostdip_frozen_conf.parquet` has only D = 40.
    - **(iii) and (iv)** The AST identity and decode identity tests are committed at the tag and run on mal-fast-0's Python. The records PR cites the job ids. This makes the guard (h) cover transitive (QP ruling, question 4): Q60\* equals S\* on decode functions, S\* equals F50, and F50 equals `1f7a89c`.
    - **(v)** Unit tests are green at the tag.
 
@@ -801,7 +798,7 @@ Companion texts:
       - quant-proof's comment 6454061741;
       - `docs/HANDOFF.md`, whose §1 quotes Q50's day-1 dry counts (used for nothing) and whose §7 states fast-0 memory pressure (used for the memory rule).
     - **Opened by this writer:**
-      - the sha256 of `boostdip_disc_v2.parquet`;
+      - the sha256 of `boostdip_disc_v2.parquet` (computed for the withdrawn explore-0814 reference; not used);
       - the code of `tools/h5_shadow.py`.
     - **Not opened:**
       - any Q50, s1 or HV4 output, shadow or score file;
