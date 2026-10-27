@@ -222,6 +222,16 @@ class Hv7Guard:
         ids = {r["reservation_id"] for r in rows if r.get("kind") == "reserve" and r.get("request_sha256") == request_sha256}
         return math.fsum(r["cost_usd"] for r in rows if r.get("reservation_id") in ids)
 
+    def reserved_without_cache(self, day: str, request_sha256: str) -> bool:
+        """True when the budget ledger holds a reserve row for this request but the replay cache has no <request_sha256>.json: the call was cut off (crash or
+        shutdown) after it was reserved. Such a request is NEVER re-asked (a second reserve could pay twice)."""
+        led = Ledger(self.root / "ledgers" / RANK_LEDGER / f"{day}.jsonl")
+        with led.locked(exclusive=False):
+            rows = led.rows()
+        if not any(r.get("kind") == "reserve" and r.get("request_sha256") == request_sha256 for r in rows):
+            return False
+        return not (self.root / "cache" / RANK_LEDGER / f"{request_sha256}.json").exists()
+
     def day_spent(self, day: str) -> float:
         led = Ledger(self.root / "ledgers" / RANK_LEDGER / f"{day}.jsonl")
         with led.locked(exclusive=False):
@@ -406,8 +416,8 @@ class Hv7Runner:
         check_card_keys(card)       # raises: a key outside the allowlist is a fault, not a skip
         return card
 
-    def screen(self, T: int, rebuild: Mapping[str, Any] | None = None) -> None:
-        """rebuild: the logged period row of a resumed period. The screen is re-run from the replayed tape and must equal the logged one; no new SCAN row."""
+    def screen(self, T: int, rebuild: Mapping[str, Any] | None = None, rank_row: Mapping[str, Any] | None = None) -> None:
+        """rebuild: the logged period row of a resumed period. The screen is re-run from the replayed tape and must equal the logged one; no new SCAN row. rank_row: the L rank row already logged for it (a fallback written at shutdown): L's pick is taken from it, the model is not asked."""
         t_d = R.iso_from_ms(T)
         pools = self.state.pools_wsol(lambda p: p.prog == "pumpswap")
 
@@ -450,18 +460,43 @@ class Hv7Runner:
             return
         ordered = [cards[i] for i in scr.ids]
         rr = R.build_rank_request(t_d, ordered, seq=T // HOUR_MS)
-        call = _Call(lambda: self._ask(rr, T), threaded=self.cfg.live)
+        l_logged = None
+        if rank_row is not None:
+            l_logged, call = rank_row.get("pick"), None
+        elif rebuild is not None and self._cut_off(rr, T):
+            call = None                                  # (b): reserved, never answered: a counted L FALLBACK, never re-asked
+        else:
+            call = _Call(lambda: self._ask(rr, T), threaded=self.cfg.live)
         picks = {"R": [R.r_pick(t_d, scr.ids, shas)], "S": [R.s_pick(scr)], "U": list(R.u_set(scr))}
         if rebuild is None:
             self.log.append("SCAN", T, base)
         self.pending = {"t_e": T - T_D_OFFSET_MS + T_E_OFFSET_MS, "t_d": T, "t_d_iso": t_d, "picks": picks, "cards": {i: cards[i] for i in scr.ids},
-                        "rr": rr, "call": call, "scr_ids": scr.ids, "shas": shas}
+                        "rr": rr, "call": call, "scr_ids": scr.ids, "shas": shas, "l_logged": l_logged}
+        if rebuild is not None and rank_row is None and call is None:
+            self._resolve_l(self.pending, T, forced="call_cut_off")
+            self.pending["l_logged"] = self.pending["picks"]["L"][0]
 
-    def _resolve_l(self, pend: dict, T: int) -> None:
+    def _cut_off(self, rr: R.RankRequest, T: int) -> bool:
+        g = self.guard
+        if g is None or not hasattr(g, "reserved_without_cache"):
+            return False
+        try:
+            hit = g.reserved_without_cache(utc_day(T), rr.request.request_sha256())
+        except Exception:  # noqa: BLE001 - an unreadable ledger fails closed: do not re-ask
+            self._count("ledger_unreadable")
+            return True
+        if hit:
+            self._count("call_cut_off")
+        return hit
+
+    def _resolve_l(self, pend: dict, T: int, forced: str | None = None) -> None:
         """At t_e: the L verdict if the call returned in time, else a FALLBACK ("late"). Logs the rank row and sets L's pick."""
         rr = pend["rr"]
-        got = pend["call"].get()
-        if got is None:
+        got = None if forced else (pend["call"].get() if pend["call"] is not None else None)
+        if forced:
+            verdict = R.validate_rank(None, rr.shown_ids)
+            mrow = {"model_error": forced, "refused": False, "latency_ms": None, "cost_usd": 0.0, "response_sha256": None, "late": False, "cut_off": True}
+        elif got is None:
             self._count("late_reply")
             verdict = R.validate_rank(None, rr.shown_ids)
             mrow = {"model_error": "no_reply_by_t_e", "refused": False, "latency_ms": None, "cost_usd": 0.0, "response_sha256": None, "late": True}
@@ -521,7 +556,10 @@ class Hv7Runner:
         if pend is None or pend["t_e"] != T:
             return
         self.pending = None
-        self._resolve_l(pend, T)
+        if pend.get("l_logged") is not None:
+            pend["picks"]["L"] = [pend["l_logged"]]         # the rank row is already in the log (cut-off fallback)
+        else:
+            self._resolve_l(pend, T)
         if self.entries_halted_at(T):
             self.log.append("SCAN", T, {"kind": "entries_halted", "t_e": R.iso_from_ms(T)})
             return
@@ -595,13 +633,15 @@ class Hv7Runner:
                                       "pick_display_slot": None})
 
     def shutdown(self) -> None:
-        """Orderly stop. An L call still in flight cannot be waited for: the period is excluded (rule 4) so that the log says what happened to it. A pending
-        period whose reply is already back is left alone: resume re-asks it through the cache."""
+        """Orderly stop. An L call still in flight cannot be waited for: it is an L FALLBACK (rank row, cut_off true, counted in the 10% rule), not an exclusion.
+        Its pick is R's. A resume at or before t_e takes L's pick from that row and enters all arms; the call is never re-asked. A pending period whose reply
+        is already back is left alone: resume re-asks it through the cache."""
         p = self.pending
-        if p is not None and not p["call"].done.is_set():
+        if p is not None and p["call"] is not None and not p["call"].done.is_set():
             self._count("shutdown_in_flight")
+            self._resolve_l(p, p["t_d"], forced="shutdown_in_flight")
+            p["l_logged"] = p["picks"]["L"][0]
             self.pending = None
-            self._log_excluded(p["t_d"], p["t_d_iso"], "shutdown_in_flight")
 
     def _repair_tails(self, now_ms: int) -> int:
         n = 0
@@ -670,6 +710,14 @@ class Hv7Runner:
                 else:
                     self._count("restart_after_t_e")
                     self._log_excluded(t_d, last["t_d"], "restart_after_t_e")
+            elif (not ranks[-1].get("excluded") and now_ms <= t_e and ranks[-1].get("cut_off") and ranks[-1].get("pick")
+                  and not any(r.get("kind") == "entry" and r["ms"] == t_e for a in ROWS_ARMS(rows) for r in a)
+                  and not any(r.get("kind") == "entries_halted" and r.get("t_e") == last["t_e"] for r in self.log.rows("SCAN"))):
+                self.poll_to(t_d)
+                self.sim_now = max(self.sim_now, t_d)
+                self.screen(t_d, rebuild=last, rank_row=ranks[-1])
+                pending_rebuilt = self.pending is not None
+                nxt = t_d + TICK_MS
             elif not ranks[-1].get("excluded") and not any(r.get("kind") == "entries_halted" and r.get("t_e") == last["t_e"] for r in self.log.rows("SCAN")):
                 want = {"L": [ranks[-1]["pick"]], "R": [R.r_pick(last["t_d"], last["screen"], last["card_shas"])], "S": [last["screen"][0]], "U": list(last["screen"])}
                 for arm in ARM_ORDER:
@@ -723,6 +771,10 @@ class Hv7Runner:
 
     def decision_md5(self) -> str:
         return self.log.md5()
+
+
+def ROWS_ARMS(rows: Mapping[str, list]) -> list[list]:
+    return [rows[a] for a in ARM_ORDER]
 
 
 def rows_l(log: DecisionLog) -> list[dict]:

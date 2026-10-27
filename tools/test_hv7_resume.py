@@ -134,7 +134,7 @@ def test_restart_after_t_e_excludes_the_period_and_logs_a_rank_row(tmp_path):
     assert second.counters.get("restart_after_t_e") == 1
 
 
-def test_in_flight_call_at_shutdown_excludes_the_period_and_resume_adds_nothing(tmp_path):
+def test_in_flight_call_at_shutdown_is_a_counted_l_fallback_and_resume_never_re_asks(tmp_path):
     first = make(tmp_path)
     first.run(START, T_E1)
     assert first.pending is not None
@@ -142,12 +142,76 @@ def test_in_flight_call_at_shutdown_excludes_the_period_and_resume_adds_nothing(
     first.shutdown()
     assert first.pending is None and first.counters["shutdown_in_flight"] == 1
     r = rows_of(first, "L", "rank")
-    assert len(r) == 1 and r[0]["excluded"] and r[0]["fallback_reason"] == "shutdown_in_flight"
-    n_scan = len(rows_of(first, "SCAN"))
+    assert len(r) == 1 and r[0]["fallback"] is True and not r[0].get("excluded") and r[0]["model_error"] == "shutdown_in_flight" and r[0]["cut_off"] is True
+    assert not rows_of(first, "SCAN", "period_excluded")        # a fallback, not an exclusion
     second = make(tmp_path)
+    calls = []
+    second.model.complete = lambda *a, **k: calls.append(1)
     second.run(second.resume(T_E1), END)
-    assert len(rows_of(second, "L", "rank")) == 1 and len(rows_of(second, "SCAN", "gap")) == 0
-    assert len(rows_of(second, "SCAN")) == n_scan
+    assert calls == [] and len(rows_of(second, "L", "rank")) == 1 and len(rows_of(second, "SCAN", "gap")) == 0
+    ent = {a: rows_of(second, a, "entry") for a in R.ARM_ORDER}
+    assert all(len(ent[a]) >= 1 and ent[a][0]["ms"] == T_E1 for a in R.ARM_ORDER)
+    assert ent["L"][0]["pool"] == ent["R"][0]["pool"] == r[0]["pick"]          # L entered on its fallback (R's pick) at t_e
+
+
+def test_reserve_row_without_cache_file_is_a_fallback_and_is_never_re_asked(tmp_path):
+    """(b): the call was reserved and cut off. Count reserve rows before and after resume: no second paid call."""
+    seen = []
+    first = make(tmp_path)
+    orig = first.model.complete
+    first.model.complete = lambda req, now: (seen.append(req.request_sha256()), orig(req, now))[1]
+    first.run(START, T_E1)
+    led = tmp_path / "v7" / "ledgers" / R.RANK_LEDGER / (R.utc_day(T_D1) + ".jsonl")
+    led.parent.mkdir(parents=True, exist_ok=True)
+    led.write_text(json.dumps({"kind": "reserve", "reservation_id": "r1", "request_sha256": seen[0], "cost_usd": 0.01}) + "\n")
+    assert not (tmp_path / "v7" / "cache" / R.RANK_LEDGER / (seen[0] + ".json")).exists()
+
+    def reserves():
+        return sum(1 for x in led.read_text().splitlines() if json.loads(x)["kind"] == "reserve")
+
+    n0 = reserves()
+    second = make(tmp_path)
+    calls = []
+    second.model.complete = lambda *a, **k: calls.append(1)
+    second.run(second.resume(T_E1), END)
+    assert calls == [] and reserves() == n0 == 1
+    rank = rows_of(second, "L", "rank")
+    assert len(rank) == 1 and rank[0]["fallback"] is True and rank[0]["model_error"] == "call_cut_off" and not rank[0].get("excluded")
+    assert second.counters["call_cut_off"] == 1
+    assert {a: rows_of(second, a, "entry")[0]["pool"] for a in "LR"}["L"] == rank[0]["pick"]
+    assert all(rows_of(second, a, "entry") for a in R.ARM_ORDER)
+
+
+def test_a_reserve_with_its_cache_file_is_re_asked_through_the_cache(tmp_path):
+    seen = []
+    first = make(tmp_path)
+    orig = first.model.complete
+    first.model.complete = lambda req, now: (seen.append(req.request_sha256()), orig(req, now))[1]
+    first.run(START, T_E1)
+    led = tmp_path / "v7" / "ledgers" / R.RANK_LEDGER / (R.utc_day(T_D1) + ".jsonl")
+    led.parent.mkdir(parents=True, exist_ok=True)
+    led.write_text(json.dumps({"kind": "reserve", "reservation_id": "r1", "request_sha256": seen[0], "cost_usd": 0.01}) + "\n")
+    cache = tmp_path / "v7" / "cache" / R.RANK_LEDGER
+    cache.mkdir(parents=True, exist_ok=True)
+    (cache / (seen[0] + ".json")).write_text("{}")
+    second = make(tmp_path)
+    second.run(second.resume(T_E1), T_E1 + MIN)
+    assert not rows_of(second, "L", "rank")[0].get("cut_off") and second.counters.get("call_cut_off", 0) == 0
+
+
+def test_restart_with_entries_halt_enters_nothing_after_h_and_ends_flat(tmp_path):
+    """DESIGN section 4: a restart carrying an entries halt. Positions are open at the restart; the halt falls before the next t_e."""
+    halt = T_E1 + 30 * MIN
+    first = make(tmp_path)
+    first.run(START, T_E1 + 3 * MIN)
+    second = make(tmp_path, cfg_kw={"entries_halt_ms": halt})
+    nxt = second.resume(T_E1 + 3 * MIN)
+    second.run(nxt, T_E1 + 3 * HOUR)
+    assert second._stop and not second.open                               # ran until flat, then stopped itself
+    assert [r["reason"] for r in rows_of(second, "SCAN", "run_complete")] == ["entries_halt_and_no_open_position"]
+    assert all(r["ms"] < halt for a in R.ARM_ORDER for r in rows_of(second, a, "entry"))
+    assert all(r["ms"] < halt for r in rows_of(second, "SCAN", "period"))     # no new screen after H
+    assert rows_of(second, "U", "sell")
 
 
 def test_shutdown_with_a_returned_reply_leaves_the_period_to_resume(tmp_path, base):
