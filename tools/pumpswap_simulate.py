@@ -114,13 +114,17 @@ def fetch_pool_state(rpc: Rpc, pool: str, user: Pubkey) -> tuple[tx.PoolState, d
     gc, mint, bv, qv, usr = vals
     if not gc or not mint or not bv or not qv:
         raise SystemExit("missing pool/config accounts")
-    cfg = tx.parse_global_config(_b64(gc))
-    recips = [r for r in cfg["protocol_fee_recipients"] if r != user]
+    gcb = _b64(gc)
+    cfg = tx.parse_global_config(gcb)
+    try:
+        fee_to = tx.fee_recipient(gcb, pdata, user)
+    except ValueError as e:
+        raise SystemExit(f"fee recipient refused: {e}")
     ps = tx.pool_state_from_accounts(
         pool_pk,
         pdata,
         base_token_program=Pubkey.from_string(mint["owner"]),
-        protocol_fee_recipient=recips[1] if len(recips) > 1 else recips[0],
+        protocol_fee_recipient=fee_to,
         buyback_fee_recipient=cfg["buyback_fee_recipients"][0],
     )
     extra = {
