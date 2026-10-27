@@ -365,7 +365,9 @@ class Gate(unittest.TestCase):
             self.assertEqual(r["status"], "NOT_DECIDABLE")
             self.assertIn("disagree", r["reasons"][0])
             rc = r["attempt_reconciliation"]
-            self.assertEqual((rc["decision_log_attempts_before_b"], rc["ledger_attempts_before_b"], rc["lost_attempts"]), (100, 120, -20))
+            self.assertEqual((rc["decision_log_attempts_before_b"], rc["ledger_attempts_before_b"], rc["lost_attempts"]), (100, 120, 0))
+            self.assertEqual(rc["extra_ledger_attempts"], 20)
+            self.assertEqual(rc["lost_share"], 0.0)
             self.assertIn("multiplicity", r)
 
     @with_world
@@ -402,14 +404,40 @@ class Gate(unittest.TestCase):
         self.assertIn("not a verdict", r["cells_not_a_verdict"])
 
     @with_world
-    def test_coverage_line_counts_hours_without_rows(self, w):
-        ms = [T0 + h * 3_600_000 + 60_000 for h in range(48) if h not in (5, 6, 7)]
-        w.declog("L", ms)
+    def test_coverage_separates_outage_from_no_trade_hours(self, w):
+        hrs = [h for h in range(48) if h not in (5, 6, 7)]  # hours 5-7: the runner was down
+        w.declog("L", [T0 + h * 3_600_000 + 60_000 for h in hrs if h != 9])  # hour 9: runner up, L did not trade
+        d = w.dec / "decisions" / "SCAN"
+        d.mkdir(parents=True)
+        by = collections.defaultdict(list)
+        for h in hrs:
+            m = T0 + h * 3_600_000 + 60_000
+            by[X.utc_day(m)].append({"kind": "period", "ms": m})
+        for day, rs in by.items():
+            (d / f"{day}.jsonl").write_text("\n".join(json.dumps(r) for r in rs) + "\n")
         cv = X.coverage_check(w.dec, T0, T0 + 2 * DAY)
-        self.assertEqual(cv["window_hours"], 48)
-        self.assertEqual(cv["L"]["hours_with_no_rows"], 3)
-        self.assertEqual(cv["R"]["hours_with_no_rows"], 48)
+        self.assertEqual((cv["window_hours"], cv["outage_hours"], cv["runner_up_hours"]), (48, 3, 45))
+        self.assertEqual(cv["L"]["no_trade_hours"], 1)
+        self.assertEqual(cv["R"]["no_trade_hours"], 45)
         self.assertTrue(cv["report_only"])
+
+    @with_world
+    def test_worst_case_line_when_attempts_are_lost(self, w):
+        rows = self.book_ledger(w, 20)
+        r = gate(w, "L", rows, periods(6, 21), T0 + 8 * DAY)  # 5 lost, still reads
+        wc = r["lost_attempts_worst_case"]
+        self.assertEqual((wc["lost"], wc["report_only"]), (5, True))
+        self.assertEqual(wc["cells"]["flat_1p9_sc"]["n"], 105)
+        self.assertIn("pass_survives", wc)
+        r0 = gate(w, "L", rows, periods(6, 20), T0 + 8 * DAY)
+        self.assertNotIn("lost_attempts_worst_case", r0)
+
+    @with_world
+    def test_lost_check_runs_without_a_deciding_stake_book(self, w):
+        w.add_rows(arm_book("hv7.0-L", 6, 20, win, stakes=(0.5,)))  # no trade rows at the deciding stake
+        r = gate(w, "L", w.led.scan_bot("hv7.0-L")[0], periods(6, 24), T0 + 8 * DAY)  # 120 decided before B vs 100 in the ledger
+        self.assertEqual(r["status"], "NOT_DECIDABLE")
+        self.assertTrue(any("lost" in m for m in r["reasons"]))
 
 
 def contrast_rows(days, per_day, l_pick, pnl, lag=0, extra_u_pools=("a", "b", "c", "d"), r_pool="c", s_pool="b"):
@@ -424,8 +452,11 @@ class Contrast(unittest.TestCase):
     def regn(self, days=10):
         return {"clock_start_ms": T0, "halt_ms": T0 + days * DAY, "D": days, "stake": 0.25, "registry": {}}
 
-    def read(self, rows, days=10, now=None, fb=FB_OK, e1=E1_OK, ranks=(), **kw):
+    def read(self, rows, days=10, now=None, fb=FB_OK, e1=E1_OK, ranks=(), ems=None, **kw):
         h = T0 + days * DAY
+        if ems is None:  # by default the decision log agrees with the ledger
+            ems = {a: [r["stamp_ms"]["entry"] for r in rs if r["kind"] in ("open", "refused")] for a, rs in rows.items()}
+        kw.setdefault("entry_ms_by_arm", ems)
         return X.contrast_read(now_ms=h + X.EXIT_WINDOW_MS if now is None else now, regn=self.regn(days), rows_by_arm=rows, l_rank_rows=ranks, fallback=fb, e1=e1,
                                n_books=30, **kw)
 
@@ -563,6 +594,43 @@ class Contrast(unittest.TestCase):
         with self.assertRaisesRegex(X.Refused, "U priced trades"):
             self.read(rows)
 
+    def test_contrast_lost_attempts_are_not_decidable_not_a_pass(self):
+        # QP probe CONTRAST-LOST: L takes the worst pool once a day; the full book is NOT_PASS
+        def pick(d, i):
+            return ("d",) if i < 3 else ("a",)
+
+        full = {"L": arm_book("hv7.0-L", 10, 4, lambda d, i, p: PNL[p], pick, stakes=(0.25,))}
+        rows = contrast_rows(10, 4, "a", PNL)
+        rows["L"] = full["L"]
+        ems = {a: [r["stamp_ms"]["entry"] for r in rs if r["kind"] == "open"] for a, rs in rows.items()}
+        res = self.read(rows)
+        self.assertEqual(res["status"], "NOT_PASS")
+        # the same book with the worst-pick positions (30 of L's 40 periods) missing from the ledger but present in the decision log
+        short = dict(rows, L=[r for r in rows["L"] if not r.get("position_id", "").endswith("-d")])
+        res = self.read(short, ems=ems)
+        self.assertEqual(res["status"], "NOT_DECIDABLE")
+        self.assertTrue(any("lost" in m for m in res["reasons"]))
+        il = res["integrity"]["L"]
+        self.assertEqual((il["decision_log_attempts"], il["ledger_attempts"], il["lost_attempts"]), (40, 10, 30))
+        # a small loss (2 of 40 = 5.0% is not above the cap) still reads
+        few = dict(rows, L=[r for r in rows["L"] if r.get("position_id") not in ("hv7.0-L-0-0-d", "hv7.0-L-1-0-d")])
+        res = self.read(few, ems=ems)
+        self.assertNotEqual(res["status"], "NOT_DECIDABLE")
+        self.assertEqual(res["integrity"]["L"]["lost_attempts"], 2)
+
+    def test_contrast_ledger_with_extra_attempts_is_final(self):
+        rows = self.build(10, "a")
+        ems = {a: [r["stamp_ms"]["entry"] for r in rs if r["kind"] == "open"] for a, rs in rows.items()}
+        ems["S"] = ems["S"][:-3]
+        res = self.read(rows, ems=ems)
+        self.assertEqual(res["status"], "NOT_DECIDABLE")
+        self.assertTrue(any("disagree" in m for m in res["reasons"]))
+        self.assertEqual(res["integrity"]["S"]["extra_ledger_attempts"], 3)
+
+    def test_contrast_needs_decision_log_instants(self):
+        with self.assertRaises(X.Refused):
+            X.contrast_read(now_ms=HALT + X.EXIT_WINDOW_MS, regn=self.regn(), rows_by_arm=self.build(10, "a"), l_rank_rows=(), fallback=FB_OK, e1=E1_OK, n_books=3)
+
     def test_missing_strand_rule_is_report_only(self):
         rows = contrast_rows(10, 4, "a", PNL)
         rows = {a: [dict(r, legs={"total": r["legs"]["total"]}, calc={k: dict(v, by_rule={"total": v["by_rule"]["total"]}) for k, v in r["calc"].items()}) if r["kind"] == "trade" else r
@@ -587,10 +655,11 @@ class Contrast(unittest.TestCase):
 
     def test_missing_stamp_refused(self):
         rows = self.build(10, "a")
+        ems = {a: [r["stamp_ms"]["entry"] for r in rs if r["kind"] == "open"] for a, rs in rows.items()}
         for r in rows["L"]:
             r.pop("stamp_ms", None)
         with self.assertRaises(X.Refused):
-            self.read(rows)
+            self.read(rows, ems=ems)
 
 
 class Files(unittest.TestCase):
@@ -678,12 +747,12 @@ class Cli(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, mock.patch("tools.arena_paper.shutil.disk_usage", lambda p: collections.namedtuple("U", "total used free")(1000, 500, 500)):
             w = World(tmp)
             self.with_roots(w)
-            for arm, rows in contrast_rows(10, 4, "a", PNL).items():
+            for arm, rows in contrast_rows(10, 12, "a", PNL).items():
                 w.add_rows(rows)
-            ms4 = periods(10, 4)
-            w.declog("L", periods(10, 20), [{"kind": "rank", "ms": m - 45_000, "fallback": False, "order": ["a", "b", "c", "d"]} for m in ms4])
-            for arm in ("R", "S", "U"):
-                w.declog(arm, ms4)
+            ms4 = periods(10, 12)
+            w.declog("L", ms4, [{"kind": "rank", "ms": m - 45_000, "fallback": False, "order": ["a", "b", "c", "d"]} for m in ms4])
+            for arm, k in (("R", 1), ("S", 1), ("U", 4)):  # U enters every one of the four screened pools
+                w.declog(arm, ms4 * k)
             rec = Path(tmp) / "reads"
             rc, out = run_cli(w, "contrast", now=HALT + X.EXIT_WINDOW_MS, record=rec)
             self.assertEqual(rc, 0, out)
@@ -723,6 +792,10 @@ class Cli(unittest.TestCase):
             out = io.StringIO()
             rc = X.main(["gate", "--root", str(w.dec), "--ledger-root", X.LEDGER_ROOT, "--registry", w.reg, "--n-books", "3"], out=out, _wall_ms=LATE)
             self.assertEqual((rc, out.getvalue()), (1, ""))
+
+    def test_beside_never_reads_production_reads_in_test_mode(self):
+        with mock.patch.object(X.AS, "load_recorded_read", side_effect=AssertionError("production reads dir read")):
+            self.assertIsNone(X._beside("hv7.0-L", True))
 
     def test_old_timing_flags_do_not_exist(self):
         with self.assertRaises(SystemExit):

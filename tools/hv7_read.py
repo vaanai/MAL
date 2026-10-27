@@ -257,17 +257,25 @@ def e1_check(root: str | Path, clock_start_ms: int) -> dict[str, Any]:
 
 
 def coverage_check(root: str | Path, start_ms: int, end_ms: int) -> dict[str, Any]:
-    """REPORT-ONLY, outcome-blind: per arm, the whole hours in [start, end) with no runner row at all (any kind) in the decision log. Whole-hour outages leave no
-    excluded-period row, so the 10% cap (excluded / (rank rows + excluded)) does not see them."""
+    """REPORT-ONLY, outcome-blind. Separates OUTAGE hours (no row in the SCAN log and none in any arm log: the runner was not writing) from NO-TRADE hours
+    (the runner wrote SCAN rows but this arm has no entry row). Whole-hour outages leave no excluded-period row, so the 10% cap does not see them."""
     hours = set(range(start_ms // 3_600_000, (end_ms + 3_599_999) // 3_600_000))
-    out: dict[str, Any] = {"report_only": True, "window_hours": len(hours), "note": "hours with no runner rows are outside the 10% excluded-period cap"}
-    for arm in R.ARM_ORDER:
-        seen = set()
-        for row, bad in C._rows(Path(root), arm):
+
+    def seen(name):
+        out = set()
+        for row, bad in C._rows(Path(root), name):
             m = None if bad else row.get("ms")
             if isinstance(m, int) and not isinstance(m, bool) and start_ms <= m < end_ms:
-                seen.add(m // 3_600_000)
-        out[arm] = {"hours_with_rows": len(seen & hours), "hours_with_no_rows": len(hours - seen)}
+                out.add(m // 3_600_000)
+        return out & hours
+
+    scan = seen("SCAN")
+    arms = {a: seen(a) for a in R.ARM_ORDER}
+    up = scan.union(*arms.values())
+    out: dict[str, Any] = {"report_only": True, "window_hours": len(hours), "outage_hours": len(hours - up), "runner_up_hours": len(up),
+                           "note": "outage hours = no SCAN row and no arm row; they fall outside the 10% excluded-period cap"}
+    for a in R.ARM_ORDER:
+        out[a] = {"hours_with_entry_rows": len(arms[a]), "no_trade_hours": len(up - arms[a])}
     return out
 
 
@@ -293,7 +301,7 @@ def holm_block(n_books: int, ps: Mapping[str, float] | None, *, flags: Mapping[s
 
 # ------------------------------------------------------------------------------------------------------------------------------ integrity of one arm's rows
 def arm_integrity(rows: Sequence[Mapping[str, Any]], incidents: Sequence[Mapping[str, Any]], problems: Sequence[str], start_ms: int, end_ms: int, now_ms: int,
-                  stake: float) -> dict[str, Any]:
+                  stake: float, entry_decisions_ms: Sequence[int] = ()) -> dict[str, Any]:
     """The arena_score integrity rules applied to one contrast arm over [start, end) (a copy, because the scorer cannot be forced past a bot's natural instant;
     the bonding and stored flat-leg rules are applied separately in contrast_read, so the two must be kept in step by hand): pending (<24 h, caller refuses), restart orphans, excluded + data-refused share vs 5%,
     incidents before end, damaged lines. `reasons` are NOT_DECIDABLE causes."""
@@ -304,6 +312,17 @@ def arm_integrity(rows: Sequence[Mapping[str, Any]], incidents: Sequence[Mapping
     share = (info["excluded"] + info["data_refused"]) / info["attempts"] if info["attempts"] else None
     inc_before = sum(1 for i in incidents if AS.incident_instant(i) < end_ms)
     reasons = []
+    a_dec = sum(1 for m in entry_decisions_ms if start_ms <= m < end_ms)
+    a_led = info["attempts"]
+    lost = a_dec - a_led
+    rec = {"decision_log_attempts": a_dec, "ledger_attempts": a_led, "lost_attempts": max(lost, 0), "extra_ledger_attempts": max(-lost, 0)}
+    if lost < 0:
+        reasons.append(f"decision log and ledger disagree: the ledger holds {-lost} attempt(s) the decision log lacks (decision log {a_dec}, ledger {a_led})")
+    elif lost > 0 and a_dec:
+        lshare = (info["excluded"] + info["data_refused"] + lost) / a_dec
+        rec["excluded_lost_share"] = lshare
+        if lshare > AS.MAX_EXCLUDED_SHARE:
+            reasons.append(f"excluded + data-refused + lost share {lshare:.4%} above {AS.MAX_EXCLUDED_SHARE:.0%} ({lost} attempt(s) lost between decision log and ledger)")
     if orphans:
         reasons.append(f"{orphans} restart orphan(s)")
     if share is not None and share > AS.MAX_EXCLUDED_SHARE:
@@ -312,7 +331,7 @@ def arm_integrity(rows: Sequence[Mapping[str, Any]], incidents: Sequence[Mapping
         reasons.append(f"{inc_before} ledger incident(s) before the window end")
     if problems:
         reasons.append(f"{len(problems)} torn or unparseable ledger line(s)")
-    return {"attempts": info["attempts"], "priced": info["priced"], "excluded": info["excluded"], "data_refused": info["data_refused"], "excluded_share": share,
+    return {**rec, "attempts": info["attempts"], "priced": info["priced"], "excluded": info["excluded"], "data_refused": info["data_refused"], "excluded_share": share,
             "pending": pending, "restart_orphans": orphans, "incidents_before_end": inc_before, "ledger_problems": len(problems), "reasons": reasons}
 
 
@@ -346,7 +365,8 @@ def gate_read(arm: str, *, now_ms: int, regn: Mapping[str, Any], rows: Sequence[
     a_dec = sum(1 for m in entry_decisions_ms if clock <= m < b)
     a_led = sum(1 for r in rows if r.get("kind") in ("open", "refused") and "decision_ms" in r and clock <= AS._entry(r) < b)
     lost = a_dec - a_led
-    recon = {"decision_log_attempts_before_b": a_dec, "ledger_attempts_before_b": a_led, "lost_attempts": lost, "lost_share": (lost / a_dec) if a_dec else None,
+    recon = {"decision_log_attempts_before_b": a_dec, "ledger_attempts_before_b": a_led, "lost_attempts": max(lost, 0), "extra_ledger_attempts": max(-lost, 0),
+             "lost_share": (max(lost, 0) / a_dec) if a_dec else None,
              "ledger_natural_boundary_ms": natural, "read_boundary_ms": b}
     base["attempt_reconciliation"] = recon
     base["read_boundary_ms"] = b
@@ -382,8 +402,9 @@ def gate_read(arm: str, *, now_ms: int, regn: Mapping[str, Any], rows: Sequence[
     nd: list[str] = list(own_nd)
     ne: list[str] = []
     book = (sc.get("books") or {}).get(str(stake))
-    if lost > 0 and book and book.get("excluded_share") is not None and a_dec:
-        share = (book["excluded_share"] * sc["attempts"] + lost) / a_dec  # DEC-031 1.4: lost attempts join the numerator, the decision log is the denominator
+    if lost > 0 and a_dec:  # DEC-031 1.4: lost attempts join the numerator, the decision log is the denominator (also when the deciding-stake book is absent)
+        num = (book["excluded_share"] * sc["attempts"]) if book and book.get("excluded_share") is not None else float(sc.get("refused_data_issues") or 0)
+        share = (num + lost) / a_dec
         res["excluded_lost_share"] = share
         if share > AS.MAX_EXCLUDED_SHARE:
             nd.append(f"excluded + data-refused + lost share {share:.4%} above {AS.MAX_EXCLUDED_SHARE:.0%} ({lost} attempt(s) lost between decision log and ledger)")
@@ -421,6 +442,16 @@ def gate_read(arm: str, *, now_ms: int, regn: Mapping[str, Any], rows: Sequence[
             res["fail_label"] = sc["fail_label"]
         res["report_only_cells"] = [{"stake": bk["stake"], "cell": k, "n": c["n"], "mean_sol": c["mean_sol"], "total_sol": c["total_sol"], "ci90_lo_sol": c["ci90_lo_sol"]}
                                    for bk in sc["books"].values() for k, c in bk.get("cells", {}).items() if not (bk["stake"] == stake and f"_{LAT}_" in k)]
+        if lost > 0:  # REPORT-ONLY: every lost attempt imputed as a total loss of the stake (days not imputed: trade-level statistics only)
+            wc, survives = {}, True
+            for key in CELLS:
+                x = np.concatenate([cells_x[key], np.full(lost, -stake * 1e9)]) / 1e9
+                srt = np.sort(x)[::-1]
+                lo, ex3 = AS.boot_lo(x), float(srt[3:].sum())
+                wc[key] = {"n": int(len(x)), "mean_sol": float(x.mean()), "total_sol": float(x.sum()), "ci90_lo_sol": lo, "ex_top3_sol": ex3}
+                survives = survives and bool(lo is not None and lo > 0 and ex3 > 0 and x.sum() > 0)
+            res["lost_attempts_worst_case"] = {"report_only": True, "lost": lost, "imputed_pnl_sol_each": -stake, "cells": wc, "pass_survives": survives,
+                                               "note": "each lost attempt a total loss of the stake; day counts not imputed; a DEC-032 canary proposal should quote this line"}
     elif sc["status"] == "REPORT_ONLY":
         res["report_only_reasons"] = list(sc["reasons"])
     if nd:
@@ -525,7 +556,7 @@ def contrast_cell(pa: Mapping[str, Mapping[int, float]], pb: Mapping[str, Mappin
 def contrast_read(*, now_ms: int, regn: Mapping[str, Any], rows_by_arm: Mapping[str, Sequence[Mapping[str, Any]]], l_rank_rows: Sequence[Mapping[str, Any]],
                   fallback: Mapping[str, Any], e1: Mapping[str, Any] | None, n_books: int, incidents_by_arm: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
                   problems_by_arm: Mapping[str, Sequence[str]] | None = None, other_ps: Mapping[str, float] | None = None,
-                  coverage: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                  coverage: Mapping[str, Any] | None = None, entry_ms_by_arm: Mapping[str, Sequence[int]] | None = None) -> dict[str, Any]:
     """L - U and the secondaries, once, at T0 + H. Raises Refused before T0 + H + 61 min and on any PENDING attempt (< 24 h); an older unclosed attempt is a restart
     orphan -> NOT_DECIDABLE."""
     e1 = _need_e1(e1)
@@ -538,7 +569,9 @@ def contrast_read(*, now_ms: int, regn: Mapping[str, Any], rows_by_arm: Mapping[
     for a in ARMS:
         if a not in rows_by_arm:
             raise Refused(f"no ledger rows given for arm {a}")
-        integ[a] = arm_integrity(rows_by_arm[a], (incidents_by_arm or {}).get(a, ()), (problems_by_arm or {}).get(a, ()), clock, h_end, now_ms, stake)
+        if entry_ms_by_arm is None or a not in entry_ms_by_arm:
+            raise Refused(f"no decision-log entry instants given for arm {a}: the decision log / ledger reconciliation needs them")
+        integ[a] = arm_integrity(rows_by_arm[a], (incidents_by_arm or {}).get(a, ()), (problems_by_arm or {}).get(a, ()), clock, h_end, now_ms, stake, entry_ms_by_arm[a])
         if integ[a]["pending"]:
             raise Refused(f"arm {a}: {integ[a]['pending']} attempt(s) in the window are PENDING (younger than the 24 h settle window): not read")
         tr[a], _ = priced_trades(rows_by_arm[a], clock, h_end, stake)
@@ -662,8 +695,10 @@ def _load_arm(ledger_root: str, registry: str, arm: str) -> tuple[list[dict], li
     return rows, incidents, list(problems) + list(inc_problems)
 
 
-def _beside(bot: str) -> Any:
+def _beside(bot: str, test_mode: bool = False) -> Any:
     """Any arena_score record for this bot id, printed beside the hv7 record: hv7_read's record is the gate read; arena_score output for hv7.* is non-binding."""
+    if test_mode:  # never read the production reads dir from a test run
+        return None
     try:
         return AS.load_recorded_read(AS.READS_DIR, bot)
     except Exception:  # noqa: BLE001
@@ -721,7 +756,7 @@ def main(argv: Sequence[str] | None = None, *, out=None, _wall_ms: int | None = 
             cov = coverage_check(a.root, clock, b) if b is not None else None
             res = gate_read(a.arm, now_ms=now, regn=regn, rows=rows, entry_decisions_ms=ems, e1=e1, fallback=fb, incidents=incs, ledger_problems=probs,
                             n_books=a.n_books, other_ps=other, coverage=cov)
-            res["arena_score_record_beside"] = _beside(bot)
+            res["arena_score_record_beside"] = _beside(bot, test_mode)
             record_once(rec_dir, tag, res)
         else:
             tag = f"{R.bot_id('L')}_contrast"
@@ -734,7 +769,7 @@ def main(argv: Sequence[str] | None = None, *, out=None, _wall_ms: int | None = 
             l_rank = [r for r, bad in C._rows(Path(a.root), "L") if not bad and r.get("kind") == "rank" and clock <= r.get("ms", -1) < halt]
             res = contrast_read(now_ms=now, regn=regn, rows_by_arm={x: v[0] for x, v in loaded.items()}, l_rank_rows=l_rank, fallback=fb, e1=e1, n_books=a.n_books,
                                 incidents_by_arm={x: v[1] for x, v in loaded.items()}, problems_by_arm={x: v[2] for x, v in loaded.items()}, other_ps=other,
-                                coverage=coverage_check(a.root, clock, halt))
+                                coverage=coverage_check(a.root, clock, halt), entry_ms_by_arm={x: entry_ms(a.root, x) for x in ARMS})
             record_once(rec_dir, tag, res)
     except (Refused, AS.Refused) as e:  # these carry no outcome data
         print(f"refused: {e}", file=sys.stderr)
