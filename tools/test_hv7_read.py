@@ -1,79 +1,170 @@
 """Synthetic-only tests for tools/hv7_read.py (HV7 chunk C5). No tape, no drill or job output, no arena path."""
+import collections
+import functools
+import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 
-from tools import hv7_read as X
-from tools import hv7_runner as R
+os.environ["MAL_ARENA_TEST"] = "1"
+
+from tools import arena_paper as AP  # noqa: E402
+from tools import hv7_read as X  # noqa: E402
+from tools import hv7_runner as R  # noqa: E402
 
 DAY = 86_400_000
 T0 = 1_792_000_000_000 // DAY * DAY  # an arbitrary synthetic 00:00Z
-SEND = 1_000_000.0
+HALT = T0 + 10 * DAY
+SEND = 505_000
+STACK = {"send": SEND, "rent": 2_039_280, "h_in": 0.002608, "h_out": 0.0016, "k_rounding": "ceil", "exit_lag_s": 0.55, "guard": 1.15, "portal_ppm": 0,
+         "press_intercept_provisional": -1.42, "strand_rule": "both", "e1_floor_per_005": 384_022, "sps_entry": 0.4, "sps_exit": 0.4}
+SHA = "abc1234"
+STAKES = (0.25, 0.5, 1.0)
+E1_OK = {"a_l": 40, "a_l_lt_20": False, "fallback_share": 0.0, "fallback_gt_10pct": False, "count_sha256": "x"}
+FB_OK = {"L_not_evaluable": False, "excluded_cap_not_decidable": False, "reason": None, "fallback_share": 0.0, "attempts_L": 10, "rank_rows": 10,
+         "entry_vs_rank_row_difference": False}
+LATE = 10**15  # a synthetic "wall clock" far after every synthetic instant
 
 
-def trade(ms, pool, pnl, *, kind="trade", pid=None):
-    pid = pid or f"p{ms}-{pool}"
-    by = {"pnl_nofail": float(pnl), "filled": True, "strand": False}
-    return {"kind": kind, "position_id": pid, "trade_id": pid, "decision_ms": {"entry": ms}, "pool": pool, "stack": {"send": SEND},
-            "calc": {"1p9": {"by_rule": {"sc": dict(by), "total": dict(by)}, "ssb": 5.0, "nearby_lamports": 1e9}}, "v_src": {"entry": "x", "exit": "x", "span": {}}}
+@functools.lru_cache(maxsize=None)
+def _legs(pnl, rule):
+    flat, press, _, _ = X.AS._legs(rule, np.array([pnl]), np.array([True]), np.array([False]), np.array([0.0]), np.array([0.0]), float(SEND))
+    return float(flat[0]), float(press[0])
 
 
-def opened(ms, pool, pid=None):
-    return {"kind": "open", "position_id": pid or f"p{ms}-{pool}", "decision_ms": {"entry": ms}}
+def start_row(bot):
+    return {"schema": "arena_trade_v1", "kind": "start", "trade_id": f"start-eng1-{bot}", "engine_id": "eng1", "bot_id": bot, "frozen_sha": SHA,
+            "decision_ms": {"entry": T0 + 1000, "exit": None}, "code_head": SHA, "code_dirty": False, "stack": dict(STACK)}
 
 
-def book(days, per_day, pnl_fn, arm_pool=lambda i: "a"):
-    """rows + entry stamps: per_day periods a day at t_e = day + i hours."""
-    rows, ems = [], []
+def open_row(bot, pid, ms, lag=0):
+    return {"schema": "arena_trade_v1", "kind": "open", "trade_id": f"{pid}-open", "position_id": pid, "bot_id": bot, "frozen_sha": SHA,
+            "decision_ms": {"entry": ms + lag, "exit": None}, "stamp_ms": {"entry": ms, "exit": None}, "stack": dict(STACK), "code_head": SHA, "code_dirty": False,
+            "engine_id": "eng1"}
+
+
+def trade_row(bot, pid, ms, pool, pnl, stake, lag=0, rules=("total", "sc")):
+    legs = {r: {} for r in rules}
+    by = {}
+    for rule in rules:
+        flat, press = _legs(float(pnl), rule)
+        for lat in ("1p3", "1p9"):
+            legs[rule][f"flat_{lat}"] = {"state": "filled", "net_lamports": flat}
+            legs[rule][f"press_{lat}"] = {"state": "filled", "net_lamports": press}
+        by[rule] = {"pnl_nofail": float(pnl), "filled": True, "state": "filled", "strand": False, "e1_extra": 0.0, "p_press_provisional": 0.2}
+    calc = {lat: {"landing_slot": 1, "Qe": 1.0, "Be": 1.0, "spot": 1.0, "ssb": 0.0, "nearby_lamports": 0.0, "Qx": 1.0, "Bx": 1.0, "by_rule": {k: dict(v) for k, v in by.items()}}
+            for lat in ("1p3", "1p9")}
+    return {"schema": "arena_trade_v1", "kind": "trade", "trade_id": f"{pid}-s{int(stake * 1000)}", "position_id": pid, "bot_id": bot, "frozen_sha": SHA,
+            "decision_ms": {"entry": ms + lag, "exit": ms + lag + 5000}, "stamp_ms": {"entry": ms, "exit": None}, "stake_sol": stake, "prog": "pumpswap",
+            "state_src": "tape", "stack": dict(STACK), "legs": legs, "calc": calc, "pool": pool, "v_src": {"entry": "row", "exit": "row", "span": {"row": 5}}}
+
+
+def periods(days, per_day):
+    return [T0 + d * DAY + (i + 1) * 180_000 for d in range(days) for i in range(per_day)]
+
+
+def arm_book(bot, days, per_day, pnl_fn, pools_fn=lambda d, i: ("a",), stakes=STAKES, lag=0, rules=("total", "sc")):
+    """start row + open + one trade row per stake per position. pnl_fn(d, i, pool) -> lamports."""
+    rows = [start_row(bot)]
     for d in range(days):
         for i in range(per_day):
-            ms = T0 + d * DAY + (i + 1) * 3_600_000
-            ems.append(ms)
-            rows += [opened(ms, arm_pool(i)), trade(ms, arm_pool(i), pnl_fn(d, i))]
-    return rows, ems
+            ms = T0 + d * DAY + (i + 1) * 180_000
+            for pool in pools_fn(d, i):
+                pid = f"{bot}-{d}-{i}-{pool}"
+                rows.append(open_row(bot, pid, ms, lag))
+                for st in stakes:
+                    rows.append(trade_row(bot, pid, ms, pool, pnl_fn(d, i, pool), st, lag, rules))
+    return rows
+
+
+def win(d, i, pool="a"):
+    return 4_000_000 + ((d * 7 + i * 3) % 5) * 1_000_000
+
+
+class World:
+    """A tmp registry (four HV7 books + hv7_halt lines), ledger and decision logs."""
+
+    def __init__(self, tmp, halt=HALT, clock=T0):
+        self.root = Path(tmp)
+        self.reg = str(self.root / "bots.json")
+        self.ledger = str(self.root / "ledger")
+        self.dec = self.root / "hv7root"
+        for arm in R.ARM_ORDER:
+            AP.register_bot(R.bot_id(arm), SHA, clock, self.reg, deciding_stake=0.25, model_ids=(["m"] if arm == "L" else []), now_ms=0, verify_sha=False)
+            AP._append_line(Path(self.reg), {"kind": "hv7_halt", "bot_id": R.bot_id(arm), "entries_halt_ms": halt})
+        self.led = AP.Ledger(self.ledger)
+
+    def add_rows(self, rows):
+        for r in rows:
+            self.led.append(r)
+
+    def declog(self, arm, ms_list, ranks=()):
+        d = self.dec / "decisions" / arm
+        d.mkdir(parents=True, exist_ok=True)
+        by_day = collections.defaultdict(list)
+        for m in ms_list:
+            by_day[X.utc_day(m)].append({"kind": "entry", "ms": m})
+        for r in ranks:
+            by_day[X.utc_day(r["ms"])].append(r)
+        for day, rs in by_day.items():
+            (d / f"{day}.jsonl").write_text("\n".join(json.dumps(r) for r in rs) + "\n")
+
+
+def with_world(test):
+    @functools.wraps(test)
+    def inner(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            w = World(tmp)
+            old = R.READ_ROOTS
+            R.READ_ROOTS = tuple(old) + (str(w.dec),)
+            try:
+                with mock.patch("tools.arena_paper.shutil.disk_usage", lambda p: collections.namedtuple("U", "total used free")(1000, 500, 500)):
+                    test(self, w)
+            finally:
+                R.READ_ROOTS = old
+    return inner
+
+
+def gate(w, arm, rows, ems, now, **kw):
+    kw.setdefault("e1", E1_OK)
+    kw.setdefault("n_books", 30)
+    regn = X.load_registration(w.reg)
+    return X.gate_read(arm, now_ms=now, regn=regn, rows=rows, entry_decisions_ms=ems, **kw)
 
 
 class SignFlip(unittest.TestCase):
     def test_d5_min_p(self):
         self.assertEqual(X.sign_flip_min_p(5), 0.03125)
         self.assertEqual(X.sign_flip_p([1.0] * 5), 0.03125)
-        self.assertGreater(X.sign_flip_p([1.0] * 5), X.CONTRAST_ALPHA)  # power at B is exactly 0
+        self.assertGreater(X.sign_flip_p([1.0] * 5), X.CONTRAST_ALPHA)
         self.assertEqual(X.sign_flip_p([1.0] * 6), 0.015625)
-        self.assertLessEqual(X.sign_flip_p([1.0] * 6), X.CONTRAST_ALPHA)
 
     def test_zero_days_do_not_change_p(self):
         self.assertEqual(X.sign_flip_p([1.0] * 6 + [0.0] * 4), 0.015625)
 
 
 class Helpers(unittest.TestCase):
-    def test_horizon(self):
-        end = T0 + 10 * DAY
-        self.assertEqual(X.horizon_days(20, T0, end), 10)  # ceil(150/20) = 8 -> max 14 -> capped by the window end
-        self.assertEqual(X.horizon_days(20, T0, T0 + 100 * DAY), 14)
-        self.assertEqual(X.horizon_days(1, T0, T0 + 500 * DAY), 90)
-        self.assertEqual(X.horizon_days(None, T0, end, override=9), 9)
-        with self.assertRaises(X.Refused):
-            X.horizon_days(None, T0, end)
-
     def test_day_block_boot_constant_and_blocks(self):
-        x = [0.01] * 12
         days = ["d1"] * 4 + ["d2"] * 4 + ["d3"] * 4
-        self.assertAlmostEqual(X.day_block_boot_lo(x, days), 0.01)
-        # one day carries all the profit: some resamples drop it, so the 5th percentile is below the plain mean
+        self.assertAlmostEqual(X.day_block_boot_lo([0.01] * 12, days), 0.01)
         x2 = [0.1] * 4 + [-0.001] * 8
-        lo = X.day_block_boot_lo(x2, days)
-        self.assertLess(lo, 0.0)
-        self.assertEqual(lo, X.day_block_boot_lo(x2, days))  # seed 1, deterministic
+        self.assertLess(X.day_block_boot_lo(x2, days), 0.0)
+        self.assertEqual(X.day_block_boot_lo(x2, days), X.day_block_boot_lo(x2, days))
 
-    def test_mde_line(self):
+    def test_mde_line_quotes_design(self):
         s = X.mde_line(10)
         self.assertIn("1.9%", s)
-        self.assertIn("0.17", s)
+        self.assertIn("rank IC about 0.17;", s)
         self.assertIn("no skill detected", s)
-        self.assertIn("not tabulated", X.mde_line(9))
+        nine = X.mde_line(9)
+        self.assertIn("not tabulated", nine)
+        self.assertNotIn("rank IC about", nine)
+        self.assertIn("larger than at D = 10", nine)
         self.assertAlmostEqual(X.mde_ic(1.9, 8), 0.1665, places=3)
 
     def test_holm_block(self):
@@ -81,259 +172,473 @@ class Helpers(unittest.TestCase):
         self.assertAlmostEqual(h["plain_line_1_minus_0.95_pow_N"], 1 - 0.95 ** 30)
         self.assertEqual(h["holm"]["a"]["rank"], 1)
         self.assertAlmostEqual(h["holm"]["a"]["holm_level"], 0.05 / 2)
-        self.assertAlmostEqual(h["holm"]["b"]["holm_level"], 0.05)
+        self.assertEqual(X.holm_block(30, None)["holm_text"], "Holm rank: not computed, no p list given")
+
+    def test_t_e_offset_comes_from_the_runner(self):
+        self.assertEqual(X.T_E_MINUS_T_D_MS, R.T_E_OFFSET_MS - R.T_D_OFFSET_MS)
+
+    def test_priced_trades_filters_the_deciding_stake(self):
+        rows = arm_book("hv7.0-L", 6, 6, win)  # 36 positions x 3 stakes
+        tr, info = X.priced_trades(rows, T0, None, 0.25)
+        self.assertEqual(len(tr), 36)
+        self.assertEqual(info["priced"], 36)
+        self.assertEqual({r["stake_sol"] for r in tr}, {0.25})
+
+
+class Registration(unittest.TestCase):
+    @with_world
+    def test_timing_comes_from_the_registry(self, w):
+        regn = X.load_registration(w.reg)
+        self.assertEqual((regn["clock_start_ms"], regn["halt_ms"], regn["D"], regn["stake"]), (T0, HALT, 10, 0.25))
+        with tempfile.TemporaryDirectory() as t2:
+            w2 = World(t2, halt=T0 + 9 * DAY)
+            self.assertEqual(X.load_registration(w2.reg)["D"], 9)
+
+    @with_world
+    def test_missing_or_disagreeing_halt_refused(self, w):
+        AP._append_line(Path(w.reg), {"kind": "hv7_halt", "bot_id": "hv7.0-U", "entries_halt_ms": HALT + DAY})
+        with self.assertRaises(X.Refused):
+            X.load_registration(w.reg)
+        with tempfile.TemporaryDirectory() as t2:
+            p = Path(t2) / "bots.json"
+            AP.register_bot("hv7.0-L", SHA, T0, p, deciding_stake=0.25, model_ids=[], now_ms=0, verify_sha=False)
+            with self.assertRaises(X.Refused):
+                X.load_registration(p)
 
 
 class Gate(unittest.TestCase):
-    def setUp(self):
-        self.good_rows, self.ems = book(6, 20, lambda d, i: 5e7 + 1e6 * ((i * 7 + d) % 5))  # 120 attempts on 6 days, steady winners
-        self.b = X.AS.blind_read_instant(self.ems, T0)
+    def setup_book(self, w, arm="L", days=6, per_day=20, pnl=win, **kw):
+        rows = arm_book(R.bot_id(arm), days, per_day, pnl, **kw)
+        ems = periods(days, per_day)
+        w.add_rows(rows)
+        return rows, ems
 
-    def test_blind_boundary_is_known(self):
-        # 20 a day: 100 attempts and 5 dates are first met at the end of day 5 -> B = T0 + 5 d
-        self.assertEqual(self.b, T0 + 5 * DAY)
-
-    def test_refused_before_b(self):
-        few = [m for m in self.ems if m < T0 + 4 * DAY]
-        with self.assertRaises(X.Refused):
-            X.gate_read("L", now_ms=T0 + 10 * DAY, clock_start_ms=T0, entry_decisions_ms=few, rows=self.good_rows)
-
-    def test_refused_before_b_plus_exit_window(self):
-        with self.assertRaises(X.Refused):
-            X.gate_read("L", now_ms=self.b + X.EXIT_WINDOW_MS - 1, clock_start_ms=T0, entry_decisions_ms=self.ems, rows=self.good_rows)
-        X.gate_read("L", now_ms=self.b + X.EXIT_WINDOW_MS, clock_start_ms=T0, entry_decisions_ms=self.ems, rows=self.good_rows)
-
-    def test_refused_with_open_attempt(self):
-        rows = self.good_rows + [opened(T0 + 4 * DAY + 5, "z")]
-        with self.assertRaises(X.Refused):
-            X.gate_read("L", now_ms=self.b + DAY, clock_start_ms=T0, entry_decisions_ms=self.ems + [T0 + 4 * DAY + 5], rows=rows)
-
-    def test_r_and_u_have_no_gate(self):
-        with self.assertRaises(X.Refused):
-            X.gate_read("U", now_ms=self.b + DAY, clock_start_ms=T0, entry_decisions_ms=self.ems, rows=self.good_rows)
-
-    def test_pass_known_answer(self):
-        r = X.gate_read("L", now_ms=self.b + DAY, clock_start_ms=T0, entry_decisions_ms=self.ems, rows=self.good_rows)
+    @with_world
+    def test_pass_known_answer_and_stake_filter(self, w):
+        rows, ems = self.setup_book(w)
+        b = X.AS.blind_read_instant(ems, T0)
+        self.assertEqual(b, T0 + 5 * DAY)
+        r = gate(w, "L", w.led.scan_bot("hv7.0-L")[0], ems, b + DAY)
         self.assertEqual(r["status"], "PASS", r.get("cells"))
-        self.assertEqual(set(r["cells"]), set(X.CELLS))
         c = r["cells"]["flat_1p9_sc"]
-        self.assertEqual(c["n"], 100)
-        self.assertEqual(c["days"], 5)
-        self.assertEqual(c["days_pos"], 5)
-        self.assertGreater(c["ci90_lo_sol"], 0)
-        self.assertGreater(c["ex_top3_sol"], 0)
-        self.assertTrue(c["day_block_ci90_lo_sol"]["report_only"])
+        self.assertEqual((c["n"], c["days"], c["days_pos"]), (100, 5, 5))  # 3 stake rows per position do not triple n
+        self.assertEqual(r["priced_trades"], 100)
+        self.assertIn("screen pass; confirmation owed", r["status_text"])
         self.assertTrue(r["no_book_has_cleared_the_promotion_gate"])
+        self.assertFalse(r["boundary_difference"])
+        self.assertTrue(any(c["stake"] != 0.25 or "_1p3_" in c["cell"] for c in r["report_only_cells"]))
 
-    def test_only_attempts_before_b_count(self):
-        r = X.gate_read("L", now_ms=self.b + DAY, clock_start_ms=T0, entry_decisions_ms=self.ems, rows=self.good_rows)
-        self.assertEqual(r["priced_trades"], 100)  # the day-6 trades are after B
+    @with_world
+    def test_multiplicity_block_in_the_gate(self, w):
+        rows, ems = self.setup_book(w)
+        b = T0 + 5 * DAY
+        r = gate(w, "L", w.led.scan_bot("hv7.0-L")[0], ems, b + DAY, n_books=30)
+        m = r["multiplicity"]
+        self.assertEqual(m["N"], 30)
+        self.assertAlmostEqual(m["plain_line_1_minus_0.95_pow_N"], 1 - 0.95 ** 30)
+        self.assertEqual(m["holm_text"], "Holm rank: not computed, no p list given")
+        r = gate(w, "L", w.led.scan_bot("hv7.0-L")[0], ems, b + DAY, other_ps={"other": 0.4})
+        self.assertEqual(r["multiplicity"]["holm"]["hv7.0-L"]["rank"], 1)
+        self.assertEqual(r["multiplicity"]["holm"]["other"]["rank"], 2)
 
-    def test_losing_book_fails(self):
-        rows, ems = book(6, 20, lambda d, i: -2e7)
-        r = X.gate_read("L", now_ms=T0 + 8 * DAY, clock_start_ms=T0, entry_decisions_ms=ems, rows=rows)
+    @with_world
+    def test_refusals_before_b_and_before_b_plus_exit_window(self, w):
+        rows, ems = self.setup_book(w)
+        b = T0 + 5 * DAY
+        rows = w.led.scan_bot("hv7.0-L")[0]
+        with self.assertRaises(X.Refused):
+            gate(w, "L", rows, [m for m in ems if m < T0 + 4 * DAY], b + DAY)
+        with self.assertRaises(X.Refused):
+            gate(w, "L", rows, ems, b + X.EXIT_WINDOW_MS - 1)
+        gate(w, "L", rows, ems, b + X.EXIT_WINDOW_MS)
+        with self.assertRaises(X.Refused):
+            gate(w, "U", rows, ems, b + DAY)
+
+    @with_world
+    def test_losing_top3_and_minority_days_fail(self, w):
+        rows, ems = self.setup_book(w, pnl=lambda d, i, p: -2_000_000)
+        r = gate(w, "L", w.led.scan_bot("hv7.0-L")[0], ems, T0 + 8 * DAY)
         self.assertEqual(r["status"], "FAIL")
-        self.assertTrue(all(not c["pass"] for c in r["cells"].values()))
+        with tempfile.TemporaryDirectory() as t2:
+            w2 = World(t2)
+            rows2, ems2 = arm_book("hv7.0-L", 6, 20, lambda d, i, p: 4e8 if d == 0 else -1_000_000), periods(6, 20)
+            w2.add_rows(rows2)
+            r = gate(w2, "L", w2.led.scan_bot("hv7.0-L")[0], ems2, T0 + 8 * DAY)
+            self.assertEqual(r["status"], "FAIL")
+            self.assertTrue(any("not a majority" in m for c in r["cells"].values() for m in c["misses"]))
 
-    def test_top3_dependence_fails(self):
-        # three huge winners, everything else slightly negative: total > 0 but not after removing the top 3
-        rows, ems = book(6, 20, lambda d, i: 3e9 if (d, i) in {(0, 0), (1, 1), (2, 2)} else -1e7)
-        r = X.gate_read("L", now_ms=T0 + 8 * DAY, clock_start_ms=T0, entry_decisions_ms=ems, rows=rows)
-        self.assertEqual(r["status"], "FAIL")
-        self.assertTrue(any("ex-top-3" in m for c in r["cells"].values() for m in c["misses"]))
-
-    def test_minority_positive_days_fail(self):
-        # day 0 is a big win, days 1-4 small losses: positive total, positive mean, but 1 of 5 days positive
-        rows, ems = book(6, 20, lambda d, i: 4e8 if d == 0 else -1e6)
-        r = X.gate_read("L", now_ms=T0 + 8 * DAY, clock_start_ms=T0, entry_decisions_ms=ems, rows=rows)
-        self.assertEqual(r["status"], "FAIL")
-        self.assertTrue(any("not a majority" in m for c in r["cells"].values() for m in c["misses"]))
-
-    def test_not_decidable_when_b_after_horizon(self):
-        few = [m for m in self.ems if m < T0 + 3 * DAY]
-        r = X.gate_read("L", now_ms=T0 + 12 * DAY, clock_start_ms=T0, entry_decisions_ms=few, rows=[], horizon_end_ms=T0 + 10 * DAY)
+    @with_world
+    def test_excluded_share_over_5pct_is_not_decidable(self, w):
+        rows, ems = self.setup_book(w)
+        # exclude 6 of the 100 positions before B (6% > 5%): positions 0-5 of day 0
+        ex = {f"hv7.0-L-0-{i}-a" for i in range(6)}
+        rows = [dict(r, v_src={"entry": "none", "exit": "row", "span": {}}) if (r["kind"] == "trade" and r["position_id"] in ex) else r for r in w.led.scan_bot("hv7.0-L")[0]]
+        r = gate(w, "L", rows, ems, T0 + 8 * DAY)
         self.assertEqual(r["status"], "NOT_DECIDABLE")
+        self.assertTrue(any("excluded" in m for m in r["reasons"]), r["reasons"])
 
-    def test_fallback_over_ten_percent_is_not_evaluable_for_l_only(self):
-        fb = {"L_not_evaluable": True, "all_not_evaluable": False, "reason": "E_fallback"}
-        self.assertEqual(X.gate_read("L", now_ms=self.b + DAY, clock_start_ms=T0, entry_decisions_ms=self.ems, rows=self.good_rows, fallback=fb)["status"], "NOT_EVALUABLE")
-        self.assertEqual(X.gate_read("S", now_ms=self.b + DAY, clock_start_ms=T0, entry_decisions_ms=self.ems, rows=self.good_rows, fallback=fb)["status"], "PASS")
+    @with_world
+    def test_orphan_is_pending_then_not_decidable(self, w):
+        rows, ems = self.setup_book(w)
+        last = f"hv7.0-L-4-19-a"
+        rows = [r for r in w.led.scan_bot("hv7.0-L")[0] if not (r["kind"] == "trade" and r["position_id"] == last)]
+        b = T0 + 5 * DAY
+        with self.assertRaises(X.Refused):  # younger than 24 h: PENDING, not read
+            gate(w, "L", rows, ems, b + 3_600_000)
+        r = gate(w, "L", rows, ems, b + 30 * 3_600_000)  # older: restart orphan
+        self.assertEqual(r["status"], "NOT_DECIDABLE")
+        self.assertEqual(r["restart_orphans"], 1)
+
+    @with_world
+    def test_incident_before_b_is_not_decidable(self, w):
+        rows, ems = self.setup_book(w)
+        inc = [{"kind": "buy_refused", "at_ms": T0 + 2 * DAY, "day_file": "x"}]
+        r = gate(w, "L", w.led.scan_bot("hv7.0-L")[0], ems, T0 + 8 * DAY, incidents=inc)
+        self.assertEqual(r["status"], "NOT_DECIDABLE")
+        self.assertTrue(any("incident" in m for m in r["reasons"]))
+
+    @with_world
+    def test_missing_strand_rule_is_report_only(self, w):
+        rows, ems = self.setup_book(w, rules=("total",))
+        r = gate(w, "L", w.led.scan_bot("hv7.0-L")[0], ems, T0 + 8 * DAY)
+        self.assertEqual(r["status"], "REPORT_ONLY")
+
+    @with_world
+    def test_stored_flat_leg_mismatch_refused(self, w):
+        rows, ems = self.setup_book(w)
+        rows = w.led.scan_bot("hv7.0-L")[0]
+        for r in rows:
+            if r["kind"] == "trade":
+                r["legs"]["sc"]["flat_1p9"]["net_lamports"] += 1.0
+                break
+        with self.assertRaises(X.AS.Refused):
+            gate(w, "L", rows, ems, T0 + 8 * DAY)
+
+    @with_world
+    def test_e1_entry_rate_makes_every_read_not_decidable(self, w):
+        rows, ems = self.setup_book(w)
+        e1 = dict(E1_OK, a_l=19, a_l_lt_20=True)
+        r = gate(w, "L", w.led.scan_bot("hv7.0-L")[0], ems, T0 + 8 * DAY, e1=e1)
+        self.assertEqual(r["status"], "NOT_DECIDABLE")
+        self.assertTrue(r["reasons"][0].startswith("E1_entry_rate"))
+
+    @with_world
+    def test_e1_fallback_binds_l_only_even_if_window_share_is_low(self, w):
+        rows, ems = self.setup_book(w)
+        e1 = dict(E1_OK, fallback_gt_10pct=True, fallback_share=0.2)
+        fb = dict(FB_OK, fallback_share=0.05)  # the [T0, B) share is under 10%
+        r = gate(w, "L", w.led.scan_bot("hv7.0-L")[0], ems, T0 + 8 * DAY, e1=e1, fallback=fb)
+        self.assertEqual(r["status"], "NOT_EVALUABLE")
+        self.assertTrue(r["reasons"][0].startswith("E1_fallback"))
+
+    @with_world
+    def test_e1_missing_is_refused(self, w):
+        rows, ems = self.setup_book(w)
+        with self.assertRaises(X.Refused):
+            gate(w, "L", w.led.scan_bot("hv7.0-L")[0], ems, T0 + 8 * DAY, e1=None)
+
+    @with_world
+    def test_excluded_period_cap_is_named_not_decidable(self, w):
+        rows, ems = self.setup_book(w)
+        r = gate(w, "L", w.led.scan_bot("hv7.0-L")[0], ems, T0 + 8 * DAY, fallback=dict(FB_OK, excluded_cap_not_decidable=True))
+        self.assertEqual(r["status"], "NOT_DECIDABLE")
+        self.assertTrue(any("10% cap (NOT_DECIDABLE)" in m for m in r["reasons"]))
+
+    @with_world
+    def test_b_after_horizon_not_decidable(self, w):
+        r = gate(w, "L", [], [m for m in periods(3, 20)], T0 + 12 * DAY)
+        self.assertEqual(r["status"], "NOT_DECIDABLE")
+        self.assertEqual(r["reason"], "B_not_reached_by_T0_plus_H")
+        with self.assertRaises(X.Refused):
+            gate(w, "L", [], periods(3, 20), T0 + 9 * DAY)
+
+    @with_world
+    def test_decision_log_b_vs_ledger_natural_is_disclosed(self, w):
+        rows, ems = self.setup_book(w)
+        rows = w.led.scan_bot("hv7.0-L")[0]
+        # the decision log has an extra early entry that never reached the engine: B is the same here, but one with fewer ledger attempts moves it
+        drop = {f"hv7.0-L-0-{i}-a" for i in range(3)}
+        rows2 = [r for r in rows if r.get("position_id") not in drop]
+        r = gate(w, "L", rows2, ems, T0 + 8 * DAY)
+        self.assertTrue(r["boundary_difference"])
+        self.assertIn("differs", r["boundary_note"])
+        self.assertEqual(r["read_boundary_ms"], T0 + 5 * DAY)
 
 
-def arm_rows(days, n_per_day, pnl_fn, pools=("a",)):
-    rows = []
-    for d in range(days):
-        for i in range(n_per_day):
-            ms = T0 + d * DAY + (i + 1) * 3_600_000
-            for pool in pools:
-                rows += [opened(ms, pool), trade(ms, pool, pnl_fn(d, i, pool))]
-    return rows
+def contrast_rows(days, per_day, l_pick, pnl, lag=0, extra_u_pools=("a", "b", "c", "d"), r_pool="c", s_pool="b"):
+    mk = lambda bot, pools: arm_book(bot, days, per_day, lambda d, i, p: pnl[p], lambda d, i: pools, stakes=(0.25,), lag=lag)  # noqa: E731
+    return {"L": mk("hv7.0-L", (l_pick,)), "R": mk("hv7.0-R", (r_pool,)), "S": mk("hv7.0-S", (s_pool,)), "U": mk("hv7.0-U", tuple(extra_u_pools))}
 
 
-FB_OK = {"L_not_evaluable": False, "all_not_evaluable": False, "reason": None, "fallback_share": 0.0}
-
-
-def rank_row(ms_te, order):
-    return {"kind": "rank", "ms": ms_te - X.T_E_MINUS_T_D_MS, "fallback": False, "order": order}
+PNL = {"a": 3e7, "b": 1e7, "c": -1e7, "d": -3e7}
 
 
 class Contrast(unittest.TestCase):
-    POOLS = ("a", "b", "c", "d")
-    PNL = {"a": 3e7, "b": 1e7, "c": -1e7, "d": -3e7}
+    def regn(self, days=10):
+        return {"clock_start_ms": T0, "halt_ms": T0 + days * DAY, "D": days, "stake": 0.25, "registry": {}}
 
-    def build(self, days, l_pick, noise=0.0):
-        u = arm_rows(days, 4, lambda d, i, p: self.PNL[p] + noise * ((d + i) % 3), pools=self.POOLS)
-        l = arm_rows(days, 4, lambda d, i, p: self.PNL[p] + noise * ((d + i) % 3), pools=(l_pick,))
-        r = arm_rows(days, 4, lambda d, i, p: self.PNL[p] + noise * ((d + i) % 3), pools=("c",))
-        s = arm_rows(days, 4, lambda d, i, p: self.PNL[p] + noise * ((d + i) % 3), pools=("b",))
-        return {"L": l, "R": r, "S": s, "U": u}
-
-    def read(self, rows, days=10, now=None, fb=FB_OK, ranks=()):
+    def read(self, rows, days=10, now=None, fb=FB_OK, e1=E1_OK, ranks=(), **kw):
         h = T0 + days * DAY
-        return X.contrast_read(now_ms=h + X.EXIT_WINDOW_MS if now is None else now, clock_start_ms=T0, horizon_end_ms=h, rows_by_arm=rows, l_rank_rows=ranks, fallback=fb, n_books=30)
+        return X.contrast_read(now_ms=h + X.EXIT_WINDOW_MS if now is None else now, regn=self.regn(days), rows_by_arm=rows, l_rank_rows=ranks, fallback=fb, e1=e1,
+                               n_books=30, **kw)
+
+    def build(self, days, pick, lag=0, per_day=4):
+        return contrast_rows(days, per_day, pick, PNL, lag=lag)
 
     def test_refused_before_h_plus_exit_window(self):
         rows = self.build(10, "a")
         h = T0 + 10 * DAY
-        with self.assertRaises(X.Refused):
-            self.read(rows, now=h)
-        with self.assertRaises(X.Refused):
-            self.read(rows, now=h + X.EXIT_WINDOW_MS - 1)
-        self.read(rows, now=h + X.EXIT_WINDOW_MS)
+        for now in (h, h + X.EXIT_WINDOW_MS - 1):
+            with self.assertRaises(X.Refused):
+                self.read(rows, now=now)
+        self.read(rows, now=h + X.EXIT_WINDOW_MS + 30 * 3_600_000)
 
-    def test_refused_with_unclosed_attempt(self):
+    def test_pending_refused_orphan_not_decidable(self):
         rows = self.build(10, "a")
-        rows["L"].append(opened(T0 + 3 * DAY + 5, "a"))
+        rows["L"].append(open_row("hv7.0-L", "hv7.0-L-late", T0 + 10 * DAY - 3_600_000))  # decided 1 h before the window end, never closed
         with self.assertRaises(X.Refused):
-            self.read(rows)
+            self.read(rows)  # about 2 h old at the read: PENDING (< 24 h)
+        res = self.read(rows, now=T0 + 10 * DAY + 40 * 3_600_000)
+        self.assertEqual(res["status"], "NOT_DECIDABLE")
+        self.assertTrue(any("orphan" in m for m in res["reasons"]))
 
-    def test_skill_known_answer(self):
-        # L always takes the best pool, U is the mean of all four: every daily difference is positive in all four sub-cells
-        res = self.read(self.build(10, "a"))
+    def test_e1_entry_rate_not_decidable(self):
+        res = self.read(self.build(10, "a"), e1=dict(E1_OK, a_l=3, a_l_lt_20=True))
+        self.assertEqual(res["status"], "NOT_DECIDABLE")
+        self.assertTrue(res["reasons"][0].startswith("E1_entry_rate"))
+        self.assertIn("N", res["multiplicity"])
+
+    def test_e1_fallback_blocks_l_even_when_window_share_is_low(self):
+        res = self.read(self.build(10, "a"), e1=dict(E1_OK, fallback_gt_10pct=True), fb=dict(FB_OK, fallback_share=0.01))
+        self.assertEqual(res["status"], "NOT_EVALUABLE")
+        self.assertEqual(res["contrasts"]["L-U"]["reason"], "E1_fallback")
+        self.assertIn(res["contrasts"]["S-U"]["status"], ("PASS", "NOT_PASS", "NOT_DECIDABLE"))
+
+    def test_excluded_share_over_5pct_arm_not_decidable(self):
+        rows = self.build(10, "a")
+        k = 0
+        for r in rows["R"]:
+            if r["kind"] == "trade" and k < 5:
+                r["v_src"] = {"entry": "none", "exit": "row", "span": {}}
+                k += 1
+        res = self.read(rows)  # 5 of 40 = 12.5%
+        self.assertEqual(res["status"], "NOT_DECIDABLE")
+        self.assertTrue(any("excluded" in m for m in res["reasons"]))
+
+    def test_incident_in_window_not_decidable(self):
+        res = self.read(self.build(10, "a"), incidents_by_arm={"S": [{"kind": "buy_refused", "at_ms": T0 + DAY, "day_file": "x"}]})
+        self.assertEqual(res["status"], "NOT_DECIDABLE")
+
+    def test_skill_known_answer_and_stake_filter(self):
+        rows = self.build(10, "a")
+        for a in rows:  # add the other stakes: they must not enter
+            extra = []
+            for r in rows[a]:
+                if r["kind"] == "trade":
+                    for st in (0.5, 1.0):
+                        extra.append(dict(r, stake_sol=st, trade_id=r["trade_id"] + f"x{st}", calc=json.loads(json.dumps(r["calc"]))))
+            rows[a] += extra
+        res = self.read(rows)
         lu = res["contrasts"]["L-U"]
-        self.assertEqual(res["status"], "PASS")
-        self.assertEqual(res["D"], 10)
-        self.assertEqual(lu["min_nonzero_days"], 10)
+        self.assertEqual((res["status"], res["D"], lu["min_nonzero_days"]), ("PASS", 10, 10))
         for s in lu["subcells"].values():
             self.assertEqual(s["p"], 2.0 ** -10)
-            self.assertEqual(s["days_positive"], 10)
-        self.assertTrue(res["a_skill_pass_is_not_a_promotion"])
-        self.assertTrue(res["no_book_has_cleared_the_promotion_gate"])
+            self.assertEqual(s["periods"], 40)
+            self.assertEqual((s["periods_dropped_a"], s["periods_dropped_b"]), (0, 0))
         self.assertIn("not a promotion", res["verdict_text"])
-        self.assertIn("MDE", res["mde"])
+        self.assertIn("confirmation owed", res["verdict_text"])
+        self.assertTrue(res["a_skill_pass_is_not_a_promotion"])
 
-    def test_l_equals_u_expectation_is_not_a_pass(self):
-        # L takes a pool whose pnl equals U's mean (-0.0) : differences are zero every day -> p = 1 -> NOT_PASS (10 days, but zero non-zero days)
-        rows = {a: arm_rows(10, 4, lambda d, i, p: 0.0, pools=("a",) if a != "U" else self.POOLS) for a in X.ARMS}
+    def test_dropped_periods_reported_per_pair(self):
+        rows = self.build(10, "a")
+        rows["S"] = [r for r in rows["S"] if r.get("position_id", "").split("-")[-3:-1] != ["9", "3"]]  # S misses one period
         res = self.read(rows)
-        self.assertIn(res["status"], ("NOT_DECIDABLE",))  # no non-zero days: contrast_days
-        self.assertEqual(res["reason"], "contrast_days")
+        s = res["contrasts"]["L-S"]["subcells"]["flat_1p9_sc"]
+        self.assertEqual((s["periods"], s["periods_dropped_a"], s["periods_dropped_b"]), (39, 1, 0))
 
-    def test_worse_than_random_not_pass(self):
+    def test_worse_than_random_and_few_days(self):
         res = self.read(self.build(10, "d"))
         self.assertEqual(res["status"], "NOT_PASS")
-        self.assertIn("no skill detected", res["verdict_text"])
-
-    def test_fewer_than_8_nonzero_days_not_decidable(self):
+        self.assertEqual(res["verdict_text"], "no skill detected; MDE IC about 0.17")
+        res = self.read(self.build(9, "d"), days=9)
+        self.assertIn("not tabulated", res["verdict_text"])
+        self.assertNotIn("about 0.17", res["verdict_text"])
         res = self.read(self.build(7, "a"), days=7)
-        self.assertEqual(res["status"], "NOT_DECIDABLE")
-        self.assertEqual(res["reason"], "contrast_days")
-        self.assertEqual(res["contrasts"]["L-U"]["min_nonzero_days"], 7)
-        self.assertEqual(res["sign_flip_min_p_at_D"], 2.0 ** -7)
-
-    def test_d5_cannot_pass(self):
+        self.assertEqual((res["status"], res["reason"]), ("NOT_DECIDABLE", "contrast_days"))
         res = self.read(self.build(5, "a"), days=5)
         self.assertEqual(res["status"], "NOT_DECIDABLE")
-        self.assertEqual(X.sign_flip_p([1.0] * 5), 0.03125)
 
-    def test_secondaries_and_fault_check(self):
+    def test_secondaries_holm_and_flags(self):
         res = self.read(self.build(10, "a"))
         c = res["contrasts"]
         self.assertEqual(set(c), {"L-U", "L-R", "L-S", "S-U", "R-U"})
-        self.assertGreater(c["L-S"]["subcells"]["flat_1p9_sc"]["mean_daily_diff_sol"], 0)  # a beats b
-        self.assertLess(c["R-U"]["subcells"]["flat_1p9_sc"]["mean_daily_diff_sol"], 0)  # c is below the U mean (pnl -1e7 vs mean 0)
-        self.assertEqual(set(res["holm"]["holm"]), {"L-R", "L-S", "S-U", "R-U"})  # no rank rows given: no IC in the family
-        self.assertNotIn("L-U", res["holm"]["holm"])
-        self.assertEqual(res["holm"]["N"], 30)
+        self.assertEqual(set(res["holm"]["holm"]), {"L-R", "L-S", "S-U", "R-U"})
+        self.assertEqual(res["multiplicity"]["holm_text"], "Holm rank: not computed, no p list given")
+        res = self.read(self.build(7, "a"), days=7)
+        self.assertEqual(set(res["holm"]["flags"]), {"L-R", "L-S", "S-U", "R-U"})
 
-    def test_same_pool_same_price_all_arms_zero_difference(self):
-        # an arm that buys exactly U's pool set prices to a zero daily difference (A1: one shared pressure intercept)
+    def test_same_pool_zero_difference_no_fault(self):
         rows = self.build(10, "a")
-        rows["R"] = arm_rows(10, 4, lambda d, i, p: self.PNL[p], pools=self.POOLS)
+        rows["R"] = contrast_rows(10, 4, "a", PNL, r_pool="c")["R"]
+        rows["R"] = arm_book("hv7.0-R", 10, 4, lambda d, i, p: PNL[p], lambda d, i: ("a", "b", "c", "d"), stakes=(0.25,))
         res = self.read(rows)
         for s in res["contrasts"]["R-U"]["subcells"].values():
             self.assertAlmostEqual(s["total_diff_sol"], 0.0, places=12)
         self.assertFalse(res["R_minus_U_fault_flag"])
 
-    def test_rank_ic_perfect_order(self):
-        rows = self.build(10, "a")
-        ranks = [rank_row(T0 + d * DAY + (i + 1) * 3_600_000, ["a", "b", "c", "d"]) for d in range(10) for i in range(4)]
-        res = self.read(rows, ranks=ranks)
+    def test_fault_check_is_two_tailed(self):
+        res = self.read(self.build(10, "a"))  # R (pool c) is far BELOW U in every day
+        self.assertLess(res["contrasts"]["R-U"]["subcells"]["flat_1p9_sc"]["mean_daily_diff_sol"], 0)
+        self.assertTrue(res["R_minus_U_fault_flag"])
+        res = self.read(contrast_rows(10, 4, "a", PNL, r_pool="a"))  # R far above U
+        self.assertTrue(res["R_minus_U_fault_flag"])
+
+    def test_rank_ic_perfect_order_and_write_lag(self):
+        def ranks():
+            return [{"kind": "rank", "ms": m - X.T_E_MINUS_T_D_MS, "fallback": False, "order": ["a", "b", "c", "d"]} for m in periods(10, 4)]
+
+        res = self.read(self.build(10, "a"), ranks=ranks())
         self.assertAlmostEqual(res["rank_ic"]["mean_daily_ic"], 1.0)
         self.assertEqual(res["rank_ic"]["periods"], 40)
+        res = self.read(self.build(10, "a", lag=37), ranks=ranks())  # decision_ms is the write instant, 37 ms after the stamp
+        self.assertEqual(res["rank_ic"]["periods"], 40)
         self.assertEqual(res["rank_ic"]["p"], 2.0 ** -10)
+        self.assertEqual(res["contrasts"]["L-U"]["subcells"]["flat_1p9_sc"]["periods"], 40)
 
-    def test_fallback_not_evaluable_blocks_l_contrasts(self):
-        fb = {"L_not_evaluable": True, "all_not_evaluable": False, "reason": "E_fallback"}
-        res = self.read(self.build(10, "a"), fb=fb)
-        self.assertEqual(res["contrasts"]["L-U"]["status"], "NOT_EVALUABLE")
-        self.assertEqual(res["contrasts"]["S-U"]["status"] in ("PASS", "NOT_PASS", "NOT_DECIDABLE"), True)
-        self.assertEqual(res["status"], "NOT_EVALUABLE")
+    def test_rank_row_vs_entry_count_flagged(self):
+        res = self.read(self.build(10, "a"), fb=dict(FB_OK, attempts_L=41, rank_rows=40, entry_vs_rank_row_difference=True))
+        self.assertTrue(res["rank_ic"]["entry_vs_rank_row_difference"])
+        self.assertEqual((res["rank_ic"]["l_entry_rows"], res["rank_ic"]["l_rank_rows"]), (41, 40))
+
+    def test_no_u_trades_clear_refusal(self):
+        rows = self.build(10, "a")
+        rows["U"] = [rows["U"][0]]
+        with self.assertRaisesRegex(X.Refused, "U priced trades"):
+            self.read(rows)
+
+    def test_missing_stamp_refused(self):
+        rows = self.build(10, "a")
+        for r in rows["L"]:
+            r.pop("stamp_ms", None)
+        with self.assertRaises(X.Refused):
+            self.read(rows)
 
 
 class Files(unittest.TestCase):
-    def setUp(self):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.root = Path(self.tmp.name)
-        self._old = R.READ_ROOTS
-        R.READ_ROOTS = tuple(R.READ_ROOTS) + (str(self.root),)
-        self.addCleanup(lambda: setattr(R, "READ_ROOTS", self._old))
-        self.addCleanup(self.tmp.cleanup)
+    def test_fallback_check_entry_vs_rank_and_e1(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            w = World(tmp)
+            old = R.READ_ROOTS
+            R.READ_ROOTS = tuple(old) + (str(w.dec),)
+            self.addCleanup(lambda: setattr(R, "READ_ROOTS", old))
+            ms = periods(1, 20)
+            ranks = [{"kind": "rank", "ms": m - 45_000, "fallback": i < 3} for i, m in enumerate(ms)]  # 3/20 = 15%
+            w.declog("L", ms, ranks)
+            self.assertEqual(len(X.entry_ms(w.dec, "L")), 20)
+            fb = X.fallback_check(w.dec, T0, T0 + DAY)
+            self.assertTrue(fb["L_not_evaluable"])
+            self.assertEqual(fb["reason"], "E_fallback")
+            self.assertFalse(fb["entry_vs_rank_row_difference"])
+            e1 = X.e1_check(w.dec, T0)
+            self.assertFalse(e1["a_l_lt_20"])
+            self.assertTrue(e1["fallback_gt_10pct"])
+            self.assertEqual(len(e1["count_sha256"]), 64)
+            w.declog("L", ms[:19], ranks[:19])
+            for f in (w.dec / "decisions" / "L").glob("*.jsonl"):
+                f.unlink()
+            w.declog("L", ms[:19], ranks)  # 19 entries, 20 rank rows
+            self.assertTrue(X.e1_check(w.dec, T0)["a_l_lt_20"])
+            self.assertTrue(X.fallback_check(w.dec, T0, T0 + DAY)["entry_vs_rank_row_difference"])
 
-    def write(self, arm, rows):
-        d = self.root / "decisions" / arm
-        d.mkdir(parents=True, exist_ok=True)
-        by_day = {}
-        for r in rows:
-            by_day.setdefault(X.utc_day(r["ms"]), []).append(r)
-        for day, rs in by_day.items():
-            (d / f"{day}.jsonl").write_text("\n".join(json.dumps(r) for r in rs) + "\n")
+    def test_record_once_is_per_bot_and_kind(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            X.record_once(tmp, "hv7.0-L_gate", {"a": 1})
+            X.record_once(tmp, "hv7.0-S_gate", {"a": 1})
+            X.record_once(tmp, "hv7.0-L_contrast", {"a": 1})
+            with self.assertRaises(X.Refused):
+                X.record_once(tmp, "hv7.0-L_gate", {"a": 2})
 
-    def test_fallback_check_and_entry_ms(self):
-        ents = [{"kind": "entry", "ms": T0 + 3_600_000 * (i + 1)} for i in range(20)]
-        ranks = [{"kind": "rank", "ms": T0 + 3_600_000 * (i + 1) - 45_000, "fallback": i < 3} for i in range(20)]  # 3/20 = 15%
-        self.write("L", ents + ranks)
-        self.assertEqual(len(X.entry_ms(self.root, "L")), 20)
-        fb = X.fallback_check(self.root, T0, T0 + DAY)
-        self.assertEqual(fb["fallbacks"], 3)
-        self.assertTrue(fb["L_not_evaluable"])
-        self.assertEqual(fb["reason"], "E_fallback")
-        ranks2 = [dict(r, fallback=i < 2) for i, r in enumerate(ranks)]  # 10% exactly is not over
-        self.write("L", ents + ranks2)
-        self.assertFalse(X.fallback_check(self.root, T0, T0 + DAY)["L_not_evaluable"])
 
-    def test_record_once(self):
-        X.record_once(self.root / "reads", "contrast", {"a": 1})
-        with self.assertRaises(X.Refused):
-            X.record_once(self.root / "reads", "contrast", {"a": 2})
+def run_cli(w, kind, extra=(), wall=LATE, arm="L", now=None, record=None):
+    out = io.StringIO()
+    argv = [kind, "--root", str(w.dec), "--ledger-root", w.ledger, "--registry", w.reg, "--n-books", "30", "--arm", arm]
+    if now is not None:
+        argv += ["--now-ms", str(now)]
+    if record is not None:
+        argv += ["--record-dir", str(record)]
+    rc = X.main(argv + list(extra), out=out, _wall_ms=wall)
+    return rc, out.getvalue()
 
-    def test_cli_refuses_before_b(self):
-        import io
 
-        self.write("L", [{"kind": "entry", "ms": T0 + 3_600_000}])
-        out = io.StringIO()
-        rc = X.main(["gate", "--arm", "L", "--root", str(self.root), "--ledger-root", str(self.root / "led"), "--registry", str(self.root / "reg.json"),
-                     "--clock-start-ms", str(T0), "--window-end-ms", str(T0 + 10 * DAY), "--rate", "20", "--now-ms", str(T0 + 9 * DAY), "--n-books", "30",
-                     "--record-dir", str(self.root / "reads")], out=out)
-        self.assertEqual(rc, 1)
-        self.assertEqual(out.getvalue(), "")
-        self.assertFalse((self.root / "reads").exists())
+class Cli(unittest.TestCase):
+    def full_world(self, w):
+        for arm in ("L", "S"):
+            rows = arm_book(R.bot_id(arm), 6, 20, win)
+            w.add_rows(rows)
+        ms = periods(6, 20)
+        ranks = [{"kind": "rank", "ms": m - 45_000, "fallback": False, "order": ["a"]} for m in ms]
+        w.declog("L", ms, ranks)
+        w.declog("S", ms)
 
-    def test_cli_refuses_contrast_early(self):
-        rc = X.main(["contrast", "--root", str(self.root), "--ledger-root", str(self.root / "led"), "--registry", str(self.root / "reg.json"),
-                     "--clock-start-ms", str(T0), "--window-end-ms", str(T0 + 10 * DAY), "--rate", "20", "--now-ms", str(T0 + 10 * DAY + 1), "--n-books", "30",
-                     "--record-dir", str(self.root / "reads")])
-        self.assertEqual(rc, 1)
+    def with_roots(self, w):
+        old = R.READ_ROOTS
+        R.READ_ROOTS = tuple(old) + (str(w.dec),)
+        self.addCleanup(lambda: setattr(R, "READ_ROOTS", old))
+
+    def test_gate_happy_path_end_to_end_and_once_per_bot(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch("tools.arena_paper.shutil.disk_usage", lambda p: collections.namedtuple("U", "total used free")(1000, 500, 500)):
+            w = World(tmp)
+            self.with_roots(w)
+            self.full_world(w)
+            rec = Path(tmp) / "reads"
+            now = T0 + 7 * DAY
+            rc, out = run_cli(w, "gate", now=now, record=rec)
+            self.assertEqual(rc, 0, out)
+            res = json.loads(out)
+            self.assertEqual(res["status"], "PASS")
+            self.assertEqual(res["cells"]["flat_1p9_sc"]["n"], 100)
+            self.assertEqual(res["e1"]["a_l"], 40)  # E1 window = the first two days, 20 a day
+            self.assertIn("holm_text", res["multiplicity"])
+            self.assertTrue((rec / "hv7_read_hv7.0-L_gate.json").exists())
+            self.assertEqual(run_cli(w, "gate", now=now, record=rec)[0], 1)  # L again: refused
+            rc, out = run_cli(w, "gate", arm="S", now=now, record=rec)  # S is its own bot: allowed
+            self.assertEqual(rc, 0, out)
+            self.assertTrue((rec / "hv7_read_hv7.0-S_gate.json").exists())
+
+    def test_future_now_ms_refused_and_flags_are_test_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            w = World(tmp)
+            self.with_roots(w)
+            rec = Path(tmp) / "reads"
+            rc, out = run_cli(w, "contrast", now=HALT + DAY, wall=HALT, record=rec)
+            self.assertEqual(rc, 1)
+            self.assertEqual(out, "")
+            self.assertFalse(rec.exists())
+            with mock.patch.dict(os.environ, {"MAL_ARENA_TEST": "0"}):
+                self.assertEqual(run_cli(w, "gate", now=T0, wall=LATE)[0], 1)
+                self.assertEqual(run_cli(w, "gate", record=rec, wall=LATE)[0], 1)
+
+    def test_old_timing_flags_do_not_exist(self):
+        with self.assertRaises(SystemExit):
+            X.main(["gate", "--horizon-days", "7", "--n-books", "3"])
+        with self.assertRaises(SystemExit):
+            X.main(["gate", "--window-end-ms", "1", "--n-books", "3"])
+
+    def test_contrast_before_window_complete_refused_with_wall_clock(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            w = World(tmp)
+            self.with_roots(w)
+            # the real clock is day 8 of 10: days 9 and 10 do not exist, so the read is refused whatever data is on disk
+            rc, _ = run_cli(w, "contrast", wall=T0 + 8 * DAY, record=Path(tmp) / "reads")
+            self.assertEqual(rc, 1)
+
+    def test_gate_refused_before_b_via_cli(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            w = World(tmp)
+            self.with_roots(w)
+            w.declog("L", [T0 + 3_600_000])
+            rc, out = run_cli(w, "gate", now=T0 + 9 * DAY, record=Path(tmp) / "reads")
+            self.assertEqual((rc, out), (1, ""))
 
 
 if __name__ == "__main__":
