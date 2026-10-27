@@ -37,7 +37,7 @@ To the writer's knowledge, no Q* = 60 trigger outcome, fill, exit or P&L has bee
   - before 2026-11-14T00:00Z, no record carries an outcome for a synthetic or unclassified pool or splits an outcome by class;
   - nobody prices this rule on arena-tape hours outside this scope.
 - **(d) Executor (live) outcomes are NOT declared here.** A live canary for this book needs its own DEC-032 copy and an executor change. `tools/h5_arena_executor.py` is on Q50's pinned list, so that change is deferred until Q50's X is settled or Q50 has ended without a PASS. A second note (part B) is needed then, in the form of `EXP/EXP-024-note-s1-successor.md` part B.
-- **(e) Independence and nesting.** Every Q60 trigger pool that Q50 triggers on is also a Q50 pool. Q60's triggered pools contain every Q50 and every Q* = 40 trigger pool, because the first Q <= 60 sell comes at or before the first Q <= 50 sell. On a shared pool Q60 enters at the same print or an earlier one, with the same 330 s exit.
+- **(e) Independence and nesting.** Q60's triggered pools contain every Q50 and every Q\* = 40 trigger pool, because the first Q <= 60 sell comes at or before the first Q <= 50 sell (spent() is monotone and t is earlier). On a shared pool Q60 enters at the same print or an earlier one, with the same 330 s exit.
   - Nothing Q60 shows may stop, delay, re-scope or change the registration, window or read of Q50 or of `h5v1q50-boostfloor-s1` (DEC-031 Amendment 17).
   - Nothing Q50 or s1 shows may change Q60's.
   - Q60's read is reported beside Q50's and s1's and is never pooled with them (DEC-031 Amendment 19 item 7).
