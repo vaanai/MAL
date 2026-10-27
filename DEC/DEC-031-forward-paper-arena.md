@@ -647,3 +647,165 @@ DEC-031 Amendment 18: the registration path of the 2026-11-06 successor of `h5v1
 9. **N, c and siblings (R8).** N + 1 at the successor's clock; Q50 stays in N with its own end. A successor screen PASS enters confirmation automatically and adds 1 to c (Amendment 3 item 2). No carry-over into the paper read: no Q50 trade is pooled, no confirmation credit passes (R8.2), and the successor's read is never Q50's confirmation (§2 step 4 and Amendment 3 item 2 need the same `bot_id`; Amendment 3 item 5). Every successor read prints side by side, counts only: Q50 (its read verdict or end class, counted trades), `h5v1-boostfloor-a2` and `h5v2-boostclock-a2` (ended, 0 attempts), and any other successor, with the shared-pool count (Amendment 3 item 8 (e)). A successor pass is best of N, in-sample against Q50, and, after a Q50 FAIL or NOT_DECIDABLE, the second sample of a rule whose first sample did not pass: at about 5% per look the rule-level false-pass chance is about 1 - 0.95^2 = 9.75%, which the uncorrected screen does not show, and the read says so. If Q50 also entered confirmation, both count in c (c counts tests). Live rung carry-over is DEC-032 Amendment 2 item 12.3 as corrected by its Erratum 1, in the successor's own canary copy (DEC-034); it changes nothing in this paper book.
 10. **Unchanged:** the promotion gate and every threshold (n >= 100; >= 5 UTC dates with a majority positive; CI90 lower bound > 0, 1,000 draws, seed 1, 5th percentile; ex-top-3 > 0; flat 15% and pressure-fail at slope scale 1); §2's one read per `bot_id` and its deciding cell; the 5% and Amendment 6 caps and denominators; DEC-014's NOT_DECIDABLE rules; Q50's sha, clock, window, H, end-seal, A3 rule, state file, wrapper, instant tool and read; EXP-024 and its seals (Look 2 to its end state, first 2026-11-14T00:00Z); Amendments 1 to 17; every other registered book.
 11. **Disclosure.** In view: DEC-031 through Amendment 15 at origin/main `c8fcf761`, DEC-032, DEC-033, EXP-024 Amendments 9 and 10 and their Notes, QP-RULING-1024-successor, `docs/research/q50-successor/PLAYBOOK.md`, the S\* tag and its diff, `docs/HANDOFF.md`, and the code of `tools/h5_shadow.py`, `tools/h5_arena_executor.py`, `tools/h5_arena_ladder.py`, `tools/h5_arena_exec_replay.py`, `tools/arena_h5_score.py`, `tools/arena_h5_score_q50.py`, `tools/arena_h5_q50_instant.py`, `tools/arena_h5_books.py` and `tools/a3_halt.py`. `docs/HANDOFF.md` §1 quotes Q50's day-1 dry-score counts (disclosed in #897); they were in view as text and were used for nothing here. Not opened: any Q50 or HV4 shadow output, trigger, decision log, ledger, `bots.json`, score output, count file, read-instant file, A3 daily record, verdict or applied log, job status or log, or any fill, exit or P&L. Q50's outcomes have been observable in real time since 2026-10-25 under EXP-024 Amendment 10 (a); this writer looked at none. Winner's curse: Q* = 50 is a discarded discovery cell, and any successor pass is best of N. No book has cleared the promotion gate, and nothing here is a profit claim.
+
+
+### Amendment 19 (DRAFT; number = the next free DEC-031 amendment at merge, Amendment 16 is held by open PR #1019, a renumber is a fill; written 2026-10-27T21:21:00Z, revised 2026-10-27T21:32:12Z on quant-proof's comment 6454061741 (B1 to B6, rulings (a) to (f)) and its B1 correction 6454095235, both from `date -u` on mal-research-0; records only; before the registration, P0 count and clock of the book it covers, and before any outcome of that book exists; outcome-blind; status: DRAFT until merge, QP OK on the exact head and a reviewer verdict)
+DEC-031 Amendment 19: the decision to register the Q* = 60 sibling `h5v1q60-boostfloor-a1` (rule `H5-BOOSTFLOOR-Q60 v1`; library row `l3-boost-h5q50-1` variant B) as its own arena book on its own clock, and the rules it runs under. Scope: this book, plus one report-only print line in the successor `h5v1q50-boostfloor-s1`'s read (item 7). No book has cleared the promotion gate.
+
+Q* = 60 is a discarded discovery cell. Discovery was monotone, with smaller Q\* better, so 60 is the worst of {40, 50, 60}. No Q60 edge figure exists, and none exists for Q50 either. Nothing here is a profit claim.
+
+Companion texts:
+- `EXP/EXP-024-RULE-Q60.md` (this PR).
+- `docs/research/q60-sibling/PLAN.md` (this PR).
+- The declared observation `EXP/EXP-024-note-q60.md`, which comes in a **later PR** (item 5).
+
+**Takes effect** on merge, after quant-proof's OK on the exact final head and a reviewer verdict on the PR. **Its squash-merge committer time must be before 2026-10-30T00:00:00Z**, Q50's earliest read boundary, so that the registration decision exists before any Q50 read verdict (QP ruling (c)).
+- If it merges later, every Q60 read states: "the Q60 registration was decided after Q50's earliest read instant, with Q50's outcomes and any Q50 read verdict observable."
+- A Q50 or s1 outcome, verdict, P&L, fill or count is never a reason to register or not register this book, to stop it, or to pick its sha, clock, stake, H, window or read.
+
+**Pinned set.** Nothing in this work changes any of the 43 paths of `scripts/ops/q50-xtime-manifest.sh` line 23 (the manager's rule of 2026-10-27; QP ruling (d) verified 0 of this PR's paths on it). The Q60 code lives on a tagged commit off S\*, never merged to main.
+
+1. **The book.**
+   - **bot_id** `h5v1q60-boostfloor-a1`. It has Amendment 5 item 2.1's three properties: it starts `h5v1`, does not start `h5v1-boostfloor-`, and starts `h5`. A committed test shows them (plan Q1). `-a1` marks a first registration of a rule; `-s<k>` is for successors.
+   - **Rule** `H5-BOOSTFLOOR-Q60 v1`, `EXP/EXP-024-RULE-Q60.md`, sha256 `f36afaae00edd5b8292fdbe732c6034251cc1371afb6c1e54b50e548a91717b9`. It is the Q50 block except four lines (1, 22, 42, 47), as quant-proof verified.
+   - **Deciding cell, as Q50's** (Amendment 5 item 2.3): the 1.9 s leg at 0.30 SOL, rent charged, both fail models, strand rules sc and total. The stack is DEC-031-rev2 at 505,000 lamports per send; Amendment 8 does not cover it. Exit v1 (330 s).
+2. **Frozen sha.** `q60_sha` is defined here as **the commit tagged `q60-base-1` on origin, whose diff against S\* (`5c2ab7c64b21358619e37068c6a53e4d183512ea`, tag `q50-succ-base-1`) is exactly the following and nothing else.**
+
+   The changes, in `tools/h5_shadow.py`:
+   - (a) `Q_STAR_ALLOWED` = (40.0, 50.0, 60.0).
+   - (b) A per-level rule table {50.0: (`H5-BOOSTFLOOR-Q50 v1`, `b3f8ecbf…`), 60.0: (`H5-BOOSTFLOOR-Q60 v1`, `f36afaae…`)}. The start record and every use of `Q50_RULE_ID` / `Q50_RULE_SHA256` take the rule fields from it, so the 40.0 and 50.0 records stay byte-identical.
+
+   The test files that follow:
+   - (c) The Q\* 60 trigger at exactly <= 60e9 on a fixture.
+   - (d) 40/50 start records byte-identical to S\*'s.
+   - (e) 45 and 70 refused.
+   - (f) An AST identity test of every other function against S\*.
+   - (g) A decode identity test.
+   - (h) The seal grid at Q\* 60 on synthetic 2026 times.
+   - (i) `compare_frozen` refuses when no frozen row matches the level (quant-proof's MINOR latent defect in comment 6454095235: at Q\* != 40 it silently returns 0 rows), with a test. This fix is on the `q60-base-1` tag only, never in the pinned `tools/h5_shadow.py` on main.
+
+   It is built on S\*, not F50, because F50's fresh-forward seal ends every pool at 2026-11-06T00Z (QP-RULING-1024-successor R7(a)). Q\* = 60 cannot be set by config: `check_q_star` refuses it, and a Q\* != 40 start record carries Q50's rule fields (`tools/h5_shadow.py` lines 200 to 202 and 3287 to 3288 at F50; 3290 to 3291 at S\*). A commit with any other diff is a new `bot_id`.
+
+   **Built and proven before the clock** (target: tagged by 2026-11-02T00:00Z). The proofs:
+   - **(i)** Runs A (default) and B (`--q-star-sol 50`) of the 2026-09-20 md5 decision-equivalence give exactly #1548's md5s at S\*.
+   - **(ii) Run C (B1, as corrected by quant-proof's comment 6454095235): the Q50 precedent of #789.** A fresh, unmodified `s14_boostdip.py` run (sha256 `70becfb7…`, the file #789 used) with env DS=60 TMIN=0 TMAX=300 TEND=330 NOBOOSTREQ=0 on the exploration day 2026-09-20 (fast-pool-0918; outside every counted window and seal), compared with the shadow's replay at `--q-star-sol 60` through `parity_v2.py`, as #789 did at DS=50 (output sha256 `a02cd8f7…`; s14 138 vs shadow 137). It is judged against the same 2 residual pools diagnosed in D1 of `ARTIFACTS/lab/arena-records-2026-10-24-q50.md` (`F9fckcTp…`, a parity-driver window cut; `7j99BJ9h…`, a replay-only optimistic effect), each disclosed if it recurs. **Any other difference is a STOP**: no registration until quant-proof rules. Run C prints counts and pool ids of differences only, never P&L. No frozen discovery rows are used: `boostdip_frozen_conf.parquet` has only D = 40.
+   - **(iii) and (iv)** The AST identity and decode identity tests are committed at the tag and run on mal-fast-0's Python. The records PR cites the job ids. This makes the guard (h) cover transitive (QP ruling, question 4): Q60\* equals S\* on decode functions, S\* equals F50, and F50 equals `1f7a89c`.
+   - **(v)** Unit tests are green at the tag.
+
+   The later note PR and the registration record carry the commit sha.
+3. **P0, planning rate and H.**
+   - **Planning rate** (in view; not the P0). Library row `l3-boost-h5q50-1` (hunt24 `COUNTS.md`, sha256 `19371f15…`) gives Q\* 60 strict triggers of 45 / 47 / 32 raw on 10-19 / 10-20 / 10-21, a mean of 41.33.
+     - These days are partial, 10-20 holds a hard gap, and the count was not fixed-first.
+     - Q\* 50 gave 36 / 31 / 21 on the same days.
+     - H = min(90, max(14, ceil(150 / 41.33))) = **14**. H is 14 for every rate of at least about 10.714 a day.
+   - **P0 (a declared departure in the form of Amendment 5 item 1; ACCEPTED by quant-proof, ruling (f)).**
+     - **Counter.** The structure-only proxy counter `scripts/research/l3_count_q60p0.py` is `l3_count_q50p0.py` (sha256 `8c6b4905…`) with its output restricted to the `G0_wsol_band|trig|Q60|strict` cell (plan Q4). Its sha256 is pinned in the records PR before the job.
+     - **Window and rules.** The window is the same 72 hours as Q50's P0, `[2026-10-21T00Z, 2026-10-24T00Z)`, which were gap-clean on metadata alone (Amendment 5 item 1.4). The gap rule is that of Amendment 5 item 1.5. The proxy bar of item 1.3 applies: mean at least 20, each day at least 10, raw. Below the bar the result is NOT_DECIDABLE, with no re-count and no other window.
+     - **Fixed-first.** The P0 text is notebooked fixed-first before the job runs.
+     - **Disclosure (f)(1).** `l3_count_q50p0.py` has `QSTARS = (40.0, 50.0, 60.0)`, so job #1413's output (`q50p0.json`) on these exact hours very likely already holds the Q60 cells. This P0 is blind only if nobody opened that output. The registration record states whether anyone did. This writer did not open it.
+     - **Disclosure (f)(2).** By nesting, each Q60 strict day count is at least Q50's, and Q50's P0 passed (mean 35.333333333333336). So the Q60 bar is near-certain to pass, and H = 14 regardless. This P0 is a formality and decides nothing.
+     - **Staleness.** The window is valid for a clock at or before 2026-11-07T00:00:00Z (the R3.4 limit, applied by analogy). A later clock (item 4, slip) uses a new structure-only P0, pre-committed here: the same counter, the 3 latest full closed UTC days before registration, gap-clean on metadata, fixed-first, the same bar. H is recomputed from it, capped by `SUCC_END_MS` and never extended.
+   - **H = 14.** H is written as `window_end_ms` = clock + 14 d in the `bots.json` line at registration (Amendment 4 item 2.2). It is copied in the notebook and the records PR.
+4. **Clock: 2026-11-07T00:00:00Z (1794009600000), filled.** This gives:
+   - the window [2026-11-07T00Z, 2026-11-21T00Z), E_q60 = 1795219200000;
+   - the earliest read boundary 2026-11-12T00:00:00Z (1794441600000).
+   - **Why this date.** It is after Q50's shadow has ended (about 2026-11-06T00:10Z), so three H5 shadows never run at once.
+   - **Why not earlier.** The earliest legal and realistic clock was 2026-10-31T00:00Z. It was not chosen, because of the review load on the Q50, HV4 and HV6 read days and fast-0 memory (plan section 5).
+   - **Am.3 item 1.** The clock is the first 00:00Z after registration "or later", and this item puts it at 11-07T00Z.
+   - **Slip (Amendment 17 pattern).** If any pre-clock item of item 5 is not done by 2026-11-06T23:00Z, the clock is the first 00:00Z after the last item, with the new P0 of item 3. The slip is notebooked with the unmet item before the clock it misses. Work not done is a slip, never a stop. If the `bots.json` line was already written with the missed clock, that book ends NOT_DECIDABLE before its clock (empty window, N + 1), and the same rule is registered again as `-a2`, by this same item, with N + 1.
+   - **Not a second frozen copy.** Q60 is a different rule (Amendment 3 item 5's last sentences). Its window overlaps s1's, which is the sibling taint of Amendment 3 item 8 (e) (item 7).
+5. **Pre-clock list.**
+   - **(1)** This amendment and the rule file merged.
+   - **(2)** The declared observation `EXP/EXP-024-note-q60.md`, in a later PR, merged with QP OK and a reviewer verdict, with `q60_sha` filled. It must merge before any process at `q60_sha` reads a live feed (the smoke included), and so before registration. It must meet QP-RULING-1027-s1-r2's four anchors and conditions (1) to (5) for a separate-file declared observation:
+     - it is cited by path and merged blob;
+     - it is listed in SEALS-BRIEF;
+     - it gets a pointer line later.
+
+     Its text is the draft at #1064's head `356b61be`, plus B5's exact wording (item 10).
+   - **(3)** `q60_sha` tagged, with proofs (i) to (v) and QP OK.
+   - **(4)** The P0 job PASS.
+   - **(5)** The Amendment 6 smoke: at least 2 h at `q60_sha`, in a scratch root, after (2). It is judged on a blocking list notebooked before it starts. It has its own `MemoryMax` under item 8's fit check (B6).
+   - **(6)** The integrity report tool and thresholds pinned in the registration record. Proposed: Q50's own pins, cited.
+   - **(7)** Registration and the books-file swap in one command (item 6).
+   - **(8)** The official green A3 run on the new books file after registration.
+   - **(9)** The shadow started after `registered_at_ms`, with at least 1 h of clean log.
+   - **(10)** The score loop, day-1 dry score (counts only) and halt-alert jobs submitted.
+   - **(11)** A kill-review check line.
+
+   The records PR follows within 24 h.
+
+   **Tools fallback (B3).** The wrapper, read-instant and register entries are one row in the successor s1's book-table module (s1 plan items C2 and C3). If that module has not merged with QP OK and a reviewer verdict by 2026-11-03T00:00:00Z, this book's entries are built standalone: a new module of the same form, with its own tests, QP OK and reviewer verdict. That build is not a reason to stop, only a possible slip (item 4). Q50's `arena_h5_score_q50.py` and `arena_h5_q50_instant.py` are never edited for it.
+6. **A3 and books file.**
+   - **Listing.** The book is listed under `new_rule_bot_ids` (Amendments 4 and 10). The new books file is the then-current file plus this id.
+   - **The swap.** It is swapped in the registration command, outside :04 to :25 of 07/13/19 UTC and outside 12:10 to 12:25Z. The registry-hygiene check of DEC-032 Amendment 3 item 3 runs first.
+   - **No loop redeploy.** The no-sticky-non-PASS check is made from verdict fields only, at the swap and at the green run (QP-RULING-1027-s1, answer 2). A non-PASS in [registration, clock) ends the book NOT_DECIDABLE (empty window, N + 1).
+   - **Fees check.** It is not deployed for this book (R9.1 needs Q50 ended, and the setting cannot change after the clock). This is disclosed.
+   - **Coverage of the A3 chains.** The loop, dead-man and alert chains cover 2026-11-21T07:10Z.
+   - **Q50's reads.** They keep the books-v2 view from a pre-change worktree (QP-RULING-1027-s1 (e)2).
+7. **Read, multiplicity, siblings, what a pass licenses.**
+   - **Read.** Amendment 11 items 1 to 5 apply word for word, with `h5v1q50-boostfloor-a1` read as `h5v1q60-boostfloor-a1`, its clock 1794009600000, and "2026-11-06T00:00:00Z (the end-seal)" read as 1795219200000. The item-1 tool is merged with QP OK and a reviewer verdict before 2026-11-12T00:00Z.
+   - **Multiplicity (ruling (b)).**
+     - **The counts.** N + 1 at the clock. A screen PASS enters confirmation and adds 1 to c (Amendment 3 item 2). The screen is not corrected, by design: the correction is the confirmation at p at most 0.05/c.
+     - **The family line, with its derivation.** This exact line is **printed in every Q60 read, in every read of `h5v1q50-boostfloor-s1` (a report-only print in s1's shared tool row; it adds a line to Amendment 18 item 7's read and changes no decision), and in every owner ask for a C0 canary of Q50, s1 or Q60**: "Rule family H5-BOOSTFLOOR at Q* 50 and 60: Q50, s1 and Q60 are three looks at one premise on nested pool sets with the same exit. If no look has an edge, the chance that at least one screen passes is up to 1 - 0.95^3 = 14.3% at a NOMINAL 5% per look (an 'up to' bound under positive dependence). It is nominal because a percentile date-cluster bootstrap on 5 to 14 dates can understate the CI width."
+     - **Q50's read stays untouched.**
+     - **The arena-wide line.** Every read still prints the arena-wide 1 - 0.95^N.
+   - **Beside, never pooled.** Every Q60 read prints the following, side by side and counts only:
+     - Q50 (its verdict or end class, and its counted trades);
+     - s1 (the same);
+     - `h5v1-boostfloor-a2` and `h5v2-boostclock-a2` (ended, 0 attempts);
+     - the shared-pool counts Q60 ∩ Q50 and Q60 ∩ s1;
+     - the band-only count, from decision records only.
+
+     No Q60 trade is pooled with a Q50 or s1 trade, or the reverse.
+   - **What a Q60 PASS licenses.**
+     - Only Q60's own DEC-031 §2 steps 1 to 3: a C0 canary under its own later DEC-032 copy. That needs a note part B and the executor change, both deferred (the pinned-path rule).
+     - **Owner ask.** After a Q50 or s1 FAIL or NOT_DECIDABLE, the owner is asked afresh, with those verdicts and the family line stated. The standing C0 line is not used (QP-RULING-1027-s1 (c)).
+     - Nothing for Q50 or s1: no rung, no carry-over, no confirmation credit, in either direction.
+     - Stake above C0 only on Q60's own confirmation at p at most 0.05/c.
+     - A Q60 PASS with a Q50 FAIL is a best-of-siblings result on a nested, worse-in-discovery cell. It is labelled so, and is never evidence about Q50's rule (ruling (a)).
+   - **One live H5 canary at a time (B4).** At most one H5-family live canary (Q50, s1 or Q60) runs at any instant. A cross-book pool lock comes only under a later DEC with a QP ruling, and never changes a running canary's decisions.
+8. **Memory (B6).**
+   - **Every process at `q60_sha` on mal-fast-0 has its own `MemoryMax`.** That means the Amendment 6 smoke (about 11-03, beside Q50's live shadow #1419/#1421 and any other running H5 process) and the book's shadow (from about 2026-11-06, after Q50's shadow ends, beside s1's).
+   - **Fit check.** Before each start, `systemctl show user-1002.slice -p MemoryCurrent` plus the sum of the `MemoryMax` of every H5 process that can run at the same time must fit the slice. Otherwise the start waits. A first refusal is a slip; a second refusal, recorded with the numbers both times, is a stop (item 9).
+   - **Priority.** The book never restarts or displaces Q50's or s1's process. s1 has priority (Amendment 17).
+   - **The shadow.** It runs from a clean checkout at `q60_sha`, with `--fresh-forward ARENA --q-star-sol 60`, in its own out dir `$HOME/data/arena/h5-q60-*`.
+9. **Stop list (B3; the Amendment 17 pattern; no outcome-dependent exit).** Only these stop the book, each notebooked with its instant before the stop. Work not done is a slip (item 4), never a stop.
+   - **Structural class.** Class H4b, H5b or H7 (QP-RULING-1024-successor R1) of an A3 flag or end on any guard run before the book's read. It is assigned from structure fields only (verdict reasons, fee-tier and account evidence, BOOST flags), notebooked with them, and confirmed by quant-proof before it stops the book. A reclassification after any Q50, s1 or Q60 verdict exists may only be stricter, and only with quant-proof.
+   - **Kill-review week.** One whose dates are on main before this amendment merges and that overlaps [registration, read]. None is recorded at writing.
+   - **Memory.** A second memory refusal (item 8).
+   - **External impossibility.** A quant-proof ruling that an item cannot be met for a reason outside the lab's control: a seal, a proven code impossibility, or a host.
+   - **What is not a stop.** A Q50 or s1 end, read or verdict of any class except the first bullet's.
+   - **After registration.** A stop there ends the book NOT_DECIDABLE (N + 1).
+10. **Who chose Q60, and when (B5; exact).**
+    - The owner asked to expand on Q50 so that the lab has a better chance if its forward test disappoints. The ask was relayed to this writer by the manager.
+    - This agent drafted the design (#1064, 2026-10-27 from 21:21Z).
+    - The manager, manager17, chose the lean form (clock 11-07T00Z) at about 2026-10-27T21:2xZ, from the library row counts (`l3-boost-h5q50-1`) and this design.
+    - Neither the manager nor this agent opened any Q50 outcome (P&L, fill, exit) or any Q50 output: they are sealed. Q50's outcomes could have been observed in real time since 2026-10-25 under EXP-024 Amendment 10 (a), but none was opened by either.
+    - Whether the owner looked at any Q50 outcome before the ask is not known to this writer. The registration record states it from the owner's or the manager's word.
+    - The label "chosen with Q50 outcomes in view" applies to every Q60 read only if the record shows that someone in the choice opened one.
+11. **Unchanged:**
+    - the promotion gate and every threshold;
+    - §2;
+    - Amendments 1 to 18, except the one report-only print line added to Amendment 18 item 7's read by item 7;
+    - Q50's and s1's books, texts and Q50's read;
+    - EXP-024 and its seals (Look 2 to its end state, first 2026-11-14T00:00Z);
+    - `EXP/EXP-024-note-s1-successor.md` (blob `7015abc9`);
+    - DEC-032.
+12. **Disclosure.**
+    - **In view:**
+      - the library row's counts (structure only);
+      - the texts and code named above;
+      - quant-proof's comment 6454061741;
+      - `docs/HANDOFF.md`, whose §1 quotes Q50's day-1 dry counts (used for nothing) and whose §7 states fast-0 memory pressure (used for the memory rule).
+    - **Opened by this writer:**
+      - the sha256 of `boostdip_disc_v2.parquet` (computed for the withdrawn explore-0814 reference; not used);
+      - the code of `tools/h5_shadow.py`.
+    - **Not opened:**
+      - any Q50, s1 or HV4 output, shadow or score file;
+      - any count file (including `q50p0.json`), ledger or `bots.json`;
+      - any A3 record, job status or log;
+      - any fill, exit or P&L;
+      - any parquet column of the discovery files;
+      - `/data/mal/meta-capture/`, which was not listed.
+    - **Not priced:** nothing.
+    - Winner's curse and sibling taint apply. Not a profit claim.
