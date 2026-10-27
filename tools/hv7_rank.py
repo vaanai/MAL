@@ -37,8 +37,7 @@ FORBIDDEN_KEY_PARTS = ("outcome", "pnl", "fwd", "future", "realis", "realiz", "f
                        "prior_trade", "exit_")
 FORBIDDEN_KEYS_EXACT = frozenset({"arm", "arms", "pick", "picks", "rank", "ranks", "decision", "decisions", "exit", "trade", "trades"})
 
-FALLBACK_REASONS = ("empty", "refusal", "not_json", "not_list", "bad_item", "unknown_id", "duplicate_id", "missing_id",
-                    "wrong_length")
+FALLBACK_REASONS = ("empty", "refusal", "not_json", "not_list", "bad_item", "unknown_id", "duplicate_id", "missing_id")
 
 _ISO = re.compile(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3})Z")
 _WORD_FIELD = re.compile(r"(?<![\w.])(?:f|risk|setup)\.[a-z][a-z0-9_]*")
@@ -76,7 +75,7 @@ def _sha(text: str) -> str:
 
 @dataclass(frozen=True)
 class ScreenSet:
-    ids: tuple[str, ...]      # screen order: vol60 descending, ties by pool id
+    ids: tuple[str, ...]      # screen order: vol_60m descending, ties by pool id
     no_trade: bool            # fewer than n_min candidates: no trade in any arm
     reason: str | None
 
@@ -85,16 +84,16 @@ def _vol_ok(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
 
 
-def screen_set(passed, vol60: dict, n: int = N_DEFAULT, n_min: int = N_MIN, vetoed=frozenset()) -> ScreenSet:
-    """passed: ids of pools that passed the scan. vol60: id -> 60-minute SOL volume. Pools in `vetoed` or with a missing or
-    non-finite vol60 are dropped (fail closed) before the first n are taken, so a vetoed pool is replaced by the next."""
+def screen_set(passed, vol_60m: dict, n: int = N_DEFAULT, n_min: int = N_MIN, vetoed=frozenset()) -> ScreenSet:
+    """passed: ids of pools that passed the scan. vol_60m: id -> 60-minute SOL volume (the card field f.vol_60m). Pools in `vetoed` or with a
+    missing or non-finite vol_60m are dropped (fail closed) before the first n are taken, so a vetoed pool is replaced by the next."""
     if isinstance(n, bool) or not isinstance(n, int) or not (N_MIN <= n <= N_MAX) or isinstance(n_min, bool) or not isinstance(n_min, int) or not (N_MIN <= n_min <= n):
-        raise RankError(f"need {N_MIN} <= n_min <= n <= {N_MAX} and 1 <= n")
+        raise RankError(f"need n and n_min to be integers with {N_MIN} <= n_min <= n <= {N_MAX} (got n={n!r}, n_min={n_min!r})")
     pool = []
     for pid in set(passed):
-        if pid in vetoed or not _vol_ok(vol60.get(pid)):
+        if pid in vetoed or not _vol_ok(vol_60m.get(pid)):
             continue
-        pool.append((-float(vol60[pid]), pid))
+        pool.append((-float(vol_60m[pid]), pid))
     pool.sort()
     ids = tuple(pid for _, pid in pool[:n])
     if len(ids) < n_min:
@@ -271,12 +270,22 @@ def validate_rank(reply, shown_ids) -> RankVerdict:
         return _fallback("refusal")
     if not reply.strip():
         return _fallback("empty")
+    dup_key = False
+
+    def _pairs(pairs):      # json.loads keeps the LAST of two equal keys; a reply object with a repeated key is malformed, not "the last one wins"
+        nonlocal dup_key
+        d = dict(pairs)
+        dup_key = dup_key or len(d) != len(pairs)
+        return d
+
     try:
-        data = json.loads(reply)
+        data = json.loads(reply, object_pairs_hook=_pairs)
     except (ValueError, RecursionError):
         return _fallback("not_json")
     if not isinstance(data, list):
         return _fallback("not_list")
+    if dup_key:
+        return _fallback("bad_item")
     ids: list[str] = []
     over = nofield = bad = defect = 0
     for item in data:
@@ -297,10 +306,8 @@ def validate_rank(reply, shown_ids) -> RankVerdict:
         return _fallback("unknown_id")
     if len(set(ids)) != len(ids):
         return _fallback("duplicate_id")
-    if len(ids) < len(shown):
+    if len(ids) < len(shown):      # known ids, no duplicates: the list cannot be longer than `shown`, so this is the only length fault left
         return _fallback("missing_id")
-    if len(ids) != len(shown):
-        return _fallback("wrong_length")
     return RankVerdict(ok=True, order=tuple(ids), reason=None, why_words_over_20=over, why_without_field=nofield, why_defect=defect, why_invalid=bad)
 
 

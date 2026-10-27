@@ -347,7 +347,7 @@ counts only; in-clock rows are in-sample).
 **Not used in v7.0.** `hv5_validate` (BUY/SKIP/WATCH validator), `hv6_review` and `hv6_release` (only for v7.1 L-mem), the regime channel.
 
 **New.**
-- `tools/hv7_rank.py` (pure): `screen_set(scan_result, f.vol_60m, n=8, n_min=3)`, `display_perm(arm, t_d, card_shas)`, `build_rank_request`,
+- `tools/hv7_rank.py` (pure): `screen_set(passed, vol_60m, n=8, n_min=3, vetoed=frozenset())` (`passed` = ids that passed the scan; `vol_60m` = id -> `f.vol_60m`), `display_perm(arm, t_d, card_shas)`, `build_rank_request`,
   `validate_rank(reply, shown_ids) -> RankVerdict` (full permutation or FALLBACK with a reason code), `pick_top_k(verdict, k=1)`, `r_pick(t_d,
   card_shas)`, `s_pick(set)`, `u_set(set)`, `fallback_pick`.
 - `tools/hv7_playbooks/RANK_v0.txt`, `tools/hv7_templates/rank.txt`.
