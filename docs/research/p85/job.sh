@@ -11,7 +11,7 @@ RULE="$P/l1_rule_tpfix_p85.py:L1Rule"; KW="{\"aux_dir\":\"$W/work\"}"
 [ -f $W/work/aux_fresh0808.json ] || systemd-run --user --scope -q -p MemoryMax=8G -p MemorySwapMax=0 python3 -I $P/aux_fresh0808.py > $W/out/aux.log 2>&1
 cat $W/out/aux.log
 for MODE in $MODES; do
- OUT=$W/out/$MODE; mkdir -p $OUT
+ OUT=$W/out/$MODE; mkdir -p $OUT; P85_FILELIST=$OUT/filelist.txt; export P85_FILELIST
  if [ $MODE = counts ]; then EXTRA="--count-only"; else EXTRA="--min-attempts-per-day 2.0 --declared-stake-sol 0.25 --no-screen-p"; fi
  systemd-run --user --scope -q -p MemoryMax=14G -p MemorySwapMax=0 python3 -I $P/run160_p85.py --rule "$RULE" --rule-kwargs "$KW" --block $CV --out $OUT --workers 2 $EXTRA > $OUT/stdout.json 2> $OUT/stderr.log
  echo "$MODE done $(date -u +%FT%TZ)"; ls $OUT
