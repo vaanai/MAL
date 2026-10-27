@@ -80,19 +80,19 @@ def reversed_rank(req):
     return json.dumps([{"id": i, "why": "f.vol_60m is lowest"} for i in order])
 
 
-def make(tmp: Path, *, script=leader_first, rows=None, cost_usd=0.0, latency_ms=50, bots=R.ARM_ORDER, cfg_kw=None):
+def make(tmp: Path, *, script=leader_first, rows=None, cost_usd=0.0, latency_ms=50, bots=R.ARM_ORDER, cfg_kw=None, engine_now=None, run_now=None):
     tape = tmp / "tape"
     if not tape.exists():
         write_tape(tape, rows if rows is not None else tape_rows())
     root = tmp / "v7"
     guard = R.Hv7Guard(root)
     model = A.StubModel(script, guard=guard, cost_usd=cost_usd, latency_ms=latency_ms)
-    engine = ArenaEngine(tmp / "eng", tmp / "reg.json", cfg=R.stack_config(FEED_DELAY_SLOTS), sps_fn=lambda: 0.4)
+    engine = ArenaEngine(tmp / "eng", tmp / "reg.json", cfg=R.stack_config(FEED_DELAY_SLOTS), sps_fn=lambda: 0.4, now_fn=engine_now)
     for b in bots:
         register_bot(b if b.startswith("hv7") else R.bot_id(b), "abcdef1234567", T0 - 60 * MIN, str(tmp / "reg.json"), deciding_stake=0.25,
                      model_ids=[A.MODEL_ID] if b == "L" else [], now_ms=T0 - 61 * MIN, verify_sha=False)
     cfg = R.Hv7Config(root=str(root), frozen_sha="abcdef1234567", clock_start_ms=T0 - 60 * MIN, **(cfg_kw or {}))
-    return R.Hv7Runner(cfg, ArenaState(tape, start_ms=0), engine, model, FakeChain(), guard)
+    return R.Hv7Runner(cfg, ArenaState(tape, start_ms=0), engine, model, FakeChain(), guard, now_fn=run_now)
 
 
 def rows_of(run, arm, kind=None):
@@ -308,3 +308,54 @@ def test_path_guard_refuses_other_roots(tmp_path):
 
 def test_runner_import_guard_is_clean():
     assert H.forbidden_imports(Path(R.__file__).read_text()) == []
+
+
+class FakeClock:
+    def __init__(self, t):
+        self.t = t
+
+    def now(self):
+        return self.t
+
+    def sleep(self, sec):
+        self.t += int(round(sec * 1000))
+
+
+def test_live_slow_model_does_not_delay_entries_or_exits(tmp_path):
+    """Live mode with a fake clock and a model that has not answered 120 s after t_d (it never answers before the run ends): the loop must keep ticking, every
+    arm enters at t_e through the engine's own leg from t_e (not from L's reply), the period is a counted FALLBACK, and period 1's time exit happens on schedule."""
+    import threading
+
+    release = threading.Event()
+    clk = FakeClock(T0 + HOUR)
+
+    def slow(req):
+        release.wait(timeout=60)           # real seconds; released in `finally` below, long after the fake t_e
+        return leader_first(req)
+
+    run = make(tmp_path, script=slow, engine_now=clk.now, run_now=clk.now, cfg_kw={"live": True})
+    try:
+        run.run(T0 + HOUR, T_E2 + 2 * MIN, sleep=clk.sleep)
+    finally:
+        release.set()
+    rank = rows_of(run, "L", "rank")
+    assert rank[0]["fallback"] is True and rank[0]["late"] is True and run.counters["late_reply"] >= 1
+    r_pool = rows_of(run, "R", "entry")[0]["pool"]
+    assert rank[0]["pick"] == r_pool                                              # R's pick, counted
+    opens = {a: [r for r in run.engine.ledger.read_bot(R.bot_id(a)) if r["kind"] == "open" and r["decision_ms"]["entry"] < T_E1 + HOUR // 2] for a in R.ARM_ORDER}
+    assert [len(opens[a]) for a in R.ARM_ORDER] == [1, 1, 1, 4]
+    instants = {(o["decision_ms"]["entry"], o["effective_slot"]["entry"]) for v in opens.values() for o in v}
+    assert len(instants) == 1                                                      # one shared clock for the whole batch
+    inst = next(iter(instants))[0]
+    assert T_E1 <= inst <= T_E1 + 1_500, inst - T_E1                               # t_e (+ the loop's 1 s tick), nowhere near t_e + 120 s
+    sells = [r for r in rows_of(run, "S", "sell")]
+    assert sells and sells[0]["ms"] == T_E2 and sells[0]["reason"] == "time"      # exit on schedule while the next call is still pending
+    sell_open = [r for r in run.engine.ledger.read_bot("hv7.0-S") if r["kind"] == "sell"]
+    if sell_open:
+        assert sell_open[0]["decision_ms"]["exit"] - T_E2 <= 1_500
+
+
+@pytest.mark.parametrize("kw", [{"day_cap_usd": float("nan")}, {"min_call_usd": float("nan")}, {"day_cap_usd": -0.1}, {"day_cap_usd": True}, {"min_call_usd": float("inf")}])
+def test_guard_rejects_nan_and_non_finite(kw):
+    with pytest.raises(ValueError):
+        R.Hv7Guard("/tmp/x-v7", **kw)

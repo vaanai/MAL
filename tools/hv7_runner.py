@@ -16,7 +16,17 @@ DEVIATIONS from DESIGN section 8, found by reading the code (disclosed for the P
     surface (preflight / record_refusal, reserve-before-call through haiku_caller's own ledger) and one ledger, RANK-L, capped at HV7_DAY_CAP_USD.
   * The U arm is ONE bot id (hv7.0-U) holding up to 8 positions: the engine keys positions by id (bot, pool, stamp, slot), not by bot. Pricing
     independence across L, R, S and U is a hard test (test_hv7_runner.py), not an assumption.
-NOT HERE (C3): resume after a crash, the E1 restart drill, hv7_count.py, hv7_register.py, the real-layout drill. `main` is wired but has never been run.
+  * Shared clock (new, not in DESIGN): one engine call clock is frozen for each batch of orders (all arms' entries at t_e; all sells of one tick), so arms
+    that call a few ms apart cannot land a slot apart.
+  * The L model call never blocks the loop. In live mode it runs on its own daemon thread from t_d; at t_e the loop uses the reply only if it arrived by
+    t_e, otherwise the period is a FALLBACK (R's pick, counted) and every arm still enters at t_e, through the engine's own 1.9 s leg from t_e, never from
+    L's reply time. Exits keep running on every tick during the call. (QP #998.)
+NOT HERE (C3): the E1 restart drill, hv7_count.py, hv7_register.py, the real-layout drill. `main` is wired but has never been run.
+
+C3 TODO (reviewer notes on #998):
+  * resume after a crash (rebuild open positions and the pending period from the hash-chained log and the engine ledger; none exists yet);
+  * torn last line: a crash between the log write and the engine write, or a half-written log line, must be detected and refused or repaired on resume;
+  * validate the --owner-cost-line-ref argument of main() (today it is only required to be present, not checked against the owner's recorded line).
 """
 from __future__ import annotations
 
@@ -33,6 +43,7 @@ import math
 import os
 import signal
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -145,6 +156,9 @@ class Hv7Guard:
     (preflight, record_refusal), so hv4_model.CallerModel / StubModel use it unchanged. A denied preflight is a FALLBACK in the runner, never a trade skip."""
 
     def __init__(self, root: str | os.PathLike, *, day_cap_usd: float = HV7_DAY_CAP_USD, min_call_usd: float = A.MIN_CALL_USD) -> None:
+        for name, v in (("day_cap_usd", day_cap_usd), ("min_call_usd", min_call_usd)):
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0:
+                raise ValueError(f"{name} must be a finite number >= 0")       # NaN would pass every `>` test below
         if day_cap_usd > HV7_DAY_CAP_USD + 1e-12:
             raise ValueError("day_cap_usd may only be lowered")
         low = str(root).lower()
@@ -227,6 +241,29 @@ class Hv7Config:
     phantom_filter: bool = True
     n: int = R.N_DEFAULT
     n_min: int = R.N_MIN
+
+
+class _Call:
+    """One model call. Sim mode: run inline (the reply time is T + latency_ms, judged in _ask). Live mode: run on a daemon thread; get() is None until the
+    call returns, so the loop can keep ticking and decide at t_e."""
+
+    def __init__(self, fn: Callable[[], Any], threaded: bool) -> None:
+        self.out: Any = None
+        self.done = threading.Event()
+        self._fn = fn
+        if threaded:
+            threading.Thread(target=self._run, daemon=True).start()
+        else:
+            self._run()
+
+    def _run(self) -> None:
+        try:
+            self.out = self._fn()
+        finally:
+            self.done.set()
+
+    def get(self) -> Any:
+        return self.out if self.done.is_set() else None
 
 
 class Hv7Runner:
@@ -373,16 +410,30 @@ class Hv7Runner:
             return
         ordered = [cards[i] for i in scr.ids]
         rr = R.build_rank_request(t_d, ordered, seq=T // HOUR_MS)
-        verdict, mrow = self._ask(rr, T)
-        choice = R.l_choice(verdict, t_d, scr.ids, shas)
-        picks = {"L": [choice.pool_id], "R": [R.r_pick(t_d, scr.ids, shas)], "S": [R.s_pick(scr)], "U": list(R.u_set(scr))}
-        slot = R.display_slot_of(rr.perm, scr.ids, choice.pool_id) if not choice.fallback else None
+        call = _Call(lambda: self._ask(rr, T), threaded=self.cfg.live)
+        picks = {"R": [R.r_pick(t_d, scr.ids, shas)], "S": [R.s_pick(scr)], "U": list(R.u_set(scr))}
         self.log.append("SCAN", T, base)
-        self.log.append("L", T, {"kind": "rank", **mrow, "request_sha256": rr.request.request_sha256(), "shown": list(rr.shown_ids), "perm": list(rr.perm),
-                                 "ok": verdict.ok, "order": list(verdict.order), "fallback": choice.fallback, "fallback_reason": choice.reason, "pick": choice.pool_id,
-                                 "pick_display_slot": slot, "why_defect": verdict.why_defect, "why_words_over_20": verdict.why_words_over_20,
-                                 "why_without_field": verdict.why_without_field})
-        self.pending = {"t_e": T - T_D_OFFSET_MS + T_E_OFFSET_MS, "t_d": T, "picks": picks, "cards": {i: cards[i] for i in scr.ids}, "fallback": choice.fallback}
+        self.pending = {"t_e": T - T_D_OFFSET_MS + T_E_OFFSET_MS, "t_d": T, "t_d_iso": t_d, "picks": picks, "cards": {i: cards[i] for i in scr.ids},
+                        "rr": rr, "call": call, "scr_ids": scr.ids, "shas": shas}
+
+    def _resolve_l(self, pend: dict, T: int) -> None:
+        """At t_e: the L verdict if the call returned in time, else a FALLBACK ("late"). Logs the rank row and sets L's pick."""
+        rr = pend["rr"]
+        got = pend["call"].get()
+        if got is None:
+            self._count("late_reply")
+            verdict = R.validate_rank(None, rr.shown_ids)
+            mrow = {"model_error": "no_reply_by_t_e", "refused": False, "latency_ms": None, "cost_usd": 0.0, "response_sha256": None, "late": True}
+        else:
+            verdict, mrow = got
+        choice = R.l_choice(verdict, pend["t_d_iso"], pend["scr_ids"], pend["shas"])
+        slot = R.display_slot_of(rr.perm, pend["scr_ids"], choice.pool_id) if not choice.fallback else None
+        self.log.append("L", pend["t_d"], {"kind": "rank", **mrow, "request_sha256": rr.request.request_sha256(), "shown": list(rr.shown_ids),
+                                           "perm": list(rr.perm), "ok": verdict.ok, "order": list(verdict.order), "fallback": choice.fallback,
+                                           "fallback_reason": choice.reason, "pick": choice.pool_id, "pick_display_slot": slot,
+                                           "why_defect": verdict.why_defect, "why_words_over_20": verdict.why_words_over_20,
+                                           "why_without_field": verdict.why_without_field})
+        pend["picks"]["L"] = [choice.pool_id]
 
     def _ask(self, rr: R.RankRequest, T: int) -> tuple[R.RankVerdict, dict]:
         """One model call. Anything but a full permutation in time (error, refusal, budget stop, exception, late reply) is a FALLBACK verdict."""
@@ -410,6 +461,7 @@ class Hv7Runner:
         if pend is None or pend["t_e"] != T:
             return
         self.pending = None
+        self._resolve_l(pend, T)
         if self.entries_halted_at(T):
             self.log.append("SCAN", T, {"kind": "entries_halted", "t_e": R.iso_from_ms(T)})
             return
