@@ -61,17 +61,15 @@ def price_one(sl, q, b, isb, sol, th, sps, j, stake):
         return tk * Q / (B + tk) * (1 - tier(Q, B + tk))
     cap = X + int(round(CAP_S / sps))
     reason = "cap"; ytr = cap
-    for m in range(np.searchsorted(sl, X, "right") , len(sl)):
-        if sl[m] == sl[m - 1]:
-            continue
-        y = sl[m - 1]
-        if y <= X:
-            continue
-        if y >= cap:
-            break
-        v = val(y) / stake - 1
-        if v >= TGT: reason = "tp"; ytr = y; break
-        if v <= STOP: reason = "sl"; ytr = y; break
+    k0 = int(np.searchsorted(sl, X, "right")); kc = int(np.searchsorted(sl, cap, "left"))   # marks at m use state before print m = state after slot sl[m-1]
+    m = np.arange(k0 + 1, min(kc, len(sl) - 1) + 1)
+    m = m[(sl[m] > sl[m - 1]) & (sl[m - 1] > X) & (sl[m - 1] < cap)]
+    if len(m):
+        Q = q[m] + net; B = b[m] - tk
+        v = tk * Q / (B + tk) * (1 - tier(Q, B + tk)) / stake - 1
+        hit = np.flatnonzero((v >= TGT) | (v <= STOP))
+        if len(hit):
+            h = hit[0]; ytr = int(sl[m[h] - 1]); reason = "tp" if v[h] >= TGT else "sl"
     censored = reason == "cap" and sl[-1] < cap
     pnl = val(ytr + EL) - stake - 2 * PRIO
     ix = np.searchsorted(sl, X, "left"); hi = np.searchsorted(sl, X, "right"); lo2 = np.searchsorted(sl, X - int(round(2.0 / sps)), "left")
@@ -83,7 +81,7 @@ def main():
     mode = sys.argv[1]
     stake = float(sys.argv[3]) * 1e9 if mode == "price" and len(sys.argv) > 3 else 0.25e9
     days = sorted(os.path.basename(f)[:10] for f in glob.glob(f"{P}/meta/*.parquet"))
-    rows = []; pools = 0; skipped_sps = 0; days_with_paths = 0; sign_ok = sign_n = 0; unsorted = 0
+    n_raw = 0; rows = []; pools = 0; skipped_sps = 0; days_with_paths = 0; sign_ok = sign_n = 0; unsorted = 0
     for day in days:
         pp = f"{P}/paths/{day}.parquet"
         if not os.path.exists(pp):
@@ -102,18 +100,23 @@ def main():
                 unsorted += 1; continue
             dq = np.diff(q); s = np.where(isb[:-1], 1, -1)   # PRE-trade: q[j+1]-q[j] has the sign of print j
             m = dq != 0; sign_ok += int((np.sign(dq[m]) == s[m]).sum()); sign_n += int(m.sum())
+            busy = -1
             for j in clusters(sl, q, isb, sol, th):
+                n_raw += 1
+                if mode == "price" and sl[j] + L <= busy:
+                    continue   # one open position per pool (PREREG)
                 r = dict(day=day, mint=mint, j=int(j), slot=int(sl[j]), q_sol=q[j] / 1e9, died=bool(q[-1] < 0.5 * q[j]))
                 if mode == "price":
                     pr = price_one(sl, q, b, isb, sol, th, sps, j, stake)
                     if pr is None:
                         r["unfilled"] = True
                     else:
-                        r.update(pr); r["unfilled"] = False
+                        r.update(pr); r["unfilled"] = False; busy = pr["ytr"] + EL
                 rows.append(r)
         print(day, pools, len(rows), flush=True)
     d = pd.DataFrame(rows)
     print(f"PRE-trade check: sign(q[j+1]-q[j]) matches side of print j in {sign_ok}/{sign_n} = {sign_ok / max(1, sign_n):.4f}")
+    print(f"raw clusters (before the one-open-position rule) = {n_raw}")
     print(f"days_with_paths={days_with_paths} pools={pools} skipped_sps={skipped_sps} unsorted={unsorted} clusters={len(d)}")
     if len(d):
         print(f"clusters per day (over {days_with_paths} days) = {len(d) / days_with_paths:.4f}; days with >=1 cluster = {d.day.nunique()}")
