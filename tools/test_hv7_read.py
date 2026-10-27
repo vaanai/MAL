@@ -163,7 +163,7 @@ class Helpers(unittest.TestCase):
         self.assertIn("no skill detected", s)
         nine = X.mde_line(9)
         self.assertIn("not tabulated", nine)
-        self.assertNotIn("rank IC about", nine)
+        self.assertIn("not tabulated at D = 9", nine)
         self.assertIn("larger than at D = 10", nine)
         self.assertAlmostEqual(X.mde_ic(1.9, 8), 0.1665, places=3)
 
