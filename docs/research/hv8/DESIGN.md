@@ -200,6 +200,8 @@ Offline (built now):
 
 *Amendment (C2 QP, 2026-10-27):* T8a = C1's 52 numeric fields (`R.T8A_NUMERIC`) + `f.age_known` (0/1) + the 3 setup tags (`R.T8A_TAGS`) = 56 features; C1's `T8A_FIELDS` (55) omits age_known. In `g_s` the sd over fold gaps uses ddof = 1.
 
+*Amendment (C3 QP, 2026-10-27):* label pricing registers **feed delay = 7 slots** (the arena runs U at `StackConfig(feed_delay_slots=7)`, ARTIFACTS/lab/arena-records-2026-10-18.md line 62) and **0.368 s per slot** (P69's August figure, cited, not re-measured; per-hour measurement not done). `tools/hv8_labels.py` takes both as required arguments and records them in `labels-manifest.json`; a report-only rerun at 2 slots / 0.4 s counts label flips and censoring changes. Run condition: the adapter runs with no `--lookback` and its report shows `preamble_rows` 0, first hour 2026-08-14T12, last hour 2026-08-28T11; otherwise stop and go back to QP. `created_known` is graduation-only on the adapter tape (no `pool_create` rows).
+
 Forward (DEFERRED):
 6. **Bridge** (stub day, needs the owner line): 48 stub cards rated on both the plan path and the API path; quadratic-weighted kappa >= 0.60 on at
    least 2 of 3 items (noisy at 48; kill-only).
