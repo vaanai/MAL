@@ -29,10 +29,10 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | --- | --- | --- | --- |
 | `live-canary` | 1 | 0 | 0 |
 | `forward-test` | 2 | 0 | 0 |
-| `explored-survivor-unconfirmed` | 9 | 0 | 0 |
+| `explored-survivor-unconfirmed` | 10 | 0 | 0 |
 | `parked` | 9 | 0 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 44 | 20 | 1 |
+| `untested` | 43 | 20 | 1 |
 | `desk-read` | 1 | 48 | 0 |
 | `explored-no-survivor` | 41 | 7 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
@@ -54,6 +54,7 @@ Each of these was positive on data the lab had already seen and has no clean for
 
 | Id | Idea | Where it stands | Next step |
 | --- | --- | --- | --- |
+| `lib-a-A38` | Sizing overlays: fractional Kelly, concurrency caps, daily stops | "UNTESTED" (tree row 9c); "Creates no edge. Only after a positive book." | P65 (2026-10-27) priced the pre-registered flat/cap/daily-stop/half-Kelly set on the 2,826 frozen Q50 trades (planning input, NOT gate evidence). Use for canary sizing only after Q50 passes its gate … |
 | `lib-a-A40` | Wall-clock caps: 300 s cap | 2026-10-26 P59 (exploration, not gate evidence; PREREG docs/research/p59/PREREG.md written before pricing): applied to FLOOR (l1_rule_tpfix, 160,000 per send, 4 Aug/Sep blocks, 300 s cap with tp 1.5 kept) it is DROP. Confirmation (Sep, n 25 base vs 135 with cap): mean flat -2.1287% vs base +5.6212% (delta -7.7500 pp), pressure -1.7964% vs +4.7240% (delta -6.5203 pp), 0 of 7 days positive; discovery (Aug) delta … | not in source |
 | `lib-a-A41` | Entry price guard: seed x 1.15 on chain | 2026-10-26 P59 (exploration, not gate evidence): already part of FLOOR's priced path. tools/arena_stack.py:27 GUARD = 1.15 (buy reverts and pays one send if exec price > 1.15 x decision spot, the same rule as h4-boostmid RULE.md:26). Adding it to FLOOR-SLOW changes nothing: DROP as REDUNDANT. Diagnostic guard-OFF ablation on FLOOR's 4 blocks: pooled flat 6.4206% -> 6.3281%, pressure 5.1417% -> 5.0637% (the guard is … | not in source |
 | `lib-b-B2` | H2 wallet copy, Book A (frozen 50-wallet list) | "promising, single wallet (verifier: not refuted; the method does not generalize)". Cause: "not dead". Open issue (d) TOO FEW TRADES / CONCENTRATED. | Deciding read: P0 activity precondition on the one wallet (earliest 2026-10-09); deciding read on walk 2 or forward-1002 (JUDGE.md section 2.2). |
@@ -88,7 +89,6 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `lib-a-A24` | Operator and sybil cluster detection | F6 wallet intelligence | not in source |
 | `lib-a-A29` | Attention concentration | F7 market structure and regime | not in source |
 | `lib-a-A35` | Synthetic inventory market making on aged pools | F8 liquidity, carry and off-pump venues | Combine the two parts only if either is positive (tree row 8e). |
-| `lib-a-A38` | Sizing overlays: fractional Kelly, concurrency caps, daily stops | F9 portfolio and payoff | Apply only after a positive book (tree row 9c, condition). |
 | `lib-b-E19` | Analog-boost ensemble (C3 analog A5/B cells; leaf 5) (hunt-4) | hunt-4 analog ensemble | Test per JUDGE-4 section 4 leaf 5. Kill, as the source states it: "if the ensemble does not beat both single models on explore-0814, or the September day-level one-sided t p is above 0.10." |
 | `lib-c-F6.1` | veto-stack-paired | not picked (JUDGE-6 §5) | not in source |
 | `lib-c-F6.3` | book-health-switch | not picked (JUDGE-6 §5) | not in source |
