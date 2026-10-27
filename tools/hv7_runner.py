@@ -680,6 +680,7 @@ class Hv7Runner:
         ev = {"ms": now_ms, "kind": "resume", "torn_lines": torn, "gap_rows": gaps, "open_rebuilt": len(self.open), "pending_rebuilt": pending_rebuilt,
               "next_tick": nxt, "frozen_sha": self.cfg.frozen_sha}
         path = Path(check_path(self.root / "resume.jsonl", "w"))
+        path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "ab") as fh:
             fh.write(json.dumps(ev, sort_keys=True, separators=(",", ":")).encode() + b"\n")
             fh.flush()
@@ -756,7 +757,8 @@ def main(argv: list[str] | None = None) -> int:
     engine.start_all()
     now = int(time.time_ns() // 1_000_000) // TICK_MS * TICK_MS
     if run.log.files("SCAN"):
-        start = max(now, run.resume(now))
+        run.resume(now)             # live: the loop starts at the wall clock; the return value (a sim catch-up tick) is not used
+        start = now
     else:
         run.log_start()
         start = now
