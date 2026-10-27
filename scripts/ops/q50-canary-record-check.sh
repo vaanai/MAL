@@ -7,8 +7,8 @@
 #   (b) among non-template, regular, mode-100644 files matching the executor's CANARY_DEC_GLOB, exactly one has a CANARY_OWNER_RE match for bot_id, and it is DEC/DEC-033-h5v1q50-canary.md
 #       (DEC-024/026/028 match the glob too and are allowed);
 #   (c) in that file: no open marker (<FILL, or FILL:gate-read|review|owner not followed by a word char or '-'); the set of POSTX:<name> tokens equals the declared table
-#       (table rows start with "   | `POSTX:" ); with --after-r (records PR R merged) there must be NO POSTX token;
-#   (d) positive control: the same checks must FAIL on blob 1dd08c83 (the unfilled copy) when that blob exists in the repo; the marker regex must find >0 hits in it;
+#       (table rows start with "   | `POSTX:" ); with --after-r (records PR R merged) there must be NO POSTX token outside the declared table rows (the table may stay);
+#   (d) positive control, MANDATORY: the same checks must FAIL on blob 1dd08c837660c778c5c26315f1b607faa8ce2f49 (the unfilled copy); a missing or non-blob object (shallow clone) is a FAIL, never a skip;
 #   (e) prints the path and the blob sha256.
 # rc 0 = all pass; 3 = a check failed; 2 = usage/git/import error.
 set -u
@@ -23,7 +23,8 @@ after_r = "--after-r" in args
 args = [a for a in args if a != "--after-r"]
 bot = args[0] if args else "h5v1q50-boostfloor-a1"
 DEC033 = "DEC/DEC-033-h5v1q50-canary.md"
-CONTROL_BLOB = "1dd08c83"
+import os
+CONTROL_BLOB = os.environ.get("Q50_CONTROL_BLOB", "1dd08c837660c778c5c26315f1b607faa8ce2f49")  # full id; the env override exists for the test only
 OPEN = re.compile(r"<FILL|FILL:(?:gate-read|review|owner)(?![\w-])")
 POSTX = re.compile(r"POSTX:[a-z0-9_]+")
 ROW = re.compile(r"^\s*\| `POSTX:")
@@ -46,7 +47,9 @@ def md(text, label):
     if m: f.append(f"{label}: {len(m)} open FILL marker lines (first: {m[:8]})")
     used, declared = postx_checks(text)
     if after_r:
-        if used: f.append(f"{label}: POSTX tokens remain after R: {sorted(used)}")
+        body = "\n".join(l for l in text.split("\n") if not ROW.match(l))
+        left = set(POSTX.findall(body))
+        if left: f.append(f"{label}: POSTX tokens remain after R outside the declared table: {sorted(left)}")
     elif used != declared or not declared:
         f.append(f"{label}: POSTX set != declared table; only in text {sorted(used - declared)}, only in table {sorted(declared - used)}")
     return f
@@ -82,14 +85,15 @@ with tempfile.TemporaryDirectory(prefix="q50crc.") as td:
     else: fails.append("(c) DEC-033 missing")
     # (e)
     print("path:", DEC033); print("blob sha256:", hashlib.sha256(text.encode()).hexdigest())
-# (d) positive control
+# (d) positive control (mandatory)
 try:
+    if git("cat-file", "-t", CONTROL_BLOB).strip() != "blob": raise RuntimeError("not a blob")
     ctl = git("cat-file", "-p", CONTROL_BLOB)
     cf = md(ctl, "control")
     if not markers(ctl) or not cf: fails.append("(d) positive control did NOT fail on blob " + CONTROL_BLOB)
     else: print("(d) positive control fails on", CONTROL_BLOB, "as required:", cf[0][:90])
-except RuntimeError:
-    print("(d) control blob", CONTROL_BLOB, "not in this repo: positive control NOT run")
+except RuntimeError as e:
+    fails.append("(d) positive control blob " + CONTROL_BLOB + " missing or not a blob (" + str(e)[:80] + "): the control is mandatory")
 for x in fails: print("FAIL", x)
 print("q50-canary-record-check:", "FAIL" if fails else "PASS")
 sys.exit(3 if fails else 0)
