@@ -32,13 +32,13 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `explored-survivor-unconfirmed` | 10 | 0 | 0 |
 | `parked` | 9 | 1 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 43 | 20 | 1 |
-| `desk-read` | 1 | 48 | 0 |
+| `untested` | 43 | 25 | 1 |
+| `desk-read` | 1 | 49 | 0 |
 | `explored-no-survivor` | 41 | 7 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 185 | 82 | 2 |
+| **all** | 185 | 88 | 2 |
 
-The file holds 519 rows: the 269 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 525 rows: the 275 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -312,6 +312,42 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `p64-creator-claim-veto` | Creator fee-claim veto on the H5/Q50 BOOST-floor entry | `parked` | NOT_DECIDABLE on capacity (not killed). Claims are not in the Aug/Sep tape. A causal public-RPC sample of 80 of 2,790 frozen trades found a claim in the prior 10 min for 1 (1.25%), and in the prior 30 and 60 min for 2 (2.5%; Wilson 95% 0.69% to 8.66%, which includes the 3% line; the count is a lower bound: 32% of … |
+
+### p67-perm-sc (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p67-perm-sc-ranker` | Permutation self-consistency ranker for HV7 L (K shuffled calls, Borda aggregate) | `untested` | not run; aggregation lowers noise and cannot create information; expected IC below the registered MDE of about 0.17 |
+
+### p67-pointwise-feature (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p67-pointwise-feature-calibrator` | Haiku pointwise 0-3 ratings as features in a frozen 2-4 feature calibrator (HV8) | `untested` | not run; pre-period reuse and overlap with HV6/HV7 rehearsal days must be checked in docs/HOLDOUT_LEDGER.md |
+
+### p67-pairwise (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p67-pairwise-tournament` | Pairwise round-robin ranking (Copeland) versus listwise, chosen by outcome-blind stability vs the … | `untested` | not run; pairwise loses cross-card context; null is not evidence of no skill |
+
+### p67-knn-case (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p67-knn-case-memory` | kNN retrieval of similar past pools with outcomes as few-shot context | `untested` | not run; writes outcomes into prompts (HV7 forbids), leakage risk if memory spans test days, and a plain numeric kNN would be the honest comparator |
+
+### p67-llm-rule-writer (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p67-llm-rule-writer-offline` | Claude writes candidate screening rules offline; rules run as code with pre-registered count of … | `untested` | not run; multiplicity of rules tried is the main risk; runs on the Claude plan, not the API |
+
+### p67-llm-debate (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p67-llm-debate-closed` | Multi-agent debate / bull-bear researchers for pool ranking | `desk-read` | not run; no demonstrated edge over permutation self-consistency at 3-6x cost |
 
 ## Dead as frozen, and explored with no survivor
 
