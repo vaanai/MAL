@@ -39,8 +39,13 @@ RUN CONDITIONS (QP ruling on #1059, E1-E4, H1, V1; they bind the manager's job):
   E3. This tool's bad hours are never an input to any book's excluded hours. A disagreement with a book's table of record goes to QP.
   E4. MiScusi job under MemoryMax; a notebook decision entry first (head sha, exact command, RPC host).
   H1. getTransaction is paced at >= 1.0 s per call, enforced in code (MIN_INTERVAL_S): research-0's arena feed pool resolver shares the IP.
-  V1. Before the first count, --verify-tx on two synthetic completion txs (one buy_v3, one buy_exact_quote_in_v3) from days before the counted
-      days. A FAIL changes the kill-line definition on V1 alone, never after count output exists.
+  V1a (QP ruling P98-V1). Before the first count, --verify-tx on 3 direct BuyExactQuoteInV3 synthetic completion txs (pump at invoke [1],
+      no other pump Buy token) from days before the counted days, 3 distinct signers, all PASS_POOL_ONLY. Any FAIL or inconclusive: no count.
+  V1b. Kill lines 1 and 2 use all synthetic completions. Kill line 3 (median quote_in) uses only direct, WSOL-quoted BuyExactQuoteInV3
+      completions; every other synthetic completion is counted per day as quote_unverified by instruction token and left out. Under 20 verified
+      txs pooled over decidable days, line 3 is NOT_DECIDABLE (lines 1 and 2 still decide). The count of synthetic completions whose event user
+      is not the fee payer is a disclosure only. The line-3 restriction was fixed from the #1780 instruction-token tally alone, before any
+      counted-day output existed; #1780's output is never a baseline.
   LOOKBACK. Mayhem flags come from `create` rows of the counted day and the LOOKBACK_DAYS = 2 days before it. This is fixed and must never be
       widened. A coin created more than 48 h before it completes has no create row in the window and is UNCLASSIFIED (disclosed; conservative).
 GuardedRow is a guard against accidental reads, not a sandbox: Python can always reach the wrapped dict.
@@ -88,6 +93,12 @@ USER_AGENT = "MAL-p98/1 (+research)"  # explicit; some public hosts 403 the defa
 START_TX_VERSION = 1  # as pump_structure_monitor.MAX_TX_VERSION: version-1 txs exist; code -32015 names the version a node wants
 _VERSION_HINT = re.compile(r"maxSupportedTransactionVersion\D{0,12}(\d+)")
 MAX_TX_VERSION_CAP = 4  # never follow a hint above this
+VERIFIED_TOKEN = "BuyExactQuoteInV3"
+MIN_VERIFIED_FOR_MEDIAN = 20  # QP P98-V1: under 20 verified txs pooled over decidable days, kill line 3 is NOT_DECIDABLE
+V1A_TXS = 3  # distinct signers, direct BuyExactQuoteInV3 txs from before the counted days
+_INVOKE = re.compile(r"^Program (\w{32,44}) invoke \[(\d+)\]$")
+_INSTR = re.compile(r"^Program log: Instruction: (\w+)$")
+_ANY_BUY = re.compile(r"Instruction: (\w*Buy\w*)")
 MIN_INTERVAL_S = 1.0  # hard floor between getTransaction calls (QP #1059 H1)
 TAPE_FLOOR_DAY = date(2026, 10, 20)  # tape before this is partial / redeploy day; refused
 KILL_SHARE = 0.10
@@ -192,6 +203,46 @@ def iter_rows(path: Path) -> Iterator[GuardedRow]:
 TRADE_DISC = bytes.fromhex("bddb7fd34ee661ee")  # pump TradeEvent; used only by --verify-tx
 
 
+def pump_variant(logs: Any) -> dict[str, Any]:
+    """Instruction variant of a completion tx from logMessages only (fixed patterns: `Program <id> invoke [n]` and
+    `Program log: Instruction: <Name>`; nothing else is read). Returns {"token": <str>, "direct": bool}.
+
+    The token of an `Instruction:` log belongs to the innermost program on the invoke stack. `direct` is true only when the pump program is
+    invoked at the top level (invoke [1]) for the one pump-context Buy* instruction of the tx, that token is exactly BuyExactQuoteInV3, no other
+    pump-context Buy* token exists, and the logs are not truncated. The token is the pump-context Buy* token (or `multiple`), else the first
+    Buy* token of any program, else `none`."""
+    stack: list[tuple[str, int]] = []
+    pump_buys: list[tuple[str, int]] = []
+    if not isinstance(logs, list):
+        return {"token": "none", "direct": False}
+    truncated = False
+    for ln in logs:
+        if not isinstance(ln, str):
+            continue
+        if "Log truncated" in ln:
+            truncated = True
+        m = _INVOKE.match(ln)
+        if m:
+            stack.append((m.group(1), int(m.group(2))))
+            continue
+        if ln.startswith("Program ") and (ln.endswith(" success") or " failed" in ln):
+            if stack:
+                stack.pop()
+            continue
+        m = _INSTR.match(ln)
+        if m and stack and stack[-1][0] == M.PUMP_PROGRAM and "Buy" in m.group(1):
+            pump_buys.append((m.group(1), stack[-1][1]))
+    if len(pump_buys) > 1 and len({t for t, _ in pump_buys}) > 1:
+        token = "multiple"
+    elif pump_buys:
+        token = pump_buys[0][0]
+    else:
+        any_buy = _ANY_BUY.findall("\n".join(x for x in logs if isinstance(x, str)))
+        token = any_buy[0] if any_buy else "none"
+    direct = (not truncated and len(pump_buys) == 1 and pump_buys[0][0] == VERIFIED_TOKEN and pump_buys[0][1] == 1)
+    return {"token": token, "direct": direct}
+
+
 def classify_tx(tx: Any) -> dict[str, Any]:
     """Class of a completion tx: {"cls": synthetic|normal|unclassified, quote_in, base_out, signer, why}.
 
@@ -216,9 +267,14 @@ def classify_tx(tx: Any) -> dict[str, Any]:
         raw = hits[0]
         if len(raw) < MIN_EVENT_LEN:
             return {"cls": "unclassified", "why": "short_event"}
+        signer = b58encode(raw[8:40])
+        keys = M.tx_keys(tx)
+        v = pump_variant(logs)
         return {
             "cls": "synthetic",
-            "signer": b58encode(raw[8:40]),
+            "token": v["token"], "direct": v["direct"],
+            "payer_differs": bool(keys) and keys[0] != signer,
+            "signer": signer,
             "base_out": int.from_bytes(raw[144:152], "little"),
             "quote_in": int.from_bytes(raw[152:160], "little"),
         }
@@ -395,6 +451,8 @@ def count_day(day: date, tape_dir: Path, fetch: Callable[[str], Any], *, tape_fl
     n_mayhem = n_unknown = n_normal = n_syn = n_unc = n_nonwsol = 0
     signers: collections.Counter = collections.Counter()
     quotes: list[int] = []
+    unverified: collections.Counter = collections.Counter()
+    n_payer_differs = 0
     why: collections.Counter = collections.Counter()
     for sig, (mint, qmint) in comps.items():
         if mint in mayhem:
@@ -414,10 +472,19 @@ def count_day(day: date, tape_dir: Path, fetch: Callable[[str], Any], *, tape_fl
         else:
             n_syn += 1
             signers[c["signer"]] += 1
-            if qmint == WSOL:
-                quotes.append(c["quote_in"])
-            else:
+            if c["payer_differs"]:
+                n_payer_differs += 1
+            if qmint != WSOL:
                 n_nonwsol += 1
+            verified_variant = c["direct"] and c["token"] == VERIFIED_TOKEN
+            if verified_variant and qmint == WSOL:
+                quotes.append(c["quote_in"])  # kill line 3 reads only direct, WSOL-quoted BuyExactQuoteInV3 completions
+            elif verified_variant:
+                unverified["non_wsol_quote"] += 1
+            elif c["token"] == VERIFIED_TOKEN:
+                unverified[f"{VERIFIED_TOKEN}:not_direct"] += 1
+            else:
+                unverified[c["token"]] += 1
     denom = len(comps) - n_mayhem
     rec.update({
         "completions": len(comps), "mayhem": n_mayhem, "non_mayhem": denom,
@@ -426,7 +493,8 @@ def count_day(day: date, tape_dir: Path, fetch: Callable[[str], Any], *, tape_fl
         "synthetic_share": (n_syn / denom) if denom else None,
         "synthetic_nonwsol_quote": n_nonwsol,
         "quote_in_median_sol": (statistics.median(quotes) / 1e9) if quotes else None,
-        "quote_in_n": len(quotes),
+        "quote_in_n": len(quotes), "quote_unverified": dict(sorted(unverified.items())),
+        "quote_unverified_n": sum(unverified.values()), "event_user_not_fee_payer": n_payer_differs,
         "distinct_signers": len(signers), "top5_share": top5_share(signers),
     })
     reasons = []
@@ -442,6 +510,7 @@ def count_day(day: date, tape_dir: Path, fetch: Callable[[str], Any], *, tape_fl
     rec["not_decidable_reasons"] = reasons
     rec["_signers"] = signers
     rec["_quotes"] = quotes
+    rec["_unverified"] = unverified
     return rec
 
 
@@ -453,12 +522,15 @@ def kill_review(days: list[dict[str, Any]]) -> dict[str, Any]:
         return out
     pooled: collections.Counter = collections.Counter()
     quotes: list[int] = []
+    unver: collections.Counter = collections.Counter()
     for d in ok:
         pooled.update(d["_signers"])
         quotes.extend(d["_quotes"])
+        unver.update(d["_unverified"])
     med_share = statistics.median(d["synthetic_share"] for d in ok)
     top5 = top5_share(pooled)
-    med_q = (statistics.median(quotes) / 1e9) if quotes else None
+    median_line = "DECIDABLE" if len(quotes) >= MIN_VERIFIED_FOR_MEDIAN else "NOT_DECIDABLE"
+    med_q = (statistics.median(quotes) / 1e9) if median_line == "DECIDABLE" else None
     kills = []
     if med_share < KILL_SHARE:
         kills.append("share_lt_10pct (not blind, disclosed)")
@@ -466,10 +538,13 @@ def kill_review(days: list[dict[str, Any]]) -> dict[str, Any]:
         kills.append("top5_ge_80pct")
     if med_q is not None and med_q < KILL_MEDIAN_SOL:
         kills.append("median_quote_in_lt_0.05_sol")
-    if top5 is None or med_q is None:
+    if top5 is None:
         kills.append("no_synthetic_completions_to_measure")
     out.update({"median_day_synthetic_share": med_share, "pooled_synthetic": sum(pooled.values()),
                 "pooled_top5_share": top5, "pooled_median_quote_in_sol": med_q, "kill_lines_hit": kills,
+                "median_line": median_line, "verified_quote_txs": len(quotes), "quote_unverified_pooled": dict(sorted(unver.items())),
+                "event_user_not_fee_payer_pooled": sum(d["event_user_not_fee_payer"] for d in ok),
+                "median_disclosure": "median covers direct WSOL BuyExactQuoteInV3 completions only; routed or other buys may differ in size",
                 "verdict": "KILL" if kills else "NO_KILL_LINE_HIT (counts only, not an edge claim)"})
     return out
 
@@ -556,7 +631,21 @@ def verify_identity(tx: Any, variant: str) -> dict[str, Any]:
             "new_account_rent": new_rent, "token_delta": token_delta, "residual_pool_only": res_pool, "residual_curve_plus_pool": res_both}
 
 
-VARIANTS = ("buy_v3", "buy_exact_quote_in_v3")
+def verify_v1a(txs: list[Any]) -> dict[str, Any]:
+    """V1a (QP P98-V1): the lamport-exact identity on 3 direct BuyExactQuoteInV3 synthetic txs with 3 distinct signers, all the same
+    PASS verdict. Anything else (including a PASS that is not POOL_ONLY, or a non-direct tx) is FAIL: no count."""
+    rows = []
+    signers = []
+    for tx in txs:
+        c = classify_tx(tx)
+        if c["cls"] != "synthetic" or not c["direct"] or c["token"] != VERIFIED_TOKEN:
+            rows.append({"variant": VERIFIED_TOKEN, "verdict": "FAIL", "why": f"not_direct_{VERIFIED_TOKEN}:{c.get('token', c['cls'])}"})
+            continue
+        signers.append(c["signer"])
+        rows.append(verify_identity(tx, VERIFIED_TOKEN))
+    verdicts = {r["verdict"] for r in rows}
+    ok = len(txs) == V1A_TXS and len(set(signers)) == V1A_TXS and verdicts == {"PASS_POOL_ONLY"}
+    return {"v1a": "PASS" if ok else "FAIL", "txs": len(txs), "distinct_signers": len(set(signers)), "rows": rows}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -565,13 +654,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--days", help="comma list of closed UTC days, YYYY-MM-DD")
     ap.add_argument("--rpc-url", required=True, help="public archival https host the arena feed does not use (QP H1)")
     ap.add_argument("--out", help="write the counts JSON here")
-    ap.add_argument("--verify-tx", nargs=2, metavar=("BUY_V3_SIG", "BUY_EXACT_QUOTE_IN_V3_SIG"),
-                    help="V1: signatures of one buy_v3 and one buy_exact_quote_in_v3 completion tx from days before the counted days")
+    ap.add_argument("--verify-tx", nargs=V1A_TXS, metavar="SIG",
+                    help="V1a: signatures of 3 direct BuyExactQuoteInV3 completion txs with 3 distinct signers from days before the counted days")
     a = ap.parse_args(argv)
     if a.verify_tx:
         vf = make_rpc_fetch(a.rpc_url, balances=True)
-        print(json.dumps([verify_identity(vf(sig), v) for v, sig in zip(VARIANTS, a.verify_tx)], indent=1, sort_keys=True))
-        return 0
+        res = verify_v1a([vf(sig) for sig in a.verify_tx])
+        print(json.dumps(res, indent=1, sort_keys=True))
+        return 0 if res["v1a"] == "PASS" else 1
     fetch = make_rpc_fetch(a.rpc_url)
     if not a.days:
         ap.error("--days is required")

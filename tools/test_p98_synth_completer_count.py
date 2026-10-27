@@ -10,12 +10,10 @@ import pytest
 from observe import trade_decode as td
 from tools import p98_synth_completer_count as p98
 
+PUMP = p98.M.PUMP_PROGRAM
 DAY = date(2026, 10, 28)
 NEXT = date(2026, 10, 29)
 WSOL = p98.WSOL
-
-
-PUMP = p98.M.PUMP_PROGRAM
 
 
 def mk_tx(logs, inner=None, keys=None):
@@ -29,7 +27,7 @@ def cpi_ix(raw, pid_idx=1):
 
 
 def raw_event(**kw):
-    ev = event_logs(**kw)[1].split("Program data: ")[1]
+    ev = next(x for x in event_logs(**kw) if x.startswith("Program data: ")).split("Program data: ")[1]
     return base64.b64decode(ev)
 
 
@@ -37,13 +35,14 @@ def ms(day, h=0, m=0):
     return int(datetime(day.year, day.month, day.day, h, m, tzinfo=timezone.utc).timestamp() * 1000)
 
 
-def event_logs(quote_in=300_000_000, base_out=5_000_000, signer_byte=7, length=232):
+def event_logs(quote_in=300_000_000, base_out=5_000_000, signer_byte=7, length=232, token="BuyExactQuoteInV3", depth=1):
     raw = bytearray(length)
     raw[:8] = p98.POST_COMPLETE_BUY_DISC
     raw[8:40] = bytes([signer_byte]) * 32
     raw[144:152] = base_out.to_bytes(8, "little")
     raw[152:160] = quote_in.to_bytes(8, "little")
-    return ["Program log: x", "Program data: " + base64.b64encode(bytes(raw)).decode()]
+    return [f"Program {PUMP} invoke [{depth}]", f"Program log: Instruction: {token}",
+            "Program data: " + base64.b64encode(bytes(raw)).decode(), f"Program {PUMP} success"]
 
 
 def write_day(tape, day, rows_by_hour=None, drop_hours=(), hb=60, extra=()):
@@ -77,7 +76,7 @@ def test_classify_synthetic_reads_only_three_fields():
     c = p98.classify_tx(mk_tx(event_logs(quote_in=123, base_out=456, signer_byte=9)))
     assert c["cls"] == "synthetic" and c["quote_in"] == 123 and c["base_out"] == 456
     assert c["signer"] == td.b58encode(bytes([9]) * 32)
-    assert set(c) == {"cls", "signer", "base_out", "quote_in"}  # no reserve / fee / ts key exists
+    assert set(c) == {"cls", "signer", "base_out", "quote_in", "token", "direct", "payer_differs"}  # no reserve / fee / ts key exists
 
 
 def test_classify_normal_short_truncated_two_events_nologs():
@@ -239,7 +238,8 @@ def test_non_wsol_quote_excluded_from_sol_median(tmp_path):
 
 def test_kill_lines_each(tmp_path):
     def rec(share, sig_counts, quotes):
-        return {"status": "DECIDABLE", "synthetic_share": share, "_signers": p98.collections.Counter(sig_counts), "_quotes": quotes}
+        quotes = quotes * 20 if len(quotes) < 20 else quotes
+        return {"status": "DECIDABLE", "synthetic_share": share, "_signers": p98.collections.Counter(sig_counts), "_quotes": quotes, "_unverified": p98.collections.Counter(), "event_user_not_fee_payer": 0}
     spread = {str(i): 1 for i in range(20)}
     ok = p98.kill_review([rec(0.3, spread, [10**9] * 5)])
     assert ok["kill_lines_hit"] == [] and ok["verdict"].startswith("NO_KILL")
@@ -494,3 +494,97 @@ def test_version1_shaped_tx_with_loaded_addresses_decodes_cpi_event():
     # without loadedAddresses the program index cannot be resolved: unclassified, never normal
     resp["result"]["meta"]["loadedAddresses"] = None
     assert p98.classify_tx(p98.tx_from_response(resp))["why"] == "inner_program_unresolved"
+
+
+# ---- QP P98-V1: variant reader, median restriction, disclosure, V1a ------------------------------------------
+def wrapped(inner_logs, depth=1):
+    """pump context nested inside a router at `depth`-1."""
+    return ["Program JUP1111111111111111111111111111111111111111 invoke [1]", "Program log: Instruction: MultiHopJupiterBuy"] + inner_logs
+
+
+def test_pump_variant_reader():
+    d = p98.pump_variant(event_logs())
+    assert d == {"token": "BuyExactQuoteInV3", "direct": True}
+    assert p98.pump_variant(event_logs(token="BuyV3")) == {"token": "BuyV3", "direct": False}
+    assert p98.pump_variant(event_logs(depth=2)) == {"token": "BuyExactQuoteInV3", "direct": False}
+    routed = wrapped(event_logs(depth=2))
+    assert p98.pump_variant(routed) == {"token": "BuyExactQuoteInV3", "direct": False}
+    assert p98.pump_variant(["Program JUP1111111111111111111111111111111111111111 invoke [1]", "Program log: Instruction: MultiHopJupiterBuy"]) \
+        == {"token": "MultiHopJupiterBuy", "direct": False}
+    assert p98.pump_variant(["Program log: x"]) == {"token": "none", "direct": False}
+    # two pump buy tokens: not direct
+    two = event_logs() + [f"Program {PUMP} invoke [1]", "Program log: Instruction: BuyV3", f"Program {PUMP} success"]
+    assert p98.pump_variant(two) == {"token": "multiple", "direct": False}
+    # truncated logs: never direct
+    assert p98.pump_variant(event_logs() + ["Log truncated"])["direct"] is False
+    # an Instruction log of another program is not a pump token
+    other = ["Program ABC1111111111111111111111111111111111111111 invoke [1]", "Program log: Instruction: BuyExactQuoteInV3"]
+    assert p98.pump_variant(other) == {"token": "BuyExactQuoteInV3", "direct": False}
+    assert p98.pump_variant(None) == {"token": "none", "direct": False}
+
+
+def test_median_only_over_verified_and_unverified_tallied(tmp_path):
+    names = [("m1", "s1", event_logs(quote_in=1_000_000_000, signer_byte=1)),
+             ("m2", "s2", event_logs(quote_in=9_000_000_000, signer_byte=2, token="BuyV3")),
+             ("m3", "s3", wrapped(event_logs(quote_in=8_000_000_000, signer_byte=3, depth=2))),
+             ("m4", "s4", event_logs(quote_in=7_000_000_000, signer_byte=4, depth=2)),
+             ("m5", "s5", ["Program JUP1111111111111111111111111111111111111111 invoke [1]", "Program log: Instruction: MultiHopJupiterBuy"]
+              + event_logs(quote_in=6_000_000_000, signer_byte=5)[2:3]),
+             ("m6", "s6", event_logs(quote_in=5_000_000_000, signer_byte=6)),
+             ("m7", "s7", ["Program log: nothing"] + event_logs(quote_in=4_000_000_000, signer_byte=8)[2:3])]
+    write_day(tmp_path, DAY, {2: [create(m) for m, _, _ in names], 3: [complete(sg, m, q=(WSOL if m != "m6" else "USDCm")) for m, sg, _ in names]})
+    write_day(tmp_path, NEXT)
+    r = p98.count_day(DAY, tmp_path, fake_fetch({sg: lg for _, sg, lg in names}))
+    assert r["synthetic"] == 7 and r["quote_in_n"] == 1 and r["quote_in_median_sol"] == 1.0
+    assert r["quote_unverified"] == {"BuyExactQuoteInV3:not_direct": 2, "BuyV3": 1, "MultiHopJupiterBuy": 1, "none": 1, "non_wsol_quote": 1}
+    assert r["quote_unverified_n"] == 6
+    assert r["distinct_signers"] == 7  # share and top-5 use all synthetic completions
+    assert r["event_user_not_fee_payer"] == 7  # mk_tx's fee payer is "Signer", never an event user
+
+
+def test_payer_equal_is_not_counted():
+    me = td.b58encode(bytes([7]) * 32)
+    tx = mk_tx(event_logs(signer_byte=7), keys=[me, PUMP])
+    assert p98.classify_tx(tx)["payer_differs"] is False
+    assert p98.classify_tx(mk_tx(event_logs(signer_byte=7), keys=["Other", PUMP]))["payer_differs"] is True
+
+
+def _day_rec(quotes, share=0.3):
+    return {"status": "DECIDABLE", "synthetic_share": share, "_signers": p98.collections.Counter({str(i): 1 for i in range(30)}),
+            "_quotes": quotes, "_unverified": p98.collections.Counter({"BuyV3": 2}), "event_user_not_fee_payer": 3}
+
+
+def test_median_not_decidable_under_20_verified():
+    k = p98.kill_review([_day_rec([10**7] * 19)])
+    assert k["median_line"] == "NOT_DECIDABLE" and k["pooled_median_quote_in_sol"] is None
+    assert "median_quote_in_lt_0.05_sol" not in k["kill_lines_hit"] and k["verdict"].startswith("NO_KILL")  # lines 1 and 2 still decide
+    k = p98.kill_review([_day_rec([10**7] * 10), _day_rec([10**7] * 10)])  # pooled over days
+    assert k["median_line"] == "DECIDABLE" and "median_quote_in_lt_0.05_sol" in k["kill_lines_hit"]
+    assert k["quote_unverified_pooled"] == {"BuyV3": 4} and k["event_user_not_fee_payer_pooled"] == 6 and "subset" not in k["median_disclosure"] \
+        and "only" in k["median_disclosure"]
+    k = p98.kill_review([_day_rec([10**7] * 19, share=0.05)])
+    assert k["verdict"] == "KILL" and k["kill_lines_hit"] == ["share_lt_10pct (not blind, disclosed)"]
+
+
+def _v1a_txs(n=3, distinct=True, **kw):
+    out = []
+    for i in range(n):
+        t = verify_tx("pool_only", signer_byte=(7 + i if distinct else 7))
+        t["meta"]["logMessages"] = event_logs(**kw)[:2] + [f"Program {PUMP} success"]  # the event itself stays in the CPI blob
+        out.append(t)
+    return out
+
+
+def test_v1a_pass_and_failures():
+    assert p98.verify_v1a(_v1a_txs())["v1a"] == "PASS"
+    assert p98.verify_v1a(_v1a_txs(distinct=False))["v1a"] == "FAIL"  # one signer
+    assert p98.verify_v1a(_v1a_txs(2))["v1a"] == "FAIL"  # fewer than 3
+    assert p98.verify_v1a(_v1a_txs(token="BuyV3"))["v1a"] == "FAIL"
+    assert p98.verify_v1a(_v1a_txs(depth=2))["v1a"] == "FAIL"  # not top level
+    txs = _v1a_txs()
+    txs[1]["meta"]["postBalances"][0] -= 1  # one lamport off
+    r = p98.verify_v1a(txs)
+    assert r["v1a"] == "FAIL" and r["rows"][1]["verdict"] == "FAIL"
+    txs = _v1a_txs()
+    txs[0] = None
+    assert p98.verify_v1a(txs)["v1a"] == "FAIL"
