@@ -253,14 +253,24 @@ def _ledger_stamp(r: Mapping[str, Any]) -> int:
     return int(st) if isinstance(st, int) else int(AS._entry(r))
 
 
-def reconcile_ids(orders: Sequence[tuple[int, str]], rows: Sequence[Mapping[str, Any]], start_ms: int, end_ms: int) -> dict[str, Any]:
+def reconcile_ids(orders: Sequence[tuple[int, str]], rows: Sequence[Mapping[str, Any]], start_ms: int, end_ms: int, stake: float) -> dict[str, Any]:
     """The shared decision-log / ledger reconciliation of one arm over [start_ms, end_ms), by IDENTITY not count. Log set = order_ids of the entry rows; ledger set =
     position_ids of the open and refused rows (the engine writes `position_id`). lost = in the log, not the ledger (counts toward the 5% cap); foreign = in the
     ledger, never ordered by the log (final NOT_DECIDABLE). The attempt counts are the set sizes."""
     log_ids = {oid for ms, oid in orders if start_ms <= ms < end_ms}
     led_ids = {r["position_id"] for r in rows if r.get("kind") in ("open", "refused") and "decision_ms" in r and start_ms <= _ledger_stamp(r) < end_ms}
-    lost, foreign = sorted(log_ids - led_ids), sorted(led_ids - log_ids)
-    return {"decision_log_attempts": len(log_ids), "ledger_attempts": len(led_ids), "lost_attempts": len(lost), "foreign_ledger_positions": len(foreign),
+    # QP #1044: a position closed at another stake only (the scorer treats a trade row at ANY stake as closing it) is dropped from the deciding book by priced_trades, so its
+    # id matching proves nothing. An open position with a trade/excluded row at some stake but none at the DECIDING stake is lost. (No close row at all stays the pending /
+    # restart-orphan path.)
+    def at_stake(r):
+        return r.get("stake_sol") is not None and abs(float(r["stake_sol"]) - float(stake)) < 1e-12
+
+    closed_any = {r["position_id"] for r in rows if r.get("kind") in ("trade", "excluded")}
+    closed_dec = {r["position_id"] for r in rows if r.get("kind") in ("trade", "excluded") and at_stake(r)}
+    open_ids = {r["position_id"] for r in rows if r.get("kind") == "open" and "decision_ms" in r and start_ms <= _ledger_stamp(r) < end_ms}
+    no_dec = sorted((open_ids & log_ids) & (closed_any - closed_dec))
+    lost, foreign = sorted((log_ids - led_ids) | set(no_dec)), sorted(led_ids - log_ids)
+    return {"no_deciding_stake_row": len(no_dec), "no_deciding_stake_row_sample": no_dec[:3], "decision_log_attempts": len(log_ids), "ledger_attempts": len(led_ids), "lost_attempts": len(lost), "foreign_ledger_positions": len(foreign),
             "extra_ledger_attempts": len(foreign), "lost_ids_sample": lost[:3], "foreign_ids_sample": foreign[:3]}
 
 
@@ -352,7 +362,7 @@ def arm_integrity(rows: Sequence[Mapping[str, Any]], incidents: Sequence[Mapping
     share = (info["excluded"] + info["data_refused"]) / info["attempts"] if info["attempts"] else None
     inc_before = sum(1 for i in incidents if AS.incident_instant(i) < end_ms)
     reasons = []
-    rec = reconcile_ids(entry_orders, rows, start_ms, end_ms)
+    rec = reconcile_ids(entry_orders, rows, start_ms, end_ms, stake)
     a_dec, lost = rec["decision_log_attempts"], rec["lost_attempts"]
     if rec["foreign_ledger_positions"]:
         reasons.append(f"{FOREIGN_WHY} ({rec['foreign_ledger_positions']} foreign; decision log {a_dec}, ledger {rec['ledger_attempts']}, lost {lost})")
@@ -401,10 +411,10 @@ def gate_read(arm: str, *, now_ms: int, regn: Mapping[str, Any], rows: Sequence[
     if now_ms < b + EXIT_WINDOW_MS:
         raise Refused(f"{arm}: now {now_ms} is before B + 61 min ({b + EXIT_WINDOW_MS}); the gate is not read before every attempt decided before B has exited")
     natural = natural_ledger_instant(rows, clock)
-    ids = reconcile_ids(entry_orders, rows, clock, b)
+    ids = reconcile_ids(entry_orders, rows, clock, b, stake)
     a_dec, a_led, lost, foreign = ids["decision_log_attempts"], ids["ledger_attempts"], ids["lost_attempts"], ids["foreign_ledger_positions"]
     recon = {"decision_log_attempts_before_b": a_dec, "ledger_attempts_before_b": a_led, "lost_attempts": lost, "foreign_ledger_positions": foreign,
-             "extra_ledger_attempts": foreign, "lost_ids_sample": ids["lost_ids_sample"], "foreign_ids_sample": ids["foreign_ids_sample"],
+             "extra_ledger_attempts": foreign, "lost_ids_sample": ids["lost_ids_sample"], "no_deciding_stake_row": ids["no_deciding_stake_row"], "foreign_ids_sample": ids["foreign_ids_sample"],
              "lost_share": (lost / a_dec) if a_dec else None, "matched_by": "decision-log order_id == ledger position_id",
              "ledger_natural_boundary_ms": natural, "read_boundary_ms": b}
     base["attempt_reconciliation"] = recon
@@ -494,7 +504,7 @@ def gate_read(arm: str, *, now_ms: int, regn: Mapping[str, Any], rows: Sequence[
                 survives = survives and bool(lo is not None and lo > 0 and ex3 > 0 and x.sum() > 0)
             res["lost_attempts_worst_case"] = {"report_only": True, "lost": lost, "imputed_pnl_sol_each": imp / 1e9, "send_lamports": send, "cells": wc,
                                                "per_trade_cells_survive": survives, "day_rule_imputed": False,
-                                               "note": "each lost attempt imputed as -stake - round-trip fees (2 x send + deciding rent, the fee legs arena_score uses; no proceeds); per_trade_cells_survive "
+                                               "note": "each lost attempt imputed as -stake - round-trip fees (2 x send + deciding rent, the fee legs arena_score uses; no proceeds); for a lost attempt that was sent and stranded this is slightly optimistic (a stranded position loses -stake - send - 2,039,280 rent, about 0.0015 SOL more); per_trade_cells_survive "
                                                        "covers the per-trade cell tests only (CI lower bound, ex-top-3, total); the 5-day and majority-positive-day rules are NOT imputed; "
                                                        "a DEC-032 canary proposal should quote this line"}
     elif sc["status"] == "REPORT_ONLY":

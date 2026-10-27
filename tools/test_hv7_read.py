@@ -485,6 +485,25 @@ class Gate(unittest.TestCase):
                         entry_orders=default_orders("L", periods(6, 19)))
 
     @with_world
+    def test_gate_trade_rows_only_at_another_stake_count_as_lost(self, w):
+        # QP #1044 (p3 shape): ids all match, but k positions keep trade rows at stakes 0.5/1.0 only; the scorer treats them as closed, the deciding book drops them
+        rows = self.book_ledger(w, 20)
+        gone = {f"hv7.0-L-{d}-{i}-a" for d in range(3) for i in range(2)}
+
+        def drop(k):
+            ids = set(sorted(gone)[:k])
+            return [r for r in rows if not (r.get("kind") == "trade" and r["position_id"] in ids and abs(r["stake_sol"] - 0.25) < 1e-12)]
+        r5 = gate(w, "L", drop(5), periods(6, 20), T0 + 8 * DAY)
+        rc = r5["attempt_reconciliation"]
+        self.assertEqual((rc["lost_attempts"], rc["foreign_ledger_positions"], rc["no_deciding_stake_row"]), (5, 0, 5))
+        self.assertNotEqual(r5["status"], "PASS")  # 5 of 100 is not above the cap, but the lost positions are reported and the read is not the PASS the moved rows would give
+        r6 = gate(w, "L", drop(6), periods(6, 20), T0 + 8 * DAY)
+        self.assertEqual(r6["status"], "NOT_DECIDABLE")
+        self.assertTrue(any("lost" in m for m in r6["reasons"]))
+        self.assertEqual(r6["attempt_reconciliation"]["lost_attempts"], 6)
+        self.assertEqual(gate(w, "L", rows, periods(6, 20), T0 + 8 * DAY)["attempt_reconciliation"]["no_deciding_stake_row"], 0)
+
+    @with_world
     def test_worst_case_line_when_attempts_are_lost(self, w):
         rows = self.book_ledger(w, 20)
         r = gate(w, "L", rows, periods(6, 21), T0 + 8 * DAY)  # 5 lost, still reads
@@ -496,6 +515,7 @@ class Gate(unittest.TestCase):
         self.assertFalse(wc["day_rule_imputed"])
         self.assertAlmostEqual(wc["imputed_pnl_sol_each"], -0.25 - 2 * SEND / 1e9)  # -stake - round-trip fees (2 x send; deciding rent 0)
         self.assertIn("NOT imputed", wc["note"])
+        self.assertIn("0.0015 SOL", wc["note"])
         r0 = gate(w, "L", rows, periods(6, 20), T0 + 8 * DAY)
         self.assertNotIn("lost_attempts_worst_case", r0)
 
@@ -723,6 +743,17 @@ class Contrast(unittest.TestCase):
                 break
         with self.assertRaisesRegex(X.Refused, "stored flat leg"):
             self.read(rows)
+
+    def test_contrast_trade_rows_only_at_another_stake_count_as_lost(self):
+        rows = self.build(10, "a")
+        for r in rows["L"]:  # 3 of L's 40 positions: the deciding-stake trade row moved to stake 0.5
+            if r["kind"] == "trade" and r["position_id"] in ("hv7.0-L-0-0-a", "hv7.0-L-1-0-a", "hv7.0-L-2-0-a"):
+                r["stake_sol"] = 0.5
+        res = self.read(rows)
+        il = res["integrity"]["L"]
+        self.assertEqual((il["lost_attempts"], il["no_deciding_stake_row"], il["foreign_ledger_positions"]), (3, 3, 0))
+        self.assertEqual(res["status"], "NOT_DECIDABLE")  # 3 of 40 = 7.5% above the cap
+        self.assertTrue(any("lost" in m for m in res["reasons"]))
 
     def test_contrast_swapped_pools_same_count_is_final(self):
         # QP round 4 R4-5(a): L's decision log says pool d (the worst), the ledger holds pool a at the same instants
