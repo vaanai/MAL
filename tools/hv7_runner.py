@@ -805,8 +805,9 @@ def rows_l(log: DecisionLog) -> list[dict]:
     return [r for r in log.rows("L") if r.get("kind") == "rank"]
 
 
-def main(argv: list[str] | None = None) -> int:
-    """A MiScusi job. NEVER RUN yet (C3b registers and drills it). Refuses unless --owner-cost-line-ref matches OWNER_REF_RE."""
+def main(argv: list[str] | None = None, *, _stub: Mapping[str, Any] | None = None) -> int:
+    """A MiScusi job. Refuses unless --owner-cost-line-ref matches OWNER_REF_RE. `_stub` is for tests and the C3b smoke only: a dict with model, chain, engine,
+    start_ms and end_ms; the refusals above it (owner ref, registry pins) are the same code path, then the run is simulated (not live), with no signal handler."""
     ap = argparse.ArgumentParser(description="HV7 forced-rank runner (paper only)")
     ap.add_argument("--tape", required=True)
     ap.add_argument("--root", default=HV7_ROOT)
@@ -833,10 +834,20 @@ def main(argv: list[str] | None = None) -> int:
     if any(v["entries_halt_ms"] != a.entries_halt_ms or v["clock_start_ms"] != a.clock_start_ms for v in pins.values()):
         print("refused: --entries-halt-ms / --clock-start-ms differ from the registry", file=sys.stderr)
         return 2
+    guard = Hv7Guard(a.root)
+    if _stub is not None:
+        run = Hv7Runner(Hv7Config(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=False, entries_halt_ms=a.entries_halt_ms),
+                        ArenaState(check_path(a.tape, "r"), start_ms=0), _stub["engine"], _stub["model"], _stub["chain"], guard)
+        run.sim_now = int(_stub["start_ms"])        # the start row is stamped with the simulated instant, never the wall clock
+        run.log_start()
+        try:
+            run.run(int(_stub["start_ms"]), int(_stub["end_ms"]))
+        finally:
+            run.shutdown()
+        return 0
     from tools.hv6_agents import CallerModel
     from tools.hv6_runner import live_chain_source
 
-    guard = Hv7Guard(a.root)
     engine = ArenaEngine(cfg=stack_config(a.feed_delay_slots))
     run = Hv7Runner(Hv7Config(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True, entries_halt_ms=a.entries_halt_ms),
                     ArenaState(check_path(a.tape, "r"), start_ms=0), engine, CallerModel(guard), live_chain_source(a.root), guard)
