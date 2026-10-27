@@ -379,7 +379,7 @@ class Gate(unittest.TestCase):
 
     @with_world
     def test_p10b_small_loss_waits_then_final_not_decidable(self, w):
-        w.add_rows(arm_book("hv7.0-L", 6, 20, win))
+        w.add_rows(arm_book("hv7.0-L", 5, 20, win))  # the ledger holds days 0-4 only: 97 attempts once three are lost, so it has no natural instant
         rows = [r for r in w.led.scan_bot("hv7.0-L")[0] if not r.get("position_id", "").startswith(("hv7.0-L-1-0-", "hv7.0-L-1-1-", "hv7.0-L-1-2-"))]
         ems = periods(6, 20)
         with self.assertRaises(X.Refused):
