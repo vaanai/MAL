@@ -6,7 +6,7 @@
 # Usage: HV7_FINAL_SHA=<sha> sh scripts/ops/hv7-smoke.sh REPO ID
 #   REPO  a CLEAN checkout at the final sha (HV7_FINAL_SHA, 40 hex, required in the environment)
 #   ID    fresh name; the smoke dir is /data/mal/arena/haiku-v7/smoke/<ID> (refused if it exists)
-# Runs 31 ranker periods 4 min apart after an 8 min warm-up (about 2 h 9 min wall). The API key is read at run time from /var/lib/mal/anthropic/anthropic.env
+# Runs 31 ranker periods at the runner's real instants (H:02 UTC, one per hour) after an 8 min warm-up plus one 14 min prefetch window (about 31-32 h wall). The API key is read at run time from /var/lib/mal/anthropic/anthropic.env
 # into the child's environment only; it is never echoed, logged or passed on a command line.
 # Writes ONLY under <HV7_ROOT>/smoke/<ID>/. The production root, the real registry (/data/mal/arena/bots.json) and every HV4/HV6/Q50 path are never touched.
 # FEED_DELAY_SLOTS must equal the value the registered runner job will use (the pack pins it).
@@ -38,4 +38,4 @@ export MAL_HV4_RPC
 set -a
 . "$KEYFILE"
 set +a
-exec /data/mal/venv/bin/python -I "$TOOL" --repo "$REPO" --smk "$SMK" --cap-usd 0.10 --expect-sha "$FINAL" --periods 31 --period-min 4 --warmup-min 8 --feed-delay-slots "${FEED_DELAY_SLOTS:-7}"
+exec /data/mal/venv/bin/python -I "$TOOL" --repo "$REPO" --smk "$SMK" --cap-usd 0.10 --expect-sha "$FINAL" --periods 31 --warmup-min 8 --feed-delay-slots "${FEED_DELAY_SLOTS:-7}"

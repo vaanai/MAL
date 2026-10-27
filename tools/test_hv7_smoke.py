@@ -56,7 +56,7 @@ def rules():
 
 
 def args(smk, **kw):
-    d = dict(smk=str(smk), cap_usd=0.10, periods=31, period_ms=4 * MIN, warmup_ms=8 * MIN, frozen_sha=SHA, feed_delay_slots=2)
+    d = dict(smk=str(smk), cap_usd=0.10, periods=31, warmup_ms=8 * MIN, frozen_sha=SHA, feed_delay_slots=2)
     d.update(kw)
     return Namespace(**d)
 
@@ -73,7 +73,7 @@ def sim(tmp_path, *, cost=0.0, latency=50, script=leader_first, periods=5, **kw)
         return made["m"]
 
     rep = S.run_smoke(rules(), args(parent / "s1", periods=periods, **kw), model=mk, chain=FakeChain(), tape_dir=str(tape), live=False, start_ms=T0 + HOUR, parent=str(parent),
-                      verify_sha=False, engine_kw={"sps_fn": lambda: 0.4})
+                      verify_sha=False, engine_kw={"sps_fn": lambda: 0.4}, period_ms=4 * MIN, anchor_h02=False)      # unit-test grid only: fast, fake chain; the CLI cannot reach it
     return rep, parent / "s1", made["m"]
 
 
@@ -204,12 +204,30 @@ def test_report_whitelist_never_carries_pool_or_price(tmp_path):
 
 
 # --------------------------------------------------------------------------------------------------------------------- end to end, fake caller
-def test_period_plan_31_periods_four_minutes_apart():
-    grid, last_te, t_end = S.period_plan(T0 + 500, S.WARMUP_MS, S.PERIOD_MS, S.PERIODS, RN.TICK_MS, RN.T_E_OFFSET_MS - RN.T_D_OFFSET_MS)
-    assert len(grid) == 31 and {b - a for a, b in zip(grid, grid[1:])} == {4 * MIN} and grid[0] % RN.TICK_MS == 0
-    assert last_te - grid[0] == 120 * MIN + 45_000 >= S.MIN_SPAN_MS          # 30 gaps x 4 min = 2 h from the first t_d to the last
-    assert t_end - (T0 + 500) < 2 * HOUR + 15 * MIN                            # about 2 h 9 min wall
-    assert RN.T_E_OFFSET_MS - RN.T_D_OFFSET_MS == 45_000
+def test_period_plan_hourly_at_h02_after_one_full_prefetch_window():
+    assert S.PREFETCH_LEAD_MS == RN.PREFETCH_WINDOW_END_MS - RN.PREFETCH_WINDOW_START_MS + HOUR and S.T_D_OFFSET_MS == RN.T_D_OFFSET_MS and S.PERIOD_MS == HOUR
+    te = RN.T_E_OFFSET_MS - RN.T_D_OFFSET_MS
+    for off in range(0, 60 * MIN, 5 * MIN + 17_000):
+        t0 = T0 + 5 * HOUR + off
+        grid, last_te, t_end = S.period_plan(t0, S.WARMUP_MS, S.PERIOD_MS, S.PERIODS, RN.TICK_MS, te)
+        assert len(grid) == 31 and {b - a for a, b in zip(grid, grid[1:])} == {HOUR}
+        assert all(g % HOUR == RN.T_D_OFFSET_MS for g in grid)                       # the runner's real instants
+        assert grid[0] - S.PREFETCH_LEAD_MS >= t0 + S.WARMUP_MS                       # a whole window (and the warm-up) before the first screen
+        assert grid[0] - HOUR - S.PREFETCH_LEAD_MS < t0 + S.WARMUP_MS                 # ... and it is the FIRST such H:02
+        assert last_te - grid[0] == 30 * HOUR + 45_000 >= S.MIN_SPAN_MS
+        assert t_end - t0 < 31 * HOUR + 2 * HOUR                                       # about 31-32 h wall
+
+
+def test_cli_has_no_period_or_window_override_and_real_chain_needs_the_hourly_grid(tmp_path, monkeypatch):
+    src = Path(S.__file__).read_text()
+    assert "--period-min" not in src and "--runner-window" not in src and "PREFETCH_WINDOW_START_MS =" not in src and "PREFETCH_WINDOW_START_MS = 0" not in src
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
+    monkeypatch.setenv("MAL_HV4_RPC", "helius")
+    parent = tmp_path / "smoke"
+    parent.mkdir()
+    for kw in ({"period_ms": 4 * MIN}, {"anchor_h02": False}):
+        with pytest.raises(S.Refused, match="real_chain_requires_hourly_h02_grid"):
+            S.run_smoke(rules(), args(parent / "s", **{}), model=None, chain=None, parent=str(parent), **kw)
 
 
 def test_sim_run_drives_real_rank_calls_on_the_compressed_grid(tmp_path):
@@ -218,7 +236,7 @@ def test_sim_run_drives_real_rank_calls_on_the_compressed_grid(tmp_path):
     assert len(model.calls) == 5 and all(r.kind == "rank" and r.arm == "L" for r in model.calls)       # the real RANK request, one per period
     rows = [json.loads(x) for f in sorted((smk / "root" / "decisions" / "SCAN").glob("*.jsonl")) for x in f.read_bytes().splitlines()]
     td = [r["t_d"] for r in rows if r["kind"] == "period"]
-    assert len(td) == 5 and len(set(td)) == 5                      # five distinct periods inside the first hour-and-a-bit, none on the hourly grid alone
+    assert len(td) == 5 and len(set(td)) == 5
     assert rep["span_s"] == pytest.approx(4 * 4 * 60 + 45) and rep["verdict"] == "INCOMPLETE" and "span_under_2h" in rep["incomplete_reasons"]
     assert (smk / "report.json").is_file()
 
@@ -316,7 +334,7 @@ def test_smoke_dir_rules(tmp_path):
 def test_period_args_are_bounded(tmp_path):
     parent = tmp_path / "smoke"
     parent.mkdir()
-    for kw in ({"periods": 0}, {"periods": 41}, {"period_ms": 60_000}):
+    for kw in ({"periods": 0}, {"periods": 41}):
         with pytest.raises(S.Refused):
             S.run_smoke(rules(), args(parent / "s", **kw), model=object(), chain=object(), parent=str(parent))
 
@@ -350,7 +368,7 @@ def test_wrapper_requires_final_sha_and_clean_checkout(tmp_path):
 
 def test_wrapper_text_pins():
     t = WRAP.read_text()
-    assert "--cap-usd 0.10" in t and "--periods 31" in t and "--period-min 4" in t
+    assert "--cap-usd 0.10" in t and "--periods 31" in t and "--period-min" not in t
     assert '. "$KEYFILE"' in t and "echo" not in t.split('. "$KEYFILE"')[1]          # nothing is echoed after the key is sourced
     assert "ANTHROPIC_API_KEY" not in t           # the wrapper never names the variable's value anywhere
 
@@ -388,41 +406,9 @@ def test_smoke_obtains_its_chain_from_the_runners_live_chain_source_and_its_watc
     write_tape(tape, tape_rows())
     parent = tmp_path / "smoke"
     parent.mkdir()
-    rep = S.run_smoke(rules(), args(parent / "s1", periods=3), model=lambda g: A.StubModel(leader_first, guard=g, cost_usd=0.0, latency_ms=50), chain=None,
+    rep = S.run_smoke(rules(), args(parent / "s1", periods=2), model=lambda g: A.StubModel(leader_first, guard=g, cost_usd=0.0, latency_ms=50), chain=None,
                       tape_dir=str(tape), live=False, start_ms=T0 + HOUR, parent=str(parent), verify_sha=False, engine_kw={"sps_fn": lambda: 0.4})
     assert seen["roots"] == [parent / "s1" / "root"]                        # built by the runner's function, rooted under the smoke dir
     assert seen["started"] == 1 and seen["stopped"] == 1 and seen["watch"] >= 1       # watch fed by Hv7Runner.watch_tick
     assert rep["chain_source"].startswith("hv7_runner.live_chain_source")
     assert not hasattr(S, "_feed_watch")                                     # no private watch-set construction left
-
-
-@pytest.mark.parametrize("runner_window", [False, True])
-def test_prefetch_window_override_is_smoke_only_and_restored(tmp_path, monkeypatch, runner_window):
-    probe = {"open_at_h20": []}
-    start0 = RN.PREFETCH_WINDOW_START_MS
-
-    class _Pre:
-        def start(self):
-            probe["open_at_h20"].append(RN.prefetch_window_open(T0 + 20 * MIN))     # a t outside H:48-H:02 (T0 is on the hour)
-
-        def stop(self):
-            pass
-
-        def stats(self):
-            return {"calls_last_hour": 0}
-
-    class WChain(FakeChain):
-        prefetch = _Pre()
-
-    monkeypatch.setattr(RN, "live_chain_source", lambda root, env=None: WChain())
-    monkeypatch.setenv("MAL_HV4_RPC", "helius")
-    monkeypatch.delenv("MAL_HV4_CHAIN_STATE", raising=False)
-    tape = tmp_path / "tape"
-    write_tape(tape, tape_rows())
-    parent = tmp_path / "smoke"
-    parent.mkdir()
-    rep = S.run_smoke(rules(), args(parent / "s1", periods=2, runner_window=runner_window), model=lambda g: A.StubModel(leader_first, guard=g, cost_usd=0.0, latency_ms=50),
-                      chain=None, tape_dir=str(tape), live=False, start_ms=T0 + HOUR, parent=str(parent), verify_sha=False, engine_kw={"sps_fn": lambda: 0.4})
-    assert probe["open_at_h20"] == [not runner_window]
-    assert rep["prefetch_window"] == ("runner_H48_H02" if runner_window else "open_all_hour_smoke_override")
-    assert RN.PREFETCH_WINDOW_START_MS == start0 and not RN.prefetch_window_open(T0 + 20 * MIN)     # restored: the runner's window is untouched afterwards

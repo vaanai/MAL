@@ -6,19 +6,17 @@ PAPER only. Runs the FINAL-sha runner (`tools.hv7_runner.Hv7Runner`, imported fr
 the wrapper takes from /var/lib/mal/anthropic/anthropic.env into the child's environment only; this file never reads, prints or stores its value) and the
 live arena tape (read only, through the frozen runner and card code). It edits no frozen file (tools/hv7_*.py at the final sha).
 
-PERIOD COMPRESSION (no frozen code touched). `Hv7Runner.tick` fires the screen only when `T % HOUR_MS == T_D_OFFSET_MS`, so a 2 h run makes about 2 calls and
-Hv7Config has no period or tick parameter. This tool does not call `tick`. It drives the runner's public methods in the same order `tick` uses
-(`sim_now`, `poll_to`, `exits`, then `screen(T)` at a period instant `t_d`, then `enter(T)` at `t_d + 45 s`, which is `pending["t_e"]`), with the period
-instants on a 4-minute grid instead of H:02:00. `screen` and `enter` derive t_e from the T they are given, so nothing else changes: the request bytes are
-the real RANK_v0 prompt (`build_rank_request`), the call is the runner's own `_ask`, the verdict is its own `_resolve_l`. 31 periods, 4 min apart, from a
-warm-up after the start: 120 min from the first t_d to the last, 2 h 4 min or so in all. One stated difference from the hourly run: `seq = T // HOUR_MS` in
-the request is the same for the periods of one hour; the cards differ with as_of, so request bytes still differ (a replayed request would show as replayed
-and cost 0, and is reported).
+HOURLY DESIGN (no frozen code touched, no compression). `Hv7Runner.tick` fires the screen only when `T % HOUR_MS == T_D_OFFSET_MS` and Hv7Config has no period
+parameter, so this tool does not call `tick`; it drives the runner's public methods in the order `tick` uses (`sim_now`, `poll_to`, `exits`, `watch_tick`, then
+`screen(T)` at a period instant `t_d`, then `enter(T)` at `t_d + 45 s`). The period instants are the runner's real ones: H:02:00 UTC, one per hour, 31 of them (30 hours
+from the first t_d to the last, about 31-32 h wall). The first t_d is the first H:02 that falls at least WARMUP (8 min) plus one full prefetch window (14 min) after the
+start, so the prefetcher has run a whole H:48-H:02 window before the first screen. Request bytes are the real RANK_v0 prompt (`build_rank_request`), the call is the
+runner's own `_ask`, the verdict its own `_resolve_l`.
 
-The chain source is the runner's own `hv7_runner.live_chain_source(root)` (same classes, phase-locked prefetch window H:48-H:02, 500 calls/h), with its state
-files under the smoke dir; the prefetcher is started as `main` starts it and fed by the runner's own `watch_tick` (WATCH_MAX 200), so the smoke exercises the runner path.
-ONE deliberate difference: the runner's prefetch window (H:48-H:02) is locked to the hourly t_d; this tool screens every 4 min, so outside it facts go stale and the
-refusal rule would FAIL for phase alone. Default: the window start is set to 0 for the run (restored after; report prefetch_window); `--runner-window` keeps H:48-H:02.
+The chain source is the runner's own `hv7_runner.live_chain_source(root)` (HV4Chain + policy-v2 prefetcher gated to the window H:48-H:02, 500 calls/h), state files under
+the smoke dir; the prefetcher is started as `main` starts it (`chain.prefetch.start()`) and fed by the runner's own `watch_tick` (WATCH_MAX 200). Nothing about the
+prefetch regime is overridden: it is the live regime. DISCLOSURE: the smoke's card-refusal share is measured in the live regime at the live instants, but over 31 hourly
+screens on whatever the live tape holds; live H:02 fact freshness is also shown by the synthetic tools/test_hv7_prefetch_phase.py (no RPC).
 
 WRITES ONLY under <HV7_ROOT>/smoke/<id>/ : root/ (decision log, RANK-L cost ledger, replay cache, chain state), engine-ledger/, smoke-registry.json,
 report.json. The production root, the real registry (/data/mal/arena/bots.json) and every HV4/HV6/Q50 path are never touched. The engine ledger (fills,
@@ -56,7 +54,9 @@ CALL_P95_FAIL_MS = 8_000
 REFUSAL_FAIL_FRAC = 0.05
 MIN_OK_CALLS = 30
 MIN_SPAN_MS = 2 * 3_600_000
-PERIOD_MS = 4 * 60_000
+PERIOD_MS = 3_600_000
+PREFETCH_LEAD_MS = 14 * 60_000       # the runner's window length [H:48, H:02); a test pins it to hv7_runner's constants
+T_D_OFFSET_MS = 2 * 60_000           # pinned to hv7_runner.T_D_OFFSET_MS by a test
 PERIODS = 31
 WARMUP_MS = 8 * 60_000
 TAIL_MS = 60_000
@@ -279,9 +279,14 @@ def build_chain(R: SimpleNamespace, root: Path) -> Any:
     return R.RN.live_chain_source(root)
 
 
-def period_plan(t_start: int, warmup_ms: int, period_ms: int, periods: int, tick_ms: int, te_offset_ms: int) -> tuple[list[int], int, int]:
-    """(t_d grid, last t_e, loop end). The grid starts at the first whole tick after the warm-up and steps by period_ms; t_e is t_d + te_offset_ms."""
-    first = (t_start + warmup_ms + tick_ms - 1) // tick_ms * tick_ms
+def period_plan(t_start: int, warmup_ms: int, period_ms: int, periods: int, tick_ms: int, te_offset_ms: int, anchor_h02: bool = True) -> tuple[list[int], int, int]:
+    """(t_d grid, last t_e, loop end). anchor_h02 (the only mode the CLI reaches): the first t_d is the first H:02:00 UTC at or after t_start + warmup + one full prefetch
+    window, then every period_ms (one hour). Without it (unit tests only): the first whole tick after the warm-up. t_e is t_d + te_offset_ms."""
+    earliest = t_start + warmup_ms + (PREFETCH_LEAD_MS if anchor_h02 else 0)
+    if anchor_h02:
+        first = (earliest - T_D_OFFSET_MS + PERIOD_MS - 1) // PERIOD_MS * PERIOD_MS + T_D_OFFSET_MS
+    else:
+        first = (earliest + tick_ms - 1) // tick_ms * tick_ms
     grid = [first + k * period_ms for k in range(periods)]
     last_te = grid[-1] + te_offset_ms
     return grid, last_te, last_te + TAIL_MS
@@ -289,12 +294,14 @@ def period_plan(t_start: int, warmup_ms: int, period_ms: int, periods: int, tick
 
 def run_smoke(R: SimpleNamespace, a: argparse.Namespace, *, model: Any = None, chain: Any = None, tape_dir: str | None = None, live: bool = True,
               start_ms: int | None = None, sleep: Callable[[float], None] = time.sleep, now_fn: Callable[[], int] | None = None, parent: str | None = None,
-              verify_sha: bool = True, engine_kw: dict | None = None) -> dict[str, Any]:
+              verify_sha: bool = True, engine_kw: dict | None = None, period_ms: int = PERIOD_MS, anchor_h02: bool = True) -> dict[str, Any]:
     smk = check_smk(a.smk, parent)
     if not (0 < a.cap_usd <= SPEND_CAP_USD):
         raise Refused("cap_above_0.10")
-    if not (1 <= a.periods <= 40) or a.period_ms < 120_000 or a.warmup_ms < 0:
+    if not (1 <= a.periods <= 40) or period_ms < 120_000 or a.warmup_ms < 0:
         raise Refused("period_args_out_of_range")
+    if chain is None and (period_ms != PERIOD_MS or not anchor_h02):
+        raise Refused("real_chain_requires_hourly_h02_grid")
     if model is None and not os.environ.get("ANTHROPIC_API_KEY", "").strip():
         raise Refused("api_key_not_in_env")
     if chain is None and (os.environ.get("MAL_HV4_RPC", "").strip().lower() != "helius"):
@@ -315,13 +322,6 @@ def run_smoke(R: SimpleNamespace, a: argparse.Namespace, *, model: Any = None, c
     smodel = SpendStopModel(inner, guard, root, a.cap_usd, guard.min_call_usd)
     chain = chain if chain is not None else build_chain(R, root)
     prefetch = getattr(chain, "prefetch", None)
-    # The runner's prefetch window (H:48-H:02) is phase-locked to the HOURLY t_d = H:02; this tool screens every 4 min, so outside the window the mint facts age past the
-    # card's 15 min limit (chain_stale / chain_none refusals, a certain FAIL on the 5% refusal rule). Unless --runner-window, the window start is moved to 0 for the run
-    # (module constant, restored in the finally; no frozen file is edited): the same gated class and 500 calls/h cap run, the prefetch is open on the 4-min grid.
-    saved_window_start = RN.PREFETCH_WINDOW_START_MS
-    window_mode = "runner_H48_H02" if (prefetch is None or getattr(a, "runner_window", False)) else "open_all_hour_smoke_override"
-    if window_mode != "runner_H48_H02":
-        RN.PREFETCH_WINDOW_START_MS = 0
     if prefetch is not None:
         prefetch.start()
     tape = tape_dir or H.TAPE_ROOT
@@ -329,7 +329,7 @@ def run_smoke(R: SimpleNamespace, a: argparse.Namespace, *, model: Any = None, c
     cfg = RN.Hv7Config(root=str(root), frozen_sha=a.frozen_sha, clock_start_ms=clock, live=live, entries_halt_ms=None)
     engine = R.AP.ArenaEngine(str(eng), str(reg), cfg=RN.stack_config(a.feed_delay_slots), **(engine_kw or {}))
     t_start = now - now % RN.TICK_MS
-    td_grid, last_te, t_end = period_plan(t_start, a.warmup_ms, a.period_ms, a.periods, RN.TICK_MS, RN.T_E_OFFSET_MS - RN.T_D_OFFSET_MS)
+    td_grid, last_te, t_end = period_plan(t_start, a.warmup_ms, period_ms, a.periods, RN.TICK_MS, RN.T_E_OFFSET_MS - RN.T_D_OFFSET_MS, anchor_h02)
     first_td = td_grid[0]
     err = None
     samples: list[int] = []
@@ -381,7 +381,6 @@ def run_smoke(R: SimpleNamespace, a: argparse.Namespace, *, model: Any = None, c
                 counters["hook_errors"] = len(run.hook_errors)
         if prefetch is not None:
             prefetch.stop()
-        RN.PREFETCH_WINDOW_START_MS = saved_window_start
         rep_fn = getattr(chain, "credit_report", None)
         if rep_fn is not None:
             try:
@@ -391,10 +390,10 @@ def run_smoke(R: SimpleNamespace, a: argparse.Namespace, *, model: Any = None, c
     rep = report(root, counters=counters, run_error=err, window_ms=(first_td, last_te), cap_usd=a.cap_usd, spend_stop_hits=smodel.hits, chain_credits=credits,
                  calls_h_samples=samples)
     rep["frozen_sha"] = a.frozen_sha
-    rep["period_ms"] = a.period_ms
+    rep["period_ms"] = period_ms
     rep["periods_planned"] = a.periods
     rep["compression"] = "driven_by_smoke_tool_via_public_screen_enter; frozen tick() not used; hourly code unchanged"
-    rep["prefetch_window"] = window_mode
+    rep["prefetch_window"] = "runner_H48_H02_live_regime" if prefetch is not None else "injected_chain"
     rep["chain_source"] = "hv7_runner.live_chain_source (the runner path)" if prefetch is not None else "injected"
     (smk / "report.json").write_text(render(rep))
     return rep
@@ -407,12 +406,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--cap-usd", type=float, default=SPEND_CAP_USD)
     ap.add_argument("--feed-delay-slots", type=int, required=True)
     ap.add_argument("--periods", type=int, default=PERIODS)
-    ap.add_argument("--period-min", type=float, default=PERIOD_MS / 60_000)
     ap.add_argument("--warmup-min", type=float, default=WARMUP_MS / 60_000)
-    ap.add_argument("--runner-window", action="store_true", help="keep the runner's H:48-H:02 prefetch window (screens outside it will see stale/no facts); default: window open for the whole hour")
     ap.add_argument("--expect-sha", required=True, help="the registered final sha (40 hex)")
     a = ap.parse_args(argv)
-    a.period_ms, a.warmup_ms = int(a.period_min * 60_000), int(a.warmup_min * 60_000)
+    a.warmup_ms = int(a.warmup_min * 60_000)
     a.frozen_sha = a.expect_sha.strip().lower()
     if len(a.frozen_sha) != 40 or any(ch not in SHA_RE for ch in a.frozen_sha):
         print("hv7_smoke: refused: --expect-sha must be 40 hex characters", file=sys.stderr)
