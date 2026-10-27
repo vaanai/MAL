@@ -196,6 +196,8 @@ Offline (built now):
    `g_s = 0.5 x max(0, g - 1.645 x sd_folds(g_k) / sqrt(7))` (g = mean fold gap, g_k the fold gaps), never `g`. The null pass rate of bar 5 is not
    simulated here.
 
+*Amendment (C2 review, 2026-10-27):* bar 1 (parse count vs calls) lives in the C3 validator, not in `tools/hv8_calib.py`; C2 implements bars 2, 3, 4, 5 and `offline_verdict` (bar 4 before bar 5).
+
 Forward (DEFERRED):
 6. **Bridge** (stub day, needs the owner line): 48 stub cards rated on both the plan path and the API path; quadratic-weighted kappa >= 0.60 on at
    least 2 of 3 items (noisy at 48; kill-only).
