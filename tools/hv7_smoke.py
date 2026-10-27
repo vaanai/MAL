@@ -301,6 +301,14 @@ def _feed_watch(R: SimpleNamespace, run: Any, T: int) -> None:
     run.chain.watch([(q, run.state.pool(q).mint) for q in ranked], hot, int(T), vols={q: res.feats[q].get("vol_60m") or 0.0 for q in ranked})
 
 
+def period_plan(t_start: int, warmup_ms: int, period_ms: int, periods: int, tick_ms: int, te_offset_ms: int) -> tuple[list[int], int, int]:
+    """(t_d grid, last t_e, loop end). The grid starts at the first whole tick after the warm-up and steps by period_ms; t_e is t_d + te_offset_ms."""
+    first = (t_start + warmup_ms + tick_ms - 1) // tick_ms * tick_ms
+    grid = [first + k * period_ms for k in range(periods)]
+    last_te = grid[-1] + te_offset_ms
+    return grid, last_te, last_te + TAIL_MS
+
+
 def run_smoke(R: SimpleNamespace, a: argparse.Namespace, *, model: Any = None, chain: Any = None, tape_dir: str | None = None, live: bool = True,
               start_ms: int | None = None, sleep: Callable[[float], None] = time.sleep, now_fn: Callable[[], int] | None = None, parent: str | None = None,
               verify_sha: bool = True, engine_kw: dict | None = None) -> dict[str, Any]:
@@ -336,10 +344,8 @@ def run_smoke(R: SimpleNamespace, a: argparse.Namespace, *, model: Any = None, c
     cfg = RN.Hv7Config(root=str(root), frozen_sha=a.frozen_sha, clock_start_ms=clock, live=live, entries_halt_ms=None)
     engine = R.AP.ArenaEngine(str(eng), str(reg), cfg=RN.stack_config(a.feed_delay_slots), **(engine_kw or {}))
     t_start = now - now % RN.TICK_MS
-    first_td = (t_start + a.warmup_ms + RN.TICK_MS - 1) // RN.TICK_MS * RN.TICK_MS
-    td_grid = [first_td + k * a.period_ms for k in range(a.periods)]
-    last_te = td_grid[-1] + (RN.T_E_OFFSET_MS - RN.T_D_OFFSET_MS)
-    t_end = last_te + TAIL_MS
+    td_grid, last_te, t_end = period_plan(t_start, a.warmup_ms, a.period_ms, a.periods, RN.TICK_MS, RN.T_E_OFFSET_MS - RN.T_D_OFFSET_MS)
+    first_td = td_grid[0]
     err = None
     samples: list[int] = []
     credits: Any = None
