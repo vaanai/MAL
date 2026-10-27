@@ -248,9 +248,12 @@ def entry_orders(root: str | Path, arm: str) -> list[tuple[int, str]]:
 
 
 def _ledger_stamp(r: Mapping[str, Any]) -> int:
-    """The bot's stamp of an entry row (the engine's position id hashes the stamp, and the decision log's ms is the stamp); falls back to the write instant."""
+    """The bot's stamp of an entry row (the engine's position id hashes the stamp, and the decision log's ms is the stamp). No fallback to the write instant: a row
+    without stamp_ms.entry is refused (a gate read turns that into a final NOT_DECIDABLE at T0 + H + 61 min)."""
     st = (r.get("stamp_ms") or {}).get("entry")
-    return int(st) if isinstance(st, int) else int(AS._entry(r))
+    if not isinstance(st, int) or isinstance(st, bool):
+        raise Refused(f"ledger row {r.get('trade_id')} has no stamp_ms.entry: the decision-log reconciliation cannot place it")
+    return st
 
 
 def reconcile_ids(orders: Sequence[tuple[int, str]], rows: Sequence[Mapping[str, Any]], start_ms: int, end_ms: int, stake: float) -> dict[str, Any]:
@@ -274,6 +277,7 @@ def reconcile_ids(orders: Sequence[tuple[int, str]], rows: Sequence[Mapping[str,
             "extra_ledger_attempts": len(foreign), "lost_ids_sample": lost[:3], "foreign_ids_sample": foreign[:3]}
 
 
+NO_DEC_WHY = "closing rows missing at the deciding stake"
 FOREIGN_WHY = "ledger holds positions the decision log never ordered"
 
 
@@ -366,6 +370,8 @@ def arm_integrity(rows: Sequence[Mapping[str, Any]], incidents: Sequence[Mapping
     a_dec, lost = rec["decision_log_attempts"], rec["lost_attempts"]
     if rec["foreign_ledger_positions"]:
         reasons.append(f"{FOREIGN_WHY} ({rec['foreign_ledger_positions']} foreign; decision log {a_dec}, ledger {rec['ledger_attempts']}, lost {lost})")
+    if rec["no_deciding_stake_row"]:
+        reasons.append(f"{NO_DEC_WHY} ({rec['no_deciding_stake_row']} position(s) closed at another stake only)")
     if lost > 0 and a_dec:
         lshare = (info["excluded"] + info["data_refused"] + lost) / a_dec
         rec["excluded_lost_share"] = lshare
@@ -411,7 +417,14 @@ def gate_read(arm: str, *, now_ms: int, regn: Mapping[str, Any], rows: Sequence[
     if now_ms < b + EXIT_WINDOW_MS:
         raise Refused(f"{arm}: now {now_ms} is before B + 61 min ({b + EXIT_WINDOW_MS}); the gate is not read before every attempt decided before B has exited")
     natural = natural_ledger_instant(rows, clock)
-    ids = reconcile_ids(entry_orders, rows, clock, b, stake)
+    try:
+        ids = reconcile_ids(entry_orders, rows, clock, b, stake)
+    except Refused as e:
+        if now_ms < halt + EXIT_WINDOW_MS:
+            raise
+        base["read_boundary_ms"] = b
+        base["multiplicity"] = holm_block(n_books, None if other_ps is None else dict(other_ps))
+        return dict(base, status="NOT_DECIDABLE", reasons=[f"{e}; final at T0 + H + 61 min"])
     a_dec, a_led, lost, foreign = ids["decision_log_attempts"], ids["ledger_attempts"], ids["lost_attempts"], ids["foreign_ledger_positions"]
     recon = {"decision_log_attempts_before_b": a_dec, "ledger_attempts_before_b": a_led, "lost_attempts": lost, "foreign_ledger_positions": foreign,
              "extra_ledger_attempts": foreign, "lost_ids_sample": ids["lost_ids_sample"], "no_deciding_stake_row": ids["no_deciding_stake_row"], "foreign_ids_sample": ids["foreign_ids_sample"],
@@ -430,6 +443,8 @@ def gate_read(arm: str, *, now_ms: int, regn: Mapping[str, Any], rows: Sequence[
 
     if foreign:
         return final_nd(f"{FOREIGN_WHY} ({foreign} foreign position id(s) before B {b}; decision log {a_dec}, ledger {a_led}, lost {lost}); final")
+    if ids["no_deciding_stake_row"]:
+        return final_nd(f"{NO_DEC_WHY} ({ids['no_deciding_stake_row']} position(s) closed at another stake only, before B {b}; lost {lost} of {a_dec} decision-log attempts); final")
     if natural is not None and natural < b:
         return final_nd(f"decision log and ledger disagree: the ledger reached its own instant {natural} before the decision-log B {b} (decision log {a_dec}, ledger {a_led}); final")
     if natural is None or natural > b:  # the ledger is short: the scorer cannot be run at the ledger's own instant

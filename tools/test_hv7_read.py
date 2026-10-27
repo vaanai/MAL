@@ -496,12 +496,27 @@ class Gate(unittest.TestCase):
         r5 = gate(w, "L", drop(5), periods(6, 20), T0 + 8 * DAY)
         rc = r5["attempt_reconciliation"]
         self.assertEqual((rc["lost_attempts"], rc["foreign_ledger_positions"], rc["no_deciding_stake_row"]), (5, 0, 5))
-        self.assertNotEqual(r5["status"], "PASS")  # 5 of 100 is not above the cap, but the lost positions are reported and the read is not the PASS the moved rows would give
+        self.assertEqual(r5["status"], "NOT_DECIDABLE")  # QP p3 exactly: 5 moved (4.545%) no longer reads PASS; an integrity failure, not only the 5% cap
+        self.assertTrue(any("closing rows missing at the deciding stake" in m for m in r5["reasons"]))
         r6 = gate(w, "L", drop(6), periods(6, 20), T0 + 8 * DAY)
         self.assertEqual(r6["status"], "NOT_DECIDABLE")
         self.assertTrue(any("lost" in m for m in r6["reasons"]))
         self.assertEqual(r6["attempt_reconciliation"]["lost_attempts"], 6)
         self.assertEqual(gate(w, "L", rows, periods(6, 20), T0 + 8 * DAY)["attempt_reconciliation"]["no_deciding_stake_row"], 0)
+
+    @with_world
+    def test_gate_row_without_stamp_ms_entry_refused_then_final_not_decidable(self, w):
+        rows = self.book_ledger(w, 20)
+        rows = [dict(r) for r in rows]
+        for r in rows:
+            if r.get("kind") == "open":
+                r["stamp_ms"] = {"entry": None, "exit": None}
+                break
+        with self.assertRaises(X.Refused):
+            gate(w, "L", rows, periods(6, 20), T0 + 8 * DAY)
+        r = gate(w, "L", rows, periods(6, 20), HALT + X.EXIT_WINDOW_MS)
+        self.assertEqual(r["status"], "NOT_DECIDABLE")
+        self.assertTrue(any("stamp_ms.entry" in m for m in r["reasons"]))
 
     @with_world
     def test_worst_case_line_when_attempts_are_lost(self, w):
@@ -752,8 +767,19 @@ class Contrast(unittest.TestCase):
         res = self.read(rows)
         il = res["integrity"]["L"]
         self.assertEqual((il["lost_attempts"], il["no_deciding_stake_row"], il["foreign_ledger_positions"]), (3, 3, 0))
-        self.assertEqual(res["status"], "NOT_DECIDABLE")  # 3 of 40 = 7.5% above the cap
-        self.assertTrue(any("lost" in m for m in res["reasons"]))
+        self.assertEqual(res["status"], "NOT_DECIDABLE")
+        self.assertTrue(any("closing rows missing at the deciding stake" in m for m in res["reasons"]))
+
+    def test_contrast_one_moved_row_in_any_arm_is_final(self):
+        for arm in ("L", "R", "S", "U"):  # one position of 40 (2.5%, under the 5% cap) still fails the integrity check
+            rows = self.build(10, "a")
+            for r in rows[arm]:
+                if r["kind"] == "trade":
+                    r["stake_sol"] = 0.5
+                    break
+            res = self.read(rows)
+            self.assertEqual(res["status"], "NOT_DECIDABLE", arm)
+            self.assertTrue(any("closing rows missing at the deciding stake" in m for m in res["reasons"]), arm)
 
     def test_contrast_swapped_pools_same_count_is_final(self):
         # QP round 4 R4-5(a): L's decision log says pool d (the worst), the ledger holds pool a at the same instants
