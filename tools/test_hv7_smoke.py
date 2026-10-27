@@ -394,3 +394,35 @@ def test_smoke_obtains_its_chain_from_the_runners_live_chain_source_and_its_watc
     assert seen["started"] == 1 and seen["stopped"] == 1 and seen["watch"] >= 1       # watch fed by Hv7Runner.watch_tick
     assert rep["chain_source"].startswith("hv7_runner.live_chain_source")
     assert not hasattr(S, "_feed_watch")                                     # no private watch-set construction left
+
+
+@pytest.mark.parametrize("runner_window", [False, True])
+def test_prefetch_window_override_is_smoke_only_and_restored(tmp_path, monkeypatch, runner_window):
+    probe = {"open_at_h20": []}
+    start0 = RN.PREFETCH_WINDOW_START_MS
+
+    class _Pre:
+        def start(self):
+            probe["open_at_h20"].append(RN.prefetch_window_open(T0 + 20 * MIN))     # a t outside H:48-H:02 (T0 is on the hour)
+
+        def stop(self):
+            pass
+
+        def stats(self):
+            return {"calls_last_hour": 0}
+
+    class WChain(FakeChain):
+        prefetch = _Pre()
+
+    monkeypatch.setattr(RN, "live_chain_source", lambda root, env=None: WChain())
+    monkeypatch.setenv("MAL_HV4_RPC", "helius")
+    monkeypatch.delenv("MAL_HV4_CHAIN_STATE", raising=False)
+    tape = tmp_path / "tape"
+    write_tape(tape, tape_rows())
+    parent = tmp_path / "smoke"
+    parent.mkdir()
+    rep = S.run_smoke(rules(), args(parent / "s1", periods=2, runner_window=runner_window), model=lambda g: A.StubModel(leader_first, guard=g, cost_usd=0.0, latency_ms=50),
+                      chain=None, tape_dir=str(tape), live=False, start_ms=T0 + HOUR, parent=str(parent), verify_sha=False, engine_kw={"sps_fn": lambda: 0.4})
+    assert probe["open_at_h20"] == [not runner_window]
+    assert rep["prefetch_window"] == ("runner_H48_H02" if runner_window else "open_all_hour_smoke_override")
+    assert RN.PREFETCH_WINDOW_START_MS == start0 and not RN.prefetch_window_open(T0 + 20 * MIN)     # restored: the runner's window is untouched afterwards

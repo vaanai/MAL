@@ -17,6 +17,8 @@ and cost 0, and is reported).
 
 The chain source is the runner's own `hv7_runner.live_chain_source(root)` (same classes, phase-locked prefetch window H:48-H:02, 500 calls/h), with its state
 files under the smoke dir; the prefetcher is started as `main` starts it and fed by the runner's own `watch_tick` (WATCH_MAX 200), so the smoke exercises the runner path.
+ONE deliberate difference: the runner's prefetch window (H:48-H:02) is locked to the hourly t_d; this tool screens every 4 min, so outside it facts go stale and the
+refusal rule would FAIL for phase alone. Default: the window start is set to 0 for the run (restored after; report prefetch_window); `--runner-window` keeps H:48-H:02.
 
 WRITES ONLY under <HV7_ROOT>/smoke/<id>/ : root/ (decision log, RANK-L cost ledger, replay cache, chain state), engine-ledger/, smoke-registry.json,
 report.json. The production root, the real registry (/data/mal/arena/bots.json) and every HV4/HV6/Q50 path are never touched. The engine ledger (fills,
@@ -313,6 +315,13 @@ def run_smoke(R: SimpleNamespace, a: argparse.Namespace, *, model: Any = None, c
     smodel = SpendStopModel(inner, guard, root, a.cap_usd, guard.min_call_usd)
     chain = chain if chain is not None else build_chain(R, root)
     prefetch = getattr(chain, "prefetch", None)
+    # The runner's prefetch window (H:48-H:02) is phase-locked to the HOURLY t_d = H:02; this tool screens every 4 min, so outside the window the mint facts age past the
+    # card's 15 min limit (chain_stale / chain_none refusals, a certain FAIL on the 5% refusal rule). Unless --runner-window, the window start is moved to 0 for the run
+    # (module constant, restored in the finally; no frozen file is edited): the same gated class and 500 calls/h cap run, the prefetch is open on the 4-min grid.
+    saved_window_start = RN.PREFETCH_WINDOW_START_MS
+    window_mode = "runner_H48_H02" if (prefetch is None or getattr(a, "runner_window", False)) else "open_all_hour_smoke_override"
+    if window_mode != "runner_H48_H02":
+        RN.PREFETCH_WINDOW_START_MS = 0
     if prefetch is not None:
         prefetch.start()
     tape = tape_dir or H.TAPE_ROOT
@@ -372,6 +381,7 @@ def run_smoke(R: SimpleNamespace, a: argparse.Namespace, *, model: Any = None, c
                 counters["hook_errors"] = len(run.hook_errors)
         if prefetch is not None:
             prefetch.stop()
+        RN.PREFETCH_WINDOW_START_MS = saved_window_start
         rep_fn = getattr(chain, "credit_report", None)
         if rep_fn is not None:
             try:
@@ -384,6 +394,7 @@ def run_smoke(R: SimpleNamespace, a: argparse.Namespace, *, model: Any = None, c
     rep["period_ms"] = a.period_ms
     rep["periods_planned"] = a.periods
     rep["compression"] = "driven_by_smoke_tool_via_public_screen_enter; frozen tick() not used; hourly code unchanged"
+    rep["prefetch_window"] = window_mode
     rep["chain_source"] = "hv7_runner.live_chain_source (the runner path)" if prefetch is not None else "injected"
     (smk / "report.json").write_text(render(rep))
     return rep
@@ -398,6 +409,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--periods", type=int, default=PERIODS)
     ap.add_argument("--period-min", type=float, default=PERIOD_MS / 60_000)
     ap.add_argument("--warmup-min", type=float, default=WARMUP_MS / 60_000)
+    ap.add_argument("--runner-window", action="store_true", help="keep the runner's H:48-H:02 prefetch window (screens outside it will see stale/no facts); default: window open for the whole hour")
     ap.add_argument("--expect-sha", required=True, help="the registered final sha (40 hex)")
     a = ap.parse_args(argv)
     a.period_ms, a.warmup_ms = int(a.period_min * 60_000), int(a.warmup_min * 60_000)
