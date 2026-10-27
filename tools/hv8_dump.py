@@ -290,8 +290,8 @@ def _jl(objs) -> bytes:
     return "".join(json.dumps(o, sort_keys=True, separators=(",", ":")) + "\n" for o in objs).encode()
 
 
-def repo_head() -> str:
-    cwd = str(Path(__file__).resolve().parent.parent)
+def repo_head(repo: str | os.PathLike | None = None) -> str:
+    cwd = str(repo) if repo is not None else str(Path(__file__).resolve().parent.parent)
     try:
         if subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip():
             raise Refused("dirty_tree")
@@ -350,26 +350,64 @@ def write_dump(res: dict[str, Any], out_dir: Path, *, head: str, win: Window = D
 
 
 def lookahead_instants(win: Window = DEFAULT) -> list[int]:
-    """DESIGN section 4 no-lookahead check: the first, the middle (index n // 2) and the last t_d of the grid."""
+    """DESIGN section 4 no-lookahead check: the base instants are the first, the middle (index n // 2) and the last t_d of the grid."""
     g = win.grid()
     return [g[0], g[len(g) // 2], g[-1]]
 
 
+def lookahead_pick(full_sets, win: Window = DEFAULT) -> tuple[list[int | None], list[dict[str, Any]]]:
+    """Swap rule (fixed): a base instant with no set takes the NEXT later grid instant that has a set and is not already used; none left -> None (NOT_RUN)."""
+    g, has, used = win.grid(), {t for t, cs in full_sets if cs}, set()
+    picks, swaps = [], []
+    for base in lookahead_instants(win):
+        use = next((t for t in g if t >= base and t in has and t not in used), None)
+        if use is not None:
+            used.add(use)
+        picks.append(use)
+        if use != base:
+            swaps.append({"base": iso_s(base), "used": iso_s(use) if use is not None else None})
+    return picks, swaps
+
+
 def lookahead_check(tape: Path, scratch: Path, full_sets, win: Window = DEFAULT) -> dict[str, Any]:
-    """For each of 3 fixed instants: rebuild the cards on the tape CUT at t_d (rows at or after t_d dropped on arrival) and compare the card bytes and
-    view_sha256 with the ones the full-tape pass built. PASS only if every instant matches. Card shas only; no outcome."""
+    """For 3 instants: rebuild the cards on the tape CUT at t_d (rows at or after t_d dropped on arrival) and compare card bytes and view_sha256 with the
+    full-tape pass. PASS needs every instant to hold at least one compared card and to match; an instant without a set is swapped by lookahead_pick; if no
+    instant can be found the result is NOT_RUN. Card shas only; no outcome."""
     full = {t: cs for t, cs in full_sets}
-    inst, mism, sets_cmp, cards_cmp = [], 0, 0, 0
-    for n, t in enumerate(lookahead_instants(win)):
+    picks, swaps = lookahead_pick(full_sets, win)
+    inst, mism, cards_cmp = [], 0, 0
+    for n, t in enumerate(picks):
+        if t is None:
+            continue
         cut = collect(tape, Path(scratch) / f"lookahead-{n}", win, t_ds=[t], cut_ms=t)["sets"]
         a, b = full.get(t, []), (cut[0][1] if cut else [])
-        same = [H8.view_sha256(c) for c in a] == [H8.view_sha256(c) for c in b] and \
+        same = bool(a) and [H8.view_sha256(c) for c in a] == [H8.view_sha256(c) for c in b] and \
             [json.dumps(c, sort_keys=True) for c in a] == [json.dumps(c, sort_keys=True) for c in b]
         mism += 0 if same else 1
-        sets_cmp += 1 if (a or b) else 0
         cards_cmp += len(a)
         inst.append({"t_d": iso_s(t), "cards_full": len(a), "cards_cut": len(b), "match": same})
-    return {"lookahead_check": "FAIL" if mism else "PASS", "instants": inst, "sets_compared": sets_cmp, "cards_compared": cards_cmp, "mismatches": mism}
+    verdict = "NOT_RUN" if any(t is None for t in picks) else ("FAIL" if mism else "PASS")
+    return {"lookahead_check": verdict, "instants": inst, "swaps": swaps, "sets_compared": len(inst), "cards_compared": cards_cmp, "mismatches": mism}
+
+
+def adapter_report_sha(tape: Path) -> str | None:
+    p = Path(tape) / "adapter_report.json"
+    return hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None
+
+
+def check_count_record(count_path: Path, tape: Path, repo: str | os.PathLike | None = None) -> None:
+    """The dump gate: the last count-only output must say PASS, name the CURRENT clean git head and the CURRENT adapter_report.json sha256."""
+    try:
+        rec = json.loads(Path(count_path).read_text())
+    except (OSError, ValueError):
+        raise Refused("no_count_record") from None
+    if rec.get("lookahead_check") != "PASS":
+        raise Refused("count_record_not_pass")
+    if rec.get("git_head") != repo_head(repo):
+        raise Refused("count_record_git_head_differs")
+    cur = adapter_report_sha(tape)
+    if cur is None or rec.get("adapter_report_sha256") != cur:
+        raise Refused("count_record_adapter_report_differs")
 
 
 def count_only(res: dict[str, Any]) -> dict[str, Any]:
@@ -382,14 +420,22 @@ def count_only(res: dict[str, Any]) -> dict[str, Any]:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="HV8 training dump (explore-0814 adapter output). Counts only; 0 API.")
     ap.add_argument("--tape", required=True, help="arena-format hours written by arena_clean_adapter from explore-0814 (never the live arena tape)")
-    ap.add_argument("--scratch", required=True)
+    ap.add_argument("--scratch")
+    ap.add_argument("--check-count", metavar="COUNT_JSON", help="the dump gate: refuse unless this count-only record is PASS at the current head and adapter report")
     ap.add_argument("--out", help="empty dir under /data2/mal/hv8-train/ (omit with --count-only)")
     ap.add_argument("--count-only", action="store_true")
     a = ap.parse_args(argv)
     try:
+        if a.check_count:
+            check_count_record(Path(a.check_count), Path(a.tape))
+            print(json.dumps({"hv8_dump": "count_record_ok"}))
+            return 0
+        if not a.scratch:
+            raise Refused("scratch_required")
+        head = repo_head() if a.count_only else None             # a dirty tree refuses before any replay
         res = collect(Path(a.tape), Path(a.scratch))
         if a.count_only:
-            out = count_only(res)
+            out = count_only(res) | {"git_head": head, "adapter_report_sha256": adapter_report_sha(Path(a.tape))}
             out |= lookahead_check(Path(a.tape), Path(a.scratch), res["sets"])
             print(json.dumps(out, sort_keys=True, separators=(",", ":")))
             return 4 if out["lookahead_check"] != "PASS" else 0

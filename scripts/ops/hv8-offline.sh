@@ -23,19 +23,13 @@ case "${1:-}" in
     check_report
     rc=0
     "$PY" -B -m tools.hv8_dump --tape "$ROOT/tape" --scratch "$ROOT/scratch-count-$TS" --count-only > "$ROOT/count-$TS.json" || rc=$?
+    # The copy runs even after a crash or a FAIL on purpose (fail-closed): a failed count replaces the last record, so an old PASS can never open `dump`.
     cp "$ROOT/count-$TS.json" "$ROOT/count-latest.json"
     cat "$ROOT/count-$TS.json"
     exit $rc ;;
   dump)
     check_report
-    "$PY" -I -c '
-import json, sys
-try:
-    ok = json.load(open("/data2/mal/hv8-train/count-latest.json")).get("lookahead_check") == "PASS"
-except (OSError, ValueError):
-    ok = False
-print(json.dumps({"count_lookahead_check": "PASS" if ok else "REFUSED_NO_PASS_RECORDED"}))
-sys.exit(0 if ok else 5)'
+    "$PY" -B -m tools.hv8_dump --tape "$ROOT/tape" --check-count "$ROOT/count-latest.json"
     "$PY" -B -m tools.hv8_dump --tape "$ROOT/tape" --scratch "$ROOT/scratch-dump-$TS" --out "$ROOT/dump" ;;
   labels)
     : "${HV8_MANIFEST_SHA:?set HV8_MANIFEST_SHA to the pinned ratings manifest sha256}"

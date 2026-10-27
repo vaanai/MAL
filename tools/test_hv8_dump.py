@@ -211,25 +211,28 @@ def test_lookahead_check_passes_on_clean_synthetic_tape(tmp_path):
     write_tape(tape, tape_rows())
     full = D.collect(tape, tmp_path / "sc", WIN)
     r = D.lookahead_check(tape, tmp_path / "sc", full["sets"], WIN)
-    assert r["lookahead_check"] == "PASS" and r["mismatches"] == 0 and len(r["instants"]) == 3
+    assert r["lookahead_check"] == "PASS" and r["mismatches"] == 0 and len(r["instants"]) == 3 and r["swaps"] == []
     assert r["cards_compared"] > 0 and all(i["cards_full"] == i["cards_cut"] > 0 for i in r["instants"])
 
 
-def test_lookahead_check_fails_when_the_full_pass_reads_the_future(tmp_path, monkeypatch):
-    from tools import hv7_runner as R7
+def test_lookahead_check_fails_when_a_full_pass_card_depends_on_the_future(tmp_path):
+    """A card whose bytes differ between the full and the cut tape is a lookahead. (HV7's own as-of assert refuses a runner that polls past t_d, so the
+    planted leak is a full-pass card changed as if a later row had fed it: the check must see the byte difference.)"""
+    import copy
     tape = tmp_path / "tape"
     write_tape(tape, tape_rows())
-    monkeypatch.setattr(R7.Hv7Runner, "poll_to", lambda self, T: self.state.poll(until_ms=T - 1 + 40 * 60_000))     # planted: reads 40 min ahead
-    full = D.collect(tape, tmp_path / "leaky", WIN)
-    monkeypatch.undo()
-    r = D.lookahead_check(tape, tmp_path / "sc", full["sets"], WIN)
-    assert r["lookahead_check"] == "FAIL" and r["mismatches"] >= 1
+    full = copy.deepcopy(D.collect(tape, tmp_path / "full", WIN)["sets"])
+    full[1][1][0]["f"]["vol_60m"] = full[1][1][0]["f"]["vol_60m"] + 1.0
+    r = D.lookahead_check(tape, tmp_path / "sc", full, WIN)
+    assert r["lookahead_check"] == "FAIL" and r["mismatches"] == 1
+    assert [i["match"] for i in r["instants"]] == [True, False, True]
 
 
 def test_main_count_only_prints_the_check_and_exits_nonzero_on_fail(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(D, "DEFAULT", WIN)
     monkeypatch.setattr(D, "collect", lambda tape, scratch, win=WIN, **k: {"sets": [], "counters": {}, "dropped_instances": 0, "dropped_pools": 0,
                                                                           "tail_rows_scanned": 0, "periods": 0})
+    monkeypatch.setattr(D, "repo_head", lambda *a, **k: "a" * 40)
     monkeypatch.setattr(D, "lookahead_check", lambda *a, **k: {"lookahead_check": "FAIL", "mismatches": 1})
     assert D.main(["--tape", str(tmp_path), "--scratch", str(tmp_path / "s"), "--count-only"]) == 4
     assert '"lookahead_check":"FAIL"' in capsys.readouterr().out
@@ -239,4 +242,73 @@ def test_main_count_only_prints_the_check_and_exits_nonzero_on_fail(tmp_path, mo
 
 def test_wrapper_dump_refuses_without_a_recorded_pass_and_uses_fresh_scratch():
     src = (Path(__file__).resolve().parent.parent / "scripts/ops/hv8-offline.sh").read_text()
-    assert "count-latest.json" in src and "REFUSED_NO_PASS_RECORDED" in src and "scratch-dump-$TS" in src and "scratch-count-$TS" in src and "scratch-labels-$TS" in src
+    assert "count-latest.json" in src and "scratch-dump-$TS" in src and "scratch-count-$TS" in src and "scratch-labels-$TS" in src and "--check-count" in src and "fail-closed" in src
+
+
+def test_an_instant_without_a_set_is_swapped_for_the_next_one_and_none_means_not_run(tmp_path):
+    tape = tmp_path / "tape"
+    write_tape(tape, tape_rows())
+    full = D.collect(tape, tmp_path / "sc", WIN)
+    g = WIN.grid()
+    # drop the first instant's set: base 0 -> instant 1, base 1 -> instant 2, base 2 has nothing left
+    r = D.lookahead_check(tape, tmp_path / "sc", [(t, c) for t, c in full["sets"] if t != g[0]], WIN)
+    assert r["lookahead_check"] == "NOT_RUN" and r["swaps"][0] == {"base": D.iso_s(g[0]), "used": D.iso_s(g[1])} and r["swaps"][-1]["used"] is None
+    # an empty set object at an instant counts as empty too
+    picks, _ = D.lookahead_pick([(g[0], []), (g[1], full["sets"][1][1]), (g[2], full["sets"][2][1])], WIN)
+    assert picks == [g[1], g[2], None]
+
+
+def test_a_swap_with_room_passes_and_is_recorded(tmp_path):
+    tape = tmp_path / "tape"
+    write_tape(tape, tape_rows())
+    full = D.collect(tape, tmp_path / "sc", WIN)
+    g = WIN.grid()                                   # 3 instants; use a 4-instant window so the swap has room
+    win = D.Window(WIN.block_start_ms, T0, T0 + 4 * HOUR, T0 + 5 * HOUR)
+    full4 = D.collect(tape, tmp_path / "sc4", win)
+    g = win.grid()
+    sets = [(t, c) for t, c in full4["sets"] if t != g[0]]          # the first instant has no set
+    r = D.lookahead_check(tape, tmp_path / "sc4", sets, win)
+    assert r["lookahead_check"] == "PASS" and r["swaps"] == [{"base": D.iso_s(g[0]), "used": D.iso_s(g[1])}]
+    assert [i["t_d"] for i in r["instants"]] == [D.iso_s(g[1]), D.iso_s(g[2]), D.iso_s(g[3])] and all(i["cards_full"] > 0 and i["match"] for i in r["instants"])
+
+
+def _record(tmp_path, **kw):
+    tape = tmp_path / "tp"
+    tape.mkdir(exist_ok=True)
+    (tape / "adapter_report.json").write_text('{"preamble_rows": 0}')
+    rec = {"lookahead_check": "PASS", "git_head": D.repo_head.__wrapped__ if False else "h" * 40, "adapter_report_sha256": D.adapter_report_sha(tape)} | kw
+    (tmp_path / "count.json").write_text(json.dumps(rec))
+    return tape, tmp_path / "count.json"
+
+
+def test_dump_gate_needs_pass_head_and_report_to_match(tmp_path, monkeypatch):
+    monkeypatch.setattr(D, "repo_head", lambda repo=None: "h" * 40)
+    tape, cp = _record(tmp_path)
+    D.check_count_record(cp, tape)                                                       # all three agree
+    for kw, why in (({"lookahead_check": "FAIL"}, "not_pass"), ({"lookahead_check": "NOT_RUN"}, "not_pass"), ({"git_head": "x" * 40}, "git_head_differs"),
+                    ({"adapter_report_sha256": "0" * 64}, "adapter_report_differs"), ({"adapter_report_sha256": None}, "adapter_report_differs")):
+        tape, cp = _record(tmp_path, **kw)
+        with pytest.raises(D.Refused, match=why):
+            D.check_count_record(cp, tape)
+    tape, cp = _record(tmp_path)
+    (tape / "adapter_report.json").write_text('{"preamble_rows": 5}')                    # the report changed after the count
+    with pytest.raises(D.Refused, match="adapter_report_differs"):
+        D.check_count_record(cp, tape)
+    with pytest.raises(D.Refused, match="no_count_record"):
+        D.check_count_record(tmp_path / "missing.json", tape)
+    assert D.main(["--tape", str(tape), "--check-count", str(cp)]) == 2
+
+
+def test_count_only_records_head_and_report_sha_and_refuses_a_dirty_tree(tmp_path, monkeypatch, capsys):
+    (tmp_path / "adapter_report.json").write_text("{}")
+    monkeypatch.setattr(D, "collect", lambda tape, scratch, win=WIN, **k: {"sets": [], "counters": {}, "dropped_instances": 0, "dropped_pools": 0, "tail_rows_scanned": 0, "periods": 0})
+    monkeypatch.setattr(D, "lookahead_check", lambda *a, **k: {"lookahead_check": "PASS"})
+    monkeypatch.setattr(D, "repo_head", lambda repo=None: "b" * 40)
+    assert D.main(["--tape", str(tmp_path), "--scratch", str(tmp_path / "s"), "--count-only"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["git_head"] == "b" * 40 and out["adapter_report_sha256"] == D.adapter_report_sha(tmp_path)
+
+    def dirty(repo=None):
+        raise D.Refused("dirty_tree")
+    monkeypatch.setattr(D, "repo_head", dirty)
+    assert D.main(["--tape", str(tmp_path), "--scratch", str(tmp_path / "s"), "--count-only"]) == 2
