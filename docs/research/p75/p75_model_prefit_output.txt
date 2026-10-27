@@ -1,0 +1,29 @@
+priced entries by block: {'explore-0814': 12529, 'fresh-0903': 2580, 'exp011-0909': 2014}  days: {'exp011-0909': 7, 'explore-0814': 15, 'fresh-0903': 7}
+age_min missing share by block: {'exp011-0909': 0.013902681231380337, 'explore-0814': 0.050203527815468114, 'fresh-0903': 0.027131782945736434}
+label y base rate by block: {'exp011-0909': 0.34309831181727907, 'explore-0814': 0.38031766302178943, 'fresh-0903': 0.34108527131782945}
+weights (intercept, then standardised ['vel60', 'vel300', 'buyers300', 'flow300', 'age_min'] ): [-0.5075, 0.0489, -0.0391, -0.2626, 0.3211, 0.0041]
+AUC train explore-0814: 0.6023
+AUC fresh-0903: 0.6031
+CUTOFF (fresh-0903 90th pct of scores): 0.4797386738824719
+
+=== fresh-0903 ALL (unselected): trades 2580, days 7, trades/day 368.57
+exit kinds: {'stop': 1808, 'a99': 418, 'migration': 243, 'time': 104, 'sell_reverts': 7}  impact mean 0.3207%
+[flat] mean/trade -0.015199 SOL (-6.079%) total -39.2122 ex-top3 -40.2437 ex-best-day -37.3145 (best 2026-09-03) positive days 0/7 CI90lo -0.019049
+     capacity 0.25: 368.57/day x 0.25 x -0.06079 = -5.60174 SOL/day
+[press] mean/trade -0.013890 SOL (-5.556%) total -35.8360 ex-top3 -36.7923 ex-best-day -34.6538 (best 2026-09-03) positive days 0/7 CI90lo -0.017380
+     capacity 0.25: 368.57/day x 0.25 x -0.05556 = -5.11943 SOL/day
+[flat100] 1 SOL: n 2575 mean/trade -0.063593 SOL (-6.359%) total -163.7526  capacity -23.39323 SOL/day
+[press100] 1 SOL: n 2575 mean/trade -0.057993 SOL (-5.799%) total -149.3310  capacity -21.33300 SOL/day
+migration share 0.0942
+
+=== fresh-0903 top10% (cutoff set here): trades 258, days 7, trades/day 36.86
+exit kinds: {'stop': 113, 'a99': 93, 'migration': 47, 'time': 3, 'sell_reverts': 2}  impact mean 0.2709%
+[flat] mean/trade -0.013770 SOL (-5.508%) total -3.5527 ex-top3 -4.2130 ex-best-day -3.8308 (best 2026-09-04) positive days 1/7 CI90lo -0.025329
+     capacity 0.25: 36.86/day x 0.25 x -0.05508 = -0.50752 SOL/day
+[press] mean/trade -0.008687 SOL (-3.475%) total -2.2412 ex-top3 -2.8889 ex-best-day -2.6459 (best 2026-09-04) positive days 1/7 CI90lo -0.018370
+     capacity 0.25: 36.86/day x 0.25 x -0.03475 = -0.32017 SOL/day
+[flat100] 1 SOL: n 256 mean/trade -0.059102 SOL (-5.910%) total -15.1302  capacity -2.16145 SOL/day
+[press100] 1 SOL: n 256 mean/trade -0.037642 SOL (-3.764%) total -9.6364  capacity -1.37663 SOL/day
+migration share 0.1822
+
+(--test not given: exp011-0909 not scored)
