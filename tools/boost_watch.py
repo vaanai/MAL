@@ -11,15 +11,15 @@ getSignaturesForAddress, getTransaction) and watches:
 One status line (JSON) per poll goes to ~/mal-data/boost-watch/boost_watch.log (override --log-dir). State (baseline, seen signatures) is in
 state.json beside it, so a restart does not re-alert on old signatures and does not lose a change that happened while it was down.
 
-EXIT CODES: 0 nothing changed; 3 CHANGE (boost_enabled is not true, layout/hash/admin/authority changed vs baseline, a watched instruction, or any new
-write on the config account); 4 reads failing --max-fail polls in a row (blind, NOT a change); 2 usage.
+EXIT CODES: 0 nothing changed; 3 CHANGE (boost_enabled is not true, layout/hash/admin/authority changed vs baseline, a watched instruction, or a new
+transaction in which the config account is WRITABLE); 4 reads failing --max-fail polls in a row (blind, NOT a change); 2 usage.
 The first run with no state records a baseline (exit 0) unless boost_enabled is already not true (exit 3).
-After exit 3 the alert stays latched in state.json: every later run exits 3 again until a human runs `--ack` (which also drops the baseline, so the
-next poll re-baselines on the new state).
+After exit 3 the alert stays latched in state.json: every later run exits 3 again until the manager runs `--ack` after review (an unknown or false BOOST state also needs the owner's line first).
+`--ack` also drops the baseline, so the next poll re-baselines on the new state.
 
 NOT SEEN: pump (bonding-curve) program changes and the BOOST end of a single pool (tools/pump_structure_monitor.py covers program redeploys);
 a toggle sent by an address other than admin/boost_authority is still visible through its write to the config account.
-Any config-account write is an alert, including harmless fee updates: the owner decides, the tool does not classify.
+Any transaction that writes the config account is an alert (swaps only read it, and do not alert), including harmless fee updates: the owner decides, the tool does not classify.
 """
 from __future__ import annotations
 
@@ -97,6 +97,24 @@ def scan_tx(tx: Mapping[str, Any] | None, watched: Mapping[bytes, str]) -> list[
     return found
 
 
+def writable_keys(tx: Mapping[str, Any] | None) -> set[str]:
+    """Account keys that are WRITABLE in one getTransaction result (encoding json): message header flags for the static keys, then loaded
+    writable addresses (v0 lookup tables). Loaded readonly addresses are not writable."""
+    if not tx:
+        return set()
+    msg = tx["transaction"]["message"]
+    h = msg["header"]
+    keys = list(msg["accountKeys"])
+    n, nsig = len(keys), h["numRequiredSignatures"]
+    out = {k for i, k in enumerate(keys)
+           if (i < nsig and i < nsig - h["numReadonlySignedAccounts"]) or (i >= nsig and i < n - h["numReadonlyUnsignedAccounts"])}
+    out.update(((tx.get("meta") or {}).get("loadedAddresses") or {}).get("writable", []))
+    return out
+
+
+MAX_CONFIG_FETCH = 10  # swaps list the config read-only and are many per minute: fetch at most this many per poll, the hash covers the rest
+
+
 def new_sigs(sigs: list[Mapping[str, Any]], seen: list[str]) -> list[str]:
     """Signatures (oldest first) from getSignaturesForAddress (newest first) not yet in `seen`."""
     s = set(seen)
@@ -138,7 +156,11 @@ def poll(client: Any, state: Mapping[str, Any], watched: Mapping[bytes, str]) ->
         if addr not in seen:  # first sight of an address: record history, do not alert on it
             seen[addr] = [x["signature"] for x in sigs]
             continue
-        for sig in new_sigs(sigs, seen[addr]):
+        todo = new_sigs(sigs, seen[addr])
+        if label == "config" and len(todo) > MAX_CONFIG_FETCH:
+            seen[addr] = (seen[addr] + todo[:-MAX_CONFIG_FETCH])[-200:]  # oldest are marked seen unfetched; account hash/bytes cover them
+            todo = todo[-MAX_CONFIG_FETCH:]
+        for sig in todo:
             tx = client.call("getTransaction", [sig, {"encoding": "json", "commitment": "finalized", "maxSupportedTransactionVersion": 0}])
             if tx is None:
                 break  # not retrievable yet: stays unseen, retried next poll (order kept)
@@ -147,7 +169,7 @@ def poll(client: Any, state: Mapping[str, Any], watched: Mapping[bytes, str]) ->
             seen[addr] = (seen[addr] + [sig])[-200:]
             if hits:
                 reasons.append("watched_ix:" + "+".join(sorted({h["ix"] for h in hits})))
-            elif label == "config":
+            elif CONFIG_ADDRESS in writable_keys(tx):  # a read-only mention (every swap) is NOT an alert
                 reasons.append("config_account_tx")
     if not base:
         st["baseline"] = {k: cfg[k] for k in ("sha256", "admin", "boost_authority", "boost_enabled")}

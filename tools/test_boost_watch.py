@@ -32,7 +32,8 @@ def with_flag(v: int) -> bytes:
 
 def tx(data: bytes, inner: bool = False, program: str = bw.PROGRAM) -> dict:
     ix = {"programIdIndex": 1, "accounts": [0], "data": m.b58encode(data)}
-    return {"slot": 5, "transaction": {"message": {"accountKeys": [ADMIN, program], "instructions": [] if inner else [ix]}},
+    hdr = {"numRequiredSignatures": 1, "numReadonlySignedAccounts": 0, "numReadonlyUnsignedAccounts": 1}
+    return {"slot": 5, "transaction": {"message": {"header": hdr, "accountKeys": [ADMIN, program], "instructions": [] if inner else [ix]}},
             "meta": {"err": None, "innerInstructions": [{"index": 0, "instructions": [ix]}] if inner else []}}
 
 
@@ -115,9 +116,49 @@ def test_other_program_with_same_bytes_ignored():
     assert bw.scan_tx(tx(TOGGLE + b"\x00", program=m.PUMP_PROGRAM), WATCHED) == []
 
 
-def test_new_config_write_alerts(tmp_path):
+def cfg_tx(writable: bool, loaded: bool = False) -> dict:
+    """Constructed in the shape of a PumpSwap swap: payer (signer, writable), config, program (readonly unsigned). Static layout puts config
+    at index 1; writable=True moves it into the writable-unsigned region (header readonly-unsigned count 1 = program only)."""
+    t = tx(b"\x02" * 9)
+    msg = t["transaction"]["message"]
+    if loaded:
+        msg["accountKeys"] = [ADMIN, bw.PROGRAM]
+        msg["header"]["numReadonlyUnsignedAccounts"] = 1
+        t["meta"]["loadedAddresses"] = {"writable": [bw.CONFIG_ADDRESS] if writable else [], "readonly": [] if writable else [bw.CONFIG_ADDRESS]}
+    else:
+        msg["accountKeys"] = [ADMIN, bw.CONFIG_ADDRESS, bw.PROGRAM] if writable else [ADMIN, bw.PROGRAM, bw.CONFIG_ADDRESS]
+        msg["header"]["numReadonlyUnsignedAccounts"] = 1 if writable else 2
+        msg["instructions"][0]["programIdIndex"] = 2 if writable else 1
+    return t
+
+
+def test_writable_keys():
+    assert bw.CONFIG_ADDRESS in bw.writable_keys(cfg_tx(True)) and bw.CONFIG_ADDRESS not in bw.writable_keys(cfg_tx(False))
+    assert bw.CONFIG_ADDRESS in bw.writable_keys(cfg_tx(True, loaded=True)) and bw.CONFIG_ADDRESS not in bw.writable_keys(cfg_tx(False, loaded=True))
+
+
+@pytest.mark.parametrize("loaded", [False, True])
+def test_readonly_swap_mention_does_not_alert(tmp_path, loaded):
+    d = tmp_path / str(loaded)
+    assert bw.run(args(d), client=Fake(sigs={bw.CONFIG_ADDRESS: ["a"]})) == 0
+    f = Fake(sigs={bw.CONFIG_ADDRESS: ["s2", "s1", "a"]}, txs={"s1": cfg_tx(False, loaded), "s2": cfg_tx(False, loaded)})
+    assert bw.run(args(d), client=f) == 0
+    last = lines(d)[-1]
+    assert last["status"] == "OK" and len(last["new_txs"]) == 2
+
+
+def test_config_fetch_is_capped(tmp_path):
     assert bw.run(args(tmp_path), client=Fake(sigs={bw.CONFIG_ADDRESS: ["a"]})) == 0
-    f = Fake(sigs={bw.CONFIG_ADDRESS: ["z", "a"]}, txs={"z": tx(b"\x02" * 9)})
+    ids = [f"s{i}" for i in range(20)]
+    f = Fake(sigs={bw.CONFIG_ADDRESS: ids[::-1] + ["a"]}, txs={i: cfg_tx(False) for i in ids})
+    assert bw.run(args(tmp_path), client=f) == 0
+    assert f.calls.count("getTransaction") == bw.MAX_CONFIG_FETCH
+
+
+@pytest.mark.parametrize("loaded", [False, True])
+def test_new_config_write_alerts(tmp_path, loaded):
+    assert bw.run(args(tmp_path), client=Fake(sigs={bw.CONFIG_ADDRESS: ["a"]})) == 0
+    f = Fake(sigs={bw.CONFIG_ADDRESS: ["z", "a"]}, txs={"z": cfg_tx(True, loaded)})
     assert bw.run(args(tmp_path), client=f) == 3
     assert "config_account_tx" in lines(tmp_path)[-1]["change"]
 
