@@ -32,3 +32,10 @@ KILL if any of: mean <= 0 under either fail model (pooled); the result is driven
 
 ## Seals
 Aug/Sep exploration only: no October hour, arena tape, DBC, LaunchLab, FLOOR G1, meta-capture, HV4/HV6/HV7/Q50 data or job. The ledger lists these three blocks as exploration pool.
+
+## Amendment 1 (2026-10-27, before any pricing; counts of the unfiltered funnel had been run and are kept in p87_count_output history only as a disclosed first look)
+Source: coordinator message relaying the P78 QP review (#1041): B7 contains quiet/pegged pools and possible supply anomalies (median mcap about 224k SOL, 25 pools above 10M SOL, 211 pools flat for >= 24 h, 35% of tradeable B7 pool-hours with median 2-slot move < 0.001%). Added to the universe, still one parameter set:
+- Exclude pool-hours whose median computed market cap is above 5,000,000 SOL (supply/decimals anomaly).
+- Exclude signals where the trailing 6 h realised range of the pre-trade price (max/min - 1 over retained prints of the pool segment in the 6 h up to and including the signal print) is under 2%. At the start of the tape and after a >150-slot retention gap the window is shorter, which makes the filter stricter, not looser.
+- Reported: tradeable pool-hours dropped by the mcap filter, signal prints and distinct pool-hours dropped by the range filter. Also reported: composition of traded pools (entry mcap quantiles, distinct pools, top-5 pools' share of trades).
+Thresholds 5M and 2% are as given, not tuned.
