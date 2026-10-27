@@ -374,7 +374,7 @@ def contrast_read(*, now_ms: int, clock_start_ms: int, horizon_end_ms: int, rows
             ic["reason"] = "contrast_days"
     res["rank_ic"] = ic
     fam = {k: float(v["p"]) for k, v in out.items() if k != "L-U" and v.get("p") is not None and v.get("status") != "NOT_EVALUABLE"}
-    if ic and ic["p"] is not None:
+    if ic and ic["p"] is not None and ic["periods"] > 0:
         fam["rank_ic"] = float(ic["p"])
     res["holm"] = holm_block(n_books, fam)
     res["holm"]["family"] = "secondaries only (L-R, L-S, S-U, R-U, rank IC); L-U is the primary at alpha 0.025"
