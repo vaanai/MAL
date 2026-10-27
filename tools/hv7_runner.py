@@ -32,8 +32,11 @@ RESUME RULES (stated, tested in test_hv7_resume.py):
      (reason entry_not_in_engine). No late entry, ever: every entry is at t_e.
   3. Pending period, resumed at or before t_e: re-screened at t_d from the replayed tape (no new SCAN row; the screen ids and card shas must equal the logged
      ones, else the period is excluded, reason resume_rebuild_mismatch) and the L call is re-asked through the replay cache (same request_sha256, no double spend).
-  4. Pending period, resumed after t_e, or an L call still in flight at shutdown: the period is EXCLUDED for all four arms (SCAN `period_excluded` row and an L
-     `rank` row with fallback true, excluded true and the reason). It is not scored as a fallback entry. hv7_count reports it as `excluded`.
+     EXCEPTION: if the budget ledger holds a reserve row for that request and the cache has no <request_sha256>.json, the call was cut off. It is NEVER re-asked:
+     L gets a counted FALLBACK rank row (cut_off true, model_error call_cut_off, pick = R's) and every arm still enters at t_e.
+  4. An L call still in flight at shutdown is the same thing: an L FALLBACK rank row (cut_off true, model_error shutdown_in_flight), counted in the 10% fallback
+     rule, not an exclusion. A period resumed AFTER t_e, or one whose rebuild does not match, is EXCLUDED in all four arms (SCAN `period_excluded` row and an L
+     `rank` row with excluded true). Exclusions have their own 10% cap in hv7_count; over it every arm is NOT EVALUABLE.
   5. A period whose rank row exists but whose entries are incomplete (kill during enter): a `gap` row per missing (arm, pool) entry; never a late entry.
   6. The resume event itself goes to <root>/resume.jsonl, NOT to the decision log: a resume with no torn line, no unexecuted entry and no in-flight loss leaves
      the decision-log md5 equal to an uninterrupted run. Gap and exclusion rows are in the decision log, so the md5 differs by rule when one is written.
@@ -108,6 +111,27 @@ OWNER_REF_RE = re.compile(r"(?:n|q)_[A-Za-z0-9_-]{12,20}")
 
 class Hv7Error(RuntimeError):
     pass
+
+
+def registered_pins(registry_path: str | os.PathLike) -> dict[str, dict[str, Any]]:
+    """bot id -> {"clock_start_ms", "entries_halt_ms"} for the four HV7 books, read from the registry (the `register` lines and the `hv7_halt` lines that
+    tools/hv7_register.py appends). Raises Hv7Error unless all four ids are registered with ONE clock and ONE halt."""
+    rp = Path(registry_path)
+    reg: dict[str, Any] = {}
+    halt: dict[str, int] = {}
+    if rp.exists():
+        for line in rp.read_text().splitlines():
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            if r.get("kind") == "register" and str(r.get("bot_id", "")).startswith(BOT_PREFIX):
+                reg[r["bot_id"]] = r["clock_start_ms"]
+            elif r.get("kind") == "hv7_halt":
+                halt[r["bot_id"]] = r["entries_halt_ms"]
+    ids = [bot_id(a) for a in ARM_ORDER]
+    if any(i not in reg or i not in halt for i in ids) or len({reg[i] for i in ids}) != 1 or len({halt[i] for i in ids}) != 1:
+        raise Hv7Error("the registry does not hold all four HV7 books with one clock and one entries halt")
+    return {i: {"clock_start_ms": reg[i], "entries_halt_ms": halt[i]} for i in ids}
 
 
 def validate_owner_ref(ref: Any) -> str:
@@ -790,6 +814,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--clock-start-ms", type=int, required=True)
     ap.add_argument("--entries-halt-ms", type=int, required=True)
     ap.add_argument("--feed-delay-slots", type=int, required=True)
+    ap.add_argument("--registry", default=None, help="bots.json to read the pins from (default: the real registry)")
     ap.add_argument("--owner-cost-line-ref", required=True, help="reference to the owner's HV7 cost line (DESIGN section 5); no API call without it")
     a = ap.parse_args(argv)
     try:
@@ -797,7 +822,17 @@ def main(argv: list[str] | None = None) -> int:
     except Hv7Error as e:
         print(f"refused: {e}", file=sys.stderr)
         return 2
+    from tools import arena_paper
     from tools.arena_paper import ArenaEngine
+
+    try:            # the halt and the clock come from the registry: a command line that disagrees with it is refused before anything is built
+        pins = registered_pins(a.registry or arena_paper.REGISTRY_PATH)
+    except (Hv7Error, OSError, ValueError, KeyError) as e:
+        print(f"refused: registry pins ({type(e).__name__})", file=sys.stderr)
+        return 2
+    if any(v["entries_halt_ms"] != a.entries_halt_ms or v["clock_start_ms"] != a.clock_start_ms for v in pins.values()):
+        print("refused: --entries-halt-ms / --clock-start-ms differ from the registry", file=sys.stderr)
+        return 2
     from tools.hv6_agents import CallerModel
     from tools.hv6_runner import live_chain_source
 

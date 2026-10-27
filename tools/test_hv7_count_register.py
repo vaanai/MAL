@@ -17,6 +17,26 @@ from tools.test_hv7_resume import mod_env  # noqa: F401
 from tools.test_hv7_runner import _env  # noqa: F401
 
 DAY1, DAY2 = 1_790_000_000_000, 1_790_000_000_000 + 86_400_000
+END = DAY2 + 86_400_000
+
+@pytest.fixture(autouse=True)
+def _no_sockets(monkeypatch):
+    """The drill is 0 API: any socket connect in these tests fails the test (own guard, independent of the runner test file's fixture)."""
+    import socket
+
+    def no_net(*a, **k):
+        raise AssertionError("network used in a drill test")
+
+    monkeypatch.setattr(socket.socket, "connect", no_net)
+    monkeypatch.setattr(socket, "create_connection", no_net)
+
+
+def test_sockets_are_blocked_in_this_file():
+    import socket
+
+    with pytest.raises(AssertionError):
+        socket.socket().connect(("127.0.0.1", 9))
+
 
 
 def fill(root: Path):
@@ -35,13 +55,15 @@ def fill(root: Path):
 
 def test_count_attempts_fallbacks_excluded_and_days(tmp_path, mod_env):
     fill(tmp_path / "v7")
-    c = K.count(tmp_path / "v7")
+    c = K.count(tmp_path / "v7", clock_start_ms=0, clock_end_ms=END)
     assert c["attempts"] == {"L": 3, "R": 3, "S": 3, "U": 3}
     assert (c["rank_rows"], c["fallbacks"], c["excluded_periods"]) == (3, 2, 1)
     assert c["fallback_share"] == pytest.approx(2 / 3) and c["fallback_share_gt_10pct"] is True
     assert c["nonzero_days"] == {"any": 2, "L": 2, "R": 2, "S": 2, "U": 2}
-    assert c["torn_lines"] == 0
-    assert K.count(tmp_path / "v7", clock_start_ms=DAY2)["attempts"]["L"] == 1
+    assert c["torn_lines"] == 0 and c["a_l"] == 3 and c["a_l_lt_20"] is True
+    assert c["excluded_share"] == pytest.approx(1 / 4) and c["excluded_gt_10pct"] is True and c["not_evaluable"] is True
+    assert K.count(tmp_path / "v7", clock_start_ms=0, clock_end_ms=DAY2)["attempts"]["L"] == 2          # the end is exclusive
+    assert K.count(tmp_path / "v7", clock_start_ms=DAY2, clock_end_ms=END)["attempts"]["L"] == 1
 
 
 def test_count_ignores_the_late_reply_counter_and_reads_no_outcome_field(tmp_path, mod_env):
@@ -50,9 +72,20 @@ def test_count_ignores_the_late_reply_counter_and_reads_no_outcome_field(tmp_pat
     code = src.split('"""', 2)[2]
     assert "late_reply" not in code and "est_ret" not in code and "counters" not in code and "pnl" not in code.lower()
     out = io.StringIO()
-    assert K.main(["--root", str(tmp_path / "v7")], out=out) == 0
+    assert K.main(["--root", str(tmp_path / "v7"), "--clock-end-ms", str(END)], out=out) == 0
     printed = json.loads(out.getvalue())
-    assert set(printed) == {"attempts", "rank_rows", "fallbacks", "excluded_periods", "fallback_share", "fallback_share_gt_10pct", "nonzero_days", "torn_lines", "clock_start_ms"}
+    assert set(printed) == {"attempts", "a_l", "a_l_lt_20", "rank_rows", "fallbacks", "fallback_share", "fallback_share_gt_10pct", "excluded_periods", "excluded_share",
+                            "excluded_gt_10pct", "not_evaluable", "nonzero_days", "torn_lines", "clock_start_ms", "clock_end_ms"}
+    with pytest.raises(SystemExit):
+        K.main(["--root", str(tmp_path / "v7")], out=io.StringIO())      # --clock-end-ms is required
+
+
+def test_a_cut_off_call_counts_as_a_fallback_not_an_exclusion(tmp_path, mod_env):
+    log = R.Hv7DecisionLog(tmp_path / "v7")
+    for i in range(10):
+        log.append("L", DAY1 + i, {"kind": "rank", "fallback": i == 0, "cut_off": i == 0})
+    c = K.count(tmp_path / "v7", clock_start_ms=0, clock_end_ms=END)
+    assert (c["fallbacks"], c["excluded_periods"], c["rank_rows"]) == (1, 0, 10) and c["fallback_share_gt_10pct"] is False and c["not_evaluable"] is False
 
 
 def test_count_counts_a_torn_line_and_does_not_raise(tmp_path, mod_env):
@@ -60,16 +93,16 @@ def test_count_counts_a_torn_line_and_does_not_raise(tmp_path, mod_env):
     f = log.files("U")[-1]
     with open(f, "ab") as fh:
         fh.write(b'{"kind":"ent')
-    assert K.count(tmp_path / "v7")["torn_lines"] == 1
+    assert K.count(tmp_path / "v7", clock_start_ms=0, clock_end_ms=END)["torn_lines"] == 1
 
 
 def test_count_empty_root_is_all_zero_and_no_share(tmp_path, mod_env):
-    c = K.count(tmp_path / "none")
+    c = K.count(tmp_path / "none", clock_start_ms=0, clock_end_ms=END)
     assert c["attempts"] == {a: 0 for a in R.ARM_ORDER} and c["fallback_share"] is None and c["fallback_share_gt_10pct"] is None
 
 
 # ------------------------------------------------------------------------------------------------------------------------ register
-NOW, CLOCK, HALT, SHA = 1_000_000, 2_000_000, 9_000_000, "a" * 40
+NOW, CLOCK, HALT, SHA = 1_000_000, 1793491200000, 1794355200000, "a" * 40
 
 
 def run_reg(argv, reg):
@@ -117,7 +150,8 @@ def test_live_registry_needs_the_exact_confirm_and_the_arena_path_is_refused_wit
     assert rc == 0 and sorted(arena_paper.load_registry(tmp_path / "live.json")) == list(G.HV7_BOTS)
 
 
-@pytest.mark.parametrize("bad", [["--sha", "xyz"], ["--clock-start-ms", "500"], ["--entries-halt-ms", "2000000"]])
+@pytest.mark.parametrize("bad", [["--sha", "xyz"], ["--sha", "a" * 7], ["--sha", "a" * 39], ["--sha", "a" * 41], ["--clock-start-ms", "500"], ["--clock-start-ms", "1793491200001"],
+                                 ["--clock-start-ms", "1793577600001"], ["--entries-halt-ms", "2000000"], ["--entries-halt-ms", "1794355200001"]])
 def test_bad_pins_are_refused(tmp_path, bad):
     argv = ["--sha", SHA, "--clock-start-ms", str(CLOCK), "--entries-halt-ms", str(HALT), "--registry", str(tmp_path / "r.json"), "--execute"]
     for i in range(0, len(bad), 2):
@@ -130,10 +164,38 @@ def test_a_changed_value_for_a_registered_id_is_refused_and_masked(tmp_path):
     reg = tmp_path / "bots.json"
     assert run_reg(["--registry", str(reg), "--execute"], reg)[0] == 0
     out, err = io.StringIO(), io.StringIO()
-    rc = G.main(["--sha", SHA, "--clock-start-ms", str(CLOCK + 1), "--entries-halt-ms", str(HALT), "--registry", str(reg), "--execute"], out=out, err=err, _now_ms=NOW, _verify_sha=False)
-    assert rc == 1 and err.getvalue().strip() == "ArenaRefused hv7.0-L"
+    rc = G.main(["--sha", SHA, "--clock-start-ms", str(1793577600000), "--entries-halt-ms", str(HALT), "--registry", str(reg), "--execute"], out=out, err=err, _now_ms=NOW, _verify_sha=False)
+    assert rc == 1 and err.getvalue().strip() == "ArenaRefused hv7.0-L"        # the other allowed clock is still a different value for a registered id
 
 
 def test_register_all_refuses_a_foreign_id(tmp_path):
     with pytest.raises(G.Refused):
         G.register_all(SHA, CLOCK, tmp_path / "r.json", bot_ids=("hv6.0-L",), now_ms=NOW, verify_sha=False)
+
+
+def test_clocks_and_halt_are_the_pinned_instants():
+    from datetime import datetime, timezone
+
+    ms = lambda y, m, d: int(datetime(y, m, d, tzinfo=timezone.utc).timestamp() * 1000)
+    assert G.CLOCKS_MS == (ms(2026, 11, 1), ms(2026, 11, 2)) and G.HALT_MS == ms(2026, 11, 11) and G.DECIDING_STAKE == 0.25
+
+
+def test_halt_is_stored_in_the_registry_and_the_runner_main_checks_it(tmp_path, monkeypatch, capsys):
+    reg = tmp_path / "bots.json"
+    assert run_reg(["--registry", str(reg), "--execute"], reg)[0] == 0
+    assert sorted(arena_paper.load_registry(reg)) == list(G.HV7_BOTS)           # the extra lines do not disturb the loader
+    assert all(v == {"clock_start_ms": CLOCK, "entries_halt_ms": HALT} for v in R.registered_pins(reg).values())
+    assert run_reg(["--registry", str(reg), "--execute"], reg)[0] == 0           # idempotent: one hv7_halt line per book
+    assert sum(1 for x in reg.read_text().splitlines() if '"hv7_halt"' in x) == 4
+    import tools.hv6_agents as A
+
+    def boom(*a, **k):
+        raise AssertionError("built")
+
+    monkeypatch.setattr(A, "CallerModel", boom)
+    monkeypatch.setattr(R, "Hv7Guard", boom)
+    base = ["--tape", str(tmp_path), "--root", str(tmp_path / "v7"), "--frozen-sha", SHA, "--feed-delay-slots", "2", "--owner-cost-line-ref", "q_6_kzYJva9XXuYQ", "--registry", str(reg)]
+    assert R.main(base + ["--clock-start-ms", str(CLOCK), "--entries-halt-ms", str(HALT + 1)]) == 2        # H differs from the registry
+    assert R.main(base + ["--clock-start-ms", str(CLOCK + 1), "--entries-halt-ms", str(HALT)]) == 2
+    assert R.main(base[:-2] + ["--registry", str(tmp_path / "none.json"), "--clock-start-ms", str(CLOCK), "--entries-halt-ms", str(HALT)]) == 2     # nothing registered
+    assert "refused" in capsys.readouterr().err

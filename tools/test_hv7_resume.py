@@ -14,6 +14,25 @@ from tools.test_hv7_runner import (HOUR, MIN, T0, T_D1, T_E1, POOLS, _env, leade
 START = T0 + HOUR
 END = T_E1 + 15 * MIN
 
+@pytest.fixture(autouse=True)
+def _no_sockets(monkeypatch):
+    """The drill is 0 API: any socket connect in these tests fails the test (own guard, independent of the runner test file's fixture)."""
+    import socket
+
+    def no_net(*a, **k):
+        raise AssertionError("network used in a drill test")
+
+    monkeypatch.setattr(socket.socket, "connect", no_net)
+    monkeypatch.setattr(socket, "create_connection", no_net)
+
+
+def test_sockets_are_blocked_in_this_file():
+    import socket
+
+    with pytest.raises(AssertionError):
+        socket.socket().connect(("127.0.0.1", 9))
+
+
 
 class Kill(BaseException):
     """A kill -9 stand-in: not an Exception, so no handler in the runner can swallow it."""
