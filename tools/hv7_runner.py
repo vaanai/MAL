@@ -21,12 +21,25 @@ DEVIATIONS from DESIGN section 8, found by reading the code (disclosed for the P
   * The L model call never blocks the loop. In live mode it runs on its own daemon thread from t_d; at t_e the loop uses the reply only if it arrived by
     t_e, otherwise the period is a FALLBACK (R's pick, counted) and every arm still enters at t_e, through the engine's own 1.9 s leg from t_e, never from
     L's reply time. Exits keep running on every tick during the call. (QP #998.)
-NOT HERE (C3): the E1 restart drill, hv7_count.py, hv7_register.py, the real-layout drill. `main` is wired but has never been run.
+C3a (this file): resume after a crash (`Hv7Runner.resume`), torn-line repair, in-flight shutdown, owner-ref validation, counter lock, ledger
+reconciliation of rank-row cost. hv7_count.py, hv7_register.py and scripts/ops/hv7-e1-drill.sh are separate files. `main` is wired but has never been run.
 
-C3 TODO (reviewer notes on #998):
-  * resume after a crash (rebuild open positions and the pending period from the hash-chained log and the engine ledger; none exists yet);
-  * torn last line: a crash between the log write and the engine write, or a half-written log line, must be detected and refused or repaired on resume;
-  * validate the --owner-cost-line-ref argument of main() (today it is only required to be present, not checked against the owner's recorded line).
+RESUME RULES (stated, tested in test_hv7_resume.py):
+  1. A torn last line (no trailing newline) is truncated to the last full line and a `gap` row (reason torn_last_line, dropped byte count and sha256) is
+     appended to the SCAN log. A broken hash chain is NOT repairable: LogChainError, the runner refuses to start.
+  2. Open positions are rebuilt from the entry rows plus the engine's own recover() (the engine holds the position; the log holds the Pos). An entry row with
+     no engine position, no sell row and no order_refused row (crash between the log write and the engine write) is NOT re-sent: a `gap` row
+     (reason entry_not_in_engine). No late entry, ever: every entry is at t_e.
+  3. Pending period, resumed at or before t_e: re-screened at t_d from the replayed tape (no new SCAN row; the screen ids and card shas must equal the logged
+     ones, else the period is excluded, reason resume_rebuild_mismatch) and the L call is re-asked through the replay cache (same request_sha256, no double spend).
+     EXCEPTION: if the budget ledger holds a reserve row for that request and the cache has no <request_sha256>.json, the call was cut off. It is NEVER re-asked:
+     L gets a counted FALLBACK rank row (cut_off true, model_error call_cut_off, pick = R's) and every arm still enters at t_e.
+  4. An L call still in flight at shutdown is the same thing: an L FALLBACK rank row (cut_off true, model_error shutdown_in_flight), counted in the 10% fallback
+     rule, not an exclusion. A period resumed AFTER t_e, or one whose rebuild does not match, is EXCLUDED in all four arms (SCAN `period_excluded` row and an L
+     `rank` row with excluded true). Exclusions have their own 10% cap in hv7_count; over it every arm is NOT EVALUABLE.
+  5. A period whose rank row exists but whose entries are incomplete (kill during enter): a `gap` row per missing (arm, pool) entry; never a late entry.
+  6. The resume event itself goes to <root>/resume.jsonl, NOT to the decision log: a resume with no torn line, no unexecuted entry and no in-flight loss leaves
+     the decision-log md5 equal to an uninterrupted run. Gap and exclusion rows are in the decision log, so the md5 differs by rule when one is written.
 """
 from __future__ import annotations
 
@@ -38,9 +51,11 @@ if __package__ in (None, ""):
 
 import argparse
 import contextlib
+import hashlib
 import json
 import math
 import os
+import re
 import signal
 import sys
 import threading
@@ -53,7 +68,7 @@ from tools import hv4_cards as C
 from tools import hv6_agents as A
 from tools import hv6_cards as H
 from tools import hv7_rank as R
-from tools.arena_declog import DecisionLog, sha256_hex, utc_day
+from tools.arena_declog import GENESIS, DecisionLog, LogChainError, sha256_hex, utc_day  # noqa: F401
 from tools.arena_paper import ArenaRefused
 from tools.arena_state import WSOL_MINT, ArenaState
 from tools.haiku_caller import Ledger, LedgerError
@@ -89,8 +104,40 @@ READ_ROOTS = (H.TAPE_ROOT, HV7_ROOT)
 WRITE_ROOTS = (HV7_ROOT,)
 
 
+# Owner cost-line reference: a MiScusi notebook id (n_...) or a MiScusi question id (q_...). real ids contain "-" and "_" (e.g. q_6_kzYJva9XXuYQ), so the body is 12-20 of [A-Za-z0-9_-];
+# the pattern is pinned here so a typo or a free-text string cannot unlock the API path.
+OWNER_REF_RE = re.compile(r"(?:n|q)_[A-Za-z0-9_-]{12,20}")
+
+
 class Hv7Error(RuntimeError):
     pass
+
+
+def registered_pins(registry_path: str | os.PathLike) -> dict[str, dict[str, Any]]:
+    """bot id -> {"clock_start_ms", "entries_halt_ms"} for the four HV7 books, read from the registry (the `register` lines and the `hv7_halt` lines that
+    tools/hv7_register.py appends). Raises Hv7Error unless all four ids are registered with ONE clock and ONE halt."""
+    rp = Path(registry_path)
+    reg: dict[str, Any] = {}
+    halt: dict[str, int] = {}
+    if rp.exists():
+        for line in rp.read_text().splitlines():
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            if r.get("kind") == "register" and str(r.get("bot_id", "")).startswith(BOT_PREFIX):
+                reg[r["bot_id"]] = r["clock_start_ms"]
+            elif r.get("kind") == "hv7_halt":
+                halt[r["bot_id"]] = r["entries_halt_ms"]
+    ids = [bot_id(a) for a in ARM_ORDER]
+    if any(i not in reg or i not in halt for i in ids) or len({reg[i] for i in ids}) != 1 or len({halt[i] for i in ids}) != 1:
+        raise Hv7Error("the registry does not hold all four HV7 books with one clock and one entries halt")
+    return {i: {"clock_start_ms": reg[i], "entries_halt_ms": halt[i]} for i in ids}
+
+
+def validate_owner_ref(ref: Any) -> str:
+    if not isinstance(ref, str) or OWNER_REF_RE.fullmatch(ref) is None:
+        raise Hv7Error("owner cost-line ref must be a MiScusi notebook id (n_...) or question id (q_...)")
+    return ref
 
 
 class CardAllowlistError(Hv7Error):
@@ -190,6 +237,25 @@ class Hv7Guard:
     def record_refusal(self, pf: A.Preflight, now_ms: int) -> None:
         return None
 
+    def request_cost(self, day: str, request_sha256: str) -> float:
+        """Net cost the budget ledger holds for one request: its reserve rows plus the settle rows of those reservations (0.0 if none: a replayed answer
+        reserves nothing). Reconciles a rank row's cost_usd against the ledger."""
+        led = Ledger(self.root / "ledgers" / RANK_LEDGER / f"{day}.jsonl")
+        with led.locked(exclusive=False):
+            rows = led.rows()
+        ids = {r["reservation_id"] for r in rows if r.get("kind") == "reserve" and r.get("request_sha256") == request_sha256}
+        return math.fsum(r["cost_usd"] for r in rows if r.get("reservation_id") in ids)
+
+    def reserved_without_cache(self, day: str, request_sha256: str) -> bool:
+        """True when the budget ledger holds a reserve row for this request but the replay cache has no <request_sha256>.json: the call was cut off (crash or
+        shutdown) after it was reserved. Such a request is NEVER re-asked (a second reserve could pay twice)."""
+        led = Ledger(self.root / "ledgers" / RANK_LEDGER / f"{day}.jsonl")
+        with led.locked(exclusive=False):
+            rows = led.rows()
+        if not any(r.get("kind") == "reserve" and r.get("request_sha256") == request_sha256 for r in rows):
+            return False
+        return not (self.root / "cache" / RANK_LEDGER / f"{request_sha256}.json").exists()
+
     def day_spent(self, day: str) -> float:
         led = Ledger(self.root / "ledgers" / RANK_LEDGER / f"{day}.jsonl")
         with led.locked(exclusive=False):
@@ -277,6 +343,7 @@ class Hv7Runner:
         self.arm_of: dict[str, str] = {}
         self.pending: dict[str, Any] | None = None
         self.counters: dict[str, int] = {}
+        self._lock = threading.Lock()              # the L thread and the loop both count
         self.hook_errors: list[str] = []
         self.slot = 0
         self.sim_now = 0
@@ -305,7 +372,8 @@ class Hv7Runner:
 
     # -- plumbing
     def _count(self, k: str, n: int = 1) -> None:
-        self.counters[k] = self.counters.get(k, 0) + n
+        with self._lock:
+            self.counters[k] = self.counters.get(k, 0) + n
 
     def _now(self, T: int) -> int:
         return self.now_fn() if self.cfg.live else T
@@ -372,7 +440,8 @@ class Hv7Runner:
         check_card_keys(card)       # raises: a key outside the allowlist is a fault, not a skip
         return card
 
-    def screen(self, T: int) -> None:
+    def screen(self, T: int, rebuild: Mapping[str, Any] | None = None, rank_row: Mapping[str, Any] | None = None) -> None:
+        """rebuild: the logged period row of a resumed period. The screen is re-run from the replayed tape and must equal the logged one; no new SCAN row. rank_row: the L rank row already logged for it (a fallback written at shutdown): L's pick is taken from it, the model is not asked."""
         t_d = R.iso_from_ms(T)
         pools = self.state.pools_wsol(lambda p: p.prog == "pumpswap")
 
@@ -404,23 +473,54 @@ class Hv7Runner:
         shas = tuple(A.p4.card_sha256(cards[i]) for i in scr.ids)
         base = {"kind": "period", "t_d": t_d, "t_e": R.iso_from_ms(T - T_D_OFFSET_MS + T_E_OFFSET_MS), "counts": dict(res.counts), "n_candidates": len(res.candidates),
                 "vetoed": sorted(vetoed), "screen": list(scr.ids), "card_shas": list(shas), "no_trade": scr.no_trade, "reason": scr.reason, "as_of_slot": self.slot}
+        if rebuild is not None and (list(scr.ids) != list(rebuild.get("screen", ())) or list(shas) != list(rebuild.get("card_shas", ())) or scr.no_trade):
+            self._count("resume_rebuild_mismatch")
+            self.pending = None
+            self._log_excluded(T, t_d, "resume_rebuild_mismatch")
+            return
         if scr.no_trade:
             self.pending = None
             self.log.append("SCAN", T, base)
             return
         ordered = [cards[i] for i in scr.ids]
         rr = R.build_rank_request(t_d, ordered, seq=T // HOUR_MS)
-        call = _Call(lambda: self._ask(rr, T), threaded=self.cfg.live)
+        l_logged = None
+        if rank_row is not None:
+            l_logged, call = rank_row.get("pick"), None
+        elif rebuild is not None and self._cut_off(rr, T):
+            call = None                                  # (b): reserved, never answered: a counted L FALLBACK, never re-asked
+        else:
+            call = _Call(lambda: self._ask(rr, T), threaded=self.cfg.live)
         picks = {"R": [R.r_pick(t_d, scr.ids, shas)], "S": [R.s_pick(scr)], "U": list(R.u_set(scr))}
-        self.log.append("SCAN", T, base)
+        if rebuild is None:
+            self.log.append("SCAN", T, base)
         self.pending = {"t_e": T - T_D_OFFSET_MS + T_E_OFFSET_MS, "t_d": T, "t_d_iso": t_d, "picks": picks, "cards": {i: cards[i] for i in scr.ids},
-                        "rr": rr, "call": call, "scr_ids": scr.ids, "shas": shas}
+                        "rr": rr, "call": call, "scr_ids": scr.ids, "shas": shas, "l_logged": l_logged}
+        if rebuild is not None and rank_row is None and call is None:
+            self._resolve_l(self.pending, T, forced="call_cut_off")
+            self.pending["l_logged"] = self.pending["picks"]["L"][0]
 
-    def _resolve_l(self, pend: dict, T: int) -> None:
+    def _cut_off(self, rr: R.RankRequest, T: int) -> bool:
+        g = self.guard
+        if g is None or not hasattr(g, "reserved_without_cache"):
+            return False
+        try:
+            hit = g.reserved_without_cache(utc_day(T), rr.request.request_sha256())
+        except Exception:  # noqa: BLE001 - an unreadable ledger fails closed: do not re-ask
+            self._count("ledger_unreadable")
+            return True
+        if hit:
+            self._count("call_cut_off")
+        return hit
+
+    def _resolve_l(self, pend: dict, T: int, forced: str | None = None) -> None:
         """At t_e: the L verdict if the call returned in time, else a FALLBACK ("late"). Logs the rank row and sets L's pick."""
         rr = pend["rr"]
-        got = pend["call"].get()
-        if got is None:
+        got = None if forced else (pend["call"].get() if pend["call"] is not None else None)
+        if forced:
+            verdict = R.validate_rank(None, rr.shown_ids)
+            mrow = {"model_error": forced, "refused": False, "latency_ms": None, "cost_usd": 0.0, "response_sha256": None, "late": False, "cut_off": True}
+        elif got is None:
             self._count("late_reply")
             verdict = R.validate_rank(None, rr.shown_ids)
             mrow = {"model_error": "no_reply_by_t_e", "refused": False, "latency_ms": None, "cost_usd": 0.0, "response_sha256": None, "late": True}
@@ -445,7 +545,9 @@ class Hv7Runner:
             row["model_error"] = "exception:" + type(e).__name__
             self._count("model_exception")
             return R.validate_rank(None, rr.shown_ids), row
-        row.update(model_error=reply.error, refused=bool(reply.refused), latency_ms=reply.latency_ms, cost_usd=reply.cost_usd, response_sha256=reply.response_sha256)
+        row.update(model_error=reply.error, refused=bool(reply.refused), latency_ms=reply.latency_ms, cost_usd=reply.cost_usd, response_sha256=reply.response_sha256,
+                   replayed=bool(getattr(reply, "replayed", False)))
+        row.update(self._reconcile(rr, T, row))
         recv = self.now_fn() if self.cfg.live else T + int(reply.latency_ms or 0)
         if reply.error is not None or reply.refused:
             return R.validate_rank(None, rr.shown_ids), row
@@ -455,13 +557,33 @@ class Hv7Runner:
             return R.validate_rank(None, rr.shown_ids), row
         return R.validate_rank(reply.text, rr.shown_ids), row
 
+    def _reconcile(self, rr: R.RankRequest, T: int, row: Mapping[str, Any]) -> dict:
+        """Log the budget ledger's own figure for this request next to the row's cost_usd. A replayed answer must show 0.0 in the ledger. A mismatch is counted,
+        never hidden; an unreadable ledger is recorded as null."""
+        g = self.guard
+        if g is None or not hasattr(g, "request_cost"):
+            return {"ledger_cost_usd": None, "cost_reconciled": None}
+        try:
+            led = g.request_cost(utc_day(T), rr.request.request_sha256())
+        except Exception:  # noqa: BLE001 - recorded as null
+            self._count("ledger_unreadable")
+            return {"ledger_cost_usd": None, "cost_reconciled": None}
+        want = 0.0 if row.get("replayed") else float(row.get("cost_usd") or 0.0)
+        ok = abs(led - want) <= 1e-9
+        if not ok:
+            self._count("cost_mismatch")
+        return {"ledger_cost_usd": led, "cost_reconciled": ok}
+
     # -- t_e: entries
     def enter(self, T: int) -> None:
         pend = self.pending
         if pend is None or pend["t_e"] != T:
             return
         self.pending = None
-        self._resolve_l(pend, T)
+        if pend.get("l_logged") is not None:
+            pend["picks"]["L"] = [pend["l_logged"]]         # the rank row is already in the log (cut-off fallback)
+        else:
+            self._resolve_l(pend, T)
         if self.entries_halted_at(T):
             self.log.append("SCAN", T, {"kind": "entries_halted", "t_e": R.iso_from_ms(T)})
             return
@@ -526,6 +648,117 @@ class Hv7Runner:
         self.open.pop(pos.pid, None)
         return True
 
+    # -- exclusion, shutdown, resume
+    def _log_excluded(self, t_d_ms: int, t_d_iso: str, reason: str) -> None:
+        """A period that gets no entry in any arm (rule 4): a SCAN row and an L rank row that says fallback true, excluded true."""
+        self.log.append("SCAN", t_d_ms, {"kind": "period_excluded", "t_d": t_d_iso, "reason": reason})
+        self.log.append("L", t_d_ms, {"kind": "rank", "model_error": reason, "refused": False, "latency_ms": None, "cost_usd": 0.0, "response_sha256": None,
+                                      "late": False, "ok": False, "order": [], "fallback": True, "fallback_reason": reason, "excluded": True, "pick": None,
+                                      "pick_display_slot": None})
+
+    def shutdown(self) -> None:
+        """Orderly stop. An L call still in flight cannot be waited for: it is an L FALLBACK (rank row, cut_off true, counted in the 10% rule), not an exclusion.
+        Its pick is R's. A resume at or before t_e takes L's pick from that row and enters all arms; the call is never re-asked. A pending period whose reply
+        is already back is left alone: resume re-asks it through the cache."""
+        p = self.pending
+        if p is not None and p["call"] is not None and not p["call"].done.is_set():
+            self._count("shutdown_in_flight")
+            self._resolve_l(p, p["t_d"], forced="shutdown_in_flight")
+            p["l_logged"] = p["picks"]["L"][0]
+            self.pending = None
+
+    def _repair_tails(self, now_ms: int) -> int:
+        n = 0
+        for name in ("SCAN",) + ARM_ORDER:
+            for f in self.log.files(name):
+                data = f.read_bytes()
+                if not data or data.endswith(b"\n"):
+                    continue
+                cut = data.rfind(b"\n") + 1
+                dropped = data[cut:]
+                check_path(f, "w")
+                with open(f, "r+b") as fh:
+                    fh.truncate(cut)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                self.log._head.pop(name, None)
+                self.log.verify(name)           # the truncated log must chain, else LogChainError: not repairable
+                self.log.append("SCAN", now_ms, {"kind": "gap", "reason": "torn_last_line", "stream": name, "file": f.name, "dropped_bytes": len(dropped),
+                                                 "dropped_sha256": hashlib.sha256(dropped).hexdigest()})
+                n += 1
+        return n
+
+    def _gap_once(self, now_ms: int, key: str, body: dict) -> bool:
+        if any(r.get("kind") == "gap" and r.get("key") == key for r in self.log.rows("SCAN")):
+            return False
+        self.log.append("SCAN", now_ms, {"kind": "gap", "key": key, **body})
+        return True
+
+    def resume(self, now_ms: int) -> int:
+        """Rebuild after a restart (rules 1-6 in the module docstring). Returns the tick to start `run` from. The tape state is NOT in the log: it is replayed
+        by the loop's own poll, as on a first start."""
+        now_ms = int(now_ms) // TICK_MS * TICK_MS
+        torn = self._repair_tails(now_ms)
+        for name in ("SCAN",) + ARM_ORDER:
+            self.log._head.pop(name, None)
+            self.log.verify(name)
+        self.engine.recover()
+        gaps = 0
+        rows = {a: self.log.rows(a) for a in ARM_ORDER}
+        for arm in ARM_ORDER:
+            sold = {r["pid"] for r in rows[arm] if r.get("kind") == "sell"}
+            refused = {r["order_id"] for r in rows[arm] if r.get("kind") == "order_refused" and r.get("side") == "buy"}
+            for r in rows[arm]:
+                if r.get("kind") != "entry":
+                    continue
+                pid = r["order_id"]
+                ep = self.engine.positions.get(pid)
+                if ep is not None and ep.exit_slot is None:
+                    self.open[pid] = Pos(**r["pos"])
+                elif ep is None and pid not in sold and pid not in refused:
+                    gaps += self._gap_once(now_ms, "entry_not_in_engine:" + pid, {"reason": "entry_not_in_engine", "arm": arm, "order_id": pid, "pool": r["pool"]})
+        nxt = now_ms
+        periods = [r for r in self.log.rows("SCAN") if r.get("kind") == "period" and not r.get("no_trade")]
+        pending_rebuilt = False
+        if periods:
+            last = periods[-1]
+            t_d, t_e = R.ms_from_iso(last["t_d"]), R.ms_from_iso(last["t_e"])
+            ranks = [r for r in rows_l(self.log) if r["ms"] == t_d]
+            if not ranks:
+                if now_ms <= t_e:
+                    self.poll_to(t_d)
+                    self.sim_now = max(self.sim_now, t_d)
+                    self.screen(t_d, rebuild=last)
+                    pending_rebuilt = self.pending is not None
+                    nxt = t_d + TICK_MS
+                else:
+                    self._count("restart_after_t_e")
+                    self._log_excluded(t_d, last["t_d"], "restart_after_t_e")
+            elif (not ranks[-1].get("excluded") and now_ms <= t_e and ranks[-1].get("cut_off") and ranks[-1].get("pick")
+                  and not any(r.get("kind") == "entry" and r["ms"] == t_e for a in ROWS_ARMS(rows) for r in a)
+                  and not any(r.get("kind") == "entries_halted" and r.get("t_e") == last["t_e"] for r in self.log.rows("SCAN"))):
+                self.poll_to(t_d)
+                self.sim_now = max(self.sim_now, t_d)
+                self.screen(t_d, rebuild=last, rank_row=ranks[-1])
+                pending_rebuilt = self.pending is not None
+                nxt = t_d + TICK_MS
+            elif not ranks[-1].get("excluded") and not any(r.get("kind") == "entries_halted" and r.get("t_e") == last["t_e"] for r in self.log.rows("SCAN")):
+                want = {"L": [ranks[-1]["pick"]], "R": [R.r_pick(last["t_d"], last["screen"], last["card_shas"])], "S": [last["screen"][0]], "U": list(last["screen"])}
+                for arm in ARM_ORDER:
+                    have = {r["pool"] for r in rows[arm] if r.get("kind") == "entry" and r["ms"] == t_e}
+                    for pool in want[arm]:
+                        if pool not in have:
+                            gaps += self._gap_once(now_ms, f"entry_missing:{arm}:{pool}:{t_e}", {"reason": "entry_missing_after_restart", "arm": arm, "pool": pool, "t_e": last["t_e"]})
+        ev = {"ms": now_ms, "kind": "resume", "torn_lines": torn, "gap_rows": gaps, "open_rebuilt": len(self.open), "pending_rebuilt": pending_rebuilt,
+              "next_tick": nxt, "frozen_sha": self.cfg.frozen_sha}
+        path = Path(check_path(self.root / "resume.jsonl", "w"))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path, "ab") as fh:
+            fh.write(json.dumps(ev, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        return nxt
+
     # -- loop
     def tick(self, T: int) -> None:
         self.sim_now = max(self.sim_now, T)
@@ -564,8 +797,17 @@ class Hv7Runner:
         return self.log.md5()
 
 
-def main(argv: list[str] | None = None) -> int:
-    """A MiScusi job. NEVER RUN in C2 (no owner cost line yet; C3 hardens, drills and registers it). Refuses without an explicit owner-line reference."""
+def ROWS_ARMS(rows: Mapping[str, list]) -> list[list]:
+    return [rows[a] for a in ARM_ORDER]
+
+
+def rows_l(log: DecisionLog) -> list[dict]:
+    return [r for r in log.rows("L") if r.get("kind") == "rank"]
+
+
+def main(argv: list[str] | None = None, *, _stub: Mapping[str, Any] | None = None) -> int:
+    """A MiScusi job. Refuses unless --owner-cost-line-ref matches OWNER_REF_RE. `_stub` is for tests and the C3b smoke only: a dict with model, chain, engine,
+    start_ms and end_ms; the refusals above it (owner ref, registry pins) are the same code path, then the run is simulated (not live), with no signal handler."""
     ap = argparse.ArgumentParser(description="HV7 forced-rank runner (paper only)")
     ap.add_argument("--tape", required=True)
     ap.add_argument("--root", default=HV7_ROOT)
@@ -573,20 +815,55 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--clock-start-ms", type=int, required=True)
     ap.add_argument("--entries-halt-ms", type=int, required=True)
     ap.add_argument("--feed-delay-slots", type=int, required=True)
+    ap.add_argument("--registry", default=None, help="bots.json to read the pins from (default: the real registry)")
     ap.add_argument("--owner-cost-line-ref", required=True, help="reference to the owner's HV7 cost line (DESIGN section 5); no API call without it")
     a = ap.parse_args(argv)
+    try:
+        validate_owner_ref(a.owner_cost_line_ref)       # BEFORE anything is built: CallerModel is never constructed on a bad ref
+    except Hv7Error as e:
+        print(f"refused: {e}", file=sys.stderr)
+        return 2
+    from tools import arena_paper
     from tools.arena_paper import ArenaEngine
+
+    try:            # the halt and the clock come from the registry: a command line that disagrees with it is refused before anything is built
+        pins = registered_pins(a.registry or arena_paper.REGISTRY_PATH)
+    except (Hv7Error, OSError, ValueError, KeyError) as e:
+        print(f"refused: registry pins ({type(e).__name__})", file=sys.stderr)
+        return 2
+    if any(v["entries_halt_ms"] != a.entries_halt_ms or v["clock_start_ms"] != a.clock_start_ms for v in pins.values()):
+        print("refused: --entries-halt-ms / --clock-start-ms differ from the registry", file=sys.stderr)
+        return 2
+    guard = Hv7Guard(a.root)
+    if _stub is not None:
+        run = Hv7Runner(Hv7Config(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=False, entries_halt_ms=a.entries_halt_ms),
+                        ArenaState(check_path(a.tape, "r"), start_ms=0), _stub["engine"], _stub["model"], _stub["chain"], guard)
+        run.sim_now = int(_stub["start_ms"])        # the start row is stamped with the simulated instant, never the wall clock
+        run.log_start()
+        try:
+            run.run(int(_stub["start_ms"]), int(_stub["end_ms"]))
+        finally:
+            run.shutdown()
+        return 0
     from tools.hv6_agents import CallerModel
     from tools.hv6_runner import live_chain_source
 
-    guard = Hv7Guard(a.root)
     engine = ArenaEngine(cfg=stack_config(a.feed_delay_slots))
     run = Hv7Runner(Hv7Config(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True, entries_halt_ms=a.entries_halt_ms),
                     ArenaState(check_path(a.tape, "r"), start_ms=0), engine, CallerModel(guard), live_chain_source(a.root), guard)
     signal.signal(signal.SIGTERM, run.request_stop)
     engine.start_all()
-    run.log_start()
-    run.run(int(time.time_ns() // 1_000_000) // TICK_MS * TICK_MS, 1 << 62)
+    now = int(time.time_ns() // 1_000_000) // TICK_MS * TICK_MS
+    if run.log.files("SCAN"):
+        run.resume(now)             # live: the loop starts at the wall clock; the return value (a sim catch-up tick) is not used
+        start = now
+    else:
+        run.log_start()
+        start = now
+    try:
+        run.run(start, 1 << 62)
+    finally:
+        run.shutdown()
     return 0
 
 
