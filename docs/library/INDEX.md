@@ -329,7 +329,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
-| `p67-pairwise-tournament` | Pairwise round-robin ranking (Copeland) versus listwise, chosen by outcome-blind stability | `untested` | not run; pairwise loses cross-card context; null is not evidence of no skill |
+| `p67-pairwise-tournament` | Pairwise round-robin ranking (Copeland) versus listwise, chosen by outcome-blind stability vs the … | `untested` | not run; pairwise loses cross-card context; null is not evidence of no skill |
 
 ### p67-knn-case (1)
 

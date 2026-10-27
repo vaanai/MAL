@@ -68,6 +68,11 @@ Manager decision recorded: K=3 Borda is **v7.1**, not v7.0, because of the cost 
   - Fewer than 2 valid replies is FALLBACK to R's pick (counts in n).
   - L1 (the first call alone) is report-only.
   - The owner cost line is raised first, before any K>1 live run.
+- Further v7.1 rules (QP and reviewer):
+  - A reply after t_e is invalid; the number of valid replies per period is logged.
+  - A C2 test shows haiku_caller handles 3 concurrent calls safely on one ledger; alternatively the 3 calls run one after another inside the t_e window.
+  - The md5 decision-equivalence proof and the real-layout replay are rerun at the K=3 sha.
+  - DESIGN section 7 bar 4 (agreement vs chance) remains the kill floor for v7.1.
 - Agreement statistic (mean pairwise Kendall tau among the K orders) is **report-only**. The earlier draft's kill rule "real-card agreement must exceed shuffled-field agreement" is **dropped**: a consistent field-rule ranker would fail it (it is stable on shuffled fields too), so it kills good rankers.
 - Outcome test: the existing L - U contrast (daily sign-flips, MDE rank IC about 0.17 at D = 10) plus report-only L(K=3) - L1, paired on the same periods.
 - Cost (QP): single 0.0352 USD/day; K=3 about 0.1055 expected, **0.338 worst case with retries, above the 0.30 cap**. K=5 is not affordable. So K=3 needs the cap raised, or a retry limit that keeps the worst case under 0.30.
@@ -85,9 +90,9 @@ Manager decision recorded: K=3 Borda is **v7.1**, not v7.0, because of the cost 
 
 ### Rank 3: pairwise tournament versus listwise, decided outcome-blind, then one adopted (HV7.2 or HV8)
 
-- What: run listwise (K=3, rank 1) and pairwise round-robin (28 pairs, both orders, Copeland score) on the same rehearsal prompts. Compare **stability only**: Kendall tau between two independent repeats of each method, transitivity-violation rate for pairwise, and the same on shuffled-card placebo. No outcomes opened. The method with the higher real-minus-placebo stability margin is adopted as the sole L; no arm is added.
+- What: run listwise (K=3, rank 1) and pairwise round-robin (28 pairs, both orders, Copeland score) on the same rehearsal prompts. Compare **stability only**: Kendall tau between two independent repeats of each method, transitivity-violation rate for pairwise. The method is chosen by stability against the random/position baseline (DESIGN section 7 bar 4); the same statistic on shuffled cards is report-only. No outcomes opened. The method with the larger margin over that baseline is adopted as the sole L; no arm is added.
 - Why outcome-blind: choosing the better method by outcome would be a selection step with multiplicity.
-- Cost (QP): pairwise single order 0.4305, both orders 0.8610 USD/day, both above the 0.30 cap. The stability comparison itself is offline on rehearsal prompts (a one-off bill, sized under the rehearsal call cap); adopting pairwise live needs the cap raised, otherwise it is not adoptable and the comparison is moot.
+- Cost (QP): pairwise single order 0.4305, both orders 0.8610 USD/day, both above the 0.30 cap. The rehearsal runs on Claude-plan subagents, so there is no API bill. Pairwise in both orders is 56 calls per set, 4,032 calls over 72 sets, against the 288-call rehearsal cap, so it needs its own DESIGN section 7 amendment before any run. Adopting pairwise live also needs the 0.30 USD/day cap raised; otherwise it is not adoptable.
 - Caveat: pairwise on 8 cards loses the cross-card context that may carry the screen's information; a null here is not evidence of no skill.
 
 ### Not recommended now
