@@ -1,0 +1,16 @@
+entries 661 days with a trade 28 trades/day over 28 days: 23.607142857142858
+
+=== stake 0.25 SOL: gross (no fail) mean -0.040397 SOL, median -0.131365, share winners 0.2557
+flat15: mean -0.034346 SOL (-13.738% of stake) total -22.7027 ex_top3 -30.2516 best_day 2026-08-18 (2.7545) ex_best_day -25.4572 days_pos 6/28 CI90_lo trade -0.051181 dayclu -0.048968
+   capacity: trades/day 23.607 x stake 0.25 x mean edge -0.13738 = -0.81081 SOL/day
+press: mean -0.026466 SOL (-10.586% of stake) total -17.4941 ex_top3 -24.5583 best_day 2026-08-18 (2.7830) ex_best_day -20.2771 days_pos 7/28 CI90_lo trade -0.041589 dayclu -0.039482
+   capacity: trades/day 23.607 x stake 0.25 x mean edge -0.10586 = -0.62479 SOL/day
+
+=== stake 1.0 SOL: gross (no fail) mean -0.223292 SOL, median -0.491065, share winners 0.2481
+flat15: mean -0.189806 SOL (-18.981% of stake) total -125.4621 ex_top3 -147.0085 best_day 2026-09-05 (6.4703) ex_best_day -131.9323 days_pos 2/28 CI90_lo trade -0.239346 dayclu -0.228843
+   capacity: trades/day 23.607 x stake 1.0 x mean edge -0.18981 = -4.48079 SOL/day
+press: mean -0.155512 SOL (-15.551% of stake) total -102.7932 ex_top3 -121.8327 best_day 2026-09-05 (5.4371) ex_best_day -108.2303 days_pos 2/28 CI90_lo trade -0.198284 dayclu -0.188240
+   capacity: trades/day 23.607 x stake 1.0 x mean edge -0.15551 = -3.67119 SOL/day
+
+entry quote reserve SOL q10/50/90: [ 1.16197762  2.44386673 11.09267679]
+per block entries: {'exp011-0909': 172, 'explore-0814': 292, 'fresh-0903': 197}

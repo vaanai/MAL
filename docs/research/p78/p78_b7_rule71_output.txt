@@ -1,0 +1,39 @@
+Running as unit: run-r08741c17d26b486cb9fe14febef95f62.scope; invocation ID: fb695848f9be445a845e05207f4f7212
+ranking days 15; (wallet,pool) rows 1365746; round-trip wallets 154083; ranked (>=5 rt) 13269
+bot flags among ranked: B1 4535 B2 5684 B3 1858 any 8858 of 13269
+unfiltered top 50 flagged 44
+clean ranked 4411 top50 n 50 score sum SOL 900.2485420332775
+2026-09-03 59
+2026-09-04 162
+2026-09-05 230
+2026-09-06 341
+2026-09-07 453
+2026-09-08 526
+2026-09-09 637
+2026-09-10 742
+2026-09-11 801
+2026-09-12 833
+2026-09-13 869
+2026-09-14 932
+2026-09-15 954
+skipped {'entry_after_lead_sell': 0, 'no_sps': 1, 'dust': 207} | copies 954 days 13 of 13 wallets with a copy 22
+kinds {'timer': 552, 'lead_sell': 402} trunc 293
+
+=== P71 copy in band, stake 0.1 SOL: trades 954, days with trades 13, days in population 13, trades/day 73.3846, mean p_fail 0.2890
+nofail {'n': 954, 'days': 13, 'mean_sol': np.float64(0.00016), 'mean_pct': np.float64(0.16471), 'ci5_pct': np.float64(-1.15182), 'total': np.float64(0.15713), 'days_pos': '9/13', 'majority_pos': True, 'ex_top3_total': np.float64(-0.00639), 'best_day': '2026-09-07', 'ex_bestday_total': np.float64(-0.12511), 'ex_bestday_mean_pct': np.float64(-0.14858), 'median_pct': np.float64(0.8546)}
+flat {'n': 954, 'days': 13, 'mean_sol': np.float64(0.00013), 'mean_pct': np.float64(0.13175), 'ci5_pct': np.float64(-0.9873), 'total': np.float64(0.12569), 'days_pos': '9/13', 'majority_pos': True, 'ex_top3_total': np.float64(-0.01328), 'best_day': '2026-09-07', 'ex_bestday_total': np.float64(-0.11329), 'ex_bestday_mean_pct': np.float64(-0.13455), 'median_pct': np.float64(0.71816)}
+press {'n': 954, 'days': 13, 'mean_sol': np.float64(0.00014), 'mean_pct': np.float64(0.14068), 'ci5_pct': np.float64(-0.73157), 'total': np.float64(0.13421), 'days_pos': '9/13', 'majority_pos': True, 'ex_top3_total': np.float64(0.01279), 'best_day': '2026-09-07', 'ex_bestday_total': np.float64(-0.06004), 'ex_bestday_mean_pct': np.float64(-0.0713), 'median_pct': np.float64(0.54833)}
+capacity: 73.3846 trades/day x 0.1 SOL x 0.1317% (lower model) = 0.00967 SOL/day
+
+=== P71 copy in band, stake 0.25 SOL: trades 954, days with trades 13, days in population 13, trades/day 73.3846, mean p_fail 0.2890
+nofail {'n': 954, 'days': 13, 'mean_sol': np.float64(0.00058), 'mean_pct': np.float64(0.23065), 'ci5_pct': np.float64(-1.08586), 'total': np.float64(0.55011), 'days_pos': '9/13', 'majority_pos': True, 'ex_top3_total': np.float64(0.14081), 'best_day': '2026-09-07', 'ex_bestday_total': np.float64(-0.17394), 'ex_bestday_mean_pct': np.float64(-0.08263), 'median_pct': np.float64(0.92056)}
+flat {'n': 954, 'days': 13, 'mean_sol': np.float64(0.00048), 'mean_pct': np.float64(0.19276), 'ci5_pct': np.float64(-0.92628), 'total': np.float64(0.45972), 'days_pos': '9/13', 'majority_pos': True, 'ex_top3_total': np.float64(0.11185), 'best_day': '2026-09-07', 'ex_bestday_total': np.float64(-0.1548), 'ex_bestday_mean_pct': np.float64(-0.07354), 'median_pct': np.float64(0.77917)}
+press {'n': 954, 'days': 13, 'mean_sol': np.float64(0.00049), 'mean_pct': np.float64(0.1971), 'ci5_pct': np.float64(-0.67449), 'total': np.float64(0.47008), 'days_pos': '9/13', 'majority_pos': True, 'ex_top3_total': np.float64(0.16612), 'best_day': '2026-09-07', 'ex_bestday_total': np.float64(-0.0311), 'ex_bestday_mean_pct': np.float64(-0.01477), 'median_pct': np.float64(0.60576)}
+capacity: 73.3846 trades/day x 0.25 SOL x 0.1928% (lower model) = 0.03536 SOL/day
+
+=== P71 copy in band, stake 1.0 SOL: trades 954, days with trades 13, days in population 13, trades/day 73.3846, mean p_fail 0.2890
+nofail {'n': 954, 'days': 13, 'mean_sol': np.float64(0.00263), 'mean_pct': np.float64(0.26339), 'ci5_pct': np.float64(-1.05306), 'total': np.float64(2.51278), 'days_pos': '9/13', 'majority_pos': True, 'ex_top3_total': np.float64(0.87467), 'best_day': '2026-09-07', 'ex_bestday_total': np.float64(-0.41989), 'ex_bestday_mean_pct': np.float64(-0.04987), 'median_pct': np.float64(0.95335)}
+flat {'n': 954, 'days': 13, 'mean_sol': np.float64(0.00223), 'mean_pct': np.float64(0.22306), 'ci5_pct': np.float64(-0.89592), 'total': np.float64(2.12799), 'days_pos': '9/13', 'majority_pos': True, 'ex_top3_total': np.float64(0.73563), 'best_day': '2026-09-07', 'ex_bestday_total': np.float64(-0.36386), 'ex_bestday_mean_pct': np.float64(-0.04321), 'median_pct': np.float64(0.80952)}
+press {'n': 954, 'days': 13, 'mean_sol': np.float64(0.00225), 'mean_pct': np.float64(0.22513), 'ci5_pct': np.float64(-0.64611), 'total': np.float64(2.14773), 'days_pos': '9/13', 'majority_pos': True, 'ex_top3_total': np.float64(0.93105), 'best_day': '2026-09-07', 'ex_bestday_total': np.float64(0.11216), 'ex_bestday_mean_pct': np.float64(0.01332), 'median_pct': np.float64(0.63215)}
+capacity: 73.3846 trades/day x 1.0 SOL x 0.2231% (lower model) = 0.16369 SOL/day
+best wallet share of total (nofail, 0.1 SOL): 1.9511473375353425 wallets with a priced copy 22

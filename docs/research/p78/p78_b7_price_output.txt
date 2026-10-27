@@ -1,0 +1,45 @@
+Running as unit: run-rb24721822a6246aa9d3aa02e43f6a861.scope; invocation ID: 3009e0337b0548fab122b622f4d7a244
+days 28 full(>=12h) 28
+2026-08-14 1 168 91 360
+2026-08-15 18 253 121 612
+2026-08-16 11 218 124 798
+2026-08-17 46 263 132 687
+2026-08-18 24 304 137 809
+2026-08-19 28 218 135 867
+2026-08-20 49 294 151 806
+2026-08-21 65 279 148 877
+2026-08-22 52 395 171 878
+2026-08-23 115 409 168 875
+2026-08-24 77 409 170 748
+2026-08-25 81 444 177 743
+2026-08-26 62 309 164 755
+2026-08-28 24 217 105 316
+2026-09-03 18 221 120 331
+2026-08-27 80 317 153 763
+2026-09-04 42 463 219 617
+2026-09-05 34 398 289 848
+2026-09-06 60 456 307 826
+2026-09-07 69 389 280 802
+2026-09-08 50 397 249 738
+2026-09-09 71 787 324 781
+2026-09-10 42 581 271 656
+2026-09-12 27 536 215 662
+2026-09-11 27 304 203 628
+2026-09-13 40 298 160 587
+2026-09-15 4 56 88 224
+2026-09-14 40 278 183 596
+band [98240.0,1e+18) pools 5055 segments 19190 skipped_sps 156; rule1 events 1257 (44.893/day), rule3 events 9661 (345.036/day), days 28
+exits: {'sl': 800, 'cap': 320, 'tp': 137} censored 139
+
+=== P72 sell-cluster absorb: trades 1257, days with trades 28, days in population 28, trades/day 44.8929, mean p_fail 0.2890
+nofail {'n': 1257, 'days': 28, 'mean_sol': np.float64(-0.0527), 'mean_pct': np.float64(-21.07838), 'ci5_pct': np.float64(-23.73999), 'total': np.float64(-66.2388), 'days_pos': '0/28', 'majority_pos': False, 'ex_top3_total': np.float64(-66.41587), 'best_day': '2026-08-14', 'ex_bestday_total': np.float64(-66.05201), 'ex_bestday_mean_pct': np.float64(-21.03567), 'median_pct': np.float64(-13.96953)}
+flat {'n': 1257, 'days': 28, 'mean_sol': np.float64(-0.0448), 'mean_pct': np.float64(-17.91992), 'ci5_pct': np.float64(-20.18229), 'total': np.float64(-56.31335), 'days_pos': '0/28', 'majority_pos': False, 'ex_top3_total': np.float64(-56.46383), 'best_day': '2026-08-14', 'ex_bestday_total': np.float64(-56.15457), 'ex_bestday_mean_pct': np.float64(-17.88362), 'median_pct': np.float64(-11.8774)}
+press {'n': 1257, 'days': 28, 'mean_sol': np.float64(-0.04305), 'mean_pct': np.float64(-17.21996), 'ci5_pct': np.float64(-19.38476), 'total': np.float64(-54.11371), 'days_pos': '0/28', 'majority_pos': False, 'ex_top3_total': np.float64(-54.24838), 'best_day': '2026-08-14', 'ex_bestday_total': np.float64(-53.95828), 'ex_bestday_mean_pct': np.float64(-17.18417), 'median_pct': np.float64(-11.20098)}
+capacity: 44.8929 trades/day x 0.25 SOL x -17.9199% (lower model) = -2.01119 SOL/day
+exits: time exit censored 1669
+
+=== P78-M momentum 15m: trades 9661, days with trades 28, days in population 28, trades/day 345.0357, mean p_fail 0.2890
+nofail {'n': 9661, 'days': 28, 'mean_sol': np.float64(-0.01674), 'mean_pct': np.float64(-6.69532), 'ci5_pct': np.float64(-8.02362), 'total': np.float64(-161.70866), 'days_pos': '0/28', 'majority_pos': False, 'ex_top3_total': np.float64(-163.06606), 'best_day': '2026-08-20', 'ex_bestday_total': np.float64(-161.65483), 'ex_bestday_mean_pct': np.float64(-6.90316), 'median_pct': np.float64(5.11746)}
+flat {'n': 9661, 'days': 28, 'mean_sol': np.float64(-0.01424), 'mean_pct': np.float64(-5.69432), 'ci5_pct': np.float64(-6.82338), 'total': np.float64(-137.53206), 'days_pos': '0/28', 'majority_pos': False, 'ex_top3_total': np.float64(-138.68583), 'best_day': '2026-08-20', 'ex_bestday_total': np.float64(-137.48389), 'ex_bestday_mean_pct': np.float64(-5.87099), 'median_pct': np.float64(4.34654)}
+press {'n': 9661, 'days': 28, 'mean_sol': np.float64(-0.01166), 'mean_pct': np.float64(-4.66352), 'ci5_pct': np.float64(-5.58453), 'total': np.float64(-112.63575), 'days_pos': '0/28', 'majority_pos': False, 'ex_top3_total': np.float64(-113.59836), 'best_day': '2026-08-20', 'ex_bestday_total': np.float64(-112.44185), 'ex_bestday_mean_pct': np.float64(-4.80162), 'median_pct': np.float64(3.81107)}
+capacity: 345.0357 trades/day x 0.25 SOL x -5.6943% (lower model) = -4.91186 SOL/day
