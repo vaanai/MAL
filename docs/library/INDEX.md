@@ -32,8 +32,8 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `explored-survivor-unconfirmed` | 10 | 0 | 0 |
 | `parked` | 9 | 1 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 43 | 26 | 1 |
-| `desk-read` | 1 | 48 | 0 |
+| `untested` | 43 | 25 | 1 |
+| `desk-read` | 1 | 49 | 0 |
 | `explored-no-survivor` | 41 | 7 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
 | **all** | 185 | 88 | 2 |
@@ -347,7 +347,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
-| `p67-llm-debate-closed` | Multi-agent debate / bull-bear researchers for pool ranking | `untested` | not run; no demonstrated edge over permutation self-consistency at 3-6x cost |
+| `p67-llm-debate-closed` | Multi-agent debate / bull-bear researchers for pool ranking | `desk-read` | not run; no demonstrated edge over permutation self-consistency at 3-6x cost |
 
 ## Dead as frozen, and explored with no survivor
 

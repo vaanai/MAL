@@ -29,42 +29,49 @@ Common shape: LLM reads a text bundle (price, news/KOL feed), emits BUY/SELL/HOL
 
 - Ranking and aggregation methods (text retrieval benchmarks, not finance): moderate evidence, replicated, but a different task.
   - Permutation self-consistency: shuffle the list, rank repeatedly, take the central ranking by Kendall tau. Paper claim: up to 7-18% improvement for GPT-3.5, 8-16% for LLaMA2-70B over single-pass listwise on five list-ranking datasets (https://arxiv.org/abs/2310.07712, NAACL 2024; code https://github.com/castorini/perm-sc).
-  - Pairwise Ranking Prompting: compare pairs, aggregate; insensitive to input order; a 20B model near GPT-4-based ranking on TREC-DL (https://arxiv.org/abs/2306.17563).
+  - Pairwise Ranking Prompting: compare pairs, aggregate; insensitive to input order; a 20B model near GPT-4-based ranking on TREC-DL (https://arxiv.org/abs/2306.17563; paper claim).
   - Position bias is real in listwise and pairwise judging (https://arxiv.org/abs/2406.07791); inconsistency across sorts can be reduced by aggregating runs (https://arxiv.org/abs/2406.00231).
-- Debate: https://arxiv.org/abs/2311.17371 (ICML 2024) and https://arxiv.org/abs/2502.08788 find multi-agent debate does not reliably beat self-consistency or single-agent CoT despite more compute (QA benchmarks).
+- Debate: https://arxiv.org/abs/2311.17371 (ICML 2024) and https://arxiv.org/abs/2502.08788 find multi-agent debate does not reliably beat self-consistency or single-agent CoT despite more compute (QA benchmarks; paper claims, 2311.17371 and 2502.08788).
 - Calibration: verbalized LLM confidence is overconfident (https://arxiv.org/abs/2306.13063); a 2026 forecasting paper reports near-calibration below 0.5 and overconfidence above it (https://arxiv.org/abs/2607.08046; paper claim, not read). Fix everyone uses is a held-out recalibration map, i.e. a small model on top.
-- Finance agent papers (backtest, high leakage risk): CryptoTrade, EMNLP 2024, analyst + news + trader + reflection agents on daily BTC/ETH/SOL (https://arxiv.org/abs/2407.09546); TradingAgents, three stocks over a short 2024 window (https://arxiv.org/abs/2412.20138); FinMem, FinCon (library rows 14-16). StockBench (https://arxiv.org/abs/2510.02209): most agents did not beat buy-and-hold (abstract). Alpha Arena Season 1 (live, press): Qwen3-Max +22.32%, four of six models in the red, organiser called it exploratory with no statistical controls.
+- Finance agent papers (backtest, high leakage risk): CryptoTrade, EMNLP 2024, analyst + news + trader + reflection agents on daily BTC/ETH/SOL (https://arxiv.org/abs/2407.09546); TradingAgents, three stocks over a short 2024 window (https://arxiv.org/abs/2412.20138); FinMem, FinCon (library rows 14-16). StockBench (https://arxiv.org/abs/2510.02209): most agents did not beat buy-and-hold (abstract). Alpha Arena Season 1 (live, press): Qwen3-Max +22.32% (press figure), four of six models in the red, organiser called it exploratory with no statistical controls.
 - Leakage: https://arxiv.org/abs/2601.13770 (Look-Ahead-Bench), https://arxiv.org/abs/2603.17692 (BlindTrade anonymisation), https://arxiv.org/abs/2607.04958 (look-ahead-freedom as a property). Relevance to us is lower: pump pools are post-cutoff, tape-based, and cards carry no names in HV6/HV7. The leakage that does apply to us is **our own**: reuse of rehearsal days, and prompt edits made after seeing outcomes.
 - LLM alpha mining: "Alpha Jungle" LLM+MCTS formula mining, AAAI 2026 (https://arxiv.org/abs/2505.11122); backtest claims; generalisation across regimes untested per a summary. Multiplicity is the unaddressed risk.
 - Crypto text features: I found no memecoin or Solana study with an out-of-sample trading result. Evidence for text -> memecoin returns: none found.
 
 ## 3. Pattern by pattern
 
-Constants used: HV7 hourly, N up to 8 cards, ~3,000 input tokens per ranking call (assumption), ~400 output tokens, 24 periods/day. One L call costs 24 x (3,000 x 0.10 + 400 x 0.50) / 1e6 = 0.0120 USD/day (arithmetic; with the cache marker on the system block it is lower). Cap 0.30 USD/day.
+Constants used (QP-corrected, from DESIGN section 5): one rank call = 2,874 cache-write + 9,056 new input + 400 output tokens = 0.00146485 USD/call. Hourly calls always pay cache-write (the cache lasts 5 min). Single L = 24 calls = 0.0352 USD/day. Cap 0.30 USD/day. My first draft used 3,000 input tokens and a cache discount and understated every cost by about 3x; those figures are withdrawn.
 
 | # | Pattern | Evidence it works | Fits our constraints | Cost / day (arithmetic) |
 |---|---|---|---|---|
-| 1 | Listwise vs pairwise / tournament | Text ranking only; listwise is order-sensitive, pairwise is robust but 28 pairs (56 with both orders) at N=8 | Fits if pairs fit ~900 in / 50 out tokens. Latency: 56 parallel calls fit well before t_e (45 s) | Single order 28 x 24 x (900x0.10+50x0.50)/1e6 = 0.0773; both orders 0.1546. Fits cap |
-| 2 | Self-consistency / majority vote (permutation SC) | Best-replicated ranking fix above | Yes; K shuffled calls, Borda or Kemeny aggregate. Also gives an outcome-free diagnostic (agreement) | K=3: 0.036; K=5: 0.060 |
-| 3 | Rationale-then-score | Mixed in general; for ranking, rationale can anchor. No finance-specific audited evidence found | Costs output tokens; HV7 already caps `why` at 20 words. Score pointwise instead of ordering | Pointwise 8 cards x 24 x (450x0.10+80x0.50)/1e6 = 0.0163 |
+| 1 | Listwise vs pairwise / tournament | Text ranking only (paper claims); listwise is order-sensitive, pairwise is robust but 28 pairs (56 with both orders) at N=8 | Latency fine in parallel, but cost is the limit | QP figures: single order 0.4305, both orders 0.8610 USD/day. ABOVE the 0.30 cap |
+| 2 | Self-consistency / majority vote (permutation SC) | Best-replicated ranking fix above | Yes; K shuffled calls, Borda aggregate. Also gives an outcome-free agreement statistic (report-only) | K=3 about 0.1055 expected, 0.338 worst case with retries (ABOVE the cap); needs the owner cost line raised first |
+| 3 | Rationale-then-score | Mixed in general; for ranking, rationale can anchor. No finance-specific audited evidence found | Costs output tokens; HV7 already caps `why` at 20 words. Score pointwise instead of ordering | Pointwise about 0.105 (QP) |
 | 4 | Calibrated probabilities + EV threshold | Calibration needs held-out labels; verbalised confidence overconfident; Alpha Illusion: LLM confidence is not a tradable probability | A threshold re-creates abstention, the HV4/HV6 failure (n starvation). Only as a *ranking score* via a frozen calibrator, never a trade/no-trade gate in the first test | Same as 3 |
 | 5 | kNN retrieval of similar past cases | Found no trading evidence (searched; none). Retrieval-augmented forecasting calibration not found either | Outcome lag: a case enters memory only after its 60 min exit; bandwagon + leakage risk; writes outcomes into prompts (HV7 forbids outcomes in requests) | Longer prompts: +1,500 in tokens per call = +0.0036/call-day at L only |
 | 6 | Reflection / memory with outcome lag | CryptoTrade, FinMem, FinCon backtests; lab: haiku-v3 learning ~ placebo. Reflexion/ExpeL gains are benchmark tasks | Already tried here; HV7 L-mem is deferred v7.1 | ~0.005 per night note |
-| 7 | LLM as feature extractor feeding a small model | Alpha Illusion recommends "LLM as information interface"; lab found Haiku gain = dead-pool filter, i.e. a numeric filter did the work | Best fit: gives a clean test "does the LLM score add over the numeric model at matched coverage". Cards numeric; text only from metadata (P28) | Pointwise 0.0163 |
-| 8 | Multi-agent debate | Does not beat self-consistency (two papers above); finance versions (TradingAgents) have no cost-honest ablation I found | 3-6x calls for no demonstrated edge | 0.04-0.07 |
+| 7 | LLM as feature extractor feeding a small model | Alpha Illusion recommends "LLM as information interface"; lab found Haiku gain = dead-pool filter, i.e. a numeric filter did the work | Best fit: gives a clean test "does the LLM score add over the numeric model at matched coverage". Cards numeric; text only from metadata (P28) | Pointwise about 0.105 |
+| 8 | Multi-agent debate | Does not beat self-consistency (two papers above, paper claims); finance versions (TradingAgents) have no cost-honest ablation I found | 3-6x calls for no demonstrated edge | Roughly 0.1-0.2 (3-6x the single 0.0352; arithmetic) |
 | 9 | Regime classifier | Library already holds regime signals; one label per hour = tiny effective n; a regime label can also be computed in code | LLM adds nothing code cannot; fails n | ~0.003 |
 | 10 | LLM writes rules offline | Alpha Jungle-type backtests; lab row web-llm-traders-7 untested | Best on cost (the live loop is code), but the multiplicity of rules tried is the danger; API is reserved by the owner for the Haiku trader, so rule drafting runs on the Claude plan, not the API | 0 API (plan-side) |
 
 ## 4. Ranked recommendations (all paired against random, with a placebo; none claims profit)
 
-### Rank 1: permutation self-consistency as HV7's ranker (v7.1 of L, before the clock)
+### Rank 1: permutation self-consistency as HV7's ranker (K=3 Borda goes to v7.1, not v7.0)
 
-- What: L's order = Borda aggregate of K = 3 independent calls with different seeded shuffles (the existing perm formula with a K index). Report-only: L1 (first call alone), so the ranking stability benefit is measured, not assumed. Same exit, same arms R/S/U.
-- Outcome-free kill test (run on rehearsal prompts, no outcome opened): per period, mean pairwise Kendall tau between the K orders. Placebo comparator: the same statistic when the K calls are given cards whose field values are shuffled across pools (so the cards carry no pool-specific information) and a pure-random permutation baseline (expected tau 0). If real-card tau is not clearly above the shuffled-card tau, the ranker is reading noise or position; do not register an LLM arm. Pre-declare the margin before running.
-- Outcome test: the existing L - U contrast (daily sign-flips, MDE rank IC about 0.17 at D = 10). Add one report-only contrast L(K=3) - L1 on the same periods (paired, same cards).
-- Fit: changes only the model-call count; fallback rule unchanged (any of the K replies that is not a full permutation is dropped; fewer than 2 valid = FALLBACK to R's pick).
-- Cost: about 0.036 USD/day (K=3), 0.060 (K=5); both under 0.30. Latency: calls in parallel, well inside the 45 s gap.
-- Honest limit: aggregation lowers noise, it cannot create information. Expected: agreement up, IC not above the MDE.
+Manager decision recorded: K=3 Borda is **v7.1**, not v7.0, because of the cost (below) and the rehearsal size (432 calls against a 288-call cap). v7.0 stays a single-call L.
+
+- What: L's order = Borda aggregate of K = 3 independent calls with different seeded shuffles (the existing perm formula with a K index).
+- QP rules for v7.1:
+  - k=0 is byte-identical to v7.0 (K index 0 reproduces the v7.0 request and perm).
+  - Borda runs over valid replies only, with an outcome-free tie-break: the order of the lowest-index valid call.
+  - Fewer than 2 valid replies is FALLBACK to R's pick (counts in n).
+  - L1 (the first call alone) is report-only.
+  - The owner cost line is raised first, before any K>1 live run.
+- Agreement statistic (mean pairwise Kendall tau among the K orders) is **report-only**. The earlier draft's kill rule "real-card agreement must exceed shuffled-field agreement" is **dropped**: a consistent field-rule ranker would fail it (it is stable on shuffled fields too), so it kills good rankers.
+- Outcome test: the existing L - U contrast (daily sign-flips, MDE rank IC about 0.17 at D = 10) plus report-only L(K=3) - L1, paired on the same periods.
+- Cost (QP): single 0.0352 USD/day; K=3 about 0.1055 expected, **0.338 worst case with retries, above the 0.30 cap**. K=5 is not affordable. So K=3 needs the cap raised, or a retry limit that keeps the worst case under 0.30.
+- Honest limit: aggregation lowers noise, it cannot create information. Expected: IC not above the MDE.
 
 ### Rank 2: pointwise rationale-then-score features with a frozen small calibrator (HV8)
 
@@ -72,14 +79,15 @@ Constants used: HV7 hourly, N up to 8 cards, ~3,000 input tokens per ranking cal
 - Comparators (all frozen at the same time): (a) numeric-only model with the same form and feature count; (b) LLM scores permuted across pools within period (placebo: same marginal, no information); (c) R and U.
 - Test: paired difference (model with LLM scores - numeric-only), daily sign-flips; skill claim only if it beats (a), because lab history is that a numeric filter explains the gain. Gate for any absolute claim is unchanged.
 - Fit: no abstention (always ranks), numeric heavy, so cheap; the calibrator absorbs the overconfidence documented above. Ties to P28 narrative scorer (docs/research/p28-haiku-narrative) for text fields; its seal rules apply (October meta-capture is walk-2 sealed; counts only until a QP ruling).
-- Cost: about 0.016 USD/day for scoring; training is one-off offline.
-- Risks: pre-period reuse (disclose), 2-4 features limit overfit; training on days that overlap HV6/HV7 rehearsals contaminates; use days not used elsewhere and check docs/HOLDOUT_LEDGER.md.
+- Cost: pointwise scoring about 0.105 USD/day (QP); training is one-off offline.
+- Pre-declaration: the 2-4 features and the training window are named **before training**. Training outcomes come from a ledger block (docs/HOLDOUT_LEDGER.md), **never the 10-21..23 rehearsal sets**.
+- Risks: pre-period reuse (disclose); 2-4 features limit overfit.
 
 ### Rank 3: pairwise tournament versus listwise, decided outcome-blind, then one adopted (HV7.2 or HV8)
 
 - What: run listwise (K=3, rank 1) and pairwise round-robin (28 pairs, both orders, Copeland score) on the same rehearsal prompts. Compare **stability only**: Kendall tau between two independent repeats of each method, transitivity-violation rate for pairwise, and the same on shuffled-card placebo. No outcomes opened. The method with the higher real-minus-placebo stability margin is adopted as the sole L; no arm is added.
 - Why outcome-blind: choosing the better method by outcome would be a selection step with multiplicity.
-- Cost: pairwise both orders 0.155 USD/day, single order 0.077; fits the 0.30 cap alone but not combined with K=3 listwise at the same time on the live day (0.19 total is fine, the cap is ok; disclose).
+- Cost (QP): pairwise single order 0.4305, both orders 0.8610 USD/day, both above the 0.30 cap. The stability comparison itself is offline on rehearsal prompts (a one-off bill, sized under the rehearsal call cap); adopting pairwise live needs the cap raised, otherwise it is not adoptable and the comparison is moot.
 - Caveat: pairwise on 8 cards loses the cross-card context that may carry the screen's information; a null here is not evidence of no skill.
 
 ### Not recommended now
