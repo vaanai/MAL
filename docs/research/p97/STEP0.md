@@ -152,11 +152,20 @@ phi = 1 minus the authority's per-transaction take. So the measured bar is 2 f (
 | Coin | r | p + lp | f | phi | Census formula | Measured bar | Carry per unit of daily turnover |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | `7ttfwuBS` | 0.90% | 0.25% | 0.883 | 0.9995 | 2.556 | **2.258** | 1.019% a day |
-| `51SfaAyr` | 0.75% | 0.25% | 0.861 | 0.9988 | 2.667 | **2.299** | 0.870% a day |
+| `51SfaAyr` | 0.75% | 0.25% | 0.861 | 0.9951 to 0.9988 | 2.667 | **2.299 to 2.307** | 0.867% to 0.870% a day |
+
+phi depends on round size, because the authority's take is a fixed 9,900 lamports per transaction: the 51Sfaa
+20:42:49 round gives 0.9988 (bar 2.299) and the 20:48:54 round gives 0.9951 (take share 0.004934, bar 2.307). f is one
+post-round snapshot per coin and moves with the pool vault's token share (11.68% for 7ttfw, 5.70% for 51Sfaa).
 
 Priority fees and slippage are left out, as in the census; impact at size is not priced. The bar only covers the fee
-round trip. P70's -12.4% mean 24 h drift on top-volume pools is about 12 to 14 times the carry at turnover 1, which is
-why the row's first Step 1 output is drift alone.
+round trip. P70's mean 24 h drift (-0.031126 SOL on a 0.25 SOL stake, -12.45% of stake) is on a stake basis. Per token
+held, which is the carry's basis, it is about -0.031126 / (0.25 x 0.5129) = **-24.3%** (0.5129 is P70's median swap
+share of the stake, so this is approximate). That is about 24 to 28 times the carry at turnover 1. Two caveats: it is a
+mean driven by collapses (81 of 240 pool-days fell below half price), and it comes from a different population
+(P70's top-10 prior-day-volume pools, August to September, in sample, migrated after 08-14; not holder-rewards coins).
+The row's kill clause uses the median. Drift stays the dominant risk, which is why the row's first Step 1 output is
+drift alone.
 
 ### Kill line and status
 
@@ -168,10 +177,18 @@ why the row's first Step 1 output is drift alone.
 
 ### Seal and data notes
 
-- PumpSwap events were decoded for 2 trades only, and only their fee basis-point fields were read. The script
-  (`feebps.py`) skips reserve and amount fields by offset and never prints or stores them. It accepts a trade only at
-  least 360 s after a distribution round that had already swept that pool's PumpSwap creator fees, so both pools
-  were past their first 360 s. No DBC account or event was read. No MAL tape, Q50, HV4 or EXP-024 file was opened.
+- PumpSwap events were decoded for 2 trades only, and only their fee basis-point fields were read. The decoder
+  (`feebps.py`) skips reserve and amount fields by offset and never prints them. It accepts a trade only at least
+  360 s after a distribution round that had already swept that pool's PumpSwap creator fees.
+- **Storage disclosure.** `tx.py` cached every fetched `getTransaction` result in full (logs and token balances) in
+  a session scratch directory outside the repo: 526 files. That cache held **3** PumpSwap Buy/Sell events, not 2:
+  the 2 fee-bps trades above, and a third inside an authority-signed Jupiter swap (sig `4SjjVmoQFL...`, 10-27T20:27:50Z,
+  pool `Deb7ybe2` for 2BJDwU/SOL). No script decoded the third event: `decode.py` and the analysis kept only
+  instruction names and the distribution event. Pool creation times (oldest LP-mint signature, per QP): 7ttfw pool
+  `8L3igRfr` 10-23T19:51:54Z (fee-bps trade about 4 days later); 51Sfaa pool `GfgxhqZm` 10-26T21:11:53Z (trade about
+  23.8 h later); 2BJDwU pool `Deb7ybe2` 10-27T18:34:39Z (swap at about +6,791 s). All three are past every H5 path and
+  the first-360 s clause. **The cache was deleted on 2026-10-27 after QP's review and was never in git**
+  (`git ls-files` shows no cached transaction file). No DBC account or event was read. No MAL tape, Q50, HV4 or EXP-024 file was opened.
 - Distribution transactions hold no prices or reserves. Holder snapshots are token balances, and no price was
   derived from them.
 
