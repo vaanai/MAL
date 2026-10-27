@@ -12,5 +12,5 @@ with Pool(2) as P:
         for k, v in d.items(): mig.setdefault(k, v)
     for m, h in P.imap(C.rd_cre, [f for _, f in C.hourfiles(dirs, "creates")]):
         may |= m; have |= h
-json.dump(dict(mig=mig, have=sorted(have), mayhem=sorted(may)), open("/data/mal/hunt-1008/push-1016/ops/manager17/p85/work/aux_fresh0808.json", "w"))
+json.dump(dict(mig=mig, have=sorted(have), mayhem=sorted(may)), open("/data/mal/hunt-1008/ops/manager17/p85/work/aux_fresh0808.json", "w"))
 print("fresh0808", len(mig), len(have), len(may))
