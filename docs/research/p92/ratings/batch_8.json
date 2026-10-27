@@ -1,0 +1,102 @@
+{
+"h71":[
+{"id":"c7","why":"quote_eff_sol 1095 deep, top3_share_60m 0.18 low, flat ret_60m; hypothesis only"},
+{"id":"c4","why":"quote_eff_sol 449, top3_share_60m 0.06, heavy prints_60m 13771, flat ret_60m"},
+{"id":"c3","why":"quote_eff_sol 404, net_flow_60m positive, top3_share_60m 0.16; ret_60m +1.06 chase risk"},
+{"id":"c2","why":"quote_eff_sol 426, top3_share_60m 0.11, but net_flow_60m negative"},
+{"id":"c5","why":"quote_eff_sol 315, ret_5m +0.29 spike may revert; top3_share 0.11"},
+{"id":"c6","why":"quote_eff_sol 11249 but top3_share_60m 0.99, one wallet dominates the tape"},
+{"id":"c1","why":"quote_eff_sol 94 shallow measured loser, ret_15m -0.25 falling"},
+{"id":"c8","why":"flow_ratio_60m -0.40 and ret_15m -0.49, sell pressure; top3_share 0.52"}
+],
+"h72":[
+{"id":"c1","why":"quote_eff_sol 1875 deep, top3_share_60m 0.15, close_vs_hi_6h 0.94 near high"},
+{"id":"c5","why":"flow_ratio_60m +0.83 buy pressure, quote_eff_sol 2881, top3_share 0.30; ret_60m +1.0 chase risk"},
+{"id":"c3","why":"quote_eff_sol 766, top3_share_60m 0.20, ret_60m -0.08 mild, flow slightly negative"},
+{"id":"c4","why":"top3_share_60m 0.03 low, prints_60m 10258, but quote_eff_sol 346 and ret_60m -0.13"},
+{"id":"c2","why":"quote_eff_sol 471, flow_ratio_60m +0.05, but ret_5m -0.12 falling"},
+{"id":"c7","why":"quote_eff_sol 7646 deep but top3_share_60m 0.97, one wallet dominates"},
+{"id":"c6","why":"quote_eff_sol 254 shallow, ret_15m -0.39 falling"},
+{"id":"c8","why":"quote_eff_sol 213 shallowest, ret_5m +0.42 spike likely reverts"}
+],
+"h73":[
+{"id":"c6","why":"quote_eff_sol 6337, flow_ratio_60m +0.83, top3_share_60m 0.29, close_vs_hi_6h 1.0"},
+{"id":"c8","why":"flow_ratio_60m +0.74, quote_eff_sol 1677, top3_share_60m 0.27; ret_60m +2.06 chase risk"},
+{"id":"c2","why":"flow_ratio_60m +0.82, quote_eff_sol 1721, top3_share 0.30; ret_60m +1.89 extended"},
+{"id":"c5","why":"quote_eff_sol 1692, flow_ratio_60m +0.49, top3_share 0.43, at 6h high"},
+{"id":"c7","why":"quote_eff_sol 1716, flow_ratio_60m -0.18 selling, top3_share 0.38"},
+{"id":"c4","why":"flow_ratio_60m -0.30 selling after ret_15m +0.43 run, top3_share 0.43"},
+{"id":"c1","why":"quote_eff_sol 8293 deep but top3_share_60m 0.9986, one wallet dominates"},
+{"id":"c3","why":"quote_eff_sol 133 shallow, flow_ratio_60m -0.74, ret_60m -0.96 dumping"}
+],
+"h74":[
+{"id":"c8","why":"quote_eff_sol 1016, top3_share_60m 0.11, prints_60m 5806, ret_60m -0.13"},
+{"id":"c2","why":"quote_eff_sol 1209, top3_share_60m 0.13, volume 5301 SOL, flow near zero"},
+{"id":"c5","why":"quote_eff_sol 504, top3_share_60m 0.19, flat ret_60m +0.01 and flow"},
+{"id":"c4","why":"quote_eff_sol 584, top3_share_60m 0.22, flow_ratio_60m -0.08 selling"},
+{"id":"c3","why":"quote_eff_sol 241 shallow, ret_5m +0.10 spike, ret_60m -0.11"},
+{"id":"c7","why":"quote_eff_sol 7940 deep but top3_share_60m 0.99, one wallet dominates"},
+{"id":"c6","why":"quote_eff_sol 253 shallow, ret_60m -0.63, close_vs_hi_6h 0.23"},
+{"id":"c1","why":"quote_eff_sol 191 shallow, ret_60m -0.75, ret_5m -0.19 falling"}
+],
+"h75":[
+{"id":"c1","why":"quote_eff_sol 6732, top3_share_60m 0.17, flow_ratio_60m +0.37, close_vs_hi_6h 1.0"},
+{"id":"c4","why":"quote_eff_sol 9957, flow_ratio_60m +0.79, top3_share 0.51 moderate concentration"},
+{"id":"c3","why":"quote_eff_sol 700, top3_share_60m 0.15, volume 5611, ret_60m +0.61"},
+{"id":"c7","why":"quote_eff_sol 1058, top3_share_60m 0.19, flow mildly positive; traders_15m only 22"},
+{"id":"c8","why":"quote_eff_sol 11309 deep but top3_share_60m 0.99, one wallet dominates"},
+{"id":"c5","why":"quote_eff_sol 3806 but top3_share_60m 0.998, concentrated tape"},
+{"id":"c6","why":"quote_eff_sol 8640 but top3_share_60m 0.997, concentrated tape"},
+{"id":"c2","why":"quote_eff_sol 127 shallow, close_vs_hi_6h 0.15, flow near zero"}
+],
+"h76":[
+{"id":"c2","why":"quote_eff_sol 8646, top3_share_60m 0.08, flow_ratio_60m +0.42, close_vs_hi_6h 1.0"},
+{"id":"c3","why":"top3_share_60m 0.02 low, quote_eff_sol 462, prints_60m 8978, flow near zero"},
+{"id":"c6","why":"quote_eff_sol 6354, flow_ratio_60m +0.41, but top3_share_60m 0.998"},
+{"id":"c1","why":"quote_eff_sol 5625, flow_ratio_60m +0.39, but top3_share_60m 0.9975"},
+{"id":"c7","why":"quote_eff_sol 15531, flow_ratio_60m +0.42, but top3_share_60m 0.998"},
+{"id":"c5","why":"quote_eff_sol 275 shallow, ret_5m +0.32 spike likely reverts"},
+{"id":"c4","why":"quote_eff_sol 299 shallow, prints_60m 512 thin, ret_60m +0.48 chase"},
+{"id":"c8","why":"flow_ratio_60m -0.60 and ret_60m -0.55, heavy selling"}
+],
+"h77":[
+{"id":"c7","why":"quote_eff_sol 580, top3_share_60m 0.06, flow_ratio_60m +0.03, ret_15m +0.42"},
+{"id":"c5","why":"top3_share_60m 0.04 low, traders_15m 939, quote_eff_sol 440, flat returns"},
+{"id":"c4","why":"quote_eff_sol 871, top3_share_60m 0.17, but ret_60m -0.21, flow -0.07"},
+{"id":"c6","why":"quote_eff_sol 481, top3_share_60m 0.13, ret_60m -0.43 falling"},
+{"id":"c2","why":"top3_share_60m 0.04, but quote_eff_sol 340 shallow and ret_60m -0.44"},
+{"id":"c3","why":"traders_15m 23 thin, quote_eff_sol 438, ret_60m -0.30"},
+{"id":"c1","why":"quote_eff_sol 246 shallow, ret_15m -0.23, close_vs_hi_6h 0.25"},
+{"id":"c8","why":"top3_share_60m 0.81 concentrated, flow_ratio_60m -0.62 selling"}
+],
+"h78":[
+{"id":"c7","why":"quote_eff_sol 5802, top3_share_60m 0.08, flow_ratio_60m +0.44, close_vs_hi_6h 1.0"},
+{"id":"c3","why":"top3_share_60m 0.02, prints_60m 8310, flow +0.03, ret_60m +0.21"},
+{"id":"c1","why":"quote_eff_sol 1373, top3_share_60m 0.61, flow_ratio_60m +0.07 mild"},
+{"id":"c2","why":"quote_eff_sol 17062 deep but top3_share_60m 0.99, one wallet dominates"},
+{"id":"c4","why":"quote_eff_sol 7134 deep but top3_share_60m 0.99, concentrated"},
+{"id":"c5","why":"quote_eff_sol 9725 deep but top3_share_60m 0.99, concentrated"},
+{"id":"c8","why":"quote_eff_sol 7868 deep but top3_share_60m 0.99, concentrated"},
+{"id":"c6","why":"quote_eff_sol 312 shallow, ret_60m -0.28, flow_ratio_60m -0.07"}
+],
+"h79":[
+{"id":"c2","why":"quote_eff_sol 1833, top3_share_60m 0.31, flow_ratio_60m +0.29, prints_60m 32403"},
+{"id":"c3","why":"flow_ratio_60m +0.44, but traders_15m 50 thin and ret_60m +3.38 chase risk"},
+{"id":"c1","why":"flow_ratio_60m +0.39 but top3_share_60m 0.997, one wallet dominates"},
+{"id":"c4","why":"quote_eff_sol 6388 deep, flow_ratio_60m +0.38, top3_share 0.996"},
+{"id":"c8","why":"quote_eff_sol 5656 deep, flow_ratio_60m +0.41, top3_share 0.99"},
+{"id":"c5","why":"quote_eff_sol 4716, flow_ratio_60m +0.38, top3_share 0.994"},
+{"id":"c7","why":"quote_eff_sol 3707, flow_ratio_60m +0.39, top3_share 0.988"},
+{"id":"c6","why":"quote_eff_sol 473 shallow, measured to start behind; top3_share 0.01"}
+],
+"h80":[
+{"id":"c1","why":"top3_share_60m 0.02, prints_60m 13517, quote_eff_sol 418, close_vs_hi_6h 0.78"},
+{"id":"c4","why":"quote_eff_sol 7504, flow_ratio_60m +0.55, but top3_share_60m 0.998"},
+{"id":"c7","why":"quote_eff_sol 6062, flow_ratio_60m +0.37, but top3_share_60m 0.98"},
+{"id":"c2","why":"quote_eff_sol 14507, flow_ratio_60m +0.41, but top3_share_60m 0.98"},
+{"id":"c3","why":"quote_eff_sol 5887, flow_ratio_60m +0.41, but top3_share_60m 0.99"},
+{"id":"c6","why":"quote_eff_sol 12508 deep but top3_share_60m 0.998, concentrated"},
+{"id":"c8","why":"quote_eff_sol 324 shallow, ret_15m -0.17, ret_60m -0.09 falling"},
+{"id":"c5","why":"quote_eff_sol 193 shallowest, close_vs_hi_6h 0.19, ret_15m -0.20"}
+]
+}
