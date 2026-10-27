@@ -31,3 +31,6 @@ Capacity of a veto = trades avoided, not trades added: the book keeps (1 - share
 
 ## Seals
 Aug/Sep exploration blocks (explore-0814, fresh-0903, exp011-0909, fast-pool-0918, oracle-insample-0922) via the audit-1008 paths used by P55. No October hour, arena tape, DBC, LaunchLab, FLOOR G1, meta-capture, HV4/HV6/HV7/Q50 output or job, #1419/#1421. These dates are read by at least 14 families (HOLDOUT_LEDGER m >= 14), so a result is in-sample.
+
+## Correction note (2026-10-27T13:53Z)
+The header says "Written 2026-10-27T13:5xZ". The PREREG commit 90a5d971 is stamped 2026-10-27T13:46:20Z; the body above is unchanged. Written before any flag, count or P&L was computed.

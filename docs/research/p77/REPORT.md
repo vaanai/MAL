@@ -1,4 +1,4 @@
-# P77: b-flow flow-surge veto on the frozen H5 binding book. Verdict: NOT_DECIDABLE (veto fires on 90.6% of trades; no P&L read)
+# P77: b-flow flow-surge veto on the frozen H5 binding book. Verdict: NOT_DECIDABLE (veto fires on 89.38% of trades overall, 91.54% discovery, 86.12% confirmation; no P&L read)
 
 Lane P77, 2026-10-27. Paper only. No book has cleared the promotion gate. The 2,826 frozen H5 trades sit on dates already read by at least 14 families; any later result would have been in-sample.
 
@@ -26,4 +26,4 @@ Why it fires so often (inference): H5 enters pools within 300 s of migration, wh
 Aug/Sep exploration blocks via the audit-1008 paths (as P55). No October hour, arena, DBC, LaunchLab, FLOOR G1, meta-capture, HV4/HV6/HV7/Q50 output or job, no #1419/#1421. 0 Helius credits.
 
 ## Files
-`PREREG.md`, `p77_run.py`, `p77_counts_output.txt`, `REPORT.md`.
+`PREREG.md`, `p77_run.py` (flags mode only; the former pricing mode was removed, never run), `p77_counts_output.txt`, `REPORT.md`.
