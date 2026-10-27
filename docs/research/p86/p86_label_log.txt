@@ -1,0 +1,4 @@
+candidates in 4960; priced 4600; drops {'no_pre_print': 0, 'no_entry_print': 47, 'no_trigger': 217, 'no_exit_print': 96, 'bad_state': 0}
+curve intercept -1.146258, mean p_fail 0.2890
+entry lag slots (first print slot - slot_d): median 6.0 p90 40.0; hold slots median 9899.0
+mean y (no fail) -0.081757; mean pnl25 lamports -20439146.0
