@@ -441,3 +441,89 @@ def test_equivalence_reads_only_the_three_pinned_card_files():
     for banned in ("iterdir", ".glob(", "rglob", "listdir", "os.walk", "scandir", ".stat("):
         assert banned not in src.split('"""', 2)[2], banned
     assert E.WINDOW_MS == (1792540800000, 1792800000000)
+
+
+# ------------------------------------------------------------------------------------------------------------------------ HV6 reference drill: pre-filter vs phantom-ON
+def _phantom_tape_rows():
+    """The synthetic tape plus all-ones-signature copies of some trades (simulated rows): a phantom-ON build drops them, a phantom-OFF build counts them."""
+    rows = tape_rows()
+    extra = []
+    for i, r in enumerate(rows):
+        if r["type"] == "trade" and i % 7 == 0:
+            c = dict(r)
+            c["signature"] = "1" * 64
+            c["sol_lamports"] = r["sol_lamports"] * 5
+            extra.append(c)
+    assert extra
+    return sorted(rows + extra, key=lambda r: (r["t_recv_ms"], r["signature"]))
+
+
+def _hv6_on(tmp_path, monkeypatch, rows, phantom: bool):
+    from tools import hv6_cards as H6
+    from tools.test_hv6_runner import make as make6
+
+    monkeypatch.setattr(H6, "READ_ROOTS", (str(tmp_path.parent),))
+    monkeypatch.setattr(H6, "WRITE_ROOTS", (str(tmp_path.parent),))
+    monkeypatch.delenv("MAL_HV4_CHAIN_STATE", raising=False)
+    write_tape(tmp_path / "h6" / "tape", rows)
+    run = make6(tmp_path / "h6", cfg_kw={"phantom_filter": phantom})
+    run.run(START, END)
+    return tmp_path / "h6" / "v6" / "cards"
+
+
+def test_pre_filter_hv6_cards_differ_only_when_phantom_rows_are_present(tmp_path, monkeypatch, _restore_consts):
+    from tools import hv7_card_equiv as E
+
+    monkeypatch.setattr(E, "MIN_PAIRS", 3)
+    # (a) no phantom rows: HV6 phantom-OFF cards equal HV7 phantom-ON cards, so the filter alone is not a difference
+    clean = tmp_path / "clean"
+    clean.mkdir()
+    write_tape(clean / "tape", tape_rows())
+    d0 = _hv6_on(clean, monkeypatch, tape_rows(), phantom=False)
+    _eq_ok(E, clean / "tape", clean)
+    r0 = E.run_equiv([DAY], "eq6", _md5(d0, [DAY]), cards_dir=d0, tape_dir=str(clean / "tape"), root=clean / "drill" / "eq6", window=(0, 1 << 62))
+    assert r0["hv7_card_equiv"] == "PASS" and r0["unequal"] == 0, r0
+    # (b) phantom rows present: the phantom-OFF reference is UNEQUAL to HV7's (phantom-ON) card; the field breakdown names fields and counts only
+    dirty = tmp_path / "dirty"
+    dirty.mkdir()
+    rows = _phantom_tape_rows()
+    write_tape(dirty / "tape", rows)
+    d1 = _hv6_on(dirty, monkeypatch, rows, phantom=False)
+    _eq_ok(E, dirty / "tape", dirty)
+    r1 = E.run_equiv([DAY], "eq7", _md5(d1, [DAY]), cards_dir=d1, tape_dir=str(dirty / "tape"), root=dirty / "drill" / "eq7", window=(0, 1 << 62), field_diff=True)
+    assert r1["hv7_card_equiv"] == "FAIL" and r1["unequal"] > 0, r1
+    fc = r1["unequal_field_counts"]
+    assert fc and all(isinstance(v, int) and v > 0 for v in fc.values()) and all(isinstance(k, str) for k in fc)
+    # (c) the same dirty tape with a phantom-ON HV6 reference is equal again
+    ok = tmp_path / "ok"
+    ok.mkdir()
+    write_tape(ok / "tape", rows)
+    d2 = _hv6_on(ok, monkeypatch, rows, phantom=True)
+    _eq_ok(E, ok / "tape", ok)
+    r2 = E.run_equiv([DAY], "eq8", _md5(d2, [DAY]), cards_dir=d2, tape_dir=str(ok / "tape"), root=ok / "drill" / "eq8", window=(0, 1 << 62), hv6_drill_id=E.HV6_DRILL_ID_P3_ON)
+    assert r2["hv7_card_equiv"] == "PASS" and r2["hv6_drill_id"] == "p3-on-8cd8fe54", r2
+
+
+def test_hv6_drill_id_allowlist_is_exactly_two_and_paths_are_constructed():
+    from tools import hv7_card_equiv as E
+
+    assert E.HV6_DRILL_IDS == ("real-5071e29a-r16g-20261026", "p3-on-8cd8fe54")
+    for ok in E.HV6_DRILL_IDS:
+        assert E.hv6_cards_dir(ok) == Path("/data/mal/arena/haiku-v6/drill") / ok / "real-a" / "v6" / "cards"
+    for bad in ("", "../x", "p3-on-8cd8fe5", "real-5071e29a-r16g-20261027", "p3-on-8cd8fe54/", "x"):
+        with pytest.raises(E.Refused, match="hv6_drill_id_not_allowed"):
+            E.hv6_cards_dir(bad)
+    with pytest.raises(E.Refused, match="hv6_drill_id_not_allowed"):
+        E.run_equiv(["2026-10-21"], "eqx", "0" * 32, hv6_drill_id="p3-on-8cd8fe54/../x")
+    with pytest.raises(SystemExit):
+        E.main(["--drill-id", "e", "--expect-cards-md5", "0" * 32, "--hv6-drill-id", "other"])
+
+
+def test_diff_fields_reports_names_and_counts_never_values():
+    from tools import hv7_card_equiv as E
+
+    a = {"id": "x", "f": {"vol_60m": 1.5, "n": 3}, "chain": {"k": 1}, "setup": None}
+    b = {"id": "x", "f": {"vol_60m": 2.5, "n": 3}, "chain": {"k": 1, "extra": 2}, "setup": None, "Weird Key": 1}
+    out = E.diff_fields(a, b)
+    assert out == {"f.vol_60m": 1, "chain.extra(one_side_only)": 1, "<other>(one_side_only)": 1}
+    assert "2.5" not in json.dumps(out) and "1.5" not in json.dumps(out)
