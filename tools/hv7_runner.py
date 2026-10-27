@@ -42,7 +42,8 @@ RESUME RULES (stated, tested in test_hv7_resume.py):
      stamped before t_d, so a live restart between t_d and t_e can never rebuild the screen: rule 3 ends in resume_rebuild_mismatch and the period is EXCLUDED
      (counted in the 10% exclusion cap). The success path of rule 3 is reachable only with a direct-fetch chain, as in the drills. (b) A live run adds one
      `run_summary` row to the SCAN log at every stop (and a `start` row carries the provider), so rule 6's "decision-log md5 equal to an uninterrupted run"
-     holds on the drill / sim path only. (c) engine.start_record is called for the four HV7 books only, never start_all.
+     holds on the drill / sim path only. (c) The first screen after a restart (or the first ever) can lack a holders block and may not hold the top pools: the prefetcher only fetches in
+     [H:48, H:02) and its store starts empty. (d) engine.start_record is called for the four HV7 books only, never start_all.
   6. The resume event itself goes to <root>/resume.jsonl, NOT to the decision log: a resume with no torn line, no unexecuted entry and no in-flight loss leaves
      the decision-log md5 equal to an uninterrupted run. Gap and exclusion rows are in the decision log, so the md5 differs by rule when one is written.
 """
@@ -115,7 +116,17 @@ HV7_RPC_CALLS_PER_DAY = 24 * HV7_RPC_CALLS_PER_H     # 12,000
 WATCH_MAX = 200                                       # the prefetcher's watch set, top pools by vol_60m. NOT HV6's 2,000: at 500 calls/h the cold mint tier of 1,000 watched pools
 #                                                     # eats the budget the hot holders reads need (sim, PR #1033: no holders block for 4 of 5 screens); at 200 it holds for 100/300/1,000 candidates
 WATCH_HOT_TOP = 32                                    # hot = the top WATCH_HOT_TOP vol_ok candidates by vol_60m (the pools the screen will try first) ...
-WATCH_HOT_MAX = 32                                    # ... plus the screened and card-tried pools of the last screen (at most this many)
+WATCH_HOT_MAX = 32                                    # ... plus the screened and card-tried pools of the last screen (at most this many), so hot can reach WATCH_HOT_TOP + WATCH_HOT_MAX = 64
+# The prefetcher may fetch only in the window [H:48, H:02) UTC, which ends at t_d. At 500 calls/h the rolling-hour cap is always spent: left free-running, the
+# burst re-spends one window later and drifts about a minute an hour relative to t_d, so most screens saw stale or no facts (QP sim, PR #1033). Phase-locked to t_d,
+# all of the hour's budget lands in the 14 minutes before the screen, so the facts it reads are at most 14 minutes old (the card limit is 15).
+PREFETCH_WINDOW_START_MS = HOUR_MS - 12 * MIN_MS      # H:48:00
+PREFETCH_WINDOW_END_MS = T_D_OFFSET_MS                # H:02:00 = t_d, exclusive
+
+
+def prefetch_window_open(now_ms: int) -> bool:
+    m = now_ms % HOUR_MS
+    return m >= PREFETCH_WINDOW_START_MS or m < PREFETCH_WINDOW_END_MS
 WATCH_EVERY_MS = 60_000                               # the watch is told on every minute tick, before the hourly card build
 
 
@@ -197,6 +208,19 @@ def check_card_keys(card: Mapping[str, Any]) -> None:
         raise CardAllowlistError(f"card keys outside the allowlist: {bad}")
 
 
+def _gated_prefetcher_class() -> type:
+    from tools.hv4_prefetch import ChainPrefetcher
+
+    class Hv7ChainPrefetcher(ChainPrefetcher):
+        """HV4's ChainPrefetcher (policy v2), unchanged, whose passes run only inside the t_d-locked window (prefetch_window_open). `watch` is not gated: it makes no RPC."""
+
+        def run_once(self, now_ms: int | None = None) -> int:
+            now = self.clock() if now_ms is None else now_ms
+            return super().run_once(now_ms) if prefetch_window_open(now) else 0
+
+    return Hv7ChainPrefetcher
+
+
 def live_chain_source(root: str | os.PathLike, env: Mapping[str, str] | None = None) -> ChainSource:
     """HV6's ChainSource (compose and chain_part are HV6's, byte for byte) over an HV4Chain whose RpcClient state file and whose policy-v2 prefetcher spend file are
     under the HV7 root, every path through HV7's check_path (H.check is bound to HV6's roots). Provider pinned and HV4's chain state refused, as in HV6. The thread
@@ -204,13 +228,12 @@ def live_chain_source(root: str | os.PathLike, env: Mapping[str, str] | None = N
     refuse_hv4_chain_state(env)
     pinned_provider(env)
     from tools.hv4_chain import HV4Chain, RpcClient, RpcConfig
-    from tools.hv4_prefetch import ChainPrefetcher
 
     state = check_path(Path(root) / CHAIN_CREDITS_FILE, "w")
     spend = check_path(Path(root) / CHAIN_SPEND_FILE, "w")
     os.makedirs(os.path.dirname(state), exist_ok=True)
     chain = HV4Chain(RpcClient(RpcConfig.from_env(env), state_path=state, daily_call_cap=HV7_RPC_CALLS_PER_DAY))
-    return ChainSource(chain, ChainPrefetcher(chain, ChainSource.compose, spend_path=Path(spend), policy="v2", hourly_budget=HV7_RPC_CALLS_PER_H))
+    return ChainSource(chain, _gated_prefetcher_class()(chain, ChainSource.compose, spend_path=Path(spend), policy="v2", hourly_budget=HV7_RPC_CALLS_PER_H))
 
 
 def watch_sets(vol: Mapping[str, Any], last_hot: Sequence[str] = ()) -> tuple[list[str], list[str], dict[str, float]]:
@@ -982,15 +1005,18 @@ def main(argv: list[str] | None = None, *, _stub: Mapping[str, Any] | None = Non
         print(f"refused: {type(e).__name__}", file=sys.stderr)
         return 2
     signal.signal(signal.SIGTERM, run.request_stop)
-    now = int(time.time_ns() // 1_000_000) // TICK_MS * TICK_MS
-    provider = getattr(getattr(chain.chain, "rpc", None), "provider", None)
-    if run.log.files("SCAN"):
-        run.resume(now)             # live: the loop starts at the wall clock; the return value (a sim catch-up tick) is not used
+    try:
+        now = int(time.time_ns() // 1_000_000) // TICK_MS * TICK_MS
+        provider = getattr(getattr(chain.chain, "rpc", None), "provider", None)
+        if run.log.files("SCAN"):
+            run.resume(now)             # live: the loop starts at the wall clock; the return value (a sim catch-up tick) is not used
+        else:
+            run.log_start(provider)
         start = now
-    else:
-        run.log_start(provider)
-        start = now
-    chain.prefetch.start()          # facts are fetched off the scan path, stamped before the scan instant
+        chain.prefetch.start()          # last in the wrapper: nothing can fail after the thread is running. Facts are fetched off the scan path, stamped before the scan instant
+    except Exception as e:      # noqa: BLE001
+        print(f"refused: {type(e).__name__}", file=sys.stderr)
+        return 2
     try:
         run.run(start, 1 << 62)
     finally:

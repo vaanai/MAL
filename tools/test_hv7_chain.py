@@ -44,6 +44,7 @@ def test_live_chain_source_builds_under_the_hv7_root(tmp_path):
     pf = src.prefetch
     assert pf.policy == "v2" and pf.hourly_budget == 500
     assert str(pf.spend_path) == str(tmp_path / "v7" / R.CHAIN_SPEND_FILE)
+    assert type(pf).__name__ == "Hv7ChainPrefetcher" and pf.run_once(5 * 3_600_000 + 10 * 60_000) == 0      # outside [H:48, H:02): no pass, no RPC
     rpc = src.chain.rpc
     assert rpc.provider == "public" and rpc.daily_call_cap == 12_000
     assert str(rpc.counter.state_path) == str(tmp_path / "v7" / R.CHAIN_CREDITS_FILE)
@@ -315,3 +316,39 @@ def _raising_start(tmp, led, reg, cfg):
 
     eng.start_record = boom
     return eng
+
+
+def test_main_refuses_the_shared_arena_ledger_and_a_ledger_outside_the_hv7_root(tmp_path, monkeypatch, capsys):
+    write_tape(tmp_path / "tape", tape_rows())
+    reg = tmp_path / "bots.json"
+    _registry(reg)
+    monkeypatch.setenv("MAL_HV4_RPC", "public")
+
+    def never(*a, **k):
+        raise AssertionError("engine built before the ledger refusal")
+
+    monkeypatch.setattr(arena_paper, "ArenaEngine", never)
+    monkeypatch.setattr(R, "WRITE_ROOTS", (str(tmp_path / "v7"),))
+    for bad in ("/data/mal/arena/ledger", str(tmp_path / "elsewhere")):
+        assert R.main([*_argv(tmp_path, reg, "n_-pn6x44cliJfQg"), "--ledger-root", bad]) == 2
+        assert "refused: ledger root (PathRefused)" in capsys.readouterr().err
+    assert not (tmp_path / "v7").exists()
+
+
+def test_main_exits_2_when_log_start_resume_or_prefetch_start_fails(tmp_path, monkeypatch, capsys):
+    from tools.hv4_prefetch import ChainPrefetcher
+    reg = _live_env(tmp_path, monkeypatch)
+    stops: list[int] = []
+    monkeypatch.setattr(ChainPrefetcher, "stop", lambda self: stops.append(1))
+    old = signal.getsignal(signal.SIGTERM)
+    try:
+        for target, name in (("log_start", "OSError"), ("start", "RuntimeError")):
+            with monkeypatch.context() as m:
+                def boom(*a, **k):
+                    raise (OSError("p") if name == "OSError" else RuntimeError("p"))
+                m.setattr(R.Hv7Runner if target == "log_start" else ChainPrefetcher, target, boom)
+                assert R.main(_argv(tmp_path / "x" if False else tmp_path, reg, "n_-pn6x44cliJfQg")) == 2
+                assert capsys.readouterr().err.strip() == f"refused: {name}"
+    finally:
+        signal.signal(signal.SIGTERM, old)
+    assert stops == []          # a start failure before the loop leaves no thread to stop
