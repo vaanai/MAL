@@ -740,6 +740,8 @@ The copy's owner notice (§2) is unchanged in words: "It halts by itself on a pu
 - Dead-man loop #1319 (a3-daily.sh deadman at 13:10Z, pin 136cd98) ends about 2026-11-03T21Z. #1333 runs after it with a 13 d limit, so it ends about 2026-11-16T21Z, and earlier if #1319 dies early.
 - Q50 alone (E <= 2026-11-06T00Z) is covered by #1446, with only about 18 h of margin. #1447 stays queued.
 
+**Correction 2026-10-27 (`date -u` ~20Z, records PR; the facts above are left as written).** Read from `miscusi_job_status`: #1446 started 2026-10-24T00:57:39Z with a 312 h limit, so it ends at 2026-11-06T00:57:39Z, not "about 2026-11-06T18Z"; the margin over Q50's E (2026-11-06T00Z) was 57 min, not 18 h. Its limit has since been extended to 14 d, so it now ends 2026-11-07T00:57:39Z. Alert #1540 runs to A3_ALERT_UNTIL 2026-11-06T17:53Z (job limit 2026-11-07T17:53Z), not "about 2026-11-08T13Z". Dead-man #1319 was due to end 2026-11-03T21:13:55Z; its limit is now 14 d, so it ends about 2026-11-04T21:13Z (QP-PRERULING-1027-xorder Q5 item 2; the real limit is to be read from the job list); #1333 stays queued after it. Successors #1447 and #1333 are still queued. Latest submit times if an HV4 or HV6 canary moves E (QP-PRERULING-1027-xorder Q5 item 4): loop job 3 by about 2026-11-18T00:57Z; the alert by 2026-11-05T17:53Z, by a successor, because extending the job does not move A3_ALERT_UNTIL. Q50 alone is covered. Not checked by quant-proof.
+
 **Before each canary's first send** (a precondition, recorded in `FILL:a3_guard_source`):
 1. The manager records the running loop job, its pin and its time limit, and every queued successor with its `after` link and time limit.
 2. **The one rule (48 h)** (F5). Every chain job whose limit is before `E` is either:
