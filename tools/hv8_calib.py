@@ -5,6 +5,9 @@ Pure numpy, no clock, no network, no sklearn. Nothing here says HV8 makes money.
 Row schema (one dict per rated card, in screen order within its set; features and ratings only, NO outcome):
   card_sha, t_d (ISO "2026-08-21T12:02:00Z"), f (dict of FEATURE_FIELDS + max_stake), risk (dict, KEPT_RISK), setup_type, setup_z,
   ratings [flow, dump_risk, trend] ints 0-3 (FIRST ratings only; a row with retest=True raises).
+T8a means "all scalar card fields": FEATURE_FIELDS, max_stake, age_known (0/1), the 3 kept risk fields, setup.z, and one 0/1 per setup tag.
+Naming note: the DESIGN's "setup tag" is the card's setup.type value (PULLBACK, BREAKOUT, SECOND_WAVE = keys of hv4_cards.SETUP_PERSONA);
+here each is a feature named setup_tag.<TYPE>, fed from the row key setup_type. age_tier is categorical and is not included.
 Outcomes come only from load_labels(), which refuses unless RATINGS-PIN.md exists and its sha equals the sha256 of the ratings manifest.
 """
 from __future__ import annotations
@@ -27,14 +30,21 @@ N_FOLDS = 7
 C_REG = 1.0
 ITERS = 50
 MIN_SET = 3
+MIN_LABELLED = 600       # bar 4
+KAPPA_MIN = 0.40         # bar 2
+KAPPA_ITEMS_MIN = 2
+DEGENERATE_SHARE = 0.90  # bar 3
+NOT_DECIDABLE = "NOT_DECIDABLE"
+_PIN_LINE = re.compile(r"manifest_sha256: [0-9a-f]{64}")
 GAP_MIN = 0.10
 FOLDS_POS_MIN = 6
 
 L8_NAMES = tuple(f"rating.{i}" for i in R.ITEMS) + (R.ANCHOR,)
 T8_NAMES = tuple(R.MIRROR[i] for i in R.ITEMS) + (R.ANCHOR,)
 _RISK = tuple(f"risk.{k}" for k in R.KEPT_RISK)
+BINARY = frozenset({"f.age_known"})
 T8A_NUMERIC = tuple(f"f.{k}" for k in R.C.FEATURE_FIELDS) + ("f.max_stake",) + _RISK + ("setup.z",)
-T8A_NAMES = T8A_NUMERIC + tuple(f"setup_tag.{t}" for t in R.SETUP_TAGS)
+T8A_NAMES = T8A_NUMERIC + ("f.age_known",) + tuple(f"setup_tag.{t}" for t in R.SETUP_TAGS)
 FEATURE_SETS = {"L8": L8_NAMES, "T8": T8_NAMES, "T8a": T8A_NAMES}
 _LOG = re.compile(r"^f\.(vol_|net_flow_)|_sol")
 
@@ -49,6 +59,8 @@ def _parse_iso(s: str) -> datetime:
 
 def fold_of(t_d_iso: str) -> int:
     t = _parse_iso(t_d_iso)
+    if t.minute != 2 or t.second != 0:
+        raise CalibError(f"t_d is not on the H:02:00Z grid: {t_d_iso}")
     if t >= _parse_iso(LAB_END_ISO) or t < _parse_iso(LAB_FIRST_ISO):
         raise CalibError(f"t_d outside the training window: {t_d_iso}")
     return int((t - _parse_iso(LAB_FIRST_ISO)).total_seconds() // 86400)
@@ -75,6 +87,8 @@ def raw_value(row: dict, name: str):
     kind, _, key = name.partition(".")
     if kind == "rating":
         return float(row["ratings"][R.ITEMS.index(key)])
+    if name in BINARY:
+        return 1.0 if (row.get("f") or {}).get(key) else 0.0
     if kind == "f":
         v = (row.get("f") or {}).get(key)
     elif kind == "risk":
@@ -98,7 +112,7 @@ def fit_preproc(rows, names) -> dict:
     cols = []
     for n in names:
         raw = [raw_value(r, n) for r in rows]
-        if n.startswith("rating.") or n.startswith("setup_tag."):
+        if n.startswith("rating.") or n.startswith("setup_tag.") or n in BINARY:
             cols.append({"lo": None, "hi": None, "med": 0.0, "mean": 0.0, "sd": 1.0, "_raw": raw}); continue
         vals = np.array([_tf(n, v) for v in raw if v is not None], dtype=float)
         if len(vals) == 0:
@@ -149,7 +163,7 @@ def irls(X: np.ndarray, y: np.ndarray, c: float = C_REG, iters: int = ITERS) -> 
     return w
 
 
-def fit_model(rows, y, names) -> dict:
+def fit_model(rows, y, names, pinned_manifest_sha: str | None = None) -> dict:
     if tuple(names) not in FEATURE_SETS.values():
         raise CalibError("feature list is not one of the registered sets (L8, T8, T8a)")
     rows = check_rows(rows)
@@ -157,7 +171,7 @@ def fit_model(rows, y, names) -> dict:
         raise CalibError("rows and labels must align and be non-empty")
     pre = fit_preproc(rows, names)
     w = irls(design(rows, pre), np.asarray(y, dtype=float))
-    model = {"pre": pre, "w": [float(v) for v in w], "train_manifest_sha": hashlib.sha256(
+    model = {"pre": pre, "w": [float(v) for v in w], "pinned_manifest_sha": pinned_manifest_sha, "train_manifest_sha": hashlib.sha256(
         ",".join(sorted(r["card_sha"] for r in rows)).encode()).hexdigest()}
     model["sha256"] = model_sha(model)
     return model
@@ -179,10 +193,12 @@ def read_pin(pin_path: Path | None = None) -> str:
     p = Path(pin_path) if pin_path else PIN_PATH
     if not p.is_file():
         raise CalibError("RATINGS-PIN.md does not exist: labels are refused")
-    m = re.search(r"manifest_sha256:\s*`?([0-9a-f]{64})`?", p.read_text())
-    if not m:
-        raise CalibError("RATINGS-PIN.md has no manifest_sha256 line")
-    return m.group(1)
+    text = p.read_text()
+    if text.endswith("\n"):
+        text = text[:-1]
+    if not _PIN_LINE.fullmatch(text):  # exactly one line, no prefix, no suffix, no extra lines
+        raise CalibError("RATINGS-PIN.md must be exactly one line: manifest_sha256: <64 lowercase hex>")
+    return text.split(" ")[1]
 
 
 def load_labels(labels_path, manifest_path, pin_path: Path | None = None) -> dict:
@@ -201,26 +217,28 @@ def load_labels(labels_path, manifest_path, pin_path: Path | None = None) -> dic
 
 
 def label_rows(rows, returns: dict):
-    """Attach returns; y = 1 if above the set median, 0 if below; ties and censored dropped and counted.
-    Returns (labelled_rows, ret list, y list, counts)."""
+    """y = 1 if the flat-15% net return is above the set's median of known returns, 0 if below; ties and censored cards get ret/y None
+    (counted) but STAY in the row list so P8 can permute over the whole set. Returns (all_rows, rets, ys, counts); rets/ys are aligned
+    to all_rows with None for unlabelled cards."""
     rows = check_rows(rows)
-    by_set: dict[str, list[dict]] = {}
-    for r in rows:
-        by_set.setdefault(r["t_d"], []).append(r)
-    keep, rets, ys = [], [], []
+    by_set: dict[str, list[int]] = {}
+    for i, r in enumerate(rows):
+        by_set.setdefault(r["t_d"], []).append(i)
+    rets, ys = [None] * len(rows), [None] * len(rows)
     cnt = {"censored": 0, "tied": 0, "kept": 0}
-    for t, grp in by_set.items():
-        vals = [returns.get(r["card_sha"]) for r in grp]
+    for idx in by_set.values():
+        vals = [returns.get(rows[i]["card_sha"]) for i in idx]
         known = [v for v in vals if v is not None]
         med = float(np.median(known)) if known else None
-        for r, v in zip(grp, vals):
+        for i, v in zip(idx, vals):
             if v is None:
                 cnt["censored"] += 1
             elif v == med:
                 cnt["tied"] += 1
             else:
-                keep.append(r); rets.append(float(v)); ys.append(1 if v > med else 0); cnt["kept"] += 1
-    return keep, rets, ys, cnt
+                rets[i], ys[i] = float(v), 1 if v > med else 0
+                cnt["kept"] += 1
+    return rows, rets, ys, cnt
 
 
 # ------------------------------------------------------------------ IC, LODO
@@ -271,38 +289,104 @@ def _placebo_rows(rows, groups):
 
 
 def lodo(rows, rets, ys) -> dict:
-    """Per-fold mean within-set Spearman IC (sets with >= 3 labelled cards) for L8, T8, T8a, P8, plus P8's matching-pick share."""
+    """Per-fold mean within-set Spearman IC (sets with >= 3 labelled cards) for L8, T8, T8a, P8.
+    rows = ALL rated cards in screen order; rets/ys are None for unlabelled cards. P8 permutes over all of a set's cards (DESIGN seed),
+    then only labelled cards are scored. A fold with no set of >= 3 labelled cards has IC None and is listed in `not_decidable_folds`.
+    Also returned: per-arm per-fold count of constant-score sets (their IC stays 0.0), matching-pick share per fold (P8 pick = L8 pick,
+    among labelled cards) and overall."""
     rows = check_rows(rows)
+    if not len(rows) == len(rets) == len(ys):
+        raise CalibError("rows, rets, ys must align")
     folds = np.array([fold_of(r["t_d"]) for r in rows])
-    rets, ys = np.asarray(rets, dtype=float), np.asarray(ys, dtype=float)
-    ic = {a: [] for a in ("L8", "T8", "T8a", "P8")}
-    match = [0, 0]
+    lab = np.array([y is not None for y in ys])
+    rets_a = np.array([np.nan if v is None else v for v in rets], dtype=float)
+    ys_a = np.array([np.nan if v is None else v for v in ys], dtype=float)
+    arms = ("L8", "T8", "T8a", "P8")
+    ic = {a: [] for a in arms}
+    const = {a: [] for a in arms}
+    match_fold, match = [], [0, 0]
+    bad = []
     for k in range(N_FOLDS):
-        tr, te = np.where(folds != k)[0], np.where(folds == k)[0]
+        tr = np.where((folds != k) & lab)[0]
+        te = np.where(folds == k)[0]
         if len(tr) == 0 or len(te) == 0:
             raise CalibError(f"fold {k} is empty")
-        trr, ter = [rows[i] for i in tr], [rows[i] for i in te]
-        scores = {}
-        models = {a: fit_model(trr, ys[tr], FEATURE_SETS[a]) for a in FEATURE_SETS}
-        for a, m in models.items():
-            scores[a] = score(m, ter)
+        ter = [rows[i] for i in te]
+        models = {a: fit_model([rows[i] for i in tr], ys_a[tr], FEATURE_SETS[a]) for a in FEATURE_SETS}
+        scores = {a: score(m, ter) for a, m in models.items()}
         groups = _set_groups(ter)
-        scores["P8"] = score(models["L8"], _placebo_rows(ter, groups))
-        for a in ic:
-            vals = [spearman(scores[a][idx], rets[te][idx]) for idx in groups.values() if len(idx) >= MIN_SET]
-            ic[a].append(float(np.mean(vals)) if vals else 0.0)
+        scores["P8"] = score(models["L8"], _placebo_rows(ter, groups))  # permuted over all cards of each set
+        labk = lab[te]
+        ic_k = {a: [] for a in arms}
+        cc = {a: 0 for a in arms}
+        m_k = [0, 0]
         for idx in groups.values():
-            if len(idx) >= MIN_SET:
-                match[1] += 1
-                match[0] += pick_index(scores["L8"][idx]) == pick_index(scores["P8"][idx])
-    return {"ic": ic, "p8_matching_pick_share": match[0] / match[1] if match[1] else None}
+            li = [i for i in idx if labk[i]]
+            if len(li) < MIN_SET:
+                continue
+            for a in arms:
+                sc = scores[a][li]
+                if np.all(sc == sc[0]):
+                    cc[a] += 1
+                ic_k[a].append(spearman(sc, rets_a[te][li]))
+            m_k[1] += 1
+            m_k[0] += pick_index(scores["L8"][li]) == pick_index(scores["P8"][li])
+        if not ic_k["L8"]:
+            bad.append(k)
+        for a in arms:
+            ic[a].append(float(np.mean(ic_k[a])) if ic_k[a] else None)
+            const[a].append(cc[a])
+        match_fold.append(m_k[0] / m_k[1] if m_k[1] else None)
+        match[0] += m_k[0]; match[1] += m_k[1]
+    return {"ic": ic, "constant_score_sets": const, "p8_matching_pick_share_by_fold": match_fold,
+            "p8_matching_pick_share": match[0] / match[1] if match[1] else None, "not_decidable_folds": bad}
+
+
+# ------------------------------------------------------------------ bars 2, 3, 4
+
+def qw_kappa(a, b, n_cat: int = 4):
+    """Quadratic-weighted Cohen's kappa between two integer rating lists on 0..n_cat-1; None if undefined (zero expected disagreement)."""
+    a, b = list(a), list(b)
+    if len(a) != len(b) or not a:
+        raise CalibError("kappa needs two non-empty aligned lists")
+    O = np.zeros((n_cat, n_cat))
+    for x, y in zip(a, b):
+        O[x, y] += 1
+    O /= O.sum()
+    E = np.outer(O.sum(1), O.sum(0))
+    W = np.array([[(i - j) ** 2 for j in range(n_cat)] for i in range(n_cat)], dtype=float) / (n_cat - 1) ** 2
+    den = float((W * E).sum())
+    return None if den == 0 else 1.0 - float((W * O).sum()) / den
+
+
+def bar2(first, retest) -> dict:
+    """Reliability: kappa >= 0.40 on >= 2 of 3 items. first/retest: aligned lists of rating triples (retest cards only)."""
+    ks = [qw_kappa([t[i] for t in first], [t[i] for t in retest]) for i in range(3)]
+    n_ok = sum(1 for k in ks if k is not None and k >= KAPPA_MIN)
+    return {"kappa": dict(zip(R.ITEMS, ks)), "items_ok": n_ok, "pass": n_ok >= KAPPA_ITEMS_MIN}
+
+
+def bar3(first) -> dict:
+    """Non-degenerate: at most 1 item with more than 90% of first ratings on one value."""
+    first = list(first)
+    if not first:
+        raise CalibError("bar 3 needs ratings")
+    share = [max(sum(1 for t in first if t[i] == v) for v in range(4)) / len(first) for i in range(3)]
+    n_bad = sum(1 for x in share if x > DEGENERATE_SHARE)
+    return {"top_share": dict(zip(R.ITEMS, share)), "degenerate_items": n_bad, "pass": n_bad <= 1}
+
+
+def bar4(n_labelled: int) -> dict:
+    return {"n_labelled": int(n_labelled), "pass": n_labelled >= MIN_LABELLED}
 
 
 # ------------------------------------------------------------------ bar 5
 
 def bar5(ic: dict) -> dict:
     """Bar 5 (DESIGN section 5): (a) mean gap L8-T8 >= 0.10, (b) gap > 0 on >= 6 of 7 folds, (c) mean L8 > mean T8a, (d) mean L8 > mean P8.
-    g_s = 0.5 * max(0, g - 1.645 * sd_folds(g_k) / sqrt(7)), sd with ddof=1. Kill-only."""
+    g_s = 0.5 * max(0, g - 1.645 * sd_folds(g_k) / sqrt(7)), sd with ddof=1. Kill-only. A None fold IC returns NOT_DECIDABLE."""
+    if any(v is None for k in ("L8", "T8", "T8a", "P8") for v in ic[k]):
+        return {"pass": False, "verdict": NOT_DECIDABLE, "reason": "a fold has no set with >= 3 labelled cards"}
     L, T, A, P = (np.asarray(ic[k], dtype=float) for k in ("L8", "T8", "T8a", "P8"))
     if not all(len(x) == N_FOLDS for x in (L, T, A, P)):
         raise CalibError("bar 5 needs 7 fold ICs per arm")
@@ -311,5 +395,20 @@ def bar5(ic: dict) -> dict:
     se = float(gk.std(ddof=1) / math.sqrt(N_FOLDS))
     a, b = g >= GAP_MIN, int((gk > 0).sum()) >= FOLDS_POS_MIN
     c, d = bool(L.mean() > A.mean()), bool(L.mean() > P.mean())
+    ok = bool(a and b and c and d)
     return {"gap": g, "se": se, "folds_positive": int((gk > 0).sum()), "a": bool(a), "b": bool(b), "c": c, "d": d,
-            "pass": bool(a and b and c and d), "g_shrunk": 0.5 * max(0.0, g - 1.645 * se)}
+            "pass": ok, "verdict": "PASS" if ok else "FAIL", "g_shrunk": 0.5 * max(0.0, g - 1.645 * se)}
+
+
+def offline_verdict(first, retest, rows, rets, ys) -> dict:
+    """Bars 2, 3 (FAIL if missed), then bar 4 (< 600 labelled -> NOT_DECIDABLE, bar 5 is NOT run), then bar 5 (NOT_DECIDABLE if a fold
+    has no set with >= 3 labelled cards). Bar 1 (parse) is checked by the C3 validator, not here."""
+    b2, b3, b4 = bar2(first, retest), bar3(first), bar4(sum(1 for y in ys if y is not None))
+    out = {"bar2": b2, "bar3": b3, "bar4": b4}
+    if not b2["pass"] or not b3["pass"]:
+        return {**out, "verdict": "FAIL"}
+    if not b4["pass"]:
+        return {**out, "verdict": NOT_DECIDABLE, "reason": "bar 4: fewer than 600 labelled cards"}
+    run = lodo(rows, rets, ys)
+    b5 = bar5(run["ic"])
+    return {**out, "lodo": run, "bar5": b5, "verdict": b5["verdict"]}
