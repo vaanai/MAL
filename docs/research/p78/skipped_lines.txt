@@ -1,0 +1,2 @@
+exp011-0909/b trades-2026-09-15T03.jsonl.zst 1
+exp011-0909/c trades-2026-09-12T07.jsonl.zst 1
