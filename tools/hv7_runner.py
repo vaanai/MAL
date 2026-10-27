@@ -38,6 +38,11 @@ RESUME RULES (stated, tested in test_hv7_resume.py):
      rule, not an exclusion. A period resumed AFTER t_e, or one whose rebuild does not match, is EXCLUDED in all four arms (SCAN `period_excluded` row and an L
      `rank` row with excluded true). Exclusions have their own 10% cap in hv7_count; over it every arm is NOT EVALUABLE.
   5. A period whose rank row exists but whose entries are incomplete (kill during enter): a `gap` row per missing (arm, pool) entry; never a late entry.
+  LIVE LIMITS (disclosed, QP/reviewer #1033): (a) in a live run the prefetcher store is in memory and empty after a restart, and part_at(t_d) serves only facts
+     stamped before t_d, so a live restart between t_d and t_e can never rebuild the screen: rule 3 ends in resume_rebuild_mismatch and the period is EXCLUDED
+     (counted in the 10% exclusion cap). The success path of rule 3 is reachable only with a direct-fetch chain, as in the drills. (b) A live run adds one
+     `run_summary` row to the SCAN log at every stop (and a `start` row carries the provider), so rule 6's "decision-log md5 equal to an uninterrupted run"
+     holds on the drill / sim path only. (c) engine.start_record is called for the four HV7 books only, never start_all.
   6. The resume event itself goes to <root>/resume.jsonl, NOT to the decision log: a resume with no torn line, no unexecuted entry and no in-flight loss leaves
      the decision-log md5 equal to an uninterrupted run. Gap and exclusion rows are in the decision log, so the md5 differs by rule when one is written.
 """
@@ -107,8 +112,11 @@ WRITE_ROOTS = (HV7_ROOT,)
 # Live chain client. HV7 has its own RPC budget so it does not compete with HV6's 1,000 calls/h; state and spend files sit under HV7_ROOT.
 HV7_RPC_CALLS_PER_H = 500
 HV7_RPC_CALLS_PER_DAY = 24 * HV7_RPC_CALLS_PER_H     # 12,000
-WATCH_MAX = 2_000                                     # = hv6_runner.WATCH_MAX_POOLS: the prefetcher's watch set, top pools by vol_60m
-WATCH_HOT_MAX = 32                                    # the pools whose card was tried this screen (the screened N <= 8 first) are hot, never more than this many
+WATCH_MAX = 200                                       # the prefetcher's watch set, top pools by vol_60m. NOT HV6's 2,000: at 500 calls/h the cold mint tier of 1,000 watched pools
+#                                                     # eats the budget the hot holders reads need (sim, PR #1033: no holders block for 4 of 5 screens); at 200 it holds for 100/300/1,000 candidates
+WATCH_HOT_TOP = 32                                    # hot = the top WATCH_HOT_TOP vol_ok candidates by vol_60m (the pools the screen will try first) ...
+WATCH_HOT_MAX = 32                                    # ... plus the screened and card-tried pools of the last screen (at most this many)
+WATCH_EVERY_MS = 60_000                               # the watch is told on every minute tick, before the hourly card build
 
 
 # Owner cost-line reference: a MiScusi notebook id (n_...) or a MiScusi question id (q_...). real ids contain "-" and "_" (e.g. q_6_kzYJva9XXuYQ), so the body is 12-20 of [A-Za-z0-9_-];
@@ -203,6 +211,18 @@ def live_chain_source(root: str | os.PathLike, env: Mapping[str, str] | None = N
     os.makedirs(os.path.dirname(state), exist_ok=True)
     chain = HV4Chain(RpcClient(RpcConfig.from_env(env), state_path=state, daily_call_cap=HV7_RPC_CALLS_PER_DAY))
     return ChainSource(chain, ChainPrefetcher(chain, ChainSource.compose, spend_path=Path(spend), policy="v2", hourly_budget=HV7_RPC_CALLS_PER_H))
+
+
+def watch_sets(vol: Mapping[str, Any], last_hot: Sequence[str] = ()) -> tuple[list[str], list[str], dict[str, float]]:
+    """(items, hot, vols) for ChainPrefetcher.watch. vol = vol_60m of every candidate pool. hot = the top WATCH_HOT_TOP vol_ok candidates by vol_60m, then the
+    screened and card-tried pools of the last screen that are still candidates. items = hot, then the other candidates by vol_60m, at most WATCH_MAX, never
+    cutting the hot set."""
+    ok = sorted((q for q in vol if R._vol_ok(vol[q])), key=lambda q: (-float(vol[q]), q))
+    hot = list(dict.fromkeys([*ok[:WATCH_HOT_TOP], *(q for q in last_hot if q in vol)]))
+    in_hot = set(hot)
+    rest = sorted((q for q in vol if q not in in_hot), key=lambda q: (-float(vol[q] or 0.0), q))
+    items = (hot + rest)[:max(WATCH_MAX, len(hot))]
+    return items, hot, {q: float(vol[q] or 0.0) for q in items}
 
 
 class Hv7DecisionLog(DecisionLog):
@@ -372,6 +392,7 @@ class Hv7Runner:
         self.arm_of: dict[str, str] = {}
         self.pending: dict[str, Any] | None = None
         self.counters: dict[str, int] = {}
+        self._last_hot: list[str] = []
         self._lock = threading.Lock()              # the L thread and the loop both count
         self.hook_errors: list[str] = []
         self.slot = 0
@@ -494,19 +515,24 @@ class Hv7Runner:
         check_card_keys(card)       # raises: a key outside the allowlist is a fault, not a skip
         return card
 
-    def _watch(self, T: int, res: Any, screened: Sequence[str], tried: Sequence[str]) -> None:
-        """Tell a chain source with a background prefetcher the watch set (no RPC here, no effect on the decision path; a fake chain has no `watch`).
-        hot = the screened pools, then the other pools whose card was tried this screen (a pool with no facts yet has no card and must still be prefetched),
-        at most WATCH_HOT_MAX. items = the screened and tried pools, then the top candidates by vol_60m, at most WATCH_MAX."""
-        watch = getattr(self.chain, "watch", None)
-        if watch is None:
+    def watch_tick(self, T: int) -> None:
+        """Once a minute (live chain with a background prefetcher only; a fake chain has no `watch`, so replays and drills never reach the scan below): scan the
+        state polled to T and tell the prefetcher the watch set, BEFORE the hourly card build, so the facts the screen reads at t_d are about a minute old, not fifty.
+        No RPC and no state change here; the decision path never reads this."""
+        if T % WATCH_EVERY_MS or getattr(self.chain, "watch", None) is None:
             return
-        hot = list(dict.fromkeys([*screened, *tried]))[:WATCH_HOT_MAX]
-        vol = {q: res.feats[q].get("vol_60m") or 0.0 for q in res.candidates}
-        in_hot = set(hot)
-        rest = sorted((q for q in res.candidates if q not in in_hot), key=lambda q: (-float(vol[q]), q))
-        ranked = (hot + rest)[:max(WATCH_MAX, len(hot))]
-        watch([(q, self.state.pool(q).mint) for q in ranked], hot, self._now(T), vols={q: vol[q] for q in ranked})
+        pools = self.state.pools_wsol(lambda p: p.prog == "pumpswap")
+
+        def gen():
+            for p in pools:
+                snap = self.state.snapshot(p.id)
+                if snap is not None:
+                    yield snap, list(p.events)
+
+        res = H.scan(gen(), as_of_ms=T, limiter=C.SetupLimiter(), board_on=False)
+        vol = {q: res.feats[q].get("vol_60m") for q in res.candidates}
+        items, hot, vols = watch_sets(vol, self._last_hot)
+        self.chain.watch([(q, self.state.pool(q).mint) for q in items], hot, self._now(T), vols=vols)
 
     def screen(self, T: int, rebuild: Mapping[str, Any] | None = None, rank_row: Mapping[str, Any] | None = None) -> None:
         """rebuild: the logged period row of a resumed period. The screen is re-run from the replayed tape and must equal the logged one; no new SCAN row. rank_row: the L rank row already logged for it (a fallback written at shutdown): L's pick is taken from it, the model is not asked."""
@@ -540,7 +566,7 @@ class Hv7Runner:
                 continue
             cards[pid] = card
         scr = R.screen_set(list(cards), vol, n=self.cfg.n, n_min=self.cfg.n_min)
-        self._watch(T, res, scr.ids, tried)
+        self._last_hot = list(dict.fromkeys([*scr.ids, *tried]))[:WATCH_HOT_MAX]      # the next minute ticks keep these hot
         shas = tuple(A.p4.card_sha256(cards[i]) for i in scr.ids)
         base = {"kind": "period", "t_d": t_d, "t_e": R.iso_from_ms(T - T_D_OFFSET_MS + T_E_OFFSET_MS), "counts": dict(res.counts), "n_candidates": len(res.candidates),
                 "vetoed": sorted(vetoed), "screen": list(scr.ids), "card_shas": list(shas), "no_trade": scr.no_trade, "reason": scr.reason, "as_of_slot": self.slot}
@@ -841,6 +867,7 @@ class Hv7Runner:
                 self.log.append("SCAN", T, {"kind": "run_complete", "reason": "entries_halt_and_no_open_position"})
                 self._stop = True
             return
+        self.watch_tick(T)                             # before the hourly card build (the minute tick at t_d runs first)
         m = T % HOUR_MS
         if m == T_D_OFFSET_MS:
             self.screen(T)
@@ -921,6 +948,9 @@ def main(argv: list[str] | None = None, *, _stub: Mapping[str, Any] | None = Non
         return 2
     try:
         ledger_root = check_path(a.ledger_root or Path(a.root) / "engine-ledger", "w")
+        base, led = os.path.realpath(a.root), os.path.realpath(ledger_root)
+        if led == base or not led.startswith(base + os.sep):        # strictly inside --root (hv7_read refuses anything else)
+            raise H.PathRefused("ledger_not_inside_root")
     except (Hv7Error, H.PathRefused) as e:
         print(f"refused: ledger root ({type(e).__name__})", file=sys.stderr)
         return 2
@@ -942,11 +972,16 @@ def main(argv: list[str] | None = None, *, _stub: Mapping[str, Any] | None = Non
         chain = live_chain_source(a.root)
         run = Hv7Runner(Hv7Config(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True, entries_halt_ms=a.entries_halt_ms),
                         ArenaState(check_path(a.tape, "r"), start_ms=0), engine, CallerModel(guard), chain, guard)
-    except (Hv7Error, H.PathRefused, RuntimeError, PermissionError) as e:
+    except Exception as e:      # noqa: BLE001 - every builder error (ChainError, ValueError, OSError, ArenaRefused, ...): the class name only, never the message
+        print(f"refused: {type(e).__name__}", file=sys.stderr)
+        return 2
+    try:
+        for arm in ARM_ORDER:           # the four HV7 books only (start_all would write a start row for every registered book of every project into this ledger)
+            engine.start_record(bot_id(arm))
+    except Exception as e:      # noqa: BLE001
         print(f"refused: {type(e).__name__}", file=sys.stderr)
         return 2
     signal.signal(signal.SIGTERM, run.request_stop)
-    engine.start_all()
     now = int(time.time_ns() // 1_000_000) // TICK_MS * TICK_MS
     provider = getattr(getattr(chain.chain, "rpc", None), "provider", None)
     if run.log.files("SCAN"):
