@@ -187,6 +187,13 @@ class Known:
         return any(t is not None and t < t_d for t in ts)
 
 
+def allow_roots(scratch: Path) -> None:
+    """Process-local: HV7's path allowlist gets the scratch dir (the runner's decision log and the engine ledger live there)."""
+    base = os.path.realpath(scratch)
+    R.READ_ROOTS = tuple(dict.fromkeys(R.READ_ROOTS + (base,)))
+    R.WRITE_ROOTS = tuple(dict.fromkeys(R.WRITE_ROOTS + (base,)))
+
+
 def make_runner(tape: Path, scratch: Path, win: Window = DEFAULT, *, t_ds: list[int] | None = None, engine: Any = None, model: Any = None,
                 guard: Any = None) -> tuple[Any, dict[str, Any]]:
     """The guarded HV7 runner over the tape (shared by the dump and the label tool). Every refusal fires here, before a row is applied.
@@ -199,9 +206,7 @@ def make_runner(tape: Path, scratch: Path, win: Window = DEFAULT, *, t_ds: list[
     rows_scanned = prescan_tail(files, win)
     known = Known(win)
     root = scratch / "v7"
-    base = os.path.realpath(scratch)
-    R.READ_ROOTS = tuple(dict.fromkeys(R.READ_ROOTS + (base,)))          # process-local: the runner's log dir lives in scratch
-    R.WRITE_ROOTS = tuple(dict.fromkeys(R.WRITE_ROOTS + (base,)))
+    allow_roots(scratch)
     run = R.Hv7Runner(R.Hv7Config(root=str(root), frozen_sha="hv8dump0000000", clock_start_ms=win.block_start_ms, phantom_filter=True),
                       ArenaState(tape, start_ms=0), engine or NullEngine(), model or NoModel(), FakeChain(), guard or R.Hv7Guard(root))
     if model is None:
