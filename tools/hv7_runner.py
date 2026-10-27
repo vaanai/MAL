@@ -861,8 +861,20 @@ class Hv7Runner:
     def request_stop(self, *_a: Any) -> None:
         self._stop = True
 
-    def log_start(self) -> None:
-        self.log.append("SCAN", self.sim_now or self.now_fn(), {"kind": "start", "frozen_sha": self.cfg.frozen_sha, "entries_halt_ms": self.cfg.entries_halt_ms,
+    def summary(self, provider: str | None = None) -> dict[str, Any]:
+        out: dict[str, Any] = {"counters": dict(self.counters), "provider": provider}
+        rep = getattr(self.chain, "credit_report", None)
+        if rep is not None:
+            try:
+                out["chain_credits"] = rep()
+            except Exception as e:  # noqa: BLE001
+                out["chain_credits"] = {"error": type(e).__name__}
+        return out
+
+    def log_start(self, provider: str | None = None) -> None:
+        # `provider` is recorded only when given (live), so a stub/replay start row is byte-identical to before
+        extra = {"provider": provider} if provider is not None else {}
+        self.log.append("SCAN", self.sim_now or self.now_fn(), {"kind": "start", **extra, "frozen_sha": self.cfg.frozen_sha, "entries_halt_ms": self.cfg.entries_halt_ms,
                                                               "clock_start_ms": self.cfg.clock_start_ms, "live": bool(self.cfg.live), "day_cap_usd": HV7_DAY_CAP_USD})
 
     def decision_md5(self) -> str:
@@ -888,6 +900,7 @@ def main(argv: list[str] | None = None, *, _stub: Mapping[str, Any] | None = Non
     ap.add_argument("--entries-halt-ms", type=int, required=True)
     ap.add_argument("--feed-delay-slots", type=int, required=True)
     ap.add_argument("--registry", default=None, help="bots.json to read the pins from (default: the real registry)")
+    ap.add_argument("--ledger-root", default=None, help="engine ledger dir; default <root>/engine-ledger; refused outside the HV7 root (the shared arena ledger is HV4's, sealed)")
     ap.add_argument("--owner-cost-line-ref", required=True, help="reference to the owner's HV7 cost line (DESIGN section 5); no API call without it")
     a = ap.parse_args(argv)
     try:
@@ -906,6 +919,11 @@ def main(argv: list[str] | None = None, *, _stub: Mapping[str, Any] | None = Non
     if any(v["entries_halt_ms"] != a.entries_halt_ms or v["clock_start_ms"] != a.clock_start_ms for v in pins.values()):
         print("refused: --entries-halt-ms / --clock-start-ms differ from the registry", file=sys.stderr)
         return 2
+    try:
+        ledger_root = check_path(a.ledger_root or Path(a.root) / "engine-ledger", "w")
+    except (Hv7Error, H.PathRefused) as e:
+        print(f"refused: ledger root ({type(e).__name__})", file=sys.stderr)
+        return 2
     guard = Hv7Guard(a.root)
     if _stub is not None:
         run = Hv7Runner(Hv7Config(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=False, entries_halt_ms=a.entries_halt_ms),
@@ -918,26 +936,35 @@ def main(argv: list[str] | None = None, *, _stub: Mapping[str, Any] | None = Non
             run.shutdown()
         return 0
     from tools.hv6_agents import CallerModel
-    engine = ArenaEngine(cfg=stack_config(a.feed_delay_slots))
-    run = Hv7Runner(Hv7Config(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True, entries_halt_ms=a.entries_halt_ms),
-                    ArenaState(check_path(a.tape, "r"), start_ms=0), engine, CallerModel(guard), live_chain_source(a.root), guard)
+
+    try:
+        engine = ArenaEngine(ledger_root, a.registry or arena_paper.REGISTRY_PATH, cfg=stack_config(a.feed_delay_slots))
+        chain = live_chain_source(a.root)
+        run = Hv7Runner(Hv7Config(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True, entries_halt_ms=a.entries_halt_ms),
+                        ArenaState(check_path(a.tape, "r"), start_ms=0), engine, CallerModel(guard), chain, guard)
+    except (Hv7Error, H.PathRefused, RuntimeError, PermissionError) as e:
+        print(f"refused: {type(e).__name__}", file=sys.stderr)
+        return 2
     signal.signal(signal.SIGTERM, run.request_stop)
     engine.start_all()
     now = int(time.time_ns() // 1_000_000) // TICK_MS * TICK_MS
+    provider = getattr(getattr(chain.chain, "rpc", None), "provider", None)
     if run.log.files("SCAN"):
         run.resume(now)             # live: the loop starts at the wall clock; the return value (a sim catch-up tick) is not used
         start = now
     else:
-        run.log_start()
+        run.log_start(provider)
         start = now
-    run.chain.prefetch.start()      # facts are fetched off the scan path, stamped before the scan instant
+    chain.prefetch.start()          # facts are fetched off the scan path, stamped before the scan instant
     try:
         run.run(start, 1 << 62)
     finally:
-        run.chain.prefetch.stop()
+        chain.prefetch.stop()
         run.shutdown()
+        summ = run.summary(provider)
+        run.log.append("SCAN", int(time.time() * 1000), {"kind": "run_summary", **summ})   # after the last decision row; resume reads the last period row, not the last row
+        print(json.dumps({"summary": summ}, sort_keys=True, separators=(",", ":")))
     return 0
-
 
 if __name__ == "__main__":
     sys.exit(main())

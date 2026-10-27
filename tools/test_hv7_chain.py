@@ -58,7 +58,7 @@ def test_live_chain_source_refusals(tmp_path, monkeypatch):
         R.live_chain_source("/data/mal/arena/haiku-v6", PUBLIC)                   # HV6's root is not HV7's
 
 
-def test_main_live_path_starts_and_stops_the_prefetcher(tmp_path, monkeypatch):
+def test_main_live_path_starts_and_stops_the_prefetcher(tmp_path, monkeypatch, capsys):
     from tools.hv4_prefetch import ChainPrefetcher
     write_tape(tmp_path / "tape", tape_rows())
     reg = tmp_path / "bots.json"
@@ -73,8 +73,9 @@ def test_main_live_path_starts_and_stops_the_prefetcher(tmp_path, monkeypatch):
     real_check = R.check_path
     monkeypatch.setattr(R, "check_path", lambda p, mode="r": (seen.append((os.fspath(p), mode)), real_check(p, mode))[1])
     started: list[int] = []
+    built: list[tuple[str, str]] = []
     monkeypatch.setattr(arena_paper, "ArenaEngine",
-                        lambda cfg=None: _engine(tmp_path, cfg, started))
+                        lambda led, reg, cfg=None: _engine(tmp_path, led, reg, cfg, started, built))
     monkeypatch.setattr(A, "CallerModel", lambda guard: A.StubModel(lambda req: "[]", guard=guard))
     old = signal.getsignal(signal.SIGTERM)
     try:
@@ -82,6 +83,10 @@ def test_main_live_path_starts_and_stops_the_prefetcher(tmp_path, monkeypatch):
     finally:
         signal.signal(signal.SIGTERM, old)
     assert events == ["start", "run", "stop"] and started == [1]
+    assert built == [(str(tmp_path / "v7" / "engine-ledger"), str(reg))]       # the ledger is under the HV7 root; the registry path is --registry
+    scan = R.Hv7DecisionLog(tmp_path / "v7").rows("SCAN")
+    assert scan[0]["kind"] == "start" and scan[0]["provider"] == "public" and scan[-1]["kind"] == "run_summary" and scan[-1]["provider"] == "public"
+    assert capsys.readouterr().out.startswith('{"summary":')
     root = str(tmp_path / "v7")
     assert any(p.endswith(R.CHAIN_CREDITS_FILE) for p, _ in seen) and any(p.endswith(R.CHAIN_SPEND_FILE) for p, _ in seen)
     for p, mode in seen:
@@ -107,7 +112,7 @@ def test_main_stops_the_prefetcher_when_the_loop_raises(tmp_path, monkeypatch):
         raise ValueError("loop")
 
     monkeypatch.setattr(R.Hv7Runner, "run", boom)
-    monkeypatch.setattr(arena_paper, "ArenaEngine", lambda cfg=None: _engine(tmp_path, cfg, []))
+    monkeypatch.setattr(arena_paper, "ArenaEngine", lambda led, reg, cfg=None: _engine(tmp_path, led, reg, cfg, [], []))
     monkeypatch.setattr(A, "CallerModel", lambda guard: A.StubModel(lambda req: "[]", guard=guard))
     old = signal.getsignal(signal.SIGTERM)
     try:
@@ -118,7 +123,9 @@ def test_main_stops_the_prefetcher_when_the_loop_raises(tmp_path, monkeypatch):
     assert events == ["start", "stop"]
 
 
-def _engine(tmp: Path, cfg, started: list):
+def _engine(tmp: Path, led, reg, cfg, started: list, built: list | None = None):
+    if built is not None:
+        built.append((str(led), str(reg)))
     eng = ArenaEngine(tmp / "eng", tmp / "reg.json", cfg=cfg, sps_fn=lambda: 0.4)
     eng.start_all = lambda: started.append(1)
     return eng
@@ -168,3 +175,32 @@ def test_watch_items_are_capped_but_never_cut_the_hot_set(tmp_path, monkeypatch)
     _run(tmp_path, wc)
     w = wc.watches[0]
     assert len(w["items"]) == max(1, len(w["hot"])) and set(w["hot"]) <= {p for p, _ in w["items"]}
+
+
+def test_main_refuses_a_ledger_root_outside_the_hv7_root(tmp_path, monkeypatch, capsys):
+    write_tape(tmp_path / "tape", tape_rows())
+    reg = tmp_path / "bots.json"
+    _registry(reg)
+    monkeypatch.setenv("MAL_HV4_RPC", "public")
+
+    def never(*a, **k):
+        raise AssertionError("engine built before the ledger refusal")
+
+    monkeypatch.setattr(arena_paper, "ArenaEngine", never)
+    for bad in ("/data/mal/arena/ledger", str(tmp_path / "elsewhere")):
+        monkeypatch.setattr(R, "WRITE_ROOTS", (str(tmp_path / "v7"),))
+        assert R.main([*_argv(tmp_path, reg, "n_-pn6x44cliJfQg"), "--ledger-root", bad]) == 2
+        assert "refused: ledger root (PathRefused)" in capsys.readouterr().err
+    assert not (tmp_path / "v7").exists()
+
+
+def test_main_wraps_a_chain_builder_refusal_into_exit_2(tmp_path, monkeypatch, capsys):
+    write_tape(tmp_path / "tape", tape_rows())
+    reg = tmp_path / "bots.json"
+    _registry(reg)
+    _registry(tmp_path / "reg.json")
+    monkeypatch.delenv("MAL_HV4_RPC", raising=False)          # provider not pinned: RuntimeError in the builder
+    monkeypatch.setattr(arena_paper, "ArenaEngine", lambda led, reg, cfg=None: _engine(tmp_path, led, reg, cfg, []))
+    monkeypatch.setattr(A, "CallerModel", lambda guard: A.StubModel(lambda req: "[]", guard=guard))
+    assert R.main(_argv(tmp_path, reg, "n_-pn6x44cliJfQg")) == 2
+    assert "refused: RuntimeError" in capsys.readouterr().err
