@@ -187,12 +187,12 @@ def test_kill_inside_enter_after_the_log_row_before_the_engine_buy(tmp_path):
 
 
 # ------------------------------------------------------------------------------------------------------------------------ owner ref
-@pytest.mark.parametrize("ref", ["n_abcdefgh12", "q_AbCdEfGh1234", "n_" + "a" * 32])
+@pytest.mark.parametrize("ref", ["q_6_kzYJva9XXuYQ", "n_-pn6x44cliJfQg", "n__xWQhqHQh0pbvw", "n_KF2tdyqfuCSYDg", "n_" + "a" * 12, "n_" + "a" * 20])
 def test_owner_ref_accepts_notebook_and_question_ids(ref):
     assert R.validate_owner_ref(ref) == ref
 
 
-@pytest.mark.parametrize("ref", ["", "yes", "n_", "n_short", "x_abcdefgh12", "n_abcdefgh12 ", "n_abc-defgh12", "n_" + "a" * 33, "N_abcdefgh12", None, 5, "n_abcdefgh12\n"])
+@pytest.mark.parametrize("ref", ["", "yes", "n_", "q_", "q_short", "n_" + "a" * 11, "x_abcdefgh1234", "q_6_kzYJva9XXuYQ ", "q_6_kzYJva9 XXuYQ", "n_" + "a" * 21, "N_abcdefgh1234", None, 5, "n_abcdefgh1234\n"])
 def test_owner_ref_refuses_everything_else(ref):
     with pytest.raises(R.Hv7Error):
         R.validate_owner_ref(ref)

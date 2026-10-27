@@ -101,9 +101,9 @@ READ_ROOTS = (H.TAPE_ROOT, HV7_ROOT)
 WRITE_ROOTS = (HV7_ROOT,)
 
 
-# Owner cost-line reference: a MiScusi notebook id (n_...) or a MiScusi question id (q_...). ASSUMED shape (prefix, then 8-32 base62 characters);
+# Owner cost-line reference: a MiScusi notebook id (n_...) or a MiScusi question id (q_...). real ids contain "-" and "_" (e.g. q_6_kzYJva9XXuYQ), so the body is 12-20 of [A-Za-z0-9_-];
 # the pattern is pinned here so a typo or a free-text string cannot unlock the API path.
-OWNER_REF_RE = re.compile(r"(?:n|q)_[A-Za-z0-9]{8,32}")
+OWNER_REF_RE = re.compile(r"(?:n|q)_[A-Za-z0-9_-]{12,20}")
 
 
 class Hv7Error(RuntimeError):

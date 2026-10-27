@@ -355,6 +355,17 @@ counts only; in-clock rows are in-sample).
 - `tools/hv7_count.py`: P0 counter, outcome-blind decision-timestamp count for B and E1, slot histogram.
 - `tools/hv7_register.py`; `tools/hv7_read.py` (gate + contrasts; owed before the read, not before the clock).
 
+## 8a. Resume and restart (C3a, rule accepted by the manager 2026-10-27; for QP to rule on)
+
+The hourly loop resumes from the hash-chained decision log and the engine ledger (`Hv7Runner.resume`). Stated rules:
+
+1. A torn last log line is truncated to the last full line and a `gap` row (`torn_last_line`, dropped bytes, sha256) is appended to the SCAN log. A broken hash chain is not repaired: the runner refuses to start.
+2. Open positions are rebuilt from the entry rows and the engine's `recover()`. An entry row with no engine position, no sell row and no refused row gets a `gap` row (`entry_not_in_engine`) and is never re-sent. No entry is ever made after t_e.
+3. A pending period resumed at or before t_e is re-screened at t_d (the screen ids and card shas must equal the logged ones, else the period is excluded) and L is re-asked through the replay cache with the same request sha256, so no second spend.
+4. **A period resumed after t_e, or whose L call is still in flight at shutdown, is EXCLUDED in all four arms.** It writes a SCAN `period_excluded` row and an L `rank` row with fallback true, excluded true and the reason. It is not scored as an R-fallback entry. `tools/hv7_count.py` reports it as `excluded_periods`, separate from fallbacks.
+5. A period whose rank row exists but whose entries are incomplete (a kill during entry) gets a `gap` row per missing (arm, pool) entry. No late entry.
+6. The resume event goes to `<root>/resume.jsonl`, not the decision log, so a resume with no gap and no exclusion leaves the decision-log md5 equal to an uninterrupted run.
+
 ## 9. PR plan (builder chunks, each <= 40 turns, WIP commit by turn 28)
 
 | Chunk | Branch | Scope | Tests |
