@@ -91,20 +91,24 @@ def test_a_different_input_changes_the_md5(tmp_path, tape):
 
 def test_the_hour_filter_never_opens_other_days(tmp_path, tape, monkeypatch):
     opened = []
-    orig = R.ArenaState._hour_files
+    orig_open, orig_stat = Path.open, Path.stat
 
-    def spy(self):
-        got = orig(self)
-        opened.extend(t[0] for t in got)
-        return got
+    def spy_open(self, *a, **k):
+        if self.parent == tape:
+            opened.append(self.name)
+        return orig_open(self, *a, **k)
 
-    monkeypatch.setattr(R.ArenaState, "_hour_files", spy)
-    D.one_run(tmp_path / "d", "real-a", SHA, ["2026-09-24"], tape, start_ms=START, end_ms=START + 10 * MIN)     # a day that has no hour file in this tape
-    # the filter hands the reader no hour of 2026-09-25 when the chosen day is 2026-09-24 (the spy sees the unfiltered list; the filtered one is empty)
-    run = D.new_run(tmp_path / "d2", "real-a", SHA, ["2026-09-24"], tape, start_ms=START, end_ms=END)
-    assert run.state._hour_files() == []
-    run = D.new_run(tmp_path / "d3", "real-a", SHA, [DAY], tape, start_ms=START, end_ms=END)
-    assert run.state._hour_files() != []
+    def spy_stat(self, *a, **k):
+        if self.parent == tape:
+            opened.append("stat:" + self.name)
+        return orig_stat(self, *a, **k)
+
+    monkeypatch.setattr(Path, "open", spy_open)
+    monkeypatch.setattr(Path, "stat", spy_stat)
+    D.one_run(tmp_path / "d", "real-a", SHA, ["2026-09-24"], tape, start_ms=START, end_ms=START + 10 * MIN)       # a day this tape has no hour for
+    assert opened == []
+    D.one_run(tmp_path / "d2", "real-a", SHA, [DAY], tape, start_ms=START, end_ms=START + 10 * MIN)
+    assert opened and all(DAY in n for n in opened)
 
 
 def test_run_real_in_process_passes_and_seals(tmp_path, tape, monkeypatch, capsys):
@@ -122,8 +126,16 @@ def test_run_real_in_process_passes_and_seals(tmp_path, tape, monkeypatch, capsy
     assert set(res["counts"]["entries"]) == set(R.ARM_ORDER)
 
 
-def test_verdict_fails_on_md5_rss_period_tick_and_vacuous():
-    base = {"log_md5": "m", "cards_md5": "c", "entries": {"L": 1}, "periods_ge3": 3, "period_ms_p95": 10.0, "tick_ms_p95": 1.0}
+CLEAN = {"log_md5": "m", "cards_md5": "c", "entries": {"L": 3, "R": 3, "S": 3, "U": 9}, "periods_ge3": 3, "period_ms_p95": 10.0, "tick_ms_p95": 1.0, "hook_errors": 0,
+         "fallbacks": 0, "counters": {}}
+
+
+def _v(**kw):
+    return D.verdict({**CLEAN, **kw}, dict(CLEAN), dict(CLEAN), 100.0, 200.0)
+
+
+def test_verdict_passes_a_clean_run_and_fails_on_md5_rss_period_tick_and_vacuous():
+    base = CLEAN
     assert D.verdict(base, dict(base), dict(base), 100.0, 200.0)["result"] == "PASS"
     assert D.verdict(base, {**base, "log_md5": "x"}, dict(base), 100.0, 200.0)["result"] == "FAIL"
     assert D.verdict(base, dict(base), {**base, "log_md5": "x"}, 100.0, 200.0)["md5_equal_run3_other_hashseed"] is False
@@ -131,7 +143,56 @@ def test_verdict_fails_on_md5_rss_period_tick_and_vacuous():
     assert D.verdict({**base, "period_ms_p95": 15000.0}, dict(base), dict(base), 1.0, 2.0)["period_p95_ok"] is False
     assert D.verdict(base, {**base, "tick_ms_p95": 1000.0}, dict(base), 1.0, 2.0)["tick_p95_ok"] is False
     assert D.verdict({**base, "periods_ge3": 0}, dict(base), dict(base), 1.0, 2.0)["result"] == "FAIL"
-    assert D.verdict(base, dict(base), {**base, "run3": 1, "period_ms_p95": 1e9, "tick_ms_p95": 1e9}, 1.0, 2.0)["result"] == "PASS"      # run 3 timing is report-only
+    slow3 = {**base, "period_ms_p95": 1e9, "tick_ms_p95": 1e9}
+    assert D.verdict(base, dict(base), slow3, 1.0, 2.0)["result"] == "PASS"      # run 3 timing is report-only
+
+
+@pytest.mark.parametrize("kw,name", [
+    ({"hook_errors": 1}, "hook_errors"), ({"hook_errors": None}, "hook_errors"),
+    ({"counters": {"leakage_refused": 1}}, "leakage_refused"), ({"counters": {"model_exception": 2}}, "model_exception"),
+    ({"counters": {"ledger_unreadable": 1}}, "ledger_unreadable"), ({"counters": {"cost_mismatch": 1}}, "cost_mismatch"), ({"counters": {"late_reply": 1}}, "late_reply"),
+    ({"fallbacks": 1}, "fallbacks"),
+    ({"entries": {"L": 2, "R": 3, "S": 3, "U": 9}}, "entries"), ({"entries": {"L": 3, "R": 2, "S": 3, "U": 9}}, "entries"), ({"entries": {"L": 3, "R": 3, "S": 2, "U": 9}}, "entries"),
+    ({"entries": {"L": 3, "R": 3, "S": 3, "U": 2}}, "entries"), ({"entries": {"L": 4, "R": 4, "S": 4, "U": 9}}, "entries"), ({"entries": {}}, "entries"),
+    ({"periods_ge3": 0, "entries": {"L": 0, "R": 0, "S": 0, "U": 0}}, "entries")])
+def test_every_stub_invariant_failure_fails_the_verdict(kw, name):
+    v = _v(**kw)
+    assert v["result"] == "FAIL" and v["invariants_ok"] is False and name in v["invariants_broken"]["run1"]
+    # the same breakage in run 2 or run 3 also fails (identical broken runs are not a proof)
+    broken = {**CLEAN, **kw}
+    assert D.verdict(CLEAN, dict(broken), dict(CLEAN), 1.0, 2.0)["result"] == "FAIL"
+    assert D.verdict(CLEAN, dict(CLEAN), dict(broken), 1.0, 2.0)["result"] == "FAIL"
+    assert D.verdict(broken, dict(broken), dict(broken), 1.0, 2.0)["result"] == "FAIL"
+
+
+def test_u_may_exceed_the_period_count_but_not_fall_below_it():
+    big = {**CLEAN, "entries": {"L": 3, "R": 3, "S": 3, "U": 24}}
+    assert D.verdict(big, dict(big), dict(big), 1.0, 2.0)["result"] == "PASS"
+
+
+def test_summary_counts_buy_side_refusals_only_and_prints_an_allow_list_of_counters(tmp_path, tape):
+    base = tmp_path / "d"
+    run = D.new_run(base, "real-a", SHA, [DAY], tape, start_ms=START, end_ms=END)
+    run.run(START, END)
+    run.log.append("L", START, {"kind": "order_refused", "order_id": "x", "side": "sell", "reason": "arena_refused", "error_class": "E"})
+    run.log.append("L", START, {"kind": "order_refused", "order_id": "y", "side": "buy", "reason": "arena_refused", "error_class": "E"})
+    for k in ("sell_refused", "shutdown_in_flight", "restart_after_t_e", "late_reply", "card_refused:age_under_2h", "phantom_drop_x", "model_exception", "zzz"):
+        run._count(k)
+    s = D.summarize(run)
+    assert s["order_refused"] == 1
+    assert set(s["counters"]) == {"late_reply", "card_refused:age_under_2h", "phantom_drop_x", "model_exception"} | (set(s["counters"]) & D.PRINT_COUNTERS)
+    for banned in ("sell_refused", "shutdown_in_flight", "restart_after_t_e", "zzz"):
+        assert banned not in s["counters"] and banned not in json.dumps(s)
+    assert "sell" not in json.dumps(s).replace("order_refused", "")
+
+
+def test_the_hour_scan_cutoff_is_hv7s(tmp_path):
+    d = tmp_path / "t"
+    d.mkdir()
+    (d / "tape-2026-10-24T00.jsonl").write_text("")
+    assert D.hour_scan(d, ["2026-10-23"])["hours_present"] == 0          # not a chosen day: only listed, never judged
+    with pytest.raises(D.Refused, match="hour_at_or_after_cutoff"):
+        D.hour_scan(d, ["2026-10-24"])
 
 
 # ------------------------------------------------------------------------------------------------------------------------ P0
@@ -167,10 +228,12 @@ def test_p0_rule_switches_below_10_7_and_flags_a_day_under_5():
 
 
 def test_p0_refuses_other_tape_days_and_ids(tmp_path):
-    with pytest.raises(D.Refused):
+    with pytest.raises(D.Refused, match="tape_dir_not_allowed"):
         P.run_p0(["2026-10-21"], "p1", tape_dir=str(tmp_path))
     with pytest.raises(D.Refused):
         P.run_p0(["2026-10-21"], "../p1")
+    with pytest.raises(D.Refused, match="not_a_drill_root"):
+        P.run_p0(["2026-10-21"], "p1", root=tmp_path / "elsewhere")
     with pytest.raises(D.Refused):
         D.parse_days("2026-10-20")
 
@@ -226,3 +289,155 @@ def test_main_smoke_refused_ref_accepted_ref_and_registry_mismatch(tmp_path, mon
 
 def _stub_never() -> dict:
     return {"engine": None, "model": None, "chain": None, "start_ms": 0, "end_ms": 0}
+
+
+# ------------------------------------------------------------------------------------------------------------------------ the subprocess path
+def test_isolated_runs_use_three_processes_with_the_declared_hash_seeds(tmp_path, tape, monkeypatch):
+    """Drives _isolated_run / child_one_run for real: each replay is a separate python process whose PYTHONHASHSEED is the declared one. The child is started with -c so
+    the constants (drill root, tape, write roots, window) can be pointed at the temp tree; nothing else differs from `-m tools.drill_hv7_real_layout --one-run`."""
+    import subprocess
+    import sys
+
+    monkeypatch.setattr(D, "DRILL_ROOT", tmp_path / "drill")
+    monkeypatch.setattr(D, "REAL_TAPE", str(tape))
+    monkeypatch.setattr(D, "seal_read_only", lambda base: None)
+    base_tmp = str(tmp_path.parent)
+    code = (
+        "import sys; from pathlib import Path\n"
+        "from tools import drill_hv7_real_layout as D, hv7_runner as R\n"
+        f"R.READ_ROOTS = R.WRITE_ROOTS = ({base_tmp!r},)\n"
+        f"D.DRILL_ROOT = Path({str(tmp_path / 'drill')!r}); D.REAL_TAPE = {str(tape)!r}\n"
+        "D.ALLOWED_DAYS = ('2026-09-25',)\n"
+        "o = D.one_run\n"
+        f"D.one_run = lambda b, t, s, d, tp, **k: o(b, t, s, d, tp, start_ms={START}, end_ms={END})\n"
+        "raise SystemExit(D.main(sys.argv[1:]))\n")
+    real_run, calls = subprocess.run, []
+
+    def fake_run(argv, **kw):
+        calls.append(kw["env"]["PYTHONHASHSEED"])
+        assert argv[1:4] == ["-B", "-m", "tools.drill_hv7_real_layout"] and "--one-run" in argv
+        return real_run([argv[0], "-B", "-c", code, *argv[4:]], **kw)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    res = D.run_real([DAY], "iso1", SHA, tape_dir=str(tape), isolate=True, rss_cap_mb=1e9)
+    assert calls == ["0", "0", "1234567"]
+    seeds = [json.loads((tmp_path / "drill" / "iso1" / f"{t}.json").read_text())["hashseed"] for t in D.RUNS]
+    assert seeds == ["0", "0", "1234567"]
+    assert res["result"] == "PASS" and res["peak_rss_mb"] > 0
+
+
+# ------------------------------------------------------------------------------------------------------------------------ as-of mutation
+def test_a_planted_future_print_raises_leakage_error_and_the_runner_refuses_the_card(tmp_path, tape):
+    from tools import hv4_cards as C
+
+    run = D.new_run(tmp_path / "d", "real-a", SHA, [DAY], tape, start_ms=START, end_ms=END)
+    T = T_E1 - 45_000
+    run.poll_to(T)
+    pool = sorted(p.id for p in run.state.pools_wsol(lambda p: p.prog == "pumpswap"))[0]
+    snap, prints = run.state.snapshot(pool), list(run.state.pool(pool).events)
+    feats = H_scan_feats(run, snap, prints, T)
+    ok = run._card(pool, T, snap, prints, feats)
+    assert ok is not None and run.counters.get("leakage_refused", 0) == 0                   # control: the same pool at the same instant builds a card
+    planted = prints + [(T + 5000, 1_000_000_000, True, "planted")]                          # a print stamped AFTER T
+    with pytest.raises(C.LeakageError):
+        C.assert_as_of(snap, T, prints=planted, chain={}, as_of_slot=run.slot)
+    assert run._card(pool, T, snap, planted, feats) is None
+    assert run.counters["leakage_refused"] == 1
+    with pytest.raises(C.LeakageError):
+        C.assert_as_of(snap, T, prints=prints + [(T, 1, True, "x")], chain={}, as_of_slot=run.slot)      # a print AT T is refused too (strict t < T)
+
+
+def H_scan_feats(run, snap, prints, T):
+    from tools import hv4_cards as C
+    from tools import hv6_cards as H
+
+    res = H.scan(iter([(snap, prints)]), as_of_ms=T, limiter=C.SetupLimiter(), board_on=False)
+    return res.feats[snap["id"]]
+
+
+# ------------------------------------------------------------------------------------------------------------------------ HV6 card equivalence
+@pytest.fixture()
+def hv6_cards(tmp_path, tape, monkeypatch):
+    """A real HV6 runner on the same synthetic tape: its cards/ files are the 'HV6 side'."""
+    from tools import hv6_cards as H6
+    from tools import hv6_runner as R6
+    from tools.test_hv6_runner import make as make6
+
+    monkeypatch.setattr(H6, "READ_ROOTS", (str(tmp_path.parent),))
+    monkeypatch.setattr(H6, "WRITE_ROOTS", (str(tmp_path.parent),))
+    monkeypatch.delenv("MAL_HV4_CHAIN_STATE", raising=False)
+    write_tape(tmp_path / "h6" / "tape", tape_rows())          # the HV6 runner replays the SAME tape contents as the HV7 side
+    run = make6(tmp_path / "h6")
+    run.run(START, END)
+    d = tmp_path / "h6" / "v6" / "cards"
+    assert list(d.glob("*.jsonl"))
+    return d, R6
+
+
+@pytest.fixture()
+def _restore_consts():
+    from tools import hv7_card_equiv as E
+
+    saved = (E.REAL_TAPE, D.DRILL_ROOT)
+    yield
+    E.REAL_TAPE, D.DRILL_ROOT = saved
+
+
+def _md5(d: Path, days) -> str:
+    import hashlib
+
+    h = hashlib.md5()
+    for x in days:
+        h.update(f"cards/{x}.jsonl".encode() + b"\0" + (d / f"{x}.jsonl").read_bytes() + b"\0")
+    return h.hexdigest()
+
+
+def test_hv7_cards_equal_hv6_cards_at_hv6s_instants(tmp_path, tape, hv6_cards, monkeypatch, _restore_consts):
+    from tools import hv7_card_equiv as E
+
+    d, _ = hv6_cards
+    monkeypatch.setattr(E, "MIN_PAIRS", 3)
+    _eq_ok(E, tape, tmp_path)
+    res = E.run_equiv([DAY], "eq1", _md5(d, [DAY]), cards_dir=d, tape_dir=str(tape), root=tmp_path / "drill" / "eq1", window=(0, 1 << 62))
+    assert res["hv7_card_equiv"] == "PASS" and res["pairs"] >= 3 and res["unequal"] == 0 and res["equal"] == res["pairs"] and res["hv6_sha_self_mismatch"] == 0, res
+    assert res["outcome_free"] is True and res["api_calls"] == 0
+
+
+def _eq_ok(E, tape, tmp_path) -> None:
+    """Point the module constants at the temp tree for this test (restored by the autouse fixture below)."""
+    E.REAL_TAPE = str(tape)
+    D.DRILL_ROOT = tmp_path / "drill"
+
+
+def test_equivalence_fails_on_a_changed_card_and_refuses_a_wrong_md5_or_window(tmp_path, tape, hv6_cards, monkeypatch, _restore_consts):
+    from tools import hv7_card_equiv as E
+
+    d, _ = hv6_cards
+    _eq_ok(E, tape, tmp_path)
+    monkeypatch.setattr(E, "MIN_PAIRS", 3)
+    with pytest.raises(E.Refused, match="pinned"):
+        E.run_equiv([DAY], "eq2", "0" * 32, cards_dir=d, tape_dir=str(tape), root=tmp_path / "drill" / "eq2", window=(0, 1 << 62))
+    with pytest.raises(E.Refused, match="outside_window"):
+        E.run_equiv([DAY], "eq3", _md5(d, [DAY]), cards_dir=d, tape_dir=str(tape), root=tmp_path / "drill" / "eq3", window=(0, 1000))
+    with pytest.raises(E.Refused, match="tape_dir"):
+        E.run_equiv([DAY], "eq4", "0" * 32, cards_dir=d, tape_dir=str(tmp_path), root=tmp_path / "drill" / "eq4")
+    # change one HV6 card's field (and its sha, so the file is self-consistent): the comparison must count it as unequal and FAIL
+    f = d / f"{DAY}.jsonl"
+    lines = f.read_text().splitlines()
+    r = json.loads(lines[0])
+    r["card"]["f"]["vol_60m"] = (r["card"]["f"]["vol_60m"] or 0) + 1.0
+    r["sha"] = E.p4.card_sha256(r["card"])
+    lines[0] = json.dumps(r)
+    f.write_text("\n".join(lines) + "\n")
+    res = E.run_equiv([DAY], "eq5", _md5(d, [DAY]), cards_dir=d, tape_dir=str(tape), root=tmp_path / "drill" / "eq5", window=(0, 1 << 62))
+    assert res["hv7_card_equiv"] == "FAIL" and res["unequal"] >= 1
+
+
+def test_equivalence_reads_only_the_three_pinned_card_files():
+    from tools import hv7_card_equiv as E
+
+    src = Path(E.__file__).read_text()
+    assert E.HV6_CARDS_DIR == Path("/data/mal/arena/haiku-v6/drill/real-5071e29a-r16g-20261026/real-a/v6/cards")
+    for banned in ("iterdir", ".glob(", "rglob", "listdir", "os.walk", "scandir", ".stat("):
+        assert banned not in src.split('"""', 2)[2], banned
+    assert E.WINDOW_MS == (1792540800000, 1792800000000)
