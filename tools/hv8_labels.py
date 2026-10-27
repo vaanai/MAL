@@ -116,7 +116,7 @@ def read_ledger(root: Path, bot: str) -> list[dict]:
     return rows
 
 
-def price(tape: Path, scratch: Path, cards: list[dict], win: D.Window, rule: str | None = None) -> dict[str, Any]:
+def price(tape: Path, scratch: Path, cards: list[dict], win: D.Window, rule: str | None = None, t_ds: list[int] | None = None) -> dict[str, Any]:
     scratch = D.check_path(scratch)
     D.allow_roots(scratch)
     guard = R.Hv7Guard(scratch / "v7")
@@ -124,8 +124,8 @@ def price(tape: Path, scratch: Path, cards: list[dict], win: D.Window, rule: str
     reg = scratch / "reg.json"
     eng = ArenaEngine(scratch / "engine-ledger", reg, cfg=R.stack_config(FEED_DELAY_SLOTS), sps_fn=lambda: SPS)
     bot = R.bot_id("U")
-    register_bot(bot, "hv8labels0000"[:13], win.block_start_ms, str(reg), deciding_stake=STAKE_SOL, model_ids=[], now_ms=win.block_start_ms - 60_000, verify_sha=False)
-    run, info = D.make_runner(tape, scratch, win, engine=eng, model=model, guard=guard)
+    register_bot(bot, "abcdef1234567", win.block_start_ms, str(reg), deciding_stake=STAKE_SOL, model_ids=[], now_ms=win.block_start_ms - 60_000, verify_sha=False)
+    run, info = D.make_runner(tape, scratch, win, t_ds=t_ds, engine=eng, model=model, guard=guard)
     grid = info["t_ds"]
     gset = set(grid)
     seen: set[tuple[str, str, str]] = set()
