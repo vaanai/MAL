@@ -670,3 +670,40 @@ def test_wire_equiv_check_applies_the_qp_pass_criteria():
         d[path[-1]] = val
         out = chk(r)
         assert not out["ok"] and any(f.endswith(name) for f in out["fails"]), name
+
+
+def test_wall_tick_during_a_slow_fetch_queues_behind_the_rows():
+    import threading
+
+    release = threading.Event()
+    seen = []
+
+    def fetch(cfg):
+        assert release.wait(5)
+        return {"data_b64": account_b64(1234)}
+
+    async def go():
+        with Maps(), tempfile.TemporaryDirectory() as td:
+            run_ = W.WiredRunner(td, gate=W.ConfigGate(fetch), slot_source="wall", bt_src="recv", start_ts=1_700_000_000.0)
+            run_.on_row = lambda r: seen.append(("row", r["signature"]))
+            run_._signal = lambda sig: seen.append(("sig", sig)) or True
+            run_.wall.observe(1000, 100.0)
+            run_.ingest(sol("NEWCFG", signature="a", slot=1000, t_recv_ms=100_000, bt_src="recv"))  # starts the fetch, holds
+            await asyncio.sleep(0.05)
+            run_.ingest(sol("NEWCFG", signature="b", slot=1001, t_recv_ms=100_400, bt_src="recv"))
+            assert run_.hold and run_.wall_tick(100.0 + 0.4 * 10) is False and seen == [] and [k for k, _ in run_.fifo] == ["row", "row", "sig"]
+            release.set()
+            while run_.hold or run_.fifo:
+                await asyncio.sleep(0.01)
+
+    run(go())
+    assert seen == [("row", "a"), ("row", "b"), ("sig", seen[-1][1])] and seen[-1][0] == "sig"
+
+
+def test_live_cli_refuses_wall_and_none_slot_sources_and_other_lags():
+    with tempfile.TemporaryDirectory() as td:
+        flag = str(Path(td) / "FLAG")
+        G.arm(flag, "j_abc", OPEN)
+        for extra in (["--slot-source", "wall"], ["--slot-source", "none"], ["--close-lag", "1"]):
+            assert W.main(["--live", "--env-file", "/nonexistent", "--look-flag", flag, "--out", str(Path(td) / "o"), *extra]) == 2
+        assert not (Path(td) / "o").exists()

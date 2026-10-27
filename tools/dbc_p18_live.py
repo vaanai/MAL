@@ -296,7 +296,12 @@ class WiredRunner(P.Runner):
 
     def wall_tick(self, now_s: float) -> bool:
         sig = self.wall.tick(now_s) if self.wall is not None else None
-        return self._signal(sig) if sig is not None else False
+        if sig is None:
+            return False
+        if self.hold:
+            self.fifo.append(("sig", sig))  # same FIFO as the rows: never close a slot before the queued rows of that slot are delivered
+            return False
+        return self._signal(sig)
 
     def report(self) -> dict[str, Any]:
         st = super().report()
@@ -503,6 +508,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if not ns.look_flag or not ns.env_file:
             raise P.StartRefused("--look-flag and --env-file are required")
+        if ns.live and (ns.slot_source != "ws" or ns.close_lag != CLOSE_LAG_SLOTS):
+            raise P.StartRefused("--live is pinned to --slot-source ws --close-lag 2 (QP #1067 Q-C); wall/none are test-only")
         if ns.probe and (ns.credit_cap is None or ns.credit_cap <= 0 or ns.minutes > 30):
             raise P.StartRefused("--probe needs --credit-cap > 0 and --minutes <= 30")
         P.start_guard(live=True, test=False, now=datetime.now(timezone.utc), marker=os.path.expanduser(ns.look_flag), marker_exists=G.flag_valid,
