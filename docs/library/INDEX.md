@@ -32,9 +32,9 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `explored-survivor-unconfirmed` | 10 | 0 | 0 |
 | `parked` | 9 | 1 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 43 | 25 | 1 |
+| `untested` | 43 | 24 | 1 |
 | `desk-read` | 1 | 49 | 0 |
-| `explored-no-survivor` | 41 | 7 | 1 |
+| `explored-no-survivor` | 41 | 8 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
 | **all** | 185 | 88 | 2 |
 
@@ -341,7 +341,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
-| `p67-llm-rule-writer-offline` | Claude writes candidate screening rules offline; rules run as code with pre-registered count of … | `untested` | not run; multiplicity of rules tried is the main risk; runs on the Claude plan, not the API |
+| `p67-llm-rule-writer-offline` | Claude writes candidate screening rules offline; rules run as code with pre-registered count of … | `explored-no-survivor` | P68 (2026-10-27): 5 rules written offline by Claude from Aug explore-0814 aggregates; tested once on Sep exp011-0909 (n=291): 0 of 5 KEEP. Best diff vs base flat +4.78 pp (R4) but ex-top-3 negative for all five, Holm p_worst min 0.2697. Exploration read only; see docs/research/p68/. |
 
 ### p67-llm-debate (1)
 

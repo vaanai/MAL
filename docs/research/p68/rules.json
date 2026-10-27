@@ -1,0 +1,9 @@
+{"writer": "Claude Sonnet 5.5 (this agent), one shot, from docs/research/p68/discovery_aggregates.txt only",
+ "features_causal_at_entry": ["trig_t (s since pool start at trigger print)", "rem (SOL remaining to curve budget at trigger)", "q_trig (quote reserve SOL at trigger)", "hour (UTC hour of migration block time)"],
+ "rules": [
+  {"id": "R1", "conds": [["trig_t", ">", 23.131], ["trig_t", "<=", 115.478]], "why": "discovery quintiles 2-3 of trig_t: flat 18.5 / 23.8 pp vs base 11.6"},
+  {"id": "R2", "conds": [["rem", ">", 12.369], ["rem", "<=", 16.411]], "why": "discovery rem quintiles 3-4: 17.0 / 23.1 pp"},
+  {"id": "R3", "conds": [["trig_t", ">", 23.131], ["trig_t", "<=", 200.786], ["q_trig", "<=", 39.854]], "why": "drop earliest triggers and the top-q_trig quintile (5.5 pp)"},
+  {"id": "R4", "conds": [["hour", ">=", 6], ["hour", "<=", 11]], "why": "discovery hour 6-11 UTC: 23.0 pp, n=147"},
+  {"id": "R5", "conds": [["rem", ">", 8.232], ["rem", "<=", 16.411], ["trig_t", ">", 23.131], ["trig_t", "<=", 200.786]], "why": "intersection of the two best-looking bands"}
+ ]}
