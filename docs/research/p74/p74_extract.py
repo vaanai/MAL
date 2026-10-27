@@ -21,11 +21,30 @@ for f in files:
     m = prog >= 0.85
     cand.update(b["mint"].filter(pa.array(m)).unique().to_pylist())
 print("hours", len(hours), "candidate mints", len(cand), flush=True)
+import pandas as pd
+tk = pq.read_table("/data/mal/hunt-shared/tokens.parquet", columns=["mint", "is_mayhem_mode"]).to_pandas()
+mayh = set(tk.mint[tk.is_mayhem_mode.fillna(False)])
+print("mayhem among candidates (excluded)", len(cand & mayh), flush=True)
+cand -= mayh
+print("non-mayhem candidates", len(cand), flush=True)
 cl = pa.array(sorted(cand))
-out = []
+PS_KEEP = 5   # only the first PS_KEEP PumpSwap prints per mint are needed (first print after migration + lag)
+kept = {}
+w = None
+n = 0
 for f in hours:
     t = pq.read_table(f, columns=COLS, filters=[("block", "in", BLOCKS)])
-    out.append(t.filter(pc.is_in(t["mint"], value_set=cl)))
-res = pa.concat_tables(out)
-pq.write_table(res, sys.argv[1])
-print("rows", res.num_rows)
+    t = t.filter(pc.is_in(t["mint"], value_set=cl))
+    df = t.to_pandas()
+    ps = df[df.venue == "pumpswap"].sort_values(["mint", "slot", "tx_index", "event_index"])
+    ps["r"] = ps.groupby("mint").cumcount() + ps.mint.map(kept).fillna(0)
+    ps = ps[ps.r < PS_KEEP].drop(columns="r")
+    for m, c_ in ps.groupby("mint").size().items():
+        kept[m] = kept.get(m, 0) + c_
+    df = pd.concat([df[df.venue != "pumpswap"], ps])
+    t = pa.Table.from_pandas(df, schema=t.schema, preserve_index=False)
+    if w is None:
+        w = pq.ParquetWriter(sys.argv[1], t.schema)
+    w.write_table(t); n += t.num_rows
+w.close()
+print("rows", n)
