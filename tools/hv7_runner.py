@@ -73,7 +73,7 @@ from tools.arena_paper import ArenaRefused
 from tools.arena_state import WSOL_MINT, ArenaState
 from tools.haiku_caller import Ledger, LedgerError
 from tools.hv6_phantom import PhantomFilter
-from tools.hv6_runner import Pos, QuoteHistory, exit_reason, mark_ret, position_id, stack_config  # noqa: F401
+from tools.hv6_runner import HOUSEKEEP_EVERY_MS, Pos, QuoteHistory, exit_reason, mark_ret, position_id, stack_config  # noqa: F401
 
 MIN_MS = 60_000
 HOUR_MS = 3_600_000
@@ -305,6 +305,9 @@ class Hv7Config:
     live: bool = False
     entries_halt_ms: int | None = None
     phantom_filter: bool = True
+    # Memory bound (Hv7Runner._housekeep), the same one HV6 runs: QuoteHistory forgets pools the state no longer holds and the engine trims print history to what
+    # a later buy can read. Decision-neutral by construction and by test (tools/test_hv7_runner_mem.py). Off only in the test that proves it changes nothing.
+    bound_memory: bool = True
     n: int = R.N_DEFAULT
     n_min: int = R.N_MIN
 
@@ -347,6 +350,7 @@ class Hv7Runner:
         self.hook_errors: list[str] = []
         self.slot = 0
         self.sim_now = 0
+        self._housekeep_at = 0      # tape instant (t_recv_ms) of the next memory housekeeping
         self._stop = False
         self._sell_next: dict[str, int] = {}
         self._complete_logged = False
@@ -390,6 +394,21 @@ class Hv7Runner:
                     self.quotes.add(p.id, int(row["t_recv_ms"]), p.q_real / 1e9)
         except Exception as e:  # noqa: BLE001 - recorded, never swallowed silently
             self.hook_errors.append(type(e).__name__)
+        t = row.get("t_recv_ms")
+        if self.cfg.bound_memory and isinstance(t, int) and not isinstance(t, bool) and t >= self._housekeep_at:
+            try:  # its own try: a housekeeping failure must never skip a row's engine feed
+                self._housekeep(t)
+            except Exception as e:  # noqa: BLE001
+                self.hook_errors.append("housekeep:" + type(e).__name__)
+
+    def _housekeep(self, t: int) -> None:
+        """As Runner._housekeep in HV6 (same bounds, same engine API), driven by the tape clock: QuoteHistory forgets pools idle past the state's eviction horizon
+        that the state no longer holds; the engine trims the print history of every pool with no open/pending position (ArenaEngine.trim_history)."""
+        self._housekeep_at = t - t % HOUSEKEEP_EVERY_MS + HOUSEKEEP_EVERY_MS
+        self._count("quote_pools_swept", self.quotes.sweep(t, self.state.evict_idle_ms, held=lambda k: self.state.pool(k) is not None))
+        if hasattr(self.engine, "trim_history"):
+            self._count("engine_trims")
+            self._count("engine_prints_trimmed", int(self.engine.trim_history() or 0))
 
     def poll_to(self, T: int) -> None:
         self.state.poll(until_ms=T - 1)
