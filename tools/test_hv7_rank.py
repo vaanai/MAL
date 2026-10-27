@@ -385,3 +385,58 @@ def test_cost_arithmetic():
     assert hv6 + v61_parked + hv7 == pytest.approx(2.50) and hv6 + v61_parked + hv7 <= 3.00
     assert 10 * hv7 == pytest.approx(3.00)
     assert R.ASSUMED_OUTPUT_TOKENS == 400 and R.MAX_TOKENS == 600
+
+
+# ---------------------------------------------------------------- C2 session: C1 nits
+
+def test_duplicate_id_key_in_one_reply_object_is_bad_item():
+    ids = ["a", "b", "c"]
+    dup = '[{"id": "a", "id": "b", "why": "f.vol_60m"}, {"id": "b", "why": "f.vol_60m"}, {"id": "c", "why": "f.vol_60m"}]'
+    v = R.validate_rank(dup, ids)
+    assert not v.ok and v.reason == "bad_item"        # plain json.loads would keep the last "id" and read this as [b, b, c]
+    dup2 = '[{"id": "a", "why": "f.x", "why": "f.y"}, {"id": "b", "why": "f.x"}, {"id": "c", "why": "f.x"}]'
+    assert R.validate_rank(dup2, ids).reason == "bad_item"
+    ok = '[{"id": "c", "why": "f.vol_60m"}, {"id": "a", "why": "f.vol_60m"}, {"id": "b", "why": "f.vol_60m"}]'
+    assert R.validate_rank(ok, ids).ok
+
+
+def test_wrong_length_reason_is_gone_and_every_length_fault_has_a_reason():
+    assert "wrong_length" not in R.FALLBACK_REASONS
+    ids = ["a", "b", "c"]
+    one = lambda i: {"id": i, "why": "f.vol_60m"}
+    assert R.validate_rank(json.dumps([one("a"), one("b")]), ids).reason == "missing_id"
+    assert R.validate_rank(json.dumps([one("a"), one("b"), one("c"), one("d")]), ids).reason == "unknown_id"
+    assert R.validate_rank(json.dumps([one("a"), one("b"), one("c"), one("c")]), ids).reason == "duplicate_id"
+    assert R.validate_rank(json.dumps([]), ids).reason == "missing_id"
+
+
+def test_display_slot_of_matches_the_shown_order():
+    t = R.iso_from_ms(TD_MS)
+    cs = [card(i) for i in range(6)]
+    rr = R.build_rank_request(t, cs)
+    for pid in rr.screen_ids:
+        assert R.display_slot_of(rr.perm, rr.screen_ids, pid) == list(rr.shown_ids).index(pid)
+    assert sorted(R.display_slot_of(rr.perm, rr.screen_ids, p) for p in rr.screen_ids) == list(range(6))
+    with pytest.raises(ValueError):
+        R.display_slot_of(rr.perm, rr.screen_ids, "nope")
+
+
+@pytest.mark.parametrize("n", range(3, 9))
+def test_r_pick_uniform_for_every_realised_n(n):
+    counts = [0] * n
+    for k in range(6000):
+        t = R.iso_from_ms(TD_MS + k * 3_600_000)
+        counts[R.r_pick_index(t, shas(n, k))] += 1
+    exp = 6000 / n
+    chi = sum((c - exp) ** 2 / exp for c in counts)
+    crit = {2: 13.82, 3: 16.27, 4: 18.47, 5: 20.52, 6: 22.46, 7: 24.32}[n - 1]     # chi-square p = 0.001 at df n-1
+    assert chi < crit, (n, chi, counts)
+
+
+def test_screen_set_argument_names_and_message():
+    sc = R.screen_set(["a", "b", "c"], vol_60m={"a": 3.0, "b": 2.0, "c": 1.0})
+    assert sc.ids == ("a", "b", "c")
+    with pytest.raises(R.RankError, match=r"3 <= n_min <= n <= 8 \(got n=9, n_min=3\)"):
+        R.screen_set(["a"], {"a": 1.0}, n=9)
+    with pytest.raises(R.RankError, match=r"got n=8, n_min=2"):
+        R.screen_set(["a"], {"a": 1.0}, n_min=2)
