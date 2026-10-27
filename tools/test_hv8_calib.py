@@ -258,3 +258,16 @@ def test_model_stores_pinned_sha_and_age_known_feature():
     assert m["pinned_manifest_sha"] == "b" * 64
     assert m["sha256"] != K.fit_model([rows[i] for i in ids], [ys[i] for i in ids], K.L8_NAMES, pinned_manifest_sha="c" * 64)["sha256"]
     assert "f.age_known" in K.T8A_NAMES and K.raw_value({"f": {"age_known": True}}, "f.age_known") == 1.0
+
+
+def test_t8a_single_definition_56():
+    assert len(R.T8A_FIELDS) == 55 and len(R.T8A_NUMERIC) == 52 and len(K.T8A_NAMES) == 56
+    assert K.T8A_NAMES == R.T8A_NUMERIC + ("f.age_known",) + R.T8A_TAGS
+    assert tuple(n for n in K.T8A_NAMES if n != "f.age_known") == R.T8A_FIELDS
+    assert K.T8A_NAMES[-4:] == ("f.age_known", "setup.tag.BREAKOUT", "setup.tag.PULLBACK", "setup.tag.SECOND_WAVE")
+
+
+def test_kappa_refuses_out_of_range():
+    for bad in ([4, 0], [-1, 0], [True, 0], [1.0, 0]):
+        with pytest.raises(K.CalibError):
+            K.qw_kappa(bad, [0, 0])

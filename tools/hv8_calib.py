@@ -7,7 +7,7 @@ Row schema (one dict per rated card, in screen order within its set; features an
   ratings [flow, dump_risk, trend] ints 0-3 (FIRST ratings only; a row with retest=True raises).
 T8a means "all scalar card fields": FEATURE_FIELDS, max_stake, age_known (0/1), the 3 kept risk fields, setup.z, and one 0/1 per setup tag.
 Naming note: the DESIGN's "setup tag" is the card's setup.type value (PULLBACK, BREAKOUT, SECOND_WAVE = keys of hv4_cards.SETUP_PERSONA);
-here each is a feature named setup_tag.<TYPE>, fed from the row key setup_type. age_tier is categorical and is not included.
+here each is a feature named setup.tag.<TYPE> (C1's R.T8A_TAGS), fed from the row key setup_type. age_tier is categorical and is not included.
 Outcomes come only from load_labels(), which refuses unless RATINGS-PIN.md exists and its sha equals the sha256 of the ratings manifest.
 """
 from __future__ import annotations
@@ -43,8 +43,8 @@ L8_NAMES = tuple(f"rating.{i}" for i in R.ITEMS) + (R.ANCHOR,)
 T8_NAMES = tuple(R.MIRROR[i] for i in R.ITEMS) + (R.ANCHOR,)
 _RISK = tuple(f"risk.{k}" for k in R.KEPT_RISK)
 BINARY = frozenset({"f.age_known"})
-T8A_NUMERIC = tuple(f"f.{k}" for k in R.C.FEATURE_FIELDS) + ("f.max_stake",) + _RISK + ("setup.z",)
-T8A_NAMES = T8A_NUMERIC + ("f.age_known",) + tuple(f"setup_tag.{t}" for t in R.SETUP_TAGS)
+T8A_NUMERIC = R.T8A_NUMERIC  # C1's 52 numeric fields; T8a = these + f.age_known (0/1) + C1's 3 setup tags = 56
+T8A_NAMES = T8A_NUMERIC + ("f.age_known",) + R.T8A_TAGS
 FEATURE_SETS = {"L8": L8_NAMES, "T8": T8_NAMES, "T8a": T8A_NAMES}
 _LOG = re.compile(r"^f\.(vol_|net_flow_)|_sol")
 
@@ -95,8 +95,8 @@ def raw_value(row: dict, name: str):
         v = (row.get("risk") or {}).get(key)
     elif name == "setup.z":
         v = row.get("setup_z")
-    elif kind == "setup_tag":
-        return 1.0 if row.get("setup_type") == key else 0.0
+    elif name.startswith("setup.tag."):
+        return 1.0 if row.get("setup_type") == name[len("setup.tag."):] else 0.0
     else:
         raise CalibError(f"unregistered feature {name}")
     if v is None or isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
@@ -112,7 +112,7 @@ def fit_preproc(rows, names) -> dict:
     cols = []
     for n in names:
         raw = [raw_value(r, n) for r in rows]
-        if n.startswith("rating.") or n.startswith("setup_tag.") or n in BINARY:
+        if n.startswith("rating.") or n.startswith("setup.tag.") or n in BINARY:
             cols.append({"lo": None, "hi": None, "med": 0.0, "mean": 0.0, "sd": 1.0, "_raw": raw}); continue
         vals = np.array([_tf(n, v) for v in raw if v is not None], dtype=float)
         if len(vals) == 0:
@@ -347,6 +347,8 @@ def lodo(rows, rets, ys) -> dict:
 def qw_kappa(a, b, n_cat: int = 4):
     """Quadratic-weighted Cohen's kappa between two integer rating lists on 0..n_cat-1; None if undefined (zero expected disagreement)."""
     a, b = list(a), list(b)
+    if any((not isinstance(v, int)) or isinstance(v, bool) or not 0 <= v < n_cat for v in a + b):
+        raise CalibError("kappa ratings must be ints in 0..3")
     if len(a) != len(b) or not a:
         raise CalibError("kappa needs two non-empty aligned lists")
     O = np.zeros((n_cat, n_cat))
