@@ -30,15 +30,15 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `live-canary` | 1 | 0 | 0 |
 | `forward-test` | 2 | 0 | 0 |
 | `explored-survivor-unconfirmed` | 10 | 0 | 0 |
-| `parked` | 9 | 1 | 0 |
+| `parked` | 9 | 2 | 0 |
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 43 | 24 | 1 |
 | `desk-read` | 1 | 49 | 0 |
 | `explored-no-survivor` | 41 | 8 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 185 | 88 | 2 |
+| **all** | 185 | 89 | 2 |
 
-The file holds 525 rows: the 275 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 526 rows: the 276 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -348,6 +348,12 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `p67-llm-debate-closed` | Multi-agent debate / bull-bear researchers for pool ranking | `desk-read` | not run; no demonstrated edge over permutation self-consistency at 3-6x cost |
+
+### p80-h5-rug (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p80-h5-rug-veto` | Learned rug / big-loser veto (top 15% of a 6-feature logistic) on the frozen H5 book | `parked` | Independent training sample is empty: all 1,702 explore-0814 pools that meet the H5 entry trigger are H5 trades; 0 of 9,470 other pools trigger. No pnl or veto read. |
 
 ## Dead as frozen, and explored with no survivor
 
