@@ -7,7 +7,7 @@ PAPER only. 0 API, fake chain (the same FakeChain the HV6 real-layout drill used
 SEAL CONDITIONS (QP #996, comment 6431175846, (c)1-5) which this tool keeps:
   1. It opens exactly three files, by constructed path, never by listing or stat of the drill root:
        /data/mal/arena/haiku-v6/drill/real-5071e29a-r16g-20261026/real-a/v6/cards/2026-10-2{1,2,3}.jsonl
-     The drill id is pinned here, and --expect-cards-md5 (the cards md5 pinned in the manifest) is REQUIRED: a different md5 refuses the run. Nothing else under
+     The HV6 drill id is one of an allowlist of two (--hv6-drill-id; default the pre-filter real-layout drill; the other is the phantom-ON drill p3-on-8cd8fe54), and --expect-cards-md5 (the cards md5 pinned in the manifest) is REQUIRED: a different md5 refuses the run. Nothing else under
      the HV6 drill root is opened: no decision log, fill, exit, llm row, counter, result file or other drill id.
   2. Any card row whose as_of_ms is outside [2026-10-21T00Z, 2026-10-24T00Z) refuses the whole run. No later card of the same pool is joined, and no mark, exit,
      price path or outcome is read.
@@ -49,8 +49,38 @@ from tools.drill_hv6_item6 import FakeChain  # noqa: E402
 from tools.drill_hv7_real_layout import ALLOWED_DAYS, DRILL_ROOT, END_EXCLUSIVE, ID_RE, Refused, day_ms, hour_scan, is_drill_root, parse_days  # noqa: E402
 from tools.hv6_agents import p4  # noqa: E402
 
-HV6_DRILL_ID = "real-5071e29a-r16g-20261026"
-HV6_CARDS_DIR = Path("/data/mal/arena/haiku-v6/drill") / HV6_DRILL_ID / "real-a" / "v6" / "cards"
+import re
+
+HV6_DRILL_ID = "real-5071e29a-r16g-20261026"          # recorded BEFORE the phantom filter (#980): its cards were built from unfiltered tape
+HV6_DRILL_ID_P3_ON = "p3-on-8cd8fe54"                  # HV6's phantom-ON drill (job #1684, cards_md5 c633075023271a38f8ec8cad1226772e, 1560 cards)
+HV6_DRILL_IDS = (HV6_DRILL_ID, HV6_DRILL_ID_P3_ON)     # the allowlist: exactly these two, nothing else is ever joined
+HV6_DRILL_BASE = Path("/data/mal/arena/haiku-v6/drill")
+# ASSUMPTION (not verified, the drill root is never listed): p3-on-8cd8fe54 uses the same real-a/v6/cards layout as the real-layout drill.
+HV6_CARDS_DIR = HV6_DRILL_BASE / HV6_DRILL_ID / "real-a" / "v6" / "cards"
+_FIELD_RE = re.compile(r"[a-z_0-9]{1,40}")
+
+
+def hv6_cards_dir(hv6_drill_id: str) -> Path:
+    """The constructed cards/ path of an allowlisted HV6 drill id. Anything else refuses (no path is built from free text)."""
+    if hv6_drill_id not in HV6_DRILL_IDS:
+        raise Refused("hv6_drill_id_not_allowed")
+    return HV6_DRILL_BASE / hv6_drill_id / "real-a" / "v6" / "cards"
+
+
+def diff_fields(a: Any, b: Any, prefix: str = "", out: dict[str, int] | None = None, depth: int = 0) -> dict[str, int]:
+    """Names of the card fields that differ (dotted key path), with counts. Never a value. A key that is not a plain schema name is counted as '<other>'."""
+    out = {} if out is None else out
+    if isinstance(a, dict) and isinstance(b, dict) and depth < 4:
+        for k in sorted(set(a) | set(b), key=str):
+            name = k if isinstance(k, str) and _FIELD_RE.fullmatch(k) else "<other>"
+            path = f"{prefix}.{name}" if prefix else name
+            if k not in a or k not in b:
+                out[path + "(one_side_only)"] = out.get(path + "(one_side_only)", 0) + 1
+            else:
+                diff_fields(a[k], b[k], path, out, depth + 1)
+    elif a != b or type(a) is not type(b):
+        out[prefix or "<card>"] = out.get(prefix or "<card>", 0) + 1
+    return out
 REAL_TAPE = H.TAPE_ROOT
 WINDOW_MS = (day_ms(ALLOWED_DAYS[0]), day_ms(END_EXCLUSIVE))
 MIN_PAIRS = 50
@@ -91,10 +121,11 @@ def read_hv6_cards(cards_dir: Path, days: list[str], window: tuple[int, int], ex
     return by_t, {"hv6_rows": rows, "hv6_sha_self_mismatch": self_bad, "instants": len(by_t)}
 
 
-def compare(by_t: dict[int, dict[str, dict]], root: Path, tape: Path, days: list[str], *, strict_leak: bool = False) -> dict[str, int]:
+def compare(by_t: dict[int, dict[str, dict]], root: Path, tape: Path, days: list[str], *, strict_leak: bool = False, field_counts: dict[str, int] | None = None,
+            phantom_filter: bool = True) -> dict[str, int]:
     start = min(by_t) if by_t else 0
     guard = R.Hv7Guard(root / "v7")
-    run = R.Hv7Runner(R.Hv7Config(root=str(root / "v7"), frozen_sha="cardequiv0000", clock_start_ms=start, phantom_filter=True), ArenaState(tape, start_ms=0), NullEngine(),
+    run = R.Hv7Runner(R.Hv7Config(root=str(root / "v7"), frozen_sha="cardequiv0000", clock_start_ms=start, phantom_filter=phantom_filter), ArenaState(tape, start_ms=0), NullEngine(),
                       NoModel(), FakeChain(), guard)
     want = frozenset(days)
     orig = run.state._hour_files
@@ -130,12 +161,15 @@ def compare(by_t: dict[int, dict[str, dict]], root: Path, tape: Path, days: list
                 n["equal"] += 1
             else:
                 n["unequal"] += 1
+                if field_counts is not None:
+                    diff_fields(c6, card7, out=field_counts)
     n["leakage_refused"] = run.counters.get("leakage_refused", 0)
     return n
 
 
 def run_equiv(days: list[str], drill_id: str, expect_md5: str, *, cards_dir: Path | None = None, tape_dir: str | None = None, root: Path | None = None,
-              window: tuple[int, int] | None = None) -> dict[str, Any]:
+              window: tuple[int, int] | None = None, hv6_drill_id: str = HV6_DRILL_ID, field_diff: bool = False, phantom_filter: bool = True) -> dict[str, Any]:
+    ref_dir = hv6_cards_dir(hv6_drill_id)       # refuses an id outside the allowlist first, even when cards_dir is given (tests)
     tape_dir = REAL_TAPE if tape_dir is None else tape_dir
     if tape_dir != REAL_TAPE:
         raise Refused("tape_dir_not_allowed")
@@ -147,11 +181,13 @@ def run_equiv(days: list[str], drill_id: str, expect_md5: str, *, cards_dir: Pat
     R.check_path(root / "x", "w")
     root.mkdir(parents=True, exist_ok=True)
     info = hour_scan(Path(tape_dir), days)
-    by_t, cnt = read_hv6_cards(HV6_CARDS_DIR if cards_dir is None else cards_dir, days, window or WINDOW_MS, expect_md5)
-    n = compare(by_t, root, Path(tape_dir), days)
+    by_t, cnt = read_hv6_cards(ref_dir if cards_dir is None else cards_dir, days, window or WINDOW_MS, expect_md5)
+    fc: dict[str, int] | None = {} if field_diff else None
+    n = compare(by_t, root, Path(tape_dir), days, field_counts=fc, phantom_filter=phantom_filter)
     ok = n["pairs"] >= MIN_PAIRS and n["unequal"] == 0 and n["hv7_no_card"] == 0 and n["not_candidate"] == 0 and n["unknown_pool"] == 0 and cnt["hv6_sha_self_mismatch"] == 0
-    return {"hv7_card_equiv": "PASS" if ok else "FAIL", "hv6_drill_id": HV6_DRILL_ID, "cards_md5_equals_pinned": True, "cards_md5": expect_md5, "min_pairs": MIN_PAIRS,
-            "days": len(days), **info, **cnt, **n, "outcome_free": True, "api_calls": 0}
+    return {"hv7_card_equiv": "PASS" if ok else "FAIL", "hv6_drill_id": hv6_drill_id, "cards_md5_equals_pinned": True, "cards_md5": expect_md5, "min_pairs": MIN_PAIRS,
+            "days": len(days), **info, **cnt, **n, "outcome_free": True, "api_calls": 0,
+            **({"unequal_field_counts": dict(sorted(fc.items()))} if fc is not None else {})}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -159,9 +195,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--days", default=",".join(ALLOWED_DAYS))
     ap.add_argument("--drill-id", required=True, help="HV7 scratch drill id")
     ap.add_argument("--expect-cards-md5", required=True, help="the cards md5 pinned in the manifest (QP #996 (c)1)")
+    ap.add_argument("--hv6-drill-id", default=HV6_DRILL_ID, choices=HV6_DRILL_IDS, help="the HV6 reference drill (allowlist of two). Default: the pre-filter real-layout drill")
+    ap.add_argument("--field-diff", action="store_true", help="report only: counts of card field NAMES that differ in the unequal pairs (no values); does not change the verdict")
     a = ap.parse_args(argv)
     try:
-        res = run_equiv(parse_days(a.days), a.drill_id, a.expect_cards_md5)
+        res = run_equiv(parse_days(a.days), a.drill_id, a.expect_cards_md5, hv6_drill_id=a.hv6_drill_id, field_diff=a.field_diff)
     except Refused as e:
         print(json.dumps({"hv7_card_equiv": "refused", "why": str(e)}), file=sys.stderr)
         return 2
