@@ -10,7 +10,12 @@ and loader restrictions as tools/hv7_p0_count.py (days 2026-10-21..23 only, the 
 Output, under the flag --out which must resolve inside /data2/mal/hv7-rehearsal/ (anything else is refused, symlinks resolved):
   prompts/batch-NN.jsonl   6 calls per file (the last file may hold fewer); one line per call:
                            {chunk_id, set_id (= t_d ms), shuffle ("A"|"B"), card_ids (display order), system, user}
-  manifest.json            counts, per-file sha256, per-call request_sha256, the playbook / template sha256s. Counts and hashes only.
+  manifest.json            counts, per-file sha256, per-call request_sha256, the playbook / template sha256s, the git head of the code (a dirty tree is refused),
+                           the screen counters leakage_refused / card_refused / chain_none. Counts and hashes only.
+ONE RUN: a non-empty --out is refused (no stale batch file, no second run into the same dir). CALL CAP in code: sets <= 24 per day and calls == 2 x sets, so at most
+72 sets / 144 calls for the three days; --half-hour adds the :32 instants (<= 48 sets per day, 144 sets / 288 calls), to be used only if the hourly run gave fewer than
+30 sets (DESIGN section 7 amendment); it REPLACES the hourly run. In --half-hour mode seq is t_d // 1 h at :02 (so the :02 requests are byte-identical to the hourly
+run's) and t_d // 1 h + 100000 at :32.
 Nothing here computes an outcome. Pre-clock structure, not evidence.
 """
 from __future__ import annotations
@@ -25,6 +30,7 @@ import argparse
 import hashlib
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from typing import Any
@@ -55,13 +61,52 @@ def check_out(path: str | os.PathLike) -> Path:
     return p
 
 
+HALF_SEQ_OFFSET = 100_000
+SCREEN_COUNTERS = ("leakage_refused", "card_refused", "chain_none")
+
+
+def seq_for(t_d_ms: int) -> int:
+    return t_d_ms // R.HOUR_MS + (HALF_SEQ_OFFSET if t_d_ms % R.HOUR_MS == R.T_D_OFFSET_MS + R.HOUR_MS // 2 else 0)
+
+
 def requests_for_set(t_d_ms: int, cards_in_screen_order: list[dict], tags: tuple = SHUFFLES) -> list[tuple[Any, RK.RankRequest]]:
     """The requests for one set, in `tags` order. tag None = the runner's own L request (a test compares it with what Hv7Runner sends)."""
     t_d = RK.iso_from_ms(t_d_ms)
-    return [(tag, RK.build_rank_request(t_d, cards_in_screen_order, seq=t_d_ms // R.HOUR_MS, perm_tag=tag)) for tag in tags]
+    return [(tag, RK.build_rank_request(t_d, cards_in_screen_order, seq=seq_for(t_d_ms), perm_tag=tag)) for tag in tags]
 
 
-def collect_sets(days: list[str], root: Path, tape: Path, *, start_ms: int | None = None, end_ms: int | None = None) -> list[tuple[int, list[dict]]]:
+def repo_head(repo: str | os.PathLike | None = None) -> str:
+    """git rev-parse HEAD of the code; a dirty tracked tree is refused (the prompt and code are frozen at a pushed sha)."""
+    cwd = str(repo) if repo is not None else str(Path(__file__).resolve().parent.parent)
+    try:
+        if subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip():
+            raise Refused("dirty_tree")
+        head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=cwd, capture_output=True, text=True, check=True).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        raise Refused("git_head_unavailable") from None
+    if len(head) != 40:
+        raise Refused("git_head_unavailable")
+    return head
+
+
+def enforce_caps(n_sets: int, n_calls: int, days: list[str], half_hour: bool) -> None:
+    per_day = 48 if half_hour else 24
+    if n_sets > per_day * len(days) or n_calls != 2 * n_sets or n_calls > 2 * per_day * len(days):
+        raise Refused("call_cap")
+
+
+def check_empty(out_dir: Path) -> None:
+    if out_dir.exists() and (not out_dir.is_dir() or any(out_dir.iterdir())):
+        raise Refused("out_not_empty")
+
+
+def collect_sets(days: list[str], root: Path, tape: Path, *, start_ms: int | None = None, end_ms: int | None = None,
+                 half_hour: bool = False) -> list[tuple[int, list[dict]]]:
+    return collect(days, root, tape, start_ms=start_ms, end_ms=end_ms, half_hour=half_hour)[0]
+
+
+def collect(days: list[str], root: Path, tape: Path, *, start_ms: int | None = None, end_ms: int | None = None,
+            half_hour: bool = False) -> tuple[list[tuple[int, list[dict]]], dict[str, int]]:
     start = day_ms(days[0]) if start_ms is None else start_ms
     end = day_ms(days[-1]) + 86_400_000 if end_ms is None else end_ms
     run = R.Hv7Runner(R.Hv7Config(root=str(root / "v7"), frozen_sha="dumpreq0000000", clock_start_ms=start, phantom_filter=True), ArenaState(tape, start_ms=0),
@@ -72,6 +117,7 @@ def collect_sets(days: list[str], root: Path, tape: Path, *, start_ms: int | Non
     run.state._hour_files = lambda: [t for t in orig() if t[0][:10] in want and t[0] < END_EXCLUSIVE]
     sets = []
     T = (start // R.HOUR_MS) * R.HOUR_MS + R.T_D_OFFSET_MS
+    step = R.HOUR_MS // 2 if half_hour else R.HOUR_MS
     while T < end:
         if T >= start:
             run.poll_to(T)                      # rows up to T - 1 ms only
@@ -82,18 +128,21 @@ def collect_sets(days: list[str], root: Path, tape: Path, *, start_ms: int | Non
                 cards = [run.pending["cards"][i] for i in run.pending["scr_ids"]]
                 assert 3 <= len(cards) <= RK.N_MAX and all(c["as_of_ms"] == T for c in cards)
                 sets.append((T, cards))
-        T += R.HOUR_MS
-    return sets
+        T += step
+    return sets, {k: run.counters.get(k, 0) for k in SCREEN_COUNTERS}
 
 
-def dump(days: list[str], out_dir: Path, tape: Path, scratch: Path, *, start_ms: int | None = None, end_ms: int | None = None) -> dict[str, Any]:
+def dump(days: list[str], out_dir: Path, tape: Path, scratch: Path, *, head: str, start_ms: int | None = None, end_ms: int | None = None,
+         half_hour: bool = False) -> dict[str, Any]:
     out_dir = check_out(out_dir)
-    sets = collect_sets(days, scratch, tape, start_ms=start_ms, end_ms=end_ms)
+    check_empty(out_dir)
+    sets, counters = collect(days, scratch, tape, start_ms=start_ms, end_ms=end_ms, half_hour=half_hour)
     calls = []
     for t_d, cards in sets:
         for tag, rr in requests_for_set(t_d, cards):
             calls.append({"set_id": t_d, "shuffle": tag, "card_ids": list(rr.shown_ids), "system": rr.request.system, "user": rr.request.user_text,
                           "request_sha256": rr.request.request_sha256()})
+    enforce_caps(len(sets), len(calls), days, half_hour)          # before anything is written
     (out_dir / "prompts").mkdir(parents=True, exist_ok=True)
     files = []
     for n, i in enumerate(range(0, len(calls), CALLS_PER_FILE)):
@@ -111,18 +160,22 @@ def dump(days: list[str], out_dir: Path, tape: Path, scratch: Path, *, start_ms:
     rr0 = RK.load_rank_playbook(), RK.load_rank_template()
     manifest = {"hv7_dump_requests": "manifest", "days": list(days), "sets": len(sets), "calls": len(calls), "files": files, "sets_per_day": per_day,
                 "n_histogram": dict(sorted(n_hist.items())), "shuffles": list(SHUFFLES), "calls_per_file": CALLS_PER_FILE, "playbook_sha256": rr0[0].sha256,
-                "template_sha256": rr0[1].sha256, "request_sha256": [c["request_sha256"] for c in calls], "api_calls": 0, "outcome_free": True}
+                "template_sha256": rr0[1].sha256, "request_sha256": [c["request_sha256"] for c in calls], "api_calls": 0, "outcome_free": True, "git_head": head, "half_hour": half_hour,
+                "screen_counters": counters}
     (out_dir / "manifest.json").write_text(json.dumps(manifest, sort_keys=True, indent=1) + "\n")
-    return {k: manifest[k] for k in ("sets", "calls", "sets_per_day", "n_histogram")} | {"files": len(files), "hv7_dump_requests": "done", "api_calls": 0}
+    return {k: manifest[k] for k in ("sets", "calls", "sets_per_day", "n_histogram")} | {"files": len(files), "hv7_dump_requests": "done", "api_calls": 0, "git_head": head, "half_hour": half_hour, "screen_counters": counters}
 
 
-def run_dump(days: list[str], drill_id: str, out: str, *, tape_dir: str | None = None, scratch: Path | None = None) -> dict[str, Any]:
+def run_dump(days: list[str], drill_id: str, out: str, *, tape_dir: str | None = None, scratch: Path | None = None, half_hour: bool = False,
+             head: str | None = None) -> dict[str, Any]:
     tape_dir = REAL_TAPE if tape_dir is None else tape_dir
     if tape_dir != REAL_TAPE:
         raise Refused("tape_dir_not_allowed")
     if not ID_RE.fullmatch(drill_id):
         raise Refused("drill_id")
     out_dir = check_out(out)
+    check_empty(out_dir)
+    head = repo_head() if head is None else head
     scratch = Path(scratch) if scratch is not None else DRILL_ROOT / drill_id
     if not is_drill_root(scratch):
         raise Refused("not_a_drill_root")
@@ -130,17 +183,18 @@ def run_dump(days: list[str], drill_id: str, out: str, *, tape_dir: str | None =
     scratch.mkdir(parents=True, exist_ok=True)
     if hour_scan(Path(tape_dir), days)["hours_present"] == 0:
         raise Refused("no_hour_files_for_the_days")
-    return dump(days, out_dir, Path(tape_dir), scratch)
+    return dump(days, out_dir, Path(tape_dir), scratch, head=head, half_hour=half_hour)
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Dump the exact HV7 rank requests (A and B shuffles) for 2026-10-21..23. Counts only; 0 API.")
     ap.add_argument("--days", default="2026-10-21,2026-10-22,2026-10-23")
     ap.add_argument("--drill-id", required=True, help="scratch id under the HV7 drill root (the runner's log needs a dir)")
+    ap.add_argument("--half-hour", action="store_true", help="add the :32 instants (<= 144 sets / 288 calls); only if the hourly run gave fewer than 30 sets; replaces that run")
     ap.add_argument("--out", required=True, help="must be inside /data2/mal/hv7-rehearsal/")
     a = ap.parse_args(argv)
     try:
-        res = run_dump(parse_days(a.days), a.drill_id, a.out)
+        res = run_dump(parse_days(a.days), a.drill_id, a.out, half_hour=a.half_hour)
     except Refused as e:
         print(json.dumps({"hv7_dump_requests": "refused", "why": str(e)}), file=sys.stderr)
         return 2

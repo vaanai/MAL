@@ -57,7 +57,7 @@ def test_the_dumped_request_equals_what_the_runner_sends(tmp_path):
 def test_files_have_six_calls_and_the_manifest_matches(tmp_path):
     out = tmp_path / "rehearsal" / "o1"
     write_tape(tmp_path / "tape", tape_rows())
-    res = DR.dump([DAY], out, tmp_path / "tape", tmp_path / "scratch")
+    res = DR.dump([DAY], out, tmp_path / "tape", tmp_path / "scratch", head="a" * 40)
     man = json.loads((out / "manifest.json").read_text())
     assert res["calls"] == man["calls"] == 2 * man["sets"] >= 6 and res["api_calls"] == 0
     files = sorted((out / "prompts").glob("batch-*.jsonl"))
