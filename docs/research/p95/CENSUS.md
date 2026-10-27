@@ -1,0 +1,156 @@
+# P95: structural edges census (desk + public web)
+
+Lane P95, manager17, written 2026-10-27 (`date -u` 20:02Z). Desk and public-web research only: **no tape row read, no pricing, 0 Helius credits, no sealed, forward, holdout, arena or meta-capture path opened.** No book has cleared the promotion gate. Nothing here says any strategy makes money. Every probability and every SOL/day figure below is the author's judgment, labelled as such; none is a measurement.
+
+**The question.** Where does a protocol, program, schedule or forced flow create price pressure or a payment that does not require out-predicting other traders? H5 BOOST-floor (`lib-c-K1`, rule `/data/mal/hunt-1008/h5-flows/RULE.md`) is the template: pump.fun's BOOST agent spends a fixed 17.585 SOL TWAP after each non-Mayhem graduation, whatever the price.
+
+**The short answer.** The lab has already mined this space hard: of 30 mechanism classes checked, 27 already have a library row (most are dead or desk-read) or carry no payment at all. Three new candidates come out of this census, all low prior. The best-prepared structural test in the library is an existing row (`p25-pump-order-keeper-absorb`, its pricing declare is already frozen). The new pump.fun changes of 2026-09-30 to 2026-10-17 (fee sweeps, synthetic migration, pump-coin quotes to depth 2, the app's 0.45% fee, Callout Rewards) mostly move existing rows rather than open new money.
+
+Files read: `docs/research/p94/SYNTHESIS.md`, `docs/library/INDEX.md` and `ideas.jsonl` (537 rows; all structural-class rows by id, listed in section 1), `/data/mal/hunt-1008/h5-flows/RULE.md`, `docs/research/{p73,p79,p82,p83}/REPORT.md`, `docs/research/p81/IDEAS.md`, `docs/research/venues-new-tape-2026-10-24.md`, `docs/research/p20-ideas/IDEAS.md` and `p25-change-ideas/IDEAS.md` (headings and the C9 row), `docs/research/p29-keeper-absorb/{RESULTS,PRICING-DECLARE}.md` (grep only), `tools/paper_curve_math.py` (fee tables). Public pump docs read from GitHub `pump-fun/pump-public-docs` at its head of 2026-10-13 (commit list and five docs, section "Sources"). No P36 venue census exists under `docs/research/`; the 10-24 venue note was used in its place.
+
+## 0. Cost floor and seals used throughout
+
+**Cost floor (taker round trip), from the lab's own numbers:**
+
+| Leg | Value | Source |
+|---|---|---|
+| Bonding curve fee | 1.25% a leg | `tools/paper_curve_math.py` `BONDING_FEE_PPM` |
+| PumpSwap canonical, market cap [0, 420) SOL | 1.25% a leg (creator 0.30 + protocol 0.93 + LP 0.02) | `PUMPSWAP_SOL_FEE_SPLIT` |
+| PumpSwap canonical, [420, 1470) SOL | 1.20% a leg (creator 0.95 + protocol 0.05 + LP 0.20) | same |
+| PumpSwap canonical, 98,240 SOL and up | 0.30% a leg | same |
+| pump app / web Platform Fee (since 2026-10-17) | +0.45% a leg (0.40% referred); **not paid by a bot or terminal** | TokenPost; pump.fun fees page (403 to the fetcher, quoted via TokenPost) |
+| Priority | 55,000 lamports a send (H5 rule); lab default 0.001 SOL (P83) | RULE.md; P83 |
+| Round-trip floor at 0.25 SOL incl. 2-slot drift | 3.3989% (band B0) to 0.6479% (B7) | P78 via P94 §2(a) |
+
+The working floor for small and mid coins is therefore 2.5% to 4% a round trip; a structural flow has to move price by more than that inside our holding window, or pay us more than that, to matter.
+
+**Seals every proposed test below respects** (none of the tests reads any of these):
+- Q50/HV4 outputs and H5-family pools under the EXP-024 Look-2 seal to 2026-11-14: no pricing of H5 rules (or of any BOOST-pool price path) on October pools.
+- DBC forward window [2026-10-25T00Z, 2026-11-01T00:10Z) and fwdv1: not read.
+- LaunchLab holdout [10-17, 10-24): SPENT, not used.
+- `/data/mal/meta-capture/`: never listed or read.
+- fresh-0802 (last reserve, unspent): not proposed. fresh-0828: EXP-028's, not proposed.
+- Arena tape: counts or creates only under a QP ruling; every test that names the arena tape says so.
+
+## 1. Census of mechanism classes
+
+Status key: **NEW** = new row added by this lane; **ROW** = an existing row covers it (status in brackets); **NONE** = checked, no payment or forced flow that a taker can be paid by.
+
+| # | Class | Mechanism as of Oct 2026 (source) | Forced or protocol counterparty | Status |
+|---|---|---|---|---|
+| 1 | Protocol-funded TWAP buyer after graduation | BOOST: ~17.585 SOL of TWAP buys over ~5 min after each non-Mayhem migration since 2026-07-21, bought tokens burned (KuCoin blog, The Block 2026-07-29) | BOOST agent | ROW `lib-c-K1` (live-canary/forward via Q50), neighbours `lib-a-A1`, `boost-universe-3`, `l3-boost-custompair-1` |
+| 2 | Mayhem AI agent | opt-in at create, extra 1B tokens, agent trades 24 h, unsold tokens burned (Cryptopolitan; BloFin 2026-09-27) | Mayhem agent | ROW `mayhem-flow-1` (no survivor), `mayhem-flow-2` (parked, P73 not priceable), `mayhem-flow-4` (P79 KILL) |
+| 3 | PUMP buyback-and-burn | 50% of net revenue, one year from 2026-04 (CoinDesk 2026-04-29); a per-trade `buyback_fee` leg is paid in the trade (pump docs SWEEP_FEES) | PUMP buyback | ROW `pump-buyback-1` (continuous, no window), `p60-pump-buyback-cadence` (desk-read), `hunt23-w3-pump-sink-1` (untested); P76: no PUMP/SOL pool in the tape |
+| 4 | PUMP scheduled unlock | 6.87B PUMP a month from 08-11 to July 2029; insiders kept 92% of the July unlock (4pillars) | unlock recipients (not forced to sell) | ROW `scheduled-flows-11` (untested). Not a forced flow; P76 says the tape has no PUMP/SOL pool |
+| 5 | Cashback (creator fee refunded to trader) | deprecated 2026-09-12, old coins still pay (pump docs README) | protocol | ROW `p82-cashback-floor` (KILL as a cost note, +0.218 pp) |
+| 6 | Holder rewards (creator fee paid to holders) | since 2026-09-12; custom pairs set a flat rate up to a platform maximum (3% at time of writing, `web-pump-changes-2`) | protocol, out of every trade's creator fee | ROW `p81-holder-carry` (untested), `lib-a-A36`/`web-competitors-8` (dead as frozen) |
+| 7 | Volume incentive (`claim_token_incentives`) | both `GlobalVolumeAccumulator`s all zero on 2026-10-27 (P83) | none while inactive | ROW `p81-volume-accrual` (INACTIVE) |
+| 8 | Callout Rewards | app users paid daily in USDC by the trading (from 10-10: follower profit) their callouts drive; Oct 4 spam cut, Oct 10 metric change, low-cap calls paid at a reduced rate; ~$15M launch budget, "$300k/day is the baseline" (Alon via TokenPost) | app followers who buy after a callout | **NEW** `p95-callout-follow` |
+| 9 | App Platform Fee 0.45% (10-17) | app trades pay +0.45%; terminals and bots do not | none (a tag, not a payment) | ROW `p25-app-fee-retail-tag` (untested) |
+| 10 | Referral match / 4x boost (10-16) | $50 match after 5 trading days in 10; referred traders ~10% fee discount | none for a bot | NONE (app-only; MAL pays no app fee to discount). Fee-program referral vault: ROW `w2-pump-idl-7` |
+| 11 | Fee sweeps (10-07) | v3/v2/multi-hop trades keep protocol and creator fees in the curve or pool; permissionless `sweep_*` pays them out; price does not change on a sweep (pump docs SWEEP_FEES, VIRTUAL_QUOTE_RESERVES_FEE_ADJUSTMENT) | none: the payer of a sweep gets nothing | NONE as a payment; ROW `web-pump-changes-3`. New data path for `p64-creator-claim-veto` (section 3) |
+| 12 | Negative `virtual_quote_reserves` (09-30) | waiting fees subtracted from VQR so price ignores them | none | NONE (pricing honesty only; `tools/arena_state.py:424-427` prices on `q + v`, so the arena already uses effective reserves) |
+| 13 | Synthetic migration (10-07) | the v3 buy that completes a curve has no max size: it buys the rest from the tokens bound for the pool, at the pool's opening price, paying the **bonding** fee schedule; nobody else can trade until `migrate_v2`; Mayhem coins excluded (pump docs SYNTHETIC_MIGRATION) | BOOST TWAP after migration; later buyers | **NEW** `p95-synthetic-completer` (neighbours `speed-route-3`, `lib-a-A1`, `lib-c-Q2.12`, `lib-c-R2.SB-H3`) |
+| 14 | Pump coins as quote mints, depth 2 (10-07, 10-13) | buying a child from SOL routes through every parent in one tx (`multi_hop_swap`); children's curves hold parent tokens; child protocol, creator and buyback fees are paid in the parent token (pump docs CREATE_WITH_PUMP_COIN_QUOTE, SWEEP_FEES) | child buyers forced to buy the parent | ROW `lib-c-J3` (KILL), `hunt23-w3-qsink-1`, `p25-quote-drift-completion`, `web-pump-changes-1` |
+| 15 | Fee liquidation in quote coins | protocol fees and the buyback leg on parent-quoted and PUMP-quoted pools land in the quote token; converting them to SOL or PUMP is a forced sell of that quote | pump.fun fee and buyback wallets | ROW `lib-c-R2.SB-H4` (untested) and `hunt23-w3-pump-sink-1`; section 3 adds a counts test that the 10-07 sweep events make cheap |
+| 16 | PreStocks / tokenized-stock quotes | pump allows 8 PreStocks quotes since 10-19, DBC since 10-22; ~0.5% transfer fee | child buyers forced to buy the stock leg | ROW `p25-prestock-quote-band`, `p60-t22-quote-pnl-audit` |
+| 17 | Token-2022 transfer fee on DBC mints | fee cut binds ~2 epochs after it is set | holders | ROW `p25-t22-fee-epoch-clock` (untested) |
+| 18 | Anti-sniper fee decay | Meteora fee scheduler (linear/exponential) and rate limiter (Meteora docs, A.S.S.); x7pad: 90% sniper fee decaying to 1/2/5% within 5 s (dev.to, 2026-10-09) | deferred buyers after expiry | ROW `p20-dbc-fee-floor-clock` (no survivor). The 5 s x7pad decay is shorter than MAL latency plus a slot; not re-proposed |
+| 19 | Graduation price step | pump: price continuous through migration and synthetic migration by design (pump docs); DBC: DAMM v2 first print median 11% above strand decision spots (P16) | first DAMM buyers | pump: NONE (no step by design). DBC: ROW `p20-dbc-completion-step` (no path to a book per QP-RULING-1024-p20); LaunchLab: ROW `ll-grad-floor` (no survivor) |
+| 20 | Fee-tier step at market-cap thresholds | PumpSwap [0,420) 1.25% to [420,1470) 1.20%: a 0.05 pp step; tiers keep falling to 0.30% at 98,240 SOL | none | NONE as a step; the cheap-band idea is ROW `lib-a-A27` (no survivor), P78/P87 KILL |
+| 21 | Launchpad platform-token buybacks | x7pad: 20% of coin fees buy and burn X7 "roughly hourly", 303 runs, $122.5K reported (dev.to 2026-10-09); Paid (launched 2026-09-15): 20% to PAID buybacks (vortflux, secondary); Believe 0.8% fee to buyback (comparison blog); StonkFun 5-min crank | platform buyback wallet | **NEW** `p95-launchpad-token-buyback` for x7pad/Paid. ROW `mech-buyer-scout-1/2/3`, `web-cross-venue-1`, `web-forced-flows-9`, `web-forced-flows-10` for the older ones |
+| 22 | Creator-fee claims | pump creator fees are SOL (or quote), not the coin, so a claim is not a forced sale of the coin | creator (discretionary) | ROW `p64-creator-claim-veto` (parked: claims were not in the tape) |
+| 23 | DBC/DAMM v2 locked-LP fee claims, vesting, Jupiter Lock cliffs | discretionary claims; base-token fees only if the config collects both sides | claimant (not forced) | ROW `scheduled-flows-7`, `web-forced-flows-3`, `web-forced-flows-13` |
+| 24 | Pre-launch allocation (Alpha Vault, Genesis) | protected pre-activation buys, pro-rata, vesting | allocation buyers | ROW `p20-launch-allocation` |
+| 25 | Pump app TP/SL orders | price-triggered sells executed by keeper `64fcNU...` with memo `pump-limit:v3` (P29) | stop-loss sellers (price-insensitive) | ROW `p25-pump-order-keeper-absorb` (revive trigger met; pricing declare frozen) |
+| 26 | Jupiter DCA / Recurring / Trigger orders | off-chain, custodial or private | n/a | ROW `web-forced-flows-1`, `-8`, `-12` (shelved/excluded) |
+| 27 | Lending and perp liquidations | keeper liquidations of memecoin collateral; pump app now routes Hyperliquid perps (crypto.news, 10-17) | liquidated borrowers | ROW `web-forced-flows-4`, `-5`; funding carry ROW `w4s-short-hl-funding-cost` (closed) |
+| 28 | Keeper / crank rewards | sweeps, `extend_account`, `claim_cashback`, `migrate_v2` are permissionless but pay the caller nothing (the payer covers rent) per pump docs; Token-2022 withheld-fee harvest pays the withdraw authority only | none | NONE: no paid crank found on pump, PumpSwap or DBC |
+| 29 | Cross-venue / aggregator routing | sibling pools are dust; atomic arb untested | trader who moved pool A | ROW `w4-gap-xpool-1` (KILL at structure count), `p20-atomic-xpool-bundle` |
+| 30 | Exchange or perp listing | event-driven | n/a | ROW `p20-listing-announce` |
+
+## 2. New candidates (one library row each)
+
+### 2.1 `p95-callout-follow`: lead the paid follower flow after a Callout
+
+- **Mechanism.** pump.fun pays callers daily, in USDC, pro rata to the trading (from 2026-10-10, the follower profit) their callouts drive among app users. Sources: Pump.fun on X (status 2087913072644001849, 2087913075827474852), Alon on X (2087913907268493797), KuCoin flash (Oct 4 algorithm change), Crypto Briefing (Oct 10 change; ~$15M budget; methodology undisclosed), TokenPost (unpaid referral fees to grow the pool; "$300k/day is the baseline"). The protocol is not the buyer; it pays someone else to bring buyers. The followers are app users who pay the 0.45% Platform Fee, so their buys may be tagged on chain (`p25-app-fee-retail-tag`).
+- **Counterparty.** App followers who buy at human speed after a callout. Not forced, but induced by a paid incentive, so their flow should follow the callout in time.
+- **Size per event vs cost.** Unknown. For a 0.25 SOL round trip on a small pool the floor is 2.5% (two 1.25% legs, bonding or PumpSwap [0,420)) plus 2-slot drift, so 2.5% to 4%. Follower net buying b into effective quote Q moves price by (1+b/Q)^2-1; 4% needs b of about 2% of Q (1.7 SOL into an 85 SOL pool). Whether a callout drives that much is the unknown.
+- **Events/day.** Unknown (no public count found).
+- **Capacity at 0.05 to 0.30 SOL.** Our own impact on an 85 SOL pool is (1+0.3/85)^2-1, about 0.71% at 0.30 SOL. Judgment: 20 qualifying callouts/day x 0.25 SOL x 3% net = 0.15 SOL/day if it works.
+- **Can MAL's tape count it?** Not the callouts: they live in the app, and no public feed or on-chain record was found. App-tagged follower buys could be counted on the arena tape, only under a QP ruling.
+- **First counts-only test.** Step 0 (desk, about an hour): is there an unauthenticated public endpoint or an on-chain record (memo, program) of callouts with a timestamp and a mint? If not, record NOT_TESTABLE and stop. No logged-in scraping, no account, no posting. Step 1 (forward recording, 3 full UTC days from the day after registration, never on past arena hours without QP): for each callout by the top 100 callers, count app-tagged net buy SOL in [t+2 s, t+120 s] and that SOL over the pool's effective quote at t.
+- **Kill line (pre-stated).** KILL if, on the median day, fewer than 20 callouts have implied follower move (1+b/Q)^2-1 of at least 4%, or if the median first app-tagged follower buy lands within 2 s of the callout (no lead for MAL at 1.9 s), or if Step 0 finds no public timestamped feed (NOT_TESTABLE).
+- **Policy.** MAL reads only. It never posts callouts or farms Callout Rewards; doing either is an owner decision and a possible terms-of-service issue.
+- **Prior (judgment).** About 3%. Copy-type lines died on latency (P71), and the Oct 10 move to follower profit may reduce hype calls.
+
+### 2.2 `p95-synthetic-completer`: the completing v3 buy as a first-in entry ahead of BOOST
+
+- **Mechanism.** Since 2026-10-07, `buy_v3` / `buy_exact_quote_in_v3` that empties a bonding curve "has no max size": it buys the rest of the curve at the curve price, then buys any amount from the tokens bound for the PumpSwap pool, at the price that pool would charge, and `migrate_v2` opens the pool where that buy stopped. Both parts pay the bonding curve fee schedule. After it, every trade on the curve fails until `migrate_v2` runs. Mayhem coins are excluded (pump docs SYNTHETIC_MIGRATION.md; PostCompleteBuyEvent carries `base_out`, `quote_in`, the fees and the pool reserves before and after). So the completer holds the only position in the pool at its opening price before anybody else can trade it, and BOOST's ~17.585 SOL TWAP follows on non-Mayhem pools.
+- **Counterparty.** BOOST (protocol-funded, price-insensitive) and the first post-migration buyers.
+- **What is different from dead rows.** `speed-route-3` (parked: bundling `migrate_v2` plus a buy, contested by one bot on 26% of pools), `lib-a-A1` (pre-BOOST and mid-BOOST entry, no survivor), `lib-c-Q2.12` (migrate-direct cell, FAIL) and `web-oct-mechanics-1` (exit at or before complete, KILL) all faced a race or a curve-capped size. The synthetic buy removes the race with `migrate_v2` and the size cap. It does not remove the reason those rows died (post-migration dumping outweighing BOOST at MAL latency), so this may be the same dead play with a new door.
+- **Size per event vs cost.** BOOST budget about 17.585 SOL against an effective quote of roughly 85 SOL (budget = pool V, `boost-universe-3`); realised effect after other flow unmeasured. Cost: bonding fee 1.25% on entry (both parts), PumpSwap 1.25% or 1.20% on exit, two priority fees, exit lag: about 2.5% plus drift.
+- **Events/day.** Non-Mayhem graduations per day: not read here (arena tape counts it under a QP ruling). Share completed by a v3 synthetic buy: unknown (the first test).
+- **Capacity at 0.05 to 0.30 SOL.** Own impact about 0.7% at 0.30 SOL on 85 SOL. Judgment: 30 entries/day x 0.25 x 3% = 0.225 SOL/day if it works, before competition for the completing slot.
+- **Can MAL's tape count it?** Aug/Sep tape: no (the mechanism starts 10-07). October: completion rows exist in the arena tape (QP ruling needed); the PostCompleteBuyEvent itself is cheapest from public `getTransaction` on completion signatures.
+- **First counts-only test.** From 2026-10-28T00Z forward, 3 full UTC days, public RPC only, no price, reserve-after-migration or outcome column read for any BOOSTed pool (EXP-024 Look-2 seal to 2026-11-14): count completions per day; share with a PostCompleteBuyEvent; distribution of its `quote_in`; signer concentration (top-5 share) of synthetic completers; slots from complete to `migrate_v2`; share where `migrate_v2` is in the same transaction or slot.
+- **Kill line (pre-stated).** KILL if synthetic completions are under 10% of completions on the median day, or the top 5 signers take at least 80% of synthetic completions (a held slot), or the median pool-part `quote_in` is under 0.05 SOL (nobody uses it, so no evidence it is worth anything). A PASS of the counts licenses only a pre-registered pricing study after 2026-11-14 with a QP ruling, never a pricing of October BOOST pools before the seal ends.
+- **Prior (judgment).** About 2%.
+
+### 2.3 `p95-launchpad-token-buyback`: hourly platform-token buybacks on new launchpads
+
+- **Mechanism.** x7pad (Meteora-based, coins quoted in tokenized stocks, launched early Oct 2026): 20% of every coin's fees buy and burn X7 (80% of X7's own fees), from a dedicated wallet "roughly hourly"; project scoreboard 303 runs, $122.5K spent, 210.74M X7 burned; on-chain supply about 788.9M of 1B is consistent (dev.to holder's notes, 2026-10-09; X7 mint `CdhZy8wrRxNxoV8HtoByXKN7mvS46avtuZ1b39tKfx7` per that article, copycats exist). Paid (launched 2026-09-15): 20% of fees to PAID buybacks and burns (vortflux, secondary; no schedule).
+- **Counterparty.** The platform's buyback wallet: protocol-funded and price-insensitive within a run.
+- **Size per event vs cost.** Reported mean about $404 a run (122.5K / 303). Implied move (1+b/Q)^2-1 depends on the X7 pool depth, not read. Cost floor: the pool fee is unknown (x7pad coin fees are 1/2/5%; X7's own pool fee not found) plus any stock-quote conversion leg, so likely at or above 2%.
+- **Events/day.** About 24 if hourly holds (project claim).
+- **Capacity at 0.05 to 0.30 SOL.** One token per platform; tiny. Judgment: 24 x 0.1 SOL x 1% = 0.024 SOL/day if it works.
+- **Can MAL's tape count it?** No: DAMM v2 is not recorded and DBC rows are instruction-level only (venue note 2026-10-24). Public RPC only.
+- **First counts-only test.** Find the buyback wallet as the signer of X7 burn transactions (`getSignaturesForAddress` on the X7 mint, public RPC, 0 Helius); for 3 full UTC days list run times, SOL-equivalent size and the pool's quote reserve before each run. Same for Paid if its wallet is identifiable within the same hour of desk time.
+- **Kill line (pre-stated, as `mech-buyer-scout-1`).** KILL if fewer than 13 runs/day, or the median run's implied move (1+b/Q)^2-1 is below the pool's round-trip cost, or run times are not predictable (coefficient of variation of the gap above 0.5). NOT_TESTABLE if the wallet cannot be identified in one desk hour.
+- **Prior (judgment).** About 1%: the same class died on capacity (`mech-buyer-scout-1`: 0 of 43 buys implied a move at or above 2.5%).
+
+## 3. Existing rows that this census moves
+
+- **`p25-pump-order-keeper-absorb`** (untested; revive trigger met by P29). Stop-loss sells are price-triggered, so they are a forced, price-insensitive flow: the most structural untested line in the library. P29 tagged them by keeper `64fcNUtAAockLpMJZ1DudHCMHJhLRBmgrmGvbrwmQzQw` and memo; median full day 3,139 tagged sells and 227 SL60 clusters (`docs/research/p29-keeper-absorb/RESULTS.md`). Its pricing rule and kill set are already frozen in `docs/research/p29-keeper-absorb/PRICING-DECLARE.md` (section 5: KILL if any of nine conditions fires on any of four sub-cells, including mean <= 0, no strict majority of positive days, worst-in-slot leg <= 0). The caution: P72 killed the untagged version (0 of 36 days positive, -2.63768% flat), and the declare itself discloses that the untagged cascade family was negative on the same September days. Data: fresh-0903 plus the keeper's public history (from 2026-09-03); not sealed. **First test: run the frozen PRICING-DECLARE as written.**
+- **`p81-holder-carry`** (untested). Arithmetic this census adds: for a holder rewards coin with rate r, a holder's carry per day is about r x turnover (volume / market cap) of stake, and the round trip costs 2(r + p + lp) plus priority, where p + lp is the non-rebated fee. Break-even is turnover x days held > 2(1 + (p+lp)/r): at r = 0.95% and p+lp = 0.25%, turnover x days > 2.53. Custom pairs can set r up to the platform maximum (3% at writing, `web-pump-changes-2`), which lowers the bar to about 2.17. P70's -12.4% 24 h drift on top-volume pools still dominates; the test stays P81's Step 0 (flag read plus a payout check on sampled holders) and kill line (median reward-minus-fee day <= 0, or fewer than 5 candidate coins a day).
+- **`lib-c-R2.SB-H4` / `hunt23-w3-pump-sink-1`** (untested). Since 10-07 the protocol fee on v2/v3 trades sits in the pool until pump.fun runs `sweep_protocol_fee`, which emits `SweepPoolFeeEvent` (`bucket 0`, recipient, amount); on parent-quoted and PUMP-quoted pools that amount is in the quote token, and the buyback leg is paid to a buyback recipient's token account for that quote. Any conversion of those balances to SOL or PUMP is a forced sell of the quote. **First counts-only test:** 3 full UTC days from registration, public RPC: protocol-fee sweeps per day on non-WSOL, non-USDC quote pools, amounts in SOL-equivalent, and outgoing swaps from the 8 fee recipients' and the buyback recipients' quote-token accounts within 60 min. **Kill:** fewer than 5 conversions a day of at least 0.5 SOL-equivalent, or no regular timing (gap CV above 0.5), or median implied move on the quote's pool below 2.5%. Note: the only side MAL could trade is buying after the conversion, which is the absorb class P72 killed untagged; prior about 2% (judgment).
+- **`p64-creator-claim-veto`** (parked: claims were not in the tape). Since 10-07 a creator must call `sweep_creator_fee` before `collect_creator_fee_v2` / `collect_coin_creator_fee`, and every v2/v3 trade event carries `creator_fee_unclaimed`. The claim moment and the waiting amount are now readable on chain. This is the missing data, but only for October pools: the Q50/H5 domain is sealed to 2026-11-14, so the veto can be fitted only under P94 direction 2 (after the Q50 read, new pre-registration).
+
+## 4. Ranking (all judgment)
+
+P is the author's probability that the first test passes and a later pre-registered pricing study is positive under both fail models. SOL/day is trades/day x stake x net edge if it works, at 0.25 SOL unless stated. Neither is a measurement.
+
+| Rank | Candidate | Row | P | SOL/day if it works | P x SOL/day | First test |
+|---|---|---|---|---|---|---|
+| 1 | Keeper-tagged stop-loss absorb | `p25-pump-order-keeper-absorb` | 5% | 50 x 0.25 x 2% = 0.25 | 0.0125 | frozen P29 PRICING-DECLARE |
+| 2 | Callout follower flow | `p95-callout-follow` (new) | 3% | 20 x 0.25 x 3% = 0.15 | 0.0045 | public-feed check, then 3-day counts |
+| 3 | Synthetic-migration completer | `p95-synthetic-completer` (new) | 2% | 30 x 0.25 x 3% = 0.225 | 0.0045 | 3-day completion counts, public RPC, seal-safe |
+| 4 | Quote-coin fee liquidation | `lib-c-R2.SB-H4` | 2% | 10 x 0.25 x 2% = 0.05 | 0.0010 | sweep-event and conversion counts |
+| 5 | Holder-rewards carry | `p81-holder-carry` | 5% | 3 x 0.30 x 1% = 0.009 | 0.0005 | P81 Step 0 |
+| 6 | Launchpad platform-token buyback | `p95-launchpad-token-buyback` (new) | 1% | 24 x 0.10 x 1% = 0.024 | 0.0002 | buyback-wallet cadence counts |
+
+Every expected value in this table is below 0.02 SOL/day. That is the census's main finding: the structural payments still open on these venues are small against the 2.5% to 4% taker floor, and BOOST remains the only one the lab has found that is large per event (17.585 SOL against a ~85 SOL pool). The cheap first steps are all counts; none needs Helius.
+
+## 5. What was checked and found to pay nothing
+
+- **No paid crank.** Sweeps, `extend_account`, `claim_cashback` and `migrate_v2` are permissionless, but the caller only pays rent (pump docs SWEEP_FEES, SYNTHETIC_MIGRATION). Token-2022 withheld fees go only to the withdraw authority.
+- **No pump graduation step.** The pump docs state that the price is continuous through migration and through a synthetic migration, and BOOST's virtual reserve equals its budget (`boost-universe-3`).
+- **Fee-tier steps are tiny.** The first PumpSwap step is 1.25% to 1.20% a leg; the large savings sit only above about 98,240 SOL market cap (P78/P87 KILL).
+- **Volume incentive inactive** (P83), **cashback ending** (P82: share near zero in late September).
+- **Sweeps do not move price**: waiting fees are already excluded from effective reserves.
+
+## Not measured
+
+Callout counts, payouts or timing; synthetic-completion share, sizes or signers; X7 or PAID pool depth, run sizes in SOL or cadence; quote-coin fee conversions; graduations per day in October; any price, P&L or outcome. Web sources are secondary unless they are the pump public docs; the pump.fun fees page returned 403 to the fetcher. No tape row, sealed path or arena hour was opened.
+
+## Sources (read 2026-10-27)
+
+- pump public docs, GitHub `pump-fun/pump-public-docs` head 2026-10-13 (commits 2026-09-29, 10-07, 10-08, 10-13): [README](https://github.com/pump-fun/pump-public-docs/blob/main/README.md), [SWEEP_FEES](https://github.com/pump-fun/pump-public-docs/blob/main/docs/instructions/SWEEP_FEES.md), [SYNTHETIC_MIGRATION](https://github.com/pump-fun/pump-public-docs/blob/main/docs/SYNTHETIC_MIGRATION.md), [VIRTUAL_QUOTE_RESERVES_FEE_ADJUSTMENT](https://github.com/pump-fun/pump-public-docs/blob/main/docs/VIRTUAL_QUOTE_RESERVES_FEE_ADJUSTMENT.md), [NEGATIVE_VIRTUAL_QUOTE_RESERVES](https://github.com/pump-fun/pump-public-docs/blob/main/docs/NEGATIVE_VIRTUAL_QUOTE_RESERVES.md), [CREATE_WITH_PUMP_COIN_QUOTE](https://github.com/pump-fun/pump-public-docs/blob/main/docs/instructions/CREATE_WITH_PUMP_COIN_QUOTE.md)
+- App fee and Callout pool: [TokenPost 33804](https://www.tokenpost.com/news/business/33804); [crypto.news, perps](https://crypto.news/pump-fun-hyperliquid-perpetuals-fees-us-restrictions/); [pump.fun fees page](https://pump.fun/docs/fees) (403 to the fetcher)
+- Callout Rewards: [Pump.fun on X](https://x.com/Pumpfun/status/2087913072644001849), [thread](https://x.com/Pumpfun/status/2087913075827474852), [Alon on X](https://x.com/a1lon9/status/2087913907268493797), [KuCoin flash](https://www.kucoin.com/news/flash/pump-fun-adjusts-callout-reward-algorithm-to-prioritize-quality), [Crypto Briefing, Oct 10 change](https://cryptobriefing.com/pump-fun-callout-rewards-follower-profits/)
+- BOOST: [The Block 2026-07-29](https://theblock.co/news/defi/2026-07-29-pump-fun-token-graduation-rate-jumps-boost-changes-launch-incentives-409815), [KuCoin BOOST explainer](https://www.kucoin.com/blog/pump-fun-boost-mode-explained)
+- Mayhem: [Cryptopolitan](https://www.cryptopolitan.com/pump-fun-launches-mayhem-mode-letting-ai-agents-loose-in-the-trenches/), [BloFin](https://blofin.com/academy/education/pumpfun/what-is-mayhem-mode)
+- PUMP buyback and unlock: [CoinDesk 2026-04-29](https://www.coindesk.com/markets/2026/04/29/pump-fun-burns-36-of-pump-supply-in-usd370-million-wipe-locks-50-revenue-into-ongoing-buybacks), [4pillars](https://research.4pillars.io/en/data/content/pump-insiders-kept-92-of-the-july-unlock), [The Defiant](https://thedefiant.io/news/defi/pump-fun-s-pump-buybacks-top-usd400m-as-token-stays-flat)
+- Meteora DBC anti-sniper suite: [docs](https://docs.meteora.ag/meteoras-anti-sniper-suite-a.s.s./meteoras-anti-sniper-suite/a.s.s.-for-dbc), [what is DBC](https://docs.meteora.ag/core-products/dbc/what-is-dbc)
+- Launchpad buybacks: [x7pad holder's notes, 2026-10-09](https://dev.to/shengtsai/x7pad-a-solana-launchpad-where-coins-trade-against-tokenized-stocks-a-holders-notes-4p7), [Paid (vortflux)](https://vortflux.com/en/article/paid-solana-launchpad-x-fee-sharing), [LetsBONK (cryptonews)](https://cryptonews.net/news/altcoins/33379454)
+- Other 10-2026 pump changes: [Pump Bridge (crypto.news)](https://crypto.news/pump-fun-launches-pump-bridge-with-faster-crosschain-trades-and-fewer-errors/), [referral (cryptonews.net)](https://cryptonews.net/news/altcoins/33605663/)
