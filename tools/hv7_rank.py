@@ -25,7 +25,7 @@ TEMPLATE_DIR = PACKAGE_DIR / "hv7_templates"
 
 N_DEFAULT = 8
 N_MIN = 3
-N_MAX = 12            # card cap of one rank request (hv4_prompts' own cap of 4 is for HV4/HV6)
+N_MAX = 8             # card cap of one rank request; any N from N_MIN to N_MAX is valid (hv4_prompts' entry cap of 4 is for HV4/HV6)
 MAX_TOKENS = 600
 KIND = "rank"
 ARM_L = "L"
@@ -181,6 +181,23 @@ def forbidden_keys(node) -> list[str]:
     return sorted(set(bad))
 
 
+def check_rank_cards(cards) -> list[dict]:
+    """HV7-local card check: N_MIN <= N <= N_MAX cards, then hv4_prompts' per-card checks (ids, as_of_ms, x null, strings, size).
+    Cards must be in screen order: f.vol_60m descending, ties by id (R's index and the S arm point into this order)."""
+    if not isinstance(cards, (list, tuple)) or not (N_MIN <= len(cards) <= N_MAX):
+        raise RankError(f"a rank request needs {N_MIN} to {N_MAX} cards")
+    cards = P.check_cards(cards, max_cards=N_MAX)
+    keys = []
+    for c in cards:
+        v = (c.get("f") or {}).get("vol_60m") if isinstance(c.get("f"), dict) else None
+        if not _vol_ok(v):
+            raise RankError("every card needs a finite f.vol_60m (the screen key)")
+        keys.append((-float(v), c["id"]))
+    if keys != sorted(keys):
+        raise RankError("cards must be in screen order (f.vol_60m descending, ties by id)")
+    return list(cards)
+
+
 @dataclass(frozen=True)
 class RankRequest:
     request: P.Request
@@ -196,9 +213,7 @@ def build_rank_request(t_d_iso: str, cards, *, seq: int = 0, playbook: P.Playboo
     """cards: the N cards in SCREEN order, all built at t_d. They are shown in the seeded display order. perm_tag overrides the
     permutation seed arm (the offline rehearsal uses 'A' and 'B')."""
     t_ms = ms_from_iso(t_d_iso)
-    cards = P.check_cards(cards, max_cards=N_MAX)
-    if len(cards) < N_MIN:
-        raise RankError(f"a rank request needs at least {N_MIN} cards")
+    cards = check_rank_cards(cards)
     for c in cards:
         if c["as_of_ms"] != t_ms:
             raise RankError("every card must be built at t_d (as_of_ms == t_d)")
@@ -233,6 +248,7 @@ class RankVerdict:
     reason: str | None                # one of FALLBACK_REASONS when not ok
     why_words_over_20: int = 0        # report-only flags, never a fallback cause
     why_without_field: int = 0
+    why_invalid: int = 0              # items whose why is missing or not a string
 
 
 def _fallback(reason: str) -> RankVerdict:
@@ -242,7 +258,10 @@ def _fallback(reason: str) -> RankVerdict:
 def validate_rank(reply, shown_ids) -> RankVerdict:
     """reply: the model's text (or None for a refusal, timeout or budget stop). Valid only if it is a JSON array holding exactly one
     {"id": ..., "why": ...} object per shown id (no other keys), each id once. Anything else (SKIP text, prose, a code fence, a
-    short, long or duplicated list) is a FALLBACK with a reason code."""
+    short, long or duplicated list) is a FALLBACK with a reason code.
+
+    WHY RULE (decided, QP ruling on #996 part d): a full permutation with a bad `why` (over 20 words, naming no card field, missing,
+    or not a string) is ACCEPTED and logged in the verdict counts (report-only). It is never a fallback."""
     shown = list(shown_ids)
     if reply is None or not isinstance(reply, str):
         return _fallback("refusal")
@@ -255,18 +274,16 @@ def validate_rank(reply, shown_ids) -> RankVerdict:
     if not isinstance(data, list):
         return _fallback("not_list")
     ids: list[str] = []
-    over = nofield = 0
+    over = nofield = bad = 0
     for item in data:
         if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not set(item) <= {"id", "why"}:
             return _fallback("bad_item")
         why = item.get("why")
-        if "why" in item and not isinstance(why, str):
-            return _fallback("bad_item")
         if isinstance(why, str):
             over += len(why.split()) > 20
             nofield += not _WORD_FIELD.search(why)
         else:
-            nofield += 1
+            bad += 1      # missing or non-string why: accepted, counted
         ids.append(item["id"])
     known = set(shown)
     if any(i not in known for i in ids):
@@ -277,7 +294,7 @@ def validate_rank(reply, shown_ids) -> RankVerdict:
         return _fallback("missing_id")
     if len(ids) != len(shown):
         return _fallback("wrong_length")
-    return RankVerdict(ok=True, order=tuple(ids), reason=None, why_words_over_20=over, why_without_field=nofield)
+    return RankVerdict(ok=True, order=tuple(ids), reason=None, why_words_over_20=over, why_without_field=nofield, why_invalid=bad)
 
 
 def pick_top_k(verdict: RankVerdict, k: int = 1) -> tuple[str, ...]:

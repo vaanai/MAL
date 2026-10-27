@@ -22,7 +22,7 @@ TD_MS = R.ms_from_iso(TD)
 
 def card(i, as_of=TD_MS, **extra):
     c = {"id": f"pool{i}", "as_of_ms": as_of, "as_of_slot": 1000 + i, "x": None,
-         "f": {"ret_60m": 0.01 * i, "vol_60m": 10.0 + i, "age_s": 8000, "quote_eff_sol": 100.0 + i},
+         "f": {"ret_60m": 0.01 * i, "vol_60m": 100.0 - i, "age_s": 8000, "quote_eff_sol": 100.0 + i},
          "risk": {"holder_count": 50 + i}, "setup": {"type": "PULLBACK"}}
     c.update(extra)
     return c
@@ -42,12 +42,34 @@ def paras(text):
     return [p.strip("\n") for p in text.replace("=== RULES ===\n", "\n\n").split("\n\n")]
 
 
-@pytest.mark.parametrize("prefix", ["BASE RATE.", "SCREEN, NOT REASON.", "MEASURED DIRECTIONS.", "UNTRUSTED TEXT", "CARDS\n", "HONESTY"])
-def test_base_rate_paragraphs_byte_identical_to_gen(prefix):
-    g = [p for p in paras(GEN.read_text(encoding="utf-8")) if p.startswith(prefix)]
-    r = [p for p in paras(RANK.read_text(encoding="utf-8")) if p.startswith(prefix)]
-    assert len(g) == 1 and len(r) == 1
-    assert g[0].encode("utf-8") == r[0].encode("utf-8")
+QP_CLAUSE = "Every other field is context, not evidence of direction; you may argue from them, but say it is a hypothesis, not a lab result."
+
+
+def _one(text, prefix):
+    m = [p for p in paras(text) if p.startswith(prefix)]
+    assert len(m) == 1
+    return m[0]
+
+
+@pytest.mark.parametrize("prefix", ["UNTRUSTED TEXT", "CARDS\n", "HONESTY"])
+def test_header_paragraphs_byte_identical_to_gen(prefix):
+    assert _one(GEN.read_text(encoding="utf-8"), prefix).encode() == _one(RANK.read_text(encoding="utf-8"), prefix).encode()
+
+
+def test_base_rate_truth_lines_byte_equal_and_no_skip_wording():
+    g, r = _one(GEN.read_text(encoding="utf-8"), "BASE RATE."), _one(RANK.read_text(encoding="utf-8"), "BASE RATE.")
+    cut = g.index(" Do not buy to fill a quota")
+    assert cut > 0 and r.encode().startswith(g[:cut].encode())      # every measured number and the "earlier Haiku" truth, unchanged
+    assert "SKIP" not in r and "skip" not in r and "quota" not in r
+    assert r.endswith("Judge each pool on its fields alone.")
+
+
+def test_measured_directions_uses_qp_clause():
+    g, r = _one(GEN.read_text(encoding="utf-8"), "MEASURED DIRECTIONS."), _one(RANK.read_text(encoding="utf-8"), "MEASURED DIRECTIONS.")
+    cut = g.index(" Every other field is context")
+    assert r.encode().startswith(g[:cut].encode())
+    assert r.endswith(" " + QP_CLAUSE) and r.count(QP_CLAUSE) == 1
+    assert "do not claim" not in r and "Conviction" not in r and "Size 0.25" not in r and "improves the odds" not in r
 
 
 def test_playbook_parses_and_has_ranking_task():
@@ -98,7 +120,14 @@ def test_validator_rejections():
     _bad('{"ranking": []}', "not_list")
     _bad(json.dumps(IDS), "bad_item")                                    # bare id strings
     _bad(json.dumps([{"id": 5, "why": "x"}] * 8), "bad_item")
-    _bad(json.dumps([{"id": i, "why": 3} for i in IDS]), "bad_item")
+
+
+def test_bad_why_on_full_permutation_is_accepted_and_logged():
+    v = R.validate_rank(json.dumps([{"id": i, "why": 3} for i in IDS]), IDS)
+    assert v.ok and v.why_invalid == 8 and v.order == tuple(IDS)
+    mixed = [{"id": IDS[0], "why": None}, {"id": IDS[1]}] + [{"id": i, "why": "f.age_s is high"} for i in IDS[2:]]
+    v = R.validate_rank(json.dumps(mixed), IDS)
+    assert v.ok and v.why_invalid == 2 and v.why_without_field == 0
 
 
 def test_why_quality_is_flag_not_fallback():
@@ -106,7 +135,7 @@ def test_why_quality_is_flag_not_fallback():
     v = R.validate_rank(reply(IDS, why=long), IDS)
     assert v.ok and v.why_words_over_20 == 8 and v.why_without_field == 8
     v = R.validate_rank(json.dumps([{"id": i} for i in IDS]), IDS)
-    assert v.ok and v.why_without_field == 8
+    assert v.ok and v.why_invalid == 8
 
 
 def test_fallback_reasons_are_all_known():
@@ -200,7 +229,7 @@ def test_min_set_rule_no_trade_below_three():
 
 def test_screen_argument_checks():
     with pytest.raises(R.RankError):
-        R.screen_set([], {}, n=13)
+        R.screen_set([], {}, n=9)
     with pytest.raises(R.RankError):
         R.screen_set([], {}, n=4, n_min=5)
 
@@ -232,6 +261,41 @@ def test_request_bytes_identical_across_builds_and_marker():
     assert R.validate_rank(reply(a.shown_ids), a.request.ids).ok
 
 
+@pytest.mark.parametrize("n", [3, 4, 5, 6, 7, 8])
+def test_any_n_from_3_to_8(n):
+    rr = R.build_rank_request(TD, cards(n))
+    assert len(rr.shown_ids) == n and sorted(rr.shown_ids) == sorted(f"pool{i}" for i in range(n))
+    assert f"{n} cards" in rr.request.user_text and f"exactly {n} objects" in rr.request.user_text
+    assert R.validate_rank(reply(rr.shown_ids), rr.request.ids).ok
+    assert not R.validate_rank(reply(rr.shown_ids[:-1]), rr.request.ids).ok
+
+
+def test_cards_must_be_in_screen_order():
+    cs = cards()
+    cs[0], cs[1] = cs[1], cs[0]
+    with pytest.raises(R.RankError):
+        R.build_rank_request(TD, cs)
+    cs = cards()
+    cs[2]["f"] = dict(cs[2]["f"], vol_60m=None)
+    with pytest.raises(R.RankError):
+        R.build_rank_request(TD, cs)
+
+
+def test_r_index_points_into_screen_order_not_display_order():
+    differs = 0
+    for k in range(50):
+        t = R.iso_from_ms(TD_MS + k * 3_600_000)
+        cs = cards(8, as_of=R.ms_from_iso(t))
+        rr = R.build_rank_request(t, cs)
+        idx = R.r_pick_index(t, rr.screen_card_shas)
+        expected = f"pool{idx}"                                     # card i has vol 100 - i, so screen index i is pool i
+        assert rr.screen_ids[idx] == expected
+        c = R.l_choice(R.validate_rank("nope", rr.request.ids), t, rr.screen_ids, rr.screen_card_shas)
+        assert c.fallback and c.pool_id == expected
+        differs += rr.shown_ids[idx] != expected                    # the display order is a different order
+    assert differs > 20
+
+
 def test_request_changes_with_set_seed_and_tag():
     base = R.build_rank_request(TD, cards())
     assert R.build_rank_request(TD, cards(7)).request.user_text != base.request.user_text
@@ -243,7 +307,7 @@ def test_request_checks():
     with pytest.raises(R.RankError):
         R.build_rank_request(TD, cards(2))                       # below the minimum set
     with pytest.raises(P.PromptError):
-        R.build_rank_request(TD, cards(13))                      # above the cap
+        R.build_rank_request(TD, cards(9))                       # above the cap
     with pytest.raises(R.RankError):
         R.build_rank_request(TD, cards(as_of=TD_MS + 1))         # card built after t_d
     with pytest.raises(R.RankError):
