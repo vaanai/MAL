@@ -33,10 +33,6 @@ con.execute(f"""CREATE OR REPLACE TABLE M AS
  GROUP BY r.pool, r.bt//60""")
 con.execute("CREATE OR REPLACE TABLE FIRST AS SELECT pool, min(bt) AS first_bt FROM read_parquet('" + glob_ + "') WHERE wsol AND mint LIKE '%pump' GROUP BY pool")
 print("M rows", con.execute("select count(*) from M").fetchone(), flush=True)
-con.execute(f"""CREATE OR REPLACE TABLE T AS
- SELECT r.pool, r.bt//60 AS m, r.trader, sum(sol)::DOUBLE AS vs FROM read_parquet('{glob_}') r JOIN DEEP ON DEEP.pool=r.pool
- WHERE r.wsol AND r.mint LIKE '%pump' AND r.sig <> '{'1'*64}' AND r.trader NOT IN {ph} GROUP BY r.pool, r.bt//60, r.trader""")
-print("T rows", con.execute("select count(*) from T").fetchone(), flush=True)
 # hourly bucket stats
 con.execute("""CREATE OR REPLACE TABLE B AS
  SELECT pool, (m-2)//60 AS hb, sum(n) AS n60, sum(CASE WHEN m-2-((m-2)//60)*60 >= 45 THEN n ELSE 0 END) AS n15,
@@ -58,14 +54,16 @@ con.execute("""CREATE OR REPLACE TABLE S0 AS
  WHERE B.n60 >= 20 AND MD.depth_med >= 100 AND RG.range6 >= 0.02 AND ml.pl*1e6 >= 58940 AND ml.pl*1e6 < 5000000
    AND ((B.hb+1)*3600+120) - B.lastbt <= 120 AND ((B.hb+1)*3600+120) - F.first_bt >= 21600 AND ml.ql/1e9 >= 30""")
 print("S0 rows", con.execute("select count(*) from S0").fetchone(), flush=True)
-# signers15 and top3 share, per pool-hour
-con.execute("""CREATE OR REPLACE TABLE SG AS
- SELECT S0.pool, S0.hb, count(DISTINCT CASE WHEN T.m >= (S0.hb*60+2)+45 THEN T.trader END) AS signers15
- FROM S0 JOIN T ON T.pool=S0.pool AND T.m >= S0.hb*60+2 AND T.m < S0.hb*60+62 GROUP BY S0.pool, S0.hb""")
+# per pool-hour trader volumes (only for S0 pool-hours)
+con.execute(f"""CREATE OR REPLACE TABLE T AS
+ SELECT S0.pool, S0.hb, r.trader, sum(r.sol)::DOUBLE AS vs, max(CASE WHEN r.bt//60 >= S0.hb*60+2+45 THEN 1 ELSE 0 END) AS in15
+ FROM S0 JOIN read_parquet('{glob_}') r ON r.pool=S0.pool AND r.bt >= S0.hb*3600+120 AND r.bt < S0.hb*3600+3720
+ WHERE r.wsol AND r.mint LIKE '%pump' AND r.sig <> '{'1'*64}' AND r.trader NOT IN {ph} GROUP BY S0.pool, S0.hb, r.trader""")
+print("T rows", con.execute("select count(*) from T").fetchone(), flush=True)
+con.execute("""CREATE OR REPLACE TABLE SG AS SELECT pool, hb, sum(in15) AS signers15 FROM T GROUP BY pool, hb""")
 con.execute("""CREATE OR REPLACE TABLE TP AS
  SELECT pool, hb, sum(vs) FILTER (WHERE rk<=3)/sum(vs) AS top3 FROM (
-   SELECT S0.pool, S0.hb, T.trader, sum(T.vs) AS vs, row_number() OVER (PARTITION BY S0.pool, S0.hb ORDER BY sum(T.vs) DESC) AS rk
-   FROM S0 JOIN T ON T.pool=S0.pool AND T.m >= S0.hb*60+2 AND T.m < S0.hb*60+62 GROUP BY S0.pool, S0.hb, T.trader) GROUP BY pool, hb""")
+   SELECT pool, hb, vs, row_number() OVER (PARTITION BY pool, hb ORDER BY vs DESC) AS rk FROM T) GROUP BY pool, hb""")
 con.execute("""CREATE OR REPLACE TABLE S1 AS
  SELECT S0.*, SG.signers15, TP.top3 FROM S0 JOIN SG USING (pool, hb) JOIN TP USING (pool, hb)""")
 print("S1 rows", con.execute("select count(*) from S1").fetchone(), flush=True)
