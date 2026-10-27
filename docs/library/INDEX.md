@@ -30,15 +30,15 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `live-canary` | 1 | 0 | 0 |
 | `forward-test` | 2 | 0 | 0 |
 | `explored-survivor-unconfirmed` | 10 | 0 | 0 |
-| `parked` | 9 | 0 | 0 |
+| `parked` | 9 | 1 | 0 |
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 43 | 20 | 1 |
 | `desk-read` | 1 | 48 | 0 |
 | `explored-no-survivor` | 41 | 7 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 185 | 81 | 2 |
+| **all** | 185 | 82 | 2 |
 
-The file holds 518 rows: the 268 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 519 rows: the 269 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -306,6 +306,12 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `p60-bam-preconf-race` | Jito BAM preconfirmations (Helius/Triton) as an early-transaction signal -- CLOSED, speed race | `desk-read` | CLOSED on arrival: the advantage is 5-10 ms against our 1-2 s entry latency and 7-slot charge. Listed so the next lane does not re-derive it. Capacity: 0 at our latency. |
+
+### p64-creator-claim (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p64-creator-claim-veto` | Creator fee-claim veto on the H5/Q50 BOOST-floor entry | `parked` | NOT_DECIDABLE on capacity (not killed). Claims are not in the Aug/Sep tape. A causal public-RPC sample of 80 of 2,790 frozen trades found a claim in the prior 10 min for 1 (1.25%), and in the prior 30 and 60 min for 2 (2.5%; Wilson 95% 0.69% to 8.66%, which includes the 3% line; the count is a lower bound: 32% of … |
 
 ## Dead as frozen, and explored with no survivor
 
