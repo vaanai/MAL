@@ -64,3 +64,21 @@ Kill line hit: the book's mean is <= 0 under both fail models (-1.128 pp, -0.656
 ## Files
 
 `PREREG.md`, `p86_convert.py`, `p86_check_reserves.py` (+ output), `p86_build.py`, `p86_build_output.txt`, `p86_counts.txt`, `p86_label.py`, `p86_label_log.txt`, `p86_label_log_w240.txt`, `p86_analyze.py`, `p86_analyze_output.txt`, `p86_analyze_output_nopool.txt`, `p86_analyze_output_w240.txt`. Data (not committed): `/data2/mal/p86/`.
+
+## Corrections after QP and reviewer review of #1043 (text only, no rerun)
+
+The KILL is stronger than the tables above show, and the absolute levels of the book, R, U and S in them are flattered. Figures below are from QP's audit (`qp1043/audit_out.txt`, `strict_out.txt`).
+
+1. **Survivorship.** The 360 pools dropped for lack of an exit print are excluded above. Including them (flat model, all 8 candidates per hour):
+
+| dropped pools priced | book (pp) | U (pp) | book - U (pp) |
+|---|---:|---:|---:|
+| at last price | -8.185 | -14.267 | +6.081 |
+| at -100% | -9.150 | -15.261 | +6.112 |
+
+   The IC with dropped pools included is 0.274 / 0.272 (last price / -100%), or 0.244 / 0.242 if the memory is refit with them. In 28 of 286 hours the true top pick later died; the book silently took the next pick, which is a look-ahead selection. Read the levels in the main tables as upper bounds. The relative gaps (book - U) hold.
+2. **Next-hour placebo.** IC 0.28802 on next-hour labels against 0.21098 on own labels, over 257 hours. The signal is a persistent pool-type property (a liquidity and structure ordering), not a one-hour forecast.
+3. **Entry lag and fees.** IC 0.27814 at 2 slots, 0.27873 at +30 s, 0.27453 at +60 s. On fee-free returns 0.26370. By feature group: structural 0.30390, returns 0.23708.
+4. **HV7 / HV8 bar (reworded).** The 0.28 here is for this looser set with my 10 features. The bar for HV7 / HV8 should be a numeric kNN on HV7's own cards and screen, which was not built; 0.278 is not that bar. The earlier line comparing it with HV7's MDE of 0.17 is withdrawn.
+5. **Amendment 1 timing is self-attested** (see PREREG Note 2).
+6. **Strict memory rule.** The PREREG sentence on 00:02 exits was wrong (PREREG Note 2). Strict rule: IC 0.27818, t 11.303; book -1.141 / -0.667 pp.
