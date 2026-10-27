@@ -923,15 +923,23 @@ Quant-proof's pre-ruling N2 (`QP-PRERULING-1026-n2-n4.md`, verdict (a)) already 
    - `tools/pumpswap_simulate.py`
    - `tools/probe_executor.py`
 
-   `scripts/ops/q50-xtime-manifest.sh` (PR #1027) exits 3 `PINNED_SET_CHANGED` unless exactly these four differ.
+   `scripts/ops/q50-xtime-manifest.sh` (PR #1027) exits 3 `PINNED_SET_CHANGED` unless exactly these four differ, and pins each of the three new blobs by exact git blob and sha256, as it does the executor (any other content, even one appended line, is exit 3):
+   - `tools/pumpswap_tx.py`: blob `2c9f6dda26ddbed50a6231b47a85c91723a19d50`, sha256 `2c71d3c0d561968fd8836e688f21c50f5e19d1947a4be547b5e40a041d841655`
+   - `tools/pumpswap_simulate.py`: blob `ec5f22a8048c100500bde49ca34622d88b6e6706`, sha256 `63d27af8f71066c480da0fb6d3a7cb163f6f623d2ec93b3e84bb5793d8156966`
+   - `tools/probe_executor.py`: blob `07b2851b8086a7cd402574ad601af26a7344db84`, sha256 `f786d4012a442f7136993caceae1a0b9062230148d1f7d04e907028a82022b01`
+
+   Probe: `sh scripts/ops/test_q50_xtime_manifest.sh` (local throwaway origin): X = head gives rc 0; one extra line in each of the three files, the executor, or `tools/probe_live.py` gives rc 3.
 2. **Reason** (notebook decision n_aIm_21YbvT68_A). N4 #1750 found PumpSwap error 6013 `InvalidProtocolFeeRecipient` on a mayhem pool (pool byte 243 = 1): the builder always chose `protocol_fee_recipients[1]`, and a mayhem pool accepts only a reserved recipient. PR #1027 adds one shared helper `tools/pumpswap_tx.py fee_recipient` (and `pool_is_mayhem`) used on the buy and the sell path. Non-mayhem tx bytes are byte-identical to the old rule: `tools/test_pumpswap_mayhem_recipient.py` `BuilderPaths.test_simulate_non_mayhem_bytes_identical` and `test_snapshot_non_mayhem_bytes_identical_cached_and_uncached` compare the serialized buy and sell messages. Not shown: that every one of the 8 reserved keys is accepted (2 were simulated in #1025), and any simulate of a mayhem buy.
 3. **Moved pins** (`tools/hv4_live_c0.py`, SELL_BUILDER_PIN / PIN_EXTRA):
    - `pe.fetch_snapshot_sha256`: e0c0d598b99a92864d401b32a99f2f70550565c03a3618df975484cd47f49b74 -> 4eca167a0f3c4fcd3e1d1a53cdab00fa4f7a183c3895cf1caca2ec9c666de4c5 (body changed).
    - `x.pumpswap_tx.fee_recipient_sha256`: new, 930899fddb8b24e796bce00b5044322c9aad6a8903ef952b5592898782c8ed03.
    - `x.pumpswap_tx.pool_is_mayhem_sha256`: new, 74d043fcf2cd07d136f0d13eb5785105210e5060faeebbdafb745280d59923d7.
 4. **Still owed before C0 (none done at the time of writing):**
-   - the md5 replay at X: `sh scripts/ops/q50-xtime-md5-job.sh <X>`, last line `md5-replay VERDICT: EQUAL`, #1481 counts A 137/137, B 101/101, B synthetic_unconfirmed 0/0;
+   - the manifest run at X: `sh scripts/ops/q50-xtime-manifest.sh <X>`, rc 0, four changed paths, the three blob pins of item 1, list sha256 `244f9e85...`; its manifest sha256 goes to Helm;
+   - every other precondition in `ARTIFACTS/lab/q50-xtime/Q50-X-TIME-CHECKLIST.md` section G and the go-live blocker list (section I): tests 1-17 and 17b green at X on mal-fast-0, the 1 h dry run at X (0 build errors, `a3_guard_unreadable` = 0, `a3_guard_pending` and latch counts reported), the DEC copy and the canary record check at X, and the HELM-SHEET re-pin to X in one records PR;
+   - the md5 replay at X: `sh scripts/ops/q50-xtime-md5-job.sh <X>`, last line `md5-replay VERDICT: EQUAL`, #1481 counts A 137/137, B 101/101, B synthetic_unconfirmed 0/0. The replay exercises `decide_row` only and does NOT test the recipient change. That change is covered by the byte-identity tests (item 2) plus the N4 rerun below;
    - Helm's re-pinned install of X, requested through the owner;
-   - an N4 rerun at X that includes a mayhem pool.
+   - an N4 rerun at X that includes a mayhem pool (sell simulate; a mayhem buy has not been simulated).
+   - Known behaviour, disclosed: if the global mayhem switch is off (`mayhem_mode_enabled` = 0), a mayhem pool's exit snapshot refuses to price (`mayhem_refused`). The live exit then never sells blind: the position is held and `unpriced_position` is alerted every 60 s without naming the reason, until the switch returns. The alert text is not changed in this PR because `tools/probe_live.py` is a pinned path outside the four. A mayhem snapshot also always refreshes the shared parsed global-config cache (`StaticCache.put`); tx bytes of non-mayhem pools are unchanged (byte-identity tests).
 5. **Not a result.** No book has cleared the promotion gate. Nothing here is a profit claim. Gate unchanged.
 
