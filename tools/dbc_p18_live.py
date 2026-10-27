@@ -335,7 +335,8 @@ async def run_probe(url: str, rpc: Callable[[str, list[Any]], Any], out: Path, c
 
 # ------------------------------------------------------------------------------------------------------------------------------ live
 async def run_live_wired(out: str, env_file: str, credit_cap: float | None, look_flag: str, *, prune: bool = True, slot_source: str = "ws", close_lag: int = CLOSE_LAG_SLOTS,
-                         now: datetime | None = None, connect: Callable[[str], Any] | None = None, fetch: Callable[[str], Any] | None = None) -> int:
+                         now: datetime | None = None, connect: Callable[[str], Any] | None = None, fetch: Callable[[str], Any] | None = None,
+                         cfg_summary: str | None = None) -> int:
     from tools import venue_backfill as VB  # noqa: PLC0415
 
     now = now or datetime.now(timezone.utc)
@@ -351,7 +352,7 @@ async def run_live_wired(out: str, env_file: str, credit_cap: float | None, look
     url = FF.ws_url(key)
     gate = ConfigGate(fetch or make_account_fetch(VB.make_url(key)))
     meter, gaps, slot_meter = FF.Meter(credit_cap), FF.Gaps(), FF.Meter(None)
-    run = WiredRunner(out, gate=gate, slot_source=slot_source, close_lag=close_lag, slot_meter=slot_meter, prune=prune, live=True, bt_src="recv", start_ts=now.timestamp(), meter=meter)
+    run = WiredRunner(out, gate=gate, slot_source=slot_source, close_lag=close_lag, slot_meter=slot_meter, prune=prune, live=True, bt_src="recv", start_ts=now.timestamp(), meter=meter, cfg_summary=cfg_summary)
     stop = asyncio.Event()
 
     async def watchdog() -> None:
@@ -384,6 +385,7 @@ async def run_live_wired(out: str, env_file: str, credit_cap: float | None, look
     if run.mem_exceeded and rc == 0:
         rc = P.EXIT_MEM
     reason = {0: "stop", FF.EXIT_CAP: "credit_cap", P.EXIT_MEM: "memory_bar"}.get(rc, "stop")
+    run.tick()
     run.log.append(F.BOOK, run.clock_ms(), {"type": "stop", "reason": reason, **P.feed_row(meter), "slot_feed_bytes": slot_meter.bytes, "rss_mib": round(run.rss(), 1),
                                             "peak_rss_mib": round(P.peak_rss_mib(), 1)})
     print(json.dumps({"stop": reason, "feed": P.feed_row(meter), "slot_feed": FP_row(slot_meter), "rss_mib": round(run.rss(), 1)}), flush=True)
