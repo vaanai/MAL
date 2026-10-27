@@ -7,7 +7,8 @@ Adds around `dbc_p18_run.Runner`:
    SlotCloser clamps a signal to the highest row slot seen, ignores stale ones, and logs/counts every row that arrives for an already-closed slot (`late_after_close`). A lost slot
    socket sends no signal; the pinned row-driven close then applies (neutral).
 2. FIRST-SIGHT CONFIG FETCH. A trade/curve_complete row whose config is in neither dbc_price.CFG_THR nor CFG_UNMAPPED triggers one blocking getAccountInfo (finalized, base64, 3 s
-   timeout, 2 attempts) BEFORE the row reaches the engine; the account is decoded with tools.dbc_config.summary_map (the read's R4 decoder), thr/transfer-fee go into CFG_THR /
+   timeout, 2 attempts) in a THREAD, only for SOL-quoted trade rows (R4's scan scope). Rows keep their true receive stamps; every later row and slot signal waits in one FIFO until the
+   fetch ends, so the wait is inside t_decide - t_recv and L90 counts it (see `stall_report`); the account is decoded with tools.dbc_config.summary_map (the read's R4 decoder), thr/transfer-fee go into CFG_THR /
    CFG_XFER exactly as dbc_price.load_config_thresholds does; undecodable or absent = CFG_UNMAPPED (excluded and counted, as R4). One `cfg_fetch` row per config goes to the chain.
 3. PROBE (`--probe`): N minutes (default 10) of the feed with a mandatory --credit-cap; NO engine, NO decision log. Records bytes/s, the byte-meter credit estimate (NOT billed
    credits) and the feed-lag p90 by the QP feed-lag method (#968): piecewise-linear getBlockTime anchors (one per 30 s, slots >= 150 old), +0.5 s floor correction.
@@ -160,17 +161,22 @@ def make_account_fetch(url: str, timeout_s: float = CFG_TIMEOUT_S, urlopen: Call
 
 
 class ConfigGate:
-    """First sight of an unmapped config: fetch once, decode with the read's decoder, update the dbc_price maps. Returns the chain row for the sight (or None)."""
+    """First sight of an unmapped config on a SOL-quoted trade row (the rows R4's scan covers): fetch once, decode with the read's decoder, update the dbc_price maps.
+    Split in three so the blocking part can run off the event loop: `needs` (cheap test), `fetch_raw` (blocking RPC, touches no shared map: safe in a thread), `apply` (map update, loop thread).
+    `check` = all three inline (tests and the md5 harness, where the fetcher must never be called)."""
 
-    def __init__(self, fetch: Callable[[str], dict[str, str] | None], attempts: int = CFG_ATTEMPTS) -> None:
-        self.fetch, self.attempts = fetch, attempts
-        self.stats = {"sights": 0, "mapped": 0, "unmapped": 0, "rpc_calls": 0, "rpc_errors": 0}
+    def __init__(self, fetch: Callable[[str], dict[str, str] | None], attempts: int = CFG_ATTEMPTS, clock_ms: Callable[[], int] = lambda: time.time_ns() // 1_000_000) -> None:
+        self.fetch, self.attempts, self.clock_ms = fetch, attempts, clock_ms
+        self.reasons: dict[str, str] = {}  # unmapped config -> absent | undecodable | rpc_error
+        self.stats = {"sights": 0, "mapped": 0, "unmapped": 0, "rpc_calls": 0, "rpc_errors": 0, "stall_ms_total": 0, "stall_ms_max": 0}
 
-    def check(self, r: dict[str, Any]) -> dict[str, Any] | None:
+    @staticmethod
+    def needs(r: dict[str, Any]) -> bool:
         cfg = r.get("config")
-        if not cfg or cfg in L.CFG_THR or cfg in L.CFG_UNMAPPED:
-            return None
-        self.stats["sights"] += 1
+        return bool(cfg) and r.get("type") == "trade" and r.get("quote_mint") == L.WSOL and cfg not in L.CFG_THR and cfg not in L.CFG_UNMAPPED
+
+    def fetch_raw(self, cfg: str) -> dict[str, Any]:
+        t0 = self.clock_ms()
         raw, err, n = None, None, 0
         for n in range(1, self.attempts + 1):
             self.stats["rpc_calls"] += 1
@@ -180,6 +186,15 @@ class ConfigGate:
             except Exception as e:  # noqa: BLE001
                 err = FF.redact(f"{type(e).__name__}: {e}")[:120]
                 self.stats["rpc_errors"] += 1
+        return {"cfg": cfg, "raw": raw, "err": err, "attempts": n, "t_start_ms": t0, "t_end_ms": self.clock_ms()}
+
+    def apply(self, res: dict[str, Any]) -> dict[str, Any]:
+        cfg, raw, err = res["cfg"], res["raw"], res["err"]
+        dur = res["t_end_ms"] - res["t_start_ms"]
+        self.stats["sights"] += 1
+        self.stats["stall_ms_total"] += dur
+        self.stats["stall_ms_max"] = max(self.stats["stall_ms_max"], dur)
+        base = {"type": "cfg_fetch", "config": cfg, "attempts": res["attempts"], "t_start_ms": res["t_start_ms"], "t_end_ms": res["t_end_ms"], "fetch_ms": dur}
         m = C.summary_map({cfg: raw}) if raw else {}
         if cfg in m:
             v = m[cfg]
@@ -188,10 +203,17 @@ class ConfigGate:
             if xfer:
                 L.CFG_XFER.add(cfg)
             self.stats["mapped"] += 1
-            return {"type": "cfg_fetch", "config": cfg, "result": "mapped", "thr": int(v["thr"]), "xfer": xfer, "hook": bool(v.get("hook")), "attempts": n}
+            return {**base, "result": "mapped", "thr": int(v["thr"]), "xfer": xfer, "hook": bool(v.get("hook"))}
+        reason = "rpc_error" if err else ("absent" if raw is None else "undecodable")
         L.CFG_UNMAPPED.add(cfg)
+        self.reasons[cfg] = reason
         self.stats["unmapped"] += 1
-        return {"type": "cfg_fetch", "config": cfg, "result": "unmapped", "reason": err or ("absent" if raw is None else "undecodable"), "attempts": n}
+        return {**base, "result": "unmapped", "reason": reason, "error": err}
+
+    def check(self, r: dict[str, Any]) -> dict[str, Any] | None:
+        if not self.needs(r):
+            return None
+        return self.apply(self.fetch_raw(r["config"]))
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ runner
@@ -204,6 +226,8 @@ class WiredRunner(P.Runner):
         self.sigs = SlotSignals(close_lag)
         self.wall = WallClockSlots(close_lag) if slot_source == "wall" else None
         self.slot_stats: dict[str, int] = {}
+        self.hold, self.fifo, self.fetch_waits = False, deque(), 0
+        self.sol_trade_rows = self.unmapped_rows = 0
         super().__init__(out, **kw)
 
     def _ensure(self, t_s: float) -> None:
@@ -212,37 +236,104 @@ class WiredRunner(P.Runner):
         if first:
             here = Path(__file__).resolve().parent
             self.log.append(F.BOOK, int(t_s * 1000), {"type": "wire", "slot_source": self.slot_source, "close_lag_slots": self.close_lag, "cfg_first_sight_fetch": self.gate is not None,
-                                                      "cfg_attempts": CFG_ATTEMPTS, "code_sha256": {f: F.sha256_file(here / f) for f in CODE_FILES}})
+                                                      "cfg_attempts": CFG_ATTEMPTS, "cfg_fetch_scope": "sol_quoted_trade_rows", "cfg_fetch_hold": "fifo_off_loop", "code_sha256": {f: F.sha256_file(here / f) for f in CODE_FILES}})
+
+    # -- ingest. The feed's sink is `ingest`: rows keep the receive stamp the feed gave them (t_recv_ms is set BEFORE the sink runs). A first-sight config fetch runs in a thread;
+    # while it runs every later row and slot signal waits in one FIFO and is delivered in order when the fetch ends. The wait is therefore inside t_decide - t_recv (L90 sees it).
+    def ingest(self, r: dict[str, Any]) -> None:
+        if self.hold:
+            self.fifo.append(("row", r))
+            return
+        self._deliver(r)
+
+    def _deliver(self, r: dict[str, Any]) -> None:
+        if self.gate is not None and self.gate.needs(r):
+            self._ensure(L.block_time_s(r))
+            self.hold = True
+            self.fifo.append(("row", r))
+            self.fetch_waits += 1
+            asyncio.get_running_loop().create_task(self._fetch_then_drain(r["config"]))
+            return
+        self.on_row(r)
+
+    async def _fetch_then_drain(self, cfg: str) -> None:
+        assert self.gate is not None
+        res = await asyncio.get_running_loop().run_in_executor(None, self.gate.fetch_raw, cfg)
+        ev = self.gate.apply(res)
+        self.log.append(F.BOOK, int(res["t_end_ms"]), {**ev, "book": F.BOOK, "fifo_len": len(self.fifo)})
+        self.hold = False
+        self.drain()
+
+    def drain(self) -> None:
+        while self.fifo and not self.hold:
+            kind, x = self.fifo.popleft()
+            if kind == "row":
+                self._deliver(x)
+            else:
+                self._signal(x)
 
     def on_row(self, r: dict[str, Any]) -> None:
-        if r.get("type") in ("trade", "curve_complete"):
-            if self.gate is not None:
-                self._ensure(L.block_time_s(r))
-                ev = self.gate.check(r)
-                if ev is not None:
-                    self.log.append(F.BOOK, int(L.block_time_s(r) * 1000), {**ev, "book": F.BOOK, "slot": r.get("slot")})
-            if self.wall is not None and r.get("slot") is not None:
-                self.wall.observe(int(r["slot"]), L.block_time_s(r))
+        if r.get("type") == "trade" and r.get("quote_mint") == L.WSOL:
+            self.sol_trade_rows += 1
+            if r.get("config") in L.CFG_UNMAPPED:
+                self.unmapped_rows += 1
+        if r.get("type") in ("trade", "curve_complete") and self.wall is not None and r.get("slot") is not None:
+            self.wall.observe(int(r["slot"]), L.block_time_s(r))
         super().on_row(r)
 
+    def _signal(self, sig: int) -> bool:
+        return self.on_slot_signal(sig)
+
     def on_slot_notified(self, slot: int) -> bool:
-        """A slotNotification arrived (slotSubscribe): close slots <= slot - lag."""
+        """A slotNotification arrived (slotSubscribe): close slots <= slot - lag (queued behind a pending config fetch, in order)."""
         sig = self.sigs.feed(slot)
-        return self.on_slot_signal(sig) if sig is not None else False
+        if sig is None:
+            return False
+        if self.hold:
+            self.fifo.append(("sig", sig))
+            return False
+        return self._signal(sig)
 
     def wall_tick(self, now_s: float) -> bool:
         sig = self.wall.tick(now_s) if self.wall is not None else None
-        return self.on_slot_signal(sig) if sig is not None else False
+        return self._signal(sig) if sig is not None else False
+
+    def report(self) -> dict[str, Any]:
+        st = super().report()
+        st["stalls"] = stall_report(self.log.rows(F.BOOK))
+        return st
+
+    def unmapped_report(self) -> dict[str, Any]:
+        """R4's bar on the dry-score day: unmapped SOL-quoted trade rows / all SOL-quoted trade rows must be <= 5%; split by reason (absent / undecodable / rpc_error)."""
+        by: dict[str, int] = {}
+        for c, why in (self.gate.reasons if self.gate else {}).items():
+            by[why] = by.get(why, 0) + 1
+        share = self.unmapped_rows / self.sol_trade_rows if self.sol_trade_rows else None
+        return {"sol_trade_rows": self.sol_trade_rows, "unmapped_rows": self.unmapped_rows, "share": share, "bar": 0.05, "ok": (share <= 0.05) if share is not None else None,
+                "configs_by_reason": by, "fetch_waits": self.fetch_waits, "fifo_len": len(self.fifo)}
 
     def tick(self) -> dict[str, Any]:
         st = super().tick()
-        st["wire"] = {"slot_source": self.slot_source, "close_lag_slots": self.close_lag, "slot_feed": dict(self.slot_stats), "cfg_gate": dict(self.gate.stats) if self.gate else None}
+        st["wire"] = {"slot_source": self.slot_source, "close_lag_slots": self.close_lag, "slot_feed": dict(self.slot_stats), "cfg_gate": dict(self.gate.stats) if self.gate else None,
+                      "cfg_unmapped": self.unmapped_report()}
         if self.slot_meter is not None:
             st["slot_feed_meter"] = FP_row(self.slot_meter)
         tmp = self.out / "status.json.tmp"
         tmp.write_text(json.dumps(st, default=float))
         os.replace(tmp, self.out / "status.json")
         return st
+
+
+def stall_report(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    """How L90 accounts for config-fetch stalls (fixed before the dry score). While a first-sight fetch runs, rows keep their TRUE receive stamps and wait in a FIFO, so the wait is
+    inside (t_decide - t_recv_trigger) and L90 counts it in full with no correction. This report only prints: fetches, total / max fetch time, and the decisions whose trigger row was
+    received during a fetch window (the ones the stall touched). Reads `cfg_fetch` and `decision` rows only (never exit rows)."""
+    f = [r for r in rows if r.get("type") == "cfg_fetch"]
+    win = [(r["t_start_ms"], r["t_end_ms"]) for r in f]
+    dec = [r for r in rows if r.get("type") == "decision" and "t_recv_ms" in r]
+    touched = sum(1 for r in dec if any(a <= r["t_recv_ms"] <= b for a, b in win))
+    ms = [b - a for a, b in win]
+    return {"fetches": len(f), "fetch_ms_total": sum(ms), "fetch_ms_max": max(ms) if ms else 0, "decisions_with_stamped_trigger": len(dec), "decisions_received_during_a_fetch": touched}
 
 
 def FP_row(m: FF.Meter) -> dict[str, Any]:
@@ -326,7 +417,8 @@ async def run_probe(url: str, rpc: Callable[[str, list[Any]], Any], out: Path, c
     est = meter.credits() + calls[0]  # getBlockTime = 1 credit each (assumed)
     res = {"kind": "p18-probe", "exit": rc, "seconds": round(secs, 1), "bytes": meter.bytes, "msgs": meter.msgs, "connections": meter.connections, "bytes_per_s": round(meter.bytes / secs, 1),
            "msgs_per_s": round(meter.msgs / secs, 2), "getBlockTime_calls": calls[0], "credits_est_meter": round(meter.credits(), 1), "credits_est_total": round(est, 1),
-           "credits_basis": "byte-based estimate, not billed credits; record the Helius dashboard delta over the probe window (owner/Helm)", "credits_per_day_est": round(est / secs * 86400, 0),
+           "credits_basis": "byte-based estimate, not billed credits; record the Helius dashboard delta over the probe window (owner/Helm)",
+           "credits_est_is_lower_bound": True, "getBlockTime_note": "logical calls; http_rpc may retry up to 6 HTTP attempts per call, so credits_est_total is a LOWER BOUND", "credits_per_day_est": round(est / secs * 86400, 0),
            "day_bar_credits": 3 * 85_000, "feed_lag": lag, "feed_lag_term_s": max(P.FEED_LAG_FLOOR_S, lag["p90_s"]) if lag["p90_s"] is not None else None,
            "gaps": gaps.count, "rows": len(rows)}
     (out / "probe.json").write_text(json.dumps(res, indent=1))
@@ -377,7 +469,7 @@ async def run_live_wired(out: str, env_file: str, credit_cap: float | None, look
     elif slot_source == "wall":
         tasks.append(asyncio.create_task(wall_ticker()))
     try:
-        rc = await FF.run_feed(url, run.on_row, stop, connect=connect, meter=meter, gaps=gaps)
+        rc = await FF.run_feed(url, run.ingest, stop, connect=connect, meter=meter, gaps=gaps)
     finally:
         stop.set()
         for t in tasks:

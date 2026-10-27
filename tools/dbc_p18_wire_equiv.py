@@ -8,6 +8,7 @@ The log md5 must equal the #1670 baseline 5053b05c3ff0446c1a07b692f15a3430 (pinn
 
     python3 -m tools.dbc_p18_wire_equiv run --out DIR [--lag 2] [--limit-hours 72]
     python3 -m tools.dbc_p18_equiv compare DIR_A DIR_B --expect-md5 5053b05c3ff0446c1a07b692f15a3430
+    python3 -m tools.dbc_p18_wire_equiv check DIR_A DIR_B      # QP pass criteria; exit 1 on any miss
 """
 
 from __future__ import annotations
@@ -31,6 +32,8 @@ from tools import dbc_p18_live as W
 from tools import dbc_p18_run as P
 
 BASELINE_MD5 = "5053b05c3ff0446c1a07b692f15a3430"
+BASELINE_HEAD_SHA = "f3bc3700836fb089825b9abe4ef8569606275931267a961ca7ab3b12ea2c1627"  # #1670 / #1680 declog head
+BASELINE_HEAD_SEQ, BASELINE_HOURS, BASELINE_DECISIONS = 1174, 72, 551  # #1670 / #1680
 
 
 class FetchForbidden(AssertionError):
@@ -93,6 +96,24 @@ def run(out: Path, lag: int, limit_hours: int, root: str | None = None) -> dict[
     return res
 
 
+def check(dirs: list[Path]) -> dict[str, Any]:
+    """QP pass criteria for the 72 h job (any miss = no registration at that sha). Reads only the equiv.json files of the runs."""
+    here = Path(__file__).resolve().parent
+    now_sha = {f: F.sha256_file(here / f) for f in W.CODE_FILES}
+    fails: list[str] = []
+    for d in dirs:
+        r = json.loads((d / "equiv.json").read_text())
+        w, sc = r.get("wire") or {}, r.get("slot_close") or {}
+        gate = w.get("cfg_gate") or {}
+        for name, ok in (("md5", r["declog"]["md5"] == BASELINE_MD5), ("head", r["declog"]["head"] == [BASELINE_HEAD_SHA, BASELINE_HEAD_SEQ]), ("hours", r["hours_streamed"] == BASELINE_HOURS),
+                         ("decisions", r["decisions_live"] == BASELINE_DECISIONS), ("late_after_close", sc.get("late_after_close") == 0), ("late_rows", r["stats"].get("late_rows") == 0),
+                         ("cfg_sights", gate.get("sights") == 0 and gate.get("rpc_calls") == 0), ("notifications", (w.get("notifications") or 0) > 0),
+                         ("signals_advanced", (sc.get("signals_advanced") or 0) > 0), ("code_sha256", w.get("code_sha256") == now_sha)):
+            if not ok:
+                fails.append(f"{d.name}:{name}")
+    return {"ok": not fails, "fails": fails, "dirs": [str(d) for d in dirs], "code_sha256": now_sha}
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -101,7 +122,13 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--root", default=None)
     r.add_argument("--lag", type=int, default=W.CLOSE_LAG_SLOTS)
     r.add_argument("--limit-hours", type=int, default=72)
+    c = sub.add_parser("check")
+    c.add_argument("dirs", nargs="+")
     ns = ap.parse_args(argv)
+    if ns.cmd == "check":
+        res = check([Path(x) for x in ns.dirs])
+        print(json.dumps(res))
+        return 0 if res["ok"] else 1
     try:
         res = run(Path(ns.out), ns.lag, ns.limit_hours, ns.root)
     except F.ReplayRefused as e:

@@ -150,6 +150,10 @@ def account_b64(thr: int, xfer_bps: int = 0, mode: int = 0) -> str:
     return base64.b64encode(bytes(out)).decode()
 
 
+def sol(cfg, **kw):
+    return {"type": "trade", "config": cfg, "quote_mint": L.WSOL, **kw}
+
+
 class Maps:
     """Save / restore the dbc_price config maps around a test."""
 
@@ -176,9 +180,11 @@ def test_first_sight_fetches_once_caches_and_maps():
 
     with Maps():
         g = W.ConfigGate(fetch)
-        ev = g.check({"type": "trade", "config": "NEWCFG"})
+        ev = g.check(sol("NEWCFG"))
         assert ev["result"] == "mapped" and ev["thr"] == 1234 and ev["xfer"] is False and L.CFG_THR["NEWCFG"] == 1234
-        assert g.check({"type": "trade", "config": "NEWCFG"}) is None and calls == ["NEWCFG"]
+        assert g.check(sol("NEWCFG")) is None and calls == ["NEWCFG"]
+        assert g.check({"type": "trade", "config": "NONSOL", "quote_mint": "OtherMint"}) is None and g.check({"type": "curve_complete", "config": "CC", "quote_mint": L.WSOL}) is None
+        assert calls == ["NEWCFG"]
         assert g.check({"type": "trade"}) is None and g.check({"type": "trade", "config": None}) is None
         assert g.stats["sights"] == 1 and g.stats["mapped"] == 1 and g.stats["rpc_calls"] == 1
 
@@ -186,7 +192,7 @@ def test_first_sight_fetches_once_caches_and_maps():
 def test_first_sight_transfer_fee_config_is_excluded_like_the_static_map():
     with Maps():
         g = W.ConfigGate(lambda c: {"data_b64": account_b64(99, 50)})
-        ev = g.check({"config": "XF"})
+        ev = g.check(sol("XF"))
         assert ev["xfer"] is True and "XF" in L.CFG_XFER and L.CFG_THR["XF"] == 99
 
 
@@ -198,15 +204,15 @@ def test_first_sight_absent_undecodable_and_failing_configs_are_unmapped_with_a_
         raise RuntimeError("rpc down wss://h/?api-key=SECRETKEY")
 
     with Maps():
-        a = W.ConfigGate(lambda c: None).check({"config": "ABSENT"})
-        b = W.ConfigGate(lambda c: {"data_b64": "AAAA"}).check({"config": "JUNK"})
+        a = W.ConfigGate(lambda c: None).check(sol("ABSENT"))
+        b = W.ConfigGate(lambda c: {"data_b64": "AAAA"}).check(sol("JUNK"))
         gate = W.ConfigGate(boom, attempts=2)
-        c = gate.check({"config": "DOWN"})
+        c = gate.check(sol("DOWN"))
         assert (a["result"], a["reason"], a["attempts"]) == ("unmapped", "absent", 1)
         assert (b["result"], b["reason"]) == ("unmapped", "undecodable")
-        assert (c["result"], c["attempts"]) == ("unmapped", 2) and n[0] == 2 and "SECRETKEY" not in json.dumps(c)
+        assert (c["result"], c["reason"], c["attempts"]) == ("unmapped", "rpc_error", 2) and n[0] == 2 and "SECRETKEY" not in json.dumps(c)
         assert {"ABSENT", "JUNK", "DOWN"} <= L.CFG_UNMAPPED and "ABSENT" not in L.CFG_THR
-        assert gate.check({"config": "DOWN"}) is None and n[0] == 2  # a negative result is cached too
+        assert gate.check(sol("DOWN")) is None and n[0] == 2  # a negative result is cached too
 
 
 def test_account_fetch_request_shape_and_responses():
@@ -255,10 +261,13 @@ def test_wired_runner_on_the_fixture_matches_the_plain_runner_when_all_configs_a
         base = P.Runner(a, bt_src="recv")
         gate = W.ConfigGate(lambda c: (_ for _ in ()).throw(AssertionError("fetch")))
         wired = W.WiredRunner(b, gate=gate, slot_source="ws", bt_src="recv")
-        for r in rows:
-            base.on_row(r)
-            wired.on_row(r)
-            wired.on_slot_notified(int(r["slot"]) + 5)
+        async def feed():
+            for r in rows:
+                base.on_row(r)
+                wired.ingest(r)
+                wired.on_slot_notified(int(r["slot"]) + 5)
+
+        run(feed())
         base.finish()
         wired.finish()
         rb, rw = base.log.rows(F.BOOK), wired.log.rows(F.BOOK)
@@ -283,11 +292,16 @@ def test_wired_runner_maps_a_config_missing_from_the_static_map_the_same_way_the
             gate = W.ConfigGate(lambda c: {"data_b64": account_b64(thr[c])})
             run_ = W.WiredRunner(td, gate=gate, bt_src="recv", cfg_summary=None)
             L.CFG_THR.pop(gone), L.CFG_XFER.discard(gone)  # the Runner just loaded the static map; drop one config
-            for r in rows:
-                run_.on_row(r)
+            async def feed():
+                for r in rows:
+                    run_.ingest(r)
+                while run_.hold or run_.fifo:
+                    await asyncio.sleep(0.01)
+
+            run(feed())
             assert L.CFG_THR[gone] == thr[gone] and gate.stats["mapped"] == 1
             ev = [r for r in run_.log.rows(F.BOOK) if r["type"] == "cfg_fetch"]
-            assert len(ev) == 1 and ev[0]["config"] == gone and ev[0]["result"] == "mapped"
+            assert len(ev) == 1 and ev[0]["config"] == gone and ev[0]["result"] == "mapped" and ev[0]["t_end_ms"] >= ev[0]["t_start_ms"] and ev[0]["attempts"] == 1 and not run_.hold
 
 
 def _run_tape(feed_cls=None, lag=2):
@@ -522,7 +536,7 @@ def test_live_loop_on_fake_sockets_wires_slots_and_config_fetch():
         st = json.loads((out / "status.json").read_text())
         rows = DecisionLog(str(out / "declog")).rows(F.BOOK)
     assert rc == FF.EXIT_CAP and set(sent) == {"transactionSubscribe", "slotSubscribe"}
-    assert fetched == [used[0]] and st["wire"]["cfg_gate"]["mapped"] == 1 and st["slot_close"]["signals"] > 0
+    assert fetched == [used[0]] and st["wire"]["cfg_gate"]["mapped"] == 1 and st["wire"]["cfg_unmapped"]["ok"] is True and st["slot_close"]["signals"] > 0
     kinds = [r["type"] for r in rows]  # (the test clock is real time while start_ts is 11-02, so file order is not asserted)
     assert {"start", "wire", "cfg_fetch", "stop"} <= set(kinds) and sorted(r["seq"] for r in rows) == list(range(len(rows)))
     assert "testkey" not in json.dumps(rows) and "testkey" not in json.dumps(st)
@@ -535,3 +549,124 @@ def test_live_entry_refuses_before_the_guard_opens():
         with _raises(P.StartRefused):
             run(W.run_live_wired(str(Path(td) / "o"), "/nonexistent", None, flag, now=D(2026, 10, 30)))
         assert not (Path(td) / "o").exists()
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ fetch is off the loop
+def test_slow_fetch_does_not_delay_receive_stamps_and_rows_wait_in_order():
+    import threading
+    import time as _t
+
+    release = threading.Event()
+    order = []
+
+    def fetch(cfg):
+        order.append(("fetch_start", cfg))
+        assert release.wait(5)
+        return {"data_b64": account_b64(1234)}
+
+    stamps = []
+
+    async def go():
+        with Maps(), tempfile.TemporaryDirectory() as td:
+            rows = []
+            run_ = W.WiredRunner(td, gate=W.ConfigGate(fetch), bt_src="recv", start_ts=1_700_000_000.0)
+            run_.on_row = lambda r: (rows.append(r), order.append(("row", r["signature"])))[0]  # record delivery order only
+            # the feed stamps t_recv BEFORE the sink: emulate run_feed (recv -> stamp -> sink) with a real clock
+            def deliver(sig, cfg):
+                r = sol(cfg, signature=sig, slot=1, t_recv_ms=_t.time_ns() // 1_000_000, bt_src="recv")
+                stamps.append((sig, r["t_recv_ms"]))
+                run_.ingest(r)
+
+            deliver("a", "NEWCFG")  # starts the fetch (blocked until `release`)
+            await asyncio.sleep(0.05)
+            t0 = _t.monotonic()
+            for i in range(50):  # the loop is free: 50 more rows are received and stamped while the fetch is stuck
+                deliver(f"b{i}", "NEWCFG")
+                await asyncio.sleep(0.001)
+            loop_time = _t.monotonic() - t0
+            assert run_.hold and not rows and len(run_.fifo) == 51
+            assert run_.on_slot_notified(100) is False and len(run_.fifo) == 52  # signals queue behind the fetch too
+            release.set()
+            while run_.hold or run_.fifo:
+                await asyncio.sleep(0.01)
+            return rows, loop_time, run_
+
+    rows, loop_time, run_ = run(go())
+    assert [r["signature"] for r in rows] == ["a"] + [f"b{i}" for i in range(50)]  # FIFO order kept
+    ts = [t for _, t in stamps]
+    gaps = [b - a for a, b in zip(ts, ts[1:])]
+    assert max(gaps[1:]) < 500 and loop_time < 2.0  # stamps follow the real arrival (a blocked loop would show one multi-second gap)
+    assert order[0] == ("fetch_start", "NEWCFG") and run_.fetch_waits == 1
+
+
+def test_blocking_call_on_the_loop_would_have_been_visible_to_the_same_check():
+    import time as _t
+
+    async def go():
+        t0 = _t.monotonic()
+        _t.sleep(0.3)  # what the old code did
+        await asyncio.sleep(0)
+        return _t.monotonic() - t0
+
+    assert run(go()) >= 0.3  # the timing method above does see a blocked loop
+
+
+def test_non_sol_rows_never_fetch_and_unmapped_share_is_split_by_reason():
+    calls = []
+
+    def fetch(cfg):
+        calls.append(cfg)
+        return None if cfg == "GONE" else {"data_b64": "AAAA"}
+
+    async def go():
+        with Maps(), tempfile.TemporaryDirectory() as td:
+            run_ = W.WiredRunner(td, gate=W.ConfigGate(fetch), bt_src="recv", start_ts=1_700_000_000.0)
+            L.CFG_THR["KNOWN"] = 1
+            run_.closer = type("Stub", (), {"on_row": lambda self, r: None})()  # engine not under test here
+            seq = [sol("KNOWN", slot=1), sol("GONE", slot=1), sol("GONE", slot=1), sol("JUNK", slot=1),
+                   {"type": "trade", "config": "OTHERQ", "quote_mint": "X", "slot": 1}]
+            for r in seq:
+                run_.ingest({**r, "signature": "s", "t_recv_ms": 1_700_000_000_000, "bt_src": "recv"})
+                while run_.hold:
+                    await asyncio.sleep(0.01)
+            return run_
+
+    run_ = run(go())
+    rep = run_.unmapped_report()
+    assert calls == ["GONE", "JUNK"]  # one fetch per config, none for the non-SOL pool
+    assert rep["configs_by_reason"] == {"absent": 1, "undecodable": 1} and rep["sol_trade_rows"] == 4 and rep["unmapped_rows"] == 3 and rep["ok"] is False and rep["bar"] == 0.05
+
+
+def test_stall_report_counts_fetches_and_decisions_received_during_one():
+    rows = [{"type": "cfg_fetch", "t_start_ms": 1000, "t_end_ms": 1400}, {"type": "cfg_fetch", "t_start_ms": 5000, "t_end_ms": 5100},
+            {"type": "decision", "t_recv_ms": 1200}, {"type": "decision", "t_recv_ms": 3000}, {"type": "decision", "t_recv_ms": 1000}, {"type": "exit", "t_recv_ms": 1200}]
+    assert W.stall_report(rows) == {"fetches": 2, "fetch_ms_total": 500, "fetch_ms_max": 400, "decisions_with_stamped_trigger": 3, "decisions_received_during_a_fetch": 2}
+
+
+def test_probe_credit_figure_is_labelled_a_lower_bound():
+    res = run(W.run_probe("wss://h/?api-key=K", lambda m, p: None, Path(tempfile.mkdtemp()), 0.5, minutes=0.5, connect=lambda u: Conn(WS(_fixture_messages())), sleep=_instant))
+    assert res["credits_est_is_lower_bound"] is True and "LOWER BOUND" in res["getBlockTime_note"]
+
+
+def test_wire_equiv_check_applies_the_qp_pass_criteria():
+    here = Path(WE.__file__).resolve().parent
+    good = {"declog": {"md5": WE.BASELINE_MD5, "head": [WE.BASELINE_HEAD_SHA, WE.BASELINE_HEAD_SEQ]}, "hours_streamed": 72, "decisions_live": 551, "stats": {"late_rows": 0},
+            "slot_close": {"late_after_close": 0, "signals_advanced": 5},
+            "wire": {"notifications": 9, "cfg_gate": {"sights": 0, "rpc_calls": 0}, "code_sha256": {f: F.sha256_file(here / f) for f in W.CODE_FILES}}}
+
+    def chk(r):
+        with tempfile.TemporaryDirectory() as td:
+            (Path(td) / "equiv.json").write_text(json.dumps(r))
+            return WE.check([Path(td)])
+
+    assert chk(good)["ok"] is True
+    for path, val, name in ((("declog", "md5"), "x", "md5"), (("hours_streamed",), 71, "hours"), (("decisions_live",), 550, "decisions"), (("slot_close", "late_after_close"), 1, "late_after_close"),
+                            (("slot_close", "signals_advanced"), 0, "signals_advanced"), (("wire", "notifications"), 0, "notifications"), (("wire", "cfg_gate", "sights"), 1, "cfg_sights"),
+                            (("wire", "code_sha256"), {}, "code_sha256"), (("stats", "late_rows"), 2, "late_rows")):
+        r = json.loads(json.dumps(good))
+        d = r
+        for k in path[:-1]:
+            d = d[k]
+        d[path[-1]] = val
+        out = chk(r)
+        assert not out["ok"] and any(f.endswith(name) for f in out["fails"]), name
