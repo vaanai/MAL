@@ -32,3 +32,6 @@ SOL/USDC price move over the hold; impact on the SOL<->USDC leg; buy-side fee on
 3. The held-out wording is narrowed as in Data.
 4. Zero-leg line: with only the pool fee (no SOL<->USDC legs), the 1 SOL mean is -0.004215 SOL at 0.30% and 5 of 12 days are positive. Still negative.
 5. The two capacity means are labelled above (before vs after the fail model).
+6. Method behind the USDC proof: getAccountInfo on the pool; the base mint is at bytes 43..75 and the quote mint at bytes 75..107.
+7. Sensitivity at the measured 0.30% pool fee (1 SOL, flat model): 3/12 days positive; hour 16 ranks 13 of 24 on the placebo.
+8. Zero-leg line at 0.35% (pool fee only): mean -0.005064 SOL, 5/12 days positive, CI90 low -0.011346.

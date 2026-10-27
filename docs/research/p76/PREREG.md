@@ -27,3 +27,5 @@ Verdict vocabulary: KILL, LEAD, NOT_DECIDABLE. Gate-level claims need at least 1
 - 2uF4X is proven PUMP/USDC (QP read the pool account; quote mint EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v), not merely inferred.
 - The 0.35% fee on 2uF4X was taken from PUMP-quoted pools in boost-custom-v2; the measured median on 2uF4X is 0.3000% over 64,536 sells. The registered rule used 0.35%.
 - The source's s4.py hour returns start 09-03, but its s2.py and s3.py read 08-14..09-25; "held-out" means unread by s4.py only.
+- USDC proof method: getAccountInfo on the pool; base mint at bytes 43..75, quote mint at bytes 75..107.
+- 0.30% sensitivity: 3/12 days positive, placebo rank 13 of 24. 0.35% zero-leg: mean -0.005064, 5/12 days, CI90 low -0.011346.
