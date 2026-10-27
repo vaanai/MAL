@@ -212,10 +212,10 @@ def test_period_plan_hourly_at_h02_after_one_full_prefetch_window():
         grid, last_te, t_end = S.period_plan(t0, S.WARMUP_MS, S.PERIOD_MS, S.PERIODS, RN.TICK_MS, te)
         assert len(grid) == 31 and {b - a for a, b in zip(grid, grid[1:])} == {HOUR}
         assert all(g % HOUR == RN.T_D_OFFSET_MS for g in grid)                       # the runner's real instants
-        assert grid[0] - S.PREFETCH_LEAD_MS >= t0 + S.WARMUP_MS                       # a whole window (and the warm-up) before the first screen
-        assert grid[0] - HOUR - S.PREFETCH_LEAD_MS < t0 + S.WARMUP_MS                 # ... and it is the FIRST such H:02
+        assert grid[0] - HOUR - S.PREFETCH_LEAD_MS >= t0 + S.WARMUP_MS                 # the cold-fill window (and the warm-up) pass unscreened, then a whole window
+        assert grid[0] - 2 * HOUR - S.PREFETCH_LEAD_MS < t0 + S.WARMUP_MS             # ... and it is the FIRST such H:02
         assert last_te - grid[0] == 30 * HOUR + 45_000 >= S.MIN_SPAN_MS
-        assert t_end - t0 < 31 * HOUR + 2 * HOUR                                       # about 31-32 h wall
+        assert 31 * HOUR < t_end - t0 < 31 * HOUR + 3 * HOUR                           # about 32-33 h wall
 
 
 def test_cli_has_no_period_or_window_override_and_real_chain_needs_the_hourly_grid(tmp_path, monkeypatch):

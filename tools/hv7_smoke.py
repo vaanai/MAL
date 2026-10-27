@@ -9,8 +9,8 @@ live arena tape (read only, through the frozen runner and card code). It edits n
 HOURLY DESIGN (no frozen code touched, no compression). `Hv7Runner.tick` fires the screen only when `T % HOUR_MS == T_D_OFFSET_MS` and Hv7Config has no period
 parameter, so this tool does not call `tick`; it drives the runner's public methods in the order `tick` uses (`sim_now`, `poll_to`, `exits`, `watch_tick`, then
 `screen(T)` at a period instant `t_d`, then `enter(T)` at `t_d + 45 s`). The period instants are the runner's real ones: H:02:00 UTC, one per hour, 31 of them (30 hours
-from the first t_d to the last, about 31-32 h wall). The first t_d is the first H:02 that falls at least WARMUP (8 min) plus one full prefetch window (14 min) after the
-start, so the prefetcher has run a whole H:48-H:02 window before the first screen. Request bytes are the real RANK_v0 prompt (`build_rank_request`), the call is the
+from the first t_d to the last, about 32-33 h wall). The first t_d is the first H:02 that falls at least WARMUP (8 min) + one prefetch window (14 min) + 1 h after the
+start: the first window is the cold fill and is NOT screened (a cold store cannot hold the top pools; sim: 67 of 75 cards refused at that screen), the next is. Request bytes are the real RANK_v0 prompt (`build_rank_request`), the call is the
 runner's own `_ask`, the verdict its own `_resolve_l`.
 
 The chain source is the runner's own `hv7_runner.live_chain_source(root)` (HV4Chain + policy-v2 prefetcher gated to the window H:48-H:02, 500 calls/h), state files under
@@ -281,8 +281,8 @@ def build_chain(R: SimpleNamespace, root: Path) -> Any:
 
 def period_plan(t_start: int, warmup_ms: int, period_ms: int, periods: int, tick_ms: int, te_offset_ms: int, anchor_h02: bool = True) -> tuple[list[int], int, int]:
     """(t_d grid, last t_e, loop end). anchor_h02 (the only mode the CLI reaches): the first t_d is the first H:02:00 UTC at or after t_start + warmup + one full prefetch
-    window, then every period_ms (one hour). Without it (unit tests only): the first whole tick after the warm-up. t_e is t_d + te_offset_ms."""
-    earliest = t_start + warmup_ms + (PREFETCH_LEAD_MS if anchor_h02 else 0)
+    window + one hour (the first window is the cold fill and is not screened: a cold store cannot hold the top pools, hv7_runner LIVE LIMIT c), then every period_ms (one hour). Without it (unit tests only): the first whole tick after the warm-up. t_e is t_d + te_offset_ms."""
+    earliest = t_start + warmup_ms + (PREFETCH_LEAD_MS + PERIOD_MS if anchor_h02 else 0)
     if anchor_h02:
         first = (earliest - T_D_OFFSET_MS + PERIOD_MS - 1) // PERIOD_MS * PERIOD_MS + T_D_OFFSET_MS
     else:

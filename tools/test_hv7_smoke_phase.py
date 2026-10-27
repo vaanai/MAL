@@ -24,6 +24,14 @@ def simulate_smoke(k: int, start_minute: int, periods: int = S.PERIODS) -> dict:
     t_start = now[0]
     clock = lambda: now[0]  # noqa: E731
     chain = T._Chain(clock)
+    day_calls: dict[int, int] = {}
+    orig_c = chain._c
+
+    def counted(n):
+        day_calls[clock() // (24 * HOUR)] = day_calls.get(clock() // (24 * HOUR), 0) + n
+        orig_c(n)
+
+    chain._c = counted
     pf = R._gated_prefetcher_class()(chain, lambda mf, mh, hd: {"mint_ms": mf.as_of_ms, "holders": hd is not None}, clock=clock, holders=True,
                                      hourly_budget=R.HV7_RPC_CALLS_PER_H, policy="v2")
     mkt = T._Market(k, rng)
@@ -60,10 +68,7 @@ def simulate_smoke(k: int, start_minute: int, periods: int = S.PERIODS) -> dict:
         now[0] += STEP
     mins = chain.counter.minutes
     roll = max((sum(v for m, v in mins.items() if a <= m < a + HOUR) for a in mins), default=0)
-    days = {}
-    for m, v in mins.items():
-        days[m // (24 * HOUR)] = days.get(m // (24 * HOUR), 0) + v
-    return {"k": k, "start": start_minute, "tried": tried_n, "refused": ref, "no_holders": noh, "full": full, "calls": chain.calls, "max_roll_h": roll, "max_day": max(days.values()),
+    return {"k": k, "start": start_minute, "tried": tried_n, "refused": ref, "no_holders": noh, "full": full, "calls": chain.calls, "max_roll_h": roll, "max_day": max(day_calls.values()),
             "span_h": (end - t_start) / HOUR}
 
 
