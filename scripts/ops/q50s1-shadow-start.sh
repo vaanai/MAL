@@ -1,0 +1,120 @@
+#!/bin/sh
+# MiScusi job command: START the shadow of the Q50 successor `h5v1q50-boostfloor-s1` (DEC-031 Amendment 18 item 8; plan C12). POSIX sh only (MiScusi runs commands under sh).
+# NOT SUBMITTED by the PR that adds it. The manager submits it once, inside 2026-11-05T20:00:00Z to 22:30:00Z, after registration (scripts/ops/q50s1-register.sh --apply),
+# the Amendment 6 smoke, the green A3 run on books v3 and the EXP-024 successor note (part A) are all done. Paper only: no keys, no transactions, 0 Helius credits.
+#
+# Submit (miscusi_job_submit): machine mal-fast-0, command `sh scripts/ops/q50s1-shadow-start.sh` from a checkout of main that contains this file, resumable false (a restart at the same
+# code_sha continues the same book as a gap record; a new process is a manager decision), 1 CPU, job memory 1.5 GB (fast-0 refuses >= 2 GB), a time limit past 2026-11-20T00Z.
+#   `sh scripts/ops/q50s1-shadow-start.sh --check` runs every check below and prints the command it would run; it starts nothing and is allowed at any time of day.
+#
+# What it does, in order (each refusal exits non-zero before anything starts):
+#   1. host is mal-fast-0 (exit 6);
+#   2. the UTC time is inside [2026-11-05T20:00:00Z, 2026-11-05T22:30:00Z] (exit 4; --check only reports);
+#   3. S* is in the repo: tag q50-succ-base-1 resolves to 5c2ab7c64b21358619e37068c6a53e4d183512ea (exit 7); a clean detached worktree of exactly that commit is made at
+#      $HOME/data/arena-src/q50s1-5c2ab7c6 (never main, never F50 a5f41370) and must have no tracked-file change (exit 5);
+#   4. bots.json holds the s1 line with frozen_sha S*, clock 1793923200000, window_end_ms pinned 1795132800000, and registered_at_ms before now (exit 8);
+#   5. no process of this book runs (the unit q50s1-shadow.scope is not active; one process per frozen_sha) and the out dir $HOME/data/arena/h5-q50s1-<UTC date> does not exist (exit 9);
+#   6. MEMORY (an OOM would end Q50's open positions NOT_DECIDABLE and gap-halt its live feed): MemoryCurrent of user-1002.slice + the sum of the finite MemoryMax of every running
+#      user unit + this process's MemoryMax (1500M) must fit the slice's MemoryMax (MemTotal if the slice has none). If not, it WAITS NOTHING and exits 10: the start moves
+#      (a slip under Amendment 17 item 2), it is never started uncapped;
+#   7. starts `python -m tools.h5_shadow` from the S* worktree under `systemd-run --user --scope -p MemoryMax=1500M -p MemorySwapMax=0 --unit=q50s1-shadow` and stops that scope on TERM,
+#      INT and EXIT (miscusi_job_cancel leaves --scope children alive: this job stops its own scope). The shadow's args: --fresh-forward ARENA --q-star-sol 50 --sockets 3 --syn-sockets 1
+#      and the two public ws URLs of scripts/research/arena-h5.sh. bx10 is off at Q* 50 in code.
+# Output: $HOME/data/arena/h5-q50s1-<UTC date>/h5-shadow-<UTC hour>.jsonl (never opened by any worker; the Q50 seal and EXP-024 successor note part A apply).
+# Env (all optional): ARENA_H5_PYTHON (default /var/lib/mal/fast-listener/.venv/bin/python), Q50S1_REPO (default: the checkout this script is in), Q50S1_ARENA (default $HOME/data/arena).
+# --check only: Q50S1_NOW_EPOCH (seconds) replaces the clock, so the checks can be rehearsed.
+set -eu
+set -f
+S_SHA=5c2ab7c64b21358619e37068c6a53e4d183512ea
+S_TAG=q50-succ-base-1
+CLOCK_MS=1793923200000
+END_MS=1795132800000
+WIN_FROM=1793908800   # 2026-11-05T20:00:00Z
+WIN_TO=1793916900     # 2026-11-05T22:30:00Z
+NEW_MAX_MB=1500
+MODE=run
+[ "${1:-}" = "--check" ] && MODE=check
+[ "$#" -le 1 ] || { echo "q50s1-shadow: usage: q50s1-shadow-start.sh [--check]" >&2; exit 2; }
+if [ "$#" -eq 1 ] && [ "$MODE" != "check" ]; then echo "q50s1-shadow: unknown argument" >&2; exit 2; fi
+[ -n "${HOME:-}" ] || { echo "q50s1-shadow: HOME is not set" >&2; exit 2; }
+HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO="${Q50S1_REPO:-$(cd "$HERE/../.." && pwd)}"
+ARENA="${Q50S1_ARENA:-$HOME/data/arena}"
+PY="${ARENA_H5_PYTHON:-/var/lib/mal/fast-listener/.venv/bin/python}"
+SRC="$HOME/data/arena-src/q50s1-$(printf '%s' "$S_SHA" | cut -c1-8)"
+UNIT=q50s1-shadow
+NOW="$(date -u +%s)"
+if [ "$MODE" = "check" ] && [ -n "${Q50S1_NOW_EPOCH:-}" ]; then NOW="$Q50S1_NOW_EPOCH"; fi
+case "$NOW" in ''|*[!0-9]*) echo "q50s1-shadow: bad clock $NOW" >&2; exit 2 ;; esac
+DAY="$(date -u -d "@$NOW" +%Y-%m-%d)"
+OUT="$ARENA/h5-q50s1-$DAY"
+case "$OUT" in *..*) echo "q50s1-shadow: refusing out dir $OUT" >&2; exit 2 ;; esac
+
+# 1. host
+if [ "$(hostname)" != "mal-fast-0" ]; then echo "q50s1-shadow: this book runs on mal-fast-0 (this is $(hostname))" >&2; [ "$MODE" = "check" ] || exit 6; fi
+# 2. time window
+if [ "$NOW" -lt "$WIN_FROM" ] || [ "$NOW" -gt "$WIN_TO" ]; then
+  echo "q50s1-shadow: now $NOW is outside the start window [$WIN_FROM, $WIN_TO] (2026-11-05T20:00Z to 22:30Z; at least 1 h before the clock)" >&2
+  [ "$MODE" = "check" ] || exit 4
+fi
+# 3. S* worktree, clean
+git -C "$REPO" fetch -q origin "refs/tags/$S_TAG:refs/tags/$S_TAG" 2>/dev/null || true
+GOT="$(git -C "$REPO" rev-parse "$S_TAG^{commit}" 2>/dev/null || true)"
+[ "$GOT" = "$S_SHA" ] || { echo "q50s1-shadow: tag $S_TAG is '$GOT', not S* $S_SHA" >&2; exit 7; }
+if [ ! -d "$SRC" ]; then
+  if [ "$MODE" = "check" ]; then echo "q50s1-shadow: (check) would create the detached worktree $SRC at $S_SHA"; else
+    mkdir -p "$(dirname "$SRC")"
+    git -C "$REPO" worktree add --detach "$SRC" "$S_SHA" >&2 || { echo "q50s1-shadow: cannot create the S* worktree" >&2; exit 7; }
+  fi
+fi
+if [ -d "$SRC" ]; then
+  [ "$(git -C "$SRC" rev-parse HEAD)" = "$S_SHA" ] || { echo "q50s1-shadow: $SRC is not at S*" >&2; exit 7; }
+  ST="$(git -C "$SRC" status --porcelain --untracked-files=no)" || exit 7
+  [ -z "$ST" ] || { echo "q50s1-shadow: $SRC has tracked-file changes" >&2; exit 5; }
+fi
+# 4. the registered line
+LINE="$("$PY" -I - "$ARENA/bots.json" "$S_SHA" "$CLOCK_MS" "$END_MS" "$NOW" <<'PYEOF'
+import json, sys
+path, sha, clock, end, now = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]) * 1000
+try:
+    e = json.load(open(path))["bots"]["h5v1q50-boostfloor-s1"]
+except (OSError, KeyError, ValueError):
+    print("no s1 line"); sys.exit(1)
+ok = e.get("frozen_sha") == sha and e.get("clock_start_ms") == clock and e.get("window_end_ms_pin") == end and isinstance(e.get("registered_at_ms"), int) and e["registered_at_ms"] < now
+print("ok" if ok else "line does not match the table row or registered_at_ms is not before now")
+sys.exit(0 if ok else 1)
+PYEOF
+)" || { echo "q50s1-shadow: bots.json: $LINE" >&2; exit 8; }
+# 5. one process, new out dir
+if systemctl --user is-active --quiet "$UNIT.scope" 2>/dev/null; then echo "q50s1-shadow: $UNIT.scope is already active (one process per frozen_sha)" >&2; exit 9; fi
+[ ! -e "$OUT" ] || { echo "q50s1-shadow: $OUT exists; a restart on the same day needs a new dir (manager decision)" >&2; exit 9; }
+# 6. memory
+SLICE=user-1002.slice
+CUR="$(systemctl show "$SLICE" -p MemoryCurrent --value 2>/dev/null || echo "")"
+SMAX="$(systemctl show "$SLICE" -p MemoryMax --value 2>/dev/null || echo "")"
+case "$CUR" in ''|*[!0-9]*) echo "q50s1-shadow: cannot read MemoryCurrent of $SLICE ('$CUR')" >&2; exit 10 ;; esac
+case "$SMAX" in ''|*[!0-9]*) SMAX="$(awk '/^MemTotal:/ {print $2 * 1024}' /proc/meminfo)" ;; esac
+SUM=0; UNCAPPED=0
+for u in $(systemctl --user list-units --type=service,scope --state=running --plain --no-legend 2>/dev/null | awk '{print $1}'); do
+  m="$(systemctl --user show "$u" -p MemoryMax --value 2>/dev/null || echo "")"
+  case "$m" in ''|*[!0-9]*) UNCAPPED=$((UNCAPPED + 1)) ;; *) SUM=$((SUM + m)) ;; esac
+done
+NEWB=$((NEW_MAX_MB * 1024 * 1024))
+NEED=$((CUR + SUM + NEWB))
+echo "q50s1-shadow: memory: MemoryCurrent=$CUR + sum(finite MemoryMax of running units)=$SUM (uncapped running units: $UNCAPPED, not summed) + new MemoryMax=$NEWB = $NEED; slice max=$SMAX"
+if [ "$NEED" -gt "$SMAX" ]; then echo "q50s1-shadow: does not fit the slice: NOT starting (a slip under DEC-031 Amendment 17 item 2, never an uncapped start)" >&2; exit 10; fi
+# 7. start
+WS1=wss://api.mainnet-beta.solana.com
+WS2=wss://public.rpc.solanavibestation.com
+[ -x "$PY" ] || { echo "q50s1-shadow: no python at $PY" >&2; exit 2; }
+"$PY" -I -c 'import websockets, certifi' 2>/dev/null || { echo "q50s1-shadow: websockets/certifi missing in $PY" >&2; exit 3; }
+if [ "$MODE" = "check" ]; then
+  echo "q50s1-shadow: (check) would run in $SRC: systemd-run --user --scope --unit=$UNIT -p MemoryMax=${NEW_MAX_MB}M -p MemorySwapMax=0 env PYTHONPATH=$SRC H5_CODE_SHA=$S_SHA $PY -m tools.h5_shadow --fresh-forward ARENA --q-star-sol 50 --out-dir $OUT --sockets 3 --syn-sockets 1 --ws-url $WS1 --ws-url $WS2"
+  exit 0
+fi
+cd "$SRC"
+trap 'systemctl --user stop "$UNIT.scope" >/dev/null 2>&1 || true' EXIT TERM INT
+echo "q50s1-shadow: starting rule H5-BOOSTFLOOR-Q50 v1, fresh-forward ARENA, q*=50, out=$OUT, head=$S_SHA, MemoryMax=${NEW_MAX_MB}M, python=$PY"
+systemd-run --user --scope --quiet --unit="$UNIT" -p "MemoryMax=${NEW_MAX_MB}M" -p MemorySwapMax=0 \
+  env PYTHONPATH="$SRC" H5_CODE_SHA="$S_SHA" H5_DIRTY="" "$PY" -m tools.h5_shadow --fresh-forward ARENA --q-star-sol 50 --out-dir "$OUT" \
+  --sockets 3 --syn-sockets 1 --ws-url "$WS1" --ws-url "$WS2"
