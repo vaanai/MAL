@@ -30,11 +30,11 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `live-canary` | 1 | 0 | 0 |
 | `forward-test` | 2 | 0 | 0 |
 | `explored-survivor-unconfirmed` | 9 | 0 | 0 |
-| `parked` | 9 | 1 | 0 |
+| `parked` | 9 | 0 | 0 |
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 44 | 20 | 1 |
 | `desk-read` | 1 | 48 | 0 |
-| `explored-no-survivor` | 41 | 6 | 1 |
+| `explored-no-survivor` | 41 | 7 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
 | **all** | 185 | 81 | 2 |
 
@@ -281,7 +281,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
-| `p60-feeshare-commit-tag` | Creator fee-sharing / one-redirect lock as a creator-commitment label for the rug filter | `parked` | Desk-read idea; P62 (2026-10-27, PR #995) ran it on Aug/Sep exploration blocks and it is NOT_DECIDABLE (detector defect), not a KILL. Original kill-risk note: Capacity guess: a veto on an existing book's entries: if it removes 10% of entries that carry 25% of losses, on a 20 trades/day x 0.1 SOL book that is up to … |
+| `p60-feeshare-commit-tag` | Creator fee-sharing / one-redirect lock as a creator-commitment label for the rug filter | `explored-no-survivor` | P62 (2026-10-27, PR #995) ran the in-create-tx version on Aug/Sep exploration blocks: KILL for that feature only. Original kill-risk note: Capacity guess: a veto on an existing book's entries: if it removes 10% of entries that carry 25% of losses, on a 20 trades/day x 0.1 SOL book that is up to 0.05 SOL/day of avoided … |
 
 ### p60-t22-quote-pnl (1)
 
