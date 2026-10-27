@@ -97,7 +97,7 @@ Full holder snapshots (`getProgramAccounts` on the mint, all token accounts) aga
 
 - **Pro rata on balance.** Paid share over held share is one constant inside a round: 95% (7ttfw) and 97% (51Sfaa) of
   recipients sit within 1% of the round's per-token rate; the rest are wallets whose balance moved between the round
-  and the snapshot. The top-11 wallets of each coin are paid at the same ratio to 3 decimals.
+  and the snapshot. All top-11 wallets of 7ttfw, and 9 of the top 11 of 51Sfaa (the other 2 moved balance), are paid at the same ratio to 3 decimals.
 - **Balance at the round instant, not time-weighted.** The 16 wallets paid at 20:48:54 that were not paid at
   20:42:49 got exactly 1.000x the per-token rate on their balance (snapshot 20:56Z). A holder is paid for the fees
   accrued since the previous round if it holds at the round.
@@ -160,7 +160,7 @@ why the row's first Step 1 output is drift alone.
 
 ### Kill line and status
 
-- Step 0 kill clause, "no payout seen to sampled holders": **not met**. Payouts were seen to 3,933 recipient slots
+- Step 0 kill clause, "no payout seen to sampled holders": **not met**. Payouts were seen to 3,971 recipient slots
   across 5 rounds of 3 coins.
 - The revive trigger asks for this **and** at least 5 flagged days. The flagged-day count (holder-rewards coins by
   day with turnover >= 3) was not run: it needs the tape mint list and tape volume, which this lane does not read.
