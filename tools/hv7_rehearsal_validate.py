@@ -12,7 +12,11 @@ Sums run over the valid-permutation calls i (N_i = len(card_ids)); n = number of
                  E_j >= 9; slots with E_j < 9 are report-only. Chi-square (expected counts E_j, slots with E_j >= 5) is report-only.
   4 consistency  top-1 A/B agreement over the S sets >= max(0.20, (sum_s 1/N_s + 2.1 x sqrt(sum_s (1/N_s)(1 - 1/N_s))) / S)
   5 content      (report-only) agreement >= max(0.30, 2.4 x mean_s(1/N_s))
-  6 sample       sets in the prompts < 30 -> NOT_DECIDABLE at hourly periods (re-run once with the :32 instants added)
+  6 sample       sets in the prompts < 30 -> NOT_DECIDABLE at hourly periods (re-run once with the :32 instants added; no further re-run when the manifest is
+                 already a half-hour run)
+INPUT INTEGRITY (refused, exit 2, before any bar): the prompts must match manifest.json (every listed file's sha256 and call count, no unlisted batch file, total
+calls and sets, a 40-hex git_head); a duplicate reply key (chunk_id, set_id, shuffle) is refused (a re-asked call would pick a variant by result); replies that match no
+prompt are counted and printed (`replies_matching_no_prompt`), never used. The result prints git_head and half_hour.
 Result: NOT_DECIDABLE if bar 6 trips; else PASS iff bars 1, 2, 3 and 4 pass, else FAIL.
 """
 from __future__ import annotations
@@ -24,6 +28,7 @@ if __package__ in (None, ""):
     _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
 import argparse
+import hashlib
 import json
 import math
 import sys
@@ -37,7 +42,11 @@ PARSE_SHARE = 0.95
 AGREE_FLOOR = 0.20
 
 
-def validate(prompts: Mapping[str, Mapping[str, Any]], replies: Mapping[str, Any]) -> dict[str, Any]:
+class InputRefused(Exception):
+    """Carries a fixed reason string only (never a value from the files)."""
+
+
+def validate(prompts: Mapping[str, Mapping[str, Any]], replies: Mapping[str, Any], *, manifest: Mapping[str, Any] | None = None) -> dict[str, Any]:
     calls = len(prompts)
     top: dict[str, int] = {}                      # chunk_id -> display slot (1-based) of the rank-1 pick
     top_id: dict[str, str] = {}
@@ -84,36 +93,71 @@ def validate(prompts: Mapping[str, Mapping[str, Any]], replies: Mapping[str, Any
         k = str(len(prompts[any_cid]["card_ids"]))
         hist[k] = hist.get(k, 0) + 1
     undecidable = n_sets < MIN_SETS
+    half = bool(manifest.get("half_hour")) if manifest else None
+    stray = len(set(replies) - set(prompts))
     bars = {"parse": parse_pass, "slot1": slot1_pass, "other_slots": other_pass, "consistency": agree_pass}
     result = "NOT_DECIDABLE" if undecidable else ("PASS" if all(bars.values()) else "FAIL")
     return {"result": result, "bars": bars, "calls": calls, "valid": valid, "valid_needed": need, "sets": n_sets, "sets_both_valid": S, "n_histogram": dict(sorted(hist.items())),
             "slot1_share": slot1, "slot1_bar": slot1_bar, "mean_inv_n": mean_inv, "slots": slots, "chi_square_report_only": chi,
             "agreement": agree, "agreement_bar": agree_bar, "content_driven_report_only": bool(S and agree >= content_bar), "content_bar": content_bar,
-            "not_decidable_below_sets": MIN_SETS, "rerun_with_half_hour": undecidable, "outcome_free": True}
+            "not_decidable_below_sets": MIN_SETS, "rerun_with_half_hour": bool(undecidable and half is not True), "git_head": (manifest or {}).get("git_head"), "half_hour": half,
+            "replies_matching_no_prompt": stray, "outcome_free": True}
 
 
-def load(prompts_dir: Path, replies_path: Path) -> tuple[dict, dict]:
-    prompts = {}
-    for p in sorted(Path(prompts_dir).glob("batch-*.jsonl")):
-        for line in p.read_text().splitlines():
-            if line.strip():
-                r = json.loads(line)
-                prompts[r["chunk_id"] + ":" + str(r["set_id"]) + ":" + r["shuffle"]] = r
-    replies = {}
+def load(prompts_dir: Path, replies_path: Path, manifest_path: Path | None = None) -> tuple[dict, dict, dict]:
+    """Returns (prompts, replies, manifest). Refuses (InputRefused) unless the prompts equal the manifest; refuses duplicate reply keys."""
+    prompts_dir = Path(prompts_dir)
+    mp = Path(manifest_path) if manifest_path is not None else prompts_dir.parent / "manifest.json"
+    try:
+        man = json.loads(mp.read_text())
+    except (OSError, ValueError):
+        raise InputRefused("manifest_unreadable") from None
+    head = man.get("git_head")
+    if not isinstance(head, str) or len(head) != 40 or any(c not in "0123456789abcdef" for c in head):
+        raise InputRefused("manifest_git_head_missing")
+    listed = {Path(f["file"]).name: f for f in man.get("files", [])}
+    on_disk = {p.name for p in prompts_dir.glob("batch-*.jsonl")}
+    if on_disk != set(listed) or not listed:
+        raise InputRefused("batch_files_differ_from_manifest")
+    prompts: dict = {}
+    total = 0
+    for name in sorted(listed):
+        data = (prompts_dir / name).read_bytes()
+        lines = [x for x in data.splitlines() if x.strip()]
+        if hashlib.sha256(data).hexdigest() != listed[name]["sha256"] or len(lines) != listed[name]["calls"]:
+            raise InputRefused("batch_file_sha_or_calls_differ")
+        for line in lines:
+            r = json.loads(line)
+            k = r["chunk_id"] + ":" + str(r["set_id"]) + ":" + r["shuffle"]
+            if k in prompts:
+                raise InputRefused("duplicate_prompt_key")
+            prompts[k] = r
+        total += len(lines)
+    if total != man.get("calls") or len(prompts) != total or len({r["set_id"] for r in prompts.values()}) != man.get("sets"):
+        raise InputRefused("totals_differ_from_manifest")
+    replies: dict = {}
     for line in Path(replies_path).read_text().splitlines():
         if line.strip():
             r = json.loads(line)
-            replies[r["chunk_id"] + ":" + str(r.get("set_id")) + ":" + str(r.get("shuffle"))] = r.get("text")
-    return prompts, replies
+            k = r["chunk_id"] + ":" + str(r.get("set_id")) + ":" + str(r.get("shuffle"))
+            if k in replies:
+                raise InputRefused("duplicate_reply_key")
+            replies[k] = r.get("text")
+    return prompts, replies, man
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="HV7 rehearsal bars (QP 6432750602 (c)). Counts only.")
     ap.add_argument("--prompts-dir", required=True)
+    ap.add_argument("--manifest", default=None, help="default: <prompts-dir>/../manifest.json")
     ap.add_argument("--replies", required=True, help="JSON lines {chunk_id, set_id, shuffle, text}")
     a = ap.parse_args(argv)
     try:
-        res = validate(*load(Path(a.prompts_dir), Path(a.replies)))
+        pr, rp, man = load(Path(a.prompts_dir), Path(a.replies), Path(a.manifest) if a.manifest else None)
+        res = validate(pr, rp, manifest=man)
+    except InputRefused as e:
+        print(json.dumps({"hv7_rehearsal_validate": "refused", "why": str(e)}), file=sys.stderr)
+        return 2
     except Exception as e:  # noqa: BLE001 - the class name only
         print(json.dumps({"hv7_rehearsal_validate": "error", "class": type(e).__name__}), file=sys.stderr)
         return 3

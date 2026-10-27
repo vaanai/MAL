@@ -107,14 +107,109 @@ def test_below_30_sets_is_not_decidable_and_asks_for_the_half_hour_rerun():
     assert V.validate(pr, replies(pr, leader))["result"] in ("PASS", "FAIL")
 
 
-def test_cli_prints_counts_only_and_exits_by_result(tmp_path, capsys):
+def test_cli_without_a_manifest_is_refused(tmp_path):
     pr = prompts(n_sets=30)
     d = tmp_path / "prompts"
     d.mkdir()
     (d / "batch-00.jsonl").write_text("".join(json.dumps(p) + "\n" for p in pr.values()))
     rp = tmp_path / "replies.jsonl"
+    rp.write_text("")
+    assert V.main(["--prompts-dir", str(d), "--replies", str(rp)]) == 2
+
+
+# ------------------------------------------------------------------------------------------------------------------------ input integrity
+import hashlib  # noqa: E402
+
+
+def write_run(tmp_path, pr, *, half=False, head="a" * 40, per_file=6):
+    out = tmp_path / "run"
+    (out / "prompts").mkdir(parents=True)
+    items = list(pr.values())
+    files = []
+    for n, i in enumerate(range(0, len(items), per_file)):
+        body = "".join(json.dumps(x, sort_keys=True) + "\n" for x in items[i:i + per_file]).encode()
+        name = f"batch-{n:02d}.jsonl"
+        (out / "prompts" / name).write_bytes(body)
+        files.append({"file": f"prompts/{name}", "calls": len(items[i:i + per_file]), "sha256": hashlib.sha256(body).hexdigest()})
+    man = {"calls": len(items), "sets": len({x["set_id"] for x in items}), "files": files, "half_hour": half}
+    if head is not None:
+        man["git_head"] = head
+    (out / "manifest.json").write_text(json.dumps(man))
+    return out
+
+
+def write_replies(tmp_path, pr, extra=()):
     rep = replies(pr, leader)
-    rp.write_text("".join(json.dumps({"chunk_id": pr[k]["chunk_id"], "set_id": pr[k]["set_id"], "shuffle": pr[k]["shuffle"], "text": t}) + "\n" for k, t in rep.items()))
-    assert V.main(["--prompts-dir", str(d), "--replies", str(rp)]) == 0
-    out = json.loads(capsys.readouterr().out)
-    assert out["result"] == "PASS" and out["outcome_free"] is True and "P0_0" not in json.dumps(out)
+    lines = [{"chunk_id": pr[k]["chunk_id"], "set_id": pr[k]["set_id"], "shuffle": pr[k]["shuffle"], "text": t} for k, t in rep.items()] + list(extra)
+    rp = tmp_path / "replies.jsonl"
+    rp.write_text("".join(json.dumps(x) + "\n" for x in lines))
+    return rp
+
+
+def test_prompts_matching_the_manifest_load_and_print_head_and_half_hour(tmp_path):
+    pr = prompts(n_sets=30)
+    out = write_run(tmp_path, pr, half=False, head="c" * 40)
+    p, r, m = V.load(out / "prompts", write_replies(tmp_path, pr))
+    res = V.validate(p, r, manifest=m)
+    assert res["git_head"] == "c" * 40 and res["half_hour"] is False and res["result"] == "PASS" and res["replies_matching_no_prompt"] == 0
+
+
+@pytest.mark.parametrize("what", ["edit", "delete_file", "extra_file", "no_head", "short_head", "calls", "sets", "missing_manifest"])
+def test_prompts_that_differ_from_the_manifest_are_refused(tmp_path, what):
+    pr = prompts(n_sets=30)
+    out = write_run(tmp_path, pr, head=None if what == "no_head" else ("abc" if what == "short_head" else "a" * 40))
+    rp = write_replies(tmp_path, pr)
+    files = sorted((out / "prompts").glob("batch-*.jsonl"))
+    man = json.loads((out / "manifest.json").read_text())
+    if what == "edit":
+        files[0].write_bytes(files[0].read_bytes().replace(b"P0_0", b"P0_9"))
+    elif what == "delete_file":
+        files[-1].unlink()
+    elif what == "extra_file":
+        (out / "prompts" / "batch-99.jsonl").write_text("")
+    elif what == "calls":
+        man["calls"] += 1
+    elif what == "sets":
+        man["sets"] += 1
+    elif what == "missing_manifest":
+        (out / "manifest.json").unlink()
+    if what in ("calls", "sets"):
+        (out / "manifest.json").write_text(json.dumps(man))
+    with pytest.raises(V.InputRefused):
+        V.load(out / "prompts", rp)
+    if what == "edit":                                                   # an edit that keeps the line count is still caught by the sha256
+        assert V.main(["--prompts-dir", str(out / "prompts"), "--replies", str(rp)]) == 2
+
+
+def test_duplicate_reply_keys_are_refused_and_strays_are_counted(tmp_path):
+    pr = prompts(n_sets=30)
+    out = write_run(tmp_path, pr)
+    k = next(iter(pr.values()))
+    dup = {"chunk_id": k["chunk_id"], "set_id": k["set_id"], "shuffle": k["shuffle"], "text": "[]"}
+    with pytest.raises(V.InputRefused, match="duplicate_reply_key"):
+        V.load(out / "prompts", write_replies(tmp_path, pr, extra=[dup]))
+    assert V.main(["--prompts-dir", str(out / "prompts"), "--replies", str(tmp_path / "replies.jsonl")]) == 2
+    stray = {"chunk_id": "batch-77", "set_id": 5, "shuffle": "A", "text": "x"}
+    p, r, m = V.load(out / "prompts", write_replies(tmp_path, pr, extra=[stray]))
+    res = V.validate(p, r, manifest=m)
+    assert res["replies_matching_no_prompt"] == 1 and res["valid"] == 60 and res["result"] == "PASS"       # a stray is never used
+
+
+def test_half_hour_manifest_under_30_sets_is_not_decidable_with_no_further_rerun(tmp_path):
+    pr = prompts(n_sets=20)
+    for half, want in ((False, True), (True, False)):
+        sub = tmp_path / ("h" if half else "n")
+        sub.mkdir()
+        out = write_run(sub, pr, half=half)
+        p, r, m = V.load(out / "prompts", write_replies(sub, pr))
+        res = V.validate(p, r, manifest=m)
+        assert res["result"] == "NOT_DECIDABLE" and res["rerun_with_half_hour"] is want and res["half_hour"] is half
+
+
+def test_cli_prints_counts_only_and_exits_by_result(tmp_path, capsys):
+    pr = prompts(n_sets=30)
+    out = write_run(tmp_path, pr, head="d" * 40)
+    rp = write_replies(tmp_path, pr)
+    assert V.main(["--prompts-dir", str(out / "prompts"), "--replies", str(rp)]) == 0
+    res = json.loads(capsys.readouterr().out)
+    assert res["result"] == "PASS" and res["outcome_free"] is True and res["git_head"] == "d" * 40 and "P0_0" not in json.dumps(res)
