@@ -71,7 +71,7 @@ from tools import hv7_rank as R
 from tools.arena_declog import GENESIS, DecisionLog, LogChainError, sha256_hex, utc_day  # noqa: F401
 from tools.arena_paper import ArenaRefused
 from tools.arena_state import WSOL_MINT, ArenaState
-from tools.haiku_caller import Ledger, LedgerError
+from tools.haiku_caller import HaikuCaller, Ledger, LedgerError, RetriesExhausted
 from tools.hv6_phantom import PhantomFilter
 from tools.hv6_runner import Pos, QuoteHistory, exit_reason, mark_ret, position_id, stack_config  # noqa: F401
 
@@ -88,6 +88,11 @@ STAKE_SOL = 0.25
 HV7_ROOT = "/data/mal/arena/haiku-v7"
 HV7_DAY_CAP_USD = 0.30                     # pinned: DESIGN section 5 cap table; the K1 sum test lives in test_hv7_runner.py
 K1_DAY_CAP_USD = 3.00
+# v7.1 (K = 3 Borda). A separate release: nothing below changes a v7.0 byte or decision unless release == "v7.1".
+HV7_V71_DAY_CAP_USD = 0.30                # pinned. Worst case with the 2-attempt cap is 0.2254 USD/day (test_v71_worst_case_arithmetic); the cap-sum test is against the real HV6 caps
+V71_MAX_ATTEMPTS = 2                      # HTTP attempts per call (haiku_caller allows 3; the v7.1 caller class stops at 2)
+V71_WORST_CALL_IN = dict(cache_write_tokens=2874, new_tokens=9056, output_tokens=R.MAX_TOKENS)   # DESIGN section 5 N = 8 call with the full 600-token output
+V71_PERIODS_PER_DAY = 24
 RANK_LEDGER = "RANK-L"
 EXIT = dict(A.X_EXIT)                      # {stop_pct -8, target_pct +20, trail_pct None, time_min 60}: HV6's X rule, one rule for every arm
 MAX_OPEN_U = R.N_MAX
@@ -202,11 +207,14 @@ class Hv7Guard:
     """HV7's own reserve-before-call gate: one ledger (RANK-L), capped at HV7_DAY_CAP_USD, no group. Same duck-typed surface as hv6_agents.BudgetGuard
     (preflight, record_refusal), so hv4_model.CallerModel / StubModel use it unchanged. A denied preflight is a FALLBACK in the runner, never a trade skip."""
 
-    def __init__(self, root: str | os.PathLike, *, day_cap_usd: float = HV7_DAY_CAP_USD, min_call_usd: float = A.MIN_CALL_USD) -> None:
+    def __init__(self, root: str | os.PathLike, *, day_cap_usd: float | None = None, min_call_usd: float = A.MIN_CALL_USD, release: str = R.RELEASE_V70) -> None:
+        R.check_release(release)
+        ceiling = HV7_V71_DAY_CAP_USD if release == R.RELEASE_V71 else HV7_DAY_CAP_USD
+        day_cap_usd = ceiling if day_cap_usd is None else day_cap_usd
         for name, v in (("day_cap_usd", day_cap_usd), ("min_call_usd", min_call_usd)):
             if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0:
                 raise ValueError(f"{name} must be a finite number >= 0")       # NaN would pass every `>` test below
-        if day_cap_usd > HV7_DAY_CAP_USD + 1e-12:
+        if day_cap_usd > ceiling + 1e-12:
             raise ValueError("day_cap_usd may only be lowered")
         low = str(root).lower()
         bad = next((t for t in A.DENY_ROOT_TOKENS if t in low), None)
@@ -262,9 +270,28 @@ class Hv7Guard:
             return led.spent()
 
 
-def cap_sum_usd() -> float:
+def cap_sum_usd(release: str = R.RELEASE_V70) -> float:
     """HV6's registered caps (config only: no ledger, spend or output) plus HV7's pinned cap. Must stay <= K1_DAY_CAP_USD (tested)."""
-    return math.fsum([A.caps_total_usd(), HV7_DAY_CAP_USD])
+    return math.fsum([A.caps_total_usd(), HV7_V71_DAY_CAP_USD if R.check_release(release) == R.RELEASE_V71 else HV7_DAY_CAP_USD])
+
+
+def v71_worst_case_day_usd() -> float:
+    """Worst case of a v7.1 day: every period (24), K calls each, every call spends V71_MAX_ATTEMPTS full-price attempts."""
+    return R.cost_usd(**V71_WORST_CALL_IN) * V71_MAX_ATTEMPTS * R.K_V71 * V71_PERIODS_PER_DAY
+
+
+class _CappedCaller(HaikuCaller):
+    """HaikuCaller that stops after V71_MAX_ATTEMPTS attempts (the base class allows 3). The third attempt is refused before anything is reserved or sent."""
+
+    def _attempt(self, attempt, key, body, body_bytes, sha):
+        if attempt > V71_MAX_ATTEMPTS:
+            raise RetriesExhausted(f"retries capped at {V71_MAX_ATTEMPTS} attempts", attempts=V71_MAX_ATTEMPTS, last_status=None, last_error_class="attempt_cap")
+        return super()._attempt(attempt, key, body, body_bytes, sha)
+
+
+def v71_caller_model(guard: Any):
+    """The v7.1 live model: hv6's CallerModel over the 2-attempt caller. v7.0 keeps hv6_agents.CallerModel."""
+    return A.CallerModel(guard, caller_cls=_CappedCaller)
 
 
 # ------------------------------------------------------------------------------------------------------------------------ pricing independence
@@ -307,6 +334,7 @@ class Hv7Config:
     phantom_filter: bool = True
     n: int = R.N_DEFAULT
     n_min: int = R.N_MIN
+    release: str = R.RELEASE_V70            # "v7.1" = K = 3 Borda; the default is v7.0 and changes nothing
 
 
 class _Call:
@@ -334,6 +362,7 @@ class _Call:
 
 class Hv7Runner:
     def __init__(self, cfg: Hv7Config, state: Any, engine: Any, model: Any, chain: Any, guard: Any = None, now_fn: Callable[[], int] | None = None) -> None:
+        R.check_release(cfg.release)
         self.cfg, self.state, self.engine, self.model, self.chain, self.guard = cfg, state, engine, model, chain, guard
         self.now_fn = now_fn or (lambda: time.time_ns() // 1_000_000)
         self.root = Path(check_path(cfg.root, "w"))
@@ -484,18 +513,23 @@ class Hv7Runner:
             return
         ordered = [cards[i] for i in scr.ids]
         rr = R.build_rank_request(t_d, ordered, seq=T // HOUR_MS)
+        v71 = self.cfg.release == R.RELEASE_V71
+        rrs = [rr] + [R.build_rank_request(t_d, ordered, seq=T // HOUR_MS, k=k) for k in range(1, R.K_V71)] if v71 else None   # rrs[0] is rr, the v7.0 request
+        acc: list = []
         l_logged = None
         if rank_row is not None:
             l_logged, call = rank_row.get("pick"), None
-        elif rebuild is not None and self._cut_off(rr, T):
-            call = None                                  # (b): reserved, never answered: a counted L FALLBACK, never re-asked
+        elif rebuild is not None and (v71 or self._cut_off(rr, T)):
+            call = None                                  # (b): reserved, never answered: a counted L FALLBACK, never re-asked. v7.1: a rebuilt period is never re-asked
+        elif v71:
+            call = _Call(lambda: self._ask_all(rrs, T, acc), threaded=self.cfg.live)
         else:
             call = _Call(lambda: self._ask(rr, T), threaded=self.cfg.live)
         picks = {"R": [R.r_pick(t_d, scr.ids, shas)], "S": [R.s_pick(scr)], "U": list(R.u_set(scr))}
         if rebuild is None:
             self.log.append("SCAN", T, base)
         self.pending = {"t_e": T - T_D_OFFSET_MS + T_E_OFFSET_MS, "t_d": T, "t_d_iso": t_d, "picks": picks, "cards": {i: cards[i] for i in scr.ids},
-                        "rr": rr, "call": call, "scr_ids": scr.ids, "shas": shas, "l_logged": l_logged}
+                        "rr": rr, "rrs": rrs, "acc": acc, "call": call, "scr_ids": scr.ids, "shas": shas, "l_logged": l_logged}
         if rebuild is not None and rank_row is None and call is None:
             self._resolve_l(self.pending, T, forced="call_cut_off")
             self.pending["l_logged"] = self.pending["picks"]["L"][0]
@@ -516,10 +550,14 @@ class Hv7Runner:
     def _resolve_l(self, pend: dict, T: int, forced: str | None = None) -> None:
         """At t_e: the L verdict if the call returned in time, else a FALLBACK ("late"). Logs the rank row and sets L's pick."""
         rr = pend["rr"]
+        if pend.get("rrs") is not None and not forced:
+            return self._resolve_l71(pend)
         got = None if forced else (pend["call"].get() if pend["call"] is not None else None)
         if forced:
             verdict = R.validate_rank(None, rr.shown_ids)
             mrow = {"model_error": forced, "refused": False, "latency_ms": None, "cost_usd": 0.0, "response_sha256": None, "late": False, "cut_off": True}
+            if pend.get("rrs") is not None:
+                mrow.update(release=R.RELEASE_V71, k_valid=0, l1_pick=None)
         elif got is None:
             self._count("late_reply")
             verdict = R.validate_rank(None, rr.shown_ids)
@@ -535,12 +573,60 @@ class Hv7Runner:
                                            "why_without_field": verdict.why_without_field})
         pend["picks"]["L"] = [choice.pool_id]
 
-    def _ask(self, rr: R.RankRequest, T: int) -> tuple[R.RankVerdict, dict]:
-        """One model call. Anything but a full permutation in time (error, refusal, budget stop, exception, late reply) is a FALLBACK verdict."""
+    def _ask_all(self, rrs: Sequence[R.RankRequest], T: int, acc: list) -> None:
+        """v7.1: the K calls one after another (no concurrency), each started only before t_e (hard deadline). acc gets (k, verdict | None, row) as each
+        call ends; a call never started is (k, None, {"skipped": "deadline"}). Sim mode advances a simulated clock by each reply's latency."""
         t_e = T - T_D_OFFSET_MS + T_E_OFFSET_MS
+        elapsed = 0
+        for k, rr in enumerate(rrs):
+            start = int(self.now_fn()) if self.cfg.live else T + elapsed
+            if start >= t_e:
+                self._count("v71_deadline_skip")
+                acc.append((k, None, {"skipped": "deadline", "request_sha256": rr.request.request_sha256()}))
+                continue
+            verdict, row = self._ask(rr, T, offset_ms=elapsed)
+            elapsed += int(row.get("latency_ms") or 0)
+            acc.append((k, verdict, row))
+
+    def _resolve_l71(self, pend: dict) -> None:
+        """At t_e (v7.1): Borda over the valid replies that arrived by t_e. L1 (call 0's own pick) is logged and report-only: never an arm, never a bot."""
+        rrs, t_e = pend["rrs"], pend["t_e"]
+        got = {k: (v, row) for k, v, row in list(pend["acc"])}
+        orders, calls, cost = [], [], 0.0
+        for k, rr in enumerate(rrs):
+            v, row = got.get(k, (None, {"skipped": "no_reply_by_t_e"}))
+            if k not in got:
+                self._count("late_reply")
+            ok = bool(v is not None and v.ok and not row.get("late") and int(row.get("recv_ms") or 0) <= t_e)
+            orders.append((k, v.order if ok else None))
+            cost += float(row.get("cost_usd") or 0.0)
+            calls.append({"k": k, "request_sha256": rr.request.request_sha256(), "perm": list(rr.perm), "valid": ok, "ok": bool(v is not None and v.ok),
+                          "reason": v.reason if v is not None else None, "order": list(v.order) if ok else [], **{x: row.get(x) for x in (
+                              "model_error", "refused", "latency_ms", "cost_usd", "response_sha256", "late", "recv_ms", "skipped", "ledger_cost_usd", "cost_reconciled")}})
+        b = R.borda(orders)
+        if b.fallback:
+            choice, slot = R.LChoice(R.fallback_pick(pend["t_d_iso"], pend["scr_ids"], pend["shas"]), True, b.reason), None
+            self._count("v71_fallback")
+        else:
+            choice = R.LChoice(b.order[0], False, None)
+            slot = R.display_slot_of(rrs[0].perm, pend["scr_ids"], choice.pool_id)
+        self._count(f"v71_k_valid_{b.k_valid}")
+        l1 = next((o[0] for k, o in orders if k == 0 and o), None)
+        self.log.append("L", pend["t_d"], {"kind": "rank", "release": R.RELEASE_V71, "k_calls": len(rrs), "k_valid": b.k_valid, "valid_calls": list(b.valid_calls),
+                                           "calls": calls, "cost_usd": cost, "order": list(b.order), "points": [list(x) for x in b.points], "top_tied": b.top_tied,
+                                           "fallback": choice.fallback, "fallback_reason": choice.reason, "pick": choice.pool_id, "pick_display_slot": slot,
+                                           "l1_pick": l1, "l1_report_only": True, "request_sha256": rrs[0].request.request_sha256(), "shown": list(rrs[0].shown_ids),
+                                           "perm": list(rrs[0].perm)})
+        pend["picks"]["L"] = [choice.pool_id]
+
+    def _ask(self, rr: R.RankRequest, T: int, offset_ms: int | None = None) -> tuple[R.RankVerdict, dict]:
+        """One model call. Anything but a full permutation in time (error, refusal, budget stop, exception, late reply) is a FALLBACK verdict.
+        offset_ms is v7.1 only: the call's start offset in sim mode; it also adds recv_ms to the row. None (v7.0) changes nothing."""
+        t_e = T - T_D_OFFSET_MS + T_E_OFFSET_MS
+        off = offset_ms or 0
         row: dict[str, Any] = {"model_error": None, "refused": False, "latency_ms": None, "cost_usd": 0.0, "response_sha256": None, "late": False}
         try:
-            reply = self.model.complete(rr.request, self._now(T))
+            reply = self.model.complete(rr.request, self._now(T) + (0 if self.cfg.live else off))
         except Exception as e:  # noqa: BLE001 - class name only
             row["model_error"] = "exception:" + type(e).__name__
             self._count("model_exception")
@@ -548,7 +634,9 @@ class Hv7Runner:
         row.update(model_error=reply.error, refused=bool(reply.refused), latency_ms=reply.latency_ms, cost_usd=reply.cost_usd, response_sha256=reply.response_sha256,
                    replayed=bool(getattr(reply, "replayed", False)))
         row.update(self._reconcile(rr, T, row))
-        recv = self.now_fn() if self.cfg.live else T + int(reply.latency_ms or 0)
+        recv = self.now_fn() if self.cfg.live else T + off + int(reply.latency_ms or 0)
+        if offset_ms is not None:
+            row["recv_ms"] = int(recv)
         if reply.error is not None or reply.refused:
             return R.validate_rank(None, rr.shown_ids), row
         if recv > t_e:
@@ -816,6 +904,7 @@ def main(argv: list[str] | None = None, *, _stub: Mapping[str, Any] | None = Non
     ap.add_argument("--entries-halt-ms", type=int, required=True)
     ap.add_argument("--feed-delay-slots", type=int, required=True)
     ap.add_argument("--registry", default=None, help="bots.json to read the pins from (default: the real registry)")
+    ap.add_argument("--release", default=R.RELEASE_V70, choices=R.RELEASES, help="v7.0 (default, single L call) or v7.1 (K = 3 Borda; not for the 11-01 registration)")
     ap.add_argument("--owner-cost-line-ref", required=True, help="reference to the owner's HV7 cost line (DESIGN section 5); no API call without it")
     a = ap.parse_args(argv)
     try:
@@ -834,9 +923,9 @@ def main(argv: list[str] | None = None, *, _stub: Mapping[str, Any] | None = Non
     if any(v["entries_halt_ms"] != a.entries_halt_ms or v["clock_start_ms"] != a.clock_start_ms for v in pins.values()):
         print("refused: --entries-halt-ms / --clock-start-ms differ from the registry", file=sys.stderr)
         return 2
-    guard = Hv7Guard(a.root)
+    guard = Hv7Guard(a.root, release=a.release)
     if _stub is not None:
-        run = Hv7Runner(Hv7Config(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=False, entries_halt_ms=a.entries_halt_ms),
+        run = Hv7Runner(Hv7Config(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=False, entries_halt_ms=a.entries_halt_ms, release=a.release),
                         ArenaState(check_path(a.tape, "r"), start_ms=0), _stub["engine"], _stub["model"], _stub["chain"], guard)
         run.sim_now = int(_stub["start_ms"])        # the start row is stamped with the simulated instant, never the wall clock
         run.log_start()
@@ -849,8 +938,8 @@ def main(argv: list[str] | None = None, *, _stub: Mapping[str, Any] | None = Non
     from tools.hv6_runner import live_chain_source
 
     engine = ArenaEngine(cfg=stack_config(a.feed_delay_slots))
-    run = Hv7Runner(Hv7Config(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True, entries_halt_ms=a.entries_halt_ms),
-                    ArenaState(check_path(a.tape, "r"), start_ms=0), engine, CallerModel(guard), live_chain_source(a.root), guard)
+    run = Hv7Runner(Hv7Config(root=a.root, frozen_sha=a.frozen_sha, clock_start_ms=a.clock_start_ms, live=True, entries_halt_ms=a.entries_halt_ms, release=a.release),
+                    ArenaState(check_path(a.tape, "r"), start_ms=0), engine, (v71_caller_model(guard) if a.release == R.RELEASE_V71 else CallerModel(guard)), live_chain_source(a.root), guard)
     signal.signal(signal.SIGTERM, run.request_stop)
     engine.start_all()
     now = int(time.time_ns() // 1_000_000) // TICK_MS * TICK_MS
