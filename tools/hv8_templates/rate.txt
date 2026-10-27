@@ -1,0 +1,4 @@
+One pool that passed the lab's code screen. Rate it on flow, dump_risk and trend (each 0, 1, 2 or 3).
+{{CARD}}
+Call {{NONCE}}
+Reply with one JSON object and nothing else: {"why":"<=25 words naming a card field","flow":<0-3>,"dump_risk":<0-3>,"trend":<0-3>}. Integers only.
