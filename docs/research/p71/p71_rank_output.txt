@@ -1,0 +1,6 @@
+2026-08-28 438095
+pools (wallet,pool) rows 12020202 wallets 2263518 round-trip wallets 1306222 ranked (>=5 rt) 220126
+bot flags among ranked: B1 25199 B2 6193 B3 3585 any 30576 of 220126
+unfiltered top 50: flagged 38 B1 38 B2 2 B3 0
+clean ranked wallets 189550 top50 clean: n 50 score range 8751.552448088407 107.081715496 sum SOL 43331.22862564332
+top50 clean n_rt min/median/max 5 15.5 135

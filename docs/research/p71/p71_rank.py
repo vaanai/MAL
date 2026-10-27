@@ -7,6 +7,7 @@ import numpy as np, pandas as pd
 P = "/data/mal/audit-1008/work/g_reachable_cap_book_rescore"
 BLOCK = "explore-0814"
 N_HOUR, MIN_RT, TOPN = 30, 5, 50
+SEED_BIG, SEED_ROW = 100_000_000_000, 987_654_320
 out = sys.argv[1]
 os.makedirs(out, exist_ok=True)
 
@@ -19,6 +20,7 @@ for f in sorted(glob.glob(f"{P}/meta/*.parquet")):
     day = os.path.basename(f)[:-8]
     g = pd.read_parquet(f"{P}/paths/{day}.parquet", columns=["mint", "slot", "isbuy", "sol", "tok", "th", "bt"])
     g = g[g.mint.isin(m.mint)]
+    g = g[(g.sol <= SEED_BIG) & (g.sol != SEED_ROW)]  # PREREG amendment 2: pool-seed rows are not trades
     g["sol"] = g.sol.astype(float)
     g["hr"] = g.bt // 3600
     hours.append(g.groupby(["th", "hr"]).size().rename("n").reset_index())

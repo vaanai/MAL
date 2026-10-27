@@ -22,6 +22,10 @@ Written before any pricing. Library rows: web-public-pnl-3, web-public-pnl-5. La
 
 The first August ranking run (job log, Aug tape only, no September row read) gave top scores near 8,751 SOL per wallet, which is a unit artifact: a wallet that sells tokens it did not buy inside the visible pool window (bought on the bonding curve or transferred) gets the full sale proceeds against only the pool-buy cost. Fix, applied before any copy pricing: net is on matched quantity, `net = sell_sol * min(1, tok_bought/tok_sold) - buy_sol * min(1, tok_sold/tok_bought)`. Nothing else changes. The pre-fix run's only reported fact is that 43 of its unfiltered top 50 were flagged (B1 43, B2 5, B3 4); the post-fix ranking is reported in REPORT.md.
 
+## Amendment 2 (2026-10-27, before any Sep copy pricing; ranking and attribution only)
+
+After amendment 1 the top August scores were still up to 8,751 SOL per wallet. Inspecting one wallet's rows (August tape only) showed pool-seed rows, not trades: a print with `sol` = 987,654,320 lamports (a placeholder constant, `tok` 2.3767e12) and a print of about 1,777 to 2,960 SOL (more than 20x the pool's quote reserve of about 67 SOL, so not a possible swap) at the pool's first slot. Rule, applied to wallet attribution only (ranking, bot flags, and which prints count as a lead's buy or sell; the price path of every pool is untouched): a print with `sol` > 100 SOL or `sol` = 987,654,320 is not a trade and is dropped from attribution.
+
 ## Copy test (Sep, fresh-0903 and exp011-0909)
 
 - Pool filter as P55: `meta.v` in [17.5, 17.7] SOL, seconds-per-slot from block times in (0.15, 0.6).
