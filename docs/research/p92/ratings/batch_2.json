@@ -1,0 +1,102 @@
+{
+"h11":[
+{"id":"c7","why":"flow_ratio_60m 0.85 with deep quote_eff_sol 4766 and close_vs_hi_6h 1.0; buy flow hypothesis"},
+{"id":"c5","why":"flow_ratio_60m 0.70, traders_15m 2386 broad participation, top3_share_60m 0.29"},
+{"id":"c2","why":"flow_ratio_60m 0.81 and quote_eff_sol 3279 but ret_60m 0.54 looks extended"},
+{"id":"c6","why":"flow_ratio_60m 0.83 but ret_60m 1.52 is very extended; fade risk"},
+{"id":"c3","why":"quote_eff_sol 7689 deep, but flow_ratio_60m 0.40 and top3_share_60m 0.99 concentrated"},
+{"id":"c1","why":"quote_eff_sol 10680 deep, flow_ratio_60m 0.39, top3_share_60m 0.998 concentrated"},
+{"id":"c8","why":"net_flow_60m -1570 and flow_ratio_60m -0.49 after ret_15m 0.35; sell pressure"},
+{"id":"c4","why":"quote_eff_sol 156 shallow, ret_60m -0.53, close_vs_hi_6h 0.36, flow negative"}
+],
+"h12":[
+{"id":"c6","why":"quote_eff_sol 19654 deepest, flow_ratio_60m 0.53, ret_60m 0.05 modest"},
+{"id":"c3","why":"quote_eff_sol 7612 with top3_share_60m 0.08, flow_ratio_60m 0.43"},
+{"id":"c4","why":"quote_eff_sol 4789, flow_ratio_60m 0.38, ret_60m 0.11 with positive net flow"},
+{"id":"c2","why":"quote_eff_sol 10451, flow_ratio_60m 0.40, ret_60m 0.05 but top3_share_60m 0.99"},
+{"id":"c8","why":"quote_eff_sol 14491 deep, flow_ratio_60m 0.39, ret_60m 0.04"},
+{"id":"c7","why":"flow_ratio_60m 0.07 near flat, close_vs_hi_6h 0.44, traders_15m 85 thin"},
+{"id":"c5","why":"flow_ratio_60m -0.04 and ret_15m -0.04 with quote_eff_sol 325 shallow"},
+{"id":"c1","why":"flow_ratio_60m -0.06, ret_60m -0.22, close_vs_hi_6h 0.67, quote_eff_sol 301"}
+],
+"h13":[
+{"id":"c3","why":"flow_ratio_60m 0.83, net_flow_60m 929, top3_share_60m 0.27, quote_eff_sol 5338"},
+{"id":"c4","why":"quote_eff_sol 3782 and flow_ratio_60m 0.41 with ret_60m 0.15 and close 1.0"},
+{"id":"c2","why":"quote_eff_sol 6274, flow_ratio_60m 0.43, ret_60m 0.09 at high close"},
+{"id":"c1","why":"quote_eff_sol 9721, flow_ratio_60m 0.43, ret_60m 0.06 but top3_share_60m 0.996"},
+{"id":"c6","why":"quote_eff_sol 13072 deep, flow_ratio_60m 0.39, ret_60m 0.04"},
+{"id":"c7","why":"flow_ratio_60m 0.05 and traders_15m 21, quote_eff_sol 2138"},
+{"id":"c8","why":"quote_eff_sol 382 shallow, flow_ratio_60m 0.02, close_vs_hi_6h 0.64"},
+{"id":"c5","why":"quote_eff_sol 155 shallowest, ret_5m -0.07 after ret_60m 0.65 spike"}
+],
+"h14":[
+{"id":"c4","why":"flow_ratio_60m 0.80, quote_eff_sol 2893, ret_15m 0.27 with close_vs_hi_6h 1.0"},
+{"id":"c5","why":"flow_ratio_60m -0.03 but quote_eff_sol 406 and age 281k stable; weak"},
+{"id":"c6","why":"quote_eff_sol 865, flow_ratio_60m -0.07, ret_60m -0.15 weakening"},
+{"id":"c2","why":"ret_5m 0.20 but quote_eff_sol 255 and flow_ratio_60m 0.01"},
+{"id":"c8","why":"ret_15m 1.06 and ret_60m 1.56 overextended; quote_eff_sol 377 shallow"},
+{"id":"c7","why":"quote_eff_sol 188 shallow, flow_ratio_60m -0.02, ret_60m -0.27"},
+{"id":"c3","why":"quote_eff_sol 180 shallow, flow_ratio_60m 0.00, close_vs_hi_6h 0.69"},
+{"id":"c1","why":"ret_15m -0.96 and flow_ratio_60m -0.95 collapse; close_vs_hi_6h 0.04"}
+],
+"h15":[
+{"id":"c2","why":"flow_ratio_60m 0.82, quote_eff_sol 5689, close_vs_hi_6h 1.0, top3_share_60m 0.26"},
+{"id":"c5","why":"flow_ratio_60m 0.55, quote_eff_sol 6422, top3_share_60m 0.075"},
+{"id":"c6","why":"quote_eff_sol 7225 deep, flow_ratio_60m 0.43, ret_60m 0.08"},
+{"id":"c7","why":"quote_eff_sol 229 shallow, flow_ratio_60m 0.00, ret_60m -0.04 flat"},
+{"id":"c4","why":"ret_60m 1.17 overextended, quote_eff_sol 177 shallow"},
+{"id":"c1","why":"ret_15m -0.29 and ret_60m -0.56 falling, close_vs_hi_6h 0.31"},
+{"id":"c3","why":"quote_eff_sol 126 shallow, ret_60m -0.33, flow_ratio_60m -0.03"},
+{"id":"c8","why":"quote_eff_sol 67 shallowest, close_vs_hi_6h 0.41, ret_60m 0.93 spike"}
+],
+"h16":[
+{"id":"c4","why":"flow_ratio_60m 0.67, net_flow_60m 609, ret_60m 0.21 with quote_eff_sol 6652"},
+{"id":"c3","why":"flow_ratio_60m 0.42, ret_60m 0.16, quote_eff_sol 3734 deep"},
+{"id":"c5","why":"flow_ratio_60m 0.40, ret_60m 0.08, quote_eff_sol 6582"},
+{"id":"c8","why":"flow_ratio_60m 0.40, quote_eff_sol 10973, ret_60m 0.05 modest"},
+{"id":"c7","why":"quote_eff_sol 12228, flow_ratio_60m 0.40, ret_60m 0.04"},
+{"id":"c1","why":"quote_eff_sol 10455, flow_ratio_60m 0.38, ret_60m 0.05"},
+{"id":"c6","why":"quote_eff_sol 10457, flow_ratio_60m 0.38, ret_60m 0.05"},
+{"id":"c2","why":"ret_5m -0.34 collapse, quote_eff_sol 178, close_vs_hi_6h 0.48"}
+],
+"h17":[
+{"id":"c1","why":"net_flow_60m 738, flow_ratio_60m 0.70, traders_15m 2564, close_vs_hi_6h 1.0"},
+{"id":"c4","why":"flow_ratio_60m 0.76 and quote_eff_sol 1702 but ret_60m 1.84 extended"},
+{"id":"c7","why":"traders_15m 2175, quote_eff_sol 938, close_vs_hi_6h 0.999, flow_ratio_60m 0.09"},
+{"id":"c5","why":"quote_eff_sol 1859, flow_ratio_60m 0.01, close_vs_hi_6h 0.93 flat"},
+{"id":"c2","why":"quote_eff_sol 389, flow_ratio_60m 0.02, ret_60m 0.19 with top3 0.02"},
+{"id":"c3","why":"quote_eff_sol 258, ret_60m -0.08, close_vs_hi_6h 0.75, age 522k"},
+{"id":"c6","why":"quote_eff_sol 128, close_vs_hi_6h 0.13, ret_60m -0.55 falling"},
+{"id":"c8","why":"quote_eff_sol 98 shallowest, ret_60m -0.80, close_vs_hi_6h 0.13"}
+],
+"h18":[
+{"id":"c3","why":"flow_ratio_60m 0.47, quote_eff_sol 6792, top3_share_60m 0.085"},
+{"id":"c1","why":"flow_ratio_60m 0.38, quote_eff_sol 4327, ret_60m 0.12 close 1.0"},
+{"id":"c8","why":"flow_ratio_60m 0.40, quote_eff_sol 4594, ret_60m 0.13 with top3 0.96"},
+{"id":"c2","why":"quote_eff_sol 5854, flow_ratio_60m 0.20, ret_60m 0.05, top3 0.07"},
+{"id":"c6","why":"flow_ratio_60m 0.05, traders_15m 21, quote_eff_sol 1560 flat"},
+{"id":"c7","why":"ret_15m -0.36, close_vs_hi_6h 0.25, quote_eff_sol 275 shallow"},
+{"id":"c4","why":"flow_ratio_60m -0.86 and ret_15m -0.71 selling collapse"},
+{"id":"c5","why":"flow_ratio_60m -0.87, ret_5m -0.74, close_vs_hi_6h 0.14 worst"}
+],
+"h19":[
+{"id":"c8","why":"flow_ratio_60m 0.74, net_flow_60m 1104, close_vs_hi_6h 1.0, top3_share_60m 0.23"},
+{"id":"c7","why":"flow_ratio_60m 0.56, quote_eff_sol 6497, ret_60m 0.16, top3 0.999"},
+{"id":"c6","why":"quote_eff_sol 11007 deep, flow_ratio_60m 0.37, ret_60m 0.04"},
+{"id":"c1","why":"quote_eff_sol 11520 deep, flow_ratio_60m 0.17, ret_60m 0.02 flat"},
+{"id":"c4","why":"quote_eff_sol 293 shallow, flow_ratio_60m 0.01, ret_60m 0.18"},
+{"id":"c2","why":"flow_ratio_60m -0.08, close_vs_hi_6h 0.37, age 292k weakening"},
+{"id":"c5","why":"quote_eff_sol 253 shallow, ret_60m 1.50 overextended, traders_15m 35"},
+{"id":"c3","why":"quote_eff_sol 181 shallow, close_vs_hi_6h 0.16, ret_60m -0.21"}
+],
+"h20":[
+{"id":"c8","why":"flow_ratio_60m 0.42, quote_eff_sol 5959, close_vs_hi_6h 1.0, ret_60m 0.10"},
+{"id":"c4","why":"flow_ratio_60m 0.37, quote_eff_sol 4929, ret_60m 0.10 with top3 0.996"},
+{"id":"c7","why":"quote_eff_sol 6875, flow_ratio_60m 0.38, ret_60m 0.07"},
+{"id":"c3","why":"quote_eff_sol 6923, flow_ratio_60m 0.37, ret_60m 0.07"},
+{"id":"c1","why":"flow_ratio_60m 0.41, quote_eff_sol 3793, ret_60m 0.15 with top3 0.996"},
+{"id":"c5","why":"quote_eff_sol 433 shallow, flow_ratio_60m 0.00, ret_60m -0.02"},
+{"id":"c2","why":"ret_15m -0.19 and quote_eff_sol 398 shallow, close_vs_hi_6h 0.74"},
+{"id":"c6","why":"flow_ratio_60m -0.04, ret_15m -0.10, quote_eff_sol 568, close_vs_hi_6h 0.52"}
+]
+}
