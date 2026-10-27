@@ -91,6 +91,7 @@ feed; stop if signal-to-landing p90 > 2.5 s; size stays 0.25 SOL.
 
 ## Addendum 2026-10-27T21:42:07Z (date -u): read tool, venue_backfill.py pins, read job chain, memory (records only)
 Required by QP-RULING-1024-read-hardening.md item 2c (sha256 3e880055063e294d3b384a533b7e7a79974632688b7dc66b731ec1e520adebf2) and by the QP verdict on PR #890 (head 86b0e3d1, 2026-10-24T18:23Z).
+Chain section A4 and memory section A5 updated 2026-10-27T21:51:12Z (date -u) after QP's OK at 36f203ad (comment 6454456703) and the chain resubmission.
 Records only: no R or AM term, tagged file, constant or window changes. Nothing under fwdv1/ or the read output dir was opened or listed for this addendum. m10 has NOT cleared the promotion gate;
 this read is CONFIRMATION only, and a PASS licenses a forward paper book (P18), nothing more.
 
@@ -112,30 +113,39 @@ F = MiScusi job #1546 (replaces #1510; only change `--credit-cap 3700000`, item 
 Started 2026-10-24T18:28Z, limit 190 h (ends 2026-11-01T16:28Z). Source: the QP verdict on #890 and the manager's job record; this addendum did not open F's log.
 
 ### A4. Read job chain, as submitted (all mal-research-0, code vaanai/MAL @ 304bb9cd, POSIX sh, resumable false)
+The first chain (#1785-#1793, serial: each G pass after the previous one, READ after pass 5) was cancelled before any of it ran. A G pass killed at its 3 h limit would have failed the chain and
+blocked the READ (QP non-blocking note on PR #1068, comment 6454456703). It was resubmitted as below, so that no G pass can block the READ.
 | Job | Role | after | Resources |
 |---|---|---|---|
 | #1784 | G gate g1: host-side sleep to 2026-10-28T06:00:00Z | none (running) | 64 MB, 10 h |
-| #1785 | G pass 1 | #1784 | 4 GB, 3 h |
-| #1786 / #1787 | G gate g2 (to 2026-10-29T06:00:00Z) / G pass 2 | #1785 / #1786 | 64 MB, 25 h / 4 GB, 3 h |
-| #1788 / #1789 | G gate g3 (to 2026-10-30T06:00:00Z) / G pass 3 | #1787 / #1788 | as g2 / pass 2 |
-| #1790 / #1791 | G gate g4 (to 2026-10-31T06:00:00Z) / G pass 4 | #1789 / #1790 | as g2 / pass 2 |
-| #1792 | G pass 5, FINAL | F #1546 and #1791 | 4 GB, 3 h |
-| #1793 | READ, Option A: `sh scripts/research/dbc-m10-read-job.sh A 10` | F #1546 and #1792 | 11 GB, 2 CPU, 600 min (10 h), priority urgent |
+| #1797 | G gate g2, to 2026-10-29T06:00:00Z | #1784 | 64 MB, 25 h |
+| #1799 | G gate g3, to 2026-10-30T06:00:00Z | #1797 | 64 MB, 25 h |
+| #1801 | G gate g4, to 2026-10-31T06:00:00Z | #1799 | 64 MB, 25 h |
+| #1796 / #1798 / #1800 / #1802 | G pass 1 / 2 / 3 / 4 | its own gate: #1784 / #1797 / #1799 / #1801 | 4 GB, 1 CPU, 3 h each |
+| #1803 | G pass 5, FINAL | F #1546 only | 4 GB, 1 CPU, 3 h |
+| #1804 | READ, Option A: `sh scripts/research/dbc-m10-read-job.sh A 10` | F #1546 and #1803 | 11 GB, 2 CPU, 600 min (10 h), priority urgent |
+Cancelled, never ran: #1785-#1793.
 
-- Gates: `T=$(date -u -d '<instant>' +%s); while [ "$(date -u +%s)" -lt "$T" ]; do sleep 60; done; date -u`.
-- G passes 1-4: wait until no `venue_backfill_dbc` process is seen on 2 checks 5 min apart; if the UTC hour reaches 20 first, print "G pass N skipped: past 20Z" and exit 0 (so the pass ends before F's next 00:20Z fetch; reviewer finding 1 on #890).
-  Then `python3 /data2/mal/wt/dbc-read-ops/tools/dbc_m10_gapfix.py pass --pass N --wt /data2/mal/wt/dbc-m10-read-am1 --budget 300000`.
-  G pass 5 has no wait loop: it refuses with exit 12 if a writer is running, then runs the same command with `--pass 5`.
-- DISCLOSURE, rc mapping: every G pass maps the tool's rc 1 (some hours still gap) and rc 5 (G budget spent) to job exit 0, so the `after` chain keeps moving and the read still starts.
-  The job state therefore does not show these outcomes. The real rc is printed in the job log ("G pass N rc=<rc>") and recorded in G-LOG.md (with G-STATE.json, kept with the read record).
-  rc 10 (pins), 12 (refused) and any other rc fail the job on purpose: the chain stops there and that pass and its successors are resubmitted. If #1792 fails, #1793 does not start (pre-claim, not a look).
-- READ #1793 runs at git_ref 304bb9cd (wrapper sha256 282c9d4a, launcher 04c98b97, ops 23776c67; the same on main). Its own time gate holds until 2026-11-01T00:10:00Z (1793491800), then pins (exit 10), memory (exit 13),
+- Gates: `T=$(date -u -d '<instant>' +%s); while [ "$(date -u +%s)" -lt "$T" ]; do sleep 60; done; date -u`. The gates are chained only to each other, and a gate cannot fail
+  short of its time limit: each one sleeps at most about 24 h of its 25 h limit. The G passes are independent of each other. A failed pass stops only itself; the next gate and pass still run.
+- Bounded wait, every G pass (1-5): check for a `venue_backfill_dbc` process every 5 min and proceed after 2 consecutive no-writer checks. After 20 checks (100 min) without that, print
+  "G pass N skipped: writer still running after 100 min" and exit 0. This leaves at least 80 min of the 180 min limit for the pass. Then
+  `python3 /data2/mal/wt/dbc-read-ops/tools/dbc_m10_gapfix.py pass --pass N --wt /data2/mal/wt/dbc-m10-read-am1 --budget 300000`.
+- DISCLOSURE, rc mapping: every G pass maps the tool's rc 1 (some hours still gap) and rc 5 (G budget spent) to job exit 0. A skip also exits 0. So the job state does not show these outcomes,
+  and the READ still starts. The real rc is printed in the job log ("G pass N rc=<rc>" or the skip line) and recorded in G-LOG.md (with G-STATE.json, kept with the read record).
+  rc 10 (pins), 12 (refused) and any other rc fail only that pass. A failure of G pass 5 (#1803) means #1804 does not start (pre-claim, not a look): fix it, then resubmit the pass and the READ.
+- Unpinned G worktree, disclosed: the G script runs from /data2/mal/wt/dbc-read-ops (HEAD 304bb9cd81727a7453a216dee055344522a4d387, `git status --porcelain` empty at 2026-10-27T21:51:12Z). Nothing pins that copy
+  of dbc_m10_gapfix.py, which itself pin-checks only the tag worktree it fetches from. The worktree must stay untouched (no checkout, pull, edit or untracked file) until the read ends.
+- READ #1804 runs at git_ref 304bb9cd (wrapper sha256 282c9d4a, launcher 04c98b97, ops 23776c67; the same on main). Its own time gate holds until 2026-11-01T00:10:00Z (1793491800), then pins (exit 10), memory (exit 13),
   completeness with up to 1 h wait for the 900 s mtime age (exit 11), guards (exit 12), then the Option A launcher. Every wrapper exit and every tool rc 2/3/5/6/7 is pre-claim, not a look, and goes to READ-ATTEMPTS.log.
   Once "LOOK CONSUMED" prints, anything other than rc 0 with fwd-m10-am1.json written is NOT_DECIDABLE and ends m10 and every D1 variant on DBC (item 1).
 
 ### A5. Memory (ruling item 1)
 Item 1 says "On research-0, check free memory first. No other heavy job on the box." The second sentence cannot hold literally: the HV4 runner #1561 (to 2026-11-07T12:05Z) and the HV6 regime-block producer #1748
-(from 2026-10-28T00:15Z, 14 days) run through the read instant, alongside smaller long-running jobs. The check applied is the wrapper's MemAvailable floor: step 13, `dbc_m10_read_ops.py mem --min-gb 10`,
-run after the 00:10Z time gate and the pins and before the claim; MemAvailable < 10 GiB gives exit 13 (pre-claim, not a look). MiScusi also starts #1793 only when it can reserve 11 GB for it.
-Sizing (manager's chain notes, not re-derived here): C2 (#1576) peak RSS 794.6 MiB x 8.4 x 1.5 = 9.78 GiB -> floor 10 GiB, job 11 GB. Manager rule: no new heavy research-0 job from 2026-10-31T22:00Z until the read ends.
+(from 2026-10-28T00:15Z, 14 days) run through the read instant, alongside smaller long-running jobs. Heavy queued jobs on research-0: #1775 (HV8 offline dump, 24 GB) and #1767 (P91 build, 16 GB), both waiting for room and able to start near the read,
+and #1562 (HV4 runner seg2, after #1561, so not before 2026-11-07T12:05Z). Manager rule: no new heavy research-0 job from 2026-10-31T22:00Z until the read ends; #1775 and #1767 are held or deprioritised if they have not finished by then.
+The check applied is the wrapper's MemAvailable floor: step 13, `dbc_m10_read_ops.py mem --min-gb 10`, run after the 00:10Z time gate and the pins and before the claim; MemAvailable < 10 GiB gives exit 13
+(pre-claim, not a look). MiScusi also starts #1804 only when it can reserve 11 GB for it. The other jobs' memory is capped by their own MiScusi limits, and that capped coexistence is accepted in place of
+"no other heavy job".
+Sizing (manager's chain notes, not re-derived here): C2 (#1576) peak RSS 794.6 MiB x 8.4 x 1.5 = 9.78 GiB -> floor 10 GiB, job 11 GB. This rests on the single C2 run #1576 alone; no other measured peak backs it.
 Residual risk, disclosed: the floor is a point-in-time check. It does not stop another job from growing after it; a post-claim OOM is NOT_DECIDABLE and ends m10.
