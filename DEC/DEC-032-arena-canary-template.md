@@ -795,3 +795,26 @@ Quant-proof's pre-ruling N2 (`QP-PRERULING-1026-n2-n4.md`, verdict (a)) already 
 - **Item 7.** The job ids and limits in item 7 are the manager's facts. Neither quant-proof nor this writer checked them. The actual running and queued jobs, their pins and their limits are recorded in the C0 DEC copy at first send (`FILL:a3_guard_source`), where quant-proof checks them.
   - Latest submit times under the 48 h rule, on those facts: loop job 3 about 2026-11-17T18Z; dead-man job 3 about 2026-11-14T21Z; alert #1540, extension or successor, 2026-11-06T13Z.
   - All three move earlier if a predecessor ends early, and all three are preconditions of the first HV4 send.
+
+## Amendment 4: Q50 X-time install, the pinned set changes in exactly FOUR blobs (mayhem fee recipient fix) (DRAFT)
+
+**Status: DRAFT.** Written 2026-10-27T13:51Z (`date -u`), records only, before any Q50 C0 send. It becomes text in force only after merge plus a quant-proof OK and a reviewer verdict on the merged head. It does not rewrite Amendment 3 section 8 item 1 ("The pinned set changes in exactly one blob"); it supersedes that count for the Q50 X-time install once in force. The 43-path list itself (sha256 `244f9e85dd5870bfc47be1cf535eadecd0e2783cc17fee11440ab0ea7ae83720`) keeps the same paths.
+
+1. **Four changed blobs vs the reviewed install 0526d5cd, no others:**
+   - `tools/h5_arena_executor.py` (the 5b blob, unchanged by this amendment: blob 70d789ff, sha256 ef8ae931...)
+   - `tools/pumpswap_tx.py`
+   - `tools/pumpswap_simulate.py`
+   - `tools/probe_executor.py`
+
+   `scripts/ops/q50-xtime-manifest.sh` (PR #1027) exits 3 `PINNED_SET_CHANGED` unless exactly these four differ.
+2. **Reason** (notebook decision n_aIm_21YbvT68_A). N4 #1750 found PumpSwap error 6013 `InvalidProtocolFeeRecipient` on a mayhem pool (pool byte 243 = 1): the builder always chose `protocol_fee_recipients[1]`, and a mayhem pool accepts only a reserved recipient. PR #1027 adds one shared helper `tools/pumpswap_tx.py fee_recipient` (and `pool_is_mayhem`) used on the buy and the sell path. Non-mayhem tx bytes are byte-identical to the old rule: `tools/test_pumpswap_mayhem_recipient.py` `BuilderPaths.test_simulate_non_mayhem_bytes_identical` and `test_snapshot_non_mayhem_bytes_identical_cached_and_uncached` compare the serialized buy and sell messages. Not shown: that every one of the 8 reserved keys is accepted (2 were simulated in #1025), and any simulate of a mayhem buy.
+3. **Moved pins** (`tools/hv4_live_c0.py`, SELL_BUILDER_PIN / PIN_EXTRA):
+   - `pe.fetch_snapshot_sha256`: e0c0d598b99a92864d401b32a99f2f70550565c03a3618df975484cd47f49b74 -> 4eca167a0f3c4fcd3e1d1a53cdab00fa4f7a183c3895cf1caca2ec9c666de4c5 (body changed).
+   - `x.pumpswap_tx.fee_recipient_sha256`: new, 930899fddb8b24e796bce00b5044322c9aad6a8903ef952b5592898782c8ed03.
+   - `x.pumpswap_tx.pool_is_mayhem_sha256`: new, 74d043fcf2cd07d136f0d13eb5785105210e5060faeebbdafb745280d59923d7.
+4. **Still owed before C0 (none done at the time of writing):**
+   - the md5 replay at X: `sh scripts/ops/q50-xtime-md5-job.sh <X>`, last line `md5-replay VERDICT: EQUAL`, #1481 counts A 137/137, B 101/101, B synthetic_unconfirmed 0/0;
+   - Helm's re-pinned install of X, requested through the owner;
+   - an N4 rerun at X that includes a mayhem pool.
+5. **Not a result.** No book has cleared the promotion gate. Nothing here is a profit claim. Gate unchanged.
+
