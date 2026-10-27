@@ -32,13 +32,13 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `explored-survivor-unconfirmed` | 10 | 0 | 0 |
 | `parked` | 9 | 2 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 44 | 27 | 1 |
+| `untested` | 44 | 28 | 1 |
 | `desk-read` | 1 | 49 | 0 |
 | `explored-no-survivor` | 43 | 16 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 188 | 100 | 2 |
+| **all** | 188 | 101 | 2 |
 
-The file holds 540 rows: the 290 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 541 rows: the 291 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -421,6 +421,12 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `p95-launchpad-token-buyback` | Launchpad platform-token buyback cadence: x7pad X7 (hourly) and Paid PAID | `untested` | Untested. Judgment: P about 1%; 24 runs/day x 0.10 SOL x 1% = 0.024 SOL/day if it works. Mean run about $404 (reported); pool depth and pool fee unknown; mech-buyer-scout-1 found 0 of 43 buys implying a move >= 2.5%. MAL tape does not record DAMM v2. |
+
+### p96-q50-forward (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p96-q50-forward-veto` | Avoid-bad-pools veto fit on Q50's forward trades, tested once on successor s1's trades | `untested` | Not run: waits for Q50's and s1's final reads, the EXP-024 Look-2 seal end (2026-11-14T00Z) and s1's end + 1 h, with s1's clock bound to the arena bots.json (earliest about 2026-11-20T01Z, later after a slip). The scored-rows export from the ledger is owed (its own PR). |
 
 ## Dead as frozen, and explored with no survivor
 
