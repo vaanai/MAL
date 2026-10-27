@@ -95,6 +95,8 @@ is optional, and adds no arm or cell.
 | C5 read tool | PR #1021 (`tools/hv7_read.py`), still under fix: flags may change. Invocation to pin: `--horizon-days 10` (or `--rate` with the P0 mean). **Re-check after #1021 merges.** |
 | Binding read (QP re-check of #1021, 6443512785) | `hv7_read`'s once-only record is THE binding gate read for `hv7.0-L` and `hv7.0-S`. Any `arena_score --record` read of those bots is not a registered read and is never quoted. |
 | Outage blind spot (same re-check) | A runner outage of whole hours writes no rows, so DESIGN's 10% excluded-period cap cannot see it (the cap counts `period_excluded` rows, and an outage writes none). Disclosed. The read prints a report-only coverage line: hours with no runner rows, per arm. It gates nothing. |
+| Runbook rule: refusals that never resolve (QP round 3 on C5, 6444391481) | Some `hv7_read` refusals inherited from `arena_score` never resolve on their own: a dirty-tree open row, a flat-leg mismatch, a missing stamp, or U with no trades. If any of these still holds at T0 + H + 61 min (for the gate: B + 24 h), the manager records that read as NOT_DECIDABLE in the notebook and in LAB_STATE, citing the refusal text. The manager never fixes the data in order to get a read. |
+| Gate worst-case line (same round) | The gate prints a report-only worst-case line that treats lost attempts as total losses, because a gate PASS triggers the owner's standing C0 proposal (10-23 approval). The line gates nothing. |
 
 ### 3b. DESIGN section 3, quoted in full (fallback rule, `why` rule, display permutation, prompt-sentence replacements)
 
