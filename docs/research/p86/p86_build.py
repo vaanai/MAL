@@ -16,7 +16,7 @@ for f in ("pool_v_0814.json", "pool_v.json", "pool_v_0909.json"):
 vdf = pd.DataFrame({"pool": list(v), "v": list(v.values())})
 vdf = vdf[(vdf.v >= LO) & (vdf.v <= HI)].reset_index(drop=True)
 con = duckdb.connect("/data2/mal/p86/work.duckdb")
-con.execute("PRAGMA threads=8; PRAGMA memory_limit='24GB'; PRAGMA temp_directory='/data2/mal/p86/tmp'")
+con.execute("PRAGMA threads=8; PRAGMA memory_limit='8GB'; PRAGMA temp_directory='/data2/mal/p86/tmp'")
 con.register("vdf", vdf)
 con.execute("CREATE OR REPLACE TABLE V AS SELECT * FROM vdf")
 glob_ = PS + "/*.parquet"

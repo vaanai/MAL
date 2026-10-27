@@ -23,7 +23,7 @@ def tier(Q, B):
 
 c = pd.read_parquet(CAND)
 con = duckdb.connect()
-con.execute("PRAGMA threads=8; PRAGMA memory_limit='16GB'")
+con.execute("PRAGMA threads=8; PRAGMA memory_limit='8GB'")
 con.register("c", c[["pool", "td", "v_sol"]])
 glob_ = PS + "/*.parquet"
 sel = "r.pool, c.td, r.slot, r.bt, r.side, r.sol, r.q::DOUBLE AS q, r.b::DOUBLE AS b, coalesce(r.txi,0) AS txi, coalesce(r.evi,0) AS evi"

@@ -1,0 +1,7 @@
+V-band pools 46534
+S0 pool-hours 68302 (cheap screen)
+S1 after signers>=8 68302
+feature-undefined dropped 0
+hours with >=1 survivor 621; with >=3 620; candidate hours kept 620; candidates 4960
+survivors per hour: mean 109.99 median 118.0 p10 69.0 p90 152.0
+hour rows (M minute-agg rows) min/median: 12975 418388; hours with fewer than 50k rows: [496307, 496787]
