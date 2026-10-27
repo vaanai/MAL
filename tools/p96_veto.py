@@ -3,15 +3,17 @@
     python -m tools.p96_veto --after-read --scored-rows ROWS.jsonl \
         --trigger-dir h5v1q50-boostfloor-a1=DIR [...] --trigger-dir h5v1q50-boostfloor-s1=DIR [...] \
         --read-json h5v1q50-boostfloor-a1=Q50_READ.json --read-json h5v1q50-boostfloor-s1=S1_READ.json \
-        [--confirm-read-json BOT=PATH ...] --s1-clock-ms MS --out RESULT.json [--now-ms MS]
+        [--confirm-read-json BOT=PATH ...] --bots-json ARENA_BOTS.json --s1-clock-ms MS --out RESULT.json [--now-ms MS]
 
 Nothing here is a profit claim and no book has cleared the promotion gate. A PASS licenses only a new forward book (a vetoed successor on new days); it never changes
 Q50's or s1's read. The run adds 1 to c whatever its verdict (once the seal checks pass).
 
 SEAL (all checked before any row or shadow record is opened; REFUSED = exit 3, nothing decided):
   * --after-read must be set;
-  * the wall clock (--now-ms is clamped to it, so it can only tighten) is at or after 2026-11-14T00:00Z (EXP-024 section 3 end state, first listed) and at or after
-    s1's end E_s1 + 1 h (every s1 trade has exited);
+  * the wall clock (--now-ms, and run()'s now_ms when called directly, are clamped to it, so they can only tighten) is at or after 2026-11-14T00:00Z (EXP-024 section 3
+    end state, first listed);
+  * --s1-clock-ms equals s1's `clock_start_ms` in the arena registry bots.json (its sha256 is recorded), Q50's line has the Q50 clock, and the wall clock is at or after
+    E_s1 + 1 h, E_s1 = the line's `window_end_ms` when set (it must not exceed min(clock + 14 d, 2026-12-01T00Z)), else that minimum;
   * a sealed-read marker for both books: the `--json` output of tools/arena_h5_read.py, with the book in `books`, not in `refused`, `status` PASS / FAIL / NOT_DECIDABLE, `final`
     not false, and a provenance key ending in `read-instant.json`; PASS / FAIL also need read_instant_ms, refit.intercept and the four deciding sub-cells;
   * a screen PASS needs that book's confirmation read marker (--confirm-read-json, same format, read_instant_ms after the screen read's);
@@ -20,8 +22,11 @@ A NOT_DECIDABLE read of either book ends the lane NOT_DECIDABLE before any row i
 
 INPUTS. ROWS.jsonl: per book one `p96_rows_header` line and one `p96_row` line per counted trade at 0.30 SOL (PREREG section 11); the rows decided before the read instant must
 reproduce the read's four sub-cells (n, total within 1e-9 SOL) and the header intercept must equal the read's refit intercept, or REFUSED. Trigger dirs: the shadow out dirs of the
-book (h5-shadow-<UTC hour>.jsonl); the first pv trigger of a pool wins, dirs in name order (the scorer's order); only start, pv trigger, strip (`buys` before the trigger slot) and
-boost_slice records are used. Outcome, outcome_bx10, pool-close, `strip.rows` and `post_last` are never read.
+book (h5-shadow-<UTC hour>.jsonl); the first pv trigger of a pool wins, dirs in name order (the scorer's order); only start and pv trigger records are used (five features, all
+fields the trigger record carries at t_detect_ms; QP B1 on #1060 removed the strip-based sixth). Outcome, outcome_bx10, strip, boost_slice and pool-close records are never read.
+
+CALLER TRUST (procedural limits, PREREG section 10): the read markers and bots.json are not authenticated (only their sha256 is recorded); the scored rows after each read
+instant are tied to no sealed figure; write-once holds per --out path only.
 """
 
 from __future__ import annotations
@@ -58,9 +63,12 @@ LOOK2_END_MS = _ms(2026, 11, 14)  # 1794614400000, EXP-024 section 3 end state (
 EXIT_GRACE_MS = 3_600_000
 FINAL = ("PASS", "FAIL", "NOT_DECIDABLE")
 
-FEATURES = ("t_trig_s", "q_post_sol", "sell_frac", "boost_left_sol", "log_prints", "nb_pre_frac")
-PRIOR_SIGN = {"t_trig_s": "+", "q_post_sol": "+", "sell_frac": "+", "boost_left_sol": "-", "log_prints": "-", "nb_pre_frac": "-"}  # risk direction, judgment, report-only
-PRE_SLOTS = 50  # = tools.h5_shadow.FRESH_BUYS_BACK_SLOTS: strip.buys start 50 slots before the first trigger print
+FEATURES = ("t_trig_s", "q_post_sol", "sell_frac", "boost_left_sol", "log_prints")  # five: F6 (strip.buys) dropped on QP B1 (#1060), it was not causal
+PRIOR_SIGN = {"t_trig_s": "+", "q_post_sol": "+", "sell_frac": "+", "boost_left_sol": "-", "log_prints": "-"}  # risk direction, judgment, report-only
+RULE_GATE_FEATURES = ("t_trig_s", "q_post_sol", "boost_left_sol")  # the rule's own trigger gates (h5_shadow._eval l.1906, l.1919, l.1914)
+QSTAR_FEATURE = "q_post_sol"
+QSTAR_NOTE = ("Report-only (QP N1 on #1060): the same number of test trades vetoed by highest q_post_sol, i.e. a tighter Q*. q_post, t and BOOST spent are the rule's own trigger "
+              "gates; a veto driven mostly by q_post_sol is a re-threshold of the rule (Q* smaller), a direction already searched in-sample on discovery, not a new filter.")
 LABEL_CELL = "flat_1p9_total"
 LABEL_PCT = 25.0
 VETO_PCT = 80.0
@@ -91,16 +99,51 @@ def s1_window(clock_ms: int) -> tuple[int, int]:
     return clock_ms, min(clock_ms + S1_HORIZON_MS, SUCC_END_MS)
 
 
-def windows(s1_clock_ms: int) -> dict[str, tuple[int, int]]:
-    return {Q50_ID: (Q50_CLOCK_MS, Q50_END_MS), S1_ID: s1_window(s1_clock_ms)}
+def _int(x: Any) -> bool:
+    return isinstance(x, int) and not isinstance(x, bool)
+
+
+def load_bots(path: str | os.PathLike, s1_clock_ms: int) -> dict[str, Any]:
+    """Bind the windows to the arena registry (QP B2 on #1060): bots.json {"bots": {bot_id: {clock_start_ms, window_end_ms, ...}}} as tools/arena_h5_score.register_books
+    writes it. s1's clock_start_ms must equal --s1-clock-ms (an 11-07 slip included); Q50's must be the Q50 clock. E_s1 = s1's window_end_ms when set (an A3 halt can only
+    move it earlier), never past min(clock + 14 d, 2026-12-01T00Z); else that minimum. Returns {windows, sha256, path}."""
+    p = Path(path)
+    if not p.is_file():
+        raise Refused(f"bots.json {os.fspath(path)!r} does not exist")
+    try:
+        bots = json.loads(p.read_text()).get("bots")
+    except (ValueError, AttributeError):
+        raise Refused("bots.json is not a registry object {\"bots\": {...}}") from None
+    if not isinstance(bots, dict) or not all(isinstance(bots.get(b), dict) for b in BOOKS):
+        raise Refused(f"bots.json has no line for each of {list(BOOKS)}")
+    q, s = bots[Q50_ID], bots[S1_ID]
+    if q.get("clock_start_ms") != Q50_CLOCK_MS:
+        raise Refused(f"bots.json: {Q50_ID} clock_start_ms {q.get('clock_start_ms')!r} is not the Q50 clock {Q50_CLOCK_MS}")
+    if not _int(s.get("clock_start_ms")) or s["clock_start_ms"] != s1_clock_ms:
+        raise Refused(f"--s1-clock-ms {s1_clock_ms} != s1's clock_start_ms {s.get('clock_start_ms')!r} in bots.json")
+    lo, hi = s1_window(s1_clock_ms)
+    we = s.get("window_end_ms")
+    if we is not None:
+        if not _int(we) or not lo < we <= hi:
+            raise Refused(f"bots.json: s1 window_end_ms {we!r} is not in ({lo}, {hi}]")
+        hi = we
+    qe = q.get("window_end_ms")
+    q_hi = Q50_END_MS if qe is None else qe
+    if not _int(q_hi) or not Q50_CLOCK_MS < q_hi <= Q50_END_MS:
+        raise Refused(f"bots.json: Q50 window_end_ms {qe!r} is not in ({Q50_CLOCK_MS}, {Q50_END_MS}]")
+    return {"windows": {Q50_ID: (Q50_CLOCK_MS, q_hi), S1_ID: (lo, hi)}, "sha256": sha256_file(p), "path": os.fspath(path)}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ seal
-def check_time(after_read: bool, now_ms: int, s1_end_ms: int) -> None:
+def check_flag_and_floor(after_read: bool, now_ms: int) -> None:
+    """Before any file is opened: the flag and the EXP-024 Look-2 floor."""
     if not after_read:
         raise Refused("--after-read is not set: Q50's and s1's outputs are sealed until their reads are final")
     if now_ms < LOOK2_END_MS:
         raise Refused(f"now {now_ms} is before 2026-11-14T00:00Z ({LOOK2_END_MS}): the EXP-024 Look-2 seal covers H5-family pools until then")
+
+
+def check_s1_closed(now_ms: int, s1_end_ms: int) -> None:
     if now_ms < s1_end_ms + EXIT_GRACE_MS:
         raise Refused(f"now {now_ms} is before s1's end + 1 h ({s1_end_ms + EXIT_GRACE_MS}): s1's window is not closed")
 
@@ -217,16 +260,14 @@ def check_parity(bot: str, header: Mapping[str, Any], rows: Sequence[Mapping[str
 
 # ------------------------------------------------------------------------------------------------------------------------------ shadow records
 def load_shadow(dirs: Sequence[str | os.PathLike], pools: set[str]) -> dict[str, dict[str, Any]]:
-    """pool -> {trigger, strip, slices} from the first dir (name order) whose pv trigger names the pool; strip and boost slices from that same dir. Every start record of every dir
-    must be a Q50-rule process's (arena_h5_score_q50.start_problem)."""
+    """pool -> {trigger, dir} from the first dir (name order) whose pv trigger names the pool. Only start and pv trigger records are kept; every start record of every dir
+    must be a Q50-rule process's (arena_h5_score_q50.start_problem). No strip, boost_slice, outcome or pool record is kept."""
     out: dict[str, dict[str, Any]] = {}
     for d in sorted((Path(x) for x in dirs), key=lambda p: p.name):
         if not d.is_dir():
             raise Refused(f"trigger dir {os.fspath(d)!r} does not exist")
         counts: collections.Counter = collections.Counter()
         trig: dict[str, dict] = {}
-        strip: dict[str, dict] = {}
-        slices: dict[str, list] = {}
         n_start = 0
         for rec in read_records(d, counts):
             t, pool = rec.get("type"), rec.get("pool")
@@ -235,45 +276,24 @@ def load_shadow(dirs: Sequence[str | os.PathLike], pools: set[str]) -> dict[str,
                 why = start_problem(rec)
                 if why:
                     raise Refused(f"trigger dir {d.name}: start record is not a Q50-rule process ({why})")
-            elif pool not in pools or pool in out:
-                continue
-            elif t == "trigger" and rec.get("variant") == VARIANT:
+            elif t == "trigger" and rec.get("variant") == VARIANT and pool in pools and pool not in out:
                 trig.setdefault(pool, rec)
-            elif t == "strip":
-                strip.setdefault(pool, rec)
-            elif t == "boost_slice":
-                slices.setdefault(pool, []).append(rec)
         if n_start == 0:
             raise Refused(f"trigger dir {d.name}: no start record")
         for pool, tr in trig.items():
-            out[pool] = {"trigger": tr, "strip": strip.get(pool), "slices": slices.get(pool, []), "dir": d.name}
+            out[pool] = {"trigger": tr, "dir": d.name}
     return out
 
 
 def features(sh: Mapping[str, Any] | None) -> tuple[np.ndarray | None, str | None]:
-    """The six frozen features (PREREG section 3) from decision-time fields, or (None, why) when the trade is unscorable."""
+    """The five frozen features (PREREG section 3), every one a field of the pv trigger record as written at t_detect_ms (h5_shadow._fire l.1994-2007), or (None, why)."""
     if sh is None:
         return None, "no_trigger"
     tr = sh["trigger"]
-    t, qpost, qpre, sell, left, nprint, slot = (tr.get(k) for k in ("t_since_s0_s", "q_pv_post_sol", "q_pv_pre_sol", "sell_user_out", "boost_remaining_sol", "prints_seen", "slot"))
-    if not all(_num(x) for x in (t, qpost, qpre, sell, left, nprint)) or isinstance(slot, bool) or not isinstance(slot, int):
+    t, qpost, qpre, sell, left, nprint = (tr.get(k) for k in ("t_since_s0_s", "q_pv_post_sol", "q_pv_pre_sol", "sell_user_out", "boost_remaining_sol", "prints_seen"))
+    if not all(_num(x) for x in (t, qpost, qpre, sell, left, nprint)) or qpre <= 0 or nprint < 0:
         return None, "trigger_field"
-    if qpre <= 0 or nprint < 0:
-        return None, "trigger_field"
-    st = sh.get("strip")
-    if st is None:
-        return None, "no_strip"
-    buys = st.get("buys")
-    if not isinstance(buys, list) or st.get("buys_truncated") is not False:
-        return None, "no_buys"
-    lo = slot - PRE_SLOTS
-    try:
-        nb = sum(int(x) for s, x in buys if lo <= int(s) < slot)
-        bs = sum(int(r["lamports"]) for r in sh["slices"] if lo <= int(r["slot"]) < slot)
-    except (TypeError, ValueError, KeyError):
-        return None, "no_buys"
-    depth = float(qpre) * 1e9
-    x = np.array([float(t), float(qpost), float(sell) / depth, float(left), math.log1p(float(nprint)), max(0, nb - bs) / depth], float)
+    x = np.array([float(t), float(qpost), float(sell) / (float(qpre) * 1e9), float(left), math.log1p(float(nprint))], float)
     return (x, None) if np.all(np.isfinite(x)) else (None, "nonfinite")
 
 
@@ -371,10 +391,34 @@ def nd(reason: str, **extra: Any) -> dict[str, Any]:
     return {"verdict": "NOT_DECIDABLE", "reasons": [reason], "license": "nothing", "multiplicity": MULTIPLICITY, **extra}
 
 
-def run(*, rows_path: str, trigger_dirs: Mapping[str, Sequence[str]], read_paths: Mapping[str, str], confirm_paths: Mapping[str, str], s1_clock_ms: int, after_read: bool,
-        now_ms: int) -> dict[str, Any]:
-    wins = windows(s1_clock_ms)
-    check_time(after_read, now_ms, wins[S1_ID][1])
+def qstar_compare(v_by_cell: Mapping[str, np.ndarray], q_post: np.ndarray, ok: np.ndarray, veto: np.ndarray, w: Mapping[str, float]) -> dict[str, Any]:
+    """REPORT-ONLY, pre-declared (QP N1 on #1060): veto the same k scorable test trades by highest q_post_sol (ties: earlier decision first), the tighter-Q* veto, and say
+    whether the model veto is mostly that. Never deciding."""
+    k = int(veto.sum())
+    idx = sorted(np.flatnonzero(ok).tolist(), key=lambda i: (-q_post[i], i))[:k]
+    qv = np.zeros(len(veto), bool)
+    qv[idx] = True
+    overlap = float((qv & veto).sum() / k) if k else None
+    absw = {f: abs(x) for f, x in w.items()}
+    top = max(absw, key=absw.get)
+    cells = {c: {"delta_model_sol": float(-v[veto].sum()) / 1e9, "delta_qstar_sol": float(-v[qv].sum()) / 1e9,
+                 "model_minus_qstar_sol": float(v[qv].sum() - v[veto].sum()) / 1e9} for c, v in v_by_cell.items()}
+    dominated = top == QSTAR_FEATURE or (overlap is not None and overlap >= 0.5)
+    return {"report_only": True, "note": QSTAR_NOTE, "k": k, "overlap_share": overlap, "largest_abs_weight": top,
+            "q_post_weight_share": absw[QSTAR_FEATURE] / sum(absw.values()) if sum(absw.values()) else None, "cells": cells,
+            "re_threshold_of_rule": dominated,
+            "statement": ("This veto is driven mostly by q_post_sol (largest weight or >= 50% overlap with the tighter-Q* veto): it is a re-threshold of the rule (smaller Q*), a "
+                          "direction already searched in-sample, not a new filter." if dominated else
+                          "q_post_sol is not the largest weight and the overlap with the tighter-Q* veto is under 50%.")}
+
+
+def run(*, rows_path: str, trigger_dirs: Mapping[str, Sequence[str]], read_paths: Mapping[str, str], confirm_paths: Mapping[str, str], bots_path: str, s1_clock_ms: int,
+        after_read: bool, now_ms: int | None = None) -> dict[str, Any]:
+    now_ms = wall_ms() if now_ms is None else min(int(now_ms), wall_ms())  # the CLI's clamp, also for a direct call: it can only tighten the seal
+    check_flag_and_floor(after_read, now_ms)
+    reg = load_bots(bots_path, s1_clock_ms)
+    wins = reg["windows"]
+    check_s1_closed(now_ms, wins[S1_ID][1])
     for b in BOOKS:
         if b not in read_paths:
             raise Refused(f"--read-json {b}=PATH is required (the sealed-read marker)")
@@ -384,7 +428,12 @@ def run(*, rows_path: str, trigger_dirs: Mapping[str, Sequence[str]], read_paths
     confirms = {b: check_confirm(b, reads[b], confirm_paths.get(b)) for b in BOOKS}
     markers = {b: {"read": {k: reads[b][k] for k in ("status", "sha256", "path", "read_instant_ms")}, "confirm": None if confirms[b] is None else
                    {k: confirms[b][k] for k in ("status", "sha256", "path", "read_instant_ms")}} for b in BOOKS}
-    base = {"markers": markers, "windows": {b: list(w) for b, w in wins.items()}, "prereg": "docs/research/p96/PREREG.md"}
+    for b in BOOKS:
+        ri = reads[b]["read_instant_ms"]
+        if reads[b]["status"] != "NOT_DECIDABLE" and not wins[b][0] < ri <= wins[b][1]:
+            raise Refused(f"{b}: read_instant_ms {ri} is not inside the book's window {list(wins[b])} from bots.json")
+    base = {"markers": markers, "bots_json": {"sha256": reg["sha256"], "path": reg["path"]}, "windows": {b: list(w) for b, w in wins.items()},
+            "prereg": "docs/research/p96/PREREG.md", "now_ms": now_ms}
     for b in BOOKS:
         if reads[b]["status"] == "NOT_DECIDABLE":
             return nd(f"{b}: its read is NOT_DECIDABLE, so no priced read anchors its rows (PREREG section 5 step 2); no row was opened", **base)
@@ -435,7 +484,9 @@ def run(*, rows_path: str, trigger_dirs: Mapping[str, Sequence[str]], read_paths
     # step 7: test
     days = [utc_day(r["decision_ms"]) for r in rows[S1_ID]]
     plac = placebo_sets(len(veto), int(veto.sum()))
-    cells = {k: test_cell(np.array([float(r["v"][k]) for r in rows[S1_ID]], float), days, veto, plac) for k in SUBCELLS}
+    vbc = {k: np.array([float(r["v"][k]) for r in rows[S1_ID]], float) for k in SUBCELLS}
+    cells = {k: test_cell(vbc[k], days, veto, plac) for k in SUBCELLS}
+    base["qstar_compare_report_only"] = qstar_compare(vbc, Xt[:, FEATURES.index(QSTAR_FEATURE)], okt_a, veto, base["model"]["weights_standardised"])
     vt = np.array([float(r["v"][LABEL_CELL]) for r in rows[S1_ID]], float)
     base["test_auc_report_only"] = auc(st[okt_a], (vt[okt_a] <= cut).astype(float))
     span_days = (wins[S1_ID][1] - wins[S1_ID][0]) / DAY_MS
@@ -484,6 +535,8 @@ def render(res: Mapping[str, Any]) -> str:
         L.append(f"  counts: {res['counts']}")
     if "test_veto" in res:
         L.append(f"  test veto: {res['test_veto']}")
+    if "qstar_compare_report_only" in res:
+        L.append(f"  tighter-Q* comparison (report-only): {res['qstar_compare_report_only']['statement']}")
     for k, c in (res.get("cells") or {}).items():
         L.append(f"  {k}: delta {c['delta_sol']:+.6f} vs placebo {c['delta_vs_placebo_sol']:+.6f} p {c['placebo_p']:.6f} kept total {c['kept']['total_sol']:+.6f} "
                  f"ci90lo {c['kept']['ci90_lo_sol']} n {c['kept']['n']} kills {c['kills']}")
@@ -497,6 +550,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--trigger-dir", action="append", default=[], metavar="BOT=DIR")
     ap.add_argument("--read-json", action="append", default=[], metavar="BOT=PATH")
     ap.add_argument("--confirm-read-json", action="append", default=[], metavar="BOT=PATH")
+    ap.add_argument("--bots-json", required=True, help="the arena registry; s1's clock_start_ms must equal --s1-clock-ms")
     ap.add_argument("--s1-clock-ms", type=int, required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--now-ms", type=int)
@@ -507,11 +561,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         if out.exists():
             raise Refused(f"--out {a.out!r} exists: P96 runs once (write-once result)")
         res = run(rows_path=a.scored_rows, trigger_dirs=parse_kv(a.trigger_dir, "--trigger-dir", True), read_paths=parse_kv(a.read_json, "--read-json", False),
-                  confirm_paths=parse_kv(a.confirm_read_json, "--confirm-read-json", False), s1_clock_ms=a.s1_clock_ms, after_read=a.after_read, now_ms=now)
+                  confirm_paths=parse_kv(a.confirm_read_json, "--confirm-read-json", False), bots_path=a.bots_json, s1_clock_ms=a.s1_clock_ms,
+                  after_read=a.after_read, now_ms=now)
     except Refused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 3
-    res = dict(res, now_ms=now, tool_sha256=sha256_file(__file__))
+    res = dict(res, tool_sha256=sha256_file(__file__))
     write_once(out, res)
     print(render(res))
     return 0
