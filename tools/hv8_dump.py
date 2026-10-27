@@ -201,9 +201,9 @@ def allow_roots(scratch: Path) -> None:
 
 
 def make_runner(tape: Path, scratch: Path, win: Window = DEFAULT, *, t_ds: list[int] | None = None, engine: Any = None, model: Any = None,
-                guard: Any = None) -> tuple[Any, dict[str, Any]]:
+                guard: Any = None, cut_ms: int | None = None) -> tuple[Any, dict[str, Any]]:
     """The guarded HV7 runner over the tape (shared by the dump and the label tool). Every refusal fires here, before a row is applied.
-    Defaults (NullEngine, NoModel) price nothing and ask nothing."""
+    Defaults (NullEngine, NoModel) price nothing and ask nothing. cut_ms: rows with t_recv_ms at or after it are dropped on arrival (the tape "cut at t_d")."""
     tape, scratch = check_path(tape), check_path(scratch)
     files = hour_files(tape, win)
     t_ds = win.grid() if t_ds is None else list(t_ds)
@@ -225,8 +225,13 @@ def make_runner(tape: Path, scratch: Path, win: Window = DEFAULT, *, t_ds: list[
     def ingest(data: bytes) -> None:       # every row read is checked on arrival, before it can queue
         n0 = len(st._buf)
         inner_ingest(data)
-        for r in list(st._buf)[n0:]:
+        new = list(st._buf)[n0:]
+        for r in new:
             guard_row(r, win)
+        if cut_ms is not None:
+            for _ in new:
+                st._buf.pop()
+            st._buf.extend(r for r in new if r["t_recv_ms"] < cut_ms)
 
     st._ingest = ingest                    # type: ignore[method-assign]
     inner_apply = st.apply
@@ -252,9 +257,9 @@ def make_runner(tape: Path, scratch: Path, win: Window = DEFAULT, *, t_ds: list[
     return run, {"dropped": dropped, "tail_rows_scanned": rows_scanned, "t_ds": t_ds}
 
 
-def collect(tape: Path, scratch: Path, win: Window = DEFAULT, *, t_ds: list[int] | None = None) -> dict[str, Any]:
+def collect(tape: Path, scratch: Path, win: Window = DEFAULT, *, t_ds: list[int] | None = None, cut_ms: int | None = None) -> dict[str, Any]:
     """The replay. Returns {sets: [(t_d, [cards in screen order])], counters, dropped_instances, dropped_pools, tail_rows_scanned, periods}."""
-    run, info = make_runner(tape, scratch, win, t_ds=t_ds)
+    run, info = make_runner(tape, scratch, win, t_ds=t_ds, cut_ms=cut_ms)
     dropped, t_ds, rows_scanned = info["dropped"], info["t_ds"], info["tail_rows_scanned"]
     sets = []
     for T in t_ds:
@@ -344,6 +349,29 @@ def write_dump(res: dict[str, Any], out_dir: Path, *, head: str, win: Window = D
     return {k: manifest[k] for k in ("sets", "cards", "retest", "caps", "batch_plan", "created_known")} | {"hv8_dump": "done", "api_calls": 0, "git_head": head}
 
 
+def lookahead_instants(win: Window = DEFAULT) -> list[int]:
+    """DESIGN section 4 no-lookahead check: the first, the middle (index n // 2) and the last t_d of the grid."""
+    g = win.grid()
+    return [g[0], g[len(g) // 2], g[-1]]
+
+
+def lookahead_check(tape: Path, scratch: Path, full_sets, win: Window = DEFAULT) -> dict[str, Any]:
+    """For each of 3 fixed instants: rebuild the cards on the tape CUT at t_d (rows at or after t_d dropped on arrival) and compare the card bytes and
+    view_sha256 with the ones the full-tape pass built. PASS only if every instant matches. Card shas only; no outcome."""
+    full = {t: cs for t, cs in full_sets}
+    inst, mism, sets_cmp, cards_cmp = [], 0, 0, 0
+    for n, t in enumerate(lookahead_instants(win)):
+        cut = collect(tape, Path(scratch) / f"lookahead-{n}", win, t_ds=[t], cut_ms=t)["sets"]
+        a, b = full.get(t, []), (cut[0][1] if cut else [])
+        same = [H8.view_sha256(c) for c in a] == [H8.view_sha256(c) for c in b] and \
+            [json.dumps(c, sort_keys=True) for c in a] == [json.dumps(c, sort_keys=True) for c in b]
+        mism += 0 if same else 1
+        sets_cmp += 1 if (a or b) else 0
+        cards_cmp += len(a)
+        inst.append({"t_d": iso_s(t), "cards_full": len(a), "cards_cut": len(b), "match": same})
+    return {"lookahead_check": "FAIL" if mism else "PASS", "instants": inst, "sets_compared": sets_cmp, "cards_compared": cards_cmp, "mismatches": mism}
+
+
 def count_only(res: dict[str, Any]) -> dict[str, Any]:
     n = sum(len(c) for _t, c in res["sets"])
     return {"hv8_dump": "count_only", "periods": res["periods"], "sets": len(res["sets"]), "cards": n, "caps": H8.call_caps(n),
@@ -361,8 +389,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         res = collect(Path(a.tape), Path(a.scratch))
         if a.count_only:
-            print(json.dumps(count_only(res), sort_keys=True, separators=(",", ":")))
-            return 0
+            out = count_only(res)
+            out |= lookahead_check(Path(a.tape), Path(a.scratch), res["sets"])
+            print(json.dumps(out, sort_keys=True, separators=(",", ":")))
+            return 4 if out["lookahead_check"] != "PASS" else 0
         if not a.out:
             raise Refused("out_required")
         print(json.dumps(write_dump(res, Path(a.out), head=repo_head()), sort_keys=True, separators=(",", ":")))

@@ -198,3 +198,45 @@ def test_two_replays_write_identical_bytes(tmp_path):
 
 def test_main_refuses_a_denied_tape_path(tmp_path, capsys):
     assert D.main(["--tape", str(tmp_path / "fresh-0828"), "--scratch", str(tmp_path / "s"), "--count-only"]) == 2
+
+
+# ---------------------------------------------------------------- count-only no-lookahead check (QP condition on the dump)
+def test_lookahead_instants_are_first_middle_last():
+    g = D.DEFAULT.grid()
+    assert D.lookahead_instants() == [g[0], g[83], g[166]]
+
+
+def test_lookahead_check_passes_on_clean_synthetic_tape(tmp_path):
+    tape = tmp_path / "tape"
+    write_tape(tape, tape_rows())
+    full = D.collect(tape, tmp_path / "sc", WIN)
+    r = D.lookahead_check(tape, tmp_path / "sc", full["sets"], WIN)
+    assert r["lookahead_check"] == "PASS" and r["mismatches"] == 0 and len(r["instants"]) == 3
+    assert r["cards_compared"] > 0 and all(i["cards_full"] == i["cards_cut"] > 0 for i in r["instants"])
+
+
+def test_lookahead_check_fails_when_the_full_pass_reads_the_future(tmp_path, monkeypatch):
+    from tools import hv7_runner as R7
+    tape = tmp_path / "tape"
+    write_tape(tape, tape_rows())
+    monkeypatch.setattr(R7.Hv7Runner, "poll_to", lambda self, T: self.state.poll(until_ms=T - 1 + 40 * 60_000))     # planted: reads 40 min ahead
+    full = D.collect(tape, tmp_path / "leaky", WIN)
+    monkeypatch.undo()
+    r = D.lookahead_check(tape, tmp_path / "sc", full["sets"], WIN)
+    assert r["lookahead_check"] == "FAIL" and r["mismatches"] >= 1
+
+
+def test_main_count_only_prints_the_check_and_exits_nonzero_on_fail(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(D, "DEFAULT", WIN)
+    monkeypatch.setattr(D, "collect", lambda tape, scratch, win=WIN, **k: {"sets": [], "counters": {}, "dropped_instances": 0, "dropped_pools": 0,
+                                                                          "tail_rows_scanned": 0, "periods": 0})
+    monkeypatch.setattr(D, "lookahead_check", lambda *a, **k: {"lookahead_check": "FAIL", "mismatches": 1})
+    assert D.main(["--tape", str(tmp_path), "--scratch", str(tmp_path / "s"), "--count-only"]) == 4
+    assert '"lookahead_check":"FAIL"' in capsys.readouterr().out
+    monkeypatch.setattr(D, "lookahead_check", lambda *a, **k: {"lookahead_check": "PASS", "mismatches": 0})
+    assert D.main(["--tape", str(tmp_path), "--scratch", str(tmp_path / "s"), "--count-only"]) == 0
+
+
+def test_wrapper_dump_refuses_without_a_recorded_pass_and_uses_fresh_scratch():
+    src = (Path(__file__).resolve().parent.parent / "scripts/ops/hv8-offline.sh").read_text()
+    assert "count-latest.json" in src and "REFUSED_NO_PASS_RECORDED" in src and "scratch-dump-$TS" in src and "scratch-count-$TS" in src and "scratch-labels-$TS" in src
