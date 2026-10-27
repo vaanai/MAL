@@ -73,6 +73,11 @@ class Window:
 DEFAULT = Window(iso_ms("2026-08-14T12:00:00Z"), iso_ms("2026-08-21T12:00:00Z"), iso_ms("2026-08-28T11:00:00Z"), iso_ms("2026-08-28T12:00:00Z"))
 
 
+def iso_s(ms: int) -> str:
+    """Second-resolution ISO ('2026-08-21T12:02:00Z'), the form hv8_calib.fold_of parses."""
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def check_td(t_d_ms: int, win: Window = DEFAULT) -> None:
     if t_d_ms not in set(win.grid()):
         raise Refused("t_d_not_on_the_training_grid")
@@ -247,7 +252,7 @@ def collect(tape: Path, scratch: Path, win: Window = DEFAULT, *, t_ds: list[int]
 def card_rows(sets) -> list[dict]:
     rows = []
     for t_d, cards in sets:
-        iso = RK.iso_from_ms(t_d)
+        iso = iso_s(t_d)
         for pos, c in enumerate(cards):
             v = H8.tape_view(c)
             rows.append({"card_sha": H8.view_sha256(c), "t_d": iso, "pos": pos, "n_in_set": len(cards), "pool": v["id"], "f": v["f"], "risk": v["risk"],
@@ -281,7 +286,7 @@ def write_dump(res: dict[str, Any], out_dir: Path, *, head: str, win: Window = D
     if out_dir.exists() and (not out_dir.is_dir() or any(out_dir.iterdir())):
         raise Refused("out_not_empty")
     rows = card_rows(res["sets"])
-    cards = {r["card_sha"]: c for t, cs in res["sets"] for r, c in zip([x for x in rows if x["t_d"] == RK.iso_from_ms(t)], cs)}
+    cards = {H8.view_sha256(c): c for _t, cs in res["sets"] for c in cs}
     first = [r["card_sha"] for r in rows]
     retest = H8.retest_select(first)
     caps = H8.call_caps(len(first))
@@ -304,9 +309,9 @@ def write_dump(res: dict[str, Any], out_dir: Path, *, head: str, win: Window = D
     pb, tp = H8.load_rate_playbook(), H8.load_rate_template()
     per_day: dict[str, int] = {}
     for t, _c in res["sets"]:
-        per_day[RK.iso_from_ms(t)[:10]] = per_day.get(RK.iso_from_ms(t)[:10], 0) + 1
-    manifest = {"hv8_dump": "manifest", "window": {"block_start": RK.iso_from_ms(win.block_start_ms), "first_h": RK.iso_from_ms(win.first_h_ms),
-                                                    "last_h_excl": RK.iso_from_ms(win.last_h_excl_ms), "tape_end_excl": RK.iso_from_ms(win.end_ms)},
+        per_day[iso_s(t)[:10]] = per_day.get(iso_s(t)[:10], 0) + 1
+    manifest = {"hv8_dump": "manifest", "window": {"block_start": iso_s(win.block_start_ms), "first_h": iso_s(win.first_h_ms),
+                                                    "last_h_excl": iso_s(win.last_h_excl_ms), "tape_end_excl": iso_s(win.end_ms)},
                 "periods": res["periods"], "sets": len(res["sets"]), "cards": len(first), "retest": len(retest), "caps": caps, "sets_per_day": per_day,
                 "batch_plan": {"first_batches": sum(1 for b in plan if b["kind"] == "first"), "retest_batches": sum(1 for b in plan if b["kind"] == "retest"),
                                "rerun_batch": 1, "max_per_batch": H8.BATCH_MAX, "order_seed": "sha256('hv8-batch|' + card_sha)"},
