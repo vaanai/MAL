@@ -553,7 +553,7 @@ def test_trim_report_flags():
     assert not D.trim_report({"engine_refused_history_trimmed": 1})["engine_trim_safety_ok"]
 
 
-def test_one_run_copies_the_runner_counters_and_exit_reasons(tmp_path, tape, monkeypatch):
+def test_one_run_copies_the_runner_counters(tmp_path, tape, monkeypatch):
     seen = {}
     orig = R.Hv7Runner.sync_engine_counters
 
@@ -568,16 +568,9 @@ def test_one_run_copies_the_runner_counters_and_exit_reasons(tmp_path, tape, mon
         assert res[k] == run.counters.get(k, 0) and isinstance(res[k], int)
     assert res["engine_trim_safety_ok"] is (res["engine_rows_below_trim_floor"] == 0 and res["engine_refused_history_trimmed"] == 0)
     assert res["engine_trim_exercised"] is (res["engine_hist_trimmed_prints"] > 0)
-    ecr = res["exit_reason_counts"]
-    assert set(ecr) == set(R.ARM_ORDER)
-    rows = {a: {r["position_id"]: r["exit_reason"] for r in run.engine.ledger.read_bot(R.bot_id(a)) if r.get("kind") == "trade"} for a in R.ARM_ORDER}
-    for a in R.ARM_ORDER:
-        assert sum(ecr[a].values()) == len(rows[a])
-        for why, n in ecr[a].items():
-            assert n == sum(1 for w in rows[a].values() if w == why)
 
 
-def test_run_real_report_has_per_run_trim_report_and_stdout_omits_exit_reasons(tmp_path, tape, monkeypatch, capsys):
+def test_run_real_report_has_per_run_trim_report_and_no_exit_or_outcome_field_anywhere(tmp_path, tape, monkeypatch, capsys):
     monkeypatch.setattr(D, "DRILL_ROOT", tmp_path / "drill")
     monkeypatch.setattr(D, "REAL_TAPE", str(tape))
     monkeypatch.setattr(D, "seal_read_only", lambda base: None)
@@ -588,8 +581,14 @@ def test_run_real_report_has_per_run_trim_report_and_stdout_omits_exit_reasons(t
     rep = res["engine_trim_report"]
     assert set(rep) == {"run1", "run2", "run3"}
     for x in rep.values():
-        assert {*D.TRIM_COUNTER_KEYS, "engine_trim_safety_ok", "engine_trim_exercised", "exit_reason_counts"} <= set(x)
-    on_disk = json.loads((tmp_path / "drill" / "t2" / "real-layout-result.json").read_text())
-    assert on_disk["engine_trim_report"] == rep
-    printed = capsys.readouterr().out
-    assert "engine_trim_safety_ok" in printed and "exit_reason_counts" not in printed
+        assert set(x) == {*D.TRIM_COUNTER_KEYS, "engine_trim_safety_ok", "engine_trim_exercised"}
+    root = tmp_path / "drill" / "t2"
+    assert json.loads((root / "real-layout-result.json").read_text())["engine_trim_report"] == rep
+    # no exit / outcome field in the stdout or in any JSON the drill root holds at the top level (the result file; per-run files are returned dicts in-process)
+    texts = [capsys.readouterr().out, json.dumps(res)] + [p.read_text() for p in root.glob("*.json")]
+    for t in texts:
+        for banned in ("exit_reason", "exit_reasons", "hard_stop", "max_hold", "pnl", "net_lamports"):
+            assert banned not in t
+    for tag in ("real-a", "real-b", "real-c"):
+        r = D.one_run(tmp_path / "d3", tag, SHA, [DAY], tape, start_ms=START, end_ms=END)
+        assert "exit_reason" not in json.dumps(r) and "exit_reason_counts" not in r

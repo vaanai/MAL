@@ -154,21 +154,6 @@ def trim_report(counters: dict) -> dict:
             "engine_trim_exercised": c["engine_hist_trimmed_prints"] > 0}
 
 
-def exit_reason_counts(run: R.Hv7Runner) -> dict:
-    """Report-only: per arm, {exit_reason: n} over the engine ledger's distinct closed positions (kind == "trade"; one position is several stake rows)."""
-    res: dict = {}
-    for arm in R.ARM_ORDER:
-        seen: dict[str, str] = {}
-        for r in run.engine.ledger.read_bot(R.bot_id(arm)):
-            if r.get("kind") == "trade":
-                seen[str(r.get("position_id"))] = str(r.get("exit_reason"))
-        cnt: dict[str, int] = {}
-        for why in seen.values():
-            cnt[why] = cnt.get(why, 0) + 1
-        res[arm] = dict(sorted(cnt.items()))
-    return res
-
-
 def summarize(run: R.Hv7Runner) -> dict:
     scan = run.log.rows("SCAN")
     per = [r for r in scan if r.get("kind") == "period"]
@@ -214,7 +199,6 @@ def one_run(base: Path, tag: str, sha: str, days: list[str], tape: Path, *, star
     root = Path(run.cfg.root)
     res = summarize(run)
     res.update(trim_report(run.counters))
-    res["exit_reason_counts"] = exit_reason_counts(run)
     pm = list(period_ms.values())
     res.update({"log_md5": log_md5(root), "cards_md5": md5_bytes(b"") if not (root / "cards").exists() else cards_md5(root),
                 "ticks": len(tick_ms), "tick_ms_p50": round(pct(tick_ms, 0.5), 2), "tick_ms_p95": round(pct(tick_ms, 0.95), 2),
@@ -304,8 +288,8 @@ def run_real(days: list[str], drill_id: str, sha: str, *, rss_cap_mb: float = RS
         a, b, c = (one_run(base, t, sha, days, Path(tape_dir)) for t in RUNS)
         rss_mb = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 1)
     v = verdict(a, b, c, rss_mb, rss_cap_mb)
-    # REPORT-ONLY (not in pass_rule, not in "result"): per-run trim counters and flags, and per-arm exit_reason counts from the engine ledger.
-    report = {t: {**{k: x[k] for k in (*TRIM_COUNTER_KEYS, "engine_trim_safety_ok", "engine_trim_exercised")}, "exit_reason_counts": x["exit_reason_counts"]}
+    # REPORT-ONLY (not in pass_rule, not in "result"): per-run trim counters and flags.
+    report = {t: {k: x[k] for k in (*TRIM_COUNTER_KEYS, "engine_trim_safety_ok", "engine_trim_exercised")}
               for t, x in (("run1", a), ("run2", b), ("run3", c))}
     res = {"hv7_real_layout": "end", **v, "run1_log_md5": a["log_md5"], "run2_log_md5": b["log_md5"], "run3_log_md5": c["log_md5"], "run1_cards_md5": a["cards_md5"],
            "run3_cards_md5": c["cards_md5"], "engine_trim_report": report,
@@ -315,7 +299,7 @@ def run_real(days: list[str], drill_id: str, sha: str, *, rss_cap_mb: float = RS
            "timing": {"run1": {k: a[k] for k in ("ticks", "tick_ms_p50", "tick_ms_p95", "tick_ms_max", "period_ms_p50", "period_ms_p95", "period_ms_max")},
                       "run2": {k: b[k] for k in ("ticks", "tick_ms_p50", "tick_ms_p95", "tick_ms_max", "period_ms_p50", "period_ms_p95", "period_ms_max")},
                       "run3_report_only": {k: c[k] for k in ("tick_ms_p95", "period_ms_p95")}}}
-    out({k: ({t: {kk: vv for kk, vv in x.items() if kk != "exit_reason_counts"} for t, x in v.items()} if k == "engine_trim_report" else v) for k, v in res.items()})   # stdout: no exit-reason counts (outcome-adjacent); the file has them
+    out(res)
     rf = base / "real-layout-result.json"
     rf.write_text(json.dumps(res, sort_keys=True, separators=(",", ":")) + "\n")
     digest = hashlib.sha256(rf.read_bytes()).hexdigest()
