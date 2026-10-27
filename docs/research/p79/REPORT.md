@@ -15,7 +15,7 @@ Lane P79, 2026-10-27. Exploration tape only (explore-0814, fresh-0903, exp011-09
 
 Rule: after the agent's second consecutive SELL in a pool (within 150 slots of the first row), buy 0.25 SOL landing 2 slots later, exit 20 slots after that landing with exit lag 2; entry state quote reserve at least 1.0 SOL; PumpSwap pre-trade reserves, V = 0, tier fee on both legs, 55,000 lamports per send; flat 15% and pressure-fail (mean p 0.289 on 661 entries).
 
-5,857 pools produced the signal; 5,196 failed the 1 SOL depth filter (88.7%); 661 entries over 28 UTC days, 23.607 per day. 5 entries per stake had the held tokens exceed the pool's remaining base at exit and were booked as a total loss (conservative; stated in the script).
+5,857 pools produced the signal; 5,196 failed the 1 SOL depth filter (88.7%); 661 entries over 28 UTC days, 23.607 per day. 5 entries, all at the 1 SOL stake and none at 0.25 SOL, had the held tokens exceed the pool's remaining base at exit and were booked as a total loss (conservative; stated in the script). The 0.25 SOL primary is unaffected.
 
 | 0.25 SOL | flat 15% | pressure-fail |
 | --- | --- | --- |
@@ -49,7 +49,7 @@ Verdict KILL. Reading: the agent's sign is independent of its history, so a buy 
 
 ## Not measured
 
-- The pool account byte-243 mayhem flag per historical pool: not on the tape; the label is `is_mayhem_mode` from tokens.parquet. The fixture pool (AqjAEL...) has the flag set and V of order -1e4 lamports, so V = 0 was applied to all pools (an assumption, not a per-pool read).
+- The pool account byte-243 mayhem flag per historical pool: not on the tape; the label is `is_mayhem_mode` from tokens.parquet. V = 0 was applied to all pools. QP's per-pool measurement from the tape (PR #1035 comment 6444359021, QP OK at dd37b6eb) replaces the earlier fixture-based assumption: implied V is at most about 0.0002 x quote; on pools with quote of at least 1 SOL the median V is within +-0.0004 SOL. Repricing with V from -1 to +17.58 SOL keeps the 0.25 SOL flat mean between -0.034 and -0.047, so the sign never flips.
 - Alternative rules (other horizons, buy after buy bursts, selling into agent buys, entry lag other than 2, depth filters below 1 SOL, the non-agent mayhem wallets): none priced. One rule, one parameter set.
 - Any October hour, and the agent's behaviour after the exploration period.
 - Fee legs come from the P55 tier function, not from the empty `lp_fee/protocol_fee/creator_fee` columns of the tape.
