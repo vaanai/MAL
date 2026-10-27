@@ -492,7 +492,7 @@ def gate_read(arm: str, *, now_ms: int, regn: Mapping[str, Any], rows: Sequence[
                 lo, ex3 = AS.boot_lo(x), float(srt[3:].sum())
                 wc[key] = {"n": int(len(x)), "mean_sol": float(x.mean()), "total_sol": float(x.sum()), "ci90_lo_sol": lo, "ex_top3_sol": ex3}
                 survives = survives and bool(lo is not None and lo > 0 and ex3 > 0 and x.sum() > 0)
-            res["lost_attempts_worst_case"] = {"report_only": True, "lost": lost, "imputed_pnl_sol_each": imp / 1e9, "send_lamports": send,
+            res["lost_attempts_worst_case"] = {"report_only": True, "lost": lost, "imputed_pnl_sol_each": imp / 1e9, "send_lamports": send, "cells": wc,
                                                "per_trade_cells_survive": survives, "day_rule_imputed": False,
                                                "note": "each lost attempt imputed as -stake - round-trip fees (2 x send + deciding rent, the fee legs arena_score uses; no proceeds); per_trade_cells_survive "
                                                        "covers the per-trade cell tests only (CI lower bound, ex-top-3, total); the 5-day and majority-positive-day rules are NOT imputed; "
