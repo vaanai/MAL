@@ -20,7 +20,7 @@ On discovery the switch changes the mean per trade by about zero (placebo p 0.47
 ## Confirmation (the one-time test), 1,124 trades
 Days: 21, on 0, off 21 (4 undefined-off). Trades kept 0. No mean, delta, total, CI90 or placebo exists.
 
-Cause, known from the counts before pricing and disclosed in PREREG: the graduation count falls from about 11,000 per day (Aug 14) to about 2,000 per day (mid Sep). No September prior day exceeds T = 4525 (maximum 3,610). The rule as fixed is a level test, and the level drifted below the August median for the whole confirmation set.
+Cause, known from the counts before pricing and disclosed in PREREG: the graduation count falls from 7,444 per day (Aug 15, the first complete day; Aug 14 is a 12-hour partial day with 11,180) to about 2,000 per day (mid Sep). No September prior day exceeds T = 4525 (maximum 3,610). The rule as fixed is a level test, and the level drifted below the August median for the whole confirmation set.
 
 Kill line hit: **4 (fewer than 4 on-days; 0)**. Lines 1 to 3 have no kept trades to evaluate. Verdict KILL for this rule. Honest reading: this is a failure of the variable's stationarity, not evidence about regime switching in general. The confirmation did not test whether the switch helps.
 
@@ -32,10 +32,10 @@ Threshold = median of `G(D-1)` within each tape block. Discovery is identical to
 | flat 15% | 12.5381% | 4.3426% | -8.1955 | 14.0929 / 2.2061 | 1.0071 | 1.4700 | 7/8 | 2.0783% | 0.9930 |
 | pressure-fail | 10.9866% | 4.0295% | -6.9571 | 12.3489 / 2.0470 | 1.2097 | 1.3850 | 7/8 | 1.9458% | 0.9900 |
 
-With the drift removed, the switched book is worse than the unswitched book by 7 to 8 pp per trade, and the placebo p is 0.99: random day selections beat it almost always. If anything, the days after high graduation counts (relative to the block) were the worse ones. This is report-only and post-declared at the threshold level; it is not a finding.
+With the drift removed, the switched book is worse than the unswitched book by 7 to 8 pp per trade, and the placebo p is 0.99: random day selections beat it almost always. If anything, the days after high graduation counts (relative to the block) were the worse ones. This is report-only and declared in PREREG before pricing; it is report-only and not a finding.
 
 ## Capacity line (rough, first-order impact 2x/(Q+x), median Q = 39.48 SOL)
-Discovery switched book, 116.5 trades per on-day: stake 0.25 SOL, haircut 1.26%, flat net/day 3.0098 SOL (pressure 2.7947); stake 1 SOL, haircut 4.94%, flat 7.7500 SOL (pressure 6.8895). These come from the stored 0.1 SOL P&L less a haircut and are not repriced; they scale a discovery in-sample mean, and the unswitched book would show larger totals. Not evidence of profit.
+Discovery switched book: 116.5 trades per on-day. At a 0.25 SOL stake the first-order round-trip impact is 1.26% and at 1 SOL it is 4.94%. Per-day SOL figures from an earlier draft (including 7.75 SOL/day at 1 SOL) are withdrawn and not achievable: the stored P&L already contains impact at the 0.1 SOL stake, so subtracting the larger-stake haircut and scaling by stake double-counts impact, and the discovery mean is in-sample. No capacity or net-per-day number is claimed.
 
 ## Not measured
 No tape feature other than graduation counts; no drift-robust variable in the primary; no October data; no forward or Q50/H5 output. Day-level only; 6 on-days in discovery is a small sample.

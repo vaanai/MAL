@@ -359,7 +359,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
-| `p84-h5-regime-switch` | Prior-day graduation count as a day-level on/off switch on the frozen H5 binding book | `explored-no-survivor` | KILL by line 4: 0 on-days in confirmation (graduations fall from ~11,000/day in Aug to ~2,000/day in Sep, so every Sep prior day is below T=4525). Discovery: switch delta -0.0005 pp flat, +0.2584 pp pressure, placebo p 0.506/0.471. Report-only block-median variant S1: confirmation delta -8.1955 pp flat, -6.9571 pp … |
+| `p84-h5-regime-switch` | Prior-day graduation count as a day-level on/off switch on the frozen H5 binding book | `explored-no-survivor` | KILL by line 4: 0 on-days in confirmation (graduations fall from 7,444/day on the first complete day, Aug 15 (Aug 14 is a 12-hour partial) to ~2,000/day in Sep, so every Sep prior day is below T=4525). Discovery: switch delta -0.0005 pp flat, +0.2584 pp pressure, placebo p 0.506/0.471. Report-only block-median variant … |
 
 ## Dead as frozen, and explored with no survivor
 

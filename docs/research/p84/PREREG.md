@@ -39,3 +39,6 @@ If no confirmation trades are kept, the verdict is KILL by line 4 (reported as n
 
 ## Seals
 Aug/Sep exploration blocks only. No Q50 or H5 forward output, no jobs #1419/#1421, no October hour, no HV4/HV6/HV7, no arena, DBC, LaunchLab, FLOOR G1 or meta-capture file. These sets have been read by at least 14 families (EXP-024 sec. 9): even a pass is in-sample for the lab.
+
+## Correction note, 2026-10-27 (added after the run; body above unchanged)
+The body says graduation counts fall from "about 11,000 (Aug 14)". 2026-08-14 is a 12-hour partial day (11,180). The first complete day is 2026-08-15 with 7,444. The drift to about 2,000 by mid-September stands. The rule, threshold and kill lines are unaffected.
