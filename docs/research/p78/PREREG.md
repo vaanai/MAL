@@ -13,7 +13,7 @@ Pricing conventions (binding): PumpSwap tape reserves are PRE-trade (checked on 
 ## Step 1: cost map (descriptive; no strategy P&L)
 
 Fee bands (frozen; band = market-cap range of the pre-trade print, total fee ppm from the table at each print): 
-B0 `[0,420)` 12,500; B1 `[420,1470)` 12,000; B2 `[1470,9820)` 11,500..10,000; B3 `[9820,24560)` 9,500..6,000(+); B4 `[24560,58940)` 5,500..2,500 region; B5 `[58940,78590)`; B6 `[78590,98240)`; B7 `>=98240` (500 ppm creator+protocol+LP... see table). The exact ppm range inside each band is printed from the table in the output.
+B0 `[0,420)`; B1 `[420,1470)`; B2 `[1470,9820)`; B3 `[9820,24560)`; B4 `[24560,58940)`; B5 `[58940,78590)`; B6 `[78590,98240)`; B7 `>=98240` (market cap in SOL). The exact ppm range inside each band is printed from the table in the output.
 
 Unit = pool-hour (pool, UTC hour of block_time). Its band is the band of the median pre-trade market cap of its prints. For each band, per UTC day averaged over days with data: number of distinct pools with a pool-hour in the band, pool-hours, and prints.
 - Fee per leg: creator + protocol + LP ppm at the band's median market cap (from `PUMPSWAP_SOL_FEE_SPLIT`), as % of notional; round-trip fee = 1-(1-f)^2.
