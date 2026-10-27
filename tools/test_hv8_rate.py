@@ -60,15 +60,6 @@ def test_view_drops_every_removed_key_and_keeps_the_rest():
     assert v["risk"]["holder_count"] == card["risk"]["holder_count"]
 
 
-def test_view_equal_across_fake_chain_and_real_chain_on_kept_keys():
-    fake = base_chain(top1_frac=0.05, top10_frac=0.30, creator_sold_frac=None, same_slot_supply=None, sniper_share=None, sniper_still_holding=None)
-    real = base_chain(top1_frac=0.41, top10_frac=0.88, creator_sold_frac=0.9, same_slot_supply=0.2, sniper_share=0.5, sniper_still_holding=0.4,
-                      holders_as_of_ms=T - 10_000, extensions=[], mayhem=False)
-    a, b = H.tape_view(real_card(fake)), H.tape_view(real_card(real))
-    assert json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
-    assert H.view_sha256(real_card(fake)) == H.view_sha256(real_card(real))
-
-
 def test_view_fails_closed_on_an_unknown_key():
     for path in (("zzz",), ("f", "zzz"), ("risk", "zzz"), ("tops", "zzz")):
         c = real_card()
@@ -290,7 +281,9 @@ def test_placebo_deterministic_no_fixed_point_and_a_single_cycle():
 
 def test_placebo_seed_depends_on_time_and_order():
     h = shas(6)
-    assert H.placebo_perm(TD, h) != H.placebo_perm("2026-08-22T04:02:00.000Z", h) or H.placebo_perm(TD, h) != H.placebo_perm(TD, h[::-1])
+    base = H.placebo_perm(TD, h)
+    assert base != H.placebo_perm("2026-08-22T04:02:00.000Z", h)
+    assert base != H.placebo_perm(TD, h[::-1])
 
 
 def test_placebo_matches_the_spec_arithmetic_for_a_fixed_seed():

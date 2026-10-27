@@ -73,7 +73,11 @@ def _sha(text: str) -> str:
 # ---------------------------------------------------------------- the view and the request
 
 def tape_view(card: dict) -> dict:
-    """The card with every RPC-derived key removed. Fail closed: a key that is in neither the kept nor the removed list raises."""
+    """The card with every RPC-derived key removed. Fail closed: a key that is in neither the kept nor the removed list raises.
+
+    The three kept risk keys (holder_count, quote_chg_15m, quote_dd_peak) are NOT recomputed here: the card must come from Hv7Runner._card,
+    which overwrites them from tape (net map, quote history). A card built any other way, or at a pool with no tape quote reference or peak
+    (the runner then keeps the chain's values), can carry chain-supplied values. tools/test_hv8_view_runner.py checks the runner path."""
     if not isinstance(card, dict):
         raise RateError("a card must be an object")
     unknown = sorted(set(card) - KEPT_TOP - REMOVED_TOP)
