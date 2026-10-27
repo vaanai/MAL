@@ -24,6 +24,7 @@ import hashlib
 import json
 import sys
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,30 +56,72 @@ STRUCTURAL_STR = ("IncorrectProgramId", "InvalidProgramId", "ProgramAccountNotFo
 NO_TOKENS_LOG = ("insufficient funds", "owner does not match", "account not initialized", "AccountNotInitialized")
 
 
+RETRY_HTTP = (429, 500, 502, 503, 504)  # 403 is not retried here: the q50 rerun must fail loud on a blocked key
+GET_TX_MAX_VERSION = 0  # v0 transactions need maxSupportedTransactionVersion >= 0; the call is normalised in RateLimitedRpc
+
+
+def _tx_config(params: list) -> list:
+    """getTransaction params with maxSupportedTransactionVersion forced to >= 0 (a missing one makes the node reject a v0 tx)."""
+    out = list(params)
+    cfg = dict(out[1]) if len(out) > 1 and isinstance(out[1], dict) else {}
+    v = cfg.get("maxSupportedTransactionVersion")
+    if not isinstance(v, int) or v < GET_TX_MAX_VERSION:
+        cfg["maxSupportedTransactionVersion"] = GET_TX_MAX_VERSION
+    if len(out) > 1:
+        out[1] = cfg
+    else:
+        out.append(cfg)
+    return out
+
+
 class RateLimitedRpc:
-    """JSON-RPC over HTTP, at most one request per MIN_INTERVAL_S. `post` and `sleep`/`clock` are injectable for tests."""
+    """JSON-RPC over HTTP, at most one request per MIN_INTERVAL_S. HTTP 429/5xx and network errors are retried with exponential backoff, at most
+    `retries` times per call. `post`, `sleep` and `clock` are injectable for tests. A failure names the method, the HTTP status (or exception type) and,
+    for getTransaction, the signature. It never carries the URL, which may hold an API key."""
 
     def __init__(self, url: str, post: Callable[[str, dict], dict] | None = None, sleep: Callable[[float], None] = time.sleep,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic, retries: int = 4, backoff_base: float = 2.0, backoff_cap: float = 30.0):
         self.url, self.post, self.sleep, self.clock = url, post or self._http, sleep, clock
+        self.retries, self.backoff_base, self.backoff_cap = retries, backoff_base, backoff_cap
         self.last = -1e9
         self.calls: list[str] = []
+
+    def __repr__(self) -> str:
+        return "RateLimitedRpc(<redacted>)"
 
     @staticmethod
     def _http(url: str, payload: dict) -> dict:
         req = urllib.request.Request(url, json.dumps(payload).encode(), {"Content-Type": "application/json"})
         return json.load(urllib.request.urlopen(req, timeout=30))
 
+    @staticmethod
+    def _label(method: str, params: list, exc: BaseException) -> str:
+        code = getattr(exc, "code", None) if isinstance(exc, urllib.error.HTTPError) else None
+        what = f"HTTP {code}" if code is not None else type(exc).__name__
+        sig = f" sig={params[0]}" if method == "getTransaction" and params and isinstance(params[0], str) else ""
+        return f"rpc {method} failed: {what}{sig}"
+
     def __call__(self, method: str, params: list) -> Any:
-        wait = MIN_INTERVAL_S - (self.clock() - self.last)
-        if wait > 0:
-            self.sleep(wait)
-        self.last = self.clock()
-        self.calls.append(method)
-        try:
-            resp = self.post(self.url, {"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
-        except Exception as exc:
-            raise SystemExit(f"rpc {method} failed: {type(exc).__name__}") from None
+        if method == "getTransaction":
+            params = _tx_config(params)
+        payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params}
+        resp = None
+        for attempt in range(self.retries + 1):
+            wait = MIN_INTERVAL_S - (self.clock() - self.last)
+            if wait > 0:
+                self.sleep(wait)
+            self.last = self.clock()
+            self.calls.append(method)
+            try:
+                resp = self.post(self.url, payload)
+                break
+            except Exception as exc:
+                code = getattr(exc, "code", None) if isinstance(exc, urllib.error.HTTPError) else None
+                retryable = code in RETRY_HTTP if code is not None else isinstance(exc, OSError)  # URLError, timeout, reset are OSError
+                if not retryable or attempt >= self.retries:
+                    suffix = f" after {attempt + 1} attempts" if attempt else ""
+                    raise SystemExit(self._label(method, params, exc) + suffix) from None
+                self.sleep(min(self.backoff_cap, self.backoff_base * 2 ** attempt))
         if "error" in resp:
             raise SystemExit(f"rpc {method} error: {resp['error']}")
         return resp["result"]
