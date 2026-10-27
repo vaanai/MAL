@@ -406,7 +406,8 @@ class Hv7Runner:
         check_card_keys(card)       # raises: a key outside the allowlist is a fault, not a skip
         return card
 
-    def screen(self, T: int) -> None:
+    def screen(self, T: int, rebuild: Mapping[str, Any] | None = None) -> None:
+        """rebuild: the logged period row of a resumed period. The screen is re-run from the replayed tape and must equal the logged one; no new SCAN row."""
         t_d = R.iso_from_ms(T)
         pools = self.state.pools_wsol(lambda p: p.prog == "pumpswap")
 
@@ -438,6 +439,11 @@ class Hv7Runner:
         shas = tuple(A.p4.card_sha256(cards[i]) for i in scr.ids)
         base = {"kind": "period", "t_d": t_d, "t_e": R.iso_from_ms(T - T_D_OFFSET_MS + T_E_OFFSET_MS), "counts": dict(res.counts), "n_candidates": len(res.candidates),
                 "vetoed": sorted(vetoed), "screen": list(scr.ids), "card_shas": list(shas), "no_trade": scr.no_trade, "reason": scr.reason, "as_of_slot": self.slot}
+        if rebuild is not None and (list(scr.ids) != list(rebuild.get("screen", ())) or list(shas) != list(rebuild.get("card_shas", ())) or scr.no_trade):
+            self._count("resume_rebuild_mismatch")
+            self.pending = None
+            self._log_excluded(T, t_d, "resume_rebuild_mismatch")
+            return
         if scr.no_trade:
             self.pending = None
             self.log.append("SCAN", T, base)
@@ -446,7 +452,8 @@ class Hv7Runner:
         rr = R.build_rank_request(t_d, ordered, seq=T // HOUR_MS)
         call = _Call(lambda: self._ask(rr, T), threaded=self.cfg.live)
         picks = {"R": [R.r_pick(t_d, scr.ids, shas)], "S": [R.s_pick(scr)], "U": list(R.u_set(scr))}
-        self.log.append("SCAN", T, base)
+        if rebuild is None:
+            self.log.append("SCAN", T, base)
         self.pending = {"t_e": T - T_D_OFFSET_MS + T_E_OFFSET_MS, "t_d": T, "t_d_iso": t_d, "picks": picks, "cards": {i: cards[i] for i in scr.ids},
                         "rr": rr, "call": call, "scr_ids": scr.ids, "shas": shas}
 
@@ -579,6 +586,106 @@ class Hv7Runner:
         self.open.pop(pos.pid, None)
         return True
 
+    # -- exclusion, shutdown, resume
+    def _log_excluded(self, t_d_ms: int, t_d_iso: str, reason: str) -> None:
+        """A period that gets no entry in any arm (rule 4): a SCAN row and an L rank row that says fallback true, excluded true."""
+        self.log.append("SCAN", t_d_ms, {"kind": "period_excluded", "t_d": t_d_iso, "reason": reason})
+        self.log.append("L", t_d_ms, {"kind": "rank", "model_error": reason, "refused": False, "latency_ms": None, "cost_usd": 0.0, "response_sha256": None,
+                                      "late": False, "ok": False, "order": [], "fallback": True, "fallback_reason": reason, "excluded": True, "pick": None,
+                                      "pick_display_slot": None})
+
+    def shutdown(self) -> None:
+        """Orderly stop. An L call still in flight cannot be waited for: the period is excluded (rule 4) so that the log says what happened to it. A pending
+        period whose reply is already back is left alone: resume re-asks it through the cache."""
+        p = self.pending
+        if p is not None and not p["call"].done.is_set():
+            self._count("shutdown_in_flight")
+            self.pending = None
+            self._log_excluded(p["t_d"], p["t_d_iso"], "shutdown_in_flight")
+
+    def _repair_tails(self, now_ms: int) -> int:
+        n = 0
+        for name in ("SCAN",) + ARM_ORDER:
+            for f in self.log.files(name):
+                data = f.read_bytes()
+                if not data or data.endswith(b"\n"):
+                    continue
+                cut = data.rfind(b"\n") + 1
+                dropped = data[cut:]
+                check_path(f, "w")
+                with open(f, "r+b") as fh:
+                    fh.truncate(cut)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                self.log._head.pop(name, None)
+                self.log.verify(name)           # the truncated log must chain, else LogChainError: not repairable
+                self.log.append("SCAN", now_ms, {"kind": "gap", "reason": "torn_last_line", "stream": name, "file": f.name, "dropped_bytes": len(dropped),
+                                                 "dropped_sha256": hashlib.sha256(dropped).hexdigest()})
+                n += 1
+        return n
+
+    def _gap_once(self, now_ms: int, key: str, body: dict) -> bool:
+        if any(r.get("kind") == "gap" and r.get("key") == key for r in self.log.rows("SCAN")):
+            return False
+        self.log.append("SCAN", now_ms, {"kind": "gap", "key": key, **body})
+        return True
+
+    def resume(self, now_ms: int) -> int:
+        """Rebuild after a restart (rules 1-6 in the module docstring). Returns the tick to start `run` from. The tape state is NOT in the log: it is replayed
+        by the loop's own poll, as on a first start."""
+        now_ms = int(now_ms) // TICK_MS * TICK_MS
+        torn = self._repair_tails(now_ms)
+        for name in ("SCAN",) + ARM_ORDER:
+            self.log._head.pop(name, None)
+            self.log.verify(name)
+        self.engine.recover()
+        gaps = 0
+        rows = {a: self.log.rows(a) for a in ARM_ORDER}
+        for arm in ARM_ORDER:
+            sold = {r["pid"] for r in rows[arm] if r.get("kind") == "sell"}
+            refused = {r["order_id"] for r in rows[arm] if r.get("kind") == "order_refused" and r.get("side") == "buy"}
+            for r in rows[arm]:
+                if r.get("kind") != "entry":
+                    continue
+                pid = r["order_id"]
+                ep = self.engine.positions.get(pid)
+                if ep is not None and ep.exit_slot is None:
+                    self.open[pid] = Pos(**r["pos"])
+                elif ep is None and pid not in sold and pid not in refused:
+                    gaps += self._gap_once(now_ms, "entry_not_in_engine:" + pid, {"reason": "entry_not_in_engine", "arm": arm, "order_id": pid, "pool": r["pool"]})
+        nxt = now_ms
+        periods = [r for r in self.log.rows("SCAN") if r.get("kind") == "period" and not r.get("no_trade")]
+        pending_rebuilt = False
+        if periods:
+            last = periods[-1]
+            t_d, t_e = R.ms_from_iso(last["t_d"]), R.ms_from_iso(last["t_e"])
+            ranks = [r for r in rows_l(self.log) if r["ms"] == t_d]
+            if not ranks:
+                if now_ms <= t_e:
+                    self.poll_to(t_d)
+                    self.sim_now = max(self.sim_now, t_d)
+                    self.screen(t_d, rebuild=last)
+                    pending_rebuilt = self.pending is not None
+                    nxt = t_d + TICK_MS
+                else:
+                    self._count("restart_after_t_e")
+                    self._log_excluded(t_d, last["t_d"], "restart_after_t_e")
+            elif not ranks[-1].get("excluded") and not any(r.get("kind") == "entries_halted" and r.get("t_e") == last["t_e"] for r in self.log.rows("SCAN")):
+                want = {"L": [ranks[-1]["pick"]], "R": [R.r_pick(last["t_d"], last["screen"], last["card_shas"])], "S": [last["screen"][0]], "U": list(last["screen"])}
+                for arm in ARM_ORDER:
+                    have = {r["pool"] for r in rows[arm] if r.get("kind") == "entry" and r["ms"] == t_e}
+                    for pool in want[arm]:
+                        if pool not in have:
+                            gaps += self._gap_once(now_ms, f"entry_missing:{arm}:{pool}:{t_e}", {"reason": "entry_missing_after_restart", "arm": arm, "pool": pool, "t_e": last["t_e"]})
+        ev = {"ms": now_ms, "kind": "resume", "torn_lines": torn, "gap_rows": gaps, "open_rebuilt": len(self.open), "pending_rebuilt": pending_rebuilt,
+              "next_tick": nxt, "frozen_sha": self.cfg.frozen_sha}
+        path = Path(check_path(self.root / "resume.jsonl", "w"))
+        with open(path, "ab") as fh:
+            fh.write(json.dumps(ev, sort_keys=True, separators=(",", ":")).encode() + b"\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        return nxt
+
     # -- loop
     def tick(self, T: int) -> None:
         self.sim_now = max(self.sim_now, T)
@@ -617,8 +724,12 @@ class Hv7Runner:
         return self.log.md5()
 
 
+def rows_l(log: DecisionLog) -> list[dict]:
+    return [r for r in log.rows("L") if r.get("kind") == "rank"]
+
+
 def main(argv: list[str] | None = None) -> int:
-    """A MiScusi job. NEVER RUN in C2 (no owner cost line yet; C3 hardens, drills and registers it). Refuses without an explicit owner-line reference."""
+    """A MiScusi job. NEVER RUN yet (C3b registers and drills it). Refuses unless --owner-cost-line-ref matches OWNER_REF_RE."""
     ap = argparse.ArgumentParser(description="HV7 forced-rank runner (paper only)")
     ap.add_argument("--tape", required=True)
     ap.add_argument("--root", default=HV7_ROOT)
@@ -628,6 +739,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--feed-delay-slots", type=int, required=True)
     ap.add_argument("--owner-cost-line-ref", required=True, help="reference to the owner's HV7 cost line (DESIGN section 5); no API call without it")
     a = ap.parse_args(argv)
+    try:
+        validate_owner_ref(a.owner_cost_line_ref)       # BEFORE anything is built: CallerModel is never constructed on a bad ref
+    except Hv7Error as e:
+        print(f"refused: {e}", file=sys.stderr)
+        return 2
     from tools.arena_paper import ArenaEngine
     from tools.hv6_agents import CallerModel
     from tools.hv6_runner import live_chain_source
@@ -638,8 +754,16 @@ def main(argv: list[str] | None = None) -> int:
                     ArenaState(check_path(a.tape, "r"), start_ms=0), engine, CallerModel(guard), live_chain_source(a.root), guard)
     signal.signal(signal.SIGTERM, run.request_stop)
     engine.start_all()
-    run.log_start()
-    run.run(int(time.time_ns() // 1_000_000) // TICK_MS * TICK_MS, 1 << 62)
+    now = int(time.time_ns() // 1_000_000) // TICK_MS * TICK_MS
+    if run.log.files("SCAN"):
+        start = max(now, run.resume(now))
+    else:
+        run.log_start()
+        start = now
+    try:
+        run.run(start, 1 << 62)
+    finally:
+        run.shutdown()
     return 0
 
 
