@@ -21,12 +21,22 @@ DEVIATIONS from DESIGN section 8, found by reading the code (disclosed for the P
   * The L model call never blocks the loop. In live mode it runs on its own daemon thread from t_d; at t_e the loop uses the reply only if it arrived by
     t_e, otherwise the period is a FALLBACK (R's pick, counted) and every arm still enters at t_e, through the engine's own 1.9 s leg from t_e, never from
     L's reply time. Exits keep running on every tick during the call. (QP #998.)
-NOT HERE (C3): the E1 restart drill, hv7_count.py, hv7_register.py, the real-layout drill. `main` is wired but has never been run.
+C3a (this file): resume after a crash (`Hv7Runner.resume`), torn-line repair, in-flight shutdown, owner-ref validation, counter lock, ledger
+reconciliation of rank-row cost. hv7_count.py, hv7_register.py and scripts/ops/hv7-e1-drill.sh are separate files. `main` is wired but has never been run.
 
-C3 TODO (reviewer notes on #998):
-  * resume after a crash (rebuild open positions and the pending period from the hash-chained log and the engine ledger; none exists yet);
-  * torn last line: a crash between the log write and the engine write, or a half-written log line, must be detected and refused or repaired on resume;
-  * validate the --owner-cost-line-ref argument of main() (today it is only required to be present, not checked against the owner's recorded line).
+RESUME RULES (stated, tested in test_hv7_resume.py):
+  1. A torn last line (no trailing newline) is truncated to the last full line and a `gap` row (reason torn_last_line, dropped byte count and sha256) is
+     appended to the SCAN log. A broken hash chain is NOT repairable: LogChainError, the runner refuses to start.
+  2. Open positions are rebuilt from the entry rows plus the engine's own recover() (the engine holds the position; the log holds the Pos). An entry row with
+     no engine position, no sell row and no order_refused row (crash between the log write and the engine write) is NOT re-sent: a `gap` row
+     (reason entry_not_in_engine). No late entry, ever: every entry is at t_e.
+  3. Pending period, resumed at or before t_e: re-screened at t_d from the replayed tape (no new SCAN row; the screen ids and card shas must equal the logged
+     ones, else the period is excluded, reason resume_rebuild_mismatch) and the L call is re-asked through the replay cache (same request_sha256, no double spend).
+  4. Pending period, resumed after t_e, or an L call still in flight at shutdown: the period is EXCLUDED for all four arms (SCAN `period_excluded` row and an L
+     `rank` row with fallback true, excluded true and the reason). It is not scored as a fallback entry. hv7_count reports it as `excluded`.
+  5. A period whose rank row exists but whose entries are incomplete (kill during enter): a `gap` row per missing (arm, pool) entry; never a late entry.
+  6. The resume event itself goes to <root>/resume.jsonl, NOT to the decision log: a resume with no torn line, no unexecuted entry and no in-flight loss leaves
+     the decision-log md5 equal to an uninterrupted run. Gap and exclusion rows are in the decision log, so the md5 differs by rule when one is written.
 """
 from __future__ import annotations
 
@@ -38,9 +48,11 @@ if __package__ in (None, ""):
 
 import argparse
 import contextlib
+import hashlib
 import json
 import math
 import os
+import re
 import signal
 import sys
 import threading
@@ -53,7 +65,7 @@ from tools import hv4_cards as C
 from tools import hv6_agents as A
 from tools import hv6_cards as H
 from tools import hv7_rank as R
-from tools.arena_declog import DecisionLog, sha256_hex, utc_day
+from tools.arena_declog import GENESIS, DecisionLog, LogChainError, sha256_hex, utc_day  # noqa: F401
 from tools.arena_paper import ArenaRefused
 from tools.arena_state import WSOL_MINT, ArenaState
 from tools.haiku_caller import Ledger, LedgerError
@@ -89,8 +101,19 @@ READ_ROOTS = (H.TAPE_ROOT, HV7_ROOT)
 WRITE_ROOTS = (HV7_ROOT,)
 
 
+# Owner cost-line reference: a MiScusi notebook id (n_...) or a MiScusi question id (q_...). ASSUMED shape (prefix, then 8-32 base62 characters);
+# the pattern is pinned here so a typo or a free-text string cannot unlock the API path.
+OWNER_REF_RE = re.compile(r"(?:n|q)_[A-Za-z0-9]{8,32}")
+
+
 class Hv7Error(RuntimeError):
     pass
+
+
+def validate_owner_ref(ref: Any) -> str:
+    if not isinstance(ref, str) or OWNER_REF_RE.fullmatch(ref) is None:
+        raise Hv7Error("owner cost-line ref must be a MiScusi notebook id (n_...) or question id (q_...)")
+    return ref
 
 
 class CardAllowlistError(Hv7Error):
@@ -190,6 +213,15 @@ class Hv7Guard:
     def record_refusal(self, pf: A.Preflight, now_ms: int) -> None:
         return None
 
+    def request_cost(self, day: str, request_sha256: str) -> float:
+        """Net cost the budget ledger holds for one request: its reserve rows plus the settle rows of those reservations (0.0 if none: a replayed answer
+        reserves nothing). Reconciles a rank row's cost_usd against the ledger."""
+        led = Ledger(self.root / "ledgers" / RANK_LEDGER / f"{day}.jsonl")
+        with led.locked(exclusive=False):
+            rows = led.rows()
+        ids = {r["reservation_id"] for r in rows if r.get("kind") == "reserve" and r.get("request_sha256") == request_sha256}
+        return math.fsum(r["cost_usd"] for r in rows if r.get("reservation_id") in ids)
+
     def day_spent(self, day: str) -> float:
         led = Ledger(self.root / "ledgers" / RANK_LEDGER / f"{day}.jsonl")
         with led.locked(exclusive=False):
@@ -277,6 +309,7 @@ class Hv7Runner:
         self.arm_of: dict[str, str] = {}
         self.pending: dict[str, Any] | None = None
         self.counters: dict[str, int] = {}
+        self._lock = threading.Lock()              # the L thread and the loop both count
         self.hook_errors: list[str] = []
         self.slot = 0
         self.sim_now = 0
@@ -305,7 +338,8 @@ class Hv7Runner:
 
     # -- plumbing
     def _count(self, k: str, n: int = 1) -> None:
-        self.counters[k] = self.counters.get(k, 0) + n
+        with self._lock:
+            self.counters[k] = self.counters.get(k, 0) + n
 
     def _now(self, T: int) -> int:
         return self.now_fn() if self.cfg.live else T
@@ -445,7 +479,9 @@ class Hv7Runner:
             row["model_error"] = "exception:" + type(e).__name__
             self._count("model_exception")
             return R.validate_rank(None, rr.shown_ids), row
-        row.update(model_error=reply.error, refused=bool(reply.refused), latency_ms=reply.latency_ms, cost_usd=reply.cost_usd, response_sha256=reply.response_sha256)
+        row.update(model_error=reply.error, refused=bool(reply.refused), latency_ms=reply.latency_ms, cost_usd=reply.cost_usd, response_sha256=reply.response_sha256,
+                   replayed=bool(getattr(reply, "replayed", False)))
+        row.update(self._reconcile(rr, T, row))
         recv = self.now_fn() if self.cfg.live else T + int(reply.latency_ms or 0)
         if reply.error is not None or reply.refused:
             return R.validate_rank(None, rr.shown_ids), row
@@ -454,6 +490,23 @@ class Hv7Runner:
             self._count("late_reply")
             return R.validate_rank(None, rr.shown_ids), row
         return R.validate_rank(reply.text, rr.shown_ids), row
+
+    def _reconcile(self, rr: R.RankRequest, T: int, row: Mapping[str, Any]) -> dict:
+        """Log the budget ledger's own figure for this request next to the row's cost_usd. A replayed answer must show 0.0 in the ledger. A mismatch is counted,
+        never hidden; an unreadable ledger is recorded as null."""
+        g = self.guard
+        if g is None or not hasattr(g, "request_cost"):
+            return {"ledger_cost_usd": None, "cost_reconciled": None}
+        try:
+            led = g.request_cost(utc_day(T), rr.request.request_sha256())
+        except Exception:  # noqa: BLE001 - recorded as null
+            self._count("ledger_unreadable")
+            return {"ledger_cost_usd": None, "cost_reconciled": None}
+        want = 0.0 if row.get("replayed") else float(row.get("cost_usd") or 0.0)
+        ok = abs(led - want) <= 1e-9
+        if not ok:
+            self._count("cost_mismatch")
+        return {"ledger_cost_usd": led, "cost_reconciled": ok}
 
     # -- t_e: entries
     def enter(self, T: int) -> None:
