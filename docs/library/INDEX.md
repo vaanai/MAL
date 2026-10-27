@@ -34,11 +34,11 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 43 | 24 | 1 |
 | `desk-read` | 1 | 49 | 0 |
-| `explored-no-survivor` | 41 | 8 | 1 |
+| `explored-no-survivor` | 41 | 9 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 185 | 89 | 2 |
+| **all** | 185 | 90 | 2 |
 
-The file holds 526 rows: the 276 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 527 rows: the 277 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -354,6 +354,12 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `p80-h5-rug-veto` | Learned rug / big-loser veto (top 15% of a 6-feature logistic) on the frozen H5 book | `parked` | Independent training sample is empty: all 1,702 explore-0814 pools that meet the H5 entry trigger are H5 trades; 0 of 9,470 other pools trigger. No pnl or veto read. |
+
+### p84-h5-regime (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p84-h5-regime-switch` | Prior-day graduation count as a day-level on/off switch on the frozen H5 binding book | `explored-no-survivor` | KILL by line 4: 0 on-days in confirmation (graduations fall from ~11,000/day in Aug to ~2,000/day in Sep, so every Sep prior day is below T=4525). Discovery: switch delta -0.0005 pp flat, +0.2584 pp pressure, placebo p 0.506/0.471. Report-only block-median variant S1: confirmation delta -8.1955 pp flat, -6.9571 pp … |
 
 ## Dead as frozen, and explored with no survivor
 
