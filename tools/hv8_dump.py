@@ -187,8 +187,10 @@ class Known:
         return any(t is not None and t < t_d for t in ts)
 
 
-def collect(tape: Path, scratch: Path, win: Window = DEFAULT, *, t_ds: list[int] | None = None) -> dict[str, Any]:
-    """The replay. Returns {sets: [(t_d, [cards in screen order])], counters, dropped_instances, dropped_pools, warm_rows}."""
+def make_runner(tape: Path, scratch: Path, win: Window = DEFAULT, *, t_ds: list[int] | None = None, engine: Any = None, model: Any = None,
+                guard: Any = None) -> tuple[Any, dict[str, Any]]:
+    """The guarded HV7 runner over the tape (shared by the dump and the label tool). Every refusal fires here, before a row is applied.
+    Defaults (NullEngine, NoModel) price nothing and ask nothing."""
     tape, scratch = check_path(tape), check_path(scratch)
     files = hour_files(tape, win)
     t_ds = win.grid() if t_ds is None else list(t_ds)
@@ -201,8 +203,9 @@ def collect(tape: Path, scratch: Path, win: Window = DEFAULT, *, t_ds: list[int]
     R.READ_ROOTS = tuple(dict.fromkeys(R.READ_ROOTS + (base,)))          # process-local: the runner's log dir lives in scratch
     R.WRITE_ROOTS = tuple(dict.fromkeys(R.WRITE_ROOTS + (base,)))
     run = R.Hv7Runner(R.Hv7Config(root=str(root), frozen_sha="hv8dump0000000", clock_start_ms=win.block_start_ms, phantom_filter=True),
-                      ArenaState(tape, start_ms=0), NullEngine(), NoModel(), FakeChain(), R.Hv7Guard(root))
-    run._ask = lambda rr, T: None           # type: ignore[method-assign]  # no model call of any kind
+                      ArenaState(tape, start_ms=0), engine or NullEngine(), model or NoModel(), FakeChain(), guard or R.Hv7Guard(root))
+    if model is None:
+        run._ask = lambda rr, T: None       # type: ignore[method-assign]  # no model call of any kind
     keep = frozenset(p for _h, p in files)
     st = run.state
     st._hour_files = lambda orig=st._hour_files: [t for t in orig() if (t[1] or t[2]) in keep]     # type: ignore[method-assign]
@@ -235,6 +238,13 @@ def collect(tape: Path, scratch: Path, win: Window = DEFAULT, *, t_ds: list[int]
         return orig_card(pool, T, snap, prints, feats)
 
     run._card = card                       # type: ignore[method-assign]
+    return run, {"dropped": dropped, "tail_rows_scanned": rows_scanned, "t_ds": t_ds}
+
+
+def collect(tape: Path, scratch: Path, win: Window = DEFAULT, *, t_ds: list[int] | None = None) -> dict[str, Any]:
+    """The replay. Returns {sets: [(t_d, [cards in screen order])], counters, dropped_instances, dropped_pools, tail_rows_scanned, periods}."""
+    run, info = make_runner(tape, scratch, win, t_ds=t_ds)
+    dropped, t_ds, rows_scanned = info["dropped"], info["t_ds"], info["tail_rows_scanned"]
     sets = []
     for T in t_ds:
         run.poll_to(T)                     # rows up to T - 1 ms only; the first call replays the warm-up
