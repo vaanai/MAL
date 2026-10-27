@@ -1,0 +1,7 @@
+Running as unit: run-r78bcde2df03644da9d0e569b7cc19710.scope; invocation ID: dc591b7f5583405884588ae422ad5a97
+hours 776 full days 30 eligible 24 2026-08-16 2026-09-23
+migrated mints (36400,)
+pool-days with volume 176202 lp_fee non-null share 0.0
+selected pool-days 240 days 24 per-day counts min 10
+prior-day vol (SOL) median/min/max of rank1 {'count': 24.0, 'mean': 1263167.2857081802, 'std': 3268859.4268710823, 'min': 61253.038419541, '25%': 103872.2420066405, '50%': 226670.488508965, '75%': 564844.0606951913, 'max': 15631670.90381102}
+rank10 vol SOL median 29822.5006319375
