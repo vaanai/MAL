@@ -119,7 +119,7 @@ SELL_BUILDER_PIN: dict[str, str] = {
     "pe.exit_check_sha256": "7dcd289631cfe0418439df90f4b0901518d813dfd474f0cb2a6c660e3a51eb00",  # PR 3: the quote_out that min_out is a share of
     "c0.ladder_sha256": "06123a941d5a842fe9eccaed4277b898fe8c88ba7681c0feee5f059b397f3233",  # PR 3: the compiled 0.85 / 0.65 rungs and their escalation point (this module's own ladder source)
     # PR 5a (QP removal precondition 2): the exit snapshot builder and the decoders / quote helpers it calls
-    "pe.fetch_snapshot_sha256": "e0c0d598b99a92864d401b32a99f2f70550565c03a3618df975484cd47f49b74",
+    "pe.fetch_snapshot_sha256": "4eca167a0f3c4fcd3e1d1a53cdab00fa4f7a183c3895cf1caca2ec9c666de4c5",
     "pe.entry_quote_sha256": "5d231ffbfb421cfc00c6208d45a3cf3f7be3284c37c12f0ee9b290fdc8741582",
     "pe.fee_ppm_for_sha256": "0417a9705faf7613bfd59cf623da1aa6e0ce7b0b910c61f8625ab482a8a67ca8",
     "pe.drift_vs_seed_sha256": "4021191cb90890acbd2f88f1ac2d555c968e493b985ca6b86f0f90169a5a34db",
@@ -155,6 +155,8 @@ SELL_BUILDER_PIN: dict[str, str] = {
     "x.pumpswap_tx.parse_virtual_signed_sha256": "2636cf5c1ce25d493d96aa5a19646870f2af9245eb17ba330e6313dd4d4ceff7",
     "x.pumpswap_tx.global_volume_accumulator_sha256": "6640e41412852a01e05ca9bf304671b9c461cf78a53f4b7f29174f68eb725aea",
     "x.pumpswap_tx.user_volume_accumulator_sha256": "36da371bf169495396c3482111e1795f0f617e2951a947d8f12cdd9d123f33f3",
+    "x.pumpswap_tx.fee_recipient_sha256": "930899fddb8b24e796bce00b5044322c9aad6a8903ef952b5592898782c8ed03",
+    "x.pumpswap_tx.pool_is_mayhem_sha256": "74d043fcf2cd07d136f0d13eb5785105210e5060faeebbdafb745280d59923d7",
     "x.probe_executor.critical_sha256": "5202b98f88c7fd5999bb29e592f79a6909d449f05079084238871d7ccfea8f47",
     "x.probe_live.LiveExecutor._send_sha256": "0c8f34a313e985b85788ee94425ff32bfdf56e5fa1913eaf8ac9528bc567b91c",
     "x.probe_live.LiveExecutor._exit_candidates_sha256": "b77a23adb146cf51b559126431d1991fe7da477006312e7812736ce88ea03f37",
@@ -179,6 +181,7 @@ PIN_EXTRA = ("pumpswap_simulate:_b64", "pumpswap_simulate:token_amount",
              "probe_executor:Snapshot", "probe_executor:check_sell", "probe_executor:check_halt_file",
              "probe_executor:Executor._prio", "probe_executor:Executor._exit_prio",
              "pumpswap_tx:parse_virtual_signed", "pumpswap_tx:global_volume_accumulator", "pumpswap_tx:user_volume_accumulator",
+             "pumpswap_tx:fee_recipient", "pumpswap_tx:pool_is_mayhem",
              "probe_live:LiveExecutor._send", "probe_live:LiveExecutor._exit_candidates",
              "probe_executor:critical")  # critical: the @pe.critical wrapper around _start_sell (inspect.getsource unwraps it, so it needs its own key)
 BRIDGE_METHODS = ("poll_positions", "refresh_warm")  # BridgeExecutor, nested in make_live_port: read by AST from the file on disk
