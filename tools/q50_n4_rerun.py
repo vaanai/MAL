@@ -8,9 +8,9 @@ Mint rule (pre-ruling): each pool's s0 (oldest signature blockTime) must be in S
 outcome, V or an H5 rule, never from an October hour). The caller gives s0 and its source; the script also tries a public-RPC oldest-signature walk
 (capped) and refuses on a contradiction. One Token and one Token-2022 mint. Pass = full_sell_ok and control_reverts_at_base_close for both.
 
-TODO (capped-walk hardening, QP 6433064859; not implemented): when the walk hits its cap, also require
-  (1) getBlockTime(migration_slot) within 120 s of the caller's s0, and
-  (2) the oldest blockTime seen >= s0 - 120 s and < 2026-10-01T00:00:00Z.
+Capped-walk hardening (QP-RULING-1027-n4-t22 (0)): when the walk hits its cap, the caller must give a migration slot and a tape or chain-migration
+source, and also (1) getBlockTime(migration_slot) is within 120 s of the caller's s0, and (2) the oldest blockTime seen is >= s0 - 120 s and
+< 2026-10-01T00:00:00Z.
 """
 from __future__ import annotations
 
@@ -29,6 +29,8 @@ SEPT_END = datetime(2026, 10, 1, tzinfo=timezone.utc)  # exclusive; the Look-2 c
 MAX_PAGES = 30
 S0_TOLERANCE_S = 120  # |caller s0 - RPC oldest blockTime| when the walk reaches the pool's first signature
 TAPE_SOURCE = "sept-audit-tape-migrations"
+CHAIN_SOURCE = "chain-migration-tx"  # s0 = getBlockTime of an on-chain pump migration tx (QP (2) source ii)
+CAPPED_SOURCES = (TAPE_SOURCE, CHAIN_SOURCE)
 
 
 def parse_utc(s: str) -> datetime:
@@ -55,11 +57,22 @@ def oldest_block_time(rpc: Callable[[str, list], Any], pool: str, max_pages: int
     return oldest, False
 
 
-def s0_cross_check(s0: datetime, source: str, slot: int | None, oldest: int | None, reached: bool) -> str | None:
-    """Refusal reason or None. Walk capped: only the Sept audit tape with a migration slot is accepted. Walk complete: the found s0 must match."""
+def s0_cross_check(s0: datetime, source: str, slot: int | None, oldest: int | None, reached: bool, slot_time: int | None = None) -> str | None:
+    """Refusal reason or None. Walk capped: only a tape/chain source with a migration slot whose getBlockTime (slot_time) is within tolerance of s0,
+    and an oldest blockTime seen in [s0 - tol, Oct 1). Walk complete: the found s0 must match."""
     if not reached:
-        if source != TAPE_SOURCE or slot is None:
+        if source not in CAPPED_SOURCES or slot is None:
             return "walk_capped_needs_tape_source_with_migration_slot"
+        if slot_time is None:
+            return "slot_blocktime_missing"
+        if abs(slot_time - s0.timestamp()) > S0_TOLERANCE_S:
+            return f"slot_blocktime_mismatch:caller={int(s0.timestamp())},slot={slot_time},tol={S0_TOLERANCE_S}"
+        if oldest is None:
+            return "rpc_no_signatures"
+        if oldest < s0.timestamp() - S0_TOLERANCE_S:
+            return f"capped_oldest_before_s0:{oldest}"
+        if oldest >= SEPT_END.timestamp():
+            return f"capped_oldest_not_september:{oldest}"
         return None
     if oldest is None:
         return "rpc_no_signatures"
@@ -76,14 +89,18 @@ def check_one(rpc, kind: str, mint: str, pool: str, s0_utc: str, s0_source: str,
     if prob:
         return {"kind": kind, "mint": mint, "pool": pool, "ok": False, "refusal": prob}
     oldest, reached = oldest_block_time(rpc, pool)
-    bad = s0_cross_check(s0, s0_source, migration_slot, oldest, reached)
+    slot_time = None
+    if not reached and migration_slot is not None and s0_source in CAPPED_SOURCES:
+        slot_time = rpc("getBlockTime", [migration_slot])
+    bad = s0_cross_check(s0, s0_source, migration_slot, oldest, reached, slot_time)
     if bad:
         return {"kind": kind, "mint": mint, "pool": pool, "ok": False, "refusal": bad}
     rec = ss.holder_run(rpc, mint, pool, ax.PRIORITY_DEFAULT)
     out = out_dir / f"q50-n4-{kind}-{mint[:8]}.json"
     sha = ss.write_record(rec, out)
     v = rec["verdict"]
-    ok = bool(v["full_sell_ok"]) and bool(v["control_reverts_at_base_close"]) and rec["token_program"] == expect_program
+    got = str(rec["token_program"]).lower()
+    ok = bool(v["full_sell_ok"]) and bool(v["control_reverts_at_base_close"]) and got == expect_program.lower() and got in ss.TOKEN_NAMES.values()
     return {"kind": kind, "mint": mint, "pool": pool, "s0_utc": s0_utc, "s0_source": s0_source, "migration_slot": migration_slot, "rpc_oldest_blocktime": oldest, "rpc_oldest_reached_end": reached,
             "token_program": rec["token_program"], "expected_program": expect_program, "full_sell_ok": v["full_sell_ok"],
             "control_reverts_at_base_close": v["control_reverts_at_base_close"],
@@ -96,7 +113,7 @@ def main(argv: list[str] | None = None, rpc_factory: Callable[[str], Any] | None
         ap.add_argument(f"--{k}-mint", required=True)
         ap.add_argument(f"--{k}-pool", required=True)
         ap.add_argument(f"--{k}-s0-utc", required=True, help="pool create blockTime, UTC, YYYY-MM-DDTHH:MM:SSZ, September 2026")
-        ap.add_argument(f"--{k}-s0-source", required=True, help="sept-audit-tape-migrations | rpc-oldest-signature")
+        ap.add_argument(f"--{k}-s0-source", required=True, help="sept-audit-tape-migrations | chain-migration-tx | rpc-oldest-signature")
         ap.add_argument(f"--{k}-migration-slot", type=int, default=None, help="required when the oldest-signature walk hits its cap")
     ap.add_argument("--rpc", default=ss.DEFAULT_RPC)
     ap.add_argument("--out-dir", required=True, type=Path)
