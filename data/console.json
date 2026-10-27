@@ -20,8 +20,8 @@
   {
    "id": "hv6-smoke-armed-1027",
    "kind": "decision",
-   "title": "HV6 P0 PASS; smoke armed for 10-28 00:40Z (gate #1768 → #1769 → #1770)",
-   "detail": "Sources: MiScusi job #1746 (HV6 P0 count, exit 0, verdict registration_ok true; notebook n_4ffIm1diGryDOg) and pinned smoke entry n_4Kfsh-nYw6G_SQ (MiScusi jobs #1768 gate, #1769 runner smoke, #1770 reviewer smoke). Registration targeted by 10-29T12Z for T0 10-30. No book has cleared the promotion gate.",
+   "title": "HV6 P0 verdict registration_ok; smoke armed for 10-28 00:40Z (gate #1768 → #1769 → #1770)",
+   "detail": "Sources: MiScusi job #1746 (HV6 P0 count, exit 0); its output file /data/mal/arena/haiku-v6/p0/p0-8cd8fe54a3-20261027T131424Z.jsonl (sha256 c2d08aa2f1c6700b7b5fa9bf1e2da8bd16b70c04ee689cb5ad7b8840cb274270) ends with a verdict row: registration_ok true, floor_pass_all_arms true, gap_rule_ok true (notebook n_4ffIm1diGryDOg). Smoke chain per pinned entry n_4Kfsh-nYw6G_SQ: MiScusi jobs #1768 gate, #1769 runner smoke, #1770 reviewer smoke. Registration targeted by 10-29T12Z for T0 10-30. No book has cleared the promotion gate.",
    "atUtc": "2026-10-27T18:30:00Z"
   },
   {
