@@ -7,9 +7,9 @@ Seals: Aug/Sep exploration tape and the frozen 2,826 binding trades only. Public
 3. Random sample seed 1, n=80 of 2,790 matched trades (36 of 2,826 have no create row; 1,856 creators):
    prior 10 min 1/80 = 1.25%; 30 min 2/80 = 2.5%; 60 min 2/80 = 2.5% (Wilson 95% 0.69% to 8.66%). Lower bound; crude correction ~3.7%.
    Claim lags 26.1 s and 1,036.6 s. 6 other trades had sweep/distribute/transfer only (not counted).
-4. NOT_DECIDABLE: the point estimate (2.5%) is below the 3% line but the interval and the lower-bound count do not exclude it; a veto skipping <4% of entries would need skipped trades ~27 pp worse than the rest to move the mean +1.0 pp.
+4. NOT_DECIDABLE: the point estimate (2.5%) is below the 3% line but the interval and the lower-bound count do not exclude it; a veto skipping <4% of entries would need skipped trades ~27 pp worse than the rest to move the mean +1.0 pp (arithmetic only; no outcome joined).
    Caveats: n=80; CI upper end above 3%; shared-fee-config creators missed; entry time = mbt + trig_t + 1.9 s.
-   Revive only with a decoded claim feed.
+   Revive: a decoded claim feed OR a full uncapped causal pass with retries.
 Probe ran as a local background process, not a MiScusi job. Script: p64_probe_claims.py.
 
 The 3% line: "KILL if fewer than 3% are affected (no capacity)" comes from the manager's lane brief for P64 (manager17), not from a DEC or the constitution. It is a capacity floor chosen by the manager.
