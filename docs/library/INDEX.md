@@ -33,8 +33,8 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `parked` | 9 | 0 | 0 |
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 44 | 20 | 1 |
-| `desk-read` | 1 | 49 | 0 |
-| `explored-no-survivor` | 41 | 6 | 1 |
+| `desk-read` | 1 | 48 | 0 |
+| `explored-no-survivor` | 41 | 7 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
 | **all** | 185 | 81 | 2 |
 
@@ -281,7 +281,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
-| `p60-feeshare-commit-tag` | Creator fee-sharing / one-redirect lock as a creator-commitment label for the rug filter | `desk-read` | Untested. Capacity guess: a veto on an existing book's entries: if it removes 10% of entries that carry 25% of losses, on a 20 trades/day x 0.1 SOL book that is up to 0.05 SOL/day of avoided loss (arithmetic on invented shares, not a measurement). Kill risk: most pump coins never configure sharing, so the label is … |
+| `p60-feeshare-commit-tag` | Creator fee-sharing / one-redirect lock as a creator-commitment label for the rug filter | `explored-no-survivor` | Untested. Capacity guess: a veto on an existing book's entries: if it removes 10% of entries that carry 25% of losses, on a 20 trades/day x 0.1 SOL book that is up to 0.05 SOL/day of avoided loss (arithmetic on invented shares, not a measurement). Kill risk: most pump coins never configure sharing, so the label is … |
 
 ### p60-t22-quote-pnl (1)
 
