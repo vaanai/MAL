@@ -32,9 +32,9 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `explored-survivor-unconfirmed` | 10 | 0 | 0 |
 | `parked` | 9 | 2 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 43 | 24 | 1 |
+| `untested` | 43 | 23 | 1 |
 | `desk-read` | 1 | 49 | 0 |
-| `explored-no-survivor` | 41 | 8 | 1 |
+| `explored-no-survivor` | 41 | 9 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
 | **all** | 185 | 89 | 2 |
 
@@ -335,7 +335,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
-| `p67-knn-case-memory` | kNN retrieval of similar past pools with outcomes as few-shot context | `untested` | not run; writes outcomes into prompts (HV7 forbids), leakage risk if memory spans test days, and a plain numeric kNN would be the honest comparator |
+| `p67-knn-case-memory` | kNN retrieval of similar past pools with outcomes as few-shot context | `explored-no-survivor` | The LLM-free numeric comparator is KILLED as a book (mean <= 0 under both fail models); the rank IC and the R / U / S baselines are the deliverable for HV7 and HV8. Still not run: any LLM case-memory ranker (writes outcomes into prompts; HV7 forbids it). |
 
 ### p67-llm-rule-writer (1)
 

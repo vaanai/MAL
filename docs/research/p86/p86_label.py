@@ -14,6 +14,7 @@ PS, CAND, OUT, LOG = sys.argv[1:5]
 TH = np.array([t for t, _ in PUMPSWAP_SOL_FEE_TIERS], float)
 TP = np.array([p for _, p in PUMPSWAP_SOL_FEE_TIERS], float)
 PRIO = 55_000
+WIN = int(sys.argv[5]) if len(sys.argv) > 5 else 1800
 STAKES = {"25": 0.25e9, "100": 1.0e9}
 
 
@@ -28,7 +29,8 @@ con.register("c", c[["pool", "td", "v_sol"]])
 glob_ = PS + "/*.parquet"
 sel = "r.pool, c.td, r.slot, r.bt, r.side, r.sol, r.q::DOUBLE AS q, r.b::DOUBLE AS b, coalesce(r.txi,0) AS txi, coalesce(r.evi,0) AS evi"
 E = con.execute(f"SELECT {sel} FROM read_parquet('{glob_}') r JOIN c ON c.pool=r.pool AND r.bt >= c.td-140 AND r.bt < c.td+40 WHERE r.wsol").df()
-X = con.execute(f"SELECT {sel} FROM read_parquet('{glob_}') r JOIN c ON c.pool=r.pool AND r.bt >= c.td+3600 AND r.bt < c.td+3600+240 WHERE r.wsol").df()
+X = con.execute(f"""SELECT * FROM (SELECT {sel}, row_number() OVER (PARTITION BY r.pool, c.td ORDER BY r.slot, coalesce(r.txi,0), coalesce(r.evi,0)) AS rn
+  FROM read_parquet('{glob_}') r JOIN c ON c.pool=r.pool AND r.bt >= c.td+3600 AND r.bt < c.td+3600+{WIN} WHERE r.wsol) WHERE rn <= 600""").df()
 E = E.sort_values(["slot", "txi", "evi"]); X = X.sort_values(["slot", "txi", "evi"])
 Eg = {k: g for k, g in E.groupby(["pool", "td"], sort=False)}
 Xg = {k: g for k, g in X.groupby(["pool", "td"], sort=False)}

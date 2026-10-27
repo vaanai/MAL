@@ -1,4 +1,4 @@
-"""P86 step 3: walk-forward kNN (k=25), book (a), R / U / S baselines, rank IC (PREREG.md). Usage: p86_analyze.py LABELED.parquet > output.txt"""
+"""P86 step 3: walk-forward kNN (k=25), book (a), R / U / S baselines, rank IC (PREREG.md). Usage: p86_analyze.py LABELED.parquet [nopool] > output.txt"""
 import sys
 import numpy as np
 import pandas as pd
@@ -8,6 +8,7 @@ PRIO = 55_000
 K = 25
 FEATS = ["log_vol60", "ret_5m", "ret_15m", "ret_60m", "flow60", "log_signers15", "log_age", "top3_60m", "close_vs_hi", "log_qeff"]
 TEST_FROM = pd.Timestamp("2026-09-03", tz="UTC")
+NOPOOL = len(sys.argv) > 2 and sys.argv[2] == "nopool"  # report-only sensitivity: memory never contains the same pool as the scored candidate
 x = pd.read_parquet(sys.argv[1])
 x["ts"] = pd.to_datetime(x.td, unit="s", utc=True)
 x["day"] = x.ts.dt.strftime("%Y-%m-%d")
@@ -32,6 +33,8 @@ for d in sorted(x[is_test].day.unique()):
     M = ((mem[FEATS].values - mu) / sd); my = mem.y.values
     Z = (x.loc[cur, FEATS].values - mu) / sd
     D = ((Z[:, None, :] - M[None, :, :]) ** 2).sum(-1)
+    if NOPOOL:
+        D = np.where(np.asarray(mem.pool.astype(str))[None, :] == np.asarray(x.loc[cur, "pool"].astype(str))[:, None], np.inf, D)
     nn = np.argsort(D, axis=1, kind="stable")[:, :K]
     x.loc[cur, "score"] = my[nn].mean(1)
 t = x[is_test].copy()

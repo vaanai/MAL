@@ -81,3 +81,7 @@ Reported: trades/day x stake x net edge (mean pnl per trade, both models), at 0.
 ## Expectation (not evidence)
 
 Every universe the lab has measured loses before selection; the expected book mean is negative under both models. The deliverable is the IC and the R / S baselines.
+
+## Amendment 1 (2026-10-27, before p86_analyze.py was run; after seeing the drop counts and the mean no-fail label of the first pricing run)
+
+The PREREG did not state a maximum wait for the exit print. The first pricing run used a 240 s window after the trigger and dropped 415 candidates with no print in it (and 103 with no print after trigger + 2 slots). Dropping pools that went quiet is survivorship bias in the favourable direction (a pool that dies is exactly a loss). Primary label window is therefore 1,800 s after t_d + 3600 s (a pool with no print in that window is still dropped and counted). The 240 s run is kept as a sensitivity (`p86_label_log_w240.txt`, `p86_analyze_output_w240.txt`). The first run's mean no-fail label (-0.042288) had been seen; no other number of it had. Nothing else changed.
