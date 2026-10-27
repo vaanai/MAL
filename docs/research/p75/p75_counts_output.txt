@@ -1,0 +1,3 @@
+Running as unit: run-rfc117cbd5e09414c812154844be147bc.scope; invocation ID: 07a1f7feeecf453da32d8b7201f0b9d3
+/data2/mal/wt/p75/docs/research/p75/p75_counts.py:16: RuntimeWarning: overflow encountered in divide
+  kd = np.abs(q[1:] * bb[1:] / (q[:-1] * bb[:-1] + 1e-300) - 1)

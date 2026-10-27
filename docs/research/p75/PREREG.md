@@ -37,3 +37,10 @@ Also reported as caveats: total without best day <= 0, minority-positive days, C
 
 ## Capacity line
 trades/day x stake x net mean per trade at 0.25 and 1 SOL (each with its own curve impact), both fail models, concurrency uncapped.
+
+## Amendment 1 (pre-result; made after the P74 review points (1)-(3) arrived)
+State of knowledge at this amendment: the PREREG above is committed (8a742df6). The rows file was re-extracted (with `trader`) and the counts/pricing jobs were started but both were OOM-killed at the 8G cap before producing any output. No feature value, fit, score, cutoff, outcome or test number has been seen by anyone in this lane.
+1. Portal fee: the primary result is without the 0.5% portal fee (P55/P73/P74 convention); the whole analysis is ALSO run with the 0.5% portal fee (5,000 ppm) charged on each bonding leg (buy net and sell proceeds; PumpSwap exit unchanged). The features, fit and cutoff do not depend on fees, so they are identical across the two runs. Neither version may be called a LEAD unless it is positive both ways (kill lines 1-3 are applied to both).
+2. `p75_price.py` resolves `tools/` repo-relatively.
+3. The bonding real-SOL sell cap is tested as in `tools.paper_curve_math.quote_sell`: payable real SOL = observed tape reserve (q) minus the 30 SOL virtual floor (q itself if q < 30 SOL); a sell whose gross exceeds it reverts and is booked as a total loss of the stake (conservative) and counted. The number of such trades is reported; "the cap never bound" is not relied on.
+4. Memory cap raised to 24G for the counts/pricing steps (first attempt at 8G was OOM-killed).

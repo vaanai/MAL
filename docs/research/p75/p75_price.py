@@ -3,7 +3,9 @@ Run: python p74_price.py ROWS.parquet OUT.parquet   (ROWS from p74_extract.py; M
 """
 import math, sys
 import numpy as np, pandas as pd, pyarrow.parquet as pq
-sys.path.insert(0, "/data2/mal/wt/p74")
+import os, pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[3]))
+PORTAL = int(os.environ.get("P75_PORTAL_PPM", "0")) / 1e6   # 0 primary; 5000 = 0.5% portal fee on each bonding leg
 from tools.paper_curve_math import PUMPSWAP_SOL_FEE_TIERS, BONDING_FEE_PPM
 from tools.latency_curve import Pressure, fit_curve
 
@@ -49,13 +51,13 @@ for mint, g in bond.groupby("mint", sort=False):
     k = np.arange(j + 1, len(sl))
     tmax = X + T_SLOTS
     for name, S in STAKES.items():
-        net = S * (1 - FEE)
+        net = S * (1 - FEE) * (1 - PORTAL)
         tkn = b[j] * net / (q[j] + net)
         if tkn >= max(0.0, b[j] - TOK_OFF): row[name] = np.nan; row["refused_" + name] = True; continue
         row["impact_" + name] = (net / tkn) / (q[j] / b[j]) - 1
         qk = q[k]; bk = b[k]
         with np.errstate(all="ignore"):
-            gross = tkn * (qk + net) / bk; proc = gross * (1 - FEE)
+            gross = tkn * (qk + net) / bk; proc = gross * (1 - FEE) * (1 - PORTAL)
         mark = (proc - S) / S
         trig = ((prog[k] >= P_EXIT) | (mark <= -STOP) | (sl[k] > tmax)) & (qk > 0)
         tt = np.flatnonzero(trig)
@@ -71,8 +73,10 @@ for mint, g in bond.groupby("mint", sort=False):
             m = np.searchsorted(sl, land, "right") - 1
             if q[m] <= 0: row[name] = np.nan; row["q0_" + name] = True; continue
             gs = tkn * (q[m] + net) / b[m]
-            if q[m] >= 30e9 and gs > q[m] + net - 30e9: stats["cap_hit"] += 1
-            proceeds = gs * (1 - FEE); kind = reason
+            # P75 fix: payable real SOL is the OBSERVED tape reserve less the 30 SOL virtual floor (our reinjected buy creates no real SOL beyond what it paid in)
+            real_sol = q[m] - 30e9 if q[m] >= 30e9 else q[m]
+            if gs > real_sol: stats["cap_hit"] += 1; row[name] = -S - 2 * PRIO; row["kind_" + name] = "sell_reverts"; continue
+            proceeds = gs * (1 - FEE) * (1 - PORTAL); kind = reason
         else:
             kind = "migration"
             pg = psg.get(mint)
