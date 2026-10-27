@@ -1,0 +1,88 @@
+[
+ {
+  "mint": "7ttfwuBSnbNTgf32gUAT7v9bjdDWsn6pYpp7nmGmpump",
+  "round_start": "2026-10-27T20:16:44Z",
+  "round_end": "2026-10-27T20:16:48Z",
+  "txs": 14,
+  "ix_counts": {
+   "transfer_creator_fees_to_pump": 1,
+   "collect_creator_fee": 1,
+   "distribute_fee_to_holders": 13
+  },
+  "quote_mint": "So11111111111111111111111111111111111111112",
+  "recipients": 200,
+  "total_paid_raw": 199117968,
+  "to_authority_raw": 138600,
+  "to_authority_share": 0.000696,
+  "first_sig": "5AyqgaFRtuiudodQEQsBF64Nqx57RwdmNxwqUcGDqqmpGWis23KuB9dMEXst2Wrxpi7uTDhV7r1xfsUe9nhZhssr"
+ },
+ {
+  "mint": "7ttfwuBSnbNTgf32gUAT7v9bjdDWsn6pYpp7nmGmpump",
+  "round_start": "2026-10-27T20:27:45Z",
+  "round_end": "2026-10-27T20:27:48Z",
+  "txs": 15,
+  "ix_counts": {
+   "transfer_creator_fees_to_pump": 1,
+   "collect_creator_fee": 1,
+   "distribute_fee_to_holders": 14
+  },
+  "quote_mint": "So11111111111111111111111111111111111111112",
+  "recipients": 205,
+  "total_paid_raw": 300159376,
+  "to_authority_raw": 148500,
+  "to_authority_share": 0.000495,
+  "first_sig": "TkABiU6fYSKJECXHqo5nKKQpqwaM7ie4dp89kSKUfvU9x1pNKNPD7et7VcM9ESZ2Rq9h2fjEnYGGnwzAkE9AXj6"
+ },
+ {
+  "mint": "51SfaAyrYaR8FpibXT4TXtxEpnZSNoDwYVRojtKupump",
+  "round_start": "2026-10-27T20:42:49Z",
+  "round_end": "2026-10-27T20:43:07Z",
+  "txs": 127,
+  "ix_counts": {
+   "transfer_creator_fees_to_pump": 1,
+   "collect_creator_fee": 1,
+   "distribute_fee_to_holders": 126
+  },
+  "quote_mint": "So11111111111111111111111111111111111111112",
+  "recipients": 1781,
+  "total_paid_raw": 1037524948,
+  "to_authority_raw": 1257300,
+  "to_authority_share": 0.001212,
+  "first_sig": "3KrXX3NzGPGmzMucRyzjDVso72PjamBYQh9wmGKGS9saxVxSVDrE1TAkwu7fiP42ihqaLSWmvdNuDZ3crxDRoNf7"
+ },
+ {
+  "mint": "51SfaAyrYaR8FpibXT4TXtxEpnZSNoDwYVRojtKupump",
+  "round_start": "2026-10-27T20:48:54Z",
+  "round_end": "2026-10-27T20:49:17Z",
+  "txs": 124,
+  "ix_counts": {
+   "transfer_creator_fees_to_pump": 1,
+   "collect_creator_fee": 1,
+   "distribute_fee_to_holders": 123
+  },
+  "quote_mint": "So11111111111111111111111111111111111111112",
+  "recipients": 1747,
+  "total_paid_raw": 248805909,
+  "to_authority_raw": 1227600,
+  "to_authority_share": 0.004934,
+  "first_sig": "JoNBnhbewLvbjScZnwJUQorK3EoRhkxbDrr9CqdJ2rv5mg33wQcxLnNdLEj5Fsb5ZiFjN3hfrk9gDUJj91YDhjE"
+ },
+ {
+  "mint": "H1fK1zrjVYeMs5FLGUDhqF34usz75UbVynKt4JHZpump",
+  "round_start": "2026-10-27T20:22:26Z",
+  "round_end": "2026-10-27T20:22:28Z",
+  "txs": 7,
+  "ix_counts": {
+   "ATokenGP:01": 1,
+   "collect_creator_fee_v2": 1,
+   "collect_coin_creator_fee": 1,
+   "distribute_fee_to_holders": 6
+  },
+  "quote_mint": "TTWofwAge91oFhZs7kpQdyrVRkmevgM88xijGvQFbKo",
+  "recipients": 38,
+  "total_paid_raw": 102,
+  "to_authority_raw": 36,
+  "to_authority_share": 0.352941,
+  "first_sig": "3f4sPjXrjGyiaZePCGC6BhEAWuKVwNgbrK3Fjr3oscRXtsfMs2TL47Qgg9R3bcxdASHuRhJc8BogZFWXWQJ8Jpid"
+ }
+]
