@@ -77,10 +77,163 @@ is optional, and adds no arm or cell.
 
 ## 3. Clock
 
-- T0 = 2026-11-01T00:00:00Z = `1793491200000` (`CLOCKS_MS[0]` in `hv7_register.py`; the fallback clock `1793577600000` = 2026-11-02T00:00:00Z is not registered by this pack).
+- T0 = 2026-11-01T00:00:00Z = `1793491200000` (`CLOCKS_MS[0]` in `hv7_register.py`; the fallback clock `1793577600000` = 2026-11-02T00:00:00Z is not registered by this pack; a slip to that clock needs a pack revision with H = 9, a needed rate of 11.1/day, and the confirm phrase with the new ms, DESIGN section 6).
 - Entries halt (H) = `1794355200000` = 2026-11-11T00:00:00Z (`HALT_MS`).
 - `--clock-start-ms` must be passed explicitly (it is `required=True` in `hv7_register.py` and `hv7_runner.py`; `hv7_count.py` takes it with default 0, so pass it explicitly there too, and it additionally requires `--clock-end-ms`).
 - Kill-review check (DESIGN section 6): LAB_STATE and docs/HANDOFF.md list no kill-review week after 2026-10-05 (manager17, relayed 2026-10-27, PR #996). To be re-checked on the registration date.
+
+### 3a. Pin block: H and the read instants (Am.4 item 2.2, Am.7)
+
+| Pin | Value |
+|---|---|
+| H | 10 days (Am.4 item 2.2: 14, capped by the 2026-11-11 window end); 9 for the 11-02 fallback clock |
+| T0 + H | `1794355200000` = 2026-11-11T00:00:00Z = `HALT_MS` |
+| E1 instant | 2026-11-03T00:00:00Z = `1793664000000`, over [T0, T0 + 2 d) (section 3c) |
+| Gate read | B <= T0 + H, else NOT_DECIDABLE; read not before B + 61 min |
+| Contrast window and read | `t_e` in [`1793491200000`, `1794355200000`); read not before 2026-11-11T01:01:00Z = `1794358860000` |
+| Where H lives (Am.7) | the `hv7_halt` registry line carries the halt instant; the notebook copy (`REGISTRATION_NOTEBOOK_ID`) carries H = 10 too |
+| C5 read tool | PR #1021 (`tools/hv7_read.py`), still under fix: flags may change. Invocation to pin: `--horizon-days 10` (or `--rate` with the P0 mean). **Re-check after #1021 merges.** |
+
+### 3b. DESIGN section 3, quoted in full (fallback rule, `why` rule, display permutation, prompt-sentence replacements)
+
+The block below is copied programmatically from `docs/research/hv7/DESIGN.md` lines 82 to 155 (the whole of section 3 through its last line). It carries the FALLBACK rule and its 10% checks at E1, B and T0 + H, the no-abstain rule, the `why` rule, the position-bias control, the disclosed BASE RATE replacement ("Do not buy to fill a quota ..." replaced by "The book trades your first choice ...") and the MEASURED DIRECTIONS clause replacing GEN_v0 line 31, and the RANKING TASK paragraph. Both prompt-sentence replacements are disclosed here as the registration (section 7).
+
+<!-- BEGIN DESIGN SECTION 3 (verbatim) -->
+## 3. Arms
+
+Cards are byte-identical at `t_d` for every arm. Every arm buys 0.25 SOL at `t_e` (so R, S and U do not get a latency head start over L's API
+call) and exits by the same code rule.
+
+| Arm | Pick | Model call | Promotable |
+|---|---|---|---|
+| **L** | Haiku's rank 1 (k = 1) of the shuffled set | 1 per period | yes |
+| **R** | uniform random pick: index into the **screen order** (section 2) = `int(sha256("hv7-R|" + t_d_iso + "|" + ",".join(sorted(card_shas))).hexdigest(), 16) mod N` | none | no (placebo) |
+| **S** | screen-score pick: candidate 1 of the screen order (`f.vol_60m`) | none | yes (rule book) |
+| **U** | **all N** candidates, 0.25 SOL each, per-period return = mean over N | none | no (report-only null) |
+| L-mem (v7.1, not in v7.0) | L plus a nightly reviewer memory note | 1 per period + 1/night | deferred |
+
+**Why U.** R's single seeded draw is an unbiased estimate of "random selection from the same set", with draw noise. U is that expectation exactly
+(the mean over all N), so L - U has no draw noise. Under independent per-pool returns with sd s, var(L - R) is about 2 s^2 and var(L - U) about
+s^2 (1 + 1/N) (assumption: zero cross-pool correlation; positive correlation helps both). At N = 8 that is sd 1.41 s against 1.06 s, so L - U needs
+about 0.56x the sample of L - R for the same power. U also prices every non-selected rank, which gives the rank IC (Spearman of L's full order vs
+realised 60-min return, report-only) and the data `haiku-v3-4` lacked. R is kept because it is the literal placebo the owner asked for and is a
+check on U (R - U must be mean zero; a non-zero R - U is a pipeline fault, reported).
+
+**Engine load for U.** Up to 8 concurrent 0.25 SOL paper positions per hour for one bot id. `arena_paper.ArenaEngine.buy` takes one order at a
+time; whether the engine and runner allow 8 open positions for one bot is **not verified** (C2 checks it). If not, U is computed by the read tool
+from 8 shadow bot ids `hv7.0-U1..U8` (slot by screen order), which is the same arithmetic.
+
+**Cross-arm pricing independence (hard C2 test, QP (a)4).** L's pick is always one of U's N, and R's and S's picks often are too. `arena_paper`
+prices each fill on tape state with only the bot's own buy re-injected (header line 13), which suggests independence, but it is not verified.
+C2 must show **byte-identical entry and exit prices** (every leg, both fail models) for 2 bots, and for L + U1..U8 (+ R + S), buying one pool at
+one `t_e`. If that test fails, the design is invalid (not just noisier) and HV7 is not registered until it passes.
+
+**Model and no-abstain rule.** `claude-haiku-5-5`, thinking disabled, no temperature, max_tokens 600, one 5-min cache marker on the system block
+(`hv4_prompts.CACHE_MARKER`). The reply must be a JSON list that is a full permutation of the shown candidate ids (exactly N, no duplicates, no
+others), each with `why` <= 20 words naming >= 1 card field. There is **no SKIP, WATCH or VETO token**. A reply that is not a full permutation, a
+refusal, a timeout, a budget stop, or no reply by `t_e` is **FALLBACK**: L trades **R's pick** that period, the row is logged `fallback=true`, and
+the attempt counts in n. Fallback rows contribute 0 to L - R (given the C2 pricing-independence test) and R - U noise to L - U, so a failing model pulls the contrast
+toward the null, never toward a pass. **Fallback rule (QP (a)3):** F_L / A_L > 0.10, over all counted attempts of L, makes the L gate read and
+every L contrast NOT EVALUABLE. It is checked by the outcome-blind count tool at E1 (attempts in [T0, T0 + 2 d)), at B (attempts before B) and at
+T0 + H (all attempts with `t_e` in [T0, T0 + H)), each time written once before any outcome is opened.
+
+**`why` rule (frozen, QP (d)3).** The order is the decision. A full permutation whose `why` for some item is over 20 words or names no card field
+is **accepted and logged** (`why_defect` count), not FALLBACK. Only a reply that is not a full permutation of the shown ids (or a refusal,
+timeout, budget stop, no reply by `t_e`) is FALLBACK. The rehearsal parse bar counts by this rule and reports `why_defect` beside it.
+
+**Position bias control.** The display order is a seeded permutation, `perm = argsort(sha256("hv7-perm|L|" + t_d_iso + "|" + card_sha))` per
+card, logged with the request. Because the order is random, a model that always picks display slot 1 is a random picker: position bias costs power,
+never validity (L then equals R in distribution). Bias is measured offline (section 7) and, in the live run, only by the pinned outcome-blind tool
+at E1 (section 4).
+
+**Prompt (sketch; frozen text goes in C1 and is not edited after the rehearsal).** System block = HV6's GEN playbook header facts that are true
+for all arms. Every measured BASE RATE sentence is byte-equal to GEN_v0; the closing buy/skip sentences are replaced with
+"The book trades your first choice and pays the round trip cost before any move, so rank by what the card fields support. Judge each pool on its fields alone." (disclosed below). MEASURED DIRECTIONS ends with the QP clause (below). C1's tests byte-compare
+with `tools/hv6_playbooks/GEN_v0.txt`: UNTRUSTED TEXT, CARDS, HONESTY and SCREEN, NOT REASON whole; BASE RATE up to and including "...a learning
+loop did no better than a shuffled one."; MEASURED DIRECTIONS up to the changed sentence.
+
+**Disclosed replacement in BASE RATE (made in C1, found by QP's #997 review).** GEN_v0 line 25 ends: "Do not buy to fill a quota and do not skip
+to stay safe: a BUY pays the round trip cost before any move, a SKIP forgoes whatever a good card offers. Judge each card on its fields alone."
+RANK_v0 replaces those two sentences with: "The book trades your first choice and pays the round trip cost before any move, so rank by what the
+card fields support. Judge each pool on its fields alone." Reason: the GEN_v0 sentences address a BUY/SKIP choice that a forced rank does not
+have (there is no quota to fill and no SKIP to take), so kept as written they would describe options the model does not have. The replacement
+keeps the one factual claim in them (the round trip is paid before any move) and the "fields alone" instruction. Every measured sentence before
+it (universes lose before selection; round trip about 2.4%, 3.5% with rent; fresh pools -24.09% per attempt; survivors -8.27% per 24 h hold; a
+random pick among ten -2.88%; earlier Haiku versions added nothing) stays byte-equal to GEN_v0. The registration discloses this replacement
+beside the MEASURED DIRECTIONS change. MEASURED DIRECTIONS uses QP-RULING-1026-entry-rate (c)'s clause instead of GEN_v0 line 31 ("do not claim that
+one of them improves the odds", which contradicts a forced ranker): "you may argue from them, but say it is a hypothesis, not a lab result".
+GEN_v0's conviction and size sentences are dropped (HV7 has neither). Both changes are disclosed in the registration. Plus:
+
+> RANKING TASK. You are shown N pools that passed the lab's code screen at the same instant. The book WILL buy exactly one of them, your first
+> choice, and sell it by a fixed code rule (stop -8%, target +20%, or 60 minutes). You cannot skip. The base rate above still holds: the average
+> of these pools is expected to lose after costs. Your job is relative selection: order them from the one you expect to do best over the next
+> 60 minutes to the one you expect to do worst. Argue from card fields; say "hypothesis" where the lab has no measured direction. The order shown
+> is random and carries no information.
+
+User block = the N cards in the shuffled order, with ids, checked by an HV7-local card check (`hv4_prompts.check_cards` caps at
+`ENTRY_MAX_CARDS = 4`; no hv4_/hv6_ file is edited). No outcome, no prior trade, no P&L, no other arm's decision is ever in a request.
+
+<!-- END DESIGN SECTION 3 (verbatim) -->
+
+Status line under the quoted engine-load and independence text (the quote stays as written): the C2 tests that answer "not verified" are in section 6 (`test_one_entry_per_arm_at_t_e_and_u_holds_all_n`: U holds all N open positions; `test_pricing_independence_*`: byte-identical pricing across arms), at the final sha.
+
+### 3c. E1 halt: declaration-only, with a manual action (QP item 2, manager decision)
+
+E1 is checked at 2026-11-03T00:00:00Z (`1793664000000`) by the outcome-blind count tool (`tools/hv7_count.py`) over [T0, T0 + 2 d). If fewer than 20 L attempts are counted in those two days, E1 FIRES: every HV7 read is NOT_DECIDABLE. The "entries halt for all arms at the next 00:00Z boundary" of DESIGN section 4 is **declaration-only**; there is no CLI route for it (`hv7_runner.main` refuses any `--entries-halt-ms` other than the registered `hv7_halt`, and `hv7_register.check_pins` refuses any halt other than `HALT_MS`). The production action is manual: the manager cancels the HV7 runner job, which stops API spend, and records it in LAB_STATE; open positions are then handled as Am.6 item 4 restart exclusions. A host-side MiScusi check job, scheduled before T0 for `1793664000000`, computes the E1 count at that instant and writes counts only. **That job is MANAGER-owed** (placeholder `E1_CHECK_JOB` in section 0; section 9).
+
+`RESULT_E1` (section 6) is a resume/restart drill: `scripts/ops/hv7-e1-drill.sh` runs `tools/test_hv7_resume.py` and `tools/test_hv7_count_register.py`. It is not a production-halt drill. `test_restart_with_entries_halt_enters_nothing_after_h_and_ends_flat` drives `Hv7Runner` directly, not `main()`.
+
+### 3d. Amendment 6 coverage (HV7 registers after Am.6; item 1 applies)
+
+| Am.6 item | Evidence | Status |
+|---|---|---|
+| 1.1 pins unchanged: frozen sha, rule, deciding cell, read rule; Am.2 config pin; parity and engine pins | sections 1, 3a, 3e | pinned here; `HV7_FINAL_SHA` OPEN |
+| 1.2 unit tests green at the frozen sha | `RESULT_UNIT` | OPEN (MANAGER): cite the run at `HV7_FINAL_SHA` |
+| 1.3 live smoke of at least 2 h, real model, scratch root, never counted | `RESULT_SMOKE` | OPEN (MANAGER); limits pinned below |
+| 1.3(e) md5 decision-equivalence proof (port) | `RESULT_EQUIV_1D`, `RESULT_F_3D` (section 6) | OPEN |
+| 2 data-integrity tool, thresholds, labels | below | pinned here |
+
+**Smoke (item 1.3(f)).** The smoke calls the real model `claude-haiku-5-5` at the pinned sampling settings (DESIGN section 3), the single ranker call, in a fresh scratch root that is not `HV7_ROOT` and not `/data/mal/arena/bots.json`; its ledger is never opened for price, fill or P&L; counts, timings and flags only. A StubModel run does not meet it. Its cost is inside the 0.30 USD/day cap: smoke API cap **0.10 USD** (reserve-before-call guard, lowered only), on a smoke ledger that is not `RANK-L`. The error limits are pinned now, before it runs, and are HV6's smoke limits (`git show origin/claude/hv6-registration-b:ARTIFACTS/lab/hv6-registration-1026.md`, section 7b: FAIL if STALE > 5% or chunk p95 > 8 s or card refusals above 5% of cards attempted or a run error or spend above the cap; INCOMPLETE under 30 error-free LLM calls; else PASS) adapted to the single ranker call:
+
+- FAIL if the share of ranker calls that become a FALLBACK (API error, timeout, refusal, a reply that is not a full permutation of the shown ids; why-defects are report-only, DESIGN section 3) is above 5% of calls;
+- FAIL if the ranker call latency p95 is above 8 s (HV6's p95 limit; the live deadline is `t_e`, 45 s after `t_d`);
+- FAIL if card refusals (as_of, chain stale or unavailable, holders stale) exceed 5% of cards attempted (built + refused);
+- FAIL on any run error, traceback or restart, or if spend exceeds 0.10 USD;
+- INCOMPLETE under 30 error-free ranker calls;
+- else PASS.
+
+A FAIL is fixed by code at a new sha, never by tuning a limit. The pinned notebook entry (blocking list, tool sha256s, this PR's head sha, instant, month-to-date API spend) precedes the job. **Open point for the manager:** `tools/hv7_*.py` at 687c77c6 has no smoke tool, and at hourly periods a 2 h live run makes about 2 ranker calls, so the 30-call INCOMPLETE floor needs a smoke driver that makes at least 30 ranker calls inside the 2 h (periods compressed in the smoke root only). That tool and its sha256 are `RESULT_SMOKE` prerequisites and are not claimed here.
+
+**Data-integrity tool (item 2).** `tools/arena_hour_health.py`, sha256 `227f92be466fec0bd6c6502bcece6b2e7755d0a675a30d08a2dd79d6353903b5` (checked with `sha256sum` on this branch; PR #805, merged `0a5aef86`; the same pin as HV4's L6/L7). HV6's pack names the tool and thresholds only by reference to HV4 L7; HV7 pins the HV4 L7 FINAL thresholds file `ARTIFACTS/lab/hv4-thresholds-FINAL-1025.json`, sha256 `da13ccc28457eaab2906548f318f76ce5c4598ecf7c007affcc3d8e7bd8b2eed` (verified with `sha256sum`), one value per check per UTC hour:
+
+| check | value | label |
+|---|---|---|
+| tape-hour file present, size > 0 | required | price-path (tape-level, both labels) |
+| `max_gap_s` | 3600 | price-path |
+| `max_sample_gap_s` | 900 | price-path |
+| `min_samples_per_hour` | 12 | price-path |
+| `feed_max_nonnull_gap_s` | 900 | price-path |
+| `feed_writing_paused` | 0 | price-path |
+| `feed_pauses_delta` | 0 | price-path |
+| `feed_rows_dropped_delta` | 0 | price-path |
+| `max_input_age_s` | 120 | decision-input |
+
+HV7 reads the PumpSwap pools of the arena tape (`READ_ROOTS = (hv6_cards.TAPE_ROOT, HV7_ROOT)`); the manager confirms before the clock that these HV4 values (including `max_input_age_s` 120) are the ones HV7 is pinned to, or supplies a different file with its sha256. Report-only, never excluding: scan and decision latency, RSS, call budgets, decision counts (Am.6 item 2.2). The 300 s sampler job and the daily hour-table job are MANAGER-owed (section 9). The tool is pinned as path@sha256 here; the thresholds are never changed on a counted window.
+
+### 3e. Config pins as the code sets them (read-only, clean detached checkout at `687c77c64a777b91aba2514744287304ae1969ac`, `/data/mal/venv/bin/python -B`, 2026-10-27)
+
+| Pin | Value |
+|---|---|
+| `--feed-delay-slots` | 7 (as HV4's record, `ARTIFACTS/lab/hv4-registration-1023.md`, and HV6's pack) |
+| `StackConfig.as_dict()` of `tools.hv6_runner.stack_config(7)` (the call `hv7_runner` makes) | `{"e1_floor_per_005": 384022, "exit_lag_s": 0.55, "feed_delay_slots": 7, "guard": 1.15, "h_in": 0.002608, "h_out": 0.0016, "k_rounding": "ceil", "portal_ppm": 0, "press_intercept_provisional": -1.4197242838379789, "rent": 0, "send": 505000, "strand_rule": "both"}` |
+| sha256 of that dict (`json.dumps(d, sort_keys=True)`, UTF-8) | `b9de8e6f460bcf40c1a25b48ab0eb05b2d193930713201c496c533d20b9212ce` |
+| send | 505,000 lamports (`hv6_runner.STACK_FIELDS`); HV7 is not Am.8-covered |
+| engine blobs (`git hash-object`) | `tools/arena_feed.py` `d6969658f9d2f23f45a29b3ee785fc0d7b746774`; `tools/arena_paper.py` `5eef156bb617138a4c04fca6779f9ff4c5215b13`; `tools/arena_score.py` `f3adcd69c7ef62392eafc511b40d93a0dc31f13c` |
+| engine file sha256 | `tools/arena_feed.py` `7a9d424b6584b097ee61e4c7b48bef6e43b317bdd438ba588074057b5828826f`; `tools/arena_paper.py` `9d2fdb04a3da9bb38de9e30c91154f5a9ab2de513e6f4d7936c1eb1a54863514`; `tools/arena_score.py` `c4859323622794f5f97a131eb32256c905ca2ab6c1adf8ab21568fc2a98f27f3` |
+| `--tape` | `/data/mal/arena/tape` (`hv6_cards.TAPE_ROOT`) |
+| `--root` | `/data/mal/arena/haiku-v7` (`HV7_ROOT`) |
+
+These are re-checked by the same commands at `HV7_FINAL_SHA` (the engine files and `hv6_runner` are expected unchanged since 687c77c6; `git diff 687c77c6 <final> -- tools scripts` must be empty or the values are recomputed).
 
 ## 4. Reads (DESIGN section 4, quoted exactly)
 
