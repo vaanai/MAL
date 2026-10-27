@@ -30,15 +30,15 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `live-canary` | 1 | 0 | 0 |
 | `forward-test` | 2 | 0 | 0 |
 | `explored-survivor-unconfirmed` | 10 | 0 | 0 |
-| `parked` | 9 | 1 | 0 |
+| `parked` | 9 | 2 | 0 |
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 43 | 24 | 1 |
 | `desk-read` | 1 | 49 | 0 |
 | `explored-no-survivor` | 41 | 9 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 185 | 89 | 2 |
+| **all** | 185 | 90 | 2 |
 
-The file holds 526 rows: the 276 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 527 rows: the 277 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -354,6 +354,12 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `mayhem-flow-4` | Buy after the Mayhem agent's sell burst on PumpSwap | `explored-no-survivor` | P79 2026-10-27: KILL. 661 entries, 23.607 per day; mean -0.034346 SOL (flat 15%) and -0.026466 SOL (pressure-fail) at 0.25 SOL; 6 and 7 of 28 days positive; sides independent (buy->buy 85,973, buy->sell 88,089, sell->buy 85,123, sell->sell 90,703); 88.7% of signals fail a 1 SOL depth filter (median first-row quote … |
+
+### p80-h5-rug (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p80-h5-rug-veto` | Learned rug / big-loser veto (top 15% of a 6-feature logistic) on the frozen H5 book | `parked` | Independent training sample is empty: all 1,702 explore-0814 pools that meet the H5 entry trigger are H5 trades; 0 of 9,470 other pools trigger. No pnl or veto read. |
 
 ## Dead as frozen, and explored with no survivor
 

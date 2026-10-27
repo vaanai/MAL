@@ -1,0 +1,54 @@
+clusters after the one-open-position rule 425236; unfilled 94; clusters/day (declared, after position rule) 11812.1111
+trades 425142, days with trades 36, trades/day over 36 days 11809.5000; mean p_fail 0.2890
+exits: {'sl': 246969, 'tp': 176195, 'cap': 1978} censored 1489
+hit rate (target) 41.444%  stop 58.091%  cap 0.465%
+nofail {'n': 425142, 'days': 36, 'mean_sol': np.float64(-0.00775), 'mean_pct': np.float64(-3.09927), 'ci5_pct': np.float64(-3.19168), 'total': np.float64(-3294.07413), 'days_pos': 0, 'ex_top3_total': np.float64(-3303.21036), 'ex_top3_mean_pct': np.float64(-3.10789), 'best_day': '2026-09-18', 'ex_bestday_total': np.float64(-3289.47471), 'ex_bestday_mean_pct': np.float64(-3.09964), 'median_pct': np.float64(-8.34821)}
+flat {'n': 425142, 'days': 36, 'mean_sol': np.float64(-0.00659), 'mean_pct': np.float64(-2.63768), 'ci5_pct': np.float64(-2.71623), 'total': np.float64(-2803.47043), 'days_pos': 0, 'ex_top3_total': np.float64(-2811.2362), 'ex_top3_mean_pct': np.float64(-2.645), 'best_day': '2026-09-18', 'ex_bestday_total': np.float64(-2799.55561), 'ex_bestday_mean_pct': np.float64(-2.638), 'median_pct': np.float64(-7.09928)}
+press {'n': 425142, 'days': 36, 'mean_sol': np.float64(-0.00594), 'mean_pct': np.float64(-2.37532), 'ci5_pct': np.float64(-2.45632), 'total': np.float64(-2524.61615), 'days_pos': 0, 'ex_top3_total': np.float64(-2532.64675), 'ex_top3_mean_pct': np.float64(-2.38289), 'best_day': '2026-09-18', 'ex_bestday_total': np.float64(-2521.11164), 'ex_bestday_mean_pct': np.float64(-2.37562), 'median_pct': np.float64(-4.76553)}
+
+--- died vs survived (report only, uses post-entry information; not causal) ---
+died n=260330 hit_rate=40.322% stop=59.492% {'nofail': np.float64(-4.2242), 'flat': np.float64(-3.5938), 'press': np.float64(-3.2023)} (mean % of stake)
+survived n=164812 hit_rate=43.217% stop=55.878% {'nofail': np.float64(-1.3224), 'flat': np.float64(-1.1274), 'press': np.float64(-1.069)} (mean % of stake)
+
+--- kill lines ---
+kill lines hit: ['1 mean net <= 0 under a fail model', '3 top-3 driven']
+capacity: 11809.5000 trades/day x 0.25 SOL x -2.6377% (lower model) = -77.87418 SOL/day
+per-day totals (SOL):
+                 flat     press
+day                           
+2026-08-14  -53.6084  -47.9005
+2026-08-15  -82.6877  -74.5800
+2026-08-16  -81.0991  -73.9396
+2026-08-17  -95.3265  -85.1418
+2026-08-18  -83.1207  -73.8017
+2026-08-19 -126.4326 -107.4501
+2026-08-20 -112.7644  -98.4196
+2026-08-21 -101.8950  -91.2632
+2026-08-22  -89.2429  -78.8830
+2026-08-23  -78.7527  -70.8517
+2026-08-24  -98.3686  -89.0496
+2026-08-25 -116.6713 -105.2637
+2026-08-26 -119.5882 -107.2584
+2026-08-27 -137.5940 -118.0202
+2026-08-28  -46.8375  -42.7693
+2026-09-03  -41.1591  -37.1599
+2026-09-04  -62.3563  -57.1227
+2026-09-05  -59.1250  -52.9218
+2026-09-06  -61.5570  -56.2654
+2026-09-07  -78.7116  -72.1361
+2026-09-08  -71.5838  -64.4161
+2026-09-09  -69.9703  -61.2432
+2026-09-10  -60.0385  -54.1796
+2026-09-11  -58.2007  -52.1334
+2026-09-12  -64.7846  -60.0674
+2026-09-13  -79.1934  -72.8710
+2026-09-14  -65.6929  -60.8313
+2026-09-15  -40.0723  -36.8236
+2026-09-18   -3.9148   -3.5045
+2026-09-19  -88.5156  -82.6554
+2026-09-20  -99.1373  -91.9692
+2026-09-21  -91.8766  -84.8715
+2026-09-22  -82.0354  -75.3028
+2026-09-23  -83.4460  -75.2224
+2026-09-24  -91.3596  -84.2851
+2026-09-25  -26.7502  -24.0411
