@@ -426,7 +426,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
-| `p96-q50-forward-veto` | Avoid-bad-pools veto fit on Q50's forward trades, tested once on successor s1's trades | `untested` | Not run: waits for Q50's and s1's final reads, the EXP-024 Look-2 seal end (2026-11-14T00Z) and s1's end + 1 h (earliest about 2026-11-20T01Z). The scored-rows export from the ledger is owed (its own PR). |
+| `p96-q50-forward-veto` | Avoid-bad-pools veto fit on Q50's forward trades, tested once on successor s1's trades | `untested` | Not run: waits for Q50's and s1's final reads, the EXP-024 Look-2 seal end (2026-11-14T00Z) and s1's end + 1 h, with s1's clock bound to the arena bots.json (earliest about 2026-11-20T01Z, later after a slip). The scored-rows export from the ledger is owed (its own PR). |
 
 ## Dead as frozen, and explored with no survivor
 
