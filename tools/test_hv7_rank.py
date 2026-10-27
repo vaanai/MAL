@@ -1,0 +1,315 @@
+"""HV7 C1 tests: tools/hv7_rank.py, RANK_v0.txt, rank.txt. Synthetic cards only; no tape, card file or job output is read."""
+from __future__ import annotations
+
+import ast
+import hashlib
+import json
+from pathlib import Path
+
+import pytest
+
+import tools.hv4_prompts as P
+import tools.hv6_cards as hc
+import tools.hv7_rank as R
+from tools.haiku_caller import PRICES
+
+ROOT = Path(__file__).resolve().parent
+GEN = ROOT / "hv6_playbooks" / "GEN_v0.txt"
+RANK = ROOT / "hv7_playbooks" / "RANK_v0.txt"
+TD = "2026-11-01T03:02:00.000Z"
+TD_MS = R.ms_from_iso(TD)
+
+
+def card(i, as_of=TD_MS, **extra):
+    c = {"id": f"pool{i}", "as_of_ms": as_of, "as_of_slot": 1000 + i, "x": None,
+         "f": {"ret_60m": 0.01 * i, "vol_60m": 10.0 + i, "age_s": 8000, "quote_eff_sol": 100.0 + i},
+         "risk": {"holder_count": 50 + i}, "setup": {"type": "PULLBACK"}}
+    c.update(extra)
+    return c
+
+
+def cards(n=8, **kw):
+    return [card(i, **kw) for i in range(n)]
+
+
+def reply(order, why="f.ret_60m is positive"):
+    return json.dumps([{"id": i, "why": why} for i in order])
+
+
+# ---------------------------------------------------------------- playbook and template
+
+def paras(text):
+    return [p.strip("\n") for p in text.replace("=== RULES ===\n", "\n\n").split("\n\n")]
+
+
+@pytest.mark.parametrize("prefix", ["BASE RATE.", "SCREEN, NOT REASON.", "MEASURED DIRECTIONS.", "UNTRUSTED TEXT", "CARDS\n", "HONESTY"])
+def test_base_rate_paragraphs_byte_identical_to_gen(prefix):
+    g = [p for p in paras(GEN.read_text(encoding="utf-8")) if p.startswith(prefix)]
+    r = [p for p in paras(RANK.read_text(encoding="utf-8")) if p.startswith(prefix)]
+    assert len(g) == 1 and len(r) == 1
+    assert g[0].encode("utf-8") == r[0].encode("utf-8")
+
+
+def test_playbook_parses_and_has_ranking_task():
+    pb = R.load_rank_playbook()
+    assert pb.name == "RANK" and "RANKING TASK. You are shown N pools" in pb.rules
+    assert "You cannot skip." in pb.rules and "The order shown is random and carries no information." in pb.rules
+    assert "BUY, WATCH or SKIP" not in pb.text   # GEN's per-card answer sentence must not be carried over
+
+
+def test_template_placeholders():
+    t = R.load_rank_template()
+    assert sorted(set(__import__("re").findall(r"\{\{([A-Z]+)\}\}", t.text))) == ["CARDS", "N", "NONCE", "TD"]
+
+
+# ---------------------------------------------------------------- ordering validator
+
+IDS = [f"pool{i}" for i in range(8)]
+
+
+def test_valid_permutation():
+    order = [IDS[i] for i in (3, 1, 7, 0, 2, 6, 5, 4)]
+    v = R.validate_rank(reply(order), IDS)
+    assert v.ok and v.order == tuple(order) and v.reason is None
+    assert R.pick_top_k(v, 1) == (order[0],) and R.pick_top_k(v, 3) == tuple(order[:3])
+
+
+def _bad(text, reason, ids=IDS):
+    v = R.validate_rank(text, ids)
+    assert not v.ok and v.reason == reason and v.order == ()
+    assert R.pick_top_k(v, 1) == ()
+
+
+def test_validator_rejections():
+    _bad(reply(IDS[:7]), "missing_id")                                   # missing
+    _bad(reply(IDS + ["pool8"]), "unknown_id")                           # extra / invented id
+    _bad(reply(IDS[:7] + ["pool0"]), "duplicate_id")                     # duplicate
+    _bad(reply(IDS[:7] + ["other"]), "unknown_id")                       # wrong id
+    _bad(reply(IDS[:4]), "missing_id")                                   # wrong N
+    _bad(reply(IDS[:7] + [IDS[0]]), "duplicate_id")
+    _bad(json.dumps([{"id": i, "action": "SKIP", "why": "no"} for i in IDS]), "bad_item")   # SKIP text
+    _bad(json.dumps([{"id": i, "action": "WATCH"} for i in IDS]), "bad_item")
+    _bad("I cannot rank these.", "not_json")                             # refusal prose
+    _bad("```json\n" + reply(IDS) + "\n```", "not_json")                 # code fence
+    _bad(None, "refusal")                                                # timeout / budget stop / refusal
+    _bad("", "empty")
+    _bad("   \n", "empty")
+    _bad("[]", "missing_id")
+    _bad('{"ranking": []}', "not_list")
+    _bad(json.dumps(IDS), "bad_item")                                    # bare id strings
+    _bad(json.dumps([{"id": 5, "why": "x"}] * 8), "bad_item")
+    _bad(json.dumps([{"id": i, "why": 3} for i in IDS]), "bad_item")
+
+
+def test_why_quality_is_flag_not_fallback():
+    long = " ".join(["word"] * 25)
+    v = R.validate_rank(reply(IDS, why=long), IDS)
+    assert v.ok and v.why_words_over_20 == 8 and v.why_without_field == 8
+    v = R.validate_rank(json.dumps([{"id": i} for i in IDS]), IDS)
+    assert v.ok and v.why_without_field == 8
+
+
+def test_fallback_reasons_are_all_known():
+    for r in ("empty", "refusal", "not_json", "not_list", "bad_item", "unknown_id", "duplicate_id", "missing_id"):
+        assert r in R.FALLBACK_REASONS
+
+
+# ---------------------------------------------------------------- determinism and uniformity
+
+def shas(n=8, seed=0):
+    return [hashlib.sha256(f"{seed}|{i}".encode()).hexdigest() for i in range(n)]
+
+
+def test_display_perm_deterministic_and_a_permutation():
+    s = shas()
+    a, b = R.display_perm("L", TD, s), R.display_perm("L", TD, s)
+    assert a == b and sorted(a) == list(range(8))
+    assert R.display_perm("A", TD, s) != R.display_perm("B", TD, s)
+    assert R.display_perm("L", TD, s) != R.display_perm("L", "2026-11-01T04:02:00.000Z", s)
+    with pytest.raises(R.RankError):
+        R.display_perm("L|x", TD, s)
+    with pytest.raises(R.RankError):
+        R.display_perm("L", "2026-11-01 03:02", s)
+
+
+def test_display_perm_slot_uniformity():
+    # the screen's #1 candidate lands in each of 8 slots about equally over 8,000 periods
+    counts = [0] * 8
+    for k in range(8000):
+        t = R.iso_from_ms(TD_MS + k * 3_600_000)
+        perm = R.display_perm("L", t, shas(8, k))
+        counts[perm.index(0)] += 1
+    chi = sum((c - 1000) ** 2 / 1000 for c in counts)
+    assert chi < 24.32, (chi, counts)    # chi-square df 7, p = 0.001
+
+
+def test_r_pick_determinism_and_order_independence():
+    s = shas()
+    ids = IDS
+    assert R.r_pick(TD, ids, s) == R.r_pick(TD, ids, s)
+    assert R.r_pick_index(TD, s) == R.r_pick_index(TD, list(reversed(s)))     # hash uses the sorted shas
+    assert R.fallback_pick(TD, ids, s) == R.r_pick(TD, ids, s)
+    exp = int(hashlib.sha256(("hv7-R|" + TD + "|" + ",".join(sorted(s))).encode()).hexdigest(), 16) % 8
+    assert R.r_pick_index(TD, s) == exp
+    with pytest.raises(R.RankError):
+        R.r_pick(TD, ids[:7], s)
+
+
+def test_r_pick_uniform_over_10000_sets():
+    counts = [0] * 8
+    for k in range(10_000):
+        t = R.iso_from_ms(TD_MS + k * 3_600_000)
+        counts[R.r_pick_index(t, shas(8, k))] += 1
+    exp = 10_000 / 8
+    chi = sum((c - exp) ** 2 / exp for c in counts)
+    assert chi < 24.32, (chi, counts)    # chi-square df 7, p = 0.001
+
+
+# ---------------------------------------------------------------- screen, s_pick, u_set, min-set rule
+
+def test_screen_order_and_tie_by_pool_id():
+    vol = {"b": 5.0, "a": 5.0, "c": 9.0, "d": 1.0}
+    sc = R.screen_set(["a", "b", "c", "d"], vol, n=8, n_min=3)
+    assert sc.ids == ("c", "a", "b", "d") and not sc.no_trade
+    assert R.s_pick(sc) == "c" and R.u_set(sc) == sc.ids
+    tie = R.screen_set(["z", "m", "q"], {"z": 2.0, "m": 2.0, "q": 2.0})
+    assert tie.ids == ("m", "q", "z") and R.s_pick(tie) == "m"
+
+
+def test_screen_takes_first_n_and_vetoed_replaced_by_next():
+    vol = {f"p{i:02d}": float(100 - i) for i in range(12)}
+    sc = R.screen_set(vol, vol)
+    assert sc.ids == tuple(f"p{i:02d}" for i in range(8))
+    sc2 = R.screen_set(vol, vol, vetoed={"p00", "p03"})
+    assert sc2.ids == tuple(f"p{i:02d}" for i in (1, 2, 4, 5, 6, 7, 8, 9))
+
+
+def test_min_set_rule_no_trade_below_three():
+    for k in (0, 1, 2):
+        vol = {f"p{i}": 1.0 + i for i in range(k)}
+        sc = R.screen_set(vol, vol)
+        assert sc.no_trade and R.s_pick(sc) is None and R.u_set(sc) == ()
+    sc = R.screen_set({"a": 1.0, "b": 2.0, "c": 3.0}, {"a": 1.0, "b": 2.0, "c": 3.0})
+    assert not sc.no_trade and len(sc.ids) == 3
+    # a veto or a missing / non-finite volume that drops the set below 3 is a no-trade
+    assert R.screen_set(["a", "b", "c"], {"a": 1.0, "b": 2.0, "c": 3.0}, vetoed={"a"}).no_trade
+    assert R.screen_set(["a", "b", "c"], {"a": 1.0, "b": 2.0, "c": float("nan")}).no_trade
+    assert R.screen_set(["a", "b", "c"], {"a": 1.0, "b": 2.0}).no_trade
+    assert R.screen_set(["a", "b", "c"], {"a": 1.0, "b": 2.0, "c": True}).no_trade
+
+
+def test_screen_argument_checks():
+    with pytest.raises(R.RankError):
+        R.screen_set([], {}, n=13)
+    with pytest.raises(R.RankError):
+        R.screen_set([], {}, n=4, n_min=5)
+
+
+# ---------------------------------------------------------------- fallback to R
+
+def test_fallback_to_r():
+    s = shas()
+    good = R.validate_rank(reply(list(reversed(IDS))), IDS)
+    c = R.l_choice(good, TD, IDS, s)
+    assert c == R.LChoice("pool7", False, None)
+    for text, reason in ((None, "refusal"), ("nope", "not_json"), (reply(IDS[:7]), "missing_id")):
+        c = R.l_choice(R.validate_rank(text, IDS), TD, IDS, s)
+        assert c.fallback and c.reason == reason and c.pool_id == R.r_pick(TD, IDS, s)
+
+
+# ---------------------------------------------------------------- request
+
+def test_request_bytes_identical_across_builds_and_marker():
+    a, b = R.build_rank_request(TD, cards()), R.build_rank_request(TD, cards())
+    assert a.request == b.request and a.request.request_sha256() == b.request.request_sha256()
+    assert a.request.user_text == b.request.user_text
+    sysb = a.request.body()["system"]
+    assert sum(1 for blk in sysb if "cache_control" in blk) == 1 and sysb[0]["cache_control"] == P.CACHE_MARKER
+    assert a.request.max_tokens == 600 and "temperature" not in a.request.body()
+    assert sorted(a.shown_ids) == sorted(IDS) and a.shown_ids == tuple(a.screen_ids[i] for i in a.perm)
+    assert a.request.ids == a.shown_ids and "Call " in a.request.user_text
+    # a reply in the shown order validates against exactly these ids
+    assert R.validate_rank(reply(a.shown_ids), a.request.ids).ok
+
+
+def test_request_changes_with_set_seed_and_tag():
+    base = R.build_rank_request(TD, cards())
+    assert R.build_rank_request(TD, cards(7)).request.user_text != base.request.user_text
+    assert R.build_rank_request(TD, cards(), perm_tag="A").perm != R.build_rank_request(TD, cards(), perm_tag="B").perm
+    assert R.build_rank_request(TD, cards(), seq=1).request.nonce != base.request.nonce
+
+
+def test_request_checks():
+    with pytest.raises(R.RankError):
+        R.build_rank_request(TD, cards(2))                       # below the minimum set
+    with pytest.raises(P.PromptError):
+        R.build_rank_request(TD, cards(13))                      # above the cap
+    with pytest.raises(R.RankError):
+        R.build_rank_request(TD, cards(as_of=TD_MS + 1))         # card built after t_d
+    with pytest.raises(R.RankError):
+        R.build_rank_request(TD, cards(as_of=TD_MS - 1))
+
+
+@pytest.mark.parametrize("key", ["outcome", "pnl_sol", "fwd_ret_60m", "future_ret", "realized_ret", "fill_price", "label", "exit_price",
+                                 "prior_trade", "arm", "pick", "rank", "decision"])
+def test_no_outcome_field_enters_a_request(key):
+    cs = cards()
+    cs[3] = dict(cs[3], **{key: 0.1})
+    with pytest.raises(R.RankError):
+        R.build_rank_request(TD, cs)
+    cs = cards()
+    cs[3]["f"] = dict(cs[3]["f"], **{key: 0.1})                  # nested too
+    with pytest.raises(R.RankError):
+        R.build_rank_request(TD, cs)
+
+
+def test_normal_card_keys_pass_guard():
+    assert R.forbidden_keys(cards()) == []
+    assert R.forbidden_keys([{"f": {"ret_1m": 0, "dd_ath": 0, "alarm": 1, "quote_dd_peak": 0}}]) == []
+
+
+def test_request_text_has_no_outcome_vocabulary():
+    r = R.build_rank_request(TD, cards()).request
+    low = (R.load_rank_template().text + r.user_text.split("\n")[0]).lower()
+    for word in ("pnl", "p&l", "outcome", "your previous", "other arm"):
+        assert word not in low
+
+
+# ---------------------------------------------------------------- purity
+
+def test_module_is_pure():
+    src = (ROOT / "hv7_rank.py").read_text(encoding="utf-8")
+    assert hc.forbidden_imports(src, hc.HV4_CODE_ONLY) == []
+    mods = set()
+    for node in ast.walk(ast.parse(src)):
+        if isinstance(node, ast.Import):
+            mods |= {a.name for a in node.names}
+        elif isinstance(node, ast.ImportFrom):
+            mods.add(node.module)
+    assert mods <= {"__future__", "hashlib", "json", "math", "re", "dataclasses", "datetime", "pathlib", "tools", "tools.haiku_caller"}
+    for banned in ("socket", "requests", "urllib", "subprocess", "os", "time", "random", "anthropic"):
+        assert banned not in mods
+    assert "datetime.now" not in src and "time.time" not in src and "open(" not in src.replace("def open", "")
+
+
+# ---------------------------------------------------------------- cost arithmetic (DESIGN section 5)
+
+def test_cost_arithmetic():
+    p = PRICES["claude-haiku-5-5"]
+    assert (p["input"], p["cache_write"], p["cache_read"], p["output"]) == (0.10, 0.125, 0.01, 0.50)
+    row1 = R.cost_usd(2874, 9056, 400)
+    assert row1 == pytest.approx((2874 * 0.125 + 9056 * 0.10 + 400 * 0.50) / 1e6)
+    assert row1 == pytest.approx(0.00146485)
+    assert 24 * row1 == pytest.approx(0.0351564)
+    worst = R.cost_usd(2874, 9056, 600)
+    assert worst == pytest.approx(0.00156485) and 24 * worst == pytest.approx(0.03755640)
+    n12 = R.cost_usd(2874, 13384, 400)
+    assert n12 == pytest.approx(0.00189765) and 24 * n12 == pytest.approx(0.0455436)
+    assert 48 * row1 == pytest.approx(0.0703128)
+    mem = R.cost_usd(0, 11056, 400, cache_read_tokens=2874)
+    assert mem == pytest.approx(0.00133434) and 24 * mem == pytest.approx(0.03202416)
+    assert R.cost_usd(0, 60000, 4000) == pytest.approx(0.008)
+    assert 4 * 0.50 + 0.15 + 0.05 == pytest.approx(2.20)
+    assert 2.20 + 0.30 == pytest.approx(2.50) and 2.50 <= 3.00
+    assert 10 * 0.30 == pytest.approx(3.00)
+    assert R.ASSUMED_OUTPUT_TOKENS == 400 and R.MAX_TOKENS == 600
