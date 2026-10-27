@@ -28,7 +28,7 @@ The lab's Haiku traders abstain, so their books never reach n:
 
 **HV7 removes the choice to abstain, not the truth.** Each period a fixed causal code screen yields N candidates. Haiku must order them; the book
 trades the top k. The entry rate is set by the design (periods/day x share of periods with a full candidate set), not by the model. The prompt
-keeps the base-rate statement verbatim and says: "You must rank. The book trades your top pick. Your job is relative selection: which of these is
+keeps every measured base-rate sentence verbatim (one non-measured sentence pair is replaced; section 3) and says: "You must rank. The book trades your top pick. Your job is relative selection: which of these is
 least bad / most likely to do better than the others over the next 60 minutes."
 
 The consequence must be said up front: **a forced book trades the screen's base rate plus whatever Haiku's selection adds.** Every universe the lab has
@@ -127,8 +127,18 @@ never validity (L then equals R in distribution). Bias is measured offline (sect
 at E1 (section 4).
 
 **Prompt (sketch; frozen text goes in C1 and is not edited after the rehearsal).** System block = HV6's GEN playbook header facts that are true
-for all arms: BASE RATE and SCREEN, NOT REASON verbatim (a C1 test byte-compares these two paragraphs, and only these, with
-`tools/hv6_playbooks/GEN_v0.txt`). MEASURED DIRECTIONS uses QP-RULING-1026-entry-rate (c)'s clause instead of GEN_v0 line 31 ("do not claim that
+for all arms: SCREEN, NOT REASON verbatim, and BASE RATE verbatim except its last two sentences (C1 tests byte-compare SCREEN, NOT REASON
+whole, and BASE RATE up to and including "...a learning loop did no better than a shuffled one.", with `tools/hv6_playbooks/GEN_v0.txt`).
+
+**Disclosed replacement in BASE RATE (made in C1, found by QP's #997 review).** GEN_v0 line 25 ends: "Do not buy to fill a quota and do not skip
+to stay safe: a BUY pays the round trip cost before any move, a SKIP forgoes whatever a good card offers. Judge each card on its fields alone."
+RANK_v0 replaces those two sentences with: "The book trades your first choice and pays the round trip cost before any move, so rank by what the
+card fields support. Judge each pool on its fields alone." Reason: the GEN_v0 sentences address a BUY/SKIP choice that a forced rank does not
+have (there is no quota to fill and no SKIP to take), so kept verbatim they would describe options the model does not have. The replacement
+keeps the one factual claim in them (the round trip is paid before any move) and the "fields alone" instruction. Every measured sentence before
+it (universes lose before selection; round trip about 2.4%, 3.5% with rent; fresh pools -24.09% per attempt; survivors -8.27% per 24 h hold; a
+random pick among ten -2.88%; earlier Haiku versions added nothing) stays byte-equal to GEN_v0. The registration discloses this replacement
+beside the MEASURED DIRECTIONS change. MEASURED DIRECTIONS uses QP-RULING-1026-entry-rate (c)'s clause instead of GEN_v0 line 31 ("do not claim that
 one of them improves the odds", which contradicts a forced ranker): "you may argue from them, but say it is a hypothesis, not a lab result".
 GEN_v0's conviction and size sentences are dropped (HV7 has neither). Both changes are disclosed in the registration. Plus:
 
@@ -346,7 +356,7 @@ counts only; in-clock rows are in-sample).
 
 | Chunk | Branch | Scope | Tests |
 |---|---|---|---|
-| **C1** | `claude/hv7-rank-core` | `hv7_rank.py`, `RANK_v0.txt`, `rank.txt` | permutation validator (dup, missing, extra, wrong N, SKIP text, refusal, empty -> FALLBACK; long or field-less `why` -> accepted + `why_defect`), shuffle determinism, `r_pick` indexes the screen order (not the display order) with determinism and uniformity over 10,000 synthetic sets (chi-square), `s_pick` tie order, realised N 3..8 in `display_perm`/`r_pick`/`u_set`, `n_min` rule, HV7-local card check, byte-compare of BASE RATE and SCREEN, NOT REASON with GEN_v0, MEASURED DIRECTIONS uses the QP (c) clause, request bytes identical across two builds, no outcome field allowed in a request (guard test), price arithmetic of section 5, K1 cap sum test (section 5 (a)) |
+| **C1** | `claude/hv7-rank-core` | `hv7_rank.py`, `RANK_v0.txt`, `rank.txt` | permutation validator (dup, missing, extra, wrong N, SKIP text, refusal, empty -> FALLBACK; long or field-less `why` -> accepted + `why_defect`), shuffle determinism, `r_pick` indexes the screen order (not the display order) with determinism and uniformity over 10,000 synthetic sets (chi-square), `s_pick` tie order, realised N 3..8 in `display_perm`/`r_pick`/`u_set`, `n_min` rule, HV7-local card check, byte-compare of SCREEN, NOT REASON and BASE RATE's measured sentences with GEN_v0 (last two BASE RATE sentences replaced, section 3), MEASURED DIRECTIONS uses the QP (c) clause, request bytes identical across two builds, no outcome field allowed in a request (guard test), price arithmetic of section 5, K1 cap sum test (section 5 (a)) |
 | C2 | `claude/hv7-runner` | `hv7_runner.py`, HV7 budget ledger, fixed `t_e`, 8-position U (or U1..U8), fallback path | **hard: byte-identical entry and exit prices (all legs, both fail models) for L, R, S and U1..U8 buying one pool at one `t_e`; failure = design invalid**; 1.9 s leg lands at sd + d + k from `t_e`; StubModel drill on synthetic tape: every period with >= 3 candidates gives exactly one entry per arm at `t_e`; exits before entries; fallback on timeout; budget stop -> fallback; two runs byte-identical |
 | C3 | `claude/hv7-count-register` | `hv7_count.py`, `hv7_register.py`, real-layout drill + replay script, E1 restart drill | md5 decision-equivalence: HV7 card md5s equal HV6's at the same instants on 10-21..23 (screen reuse proof); two seed-1 replays byte-identical; as-of mutation test (planted future print raises LeakageError); P0 counts |
 | R | (no PR; `/data2/mal/hv7-rank-rehearsal`) | rehearsal prompts + manager-run Haiku subagents + validator | the section 7 bars, after QP OK on the card source |
@@ -355,7 +365,8 @@ counts only; in-clock rows are in-sample).
 
 **First builder chunk (C1) brief, ready to send.** "Worktree `/data2/mal/wt/hv7-rank-core` from origin/main, branch `claude/hv7-rank-core`.
 Write `tools/hv7_rank.py` (pure: no I/O, no clock, no network, no key; `forbidden_imports` test as HV6), `tools/hv7_playbooks/RANK_v0.txt` (system
-text: HV6 GEN v0's BASE RATE and SCREEN, NOT REASON paragraphs copied verbatim by a test that compares bytes with `tools/hv6_playbooks/GEN_v0.txt`,
+text: HV6 GEN v0's SCREEN, NOT REASON paragraph and BASE RATE's measured sentences copied verbatim, by a test that compares bytes with
+`tools/hv6_playbooks/GEN_v0.txt`, BASE RATE's last two sentences replaced as disclosed in section 3,
 plus the QP (c) MEASURED DIRECTIONS clause and the RANKING TASK paragraph of docs/research/hv7/DESIGN.md section 3; no conviction or size
 sentence), `tools/hv7_templates/rank.txt`, and `tools/test_hv7_rank.py` with the C1 tests in DESIGN section 9 (QP (d)1-4 included). Requests are built with `tools.hv4_prompts.Request` and carry one 5-min cache marker. Do not edit any hv4_/hv5_/hv6_
 file. No tape, card file, drill output or job output is read. Commit after every file; push; open a draft PR; do not merge."
