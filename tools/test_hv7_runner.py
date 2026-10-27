@@ -304,3 +304,7 @@ def test_path_guard_refuses_other_roots(tmp_path):
     with pytest.raises(H.PathRefused):
         R.check_path("/etc/passwd", "r")
     assert R.check_path(str(tmp_path / "ok"), "w")
+
+
+def test_runner_import_guard_is_clean():
+    assert H.forbidden_imports(Path(R.__file__).read_text()) == []
