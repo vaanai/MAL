@@ -34,11 +34,11 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 45 | 24 | 1 |
 | `desk-read` | 1 | 49 | 0 |
-| `explored-no-survivor` | 42 | 15 | 1 |
+| `explored-no-survivor` | 42 | 16 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 188 | 96 | 2 |
+| **all** | 188 | 97 | 2 |
 
-The file holds 536 rows: the 286 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 537 rows: the 287 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -392,6 +392,12 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `p88-knn-c-forward` | KNN-C: cost-gated numeric kNN ranker (P86, k = 25, 10 tape features) as a forward arena paper book | `untested` | SHELVED / REDESIGN by manager17 on 2026-10-27 after QP CHANGES 6446421063 and reviewer CHANGES 6446421595 on PR #1046: expected gate FAIL with near certainty (the cost gate would need to lift L by about 11-12 pp), and with -100% labels m likely binds at 0, so a stop at the 7.2-a-day P0 kill line is likelier; K1-K5 not … |
+
+### p87-b7 (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p87-b7-pullback` | B7 dip-absorption pullback (>=8% fall in 15 min, net buy flow >0 in 60 s, >=6 h in B7; +6%/-8%/45 … | `explored-no-survivor` | KILL: mean -0.43635% flat and -0.3685% pressure at 0.25 SOL, negative in all three blocks, 11/26 days positive (flat), CI90 lower -0.78277%, ex-top-3 -0.73301 SOL; 52 pools, top 5 carry 68.5% of trades. In-sample, read by >= 14 families. |
 
 ### p93-haiku (1)
 
