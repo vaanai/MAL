@@ -61,6 +61,7 @@ import base64
 import binascii
 import collections
 import json
+import re
 import statistics
 import sys
 import time
@@ -83,6 +84,10 @@ UNCLASSIFIED_MAX = 0.01
 # a healthy hour holds between 55 (3600 / 65) and 60 rows. 55 is the floor with no margin for a lost row; fixed, never changed after output.
 HB_MIN_PER_HOUR = 55
 LOOKBACK_DAYS = 2  # fixed; never widened (QP #1059). Older coins are unclassified.
+USER_AGENT = "MAL-p98/1 (+research)"  # explicit; some public hosts 403 the default Python-urllib agent
+START_TX_VERSION = 1  # as pump_structure_monitor.MAX_TX_VERSION: version-1 txs exist; code -32015 names the version a node wants
+_VERSION_HINT = re.compile(r"maxSupportedTransactionVersion\D{0,12}(\d+)")
+MAX_TX_VERSION_CAP = 4  # never follow a hint above this
 MIN_INTERVAL_S = 1.0  # hard floor between getTransaction calls (QP #1059 H1)
 TAPE_FLOOR_DAY = date(2026, 10, 20)  # tape before this is partial / redeploy day; refused
 KILL_SHARE = 0.10
@@ -280,21 +285,26 @@ def make_rpc_fetch(url: str, *, min_interval_s: float = MIN_INTERVAL_S, retries:
     op = opener or urllib.request.urlopen
 
     def fetch(sig: str) -> Any:
-        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getTransaction",
-                           "params": [sig, {"encoding": "json", "commitment": "confirmed", "maxSupportedTransactionVersion": 0}]}).encode()
+        version = START_TX_VERSION
         for attempt in range(retries):
+            body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "getTransaction",
+                               "params": [sig, {"encoding": "json", "commitment": "confirmed", "maxSupportedTransactionVersion": version}]}).encode()
             if last[0] is not None:
                 wait = min_interval_s - (clock() - last[0])
                 if wait > 0:
                     sleep(wait)
             last[0] = clock()
             try:
-                req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"})
+                req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", "User-Agent": USER_AGENT})
                 with op(req, timeout=timeout_s) as r:  # noqa: S310 - https host checked above
                     resp = json.loads(r.read())
             except (urllib.error.URLError, TimeoutError, ValueError, OSError):
                 continue
-            if isinstance(resp, dict) and isinstance(resp.get("error"), dict):
+            err = resp.get("error") if isinstance(resp, dict) else None
+            if isinstance(err, dict):
+                hint = _VERSION_HINT.search(str(err.get("message", "")))
+                if err.get("code") == -32015 and hint and version < int(hint.group(1)) <= MAX_TX_VERSION_CAP:
+                    version = int(hint.group(1))  # retry once at the version the node names (still paced, still inside `retries`)
                 continue
             return tx_from_response(resp, balances=balances)
         return None
