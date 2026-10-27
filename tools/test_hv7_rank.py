@@ -51,7 +51,7 @@ def _one(text, prefix):
     return m[0]
 
 
-@pytest.mark.parametrize("prefix", ["UNTRUSTED TEXT", "CARDS\n", "HONESTY"])
+@pytest.mark.parametrize("prefix", ["UNTRUSTED TEXT", "CARDS\n", "HONESTY", "SCREEN, NOT REASON."])
 def test_header_paragraphs_byte_identical_to_gen(prefix):
     assert _one(GEN.read_text(encoding="utf-8"), prefix).encode() == _one(RANK.read_text(encoding="utf-8"), prefix).encode()
 
@@ -124,16 +124,16 @@ def test_validator_rejections():
 
 def test_bad_why_on_full_permutation_is_accepted_and_logged():
     v = R.validate_rank(json.dumps([{"id": i, "why": 3} for i in IDS]), IDS)
-    assert v.ok and v.why_invalid == 8 and v.order == tuple(IDS)
+    assert v.ok and v.why_invalid == 8 and v.why_defect == 8 and v.order == tuple(IDS)
     mixed = [{"id": IDS[0], "why": None}, {"id": IDS[1]}] + [{"id": i, "why": "f.age_s is high"} for i in IDS[2:]]
     v = R.validate_rank(json.dumps(mixed), IDS)
-    assert v.ok and v.why_invalid == 2 and v.why_without_field == 0
+    assert v.ok and v.why_invalid == 2 and v.why_without_field == 0 and v.why_defect == 2
 
 
 def test_why_quality_is_flag_not_fallback():
     long = " ".join(["word"] * 25)
     v = R.validate_rank(reply(IDS, why=long), IDS)
-    assert v.ok and v.why_words_over_20 == 8 and v.why_without_field == 8
+    assert v.ok and v.why_words_over_20 == 8 and v.why_without_field == 8 and v.why_defect == 8
     v = R.validate_rank(json.dumps([{"id": i} for i in IDS]), IDS)
     assert v.ok and v.why_invalid == 8
 
@@ -232,6 +232,11 @@ def test_screen_argument_checks():
         R.screen_set([], {}, n=9)
     with pytest.raises(R.RankError):
         R.screen_set([], {}, n=4, n_min=5)
+    for bad_min in (0, 1, 2):
+        with pytest.raises(R.RankError):
+            R.screen_set([], {}, n=8, n_min=bad_min)
+    with pytest.raises(R.RankError):
+        R.screen_set([], {}, n=2, n_min=2)
 
 
 # ---------------------------------------------------------------- fallback to R
@@ -373,7 +378,10 @@ def test_cost_arithmetic():
     mem = R.cost_usd(0, 11056, 400, cache_read_tokens=2874)
     assert mem == pytest.approx(0.00133434) and 24 * mem == pytest.approx(0.03202416)
     assert R.cost_usd(0, 60000, 4000) == pytest.approx(0.008)
-    assert 4 * 0.50 + 0.15 + 0.05 == pytest.approx(2.20)
-    assert 2.20 + 0.30 == pytest.approx(2.50) and 2.50 <= 3.00
-    assert 10 * 0.30 == pytest.approx(3.00)
+    # Arithmetic on the cap table, not enforcement: nothing here limits spend. HV6 caps 4 x 0.50 + 0.15 + 0.05, v6.1 parked at 0.00.
+    hv6_caps = (0.50, 0.50, 0.50, 0.50, 0.15, 0.05)
+    hv6, v61_parked, hv7 = sum(hv6_caps), 0.00, 0.30
+    assert hv6 == pytest.approx(2.20)
+    assert hv6 + v61_parked + hv7 == pytest.approx(2.50) and hv6 + v61_parked + hv7 <= 3.00
+    assert 10 * hv7 == pytest.approx(3.00)
     assert R.ASSUMED_OUTPUT_TOKENS == 400 and R.MAX_TOKENS == 600

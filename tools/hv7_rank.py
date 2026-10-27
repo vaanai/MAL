@@ -88,8 +88,8 @@ def _vol_ok(v) -> bool:
 def screen_set(passed, vol60: dict, n: int = N_DEFAULT, n_min: int = N_MIN, vetoed=frozenset()) -> ScreenSet:
     """passed: ids of pools that passed the scan. vol60: id -> 60-minute SOL volume. Pools in `vetoed` or with a missing or
     non-finite vol60 are dropped (fail closed) before the first n are taken, so a vetoed pool is replaced by the next."""
-    if isinstance(n, bool) or not isinstance(n, int) or not (1 <= n <= N_MAX) or isinstance(n_min, bool) or not isinstance(n_min, int) or not (1 <= n_min <= n):
-        raise RankError("need 1 <= n_min <= n <= N_MAX")
+    if isinstance(n, bool) or not isinstance(n, int) or not (N_MIN <= n <= N_MAX) or isinstance(n_min, bool) or not isinstance(n_min, int) or not (N_MIN <= n_min <= n):
+        raise RankError(f"need {N_MIN} <= n_min <= n <= {N_MAX} and 1 <= n")
     pool = []
     for pid in set(passed):
         if pid in vetoed or not _vol_ok(vol60.get(pid)):
@@ -182,7 +182,10 @@ def forbidden_keys(node) -> list[str]:
 
 
 def check_rank_cards(cards) -> list[dict]:
-    """HV7-local card check: N_MIN <= N <= N_MAX cards, then hv4_prompts' per-card checks (ids, as_of_ms, x null, strings, size).
+    """HV7-local card check. C2 NOTE: cards must be built only through hv6_cards.build_card (so no outcome field can exist) or checked
+    against an allowlist of keys; the forbidden-key guard is a backstop, not the boundary.
+
+    N_MIN <= N <= N_MAX cards, then hv4_prompts' per-card checks (ids, as_of_ms, x null, strings, size).
     Cards must be in screen order: f.vol_60m descending, ties by id (R's index and the S arm point into this order)."""
     if not isinstance(cards, (list, tuple)) or not (N_MIN <= len(cards) <= N_MAX):
         raise RankError(f"a rank request needs {N_MIN} to {N_MAX} cards")
@@ -248,6 +251,7 @@ class RankVerdict:
     reason: str | None                # one of FALLBACK_REASONS when not ok
     why_words_over_20: int = 0        # report-only flags, never a fallback cause
     why_without_field: int = 0
+    why_defect: int = 0               # items with any why defect (over 20 words, no card field named, missing or not a string)
     why_invalid: int = 0              # items whose why is missing or not a string
 
 
@@ -274,16 +278,19 @@ def validate_rank(reply, shown_ids) -> RankVerdict:
     if not isinstance(data, list):
         return _fallback("not_list")
     ids: list[str] = []
-    over = nofield = bad = 0
+    over = nofield = bad = defect = 0
     for item in data:
         if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not set(item) <= {"id", "why"}:
             return _fallback("bad_item")
         why = item.get("why")
         if isinstance(why, str):
-            over += len(why.split()) > 20
-            nofield += not _WORD_FIELD.search(why)
+            o, nf = len(why.split()) > 20, not _WORD_FIELD.search(why)
+            over += o
+            nofield += nf
+            defect += o or nf
         else:
             bad += 1      # missing or non-string why: accepted, counted
+            defect += 1
         ids.append(item["id"])
     known = set(shown)
     if any(i not in known for i in ids):
@@ -294,7 +301,7 @@ def validate_rank(reply, shown_ids) -> RankVerdict:
         return _fallback("missing_id")
     if len(ids) != len(shown):
         return _fallback("wrong_length")
-    return RankVerdict(ok=True, order=tuple(ids), reason=None, why_words_over_20=over, why_without_field=nofield, why_invalid=bad)
+    return RankVerdict(ok=True, order=tuple(ids), reason=None, why_words_over_20=over, why_without_field=nofield, why_defect=defect, why_invalid=bad)
 
 
 def pick_top_k(verdict: RankVerdict, k: int = 1) -> tuple[str, ...]:
