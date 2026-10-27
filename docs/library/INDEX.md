@@ -30,9 +30,9 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `live-canary` | 1 | 0 | 0 |
 | `forward-test` | 2 | 0 | 0 |
 | `explored-survivor-unconfirmed` | 10 | 0 | 0 |
-| `parked` | 9 | 2 | 0 |
+| `parked` | 9 | 3 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 44 | 27 | 1 |
+| `untested` | 44 | 26 | 1 |
 | `desk-read` | 1 | 49 | 0 |
 | `explored-no-survivor` | 43 | 16 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
@@ -129,7 +129,7 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `p25-t22-fee-epoch-clock` | Token-2022 transfer-fee cut public epochs before it binds (DBC transfer-fee mints) | P25 change-capture (2026-10-24) | Public getMultipleAccounts / getSignaturesForAddress on the 42 configs' mints (0 Helius); priced looks only on DBC [10-17, 10-24) as disclosed exploration with QP's OK (not D1); nothing >= 2026-10-25T00Z for DBC/DAMM before the m10 read; a forward recorder after 2026-11-01T00:10Z. |
 | `p25-prestock-quote-band` | PreStock quote-leg dislocation against an external anchor | P25 change-capture (2026-10-24) | Owner's say first; then public mint/pool lists and anchor prices (GeckoTerminal), one declared day of forward gap logging; 0 Helius; any pump-side book is arena-only. |
 | `p81-cashback-floor` | CASHBACK-FLOOR: re-cost frozen H5 trades on cashback coins (creator leg refunded to the … | P81 cost-floor receipts (2026-10-27) | Step 0: getMultipleAccounts over distinct H5 pools (about 20 calls of 100) for is_cashback_coin; 20-tx getTransaction check that cashback_fee_basis_points is paid on PumpSwap sells; then one repricing with the P55 code. |
-| `p81-holder-carry` | HOLDER-CARRY: multi-day hold of high-turnover holder-rewards coins paid the creator fee | P81 cost-floor receipts (2026-10-27) | Count holder-reward coins created 09-12..09-25 by BondingCurve flag; sample holder payout via getSignaturesForAddress; report drift alone first. |
+| `p81-holder-carry` | HOLDER-CARRY: multi-day hold of high-turnover holder-rewards coins paid the creator fee | P81 cost-floor receipts (2026-10-27) | Step 1 (needs tape, not in P97): count holder-rewards coins by day via the BondingCurve is_holder_reward flag and their tape turnover; report drift alone first; carry credited with the measured phi and f. |
 
 ## Owner ideas
 
@@ -408,7 +408,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
-| `p95-callout-follow` | Callout follower flow: enter right after a top caller's pump app callout, exit into paid follower … | `untested` | Untested. Judgment: P about 3%; if it works 20 callouts/day x 0.25 SOL x 3% = 0.15 SOL/day. Kill risks: no public timestamped callout feed (NOT_TESTABLE); followers too slow or too small to move a pool by the 2.5-4% taker floor; copy-type lines died on latency (P71). |
+| `p95-callout-follow` | Callout follower flow: enter right after a top caller's pump app callout, exit into paid follower … | `parked` | Step 0 NOT_TESTABLE (P97, 2026-10-27): no public, timestamped callout feed readable without an account or key. The pump public docs and IDLs have no callout API, program, account or event, and the payout is off-chain. The undocumented app endpoints frontend-api-v3 /callout/coin/{mint} and /callout/list/{caller} are … |
 
 ### p95-synthetic (1)
 
