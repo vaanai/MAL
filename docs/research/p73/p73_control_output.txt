@@ -1,0 +1,4 @@
+/data2/mal/wt/p73/docs/research/p73/p73_control.py:10: RuntimeWarning: overflow encountered in divide
+  kd = np.abs(q[1:] * b[1:] / (q[:-1] * b[:-1] + 1e-300) - 1)
+mayhem rows 31194 q==0 share 0.11602 pairs 27249 share |k drift|<1e-6 0.41455 share <1e-3 0.41455 median 0.059123731351354736
+non-mayhem rows 55586 q==0 share 0.00113 pairs 53780 share |k drift|<1e-6 1.0 share <1e-3 1.0 median 1.0450418308494136e-11
