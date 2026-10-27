@@ -7,6 +7,10 @@ Nothing is signed or sent. No proceeds, min_out or balances are printed.
 Mint rule (pre-ruling): each pool's s0 (oldest signature blockTime) must be in September 2026, chosen from the pool's create fact only (never by
 outcome, V or an H5 rule, never from an October hour). The caller gives s0 and its source; the script also tries a public-RPC oldest-signature walk
 (capped) and refuses on a contradiction. One Token and one Token-2022 mint. Pass = full_sell_ok and control_reverts_at_base_close for both.
+
+TODO (capped-walk hardening, QP 6433064859; not implemented): when the walk hits its cap, also require
+  (1) getBlockTime(migration_slot) within 120 s of the caller's s0, and
+  (2) the oldest blockTime seen >= s0 - 120 s and < 2026-10-01T00:00:00Z.
 """
 from __future__ import annotations
 
