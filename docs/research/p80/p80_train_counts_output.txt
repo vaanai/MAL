@@ -1,0 +1,17 @@
+Running as unit: run-rdbcb4e7f1de344928a22da5e0eb2a44e.scope; invocation ID: 9946f853d54547429110969540e8c9db
+2026-08-14 {'pools': 395, 'h5': 64, 'nonh5': 331, 'nonh5_sps_fail': 0, 'nonh5_q_le40': 203, 'nonh5_trigger': 0, 'h5_trigger': 64}
+2026-08-15 {'pools': 1039, 'h5': 130, 'nonh5': 909, 'nonh5_sps_fail': 0, 'nonh5_q_le40': 562, 'nonh5_trigger': 0, 'h5_trigger': 130}
+2026-08-16 {'pools': 1714, 'h5': 206, 'nonh5': 1508, 'nonh5_sps_fail': 0, 'nonh5_q_le40': 916, 'nonh5_trigger': 0, 'h5_trigger': 206}
+2026-08-17 {'pools': 2493, 'h5': 312, 'nonh5': 2181, 'nonh5_sps_fail': 0, 'nonh5_q_le40': 1278, 'nonh5_trigger': 0, 'h5_trigger': 312}
+2026-08-18 {'pools': 3292, 'h5': 404, 'nonh5': 2888, 'nonh5_sps_fail': 0, 'nonh5_q_le40': 1651, 'nonh5_trigger': 0, 'h5_trigger': 404}
+2026-08-19 {'pools': 4156, 'h5': 593, 'nonh5': 3563, 'nonh5_sps_fail': 0, 'nonh5_q_le40': 2019, 'nonh5_trigger': 0, 'h5_trigger': 593}
+2026-08-20 {'pools': 4961, 'h5': 708, 'nonh5': 4253, 'nonh5_sps_fail': 0, 'nonh5_q_le40': 2426, 'nonh5_trigger': 0, 'h5_trigger': 708}
+2026-08-21 {'pools': 5760, 'h5': 829, 'nonh5': 4931, 'nonh5_sps_fail': 0, 'nonh5_q_le40': 2802, 'nonh5_trigger': 0, 'h5_trigger': 829}
+2026-08-22 {'pools': 6502, 'h5': 925, 'nonh5': 5577, 'nonh5_sps_fail': 0, 'nonh5_q_le40': 3145, 'nonh5_trigger': 0, 'h5_trigger': 925}
+2026-08-23 {'pools': 7168, 'h5': 987, 'nonh5': 6181, 'nonh5_sps_fail': 0, 'nonh5_q_le40': 3433, 'nonh5_trigger': 0, 'h5_trigger': 987}
+2026-08-24 {'pools': 7978, 'h5': 1096, 'nonh5': 6882, 'nonh5_sps_fail': 0, 'nonh5_q_le40': 3763, 'nonh5_trigger': 0, 'h5_trigger': 1096}
+2026-08-25 {'pools': 8870, 'h5': 1233, 'nonh5': 7637, 'nonh5_sps_fail': 0, 'nonh5_q_le40': 4173, 'nonh5_trigger': 0, 'h5_trigger': 1233}
+2026-08-26 {'pools': 9803, 'h5': 1411, 'nonh5': 8392, 'nonh5_sps_fail': 0, 'nonh5_q_le40': 4580, 'nonh5_trigger': 0, 'h5_trigger': 1411}
+2026-08-27 {'pools': 10796, 'h5': 1661, 'nonh5': 9135, 'nonh5_sps_fail': 0, 'nonh5_q_le40': 4987, 'nonh5_trigger': 0, 'h5_trigger': 1661}
+2026-08-28 {'pools': 11172, 'h5': 1702, 'nonh5': 9470, 'nonh5_sps_fail': 1, 'nonh5_q_le40': 5168, 'nonh5_trigger': 0, 'h5_trigger': 1702}
+FINAL {'pools': 11172, 'h5': 1702, 'nonh5': 9470, 'nonh5_sps_fail': 1, 'nonh5_q_le40': 5168, 'nonh5_trigger': 0, 'h5_trigger': 1702}

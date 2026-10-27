@@ -1,0 +1,40 @@
+Running as unit: run-rbadf722430a04493af4f35fc08b8bfdf.scope; invocation ID: 7e4f24cfa4c646deb011cf32e032a5dc
+(extract output: 44,049 mints reached 85%; 13,418 Mayhem excluded; 30,631 non-mayhem candidates)
+bonding rows 24118384 q==0 share 0.04138345255635701
+/data2/mal/wt/p74/docs/research/p74/p74_counts.py:16: RuntimeWarning: overflow encountered in divide
+  kd = np.abs(q[1:] * bb[1:] / (q[:-1] * bb[:-1] + 1e-300) - 1)
+CP pairs 23090584 share |k drift|<1e-6 0.9999490268414173
+post-trade base-change check (base_i - base_{i-1} == -/+ token_raw_i) share 0.9984118070290741
+mints reaching 85% 30631 observed crossing 22743 first print already >=85% 7888
+completion share of entries (any complete in tape or tokens.complete_slot) 0.5547201336675021
+            entries  completes
+day                           
+2026-08-14      650        332
+2026-08-15      876        459
+2026-08-16      860        475
+2026-08-17     1125        596
+2026-08-18     1157        591
+2026-08-19     1399        730
+2026-08-20     1149        663
+2026-08-21     1110        636
+2026-08-22      959        546
+2026-08-23      800        440
+2026-08-24     1006        498
+2026-08-25     1099        589
+2026-08-26     1137        607
+2026-08-27     1362        682
+2026-08-28      359        207
+2026-09-03      428        251
+2026-09-04      658        402
+2026-09-05      480        300
+2026-09-06      499        332
+2026-09-07      817        480
+2026-09-08      717        392
+2026-09-09      845        454
+2026-09-10      627        347
+2026-09-11      568        336
+2026-09-12      544        343
+2026-09-13      580        365
+2026-09-14      643        387
+2026-09-15      289        176
+days 28 entries/day mean 812.25 min 289

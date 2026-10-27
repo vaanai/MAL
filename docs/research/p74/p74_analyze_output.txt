@@ -1,0 +1,22 @@
+
+=== stake 0.25 SOL: trades 17123 days 28 attempts/day mean 611.5 min 178
+impact of own buy: mean 0.3115% median 0.3023%
+exit kinds: {'stop': 12177, 'a99': 2774, 'migration': 1598, 'time': 574}
+completion rate (sold into migration share): 0.09332476785609999  mean raw pnl SOL migration 0.19946 other -0.03403
+[flat] mean/trade -0.010415 SOL (-4.166% of stake) total -178.3358 ex-top3 -181.8381 ex-best-day -179.9463 (best 2026-08-28 1.6105) positive days 1/28 CI90 lo(trade) -0.011906
+     CI90 lo (day-cluster) -0.012733
+     capacity: 611.5/day x 0.25 SOL x -0.04166 = -6.36913 SOL/day (concurrency uncapped)
+[press] mean/trade -0.009246 SOL (-3.698% of stake) total -158.3146 ex-top3 -161.1416 ex-best-day -159.6567 (best 2026-08-28 1.3421) positive days 1/28 CI90 lo(trade) -0.010597
+     CI90 lo (day-cluster) -0.011341
+     capacity: 611.5/day x 0.25 SOL x -0.03698 = -5.65409 SOL/day (concurrency uncapped)
+
+=== stake 1.0 SOL: trades 17059 days 28 attempts/day mean 609.2 min 177
+impact of own buy: mean 1.1978% median 1.2092%
+exit kinds: {'stop': 12162, 'a99': 2742, 'migration': 1583, 'time': 572}
+completion rate (sold into migration share): 0.09279559176974031  mean raw pnl SOL migration 0.76141 other -0.13600
+[flat] mean/trade -0.044825 SOL (-4.483% of stake) total -764.6720 ex-top3 -777.8252 ex-best-day -770.2154 (best 2026-08-28 5.5435) positive days 1/28 CI90 lo(trade) -0.050902
+     CI90 lo (day-cluster) -0.053809
+     capacity: 609.2/day x 1.0 SOL x -0.04483 = -27.30971 SOL/day (concurrency uncapped)
+[press] mean/trade -0.039501 SOL (-3.950% of stake) total -673.8434 ex-top3 -684.6508 ex-best-day -678.4618 (best 2026-08-28 4.6184) positive days 1/28 CI90 lo(trade) -0.044978
+     CI90 lo (day-cluster) -0.047824
+     capacity: 609.2/day x 1.0 SOL x -0.03950 = -24.06583 SOL/day (concurrency uncapped)
