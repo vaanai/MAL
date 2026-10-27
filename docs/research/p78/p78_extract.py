@@ -37,7 +37,7 @@ def one(args):
     con = duckdb.connect(); con.execute("SET memory_limit='3GB'; SET threads=2")
     d = con.execute(f"""SELECT pool, mint, trader, side, sol_lamports AS sol, token_raw AS tok, quote_reserve AS q, base_reserve AS b, slot,
         tx_index AS txi, event_index AS evi, coalesce(block_time, event_ts) AS bt
-        FROM read_json('{path}', format='newline_delimited', compression='zstd', columns={{venue:'VARCHAR', mint:'VARCHAR', trader:'VARCHAR', side:'VARCHAR',
+        FROM read_json('{path}', format='newline_delimited', compression='zstd', ignore_errors=true, columns={{venue:'VARCHAR', mint:'VARCHAR', trader:'VARCHAR', side:'VARCHAR',
         sol_lamports:'BIGINT', token_raw:'HUGEINT', quote_reserve:'HUGEINT', base_reserve:'HUGEINT', pool:'VARCHAR', slot:'BIGINT', event_index:'BIGINT', event_ts:'BIGINT',
         quote_is_wsol:'BOOLEAN', block_time:'BIGINT', tx_index:'BIGINT'}})
         WHERE venue='pumpswap' AND quote_is_wsol AND mint LIKE '%pump' AND quote_reserve>0 AND base_reserve>0""").df()
