@@ -1,0 +1,9 @@
+trades 2826; discovery 1702; confirmation 1124 (sets: {'frozen_disc': 1702, 'frozen_conf': 1124})
+all ten features computable (P86 rule): 0
+  price at or before t-0 min exists: 2826
+  price at or before t-5 min exists: 17
+  price at or before t-15 min exists: 0
+  price at or before t-60 min exists: 0
+age at entry (s) quantiles 0/10/50/90/100: [1.9, 14.9, 102.9, 259.9, 303.9]
+P86 memory age range: 7,200 s to 604,800 s (log_age 8.88 to 13.3)
+trades with age at entry >= 7200 s: 0
