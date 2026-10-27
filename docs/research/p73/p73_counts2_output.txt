@@ -1,0 +1,13 @@
+/data2/mal/wt/p73/docs/research/p73/p73_counts2.py:11: RuntimeWarning: divide by zero encountered in divide
+  k0 = np.r_[np.nan, (q * b)[:-1]]; kd = np.abs(q * b / k0 - 1)
+/data2/mal/wt/p73/docs/research/p73/p73_counts2.py:11: RuntimeWarning: invalid value encountered in divide
+  k0 = np.r_[np.nan, (q * b)[:-1]]; kd = np.abs(q * b / k0 - 1)
+/data2/mal/wt/p73/docs/research/p73/p73_counts2.py:13: RuntimeWarning: divide by zero encountered in divide
+  r = dq[m] / sol[m]
+/data2/mal/wt/p73/docs/research/p73/p73_counts2.py:13: RuntimeWarning: invalid value encountered in divide
+  r = dq[m] / sol[m]
+rows 22613073 q==0 0.09619922068973111 b==0 0.0 sol==0 0.0963046022095272 q or b zero 0.09619922068973111
+mints with any zero-reserve row 19040 of 201001
+buy n 10416067 dir ok 0.99903 |k drift| q50/q90/q99 [0.06275223307689703, 0.26587333623929965, 0.4389289497882027] share k<1e-6 0.40295 dq/sol q5/50/95 [1.0, 4.23118, 375.04415]
+sell n 9839685 dir ok 0.99979 |k drift| q50/q90/q99 [0.08295856668070611, 0.28490906757938833, 0.45983856693029806] share k<1e-6 0.36341 dq/sol q5/50/95 [-391.84908, -7.00402, -1.0]
+pair rows usable 0.9037875659153691
