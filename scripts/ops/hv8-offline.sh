@@ -1,11 +1,12 @@
 #!/bin/sh
 # HV8 offline stage, pinned command lines (C3). Run under sh as a MiScusi job: sh scripts/ops/hv8-offline.sh <adapter|count|dump|labels>
-# Paper only, 0 API. Sets: HV8_MANIFEST_SHA for `labels` (the ratings manifest sha256 that RATINGS-PIN.md carries).
+# Paper only, 0 API. Every run gets a fresh timestamped scratch dir; `dump` refuses unless the last `count` recorded lookahead_check PASS. Sets: HV8_MANIFEST_SHA for `labels` (the ratings manifest sha256 that RATINGS-PIN.md carries).
 set -eu
 cd "$(dirname "$0")/../.."
 PY=/data/mal/venv/bin/python
 ROOT=/data2/mal/hv8-train
 BLK=/data/mal/clean-view/explore-0814
+TS=$(date -u +%Y%m%dT%H%M%SZ)
 check_report() {
   "$PY" -I -c '
 import json, sys
@@ -20,13 +21,19 @@ case "${1:-}" in
     check_report ;;
   count)
     check_report
-    "$PY" -B -m tools.hv8_dump --tape "$ROOT/tape" --scratch "$ROOT/scratch-count" --count-only ;;
+    rc=0
+    "$PY" -B -m tools.hv8_dump --tape "$ROOT/tape" --scratch "$ROOT/scratch-count-$TS" --count-only > "$ROOT/count-$TS.json" || rc=$?
+    # The copy runs even after a crash or a FAIL on purpose (fail-closed): a failed count replaces the last record, so an old PASS can never open `dump`.
+    cp "$ROOT/count-$TS.json" "$ROOT/count-latest.json"
+    cat "$ROOT/count-$TS.json"
+    exit $rc ;;
   dump)
     check_report
-    "$PY" -B -m tools.hv8_dump --tape "$ROOT/tape" --scratch "$ROOT/scratch-dump" --out "$ROOT/dump" ;;
+    "$PY" -B -m tools.hv8_dump --tape "$ROOT/tape" --check-count "$ROOT/count-latest.json"
+    "$PY" -B -m tools.hv8_dump --tape "$ROOT/tape" --scratch "$ROOT/scratch-dump-$TS" --out "$ROOT/dump" ;;
   labels)
     : "${HV8_MANIFEST_SHA:?set HV8_MANIFEST_SHA to the pinned ratings manifest sha256}"
     check_report
-    "$PY" -B -m tools.hv8_labels --dump "$ROOT/dump" --ratings "$ROOT/ratings" --manifest-sha "$HV8_MANIFEST_SHA" --tape "$ROOT/tape" --scratch "$ROOT/scratch-labels" --out "$ROOT/labels" --feed-delay-slots 7 --sps 0.368 --sensitivity ;;
+    "$PY" -B -m tools.hv8_labels --dump "$ROOT/dump" --ratings "$ROOT/ratings" --manifest-sha "$HV8_MANIFEST_SHA" --tape "$ROOT/tape" --scratch "$ROOT/scratch-labels-$TS" --out "$ROOT/labels-$TS" --feed-delay-slots 7 --sps 0.368 --sensitivity ;;
   *) echo "usage: sh scripts/ops/hv8-offline.sh adapter|count|dump|labels" >&2; exit 64 ;;
 esac
