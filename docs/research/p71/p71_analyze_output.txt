@@ -1,0 +1,70 @@
+rows 611 mean p 0.2889999999999999
+
+=== fresh-0903: n=320 days=7 wallets=28 ===
+flat {'mean_sol': np.float64(-0.00577), 'mean_pct': np.float64(-5.77062), 'total': np.float64(-1.8466), 'ex_top3': np.float64(-2.73692), 'best_day': '2026-09-04', 'ex_best_day': np.float64(-2.33363), 'days_pos': '2/7', 'ci5_pct': np.float64(-12.93527), 'best_wallet': 13968991423159764332, 'ex_best_wallet': np.float64(-2.26913), 'best_wallet_share': np.float64(-0.22881), 'wallets_pos': '10/28', 'median_pct': np.float64(-12.77318)}
+press {'mean_sol': np.float64(-0.00324), 'mean_pct': np.float64(-3.23792), 'total': np.float64(-1.03614), 'ex_top3': np.float64(-1.88639), 'best_day': '2026-09-04', 'ex_best_day': np.float64(-1.47751), 'days_pos': '2/7', 'ci5_pct': np.float64(-8.99108), 'best_wallet': 13968991423159764332, 'ex_best_wallet': np.float64(-1.49398), 'best_wallet_share': np.float64(-0.44187), 'wallets_pos': '9/28', 'median_pct': np.float64(-6.2991)}
+
+=== exp011-0909: n=291 days=7 wallets=24 ===
+flat {'mean_sol': np.float64(-0.00296), 'mean_pct': np.float64(-2.95574), 'total': np.float64(-0.86012), 'ex_top3': np.float64(-1.79304), 'best_day': '2026-09-10', 'ex_best_day': np.float64(-1.10183), 'days_pos': '3/7', 'ci5_pct': np.float64(-9.09248), 'best_wallet': 1660787486389200556, 'ex_best_wallet': np.float64(-1.36797), 'best_wallet_share': np.float64(-0.59044), 'wallets_pos': '7/24', 'median_pct': np.float64(-1.54061)}
+press {'mean_sol': np.float64(-0.00199), 'mean_pct': np.float64(-1.98778), 'total': np.float64(-0.57844), 'ex_top3': np.float64(-1.3643), 'best_day': '2026-09-10', 'ex_best_day': np.float64(-0.79324), 'days_pos': '3/7', 'ci5_pct': np.float64(-6.08692), 'best_wallet': 1660787486389200556, 'ex_best_wallet': np.float64(-1.08105), 'best_wallet_share': np.float64(-0.86889), 'wallets_pos': '8/24', 'median_pct': np.float64(-1.64738)}
+
+=== POOLED: n=611 days=13 wallets=32 ===
+flat {'mean_sol': np.float64(-0.00443), 'mean_pct': np.float64(-4.42999), 'total': np.float64(-2.70672), 'ex_top3': np.float64(-3.84512), 'best_day': '2026-09-04', 'ex_best_day': np.float64(-3.19375), 'days_pos': '5/13', 'ci5_pct': np.float64(-8.73009), 'best_wallet': 13968991423159764332, 'ex_best_wallet': np.float64(-3.44161), 'best_wallet_share': np.float64(-0.2715), 'wallets_pos': '9/32', 'median_pct': np.float64(-2.46499)}
+press {'mean_sol': np.float64(-0.00264), 'mean_pct': np.float64(-2.64252), 'total': np.float64(-1.61458), 'ex_top3': np.float64(-2.65021), 'best_day': '2026-09-04', 'ex_best_day': np.float64(-2.05596), 'days_pos': '5/13', 'ci5_pct': np.float64(-5.98689), 'best_wallet': 13968991423159764332, 'ex_best_wallet': np.float64(-2.37124), 'best_wallet_share': np.float64(-0.46864), 'wallets_pos': '10/32', 'median_pct': np.float64(-1.98518)}
+
+hold slots/kind: {'lead_sell': 545, 'timer': 66} truncated timer exits 66 median hold slots 340.0
+sensitivity: copied-sell lag 2 slots (timer exits unchanged), pooled
+
+=== lag2 sens: n=577 days=13 wallets=32 ===
+flat {'mean_sol': np.float64(-0.00374), 'mean_pct': np.float64(-3.73575), 'total': np.float64(-2.15553), 'ex_top3': np.float64(-3.31382), 'best_day': '2026-09-04', 'ex_best_day': np.float64(-2.64986), 'days_pos': '5/13', 'ci5_pct': np.float64(-8.23298), 'best_wallet': 13968991423159764332, 'ex_best_wallet': np.float64(-2.96169), 'best_wallet_share': np.float64(-0.374), 'wallets_pos': '9/32', 'median_pct': np.float64(-2.0792)}
+press {'mean_sol': np.float64(-0.00208), 'mean_pct': np.float64(-2.07685), 'total': np.float64(-1.19834), 'ex_top3': np.float64(-2.2484), 'best_day': '2026-09-04', 'ex_best_day': np.float64(-1.65434), 'days_pos': '6/13', 'ci5_pct': np.float64(-5.53556), 'best_wallet': 13968991423159764332, 'ex_best_wallet': np.float64(-2.01951), 'best_wallet_share': np.float64(-0.68525), 'wallets_pos': '10/32', 'median_pct': np.float64(-1.96079)}
+
+per-day net SOL, flat
+                        size     sum
+exp011-0909 2026-09-09    34 -0.6575
+            2026-09-10    19  0.2417
+            2026-09-11    22 -0.4566
+            2026-09-12    22  0.1369
+            2026-09-13    94 -0.0811
+            2026-09-14    55 -0.1022
+            2026-09-15    45  0.0586
+fresh-0903  2026-09-03    47  0.0918
+            2026-09-04    72  0.4870
+            2026-09-05    23 -0.1393
+            2026-09-06    15 -0.0432
+            2026-09-07    48 -0.2837
+            2026-09-08    72 -1.5004
+            2026-09-09    43 -0.4589
+
+per-day net SOL, press
+                        size     sum
+exp011-0909 2026-09-09    34 -0.3766
+            2026-09-10    19  0.2148
+            2026-09-11    22 -0.3445
+            2026-09-12    22  0.1575
+            2026-09-13    94 -0.0083
+            2026-09-14    55 -0.2626
+            2026-09-15    45  0.0413
+fresh-0903  2026-09-03    47  0.2475
+            2026-09-04    72  0.4414
+            2026-09-05    23 -0.0943
+            2026-09-06    15 -0.0307
+            2026-09-07    48 -0.2009
+            2026-09-08    72 -1.0864
+            2026-09-09    43 -0.3128
+
+=== capacity: copied buys 611 over 13 Sep days => 47.00 per day (fresh-0903 320/7d, exp011-0909 291/7d)
+stake 0.1 SOL flat: mean net/trade -0.00443 SOL (-4.430% of stake) | trades/day x stake x edge = 47.00 x 0.1 x -4.430% => -0.20821 SOL/day
+stake 0.1 SOL press: mean net/trade -0.00264 SOL (-2.643% of stake) | trades/day x stake x edge = 47.00 x 0.1 x -2.643% => -0.12420 SOL/day
+stake 0.25 SOL flat: mean net/trade -0.01093 SOL (-4.373% of stake) | trades/day x stake x edge = 47.00 x 0.25 x -4.373% => -0.51383 SOL/day
+stake 0.25 SOL press: mean net/trade -0.00648 SOL (-2.590% of stake) | trades/day x stake x edge = 47.00 x 0.25 x -2.590% => -0.30436 SOL/day
+stake 1.0 SOL flat: mean net/trade -0.04362 SOL (-4.362% of stake) | trades/day x stake x edge = 47.00 x 1.0 x -4.362% => -2.05014 SOL/day
+stake 1.0 SOL press: mean net/trade -0.02582 SOL (-2.582% of stake) | trades/day x stake x edge = 47.00 x 1.0 x -2.582% => -1.21369 SOL/day
+
+=== persistence: wallets with a priced copy 32
+Spearman IC Aug net vs Sep copy sum_flat: -0.1653 (p=0.3659, n=32)
+Spearman IC Aug net vs Sep copy mean_flat: -0.0337 (p=0.8546, n=32)
+Spearman IC Aug net vs Sep copy sum_press: -0.1690 (p=0.3552, n=32)
+Spearman IC Aug net vs Sep copy mean_press: -0.0521 (p=0.7772, n=32)
+descriptive: Spearman IC Aug net vs wallet's own Sep realized net (matched qty): -0.1690 (p=0.3636, n=31 wallets with Sep round trips); Sep own-net total -140.32 SOL; wallets positive 11/31
+Aug top-50 score total SOL 7790.829921518634
