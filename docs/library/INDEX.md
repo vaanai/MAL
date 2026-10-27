@@ -34,11 +34,11 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 45 | 24 | 1 |
 | `desk-read` | 1 | 49 | 0 |
-| `explored-no-survivor` | 42 | 12 | 1 |
+| `explored-no-survivor` | 42 | 13 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 188 | 93 | 2 |
+| **all** | 188 | 94 | 2 |
 
-The file holds 533 rows: the 283 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 534 rows: the 284 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -380,6 +380,12 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `p78-cost-floor-tiers` | Cheapest PumpSwap fee band (market cap >= 98,240 SOL, 0.30% per leg): frozen P72 absorb, P71 copy … | `explored-no-survivor` | P72 absorb KILL (mean -17.91992% flat, 0/28 days); 15-min momentum KILL (-5.69432% flat, 0/28 days); P71 copy KILL under P71's frozen lines 2 and 3 (ex-top-3 -0.01328 SOL flat; ex-best-wallet -0.1347 SOL flat, best wallet 195% of total), although its mean is +0.13175% flat and +0.14068% pressure at 0.1 SOL; retention … |
+
+### p87-b7 (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p87-b7-pullback` | B7 dip-absorption pullback (>=8% fall in 15 min, net buy flow >0 in 60 s, >=6 h in B7; +6%/-8%/45 … | `explored-no-survivor` | KILL: mean -0.43635% flat and -0.3685% pressure at 0.25 SOL, negative in all three blocks, 11/26 days positive (flat), CI90 lower -0.78277%, ex-top-3 -0.73301 SOL; 52 pools, top 5 carry 68.5% of trades. In-sample, read by >= 14 families. |
 
 ## Dead as frozen, and explored with no survivor
 
