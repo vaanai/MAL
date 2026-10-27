@@ -18,6 +18,10 @@ Written before any pricing. Library rows: web-public-pnl-3, web-public-pnl-5. La
   - B3: in at least one third of its round-trip pools, first sell slot minus first buy slot is below 2 slots.
 - Flagged wallets are excluded. Top 50 of the rest by score = the copy list. Also reported: how many of the unfiltered top 50 are flagged (flagged share).
 
+## Amendment 1 (2026-10-27, before any Sep copy pricing; ranking step only)
+
+The first August ranking run (job log, Aug tape only, no September row read) gave top scores near 8,751 SOL per wallet, which is a unit artifact: a wallet that sells tokens it did not buy inside the visible pool window (bought on the bonding curve or transferred) gets the full sale proceeds against only the pool-buy cost. Fix, applied before any copy pricing: net is on matched quantity, `net = sell_sol * min(1, tok_bought/tok_sold) - buy_sol * min(1, tok_sold/tok_bought)`. Nothing else changes. The pre-fix run's only reported fact is that 43 of its unfiltered top 50 were flagged (B1 43, B2 5, B3 4); the post-fix ranking is reported in REPORT.md.
+
 ## Copy test (Sep, fresh-0903 and exp011-0909)
 
 - Pool filter as P55: `meta.v` in [17.5, 17.7] SOL, seconds-per-slot from block times in (0.15, 0.6).
