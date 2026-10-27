@@ -310,6 +310,12 @@ def find_holder(rpc: Callable[[str, list], Any], mint: str, pool: Pubkey, token_
         if info.get("state") != "initialized" or info.get("mint") != mint or int(info["tokenAmount"]["amount"]) < 2:
             skipped["frozen_or_empty"] = skipped.get("frozen_or_empty", 0) + 1
             continue
+        close_auth = info.get("closeAuthority")
+        if close_auth is not None and close_auth != owner:
+            # T22: a foreign close authority makes the SPL CloseAccount fail with 0x4 (owner does not match) for the impersonated owner.
+            # That is an artifact of the test holder; our own wallet creates its base ATA without a close authority.
+            skipped["foreign_close_authority"] = skipped.get("foreign_close_authority", 0) + 1
+            continue
         opk = Pubkey.from_string(owner)
         if owner == str(pool) or not opk.is_on_curve():
             skipped["pool_or_pda_owner"] = skipped.get("pool_or_pda_owner", 0) + 1

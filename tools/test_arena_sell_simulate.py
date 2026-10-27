@@ -183,6 +183,36 @@ class HolderMode(unittest.TestCase):
             ss.find_holder(rpc, mint, pool, tp)
 
 
+    def test_find_holder_skips_foreign_close_authority(self):
+        """T22: token account with closeAuthority not null and not the owner is skipped; closeAuthority == owner is kept."""
+        mint, pool = MINT, ss.Pubkey.from_string("4JfV6QHCFTWUdQJ6MFj72r1JmJybJowHNYWDs6MUovsX")
+        tp = tx.TOKEN_PROGRAM
+        bad, ok_self, ok_none = ss.Keypair().pubkey(), ss.Keypair().pubkey(), ss.Keypair().pubkey()
+        a = lambda o: str(tx.ata(o, ss.Pubkey.from_string(mint), tp))  # noqa: E731
+
+        def tok(owner, **extra):
+            info = {"owner": str(owner), "mint": mint, "state": "initialized", "tokenAmount": {"amount": "5"}, **extra}
+            return {"owner": str(tp), "data": {"parsed": {"info": info}}}
+
+        accts = {a(bad): tok(bad, closeAuthority=str(ss.Keypair().pubkey())), a(ok_self): tok(ok_self, closeAuthority=str(ok_self)), a(ok_none): tok(ok_none)}
+        wallets = {str(k): {"owner": ss.SYSTEM_PROGRAM, "lamports": 5 * 10**9, "executable": False, "space": 0} for k in (bad, ok_self, ok_none)}
+
+        def rpc(method, params):
+            if method == "getTokenLargestAccounts":
+                return {"value": [{"address": k} for k in accts]}
+            if method == "getAccountInfo":
+                return {"value": accts.get(params[0]) or wallets.get(params[0])}
+            raise AssertionError(method)
+
+        h = ss.find_holder(rpc, mint, pool, tp)
+        self.assertEqual(h["owner"], str(ok_self))
+        self.assertEqual(h["skipped"], {"foreign_close_authority": 1})
+        del accts[a(ok_self)], accts[a(ok_none)]  # only the foreign-authority account left -> no holder
+        with self.assertRaises(SystemExit) as cm:
+            ss.find_holder(rpc, mint, pool, tp)
+        self.assertIn("foreign_close_authority", str(cm.exception))
+
+
 class Classify(unittest.TestCase):
     def test_table(self):
         c = ss.classify
