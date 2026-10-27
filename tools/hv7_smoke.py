@@ -15,10 +15,8 @@ warm-up after the start: 120 min from the first t_d to the last, 2 h 4 min or so
 the request is the same for the periods of one hour; the cards differ with as_of, so request bytes still differ (a replayed request would show as replayed
 and cost 0, and is reported).
 
-The frozen `hv7_runner.main` never starts a chain prefetcher or calls `chain.watch`, and `hv6_runner.live_chain_source` writes through HV6's path
-allowlist (refused under the HV7 root). The smoke therefore builds the chain source here, from the same classes (HV4Chain, RpcClient, ChainPrefetcher
-policy v2, ChainSource, 1,000 calls/h), with its state files under the smoke dir, starts the prefetcher, and feeds it the watchlist once a minute from the
-runner's own state with the runner's own scan. This is a smoke-tool choice, not frozen-code behaviour; the report says so.
+The chain source is the runner's own `hv7_runner.live_chain_source(root)` (same classes, phase-locked prefetch window H:48-H:02, 500 calls/h), with its state
+files under the smoke dir; the prefetcher is started as `main` starts it and fed by the runner's own `watch_tick` (WATCH_MAX 200), so the smoke exercises the runner path.
 
 WRITES ONLY under <HV7_ROOT>/smoke/<id>/ : root/ (decision log, RANK-L cost ledger, replay cache, chain state), engine-ledger/, smoke-registry.json,
 report.json. The production root, the real registry (/data/mal/arena/bots.json) and every HV4/HV6/Q50 path are never touched. The engine ledger (fills,
@@ -274,31 +272,9 @@ class SpendStopModel:
 
 
 def build_chain(R: SimpleNamespace, root: Path) -> Any:
-    """HV6's own chain classes, state under the smoke root (hv6_runner.live_chain_source writes through HV6's path allowlist, refused here)."""
-    H6 = R.H6
-    H6.refuse_hv4_chain_state()
-    H6.pinned_provider()
-    from tools.hv4_chain import HV4Chain, RpcClient, RpcConfig  # noqa: PLC0415
-    from tools.hv4_prefetch import ChainPrefetcher  # noqa: PLC0415
-
-    chain = HV4Chain(RpcClient(RpcConfig.from_env(None), state_path=root / H6.CHAIN_CREDITS_FILE, daily_call_cap=H6.RPC_CALLS_PER_DAY))
-    return H6.ChainSource(chain, ChainPrefetcher(chain, H6.ChainSource.compose, spend_path=root / H6.CHAIN_SPEND_FILE, policy="v2", hourly_budget=H6.RPC_CALLS_PER_H))
-
-
-def _feed_watch(R: SimpleNamespace, run: Any, T: int) -> None:
-    """The runner's own screen selection (same scan, same vol_60m order), used only to tell the prefetcher which pools to fetch. No RPC here, no card."""
-    pools = run.state.pools_wsol(lambda p: p.prog == "pumpswap")
-
-    def gen():
-        for p in pools:
-            snap = run.state.snapshot(p.id)
-            if snap is not None:
-                yield snap, list(p.events)
-
-    res = R.H.scan(gen(), as_of_ms=T, limiter=R.C.SetupLimiter(), board_on=False)
-    ranked = sorted(res.candidates, key=lambda q: (-float(res.feats[q].get("vol_60m") or 0.0), q))
-    hot = ranked[:25]
-    run.chain.watch([(q, run.state.pool(q).mint) for q in ranked], hot, int(T), vols={q: res.feats[q].get("vol_60m") or 0.0 for q in ranked})
+    """The runner's own live chain source (hv7_runner.live_chain_source, the function `main` calls): HV4Chain + policy-v2 prefetcher gated to the t_d-locked window
+    H:48-H:02, 500 calls/h, state and spend files under `root` (the smoke root is under the HV7 root, so HV7's check_path accepts it). Nothing is built here."""
+    return R.RN.live_chain_source(root)
 
 
 def period_plan(t_start: int, warmup_ms: int, period_ms: int, periods: int, tick_ms: int, te_offset_ms: int) -> tuple[list[int], int, int]:
@@ -370,12 +346,13 @@ def run_smoke(R: SimpleNamespace, a: argparse.Namespace, *, model: Any = None, c
                 run.screen(T)
             elif run.pending is not None and T == run.pending["t_e"]:
                 run.enter(T)
-            if prefetch is not None and T < td_grid[-1] and T - last_watch >= WATCH_EVERY_MS:
-                last_watch = T
+            if prefetch is not None and T < td_grid[-1]:
                 try:
-                    _feed_watch(R, run, T)
+                    run.watch_tick(T)       # the runner's own method, called as its tick does (self-gated to WATCH_EVERY_MS, WATCH_MAX 200, runner scan and hot set)
                 except Exception as e:  # noqa: BLE001 - class name only; a starved watchlist shows as card refusals
                     run._count("watch_error:" + type(e).__name__)
+            if prefetch is not None and T < td_grid[-1] and T - last_watch >= WATCH_EVERY_MS:
+                last_watch = T
                 try:
                     samples.append(int(prefetch.stats().get("calls_last_hour", 0)))
                 except Exception:  # noqa: BLE001
@@ -407,7 +384,7 @@ def run_smoke(R: SimpleNamespace, a: argparse.Namespace, *, model: Any = None, c
     rep["period_ms"] = a.period_ms
     rep["periods_planned"] = a.periods
     rep["compression"] = "driven_by_smoke_tool_via_public_screen_enter; frozen tick() not used; hourly code unchanged"
-    rep["chain_source"] = "smoke-built (frozen runner main has no prefetcher start or watch)" if prefetch is not None else "injected"
+    rep["chain_source"] = "hv7_runner.live_chain_source (the runner path)" if prefetch is not None else "injected"
     (smk / "report.json").write_text(render(rep))
     return rep
 

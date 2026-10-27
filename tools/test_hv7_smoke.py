@@ -353,3 +353,44 @@ def test_wrapper_text_pins():
     assert "--cap-usd 0.10" in t and "--periods 31" in t and "--period-min 4" in t
     assert '. "$KEYFILE"' in t and "echo" not in t.split('. "$KEYFILE"')[1]          # nothing is echoed after the key is sourced
     assert "ANTHROPIC_API_KEY" not in t           # the wrapper never names the variable's value anywhere
+
+
+# --------------------------------------------------------------------------------------------------------------------- the smoke uses the runner's chain path
+
+def test_smoke_obtains_its_chain_from_the_runners_live_chain_source_and_its_watch_tick(tmp_path, monkeypatch):
+    seen = {"roots": [], "started": 0, "stopped": 0, "watch": 0}
+
+    class _Pre:
+        def start(self):
+            seen["started"] += 1
+
+        def stop(self):
+            seen["stopped"] += 1
+
+        def stats(self):
+            return {"calls_last_hour": 0}
+
+    class WatchChain(FakeChain):
+        prefetch = _Pre()
+
+        def watch(self, items, hot, now, vols=None):
+            seen["watch"] += 1
+            assert len(items) <= RN.WATCH_MAX
+
+    def fake_source(root, env=None):
+        seen["roots"].append(Path(root))
+        return WatchChain()
+
+    monkeypatch.setattr(RN, "live_chain_source", fake_source)
+    monkeypatch.setenv("MAL_HV4_RPC", "helius")
+    monkeypatch.delenv("MAL_HV4_CHAIN_STATE", raising=False)
+    tape = tmp_path / "tape"
+    write_tape(tape, tape_rows())
+    parent = tmp_path / "smoke"
+    parent.mkdir()
+    rep = S.run_smoke(rules(), args(parent / "s1", periods=3), model=lambda g: A.StubModel(leader_first, guard=g, cost_usd=0.0, latency_ms=50), chain=None,
+                      tape_dir=str(tape), live=False, start_ms=T0 + HOUR, parent=str(parent), verify_sha=False, engine_kw={"sps_fn": lambda: 0.4})
+    assert seen["roots"] == [parent / "s1" / "root"]                        # built by the runner's function, rooted under the smoke dir
+    assert seen["started"] == 1 and seen["stopped"] == 1 and seen["watch"] >= 1       # watch fed by Hv7Runner.watch_tick
+    assert rep["chain_source"].startswith("hv7_runner.live_chain_source")
+    assert not hasattr(S, "_feed_watch")                                     # no private watch-set construction left
