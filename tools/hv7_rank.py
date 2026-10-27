@@ -143,6 +143,71 @@ def display_perm(arm: str, t_d_iso: str, card_shas) -> list[int]:
     return [i for _, i in sorted(keys)]
 
 
+# ---------------------------------------------------------------- v7.1: K = 3 calls, Borda over the valid replies (additive; v7.0 never reaches this)
+
+RELEASE_V70 = "v7.0"
+RELEASE_V71 = "v7.1"
+RELEASES = (RELEASE_V70, RELEASE_V71)
+K_V71 = 3                       # calls per period in v7.1 (call k = 0 is the v7.0 L request, byte for byte)
+MIN_VALID_V71 = 2               # fewer valid replies than this is a FALLBACK to R's pick
+SEQ_K_STRIDE = 1_000_000_000    # nonce seq of call k >= 1 is seq + k * stride, so two equal permutations still make two different requests
+
+
+def check_release(release) -> str:
+    if release not in RELEASES:
+        raise RankError(f"release must be one of {RELEASES}")
+    return release
+
+
+def display_perm_k(arm: str, t_d_iso: str, card_shas, k: int = 0) -> list[int]:
+    """Call k's display order. k = 0 is display_perm byte for byte (the v7.0 formula). k >= 1 adds the K index to the seed text:
+    sha256("hv7-perm|<arm>|k<k>|" + t_d_iso + "|" + card_sha)."""
+    if isinstance(k, bool) or not isinstance(k, int) or k < 0:
+        raise RankError("k must be an integer >= 0")
+    if k == 0:
+        return display_perm(arm, t_d_iso, card_shas)
+    ms_from_iso(t_d_iso)
+    if not isinstance(arm, str) or not arm or "|" in arm:
+        raise RankError("arm must be a non-empty string without '|'")
+    keys = [(_sha(f"hv7-perm|{arm}|k{k}|{t_d_iso}|{s}"), i) for i, s in enumerate(card_shas)]
+    return [i for _, i in sorted(keys)]
+
+
+@dataclass(frozen=True)
+class BordaResult:
+    fallback: bool
+    reason: str | None                # "fewer_than_2_valid" on a FALLBACK
+    order: tuple[str, ...]            # best first; () on FALLBACK
+    points: tuple[tuple[str, int], ...]   # (id, Borda points) in the final order; () on FALLBACK
+    k_valid: int
+    valid_calls: tuple[int, ...]      # the call indices that counted
+    top_tied: bool                    # True when the tie-break decided the top place
+
+
+def borda(orders, min_valid: int = MIN_VALID_V71) -> BordaResult:
+    """orders: one entry per call, (k, order) with order a full tuple of ids (a valid reply) or None/() (invalid: error, refusal, malformed, late,
+    skipped). Borda points per valid reply: N - 1 - position. Sum over the VALID replies only. Ties broken by position in the order of the
+    lowest-index valid call (outcome-free). Fewer than min_valid valid replies: FALLBACK (the caller uses R's pick)."""
+    valid = [(k, tuple(o)) for k, o in orders if o]
+    valid.sort(key=lambda t: t[0])
+    if len(valid) < min_valid:
+        return BordaResult(True, "fewer_than_2_valid", (), (), len(valid), tuple(k for k, _ in valid), False)
+    ids = valid[0][1]
+    for _, o in valid:
+        if sorted(o) != sorted(ids) or len(set(o)) != len(o):
+            raise RankError("valid orders must be permutations of the same ids")
+    n = len(ids)
+    pts = {i: 0 for i in ids}
+    for _, o in valid:
+        for pos, i in enumerate(o):
+            pts[i] += n - 1 - pos
+    first = {i: pos for pos, i in enumerate(valid[0][1])}
+    final = sorted(ids, key=lambda i: (-pts[i], first[i]))
+    top = max(pts.values())
+    return BordaResult(False, None, tuple(final), tuple((i, pts[i]) for i in final), len(valid), tuple(k for k, _ in valid),
+                       sum(1 for v in pts.values() if v == top) > 1)
+
+
 # ---------------------------------------------------------------- the request
 
 def load_rank_playbook(directory: Path | None = None) -> P.Playbook:
@@ -211,7 +276,7 @@ class RankRequest:
 
 
 def build_rank_request(t_d_iso: str, cards, *, seq: int = 0, playbook: P.Playbook | None = None, arm: str = ARM_L,
-                       perm_tag: str | None = None) -> RankRequest:
+                       perm_tag: str | None = None, k: int = 0) -> RankRequest:
     """cards: the N cards in SCREEN order, all built at t_d. They are shown in the seeded display order. perm_tag overrides the
     permutation seed arm (the offline rehearsal uses 'A' and 'B')."""
     t_ms = ms_from_iso(t_d_iso)
@@ -225,7 +290,9 @@ def build_rank_request(t_d_iso: str, cards, *, seq: int = 0, playbook: P.Playboo
     playbook = playbook if playbook is not None else load_rank_playbook()
     template = load_rank_template()
     screen_shas = tuple(P.card_sha256(c) for c in cards)
-    perm = display_perm(perm_tag or arm, t_d_iso, screen_shas)
+    perm = display_perm_k(perm_tag or arm, t_d_iso, screen_shas, k)      # k = 0 is the v7.0 permutation, byte for byte
+    if k:
+        seq = seq + k * SEQ_K_STRIDE
     shown = [cards[i] for i in perm]
     shown_shas = tuple(screen_shas[i] for i in perm)
     batch = P.batch_sha256(shown_shas)
