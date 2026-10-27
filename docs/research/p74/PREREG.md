@@ -44,3 +44,10 @@ LEAD requires none of lines 1-4, CI90 lower bound > 0, and at least 100 trades o
 ## Capacity line
 
 attempts/day x stake x net mean per trade, at 0.25 and 1 SOL (each with its own impact), under both fail models. Concurrency uncapped (open positions at once reported as a caveat).
+
+## Amendment 1 (2026-10-27, made before any pricing or result was read; at the manager's instruction after P73's finding)
+
+- Mayhem identification as P73: `is_mayhem_mode` true in `/data/mal/hunt-shared/tokens.parquet` (mints absent from tokens.parquet count as non-mayhem). These mints are excluded from entry; the count excluded is reported. (The universe line above already excluded them; this fixes the identification.)
+- Pre-pricing check: constant product must hold on at least 99% of consecutive bonding print pairs of the priced mints (pairs in the window from the first tape print to the last print used by any exit). Otherwise the verdict is NOT_DECIDABLE and no pricing is run.
+- Rows with `quote_reserve` = 0 are counted and any entry/exit path touching one is dropped and reported.
+- The extraction (p74_extract.py: all rows of mints reaching >= 85% progress, 44,049 mints) was run before this amendment; it computed no price and no outcome.
