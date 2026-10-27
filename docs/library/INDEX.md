@@ -34,11 +34,11 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 45 | 24 | 1 |
 | `desk-read` | 1 | 49 | 0 |
-| `explored-no-survivor` | 42 | 14 | 1 |
+| `explored-no-survivor` | 42 | 15 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 188 | 95 | 2 |
+| **all** | 188 | 96 | 2 |
 
-The file holds 535 rows: the 285 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 536 rows: the 286 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -392,6 +392,12 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `p88-knn-c-forward` | KNN-C: cost-gated numeric kNN ranker (P86, k = 25, 10 tape features) as a forward arena paper book | `untested` | SHELVED / REDESIGN by manager17 on 2026-10-27 after QP CHANGES 6446421063 and reviewer CHANGES 6446421595 on PR #1046: expected gate FAIL with near certainty (the cost gate would need to lift L by about 11-12 pp), and with -100% labels m likely binds at 0, so a stop at the 7.2-a-day P0 kill line is likelier; K1-K5 not … |
+
+### p93-haiku (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p93-haiku-text` | Haiku reads token name+symbol to predict PumpSwap pool survival (offline, Claude-plan Haiku) | `explored-no-survivor` | Kill line hit: CI lower bound <= 0.55 and AUC not above baseline. Haiku's reading of name and symbol carries no survival signal here; only 19 positives, so power is low. |
 
 ## Dead as frozen, and explored with no survivor
 
