@@ -92,8 +92,8 @@ class World:
     def __init__(self, tmp, halt=HALT, clock=T0):
         self.root = Path(tmp)
         self.reg = str(self.root / "bots.json")
-        self.ledger = str(self.root / "ledger")
         self.dec = self.root / "hv7root"
+        self.ledger = str(self.dec / "engine-ledger")
         for arm in R.ARM_ORDER:
             AP.register_bot(R.bot_id(arm), SHA, clock, self.reg, deciding_stake=0.25, model_ids=(["m"] if arm == "L" else []), now_ms=0, verify_sha=False)
             AP._append_line(Path(self.reg), {"kind": "hv7_halt", "bot_id": R.bot_id(arm), "entries_halt_ms": halt})
@@ -705,6 +705,24 @@ class Cli(unittest.TestCase):
             with mock.patch.dict(os.environ, {"MAL_ARENA_TEST": "0"}):
                 self.assertEqual(run_cli(w, "gate", now=T0, wall=LATE)[0], 1)
                 self.assertEqual(run_cli(w, "gate", record=rec, wall=LATE)[0], 1)
+
+    def test_ledger_path_is_inside_the_hv7_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "hv7"
+            root.mkdir()
+            self.assertEqual(X.resolve_ledger_root(root, None), str(root.resolve() / "engine-ledger"))
+            self.assertEqual(X.resolve_ledger_root(root, str(root / "engine-ledger")), str(root.resolve() / "engine-ledger"))
+            for bad in (X.LEDGER_ROOT, X.LEDGER_ROOT + "/hv7.0-L", str(Path(tmp) / "elsewhere"), str(root / ".." / "x")):
+                with self.assertRaises(X.Refused):
+                    X.resolve_ledger_root(root, bad)
+
+    def test_cli_refuses_shared_ledger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            w = World(tmp)
+            self.with_roots(w)
+            out = io.StringIO()
+            rc = X.main(["gate", "--root", str(w.dec), "--ledger-root", X.LEDGER_ROOT, "--registry", w.reg, "--n-books", "3"], out=out, _wall_ms=LATE)
+            self.assertEqual((rc, out.getvalue()), (1, ""))
 
     def test_old_timing_flags_do_not_exist(self):
         with self.assertRaises(SystemExit):

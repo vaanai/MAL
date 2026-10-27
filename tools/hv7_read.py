@@ -642,6 +642,17 @@ def record_once(record_dir: str | Path, kind: str, res: Mapping[str, Any]) -> Pa
     return p
 
 
+def resolve_ledger_root(root: str | Path, ledger_root: str | None) -> str:
+    """The HV7 engine ledger is <HV7 root>/engine-ledger. The shared arena ledger and any path outside the HV7 root (symlinks resolved) are refused."""
+    base = Path(os.path.realpath(root))
+    p = Path(os.path.realpath(ledger_root)) if ledger_root else base / "engine-ledger"
+    if p == Path(os.path.realpath(LEDGER_ROOT)) or Path(os.path.realpath(LEDGER_ROOT)) in p.parents:
+        raise Refused("the shared arena ledger is refused: the HV7 ledger is <HV7 root>/engine-ledger")
+    if base not in p.parents:
+        raise Refused("the ledger root must be inside the HV7 root")
+    return str(p)
+
+
 def _load_arm(ledger_root: str, registry: str, arm: str) -> tuple[list[dict], list[dict], list[str]]:
     bot = R.bot_id(arm)
     led = Ledger(ledger_root)
@@ -677,7 +688,7 @@ def main(argv: Sequence[str] | None = None, *, out=None, _wall_ms: int | None = 
     ap.add_argument("kind", choices=("gate", "contrast"))
     ap.add_argument("--arm", choices=PROMOTABLE, default="L")
     ap.add_argument("--root", default=R.HV7_ROOT, help="HV7 decision-log root (<root>/decisions/<arm>/)")
-    ap.add_argument("--ledger-root", default=LEDGER_ROOT)
+    ap.add_argument("--ledger-root", help="default <root>/engine-ledger; /data/mal/arena/ledger (shared, holds sealed HV4 output) and any path outside the HV7 root are refused")
     ap.add_argument("--registry", default=REGISTRY_PATH, help="timing (clock, window end, deciding stake) is read from here, never from a flag")
     ap.add_argument("--n-books", type=int, required=True, help="N: every book with a clock before the read, from notebook copies")
     ap.add_argument("--other-ps", help="JSON {name: report-only p} of the other arena reads, from notebook copies (Holm rank)")
@@ -693,6 +704,7 @@ def main(argv: Sequence[str] | None = None, *, out=None, _wall_ms: int | None = 
         if now > wall:
             raise Refused(f"--now-ms {now} is later than the wall clock {wall}")
         regn = load_registration(a.registry)
+        a.ledger_root = resolve_ledger_root(a.root, a.ledger_root)
         other = _load_other_ps(a.other_ps)
         rec_dir = Path(a.record_dir) if a.record_dir else Path(AS.READS_DIR) / "hv7"
         clock, halt = regn["clock_start_ms"], regn["halt_ms"]
