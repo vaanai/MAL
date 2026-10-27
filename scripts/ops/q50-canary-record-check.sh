@@ -6,7 +6,7 @@
 #   (a) canary_record_refusal(bot_id, tree) from the tree's OWN tools/h5_arena_executor.py returns None;
 #   (b) among non-template, regular, mode-100644 files matching the executor's CANARY_DEC_GLOB, exactly one has a CANARY_OWNER_RE match for bot_id, and it is DEC/DEC-033-h5v1q50-canary.md
 #       (DEC-024/026/028 match the glob too and are allowed);
-#   (c) in that file: no open marker (<FILL, or FILL:gate-read|review|owner not followed by a word char or '-'); the set of POSTX:<name> tokens equals the declared table
+#   (c) in that file: no open marker (<FILL, or FILL:gate-read|review|owner not followed by a word char or '-'); the set of POSTX:<name> tokens OUTSIDE the table rows equals the declared table (a token dropped or filled early fails)
 #       (table rows start with "   | `POSTX:" ); with --after-r (records PR R merged) there must be NO POSTX token outside the declared table rows (the table may stay);
 #   (d) positive control, MANDATORY: the same checks must FAIL on blob 1dd08c837660c778c5c26315f1b607faa8ce2f49 (the unfilled copy); a missing or non-blob object (shallow clone) is a FAIL, never a skip;
 #   (e) prints the path and the blob sha256.
@@ -35,7 +35,7 @@ def git(*a, raw=False):
 def markers(text):
     return [i + 1 for i, l in enumerate(text.split("\n")) if OPEN.search(l)]
 def postx_checks(text):
-    used = set(POSTX.findall(text))
+    used = set(POSTX.findall("\n".join(l for l in text.split("\n") if not ROW.match(l))))  # tokens in the BODY only: table rows never count as presence
     declared = set()
     for l in text.split("\n"):
         if ROW.match(l): declared |= set(POSTX.findall(l.split("|")[1]))

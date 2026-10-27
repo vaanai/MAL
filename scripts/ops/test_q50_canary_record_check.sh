@@ -30,6 +30,15 @@ s = re.sub(r"<FILL|FILL:(?:gate-read|review|owner)(?![\w-])", "DONE", s)
 if how in ("clean", "extra"): s += "\nOWNER_CANARY_CONFIRMED: bot_id=h5v1q50-boostfloor-a1\n"
 if how == "extra": s += "\nstray POSTX:not_in_the_table\n"
 def drop_postx(t): return "\n".join(l if re.match(r"^\s*\| `POSTX:", l) else re.sub(r"POSTX:[a-z0-9_]+", "DONE", l) for l in t.split("\n"))
+if how in ("dropone", "fillearly"):
+    s = re.sub(r"<FILL|FILL:(?:gate-read|review|owner)(?![\w-])", "DONE", s) + "\nOWNER_CANARY_CONFIRMED: bot_id=h5v1q50-boostfloor-a1\n"
+    tok = "POSTX:fund" if how == "fillearly" else "POSTX:start_balance"
+    new = "0.50 SOL" if how == "fillearly" else "DONE"
+    out, done = [], False
+    for l in s.split("\n"):
+        if tok in l and not re.match(r"^\s*\| `POSTX:", l): l = re.sub(re.escape(tok) + r"(?![a-z0-9_])", new, l); done = True  # every body occurrence
+        out.append(l)
+    assert done; s = "\n".join(out)
 if how == "noposxclean": s = drop_postx(s) + "\nOWNER_CANARY_CONFIRMED: bot_id=h5v1q50-boostfloor-a1\n"
 if how == "notable": s = re.sub(r"POSTX:[a-z0-9_]+", "DONE", s) + "\nOWNER_CANARY_CONFIRMED: bot_id=h5v1q50-boostfloor-a1\n"
 open(f, "w").write(s)
@@ -44,11 +53,15 @@ out=$(PYTHON=$PY Q50_CONTROL_BLOB=0000000000000000000000000000000000000000 sh "$
 if [ "$rc" = 3 ]; then echo "PASS missing positive-control blob fails (rc 3)"; else echo "FAIL missing control rc=$rc"; echo "$out"|tail -3; FAIL=1; fi
 git reset -q --hard HEAD~1; mod $F noposxclean; R=$(commit afterR)
 run "after R, POSTX only in the declared table" 0 "$R" --after-r
-run "after R tree under the stage-2 rule: set equals table, passes" 0 "$R"
+run "after R tree under the stage-2 rule: body has no tokens, table declares them, fails" 3 "$R"
 git reset -q --hard HEAD~1; mod $F notable; N=$(commit notable)
 run "after R, table removed too" 0 "$N" --after-r
 run "table removed, stage-2 rule (empty declared table)" 3 "$N"
 git reset -q --hard HEAD~1; mod $F noposxclean; R=$(commit afterR)
+git reset -q --hard HEAD~1; mod $F dropone; G=$(commit dropone)
+run "one declared token dropped from the body (outside the table)" 3 "$G"
+git reset -q --hard HEAD~1; mod $F fillearly; G=$(commit fillearly)
+run "one X-dependent field filled early (token replaced by a value)" 3 "$G"
 git reset -q --hard HEAD~1; mod $F extra; E=$(commit extra)
 run "POSTX token outside the table" 3 "$E"
 git reset -q --hard HEAD~1; mod $F clean; sed 's/h5v1q50-boostfloor-a1/other-book/' $F > DEC/DEC-024-x-canary.md; O=$(commit otherbook)
