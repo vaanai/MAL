@@ -1,0 +1,95 @@
+rows 480 pool-days (per stake) 240 days 24 max |identity residual| lamports 2.682209014892578e-07
+pressure curve intercept -0.90965382630416 mean p 0.289
+V known share of pool-days 0.6958333333333333  48h branch with next-day boundary 1.0
+
+=== stake 0.25 SOL: 240 pool-days, 24 days ===
+components mean per pool-day (SOL, 24h branch): net -0.0553283045190426 fees 0.0044611561474740425 IL -0.02496070802205359 price drift on bought basket -0.031126363649513475 entry cost -0.00187634941402703 exit cost -0.0016060395809225443 fixed priority -0.00022
+median LP share g 0.00037569511760513754 median swap fraction of stake at entry 0.5128961211450737 median fees SOL 0.001518682024755525 median fees % stake 0.60747280990221
+[flat] mean/pool-day -0.056842 SOL (-22.7367% of S)  total -13.642036  total ex-top3 -14.569884  total ex-best-day(2026-09-10) -13.723994  days majority-positive 0/24  CI90 lower (date-cluster, 1000, seed1) -0.068451  share positive pool-days 0.1708
+    collapsed(px<0.5): n 81  total -12.342724  mean -0.152379
+    survivors: n 159  total -1.299312  mean -0.008172
+    Qx<5SOL: n 23  total -0.257753  mean -0.011207
+    ex-collapsed total -1.299312  mean -0.008172
+[press] mean/pool-day -0.058372 SOL (-23.3490% of S)  total -14.009378  total ex-top3 -14.923948  total ex-best-day(2026-09-10) -14.325080  days majority-positive 0/24  CI90 lower (date-cluster, 1000, seed1) -0.069478  share positive pool-days 0.1708
+    collapsed(px<0.5): n 81  total -12.472674  mean -0.153984
+    survivors: n 159  total -1.536704  mean -0.009665
+    Qx<5SOL: n 23  total -0.240519  mean -0.010457
+    ex-collapsed total -1.536704  mean -0.009665
+hedged-view net (fees + IL - costs, i.e. excluding price drift of the bought token basket): mean -0.024202 SOL  total -5.808466  ex-top3 -5.887404  share positive 0.0958  fees-only mean 0.004461
+24h-only net (no fail model) mean -0.0553283045190426 median -0.04831711157673621
+per-day net (flat, press) SOL:
+                   f         p
+day                           
+2026-08-16 -0.673964 -0.720421
+2026-08-17 -0.749633 -0.766458
+2026-08-18 -0.405866 -0.412662
+2026-08-19 -0.804718 -0.863248
+2026-08-20 -0.849582 -0.856431
+2026-08-21 -0.751154 -0.756185
+2026-08-22 -0.114335 -0.128478
+2026-08-23 -0.467744 -0.485917
+2026-08-24 -0.840969 -0.889719
+2026-08-25 -0.509090 -0.574697
+2026-08-26 -1.142025 -1.169002
+2026-09-05 -0.116232 -0.104063
+2026-09-06 -0.542987 -0.584262
+2026-09-07 -0.619616 -0.611258
+2026-09-08 -0.481012 -0.505303
+2026-09-09 -1.024900 -1.005676
+2026-09-10  0.081957  0.315701
+2026-09-11 -0.111975 -0.164507
+2026-09-12 -0.449905 -0.515407
+2026-09-13 -1.278807 -1.308138
+2026-09-20 -0.454711 -0.496433
+2026-09-21 -0.516610 -0.532249
+2026-09-22 -0.247065 -0.288540
+2026-09-23 -0.571092 -0.586030
+capacity [flat]: 10 pool-days x 0.25 SOL x -22.7367% = -0.568418 SOL/day
+capacity [press]: 10 pool-days x 0.25 SOL x -23.3490% = -0.583724 SOL/day
+worst 5 pool-days (flat, SOL): [-0.24268, -0.241, -0.23954, -0.23812, -0.23689]  best 5: [0.36273, 0.28876, 0.27636, 0.25001, 0.24594]
+
+=== stake 1.0 SOL: 240 pool-days, 24 days ===
+components mean per pool-day (SOL, 24h branch): net -0.2291632950916091 fees 0.01783589306066501 IL -0.10017701493807818 price drift on bought basket -0.124182902522292 entry cost -0.011858121358837485 exit cost -0.010561149333066434 fixed priority -0.00022
+median LP share g 0.0015019267331937598 median swap fraction of stake at entry 0.5126647964412754 median fees SOL 0.0060706036343349664 median fees % stake 0.6070603634334968
+[flat] mean/pool-day -0.235193 SOL (-23.5193% of S)  total -56.446205  total ex-top3 -60.156315  total ex-best-day(2026-09-10) -56.777307  days majority-positive 0/24  CI90 lower (date-cluster, 1000, seed1) -0.277531  share positive pool-days 0.1583
+    collapsed(px<0.5): n 81  total -49.367070  mean -0.609470
+    survivors: n 159  total -7.079135  mean -0.044523
+    Qx<5SOL: n 23  total -2.150843  mean -0.093515
+    ex-collapsed total -7.079135  mean -0.044523
+[press] mean/pool-day -0.241292 SOL (-24.1292% of S)  total -57.909983  total ex-top3 -61.568367  total ex-best-day(2026-09-10) -59.175710  days majority-positive 0/24  CI90 lower (date-cluster, 1000, seed1) -0.286578  share positive pool-days 0.1583
+    collapsed(px<0.5): n 81  total -49.884255  mean -0.615855
+    survivors: n 159  total -8.025728  mean -0.050476
+    Qx<5SOL: n 23  total -2.084215  mean -0.090618
+    ex-collapsed total -8.025728  mean -0.050476
+hedged-view net (fees + IL - costs, i.e. excluding price drift of the bought token basket): mean -0.104980 SOL  total -25.195294  ex-top3 -25.510914  share positive 0.0958  fees-only mean 0.017836
+24h-only net (no fail model) mean -0.2291632950916091 median -0.19560516514908619
+per-day net (flat, press) SOL:
+                   f         p
+day                           
+2026-08-16 -2.846510 -3.031135
+2026-08-17 -3.123516 -3.189907
+2026-08-18 -1.673304 -1.699933
+2026-08-19 -3.243224 -3.476931
+2026-08-20 -3.475304 -3.502114
+2026-08-21 -3.100515 -3.120333
+2026-08-22 -0.536462 -0.592295
+2026-08-23 -1.958413 -2.030459
+2026-08-24 -3.386838 -3.581535
+2026-08-25 -2.055292 -2.317398
+2026-08-26 -4.576325 -4.683894
+2026-09-05 -0.745290 -0.697033
+2026-09-06 -2.429656 -2.594870
+2026-09-07 -2.749387 -2.718629
+2026-09-08 -2.107285 -2.203916
+2026-09-09 -4.179925 -4.102898
+2026-09-10  0.331102  1.265727
+2026-09-11 -0.448035 -0.657748
+2026-09-12 -1.875060 -2.136732
+2026-09-13 -5.109943 -5.227019
+2026-09-20 -1.815339 -1.981911
+2026-09-21 -2.060768 -2.123092
+2026-09-22 -0.999753 -1.165290
+2026-09-23 -2.281162 -2.340635
+capacity [flat]: 10 pool-days x 1.0 SOL x -23.5193% = -2.351925 SOL/day
+capacity [press]: 10 pool-days x 1.0 SOL x -24.1292% = -2.412916 SOL/day
+worst 5 pool-days (flat, SOL): [-0.97003, -0.96336, -0.9575, -0.95182, -0.94696]  best 5: [1.45082, 1.15552, 1.10376, 0.99945, 0.98338]

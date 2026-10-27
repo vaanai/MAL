@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 from tools import arena_sell_simulate as ss
 from tools import h5_arena_executor as ax
+from tools.boost_watch import rpc_from_env_file
 
 SEPT_START = datetime(2026, 9, 1, tzinfo=timezone.utc)
 SEPT_END = datetime(2026, 10, 1, tzinfo=timezone.utc)  # exclusive; the Look-2 class starts on October hours
@@ -116,19 +117,27 @@ def main(argv: list[str] | None = None, rpc_factory: Callable[[str], Any] | None
         ap.add_argument(f"--{k}-s0-source", required=True, help="sept-audit-tape-migrations | chain-migration-tx | rpc-oldest-signature")
         ap.add_argument(f"--{k}-migration-slot", type=int, default=None, help="required when the oldest-signature walk hits its cap")
     ap.add_argument("--rpc", default=ss.DEFAULT_RPC)
+    ap.add_argument("--rpc-env", help="env file holding the Helius RPC URL or API key (e.g. /var/lib/mal/fast-listener/helius.env on mal-fast-0); the URL is built in-process and never printed or logged")
     ap.add_argument("--out-dir", required=True, type=Path)
     a = ap.parse_args(argv)
     if "?" in a.rpc or "api-key" in a.rpc.lower() or "@" in a.rpc:
         raise SystemExit("--rpc must be a plain public URL (no query string, no key)")
+    url, rpc_label = a.rpc, a.rpc.split("/")[2]
+    if a.rpc_env:
+        try:
+            url, rpc_label = rpc_from_env_file(a.rpc_env), "helius"  # the only RPC identity that is ever logged
+        except (OSError, ValueError) as exc:
+            print(f"rpc-env unusable: {type(exc).__name__}", file=sys.stderr)  # type only: never the path contents
+            return 2
     pin = ax.sell_pin_problem()
     if pin:
         print(json.dumps({"verdict": "REFUSED", "refusal": f"sell_builder_pin:{pin}"}))
         return 2
-    rpc = (rpc_factory or ss.RateLimitedRpc)(a.rpc)
+    rpc = (rpc_factory or ss.RateLimitedRpc)(url)
     res = [check_one(rpc, "token", a.token_mint, a.token_pool, a.token_s0_utc, a.token_s0_source, "Token", a.out_dir, a.token_migration_slot),
            check_one(rpc, "token2022", a.token2022_mint, a.token2022_pool, a.token2022_s0_utc, a.token2022_s0_source, "Token-2022", a.out_dir, a.token2022_migration_slot)]
     summary = {"kind": "q50_n4_rerun.v1", "builder_pin": ax.SELL_BUILDER_PIN, "builder_pin_problem": None, "priority": ax.PRIORITY_DEFAULT.as_dict(),
-               "rpc_host": a.rpc.split("/")[2], "signed": False, "results": res, "verdict": "PASS" if all(r["ok"] for r in res) else "FAIL",
+               "rpc_host": rpc_label, "signed": False, "results": res, "verdict": "PASS" if all(r["ok"] for r in res) else "FAIL",
                "not_measured": ["proceeds", "min_out", "landing", "any signed or sent transaction"]}
     sha = ss.write_record(summary, a.out_dir / "q50-n4-summary.json")
     print(json.dumps({"verdict": summary["verdict"], "summary_sha256": sha, "results": [{k: r.get(k) for k in ("kind", "mint", "ok", "refusal", "token_program")} for r in res]}))

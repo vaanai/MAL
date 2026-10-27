@@ -1,0 +1,39 @@
+== mayhem PumpSwap universe (is_mayhem_mode mints, 3 exploration blocks)
+[(1922459, 9211, 9203, 18241, 3)]
+== non-mayhem pool count proxy: tokens.parquet non-mayhem mints with ps_n_trades>0
+[(19799, 19824)]
+== top mayhem-pool coverage wallets: (trader, mayhem pools, share of 9211, nonmayhem pools, nonmayhem rows)
+('27HFmP7ccLadGswvQfvea4o3juLw75cPF4V6jWpHM3MX', 7442, 0.8079, 15543, 17978, 19732, 1.9)
+('Fs9RN3wAsuJKPbTmtX5eek1bhW5krNH8RkQxkFAtgNfR', 7364, 0.7995, 16568, 16688, 7748, 0.4)
+('3ct4z3q2XHEGTb4Noe3Wh5iySA8e5UZawUXkWAnkfh5J', 6353, 0.6897, 2158, 37472, 70555, 1334.1)
+('BwWK17cbHxwWBKZkUYvzxLcNQ1YVyaFezduWbtm2de6s', 6066, 0.6586, 0, 0, 355954, 53510.5)
+('ALdJgL529UEDi3ANvMthHbXof5MJdRpYjUZsoHDzFste', 5832, 0.6332, 3268, 14614, 20924, 327.1)
+('FoZhwdxM8hwM1PGXW5Nie3a8YmWoj7aEqr34rpapgQP2', 4146, 0.4501, 1267, 9837, 22346, 99.5)
+('3KcPSJ8ouE7H1feoWHmhDwXhLnXhpxP6R6713uytFmBM', 3933, 0.427, 9670, 10979, 4411, 0.1)
+('Axja4dTBheeYis4Jz7tdMJp5SAtVhcW5hKnvYAnKZaaH', 3712, 0.403, 14, 30, 18156, 173.3)
+('3BDBAy8tNV65WZJv9CkPA9U6KWXi1fsYcTrHwn3A9ZAU', 3433, 0.3727, 14, 30, 14726, 135.4)
+('2s53435AHPb9YcoGqjvWyE1yoFTwzNsX5YmchTChbo11', 3325, 0.361, 3837, 14738, 20876, 10784.1)
+('6UuMWNCGEupX9aNGxAtiB4P37e2xnrt3L3qu9goWCmpy', 3176, 0.3448, 5, 10, 14742, 148.3)
+('6cHyfCf2G3kroK7Ys8qAUckH3GDYpmAgy3kVwyHV52ww', 2872, 0.3118, 5, 10, 11520, 116.0)
+== constant-product / token-conservation check on consecutive same-pool PRE-trade rows (all mayhem pools)
+[('buy', 1022534, 0.9988352465541488, 0.9999080715164483, 0.988280096309756), ('sell', 890714, 0.9968306325038115, 0.9971865267639219, 0.9421823391122178)]
+[(1913248, 0.9966522897188446)]
+== agent BwWK17 activity
+[(6066, 355954, 0.48919523309191637, 53510.509485696)]
+pools with agent / all mayhem pools, by block:
+[('exp011-0909', 1433, 3798, 0.3772999942302704), ('explore-0814', 3197, 4907, 0.6514999866485596), ('fresh-0903', 1436, 2591, 0.5541999936103821)]
+trades per pool q10/q50/q90/mean: [([12.0, 44.0, 123.0], 58.68018463567425)]
+first agent trade, slots after pool first row, q10/q50/q90/q99: [([0.0, 1.0, 6.0, 171.15000000000327],)]
+first agent trade seconds after pool first row (block_time): [([0.0, 0.0, 2.0, 64.35000000000036],)]
+agent active span (last-first agent slot) q10/q50/q90/q99: [([23.0, 95.5, 349.5, 12688.250000000267],)]
+last agent trade slots after pool first row q10/q50/q90/q99: [([25.0, 98.5, 360.5, 15219.950000000093],)]
+share of agent trades within 20/50/100 slots of pool first row: [(0.16240300713013478, 0.3701826640520966, 0.6033841451423498)]
+agent size SOL q10/q50/q90: [([0.002426151800000001, 0.0156570395, 0.18893443740000013],)]
+agent size / pre-trade quote reserve (V=0 on mayhem pools, fixture pool A) q10/q50/q90: [([0.07009999736550646, 0.18099996372985216, 0.34849998919777925],)]
+pre-trade quote reserve at agent trades, SOL q10/q50/q90: [([0.0183487924, 0.0898547125, 1.0357120722000006],)]
+pool first-row quote reserve SOL q10/q50/q90: [([0.021437351, 0.090374372, 0.969475799],)]
+agent share of pool volume in its first 20 slots: [(0.5340979404010103,)]
+agent sign transitions (prev agent side -> next agent side) within pool:
+[('buy', 'buy', 85973), ('buy', 'sell', 88089), ('sell', 'buy', 85123), ('sell', 'sell', 90703)]
+agent trades in same slot as previous agent trade share: [(0.0035525653923541246,)]
+agent trades per UTC day (pools active): [('2026-08-14', 184), ('2026-08-15', 234), ('2026-08-16', 183), ('2026-08-17', 177), ('2026-08-18', 241), ('2026-08-19', 170), ('2026-08-20', 128), ('2026-08-21', 275), ('2026-08-22', 229), ('2026-08-23', 171), ('2026-08-24', 203), ('2026-08-25', 238), ('2026-08-26', 358), ('2026-08-27', 264), ('2026-08-28', 156), ('2026-09-03', 120), ('2026-09-04', 252), ('2026-09-05', 250), ('2026-09-06', 192), ('2026-09-07', 202), ('2026-09-08', 300), ('2026-09-09', 284), ('2026-09-10', 266), ('2026-09-11', 282), ('2026-09-12', 259), ('2026-09-13', 185), ('2026-09-14', 174), ('2026-09-15', 109)]

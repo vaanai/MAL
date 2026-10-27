@@ -204,6 +204,45 @@ def parse_global_config(data: bytes) -> dict[str, object]:
     }
 
 
+POOL_MAYHEM_OFFSET = 243  # Pool account: is_mayhem_mode bool right after coin_creator (ends at 243)
+GC_RESERVED_OFFSET = 385  # GlobalConfig: reserved_fee_recipient pubkey
+GC_MAYHEM_ENABLED_OFFSET = 417  # GlobalConfig: mayhem_mode_enabled bool
+GC_RESERVED_LIST_OFFSET = 418  # GlobalConfig: reserved_fee_recipients [pubkey; 7]
+N_RESERVED_LIST = 7
+
+
+def pool_is_mayhem(pool_bytes: bytes) -> bool:
+    """is_mayhem_mode (pool byte 243). A pool account too short to hold it is not mayhem (parse_pool_account refuses it anyway)."""
+    return len(pool_bytes) > POOL_MAYHEM_OFFSET and pool_bytes[POOL_MAYHEM_OFFSET] == 1
+
+
+def fee_recipient(global_config: "bytes | dict[str, object]", pool_bytes: bytes, user: Pubkey | None = None) -> Pubkey:
+    """The protocol fee recipient for a buy or a sell on this pool. ONE rule for both sides.
+
+    Non-mayhem pool: exactly the old choice, protocol_fee_recipients[1] among those that are not `user` (index 0 when only one is left).
+    `global_config` may be the raw account bytes or the parsed dict from parse_global_config.
+    Mayhem pool (is_mayhem_mode = 1): the program accepts only a reserved recipient (6013 InvalidProtocolFeeRecipient otherwise). We take
+    reserved_fee_recipient (offset 385), the first reserved key that is not `user`. Needs the raw bytes; a parsed dict has no reserved keys.
+    Raises ValueError when the pool is mayhem and mayhem_mode_enabled = 0, or when the reserved keys are not readable.
+    Only 2 of the 8 reserved keys were simulated as accepted (#1025); the choice of 385 is deterministic, not proven unique."""
+    if not pool_is_mayhem(pool_bytes):
+        cfg = parse_global_config(global_config) if isinstance(global_config, (bytes, bytearray)) else global_config
+        recips = [r for r in cfg["protocol_fee_recipients"] if r != user]  # type: ignore[index]
+        return recips[1] if len(recips) > 1 else recips[0]
+    if not isinstance(global_config, (bytes, bytearray)):
+        raise ValueError("mayhem pool needs the raw global config bytes")
+    if len(global_config) < GC_RESERVED_LIST_OFFSET + 32 * N_RESERVED_LIST:
+        raise ValueError("global config too short for the reserved fee recipients")
+    if global_config[GC_MAYHEM_ENABLED_OFFSET] != 1:
+        raise ValueError("mayhem pool but global config mayhem_mode_enabled = 0")
+    reserved = [Pubkey.from_bytes(global_config[GC_RESERVED_OFFSET : GC_RESERVED_OFFSET + 32])] + [
+        Pubkey.from_bytes(global_config[GC_RESERVED_LIST_OFFSET + 32 * i : GC_RESERVED_LIST_OFFSET + 32 * (i + 1)]) for i in range(N_RESERVED_LIST)]
+    for r in reserved:
+        if r != user and r != Pubkey.default():
+            return r
+    raise ValueError("no usable reserved fee recipient")
+
+
 def pool_state_from_accounts(
     pool: Pubkey,
     pool_data: bytes,

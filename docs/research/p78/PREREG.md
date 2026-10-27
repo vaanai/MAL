@@ -1,0 +1,54 @@
+# P78 pre-registration: cost-floor tiers (cheapest PumpSwap fee band) and a frozen re-test of three rules
+
+Written before any pricing and before any count of this lane. Lane P78, manager17, 2026-10-27. Exploration only; paper only. These are in-sample lab dates that at least 14 families have already read (EXP-024 sec. 9, m >= 14): a positive here is a LEAD, never a pass. No book has cleared the promotion gate.
+
+Why: P70-P76 died on the cost floor (fees plus exit lag, about 2.5-4% per round trip) in the V-era migration windows (first ~32 min after migration, market cap about 400 SOL, fee 1.20-1.25%). PumpSwap fees fall with market cap (`tools/paper_curve_math.PUMPSWAP_SOL_FEE_TIERS`, split in `PUMPSWAP_SOL_FEE_SPLIT`). Large pools may have a much lower floor. P56 already priced one deep-pool momentum rule (+3% / 60 s, KILL, 4,267 trades, fresh-0903 only); this lane asks the broader question across all frozen rules.
+
+## Data (frozen; exploration blocks only)
+
+Clean-view hourly trade tape `/data2/mal/clean-view/{explore-0814/w1..w7, fresh-0903/w1..w3, exp011-0909/b,c}/trades/*.jsonl.zst` (HOLDOUT_LEDGER: explore-0814 `[08-14T12,08-28T12)`, fresh-0903 `[09-03T12,09-09T12)`, exp011-0909 `[09-09T12,09-15T12)`, all exploration pool). Not read: any October hour, fresh-0802/0808/0828, fast-pool, oracle blocks, arena tape, DBC, LaunchLab, FLOOR G1, meta-capture, HV4/HV6/HV7/Q50 output or job. The V-era `paths` parquet (used by P55/P71/P72) holds only the first 32 min of migrated pools, so it has almost no deep pools; the full clean-view tape is the only exploration source that does. Rows kept: venue pumpswap, quote wSOL, mint ends `pump` (the P56 filter); rows with zero reserve dropped.
+
+Pricing conventions (binding): PumpSwap tape reserves are PRE-trade (checked on these rows: sign(q[j+1]-q[j]) must match the side of print j; the check result is reported). Quote reserve used = `q + V`. V: the V map is the V-era V (about 17.5845 SOL) from `meta.v` of the P55 paths dataset where the pool's mint is listed there; every other pool gets V = 0 (the 2026-10-06 lab note `pumpswap-v-layout-2026-10-06.md`: older/deep pools have V about 0, |V| < 0.002 SOL). The share of in-tier pools with V from meta is reported. Fee legs from `tools/paper_curve_math`; tier lookup on `(q+V)/b * 1e6` as `p72_run.tier` (market cap in SOL = quote SOL x 1e9 supply / base UI).
+
+## Step 1: cost map (descriptive; no strategy P&L)
+
+Fee bands (frozen; band = market-cap range of the pre-trade print, total fee ppm from the table at each print): 
+B0 `[0,420)`; B1 `[420,1470)`; B2 `[1470,9820)`; B3 `[9820,24560)`; B4 `[24560,58940)`; B5 `[58940,78590)`; B6 `[78590,98240)`; B7 `>=98240` (market cap in SOL). The exact ppm range inside each band is printed from the table in the output.
+
+Unit = pool-hour (pool, UTC hour of block_time). Its band is the band of the median pre-trade market cap of its prints. For each band, per UTC day averaged over days with data: number of distinct pools with a pool-hour in the band, pool-hours, and prints.
+- Fee per leg: creator + protocol + LP ppm at the band's median market cap (from `PUMPSWAP_SOL_FEE_SPLIT`), as % of notional; round-trip fee = 1-(1-f)^2.
+- Impact at 0.25 and 1 SOL: for every pool-hour, the exact constant-product one-way price impact of a buy of that stake into the median pre-trade state (fee-adjusted input), `1 - mid/avg_exec`. Round-trip impact is reported in two forms: (a) exact same-state round trip, which is the fee only (a buy and an immediate sell into one's own impact returns the impact; shown for transparency); (b) 2 x one-way, the cost if the own impact is NOT given back (non-reverting upper bound). The cost floor uses (a) plus the lag term; (b) is a sensitivity column.
+- Slippage from a 2-slot exit lag: per pool, per distinct slot s with a print, price p(s) = pre-trade q/b of the first print in the slot; |p(s')/p(s)-1| with s' the first slot >= s+2 that has a print and s' - s <= 6 (pairs further apart are dropped and counted). Reported: the median of those absolute moves over all pool-slots of the pool-hour, then the median over pool-hours in the band.
+- Round-trip cost floor at stake S = RT fee + 2 x 55,000 lamports / S + median 2-slot absolute move (as % of notional). Priority sends: two, as the frozen P72/P71 code.
+- Capacity: tradeable pool-hours per day. Tradeable pool-hour = at least 20 prints in the hour and median quote depth `q+V` >= 100 SOL (so a 1 SOL stake is at most 1% of reserve). Capacity in the table is tradeable pool-hours per day and the share that also has median depth >= 400 SOL.
+
+## Tier choice rule (frozen now)
+
+The tier is the lowest-fee band (highest market cap) among B0..B7 that has at least 20 distinct pools per day on average over the days with data, counting a pool for a day when it has at least one tradeable pool-hour (the definition above) in the band that UTC day. Days with fewer than 12 hours of tape (edge days) are excluded from this average. The count is made on the Step 1 map before any rule is run; ties cannot occur (bands are ordered). If no band reaches 20 the lane stops with NOT_DECIDABLE for Step 2. The band is fixed from this rule once and is not revisited.
+
+## Step 2: three frozen rules, inside the chosen band only
+
+"Inside the band" = the entry decision uses only prints whose pre-trade market cap is in the band (cluster, signal and lead-buy prints; the copy lead's buys). Everything else (exit, fee lookup at exit state, V, priority, fail models, metrics) is the unchanged frozen code. Parameters are not changed in any way. The only changes to the killed scripts are data-adapter changes (read the clean view; no `meta.v` window filter; V from the rule above; no 7,300-slot window; band filter at the entry print; sps per pool from block time as the scripts do, with the per-pool window being the pool's prints on the tape).
+
+1. **P72 sell-cluster absorb** (branch `claude/p72-sell-cluster-absorb`, PR #1029, `p72_run.py`, `PREREG.md` there): K=3 distinct sellers, W=10 slots, net sell >= 2.0% of the pre-trade quote reserve (q+V) of the first sell in the window, no buy in between, reserve >= 50 SOL, one cluster per buy-free run; buy 0.25 SOL landing at cluster slot + 2 (L=2); exit first of +10% target, -10% stop, 600 s cap, exit lag 2, one open position per pool.
+2. **P71 copy** (branch `claude/p71-wallet-persist`, merged; `p71_rank.py`, `p71_price.py`): rank on explore-0814 only (per wallet and pool a round trip, matched-quantity net, bot flags B1 > 30 trades in a UTC hour, B2 same-slot buy+sell, B3 fast first sell < 2 slots in at least a third of its round-trip pools, wallets with at least 5 round-trip pools, top 50 clean wallets; amendment 2 pool-seed rows dropped). In the tier only: round trips are built from in-band prints; the bot flags use the same in-band prints (an hour count for B1 uses all pumpswap prints of the wallet in that hour). Copy test on fresh-0903 and exp011-0909: every in-band buy by a copy-list wallet with sol >= 0.05 SOL, stake 0.1 SOL, entry lead slot + ceil(1.9 s/sps), exit at the lead's first sell (landing after the same lag) else 60 min timer + 2 slots. If fewer than 20 wallets with a priced copy, or fewer than 100 priced copies, or fewer than 5 days: NOT_DECIDABLE for this rule.
+3. **One 15-minute momentum rule, declared here (P78-M)**: at a print in the band with median-state depth `q+V` >= 100 SOL, if the pre-trade price now is at least +5.0% above the pre-trade price at the last print at least 900 s ago (900 s converted at the pool's sps), a signal fires; per-pool cooldown 900 s and one open position per pool. Buy 0.25 SOL landing at signal slot + 2 (L=2, same as P72), priced at the state after that slot, tier fee at the state (own impact included). Exit: time exit at landing + 900 s (round(900/sps) slots), exit lag 2, sell with the tier fee at the exit state, priority 55,000 per send, two sends. No stop, no target. Pricing code reuses `p72_run.price_one`'s state/AMM math (same functions); only the exit trigger differs. One parameter set, no grid; +3% / 60 s (P56) is not rerun.
+
+Fail models (all three rules): flat 15% `0.85*pnl + 0.15*(-55,000)`; pressure-fail at slope scale 1 with `p` from `tools/latency_curve.fit_curve` fitted on the rule's own trades (same `Pressure(same_slot_buys, nearby_buy_lamports)` definition as P72/P71: buys in the landing slot and buy lamports in the 2 s up to it; intercept fit to the book's mean p), as in the frozen analysis scripts.
+
+## Report (each rule, nothing selected)
+
+Trades per day (and over how many days); mean net per trade, SOL and % of stake, under both fail models; total; total without the top 3 trades; total without the best UTC day; number of days with a positive total and whether a majority is positive; CI90 lower bound of the mean (date-cluster bootstrap, 1,000 draws, seed 1, 5th percentile); capacity = trades/day x stake x net edge (lower of the two models), at 0.25 SOL (P71: 0.1, 0.25, 1.0 SOL as in its script) after own AMM impact. Also the same rule's mean in the lowest-fee band that has any trades vs. B0/B1 context from the killed lanes (P72 -2.63768% flat, -2.37532% pressure at 0.25 SOL).
+
+## Kill line
+
+KILL if every rule has mean net <= 0 under at least one fail model in the cheapest tier (the user's line: every rule has mean <= 0). If any rule has mean > 0 under BOTH fail models, it is a LEAD (in-sample), not a pass, and is reported with its top-3, best-day, majority-days and CI90 results; the promotion-gate items (>= 100 trades, >= 5 days with a majority positive, CI90 lower bound > 0, total positive without the top 3) are reported for information only. NOT_DECIDABLE for a rule that fails its count floor (above).
+
+## Seals
+
+Aug/Sep exploration clean views only; no HV4/Q50 output or job, no DBC window, no meta-capture, no arena tape, no October hour; EXP-024 Look-2 seal, FLOOR G1, LaunchLab holdout and D1 untouched. Reads of the clean views print counts and hashes only until this file is pushed.
+
+## Notes added after the fact (2026-10-27, no rule or threshold changed)
+
+- QP and reviewer on PR #1041 ruled that P71's own frozen kill lines (docs/research/p71/PREREG.md lines 2 and 3) govern the P71 verdict, so P71 in B7 is KILL, not LEAD. The mean-only line above is looser and is kept as written.
+- The B7 band proved to be mostly quiet or pegged pools (see REPORT composition section); the tier choice rule above was applied as written.

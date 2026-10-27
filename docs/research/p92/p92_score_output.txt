@@ -1,0 +1,41 @@
+curve mean p over labelled (P86 reproduction): 0.289
+dead pools in sample: 77 of 640 | unpriced (no entry print): 4 | exit==entry (no later print): 0
+invalid/missing hours: []
+
+=== rank IC per hour (hours 80, days 13) ===
+  Haiku     mean IC +0.02723  hour-t +0.517  day-block t +0.455
+  kNN       mean IC +0.29583  hour-t +6.817  day-block t +5.188
+  ensemble  mean IC +0.24494  hour-t +6.488  day-block t +6.994
+corr(IC_h, IC_k) across hours: -0.202
+  Haiku - kNN: mean diff -0.26860  day-mean diff -0.26847  day-block t -2.810  days+ 2 days- 11  sign-test p (two-sided) 0.0225  | hour-level t -3.597
+  ensemble - kNN: mean diff -0.05089  day-mean diff -0.04686  day-block t -1.175  days+ 4 days- 9  sign-test p (two-sided) 0.2668  | hour-level t -1.420
+per-day mean IC:
+             ic_h   ic_k   ic_e
+day                            
+2026-09-03 -0.095  0.357  0.198
+2026-09-04  0.024  0.177  0.092
+2026-09-05  0.257  0.488  0.483
+2026-09-06  0.027  0.473  0.323
+2026-09-07  0.054  0.306  0.255
+2026-09-08  0.201 -0.027  0.085
+2026-09-09 -0.150  0.544  0.350
+2026-09-10 -0.374  0.548  0.265
+2026-09-11  0.323  0.020  0.235
+2026-09-12 -0.099  0.423  0.282
+2026-09-13  0.020  0.032  0.008
+2026-09-14  0.024  0.274  0.278
+2026-09-15  0.087  0.175  0.325
+
+=== top-pick mean per trade, pp of 0.25 SOL stake (dead pools priced at last print); hours 80 ===
+  Haiku  flat15 -23.725 pp   pressure -18.419 pp   (SOL/trade flat -0.059312)
+  kNN    flat15 -11.453 pp   pressure -9.189 pp   (SOL/trade flat -0.028633)
+  ens    flat15 -7.828 pp   pressure -5.949 pp   (SOL/trade flat -0.019570)
+  U      flat15 -16.700 pp   pressure -13.311 pp   (SOL/trade flat -0.041749)
+  R      flat15 -9.852 pp   pressure -8.624 pp   (SOL/trade flat -0.024631)
+
+=== top-pick mean per trade, pp of 0.25 SOL stake (report-only: dead pools dropped, P86 convention); hours 80 ===
+  Haiku  flat15 -9.233 pp   pressure -7.566 pp   (SOL/trade flat -0.023082)
+  kNN    flat15 -3.195 pp   pressure -2.325 pp   (SOL/trade flat -0.007987)
+  ens    flat15 -0.389 pp   pressure -0.018 pp   (SOL/trade flat -0.000972)
+  U      flat15 -8.315 pp   pressure -6.520 pp   (SOL/trade flat -0.020788)
+  R      flat15 -5.291 pp   pressure -4.364 pp   (SOL/trade flat -0.013227)

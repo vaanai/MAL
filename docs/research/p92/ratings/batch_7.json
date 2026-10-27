@@ -1,0 +1,100 @@
+{"h61":[
+{"id":"c1","why":"Deep quote_eff_sol 247 and top3_share_60m 0.063 with positive net_flow_60m; hypothesis only."},
+{"id":"c3","why":"quote_eff_sol 288, traders_15m 956, top3_share_60m 0.019; flow roughly flat."},
+{"id":"c8","why":"Large quote_eff_sol 5358 and strong flow_ratio_60m 0.80, but close_vs_hi_6h at 1.0 is extended."},
+{"id":"c5","why":"quote_eff_sol 304 and traders_15m 997, but net_flow_60m -91 is negative."},
+{"id":"c2","why":"Shallow quote_eff_sol 159 and ret_60m -0.195 with flat flow."},
+{"id":"c7","why":"quote_eff_sol 360 but ret_5m -0.18 and traders_15m only 156."},
+{"id":"c6","why":"top3_share_60m 0.97 concentrates the tape in few wallets despite positive flow."},
+{"id":"c4","why":"quote_eff_sol 118, ret_60m -0.66 and net_flow_60m -80; dead and falling."}
+],
+"h62":[
+{"id":"c4","why":"top3_share_60m 0.075 with flow_ratio_60m 0.54 and close_vs_hi_6h 1.0; traders_15m only 50."},
+{"id":"c8","why":"quote_eff_sol 5700, top3_share_60m 0.175, flow_ratio_60m 0.37; traders_15m just 21."},
+{"id":"c1","why":"ret_5m 0.22 and ret_15m 0.18 strong but close_vs_hi_6h 0.31 leaves room; hypothesis."},
+{"id":"c5","why":"quote_eff_sol 339 and ret_60m -0.30 with net_flow_60m -67; weak."},
+{"id":"c7","why":"quote_eff_sol 10252 but top3_share_60m 0.95 concentrates the tape."},
+{"id":"c3","why":"quote_eff_sol 8322 but top3_share_60m 0.947 and close_vs_hi_6h 1.0."},
+{"id":"c6","why":"top3_share_60m 0.994 concentrates the tape in a single wallet cluster."},
+{"id":"c2","why":"top3_share_60m 0.994 and close_vs_hi_6h 0.9986 leave no pullback room."}
+],
+"h63":[
+{"id":"c3","why":"quote_eff_sol 557, top3_share_60m 0.024, traders_15m 772 and ret_60m 0.56."},
+{"id":"c8","why":"quote_eff_sol 656, top3_share_60m 0.054, flow_ratio_60m 0.03 and ret_60m 0.27."},
+{"id":"c7","why":"quote_eff_sol 560, traders_15m 248, net_flow_60m +88 and ret_60m 0.34."},
+{"id":"c1","why":"quote_eff_sol 870 and traders_15m 453; ret_60m flat near zero, flow ~0."},
+{"id":"c5","why":"quote_eff_sol 153 and only 71 traders_15m; prints_15m 102 is thin."},
+{"id":"c6","why":"ret_5m 0.65 spike with ret_60m -0.54 and close_vs_hi_6h 0.11; faded spike."},
+{"id":"c4","why":"quote_eff_sol 153, ret_60m -0.62 and net_flow_60m -89; falling and shallow."},
+{"id":"c2","why":"ret_15m -0.67 and close_vs_hi_6h 0.15 after a crash; net_flow_60m negative."}
+],
+"h64":[
+{"id":"c3","why":"quote_eff_sol 438, traders_15m 1209, top3_share_60m 0.022, positive flow."},
+{"id":"c4","why":"traders_15m 1195, top3_share_60m 0.117, net_flow_60m +231; ret_60m 1.55 is extended."},
+{"id":"c5","why":"traders_15m 771, top3_share_60m 0.010, quote_eff_sol 334; ret_15m -0.18 dip."},
+{"id":"c8","why":"quote_eff_sol 4840 but top3_share_60m 0.979 concentrates the tape."},
+{"id":"c6","why":"quote_eff_sol 7917 but top3_share_60m 0.9945 concentrates the tape."},
+{"id":"c1","why":"quote_eff_sol 14601 but top3_share_60m 0.988 concentrates the tape."},
+{"id":"c2","why":"quote_eff_sol 109 is shallow and close_vs_hi_6h 0.36 after ret_15m -0.37."},
+{"id":"c7","why":"net_flow_60m -117, ret_15m -0.62 and close_vs_hi_6h 0.08; falling."}
+],
+"h65":[
+{"id":"c1","why":"quote_eff_sol 479, top3_share_60m 0.06, traders_15m 476, prints_15m 4180; flat flow."},
+{"id":"c5","why":"quote_eff_sol 1097, top3_share_60m 0.16, traders_15m 339; flow -35 small."},
+{"id":"c2","why":"quote_eff_sol 6918 with positive flow_ratio_60m 0.38 but top3_share_60m 0.977."},
+{"id":"c4","why":"quote_eff_sol 7860 with flow_ratio_60m 0.41 but top3_share_60m 0.993."},
+{"id":"c8","why":"quote_eff_sol 363, traders_15m 136 and top3_share_60m 0.31; thin."},
+{"id":"c6","why":"net_flow_60m -32 and ret_15m -0.07 with close_vs_hi_6h 0.47; softening."},
+{"id":"c3","why":"ret_5m 0.49 spike with top3_share_60m 0.42 and net_flow_60m -34."},
+{"id":"c7","why":"net_flow_60m -75, ret_60m -0.18 and only 120 traders_15m; age 417720 s."}
+],
+"h66":[
+{"id":"c2","why":"net_flow_60m +5 flat, top3_share_60m 0.05, quote_eff_sol 334; no clear push."},
+{"id":"c1","why":"quote_eff_sol 209, top3_share_60m 0.057, traders_15m 753; ret_15m 0.21 but ret_60m -0.29."},
+{"id":"c3","why":"quote_eff_sol 469, top3_share_60m 0.13; traders_15m only 91 and net_flow_60m -7."},
+{"id":"c6","why":"quote_eff_sol 4624 but top3_share_60m 0.979 concentrates the tape."},
+{"id":"c7","why":"quote_eff_sol 5875 but top3_share_60m 0.992 concentrates the tape."},
+{"id":"c8","why":"quote_eff_sol 6224 but top3_share_60m 0.995 concentrates the tape."},
+{"id":"c4","why":"quote_eff_sol 3901 but top3_share_60m 0.99 concentrates the tape."},
+{"id":"c5","why":"net_flow_60m -2514 (flow_ratio_60m -0.77) and ret_15m -0.70; heavy selling."}
+],
+"h67":[
+{"id":"c7","why":"quote_eff_sol 327, traders_15m 806, top3_share_60m 0.07, close_vs_hi_6h 0.84."},
+{"id":"c4","why":"top3_share_60m 0.19, net_flow_60m +105, ret_60m 0.51; extended, hypothesis."},
+{"id":"c2","why":"quote_eff_sol 11091 and flow_ratio_60m 0.51, but traders_15m only 53."},
+{"id":"c1","why":"quote_eff_sol 4563 with net_flow_60m +260 but top3_share_60m 0.994."},
+{"id":"c6","why":"quote_eff_sol 6725 with net_flow_60m +247 but top3_share_60m 0.998."},
+{"id":"c3","why":"quote_eff_sol 5817 with net_flow_60m +257 but top3_share_60m 0.997."},
+{"id":"c8","why":"quote_eff_sol 11442 but top3_share_60m 0.998 and close_vs_hi_6h 1.0."},
+{"id":"c5","why":"ret_15m -0.48 and ret_60m -0.57 with close_vs_hi_6h 0.32; falling, quote_eff_sol 174."}
+],
+"h68":[
+{"id":"c4","why":"top3_share_60m 0.044, traders_15m 456, quote_eff_sol 595; ret_60m 0.17 moderate."},
+{"id":"c1","why":"net_flow_60m +999, traders_15m 1407, top3_share_60m 0.285; ret_60m 0.47 extended."},
+{"id":"c6","why":"net_flow_60m +1001, traders_15m 1372, top3_share_60m 0.256; ret_60m 0.63 extended."},
+{"id":"c8","why":"traders_15m 716, top3_share_60m 0.02; ret_15m -0.45 against ret_60m 1.80, erratic."},
+{"id":"c2","why":"net_flow_60m -110, ret_60m -0.24 and quote_eff_sol 808; sellers in control."},
+{"id":"c7","why":"quote_eff_sol 14998 but top3_share_60m 0.986 concentrates the tape."},
+{"id":"c5","why":"quote_eff_sol 10604 but top3_share_60m 0.994 concentrates the tape."},
+{"id":"c3","why":"quote_eff_sol 181, ret_15m -0.37, ret_5m -0.29 and close_vs_hi_6h 0.47; falling."}
+],
+"h69":[
+{"id":"c2","why":"quote_eff_sol 324, traders_15m 316, top3_share_60m 0.134; ret_60m -0.15 weak."},
+{"id":"c4","why":"quote_eff_sol 391 and top3_share_60m 0.31 but traders_15m only 74."},
+{"id":"c1","why":"quote_eff_sol 472 but traders_15m 63 and prints_15m 116; thin."},
+{"id":"c8","why":"quote_eff_sol 12811 with net_flow_60m +397 but top3_share_60m 0.975."},
+{"id":"c5","why":"net_flow_60m -158 and ret_60m -0.51 with close_vs_hi_6h 0.30."},
+{"id":"c3","why":"quote_eff_sol 127 shallow and ret_60m -0.24 with close_vs_hi_6h 0.54."},
+{"id":"c6","why":"net_flow_60m -781 (flow_ratio_60m -0.84) and ret_60m -0.91; heavy selling."},
+{"id":"c7","why":"net_flow_60m -1032 (flow_ratio_60m -0.87) and ret_60m -0.95; collapse."}
+],
+"h70":[
+{"id":"c8","why":"quote_eff_sol 451, top3_share_60m 0.04, traders_15m 488, prints_15m 4341; flat flow."},
+{"id":"c6","why":"top3_share_60m 0.055, traders_15m 262, ret_60m -0.008; flat, age 428443 s."},
+{"id":"c7","why":"traders_15m 875, top3_share_60m 0.11, net_flow_60m -2; ret_15m 0.41 spike, ret_60m -0.12."},
+{"id":"c4","why":"quote_eff_sol 6638 and net_flow_60m +472 but top3_share_60m 0.995."},
+{"id":"c5","why":"quote_eff_sol 2791 but top3_share_60m 0.999 and net_flow_60m -200."},
+{"id":"c2","why":"ret_60m -0.33, ret_5m -0.24 and close_vs_hi_6h 0.21; falling, quote_eff_sol 146."},
+{"id":"c1","why":"net_flow_60m -594 (flow_ratio_60m -0.56) and close_vs_hi_6h 0.03; collapsing."},
+{"id":"c3","why":"net_flow_60m -790 (flow_ratio_60m -0.74) and close_vs_hi_6h 0.095; collapsing."}
+]}

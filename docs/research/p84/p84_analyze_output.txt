@@ -1,0 +1,82 @@
+rows 2826 {'frozen_disc': 1702, 'frozen_conf': 1124}
+tool check max|repriced frozen - stored| lamports 0.0
+discovery defined days 13 of 15 values [2977, 3011, 3143, 3226, 3613, 4243, 4525, 5409, 5624, 5777, 6018, 7444, 8082] T = 4525.0
+S1 block medians {'exp011-0909': 2044.0, 'explore-0814': 4525.0, 'fast-pool-0918': 3510.0, 'fresh-0903': 2638.0, 'oracle-insample-0922': 2094.0}
+           day                   blk    n       g     on  undef  on_s1
+0   2026-08-14          explore-0814   64     NaN  False   True  False
+1   2026-08-15          explore-0814   66     NaN  False   True  False
+2   2026-08-16          explore-0814   76  7444.0   True  False   True
+3   2026-08-17          explore-0814  106  5777.0   True  False   True
+4   2026-08-18          explore-0814   92  5409.0   True  False   True
+5   2026-08-19          explore-0814  189  6018.0   True  False   True
+6   2026-08-20          explore-0814  115  8082.0   True  False   True
+7   2026-08-21          explore-0814  121  5624.0   True  False   True
+8   2026-08-22          explore-0814   96  4243.0  False  False  False
+9   2026-08-23          explore-0814   62  4525.0  False  False  False
+10  2026-08-24          explore-0814  109  3011.0  False  False  False
+11  2026-08-25          explore-0814  137  2977.0  False  False  False
+12  2026-08-26          explore-0814  178  3613.0  False  False  False
+13  2026-08-27          explore-0814  250  3226.0  False  False  False
+14  2026-08-28          explore-0814   41  3143.0  False  False  False
+15  2026-09-03            fresh-0903   38     NaN  False   True  False
+16  2026-09-04            fresh-0903   49     NaN  False   True  False
+17  2026-09-05            fresh-0903   30  3387.0  False  False   True
+18  2026-09-06            fresh-0903   25  2566.0  False  False  False
+19  2026-09-07            fresh-0903   69  2619.0  False  False  False
+20  2026-09-08            fresh-0903   60  2657.0  False  False   True
+21  2026-09-09           exp011-0909   76  2044.0  False  False  False
+22  2026-09-10           exp011-0909   44  2546.0  False  False   True
+23  2026-09-11           exp011-0909   45  2230.0  False  False   True
+24  2026-09-12           exp011-0909   55  1966.0  False  False  False
+25  2026-09-13           exp011-0909   28  2085.0  False  False   True
+26  2026-09-14           exp011-0909   50  2015.0  False  False  False
+27  2026-09-15           exp011-0909   29  1846.0  False  False  False
+28  2026-09-18        fast-pool-0918    4     NaN  False   True  False
+29  2026-09-19        fast-pool-0918   66     NaN  False   True  False
+30  2026-09-20        fast-pool-0918   72  3410.0  False  False  False
+31  2026-09-21        fast-pool-0918   91  3610.0  False  False   True
+32  2026-09-22  oracle-insample-0922   97  2586.0  False  False   True
+33  2026-09-23  oracle-insample-0922  113  2248.0  False  False   True
+34  2026-09-24  oracle-insample-0922   71  1940.0  False  False  False
+35  2026-09-25  oracle-insample-0922   12  1648.0  False  False  False
+
+=== PRIMARY T=4525 | frozen_disc ===
+days total 15 on 6 off 9 of which undefined-off 2
+trades all 1702 kept 699
+flat: mean_all 11.5930% mean_on 11.5925% delta_pp -0.0005 | total_all 19.7313 SOL total_on 8.1032 SOL ex_top3 5.6140 ex_bestday(2026-08-17) 5.1657 | days_pos 5/6 CI90lo 5.6225% placebo_p 0.5060
+press: mean_all 10.5955% mean_on 10.8539% delta_pp 0.2584 | total_all 18.0336 SOL total_on 7.5869 SOL ex_top3 5.6238 ex_bestday(2026-08-17) 4.7645 | days_pos 6/6 CI90lo 5.6941% placebo_p 0.4710
+capacity: trades/on-day 116.500, median Q 39.48 SOL
+  flat stake 0.25: haircut 1.26% mean_after 10.33% net/day 3.0098 SOL (rough, first order)
+  flat stake 1.0: haircut 4.94% mean_after 6.65% net/day 7.7500 SOL (rough, first order)
+  press stake 0.25: haircut 1.26% mean_after 9.60% net/day 2.7947 SOL (rough, first order)
+  press stake 1.0: haircut 4.94% mean_after 5.91% net/day 6.8895 SOL (rough, first order)
+
+=== PRIMARY T=4525 | frozen_conf ===
+days total 21 on 0 off 21 of which undefined-off 4
+trades all 1124 kept 0
+flat no kept trades; all-mean 12.5381
+press no kept trades; all-mean 10.9866
+
+=== S1 report-only block-median | frozen_disc ===
+days total 15 on 6 off 9 of which undefined-off 2
+trades all 1702 kept 699
+flat: mean_all 11.5930% mean_on 11.5925% delta_pp -0.0005 | total_all 19.7313 SOL total_on 8.1032 SOL ex_top3 5.6140 ex_bestday(2026-08-17) 5.1657 | days_pos 5/6 CI90lo 5.6225% placebo_p 0.5060
+press: mean_all 10.5955% mean_on 10.8539% delta_pp 0.2584 | total_all 18.0336 SOL total_on 7.5869 SOL ex_top3 5.6238 ex_bestday(2026-08-17) 4.7645 | days_pos 6/6 CI90lo 5.6941% placebo_p 0.4710
+capacity: trades/on-day 116.500, median Q 39.48 SOL
+  flat stake 0.25: haircut 1.26% mean_after 10.33% net/day 3.0098 SOL (rough, first order)
+  flat stake 1.0: haircut 4.94% mean_after 6.65% net/day 7.7500 SOL (rough, first order)
+  press stake 0.25: haircut 1.26% mean_after 9.60% net/day 2.7947 SOL (rough, first order)
+  press stake 1.0: haircut 4.94% mean_after 5.91% net/day 6.8895 SOL (rough, first order)
+
+=== S1 report-only block-median | frozen_conf ===
+days total 21 on 8 off 13 of which undefined-off 4
+trades all 1124 kept 508
+flat: mean_all 12.5381% mean_on 4.3426% delta_pp -8.1955 | total_all 14.0929 SOL total_on 2.2061 SOL ex_top3 1.0071 ex_bestday(2026-09-21) 1.4700 | days_pos 7/8 CI90lo 2.0783% placebo_p 0.9930
+press: mean_all 10.9866% mean_on 4.0295% delta_pp -6.9571 | total_all 12.3489 SOL total_on 2.0470 SOL ex_top3 1.2097 ex_bestday(2026-09-23) 1.3850 | days_pos 7/8 CI90lo 1.9458% placebo_p 0.9900
+capacity: trades/on-day 63.500, median Q 39.41 SOL
+  flat stake 0.25: haircut 1.26% mean_after 3.08% net/day 0.4892 SOL (rough, first order)
+  flat stake 1.0: haircut 4.95% mean_after -0.61% net/day -0.3853 SOL (rough, first order)
+  press stake 0.25: haircut 1.26% mean_after 2.77% net/day 0.4395 SOL (rough, first order)
+  press stake 1.0: haircut 4.95% mean_after -0.92% net/day -0.5842 SOL (rough, first order)
+
+CONFIRMATION kill lines hit: ['4 fewer than 4 on-days (0)']

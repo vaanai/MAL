@@ -76,6 +76,8 @@ FAULT_COUNTERS = ("leakage_refused", "model_exception", "ledger_unreadable", "co
 PRINT_COUNTERS = frozenset(FAULT_COUNTERS) | {"card_refused", "chain_none", "call_cut_off"}
 PRINT_COUNTER_PREFIXES = ("card_refused:", "phantom_drop_")
 RUNS = tuple(HASHSEEDS)
+# REPORT-ONLY engine trim-safety counters, copied from Hv7Runner.counters (never recomputed). Not part of PASS_RULE (registration pins its text).
+TRIM_COUNTER_KEYS = ("engine_rows_below_trim_floor", "engine_refused_history_trimmed", "engine_hist_trimmed_prints", "engine_trims", "engine_prints_trimmed", "quote_pools_swept")
 PASS_RULE = ("PASS iff md5_equal (decision-log md5 and cards md5 of run1 == run2 == run3, and equal entry counts) AND in each run: hook_errors == 0, leakage_refused / "
              "model_exception / ledger_unreadable / cost_mismatch / late_reply == 0, fallbacks == 0, entries L == R == S == periods_ge3 and U >= periods_ge3, periods_ge3 > 0 "
              "AND peak_rss_mb (max of the three "
@@ -144,6 +146,14 @@ def new_run(base: Path, tag: str, sha: str, days: list[str], tape: Path, *, star
     return run
 
 
+def trim_report(counters: dict) -> dict:
+    """Report-only: the runner's trim counters as copied (missing key -> 0) plus the two derived flags. rows_below_trim_floor == 0 and refused_history_trimmed == 0 is the
+    trim's safety condition; hist_trimmed_prints > 0 says the trim actually ran. Not part of the PASS rule."""
+    c = {k: int(counters.get(k, 0)) for k in TRIM_COUNTER_KEYS}
+    return {**c, "engine_trim_safety_ok": c["engine_rows_below_trim_floor"] == 0 and c["engine_refused_history_trimmed"] == 0,
+            "engine_trim_exercised": c["engine_hist_trimmed_prints"] > 0}
+
+
 def summarize(run: R.Hv7Runner) -> dict:
     scan = run.log.rows("SCAN")
     per = [r for r in scan if r.get("kind") == "period"]
@@ -185,8 +195,10 @@ def one_run(base: Path, tag: str, sha: str, days: list[str], tape: Path, *, star
     run.run(start, end)
     for x in (*R.ARM_ORDER, "SCAN"):
         run.log.verify(x)
+    run.sync_engine_counters()
     root = Path(run.cfg.root)
     res = summarize(run)
+    res.update(trim_report(run.counters))
     pm = list(period_ms.values())
     res.update({"log_md5": log_md5(root), "cards_md5": md5_bytes(b"") if not (root / "cards").exists() else cards_md5(root),
                 "ticks": len(tick_ms), "tick_ms_p50": round(pct(tick_ms, 0.5), 2), "tick_ms_p95": round(pct(tick_ms, 0.95), 2),
@@ -276,8 +288,11 @@ def run_real(days: list[str], drill_id: str, sha: str, *, rss_cap_mb: float = RS
         a, b, c = (one_run(base, t, sha, days, Path(tape_dir)) for t in RUNS)
         rss_mb = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 1)
     v = verdict(a, b, c, rss_mb, rss_cap_mb)
+    # REPORT-ONLY (not in pass_rule, not in "result"): per-run trim counters and flags.
+    report = {t: {k: x[k] for k in (*TRIM_COUNTER_KEYS, "engine_trim_safety_ok", "engine_trim_exercised")}
+              for t, x in (("run1", a), ("run2", b), ("run3", c))}
     res = {"hv7_real_layout": "end", **v, "run1_log_md5": a["log_md5"], "run2_log_md5": b["log_md5"], "run3_log_md5": c["log_md5"], "run1_cards_md5": a["cards_md5"],
-           "run3_cards_md5": c["cards_md5"],
+           "run3_cards_md5": c["cards_md5"], "engine_trim_report": report,
            "counts": {k: a[k] for k in ("periods", "periods_ge3", "periods_no_trade", "periods_with_ge3_raw_candidates", "entries", "order_refused", "rank_rows", "fallbacks",
                                         "exclusions", "gaps", "counters", "hook_errors")},
            "run2_counts_equal": {k: a[k] == b[k] for k in ("periods", "periods_ge3", "entries", "fallbacks", "exclusions", "counters")},

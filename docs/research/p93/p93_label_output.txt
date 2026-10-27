@@ -1,0 +1,1 @@
+labelled 400 excluded(no pumpswap row in window) 0 survive 19 base_rate 0.0475

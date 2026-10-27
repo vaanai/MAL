@@ -1,0 +1,17 @@
+Running as unit: run-rb15cfdb8ec314a3ebf8f6666920de9ef.scope; invocation ID: c71c4080217045f6bf4dddf0b013f070
+/data2/mal/wt/p73/docs/research/p73/p73_counts.py:8: RuntimeWarning: divide by zero encountered in divide
+  k0 = np.r_[np.nan, (q * b)[:-1]]; kd = np.abs(q * b / k0 - 1)
+/data2/mal/wt/p73/docs/research/p73/p73_counts.py:8: RuntimeWarning: invalid value encountered in divide
+  k0 = np.r_[np.nan, (q * b)[:-1]]; kd = np.abs(q * b / k0 - 1)
+/data2/mal/wt/p73/docs/research/p73/p73_counts.py:12: RuntimeWarning: invalid value encountered in divide
+  r = dq[m] / sol[m]
+/data2/mal/wt/p73/docs/research/p73/p73_counts.py:12: RuntimeWarning: divide by zero encountered in divide
+  r = dq[m] / sol[m]
+rows 22613073 mints 201001
+buy n 11551696 token_raw==|d base| share 0.99995 median |k drift| nan share |k drift|<1e-6 0.36333 share <1e-3 0.3635 dq/sol q5/50/95 [nan, nan, nan]
+sell n 10860376 token_raw==|d base| share 0.99993 median |k drift| nan share |k drift|<1e-6 0.32926 share <1e-3 0.32938 dq/sol q5/50/95 [nan, nan, nan]
+buy: share dq>0 & db<0 0.90081  sell: share dq<0 & db>0 0.90544
+eligible mints 76807 signals 34581 share 0.45023
+day   2026-08-14  2026-08-15  2026-08-16  2026-08-17  2026-08-18  2026-08-19  2026-08-20  2026-08-21  2026-08-22  2026-08-23  2026-08-24  2026-08-25  2026-08-26  2026-08-27  2026-08-28  2026-09-03  2026-09-04  2026-09-05  2026-09-06  2026-09-07  2026-09-08  2026-09-09  2026-09-10  2026-09-11  2026-09-12  2026-09-13  2026-09-14  2026-09-15
+size        1812        2999        2940        2737        2531        2665        2123        2767        2342        1957        2236        3345        4313        3547        1495        2099        4008        3202        2693        2635        2692        3136        3505        3841        3324        2339        2447        1077
+sum          974        1569        1341        1266        1232        1056        1020        1230        1113         826         957        1425        1859        1572         681         930        1709        1386        1082        1191        1096        1336        1595        1683        1551        1152        1206         543

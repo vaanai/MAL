@@ -1,0 +1,102 @@
+{
+"h21": [
+{"id":"c8","why":"f.quote_eff_sol 2858 deep; flow_ratio_60m 0.87 buy-led; ret_60m +1.11 (momentum hypothesis)"},
+{"id":"c2","why":"f.quote_eff_sol 478; top3_share_60m 0.02, traders_15m 1314; flow_ratio_60m near zero"},
+{"id":"c6","why":"f.quote_eff_sol 820; ret_15m +0.19, net_flow_60m positive, top3_share_60m 0.10"},
+{"id":"c5","why":"f.quote_eff_sol 625; top3_share_60m 0.06, prints_60m 14074; ret_60m -0.03 flat"},
+{"id":"c1","why":"f.quote_eff_sol 178 thin; ret_15m -0.17 and ret_5m -0.04 soft, flow slightly positive"},
+{"id":"c3","why":"ret_60m -0.27 with net_flow_60m -104 SOL; flow_ratio_60m -0.07, age_s 592120"},
+{"id":"c7","why":"ret_5m -0.99 and ret_15m -0.99; net_flow_60m -2195 SOL, flow_ratio_60m -0.63"},
+{"id":"c4","why":"ret_60m -0.9975, flow_ratio_60m -0.94; close_vs_hi_6h 0.0025, dead pool"}
+],
+"h22": [
+{"id":"c4","why":"f.quote_eff_sol 6804 deepest; flow_ratio_60m 0.59 buy-led, ret_60m +0.16, close_vs_hi_6h 1.0"},
+{"id":"c1","why":"f.quote_eff_sol 4679; flow_ratio_60m 0.37, close_vs_hi_6h 0.9999; only 21 traders_15m"},
+{"id":"c2","why":"f.quote_eff_sol 1398; close_vs_hi_6h 0.996, flow_ratio_60m 0.06; ret_60m +0.06 steady"},
+{"id":"c5","why":"f.quote_eff_sol 1369; flow_ratio_60m 0.06, ret_60m +0.07; traders_15m only 22"},
+{"id":"c8","why":"ret_60m +0.31, ret_15m +0.18 momentum (hypothesis); f.quote_eff_sol 195 thin"},
+{"id":"c6","why":"f.quote_eff_sol 244 thin; ret_60m +0.23 but ret_5m -0.07, top3_share_60m 0.05"},
+{"id":"c3","why":"f.quote_eff_sol 148 thin; ret_15m -0.24, ret_60m -0.11, flow_ratio_60m ~0"},
+{"id":"c7","why":"close_vs_hi_6h 0.07 near lows; ret_60m -0.11, flow_ratio_60m -0.02"}
+],
+"h23": [
+{"id":"c1","why":"f.quote_eff_sol 346; top3_share_60m 0.03, flow_ratio_60m 0.05, ret_60m +0.32 steady"},
+{"id":"c8","why":"f.quote_eff_sol 1051; ret_15m +0.62 parabolic, flow_ratio_60m 0.04; chase risk (hypothesis)"},
+{"id":"c2","why":"ret_15m +0.51, ret_60m +0.66 extended; close_vs_hi_6h 0.41, f.quote_eff_sol 300"},
+{"id":"c4","why":"top3_share_60m 0.98 concentrated; f.quote_eff_sol 5589 deep, flow_ratio_60m 0.39"},
+{"id":"c7","why":"top3_share_60m 0.99 concentrated; f.quote_eff_sol 16165, flow_ratio_60m 0.56"},
+{"id":"c3","why":"top3_share_60m 0.998 concentrated; f.quote_eff_sol 12710, flow_ratio_60m 0.40"},
+{"id":"c5","why":"ret_15m -0.28, ret_60m -0.50, close_vs_hi_6h 0.16; net_flow_60m -76 SOL"},
+{"id":"c6","why":"ret_60m -0.30, ret_5m -0.17, close_vs_hi_6h 0.26; net_flow_60m -49 SOL"}
+],
+"h24": [
+{"id":"c2","why":"top3_share_60m 0.07, traders_15m 1554; f.quote_eff_sol 5348, flow_ratio_60m 0.19"},
+{"id":"c5","why":"f.quote_eff_sol 11642; top3_share_60m 0.68 lower than peers, flow_ratio_60m 0.18"},
+{"id":"c8","why":"f.quote_eff_sol 197 thin; top3_share_60m 0.06, prints_60m 14542 diversified"},
+{"id":"c1","why":"top3_share_60m 0.995 concentrated; f.quote_eff_sol 7633, flow_ratio_60m 0.38"},
+{"id":"c3","why":"top3_share_60m 0.999 concentrated; flow_ratio_60m 0.55 buy-led, f.quote_eff_sol 6950"},
+{"id":"c4","why":"top3_share_60m 0.997 concentrated; f.quote_eff_sol 11265, flow_ratio_60m 0.41"},
+{"id":"c6","why":"top3_share_60m 0.99 concentrated; f.quote_eff_sol 12599, flow_ratio_60m 0.40"},
+{"id":"c7","why":"top3_share_60m 0.98 concentrated; f.quote_eff_sol 3815, flow_ratio_60m 0.39"}
+],
+"h25": [
+{"id":"c4","why":"f.quote_eff_sol 506; top3_share_60m 0.04, traders_15m 527, prints_60m 10020"},
+{"id":"c2","why":"f.quote_eff_sol 984; top3_share_60m 0.22; ret_60m -0.04, ret_15m -0.05 soft"},
+{"id":"c5","why":"f.quote_eff_sol 815; top3_share_60m 0.21; ret_5m -0.04, ret_15m -0.12 mixed"},
+{"id":"c7","why":"traders_15m 70 low; f.quote_eff_sol 369, ret_5m +0.09 fading to ret_15m -0.06"},
+{"id":"c1","why":"ret_60m +0.97 parabolic; f.quote_eff_sol 160 thin, ret_5m -0.12 reversal risk"},
+{"id":"c3","why":"top3_share_60m 0.99 concentrated; f.quote_eff_sol 8682, flow_ratio_60m 0.41"},
+{"id":"c8","why":"top3_share_60m 0.98 concentrated; f.quote_eff_sol 7970, flow_ratio_60m 0.42"},
+{"id":"c6","why":"top3_share_60m 0.99 concentrated; f.quote_eff_sol 8055, flow_ratio_60m 0.40"}
+],
+"h26": [
+{"id":"c6","why":"f.quote_eff_sol 9486 deep; flow_ratio_60m 0.39, close_vs_hi_6h 1.0; top3_share_60m 0.997"},
+{"id":"c8","why":"f.quote_eff_sol 7628 deep; flow_ratio_60m 0.39; top3_share_60m 0.997 concentrated"},
+{"id":"c4","why":"f.quote_eff_sol 346; ret_15m -0.23 but flow_ratio_60m -0.02 roughly neutral"},
+{"id":"c3","why":"ret_60m +0.32, close_vs_hi_6h 0.999; traders_15m 13 and prints_15m 75 very thin"},
+{"id":"c5","why":"ret_5m -0.13, ret_60m -0.08; f.quote_eff_sol 368, flow_ratio_60m -0.04"},
+{"id":"c1","why":"f.quote_eff_sol 341; ret_15m -0.17, ret_60m -0.30, flow_ratio_60m -0.03"},
+{"id":"c2","why":"top3_share_60m 0.59 concentrated; ret_15m -0.28 and flow_ratio_60m -0.06"},
+{"id":"c7","why":"ret_15m -0.96, flow_ratio_60m -0.65, close_vs_hi_6h 0.04; collapsing"}
+],
+"h27": [
+{"id":"c3","why":"ret_5m +0.11, ret_15m +0.15, close_vs_hi_6h 0.86; traders_15m 66 small, flow_ratio_60m 0.06"},
+{"id":"c7","why":"top3_share_60m 0.99 concentrated; flow_ratio_60m 0.70 and f.quote_eff_sol 15670"},
+{"id":"c1","why":"top3_share_60m 0.998 concentrated; f.quote_eff_sol 6021, flow_ratio_60m 0.43"},
+{"id":"c2","why":"top3_share_60m 0.02 diversified; ret_60m -0.39, close_vs_hi_6h 0.34, flow_ratio_60m -0.06"},
+{"id":"c4","why":"top3_share_60m 0.99 concentrated; f.quote_eff_sol 3842, flow_ratio_60m 0.39"},
+{"id":"c6","why":"top3_share_60m 0.99 concentrated; f.quote_eff_sol 5613, flow_ratio_60m 0.39"},
+{"id":"c8","why":"top3_share_60m 0.99 concentrated; f.quote_eff_sol 4329, flow_ratio_60m 0.33"},
+{"id":"c5","why":"ret_60m -0.57, close_vs_hi_6h 0.08, f.quote_eff_sol 146 thin; flow_ratio_60m -0.02"}
+],
+"h28": [
+{"id":"c3","why":"top3_share_60m 0.08, flow_ratio_60m 0.49, f.quote_eff_sol 8120 deep; traders_15m 50"},
+{"id":"c7","why":"f.quote_eff_sol 2620, flow_ratio_60m 0.31, ret_60m +0.18; traders_15m only 30"},
+{"id":"c5","why":"ret_60m +0.55, close_vs_hi_6h 0.83; top3_share_60m 0.025 diversified, f.quote_eff_sol 292"},
+{"id":"c1","why":"prints_60m 18018, top3_share_60m 0.045, ret_60m +0.37; f.quote_eff_sol 310 modest"},
+{"id":"c2","why":"ret_60m +0.008, flow_ratio_60m 0.008 flat; traders_15m 21, f.quote_eff_sol 1097"},
+{"id":"c4","why":"top3_share_60m 0.98 concentrated; f.quote_eff_sol 5604, flow_ratio_60m 0.41"},
+{"id":"c6","why":"top3_share_60m 0.97 concentrated; f.quote_eff_sol 4652, flow_ratio_60m 0.40"},
+{"id":"c8","why":"top3_share_60m 0.97 concentrated; f.quote_eff_sol 7629, flow_ratio_60m 0.41"}
+],
+"h29": [
+{"id":"c3","why":"top3_share_60m 0.99 concentrated; flow_ratio_60m 0.54 buy-led, f.quote_eff_sol 4752"},
+{"id":"c6","why":"top3_share_60m 0.30, ret_60m -0.06, close_vs_hi_6h 0.43; flow_ratio_60m -0.015 quiet"},
+{"id":"c1","why":"top3_share_60m 0.997 concentrated; f.quote_eff_sol 6030, flow_ratio_60m 0.53"},
+{"id":"c2","why":"ret_15m -0.47, ret_5m -0.14, close_vs_hi_6h 0.27; flow_ratio_60m 0.003 flat"},
+{"id":"c8","why":"f.quote_eff_sol 87 thin; ret_15m +0.33 then ret_60m -0.30, close_vs_hi_6h 0.26"},
+{"id":"c5","why":"f.quote_eff_sol 131 thin; ret_15m +0.40 but ret_60m -0.37, close_vs_hi_6h 0.25"},
+{"id":"c4","why":"ret_60m -0.59, ret_5m -0.20, flow_ratio_60m -0.08; close_vs_hi_6h 0.25 falling"},
+{"id":"c7","why":"ret_60m -0.90, flow_ratio_60m -0.88, close_vs_hi_6h 0.09; collapsing"}
+],
+"h30": [
+{"id":"c1","why":"ret_60m +0.56, flow_ratio_60m 0.80 buy-led, f.quote_eff_sol 2675, top3_share_60m 0.31"},
+{"id":"c3","why":"ret_60m +1.16, flow_ratio_60m 0.54, traders_15m 905, top3_share_60m 0.36; parabolic"},
+{"id":"c4","why":"top3_share_60m 0.998 concentrated; f.quote_eff_sol 13781, flow_ratio_60m 0.39"},
+{"id":"c7","why":"top3_share_60m 0.994 concentrated; f.quote_eff_sol 5855, flow_ratio_60m 0.41"},
+{"id":"c2","why":"ret_60m -0.18, close_vs_hi_6h 0.68; flow_ratio_60m -0.017, top3_share_60m 0.17"},
+{"id":"c5","why":"ret_5m -0.18 after ret_60m +1.54; close_vs_hi_6h 0.27 reversal risk, f.quote_eff_sol 339"},
+{"id":"c8","why":"ret_5m -0.16, ret_15m -0.16, flow_ratio_60m -0.02; f.quote_eff_sol 790"},
+{"id":"c6","why":"ret_60m -0.55, ret_15m -0.15, flow_ratio_60m -0.015; f.quote_eff_sol 149 thin"}
+]
+}
