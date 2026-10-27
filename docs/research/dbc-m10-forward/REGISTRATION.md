@@ -88,3 +88,54 @@ Operational failures that can be checked beforehand (fetcher/key file/lock, out 
 ## Before any live canary (QP section 3, not part of this read)
 Forward paper DBC book passing the gate under both fail models plus owner approval; a DBC executor (does not exist); md5 decision-equivalence replay proof; trigger and send on mal-fast-0 with a processed
 feed; stop if signal-to-landing p90 > 2.5 s; size stays 0.25 SOL.
+
+## Addendum 2026-10-27T21:42:07Z (date -u): read tool, venue_backfill.py pins, read job chain, memory (records only)
+Required by QP-RULING-1024-read-hardening.md item 2c (sha256 3e880055063e294d3b384a533b7e7a79974632688b7dc66b731ec1e520adebf2) and by the QP verdict on PR #890 (head 86b0e3d1, 2026-10-24T18:23Z).
+Records only: no R or AM term, tagged file, constant or window changes. Nothing under fwdv1/ or the read output dir was opened or listed for this addendum. m10 has NOT cleared the promotion gate;
+this read is CONFIRMATION only, and a PASS licenses a forward paper book (P18), nothing more.
+
+### A1. Read tool (item 2c, verbatim)
+"R2's read tool is tools/dbc_fwd_read_am1.py at tag dbc-m10-forward-v1-am1. tools/dbc_fwd_read.py is retained only as an imported library. Any invocation of it as a program or of its run() against FWD_ROOT is forbidden; a marker v3 claim by it ends m10 (AM6 class, licenses nothing)."
+This supersedes the "Read tool" line of R2 above (`python3 tools/dbc_fwd_read.py --confirm-one-look`, output dir fwd-read-v1). The same line is already in docs/HANDOFF.md section 6 (11-01T00:10Z step) on main at 37bafde4, so this PR does not edit HANDOFF.
+
+### A2. tools/venue_backfill.py: two pinned values, functionally identical (QP on #890, PIN finding)
+- 15605f65894282f71d39dca5e2be1ba0935d5c9676a29c4be6415ac06ea23571 (sha256) is the file at tag dbc-m10-forward-v1 = c6d4c046bcca5459909fadece040e24762a2f897 (git blob 4fcb8810). PINS.txt records it. Fetch F (#1546) runs this version.
+- 7185d58c2cc176f02acc0bb83899745d019317b9008a00c8ec46577beb3e2600 (sha256) is the file at tag dbc-m10-forward-v1-am1 = 7d5be9e51a39db1b8030843a273f747eb92a2967 (git blob 69268a16), and on main. tools/dbc_m10_read_ops.py pins this value for the read.
+- How this was checked (2026-10-27T21:41Z, `git show <commit>:tools/venue_backfill.py` only):
+  - `git diff c6d4c046 7d5be9e5 -- tools/venue_backfill.py` is one added line inside the module docstring (hunk `@@ -9,6 +9,7 @@`: the "Record, MiScusi job #1461: credits_used = 1,823,700 ..." LaunchLab note). The only commit between the two tags that touches the file is 5c8b355a (#856).
+  - Python AST of both versions with the module docstring removed: identical (`ast.dump` md5 16e7d2af42c5859fcd9199056495afec for both). The same 29 definitions in the same order: CapReached, Credits, hour_floor, hour_label, parse_hour, hours_between, tx_notice, rows_from_tx, sort_key, make_url, read_key, Pacer, http_rpc, gtfa_params, fetch_hour, build_hour_rows, gap_rows, write_hour, load_cp, save_cp, run_hours, probe, main (plus methods __init__, charge, __init__, wait, call, progress).
+  - Nothing in venue_backfill.py, venue_backfill_dbc.py, dbc_fwd_read.py or dbc_fwd_read_am1.py reads `__doc__` (grep at 7d5be9e5), so the docstring line cannot change behaviour.
+- The fetch files F imports are identical at both tags and on main (QP on #890): venue_backfill_dbc.py c6f754fa, dbc_decode.py 10a52a52, arena_zst.py 4ddbf448.
+
+### A3. Fetch F
+F = MiScusi job #1546 (replaces #1510; only change `--credit-cap 3700000`, item 5), mal-research-0, in the jobtree at commit c6d4c046bcca5459909fadece040e24762a2f897 (tag dbc-m10-forward-v1), not in the am1 tag worktree.
+Started 2026-10-24T18:28Z, limit 190 h (ends 2026-11-01T16:28Z). Source: the QP verdict on #890 and the manager's job record; this addendum did not open F's log.
+
+### A4. Read job chain, as submitted (all mal-research-0, code vaanai/MAL @ 304bb9cd, POSIX sh, resumable false)
+| Job | Role | after | Resources |
+|---|---|---|---|
+| #1784 | G gate g1: host-side sleep to 2026-10-28T06:00:00Z | none (running) | 64 MB, 10 h |
+| #1785 | G pass 1 | #1784 | 4 GB, 3 h |
+| #1786 / #1787 | G gate g2 (to 2026-10-29T06:00:00Z) / G pass 2 | #1785 / #1786 | 64 MB, 25 h / 4 GB, 3 h |
+| #1788 / #1789 | G gate g3 (to 2026-10-30T06:00:00Z) / G pass 3 | #1787 / #1788 | as g2 / pass 2 |
+| #1790 / #1791 | G gate g4 (to 2026-10-31T06:00:00Z) / G pass 4 | #1789 / #1790 | as g2 / pass 2 |
+| #1792 | G pass 5, FINAL | F #1546 and #1791 | 4 GB, 3 h |
+| #1793 | READ, Option A: `sh scripts/research/dbc-m10-read-job.sh A 10` | F #1546 and #1792 | 11 GB, 2 CPU, 600 min (10 h), priority urgent |
+
+- Gates: `T=$(date -u -d '<instant>' +%s); while [ "$(date -u +%s)" -lt "$T" ]; do sleep 60; done; date -u`.
+- G passes 1-4: wait until no `venue_backfill_dbc` process is seen on 2 checks 5 min apart; if the UTC hour reaches 20 first, print "G pass N skipped: past 20Z" and exit 0 (so the pass ends before F's next 00:20Z fetch; reviewer finding 1 on #890).
+  Then `python3 /data2/mal/wt/dbc-read-ops/tools/dbc_m10_gapfix.py pass --pass N --wt /data2/mal/wt/dbc-m10-read-am1 --budget 300000`.
+  G pass 5 has no wait loop: it refuses with exit 12 if a writer is running, then runs the same command with `--pass 5`.
+- DISCLOSURE, rc mapping: every G pass maps the tool's rc 1 (some hours still gap) and rc 5 (G budget spent) to job exit 0, so the `after` chain keeps moving and the read still starts.
+  The job state therefore does not show these outcomes. The real rc is printed in the job log ("G pass N rc=<rc>") and recorded in G-LOG.md (with G-STATE.json, kept with the read record).
+  rc 10 (pins), 12 (refused) and any other rc fail the job on purpose: the chain stops there and that pass and its successors are resubmitted. If #1792 fails, #1793 does not start (pre-claim, not a look).
+- READ #1793 runs at git_ref 304bb9cd (wrapper sha256 282c9d4a, launcher 04c98b97, ops 23776c67; the same on main). Its own time gate holds until 2026-11-01T00:10:00Z (1793491800), then pins (exit 10), memory (exit 13),
+  completeness with up to 1 h wait for the 900 s mtime age (exit 11), guards (exit 12), then the Option A launcher. Every wrapper exit and every tool rc 2/3/5/6/7 is pre-claim, not a look, and goes to READ-ATTEMPTS.log.
+  Once "LOOK CONSUMED" prints, anything other than rc 0 with fwd-m10-am1.json written is NOT_DECIDABLE and ends m10 and every D1 variant on DBC (item 1).
+
+### A5. Memory (ruling item 1)
+Item 1 says "On research-0, check free memory first. No other heavy job on the box." The second sentence cannot hold literally: the HV4 runner #1561 (to 2026-11-07T12:05Z) and the HV6 regime-block producer #1748
+(from 2026-10-28T00:15Z, 14 days) run through the read instant, alongside smaller long-running jobs. The check applied is the wrapper's MemAvailable floor: step 13, `dbc_m10_read_ops.py mem --min-gb 10`,
+run after the 00:10Z time gate and the pins and before the claim; MemAvailable < 10 GiB gives exit 13 (pre-claim, not a look). MiScusi also starts #1793 only when it can reserve 11 GB for it.
+Sizing (manager's chain notes, not re-derived here): C2 (#1576) peak RSS 794.6 MiB x 8.4 x 1.5 = 9.78 GiB -> floor 10 GiB, job 11 GB. Manager rule: no new heavy research-0 job from 2026-10-31T22:00Z until the read ends.
+Residual risk, disclosed: the floor is a point-in-time check. It does not stop another job from growing after it; a post-claim OOM is NOT_DECIDABLE and ends m10.
