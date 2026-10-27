@@ -34,7 +34,7 @@ QP's #979 nit: the "Still open" list was shorter than s7-s9. This table is the c
 | s8.4 | Mint fetch of traded mints, sell-builder pin and simulate output | OWED / NOT CHECKED | QP N4 (same pre-ruling): #821 does NOT meet C7 as recorded; rerun with mints from outside the Look-2 class. `FILL:mint_fetch`, `FILL:simulate_ref`, `FILL:builder_path@sha256`. Chain proofs: `hunt29/p1/CHAIN-PROOFS.md` (not re-read here). |
 | s8.5 | Owner ask through `miscusi_ask` (s2 text), only after items 1 to 5 | BLOCKED-ON items 1-4 | Pre-owner standing OK for a C0 canary after a PASS exists (owner 10-23 15:00Z); keys, wallet and go-live need the owner's word at the time. |
 | s8.6 | Parity and tie-out tools; executor installed DRY; 1 h dry run; md5 replay | OWED at X | Items (c) and (d) above. Tools: `tools/arena_live_parity.py`, `tools/arena_tieout.py` in the pinned set. `tieout-daily.sh` and `twin-writer-loop.sh` re-pin to X (new SHA256SUMS lines; QP N2 (c)). Scheduled reconciliation job id = `FILL:tie_out_job`, OWED. |
-| s8.7 | Owner yes/no, wallet funding (0.35 to 1.00 SOL), own instruction to Helm; Helm: pinned root install from the named sha, manifest, key via credential, drop-ins, watchdog, `TIER` T0 and `LIVE_OK` | BLOCKED-ON owner + Helm | HELM-SHEET s.F order. `LIVE_OK` and `TIER` are not for the dry install. |
+| s8.7 | Owner yes/no, wallet funding (0.35 to 1.00 SOL), own instruction to Helm; Helm: pinned root install from the named sha, manifest, key via credential, drop-ins, watchdog, `TIER` T1 (ARENA_LIVE_TIER; /etc/mal-h5-arena/TIER) and `LIVE_OK` | BLOCKED-ON owner + Helm | HELM-SHEET s.F order. `LIVE_OK` and `TIER` are not for the dry install. |
 | s8.8 | Manager reviews dry output, sets `end_ms` (<= 2026-11-06T00Z, at most 14 days), gives go; manager restarts no host unit | OWED | |
 
 ## D. DEC-032 s9 FILL fields (every one needs a value in the merged copy)
@@ -96,6 +96,6 @@ No replay, dry run, install or manifest at X has run. No claim about any book's 
 6. Tests 1–17 and 17b green at X on mal-fast-0's Python.
 7. A 1 h dry run at X with `a3_record_file` set: 0 build errors, `a3_guard_unreadable` = 0, and `a3_guard_pending`/latch counts reported.
 8. The Am.3 §7 guard-chain facts recorded from the job list (#1446/#1447/#1540/#1319/#1333, with their pins and limits).
-9. The owner ask (§2), the owner's yes and funding, and Helm's install, `TIER` T0 and `LIVE_OK`.
+9. The owner ask (§2), the owner's yes and funding, and Helm's install, `TIER` T1 (ARENA_LIVE_TIER; the arena reads its own /etc/mal-h5-arena/TIER) and `LIVE_OK`. (Corrected from the verbatim QP text, which said T0: the code requires T1.)
 10. The manager reviews the dry run and sets `end_ms` ≤ 2026-11-06T00Z.
 11. The "unpromoted execution measurement" label on every canary record.
