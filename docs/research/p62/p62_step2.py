@@ -7,10 +7,28 @@ CV = "/data/mal/clean-view"
 SPLITS = {"discovery": ["explore-0814"], "confirmation": ["fresh-0903", "exp011-0909"]}
 N = int(sys.argv[1]) if len(sys.argv) > 1 else 400
 OUT = sys.argv[2] if len(sys.argv) > 2 else "p62_step2.json"
+MAXF = int(sys.argv[3]) if len(sys.argv) > 3 else 10**9  # test slice: max create/migration files per block
+
+
+BAD = collections.Counter()
 
 
 def zlines(p):
-    return subprocess.run(["zstd", "-dc", p], capture_output=True, text=True).stdout.splitlines()
+    """stream decoded lines (no whole-file buffer)."""
+    pr = subprocess.Popen(["zstd", "-dc", p], stdout=subprocess.PIPE, text=True, errors="replace")
+    for l in pr.stdout:
+        yield l.rstrip("\n")
+    pr.stdout.close()
+    if pr.wait() != 0:
+        BAD["zstd_nonzero:" + p.split("/")[-3]] += 1
+
+
+def jl(l, kind):
+    try:
+        return json.loads(l)
+    except ValueError:
+        BAD[kind] += 1
+        return None
 
 
 def rpc_tx(sig):
@@ -43,15 +61,17 @@ def build(split):
     rnd = random.Random(1)
     sig, comp = {}, []
     for blk in SPLITS[split]:
-        for f in sorted(glob.glob(f"{CV}/{blk}/*/creates/creates-*.jsonl.zst")):
+        for f in sorted(glob.glob(f"{CV}/{blk}/*/creates/creates-*.jsonl.zst"))[:MAXF]:
             for l in zlines(f):
-                c = json.loads(l)
+                c = jl(l, "bad_creates")
+                if not c or "mint" not in c or "signature" not in c:
+                    continue
                 sig[c["mint"]] = c["signature"]
-        for f in sorted(glob.glob(f"{CV}/{blk}/*/migrations/migrations-*.jsonl.zst")):
+        for f in sorted(glob.glob(f"{CV}/{blk}/*/migrations/migrations-*.jsonl.zst"))[:MAXF]:
             for l in zlines(f):
-                m = json.loads(l)
-                if m.get("type") == "complete":
-                    comp.append((m["mint"], m["event_ts"], f))
+                m = jl(l, "bad_migrations")
+                if m and m.get("type") == "complete":
+                    comp.append((m["mint"], m["event_ts"], f)) if "mint" in m and "event_ts" in m else BAD.update(["migration_missing_fields"])
     comp = sorted(set((a, b) for a, b, _ in comp))
     have = [(m, t) for m, t in comp if m in sig]
     print(split, "migrations", len(comp), "with create in block", len(have), flush=True)
@@ -83,8 +103,11 @@ def outcomes(split, cand):
             i = l.find('"mint":"')
             if l[i + 8:i + 52].split('"')[0] not in mints:
                 continue
-            r = json.loads(l)
-            px[r["mint"]].append((r["event_ts"], r["slot"], r.get("event_index", 0), r["price_sol"]))
+            r = jl(l, "bad_trades")
+            if not r or "event_ts" not in r or "price_sol" not in r:
+                BAD["trade_missing_fields"] += 1
+                continue
+            px[r.get("mint")].append((r["event_ts"], r.get("slot", 0), r.get("event_index", 0), r["price_sol"]))
     res = {}
     for m, t in cand:
         s = sorted(x for x in px.get(m, []) if x[0] >= t)
@@ -140,6 +163,8 @@ def main():
                        "n_cfg1": tab[(1, 0)] + tab[(1, 1)], "auc": a,
                        "placebo_mean": sum(sh) / len(sh) if sh else None, "placebo_p95": sh[int(.95 * (len(sh) - 1))] if sh else None}
     print(json.dumps(summ, indent=1))
+    print("malformed/skipped line counts:", dict(BAD))
+    summ["_skipped"] = dict(BAD)
     json.dump({"summary": summ, **out}, open(OUT, "w"))
 
 
