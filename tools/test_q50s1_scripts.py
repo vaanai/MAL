@@ -12,7 +12,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 REG = REPO / "scripts" / "ops" / "q50s1-register.sh"
 SHD = REPO / "scripts" / "ops" / "q50s1-shadow-start.sh"
-WIN_FROM, WIN_TO = 1793908800, 1793916900  # 2026-11-05T20:00:00Z, 22:30:00Z
+WIN_FROM, WIN_TO = 1793908800, 1793917800  # 2026-11-05T20:00:00Z, 22:30:00Z
 GIB = 1024 ** 3
 
 
@@ -38,7 +38,7 @@ class Syntax(unittest.TestCase):
         self.assertIn("S_SHA=5c2ab7c64b21358619e37068c6a53e4d183512ea", t)
         self.assertNotIn("a5f41370", t.replace("NOT F50 a5f41370", "").replace("never main, never F50 a5f41370", ""))
         self.assertIn("WIN_FROM=1793908800", t)
-        self.assertIn("WIN_TO=1793916900", t)
+        self.assertIn("WIN_TO=1793917800", t)
         self.assertIn("--q-star-sol 50", t)
         self.assertIn("MemoryMax=", t)
         self.assertIn("MemorySwapMax=0", t)
@@ -50,14 +50,14 @@ class Register(unittest.TestCase):
         return subprocess.run(["sh", str(REG), *args], capture_output=True, text=True, env=env, cwd=REPO)
 
     def test_bad_arguments_refuse(self):
-        for a in (("--bogus",), ("--apply", "--now-ms", "1"), ("x",)):
+        for a in (("--bogus",), ("--apply",), ("--preclock-notebook-ref", "nb_Abc123", "--now-ms", "1"), ("--preclock-notebook-ref",), ("x",)):
             r = self.run_(*a)
             self.assertEqual(r.returncode, 2, a)
             self.assertIn("q50s1-register", r.stderr)
 
     def test_an_unknown_arena_root_is_refused_by_the_tool_and_nothing_is_written(self):
         with tempfile.TemporaryDirectory() as d:
-            r = self.run_(arena=d)
+            r = self.run_("--preclock-notebook-ref", "nb_Abc123", arena=d)
             self.assertEqual(r.returncode, 2, r.stderr)
             self.assertIn("REFUSED", r.stderr)
             self.assertEqual(list(Path(d).iterdir()), [])
@@ -80,7 +80,7 @@ class ShadowCheck(unittest.TestCase):
         self.py.write_text('#!/bin/sh\ncase "$*" in *"import websockets"*) exit 0 ;; esac\nexec python3 "$@"\n')
         self.py.chmod(0o755)
         self.stub("hostname", "echo mal-fast-0")
-        self.set_mem(cur=2 * GIB, smax=20 * GIB, running=[("a.service", 1 * GIB), ("b.service", "infinity")])
+        self.set_mem(cur=2 * GIB, smax=20 * GIB, running=[("a.service", 1 * GIB), ("b.service", 2 * GIB)])
         S = "5c2ab7c64b21358619e37068c6a53e4d183512ea"
         self.stub("git", f'''
 case "$*" in
@@ -134,7 +134,7 @@ esac''')
         self.assertIn("--fresh-forward ARENA --q-star-sol 50", r.stdout)
         self.assertIn("MemoryMax=1500M", r.stdout)
         self.assertIn(f"{self.arena}/h5-q50s1-2026-11-05", r.stdout)
-        self.assertIn("uncapped running units: 1", r.stdout)
+        self.assertIn("without a finite MemoryMax: 0", r.stdout)
         self.assertFalse((self.arena / "h5-q50s1-2026-11-05").exists())
 
     def test_check_outside_the_window_reports_but_a_real_run_would_exit_4(self):
@@ -165,6 +165,19 @@ esac''')
         self.assertIn("NOT starting", r.stderr)
         self.set_mem(cur=2 * GIB, smax=20 * GIB, running=[("a.service", 17 * GIB)])  # the sum of caps counts, not only the current use
         self.assertEqual(self.run_().returncode, 10)
+
+    def test_an_uncapped_running_unit_refuses_even_when_everything_fits(self):
+        self.set_mem(cur=1 * GIB, smax=64 * GIB, running=[("a.service", 1 * GIB), ("b.service", "infinity")])
+        r = self.run_()
+        self.assertEqual(r.returncode, 10, r.stdout + r.stderr)
+        self.assertIn("no finite MemoryMax", r.stderr)
+
+    def test_the_window_edges_are_exact(self):
+        import datetime as dt
+        self.assertEqual(WIN_FROM, int(dt.datetime(2026, 11, 5, 20, 0, tzinfo=dt.timezone.utc).timestamp()))
+        self.assertEqual(WIN_TO, int(dt.datetime(2026, 11, 5, 22, 30, tzinfo=dt.timezone.utc).timestamp()))
+        for now, inside in ((WIN_FROM - 1, False), (WIN_FROM, True), (WIN_TO, True), (WIN_TO + 1, False)):
+            self.assertEqual("outside the start window" not in self.run_(now=now).stderr, inside, now)
 
     def test_wrong_tag_refuses_before_anything_else(self):
         self.stub("git", 'case "$*" in *fetch*) exit 0 ;; *"rev-parse q50-succ-base-1"*) echo a5f41370' + "0" * 32 + ' ;; *) exit 0 ;; esac')

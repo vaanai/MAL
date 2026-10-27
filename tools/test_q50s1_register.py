@@ -23,6 +23,7 @@ from tools.test_arena_h5_books_v3 import V2_TEXT, V3_TEXT
 S1 = si.S1_ID
 NOW = si.S1["register_not_before_ms"] + 14 * 3_600_000 + 30 * 60_000  # 11-04T14:30Z: inside the window, outside the forbidden minutes
 HOUR = 3_600_000
+REF = "nb_Abc123-xyz"
 
 
 class Setup(unittest.TestCase):
@@ -135,12 +136,23 @@ class Tests(Setup):
     def test_cli_main_dry_run_and_refusal(self):
         out, err = io.StringIO(), io.StringIO()
         with mock.patch.object(sc.h5, "ARENA_ROOT", str(self.arena)), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
-            rc = R.main(["--arena-root", str(self.arena), "--books-file", str(self.books), "--now-ms", str(NOW), "--host", "h"])
+            rc = R.main(["--arena-root", str(self.arena), "--books-file", str(self.books), "--now-ms", str(NOW), "--host", "h", "--preclock-notebook-ref", REF])
             self.assertEqual(rc, 0, err.getvalue())
             self.assertEqual(json.loads(out.getvalue())["status"], "dry_run")
-            rc = R.main(["--arena-root", str(self.arena), "--books-file", str(self.books), "--now-ms", "5", "--apply"])
-        self.assertEqual(rc, 2)
-        self.assertIn("REFUSED", err.getvalue())
+            rc = R.main(["--arena-root", str(self.arena), "--books-file", str(self.books), "--now-ms", str(NOW), "--apply", "--preclock-notebook-ref", REF])
+            self.assertEqual(rc, 2)  # --now-ms is never accepted with --apply
+            self.assertIn("--now-ms is not accepted with --apply", err.getvalue())
+            self.assertEqual(self.books.read_text(), V2_TEXT)
+            self.assertNotIn(S1, json.loads(self.reg.read_text())["bots"])
+
+    def test_preclock_notebook_ref_is_required_and_format_checked(self):
+        base = ["--arena-root", str(self.arena), "--books-file", str(self.books), "--now-ms", str(NOW)]
+        with mock.patch.object(sc.h5, "ARENA_ROOT", str(self.arena)), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit):
+                R.main(base)  # missing: argparse exits 2
+            for bad in ("", "short", "has space!", "x" * 81, "a/b/c/d/e"):
+                self.assertEqual(R.main([*base, "--preclock-notebook-ref", bad]), 2, bad)
+            self.assertEqual(R.main([*base, "--preclock-notebook-ref", REF]), 0)
 
 
 if __name__ == "__main__":

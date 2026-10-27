@@ -15,7 +15,7 @@
 #   4. bots.json holds the s1 line with frozen_sha S*, clock 1793923200000, window_end_ms pinned 1795132800000, and registered_at_ms before now (exit 8);
 #   5. no process of this book runs (the unit q50s1-shadow.scope is not active; one process per frozen_sha) and the out dir $HOME/data/arena/h5-q50s1-<UTC date> does not exist (exit 9);
 #   6. MEMORY (an OOM would end Q50's open positions NOT_DECIDABLE and gap-halt its live feed): MemoryCurrent of user-1002.slice + the sum of the finite MemoryMax of every running
-#      user unit + this process's MemoryMax (1500M) must fit the slice's MemoryMax (MemTotal if the slice has none). If not, it WAITS NOTHING and exits 10: the start moves
+#      user unit + this process's MemoryMax (1500M) must fit the slice's MemoryMax (MemTotal if the slice has none); ANY running unit without a finite MemoryMax also refuses. If not, it WAITS NOTHING and exits 10: the start moves
 #      (a slip under Amendment 17 item 2), it is never started uncapped;
 #   7. starts `python -m tools.h5_shadow` from the S* worktree under `systemd-run --user --scope -p MemoryMax=1500M -p MemorySwapMax=0 --unit=q50s1-shadow` and stops that scope on TERM,
 #      INT and EXIT (miscusi_job_cancel leaves --scope children alive: this job stops its own scope). The shadow's args: --fresh-forward ARENA --q-star-sol 50 --sockets 3 --syn-sockets 1
@@ -30,7 +30,7 @@ S_TAG=q50-succ-base-1
 CLOCK_MS=1793923200000
 END_MS=1795132800000
 WIN_FROM=1793908800   # 2026-11-05T20:00:00Z
-WIN_TO=1793916900     # 2026-11-05T22:30:00Z
+WIN_TO=1793917800     # 2026-11-05T22:30:00Z
 NEW_MAX_MB=1500
 MODE=run
 [ "${1:-}" = "--check" ] && MODE=check
@@ -101,7 +101,8 @@ for u in $(systemctl --user list-units --type=service,scope --state=running --pl
 done
 NEWB=$((NEW_MAX_MB * 1024 * 1024))
 NEED=$((CUR + SUM + NEWB))
-echo "q50s1-shadow: memory: MemoryCurrent=$CUR + sum(finite MemoryMax of running units)=$SUM (uncapped running units: $UNCAPPED, not summed) + new MemoryMax=$NEWB = $NEED; slice max=$SMAX"
+echo "q50s1-shadow: memory: MemoryCurrent=$CUR + sum(finite MemoryMax of running units)=$SUM (running units without a finite MemoryMax: $UNCAPPED) + new MemoryMax=$NEWB = $NEED; slice max=$SMAX"
+if [ "$UNCAPPED" -gt 0 ]; then echo "q50s1-shadow: $UNCAPPED running unit(s) have no finite MemoryMax: NOT starting (DEC-031 Amendment 18 item 8: every process in the slice is capped; a slip under Amendment 17 item 2)" >&2; exit 10; fi
 if [ "$NEED" -gt "$SMAX" ]; then echo "q50s1-shadow: does not fit the slice: NOT starting (a slip under DEC-031 Amendment 17 item 2, never an uncapped start)" >&2; exit 10; fi
 # 7. start
 WS1=wss://api.mainnet-beta.solana.com

@@ -103,6 +103,8 @@ class BooksV3(Tmp):
         self.assertIsNone(B.check_recorded_instant(S1, doc, counted, counted, si.EARLIEST_BOUNDARY_MS))
         self.assertIsNotNone(B.check_recorded_instant(S1, doc, counted, counted, si.EARLIEST_BOUNDARY_MS + DAY))
         self.assertIsNotNone(B.check_recorded_instant(S1, doc, counted[:-1], counted[:-1], si.EARLIEST_BOUNDARY_MS))
+        for bad in ({"clock_start_ms": si.CLOCK_MS + DAY, "end_seal_ms": si.END_MS}, {"clock_start_ms": si.CLOCK_MS, "end_seal_ms": si.END_MS - DAY}):
+            self.assertIn("table row", B.check_recorded_instant(S1, bad, counted, counted, si.EARLIEST_BOUNDARY_MS))
         # Q50 is unchanged: its record's own clock and end
         qd = {"clock_start_ms": qi.END_SEAL_MS - 12 * DAY, "end_seal_ms": qi.END_SEAL_MS}
         qc = [qd["clock_start_ms"] + 3_600_000 + d * DAY + i for d in range(5) for i in range(20)]

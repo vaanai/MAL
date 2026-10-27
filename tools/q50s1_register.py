@@ -1,6 +1,6 @@
 """One-command registration of `h5v1q50-boostfloor-s1` and the books v2 -> v3 swap (plan C5; DEC-031 Amendment 18 items 4 and 6.1). PAPER ONLY. No outcome is read.
 
-    python -m tools.q50s1_register --arena-root ARENA --books-file ARENA/a3-books.json [--apply] [--now-ms MS]
+    python -m tools.q50s1_register --arena-root ARENA --books-file ARENA/a3-books.json --preclock-notebook-ref REF [--apply]
 
 Default is a DRY RUN: every check runs and nothing is written. With --apply, under the registry lock: (1) refuse inside :04 to :25 of the 07, 13 and 19 UTC hours and inside
 12:10 to 12:25Z (the A3 loop and dead-man windows); (2) the books file must be the registered v2 (sha256 819c699d...), or already v3 with the line registered (idempotent no-op);
@@ -16,6 +16,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -28,6 +29,7 @@ from tools import arena_h5_score as sc
 from tools import arena_h5_score_q50s as w
 from tools.arena_score import Refused
 
+NOTEBOOK_REF_RE = re.compile(r"[A-Za-z0-9_-]{6,80}")
 FORBIDDEN_NOTE = "inside :04 to :25 of the 07, 13 or 19 UTC hour, or 12:10 to 12:25Z (A3 loop / dead-man windows)"
 
 
@@ -109,14 +111,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--arena-root", required=True)
     ap.add_argument("--books-file", required=True)
     ap.add_argument("--apply", action="store_true", help="write (default: dry run)")
-    ap.add_argument("--now-ms", type=int, default=None, help="fixtures only; a real run uses the wall clock")
+    ap.add_argument("--now-ms", type=int, default=None, help="dry run / fixtures only; refused with --apply (a real run uses the wall clock)")
+    ap.add_argument("--preclock-notebook-ref", required=True, help="the MiScusi notebook entry that lists the pre-clock items (format checked only)")
     ap.add_argument("--sockets", type=int, default=3)
     ap.add_argument("--endpoint", action="append", default=None)
     ap.add_argument("--host", default=None)
     a = ap.parse_args(list(sys.argv[1:] if argv is None else argv))
+    if not NOTEBOOK_REF_RE.fullmatch(a.preclock_notebook_ref):
+        print("REFUSED: --preclock-notebook-ref must be a notebook entry id (6 to 80 of A-Z a-z 0-9 _ -)", file=sys.stderr)
+        return 2
+    if a.apply and a.now_ms is not None:
+        print("REFUSED: --now-ms is not accepted with --apply (the registration instant is the wall clock)", file=sys.stderr)
+        return 2
     now = a.now_ms if a.now_ms is not None else int(time.time() * 1000)
     try:
-        rep = run(sc._arena_root(a.arena_root), Path(a.books_file), now_ms=now, apply=a.apply, sockets=a.sockets, endpoints=a.endpoint or ["default"], host=a.host)
+        rep = dict(run(sc._arena_root(a.arena_root), Path(a.books_file), now_ms=now, apply=a.apply, sockets=a.sockets, endpoints=a.endpoint or ["default"], host=a.host), preclock_notebook_ref=a.preclock_notebook_ref)
     except (Refused, ValueError, a3_halt.Invalid) as e:
         print(f"REFUSED: {e}", file=sys.stderr)
         return 2
