@@ -150,6 +150,8 @@ def irls(X: np.ndarray, y: np.ndarray, c: float = C_REG, iters: int = ITERS) -> 
 
 
 def fit_model(rows, y, names) -> dict:
+    if tuple(names) not in FEATURE_SETS.values():
+        raise CalibError("feature list is not one of the registered sets (L8, T8, T8a)")
     rows = check_rows(rows)
     if len(rows) != len(y) or len(rows) == 0:
         raise CalibError("rows and labels must align and be non-empty")
