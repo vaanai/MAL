@@ -1,0 +1,437 @@
+#!/usr/bin/env python3
+"""hv7_smoke: the real-model smoke for HV7 (DEC-031 Am.6 item 1.3; pack ARTIFACTS/lab/hv7-registration-1027.md section 3d).
+
+PAPER only. Runs the FINAL-sha runner (`tools.hv7_runner.Hv7Runner`, imported from `--repo`, a clean checkout at the final sha) with the REAL caller
+(claude-haiku-5-5 through tools.hv6_agents.CallerModel -> tools.haiku_caller; the key is read by the caller from ANTHROPIC_API_KEY at call time, which
+the wrapper takes from /var/lib/mal/anthropic/anthropic.env into the child's environment only; this file never reads, prints or stores its value) and the
+live arena tape (read only, through the frozen runner and card code). It edits no frozen file (tools/hv7_*.py at the final sha).
+
+PERIOD COMPRESSION (no frozen code touched). `Hv7Runner.tick` fires the screen only when `T % HOUR_MS == T_D_OFFSET_MS`, so a 2 h run makes about 2 calls and
+Hv7Config has no period or tick parameter. This tool does not call `tick`. It drives the runner's public methods in the same order `tick` uses
+(`sim_now`, `poll_to`, `exits`, then `screen(T)` at a period instant `t_d`, then `enter(T)` at `t_d + 45 s`, which is `pending["t_e"]`), with the period
+instants on a 4-minute grid instead of H:02:00. `screen` and `enter` derive t_e from the T they are given, so nothing else changes: the request bytes are
+the real RANK_v0 prompt (`build_rank_request`), the call is the runner's own `_ask`, the verdict is its own `_resolve_l`. 31 periods, 4 min apart, from a
+warm-up after the start: 120 min from the first t_d to the last, 2 h 4 min or so in all. One stated difference from the hourly run: `seq = T // HOUR_MS` in
+the request is the same for the periods of one hour; the cards differ with as_of, so request bytes still differ (a replayed request would show as replayed
+and cost 0, and is reported).
+
+The chain source is the runner's own `hv7_runner.live_chain_source(root)` (same classes, phase-locked prefetch window H:48-H:02, 500 calls/h), with its state
+files under the smoke dir; the prefetcher is started as `main` starts it and fed by the runner's own `watch_tick` (WATCH_MAX 200), so the smoke exercises the runner path.
+ONE deliberate difference: the runner's prefetch window (H:48-H:02) is locked to the hourly t_d; this tool screens every 4 min, so outside it facts go stale and the
+refusal rule would FAIL for phase alone. Default: the window start is set to 0 for the run (restored after; report prefetch_window); `--runner-window` keeps H:48-H:02.
+
+WRITES ONLY under <HV7_ROOT>/smoke/<id>/ : root/ (decision log, RANK-L cost ledger, replay cache, chain state), engine-ledger/, smoke-registry.json,
+report.json. The production root, the real registry (/data/mal/arena/bots.json) and every HV4/HV6/Q50 path are never touched. The engine ledger (fills,
+prices) is never opened; the decision rows are read through a whitelist projection of the L rank row and the SCAN period row (counts and lengths only);
+the cost ledger is read through tools.haiku_caller.ledger_summary. No pool id, mint, price, fill or P&L is read into the report.
+
+SPEND: a hard stop at SPEND_CAP_USD (0.10) over every day file of the RANK-L cost ledger, checked before each call (a wrapper around the model); the
+frozen Hv7Guard day cap is lowered to the same figure (a cap can be lowered, never raised).
+
+VERDICT (pre-declared in the pack, section 3d; a FAIL is fixed by code at a new sha, never by tuning a limit):
+  FAIL if FALLBACK calls > 5% of ranker calls, or the p95 of the call latency > 8,000 ms, or card refusals > 5% of cards attempted (built + refused), or any
+  run error (a raised exception, a hook error, a model exception, a cost mismatch, an unreadable ledger), or spend > 0.10 USD.
+  INCOMPLETE if fewer than 30 error-free ranker calls, or the span from the first t_d to the last t_e is under 2 h (7,200 s). Otherwise PASS.
+Exit 0 PASS, 1 FAIL or INCOMPLETE, 2 refused before any call.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import math
+import os
+import sys
+import time
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Callable
+
+HV7_ROOT = "/data/mal/arena/haiku-v7"
+SMOKE_PARENT = HV7_ROOT + "/smoke"
+SHA_RE = "0123456789abcdef"
+SPEND_CAP_USD = 0.10
+FALLBACK_FAIL_FRAC = 0.05
+CALL_P95_FAIL_MS = 8_000
+REFUSAL_FAIL_FRAC = 0.05
+MIN_OK_CALLS = 30
+MIN_SPAN_MS = 2 * 3_600_000
+PERIOD_MS = 4 * 60_000
+PERIODS = 31
+WARMUP_MS = 8 * 60_000
+TAIL_MS = 60_000
+WATCH_EVERY_MS = 60_000
+RPC_CALLS_PER_H = 1_000
+ERROR_COUNTERS = ("model_exception", "cost_mismatch", "ledger_unreadable")
+REFUSAL_COUNTERS = ("card_refused", "chain_none", "leakage_refused")
+
+
+class Refused(Exception):
+    """Argument or environment refusal; carries a fixed code only."""
+
+
+def _pct(vals: list[float], q: float) -> float | None:
+    if not vals:
+        return None
+    s = sorted(vals)
+    return s[min(len(s) - 1, int(q * len(s)))]
+
+
+def _rows(root: Path, name: str):
+    d = root / "decisions" / name
+    for f in sorted(d.glob("*.jsonl")) if d.is_dir() else []:
+        for line in f.read_bytes().splitlines():
+            if line.strip():
+                yield json.loads(line)
+
+
+def _num(v: Any) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v)
+
+
+def _num_only(d: Any) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    if isinstance(d, dict):
+        for k, v in d.items():
+            if _num(v):
+                out[str(k)] = v
+            elif isinstance(v, dict):
+                sub = _num_only(v)
+                if sub:
+                    out[str(k)] = sub
+    return out
+
+
+def _err_class(e: Any) -> str:
+    """A model_error string reduced to a short class label (letters, digits, underscore, colon), never a message."""
+    s = str(e)[:48]
+    return "".join(ch if (ch.isalnum() or ch in "_:") else "_" for ch in s)
+
+
+def report(root: str | os.PathLike, *, counters: dict[str, Any] | None = None, run_error: str | None = None, window_ms: tuple[int, int] | None = None,
+           cap_usd: float = SPEND_CAP_USD, spend_stop_hits: int = 0, chain_credits: Any = None, calls_h_samples: list[int] | None = None) -> dict[str, Any]:
+    """Counts-only report over a smoke root. L rank rows and SCAN period rows through a whitelist projection (never shown, order, pick); the cost ledgers by their own totals."""
+    root = Path(root)
+    n_calls = ok_valid = fallbacks = refusals = errfree = late = cut = replayed = 0
+    lat: list[float] = []
+    errs: dict[str, int] = {}
+    fb_reasons: dict[str, int] = {}
+    for r in _rows(root, "L"):
+        if r.get("kind") != "rank":
+            continue
+        n_calls += 1
+        ok_valid += int(r.get("ok") is True)
+        fallbacks += int(r.get("fallback") is True)
+        refusals += int(r.get("refused") is True)
+        late += int(r.get("late") is True)
+        cut += int(r.get("cut_off") is True)
+        replayed += int(r.get("replayed") is True)
+        me = r.get("model_error")
+        if me is not None:
+            k = _err_class(me)
+            errs[k] = errs.get(k, 0) + 1
+        fr = r.get("fallback_reason")
+        if r.get("fallback") is True and isinstance(fr, str):
+            k = _err_class(fr)
+            fb_reasons[k] = fb_reasons.get(k, 0) + 1
+        if me is None and r.get("refused") is not True and r.get("late") is not True and r.get("cut_off") is not True:
+            errfree += 1
+        if _num(r.get("latency_ms")):
+            lat.append(float(r["latency_ms"]))
+    periods = no_trade = built = excluded = 0
+    for r in _rows(root, "SCAN"):
+        k = r.get("kind")
+        if k == "period":
+            periods += 1
+            no_trade += int(bool(r.get("no_trade")))
+            built += len(r.get("card_shas") or ()) + len(r.get("vetoed") or ())
+        elif k == "period_excluded":
+            excluded += 1
+    cnt = _num_only(counters or {})
+    refused_cards = sum(int(cnt.get(k, 0)) for k in REFUSAL_COUNTERS)
+    reason_counts = {k[len("card_refused:"):][:60]: v for k, v in sorted(cnt.items()) if k.startswith("card_refused:")}
+    attempted = built + refused_cards
+    refusal_frac = refused_cards / attempted if attempted else 0.0
+    tok = {"input": 0, "output": 0, "cache_creation_input": 0, "cache_read_input": 0}
+    usd = 0.0
+    led_dir = root / "ledgers"
+    if led_dir.is_dir():
+        from tools.haiku_caller import ledger_summary  # noqa: PLC0415 - the cost ledger (spend), not an engine ledger
+
+        for f in sorted(led_dir.glob("*/*.jsonl")):
+            s = ledger_summary(f)
+            usd += float(s.get("total_cost_usd", 0.0))
+            for k, v in (s.get("tokens") or {}).items():
+                if k in tok and isinstance(v, int):
+                    tok[k] += v
+    fb_frac = fallbacks / n_calls if n_calls else 0.0
+    p95 = _pct(lat, 0.95)
+    span_ms = (window_ms[1] - window_ms[0]) if window_ms else None
+    err_counts = {k: int(cnt.get(k, 0)) for k in ERROR_COUNTERS}
+    fails = []
+    if fb_frac > FALLBACK_FAIL_FRAC:
+        fails.append("fallback_share_above_5pct")
+    if p95 is not None and p95 > CALL_P95_FAIL_MS:
+        fails.append("call_latency_p95_above_8s")
+    if refusal_frac > REFUSAL_FAIL_FRAC:
+        fails.append("card_refusals_above_5pct_of_attempted")
+    if run_error or any(err_counts.values()) or int(cnt.get("hook_errors", 0)):
+        fails.append("run_error")
+    if usd > cap_usd + 1e-9:
+        fails.append("spend_above_cap")
+    incomplete = []
+    if errfree < MIN_OK_CALLS:
+        incomplete.append("fewer_than_30_error_free_calls")
+    if span_ms is None or span_ms < MIN_SPAN_MS:
+        incomplete.append("span_under_2h")
+    verdict = "FAIL" if fails else ("INCOMPLETE" if incomplete else "PASS")
+    return {"kind": "hv7_smoke_report", "verdict": verdict, "fail_reasons": fails, "incomplete_reasons": incomplete, "run_error": run_error,
+            "window_ms": list(window_ms) if window_ms else None, "span_s": None if span_ms is None else span_ms / 1000.0, "min_span_s": MIN_SPAN_MS / 1000.0,
+            "periods": periods, "no_trade_periods": no_trade, "excluded_periods": excluded,
+            "calls": n_calls, "error_free_calls": errfree, "min_error_free_calls": MIN_OK_CALLS, "valid_permutations": ok_valid,
+            "fallback": fallbacks, "fallback_share": round(fb_frac, 6), "fallback_limit": FALLBACK_FAIL_FRAC, "fallback_reasons": dict(sorted(fb_reasons.items())),
+            "model_refusals": refusals, "late_replies": late, "cut_off": cut, "replayed": replayed, "model_error_counts": dict(sorted(errs.items())),
+            "call_latency_ms": {"n": len(lat), "p50": _pct(lat, 0.5), "p95": p95, "max": max(lat) if lat else None, "limit_p95": CALL_P95_FAIL_MS},
+            "tokens": tok, "spend_usd": round(usd, 6), "cap_usd": cap_usd, "spend_stop_hits": spend_stop_hits,
+            "cards_built": built, "card_refusals": refused_cards, "cards_attempted": attempted, "card_refusal_share": round(refusal_frac, 6),
+            "card_refusal_reason_counts": reason_counts, "error_counters": err_counts, "hook_errors": int(cnt.get("hook_errors", 0)),
+            "watch_errors": {k[len("watch_error:"):][:40]: v for k, v in sorted(cnt.items()) if k.startswith("watch_error:")},
+            "runner_counters": {k: v for k, v in sorted(cnt.items()) if ":" not in k},
+            "chain_calls_per_h": {"samples": len(calls_h_samples or []), "max": max(calls_h_samples) if calls_h_samples else None, "cap": RPC_CALLS_PER_H},
+            "helius_credits": _num_only(chain_credits),
+            "disclosure": "smoke: never counted, not in N, never an input to any read; engine ledger and prices never opened; no pool is named"}
+
+
+def render(rep: dict[str, Any]) -> str:
+    body = json.dumps(rep, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n"
+    return body + "sha256 " + hashlib.sha256(body.encode()).hexdigest() + "\n"
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ the run
+def load_rules(repo: str) -> SimpleNamespace:
+    sys.dont_write_bytecode = True
+    repo = str(Path(repo).resolve())
+    here = str(Path(__file__).resolve().parent)
+    sys.path[:] = [p for p in sys.path if p and str(Path(p).resolve()) != here]
+    for m in [m for m in sys.modules if m == "tools" or m.startswith("tools.")]:
+        del sys.modules[m]
+    sys.path.insert(0, repo)
+    from tools import arena_paper as AP  # noqa: PLC0415
+    from tools import hv4_cards as C  # noqa: PLC0415
+    from tools import hv4_model as M4  # noqa: PLC0415
+    from tools import hv6_agents as A  # noqa: PLC0415
+    from tools import hv6_cards as H  # noqa: PLC0415
+    from tools import hv6_runner as H6  # noqa: PLC0415
+    from tools import hv7_register as REG  # noqa: PLC0415
+    from tools import hv7_runner as RN  # noqa: PLC0415
+    from tools.arena_state import ArenaState  # noqa: PLC0415
+
+    for mod in (AP, C, M4, A, H, H6, REG, RN):
+        if not str(Path(mod.__file__).resolve()).startswith(repo + os.sep):
+            raise Refused("module_not_from_repo")
+    return SimpleNamespace(AP=AP, C=C, M4=M4, A=A, H=H, H6=H6, REG=REG, RN=RN, ArenaState=ArenaState, repo=repo)
+
+
+def check_smk(smk: str, parent: str | None = None) -> Path:
+    """The smoke dir must be a fresh child of <HV7_ROOT>/smoke/ (no symlink games), never the production root, never the real registry."""
+    p = Path(os.path.normpath(smk))
+    if not p.is_absolute() or "probe" in str(p).lower():
+        raise Refused("smk_not_absolute_or_probe")
+    par = os.path.realpath(parent or SMOKE_PARENT)
+    if os.path.realpath(p.parent) != par or p.name in ("", ".", ".."):
+        raise Refused("smk_not_a_child_of_smoke_dir")
+    if p.exists():
+        raise Refused("smk_exists")
+    return p
+
+
+class SpendStopModel:
+    """Wraps the model. Before EACH call: total spent over every day file of the RANK-L cost ledger plus the smallest worst-case reserve must fit under the
+    cap, else the call is not made and the reply is an error (a counted FALLBACK in the runner). The frozen Hv7Guard day cap is the second, per-day fence."""
+
+    def __init__(self, inner: Any, guard: Any, root: str | os.PathLike, cap_usd: float, min_call_usd: float) -> None:
+        self.inner, self.guard, self.root = inner, guard, Path(root)
+        self.cap_usd, self.min_call_usd = float(cap_usd), float(min_call_usd)
+        self.hits = 0
+        self.calls = 0
+        self.model = getattr(inner, "model", None)
+
+    def spent(self) -> float:
+        total = 0.0
+        d = self.root / "ledgers" / "RANK-L"
+        for f in sorted(d.glob("*.jsonl")) if d.is_dir() else []:
+            total += self.guard.day_spent(f.stem)
+        return total
+
+    def complete(self, req: Any, now_ms: int) -> Any:
+        if self.spent() + self.min_call_usd > self.cap_usd + 1e-12:
+            self.hits += 1
+            from tools.hv4_model import ModelReply  # noqa: PLC0415
+
+            return ModelReply(error="smoke_spend_stop")
+        self.calls += 1
+        return self.inner.complete(req, now_ms)
+
+
+def build_chain(R: SimpleNamespace, root: Path) -> Any:
+    """The runner's own live chain source (hv7_runner.live_chain_source, the function `main` calls): HV4Chain + policy-v2 prefetcher gated to the t_d-locked window
+    H:48-H:02, 500 calls/h, state and spend files under `root` (the smoke root is under the HV7 root, so HV7's check_path accepts it). Nothing is built here."""
+    return R.RN.live_chain_source(root)
+
+
+def period_plan(t_start: int, warmup_ms: int, period_ms: int, periods: int, tick_ms: int, te_offset_ms: int) -> tuple[list[int], int, int]:
+    """(t_d grid, last t_e, loop end). The grid starts at the first whole tick after the warm-up and steps by period_ms; t_e is t_d + te_offset_ms."""
+    first = (t_start + warmup_ms + tick_ms - 1) // tick_ms * tick_ms
+    grid = [first + k * period_ms for k in range(periods)]
+    last_te = grid[-1] + te_offset_ms
+    return grid, last_te, last_te + TAIL_MS
+
+
+def run_smoke(R: SimpleNamespace, a: argparse.Namespace, *, model: Any = None, chain: Any = None, tape_dir: str | None = None, live: bool = True,
+              start_ms: int | None = None, sleep: Callable[[float], None] = time.sleep, now_fn: Callable[[], int] | None = None, parent: str | None = None,
+              verify_sha: bool = True, engine_kw: dict | None = None) -> dict[str, Any]:
+    smk = check_smk(a.smk, parent)
+    if not (0 < a.cap_usd <= SPEND_CAP_USD):
+        raise Refused("cap_above_0.10")
+    if not (1 <= a.periods <= 40) or a.period_ms < 120_000 or a.warmup_ms < 0:
+        raise Refused("period_args_out_of_range")
+    if model is None and not os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        raise Refused("api_key_not_in_env")
+    if chain is None and (os.environ.get("MAL_HV4_RPC", "").strip().lower() != "helius"):
+        raise Refused("MAL_HV4_RPC_must_be_helius")
+    if os.environ.get("MAL_HV4_CHAIN_STATE"):
+        raise Refused("MAL_HV4_CHAIN_STATE_set")
+    RN, A, H = R.RN, R.A, R.H
+    root, eng, reg = smk / "root", smk / "engine-ledger", smk / "smoke-registry.json"
+    RN.check_path(root, "w")
+    root.mkdir(parents=True)
+    eng.mkdir(parents=True)
+    clock_fn = now_fn or (lambda: time.time_ns() // 1_000_000)
+    now = int(clock_fn()) if start_ms is None else int(start_ms)
+    clock = (now // RN.MIN_MS + 2) * RN.MIN_MS
+    R.REG.register_all(a.frozen_sha, clock, str(reg), entries_halt_ms=None, now_ms=now, repo=R.repo, verify_sha=verify_sha, out=open(os.devnull, "w"))
+    guard = RN.Hv7Guard(root, day_cap_usd=a.cap_usd)
+    inner = model(guard) if callable(model) else (model if model is not None else R.A.CallerModel(guard))
+    smodel = SpendStopModel(inner, guard, root, a.cap_usd, guard.min_call_usd)
+    chain = chain if chain is not None else build_chain(R, root)
+    prefetch = getattr(chain, "prefetch", None)
+    # The runner's prefetch window (H:48-H:02) is phase-locked to the HOURLY t_d = H:02; this tool screens every 4 min, so outside the window the mint facts age past the
+    # card's 15 min limit (chain_stale / chain_none refusals, a certain FAIL on the 5% refusal rule). Unless --runner-window, the window start is moved to 0 for the run
+    # (module constant, restored in the finally; no frozen file is edited): the same gated class and 500 calls/h cap run, the prefetch is open on the 4-min grid.
+    saved_window_start = RN.PREFETCH_WINDOW_START_MS
+    window_mode = "runner_H48_H02" if (prefetch is None or getattr(a, "runner_window", False)) else "open_all_hour_smoke_override"
+    if window_mode != "runner_H48_H02":
+        RN.PREFETCH_WINDOW_START_MS = 0
+    if prefetch is not None:
+        prefetch.start()
+    tape = tape_dir or H.TAPE_ROOT
+    RN.check_path(tape, "r")
+    cfg = RN.Hv7Config(root=str(root), frozen_sha=a.frozen_sha, clock_start_ms=clock, live=live, entries_halt_ms=None)
+    engine = R.AP.ArenaEngine(str(eng), str(reg), cfg=RN.stack_config(a.feed_delay_slots), **(engine_kw or {}))
+    t_start = now - now % RN.TICK_MS
+    td_grid, last_te, t_end = period_plan(t_start, a.warmup_ms, a.period_ms, a.periods, RN.TICK_MS, RN.T_E_OFFSET_MS - RN.T_D_OFFSET_MS)
+    first_td = td_grid[0]
+    err = None
+    samples: list[int] = []
+    credits: Any = None
+    counters: dict[str, Any] = {}
+    run = None
+    try:
+        run = RN.Hv7Runner(cfg, R.ArenaState(tape, start_ms=0), engine, smodel, chain, guard, now_fn=now_fn)
+        run.sim_now = t_start
+        run.log_start()
+        td_set = set(td_grid)
+        last_watch = -WATCH_EVERY_MS
+        T = t_start
+        while T < t_end and not run._stop:
+            if live:
+                wait = (T + 1000 - run.now_fn()) / 1000.0
+                if wait > 0:
+                    sleep(wait)
+            run.sim_now = max(run.sim_now, T)
+            run.poll_to(T)
+            run.exits(T)                                    # the order tick() uses: exits before entries
+            if T in td_set:
+                run.screen(T)
+            elif run.pending is not None and T == run.pending["t_e"]:
+                run.enter(T)
+            if prefetch is not None and T < td_grid[-1]:
+                try:
+                    run.watch_tick(T)       # the runner's own method, called as its tick does (self-gated to WATCH_EVERY_MS, WATCH_MAX 200, runner scan and hot set)
+                except Exception as e:  # noqa: BLE001 - class name only; a starved watchlist shows as card refusals
+                    run._count("watch_error:" + type(e).__name__)
+            if prefetch is not None and T < td_grid[-1] and T - last_watch >= WATCH_EVERY_MS:
+                last_watch = T
+                try:
+                    samples.append(int(prefetch.stats().get("calls_last_hour", 0)))
+                except Exception:  # noqa: BLE001
+                    pass
+            T += RN.TICK_MS
+        run.sync_engine_counters()
+    except Exception as e:  # noqa: BLE001 - class name only
+        err = type(e).__name__
+    finally:
+        if run is not None:
+            try:
+                run.shutdown()
+            except Exception as e:  # noqa: BLE001
+                err = err or type(e).__name__
+            counters = dict(run.counters)
+            if run.hook_errors:
+                counters["hook_errors"] = len(run.hook_errors)
+        if prefetch is not None:
+            prefetch.stop()
+        RN.PREFETCH_WINDOW_START_MS = saved_window_start
+        rep_fn = getattr(chain, "credit_report", None)
+        if rep_fn is not None:
+            try:
+                credits = rep_fn()
+            except Exception:  # noqa: BLE001
+                credits = None
+    rep = report(root, counters=counters, run_error=err, window_ms=(first_td, last_te), cap_usd=a.cap_usd, spend_stop_hits=smodel.hits, chain_credits=credits,
+                 calls_h_samples=samples)
+    rep["frozen_sha"] = a.frozen_sha
+    rep["period_ms"] = a.period_ms
+    rep["periods_planned"] = a.periods
+    rep["compression"] = "driven_by_smoke_tool_via_public_screen_enter; frozen tick() not used; hourly code unchanged"
+    rep["prefetch_window"] = window_mode
+    rep["chain_source"] = "hv7_runner.live_chain_source (the runner path)" if prefetch is not None else "injected"
+    (smk / "report.json").write_text(render(rep))
+    return rep
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description="HV7 real-model smoke (paper; writes only under <HV7_ROOT>/smoke/<id>/).")
+    ap.add_argument("--repo", required=True, help="clean checkout at the final sha")
+    ap.add_argument("--smk", required=True, help="fresh dir <HV7_ROOT>/smoke/<id>")
+    ap.add_argument("--cap-usd", type=float, default=SPEND_CAP_USD)
+    ap.add_argument("--feed-delay-slots", type=int, required=True)
+    ap.add_argument("--periods", type=int, default=PERIODS)
+    ap.add_argument("--period-min", type=float, default=PERIOD_MS / 60_000)
+    ap.add_argument("--warmup-min", type=float, default=WARMUP_MS / 60_000)
+    ap.add_argument("--runner-window", action="store_true", help="keep the runner's H:48-H:02 prefetch window (screens outside it will see stale/no facts); default: window open for the whole hour")
+    ap.add_argument("--expect-sha", required=True, help="the registered final sha (40 hex)")
+    a = ap.parse_args(argv)
+    a.period_ms, a.warmup_ms = int(a.period_min * 60_000), int(a.warmup_min * 60_000)
+    a.frozen_sha = a.expect_sha.strip().lower()
+    if len(a.frozen_sha) != 40 or any(ch not in SHA_RE for ch in a.frozen_sha):
+        print("hv7_smoke: refused: --expect-sha must be 40 hex characters", file=sys.stderr)
+        return 2
+    try:
+        import subprocess  # noqa: PLC0415
+
+        head = subprocess.run(["git", "-C", a.repo, "rev-parse", "HEAD"], capture_output=True, text=True, timeout=60).stdout.strip()
+        dirty = subprocess.run(["git", "-C", a.repo, "status", "--porcelain"], capture_output=True, text=True, timeout=60).stdout.strip()
+        if head != a.frozen_sha or dirty:
+            raise Refused("repo_not_at_final_sha_or_dirty")
+        R = load_rules(a.repo)
+        rep = run_smoke(R, a)
+    except Refused as e:
+        print(f"hv7_smoke: refused: {e}", file=sys.stderr)
+        return 2
+    sys.stdout.write(render(rep))
+    return 0 if rep["verdict"] == "PASS" else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
