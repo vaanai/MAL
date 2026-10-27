@@ -39,19 +39,19 @@ D = 7 slots against the measured feed delay of 1.4815 s:
 | Tape sps (s) | D = 7 in seconds | x vs 1.4815 s | corrected D = ceil(1.4815 / sps) |
 | ---: | ---: | ---: | ---: |
 | 0.368 (Aug) | 2.576 | 1.74 | 5 |
-| 0.31 (early Sep, inferred low) | 2.170 | 1.46 | 5 |
+| 0.31 (early Sep, inferred low) | 2.170 | 1.46 (rests on the INFERRED 0.31 s slot time) | 5 |
 | 0.267 | 1.869 | 1.26 | 6 |
 | 0.2174 | 1.522 | 1.03 | 7 |
 
 Feed delay is a receive-time lag against block_time, so it is a seconds property. That it does not scale with the slot length is an assumption; this audit did not test it (that is p60's question).
-Total modelled entry latency (D + leg) against the real one (1.4815 + leg): at 0.368 s and a 1.9 s leg, 4.476 s vs 3.382 s, 1.32x; at a 1.3 s leg, 3.876 vs 2.782, 1.39x. **Below 1.5x for every period.** The D component alone reaches 1.5x only on August tape (and early September if the slot time is 0.32 s or above).
+Total modelled entry latency, including the leg's round-up to whole slots (k = ceil(leg / sps)), against the real one (1.4815 + leg). At 0.368 s: 1.9 s leg = 6 slots, so D + leg = 13 slots = 4.784 s vs 3.3815 s, **1.415x**; 1.3 s leg = 4 slots, 11 slots = 4.048 s vs 2.7815 s, **1.455x**. Both are under 1.5x. At 0.267 s the same calculation is lower. The D component alone reaches 1.5x only on August tape (and early September if the slot time is 0.32 s or above). The 1.4815 s feed figure is from the 2026-10-18 arena feed (public RPC), not the fast-0 listener; whether the fast-0 listener has the same lag is not established here.
 
 ### 3.1 EXP-012 family and the k-sweeps (P51-style, 2026-10-02 / 10-04 curves)
 
 - **Data period:** the 9-day pool, fast-pool 09-18T23..09-22, oracle-insample 09-22..25, oracle-live 09-25..27: the 0.267 s era. The holdout block 09-03..09-09 is 0.31 to 0.37 s.
-- **Charge:** k = 6, i.e. 1.60 s at 0.267 s. Real leg 1.3 to 1.9 s, so in range (0.84x to 1.23x). k = 8 is 2.14 s, k = 12 is 3.20 s.
-- **Sweep result under V:** pressure CI90 lower bound above 0 through k = 8 (0.00117 at k = 8) and below 0 from k = 12 (-0.00413); `exp012-latency-virtual-2026-10-04.md`.
-- **Verdict: not mis-charged.** The "edge gone by k = 12" statement is 3.2 s, about 1.7x our upper leg. It was not the cause of the EXP-012 outcome and the sweep already shows edge at 1.3 to 1.9 s. On the 09-03 holdout, k = 6 at 0.31 to 0.37 s is 1.9 to 2.2 s: at most 1.15x the upper leg. For Oct-9-and-later forward hours a fixed k = 6 is 1.30 s, **lenient** by up to 1.46x against 1.9 s. DEC-016's live-support check uses the measured k, so it is not affected.
+- **Charge:** k = 6, i.e. 1.60 s at 0.267 s. Real entry latency is feed delay + leg = 2.78 to 3.38 s, which is k = 11 to 13 at 0.267 s per slot. So k = 6 was a **lenient** charge (about 0.5x to 0.6x of real). k = 8 is 2.14 s, k = 12 is 3.20 s.
+- **Sweep result under V** (exploration, OOF-selected book, n = 881, not evidence): CI90 lower bounds above 0 through k = 8 but barely (flat 0.00064, pressure 0.00117 at k = 8); at k = 12 both are below 0 (flat -0.00479, pressure -0.00413). `exp012-latency-virtual-2026-10-04.md`. At the real k of 11 to 13 the sweep shows **no** edge.
+- **Verdict: the slot era does not mis-charge this line against it.** Its k = 6 was lenient, so a correct charge is harsher, not kinder. Not flagged (no harsh charge). On the 09-03 holdout, k = 6 at 0.31 to 0.37 s is 1.9 to 2.2 s, still below the real 2.78 to 3.38 s. For hours from 10-09 on, a fixed k = 6 is 1.30 s, **lenient** by 2.1x to 2.6x against the real total. DEC-016's live-support check uses the measured k, so it is not affected.
 
 ### 3.2 The 7-slot feed delay (arena kit and screens)
 
@@ -59,7 +59,7 @@ Total modelled entry latency (D + leg) against the real one (1.4815 + leg): at 0
 | --- | --- | --- | --- |
 | `hunt23-speed-1` | explore-0814, 0.368 s | sweep D in {2, 4, 7} x leg {0.5, 0.9, 1.3, 1.9} | Own sweep covers the corrected D = 4 or 5 (1.47 s, 1.84 s). Levels stay negative at the fastest point (flat -0.81%, -2.18%, -2.11%; E1 mean about -20%); no grid point has mean, ex-top-3 and ex-best-day above 0. **Charge was 1.74x harsh at D = 7 but the sweep shows no edge at the corrected k. Not flagged.** |
 | `p6-latency-reprice` | Aug/Sep blocks, D = 7 held, leg swept | 7 | D not varied. The leg sweep moves means by 0.0000 to +0.0008 SOL/trade; correcting D from 7 to 5 or 6 is a smaller or equal step than the 1.9 to 1.0 s leg change (about 0.6 to 1 s). Negative lines (REVIVE r2h/r6h/r12h at -0.0028 to -0.0037) are 3 to 10 times larger than that gain. **Possibly mis-charged, cannot flip. Not flagged.** FLOOR v2 is positive at every leg already. |
-| `hunt23-b-flow-B` | four blocks pooled (explore-0814 336 h, oracle-insample 79 h, fast-pool 73 h, oracle-live 65 h) | 7 | The 1.15 price guard refused 18% to 31% of attempts because the price had moved more than 15% by landing ("about 4.5 s"). At 0.368 s that is 2.58 + 1.9 = 4.48 s against a real 3.38 s. Gross medians -5.12%, -10.80%, -18.90% are far below what a 25% shorter delay would recover. No own sweep. **Possibly mis-charged, no edge shown. Not flagged.** |
+| `hunt23-b-flow-B` | four blocks pooled (explore-0814 336 h, oracle-insample 79 h, fast-pool 73 h, oracle-live 65 h) | 7 | The 1.15 price guard refused 18% to 31% of attempts because the price had moved more than 15% by landing ("about 4.5 s"). At 0.368 s that is 2.58 + 1.9 = 4.784 s (13 slots) against a real 3.3815 s (1.415x). Gross medians -5.12%, -10.80%, -18.90% are far below what a 25% shorter delay would recover. No own sweep. **Possibly mis-charged, no edge shown. Not flagged.** |
 | `hunt23-c-1` | explore-0814 | 7 | The 1.15 guard rejects 38% of SM1-h30 attempts. All 16 sub-tests fail with means -4.10% to -13.11%. No own sweep. **Possibly mis-charged, no edge shown. Not flagged.** |
 | `hunt23-w2-death-1`, `-2` | four blocks whole (553 h), D = 7, 1.9 s | 7 | Every cell fails mean, ex-top-3, ex-best-day and CI. No own sweep. **Possibly mis-charged (August share), no edge shown. Not flagged.** |
 | Oct-era arena lines (Q50, H5, DBC, HV4 deciding legs) | 0.2174 s tape | 7 | ceil(1.4815 / 0.2168) = 7. **Correct.** On 09-18 to 10-09 hours D = 7 is 1.26x harsh, below 1.5x. |
