@@ -316,7 +316,10 @@ def run_smoke(R: SimpleNamespace, a: argparse.Namespace, *, model: Any = None, c
     clock_fn = now_fn or (lambda: time.time_ns() // 1_000_000)
     now = int(clock_fn()) if start_ms is None else int(start_ms)
     clock = (now // RN.MIN_MS + 2) * RN.MIN_MS
-    R.REG.register_all(a.frozen_sha, clock, str(reg), entries_halt_ms=None, now_ms=now, repo=R.repo, verify_sha=verify_sha, out=open(os.devnull, "w"))
+    # Production registration: the real clock and the sha verified against origin/main (arena_paper.register_bot refuses now_ms / verify_sha=False unless MAL_ARENA_TEST=1,
+    # which the wrapper unsets; smoke job #1776 crashed here). `start_ms` / `verify_sha=False` are unit-test overrides and are passed on ONLY when asked for.
+    reg_kw: dict[str, Any] = {} if (start_ms is None and verify_sha) else {"now_ms": now, "verify_sha": verify_sha}
+    R.REG.register_all(a.frozen_sha, clock, str(reg), entries_halt_ms=None, repo=R.repo, out=open(os.devnull, "w"), **reg_kw)
     guard = RN.Hv7Guard(root, day_cap_usd=a.cap_usd)
     inner = model(guard) if callable(model) else (model if model is not None else R.A.CallerModel(guard))
     smodel = SpendStopModel(inner, guard, root, a.cap_usd, guard.min_call_usd)

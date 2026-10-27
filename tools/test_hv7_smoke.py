@@ -412,3 +412,45 @@ def test_smoke_obtains_its_chain_from_the_runners_live_chain_source_and_its_watc
     assert seen["started"] == 1 and seen["stopped"] == 1 and seen["watch"] >= 1       # watch fed by Hv7Runner.watch_tick
     assert rep["chain_source"].startswith("hv7_runner.live_chain_source")
     assert not hasattr(S, "_feed_watch")                                     # no private watch-set construction left
+
+
+# --------------------------------------------------------------------------------------------------------------------- production setup path (job #1776 crashed here)
+
+def _origin_clone(tmp_path):
+    """A local bare origin with one commit on main, and a clone of it: verify_sha_on_origin runs for real (git fetch of a local path, no network)."""
+    bare, work = tmp_path / "origin.git", tmp_path / "work"
+    git = ["git", "-c", "user.email=a@b", "-c", "user.name=t"]
+    subprocess.run([*git, "init", "-q", "--bare", "-b", "main", str(bare)], check=True)
+    subprocess.run([*git, "clone", "-q", str(bare), str(work)], check=True, capture_output=True)
+    (work / "f").write_text("1")
+    subprocess.run([*git, "-C", str(work), "add", "f"], check=True)
+    subprocess.run([*git, "-C", str(work), "commit", "-qm", "c"], check=True)
+    subprocess.run([*git, "-C", str(work), "push", "-q", "origin", "HEAD:main"], check=True, capture_output=True)
+    return work, subprocess.run([*git, "-C", str(work), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def test_production_setup_path_with_the_test_env_unset(tmp_path, monkeypatch):
+    """No now_ms, no verify_sha=False, MAL_ARENA_TEST unset (as the wrapper leaves it): the real clock and the real sha verification must work end to end."""
+    monkeypatch.delenv("MAL_ARENA_TEST", raising=False)
+    work, head = _origin_clone(tmp_path)
+    tape = tmp_path / "tape"
+    write_tape(tape, tape_rows())
+    parent = tmp_path / "smoke"
+    parent.mkdir()
+    R = rules()
+    R.repo = str(work)
+    a = args(parent / "s1", periods=2, frozen_sha=head)
+    rep = S.run_smoke(R, a, model=lambda g: A.StubModel(leader_first, guard=g, cost_usd=0.0, latency_ms=50), chain=FakeChain(), tape_dir=str(tape), live=False,
+                      sleep=lambda s: None, parent=str(parent), engine_kw={"sps_fn": lambda: 0.4}, period_ms=4 * MIN, anchor_h02=False)
+    reg = [json.loads(x) for x in (parent / "s1" / "smoke-registry.json").read_text().splitlines()]
+    lines = [r for r in reg if r.get("kind") == "register"]
+    assert len(lines) == 4 and all(r["time_source"] == "wall_clock" and r["verified_sha"] == head for r in lines)       # the production line, not a test_override
+    assert rep.get("run_error") is None and rep["periods"] == 2 and not rep["fail_reasons"], rep["fail_reasons"]     # no calls: the fixture tape is in the past, setup and loop are what is tested
+
+
+def test_production_refusal_is_active_for_the_test_overrides(tmp_path, monkeypatch):
+    monkeypatch.delenv("MAL_ARENA_TEST", raising=False)
+    parent = tmp_path / "smoke"
+    parent.mkdir()
+    with pytest.raises(AP.ArenaRefused, match="test-only overrides"):
+        S.run_smoke(rules(), args(parent / "s1", periods=2), model=object(), chain=FakeChain(), tape_dir=str(tmp_path), live=False, start_ms=T0 + HOUR, parent=str(parent))
