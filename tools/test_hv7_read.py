@@ -352,17 +352,64 @@ class Gate(unittest.TestCase):
         with self.assertRaises(X.Refused):
             gate(w, "L", [], periods(3, 20), T0 + 9 * DAY)
 
+    def book_ledger(self, w, per_day, days=6):
+        w.add_rows(arm_book("hv7.0-L", days, per_day, win))
+        return w.led.scan_bot("hv7.0-L")[0]
+
     @with_world
-    def test_decision_log_b_vs_ledger_natural_is_disclosed(self, w):
-        rows, ems = self.setup_book(w)
-        rows = w.led.scan_bot("hv7.0-L")[0]
-        # the decision log has an extra early entry that never reached the engine: B is the same here, but one with fewer ledger attempts moves it
-        drop = {f"hv7.0-L-0-{i}-a" for i in range(3)}
-        rows2 = [r for r in rows if r.get("position_id") not in drop]
-        r = gate(w, "L", rows2, ems, T0 + 8 * DAY)
-        self.assertTrue(r["boundary_difference"])
-        self.assertIn("differs", r["boundary_note"])
-        self.assertEqual(r["read_boundary_ms"], T0 + 5 * DAY)
+    def test_p9_ledger_has_extra_attempts_is_final_not_decidable(self, w):
+        rows = self.book_ledger(w, 20)  # ledger: 6 days, natural instant day 5
+        ems = [m for m in periods(6, 20) if m >= T0 + DAY]  # the decision log lacks day 0: its B is day 6
+        for now in (T0 + 8 * DAY, T0 + 40 * DAY):
+            r = gate(w, "L", rows, ems, now)
+            self.assertEqual(r["status"], "NOT_DECIDABLE")
+            self.assertIn("disagree", r["reasons"][0])
+            rc = r["attempt_reconciliation"]
+            self.assertEqual((rc["decision_log_attempts_before_b"], rc["ledger_attempts_before_b"], rc["lost_attempts"]), (100, 120, -20))
+            self.assertIn("multiplicity", r)
+
+    @with_world
+    def test_p10_ledger_never_reaches_its_instant(self, w):
+        rows = self.book_ledger(w, 10)  # half the attempts are in the ledger
+        ems = periods(6, 20)
+        r = gate(w, "L", rows, ems, T0 + 8 * DAY)
+        self.assertEqual(r["status"], "NOT_DECIDABLE")
+        self.assertEqual(r["attempt_reconciliation"]["lost_attempts"], 50)
+        self.assertIn("lost", r["reasons"][0])
+
+    @with_world
+    def test_p10b_small_loss_waits_then_final_not_decidable(self, w):
+        w.add_rows(arm_book("hv7.0-L", 6, 20, win))
+        rows = [r for r in w.led.scan_bot("hv7.0-L")[0] if not r.get("position_id", "").startswith(("hv7.0-L-1-0-", "hv7.0-L-1-1-", "hv7.0-L-1-2-"))]
+        ems = periods(6, 20)
+        with self.assertRaises(X.Refused):
+            gate(w, "L", rows, ems, T0 + 8 * DAY)
+        r = gate(w, "L", rows, ems, HALT + X.EXIT_WINDOW_MS)
+        self.assertEqual(r["status"], "NOT_DECIDABLE")
+        self.assertIn("never reached", r["reasons"][0])
+        self.assertEqual(r["attempt_reconciliation"]["lost_attempts"], 3)
+
+    @with_world
+    def test_lost_attempts_join_the_5pct_numerator(self, w):
+        rows = self.book_ledger(w, 20)
+        r = gate(w, "L", rows, periods(6, 21), T0 + 8 * DAY)  # 105 decided, 100 in the ledger: 5 lost = 4.76%
+        self.assertEqual(r["status"], "PASS")
+        self.assertEqual(r["attempt_reconciliation"]["lost_attempts"], 5)
+        r = gate(w, "L", rows, periods(6, 22), T0 + 8 * DAY)  # 110 decided: 10 lost = 9.09%
+        self.assertEqual(r["status"], "NOT_DECIDABLE")
+        self.assertTrue(any("lost" in m for m in r["reasons"]))
+        self.assertEqual(r["scorer_status_before_hv7_rules"], "PASS")
+        self.assertIn("not a verdict", r["cells_not_a_verdict"])
+
+    @with_world
+    def test_coverage_line_counts_hours_without_rows(self, w):
+        ms = [T0 + h * 3_600_000 + 60_000 for h in range(48) if h not in (5, 6, 7)]
+        w.declog("L", ms)
+        cv = X.coverage_check(w.dec, T0, T0 + 2 * DAY)
+        self.assertEqual(cv["window_hours"], 48)
+        self.assertEqual(cv["L"]["hours_with_no_rows"], 3)
+        self.assertEqual(cv["R"]["hours_with_no_rows"], 48)
+        self.assertTrue(cv["report_only"])
 
 
 def contrast_rows(days, per_day, l_pick, pnl, lag=0, extra_u_pools=("a", "b", "c", "d"), r_pool="c", s_pool="b"):
@@ -516,6 +563,28 @@ class Contrast(unittest.TestCase):
         with self.assertRaisesRegex(X.Refused, "U priced trades"):
             self.read(rows)
 
+    def test_missing_strand_rule_is_report_only(self):
+        rows = contrast_rows(10, 4, "a", PNL)
+        rows = {a: [dict(r, legs={"total": r["legs"]["total"]}, calc={k: dict(v, by_rule={"total": v["by_rule"]["total"]}) for k, v in r["calc"].items()}) if r["kind"] == "trade" else r
+                    for r in rs] for a, rs in rows.items()}
+        res = self.read(rows)
+        self.assertEqual(res["status"], "REPORT_ONLY")
+        self.assertIn("not priced under both strand rules", res["reasons"][0])
+
+    def test_bonding_row_is_report_only(self):
+        rows = self.build(10, "a")
+        rows["S"] = [dict(r, prog="pump_bonding") if r["kind"] == "trade" else r for r in rows["S"]]
+        self.assertEqual(self.read(rows)["status"], "REPORT_ONLY")
+
+    def test_stored_flat_leg_mismatch_refused(self):
+        rows = self.build(10, "a")
+        for r in rows["R"]:
+            if r["kind"] == "trade":
+                r["legs"]["sc"]["flat_1p9"]["net_lamports"] += 1.0
+                break
+        with self.assertRaisesRegex(X.Refused, "stored flat leg"):
+            self.read(rows)
+
     def test_missing_stamp_refused(self):
         rows = self.build(10, "a")
         for r in rows["L"]:
@@ -604,6 +673,25 @@ class Cli(unittest.TestCase):
             rc, out = run_cli(w, "gate", arm="S", now=now, record=rec)  # S is its own bot: allowed
             self.assertEqual(rc, 0, out)
             self.assertTrue((rec / "hv7_read_hv7.0-S_gate.json").exists())
+
+    def test_contrast_happy_path_end_to_end(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch("tools.arena_paper.shutil.disk_usage", lambda p: collections.namedtuple("U", "total used free")(1000, 500, 500)):
+            w = World(tmp)
+            self.with_roots(w)
+            for arm, rows in contrast_rows(10, 4, "a", PNL).items():
+                w.add_rows(rows)
+            ms4 = periods(10, 4)
+            w.declog("L", periods(10, 20), [{"kind": "rank", "ms": m - 45_000, "fallback": False, "order": ["a", "b", "c", "d"]} for m in ms4])
+            for arm in ("R", "S", "U"):
+                w.declog(arm, ms4)
+            rec = Path(tmp) / "reads"
+            rc, out = run_cli(w, "contrast", now=HALT + X.EXIT_WINDOW_MS, record=rec)
+            self.assertEqual(rc, 0, out)
+            res = json.loads(out)
+            self.assertEqual((res["status"], res["D"]), ("PASS", 10))
+            self.assertTrue((rec / "hv7_read_hv7.0-L_contrast.json").exists())
+            self.assertIn("coverage", res)
+            self.assertEqual(run_cli(w, "contrast", now=HALT + X.EXIT_WINDOW_MS, record=rec)[0], 1)
 
     def test_future_now_ms_refused_and_flags_are_test_only(self):
         with tempfile.TemporaryDirectory() as tmp:
