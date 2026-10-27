@@ -1,0 +1,4 @@
+Pools that passed the lab's code screen at {{TD}}: {{N}} cards, in a random display order.
+{{CARDS}}
+Call {{NONCE}}
+Reply with one JSON array of exactly {{N}} objects, best first: {"id":"<id>","why":"<=20 words naming a card field"}. Every id once, none added, no SKIP.
