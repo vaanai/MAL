@@ -1,13 +1,18 @@
-P64 creator-fee-claim veto, step 1 feasibility: KILL. Exploration, counts only, no pnl read, step 2 not run. No book has cleared the promotion gate.
+P64 creator-fee-claim veto, step 1 feasibility: NOT_DECIDABLE on capacity (status parked; the earlier KILL was withdrawn after QP review). Exploration, counts only, no pnl read, step 2 not run. No book has cleared the promotion gate.
 Seals: Aug/Sep exploration tape and the frozen 2,826 binding trades only. Public RPC, 0 Helius credits.
 
 1. Claim in tape? No. Tape has trades, creates, migrations only; trades carry creator_fee accrual, not claims.
 2. Causal recovery: getSignaturesForAddress(creator, before=getBlock anchor at entry slot, until=create sig) + getTransaction log match
    (Instruction: CollectCreatorFee / CollectCoinCreatorFee). 80 trades took ~70 min; 150 of 471 getTransaction calls failed; 16 of 80 trades hit the 15-fetch cap. Full pass ~1 day.
 3. Random sample seed 1, n=80 of 2,790 matched trades (36 of 2,826 have no create row; 1,856 creators):
-   prior 10 min 1/80 = 1.25%; 30 min 2/80 = 2.5%; 60 min 2/80 = 2.5% (Wilson 95% 0.69% to 8.7%). Lower bound; crude correction ~3.7%.
+   prior 10 min 1/80 = 1.25%; 30 min 2/80 = 2.5%; 60 min 2/80 = 2.5% (Wilson 95% 0.69% to 8.66%). Lower bound; crude correction ~3.7%.
    Claim lags 26.1 s and 1,036.6 s. 6 other trades had sweep/distribute/transfer only (not counted).
-4. KILL: below the 3% capacity line; a veto skipping <4% of entries would need skipped trades ~27 pp worse than the rest to move the mean +1.0 pp.
+4. NOT_DECIDABLE: the point estimate (2.5%) is below the 3% line but the interval and the lower-bound count do not exclude it; a veto skipping <4% of entries would need skipped trades ~27 pp worse than the rest to move the mean +1.0 pp.
    Caveats: n=80; CI upper end above 3%; shared-fee-config creators missed; entry time = mbt + trig_t + 1.9 s.
    Revive only with a decoded claim feed.
 Probe ran as a local background process, not a MiScusi job. Script: p64_probe_claims.py.
+
+The 3% line: "KILL if fewer than 3% are affected (no capacity)" comes from the manager's lane brief for P64 (manager17), not from a DEC or the constitution. It is a capacity floor chosen by the manager.
+Why not a KILL: Wilson 95% for 2/80 is 0.69% to 8.66%, which includes 3%; the count is a lower bound (32% of getTransaction calls failed, 16 of 80 trades hit the 15-fetch cap); the crude correction (~3.7%) is above 3%. A full causal pass costs about a day of public RPC.
+Revive: a decoded creator-fee claim feed, or a full pass over all 2,826 trades with retries and no cap. Only then pre-register the veto test (step 2 was not run).
+Deviation: the probe ran as a local background process, not a MiScusi job.

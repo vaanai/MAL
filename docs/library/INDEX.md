@@ -30,11 +30,11 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `live-canary` | 1 | 0 | 0 |
 | `forward-test` | 2 | 0 | 0 |
 | `explored-survivor-unconfirmed` | 9 | 0 | 0 |
-| `parked` | 9 | 0 | 0 |
+| `parked` | 9 | 1 | 0 |
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 44 | 20 | 1 |
 | `desk-read` | 1 | 48 | 0 |
-| `explored-no-survivor` | 41 | 8 | 1 |
+| `explored-no-survivor` | 41 | 7 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
 | **all** | 185 | 82 | 2 |
 
@@ -311,7 +311,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
-| `p64-creator-claim-veto` | Creator fee-claim veto on the H5/Q50 BOOST-floor entry | `explored-no-survivor` | Claims are not in the Aug/Sep tape. A causal public-RPC sample of 80 of 2,790 frozen trades found a claim in the prior 10 min for 1 (1.25%), and in the prior 30 and 60 min for 2 (2.5%; Wilson 95% 0.69% to 8.7%; lower bound, 32% of getTransaction calls failed). Below the 3% capacity line, so KILL at step 1; no outcome … |
+| `p64-creator-claim-veto` | Creator fee-claim veto on the H5/Q50 BOOST-floor entry | `parked` | NOT_DECIDABLE on capacity (not killed). Claims are not in the Aug/Sep tape. A causal public-RPC sample of 80 of 2,790 frozen trades found a claim in the prior 10 min for 1 (1.25%), and in the prior 30 and 60 min for 2 (2.5%; Wilson 95% 0.69% to 8.66%, which includes the 3% line; the count is a lower bound: 32% of … |
 
 ## Dead as frozen, and explored with no survivor
 

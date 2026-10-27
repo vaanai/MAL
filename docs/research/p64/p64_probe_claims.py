@@ -31,6 +31,7 @@ OTHER = ('Instruction: SweepCreatorFee', 'Instruction: DistributeCreatorFees', '
 
 def rpc(method, params, tries=6):
     body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+    last = {'error': 'rate-limited after retries'}
     for i in range(tries):
         try:
             q = urllib.request.Request(URL, body, {'content-type': 'application/json'})
