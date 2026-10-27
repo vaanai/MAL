@@ -32,13 +32,13 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `explored-survivor-unconfirmed` | 10 | 0 | 0 |
 | `parked` | 9 | 2 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 45 | 24 | 1 |
+| `untested` | 45 | 27 | 1 |
 | `desk-read` | 1 | 49 | 0 |
 | `explored-no-survivor` | 42 | 16 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 188 | 97 | 2 |
+| **all** | 188 | 100 | 2 |
 
-The file holds 537 rows: the 287 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 540 rows: the 290 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -404,6 +404,24 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `p93-haiku-text` | Haiku reads token name+symbol to predict PumpSwap pool survival (offline, Claude-plan Haiku) | `explored-no-survivor` | Kill line hit: CI lower bound <= 0.55 and AUC not above baseline. Haiku's reading of name and symbol carries no survival signal here; only 19 positives, so power is low. |
+
+### p95-callout (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p95-callout-follow` | Callout follower flow: enter right after a top caller's pump app callout, exit into paid follower … | `untested` | Untested. Judgment: P about 3%; if it works 20 callouts/day x 0.25 SOL x 3% = 0.15 SOL/day. Kill risks: no public timestamped callout feed (NOT_TESTABLE); followers too slow or too small to move a pool by the 2.5-4% taker floor; copy-type lines died on latency (P71). |
+
+### p95-synthetic (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p95-synthetic-completer` | Synthetic-migration completer: the completing v3 buy takes pool-opening tokens before migrate_v2 … | `untested` | Untested. Judgment: P about 2%; if it works 30 entries/day x 0.25 SOL x 3% = 0.225 SOL/day before competition for the completing slot. Cost about 2.5% (bonding 1.25% in, PumpSwap 1.20-1.25% out) plus drift. October BOOST pools are H5-family and sealed for pricing to 2026-11-14 (EXP-024 Look-2). |
+
+### p95-launchpad-token (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p95-launchpad-token-buyback` | Launchpad platform-token buyback cadence: x7pad X7 (hourly) and Paid PAID | `untested` | Untested. Judgment: P about 1%; 24 runs/day x 0.10 SOL x 1% = 0.024 SOL/day if it works. Mean run about $404 (reported); pool depth and pool fee unknown; mech-buyer-scout-1 found 0 of 43 buys implying a move >= 2.5%. MAL tape does not record DAMM v2. |
 
 ## Dead as frozen, and explored with no survivor
 
