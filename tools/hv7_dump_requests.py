@@ -175,7 +175,6 @@ def run_dump(days: list[str], drill_id: str, out: str, *, tape_dir: str | None =
         raise Refused("drill_id")
     out_dir = check_out(out)
     check_empty(out_dir)
-    head = repo_head() if head is None else head
     scratch = Path(scratch) if scratch is not None else DRILL_ROOT / drill_id
     if not is_drill_root(scratch):
         raise Refused("not_a_drill_root")
@@ -183,6 +182,7 @@ def run_dump(days: list[str], drill_id: str, out: str, *, tape_dir: str | None =
     scratch.mkdir(parents=True, exist_ok=True)
     if hour_scan(Path(tape_dir), days)["hours_present"] == 0:
         raise Refused("no_hour_files_for_the_days")
+    head = repo_head() if head is None else head
     return dump(days, out_dir, Path(tape_dir), scratch, head=head, half_hour=half_hour)
 
 

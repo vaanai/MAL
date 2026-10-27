@@ -131,3 +131,88 @@ def test_output_path_and_inputs_are_refused(tmp_path):
     with pytest.raises(DR.Refused):
         DR.parse_days("2026-10-20")
     assert DR.main(["--drill-id", "d1", "--out", str(tmp_path / "nope")]) == 2
+
+
+# ------------------------------------------------------------------------------------------------------------------------ one run, provenance, caps
+def test_a_non_empty_out_is_refused_and_a_second_run_cannot_leave_stale_files(tmp_path):
+    write_tape(tmp_path / "tape", tape_rows())
+    out = tmp_path / "rehearsal" / "o"
+    DR.dump([DAY], out, tmp_path / "tape", tmp_path / "s1", head="a" * 40)
+    before = sorted(p.name for p in out.rglob("*"))
+    with pytest.raises(DR.Refused, match="out_not_empty"):
+        DR.dump([DAY], out, tmp_path / "tape", tmp_path / "s2", head="a" * 40, start_ms=START, end_ms=T_D1 + 1)
+    assert sorted(p.name for p in out.rglob("*")) == before
+    empty = tmp_path / "rehearsal" / "e"
+    empty.mkdir()
+    DR.dump([DAY], empty, tmp_path / "tape", tmp_path / "s3", head="a" * 40, start_ms=START, end_ms=END)         # an existing EMPTY dir is fine
+    f = tmp_path / "rehearsal" / "file"
+    f.write_text("x")
+    with pytest.raises(DR.Refused, match="out_not_empty"):
+        DR.check_empty(f)
+    with pytest.raises(DR.Refused, match="out_not_empty"):
+        DR.run_dump([DAY], "d1", str(out), head="a" * 40)
+
+
+def test_manifest_and_stdout_carry_the_git_head_and_screen_counters(tmp_path):
+    write_tape(tmp_path / "tape", tape_rows())
+    out = tmp_path / "rehearsal" / "o"
+    res = DR.dump([DAY], out, tmp_path / "tape", tmp_path / "s", head="b" * 40)
+    man = json.loads((out / "manifest.json").read_text())
+    for d in (man, res):
+        assert d["git_head"] == "b" * 40 and set(d["screen_counters"]) == {"leakage_refused", "card_refused", "chain_none"} and d["half_hour"] is False
+    assert all(isinstance(v, int) for v in man["screen_counters"].values())
+
+
+def test_a_dirty_tree_is_refused_and_a_clean_one_gives_the_head(tmp_path):
+    import subprocess
+
+    g = lambda *a: subprocess.run(["git", *a], cwd=tmp_path / "r", check=True, capture_output=True, text=True).stdout.strip()  # noqa: E731
+    (tmp_path / "r").mkdir()
+    g("init", "-q")
+    g("config", "user.email", "t@t")
+    g("config", "user.name", "t")
+    (tmp_path / "r" / "f").write_text("1")
+    g("add", "f")
+    g("commit", "-q", "-m", "x")
+    assert DR.repo_head(tmp_path / "r") == g("rev-parse", "HEAD")
+    (tmp_path / "r" / "f").write_text("2")
+    with pytest.raises(DR.Refused, match="dirty_tree"):
+        DR.repo_head(tmp_path / "r")
+    with pytest.raises(DR.Refused, match="git_head_unavailable"):
+        DR.repo_head(tmp_path / "nogit")
+
+
+def test_the_call_cap_is_enforced_in_code(tmp_path, monkeypatch):
+    days3 = ["2026-10-21", "2026-10-22", "2026-10-23"]
+    DR.enforce_caps(72, 144, days3, False)
+    DR.enforce_caps(144, 288, days3, True)
+    DR.enforce_caps(10, 20, days3, False)
+    for sets, calls, half in ((73, 146, False), (72, 143, False), (72, 145, False), (71, 144, False), (145, 290, True), (144, 287, True), (73, 146, False)):
+        with pytest.raises(DR.Refused, match="call_cap"):
+            DR.enforce_caps(sets, calls, days3, half)
+    with pytest.raises(DR.Refused, match="call_cap"):
+        DR.enforce_caps(25, 50, [DAY], False)                      # 24/day
+    DR.enforce_caps(48, 96, [DAY], True)
+    write_tape(tmp_path / "tape", tape_rows())
+    monkeypatch.setattr(DR, "enforce_caps", lambda *a: (_ for _ in ()).throw(DR.Refused("call_cap")))
+    with pytest.raises(DR.Refused, match="call_cap"):
+        DR.dump([DAY], tmp_path / "rehearsal" / "capped", tmp_path / "tape", tmp_path / "s", head="a" * 40)
+    assert not (tmp_path / "rehearsal" / "capped").exists()      # refused before anything is written
+
+
+def test_half_hour_adds_the_32_instants_and_keeps_the_02_requests(tmp_path):
+    write_tape(tmp_path / "tape", tape_rows())
+    h = DR.collect_sets([DAY], tmp_path / "s1", tmp_path / "tape", start_ms=START, end_ms=END)
+    hh = DR.collect_sets([DAY], tmp_path / "s2", tmp_path / "tape", start_ms=START, end_ms=END, half_hour=True)
+    assert len(hh) > len(h) and {t for t, _ in h} <= {t for t, _ in hh}
+    assert {t % HOUR for t, _ in hh} <= {2 * MIN, 32 * MIN} and any(t % HOUR == 32 * MIN for t, _ in hh)
+    byt = dict(hh)
+    for t, cards in h:
+        a = [rr.request.request_sha256() for _, rr in DR.requests_for_set(t, cards)]
+        b = [rr.request.request_sha256() for _, rr in DR.requests_for_set(t, byt[t])]
+        assert a == b                                   # the :02 requests are byte-identical to the hourly run's
+    seqs = {DR.seq_for(t) for t, _ in hh}
+    assert len(seqs) == len(hh)
+    out = tmp_path / "rehearsal" / "hh"
+    res = DR.dump([DAY], out, tmp_path / "tape", tmp_path / "s3", head="c" * 40, start_ms=START, end_ms=END, half_hour=True)
+    assert res["half_hour"] is True and res["calls"] == 2 * res["sets"]
