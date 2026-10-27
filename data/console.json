@@ -1,8 +1,29 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-24T13:02:15Z",
+ "updated_utc": "2026-10-27T13:58:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "hv7-rehearsal-pass-1027",
+   "kind": "result",
+   "title": "HV7 Haiku rank rehearsal PASS (judged run, 0 API)",
+   "detail": "140/140 replies valid; slot-1 share 0.1214 (bar 0.25); A/B top-1 agreement 0.70 (bar 0.2080). The first run was void (agents scripted rankings). Caveat: Haiku mistyped pool ids in 5 of 28 groups and corrected itself; live calls cannot. Notebook n_jDI1FRScLVaBEA. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-27T13:58:00Z"
+  },
+  {
+   "id": "hv7-mem-fix-1027",
+   "kind": "decision",
+   "title": "HV7 runner memory fix merged (#1018, 687c77c6); proof replays running",
+   "detail": "QP OK + reviewer APPROVE at dd162fa7. Equivalence replay 10-21 at new vs old sha (#1739 → #1743), then 3-day replay #1744. Plan n_SJvHB7-DU2QY9w. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-27T13:58:00Z"
+  },
+  {
+   "id": "hv6-p0-1027",
+   "kind": "decision",
+   "title": "HV6 P0 count running (#1746); regime producer starts 10-28T00:15Z (#1748)",
+   "detail": "Fixed-first n_Ta4PHTESNu17-A, days 10-23..26. HV6 clock 10-30T00Z if smoke and pack reviews pass. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-27T13:58:00Z"
+  },
   {
    "id": "floor-entry-1024",
    "kind": "decision",
@@ -1803,6 +1824,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261027-hv7-rehearsal",
+   "from": "claude",
+   "kind": "result",
+   "text": "HV7 Haiku ranker rehearsal passed every bar on Claude-plan subagents (140/140 valid, agreement 0.70). HV7 registration pack is draft PR #1019 for the 11-01 clock, pending the memory-fix proof replays. HV6 P0 count running for the 10-30 clock. New idea lanes P70 (LP fee income), P71 (wallet copy persistence), P72 (sell-cluster absorb). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-27T13:58:00Z"
+  },
   {
    "id": "s-20261024-q50-dryrun",
    "from": "claude",
