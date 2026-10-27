@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 URL = 'https://api.mainnet-beta.solana.com'
-FETCH_CAP = 30      # getTransaction calls per trade
+FETCH_CAP = 15      # getTransaction calls per trade
 PAGE_CAP = 3
 W = '/data/mal/hunt-1008/h5-lossfilter'
 CLAIM = ('Instruction: CollectCreatorFee', 'Instruction: CollectCoinCreatorFee')
@@ -92,9 +92,10 @@ def main(mp, outp, n):
     if 'set' not in x:
         x['set'] = np.where(x.day < '2026-09-01', 'disc', 'conf')
     s = x.sample(int(n), random_state=1)
-    with ThreadPoolExecutor(4) as ex:
-        rows = list(ex.map(one, s.itertuples()))
-    json.dump(rows, open(outp, 'w'))
+    rows = []
+    with ThreadPoolExecutor(6) as ex:
+        for o in ex.map(one, s.itertuples()):
+            rows.append(o); json.dump(rows, open(outp, 'w')); print(len(rows), o['status'], o.get('n_win_sigs'), o.get('claim_lags_s'), flush=True)
     print('done', len(rows))
 
 
