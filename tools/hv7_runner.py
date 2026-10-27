@@ -307,6 +307,9 @@ class Hv7Config:
     phantom_filter: bool = True
     # Memory bound (Hv7Runner._housekeep), the same one HV6 runs: QuoteHistory forgets pools the state no longer holds and the engine trims print history to what
     # a later buy can read. Decision-neutral by construction and by test (tools/test_hv7_runner_mem.py). Off only in the test that proves it changes nothing.
+    # CAVEAT (same as HV6, deliberate): a pool revived after more than the state's 6 h eviction horizon (state.evict_idle_ms) idle has had its QuoteHistory swept, so
+    # its quote_sol_15m_ago / quote_sol_peak facts are computed from the quotes since the revival only. The state's own eviction already resets such a pool's age, so
+    # the sweep follows the state; it is not exact against a never-swept history. tools/test_hv7_runner_mem.py::test_revived_pool_after_sweep pins the behaviour.
     bound_memory: bool = True
     n: int = R.N_DEFAULT
     n_min: int = R.N_MIN
@@ -409,6 +412,15 @@ class Hv7Runner:
         if hasattr(self.engine, "trim_history"):
             self._count("engine_trims")
             self._count("engine_prints_trimmed", int(self.engine.trim_history() or 0))
+        self.sync_engine_counters()
+
+    def sync_engine_counters(self) -> None:
+        """Surface the engine's trim-safety counters in the runner counters (set, not added). A NONZERO rows_below_trim_floor or any refused_history_trimmed voids the
+        trim's equivalence (arena_paper.py trim note), so a run must show both at 0."""
+        ec = getattr(self.engine, "counters", None) or {}
+        with self._lock:
+            for k in ("rows_below_trim_floor", "refused_history_trimmed", "hist_trimmed_prints"):
+                self.counters["engine_" + k] = int(ec.get(k, 0))
 
     def poll_to(self, T: int) -> None:
         self.state.poll(until_ms=T - 1)
@@ -804,6 +816,7 @@ class Hv7Runner:
                     sleep(wait)
             self.tick(T)
             T += TICK_MS
+        self.sync_engine_counters()
 
     def request_stop(self, *_a: Any) -> None:
         self._stop = True
