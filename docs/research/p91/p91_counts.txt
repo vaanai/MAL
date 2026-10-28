@@ -1,0 +1,13 @@
+V-band pools 46534
+S0 pool-hours 21056 (cheap screen)
+S1 21056
+feature-undefined dropped 0
+hours with >=1 survivor 618; with >=3 617; candidate hours kept 617; candidates 4936
+survivors per hour: mean 34.07 median 34.0 p10 26.0 p90 42.0
+decision hours with tape 626; share with >=3 candidates 0.9856; mean candidates per hour (capped at 8) 7.887
+TEST window (td >= 2026-09-03): hours with tape 289; with >=3 candidates 287 (share 0.9931); mean capped-8 candidates 7.948
+MEMORY window: hours 337; with >=3 330
+pass-count quantiles (all hours with >=1): p10 26.0 p50 34.0 p90 42.0
+candidate band mix: {'B7': 4050, 'B5': 498, 'B6': 388}
+candidate mcap quantiles (SOL): {0.1: 78466.0, 0.5: 330861.0, 0.9: 3155706.0}
+hour rows (M minute-agg rows) min/median: 4174 148152; hours with fewer than 50k rows: [496307, 496787]
