@@ -266,7 +266,9 @@ def run_smoke(R: SimpleNamespace, a: argparse.Namespace, *, model: Any = None, c
         n_blocks = len(list(rdir.glob("block-*.json")))
     now = int(time.time() * 1000) if start_ms is None else start_ms
     clock = (now // MIN_MS + 2) * MIN_MS  # the next whole minute after the registration, plus one: register_bot refuses a clock before the registration instant
-    R.REG.register_all(a.frozen_sha, clock, str(reg), now_ms=now, repo=R.repo, out=open(os.devnull, "w"))
+    # Production registration: the real clock and the sha verified against origin/main (arena_paper.register_bot refuses now_ms unless MAL_ARENA_TEST=1, which the wrapper
+    # unsets; smoke job #1769 crashed here with 0 API calls). `now_ms` is passed ONLY when a unit test supplies start_ms.
+    R.REG.register_all(a.frozen_sha, clock, str(reg), repo=R.repo, out=open(os.devnull, "w"), **({} if start_ms is None else {"now_ms": now}))
     guard = A.BudgetGuard(root, global_cap_usd=a.cap_usd)
     model = model(guard) if callable(model) else (model if model is not None else A.CallerModel(guard))
     chain = chain if chain is not None else RN.live_chain_source(str(root))
