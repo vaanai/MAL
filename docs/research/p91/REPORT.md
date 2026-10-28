@@ -35,4 +35,4 @@ P86 tape `/data2/mal/p86/ps` = explore-0814 (2026-08-14T12 to 08-28T11), fresh-0
 
 ## Not measured
 
-Any out-of-sample or October hour; live fills; variant (b) as a book; the picked-hour tie sensitivity; whether a different universe or a non-forced pick helps. Memory excludes dead pools (stated PREREG limitation). Because the result is a KILL on exploration days, the winner's-curse and reuse caveats only make a positive less likely, not more; they do not rescue this lane.
+Any out-of-sample or October hour; live fills; variant (b) as a book; whether a different universe or a non-forced pick helps. Memory excludes dead pools (stated PREREG limitation). Because the result is a KILL on exploration days, the winner's-curse and reuse caveats only make a positive less likely, not more; they do not rescue this lane.
