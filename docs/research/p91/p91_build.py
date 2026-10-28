@@ -105,7 +105,7 @@ with open(COUNTS, "w") as fh:
     fh.write(f"hours with >=1 survivor {len(npass)}; with >=3 {int((npass>=3).sum())}; candidate hours kept {len(keep)}; candidates {len(cand)}\n")
     fh.write(f"survivors per hour: mean {npass.mean():.2f} median {npass.median()} p10 {npass.quantile(.1)} p90 {npass.quantile(.9)}\n")
     allh = hrs.hb.values; tdall = (allh + 1) * 3600 + 120
-    cnt = npass.reindex(allh).fillna(0).values
+    cnt = npass.reindex(tdall).fillna(0).values  # BUGFIX (P91 REPORT): npass is indexed by td (seconds); it was reindexed by hb, so every lookup missed and all counts were 0
     fh.write(f"decision hours with tape {len(allh)}; share with >=3 candidates {float((cnt >= 3).mean()):.4f}; mean candidates per hour (capped at 8) {float(np.minimum(cnt, 8).mean()):.3f}\n")
     import datetime
     t0 = int(datetime.datetime(2026, 9, 3, tzinfo=datetime.timezone.utc).timestamp())
