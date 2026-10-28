@@ -35,10 +35,10 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `untested` | 44 | 27 | 1 |
 | `desk-read` | 1 | 49 | 0 |
 | `explored-no-survivor` | 43 | 16 | 1 |
-| `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 188 | 101 | 2 |
+| `dead-as-frozen` | 76 | 5 | 0 |
+| **all** | 188 | 102 | 2 |
 
-The file holds 541 rows: the 291 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 542 rows: the 292 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -427,6 +427,12 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `p96-q50-forward-veto` | Avoid-bad-pools veto fit on Q50's forward trades, tested once on successor s1's trades | `untested` | Not run: waits for Q50's and s1's final reads, the EXP-024 Look-2 seal end (2026-11-14T00Z) and s1's end + 1 h, with s1's clock bound to the arena bots.json (earliest about 2026-11-20T01Z, later after a slip). The scored-rows export from the ledger is owed (its own PR). |
+
+### p91-knn (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p91-knn-lowfee` | kNN on the low-fee, active universe (bands B5-B7): P86 numeric kNN, top pick each hour, dead pools … | `dead-as-frozen` | Frozen PREREG kill line (mean <= 0 and book - U < +1 pp, all four cells D1/D2 x flat/pressure). The ranker has within-hour rank information, but its top pick is no better than a random pick and worse than the mean of all candidates; fee band is not the binding cost (273 of 287 picks were B7). |
 
 ## Dead as frozen, and explored with no survivor
 

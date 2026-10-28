@@ -1,0 +1,5 @@
+candidates in 4936; entered 4654 (priced 4440, dead 214); drops {'no_pre_print': 0, 'no_entry_print': 282, 'no_trigger': 0, 'no_exit_print': 0, 'bad_state': 0}
+dead reasons {'no_trigger': 158, 'no_exit_print': 56}; dead with no later print at all 0
+curve intercept -1.061218, mean p_fail (priced) 0.2890
+entry lag slots: median 16.0 p90 104.69999999999982; hold slots median 9982.0
+mean y (no fail, priced) -0.001313; mean pnl25 lamports -328277.2
