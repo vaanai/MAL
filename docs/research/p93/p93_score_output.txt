@@ -1,0 +1,18 @@
+cards 400 rated 400 labelled 400 used 400
+base rate 0.0475 n 400
+Haiku AUC 0.4476  CI90 [0.3384, 0.5499]
+decile  n  meanP  survive_rate
+1 40 8.0 0.075
+2 40 12.15 0.05
+3 40 16.3 0.05
+4 40 19.18 0.025
+5 40 21.08 0.075
+6 40 23.75 0.025
+7 40 25.05 0.05
+8 40 28.7 0.05
+9 40 30.38 0.075
+10 40 35.88 0.0
+distinct P values 29 mean P 22.045 sd P 8.202010424280136
+raw AUC -len(name) 0.46953999171156235  all-caps flag 0.5482801491918774  (all-caps share 0.6975 )
+baseline 5-fold OOF AUC 0.5184
+kill: CI lower <= 0.55: True  Haiku AUC <= baseline: True  -> VERDICT KILL

@@ -1,8 +1,29 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-27T13:58:00Z",
+ "updated_utc": "2026-10-27T18:30:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "synthesis-1027",
+   "kind": "result",
+   "title": "10-27 synthesis (P94, #1051): ~20 ideas tested on past data, none profitable after fees",
+   "detail": "Main obstacle is cost (2.5–4% per round trip on small/mid coins). A numeric kNN ranker has real skill (rank IC 0.27814) but its universe loses 7.493 pp/trade (survivors only) to 14.267–15.261 pp (dead pools counted). Haiku showed no skill: rank IC 0.02723 on numeric cards (kNN 0.29583) and AUC 0.4476 on coin names (no better than a coin flip; 19 of 400 survived). Source: docs/research/p94/SYNTHESIS.md, p92, p93. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-27T18:30:00Z"
+  },
+  {
+   "id": "q50-mayhem-1027",
+   "kind": "decision",
+   "title": "Q50 go-live blocker fixed: mayhem-pool fee recipient (#1027); N4 pre-check PASS at a68338a1",
+   "detail": "Source: PR #1027 and DEC/DEC-033 Amendment 4 (on main): the builder used protocol_fee_recipients[1] on every pool; on mayhem pools PumpSwap requires a reserved recipient (N4 #1750 got error 6013 InvalidProtocolFeeRecipient on a mayhem pool). N4 pre-check job #1758 at a68338a1: PASS on both picks. Binding N4 at X, X-time steps, Helm re-pin install and the owner's line are still owed. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-27T18:30:00Z"
+  },
+  {
+   "id": "hv6-smoke-armed-1027",
+   "kind": "decision",
+   "title": "HV6 P0 verdict registration_ok; smoke armed for 10-28 00:40Z (gate #1768 → #1769 → #1770)",
+   "detail": "Sources: MiScusi job #1746 (HV6 P0 count, exit 0); its output file /data/mal/arena/haiku-v6/p0/p0-8cd8fe54a3-20261027T131424Z.jsonl (sha256 c2d08aa2f1c6700b7b5fa9bf1e2da8bd16b70c04ee689cb5ad7b8840cb274270) has a verdict row as its second-to-last line (the last line is a sha256 footer): registration_ok true, floor_pass_all_arms true, gap_rule_ok true (notebook n_4ffIm1diGryDOg). Smoke chain per pinned entry n_4Kfsh-nYw6G_SQ: MiScusi jobs #1768 gate, #1769 runner smoke, #1770 reviewer smoke. Registration targeted by 10-29T12Z for T0 10-30. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-27T18:30:00Z"
+  },
   {
    "id": "hv7-rehearsal-pass-1027",
    "kind": "result",
@@ -1824,6 +1845,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261027-synthesis",
+   "from": "claude",
+   "kind": "result",
+   "text": "10-27: about 20 new ideas tested on past data; none made money after fees (cost is the main obstacle). A real kNN ranking signal (IC 0.27814) was found but is not enough. Haiku showed no ranking skill (IC 0.02723) or text skill (AUC 0.4476). Q50 mayhem fee-recipient bug fixed (#1027); HV6 smoke runs tonight for a 10-30 clock; HV7 11-01 clock at risk (live-path fixes in review). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-27T18:30:00Z"
+  },
   {
    "id": "s-20261027-hv7-rehearsal",
    "from": "claude",

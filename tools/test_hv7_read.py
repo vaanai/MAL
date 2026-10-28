@@ -64,6 +64,27 @@ def trade_row(bot, pid, ms, pool, pnl, stake, lag=0, rules=("total", "sc")):
             "state_src": "tape", "stack": dict(STACK), "legs": legs, "calc": calc, "pool": pool, "v_src": {"entry": "row", "exit": "row", "span": {"row": 5}}}
 
 
+def default_orders(arm, ms_list, pools="abcd"):
+    """Decision-log order ids for bare instants, shaped like arm_book position ids: the n-th entry at one instant is pool pools[n]."""
+    seen = collections.Counter()
+    out = []
+    for m in ms_list:
+        d, rem = divmod(m - T0, DAY)
+        i = rem // 180_000 - 1
+        out.append((m, f"hv7.0-{arm}-{d}-{i}-{pools[seen[m]]}"))
+        seen[m] += 1
+    return out
+
+
+def ledger_orders(rows, ms_list, arm):
+    """Order ids for explicit instants: each takes the next ledger position id stamped at that instant, else a synthetic id the ledger does not hold."""
+    avail = collections.defaultdict(list)
+    for r in rows:
+        if r["kind"] in ("open", "refused"):
+            avail[r["stamp_ms"]["entry"]].append(r["position_id"])
+    return [(m, avail[m].pop(0) if avail[m] else f"declog-only-{arm}-{m}") for m in ms_list]
+
+
 def periods(days, per_day):
     return [T0 + d * DAY + (i + 1) * 180_000 for d in range(days) for i in range(per_day)]
 
@@ -103,12 +124,13 @@ class World:
         for r in rows:
             self.led.append(r)
 
-    def declog(self, arm, ms_list, ranks=()):
+    def declog(self, arm, ms_list, ranks=(), pools="abcd"):
         d = self.dec / "decisions" / arm
         d.mkdir(parents=True, exist_ok=True)
         by_day = collections.defaultdict(list)
-        for m in ms_list:
-            by_day[X.utc_day(m)].append({"kind": "entry", "ms": m})
+        orders = default_orders(arm, ms_list, pools) if all(isinstance(m, int) for m in ms_list) else list(ms_list)
+        for m, oid in orders:
+            by_day[X.utc_day(m)].append({"kind": "entry", "ms": m, "order_id": oid})
         for r in ranks:
             by_day[X.utc_day(r["ms"])].append(r)
         for day, rs in by_day.items():
@@ -134,7 +156,10 @@ def gate(w, arm, rows, ems, now, **kw):
     kw.setdefault("e1", E1_OK)
     kw.setdefault("n_books", 30)
     regn = X.load_registration(w.reg)
-    return X.gate_read(arm, now_ms=now, regn=regn, rows=rows, entry_decisions_ms=ems, **kw)
+    orders = kw.pop("entry_orders", None)
+    if orders is None:
+        orders = default_orders(arm, ems)
+    return X.gate_read(arm, now_ms=now, regn=regn, rows=rows, entry_decisions_ms=[m for m, _ in orders], entry_orders=orders, **kw)
 
 
 class SignFlip(unittest.TestCase):
@@ -363,7 +388,7 @@ class Gate(unittest.TestCase):
         for now in (T0 + 8 * DAY, T0 + 40 * DAY):
             r = gate(w, "L", rows, ems, now)
             self.assertEqual(r["status"], "NOT_DECIDABLE")
-            self.assertIn("disagree", r["reasons"][0])
+            self.assertIn("never ordered", r["reasons"][0])
             rc = r["attempt_reconciliation"]
             self.assertEqual((rc["decision_log_attempts_before_b"], rc["ledger_attempts_before_b"], rc["lost_attempts"]), (100, 120, 0))
             self.assertEqual(rc["extra_ledger_attempts"], 20)
@@ -422,13 +447,90 @@ class Gate(unittest.TestCase):
         self.assertTrue(cv["report_only"])
 
     @with_world
+    def test_gate_swapped_pools_same_count_is_final_not_decidable(self, w):
+        # QP round 4: the right count, the wrong identity. The log ordered pool d at every instant, the ledger holds pool a at the same instants.
+        rows = self.book_ledger(w, 20)
+        orders = [(m, f"hv7.0-L-{(m - T0) // DAY}-{((m - T0) % DAY) // 180_000 - 1}-d") for m in periods(6, 20)]
+        for now in (T0 + 8 * DAY, T0 + 40 * DAY):
+            r = gate(w, "L", rows, [m for m, _ in orders], now, entry_orders=orders)
+            self.assertEqual(r["status"], "NOT_DECIDABLE")
+            self.assertIn("never ordered", r["reasons"][0])
+            rc = r["attempt_reconciliation"]
+            self.assertEqual((rc["decision_log_attempts_before_b"], rc["ledger_attempts_before_b"], rc["lost_attempts"], rc["foreign_ledger_positions"]), (100, 100, 100, 100))
+
+    @with_world
+    def test_gate_phantom_instants_same_count_is_final_not_decidable(self, w):
+        # the ledger holds attempts at instants (+90 s) the decision log never logged; the counts are equal
+        rows = self.book_ledger(w, 20)
+        orders = [(m + 90_000, f"phantom-{m}") for m in periods(6, 20)]
+        r = gate(w, "L", rows, [m for m, _ in orders], T0 + 8 * DAY, entry_orders=orders)
+        self.assertEqual(r["status"], "NOT_DECIDABLE")
+        self.assertTrue(any("never ordered" in m for m in r["reasons"]))
+
+    @with_world
+    def test_gate_lost_and_foreign_both_printed(self, w):
+        rows = self.book_ledger(w, 20)
+        orders = default_orders("L", periods(6, 21))  # 5 logged-only ids (lost) and none foreign
+        r = gate(w, "L", rows, [m for m, _ in orders], T0 + 8 * DAY, entry_orders=orders)
+        rc = r["attempt_reconciliation"]
+        self.assertEqual((rc["lost_attempts"], rc["foreign_ledger_positions"], rc["extra_ledger_attempts"]), (5, 0, 0))
+
+    @with_world
+    def test_gate_requires_order_ids_that_match_the_instants(self, w):
+        rows = self.book_ledger(w, 20)
+        with self.assertRaises(X.Refused):
+            X.gate_read("L", now_ms=T0 + 8 * DAY, regn=X.load_registration(w.reg), rows=rows, entry_decisions_ms=periods(6, 20), e1=E1_OK, n_books=30)
+        with self.assertRaises(X.Refused):
+            X.gate_read("L", now_ms=T0 + 8 * DAY, regn=X.load_registration(w.reg), rows=rows, entry_decisions_ms=periods(6, 20), e1=E1_OK, n_books=30,
+                        entry_orders=default_orders("L", periods(6, 19)))
+
+    @with_world
+    def test_gate_trade_rows_only_at_another_stake_count_as_lost(self, w):
+        # QP #1044 (p3 shape): ids all match, but k positions keep trade rows at stakes 0.5/1.0 only; the scorer treats them as closed, the deciding book drops them
+        rows = self.book_ledger(w, 20)
+        gone = {f"hv7.0-L-{d}-{i}-a" for d in range(3) for i in range(2)}
+
+        def drop(k):
+            ids = set(sorted(gone)[:k])
+            return [r for r in rows if not (r.get("kind") == "trade" and r["position_id"] in ids and abs(r["stake_sol"] - 0.25) < 1e-12)]
+        r5 = gate(w, "L", drop(5), periods(6, 20), T0 + 8 * DAY)
+        rc = r5["attempt_reconciliation"]
+        self.assertEqual((rc["lost_attempts"], rc["foreign_ledger_positions"], rc["no_deciding_stake_row"]), (5, 0, 5))
+        self.assertEqual(r5["status"], "NOT_DECIDABLE")  # QP p3 exactly: 5 moved (4.545%) no longer reads PASS; an integrity failure, not only the 5% cap
+        self.assertTrue(any("closing rows missing at the deciding stake" in m for m in r5["reasons"]))
+        r6 = gate(w, "L", drop(6), periods(6, 20), T0 + 8 * DAY)
+        self.assertEqual(r6["status"], "NOT_DECIDABLE")
+        self.assertTrue(any("lost" in m for m in r6["reasons"]))
+        self.assertEqual(r6["attempt_reconciliation"]["lost_attempts"], 6)
+        self.assertEqual(gate(w, "L", rows, periods(6, 20), T0 + 8 * DAY)["attempt_reconciliation"]["no_deciding_stake_row"], 0)
+
+    @with_world
+    def test_gate_row_without_stamp_ms_entry_refused_then_final_not_decidable(self, w):
+        rows = self.book_ledger(w, 20)
+        rows = [dict(r) for r in rows]
+        for r in rows:
+            if r.get("kind") == "open":
+                r["stamp_ms"] = {"entry": None, "exit": None}
+                break
+        with self.assertRaises(X.Refused):
+            gate(w, "L", rows, periods(6, 20), T0 + 8 * DAY)
+        r = gate(w, "L", rows, periods(6, 20), HALT + X.EXIT_WINDOW_MS)
+        self.assertEqual(r["status"], "NOT_DECIDABLE")
+        self.assertTrue(any("stamp_ms.entry" in m for m in r["reasons"]))
+
+    @with_world
     def test_worst_case_line_when_attempts_are_lost(self, w):
         rows = self.book_ledger(w, 20)
         r = gate(w, "L", rows, periods(6, 21), T0 + 8 * DAY)  # 5 lost, still reads
         wc = r["lost_attempts_worst_case"]
         self.assertEqual((wc["lost"], wc["report_only"]), (5, True))
         self.assertEqual(wc["cells"]["flat_1p9_sc"]["n"], 105)
-        self.assertIn("pass_survives", wc)
+        self.assertIn("per_trade_cells_survive", wc)
+        self.assertNotIn("pass_survives", wc)
+        self.assertFalse(wc["day_rule_imputed"])
+        self.assertAlmostEqual(wc["imputed_pnl_sol_each"], -0.25 - 2 * SEND / 1e9)  # -stake - round-trip fees (2 x send; deciding rent 0)
+        self.assertIn("NOT imputed", wc["note"])
+        self.assertIn("0.0015 SOL", wc["note"])
         r0 = gate(w, "L", rows, periods(6, 20), T0 + 8 * DAY)
         self.assertNotIn("lost_attempts_worst_case", r0)
 
@@ -455,8 +557,12 @@ class Contrast(unittest.TestCase):
     def read(self, rows, days=10, now=None, fb=FB_OK, e1=E1_OK, ranks=(), ems=None, **kw):
         h = T0 + days * DAY
         if ems is None:  # by default the decision log agrees with the ledger
-            ems = {a: [r["stamp_ms"]["entry"] for r in rs if r["kind"] in ("open", "refused")] for a, rs in rows.items()}
+            ords = {a: [(r["stamp_ms"]["entry"], r["position_id"]) for r in rs if r["kind"] in ("open", "refused")] for a, rs in rows.items()}
+            ems = {a: [m for m, _ in o] for a, o in ords.items()}
+            kw.setdefault("entry_orders_by_arm", ords)
         kw.setdefault("entry_ms_by_arm", ems)
+        if "entry_orders_by_arm" not in kw:
+            kw["entry_orders_by_arm"] = {a: ledger_orders(rows[a], ms, a) for a, ms in kw["entry_ms_by_arm"].items()}
         return X.contrast_read(now_ms=h + X.EXIT_WINDOW_MS if now is None else now, regn=self.regn(days), rows_by_arm=rows, l_rank_rows=ranks, fallback=fb, e1=e1,
                                n_books=30, **kw)
 
@@ -624,7 +730,7 @@ class Contrast(unittest.TestCase):
         ems["S"] = ems["S"][:-3]
         res = self.read(rows, ems=ems)
         self.assertEqual(res["status"], "NOT_DECIDABLE")
-        self.assertTrue(any("disagree" in m for m in res["reasons"]))
+        self.assertTrue(any("never ordered" in m for m in res["reasons"]))
         self.assertEqual(res["integrity"]["S"]["extra_ledger_attempts"], 3)
 
     def test_contrast_needs_decision_log_instants(self):
@@ -653,13 +759,68 @@ class Contrast(unittest.TestCase):
         with self.assertRaisesRegex(X.Refused, "stored flat leg"):
             self.read(rows)
 
+    def test_contrast_trade_rows_only_at_another_stake_count_as_lost(self):
+        rows = self.build(10, "a")
+        for r in rows["L"]:  # 3 of L's 40 positions: the deciding-stake trade row moved to stake 0.5
+            if r["kind"] == "trade" and r["position_id"] in ("hv7.0-L-0-0-a", "hv7.0-L-1-0-a", "hv7.0-L-2-0-a"):
+                r["stake_sol"] = 0.5
+        res = self.read(rows)
+        il = res["integrity"]["L"]
+        self.assertEqual((il["lost_attempts"], il["no_deciding_stake_row"], il["foreign_ledger_positions"]), (3, 3, 0))
+        self.assertEqual(res["status"], "NOT_DECIDABLE")
+        self.assertTrue(any("closing rows missing at the deciding stake" in m for m in res["reasons"]))
+
+    def test_contrast_one_moved_row_in_any_arm_is_final(self):
+        for arm in ("L", "R", "S", "U"):  # one position of 40 (2.5%, under the 5% cap) still fails the integrity check
+            rows = self.build(10, "a")
+            for r in rows[arm]:
+                if r["kind"] == "trade":
+                    r["stake_sol"] = 0.5
+                    break
+            res = self.read(rows)
+            self.assertEqual(res["status"], "NOT_DECIDABLE", arm)
+            self.assertTrue(any("closing rows missing at the deciding stake" in m for m in res["reasons"]), arm)
+
+    def test_contrast_swapped_pools_same_count_is_final(self):
+        # QP round 4 R4-5(a): L's decision log says pool d (the worst), the ledger holds pool a at the same instants
+        rows = self.build(10, "a")
+        ords = {a: [(r["stamp_ms"]["entry"], r["position_id"]) for r in rs if r["kind"] == "open"] for a, rs in rows.items()}
+        ords["L"] = [(m, pid[:-1] + "d") for m, pid in ords["L"]]
+        res = self.read(rows, entry_orders_by_arm=ords, ems={a: [m for m, _ in o] for a, o in ords.items()})
+        self.assertEqual(res["status"], "NOT_DECIDABLE")
+        self.assertTrue(any("never ordered" in m for m in res["reasons"]))
+        il = res["integrity"]["L"]
+        self.assertEqual((il["lost_attempts"], il["foreign_ledger_positions"], il["ledger_attempts"]), (40, 40, 40))
+
+    def test_contrast_phantom_instants_same_count_is_final(self):
+        # QP round 4 R4-5(b): 10 of L's ledger positions sit at instants the decision log never logged and replace 10 logged ones
+        rows = self.build(10, "a")
+        ords = {a: [(r["stamp_ms"]["entry"], r["position_id"]) for r in rs if r["kind"] == "open"] for a, rs in rows.items()}
+        keep = [r for r in rows["L"] if not r.get("position_id", "").endswith("-3-a")]
+        for d in range(10):
+            ms = T0 + d * DAY + 4 * 180_000 + 90_000
+            pid = f"hv7.0-L-{d}-x-a"
+            keep += [open_row("hv7.0-L", pid, ms), trade_row("hv7.0-L", pid, ms, "a", PNL["a"], 0.25)]
+        res = self.read(dict(rows, L=keep), entry_orders_by_arm=ords, ems={a: [m for m, _ in o] for a, o in ords.items()})
+        self.assertEqual(res["status"], "NOT_DECIDABLE")
+        self.assertTrue(any("never ordered" in m for m in res["reasons"]))
+        self.assertEqual(res["integrity"]["L"]["foreign_ledger_positions"], 10)
+        self.assertEqual(res["integrity"]["L"]["lost_attempts"], 10)
+
+    def test_contrast_requires_order_ids(self):
+        rows = self.build(10, "a")
+        ems = {a: [r["stamp_ms"]["entry"] for r in rs if r["kind"] == "open"] for a, rs in rows.items()}
+        with self.assertRaises(X.Refused):
+            X.contrast_read(now_ms=HALT + X.EXIT_WINDOW_MS, regn=self.regn(), rows_by_arm=rows, l_rank_rows=(), fallback=FB_OK, e1=E1_OK, n_books=30, entry_ms_by_arm=ems)
+
     def test_missing_stamp_refused(self):
         rows = self.build(10, "a")
         ems = {a: [r["stamp_ms"]["entry"] for r in rs if r["kind"] == "open"] for a, rs in rows.items()}
+        ords = {a: ledger_orders(rows[a], ems[a], a) for a in rows}
         for r in rows["L"]:
             r.pop("stamp_ms", None)
         with self.assertRaises(X.Refused):
-            self.read(rows, ems=ems)
+            self.read(rows, ems=ems, entry_orders_by_arm=ords)
 
 
 class Files(unittest.TestCase):
@@ -751,8 +912,8 @@ class Cli(unittest.TestCase):
                 w.add_rows(rows)
             ms4 = periods(10, 12)
             w.declog("L", ms4, [{"kind": "rank", "ms": m - 45_000, "fallback": False, "order": ["a", "b", "c", "d"]} for m in ms4])
-            for arm, k in (("R", 1), ("S", 1), ("U", 4)):  # U enters every one of the four screened pools
-                w.declog(arm, ms4 * k)
+            for arm, k, pools in (("R", 1, "c"), ("S", 1, "b"), ("U", 4, "abcd")):  # U enters every one of the four screened pools
+                w.declog(arm, ms4 * k, pools=pools)
             rec = Path(tmp) / "reads"
             rc, out = run_cli(w, "contrast", now=HALT + X.EXIT_WINDOW_MS, record=rec)
             self.assertEqual(rc, 0, out)

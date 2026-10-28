@@ -124,8 +124,8 @@ def gate(bot_id: str, ledger_root: str | os.PathLike, read_instant_ms: int | Non
     if not rec.is_file():
         raise Refused(f"{bot_id}: no recorded read instant ({fname} absent): the score has not reached it, nothing is opened")
     doc = json.loads(rec.read_text())
-    if fname == B.qi.INSTANT_FILE:
-        if doc.get("rule") != B.qi.RULE or doc.get("bot_id") != bot_id:
+    if fname in B.AM11_FILES:  # Q50's q50-read-instant.json and s1's q50s1-read-instant.json
+        if doc.get("rule") != B.AM11_FILES[fname] or doc.get("bot_id") != bot_id:
             raise Refused(f"{bot_id}: {fname} is not an Amendment 11 record of this book")
         if doc.get("status") == B.qi.ENDED:
             raise Ended(f"{bot_id}: ENDED NOT_DECIDABLE at the end-seal (DEC-031 Amendment 11 item 2): no read instant, nothing is opened", doc)

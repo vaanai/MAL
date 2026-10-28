@@ -30,15 +30,15 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `live-canary` | 1 | 0 | 0 |
 | `forward-test` | 2 | 0 | 0 |
 | `explored-survivor-unconfirmed` | 10 | 0 | 0 |
-| `parked` | 9 | 2 | 0 |
+| `parked` | 9 | 3 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 45 | 23 | 1 |
+| `untested` | 44 | 27 | 1 |
 | `desk-read` | 1 | 49 | 0 |
-| `explored-no-survivor` | 42 | 13 | 1 |
+| `explored-no-survivor` | 43 | 16 | 1 |
 | `dead-as-frozen` | 76 | 4 | 0 |
-| **all** | 188 | 93 | 2 |
+| **all** | 188 | 101 | 2 |
 
-The file holds 533 rows: the 283 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 541 rows: the 291 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -123,14 +123,13 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `p20-listing-announce` | Exchange-listing announcement long (off-chain notice, on-chain buy within 2-4 s) | P20 fresh ideas (2026-10-24) | Public announcement archives (Binance, Upbit, Bithumb, Coinbase, Robinhood, Bybit, OKX) and GeckoTerminal minute OHLCV; 0 Helius credits; no ledger block. |
 | `p20-xstock-offhours` | Tokenized-stock (xStocks) off-hours fair-value reversion on Solana AMMs (not a meme coin) | P20 fresh ideas (2026-10-24) | Owner's say first; then xStock pool histories (~50-150k credits) and minute futures data; no ledger block. |
 | `p25-alpenglow-send-cost` | Re-cost the shelf after 200 ms slots and Alpenglow (send-fee overlay, not a book) | P25 change-capture (2026-10-24) | 24 h of hourly public getRecentPrioritizationFees on pump/PumpSwap/DBC hot accounts, forward from a declared start; 0 Helius; no tape hour. |
-| `p25-pump-order-keeper-absorb` | Absorb tagged pump app stop-loss sell clusters | P25 change-capture (2026-10-24) | Write a new frozen pricing DECLARE (docs/research/p29-keeper-absorb/ PR body has the rule): entry lag L=2 slots primary and 12, cluster = >=3 DISTINCT fill signatures, in-sample and out-of-sample days fixed before any return, fees and PumpSwap V in the quote, promotion gate. |
 | `p25-app-fee-retail-tag` | App-flow label from the 2026-10-17 pump app platform fee | P25 change-capture (2026-10-24) | Desk + public getTransaction sample of 2,000 pump txs on one declared closed day of new data; 0 Helius; any book is an arena book only (post-10-16 pump hours are walk-2 information). |
 | `p25-pump-bridge-lead` | Pump Bridge cross-chain intent seen before the Solana fill | P25 change-capture (2026-10-24) | Desk + public EVM/Solana RPC to find the bridge contracts and solver; one declared day of forward logging; 0 Helius; any pump book is arena-only. |
 | `p25-quote-drift-completion` | Custom-pair curves whose SOL cost to complete falls with their quote asset | P25 change-capture (2026-10-24) | Counts on fast [09-09T12, 09-15T12) with public external quote prices; pump-coin parents only via the oct-pregrad-d1 role and only while the parent is on its curve (graduated-parent prices are D2/D3, sealed); 0 Helius. |
 | `p25-t22-fee-epoch-clock` | Token-2022 transfer-fee cut public epochs before it binds (DBC transfer-fee mints) | P25 change-capture (2026-10-24) | Public getMultipleAccounts / getSignaturesForAddress on the 42 configs' mints (0 Helius); priced looks only on DBC [10-17, 10-24) as disclosed exploration with QP's OK (not D1); nothing >= 2026-10-25T00Z for DBC/DAMM before the m10 read; a forward recorder after 2026-11-01T00:10Z. |
 | `p25-prestock-quote-band` | PreStock quote-leg dislocation against an external anchor | P25 change-capture (2026-10-24) | Owner's say first; then public mint/pool lists and anchor prices (GeckoTerminal), one declared day of forward gap logging; 0 Helius; any pump-side book is arena-only. |
 | `p81-cashback-floor` | CASHBACK-FLOOR: re-cost frozen H5 trades on cashback coins (creator leg refunded to the … | P81 cost-floor receipts (2026-10-27) | Step 0: getMultipleAccounts over distinct H5 pools (about 20 calls of 100) for is_cashback_coin; 20-tx getTransaction check that cashback_fee_basis_points is paid on PumpSwap sells; then one repricing with the P55 code. |
-| `p81-holder-carry` | HOLDER-CARRY: multi-day hold of high-turnover holder-rewards coins paid the creator fee | P81 cost-floor receipts (2026-10-27) | Count holder-reward coins created 09-12..09-25 by BondingCurve flag; sample holder payout via getSignaturesForAddress; report drift alone first. |
+| `p81-holder-carry` | HOLDER-CARRY: multi-day hold of high-turnover holder-rewards coins paid the creator fee | P81 cost-floor receipts (2026-10-27) | Step 1 (needs tape, not in P97): count holder-rewards coins by day via the BondingCurve is_holder_reward flag and their tape turnover; report drift alone first; carry credited with the measured phi and f. |
 
 ## Owner ideas
 
@@ -381,6 +380,54 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | --- | --- | --- | --- |
 | `p78-cost-floor-tiers` | Cheapest PumpSwap fee band (market cap >= 98,240 SOL, 0.30% per leg): frozen P72 absorb, P71 copy … | `explored-no-survivor` | P72 absorb KILL (mean -17.91992% flat, 0/28 days); 15-min momentum KILL (-5.69432% flat, 0/28 days); P71 copy KILL under P71's frozen lines 2 and 3 (ex-top-3 -0.01328 SOL flat; ex-best-wallet -0.1347 SOL flat, best wallet 195% of total), although its mean is +0.13175% flat and +0.14068% pressure at 0.1 SOL; retention … |
 
+### p92-haiku-vs (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p92-haiku-vs-knn` | Haiku forced ranking vs numeric kNN on P86 cards (offline, Claude-plan Haiku) | `explored-no-survivor` | Haiku adds nothing over kNN on these cards; ensemble does not beat kNN, so no lead. |
+
+### p88-knn-c (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p88-knn-c-forward` | KNN-C: cost-gated numeric kNN ranker (P86, k = 25, 10 tape features) as a forward arena paper book | `untested` | SHELVED / REDESIGN by manager17 on 2026-10-27 after QP CHANGES 6446421063 and reviewer CHANGES 6446421595 on PR #1046: expected gate FAIL with near certainty (the cost gate would need to lift L by about 11-12 pp), and with -100% labels m likely binds at 0, so a stop at the 7.2-a-day P0 kill line is likelier; K1-K5 not … |
+
+### p87-b7 (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p87-b7-pullback` | B7 dip-absorption pullback (>=8% fall in 15 min, net buy flow >0 in 60 s, >=6 h in B7; +6%/-8%/45 … | `explored-no-survivor` | KILL: mean -0.43635% flat and -0.3685% pressure at 0.25 SOL, negative in all three blocks, 11/26 days positive (flat), CI90 lower -0.78277%, ex-top-3 -0.73301 SOL; 52 pools, top 5 carry 68.5% of trades. In-sample, read by >= 14 families. |
+
+### p93-haiku (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p93-haiku-text` | Haiku reads token name+symbol to predict PumpSwap pool survival (offline, Claude-plan Haiku) | `explored-no-survivor` | Kill line hit: CI lower bound <= 0.55 and AUC not above baseline. Haiku's reading of name and symbol carries no survival signal here; only 19 positives, so power is low. |
+
+### p95-callout (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p95-callout-follow` | Callout follower flow: enter right after a top caller's pump app callout, exit into paid follower … | `parked` | Step 0 NOT_TESTABLE (P97, 2026-10-27): no public, timestamped callout feed readable without an account or key. The pump public docs and IDLs have no callout API, program, account or event, and the payout is off-chain. The undocumented app endpoints frontend-api-v3 /callout/coin/{mint} and /callout/list/{caller} are … |
+
+### p95-synthetic (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p95-synthetic-completer` | Synthetic-migration completer: the completing v3 buy takes pool-opening tokens before migrate_v2 … | `untested` | Untested. Judgment: P about 2%; if it works 30 entries/day x 0.25 SOL x 3% = 0.225 SOL/day before competition for the completing slot. Cost about 2.5% (bonding 1.25% in, PumpSwap 1.20-1.25% out) plus drift. October BOOST pools are H5-family and sealed for pricing to 2026-11-14 (EXP-024 Look-2). |
+
+### p95-launchpad-token (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p95-launchpad-token-buyback` | Launchpad platform-token buyback cadence: x7pad X7 (hourly) and Paid PAID | `untested` | Untested. Judgment: P about 1%; 24 runs/day x 0.10 SOL x 1% = 0.024 SOL/day if it works. Mean run about $404 (reported); pool depth and pool fee unknown; mech-buyer-scout-1 found 0 of 43 buys implying a move >= 2.5%. MAL tape does not record DAMM v2. |
+
+### p96-q50-forward (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `p96-q50-forward-veto` | Avoid-bad-pools veto fit on Q50's forward trades, tested once on successor s1's trades | `untested` | Not run: waits for Q50's and s1's final reads, the EXP-024 Look-2 seal end (2026-11-14T00Z) and s1's end + 1 h, with s1's clock bound to the arena bots.json (earliest about 2026-11-20T01Z, later after a slip). The scored-rows export from the ledger is owed (its own PR). |
+
 ## Dead as frozen, and explored with no survivor
 
 "Dead" means that frozen version failed. A changed version is a new row with its own test.
@@ -504,6 +551,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `p20-dbc-start-floor` | DBC curve start-price floor option (buy pools back near sqrt_start_price, tp +50%) | `explored-no-survivor` | P21 exploration screen (E1 10-14..16 + E2 10-17..23 as disclosed exploration; m 26->32): 4 cells (band 1.02/1.05 x cap 6 h/24 h, prior peak >= 2x start, age >= 30 min, tp +50%) all FAIL. Primary d7_s105_h6: n 150, 1/10 days positive, flat -0.0070 (CI90 lo -0.0083, ex-top-3 -1.20), pressure -0.0058 (CI90 lo -0.0070). 97-100% of trips end at the time cap (dead pools, as … |
 | `p20-dbc-fee-floor-clock` | DBC/DAMM v2 anti-sniper fee-expiry clock: pre-signed buy landing at the fee-scheduler or … | `explored-no-survivor` | P21 exploration screen (E1 + E2 disclosed exploration; m 26->32): config fee schedule decoded and validated (non-dynamic configs 92-95% of tape fees within 1 bp); 634 of 7,399 configs have a schedule (modes linear/exponential; no rate limiter in candidates). 2 cells, time exit 60 s / 300 s, landing expiry + 2 slots: both FAIL. Primary d9_t60: n 123, 2/10 days positive, flat … |
 | `p20-wick-bid-zero-latency` | Resting-bid wick capture: one-sided bid liquidity filled at the dump print's own price … | `explored-no-survivor` | Latency-0 upper bound DEAD (P22, 2026-10-24, declared rule): entering at the sell's post-trade state on dump-absorb D8/D15 triggers, exploration blocks explore-0814/fresh-0903/exp011-0909 (28 days), pooled net of 25 bps and 505k-lamport sends, flat 15%: D8-300 mean -0.0208 SOL/trade at 0.1 SOL (n 336,648, CI90 lo -0.0210, 0 of 28 days positive), D15-300 -0.0316 (n 87,282). … |
+| `p25-pump-order-keeper-absorb` | Absorb tagged pump app stop-loss sell clusters | `explored-no-survivor` | KILL. P29 one-shot price look of the frozen docs/research/p29-keeper-absorb/PRICING-DECLARE.md: job #1637 at merged head ec35f5cd, 2026-10-26T03:38Z (lock /data/mal/hunt-1008/push-1016/hunt30/p29/PRICE_READ.lock); output /data/mal/hunt-1008/push-1016/hunt29/p29/price-ec35f5cd/result_price.json, p29_verdict.status 'KILL', killed true. kill_reasons: on each of total/flat … |
 | `p81-volume-accrual` | VOLUME-ACCRUAL: pump's own PUMP-token volume incentive (claim_token_incentives) against … | `explored-no-survivor` | P83 2026-10-27T14:16Z: INACTIVE. Public getAccountInfo of both GlobalVolumeAccumulator PDAs (pump Hq2wp8uJ9jCPsYgNHex8RtqdvMPfVGoYwjvF1ATiwn2Y, AMM C2aFPdENg4A2HQsmrd5rTw5TaYBX5Ku887cWjbFKtZpw): initialised, all zeros (mint = system program, total_token_supply[30] and sol_volumes[30] all 0). Reward per SOL 0 against a round-trip floor of about 70 bps (0.60% fees + 0.10% … |
 
 ## Duplicate rows

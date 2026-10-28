@@ -1,0 +1,8 @@
+explore-0814 unique_creates 559018 dup_rows 0 name_nonempty 558279 symbol_nonempty 557951 both 557896 share_both 0.9979929089939858 rows_with_uri_field 0
+  unparseable lines so far 0
+fresh-0903 unique_creates 160714 dup_rows 0 name_nonempty 160551 symbol_nonempty 160463 both 160458 share_both 0.9984071082793036 rows_with_uri_field 0
+  unparseable lines so far 0
+exp011-0909 unique_creates 179219 dup_rows 0 name_nonempty 179084 symbol_nonempty 179019 both 179015 share_both 0.9988617278301966 rows_with_uri_field 0
+  unparseable lines so far 1
+explore-0814 creates 559018 completes_in_block 16331 eligible(create+24h<=block end, name&symbol) 507407 graduated<=12h 13299
+by day {'2026-08-14': 571, '2026-08-15': 898, '2026-08-16': 867, '2026-08-17': 945, '2026-08-18': 1047, '2026-08-19': 1049, '2026-08-20': 974, '2026-08-21': 1085, '2026-08-22': 954, '2026-08-23': 856, '2026-08-24': 1026, '2026-08-25': 1152, '2026-08-26': 1375, '2026-08-27': 500}

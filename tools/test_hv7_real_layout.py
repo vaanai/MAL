@@ -527,3 +527,68 @@ def test_diff_fields_reports_names_and_counts_never_values():
     out = E.diff_fields(a, b)
     assert out == {"f.vol_60m": 1, "chain.extra(one_side_only)": 1, "<other>(one_side_only)": 1}
     assert "2.5" not in json.dumps(out) and "1.5" not in json.dumps(out)
+
+
+# ------------------------------------------------------------------------------------------------------------------------ report-only trim counters
+EXPECTED_PASS_RULE = (
+    "PASS iff md5_equal (decision-log md5 and cards md5 of run1 == run2 == run3, and equal entry counts) AND in each run: hook_errors == 0, leakage_refused / "
+    "model_exception / ledger_unreadable / cost_mismatch / late_reply == 0, fallbacks == 0, entries L == R == S == periods_ge3 and U >= periods_ge3, periods_ge3 > 0 "
+    "AND peak_rss_mb (max of the three "
+    "processes) < rss_cap_mb AND period_ms_p95 (max of runs 1 and 2; tick at t_d + tick at t_e) < 15000 AND tick_ms_p95 (max of runs 1 and 2) < 1000; run 3 "
+    "(other PYTHONHASHSEED; hv7_runner has no fast path to switch off) is tested for md5 only, its timing is report-only")
+
+
+def test_pass_rule_text_is_unchanged_and_report_fields_do_not_affect_the_verdict():
+    assert D.PASS_RULE == EXPECTED_PASS_RULE
+    bad = {**CLEAN, "engine_trim_safety_ok": False, "engine_trim_exercised": False, "engine_rows_below_trim_floor": 5}
+    v = D.verdict(bad, dict(CLEAN), dict(CLEAN), 100.0, 200.0)
+    assert v["result"] == "PASS" and v["pass_rule"] == EXPECTED_PASS_RULE
+
+
+def test_trim_report_flags():
+    assert D.trim_report({}) == {**{k: 0 for k in D.TRIM_COUNTER_KEYS}, "engine_trim_safety_ok": True, "engine_trim_exercised": False}
+    r = D.trim_report({"engine_hist_trimmed_prints": 3, "engine_trims": 2, "quote_pools_swept": 4})
+    assert r["engine_trim_safety_ok"] and r["engine_trim_exercised"] and r["quote_pools_swept"] == 4
+    assert not D.trim_report({"engine_rows_below_trim_floor": 1})["engine_trim_safety_ok"]
+    assert not D.trim_report({"engine_refused_history_trimmed": 1})["engine_trim_safety_ok"]
+
+
+def test_one_run_copies_the_runner_counters(tmp_path, tape, monkeypatch):
+    seen = {}
+    orig = R.Hv7Runner.sync_engine_counters
+
+    def spy(self):
+        orig(self)
+        seen["run"] = self
+
+    monkeypatch.setattr(R.Hv7Runner, "sync_engine_counters", spy)
+    res = D.one_run(tmp_path / "d", "real-a", SHA, [DAY], tape, start_ms=START, end_ms=END)
+    run = seen["run"]
+    for k in D.TRIM_COUNTER_KEYS:
+        assert res[k] == run.counters.get(k, 0) and isinstance(res[k], int)
+    assert res["engine_trim_safety_ok"] is (res["engine_rows_below_trim_floor"] == 0 and res["engine_refused_history_trimmed"] == 0)
+    assert res["engine_trim_exercised"] is (res["engine_hist_trimmed_prints"] > 0)
+
+
+def test_run_real_report_has_per_run_trim_report_and_no_exit_or_outcome_field_anywhere(tmp_path, tape, monkeypatch, capsys):
+    monkeypatch.setattr(D, "DRILL_ROOT", tmp_path / "drill")
+    monkeypatch.setattr(D, "REAL_TAPE", str(tape))
+    monkeypatch.setattr(D, "seal_read_only", lambda base: None)
+    real_one = D.one_run
+    monkeypatch.setattr(D, "one_run", lambda base, tag, sha, days, tp, **kw: real_one(base, tag, sha, days, tp, start_ms=START, end_ms=END))
+    res = D.run_real([DAY], "t2", SHA, tape_dir=str(tape), isolate=False, rss_cap_mb=1e9)
+    assert res["pass_rule"] == EXPECTED_PASS_RULE
+    rep = res["engine_trim_report"]
+    assert set(rep) == {"run1", "run2", "run3"}
+    for x in rep.values():
+        assert set(x) == {*D.TRIM_COUNTER_KEYS, "engine_trim_safety_ok", "engine_trim_exercised"}
+    root = tmp_path / "drill" / "t2"
+    assert json.loads((root / "real-layout-result.json").read_text())["engine_trim_report"] == rep
+    # no exit / outcome field in the stdout or in any JSON the drill root holds at the top level (the result file; per-run files are returned dicts in-process)
+    texts = [capsys.readouterr().out, json.dumps(res)] + [p.read_text() for p in root.glob("*.json")]
+    for t in texts:
+        for banned in ("exit_reason", "exit_reasons", "hard_stop", "max_hold", "pnl", "net_lamports"):
+            assert banned not in t
+    for tag in ("real-a", "real-b", "real-c"):
+        r = D.one_run(tmp_path / "d3", tag, SHA, [DAY], tape, start_ms=START, end_ms=END)
+        assert "exit_reason" not in json.dumps(r) and "exit_reason_counts" not in r
