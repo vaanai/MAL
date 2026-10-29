@@ -47,16 +47,17 @@ This has been practice since 10-12 (#621). Decision 1 asked for QP only "where t
 
 ### 2. Tiers
 - **T1, separate QP and reviewer agents (as before), is the default.** A PR is T1 if its diff contains **any** T1 trigger, whatever the file type. A mixed PR is T1. The T1 triggers:
-  1. code or scripts that a book, runner, shadow, scorer, read, gate check, executor, watchdog or live path runs;
+  1. any code or script (tools/, scripts/, tests, configs), including ops scripts;
   2. any edit under DEC/ or EXP/ other than a pure typo or link fix;
   3. edits to docs/HOLDOUT_LEDGER.md, any seals text (including SEALS-BRIEF and the HANDOFF seals section), a read rule, a registration, the promotion gate, or a live stage or limit;
   4. in docs/HANDOFF.md or LAB_STATE.md: any change to seals, clocks, deadlines, read instants or go-live conditions;
-  5. any sentence that says a book made money, any read result, and any number that decides a read, gate or kill.
+  5. any claimed edge, any sentence that says or implies a book is positive or made money (CLAUDE.md), any read result or NOT_DECIDABLE finding, and any number that decides a read, gate or kill.
 - **T0, one combined agent** writing both lines as two separate comments, applies only when the diff has **no** T1 trigger. Examples:
-  - lab notes, daily briefs, idea-library rows and KILL or NOT_DECIDABLE write-ups that carry no deciding number;
-  - LAB_STATE or HANDOFF edits outside item 4 above;
-  - pure typo or link fixes;
-  - ops scripts that nothing in T1 item 1 runs.
+  - records and docs: lab notes, daily briefs, idea-library rows, Console data, and LAB_STATE or HANDOFF edits outside item 4 above;
+  - KILL write-ups that carry no deciding number;
+  - pure typo or link fixes.
+
+  This is exactly the scope the owner approved in plan v2 ("records, docs and KILL write-ups"). Widening T0 needs the owner's word.
 - **T0 still does both jobs.** The combined agent:
   - does the reviewer's diff review;
   - checks every quoted number or claim against its source (including Console data/console.json against its lab note);
