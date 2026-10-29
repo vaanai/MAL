@@ -1,4 +1,4 @@
-NON-BINDING INDEX of the binding text. On any conflict, the cited DEC/EXP text on main controls. Built 2026-10-29 at main e3a2090c. Any edit to this file is a T1 PR (DEC-013 Am.1).
+NON-BINDING INDEX of the binding text. On any conflict, the cited DEC/EXP text on main controls. Built 2026-10-29 at main e3a2090c; HANDOFF quotes re-cited at main 836b61ac. Any edit to this file is a T1 PR (DEC-013 Am.1).
 
 # Rules for book HV4 (Haiku trader v4, the nine lane-G bots)
 
@@ -10,9 +10,9 @@ Each rule is a verbatim blockquote plus its citation `(path:line)` at the main s
 
 **Governs:** Which books, which code, which clock, which window.
 
-> Runner #1561, then #1562. NOTIFICATIONS ONLY. **Never call `miscusi_job_status` on #1561/#1562** (it is a seal view). | Read from 10-30 at the earliest. The attempts-vs-trades read rule needs its own QP ruling first.
+> Runner #1561, then #1562. NOTIFICATIONS ONLY. **Never call `miscusi_job_status` on #1561/#1562** (it is a seal view). | Read under DEC-031 Am.15 (in force; merged #915 2026-10-25T19:35:24Z) by `tools/hv4_am15_read.py --record`, at the B that `tools/hv4_read_instant.py` writes once (#1591, 01:30Z daily), at an as-of of at least B + 24 h (the wrapper refuses earlier). If B = 2026-10-30T00:00Z, the earliest read is 2026-10-31T00:00Z. One recorded read per bot. The attempts-vs-trades rule is QP-RULING-1025-hv4-read-rule R1, carried by Am.15. QP-RULING-1029-hv4-read-d1d4 (ops/manager17/, sha256 d5d7f115586bb5a0…) confirms D1–D4; this replaces the earlier 'needs its own QP ruling first' line. A days-only miss is FAIL, labelled "count-only, not a loss" (Am.15 item 2).
 
-HANDOFF HV4 row. STATE TEXT, STALE per QP-RULING-1029-hv4-read-d1d4 (section Rulings): the ruling it says is owed exists as QP-RULING-1025-hv4-read-rule R1 "Attempts vs trades" (section 4b), carried by Am.15; correcting HANDOFF is a manager item. (docs/HANDOFF.md:22)
+HANDOFF HV4 row at main 836b61ac (state document; PR #1081 replaced the earlier row text that said a QP ruling was owed). (docs/HANDOFF.md:22)
 
 > `bot_id(arm) = f"hv4-{arm}"` (hv4_runner.py:103-104@9ed4c5f): `hv4-CON-L`, `hv4-CON-F`, `hv4-CON-P`, `hv4-CON-X`, `hv4-CON-R`, `hv4-BIG-L`, `hv4-BIG-F`, `hv4-BIG-X`, `hv4-BIG-R`. BST-L/F/X/R are not registered and get no read (Note N2).
 
@@ -268,9 +268,9 @@ scripts/ops/hv4-instant-daily.sh, Output line. (scripts/ops/hv4-instant-daily.sh
 
 HANDOFF section 5, fixed instants (state document; the job id is not named in the script itself). (docs/HANDOFF.md:75)
 
-> **10-30T00Z onward:** the Q50 read and the HV4 read (the HV4 attempts rule needs a QP ruling first).
+> **10-30T00Z onward:** the Q50 read. **HV4:** its read comes at an as-of of at least B + 24 h, so 10-31T00Z at the earliest (Am.15; QP-RULING-1029-hv4-read-d1d4).
 
-HANDOFF section 7. STATE TEXT, STALE per QP-RULING-1029-hv4-read-d1d4 (same reason as the HANDOFF:22 caption). (docs/HANDOFF.md:104)
+HANDOFF section 7 at main 836b61ac (state document; PR #1081 replaced the earlier line). (docs/HANDOFF.md:104)
 
 > WHY. Amendment 15 item 1 moves HV4's read instant to the attempt-margin boundary B that tools/hv4_read_instant.py computes and writes once. The pinned read
 > path (tools/arena_am6_read.py, sha256 ef6e4555; tools/arena_score.py) computes the UNAMENDED boundary with arena_score.blind_read_instant and refuses any other
@@ -739,7 +739,7 @@ The seal list in the task brief for this file also names #1564 to #1569, #1517 t
 ## D4. Label of record. RULING: the binding record is the one recorded read (the scorer's record as written by record_read: status "FAIL" with its deciding.misses), read together with Am.15 item 2. The read file needs no label field, and none may be added.
 ```
 
-**HANDOFF:22 and :104 (stale), and the correct state text, verbatim** (host text, unverified by the checker)
+**HANDOFF:22 and :104 as the ruling judged them (those lines were replaced by PR #1081 at main 836b61ac; the new text is quoted in sections 1 and 3), and the correct state text, verbatim** (host text, unverified by the checker)
 
 ```text
 - That ruling is QP-RULING-1025-hv4-read-rule R1 (c2343c9c). Am.15 carries it and is in force. This file closes the residual D1-D4.
@@ -771,7 +771,7 @@ The 10-28 header-only contact does not block it. The D2 residual (i) can change 
 - Duty on every quote: a notebook entry, the Console, LAB_STATE, a HANDOFF or a PR that reports such a read must carry "count-only, not a loss" verbatim with "FAIL". It must never present the read as a loss or as a pending result.
 ```
 
-In short, as the ruling states it: Am.15 is in force; HANDOFF:22 and :104 are stale; the read may proceed once #1591 writes B, at an as-of of at least B + 24 h, one recorded read per bot_id. The two residual risks above stay open: the pre-merge-count-after-read case, and the 0.25-stake row assumption. D5 (unclosed attempts at B) was not asked of that ruling; its D2 part is stated in the host text above.
+In short, as the ruling states it: Am.15 is in force; the old HANDOFF:22 and :104 were stale (since replaced by #1081); the read may proceed once #1591 writes B, at an as-of of at least B + 24 h, one recorded read per bot_id. The two residual risks above stay open: the pre-merge-count-after-read case, and the 0.25-stake row assumption. D5 (unclosed attempts at B) was not asked of that ruling; its D2 part is stated in the host text above.
 
 
 ## Notes (non-binding; the writer's observations)
