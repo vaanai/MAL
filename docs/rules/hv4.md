@@ -12,7 +12,7 @@ Each rule is a verbatim blockquote plus its citation `(path:line)` at the main s
 
 > Runner #1561, then #1562. NOTIFICATIONS ONLY. **Never call `miscusi_job_status` on #1561/#1562** (it is a seal view). | Read from 10-30 at the earliest. The attempts-vs-trades read rule needs its own QP ruling first.
 
-HANDOFF HV4 row. STATE TEXT THAT MAY BE STALE: the ruling it says is owed exists as QP-RULING-1025-hv4-read-rule R1 "Attempts vs trades" (section 4b), carried by Am.15; correcting HANDOFF is a manager item. (docs/HANDOFF.md:22)
+HANDOFF HV4 row. STATE TEXT, STALE per QP-RULING-1029-hv4-read-d1d4 (section Rulings): the ruling it says is owed exists as QP-RULING-1025-hv4-read-rule R1 "Attempts vs trades" (section 4b), carried by Am.15; correcting HANDOFF is a manager item. (docs/HANDOFF.md:22)
 
 > `bot_id(arm) = f"hv4-{arm}"` (hv4_runner.py:103-104@9ed4c5f): `hv4-CON-L`, `hv4-CON-F`, `hv4-CON-P`, `hv4-CON-X`, `hv4-CON-R`, `hv4-BIG-L`, `hv4-BIG-F`, `hv4-BIG-X`, `hv4-BIG-R`. BST-L/F/X/R are not registered and get no read (Note N2).
 
@@ -270,7 +270,7 @@ HANDOFF section 5, fixed instants (state document; the job id is not named in th
 
 > **10-30T00Z onward:** the Q50 read and the HV4 read (the HV4 attempts rule needs a QP ruling first).
 
-HANDOFF section 7. STATE TEXT THAT MAY BE STALE (same reason as the HANDOFF:22 caption). (docs/HANDOFF.md:104)
+HANDOFF section 7. STATE TEXT, STALE per QP-RULING-1029-hv4-read-d1d4 (same reason as the HANDOFF:22 caption). (docs/HANDOFF.md:104)
 
 > WHY. Amendment 15 item 1 moves HV4's read instant to the attempt-margin boundary B that tools/hv4_read_instant.py computes and writes once. The pinned read
 > path (tools/arena_am6_read.py, sha256 ef6e4555; tools/arena_score.py) computes the UNAMENDED boundary with arena_score.blind_read_instant and refuses any other
@@ -723,6 +723,57 @@ Registration L9 row (E3 registration and E3b genesis). (ARTIFACTS/lab/hv4-regist
 
 The seal list in the task brief for this file also names #1564 to #1569, #1517 to #1520, #1554, #1555, #1559, #1560 and #1591 as job ids on which no status or log call is to be made. This index calls none.
 
+## Rulings: QP-RULING-1029-hv4-read-d1d4
+
+**Governs:** The QP ruling on D1-D4 of the PR #1080 QP pass. HOST TEXT THE CHECKER DOES NOT VERIFY: copied from /data/mal/hunt-1008/ops/manager17/QP-RULING-1029-hv4-read-d1d4.md (sha256 prefix d5d7f115586bb5a0, written 2026-10-29T16:28:56Z). The DEC text controls on any conflict. Nothing here says an HV4 bot makes money, and nothing in the ruling can create a PASS.
+
+**D1 to D4 verdict lines, verbatim** (host text, unverified by the checker)
+
+```text
+## D1. Is Am.15 in force? RULING: YES, in force since 2026-10-25T19:35:24Z.
+### Merge condition (Am.15 item 4: "merged, with QP OK on the exact head and a reviewer verdict, before 2026-10-30T00:00:00Z"): MET
+### Seen-first trigger: NOT TRIPPED
+### HANDOFF:22 and :104: STALE
+## D2. Does "n < 100 at B only above the cap" hold in the pinned code? RULING: HOLDS, conditional on one engine invariant that this ruling does not verify.
+## D3. Days unit. RULING: TRADE ENTRY DATES. CONFIRMED.
+## D4. Label of record. RULING: the binding record is the one recorded read (the scorer's record as written by record_read: status "FAIL" with its deciding.misses), read together with Am.15 item 2. The read file needs no label field, and none may be added.
+```
+
+**HANDOFF:22 and :104 (stale), and the correct state text, verbatim** (host text, unverified by the checker)
+
+```text
+- That ruling is QP-RULING-1025-hv4-read-rule R1 (c2343c9c). Am.15 carries it and is in force. This file closes the residual D1-D4.
+- The correct state text: the HV4 read is made under DEC-031 Am.15 by tools/hv4_am15_read.py --record, at the B that tools/hv4_read_instant.py writes once (#1591), at an as-of of at least B + 24 h (the wrapper refuses earlier: hv4_am15_read.py "--as-of-ms is before B + 24 h"). If B = 2026-10-30T00:00Z, the earliest read is 2026-10-31T00:00Z, not 10-30. Correcting HANDOFF is a manager item.
+```
+
+**May the HV4 read proceed, verbatim** (host text, unverified by the checker)
+
+```text
+## Can the HV4 read proceed under Am.15 once #1591 writes B?
+YES, for each of the nine bot_ids, under these conditions:
+- the instant file is the write-once hv4_read_instant_v1 record with status READ_INSTANT;
+- the read is tools/hv4_am15_read.py --record with the pinned arena_score (a508ed79, loaded from git at 9ed4c5ff) and arena_am6_read (ef6e4555);
+- the as-of is at or after B + 24 h;
+- it is one read per bot_id, with no preview and no unrecorded run.
+
+The 10-28 header-only contact does not block it. The D2 residual (i) can change only the outcome class, never to PASS. If no B exists by 2026-11-08T00:00:00Z, the book ENDS NOT_DECIDABLE, final.
+```
+
+**Residual risks the ruling names, verbatim** (host text, unverified by the checker)
+
+```text
+- Residual, stated plainly: the text does not say what happens if a pre-merge count contact is discovered after the read is recorded. The trigger is a past fact, but "No later switch is allowed" also applies. That case would need its own ruling. No remedy is invented here.
+
+- This holds if, and only if, every non-dropped open before B is closed by a `trade` or `excluded` row at stake 0.25 (condition (i)) and none is pending (condition (ii)).
+- (i) is an engine property: every close writes a row at every registered stake, including 0.25. The HV4 engine code was not read here. The ruling R1 assumes the same thing.
+- If (i) fails for some open (closed without a 0.25 row): n(0.25) can drop below 100 without raising the cap numerator. The read would then record "FAIL" with fail_label "FAIL (n < 100)" (:450-454 or :470-471) where the ruling expects NOT_DECIDABLE. Only the outcome class changes:
+
+- Duty on every quote: a notebook entry, the Console, LAB_STATE, a HANDOFF or a PR that reports such a read must carry "count-only, not a loss" verbatim with "FAIL". It must never present the read as a loss or as a pending result.
+```
+
+In short, as the ruling states it: Am.15 is in force; HANDOFF:22 and :104 are stale; the read may proceed once #1591 writes B, at an as-of of at least B + 24 h, one recorded read per bot_id. The two residual risks above stay open: the pre-merge-count-after-read case, and the 0.25-stake row assumption. D5 (unclosed attempts at B) was not asked of that ruling; its D2 part is stated in the host text above.
+
+
 ## Notes (non-binding; the writer's observations)
 - N1. DEC-031 Amendment 15's heading line says "status: DRAFT until merge, QP OK and reviewer verdict". `git log` on main shows the amendment and its tools merged in one commit, `305d9c0a` "DEC-031 Am.15: HV4 read instant + wrapper (QP-RULING-1025) (#915)", committer time 2026-10-25T12:35:24-07:00 (2026-10-25T19:35:24Z), which is before the item 4 bar of 2026-10-30T00:00:00Z. Per the QP pass on #1080: QP OK (comment 6402108455) and reviewer APPROVE (comment 6402206509) are both at the PR's final head 819ee4a7, and the three files are unchanged between 819ee4a7 and the merge. The amendment is in force; the DRAFT heading is stale and the "registered rule applies literally" fallback has lapsed (this closes the former open question on Am.15 merge conditions).
 - N2. The registration record is named `hv4-registration-1023.md` and its title says DRAFT for T0 2026-10-25; its section 0 and its DONE cells carry the retargeted values (clock 1792886400000 = 2026-10-25T00:00:00Z, frozen sha 9ed4c5ff). Older sentences in the same file still say clock 2026-10-21 or 2026-10-23, "first 00:00Z after a clean 24 h stub" and "Rent-charged as built" (the latter from DEC-031 Am.2's own conditions, which the record shows were met). The record's own section 1 table replaces the stub sentence with Am.6 item 1.4. The DESIGN copy is older again: "T0 = 2026-10-21T00:00Z at the earliest", "13 bots", looks at T0+5, +7, +10, +14 and "25 cells x 4 looks = 100 checks"; its Amendment A1 item 8 supersedes the looks for gate purposes, and Note N2 limits the registered bots to nine. `tools/hv4_read.py` carries the same stale "25 cells / 13 arms" text and is not a gate-read path.
@@ -740,7 +791,7 @@ The seal list in the task brief for this file also names #1564 to #1569, #1517 t
 ## OPEN QUESTIONS FOR QP
 Question 1 is the one HANDOFF names as needing a QP ruling; a separate ruling is pending.
 
-1. **Attempts versus trades.** D1-D4 under QP ruling: /data/mal/hunt-1008/ops/manager17/QP-RULING-1029-hv4-read-d1d4.md (pending). The text that answers the earlier sub-questions is quoted in section 4b: n < 100 with the margin met is possible only above the 5% cap and gives NOT_DECIDABLE (C2, C7 cap-first order); fewer than 5 trade dates is a FAIL labelled "count-only, not a loss" and final (Am.15 item 2; C2; C7 wrapper line); the gate's 5 days and day majority are over trade entry dates, O dates fix only B (C1 item 5; Am.15 item 1); a sell-refused trade booked at its fill is a trade (Declaration 1; C1 item 2). QP classifies the remainder as a narrow real item: whether Am.15 is in force (D1), whether the cap proof holds in the pinned code (D2), the days unit (D3), the label of record (D4), and unclosed attempts at B (D5). This file takes no side.
+1. **Attempts versus trades: ruled.** D1-D4 are decided by QP-RULING-1029-hv4-read-d1d4 (section "Rulings"). The only residuals are the two the ruling names, kept in that section: a pre-merge count contact discovered after the read is recorded (no remedy ruled), and the engine invariant that every non-dropped open is closed by a `trade` or `excluded` row at stake 0.25 (unverified).
 
 2. **Confirmation tooling (real gap, low).** tools/hv4_am15_read.py refuses a confirm-mode instant file; no DEC text names who builds the confirmation scorer, including the p <= 0.05/c step. It matters only after a recorded PASS and only for stake above C0 (confirmation is reachable only if B1 <= 2026-11-03T00Z). No effect on the screen read.
 
