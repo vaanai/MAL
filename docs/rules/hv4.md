@@ -4,7 +4,7 @@ NON-BINDING INDEX of the binding text. On any conflict, the cited DEC/EXP text o
 
 Each rule is a verbatim blockquote plus its citation `(path:line)` at the main sha above. Headings and the **Governs** lines are the index's words and bind nothing. docs/HANDOFF.md, the HV4 registration record and records notes are state documents, quoted only where no DEC text carries the fact. **The checker proves verbatim text only, not that a clause is in force or complete.** Check: `python3 scripts/ops/rules-quote-check.py --rev origin/main docs/rules/hv4.md`. No book has cleared the promotion gate; nothing here says any HV4 bot makes money. This file was written from repo text only: no HV4 output, ledger, decision row, card, fill, digest, job status or job log was opened.
 
-**Source files.** The binding text is DEC/DEC-031-forward-paper-arena.md (Amendments 2, 3, 4, 6, 7, 8, 15 and the sections it cites), the HV4 registration record `ARTIFACTS/lab/hv4-registration-1023.md` (its file name says 1023; it carries the 2026-10-25 clock; see Notes N2), the pinned DESIGN copy `ARTIFACTS/lab/hv4-registration-1023/DESIGN.md`, `ARTIFACTS/lab/qp-ruling-1022-hv4-am6.md`, and the pinned tools. Two HOST files are NOT in the repo and were NOT opened: `/data/mal/hunt-1008/push-1016/hunt30/hv4-read/QP-RULING-1025-hv4-read-rule.md` (full sha256 c2343c9c6ef96256419c4e7f4eec1b83584163bfd3a1aff97ca726cecdc50955; Amendment 15 is its copied text, and `ARTIFACTS/lab/c0-readiness-2026-10-25.md` section 2c restates it) and `/data/mal/hunt-1008/push-1016/hunt30/SEALS-BRIEF.md` (sha256 prefix 823cc062; quoted in section 7 only through the one line the task brief gave, as plain text the checker does not verify).
+**Source files.** The binding text is DEC/DEC-031-forward-paper-arena.md (Amendments 2 (HV4 coverage), 3 (item 6), 6, 7, 8 and 15, and the sections it cites; Amendment 4 appears only as text that Amendments 7 and 15 replace), the HV4 registration record `ARTIFACTS/lab/hv4-registration-1023.md` (its file name says 1023; it carries the 2026-10-25 clock; see Notes N2), the pinned DESIGN copy `ARTIFACTS/lab/hv4-registration-1023/DESIGN.md`, `ARTIFACTS/lab/qp-ruling-1022-hv4-am6.md`, and the pinned tools. Two HOST files are NOT in the repo (the checker cannot verify them; section 4b quotes the ruling as host text, sha c2343c9c, and the coordinator's QP pass verified that sha): `/data/mal/hunt-1008/push-1016/hunt30/hv4-read/QP-RULING-1025-hv4-read-rule.md` (full sha256 c2343c9c6ef96256419c4e7f4eec1b83584163bfd3a1aff97ca726cecdc50955; Amendment 15 is its copied text, and `ARTIFACTS/lab/c0-readiness-2026-10-25.md` section 2c restates it) and `/data/mal/hunt-1008/push-1016/hunt30/SEALS-BRIEF.md` (sha256 prefix 823cc062; quoted in section 7 only through the one line the task brief gave, as plain text the checker does not verify).
 
 ## 1. Identity, the nine bots, the frozen pins, T0 and END
 
@@ -12,7 +12,7 @@ Each rule is a verbatim blockquote plus its citation `(path:line)` at the main s
 
 > Runner #1561, then #1562. NOTIFICATIONS ONLY. **Never call `miscusi_job_status` on #1561/#1562** (it is a seal view). | Read from 10-30 at the earliest. The attempts-vs-trades read rule needs its own QP ruling first.
 
-HANDOFF HV4 row (state document). (docs/HANDOFF.md:22)
+HANDOFF HV4 row. STATE TEXT THAT MAY BE STALE: the ruling it says is owed exists as QP-RULING-1025-hv4-read-rule R1 "Attempts vs trades" (section 4b), carried by Am.15; correcting HANDOFF is a manager item. (docs/HANDOFF.md:22)
 
 > `bot_id(arm) = f"hv4-{arm}"` (hv4_runner.py:103-104@9ed4c5f): `hv4-CON-L`, `hv4-CON-F`, `hv4-CON-P`, `hv4-CON-X`, `hv4-CON-R`, `hv4-BIG-L`, `hv4-BIG-F`, `hv4-BIG-X`, `hv4-BIG-R`. BST-L/F/X/R are not registered and get no read (Note N2).
 
@@ -270,7 +270,7 @@ HANDOFF section 5, fixed instants (state document; the job id is not named in th
 
 > **10-30T00Z onward:** the Q50 read and the HV4 read (the HV4 attempts rule needs a QP ruling first).
 
-HANDOFF section 7 (state document). (docs/HANDOFF.md:104)
+HANDOFF section 7. STATE TEXT THAT MAY BE STALE (same reason as the HANDOFF:22 caption). (docs/HANDOFF.md:104)
 
 > WHY. Amendment 15 item 1 moves HV4's read instant to the attempt-margin boundary B that tools/hv4_read_instant.py computes and writes once. The pinned read
 > path (tools/arena_am6_read.py, sha256 ef6e4555; tools/arena_score.py) computes the UNAMENDED boundary with arena_score.blind_read_instant and refuses any other
@@ -337,7 +337,7 @@ DEC-031 section 2, Multiplicity. (DEC/DEC-031-forward-paper-arena.md:53)
 >   3. a live canary under its own DEC, with small limits;
 >   4. **stake above the canary's limits** needs a **confirmation**. The same `bot_id`, unchanged, must clear the same gate on its deciding cell over attempts decided after the screen read's instant: at least 100 attempts on at least 5 further UTC dates, read once at the outcome-blind instant above. **And** its one-sided bootstrap p (10,000 draws, seed 1; the larger p of the two fail models) must be at most 0.05/c. Here c is the number of arena books that have entered a confirmation under this DEC by that read, failed and NOT_DECIDABLE ones included (DEC-014 (b); Bonferroni for staggered reads, as in DEC-030 §1). Live fills must also match paper. Parity is required in addition to the confirmation and never replaces it.
 
-DEC-031 section 2, path after a screen pass. (DEC/DEC-031-forward-paper-arena.md:54)
+DEC-031 section 2, path after a screen pass (step 4 "100 attempts on at least 5 further UTC dates" is amended for these nine books by Am.15 item 3, DEC-031:574). (DEC/DEC-031-forward-paper-arena.md:54)
 
 > 7. **Unchanged:** the promotion gate and every threshold (n >= 100; >= 5 UTC dates with a majority positive; CI90 lower bound > 0, 1,000 draws, seed 1, 5th percentile; ex-top-3 > 0; flat 15% and pressure-fail at slope scale 1); the deciding cell (1.9 s, 0.25, rent 0 deciding, rent-charged leg beside it); the 5% and 10% caps and their denominators; DEC-014's NOT_DECIDABLE rules and the trim void rule; one read per bot_id; N and c; the frozen sha, clock, H = 14 and END; DESIGN A1 V1/V2 at B + 24 h.
 
@@ -353,7 +353,7 @@ c0-readiness section 2c R1 (a lab note restating the host QP ruling; the ruling 
 
 > - **If not merged by then, or any HV4 count is seen first, "the registered rule applies literally": B is the attempt boundary and n < 100 after exclusions records "FAIL (n < 100)", final and not a loss. No later switch is allowed.**
 
-c0-readiness section 2c R1 (fallback; see Notes N1 on whether it lapsed). (ARTIFACTS/lab/c0-readiness-2026-10-25.md:66)
+c0-readiness section 2c R1 (fallback). OUT OF FORCE, LAPSED: Am.15 merged as #915 (305d9c0a) at 2026-10-25T19:35:24Z, before the 2026-10-30T00:00:00Z bar; per the QP pass on #1080, QP OK (comment 6402108455) and reviewer APPROVE (comment 6402206509) are both at 819ee4a7, and DEC-031, hv4_read_instant.py and hv4_am15_read.py are unchanged between 819ee4a7 and 305d9c0a. The ruling's other trigger, "any HV4 count is seen first", is not checked here and no sealed view may be opened to check it. (ARTIFACTS/lab/c0-readiness-2026-10-25.md:66)
 
 > - `tools/hv4_read.py book` "is NOT a gate-read path" (it runs `arena_score` directly, forbidden by the HV4 record §0). Usable only for V1/V2/table steps after the gate read is recorded, and only after its own reviewed fix.
 
@@ -409,6 +409,92 @@ DESIGN section 8, Amendment A1 item 7. (ARTIFACTS/lab/hv4-registration-1023/DESI
 > - **No changes mid-window** except safety stops.
 
 DESIGN section 8. (ARTIFACTS/lab/hv4-registration-1023/DESIGN.md:249)
+
+
+## 4b. Host text of QP-RULING-1025-hv4-read-rule (Am.15 incorporates it by sha at DEC-031:571 and by item at :576)
+
+**Governs:** What the ruling says on attempts versus trades, the residual count miss, the canary consumer and the order of worst-in-slot. HOST TEXT THE CHECKER DOES NOT VERIFY: the blocks below are copied from /data/mal/hunt-1008/push-1016/hunt30/hv4-read/QP-RULING-1025-hv4-read-rule.md (full sha256 c2343c9c6ef96256419c4e7f4eec1b83584163bfd3a1aff97ca726cecdc50955, prefix c2343c9c, verified by the QP pass on #1080). Where a block and Am.15 differ, the DEC text controls. A records PR should copy the ruling into ARTIFACTS/lab/ so these become checkable.
+
+**C1. Ruling R1, Definitions (items 1 to 3, 5, 6)** (host text, unverified by the checker)
+
+```text
+1. **Attempt** = one `ArenaEngine.buy` call. It leaves a ledger row of kind `open`, or of kind `refused`. Its decision instant is `decision_ms.entry`, the engine write instant.
+   - Not attempts: an LLM SKIP, WATCH or abstain, a code-gate SKIP (conviction, bounds, caps, cooldown, loss stop), a stale reply (>10 s), a parse failure, or a refusal by the risk agent. None of these calls the engine (hv4_runner.py:1162-1170@9ed4c5f). They are decision-log rows only.
+   - An attempt whose decision hour is excluded by Am.6 item 2.4 (or that falls in a restart gap) is DROPPED. It is not in the boundary, not in n and not in the 5% denominator. It counts only toward the 10% cap of Am.6 item 3.
+2. **Trade** (a member of the gate's n) = a non-dropped attempt of kind `open`, decided in [clock_start_ms, B), with a priced `trade` row at stake 0.25, that is not excluded. Excluded means any of: a §1.4 feed gap, `missing_v`, `late_print_gap`, `engine_restart`, or Am.6 `am6_span_overlap_pricepath` / `am6_open_at_restart`.
+   - **Guarded revert** = a trade. Its leg state is `guarded`, and it costs one send (-505,000 lamports) on every leg. It is in n, the mean, the CI, ex-top-3 and its date's daily sum. Dropping it would select on the price move between call and landing, which is an outcome.
+   - **Strand / close-blocked** (Am.2 item 6) = a trade at its total loss. It is never dropped.
+   - **Unfilled** (a landing failure) is not a row class. It is inside every trade's value through the flat 15% and pressure blend. Nothing is removed for it, and "unfilled" never shrinks n.
+3. **Refused buy** (kind `refused`) = an attempt, never a trade. It is not in n, the mean, the CI, ex-top-3 or the days. Data reasons (`no_prints`, which includes `history_trimmed`; `no_feed_rows`; `clock_not_ready`) go in the numerator of the 5% cap. Every refused buy, of any reason, is in its denominator.
+5. **n, mean, CI, ex-top-3, days** are `arena_score.cell_stats` on the trades of item 2, per sub-cell:
+   - days = the distinct UTC dates of the trades' entry write instants;
+   - positive days = dates whose summed trade value is > 0, with a strict majority needed (`days_pos * 2 > days`).
+6. **Unclosed** attempts: an attempt before B younger than 24 h is PENDING (no read yet). Older than 24 h, it is an orphan, and the read is NOT_DECIDABLE (DEC-014 Am.1).
+```
+
+**C2. Ruling R1, why it cannot create a pass, and the residual count miss** (host text, unverified by the checker)
+
+```text
+**Why it cannot create a pass.** Suppose the read is not NOT_DECIDABLE under the 5% cap. Then excluded + data-refused <= (O + R) // 20, so n = O - excluded >= 100 in every sub-cell. B is never earlier than the registered boundary: the margin implies O >= 100, and O's dates are a subset of the attempts' dates. So the change only removes a FAIL set by count alone. The gate thresholds do not move.
+
+**Residual count miss, and what happens if the boundary is met but trades < 100.**
+- Under the margin rule, n < 100 at B is possible only above the 5% cap. That is NOT_DECIDABLE, final.
+- The one other count miss is fewer than 5 trade dates, when every open on a date is excluded. That is recorded as the scorer prints it: "FAIL", with misses that are count-only. It is labelled "count-only, not a loss" and is final.
+- **There is no waiting to END after a count miss.** Waiting would mean choosing the instant after the scorer's output was seen.
+- If no B exists by 2026-11-08T00:00:00Z, the book ENDS NOT_DECIDABLE at clock + H, final, counts only. It was already counted in N.
+
+**If the amendment is not merged before 2026-10-30T00:00:00Z** (the earliest boundary of either rule), or if any HV4 count is seen first, the registered rule applies literally. B is then the attempt boundary, and n < 100 after exclusions records "FAIL (n < 100)", final and not a loss. No later switch is allowed. Under neither rule is there an extension, an early read or a second read.
+(This last paragraph is the lapsed fallback; see the caption on the c0-readiness quote in section 4.)
+```
+
+**C3. Ruling R2.2 (a) to (g), the canary consumer conditions (Am.15 item 5 binds them); R2.1** (host text, unverified by the checker)
+
+```text
+1. **Before the arm's own gate read is recorded:** no bridge process, dry or live, reads any HV4 decision row. A pre-read bridge test uses only synthetic fixtures, or a StubModel shakedown root, with rc and counts only and no row content printed. A DEC-032 canary needs a recorded PASS anyway (§1 item 1).
+2. **After a recorded PASS**, a bridge may read decision rows only if all of these hold, each pre-declared in the canary DEC copy before the first send:
+   - **(a) Arm.** The PASS book is **CON-F, CON-X, BIG-F or BIG-X**. The L arms are excluded: their playbook, knobs and vetoes change nightly, and DEC-032 §1 item 4 is read literally ("Any code or prompt change is a new `bot_id`"). They need a DEC-032 amendment first. CON-P and the R arms are controls, not promotable (DESIGN §5), and are never canaried.
+   - **(b) Frozen.** bot_id, frozen_sha 9ed4c5ff63935696b2a89150e13565e123047754 and the config pin (sha256 1e611a5a…) are compiled into the bridge config. The `start` row must repeat them (`frozen_sha_mismatch` latch). For an F arm, the API-returned model id (deferred to read time, HV4 record §1) must be `claude-haiku-5-5`, or the same single id for the whole window. A different or changing id makes F ineligible.
+   - **(c) Own directory only.** The bridge reads `decisions/<that bot_id>/` and nothing else: no other arm's directory, no ledger, no `bots.json`. The bind mount is read-only on that one directory.
+   - **(d) Only decisions after the read.** Rows whose entry decision is at or after the instant the read was recorded become orders. Pre-read rows are skipped, and only their chain is verified.
+   - **(e) Siblings untouched.** Until every HV4 sibling read is recorded or ended, no HV4 bot is stopped, restarted or re-pinned because of canary output. Only the pinned 2026-11-07T12:05Z handover and Am.6 item 4 crash restarts are allowed. Every sibling read discloses the canary's start instant (pools are shared across the lane-G stream).
+   - **(f) Confirmation exposure.** The canary's live and twin figures are outcomes of the PASS arm's confirmation-window decisions. DEC-031 Am.3 item 6 ("No confirmation first") accepts this. Only these are allowed: halts acting on the book's canary, never a change to the paper book, its sha, its instant or its rule. The confirmation read discloses the exposure.
+   - **(g) Universe.** The bridge's V band and WSOL check match `hv4_cards.filters` (V in [17.5e9, 17.7e9], WSOL first). Correction to PR #907 §7 item 5: the HV4 record §2.3 shows the V band HOLDS at 9ed4c5f (hv4_cards.py:458-465). The 77bdf7e text quoted in DEC-031 Am.2 item 2 (ii) is pre-freeze. No subset declaration is needed for the band. A size rule (C0 stake = min(card size, 0.05)) is a declared mapping, not a cap.
+```
+
+**C4. Ruling R3, instant and order of worst-in-slot** (host text, unverified by the checker)
+
+```text
+1. The gate read is recorded first, through the R1 wrapper at B. The worst-in-slot step never runs before that record exists.
+  2. Then, in one host-side MiScusi job, at or after the recorded read and before any canary proposal, and only for a bot whose read is PASS:
+  3. A FAIL or NOT_DECIDABLE read gets no worst-in-slot run. It is not needed and would be an extra outcome look.
+```
+
+**C5. DEC-031 Am.3 item 6 (canary prerequisites; the mint fetch names HV4).**
+
+> 6. **Canary prerequisites** (ruling item 5). This amendment allows no live send (§4). A canary exists only under its own DEC (§2 step 3). Before one is proposed from a screen pass, all of these hold:
+>    - quant-proof's check of the read on its exact files (§2 step 1);
+>    - the owner's OK (§2 step 2);
+>    - a canary DEC with small limits (§2 step 3);
+>    - total positive ex-best-day (§2: a book whose total is not positive ex-best-day is not proposed for a canary);
+>    - the worst-in-slot mean and its CI90 lower bound, quoted in the proposal (R7).
+
+Am.3 item 6 (first part). (DEC/DEC-031-forward-paper-arena.md:207)
+
+> - **Mint fetch** (Amendment 2 item 6: Fetch, Retries and the close-blocked class): the structure-only mint-account fetch of the book's traded mints runs before ANY canary proposal. For a book Amendment 2 does not cover (for example HV4 if it ends up rent-charged as built),
+
+Am.3 item 6, mint fetch (the line continues; HV4 is named). (DEC/DEC-031-forward-paper-arena.md:215)
+
+**C6. DEC-031 Am.2 HV4 coverage.**
+
+> - **HV4** is covered only if, before its registration, both of these hold:
+>      - (i) its host, `tools/hv4_runner.py`, passes `rent=0` explicitly. At origin/main 77bdf7e, line 1595 builds `stack_config(feed_delay_slots=...)` with the default, so HV4 is rent-charged as built;
+>      - (ii) its frozen code enforces item 6's pool filter. At 77bdf7e, `tools/hv4_cards.py` `filters` (lines 399-400) checks PumpSwap and a WSOL quote only and has no V band, so a rent-0 HV4 as built could trade non-canonical WSOL pools.
+>    - Coverage is tied to HV4's registered `clock_start_ms`: that and its registration must both be after the merge. T0 is not fixed here. R1 named 2026-10-21T00:00Z, which is only the earliest. T0 is the first 00:00Z after a clean 24 h stub run at the final sha and the registration merge, and was expected to be 2026-10-22T00:00Z when this text was revised.
+>    - Items 5 to 9 apply to HV4 like any covered book.
+
+Am.2 item 2 (HV4 coverage; the registration record section 2.3 states (i) and (ii) were met). (DEC/DEC-031-forward-paper-arena.md:112)
+
+**C7. Code that implements C2** (CODE POINTERS, not quotes; the checker does not verify them). `tools/arena_score.py` at the frozen sha 9ed4c5ff (`git show 9ed4c5ff:tools/arena_score.py`; note main's copy is c4859323 and line numbers may differ there): line 84 `MAX_EXCLUDED_SHARE = 0.05`; line 422 the cap numerator `(sum(ex.values()) + len(data_refused)) / n_attempts`; lines 438-449 orphans, the over-cap share and ledger incidents are checked BEFORE any FAIL and give `NOT_DECIDABLE`; lines 450-454 `no priced trades at the deciding stake` labelled `FAIL (n < 100)`; lines 470-471 the `fail_label` set when every miss starts with `n `. On main: `tools/hv4_am15_read.py` lines 140-144 `is_count_only` (a fail_label, or misses starting `n ` or `days `; `days positive` is explicitly not a count miss), tested at `tools/test_hv4_am15_read.py` lines 245-249; `tools/hv4_am15_read.py` lines 195-196 print `FAIL: count-only, not a loss. Final (Am.15 item 2) ...`. Lines were checked by the writer against `git show`, not by the checker.
 
 
 ## 5. E5 reviewers, E6 digests and L8 tables
@@ -638,7 +724,7 @@ Registration L9 row (E3 registration and E3b genesis). (ARTIFACTS/lab/hv4-regist
 The seal list in the task brief for this file also names #1564 to #1569, #1517 to #1520, #1554, #1555, #1559, #1560 and #1591 as job ids on which no status or log call is to be made. This index calls none.
 
 ## Notes (non-binding; the writer's observations)
-- N1. DEC-031 Amendment 15's heading line says "status: DRAFT until merge, QP OK and reviewer verdict". `git log` on main shows the amendment and its tools merged in one commit, `305d9c0a` "DEC-031 Am.15: HV4 read instant + wrapper (QP-RULING-1025) (#915)", committer time 2026-10-25T12:35:24-07:00 (2026-10-25T19:35:24Z), which is before the item 4 bar of 2026-10-30T00:00:00Z. The PR comments (QP OK and reviewer verdict on the exact head) were NOT read for this file. If Am.15 had not merged in time, c0-readiness section 2c R1 says the registered rule would apply literally; with the merge before the bar, that fallback does not arise on this reading. QP to confirm.
+- N1. DEC-031 Amendment 15's heading line says "status: DRAFT until merge, QP OK and reviewer verdict". `git log` on main shows the amendment and its tools merged in one commit, `305d9c0a` "DEC-031 Am.15: HV4 read instant + wrapper (QP-RULING-1025) (#915)", committer time 2026-10-25T12:35:24-07:00 (2026-10-25T19:35:24Z), which is before the item 4 bar of 2026-10-30T00:00:00Z. Per the QP pass on #1080: QP OK (comment 6402108455) and reviewer APPROVE (comment 6402206509) are both at the PR's final head 819ee4a7, and the three files are unchanged between 819ee4a7 and the merge. The amendment is in force; the DRAFT heading is stale and the "registered rule applies literally" fallback has lapsed (this closes the former open question on Am.15 merge conditions).
 - N2. The registration record is named `hv4-registration-1023.md` and its title says DRAFT for T0 2026-10-25; its section 0 and its DONE cells carry the retargeted values (clock 1792886400000 = 2026-10-25T00:00:00Z, frozen sha 9ed4c5ff). Older sentences in the same file still say clock 2026-10-21 or 2026-10-23, "first 00:00Z after a clean 24 h stub" and "Rent-charged as built" (the latter from DEC-031 Am.2's own conditions, which the record shows were met). The record's own section 1 table replaces the stub sentence with Am.6 item 1.4. The DESIGN copy is older again: "T0 = 2026-10-21T00:00Z at the earliest", "13 bots", looks at T0+5, +7, +10, +14 and "25 cells x 4 looks = 100 checks"; its Amendment A1 item 8 supersedes the looks for gate purposes, and Note N2 limits the registered bots to nine. `tools/hv4_read.py` carries the same stale "25 cells / 13 arms" text and is not a gate-read path.
 - N3. The nine bot_ids are CON-L, CON-F, CON-P, CON-X, CON-R, BIG-L, BIG-F, BIG-X, BIG-R. The registration record calls CON-P, CON-R and BIG-R control books with one deciding cell each; the others are L, F and X arms. BST arms are not registered. Each registered bot_id has one gate read.
 - N4. The model id registered is `claude-haiku-5-5` on seven arms and `[]` on the two X arms. The API-returned id is recorded as DEFERRED to read time in the registration record.
@@ -646,22 +732,15 @@ The seal list in the task brief for this file also names #1564 to #1569, #1517 t
 - N6. The pinned code names `END` as 1794096000000 (2026-11-08T00:00:00Z) in tools/hv4_read_instant.py, and Am.15 uses the same number; the runner process runs to END_ISO 2026-11-08T13:05:00Z so that attempts entered before that cut-off can close.
 - N7. `tools/hv4_arms.py` sets MONTH_GUARD_USD = 160.0 and its comment reads the daily cap as 4.90 at cap (147 a month), while DESIGN section 6 states 4.70 a day and a $127 month. The code is a pinned file at the frozen sha; the DESIGN text is the earlier statement. The owner's line on record (HANDOFF section 3) is a $200 monthly cap after 11-11 with $192 left before it; it names the Haiku trader and does not name HV4 by id.
 - N8. "E5", "E6" and "L8" are the registration record's labels (E5 reviewers, E6 digest loops, L8 sampler and table, E3 registration, E4 runner). The task brief's phrase "sha lines only" for what may be read from E5, E6 and L8 outputs is an instruction, not a quoted rule; no repo text found says it in those words. The repo texts nearest to it are Am.6 items 2.1, 2.6 and 2.7 (the table tool is outcome-blind and its table and output sha256 are notebooked daily), the §1.2 daily decision-log sha256, and the SEALS-BRIEF line in section 7.
-- N9. Am.15 item 5 cites QP-RULING-1025-hv4-read-rule R2.2 (a) to (g) for a canary consumer. That text is in the host ruling only; it was not opened. After a recorded PASS only CON-F, CON-X, BIG-F or BIG-X may feed a C0 bridge under Am.15 item 5.
+- N9. Am.15 item 5 cites QP-RULING-1025-hv4-read-rule R2.2 (a) to (g) for a canary consumer; the host text is reproduced in section 4b (C3). After a recorded PASS only CON-F, CON-X, BIG-F or BIG-X may feed a C0 bridge under Am.15 item 5.
 - N10. Superseded or replaced text, collected: DEC-031 section 2 "When" and Am.4 item 2.3 are replaced for the nine books by Am.15 item 1 (Am.15's own words). Am.2 item 2's "T0 is the first 00:00Z after a clean 24 h stub run" is replaced by Am.6 item 1.4 (Am.6 and the registration section 1 say so). Am.4 item 2.2's "H is pinned in the bots.json line" is replaced for HV4 by Am.7 item 1 (notebook copy plus the records PR commit). DESIGN section 8's four looks and its 25 cells x 4 looks are replaced for gate purposes by DESIGN Amendment A1 item 8. Am.2 item 2's conditions (i) and (ii) for HV4 are recorded as met in registration section 2.3; that is the record's statement, not re-checked here.
+- N12. Former open questions, classified by the QP pass on #1080 and closed here: (3) Am.15 merge conditions: resolved, see N1. (4) "sha lines only": not a conflict; the binding text is the SEALS-BRIEF HV4 line (no score, preview or am6_read output, decision-row contents or attempt counts); E5 bundles carry the arm's own closed trades (registration:145) so they are outcome-bearing and sealed beyond their sha lines; the E6 digest binds through its decision_log_sha256; the L8 table tool is outcome-blind by Am.6 2.1, and the brief's "sha lines only" is stricter and stands. (5) host-only rulings: process item, addressed by section 4b. (6) spend wording: disclosure only; at runtime the caps are the pinned hv4_arms.py and hv4_budget.py; DESIGN's $4.70 a day is an arithmetic slip (7 x 0.50 + 1.00 + 0.10 = 4.60; hv4_arms.py:19-21 discloses it); HANDOFF:12 applies to the Haiku trader, which includes HV4. None affects the read.
 - N11. The pinned read tools may have changed on main since the registration pins were written (the registration pins arena_score at a508ed79 and Am.15 item 4 allows c4859323 disclosed). This file does not re-check any sha256 against disk.
 
 ## OPEN QUESTIONS FOR QP
-Not resolved here. Question 1 is the one HANDOFF names as needing its own QP ruling before the HV4 read.
+Question 1 is the one HANDOFF names as needing a QP ruling; a separate ruling is pending.
 
-1. **Attempts versus trades (the HANDOFF item; real tension in the text).** The clauses, all quoted above: (a) DEC-031 section 2 "When" counts "counted attempts (every entry decision, guarded reverts included)"; (b) Am.15 item 1 replaces it for the nine books with a boundary B defined on O (kind `open`) and R (kind `refused`): O - floor(0.05 x (O + R)) >= 100 and O decision dates on at least 5 distinct UTC dates; (c) Am.15 item 2 says the gate's n is the subset of `open` attempts "with a priced `trade` row at stake 0.25 and not excluded (§1.4, missing V, late-print gap, engine restart, Am.6 span or open-at-restart)", so n can be smaller than O; (d) CLAUDE.md's gate and DEC-031 section 2 require at least 100 trades and at least 5 UTC dates with a majority positive; (e) Am.15 item 2 last sentence: "A count-only miss at B is final and labelled 'count-only, not a loss'". The text does not say, in terms, what the verdict is when the O margin and O dates are met at B but the trade count n is below 100 or the trade dates are below 5. The candidate words in the repo are NOT_DECIDABLE (Am.6 caps, DEC-014, the no-B-by-END case), a FAIL labelled "(n < 100)" (only in the c0-readiness restatement of the fallback), and "count-only, not a loss" (Am.15 item 2 and the c0-readiness restatement, which writes it for "fewer than 5 trade dates" while Am.15 item 1 counts O dates). Also open: whether the 5 dates and the day-majority of the gate are taken over O dates or trade dates, and whether a booked-at-fill sell-refused trade (Declaration 1) counts toward n. Which word the scorer prints for each case was not read (no output or ledger was opened). QP to rule; this file takes no side.
+1. **Attempts versus trades.** D1-D4 under QP ruling: /data/mal/hunt-1008/ops/manager17/QP-RULING-1029-hv4-read-d1d4.md (pending). The text that answers the earlier sub-questions is quoted in section 4b: n < 100 with the margin met is possible only above the 5% cap and gives NOT_DECIDABLE (C2, C7 cap-first order); fewer than 5 trade dates is a FAIL labelled "count-only, not a loss" and final (Am.15 item 2; C2; C7 wrapper line); the gate's 5 days and day majority are over trade entry dates, O dates fix only B (C1 item 5; Am.15 item 1); a sell-refused trade booked at its fill is a trade (Declaration 1; C1 item 2). QP classifies the remainder as a narrow real item: whether Am.15 is in force (D1), whether the cap proof holds in the pinned code (D2), the days unit (D3), the label of record (D4), and unclosed attempts at B (D5). This file takes no side.
 
-2. **Confirmation reachability and tooling.** Am.15 item 3 defines the confirmation condition, and c0-readiness section 2c R1 states a confirmation is possible only if B1 <= 2026-11-03T00:00Z. tools/hv4_am15_read.py refuses a confirm-mode instant file ("not implemented here"). Is a tool owed before any confirmation, and does DEC text say who owns it? Not in the text found.
-
-3. **Am.15 merge conditions (Notes N1).** The amendment heading says DRAFT; merged as #915 at 2026-10-25T19:35:24Z. Item 4 required a QP OK on the exact head and a reviewer verdict. The PR comments were not read. QP to confirm the conditions were met, so the fallback "registered rule applies literally" is moot.
-
-4. **"Sha lines only" (Notes N8).** No repo text found states which parts of E5 reviewer, E6 digest and L8 table outputs may be opened. Am.6 item 2.1 makes the L8 table tool outcome-blind by design, yet the task brief allows only sha lines. QP to say whether the L8 table content (per-hour health counts) is readable, and whether E5 manifests and E6 digests are open or sealed beyond their sha256 lines.
-
-5. **Host-only rulings.** QP-RULING-1025-hv4-read-rule (R1, R2, R3) and SEALS-BRIEF are host files; this file quotes them only through Am.15 and the c0-readiness restatement. A records PR could copy the ruling into ARTIFACTS/lab/ as was done for qp-ruling-1022-hv4-am6.md. Not blocking.
-
-6. **Spend cap wording (Notes N7).** The pinned month guard is 160.0 USD and the pinned daily cap arithmetic differs from DESIGN's. No owner line on record names HV4 by id. QP to say whether any of this is a rule or only disclosure. It does not move the read.
+2. **Confirmation tooling (real gap, low).** tools/hv4_am15_read.py refuses a confirm-mode instant file; no DEC text names who builds the confirmation scorer, including the p <= 0.05/c step. It matters only after a recorded PASS and only for stake above C0 (confirmation is reachable only if B1 <= 2026-11-03T00Z). No effect on the screen read.
 
