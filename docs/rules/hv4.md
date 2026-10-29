@@ -444,8 +444,9 @@ DESIGN section 8. (ARTIFACTS/lab/hv4-registration-1023/DESIGN.md:249)
 - If no B exists by 2026-11-08T00:00:00Z, the book ENDS NOT_DECIDABLE at clock + H, final, counts only. It was already counted in N.
 
 **If the amendment is not merged before 2026-10-30T00:00:00Z** (the earliest boundary of either rule), or if any HV4 count is seen first, the registered rule applies literally. B is then the attempt boundary, and n < 100 after exclusions records "FAIL (n < 100)", final and not a loss. No later switch is allowed. Under neither rule is there an extension, an early read or a second read.
-(This last paragraph is the lapsed fallback; see the caption on the c0-readiness quote in section 4.)
 ```
+
+Index note, not host text: the last paragraph above is the lapsed fallback. See the caption on the c0-readiness quote in section 4.
 
 **C3. Ruling R2.2 (a) to (g), the canary consumer conditions (Am.15 item 5 binds them); R2.1** (host text, unverified by the checker)
 
@@ -789,7 +790,7 @@ In short, as the ruling states it: Am.15 is in force; the old HANDOFF:22 and :10
 - N11. The pinned read tools may have changed on main since the registration pins were written (the registration pins arena_score at a508ed79 and Am.15 item 4 allows c4859323 disclosed). This file does not re-check any sha256 against disk.
 
 ## OPEN QUESTIONS FOR QP
-Question 1 is the one HANDOFF names as needing a QP ruling; a separate ruling is pending.
+Question 1 was the one the old HANDOFF lines named as needing a QP ruling. QP-RULING-1029-hv4-read-d1d4 has since decided it, and #1081 replaced those HANDOFF lines.
 
 1. **Attempts versus trades: ruled.** D1-D4 are decided by QP-RULING-1029-hv4-read-d1d4 (section "Rulings"). The only residuals are the two the ruling names, kept in that section: a pre-merge count contact discovered after the read is recorded (no remedy ruled), and the engine invariant that every non-dropped open is closed by a `trade` or `excluded` row at stake 0.25 (unverified).
 
