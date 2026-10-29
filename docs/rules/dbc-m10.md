@@ -1,4 +1,4 @@
-NON-BINDING INDEX of the binding text. On any conflict, the cited DEC/EXP text on main controls. Built 2026-10-29 at main 6a2e2cbf. Any edit to this file is a T1 PR (DEC-013 Am.1).
+NON-BINDING INDEX of the binding text. On any conflict, the cited DEC/EXP text on main controls. Built 2026-10-29 at main aa9a6364. Any edit to this file is a T1 PR (DEC-013 Am.1).
 
 # Rules for book DBC m10, forward v1 (confirmation read; P18 B' on PASS)
 
@@ -24,7 +24,7 @@ REGISTRATION, What this read is. (docs/research/dbc-m10-forward/REGISTRATION.md:
 > file, produced by `python3 docs/research/dbc-m10-forward/pins.py` at the tag commit) is appended in PINS.txt in the same commit. Registration sha256 and "Registered at" are recorded in
 > SHA256SUMS.txt by the manager at tagging (`date -u`). Ruling sha256 2a34dfc0... (QP-RULING-1024-dbc-m10-swap3.md).
 
-REGISTRATION status line as written. See OPEN QUESTION 1. (docs/research/dbc-m10-forward/REGISTRATION.md:3)
+REGISTRATION status line as written. Stale status text; see Notes N1. (docs/research/dbc-m10-forward/REGISTRATION.md:3)
 
 **Governs:** The window.
 
@@ -36,7 +36,7 @@ REGISTRATION R1. (docs/research/dbc-m10-forward/REGISTRATION.md:21)
 
 > `[2026-10-25T00, 2026-11-01T00)` (7 UTC days, 168h; the read refuses before 2026-11-01T00:10Z, ten minutes after the window end, so the read instant is not an hour boundary)
 
-HOLDOUT_LEDGER, Meteora DBC m10 forward window row (Hours cell). See OPEN QUESTION 2. (docs/HOLDOUT_LEDGER.md:70)
+HOLDOUT_LEDGER, Meteora DBC m10 forward window row (Hours cell). See Notes N2. (docs/HOLDOUT_LEDGER.md:70)
 
 **Governs:** The frozen code, the tag and the pins.
 
@@ -66,6 +66,10 @@ AMENDMENT-1, AM5 pins (the 11 sha256 values; sha256 at the amendment head). (doc
 > dbc_price.py / dbc_screen.py / arena_stack.py are unchanged (7db0afdd / 607e3173 / a39b2ba6). dbc_fwd_read.py is unchanged (ccffd905), and so is dbc_fwd.py (b43e7955, merged in #878).
 
 AMENDMENT-1, AM5 pins note. (docs/research/dbc-m10-forward/AMENDMENT-1.md:56)
+
+> Both-oracle replay at the amendment head: PENDING. It needs one MiScusi job (Swap2 hours only): `python3 -m tools.dbc_fwd --replay --start 2026-10-14T00 --end 2026-10-16T04 --out <dir>`.
+
+AMENDMENT-1, AM5 (stale text: the AM5 values are carried by `docs/research/dbc-p18-build1/equivalence-swap2-1014T00-1016T04.json`, md5_triggers 6965028e46dba86f7293f4d27284a321, md5_entries 074a827303e94e8049284f67aafe7471, per QP pass on #1079; dbc_fwd.py is unchanged, b43e7955). See Notes N10. (docs/research/dbc-m10-forward/AMENDMENT-1.md:57)
 
 > 7185d58c2cc176f02acc0bb83899745d019317b9008a00c8ec46577beb3e2600 (sha256) is the file at tag dbc-m10-forward-v1-am1 = 7d5be9e51a39db1b8030843a273f747eb92a2967 (git blob 69268a16), and on main. tools/dbc_m10_read_ops.py pins this value for the read.
 
@@ -160,7 +164,7 @@ AMENDMENT-1 AM4. (docs/research/dbc-m10-forward/AMENDMENT-1.md:20)
 > records each job id and its counted credits (about 14,050 per hour, 0.34M per day, 2.4M for the window; Helius autoscaling credits, reported per CLAUDE.md). More than 6 incomplete hours = NOT_DECIDABLE
 > (refetch of an incomplete hour is allowed only before the read, by the same tool, no content inspection).
 
-REGISTRATION R3 (the fetch command and cap: see READ-HARDENING item 5 in section 3 and OPEN QUESTION 3). (docs/research/dbc-m10-forward/REGISTRATION.md:34)
+REGISTRATION R3 (the fetch command and cap: see READ-HARDENING item 5 in section 3 and Notes N3). (docs/research/dbc-m10-forward/REGISTRATION.md:34)
 
 > Base map = docs/research/dbc-p17/data/cfg_summary.json (7,399 configs, fetched by tools/dbc_cfg_fetch.py, job #1504). The read tool, after the marker claim and BEFORE the first load, scans only the
 > `config` and quote-mint strings of window trade lines, fetches every config not in the map with getMultipleAccounts (sorted keys, 100 per call, finalized; deterministic, no content-based choice),
@@ -177,7 +181,7 @@ REGISTRATION R12. (docs/research/dbc-m10-forward/REGISTRATION.md:75)
 > fee paid buy/sell/round trip bps; slot_s per hour; Swap3 share, hook / transfer-fee / unmapped-config excluded share per day; attempts per day; config-map report; sensitivities (report only).
 > Output: fwd-m10.json + fwd-m10.md (sha256 in the md).
 
-REGISTRATION R13 (the output file name is fwd-m10-am1.json under the am1 tool, see OPEN QUESTION 4). (docs/research/dbc-m10-forward/REGISTRATION.md:79)
+REGISTRATION R13 (the output file name is fwd-m10-am1.json under the am1 tool, see Notes N4). (docs/research/dbc-m10-forward/REGISTRATION.md:79)
 
 
 ## 3. The ONE read: job #1804, Option A, confirmation only
@@ -202,7 +206,7 @@ REGISTRATION addendum A1 (supersedes note). (docs/research/dbc-m10-forward/REGIS
 > Read tool: `python3 tools/dbc_fwd_read.py --confirm-one-look` (tools/dbc_fwd_read.py). Marker `/data/mal/hunt-1008/push-1016/hunt29/dbc/HOLDOUT_READ_DONE_v3` (atomic O_EXCL, outside --out),
 > preflight (all 168 hour NAMES under the fresh root, newest mtime >= 10 min), output dir `/data/mal/hunt-1008/push-1016/hunt29/dbc/fwd-read-v1` (must be empty or absent).
 
-REGISTRATION R2, the line that A1 supersedes (kept so the output-dir text is visible; NOT in force as a command). See OPEN QUESTION 4. (docs/research/dbc-m10-forward/REGISTRATION.md:27)
+REGISTRATION R2, the line that A1 supersedes (kept so the output-dir text is visible; NOT in force as a command). See Notes N4. (docs/research/dbc-m10-forward/REGISTRATION.md:27)
 
 > Data guard: tools.dbc_price.enable_forward_window accepts only [2026-10-25T00, 2026-11-01T00) directly under /data2/mal/venue-tape-backfill/fwdv1/meteora_dbc; every earlier hour is refused.
 
@@ -220,7 +224,7 @@ READ-HARDENING item 2a (repo copy; the ruling is a host file). (docs/research/db
 
 > Declared <date -u>: the fwdv1 fetch (out dir /data2/mal/venue-tape-backfill/fwdv1) runs with ONE fixed cumulative cap, `--credit-cap 3700000` (1.5 x the 2.465M of the Swap3 holdout week; QP minimum 3.7M).
 
-READ-HARDENING item 5 credit cap declaration. See OPEN QUESTION 3 (relation to the per-day `--credit-cap 500000` of R3). (docs/research/dbc-m10-forward/READ-HARDENING.md:23)
+READ-HARDENING item 5 credit cap declaration. See Notes N3 (relation to the per-day `--credit-cap 500000` of R3). (docs/research/dbc-m10-forward/READ-HARDENING.md:23)
 
 > Procedure G has a separate cumulative budget of 300,000 credits over all passes. Neither is adjusted day by day against the meter. If the cap binds (rc 5), the missing names make the read refuse before the claim (not a look).
 
@@ -342,7 +346,7 @@ REGISTRATION R3. (docs/research/dbc-m10-forward/REGISTRATION.md:37)
 > - the amendment text equals AM1-AM5.
 > Otherwise the read runs unamended. Its PASS is then recorded as PASS-SCREEN-LOOKAHEAD, which licenses nothing and ends m10 (NOT_DECIDABLE by design for licensing).
 
-AMENDMENT-1 AM6. The tag commit time is stated in OPEN QUESTION 5. (docs/research/dbc-m10-forward/AMENDMENT-1.md:23)
+AMENDMENT-1 AM6. See Notes N5. (docs/research/dbc-m10-forward/AMENDMENT-1.md:23)
 
 > Fewer than 100 fills, more than 6 incomplete hours, or more than 5% of window SOL-quoted rows in unmapped configs, among others (R1, R3, R14; R14 covers a failed one-look), is NOT_DECIDABLE and ends m10 and every D1 variant on DBC.
 
@@ -375,11 +379,11 @@ READ-HARDENING header. (docs/research/dbc-m10-forward/READ-HARDENING.md:5)
 
 > Option A needs a reviewer verdict and a QP OK on this PR by 2026-11-01T00:00Z; otherwise use `B`
 
-READ-HARDENING, Job specs (READ). See OPEN QUESTION 6. (docs/research/dbc-m10-forward/READ-HARDENING.md:58)
+READ-HARDENING, Job specs (READ). See Notes N6. (docs/research/dbc-m10-forward/READ-HARDENING.md:58)
 
 > Chain section A4 and memory section A5 updated 2026-10-27T21:51:12Z (date -u) after QP's OK at 36f203ad (comment 6454456703) and the chain resubmission.
 
-REGISTRATION addendum header (QP OK for Option A). (docs/research/dbc-m10-forward/REGISTRATION.md:94)
+REGISTRATION addendum header (QP OK on PR #1068, the records addendum; NOT the Option A OK, see the note after READ-HARDENING job specs below). (docs/research/dbc-m10-forward/REGISTRATION.md:94)
 
 > Required by QP-RULING-1024-read-hardening.md item 2c (sha256 3e880055063e294d3b384a533b7e7a79974632688b7dc66b731ec1e520adebf2) and by the QP verdict on PR #890 (head 86b0e3d1, 2026-10-24T18:23Z).
 
@@ -402,14 +406,28 @@ READ-HARDENING, Job specs (C1). (docs/research/dbc-m10-forward/READ-HARDENING.md
 
 READ-HARDENING, Job specs (C2). (docs/research/dbc-m10-forward/READ-HARDENING.md:55)
 
+> Time limit 2 h, MemoryMax 24G, resumable false. Exit codes: 0 PASS, 2 UNINFORMATIVE, 1 FAIL (the read must not run as tagged),
+
+READ-HARDENING, Job specs (C2): the rule that a C2 FAIL blocks the read as tagged. (docs/research/dbc-m10-forward/READ-HARDENING.md:57)
+
+**Host record, not in the repo (not a blockquote, not checked by the checker):** C2 engine-equivalence #1576. Recorded by the manager in the MiScusi notebook entry "DBC m10 C2 engine-equivalence #1576 = PASS" and not opened for this file. Facts as the manager gave them: job #1576 exitCode 0; `/data/mal/hunt-1008/push-1016/hunt29/dbc/sw3-engine-equiv/equivalence-sw3.json`, sha256 ed87d3cb4d28ec5f866c9513805dc3da470b2ad51151036d3f7d0cfe1c9d25fc; verdict PASS; window [2026-10-16T04, 2026-10-17T00); tag_commit 7d5be9e5..., equal to the `dbc-m10-forward-v1-am1` tag; taken_utc 2026-10-25T12:29:20Z. Per the READ-HARDENING:57 rule quoted above, a PASS means the precondition for the read to run as tagged is met. The only other repo mention of #1576 is its peak RSS (REGISTRATION.md:150).
+
 > Tests: `python3 -m tools.test_dbc_m10_read_hardening` (synthetic only).
 
 READ-HARDENING Files. NEVER RUN (seal; see section 7). (docs/research/dbc-m10-forward/READ-HARDENING.md:44)
 
+**Option A conditions met (QP pass on #1079, comment 6501961906; correction of the first draft).** READ-HARDENING:58 asks for a reviewer verdict and a QP OK on PR #890 by 2026-11-01T00:00Z. Both exist on #890 at head 86b0e3d1: QP "QP OK, with conditions" (comment 6387880346, 2026-10-24T18:23:16Z) and reviewer "APPROVE" (comment 6397758841, 2026-10-25T12:40:43Z). #890 merged 2026-10-24T18:24:00Z, merge commit 304bb9cd, which is #1804's git_ref. The comment 6454456703 quoted above is the QP OK on PR #1068, not the Option A OK. Source: PR comments, not opened for this file.
+
+**Binding lines that are only in the host ruling (not in either repo copy; not a blockquote; not checked).** Source: `/data/mal/hunt-1008/push-1016/hunt29/dbc/QP-RULING-1024-read-hardening.md` (sha256 3e880055063e294d3b384a533b7e7a79974632688b7dc66b731ec1e520adebf2), as quoted in the QP pass `/data/mal/hunt-1008/ops/reports/2026-10-29/pr1079-qp.md`. Ruling (1): `rc 4 (marker exists): not a new look. The earlier claim governs.` Ruling (2)d: `No agent, cron or job other than the read job may launch either module.` Ruling (6), last bullet: `A program-upgrade lookup (getAccountInfo on the DBC ProgramData, last deploy slot) is allowed pre-claim, REPORT-ONLY. It may not cancel or delay the read. No discretionary withdrawal on window information.` Ruling (6): `On a FAIL the read must not run as tagged.` and `The AM5 equivalence (#878) covers only [10-14T00, 10-16T04)`. Ruling (4)5 and (4)4 (G limits): `At most 3 passes per hour, at least 30 min apart.` and `Never replace a non-gap hour.` These stay unquoted at line level until the ruling is copied to ARTIFACTS/lab/ (Notes N11).
+
+**Disclosed residual risks of the #890 QP OK (PR #890 comment 6387880346, state text, UNCHECKED):** a None RPC result in the R4 fetch raises TypeError, which is not retried; a leftover uncompressed tape-H.jsonl name is not refused by the completeness check. Both are post-claim NOT_DECIDABLE routes.
+
+**Drift (C6).** Ruling (2)c says to add the A1 line to docs/HANDOFF.md; A1 (REGISTRATION.md:100) says it was in HANDOFF section 6 at 37bafde4. The current docs/HANDOFF.md has no such line; HOLDOUT_LEDGER.md:70 carries it, and the README guard and wrapper exit 12 enforce it mechanically.
+
 
 ## 6. What happens on PASS: P18 B' (DEC-031 Amendment 20)
 
-**Governs:** Status and scope of the amendment. The heading on main still says DRAFT; the merge is recorded in OPEN QUESTION 7.
+**Governs:** Status and scope of the amendment. The heading on main still says DRAFT; the merge is recorded in Notes N7.
 
 > ### Amendment 20 (DRAFT; number = the next free DEC-031 amendment at merge: Amendment 16 is held by open PR #1019,
 
@@ -591,7 +609,7 @@ QP-RULING-1026-p33-p18 Q1 item 4. (ARTIFACTS/lab/qp-ruling-1026-p33-p18.md:30)
 
 **Governs:** State document: the DBC row.
 
-> | **DBC m10** | Forward window [10-25, 11-01T00:10Z). Read chain submitted (§5). | ONE read via job #1804, a confirmation only. If it PASSes, P18 B' (DEC-031 Am.20 #1066): P0 = the read's attempts_by_day, clock 11-04T00Z, expiry 11-06T00Z. P18 code is ready: #1067 and the wire md5 PASS #1805. Owed for P18:
+> | **DBC m10** | Forward window [10-25, 11-01T00:10Z). Read chain submitted (§5). | ONE read via job #1804, a confirmation only. If it PASSes, P18 B' (DEC-031 Am.20 #1066): P0 = the read's attempts_by_day, clock 11-04T00Z, expiry 11-06T00Z. P18 code is ready: #1067 and the wire md5 PASS #1805. Owed for P18: fast-0 staging (venv, worktree, gate jobs J1–J4 per `docs/research/p18-prebuild/gate_jobs.md`), probe, dry score, registration pack and guard.
 
 docs/HANDOFF.md section 1 (state document, not binding text). (docs/HANDOFF.md:25)
 
@@ -618,7 +636,7 @@ HOLDOUT_LEDGER, forward window row. (docs/HOLDOUT_LEDGER.md:70)
 
 > Do not run `python3 -m tools.test_dbc_m10_read_hardening` or any other #890 test file on or after 2026-10-31T00:00:00Z (HANDOFF).
 
-HOLDOUT_LEDGER, forward window row. See OPEN QUESTION 8. (docs/HOLDOUT_LEDGER.md:70)
+HOLDOUT_LEDGER, forward window row. See Notes N8. (docs/HOLDOUT_LEDGER.md:70)
 
 > **Readers:** the single read job (`dbc-m10-read-job.sh`, Option A needs a reviewer verdict and a QP OK on PR #890 by 2026-11-01T00:00Z, otherwise Option B); the daily fetch and the G gap passes write only and take directory listings and completeness markers (R3). No other reader, no count, no smoke.
 
@@ -704,22 +722,35 @@ docs/HANDOFF.md section 5 (state document). (docs/HANDOFF.md:77)
 
 > - **Feed handover:** H' #1652 is armed and sleeps until 11-07T11:50Z (n_NglnQrS8iEMa1Q); post-check C #1585.
 
-docs/HANDOFF.md section 5 (state document). #1652 H' is not a DBC read-chain job in the registration text; see OPEN QUESTION 9. (docs/HANDOFF.md:83)
+docs/HANDOFF.md section 5 (state document). #1652 H' is not a DBC read-chain job (#1804 runs after F #1546 and #1803 only). (docs/HANDOFF.md:83)
+
+> - 10-31 21:07Z: check research-0 room for DBC READ #1804, which needs about 11 GB;
+
+docs/HANDOFF.md section 6 (state document; the action for the OQ12 risk). (docs/HANDOFF.md:95)
+
+> Manager rule: no new heavy research-0 job from 2026-10-31T22:00Z until the read ends; #1775 and #1767 are held or deprioritised if they have not finished by then.
+
+REGISTRATION addendum A5 (the rule for the OQ12 risk). (docs/research/dbc-m10-forward/REGISTRATION.md:146)
+
+
+## Notes (non-binding; QP classification of the first-draft questions, QP pass on #1079)
+- N1. REGISTRATION.md:3 and AMENDMENT-1.md:3 status lines are stale text; the registration is in force. `dbc-m10-forward-v1` is a lightweight tag at c6d4c046; `dbc-m10-forward-v1-am1` is an annotated tag (object e3b2f686) with tagger date 2026-10-24T15:39:46+00:00, 7d5be9e5 behind it.
+- N2. The data window is R1 [2026-10-25T00, 2026-11-01T00). The seal adds the read margin to the earliest read instant 00:10Z (HOLDOUT_LEDGER.md:70, Hours cell). 00:10Z is not data.
+- N3. Per QP, ruling (5) controls the fetch cap (one cumulative cap, raising it is operational); the R3 shape "7 jobs ... 500000" is out of force; R3's after-close and write-only terms stay. No effect on #1804.
+- N4. Per QP, A1 supersedes the whole R2 "Read tool" line; out dir is `fwd-read-v1-am1` and the file `fwd-m10-am1.json` (AMENDMENT-1.md:30; A4).
+- N5. The am1 tag was placed 2026-10-24T15:39:46Z, before 2026-10-25T00:00Z, so AM6's late-admissibility branch never engaged. The remaining route to PASS-SCREEN-LOOKAHEAD is a marker v3 claim by the old tool.
+- N6. See "Option A conditions met" in section 5.
+- N7. The Am.20 heading is stale; the amendment is in force. #1066 merged 2026-10-27T21:42:07Z (d740e064); QP OK (6454308322) and reviewer APPROVE (6454305913) are both at 4801f096.
+- N8. The #890 test-file bar date comes from a #890 QP condition (10-31T00:00Z); HANDOFF and the brief say never, which is stricter. Obey "never".
+- N9. #1652 H' is not a DBC read-chain job.
+- N10. AM5 PENDING line: see section 1.
+- N11. A later records PR should copy the host ruling to ARTIFACTS/lab/ (as was done for qp-ruling-1026). Not blocking.
 
 
 ## OPEN QUESTIONS FOR QP
-None of these is resolved here. Each is a point where two texts differ, or a status the text does not settle.
+Per the QP pass on #1079, these are not resolved here. None affects read #1804's rule, gate, pins or verdict.
 
-1. **REGISTRATION status line.** REGISTRATION.md line 3 still reads "Status: DRAFT until the tag `dbc-m10-forward-v1` is placed ... after a reviewer verdict and a QP OK on PR #868". The tags `dbc-m10-forward-v1` (commit c6d4c046, committer time 2026-10-24T07:09:42Z) and `dbc-m10-forward-v1-am1` (commit 7d5be9e5, committer time 2026-10-24T14:57:12Z) exist and the addendum treats them as placed. Is the file's status line stale text, with the registration in force? AMENDMENT-1.md line 3 has the same "DRAFT until it is tagged" wording. The "Registered at" and registration sha256 were to be recorded in SHA256SUMS.txt by the manager; no such file is in `docs/research/dbc-m10-forward/` on main. Where is the registration record?
-2. **Window end 00:00Z or 00:10Z.** R1 fixes the window as [2026-10-25T00:00Z, 2026-11-01T00:00Z) (168 hours) and the read refuses before 2026-11-01T00:10Z. The seal written in the manager's briefs is [2026-10-25T00Z, 2026-11-01T00:10Z). Is the seal wider than the window on purpose (the last 10 minutes are the read margin), and is 00:10Z not part of the data window?
-3. **Fetch command.** R3 prescribes seven per-day jobs with `--credit-cap 500000` each. READ-HARDENING item 5 declares one cumulative `--credit-cap 3700000` and job F #1546. Is item 5 the controlling text for the fetch (it reads as a supersession but does not say so), and is the R3 "(7 jobs; D = ...)" wording out of force?
-4. **R2 read tool, output directory and marker names.** A1 supersedes "the 'Read tool' line of R2" and quotes the old output dir `fwd-read-v1`. The am1 tool writes to `.../fwd-read-v1-am1` (AMENDMENT-1.md Implementation; DEC-031 Am.20 item 2.1), and R13 names `fwd-m10.json` while Am.20 names `fwd-m10-am1.json`. The preflight/data-guard and "output dir must be empty" lines of R2 remain printed above. Does A1 supersede only the command, with the directory and file names taken from AMENDMENT-1/Am.20, or the whole line?
-5. **AM6 admissibility.** AM6 says the tag "should be placed before 2026-10-25T00:00Z" and is admissible to 2026-11-01T00:00Z only if three conditions hold at the tag instant. The tag commit time is 2026-10-24T14:57:12Z (a commit time, not the tag-placement instant, which this file did not look up). The addendum also records that the READ-HARDENING item 2a README and other chmods were manager-owed. Has QP ruled that AM6's conditions held at the tag instant, so that a PASS is PASS and not PASS-SCREEN-LOOKAHEAD?
-6. **Option A condition.** READ-HARDENING requires a reviewer verdict and a QP OK "on this PR by 2026-11-01T00:00Z" for Option A, and says otherwise use B. The addendum records "QP's OK at 36f203ad (comment 6454456703)". Is that OK the one that satisfies the Option A condition on PR #890, and does the reviewer verdict exist? Job #1804 runs `A 10`. (This file did not open the PR.)
-7. **Am.20 status.** The Amendment 20 heading on main reads "DRAFT; number = the next free ... status: DRAFT until merge, QP OK on the exact head and a reviewer verdict". PR #1066 was merged (merge commit d740e064, committer time 2026-10-27T14:42:07-07:00, which is 2026-10-27T21:42:07Z), before the 2026-11-01T00:10:00Z deadline and before the 2026-10-31T00:00Z target. Is the heading text stale and the amendment in force, and did the QP OK and the reviewer verdict exist on the exact merged head?
-8. **When #890 test files are barred.** The ledger says "on or after 2026-10-31T00:00:00Z (HANDOFF)". The current HANDOFF line (section 2) says "Never run any #890 test file, nor `tools.test_dbc_m10_read_hardening`" with no date, and the standing agent brief says never. This file takes the stricter reading (never). Which text binds?
-9. **#1652 H'.** HANDOFF lists "Feed handover: H' #1652" next to the DBC chain. No registration or DEC text in the repo describes H' as a part of the m10 read chain or of P18. Is it in scope for this book's jobs list, or a separate feed job?
-10. **Hours-present fields.** DEC-031 Am.20 item 3.3 adds `hours_present`, `bad_hours` to the one field QP-RULING-1026-p33-p18 Q2(b) allows ("Only that field is used"), and Am.20 says this was put to QP for a ruling on the PR. Is there a QP verdict on that point in the repo? (The Am.20 heading cites QP comment 6454278793 as a source of the fixes; the comment is not in the repo.)
-11. **Read ruling not quoted.** QP-RULING-1024-read-hardening.md (host file), QP-RULING-1024-dbc-m10-swap3.md and QP-RULING-1024-m10-lookahead.md are not in the repo, so items 1 to 6 are quoted only through READ-HARDENING.md and the REGISTRATION addendum. The repo copies say AM1-AM6 are "copied VERBATIM" from the lookahead ruling. Does QP want the host files copied into `ARTIFACTS/lab/` and quoted at line level?
-12. **Memory floor vs. the chain.** The addendum A5 accepts a point-in-time MemAvailable floor of 10 GiB (exit 13, pre-claim) and says a post-claim OOM is NOT_DECIDABLE. HANDOFF section 7 lists "Memory room for DBC READ" as owed on 10-31. No text here says who frees room; not a conflict, noted for completeness.
+1. **SHA256SUMS record gap (real conflict, low).** REGISTRATION.md:3 says the registration sha256 and "Registered at" are recorded in SHA256SUMS.txt by the manager at tagging, and READ-HARDENING.md:34 cites SHA256SUMS-AM1.txt. Neither file is in the repo at either tag or on main, nor at hunt29/dbc/ (per QP). The wrapper pins by `git show` of the am1 tag values, not by SHA256SUMS, so there is no effect on #1804 or P18.
+2. **Q2(b) vs Am.20 item 3.3 (real textual tension, low).** QP-RULING-1026-p33-p18 Q2(b) says "Only that field is used". Am.20 item 3.3 adds `hours_present` and `bad_hours`. QP OK on the exact merged head 4801f096; the DEC text controls. The addition only adds NOT_DECIDABLE routes for B'. Affects P18 B' only (Am.20 item 8: the read does not depend on the amendment).
+3. **Disclosed risk, not a text conflict.** REGISTRATION A5 says "a post-claim OOM is NOT_DECIDABLE and ends m10". It could change #1804's outcome class but not its rule. The actions are the A5 rule and the HANDOFF 10-31 21:07Z step, both quoted above.
 
