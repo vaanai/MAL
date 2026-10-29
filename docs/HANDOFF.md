@@ -21,7 +21,7 @@ No book has cleared the promotion gate. Profit so far is 0, and no real SOL is b
 | **Q60 sibling** `h5v1q60-boostfloor-a1` | Decision merged (DEC-031 Am.19 #1064; EXP/EXP-024-RULE-Q60.md). Clock 2026-11-07T00Z, H 14. | Owed before the clock: tag `q60-base-1` (S* + Q*=60 level + the compare_frozen refuse fix, tag only); proofs (i)–(v), where Run C is a fresh s14 at DS=60 on 09-20 via parity_v2; the note PR (own QP and reviewer); P0; smoke; registration. The memory-fit check must cover every H5 shadow and the smoke. Build it as one more row in s1's tools. |
 | **HV4** (9 Haiku bots) | Runner #1561, then #1562. NOTIFICATIONS ONLY. **Never call `miscusi_job_status` on #1561/#1562** (it is a seal view). | Read from 10-30 at the earliest. The attempts-vs-trades read rule needs its own QP ruling first. |
 | **HV6** | **SLIPPED past 10-30** (n_gRpxhSP-5yLKTg). Smoke #1806 FAILED: chunk p95 41 s; refusals 34%; parse_error about 60%, because max_tokens 400 truncates 4-card replies. | Three fixes at a new final sha: (A) HV6-only entry max_tokens of about 1200; (B) concurrent arm calls, plus fitting the board into 12 calls/h; (C) a paced prefetch subclass, which can go to 2,000/h now that the owner has OKed the credits. Then the proof chain, then a smoke that PASSes, then the next rolling clock. The producer #1748 covers until 11-11T00:15Z, so a later clock needs a successor. Diagnosis: scratchpad `hv6-smoke-diag.md` (summarised in n_gRpxhSP-5yLKTg). |
-| **HV7** (Haiku rank) | Proofs done: RESULT_UNIT 329/329; EQUIV_1D PASS (n_PwyBFGvsZH5q4A); F_3D PASS (n_5mn5ovgPxYL_Hw); E1 drill #1771 PASS. Real-model smoke #1779 (smk-1027b, pin n_ARQhZdnJJ6_Msg) is running and ends ~10-29T05–06Z. | Then: fill the #1019 pack (RESULT_SMOKE, HV7_FINAL_SHA = c8fcf761), get QP and reviewer on the pack, merge DEC-031 Am.16, register for **T0 11-01**. **Start the runner in [10-31T22:05Z, 22:45Z]**, never inside [H:48, H:02). Run the pre-T0 counts check by 11-01T01:00Z. |
+| **HV7** (Haiku rank) | Proofs done: RESULT_UNIT 329/329; EQUIV_1D PASS (n_PwyBFGvsZH5q4A); F_3D PASS (n_5mn5ovgPxYL_Hw); E1 drill #1771 PASS. **Real-model smoke #1779 FAILED** at 10-29 ~05Z on the pinned FALLBACK line: 31/31 = 1.0 against the 5% limit (30 not_json, 1 duplicate_id), so 0 valid rankings (n_Q6eEwlUiOrx9nA). On the refusal line, the tool reported 13.0%, but that count includes hard vetoes the pin excludes. Pinned-class refusals were 3/285 = 0.0105, inside the limit (QP on #1071). | **SLIPPED past T0 11-01.** Diagnose the reply format from the cached replies, structure only (max_tokens, wrapper, permutation format). Then, in this order: (1) one new final sha that carries both the reply-format fix AND the new T0-dependent clock pins (hv7_register allows only 11-01/11-02; changing it after the proofs would void them); (2) re-run unit, equivalence, F and E1 at that sha; (3) fix the smoke tool's refusal count to the pinned class, with QP OK; (4) a new notebook pin and a fresh smoke ID for a new ~33 h smoke that PASSes; (5) the #1019 pack, then QP and reviewer; (6) registration at that clock. The runner start rule stays: [T0−1h55m, T0−1h15m], never inside [H:48, H:02). |
 | **DBC m10** | Forward window [10-25, 11-01T00:10Z). Read chain submitted (§5). | ONE read via job #1804, a confirmation only. If it PASSes, P18 B' (DEC-031 Am.20 #1066): P0 = the read's attempts_by_day, clock 11-04T00Z, expiry 11-06T00Z. P18 code is ready: #1067 and the wire md5 PASS #1805. Owed for P18: fast-0 staging (venv, worktree, gate jobs J1–J4 per `docs/research/p18-prebuild/gate_jobs.md`), probe, dry score, registration pack and guard. |
 
 ## 2. Seals (list all of them in every tape-touching brief)
@@ -97,7 +97,7 @@ One-shots to recreate:
 
 ## 7. Owed, by date
 - **10-29:**
-  - The HV7 smoke result (#1779): fill and review the #1019 pack, register for 11-01. The runner starts on 10-31 in [22:05, 22:45Z].
+  - HV7 smoke #1779 FAILED (reply format). HV7 slips; fix and re-proof (see §1).
   - Helm's repeat dry run (feed gaps).
   - Start the HV6 fix work (A/B/C) at a new sha.
   - Plan the use of the $192 API budget, and the self-improving Haiku trader direction (see §8).
@@ -106,7 +106,7 @@ One-shots to recreate:
   - Q60 tag and proofs (clock 11-07).
   - s1 fast-0 tests.
   - Memory room for DBC READ.
-- **11-01:** DBC READ #1804, then P18 B' (11-04) if it PASSes. HV7 T0.
+- **11-01:** DBC READ #1804, then P18 B' (11-04) if it PASSes. (HV7 T0 cancelled: slipped.)
 - **11-04/05:** s1 registration and its shadow (11-05 20:00–22:30Z).
 - **Records owed:**
   - LAB_STATE "Now" lines: HV6 slip, P91 KILL, feed hand-off re-arm, meta-capture restart.
