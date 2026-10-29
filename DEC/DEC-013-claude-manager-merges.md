@@ -2,7 +2,7 @@
 
 | Field | Value |
 | --- | --- |
-| **Status** | Active (working law) |
+| **Status** | Active (working law); Amendment 1 (2026-10-29) below |
 | **Decider** | Vaan (owner) |
 | **Date** | 2026-09-27 |
 | **Amends** | [CONSTITUTION.md](../CONSTITUTION.md) rule 11; [DEC-012](DEC-012-tool-neutral-manager-workers.md) §2 |
@@ -34,35 +34,43 @@ New DEC. Default remains: manager plans, workers open PRs, the Claude manager me
 
 ## Amendment 1 (2026-10-29): review tiers and agent model tiers
 
-**Decider:** Vaan (owner), chat 2026-10-29 ~15:3xZ: "I think yes to all of the decisions for me looks good. Get started on the management cleanup. Let's just make sure it doesn't compromise anything and make our efficiency worse. It should be better." This approves decisions 2 and 3 of `/data/mal/hunt-1008/ops/manager17/CONTEXT-COST-PLAN-1029-v2.md` (notebook n_O1kgzjdWc7wqBQ).
+**Decider:** Vaan (owner), in chat on 2026-10-29, recorded in notebook n_O1kgzjdWc7wqBQ: "I think yes to all of the decisions for me looks good. Get started on the management cleanup. Let's just make sure it doesn't compromise anything and make our efficiency worse. It should be better." This approves decisions 2 and 3 of the manager's context plan v2 (host file `/data/mal/hunt-1008/ops/manager17/CONTEXT-COST-PLAN-1029-v2.md`).
 
 **Why:** review rounds were the second-largest manager cost. Many records-only PRs got two separate agents in each of 2–4 rounds.
 
-### 1. Review tiers
-Every PR still needs both verdict lines on the PR at the exact head before merge:
+### 1. Both verdict lines on every PR (supersedes the QP clause of Decision 1)
+Every PR needs both lines on the PR at the exact head before merge:
 - `QP VERDICT at <sha>: OK`
 - `REVIEWER VERDICT at <sha>: APPROVE`
 
-The merge check (grep of those lines, body matches the PR, base is main, `--match-head-commit`) is unchanged. The tier sets who writes the two lines.
+This has been practice since 10-12 (#621). Decision 1 asked for QP only "where the PR touches a claimed edge", so this is stricter. The merge check is unchanged: grep both lines, check the posted body matches the PR, check the base is main, then `--match-head-commit`. The tier below sets only **who** writes the two lines.
 
-- **T0, one combined pass.** One agent writes both lines, as two separate comments. It must do both jobs: the reviewer's diff review and QP's check of every claim and number against its source. T0 covers PRs that change **only**:
-  - records, notes, lab notes, daily briefs, the idea library, the Console data;
-  - docs/HANDOFF.md;
-  - KILL or NOT_DECIDABLE write-ups;
-  - ops scripts that no book, read, registration or live path runs.
-- **T1, separate QP and reviewer agents, as before.** T1 covers any PR that touches:
-  - code that a book, runner, shadow, scorer, read, gate check, executor or live path runs;
-  - a read rule, registration, seal, the promotion gate, a DEC or EXP binding clause, or a live stage or limit;
-  - any sentence that says a book made money.
-- **When unsure, T1.** The manager names the tier in the review brief. A T0 reviewer that finds T1 content says so and stops; the PR moves to T1.
-- **Unchanged:** the gate, workers-do-not-merge, the exact-head rule, and DEC-032/DEC-033 go-live checks.
+### 2. Tiers
+- **T1, separate QP and reviewer agents (as before), is the default.** A PR is T1 if its diff contains **any** T1 trigger, whatever the file type. A mixed PR is T1. The T1 triggers:
+  1. code or scripts that a book, runner, shadow, scorer, read, gate check, executor, watchdog or live path runs;
+  2. any edit under DEC/ or EXP/ other than a pure typo or link fix;
+  3. edits to docs/HOLDOUT_LEDGER.md, any seals text (including SEALS-BRIEF and the HANDOFF seals section), a read rule, a registration, the promotion gate, or a live stage or limit;
+  4. in docs/HANDOFF.md or LAB_STATE.md: any change to seals, clocks, deadlines, read instants or go-live conditions;
+  5. any sentence that says a book made money, any read result, and any number that decides a read, gate or kill.
+- **T0, one combined agent** writing both lines as two separate comments, applies only when the diff has **no** T1 trigger. Examples:
+  - lab notes, daily briefs, idea-library rows and KILL or NOT_DECIDABLE write-ups that carry no deciding number;
+  - LAB_STATE or HANDOFF edits outside item 4 above;
+  - pure typo or link fixes;
+  - ops scripts that nothing in T1 item 1 runs.
+- **T0 still does both jobs.** The combined agent:
+  - does the reviewer's diff review;
+  - checks every quoted number or claim against its source (including Console data/console.json against its lab note);
+  - re-derives the tier from the diff's file list and content. If it finds any T1 trigger, it posts no verdict lines, says so, and the PR moves to T1.
+- **Who sets the tier:** the manager names it in the review brief. The PR author or builder never sets or claims a tier. The combined agent is never the PR's author or builder.
+- **When unsure, T1.**
+- **Unchanged:** the promotion gate, workers-do-not-merge, the exact-head rule, and the DEC-032/DEC-033 go-live checks.
 
-### 2. Agent model tiers
-- **Haiku 5.5:** mechanical agents, such as copies, counts, catalogues, link checks and triage tables.
-- **Sonnet 5.5:** builders on small, well-specified changes, and T0 passes on docs-only PRs.
-- **Opus:** QP rulings, T1 reviews, design, registrations and the manager.
+### 3. Agent model tiers
+- **Haiku 5.5:** mechanical agents, such as copies, counts, catalogues, link checks and triage tables. They never write a verdict line.
+- **Sonnet 5.5:** builders on small, well-specified changes.
+- **Opus:** every verdict line (T0 combined passes and both T1 passes), QP rulings, design, registrations and the manager.
 
-The manager may move any task up a tier. A task never moves down to cut cost when it decides a read, a seal or the gate.
+The manager may move a task up a tier. A task that decides a read, a seal or the gate never moves down to cut cost.
 
-### 3. Common brief
-Agent briefs cite `/data/mal/hunt-1008/ops/AGENT-BRIEF-COMMON.md` (seals, hard rules, mechanics, report-to-file with a ≤5-line reply) instead of repeating it.
+### 4. Common brief
+Agent briefs may cite the host file `/data/mal/hunt-1008/ops/AGENT-BRIEF-COMMON.md` instead of repeating the common rules. That file is operational: this DEC does not depend on its contents. The binding seals stay in SEALS-BRIEF, docs/HANDOFF.md and the DEC/EXP texts, and any edit to that file's seals text is treated as a T1 matter.

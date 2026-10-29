@@ -50,7 +50,7 @@ Forward-paper rows from 2026-09-25T19:00:00Z through 2026-09-27T06:58:12Z are vo
 ## How to work
 
 - Branch: `claude/<topic>`. One topic per branch. Small pull requests.
-- Workers open the PR and stop. The manager (the Claude session on `mal-fast-0`) reviews and merges, with a `reviewer` pass and a `quant-proof` pass where the PR touches an edge claim.
+- Workers open the PR and stop. The manager (the Claude session on `mal-fast-0`) reviews and merges. Every PR needs `QP VERDICT … OK` and `REVIEWER VERDICT … APPROVE` on the PR at the exact head. They come from separate agents (T1) or, for PRs with no T1 trigger, one combined agent (T0); see [DEC-013 Amendment 1](DEC/DEC-013-claude-manager-merges.md).
 - Commit and push often, at a green unit test, not at the end of a long uncommitted pile.
 - Workers implement. The manager plans. See [DEC-012](DEC/DEC-012-tool-neutral-manager-workers.md) and [DEC-013](DEC/DEC-013-claude-manager-merges.md).
 - Subagents in [.claude/agents/](.claude/agents/): `builder`, `host-ops`, `quant-proof`, `reviewer`.
