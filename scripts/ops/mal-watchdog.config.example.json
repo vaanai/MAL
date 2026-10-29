@@ -1,0 +1,18 @@
+{
+  "check_minute": 23,
+  "realert_hours": 6,
+  "watch": [1814, 1799, 1748, 1718, 1652, 1647, 1591, 1585],
+  "expected_done_ok": [],
+  "disk_paths": ["/", "/data2"],
+  "disk_used_alert_pct": 90,
+  "walker_dir": "/data/mal/blocks/forward-1016",
+  "walker_free_alert_pct": 21.5,
+  "walker_stale_hours": 4,
+  "walker_job_seq": 1036,
+  "walker_successor_seqs": [1290],
+  "mem_avail_alert_gib": 16,
+  "meta_rss_alert_mb": 2200,
+  "meta_job_seq": 1814,
+  "helm_dir": "/data/mal/hunt-1008/push-1016/hunt29/p1/",
+  "spill_globs": []
+}
