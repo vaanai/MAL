@@ -5,6 +5,10 @@
 # header: path branch head_sha pushed dirty_lines locked cited_by
 # and prints a summary to stdout.
 #
+# SAFETY: dirty_lines>0 means uncommitted work, whatever `pushed` says. No tree
+# with dirty_lines>0 is safe to remove without saving its diff first. A '?'
+# dirty value (could not measure) is treated the same way.
+#
 # Read-only by design: only `git worktree list`, `fetch`, `for-each-ref`,
 # `grep`, `status --porcelain` run. Nothing is removed, pruned, moved, cleaned,
 # checked out, reset or stashed. Dirty lines are counted, never named.
@@ -19,7 +23,10 @@ OPS_DIR=${OPS_DIR:-/data/mal/hunt-1008/ops}
 TAB=$(printf '\t')
 
 TMPD=$(mktemp -d "${TMPDIR:-/tmp}/wtcat.XXXXXX") || exit 1
-trap 'rm -rf "$TMPD"' EXIT INT TERM
+TMPOUT=""
+trap 'rm -rf "$TMPD"; [ -n "$TMPOUT" ] && rm -f "$TMPOUT"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 RECS="$TMPD/recs.tsv"
 BODY="$TMPD/body.tsv"
 STAT="$TMPD/status.txt"
@@ -101,7 +108,7 @@ dirty_for() {
 
 # 5. Assemble body rows.
 : > "$BODY"
-DIRTY_N=0; UNKNOWN_N=0; PUSH_N=0; LOCK_N=0; CITED_N=0; DIRTY_UNPUSHED=0
+DIRTY_N=0; UNKNOWN_N=0; PUSH_N=0; LOCK_N=0; CITED_N=0; DIRTY_UNPUSHED=0; DIRTY_PUSHED_Y=0
 while IFS="$TAB" read -r path sha branch locked; do
 	[ -n "$path" ] || continue
 	pushed=$(awk -F '\t' -v s="$sha" '$1 == s { print $2; exit }' "$TMPD/pushed.tsv")
@@ -118,6 +125,9 @@ while IFS="$TAB" read -r path sha branch locked; do
 	[ "$pushed" = n ] && PUSH_N=$((PUSH_N+1))
 	case "$locked" in y*) LOCK_N=$((LOCK_N+1)) ;; esac
 	[ -n "$cited" ] && CITED_N=$((CITED_N+1))
+	if [ "$dirty" != 0 ] && [ "$pushed" = y ]; then
+		DIRTY_PUSHED_Y=$((DIRTY_PUSHED_Y+1))
+	fi
 	if [ "$pushed" = n ] && [ "$dirty" != 0 ]; then
 		DIRTY_UNPUSHED=$((DIRTY_UNPUSHED+1))
 		printf 'DIRTY+UNPUSHED\t%s\t%s\t%s\t%s\n' "$path" "$branch" "$dirty" "$cited" >> "$TMPD/risky.tsv"
@@ -125,15 +135,20 @@ while IFS="$TAB" read -r path sha branch locked; do
 done < "$RECS"
 
 # 6. Write TSV atomically.
-mkdir -p "$(dirname "$OUT")"
+# Temp file in the same directory as OUT, then mv, so the replace is atomic.
+OUTDIR=$(dirname "$OUT")
+mkdir -p "$OUTDIR"
+TMPOUT=$(mktemp "$OUTDIR/.worktrees.XXXXXX") || exit 1
 {
 	printf 'path\tbranch\thead_sha\tpushed\tdirty_lines\tlocked\tcited_by\n'
 	cat "$BODY"
-} > "$TMPD/out.tsv"
-mv "$TMPD/out.tsv" "$OUT"
+} > "$TMPOUT"
+mv "$TMPOUT" "$OUT"
+TMPOUT=""
 
 echo "worktree catalog: $OUT"
-echo "total=$TOTAL dirty>0=$DIRTY_N dirty_unknown=$UNKNOWN_N pushed=n=$PUSH_N locked=$LOCK_N cited=$CITED_N dirty_and_pushed_n=$DIRTY_UNPUSHED"
+echo "total=$TOTAL dirty>0=$DIRTY_N dirty_unknown=$UNKNOWN_N pushed=n=$PUSH_N locked=$LOCK_N cited=$CITED_N dirty_and_pushed_y=$DIRTY_PUSHED_Y dirty_and_pushed_n=$DIRTY_UNPUSHED"
+echo "NOTE: dirty_lines>0 means uncommitted work, whatever pushed says; no tree with dirty_lines>0 is safe to remove without saving its diff first."
 if [ -s "$TMPD/risky.tsv" ]; then
 	echo "rows dirty and pushed=n (path, branch, dirty_lines, cited_by):"
 	cat "$TMPD/risky.tsv"
