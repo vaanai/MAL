@@ -136,3 +136,10 @@ If a job uses Helius autoscaling (about 20M extra credits), the PR or the daily 
 | Idea library (the 10-12 strategy library as rows, plus the 2026-10-13 research; status and why each stopped) | [docs/library/INDEX.md](docs/library/INDEX.md) |
 | Experiments | [EXP/](EXP/) |
 | SSH | [tools/oracle_ssh_smoke.md](tools/oracle_ssh_smoke.md) |
+| Book rules library (read a book's file before its DEC/EXP; a non-binding index of verbatim quotes, where the cited DEC/EXP text controls) | [docs/rules/INDEX.md](docs/rules/INDEX.md) |
+| Agent brief, common rules (cite it by path in every brief) | `/data/mal/hunt-1008/ops/AGENT-BRIEF-COMMON.md` (host) |
+| Pre-flight checklist before review | `/data/mal/hunt-1008/ops/PREFLIGHT-CHECKLIST.md` (host) |
+| Agent reports library (full reports; agents return ≤5 lines) | `/data/mal/hunt-1008/ops/reports/INDEX.tsv` (host) |
+| Lane board (≤5 active lanes) | `/data/mal/hunt-1008/ops/LANES.md` (host) |
+| Worktree catalogue (read-only; dirty means uncommitted work) | `scripts/ops/worktree-catalog.sh` writes `/data/mal/hunt-1008/ops/WORKTREES.tsv` (host) |
+| Watchdog (hourly host checks; alerts only on anomaly) | `scripts/ops/mal_watchdog.py`; state in `/data/mal/hunt-1008/ops/watchdog/` (host) |
