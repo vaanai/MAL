@@ -1,0 +1,352 @@
+#!/usr/bin/env python3
+"""Host-side watchdog: raises alert lines only when the manager is needed.
+
+stdlib only. Allowed external commands: `miscusi-agent job list` and
+`ps -eo pid,rss,args`. Never reads job status/log, never touches
+/data/mal/meta-capture, never opens trade or HELM file contents.
+"""
+import argparse
+import datetime as dt
+import glob
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import time
+
+SEALED = "/data/mal/meta-capture"
+MISCUSI = os.path.expanduser("~/.miscusi/bin/miscusi-agent")
+DEFAULTS = {
+    "check_minute": 23,
+    "realert_hours": 6,
+    "watch": [],
+    "expected_done_ok": [],
+    "disk_paths": ["/", "/data2"],
+    "disk_used_alert_pct": 90,
+    "walker_dir": "/data/mal/blocks/forward-1016",
+    "walker_free_alert_pct": 21.5,
+    "walker_stale_hours": 4,
+    "walker_job_seq": 1036,
+    "walker_successor_seqs": [1290],
+    "mem_avail_alert_gib": 16,
+    "meta_rss_alert_mb": 2200,
+    "meta_job_seq": 1814,
+    "helm_dir": "/data/mal/hunt-1008/push-1016/hunt29/p1/",
+    "spill_globs": [],
+}
+OK_STATES = {"running", "queued", "paused"}
+DONE_STATES = {"done", "passed"}
+BAD_NEW = {"failed", "killed"}
+ROW = re.compile(r"^#(\d+)\s+(\S+)\s*(.*)$")
+TRADES = re.compile(r"^trades-(\d{4}-\d\d-\d\dT\d\d)\.jsonl$")
+
+
+def refuse_sealed(path):
+    p = os.path.abspath(os.path.expanduser(str(path)))
+    if p == SEALED or p.startswith(SEALED + "/"):
+        raise ValueError("refused: path under sealed " + SEALED)
+    return p
+
+
+def run_cmd(argv):
+    """Real command runner. Only two argv shapes are allowed."""
+    if argv[0].endswith("miscusi-agent"):
+        if list(argv[1:]) not in (["job", "list"], ["job", "list", "--active"]):
+            raise ValueError("refused: miscusi-agent only runs `job list`")
+    elif argv[:1] == ["ps"]:
+        if list(argv) != ["ps", "-eo", "pid,rss,args"]:
+            raise ValueError("refused: ps shape")
+    else:
+        raise ValueError("refused command")
+    return subprocess.run(argv, capture_output=True, text=True, timeout=60, check=True).stdout
+
+
+def parse_job_list(text):
+    """Return {seq: status}; only seq and status are taken from each row."""
+    out = {}
+    for line in text.splitlines():
+        m = ROW.match(line)
+        if m and m.group(1).isdigit():
+            out[int(m.group(1))] = m.group(2)
+    return out
+
+
+def load_config(path):
+    cfg = dict(DEFAULTS)
+    if path and os.path.exists(path):
+        with open(path) as f:
+            cfg.update({k: v for k, v in json.load(f).items() if not k.startswith("_")})
+    for k in ("walker_dir", "helm_dir"):
+        refuse_sealed(cfg[k])
+    for g in cfg["spill_globs"]:
+        refuse_sealed(g)
+    for p in cfg["disk_paths"]:
+        refuse_sealed(p)
+    return cfg
+
+
+def A(key, sev, msg):
+    return {"key": key, "severity": sev, "msg": msg}
+
+
+def check_jobs(cfg, ctx):
+    text = ctx["run"]([MISCUSI, "job", "list"])
+    jobs = parse_job_list(text)
+    ctx["jobs"] = jobs
+    alerts, info = [], []
+    done_ok = set(cfg["expected_done_ok"])
+    for seq in cfg["watch"]:
+        st = jobs.get(seq)
+        if st is None:
+            alerts.append(A("job:%d:missing" % seq, "high", "job #%d not in list" % seq))
+            continue
+        s = st.lower()
+        if s in OK_STATES:
+            continue
+        if s in DONE_STATES and seq in done_ok:
+            info.append("job #%d %s (expected)" % (seq, st))
+            continue
+        alerts.append(A("job:%d:%s" % (seq, st), "high", "job #%d is %s" % (seq, st)))
+    seen = set(ctx["state"].get("failed_seen", []))
+    first = "failed_seen" not in ctx["state"]
+    cur = set()
+    for seq, st in jobs.items():
+        if st.lower() in BAD_NEW:
+            tag = "%d:%s" % (seq, st)
+            cur.add(tag)
+            if tag not in seen and not first and seq not in cfg["watch"]:
+                alerts.append(A("job:%d:%s" % (seq, st), "medium", "job #%d newly %s" % (seq, st)))
+    ctx["new_state"]["failed_seen"] = sorted(seen | cur)
+    return alerts, info, {"n_jobs": len(jobs)}
+
+
+def check_disk(cfg, ctx):
+    alerts = []
+    summ = {}
+    for p in cfg["disk_paths"]:
+        u = ctx["disk_usage"](p)
+        pct = 100.0 * u.used / u.total if u.total else 0.0
+        summ[p] = round(pct, 1)
+        if pct >= cfg["disk_used_alert_pct"]:
+            alerts.append(A("disk:" + p, "high", "%s used %.1f%%" % (p, pct)))
+    wd = cfg["walker_dir"]
+    u = ctx["disk_usage"](wd)
+    free = 100.0 * u.free / u.total if u.total else 0.0
+    summ["walker_free_pct"] = round(free, 1)
+    ctx["walker_free"] = free
+    if free < cfg["walker_free_alert_pct"]:
+        alerts.append(A("walker:disk", "high", "walker dir free %.1f%%" % free))
+    tdir = os.path.join(wd, "trades")
+    names = [n for n in ctx["listdir"](tdir) if TRADES.match(n)]
+    if names:
+        newest = max(TRADES.match(n).group(1) for n in names)
+        t = dt.datetime.strptime(newest, "%Y-%m-%dT%H").replace(tzinfo=dt.timezone.utc)
+        age_h = (ctx["now"] - t).total_seconds() / 3600.0
+        summ["walker_newest_age_h"] = round(age_h, 1)
+        seqs = [cfg["walker_job_seq"]] + list(cfg["walker_successor_seqs"])
+        running = any(ctx["jobs"].get(s, "").lower() == "running" for s in seqs)
+        if age_h > cfg["walker_stale_hours"] and running:
+            alerts.append(A("walker:stale", "high", "newest trades file %s is %.1fh old" % (newest, age_h)))
+    return alerts, [], summ
+
+
+def check_mem(cfg, ctx):
+    kb = None
+    for line in ctx["read_meminfo"]().splitlines():
+        if line.startswith("MemAvailable:"):
+            kb = int(line.split()[1])
+    if kb is None:
+        raise RuntimeError("no MemAvailable")
+    gib = kb / 1048576.0
+    ctx["mem_gib"] = gib
+    alerts = []
+    if gib < cfg["mem_avail_alert_gib"]:
+        alerts.append(A("mem:low", "high", "MemAvailable %.1f GiB" % gib))
+    return alerts, [], {"mem_avail_gib": round(gib, 1)}
+
+
+def check_meta(cfg, ctx):
+    rows = []
+    for line in ctx["run"](["ps", "-eo", "pid,rss,args"]).splitlines()[1:]:
+        parts = line.split(None, 2)
+        if len(parts) == 3 and "python -m tools.meta_capture" in parts[2] and parts[0].isdigit():
+            rows.append((int(parts[0]), int(parts[1]) / 1024.0))
+    alerts = []
+    mx = max([r[1] for r in rows], default=0.0)
+    ctx["meta_rss"] = mx
+    for pid, mb in rows:
+        if mb > cfg["meta_rss_alert_mb"]:
+            alerts.append(A("meta:rss", "high", "meta_capture pid %d RSS %.0f MB" % (pid, mb)))
+    if not rows and ctx["jobs"].get(cfg["meta_job_seq"], "").lower() == "running":
+        alerts.append(A("meta:absent", "high", "job #%d Running but no process" % cfg["meta_job_seq"]))
+    return alerts, [], {"meta_procs": len(rows), "meta_rss_mb": round(mx, 0)}
+
+
+def check_helm(cfg, ctx):
+    names = sorted(n for n in ctx["listdir"](cfg["helm_dir"]) if n.startswith("HELM-REPLY-"))
+    first = "helm_seen" not in ctx["state"]
+    seen = set(ctx["state"].get("helm_seen", []))
+    alerts = []
+    if not first:
+        for n in names:
+            if n not in seen:
+                alerts.append(A("helm:" + n, "high", "new Helm reply file " + n))
+    ctx["new_state"]["helm_seen"] = sorted(seen | set(names))
+    return alerts, [], {"helm_files": len(names)}
+
+
+def check_spill(cfg, ctx):
+    cnt = 0
+    for g in cfg["spill_globs"]:
+        for p in ctx["glob"](g):
+            try:
+                if (ctx["now"].timestamp() - ctx["mtime"](p)) > 120 * 60:
+                    cnt += 1
+            except OSError:
+                pass
+    info = ["%d dead spill files >120min" % cnt] if cnt else []
+    return [], info, {"spill_old": cnt}
+
+
+CHECKS = [("jobs", check_jobs), ("disk", check_disk), ("mem", check_mem),
+          ("meta", check_meta), ("helm", check_helm), ("spill", check_spill)]
+
+
+def default_ctx(now=None):
+    return {
+        "now": now or dt.datetime.now(dt.timezone.utc),
+        "run": run_cmd,
+        "disk_usage": shutil.disk_usage,
+        "listdir": lambda d: os.listdir(refuse_sealed(d)),
+        "read_meminfo": lambda: open("/proc/meminfo").read(),
+        "glob": glob.glob,
+        "mtime": os.path.getmtime,
+    }
+
+
+def iso(t):
+    return t.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def load_state(sd):
+    try:
+        with open(os.path.join(sd, "state.json")) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def append(path, obj):
+    with open(path, "a") as f:
+        f.write(json.dumps(obj, sort_keys=True) + "\n")
+
+
+def run_pass(cfg, state_dir, ctx, dry_run=False):
+    state = load_state(state_dir)
+    ctx["state"] = state
+    ctx["new_state"] = {}
+    ctx.setdefault("jobs", {})
+    ctx["jobs"] = {}
+    now = ctx["now"]
+    alerts, infos, summ = [], [], {}
+    for name, fn in CHECKS:
+        try:
+            a, i, s = fn(cfg, ctx)
+            alerts += a
+            infos += i
+            summ[name] = s
+        except Exception as e:  # fail loud
+            alerts.append(A("check_error:" + name, "high", "%s: %s" % (type(e).__name__, str(e)[:200])))
+            summ[name] = "error"
+            if name == "jobs":
+                # keep prior failed_seen if the list could not be read
+                for k in ("failed_seen",):
+                    if k in state:
+                        ctx["new_state"][k] = state[k]
+    ts = iso(now)
+    last = state.get("last_alert", {})
+    window = cfg["realert_hours"] * 3600
+    fresh = []
+    for a in alerts:
+        t = last.get(a["key"])
+        if t is not None and now.timestamp() - t < window:
+            continue
+        last[a["key"]] = now.timestamp()
+        fresh.append(dict(a, ts=ts))
+    st = dict(state)
+    st.update(ctx["new_state"])
+    st["last_alert"] = last
+    daily = st.setdefault("daily", {"date": ts[:10], "passes": 0, "alerts": 0, "min_walker_free": None, "max_meta_rss": 0})
+    daily_line = None
+    day = ts[:10]
+    due = (now.hour, now.minute) >= (0, 30)
+    if st.get("daily_done") != day and due:
+        # first pass after 00:30Z: summarise the accumulated day, then reset
+        daily_line = dict(daily, ts=ts, kind="daily")
+        st["daily_done"] = day
+        st["daily"] = {"date": day, "passes": 0, "alerts": 0, "min_walker_free": None, "max_meta_rss": 0}
+        daily = st["daily"]
+    daily["passes"] += 1
+    daily["alerts"] += len(fresh)
+    wf = ctx.get("walker_free")
+    if wf is not None:
+        daily["min_walker_free"] = round(wf, 1) if daily["min_walker_free"] is None else min(daily["min_walker_free"], round(wf, 1))
+    daily["max_meta_rss"] = max(daily["max_meta_rss"], round(ctx.get("meta_rss", 0)))
+    line = {"ts": ts, "checks": summ, "alert_keys": [a["key"] for a in alerts],
+            "new_alerts": [a["key"] for a in fresh], "info": infos}
+    if not dry_run:
+        os.makedirs(state_dir, exist_ok=True)
+        append(os.path.join(state_dir, "status.jsonl"), line)
+        for a in fresh:
+            append(os.path.join(state_dir, "alerts.jsonl"), a)
+        if daily_line:
+            append(os.path.join(state_dir, "daily.jsonl"), daily_line)
+        tmp = os.path.join(state_dir, "state.json.tmp")
+        with open(tmp, "w") as f:
+            json.dump(st, f)
+        os.replace(tmp, os.path.join(state_dir, "state.json"))
+        with open(os.path.join(state_dir, "heartbeat"), "w") as f:
+            f.write(ts + "\n")
+    return line, fresh
+
+
+def next_check(now, minute):
+    t = now.replace(minute=minute, second=0, microsecond=0)
+    if t <= now:
+        t += dt.timedelta(hours=1)
+    return t
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--config", default="/data/mal/hunt-1008/ops/watchdog/config.json")
+    ap.add_argument("--state-dir", default="/data/mal/hunt-1008/ops/watchdog/")
+    g = ap.add_mutually_exclusive_group()
+    g.add_argument("--once", action="store_true")
+    g.add_argument("--loop", action="store_true")
+    ap.add_argument("--duration-s", type=int, default=14 * 86400)
+    ap.add_argument("--dry-run", action="store_true")
+    a = ap.parse_args(argv)
+    cfg = load_config(a.config)
+    refuse_sealed(a.state_dir)
+    if not a.loop:
+        line, _ = run_pass(cfg, a.state_dir, default_ctx(), a.dry_run)
+        print(json.dumps(line, sort_keys=True))
+        return 0
+    end = time.time() + a.duration_s
+    line, _ = run_pass(cfg, a.state_dir, default_ctx(), a.dry_run)
+    print(json.dumps(line, sort_keys=True), flush=True)
+    while True:
+        nxt = next_check(dt.datetime.now(dt.timezone.utc), int(cfg["check_minute"]))
+        if nxt.timestamp() >= end:
+            time.sleep(max(0, end - time.time()))
+            return 0
+        time.sleep(max(0, nxt.timestamp() - time.time()))
+        line, _ = run_pass(cfg, a.state_dir, default_ctx(), a.dry_run)
+        print(json.dumps(line, sort_keys=True), flush=True)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
