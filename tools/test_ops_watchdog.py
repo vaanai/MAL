@@ -44,6 +44,8 @@ def mk(tmp, jobs, ps=PS, free=0.5, helm=(), cfg=None, now=NOW):
     ctx["disk_usage"] = lambda p: types.SimpleNamespace(total=100, used=int(100 - free * 100 / 1) if False else 50, free=int(free * 100))
     ctx["read_meminfo"] = lambda: "MemAvailable:  %d kB\n" % (64 * 1048576)
     ctx["calls"] = calls
+    real_ld = ctx["listdir"]
+    ctx["listdir"] = lambda d: ["trades-2026-10-29T11.jsonl.zst"] if d.endswith("/trades") else real_ld(d)
     return c, ctx
 
 
@@ -99,29 +101,39 @@ def test_helm_seed_then_alert(tmp_path):
     assert "SECRET-BODY" not in (tmp_path / "st" / "status.jsonl").read_text()
 
 
-def test_walker_stale_only_when_running(tmp_path):
-    old = "walk 2 through 2026-10-29T01"
-    c, ctx = mk(tmp_path, jl((1036, "Passed", old)))
-    assert "walker:stale" not in {a["key"] for a in passn(tmp_path, c, ctx)[1]}
-    c, ctx = mk(tmp_path / "b", jl((1290, "Running", old)))
+def walker_ctx(tmp, names, jobs):
+    c, ctx = mk(tmp, jobs)
+    real = ctx["listdir"]
+    ctx["listdir"] = lambda d: list(names) if d.endswith("/trades") else real(d)
+    return c, ctx
+
+
+def test_walker_stale_only_when_running_zst(tmp_path):
+    old = ["trades-2026-10-29T01.jsonl.zst", "trades-2026-10-28T23.jsonl", "junk"]
+    c, ctx = walker_ctx(tmp_path, old, jl((1036, "Passed", "w")))
+    line, fresh = passn(tmp_path, c, ctx)
+    assert "walker:stale" not in {a["key"] for a in fresh}
+    assert line["checks"]["walker"]["walker_newest_hour"] == "2026-10-29T01"
+    c, ctx = walker_ctx(tmp_path / "b", old, jl((1290, "Running", "w")))
     assert "walker:stale" in {a["key"] for a in passn(tmp_path / "b", c, ctx)[1]}
-    c, ctx = mk(tmp_path / "c", jl((1290, "Running", "walk 2 through 2026-10-29T11")))
+    c, ctx = walker_ctx(tmp_path / "c", ["trades-2026-10-29T11.jsonl.zst"], jl((1036, "Running", "w")))
     assert "walker:stale" not in {a["key"] for a in passn(tmp_path / "c", c, ctx)[1]}
 
 
-def test_walker_no_hour_is_check_error(tmp_path):
-    c, ctx = mk(tmp_path, jl((1036, "Running", "walk 2: forward-1016 from")))
+def test_walker_no_names_is_check_error(tmp_path):
+    c, ctx = walker_ctx(tmp_path, ["notes.txt", "trades-2026-10-29T11.jsonl.tmp"], jl((1036, "Running", "w")))
     assert "check_error:walker" in {a["key"] for a in passn(tmp_path, c, ctx)[1]}
-    c, ctx = mk(tmp_path / "b", jl((1036, "Passed", "x")))
-    assert "check_error:walker" not in {a["key"] for a in passn(tmp_path / "b", c, ctx)[1]}
 
 
-def test_no_directory_listing_of_walker(tmp_path):
-    c, ctx = mk(tmp_path, jl((1036, "Running", "through 2026-10-29T11")))
-    called = []
-    ctx["listdir"] = lambda d: called.append(d) or []
-    passn(tmp_path, c, ctx)
-    assert all("walk" not in d for d in called)
+def test_walker_allowlist_exact():
+    ok = "/data/mal/blocks/forward-1016/trades"
+    assert w.refuse_sealed(ok, listing=True) == ok
+    for bad in ("/data/mal/blocks/forward-1016", ok + "/../x", "/data/mal/blocks/forward-1017/trades",
+                ok + "/sub", ok + "/trades-2026-10-29T11.jsonl", "/data/mal/blocks/forward-*/trades"):
+        with pytest.raises(ValueError):
+            w.refuse_sealed(bad, listing=True)
+    with pytest.raises(ValueError):
+        w.refuse_sealed("/data/mal/meta-capture/trades", listing=True)
 
 
 def test_walker_disk_and_mem_and_meta(tmp_path):
@@ -145,7 +157,7 @@ def test_refuse_meta_capture():
     with pytest.raises(ValueError):
         w.refuse_sealed("/data/mal/blocks/forward-*/trades/*", listing=True)
     with pytest.raises(ValueError):
-        w.refuse_sealed("/data/mal/blocks/forward-1016/trades", listing=True)
+        w.refuse_sealed("/data/mal/blocks/forward-1016/other", listing=True)
     w.refuse_sealed("/data/mal/blocks/forward-1016")  # statvfs use is allowed
 
 

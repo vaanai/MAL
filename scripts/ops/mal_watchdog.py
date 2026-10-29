@@ -41,7 +41,10 @@ OK_STATES = {"running", "queued", "paused"}
 DONE_STATES = {"done", "passed"}
 BAD_NEW = {"failed", "killed"}
 ROW = re.compile(r"^#(\d+)\s+(\S+)\s*(.*)$")
-WALK_HOUR = re.compile(r"through (\d{4}-\d\d-\d\dT\d\d)")
+TRADES = re.compile(r"^trades-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl(\.zst)?$")
+# The ONLY allowlisted exception to the forward-* listing refusal: names of
+# this one directory (manager disk-guard practice since 10-16; names only).
+WALKER_TRADES = "/data/mal/blocks/forward-1016/trades"
 KNOWN = OK_STATES | DONE_STATES | BAD_NEW | {"cancelled"}
 FWD = "/data/mal/blocks/forward-*"
 
@@ -67,6 +70,8 @@ def refuse_sealed(path, listing=False):
     symlinks; for globs refuses any pattern that could expand into them."""
     protected = [SEALED] + ([FWD] if listing else [])
     raw = os.path.abspath(os.path.expanduser(str(path)))
+    if listing and raw == WALKER_TRADES and os.path.realpath(raw) == WALKER_TRADES:
+        return raw
     if _wild(raw):
         if _hits(raw, protected):
             raise ValueError("refused: glob could reach sealed path")
@@ -94,7 +99,9 @@ def run_cmd(argv):
 
 
 def default_listdir(d):
-    return os.listdir(refuse_sealed(d, listing=True))
+    p = refuse_sealed(d, listing=True)
+    with os.scandir(p) as it:
+        return [e.name for e in it]  # names only
 
 
 def default_glob(pat):
@@ -201,25 +208,22 @@ def check_disk(cfg, ctx):
 
 
 def check_walker(cfg, ctx):
-    """Freshness from the walker job's `job list` row ("through <hour>").
-    No directory listing. No hour found -> check_error:walker."""
-    seqs = [cfg["walker_job_seq"]] + list(cfg["walker_successor_seqs"])
-    running = [x for x in seqs if ctx["jobs"].get(x, "").lower() == "running"]
-    if not running:
-        return [], [], {"walker": "no running walker job"}
-    hours = []
-    for x in running:
-        m = WALK_HOUR.search(ctx["job_rows"].get(x, ""))
-        if m:
-            hours.append(m.group(1))
+    """Walker freshness from file NAMES in forward-1016/trades (os.scandir
+    names only; never open/stat/read a file). Manager disk-guard practice
+    since 10-16; names only. No matching name -> check_error:walker."""
+    d = os.path.join(cfg["walker_dir"], "trades")
+    hours = [m.group(1) for m in (TRADES.match(n) for n in ctx["listdir"](d)) if m]
     if not hours:
-        raise RuntimeError("no 'through <hour>' in job list row of walker #%s" % running[0])
-    t = dt.datetime.strptime(max(hours), "%Y-%m-%dT%H").replace(tzinfo=dt.timezone.utc)
+        raise RuntimeError("no trades-<hour>.jsonl[.zst] names found")
+    newest = max(hours)
+    t = dt.datetime.strptime(newest, "%Y-%m-%dT%H").replace(tzinfo=dt.timezone.utc)
     age_h = (ctx["now"] - t).total_seconds() / 3600.0
+    seqs = [cfg["walker_job_seq"]] + list(cfg["walker_successor_seqs"])
+    running = any(ctx["jobs"].get(x, "").lower() == "running" for x in seqs)
     alerts = []
-    if age_h > cfg["walker_stale_hours"]:
-        alerts.append(A("walker:stale", "high", "walker through %s is %.1fh old" % (max(hours), age_h)))
-    return alerts, [], {"walker_through": max(hours), "walker_age_h": round(age_h, 1)}
+    if running and age_h > cfg["walker_stale_hours"]:
+        alerts.append(A("walker:stale", "high", "newest trades hour %s is %.1fh old" % (newest, age_h)))
+    return alerts, [], {"walker_newest_hour": newest, "walker_age_h": round(age_h, 1)}
 
 
 def check_mem(cfg, ctx):
