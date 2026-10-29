@@ -6,6 +6,7 @@ stdlib only. Allowed external commands: `miscusi-agent job list` and
 /data/mal/meta-capture, never opens trade or HELM file contents.
 """
 import argparse
+import fnmatch
 import datetime as dt
 import glob
 import json
@@ -40,14 +41,43 @@ OK_STATES = {"running", "queued", "paused"}
 DONE_STATES = {"done", "passed"}
 BAD_NEW = {"failed", "killed"}
 ROW = re.compile(r"^#(\d+)\s+(\S+)\s*(.*)$")
-TRADES = re.compile(r"^trades-(\d{4}-\d\d-\d\dT\d\d)\.jsonl$")
+WALK_HOUR = re.compile(r"through (\d{4}-\d\d-\d\dT\d\d)")
+KNOWN = OK_STATES | DONE_STATES | BAD_NEW | {"cancelled"}
+FWD = "/data/mal/blocks/forward-*"
 
 
-def refuse_sealed(path):
-    p = os.path.abspath(os.path.expanduser(str(path)))
-    if p == SEALED or p.startswith(SEALED + "/"):
-        raise ValueError("refused: path under sealed " + SEALED)
-    return p
+def _wild(p):
+    return any(c in p for c in "*?[")
+
+
+def _hits(pat, protected):
+    """Component-wise: could `pat` (non-recursive glob) reach a protected dir
+    or anything below it?"""
+    pc = [c for c in pat.split("/") if c]
+    for pr in protected:
+        rc = [c for c in pr.split("/") if c]
+        if len(pc) >= len(rc) and all(fnmatch.fnmatchcase(r, q) or fnmatch.fnmatchcase(q, r)
+                                      for q, r in zip(pc, rc)):
+            return True
+    return False
+
+
+def refuse_sealed(path, listing=False):
+    """Refuse meta-capture (always) and forward-* (when listing). Resolves
+    symlinks; for globs refuses any pattern that could expand into them."""
+    protected = [SEALED] + ([FWD] if listing else [])
+    raw = os.path.abspath(os.path.expanduser(str(path)))
+    if _wild(raw):
+        if _hits(raw, protected):
+            raise ValueError("refused: glob could reach sealed path")
+        return raw
+    real = os.path.realpath(raw)
+    for cand in (raw, real):
+        if cand == SEALED or cand.startswith(SEALED + "/"):
+            raise ValueError("refused: path under sealed " + SEALED)
+        if listing and re.match(r"^/data/mal/blocks/forward-[^/]*(/|$)", cand):
+            raise ValueError("refused: listing under forward-*")
+    return raw
 
 
 def run_cmd(argv):
@@ -63,25 +93,45 @@ def run_cmd(argv):
     return subprocess.run(argv, capture_output=True, text=True, timeout=60, check=True).stdout
 
 
+def default_listdir(d):
+    return os.listdir(refuse_sealed(d, listing=True))
+
+
+def default_glob(pat):
+    refuse_sealed(pat, listing=True)
+    out = []
+    for m in glob.glob(pat):
+        refuse_sealed(os.path.realpath(m), listing=True)
+        out.append(m)
+    return out
+
+
 def parse_job_list(text):
-    """Return {seq: status}; only seq and status are taken from each row."""
+    """Return {seq: (status, rowtext)}. Raises ValueError if the output is not
+    a job table (no header, no rows, or any non-blank row that is not a job)."""
+    lines = [l for l in text.splitlines() if l.strip()]
+    if not lines or not lines[0].startswith("#seq"):
+        raise ValueError("job list: header missing or output empty")
     out = {}
-    for line in text.splitlines():
+    for line in lines[1:]:
         m = ROW.match(line)
-        if m and m.group(1).isdigit():
-            out[int(m.group(1))] = m.group(2)
+        if not m:
+            raise ValueError("job list: unparseable row")
+        out[int(m.group(1))] = (m.group(2), line)
+    if not out:
+        raise ValueError("job list: zero rows")
     return out
 
 
 def load_config(path):
     cfg = dict(DEFAULTS)
-    if path and os.path.exists(path):
-        with open(path) as f:
-            cfg.update({k: v for k, v in json.load(f).items() if not k.startswith("_")})
-    for k in ("walker_dir", "helm_dir"):
-        refuse_sealed(cfg[k])
+    refuse_sealed(path)
+    with open(path) as f:  # missing config is an error, never silent defaults
+        cfg.update({k: v for k, v in json.load(f).items() if not k.startswith("_")})
+    refuse_sealed(cfg["walker_dir"])
+    refuse_sealed(cfg["helm_dir"], listing=True)
     for g in cfg["spill_globs"]:
-        refuse_sealed(g)
+        refuse_sealed(g, listing=True)
     for p in cfg["disk_paths"]:
         refuse_sealed(p)
     return cfg
@@ -92,11 +142,17 @@ def A(key, sev, msg):
 
 
 def check_jobs(cfg, ctx):
+    """First pass baselines already-Failed jobs without alerting. Watched jobs
+    in a bad state re-alert every realert_hours until fixed (intended).
+    Unwatched Cancelled is normal and never alerts."""
     text = ctx["run"]([MISCUSI, "job", "list"])
-    jobs = parse_job_list(text)
+    rows = parse_job_list(text)  # raises -> check_error:jobs
+    jobs = {k: v[0] for k, v in rows.items()}
     ctx["jobs"] = jobs
+    ctx["job_rows"] = {k: v[1] for k, v in rows.items()}
     alerts, info = [], []
     done_ok = set(cfg["expected_done_ok"])
+    watch = set(cfg["watch"])
     for seq in cfg["watch"]:
         st = jobs.get(seq)
         if st is None:
@@ -109,6 +165,9 @@ def check_jobs(cfg, ctx):
             info.append("job #%d %s (expected)" % (seq, st))
             continue
         alerts.append(A("job:%d:%s" % (seq, st), "high", "job #%d is %s" % (seq, st)))
+    for seq, st in jobs.items():
+        if st.lower() not in KNOWN and seq not in watch:
+            alerts.append(A("job:%d:%s" % (seq, st), "medium", "job #%d unknown status %s" % (seq, st)))
     seen = set(ctx["state"].get("failed_seen", []))
     first = "failed_seen" not in ctx["state"]
     cur = set()
@@ -116,7 +175,7 @@ def check_jobs(cfg, ctx):
         if st.lower() in BAD_NEW:
             tag = "%d:%s" % (seq, st)
             cur.add(tag)
-            if tag not in seen and not first and seq not in cfg["watch"]:
+            if tag not in seen and not first and seq not in watch:
                 alerts.append(A("job:%d:%s" % (seq, st), "medium", "job #%d newly %s" % (seq, st)))
     ctx["new_state"]["failed_seen"] = sorted(seen | cur)
     return alerts, info, {"n_jobs": len(jobs)}
@@ -138,18 +197,29 @@ def check_disk(cfg, ctx):
     ctx["walker_free"] = free
     if free < cfg["walker_free_alert_pct"]:
         alerts.append(A("walker:disk", "high", "walker dir free %.1f%%" % free))
-    tdir = os.path.join(wd, "trades")
-    names = [n for n in ctx["listdir"](tdir) if TRADES.match(n)]
-    if names:
-        newest = max(TRADES.match(n).group(1) for n in names)
-        t = dt.datetime.strptime(newest, "%Y-%m-%dT%H").replace(tzinfo=dt.timezone.utc)
-        age_h = (ctx["now"] - t).total_seconds() / 3600.0
-        summ["walker_newest_age_h"] = round(age_h, 1)
-        seqs = [cfg["walker_job_seq"]] + list(cfg["walker_successor_seqs"])
-        running = any(ctx["jobs"].get(s, "").lower() == "running" for s in seqs)
-        if age_h > cfg["walker_stale_hours"] and running:
-            alerts.append(A("walker:stale", "high", "newest trades file %s is %.1fh old" % (newest, age_h)))
     return alerts, [], summ
+
+
+def check_walker(cfg, ctx):
+    """Freshness from the walker job's `job list` row ("through <hour>").
+    No directory listing. No hour found -> check_error:walker."""
+    seqs = [cfg["walker_job_seq"]] + list(cfg["walker_successor_seqs"])
+    running = [x for x in seqs if ctx["jobs"].get(x, "").lower() == "running"]
+    if not running:
+        return [], [], {"walker": "no running walker job"}
+    hours = []
+    for x in running:
+        m = WALK_HOUR.search(ctx["job_rows"].get(x, ""))
+        if m:
+            hours.append(m.group(1))
+    if not hours:
+        raise RuntimeError("no 'through <hour>' in job list row of walker #%s" % running[0])
+    t = dt.datetime.strptime(max(hours), "%Y-%m-%dT%H").replace(tzinfo=dt.timezone.utc)
+    age_h = (ctx["now"] - t).total_seconds() / 3600.0
+    alerts = []
+    if age_h > cfg["walker_stale_hours"]:
+        alerts.append(A("walker:stale", "high", "walker through %s is %.1fh old" % (max(hours), age_h)))
+    return alerts, [], {"walker_through": max(hours), "walker_age_h": round(age_h, 1)}
 
 
 def check_mem(cfg, ctx):
@@ -210,7 +280,7 @@ def check_spill(cfg, ctx):
     return [], info, {"spill_old": cnt}
 
 
-CHECKS = [("jobs", check_jobs), ("disk", check_disk), ("mem", check_mem),
+CHECKS = [("jobs", check_jobs), ("disk", check_disk), ("walker", check_walker), ("mem", check_mem),
           ("meta", check_meta), ("helm", check_helm), ("spill", check_spill)]
 
 
@@ -219,9 +289,9 @@ def default_ctx(now=None):
         "now": now or dt.datetime.now(dt.timezone.utc),
         "run": run_cmd,
         "disk_usage": shutil.disk_usage,
-        "listdir": lambda d: os.listdir(refuse_sealed(d)),
+        "listdir": default_listdir,
         "read_meminfo": lambda: open("/proc/meminfo").read(),
-        "glob": glob.glob,
+        "glob": default_glob,
         "mtime": os.path.getmtime,
     }
 
@@ -230,12 +300,24 @@ def iso(t):
     return t.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def load_state(sd):
+def load_state(sd, now=None, dry_run=False):
+    """Returns (state, error). A corrupt state.json is backed up and reported."""
+    p = os.path.join(sd, "state.json")
+    if not os.path.exists(p):
+        return {}, None
     try:
-        with open(os.path.join(sd, "state.json")) as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return {}
+        with open(p) as f:
+            st = json.load(f)
+        if not isinstance(st, dict):
+            raise ValueError("not an object")
+        return st, None
+    except (OSError, ValueError) as e:
+        if not dry_run:
+            try:
+                shutil.copy2(p, p + ".corrupt-" + (now or dt.datetime.now(dt.timezone.utc)).strftime("%Y%m%dT%H%M%S"))
+            except OSError:
+                pass
+        return {}, "%s: %s" % (type(e).__name__, str(e)[:100])
 
 
 def append(path, obj):
@@ -244,13 +326,15 @@ def append(path, obj):
 
 
 def run_pass(cfg, state_dir, ctx, dry_run=False):
-    state = load_state(state_dir)
+    now = ctx["now"]
+    state, serr = load_state(state_dir, now, dry_run)
     ctx["state"] = state
     ctx["new_state"] = {}
-    ctx.setdefault("jobs", {})
     ctx["jobs"] = {}
-    now = ctx["now"]
+    ctx["job_rows"] = {}
     alerts, infos, summ = [], [], {}
+    if serr:
+        alerts.append(A("state:unreadable", "high", "state.json unreadable (backed up), baselines reset: " + serr))
     for name, fn in CHECKS:
         try:
             a, i, s = fn(cfg, ctx)
@@ -281,11 +365,9 @@ def run_pass(cfg, state_dir, ctx, dry_run=False):
     daily = st.setdefault("daily", {"date": ts[:10], "passes": 0, "alerts": 0, "min_walker_free": None, "max_meta_rss": 0})
     daily_line = None
     day = ts[:10]
-    due = (now.hour, now.minute) >= (0, 30)
-    if st.get("daily_done") != day and due:
-        # first pass after 00:30Z: summarise the accumulated day, then reset
+    if daily["date"] != day and (now.hour, now.minute) >= (0, 30):
+        # first pass after 00:30Z on a new day: emit the finished day, reset
         daily_line = dict(daily, ts=ts, kind="daily")
-        st["daily_done"] = day
         st["daily"] = {"date": day, "passes": 0, "alerts": 0, "min_walker_free": None, "max_meta_rss": 0}
         daily = st["daily"]
     daily["passes"] += 1
@@ -336,16 +418,23 @@ def main(argv=None):
         print(json.dumps(line, sort_keys=True))
         return 0
     end = time.time() + a.duration_s
-    line, _ = run_pass(cfg, a.state_dir, default_ctx(), a.dry_run)
-    print(json.dumps(line, sort_keys=True), flush=True)
+    safe_pass(cfg, a)
     while True:
         nxt = next_check(dt.datetime.now(dt.timezone.utc), int(cfg["check_minute"]))
         if nxt.timestamp() >= end:
             time.sleep(max(0, end - time.time()))
             return 0
         time.sleep(max(0, nxt.timestamp() - time.time()))
+        safe_pass(cfg, a)
+
+
+def safe_pass(cfg, a):
+    """One loop pass that can never kill the loop; failures go to stderr."""
+    try:
         line, _ = run_pass(cfg, a.state_dir, default_ctx(), a.dry_run)
         print(json.dumps(line, sort_keys=True), flush=True)
+    except Exception as e:
+        print("WATCHDOG_PASS_FAILED %s: %s" % (type(e).__name__, str(e)[:200]), file=sys.stderr, flush=True)
 
 
 if __name__ == "__main__":
