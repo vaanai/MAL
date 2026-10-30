@@ -49,6 +49,10 @@ def tg_path(root: str) -> Path:
     return Path(root) / "transport" / f"{ARM}.tapegaps.jsonl"
 
 
+def tg_bytes_of(rows: list[tuple[str, int]]) -> bytes:
+    return b"".join((json.dumps({"kind": k, "ms": m}, sort_keys=True) + "\n").encode() for k, m in rows)
+
+
 # --- P7-c: the pure check ----------------------------------------------------------------------------------------------------------------------------
 
 
@@ -544,6 +548,53 @@ class EndToEndTests(TmpCase):
             self.assertIn(p.refusal(), {"transport_stall:feed_state_stopped_mismatch", "feed_gap_hold"})
 
 
+    def test_a_retention_head_trim_between_two_relay_passes_keeps_the_pull_running_and_the_bridge_sees_the_new_gap(self):
+        """QP CHANGES on #1105 (6527468544): relay v2 trims the front of its stream by 72 h. Real serve subprocess, real Puller thread, a Bridge on the wall clock; the 'relay'
+        is the synthetic writer (rewrites the whole file atomically). Pass 1 carries rows 80 h and 60 h old; pass 2 is the trimmed file (the 80 h row gone) plus a new gap."""
+        h = 3_600_000
+        with manual_review(), EndToEnd(self.tmp, write_first=False) as p:
+            b, dst = p.bridge, tg_path(p.e.raw["root"])
+            t = wall_ms()
+            old, mid = ("process_restart", t - 80 * h), ("data_loss", t - 60 * h)
+            p.relay_pass([old, mid], t)
+            p.wait(lambda: dst.exists() and dst.read_bytes() == Path(p.relay_file).read_bytes())
+
+            def noted_at(ms):
+                def f() -> bool:
+                    b.gap_tick(wall_ms())
+                    return b.state.gap_noted_ms == ms
+                return f
+            p.wait(noted_at(mid[1]), step=0.001)  # the first pass's newest gap
+            g = wall_ms()
+            new = ("gap_silence", g)
+            p.relay_pass([mid, new], g)  # the 80 h row aged out of the relay's 72 h window; one new row
+            p.wait(lambda: dst.read_bytes() == Path(p.relay_file).read_bytes())
+            self.assertFalse(dst.read_bytes().startswith(tg_bytes_of([old, mid])))
+            p.wait(noted_at(g), step=0.001)  # the bridge sees the new gap
+            self.assertEqual(p.rc, [])  # the puller never stopped
+            self.assertEqual(os.lstat(dst).st_mtime_ns // 1_000_000, g)
+            self.assertIsNone(p.refusal())
+            kinds = [json.loads(x)["kind"] for x in (Path(p.e.raw["root"]) / "transport" / f"{ARM}.gaps.jsonl").read_text().splitlines()] \
+                if (Path(p.e.raw["root"]) / "transport" / f"{ARM}.gaps.jsonl").exists() else []
+            self.assertNotIn("mismatch", kinds)
+            self.assertEqual(p.puller.tg_trimmed, 1)
+
+    def test_a_trim_that_is_not_retention_still_stops_the_pull_and_latches_via_the_status(self):
+        h = 3_600_000
+        with manual_review(), EndToEnd(self.tmp, write_first=False) as p:
+            dst = tg_path(p.e.raw["root"])
+            t = wall_ms()
+            p.relay_pass([("data_loss", t - 3 * h), ("gap_silence", t - 2 * h)], t)
+            p.wait(lambda: dst.exists() and dst.read_bytes() == Path(p.relay_file).read_bytes())
+            before = dst.read_bytes()
+            p.relay_pass([("gap_silence", t - 2 * h)], wall_ms())  # the 3 h old row left: not retention
+            p.wait(lambda: bool(p.rc))
+            self.assertEqual(p.rc, [df.EXIT_MISMATCH])
+            self.assertEqual(dst.read_bytes(), before)
+            p.bridge.gap_tick(wall_ms())
+            self.assertIn(c0.FEED_BREAK_LATCH, p.bridge.state.latches)
+
+
 class RelayContractTest(TmpCase):
     def test_the_real_relays_output_is_accepted_by_the_carry_and_serve_sends_it(self):
         """The one test that runs the real tools/hv4_gap_relay.py (on a SYNTHETIC tape in a temp dir): its stream passes the carry's validator and goes out as a tg frame."""
@@ -563,6 +614,75 @@ class RelayContractTest(TmpCase):
         srv = df.Server(str(Path(self.tmp) / "src"), ARM, write=frames.append, tapegaps_file=str(f))
         self.assertEqual(srv.poll_tapegaps(), 1)
         self.assertEqual(json.loads(frames[0])["b"], f.read_text())
+
+
+def _relay_trims() -> bool:
+    from tools import hv4_gap_relay as R
+    return hasattr(R, "RETAIN_MS")
+
+
+@unittest.skipUnless(_relay_trims(), "needs PR #1098 (relay v2 with the 72 h RETAIN_MS trim); main's first relay keeps every row")
+class RealRelayRetentionTest(TmpCase):
+    def test_the_real_relays_72_hour_trim_crosses_serve_and_the_puller_over_several_passes(self):
+        """QP CHANGES on #1105 (6527468544), with the REAL relay: SYNTHETIC tape hours are added between passes, each pass is `hv4_gap_relay.main` (state kept under the out
+        dir), the published stream goes through `Server.poll_tapegaps` and `Puller.handle`. Every pass is accepted; the pass that crosses 72 h drops the first gap row from the
+        head (a true head trim), and the copy equals the relay's file."""
+        import calendar
+        from tools import hv4_gap_relay as R
+        self.assertEqual(df.TAPEGAPS_RETAIN_MS, R.RETAIN_MS)
+        tape, out = Path(self.tmp) / "tape", Path(self.tmp) / "relay-out"
+        tape.mkdir()
+        h = 3_600_000
+        t0 = calendar.timegm((2026, 10, 6, 0, 0, 0)) * 1000
+
+        def hour(offset_h: int, lines: list[tuple[str, int]]) -> None:
+            t = t0 + offset_h * h
+            st = time.gmtime(t // 1000)
+            name = f"tape-{st.tm_year:04d}-{st.tm_mon:02d}-{st.tm_mday:02d}T{st.tm_hour:02d}.jsonl"
+            body = ""
+            for kind, ms in lines:
+                body += json.dumps({"type": "gap", "kind": kind, "t_recv_ms": ms} if kind != "trade" else {"type": "trade", "t_recv_ms": ms}) + "\n"
+            (tape / name).write_text(body)
+
+        def relay_pass(pass_ms: int) -> None:
+            self.assertEqual(R.main(["--tape-dir", str(tape), "--bot-id", ARM, "--out-dir", str(out)]), 0)
+            # the real relay stamps the wall clock; on a live tape that IS the tape's present. These tape hours are synthetic and old, so the stamp is moved to the pass instant
+            os.utime(out / "transport" / f"{ARM}.tapegaps.jsonl", ns=(pass_ms * 1_000_000,) * 2)
+
+        def ms_of(data: bytes) -> list[int]:
+            return [json.loads(x)["ms"] for x in data.decode().splitlines()]
+
+        dst_root = Path(self.tmp) / "dst"
+        pl = df.Puller(str(dst_root), ARM, ["true"])
+        relay_file = str(out / "transport" / f"{ARM}.tapegaps.jsonl")
+        carried: list[bytes] = []
+
+        def carry() -> None:
+            frames: list[bytes] = []
+            srv = df.Server(str(Path(self.tmp) / "src"), ARM, write=frames.append, tapegaps_file=relay_file)
+            self.assertEqual(srv.poll_tapegaps(), 1)
+            pl.handle(json.loads(frames[0]), time.time_ns())
+            self.assertEqual((dst_root / "transport" / f"{ARM}.tapegaps.jsonl").read_bytes(), Path(relay_file).read_bytes())
+            carried.append(Path(relay_file).read_bytes())
+
+        hour(0, [("process_restart", t0 + 600_000), ("trade", t0 + 660_000)])
+        relay_pass(t0 + 700_000); carry()
+        hour(30, [("feed_restart", t0 + 30 * h + 600_000), ("trade", t0 + 30 * h + 660_000)])
+        relay_pass(t0 + 30 * h + 700_000); carry()
+        hour(60, [("feed_start", t0 + 60 * h + 600_000), ("trade", t0 + 60 * h + 660_000)])
+        relay_pass(t0 + 60 * h + 700_000); carry()
+        hour(71, [("trade", t0 + 71 * h + 600_000)])
+        relay_pass(t0 + 71 * h + 700_000); carry()
+        self.assertEqual(pl.tg_trimmed, 0)  # nothing is older than 72 h before the newest instant yet
+        self.assertIn(t0 + 600_000, ms_of(carried[-1]))
+        hour(73, [("feed_restart", t0 + 73 * h + 300_000), ("trade", t0 + 73 * h + 360_000)])
+        relay_pass(t0 + 73 * h + 400_000); carry()
+        self.assertGreaterEqual(pl.tg_trimmed, 1)  # the first gap row (t0 + 10 min) is 73 h old by the pass at t0 + 73 h: the relay dropped it from the head
+        self.assertNotIn(t0 + 600_000, ms_of(carried[-1]))
+        self.assertFalse(carried[-1].startswith(carried[-2]))  # a true head trim, not an append
+        self.assertIn(t0 + 73 * h + 300_000, ms_of(carried[-1]))  # and the new gap is there
+        self.assertEqual(ms_of(carried[-1])[:len(ms_of(carried[-2])) - 1], ms_of(carried[-2])[1:])  # the rest of the old rows are the same rows, in order
+        pl.close()
 
 
 if __name__ == "__main__":
