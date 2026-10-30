@@ -16,10 +16,14 @@ Exit 0 only when the orders lists AND the per-entry outcome lists (order or the 
 
 WHAT IS SET, honestly: tools.hv4_live_c0.WINDOW_DIR (the 14-day window file directory, an absolute path constant with no config key) is pointed at a temp dir for the run and
 restored after it, so a proof never creates a window file on the host. The recorded-read record is read through the bridge's own `synthetic_ok` path (a DRY start on a root with
-the marker). Nothing else is replaced.
+the marker). For the gap case only, FEED_GAP_MANUAL_REVIEW is set per run and restored (above). Nothing else is replaced.
+
+GAP ROWS (QP standing condition C-b, #1104 N5): a second, short scenario with a decision-stream `gap` row is run twice, with tools.hv4_live_c0.FEED_GAP_MANUAL_REVIEW
+set to True (DEC-032 s5 item 2 as built: feed_break latches) and to False (DEC-031 Am.21 3.1: 60 s hold from receipt and the per-entry `feed_gap`), each restored after its
+run; both must be EQUAL. The main scenario and its md5s are unchanged.
 
 NOT COVERED: gates (parity, twin, tie-out: they can only refuse more, never change S), the live port, backstop sells (a clean synthetic book has none; one in the list is a DIFF),
-order_refused / gap rows, a restart mid-log, the 5,000 ms stale bound at a boundary, the total-stop / wallet-floor refusals (never binding under max_open 2), partial fills.
+order_refused rows, tape-gap / forwarder gap streams (the gap_tick path; tools/test_hv4_c0_gap_hold.py), a restart mid-log, the 5,000 ms stale bound at a boundary, the total-stop / wallet-floor refusals (never binding under max_open 2), partial fills.
 This is a build check of the mapping. It is not gate evidence and says nothing about any book's result. No book has cleared the promotion gate.
 
     python -m tools.hv4_c0_orders_proof [--json OUT] [--keep]
@@ -70,6 +74,7 @@ MAX_HOLD_MS = 600_000
 WINDOW_DAYS = 13  # end_ms, inside the 14-day cap
 READ_BOUNDARY_MS = 1_791_000_000_000
 
+M_GAP_HOLD_MS = 60_000  # DEC-031 Am.21 3.1: no new buy for 60 s after a coverage-losing record reaches the bridge (typed here, not imported)
 OK_V = 17_600_000_000  # inside the band
 LOW_V = 17_400_000_000  # universe-out
 
@@ -144,6 +149,31 @@ def build_scenario() -> tuple[list[Step], dict[str, tuple[str, int]]]:
     t[0] = MIDNIGHT_MS + 120_000
     exit_("d1", "PD1", "tp")
     entry("d2", pool("PD2"), "MD2", 0.25, 0.25)  # left open at the end of the log: no sell follows
+    return steps, pools
+
+
+def build_gap_scenario() -> tuple[list[Step], dict[str, tuple[str, int]]]:
+    """QP standing condition C-b (#1104 N5): a decision-stream `gap` row inside a short log, so the gap refusal labels are inside the outcomes md5. Run under BOTH values
+    of tools.hv4_live_c0.FEED_GAP_MANUAL_REVIEW (run_proof). The rows: start; an order opened before the gap; the gap row at G; an entry decided before G but read after
+    it (lat 1 s); an entry inside the 60 s hold; the exit of the pre-gap order (exits continue in both modes); an entry decided before G and read after the hold (it is
+    refused per entry under Am.21 before the age check); an entry decided after the hold."""
+    steps: list[Step] = []
+    pools: dict[str, tuple[str, int]] = {}
+    g0 = MIDNIGHT_MS + 6 * 3_600_000
+
+    def entry(oid: str, ms: int, lat: int = LATENCY_MS) -> None:
+        pools[f"PG-{oid}"] = (M_WSOL, OK_V)
+        steps.append(Step(ms, {"kind": "entry", "order_id": oid, "pool": f"PG-{oid}", "meta": {"mint": f"MG-{oid}"}, "decision_slot": 5000 + len(steps), "stake_sol": 0.25,
+                               "size": 0.25, "attempt_key": None}, lat))
+
+    steps.append(Step(g0 - 60_000, {"kind": "start", "binding": "synthetic", "frozen_sha": EXPECTED_FROZEN_SHA, "config_sha256": EXPECTED_CONFIG_PIN, "rules": [BOT_ID]}))
+    entry("g-pre", g0 - 30_000)  # opened before the gap
+    steps.append(Step(g0, {"kind": "gap", "reason": "synthetic"}))  # the coverage-losing record, instant G = g0
+    entry("g-before-late", g0 - 500, lat=1_000)  # decided before G, read 0.5 s after G (inside the hold)
+    entry("g-in-hold", g0 + 20_000)  # decided after G, read inside the hold
+    steps.append(Step(g0 + 30_000, {"kind": "exit", "order_id": "g-pre", "pool": "PG-g-pre", "reason": "tp", "decision_slot": 5100, "attempt": 1}))
+    entry("g-before-after-hold", g0 - 1, lat=M_GAP_HOLD_MS + 1_000)  # decided before G, read after the hold: per entry under Am.21, before the age check
+    entry("g-after", g0 + M_GAP_HOLD_MS + 5_000)  # decided after the hold
     return steps, pools
 
 
@@ -276,13 +306,18 @@ def _card_lamports(card: Any) -> int | None:
     return int((Decimal(str(card)) * 1_000_000_000).to_integral_value())
 
 
-def expected_lists(rows: list[dict[str, Any]], consume_ms: Mapping[int, int], pools: Mapping[str, tuple[str, int]]) -> tuple[list[Order], list[Outcome]]:
+def expected_lists(rows: list[dict[str, Any]], consume_ms: Mapping[int, int], pools: Mapping[str, tuple[str, int]], gap_mode: str | None = None) -> tuple[list[Order], list[Outcome]]:
     """The orders (and per-entry outcomes) that follow from the rows and the C0 caps. Written from DEC-032 s3 and the row semantics, not from the bridge's code: it uses
-    only the constants above, the rows as read back from disk and the instants at which the bridge consumed them."""
+    only the constants above, the rows as read back from disk and the instants at which the bridge consumed them. `gap_mode` (C-b): None = the log has no gap row;
+    "manual" = DEC-032 s5 item 2 as built (the first gap row latches feed_break: every later entry is `latched:feed_break`, exits continue); "am21" = DEC-031 Am.21 3.1
+    (no new buy until max(G, receipt) + M_GAP_HOLD_MS: `feed_gap_hold`; an entry decided at or before the newest G: `feed_gap`; both before the age check)."""
     orders: list[Order] = []
     outcomes: list[Outcome] = []
     start_seen = False
     frozen_ok = True
+    gap_latched = False
+    gap_newest = 0
+    hold_until = 0
     created: dict[str, tuple[str, str]] = {}  # order_id -> (mint, "open" | "closed")
     bought: set[str] = set()
     per_day: Counter[str] = Counter()
@@ -291,6 +326,13 @@ def expected_lists(rows: list[dict[str, Any]], consume_ms: Mapping[int, int], po
         if kind == "start":
             start_seen = True
             frozen_ok = frozen_ok and r.get("frozen_sha") == EXPECTED_FROZEN_SHA
+        elif kind == "gap" and gap_mode is not None and isinstance(r.get("ms"), int):
+            g = int(r["ms"])
+            if gap_mode == "manual":
+                gap_latched = True
+            else:
+                gap_newest = max(gap_newest, g)
+                hold_until = max(hold_until, max(g, consume_ms[seq]) + M_GAP_HOLD_MS)
         elif kind == "entry":
             oid, now = str(r["order_id"]), consume_ms[seq]
             mint = str((r.get("meta") or {}).get("mint") or f"pool:{r.get('pool')}")
@@ -301,6 +343,12 @@ def expected_lists(rows: list[dict[str, Any]], consume_ms: Mapping[int, int], po
                 label = "no_start_row"
             elif not frozen_ok:
                 label = "latched:frozen_sha_mismatch"
+            elif gap_latched:
+                label = "latched:feed_break"
+            elif gap_mode == "am21" and now < hold_until:
+                label = "feed_gap_hold"
+            elif gap_mode == "am21" and gap_newest and int(r["ms"]) <= gap_newest:
+                label = "feed_gap"
             elif now - int(r["ms"]) > M_MAX_DECISION_AGE_MS:
                 label = "stale_decision"
             elif sum(1 for _m, st in created.values() if st == "open") >= M_MAX_OPEN:
@@ -377,6 +425,29 @@ class ProofResult:
         self.record: dict[str, Any] = {}
 
 
+GAP_MODES = (("manual", True), ("am21", False))  # (label, the value of tools.hv4_live_c0.FEED_GAP_MANUAL_REVIEW for the run)
+
+
+def run_gap_case(work: Path, mode: str, manual: bool) -> dict[str, Any]:
+    """C-b: the gap scenario under one FEED_GAP_MANUAL_REVIEW value (set for this run only and restored). Returns the md5s, the labels and any problem."""
+    steps, pools = build_gap_scenario()
+    old = c0.FEED_GAP_MANUAL_REVIEW
+    c0.FEED_GAP_MANUAL_REVIEW = manual
+    try:
+        run = run_bridge(work, steps, pools)
+    finally:
+        c0.FEED_GAP_MANUAL_REVIEW = old
+    b_orders, b_out, problems = bridge_lists(run)
+    e_orders, e_out = expected_lists(run.rows, run.consume_ms, run.pools, gap_mode=mode)
+    want_latches = {"feed_break"} if manual else set()
+    if set(run.latches) != want_latches:
+        problems.append(f"gap/{mode}: the bridge ended with latches {sorted(run.latches)}, expected {sorted(want_latches)}")
+    if any(w.get("reason") in ("time_stop_backstop", "sl_backstop") for w in run.would_send):
+        problems.append(f"gap/{mode}: a backstop sell is in the would-send list")
+    return {"mode": mode, "bo": md5_of(b_orders), "eo": md5_of(e_orders), "bq": md5_of(b_out), "eq": md5_of(e_out), "problems": problems,
+            "labels": dict(sorted(Counter(lab for _s, lab in e_out).items())), "b_orders": b_orders, "e_orders": e_orders, "b_out": b_out, "e_out": e_out}
+
+
 def run_proof(work: Path | None = None) -> ProofResult:
     """Run the whole proof in `work` (a fresh temp dir when None, removed after). Never raises for a DIFF; it returns ok=False and the reasons."""
     res = ProofResult()
@@ -389,6 +460,11 @@ def run_proof(work: Path | None = None) -> ProofResult:
     base = Path(tempfile.mkdtemp(prefix="hv4-c0-orders-proof-")) if own else Path(work)  # type: ignore[arg-type]
     try:
         run = run_bridge(base, steps, pools)
+        gap_runs = []
+        for mode, manual in GAP_MODES:
+            gw = base / f"gap-{mode}"
+            gw.mkdir()
+            gap_runs.append(run_gap_case(gw, mode, manual))
     except (ValueError, SystemExit, LogChainError) as exc:  # the bridge refused to start (config, pin, window, read record): a DIFF with the reason, not a traceback
         res.lines += ["hv4_c0_orders_proof schema=" + SCHEMA, "PROBLEM the bridge refused the synthetic start: " + "; ".join(problems + [f"{type(exc).__name__}: {exc}"]),
                       "RESULT DIFF (no orders were compared; synthetic log; not gate evidence)"]
@@ -406,7 +482,10 @@ def run_proof(work: Path | None = None) -> ProofResult:
         problems.append("a backstop sell is in the would-send list: it has no row behind it")
     bo, eo, bq, eq = md5_of(b_orders), md5_of(e_orders), md5_of(b_out), md5_of(e_out)  # type: ignore[arg-type]
     kinds = Counter(r.get("kind") for r in run.rows)
-    equal = bo == eo and bq == eq and not problems
+    for g in gap_runs:
+        problems += g["problems"]
+    gaps_equal = all(g["bo"] == g["eo"] and g["bq"] == g["eq"] for g in gap_runs)
+    equal = bo == eo and bq == eq and gaps_equal and not problems
     L = res.lines
     L.append(f"hv4_c0_orders_proof schema={SCHEMA}")
     L.append("git_sha=" + os.environ.get("PROOF_GIT_SHA", "unknown"))
@@ -425,7 +504,12 @@ def run_proof(work: Path | None = None) -> ProofResult:
     L.append(f"entry_outcomes count={len(b_out)} by_label={dict(sorted(labels.items()))}")
     L.append(f"bridge_outcomes_md5={bq}")
     L.append(f"expected_outcomes_md5={eq}")
+    for g in gap_runs:  # C-b: the gap-row case under both FEED_GAP_MANUAL_REVIEW values
+        L.append(f"gap_case mode={g['mode']} bridge_orders_md5={g['bo']} expected_orders_md5={g['eo']} bridge_outcomes_md5={g['bq']} expected_outcomes_md5={g['eq']} "
+                 f"labels={g['labels']}")
     if not equal:
+        for g in gap_runs:
+            L += [f"gap/{g['mode']}: " + x for x in diff_lines(g["b_orders"], g["e_orders"]) + diff_lines(g["b_out"], g["e_out"])]
         for p in problems:
             L.append(f"PROBLEM {p}")
         L += diff_lines(b_orders, e_orders)  # type: ignore[arg-type]
@@ -434,7 +518,8 @@ def run_proof(work: Path | None = None) -> ProofResult:
     res.ok = equal
     res.record = {"schema": SCHEMA, "result": "EQUAL" if equal else "DIFF", "bot_id": BOT_ID, "git_sha": os.environ.get("PROOF_GIT_SHA", "unknown"),
                   "rows": len(run.rows), "log_md5": run.log_md5, "orders": len(b_orders), "buys": nb["buy"], "sells": nb["sell"],
-                  "bridge_orders_md5": bo, "expected_orders_md5": eo, "bridge_outcomes_md5": bq, "expected_outcomes_md5": eq, "problems": problems}
+                  "bridge_orders_md5": bo, "expected_orders_md5": eo, "bridge_outcomes_md5": bq, "expected_outcomes_md5": eq, "problems": problems,
+                  "gap_cases": [{k: g[k] for k in ("mode", "bo", "eo", "bq", "eq", "labels")} for g in gap_runs]}
     return res
 
 
