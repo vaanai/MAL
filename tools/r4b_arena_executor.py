@@ -19,9 +19,12 @@ WHAT THIS CHANGES ON TOP OF THE BRIDGE (each item is a difference between r4-b a
   4 CAPS IN RANK ORDER  X8. Entry rows of one mark are read in rank order (the engine writes them so). A row whose rank does not rise within its mark is
                    refused `rank_order`. Every skip is `entry_refused` in the bridge log with its reason. An exit row for an order the canary does not hold
                    is ignored and counted (`exits_not_held`), never an error. A reason outside rank | gap | end is not followed (counted).
-  5 LATENCY ORIGIN X9 / N5. Every order records decision_slot = the paper twin's sd(T). Landed latency = (landed_slot - decision_slot) x slot_s, with the wall
-                   time beside it when the decision host wrote `sd_seen_ms` (the first-seen time of slot sd(T)). NEVER from the declog row or the send time.
-                   `latency_summary` / `latency_check` are pure; DEC-032 P5 (rolling 20, p50 > 3.0 s) latches `p5_landing_latency` (new buys stop, exits run).
+  5 LATENCY ORIGIN X9 / N5 (DEC-032 Amendment 8 A8 = QP-RULING-1030 Erratum 1). Every order records decision_slot = the paper twin's sd(T). The DECIDING
+                   quantity is d_land = landed slot - decision_slot, in SLOTS: "at most 1.9 s" means d_land <= round(1.9 / slot_s) and "above 3.0 s" means
+                   d_land > round(3.0 / slot_s), with slot_s the per-UTC-date value the twin uses (config slot_s_by_date; config slot_s is the provisional
+                   value when a date is missing) and Python round = np.round (half to even, EXP-027 :258-261). Seconds and wall times (sd_seen_ms when a host
+                   writes it) are diagnostics only: they never decide, and a missing wall field is not a P7 condition. NEVER from the declog row or the send.
+                   `latency_summary` / `latency_check` are pure; DEC-032 P5 (rolling 20) latches `p5_landing_latency` (new buys stop, exits run).
   6 FEES           505,000 lamports per send (500,000 priority + 5,000 base, the bridge's LiveExecutor profile); reserves use the same fee. Declared, not assumed.
   7 GATES          committed-loss stop (DEC-032 section 3), wallet floor, row pins (paper stake 0.25, order id, t_mark, rank, V0 band, age window, decision_slot),
                    10-minute buy hold after a decision-host restart, canary duration (14 days from the first buy attempt), max concurrent positions 2.
@@ -43,6 +46,7 @@ import re
 import statistics
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -189,25 +193,45 @@ def _med(xs: Sequence[float]) -> float | None:
     return float(statistics.median(xs)) if xs else None
 
 
-def landed_buy_latencies(orders: Mapping[str, Mapping[str, Any]], slot_s: float) -> list[dict[str, Any]]:
-    """One record per landed buy, in landing order: order_id, slots (landed - decision), slot_s_latency, wall_s_latency, gap."""
+def k_slots(seconds: float, slot_s: float) -> int:
+    """round(seconds / slot_s), Python round = np.round (half to even): the twin's k for a latency in seconds (EXP-027 :258-261)."""
+    return int(round(seconds / slot_s))
+
+
+def order_slot_s(o: Mapping[str, Any], slot_s: float, slot_s_by_date: Mapping[str, float] | None = None) -> tuple[float, str]:
+    """(slot_s, source) for one order: the twin's per-UTC-date value of the decision's date if given, else the provisional config value."""
+    if slot_s_by_date and _int(o.get("decision_ms")):
+        d = datetime.fromtimestamp(o["decision_ms"] / 1000.0, tz=timezone.utc).strftime("%Y-%m-%d")
+        v = slot_s_by_date.get(d)
+        if _num(v) and v > 0:
+            return float(v), "date"
+    return float(slot_s), "provisional"
+
+
+def landed_buy_latencies(orders: Mapping[str, Mapping[str, Any]], slot_s: float, slot_s_by_date: Mapping[str, float] | None = None) -> list[dict[str, Any]]:
+    """One record per landed buy, in landing order: order_id, slots = d_land (landed - decision; DECIDING), k19 / k30 (round(1.9 / slot_s), round(3.0 / slot_s)),
+    x19 / x30 = d_land - k (the excess in slots), slot_s_latency and wall_s_latency (diagnostics), gap."""
     rows = []
     for oid, o in orders.items():
         if not _int(o.get("buy_landed_ms")):
             continue
         ds, ls = o.get("decision_slot"), o.get("buy_landed_slot")
-        rows.append({"order_id": oid, "landed_ms": o["buy_landed_ms"], "slots": (ls - ds) if _int(ds) and _int(ls) else None,
-                     "slot_s": slot_latency_s(ds, ls, slot_s), "wall_s": wall_latency_s(o.get("sd_seen_ms"), o["buy_landed_ms"]), "gap": bool(o.get("gap"))})
+        ss, src = order_slot_s(o, slot_s, slot_s_by_date)
+        d = (ls - ds) if _int(ds) and _int(ls) and ls >= ds else None
+        k19, k30 = k_slots(MATCH_P50_S, ss), k_slots(P5_SOFT_HALT_S, ss)
+        rows.append({"order_id": oid, "landed_ms": o["buy_landed_ms"], "slots": d, "k19": k19, "k30": k30, "x19": None if d is None else d - k19,
+                     "x30": None if d is None else d - k30, "slot_s_used": ss, "slot_s_source": src,
+                     "slot_s": slot_latency_s(ds, ls, ss), "wall_s": wall_latency_s(o.get("sd_seen_ms"), o["buy_landed_ms"]), "gap": bool(o.get("gap"))})
     rows.sort(key=lambda r: (r["landed_ms"], r["order_id"]))
     return rows
 
 
-def latency_summary(orders: Mapping[str, Mapping[str, Any]], slot_s: float, *, window: int = P5_WINDOW) -> dict[str, Any]:
+def latency_summary(orders: Mapping[str, Mapping[str, Any]], slot_s: float, *, window: int = P5_WINDOW, slot_s_by_date: Mapping[str, float] | None = None) -> dict[str, Any]:
     """The landing-latency facts of DEC-032 section 5, counted from sd(T). `window_p50_s` is the rolling P5 figure (last `window` measured landed buys);
     `all_p50_s` is the aggregate the match clause uses (all measured landed buys since the first send); `non_gap_p50_s` leaves out trips marked `gap`.
     The wall figures use sd_seen_ms and are reported beside the slot figures; a missing sd_seen_ms is counted, never replaced by another time."""
-    rows = landed_buy_latencies(orders, slot_s)
-    meas = [r for r in rows if r["slot_s"] is not None]
+    rows = landed_buy_latencies(orders, slot_s, slot_s_by_date)
+    meas = [r for r in rows if r["slots"] is not None]
     wall = [r for r in rows if r["wall_s"] is not None]
     sells = []
     for o in orders.values():
@@ -219,20 +243,23 @@ def latency_summary(orders: Mapping[str, Mapping[str, Any]], slot_s: float, *, w
     return {"origin": "sd(T): decision_slot, never the declog row or the send time", "slot_s": slot_s, "landed_buys": len(rows), "measured": len(meas),
             "unmeasured": len(rows) - len(meas), "window": window, "window_n": len(last), "window_p50_s": _med([r["slot_s"] for r in last]),
             "all_p50_s": _med([r["slot_s"] for r in meas]), "non_gap_p50_s": _med([r["slot_s"] for r in meas if not r["gap"]]),
+            "window_x30_p50_slots": _med([r["x30"] for r in last]), "all_x19_p50_slots": _med([r["x19"] for r in meas]),
+            "all_slots_p50": _med([r["slots"] for r in meas]), "provisional_slot_s": sum(1 for r in meas if r["slot_s_source"] == "provisional"),
             "wall_measured": len(wall), "wall_missing": len(rows) - len(wall), "wall_window_p50_s": _med([r["wall_s"] for r in last_wall]),
             "wall_all_p50_s": _med([r["wall_s"] for r in wall]), "sells_measured": len(sells), "sells_p50_s": _med(sells)}
 
 
 def latency_check(summary: Mapping[str, Any], *, min_n: int = P5_WINDOW) -> dict[str, Any]:
-    """DEC-032 P5 and the match clause on a `latency_summary`. Decided on the slot figures (the twin enters at sd + k slots); the wall figures are flags beside.
-    p5_soft_halt: window p50 above 3.0 s with at least `min_n` measured landed buys. match_latency_ok: all-trip p50 at most 1.9 s with at least `min_n`."""
+    """DEC-032 P5 and the match clause on a `latency_summary`, decided IN SLOTS (A8 / Erratum 1): p5_soft_halt when the median over the P5 window of
+    (d_land - round(3.0 / slot_s)) is above 0; match_latency_ok when the median over all measured landed buys of (d_land - round(1.9 / slot_s)) is at most 0;
+    both need at least `min_n` measured landed buys. The seconds and wall figures are diagnostics (diag_*), never deciding."""
     enough = summary["measured"] >= min_n
-    w, a = summary["window_p50_s"], summary["all_p50_s"]
+    x30, x19 = summary["window_x30_p50_slots"], summary["all_x19_p50_slots"]
     ww, wa = summary["wall_window_p50_s"], summary["wall_all_p50_s"]
-    return {"enough": enough, "p5_soft_halt": bool(enough and w is not None and w > P5_SOFT_HALT_S),
-            "match_latency_ok": bool(enough and a is not None and a <= MATCH_P50_S),
-            "wall_p5_over": bool(summary["wall_measured"] >= min_n and ww is not None and ww > P5_SOFT_HALT_S),
-            "wall_match_over": bool(summary["wall_measured"] >= min_n and wa is not None and wa > MATCH_P50_S)}
+    return {"enough": enough, "p5_soft_halt": bool(enough and x30 is not None and x30 > 0),
+            "match_latency_ok": bool(enough and x19 is not None and x19 <= 0),
+            "diag_wall_p5_over": bool(summary["wall_measured"] >= min_n and ww is not None and ww > P5_SOFT_HALT_S),
+            "diag_wall_match_over": bool(summary["wall_measured"] >= min_n and wa is not None and wa > MATCH_P50_S)}
 
 
 # --- N7: the r4-b paper twin at stake S and the executor's per-send fee ---------------------------------------------------------------------------------
@@ -267,7 +294,10 @@ class R4bBridge(B.Bridge):
 
     def __init__(self, cfg: B.Config, port: B.OrderPort, *, now_ms: Callable[[], int] | None = None, dry_replay_caps: bool = False,
                  live_ok_path: Path = B.LIVE_OK_PATH, tier_path: Path = B.TIER_PATH, root_checks: bool = True,
-                 close_blocked: Callable[[str], bool | None] | None = None) -> None:
+                 close_blocked: Callable[[str], bool | None] | None = None, slot_s_by_date: Mapping[str, float] | None = None) -> None:
+        self.slot_s_by_date = dict(slot_s_by_date or {})  # the twin's per-UTC-date slot_s (A8); config slot_s is the provisional value
+        if any(not _num(v) or not SLOT_S_MIN <= v <= SLOT_S_MAX for v in self.slot_s_by_date.values()):
+            raise SystemExit("r4b executor start refused: slot_s_by_date out of range")
         if (not isinstance(cfg, R4bConfig) or cfg.bot_id != BOT_ID or cfg.max_hold_ms != MAX_HOLD_MS or not FROZEN_SHA_RE.fullmatch(str(cfg.frozen_sha))
                 or not _num(cfg.slot_s) or not SLOT_S_MIN <= cfg.slot_s <= SLOT_S_MAX):
             raise SystemExit("r4b executor start refused: book pin")
@@ -483,13 +513,13 @@ class R4bBridge(B.Bridge):
         self._save()
 
     def latency_report(self) -> dict[str, Any]:
-        return {"summary": (s := latency_summary(self.state.orders, self.cfg.slot_s)), "check": latency_check(s)}
+        return {"summary": (s := latency_summary(self.state.orders, self.cfg.slot_s, slot_s_by_date=self.slot_s_by_date)), "check": latency_check(s)}
 
     def p5_check(self) -> None:
         """DEC-032 P5, evaluated on every landed buy: a soft halt (new buys stop, exits run) until the manager clears it with the bridge stopped."""
         rep = self.latency_report()
         if rep["check"]["p5_soft_halt"]:
-            self._latch(P5_LATCH, f"landing p50 {rep['summary']['window_p50_s']:.3f} s over the last {rep['summary']['window_n']} landed buys, counted from sd(T)")
+            self._latch(P5_LATCH, f"landing median excess {rep['summary']['window_x30_p50_slots']} slots over round(3.0 / slot_s), last {rep['summary']['window_n']} landed buys, counted from sd(T)")
 
 
 # --- dry replay of a closed decision log --------------------------------------------------------------------------------------------------------------
