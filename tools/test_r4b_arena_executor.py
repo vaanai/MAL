@@ -238,7 +238,7 @@ def test_no_key_wallet_rpc_or_send_path_in_the_module():
             mods |= {a.name for a in n.names}
         elif isinstance(n, ast.ImportFrom):
             mods |= {f"tools.{a.name}" for a in n.names} if n.module == "tools" else {n.module}
-    assert mods <= {"__future__", "argparse", "hashlib", "json", "re", "statistics", "sys", "dataclasses", "pathlib", "typing", "tools.arena_live_bridge", "tools.r4b_book",
+    assert mods <= {"__future__", "argparse", "hashlib", "json", "re", "statistics", "sys", "dataclasses", "datetime", "pathlib", "typing", "tools.arena_live_bridge", "tools.r4b_book",
                     "tools.r4b_frozen", "tools.arena_declog", "tools.arena_paper"}, mods
     low = src.lower()
     for bad in ("keypair", "load_probe_key", "make_live_port", "helius", "sendtransaction", "solders", ".env", "private_key", "/etc/mal-arena-live", "urllib", "socket", "requests"):
@@ -591,24 +591,26 @@ def _landed(n, lag_slots, slot_s=0.4, gap_every=0):
 
 
 def test_latency_summary_and_check_thresholds():
-    s = X.latency_summary(_landed(25, 8), 0.4)  # 3.2 s
+    # A8 / Erratum 1: decided in slots. At slot_s 0.4: k30 = round(7.5) = 8 (half to even), k19 = round(4.75) = 5.
+    s = X.latency_summary(_landed(25, 9), 0.4)  # 9 slots > 8
     c = X.latency_check(s)
-    assert s["landed_buys"] == 25 and s["window_n"] == 20 and s["window_p50_s"] == pytest.approx(3.2) and c["enough"] and c["p5_soft_halt"] and not c["match_latency_ok"]
-    s = X.latency_summary(_landed(25, 7), 0.4)  # 2.8 s: under the P5 halt, over the match clause
+    assert s["landed_buys"] == 25 and s["window_n"] == 20 and s["window_x30_p50_slots"] == 1 and c["enough"] and c["p5_soft_halt"] and not c["match_latency_ok"]
+    s = X.latency_summary(_landed(25, 8), 0.4)  # 8 slots = k30 (3.2 s in seconds, a diagnostic): not "above"
     c = X.latency_check(s)
-    assert not c["p5_soft_halt"] and not c["match_latency_ok"]
-    s = X.latency_summary(_landed(25, 4), 0.4)  # 1.6 s
+    assert s["window_p50_s"] == pytest.approx(3.2) and not c["p5_soft_halt"] and not c["match_latency_ok"]
+    s = X.latency_summary(_landed(25, 4), 0.4)
     c = X.latency_check(s)
     assert not c["p5_soft_halt"] and c["match_latency_ok"]
-    s = X.latency_summary(_landed(25, 5), 0.4)  # 2.0 s > 1.9 s
-    assert not X.latency_check(s)["match_latency_ok"]
+    s = X.latency_summary(_landed(25, 5), 0.4)  # 5 slots = k19 (2.0 s in seconds): matches in slots
+    assert X.latency_check(s)["match_latency_ok"] and s["all_x19_p50_slots"] == 0
+    assert not X.latency_check(X.latency_summary(_landed(25, 6), 0.4))["match_latency_ok"]
     s = X.latency_summary(_landed(19, 20), 0.4)  # 19 landed buys: not enough, no halt
     c = X.latency_check(s)
     assert not c["enough"] and not c["p5_soft_halt"] and not c["match_latency_ok"]
     # the rolling window follows the last 20, the match clause all of them
     o = {**_landed(30, 4), **{f"p{i:03d}": {"decision_slot": 5000 + i, "buy_landed_slot": 5000 + i + 9, "buy_landed_ms": 99_000 + i} for i in range(20)}}  # 20 slow buys at the end: 3.6 s
     s = X.latency_summary(o, 0.4)
-    assert s["window_p50_s"] == pytest.approx(3.6) and s["all_p50_s"] == pytest.approx(1.6) and X.latency_check(s)["p5_soft_halt"]
+    assert s["window_p50_s"] == pytest.approx(3.6) and s["all_p50_s"] == pytest.approx(1.6) and X.latency_check(s)["p5_soft_halt"]  # window 9 slots > 8
     edge = X.latency_summary(_landed(25, 6), 0.5)  # exactly 3.0 s: the halt is "above" 3.0 s
     assert edge["window_p50_s"] == 3.0 and not X.latency_check(edge)["p5_soft_halt"] and X.latency_check(X.latency_summary(_landed(25, 7), 0.5))["p5_soft_halt"]
     assert X.latency_summary(_landed(25, 8, gap_every=2), 0.4)["non_gap_p50_s"] == pytest.approx(3.2)
@@ -641,7 +643,7 @@ def test_p5_latches_new_buys_at_the_20th_slow_landing_but_exits_keep_running(tmp
     lg.entry(19, "M20", 1, dt=1300)  # ... so this one is not bought
     lg.exit(20, "M19", 19, reason="end")  # ... and the open position still exits
     feed(br, clk)
-    assert "p5_landing_latency" in br.state.latches and "4.000 s" in br.state.latches["p5_landing_latency"]
+    assert "p5_landing_latency" in br.state.latches and "slots over round(3.0 / slot_s)" in br.state.latches["p5_landing_latency"]
     assert br.state.counts["refused_latched"] == 1 and oid("M20", 19) not in br.state.orders
     assert br.state.orders[oid("M19", 19)]["status"] == "closed"
     lg.entry(22, "M21", 0)
@@ -794,3 +796,16 @@ def test_replay_check_cli(replayed, tmp_path, capsys):
     live.write_text(json.dumps({**rcfg(replayed, "cli3"), "mode": "live"}))
     with pytest.raises(ValueError):
         X.main(["replay-check", "--config", str(live)])
+
+
+def test_latency_uses_the_twins_per_date_slot_s_and_k_rounding():
+    """A8: thresholds per UTC date from the twin's slot_s; a missing date falls back to the provisional config value and is counted."""
+    assert X.k_slots(1.9, 0.2) == 9 and X.k_slots(3.0, 0.2) == 15 and X.k_slots(1.9, 0.4) == 5 and X.k_slots(3.0, 0.4) == 8
+    o = {"a": {"buy_landed_ms": 2, "decision_ms": 1_793_400_000_000,  # 2026-10-30T22:40Z
+ "decision_slot": 100, "buy_landed_slot": 110}}
+    r = X.landed_buy_latencies(o, 0.4, {"2026-10-30": 0.2})[0]
+    assert (r["slots"], r["k19"], r["x19"], r["slot_s_source"]) == (10, 9, 1, "date")
+    r = X.landed_buy_latencies(o, 0.4, {"2026-11-01": 0.2})[0]
+    assert (r["k19"], r["x19"], r["slot_s_source"]) == (5, 5, "provisional")
+    s = X.latency_summary(o, 0.4, slot_s_by_date={"2026-10-30": 0.2})
+    assert s["provisional_slot_s"] == 0 and s["all_slots_p50"] == 10
