@@ -112,3 +112,79 @@ class ParityStopTests(TmpCase):
         self.assertTrue(tie)
         self.assertEqual(tie[0][tie[0].index("--stop-file") + 1], str(Path(e.raw["parity_dir"]) / "STOP"))
         self.assertEqual(json.loads(json.dumps(tie[0]))[0], "tools.arena_tieout")
+
+
+class TwinGraceTests(TmpCase):
+    """QP part-A C1 (#1096): with a writable STOP the first parity run after a landing must not STOP the canary before its twin can arrive."""
+
+    def _env(self):
+        e = Hv4Env(self.tmp)
+        e.port = LedgerPort()
+        e.raw.update(parity_dir=str(Path(self.tmp) / "par"), twins_file=str(Path(self.tmp) / "twins.jsonl"), tieout_dir=str(Path(self.tmp) / "tie"))
+        return e
+
+    def _land(self, b, e, mint="M1"):
+        t = e.clock()
+        kw = {"landed": True, "tokens_received": 1_000_000, "spend_lamports": 50_000_000, "confirm_seen_ms": t, "decision_t_ms": t - 1_000, "fee_lamports": 60_000,
+              "signature": "sigB-" + mint, "tokens_source": "meta"}
+        self.assertIsNone(b.gates.recorder.on_buy(mint, kw, t, t + 3_600_000))
+        return t
+
+    def _twin_record(self, e, covered, run_ms):
+        import hashlib
+        tw = Path(e.raw["twins_file"])
+        tw.write_text("")
+        from tools import h5_arena_gates as g
+        rec = {"schema": g.TWIN_RUN_SCHEMA, "run_ms": run_ms, "covered_trip_ids": list(covered), "twins_sha256": hashlib.sha256(tw.read_bytes()).hexdigest(),
+               "config_hash": "0" * 64, "code_sha256": "0" * 64}
+        Path(str(tw) + ".run.json").write_text(json.dumps(rec))
+
+    def test_inside_the_grace_no_parity_run_no_stop_and_no_buy(self):
+        e = self._env()
+        calls = []
+        b = alb.Bridge(alb.Config.from_dict(e.raw), e.port, now_ms=e.clock, live_ok_path=e.live_ok, tier_path=e.tier, root_checks=False,
+                       parity_runner=lambda argv: calls.append(argv) or 10)
+        self.assertIsInstance(b.gates, c0p.Hv4LiveGates)
+        t = self._land(b, e)
+        b.gates.maybe_run_parity(e.clock())
+        self.assertEqual(b.gates.parity_refusal(e.clock()), c0p.TWIN_GRACE_REFUSAL)
+        e.clock.t = t + c0p.TWIN_GRACE_MS - 1
+        b.gates.maybe_run_parity(e.clock())
+        self.assertEqual(b.gates.parity_refusal(e.clock()), c0p.TWIN_GRACE_REFUSAL)
+        self.assertEqual([a for a in calls if a[0] == "tools.arena_live_parity"], [])
+        self.assertFalse(Path(c0p.parity_stop_path(e.raw["parity_dir"])).exists())
+
+    def test_a_twin_that_covers_the_trip_ends_the_grace_at_once(self):
+        e = self._env()
+        calls = []
+        b = alb.Bridge(alb.Config.from_dict(e.raw), e.port, now_ms=e.clock, live_ok_path=e.live_ok, tier_path=e.tier, root_checks=False,
+                       parity_runner=lambda argv: calls.append(argv) or 0)
+        t = self._land(b, e)
+        self._twin_record(e, [], t + 5)  # a run that does not cover M1: still pending
+        self.assertTrue(b.gates.twin_pending(e.clock()))
+        self._twin_record(e, ["M1"], t - 1)  # covers M1 but is older than the landing: still pending
+        self.assertTrue(b.gates.twin_pending(e.clock()))
+        self._twin_record(e, ["M1"], t + 5)
+        self.assertFalse(b.gates.twin_pending(e.clock()))
+        self.assertIsNone(b.gates.parity_refusal(e.clock()))
+        self.assertTrue(any(a[0] == "tools.arena_live_parity" for a in calls))
+
+    def test_after_the_grace_the_real_tool_runs_and_writes_stop_when_the_twin_never_came(self):
+        e = self._env()
+        r = _Runner()
+        b = alb.Bridge(alb.Config.from_dict(e.raw), e.port, now_ms=e.clock, live_ok_path=e.live_ok, tier_path=e.tier, root_checks=False, parity_runner=r)
+        t = self._land(b, e)
+        self._twin_record(e, [], t - 10)
+        e.clock.t = t + c0p.TWIN_GRACE_MS
+        why = b.gates.parity_refusal(e.clock())
+        self.assertTrue(why and why.startswith("parity_gate:rc_"), why)
+        self.assertTrue(any(a[0] == "tools.arena_live_parity" for a in r.calls))
+        self.assertTrue(Path(c0p.parity_stop_path(e.raw["parity_dir"])).exists())  # P7 and STOP, as before, once the grace is over
+        self.assertEqual(b._files(), (False, True))
+
+    def test_no_landing_no_grace_and_the_bound_is_at_most_stale_ms(self):
+        from tools import arena_live_parity as alp
+        self.assertLessEqual(c0p.TWIN_GRACE_MS, alp.STALE_MS)
+        e = self._env()
+        b = alb.Bridge(alb.Config.from_dict(e.raw), e.port, now_ms=e.clock, live_ok_path=e.live_ok, tier_path=e.tier, root_checks=False, parity_runner=lambda argv: 0)
+        self.assertFalse(b.gates.twin_pending(e.clock()))
