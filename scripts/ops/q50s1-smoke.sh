@@ -10,7 +10,7 @@
 #
 # Same code and flags as the book (scripts/ops/q50s1-shadow-start.sh, read from THIS checkout so the two never drift): tools/h5_shadow.py at S* 5c2ab7c6 from a clean detached worktree,
 # --fresh-forward ARENA --q-star-sol 50 --sockets 3 --syn-sockets 1 and the providers of scripts/ops/q50s1-feed.sh and scripts/ops/q50s1-ws-launch.py (the helper and the launcher the start
-# script itself uses: mainnet-beta plus the Helius ws, its key added inside the process, never on a command line), MemoryMax = its NEW_MAX_MB (1500M), MemorySwapMax=0. Differences, all outside the process's flags: the out dir is a scratch root
+# script itself uses: mainnet-beta, plus the --ws2 provider if given (host-only; a key only with --ws2-keyed, added inside the process, never on a command line)), MemoryMax = its NEW_MAX_MB (1500M), MemorySwapMax=0. Differences, all outside the process's flags: the out dir is a scratch root
 # $Q50S1_SMOKE_HOME/data/arena/h5-smoke-q50s1-<UTC stamp> (default /home/claude/s1smoke; NOT s1's, Q50's or HV4's root, QP C1; the shadow runs with HOME=$Q50S1_SMOKE_HOME
 # because h5_shadow requires <root>/h5-*; the name matches no book glob: not h5-shadow-*, h5-q50-*, h5-q50s1-2*), its own worktree $HOME/data/arena-src/q50s1-smoke-5c2ab7c6 (removed at the end), its own unit q50s1-smoke.scope with a fixed --description (no key in the journal).
 # Memory: refuses (exit 10) unless `sh scripts/ops/q50s1-shadow-start.sh --check-memory` exits 0 (the same fit check as the book's start: P + S + N + M <= L with N = 1500M;
@@ -154,7 +154,12 @@ PRC=0
 wait "$PID" || PRC=$?
 echo "q50s1-smoke: stopped at $(date -u +%FT%TZ): alive_at_end=$ALIVE process_rc=$PRC (report-only) out=$OUT report=$REP"
 JKEY=unreadable
-if journalctl --user -n 0 --no-pager >/dev/null 2>&1; then JKEY="$(journalctl --user --since "@$START" --no-pager -o cat 2>/dev/null | python3 -I "$JUDGE" count-keys)"; fi
+# key count in the journal (QP 6534174365): the literal key string over the WHOLE user journal since the start, plus the broad provider-key patterns over this smoke's own unit only
+if journalctl --user -n 0 --no-pager >/dev/null 2>&1; then
+  JA="$(journalctl --user --since "@$START" --no-pager -o cat 2>/dev/null | python3 -I "$JUDGE" count-keys --literal-only)"
+  JU="$(journalctl --user -u "$UNIT.scope" --since "@$START" --no-pager -o cat 2>/dev/null | python3 -I "$JUDGE" count-keys)"
+  case "$JA$JU" in ''|*[!0-9]*) ;; *) JKEY=$((JA + JU)) ;; esac
+fi
 case "$JKEY" in ''|*[!0-9]*) JKEY=unreadable ;; esac
 # 8. judge (counts, timings and flags only)
 JRC=0

@@ -8,7 +8,8 @@
 # counted. --out-dir: the book's dir (default $ARENA/h5-q50s1-2026-11-05): prefix counts of start/stop/error/hb rows, hb rows' trailing t_ms, gap rows' kind and flags_pools, the
 # status file's mtime, the errors file's size. Scope: `systemctl --user show q50s1-shadow.scope` ActiveState and ActiveEnterTimestamp only.
 # It is also the Am.22 item 10 key check before the clock (QP C2): counts only, never an argv or environment printed: the key string in the book's start row(s), in
-# /proc/<pid>/cmdline of every process in the scope's cgroup, HELIUS_API_KEY= in their /proc/<pid>/environ, and in the user journal since the scope start; plus
+# /proc/<pid>/cmdline of every process in the scope's cgroup, <Q50S1_KEY_VAR>= in their /proc/<pid>/environ, and in the user journal since the scope start (the literal
+# key string journal-wide; the broad provider-key patterns only on the s1 shadow's own unit, so another process's link never counts); plus
 # `findmnt -no OPTIONS /proc` (printed). Any count that is not 0, or cannot be read, is NOT_CLEAN. The one path the launcher's redaction does not cover is S*'s own
 # h5-shadow-errors.log (an exception message written to a file), which is counted too.
 # Exit: 0 CLEAN, 1 NOT_CLEAN, 2 args or unreadable input, 6 host.
@@ -60,7 +61,13 @@ if [ -n "$(printf '%s' "$PIDS" | tr -d ' ')" ]; then
   done
 fi
 KJ=unreadable
-if [ -n "$SINCE" ] && journalctl --user -n 0 --no-pager >/dev/null 2>&1; then KJ="$(journalctl --user --since "@$SINCE" --no-pager -o cat 2>/dev/null | python3 -I "$REPO/tools/q50s1_health.py" count-keys)"; fi
+# key count in the journal (QP 6534174365): the literal key string over the WHOLE user journal since the scope start, plus the broad provider-key patterns over the s1 shadow's
+# own unit only (a link in another process's journal line must not fail the check)
+if [ -n "$SINCE" ] && journalctl --user -n 0 --no-pager >/dev/null 2>&1; then
+  JA="$(journalctl --user --since "@$SINCE" --no-pager -o cat 2>/dev/null | python3 -I "$REPO/tools/q50s1_health.py" count-keys --literal-only)"
+  JU="$(journalctl --user -u "$UNIT.scope" --since "@$SINCE" --no-pager -o cat 2>/dev/null | python3 -I "$REPO/tools/q50s1_health.py" count-keys)"
+  case "$JA$JU" in ''|*[!0-9]*) ;; *) KJ=$((JA + JU)) ;; esac
+fi
 case "$KJ" in ''|*[!0-9]*) KJ=unreadable ;; esac
 PM="$(findmnt -no OPTIONS /proc 2>/dev/null | tr ' ' ',' || true)"
 echo "q50s1-clean-log: scope processes: $(printf '%s' "$PIDS" | wc -w) (pids are not printed with their argv)"

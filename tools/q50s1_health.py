@@ -424,17 +424,20 @@ def dry_filter(a: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
-def count_keys_stdin() -> int:
-    """`count-keys`: the number of stdin lines (NUL also splits) that carry any provider-key form. Prints the count only."""
+def count_keys_stdin(literal_only: bool = False) -> int:
+    """`count-keys [--literal-only]`: the number of stdin lines (NUL also splits) that carry any provider-key form (KEY_PATTERNS), or, with --literal-only, the literal
+    string api-key only. The literal form is for the WHOLE user journal (QP 6534174365: the broad patterns would count ordinary links of other processes); the broad
+    patterns are for the s1 units' own journal and logs. Prints the count only."""
     data = sys.stdin.buffer.read().decode("utf-8", errors="replace").replace("\0", "\n")
-    print(sum(1 for ln in data.splitlines() if key_line(ln)))
+    print(sum(1 for ln in data.splitlines() if (KEY_MARK in ln if literal_only else key_line(ln))))
     return 0
 
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("count-keys")
+    ck = sub.add_parser("count-keys")
+    ck.add_argument("--literal-only", action="store_true")
     s = sub.add_parser("smoke-judge")
     s.add_argument("--out-dir", required=True)
     s.add_argument("--proc-log", required=True)
@@ -463,7 +466,7 @@ def main(argv=None) -> int:
     d.add_argument("--mode", choices=("dry", "score"), default="dry")
     a = ap.parse_args(argv)
     if a.cmd == "count-keys":
-        return count_keys_stdin()
+        return count_keys_stdin(a.literal_only)
     if a.cmd == "smoke-judge":
         if (a.warm_s, a.plan_h, a.cap_bytes) != (WARM_S, PLAN_H, CAP_BYTES):
             a.test_overrides = True
