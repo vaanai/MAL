@@ -125,10 +125,10 @@ def run(arena_root: str | os.PathLike, books_path: str | os.PathLike | None = No
     for text, pin in ((A3_BOOKS_TEXT, A3_BOOKS_SHA256), (A3_BOOKS_READ_TEXT, A3_BOOKS_READ_SHA256)):
         if _sha(text.encode()) != pin:
             raise Refused("a books text does not match its sha256 pin: the module was edited")
+    root = check_root(arena_root)  # structural refusals first: they do not depend on the clock
     forbidden = forbidden_minute(now_ms)
     if forbidden and apply:
         raise Refused(f"refused at {now_ms}: {FORBIDDEN_NOTE}")
-    root = check_root(arena_root)
     books = root / A3_BOOKS_NAME
     if books_path is not None and (Path(books_path).name != A3_BOOKS_NAME or os.path.realpath(Path(books_path).parent) != os.fspath(root)):
         raise Refused(f"--books-file {os.fspath(books_path)!r} is not {books}: s1's A3 books file lives in its own root")
