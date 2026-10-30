@@ -7,6 +7,7 @@ import json
 import os
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tools import arena_live_bridge as alb
 from tools import hv4_arms
@@ -405,6 +406,7 @@ class BridgeC0Tests(TmpCase):
             rc = alb.main(["--config", str(cfgp), "--once"] + (["--live"] if live else []))
         return rc, buf.getvalue()
 
+    @mock.patch.object(c0, "LIVE_REFUSAL_ACTIVE", True)  # the default state, pinned: flipping the constant to False must not change what this test asserts
     def test_dry_start_without_marker_refused(self):
         rc, out = self._main(Hv4Env(self.tmp))
         self.assertEqual(rc, 2)
@@ -416,6 +418,7 @@ class BridgeC0Tests(TmpCase):
         rc, out = self._main(Hv4Env(self.tmp), live=True, marker=True)
         self.assertEqual(rc, 2)
 
+    @mock.patch.object(c0, "LIVE_REFUSAL_ACTIVE", True)  # the default state, pinned: flipping the constant to False must not change what this test asserts
     def test_arena_root_always_refused_without_touching_it(self):
         for root in ("/data/mal/arena", "/data/mal/arena/haiku-v4", "/data/mal/arena/../arena/x", "/data/mal/arena/nonexistent-synth"):
             for live in (False, True):
@@ -433,6 +436,7 @@ class BridgeC0Tests(TmpCase):
                 with self.assertRaises(ValueError):
                     alb.Config.from_dict({**base, "profile": ""})
 
+    @mock.patch.object(c0, "LIVE_REFUSAL_ACTIVE", True)  # the default state, pinned: flipping the constant to False must not change what this test asserts
     def test_live_start_refused_hv4_c0_incomplete(self):
         import contextlib, io, json
         cfgp = Path(self.tmp) / "cfg.json"

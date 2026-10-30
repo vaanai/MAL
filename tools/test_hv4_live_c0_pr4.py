@@ -610,6 +610,7 @@ class MainPathChecksTests(TmpCase):
         self.assertEqual(rc, 2)
         self.assertIn("parity_path_missing:twins_file", out)
 
+    @mock.patch.object(c0, "LIVE_REFUSAL_ACTIVE", True)  # the default state, pinned: flipping the constant to False must not change what this test asserts
     def test_with_the_paths_a_live_start_reaches_the_incomplete_refusal(self):
         rc, out = self._run({})
         self.assertEqual(rc, 2)
