@@ -16,7 +16,8 @@ Arms (one trigger set, every arm decides on every trigger):
     python -m tools.haiku_v5_harness run   ... --model haiku --live --approval NOTE --budget-usd X --ledger LEDGER --save-dir DIR \
                                                --expect-sha256 triggers=SHA,outcomes=SHA
     python -m tools.haiku_v5_harness dry   --triggers T.jsonl --out-dir DIR [--arms L,P,F --reps 3]   (counts + request bytes, no outcome read)
-    python -m tools.haiku_v5_harness score --run-dir DIR --outcomes O.jsonl --out SCORE.json
+    python -m tools.haiku_v5_harness pilot --run-dir DIR --ledger LEDGER [--save-dir DIR]           (structure only, no outcome)
+    python -m tools.haiku_v5_harness score --run-dir DIR --triggers T.jsonl --outcomes O.jsonl --out SCORE.json   (basis el2, same sha)
 
 Nothing here trades, holds a wallet or reads a key. The key is read only by tools.haiku_caller from ANTHROPIC_API_KEY in the job's environment.
 No book has cleared the promotion gate. An offline PASS is a hypothesis on in-sample exploration days, never gate evidence.

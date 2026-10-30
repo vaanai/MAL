@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 from pathlib import Path
 
@@ -452,3 +453,224 @@ def test_caller_stop_exits_4_and_keeps_partial_output(tmp_path, monkeypatch):
                  "--expect-sha256", f"triggers={h.sha256_file(tp)},outcomes={h.sha256_file(op)}"])
     assert rc == 4 and len((tmp_path / "r" / "decisions.jsonl").read_text().splitlines()) == 3
     assert not (tmp_path / "r" / "manifest.json").exists()
+
+
+# ------------------------------------------------------------------------------------------------------------------------ fixes for #1087
+def test_qp1_crafted_outcome_known_row_is_refused(tmp_path):
+    """QP's break: decision 23:59:30Z with outcome_known 1 ms later would have been fed that night. The loader must refuse it."""
+    trig, outc = synth(3, DAYS[:2])
+    tp, _ = write_inputs(tmp_path, trig, outc)
+    rows = [json.loads(x) for x in tp.read_text().splitlines()]
+    dec = h.day_start_ms(DAYS[0]) + h.DAY_MS - 30_000  # 23:59:30Z
+    rows.append({"type": "v5_trigger", "tid": "tBAD", "blk": blk_of(DAYS[0]), "decision_ms": dec, "outcome_known_ms": dec + 1,
+                 "card": dict(trig[0].card)})
+    bad = tmp_path / "bad.jsonl"
+    bad.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    with pytest.raises(h.Refused, match="exactly decision_ms"):
+        h.load_triggers(bad)
+    rows[-1]["outcome_known_ms"] = dec + h.OUTCOME_KNOWN_AFTER_MS
+    bad.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    got = {t.tid: t for t in h.load_triggers(bad)}
+    assert got["tBAD"].outcome_known_ms == dec + h.OUTCOME_KNOWN_AFTER_MS > h.day_start_ms(DAYS[1])
+
+
+def _stub_run(tmp_path, trig, outc, basis="el2", reps="2", name="run"):
+    d = tmp_path / name
+    d.mkdir()
+    tp, op = write_inputs(d, trig, outc, basis=basis)
+    assert h.main(["run", "--triggers", str(tp), "--outcomes", str(op), "--out-dir", str(d / "out"), "--model", "stub", "--reps", reps]) == 0
+    return tp, op, d / "out"
+
+
+def test_qp2_score_refuses_a_non_el2_basis(tmp_path):
+    trig, outc = synth(45)
+    tp, op, run = _stub_run(tmp_path, trig, outc, basis="frozen")
+    assert json.loads((run / "manifest.json").read_text())["outcome_basis"] == "frozen"
+    assert h.main(["score", "--run-dir", str(run), "--triggers", str(tp), "--outcomes", str(op), "--out", str(tmp_path / "s.json")]) == 3
+    assert not (tmp_path / "s.json").exists()
+
+
+def test_qp4_score_pins_harness_sha_and_records_the_run(tmp_path, monkeypatch, capsys):
+    trig, outc = synth(45)
+    tp, op, run = _stub_run(tmp_path, trig, outc)
+    args = ["score", "--run-dir", str(run), "--triggers", str(tp), "--outcomes", str(op)]
+    real = h.harness_sha256()
+    monkeypatch.setattr(h, "harness_sha256", lambda: "0" * 64)
+    assert h.main(args + ["--out", str(tmp_path / "s1.json")]) == 3 and not (tmp_path / "s1.json").exists()
+    monkeypatch.setattr(h, "harness_sha256", lambda: real)
+    assert h.main(args + ["--out", str(tmp_path / "s2.json")]) == 0
+    s = json.loads((tmp_path / "s2.json").read_text())
+    assert s["run"]["model"] == "stub" and s["run"]["reps"] == 2 and s["run"]["max_days"] == 0 and s["run"]["outcome_basis"] == "el2"
+    assert s["run"]["harness_sha256_run"] == s["run"]["harness_sha256_score"] == real and s["o1_verdict_eligible"] is False
+    assert "model stub; O1-eligible False" in capsys.readouterr().out
+    assert h.o1_eligible({"model": "haiku", "reps": 3, "max_days": 0, "outcome_basis": "el2", "arms": ["L", "P", "F"]})
+    assert not h.o1_eligible({"model": "haiku", "reps": 3, "max_days": 3, "outcome_basis": "el2", "arms": ["L", "P", "F"]})
+    assert "skip_split_vs_A_report_only" in s["models"]["flat_sol"]
+
+
+def test_score_refuses_missing_decisions(tmp_path):
+    trig, outc = synth(45)
+    tp, op, run = _stub_run(tmp_path, trig, outc)
+    lines = (run / "decisions.jsonl").read_text().splitlines()
+    (run / "decisions.jsonl").write_text("\n".join(lines[:-1]) + "\n")
+    assert h.main(["score", "--run-dir", str(run), "--triggers", str(tp), "--outcomes", str(op), "--out", str(tmp_path / "s.json")]) == 3
+
+
+def test_qp5_capped_night_L_and_P_reflect_on_the_same_rows(tmp_path, monkeypatch):
+    monkeypatch.setattr(h, "MAX_FEEDBACK_ROWS", 5)
+    trig, outc = synth(20, DAYS[:3])
+    out = h.make_out_dir(tmp_path / "r")
+    h.run_walk_forward(trig, outc, h.StubModel(), out, arms=("L", "P"), reps=2)
+    logs = [json.loads(x) for x in (out / "feedback_log.jsonl").read_text().splitlines()]
+    by = {(g["arm"], g["rep"], g["after_day"]): g["tids"] for g in logs}
+    for (arm, rep, day), tids in by.items():
+        assert len(tids) == 5 and (arm != "L" or tids == by[("P", rep, day)])
+
+
+def test_single_row_nights_counted(tmp_path):
+    trig, outc = synth(1, DAYS[:3])
+    counts = h.run_walk_forward(trig, outc, h.StubModel(), h.make_out_dir(tmp_path / "r"), arms=("P",), reps=1)
+    assert counts["P1"]["single_row_nights"] == 2
+
+
+def test_r2a_exact_freeze_boundary(tmp_path):
+    """outcome_known == freeze waits a night; freeze - 1 is fed (a < turned into <= would fail this)."""
+    trig, outc = synth(4, DAYS[:3])
+    freeze = h.day_start_ms(DAYS[1])
+    card = trig[0].card
+    eq = h.Trigger("tEQ", blk_of(DAYS[0]), freeze - h.OUTCOME_KNOWN_AFTER_MS, freeze, card)
+    m1 = h.Trigger("tM1", blk_of(DAYS[0]), freeze - h.OUTCOME_KNOWN_AFTER_MS - 1, freeze - 1, card)
+    outc.update({"tEQ": {"flat_sol": 0.0, "press_sol": 0.0}, "tM1": {"flat_sol": 0.0, "press_sol": 0.0}})
+    trig = sorted(trig + [eq, m1], key=lambda t: (t.decision_ms, t.tid))
+    out = h.make_out_dir(tmp_path / "r")
+    h.run_walk_forward(trig, outc, h.StubModel(), out, arms=("L",), reps=1)
+    logs = [json.loads(x) for x in (out / "feedback_log.jsonl").read_text().splitlines()]
+    assert logs[0]["freeze_ms"] == freeze and "tM1" in logs[0]["tids"] and "tEQ" not in logs[0]["tids"] and "tEQ" in logs[1]["tids"]
+
+
+def test_r2b_numeric_fit_boundary_bites(tmp_path):
+    """150 D-1 triggers whose outcomes land after D 00:00Z: flipping them cannot move D's veto. The same flip on rows known 1 ms before
+    D 00:00Z does move it, so the test can fail."""
+    rng = random.Random(3)
+    d0, d1, d2 = DAYS[0], DAYS[1], DAYS[2]
+    trig, outc = [], {}
+
+    def add(tid, day, ms, known, q, flat):
+        trig.append(h.Trigger(tid, blk_of(day), ms, known, make_card(rng, q)))
+        outc[tid] = {"flat_sol": flat, "press_sol": flat}
+
+    for i in range(120):
+        q = rng.uniform(18, 40)
+        ms = h.day_start_ms(d0) + 60_000 + i * 600_000
+        add(f"a{i:03d}", d0, ms, ms + h.OUTCOME_KNOWN_AFTER_MS, q, -0.05 if q < 22 else 0.01)
+    late = []
+    for i in range(150):
+        q = rng.uniform(18, 40)
+        ms = h.day_start_ms(d2) - 899_000 + i * 5_000  # 23:45:01Z .. 23:57:26Z on d1
+        late.append((f"b{i:03d}", ms, q))
+    for i in range(40):
+        q = rng.uniform(18, 40)
+        ms = h.day_start_ms(d2) + 60_000 + i * 60_000
+        add(f"c{i:03d}", d2, ms, ms + h.OUTCOME_KNOWN_AFTER_MS, q, 0.0)
+
+    def run(known_after_midnight: bool, flipped: bool):
+        t2, o2 = list(trig), dict(outc)
+        for tid, ms, q in late:
+            known = ms + h.OUTCOME_KNOWN_AFTER_MS if known_after_midnight else h.day_start_ms(d2) - 1
+            t2.append(h.Trigger(tid, blk_of(d1), ms, known, make_card(random.Random(tid), q)))
+            bad = q < 22
+            flat = (-0.05 if bad else 0.01) if not flipped else (0.5 if bad else -0.05)
+            o2[tid] = {"flat_sol": flat, "press_sol": flat}
+        t2.sort(key=lambda t: (t.decision_ms, t.tid))
+        return h.numeric_veto(h.by_day(t2), o2, {d0: 0, d1: 0, d2: 8})[d2]
+
+    assert all(ms + h.OUTCOME_KNOWN_AFTER_MS > h.day_start_ms(d2) for _, ms, _ in late)
+    assert run(True, False) == run(True, True)  # known after D 00:00Z: invisible to D's fit
+    assert run(False, False) != run(False, True)  # known before: the flip moves D's veto
+
+
+def test_r2c_feedback_guard_fails_closed():
+    t = h.Trigger("tX", "explore-0814", h.day_start_ms(DAYS[1]) + 5, h.day_start_ms(DAYS[1]) - 1, {n: 0 for n in h.CARD_NAMES})
+    st = h.ArmState("L", 1, pending=[(t, True)])
+    with pytest.raises(h.Refused, match="not closed before the freeze"):
+        h.feedback_rows(st, h.day_start_ms(DAYS[1]), {"tX": {"flat_sol": 0.0, "press_sol": 0.0}}, DAYS[0])
+
+
+def test_r2c_playbook_guard_fails_closed(tmp_path, monkeypatch):
+    trig, outc = synth(4, DAYS[:3])
+    real = h.feedback_rows
+
+    def leaky(st, freeze_ms, outcomes, day, placebo_text=None):
+        rows, n, _ = real(st, freeze_ms, outcomes, day)
+        return rows, n, freeze_ms  # pretend a row known AT the freeze was used
+    monkeypatch.setattr(h, "feedback_rows", leaky)
+    with pytest.raises(h.Refused, match="playbook built from an outcome known after the day start"):
+        h.run_walk_forward(trig, outc, h.StubModel(), h.make_out_dir(tmp_path / "r"), arms=("L",), reps=1)
+
+
+def test_r1_run_lock_refuses_a_second_process(tmp_path, monkeypatch):
+    import fcntl
+
+    trig, outc = synth(3, DAYS[:1])
+    tp, op = write_inputs(tmp_path, trig, outc)
+    ledger = tmp_path / "l.jsonl"
+
+    def boom(*a, **k):
+        raise AssertionError("HaikuModel constructed while the lock was held")
+
+    monkeypatch.setattr(h, "HaikuModel", boom)
+    fd = os.open(str(ledger) + h.RUN_LOCK_SUFFIX, os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        rc = h.main(["run", "--triggers", str(tp), "--outcomes", str(op), "--model", "haiku", "--live", "--approval", "n_test",
+                     "--budget-usd", "1", "--ledger", str(ledger), "--save-dir", str(tmp_path / "s"), "--out-dir", str(tmp_path / "r"),
+                     "--expect-sha256", f"triggers={h.sha256_file(tp)},outcomes={h.sha256_file(op)}"])
+    finally:
+        os.close(fd)
+    assert rc == 3 and not (tmp_path / "r").exists()
+    with h.run_lock(str(ledger)):  # released: a later run gets it
+        with pytest.raises(h.Refused, match="another v5 run"):
+            with h.run_lock(str(ledger)):
+                pass
+
+
+def test_run_start_written_before_calls(tmp_path):
+    trig, outc = synth(3, DAYS[:2])
+    tp, op, run = _stub_run(tmp_path, trig, outc, reps="1")
+    st = json.loads((run / "run_start.json").read_text())
+    assert st["harness_sha256"] == h.harness_sha256() and st["prompt_sha256"] == h.PROMPT_SHAS and st["outcome_basis"] == "el2"
+    assert st["args"]["model"] == "stub" and st["args"]["reps"] == 1
+
+
+def test_check_path_follows_symlinks(tmp_path):
+    sealed = tmp_path / "x-canary-y"
+    sealed.mkdir()
+    (sealed / "t.jsonl").write_text("{}\n")
+    link = tmp_path / "innocent.jsonl"
+    link.symlink_to(sealed / "t.jsonl")
+    with pytest.raises(h.Refused, match="forbidden fragment"):
+        h.check_path(link)
+
+
+def test_pilot_structure_reads_logs_and_ledger_only(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "decisions.jsonl").write_text("\n".join(json.dumps({"parse_ok": i != 0, "request_sha256": f"d{i}"}) for i in range(4)) + "\n")
+    (run / "feedback_log.jsonl").write_text(json.dumps({"reflect_ok": True, "request_sha256": "r0"}) + "\n")
+    store = tmp_path / "store"
+    store.mkdir()
+    (store / "d1.json").write_text(json.dumps({"request": {"x": "y" * 990}, "response": {}}))
+    rows = [{"kind": "reserve", "request_sha256": "d1", "cost_usd": 0.01}]
+    for i in range(4):
+        rows.append({"kind": "settle", "request_sha256": f"d{i}", "http_status": 200, "input_tokens": 100, "output_tokens": 50,
+                     "cache_read_input_tokens": 300, "cache_creation_input_tokens": 0, "latency_ms": 900, "stop_reason": "end_turn",
+                     "cost_usd": -0.009})
+    rows.append({"kind": "settle", "request_sha256": "r0", "http_status": 200, "input_tokens": 8000, "output_tokens": 6000,
+                 "latency_ms": 50_000, "stop_reason": "max_tokens", "cost_usd": 0.0})
+    (tmp_path / "ledger.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+    doc = h.pilot_structure(run, tmp_path / "ledger.jsonl", store)
+    assert doc["decisions"] == 4 and doc["parse_ok_rate"] == 0.75 and doc["reflect_ok_rate"] == 1.0
+    d, r = doc["by_kind"]["decide"], doc["by_kind"]["reflect"]
+    nbytes = len(json.dumps({"x": "y" * 990}, sort_keys=True, separators=(",", ":")).encode())
+    assert d["n"] == 4 and d["cache_read_share"] == 0.75 and abs(d["input_tokens_per_byte"] - 400 / nbytes) < 1e-12
+    assert r["latency_over_45s"] == 1 and r["max_tokens_stop_share"] == 1.0
