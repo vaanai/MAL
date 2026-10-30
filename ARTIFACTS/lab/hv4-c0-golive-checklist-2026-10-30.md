@@ -124,13 +124,19 @@ Known small conflicts between these PRs:
 - #1090 and #1105, in the bridge feed path.
 
 ### 1d. Findings from the builders that must be settled before the flip (code or QP)
-1. **Parity STOP in live (#1097 decision 1).**
-   - In live, the bridge's stop file is pinned to `/var/lib/mal-live/STOP`, and the hardened unit cannot write it.
-   - The parity tool then returns its "STOP not written" code instead of 11, and `parity_hard_halt` latches only on 11.
-   - So a parity hard halt could stop blocking once its cause clears, without a review.
-   - **This needs a code fix before the flip.**
-2. **`/data/mal/arena` must exist on mal-fast-0** (#1100, #1104). `_alias_of_sealed` fails closed when the prefix is absent, so every hv4_c0 start would latch. The install must create `/data/mal/arena/reads/`, as the live read record needs anyway.
-3. **False hard `tieout_mismatch` (#1092).** A parity trip opened after the day's cut raises a false hard `tieout_mismatch` in `audit_fees`. This needs a fix or a ruling. Without one, the tie-out gate can halt a correct book on day 2.
+1. **Parity STOP in live: FIXED (new PR `claude/hv4-c0-parity-stop`).**
+   - The bug: the bridge passed the wallet-wide `/var/lib/mal-live/STOP` to the parity and tie-out tools, and the unit cannot write it. Every halt then came back as rc 3, which lost the hard/soft class, and nothing latched.
+   - Now the tools write `<parity_dir>/STOP`, which is unit-writable. The bridge treats that file as STOP: no new buys, exits continue, and it survives restarts; a link or a missing parity dir also counts as STOP.
+   - rc 3 latches `parity_stop_unwritable` (hard; the manager clears it).
+   - Tests: 7 new; 455 passed in the related set.
+2. **`/data/mal/arena` on mal-fast-0: FIXED in the pack and the ask.**
+   - #1097's runbook and checklist create and check `/data/mal/arena` and `/data/mal/arena/reads`, both root:root 0755.
+   - HELM-ASK Part 1 step 5 gives the exact `install -d` command.
+   - #1100 refuses a missing dir as `read_record_dir_absent`, and its message names the command.
+3. **False hard `tieout_mismatch`: FIXED in #1092.**
+   - `hv4_c0_tieout.cut_parity_trips` audits each trip as it stood at the day's cut: a trip opened after the cut is left out, and a trip whose sell landed after the cut is checked as open.
+   - A trip with no landed buy anywhere still raises.
+   - Tests: 4 new, 3 of which fail without the fix; 558 passed in the related set.
 4. **Relay v2 superset rule (#1098).** The relay compares against the 4th-highest instant and slot, because the engine's accepted-row filter is not visible under the seal. QP should rule: keep this, or rule an exact mirror (it would read `prog`, `venue` and the dedupe key).
 5. **Real `min_out` never simulated (#1095).** The real 0.85 / 0.65 `min_out` has never been simulated against the mayhem Token-2022 pool; Q50's N4 used min_out = 1. A slippage revert would show as a FAIL in the simulate record. Run the job at X before the owner notice.
 6. **Twin relay on the real ledger (#1096).** Whether the real ledger dir passes the wrapper's "every entry regular, nlink 1" check can only be seen after a PASS. If it fails, the status shows `twin_refused:ledger:<reason>` and the bridge stays closed, which fails closed.
