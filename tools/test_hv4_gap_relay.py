@@ -650,7 +650,8 @@ class RunTests(Base):
 
     def test_main_refuses_unsafe_directories_before_creating_anything(self):
         self.write(f"{STEM}.jsonl", tline(1, 1))
-        for out in ("/data/mal/arena/x", "/data/mal/arena", "/data/mal/arena/../arena/x", str(self.tape / "o"), str(self.tape), str(self.tmp)):
+        for out in ("/data/mal/arena/x", "/data/mal/arena", "/data/mal/arena/../arena/x", "//data/mal/arena/x", "/data/mal//arena/y", "/data/mal/./arena/z",
+                    str(self.tape / "o"), str(self.tape), str(self.tmp)):
             before = sorted(os.listdir(self.tape))
             self.assertEqual(R.main(["--tape-dir", str(self.tape), "--bot-id", ARM, "--out-dir", out]), 2, out)
             self.assertEqual(sorted(os.listdir(self.tape)), before)
