@@ -282,6 +282,9 @@ class Smoke(Base):
         self.assertNotIn("abcdef0123456789abcdef0123", r.stdout + r.stderr)
         r = self.run_smoke(Q50S1_SMOKE_S=2, Q50S1_SMOKE_SAMPLE_S=1, FAKE_JOURNAL_ALL="x wss://h.example/?api-key=zzz")  # the literal counts journal-wide
         self.assertIn("SMOKE_ITEM k FAIL", r.stdout)
+        r = self.run_smoke(Q50S1_SMOKE_S=2, Q50S1_SMOKE_SAMPLE_S=1, FAKE_JOURNAL_ALL="x wss://fra.rpc.orbitflare.com?api_key=zzz")  # Erratum 2: api_key too
+        self.assertIn("SMOKE_ITEM k FAIL", r.stdout)
+        self.assertNotIn("zzz", r.stdout + r.stderr)
 
     def test_unreadable_journal_fails_k(self):
         r = self.run_smoke(Q50S1_SMOKE_S=2, Q50S1_SMOKE_SAMPLE_S=1, FAKE_JOURNAL_RC=1)
@@ -583,6 +586,9 @@ class CleanLogScript(Base):
         self.assertIn("user_journal_since_start=1", r.stdout)
         r = self.sh(CLEAN, *args, **self.clean_env(FAKE_JOURNAL_ALL="api-key=zzz somewhere"))
         self.assertEqual(r.returncode, 1)
+        r = self.sh(CLEAN, *args, **self.clean_env(FAKE_JOURNAL_ALL="probe wss://fra.rpc.orbitflare.com?api_key=zzz"))  # Erratum 2: the journal-wide literal covers api_key
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("user_journal_since_start=1", r.stdout)
 
     def test_a_configured_key_variable_or_a_path_token_is_counted(self):
         """QP A2: the environ count uses the configured key variable; a path-token credential in argv counts too."""
