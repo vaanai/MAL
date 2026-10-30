@@ -272,9 +272,10 @@ def run_real(days: list[str], drill_id: str, sha: str, *, rss_cap_mb: float = RS
            "chain": "fake_stamped_before_scan", "legacy_constants": legacy, "concurrent_calls": concurrent,
            "rows_by_program": count_programs(src, days), "orders_only_on": "pumpswap", "pass_rule": PASS_RULE, "rss_cap_mb": rss_cap_mb})
     if isolate:  # production: each replay in its own subprocess; the peak is the largest of the three processes' peaks
-        a = _isolated_run("real-a", days, drill_id, sha, base, phantom, legacy, concurrent)
-        b = _isolated_run("real-b", days, drill_id, sha, base, phantom, legacy, concurrent)
-        c = _isolated_run("real-c", days, drill_id, sha, base, phantom, legacy, concurrent)
+        sw = {k: v for k, v in (("legacy", legacy), ("concurrent", concurrent)) if v}  # passed only when on: the default call is the pre-switch call
+        a = _isolated_run("real-a", days, drill_id, sha, base, phantom, **sw)
+        b = _isolated_run("real-b", days, drill_id, sha, base, phantom, **sw)
+        c = _isolated_run("real-c", days, drill_id, sha, base, phantom, **sw)
         rss_mb = max(a.pop("peak_rss_mb"), b.pop("peak_rss_mb"), c.pop("peak_rss_mb"))
     else:
         a = one_run(rd, "real-a", start, end, phantom=phantom, legacy=legacy, concurrent=concurrent)
