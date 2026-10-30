@@ -60,7 +60,9 @@ exit 0
 while [ "$#" -gt 0 ]; do [ -n "${FAKE_SDRUN_ARGS:-}" ] && printf '%s\n' "$1" >> "$FAKE_SDRUN_ARGS"; case "$1" in -p) [ -n "${FAKE_SDRUN_ARGS:-}" ] && printf '%s\n' "$2" >> "$FAKE_SDRUN_ARGS"; shift 2 ;; -*) shift ;; *) break ;; esac; done
 exec "$@"
 ''',
-    "journalctl": '#!/bin/sh\ncase "$*" in *"-n 0"*) exit "${FAKE_JOURNAL_RC:-0}" ;; esac\necho "Started q50s1-smoke.scope - q50s1-smoke."\n',
+    # the general user journal holds an ordinary link by default (QP 6534174365: it must never fail a check); `-u <unit>` gives the s1 unit's own lines
+    "journalctl": '#!/bin/sh\ncase "$*" in *"-n 0"*) exit "${FAKE_JOURNAL_RC:-0}" ;; *" -u "*) printf "%s\\n" "${FAKE_JOURNAL_UNIT:-Started the s1 scope.}" ;; '
+                  '*) printf "%s\\n" "${FAKE_JOURNAL_ALL:-opened https://claude.ai/code/session_01BKmSK4sHKuuWwdukzBbRs2 in a browser}" ;; esac\n',
 }
 FAKE_SHADOW_PY = r'''#!/bin/sh
 case "$*" in *"import websockets"*|*" --dry "*) exit 0 ;; esac
@@ -269,6 +271,16 @@ class Smoke(Base):
         self.assertTrue(outs[0].startswith("h5-smoke-q50s1-"))
         reps = list((self.home / "data" / "q50s1-ops").iterdir())
         self.assertEqual(sorted(p.name for p in reps[0].iterdir()), ["process.log", "rss.tsv"])
+
+    def test_a_benign_link_in_the_general_journal_never_fails_k_and_a_unit_path_token_does(self):
+        r = self.run_smoke(Q50S1_SMOKE_S=2, Q50S1_SMOKE_SAMPLE_S=1)  # the default general journal carries the claude.ai link
+        self.assertIn("SMOKE_ITEM k PASS", r.stdout)
+        self.assertIn("key_string_lines_user_journal=0", r.stdout)
+        r = self.run_smoke(Q50S1_SMOKE_S=2, Q50S1_SMOKE_SAMPLE_S=1, FAKE_JOURNAL_UNIT="connect wss://x.example/abcdef0123456789abcdef0123/")
+        self.assertIn("SMOKE_ITEM k FAIL", r.stdout)
+        self.assertNotIn("abcdef0123456789abcdef0123", r.stdout + r.stderr)
+        r = self.run_smoke(Q50S1_SMOKE_S=2, Q50S1_SMOKE_SAMPLE_S=1, FAKE_JOURNAL_ALL="x wss://h.example/?api-key=zzz")  # the literal counts journal-wide
+        self.assertIn("SMOKE_ITEM k FAIL", r.stdout)
 
     def test_unreadable_journal_fails_k(self):
         r = self.run_smoke(Q50S1_SMOKE_S=2, Q50S1_SMOKE_SAMPLE_S=1, FAKE_JOURNAL_RC=1)
@@ -558,6 +570,18 @@ class CleanLogScript(Base):
         r = self.sh(CLEAN, *args, **self.clean_env(FAKE_CG=""))
         self.assertEqual(r.returncode, 1)
         self.assertIn("no_key_in_cmdline=NO", r.stdout)  # no process found: unreadable, NOT_CLEAN
+
+    def test_clean_log_journal_benign_link_ok_unit_token_and_literal_counted(self):
+        self.proc("sleep", "30")
+        args = ("--job-uid", "j_AbC-12_x", "--out-dir", str(self.sd))
+        r = self.sh(CLEAN, *args, **self.clean_env())  # default general journal: a claude.ai link
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("user_journal_since_start=0", r.stdout)
+        r = self.sh(CLEAN, *args, **self.clean_env(FAKE_JOURNAL_UNIT="wss://x.example/v2/AbCdEf0123456789XyZ_abc"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("user_journal_since_start=1", r.stdout)
+        r = self.sh(CLEAN, *args, **self.clean_env(FAKE_JOURNAL_ALL="api-key=zzz somewhere"))
+        self.assertEqual(r.returncode, 1)
 
     def test_a_configured_key_variable_or_a_path_token_is_counted(self):
         """QP A2: the environ count uses the configured key variable; a path-token credential in argv counts too."""

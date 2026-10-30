@@ -383,6 +383,16 @@ class KeyPatterns(unittest.TestCase):
             with self.subTest(s=s):
                 self.assertFalse(h.key_line(s), s)
 
+    def test_literal_only_mode_ignores_links(self):
+        import subprocess, sys
+        data = b"opened https://claude.ai/code/session_01BKmSK4sHKuuWwdukzBbRs2\nx ?token=abcdef123\n"
+        r = subprocess.run([sys.executable, "-I", str(Path(h.__file__)), "count-keys", "--literal-only"], input=data, capture_output=True)
+        self.assertEqual(r.stdout.decode().strip(), "0")
+        r = subprocess.run([sys.executable, "-I", str(Path(h.__file__)), "count-keys"], input=data, capture_output=True)
+        self.assertEqual(r.stdout.decode().strip(), "2")
+        r = subprocess.run([sys.executable, "-I", str(Path(h.__file__)), "count-keys", "--literal-only"], input=b"a api-key=1\n", capture_output=True)
+        self.assertEqual(r.stdout.decode().strip(), "1")
+
     def test_count_keys_mode_reads_nul_separated_stdin(self):
         import subprocess, sys
         r = subprocess.run([sys.executable, "-I", str(Path(h.__file__)), "count-keys"], input=b"python\0-m\0--ws-url\0wss://x.solana-mainnet.quiknode.pro/abcdef0123456789abcdef/\0", capture_output=True)
