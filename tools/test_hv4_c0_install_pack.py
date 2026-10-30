@@ -23,6 +23,18 @@ REPO = Path(__file__).resolve().parent.parent
 PACK = REPO / "scripts" / "mal-fast" / "hv4-c0"
 RUNBOOK = REPO / "docs" / "runbooks" / "hv4-c0-bridge.md"
 CHECKLIST = REPO / "scripts" / "ops" / "hv4-c0-dry-checklist.sh"
+
+
+def _src_const(name: str) -> str:
+    """The value as written in tools/hv4_live_c0.py. Not the module global: tools/test_hv4_live_c0.Hv4Env rebinds c0.READS_DIR_CANON and c0.WINDOW_DIR to temp dirs
+    and never restores them, so a full-suite run that imports it first would make these tests compare against a temp path (reviewer, part A)."""
+    m = re.search(rf'^{name} = "([^"]+)"', (REPO / "tools" / "hv4_live_c0.py").read_text(), re.M)
+    assert m, name
+    return m.group(1)
+
+
+SRC_READS_DIR_CANON = _src_const("READS_DIR_CANON")
+SRC_WINDOW_DIR = _src_const("WINDOW_DIR")
 BOT = "hv4-BIG-X"
 CRED_KEYS = {"LoadCredential", "LoadCredentialEncrypted", "SetCredential", "SetCredentialEncrypted", "ImportCredential", "EnvironmentFile", "PassEnvironment"}
 
@@ -88,7 +100,7 @@ class BaseUnitTests(unittest.TestCase):
         self.assertEqual(paths, ["/var/lib/mal-hv4-c0/state/%i", "/var/lib/mal-hv4-c0/parity/%i"])
         for p in paths:
             self.assertTrue(p.startswith("/") and "%i" in p, p)
-        self.assertNotIn(c0.WINDOW_DIR, rw[0])  # N-B/N-C: root creates the window file; the unit only reads it
+        self.assertNotIn(SRC_WINDOW_DIR, rw[0])  # N-B/N-C: root creates the window file; the unit only reads it
         self.assertEqual(values(self.d, "ReadOnlyPaths"), ["/opt/mal-arena-bridge"])
 
     def test_binds_are_read_only_absolute_and_the_expected_set(self):
@@ -96,15 +108,15 @@ class BaseUnitTests(unittest.TestCase):
         binds = values(self.d, "BindReadOnlyPaths")
         self.assertEqual(sorted(binds), sorted([
             "/var/lib/mal-arena-feed/hv4/%i", "/data/mal/arena/reads", "/var/lib/mal-hv4-c0/twins/%i", "/var/lib/mal-hv4-c0/tieout/%i",
-            "/var/lib/mal-hv4-c0/a3", c0.WINDOW_DIR]))
+            "/var/lib/mal-hv4-c0/a3", SRC_WINDOW_DIR]))
         for b in binds:
             self.assertTrue(b.startswith("/"), b)
             self.assertNotIn(":", b)
-        self.assertEqual("/data/mal/arena/reads", c0.READS_DIR_CANON)  # the reads bind IS the canonical path the gate demands (realpath equality)
+        self.assertEqual("/data/mal/arena/reads", SRC_READS_DIR_CANON)  # the reads bind IS the canonical path the gate demands (realpath equality)
 
     def test_gate_dirs_are_checked_root_owned_before_start(self):
         pre = " ".join(values(self.d, "ExecStartPre"))
-        for p in ("/etc/mal-arena-live", "/etc/mal-hv4-c0", c0.WINDOW_DIR):
+        for p in ("/etc/mal-arena-live", "/etc/mal-hv4-c0", SRC_WINDOW_DIR):
             self.assertIn(p, pre)
         self.assertIn("0:0:755", pre)
         self.assertTrue(values(self.d, "ExecStartPre")[0].startswith("+"))
@@ -118,8 +130,8 @@ class BaseUnitTests(unittest.TestCase):
             self.assertTrue(inside(norm(cfg[k]), rw), k)
         for k in ("root", "reads_dir", "twins_file", "tieout_dir", "a3_record_file"):
             self.assertTrue(inside(norm(cfg[k]), ro), k)
-        self.assertEqual(cfg["reads_dir"], c0.READS_DIR_CANON)
-        self.assertTrue(inside(c0.WINDOW_DIR, ro))
+        self.assertEqual(cfg["reads_dir"], SRC_READS_DIR_CANON)
+        self.assertTrue(inside(SRC_WINDOW_DIR, ro))
         self.assertEqual(os.path.dirname(cfg["a3_record_file"]), "/var/lib/mal-hv4-c0/a3")  # the applied log is derived from the SAME directory (Am.3 item 8.4)
         self.assertEqual(c0.A3_APPLIED_NAME, "a3-applied.jsonl")
 
@@ -167,7 +179,7 @@ class ConfigTemplateTests(unittest.TestCase):
         for cfg in (dry, live):
             self.assertEqual(cfg["profile"], c0.PROFILE)
             self.assertEqual(cfg["frozen_sha"], c0.FROZEN_SHA)
-            self.assertEqual(cfg["reads_dir"], c0.READS_DIR_CANON)
+            self.assertEqual(cfg["reads_dir"], SRC_READS_DIR_CANON)
 
     def test_placeholders_are_only_the_at_event_ones_and_paths_are_absolute(self):
         for n in ("hv4-c0.dry.json", "hv4-c0.live.json"):
