@@ -1388,15 +1388,18 @@ def main(argv: list[str] | None = None) -> int:
         else:
             why = None
         st0 = BridgeState.load(Path(cfg.state_dir) / f"bridge-state-{cfg.mode}.json", cfg.mode)
-        why = why or c0.read_record_problem(cfg.reads_dir, cfg.bot_id, st0.read_pin, (not want_live) and c0.synthetic_root(cfg.root))[0]
+        rec_why, rec_ident = (None, {}) if why else c0.read_record_problem(cfg.reads_dir, cfg.bot_id, st0.read_pin, (not want_live) and c0.synthetic_root(cfg.root))
+        why = why or rec_why
         if not why:
             first, why = c0.window_start_ms(cfg.bot_id, int(time.time() * 1000), create=False)
             why = why or c0.end_cap_problem(cfg.end_ms, first if first is not None else int(time.time() * 1000))
         if why:
             print(f"arena_live_bridge ALERT startup_refused {c0.refusal_text(why)}", flush=True)
             return 2
-        # Seal: R2.1 of QP-RULING-1025-hv4-read-rule. No hv4_c0 start, dry or live, until a read-record gate exists, except on a synthetic fixture root.
-        why = c0.start_refusal(cfg.root, want_live, cfg.bot_id)
+        live_gates_passed = bool(want_live)  # reached only when every gate above held: parity paths, a3 record file, owner line vs the pin, read record, 14-day cap
+        # Seal: R2.1 of QP-RULING-1025-hv4-read-rule. A start on a synthetic fixture root (dry) is as before; any other root starts only on a recorded PASS read
+        # for THIS bot from the canonical reads dir (real_pass_record), with the decisions paths checked, and for live with every gate above (QP removal item 3).
+        why = c0.start_refusal(cfg.root, want_live, cfg.bot_id, c0.real_pass_record(rec_why, rec_ident, cfg.bot_id), live_gates_passed)
         if why:
             print(f"arena_live_bridge ALERT startup_refused {why}", flush=True)
             return 2

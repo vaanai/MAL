@@ -453,6 +453,11 @@ def c0_stake(row: Mapping[str, Any], cap_lamports: int = C0_LIMITS["stake_lampor
 
 
 LIVE_REFUSAL = "hv4_c0_incomplete"  # a live start of this profile is refused until a later PR (sell escalation, parity pricing) removes it
+LIVE_REFUSAL_ACTIVE = True  # THE switch (QP removal item 15): True = every start outside the synthetic dry path refuses LIVE_REFUSAL. False = the recorded-read start gate in start_refusal decides.
+START_NO_REAL_PASS = "start_no_real_pass_record"  # a start on a non-synthetic root needs a recorded PASS read for THIS bot, read from the canonical reads dir (QP removal item 3)
+START_SEALED_ROOT = "start_root_or_decisions_sealed"  # the root, decisions/<bot_id> or a day file lies under or aliases /data/mal/arena (only with LIVE_REFUSAL_ACTIVE False)
+START_LIVE_ON_SYNTHETIC_ROOT = "start_live_on_synthetic_root"  # a root carrying SYNTHETIC_MARKER never starts live (only with LIVE_REFUSAL_ACTIVE False)
+START_LIVE_GATES = "start_live_gates_not_passed"  # a live start also needs every PR4 gate (parity paths, a3 record file, owner line pin, read record, window cap)
 
 
 SYNTHETIC_MARKER = "SYNTHETIC_FIXTURE_ROOT"
@@ -1123,17 +1128,60 @@ def guarded_read(root: str, bot_id: str, name: str) -> bytes:
         os.close(fd)
 
 
-def start_refusal(root: str, live: bool, bot_id: str | None = None) -> str | None:
-    """CLI start gate (QP-RULING-1025 R2.1: no bridge process, dry or live, reads an HV4 decision row before a recorded read PASS; no gate exists yet).
-    Refuse every start, except a dry start on a root that carries the explicit marker file and is not under /data/mal/arena (allowlist; a resolved
-    path under the arena is always refused, marker or not). Only checks paths; it opens nothing in the root."""
+def real_pass_record(problem: str | None, ident: Mapping[str, Any] | None, bot_id: Any) -> bool:
+    """True only when the recorded-read gate PASSED (`problem` is None, from read_record_problem) AND the record it read is the canonical scorer file for
+    THIS bot: `<realpath(READS_DIR_CANON)>/<bot_id>.json`. A record that passed only through the synthetic exception (a dry start on a marked root reading any
+    directory) is not real. This is the fact start_refusal is handed; it is derived from the gate's own result and holds no state."""
+    if problem is not None or not isinstance(ident, Mapping) or not isinstance(bot_id, str) or bot_problem(bot_id):
+        return False
+    return ident.get("path") == os.path.join(os.path.realpath(READS_DIR_CANON), f"{bot_id}.json")
+
+
+def bot_problem(bot_id: Any) -> str | None:
+    """bot_id_problem plus the hv4- prefix the read gate requires (a start gate for any other id is never a real pass)."""
+    return bot_id_problem(bot_id) or (None if str(bot_id).startswith("hv4-") else "bot_id_not_hv4")
+
+
+def start_refusal(root: str, live: bool, bot_id: str | None = None, record_real_pass: bool = False, live_gates_passed: bool = False) -> str | None:
+    """CLI start gate (QP-RULING-1025 R2.1: no bridge process, dry or live, reads an HV4 decision row before that arm's recorded read PASS). QP removal item 3.
+    Only checks paths and its two explicit arguments; it opens nothing in the root and keeps no state.
+
+    LIVE_REFUSAL_ACTIVE (module constant, True): every start outside the synthetic dry path refuses LIVE_REFUSAL, exactly as before this gate existed; the gate
+    below is not evaluated. Flipping that one constant to False is the whole removal of `hv4_c0_incomplete` (QP removal item 15) and turns the gate on:
+      * a root at, under or aliasing /data/mal/arena (SEALED_ROOT_PREFIX; realpath, abspath, or any ancestor with the prefix's (st_dev, st_ino)) is always refused,
+        marker or not, record or not;
+      * a root that carries SYNTHETIC_MARKER (a regular file): a DRY start is allowed as before (paths checked by decisions_path_refusal), a live start never;
+      * any other root, dry or live, starts only if `record_real_pass` (the caller's read_record_problem returned None for THIS bot and the record is the
+        canonical scorer file; see real_pass_record), the bot is an F or X arm, and `<root>/decisions/<bot_id>` and every day file in it neither resolve under
+        nor alias the arena (decisions_path_refusal + guard_dir, the checks the Bridge repeats on every read);
+      * a live start additionally needs `live_gates_passed` (main's gates: three parity paths, a3 record file, owner confirmation file, read record, 14-day cap)."""
     import os
+    active = LIVE_REFUSAL_ACTIVE is not False  # anything but an explicit False keeps the refusal
     real = os.path.realpath(root)
     if real == SEALED_ROOT_PREFIX or real.startswith(SEALED_ROOT_PREFIX + "/") or os.path.realpath(os.path.abspath(root)).startswith(SEALED_ROOT_PREFIX + "/"):
+        return LIVE_REFUSAL if active else START_SEALED_ROOT
+    if os.path.isfile(os.path.join(real, SYNTHETIC_MARKER)):  # synthetic dry path: unchanged
+        if live:
+            return LIVE_REFUSAL if active else START_LIVE_ON_SYNTHETIC_ROOT
+        return decisions_path_refusal(real, bot_id)
+    if active:
         return LIVE_REFUSAL
-    if live or not os.path.isfile(os.path.join(real, SYNTHETIC_MARKER)):
-        return LIVE_REFUSAL
-    return decisions_path_refusal(real, bot_id)
+    if bot_problem(bot_id):
+        return START_NO_REAL_PASS
+    why = arm_refusal(bot_id)  # only an F or X arm: -L, -P and -R arms never start on a real root, whatever record exists
+    if why:
+        return why
+    if record_real_pass is not True:  # an explicit True: a truthy non-bool is not a pass
+        return START_NO_REAL_PASS
+    if _under_sealed(real) or decisions_path_refusal(real, bot_id):  # root or an ancestor aliases the arena; decisions/<bot_id> or a day file lies under or aliases it
+        return START_SEALED_ROOT
+    try:
+        guard_dir(real, str(bot_id))  # decisions/ and decisions/<bot_id> are real directories, not links, and not an alias of the sealed decisions dirs
+    except SealedPath:
+        return START_SEALED_ROOT
+    if live and live_gates_passed is not True:
+        return START_LIVE_GATES
+    return None
 
 
 def position_worst_case_lamports(stake: int, rent_reserve: int) -> int:
