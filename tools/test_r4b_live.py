@@ -483,17 +483,25 @@ def sig(res) -> tuple:
     return (res.t, res.sd, res.mints, res.sdv.tobytes(), res.X.tobytes(), res.score.tobytes(), res.ranked, res.actions, res.d3_dropped)
 
 
-def test_live_order_feed_equals_pinned_batch_path(walk, tmp_path, boosters):
-    """Engine fed in arrival order, each mark decided on the data up to T + 30 s only (pruning on, the default), equals the pinned batch decisions."""
-    bat = batch_path(walk, tmp_path / "batch", boosters)
-    eng, res = drive(event_stream(scenario()), MARKS, boosters=boosters)
+def live_order_vs_batch(hours: dict, tmp_path: Path, boosters) -> tuple[dict, lv.Engine, list, str, list]:
+    """Write `hours` as a walker dir, run the pinned batch path on it, and drive the engine in arrival order (each mark on the data up to T + 30 s only,
+    default pruning). Returns (batch result, engine, mark results, rows md5, trades)."""
+    root = tmp_path / "walk"
+    make_walk(root, hours)
+    bat = batch_path(root, tmp_path / "batch", boosters)
+    eng, res = drive(event_stream(hours), MARKS, boosters=boosters)
     acts = [a for r in res for a in r.actions] + eng.book.close_all("end")
     allm = [m for r in res for m in r.mints]
     got = lv.rows_md5(allm, np.concatenate([r.T for r in res]), np.concatenate([r.sdv for r in res]), np.vstack([r.X for r in res]),
                       np.concatenate([r.score for r in res]))
-    assert len(allm) == bat["n_rows"] > 40
-    assert got == bat["rows_md5"]
-    assert lv.trades_from_actions(acts) == bat["trades"]
+    return bat, eng, res, got, lv.trades_from_actions(acts)
+
+
+def test_live_order_feed_equals_pinned_batch_path(tmp_path, boosters):
+    """Engine fed in arrival order, each mark decided on the data up to T + 30 s only (pruning on, the default), equals the pinned batch decisions."""
+    bat, eng, res, got, trades = live_order_vs_batch(scenario(), tmp_path, boosters)
+    assert sum(len(r.mints) for r in res) == bat["n_rows"] > 40
+    assert got == bat["rows_md5"] and trades == bat["trades"]
     assert eng.counters.get("clock_pruned", 0) > 0 and eng.counters.get("mkt_pruned", 0) > 0  # the default pruning was active
 
 
@@ -758,37 +766,31 @@ def test_score_tie_straddling_rank_10_goes_to_the_lower_mbt_then_mint(tmp_path, 
     assert (rep.rows_md5, rep.trades_md5) == (bat["rows_md5"], bat["trades_md5"]) and rep.trades == bat["trades"]
 
 
+def _without_prints(hours: dict, mint: str, lo: int, hi: int) -> dict:
+    return {h: {**d, "trades": [r for r in d["trades"] if not (r["mint"] == mint and r["venue"] == "pumpswap" and lo <= r["block_time"] < hi)]}
+            for h, d in hours.items()}
+
+
 def test_member_whose_last_print_is_300_to_600_s_before_the_mark_has_a_row(tmp_path, boosters):
-    """The activity pre-check is `last print >= T - 600`; a member quiet for the last 5 minutes still gets a row, as in mint_features (btm in [T-600, T))."""
+    """The activity pre-check is `latest print >= T - 600`; a member quiet for the last 5 minutes (and the 30 s the live feed has delivered past T) still
+    gets a row, as in mint_features (btm in [T-600, T)). Fed in arrival order, so the engine has seen no print of this mint after T + 30."""
+    T, mint = BT0 + 4 * 3600, "M03"
     hours = scenario()
-    T = BT0 + 4 * 3600
-    mint = "M03"
-    last_before = [r["block_time"] for r in hours[hour_of(T - 1)]["trades"] if r["mint"] == mint and r["venue"] == "pumpswap" and r["block_time"] < T - 300]
-    assert last_before and T - 600 <= max(last_before) < T - 300, "scenario precondition: M03 prints in [T-600, T-300)"
-    for d in hours.values():
-        d["trades"] = [r for r in d["trades"] if not (r["mint"] == mint and r["venue"] == "pumpswap" and T - 300 <= r["block_time"] < T)]
-    root = tmp_path / "walk"
-    make_walk(root, hours)
-    bat = batch_path(root, tmp_path / "batch", boosters)
-    rep = lv.replay_walker(root, H0, H1, W0, E, static_map=None, universe_min_mbt=BT0, boosters=boosters, pda_fn=pda_of, allow_dir=True)
-    at_T = next(r for r in rep.marks if r.t == T)
-    assert mint in at_T.mints
-    assert (rep.rows_md5, rep.trades_md5) == (bat["rows_md5"], bat["trades_md5"]) and rep.n_rows == bat["n_rows"]
+    prev = [r["block_time"] for h in hours.values() for r in h["trades"] if r["mint"] == mint and r["venue"] == "pumpswap" and r["block_time"] < T - 300]
+    assert T - 600 <= max(prev) < T - 300, "scenario precondition: M03 prints in [T-600, T-300)"
+    bat, eng, res, got, trades = live_order_vs_batch(_without_prints(hours, mint, T - 300, T + 30), tmp_path, boosters)
+    assert mint in next(r for r in res if r.t == T).mints
+    assert (got, trades) == (bat["rows_md5"], bat["trades"]) and len(bat["trades"]) > 10
 
 
 def test_member_whose_last_print_is_older_than_600_s_has_no_row(tmp_path, boosters):
-    hours = scenario()
-    T = BT0 + 4 * 3600
-    mint = "M03"
-    for d in hours.values():
-        d["trades"] = [r for r in d["trades"] if not (r["mint"] == mint and r["venue"] == "pumpswap" and T - 900 <= r["block_time"] < T)]
-    root = tmp_path / "walk"
-    make_walk(root, hours)
-    bat = batch_path(root, tmp_path / "batch", boosters)
-    rep = lv.replay_walker(root, H0, H1, W0, E, static_map=None, universe_min_mbt=BT0, boosters=boosters, pda_fn=pda_of, allow_dir=True)
+    T, mint = BT0 + 4 * 3600, "M03"
+    hours = _without_prints(scenario(), mint, T - 900, T + 30)
     last = max(r["block_time"] for h in hours.values() for r in h["trades"] if r["mint"] == mint and r["venue"] == "pumpswap" and r["block_time"] < T)
-    assert last < T - 600 and mint not in next(r for r in rep.marks if r.t == T).mints
-    assert (rep.rows_md5, rep.trades_md5) == (bat["rows_md5"], bat["trades_md5"])
+    assert last < T - 600
+    bat, eng, res, got, trades = live_order_vs_batch(hours, tmp_path, boosters)
+    assert mint not in next(r for r in res if r.t == T).mints
+    assert (got, trades) == (bat["rows_md5"], bat["trades"])
 
 
 # ------------------------------------------------------------------------------------------------------------------------------- QP N3: prints before their complete row
