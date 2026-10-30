@@ -15,6 +15,15 @@ PR5 install notes (QP re-check of #965; NOT implemented here):
   N-D  the logged priority is the one signed last for the mint; it may not be the priority of the tx that landed (a rebroadcast of an earlier tx can land).
 A window file left empty or damaged (crash) is written atomically now (tmp + fsync + link), and an existing bad one refuses with window_file_unreadable_manual_recovery.
 
+START GATE, OWNER FILE, LIVE_OK (QP #959 removal items 3, 9 and 15; this PR):
+  * `start_refusal` holds the recorded-read start gate, switched by LIVE_REFUSAL_ACTIVE. True (shipped) = every start outside the synthetic dry path refuses
+    `hv4_c0_incomplete`, as before. Flipping that one constant to False is the whole removal of the refusal; it is a separate, last PR (QP item 15). The facts the
+    gate needs are passed in explicitly (`record_real_pass` from `real_pass_record`, `live_gates_passed` from main), never read from module state.
+  * The bridge host must have the canonical reads dir (READS_DIR_CANON) with the recorded read, root-owned and not group/other writable, and a stat-able
+    SEALED_ROOT_PREFIX (a missing prefix fails every alias check closed). Carrying the record there is the install pack's job.
+  * The owner confirmation is one root-owned file per bot, OWNER_DEC_DIR/<bot_id>/CANARY_DEC.md (presence + the one exact line; no sha pin), and LIVE_OK is
+    LIVE_OK_DIR/<bot_id>/LIVE_OK. TIER stays shared. Two canaries also need their own wallet, state_dir, parity_dir, twins_file and tieout_dir in config.
+
 Arms: only F or X arms are canary candidates (the L arms rewrite their playbook nightly = a prompt change = a new bot_id under DEC-032 s1.4). A bot_id
 ending in -L, -P or -R is refused.
 
