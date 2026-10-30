@@ -344,6 +344,7 @@ class WriteStatusCrossTests(TmpCase):
         self.assertEqual((len(gaps), len(resumes)), (len(kinds) - 1 if hasattr(c0, "gap_loses_data") else len(kinds) - 2, 1))
         pl.close()
 
+    @mock.patch.object(c0, "FEED_GAP_MANUAL_REVIEW", True)  # DEC-032 s5 item 2 as built; under DEC-031 Am.21 3.2 stopped_mismatch leaves the latch (tools/test_hv4_c0_gap_hold.py)
     def test_stopped_mismatch_from_a_real_tamper_latches_feed_break_in_the_bridge(self):
         e = Hv4Env(self.tmp)
         b = e.bridge()
@@ -367,6 +368,7 @@ class WriteStatusCrossTests(TmpCase):
         b.gap_tick(wall_ms())
         self.assertIn(c0.FEED_BREAK_LATCH, b.state.latches)
 
+    @mock.patch.object(c0, "FEED_GAP_MANUAL_REVIEW", True)  # DEC-032 s5 item 2 as built; under DEC-031 Am.21 3.2 stopped_mismatch leaves the latch (tools/test_hv4_c0_gap_hold.py)
     def test_stopped_mismatch_status_alone_latches_without_a_gap_row(self):
         e = Hv4Env(self.tmp)
         b = e.bridge()

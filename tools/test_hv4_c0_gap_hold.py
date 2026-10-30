@@ -29,10 +29,10 @@ class _Am21(TmpCase):
 
 
 class Am21Constants(_Am21):
-    def test_shipped_default_is_the_as_built_rule(self):
-        import importlib, re
+    def test_shipped_value_is_the_am21_rule_after_the_flip(self):
         src = (Path(c0.__file__)).read_text()
-        self.assertRegex(src, r"(?m)^FEED_GAP_MANUAL_REVIEW = True\b")
+        self.assertRegex(src, r"(?m)^FEED_GAP_MANUAL_REVIEW = False\b")  # the flip PR (claude/hv4-c0-flip): Am.21 item 3 complete with #1090, #1106 and C-a
+        self.assertRegex(src, r"(?m)^LIVE_REFUSAL_ACTIVE = False\b")
 
     def test_values_follow_am21(self):
         self.assertIs(c0.FEED_GAP_MANUAL_REVIEW, False)
