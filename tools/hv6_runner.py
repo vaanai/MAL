@@ -44,6 +44,7 @@ import re
 import signal
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
@@ -489,6 +490,7 @@ class Book:
 
 HOUSEKEEP_EVERY_MS = 5 * MIN_MS      # memory bounds run every 5 minutes of TAPE time (t_recv_ms of the rows), so warm-up, live and replay prune alike
 WATCH_MAX_POOLS = 2_000              # the prefetcher's watch set: tagged + board pools always, then the top pools by 60-min volume, never more than this many
+MAX_INFLIGHT_CALLS = 16             # fix B: model calls one scan may have in flight at once (<= 3 chunks x 4 arms with 8 tags + a 4-card board)
 
 
 @dataclass
@@ -517,6 +519,14 @@ class RunnerConfig:
     # Phantom-row filter (tools/hv6_phantom.py, QP ruling 2026-10-26): rows with an all-'1' signature, rows of a signature already seen at another slot, and trade
     # rows of two pinned signers are dropped before the state and the engine, counted by kind. Off only for the equivalence proof.
     phantom_filter: bool = True
+    # Fix B (smoke #1806, 2026-10-28: chunk latency p95 41,257 ms against 8,000; the four arm calls and the scan's chunks ran one after another). True = the
+    # entry calls of ONE scan (all chunks x the four LLM arms) go out at once, one thread each (at most MAX_INFLIGHT_CALLS), and are then logged and decided in
+    # exactly the serial order: per chunk the cards, the four llm_call rows in arm order, then every member decided at the chunk's common instant (the latest
+    # receive instant of its four calls), as before. Requests do not depend on an earlier chunk's verdicts (arm, playbook, cards, seq only), the call cap counts
+    # the scan's earlier chunks before they are sent, and the budget guard holds each call's worst case while it runs (hv6_agents.BudgetGuard.inflight).
+    # None = live mode (the run job and the smoke); replay/drill runs stay on the serial code. tools/test_hv6_runner_concurrent.py proves the two give
+    # byte-identical decision logs with a deterministic model. Re-check and watch calls stay serial.
+    concurrent_calls: bool | None = None
 
 
 _OPS = {"<": lambda a, b: a < b, "<=": lambda a, b: a <= b, ">": lambda a, b: a > b, ">=": lambda a, b: a >= b}
@@ -886,27 +896,39 @@ class Runner:
         return int(self.day_level.get(day, {}).get("max_level", 0))
 
     # -- model calls
-    def _call_ok(self, names: Sequence[str], kind: str, T: int) -> bool:
+    def _call_ok(self, names: Sequence[str], kind: str, T: int, pending: int = 0) -> bool:
+        """`pending`: calls of this kind already planned in this scan but not yet recorded (fix B, concurrent path); 0 on the serial path."""
         cap = H.ENTRY_CALLS_PER_H if kind == "entry" else RECHECK_CALLS_PER_H
         for n in names:
             lst = [t for t in self.calls.get((n, kind), []) if t > T - 60 * MIN_MS]
             self.calls[(n, kind)] = lst
-            if len(lst) >= cap:
+            if len(lst) + pending >= cap:
                 return False
         return True
 
-    def _call(self, name: str, req: Any, T: int) -> tuple[Any, int]:
+    def _complete(self, req: Any, T: int) -> tuple[Any, int, bool]:
+        """The model call and its receive instant, nothing else (safe on a worker thread: no log, no counter, no book). The flag says the call raised."""
         try:
             reply = self.model.complete(req, self._now(T))
+            raised = False
         except Exception:  # noqa: BLE001 - any preflight/guard/model-path exception is a deny for this tick
             reply = A.ModelReply(error="preflight_exception")
-            self._count("preflight_exception")
+            raised = True
             if self.guard is not None:
                 try:
                     self.guard.halt_group(self._now(T), "preflight_exception")  # takes effect from the next tick
                 except Exception:  # noqa: BLE001
                     pass
-        recv = self._dec_ms(T, reply)
+        return reply, self._dec_ms(T, reply), raised
+
+    def _call(self, name: str, req: Any, T: int) -> tuple[Any, int]:
+        reply, recv, raised = self._complete(req, T)
+        if raised:
+            self._count("preflight_exception")
+        return self._record(name, req, T, reply, recv)
+
+    def _record(self, name: str, req: Any, T: int, reply: Any, recv: int) -> tuple[Any, int]:
+        """Book one finished call (main thread only): the clock, the per-day sequence, the rolling call count and the llm_call row."""
         self.sim_now = max(self.sim_now, recv)
         day = utc_day(recv)
         sq = self.seq.get((name, day), 0)
@@ -1186,8 +1208,15 @@ class Runner:
                 self.log.append(a, T, {"kind": "halt", "level": tp.level, "reason": tp.reason or "group_halted"})
             return
         maxc = min(tp.max_cards, H.CARDS_PER_CALL)
+        if self.concurrent():
+            self._entry_calls_concurrent([cards[i:i + maxc] for i in range(0, len(cards), maxc)], T, maxc)
+            return
         for i in range(0, len(cards), maxc):
             self._entry_call(cards[i:i + maxc], T, maxc)
+
+    def concurrent(self) -> bool:
+        c = self.cfg.concurrent_calls
+        return bool(self.cfg.live) if c is None else bool(c)
 
     def _entry_call(self, chunk: list[dict], T: int, maxc: int) -> None:
         members = self.llm_arm_names
@@ -1200,11 +1229,47 @@ class Runner:
         for a in members:
             req = A.build_entry_request(a, self.playbooks[a], chunk, self.seq.get((a, utc_day(T)), 0), max_cards=maxc)
             replies[a] = self._call(a, req, T)
+        self._decide_chunk(chunk, T, replies)
+
+    def _entry_calls_concurrent(self, chunks: list[list[dict]], T: int, maxc: int) -> None:
+        """Fix B: every planned chunk's four calls at once, then the serial path's bookkeeping and decisions in the serial order (see RunnerConfig)."""
+        members = self.llm_arm_names
+        day = utc_day(T)
+        planned: list[tuple[list[dict], dict[str, Any]]] = []
+        for chunk in chunks:
+            if not self._call_ok(members, "entry", T, pending=len(planned)):  # the serial path sees each earlier chunk's calls already recorded
+                self._count("entry_call_cap")
+                continue
+            # the serial path reads seq after the earlier chunks' calls bumped it (same UTC day; a call received after 00:00Z bumps the next day's count there)
+            planned.append((chunk, {a: A.build_entry_request(a, self.playbooks[a], chunk, self.seq.get((a, day), 0) + len(planned), max_cards=maxc)
+                                    for a in members}))
+        if not planned:
+            return
+        jobs = [(k, a) for k in range(len(planned)) for a in members]
+        with ThreadPoolExecutor(max_workers=min(MAX_INFLIGHT_CALLS, len(jobs)), thread_name_prefix="hv6-call") as ex:
+            futs = {(k, a): ex.submit(self._complete, planned[k][1][a], T) for k, a in jobs}
+            done = {key: f.result() for key, f in futs.items()}  # _complete never raises
+        self._count("concurrent_rounds")
+        self._count("concurrent_calls", len(jobs))
+        for k, (chunk, reqs) in enumerate(planned):
+            for c in chunk:
+                self.cards.put(c, T)
+            replies = {}
+            for a in members:
+                reply, recv, raised = done[(k, a)]
+                if raised:
+                    self._count("preflight_exception")
+                replies[a] = self._record(a, reqs[a], T, reply, recv)
+            self._decide_chunk(chunk, T, replies)
+
+    def _decide_chunk(self, chunk: list[dict], T: int, replies: Mapping[str, tuple[Any, int]]) -> None:
+        members = self.llm_arm_names
         if any(r.error in DENIED for r, _ in replies.values()):
             for a in members:
                 self.log.append(a, replies[a][1], {"kind": "symmetry_abstain", "errors": {m: replies[m][0].error for m in members}})
             return
-        # QP 918 (3): the calls run one after another, so the arms' own receive instants differ by arm ORDER. Every member is validated (STALE) and decided at ONE
+        # QP 918 (3): on the serial path the calls run one after another, so the arms' own receive instants differ by arm ORDER (on the concurrent path, fix B,
+        # by network timing). Every member is validated (STALE) and decided at ONE
         # common instant, the latest receive instant of the chunk, so no arm is favoured by where it stands in the order.
         common = max(recv for _, recv in replies.values())
         for a in members:
