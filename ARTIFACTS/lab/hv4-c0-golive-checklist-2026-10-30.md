@@ -58,7 +58,17 @@ This is a desk inventory plus builds. **No book has cleared the promotion gate.*
    - What was missing is the tape-gap and twin carriage (items 3 and 4), now in build.
 
 ### PRs opened by this lane (all draft, base main, none merged)
-See §1c. The records PR carrying this file is `claude/hv4-c0-ready`.
+- #1090 gap hold (this lane's own code);
+- #1092 send rows;
+- #1094 these records;
+- #1095 sell simulate;
+- #1096 twin carry;
+- #1097 install pack;
+- #1098 gap relay v2;
+- #1100 start gate;
+- #1104 orders proof;
+- #1105 tapegap carry.
+Details are in §1c. Open findings are in §1d.
 
 ## 1. Inventory
 
@@ -83,21 +93,51 @@ See §1c. The records PR carrying this file is `claude/hv4-c0-ready`.
 | mal-research-0 | HV4 runner #1561/#1562 (sealed); daily instant job #1591; read jobs #1829/#1830 (sleeping). Ledger, decisions and arena tape live here. Not running: the gap relay, a forwarder `serve`, the twin relay. |
 | mal-fast-0 | **Nothing for HV4** (job #1837). The H5/Q50 executor install at c8fcf761 is separate and stopped (HELM-REPLY-1029-1). research-0 has no credential to reach fast-0. fast-0 reaches research-0 with `ssh mal-research-0`. |
 
-### 1c. Built today (draft PRs from this lane)
-| Branch | Discharges | State at writing |
-|---|---|---|
-| `claude/hv4-c0-gap-hold` | Manager item 3. DEC-032 Am.5 (DRAFT) 60 s hold on data-loss gaps; transport events exempt; behind `FEED_GAP_MANUAL_REVIEW` | **PR #1090**, head 10613d1e, 402 tests pass |
-| `claude/hv4-c0-start-gate` | Manager items 2 and 4, QP #959 items 3/15. Recorded-read start gate behind a one-line `LIVE_REFUSAL_ACTIVE` flip; owner record = root-owned per-bot file, no code pin; per-bot `LIVE_OK` | builder running |
-| `claude/hv4-gap-relay-v2` | P7-a (slot gaps), P7-b (hour roll, .zst), P7-d (engine cross-test), relay loop + job script | builder running |
-| `claude/hv4-tapegap-carry` | P7-c (missing or stale stream refuses buys), P7-e carriage in the forwarder, #967 write_status cross-test | builder running |
-| `claude/hv4-c0-twin-carry` | Twin carry (trips up, twins down) for the twin gate (blocker 4) | builder running |
-| `claude/hv4-c0-send-rows` | Precondition 8 residuals (signed priority, lvbh), on the hv4_c0 path only (probe_live untouched, to protect Q50's Am.4 four-blob X install) | builder running |
-| `claude/hv4-c0-install-pack` | Precondition 14 install pack: units, binds, configs, keyless checklist (rehearsal bot id `hv4-SYN-X`), runbook, A3 liveness | builder running |
-| `claude/hv4-c0-orders-proof` | Precondition 14: md5 orders-equal-rows proof, C0 read check (rc 0 is not enough), runner dead-man | builder running |
-| `claude/hv4-c0-sell-simulate` | DEC-032 §4 simulate_ref through the bridge's pinned builder | builder running |
-| `claude/hv4-c0-ready` (this) | This checklist; stage-2 DEC copy skeletons for BIG-X and CON-X; HELM-ASK draft | records |
+### 1c. Built today (draft PRs from this lane; heads at opening; all need QP and reviewer at their exact head)
+| PR | Branch | Discharges | Head, tests |
+|---|---|---|---|
+| **#1090** | `claude/hv4-c0-gap-hold` | Manager item 3. DEC-032 Am.5 (DRAFT) 60 s hold on data-loss gaps; transport events exempt; behind `FEED_GAP_MANUAL_REVIEW` | 10613d1e, 402 passed |
+| **#1100** | `claude/hv4-c0-start-gate` | Manager items 2 and 4, QP #959 items 3/15. Recorded-read start gate behind `LIVE_REFUSAL_ACTIVE = True` (the flip is one line, later, with its own QP); owner record = root-owned per-bot file, no code pin; per-bot `LIVE_OK` | c519574f, 655 passed with the constant True and 655 with it False |
+| **#1098** | `claude/hv4-gap-relay-v2` | P7-a (slot gaps), P7-b (hour roll, .zst), P7-d (engine cross-test), loop + job script | ff66a1e4; relay 39 + script 14 + neighbours 383 passed |
+| **#1105** | `claude/hv4-tapegap-carry` | P7-c (missing or stale stream refuses buys), P7-e carriage in the forwarder, #967 write_status cross-test | 45977fcb |
+| **#1096** | `claude/hv4-c0-twin-carry` | Twin carry (trips up, twins down) for the twin gate (blocker 4) | c4d9447a, 30 new tests (117 with neighbours) |
+| **#1092** | `claude/hv4-c0-send-rows` | Precondition 8 residuals: signed priority per signature and `last_valid_block_height` on every send row, in `BridgeExecutor` only (probe_live untouched) | 0f2300be, 565 passed |
+| **#1097** | `claude/hv4-c0-install-pack` | Precondition 14 install pack: units, binds, configs, keyless checklist (rehearsal id `hv4-SYN-X`), runbook, A3 root carry | 7a3d3047, 39 + 22 passed; OPEN list in body |
+| **#1104** | `claude/hv4-c0-orders-proof` | Precondition 14: md5 orders-equal-rows proof (EQUAL at its head, md5 e2ee7027…, 63 orders, synthetic), C0 read check (rc 0 is not enough), runner dead-man | b827fbdb, 557 passed |
+| **#1095** | `claude/hv4-c0-sell-simulate` | DEC-032 §4 simulate through the bridge's pinned builder (job script for fast-0; not run) | d6dc0805, 20 new tests |
+| **#1094** | `claude/hv4-c0-ready` (this) | This checklist; stage-2 DEC copy skeletons for BIG-X and CON-X; HELM-ASK draft | records |
 
-The manager's final report lists the PR numbers and heads of the builder PRs when they open.
+Suggested merge order:
+1. #1090
+2. #1092
+3. #1098
+4. #1105
+5. #1096
+6. #1104
+7. #1097
+8. #1095
+9. #1100 last
+10. then the one-line flip PR
+
+Known small conflicts between these PRs:
+- #1090 and #1098, in `tools/test_hv4_gap_relay.py`: add the `FEED_GAP_MANUAL_REVIEW` mock to two tests;
+- #1090 and #1105, in the bridge feed path.
+
+### 1d. Findings from the builders that must be settled before the flip (code or QP)
+1. **Parity STOP in live (#1097 decision 1).**
+   - In live, the bridge's stop file is pinned to `/var/lib/mal-live/STOP`, and the hardened unit cannot write it.
+   - The parity tool then returns its "STOP not written" code instead of 11, and `parity_hard_halt` latches only on 11.
+   - So a parity hard halt could stop blocking once its cause clears, without a review.
+   - **This needs a code fix before the flip.**
+2. **`/data/mal/arena` must exist on mal-fast-0** (#1100, #1104). `_alias_of_sealed` fails closed when the prefix is absent, so every hv4_c0 start would latch. The install must create `/data/mal/arena/reads/`, as the live read record needs anyway.
+3. **False hard `tieout_mismatch` (#1092).** A parity trip opened after the day's cut raises a false hard `tieout_mismatch` in `audit_fees`. This needs a fix or a ruling. Without one, the tie-out gate can halt a correct book on day 2.
+4. **Relay v2 superset rule (#1098).** The relay compares against the 4th-highest instant and slot, because the engine's accepted-row filter is not visible under the seal. QP should rule: keep this, or rule an exact mirror (it would read `prog`, `venue` and the dedupe key).
+5. **Real `min_out` never simulated (#1095).** The real 0.85 / 0.65 `min_out` has never been simulated against the mayhem Token-2022 pool; Q50's N4 used min_out = 1. A slippage revert would show as a FAIL in the simulate record. Run the job at X before the owner notice.
+6. **Twin relay on the real ledger (#1096).** Whether the real ledger dir passes the wrapper's "every entry regular, nlink 1" check can only be seen after a PASS. If it fails, the status shows `twin_refused:ledger:<reason>` and the bridge stays closed, which fails closed.
+7. **Install posture choices for the manager:**
+   - phase-1 forwarder pull via `--cmd-json` and the twin client as `claude` (#1096, #1097), or the phase-2 forced-command keys (Helm);
+   - one unix user per wallet, if a second HV4 arm goes live;
+   - the window dir is read-only to the unit (#1097 decision 3; root creates `<bot_id>.json`).
 
 ## 2. The checklist
 
@@ -209,6 +249,8 @@ Critical path: P4 → P8 (QP, then DEC PR review) ≈ 3 to 6 h, running alongsid
   - who sends the HELM-ASK and when;
   - the capital decision if both arms PASS;
   - whether the hv4-amend lane's Am.5 text matches #1090's constants (60 s, transport kinds).
-- **Seal contacts by this lane: none.** The fixture run used only synthetic paths under `/data2/mal/scratch/hv4-c0-ready-1030/`. Job #1837 listed path names only.
+- **Seal contacts by this lane:** no file under a sealed path was listed or opened. The fixture run used only synthetic paths under `/data2/mal/scratch/hv4-c0-ready-1030/`, and job #1837 listed path names only. Two builders disclosed metadata-only contacts, both since removed from their tests:
+  - #1097: one `stat` (mode and owner) of `/data/mal/arena/reads` during a manual checklist trial;
+  - #1104: one test resolved a symlink to the sealed prefix (a stat of the link target).
 
 No book has cleared the promotion gate.
