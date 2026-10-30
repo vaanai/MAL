@@ -3,7 +3,7 @@
     python -m tools.p96_veto --after-read --scored-rows ROWS.jsonl \
         --trigger-dir h5v1q50-boostfloor-a1=DIR [...] --trigger-dir h5v1q50-boostfloor-s1=DIR [...] \
         --read-json h5v1q50-boostfloor-a1=Q50_READ.json --read-json h5v1q50-boostfloor-s1=S1_READ.json \
-        [--confirm-read-json BOT=PATH ...] --bots-json ARENA_BOTS.json --s1-clock-ms MS --out RESULT.json [--now-ms MS]
+        [--confirm-read-json BOT=PATH ...] --bots-json Q50_ARENA_BOTS.json [--s1-bots-json S1_ARENA_BOTS.json] --s1-clock-ms MS --out RESULT.json [--now-ms MS]
 
 Nothing here is a profit claim and no book has cleared the promotion gate. A PASS licenses only a new forward book (a vetoed successor on new days); it never changes
 Q50's or s1's read. The run adds 1 to c whatever its verdict (once the seal checks pass).
@@ -12,8 +12,9 @@ SEAL (all checked before any row or shadow record is opened; REFUSED = exit 3, n
   * --after-read must be set;
   * the wall clock (--now-ms, and run()'s now_ms when called directly, are clamped to it, so they can only tighten) is at or after 2026-11-14T00:00Z (EXP-024 section 3
     end state, first listed);
-  * --s1-clock-ms equals s1's `clock_start_ms` in the arena registry bots.json (its sha256 is recorded), Q50's line has the Q50 clock, and the wall clock is at or after
-    E_s1 + 1 h, E_s1 = the line's `window_end_ms` when set (it must not exceed min(clock + 14 d, 2026-12-01T00Z)), else that minimum;
+  * --s1-clock-ms equals s1's `clock_start_ms` in s1's own arena registry (--s1-bots-json, default /data/mal/arena/bots.json; DEC-031 Amendment 22 item 9 gave s1 its own root), Q50's
+    line in Q50's registry (--bots-json) has the Q50 clock (both sha256 values are recorded), and the wall clock is at or after E + 1 h, E = the s1 line's `window_end_ms` when set
+    (it must not exceed 2026-12-01T00Z = SUCC_END_MS, Amendment 22 item 8.1: H = 25 d, 24 d on the 11-07 slip, never extended; an A3 halt can only move it earlier), else 2026-12-01T00Z;
   * a sealed-read marker for both books: the `--json` output of tools/arena_h5_read.py, with the book in `books`, not in `refused`, `status` PASS / FAIL / NOT_DECIDABLE, `final`
     not false, and a provenance key ending in `read-instant.json`; PASS / FAIL also need read_instant_ms, refit.intercept and the four deciding sub-cells;
   * a screen PASS needs that book's confirmation read marker (--confirm-read-json, same format, read_instant_ms after the screen read's);
@@ -57,8 +58,8 @@ _ms = lambda *a: int(datetime(*a, tzinfo=timezone.utc).timestamp() * 1000)  # no
 Q50_CLOCK_MS = _ms(2026, 10, 25)  # 1792886400000
 Q50_END_MS = _ms(2026, 11, 6)  # 1793923200000, Q50's end-seal
 S1_MIN_CLOCK_MS = Q50_END_MS
-SUCC_END_MS = _ms(2026, 12, 1)  # 1796083200000, S*'s end constant
-S1_HORIZON_MS = 14 * DAY_MS
+SUCC_END_MS = _ms(2026, 12, 1)  # 1796083200000, S*'s end constant = s1's book end E (Amendment 22 item 8.1; was clock + 14 d under Amendment 18 item 3.2)
+S1_BOTS_JSON_DEFAULT = "/data/mal/arena/bots.json"  # s1's own registry on mal-fast-0 (Amendment 22 item 9); Q50's is passed as --bots-json
 LOOK2_END_MS = _ms(2026, 11, 14)  # 1794614400000, EXP-024 section 3 end state (first listed)
 EXIT_GRACE_MS = 3_600_000
 FINAL = ("PASS", "FAIL", "NOT_DECIDABLE")
@@ -93,45 +94,58 @@ def sha256_file(path: str | os.PathLike) -> str:
 
 
 def s1_window(clock_ms: int) -> tuple[int, int]:
-    """[clock, E_s1): E_s1 = min(clock + 14 d, SUCC_END_MS). The clock is a 00:00Z instant at or after 2026-11-06T00Z (the slip rule moves it by whole days)."""
+    """[clock, E): E = SUCC_END_MS = 2026-12-01T00Z for every clock (DEC-031 Amendment 22 item 8.1: H = 25 d, 24 d on the 11-07 slip; E is never extended). The clock is a 00:00Z
+    instant at or after 2026-11-06T00Z (the slip rule moves it by whole days)."""
     if isinstance(clock_ms, bool) or not isinstance(clock_ms, int) or clock_ms % DAY_MS or not S1_MIN_CLOCK_MS <= clock_ms < SUCC_END_MS:
         raise Refused(f"--s1-clock-ms {clock_ms!r} is not a 00:00Z instant in [2026-11-06T00Z, 2026-12-01T00Z)")
-    return clock_ms, min(clock_ms + S1_HORIZON_MS, SUCC_END_MS)
+    return clock_ms, SUCC_END_MS
 
 
 def _int(x: Any) -> bool:
     return isinstance(x, int) and not isinstance(x, bool)
 
 
-def load_bots(path: str | os.PathLike, s1_clock_ms: int) -> dict[str, Any]:
-    """Bind the windows to the arena registry (QP B2 on #1060): bots.json {"bots": {bot_id: {clock_start_ms, window_end_ms, ...}}} as tools/arena_h5_score.register_books
-    writes it. s1's clock_start_ms must equal --s1-clock-ms (an 11-07 slip included); Q50's must be the Q50 clock. E_s1 = s1's window_end_ms when set (an A3 halt can only
-    move it earlier), never past min(clock + 14 d, 2026-12-01T00Z); else that minimum. Returns {windows, sha256, path}."""
+def _registry(path: str | os.PathLike, whose: str) -> tuple[Path, dict[str, Any]]:
     p = Path(path)
     if not p.is_file():
-        raise Refused(f"bots.json {os.fspath(path)!r} does not exist")
+        raise Refused(f"{whose} bots.json {os.fspath(path)!r} does not exist")
     try:
         bots = json.loads(p.read_text()).get("bots")
     except (ValueError, AttributeError):
-        raise Refused("bots.json is not a registry object {\"bots\": {...}}") from None
-    if not isinstance(bots, dict) or not all(isinstance(bots.get(b), dict) for b in BOOKS):
-        raise Refused(f"bots.json has no line for each of {list(BOOKS)}")
-    q, s = bots[Q50_ID], bots[S1_ID]
+        raise Refused(f"{whose} bots.json is not a registry object {{\"bots\": {{...}}}}") from None
+    if not isinstance(bots, dict):
+        raise Refused(f"{whose} bots.json is not a registry object {{\"bots\": {{...}}}}")
+    return p, bots
+
+
+def load_bots(path: str | os.PathLike, s1_clock_ms: int, s1_path: str | os.PathLike) -> dict[str, Any]:
+    """Bind the windows to the arena registries (QP B2 on #1060): bots.json {"bots": {bot_id: {clock_start_ms, window_end_ms, ...}}} as tools/arena_h5_score.register_books writes
+    it. Q50's line is read from Q50's registry (`path`), s1's from s1's OWN registry (`s1_path`; DEC-031 Amendment 22 item 9: s1 has its own arena root and bots.json); the same file
+    may be passed for both. s1's clock_start_ms must equal --s1-clock-ms (an 11-07 slip included); Q50's must be the Q50 clock. E = s1's window_end_ms when set (an A3 halt can
+    only move it earlier), never past SUCC_END_MS = 2026-12-01T00Z (Amendment 22 item 8.1); else SUCC_END_MS. Returns {windows, sha256, path, s1_sha256, s1_path}; sha256 and path are
+    Q50's registry's, unchanged."""
+    p, qbots = _registry(path, "Q50's")
+    sp, sbots = _registry(s1_path, "s1's")
+    if not isinstance(qbots.get(Q50_ID), dict):
+        raise Refused(f"Q50's bots.json has no line for {Q50_ID}")
+    if not isinstance(sbots.get(S1_ID), dict):
+        raise Refused(f"s1's bots.json has no line for {S1_ID}")
+    q, s = qbots[Q50_ID], sbots[S1_ID]
     if q.get("clock_start_ms") != Q50_CLOCK_MS:
         raise Refused(f"bots.json: {Q50_ID} clock_start_ms {q.get('clock_start_ms')!r} is not the Q50 clock {Q50_CLOCK_MS}")
     if not _int(s.get("clock_start_ms")) or s["clock_start_ms"] != s1_clock_ms:
-        raise Refused(f"--s1-clock-ms {s1_clock_ms} != s1's clock_start_ms {s.get('clock_start_ms')!r} in bots.json")
+        raise Refused(f"--s1-clock-ms {s1_clock_ms} != s1's clock_start_ms {s.get('clock_start_ms')!r} in s1's bots.json")
     lo, hi = s1_window(s1_clock_ms)
     we = s.get("window_end_ms")
     if we is not None:
         if not _int(we) or not lo < we <= hi:
-            raise Refused(f"bots.json: s1 window_end_ms {we!r} is not in ({lo}, {hi}]")
+            raise Refused(f"s1's bots.json: s1 window_end_ms {we!r} is not in ({lo}, {hi}]")
         hi = we
     qe = q.get("window_end_ms")
     q_hi = Q50_END_MS if qe is None else qe
     if not _int(q_hi) or not Q50_CLOCK_MS < q_hi <= Q50_END_MS:
         raise Refused(f"bots.json: Q50 window_end_ms {qe!r} is not in ({Q50_CLOCK_MS}, {Q50_END_MS}]")
-    return {"windows": {Q50_ID: (Q50_CLOCK_MS, q_hi), S1_ID: (lo, hi)}, "sha256": sha256_file(p), "path": os.fspath(path)}
+    return {"windows": {Q50_ID: (Q50_CLOCK_MS, q_hi), S1_ID: (lo, hi)}, "sha256": sha256_file(p), "path": os.fspath(path), "s1_sha256": sha256_file(sp), "s1_path": os.fspath(s1_path)}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ seal
@@ -145,7 +159,7 @@ def check_flag_and_floor(after_read: bool, now_ms: int) -> None:
 
 def check_s1_closed(now_ms: int, s1_end_ms: int) -> None:
     if now_ms < s1_end_ms + EXIT_GRACE_MS:
-        raise Refused(f"now {now_ms} is before s1's end + 1 h ({s1_end_ms + EXIT_GRACE_MS}): s1's window is not closed")
+        raise Refused(f"now {now_ms} is before s1's end E + 1 h ({s1_end_ms + EXIT_GRACE_MS}): s1's window is not closed")
 
 
 def load_read(path: str | os.PathLike, bot: str, *, need_priced: bool = True) -> dict[str, Any]:
@@ -412,11 +426,11 @@ def qstar_compare(v_by_cell: Mapping[str, np.ndarray], q_post: np.ndarray, ok: n
                           "q_post_sol is not the largest weight and the overlap with the tighter-Q* veto is under 50%.")}
 
 
-def run(*, rows_path: str, trigger_dirs: Mapping[str, Sequence[str]], read_paths: Mapping[str, str], confirm_paths: Mapping[str, str], bots_path: str, s1_clock_ms: int,
-        after_read: bool, now_ms: int | None = None) -> dict[str, Any]:
+def run(*, rows_path: str, trigger_dirs: Mapping[str, Sequence[str]], read_paths: Mapping[str, str], confirm_paths: Mapping[str, str], bots_path: str, s1_bots_path: str,
+        s1_clock_ms: int, after_read: bool, now_ms: int | None = None) -> dict[str, Any]:
     now_ms = wall_ms() if now_ms is None else min(int(now_ms), wall_ms())  # the CLI's clamp, also for a direct call: it can only tighten the seal
     check_flag_and_floor(after_read, now_ms)
-    reg = load_bots(bots_path, s1_clock_ms)
+    reg = load_bots(bots_path, s1_clock_ms, s1_bots_path)
     wins = reg["windows"]
     check_s1_closed(now_ms, wins[S1_ID][1])
     for b in BOOKS:
@@ -432,8 +446,8 @@ def run(*, rows_path: str, trigger_dirs: Mapping[str, Sequence[str]], read_paths
         ri = reads[b]["read_instant_ms"]
         if reads[b]["status"] != "NOT_DECIDABLE" and not wins[b][0] < ri <= wins[b][1]:
             raise Refused(f"{b}: read_instant_ms {ri} is not inside the book's window {list(wins[b])} from bots.json")
-    base = {"markers": markers, "bots_json": {"sha256": reg["sha256"], "path": reg["path"]}, "windows": {b: list(w) for b, w in wins.items()},
-            "prereg": "docs/research/p96/PREREG.md", "now_ms": now_ms}
+    base = {"markers": markers, "bots_json": {"sha256": reg["sha256"], "path": reg["path"]}, "s1_bots_json": {"sha256": reg["s1_sha256"], "path": reg["s1_path"]},
+            "windows": {b: list(w) for b, w in wins.items()}, "prereg": "docs/research/p96/PREREG.md", "now_ms": now_ms}
     for b in BOOKS:
         if reads[b]["status"] == "NOT_DECIDABLE":
             return nd(f"{b}: its read is NOT_DECIDABLE, so no priced read anchors its rows (PREREG section 5 step 2); no row was opened", **base)
@@ -550,7 +564,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--trigger-dir", action="append", default=[], metavar="BOT=DIR")
     ap.add_argument("--read-json", action="append", default=[], metavar="BOT=PATH")
     ap.add_argument("--confirm-read-json", action="append", default=[], metavar="BOT=PATH")
-    ap.add_argument("--bots-json", required=True, help="the arena registry; s1's clock_start_ms must equal --s1-clock-ms")
+    ap.add_argument("--bots-json", required=True, help="Q50's arena registry ($HOME/data/arena/bots.json on mal-fast-0); its Q50 line must carry the Q50 clock")
+    ap.add_argument("--s1-bots-json", default=S1_BOTS_JSON_DEFAULT, help="s1's own arena registry (Amendment 22 item 9); its s1 line's clock_start_ms must equal --s1-clock-ms")
     ap.add_argument("--s1-clock-ms", type=int, required=True)
     ap.add_argument("--out", required=True)
     ap.add_argument("--now-ms", type=int)
@@ -561,7 +576,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if out.exists():
             raise Refused(f"--out {a.out!r} exists: P96 runs once (write-once result)")
         res = run(rows_path=a.scored_rows, trigger_dirs=parse_kv(a.trigger_dir, "--trigger-dir", True), read_paths=parse_kv(a.read_json, "--read-json", False),
-                  confirm_paths=parse_kv(a.confirm_read_json, "--confirm-read-json", False), bots_path=a.bots_json, s1_clock_ms=a.s1_clock_ms,
+                  confirm_paths=parse_kv(a.confirm_read_json, "--confirm-read-json", False), bots_path=a.bots_json, s1_bots_path=a.s1_bots_json, s1_clock_ms=a.s1_clock_ms,
                   after_read=a.after_read, now_ms=now)
     except Refused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
