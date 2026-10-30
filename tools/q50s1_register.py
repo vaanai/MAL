@@ -1,14 +1,19 @@
 """One-command registration of `h5v1q50-boostfloor-s1` in ITS OWN arena root, with its own A3 books files (DEC-031 Amendment 22 items 9 and 10; plan C5). PAPER ONLY. No outcome is read.
 
-    python -m tools.q50s1_register --arena-root ARENA [--books-file ARENA/a3-books.json] --preclock-notebook-ref REF [--apply]
+    HOME=/home/claude/s1home python -m tools.q50s1_register --arena-root /home/claude/s1home/data/arena [--books-file ROOT/a3-books.json] --preclock-notebook-ref REF [--apply]
 
-s1 runs in its own arena root on mal-fast-0 (`/data/mal/arena`, the root the pinned scorer and S*'s shadow accept; the manager creates it), with its own `bots.json` (only s1's line),
-its own 3-key A3 books file `a3-books.json` (loop 2), and a 2-key read books file `a3-books-read.json` (`tools.arena_h5_books.load_books` takes exactly two keys and a pinned sha256).
-Q50's root, registry and books file v2 are never touched: there is no books v2 -> v3 swap, no v2 byte copy and no v3.
+s1's root is S1_ROOT = /home/claude/s1home/data/arena on mal-fast-0 (the manager creates it). HV4's C0 install pack creates /data/mal/arena as root:root 0755, so s1 does not use it. The pinned
+scorer (`tools/arena_h5_score._arena_root`) and S*'s shadow accept only two roots, realpath(/data/mal/arena) and realpath($HOME/data/arena); so EVERY s1 process that checks a root runs with
+HOME=/home/claude/s1home (this tool, the scorer, the shadow), and then $HOME/data/arena IS s1's root and no pinned check changes. `scripts/ops/q50s1-register.sh` sets HOME that way.
+Because of that override, `~` is s1's root in this process. Q50's root is therefore NOT `expanduser("~")/data/arena` here but the account's real home (`pwd.getpwuid(os.getuid()).pw_dir`) + `/data/arena`.
+
+s1 has its own `bots.json` (only s1's line), its own 3-key A3 books file `a3-books.json` (loop 2), and a 2-key read books file `a3-books-read.json` (`tools.arena_h5_books.load_books` takes exactly two keys
+and a pinned sha256). Q50's root, registry and books file v2 are never touched: there is no books v2 -> v3 swap, no v2 byte copy and no v3.
 
 Default is a DRY RUN: every check runs and nothing is written. With --apply, under the registry lock (`bots.json.lock`):
 (1) refuse inside :04 to :25 of the 07, 13 and 19 UTC hours and inside 12:10 to 12:25Z (the A3 loop and dead-man windows);
-(2) refuse if --arena-root resolves (realpath) to Q50's root `$HOME/data/arena`, if it is not an existing directory, or if its `bots.json` holds any bot other than s1;
+(2) refuse if --arena-root resolves (realpath, symlinks included) to Q50's real root (the account's real home + /data/arena) or to /data/mal/arena (HV4's root), if it is not an existing
+    directory, or if its `bots.json` holds any bot other than s1;
 (3) refuse if --books-file is not `<root>/a3-books.json`;
 (4) the 3-key and 2-key texts must pass tools.a3_halt.validate_books against the registry WITH s1 added (every listed id registered; every registered h5 book listed);
 (5) the s1 line is built from the compiled row (tools.arena_h5_score_q50s.add_line: window [11-04T00Z, 11-05T12Z], before the clock, window_end_ms pinned) with the key-free
@@ -27,6 +32,7 @@ import datetime as dt
 import hashlib
 import json
 import os
+import pwd
 import re
 import sys
 import time
@@ -42,6 +48,9 @@ from tools.arena_score import Refused
 NOTEBOOK_REF_RE = re.compile(r"[A-Za-z0-9_-]{6,80}")
 FORBIDDEN_NOTE = "inside :04 to :25 of the 07, 13 or 19 UTC hour, or 12:10 to 12:25Z (A3 loop / dead-man windows)"
 S1_ID = w.S1_ID
+S1_HOME = "/home/claude/s1home"  # every s1 process runs with HOME=S1_HOME, so that $HOME/data/arena is s1's root and the pinned root checks are unchanged
+S1_ROOT = S1_HOME + "/data/arena"
+HV4_ROOT = "/data/mal/arena"  # created root:root 0755 by HV4's C0 install pack; accepted by the pinned scorer, but not s1's
 ENDPOINTS = ("wss://api.mainnet-beta.solana.com", "wss://mainnet.helius-rpc.com/")  # key-free (Amendment 22 item 10): the Helius key is added at process start by the start script
 BAD_ENDPOINT_RE = re.compile(r"[?#@\s]|api[-_]?key", re.I)
 A3_BOOKS_NAME = "a3-books.json"
@@ -65,15 +74,18 @@ def _sha(b: bytes) -> str:
 
 
 def q50_root() -> str:
-    """Realpath of Q50's arena root, `$HOME/data/arena` (the root of `h5v1q50-boostfloor-a1`; s1 never shares it)."""
-    return os.path.realpath(os.path.join(os.path.expanduser("~"), *sc.h5.ARENA_HOME_SUBDIR))
+    """Realpath of Q50's arena root: the account's REAL home (the password database, not $HOME, which s1's processes override to S1_HOME) + /data/arena."""
+    return os.path.realpath(os.path.join(pwd.getpwuid(os.getuid()).pw_dir, *sc.h5.ARENA_HOME_SUBDIR))
 
 
 def check_root(arena_root: str | os.PathLike) -> Path:
-    """The resolved s1 root. Refused: Q50's root (by realpath, so a symlink to it is caught too) and anything that is not an existing directory. Writes nothing."""
+    """The resolved s1 root. Refused: Q50's real root and HV4's /data/mal/arena (both by realpath, so a symlink to either is caught too, before anything is opened) and anything that
+    is not an existing directory. Writes nothing."""
     real = os.path.realpath(arena_root)
     if real == q50_root():
         raise Refused(f"--arena-root {os.fspath(arena_root)!r} resolves to Q50's root {real}: s1 has its own root (DEC-031 Amendment 22 item 9)")
+    if real == os.path.realpath(HV4_ROOT):
+        raise Refused(f"--arena-root {os.fspath(arena_root)!r} resolves to {HV4_ROOT} (HV4's root, not s1's): s1's root is {S1_ROOT}")
     if not os.path.isdir(real):
         raise Refused(f"--arena-root {os.fspath(arena_root)!r} is not an existing directory (the manager creates s1's root; this tool does not)")
     return Path(real)
