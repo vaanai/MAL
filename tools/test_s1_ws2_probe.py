@@ -126,6 +126,40 @@ class Pure(unittest.TestCase):
         order = [r["label"] for r in P.rank([mk("a", True, 100, 0.5, 0), mk("b", True, 50, 0.99, 0), mk("c", False, 999, 1.0, 0), mk("d", True, 0, 0.0, 0)])]
         self.assertEqual(order, ["b", "a"])
 
+    def test_keyed_candidate_guards(self):
+        self.assertTrue(P.keyed_ok("wss://fra.rpc.orbitflare.com", "ORBITFLARE_KEY", "api_key"))
+        self.assertTrue(P.keyed_ok("wss://mainnet.helius-rpc.com/", "HELIUS_API_KEY", "api-key"))
+        self.assertFalse(P.keyed_ok("wss://fra.rpc.orbitflare.com", "HELIUS_API_KEY", "api_key"))      # the Helius key never goes to another provider
+        self.assertFalse(P.keyed_ok("wss://evil-helius-rpc.com", "HELIUS_API_KEY", "api-key"))
+        self.assertFalse(P.keyed_ok("wss://rpc.shyft.to/?api_key=x", "SHYFT_KEY", "api_key"))
+        self.assertFalse(P.keyed_ok("wss://rpc.shyft.to", "SHYFT KEY", "api_key"))
+        self.assertFalse(P.keyed_ok("wss://rpc.shyft.to", "SHYFT_KEY", "api key"))
+        self.assertEqual(P.with_key("wss://rpc.shyft.to", "api_key", "abcd1234"), "wss://rpc.shyft.to?api_key=abcd1234")
+        with tempfile.TemporaryDirectory() as d:
+            kf = Path(d) / "k"
+            kf.write_text("export SHYFT_KEY='abcd-1234XY'\nOTHER=1\n")
+            self.assertEqual(P.read_var(str(kf), "SHYFT_KEY"), "abcd-1234XY")
+            self.assertIsNone(P.read_var(str(kf), "NOPE"))
+            kf.write_text("SHYFT_KEY=has_underscore\n")
+            self.assertIsNone(P.read_var(str(kf), "SHYFT_KEY"))       # same charset as the s1 launcher's KEY_RE
+
+    def test_keyed_cli_refusals_never_print_the_key(self):
+        exe = [sys.executable, "-I", str(REPO / "tools" / "s1_ws2_probe.py")]
+        with tempfile.TemporaryDirectory() as d:
+            kf = Path(d) / "k"
+            kf.write_text("HELIUS_API_KEY=fixture0key-9\nOF_KEY=fixture1key-9\n")
+            r = subprocess.run(exe + ["--keyed-url", "wss://fra.rpc.orbitflare.com", "--key-file", str(kf), "--key-var", "HELIUS_API_KEY"], capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, 2)
+            r2 = subprocess.run(exe + ["--keyed-url", "wss://fra.rpc.orbitflare.com", "--key-file", str(kf)], capture_output=True, text=True, timeout=30)
+            self.assertEqual(r2.returncode, 2)
+            r3 = subprocess.run(exe + ["--keyed-url", "wss://fra.rpc.orbitflare.com", "--key-file", str(kf), "--key-var", "MISSING"], capture_output=True, text=True, timeout=30)
+            self.assertEqual(r3.returncode, 2)
+            r4 = subprocess.run(exe + ["--keyed-url", "wss://fra.rpc.orbitflare.com", "--key-file", str(kf), "--key-var", "OF_KEY", "--top", "9"], capture_output=True, text=True, timeout=30)
+            self.assertEqual(r4.returncode, 2)
+            for x in (r, r2, r3, r4):
+                self.assertNotIn("fixture0key", x.stdout + x.stderr)
+                self.assertNotIn("fixture1key", x.stdout + x.stderr)
+
     def test_subscription_is_the_credit_probes(self):
         from tools import q50s1_ws_probe as Q
         self.assertIs(P.subscribe_request, Q.subscribe_request)  # tested equal to S*'s builder in tools/test_q50s1_ws_probe.py

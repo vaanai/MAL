@@ -19,7 +19,9 @@ Host watch: every --watch-every seconds `ss -Htni state established`, host-wide;
 api.mainnet-beta.solana.com, re-resolved each minute) are counted per phase: mean open, new and ended connections per hour, ended long-lived connections (seen in
 >= 3 samples) per hour, and bytes_received per hour. No process is named or attributed. The probe's own sockets' bytes_received (compressed wire bytes) come from
 the same samples.
-Candidate URLs must be key-free wss:// URLs (no query, fragment, userinfo or key-like token): keyed providers are out of scope.
+Candidate URLs must be key-free wss:// URLs (no query, fragment, userinfo or key-like token). One KEYED candidate may be added with --keyed-url BASE --key-file F
+--key-var VAR [--key-param P]: the key is read from F inside this process and appended as ?P=<key> (the query form S* strips from its logs); only BASE is ever printed,
+provider error text is not kept for it, and a HELIUS_API_KEY is refused for any host other than *.helius-rpc.com (no key goes to another provider).
 Run it as a MiScusi job on mal-fast-0 (websockets + certifi are in the fast-listener venv); 512 MB.
 Exit: 0 ran (any outcome), 2 usage.
 """
@@ -48,10 +50,41 @@ INITIAL_BACKOFF_S, MAX_BACKOFF_S = 1.0, 60.0  # S* observe/trade_source.py:52-53
 TRIM_MS = 15_000  # at most; 15 % of a shorter window
 SIG_KEEP = 24
 BYTES_RE = re.compile(r"\bbytes_received:(\d+)")
+NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+KEY_RE = re.compile(r"^[A-Za-z0-9-]{8,128}$")  # scripts/ops/q50s1-ws-launch.py:KEY_RE (a key this probe accepts, the launcher accepts)
 
 
 def url_ok(u: str) -> bool:
     return u.startswith("wss://") and len(u) > 6 and not any(c in u for c in "?#@ ") and not KEYLIKE.search(u)
+
+
+def read_var(path: str, var: str) -> str | None:
+    """The value of `var` in a KEY=VALUE file (optional `export `, optional quotes); None if unreadable, absent or malformed. Never logs."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        return None
+    for ln in lines:
+        t = ln.strip()
+        if t.startswith("export "):
+            t = t[7:].lstrip()
+        if t.startswith(var + "="):
+            v = t[len(var) + 1:].strip().strip("'\"")
+            return v if KEY_RE.match(v) else None
+    return None
+
+
+def keyed_ok(base: str, var: str, param: str) -> bool:
+    """A key-free base, sane names, and the Helius key only ever to a Helius host."""
+    if not (url_ok(base) and NAME_RE.match(var) and NAME_RE.match(param)):
+        return False
+    host = base[6:].split("/", 1)[0].lower()
+    return var != "HELIUS_API_KEY" or host == "helius-rpc.com" or host.endswith(".helius-rpc.com")
+
+
+def with_key(base: str, param: str, key: str) -> str:
+    return f"{base}?{param}={key}"
 
 
 def now_ms() -> int:
@@ -354,10 +387,12 @@ def coverage(cand: Stream, ref: Stream, t0: int, t1: int) -> dict:
             "cand_first_share": round(sum(1 for x in leads if x < 0) / len(leads), 4) if leads else None}
 
 
-async def window(phase: str, label: str, url: str, seconds: float, ref_url: str | None, watcher: Watcher, rng: random.Random) -> dict:
+async def window(phase: str, label: str, url: str, seconds: float, ref_url: str | None, watcher: Watcher, rng: random.Random, *, shown: str | None = None,
+                 keep_detail: bool = True) -> dict:
+    """`url` is what is opened; `shown` (default url) is what is printed: for the keyed candidate the key-free base."""
     watcher.phase = f"{phase}:{label}"
     stop = asyncio.Event()
-    cand = Stream(label, keep_detail=True)
+    cand = Stream(label, keep_detail=keep_detail)
     ref = Stream("helius-ref", keep_detail=False) if ref_url else None
     t0 = now_ms()
     tasks = [asyncio.create_task(run_stream(url, cand, stop, rng))]
@@ -374,7 +409,7 @@ async def window(phase: str, label: str, url: str, seconds: float, ref_url: str 
     stop.set()
     await asyncio.gather(*tasks, return_exceptions=True)
     secs = (t1 - t0) / 1000.0
-    rec = {"type": "window", "phase": phase, "label": label, "url": url, "seconds": round(secs, 1), "cand": stream_summary(cand, secs, t1, t0)}
+    rec = {"type": "window", "phase": phase, "label": label, "url": shown or url, "keyed": not keep_detail, "seconds": round(secs, 1), "cand": stream_summary(cand, secs, t1, t0)}
     rec["cand"]["wire_bytes_sampled"] = sum(v for k, v in watcher.own_bytes.items() if split_addr(k[0])[1] in cand.local_ports)
     if ref is not None:
         rec["ref"] = stream_summary(ref, secs, t1, t0)
@@ -399,13 +434,16 @@ def rank(screens: list[dict]) -> list[dict]:
     return sorted(ok, key=lambda r: (-(r.get("coverage_vs_ref", {}).get("coverage") or 0.0), -r["cand"]["notes"], r["cand"]["reconnects"]))
 
 
-async def amain(a, ref_url: str | None) -> dict:
+async def amain(a, ref_url: str | None, keyed: tuple[str, str] | None = None) -> dict:
+    """keyed = (key-free base, URL with the key) for the one keyed candidate."""
     rng = random.Random(1)
     watcher = Watcher(a.watch_host, a.watch_every)
     wstop = asyncio.Event()
     wtask = asyncio.create_task(watcher.run(wstop))
+    cands = [(u, u, True) for u in a.url] + ([(keyed[0], keyed[1], False)] if keyed else [])
+    real = {shown: (u, keep) for shown, u, keep in cands}
     dns = {}
-    for u in a.url:
+    for u, _, _ in cands:
         host = u[6:].split("/", 1)[0]
         try:
             dns[u] = len({x[4][0] for x in socket.getaddrinfo(host, 443, proto=socket.IPPROTO_TCP)})
@@ -414,14 +452,14 @@ async def amain(a, ref_url: str | None) -> dict:
     print(json.dumps({"type": "dns", "addresses": dns}, sort_keys=True), flush=True)
     await watch_only("baseline", a.baseline_seconds, watcher)
     screens = []
-    for i, u in enumerate(a.url):
+    for i, (u, _, _) in enumerate(cands):
         if dns[u] == 0:
             continue
-        screens.append(await window("screen", f"c{i}", u, a.screen_seconds, ref_url, watcher, rng))
+        screens.append(await window("screen", f"c{i}", real[u][0], a.screen_seconds, ref_url, watcher, rng, shown=u, keep_detail=real[u][1]))
         await watch_only(f"gap:screen:c{i}", a.gap_seconds, watcher)
     probes = []
     for r in rank(screens)[: a.top]:
-        probes.append(await window("probe", r["label"], r["url"], a.probe_seconds, ref_url, watcher, rng))
+        probes.append(await window("probe", r["label"], real[r["url"]][0], a.probe_seconds, ref_url, watcher, rng, shown=r["url"], keep_detail=real[r["url"]][1]))
         await watch_only(f"gap:probe:{r['label']}", a.gap_seconds, watcher)
     await watch_only("after", a.baseline_seconds, watcher)
     wstop.set()
@@ -434,7 +472,11 @@ async def amain(a, ref_url: str | None) -> dict:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("--url", action="append", required=True, help="key-free candidate wss:// URL; repeatable")
+    ap.add_argument("--url", action="append", default=[], help="key-free candidate wss:// URL; repeatable")
+    ap.add_argument("--keyed-url", default=None, help="key-free base of ONE keyed candidate (the key is appended in-process as ?<key-param>=<key>)")
+    ap.add_argument("--key-file", default=None, help="KEY=VALUE file holding the keyed candidate's key")
+    ap.add_argument("--key-var", default=None, help="variable name of the keyed candidate's key in --key-file")
+    ap.add_argument("--key-param", default="api_key", help="query parameter name the provider expects (default api_key)")
     ap.add_argument("--ref-key-file", default=None, help="KEY=VALUE file with HELIUS_API_KEY for the reference socket (read in-process)")
     ap.add_argument("--screen-seconds", type=float, default=45.0)
     ap.add_argument("--probe-seconds", type=float, default=600.0)
@@ -445,13 +487,25 @@ def main(argv=None) -> int:
     ap.add_argument("--watch-every", type=float, default=5.0)
     a = ap.parse_args(argv)
     bad = [u for u in a.url if not url_ok(u)]
-    if bad or len(set(a.url)) != len(a.url):
+    if (not a.url and not a.keyed_url) or bad or len(set(a.url)) != len(a.url) or (a.keyed_url in a.url):
         print(f"s1_ws2_probe: {len(bad)} URL(s) not key-free wss:// or duplicated; nothing opened", file=sys.stderr)
         return 2
     if not (10 <= a.screen_seconds <= 600 and 0 <= a.probe_seconds <= 3600 and 0 <= a.top <= 5 and 0 <= a.baseline_seconds <= 1800
             and 0 <= a.gap_seconds <= 600 and 1 <= a.watch_every <= 60 and len(a.url) <= 16):
         print("s1_ws2_probe: a duration, --top or the URL count is out of range", file=sys.stderr)
         return 2
+    keyed = None
+    if a.keyed_url or a.key_file or a.key_var:
+        if not (a.keyed_url and a.key_file and a.key_var and keyed_ok(a.keyed_url, a.key_var, a.key_param)):
+            print("s1_ws2_probe: --keyed-url, --key-file and --key-var go together; the base must be key-free wss://, the names [A-Za-z0-9_-], and a HELIUS_API_KEY"
+                  " only for a helius-rpc.com host; nothing opened", file=sys.stderr)
+            return 2
+        k = read_var(a.key_file, a.key_var)
+        if k is None:
+            print("s1_ws2_probe: no usable value for --key-var in --key-file; nothing opened", file=sys.stderr)
+            return 2
+        keyed = (a.keyed_url, with_key(a.keyed_url, a.key_param, k))
+        del k
     ref_url = None
     if a.ref_key_file:
         key = read_key(a.ref_key_file)
@@ -460,7 +514,7 @@ def main(argv=None) -> int:
             return 2
         ref_url = f"{REF_BASE}?api-key={key}"
         del key
-    summ = asyncio.run(amain(a, ref_url))
+    summ = asyncio.run(amain(a, ref_url, keyed))
     print(json.dumps(summ, sort_keys=True), flush=True)
     rp = os.environ.get("MISCUSI_RESULT")
     if rp:
