@@ -758,9 +758,9 @@ class RootCheckPathTypeTests(TmpCase):
     def test_owner_line_with_real_root_checks_takes_a_str_path(self):
         p = Path(self.tmp) / "dec.md"
         p.write_text(c0.OWNER_LINE_FMT.format(bot_id=ARM) + "\n")
-        why = c0.owner_line_problem(str(p), ARM, None, alb.root_ok_problem)
+        why = c0.owner_line_problem(str(p), ARM, alb.root_ok_problem)
         self.assertNotIn("AttributeError", str(why))
-        self.assertTrue(why)  # refused (not root-owned / pin unset), never an exception
+        self.assertTrue(why)  # refused (not root-owned), never an exception
 
     def test_live_ok_and_tier_call_sites_take_paths(self):
         e = Hv4Env(self.tmp, live=True)

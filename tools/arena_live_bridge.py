@@ -15,6 +15,12 @@ Live needs ALL of: config mode "live", --live, LIVE_OK and TIER root-owned files
 tools.h5_executor.root_file_problem), an explicit end_ms, a pinned frozen_sha that the book's `start` row repeats, a valid chain. A missing or unsafe
 LIVE_OK makes a live-configured bridge DRY for that entry (it logs the order it would have sent). The TIER file is read before every buy; the only
 tier is T0 (the canary limits); an unknown or missing tier is T0.
+The hv4_c0 profile reads its LIVE_OK per bot, /etc/mal-arena-live/hv4-c0/<bot_id>/LIVE_OK (content exactly the bot_id), and its owner confirmation per bot,
+/etc/mal-hv4-c0/<bot_id>/CANARY_DEC.md (hv4_live_c0.owner_line_check); both files root:root, mode exactly 0644, in a root-owned per-bot directory that is not group/other
+writable (0755); TIER stays the one shared file. Two canaries also need their own wallet, state_dir, parity_dir, twins_file and tieout_dir in config.
+The owner file is pinned (DEC-031 Am.21 item 4): at the first good check the bridge stores its (path, st_dev, st_ino, sha256) in `owner_pin` of the state. A later rewrite,
+a replacement (even with identical bytes) or a removal latches `owner_line` (new buys only; exits continue); the manager clears it with the bridge stopped, by removing
+BOTH `latches.owner_line` and `owner_pin` from the state file (the next good check pins the file that is there then).
 
 This is a build, not a claim. It is not gate evidence and installs nothing. Trades it would make are execution measurements.
 
@@ -72,6 +78,8 @@ UNIVERSE_V_RANGE = (17_500_000_000, 17_700_000_000)  # Am.2 item 6: V in [17.5e9
 
 LATCHES = ("sealed_path", "chain_break", "frozen_sha_mismatch", "total_loss_cap", "per_trade_loss_cap", "stuck_sell",
            "parity_hard_halt", "parity_stop_unwritable", "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch", "read_record", "tieout_mismatch", c0.A3_LATCH, c0.FEED_BREAK_LATCH)  # twin_pin_mismatch and the two before: hv4_c0 parity wiring; read_record: no recorded PASS read for the bot (hv4_c0): hv4_c0 parity wiring (tools/hv4_c0_parity.py)
+
+LATCHES = (*LATCHES, c0.OWNER_LINE_LATCH)  # owner_line: the pinned owner file was rewritten, replaced or removed (hv4_c0, live; DEC-031 Am.21 item 4). A separate line so the tuple above merges cleanly with #1110
 
 
 # --- config -----------------------------------------------------------------------------------------------------------------------
@@ -308,6 +316,7 @@ class BridgeState:
     gap_known_ms: list[int] = field(default_factory=list)  # hv4_c0, Am.21 3.1/3.3: coverage-losing instants seen (sorted); unreviewed ones are never pruned
     gap_pruned_upto_ms: int = 0  # hv4_c0, Am.21: the largest instant ever pruned from gap_known_ms (reviewed and older than GAP_KNOWN_KEEP_MS); never registered again
     read_pin: dict[str, Any] | None = None  # hv4_c0: identity {path, dev, ino, sha256} of the recorded read, pinned at the first good check and compared on every run
+    owner_pin: dict[str, Any] | None = None  # hv4_c0 live: identity {path, dev, ino, sha256} of the owner file, pinned at the first good check and compared on every later one (DEC-031 Am.21 item 4)
 
     def save(self, path: Path) -> None:
         _atomic_write(path, self.__dict__)
@@ -357,9 +366,9 @@ def read_tier(path: Path, root_checks: bool, allowed: Mapping[str, Any] | tuple[
 
 class Bridge:
     def __init__(self, cfg: Config, port: OrderPort, *, now_ms: Callable[[], int] | None = None,
-                 live_ok_path: Path = LIVE_OK_PATH, tier_path: Path = TIER_PATH, root_checks: bool = True,
+                 live_ok_path: Path | None = None, tier_path: Path = TIER_PATH, root_checks: bool = True,
                  close_blocked: Callable[[str], bool | None] | None = None, parity_runner: Callable[[list[str]], int] | None = None,
-                 owner_dec_path: Path | str | None = None, owner_pin: str | None = None, gap_clear_dir: Path | str | None = None) -> None:
+                 owner_dec_path: Path | str | None = None, gap_clear_dir: Path | str | None = None) -> None:
         """close_blocked: optional S3 hook, mint -> True (blocked) | False (ok). Interface only here. When set, a True, a None or a raise all refuse."""
         if c0.bot_id_problem(cfg.bot_id):
             raise SystemExit(f"bridge refused: {c0.bot_id_problem(cfg.bot_id)}")
@@ -368,7 +377,7 @@ class Bridge:
         self.port = port
         self.dry_port = port if not port.live else DryPort(cfg.dry_balance_lamports)  # an entry that is not live-eligible (LIVE_OK missing) is routed here: logged, never sent
         self.now_ms = now_ms or (lambda: int(time.time() * 1000))
-        self.live_ok_path = live_ok_path
+        self.live_ok_path = Path(live_ok_path) if live_ok_path is not None else (Path(c0.live_ok_path(cfg.bot_id)) if cfg.profile == c0.PROFILE else LIVE_OK_PATH)  # hv4_c0: per bot, so two canaries can run side by side; every other profile keeps the shared file
         self.tier_path = tier_path
         self.root_checks = root_checks
         if cfg.mode == LIVE and not port.live:
@@ -380,8 +389,7 @@ class Bridge:
         self.log_path = self.sd / f"bridge-log-{cfg.mode}.jsonl"
         self.state = BridgeState.load(self.state_path, cfg.mode)
         self.dlog = DecisionLog(cfg.root)
-        self.owner_dec_path = Path(owner_dec_path) if owner_dec_path is not None else Path(c0.OWNER_DEC_PATH)
-        self.owner_pin = owner_pin
+        self.owner_dec_path = Path(owner_dec_path) if owner_dec_path is not None else Path(c0.owner_dec_path(cfg.bot_id))  # per bot; bot_id was checked above
         self.gap_clear_dir = str(gap_clear_dir) if gap_clear_dir is not None else c0.GAP_CLEAR_DIR
         self._gks: set[int] | None = None  # the in-memory set of state.gap_known_ms (_gap_known)
         self._gks_src: list[int] | None = None
@@ -411,6 +419,8 @@ class Bridge:
         self._verify_at_start()
         if not {"chain_break", "sealed_path", "read_record"} & set(self.state.latches):
             self._chain_ok_ms = self.now_ms()  # verified just now
+        if cfg.profile == c0.PROFILE and cfg.mode == LIVE:
+            self._owner_gate()  # a restart with a changed owner file latches before any entry is handled
         self.reconcile()
 
     # -- plumbing
@@ -451,6 +461,23 @@ class Bridge:
             self.state.read_pin = dict(ident)
             self._save()
         return True
+
+    def _owner_gate(self) -> str | None:
+        """hv4_c0, LIVE only (DEC-031 Am.21 item 4): the owner file problem, or None. At the FIRST good check its identity (path, st_dev, st_ino, sha256) is pinned in
+        the persisted state. On every later check a rewrite, a replacement (even with identical bytes) or a removal latches `owner_line` (a hard latch: new buys
+        stop, exits keep running) until the manager clears it with the bridge stopped. Before a pin exists a missing or bad file is only a problem label (entries DRY)."""
+        if self.cfg.profile != c0.PROFILE or self.cfg.mode != LIVE:
+            return None
+        if c0.OWNER_LINE_LATCH in self.state.latches:
+            return c0.OWNER_LINE_CHANGED
+        why, ident = c0.owner_line_check(self.owner_dec_path, self.cfg.bot_id, root_ok_problem if self.root_checks else None, self.state.owner_pin)
+        if why == c0.OWNER_LINE_CHANGED:
+            self._latch(c0.OWNER_LINE_LATCH, why)
+        elif why is None and self.state.owner_pin is None:
+            self.state.owner_pin = dict(ident)  # persisted: a restart or a new process compares with THIS identity
+            self._log("owner_line_pinned", path=ident["path"], dev=ident["dev"], ino=ident["ino"], sha256=ident["sha256"])
+            self._save()
+        return why
 
     def _verify_at_start(self) -> None:
         """Full chain check of what exists now. A break latches chain_break (the bridge then never buys). The cursor is set only on a clean pass; a
@@ -641,8 +668,9 @@ class Bridge:
             except OSError:
                 why = "unreadable"
             why = why[len("live_ok_"):] if why and why.startswith("live_ok_") else why
-            if not why:  # the owner's line in a ROOT-OWNED file outside the installed tree, whose sha256 is the pinned blob
-                why = c0.owner_line_problem(self.owner_dec_path, self.cfg.bot_id, self.owner_pin, root_ok_problem if self.root_checks else None)
+        if self.cfg.profile == c0.PROFILE:  # the owner's line in this bot's ROOT-OWNED file outside the installed tree, pinned by identity (no sha in code); checked on every call so a change latches even while LIVE_OK is bad
+            owner_why = self._owner_gate()
+            why = why or owner_why
         return (False, f"live_ok_{why}") if why else (True, None)
 
     def tier_limits(self) -> tuple[str, dict[str, int], str | None]:
@@ -1199,6 +1227,7 @@ class Bridge:
         """One pass: port events, rows, backstops, warm plan. Returns rows consumed."""
         self.a3_tick(self.now_ms())
         self.gap_tick(self.now_ms())
+        self._owner_gate()  # hv4_c0 live: a rewritten, replaced or removed owner file latches `owner_line` at once, not only at the next entry (a no-op in every other case)
         self._poll_ports()
         n = 0
         if not Path(self.cfg.halt_file).exists():
@@ -1568,19 +1597,32 @@ def main(argv: list[str] | None = None) -> int:
             if not why and not cfg.a3_record_file:
                 why = "a3_record_file_missing"
             if not why:
-                why = c0.owner_line_problem(c0.OWNER_DEC_PATH, cfg.bot_id, None, root_ok_problem)
+                why = c0.bot_id_problem(cfg.bot_id)
+            st0 = None
+            if not why:
+                st0 = BridgeState.load(Path(cfg.state_dir) / f"bridge-state-{cfg.mode}.json", cfg.mode)
+                # Am.21 item 4: with a pin in the state (or the latch already set), a changed owner file does NOT refuse the start. The bridge must run so that it can
+                # latch `owner_line` (new buys stop) and keep running exits of positions that are open; a refused start would strand them. Every other owner label refuses as before.
+                why = None if c0.OWNER_LINE_LATCH in st0.latches else c0.owner_line_problem(c0.owner_dec_path(cfg.bot_id), cfg.bot_id, root_ok_problem, st0.owner_pin)
+                if why == c0.OWNER_LINE_CHANGED:
+                    why = None
         else:
             why = None
-        st0 = BridgeState.load(Path(cfg.state_dir) / f"bridge-state-{cfg.mode}.json", cfg.mode)
-        why = why or c0.read_record_problem(cfg.reads_dir, cfg.bot_id, st0.read_pin, (not want_live) and c0.synthetic_root(cfg.root))[0]
+            st0 = None
+        if st0 is None:
+            st0 = BridgeState.load(Path(cfg.state_dir) / f"bridge-state-{cfg.mode}.json", cfg.mode)
+        rec_why, rec_ident = (None, {}) if why else c0.read_record_problem(cfg.reads_dir, cfg.bot_id, st0.read_pin, (not want_live) and c0.synthetic_root(cfg.root))
+        why = why or rec_why
         if not why:
             first, why = c0.window_start_ms(cfg.bot_id, int(time.time() * 1000), create=False)
             why = why or c0.end_cap_problem(cfg.end_ms, first if first is not None else int(time.time() * 1000))
         if why:
             print(f"arena_live_bridge ALERT startup_refused {c0.refusal_text(why)}", flush=True)
             return 2
-        # Seal: R2.1 of QP-RULING-1025-hv4-read-rule. No hv4_c0 start, dry or live, until a read-record gate exists, except on a synthetic fixture root.
-        why = c0.start_refusal(cfg.root, want_live, cfg.bot_id)
+        live_gates_passed = bool(want_live)  # reached only when every gate above held: parity paths, a3 record file, owner line vs the pin, read record, 14-day cap
+        # Seal: R2.1 of QP-RULING-1025-hv4-read-rule. A start on a synthetic fixture root (dry) is as before; any other root starts only on a recorded PASS read
+        # for THIS bot from the canonical reads dir (real_pass_record), with the decisions paths checked, and for live with every gate above (QP removal item 3).
+        why = c0.start_refusal(cfg.root, want_live, cfg.bot_id, c0.real_pass_record(rec_why, rec_ident, cfg.bot_id), live_gates_passed)
         if why:
             print(f"arena_live_bridge ALERT startup_refused {why}", flush=True)
             return 2

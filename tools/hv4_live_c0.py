@@ -15,6 +15,23 @@ PR5 install notes (QP re-check of #965; NOT implemented here):
   N-D  the logged priority is the one signed last for the mint; it may not be the priority of the tx that landed (a rebroadcast of an earlier tx can land).
 A window file left empty or damaged (crash) is written atomically now (tmp + fsync + link), and an existing bad one refuses with window_file_unreadable_manual_recovery.
 
+START GATE, OWNER FILE, LIVE_OK (QP #959 removal items 3, 9 and 15; this PR):
+  * `start_refusal` holds the recorded-read start gate, switched by LIVE_REFUSAL_ACTIVE. True (shipped) = every start outside the synthetic dry path refuses
+    `hv4_c0_incomplete`, as before. Flipping that one constant to False is the whole removal of the refusal; it is a separate, last PR (QP item 15). The facts the
+    gate needs are passed in explicitly (`record_real_pass` from `real_pass_record`, `live_gates_passed` from main), never read from module state.
+  * The bridge host must have the canonical reads dir (READS_DIR_CANON) with the recorded read, root-owned and not group/other writable, and a stat-able
+    SEALED_ROOT_PREFIX (a missing prefix fails every alias check closed). Carrying the record there is the install pack's job.
+  * The owner confirmation is one root-owned file per bot, OWNER_DEC_DIR/<bot_id>/CANARY_DEC.md = /etc/mal-hv4-c0/<bot_id>/CANARY_DEC.md (presence + the one exact
+    line; NO sha256 of it in code), and LIVE_OK is LIVE_OK_DIR/<bot_id>/LIVE_OK = /etc/mal-arena-live/hv4-c0/<bot_id>/LIVE_OK. Both files: root:root, mode exactly 0644
+    (tools.h5_executor.root_file_problem, called through arena_live_bridge.root_ok_problem), in a root-owned per-bot directory that is not group/other writable
+    (0755), a regular file with link count 1. TIER stays shared. Two canaries also need their own wallet, state_dir, parity_dir, twins_file and tieout_dir in config.
+  * OWNER FILE PIN (DEC-031 Am.21 item 4, QP #1100 comment 6527456651): at the first good check a LIVE hv4_c0 bridge pins the owner file's (path, st_dev, st_ino,
+    sha256) in its state (`owner_pin`), as the read record is pinned (`read_pin`, QP N9). A later rewrite (other bytes, same inode), replacement (new inode, even
+    identical bytes) or removal makes `owner_line_check` return OWNER_LINE_CHANGED and the bridge latches `owner_line`: a hard latch, new buys only, exits continue,
+    it survives a restart, and only the manager clears it with the bridge stopped, by removing BOTH `latches.owner_line` and `owner_pin` from the state file (the
+    next good check pins the file that is there then). A restart of a pinned bridge is not refused by main() for a changed owner file, so the bridge can run exits.
+    Before the first good check a missing file is as before: entries DRY, and main() refuses a live start. A DRY bridge never pins or latches.
+
 Arms: only F or X arms are canary candidates (the L arms rewrite their playbook nightly = a prompt change = a new bot_id under DEC-032 s1.4). A bot_id
 ending in -L, -P or -R is refused.
 
@@ -458,6 +475,11 @@ def c0_stake(row: Mapping[str, Any], cap_lamports: int = C0_LIMITS["stake_lampor
 
 
 LIVE_REFUSAL = "hv4_c0_incomplete"  # a live start of this profile is refused until a later PR (sell escalation, parity pricing) removes it
+LIVE_REFUSAL_ACTIVE = True  # THE switch (QP removal item 15): True = every start outside the synthetic dry path refuses LIVE_REFUSAL. False = the recorded-read start gate in start_refusal decides.
+START_NO_REAL_PASS = "start_no_real_pass_record"  # a start on a non-synthetic root needs a recorded PASS read for THIS bot, read from the canonical reads dir (QP removal item 3)
+START_SEALED_ROOT = "start_root_or_decisions_sealed"  # the root, decisions/<bot_id> or a day file lies under or aliases /data/mal/arena (only with LIVE_REFUSAL_ACTIVE False)
+START_LIVE_ON_SYNTHETIC_ROOT = "start_live_on_synthetic_root"  # a root carrying SYNTHETIC_MARKER never starts live (only with LIVE_REFUSAL_ACTIVE False)
+START_LIVE_GATES = "start_live_gates_not_passed"  # a live start also needs every PR4 gate (parity paths, a3 record file, owner line pin, read record, window cap)
 
 
 SYNTHETIC_MARKER = "SYNTHETIC_FIXTURE_ROOT"
@@ -466,9 +488,12 @@ SEALED_ROOT_PREFIX = "/data/mal/arena"
 
 # --- PR4 gates: read record, owner line, model id, per-trade loss, 14-day window ---------------------------------------------------------------------------
 MODEL_ID = "claude-haiku-5-5"  # the one model id an F arm may have been read under (the read record's `model_ids`)
-OWNER_DEC_PATH = "/etc/mal-hv4-c0/CANARY_DEC.md"  # ROOT-OWNED, outside the installed tree (the Q50 re-install problem: a DEC/ file in the tree is overwritten by a deploy)
-CANARY_DEC_SHA256 = ""  # sha256 of the owner's CANARY_DEC.md blob; set by the reviewed PR that records the owner's confirmation (empty = unset = no live send, ever)
+OWNER_DEC_DIR = "/etc/mal-hv4-c0"  # <dir>/<bot_id>/CANARY_DEC.md: ROOT-OWNED, outside the installed tree (the Q50 re-install problem: a DEC/ file in the tree is overwritten by a deploy). One file per bot, so two canaries can run at once
+OWNER_DEC_NAME = "CANARY_DEC.md"
+OWNER_DEC_MAX_BYTES = 65_536
 OWNER_LINE_FMT = "OWNER_CANARY_CONFIRMED: bot_id={bot_id}"
+LIVE_OK_DIR = "/etc/mal-arena-live/hv4-c0"  # <dir>/<bot_id>/LIVE_OK (root-owned, content exactly the bot_id). TIER stays the one shared /etc/mal-arena-live/TIER (T1)
+LIVE_OK_NAME = "LIVE_OK"
 PER_TRADE_LOSS_PCT = 30  # per-trade loss latch: 30% of the order's own S (integer lamports, floor)
 MAX_WINDOW_MS = 14 * 86_400_000  # a C0 canary window is 14 days from the first start; end_ms may not reach past it
 READS_DIR_CANON = "/data/mal/arena/reads"  # where arena_score.record_read writes `<bot_id>.json`; the only place under the sealed prefix a record may be read from
@@ -500,9 +525,22 @@ WINDOW_MANUAL_NOTE = ("MANUAL RECOVERY: do not delete or recreate the window fil
                       "a new first start would restart the 14-day cap")
 
 
+READS_DIR_NOTE = ("on the bridge host (mal-fast-0) root checks /data/mal/arena and /data/mal/arena/reads and creates each ONLY IF ABSENT: "
+                  "`install -d -m 0755 -o root -g root /data/mal/arena /data/mal/arena/reads` (both root:root 0755; never chown or chmod an existing directory: "
+                  "one that exists with another owner or mode is a stop for the manager; /data/mal/arena must exist, the sealed-alias check fails closed without it), "
+                  "then installs the arm's recorded read as a "
+                  "byte copy `/data/mal/arena/reads/<bot_id>.json` root:root 0444 whose sha256 equals the read job's RECORD line (docs/runbooks/hv4-c0-bridge.md)")
+READS_DIR_LABELS = ("read_record_dir_absent", "read_record_missing", "read_record_dir_owner_mode", "read_record_owner_mode")
+
+
 def refusal_text(why: str) -> str:
-    """The label, plus the manual-recovery note for the two window labels that must never be cleared by the bridge."""
-    return f"{why} ({WINDOW_MANUAL_NOTE})" if why in WINDOW_MANUAL_RECOVERY else why
+    """The label, plus the manual-recovery note for the two window labels that must never be cleared by the bridge, and the reads-dir provisioning note for the
+    labels a missing or wrongly owned /data/mal/arena/reads on the bridge host gives."""
+    if why in WINDOW_MANUAL_RECOVERY:
+        return f"{why} ({WINDOW_MANUAL_NOTE})"
+    if why in READS_DIR_LABELS:
+        return f"{why} ({READS_DIR_NOTE})"
+    return why
 
 
 def bot_id_problem(bot_id: Any) -> str | None:
@@ -667,6 +705,8 @@ def read_record_problem(reads_dir: Any, bot_id: Any, pinned: Mapping[str, Any] |
         return "read_record_dir_not_canonical", ident
     if real_dir != READS_DIR_CANON and _alias_of_sealed(real_dir, (READS_DIR_CANON,)):
         return "read_record_dir_sealed_alias", ident
+    if not os.path.isdir(real_dir):  # names the provisioning step (refusal_text) instead of the generic read_record_missing; still a refusal
+        return "read_record_dir_absent", ident
     try:
         if not _owner_mode_ok(os.stat(real_dir)):
             return "read_record_dir_owner_mode", ident
@@ -719,37 +759,105 @@ def read_record_problem(reads_dir: Any, bot_id: Any, pinned: Mapping[str, Any] |
     return (why, ident)
 
 
-def owner_line_problem(path: Any, bot_id: str, pin: str | None = None, root_check: Any = None) -> str | None:
-    """The owner's confirmation: the exact line `OWNER_CANARY_CONFIRMED: bot_id=<id>` in a ROOT-OWNED file (OWNER_DEC_PATH) whose sha256 equals the pinned
-    blob. NOT a file of the installed tree. `root_check(path)` is the bridge's root:root check (None = not run, tests only). The file is opened O_NOFOLLOW and
-    hashed from the bytes that are then searched. Exactly one line may equal the wanted line; a prefix or another bot's line never matches."""
+def owner_dec_path(bot_id: Any) -> str:
+    """The owner confirmation file of one bot: OWNER_DEC_DIR/<bot_id>/CANARY_DEC.md. Raises ValueError for a bot_id that is not a plain path component."""
+    why = bot_id_problem(bot_id)
+    if why:
+        raise ValueError(why)
+    return os.path.join(OWNER_DEC_DIR, bot_id, OWNER_DEC_NAME)
+
+
+def live_ok_path(bot_id: Any) -> str:
+    """The LIVE_OK file of one bot: LIVE_OK_DIR/<bot_id>/LIVE_OK. Raises ValueError for a bot_id that is not a plain path component."""
+    why = bot_id_problem(bot_id)
+    if why:
+        raise ValueError(why)
+    return os.path.join(LIVE_OK_DIR, bot_id, LIVE_OK_NAME)
+
+
+OWNER_LINE_LATCH = "owner_line"  # the bridge latch name (arena_live_bridge.LATCHES, hv4_c0_parity.HARD_LATCHES)
+OWNER_LINE_CHANGED = "owner_line_changed"  # owner_line_check's label for a pinned file that was rewritten, replaced or removed
+OWNER_PIN_KEYS = ("path", "dev", "ino", "sha256")
+
+
+def owner_line_check(path: Any, bot_id: str, root_check: Any = None, pinned: Mapping[str, Any] | None = None) -> tuple[str | None, dict[str, Any]]:
+    """The owner's confirmation: the file `owner_dec_path(bot_id)` exists, is a regular file (not a symlink, st_nlink 1), is ROOT-OWNED and not writable by group or
+    other, and holds EXACTLY ONE line equal to `OWNER_CANARY_CONFIRMED: bot_id=<id>`. Returns (problem or None, identity). The identity {path, dev, ino, sha256} is
+    of the inode that was checked and the bytes that were searched. There is NO sha256 of the owner file or of a DEC copy in code (DEC-031 Am.21 item 4).
+    `root_check(path)` is the bridge's root:root check (None = not run, tests only). The file is opened O_NOFOLLOW and the bytes searched are the bytes of the
+    inode that was checked. A prefix, a suffix, CRLF, a second copy, or another bot's line never matches.
+
+    PIN (DEC-031 Am.21 item 4, as QP N9 does for the read record): the bridge stores the identity of the first good check in its state and passes it back as
+    `pinned` on every later check. With a pin, a different (path, st_dev, st_ino, sha256), a file that is missing, unreadable, a symlink, not regular or swapped
+    during the check, or a file that grew past OWNER_DEC_MAX_BYTES returns OWNER_LINE_CHANGED (the bridge latches `owner_line`). Rewriting the file with other
+    bytes, replacing it with identical bytes (a new inode) and removing it all change the identity. A problem that leaves the identity alone (link count, mode or
+    owner label from `root_check`) keeps its own label: that is a DRY entry, not a latch. The pin is compared before the line, so a rewrite that drops the line is
+    a change, not owner_line_missing. Residual, the same as the read-record pin: the identity is the DEC's (st_dev, st_ino, sha256), so a file deleted and then
+    created again with identical bytes on a freed, reused inode number keeps its identity.
+
+    Labels: owner_dec_missing, _symlink, _not_regular, _hardlink, _unreadable, _swapped, _too_large, and owner_dec_<root_check label>, owner_line_missing,
+    owner_line_changed (pin only)."""
     import os
-    pin = CANARY_DEC_SHA256 if pin is None else pin
-    if not (isinstance(pin, str) and len(pin) == 64 and all(c in "0123456789abcdef" for c in pin)):
-        return "owner_dec_pin_unset"
+    import stat as st_
+    ident: dict[str, Any] = {}
+    if bot_id_problem(bot_id):
+        return "owner_dec_bot_id", ident
+    pin = dict(pinned) if pinned else None
+    gone = OWNER_LINE_CHANGED if pin else None  # once pinned, a path that no longer names the pinned file is a change, whatever it names now
+    if pin and pin.get("path") != os.fspath(path):
+        return OWNER_LINE_CHANGED, ident
+    try:
+        ls = os.lstat(path)
+    except FileNotFoundError:
+        return gone or "owner_dec_missing", ident
+    except OSError:
+        return gone or "owner_dec_unreadable", ident
+    if st_.S_ISLNK(ls.st_mode):
+        return gone or "owner_dec_symlink", ident
+    if not st_.S_ISREG(ls.st_mode):
+        return gone or "owner_dec_not_regular", ident
+    if pin and (ls.st_dev, ls.st_ino) != (pin.get("dev"), pin.get("ino")):
+        return OWNER_LINE_CHANGED, ident  # a new inode, even with identical bytes
+    if ls.st_nlink != 1:
+        return "owner_dec_hardlink", ident
     if root_check is not None:
         why = root_check(path)
         if why:
-            return f"owner_dec_{why}"
+            return f"owner_dec_{why}", ident
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
-        return "owner_dec_missing"
+        return gone or "owner_dec_missing", ident
     except OSError:
-        return "owner_dec_unreadable"
+        return gone or "owner_dec_unreadable", ident
     try:
+        fs = os.fstat(fd)
+        if (fs.st_dev, fs.st_ino) != (ls.st_dev, ls.st_ino) or not st_.S_ISREG(fs.st_mode):
+            return gone or "owner_dec_swapped", ident  # another inode at the path between the lstat and the open
+        if fs.st_nlink != 1:
+            return "owner_dec_swapped", ident  # a hard link appeared between the lstat and the open: the same inode, so not a change of the pinned file
+        if fs.st_size > OWNER_DEC_MAX_BYTES:
+            return gone or "owner_dec_too_large", ident  # the pinned bytes were within the bound, so these are other bytes
         data = b""
         while True:
-            b = os.read(fd, 1 << 20)
+            b = os.read(fd, 1 << 16)
             if not b:
                 break
             data += b
+            if len(data) > OWNER_DEC_MAX_BYTES:
+                return gone or "owner_dec_too_large", ident
     finally:
         os.close(fd)
-    if hashlib.sha256(data).hexdigest() != pin:
-        return "owner_dec_sha_mismatch"
+    ident = {"path": os.fspath(path), "dev": fs.st_dev, "ino": fs.st_ino, "sha256": hashlib.sha256(data).hexdigest()}
+    if pin and {k: pin.get(k) for k in OWNER_PIN_KEYS} != ident:
+        return OWNER_LINE_CHANGED, ident
     want = OWNER_LINE_FMT.format(bot_id=bot_id)
-    return None if sum(1 for ln in data.decode("utf-8", "replace").split("\n") if ln == want) == 1 else "owner_line_missing"
+    return (None if sum(1 for ln in data.decode("utf-8", "replace").split("\n") if ln == want) == 1 else "owner_line_missing"), ident
+
+
+def owner_line_problem(path: Any, bot_id: str, root_check: Any = None, pinned: Mapping[str, Any] | None = None) -> str | None:
+    """The problem label of `owner_line_check` (None = the owner's confirmation holds). With `pinned`, a changed file is OWNER_LINE_CHANGED."""
+    return owner_line_check(path, bot_id, root_check, pinned)[0]
 
 
 # --- halts (QP removal precondition 7): FEED-GAP and A3. Both stop NEW buys only; exits keep running. ---------------------------------------------------------
@@ -1307,17 +1415,60 @@ def guarded_read(root: str, bot_id: str, name: str) -> bytes:
         os.close(fd)
 
 
-def start_refusal(root: str, live: bool, bot_id: str | None = None) -> str | None:
-    """CLI start gate (QP-RULING-1025 R2.1: no bridge process, dry or live, reads an HV4 decision row before a recorded read PASS; no gate exists yet).
-    Refuse every start, except a dry start on a root that carries the explicit marker file and is not under /data/mal/arena (allowlist; a resolved
-    path under the arena is always refused, marker or not). Only checks paths; it opens nothing in the root."""
+def real_pass_record(problem: str | None, ident: Mapping[str, Any] | None, bot_id: Any) -> bool:
+    """True only when the recorded-read gate PASSED (`problem` is None, from read_record_problem) AND the record it read is the canonical scorer file for
+    THIS bot: `<realpath(READS_DIR_CANON)>/<bot_id>.json`. A record that passed only through the synthetic exception (a dry start on a marked root reading any
+    directory) is not real. This is the fact start_refusal is handed; it is derived from the gate's own result and holds no state."""
+    if problem is not None or not isinstance(ident, Mapping) or not isinstance(bot_id, str) or bot_problem(bot_id):
+        return False
+    return ident.get("path") == os.path.join(os.path.realpath(READS_DIR_CANON), f"{bot_id}.json")
+
+
+def bot_problem(bot_id: Any) -> str | None:
+    """bot_id_problem plus the hv4- prefix the read gate requires (a start gate for any other id is never a real pass)."""
+    return bot_id_problem(bot_id) or (None if str(bot_id).startswith("hv4-") else "bot_id_not_hv4")
+
+
+def start_refusal(root: str, live: bool, bot_id: str | None = None, record_real_pass: bool = False, live_gates_passed: bool = False) -> str | None:
+    """CLI start gate (QP-RULING-1025 R2.1: no bridge process, dry or live, reads an HV4 decision row before that arm's recorded read PASS). QP removal item 3.
+    Only checks paths and its two explicit arguments; it opens nothing in the root and keeps no state.
+
+    LIVE_REFUSAL_ACTIVE (module constant, True): every start outside the synthetic dry path refuses LIVE_REFUSAL, exactly as before this gate existed; the gate
+    below is not evaluated. Flipping that one constant to False is the whole removal of `hv4_c0_incomplete` (QP removal item 15) and turns the gate on:
+      * a root at, under or aliasing /data/mal/arena (SEALED_ROOT_PREFIX; realpath, abspath, or any ancestor with the prefix's (st_dev, st_ino)) is always refused,
+        marker or not, record or not;
+      * a root that carries SYNTHETIC_MARKER (a regular file): a DRY start is allowed as before (paths checked by decisions_path_refusal), a live start never;
+      * any other root, dry or live, starts only if `record_real_pass` (the caller's read_record_problem returned None for THIS bot and the record is the
+        canonical scorer file; see real_pass_record), the bot is an F or X arm, and `<root>/decisions/<bot_id>` and every day file in it neither resolve under
+        nor alias the arena (decisions_path_refusal + guard_dir, the checks the Bridge repeats on every read);
+      * a live start additionally needs `live_gates_passed` (main's gates: three parity paths, a3 record file, owner confirmation file, read record, 14-day cap)."""
     import os
+    active = LIVE_REFUSAL_ACTIVE is not False  # anything but an explicit False keeps the refusal
     real = os.path.realpath(root)
     if real == SEALED_ROOT_PREFIX or real.startswith(SEALED_ROOT_PREFIX + "/") or os.path.realpath(os.path.abspath(root)).startswith(SEALED_ROOT_PREFIX + "/"):
+        return LIVE_REFUSAL if active else START_SEALED_ROOT
+    if os.path.isfile(os.path.join(real, SYNTHETIC_MARKER)):  # synthetic dry path: unchanged
+        if live:
+            return LIVE_REFUSAL if active else START_LIVE_ON_SYNTHETIC_ROOT
+        return decisions_path_refusal(real, bot_id)
+    if active:
         return LIVE_REFUSAL
-    if live or not os.path.isfile(os.path.join(real, SYNTHETIC_MARKER)):
-        return LIVE_REFUSAL
-    return decisions_path_refusal(real, bot_id)
+    if bot_problem(bot_id):
+        return START_NO_REAL_PASS
+    why = arm_refusal(bot_id)  # only an F or X arm: -L, -P and -R arms never start on a real root, whatever record exists
+    if why:
+        return why
+    if record_real_pass is not True:  # an explicit True: a truthy non-bool is not a pass
+        return START_NO_REAL_PASS
+    if _under_sealed(real) or decisions_path_refusal(real, bot_id):  # root or an ancestor aliases the arena; decisions/<bot_id> or a day file lies under or aliases it
+        return START_SEALED_ROOT
+    try:
+        guard_dir(real, str(bot_id))  # decisions/ and decisions/<bot_id> are real directories, not links, and not an alias of the sealed decisions dirs
+    except SealedPath:
+        return START_SEALED_ROOT
+    if live and live_gates_passed is not True:
+        return START_LIVE_GATES
+    return None
 
 
 def position_worst_case_lamports(stake: int, rent_reserve: int) -> int:

@@ -44,6 +44,8 @@ def parity_stop_path(parity_dir: str) -> str:
 HARD_LATCHES = frozenset({"parity_hard_halt", PARITY_STOP_UNWRITABLE_LATCH, "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch", "stuck_sell", "chain_break", "sealed_path", "read_record",
                           "frozen_sha_mismatch", "tieout_mismatch"}) | HARD_ARENA_HALTS
 
+HARD_LATCHES = HARD_LATCHES | {c0.OWNER_LINE_LATCH}  # DEC-031 Am.21 item 4 (a separate line so the set above merges cleanly with #1110)
+
 
 def paths_refusal(cfg: Mapping[str, Any]) -> str | None:
     """A LIVE hv4_c0 start needs the three parity paths (the trips/attempts directory, the twins file, the tie-out results directory). Absolute paths only."""

@@ -9,6 +9,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from tools import arena_live_parity as alp
@@ -398,6 +399,7 @@ class TripEndToEndTests(TmpCase):
         self.assertIn("stake_mismatch", b.state.latches)
         self.assertIn("landed_buy_without_order", b.state.latches["stake_mismatch"])
 
+    @mock.patch.object(c0, "LIVE_REFUSAL_ACTIVE", True)  # the default state, pinned: flipping the constant to False must not change what this test asserts
     def test_removal_precondition_still_refuses(self):
         self.assertEqual(c0.start_refusal("/nonexistent-root", True, ARM), "hv4_c0_incomplete")
 

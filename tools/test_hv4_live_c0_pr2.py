@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import base64
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from tools import arena_live_bridge as alb
@@ -224,6 +225,7 @@ class SellPinTests(unittest.TestCase):
                 self.assertEqual(c0.sell_pin_problem(), "sell_builder_pin_mismatch:ptx.constants_sha256")
         self.assertIsNone(c0.sell_pin_problem())  # patches undone
 
+    @mock.patch.object(c0, "LIVE_REFUSAL_ACTIVE", True)  # the default state, pinned: flipping the constant to False must not change what this test asserts
     def test_main_live_start_stays_refused_by_start_refusal_first(self):
         # PR1's start_refusal is the outermost gate: a live start is refused as hv4_c0_incomplete whatever the pin says (the pin check sits behind it)
         import contextlib, io, json, tempfile
