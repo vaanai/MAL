@@ -43,9 +43,10 @@ fi
 "$PY" -c 'import numpy' >/dev/null 2>&1 || refuse "PY=$PY cannot import numpy"
 T=$(mktemp -d "${TMPDIR:-/tmp}/hv4c0proof.XXXXXX") || refuse "mktemp failed"
 trap 'rm -rf "$T"' EXIT INT TERM
-git -C "$REPO" archive "$X" tools observe | tar -x -C "$T" || refuse "git archive of tools/ and observe/ at $X failed"
+mkdir "$T/src" || refuse "mkdir failed"
+git -C "$REPO" archive "$X" tools observe | tar -x -C "$T/src" || refuse "git archive of tools/ and observe/ at $X failed"
 OUT="$T/proof.out"
-( cd "$T" && PROOF_GIT_SHA="$X" PYTHONDONTWRITEBYTECODE=1 "$PY" -m tools.hv4_c0_orders_proof ) > "$OUT" 2>&1
+( cd "$T/src" && PROOF_GIT_SHA="$X" PYTHONDONTWRITEBYTECODE=1 "$PY" -m tools.hv4_c0_orders_proof ) > "$OUT" 2>&1
 RC=$?
 cat "$OUT"
 echo "JOB hv4-c0-orders-proof git_sha=$X tool_blob=$BLOB python=$("$PY" --version 2>&1) host=$(hostname) rc=$RC"
