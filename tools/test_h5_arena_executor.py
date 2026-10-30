@@ -539,7 +539,7 @@ class PriorityPinTests(ACase):
         for bot_id in (A2, A2V2, Q50):
             self.book_id = bot_id
             e = self.env()
-            base = dataclasses.replace(h.H5Limits.from_config(e.conf), end_ms=ax.SEAL_END_MS, gap_hold_ms=ax.GAP_HOLD_MS)  # end_ms: the seal clamp; gap hold: DEC-032 s5 (10 min). Neither is a fee
+            base = dataclasses.replace(h.H5Limits.from_config(e.conf), end_ms=ax.SEAL_END_MS, gap_hold_ms=ax.GAP_HOLD_MS)  # end_ms: the seal clamp; gap hold: DEC-032 s5 item 2 (Am.5 DRAFT: 60 s). Neither is a fee
             self.assertEqual(e.ex.h5, base, bot_id)
             self.assertEqual((e.ex.h5.buy_priority_lamports, e.ex.h5.sell_priority_lamports, e.ex.h5.escalated_priority_lamports), (55_000, 55_000, 150_000))
 
@@ -693,30 +693,108 @@ class C0PinTests(ACase):
 
 
 class GapHoldTests(ACase):
-    """Gap (c): the feed-gap hold is 10 minutes (DEC-032 s5 item 2)."""
+    """Gap (c), as amended by DEC-032 Am.5 (DRAFT): a DATA-LOSS gap record holds buys for 60 s (config may lengthen, never shorten); a redundant-socket
+    reconnect (kind socket_reconnect, flags_pools the literal false) holds nothing. Was: any gap record, 10 minutes (s5 item 2 as written)."""
 
-    def test_hold_is_ten_minutes_and_config_cannot_shorten_it(self):
-        self.assertEqual(ax.GAP_HOLD_MS, 600_000)
-        self.assertEqual(self.env().ex.h5.gap_hold_ms, 600_000)
-        self.assertEqual(self.env(gap_hold_ms=1).ex.h5.gap_hold_ms, 600_000)
+    def test_hold_is_sixty_seconds_and_config_can_lengthen_but_not_shorten_it(self):
+        self.assertEqual(ax.GAP_HOLD_MS, 60_000)
+        self.assertEqual(ax.GAP_HOLD_FLOOR_MS, 60_000)
+        self.assertEqual(self.env().ex.h5.gap_hold_ms, 60_000)
+        self.assertEqual(self.env(gap_hold_ms=1).ex.h5.gap_hold_ms, 60_000)
+        self.assertEqual(self.env(gap_hold_ms=600_000).ex.h5.gap_hold_ms, 600_000)  # the old 10 minutes stays reachable by config
+        self.assertEqual(self.env(gap_hold_ms=10**9).ex.h5.gap_hold_ms, 600_000)  # the base clamps config to its 600_000 maximum
 
-    def check(self, flags):
-        e = self.env()
+    def check_held(self, rec, hold_ms=60_000, **cfg):
+        e = self.env(**cfg)
         n0, d0 = len(e.refusals()), len(e.ledger("decision"))
-        self.assertEqual(e.ex.decide_row({"type": "gap", "kind": "reconnect", "flags_pools": flags}), ("keep", None))
-        e.jump(599_000)
+        self.assertEqual(e.ex.decide_row(rec), ("keep", None))
+        e.jump(hold_ms - 1_000)
         e.fire()
-        self.assertEqual(e.refusals()[n0:], ["feed_gap"], flags)  # 599 s after the gap record: held
+        self.assertEqual(e.refusals()[n0:], ["feed_gap"], rec)  # 1 s before the hold ends: held
         e.jump(1_000)
         e.fire()
-        self.assertEqual(e.refusals()[n0:], ["feed_gap"], flags)  # 600 s after: the hold is over, no second gap refusal
-        self.assertEqual(len(e.ledger("decision")) - d0, 1, flags)
+        self.assertEqual(e.refusals()[n0:], ["feed_gap"], rec)  # at the hold's end: over, no second gap refusal
+        self.assertEqual(len(e.ledger("decision")) - d0, 1, rec)  # the held fire is a skip row; the one after the hold is the decision
 
-    def test_any_gap_record_holds_buys_for_ten_minutes(self):
-        self.check(True)
+    def test_every_data_loss_gap_record_holds_buys_for_sixty_seconds(self):
+        lossy = [{"kind": k, "flags_pools": True} for k in ("slot_jump", "silence", "feed_restart", "socket_reconnect")]
+        lossy += [{"kind": "socket_reconnect"}, {"kind": "socket_reconnect", "flags_pools": None}, {"kind": "socket_reconnect", "flags_pools": 0},
+                  {"kind": "socket_reconnect", "flags_pools": "false"}, {"flags_pools": False}, {"kind": "silence", "flags_pools": False},
+                  {"kind": "reconnect", "flags_pools": False}]  # an unknown kind with false: fails closed
+        for i, extra in enumerate(lossy):
+            with self.subTest(rec=extra):
+                self.check_held({"type": "gap", **extra}, state_dir=str(self.tmp / f"state-{i}"))  # a fresh state per record (the pool is bought once)
 
-    def test_a_redundant_reconnect_gap_record_holds_too(self):
-        self.check(False)  # the base class would skip the hold for flags_pools false
+    def test_config_lengthened_hold_applies(self):
+        self.check_held({"type": "gap", "kind": "silence", "flags_pools": True}, hold_ms=600_000, gap_hold_ms=600_000)
+
+    def test_a_redundant_socket_reconnect_holds_nothing(self):
+        e = self.env()
+        n0, d0 = len(e.refusals()), len(e.ledger("decision"))
+        rec = {"type": "gap", "kind": "socket_reconnect", "flags_pools": False, "redundant": True, "sockets": 3}
+        self.assertEqual(e.ex.decide_row(rec), ("keep", None))
+        self.assertEqual(e.ex._gap_until_ms, 0)
+        e.fire()
+        self.assertEqual(e.refusals()[n0:], [])  # bought at once
+        self.assertEqual(len(e.ledger("decision")) - d0, 1)
+
+    def test_a_redundant_reconnect_does_not_shorten_a_running_hold(self):
+        e = self.env()
+        n0 = len(e.refusals())
+        e.ex.decide_row({"type": "gap", "kind": "silence", "flags_pools": True})
+        e.jump(30_000)
+        e.ex.decide_row({"type": "gap", "kind": "socket_reconnect", "flags_pools": False})
+        e.jump(29_000)
+        e.fire()
+        self.assertEqual(e.refusals()[n0:], ["feed_gap"])  # 59 s after the data-loss record: still held
+
+    def test_holds_extend_from_the_latest_data_loss_record(self):
+        e = self.env()
+        n0 = len(e.refusals())
+        e.ex.decide_row({"type": "gap", "kind": "silence", "flags_pools": True})
+        e.jump(50_000)
+        e.ex.decide_row({"type": "gap", "kind": "slot_jump", "flags_pools": True})
+        e.jump(59_000)  # 109 s after the first, 59 s after the second
+        e.fire()
+        self.assertEqual(e.refusals()[n0:], ["feed_gap"])
+
+    def test_gap_loses_data_and_its_tripwire(self):
+        self.assertFalse(ax.gap_loses_data({"type": "gap", "kind": "socket_reconnect", "flags_pools": False}))
+        for bad in (None, [], "gap", {"type": "gap"}, {"kind": "socket_reconnect", "flags_pools": True}):
+            self.assertTrue(ax.gap_loses_data(bad), bad)
+        self.assertIsNone(ax._gap_rule_problem())
+        with mock.patch.object(ax, "gap_loses_data", lambda row: False):
+            self.assertEqual(ax._gap_rule_problem(), "gap_rule")
+            self.assertEqual(ax.c0_guard_problem(), "c0_guard:gap_rule")
+        with mock.patch.object(ax, "gap_loses_data", lambda row: True):
+            self.assertEqual(ax._gap_rule_problem(), "gap_rule")  # a rule that never exempts is not the amended rule either
+
+    def write_feed(self, e, rows):
+        with open(e.conf["intents_file"], "a") as f:
+            f.write("".join(json.dumps(r) + "\n" for r in rows))
+        e.ex.intent_tick()
+
+    def test_through_the_feed_screen_and_the_base_reader(self):
+        """End to end on the tailed file: the screen (decide_row) and the base reader agree. A redundant reconnect is ledgered
+        feed_reconnect_redundant and the next trigger is an attempt; a data-loss record is ledgered feed_gap and holds the next trigger."""
+        e = self.env(verified=False)
+        Path(e.conf["intents_file"]).write_text("")
+        e.ex.intent_tick()  # the first look at a file only marks its end
+        e.ex.abook = dataclasses.replace(e.ex.abook, clock_start_ms=0)
+        n0 = len(e.refusals())
+        self.write_feed(e, [start_rec(e.ex.abook), {"type": "gap", "kind": "socket_reconnect", "flags_pools": False, "redundant": True}])
+        self.assertTrue(e.ex.feed_verified)
+        self.assertEqual(len(e.ledger("feed_reconnect_redundant")), 1)
+        self.assertEqual(e.ledger("feed_gap"), [])
+        self.assertEqual(e.ex._gap_until_ms, 0)
+        e.fire()
+        self.assertEqual(e.refusals()[n0:], [])
+        self.write_feed(e, [{"type": "gap", "kind": "socket_reconnect", "flags_pools": True}])
+        self.assertEqual(len(e.ledger("feed_gap")), 1)
+        self.assertEqual(e.ex._gap_until_ms, e.clock() + 60_000)
+        e.jump(1_000)
+        e.fire()  # the same pool again: feed_gap is judged before already_bought (h5_executor._hard_refusal order)
+        self.assertEqual(e.refusals()[n0:], ["feed_gap"])
 
 
 class SellReserveTests(ACase):
