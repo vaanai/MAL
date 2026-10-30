@@ -763,12 +763,17 @@ class Engine:
             if bt is not None:
                 st.last_bond_bt = int(bt)
 
-    def ingest_trade(self, row: Mapping[str, Any], frn: int | None = None) -> None:
-        """One walker-schema trade row, as it arrives (the live API). The trader is hashed only if the row is kept."""
+    def ingest_trade(self, row: Mapping[str, Any], frn: int | None = None, *, market: bool = True, per_mint: bool = True) -> None:
+        """One walker-schema trade row, as it arrives (the live API). The trader is hashed only if the row is kept.
+        market / per_mint split the two effects for a feed that learns a PumpSwap row's mint late (tools/r4b_feed_adapter): the row is counted in the
+        clock and market minutes at arrival (market only; mint None) and reaches the per-mint path once resolved (per_mint only), never twice."""
         side = row.get("side")
         isbuy = None if side is None else (side == "buy")
         tok, q, b = row.get("token_raw"), row.get("quote_reserve"), row.get("base_reserve")
-        self._clock_mkt(row.get("venue"), row.get("slot"), row.get("block_time"), row.get("sol_lamports"))
+        if market:
+            self._clock_mkt(row.get("venue"), row.get("slot"), row.get("block_time"), row.get("sol_lamports"))
+        if not per_mint:
+            return
         self._mint_trade(row.get("venue"), row.get("mint"), row.get("pool"), row.get("slot"), row.get("tx_index"), row.get("event_index"),
                          self.next_frn() if frn is None else int(frn), row.get("block_time"), isbuy, row.get("sol_lamports"), tok, q, b,
                          None, row.get("virtual_quote_reserves"), trader=row.get("trader"))
@@ -1010,22 +1015,19 @@ class Engine:
                           time.monotonic() - t_start)
 
     def prune_clock(self, T: int) -> tuple[int, int]:
-        """Drop clock seconds, market minutes and create minutes older than T - keep_clock_s (CLOCK_KEEP_S); the next mark is >= T + 1 h and reads
-        windows of at most 1 h back. Returns (seconds, minutes) dropped. Refused in exact_grid mode."""
+        """Drop clock SECONDS older than T - keep_clock_s (CLOCK_KEEP_S): only slot_at(T') for later marks reads the clock, and it never reads a second
+        before T'. Market minutes and create minutes are NEVER pruned (reviewer on #1130): the m_* columns are differences of float64 cumsums built
+        from the first market minute (rf.build_prep / Prep.mwin), and once those sums pass 2**53 the low bits of a difference depend on the prefix, so
+        the engine must keep the same first minute as the read (its H0) to stay byte-equal. They are small (1,440 a day). Returns (seconds, 0).
+        Refused in exact_grid mode."""
         if self.exact_grid:
             raise LiveRefused("exact_grid reads old grid seconds: no clock pruning")
         lo = int(T) - (CLOCK_KEEP_S if self.keep_clock_s is None else self.keep_clock_s)
         old_s = [x for x in self.clock if x < lo]
         for x in old_s:
             del self.clock[x]
-        old_m = [x for x in self.mkt if x < lo]
-        for x in old_m:
-            del self.mkt[x]
-        for x in [x for x in self.ncr if x < lo]:
-            del self.ncr[x]
         self._count("clock_pruned", len(old_s))
-        self._count("mkt_pruned", len(old_m))
-        return len(old_s), len(old_m)
+        return len(old_s), 0
 
     def prune(self, now_bt: int) -> int:
         """Drop per-mint print state that no decision can read again (graduated more than 48 h + 2 h ago) and bonding state of mints idle for 7 days
