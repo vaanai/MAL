@@ -21,8 +21,16 @@ START GATE, OWNER FILE, LIVE_OK (QP #959 removal items 3, 9 and 15; this PR):
     gate needs are passed in explicitly (`record_real_pass` from `real_pass_record`, `live_gates_passed` from main), never read from module state.
   * The bridge host must have the canonical reads dir (READS_DIR_CANON) with the recorded read, root-owned and not group/other writable, and a stat-able
     SEALED_ROOT_PREFIX (a missing prefix fails every alias check closed). Carrying the record there is the install pack's job.
-  * The owner confirmation is one root-owned file per bot, OWNER_DEC_DIR/<bot_id>/CANARY_DEC.md (presence + the one exact line; no sha pin), and LIVE_OK is
-    LIVE_OK_DIR/<bot_id>/LIVE_OK. TIER stays shared. Two canaries also need their own wallet, state_dir, parity_dir, twins_file and tieout_dir in config.
+  * The owner confirmation is one root-owned file per bot, OWNER_DEC_DIR/<bot_id>/CANARY_DEC.md = /etc/mal-hv4-c0/<bot_id>/CANARY_DEC.md (presence + the one exact
+    line; NO sha256 of it in code), and LIVE_OK is LIVE_OK_DIR/<bot_id>/LIVE_OK = /etc/mal-arena-live/hv4-c0/<bot_id>/LIVE_OK. Both files: root:root, mode exactly 0644
+    (tools.h5_executor.root_file_problem, called through arena_live_bridge.root_ok_problem), in a root-owned per-bot directory that is not group/other writable
+    (0755), a regular file with link count 1. TIER stays shared. Two canaries also need their own wallet, state_dir, parity_dir, twins_file and tieout_dir in config.
+  * OWNER FILE PIN (DEC-031 Am.21 item 4, QP #1100 comment 6527456651): at the first good check a LIVE hv4_c0 bridge pins the owner file's (path, st_dev, st_ino,
+    sha256) in its state (`owner_pin`), as the read record is pinned (`read_pin`, QP N9). A later rewrite (other bytes, same inode), replacement (new inode, even
+    identical bytes) or removal makes `owner_line_check` return OWNER_LINE_CHANGED and the bridge latches `owner_line`: a hard latch, new buys only, exits continue,
+    it survives a restart, and only the manager clears it with the bridge stopped, by removing BOTH `latches.owner_line` and `owner_pin` from the state file (the
+    next good check pins the file that is there then). A restart of a pinned bridge is not refused by main() for a changed owner file, so the bridge can run exits.
+    Before the first good check a missing file is as before: entries DRY, and main() refuses a live start. A DRY bridge never pins or latches.
 
 Arms: only F or X arms are canary candidates (the L arms rewrite their playbook nightly = a prompt change = a new bot_id under DEC-032 s1.4). A bot_id
 ending in -L, -P or -R is refused.
@@ -760,45 +768,69 @@ def live_ok_path(bot_id: Any) -> str:
     return os.path.join(LIVE_OK_DIR, bot_id, LIVE_OK_NAME)
 
 
-def owner_line_problem(path: Any, bot_id: str, root_check: Any = None) -> str | None:
+OWNER_LINE_LATCH = "owner_line"  # the bridge latch name (arena_live_bridge.LATCHES, hv4_c0_parity.HARD_LATCHES)
+OWNER_LINE_CHANGED = "owner_line_changed"  # owner_line_check's label for a pinned file that was rewritten, replaced or removed
+OWNER_PIN_KEYS = ("path", "dev", "ino", "sha256")
+
+
+def owner_line_check(path: Any, bot_id: str, root_check: Any = None, pinned: Mapping[str, Any] | None = None) -> tuple[str | None, dict[str, Any]]:
     """The owner's confirmation: the file `owner_dec_path(bot_id)` exists, is a regular file (not a symlink, st_nlink 1), is ROOT-OWNED and not writable by group or
-    other, and holds EXACTLY ONE line equal to `OWNER_CANARY_CONFIRMED: bot_id=<id>`. There is no content pin: the control is that only root can create or change
-    the file (DEC-032 Am.1 item 3 standing OK; the DEC text that allows dropping the sha pin is a separate lane). `root_check(path)` is the bridge's root:root
-    check (None = not run, tests only). The file is opened O_NOFOLLOW and the bytes searched are the bytes of the inode that was checked. A prefix, a suffix,
-    CRLF, a second copy, or another bot's line never matches. Labels: owner_dec_missing, _symlink, _not_regular, _hardlink, _unreadable, _too_large, and
-    owner_dec_<root_check label>, owner_line_missing."""
+    other, and holds EXACTLY ONE line equal to `OWNER_CANARY_CONFIRMED: bot_id=<id>`. Returns (problem or None, identity). The identity {path, dev, ino, sha256} is
+    of the inode that was checked and the bytes that were searched. There is NO sha256 of the owner file or of a DEC copy in code (DEC-031 Am.21 item 4).
+    `root_check(path)` is the bridge's root:root check (None = not run, tests only). The file is opened O_NOFOLLOW and the bytes searched are the bytes of the
+    inode that was checked. A prefix, a suffix, CRLF, a second copy, or another bot's line never matches.
+
+    PIN (DEC-031 Am.21 item 4, as QP N9 does for the read record): the bridge stores the identity of the first good check in its state and passes it back as
+    `pinned` on every later check. With a pin, a different (path, st_dev, st_ino, sha256), a file that is missing, unreadable, a symlink, not regular or swapped
+    during the check, or a file that grew past OWNER_DEC_MAX_BYTES returns OWNER_LINE_CHANGED (the bridge latches `owner_line`). Rewriting the file with other
+    bytes, replacing it with identical bytes (a new inode) and removing it all change the identity. A problem that leaves the identity alone (link count, mode or
+    owner label from `root_check`) keeps its own label: that is a DRY entry, not a latch. The pin is compared before the line, so a rewrite that drops the line is
+    a change, not owner_line_missing. Residual, the same as the read-record pin: the identity is the DEC's (st_dev, st_ino, sha256), so a file deleted and then
+    created again with identical bytes on a freed, reused inode number keeps its identity.
+
+    Labels: owner_dec_missing, _symlink, _not_regular, _hardlink, _unreadable, _swapped, _too_large, and owner_dec_<root_check label>, owner_line_missing,
+    owner_line_changed (pin only)."""
     import os
     import stat as st_
+    ident: dict[str, Any] = {}
     if bot_id_problem(bot_id):
-        return "owner_dec_bot_id"
+        return "owner_dec_bot_id", ident
+    pin = dict(pinned) if pinned else None
+    gone = OWNER_LINE_CHANGED if pin else None  # once pinned, a path that no longer names the pinned file is a change, whatever it names now
+    if pin and pin.get("path") != os.fspath(path):
+        return OWNER_LINE_CHANGED, ident
     try:
         ls = os.lstat(path)
     except FileNotFoundError:
-        return "owner_dec_missing"
+        return gone or "owner_dec_missing", ident
     except OSError:
-        return "owner_dec_unreadable"
+        return gone or "owner_dec_unreadable", ident
     if st_.S_ISLNK(ls.st_mode):
-        return "owner_dec_symlink"
+        return gone or "owner_dec_symlink", ident
     if not st_.S_ISREG(ls.st_mode):
-        return "owner_dec_not_regular"
+        return gone or "owner_dec_not_regular", ident
+    if pin and (ls.st_dev, ls.st_ino) != (pin.get("dev"), pin.get("ino")):
+        return OWNER_LINE_CHANGED, ident  # a new inode, even with identical bytes
     if ls.st_nlink != 1:
-        return "owner_dec_hardlink"
+        return "owner_dec_hardlink", ident
     if root_check is not None:
         why = root_check(path)
         if why:
-            return f"owner_dec_{why}"
+            return f"owner_dec_{why}", ident
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
-        return "owner_dec_missing"
+        return gone or "owner_dec_missing", ident
     except OSError:
-        return "owner_dec_unreadable"
+        return gone or "owner_dec_unreadable", ident
     try:
         fs = os.fstat(fd)
-        if (fs.st_dev, fs.st_ino) != (ls.st_dev, ls.st_ino) or not st_.S_ISREG(fs.st_mode) or fs.st_nlink != 1:
-            return "owner_dec_swapped"
+        if (fs.st_dev, fs.st_ino) != (ls.st_dev, ls.st_ino) or not st_.S_ISREG(fs.st_mode):
+            return gone or "owner_dec_swapped", ident  # another inode at the path between the lstat and the open
+        if fs.st_nlink != 1:
+            return "owner_dec_swapped", ident  # a hard link appeared between the lstat and the open: the same inode, so not a change of the pinned file
         if fs.st_size > OWNER_DEC_MAX_BYTES:
-            return "owner_dec_too_large"
+            return gone or "owner_dec_too_large", ident  # the pinned bytes were within the bound, so these are other bytes
         data = b""
         while True:
             b = os.read(fd, 1 << 16)
@@ -806,11 +838,19 @@ def owner_line_problem(path: Any, bot_id: str, root_check: Any = None) -> str | 
                 break
             data += b
             if len(data) > OWNER_DEC_MAX_BYTES:
-                return "owner_dec_too_large"
+                return gone or "owner_dec_too_large", ident
     finally:
         os.close(fd)
+    ident = {"path": os.fspath(path), "dev": fs.st_dev, "ino": fs.st_ino, "sha256": hashlib.sha256(data).hexdigest()}
+    if pin and {k: pin.get(k) for k in OWNER_PIN_KEYS} != ident:
+        return OWNER_LINE_CHANGED, ident
     want = OWNER_LINE_FMT.format(bot_id=bot_id)
-    return None if sum(1 for ln in data.decode("utf-8", "replace").split("\n") if ln == want) == 1 else "owner_line_missing"
+    return (None if sum(1 for ln in data.decode("utf-8", "replace").split("\n") if ln == want) == 1 else "owner_line_missing"), ident
+
+
+def owner_line_problem(path: Any, bot_id: str, root_check: Any = None, pinned: Mapping[str, Any] | None = None) -> str | None:
+    """The problem label of `owner_line_check` (None = the owner's confirmation holds). With `pinned`, a changed file is OWNER_LINE_CHANGED."""
+    return owner_line_check(path, bot_id, root_check, pinned)[0]
 
 
 # --- halts (QP removal precondition 7): FEED-GAP and A3. Both stop NEW buys only; exits keep running. ---------------------------------------------------------
