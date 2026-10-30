@@ -7,8 +7,11 @@ an environment path nor a plain ws:// local relay exists. This launcher is OUTSI
 
   python -I scripts/ops/q50s1-ws-launch.py --src <S* worktree> [--key-file <KEY=VALUE file> --keyed-url <key-free wss URL> [--key-var NAME] [--key-param NAME]] -- <h5_shadow args>
 
-Without --key-file/--keyed-url (an unkeyed second provider, or mainnet-beta alone) it only runs the module, with the same redaction. --key-var (default HELIUS_API_KEY) names
-the variable in the key file; the key is always appended as ?api-key=<key>, the only parameter S* itself redacts (QP A2 on #1121). Every --ws-url value must be HOST-ONLY
+Without --key-file/--keyed-url (an unkeyed second provider, or mainnet-beta alone) it only runs the module, with the same redaction.
+KEYED MODE IS BOUND TO A PROVIDER ALLOWLIST (security fix, manager 2026-10-30: a key must never reach another provider's host). The --keyed-url host must be in PROVIDERS;
+the --key-file's basename must start with that provider's tag followed by "." (helius.env, orbitflare.env); the variable read is that provider's; the key is appended as
+that provider's query parameter. There is no default key file anywhere. Redaction: S* strips every query from the start record and the logged argv (_strip_url) and
+from ws_connect log lines (url.split("?")); S*'s own _safe_err redacts only api-key=, so this launcher's stdout/stderr wrapper redacts api-key= AND api_key= (LEAK_RE). Every --ws-url value must be HOST-ONLY
 (wss://<host>[:<port>][/]; QP A1: a credential in a URL path would reach argv, the registry, the start record and logs).
 
 1. The process's argv (/proc/<pid>/cmdline, ps, systemctl status) is this line: the --ws-url arguments carry the key-free base only.
@@ -29,8 +32,12 @@ import runpy
 import sys
 
 KEY_VAR = "HELIUS_API_KEY"
-NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-KEY_RE = re.compile(r"^[A-Za-z0-9-]{8,128}$")
+KEY_RE = re.compile(r"^[A-Za-z0-9_-]{8,128}$")
+# host -> (key-file tag, variable in the key file, query parameter). Only these hosts may receive a key.
+PROVIDERS = {
+    "mainnet.helius-rpc.com": ("helius", "HELIUS_API_KEY", "api-key"),
+    "fra.rpc.orbitflare.com": ("orbitflare", "ORBITFLARE_API_KEY", "api_key"),
+}
 LEAK_RE = re.compile(r"(?i)(api[-_]?key=)[^&\s\"'<>]+")
 KEYLIKE = re.compile(r"(?i)api[-_]?key|[?&](key|token|auth|apikey)=|://[^/\s]*@")
 HOST_ONLY = re.compile(r"^wss://[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*(:[0-9]{1,5})?/?$")
@@ -63,7 +70,21 @@ def read_key(path: str, var: str = KEY_VAR) -> str | None:
     return None
 
 
-def keyed_argv(args: list[str], keyed_url: str, key: str) -> list[str]:
+def provider_for(keyed_url: str, key_file: str) -> tuple[str, str, str]:
+    """(tag, variable, parameter) of the allowlisted provider of keyed_url, after checking the key file's tag. Raises ValueError on any mismatch."""
+    m = HOST_ONLY.match(keyed_url)
+    if not m:
+        raise ValueError("--keyed-url must be a host-only key-free wss:// URL")
+    host = keyed_url[len("wss://"):].rstrip("/").split(":")[0].lower()
+    if host not in PROVIDERS:
+        raise ValueError(f"--keyed-url host {host} is not on the keyed-provider allowlist {sorted(PROVIDERS)}")
+    tag, var, param = PROVIDERS[host]
+    if not os.path.basename(key_file).startswith(tag + "."):
+        raise ValueError(f"the key file {os.path.basename(key_file)!r} is not tagged {tag!r} (its name must start with '{tag}.'): a key never goes to another provider's host")
+    return tag, var, param
+
+
+def keyed_argv(args: list[str], keyed_url: str, key: str, param: str = "api-key") -> list[str]:
     """Replace the one argument equal to keyed_url (it must follow --ws-url) by keyed_url + ?api-key=key. Raises ValueError on any doubt."""
     if not HOST_ONLY.match(keyed_url) or KEYLIKE.search(keyed_url):
         raise ValueError("--keyed-url must be a host-only key-free wss:// URL")
@@ -77,7 +98,9 @@ def keyed_argv(args: list[str], keyed_url: str, key: str) -> list[str]:
     if len(idx) != 1 or idx[0] == 0 or args[idx[0] - 1] != "--ws-url":
         raise ValueError("--keyed-url must appear exactly once in the h5_shadow arguments, as a --ws-url value")
     out = list(args)
-    out[idx[0]] = f"{keyed_url}?api-key={key}"
+    if param not in ("api-key", "api_key"):
+        raise ValueError("the key parameter must be api-key or api_key (the forms the redaction covers)")
+    out[idx[0]] = f"{keyed_url.rstrip('/')}/?{param}={key}" if keyed_url.endswith("/") else f"{keyed_url}?{param}={key}"
     return out
 
 
@@ -107,7 +130,7 @@ class Redacting(io.TextIOBase):
 
 def parse(argv: list[str]) -> tuple[dict, list[str]]:
     if "--" not in argv:
-        raise ValueError("usage: q50s1-ws-launch.py --src DIR [--key-file FILE --keyed-url URL [--key-var NAME]] [--dry] -- <h5_shadow args>")
+        raise ValueError("usage: q50s1-ws-launch.py --src DIR [--key-file FILE --keyed-url URL] [--dry] -- <h5_shadow args>")
     k = argv.index("--")
     own, rest = argv[:k], argv[k + 1:]
     opts: dict = {"dry": False}
@@ -117,7 +140,7 @@ def parse(argv: list[str]) -> tuple[dict, list[str]]:
         if a == "--dry":
             opts["dry"] = True
             i += 1
-        elif a in ("--src", "--key-file", "--keyed-url", "--key-var") and i + 1 < len(own):
+        elif a in ("--src", "--key-file", "--keyed-url") and i + 1 < len(own):
             opts[a[2:].replace("-", "_")] = own[i + 1]
             i += 2
         else:
@@ -126,8 +149,6 @@ def parse(argv: list[str]) -> tuple[dict, list[str]]:
         raise ValueError("--src is required")
     if ("key_file" in opts) != ("keyed_url" in opts):
         raise ValueError("--key-file and --keyed-url go together (neither for an unkeyed feed)")
-    if "key_var" in opts and not NAME_RE.match(opts["key_var"]):
-        raise ValueError("--key-var must match [A-Za-z0-9_-]")
     return opts, rest
 
 
@@ -143,13 +164,17 @@ def main(argv: list[str] | None = None) -> int:
         print(f"q50s1-ws-launch: {src} has no tools/h5_shadow.py", file=sys.stderr)
         return 2
     if "key_file" in opts:
-        var = opts.get("key_var", KEY_VAR)
+        try:
+            _tag, var, param = provider_for(opts["keyed_url"], opts["key_file"])
+        except ValueError as e:
+            print(f"q50s1-ws-launch: {e}", file=sys.stderr)
+            return 2
         key = read_key(opts["key_file"], var)
         if key is None:
             print(f"q50s1-ws-launch: no usable {var} in {opts['key_file']} (unreadable, absent or malformed); nothing started", file=sys.stderr)
             return 11
         try:
-            args = keyed_argv(rest, opts["keyed_url"], key)
+            args = keyed_argv(rest, opts["keyed_url"], key, param)
         except ValueError as e:
             print(f"q50s1-ws-launch: {e}", file=sys.stderr)
             return 2

@@ -8,7 +8,7 @@
 # counted. --out-dir: the book's dir (default $ARENA/h5-q50s1-2026-11-05): prefix counts of start/stop/error/hb rows, hb rows' trailing t_ms, gap rows' kind and flags_pools, the
 # status file's mtime, the errors file's size. Scope: `systemctl --user show q50s1-shadow.scope` ActiveState and ActiveEnterTimestamp only.
 # It is also the Am.22 item 10 key check before the clock (QP C2): counts only, never an argv or environment printed: the key string in the book's start row(s), in
-# /proc/<pid>/cmdline of every process in the scope's cgroup, <Q50S1_KEY_VAR>= in their /proc/<pid>/environ, and in the user journal since the scope start (the literal
+# /proc/<pid>/cmdline of every process in the scope's cgroup, any <PROVIDER>_API_KEY= or key form in their /proc/<pid>/environ, and in the user journal since the scope start (the literal
 # key string journal-wide; the broad provider-key patterns only on the s1 shadow's own unit, so another process's link never counts); plus
 # `findmnt -no OPTIONS /proc` (printed). Any count that is not 0, or cannot be read, is NOT_CLEAN. The one path the launcher's redaction does not cover is S*'s own
 # h5-shadow-errors.log (an exception message written to a file), which is counted too.
@@ -47,8 +47,6 @@ if [ -n "$SINCE_TXT" ]; then SINCE="$(date -u -d "$SINCE_TXT" +%s 2>/dev/null ||
 A=no
 [ "$ACT" = active ] && A=yes
 CGROOT="${Q50S1_CGROUP_ROOT:-/sys/fs/cgroup}"
-KEYVAR="${Q50S1_KEY_VAR:-HELIUS_API_KEY}"   # the keyed provider's variable name (the same Q50S1_KEY_VAR as the start); counted in /proc/<pid>/environ
-case "$KEYVAR" in ''|*[!A-Za-z0-9_]*) echo "q50s1-clean-log: bad Q50S1_KEY_VAR" >&2; exit 2 ;; esac
 CG="$(systemctl --user show "$UNIT.scope" -p ControlGroup --value 2>/dev/null || echo "")"
 PIDS=""
 if [ -n "$CG" ] && [ -r "$CGROOT$CG/cgroup.procs" ]; then PIDS="$(cat "$CGROOT$CG/cgroup.procs" 2>/dev/null | tr '\n' ' ')"; fi
@@ -57,7 +55,7 @@ if [ -n "$(printf '%s' "$PIDS" | tr -d ' ')" ]; then
   KC=0; KE=0
   for p in $PIDS; do
     if [ -r "/proc/$p/cmdline" ]; then KC=$((KC + $(python3 -I "$REPO/tools/q50s1_health.py" count-keys < "/proc/$p/cmdline"))); else KC=unreadable; break; fi
-    if [ -r "/proc/$p/environ" ]; then KE=$((KE + $(tr '\0' '\n' < "/proc/$p/environ" | grep -c -F "$KEYVAR=" || true) + $(python3 -I "$REPO/tools/q50s1_health.py" count-keys < "/proc/$p/environ"))); else KE=unreadable; break; fi
+    if [ -r "/proc/$p/environ" ]; then KE=$((KE + $(python3 -I "$REPO/tools/q50s1_health.py" count-keys < "/proc/$p/environ"))); else KE=unreadable; break; fi
   done
 fi
 KJ=unreadable

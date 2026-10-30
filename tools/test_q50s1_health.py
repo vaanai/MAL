@@ -390,8 +390,8 @@ class KeyPatterns(unittest.TestCase):
         self.assertEqual(r.stdout.decode().strip(), "0")
         r = subprocess.run([sys.executable, "-I", str(Path(h.__file__)), "count-keys"], input=data, capture_output=True)
         self.assertEqual(r.stdout.decode().strip(), "2")
-        r = subprocess.run([sys.executable, "-I", str(Path(h.__file__)), "count-keys", "--literal-only"], input=b"a api-key=1\n", capture_output=True)
-        self.assertEqual(r.stdout.decode().strip(), "1")
+        r = subprocess.run([sys.executable, "-I", str(Path(h.__file__)), "count-keys", "--literal-only"], input=b"a api-key=1\nb wss://h/?api_key=zz\nc API_KEY=1\n", capture_output=True)
+        self.assertEqual(r.stdout.decode().strip(), "3")  # Am.22 Erratum 2: both forms, any case
 
     def test_count_keys_mode_reads_nul_separated_stdin(self):
         import subprocess, sys
