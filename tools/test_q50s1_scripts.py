@@ -99,7 +99,7 @@ esac''')
         p.write_text("#!/bin/sh\n" + body + "\n")
         p.chmod(p.stat().st_mode | stat.S_IXUSR)
 
-    def set_mem(self, *, cur, smax, running):
+    def set_mem(self, *, cur, smax, running, list_rc=0):
         units = "\n".join(u for u, _ in running)
         maxes = "\n".join(f'    "{u}") echo {m} ;;' for u, m in running)
         self.stub("systemctl", f'''
@@ -107,7 +107,7 @@ case "$*" in
   *"is-active"*) exit 3 ;;
   *"show user-1002.slice -p MemoryCurrent"*) echo {cur} ;;
   *"show user-1002.slice -p MemoryMax"*) echo {smax} ;;
-  *"list-units"*) printf '%s\\n' {" ".join(repr(u + " loaded active running x") for u, _ in running) or "''"} ;;
+  *"list-units"*) [ {list_rc} -eq 0 ] || {{ echo "Failed to connect to bus" >&2; exit {list_rc}; }}; printf '%s\\n' {" ".join(repr(u + " loaded active running x") for u, _ in running) or "''"} ;;
   *"show"*)
     for a in "$@"; do last="$a"; done
     case "$3" in
@@ -189,6 +189,91 @@ esac''')
             r = subprocess.run(["sh", str(SHD), *a], capture_output=True, text=True, env=env, cwd=REPO)
             self.assertEqual(r.returncode, 2, a)
         self.assertEqual(self.run_(now="abc").returncode, 2)
+
+
+class ShadowCheckMemory(unittest.TestCase):
+    """--check-memory: only the host report and check 6; no bots.json, tag, worktree, python or out dir is touched (QP C2 on #1065: evaluate the fit before registration).
+    Reuses ShadowCheck's fixture helpers without re-running its tests."""
+    stub = ShadowCheck.stub
+    set_mem = ShadowCheck.set_mem
+    write_line = ShadowCheck.write_line
+    run_ = ShadowCheck.run_
+
+    def setUp(self):
+        ShadowCheck.setUp(self)
+        self.mark = self.d / "touched"
+        self.py.write_text(f'#!/bin/sh\ntouch {self.mark}.py\nexit 99\n')  # any python call (the bots.json read, the import check) would leave a mark
+        self.stub("git", f'touch {self.mark}.git\nexit 99')
+
+    def mem(self, *args):
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py)}
+        return subprocess.run(["sh", str(SHD), "--check-memory", *args], capture_output=True, text=True, env=env, cwd=REPO)
+
+    def assert_untouched(self):
+        self.assertFalse(Path(f"{self.mark}.py").exists(), "python was called")
+        self.assertFalse(Path(f"{self.mark}.git").exists(), "git was called")
+        self.assertEqual(sorted(p.name for p in self.arena.iterdir()), ["bots.json"] if (self.arena / "bots.json").exists() else [])
+
+    def test_fits_prints_every_unit_and_reads_nothing_else(self):
+        (self.arena / "bots.json").unlink()  # no s1 line: --check stops at 8; --check-memory never looks
+        r = self.mem()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"unit a.service MemoryMax={1 * GIB} MemoryCurrent=", r.stdout)
+        self.assertIn(f"unit b.service MemoryMax={2 * GIB} MemoryCurrent=", r.stdout)
+        self.assertIn(f"sum(finite MemoryMax of running units)={3 * GIB} (running units without a finite MemoryMax: 0)", r.stdout)
+        self.assertIn("(check-memory) fits", r.stdout)
+        self.assert_untouched()
+
+    def test_an_uncapped_unit_is_named_and_refuses(self):
+        self.set_mem(cur=1 * GIB, smax=64 * GIB, running=[("a.service", 1 * GIB), ("miscusi-agent.service", "infinity"), ("init.scope", "infinity")])
+        r = self.mem()
+        self.assertEqual(r.returncode, 10, r.stdout + r.stderr)
+        self.assertIn("unit miscusi-agent.service MemoryMax=infinity (UNCAPPED)", r.stdout)
+        self.assertIn("unit init.scope MemoryMax=infinity (UNCAPPED)", r.stdout)
+        self.assertIn("2 running unit(s) have no finite MemoryMax", r.stderr)
+        self.assertNotIn("fits", r.stdout)
+        self.assert_untouched()
+
+    def test_does_not_fit_refuses_with_the_same_formula_as_the_start(self):
+        self.set_mem(cur=18 * GIB, smax=20 * GIB, running=[("a.service", 1 * GIB)])
+        r = self.mem()
+        self.assertEqual(r.returncode, 10, r.stdout + r.stderr)
+        self.assertIn("does not fit the slice", r.stderr)
+        self.assertIn(f"= {18 * GIB + 1 * GIB + 1500 * 1024 * 1024}; slice max={20 * GIB}", r.stdout)
+
+    def test_an_unreadable_or_empty_unit_list_refuses_in_every_mode(self):
+        for kw in ({"list_rc": 1}, {"running": []}):
+            self.set_mem(cur=1 * GIB, smax=64 * GIB, **{"running": [("a.service", 1 * GIB)], **kw})
+            r = self.mem()
+            self.assertEqual(r.returncode, 10, (kw, r.stdout + r.stderr))
+            self.assertIn("cannot list the running user units", r.stderr)
+            self.stub("git", 'case "$*" in *fetch*) exit 0 ;; *"rev-parse q50-succ-base-1"*|*"rev-parse HEAD"*) echo 5c2ab7c64b21358619e37068c6a53e4d183512ea ;; *) exit 0 ;; esac')
+            self.py.write_text('#!/bin/sh\ncase "$*" in *"import websockets"*) exit 0 ;; esac\nexec python3 "$@"\n')
+            r = self.run_()  # the full --check reaches check 6 and refuses the same way
+            self.assertEqual(r.returncode, 10, (kw, r.stdout + r.stderr))
+            self.assertIn("cannot list the running user units", r.stderr)
+            self.setUp()
+
+    def test_wrong_host_is_reported_and_the_fit_still_evaluated(self):
+        self.stub("hostname", "echo mal-research-0")
+        r = self.mem()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("this book runs on mal-fast-0", r.stderr)
+        self.assert_untouched()
+
+    def test_a_real_start_on_the_wrong_host_still_exits_6_first(self):
+        self.stub("hostname", "echo mal-research-0")
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py)}
+        r = subprocess.run(["sh", str(SHD)], capture_output=True, text=True, env=env, cwd=REPO)
+        self.assertEqual(r.returncode, 6, r.stdout + r.stderr)
+        self.assert_untouched()
+
+    def test_arguments(self):
+        for a in (["x"], ["--check"]):
+            self.assertEqual(self.mem(*a).returncode, 2, a)
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home)}
+        r = subprocess.run(["sh", str(SHD), "--check-memory-only"], capture_output=True, text=True, env=env, cwd=REPO)
+        self.assertEqual(r.returncode, 2)
 
 
 if __name__ == "__main__":
