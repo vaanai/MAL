@@ -82,6 +82,7 @@ FEED_NOTE_MERGED = True  # scope item 17: EXP-024 "Note under Amendment 10" (#85
 FEED_NOTE_REF = "### Note under Amendment 10 (written 2026-10-24T01:27Z"  # the note's heading in EXP/EXP-024-h5-boostfloor-part1-prereg.md (a test checks it is in the tree)
 FEED_NOTE_BOOKS = frozenset({"h5v1q50-boostfloor-a1"})  # the bot_ids the note covers; every other book stays replay_only (QP-SCOPE item 17: "per bot_id")
 LIVE_BUILT = True  # the live entry point is main --live (QP-RULING-1023-wiring ruling 7 item 11); every live start passes live_entry_refusal first
+ARENA_OWNER_CANARY_PATH = Path("/etc/mal-h5-arena/OWNER_CANARY")  # DEC-032 Am.7 (DRAFT; audit rank 4): the owner's canary line in a root-owned file Helm writes on the owner's word
 ARENA_LIVE_OK_PATH = Path("/etc/mal-h5-arena/LIVE_OK")  # the arena canary's OWN gate: root:root 0644 (base root_file_problem), content exactly the bot_id. Helm creates it.
 DEC032_C0 = {  # DEC-032 s3 C0 column, verbatim. C0_TIER may only be at or below these; c0_guard_problem refuses a live start otherwise.
     "stake_lamports": 50_000_000, "max_open": 2, "max_trades_per_day": 30, "daily_loss_lamports": 100_000_000, "total_loss_lamports": 200_000_000,
@@ -450,9 +451,33 @@ def latest_start_record(intents: Path) -> dict[str, Any] | None:
     return last
 
 
-def canary_record_refusal(bot_id: str, root: Path) -> str | None:
+def owner_canary_file_refusal(bot_id: str, path: Path | None = None) -> str | None:
+    """DEC-032 Am.7 (DRAFT; audit rank 4). The owner's line in a root-owned file: the base file checks (regular root:root 0644 file, no symlink, root-owned
+    parent not group/other writable; the same checks as LIVE_OK) and the content is exactly ONE non-blank line, "OWNER_CANARY_CONFIRMED: bot_id=<bot_id>",
+    naming THIS bot_id. Helm writes it on the owner's own word; the executor never creates it and no sha of it is pinned in code."""
+    p = path or ARENA_OWNER_CANARY_PATH
+    problem = h.root_file_problem(p)
+    if problem:
+        return f"owner_canary_file_{problem}"
+    try:
+        text = p.read_text()
+    except (OSError, UnicodeDecodeError):
+        return "owner_canary_file_unreadable"
+    lines = [x for x in text.splitlines() if x.strip()]
+    return None if len(lines) == 1 and CANARY_OWNER_RE.findall(text) == [bot_id] else "owner_canary_file_other_book"
+
+
+def canary_record_refusal(bot_id: str, root: Path, owner_file: Path | None = None) -> str | None:
     """A live start needs a canary record in DEC/ whose owner line names THIS bot_id exactly (QP gap h). Regular files only (no symlink), the template
-    file never counts, and a line naming another book does not cover this one."""
+    file never counts, and a line naming another book does not cover this one. DEC-032 Am.7 (DRAFT): when the installed tree has no such record, the
+    owner's line in the root-owned ARENA_OWNER_CANARY_PATH (owner_canary_file_refusal) is accepted instead; the DEC record's refusal is returned otherwise."""
+    why = _dec_canary_record_refusal(bot_id, root)
+    if why is None or owner_canary_file_refusal(bot_id, owner_file) is None:
+        return None
+    return why
+
+
+def _dec_canary_record_refusal(bot_id: str, root: Path) -> str | None:
     d = root / "DEC"
     try:
         files = sorted(d.glob(CANARY_DEC_GLOB))
