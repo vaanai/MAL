@@ -943,6 +943,263 @@ class TapegapsPullTest(TapegapsCase):
         self.assertFalse(self.dst_tg().exists())
 
 
+HOUR_MS = 3_600_000
+RETAIN = 72 * HOUR_MS
+T0 = MT  # the synthetic start of a multi-day relay history
+
+
+def relay_model(rows: set[tuple[str, int]], pass_ms: int) -> bytes:
+    """What tools/hv4_gap_relay.py v2 publishes on a pass at `pass_ms` (a SYNTHETIC model of Relay._prune + write_stream, not the relay): rows sorted by (ms, kind), those
+    more than RETAIN_MS before the newest instant dropped. The newest instant is max(newest row, the tape's top instant); here the tape's top instant is the pass instant."""
+    newest = max([pass_ms] + [m for _k, m in rows])
+    keep = sorted((r for r in rows if r[1] >= newest - RETAIN), key=lambda r: (r[1], r[0]))
+    return tg_bytes(*keep)
+
+
+class TapegapsRetentionTrimTest(TapegapsCase):
+    """QP CHANGES on #1105 (comment 6527468544): relay v2 trims the FRONT of its stream by RETAIN_MS (72 h), so the puller accepts a head trim of rows that aged out and
+    still stops on every other shrink or prefix change."""
+
+    def pull(self) -> df.Puller:
+        return df.Puller(self.dst, BOT, ["true"])
+
+    def fresh_dst(self) -> None:
+        shutil.rmtree(self.dst, ignore_errors=True)
+
+    def disk(self) -> tuple[bytes, int, int]:
+        st = os.lstat(self.dst_tg())
+        return self.dst_tg().read_bytes(), st.st_ino, st.st_mtime_ns
+
+    def transport_names(self) -> list[str]:
+        return sorted(p.name for p in (Path(self.dst) / "transport").iterdir())
+
+    def test_the_constant_is_the_relays_72_hours_and_matches_the_relay_when_it_has_one(self) -> None:
+        self.assertEqual(df.TAPEGAPS_RETAIN_MS, 72 * 3600 * 1000)
+        self.assertEqual(df.TAPEGAPS_RETAIN_MS, 259_200_000)
+        from tools import hv4_gap_relay as R
+        if hasattr(R, "RETAIN_MS"):  # relay v2 (PR #1098); main still has the first relay, which keeps every row
+            self.assertEqual(df.TAPEGAPS_RETAIN_MS, R.RETAIN_MS)
+
+    def test_two_passes_across_the_72_hour_boundary_the_trimmed_file_plus_one_new_row_is_accepted(self) -> None:
+        r = [("start", T0), ("data_loss", T0 + 6 * HOUR_MS), ("feed_restart", T0 + 40 * HOUR_MS), ("gap_silence", T0 + 71 * HOUR_MS)]
+        wide = [("start", T0), ("data_loss", T0 + 30 * HOUR_MS), ("feed_restart", T0 + 80 * HOUR_MS)]  # a first pass that already spans more than 72 h
+        # (name, pass-1 rows, pass-1 instant, new gap row, how many head rows the relay's trim drops on pass 2)
+        cases = [
+            ("drop_one", r, r[3][1] + 1_000, ("data_loss", r[0][1] + RETAIN + 1), 1),
+            ("drop_two", r, r[3][1] + 1_000, ("data_loss", r[1][1] + RETAIN + 1), 2),
+            ("drop_three", r, r[3][1] + 1_000, ("data_loss", r[2][1] + RETAIN + 1), 3),
+            ("drop_all_carried_rows", r, r[3][1] + 1_000, ("data_loss", r[3][1] + RETAIN + 1), 4),
+            ("first_pass_spans_over_72h", wide, wide[2][1] + 1_000, ("gap_silence", wide[2][1] + HOUR_MS), 1),
+        ]
+        for name, rows1, mt1, new_row, dropped in cases:
+            with self.subTest(case=name):
+                self.fresh_dst()
+                pass1 = tg_bytes(*rows1)
+                self.put(pass1, mt=mt1)
+                pl = self.pull()
+                srv, out = self.server()
+                self.assertEqual(srv.poll_tapegaps(), 1)
+                pl.handle(self.frames(out)[0], time.time_ns())
+                self.assertEqual(self.dst_tg().read_bytes(), pass1)
+                # pass 2: what relay v2 publishes once its newest instant is the new row: rows more than 72 h before it are gone, the new row is last
+                newest = new_row[1]
+                kept = [x for x in rows1 + [new_row] if x[1] >= newest - RETAIN]
+                self.assertEqual(len(rows1) + 1 - len(kept), dropped)
+                pass2 = tg_bytes(*kept)
+                self.assertFalse(pass2.startswith(pass1))  # a true head trim: the old bytes are no prefix any more
+                mt2 = newest + 500
+                self.put(pass2, mt=mt2)
+                self.assertEqual(srv.poll_tapegaps(), 1)
+                pl.handle(self.frames(out)[-1], time.time_ns())
+                f = self.dst_tg()
+                self.assertEqual(f.read_bytes(), pass2)  # equals the source...
+                self.assertEqual(f.read_bytes(), Path(self.tgf).read_bytes())
+                st = os.lstat(f)
+                self.assertEqual(st.st_mtime_ns // 1_000_000, mt2)  # ...carries the source mtime...
+                self.assertTrue(stat.S_ISREG(st.st_mode) and st.st_nlink == 1)
+                self.assertEqual(pl.tg_data, pass2)  # ...and is the baseline now
+                self.assertEqual((pl.tg_frames, pl.tg_trimmed), (2, dropped))
+                self.assertEqual(self.transport_names(), sorted([f"{BOT}.tapegaps.jsonl", f"{BOT}.lock"]))  # no tmp left (handle() does not write status.json; run() does)
+                self.assertEqual(gaps(self.dst), [])  # and no mismatch row
+                pl.close()
+
+    def test_a_pass_that_only_ages_a_row_out_with_no_new_row_is_accepted_and_the_next_identical_pass_is_plain(self) -> None:
+        a = tg_bytes(("start", T0), ("data_loss", T0 + 10 * HOUR_MS))
+        b = tg_bytes(("data_loss", T0 + 10 * HOUR_MS))
+        pl = self.pull()
+        pl.handle(tg_frame(a, T0 + HOUR_MS), time.time_ns())
+        pl.handle(tg_frame(b, T0 + RETAIN + HOUR_MS), time.time_ns())  # the pass instant is 73 h after the first row
+        self.assertEqual(self.dst_tg().read_bytes(), b)
+        pl.handle(tg_frame(b, T0 + RETAIN + HOUR_MS + 30_000), time.time_ns())
+        self.assertEqual((pl.tg_frames, pl.tg_trimmed), (3, 1))
+        pl.close()
+
+    def test_a_sparse_stream_trims_against_the_pass_instant_not_the_newest_kept_row(self) -> None:
+        """The relay's newest instant can be the tape's top instant, later than its newest row (a quiet tape writes a gap row every day or so). The bound is therefore
+        max(newest kept row, the pass instant mt) - 72 h. Against the newest kept row alone, this trim (the T0 row is 73 h old at the pass; the newest kept row is 20 h old)
+        would stop the feed."""
+        kept_row = ("data_loss", T0 + 53 * HOUR_MS)
+        a, b = tg_bytes(("start", T0), kept_row), tg_bytes(kept_row)
+        self.assertGreater(T0, kept_row[1] - RETAIN)  # the 'newest kept row - 72 h' bound would call the T0 row too young to leave
+        pl = self.pull()
+        pl.handle(tg_frame(a, T0 + 60 * HOUR_MS), time.time_ns())
+        pl.handle(tg_frame(b, T0 + 73 * HOUR_MS), time.time_ns())  # what the relay publishes at its pass instant T0 + 73 h
+        self.assertEqual(self.dst_tg().read_bytes(), b)
+        pl.close()
+
+    def test_the_age_boundary_is_exact_older_accepted_equal_or_younger_refused(self) -> None:
+        for delta, ok in ((-1, True), (0, False), (1, False)):  # the removed row's ms relative to (pass instant - 72 h)
+            with self.subTest(delta=delta):
+                self.fresh_dst()
+                pass_ms = T0 + 100 * HOUR_MS
+                head, tail = ("start", pass_ms - RETAIN + delta), ("data_loss", pass_ms - HOUR_MS)
+                pl = self.pull()
+                pl.handle(tg_frame(tg_bytes(head, tail), pass_ms - 30_000), time.time_ns())
+                if ok:
+                    pl.handle(tg_frame(tg_bytes(tail), pass_ms), time.time_ns())
+                    self.assertEqual(self.dst_tg().read_bytes(), tg_bytes(tail))
+                else:
+                    before = self.disk()
+                    with self.assertRaises(df.Mismatch) as cm:
+                        pl.handle(tg_frame(tg_bytes(tail), pass_ms), time.time_ns())
+                    self.assertEqual(str(cm.exception), "tapegaps_head_trim_not_retention")
+                    self.assertEqual(self.disk(), before)
+                pl.close()
+
+    def test_more_than_72_hours_of_relay_passes_with_periodic_trims_never_stop_and_the_copy_equals_the_source(self) -> None:
+        """A SYNTHETIC multi-day run: 7 days of relay passes every 10 minutes over a seeded, sparse and bursty gap history (one every ~7 h on average, some bursts of 3), the
+        relay's trim modelled by relay_model. Every pass goes through Puller.handle (any refusal would raise Mismatch and fail the test), the copy equals the source after
+        each pass, and the trims really happened."""
+        import random
+        rng = random.Random(1)
+        kinds = ("data_loss", "gap_silence", "gap_slots", "feed_restart", "process_restart")
+        rows: set[tuple[str, int]] = set()
+        pl = self.pull()
+        trims = passes = 0
+        pass_ms, end = T0, T0 + 7 * 24 * HOUR_MS
+        next_gap = T0 + rng.randrange(0, 12 * HOUR_MS)
+        data = b""
+        with mock.patch.object(os, "fsync", lambda _fd: None):  # speed only: the write order is tested elsewhere; this test is about acceptance over time
+            while pass_ms <= end:
+                while next_gap <= pass_ms:
+                    for j in range(rng.choice((1, 1, 1, 3))):
+                        rows.add((rng.choice(kinds), next_gap + j * 1_000))
+                    next_gap += rng.randrange(HOUR_MS, 13 * HOUR_MS)
+                data = relay_model(rows, pass_ms)
+                before = pl.tg_data
+                pl.handle(tg_frame(data, pass_ms), time.time_ns())
+                self.assertEqual(self.dst_tg().read_bytes(), data)
+                trims += int(before is not None and not data.startswith(before))
+                passes += 1
+                pass_ms += 600_000
+        pl.close()
+        self.assertEqual(passes, 7 * 24 * 6 + 1)
+        self.assertGreater(trims, 5)  # the retention trim fired repeatedly after day 3
+        self.assertGreater(pl.tg_trimmed, 5)
+        last_pass = pass_ms - 600_000
+        newest = max([last_pass] + [m for _k, m in rows])
+        self.assertTrue(data and all(json.loads(x)["ms"] >= newest - RETAIN for x in data.decode().splitlines()))
+        self.assertGreater(len(rows), len(data.splitlines()))  # rows really aged out of the carried file
+        self.assertEqual(gaps(self.dst), [])
+
+    def test_the_trimmed_file_is_the_baseline_after_a_restart(self) -> None:
+        a = tg_bytes(("start", T0), ("data_loss", T0 + 10 * HOUR_MS))
+        b = tg_bytes(("data_loss", T0 + 10 * HOUR_MS), ("gap_silence", T0 + 75 * HOUR_MS))
+        pl = self.pull()
+        pl.handle(tg_frame(a, T0 + HOUR_MS), time.time_ns())
+        pl.handle(tg_frame(b, T0 + 75 * HOUR_MS + 5), time.time_ns())
+        pl.close()
+        pl2 = self.pull()
+        self.assertEqual(pl2.tg_data, b)
+        with self.assertRaises(df.Mismatch):  # the old bytes cannot come back: a head 'un-trim' is a prefix change
+            pl2.handle(tg_frame(a, T0 + 75 * HOUR_MS + 10), time.time_ns())
+        pl2.close()
+
+    def test_every_other_change_is_still_a_mismatch_stop_and_writes_nothing(self) -> None:
+        pass_ms = T0 + 80 * HOUR_MS  # r0 and r1 are older than 72 h before it, r2 and r3 are not
+        r = [("start", T0), ("data_loss", T0 + 2 * HOUR_MS), ("feed_restart", T0 + 30 * HOUR_MS), ("gap_silence", T0 + 79 * HOUR_MS)]
+        base = tg_bytes(*r)
+        # each case: bytes of the new file -> the start of the reason
+        cases = {
+            "middle_row_edited": (tg_bytes(r[0], ("data_loss", r[1][1] + 1), r[2], r[3]), "tapegaps_prefix_changed"),
+            "kept_row_edited_during_a_valid_trim": (tg_bytes(("feed_restart", r[2][1] + 1), r[3]), "tapegaps_shrank"),
+            "middle_row_removed": (tg_bytes(r[0], r[1], r[3]), "tapegaps_shrank"),
+            "middle_row_removed_while_the_head_aged_out": (tg_bytes(r[1], r[3]), "tapegaps_shrank"),
+            "middle_row_removed_after_a_valid_trim_with_an_append": (tg_bytes(r[1], r[3], ("data_loss", r[3][1] + 1)), "tapegaps_"),
+            "tail_row_removed": (tg_bytes(*r[:3]), "tapegaps_shrank"),
+            "tail_row_edited": (tg_bytes(*r[:3], ("gap_silence", r[3][1] + 1)), "tapegaps_prefix_changed"),
+            "head_row_removed_that_is_not_older_than_the_bound": (tg_bytes(r[3]), "tapegaps_head_trim_not_retention"),  # r2 (30 h old) would leave with r0 and r1
+            "reordered": (tg_bytes(r[1], r[0], r[2], r[3]), "tapegaps_prefix_changed"),
+            "reordered_tail": (tg_bytes(r[0], r[1], r[3], r[2]), "tapegaps_prefix_changed"),
+            "reordered_after_a_trim": (tg_bytes(r[3], r[2]), "tapegaps_head_trim_not_retention"),  # r3 then r2: a head trim of r0..r2 (r2 too young) plus an 'appended' r2
+            "row_inserted_before": (tg_bytes(("process_restart", T0 - 1)) + base, "tapegaps_prefix_changed"),
+            "row_inserted_in_the_middle": (tg_bytes(r[0], ("start", T0 + 1), *r[1:]), "tapegaps_prefix_changed"),
+            "emptied_though_young_rows_were_carried": (b"", "tapegaps_shrank"),
+        }
+        for name, (data, why) in cases.items():
+            with self.subTest(case=name):
+                self.fresh_dst()
+                pl = self.pull()
+                pl.handle(tg_frame(base, pass_ms - 30_000), time.time_ns())
+                before, trimmed_before = self.disk(), pl.tg_trimmed
+                with self.assertRaises(df.Mismatch) as cm:
+                    pl.handle(tg_frame(data, pass_ms), time.time_ns())
+                self.assertTrue(str(cm.exception).startswith(why), str(cm.exception))
+                self.assertEqual(self.disk(), before)  # not the bytes, not the inode, not the mtime
+                self.assertEqual((pl.tg_data, pl.tg_trimmed, pl.tg_frames), (base, trimmed_before, 1))
+                self.assertEqual(self.transport_names(), sorted([f"{BOT}.tapegaps.jsonl", f"{BOT}.lock"]))  # no tmp file
+                pl.close()
+
+    def test_a_removed_young_head_row_cannot_leave_even_with_an_old_one(self) -> None:
+        pass_ms = T0 + 100 * HOUR_MS
+        old_row, young, keep = ("start", pass_ms - RETAIN - HOUR_MS), ("data_loss", pass_ms - 10 * HOUR_MS), ("gap_silence", pass_ms - HOUR_MS)
+        base = tg_bytes(old_row, young, keep)
+        self.fresh_dst()
+        pl = self.pull()
+        pl.handle(tg_frame(base, pass_ms - 30_000), time.time_ns())
+        before = self.disk()
+        with self.assertRaises(df.Mismatch) as cm:
+            pl.handle(tg_frame(tg_bytes(keep), pass_ms), time.time_ns())  # old and young both gone
+        self.assertEqual(str(cm.exception), "tapegaps_head_trim_not_retention")
+        with self.assertRaises(df.Mismatch):
+            pl.handle(tg_frame(tg_bytes(old_row, keep), pass_ms), time.time_ns())  # the young one gone from the middle
+        self.assertEqual(self.disk(), before)
+        pl.handle(tg_frame(tg_bytes(young, keep), pass_ms), time.time_ns())  # only the old one gone: accepted
+        self.assertEqual(self.dst_tg().read_bytes(), tg_bytes(young, keep))
+        pl.close()
+
+    def pull_over_serve(self, frames: int = 1) -> tuple[df.Puller, int]:
+        pl = df.Puller(self.dst, BOT, serve_cmd(self.src, "--tapegaps-file", self.tgf))
+        return pl, pl.run(max_s=20, until=lambda p: p.tg_frames >= frames)
+
+    def test_pull_over_serve_accepts_a_retention_trim(self) -> None:
+        a = tg_bytes(("start", T0), ("data_loss", T0 + 5 * HOUR_MS))
+        self.put(a, mt=T0 + HOUR_MS)
+        _pl, rc = self.pull_over_serve()
+        self.assertEqual(rc, df.EXIT_OK)
+        b = tg_bytes(("data_loss", T0 + 5 * HOUR_MS), ("feed_restart", T0 + 80 * HOUR_MS))
+        self.put(b, mt=T0 + 80 * HOUR_MS + 1)
+        pl2, rc2 = self.pull_over_serve()
+        self.assertEqual((rc2, pl2.tg_trimmed), (df.EXIT_OK, 1))
+        self.assertEqual(self.dst_tg().read_bytes(), b)
+        self.assertEqual(os.lstat(self.dst_tg()).st_mtime_ns // 1_000_000, T0 + 80 * HOUR_MS + 1)
+        self.assertEqual(gaps(self.dst), [])
+
+    def test_pull_exits_2_on_a_head_trim_that_is_not_retention_and_the_copy_is_untouched(self) -> None:
+        a = tg_bytes(("start", T0), ("data_loss", T0 + HOUR_MS), ("gap_silence", T0 + 2 * HOUR_MS))
+        self.put(a, mt=T0 + 10 * HOUR_MS)
+        _pl, rc = self.pull_over_serve()
+        self.assertEqual(rc, df.EXIT_OK)
+        before = (self.dst_tg().read_bytes(), os.lstat(self.dst_tg()).st_mtime_ns)
+        self.put(tg_bytes(("gap_silence", T0 + 2 * HOUR_MS)), mt=T0 + 10 * HOUR_MS + 60_000)  # two rows left 10 h after they were written: not retention
+        pl2, rc2 = self.pull_over_serve()
+        self.assertEqual(rc2, df.EXIT_MISMATCH)
+        self.assertEqual((self.dst_tg().read_bytes(), os.lstat(self.dst_tg()).st_mtime_ns), before)
+        self.assertEqual(gaps(self.dst)[-1]["why"], "tapegaps_head_trim_not_retention")
+        st = json.loads((Path(self.dst) / "transport" / f"{BOT}.status.json").read_text())
+        self.assertEqual(st["state"], "stopped_mismatch")
+
+
 class StatsTest(unittest.TestCase):
     def test_pct_nearest_rank(self) -> None:
         xs = list(range(1, 101))
