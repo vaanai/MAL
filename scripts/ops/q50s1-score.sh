@@ -3,23 +3,28 @@
 # NOT SUBMITTED by the PR that adds it.
 #   sh scripts/ops/q50s1-score.sh dry-day1 --shadow-dir DIR   sleeps to 2026-11-06T06:30:00Z, then ONE `score --dry-run` (writes nothing). Prints STRUCTURE ONLY through
 #                                                                 tools/q50s1_health.py dry-filter (registered, refused dirs and reasons, read-instant record state); exit 0 = DRY_OK
-#   sh scripts/ops/q50s1-score.sh loop --shadow-dir DIR [--shadow-dir DIR2]   daily at 00:20Z until END (2026-11-20T01:00:00Z), `score` (writes the s1 ledger and, once its rule is met,
+#   sh scripts/ops/q50s1-score.sh loop --shadow-dir DIR [--shadow-dir DIR2]   daily at 00:20Z until END (2026-12-01T01:00:00Z), `score` (writes the s1 ledger and, once its rule is met,
 #                                                                 the write-once <ledger>/h5v1q50-boostfloor-s1/q50s1-read-instant.json). The wrapper's full JSON goes to this job's log
 #                                                                 (sealed, as #1543's); a structure-only line per run is appended to $HOME/data/q50s1-ops/score-status.tsv
 #                                                                 (utc, score_rc, filter_rc, registered, refused_dirs, instant_record, status-file age per dir) for the manager
 #   sh scripts/ops/q50s1-score.sh check --shadow-dir DIR      every check, prints what it would run, runs nothing
-# "The successor's score loop runs at that commit" (Amendment 18 item 7): the scorer code runs from a clean detached worktree of the item-1 tool commit, the #1065 merge 37bafde4
-# ($HOME/data/arena-src/q50s1-score-37bafde4), never from main; the wrapper, instant tool, scorer and the Q50 / a2 modules they import are checked by sha256 there.
+# "The successor's score loop runs at that commit" (Amendment 18 item 7): the scorer code runs from a clean detached worktree of the item-1 tool commit
+# ($HOME/data/arena-src/q50s1-score-<commit8>), never from main; the wrapper, instant tool, scorer and the Q50 / a2 modules they import are checked by sha256 there.
+# RE-PIN OWED: TOOL_COMMIT/PINS below are the #1065 merge 37bafde4 (pre-Amendment 22). DEC-031 Amendment 22 item 8.1 changes s1's instant tool (code PR #1109: sized screen 200 /
+# confirmation 300, E = 2026-12-01T00Z); a run at 37bafde4 would record the wrong instant, so this script REFUSES (exit 2) unless the pinned instant tool carries E. Re-pin both to
+# #1109's merge commit (one-line PR, QP OK + reviewer) before the first score run.
+# s1 runs in its own arena root (Amendment 22 item 9; default /data/mal/arena on mal-fast-0, the only other root the pinned scorer accepts): --arena-root is passed explicitly.
 # --shadow-dir: only $ARENA/h5-q50s1-<YYYY-MM-DD>[-suffix] (the book's own dirs; never Q50's h5-q50-*, never a smoke dir). The wrapper itself refuses a dir whose start records are not s1's.
-# Platform: a MiScusi job lives at most 14 d (1,209,600 s; extensions included). Submit the loop between 2026-11-06T00:30Z and 23:00Z with a 20160 min limit so that the 2026-11-20T00:20Z
-# run happens, or split it (Q50S1_SCORE_END, an epoch <= 1795136400, ends a first segment with exit 0 so a second segment `after` it starts).
+# Platform: a MiScusi job lives at most 14 d (1,209,600 s; extensions included), so the loop is two segments: A from 2026-11-06 with Q50S1_SCORE_END=1794963600 (2026-11-18T01:00Z;
+# exit 0 at END), B `after` A with the default END 1796086800 (2026-12-01T01:00Z, after the 2026-12-01T00:20Z run). B starts only if A ends with exit 0.
 # Exit: 0 ok / end reached / DRY_OK, 1 DRY_NOT_OK, 2 args/pins/python, 6 host, 7 worktree; a score run's own rc is printed, the loop continues.
-# Env (optional): Q50S1_PY (default /home/claude/venvs/c1nf-shadow/bin/python, as #1543), Q50S1_REPO, Q50S1_ARENA (default $HOME/data/arena), Q50S1_SCORE_END (loop), Q50S1_DRY_AT (epoch,
+# Env (optional): Q50S1_PY (default /home/claude/venvs/c1nf-shadow/bin/python, as #1543), Q50S1_REPO, Q50S1_ARENA (s1's root, default /data/mal/arena), Q50S1_SCORE_END (loop), Q50S1_DRY_AT (epoch,
 # dry-day1; default 1793946600 = 2026-11-06T06:30:00Z).
 set -eu
 set -f
 TOOL_COMMIT=37bafde4a604bde67723d832f1cd429798062e5b
-END_MAX=1795136400   # 2026-11-20T01:00:00Z: after the 2026-11-20T00:20Z run (E_s1 2026-11-20T00:00Z plus the last v1 exits)
+END_MAX=1796086800   # 2026-12-01T01:00:00Z: after the 2026-12-01T00:20Z run (E = 2026-12-01T00:00Z, Amendment 22 item 8.1, plus the last v1 exits)
+AM22_MARK='"window_end_ms": 1_796_083_200_000'   # the S1 row of the pinned instant tool must carry E (Amendment 22); 37bafde4's does not
 PINS="tools/arena_h5_score_q50s.py=a8365d96acabe7c7a0edd651b10914fa42fd1bee352b58ba2445729eae3d65b2
 tools/arena_h5_q50s_instant.py=ad0e3afb14792b0383cd98cf0db7843ce7dbaf3ef6562001fdec1bbb653a5add
 tools/arena_h5_score.py=dfe7f018601633921f06668fd1af3aaff7b87bf00f321d1540e10b41f8ab6006
@@ -33,7 +38,7 @@ case "$MODE" in loop|dry-day1|check) ;; *) usage ;; esac
 [ -n "${HOME:-}" ] || { echo "q50s1-score: HOME is not set" >&2; exit 2; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="${Q50S1_REPO:-$(cd "$HERE/../.." && pwd)}"
-ARENA="${Q50S1_ARENA:-$HOME/data/arena}"
+ARENA="${Q50S1_ARENA:-/data/mal/arena}"
 PY="${Q50S1_PY:-/home/claude/venvs/c1nf-shadow/bin/python}"
 OPS="$HOME/data/q50s1-ops"
 SRC="$HOME/data/arena-src/q50s1-score-$(printf '%s' "$TOOL_COMMIT" | cut -c1-8)"
@@ -52,7 +57,7 @@ done
 END="${Q50S1_SCORE_END:-$END_MAX}"
 DRY_AT="${Q50S1_DRY_AT:-1793946600}"
 case "$END$DRY_AT" in *[!0-9]*) echo "q50s1-score: bad END or DRY_AT" >&2; exit 2 ;; esac
-[ "$END" -le "$END_MAX" ] || { echo "q50s1-score: END $END is after $END_MAX (2026-11-20T01:00Z)" >&2; exit 2; }
+[ "$END" -le "$END_MAX" ] || { echo "q50s1-score: END $END is after $END_MAX (2026-12-01T01:00Z)" >&2; exit 2; }
 
 # 1. host
 if [ "$(hostname)" != "mal-fast-0" ]; then echo "q50s1-score: the book runs on mal-fast-0 (this is $(hostname))" >&2; [ "$MODE" = "check" ] || exit 6; fi
@@ -73,10 +78,11 @@ if [ -d "$SRC" ]; then
     got="$(sha256sum "$SRC/$f" 2>/dev/null | cut -c1-64)"
     [ "$got" = "$want" ] || { echo "q50s1-score: $f sha256 '$got' is not the pinned $want" >&2; exit 2; }
   done
-  echo "q50s1-score: code $TOOL_COMMIT at $SRC; pinned sha256 ok: wrapper a8365d96 instant ad0e3afb scorer dfe7f018 q50-wrapper 4ab3e909 q50-instant 3b62be7a a2-wrapper 78e5bdab"
+  grep -q -F "$AM22_MARK" "$SRC/tools/arena_h5_q50s_instant.py" || { echo "q50s1-score: the pinned instant tool at $TOOL_COMMIT has no Amendment 22 E row: RE-PIN to #1109's merge commit first (no s1 score runs on pre-Amendment-22 code)" >&2; exit 2; }
+  echo "q50s1-score: code $TOOL_COMMIT at $SRC; pinned sha256 ok ($(printf '%s\n' "$PINS" | awk -F= '{printf "%s:%s ", $1, substr($2, 1, 8)}'))"
   (cd "$SRC" && PYTHONPATH="$SRC" "$PY" -c 'import tools.arena_h5_score_q50s') || { echo "q50s1-score: $PY cannot import tools.arena_h5_score_q50s at $SRC" >&2; exit 2; }
 fi
-SDARGS=""
+SDARGS=" --arena-root $ARENA"
 for d in $DIRS; do SDARGS="$SDARGS --shadow-dir $d"; done
 if [ "$MODE" = "check" ]; then
   echo "q50s1-score: (check) would run in $SRC: $PY -m tools.arena_h5_score_q50s score$SDARGS (loop: daily 00:20Z to $END; dry-day1: --dry-run at $DRY_AT)"
