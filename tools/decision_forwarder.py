@@ -30,8 +30,10 @@ Modes
              <bot_id>.status.json   state, last frame instant, last remote heartbeat, seq, file, offset (atomic replace)
              <bot_id>.gaps.jsonl    a gap row on: stall (no frame for stall_ms), resume, disconnect, reconnect, chain/offset mismatch, local torn tail
              <bot_id>.tapegaps.jsonl  the carried relay stream (only when serve sends tg frames). Every complete line is checked (object, exactly kind str + ms int, ms in range)
-                                    and the new bytes must START WITH the bytes already accepted: a shrink, or a change of an already-seen prefix, is a mismatch (exit 2, nothing
-                                    written). Written atomically (tmp + fsync + rename + directory fsync; regular file, nlink 1) with its mtime set to the SOURCE pass instant
+                                    and the new bytes must START WITH the bytes already accepted, or be a RETENTION HEAD TRIM of them (the complete
+                                    lines equal the accepted lines minus a head of k >= 0 lines, plus appended lines, every removed line older than
+                                    TAPEGAPS_RETAIN_MS before max(newest kept row, the frame's mt): the relay's own 72 h retention). Any other shrink, or change of an
+                                    already-seen prefix, is a mismatch (exit 2, nothing written). Written atomically (tmp + fsync + rename + directory fsync; regular file, nlink 1) with its mtime set to the SOURCE pass instant
                                     (os.utime), so a dead relay shows stale on this host. The accepted bytes are the baseline after a restart. NEVER written under decisions/.
                                     status.json keys are unchanged (decision_forwarder_v1); a rejected tg frame is a `mismatch` row in gaps.jsonl.
            A chain or offset mismatch stops the puller (exit 2) and appends nothing. A disconnect reconnects with backoff and resumes at
