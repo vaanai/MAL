@@ -4,19 +4,20 @@
 #
 # usage: q50-xtime-manifest.sh X [--no-archive]
 #   X  full 40-hex sha on origin/main (the merge sha of Q50's DEC copy)
-# Exit 0 only if: the 43-path list sha256 is 244f9e85...; exactly these FOUR pinned paths differ from the reviewed install 0526d5cd (ALLOWED below: the executor with blob 70d789ff... = the 5b merge 4646e542,
+# Exit 0 only if: the 43-path list sha256 is 244f9e85...; exactly these FIVE pinned paths differ from the reviewed install 0526d5cd (ALLOWED below: the executor at EXEC_BLOB (5b merge 4646e542 plus later reviewed changes), tools/arena_live_parity.py at PLP_BLOB (DEC-032 Am.5 item 6b),
 # plus the three mayhem fee recipient files, n_aIm_21YbvT68_A / PR #1027, each pinned by exact blob AND sha256 below); the other 39 paths are identical. Any other outcome: PINNED_SET_CHANGED / refusal, exit non-zero, no install.
 # It does NOT check the canary DEC copy (QP step 3): that file does not exist until the Q50 copy PR merges. That check is a separate checklist step (row s8.3, 'canary record check at X'), run and recorded by the manager.
 set -u
 REVIEWED=0526d5cd7ab6e1bfbc05e295185c37f7c31d72f1
 M5B=4646e5428f3663af863eeefc00ce05a38aa685b7
 EXEC_PATH=tools/h5_arena_executor.py
-ALLOWED='tools/h5_arena_executor.py tools/pumpswap_simulate.py tools/pumpswap_tx.py tools/probe_executor.py'  # mayhem fee recipient fix, n_aIm_21YbvT68_A
-EXEC_BLOB=70d789ff00eb7fd79411745a270f31b2f4242f36
+ALLOWED='tools/h5_arena_executor.py tools/pumpswap_simulate.py tools/pumpswap_tx.py tools/probe_executor.py tools/arena_live_parity.py'  # mayhem fee recipient fix, n_aIm_21YbvT68_A; + DEC-032 Am.5 item 6b (P7 gap share at C0, the fifth path)
+EXEC_BLOB=7408d14669187e7be5880a5ec777b877932a8fc0  # branch claude/p7-c0-gap: 5b + the rung in the parity state (Am.5 item 6b). Re-pin to the COMBINED blob once #1085 / #1091 are merged; was 70d789ff00eb7fd79411745a270f31b2f4242f36
 PTX_PATH=tools/pumpswap_tx.py; PTX_BLOB=2c9f6dda26ddbed50a6231b47a85c91723a19d50; PTX_SHA256=2c71d3c0d561968fd8836e688f21c50f5e19d1947a4be547b5e40a041d841655
 PSIM_PATH=tools/pumpswap_simulate.py; PSIM_BLOB=ec5f22a8048c100500bde49ca34622d88b6e6706; PSIM_SHA256=63d27af8f71066c480da0fb6d3a7cb163f6f623d2ec93b3e84bb5793d8156966
 PEX_PATH=tools/probe_executor.py; PEX_BLOB=07b2851b8086a7cd402574ad601af26a7344db84; PEX_SHA256=f786d4012a442f7136993caceae1a0b9062230148d1f7d04e907028a82022b01
-EXEC_SHA256=ef8ae9315095c32ff5179567ef63d64803ddd2bde723b09f74fdc82de4decdc4
+PLP_PATH=tools/arena_live_parity.py; PLP_BLOB=989e3de66ff5ac2784f5c210f3cde1263a9ddf88; PLP_SHA256=d22aff3cb7cc0e583d72b2e1f0704725033b44239ff61d7b5a8dcd417dc1cd90  # DEC-032 Am.5 item 6b (P7 gap share at C0)
+EXEC_SHA256=0a83a21d5737a54ee6424d1cd68af77b4e72b31ef7a8c4c29fea1b4a605040d2  # see EXEC_BLOB; was ef8ae9315095c32ff5179567ef63d64803ddd2bde723b09f74fdc82de4decdc4
 OLD_EXEC_SHA256=c451a61545dac25ebb5a561c5b59d711a3f2393ab3333cff1329576cebf3d0da
 LIST_SHA256=244f9e85dd5870bfc47be1cf535eadecd0e2783cc17fee11440ab0ea7ae83720
 REPO=${MAL_REPO:-/home/claude/.miscusi/repos/vaanai/MAL}
@@ -49,17 +50,17 @@ ALLOWED_SORTED=$(printf '%s\n' $ALLOWED | sort | tr '\n' ' ' | sed 's/ $//')
 [ "$CH_SORTED" = "$ALLOWED_SORTED" ] || { echo "PINNED_SET_CHANGED: expected exactly '$ALLOWED_SORTED', got '${CH_SORTED}'"; exit 3; }
 b=$(g rev-parse "$X:$EXEC_PATH"); s=$(g show "$X:$EXEC_PATH" | sha256sum | cut -d' ' -f1)
 echo "executor blob at X=$b sha256=$s (expected $EXEC_BLOB / $EXEC_SHA256; old sha256 $OLD_EXEC_SHA256)"
-[ "$b" = "$EXEC_BLOB" ] && [ "$s" = "$EXEC_SHA256" ] || { echo "PINNED_SET_CHANGED: executor is not the 5b blob"; exit 3; }
-# the three mayhem files: exact blob and sha256, as the executor (any other content, even one appended line, is exit 3)
-for t in "$PTX_PATH $PTX_BLOB $PTX_SHA256" "$PSIM_PATH $PSIM_BLOB $PSIM_SHA256" "$PEX_PATH $PEX_BLOB $PEX_SHA256"; do
+[ "$b" = "$EXEC_BLOB" ] && [ "$s" = "$EXEC_SHA256" ] || { echo "PINNED_SET_CHANGED: executor is not the pinned blob"; exit 3; }
+# the three mayhem files and the parity tool (Am.5 item 6b): exact blob and sha256, as the executor (any other content, even one appended line, is exit 3)
+for t in "$PTX_PATH $PTX_BLOB $PTX_SHA256" "$PSIM_PATH $PSIM_BLOB $PSIM_SHA256" "$PEX_PATH $PEX_BLOB $PEX_SHA256" "$PLP_PATH $PLP_BLOB $PLP_SHA256"; do
   read -r tp tb ts <<EOT
 $t
 EOT
   b=$(g rev-parse "$X:$tp"); s=$(g show "$X:$tp" | sha256sum | cut -d' ' -f1)
   echo "$tp blob at X=$b sha256=$s (expected $tb / $ts)"
-  [ "$b" = "$tb" ] && [ "$s" = "$ts" ] || { echo "PINNED_SET_CHANGED: $tp is not the reviewed mayhem blob"; exit 3; }
+  [ "$b" = "$tb" ] && [ "$s" = "$ts" ] || { echo "PINNED_SET_CHANGED: $tp is not the reviewed blob"; exit 3; }
 done
-echo "RESULT (a): exactly FOUR changed pinned paths vs $REVIEWED ($ALLOWED_SORTED); $EXEC_PATH = 5b blob. The other $((N-4)) paths are identical."
+echo "RESULT (a): exactly FIVE changed pinned paths vs $REVIEWED ($ALLOWED_SORTED); $EXEC_PATH = the pinned blob. The other $((N-5)) paths are identical."
 # step 5: whole-tree path diff (not only the pinned set), reviewed install vs X
 g diff --name-status "$REVIEWED" "$X" > "${TMPDIR:-/tmp}/q50-xtime-treediff.$$" || die "git diff failed"
 echo "step5: whole-tree changes $REVIEWED..$X; pinned-path changes listed below (FULL=1 lists every path):"
