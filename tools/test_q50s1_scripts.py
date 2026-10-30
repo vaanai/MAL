@@ -29,9 +29,21 @@ class Syntax(unittest.TestCase):
 
     def test_neither_script_touches_a_pinned_unit_a_firewall_or_a_key(self):
         for p in (REG, SHD):
-            t = p.read_text()
+            t = p.read_text().lower()
+            if p == SHD:  # DEC-031 Amendment 22 item 10: the start script names (never prints) the one Helius key file; nothing else
+                names = set(re.findall(r"[\w/.-]*\.env\b", t))
+                self.assertEqual(names, {"/var/lib/mal/fast-listener/helius.env"}, names)
+                t = t.replace("/var/lib/mal/fast-listener/helius.env", "")
             for bad in ("ufw", "sshd", "cloudflared", "private", ".env", "api-key"):
-                self.assertNotIn(bad, t.lower(), f"{p.name}: {bad}")
+                self.assertNotIn(bad, t, f"{p.name}: {bad}")
+
+    def test_the_feed_helper_builds_the_key_url_once_and_never_prints(self):
+        helper = REPO / "scripts" / "ops" / "q50s1-feed.sh"
+        subprocess.run(["sh", "-n", str(helper)], check=True)
+        code = [ln for ln in helper.read_text().splitlines() if not ln.lstrip().startswith("#")]
+        self.assertEqual(sum("api-key" in ln for ln in code), 1)
+        for ln in code:
+            self.assertNotRegex(re.sub(r"'[^']*'", "''", ln), r"\b(echo|printf|export|logger)\b|set -x", ln)  # single-quoted sed patterns are text, not commands
 
     def test_shadow_pins_s_star_and_the_window_and_never_f50(self):
         t = SHD.read_text()
@@ -95,6 +107,7 @@ esac''')
         self.src = self.home / "data" / "arena-src" / "q50s1-5c2ab7c6"
         self.src.mkdir()
         self.write_line()
+        (self.d / "helius.env").write_text("HELIUS_API_KEY=fake0key-1234\n")  # a fixture key; the real key file is never read by a test
 
     def stub(self, name, body):
         p = self.bin / name
@@ -122,12 +135,12 @@ esac''')
 
     def write_line(self, **over):
         import json
-        e = {"frozen_sha": "5c2ab7c64b21358619e37068c6a53e4d183512ea", "clock_start_ms": 1793923200000, "window_end_ms_pin": 1795132800000, "registered_at_ms": 1793800000000}
+        e = {"frozen_sha": "5c2ab7c64b21358619e37068c6a53e4d183512ea", "clock_start_ms": 1793923200000, "window_end_ms_pin": 1796083200000, "registered_at_ms": 1793800000000}
         e.update(over)
         (self.arena / "bots.json").write_text(json.dumps({"bots": {"h5v1q50-boostfloor-s1": e}}))
 
     def run_(self, now=WIN_FROM + 60, git_status="", extra_env=None):
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_NOW_EPOCH": str(now), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py),
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HELIUS_ENV": str(self.d / "helius.env"), "Q50S1_NOW_EPOCH": str(now), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py),
                "FAKE_GIT_STATUS": git_status, "Q50S1_CGROUP_SLICE_DIR": str(self.cg), **(extra_env or {})}
         return subprocess.run(["sh", str(SHD), "--check"], capture_output=True, text=True, env=env, cwd=REPO)
 
@@ -188,11 +201,68 @@ esac''')
         self.assertEqual(self.run_().returncode, 7)
 
     def test_bad_arguments_and_clock(self):
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home)}
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HELIUS_ENV": str(self.d / "helius.env")}
         for a in (["--run"], ["--check", "x"], ["x"]):
             r = subprocess.run(["sh", str(SHD), *a], capture_output=True, text=True, env=env, cwd=REPO)
             self.assertEqual(r.returncode, 2, a)
         self.assertEqual(self.run_(now="abc").returncode, 2)
+
+
+class ShadowFeed(ShadowCheck):
+    """DEC-031 Amendment 22 item 10: the keyed Helius websocket. The key never reaches the job's output, the check echo or the scope's description; a real start is driven with a
+    fake `date` (inside the 11-05 window) and a recording systemd-run stub."""
+
+    KEY = "fake0key-1234"
+
+    def test_check_prints_the_helius_base_without_the_key(self):
+        r = self.run_()
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertIn("--ws-url wss://api.mainnet-beta.solana.com --ws-url wss://mainnet.helius-rpc.com/<query: key from", r.stdout)
+        self.assertNotIn("solanavibestation", r.stdout)
+        for leak in (self.KEY, "api-key"):
+            self.assertNotIn(leak, r.stdout + r.stderr)
+
+    def test_missing_or_malformed_key_refuses_11(self):
+        for text in (None, "", "HELIUS_API_KEY=\n", "OTHER=1\n", "HELIUS_API_KEY=ab$(id)\n", "HELIUS_API_KEY=a b\n"):
+            with self.subTest(text=text):
+                f = self.d / "helius.env"
+                if text is None:
+                    f.unlink(missing_ok=True)
+                else:
+                    f.write_text(text)
+                r = self.run_()
+                self.assertEqual(r.returncode, 11, r.stderr + r.stdout)
+                self.assertNotIn("api-key", r.stdout + r.stderr)
+
+    def test_quoted_and_exported_key_forms_are_read(self):
+        for text in ('HELIUS_API_KEY="fake0key-1234"\n', "export HELIUS_API_KEY='fake0key-1234'\n"):
+            (self.d / "helius.env").write_text(text)
+            self.assertEqual(self.run_().returncode, 0)
+
+    def test_a_real_start_never_puts_the_key_in_the_unit_or_the_output(self):
+        rec = self.d / "systemd-run.argv"
+        self.stub("systemd-run", f'for a; do printf "%s\\n" "$a"; done > {rec}\nexit 0')
+        self.stub("date", f'if [ "$*" = "-u +%s" ]; then echo {WIN_FROM + 60}; else exec /bin/date "$@"; fi')
+        self.write_line(registered_at_ms=(WIN_FROM - 3600) * 1000)
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HELIUS_ENV": str(self.d / "helius.env"), "Q50S1_REPO": str(self.d),
+               "ARENA_H5_PYTHON": str(self.py), "FAKE_GIT_STATUS": ""}
+        # a real start ignores the cgroup override and reads the real slice files: a `cat` stub answers for exactly those two paths (2 GiB used, no page cache)
+        self.stub("cat", 'case "$1" in /sys/fs/cgroup/user.slice/user-1002.slice/memory.current) echo 2147483648 ;; '
+                         '/sys/fs/cgroup/user.slice/user-1002.slice/memory.stat) printf "active_file 0\\ninactive_file 0\\nfile_mapped 0\\n" ;; *) exec /bin/cat "$@" ;; esac')
+        r = subprocess.run(["sh", str(SHD)], capture_output=True, text=True, env=env, cwd=REPO)
+        out = r.stdout + r.stderr
+        self.assertNotIn(self.KEY, out)
+        self.assertNotIn("api-key", out)
+        self.assertEqual(r.returncode, 0, out)
+        argv = rec.read_text().splitlines()
+        i = argv.index("env")
+        unit_part = argv[:i]
+        self.assertIn("--description=q50s1-shadow", unit_part)
+        self.assertNotIn("api-key", "\n".join(unit_part))
+        self.assertNotIn(self.KEY, "\n".join(unit_part))
+        self.assertEqual(sum(self.KEY in a for a in argv), 1)  # only the shadow's own --ws-url argument (disclosed residual: /proc/<pid>/cmdline)
+        self.assertIn("wss://mainnet.helius-rpc.com/?api-key=" + self.KEY, argv)
+        self.assertIn("ws=wss://api.mainnet-beta.solana.com wss://mainnet.helius-rpc.com/ (key from", r.stdout)
 
 
 class ShadowCheckMemory(unittest.TestCase):
@@ -210,7 +280,7 @@ class ShadowCheckMemory(unittest.TestCase):
         self.stub("git", f'touch {self.mark}.git\nexit 99')
 
     def mem(self, *args):
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py), "Q50S1_CGROUP_SLICE_DIR": str(self.cg)}
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HELIUS_ENV": str(self.d / "helius.env"), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py), "Q50S1_CGROUP_SLICE_DIR": str(self.cg)}
         return subprocess.run(["sh", str(SHD), "--check-memory", *args], capture_output=True, text=True, env=env, cwd=REPO)
 
     def assert_untouched(self):
@@ -377,7 +447,7 @@ class ShadowCheckMemory(unittest.TestCase):
 
     def test_a_real_start_on_the_wrong_host_still_exits_6_first(self):
         self.stub("hostname", "echo mal-research-0")
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py)}
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HELIUS_ENV": str(self.d / "helius.env"), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py)}
         r = subprocess.run(["sh", str(SHD)], capture_output=True, text=True, env=env, cwd=REPO)
         self.assertEqual(r.returncode, 6, r.stdout + r.stderr)
         self.assert_untouched()
@@ -385,7 +455,7 @@ class ShadowCheckMemory(unittest.TestCase):
     def test_arguments(self):
         for a in (["x"], ["--check"]):
             self.assertEqual(self.mem(*a).returncode, 2, a)
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home)}
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HELIUS_ENV": str(self.d / "helius.env")}
         r = subprocess.run(["sh", str(SHD), "--check-memory-only"], capture_output=True, text=True, env=env, cwd=REPO)
         self.assertEqual(r.returncode, 2)
 
