@@ -724,3 +724,95 @@ def test_p3_and_p4_use_the_live_basis_not_the_registered_pnl():
     assert run(ts, ws)["halts"]["P3"]["at_index"] == 20
     old_d = (ts[0]["live_net_lamports"] - ws[0]["pnl_lamports"]) / STAKE * 1e4
     assert old_d > 300  # the previous rule (live_net - pnl_lamports) could never fire P3 here
+
+
+# ------------------------------------------------------------------------------------------------- DEC-032 Amendment 5 item 6b (DRAFT): P7 gap share at C0
+def gap_book_small():
+    ts, ws = book(12)
+    ts[1]["gap"] = ts[8]["gap"] = True  # 2 gap trips before 20: the small-count breach
+    return ts, ws
+
+
+def gap_book_share():
+    ts, ws = book(100)
+    for i in range(6):
+        ts[i]["gap"] = True  # 6% from the first prefixes on
+    return ts, ws
+
+
+@pytest.mark.parametrize("make", [gap_book_small, gap_book_share])
+def test_am5_6b_at_c0_a_gap_share_breach_is_not_decidable_and_not_a_halt(make):
+    r = run(*make(), state=fresh_state(rung="C0"))
+    assert "P7" not in r["halts"] and r["soft_halts"] == [] and not r["stop_required"]
+    assert r["not_decidable"] and r["match"] is False and r["verdict"] == "parity not shown"
+    assert "no_twin or gap share above 5%" in r["not_shown_because"] and r["shares"]["gap"] >= 2
+
+
+@pytest.mark.parametrize("make", [gap_book_small, gap_book_share])
+@pytest.mark.parametrize("rung", ["C1", None, "c0", "C0 ", "", 0, ["C0"], "T1"])
+def test_am5_6b_at_c1_or_a_missing_or_unknown_rung_the_gap_share_is_the_p7_soft_halt(make, rung):
+    st = fresh_state() if rung is None else fresh_state(rung=rung)
+    r = run(*make(), state=st)
+    assert "P7" in r["halts"] and not r["halts"]["P7"]["hard"] and r["stop_required"] and r["not_decidable"] and not r["match"]
+
+
+def test_am5_6b_a_missing_state_keeps_the_soft_halt():
+    assert P.gap_share_halts(None) and P.gap_share_halts({}) and P.gap_share_halts({"rung": "C1"}) and not P.gap_share_halts({"rung": "C0"})
+    assert "P7" in run(*gap_book_small(), state=None)["halts"]
+
+
+def test_am5_6b_the_other_p7_parts_stay_soft_halts_at_c0():
+    ts, ws = book(12)
+    ws.pop(1)
+    ws.pop(6)  # 2 no_twin before 20
+    r = run(ts, ws, state=fresh_state(rung="C0"))
+    assert "P7" in r["halts"] and "no_twin" in r["halts"]["P7"]["detail"]
+    ts, ws = book(12)
+    ts[3]["unreadable"] = True
+    r = run(ts, ws, state=fresh_state(rung="C0"))
+    assert "P7" in r["halts"] and "unreadable" in r["halts"]["P7"]["detail"]
+    st = fresh_state(rung="C0")
+    st["at_ms"]["loss"] = NOW - 60_001
+    r = run(*book(12), state=st)
+    assert "P7" in r["halts"] and "older than 60 s" in r["halts"]["P7"]["detail"]
+    ts, _ws = book(1)  # one trip past its exit with a zero-row twins file (1 no_twin is below the small count)
+    r = run(ts, [], state=fresh_state(rung="C0"))
+    assert "P7" in r["halts"] and "zero rows" in r["halts"]["P7"]["detail"]
+
+
+def test_am5_6b_at_c0_gap_share_with_another_halt_still_exits_10(tmp_path):
+    ts, ws = gap_book_small()
+    ws.pop(3)
+    ws.pop(5)  # plus 2 no_twin
+    args = cli(tmp_path, ts, ws, attempts(40), fresh_state(rung="C0"))
+    assert P.main(args) == 10 and (tmp_path / "STOP").exists()
+    (tmp_path / "STOP").unlink()
+    ts, ws = book(24, d_bps=-301.0)
+    ts[0]["gap"] = ts[1]["gap"] = True  # gap share breach plus P3 (rolling 20 of the 22 eligible trips below -300 bps)
+    args = cli(tmp_path, ts, ws, attempts(40), fresh_state(rung="C0"))
+    out = tmp_path / "o.json"
+    assert P.main(args + ["--json", str(out)]) == 10 and (tmp_path / "STOP").exists()
+    res = json.loads(out.read_text())
+    assert "P3" in res["halts"] and "P7" not in res["halts"] and res["not_decidable"]
+
+
+def test_am5_6b_cli_gap_only_breach_exits_0_at_c0_and_10_at_c1(tmp_path, capsys):
+    ts, ws = gap_book_small()
+    out = tmp_path / "o.json"
+    args = cli(tmp_path, ts, ws, attempts(40), fresh_state(rung="C0"))
+    assert P.main(args + ["--json", str(out)]) == 0 and not (tmp_path / "STOP").exists()
+    res = json.loads(out.read_text())
+    assert res["not_decidable"] and res["match"] is False and res["verdict"] == "parity not shown" and not res["halts"]
+    args = cli(tmp_path, ts, ws, attempts(40), fresh_state(rung="C1"))
+    assert P.main(args) == 10 and (tmp_path / "STOP").exists()
+
+
+def test_am5_6b_the_ladder_refuses_a_step_up_under_a_c0_gap_breach():
+    from tools import h5_arena_ladder as L
+    from tools.test_h5_arena_ladder import good_inputs
+    r = run(*gap_book_share(), state=fresh_state(rung="C0"))
+    assert not r["stop_required"]
+    inp = good_inputs()
+    inp["parity"] = r
+    ok, res = L.evaluate_step_up(inp)
+    assert not ok and dict((n, o) for n, o, _w in res)["fills_match"] is False
