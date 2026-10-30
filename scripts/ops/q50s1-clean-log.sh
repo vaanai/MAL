@@ -7,7 +7,12 @@
 # tools/q50s1_health.py clean-log: only lines that START with "q50s1-shadow: " (the pinned start script's own lines) are printed; every other line is matched against fixed patterns and
 # counted. --out-dir: the book's dir (default $ARENA/h5-q50s1-2026-11-05): prefix counts of start/stop/error/hb rows, hb rows' trailing t_ms, gap rows' kind and flags_pools, the
 # status file's mtime, the errors file's size. Scope: `systemctl --user show q50s1-shadow.scope` ActiveState and ActiveEnterTimestamp only.
+# It is also the Am.22 item 10 key check before the clock (QP C2): counts only, never an argv or environment printed: the key string in the book's start row(s), in
+# /proc/<pid>/cmdline of every process in the scope's cgroup, HELIUS_API_KEY= in their /proc/<pid>/environ, and in the user journal since the scope start; plus
+# `findmnt -no OPTIONS /proc` (printed). Any count that is not 0, or cannot be read, is NOT_CLEAN. The one path the launcher's redaction does not cover is S*'s own
+# h5-shadow-errors.log (an exception message written to a file), which is counted too.
 # Exit: 0 CLEAN, 1 NOT_CLEAN, 2 args or unreadable input, 6 host.
+# Tests only: Q50S1_CGROUP_ROOT (default /sys/fs/cgroup; a wrong path reads nothing and fails closed).
 # Env (optional): Q50S1_HOME (s1's own HOME, default /home/claude/s1home; root = $Q50S1_HOME/data/arena, DEC-031 Amendment 22 item 9), Q50S1_JOBS_DIR (default $HOME/.miscusi/jobs).
 set -eu
 set -f
@@ -40,5 +45,23 @@ SINCE=""
 if [ -n "$SINCE_TXT" ]; then SINCE="$(date -u -d "$SINCE_TXT" +%s 2>/dev/null || echo "")"; fi
 A=no
 [ "$ACT" = active ] && A=yes
+CGROOT="${Q50S1_CGROUP_ROOT:-/sys/fs/cgroup}"
+CG="$(systemctl --user show "$UNIT.scope" -p ControlGroup --value 2>/dev/null || echo "")"
+PIDS=""
+if [ -n "$CG" ] && [ -r "$CGROOT$CG/cgroup.procs" ]; then PIDS="$(cat "$CGROOT$CG/cgroup.procs" 2>/dev/null | tr '\n' ' ')"; fi
+KC=unreadable; KE=unreadable
+if [ -n "$(printf '%s' "$PIDS" | tr -d ' ')" ]; then
+  KC=0; KE=0
+  for p in $PIDS; do
+    if [ -r "/proc/$p/cmdline" ]; then KC=$((KC + $(tr '\0' '\n' < "/proc/$p/cmdline" | grep -c -F 'api-key' || true))); else KC=unreadable; break; fi
+    if [ -r "/proc/$p/environ" ]; then KE=$((KE + $(tr '\0' '\n' < "/proc/$p/environ" | grep -c -F 'HELIUS_API_KEY=' || true))); else KE=unreadable; break; fi
+  done
+fi
+KJ=unreadable
+if [ -n "$SINCE" ] && journalctl --user -n 0 --no-pager >/dev/null 2>&1; then KJ="$(journalctl --user --since "@$SINCE" --no-pager -o cat 2>/dev/null | grep -c -F 'api-key' || true)"; fi
+case "$KJ" in ''|*[!0-9]*) KJ=unreadable ;; esac
+PM="$(findmnt -no OPTIONS /proc 2>/dev/null | tr ' ' ',' || true)"
+echo "q50s1-clean-log: scope processes: $(printf '%s' "$PIDS" | wc -w) (pids are not printed with their argv)"
 echo "q50s1-clean-log: $(date -u +%FT%TZ) scope $UNIT.scope ActiveState=$ACT ActiveEnterTimestamp='$SINCE_TXT' job $JUID out $(basename "$OUT")"
-exec python3 -I "$REPO/tools/q50s1_health.py" clean-log --out-dir "$OUT" --job-log "$JOBS/$JUID/log" --scope-active "$A" --scope-since-epoch "${SINCE:-x}"
+exec python3 -I "$REPO/tools/q50s1_health.py" clean-log --out-dir "$OUT" --job-log "$JOBS/$JUID/log" --scope-active "$A" --scope-since-epoch "${SINCE:-x}" \
+  --cmdline-key-count "$KC" --environ-key-count "$KE" --journal-key-count "$KJ" --proc-mount "${PM:--}"

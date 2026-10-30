@@ -10,7 +10,7 @@
 #   `sh scripts/ops/q50s1-shadow-start.sh --check` runs every check below and prints the command it would run; it starts nothing and is allowed at any time of day.
 #   SEGMENTS (a MiScusi job lives at most 14 d; an `after` job starts only after a SUCCESSFUL end): this job is segment 1. It stops the shadow itself at SEG1_END
 #   2026-11-19T04:30:00Z and exits 0. Segment 2 is `sh scripts/ops/q50s1-shadow-start.sh --successor`, submitted `after` segment 1. It needs now in [clock, E), uses the out dir
-#   $ARENA/h5-q50s1-<UTC date>-succ, makes the same checks and launch, and ends itself at min(2026-12-01T01:00:00Z, its start + 13 d 18 h) with exit 0. Same frozen_sha,
+#   $ARENA/h5-q50s1-<UTC date>-succ, makes the same checks and launch, and ends itself at min(2026-12-01T01:00:00Z, its start + 13 d 16 h) with exit 0. Same frozen_sha,
 #   same bot_id, no new clock: a restart under DEC-031 Amendment 6 item 4 (restart-gap hours excluded as decision-input hours; positions open at the stop are section 1.4
 #   exclusions). The handover instant is fixed here, before the clock and outcome-blind. A segment whose shadow ends before its segment end exits 1 (its successor does not
 #   start; the manager submits --successor by hand). `--check --successor` rehearses segment 2.
@@ -41,7 +41,8 @@
 #      from the key file inside the process, adds it to the Helius --ws-url in sys.argv only, and runs tools.h5_shadow from the S* worktree as `python -m` does; no key is on
 #      any command line. The h5_shadow args: --fresh-forward ARENA --q-star-sol 50 --sockets 3 --syn-sockets 1 --ws-url wss://api.mainnet-beta.solana.com
 #      --ws-url wss://mainnet.helius-rpc.com/ (scripts/ops/q50s1-feed.sh; socket i uses url i mod 2, so one PumpSwap socket is Helius). Exit 11 if a URL is not key-free
-#      or the key file is unreadable or malformed (the check mode runs the launcher with --dry). bx10 is off at Q* 50 in code.
+#      or the key file is unreadable or malformed; exit 12 if the launcher refuses its arguments (the check mode runs the launcher with --dry, against this checkout
+#      while the S* worktree does not exist yet). bx10 is off at Q* 50 in code.
 # Output: $ARENA/h5-q50s1-<UTC date>[-succ]/h5-shadow-<UTC hour>.jsonl (never opened by any worker; the Q50 seal and EXP-024 successor note part A apply).
 # Env (all optional): ARENA_H5_PYTHON (default /var/lib/mal/fast-listener/.venv/bin/python), Q50S1_REPO (default: the checkout this script is in), Q50S1_HOME (s1's own HOME,
 # default /home/claude/s1home; s1's root is $Q50S1_HOME/data/arena and the shadow runs with HOME=$Q50S1_HOME, because the pinned scorer and S*'s h5_shadow accept only
@@ -171,6 +172,8 @@ if [ "$SEG" = 2 ]; then
     echo "q50s1-shadow: a successor segment starts only in [clock, E) = [$((CLOCK_MS / 1000)), $((END_MS / 1000))); now $NOW" >&2
     [ "$MODE" = "check" ] || exit 4
   fi
+elif [ "$MODE" = run ] && [ $((SEG_END - NOW)) -gt 1208700 ]; then
+  echo "q50s1-shadow: segment 1 would run more than 14 d - 15 min to its end (a MiScusi job's limit)" >&2; exit 4
 elif [ "$NOW" -lt "$WIN_FROM" ] || [ "$NOW" -gt "$WIN_TO" ]; then
   echo "q50s1-shadow: now $NOW is outside the start window [$WIN_FROM, $WIN_TO] (2026-11-05T20:00Z to 22:30Z; at least 1 h before the clock)" >&2
   [ "$MODE" = "check" ] || exit 4
@@ -214,8 +217,12 @@ q50s1_ws2_build || { echo "q50s1-shadow: the feed URLs are not two distinct key-
 [ -x "$PY" ] || { echo "q50s1-shadow: no python at $PY" >&2; exit 2; }
 "$PY" -I -c 'import websockets, certifi' 2>/dev/null || { echo "q50s1-shadow: websockets/certifi missing in $PY" >&2; exit 3; }
 if [ "$MODE" = "check" ]; then
-  "$PY" -I "$HERE/q50s1-ws-launch.py" --dry --src "$SRC" --key-file "$Q50S1_KEY_FILE" --keyed-url "$Q50S1_WS2" -- --fresh-forward ARENA --q-star-sol 50 --out-dir "$OUT" \
-    --sockets 3 --syn-sockets 1 --ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2" >/dev/null || { echo "q50s1-shadow: the launcher refuses (key file or arguments): NOT starting" >&2; exit 11; }
+  DRYSRC="$SRC"; [ -d "$SRC" ] || DRYSRC="$REPO"   # before the S* worktree exists (it is made at the start) the dry run checks the key and the arguments against this checkout
+  LRC=0
+  "$PY" -I "$HERE/q50s1-ws-launch.py" --dry --src "$DRYSRC" --key-file "$Q50S1_KEY_FILE" --keyed-url "$Q50S1_WS2" -- --fresh-forward ARENA --q-star-sol 50 --out-dir "$OUT" \
+    --sockets 3 --syn-sockets 1 --ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2" >/dev/null || LRC=$?
+  [ "$LRC" -ne 11 ] || { echo "q50s1-shadow: the launcher finds no usable key in $Q50S1_KEY_FILE: NOT starting" >&2; exit 11; }
+  [ "$LRC" -eq 0 ] || { echo "q50s1-shadow: the launcher refuses its arguments or src (rc $LRC): NOT starting" >&2; exit 12; }
   echo "q50s1-shadow: (check) would run in $SRC: systemd-run --user --scope --unit=$UNIT -p MemoryMax=${NEW_MAX_MB}M -p MemorySwapMax=0 env PYTHONPATH=$SRC H5_CODE_SHA=$S_SHA $PY -I $HERE/q50s1-ws-launch.py --src $SRC --key-file $Q50S1_KEY_FILE --keyed-url $Q50S1_WS2 -- --fresh-forward ARENA --q-star-sol 50 --out-dir $OUT --sockets 3 --syn-sockets 1 --ws-url $Q50S1_WS1 --ws-url $Q50S1_WS2 (systemd-run --description=$UNIT; the key is added inside the process; HOME=$S1HOME for the process; segment $SEG ends $(date -u -d "@$SEG_END" +%FT%TZ) with exit 0)"
   exit 0
 fi

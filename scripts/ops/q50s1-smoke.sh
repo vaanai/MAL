@@ -11,8 +11,8 @@
 # Same code and flags as the book (scripts/ops/q50s1-shadow-start.sh, read from THIS checkout so the two never drift): tools/h5_shadow.py at S* 5c2ab7c6 from a clean detached worktree,
 # --fresh-forward ARENA --q-star-sol 50 --sockets 3 --syn-sockets 1 and the providers of scripts/ops/q50s1-feed.sh and scripts/ops/q50s1-ws-launch.py (the helper and the launcher the start
 # script itself uses: mainnet-beta plus the Helius ws, its key added inside the process, never on a command line), MemoryMax = its NEW_MAX_MB (1500M), MemorySwapMax=0. Differences, all outside the process's flags: the out dir is a scratch root
-# $ARENA/h5-smoke-q50s1-<UTC stamp> under s1's own arena root (Amendment 22 item 9; h5_shadow requires <root>/h5-*; the name matches no book glob: not h5-shadow-*, h5-q50-*,
-# h5-q50s1-2*), its own worktree $HOME/data/arena-src/q50s1-smoke-5c2ab7c6 (removed at the end), its own unit q50s1-smoke.scope with a fixed --description (no key in the journal).
+# $Q50S1_SMOKE_HOME/data/arena/h5-smoke-q50s1-<UTC stamp> (default /home/claude/s1smoke; NOT s1's, Q50's or HV4's root, QP C1; the shadow runs with HOME=$Q50S1_SMOKE_HOME
+# because h5_shadow requires <root>/h5-*; the name matches no book glob: not h5-shadow-*, h5-q50-*, h5-q50s1-2*), its own worktree $HOME/data/arena-src/q50s1-smoke-5c2ab7c6 (removed at the end), its own unit q50s1-smoke.scope with a fixed --description (no key in the journal).
 # Memory: refuses (exit 10) unless `sh scripts/ops/q50s1-shadow-start.sh --check-memory` exits 0 (the same fit check as the book's start: P + S + N + M <= L with N = 1500M;
 # PR #1086 adds that mode; without it the call is refused and so is the smoke).
 # Output: the scratch out dir (outcome-bearing: NEVER opened by a person; never counted, scored or read) and $HOME/data/q50s1-ops/smoke-<stamp>/{process.log,rss.tsv} (the process's
@@ -52,7 +52,10 @@ FEED_SH="$REPO/scripts/ops/q50s1-feed.sh"
 JUDGE="$REPO/tools/q50s1_health.py"
 [ -f "$START_SH" ] && [ -f "$FEED_SH" ] && [ -f "$JUDGE" ] || { echo "q50s1-smoke: $START_SH, $FEED_SH or $JUDGE missing" >&2; exit 2; }
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-OUT="$ARENA/h5-smoke-q50s1-$STAMP"
+SMOKEHOME="${Q50S1_SMOKE_HOME:-/home/claude/s1smoke}"   # QP C1: the smoke's scratch root is NOT s1's book root (EXP-024 s1 note part A: "a scratch root that is not the book's root")
+SROOT="$SMOKEHOME/data/arena"   # S*'s out-dir check accepts only /data/mal/arena or $HOME/data/arena, so the smoke's shadow runs with HOME=$SMOKEHOME
+case "$(realpath -m "$SROOT")" in "$(realpath -m "$ARENA")"|"$(realpath -m "$REALHOME/data/arena")"|"$(realpath -m /data/mal/arena)") echo "q50s1-smoke: the smoke root $SROOT is s1's, Q50's or HV4's root" >&2; exit 2 ;; esac
+OUT="$SROOT/h5-smoke-q50s1-$STAMP"
 REP="$HOME/data/q50s1-ops/smoke-$STAMP"
 SRC="$HOME/data/arena-src/q50s1-smoke-$(printf '%s' "$S_SHA" | cut -c1-8)"
 
@@ -99,15 +102,19 @@ LAUNCH="$REPO/scripts/ops/q50s1-ws-launch.py"
 [ -f "$LAUNCH" ] || { echo "q50s1-smoke: $LAUNCH missing" >&2; exit 2; }
 [ -x "$PY" ] || { echo "q50s1-smoke: no python at $PY" >&2; exit 2; }
 "$PY" -I -c 'import websockets, certifi' 2>/dev/null || { echo "q50s1-smoke: websockets/certifi missing in $PY" >&2; exit 3; }
-"$PY" -I "$LAUNCH" --dry --src "${SRC}" --key-file "$Q50S1_KEY_FILE" --keyed-url "$Q50S1_WS2" -- --fresh-forward ARENA --q-star-sol 50 --out-dir "$OUT" \
-  --sockets 3 --syn-sockets 1 --ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2" >/dev/null 2>&1 || [ ! -d "$SRC" ] || { echo "q50s1-smoke: the launcher refuses (key file or arguments): NOT starting" >&2; exit 11; }
+DRYSRC="$SRC"; [ -d "$SRC" ] || DRYSRC="$REPO"
+LRC=0
+"$PY" -I "$LAUNCH" --dry --src "$DRYSRC" --key-file "$Q50S1_KEY_FILE" --keyed-url "$Q50S1_WS2" -- --fresh-forward ARENA --q-star-sol 50 --out-dir "$OUT" \
+  --sockets 3 --syn-sockets 1 --ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2" >/dev/null 2>&1 || LRC=$?
+[ "$LRC" -ne 11 ] || { echo "q50s1-smoke: the launcher finds no usable key in $Q50S1_KEY_FILE: NOT starting" >&2; exit 11; }
+[ "$LRC" -eq 0 ] || { echo "q50s1-smoke: the launcher refuses its arguments or src (rc $LRC): NOT starting" >&2; exit 12; }
 if [ "$MODE" = "check" ]; then
   echo "q50s1-smoke: (check) would run in $SRC for ${DUR}s: systemd-run --user --scope --unit=$UNIT --description=$UNIT -p MemoryMax=${MAX_MB}M -p MemorySwapMax=0 env PYTHONPATH=$SRC H5_CODE_SHA=$S_SHA $PY -I $LAUNCH --src $SRC --key-file $Q50S1_KEY_FILE --keyed-url $Q50S1_WS2 -- --fresh-forward ARENA --q-star-sol 50 --out-dir $OUT --sockets 3 --syn-sockets 1 --ws-url $Q50S1_WS1 --ws-url $Q50S1_WS2 (the key is added inside the process)"
   exit 0
 fi
 
 # 7. start, sample, stop
-mkdir -p "$REP"
+mkdir -p "$REP" "$SROOT"
 LOG="$REP/process.log"
 RSS="$REP/rss.tsv"
 : > "$RSS"
@@ -120,7 +127,7 @@ trap 'exit 130' TERM INT
 START="$(date -u +%s)"
 echo "q50s1-smoke: starting at $(date -u +%FT%TZ): rule H5-BOOSTFLOOR-Q50 v1, head=$S_SHA, out=$OUT, report=$REP, MemoryMax=${MAX_MB}M, ${DUR}s, sample ${SAMPLE}s, ws=$Q50S1_WS1 $Q50S1_WS2"
 (cd "$SRC" && exec systemd-run --user --scope --quiet --unit="$UNIT" --description="$UNIT" -p "MemoryMax=${MAX_MB}M" -p MemorySwapMax=0 \
-  env HOME="$S1HOME" PYTHONPATH="$SRC" H5_CODE_SHA="$S_SHA" H5_DIRTY="" "$PY" -I "$LAUNCH" --src "$SRC" --key-file "$Q50S1_KEY_FILE" --keyed-url "$Q50S1_WS2" -- --fresh-forward ARENA \
+  env HOME="$SMOKEHOME" PYTHONPATH="$SRC" H5_CODE_SHA="$S_SHA" H5_DIRTY="" "$PY" -I "$LAUNCH" --src "$SRC" --key-file "$Q50S1_KEY_FILE" --keyed-url "$Q50S1_WS2" -- --fresh-forward ARENA \
   --q-star-sol 50 --out-dir "$OUT" --sockets 3 --syn-sockets 1 --ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2") >"$LOG" 2>&1 &
 PID=$!
 ALIVE=yes
