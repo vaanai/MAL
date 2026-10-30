@@ -217,7 +217,7 @@ q50s1_ws2_build || { echo "q50s1-shadow: the feed URLs are not two distinct key-
 [ -x "$PY" ] || { echo "q50s1-shadow: no python at $PY" >&2; exit 2; }
 "$PY" -I -c 'import websockets, certifi' 2>/dev/null || { echo "q50s1-shadow: websockets/certifi missing in $PY" >&2; exit 3; }
 if [ "$MODE" = "check" ]; then
-  DRYSRC="$SRC"; [ -d "$SRC" ] || DRYSRC="$REPO"   # before the S* worktree exists (it is made at the start) the dry run checks the key and the arguments against this checkout
+  DRYSRC="$SRC"; [ -d "$SRC" ] || DRYSRC="$(cd "$HERE/../.." && pwd)"   # before the S* worktree exists (it is made at the start) the dry run checks the key and the arguments against this checkout
   LRC=0
   "$PY" -I "$HERE/q50s1-ws-launch.py" --dry --src "$DRYSRC" --key-file "$Q50S1_KEY_FILE" --keyed-url "$Q50S1_WS2" -- --fresh-forward ARENA --q-star-sol 50 --out-dir "$OUT" \
     --sockets 3 --syn-sockets 1 --ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2" >/dev/null || LRC=$?

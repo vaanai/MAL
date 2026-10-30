@@ -102,7 +102,7 @@ LAUNCH="$REPO/scripts/ops/q50s1-ws-launch.py"
 [ -f "$LAUNCH" ] || { echo "q50s1-smoke: $LAUNCH missing" >&2; exit 2; }
 [ -x "$PY" ] || { echo "q50s1-smoke: no python at $PY" >&2; exit 2; }
 "$PY" -I -c 'import websockets, certifi' 2>/dev/null || { echo "q50s1-smoke: websockets/certifi missing in $PY" >&2; exit 3; }
-DRYSRC="$SRC"; [ -d "$SRC" ] || DRYSRC="$REPO"
+DRYSRC="$SRC"; [ -d "$SRC" ] || DRYSRC="$(cd "$HERE/../.." && pwd)"
 LRC=0
 "$PY" -I "$LAUNCH" --dry --src "$DRYSRC" --key-file "$Q50S1_KEY_FILE" --keyed-url "$Q50S1_WS2" -- --fresh-forward ARENA --q-star-sol 50 --out-dir "$OUT" \
   --sockets 3 --syn-sockets 1 --ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2" >/dev/null 2>&1 || LRC=$?
