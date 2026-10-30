@@ -330,3 +330,69 @@ def test_constants_follow_the_pinned_modules():
     assert (lv.GRID_LO_S, lv.GRID_HI_S) == (rc.LIVE_LO_S, rc.LIVE_HI_S)
     assert lv.HORIZON_S == rl.HORIZON_S and lv.WINDOW_SLOTS == rl.WINDOW_SLOTS
     assert FZ.K == 10 and FZ.STAKE_SOL == 0.25
+
+
+# ------------------------------------------------------------------------------------------------------------------------------- the single-mark feature path
+def _rand_mint(rnd, mbt, n, ch_trader):
+    t = np.sort(mbt + 30 + rnd.integers(0, 50 * 3600, n))
+    t[rnd.random(n) < 0.03] = -1  # a few null block_times (kept in order by slot, as ut does)
+    slot = S + np.arange(n) * 3 + rnd.integers(0, 2, n)
+    isbuy = rnd.random(n) < 0.55
+    sol = rnd.integers(10**7, 4 * 10**9, n).astype(float)
+    q = rnd.integers(30 * 10**9, 200 * 10**9, n).astype(float)
+    b = rnd.integers(10**14, 3 * 10**14, n).astype(float)
+    tok = (b * 0.004 * rnd.random(n)).astype(float)
+    th = rnd.choice(np.array([ch_trader] + [int(x) for x in rnd.integers(1, 2**63, 30)], np.uint64), n)
+    vq = np.full(n, float(V)) + rnd.integers(0, 3, n)
+    bt = np.where(t < 0, np.nan, t).astype(float)
+    return slot, bt, isbuy, sol, tok, q, b, th, vq
+
+
+@pytest.mark.parametrize("seed", range(6))
+def test_features_at_equals_mint_features_row_on_every_grid_mark(seed):
+    from tools import r4b_features as rf
+
+    rnd = np.random.default_rng(seed)
+    mbt = BT0 + 600
+    secs = np.arange(BT0, BT0 + 60 * 3600, 1, dtype=np.int64)
+    clock_slot = S + (secs - BT0) * 5 // 2
+    mnt = np.arange(BT0, BT0 + 60 * 3600, 60, dtype=np.float64)
+    cols = {k: rnd.integers(0, 50, len(mnt)).astype(float) * (10**9 if k.startswith("v") else 1) for k in ("n_ps", "v_ps", "n_bd", "v_bd", "n_cr")}
+    gr = np.sort(BT0 + rnd.integers(0, 50 * 3600, 200))
+    prep = rf.build_prep(secs, clock_slot, mnt, cols, gr, (S + (gr - BT0) * 5 // 2 + rnd.integers(0, 4000, 200)).astype(float))
+    ch = int(rnd.integers(1, 2**63))
+    n = int(rnd.integers(40, 900))
+    sl, bt, ib, so, tk, q, b, th, vq = _rand_mint(rnd, mbt, n, ch)
+    sl = S + np.sort(rnd.integers(0, 50 * 3600 * 5 // 2, n))
+    btv = np.where(np.isnan(bt), np.nan, BT0 + (sl - S) * 2 // 5)
+    const = rf.MintConst(mid=0, mbt=mbt, mslot=S, s0=int(sl[0]), v=float(V), cbt=float(mbt - 900) if seed % 2 else float("nan"), has_creator=True,
+                         nb=12.0, ntr=7.0, bbuy=3e9, bsell=1e9, cre_sell=float("nan") if seed == 3 else 2e8)
+    full = rf.mint_features(prep, const, ch if seed != 4 else None, sl, btv, ib, so, tk, q, b, th, vq=vq, grads_rule="asof_pda_first_print", mint_filters="asof")
+    rows = {} if full is None else {int(t): full.X[i] for i, t in enumerate(full.I[:, 1])}
+    t_lo = ((mbt + 600 + 119) // 120) * 120
+    checked = 0
+    for T in range(t_lo, mbt + 48 * 3600 + 1, 120):
+        sd = int(prep.slot_at(np.array([T]))[0])
+        k = sl < sd
+        got = lv.features_at(prep, const, ch if seed != 4 else None, sl[k], btv[k], ib[k], so[k], tk[k], q[k], b[k], th[k], vq[k], T, sd) if k.any() else None
+        want = rows.get(T)
+        assert (got is None) == (want is None), T
+        if got is not None:
+            assert got.tobytes() == want.tobytes(), (T, [rf.FEATS[i] for i in np.flatnonzero(got.view(np.uint32) != want.view(np.uint32))])
+            checked += 1
+    assert checked > 30
+
+
+def test_exact_grid_engine_equals_fast_engine(walk, tmp_path, boosters):
+    fast = lv.replay_walker(walk, H0, H1, W0, E, static_map=None, universe_min_mbt=BT0, boosters=boosters, pda_fn=pda_of, allow_dir=True)
+    orig = lv.Engine.__init__
+
+    def slow_init(self, *a, **k):
+        orig(self, *a, **{**k, "exact_grid": True})
+
+    lv.Engine.__init__ = slow_init
+    try:
+        slow = lv.replay_walker(walk, H0, H1, W0, E, static_map=None, universe_min_mbt=BT0, boosters=boosters, pda_fn=pda_of, allow_dir=True)
+    finally:
+        lv.Engine.__init__ = orig
+    assert (fast.rows_md5, fast.trades_md5) == (slow.rows_md5, slow.trades_md5)
