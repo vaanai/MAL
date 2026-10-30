@@ -117,8 +117,9 @@ def verify_table(root: Path) -> dict:
     return {r["hour"]: r for r in (json.loads(x) for x in (root / "verify.jsonl").read_text().splitlines() if x.strip())}
 
 
-def batch_path(root: Path, scratch: Path, boosters):
-    """The pinned read's decision calls (r4b_read.run_deciding) on the synthetic dir: build, build_rows, bag_score, xs_book."""
+def batch_path(root: Path, scratch: Path, boosters, score_fn=None):
+    """The pinned read's decision calls (r4b_read.run_deciding) on the synthetic dir: build, build_rows, bag_score, xs_book.
+    score_fn(boosters, X) replaces bag_score when given (tie / ranking tests)."""
     from tools import r4b_read as rr
     from tools import r4b_score as rs
 
@@ -132,7 +133,7 @@ def batch_path(root: Path, scratch: Path, boosters):
     T = np.concatenate(R.T) if R.T else np.zeros(0, np.int64)
     sd = np.concatenate(R.sd) if R.sd else np.zeros(0, np.int64)
     X = np.vstack(R.X) if R.X else np.zeros((0, FZ.N_FEATURES), np.float32)
-    score = rs.bag_score(boosters, X) if len(X) else np.zeros(0)
+    score = (score_fn or rs.bag_score)(boosters, X) if len(X) else np.zeros(0)
     b = bk.xs_book(T, mid, score)
     trades = sorted(((meta[int(m)], int(t0), int(t1), str(r)) for m, t0, t1, r in zip(b["mid"], b["T0"], b["T1"], b["reason"])), key=lambda x: (x[1], x[0]))
     mints = [meta[int(m)] for m in mid]
@@ -165,18 +166,36 @@ def test_replay_equals_pinned_batch_path(walk, tmp_path, boosters):
 def test_replay_writes_a_verifiable_declog_for_the_bridge(walk, tmp_path, boosters):
     from tools.arena_declog import DecisionLog
 
+    sha = "ab12" * 10
     rep = lv.replay_walker(walk, H0, H1, W0, E, static_map=None, universe_min_mbt=BT0, boosters=boosters, pda_fn=pda_of, allow_dir=True,
-                           log_root=tmp_path / "declog")
+                           log_root=tmp_path / "declog", frozen_sha=sha)
     log = DecisionLog(tmp_path / "declog")
     log.verify(lv.BOT_ID)  # raises on a chain break
     rows = log.rows(lv.BOT_ID)
-    assert rows[0]["kind"] == "start"
+    assert rows[0]["kind"] == "start" and rows[0]["frozen_sha"] == sha
     ent = [r for r in rows if r["kind"] == "entry"]
     ex = [r for r in rows if r["kind"] == "exit"]
     assert len(ent) == rep.counters["entries"] and len(ex) == len(rep.trades)
     assert all(r["pool"] == pda_of(r["meta"]["mint"]) and r["stake_sol"] == FZ.STAKE_SOL and r["order_id"] == f"{r['meta']['mint']}:{r['t_mark']}" for r in ent)
     assert {r["order_id"] for r in ex} == {r["order_id"] for r in ent}  # every entry is closed (end of replay)
     assert rep.log_md5 == log.md5()
+    sd_by_t = {m.t: m.sd for m in rep.marks}
+    assert all(isinstance(r["decision_slot"], int) and r["decision_slot"] == sd_by_t[r["t_mark"]] for r in ent)
+    live_exits = [r for r in ex if r["reason"] in ("rank", "gap")]  # an 'end' exit is the replay's own closure, not a mark's decision
+    assert live_exits and all(isinstance(r["decision_slot"], int) for r in live_exits)
+    assert all(r["decision_slot"] == sd_by_t[r["t_mark"]] for r in live_exits if r["reason"] == "rank")
+
+
+def test_start_row_default_frozen_sha_is_the_repo_head(walk, tmp_path, boosters):
+    import subprocess
+
+    from tools.arena_declog import DecisionLog
+
+    head = subprocess.run(["git", "-C", str(Path(lv.__file__).resolve().parents[1]), "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+    assert lv.repo_head_sha() == head and len(head) == 40
+    lv.replay_walker(walk, H0, "2026-08-14T04", W0, BT0 + 4 * 3600, static_map=None, universe_min_mbt=BT0, boosters=boosters, pda_fn=pda_of, allow_dir=True,
+                     log_root=tmp_path / "declog")
+    assert DecisionLog(tmp_path / "declog").rows(lv.BOT_ID)[0]["frozen_sha"] == head
 
 
 def test_static_map_mode_equals_batch(tmp_path, boosters):
@@ -409,3 +428,209 @@ def test_sorted4_matches_lexsort():
         o = np.lexsort(cols[::-1])
         want = bool(all((np.array([c[o] for c in cols]) == np.array(cols)).all(axis=0))) if n else True
         assert lv._sorted4(*cols) == want
+
+
+# ------------------------------------------------------------------------------------------------------------------------------- live-order feeding (engine API, arrival order)
+def _score_ret(b, X):
+    from tools import r4b_features as rf
+
+    return np.nan_to_num(X[:, rf.FEATS.index("ret_900")].astype(np.float64), nan=-9.0)
+
+
+def mk_engine(**kw):
+    kw.setdefault("universe_min_mbt", BT0)
+    kw.setdefault("pda_fn", pda_of)
+    kw.setdefault("hash_fn", lv.DuckHash())
+    if "boosters" not in kw:
+        kw.setdefault("score_fn", _score_ret)
+    return lv.Engine(**kw)
+
+
+def event_stream(hours: dict, complete_delay: int = 0) -> list:
+    """Every walker row of the scenario as (arrival second, kind order, original position, kind, row) sorted by arrival. complete_delay delays the whole
+    migrations stream (complete + migration rows) behind the trades, as a live feed that delivers streams out of chain order."""
+    ev, n = [], 0
+    for d in hours.values():
+        for sub, kind, o in (("creates", "create", 0), ("migrations", "migration", 1), ("trades", "trade", 2)):
+            for r in d[sub]:
+                ev.append((r["block_time"] + (complete_delay if kind == "migration" else 0), o, n, kind, r))
+                n += 1
+    ev.sort(key=lambda e: e[:3])
+    return ev
+
+
+def feed(eng, ev: list, i: int, until: int) -> int:
+    while i < len(ev) and ev[i][0] < until:
+        kind, r = ev[i][3], ev[i][4]
+        {"create": eng.ingest_create, "migration": eng.ingest_migration, "trade": eng.ingest_trade}[kind](r)
+        i += 1
+    return i
+
+
+def drive(ev: list, marks, lag: int = 30, **kw):
+    """Feed the stream up to T + lag, decide T, for each mark: the live call pattern. Returns (engine, [MarkResult])."""
+    eng, i, out = mk_engine(**kw), 0, []
+    for T in marks:
+        i = feed(eng, ev, i, T + lag)
+        out.append(eng.decide(T, w0=W0, last_entry=E - 3600))
+    return eng, out
+
+
+MARKS = list(range(W0, E, 3600))
+
+
+def sig(res) -> tuple:
+    return (res.t, res.sd, res.mints, res.sdv.tobytes(), res.X.tobytes(), res.score.tobytes(), res.ranked, res.actions, res.d3_dropped)
+
+
+def test_live_order_feed_equals_pinned_batch_path(walk, tmp_path, boosters):
+    """Engine fed in arrival order, each mark decided on the data up to T + 30 s only (pruning on, the default), equals the pinned batch decisions."""
+    bat = batch_path(walk, tmp_path / "batch", boosters)
+    eng, res = drive(event_stream(scenario()), MARKS, boosters=boosters)
+    acts = [a for r in res for a in r.actions] + eng.book.close_all("end")
+    allm = [m for r in res for m in r.mints]
+    got = lv.rows_md5(allm, np.concatenate([r.T for r in res]), np.concatenate([r.sdv for r in res]), np.vstack([r.X for r in res]),
+                      np.concatenate([r.score for r in res]))
+    assert len(allm) == bat["n_rows"] > 40
+    assert got == bat["rows_md5"]
+    assert lv.trades_from_actions(acts) == bat["trades"]
+    assert eng.counters.get("clock_pruned", 0) > 0 and eng.counters.get("mkt_pruned", 0) > 0  # the default pruning was active
+
+
+# ------------------------------------------------------------------------------------------------------------------------------- clock guard, mark order
+def _tiny_engine():
+    return mk_engine(universe_min_mbt=0)
+
+
+def _tape_row(bt: int, slot: int, mint: str = "FILL"):
+    return {"venue": "pump_bonding", "mint": mint, "trader": "t", "side": "buy", "sol_lamports": 1, "token_raw": 1, "quote_reserve": 1, "base_reserve": 1,
+            "pool": None, "slot": slot, "signature": f"s{bt}", "event_index": 0, "tx_index": None, "block_time": bt}
+
+
+def test_decide_refuses_until_the_second_at_or_after_T_is_complete():
+    T = BT0 + 3 * 3600
+    eng = _tiny_engine()
+    with pytest.raises(lv.LiveRefused, match="clock not complete"):  # an empty clock
+        eng.decide(T)
+    eng.ingest_trade(_tape_row(T - 5, 100))
+    with pytest.raises(lv.LiveRefused, match="clock not complete"):  # an early call: the clock ends before T
+        eng.decide(T)
+    eng.ingest_trade(_tape_row(T, 110))
+    with pytest.raises(lv.LiveRefused, match="clock not complete"):  # second T is the latest second: rows of T may still be arriving
+        eng.decide(T)
+    eng.ingest_trade(_tape_row(T + 3, 120))
+    eng.ingest_trade(_tape_row(T + 4, 121))  # no second T+1, T+2 was seen, but a second after the first one >= T is
+    assert eng._last_T is None and eng.book.last is None  # the refusals changed nothing
+    res = eng.decide(T)
+    assert res.t == T and res.sd == 110 and res.mints == []  # sd = min slot of second T
+
+
+def test_decide_refuses_a_clock_whose_only_later_second_is_the_first_one_after_T():
+    T = BT0 + 3 * 3600
+    eng = _tiny_engine()
+    eng.ingest_trade(_tape_row(T - 10, 100))
+    eng.ingest_trade(_tape_row(T + 3, 120))  # clock = {T-10, T+3}: the latest second is >= T + 1, but it is the first second at or after T
+    assert eng._clock_hi >= T + 1
+    with pytest.raises(lv.LiveRefused, match="clock not complete"):
+        eng.decide(T)
+    eng.ingest_trade(_tape_row(T + 3, 119))  # a late row of the same second lowers its min slot but does not complete it
+    with pytest.raises(lv.LiveRefused, match="clock not complete"):
+        eng.decide(T)
+    eng.ingest_trade(_tape_row(T + 6, 130))
+    assert eng.decide(T).sd == 119
+
+
+def test_decide_refuses_a_repeated_or_earlier_mark_and_livebook_step_too():
+    T = BT0 + 3 * 3600
+    eng = _tiny_engine()
+    for k in range(-2, 12000, 1000):
+        eng.ingest_trade(_tape_row(T + k, 100 + k // 3))
+    eng.decide(T + 3600)
+    for t in (T + 3600, T, T - 3600):
+        with pytest.raises(lv.LiveRefused, match="not after the last decided mark"):
+            eng.decide(t)
+    book = lv.LiveBook(k=2)
+    book.step(T, ["a", "b"])
+    book.step(T + 3600, [])  # an empty mark counts as stepped
+    for t in (T + 3600, T + 1800, T):
+        with pytest.raises(lv.LiveRefused, match="not after the last stepped mark"):
+            book.step(t, ["a"])
+    assert book.step(T + 7200, ["c"])[-1][:2] == ("entry", "c")
+
+
+def test_livebook_trailing_empty_mark_is_gap_live_but_end_in_xs_book():
+    """Documented live-vs-read difference (LiveBook docstring): an outage that runs to the end of the window. Same T0 and T1, different label."""
+    t0 = 1_786_003_200
+    book = lv.LiveBook()
+    acts = book.step(t0, ["a", "b", "c"])
+    assert [a[0] for a in acts] == ["entry"] * 3
+    gap = book.step(t0 + 3600, [])  # first empty mark: closes now, 'gap', at last non-empty mark + 1 h
+    assert sorted(gap) == [("exit", m, t0, t0 + 3600, "gap") for m in "abc"]
+    assert book.step(t0 + 7200, []) == [] and book.close_all() == []  # nothing left to close
+    live = lv.trades_from_actions(acts + gap)
+    xs = _xs_trades([t0] * 3, ["a", "b", "c"], [3.0, 2.0, 1.0])  # xs_book never sees the empty marks
+    assert [(m, a, b) for m, a, b, _ in live] == [(m, a, b) for m, a, b, _ in xs]
+    assert {r for *_, r in live} == {"gap"} and {r for *_, r in xs} == {"end"}
+
+
+# ------------------------------------------------------------------------------------------------------------------------------- bounded growth
+def test_pruned_engine_decides_like_an_unpruned_one(boosters):
+    ev = event_stream(scenario())
+    full_eng, full = drive(ev, MARKS, keep_clock_s=None)
+    pr_eng, pruned = drive(ev, MARKS)
+    assert [sig(r) for r in pruned] == [sig(r) for r in full]
+    assert sum(len(r.mints) for r in full) > 40 and any(r.actions for r in full)
+    assert pr_eng.counters["clock_pruned"] > 0 and pr_eng.counters["mkt_pruned"] > 0
+    assert "clock_pruned" not in full_eng.counters
+    assert len(pr_eng.clock) < len(full_eng.clock) and len(pr_eng.mkt) < len(full_eng.mkt) and len(pr_eng.ncr) <= len(full_eng.ncr)
+    assert min(pr_eng.clock) >= MARKS[-1] - lv.CLOCK_KEEP_S and min(pr_eng.mkt) >= MARKS[-1] - lv.CLOCK_KEEP_S
+    with pytest.raises(lv.LiveRefused):
+        mk_engine(exact_grid=True).prune_clock(W0)  # exact_grid reads old grid seconds
+
+
+def test_exact_grid_never_prunes_the_clock():
+    ev = event_stream(scenario())
+    eng, _ = drive(ev, MARKS[:2], exact_grid=True)
+    assert eng.keep_clock_s is None and "clock_pruned" not in eng.counters and min(eng.clock) < MARKS[1] - lv.CLOCK_KEEP_S
+
+
+def test_duckhash_cache_is_a_bounded_lru_and_values_are_stable():
+    con = duckdb.connect()
+    want = lambda s: int(con.execute("select hash(?::varchar)", [s]).fetchone()[0])  # noqa: E731
+    h = lv.DuckHash(cache_max=50)
+    first = {f"TR{i}": h(f"TR{i}") for i in range(200)}
+    assert len(h._cache) == 50 and "TR199" in h._cache and "TR0" not in h._cache
+    assert all(h(k) == v == want(k) for k, v in first.items())  # evicted keys are recomputed to the same value
+    assert h(None) == want(None) and len(h._cache) <= 50
+    h("TR150")  # a hit refreshes recency: it survives 49 more inserts
+    for i in range(300, 349):
+        h(f"TR{i}")
+    assert "TR150" in h._cache and lv.HASH_CACHE_MAX == 200_000 and lv.DuckHash().cache_max == 200_000
+
+
+def test_ingest_hashes_the_trader_of_kept_rows_only():
+    calls = []
+
+    def hf(s):
+        calls.append(s)
+        return len(calls)
+
+    eng = lv.Engine(universe_min_mbt=0, pda_fn=pda_of, hash_fn=hf, score_fn=_score_ret, bond_mints={"MB"})
+
+    def ps(mint, pool, trader, slot=200):
+        return {"venue": "pumpswap", "mint": mint, "pool": pool, "trader": trader, "side": "buy", "sol_lamports": 1, "token_raw": 1, "quote_reserve": 1,
+                "base_reserve": 1, "slot": slot, "block_time": BT0 + 5, "virtual_quote_reserves": V}
+
+    eng.ingest_trade({**_tape_row(BT0, 100, "OTHER"), "trader": "untracked_bond"})  # a bonding mint outside bond_mints
+    eng.ingest_trade(ps("MQ", pda_of("MQ"), "pending_trader"))  # no complete row yet: buffered, not hashed
+    eng.ingest_migration({"type": "complete", "mint": "MP", "slot": 150, "block_time": BT0})
+    eng.ingest_trade(ps("MP", "SOME_OTHER_POOL", "wrong_pool_trader"))  # a completed mint's print on a non-PDA pool
+    assert calls == []
+    eng.ingest_trade(ps("MP", pda_of("MP"), "kept_pumpswap_trader"))
+    eng.ingest_trade({**_tape_row(BT0, 140, "MB"), "trader": "kept_bonding_trader"})
+    eng.ingest_trade({**_tape_row(BT0, 151, "MB"), "trader": "after_mslot_trader"})  # skipped: slot > mslot is not known yet for MB (no complete), so kept
+    eng.ingest_migration({"type": "complete", "mint": "MB", "slot": 145, "block_time": BT0})
+    eng.ingest_trade({**_tape_row(BT0, 146, "MB"), "trader": "skipped_after_mslot_trader"})
+    assert calls == ["kept_pumpswap_trader", "kept_bonding_trader", "after_mslot_trader"]
+    eng.ingest_migration({"type": "complete", "mint": "MQ", "slot": 190, "block_time": BT0})  # the buffered print is replayed and hashed now
+    assert calls[-1] == "pending_trader" and len(calls) == 4
