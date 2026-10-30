@@ -682,6 +682,20 @@ class RunTests(Base):
             p.stderr.close()
 
 
+class DistinctReferenceTests(unittest.TestCase):
+    def test_a_reread_does_not_move_the_reference(self):
+        sc = R.Scanner()
+        for ms in (5000, 6000, 7000, 8000):
+            sc.feed_line(line(type="trade", t_recv_ms=ms, slot=ms // 10).encode())
+        self.assertEqual(sc.top_t, [5000, 6000, 7000, 8000])
+        for ms in (7000, 8000):  # the same rows read again (a shrunk file / offset past the end)
+            sc.feed_line(line(type="trade", t_recv_ms=ms, slot=ms // 10).encode())
+        self.assertEqual(sc.top_t, [5000, 6000, 7000, 8000])
+        self.assertEqual(sc.top_slot, [500, 600, 700, 800])
+        sc.feed_line(line(type="trade", t_recv_ms=9000, slot=900).encode())
+        self.assertEqual(sc.top_t, [6000, 7000, 8000, 9000])
+
+
 class BridgeTests(Base):
     def latch_on(self, kind):
         e = Hv4Env(str(self.tmp / "env"))
@@ -694,9 +708,11 @@ class BridgeTests(Base):
         self.assertIn(c0.FEED_BREAK_LATCH, b.state.latches, kind)
         self.assertEqual(b.state.gap_noted_ms, e.clock.t)
 
+    @mock.patch.object(c0, "FEED_GAP_MANUAL_REVIEW", True, create=True)  # s5 item 2 as built (#1090 ships True); Am.21 item 3 is tested in tools/test_hv4_c0_gap_hold.py
     def test_bridge_latches_feed_break_on_the_relay_stream(self):
         self.latch_on("data_loss")
 
+    @mock.patch.object(c0, "FEED_GAP_MANUAL_REVIEW", True, create=True)
     def test_bridge_latches_feed_break_on_every_relay_kind(self):
         for i, kind in enumerate(R.RELAY_KINDS):
             with self.subTest(kind=kind):

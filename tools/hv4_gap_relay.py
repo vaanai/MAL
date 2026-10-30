@@ -18,7 +18,7 @@ RULES (tools/arena_paper.py ArenaEngine.on_row / on_gap defines them):
   * gap_slots (P7-a): else (the engine's elif order) a trade row whose slot is more than GAP_SLOTS (150) above the reference slot.
 
 SUPERSET OF THE ENGINE (P7-d). The engine moves its high-water instant and slot only on ACCEPTED rows (known venue, full row, not a duplicate); the relay may not read
-those fields. So the reference is not the high-water mark of every row but the REF_DEPTH-th highest instant (slot) seen, which is never above the engine's high-water mark
+those fields. So the reference is not the high-water mark of every row but the REF_DEPTH-th highest DISTINCT instant (slot) seen (a re-read row is counted once), which is never above the engine's high-water mark
 unless the REF_DEPTH highest prior rows were ALL rejected by the engine. Hence every gap the engine records (at the accepted row's t_recv_ms) is in the relay output, whenever
 at most REF_DEPTH-1 rejected rows sit among the latest rows. The price is up to REF_DEPTH-1 extra rows (the rows right after a real gap) and a gap_silence on a feed that
 delivers fewer than REF_DEPTH rows in 60 s; both are stricter, never looser. Residual: REF_DEPTH or more consecutive rejected rows can hide a gap. Not covered: a gap or start
@@ -87,7 +87,10 @@ class RelayError(RuntimeError):
 
 
 def _keep_top(top: list[int], v: int, depth: int) -> None:
-    """`top` is ascending and holds the `depth` highest values seen."""
+    """`top` is ascending and holds the `depth` highest DISTINCT values seen. A value already held is not added again: a re-read of the same rows (a shrunk file, an
+    offset past the end, an overlap at a resume) must not move the reference up (reviewer part B: [5000,6000,7000,8000] -> [7000,7000,8000,8000])."""
+    if v in top:
+        return
     if len(top) < depth:
         bisect.insort(top, v)
     elif v > top[0]:
