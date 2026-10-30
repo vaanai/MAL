@@ -29,6 +29,11 @@ def _env(tmp_path, monkeypatch):
     prereg = tmp_path / "PREREG.md"
     prereg.write_text("frozen prereg text\n")
     monkeypatch.setattr(kt, "PREREG", prereg)
+    for kind in ("migrations", "events", "trades"):  # the real walk has every hour file; tests remove one to model a gap
+        d = tmp_path / "blocks" / "forward-1002ev" / kind
+        d.mkdir(parents=True, exist_ok=True)
+        for h in kt.hours(kt.START, kt.END):
+            (d / f"{kind}-{h}.jsonl").touch()
     yield
     oc._reset_latch_for_tests()
 
@@ -133,13 +138,15 @@ def test_events_refused_by_the_old_guard_means_not_decidable(tmp_path, monkeypat
 def test_walk2_hour_files_are_never_built(tmp_path):
     ts = int(datetime(2026, 10, 16, 1, 30, tzinfo=timezone.utc).timestamp())
     _write(tmp_path, "forward-1002ev", "events", ts, [{"type": "post_complete_buy", "mint": "X", "signature": "S", "slot": 1}])
-    assert kt.hour_paths("forward-1002ev", "events", kt.START, "2026-10-16T03") == []
+    built = kt.hour_paths("forward-1002ev", "events", kt.START, "2026-10-16T03")
+    assert built and not any("2026-10-16T01" in p.name or "2026-10-16T02" in p.name for p in built)
     assert kt.hours(kt.START, kt.END)[-1] == "2026-10-16T00"
 
 
 def test_refusals_before_any_read(tmp_path):
-    with pytest.raises(kt.Refused, match="declare-notebook"):
-        kt.run(tmp_path / "out", _sha(tmp_path), " ", log=lambda s: None)
+    for bad in (" ", "abc", "n_"):
+        with pytest.raises(kt.Refused, match="declare-notebook"):
+            kt.run(tmp_path / "out", _sha(tmp_path), bad, log=lambda s: None)
     with pytest.raises(kt.Refused, match="sha256"):
         kt.run(tmp_path / "out", "0" * 64, "n_test", log=lambda s: None)
     with pytest.raises(kt.Refused, match="forbidden"):
@@ -150,3 +157,52 @@ def test_refusals_before_any_read(tmp_path):
 
 def test_columns_are_on_the_d0_allowlist():
     assert oc.check_columns(oc.ROLE_OCT_D0, kt.COLUMNS) == []
+
+
+def test_missing_events_hour_makes_its_completions_unclassified_and_the_day_not_decidable(tmp_path):
+    for i in range(40):
+        _graduation(tmp_path, i, TS0 + i * 60, f"BOT{i}")
+    for i in range(40, 80):  # day 2: complete + trade rows present, events/ hour file missing
+        _graduation(tmp_path, i, TS0 + DAY + (i - 40) * 30, "BOT0", synthetic=False)  # all in one hour
+    gone = tmp_path / "blocks" / "forward-1002ev" / "events" / f"events-{_hour(TS0 + DAY)}.jsonl"
+    gone.unlink()
+    rc, doc, logs = _run(tmp_path)
+    d2 = doc["per_day"]["2026-10-11"]
+    assert d2["unclassified"] == 40 and d2["unclassified_hour_missing"] == 40 and d2.get("classified", 0) == 0
+    assert doc["not_decidable_days"] == ["2026-10-11"] and doc["synthetic_completions"] == 40 and doc["verdict"] == "PASS"
+    assert doc["hours_missing_or_refused"]["events"] == [_hour(TS0 + DAY)]
+    assert any('"hours_missing_or_refused"' in line for line in logs)
+
+
+def test_missing_migrations_hour_makes_its_day_not_decidable(tmp_path):
+    for i in range(40):
+        _graduation(tmp_path, i, TS0 + i * 60, f"BOT{i}")
+    for i in range(40, 80):
+        _graduation(tmp_path, i, TS0 + DAY + (i - 40) * 60, f"BOT{i}")
+    (tmp_path / "blocks" / "forward-1002ev" / "migrations" / f"migrations-{_hour(TS0 + DAY + 3600)}.jsonl").unlink()
+    rc, doc, _ = _run(tmp_path)
+    assert doc["not_decidable_days"] == ["2026-10-11"] and doc["synthetic_completions"] == 40
+
+
+def test_creates_are_read_only_in_registered_hours_and_listed_by_sha256(tmp_path):
+    for i in range(40):
+        _graduation(tmp_path, i, TS0 + i * 60, f"BOT{i}")
+    early = int(datetime(2026, 10, 5, 0, 0, tzinfo=timezone.utc).timestamp())  # before T1-b's 2026-10-08T16
+    late_ok = int(datetime(2026, 10, 8, 20, 0, tzinfo=timezone.utc).timestamp())
+    _write(tmp_path, "forward-1002", "creates", early, [{"type": "create", "mint": "X", "signature": "E", "slot": 1, "event_ts": early}])
+    _write(tmp_path, "forward-1002", "creates", late_ok, [{"type": "create", "mint": "Y", "signature": "L", "slot": 2, "event_ts": late_ok}])
+    rc, doc, _ = _run(tmp_path)
+    keys = set(doc["inputs_sha256"])
+    assert "forward-1002/creates/creates-2026-10-08T20.jsonl" in keys
+    assert not any("2026-10-05" in k for k in keys)
+    assert any(k.startswith("forward-1002ev/creates/") for k in keys)
+    assert kt.CREATES_EARLY == ("forward-1002", "2026-10-08T16", "2026-10-09T00")
+
+
+def test_post_complete_buy_of_another_mint_does_not_mark_synthetic(tmp_path):
+    for i in range(40):
+        _graduation(tmp_path, i, TS0 + i * 60, f"BOT{i}", synthetic=False)
+    _write(tmp_path, "forward-1002ev", "events", TS0, [{"type": "post_complete_buy", "mint": "OTHER", "signature": "CSIG0",
+                                                       "slot": 1, "event_index": 3, "event_ts": TS0}])
+    rc, doc, _ = _run(tmp_path)
+    assert doc["per_day"]["2026-10-10"]["synthetic"] == 0

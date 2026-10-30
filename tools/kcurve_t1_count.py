@@ -21,25 +21,28 @@ Definitions (fixed before the job is submitted):
   completion   a `complete` row in migrations/ of the window, slot >= 454,596,459 (pump redeploy 2026-10-08T16:20:17Z).
   completer    the `trader` of the pump_bonding `trade` row whose signature equals the complete row's signature
                (the D0 mask keeps `trader` on trade rows only).
-  unclassified a completion with no such trade row; counted per UTC day; a day above 1% unclassified is NOT_DECIDABLE
-               and its completions leave the pooled counts (#1055 R1).
-  synthetic    a classified completion with a `post_complete_buy` row whose signature equals the complete signature
-               or the mint's migrate signature (EXP-024 Am.4 B1 semantics). The tape can only mark a completion
+  unclassified a completion whose tx rows are missing (QP T1-d, #1055 R1): no such trade row, OR its complete-row
+               hour has no readable events/ or trades/ file (missing or refused by the guard). Counted per UTC day; a
+               day above 1% unclassified, or with a missing or refused migrations/ hour, is NOT_DECIDABLE and its
+               completions leave the pooled counts. Missing or refused hours are printed per kind.
+  synthetic    a classified completion with a `post_complete_buy` row of the same mint whose signature equals the
+               complete signature or the mint's migrate signature (EXP-024 Am.4 B1 semantics). The tape can only mark a completion
                synthetic, never settle non-synthetic (EXP-024 Am.4 B2); disclosed in the output.
-  organic      (report-only) a create row of the mint (creates/ of forward-1002 [2026-10-02T15, 2026-10-09T00) or
-               forward-1002ev's window) with complete event_ts minus create event_ts >= 60 s and a different signature.
+  organic      (report-only) a create row of the mint read only inside the registered hours (creates/ of forward-1002
+               [2026-10-08T16, 2026-10-09T00) and of forward-1002ev's window) with complete event_ts minus create event_ts >= 60 s and a different signature.
   V0 band      (report-only) V0 in [17.5e9, 17.7e9]: `virtual_quote_reserves` on an s0-type row signed by the mint's
                migrate tx (the mask keeps it only there, `_S0_FIELDS`).
   slot gap     migrate slot minus complete slot (D0 slot timing).
 
-Verdict (T1-h), pooled over the decidable days:
+Verdict (T1-h), pooled over the decidable days (not the whole window):
   NOT_DECIDABLE  the precheck finds no post_complete_buy row in the deciding source, a read is refused, no decidable day,
                  or fewer than 30 synthetic completions.
   KILL           the top-5 completers hold >= 80% of synthetic completions (a held seat).
   PASS           otherwise (licenses PREREG section 9 only; never a profit claim).
   Report-only:   the synthetic share over organic completions with V0 in band (not blind: EXP-024 Am.4 item 1); `quote_in`
                  "not measured under the D0 mask".
-Exit codes: 0 KILL or PASS written; 3 NOT_DECIDABLE written; 2 refused before any read (arguments, order, guard).
+Exit codes: 0 KILL or PASS written; 3 NOT_DECIDABLE written; 2 refused: arguments or order before any read, or a guard
+refusal (OctoberRefused) at any point, e.g. two migrate signatures for one mint.
 
 T1-f/T1-g: outputs are aggregates only (per-UTC-day counts, distinct completers, top-5 share, slot-gap histogram);
 no per-pool or per-mint table is written, and nothing is joined to any Q50, s1, HV4, arena, shadow, canary, A3-guard,
@@ -52,6 +55,7 @@ import argparse
 import collections
 import hashlib
 import json
+import re
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -69,7 +73,7 @@ ROLE = oc.ROLE_OCT_D0
 DATASET = "forward-1002ev"
 START, END = "2026-10-09T00", "2026-10-16T01"
 PRECHECK = (("forward-1002", "2026-10-08T16", "2026-10-09T00"), ("forward-1002ev", START, END))
-CREATES_EARLY = ("forward-1002", "2026-10-02T15", "2026-10-09T00")
+CREATES_EARLY = ("forward-1002", "2026-10-08T16", "2026-10-09T00")  # registered T1-b hours only
 REDEPLOY_SLOT = 454_596_459
 V_LO, V_HI = 17_500_000_000, 17_700_000_000
 ORGANIC_S = 60
@@ -133,6 +137,10 @@ def granted(blocks, dataset: str, start: str, end: str, paths: list[Path], log) 
     return ok_paths
 
 
+def hour_of(p: Path) -> str:
+    return p.name.split("-", 1)[1].split(".")[0]
+
+
 def rows_of(paths: Iterable[Path], migrate_sigs: dict | None, skipped: dict) -> Iterable[dict[str, Any]]:
     for p in paths:
         raw = (json.loads(line) for line in oc._lines(p) if line.strip())
@@ -145,8 +153,8 @@ def utc_day(ts: Any) -> str | None:
 
 def run(out: Path, prereg_sha: str, notebook: str, log=print) -> int:
     # ---- order and arguments (T1-j), before any read
-    if not notebook or not notebook.strip():
-        raise Refused("T1-j: --declare-notebook is required (T1 runs only after the PREREG DECLARE notebook entry)")
+    if not notebook or not re.fullmatch(r"n_[A-Za-z0-9_-]+", notebook.strip()):
+        raise Refused("T1-j: --declare-notebook must be the DECLARE notebook id (n_...); T1 runs only after it")
     if not PREREG.exists() or sha256_file(PREREG) != prereg_sha.lower():
         raise Refused(f"T1-j: {PREREG} is missing or its sha256 is not {prereg_sha}")
     so = str(out.resolve())
@@ -157,7 +165,8 @@ def run(out: Path, prereg_sha: str, notebook: str, log=print) -> int:
     blocks = mc.parse_ledger((REPO_ROOT / "docs" / "HOLDOUT_LEDGER.md").read_text(encoding="utf-8"))
     skipped: dict[str, int] = {}
 
-    # ---- T1-c source precheck: post_complete_buy rows per hour per dataset, printed first
+    # ---- T1-c source precheck: post_complete_buy rows per hour per dataset, printed first. Counts only; no slot floor is
+    # applied here (a post_complete_buy row cannot predate the 2026-10-08T16:20:17Z redeploy).
     pre: dict[str, dict[str, int]] = {}
     inputs: dict[str, str] = {}
     for ds, s, e in PRECHECK:
@@ -178,12 +187,14 @@ def run(out: Path, prereg_sha: str, notebook: str, log=print) -> int:
 
     # ---- migrations/: complete rows, migrate signatures
     mig_paths = granted(blocks, DATASET, START, END, hour_paths(DATASET, "migrations", START, END), log)
-    mig_rows = list(rows_of(mig_paths, None, skipped))
-    msigs = oc.migrate_sigs_from(mig_rows)
+    mig_rows: list[dict] = []
     comp: dict[str, dict] = {}  # mint -> complete identity (kept in memory only; never written)
-    for r in mig_rows:
-        if r.get("type") == "complete" and isinstance(r.get("slot"), int) and r["slot"] >= REDEPLOY_SLOT:
-            comp.setdefault(r["mint"], {"sig": r.get("signature"), "slot": r["slot"], "ts": r.get("event_ts")})
+    for p in mig_paths:
+        for r in rows_of([p], None, skipped):
+            mig_rows.append(r)
+            if r.get("type") == "complete" and isinstance(r.get("slot"), int) and r["slot"] >= REDEPLOY_SLOT:
+                comp.setdefault(r["mint"], {"sig": r.get("signature"), "slot": r["slot"], "ts": r.get("event_ts"), "hour": hour_of(p)})
+    msigs = oc.migrate_sigs_from(mig_rows)
     mig_slot = {r["mint"]: r["slot"] for r in mig_rows if r.get("type") in oc._MIGRATE_SIG_TYPES and r.get("mint") in msigs
                 and r.get("signature") == msigs[r["mint"]]}
     v0: dict[str, float] = {}
@@ -193,17 +204,20 @@ def run(out: Path, prereg_sha: str, notebook: str, log=print) -> int:
 
     # ---- events/: post_complete_buy (synthetic class), s0 V
     ev_paths = granted(blocks, DATASET, START, END, hour_paths(DATASET, "events", START, END), log)
-    pcb_sigs: set[str] = set()
+    pcb: set[tuple] = set()  # (mint, signature); mint None when the row carries none
     for r in rows_of(ev_paths, msigs, skipped):
         if r.get("type") == "post_complete_buy" and r.get("signature"):
-            pcb_sigs.add(r["signature"])
+            pcb.add((r.get("mint"), r["signature"]))
         if "virtual_quote_reserves" in r and r.get("mint") in msigs:
             v0.setdefault(r["mint"], float(r["virtual_quote_reserves"]))
 
     # ---- creates/ (report-only organic)
     created: dict[str, tuple] = {}
     for ds, s, e in (CREATES_EARLY, (DATASET, START, END)):
-        for r in rows_of(granted(blocks, ds, s, e, hour_paths(ds, "creates", s, e), log), None, skipped):
+        cr_paths = granted(blocks, ds, s, e, hour_paths(ds, "creates", s, e), log)
+        for p in cr_paths:
+            inputs[f"{ds}/creates/{p.name}"] = sha256_file(p)
+        for r in rows_of(cr_paths, None, skipped):
             if r.get("type") == "create" and r.get("mint"):
                 created.setdefault(r["mint"], (r.get("event_ts"), r.get("signature")))
 
@@ -214,6 +228,12 @@ def run(out: Path, prereg_sha: str, notebook: str, log=print) -> int:
     tr_paths = granted(blocks, DATASET, START, END, hour_paths(DATASET, "trades", START, END), log)
     for p in tr_paths + mig_paths + ev_paths:
         inputs[f"{DATASET}/{p.parent.name}/{p.name}"] = sha256_file(p)
+    expected = set(hours(START, END))
+    readable = {"migrations": {hour_of(p) for p in mig_paths}, "events": {hour_of(p) for p in ev_paths},
+                "trades": {hour_of(p) for p in tr_paths}}
+    missing = {k: sorted(expected - v) for k, v in readable.items()}
+    log(json.dumps({"hours_missing_or_refused": missing}))
+    bad_mig_days = {h[:10] for h in missing["migrations"]}
     for r in rows_of(tr_paths, None, skipped):
         sig = r.get("signature")
         if sig in want and r.get("type") == "trade" and r.get("venue") == BONDING and r.get("trader"):
@@ -232,11 +252,17 @@ def run(out: Path, prereg_sha: str, notebook: str, log=print) -> int:
         D["completions"] += 1
         if m in mig_slot:
             gap[min(max(mig_slot[m] - c["slot"], -1), 10)] += 1
+        if c["hour"] not in readable["events"] or c["hour"] not in readable["trades"]:
+            D["unclassified"] += 1
+            D["unclassified_hour_missing"] += 1
+            continue
         if m not in completer:
             D["unclassified"] += 1
+            D["unclassified_no_trade_row"] += 1
             continue
         D["classified"] += 1
-        syn = c["sig"] in pcb_sigs or (m in msigs and msigs[m] in pcb_sigs)
+        sigs = {c["sig"]} | ({msigs[m]} if m in msigs else set())
+        syn = any((m, s) in pcb or (None, s) in pcb for s in sigs)
         cr = created.get(m)
         org = bool(cr and cr[0] is not None and c["ts"] is not None and c["ts"] - cr[0] >= ORGANIC_S and cr[1] != c["sig"])
         vb = m in v0 and V_LO <= v0[m] <= V_HI
@@ -249,7 +275,8 @@ def run(out: Path, prereg_sha: str, notebook: str, log=print) -> int:
         D["wsol"] += quote.get(m) == "So11111111111111111111111111111111111111112"
         if syn:
             syn_by_day[d][completer[m]] += 1
-    decidable = sorted(d for d, D in days.items() if D["completions"] and D["unclassified"] / D["completions"] <= MAX_UNCLASSIFIED_DAY)
+    decidable = sorted(d for d, D in days.items() if D["completions"] and D["unclassified"] / D["completions"] <= MAX_UNCLASSIFIED_DAY
+                       and d not in bad_mig_days)
     pooled = collections.Counter()
     for d in decidable:
         pooled.update(syn_by_day[d])
@@ -263,10 +290,13 @@ def run(out: Path, prereg_sha: str, notebook: str, log=print) -> int:
            "report_only": {"synthetic_share_over_organic_v0_band": (org_band_syn / org_band) if org_band else None,
                            "organic_v0_band_completions": org_band, "quote_in": "not measured under the D0 mask",
                            "synthetic_share_not_blind": "EXP-024 Am.4 item 1 records 0.197, 0.316, 0.368 (#1055 R3)",
-                           "tape_marks_synthetic_only": "EXP-024 Am.4 B2: a partial decode loss is not flagged"},
+                           "tape_marks_synthetic_only": "EXP-024 Am.4 B2: a partial decode loss is not flagged",
+                           "mayhem": "not excludable under the D0 mask (create rows lose is_mayhem_mode); only the V0 band narrows the denominator",
+                           "window_end": "a completion in hour 2026-10-16T00 whose migrate row falls in walk-2 hour T01 has no migrate signature here"},
+           "hours_missing_or_refused": missing,
            "per_day": {d: dict(days[d]) for d in sorted(days)}, "slot_gap_hist": {str(k): v for k, v in sorted(gap.items())}}
     if not decidable:
-        res.update(verdict="NOT_DECIDABLE", why="no decidable UTC day (> 1% unclassified on every day)")
+        res.update(verdict="NOT_DECIDABLE", why="no decidable UTC day (every day has > 1% unclassified or a missing or refused migrations/ hour)")
     elif n_syn < MIN_SYNTHETIC:
         res.update(verdict="NOT_DECIDABLE", why=f"{n_syn} synthetic completions < {MIN_SYNTHETIC}")
     else:
