@@ -13,10 +13,10 @@
 # THE PIN: the job's git_ref is the guard tag a3-guard-pin-s1 (a commit that holds #894's bounded enumeration and fees-program check, this script, and the guard (h) choice QP rules:
 # S*'s own decoder blobs or Amendment 18 item 6.3's transitive cover; NOT YET CREATED). The script refuses unless HEAD is that tag's commit and the tree is clean. It prints the sha256 of
 # a3-daily.sh, a3_halt.py, a3_redeploy_check.py and the pins file at the pin for the records.
-# Root: s1's own (Amendment 22 item 9; default /data/mal/arena on mal-fast-0): A3_ARENA_ROOT = the root, A3_BOOKS = <root>/a3-books.json (sha256 pinned below: the 3-key file
+# Root: s1's own (Amendment 22 item 9; $Q50S1_HOME/data/arena): A3_ARENA_ROOT = the root, A3_BOOKS = <root>/a3-books.json (sha256 pinned below: the 3-key file
 # {"legacy_bot_ids": [], "new_rule_bot_ids": ["h5v1q50-boostfloor-s1"], "fees_check_bot_ids": ["h5v1q50-boostfloor-s1"]} + newline), A3_OUT = $HOME/data/structure-monitor-s1.
 # Exit: 0 segment end, 2 args/books file, 5 dirty tree, 6 host, 7 not at the guard tag. A run's own rc is printed (A3_JOB_RC / A3_DEADMAN_JOB_RC); the loop goes on.
-# Env (optional): Q50S1_ARENA (default /data/mal/arena), Q50S1_A3_OUT (default $HOME/data/structure-monitor-s1), A3_PY (as a3-daily.sh), Q50S1_GUARD_TAG (default a3-guard-pin-s1).
+# Env (optional): Q50S1_HOME (s1's own HOME, default /home/claude/s1home; root = $Q50S1_HOME/data/arena, DEC-031 Amendment 22 item 9), Q50S1_A3_OUT (default $HOME/data/structure-monitor-s1), A3_PY (as a3-daily.sh), Q50S1_GUARD_TAG (default a3-guard-pin-s1).
 set -u
 set -f
 BOOKS_SHA=9fdf6ee3047e49688f7d3e6974c3914a5a11f74bd25f830a94633e0b9986099e
@@ -31,14 +31,16 @@ E="$(date -u -d "$2" +%s)" || exit 2
 [ "$E" -le "$LATEST" ] || { echo "q50s1-a3-loop: END after 2026-12-02T00:00Z" >&2; exit 2; }
 [ "$(date -u +%s)" -lt "$E" ] || { echo "q50s1-a3-loop: END $2 has passed" >&2; exit 2; }
 [ -n "${HOME:-}" ] || { echo "q50s1-a3-loop: HOME is not set" >&2; exit 2; }
-ARENA="${Q50S1_ARENA:-/data/mal/arena}"
+S1HOME="${Q50S1_HOME:-/home/claude/s1home}"   # s1's own HOME: every s1 python that checks an arena root runs with HOME=$S1HOME (DEC-031 Am.22 item 9)
+ARENA="$S1HOME/data/arena"   # s1's own arena root: the pinned scorer and S*'s h5_shadow accept only /data/mal/arena (HV4's on fast-0, #1097) or $HOME/data/arena
+REALHOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"; [ -n "$REALHOME" ] || REALHOME="$HOME"
+case "$(realpath -m "$ARENA")" in "$(realpath -m "$REALHOME/data/arena")"|"$(realpath -m /data/mal/arena)") echo "q50s1-a3-loop: $ARENA is Q50's or HV4's root, never s1's (Amendment 22 item 9)" >&2; exit 2 ;; esac
 TAG="${Q50S1_GUARD_TAG:-a3-guard-pin-s1}"
 [ "$(hostname)" = mal-fast-0 ] || { echo "q50s1-a3-loop: runs on mal-fast-0 (this is $(hostname))" >&2; exit 6; }
 HEAD="$(git rev-parse HEAD 2>/dev/null || echo none)"
 PIN="$(git rev-parse "$TAG^{commit}" 2>/dev/null || echo none)"
 [ "$PIN" != none ] && [ "$HEAD" = "$PIN" ] || { echo "q50s1-a3-loop: HEAD $HEAD is not the guard tag $TAG ($PIN): run this job with git_ref $TAG" >&2; exit 7; }
 [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "q50s1-a3-loop: dirty tree" >&2; exit 5; }
-case "$ARENA" in "$HOME/data/arena"|"$HOME/data/arena/") echo "q50s1-a3-loop: $ARENA is Q50's root, not s1's (Amendment 22 item 9)" >&2; exit 2 ;; esac
 A3_REPO="$(pwd)"
 A3_OUT="${Q50S1_A3_OUT:-$HOME/data/structure-monitor-s1}"
 A3_BOOKS="$ARENA/a3-books.json"

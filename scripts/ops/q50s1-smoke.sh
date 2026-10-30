@@ -21,7 +21,7 @@
 # errors file and the user journal since the start: 0, Amendment 22 item 10).
 # Exit: 0 PASS, 1 FAIL (judged), 2 args/env/python/flags drift, 3 websockets/certifi, 5 dirty worktree, 6 host, 7 tag/worktree, 9 already running or out dir exists, 10 memory,
 # 11 the feed URLs are not two distinct key-free wss:// URLs, or the key file is unreadable or malformed.
-# Env (optional): ARENA_H5_PYTHON (shadow python, default /var/lib/mal/fast-listener/.venv/bin/python), Q50S1_REPO, Q50S1_ARENA (s1's own root, default /data/mal/arena),
+# Env (optional): ARENA_H5_PYTHON (shadow python, default /var/lib/mal/fast-listener/.venv/bin/python), Q50S1_REPO, Q50S1_HOME (s1's own HOME, default /home/claude/s1home; root = $Q50S1_HOME/data/arena, DEC-031 Amendment 22 item 9),
 # Tests only: Q50S1_SMOKE_S, Q50S1_SMOKE_SAMPLE_S (any value other than 25200 / 60 makes the verdict FAIL with test_overrides).
 set -eu
 set -f
@@ -36,7 +36,10 @@ if [ "$#" -eq 1 ]; then [ "$1" = "--check" ] || { echo "q50s1-smoke: unknown arg
 [ -n "${HOME:-}" ] || { echo "q50s1-smoke: HOME is not set" >&2; exit 2; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="${Q50S1_REPO:-$(cd "$HERE/../.." && pwd)}"
-ARENA="${Q50S1_ARENA:-/data/mal/arena}"
+S1HOME="${Q50S1_HOME:-/home/claude/s1home}"   # s1's own HOME: every s1 python that checks an arena root runs with HOME=$S1HOME (DEC-031 Am.22 item 9)
+ARENA="$S1HOME/data/arena"   # s1's own arena root: the pinned scorer and S*'s h5_shadow accept only /data/mal/arena (HV4's on fast-0, #1097) or $HOME/data/arena
+REALHOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"; [ -n "$REALHOME" ] || REALHOME="$HOME"
+case "$(realpath -m "$ARENA")" in "$(realpath -m "$REALHOME/data/arena")"|"$(realpath -m /data/mal/arena)") echo "q50s1-smoke: $ARENA is Q50's or HV4's root, never s1's (Amendment 22 item 9)" >&2; exit 2 ;; esac
 PY="${ARENA_H5_PYTHON:-/var/lib/mal/fast-listener/.venv/bin/python}"
 DUR="${Q50S1_SMOKE_S:-$DUR_DEFAULT}"
 SAMPLE="${Q50S1_SMOKE_SAMPLE_S:-$SAMPLE_DEFAULT}"
@@ -117,7 +120,7 @@ trap 'exit 130' TERM INT
 START="$(date -u +%s)"
 echo "q50s1-smoke: starting at $(date -u +%FT%TZ): rule H5-BOOSTFLOOR-Q50 v1, head=$S_SHA, out=$OUT, report=$REP, MemoryMax=${MAX_MB}M, ${DUR}s, sample ${SAMPLE}s, ws=$Q50S1_WS1 $Q50S1_WS2"
 (cd "$SRC" && exec systemd-run --user --scope --quiet --unit="$UNIT" --description="$UNIT" -p "MemoryMax=${MAX_MB}M" -p MemorySwapMax=0 \
-  env PYTHONPATH="$SRC" H5_CODE_SHA="$S_SHA" H5_DIRTY="" "$PY" -I "$LAUNCH" --src "$SRC" --key-file "$Q50S1_KEY_FILE" --keyed-url "$Q50S1_WS2" -- --fresh-forward ARENA \
+  env HOME="$S1HOME" PYTHONPATH="$SRC" H5_CODE_SHA="$S_SHA" H5_DIRTY="" "$PY" -I "$LAUNCH" --src "$SRC" --key-file "$Q50S1_KEY_FILE" --keyed-url "$Q50S1_WS2" -- --fresh-forward ARENA \
   --q-star-sol 50 --out-dir "$OUT" --sockets 3 --syn-sockets 1 --ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2") >"$LOG" 2>&1 &
 PID=$!
 ALIVE=yes
