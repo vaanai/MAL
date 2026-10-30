@@ -34,9 +34,9 @@
 #      command line (which holds the key). The shadow's args: --fresh-forward ARENA --q-star-sol 50 --sockets 3 --syn-sockets 1 and the two providers of scripts/ops/q50s1-feed.sh
 #      (wss://api.mainnet-beta.solana.com and the keyed wss://mainnet.helius-rpc.com/, DEC-031 Amendment 22 item 10). The key is read from the Helius env file at this step (exit 11
 #      if it is missing, unreadable or malformed); the check mode verifies it and prints the URL without its query. bx10 is off at Q* 50 in code.
-# Output: $HOME/data/arena/h5-q50s1-<UTC date>/h5-shadow-<UTC hour>.jsonl (never opened by any worker; the Q50 seal and EXP-024 successor note part A apply).
-# Env (all optional): ARENA_H5_PYTHON (default /var/lib/mal/fast-listener/.venv/bin/python), Q50S1_REPO (default: the checkout this script is in), Q50S1_ARENA (default $HOME/data/arena;
-# s1's own arena root under Amendment 22 item 9), Q50S1_HELIUS_ENV (the key file, default /var/lib/mal/fast-listener/helius.env; named by path in the starting line).
+# Output: $ARENA/h5-q50s1-<UTC date>/h5-shadow-<UTC hour>.jsonl (never opened by any worker; the Q50 seal and EXP-024 successor note part A apply).
+# Env (all optional): ARENA_H5_PYTHON (default /var/lib/mal/fast-listener/.venv/bin/python), Q50S1_REPO (default: the checkout this script is in), Q50S1_ARENA (s1's own arena root under Amendment 22
+# item 9, default /data/mal/arena on mal-fast-0: the only root besides Q50's that the pinned scorer and S*'s h5_shadow accept), Q50S1_HELIUS_ENV (the key file, default /var/lib/mal/fast-listener/helius.env; named by path in the starting line).
 # --check only: Q50S1_NOW_EPOCH (seconds) replaces the clock, so the checks can be rehearsed. --check and --check-memory only (tests): Q50S1_CGROUP_SLICE_DIR replaces the slice's
 # cgroup directory; a real start (no argument) always reads /sys/fs/cgroup/user.slice/user-1002.slice.
 set -eu
@@ -58,7 +58,7 @@ if [ "$#" -eq 1 ] && [ "$MODE" = "run" ]; then echo "q50s1-shadow: unknown argum
 [ -n "${HOME:-}" ] || { echo "q50s1-shadow: HOME is not set" >&2; exit 2; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="${Q50S1_REPO:-$(cd "$HERE/../.." && pwd)}"
-ARENA="${Q50S1_ARENA:-$HOME/data/arena}"
+ARENA="${Q50S1_ARENA:-/data/mal/arena}"   # s1's own arena root (DEC-031 Amendment 22 item 9); never Q50's $HOME/data/arena
 PY="${ARENA_H5_PYTHON:-/var/lib/mal/fast-listener/.venv/bin/python}"
 SRC="$HOME/data/arena-src/q50s1-$(printf '%s' "$S_SHA" | cut -c1-8)"
 UNIT=q50s1-shadow

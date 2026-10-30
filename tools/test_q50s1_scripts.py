@@ -140,7 +140,7 @@ esac''')
         (self.arena / "bots.json").write_text(json.dumps({"bots": {"h5v1q50-boostfloor-s1": e}}))
 
     def run_(self, now=WIN_FROM + 60, git_status="", extra_env=None):
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HELIUS_ENV": str(self.d / "helius.env"), "Q50S1_NOW_EPOCH": str(now), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py),
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_ARENA": str(self.home / "data" / "arena"), "Q50S1_HELIUS_ENV": str(self.d / "helius.env"), "Q50S1_NOW_EPOCH": str(now), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py),
                "FAKE_GIT_STATUS": git_status, "Q50S1_CGROUP_SLICE_DIR": str(self.cg), **(extra_env or {})}
         return subprocess.run(["sh", str(SHD), "--check"], capture_output=True, text=True, env=env, cwd=REPO)
 
@@ -201,7 +201,7 @@ esac''')
         self.assertEqual(self.run_().returncode, 7)
 
     def test_bad_arguments_and_clock(self):
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HELIUS_ENV": str(self.d / "helius.env")}
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_ARENA": str(self.home / "data" / "arena"), "Q50S1_HELIUS_ENV": str(self.d / "helius.env")}
         for a in (["--run"], ["--check", "x"], ["x"]):
             r = subprocess.run(["sh", str(SHD), *a], capture_output=True, text=True, env=env, cwd=REPO)
             self.assertEqual(r.returncode, 2, a)
@@ -244,7 +244,7 @@ class ShadowFeed(ShadowCheck):
         self.stub("systemd-run", f'for a; do printf "%s\\n" "$a"; done > {rec}\nexit 0')
         self.stub("date", f'if [ "$*" = "-u +%s" ]; then echo {WIN_FROM + 60}; else exec /bin/date "$@"; fi')
         self.write_line(registered_at_ms=(WIN_FROM - 3600) * 1000)
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HELIUS_ENV": str(self.d / "helius.env"), "Q50S1_REPO": str(self.d),
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_ARENA": str(self.home / "data" / "arena"), "Q50S1_HELIUS_ENV": str(self.d / "helius.env"), "Q50S1_REPO": str(self.d),
                "ARENA_H5_PYTHON": str(self.py), "FAKE_GIT_STATUS": ""}
         # a real start ignores the cgroup override and reads the real slice files: a `cat` stub answers for exactly those two paths (2 GiB used, no page cache)
         self.stub("cat", 'case "$1" in /sys/fs/cgroup/user.slice/user-1002.slice/memory.current) echo 2147483648 ;; '
@@ -280,7 +280,7 @@ class ShadowCheckMemory(unittest.TestCase):
         self.stub("git", f'touch {self.mark}.git\nexit 99')
 
     def mem(self, *args):
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HELIUS_ENV": str(self.d / "helius.env"), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py), "Q50S1_CGROUP_SLICE_DIR": str(self.cg)}
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_ARENA": str(self.home / "data" / "arena"), "Q50S1_HELIUS_ENV": str(self.d / "helius.env"), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py), "Q50S1_CGROUP_SLICE_DIR": str(self.cg)}
         return subprocess.run(["sh", str(SHD), "--check-memory", *args], capture_output=True, text=True, env=env, cwd=REPO)
 
     def assert_untouched(self):
@@ -447,7 +447,7 @@ class ShadowCheckMemory(unittest.TestCase):
 
     def test_a_real_start_on_the_wrong_host_still_exits_6_first(self):
         self.stub("hostname", "echo mal-research-0")
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HELIUS_ENV": str(self.d / "helius.env"), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py)}
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_ARENA": str(self.home / "data" / "arena"), "Q50S1_HELIUS_ENV": str(self.d / "helius.env"), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py)}
         r = subprocess.run(["sh", str(SHD)], capture_output=True, text=True, env=env, cwd=REPO)
         self.assertEqual(r.returncode, 6, r.stdout + r.stderr)
         self.assert_untouched()
@@ -455,7 +455,7 @@ class ShadowCheckMemory(unittest.TestCase):
     def test_arguments(self):
         for a in (["x"], ["--check"]):
             self.assertEqual(self.mem(*a).returncode, 2, a)
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HELIUS_ENV": str(self.d / "helius.env")}
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_ARENA": str(self.home / "data" / "arena"), "Q50S1_HELIUS_ENV": str(self.d / "helius.env")}
         r = subprocess.run(["sh", str(SHD), "--check-memory-only"], capture_output=True, text=True, env=env, cwd=REPO)
         self.assertEqual(r.returncode, 2)
 
