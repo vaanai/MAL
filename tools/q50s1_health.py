@@ -56,6 +56,7 @@ HB_MIN_SHARE = 0.9
 EGAP_SPAN_S = 340  # Amendment 22 item 11: each flagged gap covers [t_ms - 340 s, t_ms] (a trade's ~332 s span plus margin)
 EGAP_MAX = 0.025  # Amendment 22 item 11: half the 5% cap of section 1.4
 KEY_MARK = "api-key"  # Amendment 22 item 10: the count of this string in the smoke's log and the journal must be 0
+KEY_LITERALS = ("api-key", "api_key")  # DEC-031 Am.22 Erratum 2: both query-parameter forms; the journal-wide literal count covers both (case-insensitive)
 # Every provider-key form this lab can enumerate (QP A2 on #1121; the manager: "every provider-key pattern"): a query/assignment of a key-like name, a userinfo credential,
 # and a long path token after a ws/http host (QuickNode-style /<token>/, Alchemy /v2/<key>, Infura /v3/<id>). A line matching ANY of them counts.
 KEY_PATTERNS = re.compile(
@@ -426,10 +427,10 @@ def dry_filter(a: argparse.Namespace) -> int:
 
 def count_keys_stdin(literal_only: bool = False) -> int:
     """`count-keys [--literal-only]`: the number of stdin lines (NUL also splits) that carry any provider-key form (KEY_PATTERNS), or, with --literal-only, the literal
-    string api-key only. The literal form is for the WHOLE user journal (QP 6534174365: the broad patterns would count ordinary links of other processes); the broad
+    strings api-key and api_key only (Am.22 Erratum 2). The literal form is for the WHOLE user journal (QP 6534174365: the broad patterns would count ordinary links of other processes); the broad
     patterns are for the s1 units' own journal and logs. Prints the count only."""
     data = sys.stdin.buffer.read().decode("utf-8", errors="replace").replace("\0", "\n")
-    print(sum(1 for ln in data.splitlines() if (KEY_MARK in ln if literal_only else key_line(ln))))
+    print(sum(1 for ln in data.splitlines() if (any(m in ln.lower() for m in KEY_LITERALS) if literal_only else key_line(ln))))
     return 0
 
 
