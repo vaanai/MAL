@@ -6,6 +6,8 @@
 # Submit (miscusi_job_submit): machine mal-fast-0, command `sh scripts/ops/q50s1-shadow-start.sh` from a checkout of main that contains this file, resumable false (a restart at the same
 # code_sha continues the same book as a gap record; a new process is a manager decision), 1 CPU, job memory 1.5 GB (fast-0 refuses >= 2 GB), a time limit past 2026-11-20T00Z.
 #   `sh scripts/ops/q50s1-shadow-start.sh --check` runs every check below and prints the command it would run; it starts nothing and is allowed at any time of day.
+#   `sh scripts/ops/q50s1-shadow-start.sh --check-memory` runs only checks 1 (reported) and 6, so the memory fit can be evaluated before registration (QP C2 on #1065): it reads no
+#      bots.json, no tag and no worktree, creates nothing, starts nothing, prints every running user unit with its MemoryMax and MemoryCurrent, and exits 0 (fits) or 10 (would refuse).
 #
 # What it does, in order (each refusal exits non-zero before anything starts):
 #   1. host is mal-fast-0 (exit 6);
@@ -15,7 +17,8 @@
 #   4. bots.json holds the s1 line with frozen_sha S*, clock 1793923200000, window_end_ms pinned 1795132800000, and registered_at_ms before now (exit 8);
 #   5. no process of this book runs (the unit q50s1-shadow.scope is not active; one process per frozen_sha) and the out dir $HOME/data/arena/h5-q50s1-<UTC date> does not exist (exit 9);
 #   6. MEMORY (an OOM would end Q50's open positions NOT_DECIDABLE and gap-halt its live feed): MemoryCurrent of user-1002.slice + the sum of the finite MemoryMax of every running
-#      user unit + this process's MemoryMax (1500M) must fit the slice's MemoryMax (MemTotal if the slice has none); ANY running unit without a finite MemoryMax also refuses. If not, it WAITS NOTHING and exits 10: the start moves
+#      user unit + this process's MemoryMax (1500M) must fit the slice's MemoryMax (MemTotal if the slice has none); ANY running unit without a finite MemoryMax also refuses, and so does
+#      a failed or empty `systemctl --user list-units` (an unreadable unit list is never read as "no units"). If not, it WAITS NOTHING and exits 10: the start moves
 #      (a slip under Amendment 17 item 2), it is never started uncapped;
 #   7. starts `python -m tools.h5_shadow` from the S* worktree under `systemd-run --user --scope -p MemoryMax=1500M -p MemorySwapMax=0 --unit=q50s1-shadow` and stops that scope on TERM,
 #      INT and EXIT (miscusi_job_cancel leaves --scope children alive: this job stops its own scope). The shadow's args: --fresh-forward ARENA --q-star-sol 50 --sockets 3 --syn-sockets 1
@@ -34,8 +37,9 @@ WIN_TO=1793917800     # 2026-11-05T22:30:00Z
 NEW_MAX_MB=1500
 MODE=run
 [ "${1:-}" = "--check" ] && MODE=check
-[ "$#" -le 1 ] || { echo "q50s1-shadow: usage: q50s1-shadow-start.sh [--check]" >&2; exit 2; }
-if [ "$#" -eq 1 ] && [ "$MODE" != "check" ]; then echo "q50s1-shadow: unknown argument" >&2; exit 2; fi
+[ "${1:-}" = "--check-memory" ] && MODE=memory
+[ "$#" -le 1 ] || { echo "q50s1-shadow: usage: q50s1-shadow-start.sh [--check | --check-memory]" >&2; exit 2; }
+if [ "$#" -eq 1 ] && [ "$MODE" = "run" ]; then echo "q50s1-shadow: unknown argument" >&2; exit 2; fi
 [ -n "${HOME:-}" ] || { echo "q50s1-shadow: HOME is not set" >&2; exit 2; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="${Q50S1_REPO:-$(cd "$HERE/../.." && pwd)}"
@@ -50,8 +54,37 @@ DAY="$(date -u -d "@$NOW" +%Y-%m-%d)"
 OUT="$ARENA/h5-q50s1-$DAY"
 case "$OUT" in *..*) echo "q50s1-shadow: refusing out dir $OUT" >&2; exit 2 ;; esac
 
+# check 6 (memory), called at step 6 and by --check-memory; every refusal exits 10
+memory_fit() {
+  SLICE=user-1002.slice
+  CUR="$(systemctl show "$SLICE" -p MemoryCurrent --value 2>/dev/null || echo "")"
+  SMAX="$(systemctl show "$SLICE" -p MemoryMax --value 2>/dev/null || echo "")"
+  case "$CUR" in ''|*[!0-9]*) echo "q50s1-shadow: cannot read MemoryCurrent of $SLICE ('$CUR')" >&2; exit 10 ;; esac
+  case "$SMAX" in ''|*[!0-9]*) SMAX="$(awk '/^MemTotal:/ {print $2 * 1024}' /proc/meminfo)" ;; esac
+  UNITS="$(systemctl --user list-units --type=service,scope --state=running --plain --no-legend 2>/dev/null)" || UNITS=""
+  NAMES="$(printf '%s\n' "$UNITS" | awk 'NF {print $1}')"
+  [ -n "$NAMES" ] || { echo "q50s1-shadow: cannot list the running user units (systemctl --user failed or listed none): NOT starting (a slip, never an unchecked start)" >&2; exit 10; }
+  SUM=0; UNCAPPED=0
+  for u in $NAMES; do
+    m="$(systemctl --user show "$u" -p MemoryMax --value 2>/dev/null || echo "")"
+    c="$(systemctl --user show "$u" -p MemoryCurrent --value 2>/dev/null || echo "")"
+    case "$m" in ''|*[!0-9]*) UNCAPPED=$((UNCAPPED + 1)); echo "q50s1-shadow: unit $u MemoryMax=${m:-unset} (UNCAPPED) MemoryCurrent=${c:-unset}" ;; *) SUM=$((SUM + m)); echo "q50s1-shadow: unit $u MemoryMax=$m MemoryCurrent=${c:-unset}" ;; esac
+  done
+  NEWB=$((NEW_MAX_MB * 1024 * 1024))
+  NEED=$((CUR + SUM + NEWB))
+  echo "q50s1-shadow: memory: MemoryCurrent=$CUR + sum(finite MemoryMax of running units)=$SUM (running units without a finite MemoryMax: $UNCAPPED) + new MemoryMax=$NEWB = $NEED; slice max=$SMAX"
+  if [ "$UNCAPPED" -gt 0 ]; then echo "q50s1-shadow: $UNCAPPED running unit(s) have no finite MemoryMax: NOT starting (DEC-031 Amendment 18 item 8: every process in the slice is capped; a slip under Amendment 17 item 2)" >&2; exit 10; fi
+  if [ "$NEED" -gt "$SMAX" ]; then echo "q50s1-shadow: does not fit the slice: NOT starting (a slip under DEC-031 Amendment 17 item 2, never an uncapped start)" >&2; exit 10; fi
+  return 0
+}
+
 # 1. host
-if [ "$(hostname)" != "mal-fast-0" ]; then echo "q50s1-shadow: this book runs on mal-fast-0 (this is $(hostname))" >&2; [ "$MODE" = "check" ] || exit 6; fi
+if [ "$(hostname)" != "mal-fast-0" ]; then echo "q50s1-shadow: this book runs on mal-fast-0 (this is $(hostname))" >&2; [ "$MODE" != "run" ] || exit 6; fi
+if [ "$MODE" = "memory" ]; then
+  memory_fit
+  echo "q50s1-shadow: (check-memory) fits; checks 2 to 5 and 7 were not run; nothing was read from bots.json and nothing was started"
+  exit 0
+fi
 # 2. time window
 if [ "$NOW" -lt "$WIN_FROM" ] || [ "$NOW" -gt "$WIN_TO" ]; then
   echo "q50s1-shadow: now $NOW is outside the start window [$WIN_FROM, $WIN_TO] (2026-11-05T20:00Z to 22:30Z; at least 1 h before the clock)" >&2
@@ -89,21 +122,7 @@ PYEOF
 if systemctl --user is-active --quiet "$UNIT.scope" 2>/dev/null; then echo "q50s1-shadow: $UNIT.scope is already active (one process per frozen_sha)" >&2; exit 9; fi
 [ ! -e "$OUT" ] || { echo "q50s1-shadow: $OUT exists; a restart on the same day needs a new dir (manager decision)" >&2; exit 9; }
 # 6. memory
-SLICE=user-1002.slice
-CUR="$(systemctl show "$SLICE" -p MemoryCurrent --value 2>/dev/null || echo "")"
-SMAX="$(systemctl show "$SLICE" -p MemoryMax --value 2>/dev/null || echo "")"
-case "$CUR" in ''|*[!0-9]*) echo "q50s1-shadow: cannot read MemoryCurrent of $SLICE ('$CUR')" >&2; exit 10 ;; esac
-case "$SMAX" in ''|*[!0-9]*) SMAX="$(awk '/^MemTotal:/ {print $2 * 1024}' /proc/meminfo)" ;; esac
-SUM=0; UNCAPPED=0
-for u in $(systemctl --user list-units --type=service,scope --state=running --plain --no-legend 2>/dev/null | awk '{print $1}'); do
-  m="$(systemctl --user show "$u" -p MemoryMax --value 2>/dev/null || echo "")"
-  case "$m" in ''|*[!0-9]*) UNCAPPED=$((UNCAPPED + 1)) ;; *) SUM=$((SUM + m)) ;; esac
-done
-NEWB=$((NEW_MAX_MB * 1024 * 1024))
-NEED=$((CUR + SUM + NEWB))
-echo "q50s1-shadow: memory: MemoryCurrent=$CUR + sum(finite MemoryMax of running units)=$SUM (running units without a finite MemoryMax: $UNCAPPED) + new MemoryMax=$NEWB = $NEED; slice max=$SMAX"
-if [ "$UNCAPPED" -gt 0 ]; then echo "q50s1-shadow: $UNCAPPED running unit(s) have no finite MemoryMax: NOT starting (DEC-031 Amendment 18 item 8: every process in the slice is capped; a slip under Amendment 17 item 2)" >&2; exit 10; fi
-if [ "$NEED" -gt "$SMAX" ]; then echo "q50s1-shadow: does not fit the slice: NOT starting (a slip under DEC-031 Amendment 17 item 2, never an uncapped start)" >&2; exit 10; fi
+memory_fit
 # 7. start
 WS1=wss://api.mainnet-beta.solana.com
 WS2=wss://public.rpc.solanavibestation.com
