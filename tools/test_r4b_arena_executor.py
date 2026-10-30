@@ -714,14 +714,13 @@ def test_twin_entry_state_is_the_1_9_s_leg_of_mint_states():
 
 
 # ------------------------------------------------------------------------------------------------ dry replay of a closed decision log
-def stamp(src, dst, sha=SHA40):
-    """Copy a closed r4b decision log with the `start` row carrying frozen_sha, as the live decision host must write it. tools.r4b_live.replay_walker's own
-    start row has none (it is not a host). Every decision row is copied unchanged apart from the chain fields."""
+def copy_log(src, dst, frozen_sha=None):
+    """Copy a closed r4b decision log row by row (chain fields rebuilt); frozen_sha, if given, replaces the start row's value (tests of the pin only)."""
     out = DecisionLog(dst)
     for r in DecisionLog(src).rows(X.BOT_ID):
         body = {k: v for k, v in r.items() if k not in ("seq", "arm", "ms", "prev", "sha")}
-        if body["kind"] == "start":
-            body["frozen_sha"] = sha
+        if frozen_sha is not None and body["kind"] == "start":
+            body["frozen_sha"] = frozen_sha
         out.append(X.BOT_ID, r["ms"], body)
 
 
@@ -736,9 +735,10 @@ def replayed(tmp_path_factory):
 
     tmp = tmp_path_factory.mktemp("r4bexec")
     make_walk(tmp / "walk", lvt.scenario())
+    # the engine writes the start row's frozen_sha itself (#1130): no test-side stamping. "raw" carries another sha for the pin test.
     lv.replay_walker(tmp / "walk", lvt.H0, lvt.H1, lvt.W0, lvt.E, static_map=None, universe_min_mbt=lvt.BT0, boosters=rs.load_boosters(), pda_fn=lvt.pda_of, allow_dir=True,
-                     log_root=tmp / "raw")
-    stamp(tmp / "raw", tmp / "stamped")
+                     log_root=tmp / "stamped", frozen_sha=SHA40)
+    copy_log(tmp / "stamped", tmp / "raw", frozen_sha="ef" * 20)
     return tmp
 
 
@@ -755,7 +755,8 @@ def test_replay_with_the_capacity_gates_off_sends_exactly_the_logs_decisions(rep
     assert {r["reason"] for r in rows if r["kind"] == "exit"} >= {"rank", "end"}  # the scenario exercises the book's exits
     raw = [{k: v for k, v in r.items() if k not in ("seq", "arm", "ms", "prev", "sha", "frozen_sha")} for r in DecisionLog(str(replayed / "raw")).rows(X.BOT_ID)]
     new = [{k: v for k, v in r.items() if k not in ("seq", "arm", "ms", "prev", "sha", "frozen_sha")} for r in rows]
-    assert raw == new  # the stamped copy carries the engine's decisions unchanged
+    assert raw == new  # the engine's own log, unchanged; exit rows carry decision_slot and the start row frozen_sha (#1130)
+    assert all(r.get("decision_slot") is not None for r in rows if r["kind"] == "entry" or (r["kind"] == "exit" and r["reason"] != "end")) and rows[0]["frozen_sha"] == SHA40  # an end exit at E has no mark decision
 
 
 def test_replay_with_the_c0_caps_on_is_a_rank_ordered_capped_subset_with_every_skip_logged(replayed):
@@ -768,15 +769,15 @@ def test_replay_with_the_c0_caps_on_is_a_rank_ordered_capped_subset_with_every_s
     assert sorted(o["rank"] for o in st["orders"].values() if o["t_mark"] == first_mark) == [0, 1]  # the first two ranks of the first mark, nothing else
 
 
-def test_replay_of_the_raw_replay_log_is_refused_by_the_frozen_sha_pin(replayed):
+def test_replay_of_a_log_written_at_another_sha_is_refused_by_the_frozen_sha_pin(replayed):
     res = X.replay_equivalence(rcfg(replayed, "raw", root="raw"))
-    assert not res["ok"] and "frozen_sha_mismatch" in res["latches"] and res["orders"] == 0  # replay_walker's start row has no frozen_sha: the pin does its job
+    assert not res["ok"] and "frozen_sha_mismatch" in res["latches"] and res["orders"] == 0  # the start row names another sha: the pin does its job
 
 
 def test_replay_of_a_log_from_another_sha_or_a_tampered_log_fails(replayed, tmp_path):
     other = X.replay_equivalence(rcfg(replayed, "sha", frozen_sha="cd" * 20))
     assert not other["ok"] and "frozen_sha_mismatch" in other["latches"] and other["orders"] == 0
-    stamp(replayed / "raw", tmp_path / "t")
+    copy_log(replayed / "stamped", tmp_path / "t")
     f = next(iter(sorted((tmp_path / "t" / "decisions" / X.BOT_ID).glob("*.jsonl"))))
     text = f.read_text()
     assert '"stake_sol":0.25' in text
