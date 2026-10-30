@@ -14,7 +14,7 @@ This is a desk inventory plus builds. **No book has cleared the promotion gate.*
 - **About 4 to 7 h after the read record, so 2026-11-01 ~06:00 to 09:00Z at the earliest**, if all of these are true by 11-01T01:35Z:
   - the code PRs of §1c are merged;
   - the one-line `LIVE_REFUSAL_ACTIVE = False` flip is merged;
-  - the DEC-032 records are merged: Am.5 (gap hold) and the owner-file rule, from the hv4-amend lane;
+  - the DEC records are merged: DEC-031 Am.21 and DEC-032 Am.6 (done, 72066560), and #1106 (P7 at C0) for the `FEED_GAP_MANUAL_REVIEW` flip;
   - Helm's keyless Part 1 install is done on mal-fast-0.
 - **A realistic target is 11-01 ~08:00 to 16:00Z.** 01:35Z on 11-01 is 18:35 PT on Saturday 10-31, so it depends on when the owner and Helm are online to fund and to write the root files.
 - **If the code is not merged and installed before the read: 11-02 to 11-03.** That means seven code PRs, each with QP and reviewer cycles, then a Helm install and an md5 proof, all after the PASS.
@@ -96,7 +96,7 @@ Details are in §1c. Open findings are in §1d.
 ### 1c. Built today (draft PRs from this lane; heads at opening; all need QP and reviewer at their exact head)
 | PR | Branch | Discharges | Head, tests |
 |---|---|---|---|
-| **#1090** | `claude/hv4-c0-gap-hold` | Manager item 3. DEC-032 Am.5 (DRAFT) 60 s hold on data-loss gaps; transport events exempt; behind `FEED_GAP_MANUAL_REVIEW` | 10613d1e, 402 passed |
+| **#1090** | `claude/hv4-c0-gap-hold` | Manager item 3. DEC-031 Am.21 item 3 (via DEC-032 Am.6): 60 s hold from receipt, per-entry `feed_gap`, 24 h review latch, transport list, latency bound, cached reader. Behind `FEED_GAP_MANUAL_REVIEW`, which ships True until 3.4 (#1106) lands | see the final report for the head |
 | **#1100** | `claude/hv4-c0-start-gate` | Manager items 2 and 4, QP #959 items 3/15. Recorded-read start gate behind `LIVE_REFUSAL_ACTIVE = True` (the flip is one line, later, with its own QP); owner record = root-owned per-bot file, no code pin; per-bot `LIVE_OK` | c519574f, 655 passed with the constant True and 655 with it False |
 | **#1098** | `claude/hv4-gap-relay-v2` | P7-a (slot gaps), P7-b (hour roll, .zst), P7-d (engine cross-test), loop + job script | ff66a1e4; relay 39 + script 14 + neighbours 383 passed |
 | **#1105** | `claude/hv4-tapegap-carry` | P7-c (missing or stale stream refuses buys), P7-e carriage in the forwarder, #967 write_status cross-test | 45977fcb |
@@ -156,7 +156,7 @@ Legend:
 | # | Step | Citation | Who | Command / PR | Time |
 |---|---|---|---|---|---|
 | N1 | Review and merge the seven code PRs (§1c) | QP removal list #959/#969/#970; DEC-013 Am.1 (T1: QP + reviewer) | QP, R, M | PRs on the branches above | 1-2 h each, in parallel |
-| N2 | Merge the DEC records: DEC-032 Am.5 (gap hold) and the owner-file rule (no code pin) | DEC-032 status line; manager 10-30 | hv4-amend lane, QP, R, M | hv4-amend lane PR | 2-3 h |
+| N2 | DEC records: DEC-031 Am.21 and DEC-032 Am.6 (MERGED, 72066560) | DEC-032 status line; manager 10-30 | hv4-amend lane, QP, R, M | hv4-amend lane PR | 2-3 h |
 | N3 | Merge the one-line `LIVE_REFUSAL_ACTIVE = False` flip, after N1 and N2, with a fresh QP pass at its head | QP #959 item 15 | B, QP, M | follow-up to `claude/hv4-c0-start-gate` | 1 h |
 | N4 | Helm Part 1: keyless install at the merged sha Y, synthetic rehearsal with **bot id `hv4-SYN-X` only**. A real arm id would start that arm's 14-day window: the window file is written at the first start, DRY included (`arena_live_bridge.py:385`, QP #965 N-C) | runbook from the install pack; R2.1 | M → O → H | `ARTIFACTS/lab/c0-drafts/hv4/HELM-ASK-hv4-c0-DRAFT.md` Part 1 | 1-2 h of Helm time |
 | N5 | md5 orders-equal-rows proof at Y (synthetic log) | CLAUDE.md (md5 replay before deploy); QP #959 item 14 | M | `scripts/ops/hv4-c0-orders-proof-job.sh <Y>` (MiScusi job) | 15 min |
@@ -214,7 +214,7 @@ Critical path: P4 → P8 (QP, then DEC PR review) ≈ 3 to 6 h, running alongsid
 ## 4. Rules on this path that delay go-live without protecting money or validity (flags; the promotion gate is unchanged)
 | # | Rule (citation) | Delay it causes | What it protects | Proposed change |
 |---|---|---|---|---|
-| F1 | DEC-032 §5 item 2 as built: every gap row latches `feed_break`, including forwarder transport `stall`/`disconnect`/`reconnect` (`hv4_live_c0.GAP_BREAK_KINDS` :820). The clear needs 10 min AND a root-owned review file naming the exact gap instant (`gap_clear_problem` :876-901) | Hours of no buys per Access blip, until the manager writes `/etc/mal-hv4-c0/gap-clear/<bot>.json` | Nothing beyond what the 5 s entry-age bound and the self-clearing `transport_stall` already protect. Gap trips are excluded from parity either way | **Done in code behind a constant: PR #1090** (60 s hold on data-loss gaps, transport exempt, as Q50's #1085). Needs the DEC-032 Am.5 text (hv4-amend / q50-c0-feed lanes) |
+| F1 | DEC-032 §5 item 2 as built: every gap row latches `feed_break`, including forwarder transport `stall`/`disconnect`/`reconnect` (`hv4_live_c0.GAP_BREAK_KINDS` :820). The clear needs 10 min AND a root-owned review file naming the exact gap instant (`gap_clear_problem` :876-901) | Hours of no buys per Access blip, until the manager writes `/etc/mal-hv4-c0/gap-clear/<bot>.json` | Nothing beyond what the 5 s entry-age bound and the self-clearing `transport_stall` already protect. Gap trips are excluded from parity either way | **Done in code behind a constant: PR #1090**, implementing DEC-031 Am.21 item 3 (merged). It ships `FEED_GAP_MANUAL_REVIEW = True` until 3.4 (P7 at C0, #1106) lands; the value flips with the LIVE_REFUSAL flip |
 | F2 | DEC-032 §4: an owner line naming the fee when the priority differs from "the executor's installed one" (the PR #958 draft read the bridge's 500,000 default as installed) | One more owner round trip at event time | Owner-informed fee choice (the 10-05 lesson: lower priority can land slower) | QP ruling that for `hv4_c0` the compiled `PRIORITY_PIN` IS the installed priority (config refuses any other), so the clause does not trigger, and the fee goes in the owner notice. Or ask the owner for the line NOW (N8). Either way it leaves the critical path |
 | F3 | DEC-032 §2 checklist: a dry run of ≥ 1 h at the install sha. Post-read it must run on real rows, because R2.1 forbids them before the read | ~1 h on the critical path | Config/stream errors on the real root | QP ruling: the ≥ 1 h dry run may be the pre-read synthetic-root run at the same sha (N4), plus a 15 min real-root dry smoke after the record. Saves ~45 min |
 | F4 | QP #959 item 15: the removal of `hv4_c0_incomplete` only as its own diff with a fresh QP pass (read as "after everything, at event time") | A code PR + re-install after the PASS | Nothing after the read-record gate exists. The gate refuses any root without a recorded PASS | Merge the one-line flip BEFORE the read (N3), once N1/N2 have merged. Keep the separate diff and the fresh QP pass |
@@ -254,7 +254,7 @@ Critical path: P4 → P8 (QP, then DEC PR review) ≈ 3 to 6 h, running alongsid
   - QP on F2/F3/F6;
   - who sends the HELM-ASK and when;
   - the capital decision if both arms PASS;
-  - whether the hv4-amend lane's Am.5 text matches #1090's constants (60 s, transport kinds).
+  - none on the gap rule: #1090 implements DEC-031 Am.21 item 3 as merged (60 s from receipt, transport list of 3.2, 24 h latch).
 - **Seal contacts by this lane:** no file under a sealed path was listed or opened. The fixture run used only synthetic paths under `/data2/mal/scratch/hv4-c0-ready-1030/`, and job #1837 listed path names only. Two builders disclosed metadata-only contacts, both since removed from their tests:
   - #1097: one `stat` (mode and owner) of `/data/mal/arena/reads` during a manual checklist trial;
   - #1104: one test resolved a symlink to the sealed prefix (a stat of the link target).
