@@ -730,21 +730,25 @@ class ReplayResult:
     log_md5: str | None = None
 
 
-def replay_walker(walk_dir: Path, h0: str, h1: str, w0: int, e: int, *, static_map: Mapping[str, int | None] | None, universe_min_mbt: int,
+def replay_walker(walk_dir: Path | Sequence[Path], h0: str, h1: str, w0: int, e: int, *, static_map: Mapping[str, int | None] | None, universe_min_mbt: int,
                   boosters: list | None = None, score_fn: Callable | None = None, pda_fn: Callable | None = None, log_root: Path | None = None,
                   extra_hours: int = 2, allow_dir: bool = False, memory_limit: str = "4GB", progress: Callable[[str], None] | None = None) -> ReplayResult:
     """Feed a walker-layout dir hour by hour through the Engine and decide every mark in [w0, e - 1 h], as the read does (EXP-027 section 4.1).
     Migrations and creates of [h0, h1) and trades of [h0, h1 + extra_hours) are fed, as r4b_layout.build loads them. Mark T is decided once the
     files of hour(T) + 1 are in (every row with block_time before T and the first second at or after T are then in; features read slot < sd(T) only).
     static_map given -> v_source static_map; None -> event. Refuses a non-exploration path or any hour at or after REPLAY_HOUR_MAX unless allow_dir
-    (synthetic test dirs only)."""
+    (synthetic test dirs only). walk_dir may be a list of window dirs (e.g. explore-0814 w7, w6, w5): each hour file is taken from the first dir
+    that has it."""
     import duckdb
 
-    walk_dir = Path(walk_dir)
+    dirs = [Path(walk_dir)] if isinstance(walk_dir, (str, os.PathLike)) else [Path(d) for d in walk_dir]
+    if not dirs:
+        raise LiveRefused("no walk dir")
     if not allow_dir:
-        why = path_problem(walk_dir)
-        if why:
-            raise LiveRefused(f"replay refused: {why}")
+        for d in dirs:
+            why = path_problem(d)
+            if why:
+                raise LiveRefused(f"replay refused: {why}")
     hours = rl.hour_range(h0, h1)
     trade_hours = hours + [hour_key(hour_dt(h1) + timedelta(hours=i)) for i in range(extra_hours)]
     if any(h >= REPLAY_HOUR_MAX for h in trade_hours):
@@ -755,10 +759,11 @@ def replay_walker(walk_dir: Path, h0: str, h1: str, w0: int, e: int, *, static_m
     con.sql(f"SET memory_limit='{memory_limit}'; SET threads=4; SET enable_progress_bar=false; SET preserve_insertion_order=true")
 
     def f(sub: str, h: str) -> Path:
-        p = rl._hour_file(walk_dir / sub, sub, h)
-        if p is None:
-            raise LiveRefused(f"hour {h}: no {sub} file")
-        return p
+        for d in dirs:
+            p = rl._hour_file(d / sub, sub, h)
+            if p is not None:
+                return p
+        raise LiveRefused(f"hour {h}: no {sub} file")
 
     # pre-scan: mints completing in [h0, h1) (bonding aggregates only for them; equal for decisions, saves memory)
     bond_mints: set = set()
@@ -820,7 +825,7 @@ def replay_walker(walk_dir: Path, h0: str, h1: str, w0: int, e: int, *, static_m
 
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="r4-b live decision path: EXPLORATION replay only (DRY, keyless). md5s and counts out, no prices.")
-    ap.add_argument("--walk-dir", required=True, help="walker-layout dir under an exploration block (hunt23/RULES.md)")
+    ap.add_argument("--walk-dir", required=True, action="append", help="walker-layout dir under an exploration block (hunt23/RULES.md); repeat for windows")
     ap.add_argument("--from-hour", required=True)
     ap.add_argument("--to-hour", required=True)
     ap.add_argument("--w0", required=True, help="first entry mark, YYYY-MM-DDTHH")
@@ -830,7 +835,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     a = ap.parse_args(argv)
     smap = rl.load_static_map(a.static_map) if a.static_map else None
     try:
-        r = replay_walker(Path(a.walk_dir), a.from_hour, a.to_hour, hour_epoch(a.w0), hour_epoch(a.e), static_map=smap,
+        r = replay_walker([Path(d) for d in a.walk_dir], a.from_hour, a.to_hour, hour_epoch(a.w0), hour_epoch(a.e), static_map=smap,
                           universe_min_mbt=hour_epoch(a.from_hour), log_root=Path(a.out) / "declog", progress=lambda s: print(s, flush=True))
     except LiveRefused as exc:
         print(str(exc), file=sys.stderr)
