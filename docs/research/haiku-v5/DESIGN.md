@@ -4,6 +4,15 @@ Written 2026-10-30 from 15:13Z (`date -u`, mal-research-0), lane haiku-trader, b
 **No book has cleared the promotion gate. Nothing here says any book or bot makes money.** No API call was made for this lane (0 USD).
 The offline result, whatever it is, is a hypothesis on in-sample exploration days, never gate evidence.
 
+**Revision 3 (2026-10-30T21:4xZ), after pilot P1 (job #1908 at da25a118, $0.0856):** go/no-go failed on reflections: 2 of 4 stopped at
+max_tokens 6,000 inside a half-written playbook after about 5,700 tokens of adaptive thinking (the two complete ones used 3,861 and
+4,046); decide calls stopped at max_tokens 200 on 35 of 618 (5.7%; end_turn replies peaked at 178 tokens), which caused the parse
+misses (parse 97.09%). Limits now: decide 400, reflect 10,000, and the reflection prompt asks for short private reasoning. 10,000 is
+the most that stays inside tools/haiku_caller's 60 s per-attempt timeout at P1's slowest 208 output tokens/s (about 48 s); a timeout
+is charged at the worst case, retried, and would repeat on every rerun. The expected-cost model now uses P1's measured tokens per byte
+(decide 0.442, reflect 0.614), decide cache-read share (0.7725) and output (decide 100, reflect 7,000). Spend ceilings unchanged
+($16 ledger, $1 pilot). The request hashes change, so the pilot reruns into a new `run-p1b` on the same ledger; nothing replays.
+
 **Revision 2 (2026-10-30T21:2xZ), after pilot #1906 refused before any call (0 USD):** the outcome loader's sanity bound |v| <= 1 SOL
 at the 0.1 SOL stake was wrong: MAP section 4 publishes top flat trades of +1.6759, +1.4328 and +1.2117 SOL at this stake. All 2,825 el2
 rows of export-o1 are finite with the expected fields; 13 values are above 1 SOL, none below -0.2 SOL. The range is now
@@ -59,12 +68,12 @@ causal BOOST state, flow and seller concentration, 15 s and 60 s flows, creator 
 hour). No mint, date, block or arm label: the card reference is an opaque 12-hex nonce. No outcome statistic of these days is in any prompt.
 
 **Decides**: `{"act": "BUY"|"SKIP", "size": 0.5|1|2, "why": ...}`. BUY/SKIP is deciding; size is report-only (linear scaling, impact at
-other stakes not repriced). An unparseable reply falls back to the base rule (BUY, size 1) and is counted. Thinking disabled, max_tokens 200.
+other stakes not repriced). An unparseable reply falls back to the base rule (BUY, size 1) and is counted. Thinking disabled, max_tokens 400 (Revision 3).
 
 **Improves** (reflection call, once per night per learning arm): it gets its playbook and every trigger whose outcome was known strictly
 before the next trading day's 00:00Z (card values, its decision, and `ret_pct` = the base trade's return in percent of stake, bought or
 skipped), at most 200 rows (deterministic sha-ordered sample above that, seeded `v5|rep|day` so L and P see the same rows; counted), and writes a new playbook of at most 12 rules and
-2,500 characters. Thinking omitted (Haiku 5.5 adaptive, default effort), max_tokens 6,000. An unparseable reply keeps the old playbook
+2,500 characters. Thinking omitted (Haiku 5.5 adaptive, default effort), max_tokens 10,000 (Revision 3). An unparseable reply keeps the old playbook
 (counted). The playbook is the only memory.
 
 ## 4. Arms (same triggers, same days)
@@ -115,7 +124,20 @@ Token rate: v3's real ledger (Haiku 5.5, numeric cards) shows 19,801,144 input a
 2.116 USD, i.e. 4,115 input / 56 output tokens and $0.00044 per call; v3 estimated 11.75M input tokens at 3.0 chars/token, so the harness
 assumes 0.56 tokens per request byte.
 
-Dry run on the real layout at Revision 1 (no outcome read, no API; `dry.json` sha256
+Dry run on the real layout at Revision 3 limits and P1-measured rates (no outcome read, no API; `dry.json` sha256
+`0bb2ea6ea9eaae152917d5bd0c5cccf67b95e092620363bcb2025f6d91987b76` full, `fa1d58e77065eb5ea0dc11d364025dc58f0a13f3e125bc095418bde38729dcf3`
+pilot):
+
+| Run | Decide calls | Reflect calls | Max body | Expected (P1 rates) | Every reflection at its cap | Worst-case bound |
+|---|---|---|---|---|---|---|
+| Pilot P1b: first 3 days, L/P/F x 1 rep | 618 | 4 | 19,149 B | $0.0978 | $0.1038 | $0.623 |
+| Full O1: 36 days, L/P/F x 3 reps | 25,425 | 210 | 42,829 B | $4.4397 | $4.7547 | $27.5474 |
+
+P1 itself cost $0.0856 (ledger) at the old limits. With P1 and P1b on the ledger, O1's expected cumulative total is about $4.62
+($4.94 with every reflection at its cap), under the coded $16 ceiling. The worst-case bound is the reserve rule's ceiling, not a
+forecast; the ledger ceiling stops the run first.
+
+Superseded (Revision 1 estimate, v3-calibrated, old limits): dry run sha256
 `60fdcc5ccb5468c7aa3513511ec27a4af894db7ca19928ca4735cfa177c487ac` full, `ec90c2fb0fa3e66e9554c5816623a66563d821045da62b5b674e3a9d60aaa75f`
 pilot; the first head's files were `aee96d55…a4630` and `02584530…3edb2`, same call counts and costs):
 
@@ -136,7 +158,7 @@ not counted here (arena tape not opened).
 
 Working directory for every step: a clean checkout at the merged sha of this PR, for example
 `git -C /home/claude/.miscusi/repos/vaanai/MAL worktree add --detach /data2/mal/wt/v5-run <merged sha>` and `cd /data2/mal/wt/v5-run`.
-**P1, O1 and every rerun after an exit 4 run at that same sha.** The prompts are code constants: a changed prompt misses the replay store
+**P1b, O1 and every rerun after an exit 4 run at that same sha** (P1, at da25a118, is superseded by P1b, Revision 3). The prompts are code constants: a changed prompt misses the replay store
 on every call and pays again inside the same $16 ledger ceiling, so O1 could no longer finish under it. Each run writes
 `run_start.json` (harness and prompt sha256, args) before its first call; check it against the previous run before a rerun.
 Fixed paths: `S=/data2/mal/scratch/haiku-v5`, export `E=$S/export-o1`, ledger `$S/ledger.jsonl`, store `$S/store`.
@@ -147,22 +169,23 @@ Fixed paths: `S=/data2/mal/scratch/haiku-v5`, export `E=$S/export-o1`, ledger `$
    `/data/mal/c1nf-parity-venv/bin/python -m tools.haiku_v5_export --out-dir /data2/mal/scratch/haiku-v5/export-o1 --with-outcomes --basis el2 --el2-rows /data2/mal/scratch/haiku-v5/p55-rows.parquet`.
    It must print `parity OK (el2)` (totals of the full book equal P84's published el2 totals to 1e-4 SOL) or it writes nothing.
    Notebook the sha256 of `export-o1/triggers.jsonl` and `export-o1/outcomes.jsonl` (`export.json` lists both).
-2. (API; coded ceiling $1 because `--max-days` is set) Pilot P1. `<notebook id>`, `<T sha>` and `<O sha>` are filled by the manager at
+2. (API; coded ceiling $1 because `--max-days` is set; the ceiling is cumulative on the ledger, which already holds P1's $0.0856, so
+   P1b has about $0.91 of room against an expected $0.0978) Pilot P1b. `<notebook id>`, `<T sha>` and `<O sha>` are filled by the manager at
    submission from step 1's notebook entry:
-   `set -a; . /var/lib/mal/anthropic/anthropic.env; set +a; /data/mal/venv/bin/python -m tools.haiku_v5_harness run --triggers /data2/mal/scratch/haiku-v5/export-o1/triggers.jsonl --outcomes /data2/mal/scratch/haiku-v5/export-o1/outcomes.jsonl --out-dir /data2/mal/scratch/haiku-v5/run-p1 --model haiku --live --approval <notebook id> --budget-usd 1 --ledger /data2/mal/scratch/haiku-v5/ledger.jsonl --save-dir /data2/mal/scratch/haiku-v5/store --reps 1 --max-days 3 --expect-sha256 triggers=<T sha>,outcomes=<O sha>`.
+   `set -a; . /var/lib/mal/anthropic/anthropic.env; set +a; /data/mal/venv/bin/python -m tools.haiku_v5_harness run --triggers /data2/mal/scratch/haiku-v5/export-o1/triggers.jsonl --outcomes /data2/mal/scratch/haiku-v5/export-o1/outcomes.jsonl --out-dir /data2/mal/scratch/haiku-v5/run-p1b --model haiku --live --approval <notebook id> --budget-usd 1 --ledger /data2/mal/scratch/haiku-v5/ledger.jsonl --save-dir /data2/mal/scratch/haiku-v5/store --reps 1 --max-days 3 --expect-sha256 triggers=<T sha>,outcomes=<O sha>`.
    Then, **only if the run exited 0** (chain with `&&` in the same sh command, so a refusal (exit 3) or a caller stop (exit 4) reports
    cleanly and no read runs on a partial or missing run), the structure-only read (no outcome, no score):
-   `&& /data/mal/venv/bin/python -m tools.haiku_v5_harness pilot --run-dir /data2/mal/scratch/haiku-v5/run-p1 --ledger /data2/mal/scratch/haiku-v5/ledger.jsonl --save-dir /data2/mal/scratch/haiku-v5/store`
+   `&& /data/mal/venv/bin/python -m tools.haiku_v5_harness pilot --run-dir /data2/mal/scratch/haiku-v5/run-p1b --ledger /data2/mal/scratch/haiku-v5/ledger.jsonl --save-dir /data2/mal/scratch/haiku-v5/store`
    -> parse rate, reflection success, per call kind: tokens, cache-read share, input tokens per byte (the 0.56 assumption), latency max and
    count over 45 s (haiku_caller times out at 60 s, non-streaming), `max_tokens` stop share, USD per kind (each reserve row plus its
    settle row, joined on reservation_id; the total must show `matches_ledger_summary` true). Go/no-go for O1: parse >= 95%, reflection
-   success >= 90%, no reflection over 45 s, `max_tokens` stops under 10% of reflections, and a USD per call that keeps O1 under $15. The
+   success >= 90%, no reflection over 55 s and no caller timeout, `max_tokens` stops under 10% of reflections, and a USD per call that keeps O1 under $15. The
    owner compares the console with the ledger.
 3. (API; the coded ceiling is $16 on the cumulative ledger, so about $15 for this step) Full O1: the same `run` command with `--reps 3`,
    no `--max-days`, `--budget-usd 16`, `--out-dir /data2/mal/scratch/haiku-v5/run-o1`. Serial calls (haiku_caller holds its ledger lock
    across a call): about 5 to 11 h. The run lock (`ledger.jsonl.v5-run.lock`) refuses a second process on the same ledger. A run stopped
    by the caller (budget, retries, API error) exits 4 and is rerun, at the same sha, into a NEW `--out-dir` with the same ledger and store;
-   saved calls replay at no cost. P1's rep-1 calls on days 1-3 are identical requests and replay (disclosed).
+   saved calls replay at no cost. P1b's rep-1 calls on days 1-3 are identical requests and replay (disclosed).
 4. (no API) `/data/mal/venv/bin/python -m tools.haiku_v5_harness score --run-dir /data2/mal/scratch/haiku-v5/run-o1 --triggers /data2/mal/scratch/haiku-v5/export-o1/triggers.jsonl --outcomes /data2/mal/scratch/haiku-v5/export-o1/outcomes.jsonl --out /data2/mal/scratch/haiku-v5/score-o1.json`.
    The scorer refuses unless its harness sha256 equals the run's and the basis is el2. **Only a score.json with `o1_verdict_eligible`
    true (model haiku, arms L,P,F, reps 3, no `--max-days`, basis el2) is the O1 verdict.** The verdict line goes to the manager;
