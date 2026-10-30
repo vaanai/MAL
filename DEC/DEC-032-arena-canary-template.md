@@ -973,3 +973,57 @@ Quant-proof ruled this **ACCEPTABLE in principle, at C0 only**, in its report on
 - Any other canary's executor.
 
 No book has cleared the promotion gate. Nothing here is a profit claim.
+
+
+## Amendment 7: Q50's owner line may sit in a root-owned file Helm writes; the owner line no longer has to be in the installed tree (DRAFT)
+
+**Status: DRAFT, NOT IN FORCE.** Written 2026-10-30 (`date -u` 16:19Z at start) by a worker for manager18 (lane q50-c0-feed), records only, before any Q50 read verdict and before any Q50 C0 send. It is in the same PR as its code, PR #1091 (branch `claude/q50-c0-owner-file`), so the rule and the code merge together. It takes effect only when all of these hold:
+- (a) this text merges with quant-proof's OK on the exact head and a reviewer verdict on the PR;
+- (b) the canary's install sha contains #1091's code, with the md5 decision-equivalence replay EQUAL at that sha (#1481 counts) and a 1 h keyless dry run at that sha.
+
+Source: the rules audit, rank 4 (`/data/mal/hunt-1008/ops/reports/2026-10-30/audit-rules.md`). The HV4 counterpart is DEC-031 Amendment 21 item 4 (PR #1101, merged), carried into HV4 copies by Amendment 6 item 3. Outcome-blind: no Q50 output, ledger, decision row, `bots.json` or job status view was opened.
+
+**Scope.** Q50 (`h5v1q50-boostfloor-a1`) on `tools/h5_arena_executor.py`, and a later H5 book on that executor whose copy declares this amendment. Not HV4 or HV6: Amendment 6 item 3 and DEC-031 Amendment 21 item 4 cover HV4.
+
+### 1. The rule
+1. A live start of the Q50 executor needs the owner's line for its `bot_id`. Until now that meant a `DEC-*canary*.md` record in the **installed** tree (`canary_record_refusal`, the template excluded). It may now instead be the root-owned file **`/etc/mal-h5-arena/OWNER_CANARY`** (`ARENA_OWNER_CANARY_PATH`, a code constant). The file:
+   - is written by Helm, as root, on the owner's own word: the owner's standing line of Amendment 1 item 3, or a fresh line;
+   - passes `h.root_file_problem`, the same checks as the arena `LIVE_OK`: a regular file, not a symlink, root:root, mode exactly 0644, in a root-owned directory that is not group- or other-writable, with lstat and fstat on the same inode;
+   - holds exactly one non-blank line: `OWNER_CANARY_CONFIRMED: bot_id=<bot_id>`, naming this `bot_id` exactly (`owner_canary_file_refusal`).
+2. When neither the DEC record nor the file covers the book, the live start is refused with the DEC record's reason, as before. The DEC-record path itself is unchanged.
+3. **No sha256 of the file, or of a DEC copy, is compiled into code.**
+4. The DEC copy still quotes the owner's line verbatim (§2). It still merges with QP OK and a reviewer verdict before any send, and it records Helm's sha256 of the file and the instant it was written (records PR R).
+
+### 2. What it replaces in the stage order (QP-PRERULING-1027-xorder, Stage 2 item 4)
+- **Stage 2 item 4 reads** "Add the bare line `OWNER_CANARY_CONFIRMED: bot_id=h5v1q50-boostfloor-a1`. It must be in the X tree, because the installed executor reads DEC/ at X."
+- **Under this amendment:**
+  - The bare line goes into the DEC copy in git: the copy PR or records PR R, before Helm writes `LIVE_OK`.
+  - The executor reads it from `OWNER_CANARY`, so it **need not be in the installed tree**.
+  - A reinstall is needed only when the pinned-set blobs of the tree to run differ from the installed tree's (the X-time manifest decides). A tree installed before the read, with the same pinned blobs, keeps its md5 EQUAL and its dry run.
+- **Not replaced:**
+  - every other Stage 2 and Stage 3 item (read-dependent fields, `POSTX:` tokens, records PR R, N4, the 1 h dry run at the install sha);
+  - the owner's own word for the key, the wallet, funding, `LIVE_OK` and `TIER`.
+
+### 3. Rewrite latch: not adopted for Q50, and why
+DEC-031 Amendment 21 item 4 does three things for HV4's file: the bridge checks the file before **every** live buy; at the first good check it pins the file's (st_dev, st_ino, sha256); and a later rewrite, replacement or removal latches `owner_line`. Q50 does not take that latch. Its file is checked at live start (in `arena_start_refusal`, re-run by the constructor), the same as the DEC record has been at every sha. The reasons:
+- **The owner's word already gates every Q50 buy.** The arena's own `/etc/mal-h5-arena/LIVE_OK` must exist, pass the same root-file checks and name exactly this `bot_id`, and it is re-read before every live buy and every rebroadcast (`_live_gate`). Removing it stops new buys at once. The HV4 bridge pins the owner file because it uses that file as one of two per-buy gates; on Q50 that per-buy role is LIVE_OK's.
+- **A rewrite needs root, and root also writes LIVE_OK.** The latch would only alarm on a change that the same principal can make to the per-buy gate anyway. It protects no SOL beyond the C0 limits and LIVE_OK.
+- **It is not a loosening of anything that ran.** No Q50 executor sha ever re-checked the owner line after start. The DEC record was also start-only.
+- **Cost of adopting it:** a new executor path, a state field, a latch name, a new blob, re-pins, an md5 rerun and a Helm reinstall. Under the PUSH-BRIEF owner directive, a check that protects neither money nor gate validity is not added.
+
+**Two smaller differences from Amendment 21 item 4, disclosed:**
+- Q50's file must be mode 0644 exactly (the LIVE_OK pattern). HV4's must be "not group- or other-writable".
+- Q50's `root_file_problem` does not test link count 1, which HV4's text names. Only root can create a hard link to a root-owned file in a root-owned directory, so this adds no exposure that root could not create directly.
+
+### 4. Why money and gate validity are unchanged
+- The send is still gated by Helm's root-owned files written on the owner's word (`OWNER_CANARY` at start, `LIVE_OK` before every buy), by `TIER` T1, by the C0 limits of §3 and by every halt of §5.
+- No read, window, trade set or verdict changes.
+- The canary is not gate evidence.
+
+### 5. Code and proofs (PR #1091)
+- `owner_canary_file_refusal` and `canary_record_refusal(..., owner_file=None)` in `tools/h5_arena_executor.py`. Tests: a valid file covers the book without a DEC record; another book, a prefix, two lines, an extra line, a bare id, an empty file, modes 0664 and 0600, a symlink and a missing file do not; the DEC record path still covers.
+- The executor blob moves under Amendment 5 item 7 (Re-pin record 1).
+- md5 replay EQUAL at the PR head; the PR body records its provenance.
+- `scripts/ops/test_q50_canary_record_check.sh` passes.
+
+No book has cleared the promotion gate. Nothing here is a profit claim.
