@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from tools import a3_applied_alert as m
@@ -96,7 +97,10 @@ def test_cli_exit_code_and_stamp(tmp_path, capsys):
 
 
 def test_sh_loop_runs_once(tmp_path):
-    out, st = setup(tmp_path, [ap("2026-10-24T07:10:05Z")])
+    # The shell loop reads the REAL clock (no --now-ms). The fixed 2026-10-24T07:10:05Z run went older than STALE_S (13 h) on 2026-10-24T20:10Z, so the loop began to exit 3
+    # with A3_GUARD_STALE (time-bomb in the fixture since #881, not a code change). Use a run 1 h before the real now so "no ALERT, exit 0" holds on any date.
+    fresh = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    out, st = setup(tmp_path, [ap(fresh)])
     repo = Path(__file__).resolve().parent.parent
     sh = repo / "scripts/mal-fast/a3-applied-alert.sh"
     env = {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "A3_REPO": str(repo), "A3_PY": sys.executable, "A3_ALERT_UNTIL": "0"}
