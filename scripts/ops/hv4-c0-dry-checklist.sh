@@ -168,12 +168,12 @@ for d in "$LIVE_DIR" "$ETC_C0" "$WINDOW_DIR" "$A3_DIR"; do
   [ "$st" = "0:0:755" ] && pass "root_dir_0755 ($d)" || fail "dir_not_root_0755 ($d got ${st:-missing})"
 done
 # The bridge's read gate demands realpath(reads_dir) == /data/mal/arena/reads and its sealed-alias check fails closed when /data/mal/arena does not exist:
-# on the bridge host root creates BOTH, root:root 0755: install -d -m 0755 -o root -g root /data/mal/arena /data/mal/arena/reads (runbook "Provision").
+# on the bridge host root creates each ONLY IF ABSENT, root:root 0755, and never chowns an existing one (runbook "Provision", QP part B).
 ARENA_PREFIX=$(dirname "$READS_DIR")
 st=$(stat -c %u:%g:%a "$ARENA_PREFIX" 2>/dev/null)
-[ "$st" = "0:0:755" ] && pass "arena_prefix_root_0755 ($ARENA_PREFIX; only the directory is stat-ed)" || fail "arena_prefix_not_root_0755 ($ARENA_PREFIX got ${st:-missing}): install -d -m 0755 -o root -g root /data/mal/arena /data/mal/arena/reads"
+[ "$st" = "0:0:755" ] && pass "arena_prefix_root_0755 ($ARENA_PREFIX; only the directory is stat-ed)" || fail "arena_prefix_not_root_0755 ($ARENA_PREFIX got ${st:-missing}): if absent, install -d -m 0755 -o root -g root /data/mal/arena /data/mal/arena/reads; an existing dir with another owner or mode is a STOP, never chown it"
 st=$(stat -c %u:%g:%a "$READS_DIR" 2>/dev/null)
-[ "$st" = "0:0:755" ] && pass "reads_dir_root_0755 ($READS_DIR; only the directory is stat-ed)" || fail "reads_dir_not_root_0755 ($READS_DIR got ${st:-missing}): install -d -m 0755 -o root -g root /data/mal/arena /data/mal/arena/reads"
+[ "$st" = "0:0:755" ] && pass "reads_dir_root_0755 ($READS_DIR; only the directory is stat-ed)" || fail "reads_dir_not_root_0755 ($READS_DIR got ${st:-missing}): if absent, install -d -m 0755 -o root -g root /data/mal/arena /data/mal/arena/reads; an existing dir with another owner or mode is a STOP, never chown it"
 sw="$WINDOW_DIR/$SYN.json"
 st=$(stat -c %u:%g:%a "$sw" 2>/dev/null)
 [ "$st" = "0:0:444" ] && pass "synthetic_window_file_root_0444 ($sw)" || fail "synthetic_window_file_missing_or_wrong ($sw got ${st:-missing}): root creates it, write-once"

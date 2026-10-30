@@ -71,7 +71,14 @@ sudo install -d -m 0755 -o root -g root /opt/mal-arena-bridge /etc/mal-arena-liv
 sudo install -d -m 0700 -o root -g root /etc/mal-hv4-c0-key                       # live only; stays empty for a dry install
 sudo install -d -m 0755 -o root -g root /var/lib/mal-hv4-c0 /var/lib/mal-hv4-c0/window /var/lib/mal-hv4-c0/a3 /var/lib/mal-hv4-c0/state /var/lib/mal-hv4-c0/parity /var/lib/mal-hv4-c0/twins /var/lib/mal-hv4-c0/tieout
 sudo install -d -m 0755 -o root -g root /var/lib/mal-arena-feed /var/lib/mal-arena-feed/hv4
-sudo install -d -m 0755 -o root -g root /data/mal/arena /data/mal/arena/reads          # fast-0 only; the directory must exist for the reads gate (F3); without it a start refuses read_record_dir_absent, whose message names this command (PR #1100); the keyless checklist checks both dirs
+# fast-0 only: /data/mal/arena and /data/mal/arena/reads must exist for the reads gate (F3); without them a start refuses read_record_dir_absent, whose message
+# names this step (PR #1100). Create each ONLY IF ABSENT; never chown or chmod an existing directory (QP part B). One that exists as anything but a root:root 0755
+# directory (not a link) is a STOP: tell the manager. The keyless checklist checks both.
+for d in /data/mal/arena /data/mal/arena/reads; do
+  if [ -e "$d" ] || [ -L "$d" ]; then
+    st=$(sudo stat -c '%F %u:%g %a' "$d"); [ ! -L "$d" ] && [ "$st" = "directory 0:0 755" ] && echo "ok $d" || { echo "STOP: $d exists as '$st'"; break; }
+  else sudo install -d -m 0755 -o root -g root "$d" && echo "created $d"; fi
+done
 # rehearsal first: BOT=hv4-SYN-X. Real arms after their read: BOT=hv4-BIG-X, then hv4-CON-X.
 for BOT in hv4-SYN-X; do
   sudo install -d -m 3770 -o mal-hv4-c0 -g claude /var/lib/mal-hv4-c0/state/$BOT /var/lib/mal-hv4-c0/parity/$BOT
@@ -221,7 +228,7 @@ A parity or tie-out halt leaves `/var/lib/mal-hv4-c0/parity/<bot>/STOP` (written
 
 ## 12. Open (not done in this pack)
 
-1. **Parity STOP in live (F4).** The parity tool writes the stop file it is given; in live that is `/var/lib/mal-live/STOP`, which this unit cannot write. The tool then returns its "STOP not written" code instead of 11, the `parity_hard_halt` latch is only set on 11, and a hard halt could stop blocking once its cause clears, without the manager's written review. This needs a code change (give the parity tool a per-instance stop file the unit can write, and read both), which is outside this pack. Recommended as an added removal precondition.
+1. **Parity STOP in live (F4): FIXED by PR #1110** (QP OK and reviewer APPROVE, part B). The parity and tie-out tools now write `/var/lib/mal-hv4-c0/parity/<bot>/STOP`, inside this unit's ReadWritePaths, and the bridge treats it as STOP. rc 3 latches `parity_stop_unwritable`. #1110 also adds the twin grace (QP C1). The manager removes that per-bot STOP with `sudo rm` on fast-0 after the written review is on record (the canary DEC copy states this narrowing of DEC-032 §3 "Files"). Kept here only as a pointer.
 2. **Runner dead-man (QP item 14).** A host-side dead-man on the HV4 runner job and on SCAN-log `tick_timing` staleness (the runner is on research-0), and a C0 read that flags every backstop-closed trade during runner silence. Not built.
 3. **Watchdog for the bridge instance** (as `mal-h5-arena-watch`): alerts on a latch, a stale feed status, a stale A3 carry, an unreadable parity result. Not built.
 4. **HV4 daily tie-out job script** (export, fetch, check, one UTC day after 00:30Z) and the twin job's placement (F7).
