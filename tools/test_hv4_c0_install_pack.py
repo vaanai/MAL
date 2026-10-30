@@ -495,5 +495,47 @@ class SmokeFixtureTests(unittest.TestCase):
         self.assertIsNone(c0.arm_refusal("hv4-SYN-X"))  # it passes the arm rule, which is why the rehearsal can run at all
 
 
+class RunbookTests(unittest.TestCase):
+    text = RUNBOOK.read_text()
+
+    def test_load_bearing_statements_are_there(self):
+        for s in ("unresolved_hard_halts == []", "AND `match` is true", "hv4-SYN-X", "real_arm_id_in_rehearsal", "N-B", "N-C", "exactly `T1`",
+                  "/etc/mal-arena-live/hv4-c0/<bot>/LIVE_OK", "/etc/mal-hv4-c0/<bot>/CANARY_DEC.md", "OWNER_CANARY_CONFIRMED: bot_id=<bot>", "#1446",
+                  "2026-11-07T00:57Z", "2026-11-08T13:05Z", "QP-RULING-1025 R2.1", "hv4_c0_incomplete", "No book has cleared the promotion gate",
+                  "/var/lib/mal-hv4-c0/window", "a3-applied.jsonl", "MiScusi", "ssh mal-research-0", "forced-command"):
+            self.assertIn(s, self.text, s)
+
+    def test_every_repo_path_the_runbook_names_exists(self):
+        for rel in sorted(set(re.findall(r"`((?:scripts|tools|docs)/[A-Za-z0-9_./@-]+\.(?:sh|py|md|service|timer|conf|json|txt))`", self.text))):
+            if "<" in rel or "*" in rel:
+                continue
+            self.assertTrue((REPO / rel).exists(), rel)
+        for name in ("mal-hv4-c0-bridge@.service", "mal-hv4-c0-bridge-live-pinned.conf", "requirements-hv4-c0-bridge.txt", "hv4-c0-smoke-fixture.py",
+                     "hv4-c0-a3-carry.sh", "mal-hv4-c0-a3-carry.timer", "hv4-c0.dry.json", "hv4-c0.live.json"):
+            self.assertTrue((PACK / name).is_file(), name)
+            self.assertIn(name, self.text, name)
+
+    def test_the_at_event_placeholders_match_the_templates(self):
+        mine = set(re.findall(r"<AT-EVENT:[a-z_]+>", self.text))
+        theirs = set(re.findall(r"<AT-EVENT:[a-z_]+>", (PACK / "hv4-c0.dry.json").read_text()))
+        self.assertEqual(mine, theirs)
+
+    def test_no_pin_name_credential_material_or_protected_word_anywhere_in_the_pack(self):
+        banned = ["CANARY_DEC_" + "SHA256", "secr" + "ets"]
+        files = [RUNBOOK, CHECKLIST, Path(__file__), *sorted(p for p in PACK.iterdir() if p.is_file())]
+        for f in files:
+            t = f.read_text()
+            for b in banned:
+                self.assertNotIn(b, t.lower() if b.islower() else t, f"{f.name}: {b}")
+            if f != Path(__file__):  # this file's own fixture writes a fake key line to prove the checklist never echoes it
+                self.assertIsNone(re.search(r"HELIUS_API_KEY=[A-Za-z0-9]", t), f.name)
+            self.assertIsNone(re.search(r"\b[1-9A-HJ-NP-Za-km-z]{80,}\b", t), f"{f.name}: a base58-looking key")
+
+    def test_the_arena_path_appears_only_as_the_pinned_reads_dir_or_a_placeholder(self):
+        for f in [RUNBOOK, CHECKLIST, *sorted(p for p in PACK.iterdir() if p.is_file())]:
+            for m in re.finditer(r"/data/mal/arena[^\s'\"`)}]*", f.read_text()):
+                self.assertIn(m.group(0).rstrip(".,;:"), ("/data/mal/arena", "/data/mal/arena/reads", "/data/mal/arena/reads/<bot>.json", "/data/mal/arena/reads/<bot_id>.json"), f"{f.name}: {m.group(0)}")
+
+
 if __name__ == "__main__":
     unittest.main()
