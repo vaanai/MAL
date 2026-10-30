@@ -7,7 +7,6 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest import mock
 
 from tools import arena_live_bridge as alb
 from tools import hv4_gap_relay as R
@@ -72,7 +71,6 @@ class RelayTests(unittest.TestCase):
         for bad in ("hv4-../x-F", "hv4-CON-L", "rule1"):
             self.assertEqual(R.main(["--tape-dir", str(self.tape), "--bot-id", bad, "--out-dir", str(out)]), 2, bad)
 
-    @mock.patch.object(c0, "FEED_GAP_MANUAL_REVIEW", True)  # s5 item 2 as written; the Am.5 (DRAFT) hold is in tools/test_hv4_c0_gap_hold.py
     def test_bridge_latches_feed_break_on_the_relay_stream(self):
         e = Hv4Env(str(self.tmp / "env"))
         b = e.bridge()
