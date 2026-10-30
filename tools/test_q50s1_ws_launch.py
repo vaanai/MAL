@@ -70,6 +70,17 @@ class KeyedArgv(unittest.TestCase):
         self.assertEqual(out[:-1], SHADOW_ARGS[:-1])
         self.assertEqual(out[-1], f"{BASE}?api-key={KEY}")
 
+    def test_host_only_urls(self):
+        """QP A1 on #1121: a path token (QuickNode-style) is refused, keyed or not; a port is fine."""
+        L.keyed_argv(SHADOW_ARGS[:-3] + ["wss://h.example:8443/", "--ws-url", BASE], BASE, KEY)
+        for bad in ("wss://x.solana-mainnet.quiknode.pro/abcdef0123456789abcdef/", "wss://h.example/v2/abc", "wss://h.example/ws"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    L.keyed_argv(SHADOW_ARGS[:-3] + [bad, "--ws-url", BASE], BASE, KEY)
+                self.assertIsNotNone(L.host_only_problem(["--ws-url", bad]))
+        with self.assertRaises(ValueError):
+            L.keyed_argv(SHADOW_ARGS[:-1] + ["wss://h.example/k/"], "wss://h.example/k/", KEY)
+
     def test_refusals(self):
         for args, url in ((SHADOW_ARGS + ["--ws-url", BASE], BASE), ([a for a in SHADOW_ARGS if a != BASE][:-1], BASE), ([BASE] + SHADOW_ARGS[:-2], BASE),
                           (SHADOW_ARGS[:-1] + ["wss://x/?api-key=1"], BASE), (SHADOW_ARGS, BASE + "?api-key=k"), (SHADOW_ARGS, "ws://x/"), (SHADOW_ARGS + ["--rpc-url", "https://u:p@x"], BASE)):
@@ -115,6 +126,14 @@ class Run(Fixture):
         self.keyfile.write_text(f"HELIUS_API_KEY={KEY}\n")
         (self.src / "tools" / "h5_shadow.py").unlink()
         self.assertEqual(self.run_launch().returncode, 2)
+
+    def test_unkeyed_run_refuses_a_path_token_and_takes_no_key_param(self):
+        args = SHADOW_ARGS[:-1] + ["wss://x.solana-mainnet.quiknode.pro/abcdef0123456789abcdef/"]
+        r = subprocess.run([sys.executable, "-I", str(LAUNCH), "--src", str(self.src), "--dry", "--", *args], capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertNotIn("abcdef0123456789abcdef", r.stdout + r.stderr)
+        r = self.run_launch("--key-param", "token")  # QP A2: api-key is the only parameter S* redacts; no option to change it
+        self.assertEqual(r.returncode, 2)
 
     def test_usage(self):
         for argv in ([], ["--src", "x"], ["--src", "x", "--key-file", "y", "--"], ["--bogus", "--"]):

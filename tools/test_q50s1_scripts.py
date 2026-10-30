@@ -39,17 +39,27 @@ class Syntax(unittest.TestCase):
         subprocess.run(["sh", "-n", str(helper)], check=True)
         text = helper.read_text()
         code = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
-        self.assertNotIn("api-key", text.lower())
-        for bad in ("sed ", "cat ", "<", "export", "echo", "printf", "read "):  # it never reads the key file, only tests that it is readable
+        self.assertEqual([ln for ln in text.splitlines() if "api-key" in ln and not ln.lstrip().startswith("#")], [])  # QP A2: the parameter is fixed in the launcher
+        for bad in ("sed ", "cat ", "<", "export", "read ", "open("):  # it never reads the key file, only tests that it is readable (printf prints URLs and paths only)
             self.assertNotIn(bad, code)
         kf = Path(tempfile.mkdtemp()) / "k"
         kf.write_text("HELIUS_API_KEY=fixture0key-1\n")
-        def rc(ws1, ws2, keyfile=kf):
-            return subprocess.run(["sh", "-c", f'. "{helper}"; Q50S1_WS1="$1"; Q50S1_WS2="$2"; q50s1_ws2_build', "x", ws1, ws2], env=dict(os.environ, Q50S1_KEY_FILE=str(keyfile))).returncode
+        def rc(ws1, ws2, keyfile=kf, keyed="0"):
+            return subprocess.run(["sh", "-c", f'. "{helper}"; Q50S1_WS1="$1"; Q50S1_WS2="$2"; Q50S1_WS2_KEYED="$3"; q50s1_ws2_build', "x", ws1, ws2, keyed],
+                                  env=dict(os.environ, Q50S1_KEY_FILE=str(keyfile))).returncode
+        self.assertEqual(rc("wss://api.mainnet-beta.solana.com", ""), 0)  # no second provider: mainnet-beta alone (no default)
+        self.assertEqual(rc("wss://api.mainnet-beta.solana.com", "", keyed="1"), 11)  # keyed needs --ws2
         self.assertEqual(rc("wss://api.mainnet-beta.solana.com", "wss://mainnet.helius-rpc.com/"), 0)
-        self.assertEqual(rc("wss://api.mainnet-beta.solana.com", "wss://mainnet.helius-rpc.com/", keyfile=kf.parent / "missing"), 11)
+        self.assertEqual(rc("wss://api.mainnet-beta.solana.com", "wss://mainnet.helius-rpc.com/", keyed="1"), 0)
+        self.assertEqual(rc("wss://api.mainnet-beta.solana.com", "wss://mainnet.helius-rpc.com/", keyfile=kf.parent / "missing", keyed="1"), 11)
+        self.assertEqual(rc("wss://api.mainnet-beta.solana.com", "wss://mainnet.helius-rpc.com/", keyfile=kf.parent / "missing"), 0)  # unkeyed reads no key file
+        out = subprocess.run(["sh", "-c", f'. "{helper}"; q50s1_ws_args; q50s1_key_opts; echo END'], capture_output=True, text=True).stdout
+        self.assertEqual(out, "--ws-url wss://api.mainnet-beta.solana.com\nEND\n")  # the default feed: mainnet-beta only, no key options
+        self.assertEqual(rc("wss://api.mainnet-beta.solana.com", "wss://second.example:8443/"), 0)
+        self.assertEqual(rc("wss://api.mainnet-beta.solana.com", "wss://second.example"), 0)
         for ws2 in ("wss://mainnet.h" + "elius-rpc.com/?api-key=abc", "wss://x.example/?token=1", "wss://u:p@x.example", "ws://x.example", "wss://x/k?a=1",
-                    "wss://x.example/#f", "wss://x.example/apiKey=1", "", "wss://api.mainnet-beta.solana.com"):
+                    "wss://x.example/#f", "wss://x.example/apiKey=1", "wss://api.mainnet-beta.solana.com",
+                    "wss://x.solana-mainnet.quiknode.pro/abcdef0123456789abcdef/", "wss://x.example/ws", "wss://x.example/v2/abc", "wss://x.example:80a/", "wss://-x.example:/", "wss://.example/"):  # QP A1: host-only
             with self.subTest(ws2=ws2):
                 self.assertEqual(rc("wss://api.mainnet-beta.solana.com", ws2), 11)
         self.assertEqual(subprocess.run(["sh", "-c", f'. "{helper}"; q50s1_ws2_build'], env=dict(os.environ, Q50S1_KEY_FILE=str(kf))).returncode, 0)
@@ -104,7 +114,7 @@ class Register(unittest.TestCase):
             r = self.run_("--preclock-notebook-ref", "nb_Abc123", s1home=None, py=self.stub_py(d))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.split(), ["HOME=/home/claude/s1home", "-m", "tools.q50s1_register", "--arena-root", "/home/claude/s1home/data/arena", "--books-file",
-                                            "/home/claude/s1home/data/arena/a3-books.json", "--preclock-notebook-ref", "nb_Abc123"])
+                                            "/home/claude/s1home/data/arena/a3-books.json", "--preclock-notebook-ref", "nb_Abc123", "--endpoint", "wss://api.mainnet-beta.solana.com"])
         self.assertNotIn("/data/mal/arena", r.stdout)
         self.assertNotIn("/nonexistent-real-home", r.stdout)
 
@@ -113,7 +123,17 @@ class Register(unittest.TestCase):
             r = self.run_("--apply", "--preclock-notebook-ref", "nb_Abc123", s1home="/some/s1home", py=self.stub_py(d))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(r.stdout.split(), ["HOME=/some/s1home", "-m", "tools.q50s1_register", "--arena-root", "/some/s1home/data/arena", "--books-file", "/some/s1home/data/arena/a3-books.json",
-                                            "--preclock-notebook-ref", "nb_Abc123", "--apply"])
+                                            "--preclock-notebook-ref", "nb_Abc123", "--endpoint", "wss://api.mainnet-beta.solana.com", "--apply"])
+
+    def test_ws2_is_forwarded_as_a_second_endpoint_and_a_keyed_url_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = self.run_("--preclock-notebook-ref", "nb_Abc123", "--ws2", "wss://second.example/", s1home="/some/s1home", py=self.stub_py(d))
+            self.assertEqual(r.returncode, 0, r.stderr)
+            self.assertEqual(r.stdout.split()[-4:], ["--endpoint", "wss://api.mainnet-beta.solana.com", "--endpoint", "wss://second.example/"])
+            for bad in ("wss://second.example/?api-key=k", "wss://x.solana-mainnet.quiknode.pro/abcdef0123456789abcdef/"):
+                r = self.run_("--preclock-notebook-ref", "nb_Abc123", "--ws2", bad, s1home="/some/s1home", py=self.stub_py(d))
+                self.assertEqual(r.returncode, 2, bad)
+                self.assertEqual(r.stdout, "")
 
     def test_q50s1_arena_is_not_a_root_override(self):
         with tempfile.TemporaryDirectory() as d:
@@ -207,7 +227,7 @@ esac''')
 
     def write_line(self, **over):
         import json
-        e = {"frozen_sha": "5c2ab7c64b21358619e37068c6a53e4d183512ea", "clock_start_ms": 1793923200000, "window_end_ms_pin": 1796083200000, "registered_at_ms": 1793800000000}
+        e = {"frozen_sha": "5c2ab7c64b21358619e37068c6a53e4d183512ea", "clock_start_ms": 1793923200000, "window_end_ms_pin": 1796083200000, "registered_at_ms": 1793800000000, "endpoints": ["wss://api.mainnet-beta.solana.com"]}
         e.update(over)
         (self.arena / "bots.json").write_text(json.dumps({"bots": {"h5v1q50-boostfloor-s1": e}}))
 
@@ -288,20 +308,46 @@ class ShadowFeed(ShadowCheck):
     providers are key-free (scripts/ops/q50s1-feed.sh). A real start is driven with a fake `date` (inside the 11-05 window), a `cat` stub for the two slice files
     and a recording systemd-run stub; the whole generated command is checked."""
 
-    WS1, WS2 = "wss://api.mainnet-beta.solana.com", "wss://mainnet.helius-rpc.com/"
+    WS1, WS2 = "wss://api.mainnet-beta.solana.com", "wss://second.example/"
     KEY = "fixture0key-5678abcd"
 
-    def test_check_prints_two_key_free_urls_and_runs_the_launcher_dry(self):
+    def check(self, *args):
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HOME": str(self.home), "Q50S1_KEY_FILE": str(self.d / "keyfile"), "Q50S1_NOW_EPOCH": str(WIN_FROM + 60),
+               "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py), "FAKE_GIT_STATUS": "", "Q50S1_CGROUP_SLICE_DIR": str(self.cg)}
+        return subprocess.run(["sh", str(SHD), "--check", *args], capture_output=True, text=True, env=env, cwd=REPO)
+
+    def test_default_feed_is_mainnet_beta_alone_with_no_key(self):
         r = self.run_()
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertIn(f"--src {self.src} -- --fresh-forward ARENA --q-star-sol 50", r.stdout)
+        self.assertIn(f"--sockets 3 --syn-sockets 1 --ws-url {self.WS1} (systemd-run --description=q50s1-shadow; keyed=0,", r.stdout)
+        self.assertNotIn("--key-file", r.stdout)
+
+    def test_check_prints_two_key_free_urls_and_runs_the_launcher_dry(self):
+        self.write_line(endpoints=[self.WS1, self.WS2])
+        r = self.check("--ws2", self.WS2, "--ws2-keyed")
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         self.assertIn(f"--keyed-url {self.WS2} -- --fresh-forward ARENA --q-star-sol 50", r.stdout)
-        self.assertIn(f"--ws-url {self.WS1} --ws-url {self.WS2} (systemd-run --description=q50s1-shadow; the key is added inside the process; HOME={self.home} for the process; "
+        self.assertIn(f"--ws-url {self.WS1} --ws-url {self.WS2} (systemd-run --description=q50s1-shadow; keyed=1, any key is added inside the process; HOME={self.home} for the process; "
                       "segment 1 ends 2026-11-19T04:30:00Z with exit 0)", r.stdout)
         self.assertNotIn(self.KEY, r.stdout + r.stderr)
+
+    def test_endpoints_of_the_line_must_equal_this_runs_feed(self):
+        r = self.check("--ws2", self.WS2)  # the line was registered with mainnet-beta alone
+        self.assertEqual(r.returncode, 8, r.stdout + r.stderr)
+        self.assertIn("register with the same --ws2", r.stderr)
+        self.write_line(endpoints=[self.WS1, self.WS2])
+        self.assertEqual(self.check().returncode, 8)  # and the reverse
+        self.assertEqual(self.check("--ws2", self.WS2).returncode, 0)
+        self.assertEqual(self.check("--ws2-keyed").returncode, 11)  # keyed without --ws2
+        self.write_line(endpoints=[self.WS1, "wss://x.solana-mainnet.quiknode.pro/abcdef0123456789abcdef/"])
+        r = self.check("--ws2", "wss://x.solana-mainnet.quiknode.pro/abcdef0123456789abcdef/")  # QP A1: a credential in the path never reaches argv, the registry or the start record
+        self.assertEqual(r.returncode, 11, r.stdout + r.stderr)
+        self.assertNotIn("abcdef0123456789abcdef", r.stdout)
         self.assertNotIn("solanavibestation", r.stdout)
         self.assertIsNone(KEYLIKE.search(r.stdout + r.stderr))
 
-    def real_start(self, *args, seg_end=1795062600, home=None):
+    def real_start(self, *args, seg_end=1795062600, home=None, endpoints=None):
         """Segment start with stubs: systemd-run records its argv, moves the fake clock to the segment end and sleeps; systemctl stop kills it. Returns (result, argv)."""
         rec, now, pid = self.d / "systemd-run.argv", self.d / "now", self.d / "pid"
         now.write_text(str(WIN_FROM + 60) if "--successor" not in args else str(1793923200 + 86400))
@@ -309,7 +355,7 @@ class ShadowFeed(ShadowCheck):
         self.stub("date", f'if [ "$*" = "-u +%s" ]; then cat {now}; else exec /bin/date "$@"; fi')
         sc = (self.bin / "systemctl").read_text()
         (self.bin / "systemctl").write_text(sc.replace('case "$*" in', f'case "$*" in\n  *"stop q50s1-shadow.scope"*) kill $(cat {pid}) 2>/dev/null; exit 0 ;;', 1))
-        self.write_line(registered_at_ms=(WIN_FROM - 3600) * 1000)
+        self.write_line(registered_at_ms=(WIN_FROM - 3600) * 1000, endpoints=endpoints or [self.WS1])
         env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HOME": str(home or self.home), "Q50S1_KEY_FILE": str(self.d / "keyfile"),
                "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py), "FAKE_GIT_STATUS": "", "Q50S1_POLL_S": "1"}
         self.stub("cat", 'case "$1" in /sys/fs/cgroup/user.slice/user-1002.slice/memory.current) echo 2147483648 ;; '
@@ -354,7 +400,7 @@ class ShadowFeed(ShadowCheck):
         self.assertIn("Q50's or HV4's root", r.stderr)
 
     def test_a_real_start_has_no_key_in_argv_unit_properties_description_or_output(self):
-        r, argv = self.real_start()
+        r, argv = self.real_start("--ws2", self.WS2, "--ws2-keyed", endpoints=[self.WS1, self.WS2])
         out = r.stdout + r.stderr
         self.assertEqual(r.returncode, 0, out)
         i = argv.index("env")
@@ -367,7 +413,7 @@ class ShadowFeed(ShadowCheck):
         self.assertEqual(argv[-4:], ["--ws-url", self.WS1, "--ws-url", self.WS2])
         self.assertNotIn(self.KEY, "\n".join(argv) + out)
         self.assertIn("q50s1-ws-launch.py", "\n".join(argv))
-        self.assertIn(f"ws={self.WS1} {self.WS2} (key added in-process", r.stdout)
+        self.assertIn(f"ws={self.WS1} {self.WS2} (keyed=1)", r.stdout)
 
     def test_check_before_the_s_star_worktree_exists(self):
         """Review (4): on 11-05 the S* worktree may not exist yet; --check must still pass (it dry-runs the launcher against this checkout) and keep 11 for a bad key."""
@@ -378,16 +424,19 @@ class ShadowFeed(ShadowCheck):
         self.assertIn("would create the detached worktree", r.stdout)
         self.assertFalse(self.src.exists())
         (self.d / "keyfile").write_text("HELIUS_API_KEY=\n")
-        self.assertEqual(self.run_().returncode, 11)
+        self.write_line(endpoints=[self.WS1, self.WS2])
+        self.assertEqual(self.check("--ws2", self.WS2, "--ws2-keyed").returncode, 11)
 
     def test_a_bad_key_file_refuses_11(self):
+        self.write_line(endpoints=[self.WS1, self.WS2])
         for text in ("HELIUS_API_KEY=\n", "OTHER=1\n", "HELIUS_API_KEY=ab$(id)xyz\n"):
             with self.subTest(text=text):
                 (self.d / "keyfile").write_text(text)
-                r = self.run_()
+                r = self.check("--ws2", self.WS2, "--ws2-keyed")
                 self.assertEqual(r.returncode, 11, r.stdout + r.stderr)
+        self.assertEqual(self.check("--ws2", self.WS2).returncode, 0)  # unkeyed: the key file is not read
         (self.d / "keyfile").unlink()
-        self.assertEqual(self.run_().returncode, 11)
+        self.assertEqual(self.check("--ws2", self.WS2, "--ws2-keyed").returncode, 11)
 
 
 class ShadowCheckMemory(unittest.TestCase):

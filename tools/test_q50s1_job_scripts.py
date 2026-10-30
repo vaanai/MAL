@@ -60,7 +60,9 @@ exit 0
 while [ "$#" -gt 0 ]; do [ -n "${FAKE_SDRUN_ARGS:-}" ] && printf '%s\n' "$1" >> "$FAKE_SDRUN_ARGS"; case "$1" in -p) [ -n "${FAKE_SDRUN_ARGS:-}" ] && printf '%s\n' "$2" >> "$FAKE_SDRUN_ARGS"; shift 2 ;; -*) shift ;; *) break ;; esac; done
 exec "$@"
 ''',
-    "journalctl": '#!/bin/sh\ncase "$*" in *"-n 0"*) exit "${FAKE_JOURNAL_RC:-0}" ;; esac\necho "Started q50s1-smoke.scope - q50s1-smoke."\n',
+    # the general user journal holds an ordinary link by default (QP 6534174365: it must never fail a check); `-u <unit>` gives the s1 unit's own lines
+    "journalctl": '#!/bin/sh\ncase "$*" in *"-n 0"*) exit "${FAKE_JOURNAL_RC:-0}" ;; *" -u "*) printf "%s\\n" "${FAKE_JOURNAL_UNIT:-Started the s1 scope.}" ;; '
+                  '*) printf "%s\\n" "${FAKE_JOURNAL_ALL:-opened https://claude.ai/code/session_01BKmSK4sHKuuWwdukzBbRs2 in a browser}" ;; esac\n',
 }
 FAKE_SHADOW_PY = r'''#!/bin/sh
 case "$*" in *"import websockets"*|*" --dry "*) exit 0 ;; esac
@@ -85,11 +87,11 @@ NEW_MAX_MB=1500
 [ "${1:-}" = "--check-memory" ] && { echo "q50s1-shadow: (check-memory) fake"; exit "${FAKE_MEM_RC:-0}"; }
 exit 2
 . "$HERE/q50s1-feed.sh"
-systemd-run --user --scope --quiet --unit="$UNIT" --description="$UNIT" -p MemoryMax=1500M -p MemorySwapMax=0 env "$PY" -I "$HERE/q50s1-ws-launch.py" --src "$SRC" --key-file "$Q50S1_KEY_FILE" --keyed-url "$Q50S1_WS2" -- --fresh-forward ARENA --q-star-sol 50 \\
-  --out-dir X --sockets 3 --syn-sockets 1 --ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2"
+systemd-run --user --scope --quiet --unit="$UNIT" --description="$UNIT" -p MemoryMax=1500M -p MemorySwapMax=0 env "$PY" -I "$HERE/q50s1-ws-launch.py" --src "$SRC" $(q50s1_key_opts) -- --fresh-forward ARENA --q-star-sol 50 \\
+  --out-dir X --sockets 3 --syn-sockets 1 $(q50s1_ws_args)
 """
 KEYLIKE = re.compile(r"(?i)api[-_]?key|[?&](key|token|auth|apikey)=|://[^/\s]*@")
-WS1, WS2 = "wss://api.mainnet-beta.solana.com", "wss://mainnet.helius-rpc.com/"
+WS1, WS2 = "wss://api.mainnet-beta.solana.com", "wss://second.example/"
 KEY = "fixture0key-5678abcd"
 
 
@@ -181,7 +183,10 @@ class Smoke(Base):
         r = self.run_smoke("--check")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("--fresh-forward ARENA --q-star-sol 50", r.stdout)
-        self.assertIn(f"--sockets 3 --syn-sockets 1 --ws-url {WS1} --ws-url {WS2} (the key is added inside the process)", r.stdout)
+        self.assertIn(f"--sockets 3 --syn-sockets 1 --ws-url {WS1} (keyed=0;", r.stdout)  # default: mainnet-beta alone
+        r = self.run_smoke("--check", "--ws2", WS2, "--ws2-keyed")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f"--sockets 3 --syn-sockets 1 --ws-url {WS1} --ws-url {WS2} (keyed=1;", r.stdout)
         self.assertIn(f"--keyed-url {WS2} -- --fresh-forward ARENA", r.stdout)
         self.assertNotIn(KEY, r.stdout + r.stderr)
         self.assertIn("--description=q50s1-smoke -p MemoryMax=1500M -p MemorySwapMax=0", r.stdout)
@@ -193,7 +198,7 @@ class Smoke(Base):
     def test_check_against_the_real_start_script(self):
         r = self.run_smoke("--check", Q50S1_REPO=REPO)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn(f"--ws-url {WS1} --ws-url {WS2}", r.stdout)
+        self.assertIn(f"--ws-url {WS1} (keyed=0;", r.stdout)
         self.assertIsNone(KEYLIKE.search(r.stdout + r.stderr))
 
     def test_the_smoke_root_must_not_be_s1s_or_q50s(self):
@@ -202,10 +207,9 @@ class Smoke(Base):
         self.assertEqual(self.run_smoke("--check", Q50S1_SMOKE_HOME=real_home).returncode, 2)
 
     def test_a_keyed_url_in_the_helper_refuses_11(self):
-        feed = self.repo / "scripts" / "ops" / "q50s1-feed.sh"
-        feed.write_text(feed.read_text().replace("Q50S1_WS2=wss://mainnet.helius-rpc.com/", "Q50S1_WS2='wss://x.example/?api-key=k'"))
-        self.assertEqual(self.run_smoke("--check").returncode, 11)
-        self.assertEqual(self.run_smoke().returncode, 11)
+        self.assertEqual(self.run_smoke("--check", "--ws2", "wss://x.example/?api-key=k").returncode, 11)
+        self.assertEqual(self.run_smoke("--ws2", "wss://x.example/?api-key=k").returncode, 11)
+        self.assertEqual(self.run_smoke("--ws2-keyed").returncode, 11)  # keyed without --ws2
         self.assertFalse(any(self.arena.iterdir()))
 
     def test_memory_not_shown_refuses(self):
@@ -232,7 +236,7 @@ class Smoke(Base):
     def test_flag_drift_refuses(self):
         start = self.repo / "scripts" / "ops" / "q50s1-shadow-start.sh"
         for old, new in (("--sockets 3 --syn-sockets 1", "--sockets 2 --syn-sockets 1"), ("--q-star-sol 50", "--q-star-sol 40"), ("NEW_MAX_MB=1500", "NEW_MAX_MB=1800"),
-                         ('. "$HERE/q50s1-feed.sh"', ""), ('--ws-url "$Q50S1_WS2"', '--ws-url "$WS2"'), ('--description="$UNIT" ', ""), ("-p MemorySwapMax=0", "")):
+                         ('. "$HERE/q50s1-feed.sh"', ""), ("$(q50s1_ws_args)", '--ws-url "$WS2"'), ("$(q50s1_key_opts)", "--key-file x"), ('--description="$UNIT" ', ""), ("-p MemorySwapMax=0", "")):
             with self.subTest(old=old):
                 write_exec(start, FAKE_START_SH.replace(old, new))
                 r = self.run_smoke("--check")
@@ -240,7 +244,7 @@ class Smoke(Base):
 
     def test_short_run_is_judged_and_never_passes(self):
         pyargs, sdargs = self.d / "pyargs", self.d / "sdargs"
-        r = self.run_smoke(Q50S1_SMOKE_S=2, Q50S1_SMOKE_SAMPLE_S=1, FAKE_PY_ARGS=pyargs, FAKE_SDRUN_ARGS=sdargs)
+        r = self.run_smoke("--ws2", WS2, "--ws2-keyed", Q50S1_SMOKE_S=2, Q50S1_SMOKE_SAMPLE_S=1, FAKE_PY_ARGS=pyargs, FAKE_SDRUN_ARGS=sdargs)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("SMOKE_ITEM a PASS", r.stdout)
         self.assertIn("SMOKE_ITEM b PASS", r.stdout)
@@ -267,6 +271,16 @@ class Smoke(Base):
         self.assertTrue(outs[0].startswith("h5-smoke-q50s1-"))
         reps = list((self.home / "data" / "q50s1-ops").iterdir())
         self.assertEqual(sorted(p.name for p in reps[0].iterdir()), ["process.log", "rss.tsv"])
+
+    def test_a_benign_link_in_the_general_journal_never_fails_k_and_a_unit_path_token_does(self):
+        r = self.run_smoke(Q50S1_SMOKE_S=2, Q50S1_SMOKE_SAMPLE_S=1)  # the default general journal carries the claude.ai link
+        self.assertIn("SMOKE_ITEM k PASS", r.stdout)
+        self.assertIn("key_string_lines_user_journal=0", r.stdout)
+        r = self.run_smoke(Q50S1_SMOKE_S=2, Q50S1_SMOKE_SAMPLE_S=1, FAKE_JOURNAL_UNIT="connect wss://x.example/abcdef0123456789abcdef0123/")
+        self.assertIn("SMOKE_ITEM k FAIL", r.stdout)
+        self.assertNotIn("abcdef0123456789abcdef0123", r.stdout + r.stderr)
+        r = self.run_smoke(Q50S1_SMOKE_S=2, Q50S1_SMOKE_SAMPLE_S=1, FAKE_JOURNAL_ALL="x wss://h.example/?api-key=zzz")  # the literal counts journal-wide
+        self.assertIn("SMOKE_ITEM k FAIL", r.stdout)
 
     def test_unreadable_journal_fails_k(self):
         r = self.run_smoke(Q50S1_SMOKE_S=2, Q50S1_SMOKE_SAMPLE_S=1, FAKE_JOURNAL_RC=1)
@@ -556,6 +570,33 @@ class CleanLogScript(Base):
         r = self.sh(CLEAN, *args, **self.clean_env(FAKE_CG=""))
         self.assertEqual(r.returncode, 1)
         self.assertIn("no_key_in_cmdline=NO", r.stdout)  # no process found: unreadable, NOT_CLEAN
+
+    def test_clean_log_journal_benign_link_ok_unit_token_and_literal_counted(self):
+        self.proc("sleep", "30")
+        args = ("--job-uid", "j_AbC-12_x", "--out-dir", str(self.sd))
+        r = self.sh(CLEAN, *args, **self.clean_env())  # default general journal: a claude.ai link
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("user_journal_since_start=0", r.stdout)
+        r = self.sh(CLEAN, *args, **self.clean_env(FAKE_JOURNAL_UNIT="wss://x.example/v2/AbCdEf0123456789XyZ_abc"))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("user_journal_since_start=1", r.stdout)
+        r = self.sh(CLEAN, *args, **self.clean_env(FAKE_JOURNAL_ALL="api-key=zzz somewhere"))
+        self.assertEqual(r.returncode, 1)
+
+    def test_a_configured_key_variable_or_a_path_token_is_counted(self):
+        """QP A2: the environ count uses the configured key variable; a path-token credential in argv counts too."""
+        pr = subprocess.Popen(["sleep", "30"], env=dict(os.environ, MYPROV_KEY="zzzzzzzz"))
+        self.addCleanup(pr.wait)
+        self.addCleanup(pr.kill)
+        (self.cgroot / "user.slice" / "q50s1-shadow.scope" / "cgroup.procs").write_text(f"{pr.pid}\n")
+        r = self.sh(CLEAN, "--job-uid", "j_AbC-12_x", "--out-dir", str(self.sd), **self.clean_env(Q50S1_KEY_VAR="MYPROV_KEY"))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("proc_environ_key_var=1", r.stdout)
+        self.assertNotIn("zzzzzzzz", r.stdout + r.stderr)
+        self.proc("sh", "-c", "sleep 30", "x", "wss://x.solana-mainnet.quiknode.pro/abcdef0123456789abcdef/")
+        r = self.sh(CLEAN, "--job-uid", "j_AbC-12_x", "--out-dir", str(self.sd), **self.clean_env())
+        self.assertIn("proc_cmdline=1", r.stdout)
+        self.assertNotIn("abcdef0123456789abcdef", r.stdout + r.stderr)
 
     def test_a_key_in_a_scope_process_argv_is_not_clean_and_never_printed(self):
         self.proc("sh", "-c", "sleep 30", "x", "wss://h.example/?api-key=SEKRETVALUE")

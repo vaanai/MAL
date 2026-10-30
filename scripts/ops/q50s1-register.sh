@@ -13,6 +13,7 @@
 # Env: MAL_PY (python, default python3), Q50S1_HOME (default /home/claude/s1home, absolute). Q50S1_ARENA is no longer a root override: if set it must equal Q50S1_HOME/data/arena.
 # Any other argument is refused.
 set -eu
+set -f
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 S1HOME="${Q50S1_HOME:-/home/claude/s1home}"
@@ -23,16 +24,23 @@ if [ -n "${Q50S1_ARENA:-}" ] && [ "$Q50S1_ARENA" != "$ARENA" ]; then
 fi
 PY="${MAL_PY:-python3}"
 # usage: q50s1-register.sh --preclock-notebook-ref REF [--apply]   (REF: the notebook entry that lists the pre-clock items; --now-ms is never forwarded)
-APPLY=""; REF=""
+APPLY=""; REF=""; WS2_ARG=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --apply) APPLY=--apply; shift ;;
+    --ws2) [ "$#" -ge 2 ] || { echo "q50s1-register: --ws2 needs a URL" >&2; exit 2; }; WS2_ARG="$2"; shift 2 ;;
     --preclock-notebook-ref) [ "$#" -ge 2 ] || { echo "q50s1-register: --preclock-notebook-ref needs a value" >&2; exit 2; }; REF="$2"; shift 2 ;;
-    *) echo "q50s1-register: usage: q50s1-register.sh --preclock-notebook-ref REF [--apply]" >&2; exit 2 ;;
+    *) echo "q50s1-register: usage: q50s1-register.sh --preclock-notebook-ref REF [--ws2 URL] [--apply]" >&2; exit 2 ;;
   esac
 done
 [ -n "$REF" ] || { echo "q50s1-register: --preclock-notebook-ref is required" >&2; exit 2; }
+# the line's endpoints = the shadow's providers (scripts/ops/q50s1-feed.sh): mainnet-beta, plus --ws2 if given; always passed explicitly (the tool's default names Helius,
+# which is OFF for the full window, manager 2026-10-30); the shadow start refuses a line whose endpoints differ from its own --ws2 (exit 8)
+Q50S1_WS2="$WS2_ARG"; Q50S1_WS2_KEYED=0
+. "$HERE/q50s1-feed.sh"
+q50s1_ws2_build || { echo "q50s1-register: --ws2 must be a key-free wss:// URL distinct from mainnet-beta" >&2; exit 2; }
 set -- --preclock-notebook-ref "$REF"
+for ep in $(q50s1_endpoints); do set -- "$@" --endpoint "$ep"; done
 [ -z "$APPLY" ] || set -- "$@" --apply
 cd "$ROOT"
 exec env HOME="$S1HOME" PYTHONPATH="$ROOT" "$PY" -m tools.q50s1_register --arena-root "$ARENA" --books-file "$ARENA/a3-books.json" "$@"
