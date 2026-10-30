@@ -357,7 +357,7 @@ postread() {
     "$PY" -I -c 'import json, sys
 r = json.load(open(sys.argv[1]))
 g = r.get("dec032_worst_in_slot") or {}
-print("LEGS tool_exit=%s worst_in_slot_measured=%s end_consistency_ok=%s dec032_measured=%s dec032_mean_le_0=%s" % (sys.argv[2], r.get("worst_in_slot_measured"),
+print("LEGS tool_exit=%s worst_in_slot_measured=%s end_consistency_ok=%s dec032_measured=%s dec032_not_proposed_wis_le_0=%s" % (sys.argv[2], r.get("worst_in_slot_measured"),
       (r.get("end_check") or {}).get("ok"), g.get("measured"), g.get("not_proposed_mean_le_0") if g.get("measured") else "n/a"))' "$O/q50-legs.json" "$LRC" 2>/dev/null || echo "LEGS tool_exit=$LRC (json unreadable)"
   else
     echo "LEGS REFUSED by the tool, tool_exit=$LRC (digits masked): $(mask < "$O/q50-legs.err")"; PR=5

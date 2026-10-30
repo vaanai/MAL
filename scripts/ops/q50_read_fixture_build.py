@@ -1,7 +1,7 @@
 """Synthetic Q50 fixture tree for scripts/ops/q50-read.sh (no real ledger, shadow dir or applied log is opened). PAPER ONLY.
 
 Run with PYTHONPATH = a checkout of a31d9864 (the read tools' tests build the rows):  python q50_read_fixture_build.py ROOT KIND
-KIND: pass (11 of 12 pools win), fail (every pool loses), ended (50 counted trades: no boundary by the end-seal), mismatch (a READ record whose refusal count differs from the ledger).
+KIND: pass (11 of 12 pools win), fail (every pool loses), ended (98 counted trades: no boundary by the end-seal), mismatch (a READ record whose refusal count differs from the ledger).
 The fixture uses the REAL Q50 clock (2026-10-25T00:00Z) and end-seal, so the script's production constants apply unpatched: 24 pools a day on 10-25..10-29 (5 dates, 120 counted)
 gives B = 2026-10-30T00:00Z. Written by the code that writes them: the rows by tools/test_arena_h5_read's builder (arena_h5_score.price_trade / ledger_rows / write_ledger), the Am.11
 record by tools/arena_h5_q50_instant.record_doc / record. The shadow dir holds one pv trigger (v_print) and the strip of every pool; pools with i % 8 == 7 are out of the V band.
@@ -36,9 +36,9 @@ class Box:  # make_book uses only self.ledger
 
 box = Box()
 box.ledger = ledger
-per_day, days = (10, 5) if kind == "ended" else (24, 5)
+per_day, excl = (20, {(0, 0), (0, 1)}) if kind == "ended" else (24, set())  # ended: 100 attempts, 98 counted trades, so no Am.11 boundary by the end-seal
 kfn = (lambda d, i: "loss") if kind == "fail" else TR.default_kind
-book = TR.Base.make_book(box, Q50, per_day=per_day, days=days, kind=kfn)
+book = TR.Base.make_book(box, Q50, per_day=per_day, days=5, kind=kfn, excluded=excl)
 recs = []
 for d, i, k, _counted in book["pools"]:
     trig, _out, strip = TR.make_pool(d, i, k)
