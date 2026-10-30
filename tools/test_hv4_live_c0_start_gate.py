@@ -22,7 +22,7 @@ from unittest import mock
 from tools import arena_live_bridge as alb
 from tools import hv4_live_c0 as c0
 from tools.test_arena_live_bridge import TmpCase
-from tools.test_hv4_live_c0 import ARM, Hv4Env, live_main_env, write_read_record
+from tools.test_hv4_live_c0 import ARM, Hv4Env, live_main_env, owner_fixture, write_read_record
 
 DAY_FILE = "2026-10-30.jsonl"
 
@@ -496,6 +496,69 @@ class PerTickRecheckTests(MainBase):
             b.tick()
         self.assertIn("read_record", b.state.latches)
         self.assertEqual(len([c for c in e.port.calls if c[0] == "buy"]), 1)
+
+
+class PerBotLiveOkTests(TmpCase):
+    """hv4_c0 only: LIVE_OK and the owner confirmation are per bot, so two canaries (hv4-BIG-X and hv4-CON-X) can be confirmed independently."""
+
+    def _bridge(self, e, **kw):
+        raw = {k: v for k, v in e.raw.items() if k not in ("stop_file", "halt_file")}
+        cfg = alb.Config.from_dict({**raw, "mode": "live"})
+        cfg = alb.Config(**{**cfg.__dict__, "stop_file": e.raw["stop_file"], "halt_file": e.raw["halt_file"]})  # tests only: the pinned paths cannot be set via config
+        return alb.Bridge(cfg, e.port, now_ms=e.clock, tier_path=e.tier, root_checks=False, **kw)
+
+    def test_paths_are_per_bot_and_validated(self):
+        self.assertEqual(c0.live_ok_path("hv4-CON-X"), "/etc/mal-arena-live/hv4-c0/hv4-CON-X/LIVE_OK")
+        self.assertEqual(c0.live_ok_path("hv4-BIG-X"), "/etc/mal-arena-live/hv4-c0/hv4-BIG-X/LIVE_OK")
+        for bad in (None, "", "../x", "a/b", ".h", 5):
+            with self.assertRaises(ValueError):
+                c0.live_ok_path(bad)
+
+    def test_the_hv4_c0_default_is_the_per_bot_file_and_other_profiles_keep_the_shared_one(self):
+        e = Hv4Env(self.tmp, live=True)
+        self.assertEqual(self._bridge(e).live_ok_path, Path("/etc/mal-arena-live/hv4-c0/hv4-CON-X/LIVE_OK"))
+        from tools.test_arena_live_bridge import Env
+        plain = Env(tempfile.mkdtemp(dir=self.tmp))
+        b = alb.Bridge(alb.Config.from_dict(plain.raw), plain.port, now_ms=plain.clock, tier_path=plain.tier, root_checks=False)
+        self.assertEqual(b.live_ok_path, alb.LIVE_OK_PATH)  # /etc/mal-arena-live/LIVE_OK, unchanged
+        explicit = self._bridge(e, live_ok_path=e.live_ok)
+        self.assertEqual(explicit.live_ok_path, e.live_ok)  # an explicit path still wins
+
+    def test_two_bots_are_confirmed_independently(self):
+        etc = Path(self.tmp) / "etc-live"
+        dec = Path(self.tmp) / "etc-c0"
+        envs = {}
+        for bot in ("hv4-CON-X", "hv4-BIG-X"):
+            sub = tempfile.mkdtemp(dir=self.tmp)
+            envs[bot] = Hv4Env(sub, live=True, bot=bot)
+        with mock.patch.object(c0, "LIVE_OK_DIR", str(etc)), mock.patch.object(c0, "OWNER_DEC_DIR", str(dec)):
+            bridges = {bot: self._bridge(e) for bot, e in envs.items()}
+            for b in bridges.values():
+                b.tier_path.write_text("T1\n")
+            self.assertNotEqual(bridges["hv4-CON-X"].live_ok_path, bridges["hv4-BIG-X"].live_ok_path)
+            self.assertEqual(bridges["hv4-CON-X"].owner_dec_path, dec / "hv4-CON-X" / "CANARY_DEC.md")
+            self.assertEqual(bridges["hv4-BIG-X"].owner_dec_path, dec / "hv4-BIG-X" / "CANARY_DEC.md")
+            # nothing installed: both stay dry
+            self.assertEqual(bridges["hv4-CON-X"].effective_live(), (False, "live_ok_missing"))
+            self.assertEqual(bridges["hv4-BIG-X"].effective_live(), (False, "live_ok_missing"))
+            # CON-X is confirmed (LIVE_OK naming it + its own owner file): live; BIG-X is not
+            (etc / "hv4-CON-X").mkdir(parents=True)
+            (etc / "hv4-CON-X" / "LIVE_OK").write_text("hv4-CON-X\n")
+            owner_fixture(self.tmp, "hv4-CON-X")
+            self.assertEqual(bridges["hv4-CON-X"].effective_live(), (True, None))
+            self.assertEqual(bridges["hv4-BIG-X"].effective_live(), (False, "live_ok_missing"))
+            # BIG-X's LIVE_OK must name BIG-X; CON-X's name in it is another book
+            (etc / "hv4-BIG-X").mkdir()
+            (etc / "hv4-BIG-X" / "LIVE_OK").write_text("hv4-CON-X\n")
+            self.assertEqual(bridges["hv4-BIG-X"].effective_live(), (False, "live_ok_other_book"))
+            (etc / "hv4-BIG-X" / "LIVE_OK").write_text("hv4-BIG-X\n")
+            self.assertEqual(bridges["hv4-BIG-X"].effective_live(), (False, "live_ok_owner_dec_missing"))  # LIVE_OK alone is not enough
+            owner_fixture(self.tmp, "hv4-BIG-X")
+            self.assertEqual(bridges["hv4-BIG-X"].effective_live(), (True, None))
+            # CON-X's owner file does not confirm BIG-X (its line names CON-X), and removing it unconfirms only CON-X
+            (dec / "hv4-BIG-X" / "CANARY_DEC.md").write_text(c0.OWNER_LINE_FMT.format(bot_id="hv4-CON-X") + "\n")
+            self.assertEqual(bridges["hv4-BIG-X"].effective_live(), (False, "live_ok_owner_line_missing"))
+            self.assertEqual(bridges["hv4-CON-X"].effective_live(), (True, None))
 
 
 if __name__ == "__main__":

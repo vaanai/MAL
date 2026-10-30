@@ -15,6 +15,9 @@ Live needs ALL of: config mode "live", --live, LIVE_OK and TIER root-owned files
 tools.h5_executor.root_file_problem), an explicit end_ms, a pinned frozen_sha that the book's `start` row repeats, a valid chain. A missing or unsafe
 LIVE_OK makes a live-configured bridge DRY for that entry (it logs the order it would have sent). The TIER file is read before every buy; the only
 tier is T0 (the canary limits); an unknown or missing tier is T0.
+The hv4_c0 profile reads its LIVE_OK per bot, /etc/mal-arena-live/hv4-c0/<bot_id>/LIVE_OK (content exactly the bot_id), and its owner confirmation per bot,
+/etc/mal-hv4-c0/<bot_id>/CANARY_DEC.md (hv4_live_c0.owner_line_problem); TIER stays the one shared file. Two canaries also need their own wallet, state_dir,
+parity_dir, twins_file and tieout_dir in config.
 
 This is a build, not a claim. It is not gate evidence and installs nothing. Trades it would make are execution measurements.
 
@@ -354,7 +357,7 @@ def read_tier(path: Path, root_checks: bool, allowed: Mapping[str, Any] | tuple[
 
 class Bridge:
     def __init__(self, cfg: Config, port: OrderPort, *, now_ms: Callable[[], int] | None = None,
-                 live_ok_path: Path = LIVE_OK_PATH, tier_path: Path = TIER_PATH, root_checks: bool = True,
+                 live_ok_path: Path | None = None, tier_path: Path = TIER_PATH, root_checks: bool = True,
                  close_blocked: Callable[[str], bool | None] | None = None, parity_runner: Callable[[list[str]], int] | None = None,
                  owner_dec_path: Path | str | None = None, gap_clear_dir: Path | str | None = None) -> None:
         """close_blocked: optional S3 hook, mint -> True (blocked) | False (ok). Interface only here. When set, a True, a None or a raise all refuse."""
@@ -365,7 +368,7 @@ class Bridge:
         self.port = port
         self.dry_port = port if not port.live else DryPort(cfg.dry_balance_lamports)  # an entry that is not live-eligible (LIVE_OK missing) is routed here: logged, never sent
         self.now_ms = now_ms or (lambda: int(time.time() * 1000))
-        self.live_ok_path = live_ok_path
+        self.live_ok_path = Path(live_ok_path) if live_ok_path is not None else (Path(c0.live_ok_path(cfg.bot_id)) if cfg.profile == c0.PROFILE else LIVE_OK_PATH)  # hv4_c0: per bot, so two canaries can run side by side; every other profile keeps the shared file
         self.tier_path = tier_path
         self.root_checks = root_checks
         if cfg.mode == LIVE and not port.live:
@@ -622,7 +625,7 @@ class Bridge:
             except OSError:
                 why = "unreadable"
             why = why[len("live_ok_"):] if why and why.startswith("live_ok_") else why
-            if not why:  # the owner's line in a ROOT-OWNED file outside the installed tree, whose sha256 is the pinned blob
+            if not why:  # the owner's line in this bot's ROOT-OWNED file outside the installed tree (no content pin)
                 why = c0.owner_line_problem(self.owner_dec_path, self.cfg.bot_id, root_ok_problem if self.root_checks else None)
         return (False, f"live_ok_{why}") if why else (True, None)
 
