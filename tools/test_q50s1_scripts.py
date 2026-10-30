@@ -45,9 +45,21 @@ class Syntax(unittest.TestCase):
 
 
 class Register(unittest.TestCase):
-    def run_(self, *args, arena="/nonexistent-arena"):
-        env = dict(os.environ, HOME="/nonexistent-home", Q50S1_ARENA=arena)
+    def run_(self, *args, arena="/nonexistent-arena", home="/nonexistent-home", py=None):
+        """arena=None leaves Q50S1_ARENA unset (the script's default); py is a MAL_PY stub that prints its arguments, so a default root is never opened."""
+        env = dict(os.environ, HOME=home)
+        env.pop("Q50S1_ARENA", None)
+        if arena is not None:
+            env["Q50S1_ARENA"] = arena
+        if py is not None:
+            env["MAL_PY"] = py
         return subprocess.run(["sh", str(REG), *args], capture_output=True, text=True, env=env, cwd=REPO)
+
+    def stub_py(self, d):
+        p = Path(d) / "echo-args"
+        p.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
+        p.chmod(0o755)
+        return str(p)
 
     def test_bad_arguments_refuse(self):
         for a in (("--bogus",), ("--apply",), ("--preclock-notebook-ref", "nb_Abc123", "--now-ms", "1"), ("--preclock-notebook-ref",), ("x",)):
@@ -61,6 +73,29 @@ class Register(unittest.TestCase):
             self.assertEqual(r.returncode, 2, r.stderr)
             self.assertIn("REFUSED", r.stderr)
             self.assertEqual(list(Path(d).iterdir()), [])
+
+    def test_default_root_is_s1s_own_root_not_q50s_and_the_books_file_is_in_it(self):
+        with tempfile.TemporaryDirectory() as d:  # the stub prints the arguments: the real /data/mal/arena is never opened
+            r = self.run_("--preclock-notebook-ref", "nb_Abc123", arena=None, py=self.stub_py(d))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.split(), ["-m", "tools.q50s1_register", "--arena-root", "/data/mal/arena", "--books-file", "/data/mal/arena/a3-books.json",
+                                            "--preclock-notebook-ref", "nb_Abc123"])
+        self.assertNotIn("/nonexistent-home/data/arena", r.stdout)  # not $HOME/data/arena, Q50's root
+
+    def test_q50s1_arena_overrides_the_root_and_apply_is_forwarded_last(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = self.run_("--apply", "--preclock-notebook-ref", "nb_Abc123", arena="/some/s1-root", py=self.stub_py(d))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.split()[2:], ["--arena-root", "/some/s1-root", "--books-file", "/some/s1-root/a3-books.json", "--preclock-notebook-ref", "nb_Abc123", "--apply"])
+
+    def test_q50_root_is_refused_by_the_tool_and_nothing_is_written(self):
+        with tempfile.TemporaryDirectory() as d:  # HOME=d, so $HOME/data/arena is Q50's root: the scorer accepts it as a root, the register tool must not
+            q50 = Path(d) / "data" / "arena"
+            q50.mkdir(parents=True)
+            r = self.run_("--preclock-notebook-ref", "nb_Abc123", "--apply", arena=str(q50), home=d)
+            self.assertEqual(r.returncode, 2, r.stderr)
+            self.assertIn("Q50's root", r.stderr)
+            self.assertEqual(list(q50.iterdir()), [])
 
 
 class ShadowCheck(unittest.TestCase):
