@@ -228,3 +228,39 @@ class BridgeLogFieldScope(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GapCaseTests(unittest.TestCase):
+    """QP standing condition C-b (#1104 N5): the gap-row case runs under both FEED_GAP_MANUAL_REVIEW values and its refusal labels are inside the outcomes md5."""
+
+    def test_both_modes_are_equal_with_their_own_labels_and_the_value_is_restored(self):
+        from tools import hv4_c0_orders_proof as P
+        from tools import hv4_live_c0 as c0x
+        before = c0x.FEED_GAP_MANUAL_REVIEW
+        res = P.run_proof()
+        self.assertTrue(res.ok, "\n".join(res.lines))
+        self.assertEqual(c0x.FEED_GAP_MANUAL_REVIEW, before)
+        cases = {g["mode"]: g for g in res.record["gap_cases"]}
+        self.assertEqual(set(cases), {"manual", "am21"})
+        for g in cases.values():
+            self.assertEqual((g["bo"], g["bq"]), (g["eo"], g["eq"]))
+        self.assertEqual(cases["manual"]["labels"], {"latched:feed_break": 4, "order": 1})
+        self.assertEqual(cases["am21"]["labels"], {"feed_gap": 1, "feed_gap_hold": 2, "order": 2})
+        self.assertNotEqual(cases["manual"]["bq"], cases["am21"]["bq"])  # the labels are inside the md5
+        self.assertEqual((res.record["bridge_orders_md5"], res.record["bridge_outcomes_md5"]),
+                         ("e2ee70275ec0aae1791f3c410f76cc0f", "73c9fc148575796b5fdf11f6f18c8c8d"))  # the main scenario is unchanged
+
+    def test_a_wrong_hold_in_the_model_is_a_diff(self):
+        from unittest import mock
+        from tools import hv4_c0_orders_proof as P
+        with mock.patch.object(P, "M_GAP_HOLD_MS", 1_000):
+            res = P.run_proof()
+        self.assertFalse(res.ok)
+        self.assertTrue(any(line.startswith("gap/am21") for line in res.lines))
+
+    def test_a_mode_run_against_the_other_models_expectation_is_a_diff(self):
+        from unittest import mock
+        from tools import hv4_c0_orders_proof as P
+        with mock.patch.object(P, "GAP_MODES", (("manual", False),)):  # the bridge holds (Am.21) but the model expects the latch
+            res = P.run_proof()
+        self.assertFalse(res.ok)
