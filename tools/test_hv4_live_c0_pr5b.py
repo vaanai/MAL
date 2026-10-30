@@ -353,7 +353,8 @@ class TripEndToEndTests(TmpCase):
         e.clock.t = t["exit_bound_ms"] + 650_000
         self.assertEqual(self._twin(e, b, o, mint), 0)
         self.assertEqual(self._run(e, b), 11)
-        self.assertTrue(Path(e.raw["stop_file"]).exists())
+        self.assertTrue(Path(c0p.parity_stop_path(e.raw["parity_dir"])).exists())  # the tools' STOP lives in parity_dir (tools/test_hv4_c0_parity_stop.py)
+        self.assertTrue(b._files()[1])
         self.assertIn("stuck_position", self._parity_result()["hard_halts"])
         b._latch_parity_hard()
         self.assertIn("parity_hard_halt", b.state.latches)
