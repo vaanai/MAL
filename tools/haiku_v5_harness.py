@@ -978,21 +978,38 @@ def o1_eligible(man: Mapping[str, Any]) -> bool:
 def pilot_structure(run_dir: str | os.PathLike, ledger: str | os.PathLike, save_dir: str | os.PathLike | None = None) -> dict[str, Any]:
     """Structure-only pilot read (no outcome): parse and reflection rates from the run's logs, and per call kind (decide / reflect, joined on
     request_sha256) the ledger's tokens, cache-read share, latency against haiku_caller's 60 s timeout, stop reasons and cost. With
-    save_dir, input tokens per request byte (the dry run's 0.56 assumption)."""
+    save_dir, input tokens per request byte (the dry run's 0.56 assumption).
+    USD per kind = every reserve row plus its settle row (joined on reservation_id: a settle holds actual minus the reserved worst case,
+    so settles alone are negative); an unsettled reserve stays charged. Rows of requests not in this run's logs go to "other", so the sum
+    over kinds equals tools.haiku_caller.ledger_summary's total_cost_usd (checked, reported as matches_ledger_summary)."""
+    from tools.haiku_caller import Ledger, ledger_summary  # validated rows (fails closed on a malformed ledger)
+
     run_dir = Path(run_dir)
     decs = list(_jsonl(run_dir / "decisions.jsonl"))
     fbs = list(_jsonl(run_dir / "feedback_log.jsonl")) if (run_dir / "feedback_log.jsonl").exists() else []
     kind = {d["request_sha256"]: "decide" for d in decs if d.get("request_sha256")}
     kind.update({f["request_sha256"]: "reflect" for f in fbs if f.get("request_sha256")})
     agg: dict[str, dict[str, Any]] = {}
-    for row in _jsonl(ledger):
-        if row.get("kind") != "settle" or row.get("request_sha256") not in kind:
+
+    def bucket(k: str) -> dict[str, Any]:
+        return agg.setdefault(k, {"n": 0, "attempts": 0, "http_200": 0, "input": 0, "output": 0, "cache_read": 0, "cache_write": 0,
+                                  "cost_usd": 0.0, "latency_ms_max": 0, "latency_over_45s": 0, "stop_reasons": {}, "bytes": 0,
+                                  "bytes_tokens": 0})
+
+    rows = Ledger(ledger).rows()
+    req_of = {r["reservation_id"]: r.get("request_sha256") for r in rows if r.get("kind") == "reserve"}
+    costs: dict[str, list[float]] = {}
+    for row in rows:
+        sha = req_of.get(row.get("reservation_id")) if row.get("kind") in ("reserve", "settle") else row.get("request_sha256")
+        k = kind.get(sha, "other")
+        a = bucket(k)
+        costs.setdefault(k, []).append(float(row["cost_usd"]))
+        if row.get("kind") == "reserve":
+            a["attempts"] += 1
             continue
-        k = kind[row["request_sha256"]]
-        a = agg.setdefault(k, {"n": 0, "http_200": 0, "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost_usd": 0.0,
-                               "latency_ms_max": 0, "latency_over_45s": 0, "stop_reasons": {}, "bytes": 0, "bytes_tokens": 0})
+        if row.get("kind") != "settle" or k == "other":
+            continue
         a["n"] += 1
-        a["cost_usd"] += float(row.get("cost_usd") or 0.0)
         if row.get("http_status") == 200:
             a["http_200"] += 1
             for src, dst in (("input_tokens", "input"), ("output_tokens", "output"), ("cache_read_input_tokens", "cache_read"),
@@ -1010,14 +1027,18 @@ def pilot_structure(run_dir: str | os.PathLike, ledger: str | os.PathLike, save_
         lat = int(row.get("latency_ms") or 0)
         a["latency_ms_max"] = max(a["latency_ms_max"], lat)
         a["latency_over_45s"] += 1 if lat > 45_000 else 0
-    for a in agg.values():
+    for k, a in agg.items():
+        a["cost_usd"] = math.fsum(costs.get(k, []))
         tot_in = a["input"] + a["cache_read"] + a["cache_write"]
         a["cache_read_share"] = a["cache_read"] / tot_in if tot_in else None
         a["max_tokens_stop_share"] = a["stop_reasons"].get("max_tokens", 0) / a["http_200"] if a["http_200"] else None
         a["input_tokens_per_byte"] = a["bytes_tokens"] / a["bytes"] if a["bytes"] else None
+    total = math.fsum(math.fsum(v) for v in costs.values())
+    led_total = float(ledger_summary(ledger)["total_cost_usd"])
     return {"decisions": len(decs), "parse_ok_rate": sum(1 for d in decs if d["parse_ok"]) / len(decs) if decs else None,
             "reflections": len(fbs), "reflect_ok_rate": sum(1 for f in fbs if f["reflect_ok"]) / len(fbs) if fbs else None,
-            "by_kind": agg, "note": "structure only: no outcome, no score"}
+            "by_kind": agg, "total_cost_usd": total, "ledger_summary_total_cost_usd": led_total,
+            "matches_ledger_summary": abs(total - led_total) <= 1e-9, "note": "structure only: no outcome, no score"}
 
 
 def main(argv: Sequence[str] | None = None) -> int:

@@ -653,6 +653,8 @@ def test_check_path_follows_symlinks(tmp_path):
 
 
 def test_pilot_structure_reads_logs_and_ledger_only(tmp_path):
+    from tools.haiku_caller import ledger_summary
+
     run = tmp_path / "run"
     run.mkdir()
     (run / "decisions.jsonl").write_text("\n".join(json.dumps({"parse_ok": i != 0, "request_sha256": f"d{i}"}) for i in range(4)) + "\n")
@@ -660,17 +662,26 @@ def test_pilot_structure_reads_logs_and_ledger_only(tmp_path):
     store = tmp_path / "store"
     store.mkdir()
     (store / "d1.json").write_text(json.dumps({"request": {"x": "y" * 990}, "response": {}}))
-    rows = [{"kind": "reserve", "request_sha256": "d1", "cost_usd": 0.01}]
-    for i in range(4):
-        rows.append({"kind": "settle", "request_sha256": f"d{i}", "http_status": 200, "input_tokens": 100, "output_tokens": 50,
-                     "cache_read_input_tokens": 300, "cache_creation_input_tokens": 0, "latency_ms": 900, "stop_reason": "end_turn",
-                     "cost_usd": -0.009})
-    rows.append({"kind": "settle", "request_sha256": "r0", "http_status": 200, "input_tokens": 8000, "output_tokens": 6000,
-                 "latency_ms": 50_000, "stop_reason": "max_tokens", "cost_usd": 0.0})
+    rows = []
+    for i in range(4):  # decide: reserve 0.01 worst case, settle -0.009 -> 0.001 actual each
+        rows.append({"kind": "reserve", "reservation_id": f"rd{i}", "request_sha256": f"d{i}", "cost_usd": 0.01})
+        rows.append({"kind": "settle", "reservation_id": f"rd{i}", "request_sha256": f"d{i}", "http_status": 200, "input_tokens": 100,
+                     "output_tokens": 50, "cache_read_input_tokens": 300, "cache_creation_input_tokens": 0, "latency_ms": 900,
+                     "stop_reason": "end_turn", "cost_usd": -0.009})
+    rows.append({"kind": "reserve", "reservation_id": "rr0", "request_sha256": "r0", "cost_usd": 0.02})
+    rows.append({"kind": "settle", "reservation_id": "rr0", "request_sha256": "r0", "http_status": 200, "input_tokens": 8000,
+                 "output_tokens": 6000, "latency_ms": 50_000, "stop_reason": "max_tokens", "cost_usd": -0.015})
+    rows.append({"kind": "reserve", "reservation_id": "rr1", "request_sha256": "r0", "cost_usd": 0.02})  # died mid-call: stays charged
+    rows.append({"kind": "reserve", "reservation_id": "ro", "request_sha256": "zz", "cost_usd": 0.003})  # another run on the ledger
+    rows.append({"kind": "settle", "reservation_id": "ro", "request_sha256": "zz", "http_status": 200, "cost_usd": -0.001})
     (tmp_path / "ledger.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\n")
     doc = h.pilot_structure(run, tmp_path / "ledger.jsonl", store)
     assert doc["decisions"] == 4 and doc["parse_ok_rate"] == 0.75 and doc["reflect_ok_rate"] == 1.0
-    d, r = doc["by_kind"]["decide"], doc["by_kind"]["reflect"]
+    d, r, o = doc["by_kind"]["decide"], doc["by_kind"]["reflect"], doc["by_kind"]["other"]
     nbytes = len(json.dumps({"x": "y" * 990}, sort_keys=True, separators=(",", ":")).encode())
     assert d["n"] == 4 and d["cache_read_share"] == 0.75 and abs(d["input_tokens_per_byte"] - 400 / nbytes) < 1e-12
-    assert r["latency_over_45s"] == 1 and r["max_tokens_stop_share"] == 1.0
+    assert abs(d["cost_usd"] - 0.004) < 1e-12 and abs(r["cost_usd"] - 0.025) < 1e-12 and abs(o["cost_usd"] - 0.002) < 1e-12
+    assert d["attempts"] == 4 and r["attempts"] == 2 and r["latency_over_45s"] == 1 and r["max_tokens_stop_share"] == 1.0
+    assert all(b["cost_usd"] >= 0 for b in doc["by_kind"].values())
+    total = ledger_summary(tmp_path / "ledger.jsonl")["total_cost_usd"]
+    assert abs(doc["total_cost_usd"] - total) < 1e-12 and doc["matches_ledger_summary"] is True

@@ -147,7 +147,8 @@ Fixed paths: `S=/data2/mal/scratch/haiku-v5`, export `E=$S/export-o1`, ledger `$
    Then the structure-only read (no outcome, no score):
    `/data/mal/venv/bin/python -m tools.haiku_v5_harness pilot --run-dir /data2/mal/scratch/haiku-v5/run-p1 --ledger /data2/mal/scratch/haiku-v5/ledger.jsonl --save-dir /data2/mal/scratch/haiku-v5/store`
    -> parse rate, reflection success, per call kind: tokens, cache-read share, input tokens per byte (the 0.56 assumption), latency max and
-   count over 45 s (haiku_caller times out at 60 s, non-streaming), `max_tokens` stop share, USD. Go/no-go for O1: parse >= 95%, reflection
+   count over 45 s (haiku_caller times out at 60 s, non-streaming), `max_tokens` stop share, USD per kind (each reserve row plus its
+   settle row, joined on reservation_id; the total must show `matches_ledger_summary` true). Go/no-go for O1: parse >= 95%, reflection
    success >= 90%, no reflection over 45 s, `max_tokens` stops under 10% of reflections, and a USD per call that keeps O1 under $15. The
    owner compares the console with the ledger.
 3. (API; the coded ceiling is $16 on the cumulative ledger, so about $15 for this step) Full O1: the same `run` command with `--reps 3`,
