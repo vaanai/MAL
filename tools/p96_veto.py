@@ -12,7 +12,7 @@ SEAL (all checked before any row or shadow record is opened; REFUSED = exit 3, n
   * --after-read must be set;
   * the wall clock (--now-ms, and run()'s now_ms when called directly, are clamped to it, so they can only tighten) is at or after 2026-11-14T00:00Z (EXP-024 section 3
     end state, first listed);
-  * --s1-clock-ms equals s1's `clock_start_ms` in s1's own arena registry (--s1-bots-json, default /data/mal/arena/bots.json; DEC-031 Amendment 22 item 9 gave s1 its own root), Q50's
+  * --s1-clock-ms equals s1's `clock_start_ms` in s1's own arena registry (--s1-bots-json, default /home/claude/s1home/data/arena/bots.json; DEC-031 Amendment 22 item 9 gave s1 its own root), Q50's
     line in Q50's registry (--bots-json) has the Q50 clock (both sha256 values are recorded), and the wall clock is at or after E + 1 h, E = the s1 line's `window_end_ms` when set
     (it must not exceed 2026-12-01T00Z = SUCC_END_MS, Amendment 22 item 8.1: H = 25 d, 24 d on the 11-07 slip, never extended; an A3 halt can only move it earlier), else 2026-12-01T00Z;
   * a sealed-read marker for both books: the `--json` output of tools/arena_h5_read.py, with the book in `books`, not in `refused`, `status` PASS / FAIL / NOT_DECIDABLE, `final`
@@ -59,7 +59,7 @@ Q50_CLOCK_MS = _ms(2026, 10, 25)  # 1792886400000
 Q50_END_MS = _ms(2026, 11, 6)  # 1793923200000, Q50's end-seal
 S1_MIN_CLOCK_MS = Q50_END_MS
 SUCC_END_MS = _ms(2026, 12, 1)  # 1796083200000, S*'s end constant = s1's book end E (Amendment 22 item 8.1; was clock + 14 d under Amendment 18 item 3.2)
-S1_BOTS_JSON_DEFAULT = "/data/mal/arena/bots.json"  # s1's own registry on mal-fast-0 (Amendment 22 item 9); Q50's is passed as --bots-json
+S1_BOTS_JSON_DEFAULT = "/home/claude/s1home/data/arena/bots.json"  # s1's own registry on mal-fast-0 (s1's root is HOME=/home/claude/s1home + /data/arena; Amendment 22 item 9); Q50's is passed as --bots-json
 LOOK2_END_MS = _ms(2026, 11, 14)  # 1794614400000, EXP-024 section 3 end state (first listed)
 EXIT_GRACE_MS = 3_600_000
 FINAL = ("PASS", "FAIL", "NOT_DECIDABLE")
