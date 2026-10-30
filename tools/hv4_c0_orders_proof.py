@@ -43,7 +43,7 @@ from typing import Any, Iterator, Mapping
 
 from tools import arena_live_bridge as alb
 from tools import hv4_live_c0 as c0
-from tools.arena_declog import DecisionLog
+from tools.arena_declog import DecisionLog, LogChainError
 
 SCHEMA = "hv4_c0_orders_proof_v1"
 BOT_ID = "hv4-SYNTH-X"  # an X arm by suffix (hv4_live_c0.arm_refusal); not one of the nine registered arms, so nothing here can be mistaken for a real book
@@ -255,7 +255,7 @@ def bridge_lists(run: BridgeRun) -> tuple[list[Order], list[Outcome], list[str]]
     outcomes: list[Outcome] = []
     for r in run.log:
         if r["kind"] == "buy_sent":
-            outcomes.append((int(r["decision_seq"]), "order"))
+            outcomes.append((int(r.get("decision_seq", -1)), "order"))
         elif r["kind"] == "entry_refused":
             outcomes.append((int(r["seq"]), str(r["why"])))
         elif r["kind"] == "universe_skip":
@@ -389,6 +389,11 @@ def run_proof(work: Path | None = None) -> ProofResult:
     base = Path(tempfile.mkdtemp(prefix="hv4-c0-orders-proof-")) if own else Path(work)  # type: ignore[arg-type]
     try:
         run = run_bridge(base, steps, pools)
+    except (ValueError, SystemExit, LogChainError) as exc:  # the bridge refused to start (config, pin, window, read record): a DIFF with the reason, not a traceback
+        res.lines += ["hv4_c0_orders_proof schema=" + SCHEMA, "PROBLEM the bridge refused the synthetic start: " + "; ".join(problems + [f"{type(exc).__name__}: {exc}"]),
+                      "RESULT DIFF (no orders were compared; synthetic log; not gate evidence)"]
+        res.record = {"schema": SCHEMA, "result": "DIFF", "problems": problems + [f"{type(exc).__name__}: {exc}"]}
+        return res
     finally:
         if own:
             shutil.rmtree(base, ignore_errors=True)
