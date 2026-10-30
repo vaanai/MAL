@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import struct
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -949,8 +950,22 @@ def test_frozen_guard_error_on_a_changed_decoder_file(tmp_path):
 
 
 def test_frozen_guard_matches_the_shipped_pins_at_head():
+    """The pins are the git blobs at the covered book's frozen_sha, and HEAD still matches them, with ONE known and covered exception: tools/h5_shadow.py.
+    #789 (a5f41370, 2026-10-21 17:17 PT, merged after the #778 pin) added --q-star-sol to h5_shadow.py, so its HEAD blob (f23cf49221) differs from the pinned a2 frozen blob
+    (23b9ccc256). The pin stays: QP ruling 2026-10-22 G6 (ARTIFACTS/lab/qp-ruling-1022-q50.md:129) says a2 runs at 1f7a89c and pins must not be edited while it runs; the
+    decode-path source identity of h5_shadow.py between 1f7a89c and HEAD is proved by tools/test_h5_shadow_qstar_identity.py. The old form of this test (frozen_guard(shipped)
+    at HEAD, no exception) has failed since #789. A re-pin by a QP-OK PR makes the drift set empty and this test still passes."""
+    root = Path(c.__file__).resolve().parent.parent
     shipped = json.loads((Path(c.__file__).with_name("a3_redeploy_pins.json")).read_text())
-    assert c.frozen_guard(shipped) == shipped["frozen_blobs"] and set(shipped["frozen_blobs"]) == set(c.FROZEN_FILES)
+    blobs = shipped["frozen_blobs"]
+    assert set(blobs) == set(c.FROZEN_FILES)
+    for rel, want in sorted(blobs.items()):  # the pin file itself is right: blob at frozen_sha == pin (fail, never skip, if the object is missing)
+        r = subprocess.run(["git", "-C", str(root), "rev-parse", f"{shipped['frozen_sha']}:{rel}"], capture_output=True, text=True)
+        if r.returncode != 0:
+            pytest.fail(f"object {shipped['frozen_sha']} is not in this clone: git fetch it")
+        assert r.stdout.strip() == want, rel
+    drift = {rel for rel, want in blobs.items() if c.git_blob_sha(root / rel) != want}
+    assert drift <= {"tools/h5_shadow.py"}, sorted(drift)
 
 
 def test_too_few_post_deploy_migrate_txs_is_error(tmp_path):
