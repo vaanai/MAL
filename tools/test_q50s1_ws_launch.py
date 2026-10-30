@@ -45,7 +45,7 @@ class Fixture(unittest.TestCase):
         (self.src / "tools").mkdir(parents=True)
         (self.src / "tools" / "__init__.py").write_text("")
         (self.src / "tools" / "h5_shadow.py").write_text(FAKE_SHADOW)
-        self.keyfile = self.d / "key"
+        self.keyfile = self.d / "helius.env"  # tagged for the Helius host (BASE)
         self.keyfile.write_text(f"OTHER=1\nHELIUS_API_KEY={KEY}\n")
 
     def run_launch(self, *own, args=SHADOW_ARGS, rc="0"):
@@ -87,6 +87,35 @@ class KeyedArgv(unittest.TestCase):
             with self.subTest(args=args, url=url):
                 with self.assertRaises(ValueError):
                     L.keyed_argv(args, url, KEY)
+
+
+class Providers(Fixture):
+    def test_orbitflare_gets_api_key_underscore_and_its_own_variable(self):
+        of = self.d / "orbitflare.env"
+        of.write_text("ORBITFLARE_API_KEY=fixture_ORB-key01\nHELIUS_API_KEY=wrongkey-0000\n")
+        args = SHADOW_ARGS[:-1] + ["wss://fra.rpc.orbitflare.com"]
+        r = subprocess.run([sys.executable, "-I", str(LAUNCH), "--src", str(self.src), "--key-file", str(of), "--keyed-url", "wss://fra.rpc.orbitflare.com", "--dry", "--", *args],
+                           capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("--ws-url wss://fra.rpc.orbitflare.com?api_key=REDACTED", r.stdout)
+        self.assertNotIn("fixture_ORB-key01", r.stdout + r.stderr)
+        self.assertEqual(L.provider_for("wss://fra.rpc.orbitflare.com", str(of)), ("orbitflare", "ORBITFLARE_API_KEY", "api_key"))
+        self.assertEqual(L.keyed_argv(args, "wss://fra.rpc.orbitflare.com", "k" * 10, "api_key")[-1], "wss://fra.rpc.orbitflare.com?api_key=" + "k" * 10)
+
+    def test_a_key_never_goes_to_another_host(self):
+        of = self.d / "orbitflare.env"
+        of.write_text("ORBITFLARE_API_KEY=fixture_ORB-key01\n")
+        for url, kf in (("wss://fra.rpc.orbitflare.com", self.keyfile), (BASE, of), ("wss://second.example/", self.keyfile), ("wss://evil.mainnet.helius-rpc.com.example/", self.keyfile)):
+            with self.subTest(url=url, kf=kf.name):
+                with self.assertRaises(ValueError):
+                    L.provider_for(url, str(kf))
+                args = SHADOW_ARGS[:-1] + [url]
+                r = subprocess.run([sys.executable, "-I", str(LAUNCH), "--src", str(self.src), "--key-file", str(kf), "--keyed-url", url, "--dry", "--", *args],
+                                   capture_output=True, text=True, timeout=30)
+                self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+                self.assertNotIn(KEY, r.stdout + r.stderr)
+        r = self.run_launch("--key-var", "X")  # no variable override any more
+        self.assertEqual(r.returncode, 2)
 
 
 class Redact(unittest.TestCase):

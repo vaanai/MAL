@@ -88,10 +88,10 @@ NEW_MAX_MB=1500
 exit 2
 . "$HERE/q50s1-feed.sh"
 systemd-run --user --scope --quiet --unit="$UNIT" --description="$UNIT" -p MemoryMax=1500M -p MemorySwapMax=0 env "$PY" -I "$HERE/q50s1-ws-launch.py" --src "$SRC" $(q50s1_key_opts) -- --fresh-forward ARENA --q-star-sol 50 \\
-  --out-dir X --sockets 3 --syn-sockets 1 $(q50s1_ws_args)
+  --out-dir "$OUT" $(q50s1_ws_args)
 """
 KEYLIKE = re.compile(r"(?i)api[-_]?key|[?&](key|token|auth|apikey)=|://[^/\s]*@")
-WS1, WS2 = "wss://api.mainnet-beta.solana.com", "wss://second.example/"
+WS1, WS2 = "wss://api.mainnet-beta.solana.com", "wss://fra.rpc.orbitflare.com"
 KEY = "fixture0key-5678abcd"
 
 
@@ -168,14 +168,14 @@ class Smoke(Base):
         shutil.copy(REPO / "scripts" / "ops" / "q50s1-feed.sh", self.repo / "scripts" / "ops" / "q50s1-feed.sh")
         shutil.copy(REPO / "scripts" / "ops" / "q50s1-ws-launch.py", self.repo / "scripts" / "ops" / "q50s1-ws-launch.py")
         self.smokehome = self.d / "s1smoke"
-        self.keyfile = self.d / "keyfile"
-        self.keyfile.write_text(f"HELIUS_API_KEY={KEY}\n")  # a fixture key; the real key file is never read by a test
+        self.keyfile = self.d / "orbitflare.env"
+        self.keyfile.write_text(f"ORBITFLARE_API_KEY={KEY}\n")  # a fixture key; the real key file is never read by a test
         (self.repo / "tools").mkdir(parents=True)
         shutil.copy(REPO / "tools" / "q50s1_health.py", self.repo / "tools" / "q50s1_health.py")
         self.py = write_exec(self.d / "fakepy", FAKE_SHADOW_PY)
 
     def run_smoke(self, *args, **env):
-        base = dict(Q50S1_REPO=self.repo, ARENA_H5_PYTHON=self.py, FAKE_START_ROW=START_ROW, Q50S1_KEY_FILE=self.keyfile, Q50S1_SMOKE_HOME=self.smokehome)
+        base = dict(Q50S1_REPO=self.repo, ARENA_H5_PYTHON=self.py, FAKE_START_ROW=START_ROW, Q50S1_SMOKE_HOME=self.smokehome)
         base.update(env)
         return self.sh(SMOKE, *args, **base)
 
@@ -184,7 +184,7 @@ class Smoke(Base):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("--fresh-forward ARENA --q-star-sol 50", r.stdout)
         self.assertIn(f"--sockets 3 --syn-sockets 1 --ws-url {WS1} (keyed=0;", r.stdout)  # default: mainnet-beta alone
-        r = self.run_smoke("--check", "--ws2", WS2, "--ws2-keyed")
+        r = self.run_smoke("--check", "--ws2", WS2, "--ws2-keyed", "--ws2-key-file", str(self.keyfile))
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn(f"--sockets 3 --syn-sockets 1 --ws-url {WS1} --ws-url {WS2} (keyed=1;", r.stdout)
         self.assertIn(f"--keyed-url {WS2} -- --fresh-forward ARENA", r.stdout)
@@ -209,7 +209,8 @@ class Smoke(Base):
     def test_a_keyed_url_in_the_helper_refuses_11(self):
         self.assertEqual(self.run_smoke("--check", "--ws2", "wss://x.example/?api-key=k").returncode, 11)
         self.assertEqual(self.run_smoke("--ws2", "wss://x.example/?api-key=k").returncode, 11)
-        self.assertEqual(self.run_smoke("--ws2-keyed").returncode, 11)  # keyed without --ws2
+        self.assertEqual(self.run_smoke("--ws2-keyed", "--ws2-key-file", str(self.keyfile)).returncode, 11)  # keyed without --ws2
+        self.assertEqual(self.run_smoke("--check", "--ws2", WS2, "--ws2-keyed").returncode, 11)  # keyed without an explicit key file
         self.assertFalse(any(self.arena.iterdir()))
 
     def test_memory_not_shown_refuses(self):
@@ -235,7 +236,7 @@ class Smoke(Base):
 
     def test_flag_drift_refuses(self):
         start = self.repo / "scripts" / "ops" / "q50s1-shadow-start.sh"
-        for old, new in (("--sockets 3 --syn-sockets 1", "--sockets 2 --syn-sockets 1"), ("--q-star-sol 50", "--q-star-sol 40"), ("NEW_MAX_MB=1500", "NEW_MAX_MB=1800"),
+        for old, new in (('--out-dir "$OUT" $(q50s1_ws_args)', '--out-dir "$OUT" --sockets 2 $(q50s1_ws_args)'), ("--q-star-sol 50", "--q-star-sol 40"), ("NEW_MAX_MB=1500", "NEW_MAX_MB=1800"),
                          ('. "$HERE/q50s1-feed.sh"', ""), ("$(q50s1_ws_args)", '--ws-url "$WS2"'), ("$(q50s1_key_opts)", "--key-file x"), ('--description="$UNIT" ', ""), ("-p MemorySwapMax=0", "")):
             with self.subTest(old=old):
                 write_exec(start, FAKE_START_SH.replace(old, new))
@@ -244,7 +245,7 @@ class Smoke(Base):
 
     def test_short_run_is_judged_and_never_passes(self):
         pyargs, sdargs = self.d / "pyargs", self.d / "sdargs"
-        r = self.run_smoke("--ws2", WS2, "--ws2-keyed", Q50S1_SMOKE_S=2, Q50S1_SMOKE_SAMPLE_S=1, FAKE_PY_ARGS=pyargs, FAKE_SDRUN_ARGS=sdargs)
+        r = self.run_smoke("--ws2", WS2, "--ws2-keyed", "--ws2-key-file", str(self.keyfile), Q50S1_SMOKE_S=2, Q50S1_SMOKE_SAMPLE_S=1, FAKE_PY_ARGS=pyargs, FAKE_SDRUN_ARGS=sdargs)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("SMOKE_ITEM a PASS", r.stdout)
         self.assertIn("SMOKE_ITEM b PASS", r.stdout)
@@ -585,11 +586,11 @@ class CleanLogScript(Base):
 
     def test_a_configured_key_variable_or_a_path_token_is_counted(self):
         """QP A2: the environ count uses the configured key variable; a path-token credential in argv counts too."""
-        pr = subprocess.Popen(["sleep", "30"], env=dict(os.environ, MYPROV_KEY="zzzzzzzz"))
+        pr = subprocess.Popen(["sleep", "30"], env=dict(os.environ, MYPROV_API_KEY="zzzzzzzz"))
         self.addCleanup(pr.wait)
         self.addCleanup(pr.kill)
         (self.cgroot / "user.slice" / "q50s1-shadow.scope" / "cgroup.procs").write_text(f"{pr.pid}\n")
-        r = self.sh(CLEAN, "--job-uid", "j_AbC-12_x", "--out-dir", str(self.sd), **self.clean_env(Q50S1_KEY_VAR="MYPROV_KEY"))
+        r = self.sh(CLEAN, "--job-uid", "j_AbC-12_x", "--out-dir", str(self.sd), **self.clean_env())
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("proc_environ_key_var=1", r.stdout)
         self.assertNotIn("zzzzzzzz", r.stdout + r.stderr)
