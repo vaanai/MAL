@@ -27,7 +27,7 @@ SPEND: a hard stop at SPEND_CAP_USD (0.10) over every day file of the RANK-L cos
 frozen Hv7Guard day cap is lowered to the same figure (a cap can be lowered, never raised).
 
 VERDICT (pre-declared in the pack, section 3d; a FAIL is fixed by code at a new sha, never by tuning a limit):
-  FAIL if FALLBACK calls > 5% of ranker calls, or the p95 of the call latency > 8,000 ms, or card refusals > 5% of cards attempted (built + refused), or any
+  FAIL if FALLBACK calls > 5% of ranker calls, or the p95 of the call latency > 8,000 ms, or PINNED-CLASS card refusals > 5% of cards attempted (built + refused), or any
   run error (a raised exception, a hook error, a model exception, a cost mismatch, an unreadable ledger), or spend > 0.10 USD.
   INCOMPLETE if fewer than 30 error-free ranker calls, or the span from the first t_d to the last t_e is under 2 h (7,200 s). Otherwise PASS.
 Exit 0 PASS, 1 FAIL or INCOMPLETE, 2 refused before any call.
@@ -63,7 +63,51 @@ TAIL_MS = 60_000
 WATCH_EVERY_MS = 60_000
 RPC_CALLS_PER_H = 1_000
 ERROR_COUNTERS = ("model_exception", "cost_mismatch", "ledger_unreadable")
-REFUSAL_COUNTERS = ("card_refused", "chain_none", "leakage_refused")
+REFUSAL_COUNTERS = ("card_refused", "chain_none", "leakage_refused")     # every refusal: the denominator side (cards attempted = built + refused)
+# PINNED CLASS (pack section 3d: "card refusals (as_of, chain stale or unavailable, holders stale)"; HV6's as_of_refusal + chain_stale + chain_unavailable +
+# holders_stale; QP on PR #1071, comment 6488548141, B1/B2(a)). Counted toward the 5% limit: chain_none (chain unavailable), leakage_refused (as_of), and every
+# card_refused card that is NOT shown to be refused by hard vetoes alone. The HV4 hard vetoes (DESIGN section 3: "a vetoed pool is replaced by the next by
+# f.vol_60m", a normal screen step and a market property) and the Lane G filters are report-only. FAIL-CLOSED: a reason this list does not know, a reason key the
+# runner may have cut (hv7_runner truncates the joined reasons at 60 characters, so a pinned reason can be hidden at the end), and card_refused counts with no
+# reason breakdown all count toward the limit. Smoke #1779 under this rule: 3 of 285 (chain_none 3; its 34 card_refused were all hard vetoes).
+PINNED_REFUSAL_COUNTERS = ("chain_none", "leakage_refused")
+HARD_VETO_REASONS = frozenset({
+    # hv4_cards.code_vetoes, DESIGN section 2 hard vetoes 1-7
+    "mint_authority_set", "freeze_authority_set", "token_program_unknown", "token_ext_on_classic_program", "token_ext_banned", "transfer_fee_unknown",
+    "transfer_fee", "default_account_state_unknown", "default_account_frozen", "mayhem_young", "mayhem_unknown_young", "quote_below_floor",
+    "impact_cap_breached", "vstar_unknown", "vstar_wash", "sell_route", "quote_15m_unknown", "quote_15m_stamp_bad", "quote_drop_15m", "quote_not_wsol",
+    # hv4_cards.filters, the Lane G filters (a market property of the pool, never a stale or missing fact)
+    "venue_pumpswap", "quote_wsol", "v_missing", "v_band", "age_min", "age_max", "quote_floor", "impact_025", "prints_15m", "signers_15m", "vol_60m", "last_print",
+    "bad_pool_id",
+})
+# The pinned-class reasons hv4_cards can give (stamps, staleness, missing chain facts). Only used to flag a reason that is in neither list; any card that is not a
+# hard veto alone counts toward the limit whether its reason is listed here or not.
+PINNED_REASONS_KNOWN = frozenset({"as_of_slot_invalid", "as_of_slot_missing", "chain_stale", "holders_stale", "holders_stamp_invalid", "state_stale", "state_fresh"})
+PINNED_REASON_PREFIXES = ("chain_stamp_invalid:", "chain_missing:", "chain_invalid:")
+RUNNER_REASON_KEY_CAP = 60              # hv7_runner: "card_refused:" + ",".join(sorted(reasons))[:60]
+
+
+def split_card_refusals(cnt: dict[str, Any]) -> dict[str, int]:
+    """card_refused split into hard vetoes (report-only) and the pinned class (counted), fail closed. Counts only; no pool is named."""
+    total = int(cnt.get("card_refused", 0))
+    hard = cut = unknown = 0
+    for k, v in cnt.items():
+        if not k.startswith("card_refused:") or not _num(v):
+            continue
+        reasons = k[len("card_refused:"):]
+        if len(reasons) >= RUNNER_REASON_KEY_CAP:
+            cut += int(v)                                   # may be truncated: counted
+            continue
+        toks = [t for t in reasons.split(",") if t]
+        if toks and all(t in HARD_VETO_REASONS for t in toks):
+            hard += int(v)
+        elif any(t not in HARD_VETO_REASONS and t not in PINNED_REASONS_KNOWN and not t.startswith(PINNED_REASON_PREFIXES) for t in toks):
+            unknown += int(v)                               # counted (fail closed); shown so QP can classify it
+    hard = min(hard, total)
+    pinned_cards = total - hard                             # everything not shown to be a hard veto alone
+    pinned = pinned_cards + sum(int(cnt.get(k, 0)) for k in PINNED_REFUSAL_COUNTERS)
+    return {"card_refused": total, "hard_veto_cards": hard, "pinned_cards": pinned_cards, "pinned": pinned, "keys_maybe_cut": cut, "unclassified": unknown}
+
 
 
 class Refused(Exception):
@@ -148,10 +192,15 @@ def report(root: str | os.PathLike, *, counters: dict[str, Any] | None = None, r
         elif k == "period_excluded":
             excluded += 1
     cnt = _num_only(counters or {})
-    refused_cards = sum(int(cnt.get(k, 0)) for k in REFUSAL_COUNTERS)
+    refused_cards = sum(int(cnt.get(k, 0)) for k in REFUSAL_COUNTERS)        # every refusal (denominator; report-only share below)
+    split = split_card_refusals(cnt)
+    pinned_refusals = split["pinned"]
     reason_counts = {k[len("card_refused:"):][:60]: v for k, v in sorted(cnt.items()) if k.startswith("card_refused:")}
     attempted = built + refused_cards
-    refusal_frac = refused_cards / attempted if attempted else 0.0
+    refusal_frac = pinned_refusals / attempted if attempted else 0.0          # the pinned limit: pinned-class refusals over cards attempted (built + refused)
+    refusal_frac_all = refused_cards / attempted if attempted else 0.0      # report-only (hard vetoes included; the figure #1779's report showed)
+    att_ex_veto = attempted - split["hard_veto_cards"]
+    refusal_frac_ex_veto_den = pinned_refusals / att_ex_veto if att_ex_veto else 0.0   # report-only (QP's alternative: vetoed cards out of the denominator)
     tok = {"input": 0, "output": 0, "cache_creation_input": 0, "cache_read_input": 0}
     usd = 0.0
     led_dir = root / "ledgers"
@@ -193,7 +242,11 @@ def report(root: str | os.PathLike, *, counters: dict[str, Any] | None = None, r
             "model_refusals": refusals, "late_replies": late, "cut_off": cut, "replayed": replayed, "model_error_counts": dict(sorted(errs.items())),
             "call_latency_ms": {"n": len(lat), "p50": _pct(lat, 0.5), "p95": p95, "max": max(lat) if lat else None, "limit_p95": CALL_P95_FAIL_MS},
             "tokens": tok, "spend_usd": round(usd, 6), "cap_usd": cap_usd, "spend_stop_hits": spend_stop_hits,
-            "cards_built": built, "card_refusals": refused_cards, "cards_attempted": attempted, "card_refusal_share": round(refusal_frac, 6),
+            "cards_built": built, "card_refusals": pinned_refusals, "cards_attempted": attempted, "card_refusal_share": round(refusal_frac, 6),
+            "card_refusal_class": "pinned: as_of (leakage_refused, as_of_*), chain stale or unavailable (chain_none, chain_*), holders stale; hard vetoes report-only; fail closed",
+            "card_refusals_all": refused_cards, "card_refusal_share_all": round(refusal_frac_all, 6), "card_hard_veto_cards": split["hard_veto_cards"],
+            "card_refusal_share_ex_veto_denominator": round(refusal_frac_ex_veto_den, 6), "card_refusal_keys_maybe_cut": split["keys_maybe_cut"],
+            "card_refusal_unclassified": split["unclassified"],
             "card_refusal_reason_counts": reason_counts, "error_counters": err_counts, "hook_errors": int(cnt.get("hook_errors", 0)),
             "watch_errors": {k[len("watch_error:"):][:40]: v for k, v in sorted(cnt.items()) if k.startswith("watch_error:")},
             "runner_counters": {k: v for k, v in sorted(cnt.items()) if ":" not in k},
