@@ -159,15 +159,14 @@ class ScanBoard(unittest.TestCase):
         self.assertFalse(h6.is_board_second(T_BOARD + MIN))
         self.assertFalse(h6.is_board_second(T_BOARD + 1000))
 
-    def test_board_is_top_24_untagged_by_volume_ties_by_id(self):
+    def test_board_is_top_4_untagged_by_volume_ties_by_id(self):
         snaps = [pool_snap(i) for i in range(30)]
         pf = {s["id"]: feats(vol_60m=float(i), ret_60m=0.0, ret_15m=0.0) for i, s in enumerate(snaps)}
         pf[snaps[29]["id"]] = feats(vol_60m=29.0)  # pullback: tagged, so off the board
         r, _ = self.run_scan(snaps, t=T_BOARD, per_pool=pf)
-        self.assertEqual(len(r.board), 24)
+        self.assertEqual(len(r.board), 4)  # fix B: one call per board (was 24)
         self.assertNotIn(snaps[29]["id"], r.board)
-        self.assertEqual(r.board[0], snaps[28]["id"])
-        self.assertEqual(r.board[-1], snaps[5]["id"])
+        self.assertEqual(r.board, [snaps[i]["id"] for i in (28, 27, 26, 25)])
 
     def test_no_board_off_the_mark(self):
         r, _ = self.run_scan([pool_snap(i) for i in range(3)], t=T_BOARD + MIN)
@@ -227,7 +226,10 @@ class Limits(unittest.TestCase):
         L = h6.GEN_CODE_LIMITS
         self.assertEqual((L["min_conviction"], L["hard_stop_pct"], L["max_hold_min"], L["entries_per_h"], L["max_open"], L["day_loss_stop_sol"]),
                          (3, -40.0, 720, 3, 6, 1.5))
-        self.assertEqual((h6.BOARD_SIZE, h6.BOARD_EVERY_MS, h6.SCAN_SECOND_MS, h6.CARDS_PER_CALL, h6.ENTRY_CALLS_PER_H), (24, 900_000, 2000, 4, 12))
+        self.assertEqual((h6.BOARD_SIZE, h6.BOARD_EVERY_MS, h6.SCAN_SECOND_MS, h6.CARDS_PER_CALL, h6.ENTRY_CALLS_PER_H), (4, 900_000, 2000, 4, 12))
+        # fix B: the board is one call per board scan, 4 calls/h per arm, inside the 12/h entry-call cap with two thirds left to setups
+        self.assertEqual((h6.BOARD_CALLS_PER_H, h6.GEN_CODE_LIMITS["board"]), (4, 4))
+        self.assertLessEqual(h6.BOARD_CALLS_PER_H, h6.ENTRY_CALLS_PER_H // 3)
         self.assertEqual((h6.X_EXIT["stop_pct"], h6.X_EXIT["target_pct"], h6.X_EXIT["time_min"], h6.X_CAP_PER_H), (-8.0, 20.0, 60, 2))
         self.assertEqual(h6.GEN_KNOB_BOUNDS["time_min"], (10, 360))
 
