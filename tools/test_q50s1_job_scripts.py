@@ -258,15 +258,33 @@ class Smoke(Base):
         self.assertIn("key_string_lines_user_journal=unreadable", r.stdout)
 
 
+FAKE_COMMIT = "f" * 40
+AM22_MARK = '"window_end_ms": 1_796_083_200_000'
+
+
 class Score(Base):
+    """The real script refuses at its current pins (37bafde4 has no Amendment 22 E row: the re-pin to #1109's merge is owed). The logic is tested on a copy whose TOOL_COMMIT and
+    PINS are replaced by a fixture commit whose instant tool carries E (the files are 37bafde4's, the instant tool with the E row appended as a comment)."""
+
     def setUp(self):
         super().setUp()
-        self.src = self.home / "data" / "arena-src" / "q50s1-score-37bafde4"
+        self.src = self.home / "data" / "arena-src" / "q50s1-score-ffffffff"
+        pins = []
         for f in ("arena_h5_score_q50s.py", "arena_h5_q50s_instant.py", "arena_h5_score.py", "arena_h5_score_q50.py", "arena_h5_q50_instant.py", "arena_h5_score_a2.py"):
             p = self.src / "tools" / f
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_bytes(subprocess.run(["git", "-C", str(REPO), "show", f"{TOOL_COMMIT}:tools/{f}"], capture_output=True, check=True).stdout)
-        (self.src / ".fakehead").write_text(TOOL_COMMIT + "\n")
+            data = subprocess.run(["git", "-C", str(REPO), "show", f"{TOOL_COMMIT}:tools/{f}"], capture_output=True, check=True).stdout
+            if f == "arena_h5_q50s_instant.py":
+                data += ("# " + AM22_MARK + "\n").encode()
+            p.write_bytes(data)
+            pins.append(f"tools/{f}={hashlib.sha256(data).hexdigest()}")
+        (self.src / ".fakehead").write_text(FAKE_COMMIT + "\n")
+        text = SCORE.read_text()
+        text = re.sub(r"TOOL_COMMIT=[0-9a-f]{40}", f"TOOL_COMMIT={FAKE_COMMIT}", text)
+        text = re.sub(r'PINS="[^"]*"', 'PINS="' + "\n".join(pins) + '"', text)
+        self.script = self.d / "ops" / "q50s1-score.sh"
+        self.script.parent.mkdir()
+        self.script.write_text(text)
         self.sd = self.arena / "h5-q50s1-2026-11-05"
         self.sd.mkdir()
         self.args = self.d / "args"
@@ -275,14 +293,25 @@ class Score(Base):
                                                  'echo "$PWD $*" >> "$FAKE_ARGS"\ncat "$FAKE_JSON"\nexit "${FAKE_RC:-0}"\n')
 
     def doc(self, dry=True, **over):
-        b = {"registered": True, "refused_dirs": {}, "attempts": 41, "counted": 17, "q50s1_read_instant": {"record": "dry run: not written" if dry else "not decided"}}
+        b = {"registered": True, "refused_dirs": {}, "attempts": 4141417, "counted": 7171723, "q50s1_read_instant": {"record": "dry run: not written" if dry else "not decided"}}
         b.update(over)
         self.json.write_text(json.dumps({"dry_run": dry, "shadow_dirs": [str(self.sd)], "books": {"h5v1q50-boostfloor-s1": b}}))
 
-    def run_score(self, *args, **env):
+    def run_score(self, *args, script=None, **env):
         base = dict(Q50S1_REPO=REPO, Q50S1_PY=self.py, FAKE_ARGS=self.args, FAKE_JSON=self.json)
         base.update(env)
-        return self.sh(SCORE, *args, **base)
+        return self.sh(script or self.script, *args, **base)
+
+    def test_the_real_pins_refuse_until_the_am22_repin(self):
+        src = self.home / "data" / "arena-src" / "q50s1-score-37bafde4"
+        for f in ("arena_h5_score_q50s.py", "arena_h5_q50s_instant.py", "arena_h5_score.py", "arena_h5_score_q50.py", "arena_h5_q50_instant.py", "arena_h5_score_a2.py"):
+            p = src / "tools" / f
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_bytes(subprocess.run(["git", "-C", str(REPO), "show", f"{TOOL_COMMIT}:tools/{f}"], capture_output=True, check=True).stdout)
+        (src / ".fakehead").write_text(TOOL_COMMIT + "\n")
+        r = self.run_score("check", "--shadow-dir", str(self.sd), script=SCORE)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("RE-PIN", r.stderr)
 
     def test_arguments(self):
         for a in ((), ("loop",), ("bogus", "--shadow-dir", str(self.sd)), ("loop", "--shadow-dir"), ("loop", "--shadow-dir", str(self.arena / "h5-q50-2026-10-24")),
@@ -310,10 +339,10 @@ class Score(Base):
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("DRY_VERDICT OK", r.stdout)
         self.assertIn("RC=0 FILTER_RC=0", r.stdout)
-        for leak in ("41", "17", "attempts", "counted"):
+        for leak in ("4141417", "7171723", "attempts", "counted"):
             self.assertNotIn(leak, r.stdout)
         call = self.args.read_text()
-        self.assertIn(f"{self.src} -m tools.arena_h5_score_q50s score --dry-run --shadow-dir {self.sd}", call)
+        self.assertIn(f"{self.src} -m tools.arena_h5_score_q50s score --dry-run --arena-root {self.arena} --shadow-dir {self.sd}", call)
         self.assertEqual(list((self.home / "data" / "q50s1-ops").iterdir()), [])  # the temp JSON is removed
 
     def test_dry_day1_not_ok(self):
@@ -330,7 +359,7 @@ class Score(Base):
         r = self.run_score("loop", "--shadow-dir", str(self.sd), Q50S1_SCORE_END=1)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("end reached", r.stdout)
-        self.assertEqual(self.run_score("loop", "--shadow-dir", str(self.sd), Q50S1_SCORE_END=1795136401).returncode, 2)
+        self.assertEqual(self.run_score("loop", "--shadow-dir", str(self.sd), Q50S1_SCORE_END=1796086801).returncode, 2)
 
     def test_host(self):
         self.assertEqual(self.run_score("loop", "--shadow-dir", str(self.sd), FAKE_HOST="x").returncode, 6)
