@@ -270,11 +270,11 @@ class A3CarryTests(unittest.TestCase):
         p = subprocess.run(["sh", str(self.SCRIPT)], capture_output=True, text=True, env={**os.environ, "A3_CARRY_SRC": str(self.src), "A3_CARRY_DST": str(self.dst)}, timeout=60)
         return p.returncode, p.stdout
 
-    def test_copies_both_files_applied_first_with_mode_and_mtime(self):
+    def test_installs_the_record_first_then_the_applied_log_with_mode_and_mtime(self):
         os.utime(self.src / "daily.jsonl", (1_700_000_000, 1_700_000_000))
         rc, out = self.run_sh()
         self.assertEqual(rc, 0, out)
-        self.assertLess(out.index("a3-applied.jsonl"), out.index("daily.jsonl"))
+        self.assertLess(out.index("PASS a3_carry daily.jsonl"), out.index("PASS a3_carry a3-applied.jsonl"))  # never applied-ahead-of-record in between
         for n in ("daily.jsonl", "a3-applied.jsonl"):
             self.assertEqual((self.dst / n).read_bytes(), (self.src / n).read_bytes())
             self.assertEqual(stat.S_IMODE((self.dst / n).stat().st_mode), 0o644)
@@ -297,12 +297,45 @@ class A3CarryTests(unittest.TestCase):
         self.assertIn("source_missing_empty_or_link", self.run_sh()[1])
         self.assertEqual((self.dst / "daily.jsonl").read_bytes(), old)
 
+    def test_an_applied_line_ahead_of_the_record_installs_nothing(self):
+        self.run_sh()
+        old = {n: (self.dst / n).read_bytes() for n in ("daily.jsonl", "a3-applied.jsonl")}
+        (self.src / "a3-applied.jsonl").write_text('{"run_utc": "2026-10-31T00:00:00Z", "verdict": "NONE"}\n')  # the guard's line for a run whose record is not out yet
+        rc, out = self.run_sh()
+        self.assertEqual(rc, 1)
+        self.assertIn("FAIL a3_carry pair applied_ahead_of_record", out)
+        self.assertEqual({n: (self.dst / n).read_bytes() for n in old}, old)
+        self.assertEqual([p.name for p in self.dst.iterdir() if p.name.startswith(".")], [])
+        (self.src / "daily.jsonl").write_text('{"run_utc": "2026-10-31T00:00:00Z"}\n')  # the record catches up: both carried, record first
+        rc, out = self.run_sh()
+        self.assertEqual(rc, 0, out)
+        self.assertLess(out.index("daily.jsonl"), out.index("a3-applied.jsonl"))
+
+    def test_between_the_two_installs_the_bridge_reads_pending_never_ahead(self):
+        from tools import hv4_live_c0 as c0x
+        self.run_sh()
+        (self.src / "daily.jsonl").write_text('{"run_utc": "2026-10-31T00:00:00Z"}\n')
+        (self.src / "a3-applied.jsonl").write_text('{"run_utc": "2026-10-31T00:00:00Z", "verdict": "NONE"}\n')
+        shim = Path(self._t.name, "bin")
+        shim.mkdir()
+        flag = Path(self._t.name, "after-first-mv")
+        (shim / "mv").write_text("#!/bin/sh\n/bin/mv \"$@\" || exit $?\n[ -e %s ] || cp %s/daily.jsonl %s/a3-applied.jsonl %s/ 2>/dev/null; touch %s\n" % (flag, self.dst, self.dst, self._t.name, flag))
+        (shim / "mv").chmod(0o755)
+        p = subprocess.run(["sh", str(self.SCRIPT)], capture_output=True, text=True, timeout=60,
+                           env={**os.environ, "PATH": f"{shim}:{os.environ['PATH']}", "A3_CARRY_SRC": str(self.src), "A3_CARRY_DST": str(self.dst)})
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        mid_rec = json.loads(Path(self._t.name, "daily.jsonl").read_text())["run_utc"]
+        mid_app = json.loads(Path(self._t.name, "a3-applied.jsonl").read_text())["run_utc"]
+        self.assertLessEqual(mid_app, mid_rec)  # the state the bridge could read between the two renames: applied not ahead of the record
+        self.assertEqual((mid_rec, mid_app), ("2026-10-31T00:00:00Z", "2026-10-30T00:00:00Z"))
+        self.assertTrue(hasattr(c0x, "a3_problem"))
+
     def test_empty_source_is_not_carried(self):
         (self.src / "a3-applied.jsonl").write_text("")
         rc, out = self.run_sh()
         self.assertEqual(rc, 1)
         self.assertFalse((self.dst / "a3-applied.jsonl").exists())
-        self.assertTrue((self.dst / "daily.jsonl").exists())
+        self.assertFalse((self.dst / "daily.jsonl").exists())  # the pair is carried together or not at all (a lone record would read "pending" forever)
 
     def test_service_runs_this_script_from_the_pinned_tree_and_writes_only_the_carry_dir(self):
         d = directives((PACK / "mal-hv4-c0-a3-carry.service").read_text())
@@ -358,7 +391,11 @@ class ChecklistTests(unittest.TestCase):
         self.assertIn(f"FAIL arena_prefix_not_root_0755 ({self.d}", out)
         self.assertIn(f"FAIL reads_dir_not_root_0755 ({self.d / 'reads'}", out)
         self.assertGreaterEqual(out.count(cmd), 2)
-        self.assertIn(f"sudo {cmd}", (REPO / "docs" / "runbooks" / "hv4-c0-bridge.md").read_text())  # the runbook's Provision step, exact
+        rb = (REPO / "docs" / "runbooks" / "hv4-c0-bridge.md").read_text()
+        self.assertIn('for d in /data/mal/arena /data/mal/arena/reads; do', rb)  # the runbook's Provision step: create only if absent, never chown an existing dir
+        self.assertIn('else sudo install -d -m 0755 -o root -g root "$d"', rb)
+        self.assertIn('"directory 0:0 755"', rb)
+        self.assertNotIn(f"sudo {cmd}", rb)  # no unguarded form left
 
     def test_the_base_unit_text_passes_its_own_unit_checks(self):
         rc, out = self.run_sh()
