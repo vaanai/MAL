@@ -512,9 +512,20 @@ WINDOW_MANUAL_NOTE = ("MANUAL RECOVERY: do not delete or recreate the window fil
                       "a new first start would restart the 14-day cap")
 
 
+READS_DIR_NOTE = ("on the bridge host (mal-fast-0) root creates the canonical reads dir: `install -d -m 0755 -o root -g root /data/mal/arena /data/mal/arena/reads` "
+                  "(both root:root 0755; /data/mal/arena must exist, the sealed-alias check fails closed without it), then installs the arm's recorded read as a "
+                  "byte copy `/data/mal/arena/reads/<bot_id>.json` root:root 0444 whose sha256 equals the read job's RECORD line (docs/runbooks/hv4-c0-bridge.md)")
+READS_DIR_LABELS = ("read_record_dir_absent", "read_record_missing", "read_record_dir_owner_mode", "read_record_owner_mode")
+
+
 def refusal_text(why: str) -> str:
-    """The label, plus the manual-recovery note for the two window labels that must never be cleared by the bridge."""
-    return f"{why} ({WINDOW_MANUAL_NOTE})" if why in WINDOW_MANUAL_RECOVERY else why
+    """The label, plus the manual-recovery note for the two window labels that must never be cleared by the bridge, and the reads-dir provisioning note for the
+    labels a missing or wrongly owned /data/mal/arena/reads on the bridge host gives."""
+    if why in WINDOW_MANUAL_RECOVERY:
+        return f"{why} ({WINDOW_MANUAL_NOTE})"
+    if why in READS_DIR_LABELS:
+        return f"{why} ({READS_DIR_NOTE})"
+    return why
 
 
 def bot_id_problem(bot_id: Any) -> str | None:
@@ -679,6 +690,8 @@ def read_record_problem(reads_dir: Any, bot_id: Any, pinned: Mapping[str, Any] |
         return "read_record_dir_not_canonical", ident
     if real_dir != READS_DIR_CANON and _alias_of_sealed(real_dir, (READS_DIR_CANON,)):
         return "read_record_dir_sealed_alias", ident
+    if not os.path.isdir(real_dir):  # names the provisioning step (refusal_text) instead of the generic read_record_missing; still a refusal
+        return "read_record_dir_absent", ident
     try:
         if not _owner_mode_ok(os.stat(real_dir)):
             return "read_record_dir_owner_mode", ident
