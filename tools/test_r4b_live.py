@@ -634,3 +634,95 @@ def test_ingest_hashes_the_trader_of_kept_rows_only():
     assert calls == ["kept_pumpswap_trader", "kept_bonding_trader", "after_mslot_trader"]
     eng.ingest_migration({"type": "complete", "mint": "MQ", "slot": 190, "block_time": BT0})  # the buffered print is replayed and hashed now
     assert calls[-1] == "pending_trader" and len(calls) == 4
+
+
+# ------------------------------------------------------------------------------------------------------------------------------- bonding rows (reviewer note 3)
+def _bond_engine(rows: list[dict], *, complete_first: bool = True, creator: str | None = "CRE", mslot: int = 1000):
+    """An engine fed one bonding mint's rows plus its complete (and create) row. Returns (engine, Member)."""
+    con = duckdb.connect()
+    eng = lv.Engine(universe_min_mbt=0, pda_fn=pda_of, hash_fn=lambda s: int(con.execute("select hash(?::varchar)", [s]).fetchone()[0]), score_fn=_score_ret)
+    if creator is not None:
+        eng.ingest_create({"type": "create", "mint": "MB", "creator": creator, "slot": 900, "block_time": BT0 - 100})
+    comp = {"type": "complete", "mint": "MB", "slot": mslot, "block_time": BT0}
+    if complete_first:
+        eng.ingest_migration(comp)
+    for r in rows:
+        eng.ingest_trade({"venue": "pump_bonding", "mint": "MB", "block_time": BT0 - 5, "pool": None, **r})
+    if not complete_first:
+        eng.ingest_migration(comp)
+    st = eng.mints["MB"]
+    return eng, lv.Member("MB", pda_of("MB"), mslot, BT0, mslot + 1, V, st)
+
+
+def test_bonding_rows_after_mslot_are_skipped_and_counted_once_mslot_is_known():
+    rows = [dict(trader="a", side="buy", sol_lamports=5, slot=990), dict(trader="b", side="sell", sol_lamports=3, slot=1000),  # <= mslot: kept
+            dict(trader="c", side="buy", sol_lamports=7, slot=1001), dict(trader="a", side="sell", sol_lamports=9, slot=1500)]  # > mslot: skipped
+    eng, m = _bond_engine(rows)
+    st = eng.mints["MB"]
+    assert (st.b_n, st.b_buy, st.b_sell, len(st.b_by_th)) == (2, 5, 3, 2)
+    assert eng.counters["bond_rows_after_mslot_skipped"] == 2 and "bond_rows_after_mslot_mints" not in eng.counters
+    c, _ = eng.mint_const(m, 0)
+    assert (c.nb, c.ntr, c.bbuy, c.bsell) == (2.0, 2.0, 5.0, 3.0) and "bond_rows_after_mslot_mints" not in eng.counters
+
+
+def test_block_ingest_skips_bonding_rows_after_mslot_like_the_row_path():
+    con = duckdb.connect()
+    hf = lambda s: int(con.execute("select hash(?::varchar)", [s]).fetchone()[0])  # noqa: E731
+    eng = lv.Engine(universe_min_mbt=0, pda_fn=pda_of, hash_fn=hf, score_fn=_score_ret)
+    eng.ingest_migration({"type": "complete", "mint": "MB", "slot": 1000, "block_time": BT0})
+    sl = np.array([999, 1000, 1001, 1002], np.int64)
+    n = len(sl)
+    cols = {"venue": np.array(["pump_bonding"] * n, dtype=object), "mint": np.array(["MB"] * n, dtype=object), "pool": np.array([None] * n, dtype=object),
+            "slot": sl, "txi": np.full(n, -1, np.int64), "evi": np.zeros(n, np.int64), "frn": np.arange(n, dtype=np.int64), "bt": np.full(n, float(BT0)),
+            "sol": np.full(n, 5.0), "tok": np.full(n, 1.0), "q": np.full(n, 1.0), "b": np.full(n, 1.0), "vq": np.full(n, np.nan),
+            "isbuy": np.array([True, False, True, True], dtype=object), "th": np.array([hf("a"), hf("b"), hf("c"), hf("d")], np.uint64)}
+    eng.ingest_trade_block(cols)
+    st = eng.mints["MB"]
+    assert (st.b_n, st.b_buy, st.b_sell, len(st.b_by_th)) == (2, 5, 5, 2) and eng.counters["bond_rows_after_mslot_skipped"] == 2
+
+
+def test_bonding_rows_before_the_complete_row_are_kept_and_raise_the_alarm_once():
+    rows = [dict(trader="a", side="buy", sol_lamports=5, slot=990), dict(trader="c", side="buy", sol_lamports=7, slot=1001)]
+    eng, m = _bond_engine(rows, complete_first=False)  # mslot unknown when the second row arrives: it cannot be skipped
+    assert eng.mints["MB"].b_n == 2 and "bond_rows_after_mslot_skipped" not in eng.counters
+    for _ in range(3):  # three marks read the constants: still one alarm for the mint
+        eng.mint_const(m, 0)
+    assert eng.counters["bond_rows_after_mslot_mints"] == 1
+
+
+@pytest.mark.parametrize("seed", range(60))
+def test_bonding_constants_equal_the_layout_sql_including_null_sums(seed):
+    """The prep_work SQL of r4b_layout.build (bond rows slot < mslot + 1 joined to the creator hash) evaluated by DuckDB on random rows, with NULL sides and
+    NULL sols, against Engine.mint_const: nb, ntr, bbuy, bsell, cre_sell equal, NaN where SUM is NULL (and the alarm-free skip of rows after mslot)."""
+    rnd = random.Random(seed)
+    creator = None if seed % 6 == 0 else "CRE"
+    sides = ["buy", "sell"] if seed % 2 else ["buy", "sell", None]
+    p_null = 0.75 if seed % 3 else 0.3
+    rows = [dict(trader=rnd.choice(["CRE", "T1", "T2"]), side=rnd.choice(sides), sol_lamports=None if rnd.random() < p_null else rnd.randint(1, 10**9),
+                 slot=rnd.choice([990, 1000, 1000, 1001])) for _ in range(rnd.randint(1, 5))]
+    eng, m = _bond_engine(rows, creator=creator)
+    const, _ = eng.mint_const(m, 0)
+    got = [const.nb, const.ntr, const.bbuy, const.bsell, const.cre_sell]
+    con = duckdb.connect()
+    con.sql("create table b(slot bigint, isbuy boolean, sol bigint, trader varchar)")
+    for r in rows:
+        con.execute("insert into b values (?, ?, ?, ?)", [r["slot"], None if r["side"] is None else r["side"] == "buy", r["sol_lamports"], r["trader"]])
+    ch = "null::ubigint" if creator is None else "hash('CRE')"
+    sql = con.sql(f"""select count(*) nb, count(distinct th) ntr, sum(case when isbuy then sol else 0 end) bbuy, sum(case when not isbuy then sol else 0 end) bsell,
+                      sum(case when (not isbuy) and th = ch then sol else 0 end) cre_sell
+                      from (select b.*, hash(trader) th from b where slot < 1000 + 1) x, (select {ch} ch) c""").fetchone()
+    want = [float("nan")] * 5 if sql[0] == 0 else [float(v) if v is not None else float("nan") for v in sql]
+    assert np.array_equal(np.array(got), np.array(want), equal_nan=True), (rows, got, want)
+
+
+def test_bonding_sum_null_corners_reach_the_features_as_nan():
+    """All rows buys with a NULL sol: bbuy NaN, bsell 0 (the ELSE 0 terms), cre_sell 0; all creator sells with NULL sol: cre_sell NaN too."""
+    eng, m = _bond_engine([dict(trader="a", side="buy", sol_lamports=None, slot=990), dict(trader="b", side="buy", sol_lamports=None, slot=991)])
+    c, _ = eng.mint_const(m, 0)
+    assert np.isnan(c.bbuy) and c.bsell == 0.0 and c.cre_sell == 0.0 and c.nb == 2.0
+    eng, m = _bond_engine([dict(trader="CRE", side="sell", sol_lamports=None, slot=990)])
+    c, _ = eng.mint_const(m, 0)
+    assert c.bbuy == 0.0 and np.isnan(c.bsell) and np.isnan(c.cre_sell)
+    eng, m = _bond_engine([dict(trader="CRE", side="sell", sol_lamports=None, slot=990), dict(trader="x", side="buy", sol_lamports=4, slot=991)])
+    c, _ = eng.mint_const(m, 0)
+    assert c.cre_sell == 0.0 and c.bbuy == 4.0 and c.bsell == 0.0  # the buy's ELSE 0 term makes the sell sum non-NULL
