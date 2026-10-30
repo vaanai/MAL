@@ -161,7 +161,7 @@ class TestConstants(Base):
         self.assertEqual(m.s1_window(1793923200000), (1793923200000, 1796083200000))  # E = 2026-12-01T00Z, no longer clock + 14 d (2026-11-20T00Z)
         self.assertEqual(m.s1_window(1793923200000 + DAY), (1793923200000 + DAY, 1796083200000))  # the 11-07 slip keeps E: 24 d
         self.assertEqual(m.s1_window(m.SUCC_END_MS - 5 * DAY)[1], m.SUCC_END_MS)
-        self.assertEqual(m.S1_BOTS_JSON_DEFAULT, "/data/mal/arena/bots.json")
+        self.assertEqual(m.S1_BOTS_JSON_DEFAULT, "/home/claude/s1home/data/arena/bots.json")
         self.assertFalse(hasattr(m, "S1_HORIZON_MS"))
 
     def test_rule_gate_features(self):
@@ -599,8 +599,8 @@ class TestMain(Base):
         self.assertNotIn("--s1-bots-json", argv)
         with mock.patch.object(m, "run", return_value={"verdict": "NOT_DECIDABLE", "reasons": ["x"]}) as r, mock.patch.object(m, "render", return_value="R"), \
                 mock.patch.object(m, "write_once"), contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(m.main(argv), 0)  # run() is mocked: the real /data/mal/arena/bots.json is not read
-        self.assertEqual((r.call_args.kwargs["s1_bots_path"], r.call_args.kwargs["bots_path"]), ("/data/mal/arena/bots.json", str(f.bots)))
+            self.assertEqual(m.main(argv), 0)  # run() is mocked: the real s1 registry is not read
+        self.assertEqual((r.call_args.kwargs["s1_bots_path"], r.call_args.kwargs["bots_path"]), ("/home/claude/s1home/data/arena/bots.json", str(f.bots)))
 
     def test_s1_bots_json_is_forwarded_and_a_missing_one_is_refused(self):
         f = Fixture(self.root)
