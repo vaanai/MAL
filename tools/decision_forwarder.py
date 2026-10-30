@@ -9,6 +9,14 @@ Modes
              hello  {"k":"hello","v":SCHEMA,"bot":..,"ms":..}
              row    {"k":"row","f":<day file>,"o":<byte offset of the line>,"b":<the line, without its newline>}  (complete lines only)
              hb     {"k":"hb","ms":<remote ms>,"f":<file>,"o":<bytes consumed>}  every hb_ms
+             tg     {"k":"tg","mt":<source mtime ms>,"n":<byte count>,"sha":<sha256 of the bytes>,"b":<the file's text>}  only with --tapegaps-file (below)
+           --tapegaps-file <abs path> (optional, also in the --from-env form; the flag is part of the pinned forced command, never of SSH_ORIGINAL_COMMAND): the
+           hv4_gap_relay stream `<bot_id>.tapegaps.jsonl` (rows {"kind","ms"}, rewritten atomically on every relay pass, so its mtime is the relay's heartbeat). A tg frame
+           goes out at connect and whenever the file's (inode, size, mtime) changes, i.e. on every pass, even with identical bytes. The file must be a regular file with
+           st_nlink == 1, named exactly `<bot_id>.tapegaps.jsonl`, at most TAPEGAPS_MAX_BYTES (== hv4_live_c0.GAP_LOG_MAX_BYTES, a test pins it), UTF-8, every line an object
+           with exactly kind (str) and ms (int); a file that breaks that is a loud `bad` frame and exit (the puller stops). A missing file or a torn tail sends nothing (the
+           copy on the bridge host then goes stale). The seal gate below covers the tapegaps file too: if it resolves under /data/mal/arena (or aliases it) the same recorded-read
+           gate applies. The relay out-dir is meant to be OUTSIDE /data/mal/arena.
            A root under /data/mal/arena (realpath, or an ancestor with the arena's inode: a bind or alias) is refused unless --reads-dir is given
            and the bot's RECORDED PASS read passes tools.hv4_live_c0.read_record_problem (the bridge's own gate, QP #965; QP-RULING-1025 R2.1:
            no process reads an HV4 decision row before that arm's read is recorded). No instant is configured by hand, so nothing can be
@@ -21,6 +29,11 @@ Modes
            Side files under `<dst>/transport/` (NEVER inside decisions/, where any extra row would latch the bridge's chain_break):
              <bot_id>.status.json   state, last frame instant, last remote heartbeat, seq, file, offset (atomic replace)
              <bot_id>.gaps.jsonl    a gap row on: stall (no frame for stall_ms), resume, disconnect, reconnect, chain/offset mismatch, local torn tail
+             <bot_id>.tapegaps.jsonl  the carried relay stream (only when serve sends tg frames). Every complete line is checked (object, exactly kind str + ms int, ms in range)
+                                    and the new bytes must START WITH the bytes already accepted: a shrink, or a change of an already-seen prefix, is a mismatch (exit 2, nothing
+                                    written). Written atomically (tmp + fsync + rename + directory fsync; regular file, nlink 1) with its mtime set to the SOURCE pass instant
+                                    (os.utime), so a dead relay shows stale on this host. The accepted bytes are the baseline after a restart. NEVER written under decisions/.
+                                    status.json keys are unchanged (decision_forwarder_v1); a rejected tg frame is a `mismatch` row in gaps.jsonl.
            A chain or offset mismatch stops the puller (exit 2) and appends nothing. A disconnect reconnects with backoff and resumes at
            (last local file, its size); the remote side starts reading there.
   synth    tests and the hop measurement only: appends SYNTHETIC rows through tools.arena_declog.DecisionLog and logs each append's completion time.
@@ -30,6 +43,8 @@ Modes
 from __future__ import annotations
 
 import argparse
+import errno
+import hashlib
 import json
 import os
 import random
@@ -37,6 +52,7 @@ import re
 import select
 import shlex
 import signal
+import stat
 import subprocess
 import sys
 import threading
@@ -58,6 +74,10 @@ RECONNECT_SILENCE_MS_DEFAULT = 10_000  # a connected feed silent this long (serv
 MAX_PASS_BYTES = 1 << 20  # serve reads at most this much per pass (bounded catch-up); one line may not exceed it
 MAX_FRAME_BYTES = 8 << 20  # the puller's receive buffer cap without a newline (a 1 MiB line JSON-escaped stays well under it)
 SSH_OPTS = ("-o", "BatchMode=yes", "-o", "ServerAliveInterval=5", "-o", "ServerAliveCountMax=3")
+TAPEGAPS_SUFFIX = ".tapegaps.jsonl"
+TAPEGAPS_MAX_BYTES = 8_000_000  # == tools.hv4_live_c0.GAP_LOG_MAX_BYTES (the bridge refuses a bigger gap log); copied so the puller stays light, a test pins the equality
+TAPEGAPS_FRAME_MAX = MAX_FRAME_BYTES - 4096  # a tg frame (the text JSON-escaped) must fit the puller's receive cap; a file that would not is refused loudly at serve
+TAPEGAPS_MS_MAX = 4_102_444_800_000  # 2100-01-01T00:00Z: an `ms` beyond this (ns instead of ms, say) would make the bridge's gap-free window unreachable forever
 
 
 def ssh_argv(host: str) -> list[str]:
@@ -88,6 +108,41 @@ def sha256_hex(data: str) -> str:
 
 def bot_id_ok(bot_id: str) -> bool:
     return bool(BOT_ID_RE.match(bot_id or "")) and ".." not in bot_id
+
+
+def tapegaps_problem(data: bytes) -> str | None:
+    """None when `data` is a complete tape-gap stream, else why not. Empty is fine (the relay saw no gap). Otherwise UTF-8 text of newline-ended lines, each one JSON
+    object with EXACTLY the keys kind (str) and ms (int, not bool, 0 < ms <= TAPEGAPS_MS_MAX). Used by serve (source check) and by the puller (never trusts serve)."""
+    if len(data) > TAPEGAPS_MAX_BYTES:
+        return "too_large"
+    if not data:
+        return None
+    if not data.endswith(b"\n"):
+        return "torn_tail"
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return "not_utf8"
+    for ln in text.split("\n")[:-1]:
+        try:
+            r = json.loads(ln)
+        except (ValueError, RecursionError):
+            return "malformed"
+        if not isinstance(r, dict) or set(r) != {"kind", "ms"} or not isinstance(r["kind"], str):
+            return "malformed"
+        ms = r["ms"]
+        if isinstance(ms, bool) or not isinstance(ms, int):
+            return "malformed"
+        if not 0 < ms <= TAPEGAPS_MS_MAX:
+            return "ms_out_of_range"
+    return None
+
+
+def tapegaps_path_problem(path: str, bot_id: str) -> str | None:
+    """The --tapegaps-file argument must be absolute, free of `..`, and named exactly `<bot_id>.tapegaps.jsonl` (another bot's stream is never carried under this id)."""
+    if not isinstance(path, str) or not os.path.isabs(path) or ".." in path.split("/") or os.path.basename(path) != bot_id + TAPEGAPS_SUFFIX:
+        return "bad_tapegaps_file"
+    return None
 
 
 # --- serve (research-0) -----------------------------------------------------------------------------------------------------------
@@ -129,11 +184,22 @@ def _read_gate() -> Callable[[str, str], str | None] | None:
     return None if f is None else (lambda reads_dir, bot_id: f(reads_dir, bot_id)[0])
 
 
-def serve_refusal(root: str, bot_id: str, reads_dir: str | None = None, gate: Callable[[str, str], str | None] | None = None) -> str | None:
-    """None, or why serve must not open anything. Decided from paths and the read record only; no decision file is listed or opened here."""
+def tapegaps_sealed(path: str) -> bool:
+    """The tapegaps file resolves under the sealed arena prefix, or it or an ancestor has the arena's inode (stat only; the file is not opened)."""
+    return _under_sealed(path) or _alias_of_sealed(path)
+
+
+def serve_refusal(root: str, bot_id: str, reads_dir: str | None = None, gate: Callable[[str, str], str | None] | None = None,
+                  tapegaps_file: str | None = None) -> str | None:
+    """None, or why serve must not open anything. Decided from paths and the read record only; no decision file is listed or opened here. A tapegaps file under the
+    sealed arena (the relay out-dir is meant to be elsewhere) needs the same recorded-read gate as a sealed root."""
     if not bot_id_ok(bot_id):
         return "bad_bot_id"
-    if not sealed_root(root, bot_id):
+    if tapegaps_file is not None:
+        why = tapegaps_path_problem(tapegaps_file, bot_id)
+        if why:
+            return why
+    if not sealed_root(root, bot_id) and not (tapegaps_file is not None and tapegaps_sealed(tapegaps_file)):
         return None
     if not reads_dir:
         return "sealed_root_needs_read_record"
@@ -166,13 +232,16 @@ class Server:
     """Tails the bot's day files from (start_file, start_offset) and emits complete lines as frames. Files sorted by name; files before
     start_file are skipped; start_offset applies to start_file only."""
 
-    def __init__(self, root: str, bot_id: str, start_file: str = "", start_offset: int = 0, write: Callable[[bytes], None] | None = None) -> None:
+    def __init__(self, root: str, bot_id: str, start_file: str = "", start_offset: int = 0, write: Callable[[bytes], None] | None = None,
+                 tapegaps_file: str | None = None) -> None:
         self.dir = Path(root) / "decisions" / bot_id
         self.bot_id = bot_id
         self.start_file = start_file
         self.offsets: dict[str, int] = {start_file: start_offset} if start_file else {}
         self.last = (start_file, start_offset)
         self._write = write or self._stdout
+        self.tapegaps_file = tapegaps_file
+        self._tg_key: tuple[int, int, int, int] | None = None  # (dev, ino, size, mtime_ns) of the tapegaps file last sent (or last judged torn)
 
     @staticmethod
     def _stdout(b: bytes) -> None:
@@ -258,6 +327,59 @@ class Server:
         if out:
             self._write(b"".join(out))
 
+    def poll_tapegaps(self) -> int:
+        """Sends one `tg` frame when the relay stream is new at connect or its (inode, size, mtime) changed (the relay replaces the file on every pass, so this is the
+        heartbeat as well as the content). Returns the number of frames written. The path is opened with O_NOFOLLOW and judged by the open fd, so the relay's own atomic
+        replace between a stat and the open is not an error. Not sent (the bridge-side copy then ages out): a missing file, a torn tail, a file that changes while it is read.
+        A loud `bad` frame and exit: a symlink / non-regular / hard-linked file, an oversize or non-UTF-8 file, a malformed row, a frame too big for the puller."""
+        path = self.tapegaps_file
+        if not path:
+            return 0
+        name = os.path.basename(path)
+        out: list[bytes] = []
+        try:
+            ls = os.lstat(path)
+        except FileNotFoundError:
+            return 0
+        if not stat.S_ISREG(ls.st_mode):
+            self._bad(out, name, 0, "tapegaps_not_regular")  # a symlink, directory or FIFO is refused before anything is opened
+        if (ls.st_dev, ls.st_ino, ls.st_size, ls.st_mtime_ns) == self._tg_key:
+            return 0
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)  # O_NONBLOCK: a FIFO swapped in after the stat cannot hang the open
+        except FileNotFoundError:
+            return 0  # replaced away between the stat and the open: the next poll sees the new file
+        except OSError as exc:
+            self._bad(out, name, 0, "tapegaps_not_regular" if exc.errno in (errno.ELOOP, errno.ENOTDIR) else "tapegaps_unreadable")
+        with os.fdopen(fd, "rb") as fh:
+            fs = os.fstat(fh.fileno())
+            if not stat.S_ISREG(fs.st_mode):
+                self._bad(out, name, 0, "tapegaps_not_regular")
+            if fs.st_nlink != 1:
+                self._bad(out, name, 0, "tapegaps_hardlink")
+            if fs.st_size > TAPEGAPS_MAX_BYTES:
+                self._bad(out, name, 0, "tapegaps_too_large")
+            data = fh.read(TAPEGAPS_MAX_BYTES + 1)
+            fs2 = os.fstat(fh.fileno())
+        if len(data) > TAPEGAPS_MAX_BYTES:
+            self._bad(out, name, 0, "tapegaps_too_large")
+        if (fs2.st_size, fs2.st_mtime_ns) != (fs.st_size, fs.st_mtime_ns) or len(data) != fs.st_size:
+            return 0  # a non-atomic writer was at it: read again on the next poll
+        key = (fs.st_dev, fs.st_ino, fs.st_size, fs.st_mtime_ns)
+        why = tapegaps_problem(data)
+        if why == "torn_tail":
+            self._tg_key = key  # do not re-read an unchanged torn file every poll; any further write changes the key
+            print(f"decision_forwarder TAPEGAPS torn tail in {name}: not sent", file=sys.stderr, flush=True)
+            return 0
+        if why:
+            self._bad(out, name, 0, "tapegaps_" + why)
+        frame = self.frame({"k": "tg", "mt": fs.st_mtime_ns // 1_000_000, "n": len(data), "sha": hashlib.sha256(data).hexdigest(), "b": data.decode("utf-8")})
+        if len(frame) > TAPEGAPS_FRAME_MAX:
+            self._bad(out, name, 0, "tapegaps_frame_too_large")
+        self._tg_key = key
+        self._write(frame)
+        return 1
+
 
 def run_serve(args: argparse.Namespace) -> int:
     start_file, start_offset = args.start_file or "", int(args.start_offset or 0)
@@ -267,16 +389,18 @@ def run_serve(args: argparse.Namespace) -> int:
         except ValueError as exc:
             print(json.dumps({"k": "refused", "why": str(exc)}), flush=True)
             return EXIT_REFUSED
-    why = serve_refusal(args.root, args.bot_id, args.reads_dir)
+    tapegaps_file = getattr(args, "tapegaps_file", None)
+    why = serve_refusal(args.root, args.bot_id, args.reads_dir, tapegaps_file=tapegaps_file)
     if why:
         print(json.dumps({"k": "refused", "why": why}), flush=True)
         return EXIT_REFUSED
-    srv = Server(args.root, args.bot_id, start_file, start_offset)
+    srv = Server(args.root, args.bot_id, start_file, start_offset, tapegaps_file=tapegaps_file)
     end = time.monotonic() + args.max_s if args.max_s else None
     try:
         srv.hello()
         last_hb = time.monotonic()
         while end is None or time.monotonic() < end:
+            srv.poll_tapegaps()
             if srv.poll() == 0 and (time.monotonic() - last_hb) * 1000 >= args.hb_ms:
                 srv.hb()
                 last_hb = time.monotonic()
@@ -330,6 +454,10 @@ class Puller:
             raise Locked(f"dst_locked:{self.tdir / (bot_id + '.lock')}") from None
         self.status_path = self.tdir / f"{bot_id}.status.json"
         self.gaps_path = self.tdir / f"{bot_id}.gaps.jsonl"
+        self.tapegaps_path = self.tdir / f"{bot_id}{TAPEGAPS_SUFFIX}"
+        self.tg_data: bytes | None = None  # the tapegaps bytes accepted so far (the baseline every later frame must extend)
+        self.tg_mt: int | None = None
+        self.tg_frames = 0
         self.lat_fh = open(latency_log, "a", encoding="utf-8") if latency_log else None
         self.prev, self.seq = GENESIS, -1
         self.file, self.offset = "", 0
@@ -341,6 +469,7 @@ class Puller:
         self.proc: subprocess.Popen | None = None
         self.connect_ms: list[int] = []
         self._resume_local()
+        self._resume_tapegaps()
 
     def close(self) -> None:
         """Releases the single-writer lock (run() does this when it ends)."""
@@ -397,6 +526,92 @@ class Puller:
                     _, self.prev, self.seq = self._check(line)
             self.file, self.offset = name, len(data)
 
+    def _resume_tapegaps(self) -> None:
+        """The carried relay stream already here becomes the baseline (what we wrote ourselves, by atomic rename). A file that is not a regular nlink-1 file, or no longer
+        passes tapegaps_problem, is a hard stop like a local chain break (the manager inspects it; removing the file re-baselines). A stale tmp of a crashed write is removed."""
+        try:
+            os.unlink(self._tg_tmp())
+        except FileNotFoundError:
+            pass
+        try:
+            ls = os.lstat(self.tapegaps_path)
+        except FileNotFoundError:
+            return
+        if not stat.S_ISREG(ls.st_mode) or ls.st_nlink != 1:
+            raise Mismatch("tapegaps_local_not_regular")
+        if ls.st_size > TAPEGAPS_MAX_BYTES:
+            raise Mismatch("tapegaps_local_too_large")
+        data = self.tapegaps_path.read_bytes()
+        why = tapegaps_problem(data)
+        if why:
+            raise Mismatch("tapegaps_local_" + why)
+        self.tg_data = data
+        self.tg_mt = ls.st_mtime_ns // 1_000_000
+
+    def _tg_tmp(self) -> Path:
+        return self.tdir / f".{self.bot_id}{TAPEGAPS_SUFFIX}.tmp"
+
+    def _write_tapegaps(self, data: bytes, mt_ms: int) -> None:
+        """tmp (O_EXCL, no symlink following) + write + utime(source pass instant) + fsync, then rename over the stream and fsync the directory. The reader (the bridge)
+        sees the old file or the new one, never a partial one, and the new file already carries the source mtime when it appears."""
+        tmp = self._tg_tmp()
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+        try:
+            try:
+                view = memoryview(data)
+                while view:
+                    view = view[os.write(fd, view):]
+                ns = mt_ms * 1_000_000
+                os.utime(fd, ns=(ns, ns))
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(tmp, self.tapegaps_path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        dfd = os.open(str(self.tdir), os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+
+    def _handle_tapegaps(self, frame: dict) -> None:
+        """One tg frame. Every check runs before anything is written; any failure is a Mismatch (the puller stops, exit 2, and the file on disk is untouched)."""
+        mt, text, sha, n = frame.get("mt"), frame.get("b"), frame.get("sha"), frame.get("n")
+        if (isinstance(mt, bool) or not isinstance(mt, int) or not 0 < mt <= TAPEGAPS_MS_MAX or not isinstance(text, str) or not isinstance(sha, str)
+                or isinstance(n, bool) or not isinstance(n, int)):
+            raise Mismatch("bad_tapegaps_frame")
+        try:
+            data = text.encode("utf-8")
+        except UnicodeEncodeError:
+            raise Mismatch("tapegaps_not_utf8") from None
+        if len(data) != n or hashlib.sha256(data).hexdigest() != sha:
+            raise Mismatch("tapegaps_sha_mismatch")
+        why = tapegaps_problem(data)
+        if why:
+            raise Mismatch("tapegaps_" + why)
+        old = self.tg_data
+        if old is not None and data != old:
+            if len(data) < len(old):
+                raise Mismatch(f"tapegaps_shrank_{len(old)}_to_{len(data)}")
+            if not data.startswith(old):
+                raise Mismatch("tapegaps_prefix_changed")
+        self._write_tapegaps(data, mt)
+        changed = data != old
+        self.tg_data, self.tg_mt = data, mt
+        self.tg_frames += 1
+        if changed:
+            rows = data.count(b"\n")
+            print(f"decision_forwarder TAPEGAPS rows={rows} mt={mt}", file=sys.stderr, flush=True)
+
     def _check(self, line: bytes) -> tuple[dict, str, int]:
         """Checks one row against the current head and returns (row, new prev, new seq). It does NOT move the head: the caller commits the
         new head only after the row is on disk (fsynced), so memory never runs ahead of the file."""
@@ -420,6 +635,9 @@ class Puller:
             f, o = frame.get("f"), frame.get("o")
             if f is not None and o is not None and (f, o) != (self.file, self.offset):
                 raise Mismatch(f"{k}_position_mismatch_{f}_{o}_local_{self.file}_{self.offset}")  # frames are ordered: the remote must be where we are
+            return
+        if k == "tg":
+            self._handle_tapegaps(frame)
             return
         if k == "refused" or k == "bad":
             raise Mismatch(f"remote_{k}_{frame.get('why')}")
@@ -788,6 +1006,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     s.add_argument("--from-env", action="store_true", help="take the resume position from SSH_ORIGINAL_COMMAND (forced-command use)")
     s.add_argument("--reads-dir", default=None, help="required for a root under /data/mal/arena: the recorded-read dir the bridge's gate checks "
                    "(hv4_live_c0.READS_DIR_CANON); serve opens nothing until <reads-dir>/<bot_id>.json is a recorded PASS for this bot")
+    s.add_argument("--tapegaps-file", default=None, help="optional, absolute: <relay out-dir>/transport/<bot_id>.tapegaps.jsonl (tools/hv4_gap_relay.py); carried as tg frames. "
+                   "Part of the pinned forced command (--from-env), never of SSH_ORIGINAL_COMMAND")
     s.add_argument("--poll-ms", type=int, default=POLL_MS_DEFAULT)
     s.add_argument("--hb-ms", type=int, default=HB_MS_DEFAULT)
     s.add_argument("--max-s", type=float, default=None)
