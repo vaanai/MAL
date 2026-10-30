@@ -45,6 +45,7 @@ from solders.hash import Hash
 from solders.keypair import Keypair
 from solders.null_signer import NullSigner
 from solders.pubkey import Pubkey
+from solders.signature import Signature
 from solders.transaction import VersionedTransaction
 
 from tools import arena_live_bridge as alb
@@ -270,7 +271,7 @@ def decode_sell(tx_b64: str, owner: Pubkey, ps: tx.PoolState, mint: str) -> dict
     return {
         "n_instructions": len(ixs), "instructions": ixs, "program_ids": programs, "roles": roles, "layout_is_pinned_order": roles == list(ss.IX_ROLES),
         "only_expected_programs": set(programs) <= allowed, "fee_payer_is_owner": keys[0] == owner, "n_required_signatures": msg.header.num_required_signatures,
-        "first_signature_is_zero": str(t.signatures[0]) == str(Hash.default()), "tx_len_bytes": len(base64.b64decode(tx_b64)),
+        "first_signature_is_zero": t.signatures[0] == Signature.default(), "tx_len_bytes": len(base64.b64decode(tx_b64)),
         "base_ata": str(u_base), "base_token_program": str(base_tp), "token_program_name": ss.TOKEN_NAMES.get(str(base_tp), str(base_tp)),
         "base_ata_closed_in_tx": close_ok and roles.count("close_base_ata") == 1 and close_i == len(ixs) - 1,
         "base_close_under_mint_token_program": close_i >= 0 and ixs[close_i]["program"] == str(base_tp),
@@ -434,8 +435,9 @@ def holder_run(rpc: Callable[[str, list], Any], mint: str, pool: str | None, now
     require_pin()
     canon = check_pool(mint, pool)
     gate = SimRpc(rpc)
-    ps0, _ = sim.fetch_pool_state(gate, canon, Pubkey.from_string(SYSTEM))
-    holder = ss.find_holder(gate, mint, Pubkey.from_string(canon), ps0.base_token_program)
+    with sim_port(gate, NullSigner(Pubkey.from_string(SYSTEM))) as pre:  # the bridge's own snapshot names the mint's token program for the holder search
+        tp0 = prime(pre, mint)[0].ps.base_token_program
+    holder = ss.find_holder(gate, mint, Pubkey.from_string(canon), tp0)
     owner = Pubkey.from_string(holder["owner"])
     rungs: dict[str, Any] = {}
     problems: list[str] = []
