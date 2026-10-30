@@ -174,8 +174,72 @@ def test_verdict_fail_card_refusals(tmp_path):
     root = base_root(tmp_path)            # 248 built cards
     over = S.report(root, counters={"card_refused": 10, "chain_none": 3, "card_refused:holders_stale": 10}, window_ms=WIN)     # 13/261 = 4.98%
     assert over["verdict"] == "PASS" and over["card_refusals"] == 13
-    rep = S.report(root, counters={"card_refused": 10, "chain_none": 4}, window_ms=WIN)     # 14/262 = 5.34%
+    rep = S.report(root, counters={"card_refused": 10, "chain_none": 4}, window_ms=WIN)     # 14/262 = 5.34% (no reason breakdown: counted, fail closed)
     assert rep["verdict"] == "FAIL" and "card_refusals_above_5pct_of_attempted" in rep["fail_reasons"]
+
+
+# --------------------------------------------------------------------------------------------------------------------- pinned refusal class (QP on #1071, B1 and B2(a))
+SMOKE_1779_COUNTERS = {"card_refused": 34, "card_refused:vstar_wash": 27, "card_refused:quote_drop_15m": 5, "card_refused:quote_drop_15m,vstar_wash": 1,
+                       "card_refused:sell_route": 1, "chain_none": 3}     # the counter classes of smoke #1779's report.json as QP quoted them (no pool, no value)
+
+
+def _root_with_built(tmp_path, built):
+    root = tmp_path / "root"
+    put_rank_rows(root, [rank(i) for i in range(31)])
+    d = root / "decisions" / "SCAN"
+    d.mkdir(parents=True, exist_ok=True)
+    per = [built // 31 + (1 if i < built % 31 else 0) for i in range(31)]
+    (d / f"{DAY}.jsonl").write_text("".join(json.dumps({"kind": "period", "no_trade": False, "card_shas": ["x"] * k, "vetoed": [], "screen": []}) + "\n" for k in per))
+    return root
+
+
+def test_smoke_1779_counters_give_the_qp_figures(tmp_path):
+    rep = S.report(_root_with_built(tmp_path, 248), counters=SMOKE_1779_COUNTERS, window_ms=WIN)
+    assert rep["cards_attempted"] == 285 and rep["card_refusals"] == 3 and rep["card_refusal_share"] == round(3 / 285, 6) == 0.010526
+    assert rep["card_refusals_all"] == 37 and rep["card_refusal_share_all"] == 0.129825 and rep["card_hard_veto_cards"] == 34
+    assert rep["card_refusal_share_ex_veto_denominator"] == round(3 / 251, 6) and rep["card_refusal_keys_maybe_cut"] == 0 and rep["card_refusal_unclassified"] == 0
+    assert "card_refusals_above_5pct_of_attempted" not in rep["fail_reasons"] and rep["verdict"] == "PASS"
+
+
+def test_hard_vetoes_alone_never_fail_the_refusal_line(tmp_path):
+    cnt = {"card_refused": 200, "card_refused:vstar_wash": 120, "card_refused:impact_cap_breached,quote_below_floor,sell_route": 50,
+           "card_refused:mayhem_unknown_young": 20, "card_refused:age_max,vol_60m": 10}
+    rep = S.report(_root_with_built(tmp_path, 248), counters=cnt, window_ms=WIN)
+    assert rep["card_refusals"] == 0 and rep["card_hard_veto_cards"] == 200 and rep["card_refusal_share_all"] > 0.4
+    assert "card_refusals_above_5pct_of_attempted" not in rep["fail_reasons"]
+
+
+@pytest.mark.parametrize("key", ["holders_stale", "chain_stale", "as_of_slot_invalid", "as_of_slot_missing", "holders_stamp_invalid", "state_stale",
+                                 "chain_missing:holder_count", "chain_stamp_invalid:as_of_ms", "chain_invalid:mayhem",
+                                 "holders_stale,vstar_wash", "chain_stale,quote_drop_15m"])        # a pinned reason beside a hard veto still counts
+def test_pinned_reasons_count(tmp_path, key):
+    rep = S.report(_root_with_built(tmp_path, 248), counters={"card_refused": 14, "card_refused:" + key: 14}, window_ms=WIN)    # 14/262 = 5.34%
+    assert rep["card_refusals"] == 14 and rep["card_hard_veto_cards"] == 0 and rep["card_refusal_unclassified"] == 0
+    assert rep["verdict"] == "FAIL" and "card_refusals_above_5pct_of_attempted" in rep["fail_reasons"]
+
+
+def test_unknown_and_cut_reason_keys_count_fail_closed(tmp_path):
+    rep = S.report(_root_with_built(tmp_path, 248), counters={"card_refused": 14, "card_refused:some_new_reason": 14}, window_ms=WIN)
+    assert rep["card_refusals"] == 14 and rep["card_refusal_unclassified"] == 14 and rep["verdict"] == "FAIL"
+    cut = ("impact_cap_breached,mayhem_unknown_young,quote_below_floor,sell_route,state_stale")[:60]     # the runner's cut hides state_stale
+    assert len(cut) == 60 and all(t in S.HARD_VETO_REASONS for t in cut.split(",")[:-1])
+    rep = S.report(_root_with_built(tmp_path, 248), counters={"card_refused": 14, "card_refused:" + cut: 14}, window_ms=WIN)
+    assert rep["card_refusals"] == 14 and rep["card_refusal_keys_maybe_cut"] == 14 and rep["verdict"] == "FAIL"
+    rep = S.report(_root_with_built(tmp_path, 248), counters={"card_refused": 14, "card_refused:vstar_wash": 4}, window_ms=WIN)   # 10 with no breakdown
+    assert rep["card_refusals"] == 10 and rep["card_hard_veto_cards"] == 4
+    assert S.report(_root_with_built(tmp_path, 248), counters={"leakage_refused": 14}, window_ms=WIN)["card_refusals"] == 14     # as_of leak
+
+
+def test_hard_veto_list_covers_every_hv4_veto_and_filter_name():
+    """Every reason hv4_cards can give is either a hard veto / Lane G filter (report-only) or a pinned stamp/staleness class; nothing else is in the lists."""
+    import re as _re
+
+    src = (Path(S.__file__).resolve().parent / "hv4_cards.py").read_text()
+    filt = set(_re.findall(r'add\("([a-z0-9_]+)"', src))
+    appended = set(_re.findall(r'(?:reasons|bad)\.append\(f?"([a-z0-9_]+)', src))
+    known = S.HARD_VETO_REASONS | S.PINNED_REASONS_KNOWN | {"chain_missing", "chain_stamp_invalid", "chain_invalid"}
+    assert filt <= known and appended <= known, sorted((filt | appended) - known)
+    assert not (S.HARD_VETO_REASONS & S.PINNED_REASONS_KNOWN)
 
 
 def test_verdict_fail_run_error_variants(tmp_path):
