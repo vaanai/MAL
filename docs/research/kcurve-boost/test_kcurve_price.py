@@ -295,3 +295,37 @@ def test_counts_md_discloses_k_seconds_and_report_only_items():
     md = K.counts_md({"explore-0814": {"2026-08-20": {"u_organic": 3}}}, [], ks)
     assert K.STAMP in md and "k in seconds per block" in md and "K2 0.74" in md
     assert "R-b_completing_buy_sizes" in md and "p50 0.9037" in md and "structure_probe_output.jsonl" in md and "NOT computed" in md
+
+
+def test_rows_without_a_timestamp_are_counted_and_stop_the_run():
+    """Reviewer on #1135: POOL0's slot-m rows with block_time 0 are refused by build_hour; they must be counted, not vanish."""
+    rows, vmap, creates = make_pools(3, seed=13)
+    m0 = min(r["slot"] for r in rows if r["pool"] == "POOL0")
+    n_bad = 0
+    for r in rows:
+        if r["pool"] == "POOL0" and r["slot"] == m0:
+            r["block_time"] = 0
+            n_bad += 1
+    by = {}
+    for r in rows:
+        h = 0 if r["block_time"] == 0 else (r["block_time"] - T0) // 3600
+        by.setdefault(h, []).append(json.dumps(r, separators=(",", ":")).encode())
+    hrs = [S.build_hour(by[h], block="explore-0814", T=T0 + 3600 * h, idx=i, fmt="backfill", vmap=S.VMap([vmap])) for i, h in enumerate(sorted(by))]
+    assert hrs[0].n_no_ts == n_bad > 0
+    bp = K.BlockPass(0, "explore-0814", creates, price=False)
+    prev = None
+    for hr in hrs:
+        bp.hour(hr, prev)
+        prev = hr.T
+    bp.finish()
+    tot = collections.Counter()
+    for c in bp.counts.values():
+        tot.update(c)
+    assert tot["rows_no_timestamp"] == n_bad and tot["hours_with_missing_timestamp"] == 1
+    why = K.refusals({"explore-0814": {d: dict(c) for d, c in bp.counts.items()}})
+    assert any(w.startswith("STOP_RETURN_TO_QP explore-0814") and "missing timestamp" in w for w in why)
+
+
+def test_not_measured_items_are_disclosed():
+    md = K.counts_md({}, [], {})
+    assert "not measured" in md.lower() and "completing_buy_sizes" in md and "first_bonding_print" in md

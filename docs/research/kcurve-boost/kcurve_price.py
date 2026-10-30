@@ -58,6 +58,11 @@ KIT_PINS = {
     "tools/arena_report_legs.py": "65f4d471e3ad19308a038c4d6563f22322134013f09c0afe2d64c648964a0d8b",
 }
 PREREG_SHA256 = "338567229c03257c696124ce5aa09a21b1f66735276a3d8de6060c362968fcc2"
+NOT_MEASURED = {
+    "completing_buy_sizes": "PREREG section 12 item 4: NOT MEASURED by this adapter (it reads no migrations/ or bonding rows); see R-b for the probe's figures",
+    "missing_create_first_bonding_print_ge_60s": ("PREREG section 4 item 3 report-only: NOT MEASURED (missing-create pools whose mint's first bonding print in the "
+                                                  "block is >= 60 s before s0; needs bonding rows, which the kit loader does not load). Disclosed in the DECLARE-AMEND."),
+}
 REPORT_ONLY_NOTES = {
     "R-b_completing_buy_sizes": ("NOT computed by this adapter (it never reads migrations/ or bonding rows). Structure probe, explore-0814/w1 48 h "
                                   "(docs/research/kcurve-boost/probe/structure_probe_output.jsonl; PREREG section 1.2), all WSOL completes incl. instant "
@@ -187,7 +192,8 @@ def load_creates(block_path: str, read: list | None = None) -> dict[str, tuple]:
                 out.setdefault(r["mint"], (r.get("block_time") or r.get("event_ts"), r.get("is_mayhem_mode"), r.get("signature")))
             elif r.get("type") == "ingest_hot" and r.get("txType") == "create" and r.get("mint"):
                 t = r.get("t_ws")
-                ts = datetime.fromisoformat(t).timestamp() if t else None
+                dt = datetime.fromisoformat(t) if t else None
+                ts = (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp() if dt else None  # an offset-less t_ws is UTC
                 out.setdefault(r["mint"], (ts, (r.get("ws_payload") or {}).get("is_mayhem_mode"), r.get("signature")))
     return out
 
@@ -293,6 +299,10 @@ class BlockPass:
         return self.clk_rate[i]
 
     def hour(self, hr: Any, prev_T: int | None) -> None:
+        if hr.n_no_ts:  # rows build_hour refused for a missing timestamp: counted, never silently dropped (reviewer on #1135)
+            C0 = self.counts[datetime.fromtimestamp(hr.T, tz=timezone.utc).strftime("%Y-%m-%d")]
+            C0["rows_no_timestamp"] += int(hr.n_no_ts)
+            C0["hours_with_missing_timestamp"] += 1
         if hr.n == 0 or (prev_T is not None and hr.T != prev_T + 3600):
             self.flush(all_=True)
             self.clk_min, self.clk_rate = [], []
@@ -394,6 +404,8 @@ def refusals(counts_by_block: dict[str, dict]) -> list[str]:
             why.append(f"{name}: root not unique {t['root_not_unique']}/{t['seed_candidates']} > {MAX_ROOT_NOT_UNIQUE}")
         if t["seed_opening"] and t["v_unknown"] / t["seed_opening"] > MAX_V_UNKNOWN:
             why.append(f"{name}: V unknown {t['v_unknown']}/{t['seed_opening']} > {MAX_V_UNKNOWN}")
+        if t["rows_no_timestamp"]:
+            why.append(f"STOP_RETURN_TO_QP {name}: {t['rows_no_timestamp']} rows refused for a missing timestamp in {t['hours_with_missing_timestamp']} hours")
         if t["seed_opening_vband"] and t["create_missing"] / t["seed_opening_vband"] > MAX_CREATE_MISSING:
             why.append(f"STOP_RETURN_TO_QP {name}: create missing {t['create_missing']}/{t['seed_opening_vband']} > {MAX_CREATE_MISSING}")
     return why
@@ -485,6 +497,7 @@ def counts_md(counts: dict, why: list[str], k_seconds: dict) -> str:
     lines += ["", "## k in seconds per block (R-a; k x mean seconds per slot of the block's hours)", ""]
     for name, ks in k_seconds.items():
         lines.append(f"- {name}: " + ", ".join(f"{c} {v}" for c, v in ks.items()))
+    lines += ["", "## Registered in the PREREG but not measured", ""] + [f"- {k}: {v}" for k, v in NOT_MEASURED.items()]
     lines += ["", "## Report-only notes", ""] + [f"- {k}: {v}" for k, v in REPORT_ONLY_NOTES.items()] + [""]
     return "\n".join(lines)
 
@@ -529,7 +542,7 @@ def run(blocks: Sequence[str], out: str, precount: bool, stake_sol: float = DECI
     outp.mkdir(parents=True, exist_ok=True)
     if precount or why:
         doc = {"stamp": STAMP, "provenance": prov, "counts_per_block_per_day": counts, "refusals": why, "k_seconds_per_block": k_seconds,
-               "report_only_notes": REPORT_ONLY_NOTES}
+               "report_only_notes": REPORT_ONLY_NOTES, "not_measured": NOT_MEASURED}
         (outp / "counts.json").write_text(json.dumps(doc, indent=1, default=float) + "\n")
         (outp / "COUNTS.md").write_text(counts_md(counts, why, k_seconds))
         log(json.dumps({"precount": precount, "refusals": why}))
@@ -550,7 +563,7 @@ def run(blocks: Sequence[str], out: str, precount: bool, stake_sol: float = DECI
         pick = max(ok, key=lambda c: cells[c]["stats_rent0_send505k"]["total|press"]["mean"]) if ok and not solo else None
         survivors[g] = pick
     doc = {"stamp": STAMP, "report_only_solo_block": solo, "provenance": prov, "counts_per_block_per_day": counts, "k_seconds_per_block": k_seconds,
-           "report_only_notes": REPORT_ONLY_NOTES, "cells": cells,
+           "report_only_notes": REPORT_ONLY_NOTES, "not_measured": NOT_MEASURED, "cells": cells,
            "survivor_pick_per_group": survivors}
     (outp / "results.json").write_text(json.dumps(doc, indent=1, default=float) + "\n")
     log(json.dumps({"written": str(outp / "results.json"), "verdicts": {c: cells[c]["verdict"] for c in CELLS}, "survivors": survivors}))
