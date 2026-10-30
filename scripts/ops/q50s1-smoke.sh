@@ -30,9 +30,17 @@ S_TAG=q50-succ-base-1
 DUR_DEFAULT=25200
 SAMPLE_DEFAULT=60
 UNIT=q50s1-smoke
-MODE=run
-[ "$#" -le 1 ] || { echo "q50s1-smoke: usage: q50s1-smoke.sh [--check]" >&2; exit 2; }
-if [ "$#" -eq 1 ]; then [ "$1" = "--check" ] || { echo "q50s1-smoke: unknown argument" >&2; exit 2; }; MODE=check; fi
+MODE=run; WS2_ARG=""; WS2_KEYED=0
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --check) MODE=check ;;
+    --ws2) [ "$#" -ge 2 ] || { echo "q50s1-smoke: --ws2 needs a URL" >&2; exit 2; }; WS2_ARG="$2"; shift ;;
+    --ws2-keyed) WS2_KEYED=1 ;;
+    *) echo "q50s1-smoke: usage: q50s1-smoke.sh [--check] [--ws2 URL [--ws2-keyed]]" >&2; exit 2 ;;
+  esac
+  shift
+done
+Q50S1_WS2="$WS2_ARG"; Q50S1_WS2_KEYED="$WS2_KEYED"   # the second provider ONLY from --ws2 (no default), exactly as the book's start script
 [ -n "${HOME:-}" ] || { echo "q50s1-smoke: HOME is not set" >&2; exit 2; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="${Q50S1_REPO:-$(cd "$HERE/../.." && pwd)}"
@@ -63,8 +71,8 @@ SRC="$HOME/data/arena-src/q50s1-smoke-$(printf '%s' "$S_SHA" | cut -c1-8)"
 if [ "$(hostname)" != "mal-fast-0" ]; then echo "q50s1-smoke: the book runs on mal-fast-0 (this is $(hostname))" >&2; [ "$MODE" = "check" ] || exit 6; fi
 # 2. the book's flags: the start script in this checkout must use the same feed helper and flags (any drift refuses)
 grep -q -F '. "$HERE/q50s1-feed.sh"' "$START_SH" || { echo "q50s1-smoke: the start script does not load q50s1-feed.sh with ." >&2; exit 2; }
-grep -q -F -- '--ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2"' "$START_SH" || { echo "q50s1-smoke: the start script's ws arguments drifted from q50s1-feed.sh" >&2; exit 2; }
-grep -q -F -- 'q50s1-ws-launch.py" --src "$SRC" --key-file "$Q50S1_KEY_FILE" --keyed-url "$Q50S1_WS2" --' "$START_SH" || { echo "q50s1-smoke: the start script does not use the launcher" >&2; exit 2; }
+grep -q -F -- '--sockets 3 --syn-sockets 1 $(q50s1_ws_args)' "$START_SH" || { echo "q50s1-smoke: the start script's ws arguments drifted from q50s1-feed.sh" >&2; exit 2; }
+grep -q -F -- 'q50s1-ws-launch.py" --src "$SRC" $(q50s1_key_opts) --' "$START_SH" || { echo "q50s1-smoke: the start script does not use the launcher" >&2; exit 2; }
 grep -q -F -- '--description="$UNIT"' "$START_SH" || { echo "q50s1-smoke: the start script has no fixed --description" >&2; exit 2; }
 grep -q -F -- '--fresh-forward ARENA --q-star-sol 50' "$START_SH" || { echo "q50s1-smoke: start script flags drifted (--fresh-forward ARENA --q-star-sol 50)" >&2; exit 2; }
 grep -q -F -- '--sockets 3 --syn-sockets 1' "$START_SH" || { echo "q50s1-smoke: start script flags drifted (--sockets 3 --syn-sockets 1)" >&2; exit 2; }
@@ -104,12 +112,13 @@ LAUNCH="$REPO/scripts/ops/q50s1-ws-launch.py"
 "$PY" -I -c 'import websockets, certifi' 2>/dev/null || { echo "q50s1-smoke: websockets/certifi missing in $PY" >&2; exit 3; }
 DRYSRC="$SRC"; [ -d "$SRC" ] || DRYSRC="$(cd "$HERE/../.." && pwd)"
 LRC=0
-"$PY" -I "$LAUNCH" --dry --src "$DRYSRC" --key-file "$Q50S1_KEY_FILE" --keyed-url "$Q50S1_WS2" -- --fresh-forward ARENA --q-star-sol 50 --out-dir "$OUT" \
-  --sockets 3 --syn-sockets 1 --ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2" >/dev/null 2>&1 || LRC=$?
+# shellcheck disable=SC2046
+"$PY" -I "$LAUNCH" --dry --src "$DRYSRC" $(q50s1_key_opts) -- --fresh-forward ARENA --q-star-sol 50 --out-dir "$OUT" \
+  --sockets 3 --syn-sockets 1 $(q50s1_ws_args) >/dev/null 2>&1 || LRC=$?
 [ "$LRC" -ne 11 ] || { echo "q50s1-smoke: the launcher finds no usable key in $Q50S1_KEY_FILE: NOT starting" >&2; exit 11; }
 [ "$LRC" -eq 0 ] || { echo "q50s1-smoke: the launcher refuses its arguments or src (rc $LRC): NOT starting" >&2; exit 12; }
 if [ "$MODE" = "check" ]; then
-  echo "q50s1-smoke: (check) would run in $SRC for ${DUR}s: systemd-run --user --scope --unit=$UNIT --description=$UNIT -p MemoryMax=${MAX_MB}M -p MemorySwapMax=0 env PYTHONPATH=$SRC H5_CODE_SHA=$S_SHA $PY -I $LAUNCH --src $SRC --key-file $Q50S1_KEY_FILE --keyed-url $Q50S1_WS2 -- --fresh-forward ARENA --q-star-sol 50 --out-dir $OUT --sockets 3 --syn-sockets 1 --ws-url $Q50S1_WS1 --ws-url $Q50S1_WS2 (the key is added inside the process)"
+  echo "q50s1-smoke: (check) would run in $SRC for ${DUR}s: systemd-run --user --scope --unit=$UNIT --description=$UNIT -p MemoryMax=${MAX_MB}M -p MemorySwapMax=0 env PYTHONPATH=$SRC H5_CODE_SHA=$S_SHA $PY -I $LAUNCH --src $SRC $(q50s1_key_opts | sed 's/$/ /')-- --fresh-forward ARENA --q-star-sol 50 --out-dir $OUT --sockets 3 --syn-sockets 1 $(q50s1_ws_args) (keyed=$Q50S1_WS2_KEYED; any key is added inside the process)"
   exit 0
 fi
 
@@ -125,10 +134,10 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' TERM INT
 START="$(date -u +%s)"
-echo "q50s1-smoke: starting at $(date -u +%FT%TZ): rule H5-BOOSTFLOOR-Q50 v1, head=$S_SHA, out=$OUT, report=$REP, MemoryMax=${MAX_MB}M, ${DUR}s, sample ${SAMPLE}s, ws=$Q50S1_WS1 $Q50S1_WS2"
+echo "q50s1-smoke: starting at $(date -u +%FT%TZ): rule H5-BOOSTFLOOR-Q50 v1, head=$S_SHA, out=$OUT, report=$REP, MemoryMax=${MAX_MB}M, ${DUR}s, sample ${SAMPLE}s, ws=$(q50s1_endpoints | tr '\n' ' ')(keyed=$Q50S1_WS2_KEYED)"
 (cd "$SRC" && exec systemd-run --user --scope --quiet --unit="$UNIT" --description="$UNIT" -p "MemoryMax=${MAX_MB}M" -p MemorySwapMax=0 \
-  env HOME="$SMOKEHOME" PYTHONPATH="$SRC" H5_CODE_SHA="$S_SHA" H5_DIRTY="" "$PY" -I "$LAUNCH" --src "$SRC" --key-file "$Q50S1_KEY_FILE" --keyed-url "$Q50S1_WS2" -- --fresh-forward ARENA \
-  --q-star-sol 50 --out-dir "$OUT" --sockets 3 --syn-sockets 1 --ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2") >"$LOG" 2>&1 &
+  env HOME="$SMOKEHOME" PYTHONPATH="$SRC" H5_CODE_SHA="$S_SHA" H5_DIRTY="" "$PY" -I "$LAUNCH" --src "$SRC" $(q50s1_key_opts) -- --fresh-forward ARENA \
+  --q-star-sol 50 --out-dir "$OUT" --sockets 3 --syn-sockets 1 $(q50s1_ws_args)) >"$LOG" 2>&1 &
 PID=$!
 ALIVE=yes
 while :; do

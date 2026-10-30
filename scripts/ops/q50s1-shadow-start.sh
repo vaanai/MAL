@@ -1,8 +1,9 @@
 #!/bin/sh
 # MiScusi job command: START the shadow of the Q50 successor `h5v1q50-boostfloor-s1` (DEC-031 Amendment 18 item 8; plan C12). POSIX sh only (MiScusi runs commands under sh).
 # NOT SUBMITTED by the PR that adds it. The manager submits it once, inside 2026-11-05T20:00:00Z to 22:30:00Z, after registration (scripts/ops/q50s1-register.sh --apply),
-# the Amendment 6 smoke, the green A3 run on books v3 and the EXP-024 successor note (part A) are all done. Paper only: no wallet keys, no transactions. The second websocket provider is the keyed Helius ws (DEC-031 Amendment 22
-# item 10); QP on #1107: its key is in no argv, unit property, job log or journal (scripts/ops/q50s1-ws-launch.py adds it inside the process).
+# the Amendment 6 smoke, the green A3 run on books v3 and the EXP-024 successor note (part A) are all done. Paper only: no wallet keys, no transactions. Feed: mainnet-beta, plus a second provider ONLY when `--ws2 URL` is given (no default; Helius
+# for the full window is OFF, manager 2026-10-30, probe #1891). `--ws2-keyed` adds a key INSIDE the process (scripts/ops/q50s1-ws-launch.py; QP on #1107: no key in any argv,
+# unit property, job log or journal). The registered line's endpoints must equal this run's providers (exit 8 otherwise), so pass the same --ws2 to register and to both segments.
 #
 # Submit (miscusi_job_submit): machine mal-fast-0, command `sh scripts/ops/q50s1-shadow-start.sh` from a checkout of main that contains this file, resumable false (a restart at the same
 # code_sha continues the same book as a gap record; a new process is a manager decision), 1 CPU, job memory 256 MB (the job holds only sh; its cap is summed in S; the shadow's cap is
@@ -64,16 +65,21 @@ SEG1_END=1795062600       # 2026-11-19T04:30:00Z: segment 1 stops here (within 1
 SEG_LAST_END=1796086800   # 2026-12-01T01:00:00Z: E plus the last v1 exits
 SEG_MAX_S=1180800         # 13 d 16 h: a successor never runs past its job's 14 d
 POLL_S="${Q50S1_POLL_S:-20}"
-MODE=run; SEG=1
-for a in "$@"; do
-  case "$a" in
-    --check) [ "$MODE" = run ] || { echo "q50s1-shadow: usage: q50s1-shadow-start.sh [--check] [--successor] | --check-memory" >&2; exit 2; }; MODE=check ;;
-    --check-memory) [ "$#" -eq 1 ] || { echo "q50s1-shadow: --check-memory takes no other argument" >&2; exit 2; }; MODE=memory ;;
+MODE=run; SEG=1; WS2_ARG=""; WS2_KEYED=0; NARGS="$#"
+USAGE="usage: q50s1-shadow-start.sh [--check] [--successor] [--ws2 URL [--ws2-keyed]] | --check-memory"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --check) [ "$MODE" = run ] || { echo "q50s1-shadow: $USAGE" >&2; exit 2; }; MODE=check ;;
+    --check-memory) [ "$NARGS" -eq 1 ] || { echo "q50s1-shadow: --check-memory takes no other argument" >&2; exit 2; }; MODE=memory ;;
     --successor) SEG=2 ;;
-    *) echo "q50s1-shadow: unknown argument" >&2; exit 2 ;;
+    --ws2) [ "$#" -ge 2 ] || { echo "q50s1-shadow: --ws2 needs a URL" >&2; exit 2; }; WS2_ARG="$2"; shift ;;
+    --ws2-keyed) WS2_KEYED=1 ;;
+    *) echo "q50s1-shadow: unknown argument; $USAGE" >&2; exit 2 ;;
   esac
+  shift
 done
-[ "$#" -le 2 ] || { echo "q50s1-shadow: usage: q50s1-shadow-start.sh [--check] [--successor] | --check-memory" >&2; exit 2; }
+# the feed (scripts/ops/q50s1-feed.sh, shared with the smoke): mainnet-beta, plus the second provider ONLY from --ws2 (no default; never from the environment)
+Q50S1_WS2="$WS2_ARG"; Q50S1_WS2_KEYED="$WS2_KEYED"
 case "$POLL_S" in ''|*[!0-9]*) echo "q50s1-shadow: bad poll interval" >&2; exit 2 ;; esac
 [ -n "${HOME:-}" ] || { echo "q50s1-shadow: HOME is not set" >&2; exit 2; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -193,17 +199,23 @@ if [ -d "$SRC" ]; then
   ST="$(git -C "$SRC" status --porcelain --untracked-files=no)" || exit 7
   [ -z "$ST" ] || { echo "q50s1-shadow: $SRC has tracked-file changes" >&2; exit 5; }
 fi
-# 4. the registered line
-LINE="$("$PY" -I - "$ARENA/bots.json" "$S_SHA" "$CLOCK_MS" "$END_MS" "$NOW" <<'PYEOF'
+# 4. the registered line; its endpoints must be exactly this run's providers (key-free), so both segments and the registration record name the same feed
+. "$HERE/q50s1-feed.sh"
+q50s1_ws2_build || { echo "q50s1-shadow: the feed is not valid (key-free wss:// URLs, distinct; --ws2-keyed needs --ws2 and a readable key file): NOT starting (Am.22 item 10; QP on #1107)" >&2; exit 11; }
+EPS="$(q50s1_endpoints | tr '\n' ' ')"
+LINE="$("$PY" -I - "$ARENA/bots.json" "$S_SHA" "$CLOCK_MS" "$END_MS" "$NOW" "$EPS" <<'PYEOF'
 import json, sys
-path, sha, clock, end, now = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]) * 1000
+path, sha, clock, end, now, eps = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]) * 1000, sys.argv[6].split()
 try:
     e = json.load(open(path))["bots"]["h5v1q50-boostfloor-s1"]
 except (OSError, KeyError, ValueError):
     print("no s1 line"); sys.exit(1)
 ok = e.get("frozen_sha") == sha and e.get("clock_start_ms") == clock and e.get("window_end_ms_pin") == end and isinstance(e.get("registered_at_ms"), int) and e["registered_at_ms"] < now
-print("ok" if ok else "line does not match the table row or registered_at_ms is not before now")
-sys.exit(0 if ok else 1)
+if not ok:
+    print("line does not match the table row or registered_at_ms is not before now"); sys.exit(1)
+if e.get("endpoints") != eps:
+    print(f"the line's endpoints {e.get('endpoints')} are not this run's feed {eps} (register with the same --ws2)"); sys.exit(1)
+print("ok")
 PYEOF
 )" || { echo "q50s1-shadow: bots.json: $LINE" >&2; exit 8; }
 # 5. one process, new out dir
@@ -211,27 +223,25 @@ if systemctl --user is-active --quiet "$UNIT.scope" 2>/dev/null; then echo "q50s
 [ ! -e "$OUT" ] || { echo "q50s1-shadow: $OUT exists; a restart on the same day needs a new dir (manager decision)" >&2; exit 9; }
 # 6. memory
 memory_fit
-# 7. start (the feed: scripts/ops/q50s1-feed.sh, shared with the smoke)
-. "$HERE/q50s1-feed.sh"
-q50s1_ws2_build || { echo "q50s1-shadow: the feed URLs are not two distinct key-free wss:// URLs or the key file is unreadable: NOT starting (Am.22 item 10; QP on #1107)" >&2; exit 11; }
 [ -x "$PY" ] || { echo "q50s1-shadow: no python at $PY" >&2; exit 2; }
 "$PY" -I -c 'import websockets, certifi' 2>/dev/null || { echo "q50s1-shadow: websockets/certifi missing in $PY" >&2; exit 3; }
 if [ "$MODE" = "check" ]; then
   DRYSRC="$SRC"; [ -d "$SRC" ] || DRYSRC="$(cd "$HERE/../.." && pwd)"   # before the S* worktree exists (it is made at the start) the dry run checks the key and the arguments against this checkout
   LRC=0
-  "$PY" -I "$HERE/q50s1-ws-launch.py" --dry --src "$DRYSRC" --key-file "$Q50S1_KEY_FILE" --keyed-url "$Q50S1_WS2" -- --fresh-forward ARENA --q-star-sol 50 --out-dir "$OUT" \
-    --sockets 3 --syn-sockets 1 --ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2" >/dev/null || LRC=$?
+  # shellcheck disable=SC2046
+  "$PY" -I "$HERE/q50s1-ws-launch.py" --dry --src "$DRYSRC" $(q50s1_key_opts) -- --fresh-forward ARENA --q-star-sol 50 --out-dir "$OUT" \
+    --sockets 3 --syn-sockets 1 $(q50s1_ws_args) >/dev/null || LRC=$?
   [ "$LRC" -ne 11 ] || { echo "q50s1-shadow: the launcher finds no usable key in $Q50S1_KEY_FILE: NOT starting" >&2; exit 11; }
   [ "$LRC" -eq 0 ] || { echo "q50s1-shadow: the launcher refuses its arguments or src (rc $LRC): NOT starting" >&2; exit 12; }
-  echo "q50s1-shadow: (check) would run in $SRC: systemd-run --user --scope --unit=$UNIT -p MemoryMax=${NEW_MAX_MB}M -p MemorySwapMax=0 env PYTHONPATH=$SRC H5_CODE_SHA=$S_SHA $PY -I $HERE/q50s1-ws-launch.py --src $SRC --key-file $Q50S1_KEY_FILE --keyed-url $Q50S1_WS2 -- --fresh-forward ARENA --q-star-sol 50 --out-dir $OUT --sockets 3 --syn-sockets 1 --ws-url $Q50S1_WS1 --ws-url $Q50S1_WS2 (systemd-run --description=$UNIT; the key is added inside the process; HOME=$S1HOME for the process; segment $SEG ends $(date -u -d "@$SEG_END" +%FT%TZ) with exit 0)"
+  echo "q50s1-shadow: (check) would run in $SRC: systemd-run --user --scope --unit=$UNIT -p MemoryMax=${NEW_MAX_MB}M -p MemorySwapMax=0 env PYTHONPATH=$SRC H5_CODE_SHA=$S_SHA $PY -I $HERE/q50s1-ws-launch.py --src $SRC $(q50s1_key_opts | sed 's/$/ /')-- --fresh-forward ARENA --q-star-sol 50 --out-dir $OUT --sockets 3 --syn-sockets 1 $(q50s1_ws_args) (systemd-run --description=$UNIT; keyed=$Q50S1_WS2_KEYED, any key is added inside the process; HOME=$S1HOME for the process; segment $SEG ends $(date -u -d "@$SEG_END" +%FT%TZ) with exit 0)"
   exit 0
 fi
 cd "$SRC"
 trap 'systemctl --user stop "$UNIT.scope" >/dev/null 2>&1 || true' EXIT TERM INT
-echo "q50s1-shadow: starting segment $SEG (ends $(date -u -d "@$SEG_END" +%FT%TZ)) rule H5-BOOSTFLOOR-Q50 v1, fresh-forward ARENA, q*=50, out=$OUT, head=$S_SHA, MemoryMax=${NEW_MAX_MB}M, python=$PY, ws=$Q50S1_WS1 $Q50S1_WS2 (key added in-process by q50s1-ws-launch.py from $Q50S1_KEY_FILE)"
+echo "q50s1-shadow: starting segment $SEG (ends $(date -u -d "@$SEG_END" +%FT%TZ)) rule H5-BOOSTFLOOR-Q50 v1, fresh-forward ARENA, q*=50, out=$OUT, head=$S_SHA, MemoryMax=${NEW_MAX_MB}M, python=$PY, ws=$(q50s1_endpoints | tr '\n' ' ')(keyed=$Q50S1_WS2_KEYED)"
 (exec systemd-run --user --scope --quiet --unit="$UNIT" --description="$UNIT" -p "MemoryMax=${NEW_MAX_MB}M" -p MemorySwapMax=0 \
-  env HOME="$S1HOME" PYTHONPATH="$SRC" H5_CODE_SHA="$S_SHA" H5_DIRTY="" "$PY" -I "$HERE/q50s1-ws-launch.py" --src "$SRC" --key-file "$Q50S1_KEY_FILE" --keyed-url "$Q50S1_WS2" -- \
-  --fresh-forward ARENA --q-star-sol 50 --out-dir "$OUT" --sockets 3 --syn-sockets 1 --ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2") &
+  env HOME="$S1HOME" PYTHONPATH="$SRC" H5_CODE_SHA="$S_SHA" H5_DIRTY="" "$PY" -I "$HERE/q50s1-ws-launch.py" --src "$SRC" $(q50s1_key_opts) -- \
+  --fresh-forward ARENA --q-star-sol 50 --out-dir "$OUT" --sockets 3 --syn-sockets 1 $(q50s1_ws_args)) &
 PID=$!
 while kill -0 "$PID" 2>/dev/null; do
   if [ "$(date -u +%s)" -ge "$SEG_END" ]; then
