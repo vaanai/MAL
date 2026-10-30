@@ -689,6 +689,11 @@ class Bridge:
         if self._a3_refuse:
             self._count("a3_guard_pending_refusal")
             return self._a3_refuse
+        if not c0.FEED_GAP_MANUAL_REVIEW:  # DEC-032 Am.5 (DRAFT): the self-clearing hold after a data-loss gap (gap_tick / _note_gap set gap_noted_ms)
+            why = c0.gap_hold_problem(self.state.gap_noted_ms, now)
+            if why:
+                self._count("feed_gap_hold_refusal")
+                return why
         why = c0.runner_silent_problem(self._last_row_ms, self._started_ms, now)
         if why:
             self._count("runner_silent_refusal")
@@ -702,23 +707,31 @@ class Bridge:
         return f"transport_stall:{why}" if why else None
 
     def _note_gap(self, gap_ms: int, why: str) -> None:
-        """One gap record (kind and instant only): open trades are marked `gap` (DEC-032 s5.2) and feed_break latches."""
+        """One DATA-LOSS gap record (kind and instant only): open trades are marked `gap` (DEC-032 s5.2). With c0.FEED_GAP_MANUAL_REVIEW (s5 item 2 as
+        written) feed_break latches; otherwise (DEC-032 Am.5 DRAFT) new buys are held for c0.FEED_GAP_HOLD_MS after the newest gap instant (feed_refusal)."""
         if gap_ms > self.state.gap_noted_ms:
             self.state.gap_noted_ms = gap_ms
             if self.gates is not None:
                 self.gates.recorder.note_gap(gap_ms)
-        self._latch(c0.FEED_BREAK_LATCH, why)
+            if not c0.FEED_GAP_MANUAL_REVIEW:
+                self._log("feed_gap_hold", gap_ms=gap_ms, hold_ms=c0.FEED_GAP_HOLD_MS, why=why[:200])
+        if c0.FEED_GAP_MANUAL_REVIEW:
+            self._latch(c0.FEED_BREAK_LATCH, why)
         self._save()
 
     def gap_tick(self, now: int) -> None:
-        """hv4_c0 feed_break (DEC-032 s5.2 consumer). A gap record in the forwarder's gap log or a `gap` row in the decision stream latches feed_break; a forwarder
-        `stopped_mismatch` latches it too. NOTE: no producer of the book's own TAPE gap records exists yet (see the hv4_live_c0 doc). The latch is removed ONLY when
-        the feed has been gap-free for 10 minutes counted from the END of the gap AND the manager's root-owned review file names exactly the newest gap instant."""
+        """hv4_c0 feed-gap halt (DEC-032 s5.2 consumer). Gap records: the forwarder's gap log, the tape-gap stream, a `gap` row in the decision stream.
+        c0.FEED_GAP_MANUAL_REVIEW True (s5 item 2 as written): every gap record latches feed_break, removed ONLY when the feed has been gap-free for 10 minutes
+        counted from the END of the gap AND the manager's root-owned review file names exactly the newest gap instant. False (DEC-032 Am.5 DRAFT): a data-loss gap
+        record holds new buys for c0.FEED_GAP_HOLD_MS (feed_refusal), no latch; a forwarder transport event (c0.TRANSPORT_GAP_KINDS) neither holds nor latches.
+        In both modes an unreadable / malformed gap log and a forwarder `stopped_mismatch` latch feed_break, and that latch keeps the review-file clear."""
         if self.cfg.profile != c0.PROFILE:
             return
-        gaps, resumes, bad = c0.gap_log_ms(os.path.join(self.cfg.root, "transport", f"{self.cfg.bot_id}.gaps.jsonl"))
-        tgaps, _tres, tbad = c0.gap_log_ms(os.path.join(self.cfg.root, "transport", f"{self.cfg.bot_id}.tapegaps.jsonl"))  # tools/hv4_gap_relay.py: the book's own TAPE gaps
-        gaps, bad = [*gaps, *tgaps], bad or tbad
+        fentries, resumes, bad = c0.gap_log_entries(os.path.join(self.cfg.root, "transport", f"{self.cfg.bot_id}.gaps.jsonl"))
+        tentries, _tres, tbad = c0.gap_log_entries(os.path.join(self.cfg.root, "transport", f"{self.cfg.bot_id}.tapegaps.jsonl"))  # tools/hv4_gap_relay.py: the book's own TAPE gaps
+        # s5 item 2 as written: every gap row counts. Am.5 (DRAFT): a forwarder TRANSPORT event loses no row and is left to transport_stall; tape gaps always count.
+        fgaps = [ms for k, ms in fentries if c0.FEED_GAP_MANUAL_REVIEW or c0.gap_loses_data(k)]
+        gaps, bad = [*fgaps, *(ms for _k, ms in tentries)], bad or tbad
         if bad:
             self._latch(c0.FEED_BREAK_LATCH, bad)  # an unreadable, oversize or malformed gap log is not a clear
         newest = max([*gaps, self.state.gap_noted_ms]) if (gaps or self.state.gap_noted_ms) else None
