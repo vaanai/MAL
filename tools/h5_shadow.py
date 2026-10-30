@@ -197,9 +197,15 @@ SPS_LO, SPS_HI = 0.15, 0.6  # seconds per slot must lie in this open interval
 Q_STAR_SOL = 40.0  # Q = real quote + V after the sell, SOL
 
 
-Q_STAR_ALLOWED = (40.0, 50.0)  # QP ruling 2026-10-22: exactly these two levels; any other value is a different, unregistered rule
+Q_STAR_ALLOWED = (40.0, 50.0, 60.0)  # QP ruling 2026-10-22: exactly these levels; any other value is a different, unregistered rule (60.0: DEC-031 Amendment 19 item 2 (a), the q60-base-1 commit only)
 Q50_RULE_ID = "H5-BOOSTFLOOR-Q50 v1"  # the rule_id of a Q* = 50 process (EXP-024 Amendment 10, owed)
 Q50_RULE_SHA256: str | None = "b3f8ecbf8731dc322a035a0b3996b7ed3f0b8c508cc6947014e3de1aa9524fd4"  # sha256 of EXP/EXP-024-RULE-Q50.md (PR #790); the sha only, the file is never read. None = a Q* != 40 live process refuses to start
+
+# DEC-031 Amendment 19 item 2 (b): the rule fields of a Q* != 40 start record, per level. 40.0 has none (its record carries no rule fields).
+Q_STAR_RULES: dict[float, tuple[str, str | None]] = {
+    50.0: (Q50_RULE_ID, Q50_RULE_SHA256),
+    60.0: ("H5-BOOSTFLOOR-Q60 v1", "f36afaae00edd5b8292fdbe732c6034251cc1371afb6c1e54b50e548a91717b9"),  # sha256 of EXP/EXP-024-RULE-Q60.md; the sha only, the file is never read
+}
 
 
 def check_q_star(v: Any) -> float:
@@ -3218,8 +3224,8 @@ async def run_live(args: argparse.Namespace) -> int:
             raise ValueError("--h5-look2-observed does not apply with --q-star-sol != 40 (EXP-024 Am.2 does not cover it)")
         if getattr(args, "bx10_enable", None) is not None:
             raise ValueError("--bx10-enable does not apply with --q-star-sol != 40 (bx10 is off for a Q* != 40 book)")
-        if Q50_RULE_SHA256 is None:
-            raise ValueError("Q50_RULE_SHA256 is not pinned yet (EXP-024 Amendment 10): a Q* != 40 process cannot start")
+        if Q_STAR_RULES[q_star][1] is None:
+            raise ValueError(f"the rule sha256 of Q* {q_star} is not pinned yet (EXP-024 Amendment 10): a Q* != 40 process cannot start")
     if fresh:  # the arena mode: its own out dir, never the live executor's feed; checked before anything is created
         out_dir = check_fresh_out_dir(args.out_dir or "")
     else:
@@ -3288,7 +3294,7 @@ async def run_live(args: argparse.Namespace) -> int:
                           "tip_union": "off", "dirty": os.environ.get("H5_DIRTY") == "1",  # the wrapper sets H5_DIRTY=1 under ARENA_H5_ALLOW_DIRTY: code_sha does not name the code
                           "endpoints": sorted({_strip_url(u) for u in (args.ws_url or [])}) or ["default"], "host": os.uname().nodename})
     if q_star != Q_STAR_SOL:  # only a non-default level changes the start record: the default one stays byte-identical
-        start_rec.update({"rule": Q50_RULE_ID, "rule_sha256": Q50_RULE_SHA256, "q_star_sol": q_star})
+        start_rec.update({"rule": Q_STAR_RULES[q_star][0], "rule_sha256": Q_STAR_RULES[q_star][1], "q_star_sol": q_star})
     engine.emit(start_rec)
 
     def probe() -> tuple[int, dict] | None:
@@ -3450,6 +3456,8 @@ def compare_frozen(records: list[dict], meta: dict[str, dict], frozen_path: str,
 
     f = pd.read_parquet(frozen_path)
     f = f[(f.D == q_star_sol) & (f.leg == "p") & (f.H == "end") & (f.stake == "01")]
+    if len(f) == 0:  # DEC-031 Amendment 19 item 2 (i): no frozen row at this level (the frozen file holds D = 40 only): refuse, never a silent 0-row compare
+        raise Refused(f"{frozen_path}: no frozen row for Q* {q_star_sol} (leg p, exit end, stake 01)")
     pool_of = {v["mint"]: k for k, v in meta.items()}
     pools = {r["pool"]: r for r in records if r["type"] == "pool" and r["s0_block_time"] is not None
              and datetime.fromtimestamp(r["s0_block_time"], tz=timezone.utc).strftime("%Y-%m-%dT%H").startswith(s0_hour_prefix)}
