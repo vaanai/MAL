@@ -65,6 +65,12 @@ FORBIDDEN_PATH_FRAGMENTS = ("meta-capture", "/arena", "forward-", "fresh-08", "t
                             "shadow", "canary", "probe", "kalshi", "fwdv1", "_shakedown", "_smoke", "exp026-prep")
 
 STAKE_SOL = 0.1  # the frozen book's stake; outcomes are SOL at this stake
+# Sanity range for one outcome at the 0.1 SOL stake (a unit/stake guard, not a filter; nothing inside it is dropped). Loss side: el2 pnl =
+# proceeds - 0.1 SOL - 2 x 55,000 lamports >= -0.10011 SOL, so flat and press are >= -0.10011; -0.2 = 2 x stake. Win side: MAP section 4
+# publishes top flat trades of +1.6759, +1.4328 and +1.2117 SOL at this stake, so the first bound (|v| <= 1 SOL) refused real rows
+# (pilot #1906); 10 SOL = 100 x stake still refuses a lamport-unit or wrong-stake file (values of order 1e6 and up).
+OUTCOME_MIN_SOL = -2 * STAKE_SOL
+OUTCOME_MAX_SOL = 100 * STAKE_SOL
 SIZES = (0.5, 1.0, 2.0)  # report-only size multipliers
 FALLBACK = {"act": True, "size": 1.0}  # an unparsed decision falls back to the base rule (BUY, size 1) and is counted
 
@@ -312,8 +318,10 @@ def load_outcomes(path: str | os.PathLike, tids: set[str]) -> tuple[dict[str, di
         vals = {}
         for k in ("flat_sol", "press_sol"):
             v = row.get(k)
-            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or abs(v) > 10 * STAKE_SOL:
-                raise Refused(f"outcome {tid}: {k} missing or not a finite SOL value at the 0.1 SOL stake")
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+                raise Refused(f"outcome {tid}: {k} missing or not a finite number")
+            if not OUTCOME_MIN_SOL <= v <= OUTCOME_MAX_SOL:
+                raise Refused(f"outcome {tid}: {k} outside [{OUTCOME_MIN_SOL}, {OUTCOME_MAX_SOL}] SOL at the 0.1 SOL stake (unit or stake error?)")
             vals[k] = float(v)
         out[tid] = vals
     if set(out) != tids:

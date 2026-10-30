@@ -4,6 +4,12 @@ Written 2026-10-30 from 15:13Z (`date -u`, mal-research-0), lane haiku-trader, b
 **No book has cleared the promotion gate. Nothing here says any book or bot makes money.** No API call was made for this lane (0 USD).
 The offline result, whatever it is, is a hypothesis on in-sample exploration days, never gate evidence.
 
+**Revision 2 (2026-10-30T21:2xZ), after pilot #1906 refused before any call (0 USD):** the outcome loader's sanity bound |v| <= 1 SOL
+at the 0.1 SOL stake was wrong: MAP section 4 publishes top flat trades of +1.6759, +1.4328 and +1.2117 SOL at this stake. All 2,825 el2
+rows of export-o1 are finite with the expected fields; 13 values are above 1 SOL, none below -0.2 SOL. The range is now
+[`OUTCOME_MIN_SOL` -0.2, `OUTCOME_MAX_SOL` 10] SOL (loss side: el2 pnl >= -0.10011 SOL; 10 SOL still refuses lamport units). No row is
+excluded and the export is unchanged. Step 2 now chains the pilot read with `&&`.
+
 **Revision 1 (2026-10-30, from 15:38Z), on QP CHANGES (comment 6526732116) and reviewer CHANGES (comment 6526743241) at a39d2bd7:**
 (QP1) the loader refuses any trigger whose `outcome_known_ms` is not exactly decision + 15 min and never uses the file's value;
 (QP2) basis el2 (P55 exit lag 2) is required by code for every Haiku run and every score, every outcome row carries its basis, and the
@@ -144,8 +150,9 @@ Fixed paths: `S=/data2/mal/scratch/haiku-v5`, export `E=$S/export-o1`, ledger `$
 2. (API; coded ceiling $1 because `--max-days` is set) Pilot P1. `<notebook id>`, `<T sha>` and `<O sha>` are filled by the manager at
    submission from step 1's notebook entry:
    `set -a; . /var/lib/mal/anthropic/anthropic.env; set +a; /data/mal/venv/bin/python -m tools.haiku_v5_harness run --triggers /data2/mal/scratch/haiku-v5/export-o1/triggers.jsonl --outcomes /data2/mal/scratch/haiku-v5/export-o1/outcomes.jsonl --out-dir /data2/mal/scratch/haiku-v5/run-p1 --model haiku --live --approval <notebook id> --budget-usd 1 --ledger /data2/mal/scratch/haiku-v5/ledger.jsonl --save-dir /data2/mal/scratch/haiku-v5/store --reps 1 --max-days 3 --expect-sha256 triggers=<T sha>,outcomes=<O sha>`.
-   Then the structure-only read (no outcome, no score):
-   `/data/mal/venv/bin/python -m tools.haiku_v5_harness pilot --run-dir /data2/mal/scratch/haiku-v5/run-p1 --ledger /data2/mal/scratch/haiku-v5/ledger.jsonl --save-dir /data2/mal/scratch/haiku-v5/store`
+   Then, **only if the run exited 0** (chain with `&&` in the same sh command, so a refusal (exit 3) or a caller stop (exit 4) reports
+   cleanly and no read runs on a partial or missing run), the structure-only read (no outcome, no score):
+   `&& /data/mal/venv/bin/python -m tools.haiku_v5_harness pilot --run-dir /data2/mal/scratch/haiku-v5/run-p1 --ledger /data2/mal/scratch/haiku-v5/ledger.jsonl --save-dir /data2/mal/scratch/haiku-v5/store`
    -> parse rate, reflection success, per call kind: tokens, cache-read share, input tokens per byte (the 0.56 assumption), latency max and
    count over 45 s (haiku_caller times out at 60 s, non-streaming), `max_tokens` stop share, USD per kind (each reserve row plus its
    settle row, joined on reservation_id; the total must show `matches_ledger_summary` true). Go/no-go for O1: parse >= 95%, reflection
