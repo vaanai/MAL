@@ -418,6 +418,8 @@ def guard_problem() -> str | None:
         ("fee_reserve", TRIP_FEE_RESERVE_LAMPORTS == 215_000 and SELL_FEE_RESERVE_LAMPORTS == 155_000),
         ("frozen_sha", isinstance(FROZEN_SHA, str) and len(FROZEN_SHA) == 40 and FROZEN_SHA.startswith("9ed4c5ff")),
         ("daily_le_total", C0_LIMITS["daily_loss_lamports"] <= C0_LIMITS["total_loss_lamports"]),
+        ("gap_hold", FEED_GAP_MANUAL_REVIEW or FEED_GAP_HOLD_MS >= FEED_GAP_HOLD_FLOOR_MS >= 60_000),
+        ("gap_rule", gap_rule_problem() is None),
     )
     for name, ok in checks:
         if not ok:
@@ -825,9 +827,51 @@ FEED_MAX_STALL_MS = 2_000  # a forwarder status that reports a larger stall_ms i
 
 GAP_LOG_MAX_BYTES = 8_000_000
 
+# --- DEC-032 Am.5 (DRAFT; the q50-c0-feed lane, tools/h5_arena_executor.py on claude/q50-c0-gap-hold, PR #1085): relaxed feed-gap hold. ---------------------------
+# FEED_GAP_MANUAL_REVIEW True = DEC-032 s5 item 2 exactly as written and as built before: every gap record latches `feed_break` (hard), cleared only after
+# GAP_FREE_MS gap-free AND a root-owned review file naming the newest gap instant. False (Am.5 DRAFT, the H5 rule): a DATA-LOSS gap record holds new buys for
+# FEED_GAP_HOLD_MS after its instant (a self-clearing refusal, `feed_gap_hold`; open trips are still marked `gap` for parity); a TRANSPORT event of the forwarder
+# (TRANSPORT_GAP_KINDS: the puller resumes at its own byte offset and re-verifies the hash chain, so no row of the book is lost) neither holds nor latches: while the
+# forwarder is not `connected` the self-clearing `transport_stall` refusal (feed_refusal) already stops new buys, and the 5 s entry age bound refuses late entries.
+# Unchanged in both modes: an unreadable, linked, oversize or malformed gap log latches; a forwarder `stopped_mismatch` latches; exits always keep running.
+# Flipping FEED_GAP_MANUAL_REVIEW is a one-line change; tests cover both values. The relaxed value stands on DEC-032 Am.5, which must merge before any live start.
+FEED_GAP_MANUAL_REVIEW = False
+FEED_GAP_HOLD_MS = 60_000  # as h5_arena_executor GAP_HOLD_MS on claude/q50-c0-gap-hold
+FEED_GAP_HOLD_FLOOR_MS = 60_000  # guard_problem refuses a start below this
+FEED_GAP_HOLD = "feed_gap_hold"
+TRANSPORT_GAP_KINDS = ("stall", "disconnect", "reconnect", "local_torn_trimmed")  # tools/decision_forwarder.py gap rows that lose no row; mismatch and error stay data loss
 
-def gap_log_ms(path: str) -> tuple[list[int], list[int], str | None]:
-    """(gap instants, resume instants, problem) from the forwarder's <bot_id>.gaps.jsonl. Reads ONLY `kind` and `ms` of each line. A missing file is no gaps; a link, an
+
+def gap_loses_data(kind: Any) -> bool:
+    """Am.5 (DRAFT) classification of ONE gap row of the forwarder's <bot_id>.gaps.jsonl: False ONLY for a transport event in TRANSPORT_GAP_KINDS. Everything
+    else is data loss and fails closed (mismatch, error, every s5.2 kind, an unknown kind, a non-string). Rows of the tape-gap stream and `gap` rows of the
+    decision stream are always data loss (the caller does not ask)."""
+    return not (isinstance(kind, str) and kind in TRANSPORT_GAP_KINDS)
+
+
+def gap_rule_problem() -> str | None:
+    """Tripwire on gap_loses_data: every s5.2 kind and the fail-closed shapes must count as data loss; only the transport kinds may not."""
+    lossy = (None, 0, "", "mismatch", "error", "gap", "data_loss", "resubscribe", "silence", "process_restart", "feed_restart", "feed_start", "start", "takeover",
+             "gap_silence", "gap_slots", "STALL", "stall ")
+    if not all(gap_loses_data(k) for k in lossy) or any(gap_loses_data(k) for k in TRANSPORT_GAP_KINDS):
+        return "gap_rule"
+    if not set(TRANSPORT_GAP_KINDS) <= {"stall", "disconnect", "reconnect", "local_torn_trimmed"}:
+        return "gap_rule_transport_kinds"
+    return None
+
+
+def gap_hold_problem(last_gap_ms: int, now_ms: int) -> str | None:
+    """Am.5 (DRAFT) hold: `feed_gap_hold` while now is within FEED_GAP_HOLD_MS after the newest data-loss gap instant. A gap instant ahead of the clock by more
+    than FEED_SKEW_MS holds as well (a wrong clock is not a clear). No gap seen (0) = no hold."""
+    if not last_gap_ms:
+        return None
+    if last_gap_ms - now_ms > FEED_SKEW_MS or now_ms - last_gap_ms < FEED_GAP_HOLD_MS:
+        return FEED_GAP_HOLD
+    return None
+
+
+def gap_log_entries(path: str) -> tuple[list[tuple[str, int]], list[int], str | None]:
+    """([(kind, instant)] of the gap rows, resume instants, problem) from a gap log (the forwarder's <bot_id>.gaps.jsonl or the relay's .tapegaps.jsonl). Reads ONLY `kind` and `ms` of each line. A missing file is no gaps; a link, an
     unreadable file, a file over GAP_LOG_MAX_BYTES (never silently truncated) or a COMPLETE line that is not an object with an int ms is a problem (fail closed).
     Bytes after the last newline are a write in progress and are ignored."""
     try:
@@ -848,7 +892,7 @@ def gap_log_ms(path: str) -> tuple[list[int], list[int], str | None]:
         return [], [], "gap_log_unreadable"
     if len(data) > GAP_LOG_MAX_BYTES:
         return [], [], "gap_log_too_large"
-    gaps: list[int] = []
+    gaps: list[tuple[str, int]] = []
     resumes: list[int] = []
     lines = data.split(b"\n")
     lines.pop()  # the torn tail (or the empty string after the last newline)
@@ -862,10 +906,16 @@ def gap_log_ms(path: str) -> tuple[list[int], list[int], str | None]:
         if not isinstance(r, dict) or isinstance(r.get("ms"), bool) or not isinstance(r.get("ms"), int) or not isinstance(r.get("kind"), str):
             return gaps, resumes, "gap_log_malformed"
         if r["kind"] in GAP_BREAK_KINDS:
-            gaps.append(r["ms"])
+            gaps.append((r["kind"], r["ms"]))
         elif r["kind"] == "resume":
             resumes.append(r["ms"])
     return gaps, resumes, None
+
+
+def gap_log_ms(path: str) -> tuple[list[int], list[int], str | None]:
+    """(gap instants, resume instants, problem): gap_log_entries without the kinds (the behaviour before Am.5)."""
+    g, r, bad = gap_log_entries(path)
+    return [ms for _k, ms in g], r, bad
 
 
 def gap_records_ms(path: str) -> tuple[list[int], str | None]:
