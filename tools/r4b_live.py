@@ -170,6 +170,148 @@ class MintState:
     last_bond_bt: int | None = None
 
 
+def features_at(prep: rf.Prep, r: rf.MintConst, ch: Any, slot, bt, isbuy, sol, tok, q, b, th, vq, T: int, sd: int) -> np.ndarray | None:
+    """The row at the single decision T of tools/r4b_features.mint_features(..., grads_rule="asof_pda_first_print", mint_filters="asof"), computed
+    for that T only (mint_features loops over the whole 2-min grid from mbt + 600 s, about 8 s a mark on a ramped universe; this is the live path).
+    The prints are the member's, ordered like ut and already restricted to slot < sd (= prep.slot_at(T)); the caller has checked
+    ceil120(mbt + 600) <= T <= mbt + 48 h. Every expression is mint_features' own, evaluated at j = n (all prints are before sd), so the float32 row
+    is byte-equal (tests/test_r4b_live.py: every grid T of random mints; scripts/research/r4b_live_equiv.py: md5 against the pinned batch calls).
+    Returns the (63,) float32 row, or None where mint_features has no row at T."""
+    n = len(slot)
+    if n < 1:
+        return None
+    V0 = float(r.v)
+    mbt = int(r.mbt)
+    sl = np.asarray(slot)
+    if int(sl[-1]) >= sd:
+        raise ValueError("features_at needs prints with slot < sd only")
+    bt = np.asarray(bt).astype(float)
+    ib = np.asarray(isbuy).astype(bool)
+    so = np.asarray(sol).astype(float)
+    tk = np.asarray(tok).astype(float)
+    q = np.asarray(q).astype(float)
+    bb = np.asarray(b).astype(float)
+    th = np.asarray(th)
+    vqa = np.asarray(vq).astype(float)
+    bt = np.where(np.isfinite(bt), bt, -1)
+    btm = np.maximum.accumulate(bt)
+    j = n
+    jl = n - 1
+    # asof mint filter at this T (mint_features: j >= 3, no pre-trade state <= 0 up to jl, derived post-state of jl > 0)
+    if j < 3:
+        return None
+    if (((q + vqa) <= 0) | (bb <= 0)).any():
+        return None
+    qpost = (q[jl] + so[jl] * (1 - 0.0125) if ib[jl] else q[jl] - so[jl] / (1 - 0.0125)) + vqa[jl]
+    bpost = bb[jl] - tk[jl] if ib[jl] else bb[jl] + tk[jl]
+    if qpost <= 0 or bpost <= 0:
+        return None
+    if not (btm[jl] >= T - 600 and btm[jl] < T):
+        return None
+    qp = np.where(ib, q + so * 0.99, q - so * 1.01) + vqa
+    bp = np.where(ib, bb - tk, bb + tk)
+    bp = np.where(bp > 0, bp, bb)
+    pp = qp / bp
+    seed_p = (rf.SEED_Q + V0) / rf.SEED_B
+    with np.errstate(divide="ignore", invalid="ignore"):
+        lpp = np.log(pp)
+    lr = np.diff(np.concatenate([[math.log(seed_p)], lpp]))
+    cs2 = np.concatenate([[0], np.cumsum(lr * lr)])
+    cbv = np.concatenate([[0], np.cumsum(np.where(ib, so, 0))])
+    csv_ = np.concatenate([[0], np.cumsum(np.where(ib, 0, so))])
+    lg = so >= 1e9
+    cln = np.concatenate([[0], np.cumsum(np.where(lg, np.where(ib, so, -so), 0))])
+    cnl = np.concatenate([[0], np.cumsum(lg)])
+    cmax = np.maximum.accumulate(lpp)
+    cmin = np.minimum.accumulate(lpp)
+    iath = np.maximum.accumulate(np.where(lpp >= cmax, np.arange(n), 0))
+    ps = rf._prev_same(th)
+    first = np.concatenate([[0], np.cumsum(ps < 0)])
+    bidx = np.nonzero(ib)[0]
+    sidx = np.nonzero(~ib)[0]
+    pb = rf._prev_same(th[bidx])
+    pS = rf._prev_same(th[sidx])
+    cbt_nan = bool(np.isnan(r.cbt))
+    ck = 1.0 if (ch is not None and not (isinstance(ch, float) and math.isnan(ch))) else 0.0
+    isc = (th.astype(np.float64) == np.float64(ch)) if ck else np.zeros(n, bool)
+    ccs = np.concatenate([[0], np.cumsum(np.where(isc & ~ib, so, 0))])
+    ccb = np.concatenate([[0], np.cumsum(np.where(isc & ib, so, 0))])
+    Ta = np.array([T], np.int64)
+    ja = np.array([j])
+    jla = np.array([jl])
+    P = lpp[jla]
+    F: dict[str, Any] = {}
+    F["age_s"] = Ta - mbt
+    F["t_since_create"] = (Ta - r.cbt) if not cbt_nan else np.full(1, np.nan)
+    F["r_seed"] = P - math.log(seed_p)
+    jw = {w: np.minimum(np.searchsorted(btm, Ta - w, "left"), ja) for w in (60, 300, 900, 3600, 14400)}
+    for w in (60, 300, 900, 3600, 14400):
+        k = jw[w]
+        F[f"ret_{w}"] = P - np.where(k > 0, lpp[np.maximum(k - 1, 0)], math.log(seed_p))
+    F["dd_ath"] = P - cmax[jla]
+    F["rebound_atl"] = P - cmin[jla]
+    F["t_since_ath"] = Ta - btm[iath[jla]]
+    F["ath_seed"] = cmax[jla] - math.log(seed_p)
+    for w in (300, 900, 3600):
+        F[f"rv_{w}"] = cs2[ja] - cs2[jw[w]]
+        F[f"np_{w}"] = ja - jw[w]
+        F[f"bv_{w}"] = (cbv[ja] - cbv[jw[w]]) / 1e9
+        F[f"sv_{w}"] = (csv_[ja] - csv_[jw[w]]) / 1e9
+    F["np_all"] = ja.astype(float)
+    liq = qp[jla] / 1e9
+    with np.errstate(divide="ignore", invalid="ignore"):
+        F["nf_900_liq"] = (F["bv_900"] - F["sv_900"]) / liq
+        F["nf_3600_liq"] = (F["bv_3600"] - F["sv_3600"]) / liq
+    F["bv_all"] = cbv[ja] / 1e9
+    F["sv_all"] = csv_[ja] / 1e9
+    F["lnet_900"] = (cln[ja] - cln[jw[900]]) / 1e9
+    F["lnet_3600"] = (cln[ja] - cln[jw[3600]]) / 1e9
+    F["nlarge_3600"] = cnl[ja] - cnl[jw[3600]]
+    for w in (900, 3600):
+        lo = int(jw[w][0])
+        blo, bhi = int(np.searchsorted(bidx, lo)), int(np.searchsorted(bidx, j))
+        slo, shi = int(np.searchsorted(sidx, lo)), int(np.searchsorted(sidx, j))
+        ub = np.zeros(1)
+        us = np.zeros(1)
+        if bhi > blo:
+            ub[0] = (pb[blo:bhi] < blo).sum()
+        if shi > slo:
+            us[0] = (pS[slo:shi] < slo).sum()
+        F[f"ub_{w}"] = ub
+        F[f"us_{w}"] = us
+    F["uniq_all"] = first[ja]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        F["buyfrac_900"] = np.where(F["np_900"] > 0, (np.searchsorted(bidx, ja) - np.searchsorted(bidx, jw[900])) / np.maximum(F["np_900"], 1), np.nan)
+        F["avgsz_900"] = np.where(F["np_900"] > 0, (F["bv_900"] + F["sv_900"]) / np.maximum(F["np_900"], 1), np.nan)
+    F["liq_sol"] = liq
+    F["fee_tier"] = rf.fee_ppm(qp[jla], bp[jla])
+    F["t_since_last"] = Ta - btm[jla]
+    F["cre_sell_post"] = ccs[ja] / 1e9
+    F["cre_buy_post"] = ccb[ja] / 1e9
+    F["cre_known"] = np.full(1, ck)
+    hr = (Ta % 86400) / 3600.0
+    F["hour_sin"] = np.sin(2 * np.pi * hr / 24)
+    F["hour_cos"] = np.cos(2 * np.pi * hr / 24)
+    g = prep.grads_asof(Ta, np.array([sd], np.int64))
+    F["m_grads_1h"], F["m_grads_10m"] = g[0], g[1]
+    F["m_vps_10m"] = prep.mwin("v_ps", Ta, 600) / 1e9
+    F["m_nps_10m"] = prep.mwin("n_ps", Ta, 600)
+    F["m_vbd_10m"] = prep.mwin("v_bd", Ta, 600) / 1e9
+    F["m_ncr_10m"] = prep.mwin("n_cr", Ta, 600)
+    F["m_ncr_60m"] = prep.mwin("n_cr", Ta, 3600)
+    F["m_vps_60m"] = prep.mwin("v_ps", Ta, 3600) / 1e9
+    nan = np.nan
+    F["c_bond_dur"] = np.full(1, (mbt - r.cbt) if not cbt_nan else nan)
+    F["c_nbond"] = np.full(1, r.nb if not np.isnan(r.nb) else nan)
+    F["c_nbond_tr"] = np.full(1, r.ntr if not np.isnan(r.ntr) else nan)
+    F["c_bond_buy"] = np.full(1, (r.bbuy or 0) / 1e9)
+    F["c_bond_sell"] = np.full(1, (r.bsell or 0) / 1e9)
+    F["c_cre_bond_sell"] = np.full(1, (r.cre_sell if not np.isnan(r.cre_sell) else nan) / 1e9)
+    F["c_pool_delay"] = np.full(1, float(r.s0 - r.mslot))
+    F["c_v"] = np.full(1, V0 / 1e9)
+    return np.column_stack([np.asarray(F[k], float) for k in rf.FEATS]).astype(np.float32)[0]
+
+
 @dataclass
 class Member:
     mint: str
@@ -282,7 +424,8 @@ class Engine:
 
     def __init__(self, *, universe_min_mbt: int, v_source: str = "event", static_map: Mapping[str, int | None] | None = None, mode: str = "dry",
                  pda_fn: Callable[[str], str] | None = None, hash_fn: Callable[[str | None], int] | None = None, boosters: list | None = None,
-                 score_fn: Callable[[list, np.ndarray], np.ndarray] | None = None, bond_mints: set | None = None, k: int = FZ.K) -> None:
+                 score_fn: Callable[[list, np.ndarray], np.ndarray] | None = None, bond_mints: set | None = None, k: int = FZ.K,
+                 exact_grid: bool = False) -> None:
         if mode == "live" or LIVE_BUILT is not False:
             raise LiveRefused("r4b_live builds no live mode (LIVE_BUILT is False): no key, no wallet, no send")
         if mode not in ("dry", "replay"):
@@ -306,6 +449,7 @@ class Engine:
         self.mkt: dict[int, list] = {}  # minute -> [n_ps, v_ps, n_bd, v_bd]
         self.ncr: dict[int, int] = {}  # minute -> creates
         self.book = LiveBook(k=k)
+        self.exact_grid = bool(exact_grid)
         self.counters: dict[str, int] = {}
         self._frn = 0
 
@@ -599,16 +743,19 @@ class Engine:
         if self.v_source == "event" and np.isnan(vq).any():
             self._count("member_null_v_prints")  # r4b_layout refuses the whole build on this; live skips the mint and counts it
             return None
-        res = rf.mint_features(prep, const, ch, sl[idx], bt[idx], np.frombuffer(p["isbuy"], np.int8)[idx].astype(bool),
-                               np.frombuffer(p["sol"], np.float64)[idx], np.frombuffer(p["tok"], np.float64)[idx], np.frombuffer(p["q"], np.float64)[idx],
-                               np.frombuffer(p["b"], np.float64)[idx], np.frombuffer(p["th"], np.uint64)[idx], vq=vq,
-                               seg_end=T + rf.MAXH + rf.MARGIN, grads_rule="asof_pda_first_print", mint_filters="asof")
-        if res is None:
-            return None
-        hit = np.flatnonzero(res.I[:, 1] == T)
-        if not len(hit):
-            return None
-        return res.X[hit[0]], int(res.I[hit[0], 2]), s0bt
+        args = (sl[idx], bt[idx], np.frombuffer(p["isbuy"], np.int8)[idx].astype(bool), np.frombuffer(p["sol"], np.float64)[idx],
+                np.frombuffer(p["tok"], np.float64)[idx], np.frombuffer(p["q"], np.float64)[idx], np.frombuffer(p["b"], np.float64)[idx],
+                np.frombuffer(p["th"], np.uint64)[idx])
+        if self.exact_grid:  # the pinned per-mint loop over the whole 2-min grid up to T (slow; the reference the fast path is tested against)
+            res = rf.mint_features(prep, const, ch, *args, vq=vq, seg_end=T + rf.MAXH + rf.MARGIN, grads_rule="asof_pda_first_print", mint_filters="asof")
+            if res is None:
+                return None
+            hit = np.flatnonzero(res.I[:, 1] == T)
+            if not len(hit):
+                return None
+            return res.X[hit[0]], int(res.I[hit[0], 2]), s0bt
+        x = features_at(prep, const, ch, *args, vq, T, sd)
+        return None if x is None else (x, sd, s0bt)
 
     def score(self, X: np.ndarray) -> np.ndarray:
         if self.score_fn is not None:
