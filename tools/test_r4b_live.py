@@ -1,0 +1,332 @@
+"""Tests for tools/r4b_live.py. SYNTHETIC data only (tmp dirs); nothing here reads /data/mal or any tape.
+
+The equivalence tests run the pinned batch path (tools/r4b_layout.build -> tools/r4b_read.build_rows -> tools/r4b_score.bag_score -> tools/r4b_book.xs_book,
+exactly the calls of r4b_read.run_deciding) and the streaming engine on the same synthetic walker dir and require equal md5s of the scored decision rows
+and of the book's trades. Needs duckdb (/data/mal/audit-1008/venv) and lightgbm 4.7.0 (/data/mal/venv):
+  PYTHONPATH=/data/mal/audit-1008/venv/lib/python3.12/site-packages /data/mal/venv/bin/python -m pytest tools/test_r4b_live.py
+"""
+
+from __future__ import annotations
+
+import inspect
+import json
+import random
+from datetime import datetime, timezone
+from pathlib import Path
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+
+duckdb = pytest.importorskip("duckdb")
+
+from tools import r4b_book as bk  # noqa: E402
+from tools import r4b_frozen as FZ  # noqa: E402
+from tools import r4b_layout as rl  # noqa: E402
+from tools import r4b_live as lv  # noqa: E402
+from tools.test_r4b_layout import make_walk  # noqa: E402
+
+H0, H1 = "2026-08-14T00", "2026-08-14T06"
+BT0 = int(datetime(2026, 8, 14, tzinfo=timezone.utc).timestamp())
+S = 438_000_000
+V = 17_600_000_000
+W0, E = BT0 + 2 * 3600, BT0 + 6 * 3600
+
+
+def pda_of(mint: str) -> str:
+    return "PDA_" + mint
+
+
+def slot_of(bt: int) -> int:
+    return S + (bt - BT0) * 5 // 2
+
+
+def hour_of(bt: int) -> str:
+    return datetime.fromtimestamp(bt, tz=timezone.utc).strftime("%Y-%m-%dT%H")
+
+
+def scenario(seed: int = 7, n_members: int = 16) -> dict:
+    """Six hours of graduations and PumpSwap prints plus 2 extra trade hours. Members trade at different rates so the top 10 moves between marks."""
+    rnd = random.Random(seed)
+    hours = {lv.hour_key(datetime.fromtimestamp(BT0 + 3600 * i, tz=timezone.utc)): {"trades": [], "creates": [], "migrations": []} for i in range(8)}
+
+    def put(sub, bt, row):
+        hours[hour_of(bt)][sub].append(row)
+
+    traders = [f"TR{i}" for i in range(40)]
+    specs = [(f"M{i:02d}", "ok") for i in range(n_members)] + [("XMAY", "mayhem"), ("XNWS", "nonwsol"), ("XVHI", "vhigh"), ("XNOM", "nomig"),
+                                                                ("XLATE", "late")]  # XLATE: a member whose first print is < 600 s before W0 (D3 drop)
+    for k, (mint, kind) in enumerate(specs):
+        bt_c = W0 - 650 if kind == "late" else BT0 + 1000 + 151 * k
+        sc = slot_of(bt_c)
+        creator = f"CR{k}"
+        put("creates", bt_c - 900, {"type": "create", "mint": mint, "creator": creator, "is_mayhem_mode": kind == "mayhem", "slot": slot_of(bt_c - 900),
+                                    "block_time": bt_c - 900})
+        for j in range(5):  # bonding prints before the completion, the creator sells once
+            btb = bt_c - 600 + 100 * j
+            put("trades", btb, {"venue": "pump_bonding", "mint": mint, "trader": creator if j == 3 else rnd.choice(traders), "side": "sell" if j == 3 else "buy",
+                                "sol_lamports": rnd.randint(10**8, 2 * 10**9), "token_raw": rnd.randint(10**10, 10**12), "quote_reserve": 30 * 10**9,
+                                "base_reserve": 10**15, "pool": None, "slot": slot_of(btb), "signature": f"b{mint}{j}", "event_index": 0, "tx_index": j,
+                                "block_time": btb})
+        put("migrations", bt_c, {"type": "complete", "mint": mint, "slot": sc, "block_time": bt_c, "tx_index": 3, "event_index": 0})
+        if kind != "nomig":
+            put("migrations", bt_c, {"type": "migration", "mint": mint, "slot": sc, "block_time": bt_c, "tx_index": 3, "event_index": 1,
+                                     "pool": pda_of(mint), "quote_mint": "NOT_WSOL" if kind == "nonwsol" else rl.WSOL_MINT})
+        q, b = 85 * 10**9, 206 * 10**12
+        vq = 17_800_000_000 if kind == "vhigh" else V
+        rate = 8 if kind == "late" else 30 + 25 * (k % 7)
+        bt, n = bt_c + (550 if kind == "late" else 3), 0
+        while bt < BT0 + 8 * 3600 - 5:
+            if n > 40 and k % 5 == 1 and bt > BT0 + 3 * 3600 and bt < BT0 + 4 * 3600:  # a quiet hour for some mints
+                bt += 900
+                continue
+            buy = rnd.random() < (0.62 if (k + bt // 3600) % 3 == 0 else 0.45)
+            sol = rnd.randint(5 * 10**7, 3 * 10**9)
+            if buy:
+                tok = int(b * sol / (q + vq + sol))
+                row_q, row_b = q, b
+                q, b = q + sol, b - tok
+            else:
+                tok = int(b * rnd.uniform(0.001, 0.03))
+                sol = int((q + vq) * tok / (b + tok))
+                if sol >= q:
+                    bt += rate
+                    continue
+                row_q, row_b = q, b
+                q, b = q - sol, b + tok
+            txi = None if (n % 17 == 5) else rnd.randint(0, 900)
+            put("trades", bt, {"venue": "pumpswap", "mint": mint, "trader": creator if n % 23 == 0 else rnd.choice(traders), "side": "buy" if buy else "sell",
+                               "sol_lamports": sol, "token_raw": tok, "quote_reserve": row_q, "base_reserve": row_b, "pool": pda_of(mint), "slot": slot_of(bt),
+                               "signature": f"s{mint}{n}", "event_index": n % 2, "tx_index": txi, "block_time": bt, "virtual_quote_reserves": vq + (n % 3)})
+            n += 1
+            bt += rnd.randint(max(2, rate // 3), rate * 2)
+    for h in hours.values():  # rows of a hour file are in slot order, ties shuffled (the frn order is the file order)
+        rnd.shuffle(h["trades"])
+        h["trades"].sort(key=lambda r: r["slot"])
+    return hours
+
+
+@pytest.fixture(scope="module")
+def walk(tmp_path_factory):
+    root = tmp_path_factory.mktemp("r4blive") / "walk"
+    make_walk(root, scenario())
+    return root
+
+
+def verify_table(root: Path) -> dict:
+    return {r["hour"]: r for r in (json.loads(x) for x in (root / "verify.jsonl").read_text().splitlines() if x.strip())}
+
+
+def batch_path(root: Path, scratch: Path, boosters):
+    """The pinned read's decision calls (r4b_read.run_deciding) on the synthetic dir: build, build_rows, bag_score, xs_book."""
+    from tools import r4b_read as rr
+    from tools import r4b_score as rs
+
+    rl.build(root, H0, H1, scratch, v_source="event", canonical_fn=pda_of, problems_fn=lambda *_: [], verify=verify_table(root), memory_limit="1GB", threads=2)
+    plan = SimpleNamespace(w0=datetime.fromtimestamp(W0, tz=timezone.utc), e=datetime.fromtimestamp(E, tz=timezone.utc))
+    deps = SimpleNamespace(threads=2, memory_limit="1GB")
+    R, rep, con = rr.build_rows(scratch, plan, {"delta_slots": 0.0}, {"2026-08-14": 0.4}, deps, BT0)
+    meta = {m: mi for m, mi in con.sql(f"select mid, mint from read_parquet('{scratch}/meta.parquet')").fetchall()}
+    con.close()
+    mid = np.concatenate(R.mid) if R.mid else np.zeros(0, np.int64)
+    T = np.concatenate(R.T) if R.T else np.zeros(0, np.int64)
+    sd = np.concatenate(R.sd) if R.sd else np.zeros(0, np.int64)
+    X = np.vstack(R.X) if R.X else np.zeros((0, FZ.N_FEATURES), np.float32)
+    score = rs.bag_score(boosters, X) if len(X) else np.zeros(0)
+    b = bk.xs_book(T, mid, score)
+    trades = sorted(((meta[int(m)], int(t0), int(t1), str(r)) for m, t0, t1, r in zip(b["mid"], b["T0"], b["T1"], b["reason"])), key=lambda x: (x[1], x[0]))
+    mints = [meta[int(m)] for m in mid]
+    return {"rows_md5": lv.rows_md5(mints, T, sd, X, score), "trades_md5": lv.trades_md5(trades), "n_rows": len(mints), "trades": trades, "d3": rep["d3_dropped"]}
+
+
+@pytest.fixture(scope="module")
+def boosters():
+    pytest.importorskip("lightgbm")
+    from tools import r4b_score as rs
+
+    return rs.load_boosters()
+
+
+# ------------------------------------------------------------------------------------------------------------------------------- equivalence
+def test_replay_equals_pinned_batch_path(walk, tmp_path, boosters):
+    bat = batch_path(walk, tmp_path / "batch", boosters)
+    rep = lv.replay_walker(walk, H0, H1, W0, E, static_map=None, universe_min_mbt=BT0, boosters=boosters, pda_fn=pda_of, allow_dir=True,
+                           log_root=tmp_path / "declog")
+    assert bat["n_rows"] > 40 and len(bat["trades"]) > 10, "the scenario must exercise the book"
+    assert {r for *_, r in bat["trades"]} >= {"rank", "end"}
+    assert rep.n_rows == bat["n_rows"]
+    assert rep.rows_md5 == bat["rows_md5"]
+    assert rep.trades == bat["trades"]
+    assert rep.trades_md5 == bat["trades_md5"]
+    assert rep.counters["d3_dropped"] == bat["d3"] > 0
+    assert "bond_rows_after_mslot_mints" not in rep.counters
+
+
+def test_replay_writes_a_verifiable_declog_for_the_bridge(walk, tmp_path, boosters):
+    from tools.arena_declog import DecisionLog
+
+    rep = lv.replay_walker(walk, H0, H1, W0, E, static_map=None, universe_min_mbt=BT0, boosters=boosters, pda_fn=pda_of, allow_dir=True,
+                           log_root=tmp_path / "declog")
+    log = DecisionLog(tmp_path / "declog")
+    log.verify(lv.BOT_ID)  # raises on a chain break
+    rows = log.rows(lv.BOT_ID)
+    assert rows[0]["kind"] == "start"
+    ent = [r for r in rows if r["kind"] == "entry"]
+    ex = [r for r in rows if r["kind"] == "exit"]
+    assert len(ent) == rep.counters["entries"] and len(ex) == len(rep.trades)
+    assert all(r["pool"] == pda_of(r["meta"]["mint"]) and r["stake_sol"] == FZ.STAKE_SOL and r["order_id"] == f"{r['meta']['mint']}:{r['t_mark']}" for r in ent)
+    assert {r["order_id"] for r in ex} == {r["order_id"] for r in ent}  # every entry is closed (end of replay)
+    assert rep.log_md5 == log.md5()
+
+
+def test_static_map_mode_equals_batch(tmp_path, boosters):
+    root = tmp_path / "walk"
+    make_walk(root, scenario(seed=11, n_members=13))
+    smap = {pda_of(f"M{i:02d}"): V for i in range(13)} | {pda_of("XVHI"): 17_800_000_000}
+    from tools import r4b_read as rr
+    from tools import r4b_score as rs
+
+    rl.build(root, H0, H1, tmp_path / "b", v_source="static_map", static_map=smap, canonical_fn=pda_of, problems_fn=lambda *_: [], verify=verify_table(root),
+             memory_limit="1GB", threads=2)
+    plan = SimpleNamespace(w0=datetime.fromtimestamp(W0, tz=timezone.utc), e=datetime.fromtimestamp(E, tz=timezone.utc))
+    R, rep, con = rr.build_rows(tmp_path / "b", plan, {"delta_slots": 0.0}, {"2026-08-14": 0.4}, SimpleNamespace(threads=2, memory_limit="1GB"), BT0)
+    meta = dict(con.sql(f"select mid, mint from read_parquet('{tmp_path / 'b'}/meta.parquet')").fetchall())
+    con.close()
+    mid, T, sd = (np.concatenate(getattr(R, k)) for k in ("mid", "T", "sd"))
+    X = np.vstack(R.X)
+    score = rs.bag_score(boosters, X)
+    want = lv.rows_md5([meta[int(m)] for m in mid], T, sd, X, score)
+    got = lv.replay_walker(root, H0, H1, W0, E, static_map=smap, universe_min_mbt=BT0, boosters=boosters, pda_fn=pda_of, allow_dir=True)
+    assert got.rows_md5 == want
+
+
+# ------------------------------------------------------------------------------------------------------------------------------- the book
+def _xs_trades(T, mints, score):
+    order = {m: i for i, m in enumerate(sorted(set(mints)))}
+    mid = np.array([order[m] for m in mints], np.int64)
+    b = bk.xs_book(np.asarray(T, np.int64), mid, np.asarray(score, float))
+    inv = {i: m for m, i in order.items()}
+    return sorted(((inv[int(m)], int(a), int(c), str(r)) for m, a, c, r in zip(b["mid"], b["T0"], b["T1"], b["reason"])), key=lambda x: (x[1], x[0]))
+
+
+@pytest.mark.parametrize("seed", range(25))
+def test_livebook_equals_xs_book(seed):
+    rnd = np.random.default_rng(seed)
+    universe = [f"m{i:03d}" for i in range(int(rnd.integers(5, 40)))]
+    marks = np.arange(0, int(rnd.integers(5, 60)) * 3600, 3600) + 1_786_000_000 - (1_786_000_000 % 3600)
+    keep_marks = marks[rnd.random(len(marks)) > 0.12]  # missing marks: gaps
+    T, M, SC = [], [], []
+    for t in keep_marks:
+        live = [m for m in universe if rnd.random() < 0.6]
+        for m in live:
+            T.append(int(t))
+            M.append(m)
+            SC.append(float(rnd.integers(0, 6)) if seed % 3 == 0 else float(rnd.normal()))  # integer scores: many ties (lower mint wins)
+    want = _xs_trades(T, M, SC)
+    book = lv.LiveBook()
+    acts = []
+    for t in keep_marks:
+        idx = [i for i in range(len(T)) if T[i] == t]
+        ranked = [M[i] for i in sorted(idx, key=lambda i: (-SC[i], M[i]))]
+        acts += book.step(int(t), ranked)
+    acts += book.close_all()
+    assert lv.trades_from_actions(acts) == want
+
+
+def test_livebook_empty_mark_closes_as_gap_at_the_same_t1():
+    t0 = 1_786_003_200
+    book = lv.LiveBook(k=2)
+    a = book.step(t0, ["a", "b", "c"])
+    assert [x[1] for x in a if x[0] == "entry"] == ["a", "b"]
+    g = book.step(t0 + 3600, [])
+    assert sorted(g) == [("exit", "a", t0, t0 + 3600, "gap"), ("exit", "b", t0, t0 + 3600, "gap")]
+    assert book.step(t0 + 7200, ["c"]) == [("entry", "c", t0 + 7200, 0)]
+    T = [t0] * 3 + [t0 + 7200]
+    assert _xs_trades(T, ["a", "b", "c", "c"], [3.0, 2.0, 1.0, 1.0])[:2] == sorted(lv.trades_from_actions(a + g))[:2]
+
+
+# ------------------------------------------------------------------------------------------------------------------------------- ingest
+def test_row_ingest_equals_block_ingest(walk):
+    con = duckdb.connect()
+    hf = lambda s: int(con.execute("select hash(?::varchar)", [s]).fetchone()[0])  # noqa: E731
+    a = lv.Engine(universe_min_mbt=BT0, pda_fn=pda_of, hash_fn=hf, score_fn=lambda b, X: X[:, 0])
+    b = lv.Engine(universe_min_mbt=BT0, pda_fn=pda_of, hash_fn=hf, score_fn=lambda b, X: X[:, 0])
+    for hix, h in enumerate(rl.hour_range(H0, "2026-08-14T08")):
+        if h < H1:
+            for i, r in enumerate(lv._read_rows(con, walk / "migrations" / f"migrations-{h}.jsonl.zst", rl.MIG_COLS)):
+                a.ingest_migration(r, frn=hix * lv.FRN_HOUR + i)
+                b.ingest_migration(r, frn=hix * lv.FRN_HOUR + i)
+            for r in lv._read_rows(con, walk / "creates" / f"creates-{h}.jsonl.zst", rl.CREATE_COLS):
+                a.ingest_create(r)
+                b.ingest_create(r)
+        rows = lv._read_rows(con, walk / "trades" / f"trades-{h}.jsonl.zst", rl.TRADE_COLS)
+        for i, r in enumerate(rows):
+            a.ingest_trade(r, frn=hix * lv.FRN_HOUR + i)
+        b.ingest_trade_block(lv._read_trades(con, walk / "trades" / f"trades-{h}.jsonl.zst", hix))
+    assert a.clock == b.clock and a.mkt == b.mkt and a.ncr == b.ncr
+    assert set(a.mints) == set(b.mints)
+    for m in a.mints:
+        sa, sb = a.mints[m], b.mints[m]
+        assert {k: v.tolist() for k, v in sa.prints.items()} == {k: v.tolist() for k, v in sb.prints.items()}, m
+        assert (sa.b_n, sa.b_buy, sa.b_sell, sa.b_by_th, sa.ch, sa.mslot, sa.mbt, sa.mev_pool) == (sb.b_n, sb.b_buy, sb.b_sell, sb.b_by_th, sb.ch, sb.mslot, sb.mbt, sb.mev_pool)
+    ma = [(m.mint, m.s0, m.v0) for m in a.members()]
+    assert ma == [(m.mint, m.s0, m.v0) for m in b.members()] and len(ma) == 17  # 16 + XLATE; out: mayhem, non-WSOL, V high, no migration
+
+
+def test_membership_equals_layout_meta(walk, tmp_path):
+    rl.build(walk, H0, H1, tmp_path / "b", v_source="event", canonical_fn=pda_of, problems_fn=lambda *_: [], verify=verify_table(walk), memory_limit="1GB", threads=2)
+    meta = duckdb.sql(f"select mint, pool, mslot, mbt, s0, v from read_parquet('{tmp_path / 'b'}/meta.parquet') order by mid").fetchall()
+    con = duckdb.connect()
+    eng = lv.Engine(universe_min_mbt=0, pda_fn=pda_of, hash_fn=lambda s: int(con.execute("select hash(?::varchar)", [s]).fetchone()[0]),
+                    score_fn=lambda b, X: X[:, 0])
+    for hix, h in enumerate(rl.hour_range(H0, "2026-08-14T08")):
+        if h < H1:
+            for i, r in enumerate(lv._read_rows(con, walk / "migrations" / f"migrations-{h}.jsonl.zst", rl.MIG_COLS)):
+                eng.ingest_migration(r, frn=hix * lv.FRN_HOUR + i)
+            for r in lv._read_rows(con, walk / "creates" / f"creates-{h}.jsonl.zst", rl.CREATE_COLS):
+                eng.ingest_create(r)
+        eng.ingest_trade_block(lv._read_trades(con, walk / "trades" / f"trades-{h}.jsonl.zst", hix))
+    got = [(m.mint, m.pool, m.mslot, m.mbt, m.s0, m.v0) for m in eng.members()]
+    assert got == [tuple(r) for r in meta]
+
+
+# ------------------------------------------------------------------------------------------------------------------------------- guards
+def test_no_live_mode_and_no_send_path():
+    assert lv.LIVE_BUILT is False
+    with pytest.raises(lv.LiveRefused):
+        lv.Engine(universe_min_mbt=0, mode="live")
+    with pytest.raises(lv.LiveRefused):
+        lv.Engine(universe_min_mbt=0, v_source="event", static_map={})
+    src = inspect.getsource(lv)
+    for word in ("probe_live", "LiveExecutor", "Keypair", "sendTransaction", "send_transaction", "private_key", "helius.env"):
+        assert word not in src.split('"""', 2)[2], word  # nothing after the module docstring names a send path or a key
+
+
+@pytest.mark.parametrize("p", ["/data/mal/blocks/forward-1016", "/data/mal/clean-view/fresh-0802", "/data/mal/arena/tape", "/data/mal/meta-capture",
+                               "/data/mal/clean-view/fresh-0903", "/tmp/x", "/data/mal/clean-view/explore-0814/../fresh-0828/w1"])
+def test_replay_refuses_non_exploration_paths(p):
+    assert lv.path_problem(p) is not None
+    with pytest.raises(lv.LiveRefused):
+        lv.replay_walker(Path(p), "2026-08-14T00", "2026-08-14T06", W0, E, static_map={}, universe_min_mbt=0)
+
+
+def test_exploration_paths_pass_the_guard():
+    assert lv.path_problem("/data/mal/clean-view/explore-0814/w7") is None
+    assert lv.path_problem("/data/mal/clean-view/oracle-live-2026-09-25_27") is None
+
+
+def test_replay_refuses_october_hours(tmp_path):
+    with pytest.raises(lv.LiveRefused, match="October"):
+        lv.replay_walker(tmp_path, "2026-09-30T20", "2026-10-01T02", int(datetime(2026, 9, 30, 22, tzinfo=timezone.utc).timestamp()),
+                         int(datetime(2026, 10, 1, 1, tzinfo=timezone.utc).timestamp()), static_map={}, universe_min_mbt=0, allow_dir=True)
+
+
+def test_constants_follow_the_pinned_modules():
+    from tools import r4b_count as rc
+    from tools import r4b_read as rr
+
+    assert lv.D3_DROP_S == rr.D3_DROP_S
+    assert lv.MARK_S == rr.MARK_S == rc.MARK_S
+    assert (lv.GRID_LO_S, lv.GRID_HI_S) == (rc.LIVE_LO_S, rc.LIVE_HI_S)
+    assert lv.HORIZON_S == rl.HORIZON_S and lv.WINDOW_SLOTS == rl.WINDOW_SLOTS
+    assert FZ.K == 10 and FZ.STAKE_SOL == 0.25
