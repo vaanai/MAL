@@ -8,13 +8,13 @@
 # counted. --out-dir: the book's dir (default $ARENA/h5-q50s1-2026-11-05): prefix counts of start/stop/error/hb rows, hb rows' trailing t_ms, gap rows' kind and flags_pools, the
 # status file's mtime, the errors file's size. Scope: `systemctl --user show q50s1-shadow.scope` ActiveState and ActiveEnterTimestamp only.
 # Exit: 0 CLEAN, 1 NOT_CLEAN, 2 args or unreadable input, 6 host.
-# Env (optional): Q50S1_ARENA (default $HOME/data/arena), Q50S1_JOBS_DIR (default $HOME/.miscusi/jobs).
+# Env (optional): Q50S1_ARENA (s1's own root, DEC-031 Amendment 22 item 9; default /data/mal/arena), Q50S1_JOBS_DIR (default $HOME/.miscusi/jobs).
 set -eu
 set -f
 [ -n "${HOME:-}" ] || { echo "q50s1-clean-log: HOME is not set" >&2; exit 2; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-ARENA="${Q50S1_ARENA:-$HOME/data/arena}"
+ARENA="${Q50S1_ARENA:-/data/mal/arena}"
 JOBS="${Q50S1_JOBS_DIR:-$HOME/.miscusi/jobs}"
 UNIT=q50s1-shadow
 JUID=""
