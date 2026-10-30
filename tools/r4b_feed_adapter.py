@@ -76,7 +76,7 @@ class Reject:
 
 @dataclass(frozen=True)
 class Mapped:
-    kind: str  # "trade" | "migration" | "create" | "gap" | "reject"
+    kind: str  # "trade" | "market" (unresolved PumpSwap row: market totals only) | "resolved" (that row once its mint is known: per-mint only) | "migration" | "create" | "gap" | "reject"
     row: Any  # dict (trade / migration / create), GapRecord, Reject
 
     @property
@@ -186,8 +186,8 @@ class FeedAdapter:
             return Reject("pool_mint_conflict", str(row.get("type")), row.get("signature"))
         self.pools[pool] = (mint, qm)
         out = []
-        for _, w in self.unresolved.pop(pool, []):
-            out.append(Mapped("trade", {**w, "mint": mint, "quote_mint": w["quote_mint"] if w["quote_mint"] is not None else qm}))
+        for _, w in self.unresolved.pop(pool, []):  # already counted in the market totals at arrival: per-mint path only
+            out.append(Mapped("resolved", {**w, "mint": mint, "quote_mint": w["quote_mint"] if w["quote_mint"] is not None else qm}))
             self.stats["unresolved_resolved"] += 1
         return out
 
@@ -220,14 +220,14 @@ class FeedAdapter:
         out = self.sweep() if self.now_ts >= self._swept + SWEEP_S else []
         if w["venue"] == "pumpswap" and w["mint"] is None:  # unresolved: buffer, never guess
             lst = self.unresolved.get(w["pool"])
-            if lst is None and len(self.unresolved) >= self.max_pools:
-                return out + [Mapped("reject", Reject("unresolved_overflow", "trade", w["signature"], halts_buys=False))]
+            if lst is None and len(self.unresolved) >= self.max_pools:  # not buffered, but still counted in the market totals
+                return out + [Mapped("market", w), Mapped("reject", Reject("unresolved_overflow", "trade", w["signature"], halts_buys=False))]
             if lst is not None and len(lst) >= self.max_rows_per_pool:
                 self.stats["unresolved_overflow"] += 1
-                return out + [Mapped("reject", Reject("unresolved_overflow", "trade", w["signature"], halts_buys=False))]
+                return out + [Mapped("market", w), Mapped("reject", Reject("unresolved_overflow", "trade", w["signature"], halts_buys=False))]
             self.unresolved.setdefault(w["pool"], []).append((w["block_time"], w))
             self.stats["unresolved_buffered"] += 1
-            return out
+            return out + [Mapped("market", w)]  # counted in the clock and market minutes now (as the walker layout counts every PumpSwap row)
         return out + [Mapped("trade", w)]
 
     def feed(self, row: Mapping[str, Any]) -> list[Mapped]:
@@ -266,3 +266,25 @@ class FeedAdapter:
             if mp.kind == "reject":
                 self.stats[f"reject_{mp.row.reason}"] += mp.row.n
         return out
+
+
+def apply(engine: Any, mapped: list, frn_fn: Any = None) -> list:
+    """Feed adapter output into a tools.r4b_live.Engine in order: "trade" -> ingest_trade (market + per-mint), "market" -> market totals only (an
+    unresolved PumpSwap row, mint None), "resolved" -> per-mint path only (the same row once its pool's mint is known), "migration" / "create" ->
+    their ingests. Returns the gap records and rejects for the caller (a gap with halts_buys holds new buys)."""
+    held = []
+    for mp in mapped:
+        k = mp.kind
+        if k == "trade":
+            engine.ingest_trade(mp.row, frn_fn() if frn_fn else None)
+        elif k == "market":
+            engine.ingest_trade(mp.row, None, market=True, per_mint=False)
+        elif k == "resolved":
+            engine.ingest_trade(mp.row, frn_fn() if frn_fn else None, market=False, per_mint=True)
+        elif k == "migration":
+            engine.ingest_migration(mp.row)
+        elif k == "create":
+            engine.ingest_create(mp.row)
+        else:
+            held.append(mp)
+    return held
