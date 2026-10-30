@@ -726,3 +726,139 @@ def test_bonding_sum_null_corners_reach_the_features_as_nan():
     eng, m = _bond_engine([dict(trader="CRE", side="sell", sol_lamports=None, slot=990), dict(trader="x", side="buy", sol_lamports=4, slot=991)])
     c, _ = eng.mint_const(m, 0)
     assert c.cre_sell == 0.0 and c.bbuy == 4.0 and c.bsell == 0.0  # the buy's ELSE 0 term makes the sell sum non-NULL
+
+
+# ------------------------------------------------------------------------------------------------------------------------------- QP N2: ties across rank 10, the activity window
+def rename_mints(hours: dict, ren: dict) -> dict:
+    out = {}
+    for h, d in hours.items():
+        out[h] = {sub: [{**r, **({"mint": ren[r["mint"]]} if r.get("mint") in ren else {}),
+                         **({"pool": pda_of(ren[r["mint"]])} if r.get("mint") in ren and r.get("pool") == pda_of(r["mint"]) else {})} for r in rows]
+                  for sub, rows in d.items()}
+    return out
+
+
+def test_score_tie_straddling_rank_10_goes_to_the_lower_mbt_then_mint(tmp_path, boosters):
+    """Every row scores the same, so rank 10 / 11 is a tie among members that graduated at different times. The mints are renamed so that name order is the
+    REVERSE of graduation order: (mbt, mint) is told apart from mint alone and from (-mbt, mint). The engine equals the pinned xs_book and ranks by (mbt, mint)."""
+    ren = {f"M{i:02d}": f"R{15 - i:02d}" for i in range(16)}
+    hours = rename_mints(scenario(), ren)
+    root = tmp_path / "walk"
+    make_walk(root, hours)
+    mbt_of = {r["mint"]: r["block_time"] for d in hours.values() for r in d["migrations"] if r["type"] == "complete"}
+    const = lambda b, X: np.ones(len(X))  # noqa: E731
+    bat = batch_path(root, tmp_path / "batch", boosters, score_fn=const)
+    rep = lv.replay_walker(root, H0, H1, W0, E, static_map=None, universe_min_mbt=BT0, boosters=boosters, score_fn=const, pda_fn=pda_of, allow_dir=True)
+    assert any(len(r.ranked) > 10 for r in rep.marks), "the scenario must have a tie that straddles rank 10"
+    for r in rep.marks:
+        assert r.ranked == sorted(r.mints, key=lambda m: (mbt_of[m], m)), r.t
+        assert {a[1] for a in r.actions if a[0] == "entry"} <= set(r.ranked[:10])
+    big = next(r for r in rep.marks if len(r.ranked) > 10)
+    assert mbt_of[big.ranked[9]] < mbt_of[big.ranked[10]] and big.ranked[9] > big.ranked[10]  # rank 10 / 11: earlier mbt wins although its name sorts later
+    assert (rep.rows_md5, rep.trades_md5) == (bat["rows_md5"], bat["trades_md5"]) and rep.trades == bat["trades"]
+
+
+def test_member_whose_last_print_is_300_to_600_s_before_the_mark_has_a_row(tmp_path, boosters):
+    """The activity pre-check is `last print >= T - 600`; a member quiet for the last 5 minutes still gets a row, as in mint_features (btm in [T-600, T))."""
+    hours = scenario()
+    T = BT0 + 4 * 3600
+    mint = "M03"
+    last_before = [r["block_time"] for r in hours[hour_of(T - 1)]["trades"] if r["mint"] == mint and r["venue"] == "pumpswap" and r["block_time"] < T - 300]
+    assert last_before and T - 600 <= max(last_before) < T - 300, "scenario precondition: M03 prints in [T-600, T-300)"
+    for d in hours.values():
+        d["trades"] = [r for r in d["trades"] if not (r["mint"] == mint and r["venue"] == "pumpswap" and T - 300 <= r["block_time"] < T)]
+    root = tmp_path / "walk"
+    make_walk(root, hours)
+    bat = batch_path(root, tmp_path / "batch", boosters)
+    rep = lv.replay_walker(root, H0, H1, W0, E, static_map=None, universe_min_mbt=BT0, boosters=boosters, pda_fn=pda_of, allow_dir=True)
+    at_T = next(r for r in rep.marks if r.t == T)
+    assert mint in at_T.mints
+    assert (rep.rows_md5, rep.trades_md5) == (bat["rows_md5"], bat["trades_md5"]) and rep.n_rows == bat["n_rows"]
+
+
+def test_member_whose_last_print_is_older_than_600_s_has_no_row(tmp_path, boosters):
+    hours = scenario()
+    T = BT0 + 4 * 3600
+    mint = "M03"
+    for d in hours.values():
+        d["trades"] = [r for r in d["trades"] if not (r["mint"] == mint and r["venue"] == "pumpswap" and T - 900 <= r["block_time"] < T)]
+    root = tmp_path / "walk"
+    make_walk(root, hours)
+    bat = batch_path(root, tmp_path / "batch", boosters)
+    rep = lv.replay_walker(root, H0, H1, W0, E, static_map=None, universe_min_mbt=BT0, boosters=boosters, pda_fn=pda_of, allow_dir=True)
+    last = max(r["block_time"] for h in hours.values() for r in h["trades"] if r["mint"] == mint and r["venue"] == "pumpswap" and r["block_time"] < T)
+    assert last < T - 600 and mint not in next(r for r in rep.marks if r.t == T).mints
+    assert (rep.rows_md5, rep.trades_md5) == (bat["rows_md5"], bat["trades_md5"])
+
+
+# ------------------------------------------------------------------------------------------------------------------------------- QP N3: prints before their complete row
+def test_out_of_order_streams_decide_like_the_in_order_stream():
+    """The migrations stream (complete + migration rows) arrives 20 s behind the trades, so the first PumpSwap prints of every mint come before its
+    complete row. The pending buffer replays them in arrival order: every mark's rows, scores, ranks and actions equal the in-order stream's."""
+    hours = scenario()
+    in_eng, in_order = drive(event_stream(hours), MARKS)
+    late_eng, late = drive(event_stream(hours, complete_delay=20), MARKS)
+    assert [sig(r) for r in late] == [sig(r) for r in in_order]
+    assert sum(len(r.mints) for r in in_order) > 40 and any(r.actions for r in in_order)
+    assert late_eng.counters["pending_buffered"] > 16 and late_eng.counters["pending_replayed"] == late_eng.counters["pending_buffered"]
+    assert "pending_buffered" not in in_eng.counters and "pending_expired" not in late_eng.counters
+    assert not late_eng._pending and late_eng._pending_n == 0  # everything buffered was replayed (or dropped): nothing left behind
+    ms_in, ms_late = {m.mint: m for m in in_eng.members()}, {m.mint: m for m in late_eng.members()}
+    assert ms_in.keys() == ms_late.keys() and all((ms_in[k].s0, ms_in[k].v0) == (ms_late[k].s0, ms_late[k].v0) for k in ms_in)
+
+
+def _ps_row(mint: str, slot: int, bt: int | None, pool: str | None = "default", trader: str = "t", frn: int | None = None) -> dict:
+    return {"venue": "pumpswap", "mint": mint, "pool": pda_of(mint) if pool == "default" else pool, "trader": trader, "side": "buy", "sol_lamports": 10**9,
+            "token_raw": 10**6, "quote_reserve": 85 * 10**9, "base_reserve": 206 * 10**12, "slot": slot, "signature": f"s{slot}", "event_index": 0,
+            "tx_index": None, "block_time": bt, "virtual_quote_reserves": V}
+
+
+def _clock_row(bt: int, slot: int):
+    return _tape_row(bt, slot, "CLOCKMINT")
+
+
+def test_pending_prints_keep_arrival_order_and_expire_after_900_s():
+    eng = _tiny_engine()
+    t = BT0 + 5000
+    eng.ingest_trade(_ps_row("MQ", 300, t, trader="first"))
+    eng.ingest_trade(_ps_row("MQ", 300, t + 1, trader="second"))  # same slot: arrival order decides (frn)
+    eng.ingest_trade(_ps_row("MQ", 299, t + 2, trader="third"))
+    eng.ingest_trade(_ps_row("MQ", 301, None, trader="no_bt"))  # a null block_time is kept (aged by the clock at arrival)
+    eng.ingest_trade(_ps_row("MQ", 302, t + 3, pool=None))  # no pool: never the PDA pool, not buffered
+    eng.ingest_trade(_ps_row("MQ", 303, t + 4, pool="NOT_THE_PDA"))  # buffered (the pool is checked at replay), then dropped
+    assert eng.counters["pending_buffered"] == 5 and eng._pending_n == 5
+    eng.ingest_migration({"type": "complete", "mint": "MQ", "slot": 250, "block_time": t - 20})
+    p = eng.mints["MQ"].prints
+    assert [int(x) for x in p["slot"]] == [300, 300, 299, 301]  # arrival order; the non-PDA row did not get in
+    assert [int(x) for x in p["frn"]] == sorted(int(x) for x in p["frn"])
+    assert eng.counters["pending_replayed"] == 5 and eng._pending_n == 0 and not eng._pending
+    # a print older than 900 s of block_time (against the latest second ingested) is dropped on arrival, and a complete row that comes too late finds none
+    eng.ingest_trade(_clock_row(t + 2000, 400))
+    eng.ingest_trade(_ps_row("MR", 310, t + 1, trader="old"))
+    assert eng.counters["pending_expired"] == 1 and "MR" not in eng._pending
+    eng.ingest_trade(_ps_row("MR", 410, t + 1990, trader="young"))
+    eng.ingest_trade(_clock_row(t + 1990 + 1000, 500))  # the clock moves 1000 s on: the buffered print is now older than 900 s
+    eng.ingest_migration({"type": "complete", "mint": "MR", "slot": 405, "block_time": t + 1980})
+    assert len(eng.mints["MR"].prints["slot"]) == 0 and eng.counters["pending_expired"] == 2
+    eng.ingest_trade(_ps_row("MR", 420, t + 2995))  # a print after the complete row is added directly
+    assert len(eng.mints["MR"].prints["slot"]) == 1
+
+
+def test_pending_sweep_runs_with_the_clock_and_the_buffer_is_bounded(monkeypatch):
+    eng = _tiny_engine()
+    t = BT0 + 5000
+    eng.ingest_trade(_ps_row("MA", 300, t))
+    eng.ingest_trade(_clock_row(t + lv.PENDING_S + lv.PENDING_SWEEP_S, 400))
+    eng.ingest_trade(_ps_row("MB", 401, t + lv.PENDING_S + lv.PENDING_SWEEP_S))  # the sweep (by the clock) drops MA's print
+    assert list(eng._pending) == ["MB"] and eng._pending_n == 1 and eng.counters["pending_expired"] == 1
+    monkeypatch.setattr(lv, "PENDING_MAX_PER_MINT", 3)
+    monkeypatch.setattr(lv, "PENDING_MAX_TOTAL", 5)
+    eng = _tiny_engine()
+    for i in range(6):
+        eng.ingest_trade(_ps_row("MA", 300 + i, t + i))
+    assert eng.counters["pending_overflow"] == 3 and eng._pending_n == 3  # the earliest 3 are kept
+    for i in range(3):
+        eng.ingest_trade(_ps_row("MB", 310 + i, t + 10 + i))
+    assert eng._pending_n <= 5 and "MA" not in eng._pending and list(eng._pending) == ["MB"] and eng.counters["pending_evicted"] == 3
+    eng.ingest_migration({"type": "complete", "mint": "MA", "slot": 250, "block_time": t})  # evicted: nothing to replay, no error
+    assert len(eng.mints["MA"].prints["slot"]) == 0
