@@ -654,3 +654,24 @@ class LiveNetIsTheChainDeltaTests(LiveCase):
         self.assertTrue(t["exit_landed"])
         self.assertEqual(t["live_net_lamports"], buy_delta + sell_delta)
         self.assertEqual(t["live_net_lamports"], 21_000_000 - spend - 120_000)  # rent paid and refunded nets out; both fees are inside
+
+
+class P7AtC0Tests(LiveCase):
+    """DEC-032 Amendment 5 item 6b (DRAFT): the executor names the rung to the parity tool, and a `gap` trip stays inside every money total."""
+
+    def test_the_parity_state_names_the_rung(self):
+        e = self.live()
+        st = e.ex._parity_state(e.clock())
+        self.assertEqual(st["rung"], "C0")
+        self.assertEqual(st["rung"], e.ex._rung())
+
+    def test_a_gap_trip_counts_in_every_money_total(self):
+        e = self.live()
+        e.open_position()
+        now = e.clock()
+        before = (e.ex.committed_loss_lamports(), e.ex.daily_loss_now(now), e.ex.committed_loss_refusal(), e.ex._balance_refusal(now), e.ex._budget_stop(now))
+        e.ex.gates.recorder.note_gap(now)
+        self.assertTrue(e.ex.gates.recorder.trips[MINT]["gap"])
+        after = (e.ex.committed_loss_lamports(), e.ex.daily_loss_now(now), e.ex.committed_loss_refusal(), e.ex._balance_refusal(now), e.ex._budget_stop(now))
+        self.assertEqual(before, after)
+        self.assertGreater(before[0], 0)  # the open position is in committed loss, gap or not

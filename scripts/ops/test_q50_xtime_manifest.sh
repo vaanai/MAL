@@ -17,7 +17,7 @@ run() { # name, expected rc, X
   if [ "$rc" = "$2" ]; then echo "PASS $1 rc=$rc"; else echo "FAIL $1 rc=$rc expected $2"; echo "$out" | tail -3; FAIL=1; fi
 }
 run "head" 0 "$HEAD_SHA"
-for f in tools/pumpswap_tx.py tools/pumpswap_simulate.py tools/probe_executor.py tools/h5_arena_executor.py tools/probe_live.py; do
+for f in tools/pumpswap_tx.py tools/pumpswap_simulate.py tools/probe_executor.py tools/h5_arena_executor.py tools/arena_live_parity.py tools/probe_live.py; do
   git -C "$T/work" checkout -q -B probe "$HEAD_SHA"
   printf '\n# probe\n' >> "$T/work/$f"
   git -C "$T/work" commit -q -am "probe $f" || exit 2

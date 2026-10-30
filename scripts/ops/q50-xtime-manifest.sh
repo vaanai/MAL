@@ -4,19 +4,20 @@
 #
 # usage: q50-xtime-manifest.sh X [--no-archive]
 #   X  full 40-hex sha on origin/main (the merge sha of Q50's DEC copy)
-# Exit 0 only if: the 43-path list sha256 is 244f9e85...; exactly these FOUR pinned paths differ from the reviewed install 0526d5cd (ALLOWED below: the executor with blob 8369ab21... = the 5b merge 4646e542 plus #1085 (DEC-032 Am.5 gap hold) and #1091 (DEC-032 Am.7 owner-line file),
+# Exit 0 only if: the 43-path list sha256 is 244f9e85...; exactly these FIVE pinned paths differ from the reviewed install 0526d5cd (ALLOWED below: the executor with blob b96f023f... = the 5b merge 4646e542 plus #1085 (DEC-032 Am.5 gap hold), #1091 (DEC-032 Am.7 owner-line file) and #1106 (rung in the parity state); tools/arena_live_parity.py at PLP_BLOB (DEC-032 Am.5 item 6b),
 # plus the three mayhem fee recipient files, n_aIm_21YbvT68_A / PR #1027, each pinned by exact blob AND sha256 below); the other 39 paths are identical. Any other outcome: PINNED_SET_CHANGED / refusal, exit non-zero, no install.
 # It does NOT check the canary DEC copy (QP step 3): that file does not exist until the Q50 copy PR merges. That check is a separate checklist step (row s8.3, 'canary record check at X'), run and recorded by the manager.
 set -u
 REVIEWED=0526d5cd7ab6e1bfbc05e295185c37f7c31d72f1
 M5B=4646e5428f3663af863eeefc00ce05a38aa685b7
 EXEC_PATH=tools/h5_arena_executor.py
-ALLOWED='tools/h5_arena_executor.py tools/pumpswap_simulate.py tools/pumpswap_tx.py tools/probe_executor.py'  # mayhem fee recipient fix, n_aIm_21YbvT68_A
-EXEC_BLOB=8369ab21349b568efd0eda4fd64fde2e90510bca  # #1085 (DEC-032 Am.5 gap hold) + #1091 (DEC-032 Am.7 owner-line file); was 53337e087f672b685db3c4c43ec46ad70a1119ac (#1085 alone), before that 70d789ff00eb7fd79411745a270f31b2f4242f36 (the 5b blob)
+ALLOWED='tools/h5_arena_executor.py tools/pumpswap_simulate.py tools/pumpswap_tx.py tools/probe_executor.py tools/arena_live_parity.py'  # mayhem fee recipient fix, n_aIm_21YbvT68_A; + DEC-032 Am.5 item 6b (P7 gap share at C0, the fifth path, #1106)
+EXEC_BLOB=b96f023fe64eadd63a2d377e08a0d004a7038d20  # #1085 (Am.5 gap hold) + #1091 (Am.7 owner-line file) + #1106 (Am.5 item 6b: rung in the parity state); was 8369ab21349b568efd0eda4fd64fde2e90510bca (#1085 + #1091), before that 53337e087f672b685db3c4c43ec46ad70a1119ac (#1085 alone), before that 70d789ff00eb7fd79411745a270f31b2f4242f36 (the 5b blob)
 PTX_PATH=tools/pumpswap_tx.py; PTX_BLOB=2c9f6dda26ddbed50a6231b47a85c91723a19d50; PTX_SHA256=2c71d3c0d561968fd8836e688f21c50f5e19d1947a4be547b5e40a041d841655
 PSIM_PATH=tools/pumpswap_simulate.py; PSIM_BLOB=ec5f22a8048c100500bde49ca34622d88b6e6706; PSIM_SHA256=63d27af8f71066c480da0fb6d3a7cb163f6f623d2ec93b3e84bb5793d8156966
 PEX_PATH=tools/probe_executor.py; PEX_BLOB=07b2851b8086a7cd402574ad601af26a7344db84; PEX_SHA256=f786d4012a442f7136993caceae1a0b9062230148d1f7d04e907028a82022b01
-EXEC_SHA256=7e6d2f0e57388c0c3ea40eb85f6c208ad07aa2389067da70f0de6ca9679abfe0  # #1085 + #1091; was 4f5f443a71fa14606f57a75c210e2b006659dcc3217c03f841d8682d17ee9359 (#1085 alone); before that ef8ae9315095c32ff5179567ef63d64803ddd2bde723b09f74fdc82de4decdc4 (the 5b blob, installed at Y=c8fcf761)
+PLP_PATH=tools/arena_live_parity.py; PLP_BLOB=989e3de66ff5ac2784f5c210f3cde1263a9ddf88; PLP_SHA256=d22aff3cb7cc0e583d72b2e1f0704725033b44239ff61d7b5a8dcd417dc1cd90  # DEC-032 Am.5 item 6b (P7 gap share at C0), #1106
+EXEC_SHA256=9cb7ac22acc75247d8788044054349019c7656a656036421529e7da4d97f1fde  # #1085 + #1091 + #1106; was 7e6d2f0e57388c0c3ea40eb85f6c208ad07aa2389067da70f0de6ca9679abfe0 (#1085 + #1091), before that 4f5f443a71fa14606f57a75c210e2b006659dcc3217c03f841d8682d17ee9359 (#1085 alone); before that ef8ae9315095c32ff5179567ef63d64803ddd2bde723b09f74fdc82de4decdc4 (the 5b blob, installed at Y=c8fcf761)
 OLD_EXEC_SHA256=c451a61545dac25ebb5a561c5b59d711a3f2393ab3333cff1329576cebf3d0da
 LIST_SHA256=244f9e85dd5870bfc47be1cf535eadecd0e2783cc17fee11440ab0ea7ae83720
 REPO=${MAL_REPO:-/home/claude/.miscusi/repos/vaanai/MAL}
@@ -50,16 +51,16 @@ ALLOWED_SORTED=$(printf '%s\n' $ALLOWED | sort | tr '\n' ' ' | sed 's/ $//')
 b=$(g rev-parse "$X:$EXEC_PATH"); s=$(g show "$X:$EXEC_PATH" | sha256sum | cut -d' ' -f1)
 echo "executor blob at X=$b sha256=$s (expected $EXEC_BLOB / $EXEC_SHA256; old sha256 $OLD_EXEC_SHA256)"
 [ "$b" = "$EXEC_BLOB" ] && [ "$s" = "$EXEC_SHA256" ] || { echo "PINNED_SET_CHANGED: executor is not the pinned blob (5b + Am.5 gap hold)"; exit 3; }
-# the three mayhem files: exact blob and sha256, as the executor (any other content, even one appended line, is exit 3)
-for t in "$PTX_PATH $PTX_BLOB $PTX_SHA256" "$PSIM_PATH $PSIM_BLOB $PSIM_SHA256" "$PEX_PATH $PEX_BLOB $PEX_SHA256"; do
+# the three mayhem files and the parity tool (Am.5 item 6b): exact blob and sha256, as the executor (any other content, even one appended line, is exit 3)
+for t in "$PTX_PATH $PTX_BLOB $PTX_SHA256" "$PSIM_PATH $PSIM_BLOB $PSIM_SHA256" "$PEX_PATH $PEX_BLOB $PEX_SHA256" "$PLP_PATH $PLP_BLOB $PLP_SHA256"; do
   read -r tp tb ts <<EOT
 $t
 EOT
   b=$(g rev-parse "$X:$tp"); s=$(g show "$X:$tp" | sha256sum | cut -d' ' -f1)
   echo "$tp blob at X=$b sha256=$s (expected $tb / $ts)"
-  [ "$b" = "$tb" ] && [ "$s" = "$ts" ] || { echo "PINNED_SET_CHANGED: $tp is not the reviewed mayhem blob"; exit 3; }
+  [ "$b" = "$tb" ] && [ "$s" = "$ts" ] || { echo "PINNED_SET_CHANGED: $tp is not the reviewed blob"; exit 3; }
 done
-echo "RESULT (a): exactly FOUR changed pinned paths vs $REVIEWED ($ALLOWED_SORTED); $EXEC_PATH = the pinned blob (5b + Am.5 gap hold). The other $((N-4)) paths are identical."
+echo "RESULT (a): exactly FIVE changed pinned paths vs $REVIEWED ($ALLOWED_SORTED); $EXEC_PATH = the pinned blob (5b + Am.5 gap hold). The other $((N-5)) paths are identical."
 # step 5: whole-tree path diff (not only the pinned set), reviewed install vs X
 g diff --name-status "$REVIEWED" "$X" > "${TMPDIR:-/tmp}/q50-xtime-treediff.$$" || die "git diff failed"
 echo "step5: whole-tree changes $REVIEWED..$X; pinned-path changes listed below (FULL=1 lists every path):"
