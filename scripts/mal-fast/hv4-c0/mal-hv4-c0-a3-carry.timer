@@ -1,0 +1,11 @@
+[Unit]
+Description=MAL HV4 C0 A3 carry every 5 minutes (DEC-032 Am.3)
+Documentation=https://github.com/vaanai/MAL
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+AccuracySec=15s
+
+[Install]
+WantedBy=timers.target

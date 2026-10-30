@@ -1,0 +1,36 @@
+[Unit]
+Description=MAL HV4 C0 A3 carry: root-owned byte copy of the A3 daily record and the pooled guard's applied log for the bridge (DEC-032 Am.3)
+Documentation=https://github.com/vaanai/MAL
+
+[Service]
+Type=oneshot
+User=root
+# Why a copy: the bridge refuses an A3 record that is not owned by root or by its own user (tools/hv4_live_c0.a3_halt_problem, a3_record_owner_mode), and the
+# A3 loop (scripts/ops/a3-daily.sh, a MiScusi job) writes as the job user. The copy is root-owned 0644 in a root-owned dir. Stdlib sh only; it holds no key.
+ExecStart=/bin/sh /opt/mal-arena-bridge/current/scripts/mal-fast/hv4-c0/hv4-c0-a3-carry.sh
+TimeoutStartSec=60
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mal-hv4-c0/a3
+ProtectHome=read-only
+InaccessiblePaths=-/etc/mal-probe -/etc/mal-probe-rpc -/etc/mal-h5-arena-key -/etc/mal-hv4-c0-key
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX
+CapabilityBoundingSet=CAP_DAC_READ_SEARCH
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+MemoryMax=128M
+MemorySwapMax=0
+UMask=0022

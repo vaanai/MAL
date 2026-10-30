@@ -1,0 +1,74 @@
+[Unit]
+Description=MAL HV4 C0 bridge %i (DEC-032, profile hv4_c0), keyless DRY base unit: no signing, no sending, no network
+Documentation=https://github.com/vaanai/MAL
+# One instance per bot_id (the instance name is the bot_id, e.g. mal-hv4-c0-bridge@hv4-BIG-X). Two canaries = two instances, each with its own state,
+# parity, twins and tie-out dirs, its own config and (live only) its own wallet credential. This base unit has NO drop-in in a dry install: a drop-in
+# directory for an instance means a live switch (mal-hv4-c0-bridge-live-pinned.conf) and the keyless checklist fails on it.
+
+[Service]
+Type=simple
+User=mal-hv4-c0
+Group=mal-hv4-c0
+Nice=10
+WorkingDirectory=/opt/mal-arena-bridge/current
+Environment=LC_ALL=C.UTF-8
+Environment=LANG=C.UTF-8
+# Root-owned gate dirs. The window dir is root-owned and read-only to this unit: root creates <bot_id>.json there (the 14-day clock, QP #965 N-B/N-C), the
+# bridge only reads it. The inline check is root-run ("+"); %% is systemd's escape for %.
+ExecStartPre=+/usr/bin/env -i /bin/sh -c 'test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-arena-live)" = 0:0:755 && test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-hv4-c0)" = 0:0:755 && test "$(/usr/bin/stat -c %%u:%%g:%%a /var/lib/mal-hv4-c0/window)" = 0:0:755'
+# KEYLESS dry run: no --live, no LoadCredential, no EnvironmentFile. -E/-s: no PYTHON* variables, no user site. The working directory (the root-owned
+# pinned tree) is the only extra sys.path entry, which `-m` and the parity subprocess (cwd = the tree) need.
+ExecStart=/opt/mal-arena-bridge/venv/bin/python -E -s -B -u -m tools.arena_live_bridge --config /etc/mal-arena-live/hv4-c0-%i.dry.json
+Restart=on-failure
+RestartSec=10
+# Exit 2 is a deterministic start refusal (every hv4_c0 start gate): do not hot-loop.
+RestartPreventExitStatus=2
+NoNewPrivileges=true
+# Dry makes no RPC: no network at all. The live drop-in turns it on.
+PrivateNetwork=true
+RestrictAddressFamilies=AF_UNIX
+# Writes only this instance's state dir and parity dir (mal-hv4-c0:claude 3770: setgid so files are group claude, sticky so the job user can add STOP
+# but not remove the bridge's files). UMask 0027: state, trips and attempts are group-readable for the twin and tie-out jobs. Everything else is read-only.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mal-hv4-c0/state/%i /var/lib/mal-hv4-c0/parity/%i
+ReadOnlyPaths=/opt/mal-arena-bridge
+TemporaryFileSystem=/var/lib/mal:ro
+TemporaryFileSystem=/data:ro
+ProtectHome=tmpfs
+# Read-only binds (a missing source fails the start; no "-" prefix):
+#   the forwarded decision root of THIS bot (the puller's --dst; decisions/<bot_id>/ and transport/ under it)       = config root
+#   the recorded-read copy (root-created, root-owned 0444 byte copy of the bot's record; realpath must be /data/mal/arena/reads) = config reads_dir
+#   the paper twins dir of this bot (twins.jsonl + twins.jsonl.run.json)                                              = config twins_file
+#   the daily tie-out dir of this bot (LEDGER-<day>.json, tieout-<day>.json, EXCLUDED-TRIPS-<day>.json)               = config tieout_dir
+#   the A3 carry dir (a root-owned copy of daily.jsonl AND a3-applied.jsonl: the whole directory, DEC-032 Am.3 item 8.4) = config a3_record_file
+#   the 14-day window dir (write-once <bot_id>.json, created by root)
+BindReadOnlyPaths=/var/lib/mal-arena-feed/hv4/%i
+BindReadOnlyPaths=/data/mal/arena/reads
+BindReadOnlyPaths=/var/lib/mal-hv4-c0/twins/%i
+BindReadOnlyPaths=/var/lib/mal-hv4-c0/tieout/%i
+BindReadOnlyPaths=/var/lib/mal-hv4-c0/a3
+BindReadOnlyPaths=/var/lib/mal-hv4-c0/window
+InaccessiblePaths=-/etc/mal-probe -/etc/mal-probe-rpc -/etc/mal-h5-arena-key
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+PrivateDevices=true
+ProtectProc=invisible
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+RestrictNamespaces=true
+RestrictRealtime=true
+ProtectClock=true
+ProtectKernelLogs=true
+ProtectHostname=true
+UMask=0027
+LimitCORE=0
+MemoryMax=1500M
+MemorySwapMax=0
+
+[Install]
+WantedBy=multi-user.target
