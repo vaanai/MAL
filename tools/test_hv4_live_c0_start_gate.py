@@ -555,12 +555,18 @@ class PerBotLiveOkTests(TmpCase):
             self.assertEqual(bridges["hv4-BIG-X"].effective_live(), (False, "live_ok_other_book"))
             (etc / "hv4-BIG-X" / "LIVE_OK").write_text("hv4-BIG-X\n")
             self.assertEqual(bridges["hv4-BIG-X"].effective_live(), (False, "live_ok_owner_dec_missing"))  # LIVE_OK alone is not enough
+            # a file in BIG-X's place whose line names CON-X does not confirm BIG-X (no pin is taken from a file that is not good)
+            owner_fixture(self.tmp, "hv4-BIG-X").write_text(c0.OWNER_LINE_FMT.format(bot_id="hv4-CON-X") + "\n")
+            self.assertEqual(bridges["hv4-BIG-X"].effective_live(), (False, "live_ok_owner_line_missing"))
+            self.assertIsNone(bridges["hv4-BIG-X"].state.owner_pin)
             owner_fixture(self.tmp, "hv4-BIG-X")
             self.assertEqual(bridges["hv4-BIG-X"].effective_live(), (True, None))
-            # CON-X's owner file does not confirm BIG-X (its line names CON-X), and removing it unconfirms only CON-X
-            (dec / "hv4-BIG-X" / "CANARY_DEC.md").write_text(c0.OWNER_LINE_FMT.format(bot_id="hv4-CON-X") + "\n")
-            self.assertEqual(bridges["hv4-BIG-X"].effective_live(), (False, "live_ok_owner_line_missing"))
-            self.assertEqual(bridges["hv4-CON-X"].effective_live(), (True, None))
+            # removing CON-X's owner file (pinned at its first good check) latches CON-X only
+            os.unlink(dec / "hv4-CON-X" / "CANARY_DEC.md")
+            self.assertEqual(bridges["hv4-CON-X"].effective_live(), (False, "live_ok_owner_line_changed"))
+            self.assertIn("owner_line", bridges["hv4-CON-X"].state.latches)
+            self.assertEqual(bridges["hv4-BIG-X"].effective_live(), (True, None))
+            self.assertEqual(bridges["hv4-BIG-X"].state.latches, {})
 
 
 if __name__ == "__main__":

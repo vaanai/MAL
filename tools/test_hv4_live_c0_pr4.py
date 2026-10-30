@@ -434,10 +434,15 @@ class OwnerLineTests(TmpCase):
                 os.chmod(p.parent, mode)
                 self.assertEqual(c0.owner_line_problem(p, ARM, alb.root_ok_problem), "owner_dec_unsafe", oct(mode))
 
-    def test_no_sha_pin_exists_any_more(self):
+    def test_no_sha_of_the_owner_file_is_compiled_into_code(self):
+        """DEC-031 Am.21 item 4: no sha256 of the owner file or of a DEC copy in code. The identity pin lives in the bridge state (`pinned`), not in this module."""
         self.assertFalse(hasattr(c0, "CANARY_DEC_SHA256"))
         self.assertFalse(hasattr(c0, "OWNER_DEC_PATH"))
-        self.assertNotIn("pin", c0.owner_line_problem.__code__.co_varnames[:c0.owner_line_problem.__code__.co_argcount])
+        self.assertNotIn("pin", c0.owner_line_problem.__code__.co_varnames[:c0.owner_line_problem.__code__.co_argcount])  # no old-style `pin` argument
+        self.assertIn("pinned", c0.owner_line_problem.__code__.co_varnames[:c0.owner_line_problem.__code__.co_argcount])
+        for n in dir(c0):
+            if n.startswith(("OWNER", "CANARY")):
+                self.assertFalse(isinstance(getattr(c0, n), str) and len(getattr(c0, n)) == 64 and all(ch in "0123456789abcdef" for ch in getattr(c0, n)), n)
 
     def test_bad_bot_ids_are_refused_before_any_path_is_built(self):
         for bad in (None, "", "../x", "a/b", ".hidden", "x\x00y", 5):
@@ -461,10 +466,12 @@ class OwnerLineTests(TmpCase):
         b = e.bridge()
         self.assertEqual(b.owner_dec_path, Path("/etc/mal-hv4-c0/hv4-CON-X/CANARY_DEC.md"))  # the default is per bot
         self.assertEqual(b.effective_live(), (False, "live_ok_owner_dec_missing"))
+        b.owner_dec_path = self._fx(c0.OWNER_LINE_FMT.format(bot_id="hv4-BIG-X") + "\n")  # another bot's line: not good, so nothing is pinned
+        self.assertEqual(b.effective_live(), (False, "live_ok_owner_line_missing"))
+        self.assertIsNone(b.state.owner_pin)
         b.owner_dec_path = self._fx()
         self.assertEqual(b.effective_live(), (True, None))
-        b.owner_dec_path = self._fx(c0.OWNER_LINE_FMT.format(bot_id="hv4-BIG-X") + "\n")
-        self.assertEqual(b.effective_live(), (False, "live_ok_owner_line_missing"))
+        self.assertIsNotNone(b.state.owner_pin)  # pinned at the first good check (a later rewrite latches `owner_line`: OwnerPinBridgeTests)
 
     def test_main_live_refuses_without_the_owner_line_before_the_incomplete_refusal(self):
         e = Hv4Env(self.tmp)
