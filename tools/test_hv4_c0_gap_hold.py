@@ -319,3 +319,92 @@ class GapLogCacheTests(TmpCase):
         self.assertEqual(len(a[0]), 20_000)
         self.assertLess(warm, cold / 5)  # the reviewer's 53-82 ms per tick at 20,000 rows; a cache hit stats and reads one 512-byte tail
         self.assertLess(warm, 0.02)
+
+
+class Am21CostAndRearmTests(_Am21):
+    """Reviewer part A on c3f0109c: (1) a reviewed gap older than 73 h still in the stream re-armed the hold on every tick; (2) one save and one log line per
+    new record (33 s for 2,000 records inside a tick); (3) list membership (11.9 ms per tick at 2,000 known gaps)."""
+
+    env = Am21BridgeTests.env
+    bridge = staticmethod(Am21BridgeTests.bridge)
+    write = Am21BridgeTests.write
+    review = Am21BridgeTests.review
+    advance = Am21BridgeTests.advance
+    log = staticmethod(Am21BridgeTests.log)
+
+    def test_a_reviewed_gap_older_than_73h_never_rearms_the_hold_10_of_10_ticks(self):
+        e, b = self.env()
+        e.start()
+        g = e.clock.t
+        self.write(e, "tapegaps", {"kind": "data_loss", "ms": g})
+        b.tick()
+        first_hold = b.state.gap_hold_until_ms
+        self.review(e, g)
+        self.advance(e, c0.GAP_KNOWN_KEEP_MS + 1)
+        b.tick()
+        self.assertEqual(b.state.gap_known_ms, [])  # reviewed and aged out: pruned
+        held = 0
+        for _ in range(10):  # the row is still in the stream
+            self.advance(e, 1_000)
+            b.tick()
+            held += b.feed_refusal(e.clock.t) == c0.FEED_GAP_HOLD
+        self.assertEqual(held, 0)
+        self.assertEqual(b.state.gap_hold_until_ms, first_hold)
+        self.assertEqual(b.state.gap_known_ms, [])
+        self.assertEqual(len(self.log(b, "feed_gap_hold")), 1)
+
+    def test_an_aged_out_unreviewed_gap_is_tracked_for_the_24h_latch_but_never_arms_the_hold(self):
+        e, b = self.env()
+        e.start()
+        g = e.clock.t - c0.GAP_KNOWN_KEEP_MS - 1
+        self.write(e, "tapegaps", {"kind": "data_loss", "ms": g})
+        for _ in range(10):
+            b.tick()
+            self.assertNotEqual(b.feed_refusal(e.clock.t), c0.FEED_GAP_HOLD)
+            self.advance(e, 1_000)
+        self.assertEqual(b.state.gap_hold_until_ms, 0)
+        self.assertEqual(b.state.gap_known_ms, [g])
+        self.assertEqual(b.state.latches.get(c0.FEED_BREAK_LATCH), f"{c0.FEED_GAP_UNREVIEWED}:{g}")  # unreviewed for more than 24 h: the latch, not a hold
+
+    def test_2000_new_records_cost_one_save_one_log_line_and_do_not_block_an_exit(self):
+        e, b = self.env()
+        e.start()
+        e.entry_sz("o1")
+        b.tick()
+        e.port.events.append({"order_id": "o1", "event": "buy_landed", "landed_slot": 1002})
+        b.tick()
+        t = e.clock.t
+        self.write(e, "tapegaps", *({"kind": "data_loss", "ms": t - 2_000 + i} for i in range(2_000)))
+        e.exit("o1")
+        saves = []
+        orig = b._save
+        b._save = lambda: (saves.append(1), orig())[1]
+        t0 = time.perf_counter()
+        b.gap_tick(e.clock.t)
+        gap_s = time.perf_counter() - t0
+        self.assertEqual(len(saves), 1)
+        rows = self.log(b, "feed_gap_hold")
+        self.assertEqual(len(rows), 1)
+        self.assertEqual((rows[0]["n"], rows[0]["newest_ms"]), (2_000, t - 1))
+        self.assertLess(gap_s, 1.0)  # the reviewer measured 33 s
+        t0 = time.perf_counter()
+        b.tick()
+        self.assertLess(time.perf_counter() - t0, 2.0)
+        self.assertIn(("sell", "o1"), [c[:2] for c in e.port.calls])  # the exit went out in the same pass
+        self.assertEqual(len(b.state.gap_known_ms), 2_000)
+
+    def test_membership_is_a_set_and_a_steady_tick_with_2000_known_gaps_is_cheap(self):
+        e, b = self.env()
+        e.start()
+        t = e.clock.t
+        self.write(e, "tapegaps", *({"kind": "data_loss", "ms": t - 2_000 + i} for i in range(2_000)))
+        b.tick()
+        self.assertIsInstance(b._gap_known(), set)
+        self.assertEqual(len(b._gap_known()), 2_000)
+        b.gap_tick(e.clock.t)
+        n = 20
+        t0 = time.perf_counter()
+        for _ in range(n):
+            b.gap_tick(e.clock.t)
+        per = (time.perf_counter() - t0) / n
+        self.assertLess(per, 0.01)  # the reviewer measured 11.9 ms for the list scan alone
