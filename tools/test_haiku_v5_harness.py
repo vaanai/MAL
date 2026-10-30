@@ -121,8 +121,11 @@ def test_load_outcomes_refusals(tmp_path):
     with pytest.raises(h.Refused, match="cover"):
         h.load_outcomes(op, tids | {"extra"})
     p = tmp_path / "o2.jsonl"
-    p.write_text(op.read_text().replace('"flat_sol": ', '"flat_sol": 1e9, "x": ', 1))
-    with pytest.raises(h.Refused, match="finite SOL"):
+    p.write_text(op.read_text().replace('"flat_sol": ', '"flat_sol": 1e9, "x": ', 1))  # lamport units
+    with pytest.raises(h.Refused, match="outside"):
+        h.load_outcomes(p, tids)
+    p.write_text(op.read_text().replace('"flat_sol": ', '"flat_sol": "nan", "x": ', 1))
+    with pytest.raises(h.Refused, match="not a finite number"):
         h.load_outcomes(p, tids)
     p.write_text(op.read_text().replace('"basis": "el2"', '"basis": "frozen"', 1))
     with pytest.raises(h.Refused, match="mix pricing bases"):
@@ -685,3 +688,24 @@ def test_pilot_structure_reads_logs_and_ledger_only(tmp_path):
     assert all(b["cost_usd"] >= 0 for b in doc["by_kind"].values())
     total = ledger_summary(tmp_path / "ledger.jsonl")["total_cost_usd"]
     assert abs(doc["total_cost_usd"] - total) < 1e-12 and doc["matches_ledger_summary"] is True
+
+
+def test_outcome_range_admits_published_big_winners(tmp_path):
+    """Pilot #1906 refused a real row: MAP section 4 publishes top flat trades of +1.6759 SOL at the 0.1 SOL stake, above the first
+    |v| <= 1 SOL bound. The range is now [-0.2, 10] SOL: the extremes and the published winners load; just outside refuses."""
+    trig, outc = synth(5, DAYS[:1])
+    tids = [t.tid for t in trig]
+    for v, ok in ((1.6759, True), (h.OUTCOME_MAX_SOL, True), (h.OUTCOME_MIN_SOL, True), (-0.10011, True),
+                  (h.OUTCOME_MAX_SOL + 1e-9, False), (h.OUTCOME_MIN_SOL - 1e-9, False), (1.6759e9, False)):
+        o2 = dict(outc)
+        o2[tids[0]] = {"flat_sol": v, "press_sol": 0.0}
+        d = tmp_path / f"v{len(list(tmp_path.iterdir()))}"
+        d.mkdir()
+        _, op = write_inputs(d, trig, o2)
+        if ok:
+            got, basis = h.load_outcomes(op, set(tids))
+            assert got[tids[0]]["flat_sol"] == v and basis == "el2"
+        else:
+            with pytest.raises(h.Refused, match="outside"):
+                h.load_outcomes(op, set(tids))
+    assert h.OUTCOME_MIN_SOL == -0.2 and h.OUTCOME_MAX_SOL == 10.0
