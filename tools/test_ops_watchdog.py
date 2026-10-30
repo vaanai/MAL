@@ -203,14 +203,51 @@ def at(h):
     return NOW + dt.timedelta(hours=h)
 
 
-def test_new_states_unwatched_are_silent(tmp_path):
-    j = jl((1, "Starting", "a"), (2, "PASS", "b"), (3, "FAIL", "c"), (4, "Interrupted", "d"),
-           (5, "pass", "e"), (6, "STARTING", "f"), (7, "fail", "g"), (8, "INTERRUPTED", "h"))
+def test_starting_and_pass_unwatched_are_silent(tmp_path):
+    j = jl((1, "Starting", "a"), (2, "PASS", "b"), (5, "pass", "e"), (6, "STARTING", "f"))
+    for h in (0, 1):
+        c, ctx = mk(tmp_path, j, now=at(h))
+        line, fresh = passn(tmp_path, c, ctx)
+        assert fresh == [] and line["alert_keys"] == []
+
+
+def test_unwatched_fail_and_interrupted_alert_once_like_failed(tmp_path):
+    base = jl((1, "FAIL", "old"), (2, "Interrupted", "old"), (3, "Failed", "old"))
+    c, ctx = mk(tmp_path, base)
+    assert passn(tmp_path, c, ctx)[1] == []  # first pass baselines all three
+    new = jl((1, "FAIL", "old"), (2, "Interrupted", "old"), (3, "Failed", "old"),
+             (4, "FAIL", "new"), (5, "Interrupted", "new"), (6, "Failed", "new"), (7, "fail", "lc"),
+             (8, "INTERRUPTED", "uc"))
+    c, ctx = mk(tmp_path, new, now=at(1))
+    fresh = passn(tmp_path, c, ctx)[1]
+    assert sorted((a["key"], a["severity"]) for a in fresh) == sorted([
+        ("job:4:FAIL", "medium"), ("job:5:Interrupted", "medium"), ("job:6:Failed", "medium"),
+        ("job:7:fail", "medium"), ("job:8:INTERRUPTED", "medium")])
+    assert all(a["msg"].startswith("job #") and "newly" in a["msg"] for a in fresh)
+    for h in (2, 8, 20):  # once: never re-alerted, inside or past the dedupe window
+        c, ctx = mk(tmp_path, new, now=at(h))
+        assert passn(tmp_path, c, ctx)[1] == []
+
+
+def test_unwatched_fail_interrupted_baselined_on_first_pass_after_deploy(tmp_path):
+    # state written by the previous version: failed_seen exists, ended_seen does not
+    st = tmp_path / "st"
+    st.mkdir()
+    (st / "state.json").write_text(json.dumps({"failed_seen": []}))
+    j = jl((1, "FAIL", "listed before deploy"), (2, "Interrupted", "listed before deploy"))
     c, ctx = mk(tmp_path, j)
-    line, fresh = passn(tmp_path, c, ctx)
-    assert fresh == [] and line["alert_keys"] == []
-    c, ctx = mk(tmp_path, j, now=at(1))  # FAIL/Interrupted are not "newly failed" either
-    assert passn(tmp_path, c, ctx)[1] == []
+    assert passn(tmp_path, c, ctx)[1] == []  # no burst of old jobs
+    c, ctx = mk(tmp_path, jl((1, "FAIL", "a"), (2, "Interrupted", "b"), (9, "FAIL", "new")), now=at(1))
+    assert [a["key"] for a in passn(tmp_path, c, ctx)[1]] == ["job:9:FAIL"]
+
+
+def test_watched_fail_interrupted_not_double_alerted_by_unwatched_rule(tmp_path):
+    cfg = {"watch": [1, 2]}
+    c, ctx = mk(tmp_path, jl((7, "Running", "x")), cfg=cfg)
+    passn(tmp_path, c, ctx)  # baseline
+    c, ctx = mk(tmp_path, jl((1, "FAIL", "w"), (2, "Interrupted", "w"), (7, "Running", "x")), cfg=cfg, now=at(1))
+    fresh = passn(tmp_path, c, ctx)[1]
+    assert [(a["key"], a["severity"]) for a in fresh] == [("job:1:FAIL", "info"), ("job:2:Interrupted", "medium")]
 
 
 def test_states_are_case_insensitive_when_watched(tmp_path):
@@ -235,11 +272,13 @@ def test_watched_fail_is_info_once(tmp_path):
         assert passn(tmp_path, c, ctx)[1] == []
 
 
-def test_watched_interrupted_is_medium_unwatched_ignored(tmp_path):
-    j = jl((4, "Interrupted", "lost"), (5, "Interrupted", "other"))
+def test_watched_interrupted_is_medium_and_re_alerts(tmp_path):
+    j = jl((4, "Interrupted", "lost"))
     c, ctx = mk(tmp_path, j, cfg={"watch": [4]})
     fresh = passn(tmp_path, c, ctx)[1]
     assert [(a["key"], a["severity"]) for a in fresh] == [("job:4:Interrupted", "medium")]
+    c, ctx = mk(tmp_path, j, cfg={"watch": [4]}, now=at(7))
+    assert [a["key"] for a in passn(tmp_path, c, ctx)[1]] == ["job:4:Interrupted"]
 
 
 def test_watched_done_job_aged_out_is_info_once(tmp_path):
@@ -295,11 +334,13 @@ def test_watch_seen_state_pruned_and_tolerates_junk(tmp_path):
     passn(tmp_path, c, ctx)
     st = json.loads((tmp_path / "st" / "state.json").read_text())
     assert st["watch_seen"] == {"5": "running"}
-    st["watch_seen"] = ["junk"]  # a damaged value must not crash the check
-    (tmp_path / "st" / "state.json").write_text(json.dumps(st))
-    c, ctx = mk(tmp_path, jl(), cfg=cfg, now=at(1))
-    line, fresh = passn(tmp_path, c, ctx)
-    assert [a["key"] for a in fresh] == ["job:5:missing"] and line["checks"]["jobs"] != "error"
+    for junk in (["junk"], {"5": ["unhashable"]}, {"5": {"a": 1}}, {"5": 7}):
+        st["watch_seen"] = junk  # a damaged value must not crash the check
+        (tmp_path / "st" / "state.json").write_text(json.dumps(st))
+        c, ctx = mk(tmp_path, jl(), cfg=cfg, now=at(1))
+        line, fresh = passn(tmp_path, c, ctx)
+        assert line["checks"]["jobs"] != "error", junk
+        assert "job:5:missing" in line["alert_keys"], junk
 
 
 def test_only_job_list_and_ps_are_run(tmp_path):
