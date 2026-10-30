@@ -1,5 +1,6 @@
 """tools/q50s1_register.py: the one-command registration of s1 in its own arena root, with its own A3 books files (DEC-031 Amendment 22 items 9 and 10).
-Fixtures only (tmp arena root and tmp HOME); no host path and no real bots.json is touched."""
+s1's root is $HOME/data/arena with HOME overridden to s1's home (/home/claude/s1home on the host); Q50's root is the REAL home's data/arena (pwd is mocked here).
+Fixtures only (tmp s1 home, tmp real home); no host path and no real bots.json is touched."""
 from __future__ import annotations
 
 import contextlib
@@ -8,6 +9,7 @@ import io
 import json
 import os
 import tempfile
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -38,14 +40,16 @@ class Setup(unittest.TestCase):
         self._d = tempfile.TemporaryDirectory()
         self.addCleanup(self._d.cleanup)
         base = Path(self._d.name)
-        self.home = base / "home"
-        self.q50_root = self.home / "data" / "arena"  # Q50's root: $HOME/data/arena
+        self.real_home = base / "real-home"  # the account's real home (password database); Q50's root is real_home/data/arena
+        self.q50_root = self.real_home / "data" / "arena"
         self.q50_root.mkdir(parents=True)
-        env = mock.patch.dict(os.environ, {"HOME": str(self.home)})
-        env.start()
-        self.addCleanup(env.stop)
-        self.arena = base / "s1-root"  # s1's own root (an empty directory the manager made)
-        self.arena.mkdir()
+        self.s1_home = base / "s1home"  # every s1 process runs with HOME = s1's home
+        self.arena = self.s1_home / "data" / "arena"  # s1's own root (an empty directory the manager made)
+        self.arena.mkdir(parents=True)
+        for p in (mock.patch.dict(os.environ, {"HOME": str(self.s1_home)}),
+                  mock.patch.object(R.pwd, "getpwuid", return_value=types.SimpleNamespace(pw_dir=str(self.real_home)))):
+            p.start()
+            self.addCleanup(p.stop)
         self.books = self.arena / "a3-books.json"
         self.read_books = self.arena / "a3-books-read.json"
         self.reg = self.arena / "bots.json"
@@ -71,6 +75,11 @@ class Pins(unittest.TestCase):
         self.assertEqual(R.A3_BOOKS_TEXT, json.dumps({"legacy_bot_ids": [], "new_rule_bot_ids": ["h5v1q50-boostfloor-s1"], "fees_check_bot_ids": ["h5v1q50-boostfloor-s1"]}) + "\n")
         self.assertEqual(R.A3_BOOKS_READ_TEXT, json.dumps({"legacy_bot_ids": [], "new_rule_bot_ids": ["h5v1q50-boostfloor-s1"]}) + "\n")
         self.assertEqual(R.S1_ID, "h5v1q50-boostfloor-s1")
+
+    def test_the_root_constants(self):
+        self.assertEqual((R.S1_HOME, R.S1_ROOT, R.HV4_ROOT), ("/home/claude/s1home", "/home/claude/s1home/data/arena", "/data/mal/arena"))
+        self.assertEqual(os.path.join(R.S1_HOME, *sc.h5.ARENA_HOME_SUBDIR), R.S1_ROOT)  # under HOME=S1_HOME the pinned scorer's $HOME/data/arena IS s1's root
+        self.assertEqual(R.HV4_ROOT, sc.h5.ARENA_ROOT)
 
     def test_the_sha256_pins_are_recomputed(self):
         self.assertEqual(R.A3_BOOKS_SHA256, sha(BOOKS_3KEY))
@@ -201,8 +210,14 @@ class Tests(Setup):
         with self.assertRaises(Refused):
             self.run_(apply=True)
 
+    def test_q50_root_is_the_real_homes_not_the_overridden_home(self):
+        self.assertEqual(os.path.expanduser("~"), str(self.s1_home))  # HOME is s1's home in this process ...
+        self.assertEqual(R.q50_root(), os.path.realpath(self.q50_root))  # ... and Q50's root is still the real home's
+        self.assertNotEqual(R.q50_root(), os.path.realpath(self.arena))
+        self.assertEqual(self.run_()["arena_root"], os.path.realpath(self.arena))  # s1's own root ($HOME/data/arena under the override) is accepted
+
     def test_q50_root_is_refused_by_realpath(self):
-        for root in (self.q50_root, self.home / "data" / ".." / "data" / "arena"):
+        for root in (self.q50_root, self.real_home / "data" / ".." / "data" / "arena"):
             with self.assertRaisesRegex(Refused, "Q50's root"):
                 self.run_(apply=True, root=root)
             with self.assertRaisesRegex(Refused, "Q50's root"):
@@ -212,6 +227,16 @@ class Tests(Setup):
         with self.assertRaisesRegex(Refused, "Q50's root"):
             self.run_(apply=True, root=link)
         self.assertEqual(os.listdir(self.q50_root), [])  # not even a lock file
+
+    def test_hv4_root_is_refused_by_realpath_before_anything_is_opened(self):
+        for root in ("/data/mal/arena", "/data/mal/arena/../arena"):
+            for apply in (False, True):
+                with self.assertRaisesRegex(Refused, "HV4's root"):
+                    self.run_(apply=apply, root=root)
+        link = Path(self._d.name) / "link-to-hv4"
+        link.symlink_to("/data/mal/arena")
+        with self.assertRaisesRegex(Refused, "HV4's root"):
+            self.run_(root=link)
 
     def test_a_registry_that_holds_another_book_is_refused_before_any_write(self):
         self.register_other("a1", "a2")
@@ -288,7 +313,7 @@ class Tests(Setup):
 class Cli(Setup):
     def test_cli_main_dry_run_prints_the_report_then_both_texts_verbatim(self):
         out, err = io.StringIO(), io.StringIO()
-        with mock.patch.object(sc.h5, "ARENA_ROOT", str(self.arena)), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             rc = R.main(["--arena-root", str(self.arena), "--books-file", str(self.books), "--now-ms", str(NOW), "--host", "h", "--preclock-notebook-ref", REF])
         self.assertEqual(rc, 0, err.getvalue())
         lines = out.getvalue().split("\n")
@@ -300,39 +325,57 @@ class Cli(Setup):
 
     def test_cli_default_books_file_and_default_endpoints(self):
         out = io.StringIO()
-        with mock.patch.object(sc.h5, "ARENA_ROOT", str(self.arena)), contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
             self.assertEqual(R.main(["--arena-root", str(self.arena), "--now-ms", str(NOW), "--preclock-notebook-ref", REF]), 0)
         rep = json.loads(out.getvalue().split("\n")[0])
         self.assertEqual((rep["endpoints"], rep["a3_books"]), (list(R.ENDPOINTS), os.path.join(os.path.realpath(self.arena), "a3-books.json")))
 
     def test_cli_refuses_now_ms_with_apply_and_writes_nothing(self):
         err = io.StringIO()
-        with mock.patch.object(sc.h5, "ARENA_ROOT", str(self.arena)), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
             rc = R.main(["--arena-root", str(self.arena), "--books-file", str(self.books), "--now-ms", str(NOW), "--apply", "--preclock-notebook-ref", REF])
         self.assertEqual(rc, 2)  # --now-ms is never accepted with --apply
         self.assertIn("--now-ms is not accepted with --apply", err.getvalue())
         self.assertEqual(self.names(), [])
 
-    def test_cli_refuses_q50_root_through_the_real_root_check(self):
+    def test_cli_refuses_q50_root_even_when_home_is_not_overridden(self):
         err = io.StringIO()
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):  # $HOME/data/arena passes sc._arena_root; this tool refuses it
-            rc = R.main(["--arena-root", str(self.q50_root), "--now-ms", str(NOW), "--preclock-notebook-ref", REF])
+        with mock.patch.dict(os.environ, {"HOME": str(self.real_home)}), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = R.main(["--arena-root", str(self.q50_root), "--now-ms", str(NOW), "--preclock-notebook-ref", REF])  # $HOME/data/arena passes the scorer's check; this tool refuses it
         self.assertEqual(rc, 2)
         self.assertIn("REFUSED", err.getvalue())
         self.assertIn("Q50's root", err.getvalue())
         self.assertEqual(os.listdir(self.q50_root), [])
 
-    def test_cli_refuses_a_root_the_scorer_does_not_accept(self):
+    def test_cli_with_home_overridden_refuses_the_real_homes_root_at_the_scorers_check(self):
         err = io.StringIO()
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
-            rc = R.main(["--arena-root", str(self.arena), "--now-ms", str(NOW), "--preclock-notebook-ref", REF])
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):  # HOME = s1home: the pinned scorer's check no longer accepts the real home's root
+            rc = R.main(["--arena-root", str(self.q50_root), "--now-ms", str(NOW), "--preclock-notebook-ref", REF])
         self.assertEqual(rc, 2)
         self.assertIn("REFUSED", err.getvalue())
+        self.assertEqual(os.listdir(self.q50_root), [])
+
+    def test_cli_refuses_hv4s_root_which_the_scorer_accepts(self):
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = R.main(["--arena-root", "/data/mal/arena", "--now-ms", str(NOW), "--preclock-notebook-ref", REF])
+        self.assertEqual(rc, 2)
+        self.assertIn("HV4's root", err.getvalue())
+
+    def test_cli_refuses_a_root_the_scorer_does_not_accept(self):
+        elsewhere = Path(self._d.name) / "elsewhere"
+        elsewhere.mkdir()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = R.main(["--arena-root", str(elsewhere), "--now-ms", str(NOW), "--preclock-notebook-ref", REF])
+        self.assertEqual(rc, 2)
+        self.assertIn("REFUSED", err.getvalue())
+        self.assertEqual(os.listdir(elsewhere), [])
         self.assertEqual(self.names(), [])
 
     def test_preclock_notebook_ref_is_required_and_format_checked(self):
         base = ["--arena-root", str(self.arena), "--books-file", str(self.books), "--now-ms", str(NOW)]
-        with mock.patch.object(sc.h5, "ARENA_ROOT", str(self.arena)), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
                 R.main(base)  # missing: argparse exits 2
             for bad in ("", "short", "has space!", "x" * 81, "a/b/c/d/e"):
