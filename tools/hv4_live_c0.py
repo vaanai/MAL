@@ -520,8 +520,10 @@ WINDOW_MANUAL_NOTE = ("MANUAL RECOVERY: do not delete or recreate the window fil
                       "a new first start would restart the 14-day cap")
 
 
-READS_DIR_NOTE = ("on the bridge host (mal-fast-0) root creates the canonical reads dir: `install -d -m 0755 -o root -g root /data/mal/arena /data/mal/arena/reads` "
-                  "(both root:root 0755; /data/mal/arena must exist, the sealed-alias check fails closed without it), then installs the arm's recorded read as a "
+READS_DIR_NOTE = ("on the bridge host (mal-fast-0) root checks /data/mal/arena and /data/mal/arena/reads and creates each ONLY IF ABSENT: "
+                  "`install -d -m 0755 -o root -g root /data/mal/arena /data/mal/arena/reads` (both root:root 0755; never chown or chmod an existing directory: "
+                  "one that exists with another owner or mode is a stop for the manager; /data/mal/arena must exist, the sealed-alias check fails closed without it), "
+                  "then installs the arm's recorded read as a "
                   "byte copy `/data/mal/arena/reads/<bot_id>.json` root:root 0444 whose sha256 equals the read job's RECORD line (docs/runbooks/hv4-c0-bridge.md)")
 READS_DIR_LABELS = ("read_record_dir_absent", "read_record_missing", "read_record_dir_owner_mode", "read_record_owner_mode")
 
