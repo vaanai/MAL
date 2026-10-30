@@ -123,7 +123,11 @@ class AstIdentityVsF50(unittest.TestCase):
         if src is None:  # fail, never skip
             self.fail(f"object {F50} is not in this clone: git fetch it")
         self.old = _defs(ast.parse(src))
-        self.new = _defs(ast.parse(SRC.read_text()))
+        # at q60-base-1 this class proves the S* = F50 link; Q60* = S* is tools/test_h5_shadow_q60.py (f)/(g)  (QP-RULING-1030-q60-tag-tests R1)
+        r = subprocess.run(["git", "-C", str(REPO), "show", "5c2ab7c64b21358619e37068c6a53e4d183512ea:tools/h5_shadow.py"], capture_output=True, text=True)
+        if r.returncode != 0:  # fail, never skip
+            self.fail("object 5c2ab7c64b21358619e37068c6a53e4d183512ea (S*) is not in this clone: git fetch it")
+        self.new = _defs(ast.parse(r.stdout))
 
     def test_only_succ_end_engine_and_run_live_differ_at_top_level(self):
         diff = sorted(k for k in set(self.old) | set(self.new) if k not in self.old or k not in self.new or ast.dump(self.old[k]) != ast.dump(self.new[k]))

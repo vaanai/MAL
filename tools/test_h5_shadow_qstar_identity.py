@@ -15,7 +15,7 @@ REPO = SRC.parent.parent
 
 # top-level definitions changed on purpose (the flag, its checks, the Q50 constants, the start record, replay compare)
 CHANGED_TOP = {"Q50_REPLAY_CUTOFF_HOUR", "refuse_replay", "check_q_star", "_q_star_arg", "Q_STAR_ALLOWED", "Q50_RULE_ID", "Q50_RULE_SHA256", "Engine", "run_live", "run_replay", "compare_frozen", "build_parser", "main",
-               "SUCC_END_MS"}  # S* (QP-RULING-1024-successor R7(b)); S* vs F50 identity: tools/test_h5_shadow_succ_identity.py
+               "SUCC_END_MS", "Q_STAR_RULES"}  # q60-base-1: Q_STAR_RULES, DEC-031 Am.19 item 2 (b), see tools/test_h5_shadow_q60.py (f); S* (QP-RULING-1024-successor R7(b)); S* vs F50 identity: tools/test_h5_shadow_succ_identity.py
 # Engine methods changed: the constructor and the places that compared against the constant (+ the trigger record)
 CHANGED_ENGINE = {"__init__", "_fire", "_evaluate", "_eval",
                   "_h5_sealed_now"}  # S*: the fresh-forward end (QP-RULING-1024-successor R7(b))

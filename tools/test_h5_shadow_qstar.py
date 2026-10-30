@@ -101,21 +101,21 @@ class QStarValidationTests(unittest.TestCase):
         self.assertEqual(h5.build_parser().parse_args(["--q-star-sol=40"]).q_star_sol, 40.0)
 
     def test_parser_refuses_everything_else(self):
-        for bad in ("0", "-1", "nan", "inf", "-inf", "abc", "", "1e999", "42.5", "45", "60", "50.0001", "0.4"):
+        for bad in ("0", "-1", "nan", "inf", "-inf", "abc", "", "1e999", "42.5", "45", "70", "50.0001", "0.4"):  # q60-base-1: DEC-031 Am.19 item 2 (a)/(b)/(e); QP-RULING-1030-q60-tag-tests
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit, msg=bad):
                 h5.build_parser().parse_args(["--q-star-sol", bad])
 
     def test_engine_refuses_everything_else(self):
-        for bad in (0, -5, float("nan"), float("inf"), True, None, "50", [50], 45, 60.0):
+        for bad in (0, -5, float("nan"), float("inf"), True, None, "50", [50], 45, 70.0):  # q60-base-1: DEC-031 Am.19 item 2 (a)/(b)/(e); QP-RULING-1030-q60-tag-tests
             with self.assertRaises(ValueError, msg=repr(bad)):
                 h5.Engine(lambda r: None, q_star_sol=bad)
-        for ok in (40, 40.0, 50, 50.0):
+        for ok in (40, 40.0, 50, 50.0, 60, 60.0):  # q60-base-1: DEC-031 Am.19 item 2 (a)/(b)/(e); QP-RULING-1030-q60-tag-tests
             self.assertEqual(h5.Engine(lambda r: None, q_star_sol=ok).q_star_sol, float(ok))
 
     def test_check_q_star(self):
         self.assertEqual(h5.check_q_star(50), 50.0)
         self.assertIsInstance(h5.check_q_star(50), float)
-        self.assertEqual(h5.Q_STAR_ALLOWED, (40.0, 50.0))
+        self.assertEqual(h5.Q_STAR_ALLOWED, (40.0, 50.0, 60.0))  # q60-base-1: DEC-031 Am.19 item 2 (a)/(b)/(e); QP-RULING-1030-q60-tag-tests
 
 
 class QStarMainTests(unittest.TestCase):
@@ -181,7 +181,7 @@ class QStarMainTests(unittest.TestCase):
             return None
 
         with mock.patch.object(h5, "run_feed", no_feed), mock.patch.object(h5, "build_source", lambda *a, **k: None), mock.patch.object(h5, "Engine", spy), \
-                mock.patch.object(h5, "Q50_RULE_SHA256", sha):
+                mock.patch.object(h5, "Q_STAR_RULES", {**h5.Q_STAR_RULES, 50.0: (h5.Q50_RULE_ID, sha)}):  # q60-base-1: DEC-031 Am.19 item 2 (a)/(b)/(e); QP-RULING-1030-q60-tag-tests
             self.assertEqual(asyncio.run(h5.run_live(args)), 0)
         rows = [json.loads(line) for f in sorted(Path(d).glob("h5-shadow-*.jsonl")) for line in f.read_text().splitlines()]
         shutil.rmtree(d, ignore_errors=True)

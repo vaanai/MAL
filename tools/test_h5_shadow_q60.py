@@ -104,7 +104,8 @@ class Q60TriggerTests(unittest.TestCase):
             self.assertEqual({r["variant"] for r in trig}, {"pv", "fv"}, q)
             self.assertLessEqual(trig[0]["q_pv_post_sol"], 60.0, q)
             self.assertEqual(trig[0]["q_star_sol"], 60.0, q)
-        for q in (60.000001, 60.5, 65.0):
+        self.assertEqual(types(decisions(60.0, q_star_sol=60.0), "trigger")[0]["q_pv_post_sol"], 60.0)  # the fixture lands exactly on 60e9
+        for q in (60.000000001, 60.000001, 60.5, 65.0):
             self.assertEqual(types(decisions(q, q_star_sol=60.0), "trigger"), [], q)
 
     def test_the_boundary_is_one_lamport_wide_on_the_engines_own_comparison(self):
@@ -470,9 +471,18 @@ class CompareFrozenRefusalTests(unittest.TestCase):
         self.assertEqual(inspect.signature(h5.compare_frozen).parameters["q_star_sol"].default, 40.0)
         self.assertEqual(inspect.signature(sstar_module().compare_frozen), inspect.signature(h5.compare_frozen))
 
-    def test_main_replay_compare_reports_the_refusal_not_a_silent_zero(self):
-        # run_replay reaches compare_frozen only through its own path; the refusal is the Refused class main/run_replay already handle
-        self.assertTrue(issubclass(h5.Refused, Exception))
+    def test_run_replay_with_compare_frozen_fails_closed_at_q60(self):
+        # run_replay catches Refused only around its two refuse_replay calls, so the compare_frozen refusal propagates (a non-zero exit with a
+        # traceback, not "REFUSED:" rc 2). It is still fail-closed: it raises before the summary is printed, so no "compare" block ever appears.
+        args = h5.build_parser().parse_args(["--q-star-sol", "60", "--replay-tape", "/x", "--replay-hours", "2026-09-20T00", "--work-dir", "/tmp/q60-nowork",
+                                             "--compare-frozen", "/x/boostdip_frozen_conf.parquet"])
+        out = io.StringIO()
+        with mock.patch.object(h5, "replay_rows", lambda *a, **k: ([], {}, {})), mock.patch.object(h5, "replay", lambda *a, **k: None), \
+                mock.patch.dict(sys.modules, {"pandas": _fake_pandas(FROZEN_ROWS)}), contextlib.redirect_stdout(out):
+            with self.assertRaisesRegex(h5.Refused, "no frozen row"):
+                h5.run_replay(args)
+        self.assertNotIn("compare", out.getvalue())
+        self.assertEqual(out.getvalue(), "")
 
 
 if __name__ == "__main__":
