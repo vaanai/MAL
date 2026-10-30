@@ -1,0 +1,17 @@
+{
+  "profile": "hv4_c0",
+  "mode": "live",
+  "bot_id": "<AT-EVENT:bot_id>",
+  "frozen_sha": "9ed4c5ff63935696b2a89150e13565e123047754",
+  "root": "/var/lib/mal-arena-feed/hv4/<AT-EVENT:bot_id>",
+  "state_dir": "/var/lib/mal-hv4-c0/state/<AT-EVENT:bot_id>",
+  "reads_dir": "/data/mal/arena/reads",
+  "a3_record_file": "/var/lib/mal-hv4-c0/a3/daily.jsonl",
+  "parity_dir": "/var/lib/mal-hv4-c0/parity/<AT-EVENT:bot_id>",
+  "twins_file": "/var/lib/mal-hv4-c0/twins/<AT-EVENT:bot_id>/twins.jsonl",
+  "tieout_dir": "/var/lib/mal-hv4-c0/tieout/<AT-EVENT:bot_id>",
+  "funded_lamports": "<AT-EVENT:funded_lamports>",
+  "end_ms": "<AT-EVENT:end_ms>",
+  "max_hold_ms": "<AT-EVENT:max_hold_ms>",
+  "rps": 2.0
+}
