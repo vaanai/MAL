@@ -3,7 +3,7 @@
 # Pack: /data/mal/hunt-1008/ops/manager18/Q50-READ-PACK-1030.md (pins, citations, refusal paths, disclosures). Written 2026-10-30 by the manager18 q50-read-pack worker.
 #
 # Runs on mal-fast-0 from a MiScusi checkout of the commit that holds this file (cwd = that checkout's root). The read tools never run from that checkout: the script makes
-# (or re-verifies) a git worktree of a31d9864829d1f0645fef8be095eb8df575c2d00 (DEC-031 Am.18 item 6.1; docs/HANDOFF.md section 1 Q50 row) and runs every tool from there,
+# a fresh git worktree of a31d9864829d1f0645fef8be095eb8df575c2d00 for this run only (removed at exit; DEC-031 Am.18 item 6.1; docs/HANDOFF.md section 1 Q50 row) and runs every tool from there,
 # with the books v2 byte-copy (sha256 819c699d...).
 #
 # Default mode (the read), in order; each step refuses (exit 2, nothing read) on any doubt:
@@ -109,7 +109,7 @@ if [ "$TEST" = 0 ]; then
   POLLS_LEFT=0
 fi
 INSTANT=$LEDGER/$BOT/q50-read-instant.json
-WT=$OUT_DIR/wt-a31d9864
+WT=$OUT_DIR/wt-a31d9864.$$   # this run's own worktree (a waiter job and a read job never share one); removed by the EXIT trap
 O=$OUT_DIR
 
 now_ms() { if [ "$TEST" = 1 ]; then echo "$NOW_FAKE"; else echo "$(date -u +%s)000"; fi; }
@@ -197,11 +197,12 @@ check_wt() {
 }
 preflight() {
   git -C "$JOBREPO" rev-parse --git-dir >/dev/null 2>&1 || refuse "cwd is not a git checkout"
+  git -C "$JOBREPO" cat-file -e "$PIN_HEAD^{commit}" 2>/dev/null || git -C "$JOBREPO" fetch -q origin "$PIN_HEAD" >/dev/null 2>&1 || true
   git -C "$JOBREPO" cat-file -e "$PIN_HEAD^{commit}" 2>/dev/null || refuse "the checkout does not contain $PIN_HEAD (a shallow clone?)"
   [ -d "$OUT_DIR" ] || refuse "out dir missing: $OUT_DIR (run --setup first)"
-  if [ ! -e "$WT" ]; then
-    git -C "$JOBREPO" worktree add --detach "$WT" "$PIN_HEAD" >/dev/null 2>&1 || refuse "git worktree add $WT $PIN_HEAD failed"
-  fi
+  [ ! -e "$WT" ] || refuse "worktree path $WT exists"
+  trap 'git -C "$JOBREPO" worktree remove --force "$WT" >/dev/null 2>&1 || true' EXIT
+  git -C "$JOBREPO" worktree add --detach "$WT" "$PIN_HEAD" >/dev/null 2>&1 || refuse "git worktree add $WT $PIN_HEAD failed"
   check_wt
   IMP=$(cd "$WT" && "$PY" -E -B -c 'import os, numpy, tools.arena_h5_read as R, tools.arena_h5_legs as L, tools.arena_h5_inband as I
 print(os.path.realpath(R.__file__))' 2>/dev/null) || refuse "$PY cannot import numpy and the read tools from $WT"

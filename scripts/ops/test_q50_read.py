@@ -90,8 +90,7 @@ class Base(unittest.TestCase):
                 p.chmod(p.stat().st_mode | stat.S_IWUSR)
             except OSError:
                 pass
-        wt = self.out / "wt-a31d9864"
-        if wt.exists():
+        for wt in self.out.glob("wt-a31d9864.*"):
             subprocess.run(["git", "-C", str(CLONE), "worktree", "remove", "--force", str(wt)], capture_output=True)
         shutil.rmtree(self.root, ignore_errors=True)
 
@@ -162,6 +161,7 @@ class Pass(Base):
         self.assertEqual(rep["books"][Q50]["read_instant_ms"], B)
         self.assertEqual(rep["multiplicity"]["N"], 40)
         self.assertTrue(json.loads((self.out / "q50-inband.json").read_text().splitlines()[0])["band"]["quote_source"] == "shadow-wsol")
+        self.assertEqual(list(self.out.glob("wt-a31d9864*")), [], "the run's worktree is removed at exit")
         rc, log2 = self.run_script()
         self.assertEqual(rc, 2)
         self.assertIn("exists: the one read of", log2)
@@ -291,7 +291,7 @@ class Pass(Base):
         self.assertIn("production runs only on mal-fast-0", log)
         self.assertNotIn("TEST MODE", log)
         self.assertEqual(self.outputs(), [])
-        self.assertFalse((self.out / "wt-a31d9864").exists())
+        self.assertEqual(list(self.out.glob("wt-a31d9864*")), [])
 
     def test_fence_refuses_real_paths(self):
         for kw in ({"Q50T_LEDGER": "/data/mal/arena/ledger"}, {"Q50T_ARENA": "/data/mal/arena"}):
@@ -300,15 +300,28 @@ class Pass(Base):
             self.assertTrue("must not touch real paths" in log or "test path missing" in log, log)
         self.assertEqual(self.outputs(), [])
 
-    def test_tampered_worktree_refuses(self):
-        rc, log = self.run_script("--check")
-        self.assertEqual(rc, 0, log)
-        f = self.out / "wt-a31d9864" / "tools" / "arena_stack.py"
-        f.write_text(f.read_text() + "\n# edited\n")
-        rc, log = self.run_script()
+    def test_worktree_edited_during_the_wait_refuses_and_worktrees_are_removed(self):
+        body = self.instant.read_bytes()
+        self.instant.unlink()
+
+        def later():  # while the run waits for the instant: edit a tool in its worktree, then let the record appear
+            for _ in range(100):
+                wts = list(self.out.glob("wt-a31d9864.*"))
+                if wts:
+                    break
+                time.sleep(0.2)
+            time.sleep(1)
+            f = wts[0] / "tools" / "arena_stack.py"
+            f.write_text(f.read_text() + "\n# edited\n")
+            self.instant.write_bytes(body)
+        th = threading.Thread(target=later)
+        th.start()
+        rc, log = self.run_script(env=self.env(Q50T_POLLS=30))
+        th.join()
         self.assertEqual(rc, 2, log)
         self.assertIn("has local changes", log)
         self.assertEqual(self.outputs(), [])
+        self.assertEqual(list(self.out.glob("wt-a31d9864.*")), [])
 
     def test_bad_params_refuse_before_the_read(self):
         sd = f"SHADOW_DIR={self.arena / 'h5-q50-2026-10-24'}\n"
