@@ -132,3 +132,19 @@ A line whose question lacks that text does not count. An answer "NO SLOT" leaves
 - Quant-proof's walk-2 pre-registration checklist, 2026-10-16 (section 0 blockers, section 2 books and Holm).
 - push-2026-10-16-round2, "Confirmation power".
 - No sealed data, walk 2 hour, forward-paper P&L, or canary or shadow outcome record was opened to write this file.
+
+## Amendment 1 (2026-10-30, records only, outcome-blind): what a push-family PASS leads to
+
+**Status: in force on merge, with quant-proof's OK on the exact head and a reviewer verdict on the PR**, in the same PR as DEC-032 Amendment 8 and the ledger sub-entry of its item B1. Written 2026-10-30 (`date -u` 22:04Z at start) by a worker for manager18, from quant-proof's ruling `/data/mal/hunt-1008/ops/manager18/QP-RULING-1030-r4b-live.md` §2 (A1). It must merge by 2026-11-07T03:00Z (EXP-027's E) for the reasons given in DEC-032 Amendment 8 ("Merge deadline").
+
+**Why.** Section 1 ("What a PASS leads to") and section 1a (§7 bullet) send a push-family PASS "only [to] the DEC-018 path and the owner's yes", and section 5 says "DEC-018 and the owner's yes govern anything live". DEC-018 is "Proposed" and written for EXP-012 alone (its §1 step 1 is EXP-012's FINAL read). So a push-family PASS had no in-force live path. That gap protected nothing: a push-family read is stricter than the DEC-031 screen that DEC-032 accepts (all deciding cells, day-level p ≤ 0.025/k, plus the ex-best-block and ex-best-date terms of section 1a).
+
+**The change, for push-family books only.**
+1. In section 1 ("What a PASS leads to"), section 1a (the §7 bullet: "leads only to the DEC-018 path and the pre-live checks at the book's own operating point") and section 5 ("Not a live authorization"), "the DEC-018 path" reads **"a live canary under [DEC-032](DEC-032-arena-canary-template.md) as amended by its Amendment 8 (admission of push-family books, the C0 terms, the confirmation track and the rung R), and the owner's yes"**. "A paper pass is not live evidence" and "Size stays governed by DEC-020" stand.
+2. EXP-027 is not edited: its sentences at :136, :420 and :579 ("leads only to the DEC-018 path and the owner's yes", "DEC-030 §1, §5") refer to this DEC and so read through this amendment. No EXP-027 byte, pinned line, Window-record key or read rule changes.
+
+**Does not change.** The slot, the Bonferroni level 0.025/k, the stop rule, k, m, any window, the ledger route R1, the H5-domain exclusion of section 3, any seal, or any other family. It names no new book.
+
+**Seal statement.** Written before E, so no outcome of EXP-027's counted window exists or was seen; no file under `/data/mal/blocks`, `/data/mal/meta-capture`, the arena tape, `/data/mal/r4b`, or any shadow, canary or probe output was opened.
+
+No book has cleared the promotion gate. Nothing here says a book makes money.
