@@ -37,15 +37,28 @@ DEFAULTS = {
     "helm_dir": "/data/mal/hunt-1008/push-1016/hunt29/p1/",
     "spill_globs": [],
 }
-OK_STATES = {"running", "queued", "paused"}
-DONE_STATES = {"done", "passed"}
+# Job states are compared case-insensitively ("PASS" == "Passed"-family).
+OK_STATES = {"running", "queued", "paused", "starting"}
+DONE_STATES = {"done", "passed", "pass"}
+# FAIL = MiScusi ended the job as a verdict: it wrote ok:false (or verdict
+# fail), WHATEVER its exit code. That includes safety exits (h5-enforce-loop.sh
+# exits 4 with ok:false), so an unwatched FAIL is a real failure class.
+VERDICT_FAIL = {"fail"}
+# Interrupted = stopped without an exit status (killed outside MiScusi, or the
+# machine went down): a lost job.
+LOST_STATES = {"interrupted"}
+# Unwatched jobs in these states alert once per seq:state, like Failed/Killed.
+ENDED_NEW = VERDICT_FAIL | LOST_STATES
+# A watched job last seen in one of these may age out of `job list` quietly.
+FINISHED_STATES = DONE_STATES | VERDICT_FAIL
+AGED_OUT = "aged_out"  # watch_seen marker: absence already recorded as info
 BAD_NEW = {"failed", "killed"}
 ROW = re.compile(r"^#(\d+)\s+(\S+)\s*(.*)$")
 TRADES = re.compile(r"^trades-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl(\.zst)?$")
 # The ONLY allowlisted exception to the forward-* listing refusal: names of
 # this one directory (manager disk-guard practice since 10-16; names only).
 WALKER_TRADES = "/data/mal/blocks/forward-1016/trades"
-KNOWN = OK_STATES | DONE_STATES | BAD_NEW | {"cancelled"}
+KNOWN = OK_STATES | DONE_STATES | VERDICT_FAIL | LOST_STATES | BAD_NEW | {"cancelled"}
 FWD = "/data/mal/blocks/forward-*"
 
 
@@ -151,7 +164,16 @@ def A(key, sev, msg):
 def check_jobs(cfg, ctx):
     """First pass baselines already-Failed jobs without alerting. Watched jobs
     in a bad state re-alert every realert_hours until fixed (intended).
-    Unwatched Cancelled is normal and never alerts."""
+    Unwatched Cancelled is normal and never alerts.
+
+    Known states (case-insensitive): starting is in flight; pass is done;
+    fail is a job MiScusi ended as a verdict (ok:false, any exit code);
+    interrupted is a job the machine lost. Unwatched fail/interrupted alert
+    once per seq:state (medium, baselined silently on the first pass, tracked
+    in `ended_seen`), exactly like unwatched Failed/Killed. Watched fail is
+    info once; watched interrupted is medium and re-alerts. A watched job last
+    seen in a finished state that has aged out of `job list` is info once, not
+    an alert; one never seen finished stays a high alert."""
     text = ctx["run"]([MISCUSI, "job", "list"])
     rows = parse_job_list(text)  # raises -> check_error:jobs
     jobs = {k: v[0] for k, v in rows.items()}
@@ -160,18 +182,39 @@ def check_jobs(cfg, ctx):
     alerts, info = [], []
     done_ok = set(cfg["expected_done_ok"])
     watch = set(cfg["watch"])
+    prev_seen = ctx["state"].get("watch_seen", {})
+    if not isinstance(prev_seen, dict):
+        prev_seen = {}
+    wkeys = {str(x) for x in cfg["watch"]}
+    watch_seen = {k: v for k, v in prev_seen.items() if k in wkeys}  # prune unwatched
     for seq in cfg["watch"]:
         st = jobs.get(seq)
         if st is None:
-            alerts.append(A("job:%d:missing" % seq, "high", "job #%d not in list" % seq))
+            last = prev_seen.get(str(seq))
+            if isinstance(last, str) and last in FINISHED_STATES:
+                info.append("job #%d aged out of the list (last seen %s)" % (seq, last))
+                watch_seen[str(seq)] = AGED_OUT
+            elif not (isinstance(last, str) and last == AGED_OUT):
+                alerts.append(A("job:%d:missing" % seq, "high", "job #%d not in list" % seq))
             continue
         s = st.lower()
+        watch_seen[str(seq)] = s
         if s in OK_STATES:
             continue
         if s in DONE_STATES and seq in done_ok:
             info.append("job #%d %s (expected)" % (seq, st))
             continue
+        if s in VERDICT_FAIL:
+            if prev_seen.get(str(seq)) != s:  # a verdict is final: tell once
+                alerts.append(A("job:%d:%s" % (seq, st), "info",
+                                "job #%d is %s (ended as a verdict: ok:false, any exit code)" % (seq, st)))
+            continue
+        if s in LOST_STATES:
+            alerts.append(A("job:%d:%s" % (seq, st), "medium",
+                            "job #%d is %s (the machine lost the job)" % (seq, st)))
+            continue
         alerts.append(A("job:%d:%s" % (seq, st), "high", "job #%d is %s" % (seq, st)))
+    ctx["new_state"]["watch_seen"] = watch_seen
     for seq, st in jobs.items():
         if st.lower() not in KNOWN and seq not in watch:
             alerts.append(A("job:%d:%s" % (seq, st), "medium", "job #%d unknown status %s" % (seq, st)))
@@ -185,6 +228,20 @@ def check_jobs(cfg, ctx):
             if tag not in seen and not first and seq not in watch:
                 alerts.append(A("job:%d:%s" % (seq, st), "medium", "job #%d newly %s" % (seq, st)))
     ctx["new_state"]["failed_seen"] = sorted(seen | cur)
+    # FAIL / Interrupted, unwatched: same once-only alert as Failed. Own key so
+    # the first pass after deploy baselines the ones already in the list
+    # (they were already alerted as "unknown status") instead of a burst.
+    ended_prev = ctx["state"].get("ended_seen")
+    first_e = not isinstance(ended_prev, list)
+    ended_seen = set() if first_e else {x for x in ended_prev if isinstance(x, str)}
+    ended_cur = set()
+    for seq, st in jobs.items():
+        if st.lower() in ENDED_NEW:
+            tag = "%d:%s" % (seq, st)
+            ended_cur.add(tag)
+            if tag not in ended_seen and not first_e and seq not in watch:
+                alerts.append(A("job:%d:%s" % (seq, st), "medium", "job #%d newly %s" % (seq, st)))
+    ctx["new_state"]["ended_seen"] = sorted(ended_seen | ended_cur)
     return alerts, info, {"n_jobs": len(jobs)}
 
 
@@ -350,7 +407,7 @@ def run_pass(cfg, state_dir, ctx, dry_run=False):
             summ[name] = "error"
             if name == "jobs":
                 # keep prior failed_seen if the list could not be read
-                for k in ("failed_seen",):
+                for k in ("failed_seen", "ended_seen"):
                     if k in state:
                         ctx["new_state"][k] = state[k]
     ts = iso(now)

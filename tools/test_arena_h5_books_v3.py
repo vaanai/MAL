@@ -97,12 +97,16 @@ class BooksV3(Tmp):
         self.assertEqual(B.instant_file("h5v1-boostfloor-a1"), "read-instant.json")
         self.assertEqual(B.AM11_FILES, {qi.INSTANT_FILE: qi.RULE, si.INSTANT_FILE: si.RULE})
 
-    def test_check_recorded_instant_uses_am11_for_s1_with_the_records_own_clock_and_end(self):
-        counted = [si.CLOCK_MS + 3_600_000 + d * DAY + i for d in range(5) for i in range(20)]
+    def test_check_recorded_instant_uses_the_s1_power_n_rule_with_the_records_own_clock_and_end(self):
+        counted = [si.CLOCK_MS + 3_600_000 + d * DAY + i for d in range(5) for i in range(40)]  # 200 counted trades on 5 dates: branch (i) at 11-11
         doc = {"clock_start_ms": si.CLOCK_MS, "end_seal_ms": si.END_MS}
         self.assertIsNone(B.check_recorded_instant(S1, doc, counted, counted, si.EARLIEST_BOUNDARY_MS))
         self.assertIsNotNone(B.check_recorded_instant(S1, doc, counted, counted, si.EARLIEST_BOUNDARY_MS + DAY))
-        self.assertIsNotNone(B.check_recorded_instant(S1, doc, counted[:-1], counted[:-1], si.EARLIEST_BOUNDARY_MS))
+        self.assertIsNotNone(B.check_recorded_instant(S1, doc, counted[:-1], counted[:-1], si.EARLIEST_BOUNDARY_MS))  # 199: not at 11-11
+        self.assertIsNone(B.check_recorded_instant(S1, doc, counted[:-1], counted[:-1], si.SCREEN_CAP_MS))  # 199 >= 100 at S_cap: branch (ii)
+        hundred = counted[::2]  # 100 on 5 dates: Q50's rule would read at 11-11, s1's reads at S_cap only
+        self.assertIsNotNone(B.check_recorded_instant(S1, doc, hundred, hundred, si.EARLIEST_BOUNDARY_MS))
+        self.assertIsNone(B.check_recorded_instant(S1, doc, hundred, hundred, si.SCREEN_CAP_MS))
         for bad in ({"clock_start_ms": si.CLOCK_MS + DAY, "end_seal_ms": si.END_MS}, {"clock_start_ms": si.CLOCK_MS, "end_seal_ms": si.END_MS - DAY}):
             self.assertIn("table row", B.check_recorded_instant(S1, bad, counted, counted, si.EARLIEST_BOUNDARY_MS))
         # Q50 is unchanged: its record's own clock and end
