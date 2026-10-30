@@ -151,7 +151,7 @@ esac''')
         (self.arena / "bots.json").write_text(json.dumps({"bots": {"h5v1q50-boostfloor-s1": e}}))
 
     def run_(self, now=WIN_FROM + 60, git_status="", extra_env=None):
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_ARENA": str(self.home / "data" / "arena"), "Q50S1_KEY_FILE": str(self.d / "keyfile"), "Q50S1_NOW_EPOCH": str(now), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py),
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HOME": str(self.home), "Q50S1_KEY_FILE": str(self.d / "keyfile"), "Q50S1_NOW_EPOCH": str(now), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py),
                "FAKE_GIT_STATUS": git_status, "Q50S1_CGROUP_SLICE_DIR": str(self.cg), **(extra_env or {})}
         return subprocess.run(["sh", str(SHD), "--check"], capture_output=True, text=True, env=env, cwd=REPO)
 
@@ -212,7 +212,7 @@ esac''')
         self.assertEqual(self.run_().returncode, 7)
 
     def test_bad_arguments_and_clock(self):
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_ARENA": str(self.home / "data" / "arena")}
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HOME": str(self.home)}
         for a in (["--run"], ["--check", "x"], ["x"]):
             r = subprocess.run(["sh", str(SHD), *a], capture_output=True, text=True, env=env, cwd=REPO)
             self.assertEqual(r.returncode, 2, a)
@@ -234,25 +234,68 @@ class ShadowFeed(ShadowCheck):
         r = self.run_()
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
         self.assertIn(f"--keyed-url {self.WS2} -- --fresh-forward ARENA --q-star-sol 50", r.stdout)
-        self.assertIn(f"--ws-url {self.WS1} --ws-url {self.WS2} (systemd-run --description=q50s1-shadow; the key is added inside the process)", r.stdout)
+        self.assertIn(f"--ws-url {self.WS1} --ws-url {self.WS2} (systemd-run --description=q50s1-shadow; the key is added inside the process; HOME={self.home} for the process; "
+                      "segment 1 ends 2026-11-19T04:30:00Z with exit 0)", r.stdout)
         self.assertNotIn(self.KEY, r.stdout + r.stderr)
         self.assertNotIn("solanavibestation", r.stdout)
         self.assertIsNone(KEYLIKE.search(r.stdout + r.stderr))
 
-    def test_a_real_start_has_no_key_in_argv_unit_properties_description_or_output(self):
-        rec = self.d / "systemd-run.argv"
-        self.stub("systemd-run", f'for a; do printf "%s\\n" "$a"; done > {rec}\nexit 0')
-        self.stub("date", f'if [ "$*" = "-u +%s" ]; then echo {WIN_FROM + 60}; else exec /bin/date "$@"; fi')
+    def real_start(self, *args, seg_end=1795062600, home=None):
+        """Segment start with stubs: systemd-run records its argv, moves the fake clock to the segment end and sleeps; systemctl stop kills it. Returns (result, argv)."""
+        rec, now, pid = self.d / "systemd-run.argv", self.d / "now", self.d / "pid"
+        now.write_text(str(WIN_FROM + 60) if "--successor" not in args else str(1793923200 + 86400))
+        self.stub("systemd-run", f'for a; do printf "%s\\n" "$a"; done > {rec}\necho {seg_end} > {now}\necho $$ > {pid}\nexec sleep 30')
+        self.stub("date", f'if [ "$*" = "-u +%s" ]; then cat {now}; else exec /bin/date "$@"; fi')
+        sc = (self.bin / "systemctl").read_text()
+        (self.bin / "systemctl").write_text(sc.replace('case "$*" in', f'case "$*" in\n  *"stop q50s1-shadow.scope"*) kill $(cat {pid}) 2>/dev/null; exit 0 ;;', 1))
         self.write_line(registered_at_ms=(WIN_FROM - 3600) * 1000)
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_ARENA": str(self.home / "data" / "arena"), "Q50S1_KEY_FILE": str(self.d / "keyfile"), "Q50S1_REPO": str(self.d),
-               "ARENA_H5_PYTHON": str(self.py), "FAKE_GIT_STATUS": ""}
-        # a real start ignores the cgroup override and reads the real slice files: a `cat` stub answers for exactly those two paths (2 GiB used, no page cache)
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HOME": str(home or self.home), "Q50S1_KEY_FILE": str(self.d / "keyfile"),
+               "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py), "FAKE_GIT_STATUS": "", "Q50S1_POLL_S": "1"}
         self.stub("cat", 'case "$1" in /sys/fs/cgroup/user.slice/user-1002.slice/memory.current) echo 2147483648 ;; '
                          '/sys/fs/cgroup/user.slice/user-1002.slice/memory.stat) printf "active_file 0\\ninactive_file 0\\nfile_mapped 0\\n" ;; *) exec /bin/cat "$@" ;; esac')
-        r = subprocess.run(["sh", str(SHD)], capture_output=True, text=True, env=env, cwd=REPO)
+        r = subprocess.run(["sh", str(SHD), *args], capture_output=True, text=True, env=env, cwd=REPO, timeout=60)
+        return r, (rec.read_text().splitlines() if rec.exists() else [])
+
+    def test_segment_1_stops_itself_at_the_handover_with_exit_0(self):
+        r, argv = self.real_start()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("starting segment 1 (ends 2026-11-19T04:30:00Z)", r.stdout)
+        self.assertIn("segment 1 end 2026-11-19T04:30:00Z reached", r.stdout)
+        self.assertIn(f"--out-dir\n{self.arena}/h5-q50s1-2026-11-05\n", "\n".join(argv) + "\n")
+        self.assertIn(f"HOME={self.home}", argv)  # the shadow's own HOME: $HOME/data/arena is s1's root for S*'s out-dir check
+
+    def test_segment_2_successor_uses_a_succ_dir_and_ends_by_e(self):
+        r, argv = self.real_start("--successor", seg_end=1796086800)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("starting segment 2 (ends 2026-11-20T16:00:00Z)", r.stdout)  # clock + 1 d + 13 d 16 h (before E + 1 h)
+        self.assertIn(f"{self.arena}/h5-q50s1-2026-11-07-succ", "\n".join(argv))
+
+    def test_a_successor_before_the_clock_refuses_4_and_check_reports(self):
+        r = self.run_(extra_env={})  # segment 1 check inside the window
+        self.assertEqual(r.returncode, 0, r.stderr)
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HOME": str(self.home), "Q50S1_KEY_FILE": str(self.d / "keyfile"), "Q50S1_NOW_EPOCH": str(WIN_FROM + 60),
+               "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py), "FAKE_GIT_STATUS": "", "Q50S1_CGROUP_SLICE_DIR": str(self.cg)}
+        r = subprocess.run(["sh", str(SHD), "--check", "--successor"], capture_output=True, text=True, env=env, cwd=REPO)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("a successor segment starts only in [clock, E)", r.stderr)
+        self.assertIn("h5-q50s1-2026-11-05-succ", r.stdout)
+
+    def test_a_shadow_that_dies_before_its_segment_end_exits_nonzero(self):
+        self.stub("sleep", "exit 0")
+        r, _ = self.real_start(seg_end=WIN_FROM + 120)  # the fake clock stays before the end; the fake shadow (sleep stub) ends at once
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("before the segment end", r.stderr)
+
+    def test_q50s_root_or_hv4s_root_is_refused(self):
+        real_home = subprocess.run(["sh", "-c", 'getent passwd "$(id -u)" | cut -d: -f6'], capture_output=True, text=True).stdout.strip()
+        r, _ = self.real_start(home=real_home)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("Q50's or HV4's root", r.stderr)
+
+    def test_a_real_start_has_no_key_in_argv_unit_properties_description_or_output(self):
+        r, argv = self.real_start()
         out = r.stdout + r.stderr
         self.assertEqual(r.returncode, 0, out)
-        argv = rec.read_text().splitlines()
         i = argv.index("env")
         unit_part = argv[:i]  # systemd-run's own options: unit name, description, properties
         self.assertIn("--description=q50s1-shadow", unit_part)
@@ -290,7 +333,7 @@ class ShadowCheckMemory(unittest.TestCase):
         self.stub("git", f'touch {self.mark}.git\nexit 99')
 
     def mem(self, *args):
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_ARENA": str(self.home / "data" / "arena"), "Q50S1_KEY_FILE": str(self.d / "keyfile"), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py), "Q50S1_CGROUP_SLICE_DIR": str(self.cg)}
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HOME": str(self.home), "Q50S1_KEY_FILE": str(self.d / "keyfile"), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py), "Q50S1_CGROUP_SLICE_DIR": str(self.cg)}
         return subprocess.run(["sh", str(SHD), "--check-memory", *args], capture_output=True, text=True, env=env, cwd=REPO)
 
     def assert_untouched(self):
@@ -457,7 +500,7 @@ class ShadowCheckMemory(unittest.TestCase):
 
     def test_a_real_start_on_the_wrong_host_still_exits_6_first(self):
         self.stub("hostname", "echo mal-research-0")
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_ARENA": str(self.home / "data" / "arena"), "Q50S1_KEY_FILE": str(self.d / "keyfile"), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py)}
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HOME": str(self.home), "Q50S1_KEY_FILE": str(self.d / "keyfile"), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py)}
         r = subprocess.run(["sh", str(SHD)], capture_output=True, text=True, env=env, cwd=REPO)
         self.assertEqual(r.returncode, 6, r.stdout + r.stderr)
         self.assert_untouched()
@@ -465,7 +508,7 @@ class ShadowCheckMemory(unittest.TestCase):
     def test_arguments(self):
         for a in (["x"], ["--check"]):
             self.assertEqual(self.mem(*a).returncode, 2, a)
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_ARENA": str(self.home / "data" / "arena")}
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HOME": str(self.home)}
         r = subprocess.run(["sh", str(SHD), "--check-memory-only"], capture_output=True, text=True, env=env, cwd=REPO)
         self.assertEqual(r.returncode, 2)
 

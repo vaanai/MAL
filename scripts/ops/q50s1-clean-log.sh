@@ -8,13 +8,16 @@
 # counted. --out-dir: the book's dir (default $ARENA/h5-q50s1-2026-11-05): prefix counts of start/stop/error/hb rows, hb rows' trailing t_ms, gap rows' kind and flags_pools, the
 # status file's mtime, the errors file's size. Scope: `systemctl --user show q50s1-shadow.scope` ActiveState and ActiveEnterTimestamp only.
 # Exit: 0 CLEAN, 1 NOT_CLEAN, 2 args or unreadable input, 6 host.
-# Env (optional): Q50S1_ARENA (s1's own root, DEC-031 Amendment 22 item 9; default /data/mal/arena), Q50S1_JOBS_DIR (default $HOME/.miscusi/jobs).
+# Env (optional): Q50S1_HOME (s1's own HOME, default /home/claude/s1home; root = $Q50S1_HOME/data/arena, DEC-031 Amendment 22 item 9), Q50S1_JOBS_DIR (default $HOME/.miscusi/jobs).
 set -eu
 set -f
 [ -n "${HOME:-}" ] || { echo "q50s1-clean-log: HOME is not set" >&2; exit 2; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
-ARENA="${Q50S1_ARENA:-/data/mal/arena}"
+S1HOME="${Q50S1_HOME:-/home/claude/s1home}"   # s1's own HOME: every s1 python that checks an arena root runs with HOME=$S1HOME (DEC-031 Am.22 item 9)
+ARENA="$S1HOME/data/arena"   # s1's own arena root: the pinned scorer and S*'s h5_shadow accept only /data/mal/arena (HV4's on fast-0, #1097) or $HOME/data/arena
+REALHOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"; [ -n "$REALHOME" ] || REALHOME="$HOME"
+case "$(realpath -m "$ARENA")" in "$(realpath -m "$REALHOME/data/arena")"|"$(realpath -m /data/mal/arena)") echo "q50s1-clean-log: $ARENA is Q50's or HV4's root, never s1's (Amendment 22 item 9)" >&2; exit 2 ;; esac
 JOBS="${Q50S1_JOBS_DIR:-$HOME/.miscusi/jobs}"
 UNIT=q50s1-shadow
 JUID=""

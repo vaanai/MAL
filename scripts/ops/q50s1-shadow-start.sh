@@ -8,6 +8,12 @@
 # code_sha continues the same book as a gap record; a new process is a manager decision), 1 CPU, job memory 256 MB (the job holds only sh; its cap is summed in S; the shadow's cap is
 # its scope's MemoryMax=1500M), a time limit past 2026-12-01T00Z (E, DEC-031 Amendment 22 item 8.1; a MiScusi job lives at most 14 d, extensions included: see the s1 runbook).
 #   `sh scripts/ops/q50s1-shadow-start.sh --check` runs every check below and prints the command it would run; it starts nothing and is allowed at any time of day.
+#   SEGMENTS (a MiScusi job lives at most 14 d; an `after` job starts only after a SUCCESSFUL end): this job is segment 1. It stops the shadow itself at SEG1_END
+#   2026-11-19T04:30:00Z and exits 0. Segment 2 is `sh scripts/ops/q50s1-shadow-start.sh --successor`, submitted `after` segment 1. It needs now in [clock, E), uses the out dir
+#   $ARENA/h5-q50s1-<UTC date>-succ, makes the same checks and launch, and ends itself at min(2026-12-01T01:00:00Z, its start + 13 d 18 h) with exit 0. Same frozen_sha,
+#   same bot_id, no new clock: a restart under DEC-031 Amendment 6 item 4 (restart-gap hours excluded as decision-input hours; positions open at the stop are section 1.4
+#   exclusions). The handover instant is fixed here, before the clock and outcome-blind. A segment whose shadow ends before its segment end exits 1 (its successor does not
+#   start; the manager submits --successor by hand). `--check --successor` rehearses segment 2.
 #   `sh scripts/ops/q50s1-shadow-start.sh --check-memory` runs only checks 1 (reported) and 6, so the memory fit can be evaluated before registration (QP C2 on #1065): it reads no
 #      bots.json, no tag and no worktree, creates nothing, starts nothing, prints every running user unit with its MemoryMax and MemoryCurrent (and MemoryPeak for an allowlisted
 #      uncapped unit), and exits 0 (fits) or 10 (would refuse). It is also the ops-line check that runs before other heavy work on mal-fast-0 while an H5 shadow runs (Erratum 1).
@@ -19,7 +25,7 @@
 #      $HOME/data/arena-src/q50s1-5c2ab7c6 (never main, never F50 a5f41370) and must have no tracked-file change (exit 5);
 #   4. bots.json holds the s1 line with frozen_sha S*, clock 1793923200000, window_end_ms pinned 1796083200000 (E = 2026-12-01T00Z, Amendment 22 item 8.1), and registered_at_ms
 #      before now (exit 8);
-#   5. no process of this book runs (the unit q50s1-shadow.scope is not active; one process per frozen_sha) and the out dir $HOME/data/arena/h5-q50s1-<UTC date> does not exist (exit 9);
+#   5. no process of this book runs (the unit q50s1-shadow.scope is not active; one process per frozen_sha) and the out dir $ARENA/h5-q50s1-<UTC date>[-succ] does not exist (exit 9);
 #   6. MEMORY (an OOM would end Q50's open positions NOT_DECIDABLE and gap-halt its live feed), DEC-031 Amendment 18 item 8 as amended by Amendment 18 Erratum 1
 #      (ops/manager18/QP-RULING-1030-s1-memory.md): P + S + N + M <= L, where P = memory.current - inactive_file - active_file + file_mapped of
 #      /sys/fs/cgroup/user.slice/user-1002.slice (memory.current and memory.stat, read once; reclaimable page cache is not counted), S = the sum of the finite MemoryMax of every
@@ -36,9 +42,10 @@
 #      any command line. The h5_shadow args: --fresh-forward ARENA --q-star-sol 50 --sockets 3 --syn-sockets 1 --ws-url wss://api.mainnet-beta.solana.com
 #      --ws-url wss://mainnet.helius-rpc.com/ (scripts/ops/q50s1-feed.sh; socket i uses url i mod 2, so one PumpSwap socket is Helius). Exit 11 if a URL is not key-free
 #      or the key file is unreadable or malformed (the check mode runs the launcher with --dry). bx10 is off at Q* 50 in code.
-# Output: $ARENA/h5-q50s1-<UTC date>/h5-shadow-<UTC hour>.jsonl (never opened by any worker; the Q50 seal and EXP-024 successor note part A apply).
-# Env (all optional): ARENA_H5_PYTHON (default /var/lib/mal/fast-listener/.venv/bin/python), Q50S1_REPO (default: the checkout this script is in), Q50S1_ARENA (s1's own arena root under Amendment 22
-# item 9, default /data/mal/arena on mal-fast-0: the only root besides Q50's that the pinned scorer and S*'s h5_shadow accept).
+# Output: $ARENA/h5-q50s1-<UTC date>[-succ]/h5-shadow-<UTC hour>.jsonl (never opened by any worker; the Q50 seal and EXP-024 successor note part A apply).
+# Env (all optional): ARENA_H5_PYTHON (default /var/lib/mal/fast-listener/.venv/bin/python), Q50S1_REPO (default: the checkout this script is in), Q50S1_HOME (s1's own HOME,
+# default /home/claude/s1home; s1's root is $Q50S1_HOME/data/arena and the shadow runs with HOME=$Q50S1_HOME, because the pinned scorer and S*'s h5_shadow accept only
+# /data/mal/arena (HV4's on mal-fast-0) or $HOME/data/arena), Q50S1_KEY_FILE (see q50s1-feed.sh), Q50S1_POLL_S (segment-end poll, default 20 s).
 # --check only: Q50S1_NOW_EPOCH (seconds) replaces the clock, so the checks can be rehearsed. --check and --check-memory only (tests): Q50S1_CGROUP_SLICE_DIR replaces the slice's
 # cgroup directory; a real start (no argument) always reads /sys/fs/cgroup/user.slice/user-1002.slice.
 set -eu
@@ -52,15 +59,28 @@ WIN_TO=1793917800     # 2026-11-05T22:30:00Z
 NEW_MAX_MB=1500
 MARGIN_B=2147483648   # M of Amendment 18 Erratum 1
 ALLOW_UNCAPPED="init.scope dbus.service gpg-agent.service claude-remote.service miscusi-agent.service"   # plus the pattern tmux-spawn-*.scope (Erratum 1)
-MODE=run
-[ "${1:-}" = "--check" ] && MODE=check
-[ "${1:-}" = "--check-memory" ] && MODE=memory
-[ "$#" -le 1 ] || { echo "q50s1-shadow: usage: q50s1-shadow-start.sh [--check | --check-memory]" >&2; exit 2; }
-if [ "$#" -eq 1 ] && [ "$MODE" = "run" ]; then echo "q50s1-shadow: unknown argument" >&2; exit 2; fi
+SEG1_END=1795062600       # 2026-11-19T04:30:00Z: segment 1 stops here (within 14 d of any start in the window; a quiet UTC hour; no A3, score or digest slot)
+SEG_LAST_END=1796086800   # 2026-12-01T01:00:00Z: E plus the last v1 exits
+SEG_MAX_S=1180800         # 13 d 16 h: a successor never runs past its job's 14 d
+POLL_S="${Q50S1_POLL_S:-20}"
+MODE=run; SEG=1
+for a in "$@"; do
+  case "$a" in
+    --check) [ "$MODE" = run ] || { echo "q50s1-shadow: usage: q50s1-shadow-start.sh [--check] [--successor] | --check-memory" >&2; exit 2; }; MODE=check ;;
+    --check-memory) [ "$#" -eq 1 ] || { echo "q50s1-shadow: --check-memory takes no other argument" >&2; exit 2; }; MODE=memory ;;
+    --successor) SEG=2 ;;
+    *) echo "q50s1-shadow: unknown argument" >&2; exit 2 ;;
+  esac
+done
+[ "$#" -le 2 ] || { echo "q50s1-shadow: usage: q50s1-shadow-start.sh [--check] [--successor] | --check-memory" >&2; exit 2; }
+case "$POLL_S" in ''|*[!0-9]*) echo "q50s1-shadow: bad poll interval" >&2; exit 2 ;; esac
 [ -n "${HOME:-}" ] || { echo "q50s1-shadow: HOME is not set" >&2; exit 2; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="${Q50S1_REPO:-$(cd "$HERE/../.." && pwd)}"
-ARENA="${Q50S1_ARENA:-/data/mal/arena}"   # s1's own arena root (DEC-031 Amendment 22 item 9); never Q50's $HOME/data/arena
+S1HOME="${Q50S1_HOME:-/home/claude/s1home}"   # s1's own HOME: every s1 python that checks an arena root runs with HOME=$S1HOME (DEC-031 Am.22 item 9)
+ARENA="$S1HOME/data/arena"   # s1's own arena root: the pinned scorer and S*'s h5_shadow accept only /data/mal/arena (HV4's on fast-0, #1097) or $HOME/data/arena
+REALHOME="$(getent passwd "$(id -u)" 2>/dev/null | cut -d: -f6)"; [ -n "$REALHOME" ] || REALHOME="$HOME"
+case "$(realpath -m "$ARENA")" in "$(realpath -m "$REALHOME/data/arena")"|"$(realpath -m /data/mal/arena)") echo "q50s1-shadow: $ARENA is Q50's or HV4's root, never s1's (Amendment 22 item 9)" >&2; exit 2 ;; esac
 PY="${ARENA_H5_PYTHON:-/var/lib/mal/fast-listener/.venv/bin/python}"
 SRC="$HOME/data/arena-src/q50s1-$(printf '%s' "$S_SHA" | cut -c1-8)"
 UNIT=q50s1-shadow
@@ -71,6 +91,11 @@ CG_SLICE_DIR=/sys/fs/cgroup/user.slice/user-1002.slice
 if [ "$MODE" != "run" ] && [ -n "${Q50S1_CGROUP_SLICE_DIR:-}" ]; then CG_SLICE_DIR="$Q50S1_CGROUP_SLICE_DIR"; fi
 DAY="$(date -u -d "@$NOW" +%Y-%m-%d)"
 OUT="$ARENA/h5-q50s1-$DAY"
+SEG_END="$SEG1_END"
+if [ "$SEG" = 2 ]; then
+  OUT="$ARENA/h5-q50s1-$DAY-succ"
+  SEG_END=$((NOW + SEG_MAX_S)); [ "$SEG_END" -le "$SEG_LAST_END" ] || SEG_END="$SEG_LAST_END"
+fi
 case "$OUT" in *..*) echo "q50s1-shadow: refusing out dir $OUT" >&2; exit 2 ;; esac
 
 # check 6 (memory), called at step 6 and by --check-memory; every refusal exits 10. Read-only.
@@ -140,8 +165,13 @@ if [ "$MODE" = "memory" ]; then
   echo "q50s1-shadow: (check-memory) fits; checks 2 to 5 and 7 were not run; nothing was read from bots.json and nothing was started"
   exit 0
 fi
-# 2. time window
-if [ "$NOW" -lt "$WIN_FROM" ] || [ "$NOW" -gt "$WIN_TO" ]; then
+# 2. time window (segment 2: any time in [clock, E))
+if [ "$SEG" = 2 ]; then
+  if [ "$NOW" -lt $((CLOCK_MS / 1000)) ] || [ "$NOW" -ge $((END_MS / 1000)) ]; then
+    echo "q50s1-shadow: a successor segment starts only in [clock, E) = [$((CLOCK_MS / 1000)), $((END_MS / 1000))); now $NOW" >&2
+    [ "$MODE" = "check" ] || exit 4
+  fi
+elif [ "$NOW" -lt "$WIN_FROM" ] || [ "$NOW" -gt "$WIN_TO" ]; then
   echo "q50s1-shadow: now $NOW is outside the start window [$WIN_FROM, $WIN_TO] (2026-11-05T20:00Z to 22:30Z; at least 1 h before the clock)" >&2
   [ "$MODE" = "check" ] || exit 4
 fi
@@ -186,12 +216,26 @@ q50s1_ws2_build || { echo "q50s1-shadow: the feed URLs are not two distinct key-
 if [ "$MODE" = "check" ]; then
   "$PY" -I "$HERE/q50s1-ws-launch.py" --dry --src "$SRC" --key-file "$Q50S1_KEY_FILE" --keyed-url "$Q50S1_WS2" -- --fresh-forward ARENA --q-star-sol 50 --out-dir "$OUT" \
     --sockets 3 --syn-sockets 1 --ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2" >/dev/null || { echo "q50s1-shadow: the launcher refuses (key file or arguments): NOT starting" >&2; exit 11; }
-  echo "q50s1-shadow: (check) would run in $SRC: systemd-run --user --scope --unit=$UNIT -p MemoryMax=${NEW_MAX_MB}M -p MemorySwapMax=0 env PYTHONPATH=$SRC H5_CODE_SHA=$S_SHA $PY -I $HERE/q50s1-ws-launch.py --src $SRC --key-file $Q50S1_KEY_FILE --keyed-url $Q50S1_WS2 -- --fresh-forward ARENA --q-star-sol 50 --out-dir $OUT --sockets 3 --syn-sockets 1 --ws-url $Q50S1_WS1 --ws-url $Q50S1_WS2 (systemd-run --description=$UNIT; the key is added inside the process)"
+  echo "q50s1-shadow: (check) would run in $SRC: systemd-run --user --scope --unit=$UNIT -p MemoryMax=${NEW_MAX_MB}M -p MemorySwapMax=0 env PYTHONPATH=$SRC H5_CODE_SHA=$S_SHA $PY -I $HERE/q50s1-ws-launch.py --src $SRC --key-file $Q50S1_KEY_FILE --keyed-url $Q50S1_WS2 -- --fresh-forward ARENA --q-star-sol 50 --out-dir $OUT --sockets 3 --syn-sockets 1 --ws-url $Q50S1_WS1 --ws-url $Q50S1_WS2 (systemd-run --description=$UNIT; the key is added inside the process; HOME=$S1HOME for the process; segment $SEG ends $(date -u -d "@$SEG_END" +%FT%TZ) with exit 0)"
   exit 0
 fi
 cd "$SRC"
 trap 'systemctl --user stop "$UNIT.scope" >/dev/null 2>&1 || true' EXIT TERM INT
-echo "q50s1-shadow: starting rule H5-BOOSTFLOOR-Q50 v1, fresh-forward ARENA, q*=50, out=$OUT, head=$S_SHA, MemoryMax=${NEW_MAX_MB}M, python=$PY, ws=$Q50S1_WS1 $Q50S1_WS2 (key added in-process by q50s1-ws-launch.py from $Q50S1_KEY_FILE)"
-systemd-run --user --scope --quiet --unit="$UNIT" --description="$UNIT" -p "MemoryMax=${NEW_MAX_MB}M" -p MemorySwapMax=0 \
-  env PYTHONPATH="$SRC" H5_CODE_SHA="$S_SHA" H5_DIRTY="" "$PY" -I "$HERE/q50s1-ws-launch.py" --src "$SRC" --key-file "$Q50S1_KEY_FILE" --keyed-url "$Q50S1_WS2" -- --fresh-forward ARENA --q-star-sol 50 --out-dir "$OUT" \
-  --sockets 3 --syn-sockets 1 --ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2"
+echo "q50s1-shadow: starting segment $SEG (ends $(date -u -d "@$SEG_END" +%FT%TZ)) rule H5-BOOSTFLOOR-Q50 v1, fresh-forward ARENA, q*=50, out=$OUT, head=$S_SHA, MemoryMax=${NEW_MAX_MB}M, python=$PY, ws=$Q50S1_WS1 $Q50S1_WS2 (key added in-process by q50s1-ws-launch.py from $Q50S1_KEY_FILE)"
+(exec systemd-run --user --scope --quiet --unit="$UNIT" --description="$UNIT" -p "MemoryMax=${NEW_MAX_MB}M" -p MemorySwapMax=0 \
+  env HOME="$S1HOME" PYTHONPATH="$SRC" H5_CODE_SHA="$S_SHA" H5_DIRTY="" "$PY" -I "$HERE/q50s1-ws-launch.py" --src "$SRC" --key-file "$Q50S1_KEY_FILE" --keyed-url "$Q50S1_WS2" -- \
+  --fresh-forward ARENA --q-star-sol 50 --out-dir "$OUT" --sockets 3 --syn-sockets 1 --ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2") &
+PID=$!
+while kill -0 "$PID" 2>/dev/null; do
+  if [ "$(date -u +%s)" -ge "$SEG_END" ]; then
+    echo "q50s1-shadow: segment $SEG end $(date -u -d "@$SEG_END" +%FT%TZ) reached at $(date -u +%FT%TZ): stopping the shadow (SIGTERM via the scope); exit 0 so the next segment's after fires"
+    systemctl --user stop "$UNIT.scope" >/dev/null 2>&1 || kill -TERM "$PID" 2>/dev/null || true
+    wait "$PID" || true
+    exit 0
+  fi
+  sleep "$POLL_S"
+done
+RC=0; wait "$PID" || RC=$?
+echo "q50s1-shadow: the shadow ended at $(date -u +%FT%TZ) before the segment end (rc $RC): a crash under Amendment 6 item 4; the manager starts --successor" >&2
+[ "$RC" -ne 0 ] || RC=1
+exit "$RC"

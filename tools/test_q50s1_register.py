@@ -49,7 +49,7 @@ class Tests(Setup):
         rep = self.run_()
         self.assertEqual((rep["status"], rep["window_ok"], rep["forbidden_minute"]), ("dry_run", True, False))
         self.assertEqual((rep["v2_sha256"], rep["books_sha256"]), (B.BOOKS_V2_SHA256, B.BOOKS_V3_SHA256))
-        self.assertEqual((rep["window_end_ms"], rep["clock_start_ms"]), (1795132800000, 1793923200000))
+        self.assertEqual((rep["window_end_ms"], rep["clock_start_ms"]), (1796083200000, 1793923200000))  # E = 2026-12-01T00Z (power-n item 8.1)
         self.assertEqual((self.reg.read_bytes(), self.books.read_bytes()), before)
         self.assertEqual(sorted(p.name for p in self.arena.iterdir() if p.name.startswith("a3-books")), ["a3-books.json"])
 
@@ -60,7 +60,7 @@ class Tests(Setup):
         after = json.loads(self.reg.read_text())["bots"]
         self.assertEqual({k: v for k, v in after.items() if k != S1}, before)
         e = after[S1]
-        self.assertEqual((e["frozen_sha"], e["clock_start_ms"], e["window_end_ms"], e["registered_at_ms"]), (si.S1["frozen_sha"], 1793923200000, 1795132800000, NOW))
+        self.assertEqual((e["frozen_sha"], e["clock_start_ms"], e["window_end_ms"], e["registered_at_ms"]), (si.S1["frozen_sha"], 1793923200000, 1796083200000, NOW))
         self.assertEqual(self.books.read_text(), V3_TEXT)
         self.assertEqual(hashlib.sha256(self.books.read_bytes()).hexdigest(), B.BOOKS_V3_SHA256)
         cp = Path(rep["v2_copy"])

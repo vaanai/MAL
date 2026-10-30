@@ -19,7 +19,7 @@ REPO = Path(__file__).resolve().parent.parent
 OPS = REPO / "scripts" / "ops"
 SMOKE, SCORE, DIGEST, ALERT, CLEAN, LOOP = (OPS / f"q50s1-{n}.sh" for n in ("smoke", "score", "digest", "a3-alert", "clean-log", "a3-loop"))
 S_SHA = "5c2ab7c64b21358619e37068c6a53e4d183512ea"
-TOOL_COMMIT = "37bafde4a604bde67723d832f1cd429798062e5b"
+TOOL_COMMIT = "81cccea003d98d0b2857a81dcfe39394a714ebc1"
 START_ROW = json.dumps({"type": "start", "rule": "H5-BOOSTFLOOR-Q50 v1", "rule_sha256": "b3f8ecbf8731dc322a035a0b3996b7ed3f0b8c508cc6947014e3de1aa9524fd4", "code_sha": S_SHA,
                         "pid": 1, "bx10": False, "fresh_forward": "ARENA", "h5_look2": {"end_only_ms": 1796083200000}, "tip_union": "off", "dirty": False, "q_star_sol": 50.0,
                         "v": 1, "schema": "h5_shadow_v1", "t_ms": 1}, separators=(",", ":"))
@@ -114,7 +114,7 @@ class Base(unittest.TestCase):
         self.pidfile = self.d / "pid"
 
     def env(self, **extra) -> dict:
-        e = dict(os.environ, HOME=str(self.home), PATH=f"{self.bin}:{os.environ['PATH']}", FAKE_PIDFILE=str(self.pidfile), Q50S1_ARENA=str(self.arena))
+        e = dict(os.environ, HOME=str(self.home), PATH=f"{self.bin}:{os.environ['PATH']}", FAKE_PIDFILE=str(self.pidfile), Q50S1_HOME=str(self.home))
         e.update({k: str(v) for k, v in extra.items()})
         return e
 
@@ -273,8 +273,7 @@ AM22_MARK = '"window_end_ms": 1_796_083_200_000'
 
 
 class Score(Base):
-    """The real script refuses at its current pins (37bafde4 has no Amendment 22 E row: the re-pin to #1109's merge is owed). The logic is tested on a copy whose TOOL_COMMIT and
-    PINS are replaced by a fixture commit whose instant tool carries E (the files are 37bafde4's, the instant tool with the E row appended as a comment)."""
+    """The real pins are #1109's merge 81cccea0 (Amendment 22). The logic is tested on a copy whose TOOL_COMMIT and PINS are a fixture commit (81cccea0's files)."""
 
     def setUp(self):
         super().setUp()
@@ -312,16 +311,18 @@ class Score(Base):
         base.update(env)
         return self.sh(script or self.script, *args, **base)
 
-    def test_the_real_pins_refuse_until_the_am22_repin(self):
-        src = self.home / "data" / "arena-src" / "q50s1-score-37bafde4"
+    def test_the_real_pins_are_1109s_merge_and_pass_check(self):
+        src = self.home / "data" / "arena-src" / "q50s1-score-81cccea0"
         for f in ("arena_h5_score_q50s.py", "arena_h5_q50s_instant.py", "arena_h5_score.py", "arena_h5_score_q50.py", "arena_h5_q50_instant.py", "arena_h5_score_a2.py"):
             p = src / "tools" / f
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_bytes(subprocess.run(["git", "-C", str(REPO), "show", f"{TOOL_COMMIT}:tools/{f}"], capture_output=True, check=True).stdout)
         (src / ".fakehead").write_text(TOOL_COMMIT + "\n")
         r = self.run_score("check", "--shadow-dir", str(self.sd), script=SCORE)
-        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-        self.assertIn("RE-PIN", r.stderr)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("pinned sha256 ok", r.stdout)
+        (src / "tools" / "arena_h5_q50s_instant.py").write_bytes(subprocess.run(["git", "-C", str(REPO), "show", "37bafde4:tools/arena_h5_q50s_instant.py"], capture_output=True, check=True).stdout)
+        self.assertEqual(self.run_score("check", "--shadow-dir", str(self.sd), script=SCORE).returncode, 2)  # pre-Am.22 code refuses
 
     def test_arguments(self):
         for a in ((), ("loop",), ("bogus", "--shadow-dir", str(self.sd)), ("loop", "--shadow-dir"), ("loop", "--shadow-dir", str(self.arena / "h5-q50-2026-10-24")),
@@ -443,11 +444,12 @@ class Alert(Base):
 class Loop2(Base):
     def setUp(self):
         super().setUp()
-        self.s1root = self.d / "s1root"
-        self.s1root.mkdir()
+        self.s1home = self.d / "s1home"
+        self.s1root = self.s1home / "data" / "arena"
+        self.s1root.mkdir(parents=True)
 
     def loop(self, *args, cwd=REPO, **env):
-        base = dict(Q50S1_ARENA=self.s1root, FAKE_GUARD="1" * 40)
+        base = dict(Q50S1_HOME=self.s1home, FAKE_GUARD="1" * 40)
         base.update(env)
         e = self.env(**{k: v for k, v in base.items()})
         write_exec(self.bin / "git", '#!/bin/sh\ncase "$*" in "rev-parse HEAD") echo "${FAKE_HEAD:-$FAKE_GUARD}" ;; "rev-parse a3-guard-pin-s1^{commit}") echo "$FAKE_GUARD" ;; '
@@ -462,7 +464,8 @@ class Loop2(Base):
         self.assertEqual(self.loop("deadman", soon, FAKE_HOST="x").returncode, 6)
         self.assertEqual(self.loop("deadman", soon, FAKE_HEAD="2" * 40).returncode, 7)
         self.assertEqual(self.loop("deadman", soon, FAKE_DIRTY=" M tools/a3_halt.py").returncode, 5)
-        self.assertEqual(self.loop("deadman", soon, Q50S1_ARENA=self.home / "data" / "arena").returncode, 2)  # Q50's root
+        real_home = subprocess.run(["sh", "-c", 'getent passwd "$(id -u)" | cut -d: -f6'], capture_output=True, text=True).stdout.strip()
+        self.assertEqual(self.loop("deadman", soon, Q50S1_HOME=real_home).returncode, 2)  # Q50's root (the real home's data/arena)
         self.assertEqual(self.loop("deadman", soon, Q50S1_A3_OUT=self.home / "data" / "structure-monitor").returncode, 2)  # loop 1's A3_OUT
 
     def test_segment_ends_itself_with_exit_0_before_the_next_slot(self):
