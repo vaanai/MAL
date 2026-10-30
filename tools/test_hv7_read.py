@@ -190,6 +190,10 @@ class Helpers(unittest.TestCase):
         self.assertIn("not tabulated", nine)
         self.assertIn("not tabulated at D = 9", nine)
         self.assertIn("larger than at D = 10", nine)
+        fourteen = X.mde_line(14)                       # the D of every clock pinned on 2026-10-30 (H = 14 days): more days, smaller MDE
+        self.assertIn("not tabulated at D = 14", fourteen)
+        self.assertIn("smaller than at D = 10", fourteen)
+        self.assertNotIn("larger", fourteen)
         self.assertAlmostEqual(X.mde_ic(1.9, 8), 0.1665, places=3)
 
     def test_holm_block(self):
@@ -647,6 +651,10 @@ class Contrast(unittest.TestCase):
         res = self.read(self.build(9, "d"), days=9)
         self.assertIn("not tabulated", res["verdict_text"])
         self.assertNotIn("about 0.17", res["verdict_text"])
+        self.assertIn("larger than at D = 10", res["verdict_text"])
+        res = self.read(self.build(14, "d"), days=14)          # H = 14 days at the clocks pinned on 2026-10-30
+        self.assertEqual(res["status"], "NOT_PASS")
+        self.assertIn("not tabulated and is smaller than at D = 10", res["verdict_text"])
         res = self.read(self.build(7, "a"), days=7)
         self.assertEqual((res["status"], res["reason"]), ("NOT_DECIDABLE", "contrast_days"))
         res = self.read(self.build(5, "a"), days=5)
