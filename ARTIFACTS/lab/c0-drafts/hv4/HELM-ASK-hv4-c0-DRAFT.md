@@ -12,7 +12,7 @@ Authority: the install pack runbook `docs/runbooks/hv4-c0-bridge.md` (PR `claude
 
 **Why now:** it moves the install, venv, unit and file-permission work off the critical path after a PASS. QP-RULING-1025 R2.1 allows a pre-read bridge test only on synthetic fixtures, so Part 1 never touches an HV4 decision row.
 
-1. **User and directories** (runbook "Provision"): the unprivileged user `mal-arena-bridge` (no shell, no home), the state, parity and tie-out dirs, `/etc/mal-arena-live/` root:root 0755, `/etc/mal-hv4-c0/` and `/etc/mal-hv4-c0/gap-clear/` root:root 0755, `/var/lib/mal-hv4-c0/window/` with the owner and mode the runbook gives. **Do not create** `/etc/mal-arena-live/LIVE_OK`, `/etc/mal-arena-live/TIER`, any `CANARY_DEC.md`, or any key directory content.
+1. **User and directories** (runbook "Provision"): the unprivileged user `mal-arena-bridge` (no shell, no home), the state, parity and tie-out dirs, `/etc/mal-arena-live/` root:root 0755, `/etc/mal-hv4-c0/` and `/etc/mal-hv4-c0/gap-clear/` root:root 0755, `/var/lib/mal-hv4-c0/window/` with the owner and mode the runbook gives. **Do not create** any `LIVE_OK` (`/etc/mal-arena-live/hv4-c0/<bot>/LIVE_OK`), `/etc/mal-arena-live/TIER`, any `CANARY_DEC.md`, or any key directory content.
 2. **Pinned tree and venv** at Y: `/opt/mal-arena-bridge/<Y>/` from `git archive`, plus the manifest `sha256sum -c` (0 failures), plus the venv from the pack's requirements file. Send the manifest sha256.
 3. **Unit and binds** from the pack: the dry instance unit, with no credential, environment-file or `--live` line (the pack's checks). `daemon-reload`, do not enable.
 4. **Synthetic rehearsal, bot id `hv4-SYN-X` ONLY.** The bridge writes a write-once 14-day window file per bot at its first start, DRY included (QP #965 N-C). A rehearsal under `hv4-BIG-X`, `hv4-CON-X`, `hv4-BIG-F` or `hv4-CON-F` would start that arm's real 14-day clock before any PASS. Run the pack's keyless checklist script as `mal-arena-bridge`. Expect `RESULT PASS`. Then run one `--once` dry start on the pack's synthetic marker root. It must print `mode=dry`. Send both outputs. The script prints paths and PASS/FAIL only.
@@ -34,7 +34,7 @@ Part 1 takes about 1 to 2 h of Helm time. It needs no owner money and no key.
 **Steps:**
 1. **Install check:** the installed tree is the sha X the manager names, and the manifest check shows 0 failures. A re-install is needed only if Part 1's Y lacks the flip. Send the manifest sha256.
 2. **Read record copy:** `ssh mal-research-0 cat /data/mal/arena/reads/<arm>.json` to a temp file on fast-0, then `sha256sum`. It must equal the read job's `RECORD … sha256` line, which the manager gives as `<FILL:record_sha256>`. Then `install -m 0444 -o root -g root <tmp> /data/mal/arena/reads/<arm>.json`. Write it once. The bridge pins the record's (dev, ino, sha256), and a later rewrite halts it for good (QP N9). The manager can do this step with sudo on fast-0 if Helm prefers.
-3. **Owner record, on the owner's word:** `git show <DEC merge sha>:DEC/DEC-0NN-hv4-<arm>-c0-canary.md`, installed root:root 0644 at `/etc/mal-hv4-c0/<arm>/CANARY_DEC.md`. That is the per-bot path from the start-gate PR; at main c92f23e3 the code still reads the shared `/etc/mal-hv4-c0/CANARY_DEC.md` with a compiled pin. The file must contain exactly one line `OWNER_CANARY_CONFIRMED: bot_id=<arm>`. Send its `sha256sum`. No code pin is involved.
+3. **Owner record, on the owner's word:** `git show <DEC merge sha>:DEC/DEC-0NN-hv4-<arm>-c0-canary.md`, installed root:root 0644 at `/etc/mal-hv4-c0/<arm>/CANARY_DEC.md`, in a per-bot dir `/etc/mal-hv4-c0/<arm>/` root:root 0755 (PR #1100, DEC-031 Am.21 item 4). The file must contain exactly one line `OWNER_CANARY_CONFIRMED: bot_id=<arm>`. Send its `sha256sum` and the instant you wrote it. The bridge pins the file's (dev, ino, sha256) at its first good check. **Never rewrite, replace or remove it afterwards**: any of those latches `owner_line` until the manager clears it with the bridge stopped. No code pin is involved.
 4. **Streams** (the manager runs these as MiScusi jobs; Helm only confirms that the bind paths exist and are read-only to the unit):
    - the decision forwarder pull for `<arm>` into the forwarded root;
    - the twin relay client;
@@ -47,7 +47,7 @@ Part 1 takes about 1 to 2 h of Helm time. It needs no owner money and no key.
 8. **Live drop-in** from the manifest-verified copy (wallet credential, RPC key file `/var/lib/mal/fast-listener/helius.env`, never printed). `daemon-reload`, do not start.
 9. **Gate files**, root:root 0644, on the owner's say-so:
    - `/etc/mal-arena-live/TIER` = `T1`, exactly;
-   - `LIVE_OK` containing exactly `<arm>` at the path the code names.
+   - `LIVE_OK` containing exactly `<arm>` at `/etc/mal-arena-live/hv4-c0/<arm>/LIVE_OK`, root:root 0644, in a per-bot dir `/etc/mal-arena-live/hv4-c0/<arm>/` root:root 0755 (PR #1100). The bridge re-reads it before every buy.
    Then run the bridge `--once` in live config. It must not print `startup_refused`. Send the line.
 10. **Start on the manager's explicit go:** `systemctl start` of the live instance. Report the startup line (`arena_live_bridge mode=live bot=<arm> stake=50000000 floor=…`).
 
