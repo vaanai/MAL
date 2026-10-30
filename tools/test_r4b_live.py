@@ -396,3 +396,16 @@ def test_exact_grid_engine_equals_fast_engine(walk, tmp_path, boosters):
     finally:
         lv.Engine.__init__ = orig
     assert (fast.rows_md5, fast.trades_md5) == (slow.rows_md5, slow.trades_md5)
+
+
+def test_sorted4_matches_lexsort():
+    rnd = np.random.default_rng(3)
+    for _ in range(300):
+        n = int(rnd.integers(0, 40))
+        cols = [rnd.integers(0, 3, n) for _ in range(4)]
+        if rnd.random() < 0.5:  # sorted case
+            o = np.lexsort(cols[::-1])
+            cols = [c[o] for c in cols]
+        o = np.lexsort(cols[::-1])
+        want = bool(all((np.array([c[o] for c in cols]) == np.array(cols)).all(axis=0))) if n else True
+        assert lv._sorted4(*cols) == want
