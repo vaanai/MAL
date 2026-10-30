@@ -1,0 +1,339 @@
+"""tools/q50s1_health.py: the s1 smoke blocking list, the clean-log check and the dry-score structure filter, on fixtures only. No shadow output is read."""
+from __future__ import annotations
+
+import io
+import json
+import os
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+from pathlib import Path
+
+from tools import q50s1_health as h
+
+S_SHA = "5c2ab7c64b21358619e37068c6a53e4d183512ea"
+T0 = 1793700000  # 2026-11-03T08:40:00Z, a smoke-day instant (fixtures only)
+
+
+def row(d: dict, t_ms: int = T0 * 1000) -> str:
+    """As h5_shadow's Engine.emit: v, schema and t_ms are set by setdefault AFTER the record's own keys (so t_ms is last unless the record has one)."""
+    d = dict(d)
+    d.setdefault("v", 1)
+    d.setdefault("schema", "h5_shadow_v1")
+    d.setdefault("t_ms", t_ms)
+    return json.dumps(d, separators=(",", ":"), allow_nan=False) + "\n"
+
+
+def start_row(**over) -> dict:
+    r = {"type": "start", "rule": "H5-BOOSTFLOOR-Q50 v1", "rule_sha256": "b3f8ecbf8731dc322a035a0b3996b7ed3f0b8c508cc6947014e3de1aa9524fd4", "code_sha": S_SHA,
+         "argv": ["--fresh-forward", "ARENA"], "pid": 7, "bx10": False, "t_ms": T0 * 1000, "start_ms": T0 * 1000, "fresh_forward": "ARENA",
+         "h5_look2": {"end_only_ms": 1796083200000}, "tip_union": "off", "dirty": False, "q_star_sol": 50.0}
+    r.update(over)
+    return r
+
+
+def hour_name(epoch_s: int) -> str:
+    import datetime as dt
+    return "h5-shadow-" + dt.datetime.fromtimestamp(epoch_s, tz=dt.timezone.utc).strftime("%Y-%m-%dT%H") + ".jsonl"
+
+
+def run(argv) -> tuple[int, str]:
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        rc = h.main(argv)
+    return rc, buf.getvalue()
+
+
+class Fixture(unittest.TestCase):
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.addCleanup(self._d.cleanup)
+        self.d = Path(self._d.name)
+        self.out = self.d / "h5-smoke-q50s1-x"
+        self.out.mkdir()
+        self.log = self.d / "process.log"
+        self.log.write_text("")
+        self.rss = self.d / "rss.tsv"
+
+    def write_rows(self, rows_by_epoch: list[tuple[int, dict]]):
+        files: dict[str, list[str]] = {}
+        for ep, r in rows_by_epoch:
+            files.setdefault(hour_name(ep), []).append(row(r, ep * 1000))
+        for name, lines in files.items():
+            with open(self.out / name, "a") as fh:
+                fh.writelines(lines)
+
+    def healthy(self, dur=9000, rss_bytes=lambda t: 400_000_000, gaps=(), extra=()):
+        rows = [(T0, start_row())]
+        rows += [(T0 + i * 60, {"type": "hb", "counters": {"triggers": 3}, "open_pools": 2}) for i in range(1, dur // 60 + 1)]
+        rows += [(T0 + 100, {"type": "trigger", "variant": "pv", "pool": "POOLX", "mint": "MINTX"}), (T0 + 500, {"type": "outcome", "variant": "pv", "pool": "POOLX", "pnl": 1.0})]
+        rows += list(gaps) + list(extra)
+        self.write_rows(rows)
+        self.rss.write_text("".join(f"{T0 + i * 60}\t{rss_bytes(i * 60)}\t7\n" for i in range(dur // 60 + 1)))
+        return dur
+
+    def judge(self, dur, alive="yes", extra=()):
+        return run(["smoke-judge", "--out-dir", str(self.out), "--proc-log", str(self.log), "--rss", str(self.rss), "--start-epoch", str(T0),
+                    "--end-epoch", str(T0 + dur), "--alive-at-end", alive, *extra])
+
+
+class SmokeJudge(Fixture):
+    def test_healthy_smoke_passes_and_prints_no_row_content(self):
+        dur = self.healthy()
+        rc, out = self.judge(dur)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("SMOKE_VERDICT PASS failed=[]", out)
+        for item in ("duration PASS", "a PASS", "b PASS", "c PASS", "d PASS"):
+            self.assertIn(f"SMOKE_ITEM {item}", out)
+        for leak in ("POOLX", "MINTX", "pnl", "triggers", "trigger", "outcome", "open_pools"):
+            self.assertNotIn(leak, out)
+
+    def test_short_smoke_fails_duration(self):
+        dur = self.healthy(dur=3600)
+        rc, out = self.judge(dur)
+        self.assertEqual(rc, 1)
+        self.assertIn("SMOKE_ITEM duration FAIL", out)
+
+    def test_start_row_fields_are_checked(self):
+        for bad in (dict(code_sha="a5f413704eb120c8f529101a6186e3a95de7f83e"), dict(q_star_sol=40.0), dict(dirty=True), dict(tip_union="on"),
+                    dict(h5_look2={"end_only_ms": 1793923200000}), dict(fresh_forward=None), dict(bx10=True)):
+            with self.subTest(bad=bad):
+                for p in self.out.iterdir():
+                    p.unlink()
+                rows = [(T0, start_row(**bad))] + [(T0 + i * 60, {"type": "hb"}) for i in range(1, 151)]
+                self.write_rows(rows)
+                self.rss.write_text("".join(f"{T0 + i * 60}\t400000000\t7\n" for i in range(151)))
+                rc, out = self.judge(9000)
+                self.assertEqual(rc, 1)
+                self.assertIn("SMOKE_ITEM a FAIL", out)
+
+    def test_two_start_rows_is_a_restart(self):
+        dur = self.healthy(extra=[(T0 + 4000, start_row())])
+        rc, out = self.judge(dur)
+        self.assertIn("SMOKE_ITEM a FAIL start_rows=2", out)
+
+    def test_missing_heartbeats_fail_b(self):
+        self.write_rows([(T0, start_row())] + [(T0 + i * 60, {"type": "hb"}) for i in range(1, 60)])
+        self.rss.write_text("".join(f"{T0 + i * 60}\t400000000\t7\n" for i in range(151)))
+        rc, out = self.judge(9000)
+        self.assertIn("SMOKE_ITEM b FAIL hb_rows=59", out)
+
+    def test_c_traceback_dead_process_pid_change_and_error_rows(self):
+        cases = {
+            "traceback": lambda: self.log.write_text("Traceback (most recent call last):\n  File x\n"),
+            "error_line": lambda: self.log.write_text("2026-11-03 09:00:00,000 ERROR mal.h5_shadow boom\n"),
+            "dead": None,
+            "pid": lambda: self.rss.write_text("".join(f"{T0 + i * 60}\t400000000\t{7 if i < 80 else 8}\n" for i in range(151))),
+            "gone": lambda: self.rss.write_text("".join(f"{T0 + i * 60}\t{'-' if i == 90 else 400000000}\t{'-' if i == 90 else 7}\n" for i in range(151))),
+            "error_row": lambda: self.write_rows([(T0 + 300, {"type": "error", "where": "decode", "exc": "KeyError"})]),
+            "errors_log": lambda: (self.out / "h5-shadow-errors.log").write_text('{"exc":"X"}\nTraceback (most recent call last):\n'),
+        }
+        for name, act in cases.items():
+            with self.subTest(name=name):
+                for p in self.out.iterdir():
+                    p.unlink()
+                self.log.write_text("")
+                dur = self.healthy()
+                if act:
+                    act()
+                rc, out = self.judge(dur, alive="no" if name == "dead" else "yes")
+                self.assertEqual(rc, 1, out)
+                self.assertIn("SMOKE_ITEM c FAIL", out)
+
+    def test_known_warnings_are_report_only(self):
+        dur = self.healthy()
+        self.log.write_text("2026-11-03 09:00:00,000 WARNING mal.h5_shadow feed error ConnectionClosed: x\n"
+                            "2026-11-03 09:01:00,000 WARNING mal.h5_shadow source ended; restarting\n"
+                            "2026-11-03 09:02:00,000 WARNING mal.h5_shadow something new\n")
+        rc, out = self.judge(dur)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("feed_error=1", out)
+        self.assertIn("source_restart=1", out)
+        self.assertIn("warning_other=1", out)
+
+    def test_memory_projection(self):
+        # 10 MB/h growth from 400 MB: 400e6 + 10e6 * 341 = 3.81e9 > cap 1.5728e9 -> FAIL
+        dur = self.healthy(rss_bytes=lambda t: int(400_000_000 + 10_000_000 * t / 3600))
+        rc, out = self.judge(dur)
+        self.assertEqual(rc, 1)
+        self.assertIn("SMOKE_ITEM d FAIL", out)
+        # 1 MB/h: 400e6 + ~0.5e6 (R0 at +30 min) + 1e6 * 341 = 7.4e8 <= cap -> PASS
+        for p in self.out.iterdir():
+            p.unlink()
+        dur = self.healthy(rss_bytes=lambda t: int(400_000_000 + 1_000_000 * t / 3600))
+        rc, out = self.judge(dur)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("slope_bytes_per_h=1000000.0", out)
+
+    def test_warm_up_ramp_is_outside_the_fit(self):
+        dur = self.healthy(rss_bytes=lambda t: 100_000_000 + min(t, 600) * 500_000)  # ramps for 10 min, then flat
+        rc, out = self.judge(dur)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("slope_bytes_per_h=0.0", out)
+
+    def test_too_few_fit_samples_fails_d(self):
+        self.healthy()
+        self.rss.write_text("".join(f"{T0 + i * 600}\t400000000\t7\n" for i in range(4)))
+        rc, out = self.judge(9000)
+        self.assertIn("SMOKE_ITEM d FAIL fit_samples=", out)
+
+    def test_malformed_rss_is_unreadable(self):
+        self.healthy()
+        self.rss.write_text("x\ty\n")
+        rc, out = self.judge(9000)
+        self.assertEqual(rc, 2)
+
+    def test_gap_counter_by_hour_kind_and_flag(self):
+        h0 = T0 - (T0 % 3600) + 3600  # next full hour
+        gaps = [(h0 + 10, {"type": "gap", "kind": "socket_reconnect", "open_pools": 4, "flags_pools": False, "sockets": 3}),
+                (h0 + 20, {"type": "gap", "kind": "socket_reconnect", "open_pools": 4, "flags_pools": True}),
+                (h0 + 30, {"type": "gap", "kind": "socket_reconnect", "open_pools": 4, "flags_pools": True}),
+                (h0 + 40, {"type": "gap", "kind": "silence", "open_pools": 4, "flags_pools": True}),
+                (h0 + 3700, {"type": "gap", "kind": "feed_restart", "open_pools": 1, "flags_pools": True, "reason": "source_restart"})]
+        dur = self.healthy(gaps=gaps)
+        rc, out = self.judge(dur)
+        self.assertEqual(rc, 0, out)  # report-only: never changes the verdict
+        hour = hour_name(h0)[10:23]
+        self.assertIn(f"SMOKE_GAPS hour={hour} kind=socket_reconnect flags_pools=false n=1", out)
+        self.assertIn(f"SMOKE_GAPS hour={hour} kind=socket_reconnect flags_pools=true n=2", out)
+        self.assertIn(f"SMOKE_GAPS hour={hour} kind=silence flags_pools=true n=1", out)
+        self.assertIn(f"coverage_losing_max_per_hour=3 hour_of_max={hour} coverage_losing_total=4 gap_rows_total=5", out)
+        self.assertIn("limit=2 result=ABOVE", out)
+        self.assertNotIn("open_pools", out)
+
+    def test_gap_row_without_a_bool_flag_counts_as_coverage_losing(self):
+        with open(self.out / hour_name(T0 + 60), "w") as fh:
+            fh.write('{"type":"gap","kind":"slot_jump","open_pools":1,"from_slot":1,"to_slot":9,"v":1,"t_ms":1}\n')
+        dur = self.healthy()
+        rc, out = self.judge(dur)
+        self.assertIn("kind=slot_jump flags_pools=missing n=1", out)
+        self.assertIn("coverage_losing_total=1", out)
+
+    def test_overriding_a_pin_never_passes(self):
+        dur = self.healthy()
+        rc, out = self.judge(dur, extra=("--warm-s", "0"))
+        self.assertEqual(rc, 1)
+        self.assertIn("test_overrides", out)
+
+
+class CleanLog(Fixture):
+    def setUp(self):
+        super().setUp()
+        self.job = self.d / "log"
+        self.now = T0 + 7200
+
+    def book(self, hb_minutes=120, extra_rows=(), log_text=None, status_age=30):
+        self.write_rows([(T0, start_row())] + [(T0 + i * 60, {"type": "hb", "counters": {"triggers": 9}}) for i in range(1, hb_minutes + 1)] +
+                        [(T0 + 200, {"type": "trigger", "variant": "pv", "pool": "POOLY"})] + list(extra_rows))
+        st = self.out / "h5-shadow-status.json"
+        st.write_text('{"counters":{"triggers":9}}')
+        os.utime(st, (self.now - status_age, self.now - status_age))
+        self.job.write_text(log_text if log_text is not None else
+                            "q50s1-shadow: memory (P + S + N + M <= L): need=1 L=2\n"
+                            "q50s1-shadow: starting rule H5-BOOSTFLOOR-Q50 v1, fresh-forward ARENA, q*=50, out=/x, head=5c2ab7c6\n"
+                            "2026-11-03 09:00:00,000 WARNING mal.h5_shadow feed error ConnectionClosed: 1006\n"
+                            "some other line with POOLY in it\n")
+
+    def clean(self, active="yes", since=None):
+        return run(["clean-log", "--out-dir", str(self.out), "--job-log", str(self.job), "--scope-active", active,
+                    "--scope-since-epoch", str(T0 if since is None else since), "--now-epoch", str(self.now)])
+
+    def test_clean(self):
+        self.book()
+        rc, out = self.clean()
+        self.assertEqual(rc, 0, out)
+        self.assertIn("CLEAN_VERDICT CLEAN", out)
+        self.assertIn("CLEAN_START_SCRIPT q50s1-shadow: starting rule", out)
+        for leak in ("POOLY", "triggers", "some other line"):
+            self.assertNotIn(leak, out)
+        self.assertIn("feed_error=1", out)
+
+    def test_not_clean_cases(self):
+        cases = {
+            "scope_active": dict(active="no"),
+            "scope_up_1h": dict(since=self.now - 1000),
+            "one_start_row": dict(extra_rows=[(T0 + 3000, start_row())]),
+            "no_stop_row": dict(extra_rows=[(T0 + 3000, {"type": "stop"})]),
+            "no_traceback": dict(log_text="q50s1-shadow: starting rule x\nTraceback (most recent call last):\n"),
+            "one_starting_line": dict(log_text="q50s1-shadow: starting rule x\nq50s1-shadow: starting rule x\n"),
+            "no_error_critical": dict(log_text="q50s1-shadow: starting rule x\n2026-11-03 09:00:00,000 CRITICAL mal.h5_shadow x\n"),
+            "hb_last_hour": dict(hb_minutes=50),
+            "status_fresh": dict(status_age=600),
+        }
+        for name, kw in cases.items():
+            with self.subTest(name=name):
+                for p in self.out.iterdir():
+                    p.unlink()
+                book_kw = {k: v for k, v in kw.items() if k in ("hb_minutes", "extra_rows", "log_text", "status_age")}
+                self.book(**book_kw)
+                rc, out = self.clean(**{k: v for k, v in kw.items() if k in ("active", "since")})
+                self.assertEqual(rc, 1, out)
+                self.assertIn(f"{name}=NO", out)
+
+    def test_missing_inputs_are_unreadable(self):
+        self.book()
+        self.job.unlink()
+        rc, out = self.clean()
+        self.assertEqual(rc, 2)
+
+
+class DryFilter(unittest.TestCase):
+    def doc(self, **over):
+        b = {"registered": True, "refused_dirs": {}, "attempts": 12, "counted": 7, "excluded": 1, "q50s1_read_instant": {"record": "dry run: not written", "status": "NOT_YET"}}
+        b.update(over)
+        return {"dry_run": True, "shadow_dirs": ["/home/c/data/arena/h5-q50s1-2026-11-05"], "books": {"h5v1q50-boostfloor-s1": b}, "counts": {"rows": 99}}
+
+    def filt(self, doc, mode="dry"):
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            json.dump(doc, fh)
+        self.addCleanup(os.unlink, fh.name)
+        return run(["dry-filter", "--json", fh.name, "--mode", mode])
+
+    def test_ok_and_no_counts(self):
+        rc, out = self.filt(self.doc())
+        self.assertEqual(rc, 0, out)
+        self.assertIn("DRY_S1 registered=True refused_dirs=0 instant_record=dry run: not written", out)
+        self.assertIn("shadow_dirs=h5-q50s1-2026-11-05", out)
+        for leak in ("12", "attempts", "counted", "excluded", "NOT_YET", "99"):
+            self.assertNotIn(leak, out)
+
+    def test_refused_dir_or_unregistered_is_not_ok(self):
+        rc, out = self.filt(self.doc(refused_dirs={"/x/h5-q50s1-2026-11-05": "end_only_mismatch"}))
+        self.assertEqual(rc, 1)
+        self.assertIn("DRY_REFUSED_DIR dir=h5-q50s1-2026-11-05 reason=end_only_mismatch", out)
+        rc, out = self.filt(self.doc(registered=False))
+        self.assertEqual(rc, 1)
+
+    def test_mode_must_match_dry_run(self):
+        rc, _ = self.filt(self.doc(), mode="score")
+        self.assertEqual(rc, 1)
+        d = self.doc()
+        d["dry_run"] = False
+        rc, _ = self.filt(d, mode="score")
+        self.assertEqual(rc, 0)
+
+    def test_unreadable(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            fh.write("not json")
+        self.addCleanup(os.unlink, fh.name)
+        rc, out = run(["dry-filter", "--json", fh.name])
+        self.assertEqual(rc, 2)
+
+
+class Pins(unittest.TestCase):
+    def test_pins_match_the_shadow_start_and_the_table_row(self):
+        from tools import arena_h5_q50s_instant as si
+        repo = Path(__file__).resolve().parent.parent
+        start = (repo / "scripts" / "ops" / "q50s1-shadow-start.sh").read_text()
+        self.assertIn(f"S_SHA={h.S_SHA}", start)
+        self.assertIn("NEW_MAX_MB=1500", start)
+        self.assertEqual(h.CAP_BYTES, 1500 * 1024 * 1024)
+        self.assertEqual(h.S_SHA, si.S1["frozen_sha"])
+        self.assertIn(f'"rule_sha256":"{si.S1["rule_sha256"]}"', h.START_FIELDS)
+        self.assertIn(f'"end_only_ms":{si.S1["end_only_ms"]}', h.START_FIELDS)
+        # PLAN_H: 2026-11-05T20:00Z (shadow window start) to 2026-11-20T01:00Z (E_s1 + 1 h)
+        self.assertEqual(h.PLAN_H * 3600, (si.END_MS + 3_600_000) // 1000 - 1793908800)
+
+
+if __name__ == "__main__":
+    unittest.main()
