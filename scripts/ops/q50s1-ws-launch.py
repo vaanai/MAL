@@ -4,7 +4,10 @@ DEC-031 Amendment 22 item 10 (Helius websocket as s1's second provider) as bound
 or property, a job log or the journal. S* (5c2ab7c6) takes ws URLs only as --ws-url arguments (h5_shadow.py:3518) and forces TLS (observe/trade_source.py:243-250), so neither
 an environment path nor a plain ws:// local relay exists. This launcher is OUTSIDE the frozen code and changes none of it:
 
-  python -I scripts/ops/q50s1-ws-launch.py --src <S* worktree> --key-file <KEY=VALUE file> --keyed-url wss://mainnet.helius-rpc.com/ -- <h5_shadow arguments>
+  python -I scripts/ops/q50s1-ws-launch.py --src <S* worktree> [--key-file <KEY=VALUE file> --keyed-url <key-free wss URL> [--key-var NAME] [--key-param NAME]] -- <h5_shadow args>
+
+Without --key-file/--keyed-url (an unkeyed second provider, or mainnet-beta alone) it only runs the module, with the same redaction. --key-var (default HELIUS_API_KEY) and
+--key-param (default api-key) let any keyed provider be used; the key is appended as ?<key-param>=<key>.
 
 1. The process's argv (/proc/<pid>/cmdline, ps, systemctl status) is this line: the --ws-url arguments carry the key-free base only.
 2. Inside the process it reads HELIUS_API_KEY from --key-file (never printed, never put in os.environ), replaces the ONE h5_shadow argument equal to --keyed-url by
@@ -24,13 +27,14 @@ import runpy
 import sys
 
 KEY_VAR = "HELIUS_API_KEY"
+NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 KEY_RE = re.compile(r"^[A-Za-z0-9-]{8,128}$")
 LEAK_RE = re.compile(r"(?i)(api[-_]?key=)[^&\s\"'<>]+")
 KEYLIKE = re.compile(r"(?i)api[-_]?key|[?&](key|token|auth|apikey)=|://[^/\s]*@")
 
 
-def read_key(path: str) -> str | None:
-    """The value of HELIUS_API_KEY in a KEY=VALUE file (optional `export `, optional quotes); None if unreadable, absent or malformed. Never logs."""
+def read_key(path: str, var: str = KEY_VAR) -> str | None:
+    """The value of `var` (default HELIUS_API_KEY) in a KEY=VALUE file (optional `export `, optional quotes); None if unreadable, absent or malformed. Never logs."""
     try:
         with open(path, encoding="utf-8") as fh:
             lines = fh.read().splitlines()
@@ -40,13 +44,13 @@ def read_key(path: str) -> str | None:
         s = ln.strip()
         if s.startswith("export "):
             s = s[len("export "):].lstrip()
-        if s.startswith(KEY_VAR + "="):
-            v = s[len(KEY_VAR) + 1:].strip().strip("'\"")
+        if s.startswith(var + "="):
+            v = s[len(var) + 1:].strip().strip("'\"")
             return v if KEY_RE.match(v) else None
     return None
 
 
-def keyed_argv(args: list[str], keyed_url: str, key: str) -> list[str]:
+def keyed_argv(args: list[str], keyed_url: str, key: str, param: str = "api-key") -> list[str]:
     """Replace the one argument equal to keyed_url (it must follow --ws-url) by keyed_url + ?api-key=key. Raises ValueError on any doubt."""
     if not keyed_url.startswith("wss://") or KEYLIKE.search(keyed_url) or "?" in keyed_url or "#" in keyed_url:
         raise ValueError("--keyed-url must be a key-free wss:// URL")
@@ -57,7 +61,7 @@ def keyed_argv(args: list[str], keyed_url: str, key: str) -> list[str]:
     if len(idx) != 1 or idx[0] == 0 or args[idx[0] - 1] != "--ws-url":
         raise ValueError("--keyed-url must appear exactly once in the h5_shadow arguments, as a --ws-url value")
     out = list(args)
-    out[idx[0]] = f"{keyed_url}?api-key={key}"
+    out[idx[0]] = f"{keyed_url}?{param}={key}"
     return out
 
 
@@ -87,7 +91,7 @@ class Redacting(io.TextIOBase):
 
 def parse(argv: list[str]) -> tuple[dict, list[str]]:
     if "--" not in argv:
-        raise ValueError("usage: q50s1-ws-launch.py --src DIR --key-file FILE --keyed-url URL [--dry] -- <h5_shadow args>")
+        raise ValueError("usage: q50s1-ws-launch.py --src DIR [--key-file FILE --keyed-url URL [--key-var NAME] [--key-param NAME]] [--dry] -- <h5_shadow args>")
     k = argv.index("--")
     own, rest = argv[:k], argv[k + 1:]
     opts: dict = {"dry": False}
@@ -97,14 +101,18 @@ def parse(argv: list[str]) -> tuple[dict, list[str]]:
         if a == "--dry":
             opts["dry"] = True
             i += 1
-        elif a in ("--src", "--key-file", "--keyed-url") and i + 1 < len(own):
+        elif a in ("--src", "--key-file", "--keyed-url", "--key-var", "--key-param") and i + 1 < len(own):
             opts[a[2:].replace("-", "_")] = own[i + 1]
             i += 2
         else:
             raise ValueError(f"unknown launcher argument {a!r}")
-    for need in ("src", "key_file", "keyed_url"):
-        if need not in opts:
-            raise ValueError(f"--{need.replace('_', '-')} is required")
+    if "src" not in opts:
+        raise ValueError("--src is required")
+    if ("key_file" in opts) != ("keyed_url" in opts):
+        raise ValueError("--key-file and --keyed-url go together (neither for an unkeyed feed)")
+    for k in ("key_var", "key_param"):
+        if k in opts and not NAME_RE.match(opts[k]):
+            raise ValueError(f"--{k.replace('_', '-')} must match [A-Za-z0-9_-]")
     return opts, rest
 
 
@@ -119,15 +127,26 @@ def main(argv: list[str] | None = None) -> int:
     if not os.path.isfile(os.path.join(src, "tools", "h5_shadow.py")):
         print(f"q50s1-ws-launch: {src} has no tools/h5_shadow.py", file=sys.stderr)
         return 2
-    key = read_key(opts["key_file"])
-    if key is None:
-        print(f"q50s1-ws-launch: no usable {KEY_VAR} in {opts['key_file']} (unreadable, absent or malformed); nothing started", file=sys.stderr)
-        return 11
-    try:
-        args = keyed_argv(rest, opts["keyed_url"], key)
-    except ValueError as e:
-        print(f"q50s1-ws-launch: {e}", file=sys.stderr)
-        return 2
+    param = opts.get("key_param", "api-key")
+    global LEAK_RE
+    LEAK_RE = re.compile(r"(?i)((?:api[-_]?key|" + re.escape(param) + r")=)[^&\s\"'<>]+")
+    if "key_file" in opts:
+        var = opts.get("key_var", KEY_VAR)
+        key = read_key(opts["key_file"], var)
+        if key is None:
+            print(f"q50s1-ws-launch: no usable {var} in {opts['key_file']} (unreadable, absent or malformed); nothing started", file=sys.stderr)
+            return 11
+        try:
+            args = keyed_argv(rest, opts["keyed_url"], key, param)
+        except ValueError as e:
+            print(f"q50s1-ws-launch: {e}", file=sys.stderr)
+            return 2
+    else:
+        key = None
+        args = list(rest)
+        if any(KEYLIKE.search(a) for a in args):
+            print("q50s1-ws-launch: an h5_shadow argument carries a key-like token", file=sys.stderr)
+            return 2
     if opts["dry"]:
         print("q50s1-ws-launch: (dry) would run tools.h5_shadow from " + src + " with " + " ".join(LEAK_RE.sub(r"\1REDACTED", a) for a in args))
         return 0
