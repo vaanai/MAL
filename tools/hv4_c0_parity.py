@@ -27,6 +27,10 @@ TWIN_GRACE_MS = 60_000
 TWIN_GRACE_REFUSAL = "parity_gate:twin_grace"
 
 PATH_KEYS = ("parity_dir", "twins_file", "tieout_dir")
+# QP standing condition C-a (#1090 comment 6528515779): the HV4 parity state names its rung. tools/arena_live_parity.gap_share_halts keys on the EXACT string "C0"
+# (#1106, DEC-031 Am.21 3.4 / DEC-032 Am.5 item 6b): at C0 a gap-share breach makes parity NOT_DECIDABLE without a STOP. HV4 has no C1 (DEC-032 s7 needs a confirmation
+# and an owner line, neither defined for HV4 here), so the bridge's state is always C0.
+RUNG = "C0"
 CHAIN_FRESH_MS = 5_000  # the decision_chain stamp needs a verified read this young; a stalled reader loses the stamp (P7) instead of being stamped `now`
 RC_HARD = 11  # tools.arena_live_parity: a hard halt (P4); cleared only by the manager's written review and the owner
 RC_SOFT = 10
@@ -107,7 +111,7 @@ def parity_state(now_ms: int, *, loss_ok: bool, balance_ms: int | None, twins_fi
         at["decision_chain"] = now_ms
     if control_ok:
         at["control_files"] = now_ms
-    return {"at_ms": at, "unresolved_hard_halts": sorted(HARD_LATCHES & set(hard_halts))}
+    return {"at_ms": at, "unresolved_hard_halts": sorted(HARD_LATCHES & set(hard_halts)), "rung": RUNG}
 
 
 def stake_problem(kw: Mapping[str, Any], order_stake_lamports: int) -> str | None:
