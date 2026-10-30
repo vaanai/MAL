@@ -26,7 +26,7 @@
 # WATCHDOG: scripts/ops/mal_watchdog.py raises alert lines from host checks (one `check_*` per concern, config in mal-watchdog.config.json). To pick this up, add a check that reads
 # OUT_FILE (one line of JSON) and alerts when `verdict` is not "OK", or when `checked_s` is older than ~15 minutes (the dead-man itself stopped running). Not wired here: the watchdog
 # is a separate file and runs on mal-research-0; on mal-fast-0 the same one-line JSON can be read by whatever runs there. No Discord or other posting is done by this script.
-# Env: DEADMAN_NOW_S (tests: the clock, epoch seconds), DEADMAN_STATUS_MAX_AGE_S (default 10, as tools.hv4_live_c0.FEED_STATUS_MAX_AGE_MS), DEADMAN_FRAME_MAX_S (default 5, FEED_FRAME_MAX_MS).
+# No environment variable changes the clock or a bound. Only HOME is read (the default OUT_FILE).
 set -u
 refuse() { echo "REFUSED: $*"; exit 2; }
 ROOT=${1:-}; BOT=${2:-}; BOUND=${3:-1800}; HOME_DIR=${HOME:-/tmp}
@@ -43,9 +43,9 @@ case "$BOT" in *[!A-Za-z0-9._-]*|.*|*..*) refuse "BOT_ID has characters outside 
 case "$BOUND" in ''|*[!0-9]*) refuse "BOUND_S must be a positive integer" ;; esac
 [ "$BOUND" -gt 0 ] || refuse "BOUND_S must be a positive integer"
 OUT=${4:-$HOME_DIR/.local/state/mal-hv4-c0/deadman-$BOT.json}
-NOW=${DEADMAN_NOW_S:-$(date +%s)}
-case "$NOW" in ''|*[!0-9]*) refuse "DEADMAN_NOW_S must be epoch seconds" ;; esac
-STATUS_MAX=${DEADMAN_STATUS_MAX_AGE_S:-10}; FRAME_MAX=${DEADMAN_FRAME_MAX_S:-5}
+NOW=$(date +%s)  # the real clock only: no environment variable can set it or loosen a bound (tests put a fake `date` first on PATH)
+case "$NOW" in ''|*[!0-9]*) refuse "date +%s did not return epoch seconds" ;; esac
+STATUS_MAX=10; FRAME_MAX=5  # tools.hv4_live_c0.FEED_STATUS_MAX_AGE_MS and FEED_FRAME_MAX_MS, in seconds (a test pins the equality)
 
 VERDICT=UNKNOWN; REASON=; FSTATE=; AGE=; FILES=0; BYTES=0; NEWEST=; SILENCE=
 

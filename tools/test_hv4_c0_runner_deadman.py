@@ -18,8 +18,13 @@ from tools import decision_forwarder as df
 REPO = Path(__file__).resolve().parent.parent
 SCRIPT = REPO / "scripts" / "ops" / "hv4-c0-runner-deadman.sh"
 BOT = "hv4-BIG-X"
-NOW = 1_800_000_000  # epoch seconds, the script's clock (DEADMAN_NOW_S)
+NOW = 1_800_000_000  # epoch seconds: what the fake `date` on the script's PATH returns
 SENTINEL = "ROW-CONTENT-SENTINEL-MUST-NEVER-BE-READ"
+
+
+FAKE_DATE = """#!/bin/sh
+if [ "$1" = "+%s" ]; then echo "$FAKE_NOW"; else exec /bin/date "$@"; fi
+"""
 
 
 class Deadman(unittest.TestCase):
@@ -27,6 +32,10 @@ class Deadman(unittest.TestCase):
         self._d = tempfile.TemporaryDirectory()
         self.addCleanup(self._d.cleanup)
         self.d = Path(self._d.name)
+        self.bin = self.d / "bin"
+        self.bin.mkdir()
+        (self.bin / "date").write_text(FAKE_DATE)
+        os.chmod(self.bin / "date", 0o755)
         self.root = self.d / "root"
         self.out = self.d / "state" / "deadman.json"
         self.puller = df.Puller(str(self.root), BOT, ["true"], clock=lambda: NOW * 1_000_000_000)
@@ -48,10 +57,13 @@ class Deadman(unittest.TestCase):
         os.utime(f, (NOW - age_s, NOW - age_s))
         return f
 
-    def run_sh(self, bound="1800", root=None, bot=BOT, **env):
+    def env(self, now=NOW, **extra):
+        """The script's environment: a fake `date` first on PATH is the only way the clock moves."""
+        return {"PATH": f"{self.bin}:{os.environ['PATH']}", "HOME": str(self.d), "FAKE_NOW": str(now), **extra}
+
+    def run_sh(self, bound="1800", root=None, bot=BOT, now=NOW, **extra):
         args = [str(root or self.root), bot, bound, str(self.out)]
-        e = {"PATH": os.environ["PATH"], "HOME": str(self.d), "DEADMAN_NOW_S": str(NOW), **env}
-        return subprocess.run(["sh", str(SCRIPT), *args], capture_output=True, text=True, env=e)
+        return subprocess.run(["sh", str(SCRIPT), *args], capture_output=True, text=True, env=self.env(now, **extra))
 
     def record(self):
         return json.loads(self.out.read_text())
@@ -120,9 +132,9 @@ class Deadman(unittest.TestCase):
         self.status_ok(frame_age_ms=6_000)
         self.assertEqual(self.record_after()["reason"], "feed_silent")
         self.status_ok(frame_age_ms=300)
-        p = self.run_sh(DEADMAN_NOW_S=str(NOW + 11))
+        p = self.run_sh(now=NOW + 11)
         self.assertEqual((p.returncode, self.record()["reason"]), (3, "feed_status_stale"))
-        p = self.run_sh(DEADMAN_NOW_S=str(NOW - 60))
+        p = self.run_sh(now=NOW - 60)
         self.assertEqual((p.returncode, self.record()["reason"]), (3, "feed_status_future"))
 
     def record_after(self):
@@ -198,8 +210,7 @@ class Deadman(unittest.TestCase):
 
     def test_an_unwritable_status_file_still_gives_the_verdict_on_stdout(self):
         self.day_file(age_s=5000)
-        e = {"PATH": os.environ["PATH"], "HOME": str(self.d), "DEADMAN_NOW_S": str(NOW)}
-        p = subprocess.run(["sh", str(SCRIPT), str(self.root), BOT, "1800", "/proc/nowhere/deadman.json"], capture_output=True, text=True, env=e)
+        p = subprocess.run(["sh", str(SCRIPT), str(self.root), BOT, "1800", "/proc/nowhere/deadman.json"], capture_output=True, text=True, env=self.env())
         self.assertEqual(p.returncode, 1)
         self.assertIn("verdict=ALERT", p.stdout)
         self.assertIn("WARNING status file not written", p.stdout)
@@ -207,7 +218,7 @@ class Deadman(unittest.TestCase):
     def test_refusals(self):
         for args in ([], ["/tmp/x"], ["/data/mal/arena/x", BOT], ["/data/mal/arena", BOT], [str(self.root) + "/../x", BOT], [str(self.root), "bad/bot"], [str(self.root), ".hidden"],
                      [str(self.root), BOT, "0"], [str(self.root), BOT, "abc"], [str(self.root), BOT, "-5"]):
-            p = subprocess.run(["sh", str(SCRIPT), *args], capture_output=True, text=True, env={"PATH": os.environ["PATH"], "HOME": str(self.d), "DEADMAN_NOW_S": str(NOW)})
+            p = subprocess.run(["sh", str(SCRIPT), *args], capture_output=True, text=True, env=self.env())
             self.assertEqual(p.returncode, 2, (args, p.stdout))
             self.assertIn("REFUSED", p.stdout)
         self.assertFalse(self.out.exists())
@@ -222,7 +233,7 @@ class Deadman(unittest.TestCase):
         copy.write_text(src.replace("SEALED=/data/mal/arena\n", f"SEALED={stand}\n"))
         link = self.d / "lnk"
         os.symlink(stand, link)
-        e = {"PATH": os.environ["PATH"], "HOME": str(self.d), "DEADMAN_NOW_S": str(NOW)}
+        e = self.env()
         for root in (link, stand / "decisions", stand):
             p = subprocess.run(["sh", str(copy), str(root), BOT, "1800", str(self.out)], capture_output=True, text=True, env=e)
             self.assertEqual(p.returncode, 2, (root, p.stdout))
@@ -239,9 +250,8 @@ class Deadman(unittest.TestCase):
             self.assertNotIn(bad, code)
         if shutil.which("dash"):
             self.assertEqual(subprocess.run(["dash", "-n", str(SCRIPT)], capture_output=True).returncode, 0)
-            e = {"PATH": os.environ["PATH"], "HOME": str(self.d), "DEADMAN_NOW_S": str(NOW)}
             self.day_file(age_s=100)
-            p = subprocess.run(["dash", str(SCRIPT), str(self.root), BOT, "1800", str(self.out)], capture_output=True, text=True, env=e)  # a strict POSIX shell
+            p = subprocess.run(["dash", str(SCRIPT), str(self.root), BOT, "1800", str(self.out)], capture_output=True, text=True, env=self.env())  # a strict POSIX shell
             self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
 
     def test_the_watchdog_pickup_fields_are_in_the_status_file(self):
@@ -254,8 +264,18 @@ class Deadman(unittest.TestCase):
         from tools import hv4_live_c0 as c0
         text = SCRIPT.read_text()
         self.assertIn("BOUND=${3:-%d}" % (c0.RUNNER_SILENT_MS // 1000), text)
-        self.assertIn(f"DEADMAN_STATUS_MAX_AGE_S:-{c0.FEED_STATUS_MAX_AGE_MS // 1000}", text)
-        self.assertIn(f"DEADMAN_FRAME_MAX_S:-{c0.FEED_FRAME_MAX_MS // 1000}", text)
+        self.assertIn("STATUS_MAX=%d; FRAME_MAX=%d " % (c0.FEED_STATUS_MAX_AGE_MS // 1000, c0.FEED_FRAME_MAX_MS // 1000), text)
+
+    def test_no_environment_variable_moves_the_clock_or_a_bound(self):
+        """Preflight item 11: a test-only override must not reach production. The old DEADMAN_* knobs are gone; setting them changes nothing."""
+        self.day_file(age_s=5000)
+        base = self.run_sh()
+        self.assertEqual(base.returncode, 1)
+        spoof = self.run_sh(DEADMAN_NOW_S=str(NOW - 4900), DEADMAN_STATUS_MAX_AGE_S="99999", DEADMAN_FRAME_MAX_S="99999")
+        self.assertEqual((spoof.returncode, spoof.stdout), (1, base.stdout))
+        code = "\n".join(ln for ln in SCRIPT.read_text().splitlines() if not ln.lstrip().startswith("#"))
+        self.assertNotIn("DEADMAN_", code)
+        self.assertEqual(sorted(set(__import__("re").findall(r"\$\{?([A-Z][A-Z_]*)\b", code)) & {"HOME", "FAKE_NOW", "DEADMAN_NOW_S"}), ["HOME"])
 
 
 if __name__ == "__main__":
