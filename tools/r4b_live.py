@@ -67,7 +67,8 @@ HORIZON_S = rl.HORIZON_S  # ut keeps prints with block_time <= mbt + 52 h + 1800
 WINDOW_SLOTS = rl.WINDOW_SLOTS  # 7300
 V_LO, V_HI = rl.V_LO, rl.V_HI
 WSOL = rl.WSOL_MINT
-FRN_HOUR = 10_000_000_000  # r4b_layout frn = hour index * 1e10 + line ordinal
+FRN_HOUR = 10_000_000_000
+S0_FINAL_SLOTS = 9_000  # membership is cached this many slots after the s0 window closes (late rows beyond it are a feed fault)  # r4b_layout frn = hour index * 1e10 + line ordinal
 
 # Exploration replay only: the outcome blocks of /data/mal/hunt-1008/push-1016/hunt23/RULES.md. fresh-08* (the unspent reserve) is NOT here.
 EXPLORATION_DIRS = (
@@ -168,6 +169,23 @@ class MintState:
     b_by_th: dict = field(default_factory=dict)
     b_maxslot: int | None = None
     last_bond_bt: int | None = None
+    max_bt: float = float("-inf")  # latest block_time among the PDA prints (a necessary condition for a row: traded in the last 10 min)
+
+
+def _sorted4(a: np.ndarray, b: np.ndarray, c: np.ndarray, d: np.ndarray) -> bool:
+    """True iff rows are in non-decreasing lexicographic (a, b, c, d) order: each column is compared only on the adjacent pairs whose earlier
+    columns are equal."""
+    if len(a) < 2:
+        return True
+    pos = np.arange(len(a) - 1)
+    for x in (a, b, c, d):
+        dx = x[pos + 1] - x[pos]
+        if (dx < 0).any():
+            return False
+        pos = pos[dx == 0]
+        if not len(pos):
+            return True
+    return True
 
 
 def features_at(prep: rf.Prep, r: rf.MintConst, ch: Any, slot, bt, isbuy, sol, tok, q, b, th, vq, T: int, sd: int) -> np.ndarray | None:
@@ -452,6 +470,8 @@ class Engine:
         self.exact_grid = bool(exact_grid)
         self.counters: dict[str, int] = {}
         self._frn = 0
+        self.max_slot = -1  # highest slot ingested (any trade row)
+        self._member_final: dict[str, Member | None] = {}  # membership once s0 can no longer change
 
     # -- helpers
     def _count(self, k: str, n: int = 1) -> None:
@@ -528,6 +548,8 @@ class Engine:
 
     # -- ingest: trades
     def _clock_mkt(self, venue: Any, slot: Any, bt: Any, sol: Any) -> None:
+        if slot is not None and int(slot) > self.max_slot:
+            self.max_slot = int(slot)
         if bt is None:
             return
         bt = int(bt)
@@ -563,6 +585,8 @@ class Engine:
             p["evi"].append(-1 if evi is None else int(evi))
             p["frn"].append(int(frn))
             p["bt"].append(_nan(bt))
+            if bt is not None and bt > st.max_bt:
+                st.max_bt = float(bt)
             p["isbuy"].append(1 if isbuy else 0)
             p["sol"].append(_nan(sol))
             p["tok"].append(_nan(tok))
@@ -609,6 +633,8 @@ class Engine:
         if n == 0:
             return
         bt, slot, sol = cols["bt"], cols["slot"], cols["sol"]
+        if len(slot):
+            self.max_slot = max(self.max_slot, int(slot.max()))
         okb = np.isfinite(bt)
         if okb.any():
             btb, slb = bt[okb].astype(np.int64), slot[okb].astype(np.int64)
@@ -682,12 +708,20 @@ class Engine:
             return None
         return Member(mint, pda, int(st.mslot), int(st.mbt), s0, int(v0), st)
 
-    def members(self) -> list[Member]:
+    def members(self, T: int | None = None) -> list[Member]:
+        """Members graduated at or after universe_min_mbt; with T, only those that can matter at mark T (mbt >= T - 48 h - 2 h: a decision row needs
+        mbt + 48 h >= T, and m_grads counts graduations of the last hour). Membership is cached once no print can still enter the s0 window
+        (max ingested slot >= mslot + 7300 + S0_FINAL_SLOTS); before that it is recomputed at every call."""
         out = []
         for mint, st in self.mints.items():
-            if st.mslot is None or st.mbt is None or st.mbt < self.umin:
+            if st.mslot is None or st.mbt is None or st.mbt < self.umin or (T is not None and st.mbt < T - GRID_HI_S - 2 * MARK_S):
                 continue
-            m = self.member(mint)
+            if mint in self._member_final:
+                m = self._member_final[mint]
+            else:
+                m = self.member(mint)
+                if self.max_slot >= st.mslot + WINDOW_SLOTS + S0_FINAL_SLOTS:
+                    self._member_final[mint] = m
             if m is not None:
                 out.append(m)
         out.sort(key=lambda m: (m.mbt, m.mint))
@@ -732,7 +766,8 @@ class Engine:
         if not len(idx):
             return None
         tx, ev, fr = (np.frombuffer(p[k], np.int64)[idx] for k in ("txi", "evi", "frn"))
-        idx = idx[np.lexsort((fr, ev, tx, sl[idx]))]
+        if not _sorted4(sl[idx], tx, ev, fr):  # prints mostly arrive in order: the O(n) check skips the sort (same result: frn makes the key total)
+            idx = idx[np.lexsort((fr, ev, tx, sl[idx]))]
         bt_all = bt[idx]
         s0bt = float(bt_all[0]) if np.isfinite(bt_all[0]) else (float(bt_all[np.isfinite(bt_all)][0]) if np.isfinite(bt_all).any() else float(m.mbt))
         idx = idx[sl[idx] < sd]
@@ -772,7 +807,7 @@ class Engine:
         T = int(T)
         if T % MARK_S:
             raise LiveRefused(f"{T} is not an hour mark")
-        mem = self.members()
+        mem = self.members(T)
         prep = self.prep(mem)
         sd = int(prep.slot_at(np.array([T], np.int64))[0])
         in_window = (w0 is None or T >= w0) and (last_entry is None or T <= last_entry)
@@ -783,6 +818,8 @@ class Engine:
             for mid, m in enumerate(mem):
                 t_lo = ((m.mbt + GRID_LO_S + 119) // 120) * 120
                 if T < t_lo or T > m.mbt + GRID_HI_S:
+                    continue
+                if m.st.max_bt < T - 600:  # necessary for a row (mint_features: the last print before sd is within 600 s of T)
                     continue
                 r = self.mint_rows(m, mid, prep, T, sd)
                 if r is None:
