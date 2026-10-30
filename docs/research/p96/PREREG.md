@@ -116,3 +116,12 @@ python -m tools.p96_veto --after-read \
 ## 12. Seals (stated for this lane)
 
 Q50 (all outputs, ledger, shadow dirs #1419/#1421, score, count and read-instant files, decision rows, `bots.json`) and s1 are opened only by the tool, after its seal checks pass. EXP-024 Look-2 seal on H5-family pools until 2026-11-14T00Z: the tool refuses before it. The s1 note (blob 7015abc9) covers s1 pools with s0 at or after 2026-11-06. Not touched by this lane: HV4 outputs; DBC forward window [10-25T00Z, 11-01T00:10Z) and fwdv1/; LaunchLab holdout [10-17, 10-24) (spent); /data/mal/meta-capture/; fresh-0802 (last reserve) and fresh-0828 (EXP-028's); arena tape; HV replay outputs.
+
+## Erratum 1 (records only; written 2026-10-30T17:05:14Z from `date -u` on mal-research-0; before s1's registration and clock and before any s1 outcome exists; outcome-blind)
+
+DEC-031 Amendment 22 (records PR #1107) moves s1's end and registry. This erratum adds no condition and touches no Q50 text. Where this file says otherwise, read it as follows.
+- **s1's end.** E = 2026-12-01T00:00:00Z (1796083200000; S*'s `SUCC_END_MS`; Am.22 item 8.1, H = 25 d, never extended). It replaces E_s1 = min(clock + 14 d, 2026-12-01T00Z) wherever this file states it (lines 9, 16, 48 and 111 before this erratum). A `window_end_ms` in s1's `bots.json` line can only be E or earlier, after an A3 or dead-man end.
+- **Earliest run.** The wall-clock clamp "at or after E_s1 + 1 h" is now 2026-12-01T01:00:00Z, not about 2026-11-20T01Z.
+- **Registry.** s1's line is in s1's own registry, `/home/claude/s1home/data/arena/bots.json` on mal-fast-0 (Am.22 item 9; `--s1-bots-json`, whose default is that path; `--bots-json` stays Q50's registry). Q50's line stays in Q50's registry. The code change is PR #1112 (`tools/p96_veto.py` `S1_HORIZON_MS` and the separate s1 registry), merged with QP OK.
+- **Unchanged.** The veto rule, the fit on Q50, the test on s1's counted trades, the kill lines, the seals and the report-only status. The test set can now be larger, because s1 runs 25 days instead of 14. That changes nothing decided here.
+No book has cleared the promotion gate. Nothing here is a profit claim.

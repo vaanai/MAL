@@ -29,9 +29,30 @@ class Syntax(unittest.TestCase):
 
     def test_neither_script_touches_a_pinned_unit_a_firewall_or_a_key(self):
         for p in (REG, SHD):
-            t = p.read_text()
+            t = p.read_text().lower()
             for bad in ("ufw", "sshd", "cloudflared", "private", ".env", "api-key"):
-                self.assertNotIn(bad, t.lower(), f"{p.name}: {bad}")
+                self.assertNotIn(bad, t, f"{p.name}: {bad}")
+
+    def test_the_feed_helper_is_key_free_and_refuses_any_credential_in_a_url(self):
+        """QP on #1107: no key in any argv. S*'s h5_shadow takes ws URLs only as argv, so both providers are key-free; the helper reads no file."""
+        helper = REPO / "scripts" / "ops" / "q50s1-feed.sh"
+        subprocess.run(["sh", "-n", str(helper)], check=True)
+        text = helper.read_text()
+        code = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+        self.assertNotIn("api-key", text.lower())
+        for bad in ("sed ", "cat ", "<", "export", "echo", "printf", "read "):  # it never reads the key file, only tests that it is readable
+            self.assertNotIn(bad, code)
+        kf = Path(tempfile.mkdtemp()) / "k"
+        kf.write_text("HELIUS_API_KEY=fixture0key-1\n")
+        def rc(ws1, ws2, keyfile=kf):
+            return subprocess.run(["sh", "-c", f'. "{helper}"; Q50S1_WS1="$1"; Q50S1_WS2="$2"; q50s1_ws2_build', "x", ws1, ws2], env=dict(os.environ, Q50S1_KEY_FILE=str(keyfile))).returncode
+        self.assertEqual(rc("wss://api.mainnet-beta.solana.com", "wss://mainnet.helius-rpc.com/"), 0)
+        self.assertEqual(rc("wss://api.mainnet-beta.solana.com", "wss://mainnet.helius-rpc.com/", keyfile=kf.parent / "missing"), 11)
+        for ws2 in ("wss://mainnet.h" + "elius-rpc.com/?api-key=abc", "wss://x.example/?token=1", "wss://u:p@x.example", "ws://x.example", "wss://x/k?a=1",
+                    "wss://x.example/#f", "wss://x.example/apiKey=1", "", "wss://api.mainnet-beta.solana.com"):
+            with self.subTest(ws2=ws2):
+                self.assertEqual(rc("wss://api.mainnet-beta.solana.com", ws2), 11)
+        self.assertEqual(subprocess.run(["sh", "-c", f'. "{helper}"; q50s1_ws2_build'], env=dict(os.environ, Q50S1_KEY_FILE=str(kf))).returncode, 0)
 
     def test_shadow_pins_s_star_and_the_window_and_never_f50(self):
         t = SHD.read_text()
@@ -155,6 +176,9 @@ case "$*" in
 esac''')
         self.src = self.home / "data" / "arena-src" / "q50s1-5c2ab7c6"
         self.src.mkdir()
+        (self.src / "tools").mkdir()
+        (self.src / "tools" / "h5_shadow.py").write_text("raise SystemExit('the fixture shadow is never run by these tests')\n")
+        (self.d / "keyfile").write_text("HELIUS_API_KEY=fixture0key-5678abcd\n")  # a fixture key; the real key file is never read by a test
         self.write_line()
 
     def stub(self, name, body):
@@ -183,12 +207,12 @@ esac''')
 
     def write_line(self, **over):
         import json
-        e = {"frozen_sha": "5c2ab7c64b21358619e37068c6a53e4d183512ea", "clock_start_ms": 1793923200000, "window_end_ms_pin": 1795132800000, "registered_at_ms": 1793800000000}
+        e = {"frozen_sha": "5c2ab7c64b21358619e37068c6a53e4d183512ea", "clock_start_ms": 1793923200000, "window_end_ms_pin": 1796083200000, "registered_at_ms": 1793800000000}
         e.update(over)
         (self.arena / "bots.json").write_text(json.dumps({"bots": {"h5v1q50-boostfloor-s1": e}}))
 
     def run_(self, now=WIN_FROM + 60, git_status="", extra_env=None):
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_NOW_EPOCH": str(now), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py),
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HOME": str(self.home), "Q50S1_KEY_FILE": str(self.d / "keyfile"), "Q50S1_NOW_EPOCH": str(now), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py),
                "FAKE_GIT_STATUS": git_status, "Q50S1_CGROUP_SLICE_DIR": str(self.cg), **(extra_env or {})}
         return subprocess.run(["sh", str(SHD), "--check"], capture_output=True, text=True, env=env, cwd=REPO)
 
@@ -249,11 +273,121 @@ esac''')
         self.assertEqual(self.run_().returncode, 7)
 
     def test_bad_arguments_and_clock(self):
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home)}
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HOME": str(self.home)}
         for a in (["--run"], ["--check", "x"], ["x"]):
             r = subprocess.run(["sh", str(SHD), *a], capture_output=True, text=True, env=env, cwd=REPO)
             self.assertEqual(r.returncode, 2, a)
         self.assertEqual(self.run_(now="abc").returncode, 2)
+
+
+KEYLIKE = re.compile(r"(?i)api[-_]?key|[?&](key|token|auth|apikey)=|://[^/\s]*@")
+
+
+class ShadowFeed(ShadowCheck):
+    """QP on #1107 (binding): no key in any process's argv, unit description or property, job log or journal. S*'s h5_shadow takes ws URLs only as argv, so both
+    providers are key-free (scripts/ops/q50s1-feed.sh). A real start is driven with a fake `date` (inside the 11-05 window), a `cat` stub for the two slice files
+    and a recording systemd-run stub; the whole generated command is checked."""
+
+    WS1, WS2 = "wss://api.mainnet-beta.solana.com", "wss://mainnet.helius-rpc.com/"
+    KEY = "fixture0key-5678abcd"
+
+    def test_check_prints_two_key_free_urls_and_runs_the_launcher_dry(self):
+        r = self.run_()
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+        self.assertIn(f"--keyed-url {self.WS2} -- --fresh-forward ARENA --q-star-sol 50", r.stdout)
+        self.assertIn(f"--ws-url {self.WS1} --ws-url {self.WS2} (systemd-run --description=q50s1-shadow; the key is added inside the process; HOME={self.home} for the process; "
+                      "segment 1 ends 2026-11-19T04:30:00Z with exit 0)", r.stdout)
+        self.assertNotIn(self.KEY, r.stdout + r.stderr)
+        self.assertNotIn("solanavibestation", r.stdout)
+        self.assertIsNone(KEYLIKE.search(r.stdout + r.stderr))
+
+    def real_start(self, *args, seg_end=1795062600, home=None):
+        """Segment start with stubs: systemd-run records its argv, moves the fake clock to the segment end and sleeps; systemctl stop kills it. Returns (result, argv)."""
+        rec, now, pid = self.d / "systemd-run.argv", self.d / "now", self.d / "pid"
+        now.write_text(str(WIN_FROM + 60) if "--successor" not in args else str(1793923200 + 86400))
+        self.stub("systemd-run", f'for a; do printf "%s\\n" "$a"; done > {rec}\necho {seg_end} > {now}\necho $$ > {pid}\nexec sleep 30')
+        self.stub("date", f'if [ "$*" = "-u +%s" ]; then cat {now}; else exec /bin/date "$@"; fi')
+        sc = (self.bin / "systemctl").read_text()
+        (self.bin / "systemctl").write_text(sc.replace('case "$*" in', f'case "$*" in\n  *"stop q50s1-shadow.scope"*) kill $(cat {pid}) 2>/dev/null; exit 0 ;;', 1))
+        self.write_line(registered_at_ms=(WIN_FROM - 3600) * 1000)
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HOME": str(home or self.home), "Q50S1_KEY_FILE": str(self.d / "keyfile"),
+               "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py), "FAKE_GIT_STATUS": "", "Q50S1_POLL_S": "1"}
+        self.stub("cat", 'case "$1" in /sys/fs/cgroup/user.slice/user-1002.slice/memory.current) echo 2147483648 ;; '
+                         '/sys/fs/cgroup/user.slice/user-1002.slice/memory.stat) printf "active_file 0\\ninactive_file 0\\nfile_mapped 0\\n" ;; *) exec /bin/cat "$@" ;; esac')
+        r = subprocess.run(["sh", str(SHD), *args], capture_output=True, text=True, env=env, cwd=REPO, timeout=60)
+        return r, (rec.read_text().splitlines() if rec.exists() else [])
+
+    def test_segment_1_stops_itself_at_the_handover_with_exit_0(self):
+        r, argv = self.real_start()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("starting segment 1 (ends 2026-11-19T04:30:00Z)", r.stdout)
+        self.assertIn("segment 1 end 2026-11-19T04:30:00Z reached", r.stdout)
+        self.assertIn(f"--out-dir\n{self.arena}/h5-q50s1-2026-11-05\n", "\n".join(argv) + "\n")
+        self.assertIn(f"HOME={self.home}", argv)  # the shadow's own HOME: $HOME/data/arena is s1's root for S*'s out-dir check
+
+    def test_segment_2_successor_uses_a_succ_dir_and_ends_by_e(self):
+        r, argv = self.real_start("--successor", seg_end=1796086800)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("starting segment 2 (ends 2026-11-20T16:00:00Z)", r.stdout)  # clock + 1 d + 13 d 16 h (before E + 1 h)
+        self.assertIn(f"{self.arena}/h5-q50s1-2026-11-07-succ", "\n".join(argv))
+
+    def test_a_successor_before_the_clock_refuses_4_and_check_reports(self):
+        r = self.run_(extra_env={})  # segment 1 check inside the window
+        self.assertEqual(r.returncode, 0, r.stderr)
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HOME": str(self.home), "Q50S1_KEY_FILE": str(self.d / "keyfile"), "Q50S1_NOW_EPOCH": str(WIN_FROM + 60),
+               "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py), "FAKE_GIT_STATUS": "", "Q50S1_CGROUP_SLICE_DIR": str(self.cg)}
+        r = subprocess.run(["sh", str(SHD), "--check", "--successor"], capture_output=True, text=True, env=env, cwd=REPO)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("a successor segment starts only in [clock, E)", r.stderr)
+        self.assertIn("h5-q50s1-2026-11-05-succ", r.stdout)
+
+    def test_a_shadow_that_dies_before_its_segment_end_exits_nonzero(self):
+        self.stub("sleep", "exit 0")
+        r, _ = self.real_start(seg_end=WIN_FROM + 120)  # the fake clock stays before the end; the fake shadow (sleep stub) ends at once
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("before the segment end", r.stderr)
+
+    def test_q50s_root_or_hv4s_root_is_refused(self):
+        real_home = subprocess.run(["sh", "-c", 'getent passwd "$(id -u)" | cut -d: -f6'], capture_output=True, text=True).stdout.strip()
+        r, _ = self.real_start(home=real_home)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("Q50's or HV4's root", r.stderr)
+
+    def test_a_real_start_has_no_key_in_argv_unit_properties_description_or_output(self):
+        r, argv = self.real_start()
+        out = r.stdout + r.stderr
+        self.assertEqual(r.returncode, 0, out)
+        i = argv.index("env")
+        unit_part = argv[:i]  # systemd-run's own options: unit name, description, properties
+        self.assertIn("--description=q50s1-shadow", unit_part)
+        self.assertIn("--unit=q50s1-shadow", unit_part)
+        for part, label in ((unit_part, "unit"), (argv, "argv"), (out.splitlines(), "output")):
+            for a in part:
+                self.assertIsNone(KEYLIKE.search(a), f"{label}: {a}")
+        self.assertEqual(argv[-4:], ["--ws-url", self.WS1, "--ws-url", self.WS2])
+        self.assertNotIn(self.KEY, "\n".join(argv) + out)
+        self.assertIn("q50s1-ws-launch.py", "\n".join(argv))
+        self.assertIn(f"ws={self.WS1} {self.WS2} (key added in-process", r.stdout)
+
+    def test_check_before_the_s_star_worktree_exists(self):
+        """Review (4): on 11-05 the S* worktree may not exist yet; --check must still pass (it dry-runs the launcher against this checkout) and keep 11 for a bad key."""
+        import shutil
+        shutil.rmtree(self.src)
+        r = self.run_()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("would create the detached worktree", r.stdout)
+        self.assertFalse(self.src.exists())
+        (self.d / "keyfile").write_text("HELIUS_API_KEY=\n")
+        self.assertEqual(self.run_().returncode, 11)
+
+    def test_a_bad_key_file_refuses_11(self):
+        for text in ("HELIUS_API_KEY=\n", "OTHER=1\n", "HELIUS_API_KEY=ab$(id)xyz\n"):
+            with self.subTest(text=text):
+                (self.d / "keyfile").write_text(text)
+                r = self.run_()
+                self.assertEqual(r.returncode, 11, r.stdout + r.stderr)
+        (self.d / "keyfile").unlink()
+        self.assertEqual(self.run_().returncode, 11)
 
 
 class ShadowCheckMemory(unittest.TestCase):
@@ -271,7 +405,7 @@ class ShadowCheckMemory(unittest.TestCase):
         self.stub("git", f'touch {self.mark}.git\nexit 99')
 
     def mem(self, *args):
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py), "Q50S1_CGROUP_SLICE_DIR": str(self.cg)}
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HOME": str(self.home), "Q50S1_KEY_FILE": str(self.d / "keyfile"), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py), "Q50S1_CGROUP_SLICE_DIR": str(self.cg)}
         return subprocess.run(["sh", str(SHD), "--check-memory", *args], capture_output=True, text=True, env=env, cwd=REPO)
 
     def assert_untouched(self):
@@ -438,7 +572,7 @@ class ShadowCheckMemory(unittest.TestCase):
 
     def test_a_real_start_on_the_wrong_host_still_exits_6_first(self):
         self.stub("hostname", "echo mal-research-0")
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py)}
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HOME": str(self.home), "Q50S1_KEY_FILE": str(self.d / "keyfile"), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py)}
         r = subprocess.run(["sh", str(SHD)], capture_output=True, text=True, env=env, cwd=REPO)
         self.assertEqual(r.returncode, 6, r.stdout + r.stderr)
         self.assert_untouched()
@@ -446,7 +580,7 @@ class ShadowCheckMemory(unittest.TestCase):
     def test_arguments(self):
         for a in (["x"], ["--check"]):
             self.assertEqual(self.mem(*a).returncode, 2, a)
-        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home)}
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_HOME": str(self.home)}
         r = subprocess.run(["sh", str(SHD), "--check-memory-only"], capture_output=True, text=True, env=env, cwd=REPO)
         self.assertEqual(r.returncode, 2)
 
