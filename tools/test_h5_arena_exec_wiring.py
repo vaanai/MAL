@@ -314,6 +314,21 @@ class RecorderSchemaTests(LiveCase):
         self.assertIn("unreadable", res["halts"]["P7"]["detail"])
         self.assertFalse(res["match"])
 
+    def test_only_a_data_loss_gap_record_marks_open_trips(self):
+        """DEC-032 Am.5 (DRAFT) item 3: the live `gap` mark follows the paper read's rule (arena_h5_score.gap_in_span: pool flags only). A redundant-socket
+        reconnect flags no pool, so it marks no trip; a data-loss record marks every trip whose exit has not landed, as before."""
+        e = self.live()
+        e.open_position()
+        rec = e.ex.gates.recorder
+        self.assertEqual(e.ex.decide_row({"type": "gap", "kind": "socket_reconnect", "flags_pools": False, "redundant": True}), ("keep", None))
+        self.assertFalse(rec.trips[MINT]["gap"])
+        self.assertIsNone(rec.last_gap_ms)
+        self.assertFalse(gt.ParityRecorder(e.ex.gates.dir).trips[MINT]["gap"])
+        self.assertEqual(e.ex.decide_row({"type": "gap", "kind": "socket_reconnect", "flags_pools": True}), ("keep", None))
+        self.assertTrue(rec.trips[MINT]["gap"])
+        self.assertEqual(rec.last_gap_ms, e.clock())
+        self.assertTrue(gt.ParityRecorder(e.ex.gates.dir).trips[MINT]["gap"])
+
     def test_a_gap_marks_open_trips_and_a_restart_reloads(self):
         e = self.live()
         e.open_position()
