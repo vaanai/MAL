@@ -58,6 +58,15 @@ KIT_PINS = {
     "tools/arena_report_legs.py": "65f4d471e3ad19308a038c4d6563f22322134013f09c0afe2d64c648964a0d8b",
 }
 PREREG_SHA256 = "338567229c03257c696124ce5aa09a21b1f66735276a3d8de6060c362968fcc2"
+REPORT_ONLY_NOTES = {
+    "R-b_completing_buy_sizes": ("NOT computed by this adapter (it never reads migrations/ or bonding rows). Structure probe, explore-0814/w1 48 h "
+                                  "(docs/research/kcurve-boost/probe/structure_probe_output.jsonl; PREREG section 1.2), all WSOL completes incl. instant "
+                                  "launches: completing curve buy SOL p10 0.0092, p25 0.0517, p50 0.9037, p75 24.7584, p90 85.0054; share >= 0.25 SOL "
+                                  "0.5979. Report-only; decides nothing."),
+    "R-d_oracle_live_order": ("oracle-live has no tx_index: the END state of slot m + k is the pre-trade state of the next slot's first print in tape "
+                              "order (the kit's inherited convention); K-1's root is order-free."),
+    "R-e_mayhem_flag": "a block whose create rows lack is_mayhem_mode puts its pools in mayhem_or_unknown; the U < 100 refusal then stops the run: return to QP, never loosen the filter.",
+}
 STAMP = "EXPLORATION-ONLY, FIRST 360 S: no October hour; not registrable before EXP-024's end state."
 
 
@@ -276,6 +285,7 @@ class BlockPass:
         self.counts: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
         self.trips: list[dict] = []
         self.days: set[int] = set()
+        self.sps_hours: list[float] = []  # seconds per slot of every loaded hour (R-a)
         self.seg_end = -1
 
     def rate_of(self, slot: int) -> float:
@@ -291,6 +301,7 @@ class BlockPass:
         self.days.add(hr.T // 86400)
         self.clk_min.append(hr.min_slot)
         self.clk_rate.append(hr.slots_per_s)
+        self.sps_hours.append(1.0 / hr.slots_per_s)
         self.seg_end = max(self.seg_end, hr.max_slot)
         for i, pool in enumerate(hr.pools.tolist()):
             if pool in self.store:
@@ -347,12 +358,19 @@ class BlockPass:
             del self.store[pool]
             a = {k: np.concatenate([c[k] for c in s["chunks"]]) for k in s["chunks"][0]}
             C = self.counts[info["day"]]
+            trips = seat_trips(pool, a, info, self.rate_of, self.seg_end)
+            # R-c: structure counts of the same trips (no P&L): END-consistency and V faults that would make worst-in-slot "not measured"
+            # (every cell PROVISIONAL), late-print re-derivations and block-edge exclusions, deciding universe (organic) and all
+            tag = "u_organic" if info["organic"] else "u_nonorganic"
+            C[f"{tag}:block_edge_excluded"] += bool(trips[0]["excl"])
+            C[f"{tag}:late_print_derived"] += bool(trips[0]["late"])
+            for t in trips:
+                if not t["excl"]:
+                    C[f"{tag}:{t['cell']}:w_mismatch"] += bool(t["w_mismatch"])
+                    C[f"{tag}:{t['cell']}:w_vbad"] += bool(t["w_vbad"])
             if not self.price:
-                xs = info["m"] + int(np.rint(HOLD_S * info["rate"]))
-                need = xs + S.D + int(F.exit_lag_vec(np.array([1.0 / self.rate_of(xs)]))[0]) + 1
-                C["block_edge_excluded"] += bool(np.searchsorted(a["sl"], need, "left") >= len(a["sl"]) and need + S.GRACE > self.seg_end)
                 continue
-            for t in seat_trips(pool, a, info, self.rate_of, self.seg_end):
+            for t in trips:
                 t.update(blk=self.bi, T=info["T"], organic=info["organic"], pool=info["crc"])
                 self.trips.append(t)
 
@@ -455,6 +473,22 @@ def cell_result(cell: str, trips: list[dict], excluded: int, names: list[str], e
     return res
 
 
+def counts_md(counts: dict, why: list[str], k_seconds: dict) -> str:
+    """COUNTS.md text: the stamp, the refusals, per-block totals (structure only), k in seconds per block (R-a) and the report-only notes (R-b, R-d, R-e)."""
+    lines = [f"# kcurve-boost COUNTS (outcome-blind precount)", "", f"**{STAMP}**", "", "No price, P&L or outcome is computed here. No book has cleared the promotion gate.", "",
+             "## Refusals (PREREG section 12 item 4)", ""] + ([f"- {w}" for w in why] or ["- none"]) + ["", "## Per-block totals", ""]
+    for name, per_day in counts.items():
+        tot = collections.Counter()
+        for c in per_day.values():
+            tot.update(c)
+        lines.append(f"- **{name}** ({len(per_day)} UTC days): " + ", ".join(f"{k} {v}" for k, v in sorted(tot.items())))
+    lines += ["", "## k in seconds per block (R-a; k x mean seconds per slot of the block's hours)", ""]
+    for name, ks in k_seconds.items():
+        lines.append(f"- {name}: " + ", ".join(f"{c} {v}" for c, v in ks.items()))
+    lines += ["", "## Report-only notes", ""] + [f"- {k}: {v}" for k, v in REPORT_ONLY_NOTES.items()] + [""]
+    return "\n".join(lines)
+
+
 # ------------------------------------------------------------------------------------------------------------------------------ driver
 def run(blocks: Sequence[str], out: str, precount: bool, stake_sol: float = DECIDING_STAKE_SOL, workers: int = 1, log=print) -> int:
     check_stake(stake_sol)
@@ -484,6 +518,9 @@ def run(blocks: Sequence[str], out: str, precount: bool, stake_sol: float = DECI
         passes.append(bp)
         log(json.dumps({"block": name, "hours": len(files), "pools_tracked_trips": len(bp.trips)}))
     counts = {bp.name: {d: dict(c) for d, c in sorted(bp.counts.items())} for bp in passes}
+    sps = {bp.name: (float(np.mean(bp.sps_hours)) if bp.sps_hours else None) for bp in passes}  # R-a: k in seconds per block (k x mean s/slot)
+    k_seconds = {n: ({"K-1": "ahead of every print (the seat precedes slot m)"} | {f"K{k}": (k * s if s else None) for k in KS} | {"seconds_per_slot_mean": s})
+                 for n, s in sps.items()}
     why = refusals(counts)
     prov = {"stamp": STAMP, "prereg_sha256": PREREG_SHA256, "adapter_sha256": file_sha256(Path(__file__)), "kit": KIT_PINS,
             "vmap": [{"path": v, "sha256": S.file_sha256(v)} for v in vpaths], "blocks": names, "inputs_sha256": dict(sorted(inputs.items())),
@@ -491,8 +528,10 @@ def run(blocks: Sequence[str], out: str, precount: bool, stake_sol: float = DECI
             "written_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
     outp.mkdir(parents=True, exist_ok=True)
     if precount or why:
-        doc = {"stamp": STAMP, "provenance": prov, "counts_per_block_per_day": counts, "refusals": why}
+        doc = {"stamp": STAMP, "provenance": prov, "counts_per_block_per_day": counts, "refusals": why, "k_seconds_per_block": k_seconds,
+               "report_only_notes": REPORT_ONLY_NOTES}
         (outp / "counts.json").write_text(json.dumps(doc, indent=1, default=float) + "\n")
+        (outp / "COUNTS.md").write_text(counts_md(counts, why, k_seconds))
         log(json.dumps({"precount": precount, "refusals": why}))
         return 4 if why else 0
     trips = [t for bp in passes for t in bp.trips]
@@ -510,7 +549,8 @@ def run(blocks: Sequence[str], out: str, precount: bool, stake_sol: float = DECI
         ok = [c for c in CELLS if GROUP_OF[c] == g and cells[c]["verdict"] == "SURVIVES"]
         pick = max(ok, key=lambda c: cells[c]["stats_rent0_send505k"]["total|press"]["mean"]) if ok and not solo else None
         survivors[g] = pick
-    doc = {"stamp": STAMP, "report_only_solo_block": solo, "provenance": prov, "counts_per_block_per_day": counts, "cells": cells,
+    doc = {"stamp": STAMP, "report_only_solo_block": solo, "provenance": prov, "counts_per_block_per_day": counts, "k_seconds_per_block": k_seconds,
+           "report_only_notes": REPORT_ONLY_NOTES, "cells": cells,
            "survivor_pick_per_group": survivors}
     (outp / "results.json").write_text(json.dumps(doc, indent=1, default=float) + "\n")
     log(json.dumps({"written": str(outp / "results.json"), "verdicts": {c: cells[c]["verdict"] for c in CELLS}, "survivors": survivors}))

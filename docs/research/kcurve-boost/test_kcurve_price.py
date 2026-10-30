@@ -3,6 +3,7 @@ build_hour; no tape file is opened. Run: /data/mal/venv/bin/python -m pytest -q 
 
 from __future__ import annotations
 
+import collections
 import json
 import math
 import sys
@@ -267,3 +268,30 @@ def test_pool_across_an_hour_boundary_keeps_its_rows():
     ex = S.pool_states(a, np.array([m]), np.array([1 / r0]), np.array([xs]), np.array([1 / rx]))
     assert t["K-1"]["Qx"] == float(ex["Qx"][0]) and not t["K-1"]["excl"]
     assert xs >= hrs[1].min_slot  # the exit really is in the second hour
+
+
+def test_precount_counts_end_consistency_and_v_faults_per_cell(monkeypatch):
+    """R-c: a real-layout END-consistency failure that would make every cell PROVISIONAL shows in the precount, before any priced run."""
+    rows, vmap, creates = make_pools(5, seed=9)
+    bp = run_pass(rows, vmap, creates, price=False)
+    tot = collections.Counter()
+    for c in bp.counts.values():
+        tot.update(c)
+    assert bp.trips == []
+    for cell in K.CELLS:
+        assert f"u_organic:{cell}:w_mismatch" in tot and tot[f"u_organic:{cell}:w_mismatch"] == 0 and tot[f"u_organic:{cell}:w_vbad"] == 0
+    assert tot["u_organic:block_edge_excluded"] == 0 and tot["u_organic:late_print_derived"] == 0
+    assert bp.sps_hours and all(0.3 < s < 0.5 for s in bp.sps_hours)
+    monkeypatch.setattr(S, "_same", lambda a, b: False)  # every END state "differs": what a layout fault would look like
+    bp2 = run_pass(rows, vmap, creates, price=False)
+    tot2 = collections.Counter()
+    for c in bp2.counts.values():
+        tot2.update(c)
+    assert all(tot2[f"u_organic:{cell}:w_mismatch"] == 5 for cell in K.CELLS)
+
+
+def test_counts_md_discloses_k_seconds_and_report_only_items():
+    ks = {"explore-0814": {"K-1": "ahead of every print (the seat precedes slot m)", "K2": 0.74, "seconds_per_slot_mean": 0.37}}
+    md = K.counts_md({"explore-0814": {"2026-08-20": {"u_organic": 3}}}, [], ks)
+    assert K.STAMP in md and "k in seconds per block" in md and "K2 0.74" in md
+    assert "R-b_completing_buy_sizes" in md and "p50 0.9037" in md and "structure_probe_output.jsonl" in md and "NOT computed" in md
