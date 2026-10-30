@@ -24,7 +24,8 @@ from tools.arena_score import Refused
 
 DAY = m.DAY_MS
 S1_CLOCK = m.S1_MIN_CLOCK_MS
-S1_END = S1_CLOCK + 14 * DAY
+S1_END = m.SUCC_END_MS  # E = 2026-12-01T00Z for every s1 clock (DEC-031 Amendment 22 item 8.1), not clock + 14 d
+S1_BOOK_END = S1_CLOCK + 14 * DAY  # the synthetic s1 trades span 14 UTC dates from the clock; an A3 end before it cuts rows
 NOW = S1_END + 2 * 3_600_000  # after every seal of the tool
 Q50_RI = m.Q50_CLOCK_MS + 5 * DAY  # 2026-10-30T00Z
 S1_RI = S1_CLOCK + 5 * DAY  # 2026-11-11T00Z
@@ -114,7 +115,9 @@ class Fixture:
         self.rows = root / "rows.jsonl"
         write_rows(self.rows, {m.Q50_ID: self.fit, m.S1_ID: self.test}, self.ri)
         self.dirs = {m.Q50_ID: [str(write_dir(root, "h5-q50-a", self.fit))], m.S1_ID: [str(write_dir(root, "h5-q50s1-a", self.test))]}
-        self.bots = root / "bots.json"
+        self.bots = root / "bots.json"  # Q50's registry
+        self.s1_bots = root / "s1-root" / "bots.json"  # s1's own registry (Amendment 22 item 9)
+        self.s1_bots.parent.mkdir()
         self.write_bots(s1_clock=s1_clock)
         self.reads = {}
         for bot, tr in ((m.Q50_ID, self.fit), (m.S1_ID, self.test)):
@@ -124,15 +127,15 @@ class Fixture:
 
     def write_bots(self, s1_clock: int = S1_CLOCK, s1_end: int | None = None, q50_clock: int = m.Q50_CLOCK_MS) -> None:
         self.bots.write_text(json.dumps({"bots": {m.Q50_ID: {"clock_start_ms": q50_clock, "window_end_ms": None, "frozen_sha": "a" * 40},
-                                                  m.S1_ID: {"clock_start_ms": s1_clock, "window_end_ms": s1_end, "frozen_sha": "b" * 40},
                                                   "h5v1-boostfloor-a2": {"clock_start_ms": 1, "window_end_ms": 2}}}))
+        self.s1_bots.write_text(json.dumps({"bots": {m.S1_ID: {"clock_start_ms": s1_clock, "window_end_ms": s1_end, "frozen_sha": "b" * 40}}}))
 
     def set_read(self, bot: str, doc: dict) -> None:
         Path(self.reads[bot]).write_text(json.dumps(doc))
 
     def run(self, **kw):
-        args = dict(rows_path=str(self.rows), trigger_dirs=self.dirs, read_paths=self.reads, confirm_paths={}, bots_path=str(self.bots), s1_clock_ms=S1_CLOCK, after_read=True,
-                    now_ms=NOW)
+        args = dict(rows_path=str(self.rows), trigger_dirs=self.dirs, read_paths=self.reads, confirm_paths={}, bots_path=str(self.bots), s1_bots_path=str(self.s1_bots), s1_clock_ms=S1_CLOCK,
+                    after_read=True, now_ms=NOW)
         args.update(kw)
         return m.run(**args)
 
@@ -155,8 +158,11 @@ class TestConstants(Base):
         self.assertEqual(m.Q50_END_MS, 1793923200000)
         self.assertEqual(m.LOOK2_END_MS, 1794614400000)
         self.assertEqual(m.SUCC_END_MS, 1796083200000)
-        self.assertEqual(m.s1_window(1793923200000), (1793923200000, 1795132800000))
+        self.assertEqual(m.s1_window(1793923200000), (1793923200000, 1796083200000))  # E = 2026-12-01T00Z, no longer clock + 14 d (2026-11-20T00Z)
+        self.assertEqual(m.s1_window(1793923200000 + DAY), (1793923200000 + DAY, 1796083200000))  # the 11-07 slip keeps E: 24 d
         self.assertEqual(m.s1_window(m.SUCC_END_MS - 5 * DAY)[1], m.SUCC_END_MS)
+        self.assertEqual(m.S1_BOTS_JSON_DEFAULT, "/home/claude/s1home/data/arena/bots.json")
+        self.assertFalse(hasattr(m, "S1_HORIZON_MS"))
 
     def test_rule_gate_features(self):
         self.assertTrue(set(m.RULE_GATE_FEATURES) <= set(m.FEATURES))
@@ -190,6 +196,13 @@ class TestSeal(Base):
             f.run(now_ms=S1_END + 3_600_000 - 1)
         self.assertIn(f.run(now_ms=S1_END + 3_600_000)["verdict"], ("PASS", "KILL", "NOT_DECIDABLE"))
 
+    def test_s1_is_not_closed_at_its_old_14_day_end(self):
+        f = Fixture(self.root)
+        old_end = S1_CLOCK + 14 * DAY  # 2026-11-20T00Z, E_s1 under Amendment 18 item 3.2
+        with mock.patch.object(m, "wall_ms", return_value=old_end + 3_600_000):
+            with self.assertRaisesRegex(Refused, "s1's end"):
+                f.run(now_ms=old_end + 3_600_000)
+
     def test_run_clamps_to_the_wall_clock(self):
         f = Fixture(self.root)
         with mock.patch.object(m, "wall_ms", return_value=m.LOOK2_END_MS - 1):
@@ -200,13 +213,11 @@ class TestSeal(Base):
 
     def test_s1_clock_bound_to_bots_json(self):
         f = Fixture(self.root)
-        f.write_bots(s1_clock=S1_CLOCK + DAY)  # the registry says 11-07 (slip); the operator passes 11-06
+        f.write_bots(s1_clock=S1_CLOCK + DAY)  # s1's registry says 11-07 (slip); the operator passes 11-06
         with self.assertRaisesRegex(Refused, "clock_start_ms"):
             f.run()
         f.write_bots()
-        del_doc = json.loads(f.bots.read_text())
-        del del_doc["bots"][m.S1_ID]
-        f.bots.write_text(json.dumps(del_doc))
+        f.s1_bots.write_text(json.dumps({"bots": {}}))
         with self.assertRaisesRegex(Refused, "no line"):
             f.run()
         f.write_bots(q50_clock=m.Q50_CLOCK_MS + DAY)
@@ -214,26 +225,71 @@ class TestSeal(Base):
             f.run()
         with self.assertRaisesRegex(Refused, "does not exist"):
             f.run(bots_path=str(self.root / "none.json"))
+        with self.assertRaisesRegex(Refused, "s1's bots.json .* does not exist"):
+            f.run(s1_bots_path=str(self.root / "none.json"))
 
-    def test_slip_to_1107_moves_the_end(self):
+    def test_each_book_is_read_from_its_own_registry(self):
+        f = Fixture(self.root)
+        q = json.loads(f.bots.read_text())
+        s1 = json.loads(f.s1_bots.read_text())
+        # decoys: an s1 line with another clock in Q50's registry, and a Q50 line with another clock in s1's registry. Neither is read.
+        q["bots"][m.S1_ID] = {"clock_start_ms": S1_CLOCK + 3 * DAY, "window_end_ms": S1_CLOCK + 4 * DAY}
+        s1["bots"][m.Q50_ID] = {"clock_start_ms": m.Q50_CLOCK_MS + 3 * DAY, "window_end_ms": 1}
+        f.bots.write_text(json.dumps(q))
+        f.s1_bots.write_text(json.dumps(s1))
+        res = f.run()
+        self.assertEqual(res["windows"], {m.Q50_ID: [m.Q50_CLOCK_MS, m.Q50_END_MS], m.S1_ID: [S1_CLOCK, S1_END]})
+        # s1 only in Q50's registry (the old shared layout): s1's own registry has no line, so it is refused
+        f.s1_bots.write_text(json.dumps({"bots": {}}))
+        with self.assertRaisesRegex(Refused, "s1's bots.json has no line"):
+            f.run()
+        # Q50 only in s1's registry: refused for Q50's registry
+        f.write_bots()
+        f.bots.write_text(json.dumps({"bots": {}}))
+        with self.assertRaisesRegex(Refused, "Q50's bots.json has no line"):
+            f.run()
+
+    def test_one_file_holding_both_lines_may_be_passed_for_both(self):
+        f = Fixture(self.root)
+        both = {"bots": {**json.loads(f.bots.read_text())["bots"], **json.loads(f.s1_bots.read_text())["bots"]}}
+        f.bots.write_text(json.dumps(both))
+        res = f.run(s1_bots_path=str(f.bots))
+        self.assertEqual(res["bots_json"], res["s1_bots_json"])
+
+    def test_both_registries_are_recorded_by_sha256(self):
+        f = Fixture(self.root)
+        res = f.run()
+        self.assertEqual(res["bots_json"], {"sha256": m.sha256_file(f.bots), "path": str(f.bots)})
+        self.assertEqual(res["s1_bots_json"], {"sha256": m.sha256_file(f.s1_bots), "path": str(f.s1_bots)})
+        self.assertNotEqual(res["bots_json"]["sha256"], res["s1_bots_json"]["sha256"])
+
+    def test_slip_to_1107_keeps_the_end(self):
         slip = S1_CLOCK + DAY
         f = Fixture(self.root, s1_clock=slip)
         f.write_bots(s1_clock=slip)
-        end = slip + 14 * DAY
         with self.assertRaisesRegex(Refused, "s1's end"):
-            f.run(s1_clock_ms=slip, now_ms=S1_END + 3_600_000)  # the 11-06 schedule's end + 1 h is too early after a slip
-        with mock.patch.object(m, "wall_ms", return_value=end + 3_600_000):
-            res = f.run(s1_clock_ms=slip, now_ms=end + 3_600_000)
-        self.assertEqual(res["windows"][m.S1_ID], [slip, end])
+            f.run(s1_clock_ms=slip, now_ms=S1_END + 3_600_000 - 1)
+        res = f.run(s1_clock_ms=slip, now_ms=S1_END + 3_600_000)
+        self.assertEqual(res["windows"][m.S1_ID], [slip, S1_END])  # E is 2026-12-01T00Z on the slip too (24 d), not slip + 14 d
         self.assertEqual(len(res["bots_json"]["sha256"]), 64)
 
     def test_registry_window_end(self):
         f = Fixture(self.root)
-        f.write_bots(s1_end=S1_END + DAY)
+        f.write_bots(s1_end=S1_END + DAY)  # never past E
         with self.assertRaisesRegex(Refused, "window_end_ms"):
             f.run()
-        f.write_bots(s1_end=S1_END - DAY)  # an A3 halt moved the end earlier: rows after it are outside the window
+        f.write_bots(s1_end=S1_END)  # the registration pin: E itself
+        self.assertEqual(f.run()["windows"][m.S1_ID], [S1_CLOCK, S1_END])
+        f.write_bots(s1_end=S1_BOOK_END)  # an A3 halt at the old 11-20 end moved E earlier: the window follows it
+        res = f.run(now_ms=S1_BOOK_END + 3_600_000)
+        self.assertEqual(res["windows"][m.S1_ID], [S1_CLOCK, S1_BOOK_END])
+        with self.assertRaisesRegex(Refused, "s1's end"):
+            f.run(now_ms=S1_BOOK_END + 3_600_000 - 1)
+        f.write_bots(s1_end=S1_BOOK_END - DAY)  # an A3 halt before the last synthetic trades: rows after it are outside the window
         with self.assertRaisesRegex(Refused, "outside the book's window"):
+            f.run()
+        f.write_bots(s1_end=S1_CLOCK)  # not after the clock
+        with self.assertRaisesRegex(Refused, "window_end_ms"):
             f.run()
 
     def test_read_instant_inside_window(self):
@@ -506,7 +562,7 @@ class TestVerdicts(Base):
 
 class TestMain(Base):
     def _argv(self, f: Fixture, out: Path) -> list[str]:
-        a = ["--after-read", "--scored-rows", str(f.rows), "--bots-json", str(f.bots), "--s1-clock-ms", str(S1_CLOCK), "--out", str(out)]
+        a = ["--after-read", "--scored-rows", str(f.rows), "--bots-json", str(f.bots), "--s1-bots-json", str(f.s1_bots), "--s1-clock-ms", str(S1_CLOCK), "--out", str(out)]
         for b in m.BOOKS:
             a += ["--trigger-dir", f"{b}={f.dirs[b][0]}", "--read-json", f"{b}={f.reads[b]}"]
         return a
@@ -536,6 +592,34 @@ class TestMain(Base):
         with contextlib.redirect_stderr(io.StringIO()) as err:
             self.assertEqual(m.main(self._argv(f, out)), 3)
         self.assertIn("runs once", err.getvalue())
+
+    def test_s1_bots_json_defaults_to_s1s_own_root_and_the_default_is_never_opened_here(self):
+        f = Fixture(self.root)
+        argv = [x for x in self._argv(f, self.root / "r.json") if x not in ("--s1-bots-json", str(f.s1_bots))]
+        self.assertNotIn("--s1-bots-json", argv)
+        with mock.patch.object(m, "run", return_value={"verdict": "NOT_DECIDABLE", "reasons": ["x"]}) as r, mock.patch.object(m, "render", return_value="R"), \
+                mock.patch.object(m, "write_once"), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(m.main(argv), 0)  # run() is mocked: the real s1 registry is not read
+        self.assertEqual((r.call_args.kwargs["s1_bots_path"], r.call_args.kwargs["bots_path"]), ("/home/claude/s1home/data/arena/bots.json", str(f.bots)))
+
+    def test_s1_bots_json_is_forwarded_and_a_missing_one_is_refused(self):
+        f = Fixture(self.root)
+        argv = self._argv(f, self.root / "r.json")
+        argv[argv.index("--s1-bots-json") + 1] = str(self.root / "no-such" / "bots.json")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(m.main(argv), 3)
+        self.assertIn("s1's bots.json", err.getvalue())
+        self.assertIn("does not exist", err.getvalue())
+
+    def test_result_records_both_registries(self):
+        f = Fixture(self.root)
+        out = self.root / "res.json"
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(m.main(self._argv(f, out)), 0)
+        doc = json.loads(out.read_text())
+        self.assertEqual(doc["s1_bots_json"], {"sha256": m.sha256_file(f.s1_bots), "path": str(f.s1_bots)})
+        self.assertEqual(doc["bots_json"]["sha256"], m.sha256_file(f.bots))
+        self.assertEqual(doc["windows"][m.S1_ID], [S1_CLOCK, S1_END])
 
     def test_bad_bot_name(self):
         f = Fixture(self.root)
