@@ -846,7 +846,7 @@ GAP_LOG_MAX_BYTES = 8_000_000
 # (180 s, the tape-gap stream's staleness bound) is the stated bound: a record first seen later than that after its instant is logged `feed_gap_late` and still
 # holds and refuses. The hold runs from receipt and the per-entry refusal compares decision instants, so latency moves when a hold starts, never whether an
 # entry decided at or before a gap is bought.
-FEED_GAP_MANUAL_REVIEW = False
+FEED_GAP_MANUAL_REVIEW = True  # manager 2026-10-30: stays True (s5 item 2 as built) until Am.21 item 3 is complete in code, incl. 3.4 P7 at C0 (#1106); flipped with the LIVE_REFUSAL flip
 FEED_GAP_HOLD_MS = 60_000  # 3.1; a later config may only lengthen it, up to FEED_GAP_HOLD_CAP_MS (no config key exists today: the constant is the value)
 FEED_GAP_HOLD_FLOOR_MS = 60_000  # guard_problem refuses a start below this
 FEED_GAP_HOLD_CAP_MS = 600_000

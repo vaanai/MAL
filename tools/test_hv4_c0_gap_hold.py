@@ -18,7 +18,22 @@ from tools.test_hv4_live_c0 import Hv4Env, write_feed
 DAY = 86_400_000
 
 
-class Am21Constants(TmpCase):
+class _Am21(TmpCase):
+    """Every test here runs with the Am.21 value (False). The shipped default is True (s5 item 2 as built) until Am.21 item 3 is complete, incl. 3.4 (#1106)."""
+
+    def setUp(self):
+        super().setUp()
+        p = mock.patch.object(c0, "FEED_GAP_MANUAL_REVIEW", False)
+        p.start()
+        self.addCleanup(p.stop)
+
+
+class Am21Constants(_Am21):
+    def test_shipped_default_is_the_as_built_rule(self):
+        import importlib, re
+        src = (Path(c0.__file__)).read_text()
+        self.assertRegex(src, r"(?m)^FEED_GAP_MANUAL_REVIEW = True\b")
+
     def test_values_follow_am21(self):
         self.assertIs(c0.FEED_GAP_MANUAL_REVIEW, False)
         self.assertEqual((c0.FEED_GAP_HOLD_MS, c0.FEED_GAP_HOLD_FLOOR_MS, c0.FEED_GAP_HOLD_CAP_MS), (60_000, 60_000, 600_000))
@@ -59,7 +74,7 @@ class Am21Constants(TmpCase):
         self.assertEqual(c0.gap_unreviewed([t - DAY - 1], t - DAY - 1, t), [])
 
 
-class Am21BridgeTests(TmpCase):
+class Am21BridgeTests(_Am21):
     def env(self):
         root = tempfile.mkdtemp(dir=self.tmp)
         e = Hv4Env(root)
