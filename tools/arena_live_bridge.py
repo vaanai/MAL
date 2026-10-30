@@ -972,7 +972,8 @@ class Bridge:
             self._count("port_refused_buy")
         self._log("buy_sent" if ok else "buy_port_refused", order_id=oid, mint=mint, stake_lamports=stake, paper_stake_sol=row.get("stake_sol"),
                   decision_ms=order["decision_ms"], send_ms=order["send_ms"], decision_to_send_ms=order["send_ms"] - order["decision_ms"],
-                  decision_slot=order["decision_slot"], would_send=not order["live"], dry_reason=why_dry, tier=tier, label=label)
+                  decision_slot=order["decision_slot"], would_send=not order["live"], dry_reason=why_dry, tier=tier, label=label,
+                  **({"decision_seq": row["seq"]} if self.cfg.profile == c0.PROFILE else {}))  # hv4_c0: the decision row's seq, so orders can be tied back to rows (tools/hv4_c0_orders_proof.py)
         self._save()
 
     def _presend_refusal(self, row: Mapping[str, Any]) -> str | None:
@@ -1008,7 +1009,16 @@ class Bridge:
             return
         o["exit_decision_ms"] = o.get("exit_decision_ms") or int(row["ms"])
         o["exit_decision_slot"] = o.get("exit_decision_slot") or row.get("decision_slot")
+        if self.cfg.profile == c0.PROFILE and o.get("exit_decision_seq") is None:
+            o["exit_decision_seq"] = row.get("seq")  # hv4_c0 log field only; the first exit row that is acted on, as for exit_decision_ms
         self._try_exit(oid, str(row.get("reason") or "book_exit"))
+
+    def _runner_silent_ms(self, now: int) -> int:
+        """hv4_c0 log field: ms since the newest decision row this process consumed, or since its own start when it has seen none. The SAME base as
+        `c0.runner_silent_problem`, so `runner_silent_ms > c0.RUNNER_SILENT_MS` is exactly when that rule says `runner_silent`. Logged on every sell so the C0 read can
+        tell which backstop closes happened while the runner was silent (a test pins the two together)."""
+        base = self._started_ms if self._last_row_ms is None else max(self._last_row_ms, self._started_ms)
+        return max(0, int(now) - base)
 
     def _try_exit(self, oid: str, reason: str) -> None:
         o = self.state.orders[oid]
@@ -1042,9 +1052,11 @@ class Bridge:
             o["status"] = "open"
             self._count("port_refused_sell")
         dms = o.get("exit_decision_ms")
+        c0_fields = ({"decision_seq": o.get("exit_decision_seq"), "runner_silent_ms": self._runner_silent_ms(o["sell_send_ms"])}
+                     if self.cfg.profile == c0.PROFILE else {})  # hv4_c0 log fields only: tools/hv4_c0_orders_proof.py and tools/hv4_c0_read_check.py read them
         self._log("sell_sent" if ok else "sell_port_refused", order_id=oid, mint=o["mint"], reason=reason, decision_ms=dms, send_ms=o["sell_send_ms"],
                   decision_to_send_ms=(o["sell_send_ms"] - dms) if dms else None, decision_slot=o.get("exit_decision_slot"), tries=o["sell_tries"],
-                  would_send=not o["live"], label=label)
+                  would_send=not o["live"], label=label, **c0_fields)
         self._save()
 
     # -- events from the port
