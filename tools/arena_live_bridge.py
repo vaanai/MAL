@@ -77,7 +77,9 @@ SELL_RETRY_MS = 5_000
 UNIVERSE_V_RANGE = (17_500_000_000, 17_700_000_000)  # Am.2 item 6: V in [17.5e9, 17.7e9], WSOL quote
 
 LATCHES = ("sealed_path", "chain_break", "frozen_sha_mismatch", "total_loss_cap", "per_trade_loss_cap", "stuck_sell",
-           "parity_hard_halt", "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch", "read_record", "tieout_mismatch", c0.A3_LATCH, c0.FEED_BREAK_LATCH, c0.OWNER_LINE_LATCH)  # twin_pin_mismatch and the two before: hv4_c0 parity wiring; read_record: no recorded PASS read for the bot (hv4_c0): hv4_c0 parity wiring (tools/hv4_c0_parity.py); owner_line: the pinned owner file was rewritten, replaced or removed (hv4_c0, live)
+           "parity_hard_halt", "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch", "read_record", "tieout_mismatch", c0.A3_LATCH, c0.FEED_BREAK_LATCH)  # twin_pin_mismatch and the two before: hv4_c0 parity wiring; read_record: no recorded PASS read for the bot (hv4_c0): hv4_c0 parity wiring (tools/hv4_c0_parity.py)
+
+LATCHES = (*LATCHES, c0.OWNER_LINE_LATCH)  # owner_line: the pinned owner file was rewritten, replaced or removed (hv4_c0, live; DEC-031 Am.21 item 4). A separate line so the tuple above merges cleanly with #1110
 
 
 # --- config -----------------------------------------------------------------------------------------------------------------------
