@@ -3,15 +3,16 @@
 `tools/arena_h5_score_q50.py` (Q50's wrapper, sha256 f5a479ad...) and the scorer `tools/arena_h5_score.py` (sha256 dfe7f018...) are imported and NOT edited; this module only
 reuses Q50's pure helpers and replaces BOTS / score_book / summarize / write_ledger for the duration of main(), as Q50's wrapper does. Importing it has no side effect.
 
-- The book's values are the compiled table row `tools.arena_h5_q50s_instant.S1` (frozen_sha S*, clock 2026-11-06T00Z, window_end_ms E_s1 2026-11-20T00Z, rule and its sha256, Q* 50,
-  exit v1, s0 margin 60 s). `register` has NO sha, clock, end or stake flag: it writes that row.
+- The book's values are the compiled table row `tools.arena_h5_q50s_instant.S1` (frozen_sha S*, clock 2026-11-06T00Z, window_end_ms E 2026-12-01T00Z (DEC-031 power-n amendment
+  item 8.1; was E_s1 2026-11-20T00Z under Amendment 18 item 3.2), rule and its sha256, Q* 50, exit v1, s0 margin 60 s). `register` has NO sha, clock, end or stake flag: it writes that row.
 - `register_s1` writes the one line (refuses any change of sha, clock, end, rule or stake; never edits or removes another line). `window_end_ms` is set AT REGISTRATION (the H pin,
   Amendment 18 item 2.3) and an A3 end may only move it earlier. Registration is refused outside the row's registration window (Amendment 18 item 4) and at or after the clock.
 - A shadow dir feeds the book only if EVERY start record carries code_sha S* (the scorer's identity check), q_star_sol == 50.0, the Q50 rule and its sha256, and
   h5_look2.end_only_ms == 1796083200000 (S*'s SUCC_END_MS). Anything else is refused by the scorer's own refusal path with the reason.
 - pv triggers whose s0_t_recv_ms is missing, not an integer or below clock + 60,000 ms are dropped before score_book (counted, never attempts), with the a2 split counters.
-- THE READ INSTANT: on every `score` run the Amendment 18 item 7 instant is computed from the scorer's own BookResult (decision timestamps and class only) and, unless --dry-run,
-  recorded ONCE in <ledger>/h5v1q50-boostfloor-s1/q50s1-read-instant.json. The scorer's read-instant.json is an attempt-boundary record only.
+- THE READ INSTANT: on every `score` run the power-n screen instant (200 counted trades, or 100 at B >= S_cap = clock + 10 d, on 5 dates, by E; tools.arena_h5_q50s_instant)
+  is computed from the scorer's own BookResult (decision timestamps and class only) and, unless --dry-run, recorded ONCE in
+  <ledger>/h5v1q50-boostfloor-s1/q50s1-read-instant.json. The scorer's read-instant.json is an attempt-boundary record only.
 - Subcommand whitelist: `score` and `register`. `halt` (set_window_end never reaches this id), `refit`, `-h`, unknown and `--` exit 2. `score` needs an explicit --shadow-dir.
 """
 from __future__ import annotations
@@ -95,8 +96,8 @@ def filtered_dirs(entry: dict, dirs: Sequence[sc.ShadowDir], row: Mapping = si.S
 
 
 def s1_instant(bot: str, res: sc.BookResult, entry: dict, ledger_root: Path, now_ms: int, *, dry_run: bool) -> dict:
-    """Amendment 18 item 7 on this run's BookResult (counts and instants only), recorded write-once unless dry_run. The end is E_s1 always, as Q50's is the end-seal always: an A3 end
-    moves the window (the scorer skips later decisions) and is judged by Amendment 4 / 14, not by this rule."""
+    """The power-n screen instant on this run's BookResult (counts and instants only), recorded write-once unless dry_run. The end is E always, as Q50's is the end-seal always: an
+    A3 end moves the window (the scorer skips later decisions) and is judged by Amendment 4 / 14, not by this rule."""
     from tools import arena_h5_q50_instant as qi
     end = si.END_MS
     cls = qi.classes_from_result(res)
