@@ -87,7 +87,7 @@ def test_entry_request_one_marker_model_and_limits():
     cards = make_cards(3)
     req = a.build_entry_request("L", pb, cards, 0)
     body = req.body()
-    assert body["model"] == "claude-haiku-5-5" and body["max_tokens"] == 400
+    assert body["model"] == "claude-haiku-5-5" and body["max_tokens"] == 1200 == req.max_tokens  # fix A: HV6-only (HV4 entry is 400)
     assert json.dumps(body).count("cache_control") == 1
     assert len(req.system) == 1 and req.system[0]["cache_control"] == {"type": "ephemeral"}
     assert "temperature" not in body
@@ -129,7 +129,7 @@ def test_recheck_request():
     cards = make_cards(2)
     pos = [{"id": c["id"], "stop_pct": -25, "target_pct": 100, "mark_ret_pct": 3.5, "as_of_ms": T0_MS} for c in cards]
     req = a.build_recheck_request("F", pb, pos, cards, 1)
-    assert req.kind == "recheck" and req.max_tokens == 120 and json.dumps(req.body()).count("cache_control") == 1
+    assert req.kind == "recheck" and req.max_tokens == 1200 == req.body()["max_tokens"] and json.dumps(req.body()).count("cache_control") == 1  # fix A
     with pytest.raises(p4.PromptError):
         a.build_recheck_request("F", pb, list(reversed(pos)), cards, 1)
     with pytest.raises(p4.PromptError):
@@ -592,7 +592,7 @@ def test_guard_accepts_hv6_root():
 
 
 def test_regime_max_tokens_and_unhashable_event_id():
-    assert a.MAX_TOKENS["regime"] == 1200 and a.MAX_TOKENS["entry"] == 400 and a.MAX_TOKENS["review"] == 4000
+    assert a.MAX_TOKENS["regime"] == 1200 and a.MAX_TOKENS["entry"] == 1200 and a.MAX_TOKENS["recheck"] == 1200 and a.MAX_TOKENS["review"] == 4000
     assert "regime" not in hv4_arms.MAX_TOKENS                                    # HV4's table is untouched
     for eid in ([], {}, None, 5, ["RG-0a1b2c3d"]):
         blk = {**BLOCK, "events": [{"id": eid}, {"id": RG}]}
@@ -600,3 +600,28 @@ def test_regime_max_tokens_and_unhashable_event_id():
         assert vr(rr(evidence_ids=[RG]), block={**BLOCK, "events": [{"id": eid}]}).reason == "unknown_evidence_id"
     assert vr(rr(), block={**BLOCK, "events": "RG-0a1b2c3d"}).reason == "unknown_evidence_id"
     assert vr(rr(), block={**BLOCK, "events": None}).reason == "unknown_evidence_id"
+
+
+# ------------------------------------------------------------------------------------------------ fix A (smoke #1806): HV6-only max_tokens
+def test_fix_a_hv6_only_max_tokens_and_hv4_table_untouched():
+    from tools import hv6_cards as h6
+    assert hv4_arms.MAX_TOKENS == {"entry": 400, "risk": 400, "recheck": 120, "review": 4000}       # HV4's frozen table is not edited
+    assert a.TOKENS_PER_ITEM_MAX == 300 and a.ITEMS_PER_CALL_MAX == h6.CARDS_PER_CALL == a.ENTRY_MAX_CARDS == 4
+    assert a.MAX_TOKENS["entry"] == a.MAX_TOKENS["recheck"] == a.TOKENS_PER_ITEM_MAX * h6.CARDS_PER_CALL == 1200
+    # the largest item of the 62 complete smoke-#1806 replies was 165 output tokens (structure-only read): four of them fit with room
+    assert 4 * 165 < a.MAX_TOKENS["entry"]
+    pb = a.load_playbook()
+    for n in (1, 4):
+        req = a.build_entry_request("P", pb, make_cards(n), 0)
+        assert req.max_tokens == 1200 and req.body()["max_tokens"] == 1200
+    # the request bytes change with the limit (so request_sha256 changes; disclosed in the PR): same cards, HV4's 400 gives another sha
+    req = a.build_entry_request("L", pb, make_cards(2), 0)
+    import dataclasses as _dc
+    assert _dc.replace(req, max_tokens=400).request_sha256() != req.request_sha256()
+
+
+def test_fix_a_reviewer_and_regime_limits_unchanged_in_bundle_spec():
+    from tools import hv6_release as rel
+    assert a.MAX_TOKENS["review"] == 4000 and a.MAX_TOKENS["regime"] == 1200
+    assert rel.bundle_spec_sha256() == "82848deb4a534ac501604f77c06deb7fdd9e2c85a2915627f91675955c07fd4c"   # the pack's pin: fix A does not move it
+    assert rel.regime_spec_sha256() == "50be8a3f2e088c64511aeb1fb127277d9e0438e3b5ce44e46c5381338eb2c414"

@@ -21,6 +21,7 @@ bundle and reply parser, the 10-match rule on playbook/knob changes, the release
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 import os
@@ -74,7 +75,15 @@ X_ENTRIES_PER_H = 2
 # done). They are not X's exit and not a plan the model inherits (a model BUY writes all four plan keys).
 SKIP_PRICING_PLAN = dict(GEN_SPEC.plan_defaults)
 # max_tokens per call kind: HV4's table has no `regime` key. 1,200 is the DESIGN section 6 assumed output size of a regime review.
-MAX_TOKENS = {**MAX_TOKENS, "regime": 1200}
+# Fix A (smoke #1806, 2026-10-28): HV4's entry 400 and re-check 120 truncate HV6 replies. A reply item costs 112-165 output tokens in the 62 complete smoke
+# replies (structure only: a bare JSON array, keys id/action/why, the ~44-char base58 id and the `why` fill most of it); all 32 4-card replies and 2 of 8
+# 3-card replies stopped at exactly 400 (34 of 96, all PARSE_ERROR). A BUY item adds size/conviction/plan and a WATCH item a predicate of up to 4 terms. HV6 sizes both kinds
+# at TOKENS_PER_ITEM_MAX per item (about 1.8x the largest item seen) x CARDS_PER_CALL (4) = 1,200. A re-check carries up to 4 positions per call and an EXIT
+# or TIGHTEN item has a `why` too, so 120 would cut it the same way (NOT measured: the smoke opened no position, so no re-check ran). HV6-only: tools/hv4_arms.MAX_TOKENS (HV4's frozen table) is untouched, and the entry
+# and re-check builders below set the value on the request. review (4000) and regime (1200) are unchanged (they are in the bundle spec).
+TOKENS_PER_ITEM_MAX = 300
+ITEMS_PER_CALL_MAX = ENTRY_MAX_CARDS  # 4 (hv4_arms); = hv6_cards.CARDS_PER_CALL, pinned equal by a test
+MAX_TOKENS = {**MAX_TOKENS, "entry": TOKENS_PER_ITEM_MAX * ITEMS_PER_CALL_MAX, "recheck": TOKENS_PER_ITEM_MAX * ITEMS_PER_CALL_MAX, "regime": 1200}
 
 
 def knob_names() -> tuple[str, ...]:
@@ -509,7 +518,14 @@ def build_entry_request(arm: str, playbook: p4.Playbook, cards, seq: int, *, max
     _check_llm_arm(arm, playbook)
     cards = p4.check_cards(cards, max_cards=min(max_cards, ENTRY_MAX_CARDS))
     check_min_age(cards)
-    return p5._build(arm, "entry", PERSONA, playbook, cards, seq, {})
+    return _hv6_max_tokens(p5._build(arm, "entry", PERSONA, playbook, cards, seq, {}))
+
+
+def _hv6_max_tokens(req: Request) -> Request:
+    """The request with HV6's own max_tokens for its kind (fix A); hv5_prompts builds it with HV4's table. Validated again by building the body."""
+    out = dataclasses.replace(req, max_tokens=MAX_TOKENS[req.kind])
+    out.body()
+    return out
 
 
 def build_recheck_request(arm: str, playbook: p4.Playbook, positions, cards, seq: int) -> Request:
@@ -521,7 +537,7 @@ def build_recheck_request(arm: str, playbook: p4.Playbook, positions, cards, seq
         raise PromptError("positions and cards must have the same ids in the same order")
     for p in positions:
         p4.check_strings(p)
-    return p5._build(arm, "recheck", PERSONA, playbook, cards, seq, {"POSITIONS": p4._lines(positions)}, items=list(positions))
+    return _hv6_max_tokens(p5._build(arm, "recheck", PERSONA, playbook, cards, seq, {"POSITIONS": p4._lines(positions)}, items=list(positions)))
 
 
 # ---------------------------------------------------------------------------------------------------------------- validators
