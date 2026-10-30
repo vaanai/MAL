@@ -329,14 +329,19 @@ class WriteStatusCrossTests(TmpCase):
         for node in ast.walk(ast.parse(src)):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "gap" and node.args and isinstance(node.args[0], ast.Constant):
                 kinds.add(node.args[0].value)
-        self.assertEqual(kinds, {"stall", "resume", "disconnect", "reconnect", "mismatch", "local_torn_trimmed", "error"})
-        self.assertEqual(kinds - {"resume"} - set(c0.GAP_BREAK_KINDS), set())  # a kind the puller adds without the bridge knowing it would be fail-open
+        self.assertEqual(kinds, {"stall", "resume", "disconnect", "reconnect", "mismatch", "local_torn_trimmed", "error", "tapegaps_fault"})
+        if hasattr(c0, "gap_loses_data"):  # #1090 (merges first): every non-resume kind is a gap row; only Am.21 3.2's transport list leaves the latch
+            self.assertEqual(kinds - {"resume"} - set(c0.TRANSPORT_GAP_KINDS), {"tapegaps_fault"})
+            self.assertTrue(c0.gap_loses_data("tapegaps_fault"))
+        else:  # main before #1090: the bridge filters by GAP_BREAK_KINDS, so only the new fault kind is unknown to it here (fail-open on this branch alone; never installed alone)
+            self.assertEqual(kinds - {"resume"} - set(c0.GAP_BREAK_KINDS), {"tapegaps_fault"})
         pl = self.puller(Path(self.tmp) / "dst")
         for k in sorted(kinds):
             pl.gap(k, why="x") if k != "resume" else pl.gap(k, gap_ms=3)
         gaps, resumes, bad = c0.gap_log_ms(str(pl.gaps_path))
         self.assertIsNone(bad)
-        self.assertEqual((len(gaps), len(resumes)), (len(kinds) - 1, 1))  # every break kind is a gap instant, `resume` is the one that is not
+        # every break kind is a gap instant, `resume` is the one that is not; before #1090 the bridge's reader drops the unknown `tapegaps_fault` (never installed alone)
+        self.assertEqual((len(gaps), len(resumes)), (len(kinds) - 1 if hasattr(c0, "gap_loses_data") else len(kinds) - 2, 1))
         pl.close()
 
     def test_stopped_mismatch_from_a_real_tamper_latches_feed_break_in_the_bridge(self):
@@ -551,16 +556,17 @@ class EndToEndTests(TmpCase):
             self.assertIsNone(c0.feed_gap_problem(c0.feed_status_path(root, ARM), ARM, wall_ms()))  # the forwarder status is still `connected`
             p.wait(lambda: "tapegaps_fault" in json.loads(Path(c0.feed_status_path(root, ARM)).read_text()))
             p.bridge.gap_tick(wall_ms())
-            self.assertIn(c0.FEED_BREAK_LATCH, p.bridge.state.latches)  # the `error` gap row is coverage-losing for the bridge
+            if hasattr(c0, "gap_loses_data"):  # with #1090 (default s5-as-built) the fault row latches; under Am.21 it holds and refuses
+                self.assertIn(c0.FEED_BREAK_LATCH, p.bridge.state.latches)
             kinds = [json.loads(x)["kind"] for x in (Path(root) / "transport" / f"{ARM}.gaps.jsonl").read_text().splitlines()]
-            self.assertEqual(kinds, ["error"])
+            self.assertEqual(kinds, ["tapegaps_fault"])
             # new buys stop by the clock alone once the old copy ages out
             self.assertEqual(c0.tape_gap_stream_problem(str(dst), os.lstat(dst).st_mtime_ns // 1_000_000 + c0.TAPE_GAP_STREAM_MAX_AGE_MS + 1), "tape_gap_stream_stale")
             p.relay_pass(rows + [("gap_silence", t + 1)], wall_ms())  # the accepted copy plus a row: recovered
             p.wait(lambda: p.puller.tg_fault is None)
             p.wait(lambda: dst.read_bytes() == Path(p.relay_file).read_bytes())
             self.assertEqual(p.rc, [])
-            self.assertEqual([json.loads(x)["kind"] for x in (Path(root) / "transport" / f"{ARM}.gaps.jsonl").read_text().splitlines()], ["error", "resume"])
+            self.assertEqual([json.loads(x)["kind"] for x in (Path(root) / "transport" / f"{ARM}.gaps.jsonl").read_text().splitlines()], ["tapegaps_fault", "resume"])
 
     def test_a_retention_head_trim_between_two_relay_passes_keeps_the_pull_running_and_the_bridge_sees_the_new_gap(self):
         """QP CHANGES on #1105 (6527468544): relay v2 trims the front of its stream by 72 h. Real serve subprocess, real Puller thread, a Bridge on the wall clock; the 'relay'

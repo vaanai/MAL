@@ -639,15 +639,15 @@ class Puller:
     def _tapegaps_fault(self, why: object) -> None:
         """A fault in the carried relay stream (a bad frame or file, or a new file that is not the accepted one with a head trim and appended rows). The puller does NOT stop
         and the decision rows keep flowing; the tapegaps copy is NOT touched, so it keeps its old content and its old mtime and goes stale (the bridge refuses new buys on a
-        stale stream; exits keep running). One gap row per episode (and per change of reason): kind `error`, which the bridge's GAP_BREAK_KINDS counts as coverage-losing, so a
-        fault fails closed; a status note while it is open. It ends when a later frame is again the accepted copy with a head trim and appended rows (a `resume` row), or at a restart."""
+        stale stream; exits keep running). One gap row per episode (and per change of reason): kind `tapegaps_fault`. It is NOT a transport kind of DEC-031 Am.21 3.2
+        (`error` is), so with #1090 merged (gap_log_entries keeps every non-resume kind; gap_loses_data) it is coverage-losing and fails closed; a status note while it is open. It ends when a later frame is again the accepted copy with a head trim and appended rows (a `resume` row), or at a restart."""
         if not isinstance(why, str) or not TAPEGAPS_FAULT_RE.match(why):
             why = "tapegaps_bad_fault_frame"
         self.tg_faults += 1
         new = why != self.tg_fault
         self.tg_fault = why
         if new:
-            self.gap("error", why=why, tapegaps_fault=True)
+            self.gap("tapegaps_fault", why=why, tapegaps_fault=True)
         self.write_status()
 
     def _handle_tapegaps(self, frame: dict) -> None:

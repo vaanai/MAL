@@ -1170,7 +1170,7 @@ class TapegapsFaultTest(TapegapsCase):
                 self.assertEqual(self.disk(), before)  # not the bytes, not the inode, not the mtime: the copy stays as it was and goes stale
                 self.assertEqual((pl.tg_data, pl.tg_trimmed, pl.tg_frames, pl.tg_faults), (base, trimmed_before, 1, 1))
                 rows = gaps(self.dst)
-                self.assertEqual([(g["kind"], g["why"]) for g in rows], [("error", pl.tg_fault)])  # one row, kind `error` (in the bridge's GAP_BREAK_KINDS)
+                self.assertEqual([(g["kind"], g["why"]) for g in rows], [("tapegaps_fault", pl.tg_fault)])  # one row, kind `tapegaps_fault` (coverage-losing under DEC-031 Am.21 once #1090 is in)
                 self.assertEqual(self.status().get("tapegaps_fault"), pl.tg_fault)  # the status note
                 self.assertEqual(sorted(p.name for p in (Path(self.dst) / "transport").iterdir()),
                                  sorted([f"{BOT}.tapegaps.jsonl", f"{BOT}.lock", f"{BOT}.gaps.jsonl", f"{BOT}.status.json"]))  # no tmp file
@@ -1182,8 +1182,9 @@ class TapegapsFaultTest(TapegapsCase):
         pl.handle(tg_frame(a, T0 + 2), time.time_ns())
         pl.handle(tg_frame(tg_bytes(("start", T0)), T0 + 3), time.time_ns())
         g, res, bad = c0.gap_log_ms(str(pl.gaps_path))
-        self.assertEqual((len(g), res, bad), (1, [], None))  # counted as a gap record (a coverage loss), no problem
-        self.assertIn("error", c0.GAP_BREAK_KINDS)
+        self.assertEqual((len(g), res, bad), (1 if hasattr(c0, "gap_loses_data") else 0, [], None))  # with #1090 every non-resume kind is a gap row (fail closed)
+        if hasattr(c0, "gap_loses_data"):  # #1090 (merges before this PR): not a transport kind, so it holds and refuses
+            self.assertTrue(c0.gap_loses_data("tapegaps_fault"))
         st = self.status()
         self.assertEqual((st["schema"], st["tapegaps_fault"]), (df.SCHEMA, pl.tg_fault))
         pl.close()
@@ -1205,7 +1206,7 @@ class TapegapsFaultTest(TapegapsCase):
         c = a + tg_bytes(("gap_silence", T0 + 9))
         pl.handle(tg_frame(c, T0 + 10), time.time_ns())
         self.assertEqual((self.dst_tg().read_bytes(), pl.tg_fault), (c, None))
-        self.assertEqual([g["kind"] for g in gaps(self.dst)], ["error", "error", "resume"])
+        self.assertEqual([g["kind"] for g in gaps(self.dst)], ["tapegaps_fault", "tapegaps_fault", "resume"])
         self.assertEqual(gaps(self.dst)[-1]["why"], "tapegaps_recovered")
         self.assertNotIn("tapegaps_fault", self.status())  # the note is gone
         self.assertEqual(os.lstat(self.dst_tg()).st_mtime_ns // 1_000_000, T0 + 10)
@@ -1241,7 +1242,7 @@ class TapegapsFaultTest(TapegapsCase):
                 self.assertRegex(pl.tg_fault or "", df.TAPEGAPS_FAULT_RE.pattern)
                 self.assertFalse(self.dst_tg().exists())
                 self.assertEqual((pl.tg_frames, pl.tg_faults), (0, 1))
-                self.assertEqual([g["kind"] for g in gaps(self.dst)], ["error"])
+                self.assertEqual([g["kind"] for g in gaps(self.dst)], ["tapegaps_fault"])
                 pl.close()
 
     def test_a_tf_frame_from_serve_is_a_fault_with_a_closed_vocabulary_reason(self) -> None:
@@ -1281,13 +1282,13 @@ class TapegapsFaultTest(TapegapsCase):
             p.wait(lambda: p.status().get("tapegaps_fault") == p.pl.tg_fault)
             st = p.status()
             self.assertEqual(st["state"], "connected")  # the feed itself is healthy; only the stream is
-            self.assertEqual([g["kind"] for g in gaps(self.dst)], ["error"])
+            self.assertEqual([g["kind"] for g in gaps(self.dst)], ["tapegaps_fault"])
             self.assertTrue(gaps(self.dst)[0]["why"].startswith("tapegaps_"))
             c = a + tg_bytes(("gap_silence", T0 + 4 * HOUR_MS))  # the relay is again the accepted copy plus a row
             self.put(c, mt=T0 + 4 * HOUR_MS)
             p.wait(lambda: p.pl.tg_fault is None)
             self.assertEqual((self.dst_tg().read_bytes(), p.rc), (c, []))
-            self.assertEqual([g["kind"] for g in gaps(self.dst)], ["error", "resume"])
+            self.assertEqual([g["kind"] for g in gaps(self.dst)], ["tapegaps_fault", "resume"])
             p.wait(lambda: "tapegaps_fault" not in p.status())
 
     def test_a_bad_source_file_is_a_tf_fault_the_pull_keeps_running_and_decisions_flow(self) -> None:
