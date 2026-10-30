@@ -199,6 +199,116 @@ def test_unknown_status_any_job(tmp_path):
     assert {a["key"] for a in passn(tmp_path, c, ctx)[1]} == {"job:5:Lost", "job:7:Errored"}
 
 
+def at(h):
+    return NOW + dt.timedelta(hours=h)
+
+
+def test_new_states_unwatched_are_silent(tmp_path):
+    j = jl((1, "Starting", "a"), (2, "PASS", "b"), (3, "FAIL", "c"), (4, "Interrupted", "d"),
+           (5, "pass", "e"), (6, "STARTING", "f"), (7, "fail", "g"), (8, "INTERRUPTED", "h"))
+    c, ctx = mk(tmp_path, j)
+    line, fresh = passn(tmp_path, c, ctx)
+    assert fresh == [] and line["alert_keys"] == []
+    c, ctx = mk(tmp_path, j, now=at(1))  # FAIL/Interrupted are not "newly failed" either
+    assert passn(tmp_path, c, ctx)[1] == []
+
+
+def test_states_are_case_insensitive_when_watched(tmp_path):
+    j = jl((1, "STARTING", "a"), (2, "RUNNING", "b"), (3, "Paused", "c"), (4, "PASS", "d"))
+    c, ctx = mk(tmp_path, j, cfg={"watch": [1, 2, 3, 4], "expected_done_ok": [4]})
+    line, fresh = passn(tmp_path, c, ctx)
+    assert fresh == [] and any("job #4" in i for i in line["info"])
+
+
+def test_watched_pass_alerts_like_passed_unless_expected(tmp_path):
+    c, ctx = mk(tmp_path, jl((6, "PASS", "b")), cfg={"watch": [6]})
+    assert [a["key"] for a in passn(tmp_path, c, ctx)[1]] == ["job:6:PASS"]
+
+
+def test_watched_fail_is_info_once(tmp_path):
+    j = jl((3, "FAIL", "verdict"))
+    c, ctx = mk(tmp_path, j, cfg={"watch": [3]})
+    fresh = passn(tmp_path, c, ctx)[1]
+    assert [(a["key"], a["severity"]) for a in fresh] == [("job:3:FAIL", "info")]
+    for h in (7, 14):  # a verdict is final: not re-alerted after the dedupe window
+        c, ctx = mk(tmp_path, j, cfg={"watch": [3]}, now=at(h))
+        assert passn(tmp_path, c, ctx)[1] == []
+
+
+def test_watched_interrupted_is_medium_unwatched_ignored(tmp_path):
+    j = jl((4, "Interrupted", "lost"), (5, "Interrupted", "other"))
+    c, ctx = mk(tmp_path, j, cfg={"watch": [4]})
+    fresh = passn(tmp_path, c, ctx)[1]
+    assert [(a["key"], a["severity"]) for a in fresh] == [("job:4:Interrupted", "medium")]
+
+
+def test_watched_done_job_aged_out_is_info_once(tmp_path):
+    for k, st in enumerate(("Passed", "PASS", "Done", "FAIL")):
+        sub = tmp_path / ("s%d" % k)
+        cfg = {"watch": [5], "expected_done_ok": [5]}
+        c, ctx = mk(sub, jl((5, st, "a")), cfg=cfg)
+        passn(sub, c, ctx)
+        c, ctx = mk(sub, jl(), cfg=cfg, now=at(1))
+        line, fresh = passn(sub, c, ctx)
+        assert fresh == [] and line["alert_keys"] == [], st
+        assert line["info"] == ["job #5 aged out of the list (last seen %s)" % st.lower()]
+        c, ctx = mk(sub, jl(), cfg=cfg, now=at(2))
+        line, fresh = passn(sub, c, ctx)
+        assert fresh == [] and line["info"] == [], st  # recorded once only
+        c, ctx = mk(sub, jl(), cfg=cfg, now=at(20))
+        assert passn(sub, c, ctx)[1] == [], st  # and not re-raised after the window
+
+
+def test_watched_missing_never_seen_done_stays_high(tmp_path):
+    # never seen at all
+    c, ctx = mk(tmp_path, jl(), cfg={"watch": [8]})
+    assert [(a["key"], a["severity"]) for a in passn(tmp_path, c, ctx)[1]] == [("job:8:missing", "high")]
+    # seen Running (still alive), then vanished: a lost job, not a finished one
+    sub = tmp_path / "r"
+    c, ctx = mk(sub, jl((9, "Running", "a")), cfg={"watch": [9]})
+    assert passn(sub, c, ctx)[1] == []
+    c, ctx = mk(sub, jl(), cfg={"watch": [9]}, now=at(1))
+    assert [(a["key"], a["severity"]) for a in passn(sub, c, ctx)[1]] == [("job:9:missing", "high")]
+    # seen Cancelled (watched Cancelled alerts), then vanished: still high
+    sub = tmp_path / "c"
+    c, ctx = mk(sub, jl((10, "Cancelled", "a")), cfg={"watch": [10]})
+    assert [a["key"] for a in passn(sub, c, ctx)[1]] == ["job:10:Cancelled"]
+    c, ctx = mk(sub, jl(), cfg={"watch": [10]}, now=at(7))
+    assert [a["key"] for a in passn(sub, c, ctx)[1]] == ["job:10:missing"]
+
+
+def test_job_list_error_keeps_watch_seen(tmp_path):
+    cfg = {"watch": [5], "expected_done_ok": [5]}
+    c, ctx = mk(tmp_path, jl((5, "PASS", "a")), cfg=cfg)
+    passn(tmp_path, c, ctx)
+    c, ctx = mk(tmp_path, "Error: not logged in\n", cfg=cfg, now=at(1))
+    assert "check_error:jobs" in {a["key"] for a in passn(tmp_path, c, ctx)[1]}
+    c, ctx = mk(tmp_path, jl(), cfg=cfg, now=at(2))  # memory survived the failed read
+    line, fresh = passn(tmp_path, c, ctx)
+    assert "job:5:missing" not in line["alert_keys"]
+    assert line["info"] == ["job #5 aged out of the list (last seen pass)"]
+
+
+def test_watch_seen_state_pruned_and_tolerates_junk(tmp_path):
+    cfg = {"watch": [5]}
+    c, ctx = mk(tmp_path, jl((5, "Running", "a"), (6, "Running", "b")), cfg=cfg)
+    passn(tmp_path, c, ctx)
+    st = json.loads((tmp_path / "st" / "state.json").read_text())
+    assert st["watch_seen"] == {"5": "running"}
+    st["watch_seen"] = ["junk"]  # a damaged value must not crash the check
+    (tmp_path / "st" / "state.json").write_text(json.dumps(st))
+    c, ctx = mk(tmp_path, jl(), cfg=cfg, now=at(1))
+    line, fresh = passn(tmp_path, c, ctx)
+    assert [a["key"] for a in fresh] == ["job:5:missing"] and line["checks"]["jobs"] != "error"
+
+
+def test_only_job_list_and_ps_are_run(tmp_path):
+    c, ctx = mk(tmp_path, jl((5, "PASS", "a"), (6, "Interrupted", "b")), cfg={"watch": [5, 6, 7]})
+    passn(tmp_path, c, ctx)
+    assert {tuple(x[1:]) for x in ctx["calls"] if x[0] != "ps"} == {("job", "list")}
+    assert {x[0] for x in ctx["calls"]} <= {w.MISCUSI, "ps"}
+
+
 def test_corrupt_state_alerts_and_backs_up(tmp_path):
     st = tmp_path / "st"
     st.mkdir()
