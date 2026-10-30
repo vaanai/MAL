@@ -1,28 +1,33 @@
 #!/bin/sh
 # MiScusi job command: the ONE pre-clock live smoke of `h5v1q50-boostfloor-s1` (DEC-031 Amendment 6 item 1.3; Amendment 18 item 8; EXP/EXP-024-note-s1-successor.md part A (a),
-# which covers "the one pre-clock live smoke ... a process at the same code and flags in a scratch root that is not the book's root"). POSIX sh only. Paper only: no keys, no sends.
+# which covers "the one pre-clock live smoke ... a process at the same code and flags in a scratch root that is not the book's root"; DEC-031 Amendment 22 items 10 and 11: s1's own
+# feed arguments, at least 6 h, flagged-gap exposure E_gap <= 2.5%). POSIX sh only. Paper only: no wallet keys, no sends (the Helius ws key is read at start, never printed).
 # NOT SUBMITTED by the PR that adds it. Before it starts: the blocking list is notebooked (Amendment 6 item 1.3, text in the s1 runbook), the memory fit passes, and nothing else heavy runs.
 #
-#   sh scripts/ops/q50s1-smoke.sh            the smoke: 9000 s (>= 2 h; R0 and the slope start at +30 min), then the counts-only judgement; exit 0 PASS, 1 FAIL, other = refused
+#   sh scripts/ops/q50s1-smoke.sh            the smoke: 25200 s (7 h, so at least 6 full UTC hours for E_gap; R0 and the slope start at +30 min), then the counts-only
+#                                             judgement; exit 0 PASS, 1 FAIL, other = refused
 #   sh scripts/ops/q50s1-smoke.sh --check    every pre-start check, prints the command it would run, starts nothing
 #
 # Same code and flags as the book (scripts/ops/q50s1-shadow-start.sh, read from THIS checkout so the two never drift): tools/h5_shadow.py at S* 5c2ab7c6 from a clean detached worktree,
-# --fresh-forward ARENA --q-star-sol 50 --sockets 3 --syn-sockets 1 and the start script's own --ws-url list (its WS<n>= lines), MemoryMax = its NEW_MAX_MB (1500M), MemorySwapMax=0.
-# Differences, all outside the process's flags: the out dir is a scratch root $HOME/data/arena/h5-smoke-q50s1-<UTC stamp> (h5_shadow requires $HOME/data/arena/h5-*; this name matches
-# no book glob: not h5-shadow-*, h5-q50-*, h5-q50s1-2*), its own worktree $HOME/data/arena-src/q50s1-smoke-5c2ab7c6 (removed at the end), its own unit q50s1-smoke.scope.
+# --fresh-forward ARENA --q-star-sol 50 --sockets 3 --syn-sockets 1 and the providers of scripts/ops/q50s1-feed.sh (the helper the start script itself sources: mainnet-beta and the
+# keyed Helius ws), MemoryMax = its NEW_MAX_MB (1500M), MemorySwapMax=0. Differences, all outside the process's flags: the out dir is a scratch root
+# $ARENA/h5-smoke-q50s1-<UTC stamp> under s1's own arena root (Amendment 22 item 9; h5_shadow requires <root>/h5-*; the name matches no book glob: not h5-shadow-*, h5-q50-*,
+# h5-q50s1-2*), its own worktree $HOME/data/arena-src/q50s1-smoke-5c2ab7c6 (removed at the end), its own unit q50s1-smoke.scope with a fixed --description (no key in the journal).
 # Memory: refuses (exit 10) unless `sh scripts/ops/q50s1-shadow-start.sh --check-memory` exits 0 (the same fit check as the book's start: P + S + N + M <= L with N = 1500M;
 # PR #1086 adds that mode; without it the call is refused and so is the smoke).
 # Output: the scratch out dir (outcome-bearing: NEVER opened by a person; never counted, scored or read) and $HOME/data/q50s1-ops/smoke-<stamp>/{process.log,rss.tsv} (the process's
 # stdout/stderr and its own RSS samples, epoch_s TAB rss_bytes TAB pid). The job log holds only this script's lines and tools/q50s1_health.py smoke-judge's SMOKE_* lines (counts, timings
-# and flags; the gap-rows-by-kind counter and the PENDING <= 2 coverage-losing gaps/h rule are report-only).
-# Exit: 0 PASS, 1 FAIL (judged), 2 args/env/python/flags drift, 3 websockets/certifi, 5 dirty worktree, 6 host, 7 tag/worktree, 9 already running or out dir exists, 10 memory.
-# Env (optional): ARENA_H5_PYTHON (shadow python, default /var/lib/mal/fast-listener/.venv/bin/python), Q50S1_REPO, Q50S1_ARENA (default $HOME/data/arena). Tests only:
-# Q50S1_SMOKE_S, Q50S1_SMOKE_SAMPLE_S (any value other than 9000 / 60 makes the verdict FAIL with test_overrides).
+# and flags): items a-d of Amendment 6 item 1.3, g (E_gap <= 2.5%, Amendment 22 item 11; the gap-rows-by-kind counter is report-only) and k (the URL's key-parameter string counted in the process log, its
+# errors file and the user journal since the start: 0, Amendment 22 item 10).
+# Exit: 0 PASS, 1 FAIL (judged), 2 args/env/python/flags drift, 3 websockets/certifi, 5 dirty worktree, 6 host, 7 tag/worktree, 9 already running or out dir exists, 10 memory,
+# 11 Helius key missing or malformed.
+# Env (optional): ARENA_H5_PYTHON (shadow python, default /var/lib/mal/fast-listener/.venv/bin/python), Q50S1_REPO, Q50S1_ARENA (s1's own root, default /data/mal/arena),
+# Q50S1_HELIUS_ENV (see q50s1-feed.sh). Tests only: Q50S1_SMOKE_S, Q50S1_SMOKE_SAMPLE_S (any value other than 25200 / 60 makes the verdict FAIL with test_overrides).
 set -eu
 set -f
 S_SHA=5c2ab7c64b21358619e37068c6a53e4d183512ea
 S_TAG=q50-succ-base-1
-DUR_DEFAULT=9000
+DUR_DEFAULT=25200
 SAMPLE_DEFAULT=60
 UNIT=q50s1-smoke
 MODE=run
@@ -31,7 +36,7 @@ if [ "$#" -eq 1 ]; then [ "$1" = "--check" ] || { echo "q50s1-smoke: unknown arg
 [ -n "${HOME:-}" ] || { echo "q50s1-smoke: HOME is not set" >&2; exit 2; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="${Q50S1_REPO:-$(cd "$HERE/../.." && pwd)}"
-ARENA="${Q50S1_ARENA:-$HOME/data/arena}"
+ARENA="${Q50S1_ARENA:-/data/mal/arena}"
 PY="${ARENA_H5_PYTHON:-/var/lib/mal/fast-listener/.venv/bin/python}"
 DUR="${Q50S1_SMOKE_S:-$DUR_DEFAULT}"
 SAMPLE="${Q50S1_SMOKE_SAMPLE_S:-$SAMPLE_DEFAULT}"
@@ -40,8 +45,9 @@ case "$DUR$SAMPLE" in *[!0-9]*) echo "q50s1-smoke: bad duration or sample interv
 OVERRIDES=""
 if [ "$DUR" != "$DUR_DEFAULT" ] || [ "$SAMPLE" != "$SAMPLE_DEFAULT" ]; then OVERRIDES=--test-overrides; fi
 START_SH="$REPO/scripts/ops/q50s1-shadow-start.sh"
+FEED_SH="$REPO/scripts/ops/q50s1-feed.sh"
 JUDGE="$REPO/tools/q50s1_health.py"
-[ -f "$START_SH" ] && [ -f "$JUDGE" ] || { echo "q50s1-smoke: $START_SH or $JUDGE missing" >&2; exit 2; }
+[ -f "$START_SH" ] && [ -f "$FEED_SH" ] && [ -f "$JUDGE" ] || { echo "q50s1-smoke: $START_SH, $FEED_SH or $JUDGE missing" >&2; exit 2; }
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="$ARENA/h5-smoke-q50s1-$STAMP"
 REP="$HOME/data/q50s1-ops/smoke-$STAMP"
@@ -49,14 +55,10 @@ SRC="$HOME/data/arena-src/q50s1-smoke-$(printf '%s' "$S_SHA" | cut -c1-8)"
 
 # 1. host
 if [ "$(hostname)" != "mal-fast-0" ]; then echo "q50s1-smoke: the book runs on mal-fast-0 (this is $(hostname))" >&2; [ "$MODE" = "check" ] || exit 6; fi
-# 2. the book's flags, read from the start script in this checkout (any drift refuses)
-WS_LIST="$(sed -n 's/^WS[0-9]=//p' "$START_SH")"
-[ -n "$WS_LIST" ] || { echo "q50s1-smoke: no WS<n>= line in $START_SH" >&2; exit 2; }
-WS_ARGS=""
-for u in $WS_LIST; do
-  case "$u" in wss://*) ;; *) echo "q50s1-smoke: start script ws url '$u' is not wss://" >&2; exit 2 ;; esac
-  WS_ARGS="$WS_ARGS --ws-url $u"
-done
+# 2. the book's flags: the start script in this checkout must use the same feed helper and flags (any drift refuses)
+grep -q -F '. "$HERE/q50s1-feed.sh"' "$START_SH" || { echo "q50s1-smoke: the start script does not load q50s1-feed.sh with ." >&2; exit 2; }
+grep -q -F -- '--ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2"' "$START_SH" || { echo "q50s1-smoke: the start script's ws arguments drifted from q50s1-feed.sh" >&2; exit 2; }
+grep -q -F -- '--description="$UNIT"' "$START_SH" || { echo "q50s1-smoke: the start script has no fixed --description" >&2; exit 2; }
 grep -q -F -- '--fresh-forward ARENA --q-star-sol 50' "$START_SH" || { echo "q50s1-smoke: start script flags drifted (--fresh-forward ARENA --q-star-sol 50)" >&2; exit 2; }
 grep -q -F -- '--sockets 3 --syn-sockets 1' "$START_SH" || { echo "q50s1-smoke: start script flags drifted (--sockets 3 --syn-sockets 1)" >&2; exit 2; }
 grep -q -F -- '-p MemorySwapMax=0' "$START_SH" || { echo "q50s1-smoke: start script flags drifted (MemorySwapMax=0)" >&2; exit 2; }
@@ -86,12 +88,13 @@ MEMRC=0
 sh "$START_SH" --check-memory || MEMRC=$?
 echo "q50s1-smoke: memory fit (q50s1-shadow-start.sh --check-memory) rc=$MEMRC"
 if [ "$MEMRC" -ne 0 ]; then echo "q50s1-smoke: memory fit not shown: NOT starting (never an uncapped or unchecked start)" >&2; [ "$MODE" = "check" ] || exit 10; fi
-# 6. python
+# 6. feed and python
+. "$FEED_SH"
+q50s1_ws2_build || { echo "q50s1-smoke: the Helius key is missing, unreadable or malformed in $Q50S1_HELIUS_ENV: NOT starting (DEC-031 Amendment 22 item 10)" >&2; exit 11; }
 [ -x "$PY" ] || { echo "q50s1-smoke: no python at $PY" >&2; exit 2; }
 "$PY" -I -c 'import websockets, certifi' 2>/dev/null || { echo "q50s1-smoke: websockets/certifi missing in $PY" >&2; exit 3; }
-CMD="--fresh-forward ARENA --q-star-sol 50 --out-dir $OUT --sockets 3 --syn-sockets 1$WS_ARGS"
 if [ "$MODE" = "check" ]; then
-  echo "q50s1-smoke: (check) would run in $SRC for ${DUR}s: systemd-run --user --scope --unit=$UNIT -p MemoryMax=${MAX_MB}M -p MemorySwapMax=0 env PYTHONPATH=$SRC H5_CODE_SHA=$S_SHA $PY -m tools.h5_shadow $CMD"
+  echo "q50s1-smoke: (check) would run in $SRC for ${DUR}s: systemd-run --user --scope --unit=$UNIT --description=$UNIT -p MemoryMax=${MAX_MB}M -p MemorySwapMax=0 env PYTHONPATH=$SRC H5_CODE_SHA=$S_SHA $PY -m tools.h5_shadow --fresh-forward ARENA --q-star-sol 50 --out-dir $OUT --sockets 3 --syn-sockets 1 --ws-url $Q50S1_WS1 --ws-url ${Q50S1_WS2_BASE}<query: key from $Q50S1_HELIUS_ENV, not printed>"
   exit 0
 fi
 
@@ -107,11 +110,12 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 130' TERM INT
 START="$(date -u +%s)"
-echo "q50s1-smoke: starting at $(date -u +%FT%TZ): rule H5-BOOSTFLOOR-Q50 v1, head=$S_SHA, out=$OUT, report=$REP, MemoryMax=${MAX_MB}M, ${DUR}s, sample ${SAMPLE}s"
-# shellcheck disable=SC2086
-(cd "$SRC" && exec systemd-run --user --scope --quiet --unit="$UNIT" -p "MemoryMax=${MAX_MB}M" -p MemorySwapMax=0 \
-  env PYTHONPATH="$SRC" H5_CODE_SHA="$S_SHA" H5_DIRTY="" "$PY" -m tools.h5_shadow $CMD) >"$LOG" 2>&1 &
+echo "q50s1-smoke: starting at $(date -u +%FT%TZ): rule H5-BOOSTFLOOR-Q50 v1, head=$S_SHA, out=$OUT, report=$REP, MemoryMax=${MAX_MB}M, ${DUR}s, sample ${SAMPLE}s, ws=$Q50S1_WS1 $Q50S1_WS2_BASE (key from $Q50S1_HELIUS_ENV)"
+(cd "$SRC" && exec systemd-run --user --scope --quiet --unit="$UNIT" --description="$UNIT" -p "MemoryMax=${MAX_MB}M" -p MemorySwapMax=0 \
+  env PYTHONPATH="$SRC" H5_CODE_SHA="$S_SHA" H5_DIRTY="" "$PY" -m tools.h5_shadow --fresh-forward ARENA --q-star-sol 50 --out-dir "$OUT" \
+  --sockets 3 --syn-sockets 1 --ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2") >"$LOG" 2>&1 &
 PID=$!
+Q50S1_WS2=""
 ALIVE=yes
 while :; do
   NOW="$(date -u +%s)"
@@ -126,7 +130,10 @@ systemctl --user stop "$UNIT.scope" >/dev/null 2>&1 || kill -TERM "$PID" 2>/dev/
 PRC=0
 wait "$PID" || PRC=$?
 echo "q50s1-smoke: stopped at $(date -u +%FT%TZ): alive_at_end=$ALIVE process_rc=$PRC (report-only) out=$OUT report=$REP"
+JKEY=unreadable
+if journalctl --user -n 0 --no-pager >/dev/null 2>&1; then JKEY="$(journalctl --user --since "@$START" --no-pager -o cat 2>/dev/null | grep -c -F 'api-key' || true)"; fi
+case "$JKEY" in ''|*[!0-9]*) JKEY=unreadable ;; esac
 # 8. judge (counts, timings and flags only)
 JRC=0
-python3 -I "$JUDGE" smoke-judge --out-dir "$OUT" --proc-log "$LOG" --rss "$RSS" --start-epoch "$START" --end-epoch "$END" --alive-at-end "$ALIVE" $OVERRIDES || JRC=$?
+python3 -I "$JUDGE" smoke-judge --out-dir "$OUT" --proc-log "$LOG" --rss "$RSS" --start-epoch "$START" --end-epoch "$END" --alive-at-end "$ALIVE" --journal-key-count "$JKEY" $OVERRIDES || JRC=$?
 exit "$JRC"
