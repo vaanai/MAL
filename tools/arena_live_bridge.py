@@ -38,7 +38,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from tools.arena_declog import GENESIS, DecisionLog, LogChainError, sha256_hex, utc_day
 from tools import hv4_c0_parity as c0p
@@ -382,6 +382,8 @@ class Bridge:
         self.owner_dec_path = Path(owner_dec_path) if owner_dec_path is not None else Path(c0.OWNER_DEC_PATH)
         self.owner_pin = owner_pin
         self.gap_clear_dir = str(gap_clear_dir) if gap_clear_dir is not None else c0.GAP_CLEAR_DIR
+        self._gks: set[int] | None = None  # the in-memory set of state.gap_known_ms (_gap_known)
+        self._gks_src: list[int] | None = None
         self._read_ident: dict[str, Any] = {}
         if cfg.profile == c0.PROFILE:
             first, why = c0.window_start_ms(cfg.bot_id, self.now_ms(), create=True)
@@ -709,32 +711,56 @@ class Bridge:
         return f"transport_stall:{why}" if why else None
 
     def _note_gap(self, gap_ms: int, why: str) -> None:
-        """One COVERAGE-LOSING record (kind and instant only). Open trades are marked `gap` (DEC-032 s5.2; Am.21 3.1). With c0.FEED_GAP_MANUAL_REVIEW
-        (s5 item 2 as built) feed_break latches. Otherwise (DEC-031 Am.21 item 3) a record not seen before restarts the hold: no new buy until
-        max(instant, receipt) + c0.FEED_GAP_HOLD_MS (the hold runs from when the record REACHES THE BRIDGE), and entries decided at or before its instant are
-        refused (gap_entry_refusal)."""
-        now = self.now_ms()
-        if gap_ms > self.state.gap_noted_ms:
-            self.state.gap_noted_ms = gap_ms
-            if self.gates is not None:
-                self.gates.recorder.note_gap(gap_ms)
+        """One COVERAGE-LOSING record (kind and instant only), e.g. a `gap` row of the decision stream. Open trades are marked `gap` (DEC-032 s5.2; Am.21 3.1).
+        With c0.FEED_GAP_MANUAL_REVIEW (s5 item 2 as built) feed_break latches. Otherwise (DEC-031 Am.21 item 3) it goes through the batched path _note_gaps."""
         if c0.FEED_GAP_MANUAL_REVIEW:
+            if gap_ms > self.state.gap_noted_ms:
+                self.state.gap_noted_ms = gap_ms
+                if self.gates is not None:
+                    self.gates.recorder.note_gap(gap_ms)
             self._latch(c0.FEED_BREAK_LATCH, why)
             self._save()
             return
-        known = self.state.gap_known_ms
-        if gap_ms in known:
-            return
-        known.append(gap_ms)
-        known.sort()
-        if len(known) > c0.GAP_KNOWN_MAX:
+        if self._note_gaps([gap_ms], why, self._gap_reviewed_ms()):
+            self._save()
+
+    def _gap_known(self) -> set[int]:
+        """The coverage-losing instants already registered, as a set (QP/reviewer part A: a list scan cost 11.9 ms per tick at 2,000 gaps). Rebuilt from the
+        persisted list after a load or a prune."""
+        lst = self.state.gap_known_ms
+        if self._gks is None or self._gks_src is not lst or len(self._gks) != len(lst):
+            self._gks, self._gks_src = set(lst), lst
+        return self._gks
+
+    def _note_gaps(self, instants: Iterable[int], why: str, reviewed_ms: int) -> bool:
+        """DEC-031 Am.21 3.1, BATCHED (reviewer part A: one save and one log line per record cost 33 s for 2,000 records inside a tick, with exits waiting):
+        register every instant not seen before and later than the manager's review (a reviewed instant is never registered again, so it never re-arms the hold).
+        Among them, only those not older than c0.GAP_KNOWN_KEEP_MS restart the hold (an aged-out instant is tracked for the 24 h latch but never re-arms it).
+        One hold update, one trip mark, one summary log line. Returns True when the state changed; the CALLER saves once."""
+        now = self.now_ms()
+        ks = self._gap_known()
+        new = sorted({ms for ms in instants if ms not in ks and ms > reviewed_ms})
+        if not new:
+            return False
+        ks.update(new)
+        self.state.gap_known_ms.extend(new)
+        self.state.gap_known_ms.sort()
+        if len(self.state.gap_known_ms) > c0.GAP_KNOWN_MAX:
             self._latch(c0.FEED_BREAK_LATCH, f"{c0.FEED_GAP_LOG_LATCH}:gap_known_overflow")  # never a silent drop
-        self.state.gap_hold_until_ms = max(self.state.gap_hold_until_ms, max(gap_ms, now) + c0.FEED_GAP_HOLD_MS)
-        late = now - gap_ms > c0.FEED_GAP_LATENCY_BOUND_MS
+        newest = new[-1]
+        if newest > self.state.gap_noted_ms:
+            self.state.gap_noted_ms = newest
+            if self.gates is not None:
+                self.gates.recorder.note_gap(newest)
+        rearm = [ms for ms in new if now - ms <= c0.GAP_KNOWN_KEEP_MS]
+        if rearm:
+            self.state.gap_hold_until_ms = max(self.state.gap_hold_until_ms, max(rearm[-1], now) + c0.FEED_GAP_HOLD_MS)
+        late = sum(1 for ms in new if now - ms > c0.FEED_GAP_LATENCY_BOUND_MS)
         if late:
-            self._count("feed_gap_late")
-        self._log("feed_gap_hold", gap_ms=gap_ms, seen_ms=now, hold_until_ms=self.state.gap_hold_until_ms, late=late, why=why[:200])
-        self._save()
+            self.state.counts["feed_gap_late"] = self.state.counts.get("feed_gap_late", 0) + late
+        self._log("feed_gap_hold", n=len(new), first_ms=new[0], newest_ms=newest, seen_ms=now, rearmed=len(rearm), late=late,
+                  hold_until_ms=self.state.gap_hold_until_ms, why=why[:200])
+        return True
 
     def gap_entry_refusal(self, row: Mapping[str, Any]) -> str | None:
         """DEC-031 Am.21 3.1 per-entry refusal (hv4_c0, not in the as-built mode): no buy on an entry decided at or before the newest coverage-losing
@@ -776,14 +802,13 @@ class Bridge:
                     self._log("latch_cleared", latch=c0.FEED_BREAK_LATCH, reviewed_gap_ms=newest)
                     self._save()
             return
-        # DEC-031 Am.21 item 3
+        # DEC-031 Am.21 item 3 (batched: at most one state save per tick from the bookkeeping below)
         if bad:
             self._latch(c0.FEED_BREAK_LATCH, f"{c0.FEED_GAP_LOG_LATCH}:{bad}")
-        loss = [ms for k, ms in fentries if c0.gap_loses_data(k)] + [ms for _k, ms in tentries]
-        for ms in sorted(set(loss)):
-            if ms not in self.state.gap_known_ms:
-                self._note_gap(ms, f"coverage-losing record at {ms}")
         reviewed = self._gap_reviewed_ms()
+        loss = [ms for k, ms in fentries if c0.gap_loses_data(k)]
+        loss.extend(ms for _k, ms in tentries)
+        dirty = self._note_gaps(loss, "coverage-losing records", reviewed)
         unrev = c0.gap_unreviewed(self.state.gap_known_ms, reviewed, now)
         if unrev:
             self._latch(c0.FEED_BREAK_LATCH, f"{c0.FEED_GAP_UNREVIEWED}:{unrev[0]}")
@@ -797,10 +822,12 @@ class Bridge:
             if clear:
                 del self.state.latches[c0.FEED_BREAK_LATCH]
                 self._log("latch_cleared", latch=c0.FEED_BREAK_LATCH, why=why[:200], reviewed_gap_ms=reviewed)
-                self._save()
+                dirty = True
         keep = [ms for ms in self.state.gap_known_ms if ms > reviewed or now - ms <= c0.GAP_KNOWN_KEEP_MS]  # unreviewed instants are never pruned
         if len(keep) != len(self.state.gap_known_ms):
-            self.state.gap_known_ms = keep
+            self.state.gap_known_ms = keep  # _gap_known rebuilds the set; a pruned instant is <= reviewed, so _note_gaps never registers it again
+            dirty = True
+        if dirty:
             self._save()
 
     def _gap_reviewed_ms(self) -> int:
