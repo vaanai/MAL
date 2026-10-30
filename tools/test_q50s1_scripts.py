@@ -76,6 +76,8 @@ class ShadowCheck(unittest.TestCase):
         (self.home / "data" / "arena").mkdir(parents=True)
         (self.home / "data" / "arena-src").mkdir()
         self.arena = self.home / "data" / "arena"
+        self.cg = self.d / "cgroup-slice"  # the fake /sys/fs/cgroup/user.slice/user-1002.slice (Q50S1_CGROUP_SLICE_DIR, honoured only outside a real start)
+        self.cg.mkdir()
         self.py = self.bin / "fakepy"  # the import check of websockets / certifi succeeds; every other call runs the real interpreter
         self.py.write_text('#!/bin/sh\ncase "$*" in *"import websockets"*) exit 0 ;; esac\nexec python3 "$@"\n')
         self.py.chmod(0o755)
@@ -99,17 +101,19 @@ esac''')
         p.write_text("#!/bin/sh\n" + body + "\n")
         p.chmod(p.stat().st_mode | stat.S_IXUSR)
 
-    def set_mem(self, *, cur, smax, running):
-        units = "\n".join(u for u, _ in running)
+    def set_mem(self, *, cur, smax, running, list_rc=0, inactive=0, active=0, mapped=0, stat=None, smax_rc=0):
+        """cur = the slice's memory.current; memory.stat gets inactive_file / active_file / file_mapped (P = cur - inactive - active + mapped), or `stat` verbatim."""
+        (self.cg / "memory.current").write_text(f"{cur}\n")
+        (self.cg / "memory.stat").write_text(stat if stat is not None else f"anon 1\nfile {inactive + active}\nactive_file {active}\ninactive_file {inactive}\nfile_mapped {mapped}\nshmem 0\n")
         maxes = "\n".join(f'    "{u}") echo {m} ;;' for u, m in running)
         self.stub("systemctl", f'''
 case "$*" in
   *"is-active"*) exit 3 ;;
   *"show user-1002.slice -p MemoryCurrent"*) echo {cur} ;;
-  *"show user-1002.slice -p MemoryMax"*) echo {smax} ;;
-  *"list-units"*) printf '%s\\n' {" ".join(repr(u + " loaded active running x") for u, _ in running) or "''"} ;;
+  *"show user-1002.slice -p MemoryMax"*) [ {smax_rc} -eq 0 ] || exit {smax_rc}; printf '%s\\n' '{smax}' ;;
+  *"list-units"*) [ {list_rc} -eq 0 ] || {{ echo "Failed to connect to bus" >&2; exit {list_rc}; }}; printf '%s\\n' {" ".join(repr(u + " loaded active running x") for u, _ in running) or "''"} ;;
   *"show"*)
-    for a in "$@"; do last="$a"; done
+    case "$5" in MemoryCurrent) echo 1000; exit 0 ;; MemoryPeak) echo 2000; exit 0 ;; esac
     case "$3" in
 {maxes}
     *) echo infinity ;;
@@ -124,7 +128,7 @@ esac''')
 
     def run_(self, now=WIN_FROM + 60, git_status="", extra_env=None):
         env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_NOW_EPOCH": str(now), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py),
-               "FAKE_GIT_STATUS": git_status, **(extra_env or {})}
+               "FAKE_GIT_STATUS": git_status, "Q50S1_CGROUP_SLICE_DIR": str(self.cg), **(extra_env or {})}
         return subprocess.run(["sh", str(SHD), "--check"], capture_output=True, text=True, env=env, cwd=REPO)
 
     def test_happy_path_prints_the_command_and_starts_nothing(self):
@@ -134,7 +138,7 @@ esac''')
         self.assertIn("--fresh-forward ARENA --q-star-sol 50", r.stdout)
         self.assertIn("MemoryMax=1500M", r.stdout)
         self.assertIn(f"{self.arena}/h5-q50s1-2026-11-05", r.stdout)
-        self.assertIn("without a finite MemoryMax: 0", r.stdout)
+        self.assertIn("other uncapped units: 0", r.stdout)
         self.assertFalse((self.arena / "h5-q50s1-2026-11-05").exists())
 
     def test_check_outside_the_window_reports_but_a_real_run_would_exit_4(self):
@@ -159,11 +163,11 @@ esac''')
         self.assertEqual(self.run_().returncode, 8)
 
     def test_memory_that_does_not_fit_exits_10_and_never_starts(self):
-        self.set_mem(cur=18 * GIB, smax=20 * GIB, running=[("a.service", 1 * GIB)])  # 18 + 1 + 1.46 GiB > 20
+        self.set_mem(cur=18 * GIB, smax=20 * GIB, running=[("a.service", 1 * GIB)])  # P 18 + 1 + 1.46 + 2 GiB > 20
         r = self.run_()
         self.assertEqual(r.returncode, 10, r.stdout + r.stderr)
         self.assertIn("NOT starting", r.stderr)
-        self.set_mem(cur=2 * GIB, smax=20 * GIB, running=[("a.service", 17 * GIB)])  # the sum of caps counts, not only the current use
+        self.set_mem(cur=2 * GIB, smax=20 * GIB, running=[("a.service", 15 * GIB)])  # the sum of caps counts, not only the current use
         self.assertEqual(self.run_().returncode, 10)
 
     def test_an_uncapped_running_unit_refuses_even_when_everything_fits(self):
@@ -189,6 +193,201 @@ esac''')
             r = subprocess.run(["sh", str(SHD), *a], capture_output=True, text=True, env=env, cwd=REPO)
             self.assertEqual(r.returncode, 2, a)
         self.assertEqual(self.run_(now="abc").returncode, 2)
+
+
+class ShadowCheckMemory(unittest.TestCase):
+    """--check-memory: only the host report and check 6; no bots.json, tag, worktree, python or out dir is touched (QP C2 on #1065: evaluate the fit before registration).
+    Reuses ShadowCheck's fixture helpers without re-running its tests."""
+    stub = ShadowCheck.stub
+    set_mem = ShadowCheck.set_mem
+    write_line = ShadowCheck.write_line
+    run_ = ShadowCheck.run_
+
+    def setUp(self):
+        ShadowCheck.setUp(self)
+        self.mark = self.d / "touched"
+        self.py.write_text(f'#!/bin/sh\ntouch {self.mark}.py\nexit 99\n')  # any python call (the bots.json read, the import check) would leave a mark
+        self.stub("git", f'touch {self.mark}.git\nexit 99')
+
+    def mem(self, *args):
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py), "Q50S1_CGROUP_SLICE_DIR": str(self.cg)}
+        return subprocess.run(["sh", str(SHD), "--check-memory", *args], capture_output=True, text=True, env=env, cwd=REPO)
+
+    def assert_untouched(self):
+        self.assertFalse(Path(f"{self.mark}.py").exists(), "python was called")
+        self.assertFalse(Path(f"{self.mark}.git").exists(), "git was called")
+        self.assertEqual(sorted(p.name for p in self.arena.iterdir()), ["bots.json"] if (self.arena / "bots.json").exists() else [])
+
+    def test_fits_prints_every_unit_and_reads_nothing_else(self):
+        (self.arena / "bots.json").unlink()  # no s1 line: --check stops at 8; --check-memory never looks
+        r = self.mem()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"unit a.service MemoryMax={1 * GIB} MemoryCurrent=", r.stdout)
+        self.assertIn(f"unit b.service MemoryMax={2 * GIB} MemoryCurrent=", r.stdout)
+        self.assertIn(f"P={2 * GIB} S={3 * GIB} N={1500 * 1024 * 1024} M=2147483648 need={2 * GIB + 3 * GIB + 1500 * 1024 * 1024 + 2147483648} L={20 * GIB}", r.stdout)
+        self.assertIn("other uncapped units: 0", r.stdout)
+        self.assertIn("(check-memory) fits", r.stdout)
+        self.assert_untouched()
+
+    def test_an_uncapped_unit_off_the_allowlist_is_named_and_refuses(self):
+        self.set_mem(cur=1 * GIB, smax=64 * GIB, running=[("a.service", 1 * GIB), ("miscusi-agent.service", "infinity"), ("heavy.service", "infinity"), ("x.scope", "infinity")])
+        r = self.mem()
+        self.assertEqual(r.returncode, 10, r.stdout + r.stderr)
+        self.assertIn("unit heavy.service MemoryMax=infinity (UNCAPPED, not on the allowlist)", r.stdout)
+        self.assertIn("unit miscusi-agent.service MemoryMax=infinity (uncapped, ALLOWLISTED", r.stdout)
+        self.assertIn("2 running unit(s) have no finite MemoryMax and are not on the allowlist: heavy.service x.scope", r.stderr)
+        self.assertNotIn("fits", r.stdout)
+        self.assert_untouched()
+
+    # QP-RULING-1030-s1-memory C6
+    def test_c6i_large_page_cache_fails_the_literal_sum_but_p_passes(self):
+        self.set_mem(cur=18 * GIB, smax=20 * GIB, running=[("a.service", 1 * GIB)], inactive=10 * GIB, active=5 * GIB, mapped=GIB // 2)
+        r = self.mem()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        p = 18 * GIB - 15 * GIB + GIB // 2
+        self.assertIn(f"P={p} S={1 * GIB}", r.stdout)
+        self.assertIn(f"the literal Am.18 sum MemoryCurrent + S + N = {18 * GIB + 1 * GIB + 1500 * 1024 * 1024}", r.stdout)  # > L: the literal formula would refuse
+        self.assertGreater(18 * GIB + 1 * GIB + 1500 * 1024 * 1024, 20 * GIB)
+
+    def test_c6ii_every_allowlisted_name_uncapped_fits_and_prints_its_peak(self):
+        allow = ["init.scope", "dbus.service", "gpg-agent.service", "claude-remote.service", "miscusi-agent.service", "tmux-spawn-x.scope", "tmux-spawn-3f2a.scope"]
+        self.set_mem(cur=1 * GIB, smax=64 * GIB, running=[("a.service", 1 * GIB)] + [(u, "infinity") for u in allow])
+        r = self.mem()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        for u in allow:
+            self.assertIn(f"unit {u} MemoryMax=infinity (uncapped, ALLOWLISTED: counted inside P, not summed) MemoryCurrent=1000 MemoryPeak=2000", r.stdout)
+        self.assertIn(f"S={1 * GIB} ", r.stdout)
+        self.assertIn(f"allowlisted uncapped units: {len(allow)}; other uncapped units: 0", r.stdout)
+
+    def test_c6iii_near_miss_names_refuse(self):
+        for u in ("run-u7.scope", "xinit.scope", "tmux-spawn.service", "tmux-spawn-x.service", "init.scope.bak", "dbus.scope"):
+            self.set_mem(cur=1 * GIB, smax=64 * GIB, running=[("a.service", 1 * GIB), (u, "infinity")])
+            r = self.mem()
+            self.assertEqual(r.returncode, 10, (u, r.stdout + r.stderr))
+            self.assertIn(f"not on the allowlist: {u}", r.stderr)
+
+    def test_c6iv_need_equal_to_l_fits_and_one_byte_more_refuses(self):
+        need = 3 * GIB + 1 * GIB + 1500 * 1024 * 1024 + 2147483648
+        self.set_mem(cur=3 * GIB, smax=need, running=[("a.service", 1 * GIB)])
+        r = self.mem()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"need={need} L={need} (slice MemoryMax) spare=0", r.stdout)
+        self.set_mem(cur=3 * GIB + 1, smax=need, running=[("a.service", 1 * GIB)])
+        r = self.mem()
+        self.assertEqual(r.returncode, 10, r.stdout + r.stderr)
+        self.assertIn(f"need {need + 1} > L {need}", r.stderr)
+
+    def test_c6v_unreadable_or_incomplete_cgroup_files_refuse(self):
+        self.set_mem(cur=1 * GIB, smax=64 * GIB, running=[("a.service", 1 * GIB)], stat="anon 1\ninactive_file 5\nfile_mapped 1\n")  # no active_file
+        r = self.mem()
+        self.assertEqual(r.returncode, 10, r.stdout + r.stderr)
+        self.assertIn("memory.stat field active_file is missing or not numeric", r.stderr)
+        self.set_mem(cur=1 * GIB, smax=64 * GIB, running=[("a.service", 1 * GIB)], stat="inactive_file x\nactive_file 1\nfile_mapped 1\n")
+        self.assertEqual(self.mem().returncode, 10)
+        self.set_mem(cur=1 * GIB, smax=64 * GIB, running=[("a.service", 1 * GIB)])
+        (self.cg / "memory.stat").unlink()
+        r = self.mem()
+        self.assertEqual(r.returncode, 10, r.stdout + r.stderr)
+        self.assertIn("cannot read memory.stat", r.stderr)
+        self.set_mem(cur=1 * GIB, smax=64 * GIB, running=[("a.service", 1 * GIB)])
+        (self.cg / "memory.current").write_text("max\n")
+        r = self.mem()
+        self.assertEqual(r.returncode, 10, r.stdout + r.stderr)
+        self.assertIn("cannot read memory.current", r.stderr)
+
+    def test_c6vi_the_cgroup_override_is_ignored_in_a_real_start(self):
+        t = SHD.read_text()
+        lines = [x for x in t.splitlines() if "Q50S1_CGROUP_SLICE_DIR" in x and not x.lstrip().startswith("#")]
+        self.assertEqual(lines, ['if [ "$MODE" != "run" ] && [ -n "${Q50S1_CGROUP_SLICE_DIR:-}" ]; then CG_SLICE_DIR="$Q50S1_CGROUP_SLICE_DIR"; fi'])
+        self.assertIn("CG_SLICE_DIR=/sys/fs/cgroup/user.slice/user-1002.slice\n", t)
+
+    # reviewer R1 / R1b on #1086 (comment 6527036965)
+    def test_r1_slice_limit_never_fails_open(self):
+        for kw, want in (({"smax_rc": 1}, "cannot read MemoryMax of user-1002.slice (systemctl failed)"), ({"smax": ""}, "is '' (not a number and not infinity)"),
+                         ({"smax": "garbage"}, "is 'garbage' (not a number and not infinity)"), ({"smax": "[not set]"}, "not a number and not infinity")):
+            self.set_mem(**{"cur": 1 * GIB, "smax": 20 * GIB, "running": [("a.service", 1 * GIB)], **kw})
+            r = self.mem()
+            self.assertEqual(r.returncode, 10, (kw, r.stdout + r.stderr))
+            self.assertIn(want, r.stderr, kw)
+            self.assertNotIn("fits", r.stdout, kw)
+        self.set_mem(cur=1 * GIB, smax="infinity", running=[("a.service", 1 * GIB)])  # the literal "infinity" is the only MemTotal path
+        r = self.mem()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("(MemTotal (slice MemoryMax=infinity))", r.stdout)
+
+    def test_r1_a_slice_already_over_its_limit_refuses(self):
+        self.set_mem(cur=17179869184, smax=16106127360, running=[("a.service", 1 * GIB)])  # P alone above L
+        r = self.mem()
+        self.assertEqual(r.returncode, 10, r.stdout + r.stderr)
+        self.assertIn("does not fit the slice", r.stderr)
+        self.set_mem(cur=17179869184, smax=16106127360, running=[("a.service", 1 * GIB)], smax_rc=1)  # and the reviewer's repro: a failed L read never becomes MemTotal
+        r = self.mem()
+        self.assertEqual(r.returncode, 10, r.stdout + r.stderr)
+        self.assertNotIn("fits", r.stdout)
+
+    def test_r1b_a_huge_finite_cap_refuses_and_never_wraps(self):
+        for cap in ("9223372036854775807", "99999999999999999999", str(20 * GIB + 1)):
+            self.set_mem(cur=1 * GIB, smax=20 * GIB, running=[("a.service", 1 * GIB), ("big.service", cap)])
+            r = self.mem()
+            self.assertEqual(r.returncode, 10, (cap, r.stdout + r.stderr))
+            self.assertIn(f"unit big.service MemoryMax={cap} is above the slice limit", r.stderr)
+            self.assertNotIn("need=-", r.stdout)
+        self.set_mem(cur=1 * GIB, smax=20 * GIB, running=[("a.service", 1 * GIB)], stat="inactive_file 1234567890123456789\nactive_file 1\nfile_mapped 1\n")
+        r = self.mem()
+        self.assertEqual(r.returncode, 10, r.stdout + r.stderr)
+        self.assertIn("more than 18 digits", r.stderr)
+
+    def test_na_the_line_says_when_the_test_cgroup_dir_is_in_use(self):
+        r = self.mem()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"slice_dir={self.cg} (TEST OVERRIDE, not the real slice)", r.stdout)
+
+    def test_c4_read_only_no_reclaim_and_no_write_into_sys(self):
+        t = SHD.read_text()
+        self.assertNotIn("memory.reclaim", t)
+        self.assertIsNone(re.search(r">>?\s*\"?(/sys|\$CG_SLICE_DIR|\$\{CG_SLICE_DIR)", t))
+        self.assertIsNone(re.search(r"\btee\b[^\n]*(/sys|CG_SLICE_DIR)", t))
+
+    def test_does_not_fit_refuses_with_the_same_formula_as_the_start(self):
+        self.set_mem(cur=18 * GIB, smax=20 * GIB, running=[("a.service", 1 * GIB)])
+        r = self.mem()
+        self.assertEqual(r.returncode, 10, r.stdout + r.stderr)
+        self.assertIn("does not fit the slice", r.stderr)
+        self.assertIn(f"need={18 * GIB + 1 * GIB + 1500 * 1024 * 1024 + 2147483648} L={20 * GIB}", r.stdout)
+
+    def test_an_unreadable_or_empty_unit_list_refuses_in_every_mode(self):
+        for kw in ({"list_rc": 1}, {"running": []}):
+            self.set_mem(cur=1 * GIB, smax=64 * GIB, **{"running": [("a.service", 1 * GIB)], **kw})
+            r = self.mem()
+            self.assertEqual(r.returncode, 10, (kw, r.stdout + r.stderr))
+            self.assertIn("cannot list the running user units", r.stderr)
+            self.stub("git", 'case "$*" in *fetch*) exit 0 ;; *"rev-parse q50-succ-base-1"*|*"rev-parse HEAD"*) echo 5c2ab7c64b21358619e37068c6a53e4d183512ea ;; *) exit 0 ;; esac')
+            self.py.write_text('#!/bin/sh\ncase "$*" in *"import websockets"*) exit 0 ;; esac\nexec python3 "$@"\n')
+            r = self.run_()  # the full --check reaches check 6 and refuses the same way
+            self.assertEqual(r.returncode, 10, (kw, r.stdout + r.stderr))
+            self.assertIn("cannot list the running user units", r.stderr)
+            self.setUp()
+
+    def test_wrong_host_is_reported_and_the_fit_still_evaluated(self):
+        self.stub("hostname", "echo mal-research-0")
+        r = self.mem()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("this book runs on mal-fast-0", r.stderr)
+        self.assert_untouched()
+
+    def test_a_real_start_on_the_wrong_host_still_exits_6_first(self):
+        self.stub("hostname", "echo mal-research-0")
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home), "Q50S1_REPO": str(self.d), "ARENA_H5_PYTHON": str(self.py)}
+        r = subprocess.run(["sh", str(SHD)], capture_output=True, text=True, env=env, cwd=REPO)
+        self.assertEqual(r.returncode, 6, r.stdout + r.stderr)
+        self.assert_untouched()
+
+    def test_arguments(self):
+        for a in (["x"], ["--check"]):
+            self.assertEqual(self.mem(*a).returncode, 2, a)
+        env = {"PATH": f"{self.bin}:/usr/bin:/bin", "HOME": str(self.home)}
+        r = subprocess.run(["sh", str(SHD), "--check-memory-only"], capture_output=True, text=True, env=env, cwd=REPO)
+        self.assertEqual(r.returncode, 2)
 
 
 if __name__ == "__main__":

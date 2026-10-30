@@ -96,7 +96,10 @@ def test_constants_follow_the_rule_and_the_dec():
 def test_constants_equal_the_h5_arena_executor_where_they_overlap():
     h5 = pytest.importorskip("tools.h5_arena_executor")
     assert h5.C0_TIER == F.C0 and (h5.FUNDED_MIN_LAMPORTS, h5.FUNDED_MAX_LAMPORTS) == (F.FUNDED_MIN_LAMPORTS, F.FUNDED_MAX_LAMPORTS)
-    assert h5.GAP_HOLD_MS == F.GAP_HOLD_MS and h5.AM8_PRIORITY == F.PRIORITY_LAMPORTS and h5.SELL_RESERVE_SENDS == F.SELL_RESERVE_SENDS
+    assert h5.AM8_PRIORITY == F.PRIORITY_LAMPORTS and h5.SELL_RESERVE_SENDS == F.SELL_RESERVE_SENDS
+    # The gap hold no longer overlaps: DEC-032 Am.5 (DRAFT) scopes the 60 s data-loss hold to the H5 shadow feed (h5_arena_executor.gap_loses_data);
+    # the FLOOR bridge's gaps (host / engine restarts) keep s5 item 2 as written, 10 minutes, and the H5 hold is never longer than that.
+    assert F.GAP_HOLD_MS == 600_000 and h5.GAP_HOLD_FLOOR_MS <= h5.GAP_HOLD_MS <= F.GAP_HOLD_MS
     for funded in (None, 350_000_000, 600_000_000, 1_000_000_000):
         assert h5.wallet_floor_lamports(funded, 0) == F.wallet_floor_lamports(funded, 0)
 
