@@ -166,7 +166,9 @@ class DefaultModeTests(unittest.TestCase):
     def test_min_out_zero_is_refused_by_the_bridge_sign_and_fails_the_run(self):
         from tools import probe_executor as pe
         real = pe.exit_check
-        with mock.patch.object(pe, "exit_check", lambda *a, **k: {**real(*a, **k), "quote_out": 1}), contextlib.redirect_stdout(io.StringIO()):
+        # exit_check is inside the pin, so the pin check is stubbed out here: this test is about the bridge's _sign refusing a decoded min_out of 0
+        with mock.patch.object(c0, "sell_pin_problem", return_value=None), mock.patch.object(pe, "exit_check", lambda *a, **k: {**real(*a, **k), "quote_out": 1}), \
+                contextlib.redirect_stdout(io.StringIO()):
             rec, rpc = self.run_one(str(tx.TOKEN_PROGRAM))
         self.assertFalse(rec["verdict"]["pass"])
         r = rec["variants"][0]["rungs"]["first"]
