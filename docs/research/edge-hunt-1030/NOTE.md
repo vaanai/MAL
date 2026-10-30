@@ -6,7 +6,7 @@ Lane edge-hunt (manager18 push, brief `/data/mal/hunt-1008/ops/manager18/PUSH-BR
 
 **No book has cleared the promotion gate.** Every number quoted below is copied from its source, which is named. Most are in-sample exploration figures, best-of-many, or vendor claims, and are labelled that way. Every SOL/day figure in sections 3 and 4 is my judgment, not a measurement.
 
-Seals this note respects (SEALS-BRIEF.md sha256 prefix 823cc062, pasted in the PREREG): EXP-024 Look-2 (no outcome of an October V-range pool in its first 360 s until 2026-11-14T00Z), D2/D3, DBC forward window [2026-10-25T00Z, 2026-11-01T00:10Z) and fwdv1, DBC [10-17, 10-24) spent, HV4/Q50 output classes, arena tape counts and creates only, meta-capture never, fresh-0802 untouched.
+Seals this note respects (SEALS-BRIEF.md sha256 823cc062f25415fa4bd4a248646d77c5eafff89b024a9b7437f59a4d365ed6b4, pasted in the PREREG): EXP-024 Look-2 (no outcome of an October V-range pool in its first 360 s until 2026-11-14T00Z), D2/D3, DBC forward window [2026-10-25T00Z, 2026-11-01T00:10Z) and fwdv1, DBC [10-17, 10-24) spent, HV4/Q50 output classes, arena tape counts and creates only, meta-capture never, fresh-0802 untouched.
 
 ## 1. Speed: where MAL is, and what speed is worth
 

@@ -71,7 +71,7 @@ If K-1 is killed:
 
 It licenses no forward book and no live trade on this proxy alone.
 
-## 7. Seals (pasted verbatim from /data/mal/hunt-1008/push-1016/hunt30/SEALS-BRIEF.md, sha256 prefix 823cc062)
+## 7. Seals (pasted verbatim from /data/mal/hunt-1008/push-1016/hunt30/SEALS-BRIEF.md, sha256 823cc062f25415fa4bd4a248646d77c5eafff89b024a9b7437f59a4d365ed6b4)
 
 > # Active seals (copy into every tape-touching brief) — from docs/HANDOFF.md §2 at 12282a82, 2026-10-25
 > - HV4: never open ledgers, fills, prices, exits, positions, P&L, decision-row contents, bots.json, attempt counts (except the pinned count tool at its pinned use), score/preview/am6_read output, HV4 job #1561/#1562 status view or log tail. No pricing or retune of any HV4 rule on counted hours (>= 2026-10-25T00Z).
