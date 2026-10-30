@@ -57,13 +57,15 @@ case "$*" in *ActiveEnterTimestamp*) echo "${FAKE_SINCE:-}" ;; *ActiveState*) ec
 exit 0
 ''',
     "systemd-run": r'''#!/bin/sh
-while [ "$#" -gt 0 ]; do case "$1" in -p) shift 2 ;; -*) shift ;; *) break ;; esac; done
+while [ "$#" -gt 0 ]; do [ -n "${FAKE_SDRUN_ARGS:-}" ] && printf '%s\n' "$1" >> "$FAKE_SDRUN_ARGS"; case "$1" in -p) [ -n "${FAKE_SDRUN_ARGS:-}" ] && printf '%s\n' "$2" >> "$FAKE_SDRUN_ARGS"; shift 2 ;; -*) shift ;; *) break ;; esac; done
 exec "$@"
 ''',
+    "journalctl": '#!/bin/sh\ncase "$*" in *"-n 0"*) exit "${FAKE_JOURNAL_RC:-0}" ;; esac\necho "Started q50s1-smoke.scope - q50s1-smoke."\n',
 }
 FAKE_SHADOW_PY = r'''#!/bin/sh
 case "$*" in *"import websockets"*) exit 0 ;; esac
 echo "$$" > "$FAKE_PIDFILE"
+[ -n "${FAKE_PY_ARGS:-}" ] && printf '%s\n' "$@" > "$FAKE_PY_ARGS"
 OUT=""
 while [ "$#" -gt 0 ]; do [ "$1" = "--out-dir" ] && OUT="$2"; shift; done
 mkdir -p "$OUT"
@@ -80,12 +82,13 @@ wait
 FAKE_START_SH = """#!/bin/sh
 S_SHA=5c2ab7c64b21358619e37068c6a53e4d183512ea
 NEW_MAX_MB=1500
-# systemd-run --user --scope -p MemoryMax=1500M -p MemorySwapMax=0 python -m tools.h5_shadow --fresh-forward ARENA --q-star-sol 50 --out-dir X --sockets 3 --syn-sockets 1
-WS1=wss://one.example
-WS2=wss://two.example/path
 [ "${1:-}" = "--check-memory" ] && { echo "q50s1-shadow: (check-memory) fake"; exit "${FAKE_MEM_RC:-0}"; }
 exit 2
+. "$HERE/q50s1-feed.sh"
+systemd-run --user --scope --quiet --unit="$UNIT" --description="$UNIT" -p MemoryMax=1500M -p MemorySwapMax=0 env python -m tools.h5_shadow --fresh-forward ARENA --q-star-sol 50 \\
+  --out-dir X --sockets 3 --syn-sockets 1 --ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2"
 """
+KEY = "fake0key-5678"
 
 
 def write_exec(path: Path, text: str) -> Path:
@@ -126,8 +129,13 @@ class Syntax(unittest.TestCase):
             for bad in ("PIPESTATUS", "[[", "<<<", "declare ", "local ", "source ", "function ", "mapfile", "${BASH", "set -o pipefail"):
                 self.assertNotIn(bad, text, f"{p.name}: {bad}")
             self.assertIsNone(re.search(r"\$\{[A-Za-z_]+/", text), p)
+            low = text.lower()
+            if p == SMOKE:  # the smoke counts the key string in the journal (Amendment 22 item 10): that one fixed-string count is its only mention
+                self.assertEqual(low.count("api-key"), 1)
+                self.assertIn("grep -c -f 'api-key'", low)
+                low = low.replace("'api-key'", "")
             for bad in ("ufw", "sshd", "cloudflared", "private", ".env", "api-key", "a5f413704eb1"):
-                self.assertNotIn(bad, text.lower(), f"{p.name}: {bad}")
+                self.assertNotIn(bad, low, f"{p.name}: {bad}")
 
     def test_score_pins_equal_the_files_at_the_item1_commit(self):
         text = SCORE.read_text()
@@ -149,12 +157,15 @@ class Smoke(Base):
         super().setUp()
         self.repo = self.d / "repo"
         write_exec(self.repo / "scripts" / "ops" / "q50s1-shadow-start.sh", FAKE_START_SH)
+        shutil.copy(REPO / "scripts" / "ops" / "q50s1-feed.sh", self.repo / "scripts" / "ops" / "q50s1-feed.sh")
+        self.keyfile = self.d / "helius.env"
+        self.keyfile.write_text(f"HELIUS_API_KEY={KEY}\n")  # fixture key; the real key file is never read by a test
         (self.repo / "tools").mkdir(parents=True)
         shutil.copy(REPO / "tools" / "q50s1_health.py", self.repo / "tools" / "q50s1_health.py")
         self.py = write_exec(self.d / "fakepy", FAKE_SHADOW_PY)
 
     def run_smoke(self, *args, **env):
-        base = dict(Q50S1_REPO=self.repo, ARENA_H5_PYTHON=self.py, FAKE_START_ROW=START_ROW)
+        base = dict(Q50S1_REPO=self.repo, ARENA_H5_PYTHON=self.py, FAKE_START_ROW=START_ROW, Q50S1_HELIUS_ENV=self.keyfile)
         base.update(env)
         return self.sh(SMOKE, *args, **base)
 
@@ -162,8 +173,10 @@ class Smoke(Base):
         r = self.run_smoke("--check")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("--fresh-forward ARENA --q-star-sol 50", r.stdout)
-        self.assertIn("--sockets 3 --syn-sockets 1 --ws-url wss://one.example --ws-url wss://two.example/path", r.stdout)
-        self.assertIn("-p MemoryMax=1500M -p MemorySwapMax=0", r.stdout)
+        self.assertIn("--sockets 3 --syn-sockets 1 --ws-url wss://api.mainnet-beta.solana.com --ws-url wss://mainnet.helius-rpc.com/<query: key from", r.stdout)
+        self.assertIn("--description=q50s1-smoke -p MemoryMax=1500M -p MemorySwapMax=0", r.stdout)
+        self.assertNotIn(KEY, r.stdout + r.stderr)
+        self.assertNotIn("api-key", r.stdout + r.stderr)
         self.assertIn(f"H5_CODE_SHA={S_SHA}", r.stdout)
         self.assertRegex(r.stdout, r"--out-dir \S+/data/arena/h5-smoke-q50s1-\d{8}T\d{6}Z ")
         self.assertFalse(any(self.arena.iterdir()))
@@ -171,7 +184,14 @@ class Smoke(Base):
     def test_check_against_the_real_start_script(self):
         r = self.run_smoke("--check", Q50S1_REPO=REPO)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("--ws-url wss://", r.stdout)
+        self.assertIn("--ws-url wss://api.mainnet-beta.solana.com --ws-url wss://mainnet.helius-rpc.com/<query", r.stdout)
+        self.assertNotIn(KEY, r.stdout + r.stderr)
+
+    def test_missing_key_refuses_11(self):
+        self.keyfile.write_text("HELIUS_API_KEY=\n")
+        self.assertEqual(self.run_smoke("--check").returncode, 11)
+        self.assertEqual(self.run_smoke().returncode, 11)
+        self.assertFalse(any(self.arena.iterdir()))
 
     def test_memory_not_shown_refuses(self):
         r = self.run_smoke(FAKE_MEM_RC=2)
@@ -197,23 +217,32 @@ class Smoke(Base):
     def test_flag_drift_refuses(self):
         start = self.repo / "scripts" / "ops" / "q50s1-shadow-start.sh"
         for old, new in (("--sockets 3 --syn-sockets 1", "--sockets 2 --syn-sockets 1"), ("--q-star-sol 50", "--q-star-sol 40"), ("NEW_MAX_MB=1500", "NEW_MAX_MB=1800"),
-                         ("WS1=wss://one.example", "WS1=ws://one.example"), ("-p MemorySwapMax=0", "")):
+                         ('. "$HERE/q50s1-feed.sh"', ""), ('--ws-url "$Q50S1_WS2"', '--ws-url "$WS2"'), ('--description="$UNIT" ', ""), ("-p MemorySwapMax=0", "")):
             with self.subTest(old=old):
                 write_exec(start, FAKE_START_SH.replace(old, new))
                 r = self.run_smoke("--check")
                 self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
-        write_exec(start, FAKE_START_SH.replace("WS1=wss://one.example\nWS2=wss://two.example/path\n", ""))
-        self.assertEqual(self.run_smoke("--check").returncode, 2)
 
     def test_short_run_is_judged_and_never_passes(self):
-        r = self.run_smoke(Q50S1_SMOKE_S=2, Q50S1_SMOKE_SAMPLE_S=1)
+        pyargs, sdargs = self.d / "pyargs", self.d / "sdargs"
+        r = self.run_smoke(Q50S1_SMOKE_S=2, Q50S1_SMOKE_SAMPLE_S=1, FAKE_PY_ARGS=pyargs, FAKE_SDRUN_ARGS=sdargs)
         self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
         self.assertIn("SMOKE_ITEM a PASS", r.stdout)
         self.assertIn("SMOKE_ITEM b PASS", r.stdout)
         self.assertIn("SMOKE_ITEM c PASS", r.stdout)
         self.assertIn("SMOKE_ITEM d FAIL", r.stdout)  # no sample after the 30 min warm-up
         self.assertIn("feed_error=1", r.stdout)
-        self.assertRegex(r.stdout, r"SMOKE_VERDICT FAIL failed=\[test_overrides,duration,d\]")
+        self.assertIn("SMOKE_ITEM k PASS", r.stdout)
+        self.assertIn("SMOKE_ITEM g FAIL e_gap=- ", r.stdout)  # no full UTC hour in a 2 s run
+        self.assertRegex(r.stdout, r"SMOKE_VERDICT FAIL failed=\[test_overrides,duration,d,g\]")
+        out = r.stdout + r.stderr
+        self.assertNotIn(KEY, out)
+        self.assertNotIn("api-key", out)
+        sd = sdargs.read_text().splitlines()
+        self.assertIn("--description=q50s1-smoke", sd)
+        self.assertNotIn(KEY, "\n".join(sd))  # systemd-run's own options (the unit) never carry the key
+        pa = pyargs.read_text().splitlines()
+        self.assertEqual(pa[-4:], ["--ws-url", "wss://api.mainnet-beta.solana.com", "--ws-url", f"wss://mainnet.helius-rpc.com/?api-key={KEY}"])  # the process argv only (disclosed residual)
         self.assertNotIn("HIDDENPOOL", r.stdout + r.stderr)
         self.assertNotIn("triggers", r.stdout)
         self.assertFalse((self.home / "data" / "arena-src" / "q50s1-smoke-5c2ab7c6").exists())  # its own worktree is removed
@@ -222,6 +251,11 @@ class Smoke(Base):
         self.assertTrue(outs[0].startswith("h5-smoke-q50s1-"))
         reps = list((self.home / "data" / "q50s1-ops").iterdir())
         self.assertEqual(sorted(p.name for p in reps[0].iterdir()), ["process.log", "rss.tsv"])
+
+    def test_unreadable_journal_fails_k(self):
+        r = self.run_smoke(Q50S1_SMOKE_S=2, Q50S1_SMOKE_SAMPLE_S=1, FAKE_JOURNAL_RC=1)
+        self.assertIn("SMOKE_ITEM k FAIL", r.stdout)
+        self.assertIn("key_string_lines_user_journal=unreadable", r.stdout)
 
 
 class Score(Base):
