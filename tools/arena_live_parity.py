@@ -9,7 +9,8 @@ INPUTS (JSON lines; the tests use fixtures only, a real canary file is never ope
   twins     one line per paper twin (arena_paper, nofail leg, 1.9 s, priced at the executor's actual per-send fees): trip_id, pnl_lamports (the twin's registered figure), pnl_live_basis_lamports (REQUIRED, QP 10-23 ruling 6: rent 0, E1 floor EXCLUDED, the executor's actual per-send fees: this decides P3/P4 and the match test; a twin without it is no_twin),
             pnl_e1_lamports (E1 included: reported beside), entry_price, exit_price, price_failed (bool, optional)
   attempts  one line per live buy send: attempt_id, trip_id (required on a landed buy: the trip it opened), decision_ms, landed (bool), landed_ms, failed_or_expired (bool), p_fail_press (REQUIRED, in [0, 1]: the pressure leg's FAIL probability p, as in arena_stack.fail_legs, refit mean 0.289; NOT 1 - p)
-  state     {"at_ms": {"loss": ms, "balance": ms, "twin": ms, "parity": ms, "decision_chain": ms, "control_files": ms}, "last_landed_ms": ms, "unresolved_hard_halts": [ids]}
+  state     {"at_ms": {"loss": ms, "balance": ms, "twin": ms, "parity": ms, "decision_chain": ms, "control_files": ms}, "last_landed_ms": ms, "unresolved_hard_halts": [ids],
+            "rung": "C0" | "C1" (optional; DEC-032 Am.5 item 6b: only the exact string "C0" turns P7's gap-share halt into NOT_DECIDABLE; anything else is the rule as written)}
 
 DEFINITIONS (exactly DEC-032 section 5)
   eligible trip     has a twin (a failed twin price is no_twin), is not marked gap, and its exit has landed. Non-eligible trips are counted by reason: no_twin, gap, exit_pending.
@@ -24,6 +25,9 @@ DEFINITIONS (exactly DEC-032 section 5)
 READING OF THE TEXT WHERE IT IS SHORT (stated, for review)
   P1 "eligible fills" is a BUY-side notion: trips with a twin and not gap whose buy filled (entry price present), whether or not the exit has landed. Window: the first 10 at n = 10, the last 20 from n = 20.
   The shares of P7 are over ALL live trips seen so far (Amendment 1 item 1): from 20 trips, share above 5%; before 20, 2 no_twin or 2 gap trips are the soft halt.
+  DEC-032 Amendment 5 item 6b (DRAFT; QP report on #1085 item 6): when state["rung"] is exactly "C0", a `gap`-share breach is NOT a halt (absent from halts, soft_halts,
+  stop_required; no STOP): it still sets not_decidable, match stays false and the verdict is "parity not shown", so no step-up (h5_arena_ladder steps up on match only).
+  The no_twin share, unreadable trips, zero twins past an exit and stale state stay P7 soft halts at C0. C1, a missing rung or any other value: P7 exactly as written.
   The sell-lateness arm of P5 is over trips whose exit landed. The match test's landing p50 is over the eligible trips' buys.
 
 OUTPUT: a dict with the P1..P7 halts (first breach: prefix index, value), the shares, d_i statistics, the NOT_DECIDABLE flag and the verdict "LIVE FILLS MATCH PAPER" or "parity not shown".
@@ -206,6 +210,18 @@ def classify_trip(t: Mapping[str, Any], twin: Mapping[str, Any] | None) -> dict[
     return m
 
 
+P7_GAP_REPORT_ONLY_RUNG = "C0"  # DEC-032 Am.5 item 6b: the only rung at which a gap-share breach is NOT_DECIDABLE instead of a soft halt
+
+
+def gap_share_halts(state: Mapping[str, Any] | None) -> bool:
+    """DEC-032 Am.5 item 6b. False only when state["rung"] is exactly the string "C0"; a missing state or rung, "C1", or any other value keeps the gap-share
+    soft halt (fail closed to the rule as written)."""
+    if not isinstance(state, Mapping):
+        return True
+    rung = state.get("rung")
+    return not (isinstance(rung, str) and rung == P7_GAP_REPORT_ONLY_RUNG)
+
+
 def share_breach(count: int, n_trips: int) -> bool:
     """Amendment 1 item 1. Counts run from the first live send over ALL live trips, never reset. At 20 or more trips: share above 5%. Before: 2 or more is the soft halt."""
     if n_trips >= P7_SHARE_MIN_TRIPS:
@@ -222,6 +238,7 @@ def _first(h: dict[str, Any], pid: str, k: int, value: Any, detail: str) -> None
 def evaluate(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[str, Any]], attempts: Sequence[Mapping[str, Any]],
              state: Mapping[str, Any] | None, now_ms: int) -> dict[str, Any]:
     validate_inputs(trips, twins, attempts)
+    gap_halts = gap_share_halts(state)
     tw = {w["trip_id"]: w for w in twins}
     order = sorted(trips, key=lambda t: int(t.get("closed_ms") if t.get("closed_ms") is not None else t["decision_ms"]))
     halts: dict[str, dict[str, Any]] = {}
@@ -265,6 +282,8 @@ def evaluate(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[str, An
         if m["reasons"]:  # every non-eligible trip is logged with its reason (Amendment 1 item 1)
             ineligible_log.append({"index": k, "trip_id": m["trip_id"], "reasons": list(m["reasons"])})
         for name, cnt in (("gap", n_gap), ("no_twin", n_no_twin)):
+            if name == "gap" and not gap_halts:
+                continue  # DEC-032 Am.5 item 6b, C0 only: the breach still sets not_decidable below (match false, no step-up); it is not a halt
             if share_breach(cnt, k):
                 _first(halts, "P7", k, cnt / k, f"{name} {cnt}/{k} live trips: " + (f"share above {P7_SHARE:.0%}" if k >= P7_SHARE_MIN_TRIPS else f"{cnt} before {P7_SHARE_MIN_TRIPS} trips (small-sample rule)"))
     # Twins (QP 10-23, PR #825 probe: an empty twins file with fresh stamps returned rc 0): a zero-row twins file while a live trip is past its exit (landed, or its exit

@@ -1033,7 +1033,8 @@ class ArenaExecutor(h.H5Executor):
             problem = None  # LADDER_C1 is a valid arena TIER (DEC-032 Am.2 item 9.2)
         if h.live_ok_valid() is None and problem is None:
             at["control_files"] = now
-        return {"at_ms": at, "unresolved_hard_halts": sorted(HARD_ARENA_HALTS & set(self.counters.halts))}
+        # DEC-032 Am.5 item 6b: the parity tool is told the rung explicitly (C0: a gap-share breach is NOT_DECIDABLE, not a halt; C1: unchanged)
+        return {"at_ms": at, "unresolved_hard_halts": sorted(HARD_ARENA_HALTS & set(self.counters.halts)), "rung": self._rung()}
 
     def _exit_bound_ms(self, mint: str, decision_ms: Any) -> int | None:
         """The book's own late instant for the exit (plan late_wall_ms = s0 + LATE_SELL_S), never an input of the parity files."""
