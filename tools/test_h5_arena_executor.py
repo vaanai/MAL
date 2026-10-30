@@ -1174,7 +1174,7 @@ class CanaryRecordTests(ACase):
         write_canary_record(self.tmp / "repo", A2, name="DEC-032-arena-canary-template.md")
         self.refused("canary_record_for_bot_id_missing")
 
-    # DEC-032 Am.6 (DRAFT; audit rank 4): the owner's line may instead sit in a root-owned file Helm writes; no DEC record needed in the installed tree
+    # DEC-032 Am.7 (DRAFT; audit rank 4): the owner's line may instead sit in a root-owned file Helm writes; no DEC record needed in the installed tree
     def owner_file(self, text: str, mode: int = 0o644) -> Path:
         p = ax.ARENA_OWNER_CANARY_PATH
         self.assertTrue(str(p).startswith(str(self.tmp)), p)  # a test never writes the host's /etc/mal-h5-arena
