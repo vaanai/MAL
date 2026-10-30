@@ -5,10 +5,12 @@ verbatim copy in ARTIFACTS/lab/arena-records-2026-10-24-q50.md section 2). PAPER
 
 The schema is tools/a3_halt.validate_books' (exactly the two keys, each a list of unique strings, no id in both); the registry check of a3_halt is not repeated here (this tool never opens
 bots.json). The file's sha256 must equal the pin (default BOOKS_V2_SHA256; --books-sha256 overrides it, for fixtures). Every listed id needs a KNOWN exit rule (the scorer's a1 BOTS, the
-a2 wrapper's A2_BOTS, the Q50 wrapper's Q50_BOTS); an unknown id refuses the whole list.
+a2 wrapper's A2_BOTS, the Q50 wrapper's Q50_BOTS, the s1 and Q60 table rows); an unknown id refuses the whole list. v3 adds s1 (DEC-031 Amendment 18 item 6.1, plan C4) and v4 adds Q60
+(DEC-031 Amendment 19 item 6, plan Q6); each later text is made from the registered earlier one's exact bytes, and every registered text stays loadable byte for byte.
 
 THE READ INSTANT OF EACH BOOK (`instant_file`): `read-instant.json` (the pinned scorer's attempt boundary, DEC-031 section 2) for every book except `h5v1q50-boostfloor-a1`, whose read
-instant is DEC-031 Amendment 11's, recorded write-once in `q50-read-instant.json` (tools/arena_h5_q50_instant.py). For Q50 the scorer's read-instant.json is never the instant.
+instant is DEC-031 Amendment 11's, recorded write-once in `q50-read-instant.json` (tools/arena_h5_q50_instant.py), and s1 and Q60, which apply Amendment 11 with their own clock and end
+(`q50s1-read-instant.json`, `q60-read-instant.json`). For those books the scorer's read-instant.json is never the instant.
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from typing import Any, Mapping
 
 from tools import arena_h5_q50_instant as qi
 from tools import arena_h5_q50s_instant as s1i
+from tools import arena_h5_q60_instant as q60i
 from tools import arena_h5_score as h5s
 from tools.arena_h5_score_a2 import A2_BOTS
 from tools.arena_score import Refused
@@ -28,14 +31,17 @@ from tools.arena_score import Refused
 BOOKS_V2_SHA256 = "819c699d74a2fab8b8c67916a5732e54950d158c514d8fa24dabc9b65b7665c0"
 # v3 = v2 with the Q50 successor appended to new_rule_bot_ids (DEC-031 Amendment 18 item 6.1; plan C4/C5). The sha256 is of the canonical text `books_v3_text` makes from v2's bytes.
 BOOKS_V3_SHA256 = "f8e34748ad414240aeba803e298aaadc799900d2987c51d9535ed7716ca7457c"
-BOOKS_REGISTERED = (BOOKS_V2_SHA256, BOOKS_V3_SHA256)  # the default pin of load_books: either registered text (v2 stays loadable byte for byte)
+# v4 = v3 with the Q* = 60 sibling appended to new_rule_bot_ids (DEC-031 Amendment 19 item 6; plan Q6). The sha256 is of the canonical text `books_v4_text` makes from v3's bytes.
+BOOKS_V4_SHA256 = "2690f3741d8385b8f8f8ce0756635288de9c0f1b1f02b2472e03e5b7a3d827ee"
+BOOKS_REGISTERED = (BOOKS_V2_SHA256, BOOKS_V3_SHA256, BOOKS_V4_SHA256)  # the default pin of load_books: any registered text (v2 and v3 stay loadable byte for byte)
 BOOKS_KEYS = ("legacy_bot_ids", "new_rule_bot_ids")
 Q50_ID = qi.Q50_ID
 S1_ID = s1i.S1_ID
-EXIT_RULES: dict[str, str] = {**h5s.BOTS, **A2_BOTS, Q50_ID: "v1", S1_ID: "v1"}  # the Q50 wrapper's Q50_BOTS (tools/arena_h5_score_q50.py) and the s1 table row; tests check they agree
+Q60_ID = q60i.Q60_ID
+EXIT_RULES: dict[str, str] = {**h5s.BOTS, **A2_BOTS, Q50_ID: "v1", S1_ID: "v1", Q60_ID: "v1"}  # the Q50 wrapper's Q50_BOTS (tools/arena_h5_score_q50.py), the s1 and Q60 table rows; tests check they agree
 # the Amendment 11 write-once instant files and the rule text each must carry (the seal in tools/arena_h5_legs.gate keys on this)
-AM11_FILES: dict[str, str] = {qi.INSTANT_FILE: qi.RULE, s1i.INSTANT_FILE: s1i.RULE}
-AM11_BOOKS: dict[str, str] = {Q50_ID: qi.INSTANT_FILE, S1_ID: s1i.INSTANT_FILE}
+AM11_FILES: dict[str, str] = {qi.INSTANT_FILE: qi.RULE, s1i.INSTANT_FILE: s1i.RULE, q60i.INSTANT_FILE: q60i.RULE}
+AM11_BOOKS: dict[str, str] = {Q50_ID: qi.INSTANT_FILE, S1_ID: s1i.INSTANT_FILE, Q60_ID: q60i.INSTANT_FILE}
 
 
 class Books(dict):
@@ -90,8 +96,20 @@ def books_v3_text(v2_bytes: bytes) -> str:
     return json.dumps(doc) + "\n"
 
 
+def books_v4_text(v3_bytes: bytes) -> str:
+    """The canonical text of books v4 from v3's exact bytes: v3 with the Q60 book appended to new_rule_bot_ids. Refuses any input that is not the registered v3 text."""
+    if hashlib.sha256(v3_bytes).hexdigest() != BOOKS_V3_SHA256:
+        raise Refused("books v4 is made from the registered v3 text only")
+    doc = json.loads(v3_bytes)
+    if Q60_ID in doc["new_rule_bot_ids"] or Q60_ID in doc["legacy_bot_ids"]:
+        raise Refused(f"{Q60_ID} is already listed")
+    doc["new_rule_bot_ids"] = [*doc["new_rule_bot_ids"], Q60_ID]
+    return json.dumps(doc) + "\n"
+
+
 def instant_file(bot_id: str) -> str:
-    """The file that holds the book's read instant: the Am.11 write-once file for Q50 (q50-read-instant.json) and for s1 (q50s1-read-instant.json), the scorer's record for every other book."""
+    """The file that holds the book's read instant: the Am.11 write-once file for Q50 (q50-read-instant.json), s1 (q50s1-read-instant.json) and Q60 (q60-read-instant.json), the
+    scorer's record for every other book."""
     return AM11_BOOKS.get(bot_id, h5s.READ_INSTANT_FILE)
 
 
@@ -101,7 +119,9 @@ def check_recorded_instant(bot_id: str, doc: Mapping[str, Any], counted_decision
     record's end-seal; every other book: the pinned scorer's read_instant over every attempt."""
     if bot_id == S1_ID and (doc.get("clock_start_ms"), doc.get("end_seal_ms")) != (s1i.CLOCK_MS, s1i.END_MS):
         return f"the record's clock {doc.get('clock_start_ms')} / end {doc.get('end_seal_ms')} are not the s1 table row's"
-    if bot_id in AM11_BOOKS:  # Q50 and s1 share Amendment 11's rule; the record carries each book's own clock and end
+    if bot_id == Q60_ID and (doc.get("clock_start_ms"), doc.get("end_seal_ms")) != (q60i.CLOCK_MS, q60i.END_MS):
+        return f"the record's clock {doc.get('clock_start_ms')} / end {doc.get('end_seal_ms')} are not the Q60 table row's"
+    if bot_id in AM11_BOOKS:  # Q50, s1 and Q60 share Amendment 11's rule; the record carries each book's own clock and end
         r = qi.instant_rule(counted_decisions, [], start_ms=int(doc["clock_start_ms"]), end_ms=int(doc["end_seal_ms"]), now_ms=ri)
         return None if r["status"] == qi.READ and r["instant_ms"] == ri else f"Am.11 rule recomputed from the ledger gives {r['status']} {r['instant_ms']}"
     return None if h5s.read_instant(all_decisions, ri) == ri else "differs"
