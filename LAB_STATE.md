@@ -2,8 +2,17 @@
 
 Compact reload for managers. Hot file: current-state records, the decisions index, the promotion gate, restart records. Older history was moved, not deleted, on 2026-10-29. Current state and deadlines: [docs/HANDOFF.md](docs/HANDOFF.md). No book has cleared the promotion gate.
 
-## Now (2026-10-16)
+## Now (2026-10-30)
 
+- **Records 2026-10-25..10-30 (manager17/manager18; records only, no profit claim; no book has cleared the promotion gate).** Copied from docs/HANDOFF.md (§1, §3, §4, §7) and the manager17 state log (from line 274); nothing was measured or re-read from a host.
+  - **Mid-week restart record:** meta-capture #1587 exited on its RSS guard at 2026-10-28T15:15:04Z (state log: 1501 MB after 68h41m); restarted as #1814 (cap 2500 MB, same code), about 5 min gap. HANDOFF §6: restart it or fix the leak if it nears the cap.
+  - **Feed hand-off 11-07:** H' #1652 re-armed 2026-10-29T00:30Z, sleeps until 11-07T11:50Z (n_NglnQrS8iEMa1Q); old feed #1516 continues until then.
+  - **HV6 SLIPPED past T0 10-30:** smoke #1806 FAIL (chunk p95 41 s; refusals 34%; parse_error about 60%) (n_gRpxhSP-5yLKTg). **HV7 SLIPPED past T0 11-01:** smoke #1779 FAIL on the pinned fallback line, 31/31 (30 not_json, 1 duplicate_id) (n_Q6eEwlUiOrx9nA, with its correction).
+  - **Ideas closed:** P91 KILL (#1069); P98 closed, V1a FAIL (#1059/#1061/#1063); P97 callout-follow NOT_TESTABLE (#1062); P29 keeper-absorb KILL (priced 10-26).
+  - **Q50 C0 BLOCKER (n_-pbYbpY143vu4g):** the executor holds buys at least 600 s on every feed gap row. HELM-REPLY-1029-1 dry run PASS 6/6, but gaps unchanged (135 feed_reconnect_redundant + 42 gap per hour vs 149/47 on 10-28).
+  - **Merged:** Q60 sibling decision (DEC-031 Am.19, #1064; clock 2026-11-07T00Z); s1 successor (#1057/#1058/#1065); P18 B' (#1066/#1067); DBC C2 #1576 equivalence PASS.
+  - **Context plan v2** approved by the owner 10-29: DEC-013 Am.1 (#1073), watchdog #1822, rules library (#1076/#1079/#1080).
+  - **10-30:** the Q50 boundary 10-30T00Z did not qualify (no q50-read-instant.json after the 00:20Z score run). HV4 instant written for hv4-BIG-X and hv4-CON-X, read_instant_utc 2026-10-30T00:00:00Z; the read comes at an as-of of at least 2026-10-31T00Z (n_CSO75SP3v0BsAA). manager18 took over 2026-10-30T02:05Z.
 - **Mid-week restart record 2026-10-24 (manager15; records only).** Planned arena feed restart: job #1207 cancelled 12:10:03Z, SIGTERM 12:10:17Z, #1516 started 12:10:24.638Z; `process_restart` span 5,193 ms (from_ms 1792843819445, to_ms 1792843824638), no `feed_restart` row (expected by the code, QP-RULING-1024-779-feed (B)); #1516 limit 1,209,600 s (14 d), so one more feed restart is pinned for 2026-11-07T11:50-11:58Z. Before HV4's clock 2026-10-25T00:00Z. Notebook "Planned feed restart DONE" n_e0fsG-6YopjbOw.
 - **Records 2026-10-24 (manager15; records only, no profit claim; no book has cleared the promotion gate).** **H5 arena a2 ended NOT_DECIDABLE (final), both books** (`h5v1-boostfloor-a2`, `h5v2-boostclock-a2`): window_end_ms 1792696205000 (2026-10-22T19:10:05Z), before their clock of 2026-10-23T00:00:00Z, on the A3 `synthetic_share_high` flag at 8/19 = 0.421 (MiScusi notebook n_5ob4j6rvho4xuQ). Empty window, 0 counted attempts, counted in N (+2). The halt was noticed about 29 h late (second missed A3 halt after 2026-10-20). Pooled replacement rule and Q50 scope: DEC-031 Amendment 10 (DRAFT, PR #840 code); ruling `/data/mal/hunt-1008/push-1016/hunt29/a3fix/QP-RULING-1024-a3-synthetic.md`. Q50 (`h5v1q50-boostfloor-a1`, clock 2026-10-25T00:00:00Z) is covered only if the fix merges and the guard is redeployed before the clock.
 - **Records 2026-10-21 (manager13; records only, no profit claim; no book has cleared the promotion gate).**
