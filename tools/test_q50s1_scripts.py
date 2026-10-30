@@ -66,9 +66,24 @@ class Syntax(unittest.TestCase):
 
 
 class Register(unittest.TestCase):
-    def run_(self, *args, arena="/nonexistent-arena"):
-        env = dict(os.environ, HOME="/nonexistent-home", Q50S1_ARENA=arena)
+    def run_(self, *args, s1home="/nonexistent-s1home", arena=None, py=None):
+        """s1home=None leaves Q50S1_HOME unset (the script's default); arena sets the retired Q50S1_ARENA; py is a MAL_PY stub that prints HOME and its arguments, so a default root is never opened."""
+        env = dict(os.environ, HOME="/nonexistent-real-home")
+        for k in ("Q50S1_HOME", "Q50S1_ARENA"):
+            env.pop(k, None)
+        if s1home is not None:
+            env["Q50S1_HOME"] = s1home
+        if arena is not None:
+            env["Q50S1_ARENA"] = arena
+        if py is not None:
+            env["MAL_PY"] = py
         return subprocess.run(["sh", str(REG), *args], capture_output=True, text=True, env=env, cwd=REPO)
+
+    def stub_py(self, d):
+        p = Path(d) / "echo-args"
+        p.write_text("#!/bin/sh\nprintf '%s\\n' \"HOME=$HOME\" \"$@\"\n")
+        p.chmod(0o755)
+        return str(p)
 
     def test_bad_arguments_refuse(self):
         for a in (("--bogus",), ("--apply",), ("--preclock-notebook-ref", "nb_Abc123", "--now-ms", "1"), ("--preclock-notebook-ref",), ("x",)):
@@ -76,12 +91,58 @@ class Register(unittest.TestCase):
             self.assertEqual(r.returncode, 2, a)
             self.assertIn("q50s1-register", r.stderr)
 
-    def test_an_unknown_arena_root_is_refused_by_the_tool_and_nothing_is_written(self):
-        with tempfile.TemporaryDirectory() as d:
-            r = self.run_("--preclock-notebook-ref", "nb_Abc123", arena=d)
+    def test_an_s1_root_that_does_not_exist_is_refused_by_the_tool_and_nothing_is_written(self):
+        with tempfile.TemporaryDirectory() as d:  # $d/data/arena is accepted by the scorer's check under HOME=$d; this tool refuses a root nobody created
+            r = self.run_("--preclock-notebook-ref", "nb_Abc123", s1home=d)
             self.assertEqual(r.returncode, 2, r.stderr)
             self.assertIn("REFUSED", r.stderr)
+            self.assertIn("not an existing directory", r.stderr)
             self.assertEqual(list(Path(d).iterdir()), [])
+
+    def test_default_root_is_s1s_home_not_hv4s_root_and_python_runs_with_home_overridden(self):
+        with tempfile.TemporaryDirectory() as d:  # the stub prints HOME and the arguments: no real root is opened
+            r = self.run_("--preclock-notebook-ref", "nb_Abc123", s1home=None, py=self.stub_py(d))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.split(), ["HOME=/home/claude/s1home", "-m", "tools.q50s1_register", "--arena-root", "/home/claude/s1home/data/arena", "--books-file",
+                                            "/home/claude/s1home/data/arena/a3-books.json", "--preclock-notebook-ref", "nb_Abc123"])
+        self.assertNotIn("/data/mal/arena", r.stdout)
+        self.assertNotIn("/nonexistent-real-home", r.stdout)
+
+    def test_q50s1_home_overrides_the_root_and_apply_is_forwarded_last(self):
+        with tempfile.TemporaryDirectory() as d:
+            r = self.run_("--apply", "--preclock-notebook-ref", "nb_Abc123", s1home="/some/s1home", py=self.stub_py(d))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.split(), ["HOME=/some/s1home", "-m", "tools.q50s1_register", "--arena-root", "/some/s1home/data/arena", "--books-file", "/some/s1home/data/arena/a3-books.json",
+                                            "--preclock-notebook-ref", "nb_Abc123", "--apply"])
+
+    def test_q50s1_arena_is_not_a_root_override(self):
+        with tempfile.TemporaryDirectory() as d:
+            ok = self.run_("--preclock-notebook-ref", "nb_Abc123", s1home="/some/s1home", arena="/some/s1home/data/arena", py=self.stub_py(d))
+            self.assertEqual(ok.returncode, 0, ok.stderr)  # equal to the root: harmless
+            for bad in ("/data/mal/arena", "/some/other/data/arena", "/some/s1home/data/arena/"):
+                r = self.run_("--preclock-notebook-ref", "nb_Abc123", s1home="/some/s1home", arena=bad, py=self.stub_py(d))
+                self.assertEqual(r.returncode, 2, bad)
+                self.assertIn("Q50S1_ARENA", r.stderr)
+                self.assertEqual(r.stdout, "")
+
+    def test_q50s1_home_must_be_absolute(self):
+        for bad in ("relative/home", "~/s1home", "."):
+            r = self.run_("--preclock-notebook-ref", "nb_Abc123", s1home=bad)
+            self.assertEqual(r.returncode, 2, bad)
+            self.assertIn("absolute", r.stderr)
+
+    def test_end_to_end_dry_run_in_a_temp_s1_home_writes_only_the_registry_lock(self):
+        with tempfile.TemporaryDirectory() as d:  # the real python, a real HOME override, a temp root: the scorer's $HOME/data/arena check accepts it
+            root = Path(d) / "data" / "arena"
+            root.mkdir(parents=True)
+            r = self.run_("--preclock-notebook-ref", "nb_Abc123", s1home=d)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            import json  # local: the module header is #1111's too
+            rep = json.loads(r.stdout.split("\n")[0])
+            self.assertEqual((rep["status"], rep["arena_root"]), ("dry_run", os.path.realpath(root)))  # no assertion on window_ok: it depends on the wall clock
+            self.assertEqual(rep["a3_books_sha256"], "9fdf6ee3047e49688f7d3e6974c3914a5a11f74bd25f830a94633e0b9986099e")
+            self.assertEqual(rep["a3_books_read_sha256"], "799f6d2244e88fdeebf4a7c307e09b0a11f8545945dbe5c63d3f51da6000a8a0")
+            self.assertEqual(sorted(p.name for p in root.iterdir()), ["bots.json.lock"])  # a dry run never applies, whatever the wall clock says
 
 
 class ShadowCheck(unittest.TestCase):
