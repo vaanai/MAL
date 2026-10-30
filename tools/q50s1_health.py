@@ -6,8 +6,10 @@ Run as `python3 -I tools/q50s1_health.py <mode> ...` (no repo import, so any pyt
   smoke-judge  The Amendment 6 item 1.3 blocking list for the s1 smoke (scripts/ops/q50s1-smoke.sh), from the smoke's own files: (a) one start row with S*'s start-record fields,
                (b) heartbeat rows (the rule can be silent for 2 h, so (b) is judged on `hb` rows, one per 60 s), (c) no early exit, no restart, no traceback, (d) memory: R0 + slope x
                PLAN_H <= CAP from the process's own RSS samples (R0 = first sample at or after start + 30 min; slope = OLS over those samples; the HV4 smoke rule, QP-RULING-1022-hv4-am6),
-               and the smoke length (>= 2 h). Plus, REPORT-ONLY: gap rows by UTC hour, `kind` and `flags_pools` (coverage-losing = `flags_pools` not literally false) and the
-               pending pre-clock gap rule (<= 2 coverage-losing gap records per hour); warning-line counts.
+               the smoke length (>= 6 h, DEC-031 Amendment 22 item 11), (g) the flagged-gap exposure E_gap <= 2.5% (Amendment 22 item 11: |union of [t_ms - 340 s, t_ms]| over
+               every gap row whose `flags_pools` is not literally false, over the smoke's full UTC hours; only the gap rows' t_ms, kind and flags_pools are read), (k) the string
+               `api-key` appears 0 times in the process log, its errors file and the user journal since the start (Amendment 22 item 10). REPORT-ONLY: gap rows by UTC hour,
+               `kind` and `flags_pools` (never decides); warning-line counts.
   clean-log    "At least 1 h of clean log (no restart loop) before the clock" (R10.2) for the s1 shadow WITHOUT reading its sealed job log: only lines that START with the start
                script's own prefix `q50s1-shadow: ` are printed verbatim; every other line is only matched against fixed patterns and counted (tracebacks, ERROR/CRITICAL, the
                shadow's known WARNING messages). From the book's out dir: start/stop/error/hb row counts by fixed prefix, the hb rows' trailing `t_ms` only, gap rows' `kind` and
@@ -45,13 +47,15 @@ START_FIELDS = (
     '"bx10":false',
 )
 CAP_BYTES = 1500 * 1024 * 1024  # the shadow's scope MemoryMax (scripts/ops/q50s1-shadow-start.sh NEW_MAX_MB=1500) = the smoke's scope MemoryMax
-PLAN_H = 341  # 2026-11-05T20:00Z (earliest shadow start) to 2026-11-20T01:00Z (E_s1 plus the last v1 exits): the planned window of item 1.3(d)
+PLAN_H = 605  # 2026-11-05T20:00Z (earliest shadow start) to 2026-12-01T01:00Z (E = 2026-12-01T00Z, Amendment 22 item 8.1, plus the last v1 exits): item 1.3(d)'s planned window
 WARM_S = 1800  # R0 and the slope start 30 min after the process start (HV4 smoke rule)
-MIN_DUR_S = 7200  # Amendment 6 item 1.3: at least 2 h
+MIN_DUR_S = 21600  # Amendment 6 item 1.3 (2 h) lengthened for s1 by Amendment 22 item 11: at least 6 h
 MIN_FIT_SAMPLES = 10
 HB_EVERY_S = 60  # h5_shadow housekeeping(hb_s=60.0)
 HB_MIN_SHARE = 0.9
-GAP_RULE_LIMIT = 2  # pending pre-clock rule: <= 2 coverage-losing gap records per hour (audit-rules 2026-10-30 item 2); REPORT-ONLY until adopted
+EGAP_SPAN_S = 340  # Amendment 22 item 11: each flagged gap covers [t_ms - 340 s, t_ms] (a trade's ~332 s span plus margin)
+EGAP_MAX = 0.025  # Amendment 22 item 11: half the 5% cap of section 1.4
+KEY_MARK = "api-key"  # Amendment 22 item 10: the count of this string in the smoke's log and the journal must be 0
 STATUS_MAX_AGE_S = 180
 CLEAN_MIN_S = 3600
 
@@ -86,6 +90,7 @@ def scan_rows(out_dir: Path, since_ms: int | None = None) -> dict:
     """Prefix counts, gap (kind, flag) per hour and hb trailing t_ms. Reads every line as text; never json-parses one."""
     counts: collections.Counter = collections.Counter()
     gaps: dict[str, collections.Counter] = collections.defaultdict(collections.Counter)
+    flagged_t: list[int] = []
     hb_t: list[int] = []
     start_lines: list[str] = []
     for hour, path in _hour_files(out_dir):
@@ -96,6 +101,12 @@ def scan_rows(out_dir: Path, since_ms: int | None = None) -> dict:
                     k = GAP_KIND.match(line)
                     f = GAP_FLAG.search(line)
                     gaps[hour][(k.group(1) if k else "unparsed", f.group(1) if f else "missing")] += 1
+                    if not (f and f.group(1) == "false"):
+                        t = TAIL_T_MS.search(line)
+                        if t:
+                            flagged_t.append(int(t.group(1)))
+                        else:
+                            counts["flagged_gap_no_t_ms"] += 1
                 elif line.startswith(PREFIX["hb"]):
                     counts["hb"] += 1
                     t = TAIL_T_MS.search(line)
@@ -110,7 +121,7 @@ def scan_rows(out_dir: Path, since_ms: int | None = None) -> dict:
                     counts["stop"] += 1
                 elif line.startswith(PREFIX["error"]):
                     counts["error"] += 1
-    return {"counts": counts, "gaps": gaps, "hb_t": hb_t, "start_lines": start_lines, "hours": [h for h, _ in _hour_files(out_dir)]}
+    return {"counts": counts, "gaps": gaps, "flagged_t": flagged_t, "hb_t": hb_t, "start_lines": start_lines, "hours": [h for h, _ in _hour_files(out_dir)]}
 
 
 def start_fields_problem(start_lines: list[str]) -> str | None:
@@ -133,6 +144,28 @@ def gap_lines(gaps: dict[str, collections.Counter], tag: str) -> tuple[list[str]
         if losing > worst:
             worst, worst_h = losing, hour
     return out, worst, worst_h, total
+
+
+def e_gap(flagged_t_ms: list[int], start_s: int, end_s: int) -> tuple[float | None, int, int, int]:
+    """Amendment 22 item 11: |union of [t - 340 s, t]| / |full UTC hours of [start, end]|, the union clipped to those hours. Returns (E_gap or None if there is no full hour,
+    full hours, covered seconds, flagged rows inside the window)."""
+    f0 = -(-start_s // 3600) * 3600
+    f1 = (end_s // 3600) * 3600
+    if f1 <= f0:
+        return None, 0, 0, 0
+    iv = sorted((max(t // 1000 - EGAP_SPAN_S, f0), min(t // 1000, f1)) for t in flagged_t_ms)
+    iv = [(a, b) for a, b in iv if b > a]
+    covered, cur_a, cur_b = 0, None, None
+    for a, b in iv:
+        if cur_b is None or a > cur_b:
+            if cur_b is not None:
+                covered += cur_b - cur_a
+            cur_a, cur_b = a, b
+        else:
+            cur_b = max(cur_b, b)
+    if cur_b is not None:
+        covered += cur_b - cur_a
+    return covered / (f1 - f0), (f1 - f0) // 3600, covered, len(iv)
 
 
 def ols(points: list[tuple[float, float]]) -> float:
@@ -185,6 +218,14 @@ def count_log(path: Path, *, print_prefix: str | None = None) -> tuple[collectio
     return tot, per_hour, shown
 
 
+def count_mark(path: Path, mark: str = KEY_MARK) -> int:
+    """Lines that contain the mark (a count only; no line is printed)."""
+    if not path.exists():
+        return 0
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        return sum(1 for line in fh if mark in line)
+
+
 def _iso(epoch_s: int) -> str:
     return datetime.fromtimestamp(epoch_s, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -211,7 +252,7 @@ def smoke_judge(a: argparse.Namespace) -> int:
 
     dur = end - start
     ok = dur >= min_dur
-    print(f"SMOKE_ITEM duration {'PASS' if ok else 'FAIL'} duration_s={dur} min_s={min_dur} from={_iso(start)} to={_iso(end)}")
+    print(f"SMOKE_ITEM duration {'PASS' if ok else 'FAIL'} duration_s={dur} min_s={min_dur} from={_iso(start)} to={_iso(end)} (DEC-031 Amendment 22 item 11: at least 6 h)")
     if not ok:
         failed.append("duration")
 
@@ -263,13 +304,22 @@ def smoke_judge(a: argparse.Namespace) -> int:
     print("SMOKE_ITEM e CITED (md5 decision-equivalence at S*: the tag q50-succ-base-1 message and DEC-031 Amendment 18 item 2.3; not run by this smoke)")
     print("SMOKE_ITEM f N/A (not an LLM book)")
 
+    eg, full_h, cov, n_in = e_gap(rows["flagged_t"], start, end)
+    ok = eg is not None and eg <= EGAP_MAX and c["flagged_gap_no_t_ms"] == 0
+    print(f"SMOKE_ITEM g {'PASS' if ok else 'FAIL'} e_gap={'-' if eg is None else f'{eg:.6f}'} max={EGAP_MAX} full_hours={full_h} covered_s={cov} flagged_rows_in_window={n_in} "
+          f"flagged_rows_without_t_ms={c['flagged_gap_no_t_ms']} (DEC-031 Amendment 22 item 11: union of [t_ms - {EGAP_SPAN_S} s, t_ms] over flagged gap rows / full hours)")
+    if not ok:
+        failed.append("g")
+    keys = count_mark(proc_log) + count_mark(errlog)
+    jk = a.journal_key_count
+    ok = keys == 0 and jk == "0"
+    print(f"SMOKE_ITEM k {'PASS' if ok else 'FAIL'} key_string_lines_process_log_and_errors_file={keys} key_string_lines_user_journal={jk} (DEC-031 Amendment 22 item 10: both 0)")
+    if not ok:
+        failed.append("k")
     glines, worst, worst_h, total = gap_lines(rows["gaps"], "SMOKE_GAPS")
     for ln in glines:
         print(ln)
-    hours = max(dur / 3600.0, 1e-9)
-    print(f"SMOKE_GAP_RULE coverage_losing_max_per_hour={worst} hour_of_max={worst_h or '-'} coverage_losing_total={total} gap_rows_total={c['gap']} "
-          f"per_hour_overall={total / hours:.2f} limit={GAP_RULE_LIMIT} result={'WITHIN' if worst <= GAP_RULE_LIMIT else 'ABOVE'} "
-          "(PENDING pre-clock rule; report-only, not on the Amendment 6 blocking list until adopted)")
+    print(f"SMOKE_REPORT_ONLY gaps coverage_losing_total={total} coverage_losing_max_per_hour={worst} hour_of_max={worst_h or '-'} gap_rows_total={c['gap']} (counts by kind never decide)")
     print("SMOKE_REPORT_ONLY warnings " + " ".join(f"{k}={ltot[k]}" for k, _ in KNOWN_WARNINGS) + f" warning_other={ltot['warning_other']}")
     print(f"SMOKE_VERDICT {'PASS' if not failed else 'FAIL'} failed=[{','.join(failed)}]")
     return 0 if not failed else 1
@@ -308,6 +358,7 @@ def clean_log(a: argparse.Namespace) -> int:
         "no_error_critical": tot["error"] + tot["critical"] == 0,
         "hb_last_hour": hb_recent >= need_hb,
         "status_fresh": st_age is not None and st_age <= STATUS_MAX_AGE_S,
+        "no_key_string": count_mark(job_log) == 0 and count_mark(errlog) == 0,
     }
     print(f"CLEAN_CHECKS " + " ".join(f"{k}={'ok' if v else 'NO'}" for k, v in checks.items()))
     print(f"CLEAN_FIGURES scope_up_s={up if up is not None else '-'} starting_lines={starting} start_rows={c['start']} stop_rows={c['stop']} tracebacks={tot['traceback']} "
@@ -321,7 +372,8 @@ def clean_log(a: argparse.Namespace) -> int:
     glines, worst, worst_h, _ = gap_lines(recent, "CLEAN_GAPS")
     for ln in glines:
         print(ln)
-    print(f"CLEAN_GAP_RULE coverage_losing_max_per_hour={worst} hour_of_max={worst_h or '-'} limit={GAP_RULE_LIMIT} over_last_hours={a.hours} (report-only)")
+    eg, full_h, cov, n_in = e_gap(rows["flagged_t"], now - int(a.hours) * 3600, now)
+    print(f"CLEAN_E_GAP e_gap={'-' if eg is None else f'{eg:.6f}'} full_hours={full_h} covered_s={cov} flagged_rows={n_in} over_last_hours={a.hours} (report-only here; the book's own read applies section 1.4)")
     ok = all(checks.values())
     print(f"CLEAN_VERDICT {'CLEAN' if ok else 'NOT_CLEAN'} at={_iso(now)} failing=[{','.join(k for k, v in checks.items() if not v)}]")
     return 0 if ok else 1
@@ -365,6 +417,7 @@ def main(argv=None) -> int:
     s.add_argument("--warm-s", type=int, default=WARM_S)
     s.add_argument("--plan-h", type=float, default=PLAN_H)
     s.add_argument("--cap-bytes", type=int, default=CAP_BYTES)
+    s.add_argument("--journal-key-count", default="unread", help="lines of the user journal since the start that contain the key string, or 'unreadable'")
     s.add_argument("--test-overrides", action="store_true")
     c = sub.add_parser("clean-log")
     c.add_argument("--out-dir", required=True)
