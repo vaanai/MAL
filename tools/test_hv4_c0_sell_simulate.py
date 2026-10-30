@@ -292,6 +292,47 @@ class HolderModeTests(unittest.TestCase):
         self.assertFalse(rec["verdict"]["pass"])
 
 
+class CliTests(unittest.TestCase):
+    def cli(self, argv, rpc, holder=None):
+        out = io.StringIO()
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(ss, "RateLimitedRpc", lambda url: rpc), contextlib.redirect_stdout(out):
+            patches = [mock.patch.object(ss, "find_holder", lambda *a, **k: holder)] if holder else []
+            with contextlib.ExitStack() as st:
+                for p in patches:
+                    st.enter_context(p)
+                code = hs.main(["--mint", MINT, "--git-sha", "c" * 40, "--out", str(Path(d) / "r.json"), *argv])
+            files = sorted(p.name for p in Path(d).iterdir())
+            rec = json.loads((Path(d) / "r.json").read_text()) if (Path(d) / "r.json").exists() else None
+        line = [x for x in out.getvalue().splitlines() if x.startswith("{") and x.endswith("}") and '"verdict"' in x][-1]
+        return code, json.loads(line), files, rec
+
+    def test_default_mode_cli_prints_the_verdict_line_and_writes_record_and_sha(self):
+        code, line, files, rec = self.cli([], Stub(str(tx.TOKEN_2022_PROGRAM)))
+        self.assertEqual(code, 0)
+        self.assertEqual((line["verdict"], line["mode"], line["token_program"]), ("PASS", "default", "token-2022"))
+        self.assertEqual(files, ["r.json", "r.json.sha256"])
+        self.assertEqual(line["sha256"], ss.record_sha256(rec))
+        self.assertEqual(rec["code_git_sha"], "c" * 40)
+        self.assertEqual(line["rungs"]["throwaway"]["escalated"]["priority_lamports"], 150_000)
+
+    def test_holder_mode_cli(self):
+        prog = str(tx.TOKEN_PROGRAM)
+        t = HolderModeTests()
+        ata = str(tx.ata(t.OWNER, Pubkey.from_string(MINT), Pubkey.from_string(prog)))
+        holder = {"owner": str(t.OWNER), "token_account": ata, "owner_lamports": 1, "candidate_source": "stub", "candidates_checked": 1, "skipped": {}}
+        code, line, files, rec = self.cli(["--holder"], Stub(prog, sim_for=t.holder_sim(prog)), holder)
+        self.assertEqual((code, line["verdict"], line["mode"]), (0, "PASS", "holder"))
+        self.assertTrue(line["rungs"]["first"]["full_sell_ok"] and line["rungs"]["escalated"]["control_reverts_at_base_close"])
+        self.assertEqual(rec["kind"], hs.KIND_HOLDER)
+
+    def test_failed_verdict_exits_1_and_bad_args_are_refused(self):
+        code, line, _files, _rec = self.cli([], Stub(str(tx.TOKEN_PROGRAM), sim_for=lambda b64: {"err": None, "logs": [], "unitsConsumed": 1}))
+        self.assertEqual((code, line["verdict"]), (1, "FAIL"))
+        for bad in (["--rpc", "https://x.example/?api-key=1"], ["--git-sha", "nothex"]):
+            with self.assertRaises(SystemExit):
+                hs.main(["--mint", MINT, "--out", "/nonexistent/never-written.json", *bad])
+
+
 class MintsAndJobScriptTests(unittest.TestCase):
     def script_vars(self) -> dict[str, str]:
         text = JOB.read_text()
