@@ -39,8 +39,7 @@ class Syntax(unittest.TestCase):
         subprocess.run(["sh", "-n", str(helper)], check=True)
         text = helper.read_text()
         code = "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
-        self.assertEqual([ln.strip() for ln in text.splitlines() if "api-key" in ln and not ln.lstrip().startswith("#")],
-                         ['Q50S1_KEY_PARAM="${Q50S1_KEY_PARAM:-api-key}"', '[ "$Q50S1_KEY_PARAM" = api-key ] || q50s1_o="$q50s1_o --key-param $Q50S1_KEY_PARAM"'])
+        self.assertEqual([ln for ln in text.splitlines() if "api-key" in ln and not ln.lstrip().startswith("#")], [])  # QP A2: the parameter is fixed in the launcher
         for bad in ("sed ", "cat ", "<", "export", "read ", "open("):  # it never reads the key file, only tests that it is readable (printf prints URLs and paths only)
             self.assertNotIn(bad, code)
         kf = Path(tempfile.mkdtemp()) / "k"
@@ -56,8 +55,11 @@ class Syntax(unittest.TestCase):
         self.assertEqual(rc("wss://api.mainnet-beta.solana.com", "wss://mainnet.helius-rpc.com/", keyfile=kf.parent / "missing"), 0)  # unkeyed reads no key file
         out = subprocess.run(["sh", "-c", f'. "{helper}"; q50s1_ws_args; q50s1_key_opts; echo END'], capture_output=True, text=True).stdout
         self.assertEqual(out, "--ws-url wss://api.mainnet-beta.solana.com\nEND\n")  # the default feed: mainnet-beta only, no key options
+        self.assertEqual(rc("wss://api.mainnet-beta.solana.com", "wss://second.example:8443/"), 0)
+        self.assertEqual(rc("wss://api.mainnet-beta.solana.com", "wss://second.example"), 0)
         for ws2 in ("wss://mainnet.h" + "elius-rpc.com/?api-key=abc", "wss://x.example/?token=1", "wss://u:p@x.example", "ws://x.example", "wss://x/k?a=1",
-                    "wss://x.example/#f", "wss://x.example/apiKey=1", "wss://api.mainnet-beta.solana.com"):
+                    "wss://x.example/#f", "wss://x.example/apiKey=1", "wss://api.mainnet-beta.solana.com",
+                    "wss://x.solana-mainnet.quiknode.pro/abcdef0123456789abcdef/", "wss://x.example/ws", "wss://x.example/v2/abc", "wss://x.example:80a/", "wss://-x.example:/", "wss://.example/"):  # QP A1: host-only
             with self.subTest(ws2=ws2):
                 self.assertEqual(rc("wss://api.mainnet-beta.solana.com", ws2), 11)
         self.assertEqual(subprocess.run(["sh", "-c", f'. "{helper}"; q50s1_ws2_build'], env=dict(os.environ, Q50S1_KEY_FILE=str(kf))).returncode, 0)
@@ -128,9 +130,10 @@ class Register(unittest.TestCase):
             r = self.run_("--preclock-notebook-ref", "nb_Abc123", "--ws2", "wss://second.example/", s1home="/some/s1home", py=self.stub_py(d))
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertEqual(r.stdout.split()[-4:], ["--endpoint", "wss://api.mainnet-beta.solana.com", "--endpoint", "wss://second.example/"])
-            r = self.run_("--preclock-notebook-ref", "nb_Abc123", "--ws2", "wss://second.example/?api-key=k", s1home="/some/s1home", py=self.stub_py(d))
-            self.assertEqual(r.returncode, 2)
-            self.assertEqual(r.stdout, "")
+            for bad in ("wss://second.example/?api-key=k", "wss://x.solana-mainnet.quiknode.pro/abcdef0123456789abcdef/"):
+                r = self.run_("--preclock-notebook-ref", "nb_Abc123", "--ws2", bad, s1home="/some/s1home", py=self.stub_py(d))
+                self.assertEqual(r.returncode, 2, bad)
+                self.assertEqual(r.stdout, "")
 
     def test_q50s1_arena_is_not_a_root_override(self):
         with tempfile.TemporaryDirectory() as d:
@@ -337,6 +340,10 @@ class ShadowFeed(ShadowCheck):
         self.assertEqual(self.check().returncode, 8)  # and the reverse
         self.assertEqual(self.check("--ws2", self.WS2).returncode, 0)
         self.assertEqual(self.check("--ws2-keyed").returncode, 11)  # keyed without --ws2
+        self.write_line(endpoints=[self.WS1, "wss://x.solana-mainnet.quiknode.pro/abcdef0123456789abcdef/"])
+        r = self.check("--ws2", "wss://x.solana-mainnet.quiknode.pro/abcdef0123456789abcdef/")  # QP A1: a credential in the path never reaches argv, the registry or the start record
+        self.assertEqual(r.returncode, 11, r.stdout + r.stderr)
+        self.assertNotIn("abcdef0123456789abcdef", r.stdout)
         self.assertNotIn("solanavibestation", r.stdout)
         self.assertIsNone(KEYLIKE.search(r.stdout + r.stderr))
 

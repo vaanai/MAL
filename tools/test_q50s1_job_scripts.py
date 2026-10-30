@@ -559,6 +559,21 @@ class CleanLogScript(Base):
         self.assertEqual(r.returncode, 1)
         self.assertIn("no_key_in_cmdline=NO", r.stdout)  # no process found: unreadable, NOT_CLEAN
 
+    def test_a_configured_key_variable_or_a_path_token_is_counted(self):
+        """QP A2: the environ count uses the configured key variable; a path-token credential in argv counts too."""
+        pr = subprocess.Popen(["sleep", "30"], env=dict(os.environ, MYPROV_KEY="zzzzzzzz"))
+        self.addCleanup(pr.wait)
+        self.addCleanup(pr.kill)
+        (self.cgroot / "user.slice" / "q50s1-shadow.scope" / "cgroup.procs").write_text(f"{pr.pid}\n")
+        r = self.sh(CLEAN, "--job-uid", "j_AbC-12_x", "--out-dir", str(self.sd), **self.clean_env(Q50S1_KEY_VAR="MYPROV_KEY"))
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("proc_environ_key_var=1", r.stdout)
+        self.assertNotIn("zzzzzzzz", r.stdout + r.stderr)
+        self.proc("sh", "-c", "sleep 30", "x", "wss://x.solana-mainnet.quiknode.pro/abcdef0123456789abcdef/")
+        r = self.sh(CLEAN, "--job-uid", "j_AbC-12_x", "--out-dir", str(self.sd), **self.clean_env())
+        self.assertIn("proc_cmdline=1", r.stdout)
+        self.assertNotIn("abcdef0123456789abcdef", r.stdout + r.stderr)
+
     def test_a_key_in_a_scope_process_argv_is_not_clean_and_never_printed(self):
         self.proc("sh", "-c", "sleep 30", "x", "wss://h.example/?api-key=SEKRETVALUE")
         r = self.sh(CLEAN, "--job-uid", "j_AbC-12_x", "--out-dir", str(self.sd), **self.clean_env())

@@ -369,6 +369,26 @@ class DryFilter(unittest.TestCase):
         self.assertEqual(rc, 2)
 
 
+class KeyPatterns(unittest.TestCase):
+    def test_every_enumerated_provider_key_form_counts_and_structure_does_not(self):
+        hits = ["wss://x.solana-mainnet.quiknode.pro/abcdef0123456789abcdef/", "https://eth-mainnet.g.alchemy.com/v2/AbCdEf0123456789XyZ_abc", "wss://mainnet.infura.io/ws/v3/0123456789abcdef0123456789abcdef",
+                "wss://m.example/?api-key=abc", "wss://m.example/?token=abcdef", "wss://u:p@m.example/", "HELIUS_API_KEY=abcdefgh", "access_token=abcdef12", "x-token=abcdefgh",
+                "token=abcdef123", "url=wss://h.example/?apikey=1"]
+        for s in hits:
+            with self.subTest(s=s):
+                self.assertTrue(h.key_line(s), s)
+        misses = ["ws_connect feed=x url=wss://api.mainnet-beta.solana.com", "--key-file /var/x/k --keyed-url wss://mainnet.helius-rpc.com/", "monkey=1 kind=socket_reconnect",
+                  '{"endpoints":["wss://mainnet.helius-rpc.com/?REDACTED"]}', "q50s1-shadow: ws=wss://api.mainnet-beta.solana.com wss://second.example:8443/ (keyed=0)"]
+        for s in misses:
+            with self.subTest(s=s):
+                self.assertFalse(h.key_line(s), s)
+
+    def test_count_keys_mode_reads_nul_separated_stdin(self):
+        import subprocess, sys
+        r = subprocess.run([sys.executable, "-I", str(Path(h.__file__)), "count-keys"], input=b"python\0-m\0--ws-url\0wss://x.solana-mainnet.quiknode.pro/abcdef0123456789abcdef/\0", capture_output=True)
+        self.assertEqual(r.stdout.decode().strip(), "1")
+
+
 class Pins(unittest.TestCase):
     def test_pins_match_the_shadow_start_and_the_table_row(self):
         from tools import arena_h5_q50s_instant as si
