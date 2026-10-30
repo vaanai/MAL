@@ -26,9 +26,15 @@ What it is not
 Live-feed differences (disclosed, not hidden; the replay proof covers the walker schema only)
   * The public-RPC arena tape has no tx_index and no block_time (tools/arena_tape_schema.md). A feed adapter must supply block_time (event_ts) and
     leave tx_index null (it then sorts first in its slot, as training did with nulls); the within-slot order then follows arrival (frn), not chain order.
-  * sd(T) needs the first second at or after T to be complete in the clock; a row of an earlier slot that arrives after the decision is not seen.
+  * sd(T) needs the first second at or after T to be complete in the clock: decide(T) REFUSES (LiveRefused) until the clock holds a later second; a row
+    of an earlier slot that arrives after the decision is not seen.
+  * A PumpSwap print that arrives before its mint's `complete` row is buffered (<= 900 s of block_time, bounded) and replayed in arrival order when the
+    complete arrives; later than that it is lost (counters pending_*). A bonding row after mslot is skipped (the layout keeps slot <= mslot) and counted.
+  * A mark with no rows closes held positions as 'gap' (LiveBook docstring); xs_book / r4b_read label and price the same exits 'end' at e.
   * Bonding constants (c_nbond, c_bond_*) need every bonding print of a mint since its create; a live start sees only prints after the start
     (the same train/serve skew EXP-027 section 3.4 discloses for history before H0).
+  * Clock / market minutes older than 2 h are dropped after each decide (fast mode), which moves the origin of the float64 cumulative sums; equal
+    results while the sums stay below 2^53 (see Engine).
 """
 
 from __future__ import annotations
@@ -38,9 +44,12 @@ import hashlib
 import json
 import math
 import os
+import re
+import subprocess
 import sys
 import time
 from array import array
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -69,6 +78,12 @@ V_LO, V_HI = rl.V_LO, rl.V_HI
 WSOL = rl.WSOL_MINT
 FRN_HOUR = 10_000_000_000
 S0_FINAL_SLOTS = 9_000  # membership is cached this many slots after the s0 window closes (late rows beyond it are a feed fault)  # r4b_layout frn = hour index * 1e10 + line ordinal
+CLOCK_KEEP_S = 2 * 3600  # fast mode: clock seconds / market minutes older than T - 2 h are dropped after decide(T) (the widest window read is 1 h)
+HASH_CACHE_MAX = 200_000  # DuckHash LRU size
+PENDING_S = 900  # a PumpSwap print whose mint has no `complete` yet is kept this many seconds of block_time
+PENDING_MAX_PER_MINT = 2_000  # ... at most this many rows per mint (the earliest are kept, later ones counted as overflow)
+PENDING_MAX_TOTAL = 100_000  # ... and this many rows over all mints (the oldest-inserted mint is evicted first)
+PENDING_SWEEP_S = 60  # expiry sweep at most once per this many seconds of block_time
 
 # Exploration replay only: the outcome blocks of /data/mal/hunt-1008/push-1016/hunt23/RULES.md. fresh-08* (the unspent reserve) is NOT here.
 EXPLORATION_DIRS = (
@@ -111,20 +126,46 @@ def path_problem(p: str | os.PathLike) -> str | None:
 
 # ------------------------------------------------------------------------------------------------------------------------------- hashing
 class DuckHash:
-    """DuckDB's hash() of a VARCHAR (r4b_layout writes th = hash(trader), ch = hash(creator)); hash(NULL) is a fixed non-null value. Cached."""
+    """DuckDB's hash() of a VARCHAR (r4b_layout writes th = hash(trader), ch = hash(creator)); hash(NULL) is a fixed non-null value.
+    Cached in an LRU of at most `cache_max` entries (a long run sees every trader once; an evicted value is simply recomputed)."""
 
-    def __init__(self) -> None:
+    def __init__(self, cache_max: int = HASH_CACHE_MAX) -> None:
         import duckdb
 
         self._con = duckdb.connect()
-        self._cache: dict[str | None, int] = {}
+        self.cache_max = int(cache_max)
+        self._cache: OrderedDict[str | None, int] = OrderedDict()
 
     def __call__(self, s: str | None) -> int:
-        v = self._cache.get(s)
-        if v is None:
-            v = int(self._con.execute("select hash(?::varchar)", [s]).fetchone()[0])
-            self._cache[s] = v
+        c = self._cache
+        v = c.get(s)
+        if v is not None:
+            c.move_to_end(s)
+            return v
+        v = int(self._con.execute("select hash(?::varchar)", [s]).fetchone()[0])
+        c[s] = v
+        if len(c) > self.cache_max:
+            c.popitem(last=False)
         return v
+
+
+_HEAD_SHA: str | None = None
+
+
+def repo_head_sha() -> str:
+    """`git rev-parse HEAD` of the repo that holds this module, read once per process. The decision log's `start` row carries it as `frozen_sha`
+    (the bridge latches frozen_sha_mismatch on a different value). Refuses (no guess) when git cannot answer or does not return 40 hex digits."""
+    global _HEAD_SHA
+    if _HEAD_SHA is None:
+        repo = Path(__file__).resolve().parents[1]
+        try:
+            out = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=15, check=True).stdout.strip()
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise LiveRefused(f"cannot read the git HEAD of {repo} ({type(exc).__name__}); pass frozen_sha explicitly") from exc
+        if not re.fullmatch(r"[0-9a-f]{40}", out):
+            raise LiveRefused(f"git rev-parse HEAD did not return a 40-hex sha: {out[:60]!r}; pass frozen_sha explicitly")
+        _HEAD_SHA = out
+    return _HEAD_SHA
 
 
 def default_pda_fn() -> Callable[[str], str]:
@@ -161,13 +202,19 @@ class MintState:
     cslot: int | None = None
     # PDA-pool PumpSwap prints, arrival order
     prints: dict = field(default_factory=lambda: {k: array(t) for k, t in _PRINT_FIELDS})
-    # bonding aggregates (the prep_work SQL over bond rows): count, buy / sell sums, per-trader sell sums (keys = distinct traders)
+    # bonding aggregates (the prep_work SQL over bond rows, slot <= mslot): count, buy / sell sums, per-trader sell sums (keys = distinct traders).
+    # SQL SUM is NULL (NaN in the constants) when every term is NULL: b_buy_nn / b_sell_nn say some term of that sum is non-NULL (a row of the other side
+    # contributes 0, a row of that side contributes its sol, NULL if sol is NULL); b_null_sell_by_th counts the sells with a NULL sol per trader hash
+    # (cre_sell is NULL iff every bonding row is such a sell by the creator).
     b_n: int = 0
     b_buy: int = 0
     b_sell: int = 0
-    b_any_sol: bool = False
+    b_buy_nn: bool = False
+    b_sell_nn: bool = False
     b_by_th: dict = field(default_factory=dict)
+    b_null_sell_by_th: dict = field(default_factory=dict)
     b_maxslot: int | None = None
+    bond_alarm: bool = False  # a bonding row after mslot was counted for this mint (it arrived before the complete row was known)
     last_bond_bt: int | None = None
     max_bt: float = float("-inf")  # latest block_time among the PDA prints (a necessary condition for a row: traded in the last 10 min)
 
@@ -345,16 +392,28 @@ class Member:
 class LiveBook:
     """tools/r4b_book.xs_book, one mark at a time. step(t, ranked) takes the mints of every finite-score row at mark t in rank order
     (descending score, ties to the lower mid) and returns the actions of that mark: ('exit', mint, T0, T1, reason) then ('entry', mint, T0, rank).
-    A mark with no rows is not a group (xs_book): with positions held and t == last mark + rb, live closes them now with reason 'gap' at T1 = t,
-    which is the T1 xs_book gives them at the next non-empty mark."""
+    Marks must strictly increase: step refuses t <= the last stepped mark (empty or not), so a repeated or late mark cannot rewrite the book.
+    Ingest and decide run on ONE thread (the engine's per-mint prints are array buffers viewed by numpy while a mark is decided; a concurrent
+    append would raise BufferError).
+
+    Trailing / empty marks (a documented live-vs-read difference). xs_book never sees a mark without rows: it is not a group. After the last
+    non-empty mark it closes whatever is held as reason 'end' at last mark + rb, and r4b_read prices an 'end' exit at e (the calendar stop), not at that
+    T1. Live cannot wait for a next non-empty mark, so a mark WITH NO ROWS at t >= last non-empty mark + rb closes everything now with reason 'gap' at
+    T1 = last non-empty mark + rb (the T1 xs_book gives the same positions, either as 'gap' at the next non-empty mark or as 'end'). So when a feed outage
+    runs to the end of the read window, live labels the exits 'gap' where xs_book labels them 'end' and r4b_read prices them at e; the T0 and T1 are equal.
+    The same holds for a mark that has rows but whose gap since the previous non-empty mark exceeds rb (the xs_book gap rule, unchanged)."""
 
     def __init__(self, k: int = FZ.K, rb: int = MARK_S) -> None:
         self.k, self.rb = int(k), int(rb)
         self.pos: dict[str, int] = {}  # mint -> T0, insertion order
-        self.prev: int | None = None
+        self.prev: int | None = None  # last non-empty mark (xs_book's prev)
+        self.last: int | None = None  # last stepped mark, empty or not
 
     def step(self, t: int, ranked: Sequence[str]) -> list[tuple]:
         t = int(t)
+        if self.last is not None and t <= self.last:
+            raise LiveRefused(f"mark {t} is not after the last stepped mark {self.last}")
+        self.last = t
         out: list[tuple] = []
         if not ranked:
             if self.pos and self.prev is not None and t - self.prev >= self.rb:
@@ -438,12 +497,23 @@ class Engine:
     v_source "event": V0 = the event V of the s0 print and every member print's own V, pda_match required (the forward read's mode);
     "static_map": V from a {pool: V} map for every print of the mint, no pda_match (exploration replay of tapes without event V, as E-d).
     `bond_mints`: if given, bonding aggregates are kept for these mints only (a replay may pass the set of mints that complete in its window; for
-    decisions this equals keeping all, it only saves memory). `universe_min_mbt`: members graduate at or after it (EXP-027: r4b_count.UNIVERSE_MIN_MBT)."""
+    decisions this equals keeping all, it only saves memory). `universe_min_mbt`: members graduate at or after it (EXP-027: r4b_count.UNIVERSE_MIN_MBT).
+
+    Clock guard: decide(T) refuses unless the clock holds a second strictly after s*, the first second at or after T (sd(T) is the min slot of s*, which
+    is final only once a later second has been seen); a replay always satisfies this because it loads the files of hour(T) + 1 first. Marks must
+    advance: decide(T) refuses T <= the last decided mark.
+    Bounded growth: in the default fast mode (exact_grid False) decide(T) drops clock seconds, market minutes and create minutes older than
+    T - keep_clock_s (CLOCK_KEEP_S = 2 h; the widest window any feature reads is 1 h) once the mark is decided; keep_clock_s=None keeps everything and exact_grid
+    always does (the pinned per-mint loop reads old grid seconds). Pruning moves the origin of the float64 cumulative minute sums (rf.build_prep): the
+    window sums are equal while the sums stay below 2^53 (synthetic and the 5-day explore replays), beyond that they can differ in the last float64 bits.
+    Late PumpSwap prints: a print whose mint has no `complete` row yet is buffered (<= PENDING_S of block_time, <= PENDING_MAX_PER_MINT rows per mint,
+    <= PENDING_MAX_TOTAL overall) and replayed in arrival order when the complete arrives (ingest_trade only; the block path of a replay feeds migrations first).
+    Threads: ingest_* and decide run on ONE thread (np.frombuffer views over the array buffers of a mint make a concurrent append raise BufferError)."""
 
     def __init__(self, *, universe_min_mbt: int, v_source: str = "event", static_map: Mapping[str, int | None] | None = None, mode: str = "dry",
                  pda_fn: Callable[[str], str] | None = None, hash_fn: Callable[[str | None], int] | None = None, boosters: list | None = None,
                  score_fn: Callable[[list, np.ndarray], np.ndarray] | None = None, bond_mints: set | None = None, k: int = FZ.K,
-                 exact_grid: bool = False) -> None:
+                 exact_grid: bool = False, keep_clock_s: int | None = CLOCK_KEEP_S) -> None:
         if mode == "live" or LIVE_BUILT is not False:
             raise LiveRefused("r4b_live builds no live mode (LIVE_BUILT is False): no key, no wallet, no send")
         if mode not in ("dry", "replay"):
@@ -468,10 +538,16 @@ class Engine:
         self.ncr: dict[int, int] = {}  # minute -> creates
         self.book = LiveBook(k=k)
         self.exact_grid = bool(exact_grid)
+        self.keep_clock_s = None if (exact_grid or keep_clock_s is None) else int(keep_clock_s)
         self.counters: dict[str, int] = {}
         self._frn = 0
         self.max_slot = -1  # highest slot ingested (any trade row)
+        self._clock_hi = -1  # highest block_time second ingested (any trade row)
+        self._last_T: int | None = None  # last decided mark
         self._member_final: dict[str, Member | None] = {}  # membership once s0 can no longer change
+        self._pending: dict[str, list] = {}  # mint -> PumpSwap prints that arrived before the mint's complete row (arrival order)
+        self._pending_n = 0
+        self._pending_swept = -1
 
     # -- helpers
     def _count(self, k: str, n: int = 1) -> None:
@@ -515,6 +591,8 @@ class Engine:
                 st.mslot = int(slot) if st.mslot is None else min(st.mslot, int(slot))
             if bt is not None:
                 st.mbt = int(bt) if st.mbt is None else min(st.mbt, int(bt))
+            if st.mslot is not None and mint in self._pending:
+                self._pending_replay(mint, st)
         elif typ == "migration":
             st = self._st(mint)
             st.has_mig = True
@@ -553,6 +631,8 @@ class Engine:
         if bt is None:
             return
         bt = int(bt)
+        if bt > self._clock_hi:
+            self._clock_hi = bt
         if slot is not None:
             c = self.clock.get(bt)
             if c is None or int(slot) < c:
@@ -569,43 +649,113 @@ class Engine:
             if sol is not None:
                 a[3] += float(sol)
 
+    def _add_print(self, st: MintState, mint: str, pool: Any, slot: Any, txi: Any, evi: Any, frn: int, bt: Any, isbuy: Any, sol: Any, tok: Any,
+                   q: Any, b: Any, th: int | None, trader: Any, vq: Any) -> None:
+        """Append one PumpSwap print of a completed mint if it is on the mint's PDA pool. The trader is hashed here, for kept rows only."""
+        if pool is None or pool != self.pda(mint):
+            return
+        p = st.prints
+        p["slot"].append(int(slot))
+        p["txi"].append(-1 if txi is None else int(txi))
+        p["evi"].append(-1 if evi is None else int(evi))
+        p["frn"].append(int(frn))
+        p["bt"].append(_nan(bt))
+        if bt is not None and bt > st.max_bt:
+            st.max_bt = float(bt)
+        p["isbuy"].append(1 if isbuy else 0)
+        p["sol"].append(_nan(sol))
+        p["tok"].append(_nan(tok))
+        p["q"].append(_nan(q))
+        p["b"].append(_nan(b))
+        p["th"].append(int(self.th(trader) if th is None else th))
+        p["vq"].append(_nan(vq))
+
+    # -- PumpSwap prints that arrive before their mint's complete row (live feeds do not deliver the streams in chain order)
+    def _pending_add(self, mint: str, rec: tuple) -> None:
+        """rec = (pool, slot, txi, evi, frn, bt, isbuy, sol, tok, q, b, th, trader, vq). Bounded: PENDING_S of block_time, per mint and overall."""
+        if rec[0] is None:  # no pool: never the PDA pool
+            return
+        bt = rec[5]
+        if bt is not None and bt < self._clock_hi - PENDING_S:
+            self._count("pending_expired")
+            return
+        if self._clock_hi >= self._pending_swept + PENDING_SWEEP_S:
+            self._pending_sweep()
+        lst = self._pending.get(mint)
+        if lst is None:
+            lst = self._pending[mint] = []
+        if len(lst) >= PENDING_MAX_PER_MINT:
+            self._count("pending_overflow")
+            return
+        lst.append(rec + (self._clock_hi if bt is None else bt,))
+        self._pending_n += 1
+        self._count("pending_buffered")
+        while self._pending_n > PENDING_MAX_TOTAL:
+            old = next(iter(self._pending))
+            n = len(self._pending.pop(old))
+            self._pending_n -= n
+            self._count("pending_evicted", n)
+
+    def _pending_sweep(self) -> None:
+        cut = self._clock_hi - PENDING_S
+        self._pending_swept = self._clock_hi
+        for mint in list(self._pending):
+            lst = self._pending[mint]
+            keep = [r for r in lst if r[-1] >= cut]
+            if len(keep) != len(lst):
+                self._pending_n -= len(lst) - len(keep)
+                self._count("pending_expired", len(lst) - len(keep))
+                if keep:
+                    self._pending[mint] = keep
+                else:
+                    del self._pending[mint]
+
+    def _pending_replay(self, mint: str, st: MintState) -> None:
+        lst = self._pending.pop(mint)
+        self._pending_n -= len(lst)
+        cut = self._clock_hi - PENDING_S
+        for r in lst:
+            if r[-1] < cut:
+                self._count("pending_expired")
+                continue
+            pool, slot, txi, evi, frn, bt, isbuy, sol, tok, q, b, th, trader, vq = r[:-1]
+            self._add_print(st, mint, pool, slot, txi, evi, frn, bt, isbuy, sol, tok, q, b, th, trader, vq)
+            self._count("pending_replayed")
+
     def _mint_trade(self, venue: Any, mint: Any, pool: Any, slot: Any, txi: Any, evi: Any, frn: int, bt: Any, isbuy: Any, sol: Any, tok: Any,
-                    q: Any, b: Any, th: int, vq: Any) -> None:
+                    q: Any, b: Any, th: int | None, vq: Any, trader: Any = None) -> None:
+        """th: the DuckDB hash of the trader when the caller already has it (block ingest), else None: the trader string is hashed here, and only
+        for rows that are kept (a PDA print of a completed mint, a tracked bonding row at or before mslot)."""
         if mint is None or slot is None:
             return
         if venue == "pumpswap":
             st = self.mints.get(mint)
-            if st is None or st.mslot is None:  # only mints whose complete row is in (a PDA pool cannot print before its migration)
+            if st is None or st.mslot is None:  # a PDA pool cannot print before its migration: buffer until the complete row is in (bounded)
+                self._pending_add(mint, (pool, int(slot), txi, evi, frn, bt, isbuy, sol, tok, q, b, th, trader, vq))
                 return
-            if pool is None or pool != self.pda(mint):
-                return
-            p = st.prints
-            p["slot"].append(int(slot))
-            p["txi"].append(-1 if txi is None else int(txi))
-            p["evi"].append(-1 if evi is None else int(evi))
-            p["frn"].append(int(frn))
-            p["bt"].append(_nan(bt))
-            if bt is not None and bt > st.max_bt:
-                st.max_bt = float(bt)
-            p["isbuy"].append(1 if isbuy else 0)
-            p["sol"].append(_nan(sol))
-            p["tok"].append(_nan(tok))
-            p["q"].append(_nan(q))
-            p["b"].append(_nan(b))
-            p["th"].append(int(th))
-            p["vq"].append(_nan(vq))
+            self._add_print(st, mint, pool, slot, txi, evi, frn, bt, isbuy, sol, tok, q, b, th, trader, vq)
         elif venue == "pump_bonding":
             if self.bond_mints is not None and mint not in self.bond_mints:
                 return
             st = self._st(mint)
+            if st.mslot is not None and int(slot) > st.mslot:  # the layout keeps slot < mslot + 1; pump.fun has no bonding trade after complete
+                self._count("bond_rows_after_mslot_skipped")  # parity alarm: expected 0
+                return
+            if th is None:
+                th = self.th(trader)
             st.b_n += 1
             s = None if sol is None else int(sol)
+            if isbuy is not True or s is not None:  # a term of SUM(case when isbuy then sol else 0 end) that is not NULL
+                st.b_buy_nn = True
+            if isbuy is not False or s is not None:  # same for SUM(case when not isbuy then sol else 0 end)
+                st.b_sell_nn = True
             if s is not None:
-                st.b_any_sol = True
                 if isbuy is True:
                     st.b_buy += s
                 elif isbuy is False:
                     st.b_sell += s
+            elif isbuy is False:
+                st.b_null_sell_by_th[th] = st.b_null_sell_by_th.get(th, 0) + 1
             prev = st.b_by_th.get(th)
             add = s if (s is not None and isbuy is False) else 0
             st.b_by_th[th] = add if prev is None else prev + add
@@ -614,18 +764,19 @@ class Engine:
                 st.last_bond_bt = int(bt)
 
     def ingest_trade(self, row: Mapping[str, Any], frn: int | None = None) -> None:
-        """One walker-schema trade row, as it arrives (the live API)."""
+        """One walker-schema trade row, as it arrives (the live API). The trader is hashed only if the row is kept."""
         side = row.get("side")
         isbuy = None if side is None else (side == "buy")
         tok, q, b = row.get("token_raw"), row.get("quote_reserve"), row.get("base_reserve")
         self._clock_mkt(row.get("venue"), row.get("slot"), row.get("block_time"), row.get("sol_lamports"))
         self._mint_trade(row.get("venue"), row.get("mint"), row.get("pool"), row.get("slot"), row.get("tx_index"), row.get("event_index"),
                          self.next_frn() if frn is None else int(frn), row.get("block_time"), isbuy, row.get("sol_lamports"), tok, q, b,
-                         self.th(row.get("trader")), row.get("virtual_quote_reserves"))
+                         None, row.get("virtual_quote_reserves"), trader=row.get("trader"))
 
     def ingest_trade_block(self, cols: Mapping[str, np.ndarray]) -> None:
         """A block of trade rows in file order (replay): the clock / market aggregates vectorized, then the per-mint path row by row for the rows
-        that can matter (PDA prints of completed mints, bonding prints of tracked mints). Same state as ingest_trade on each row (tested).
+        that can matter (PDA prints of completed mints, bonding prints of tracked mints). Same state as ingest_trade on each row whose mint's complete
+        row is already in (tested); a PumpSwap print of a mint without one is dropped here, not buffered (a replay feeds migrations before trades).
         cols: venue, mint, pool (object), slot, txi, evi, frn (int64; txi/evi -1 for null), bt, sol, tok, q, b, vq (float64, NaN = null),
         isbuy (object: True/False/None), th (uint64)."""
         venue = cols["venue"]
@@ -638,6 +789,7 @@ class Engine:
         okb = np.isfinite(bt)
         if okb.any():
             btb, slb = bt[okb].astype(np.int64), slot[okb].astype(np.int64)
+            self._clock_hi = max(self._clock_hi, int(btb.max()))
             o = np.lexsort((slb, btb))
             ub, first = np.unique(btb[o], return_index=True)
             for s_, v_ in zip(ub.tolist(), slb[o][first].tolist()):
@@ -745,9 +897,17 @@ class Engine:
         st = m.st
         if st.b_n:
             nb, ntr = float(st.b_n), float(len(st.b_by_th))
-            bbuy, bsell = float(st.b_buy), float(st.b_sell)
-            cre = float(st.b_by_th.get(st.ch, 0)) if st.ch is not None else 0.0
-            if st.b_maxslot is not None and st.b_maxslot > st.mslot:
+            nan = float("nan")  # SQL SUM over only-NULL terms is NULL (NaN here, and feature c_bond_* then NaN as in the layout)
+            bbuy = float(st.b_buy) if st.b_buy_nn else nan
+            bsell = float(st.b_sell) if st.b_sell_nn else nan
+            if st.ch is None:
+                cre = 0.0  # th = NULL is never true: every term is the ELSE 0
+            elif st.b_null_sell_by_th.get(st.ch, 0) == st.b_n:
+                cre = nan  # every bonding row is a creator sell with a NULL sol
+            else:
+                cre = float(st.b_by_th.get(st.ch, 0))
+            if st.b_maxslot is not None and st.b_maxslot > st.mslot and not st.bond_alarm:
+                st.bond_alarm = True  # rows after mslot reached the aggregate (they arrived before the complete row): parity alarm, once per mint
                 self._count("bond_rows_after_mslot_mints")
         else:
             nb = ntr = bbuy = bsell = cre = float("nan")
@@ -802,11 +962,17 @@ class Engine:
         return rs.bag_score(self.boosters, X)
 
     def decide(self, T: int, w0: int | None = None, last_entry: int | None = None) -> MarkResult:
-        """The decision at mark T (T % 3600 == 0). w0 / last_entry bound the counted marks like the read (rows outside give an empty mark)."""
+        """The decision at mark T (T % 3600 == 0). w0 / last_entry bound the counted marks like the read (rows outside give an empty mark).
+        Refuses (LiveRefused, nothing changed) when T is not after the last decided mark, or when the clock has no second strictly after s*, the first
+        second at or after T: sd(T) = the min slot of s* would not be final (an early call would silently use the last known second)."""
         t_start = time.monotonic()
         T = int(T)
         if T % MARK_S:
             raise LiveRefused(f"{T} is not an hour mark")
+        if self._last_T is not None and T <= self._last_T:
+            raise LiveRefused(f"mark {T} is not after the last decided mark {self._last_T}")
+        if self._clock_hi < T + 1 or sum(1 for sec in self.clock if sec >= T) < 2:
+            raise LiveRefused(f"clock not complete at {T}: need a second after the first second >= {T} (latest ingested second {self._clock_hi})")
         mem = self.members(T)
         prep = self.prep(mem)
         sd = int(prep.slot_at(np.array([T], np.int64))[0])
@@ -837,8 +1003,29 @@ class Engine:
         fin = [i for i in range(len(mints)) if np.isfinite(sc[i])]
         ranked = [mints[i] for i in sorted(fin, key=lambda i: (-sc[i], mid_key[mints[i]]))]
         actions = self.book.step(T, ranked)
+        self._last_T = T
+        if self.keep_clock_s is not None:
+            self.prune_clock(T)
         return MarkResult(T, sd, mints, np.full(len(mints), T, np.int64), np.array(sds, np.int64), X, sc, ranked, actions, d3,
                           time.monotonic() - t_start)
+
+    def prune_clock(self, T: int) -> tuple[int, int]:
+        """Drop clock seconds, market minutes and create minutes older than T - keep_clock_s (CLOCK_KEEP_S); the next mark is >= T + 1 h and reads
+        windows of at most 1 h back. Returns (seconds, minutes) dropped. Refused in exact_grid mode."""
+        if self.exact_grid:
+            raise LiveRefused("exact_grid reads old grid seconds: no clock pruning")
+        lo = int(T) - (CLOCK_KEEP_S if self.keep_clock_s is None else self.keep_clock_s)
+        old_s = [x for x in self.clock if x < lo]
+        for x in old_s:
+            del self.clock[x]
+        old_m = [x for x in self.mkt if x < lo]
+        for x in old_m:
+            del self.mkt[x]
+        for x in [x for x in self.ncr if x < lo]:
+            del self.ncr[x]
+        self._count("clock_pruned", len(old_s))
+        self._count("mkt_pruned", len(old_m))
+        return len(old_s), len(old_m)
 
     def prune(self, now_bt: int) -> int:
         """Drop per-mint print state that no decision can read again (graduated more than 48 h + 2 h ago) and bonding state of mints idle for 7 days
@@ -856,11 +1043,13 @@ class Engine:
 
 # ------------------------------------------------------------------------------------------------------------------------------- decision log
 def log_actions(log: Any, res: MarkResult, members: Mapping[str, Member] | None, ms: int, stake_sol: float = FZ.STAKE_SOL) -> list[dict]:
-    """Append one mark's actions as arena_declog rows (exits first, then entries in rank order). order_id = '<mint>:<T0>'."""
+    """Append one mark's actions as arena_declog rows (exits first, then entries in rank order). order_id = '<mint>:<T0>'. Entries and exits both carry
+    decision_slot = res.sd = sd(T), the slot the mark's decision is made at (the bridge's decision-to-landed counts from it)."""
     rows = []
     for a in res.actions:
         if a[0] == "exit":
-            rows.append(log.append(BOT_ID, ms, {"kind": "exit", "order_id": f"{a[1]}:{a[2]}", "mint": a[1], "reason": a[4], "t_mark": int(a[3])}))
+            rows.append(log.append(BOT_ID, ms, {"kind": "exit", "order_id": f"{a[1]}:{a[2]}", "mint": a[1], "reason": a[4], "t_mark": int(a[3]),
+                                                "decision_slot": res.sd}))
     sc = {m: float(s) for m, s in zip(res.mints, res.score.tolist())}
     for a in res.actions:
         if a[0] == "entry":
@@ -916,13 +1105,15 @@ class ReplayResult:
 
 def replay_walker(walk_dir: Path | Sequence[Path], h0: str, h1: str, w0: int, e: int, *, static_map: Mapping[str, int | None] | None, universe_min_mbt: int,
                   boosters: list | None = None, score_fn: Callable | None = None, pda_fn: Callable | None = None, log_root: Path | None = None,
-                  extra_hours: int = 2, allow_dir: bool = False, memory_limit: str = "4GB", progress: Callable[[str], None] | None = None) -> ReplayResult:
+                  extra_hours: int = 2, allow_dir: bool = False, memory_limit: str = "4GB", progress: Callable[[str], None] | None = None,
+                  frozen_sha: str | None = None) -> ReplayResult:
     """Feed a walker-layout dir hour by hour through the Engine and decide every mark in [w0, e - 1 h], as the read does (EXP-027 section 4.1).
     Migrations and creates of [h0, h1) and trades of [h0, h1 + extra_hours) are fed, as r4b_layout.build loads them. Mark T is decided once the
     files of hour(T) + 1 are in (every row with block_time before T and the first second at or after T are then in; features read slot < sd(T) only).
     static_map given -> v_source static_map; None -> event. Refuses a non-exploration path or any hour at or after REPLAY_HOUR_MAX unless allow_dir
     (synthetic test dirs only). walk_dir may be a list of window dirs (e.g. explore-0814 w7, w6, w5): each hour file is taken from the first dir
-    that has it."""
+    that has it. frozen_sha: written on the declog `start` row (the bridge compares it with its pin); default = repo_head_sha(), read once per process
+    from `git rev-parse HEAD`, and only when log_root is given."""
     import duckdb
 
     dirs = [Path(walk_dir)] if isinstance(walk_dir, (str, os.PathLike)) else [Path(d) for d in walk_dir]
@@ -961,7 +1152,8 @@ def replay_walker(walk_dir: Path | Sequence[Path], h0: str, h1: str, w0: int, e:
         from tools.arena_declog import DecisionLog
 
         log = DecisionLog(log_root)
-        log.append(BOT_ID, w0 * 1000, {"kind": "start", "book": BOOK, "exp": "EXP-027", "mode": "replay", "schema": SCHEMA})
+        log.append(BOT_ID, w0 * 1000, {"kind": "start", "book": BOOK, "exp": "EXP-027", "mode": "replay", "schema": SCHEMA,
+                                       "frozen_sha": frozen_sha if frozen_sha is not None else repo_head_sha()})
     marks = list(range(w0, e, MARK_S))  # entry marks [W0, E - 1 h]
     last_entry = e - MARK_S
     pending = list(marks)
@@ -1015,12 +1207,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--w0", required=True, help="first entry mark, YYYY-MM-DDTHH")
     ap.add_argument("--e", required=True, help="calendar stop, YYYY-MM-DDTHH (last entry mark = e - 1 h)")
     ap.add_argument("--static-map", default=None)
+    ap.add_argument("--frozen-sha", default=None, help="written on the declog start row; default: git rev-parse HEAD of this repo")
     ap.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     smap = rl.load_static_map(a.static_map) if a.static_map else None
     try:
         r = replay_walker([Path(d) for d in a.walk_dir], a.from_hour, a.to_hour, hour_epoch(a.w0), hour_epoch(a.e), static_map=smap,
-                          universe_min_mbt=hour_epoch(a.from_hour), log_root=Path(a.out) / "declog", progress=lambda s: print(s, flush=True))
+                          universe_min_mbt=hour_epoch(a.from_hour), log_root=Path(a.out) / "declog", progress=lambda s: print(s, flush=True),
+                          frozen_sha=a.frozen_sha)
     except LiveRefused as exc:
         print(str(exc), file=sys.stderr)
         return 2
