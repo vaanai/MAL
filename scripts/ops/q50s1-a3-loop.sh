@@ -6,7 +6,7 @@
 #                                                       pre-clock green run), with A3_ENUM_ENV_FILE (the bounded upgrade-write enumeration, Amendment 13 + Erratum 1), until END_UTC
 #   sh scripts/ops/q50s1-a3-loop.sh deadman END_UTC    `a3-daily.sh deadman` at 13:10Z until END_UTC
 # Each run is skipped (A3_SKIP, nothing run) while s1's books file does not exist yet: the registration command writes it with the s1 line, so no run judges an unregistered book.
-# Segments: a MiScusi job lives at most 14 d (extensions included) and an `after` job starts only after a SUCCESSFUL end. So each segment ENDS ITSELF with exit 0 at END_UTC, and the next
+# Segments: a MiScusi job lives at most 14 d (extensions included) and an `after` job starts only after a SUCCESSFUL end. So each segment ENDS ITSELF with exit 0 AT END_UTC (it sleeps from its last slot to END), and the next
 # segment is submitted `after` it. Lifetime needed: the 07:10Z run of 2026-12-01 (Amendment 22 item 9). Plan (s1 runbook v2): loop A END 2026-11-17T20:00:00Z, loop B `after` A END
 # 2026-12-01T12:00:00Z; dead-man A END 2026-11-17T14:00:00Z, dead-man B `after` A END 2026-12-01T13:00:00Z (its last run is 2026-11-30T13:10Z;
 # the next would be after the 2026-12-01T07:10Z loop run). Each END is refused if it is more than 14 d - 15 min away. A segment that dies early blocks its successor: the alert
@@ -67,7 +67,10 @@ next_t() {
 }
 while :; do
   t=$(next_t); now=$(date -u +%s)
-  [ "$t" -lt "$E" ] || { echo "== A3_SEGMENT_END $(date -u +%FT%TZ) ($MODE; next slot is at or after END $2; exit 0 so the next segment's after fires)"; exit 0; }
+  if [ "$t" -ge "$E" ]; then
+    [ "$E" -le "$now" ] || sleep $((E - now))  # the segment ends AT its END (not right after its last slot), so the next segment's 14-d bound holds from END
+    echo "== A3_SEGMENT_END $(date -u +%FT%TZ) ($MODE; END $2 reached; exit 0 so the next segment's after fires)"; exit 0
+  fi
   [ "$t" -gt "$now" ] && sleep $((t - now))
   if books_ok; then
     if [ "$MODE" = loop ]; then
