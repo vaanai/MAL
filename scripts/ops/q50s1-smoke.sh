@@ -154,7 +154,7 @@ PRC=0
 wait "$PID" || PRC=$?
 echo "q50s1-smoke: stopped at $(date -u +%FT%TZ): alive_at_end=$ALIVE process_rc=$PRC (report-only) out=$OUT report=$REP"
 JKEY=unreadable
-if journalctl --user -n 0 --no-pager >/dev/null 2>&1; then JKEY="$(journalctl --user --since "@$START" --no-pager -o cat 2>/dev/null | grep -c -F 'api-key' || true)"; fi
+if journalctl --user -n 0 --no-pager >/dev/null 2>&1; then JKEY="$(journalctl --user --since "@$START" --no-pager -o cat 2>/dev/null | python3 -I "$JUDGE" count-keys)"; fi
 case "$JKEY" in ''|*[!0-9]*) JKEY=unreadable ;; esac
 # 8. judge (counts, timings and flags only)
 JRC=0

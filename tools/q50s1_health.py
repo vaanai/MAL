@@ -56,6 +56,12 @@ HB_MIN_SHARE = 0.9
 EGAP_SPAN_S = 340  # Amendment 22 item 11: each flagged gap covers [t_ms - 340 s, t_ms] (a trade's ~332 s span plus margin)
 EGAP_MAX = 0.025  # Amendment 22 item 11: half the 5% cap of section 1.4
 KEY_MARK = "api-key"  # Amendment 22 item 10: the count of this string in the smoke's log and the journal must be 0
+# Every provider-key form this lab can enumerate (QP A2 on #1121; the manager: "every provider-key pattern"): a query/assignment of a key-like name, a userinfo credential,
+# and a long path token after a ws/http host (QuickNode-style /<token>/, Alchemy /v2/<key>, Infura /v3/<id>). A line matching ANY of them counts.
+KEY_PATTERNS = re.compile(
+    r"(?i)(\bapi[-_]?key\b|\bapikey=|\baccess[-_]?token=|\bauth[-_]?token=|\bx-token=|[?&](key|token|auth|secret|apikey|api_key)=|\bhelius_api_key=|\b(token|secret|key)=[^&\s\x22'<>]{6,})"
+    r"|\b(wss?|https?)://[^/\s\"'<>@]+@"
+    r"|\b(wss?|https?)://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9_.-]{0,19})*/[A-Za-z0-9_-]{20,}")
 STATUS_MAX_AGE_S = 180
 CLEAN_MIN_S = 3600
 
@@ -218,12 +224,16 @@ def count_log(path: Path, *, print_prefix: str | None = None) -> tuple[collectio
     return tot, per_hour, shown
 
 
+def key_line(line: str) -> bool:
+    return KEY_MARK in line or KEY_PATTERNS.search(line) is not None
+
+
 def count_mark(path: Path, mark: str = KEY_MARK) -> int:
-    """Lines that contain the mark (a count only; no line is printed)."""
+    """Lines that carry any provider-key form (KEY_PATTERNS, which includes the literal api-key; a count only; no line is printed)."""
     if not path.exists():
         return 0
     with open(path, encoding="utf-8", errors="replace") as fh:
-        return sum(1 for line in fh if mark in line)
+        return sum(1 for line in fh if key_line(line))
 
 
 def _iso(epoch_s: int) -> str:
@@ -302,6 +312,8 @@ def smoke_judge(a: argparse.Namespace) -> int:
         print(f"SMOKE_REPORT_ONLY d_halves first_half_slope_bytes_per_h={s1h:.1f} second_half_slope_bytes_per_h={s2h:.1f} max_rss_bytes={int(max(r for _, r in fit))}")
         if not ok:
             failed.append("d")
+    em = re.search(r'"endpoints":(\[[^\]]*\])', rows["start_lines"][0]) if rows["start_lines"] else None
+    print(f"SMOKE_FEED endpoints={em.group(1) if em else '-'} (the smoke's own start record, key-free; must equal the registered line's endpoints)")
     print("SMOKE_ITEM e CITED (md5 decision-equivalence at S*: the tag q50-succ-base-1 message and DEC-031 Amendment 18 item 2.3; not run by this smoke)")
     print("SMOKE_ITEM f N/A (not an LLM book)")
 
@@ -360,7 +372,7 @@ def clean_log(a: argparse.Namespace) -> int:
         "hb_last_hour": hb_recent >= need_hb,
         "status_fresh": st_age is not None and st_age <= STATUS_MAX_AGE_S,
         "no_key_string": count_mark(job_log) == 0 and count_mark(errlog) == 0,
-        "no_key_in_start_rows": sum(KEY_MARK in ln for ln in rows["start_lines"]) == 0,
+        "no_key_in_start_rows": sum(key_line(ln) for ln in rows["start_lines"]) == 0,
         "no_key_in_cmdline": a.cmdline_key_count == "0",
         "no_key_in_environ": a.environ_key_count == "0",
         "no_key_in_journal": a.journal_key_count == "0",
@@ -368,7 +380,7 @@ def clean_log(a: argparse.Namespace) -> int:
     print(f"CLEAN_CHECKS " + " ".join(f"{k}={'ok' if v else 'NO'}" for k, v in checks.items()))
     print(f"CLEAN_FIGURES scope_up_s={up if up is not None else '-'} starting_lines={starting} start_rows={c['start']} stop_rows={c['stop']} tracebacks={tot['traceback']} "
           f"error_lines={tot['error']} critical_lines={tot['critical']} hb_rows_last_hour={hb_recent} need>={need_hb} status_age_s={st_age if st_age is not None else '-'}")
-    print(f"CLEAN_KEY_COUNTS start_rows={sum(KEY_MARK in ln for ln in rows['start_lines'])} job_log={count_mark(job_log)} errors_log={count_mark(errlog)} "
+    print(f"CLEAN_KEY_COUNTS start_rows={sum(key_line(ln) for ln in rows['start_lines'])} job_log={count_mark(job_log)} errors_log={count_mark(errlog)} "
           f"proc_cmdline={a.cmdline_key_count} proc_environ_key_var={a.environ_key_count} user_journal_since_start={a.journal_key_count} proc_mount_options={a.proc_mount or '-'} "
           "(DEC-031 Amendment 22 item 10: every count 0; an unreadable one is NOT_CLEAN. S*'s h5-shadow-errors.log is the one path the launcher's redaction does not cover)")
     print(f"CLEAN_REPORT_ONLY error_rows={c['error']} errors_log_bytes={errlog.stat().st_size if errlog.exists() else 0} "
@@ -412,9 +424,17 @@ def dry_filter(a: argparse.Namespace) -> int:
     return 0 if ok else 1
 
 
+def count_keys_stdin() -> int:
+    """`count-keys`: the number of stdin lines (NUL also splits) that carry any provider-key form. Prints the count only."""
+    data = sys.stdin.buffer.read().decode("utf-8", errors="replace").replace("\0", "\n")
+    print(sum(1 for ln in data.splitlines() if key_line(ln)))
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("count-keys")
     s = sub.add_parser("smoke-judge")
     s.add_argument("--out-dir", required=True)
     s.add_argument("--proc-log", required=True)
@@ -442,6 +462,8 @@ def main(argv=None) -> int:
     d.add_argument("--json", required=True)
     d.add_argument("--mode", choices=("dry", "score"), default="dry")
     a = ap.parse_args(argv)
+    if a.cmd == "count-keys":
+        return count_keys_stdin()
     if a.cmd == "smoke-judge":
         if (a.warm_s, a.plan_h, a.cap_bytes) != (WARM_S, PLAN_H, CAP_BYTES):
             a.test_overrides = True

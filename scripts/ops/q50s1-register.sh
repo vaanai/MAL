@@ -13,6 +13,7 @@
 # Env: MAL_PY (python, default python3), Q50S1_HOME (default /home/claude/s1home, absolute). Q50S1_ARENA is no longer a root override: if set it must equal Q50S1_HOME/data/arena.
 # Any other argument is refused.
 set -eu
+set -f
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 S1HOME="${Q50S1_HOME:-/home/claude/s1home}"

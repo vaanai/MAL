@@ -46,6 +46,8 @@ if [ -n "$SINCE_TXT" ]; then SINCE="$(date -u -d "$SINCE_TXT" +%s 2>/dev/null ||
 A=no
 [ "$ACT" = active ] && A=yes
 CGROOT="${Q50S1_CGROUP_ROOT:-/sys/fs/cgroup}"
+KEYVAR="${Q50S1_KEY_VAR:-HELIUS_API_KEY}"   # the keyed provider's variable name (the same Q50S1_KEY_VAR as the start); counted in /proc/<pid>/environ
+case "$KEYVAR" in ''|*[!A-Za-z0-9_]*) echo "q50s1-clean-log: bad Q50S1_KEY_VAR" >&2; exit 2 ;; esac
 CG="$(systemctl --user show "$UNIT.scope" -p ControlGroup --value 2>/dev/null || echo "")"
 PIDS=""
 if [ -n "$CG" ] && [ -r "$CGROOT$CG/cgroup.procs" ]; then PIDS="$(cat "$CGROOT$CG/cgroup.procs" 2>/dev/null | tr '\n' ' ')"; fi
@@ -53,12 +55,12 @@ KC=unreadable; KE=unreadable
 if [ -n "$(printf '%s' "$PIDS" | tr -d ' ')" ]; then
   KC=0; KE=0
   for p in $PIDS; do
-    if [ -r "/proc/$p/cmdline" ]; then KC=$((KC + $(tr '\0' '\n' < "/proc/$p/cmdline" | grep -c -F 'api-key' || true))); else KC=unreadable; break; fi
-    if [ -r "/proc/$p/environ" ]; then KE=$((KE + $(tr '\0' '\n' < "/proc/$p/environ" | grep -c -F 'HELIUS_API_KEY=' || true))); else KE=unreadable; break; fi
+    if [ -r "/proc/$p/cmdline" ]; then KC=$((KC + $(python3 -I "$REPO/tools/q50s1_health.py" count-keys < "/proc/$p/cmdline"))); else KC=unreadable; break; fi
+    if [ -r "/proc/$p/environ" ]; then KE=$((KE + $(tr '\0' '\n' < "/proc/$p/environ" | grep -c -F "$KEYVAR=" || true) + $(python3 -I "$REPO/tools/q50s1_health.py" count-keys < "/proc/$p/environ"))); else KE=unreadable; break; fi
   done
 fi
 KJ=unreadable
-if [ -n "$SINCE" ] && journalctl --user -n 0 --no-pager >/dev/null 2>&1; then KJ="$(journalctl --user --since "@$SINCE" --no-pager -o cat 2>/dev/null | grep -c -F 'api-key' || true)"; fi
+if [ -n "$SINCE" ] && journalctl --user -n 0 --no-pager >/dev/null 2>&1; then KJ="$(journalctl --user --since "@$SINCE" --no-pager -o cat 2>/dev/null | python3 -I "$REPO/tools/q50s1_health.py" count-keys)"; fi
 case "$KJ" in ''|*[!0-9]*) KJ=unreadable ;; esac
 PM="$(findmnt -no OPTIONS /proc 2>/dev/null | tr ' ' ',' || true)"
 echo "q50s1-clean-log: scope processes: $(printf '%s' "$PIDS" | wc -w) (pids are not printed with their argv)"
