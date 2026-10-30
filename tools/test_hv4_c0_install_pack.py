@@ -300,5 +300,200 @@ class A3CarryTests(unittest.TestCase):
         self.assertEqual(values(d, "PrivateNetwork"), ["true"])
 
 
+class ChecklistTests(unittest.TestCase):
+    """scripts/ops/hv4-c0-dry-checklist.sh against a fake tree (unit text, configs, A3 files). No host, no systemctl, no smoke start (the smoke has its own test)."""
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.addCleanup(self._t.cleanup)
+        self.d = Path(self._t.name)
+        for n in ("live", "etc", "window", "a3", "reads"):
+            (self.d / n).mkdir()
+        self.unit = self.d / "unit.txt"
+        self.unit.write_text((PACK / "mal-hv4-c0-bridge@.service").read_text())
+        self.cfg = self.d / "dry.json"
+        self.write_cfg()
+
+    def write_cfg(self, **over):
+        raw = cfg_fill("hv4-c0.dry.json", bot_id="hv4-SYN-X", **over)
+        raw["a3_record_file"] = str(self.d / "a3" / "daily.jsonl")
+        raw["bot_id"] = "hv4-SYN-X"
+        self.cfg.write_text(json.dumps(raw))
+
+    def run_sh(self, bot="hv4-SYN-X", mode="rehearsal", **env):
+        e = {**os.environ, "HV4C0_BOT": bot, "HV4C0_MODE": mode, "HV4C0_UNIT_TEXT": str(self.unit), "HV4C0_CONFIG": str(self.cfg), "HV4C0_TREE": str(REPO),
+             "HV4C0_LIVE_DIR": str(self.d / "live"), "HV4C0_ETC": str(self.d / "etc"), "HV4C0_WINDOW_DIR": str(self.d / "window"), "HV4C0_A3_DIR": str(self.d / "a3"),
+             "HV4C0_READS_DIR": str(self.d / "reads"), "HV4C0_HELIUS_ENV": str(self.d / "nope.env"), "HV4C0_NO_SYSTEMCTL": "1", "HV4C0_SKIP_SMOKE": "1",
+             "HV4C0_VENV": str(self.d / "novenv"), **env}
+        p = subprocess.run(["sh", str(CHECKLIST)], capture_output=True, text=True, env=e, timeout=120)
+        return p.returncode, p.stdout
+
+    def test_a_real_arm_id_is_refused_in_rehearsal_and_nothing_else_runs(self):
+        for bot in ("hv4-BIG-X", "hv4-CON-X", "hv4-CON-F", "hv4-BIG-L"):
+            rc, out = self.run_sh(bot=bot)
+            self.assertEqual(rc, 1, bot)
+            self.assertIn("FAIL real_arm_id_in_rehearsal", out)
+            self.assertNotIn("config_valid", out)
+        rc, out = self.run_sh(bot="hv4-FOO-X")
+        self.assertIn("FAIL rehearsal_bot_not_hv4-SYN-X", out)
+        rc, out = self.run_sh(bot="hv4-SYN-X", mode="install")
+        self.assertIn("FAIL install_bot_not_a_real_arm", out)
+        self.assertIn("FAIL mode_unknown", self.run_sh(mode="live")[1])
+
+    def test_the_base_unit_text_passes_its_own_unit_checks(self):
+        rc, out = self.run_sh()
+        for ok in ("no_credential_directives_in_unit", "no_environment_file_in_unit", "no_key_like_environment_in_unit", "no_bind_to_key_locations",
+                   "no_writable_bind_in_unit", "execstart_has_no_--live", "no_drop_in_in_unit_text", "window_dir_not_writable_in_unit",
+                   "config_valid_dry_hv4_c0", "gate_file_absent (%s)" % (self.d / "live" / "LIVE_OK")):
+            self.assertIn("PASS " + ok, out)
+
+    def test_credential_lines_live_flag_and_drop_in_fail_and_are_not_echoed(self):
+        base = (PACK / "mal-hv4-c0-bridge@.service").read_text()
+        live = (PACK / "mal-hv4-c0-bridge-live-pinned.conf").read_text()
+        self.unit.write_text(base + "\n# /etc/systemd/system/mal-hv4-c0-bridge@hv4-SYN-X.service.d/live.conf\n" + live)
+        rc, out = self.run_sh()
+        self.assertEqual(rc, 1)
+        for bad in ("FAIL credential_directive_in_unit", "FAIL environment_file_in_unit", "FAIL execstart_has_--live", "FAIL drop_in_present_in_unit_text"):
+            self.assertIn(bad, out)
+        self.assertNotIn("/etc/mal-hv4-c0-key/%i.json", out)  # the credential source from the unit text is redacted
+        self.assertNotIn("fast-listener", out)
+        self.assertNotIn("probe-wallet", out)
+        self.unit.write_text(base.replace("[Service]\n", "[Service]\nReadWritePaths=/var/lib/mal-hv4-c0/window\n", 1))
+        self.assertIn("FAIL window_dir_writable_in_unit", self.run_sh()[1])
+
+    def test_gate_files_make_a_dry_install_fail(self):
+        for rel in ("live/LIVE_OK", "live/TIER", "etc/CANARY_DEC.md"):
+            (self.d / rel).write_text("x")
+            self.assertIn("FAIL gate_file_exists (%s)" % (self.d / rel), self.run_sh()[1], rel)
+            (self.d / rel).unlink()
+        (self.d / "live" / "hv4-c0" / "hv4-SYN-X").mkdir(parents=True)
+        (self.d / "live" / "hv4-c0" / "hv4-SYN-X" / "LIVE_OK").write_text("hv4-SYN-X\n")
+        self.assertIn("FAIL gate_file_exists", self.run_sh()[1])
+
+    def test_a_live_or_off_profile_or_extra_key_config_fails(self):
+        for over, label in (({"mode": "live"}, "mode_not_dry"), ({"frozen_sha": "0" * 40}, "frozen_sha_not_pinned"), ({"extra": 1}, "unknown_keys:extra"),
+                            ({"reads_dir": "/data2/x"}, "reads_dir_not_canonical"), ({"state_dir": "rel"}, "path_not_absolute:state_dir")):
+            self.write_cfg(**over)
+            self.assertIn("FAIL config_invalid", self.run_sh()[1], over)
+            self.assertIn(label, self.run_sh()[1], over)
+        raw = json.loads(self.cfg.read_text())
+        raw["end_ms"] = "<AT-EVENT:end_ms>"
+        self.cfg.write_text(json.dumps(raw))
+        self.assertIn("placeholder_left", self.run_sh()[1])
+
+    def test_readable_key_file_fails(self):
+        k = self.d / "key.env"
+        k.write_text("HELIUS_API_KEY=not-a-real-key\n")
+        rc, out = self.run_sh(HV4C0_HELIUS_ENV=str(k))
+        self.assertIn("FAIL key_file_readable", out)
+        self.assertNotIn("not-a-real-key", out)
+
+    def a3_files(self, run_utc=None, applied_utc=None, verdict="NONE", halt=False):
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        ts = lambda dt: dt.strftime("%Y-%m-%dT%H:%M:%SZ")  # noqa: E731
+        run = ts(run_utc or now)
+        rec = {"run_utc": run, "halt": {"flags": {"pins_changed": {"halt": halt, "evaluated": True}, "synthetic_share_high": {"halt": False, "evaluated": True}}},
+               "warn": {"flags": {"program_changed": {"warn": False}}}}
+        (self.d / "a3" / "daily.jsonl").write_text(json.dumps(rec) + "\n")
+        if applied_utc != "none":
+            (self.d / "a3" / "a3-applied.jsonl").write_text(json.dumps({"run_utc": applied_utc or run, "verdict": verdict}) + "\n")
+        return timedelta
+
+    def test_a3_liveness_uses_the_bridges_own_check(self):
+        from datetime import datetime, timedelta, timezone
+        self.a3_files()
+        rc, out = self.run_sh()
+        self.assertRegex(out, r"PASS a3_bridge_check_clear .* record_age_h=0\.0")
+        self.a3_files(run_utc=datetime.now(timezone.utc) - timedelta(hours=40))
+        self.assertIn("a3_record_stale", self.run_sh()[1])
+        self.a3_files(applied_utc="none")
+        (self.d / "a3" / "a3-applied.jsonl").unlink(missing_ok=True)
+        self.assertIn("FAIL a3_bridge_check_not_clear", self.run_sh()[1])
+        self.a3_files(verdict="HALT")
+        self.assertIn("a3_guard:HALT", self.run_sh()[1])
+        self.a3_files(halt=True)
+        self.assertIn("FAIL a3_bridge_check_not_clear", self.run_sh()[1])
+        self.assertFalse((self.d / "a3" / "x").exists())
+        (self.d / "a3" / "daily.jsonl").unlink()
+        self.assertIn("FAIL a3_record_missing", self.run_sh()[1])
+
+    def test_a3_guard_chain_must_outlive_end_ms_and_is_required_in_install_mode(self):
+        end = json.loads(self.cfg.read_text())["end_ms"]
+        self.assertIn("PASS a3_guard_chain_outlives_end_ms", self.run_sh(HV4C0_A3_COVER_UNTIL_MS=str(end + 1))[1])
+        self.assertIn("FAIL a3_guard_chain_ends_before_end_ms", self.run_sh(HV4C0_A3_COVER_UNTIL_MS=str(end - 1))[1])
+        self.assertIn("INFO a3_guard_cover_not_checked", self.run_sh()[1])
+        self.assertIn("FAIL a3_guard_cover_not_given", self.run_sh(bot="hv4-BIG-X", mode="install")[1])
+
+    def test_parity_result_needs_no_unresolved_hard_halts_and_match_not_rc(self):
+        pr = self.d / "parity-result.json"
+        cases = ((dict(unresolved_hard_halts=[], match=True), "PASS parity_result_no_hard_halt_and_match"),
+                 (dict(unresolved_hard_halts=["stake_mismatch"], match=True), "FAIL parity_result_not_shown"),
+                 (dict(unresolved_hard_halts=[], match=False), "FAIL parity_result_not_shown"),
+                 (dict(match=True), "FAIL parity_result_not_shown"),
+                 (dict(unresolved_hard_halts=["tieout_mismatch", "stuck_position"], match=False), "FAIL parity_result_not_shown"))
+        for body, want in cases:
+            pr.write_text(json.dumps(body))
+            out = self.run_sh(HV4C0_PARITY_RESULT=str(pr))[1]
+            self.assertIn(want, out, body)
+            self.assertNotIn("stake_mismatch", out)  # labels of halts are counted, not printed
+        self.assertIn("INFO parity result not present yet", self.run_sh(HV4C0_PARITY_RESULT=str(self.d / "absent.json"))[1])
+
+    def test_the_script_wires_the_synthetic_smoke_and_never_starts_a_real_arm(self):
+        text = CHECKLIST.read_text()
+        self.assertIn("-m tools.arena_live_bridge --config \"$scfg\" --once", text)
+        self.assertIn("arena_live_bridge mode=dry bot=$SYN ", text)
+        self.assertNotIn("--live", "\n".join(ln for ln in text.splitlines() if "ExecStart" not in ln and "grep" not in ln and not ln.lstrip().startswith("#")))
+        self.assertNotIn("LoadCredential=", text)
+        self.assertNotRegex(text, r"cat .*(wallet|keypair|helius)")
+
+
+class SmokeFixtureTests(unittest.TestCase):
+    """The recipe the checklist's `--once` smoke runs, in-process with the window dir and the sealed prefix pointed at scratch dirs (nothing under the real
+    arena is touched). The fixture is the same module the script runs."""
+
+    def test_synthetic_marker_root_dry_once_prints_mode_dry_and_reads_no_real_file(self):
+        import contextlib
+        import importlib.util
+        import io
+        from unittest import mock
+
+        spec = importlib.util.spec_from_file_location("hv4_c0_smoke_fixture", PACK / "hv4-c0-smoke-fixture.py")
+        fx = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fx)
+        with tempfile.TemporaryDirectory() as td:
+            td = os.path.realpath(td)
+            win, arena = Path(td, "window"), Path(td, "arena")
+            win.mkdir()
+            os.chmod(win, 0o755)
+            (arena / "reads").mkdir(parents=True)
+            wf = win / (fx.BOT + ".json")
+            wf.write_text(json.dumps({"bot_id": fx.BOT, "first_start_ms": 1_795_000_000_000}) + "\n")
+            os.chmod(wf, 0o444)
+            out = Path(td, "out")
+            out.mkdir()
+            with mock.patch.object(c0, "WINDOW_DIR", str(win)), mock.patch.object(c0, "SEALED_ROOT_PREFIX", str(arena)), \
+                    mock.patch.object(c0, "READS_DIR_CANON", str(arena / "reads")):
+                cfgp = fx.build(str(REPO), str(out))
+                cfg = json.loads(Path(cfgp).read_text())
+                self.assertEqual(cfg["bot_id"], "hv4-SYN-X")
+                self.assertEqual(cfg["end_ms"], 1_795_000_000_000 + 86_400_000)
+                self.assertTrue((Path(cfg["root"]) / c0.SYNTHETIC_MARKER).is_file())
+                self.assertEqual(os.listdir(Path(cfg["root"]) / "decisions" / "hv4-SYN-X"), [])
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    rc = alb.main(["--config", cfgp, "--once"])
+                self.assertEqual(rc, 0, buf.getvalue())
+                self.assertIn("arena_live_bridge mode=dry bot=hv4-SYN-X ", buf.getvalue())
+                self.assertEqual(os.listdir(win), [fx.BOT + ".json"])  # the start wrote no window file
+                self.assertFalse(Path(cfg["state_dir"], "bridge-state-live.json").exists())
+
+    def test_a_real_arm_is_not_what_the_fixture_builds(self):
+        text = (PACK / "hv4-c0-smoke-fixture.py").read_text()
+        self.assertIn('BOT = "hv4-SYN-X"', text)
+        self.assertNotRegex(text, r"hv4-(BIG|CON)-")
+        self.assertIsNone(c0.arm_refusal("hv4-SYN-X"))  # it passes the arm rule, which is why the rehearsal can run at all
+
+
 if __name__ == "__main__":
     unittest.main()
