@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import random
+import re
 from pathlib import Path
 
 import numpy as np
@@ -709,3 +710,14 @@ def test_outcome_range_admits_published_big_winners(tmp_path):
             with pytest.raises(h.Refused, match="outside"):
                 h.load_outcomes(op, set(tids))
     assert h.OUTCOME_MIN_SOL == -0.2 and h.OUTCOME_MAX_SOL == 10.0
+
+
+def test_output_limits_sized_from_pilot_and_below_the_caller_timeout():
+    """P1 (#1908): decide end_turn replies peaked at 178 tokens, 35 of 618 hit 200; reflections were cut at 6,000 after ~5,700 thinking
+    tokens. A reflection at the cap must still finish inside haiku_caller's 60 s timeout at P1's slowest 208 tokens/s (with 5 s spare)."""
+    from tools import haiku_caller as hc
+
+    assert h.DECIDE_MAX_TOKENS >= 2 * 178 and h.REFLECT_MAX_TOKENS > 6000 * 1.5
+    assert h.REFLECT_MAX_TOKENS / h.P1_REFLECT_TOKENS_PER_S + 5 < h.CALLER_TIMEOUT_S
+    assert re.search(r"timeout is 60 s per attempt", hc.__doc__)
+    assert "Keep your private reasoning short" in h.system_reflect()

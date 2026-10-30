@@ -116,8 +116,15 @@ CARD_NAMES = tuple(n for n, _ in CARD_FIELDS)
 
 MAX_PLAYBOOK_CHARS = 2500
 MAX_FEEDBACK_ROWS = 200  # per reflection; above it a deterministic sha-ordered sample (counted)
-DECIDE_MAX_TOKENS = 200
-REFLECT_MAX_TOKENS = 6000  # thinking (adaptive, default effort) + the playbook
+# Output limits, sized from pilot P1 (job #1908 at da25a118; ledger and store structure only, no outcome). Decide: 35 of 618 replies hit
+# the old 200 (end_turn replies peaked at 178 tokens; some reason in prose before the JSON) -> 400. Reflect: 2 of 4 hit the old 6000
+# inside a half-written playbook after ~5,700 tokens of adaptive thinking (the two complete ones used 3,861 and 4,046) -> 10,000. Ceiling:
+# tools/haiku_caller times out at 60 s per attempt and P1 reflections ran at 208-219 output tokens/s, so 10,000 tokens is about 46-48 s;
+# a timeout is charged at the worst case and retried, and would repeat on every rerun, so the cap stays below the timeout.
+DECIDE_MAX_TOKENS = 400
+REFLECT_MAX_TOKENS = 10_000  # adaptive thinking (default effort) + the playbook
+P1_REFLECT_TOKENS_PER_S = 208  # slowest P1 reflection (6,000 tokens in 28.8 s)
+CALLER_TIMEOUT_S = 60  # tools/haiku_caller per-attempt timeout
 OUTCOME_KNOWN_AFTER_MS = 900_000  # export: outcome_known_ms = decision_ms + 15 min (exit is at most ~331 s after the trigger)
 BURN_IN_DAYS = 3
 MIN_TEST_DAYS, MIN_TEST_TRIGGERS = 20, 1000
@@ -133,7 +140,12 @@ LEDGER_BUDGET_MAX_USD = 16.0  # hard ceiling on --budget-usd for any Haiku run (
 PILOT_BUDGET_MAX_USD = 1.0  # hard ceiling when --max-days is set (the pilot)
 RUN_LOCK_SUFFIX = ".v5-run.lock"  # one Haiku run per ledger at a time (reviewer on #1087 item 1)
 LEARNING_ARMS = ("L", "P")
-TOKENS_PER_BYTE_EXPECTED = 0.56  # assumption: v3 ledger 19,801,144 input tokens over 4,812 calls vs its 3.0 chars/token estimate (11.75M)
+TOKENS_PER_BYTE_EXPECTED = 0.56  # first assumption (v3 ledger); superseded by the P1 measurements below for the expected cost
+# P1 measurements (pilot.json of job #1908): input tokens per request byte, cache-read share of input, output tokens per call.
+P1_DECIDE = {"tokens_per_byte": 0.44203596389830896, "cache_read_share": 0.7725282109186127, "output_tokens": 100}
+P1_REFLECT = {"tokens_per_byte": 0.6143254375399623, "output_tokens": 7000}
+# decide output 100 = (54,817 P1 output tokens + 35 truncated replies x 200 more) / 618, an upper estimate at the new cap; reflect output
+# 7,000 = above the 6,000 at which 2 of 4 P1 reflections were cut (assumption until O1's own ledger).
 PRICES = {"input": 0.10, "cache_write": 0.125, "cache_read": 0.01, "output": 0.50}  # USD per MTok, Haiku 5.5 <= 100K prompt (tools/haiku_caller.PRICES)
 
 SYSTEM_DECIDE = """PAPER RESEARCH FILTER. No real money. You filter ONE fixed entry rule on Solana PumpSwap pools.
@@ -169,6 +181,9 @@ THE RULE: {rule}
 
 CARD FIELDS:
 {glossary}
+
+Keep your private reasoning short: the whole reply, playbook included, must fit in the output limit, and an unfinished playbook is
+discarded.
 
 REPLY with the new playbook between <playbook> and </playbook> (at most 2500 characters), and nothing after </playbook>."""
 
@@ -654,26 +669,28 @@ class ByteCounter(Model):
 
 def cost_bounds(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     """worst: every byte a token (+256 margin) at the cache-write rate and max_tokens of output (the haiku_caller reserve rule).
-    expected: TOKENS_PER_BYTE_EXPECTED tokens per byte; decisions cache their system block (one write per arm-day, else reads);
-    output 60 tokens per decision (v3 ledger mean 56) and 3000 per reflection (assumption: adaptive thinking + playbook)."""
-    worst = exp = 0.0
+    expected (P1-measured rates): decide input = bytes x P1 tokens/byte, the P1 cache-read share at the cache-read rate and the rest at the
+    input rate, 100 output tokens; reflect input = bytes x P1 tokens/byte at the input rate, 7,000 output tokens. reflect_at_cap adds every
+    reflection at REFLECT_MAX_TOKENS output instead."""
+    worst = exp = cap_extra = 0.0
     per = {"decide": {"n": 0, "bytes": 0}, "reflect": {"n": 0, "bytes": 0}}
     for r in rows:
         wt_in = r["body_bytes"] + 256
         worst += wt_in * PRICES["cache_write"] / 1e6 + r["max_tokens"] * PRICES["output"] / 1e6
-        e_in = r["body_bytes"] * TOKENS_PER_BYTE_EXPECTED
-        e_sys = r["system_bytes"] * TOKENS_PER_BYTE_EXPECTED
         if r["kind"] == "decide":
-            exp += e_sys * PRICES["cache_read"] / 1e6 + (e_in - e_sys) * PRICES["input"] / 1e6 + 60 * PRICES["output"] / 1e6
+            e_in = r["body_bytes"] * P1_DECIDE["tokens_per_byte"]
+            cr = P1_DECIDE["cache_read_share"]
+            exp += (e_in * cr * PRICES["cache_read"] + e_in * (1 - cr) * PRICES["input"] + P1_DECIDE["output_tokens"] * PRICES["output"]) / 1e6
         else:
-            exp += e_in * PRICES["input"] / 1e6 + 3000 * PRICES["output"] / 1e6
+            e_in = r["body_bytes"] * P1_REFLECT["tokens_per_byte"]
+            exp += (e_in * PRICES["input"] + P1_REFLECT["output_tokens"] * PRICES["output"]) / 1e6
+            cap_extra += (REFLECT_MAX_TOKENS - P1_REFLECT["output_tokens"]) * PRICES["output"] / 1e6
         per[r["kind"]]["n"] += 1
         per[r["kind"]]["bytes"] += r["body_bytes"]
-    return {"calls": per, "worst_case_usd": round(worst, 4), "expected_usd": round(exp, 4),
+    return {"calls": per, "worst_case_usd": round(worst, 4), "expected_usd": round(exp, 4), "reflect_at_cap_usd": round(exp + cap_extra, 4),
             "max_body_bytes": max((r["body_bytes"] for r in rows), default=0),
-            "basis": "worst = haiku_caller reserve rule (bytes+256 at the cache-write rate + max_tokens output); expected = "
-                     f"{TOKENS_PER_BYTE_EXPECTED} tokens/byte (v3 ledger calibration), cached system block on decisions, 60 output tokens per "
-                     "decision, 3000 per reflection (assumption)"}
+            "basis": "worst = haiku_caller reserve rule (bytes+256 at the cache-write rate + max_tokens output); expected = P1 (job #1908) "
+                     "measured tokens/byte and decide cache-read share, 100 output tokens per decision, 7,000 per reflection"}
 
 
 # ---------------------------------------------------------------------------------------------------------------------------- scoring
