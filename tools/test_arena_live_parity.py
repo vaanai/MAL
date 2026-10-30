@@ -816,3 +816,13 @@ def test_am5_6b_the_ladder_refuses_a_step_up_under_a_c0_gap_breach():
     inp["parity"] = r
     ok, res = L.evaluate_step_up(inp)
     assert not ok and dict((n, o) for n, o, _w in res)["fills_match"] is False
+
+
+def test_am5_6b_at_c0_a_prefix_gap_breach_latches_not_decidable_even_if_the_end_share_recovers():
+    ts, ws = book(100)
+    ts[1]["gap"] = ts[8]["gap"] = True  # 2 gaps before 20 trips; 2/100 = 2% at the end
+    old_rule = run(ts, ws)
+    assert "P7" in old_rule["halts"] and not old_rule["not_decidable"] and not old_rule["match"]
+    r = run(ts, ws, state=fresh_state(rung="C0"))
+    assert "P7" not in r["halts"] and not r["stop_required"]
+    assert r["not_decidable"] and r["match"] is False and r["verdict"] == "parity not shown"  # never a match: the share never resets

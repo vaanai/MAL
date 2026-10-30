@@ -239,6 +239,7 @@ def evaluate(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[str, An
              state: Mapping[str, Any] | None, now_ms: int) -> dict[str, Any]:
     validate_inputs(trips, twins, attempts)
     gap_halts = gap_share_halts(state)
+    gap_breach_latched = False  # C0 only: a gap-share breach at ANY prefix makes parity NOT_DECIDABLE for good (the share never resets, Am.5 item 6b)
     tw = {w["trip_id"]: w for w in twins}
     order = sorted(trips, key=lambda t: int(t.get("closed_ms") if t.get("closed_ms") is not None else t["decision_ms"]))
     halts: dict[str, dict[str, Any]] = {}
@@ -283,7 +284,8 @@ def evaluate(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[str, An
             ineligible_log.append({"index": k, "trip_id": m["trip_id"], "reasons": list(m["reasons"])})
         for name, cnt in (("gap", n_gap), ("no_twin", n_no_twin)):
             if name == "gap" and not gap_halts:
-                continue  # DEC-032 Am.5 item 6b, C0 only: the breach still sets not_decidable below (match false, no step-up); it is not a halt
+                gap_breach_latched = gap_breach_latched or share_breach(cnt, k)  # DEC-032 Am.5 item 6b, C0 only: NOT_DECIDABLE (latched), not a halt
+                continue
             if share_breach(cnt, k):
                 _first(halts, "P7", k, cnt / k, f"{name} {cnt}/{k} live trips: " + (f"share above {P7_SHARE:.0%}" if k >= P7_SHARE_MIN_TRIPS else f"{cnt} before {P7_SHARE_MIN_TRIPS} trips (small-sample rule)"))
     # Twins (QP 10-23, PR #825 probe: an empty twins file with fresh stamps returned rc 0): a zero-row twins file while a live trip is past its exit (landed, or its exit
@@ -319,7 +321,7 @@ def evaluate(trips: Sequence[Mapping[str, Any]], twins: Sequence[Mapping[str, An
     n_trips = len(order)
     shares = {"trips": n_trips, "gap": n_gap, "no_twin": n_no_twin, "exit_pending": sum("exit_pending" in m["reasons"] for m in mets), "stuck": len(stuck),
               "eligible": sum(m["eligible"] for m in mets), "gap_share": n_gap / n_trips if n_trips else 0.0, "no_twin_share": n_no_twin / n_trips if n_trips else 0.0}
-    not_decidable = share_breach(n_gap, n_trips) or share_breach(n_no_twin, n_trips)
+    not_decidable = share_breach(n_gap, n_trips) or share_breach(n_no_twin, n_trips) or gap_breach_latched
     d = np.asarray([m["d"] for m in mets if m["eligible"] and "d" in m], float)
     d_e1 = np.asarray([m["d_e1"] for m in mets if m["eligible"] and "d_e1" in m], float)
     lands = [m["landing_s"] for m in mets if m["eligible"] and "landing_s" in m]
