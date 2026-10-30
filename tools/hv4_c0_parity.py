@@ -23,8 +23,18 @@ PATH_KEYS = ("parity_dir", "twins_file", "tieout_dir")
 CHAIN_FRESH_MS = 5_000  # the decision_chain stamp needs a verified read this young; a stalled reader loses the stamp (P7) instead of being stamped `now`
 RC_HARD = 11  # tools.arena_live_parity: a hard halt (P4); cleared only by the manager's written review and the owner
 RC_SOFT = 10
+RC_STOP_UNWRITABLE = 3  # tools.arena_live_parity EXIT_STOP_UNWRITABLE: a STOP was required (soft, hard, bad input or internal error) but could not be written
+# The parity and tie-out tools write their STOP here, inside parity_dir, which the hv4_c0 unit owns and can write. The bridge's own stop_file in live is the
+# wallet-wide /var/lib/mal-live/STOP, which the hardened unit cannot write: passing it to the tools made every halt come back as rc 3, which hid the hard/soft
+# class and latched nothing. The bridge treats this file as STOP (no new buys; exits continue) for as long as it exists, across restarts; only the manager removes it.
+PARITY_STOP_NAME = "STOP"
+PARITY_STOP_UNWRITABLE_LATCH = "parity_stop_unwritable"  # rc 3: the class is unknown, so it is held as a hard latch (fail closed); the manager clears it
+
+
+def parity_stop_path(parity_dir: str) -> str:
+    return str(Path(parity_dir) / PARITY_STOP_NAME)
 # Latches that the Bridge treats as unresolved hard halts for the parity state (the tool's `unresolved_hard_halts`).
-HARD_LATCHES = frozenset({"parity_hard_halt", "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch", "stuck_sell", "chain_break", "sealed_path", "read_record",
+HARD_LATCHES = frozenset({"parity_hard_halt", PARITY_STOP_UNWRITABLE_LATCH, "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch", "stuck_sell", "chain_break", "sealed_path", "read_record",
                           "frozen_sha_mismatch", "tieout_mismatch"}) | HARD_ARENA_HALTS
 
 

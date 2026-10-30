@@ -71,7 +71,7 @@ SELL_RETRY_MS = 5_000
 UNIVERSE_V_RANGE = (17_500_000_000, 17_700_000_000)  # Am.2 item 6: V in [17.5e9, 17.7e9], WSOL quote
 
 LATCHES = ("sealed_path", "chain_break", "frozen_sha_mismatch", "total_loss_cap", "per_trade_loss_cap", "stuck_sell",
-           "parity_hard_halt", "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch", "read_record", "tieout_mismatch", c0.A3_LATCH, c0.FEED_BREAK_LATCH)  # twin_pin_mismatch and the two before: hv4_c0 parity wiring; read_record: no recorded PASS read for the bot (hv4_c0): hv4_c0 parity wiring (tools/hv4_c0_parity.py)
+           "parity_hard_halt", "parity_stop_unwritable", "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch", "read_record", "tieout_mismatch", c0.A3_LATCH, c0.FEED_BREAK_LATCH)  # twin_pin_mismatch and the two before: hv4_c0 parity wiring; read_record: no recorded PASS read for the bot (hv4_c0): hv4_c0 parity wiring (tools/hv4_c0_parity.py)
 
 
 # --- config -----------------------------------------------------------------------------------------------------------------------
@@ -394,7 +394,8 @@ class Bridge:
         self._chain_ok_ms: int | None = None  # hv4_c0: when the decision log was last read and verified without a break
         self.gates = None
         if cfg.profile == c0.PROFILE and cfg.parity_dir:  # parity, twin and tie-out gates (DEC-032 s5): hv4_c0 only, active when the paths are configured
-            self.gates = c0p.build_gates(cfg.parity_dir, cfg.twins_file, cfg.tieout_dir, cfg.stop_file, self._parity_state, runner=parity_runner)
+            # the tools write their STOP inside parity_dir (unit-writable), never the wallet-wide stop_file the hardened unit cannot write (c0p.PARITY_STOP_NAME)
+            self.gates = c0p.build_gates(cfg.parity_dir, cfg.twins_file, cfg.tieout_dir, c0p.parity_stop_path(cfg.parity_dir), self._parity_state, runner=parity_runner)
         self._last_sell_try: dict[str, int] = {}
         self._a3_polled_ms: int | None = None
         self._a3_refuse: str | None = None  # DEC-032 Am.3: a pending pooled guard refuses new buys (no latch)
@@ -532,7 +533,17 @@ class Bridge:
 
     # -- gates
     def _files(self) -> tuple[bool, bool]:
-        return Path(self.cfg.halt_file).exists(), Path(self.cfg.stop_file).exists()
+        """(HALT, STOP). For hv4_c0 with gates, the parity/tie-out tools' STOP inside parity_dir counts as STOP too (any entry at that path, a link included;
+        an unstat-able parity_dir is a STOP: fail closed)."""
+        stop = Path(self.cfg.stop_file).exists()
+        if not stop and self.gates is not None:
+            try:
+                stop = os.path.lexists(c0p.parity_stop_path(self.cfg.parity_dir)) or not os.path.isdir(self.cfg.parity_dir)
+            except OSError:
+                stop = True
+            if stop:
+                self._count("parity_stop_file_refusal")
+        return Path(self.cfg.halt_file).exists(), stop
 
     # -- hv4_c0 parity / twin / tie-out (tools/hv4_c0_parity.py); every method below is a no-op unless self.gates is set
     def _parity_state(self, now: int) -> dict[str, Any]:
@@ -586,6 +597,8 @@ class Bridge:
         run = self.gates.parity_run if self.gates is not None else None
         if run is not None and run.get("rc") == c0p.RC_HARD:
             self._latch("parity_hard_halt", f"arena_live_parity rc {c0p.RC_HARD} at {run.get('at_ms')}")
+        elif run is not None and run.get("rc") == c0p.RC_STOP_UNWRITABLE:  # a halt the tool could not write down: its class is unknown, hold it as hard
+            self._latch(c0p.PARITY_STOP_UNWRITABLE_LATCH, f"arena_live_parity rc {c0p.RC_STOP_UNWRITABLE} (STOP not written) at {run.get('at_ms')}")
 
     def feed_ledger(self) -> None:
         """Move the executor's fill rows into the parity recorder. A landed buy that spent other than the order's S is a hard latch (live stake = S = twin stake)."""
