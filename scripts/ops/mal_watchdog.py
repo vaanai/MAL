@@ -37,15 +37,23 @@ DEFAULTS = {
     "helm_dir": "/data/mal/hunt-1008/push-1016/hunt29/p1/",
     "spill_globs": [],
 }
-OK_STATES = {"running", "queued", "paused"}
-DONE_STATES = {"done", "passed"}
+# Job states are compared case-insensitively ("PASS" == "Passed"-family).
+OK_STATES = {"running", "queued", "paused", "starting"}
+DONE_STATES = {"done", "passed", "pass"}
+# FAIL = a verdict job that ran to its end (done, not a crash). Not BAD_NEW.
+VERDICT_FAIL = {"fail"}
+# Interrupted = the machine lost the job. Alerts (medium) only if watched.
+LOST_STATES = {"interrupted"}
+# A watched job last seen in one of these may age out of `job list` quietly.
+FINISHED_STATES = DONE_STATES | VERDICT_FAIL
+AGED_OUT = "aged_out"  # watch_seen marker: absence already recorded as info
 BAD_NEW = {"failed", "killed"}
 ROW = re.compile(r"^#(\d+)\s+(\S+)\s*(.*)$")
 TRADES = re.compile(r"^trades-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl(\.zst)?$")
 # The ONLY allowlisted exception to the forward-* listing refusal: names of
 # this one directory (manager disk-guard practice since 10-16; names only).
 WALKER_TRADES = "/data/mal/blocks/forward-1016/trades"
-KNOWN = OK_STATES | DONE_STATES | BAD_NEW | {"cancelled"}
+KNOWN = OK_STATES | DONE_STATES | VERDICT_FAIL | LOST_STATES | BAD_NEW | {"cancelled"}
 FWD = "/data/mal/blocks/forward-*"
 
 
@@ -151,7 +159,13 @@ def A(key, sev, msg):
 def check_jobs(cfg, ctx):
     """First pass baselines already-Failed jobs without alerting. Watched jobs
     in a bad state re-alert every realert_hours until fixed (intended).
-    Unwatched Cancelled is normal and never alerts."""
+    Unwatched Cancelled is normal and never alerts.
+
+    Known states (case-insensitive): starting is in flight; pass is done;
+    fail is a finished verdict job (info, once, watched only); interrupted is
+    a job the machine lost (medium, watched only). A watched job last seen in
+    a finished state that has aged out of `job list` is info once, not an
+    alert; one never seen finished stays a high alert."""
     text = ctx["run"]([MISCUSI, "job", "list"])
     rows = parse_job_list(text)  # raises -> check_error:jobs
     jobs = {k: v[0] for k, v in rows.items()}
@@ -160,18 +174,39 @@ def check_jobs(cfg, ctx):
     alerts, info = [], []
     done_ok = set(cfg["expected_done_ok"])
     watch = set(cfg["watch"])
+    prev_seen = ctx["state"].get("watch_seen", {})
+    if not isinstance(prev_seen, dict):
+        prev_seen = {}
+    wkeys = {str(x) for x in cfg["watch"]}
+    watch_seen = {k: v for k, v in prev_seen.items() if k in wkeys}  # prune unwatched
     for seq in cfg["watch"]:
         st = jobs.get(seq)
         if st is None:
-            alerts.append(A("job:%d:missing" % seq, "high", "job #%d not in list" % seq))
+            last = prev_seen.get(str(seq))
+            if last in FINISHED_STATES:
+                info.append("job #%d aged out of the list (last seen %s)" % (seq, last))
+                watch_seen[str(seq)] = AGED_OUT
+            elif last != AGED_OUT:
+                alerts.append(A("job:%d:missing" % seq, "high", "job #%d not in list" % seq))
             continue
         s = st.lower()
+        watch_seen[str(seq)] = s
         if s in OK_STATES:
             continue
         if s in DONE_STATES and seq in done_ok:
             info.append("job #%d %s (expected)" % (seq, st))
             continue
+        if s in VERDICT_FAIL:
+            if prev_seen.get(str(seq)) != s:  # a verdict is final: tell once
+                alerts.append(A("job:%d:%s" % (seq, st), "info",
+                                "job #%d is %s (verdict job ran to its end, not a crash)" % (seq, st)))
+            continue
+        if s in LOST_STATES:
+            alerts.append(A("job:%d:%s" % (seq, st), "medium",
+                            "job #%d is %s (the machine lost the job)" % (seq, st)))
+            continue
         alerts.append(A("job:%d:%s" % (seq, st), "high", "job #%d is %s" % (seq, st)))
+    ctx["new_state"]["watch_seen"] = watch_seen
     for seq, st in jobs.items():
         if st.lower() not in KNOWN and seq not in watch:
             alerts.append(A("job:%d:%s" % (seq, st), "medium", "job #%d unknown status %s" % (seq, st)))
