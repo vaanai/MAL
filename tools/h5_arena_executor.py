@@ -104,7 +104,10 @@ A3_APPLIED_MAX_BYTES = 16 * 1024 * 1024
 A3_FUTURE_SKEW_MS = 300_000  # a run_utc more than 5 min ahead of the executor's clock is not a fresh record, it is a wrong one: latch
 ARENA_TIER_PATH = Path("/etc/mal-h5-arena/TIER")  # the arena canary's OWN tier file (root:root 0644 like the base TIER); the shared /etc/mal-h5/TIER is ignored for arena books
 ARENA_LIVE_TIER = "T1"  # a live start needs this file to read exactly T1 (the C0 stake 0.05 SOL needs T1's stake ceiling)
-GAP_HOLD_MS = 600_000  # DEC-032 s5 item 2: after a feed gap, buys restart only once the feed has been gap-free for 10 minutes
+GAP_HOLD_MS = 60_000  # DEC-032 Am.5 (DRAFT) item 2: after a DATA-LOSS gap record (gap_loses_data), buys restart once the feed has been free of them for 60 s.
+# Was 600_000 (s5 item 2 as written, on ANY gap record). Config may lengthen it up to the base's 600_000 (H5Limits gap_hold_ms), never shorten it.
+GAP_HOLD_FLOOR_MS = 60_000  # c0_guard_problem refuses a live start below this (Am.5 item 2); 60 s >= 2 x the shadow's slowest gap report (25 s, see gap_loses_data)
+GAP_REDUNDANT_KIND = "socket_reconnect"  # the ONLY gap kind tools/h5_shadow.py (frozen a5f41370) can write with flags_pools false (note_feed_stats)
 SELL_RESERVE_SENDS = 10  # the worst case of one exit: the ladder's sends (escalated resends included), each at the book's top priority
 SELL_RESERVE_FLOOR_LAMPORTS = 1_600_000  # 10 sends x (155,000 + 5,000): the p155 worst case (QP 10-23 gap d); never below it
 PAPER_FAIL_RATE = 0.15  # the flat fail model of the gate; landing-fail excess is measured against it
@@ -342,9 +345,34 @@ def arena_live_ok_refusal(bot_id: str, path: Path | None = None) -> str | None:
     return None if text.strip() == bot_id and len(text.strip().splitlines()) == 1 else "arena_live_ok_other_book"
 
 
+def gap_loses_data(row: dict[str, Any]) -> bool:
+    """DEC-032 Am.5 (DRAFT) item 1. True when a shadow `gap` record may mean lost prints: it holds buys for GAP_HOLD_MS and marks every open trip `gap`.
+    False ONLY for a redundant-socket reconnect: kind exactly GAP_REDUNDANT_KIND AND flags_pools the literal false. The shadow writes that only when its
+    per-socket link state found no instant at which every socket was down or silent (tools/h5_shadow.py note_feed_stats / common_down): some socket was
+    up and delivering throughout, so no print was lost, no pool was flagged, and the paper scorer does not exclude a trade across it
+    (tools/arena_h5_score.py gap_in_span reads the pools' flags only). Everything else is data loss and fails closed: slot_jump, silence, feed_restart,
+    a socket_reconnect with flags_pools true, a missing / null / non-bool flags_pools (0 and "false" included), an unknown kind, a non-dict.
+    Latency of the shadow's own report (why GAP_HOLD_FLOOR_MS is 60 s): slot_jump at the first event after the jump; silence after 20 s + one 5 s look;
+    a common socket outage at most silent_ms 10 s + 2 looks + 5 s margin = 25 s after it (h5_shadow.py RECENT_MARGIN_MS, LOOK_MS)."""
+    if not isinstance(row, dict):
+        return True
+    return not (row.get("kind") == GAP_REDUNDANT_KIND and row.get("flags_pools") is False)
+
+
+def _gap_rule_problem() -> str | None:
+    """Tripwire on gap_loses_data: every fail-closed shape must still count as data loss, and only the redundant reconnect may not."""
+    lossy = ({}, {"kind": GAP_REDUNDANT_KIND}, {"kind": GAP_REDUNDANT_KIND, "flags_pools": True}, {"kind": GAP_REDUNDANT_KIND, "flags_pools": None},
+             {"kind": GAP_REDUNDANT_KIND, "flags_pools": 0}, {"kind": GAP_REDUNDANT_KIND, "flags_pools": "false"}, {"kind": "silence", "flags_pools": False},
+             {"kind": "slot_jump", "flags_pools": False}, {"kind": "feed_restart", "flags_pools": False}, {"flags_pools": False})
+    if not all(gap_loses_data(r) for r in lossy) or gap_loses_data({"kind": GAP_REDUNDANT_KIND, "flags_pools": False}):
+        return "gap_rule"
+    return None
+
+
 def c0_guard_problem() -> str | None:
     """A tripwire run at every live start: the compiled C0 guards are still at least as strict as DEC-032 (s3 limits, s3 fail-closed 60 s, s3 signal age
-    5 s, s5 10-minute gap hold and P1/P2/exit thresholds, the T1 tier file, the p155 sell reserve) and every guard method is still the arena override.
+    5 s, the s5 item 2 gap hold as amended by Am.5 (DRAFT; 60 s on data-loss gap records, gap_loses_data) and P1/P2/exit thresholds, the T1 tier file,
+    the p155 sell reserve) and every guard method is still the arena override.
     None when all hold; else the first item that does not. It never loosens anything: it only refuses."""
     from tools import h5_arena_gates as g
     why = ld.ladder_guard_problem()  # DEC-032 Am.2 item 9.1: a live start refuses if any ladder constant is looser than item 3
@@ -355,7 +383,7 @@ def c0_guard_problem() -> str | None:
         if isinstance(v, bool) or not isinstance(v, int) or not 0 < v <= cap:
             return f"c0_guard:{k}"
     checks = (
-        ("gap_hold", GAP_HOLD_MS >= 600_000), ("signal_age", 0 < SIGNAL_AGE_MAX_MS <= 5_000), ("parity_interval", 0 < g.PARITY_INTERVAL_S_MAX <= 60),
+        ("gap_hold", GAP_HOLD_MS >= GAP_HOLD_FLOOR_MS >= 60_000), ("gap_rule", _gap_rule_problem() is None), ("signal_age", 0 < SIGNAL_AGE_MAX_MS <= 5_000), ("parity_interval", 0 < g.PARITY_INTERVAL_S_MAX <= 60),
         ("funded_range", 350_000_000 <= FUNDED_MIN_LAMPORTS <= FUNDED_MAX_LAMPORTS <= 1_000_000_000),
         ("floor_below_funded", 0 < FLOOR_BELOW_FUNDED_LAMPORTS <= 250_000_000), ("sell_reserve", SELL_RESERVE_FLOOR_LAMPORTS >= 1_600_000),
         ("tier", ARENA_LIVE_TIER == "T1"), ("a3_max_age", 0 < A3_MAX_AGE_MS <= 36 * 3_600_000),
@@ -1225,8 +1253,11 @@ class ArenaExecutor(h.H5Executor):
             self.feed_verified = True
             return "drop", None
         if t == "gap":
-            # DEC-032 s5 item 2: ANY gap record holds buys for 10 minutes. The base class skips the hold when flags_pools is the literal false
-            # (a redundant-socket reconnect); a canary does not take that exemption.
+            # DEC-032 Am.5 (DRAFT) items 1-2 (was s5 item 2: ANY gap record held buys 10 minutes). A redundant-socket reconnect (gap_loses_data False)
+            # neither holds nor marks a trip: the base class ledgers it as feed_reconnect_redundant. Every other gap record holds buys for
+            # h5.gap_hold_ms (GAP_HOLD_MS, 60 s; config may lengthen) and marks open trips `gap`, as before. The verdict returned is unchanged.
+            if not gap_loses_data(row):
+                return "keep", None
             self._gap_until_ms = max(self._gap_until_ms, self.now_ms() + self.h5.gap_hold_ms)
             if self.gates is not None:
                 self.gates.recorder.note_gap(self.now_ms())
