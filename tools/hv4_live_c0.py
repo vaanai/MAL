@@ -418,6 +418,9 @@ def guard_problem() -> str | None:
         ("fee_reserve", TRIP_FEE_RESERVE_LAMPORTS == 215_000 and SELL_FEE_RESERVE_LAMPORTS == 155_000),
         ("frozen_sha", isinstance(FROZEN_SHA, str) and len(FROZEN_SHA) == 40 and FROZEN_SHA.startswith("9ed4c5ff")),
         ("daily_le_total", C0_LIMITS["daily_loss_lamports"] <= C0_LIMITS["total_loss_lamports"]),
+        ("gap_hold", FEED_GAP_MANUAL_REVIEW or FEED_GAP_HOLD_CAP_MS >= FEED_GAP_HOLD_MS >= FEED_GAP_HOLD_FLOOR_MS >= 60_000),
+        ("gap_review", FEED_GAP_MANUAL_REVIEW or 0 < FEED_GAP_REVIEW_MS <= 86_400_000),
+        ("gap_rule", gap_rule_problem() is None),
     )
     for name, ok in checks:
         if not ok:
@@ -825,14 +828,133 @@ FEED_MAX_STALL_MS = 2_000  # a forwarder status that reports a larger stall_ms i
 
 GAP_LOG_MAX_BYTES = 8_000_000
 
+# --- DEC-031 Amendment 21 item 3 (merged, main 72066560): the HV4 C0 feed latch; it replaces DEC-032 s5 item 2 as built for HV4 C0 copies. -----------------
+# FEED_GAP_MANUAL_REVIEW True = s5 item 2 as built (every gap row of either stream latches feed_break; the clear needs GAP_FREE_MS gap-free AND a root-owned review
+# file naming exactly the newest gap instant). False = Am.21 item 3, all of it (3.6: "Until it is installed, s5 item 2 as built applies"):
+#   3.1 a COVERAGE-LOSING record (every row of the tape-gap stream; a `gap` row of the decision stream; a forwarder row of a kind outside TRANSPORT_GAP_KINDS,
+#       fail closed for an unknown kind) holds new buys for FEED_GAP_HOLD_MS after it REACHES THE BRIDGE (each new record restarts the hold), refuses per entry
+#       every entry row decided at or before its instant (skip `feed_gap`), and marks every open live trip `gap`. The relay carries no program field, so every
+#       relayed record holds (Am.21 3.1, fail closed);
+#   3.2 the forwarder's transport events (TRANSPORT_GAP_KINDS) and its stopped_mismatch state leave the latch; transport_stall, the 5 s decision age bound and
+#       chain_break stay;
+#   3.3 a coverage-losing record more than FEED_GAP_REVIEW_MS old whose instant is later than the manager's reviewed_gap_ms (root-owned GAP_CLEAR_DIR/<bot_id>.json,
+#       written by the manager with sudo on the bridge host) latches feed_break until a review file covers it; no acknowledgement is needed before buys resume.
+#   An unreadable, oversize or malformed gap log still latches feed_break (fail closed). That latch clears when the log reads clean, the forwarder is connected
+#   and the review file covers the newest coverage-losing instant; there is no gap-free window (QP part-A finding: on a gappy tape it might never come).
+# LATENCY BOUND (QP N3): a coverage-losing tape record reaches the bridge within one relay pass (tools/hv4_gap_relay.py loop, 30 s default, refused at >= 120 s)
+# plus the forwarder hop (docs/research/p46-transport/DESIGN.md s4: p90 21-36 ms, max <= 125 ms, synthetic) plus one bridge tick. FEED_GAP_LATENCY_BOUND_MS
+# (180 s, the tape-gap stream's staleness bound) is the stated bound: a record first seen later than that after its instant is logged `feed_gap_late` and still
+# holds and refuses. The hold runs from receipt and the per-entry refusal compares decision instants, so latency moves when a hold starts, never whether an
+# entry decided at or before a gap is bought.
+FEED_GAP_MANUAL_REVIEW = True  # manager 2026-10-30: stays True (s5 item 2 as built) until Am.21 item 3 is complete in code, incl. 3.4 P7 at C0 (#1106); flipped with the LIVE_REFUSAL flip
+FEED_GAP_HOLD_MS = 60_000  # 3.1; a later config may only lengthen it, up to FEED_GAP_HOLD_CAP_MS (no config key exists today: the constant is the value)
+FEED_GAP_HOLD_FLOOR_MS = 60_000  # guard_problem refuses a start below this
+FEED_GAP_HOLD_CAP_MS = 600_000
+FEED_GAP_REVIEW_MS = 86_400_000  # 3.3: 24 h
+FEED_GAP_LATENCY_BOUND_MS = 180_000
+FEED_GAP_HOLD = "feed_gap_hold"
+FEED_GAP_ENTRY = "feed_gap"
+FEED_GAP_UNREVIEWED = "gap_unreviewed_24h"
+FEED_GAP_LOG_LATCH = "gap_log"
+GAP_KNOWN_MAX = 20_000  # coverage-losing instants kept in the bridge state (relay MAX_ROWS); more is a latch, never a silent drop
+GAP_KNOWN_KEEP_MS = 73 * 3_600_000  # reviewed instants older than this are pruned from the state (relay retention 72 h + 1 h); unreviewed ones are never pruned
+TRANSPORT_GAP_KINDS = ("stall", "resume", "disconnect", "reconnect", "error", "mismatch", "local_torn_trimmed")  # Am.21 3.2, verbatim list (resume is not a gap row anyway)
 
-def gap_log_ms(path: str) -> tuple[list[int], list[int], str | None]:
-    """(gap instants, resume instants, problem) from the forwarder's <bot_id>.gaps.jsonl. Reads ONLY `kind` and `ms` of each line. A missing file is no gaps; a link, an
-    unreadable file, a file over GAP_LOG_MAX_BYTES (never silently truncated) or a COMPLETE line that is not an object with an int ms is a problem (fail closed).
-    Bytes after the last newline are a write in progress and are ignored."""
+
+def gap_loses_data(kind: Any) -> bool:
+    """Am.21 3.1/3.2 classification of ONE row of the forwarder's <bot_id>.gaps.jsonl: False only for a transport event. Anything else (every s5.2 kind, an
+    unknown kind, a non-string) is coverage-losing (fail closed). Rows of the tape-gap stream and `gap` rows of the decision stream are always coverage-losing."""
+    return not (isinstance(kind, str) and kind in TRANSPORT_GAP_KINDS)
+
+
+def gap_rule_problem() -> str | None:
+    """Tripwire on gap_loses_data and the Am.21 constants."""
+    lossy = (None, 0, "", "gap", "data_loss", "resubscribe", "silence", "process_restart", "feed_restart", "feed_start", "start", "takeover", "gap_silence",
+             "gap_slots", "STALL", "stall ", "unknown")
+    if not all(gap_loses_data(k) for k in lossy) or any(gap_loses_data(k) for k in TRANSPORT_GAP_KINDS):
+        return "gap_rule"
+    if set(TRANSPORT_GAP_KINDS) != {"stall", "resume", "disconnect", "reconnect", "error", "mismatch", "local_torn_trimmed"}:
+        return "gap_rule_transport_kinds"
+    return None
+
+
+def gap_hold_problem(hold_until_ms: int, now_ms: int) -> str | None:
+    """3.1 short hold: `feed_gap_hold` while now is before the persisted hold end (max over records of max(instant, receipt) + FEED_GAP_HOLD_MS)."""
+    return FEED_GAP_HOLD if hold_until_ms and now_ms < hold_until_ms else None
+
+
+def gap_entry_problem(decision_ms: Any, newest_gap_ms: int) -> str | None:
+    """3.1 per-entry refusal: an entry decided at or before the newest coverage-losing instant the bridge has seen is never bought (`feed_gap`)."""
+    if not newest_gap_ms:
+        return None
+    if isinstance(decision_ms, bool) or not isinstance(decision_ms, int):
+        return FEED_GAP_ENTRY  # fail closed: an entry without an integer decision instant cannot be placed against the gap
+    return FEED_GAP_ENTRY if decision_ms <= newest_gap_ms else None
+
+
+def gap_review_ms(path: str, bot_id: str, root_check: Any = None, now_ms: int | None = None) -> int:
+    """3.3: the manager's reviewed_gap_ms from the root-owned review file. Missing, not root-owned, linked, unreadable or malformed = 0 (nothing reviewed:
+    fail closed). A value more than FEED_SKEW_MS ahead of the bridge clock (`now_ms`) is 0 too: a review cannot cover gaps that have not happened (QP on 99222ec7)."""
+    try:
+        if root_check is not None and root_check(path):
+            return 0
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+            return 0
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as fh:
+            rec = json.loads(fh.read(4096))
+    except Exception:  # noqa: BLE001 - any failure is "nothing reviewed"
+        return 0
+    v = rec.get("reviewed_gap_ms") if isinstance(rec, dict) else None
+    if not isinstance(rec, dict) or rec.get("bot_id") != bot_id or isinstance(v, bool) or not isinstance(v, int) or v < 0:
+        return 0
+    if now_ms is not None and v - now_ms > FEED_SKEW_MS:
+        return 0
+    return v
+
+
+def gap_unreviewed(instants: Iterable[int], reviewed_ms: int, now_ms: int) -> list[int]:
+    """3.3: the coverage-losing instants older than FEED_GAP_REVIEW_MS and later than the review."""
+    return sorted(ms for ms in instants if now_ms - ms > FEED_GAP_REVIEW_MS and ms > reviewed_ms)
+
+
+_GAP_LOG_CACHE: dict[str, dict[str, Any]] = {}
+GAP_LOG_TAIL_CHECK = 512  # bytes of the accepted prefix's tail re-read on an unchanged-stat hit (catches a same-size rewrite within one mtime tick)
+
+
+def _parse_gap_lines(data: bytes) -> tuple[list[tuple[str, int]], list[int], str | None, int]:
+    """(gaps, resumes, problem, bytes consumed up to and including the last newline)."""
+    gaps: list[tuple[str, int]] = []
+    resumes: list[int] = []
+    end = data.rfind(b"\n") + 1  # bytes after the last newline are a write in progress and are ignored
+    for ln in data[:end].split(b"\n")[:-1]:
+        if not ln.strip():
+            continue
+        try:
+            r = json.loads(ln)
+        except ValueError:
+            return gaps, resumes, "gap_log_malformed", end  # a COMPLETE (newline-ended) malformed line latches
+        if not isinstance(r, dict) or isinstance(r.get("ms"), bool) or not isinstance(r.get("ms"), int) or not isinstance(r.get("kind"), str):
+            return gaps, resumes, "gap_log_malformed", end
+        if r["kind"] == "resume":
+            resumes.append(r["ms"])
+        else:  # every other kind is a gap row; an unknown kind is never dropped (fail closed: Am.21 3.1 classifies it as coverage-losing)
+            gaps.append((r["kind"], r["ms"]))
+    return gaps, resumes, None, end
+
+
+def gap_log_entries(path: str) -> tuple[list[tuple[str, int]], list[int], str | None]:
+    """([(kind, instant)] of the gap rows, resume instants, problem) from a gap log (the forwarder's <bot_id>.gaps.jsonl or the relay's .tapegaps.jsonl). Reads ONLY
+    `kind` and `ms` of each line. A missing file is no gaps; a link, an unreadable file, a file over GAP_LOG_MAX_BYTES (never silently truncated) or a COMPLETE line
+    that is not an object with an int ms is a problem (fail closed). Bytes after the last newline are a write in progress and are ignored.
+    COST (reviewer, part A: a full re-parse cost 53-82 ms per 50 ms tick at 20,000 rows): the result is cached per path. An unchanged (dev, ino, size, mtime_ns,
+    ctime_ns) whose last GAP_LOG_TAIL_CHECK bytes also match returns the cached result without parsing. A file that only GREW on the same inode is parsed from the
+    cached offset, after checking the sha256 of the accepted prefix. Anything else (a new inode, a shrink, a changed prefix) is a full re-parse."""
     try:
         ls = os.lstat(path)
     except FileNotFoundError:
+        _GAP_LOG_CACHE.pop(path, None)
         return [], [], None
     except OSError:
         return [], [], "gap_log_unreadable"
@@ -840,32 +962,47 @@ def gap_log_ms(path: str) -> tuple[list[int], list[int], str | None]:
         return [], [], "gap_log_not_regular"
     if ls.st_size > GAP_LOG_MAX_BYTES:
         return [], [], "gap_log_too_large"
+    key = (ls.st_dev, ls.st_ino, ls.st_size, ls.st_mtime_ns, ls.st_ctime_ns)
+    c = _GAP_LOG_CACHE.get(path)
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
-        with os.fdopen(fd, "rb") as fh:
+    except OSError:
+        return [], [], "gap_log_unreadable"
+    try:
+        fs = os.fstat(fd)
+        if (fs.st_dev, fs.st_ino) != (ls.st_dev, ls.st_ino):
+            return [], [], "gap_log_unreadable"
+        if c is not None and c["key"] == key and c["problem"] is None:
+            n = c["end"]
+            tail = os.pread(fd, min(GAP_LOG_TAIL_CHECK, n), n - min(GAP_LOG_TAIL_CHECK, n)) if n else b""
+            if tail == c["tail"]:
+                return list(c["gaps"]), list(c["resumes"]), None
+        with os.fdopen(os.dup(fd), "rb") as fh:
             data = fh.read(GAP_LOG_MAX_BYTES + 1)
     except OSError:
         return [], [], "gap_log_unreadable"
+    finally:
+        os.close(fd)
     if len(data) > GAP_LOG_MAX_BYTES:
         return [], [], "gap_log_too_large"
-    gaps: list[int] = []
-    resumes: list[int] = []
-    lines = data.split(b"\n")
-    lines.pop()  # the torn tail (or the empty string after the last newline)
-    for ln in lines:
-        if not ln.strip():
-            continue
-        try:
-            r = json.loads(ln)
-        except ValueError:
-            return gaps, resumes, "gap_log_malformed"  # a COMPLETE (newline-ended) malformed line latches
-        if not isinstance(r, dict) or isinstance(r.get("ms"), bool) or not isinstance(r.get("ms"), int) or not isinstance(r.get("kind"), str):
-            return gaps, resumes, "gap_log_malformed"
-        if r["kind"] in GAP_BREAK_KINDS:
-            gaps.append(r["ms"])
-        elif r["kind"] == "resume":
-            resumes.append(r["ms"])
-    return gaps, resumes, None
+    if (c is not None and c["problem"] is None and c["key"][:2] == key[:2] and len(data) >= c["end"]
+            and hashlib.sha256(data[:c["end"]]).hexdigest() == c["sha"]):
+        g2, r2, bad, used = _parse_gap_lines(data[c["end"]:])
+        gaps, resumes, end = [*c["gaps"], *g2], [*c["resumes"], *r2], c["end"] + used
+    else:
+        gaps, resumes, bad, end = _parse_gap_lines(data)
+    if bad is None:
+        _GAP_LOG_CACHE[path] = {"key": key, "end": end, "sha": hashlib.sha256(data[:end]).hexdigest(), "tail": data[max(0, end - GAP_LOG_TAIL_CHECK):end],
+                                "gaps": list(gaps), "resumes": list(resumes), "problem": None}
+    else:
+        _GAP_LOG_CACHE.pop(path, None)
+    return gaps, resumes, bad
+
+
+def gap_log_ms(path: str) -> tuple[list[int], list[int], str | None]:
+    """(gap instants, resume instants, problem): gap_log_entries without the kinds (the behaviour before Am.5)."""
+    g, r, bad = gap_log_entries(path)
+    return [ms for _k, ms in g], r, bad
 
 
 def gap_records_ms(path: str) -> tuple[list[int], str | None]:

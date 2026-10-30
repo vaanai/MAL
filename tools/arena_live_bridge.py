@@ -38,7 +38,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from tools.arena_declog import GENESIS, DecisionLog, LogChainError, sha256_hex, utc_day
 from tools import hv4_c0_parity as c0p
@@ -304,6 +304,9 @@ class BridgeState:
     start_seen: bool = False
     first_start_ms: int | None = None  # unused since #965 N2: the 14-day window start is the write-once file c0.WINDOW_DIR/<bot_id>.json, outside this state
     gap_noted_ms: int = 0  # hv4_c0: the newest gap instant seen (persisted: a restart must not clear against an older review)
+    gap_hold_until_ms: int = 0  # hv4_c0, DEC-031 Am.21 3.1: no new buy before this (max over records of max(instant, receipt) + c0.FEED_GAP_HOLD_MS); persisted
+    gap_known_ms: list[int] = field(default_factory=list)  # hv4_c0, Am.21 3.1/3.3: coverage-losing instants seen (sorted); unreviewed ones are never pruned
+    gap_pruned_upto_ms: int = 0  # hv4_c0, Am.21: the largest instant ever pruned from gap_known_ms (reviewed and older than GAP_KNOWN_KEEP_MS); never registered again
     read_pin: dict[str, Any] | None = None  # hv4_c0: identity {path, dev, ino, sha256} of the recorded read, pinned at the first good check and compared on every run
 
     def save(self, path: Path) -> None:
@@ -380,6 +383,8 @@ class Bridge:
         self.owner_dec_path = Path(owner_dec_path) if owner_dec_path is not None else Path(c0.OWNER_DEC_PATH)
         self.owner_pin = owner_pin
         self.gap_clear_dir = str(gap_clear_dir) if gap_clear_dir is not None else c0.GAP_CLEAR_DIR
+        self._gks: set[int] | None = None  # the in-memory set of state.gap_known_ms (_gap_known)
+        self._gks_src: list[int] | None = None
         self._read_ident: dict[str, Any] = {}
         if cfg.profile == c0.PROFILE:
             first, why = c0.window_start_ms(cfg.bot_id, self.now_ms(), create=True)
@@ -662,7 +667,7 @@ class Bridge:
             return "halt_file"
         if stop:
             return "stop_file"
-        why = self.feed_refusal(now)
+        why = self.feed_refusal(now) or self.gap_entry_refusal(row)
         if why:
             return why
         if now >= self.cfg.end_ms:
@@ -689,6 +694,11 @@ class Bridge:
         if self._a3_refuse:
             self._count("a3_guard_pending_refusal")
             return self._a3_refuse
+        if not c0.FEED_GAP_MANUAL_REVIEW:  # DEC-031 Am.21 3.1: the self-clearing short hold after a coverage-losing record, timed from its receipt (_note_gap)
+            why = c0.gap_hold_problem(self.state.gap_hold_until_ms, now)
+            if why:
+                self._count("feed_gap_hold_refusal")
+                return why
         why = c0.runner_silent_problem(self._last_row_ms, self._started_ms, now)
         if why:
             self._count("runner_silent_refusal")
@@ -702,38 +712,136 @@ class Bridge:
         return f"transport_stall:{why}" if why else None
 
     def _note_gap(self, gap_ms: int, why: str) -> None:
-        """One gap record (kind and instant only): open trades are marked `gap` (DEC-032 s5.2) and feed_break latches."""
-        if gap_ms > self.state.gap_noted_ms:
-            self.state.gap_noted_ms = gap_ms
+        """One COVERAGE-LOSING record (kind and instant only), e.g. a `gap` row of the decision stream. Open trades are marked `gap` (DEC-032 s5.2; Am.21 3.1).
+        With c0.FEED_GAP_MANUAL_REVIEW (s5 item 2 as built) feed_break latches. Otherwise (DEC-031 Am.21 item 3) it goes through the batched path _note_gaps."""
+        if c0.FEED_GAP_MANUAL_REVIEW:
+            if gap_ms > self.state.gap_noted_ms:
+                self.state.gap_noted_ms = gap_ms
+                if self.gates is not None:
+                    self.gates.recorder.note_gap(gap_ms)
+            self._latch(c0.FEED_BREAK_LATCH, why)
+            self._save()
+            return
+        if self._note_gaps([gap_ms], why):
+            self._save()
+
+    def _gap_known(self) -> set[int]:
+        """The coverage-losing instants already registered, as a set (QP/reviewer part A: a list scan cost 11.9 ms per tick at 2,000 gaps). Rebuilt from the
+        persisted list after a load or a prune."""
+        lst = self.state.gap_known_ms
+        if self._gks is None or self._gks_src is not lst or len(self._gks) != len(lst):
+            self._gks, self._gks_src = set(lst), lst
+        return self._gks
+
+    def _note_gaps(self, instants: Iterable[int], why: str) -> bool:
+        """DEC-031 Am.21 3.1, BATCHED (reviewer part A: one save and one log line per record cost 33 s for 2,000 records inside a tick, with exits waiting):
+        register every instant not seen before and later than state.gap_pruned_upto_ms (an instant that was pruned, i.e. reviewed AND older than
+        c0.GAP_KNOWN_KEEP_MS, is never registered again, so it never re-arms the hold). The review itself is NOT a filter here (QP on 99222ec7: a
+        future-dated review file must not switch off the hold, the per-entry refusal or the trip mark of a record the bridge has never seen). Among the new
+        instants, only those not older than c0.GAP_KNOWN_KEEP_MS restart the hold (an aged-out instant is tracked for the 24 h latch but never re-arms it).
+        One hold update, one trip mark, one summary log line. Returns True when the state changed; the CALLER saves once."""
+        now = self.now_ms()
+        ks = self._gap_known()
+        floor = self.state.gap_pruned_upto_ms
+        new = sorted({ms for ms in instants if ms not in ks and ms > floor})
+        if not new:
+            return False
+        ks.update(new)
+        self.state.gap_known_ms.extend(new)
+        self.state.gap_known_ms.sort()
+        if len(self.state.gap_known_ms) > c0.GAP_KNOWN_MAX:
+            self._latch(c0.FEED_BREAK_LATCH, f"{c0.FEED_GAP_LOG_LATCH}:gap_known_overflow")  # never a silent drop
+        newest = new[-1]
+        if newest > self.state.gap_noted_ms:
+            self.state.gap_noted_ms = newest
             if self.gates is not None:
-                self.gates.recorder.note_gap(gap_ms)
-        self._latch(c0.FEED_BREAK_LATCH, why)
-        self._save()
+                self.gates.recorder.note_gap(newest)
+        rearm = [ms for ms in new if now - ms <= c0.GAP_KNOWN_KEEP_MS]
+        if rearm:
+            self.state.gap_hold_until_ms = max(self.state.gap_hold_until_ms, max(rearm[-1], now) + c0.FEED_GAP_HOLD_MS)
+        late = sum(1 for ms in new if now - ms > c0.FEED_GAP_LATENCY_BOUND_MS)
+        if late:
+            self.state.counts["feed_gap_late"] = self.state.counts.get("feed_gap_late", 0) + late
+        self._log("feed_gap_hold", n=len(new), first_ms=new[0], newest_ms=newest, seen_ms=now, rearmed=len(rearm), late=late,
+                  hold_until_ms=self.state.gap_hold_until_ms, why=why[:200])
+        return True
+
+    def gap_entry_refusal(self, row: Mapping[str, Any]) -> str | None:
+        """DEC-031 Am.21 3.1 per-entry refusal (hv4_c0, not in the as-built mode): no buy on an entry decided at or before the newest coverage-losing
+        instant the bridge has seen. Logged as the skip `feed_gap`."""
+        if self.cfg.profile != c0.PROFILE or c0.FEED_GAP_MANUAL_REVIEW:
+            return None
+        why = c0.gap_entry_problem(row.get("ms"), self.state.gap_noted_ms)
+        if why:
+            self._count("feed_gap_refusal")
+        return why
 
     def gap_tick(self, now: int) -> None:
-        """hv4_c0 feed_break (DEC-032 s5.2 consumer). A gap record in the forwarder's gap log or a `gap` row in the decision stream latches feed_break; a forwarder
-        `stopped_mismatch` latches it too. NOTE: no producer of the book's own TAPE gap records exists yet (see the hv4_live_c0 doc). The latch is removed ONLY when
-        the feed has been gap-free for 10 minutes counted from the END of the gap AND the manager's root-owned review file names exactly the newest gap instant."""
+        """hv4_c0 feed-gap rule. Records: the forwarder's gap log, the tape-gap stream (tools/hv4_gap_relay.py), a `gap` row in the decision stream.
+        c0.FEED_GAP_MANUAL_REVIEW True = DEC-032 s5 item 2 as built: every gap record latches feed_break, removed ONLY when the feed has been gap-free for 10
+        minutes counted from the END of the gap AND the manager's root-owned review file names exactly the newest gap instant; a forwarder stopped_mismatch
+        latches too. False = DEC-031 Am.21 item 3 (see the hv4_live_c0 block): coverage-losing records hold and refuse per entry (_note_gap), transport events
+        and stopped_mismatch leave the latch, a coverage-losing record older than 24 h and later than the review latches feed_break until a review covers it,
+        and a bad gap log latches until it reads clean, the forwarder is connected and the review covers the newest coverage-losing instant."""
         if self.cfg.profile != c0.PROFILE:
             return
-        gaps, resumes, bad = c0.gap_log_ms(os.path.join(self.cfg.root, "transport", f"{self.cfg.bot_id}.gaps.jsonl"))
-        tgaps, _tres, tbad = c0.gap_log_ms(os.path.join(self.cfg.root, "transport", f"{self.cfg.bot_id}.tapegaps.jsonl"))  # tools/hv4_gap_relay.py: the book's own TAPE gaps
-        gaps, bad = [*gaps, *tgaps], bad or tbad
-        if bad:
-            self._latch(c0.FEED_BREAK_LATCH, bad)  # an unreadable, oversize or malformed gap log is not a clear
-        newest = max([*gaps, self.state.gap_noted_ms]) if (gaps or self.state.gap_noted_ms) else None
-        since = max([*gaps, *resumes, self.state.gap_noted_ms]) if newest is not None else None
-        if gaps and max(gaps) > self.state.gap_noted_ms:
-            self._note_gap(max(gaps), f"gap record at {max(gaps)}")
+        fentries, resumes, bad = c0.gap_log_entries(os.path.join(self.cfg.root, "transport", f"{self.cfg.bot_id}.gaps.jsonl"))
+        tentries, _tres, tbad = c0.gap_log_entries(os.path.join(self.cfg.root, "transport", f"{self.cfg.bot_id}.tapegaps.jsonl"))  # tools/hv4_gap_relay.py: the book's own TAPE gaps
+        bad = bad or tbad
         sp = c0.feed_status_path(self.cfg.root, self.cfg.bot_id)
         status_why = c0.feed_gap_problem(sp, self.cfg.bot_id, now) if os.path.lexists(sp) else "feed_status_missing"
-        if status_why == "feed_state_stopped_mismatch":
-            self._latch(c0.FEED_BREAK_LATCH, "forwarder_stopped_mismatch")
-        if c0.FEED_BREAK_LATCH in self.state.latches and newest is not None and not bad and status_why is None:
-            if self._gap_cleared(newest, now, since):
+        if c0.FEED_GAP_MANUAL_REVIEW:
+            gaps = [*(ms for _k, ms in fentries), *(ms for _k, ms in tentries)]
+            if bad:
+                self._latch(c0.FEED_BREAK_LATCH, bad)  # an unreadable, oversize or malformed gap log is not a clear
+            newest = max([*gaps, self.state.gap_noted_ms]) if (gaps or self.state.gap_noted_ms) else None
+            since = max([*gaps, *resumes, self.state.gap_noted_ms]) if newest is not None else None
+            if gaps and max(gaps) > self.state.gap_noted_ms:
+                self._note_gap(max(gaps), f"gap record at {max(gaps)}")
+            if status_why == "feed_state_stopped_mismatch":
+                self._latch(c0.FEED_BREAK_LATCH, "forwarder_stopped_mismatch")
+            if c0.FEED_BREAK_LATCH in self.state.latches and newest is not None and not bad and status_why is None:
+                if self._gap_cleared(newest, now, since):
+                    del self.state.latches[c0.FEED_BREAK_LATCH]
+                    self._log("latch_cleared", latch=c0.FEED_BREAK_LATCH, reviewed_gap_ms=newest)
+                    self._save()
+            return
+        # DEC-031 Am.21 item 3 (batched: at most one state save per tick from the bookkeeping below)
+        if bad:
+            self._latch(c0.FEED_BREAK_LATCH, f"{c0.FEED_GAP_LOG_LATCH}:{bad}")
+        reviewed = self._gap_reviewed_ms()
+        loss = [ms for k, ms in fentries if c0.gap_loses_data(k)]
+        loss.extend(ms for _k, ms in tentries)
+        dirty = self._note_gaps(loss, "coverage-losing records")
+        unrev = c0.gap_unreviewed(self.state.gap_known_ms, reviewed, now)
+        if unrev:
+            self._latch(c0.FEED_BREAK_LATCH, f"{c0.FEED_GAP_UNREVIEWED}:{unrev[0]}")
+        why = self.state.latches.get(c0.FEED_BREAK_LATCH)
+        if why is not None and not unrev:
+            clear = False
+            if why.startswith(c0.FEED_GAP_UNREVIEWED + ":"):
+                clear = not bad
+            elif why.startswith(c0.FEED_GAP_LOG_LATCH + ":"):
+                clear = not bad and status_why is None and reviewed >= self.state.gap_noted_ms and len(self.state.gap_known_ms) <= c0.GAP_KNOWN_MAX
+            if clear:
                 del self.state.latches[c0.FEED_BREAK_LATCH]
-                self._log("latch_cleared", latch=c0.FEED_BREAK_LATCH, reviewed_gap_ms=newest)
-                self._save()
+                self._log("latch_cleared", latch=c0.FEED_BREAK_LATCH, why=why[:200], reviewed_gap_ms=reviewed)
+                dirty = True
+        keep = [ms for ms in self.state.gap_known_ms if ms > reviewed or now - ms <= c0.GAP_KNOWN_KEEP_MS]  # unreviewed instants are never pruned
+        if len(keep) != len(self.state.gap_known_ms):
+            pruned = [ms for ms in self.state.gap_known_ms if not (ms > reviewed or now - ms <= c0.GAP_KNOWN_KEEP_MS)]
+            self.state.gap_pruned_upto_ms = max(self.state.gap_pruned_upto_ms, max(pruned))  # persisted: a pruned instant is never registered again
+            self.state.gap_known_ms = keep  # _gap_known rebuilds the set
+            dirty = True
+        if dirty:
+            self._save()
+
+    def _gap_reviewed_ms(self) -> int:
+        p = Path(self.gap_clear_dir) / f"{self.cfg.bot_id}.json"
+        try:
+            return c0.gap_review_ms(str(p), self.cfg.bot_id, root_ok_problem if self.root_checks else None, self.now_ms())
+        except Exception:  # noqa: BLE001 - nothing reviewed; never propagates into tick()
+            return 0
 
     def _gap_cleared(self, last: int, now: int, since: int | None = None) -> bool:
         p = Path(self.gap_clear_dir) / f"{self.cfg.bot_id}.json"
@@ -869,7 +977,7 @@ class Bridge:
             return "halt_file"
         if stop:
             return "stop_file"
-        why = self.feed_refusal(now)  # the feed can stall during the RPCs above (hv4_c0 only; None for every other profile)
+        why = self.feed_refusal(now) or self.gap_entry_refusal(row)  # the feed can stall, or a gap record arrive, during the RPCs above (hv4_c0 only)
         if why:
             return why
         if now >= self.cfg.end_ms:
