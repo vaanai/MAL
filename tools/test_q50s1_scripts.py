@@ -101,7 +101,7 @@ esac''')
         p.write_text("#!/bin/sh\n" + body + "\n")
         p.chmod(p.stat().st_mode | stat.S_IXUSR)
 
-    def set_mem(self, *, cur, smax, running, list_rc=0, inactive=0, active=0, mapped=0, stat=None):
+    def set_mem(self, *, cur, smax, running, list_rc=0, inactive=0, active=0, mapped=0, stat=None, smax_rc=0):
         """cur = the slice's memory.current; memory.stat gets inactive_file / active_file / file_mapped (P = cur - inactive - active + mapped), or `stat` verbatim."""
         (self.cg / "memory.current").write_text(f"{cur}\n")
         (self.cg / "memory.stat").write_text(stat if stat is not None else f"anon 1\nfile {inactive + active}\nactive_file {active}\ninactive_file {inactive}\nfile_mapped {mapped}\nshmem 0\n")
@@ -110,7 +110,7 @@ esac''')
 case "$*" in
   *"is-active"*) exit 3 ;;
   *"show user-1002.slice -p MemoryCurrent"*) echo {cur} ;;
-  *"show user-1002.slice -p MemoryMax"*) echo {smax} ;;
+  *"show user-1002.slice -p MemoryMax"*) [ {smax_rc} -eq 0 ] || exit {smax_rc}; printf '%s\\n' '{smax}' ;;
   *"list-units"*) [ {list_rc} -eq 0 ] || {{ echo "Failed to connect to bus" >&2; exit {list_rc}; }}; printf '%s\\n' {" ".join(repr(u + " loaded active running x") for u, _ in running) or "''"} ;;
   *"show"*)
     case "$5" in MemoryCurrent) echo 1000; exit 0 ;; MemoryPeak) echo 2000; exit 0 ;; esac
@@ -271,7 +271,7 @@ class ShadowCheckMemory(unittest.TestCase):
         self.set_mem(cur=3 * GIB, smax=need, running=[("a.service", 1 * GIB)])
         r = self.mem()
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn(f"need={need} L={need} spare=0", r.stdout)
+        self.assertIn(f"need={need} L={need} (slice MemoryMax) spare=0", r.stdout)
         self.set_mem(cur=3 * GIB + 1, smax=need, running=[("a.service", 1 * GIB)])
         r = self.mem()
         self.assertEqual(r.returncode, 10, r.stdout + r.stderr)
@@ -300,6 +300,47 @@ class ShadowCheckMemory(unittest.TestCase):
         lines = [x for x in t.splitlines() if "Q50S1_CGROUP_SLICE_DIR" in x and not x.lstrip().startswith("#")]
         self.assertEqual(lines, ['if [ "$MODE" != "run" ] && [ -n "${Q50S1_CGROUP_SLICE_DIR:-}" ]; then CG_SLICE_DIR="$Q50S1_CGROUP_SLICE_DIR"; fi'])
         self.assertIn("CG_SLICE_DIR=/sys/fs/cgroup/user.slice/user-1002.slice\n", t)
+
+    # reviewer R1 / R1b on #1086 (comment 6527036965)
+    def test_r1_slice_limit_never_fails_open(self):
+        for kw, want in (({"smax_rc": 1}, "cannot read MemoryMax of user-1002.slice (systemctl failed)"), ({"smax": ""}, "is '' (not a number and not infinity)"),
+                         ({"smax": "garbage"}, "is 'garbage' (not a number and not infinity)"), ({"smax": "[not set]"}, "not a number and not infinity")):
+            self.set_mem(**{"cur": 1 * GIB, "smax": 20 * GIB, "running": [("a.service", 1 * GIB)], **kw})
+            r = self.mem()
+            self.assertEqual(r.returncode, 10, (kw, r.stdout + r.stderr))
+            self.assertIn(want, r.stderr, kw)
+            self.assertNotIn("fits", r.stdout, kw)
+        self.set_mem(cur=1 * GIB, smax="infinity", running=[("a.service", 1 * GIB)])  # the literal "infinity" is the only MemTotal path
+        r = self.mem()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("(MemTotal (slice MemoryMax=infinity))", r.stdout)
+
+    def test_r1_a_slice_already_over_its_limit_refuses(self):
+        self.set_mem(cur=17179869184, smax=16106127360, running=[("a.service", 1 * GIB)])  # P alone above L
+        r = self.mem()
+        self.assertEqual(r.returncode, 10, r.stdout + r.stderr)
+        self.assertIn("does not fit the slice", r.stderr)
+        self.set_mem(cur=17179869184, smax=16106127360, running=[("a.service", 1 * GIB)], smax_rc=1)  # and the reviewer's repro: a failed L read never becomes MemTotal
+        r = self.mem()
+        self.assertEqual(r.returncode, 10, r.stdout + r.stderr)
+        self.assertNotIn("fits", r.stdout)
+
+    def test_r1b_a_huge_finite_cap_refuses_and_never_wraps(self):
+        for cap in ("9223372036854775807", "99999999999999999999", str(20 * GIB + 1)):
+            self.set_mem(cur=1 * GIB, smax=20 * GIB, running=[("a.service", 1 * GIB), ("big.service", cap)])
+            r = self.mem()
+            self.assertEqual(r.returncode, 10, (cap, r.stdout + r.stderr))
+            self.assertIn(f"unit big.service MemoryMax={cap} is above the slice limit", r.stderr)
+            self.assertNotIn("need=-", r.stdout)
+        self.set_mem(cur=1 * GIB, smax=20 * GIB, running=[("a.service", 1 * GIB)], stat="inactive_file 1234567890123456789\nactive_file 1\nfile_mapped 1\n")
+        r = self.mem()
+        self.assertEqual(r.returncode, 10, r.stdout + r.stderr)
+        self.assertIn("more than 18 digits", r.stderr)
+
+    def test_na_the_line_says_when_the_test_cgroup_dir_is_in_use(self):
+        r = self.mem()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn(f"slice_dir={self.cg} (TEST OVERRIDE, not the real slice)", r.stdout)
 
     def test_c4_read_only_no_reclaim_and_no_write_into_sys(self):
         t = SHD.read_text()

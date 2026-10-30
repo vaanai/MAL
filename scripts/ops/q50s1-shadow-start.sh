@@ -22,7 +22,7 @@
 #      (ops/manager18/QP-RULING-1030-s1-memory.md): P + S + N + M <= L, where P = memory.current - inactive_file - active_file + file_mapped of
 #      /sys/fs/cgroup/user.slice/user-1002.slice (memory.current and memory.stat, read once; reclaimable page cache is not counted), S = the sum of the finite MemoryMax of every
 #      running unit of uid 1002's user manager (this start job's own unit included), N = this process's MemoryMax (1500M = 1572864000), M = 2147483648 (margin for the growth of
-#      the allowlisted uncapped units), L = the slice's MemoryMax (MemTotal if it has none). A running unit with no finite MemoryMax refuses unless it is on the allowlist
+#      the allowlisted uncapped units), L = the slice's MemoryMax (MemTotal only if systemd reports `infinity`; a failed, empty or other read refuses; a finite unit cap above L refuses). A running unit with no finite MemoryMax refuses unless it is on the allowlist
 #      (init.scope, dbus.service, gpg-agent.service, claude-remote.service, miscusi-agent.service, tmux-spawn-*.scope); an allowlisted one is not summed (it counts inside P) and
 #      is printed with MemoryCurrent and MemoryPeak. An unreadable memory.current or memory.stat, a missing or non-numeric field, and a failed or empty
 #      `systemctl --user list-units` (never read as "no units") refuse. Read-only: no cgroup file is written. If not, it WAITS NOTHING and exits 10: the start moves
@@ -80,13 +80,21 @@ memory_fit() {
   STAT="$(cat "$CG_SLICE_DIR/memory.stat" 2>/dev/null || echo "")"
   [ -n "$STAT" ] || { echo "q50s1-shadow: cannot read memory.stat of $CG_SLICE_DIR: NOT starting" >&2; exit 10; }
   IF="$(stat_field inactive_file)"; AF="$(stat_field active_file)"; FM="$(stat_field file_mapped)"
-  for kv in "inactive_file=$IF" "active_file=$AF" "file_mapped=$FM"; do
-    case "${kv#*=}" in ''|*[!0-9]*) echo "q50s1-shadow: memory.stat field ${kv%%=*} is missing or not numeric: NOT starting" >&2; exit 10 ;; esac
+  for kv in "memory.current=$MCUR" "inactive_file=$IF" "active_file=$AF" "file_mapped=$FM"; do
+    v="${kv#*=}"
+    case "$v" in ''|*[!0-9]*) echo "q50s1-shadow: memory.stat field ${kv%%=*} is missing or not numeric: NOT starting" >&2; exit 10 ;; esac
+    [ "${#v}" -le 18 ] || { echo "q50s1-shadow: ${kv%%=*} has more than 18 digits (no int64 arithmetic on it): NOT starting" >&2; exit 10; }
   done
   P=$((MCUR - IF - AF + FM))
-  SMAX="$(systemctl show "$SLICE" -p MemoryMax --value 2>/dev/null || echo "")"
-  case "$SMAX" in ''|*[!0-9]*) SMAX="$(awk '/^MemTotal:/ {print $2 * 1024}' /proc/meminfo)" ;; esac
+  # L: the slice's MemoryMax; MemTotal ONLY when systemd reports the literal "infinity" (no limit). A failed read, an empty or any other value refuses (never fail open).
+  LRAW="$(systemctl show "$SLICE" -p MemoryMax --value 2>/dev/null)" || { echo "q50s1-shadow: cannot read MemoryMax of $SLICE (systemctl failed): NOT starting" >&2; exit 10; }
+  case "$LRAW" in
+    infinity) SMAX="$(awk '/^MemTotal:/ {print $2 * 1024}' /proc/meminfo)"; LSRC="MemTotal (slice MemoryMax=infinity)" ;;
+    ''|*[!0-9]*) echo "q50s1-shadow: MemoryMax of $SLICE is '$LRAW' (not a number and not infinity): NOT starting" >&2; exit 10 ;;
+    *) SMAX="$LRAW"; LSRC="slice MemoryMax" ;;
+  esac
   case "$SMAX" in ''|*[!0-9]*) echo "q50s1-shadow: cannot read the slice limit L: NOT starting" >&2; exit 10 ;; esac
+  [ "${#SMAX}" -le 18 ] || { echo "q50s1-shadow: the slice limit L has more than 18 digits: NOT starting" >&2; exit 10; }
   UNITS="$(systemctl --user list-units --type=service,scope --state=running --plain --no-legend 2>/dev/null)" || UNITS=""
   NAMES="$(printf '%s\n' "$UNITS" | awk 'NF {print $1}')"
   [ -n "$NAMES" ] || { echo "q50s1-shadow: cannot list the running user units (systemctl --user failed or listed none): NOT starting (a slip, never an unchecked start)" >&2; exit 10; }
@@ -104,12 +112,15 @@ memory_fit() {
           UNCAPPED=$((UNCAPPED + 1)); BAD="$BAD $u"
           echo "q50s1-shadow: unit $u MemoryMax=${m:-unset} (UNCAPPED, not on the allowlist) MemoryCurrent=${c:-unset}"
         fi ;;
-      *) SUM=$((SUM + m)); echo "q50s1-shadow: unit $u MemoryMax=$m MemoryCurrent=${c:-unset}" ;;
+      *)
+        # a finite cap that cannot fit (more than 18 digits, or above L) refuses here, so no addend can wrap the int64 sum
+        if [ "${#m}" -gt 18 ] || [ "$m" -gt "$SMAX" ]; then echo "q50s1-shadow: unit $u MemoryMax=$m is above the slice limit L=$SMAX (it can never fit): NOT starting" >&2; exit 10; fi
+        SUM=$((SUM + m)); echo "q50s1-shadow: unit $u MemoryMax=$m MemoryCurrent=${c:-unset}" ;;
     esac
   done
   NEWB=$((NEW_MAX_MB * 1024 * 1024))
   NEED=$((P + SUM + NEWB + MARGIN_B))
-  echo "q50s1-shadow: memory (P + S + N + M <= L; DEC-031 Amendment 18 item 8 as amended by Amendment 18 Erratum 1): memory.current=$MCUR inactive_file=$IF active_file=$AF file_mapped=$FM P=$P S=$SUM N=$NEWB M=$MARGIN_B need=$NEED L=$SMAX spare=$((SMAX - NEED)); allowlisted uncapped units: $ALLOWED; other uncapped units: $UNCAPPED; report-only, never deciding: the literal Am.18 sum MemoryCurrent + S + N = $((MCUR + SUM + NEWB))"
+  echo "q50s1-shadow: memory (P + S + N + M <= L; DEC-031 Amendment 18 item 8 as amended by Amendment 18 Erratum 1): memory.current=$MCUR inactive_file=$IF active_file=$AF file_mapped=$FM P=$P S=$SUM N=$NEWB M=$MARGIN_B need=$NEED L=$SMAX ($LSRC) spare=$((SMAX - NEED)) slice_dir=$CG_SLICE_DIR$([ "$CG_SLICE_DIR" = /sys/fs/cgroup/user.slice/user-1002.slice ] || echo " (TEST OVERRIDE, not the real slice)"); allowlisted uncapped units: $ALLOWED; other uncapped units: $UNCAPPED; report-only, never deciding: the literal Am.18 sum MemoryCurrent + S + N = $((MCUR + SUM + NEWB))"
   if [ "$UNCAPPED" -gt 0 ]; then echo "q50s1-shadow: $UNCAPPED running unit(s) have no finite MemoryMax and are not on the allowlist:$BAD: NOT starting (DEC-031 Amendment 18 item 8, Erratum 1; a slip under Amendment 17 item 2)" >&2; exit 10; fi
   if [ "$NEED" -gt "$SMAX" ]; then echo "q50s1-shadow: does not fit the slice (need $NEED > L $SMAX): NOT starting (a slip under DEC-031 Amendment 17 item 2, never an uncapped start)" >&2; exit 10; fi
   return 0
