@@ -201,3 +201,33 @@ One 10-minute sample is not a service level. The `status.json` and gap rows exis
 7. **A longer measurement** that includes a real Access drop, and the forced-command form on the revised code.
 
 Files: `tools/decision_forwarder.py`, `tools/test_decision_forwarder.py`, `scripts/research/p46-hop-measure.sh`.
+
+## 6. Tape-gap stream carry (added 2026-10-30; QP #969 P7-c and the carriage half of P7-e)
+
+`tools/hv4_gap_relay.py` writes `<out-dir>/transport/<bot_id>.tapegaps.jsonl` on research-0 (rows `{"kind","ms"}`, the whole file rewritten atomically on every pass). The bridge on mal-fast-0 reads `<root>/transport/<bot_id>.tapegaps.jsonl`. The forwarder now carries that one file. This is a build and a synthetic test. It is not installed, and precondition 7 stays open (see "Not done" below).
+
+**serve** takes an optional `--tapegaps-file <abs path>` (also in the `--from-env` form; the flag belongs to the pinned forced command in `authorized_keys`, never to `SSH_ORIGINAL_COMMAND`, which `parse_resume` still restricts to `resume [<file> <offset>]`).
+
+- The path must be absolute, free of `..`, and named exactly `<bot_id>.tapegaps.jsonl`.
+- A new frame `{"k":"tg","mt":<source mtime, ms>,"n":<bytes>,"sha":<sha256>,"b":<the text>}` goes out at connect and whenever the file's (inode, size, mtime) changes. The relay replaces the file on every pass, so a pass with identical bytes still sends a frame: the source mtime is the relay's heartbeat.
+- The file is opened with `O_NOFOLLOW | O_NONBLOCK` and judged by the open fd, so the relay's own atomic replace between a stat and the open is not an error.
+- Sent: only a complete stream. Empty is fine. Every line is an object with exactly `kind` (str) and `ms` (int, `0 < ms <= 4,102,444,800,000`), UTF-8, at most `TAPEGAPS_MAX_BYTES` (8,000,000 = `hv4_live_c0.GAP_LOG_MAX_BYTES`, a test pins it).
+- Not sent, quietly: a missing file, a torn tail, or a file that changes while it is read. The bridge-side copy then ages out and the bridge refuses buys.
+- Loud `bad` frame and exit (the puller stops): a symlink, FIFO, directory or hard-linked file; an oversize, non-UTF-8 or malformed file; a frame that would not fit the puller's receive cap.
+- Seal: if the tapegaps file resolves under `/data/mal/arena`, or it or an ancestor has the arena's inode, the same recorded-read gate as for a sealed root applies. The relay out-dir is meant to be outside the arena (for example `/data/mal/hv4-c0/relay`).
+
+**pull** checks every `tg` frame and trusts nothing from serve. The size, sha and every line are re-validated. The new bytes must start with the bytes already accepted. A shrink, or a change of an already-seen prefix, is a mismatch: exit 2, state `stopped_mismatch`, a `mismatch` row in `gaps.jsonl`, and nothing written. Otherwise it writes `<dst>/transport/<bot_id>.tapegaps.jsonl` as tmp (O_EXCL) + write + `os.utime(source mtime)` + fsync + rename + directory fsync (regular file, nlink 1), so the copy's mtime is the SOURCE pass instant. A dead relay therefore shows stale on mal-fast-0 whatever the wall clock does. Nothing is ever written under `decisions/`. The `decision_forwarder_v1` status keys are unchanged. After a restart the accepted file is the baseline; a damaged local copy is a hard stop (removing it re-baselines, which is the manager's action after review).
+
+**bridge** (`hv4_c0` profile only): `tools/hv4_live_c0.tape_gap_stream_problem` refuses NEW buys on a missing stream (`tape_gap_stream_missing`), one whose mtime is more than `TAPE_GAP_STREAM_MAX_AGE_MS` = 180,000 ms old (`tape_gap_stream_stale`), more than `FEED_SKEW_MS` in the future (`tape_gap_stream_future`, so a forged stamp cannot never age out), or not a plain file (`tape_gap_stream_not_regular`). It is a self-clearing refusal like `transport_stall`: no latch, counted (`tape_gap_stream_refusal`), logged by the entry refusal, and exits keep running. Only a DRY bridge on a `SYNTHETIC_FIXTURE_ROOT` may run without the file; LIVE never.
+
+**Why 180,000 ms** (a declared choice, not a measurement): the relay must complete a pass well inside the 120,000 ms the arena compactor waits before it deletes a closed hour's `.jsonl` (`arena_feed.COMPACT_GRACE_MS`, P7-b), so its cadence is pinned under 120 s. 180 s is 1.5 times that ceiling, which leaves room for one slow pass, and the hop adds tens of ms (§4). Too tight only costs buys; too loose lets a dead relay hide a gap for that long. The relay's real pass time over a full day of tape is NOT measured. It is an acceptance item for the install pack, and this bound must be re-checked against it.
+
+**Synthetic end-to-end delay** (`tools/test_hv4_tapegap_carry.py`, serve subprocess + Puller thread + Bridge on the wall clock, all in one host, bridge polled every ~1 ms, serve `--poll-ms 5`): from the relay's file replace to `gap_tick` noting the carried gap row, 30 samples over 5 runs: per-run min 14 to 20 ms, per-run median 17 to 23.5 ms, per-run max 31 to 45 ms. This is an in-process figure on one host, not a measurement of the research-0 to mal-fast-0 path (§4 has that hop, p90 21.33 to 36.22 ms) and not of the bridge's real 50 ms tick.
+
+**Not done (precondition 7 stays open):**
+
+- Install: the relay on research-0 (unit, cadence, out-dir), the forced-command line with `--tapegaps-file`, the puller unit on fast-0. The ask text goes to the manager for Helm.
+- The relay's own P7-a (slot jump / `gap_slots`), P7-b (hour roll and compaction), P7-d (engine cross-test).
+- A relay that legitimately drops rows (for example, a tape day file removed or compacted away before P7-b is fixed) makes the next pass a prefix change: the puller stops with exit 2 and the decision feed stops with it, so exits fall to the bridge's time-stop and stop-loss backstops. That is fail closed, and the manager restarts after review.
+- A new relay row that sorts BEFORE an already-carried row (same `ms`, or a late-arriving earlier gap record) is also a prefix change and stops the pull. The relay sorts by (ms, kind); this is rare, and it is declared rather than relaxed.
+- The first carried stream will contain every historical gap row the relay finds, and the bridge treats each new gap instant as a gap record. The manager's review file must name the newest one before any live start.
