@@ -45,7 +45,7 @@ GAP_SLOTS = 30  # S* tools/h5_shadow.py:241
 SILENCE_S = 20.0  # S* tools/h5_shadow.py:242
 IDLE_S = 30.0  # S* observe/trade_source.py _iter_ws recv timeout
 INITIAL_BACKOFF_S, MAX_BACKOFF_S = 1.0, 60.0  # S* observe/trade_source.py:52-53
-TRIM_MS = 15_000
+TRIM_MS = 15_000  # at most; 15 % of a shorter window
 SIG_KEEP = 24
 BYTES_RE = re.compile(r"\bbytes_received:(\d+)")
 
@@ -116,9 +116,14 @@ class Stream:
         self.up_ms = 0
         self.local_ports: set[str] = set()
         self.sigs: dict[str, int] = {}
+        self.frozen = False  # set at the window's end: nothing after it is counted
+
+    def freeze(self, t: int) -> None:
+        self.mark_down(t)
+        self.frozen = True
 
     def mark_up(self, t: int) -> None:
-        if self.up_since is None:
+        if self.up_since is None and not self.frozen:
             self.up_since = t
 
     def mark_down(self, t: int) -> None:
@@ -127,6 +132,8 @@ class Stream:
             self.up_since = None
 
     def note(self, msg: dict, t: int) -> None:
+        if self.frozen:
+            return
         if msg.get("method") is None:
             if "result" in msg and msg.get("id") == 1:
                 self.sub_ok = True
@@ -200,6 +207,8 @@ async def run_stream(url: str, st: Stream, stop: asyncio.Event, rng: random.Rand
                             st.idle_breaks += 1
                             break
                         continue
+                    if st.frozen:
+                        break
                     last = time.monotonic()
                     t = now_ms()
                     st.msgs += 1
@@ -319,19 +328,21 @@ class Watcher:
         return out
 
 
-def stream_summary(st: Stream, seconds: float, t_end: int) -> dict:
+def stream_summary(st: Stream, seconds: float, t_end: int, t_start: int | None = None) -> dict:
     st.mark_down(t_end)
     h = max(seconds, 1e-9) / 3600.0
     return {"connects": st.connects, "reconnects": st.reconnects, "rejections": st.rejections, "closes": st.closes, "errors": st.errors,
             "sub_ok": st.sub_ok, "sub_ack_ms": st.sub_ack_ms, "sub_error": st.sub_error, "extensions": st.extensions,
             "msgs": st.msgs, "notes": st.notes, "notes_per_s": round(st.notes / max(seconds, 1e-9), 1), "payload_bytes": st.payload_bytes,
             "payload_mb_per_h": round(st.payload_bytes / 1e6 / h, 1), "up_share": round(st.up_ms / max(seconds * 1000, 1), 4),
+            "first_note_s": round((st.first_note_ms - t_start) / 1000.0, 1) if (st.first_note_ms is not None and t_start is not None) else None,
             "bad_json": st.bad_json, "rpc_errors": st.rpc_errors, "err_note_share": round(st.err_notes / max(st.notes, 1), 4),
             f"slot_jumps_gt{GAP_SLOTS}": st.slot_jumps, "max_slot_jump": st.max_slot_jump, f"silences_gt{int(SILENCE_S)}s": st.silences, "idle_breaks": st.idle_breaks}
 
 
 def coverage(cand: Stream, ref: Stream, t0: int, t1: int) -> dict:
-    lo, hi = t0 + TRIM_MS, t1 - TRIM_MS
+    trim = min(TRIM_MS, int(0.15 * (t1 - t0)))
+    lo, hi = t0 + trim, t1 - trim
     ref_mid = [s for s, t in ref.sigs.items() if lo <= t <= hi]
     cand_mid = [s for s, t in cand.sigs.items() if lo <= t <= hi]
     common = [s for s in ref_mid if s in cand.sigs]
@@ -356,15 +367,18 @@ async def window(phase: str, label: str, url: str, seconds: float, ref_url: str 
     while time.monotonic() < end:
         watcher.own_ports = cand.local_ports | (ref.local_ports if ref else set())
         await asyncio.sleep(min(1.0, max(0.0, end - time.monotonic())))
+    t1 = now_ms()  # the window's end is when stop is set; the close handshakes after it are not counted as window time
+    cand.freeze(t1)
+    if ref is not None:
+        ref.freeze(t1)
     stop.set()
     await asyncio.gather(*tasks, return_exceptions=True)
-    t1 = now_ms()
     secs = (t1 - t0) / 1000.0
-    rec = {"type": "window", "phase": phase, "label": label, "url": url, "seconds": round(secs, 1), "cand": stream_summary(cand, secs, t1)}
-    own = {k: v for k, v in watcher.own_bytes.items() if split_addr(k[0])[1] in cand.local_ports}
-    rec["cand"]["wire_bytes_sampled"] = sum(own.values())
+    rec = {"type": "window", "phase": phase, "label": label, "url": url, "seconds": round(secs, 1), "cand": stream_summary(cand, secs, t1, t0)}
+    rec["cand"]["wire_bytes_sampled"] = sum(v for k, v in watcher.own_bytes.items() if split_addr(k[0])[1] in cand.local_ports)
     if ref is not None:
-        rec["ref"] = stream_summary(ref, secs, t1)
+        rec["ref"] = stream_summary(ref, secs, t1, t0)
+        rec["ref"]["wire_bytes_sampled"] = sum(v for k, v in watcher.own_bytes.items() if split_addr(k[0])[1] in ref.local_ports)
         rec["ref"]["credits_at_2_per_0.1MB"] = round(ref.payload_bytes / 1e5 * 2, 1)
         rec["coverage_vs_ref"] = coverage(cand, ref, t0, t1)
         rec["notes_ratio_vs_ref"] = round(cand.notes / ref.notes, 4) if ref.notes else None

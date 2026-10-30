@@ -93,6 +93,22 @@ class Pure(unittest.TestCase):
         s = P.stream_summary(st, 10.0, 8000)
         self.assertEqual(s["up_share"], 0.5)
 
+    def test_freeze_stops_counting_at_the_window_end(self):
+        st = P.Stream("c", True)
+        st.mark_up(0)
+        st.freeze(1000)
+        st.mark_up(2000)
+        st.note(note(5, "E" * 88), 3000)
+        self.assertEqual((st.up_ms, st.notes, st.sigs), (1000, 0, {}))
+        self.assertEqual(P.stream_summary(st, 1.0, 5000, 0)["up_share"], 1.0)
+
+    def test_short_window_trims_15_percent(self):
+        ref, cand = P.Stream("r", False), P.Stream("c", True)
+        ref.sigs = {"a": 1_000, "b": 5_000, "c": 9_500}   # window 0..10 s: trim 1.5 s -> only b is in the middle
+        cand.sigs = {"b": 5_100}
+        c = P.coverage(cand, ref, 0, 10_000)
+        self.assertEqual((c["ref_sigs_mid"], c["coverage"], c["lead_ms_p50"]), (1, 1.0, 100))
+
     def test_coverage_and_rank(self):
         ref, cand = P.Stream("r", False), P.Stream("c", True)
         t0, t1 = 0, 100_000
