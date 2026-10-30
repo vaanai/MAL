@@ -184,6 +184,15 @@ class BridgeTapeGapRefusalTests(TmpCase):
         (Path(live.raw["root"]) / c0.SYNTHETIC_MARKER).write_text("")
         self.assertEqual(lb.feed_refusal(live.clock.t), "tape_gap_stream_missing")  # live never takes the marker exemption
 
+    def test_a_synthetic_dry_root_without_a_forwarder_status_still_gets_the_stream_check(self):
+        e = Hv4Env(self.tmp)
+        br = alb.Bridge(alb.Config.from_dict(e.raw), e.port, now_ms=e.clock, live_ok_path=e.live_ok, tier_path=e.tier, root_checks=False)
+        (Path(e.raw["root"]) / c0.SYNTHETIC_MARKER).write_text("")
+        os.unlink(Path(e.raw["root"]) / "transport" / f"{e.bot}.status.json")  # no forwarder status at all: exempt on a marked dry root ...
+        self.assertIsNone(br.feed_refusal(e.clock.t))
+        write_tapegaps(e.raw["root"], e.bot, e.clock.t - c0.TAPE_GAP_STREAM_MAX_AGE_MS - 1)  # ... but an old stream is not exempt
+        self.assertEqual(br.feed_refusal(e.clock.t), "tape_gap_stream_stale")
+
     def test_presend_rechecks_the_stream_after_the_rpcs(self):
         e = Hv4Env(self.tmp)
         b = e.bridge()
