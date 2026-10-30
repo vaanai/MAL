@@ -112,6 +112,7 @@ class ACase(Case):
         self.arena_tier.write_text("T1\n")
         os.chmod(self.arena_tier, 0o644)
         for patcher in (mock.patch.object(ax, "ARENA_TIER_PATH", self.arena_tier), mock.patch.object(ax, "ARENA_LIVE_OK_PATH", self.etc / "arena-LIVE_OK"),
+                        mock.patch.object(ax, "ARENA_OWNER_CANARY_PATH", self.etc / "arena-OWNER_CANARY"),  # never the host's /etc/mal-h5-arena/OWNER_CANARY
                         mock.patch.object(ax, "FEED_NOTE_BOOKS", frozenset(ax.BOOKS) | {"h5v1-p155-testbook"}),  # fixtures run every book; the real set is tested in test_h5_arena_feed_note
                         mock.patch.object(ax, "V2_RULE_SOURCE", self.tmp / "FREEZE.md"),
                         mock.patch.object(ax, "A3_RECORD_DEFAULT", str(self.tmp / "a3-default.jsonl"))):
@@ -1250,6 +1251,50 @@ class CanaryRecordTests(ACase):
     def test_the_template_file_never_counts(self):
         write_canary_record(self.tmp / "repo", A2, name="DEC-032-arena-canary-template.md")
         self.refused("canary_record_for_bot_id_missing")
+
+    # DEC-032 Am.7 (DRAFT; audit rank 4): the owner's line may instead sit in a root-owned file Helm writes; no DEC record needed in the installed tree
+    def owner_file(self, text: str, mode: int = 0o644) -> Path:
+        p = ax.ARENA_OWNER_CANARY_PATH
+        self.assertTrue(str(p).startswith(str(self.tmp)), p)  # a test never writes the host's /etc/mal-h5-arena
+        p.write_text(text)
+        os.chmod(p, mode)
+        return p
+
+    def test_a_root_owned_owner_file_naming_this_book_covers_it_without_a_dec_record(self):
+        (self.tmp / "FREEZE.md").write_text("x")
+        self.owner_file(f"OWNER_CANARY_CONFIRMED: bot_id={A2}\n")
+        self.assertIsNone(ax.canary_record_refusal(A2, self.tmp / "repo"))
+        self.assertEqual(self.start().ex.abook.bot_id, A2)
+
+    def test_an_owner_file_that_is_wrong_in_any_way_does_not_cover(self):
+        (self.tmp / "FREEZE.md").write_text("x")
+        bad = [(f"OWNER_CANARY_CONFIRMED: bot_id={Q50}\n", 0o644, "owner_canary_file_other_book"),
+               (f"OWNER_CANARY_CONFIRMED: bot_id={A2}-x\n", 0o644, "owner_canary_file_other_book"),
+               (f"OWNER_CANARY_CONFIRMED: bot_id={A2}\nOWNER_CANARY_CONFIRMED: bot_id={Q50}\n", 0o644, "owner_canary_file_other_book"),
+               (f"OWNER_CANARY_CONFIRMED: bot_id={A2}\nanything else\n", 0o644, "owner_canary_file_other_book"),
+               (f"{A2}\n", 0o644, "owner_canary_file_other_book"), ("", 0o644, "owner_canary_file_other_book"),
+               (f"OWNER_CANARY_CONFIRMED: bot_id={A2}\n", 0o664, "owner_canary_file_unsafe"),
+               (f"OWNER_CANARY_CONFIRMED: bot_id={A2}\n", 0o600, "owner_canary_file_unsafe")]
+        for text, mode, why in bad:
+            with self.subTest(text=text, mode=oct(mode)):
+                self.owner_file(text, mode)
+                self.assertEqual(ax.owner_canary_file_refusal(A2), why)
+                self.assertEqual(ax.canary_record_refusal(A2, self.tmp / "repo"), "canary_record_for_bot_id_missing")  # the DEC reason is returned
+                self.refused("canary_record_for_bot_id_missing")
+
+    def test_a_symlinked_or_missing_owner_file_does_not_cover(self):
+        (self.tmp / "FREEZE.md").write_text("x")
+        self.assertEqual(ax.owner_canary_file_refusal(A2), "owner_canary_file_missing")
+        real = self.tmp / "real-owner"
+        real.write_text(f"OWNER_CANARY_CONFIRMED: bot_id={A2}\n")
+        os.chmod(real, 0o644)
+        ax.ARENA_OWNER_CANARY_PATH.symlink_to(real)
+        self.assertEqual(ax.owner_canary_file_refusal(A2), "owner_canary_file_unsafe")
+        self.refused("canary_record_for_bot_id_missing")
+
+    def test_a_dec_record_still_covers_with_no_owner_file(self):
+        write_canary_record(self.tmp / "repo")
+        self.assertIsNone(ax.canary_record_refusal(A2, self.tmp / "repo"))
 
     def test_a_symlinked_record_does_not_count(self):
         write_canary_record(self.tmp / "repo", A2, name="real.md")
