@@ -41,7 +41,7 @@
 #      line). The process is ALWAYS `python -I scripts/ops/q50s1-ws-launch.py ... -- <h5_shadow args>` (the launcher, outside S*, runs tools.h5_shadow from the S*
 #      worktree as `python -m` does and redacts stdout/stderr). A KEY is involved ONLY with `--ws2 URL --ws2-keyed`: then the launcher reads it from the key file inside the
 #      process and adds it as the launcher's key query parameter to that one --ws-url in sys.argv only; no key is ever on a command line. The h5_shadow args: --fresh-forward ARENA --q-star-sol 50
-#      --sockets 3 --syn-sockets 1 --ws-url wss://api.mainnet-beta.solana.com [--ws-url <the --ws2 URL, host-only>] (scripts/ops/q50s1-feed.sh; socket i uses url i mod n;
+#      --sockets N (default 3) --syn-sockets 1 --ws-url <url 0> [--ws-url <url 1>] (mainnet-beta and the --ws2 URL, host-only; --ws2-first lists WS2 first) (scripts/ops/q50s1-feed.sh; socket i uses url i mod n;
 #      no second provider by default). Exit 11 if a URL is not host-only and key-free, or --ws2-keyed has no usable key; exit 12 if the launcher refuses its arguments (the check mode runs the launcher with --dry, against this checkout
 #      while the S* worktree does not exist yet). bx10 is off at Q* 50 in code.
 # Output: $ARENA/h5-q50s1-<UTC date>[-succ]/h5-shadow-<UTC hour>.jsonl (never opened by any worker; the Q50 seal and EXP-024 successor note part A apply).
@@ -66,7 +66,8 @@ SEG_LAST_END=1796086800   # 2026-12-01T01:00:00Z: E plus the last v1 exits
 SEG_MAX_S=1180800         # 13 d 16 h: a successor never runs past its job's 14 d
 POLL_S="${Q50S1_POLL_S:-20}"
 MODE=run; SEG=1; WS2_ARG=""; WS2_KEYED=0; NARGS="$#"
-USAGE="usage: q50s1-shadow-start.sh [--check] [--successor] [--ws2 URL [--ws2-keyed]] | --check-memory"
+USAGE="usage: q50s1-shadow-start.sh [--check] [--successor] [--ws2 URL [--ws2-keyed --ws2-key-file PATH] [--ws2-first]] [--sockets N] | --check-memory"
+KEYFILE_ARG=""; SOCKETS_ARG=3; WS2_FIRST=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --check) [ "$MODE" = run ] || { echo "q50s1-shadow: $USAGE" >&2; exit 2; }; MODE=check ;;
@@ -74,12 +75,16 @@ while [ "$#" -gt 0 ]; do
     --successor) SEG=2 ;;
     --ws2) [ "$#" -ge 2 ] || { echo "q50s1-shadow: --ws2 needs a URL" >&2; exit 2; }; WS2_ARG="$2"; shift ;;
     --ws2-keyed) WS2_KEYED=1 ;;
+    --ws2-key-file) [ "$#" -ge 2 ] || { echo "q50s1-shadow: --ws2-key-file needs a path" >&2; exit 2; }; KEYFILE_ARG="$2"; shift ;;
+    --ws2-first) WS2_FIRST=1 ;;
+    --sockets) [ "$#" -ge 2 ] || { echo "q50s1-shadow: --sockets needs 1, 2 or 3" >&2; exit 2; }; SOCKETS_ARG="$2"; shift ;;
     *) echo "q50s1-shadow: unknown argument; $USAGE" >&2; exit 2 ;;
   esac
   shift
 done
 # the feed (scripts/ops/q50s1-feed.sh, shared with the smoke): mainnet-beta, plus the second provider ONLY from --ws2 (no default; never from the environment)
-Q50S1_WS2="$WS2_ARG"; Q50S1_WS2_KEYED="$WS2_KEYED"
+Q50S1_WS2="$WS2_ARG"; Q50S1_WS2_KEYED="$WS2_KEYED"; Q50S1_KEY_FILE="$KEYFILE_ARG"; Q50S1_SOCKETS="$SOCKETS_ARG"; Q50S1_WS2_FIRST="$WS2_FIRST"
+[ -z "$KEYFILE_ARG" ] || [ "$WS2_KEYED" = 1 ] || { echo "q50s1-shadow: --ws2-key-file goes with --ws2-keyed" >&2; exit 2; }
 case "$POLL_S" in ''|*[!0-9]*) echo "q50s1-shadow: bad poll interval" >&2; exit 2 ;; esac
 [ -n "${HOME:-}" ] || { echo "q50s1-shadow: HOME is not set" >&2; exit 2; }
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -201,11 +206,11 @@ if [ -d "$SRC" ]; then
 fi
 # 4. the registered line; its endpoints must be exactly this run's providers (key-free), so both segments and the registration record name the same feed
 . "$HERE/q50s1-feed.sh"
-q50s1_ws2_build || { echo "q50s1-shadow: the feed is not valid (key-free wss:// URLs, distinct; --ws2-keyed needs --ws2 and a readable key file): NOT starting (Am.22 item 10; QP on #1107)" >&2; exit 11; }
+q50s1_ws2_build || { echo "q50s1-shadow: the feed is not valid (host-only key-free wss:// URLs, distinct; --ws2-keyed needs --ws2 and an explicit readable --ws2-key-file; --sockets 1-3; --ws2-first needs --ws2): NOT starting (Am.22 item 10 and Erratum 1)" >&2; exit 11; }
 EPS="$(q50s1_endpoints | tr '\n' ' ')"
-LINE="$("$PY" -I - "$ARENA/bots.json" "$S_SHA" "$CLOCK_MS" "$END_MS" "$NOW" "$EPS" <<'PYEOF'
+LINE="$("$PY" -I - "$ARENA/bots.json" "$S_SHA" "$CLOCK_MS" "$END_MS" "$NOW" "$EPS" "$Q50S1_SOCKETS" <<'PYEOF'
 import json, sys
-path, sha, clock, end, now, eps = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]) * 1000, sys.argv[6].split()
+path, sha, clock, end, now, eps, sockets = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4]), int(sys.argv[5]) * 1000, sys.argv[6].split(), int(sys.argv[7])
 try:
     e = json.load(open(path))["bots"]["h5v1q50-boostfloor-s1"]
 except (OSError, KeyError, ValueError):
@@ -213,8 +218,10 @@ except (OSError, KeyError, ValueError):
 ok = e.get("frozen_sha") == sha and e.get("clock_start_ms") == clock and e.get("window_end_ms_pin") == end and isinstance(e.get("registered_at_ms"), int) and e["registered_at_ms"] < now
 if not ok:
     print("line does not match the table row or registered_at_ms is not before now"); sys.exit(1)
-if e.get("endpoints") != eps:
+if sorted(e.get("endpoints") or []) != sorted(eps):
     print(f"the line's endpoints {e.get('endpoints')} are not this run's feed {eps} (register with the same --ws2)"); sys.exit(1)
+if e.get("sockets") != sockets:
+    print(f"the line's sockets {e.get('sockets')} are not this run's --sockets {sockets} (register with the same --sockets)"); sys.exit(1)
 print("ok")
 PYEOF
 )" || { echo "q50s1-shadow: bots.json: $LINE" >&2; exit 8; }
@@ -230,10 +237,10 @@ if [ "$MODE" = "check" ]; then
   LRC=0
   # shellcheck disable=SC2046
   "$PY" -I "$HERE/q50s1-ws-launch.py" --dry --src "$DRYSRC" $(q50s1_key_opts) -- --fresh-forward ARENA --q-star-sol 50 --out-dir "$OUT" \
-    --sockets 3 --syn-sockets 1 $(q50s1_ws_args) >/dev/null || LRC=$?
-  [ "$LRC" -ne 11 ] || { echo "q50s1-shadow: the launcher finds no usable key in $Q50S1_KEY_FILE: NOT starting" >&2; exit 11; }
-  [ "$LRC" -eq 0 ] || { echo "q50s1-shadow: the launcher refuses its arguments or src (rc $LRC): NOT starting" >&2; exit 12; }
-  echo "q50s1-shadow: (check) would run in $SRC: systemd-run --user --scope --unit=$UNIT -p MemoryMax=${NEW_MAX_MB}M -p MemorySwapMax=0 env PYTHONPATH=$SRC H5_CODE_SHA=$S_SHA $PY -I $HERE/q50s1-ws-launch.py --src $SRC $(q50s1_key_opts | sed 's/$/ /')-- --fresh-forward ARENA --q-star-sol 50 --out-dir $OUT --sockets 3 --syn-sockets 1 $(q50s1_ws_args) (systemd-run --description=$UNIT; keyed=$Q50S1_WS2_KEYED, any key is added inside the process; HOME=$S1HOME for the process; segment $SEG ends $(date -u -d "@$SEG_END" +%FT%TZ) with exit 0)"
+    $(q50s1_ws_args) >/dev/null || LRC=$?
+  [ "$LRC" -ne 11 ] || { echo "q50s1-shadow: the launcher finds no usable key in the --ws2-key-file: NOT starting" >&2; exit 11; }
+  [ "$LRC" -eq 0 ] || { echo "q50s1-shadow: the launcher refuses its arguments, src or key-file/provider binding (rc $LRC): NOT starting" >&2; exit 12; }
+  echo "q50s1-shadow: (check) would run in $SRC: systemd-run --user --scope --unit=$UNIT -p MemoryMax=${NEW_MAX_MB}M -p MemorySwapMax=0 env PYTHONPATH=$SRC H5_CODE_SHA=$S_SHA $PY -I $HERE/q50s1-ws-launch.py --src $SRC $(q50s1_key_opts | sed 's/$/ /')-- --fresh-forward ARENA --q-star-sol 50 --out-dir $OUT $(q50s1_ws_args) (systemd-run --description=$UNIT; keyed=$Q50S1_WS2_KEYED, any key is added inside the process; HOME=$S1HOME for the process; segment $SEG ends $(date -u -d "@$SEG_END" +%FT%TZ) with exit 0)"
   exit 0
 fi
 cd "$SRC"
@@ -241,7 +248,7 @@ trap 'systemctl --user stop "$UNIT.scope" >/dev/null 2>&1 || true' EXIT TERM INT
 echo "q50s1-shadow: starting segment $SEG (ends $(date -u -d "@$SEG_END" +%FT%TZ)) rule H5-BOOSTFLOOR-Q50 v1, fresh-forward ARENA, q*=50, out=$OUT, head=$S_SHA, MemoryMax=${NEW_MAX_MB}M, python=$PY, ws=$(q50s1_endpoints | tr '\n' ' ')(keyed=$Q50S1_WS2_KEYED)"
 (exec systemd-run --user --scope --quiet --unit="$UNIT" --description="$UNIT" -p "MemoryMax=${NEW_MAX_MB}M" -p MemorySwapMax=0 \
   env HOME="$S1HOME" PYTHONPATH="$SRC" H5_CODE_SHA="$S_SHA" H5_DIRTY="" "$PY" -I "$HERE/q50s1-ws-launch.py" --src "$SRC" $(q50s1_key_opts) -- \
-  --fresh-forward ARENA --q-star-sol 50 --out-dir "$OUT" --sockets 3 --syn-sockets 1 $(q50s1_ws_args)) &
+  --fresh-forward ARENA --q-star-sol 50 --out-dir "$OUT" $(q50s1_ws_args)) &
 PID=$!
 while kill -0 "$PID" 2>/dev/null; do
   if [ "$(date -u +%s)" -ge "$SEG_END" ]; then

@@ -59,7 +59,7 @@ KEY_MARK = "api-key"  # Amendment 22 item 10: the count of this string in the sm
 # Every provider-key form this lab can enumerate (QP A2 on #1121; the manager: "every provider-key pattern"): a query/assignment of a key-like name, a userinfo credential,
 # and a long path token after a ws/http host (QuickNode-style /<token>/, Alchemy /v2/<key>, Infura /v3/<id>). A line matching ANY of them counts.
 KEY_PATTERNS = re.compile(
-    r"(?i)(\bapi[-_]?key\b|\bapikey=|\baccess[-_]?token=|\bauth[-_]?token=|\bx-token=|[?&](key|token|auth|secret|apikey|api_key)=|\bhelius_api_key=|\b(token|secret|key)=[^&\s\x22'<>]{6,})"
+    r"(?i)(\bapi[-_]?key\b|\bapikey=|\baccess[-_]?token=|\bauth[-_]?token=|\bx-token=|[?&](key|token|auth|secret|apikey|api_key)=|\bhelius_api_key=|\b[a-z0-9]+_api[-_]?key=|\b(token|secret|key)=[^&\s\x22'<>]{6,})"
     r"|\b(wss?|https?)://[^/\s\"'<>@]+@"
     r"|\b(wss?|https?)://[A-Za-z0-9.-]+(:[0-9]+)?(/[A-Za-z0-9_.-]{0,19})*/[A-Za-z0-9_-]{20,}")
 STATUS_MAX_AGE_S = 180
