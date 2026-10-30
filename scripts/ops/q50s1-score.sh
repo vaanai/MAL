@@ -19,6 +19,7 @@
 # With the shadow in two segments (scripts/ops/q50s1-shadow-start.sh: handover 2026-11-19T04:30Z), A ends 2026-11-19T06:00Z (Q50S1_SCORE_END=1795068000) and B lists both dirs
 # (h5-q50s1-2026-11-05 and h5-q50s1-2026-11-19-succ); the wrapper scores a book's dirs together (the Q50 M3 pattern).
 # Exit: 0 ok / end reached / DRY_OK, 1 DRY_NOT_OK, 2 args/pins/python, 6 host, 7 worktree; a score run's own rc is printed, the loop continues.
+# A loop segment ends AT its END (it sleeps from its last run to END), and waits up to Q50S1_DIR_WAIT_S (default 6 h) for a missing --shadow-dir; a MiScusi job lives at most 14 d: an END more than 14 d minus 15 min after this job's start is refused (exit 2).
 # Env (optional): Q50S1_PY (default /home/claude/venvs/c1nf-shadow/bin/python, as #1543), Q50S1_REPO, Q50S1_HOME (s1's own HOME, default /home/claude/s1home; root = $Q50S1_HOME/data/arena, DEC-031 Amendment 22 item 9), Q50S1_SCORE_END (loop), Q50S1_DRY_AT (epoch,
 # dry-day1; default 1793946600 = 2026-11-06T06:30:00Z).
 set -eu
@@ -62,9 +63,12 @@ END="${Q50S1_SCORE_END:-$END_MAX}"
 DRY_AT="${Q50S1_DRY_AT:-1793946600}"
 case "$END$DRY_AT" in *[!0-9]*) echo "q50s1-score: bad END or DRY_AT" >&2; exit 2 ;; esac
 [ "$END" -le "$END_MAX" ] || { echo "q50s1-score: END $END is after $END_MAX (2026-12-01T01:00Z)" >&2; exit 2; }
+DIR_WAIT="${Q50S1_DIR_WAIT_S:-21600}"   # loop: a missing shadow dir (segment 2's -succ dir) is waited for up to 6 h before a refusal
+case "$DIR_WAIT" in ''|*[!0-9]*) echo "q50s1-score: bad dir wait" >&2; exit 2 ;; esac
 
 # 1. host
 if [ "$(hostname)" != "mal-fast-0" ]; then echo "q50s1-score: the book runs on mal-fast-0 (this is $(hostname))" >&2; [ "$MODE" = "check" ] || exit 6; fi
+if [ "$MODE" = loop ] && [ $((END - $(date -u +%s))) -gt 1208700 ]; then echo "q50s1-score: END $(date -u -d "@$END" +%FT%TZ) is more than 14 d - 15 min after now: a MiScusi job lives at most 14 d: an END more than 14 d minus 15 min after this job's start is refused (exit 2)" >&2; exit 2; fi
 # 2. the item-1 tool commit, clean, pinned files
 git -C "$REPO" cat-file -e "$TOOL_COMMIT^{commit}" 2>/dev/null || { echo "q50s1-score: commit $TOOL_COMMIT is not in $REPO" >&2; exit 7; }
 if [ ! -d "$SRC" ]; then
@@ -92,7 +96,14 @@ if [ "$MODE" = "check" ]; then
   echo "q50s1-score: (check) would run in $SRC: $PY -m tools.arena_h5_score_q50s score$SDARGS (loop: daily 00:20Z to $END; dry-day1: --dry-run at $DRY_AT)"
   exit 0
 fi
-for d in $DIRS; do [ -d "$d" ] || { echo "q50s1-score: shadow dir $d does not exist" >&2; exit 2; }; done
+W0="$(date -u +%s)"
+for d in $DIRS; do
+  while [ ! -d "$d" ]; do
+    if [ "$MODE" != loop ] || [ $(( $(date -u +%s) - W0 )) -ge "$DIR_WAIT" ]; then echo "q50s1-score: shadow dir $d does not exist" >&2; exit 2; fi
+    echo "q50s1-score: waiting for $d (up to ${DIR_WAIT}s from $(date -u -d "@$W0" +%FT%TZ); the shadow's next segment makes it)"
+    sleep 60
+  done
+done
 mkdir -p "$OPS"
 
 # one scorer run -> RUN_RC, FILTER_RC and the DRY_S1 line; the full JSON is printed only when $1 = full
@@ -126,7 +137,10 @@ while :; do
   now="$(date -u +%s)"
   t="$(date -u -d "$(date -u +%F)T00:20:00Z" +%s)"
   [ "$t" -gt "$now" ] || t=$((t + 86400))
-  [ "$t" -le "$END" ] || { echo "end reached"; exit 0; }
+  if [ "$t" -gt "$END" ]; then
+    [ "$END" -le "$now" ] || sleep $((END - now))  # the segment ends AT its END (not right after its last run), so a successor `after` it starts at END
+    echo "end reached $(date -u +%FT%TZ)"; exit 0
+  fi
   sleep $((t - now))
   U="$(date -u +%FT%TZ)"
   AGES=""

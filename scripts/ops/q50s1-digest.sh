@@ -22,6 +22,7 @@ case "$(realpath -m "$ARENA")" in "$(realpath -m "$REALHOME/data/arena")"|"$(rea
 END="${Q50S1_DIGEST_END:-$END_MAX}"
 case "$END" in ''|*[!0-9]*) echo "q50s1-digest: bad END" >&2; exit 2 ;; esac
 [ "$END" -le "$END_MAX" ] || { echo "q50s1-digest: END after 2026-12-01T00:30Z" >&2; exit 2; }
+if [ "${1:-}" = loop ] && [ $((END - $(date -u +%s))) -gt 1208700 ]; then echo "q50s1-digest: END is more than 14 d - 15 min after now: a MiScusi job lives at most 14 d: an END more than 14 d minus 15 min after this job's start is refused (exit 2)" >&2; exit 2; fi
 P_PV='{"type":"trigger","variant":"pv",'
 P_BS='{"type":"boost_slice",'
 
@@ -63,7 +64,7 @@ while :; do
   now="$(date -u +%s)"
   t="$(date -u -d "$(date -u +%F)T00:10:00Z" +%s)"
   [ "$t" -gt "$now" ] || t=$((t + 86400))
-  [ "$t" -le "$END" ] || { echo "end reached"; exit 0; }
+  if [ "$t" -gt "$END" ]; then [ "$END" -le "$now" ] || sleep $((END - now)); echo "end reached $(date -u +%FT%TZ)"; exit 0; fi
   sleep $((t - now))
   digest_day "$(date -u -d yesterday +%F)"
 done
