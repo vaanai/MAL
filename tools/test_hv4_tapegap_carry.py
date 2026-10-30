@@ -532,21 +532,35 @@ class EndToEndTests(TmpCase):
             self.assertGreater(waited, 0)
             self.assertEqual(os.lstat(tg_path(p.e.raw["root"])).st_mtime_ns // 1_000_000, pass_at)
 
-    def test_a_relay_rewrite_that_drops_rows_stops_the_pull_leaves_the_copy_and_latches_via_the_status(self):
-        with EndToEnd(self.tmp, write_first=False) as p:
-            p.relay_pass([("data_loss", wall_ms() - 10), ("gap_silence", wall_ms() - 5)], wall_ms())
+    def test_a_relay_rewrite_that_is_not_a_front_trim_is_a_fault_the_pull_runs_on_the_copy_goes_stale_and_the_bridge_latches(self):
+        """The manager's decision (replacing QP decision 1(a) for the tapegaps stream): a relay file that is not the accepted copy with a head trim and appended rows does NOT
+        stop the puller. The copy keeps its content and its old mtime (so it ages out and the bridge refuses new buys as `tape_gap_stream_stale`), the forwarder status stays
+        `connected` (the decision feed is healthy), a gap row of kind `error` makes the bridge latch feed_break, and a later clean pass recovers."""
+        with manual_review(), EndToEnd(self.tmp, write_first=False) as p:
+            root, dst = p.e.raw["root"], tg_path(p.e.raw["root"])
+            t = wall_ms()
+            rows = [("data_loss", t - 10), ("gap_silence", t - 5)]
+            p.relay_pass(rows, t)
+            p.wait(lambda: dst.exists() and dst.read_bytes() == Path(p.relay_file).read_bytes())
             p.wait(lambda: p.refusal() is None)
-            before = tg_path(p.e.raw["root"]).read_bytes()
-            p.relay_pass([("data_loss", wall_ms() - 10)], wall_ms())  # a row went missing
-            p.wait(lambda: bool(p.rc))
-            self.assertEqual(p.rc, [df.EXIT_MISMATCH])
-            self.assertEqual(tg_path(p.e.raw["root"]).read_bytes(), before)
+            before = (dst.read_bytes(), os.lstat(dst).st_ino, os.lstat(dst).st_mtime_ns)
+            p.relay_pass([("data_loss", t - 9), rows[1]], wall_ms())  # an already-carried row edited in place
+            p.wait(lambda: p.puller.tg_fault is not None)
+            self.assertEqual(p.rc, [])  # the puller did not stop
+            self.assertEqual((dst.read_bytes(), os.lstat(dst).st_ino, os.lstat(dst).st_mtime_ns), before)  # the copy is untouched
+            self.assertIsNone(c0.feed_gap_problem(c0.feed_status_path(root, ARM), ARM, wall_ms()))  # the forwarder status is still `connected`
+            p.wait(lambda: "tapegaps_fault" in json.loads(Path(c0.feed_status_path(root, ARM)).read_text()))
             p.bridge.gap_tick(wall_ms())
-            self.assertIn(c0.FEED_BREAK_LATCH, p.bridge.state.latches)
-            self.assertIn("mismatch", [json.loads(x)["kind"] for x in (Path(p.e.raw["root"]) / "transport" / f"{ARM}.gaps.jsonl").read_text().splitlines()])
-            # buys are refused; which reason is reported first depends on the gap-hold ordering of #1090 (feed_gap_hold when it is in the tree)
-            self.assertIn(p.refusal(), {"transport_stall:feed_state_stopped_mismatch", "feed_gap_hold"})
-
+            self.assertIn(c0.FEED_BREAK_LATCH, p.bridge.state.latches)  # the `error` gap row is coverage-losing for the bridge
+            kinds = [json.loads(x)["kind"] for x in (Path(root) / "transport" / f"{ARM}.gaps.jsonl").read_text().splitlines()]
+            self.assertEqual(kinds, ["error"])
+            # new buys stop by the clock alone once the old copy ages out
+            self.assertEqual(c0.tape_gap_stream_problem(str(dst), os.lstat(dst).st_mtime_ns // 1_000_000 + c0.TAPE_GAP_STREAM_MAX_AGE_MS + 1), "tape_gap_stream_stale")
+            p.relay_pass(rows + [("gap_silence", t + 1)], wall_ms())  # the accepted copy plus a row: recovered
+            p.wait(lambda: p.puller.tg_fault is None)
+            p.wait(lambda: dst.read_bytes() == Path(p.relay_file).read_bytes())
+            self.assertEqual(p.rc, [])
+            self.assertEqual([json.loads(x)["kind"] for x in (Path(root) / "transport" / f"{ARM}.gaps.jsonl").read_text().splitlines()], ["error", "resume"])
 
     def test_a_retention_head_trim_between_two_relay_passes_keeps_the_pull_running_and_the_bridge_sees_the_new_gap(self):
         """QP CHANGES on #1105 (6527468544): relay v2 trims the front of its stream by 72 h. Real serve subprocess, real Puller thread, a Bridge on the wall clock; the 'relay'
@@ -579,30 +593,29 @@ class EndToEndTests(TmpCase):
             self.assertNotIn("mismatch", kinds)
             self.assertEqual(p.puller.tg_trimmed, 1)
 
-    def test_a_trim_that_is_not_retention_still_stops_the_pull_and_latches_via_the_status(self):
+    def test_a_young_front_trim_is_accepted_the_pull_keeps_running_and_the_copy_is_the_source(self):
         h = 3_600_000
         with manual_review(), EndToEnd(self.tmp, write_first=False) as p:
             dst = tg_path(p.e.raw["root"])
             t = wall_ms()
             p.relay_pass([("data_loss", t - 3 * h), ("gap_silence", t - 2 * h)], t)
             p.wait(lambda: dst.exists() and dst.read_bytes() == Path(p.relay_file).read_bytes())
-            before = dst.read_bytes()
-            p.relay_pass([("gap_silence", t - 2 * h)], wall_ms())  # the 3 h old row left: not retention
-            p.wait(lambda: bool(p.rc))
-            self.assertEqual(p.rc, [df.EXIT_MISMATCH])
-            self.assertEqual(dst.read_bytes(), before)
-            p.bridge.gap_tick(wall_ms())
-            self.assertIn(c0.FEED_BREAK_LATCH, p.bridge.state.latches)
+            g = wall_ms()
+            p.relay_pass([("gap_silence", t - 2 * h), ("data_loss", g)], g)  # the 3 h old row left (MAX_ROWS or a cold start; not 72 h retention), one row appended
+            p.wait(lambda: p.puller.tg_trimmed == 1)
+            p.wait(lambda: dst.read_bytes() == Path(p.relay_file).read_bytes())
+            self.assertEqual((p.puller.tg_trim_young, p.puller.tg_fault, p.rc), (1, None, []))
+            self.assertIsNone(p.refusal())
 
 
 class RelayContractTest(TmpCase):
     def test_the_real_relays_output_is_accepted_by_the_carry_and_serve_sends_it(self):
-        """The one test that runs the real tools/hv4_gap_relay.py (on a SYNTHETIC tape in a temp dir): its stream passes the carry's validator and goes out as a tg frame."""
+        """The one test that runs the real tools/hv4_gap_relay.py (on a SYNTHETIC tape in a temp dir, the hourly file name `tape-<UTC hour>.jsonl` that relay v2 reads; relay v1 reads any *.jsonl): its stream passes the carry's validator and goes out as a tg frame."""
         from tools import hv4_gap_relay as R
         tape = Path(self.tmp) / "tape"
         tape.mkdir()
         t = 1_791_300_000_000
-        (tape / "2026-10-06.jsonl").write_text(
+        (tape / "tape-2026-10-06T15.jsonl").write_text(
             json.dumps({"type": "gap", "kind": "process_restart", "t_recv_ms": t}) + "\n" + json.dumps({"type": "trade", "t_recv_ms": t + 1}) + "\n"
             + json.dumps({"type": "trade", "t_recv_ms": t + 1 + 60_001}) + "\n")
         out = Path(self.tmp) / "relay-out"

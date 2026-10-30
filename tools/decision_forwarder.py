@@ -10,11 +10,12 @@ Modes
              row    {"k":"row","f":<day file>,"o":<byte offset of the line>,"b":<the line, without its newline>}  (complete lines only)
              hb     {"k":"hb","ms":<remote ms>,"f":<file>,"o":<bytes consumed>}  every hb_ms
              tg     {"k":"tg","mt":<source mtime ms>,"n":<byte count>,"sha":<sha256 of the bytes>,"b":<the file's text>}  only with --tapegaps-file (below)
+             tf     {"k":"tf","why":"tapegaps_<reason>"}  a FAULT in the relay file at the source (below); sent once per file state, and serve carries on
            --tapegaps-file <abs path> (optional, also in the --from-env form; the flag is part of the pinned forced command, never of SSH_ORIGINAL_COMMAND): the
            hv4_gap_relay stream `<bot_id>.tapegaps.jsonl` (rows {"kind","ms"}, rewritten atomically on every relay pass, so its mtime is the relay's heartbeat). A tg frame
            goes out at connect and whenever the file's (inode, size, mtime) changes, i.e. on every pass, even with identical bytes. The file must be a regular file with
            st_nlink == 1, named exactly `<bot_id>.tapegaps.jsonl`, at most TAPEGAPS_MAX_BYTES (== hv4_live_c0.GAP_LOG_MAX_BYTES, a test pins it), UTF-8, every line an object
-           with exactly kind (str) and ms (int); a file that breaks that is a loud `bad` frame and exit (the puller stops). A missing file or a torn tail sends nothing (the
+           with exactly kind (str) and ms (int); a file that breaks that is a `tf` fault frame, once per file state, and serve does NOT exit (the decision rows keep flowing). A missing file or a torn tail sends nothing (the
            copy on the bridge host then goes stale). The seal gate below covers the tapegaps file too: if it resolves under /data/mal/arena (or aliases it) the same recorded-read
            gate applies. The relay out-dir is meant to be OUTSIDE /data/mal/arena.
            A root under /data/mal/arena (realpath, or an ancestor with the arena's inode: a bind or alias) is refused unless --reads-dir is given
@@ -27,13 +28,18 @@ Modes
            that its offset equals the local file size, then appends the same bytes + newline (O_APPEND, flock, fsync) to
            `<dst>/decisions/<bot_id>/<file>`. So the local log verifies with DecisionLog.verify and its md5 / day sha256 equal the source's.
            Side files under `<dst>/transport/` (NEVER inside decisions/, where any extra row would latch the bridge's chain_break):
-             <bot_id>.status.json   state, last frame instant, last remote heartbeat, seq, file, offset (atomic replace)
-             <bot_id>.gaps.jsonl    a gap row on: stall (no frame for stall_ms), resume, disconnect, reconnect, chain/offset mismatch, local torn tail
+             <bot_id>.status.json   state, last frame instant, last remote heartbeat, seq, file, offset (atomic replace); the key `tapegaps_fault` (a reason) exists only while a tapegaps fault is open
+             <bot_id>.gaps.jsonl    a gap row on: stall (no frame for stall_ms), resume, disconnect, reconnect, chain/offset mismatch, local torn tail, a tapegaps fault (kind `error`, why tapegaps_...; one row per episode), its end (kind `resume`, why tapegaps_recovered)
              <bot_id>.tapegaps.jsonl  the carried relay stream (only when serve sends tg frames). Every complete line is checked (object, exactly kind str + ms int, ms in range)
-                                    and the new bytes must START WITH the bytes already accepted, or be a RETENTION HEAD TRIM of them (the complete
-                                    lines equal the accepted lines minus a head of k >= 0 lines, plus appended lines, every removed line older than
-                                    TAPEGAPS_RETAIN_MS before max(newest kept row, the frame's mt): the relay's own 72 h retention). Any other shrink, or change of an
-                                    already-seen prefix, is a mismatch (exit 2, nothing written). Written atomically (tmp + fsync + rename + directory fsync; regular file, nlink 1) with its mtime set to the SOURCE pass instant
+                                    and the new bytes must START WITH the bytes already accepted, or be a FRONT TRIM of them: the complete lines are the accepted lines
+                                    minus a head of k >= 0 lines (a contiguous suffix), plus appended lines, WHATEVER the age of the dropped rows (the relay's 72 h
+                                    retention, its MAX_ROWS cap, a cold start; the age against TAPEGAPS_RETAIN_MS is only logged and counted). The one exception is a
+                                    new file with no accepted row left whose dropped rows are still inside the window. Anything else (a middle or tail row changed or
+                                    removed, a row inserted, a reorder) is a tapegaps FAULT, never a stop: the puller keeps running and the decision rows keep flowing,
+                                    the copy is NOT touched (old content, old mtime, so it ages out and the bridge refuses new buys), one `error` gap row and a status
+                                    note record it, a later frame that is again the accepted copy plus a front trim and appended rows ends it (a `resume` row), and so
+                                    does a puller restart (the first tg frame of a process is the source as it is, a resync). Same for a bad frame or a `tf` frame.
+                                    Written atomically (tmp + fsync + rename + directory fsync; regular file, nlink 1) with its mtime set to the SOURCE pass instant
                                     (os.utime), so a dead relay shows stale on this host. The accepted bytes are the baseline after a restart. NEVER written under decisions/.
                                     status.json keys are unchanged (decision_forwarder_v1); a rejected tg frame is a `mismatch` row in gaps.jsonl.
            A chain or offset mismatch stops the puller (exit 2) and appends nothing. A disconnect reconnects with backoff and resumes at
@@ -80,6 +86,7 @@ TAPEGAPS_SUFFIX = ".tapegaps.jsonl"
 TAPEGAPS_MAX_BYTES = 8_000_000  # == tools.hv4_live_c0.GAP_LOG_MAX_BYTES (the bridge refuses a bigger gap log); copied so the puller stays light, a test pins the equality
 TAPEGAPS_FRAME_MAX = MAX_FRAME_BYTES - 4096  # a tg frame (the text JSON-escaped) must fit the puller's receive cap; a file that would not is refused loudly at serve
 TAPEGAPS_MS_MAX = 4_102_444_800_000  # 2100-01-01T00:00Z: an `ms` beyond this (ns instead of ms, say) would make the bridge's gap-free window unreachable forever
+TAPEGAPS_FAULT_RE = re.compile(r"^tapegaps_[a-z0-9_]{1,60}\Z")  # the only form of a fault reason that is logged or written to the status (a closed vocabulary; never file content)
 TAPEGAPS_RETAIN_MS = 259_200_000  # 72 h == tools/hv4_gap_relay.py RETAIN_MS (relay v2, PR #1098): the relay drops rows older than this before its newest instant; copied so the puller stays light, a test compares them when the relay module has the attribute
 
 
@@ -141,36 +148,33 @@ def tapegaps_problem(data: bytes) -> str | None:
     return None
 
 
-def tapegaps_replace_problem(old: bytes, new: bytes, mt_ms: int) -> tuple[str | None, int]:
-    """(None, k) when `new` may replace `old` as the carried stream, else (why, 0). `new` is accepted when its complete lines equal `old`'s lines with a HEAD of k >= 0 lines
-    removed, followed by zero or more appended lines, and every removed head line is older than the retention bound: its ms is below (the newest instant) - TAPEGAPS_RETAIN_MS,
-    where the newest instant is max(the newest kept row's ms, mt_ms = the relay's pass instant). That is exactly the relay's own trim (RETAIN_MS before its newest instant, which
-    can be the tape's top instant and so later than its newest row; mt_ms is never earlier than that). Anything else is refused: a middle or tail row changed or removed, a row
-    inserted before the seen ones, a reorder, a shrink that is not a head trim, or a head trim of a row that is NOT older than the bound (a coverage loss). Both inputs have passed
-    tapegaps_problem (complete, valid lines)."""
+def tapegaps_replace_problem(old: bytes, new: bytes, mt_ms: int) -> tuple[str | None, int, int]:
+    """(None, k, young) when `new` may replace `old` as the carried stream, else (why, 0, 0). `new` is accepted when its complete lines are `old`'s lines with a HEAD of
+    k >= 0 lines removed (a contiguous SUFFIX of the old lines, which can be the whole of them for k == 0) followed by zero or more appended lines. Whatever the reason the
+    relay dropped the head (its 72 h retention, its MAX_ROWS cap, a cold start that re-read only a short stretch of tape), the age of the dropped rows is a NOTE, not a
+    condition: `young` is how many removed rows are NOT older than TAPEGAPS_RETAIN_MS before max(newest row of `new`, mt_ms), for the caller to log. One exception: k == n, i.e.
+    no old row survives (the empty suffix would otherwise match any file at all): that is a trim only when every old row is older than that bound; a wholesale replacement of rows
+    still inside the window is a fault. Refused (the caller turns it into a fault, the copy is not updated): a middle or tail row changed or removed, a row inserted before the
+    seen ones, a reorder, a shrink that is not a head trim. The ORDER of appended rows is not checked here. Both inputs have passed tapegaps_problem."""
     if new.startswith(old):
-        return None, 0  # unchanged, or appended only (k == 0)
+        return None, 0, 0  # unchanged, or appended only (k == 0)
     old_lines, new_lines = old.split(b"\n")[:-1], new.split(b"\n")[:-1]
     n = len(old_lines)
-    newest = max([mt_ms] + [json.loads(ln)["ms"] for ln in new_lines])
-    bound = newest - TAPEGAPS_RETAIN_MS
-    kmax = 0
-    while kmax < n and json.loads(old_lines[kmax])["ms"] < bound:
-        kmax += 1
-    head_trim_young = False
+    bound: int | None = None
     for k in range(1, n + 1):
         if k < n and (not new_lines or new_lines[0] != old_lines[k]):
             continue  # cheap first-line test before the full comparison
         if new_lines[:n - k] != old_lines[k:]:
             continue
-        if k <= kmax:
-            return None, k
-        head_trim_young = head_trim_young or k < n  # (k == n is "everything replaced", reported as a shrink or a changed prefix)
-    if head_trim_young:
-        return "head_trim_not_retention", 0  # the shape of a head trim, but a removed row is not older than the retention bound
+        if bound is None:
+            bound = max([mt_ms] + [json.loads(ln)["ms"] for ln in new_lines]) - TAPEGAPS_RETAIN_MS
+        young = sum(1 for ln in old_lines[:k] if json.loads(ln)["ms"] >= bound)
+        if k == n and young:
+            continue
+        return None, k, young
     if len(new) < len(old):
-        return f"shrank_{len(old)}_to_{len(new)}", 0
-    return "prefix_changed", 0
+        return f"shrank_{len(old)}_to_{len(new)}", 0, 0
+    return "prefix_changed", 0, 0
 
 
 def tapegaps_path_problem(path: str, bot_id: str) -> str | None:
@@ -362,55 +366,62 @@ class Server:
         if out:
             self._write(b"".join(out))
 
+    def _tf(self, key: tuple[int, int, int, int], why: str) -> int:
+        """A tapegaps FAULT at the source: one `tf` frame {"k":"tf","why":...} (a reason from a closed vocabulary, never file content), sent once per file state (the key), and
+        serve CARRIES ON: the decision rows and heartbeats keep flowing. The puller turns it into a gap row and a status note and leaves its copy alone, so the copy goes stale."""
+        self._tg_key = key
+        self._write(self.frame({"k": "tf", "why": why}))
+        return 1
+
     def poll_tapegaps(self) -> int:
         """Sends one `tg` frame when the relay stream is new at connect or its (inode, size, mtime) changed (the relay replaces the file on every pass, so this is the
         heartbeat as well as the content). Returns the number of frames written. The path is opened with O_NOFOLLOW and judged by the open fd, so the relay's own atomic
         replace between a stat and the open is not an error. Not sent (the bridge-side copy then ages out): a missing file, a torn tail, a file that changes while it is read.
-        A loud `bad` frame and exit: a symlink / non-regular / hard-linked file, an oversize or non-UTF-8 file, a malformed row, a frame too big for the puller."""
+        A `tf` fault frame (once per file state; serve does NOT exit, the decision stream is not stopped): a symlink / non-regular / hard-linked file, an oversize or non-UTF-8
+        file, a malformed row, a frame too big for the puller."""
         path = self.tapegaps_file
         if not path:
             return 0
-        name = os.path.basename(path)
-        out: list[bytes] = []
         try:
             ls = os.lstat(path)
         except FileNotFoundError:
             return 0
-        if not stat.S_ISREG(ls.st_mode):
-            self._bad(out, name, 0, "tapegaps_not_regular")  # a symlink, directory or FIFO is refused before anything is opened
-        if (ls.st_dev, ls.st_ino, ls.st_size, ls.st_mtime_ns) == self._tg_key:
+        key0 = (ls.st_dev, ls.st_ino, ls.st_size, ls.st_mtime_ns)
+        if key0 == self._tg_key:
             return 0
+        if not stat.S_ISREG(ls.st_mode):
+            return self._tf(key0, "tapegaps_not_regular")  # a symlink, directory or FIFO is refused before anything is opened
         try:
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)  # O_NONBLOCK: a FIFO swapped in after the stat cannot hang the open
         except FileNotFoundError:
             return 0  # replaced away between the stat and the open: the next poll sees the new file
         except OSError as exc:
-            self._bad(out, name, 0, "tapegaps_not_regular" if exc.errno in (errno.ELOOP, errno.ENOTDIR) else "tapegaps_unreadable")
+            return self._tf(key0, "tapegaps_not_regular" if exc.errno in (errno.ELOOP, errno.ENOTDIR) else "tapegaps_unreadable")
         with os.fdopen(fd, "rb") as fh:
             fs = os.fstat(fh.fileno())
+            key = (fs.st_dev, fs.st_ino, fs.st_size, fs.st_mtime_ns)
             if not stat.S_ISREG(fs.st_mode):
-                self._bad(out, name, 0, "tapegaps_not_regular")
+                return self._tf(key, "tapegaps_not_regular")
             if fs.st_nlink != 1:
-                self._bad(out, name, 0, "tapegaps_hardlink")
+                return self._tf(key, "tapegaps_hardlink")
             if fs.st_size > TAPEGAPS_MAX_BYTES:
-                self._bad(out, name, 0, "tapegaps_too_large")
+                return self._tf(key, "tapegaps_too_large")
             data = fh.read(TAPEGAPS_MAX_BYTES + 1)
             fs2 = os.fstat(fh.fileno())
         if len(data) > TAPEGAPS_MAX_BYTES:
-            self._bad(out, name, 0, "tapegaps_too_large")
+            return self._tf(key, "tapegaps_too_large")
         if (fs2.st_size, fs2.st_mtime_ns) != (fs.st_size, fs.st_mtime_ns) or len(data) != fs.st_size:
             return 0  # a non-atomic writer was at it: read again on the next poll
-        key = (fs.st_dev, fs.st_ino, fs.st_size, fs.st_mtime_ns)
         why = tapegaps_problem(data)
         if why == "torn_tail":
             self._tg_key = key  # do not re-read an unchanged torn file every poll; any further write changes the key
-            print(f"decision_forwarder TAPEGAPS torn tail in {name}: not sent", file=sys.stderr, flush=True)
+            print(f"decision_forwarder TAPEGAPS torn tail in {os.path.basename(path)}: not sent", file=sys.stderr, flush=True)
             return 0
         if why:
-            self._bad(out, name, 0, "tapegaps_" + why)
+            return self._tf(key, "tapegaps_" + why)
         frame = self.frame({"k": "tg", "mt": fs.st_mtime_ns // 1_000_000, "n": len(data), "sha": hashlib.sha256(data).hexdigest(), "b": data.decode("utf-8")})
         if len(frame) > TAPEGAPS_FRAME_MAX:
-            self._bad(out, name, 0, "tapegaps_frame_too_large")
+            return self._tf(key, "tapegaps_frame_too_large")
         self._tg_key = key
         self._write(frame)
         return 1
@@ -493,7 +504,11 @@ class Puller:
         self.tg_data: bytes | None = None  # the tapegaps bytes accepted so far (the baseline every later frame must extend)
         self.tg_mt: int | None = None
         self.tg_frames = 0
-        self.tg_trimmed = 0  # rows dropped from the head of the carried stream so far by accepted retention trims (a counter; not in status.json)
+        self.tg_trimmed = 0  # rows dropped from the head of the carried stream so far by accepted head trims (a counter)
+        self.tg_trim_young = 0  # of those, rows NOT older than the retention bound (logged as a note; a trim is accepted whatever the age)
+        self.tg_fault: str | None = None  # the reason of the open tapegaps fault (also status.json `tapegaps_fault`, present only while one is open), else None
+        self.tg_faults = 0  # tapegaps fault events so far (frames refused, `tf` frames)
+        self._tg_first = True  # the first accepted tg frame of this process is a RESYNC from the source (a restart is the recovery from a fault)
         self.lat_fh = open(latency_log, "a", encoding="utf-8") if latency_log else None
         self.prev, self.seq = GENESIS, -1
         self.file, self.offset = "", 0
@@ -539,6 +554,8 @@ class Puller:
         st = {"schema": SCHEMA, "bot": self.bot_id, "state": self.state, "ms": self._ms(), "last_frame_ms": self.last_frame_ms,
               "last_remote_ms": self.last_remote_ms, "seq": self.seq, "f": self.file, "o": self.offset, "rows": self.rows, "gaps": self.gaps,
               "stall_ms": self.stall_ms, "pid": os.getpid()}
+        if self.tg_fault is not None:
+            st["tapegaps_fault"] = self.tg_fault  # a note only while a fault is open; the state stays `connected` (the decision feed is healthy)
         tmp = self.status_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(st, sort_keys=True) + "\n")
         os.replace(tmp, self.status_path)
@@ -619,35 +636,57 @@ class Puller:
         finally:
             os.close(dfd)
 
+    def _tapegaps_fault(self, why: object) -> None:
+        """A fault in the carried relay stream (a bad frame or file, or a new file that is not the accepted one with a head trim and appended rows). The puller does NOT stop
+        and the decision rows keep flowing; the tapegaps copy is NOT touched, so it keeps its old content and its old mtime and goes stale (the bridge refuses new buys on a
+        stale stream; exits keep running). One gap row per episode (and per change of reason): kind `error`, which the bridge's GAP_BREAK_KINDS counts as coverage-losing, so a
+        fault fails closed; a status note while it is open. It ends when a later frame is again the accepted copy with a head trim and appended rows (a `resume` row), or at a restart."""
+        if not isinstance(why, str) or not TAPEGAPS_FAULT_RE.match(why):
+            why = "tapegaps_bad_fault_frame"
+        self.tg_faults += 1
+        new = why != self.tg_fault
+        self.tg_fault = why
+        if new:
+            self.gap("error", why=why, tapegaps_fault=True)
+        self.write_status()
+
     def _handle_tapegaps(self, frame: dict) -> None:
-        """One tg frame. Every check runs before anything is written; any failure is a Mismatch (the puller stops, exit 2, and the file on disk is untouched)."""
+        """One tg frame. Every check runs before anything is written; a refused frame is a tapegaps FAULT (see _tapegaps_fault), never a stop, and the file on disk is untouched.
+        An OSError while writing is a local failure and still propagates."""
         mt, text, sha, n = frame.get("mt"), frame.get("b"), frame.get("sha"), frame.get("n")
         if (isinstance(mt, bool) or not isinstance(mt, int) or not 0 < mt <= TAPEGAPS_MS_MAX or not isinstance(text, str) or not isinstance(sha, str)
                 or isinstance(n, bool) or not isinstance(n, int)):
-            raise Mismatch("bad_tapegaps_frame")
+            return self._tapegaps_fault("tapegaps_bad_frame")
         try:
             data = text.encode("utf-8")
         except UnicodeEncodeError:
-            raise Mismatch("tapegaps_not_utf8") from None
+            return self._tapegaps_fault("tapegaps_not_utf8")
         if len(data) != n or hashlib.sha256(data).hexdigest() != sha:
-            raise Mismatch("tapegaps_sha_mismatch")
+            return self._tapegaps_fault("tapegaps_sha_mismatch")
         why = tapegaps_problem(data)
         if why:
-            raise Mismatch("tapegaps_" + why)
+            return self._tapegaps_fault("tapegaps_" + why)
         old = self.tg_data
-        trimmed = 0
-        if old is not None and data != old:
-            why, trimmed = tapegaps_replace_problem(old, data, mt)
+        trimmed = young = 0
+        if old is not None and data != old and not self._tg_first:
+            why, trimmed, young = tapegaps_replace_problem(old, data, mt)
             if why:
-                raise Mismatch("tapegaps_" + why)
+                return self._tapegaps_fault("tapegaps_" + why)
         self._write_tapegaps(data, mt)
         changed = data != old
         self.tg_data, self.tg_mt = data, mt
         self.tg_frames += 1
+        self._tg_first = False
         self.tg_trimmed += trimmed
+        self.tg_trim_young += young
+        if self.tg_fault is not None:
+            self.tg_fault = None
+            self.gap("resume", why="tapegaps_recovered")
+            self.write_status()
         if changed:
             rows = data.count(b"\n")
-            print(f"decision_forwarder TAPEGAPS rows={rows} mt={mt}" + (f" head_trimmed={trimmed}" if trimmed else ""), file=sys.stderr, flush=True)
+            note = f" head_trimmed={trimmed} younger_than_retention={young}" if trimmed else ""
+            print(f"decision_forwarder TAPEGAPS rows={rows} mt={mt}{note}", file=sys.stderr, flush=True)
 
     def _check(self, line: bytes) -> tuple[dict, str, int]:
         """Checks one row against the current head and returns (row, new prev, new seq). It does NOT move the head: the caller commits the
@@ -675,6 +714,9 @@ class Puller:
             return
         if k == "tg":
             self._handle_tapegaps(frame)
+            return
+        if k == "tf":
+            self._tapegaps_fault(frame.get("why"))
             return
         if k == "refused" or k == "bad":
             raise Mismatch(f"remote_{k}_{frame.get('why')}")
