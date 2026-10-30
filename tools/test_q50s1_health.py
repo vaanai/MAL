@@ -68,6 +68,7 @@ class Fixture(unittest.TestCase):
         rows += [(T0 + i * 60, {"type": "hb", "counters": {"triggers": 3}, "open_pools": 2}) for i in range(1, dur // 60 + 1)]
         rows += [(T0 + 100, {"type": "trigger", "variant": "pv", "pool": "POOLX", "mint": "MINTX"}), (T0 + 500, {"type": "outcome", "variant": "pv", "pool": "POOLX", "pnl": 1.0})]
         rows += list(gaps) + list(extra)
+        rows += [(T0 + dur + 1, {"type": "stop", "counters": {"x": 1}})]  # the SIGTERM stop row (QP C3)
         self.write_rows(rows)
         self.rss.write_text("".join(f"{T0 + i * 60}\t{rss_bytes(i * 60)}\t7\n" for i in range(dur // 60 + 1)))
         return dur
@@ -139,6 +140,18 @@ class SmokeJudge(Fixture):
                 rc, out = self.judge(dur, alive="no" if name == "dead" else "yes")
                 self.assertEqual(rc, 1, out)
                 self.assertIn("SMOKE_ITEM c FAIL", out)
+
+    def test_c_requires_exactly_one_stop_row(self):
+        self.healthy()
+        for p in self.out.iterdir():
+            p.write_text("".join(ln for ln in p.read_text().splitlines(keepends=True) if '"type":"stop"' not in ln))
+        rc, out = self.judge(25200)
+        self.assertIn("SMOKE_ITEM c FAIL", out)
+        self.assertIn("stop_rows_not_one", out)
+        self.write_rows([(T0 + 25300, {"type": "stop"}), (T0 + 25301, {"type": "stop"})])
+        rc, out = self.judge(25200)
+        self.assertIn("stop_rows=2", out)
+        self.assertIn("SMOKE_ITEM c FAIL", out)
 
     def test_known_warnings_are_report_only(self):
         dur = self.healthy()
@@ -261,9 +274,10 @@ class CleanLog(Fixture):
                             "2026-11-03 09:00:00,000 WARNING mal.h5_shadow feed error ConnectionClosed: 1006\n"
                             "some other line with POOLY in it\n")
 
-    def clean(self, active="yes", since=None):
+    def clean(self, active="yes", since=None, cmdline="0", environ="0", journal="0"):
         return run(["clean-log", "--out-dir", str(self.out), "--job-log", str(self.job), "--scope-active", active,
-                    "--scope-since-epoch", str(T0 if since is None else since), "--now-epoch", str(self.now)])
+                    "--scope-since-epoch", str(T0 if since is None else since), "--now-epoch", str(self.now),
+                    "--cmdline-key-count", cmdline, "--environ-key-count", environ, "--journal-key-count", journal, "--proc-mount", "rw,nosuid,nodev,noexec,relatime"])
 
     def test_clean(self):
         self.book()
@@ -287,6 +301,10 @@ class CleanLog(Fixture):
             "hb_last_hour": dict(hb_minutes=50),
             "status_fresh": dict(status_age=600),
             "no_key_string": dict(log_text="q50s1-shadow: starting rule x\nfeed error wss://x/?api-key=zzz\n"),
+            "no_key_in_start_rows": dict(extra_rows=[]),
+            "no_key_in_cmdline": dict(cmdline="1"),
+            "no_key_in_environ": dict(environ="unreadable"),
+            "no_key_in_journal": dict(journal="unreadable"),
         }
         for name, kw in cases.items():
             with self.subTest(name=name):
@@ -294,7 +312,10 @@ class CleanLog(Fixture):
                     p.unlink()
                 book_kw = {k: v for k, v in kw.items() if k in ("hb_minutes", "extra_rows", "log_text", "status_age")}
                 self.book(**book_kw)
-                rc, out = self.clean(**{k: v for k, v in kw.items() if k in ("active", "since")})
+                if name == "no_key_in_start_rows":  # a start row whose logged argv still carries a key
+                    f = sorted(self.out.glob("h5-shadow-*.jsonl"))[0]
+                    f.write_text(f.read_text().replace('"argv":["--fresh-forward","ARENA"]', '"argv":["--ws-url","wss://x/?api-key=zzz"]'))
+                rc, out = self.clean(**{k: v for k, v in kw.items() if k in ("active", "since", "cmdline", "environ", "journal")})
                 self.assertEqual(rc, 1, out)
                 self.assertIn(f"{name}=NO", out)
 

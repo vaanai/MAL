@@ -277,7 +277,8 @@ def smoke_judge(a: argparse.Namespace) -> int:
     alive = a.alive_at_end == "yes"
     c_bad = {"alive_at_end": not alive, "proc_log_missing": bool(ltot["log_missing"]), "proc_log_tracebacks": ltot["traceback"] > 0,
              "error_or_critical_lines": (ltot["error"] + ltot["critical"]) > 0, "pid_changes": pid_changes > 0, "samples_without_process": bool(gone),
-             "errors_log_tracebacks": err_tb > 0, "error_rows": c["error"] > 0}
+             "errors_log_tracebacks": err_tb > 0, "error_rows": c["error"] > 0,
+             "stop_rows_not_one": c["stop"] != 1}  # QP C3: the SIGTERM shutdown path (close_all, then one stop row) is what the 11-19 handover relies on
     print(f"SMOKE_ITEM c {'PASS' if not any(c_bad.values()) else 'FAIL'} alive_at_end={a.alive_at_end} proc_log_tracebacks={ltot['traceback']} "
           f"error_lines={ltot['error']} critical_lines={ltot['critical']} pid_changes={pid_changes} samples_without_process={len(gone)} "
           f"errors_log_bytes={err_bytes} errors_log_tracebacks={err_tb} error_rows={c['error']} stop_rows={c['stop']} failing=[{','.join(k for k, v in c_bad.items() if v)}]")
@@ -359,10 +360,17 @@ def clean_log(a: argparse.Namespace) -> int:
         "hb_last_hour": hb_recent >= need_hb,
         "status_fresh": st_age is not None and st_age <= STATUS_MAX_AGE_S,
         "no_key_string": count_mark(job_log) == 0 and count_mark(errlog) == 0,
+        "no_key_in_start_rows": sum(KEY_MARK in ln for ln in rows["start_lines"]) == 0,
+        "no_key_in_cmdline": a.cmdline_key_count == "0",
+        "no_key_in_environ": a.environ_key_count == "0",
+        "no_key_in_journal": a.journal_key_count == "0",
     }
     print(f"CLEAN_CHECKS " + " ".join(f"{k}={'ok' if v else 'NO'}" for k, v in checks.items()))
     print(f"CLEAN_FIGURES scope_up_s={up if up is not None else '-'} starting_lines={starting} start_rows={c['start']} stop_rows={c['stop']} tracebacks={tot['traceback']} "
           f"error_lines={tot['error']} critical_lines={tot['critical']} hb_rows_last_hour={hb_recent} need>={need_hb} status_age_s={st_age if st_age is not None else '-'}")
+    print(f"CLEAN_KEY_COUNTS start_rows={sum(KEY_MARK in ln for ln in rows['start_lines'])} job_log={count_mark(job_log)} errors_log={count_mark(errlog)} "
+          f"proc_cmdline={a.cmdline_key_count} proc_environ_key_var={a.environ_key_count} user_journal_since_start={a.journal_key_count} proc_mount_options={a.proc_mount or '-'} "
+          "(DEC-031 Amendment 22 item 10: every count 0; an unreadable one is NOT_CLEAN. S*'s h5-shadow-errors.log is the one path the launcher's redaction does not cover)")
     print(f"CLEAN_REPORT_ONLY error_rows={c['error']} errors_log_bytes={errlog.stat().st_size if errlog.exists() else 0} "
           + " ".join(f"{k}={tot[k]}" for k, _ in KNOWN_WARNINGS) + f" warning_other={tot['warning_other']}")
     for hour in sorted(per_hour)[-int(a.hours):]:  # the newest hours that have a timestamped log line
@@ -426,6 +434,10 @@ def main(argv=None) -> int:
     c.add_argument("--scope-since-epoch", default=None)
     c.add_argument("--now-epoch", default=None)
     c.add_argument("--hours", type=int, default=3)
+    c.add_argument("--cmdline-key-count", default="unread", help="lines with the key string in /proc/<pid>/cmdline of the scope's processes, or unreadable")
+    c.add_argument("--environ-key-count", default="unread", help="HELIUS_API_KEY= entries in /proc/<pid>/environ of the scope's processes, or unreadable")
+    c.add_argument("--journal-key-count", default="unread", help="user-journal lines since the scope start with the key string, or unreadable")
+    c.add_argument("--proc-mount", default=None, help="findmnt -no OPTIONS /proc (printed, report-only)")
     d = sub.add_parser("dry-filter")
     d.add_argument("--json", required=True)
     d.add_argument("--mode", choices=("dry", "score"), default="dry")
