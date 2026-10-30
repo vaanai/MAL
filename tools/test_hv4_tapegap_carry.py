@@ -531,7 +531,8 @@ class EndToEndTests(TmpCase):
             p.bridge.gap_tick(wall_ms())
             self.assertIn(c0.FEED_BREAK_LATCH, p.bridge.state.latches)
             self.assertIn("mismatch", [json.loads(x)["kind"] for x in (Path(p.e.raw["root"]) / "transport" / f"{ARM}.gaps.jsonl").read_text().splitlines()])
-            self.assertEqual(p.refusal(), "transport_stall:feed_state_stopped_mismatch")
+            # buys are refused; which reason is reported first depends on the gap-hold ordering of #1090 (feed_gap_hold when it is in the tree)
+            self.assertIn(p.refusal(), {"transport_stall:feed_state_stopped_mismatch", "feed_gap_hold"})
 
 
 class RelayContractTest(TmpCase):
