@@ -159,7 +159,8 @@ class Pass(Base):
         rep = json.loads((self.out / "q50-read.json").read_text())
         self.assertEqual(rep["books_file"]["sha256"], "819c699d74a2fab8b8c67916a5732e54950d158c514d8fa24dabc9b65b7665c0")
         self.assertEqual(rep["books"][Q50]["read_instant_ms"], B)
-        self.assertEqual(rep["multiplicity"]["N"], 40)
+        self.assertEqual(rep["multiplicity"]["N"], 14)
+        self.assertRegex(log, r"python_version=3\.\d+\.\d+ numpy=\d")
         self.assertTrue(json.loads((self.out / "q50-inband.json").read_text().splitlines()[0])["band"]["quote_source"] == "shadow-wsol")
         self.assertEqual(list(self.out.glob("wt-a31d9864*")), [], "the run's worktree is removed at exit")
         rc, log2 = self.run_script()
@@ -328,7 +329,9 @@ class Pass(Base):
         cases = {"N_BOOKS=0\nC=1\n" + sd: "N_BOOKS", "N_BOOKS=5\nC=1\nFOO=1\n" + sd: "unknown key", "N_BOOKS=5\nC=1\nPRIOR_READ=h5v1q50-boostfloor-a1=FAIL\n" + sd: "cannot name",
                  "N_BOOKS=5\nC=1\nOTHER_P=x=1.5\n" + sd: "OTHER_P", "N_BOOKS=2\nC=1\nPRIOR_READ=a=FAIL\nPRIOR_READ=b=FAIL\n" + sd: "smaller than the books read",
                  "N_BOOKS=5\nC=1\nSHADOW_DIR=/tmp\n": "SHADOW_DIR must be", "N_BOOKS=5\nC=1\n": "at least one SHADOW_DIR",
-                 "N_BOOKS=5\nC=1\nPRIOR_READ=a=FAIL (n < 100)\n" + sd: "PRIOR_READ must be"}
+                 "N_BOOKS=5\nC=1\nPRIOR_READ=a=FAIL (n < 100)\n" + sd: "PRIOR_READ must be",
+                 "N_BOOKS=5\nC=1\nPRIOR_READ=a=FAIL\nPRIOR_READ=a=PASS\n" + sd: "PRIOR_READ names a twice",
+                 "N_BOOKS=5\nC=1\nOTHER_P=a=0.1\nOTHER_P=a=0.2\n" + sd: "OTHER_P names a twice"}
         for text, want in cases.items():
             self.set_params(text)
             rc, log = self.run_script()
@@ -375,6 +378,24 @@ class Pass(Base):
         self.assertEqual(rc, 2, log)
         self.assertIn("the post-read already ran", log)
 
+    def test_c5_a_postread_refusal_after_the_verdict_exits_5_never_2(self):
+        def racer():  # create a legs output file as soon as the read has started (after check_fresh, before the post-read)
+            for _ in range(600):
+                if (self.out / "q50-read.out").exists():
+                    (self.out / "q50-legs.out").write_text("")
+                    return
+                time.sleep(0.02)
+        th = threading.Thread(target=racer)
+        th.start()
+        rc, log = self.run_script()
+        th.join()
+        self.assertEqual(rc, 5, log)
+        self.assertIn(f"VERDICT bot={Q50} STATUS PASS", log)
+        self.assertIn("POSTREAD REFUSED: cannot create the legs output files", log)
+        self.assertNotIn("REFUSED:", log.replace("POSTREAD REFUSED:", ""))
+        for n in ("q50-read.out", "q50-read.err", "q50-read.json"):
+            self.assertFalse((self.out / n).stat().st_mode & 0o222, f"{n} is writable")
+
     def test_setup_copies_v2_only(self):
         self.out = self.root / "out2"
         self.out.mkdir()
@@ -391,6 +412,64 @@ class Pass(Base):
         rc, log = self.run_script("--setup")
         self.assertEqual(rc, 2, log)
         self.assertIn("not v2 any more", log)
+
+
+class Snippets(unittest.TestCase):
+    """The script's own code, extracted byte for byte (QP CHANGES 1 and 2)."""
+    def inband_snippet(self) -> str:
+        t = SCRIPT.read_text()
+        a = t.index("\"$PY\" -I -c 'import json, re, sys")
+        a = t.index("'", a) + 1
+        b = t.index("' \"$O/q50-inband.json\"", a)
+        return t[a:b]
+
+    def summarize(self, cells: dict, main: bool, own=None) -> str:
+        d = Path(tempfile.mkdtemp(prefix="q50-inband-snippet-", dir=SCRATCH))
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        f = d / "x.json"
+        doc = {"band": {"quote_source": "shadow-wsol"}, "in_band_gate_all_pass": main, "in_band": cells}
+        if own is not None:
+            doc["in_band_own_refit_report_only"] = own
+        f.write_text(json.dumps(doc) + "\n" + json.dumps({"type": "sha256", "sha256": "x"}) + "\n")
+        r = subprocess.run([PY, "-I", "-c", self.inband_snippet(), str(f)], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return r.stdout
+
+    def test_c1_a_majority_miss_is_a_fail_not_not_decidable(self):
+        out = self.summarize({"flat_1p9_total": {"gate_pass": False, "gate_misses": ["days positive 2/5 is not a majority"]}}, False)
+        self.assertIn("in_band_not_decidable=False", out)
+        self.assertIn("INBAND VERDICT FAIL: C0 is blocked", out)
+        self.assertNotIn("NOT_DECIDABLE", out.split("in_band_not_decidable=False", 1)[1])
+
+    def test_c1_n_below_100_with_a_ci_miss_is_not_decidable(self):
+        out = self.summarize({"flat_1p9_total": {"gate_pass": False, "gate_misses": ["n 95 < 100", "CI90 lo -0.001 <= 0"]},
+                              "press_1p9_sc": {"gate_pass": False, "gate_misses": ["days 4 < 5"]}}, False)
+        self.assertIn("in_band_not_decidable=True", out)
+        self.assertIn("[in-band NOT_DECIDABLE: n below 100 or fewer than 5 days]", out)
+
+    def test_c2_mask_drops_digits_and_their_signs(self):
+        t = SCRIPT.read_text()
+        fn = next(x for x in t.splitlines() if x.startswith("mask()"))
+        r = subprocess.run(["dash", "-c", fn + "\nprintf '%s\\n' 'REFUSED x: the 5th percentile -0.00123 != the ci90_lo_sol +0.004 e-5' | mask"], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("-#", r.stdout)
+        self.assertNotIn("+#", r.stdout)
+        self.assertFalse(any(ch.isdigit() for ch in r.stdout), r.stdout)
+
+
+class EndMismatch(Base):
+    kind = "endmismatch"
+
+    def test_c3_worst_in_slot_not_measured_exits_5_and_in_band_still_runs(self):
+        rc, log = self.run_script()
+        self.assertEqual(rc, 5, log)
+        self.assertIn(f"VERDICT bot={Q50} STATUS PASS", log)
+        self.assertIn("LEGS tool_exit=4 worst_in_slot_measured=False", log)
+        self.assertIn("FLAG worst-in-slot NOT MEASURED: no canary proposal", log)
+        self.assertIn("INBAND VERDICT PASS", log)
+        self.assert_status_only(log)
+        for n in self.outputs():
+            self.assertFalse((self.out / n).stat().st_mode & 0o222, f"{n} is writable")
 
 
 class Fail(Base):

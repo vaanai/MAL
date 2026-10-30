@@ -1,7 +1,8 @@
 """Synthetic Q50 fixture tree for scripts/ops/q50-read.sh (no real ledger, shadow dir or applied log is opened). PAPER ONLY.
 
 Run with PYTHONPATH = a checkout of a31d9864 (the read tools' tests build the rows):  python q50_read_fixture_build.py ROOT KIND
-KIND: pass (11 of 12 pools win), fail (every pool loses), ended (98 counted trades: no boundary by the end-seal), mismatch (a READ record whose refusal count differs from the ledger).
+KIND: pass (11 of 12 pools win), fail (every pool loses), ended (98 counted trades: no boundary by the end-seal), mismatch (a READ record whose refusal count differs from the ledger),
+endmismatch (pass, but every strip in the shadow dir is altered after pricing, so the legs tool's END consistency fails: worst-in-slot NOT MEASURED).
 The fixture uses the REAL Q50 clock (2026-10-25T00:00Z) and end-seal, so the script's production constants apply unpatched: 24 pools a day on 10-25..10-29 (5 dates, 120 counted)
 gives B = 2026-10-30T00:00Z. Written by the code that writes them: the rows by tools/test_arena_h5_read's builder (arena_h5_score.price_trade / ledger_rows / write_ledger), the Am.11
 record by tools/arena_h5_q50_instant.record_doc / record. The shadow dir holds one pv trigger (v_print) and the strip of every pool; pools with i % 8 == 7 are out of the V band.
@@ -21,7 +22,7 @@ from tools.test_arena_h5_books import V2_TEXT
 
 CLOCK, END = 1_792_886_400_000, 1_793_923_200_000
 root, kind = Path(sys.argv[1]).resolve(), sys.argv[2]
-assert kind in ("pass", "fail", "ended", "mismatch"), kind
+assert kind in ("pass", "fail", "ended", "mismatch", "endmismatch"), kind
 Q50 = qi.Q50_ID
 TR.BT0 = int(datetime(2026, 10, 25, tzinfo=timezone.utc).timestamp())  # make_book / make_pool read the module global at call time
 arena = root / "arena"
@@ -43,6 +44,8 @@ recs = []
 for d, i, k, _counted in book["pools"]:
     trig, _out, strip = TR.make_pool(d, i, k)
     recs.append(dict(trig, v_print=18_000_000_000 if i % 8 == 7 else 17_600_000_000))
+    if kind == "endmismatch":  # not the strip the scorer priced: the exit prints move, so END re-pricing differs from the ledger rows
+        strip = dict(strip, rows=[[r[0], r[1] * 1.5, r[2] * 1.5, r[3]] for r in strip["rows"]], post_last=[strip["post_last"][0], strip["post_last"][1] * 1.5, strip["post_last"][2] * 1.5, strip["post_last"][3]])
     recs.append(strip)
 (shadow / "h5-shadow-2026-10-25T00.jsonl").write_text("".join(json.dumps(x) + "\n" for x in recs))
 
@@ -65,5 +68,5 @@ print("record", qi.record(ledger / Q50, doc), doc["status"], doc["read_instant_m
 bc = out / "a3-books-v2-copy.json"
 bc.write_text(V2_TEXT)
 os.chmod(bc, 0o444)
-(out / "q50-read-params.txt").write_text(f"# fixture params\nN_BOOKS=40\nC=2\nCELLS_TOTAL=900\nPRIOR_READ=h5v1-boostfloor-a2=NOT_DECIDABLE\n"
-                                         f"PRIOR_READ=h5v2-boostclock-a2=NOT_DECIDABLE\nOTHER_P=hv4-CON-X=0.31\nSHADOW_DIR={shadow}\n")
+(out / "q50-read-params.txt").write_text(f"# fixture params (QP-VERDICT-1030-q50-read-pack values, plus two synthetic report-only lines)\nN_BOOKS=14\nC=1\n"
+                                         f"PRIOR_READ=hv4-BIG-X=FAIL_n_lt_100\nOTHER_P=hv4-CON-X=0.31\nSHADOW_DIR={shadow}\n")

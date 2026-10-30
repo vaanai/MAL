@@ -122,7 +122,7 @@ poll_sleep() {
   fi
   sleep "$POLL_S"
 }
-mask() { tr '0-9' '#' | tr -d '\r' | head -n 1 | cut -c1-400; }
+mask() { tr '0-9' '#' | sed 's/[-+]#/#/g' | tr -d '\r' | head -n 1 | cut -c1-400; }   # digits and their signs (QP CHANGE 2)
 
 # ---------------------------------------------------------------- setup (one-time, before the submit)
 if [ "$MODE" = setup ]; then
@@ -151,7 +151,7 @@ is_p() {
 }
 parse_params() {
   [ -f "$PARAMS" ] && [ -r "$PARAMS" ] || refuse "params file missing: $PARAMS (the manager writes it before the submit; see the pack)"
-  P_N=; P_C=; P_CT=; XARGS=; SDIRS=; NPR=0; NOP=0
+  P_N=; P_C=; P_CT=; XARGS=; SDIRS=; NPR=0; NOP=0; PR_IDS=; OP_IDS=
   while IFS= read -r ln || [ -n "$ln" ]; do
     case "$ln" in ''|'#'*) continue;; esac
     k=${ln%%=*}; v=${ln#*=}
@@ -164,12 +164,14 @@ parse_params() {
         b=${v%%=*}; t=${v#*=}
         [ "$b" != "$v" ] && is_tok "$b" && is_tok "$t" || refuse "params: PRIOR_READ must be BOT=TOKEN ([A-Za-z0-9_.-])"
         [ "$b" != "$BOT" ] || refuse "params: PRIOR_READ cannot name $BOT (it is the book read here)"
-        XARGS="$XARGS --prior-read $b=$t"; NPR=$((NPR + 1));;
+        case " $PR_IDS " in *" $b "*) refuse "params: PRIOR_READ names $b twice";; esac
+        PR_IDS="$PR_IDS $b"; XARGS="$XARGS --prior-read $b=$t"; NPR=$((NPR + 1));;
       OTHER_P)
         b=${v%%=*}; t=${v#*=}
         [ "$b" != "$v" ] && is_tok "$b" && is_p "$t" || refuse "params: OTHER_P must be BOT=P with P a decimal in [0, 1]"
         [ "$b" != "$BOT" ] || refuse "params: OTHER_P cannot name $BOT"
-        XARGS="$XARGS --other-p $b=$t"; NOP=$((NOP + 1));;
+        case " $OP_IDS " in *" $b "*) refuse "params: OTHER_P names $b twice";; esac
+        OP_IDS="$OP_IDS $b"; XARGS="$XARGS --other-p $b=$t"; NOP=$((NOP + 1));;
       SHADOW_DIR)
         case "$v" in "$ARENA"/h5-q50-20[0-9][0-9]-[01][0-9]-[0-3][0-9]|"$ARENA"/h5-q50-20[0-9][0-9]-[01][0-9]-[0-3][0-9]-succ) ;;
           *) refuse "params: SHADOW_DIR must be $ARENA/h5-q50-<date> or $ARENA/h5-q50-<date>-succ";; esac
@@ -189,7 +191,7 @@ check_wt() {
   [ "$(git -C "$WT" rev-parse HEAD 2>/dev/null)" = "$PIN_HEAD" ] || refuse "worktree $WT is not at $PIN_HEAD"
   [ "$(git -C "$WT" rev-parse --show-toplevel 2>/dev/null)" = "$(cd "$WT" && pwd -P)" ] || refuse "worktree $WT is not a git worktree root"
   [ "$(git -C "$WT" rev-parse HEAD:tools 2>/dev/null)" = "$PIN_TOOLS_TREE" ] || refuse "tools/ tree of $WT is not $PIN_TOOLS_TREE"
-  [ -z "$(git -C "$WT" status --porcelain --untracked-files=no 2>/dev/null)" ] || refuse "worktree $WT has local changes"
+  [ -z "$(git -C "$WT" status --porcelain --untracked-files=normal 2>/dev/null)" ] || refuse "worktree $WT has local changes"
   for kv in $PINS; do
     f=${kv%%=*}; s=${kv#*=}
     [ "$(sha "$WT/tools/$f")" = "$s" ] || refuse "tools/$f in $WT is not sha256 $s"
@@ -202,11 +204,16 @@ preflight() {
   [ -d "$OUT_DIR" ] || refuse "out dir missing: $OUT_DIR (run --setup first)"
   [ ! -e "$WT" ] || refuse "worktree path $WT exists"
   trap 'git -C "$JOBREPO" worktree remove --force "$WT" >/dev/null 2>&1 || true' EXIT
+  trap 'git -C "$JOBREPO" worktree remove --force "$WT" >/dev/null 2>&1; trap - EXIT; exit 2' TERM INT HUP
   git -C "$JOBREPO" worktree add --detach "$WT" "$PIN_HEAD" >/dev/null 2>&1 || refuse "git worktree add $WT $PIN_HEAD failed"
   check_wt
-  IMP=$(cd "$WT" && "$PY" -E -B -c 'import os, numpy, tools.arena_h5_read as R, tools.arena_h5_legs as L, tools.arena_h5_inband as I
-print(os.path.realpath(R.__file__))' 2>/dev/null) || refuse "$PY cannot import numpy and the read tools from $WT"
-  [ "$IMP" = "$(cd "$WT" && pwd -P)/tools/arena_h5_read.py" ] || refuse "the read tools did not import from $WT"
+  IMP=$(cd "$WT" && "$PY" -E -s -B -c 'import os, sys, numpy, tools.arena_h5_read as R, tools.arena_h5_legs as L, tools.arena_h5_inband as I
+print(os.path.realpath(R.__file__), sys.version.split()[0], numpy.__version__, os.path.realpath(numpy.__file__).startswith(os.path.realpath(sys.prefix)))' 2>/dev/null) \
+    || refuse "$PY cannot import numpy and the read tools from $WT"
+  set -- $IMP
+  [ "$#" -eq 4 ] && [ "$1" = "$(cd "$WT" && pwd -P)/tools/arena_h5_read.py" ] || refuse "the read tools did not import from $WT"
+  [ "$4" = True ] || refuse "numpy does not come from the venv of $PY (a user site-packages leak?)"
+  PYVER=$2; NPVER=$3
   [ -f "$BOOKS_COPY" ] && [ "$(sha "$BOOKS_COPY")" = "$BOOKS_V2_SHA" ] || refuse "books v2 copy $BOOKS_COPY missing or not sha256 $BOOKS_V2_SHA"
   [ ! -w "$BOOKS_COPY" ] || refuse "books v2 copy is writable (chmod a-w it)"
   parse_params
@@ -349,37 +356,41 @@ postread() {
   fi
   SARGS=; for d in $SDIRS; do SARGS="$SARGS --shadow-dir $d"; done
   PR=0
-  ( set -C; : > "$O/q50-legs.out" && : > "$O/q50-legs.err" ) || refuse "cannot create the legs output files (exist?)"
+  ( set -C; : > "$O/q50-legs.out" && : > "$O/q50-legs.err" ) || { echo "POSTREAD REFUSED: cannot create the legs output files (exist?); the read stays recorded"; return 5; }
   echo "LEGS start $(date -u +%FT%TZ)"
-  ( cd "$WT" && exec "$PY" -E -B -m tools.arena_h5_legs --bot "$BOT" --ledger-root "$LEDGER" --books-file "$BOOKS_COPY" --read-instant "$BOUND" --i-am-the-read $SARGS \
+  ( cd "$WT" && exec "$PY" -E -s -B -m tools.arena_h5_legs --bot "$BOT" --ledger-root "$LEDGER" --books-file "$BOOKS_COPY" --read-instant "$BOUND" --i-am-the-read $SARGS \
       --json "$O/q50-legs.json" ) >> "$O/q50-legs.out" 2>> "$O/q50-legs.err"
   LRC=$?
   if [ -f "$O/q50-legs.json" ]; then
-    "$PY" -I -c 'import json, sys
+    LJ=$("$PY" -I -c 'import json, sys
 r = json.load(open(sys.argv[1]))
 g = r.get("dec032_worst_in_slot") or {}
 print("LEGS tool_exit=%s worst_in_slot_measured=%s end_consistency_ok=%s dec032_measured=%s dec032_not_proposed_wis_le_0=%s" % (sys.argv[2], r.get("worst_in_slot_measured"),
-      (r.get("end_check") or {}).get("ok"), g.get("measured"), g.get("not_proposed_mean_le_0") if g.get("measured") else "n/a"))' "$O/q50-legs.json" "$LRC" 2>/dev/null || echo "LEGS tool_exit=$LRC (json unreadable)"
+      (r.get("end_check") or {}).get("ok"), g.get("measured"), g.get("not_proposed_mean_le_0") if g.get("measured") is True else "n/a"))
+print("MEASURED" if g.get("measured") is True else "NOT_MEASURED")' "$O/q50-legs.json" "$LRC" 2>/dev/null) || LJ="LEGS tool_exit=$LRC (json unreadable)
+NOT_MEASURED"
+    printf '%s\n' "$LJ" | sed -n 1p
+    [ "$(printf '%s\n' "$LJ" | sed -n 2p)" = MEASURED ] || { echo "FLAG worst-in-slot NOT MEASURED: no canary proposal (R7; DEC-032 section 1 item 2); a QP item"; PR=5; }
   else
-    echo "LEGS REFUSED by the tool, tool_exit=$LRC (digits masked): $(mask < "$O/q50-legs.err")"; PR=5
+    echo "LEGS REFUSED by the tool, tool_exit=$LRC (digits masked): $(mask < "$O/q50-legs.err")"; echo "FLAG worst-in-slot NOT MEASURED: no canary proposal (R7; DEC-032 section 1 item 2); a QP item"; PR=5
   fi
-  [ "$LRC" -eq 0 ] || [ "$LRC" -eq 4 ] || PR=5
-  ( set -C; : > "$O/q50-inband.out" && : > "$O/q50-inband.err" ) || refuse "cannot create the in-band output files (exist?)"
+  [ "$LRC" -eq 0 ] || PR=5
+  ( set -C; : > "$O/q50-inband.out" && : > "$O/q50-inband.err" ) || { echo "POSTREAD REFUSED: cannot create the in-band output files (exist?); the read stays recorded"; return 5; }
   echo "INBAND start $(date -u +%FT%TZ)"
-  ( cd "$WT" && exec "$PY" -E -B -m tools.arena_h5_inband --ledger-root "$LEDGER" $SARGS --books-file "$BOOKS_COPY" --bot "$BOT" --read-instant "$BOUND" --i-am-the-read \
+  ( cd "$WT" && exec "$PY" -E -s -B -m tools.arena_h5_inband --ledger-root "$LEDGER" $SARGS --books-file "$BOOKS_COPY" --bot "$BOT" --read-instant "$BOUND" --i-am-the-read \
       --quote-source shadow-wsol --out "$O/q50-inband.json" ) >> "$O/q50-inband.out" 2>> "$O/q50-inband.err"
   IRC=$?
   if [ "$IRC" -eq 0 ] && [ -f "$O/q50-inband.json" ]; then
-    "$PY" -I -c 'import json, sys
+    "$PY" -I -c 'import json, re, sys
 r = json.loads(open(sys.argv[1]).readline())
 main = bool(r.get("in_band_gate_all_pass"))
 own = r.get("in_band_own_refit_report_only")
 ownp = None if own is None else all(v["gate_pass"] for v in own.values())
 cells = r.get("in_band") or {}
-co = (not main) and all(m.startswith(("n ", "days ")) for v in cells.values() for m in v.get("gate_misses", []))
-print("INBAND tool_exit=0 quote_source=%s in_band_gate_all_pass=%s own_refit_all_pass=%s misses_count_only=%s" % (r["band"]["quote_source"], main, ownp, co))
+nd = any(re.fullmatch(r"n \d+ < 100|days \d+ < 5", m) for v in cells.values() for m in v.get("gate_misses", []))  # DEC-033 s11 item 3 (d): n below 100 or fewer than 5 days
+print("INBAND tool_exit=0 quote_source=%s in_band_gate_all_pass=%s own_refit_all_pass=%s in_band_not_decidable=%s" % (r["band"]["quote_source"], main, ownp, nd))
 print("INBAND VERDICT PASS (in-sample restatement; C0 still needs QP, DEC-033 in force and the owner line)" if main else
-      "INBAND VERDICT FAIL: C0 is blocked (QP-PRERULING-1027-xorder Q4; DEC-033 section 11 item 3 (d))" + (" [in-band NOT_DECIDABLE: n or days]" if co else ""))
+      "INBAND VERDICT FAIL: C0 is blocked (QP-PRERULING-1027-xorder Q4; DEC-033 section 11 item 3 (d))" + (" [in-band NOT_DECIDABLE: n below 100 or fewer than 5 days]" if nd else ""))
 if ownp is not None and ownp != main:
     print("INBAND NOTE the in-band own-refit verdict differs from the used intercept (DEC-033 section 11 item 3 (a)): QP quotes both, never the kinder alone")' "$O/q50-inband.json" 2>/dev/null || { echo "INBAND json unreadable"; PR=5; }
   else
@@ -397,7 +408,7 @@ outputs_done() {
 
 # ---------------------------------------------------------------- main
 preflight
-echo "JOB start $(date -u +%FT%TZ) mode=$MODE host=$(hostname) script=$SCRIPT_SHA job_head=$(git -C "$JOBREPO" rev-parse HEAD) worktree=$WT head=$PIN_HEAD tools_tree=$PIN_TOOLS_TREE"
+echo "JOB start $(date -u +%FT%TZ) mode=$MODE host=$(hostname) script=$SCRIPT_SHA job_head=$(git -C "$JOBREPO" rev-parse HEAD) worktree=$WT head=$PIN_HEAD tools_tree=$PIN_TOOLS_TREE python=$PY python_version=$PYVER numpy=$NPVER"
 echo "PINS $(for kv in $PINS; do printf '%s ' "${kv%%=*}=$(printf '%s' "${kv#*=}" | cut -c1-12)"; done)(full sha256 in the pack; all checked)"
 echo "BOOKS v2 copy $BOOKS_COPY sha256 $BOOKS_V2_SHA; PARAMS $PARAMS sha256 $PARAMS_SHA N_BOOKS=$P_N C=$P_C CELLS_TOTAL=${P_CT:-none} PRIOR_READ=$NPR OTHER_P=$NOP SHADOW_DIR=$(for d in $SDIRS; do basename "$d"; done | tr '\n' ' ')"
 
@@ -455,7 +466,7 @@ check_fresh read
 # ---------------------------------------------------------------- the one deciding read
 ( set -C; : > "$O/q50-read.out" && : > "$O/q50-read.err" ) || refuse "cannot create the read output files (exist?)"
 echo "READ start $(date -u +%FT%TZ) read_instant=$BOUND"
-( cd "$WT" && exec "$PY" -E -B -m tools.arena_h5_read --ledger-root "$LEDGER" --books-file "$BOOKS_COPY" --read-instant "$BOUND" --i-am-the-read $MARGS \
+( cd "$WT" && exec "$PY" -E -s -B -m tools.arena_h5_read --ledger-root "$LEDGER" --books-file "$BOOKS_COPY" --read-instant "$BOUND" --i-am-the-read $MARGS \
     --json "$O/q50-read.json" ) >> "$O/q50-read.out" 2>> "$O/q50-read.err"
 RRC=$?
 echo "READ end $(date -u +%FT%TZ) tool_exit=$RRC"
