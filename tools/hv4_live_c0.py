@@ -822,7 +822,7 @@ def feed_gap_problem(path: str, bot_id: str, now_ms: int) -> str | None:
 # --- DEC-032 s5.2 FEED-GAP HALT: the book's OWN gap records. A hard latch `feed_break` (already in HARD_ARENA_HALTS). Restart needs 10 gap-free minutes AND the manager's
 # written review, as a root-owned clear file. Only the KIND and INSTANT of a gap record are read (QP seal ruling): no other field, no join to any outcome.
 GAP_FREE_MS = 600_000
-GAP_BREAK_KINDS = ("stall", "disconnect", "reconnect", "mismatch", "local_torn_trimmed", "error", "gap", "data_loss", "resubscribe", "silence", "process_restart", "feed_restart", "feed_start", "start", "takeover", "gap_silence")  # forwarder kinds + the s5.2 list; "resume" is not a gap
+GAP_BREAK_KINDS = ("stall", "disconnect", "reconnect", "mismatch", "local_torn_trimmed", "error", "gap", "data_loss", "resubscribe", "silence", "process_restart", "feed_restart", "feed_start", "start", "takeover", "gap_silence", "gap_slots")  # forwarder kinds + the s5.2 list; "resume" is not a gap
 GAP_CLEAR_DIR = "/etc/mal-hv4-c0/gap-clear"  # <bot_id>.json: {"bot_id": ..., "reviewed_gap_ms": N}; root-owned (h5.root_file_problem), N == the newest gap instant
 FEED_BREAK_LATCH = "feed_break"
 FEED_MAX_STALL_MS = 2_000  # a forwarder status that reports a larger stall_ms is refused: a misconfigured forwarder must not widen the bound (QP ruling a)
