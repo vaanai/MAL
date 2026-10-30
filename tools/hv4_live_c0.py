@@ -911,6 +911,15 @@ def tape_gap_stream_problem(path: str, now_ms: int) -> str | None:
     return None
 
 
+def tape_gap_refusal(root: str, bot_id: str, now_ms: int, live: bool) -> str | None:
+    """The bridge's feed_refusal step for the carried tape-gap stream (P7-c): tape_gap_stream_problem on <root>/transport/<bot_id>.tapegaps.jsonl. Same exemption as the
+    forwarder status file: only a DRY bridge on a SYNTHETIC_MARKER root may run without the file; LIVE never, and a file that is there and old always refuses."""
+    path = tape_gap_stream_path(root, bot_id)
+    if not live and not os.path.lexists(path) and synthetic_root(root):
+        return None
+    return tape_gap_stream_problem(path, now_ms)
+
+
 def gap_clear_problem(path: str, bot_id: str, last_gap_ms: int, now_ms: int, root_check: Any = None, free_since_ms: int | None = None) -> str | None:
     """None when (1) the feed has been gap-free for GAP_FREE_MS counted from the END of the gap (`free_since_ms`: the newest gap OR resume instant; default the
     gap instant) and (2) the manager's root-owned review file names EXACTLY the newest gap instant (equality: a blanket or future-dated review never clears a later

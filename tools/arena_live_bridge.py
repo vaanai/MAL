@@ -694,22 +694,14 @@ class Bridge:
             self._count("runner_silent_refusal")
             return why
         path = c0.feed_status_path(self.cfg.root, self.cfg.bot_id)
-        if not (self.cfg.mode != LIVE and not os.path.lexists(path) and c0.synthetic_root(self.cfg.root)):  # only a synthetic fixture root may run without a forwarder status
+        if self.cfg.mode != LIVE and not os.path.lexists(path) and c0.synthetic_root(self.cfg.root):
+            why = None  # only a synthetic fixture root may run without a forwarder status; any other root (dry included) refuses
+        else:
             why = c0.feed_gap_problem(path, self.cfg.bot_id, now)
-            if why:
-                self._count("transport_stall_refusal")
-                return f"transport_stall:{why}"
-        return self.tape_gap_refusal(now)
-
-    def tape_gap_refusal(self, now: int) -> str | None:
-        """hv4_c0 P7-c (QP #969): the carried tape-gap stream (<root>/transport/<bot_id>.tapegaps.jsonl, tools/hv4_gap_relay.py via the forwarder) must exist and be fresh, else
-        new buys stop: `tape_gap_stream_missing` / `_stale` / `_future` / `_not_regular`. A dead relay or carry must not read as "no gaps". Self-clearing (no latch), exits keep
-        running, counted (`tape_gap_stream_refusal`) and logged by the entry refusal. Same exemption as the status file: only a DRY bridge on a SYNTHETIC_MARKER root may run
-        without the file; LIVE never. A present but stale file always refuses."""
-        tpath = c0.tape_gap_stream_path(self.cfg.root, self.cfg.bot_id)
-        if self.cfg.mode != LIVE and not os.path.lexists(tpath) and c0.synthetic_root(self.cfg.root):
-            return None
-        why = c0.tape_gap_stream_problem(tpath, now)
+        if why:
+            self._count("transport_stall_refusal")
+            return f"transport_stall:{why}"
+        why = c0.tape_gap_refusal(self.cfg.root, self.cfg.bot_id, now, self.cfg.mode == LIVE)  # P7-c (QP #969): a missing or stale carried tape-gap stream refuses new buys
         if why:
             self._count("tape_gap_stream_refusal")
         return why
@@ -725,8 +717,7 @@ class Bridge:
 
     def gap_tick(self, now: int) -> None:
         """hv4_c0 feed_break (DEC-032 s5.2 consumer). A gap record in the forwarder's gap log or a `gap` row in the decision stream latches feed_break; a forwarder
-        `stopped_mismatch` latches it too. The book's own TAPE gap records come from tools/hv4_gap_relay.py via the forwarder's `tg` frame (<root>/transport/<bot_id>.tapegaps.jsonl;
-        built, not installed; precondition 7 is open, see the hv4_live_c0 doc); a missing or stale stream refuses buys in feed_refusal (P7-c). The latch is removed ONLY when
+        `stopped_mismatch` latches it too. NOTE: no producer of the book's own TAPE gap records exists yet (see the hv4_live_c0 doc). The latch is removed ONLY when
         the feed has been gap-free for 10 minutes counted from the END of the gap AND the manager's root-owned review file names exactly the newest gap instant."""
         if self.cfg.profile != c0.PROFILE:
             return
