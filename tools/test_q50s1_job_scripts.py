@@ -53,7 +53,7 @@ for a; do
     stop) [ -f "${FAKE_PIDFILE:-/nonexistent}" ] && kill -TERM "$(cat "$FAKE_PIDFILE")" 2>/dev/null; exit 0 ;;
   esac
 done
-case "$*" in *ActiveEnterTimestamp*) echo "${FAKE_SINCE:-}" ;; *ActiveState*) echo "${FAKE_ACTSTATE:-active}" ;; esac
+case "$*" in *ActiveEnterTimestamp*) echo "${FAKE_SINCE:-}" ;; *ActiveState*) echo "${FAKE_ACTSTATE:-active}" ;; *ControlGroup*) echo "${FAKE_CG:-}" ;; esac
 exit 0
 ''',
     "systemd-run": r'''#!/bin/sh
@@ -76,7 +76,7 @@ printf '{"type":"trigger","variant":"pv","pool":"HIDDENPOOL","v":1}\n' >> "$F"
 echo "2026-11-03 09:00:00,000 WARNING mal.h5_shadow feed error ConnectionClosed: 1006" >&2
 sleep 30 &
 S=$!
-trap 'kill "$S" 2>/dev/null; exit 0' TERM
+trap 'printf "%s\n" "{\"type\":\"stop\",\"v\":1}" >> "$F"; kill "$S" 2>/dev/null; exit 0' TERM
 wait
 '''
 FAKE_START_SH = """#!/bin/sh
@@ -132,9 +132,8 @@ class Syntax(unittest.TestCase):
                 self.assertNotIn(bad, text, f"{p.name}: {bad}")
             self.assertIsNone(re.search(r"\$\{[A-Za-z_]+/", text), p)
             low = text.lower()
-            if p == SMOKE:  # the smoke counts the key string in the journal (Amendment 22 item 10): that one fixed-string count is its only mention
-                self.assertEqual(low.count("api-key"), 1)
-                self.assertIn("grep -c -f 'api-key'", low)
+            if p in (SMOKE, CLEAN):  # both count the key string (Amendment 22 item 10): fixed-string counts are its only mentions
+                self.assertEqual(low.count("api-key"), low.count("grep -c -f 'api-key'"))
                 low = low.replace("'api-key'", "")
             if p == LOOP:  # loop 2's bounded enumeration reads the one Helius file by path (Amendment 22 item 9); never printed
                 self.assertEqual(low.count("fast-listener/helius"), 1)
@@ -166,6 +165,7 @@ class Smoke(Base):
         write_exec(self.repo / "scripts" / "ops" / "q50s1-shadow-start.sh", FAKE_START_SH)
         shutil.copy(REPO / "scripts" / "ops" / "q50s1-feed.sh", self.repo / "scripts" / "ops" / "q50s1-feed.sh")
         shutil.copy(REPO / "scripts" / "ops" / "q50s1-ws-launch.py", self.repo / "scripts" / "ops" / "q50s1-ws-launch.py")
+        self.smokehome = self.d / "s1smoke"
         self.keyfile = self.d / "keyfile"
         self.keyfile.write_text(f"HELIUS_API_KEY={KEY}\n")  # a fixture key; the real key file is never read by a test
         (self.repo / "tools").mkdir(parents=True)
@@ -173,7 +173,7 @@ class Smoke(Base):
         self.py = write_exec(self.d / "fakepy", FAKE_SHADOW_PY)
 
     def run_smoke(self, *args, **env):
-        base = dict(Q50S1_REPO=self.repo, ARENA_H5_PYTHON=self.py, FAKE_START_ROW=START_ROW, Q50S1_KEY_FILE=self.keyfile)
+        base = dict(Q50S1_REPO=self.repo, ARENA_H5_PYTHON=self.py, FAKE_START_ROW=START_ROW, Q50S1_KEY_FILE=self.keyfile, Q50S1_SMOKE_HOME=self.smokehome)
         base.update(env)
         return self.sh(SMOKE, *args, **base)
 
@@ -195,6 +195,11 @@ class Smoke(Base):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn(f"--ws-url {WS1} --ws-url {WS2}", r.stdout)
         self.assertIsNone(KEYLIKE.search(r.stdout + r.stderr))
+
+    def test_the_smoke_root_must_not_be_s1s_or_q50s(self):
+        self.assertEqual(self.run_smoke("--check", Q50S1_SMOKE_HOME=self.home).returncode, 2)  # s1's own HOME (Q50S1_HOME = self.home)
+        real_home = subprocess.run(["sh", "-c", 'getent passwd "$(id -u)" | cut -d: -f6'], capture_output=True, text=True).stdout.strip()
+        self.assertEqual(self.run_smoke("--check", Q50S1_SMOKE_HOME=real_home).returncode, 2)
 
     def test_a_keyed_url_in_the_helper_refuses_11(self):
         feed = self.repo / "scripts" / "ops" / "q50s1-feed.sh"
@@ -256,7 +261,8 @@ class Smoke(Base):
         self.assertNotIn("HIDDENPOOL", r.stdout + r.stderr)
         self.assertNotIn("triggers", r.stdout)
         self.assertFalse((self.home / "data" / "arena-src" / "q50s1-smoke-5c2ab7c6").exists())  # its own worktree is removed
-        outs = [p.name for p in self.arena.iterdir()]
+        self.assertFalse(any(self.arena.iterdir()))  # QP C1: never in s1's book root
+        outs = [p.name for p in (self.smokehome / "data" / "arena").iterdir()]
         self.assertEqual(len(outs), 1)
         self.assertTrue(outs[0].startswith("h5-smoke-q50s1-"))
         reps = list((self.home / "data" / "q50s1-ops").iterdir())
@@ -375,6 +381,30 @@ class Score(Base):
     def test_host(self):
         self.assertEqual(self.run_score("loop", "--shadow-dir", str(self.sd), FAKE_HOST="x").returncode, 6)
 
+    def test_segment_end_more_than_14_d_away_is_refused(self):
+        r = self.run_score("loop", "--shadow-dir", str(self.sd), Q50S1_SCORE_END=int(time.time()) + 14 * 86400)
+        self.assertEqual(r.returncode, 2, r.stdout + r.stderr)
+        self.assertIn("more than 14 d", r.stderr)
+
+    def test_reviewer_case_a_segment_ends_at_its_end_and_b_waits_for_the_succ_dir(self):
+        """6528451378 (1): segment A must not exit right after its last run (it would start B before the -succ dir exists); B waits (bounded) for a missing dir."""
+        t0 = time.time()
+        r = self.run_score("loop", "--shadow-dir", str(self.sd), Q50S1_SCORE_END=int(t0) + 4)  # next 00:20Z run is after END: sleep to END, then exit 0
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("end reached", r.stdout)
+        self.assertGreaterEqual(time.time() - t0, 2.5)
+        succ = self.arena / "h5-q50s1-2026-11-19-succ"
+        r = self.run_score("loop", "--shadow-dir", str(self.sd), "--shadow-dir", str(succ), Q50S1_SCORE_END=1, Q50S1_DIR_WAIT_S=0)
+        self.assertEqual(r.returncode, 2)  # no wait left: refused
+        maker = subprocess.Popen(["sh", "-c", f"sleep 2; mkdir -p {succ}"])
+        try:
+            r = self.run_score("loop", "--shadow-dir", str(self.sd), "--shadow-dir", str(succ), Q50S1_SCORE_END=1, Q50S1_DIR_WAIT_S=600, timeout=120)
+        finally:
+            maker.wait()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("waiting for", r.stdout)
+        self.assertIn("end reached", r.stdout)
+
 
 class Digest(Base):
     def test_once_hashes_only_book_dirs_and_prints_no_counts(self):
@@ -420,8 +450,9 @@ class Alert(Base):
         for a in ((), ("2026-11-17 12:00",), ("2026-11-17T12:00:00Z", "x"), ("2026-01-01T00:00:00Z",), ("2026-12-02T00:00:01Z",)):
             with self.subTest(a=a):
                 self.assertEqual(self.sh(ALERT, *a).returncode, 2)
-        self.assertEqual(self.sh(ALERT, "2026-11-17T12:00:00Z", Q50S1_A3_OUT=self.home / "data" / "structure-monitor").returncode, 2)  # loop 1's dir
-        self.assertEqual(self.sh(ALERT, "2026-11-17T12:00:00Z", FAKE_HOST="mal-core-0").returncode, 6)
+        self.assertEqual(self.sh(ALERT, utc(time.time() + 3600), Q50S1_A3_OUT=self.home / "data" / "structure-monitor").returncode, 2)  # loop 1's dir
+        self.assertEqual(self.sh(ALERT, utc(time.time() + 3600), FAKE_HOST="mal-core-0").returncode, 6)
+        self.assertEqual(self.sh(ALERT, utc(time.time() + 14 * 86400)).returncode, 2)  # more than 14 d - 15 min away
 
     def test_runs_the_alert_tool_on_loop2_files_to_until(self):
         out = self.d / "sm-s1"
@@ -491,17 +522,44 @@ class CleanLogScript(Base):
         (self.jobs / "j_AbC-12_x").mkdir(parents=True)
         (self.jobs / "j_AbC-12_x" / "log").write_text("q50s1-shadow: starting rule H5-BOOSTFLOOR-Q50 v1, out=x\nsome row text POOLZ\n")
         self.since = datetime.fromtimestamp(now - 7200, tz=timezone.utc).strftime("%a %Y-%m-%d %H:%M:%S UTC")
+        self.cgroot = self.d / "cg"
+        (self.cgroot / "user.slice" / "q50s1-shadow.scope").mkdir(parents=True)
+
+    def proc(self, *argv):
+        pr = subprocess.Popen(list(argv))
+        self.addCleanup(pr.wait)
+        self.addCleanup(pr.kill)
+        (self.cgroot / "user.slice" / "q50s1-shadow.scope" / "cgroup.procs").write_text(f"{pr.pid}\n")
+        return pr
+
+    def clean_env(self, **kw):
+        base = dict(Q50S1_JOBS_DIR=self.jobs, FAKE_SINCE=self.since, Q50S1_CGROUP_ROOT=self.cgroot, FAKE_CG="/user.slice/q50s1-shadow.scope")
+        base.update(kw)
+        return base
 
     def test_clean_and_not_clean(self):
-        r = self.sh(CLEAN, "--job-uid", "j_AbC-12_x", "--out-dir", str(self.sd), Q50S1_JOBS_DIR=self.jobs, FAKE_SINCE=self.since)
+        self.proc("sleep", "30")
+        args = ("--job-uid", "j_AbC-12_x", "--out-dir", str(self.sd))
+        r = self.sh(CLEAN, *args, **self.clean_env())
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("CLEAN_VERDICT CLEAN", r.stdout)
+        self.assertIn("CLEAN_KEY_COUNTS start_rows=0 job_log=0 errors_log=0 proc_cmdline=0 proc_environ_key_var=0 user_journal_since_start=0", r.stdout)
         self.assertNotIn("POOLZ", r.stdout)
-        r = self.sh(CLEAN, "--job-uid", "j_AbC-12_x", "--out-dir", str(self.sd), Q50S1_JOBS_DIR=self.jobs, FAKE_SINCE=self.since, FAKE_ACTSTATE="inactive")
-        self.assertEqual(r.returncode, 1)
-        r = self.sh(CLEAN, "--job-uid", "j_AbC-12_x", "--out-dir", str(self.sd), Q50S1_JOBS_DIR=self.jobs, FAKE_SINCE="")
+        self.assertEqual(self.sh(CLEAN, *args, **self.clean_env(FAKE_ACTSTATE="inactive")).returncode, 1)
+        r = self.sh(CLEAN, *args, **self.clean_env(FAKE_SINCE=""))
         self.assertEqual(r.returncode, 1)
         self.assertIn("scope_up_1h=NO", r.stdout)
+        self.assertIn("no_key_in_journal=NO", r.stdout)  # no scope start instant: the journal count cannot be read
+        r = self.sh(CLEAN, *args, **self.clean_env(FAKE_CG=""))
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("no_key_in_cmdline=NO", r.stdout)  # no process found: unreadable, NOT_CLEAN
+
+    def test_a_key_in_a_scope_process_argv_is_not_clean_and_never_printed(self):
+        self.proc("sh", "-c", "sleep 30", "x", "wss://h.example/?api-key=SEKRETVALUE")
+        r = self.sh(CLEAN, "--job-uid", "j_AbC-12_x", "--out-dir", str(self.sd), **self.clean_env())
+        self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+        self.assertIn("proc_cmdline=1", r.stdout)
+        self.assertNotIn("SEKRETVALUE", r.stdout + r.stderr)
 
     def test_arguments(self):
         for a in ((), ("--job-uid", "1419"), ("--job-uid", "j_x/../y"), ("--job-uid", "j_x", "--out-dir", str(self.arena / "h5-q50-2026-10-24")), ("--bogus",)):
