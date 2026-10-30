@@ -37,7 +37,7 @@ class C0GuardTests(ACase):
                     self.assertEqual(ax.c0_guard_problem(), f"c0_guard:{k}")
 
     def test_every_loosened_constant_refuses(self):
-        cases = [(ax, "GAP_HOLD_MS", 599_999, "gap_hold"), (ax, "SIGNAL_AGE_MAX_MS", 5_001, "signal_age"), (g, "PARITY_INTERVAL_S_MAX", 61, "parity_interval"),
+        cases = [(ax, "GAP_HOLD_MS", 59_999, "gap_hold"), (ax, "GAP_HOLD_FLOOR_MS", 59_999, "gap_hold"), (ax, "GAP_REDUNDANT_KIND", "silence", "gap_rule"), (ax, "SIGNAL_AGE_MAX_MS", 5_001, "signal_age"), (g, "PARITY_INTERVAL_S_MAX", 61, "parity_interval"),
                  (ax, "FUNDED_MAX_LAMPORTS", 1_000_000_001, "funded_range"), (ax, "FUNDED_MIN_LAMPORTS", 349_999_999, "funded_range"),
                  (ax, "FLOOR_BELOW_FUNDED_LAMPORTS", 250_000_001, "floor_below_funded"), (ax, "SELL_RESERVE_FLOOR_LAMPORTS", 1_599_999, "sell_reserve"),
                  (ax, "ARENA_LIVE_TIER", "T2", "tier"), (ax, "A3_MAX_AGE_MS", 36 * 3_600_000 + 1, "a3_max_age"), (ax, "ENTRY_GAP_BPS", 201.0, "entry_gap"),
