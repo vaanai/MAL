@@ -306,6 +306,7 @@ class BridgeState:
     gap_noted_ms: int = 0  # hv4_c0: the newest gap instant seen (persisted: a restart must not clear against an older review)
     gap_hold_until_ms: int = 0  # hv4_c0, DEC-031 Am.21 3.1: no new buy before this (max over records of max(instant, receipt) + c0.FEED_GAP_HOLD_MS); persisted
     gap_known_ms: list[int] = field(default_factory=list)  # hv4_c0, Am.21 3.1/3.3: coverage-losing instants seen (sorted); unreviewed ones are never pruned
+    gap_pruned_upto_ms: int = 0  # hv4_c0, Am.21: the largest instant ever pruned from gap_known_ms (reviewed and older than GAP_KNOWN_KEEP_MS); never registered again
     read_pin: dict[str, Any] | None = None  # hv4_c0: identity {path, dev, ino, sha256} of the recorded read, pinned at the first good check and compared on every run
 
     def save(self, path: Path) -> None:
@@ -721,7 +722,7 @@ class Bridge:
             self._latch(c0.FEED_BREAK_LATCH, why)
             self._save()
             return
-        if self._note_gaps([gap_ms], why, self._gap_reviewed_ms()):
+        if self._note_gaps([gap_ms], why):
             self._save()
 
     def _gap_known(self) -> set[int]:
@@ -732,14 +733,17 @@ class Bridge:
             self._gks, self._gks_src = set(lst), lst
         return self._gks
 
-    def _note_gaps(self, instants: Iterable[int], why: str, reviewed_ms: int) -> bool:
+    def _note_gaps(self, instants: Iterable[int], why: str) -> bool:
         """DEC-031 Am.21 3.1, BATCHED (reviewer part A: one save and one log line per record cost 33 s for 2,000 records inside a tick, with exits waiting):
-        register every instant not seen before and later than the manager's review (a reviewed instant is never registered again, so it never re-arms the hold).
-        Among them, only those not older than c0.GAP_KNOWN_KEEP_MS restart the hold (an aged-out instant is tracked for the 24 h latch but never re-arms it).
+        register every instant not seen before and later than state.gap_pruned_upto_ms (an instant that was pruned, i.e. reviewed AND older than
+        c0.GAP_KNOWN_KEEP_MS, is never registered again, so it never re-arms the hold). The review itself is NOT a filter here (QP on 99222ec7: a
+        future-dated review file must not switch off the hold, the per-entry refusal or the trip mark of a record the bridge has never seen). Among the new
+        instants, only those not older than c0.GAP_KNOWN_KEEP_MS restart the hold (an aged-out instant is tracked for the 24 h latch but never re-arms it).
         One hold update, one trip mark, one summary log line. Returns True when the state changed; the CALLER saves once."""
         now = self.now_ms()
         ks = self._gap_known()
-        new = sorted({ms for ms in instants if ms not in ks and ms > reviewed_ms})
+        floor = self.state.gap_pruned_upto_ms
+        new = sorted({ms for ms in instants if ms not in ks and ms > floor})
         if not new:
             return False
         ks.update(new)
@@ -808,7 +812,7 @@ class Bridge:
         reviewed = self._gap_reviewed_ms()
         loss = [ms for k, ms in fentries if c0.gap_loses_data(k)]
         loss.extend(ms for _k, ms in tentries)
-        dirty = self._note_gaps(loss, "coverage-losing records", reviewed)
+        dirty = self._note_gaps(loss, "coverage-losing records")
         unrev = c0.gap_unreviewed(self.state.gap_known_ms, reviewed, now)
         if unrev:
             self._latch(c0.FEED_BREAK_LATCH, f"{c0.FEED_GAP_UNREVIEWED}:{unrev[0]}")
@@ -825,7 +829,9 @@ class Bridge:
                 dirty = True
         keep = [ms for ms in self.state.gap_known_ms if ms > reviewed or now - ms <= c0.GAP_KNOWN_KEEP_MS]  # unreviewed instants are never pruned
         if len(keep) != len(self.state.gap_known_ms):
-            self.state.gap_known_ms = keep  # _gap_known rebuilds the set; a pruned instant is <= reviewed, so _note_gaps never registers it again
+            pruned = [ms for ms in self.state.gap_known_ms if not (ms > reviewed or now - ms <= c0.GAP_KNOWN_KEEP_MS)]
+            self.state.gap_pruned_upto_ms = max(self.state.gap_pruned_upto_ms, max(pruned))  # persisted: a pruned instant is never registered again
+            self.state.gap_known_ms = keep  # _gap_known rebuilds the set
             dirty = True
         if dirty:
             self._save()
@@ -833,7 +839,7 @@ class Bridge:
     def _gap_reviewed_ms(self) -> int:
         p = Path(self.gap_clear_dir) / f"{self.cfg.bot_id}.json"
         try:
-            return c0.gap_review_ms(str(p), self.cfg.bot_id, root_ok_problem if self.root_checks else None)
+            return c0.gap_review_ms(str(p), self.cfg.bot_id, root_ok_problem if self.root_checks else None, self.now_ms())
         except Exception:  # noqa: BLE001 - nothing reviewed; never propagates into tick()
             return 0
 

@@ -892,9 +892,9 @@ def gap_entry_problem(decision_ms: Any, newest_gap_ms: int) -> str | None:
     return FEED_GAP_ENTRY if decision_ms <= newest_gap_ms else None
 
 
-def gap_review_ms(path: str, bot_id: str, root_check: Any = None) -> int:
+def gap_review_ms(path: str, bot_id: str, root_check: Any = None, now_ms: int | None = None) -> int:
     """3.3: the manager's reviewed_gap_ms from the root-owned review file. Missing, not root-owned, linked, unreadable or malformed = 0 (nothing reviewed:
-    fail closed)."""
+    fail closed). A value more than FEED_SKEW_MS ahead of the bridge clock (`now_ms`) is 0 too: a review cannot cover gaps that have not happened (QP on 99222ec7)."""
     try:
         if root_check is not None and root_check(path):
             return 0
@@ -908,6 +908,8 @@ def gap_review_ms(path: str, bot_id: str, root_check: Any = None) -> int:
         return 0
     v = rec.get("reviewed_gap_ms") if isinstance(rec, dict) else None
     if not isinstance(rec, dict) or rec.get("bot_id") != bot_id or isinstance(v, bool) or not isinstance(v, int) or v < 0:
+        return 0
+    if now_ms is not None and v - now_ms > FEED_SKEW_MS:
         return 0
     return v
 
