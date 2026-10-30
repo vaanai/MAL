@@ -78,6 +78,7 @@ TAPEGAPS_SUFFIX = ".tapegaps.jsonl"
 TAPEGAPS_MAX_BYTES = 8_000_000  # == tools.hv4_live_c0.GAP_LOG_MAX_BYTES (the bridge refuses a bigger gap log); copied so the puller stays light, a test pins the equality
 TAPEGAPS_FRAME_MAX = MAX_FRAME_BYTES - 4096  # a tg frame (the text JSON-escaped) must fit the puller's receive cap; a file that would not is refused loudly at serve
 TAPEGAPS_MS_MAX = 4_102_444_800_000  # 2100-01-01T00:00Z: an `ms` beyond this (ns instead of ms, say) would make the bridge's gap-free window unreachable forever
+TAPEGAPS_RETAIN_MS = 259_200_000  # 72 h == tools/hv4_gap_relay.py RETAIN_MS (relay v2, PR #1098): the relay drops rows older than this before its newest instant; copied so the puller stays light, a test compares them when the relay module has the attribute
 
 
 def ssh_argv(host: str) -> list[str]:
@@ -136,6 +137,38 @@ def tapegaps_problem(data: bytes) -> str | None:
         if not 0 < ms <= TAPEGAPS_MS_MAX:
             return "ms_out_of_range"
     return None
+
+
+def tapegaps_replace_problem(old: bytes, new: bytes, mt_ms: int) -> tuple[str | None, int]:
+    """(None, k) when `new` may replace `old` as the carried stream, else (why, 0). `new` is accepted when its complete lines equal `old`'s lines with a HEAD of k >= 0 lines
+    removed, followed by zero or more appended lines, and every removed head line is older than the retention bound: its ms is below (the newest instant) - TAPEGAPS_RETAIN_MS,
+    where the newest instant is max(the newest kept row's ms, mt_ms = the relay's pass instant). That is exactly the relay's own trim (RETAIN_MS before its newest instant, which
+    can be the tape's top instant and so later than its newest row; mt_ms is never earlier than that). Anything else is refused: a middle or tail row changed or removed, a row
+    inserted before the seen ones, a reorder, a shrink that is not a head trim, or a head trim of a row that is NOT older than the bound (a coverage loss). Both inputs have passed
+    tapegaps_problem (complete, valid lines)."""
+    if new.startswith(old):
+        return None, 0  # unchanged, or appended only (k == 0)
+    old_lines, new_lines = old.split(b"\n")[:-1], new.split(b"\n")[:-1]
+    n = len(old_lines)
+    newest = max([mt_ms] + [json.loads(ln)["ms"] for ln in new_lines])
+    bound = newest - TAPEGAPS_RETAIN_MS
+    kmax = 0
+    while kmax < n and json.loads(old_lines[kmax])["ms"] < bound:
+        kmax += 1
+    head_trim_young = False
+    for k in range(1, n + 1):
+        if k < n and (not new_lines or new_lines[0] != old_lines[k]):
+            continue  # cheap first-line test before the full comparison
+        if new_lines[:n - k] != old_lines[k:]:
+            continue
+        if k <= kmax:
+            return None, k
+        head_trim_young = head_trim_young or k < n  # (k == n is "everything replaced", reported as a shrink or a changed prefix)
+    if head_trim_young:
+        return "head_trim_not_retention", 0  # the shape of a head trim, but a removed row is not older than the retention bound
+    if len(new) < len(old):
+        return f"shrank_{len(old)}_to_{len(new)}", 0
+    return "prefix_changed", 0
 
 
 def tapegaps_path_problem(path: str, bot_id: str) -> str | None:
@@ -458,6 +491,7 @@ class Puller:
         self.tg_data: bytes | None = None  # the tapegaps bytes accepted so far (the baseline every later frame must extend)
         self.tg_mt: int | None = None
         self.tg_frames = 0
+        self.tg_trimmed = 0  # rows dropped from the head of the carried stream so far by accepted retention trims (a counter; not in status.json)
         self.lat_fh = open(latency_log, "a", encoding="utf-8") if latency_log else None
         self.prev, self.seq = GENESIS, -1
         self.file, self.offset = "", 0
@@ -599,18 +633,19 @@ class Puller:
         if why:
             raise Mismatch("tapegaps_" + why)
         old = self.tg_data
+        trimmed = 0
         if old is not None and data != old:
-            if len(data) < len(old):
-                raise Mismatch(f"tapegaps_shrank_{len(old)}_to_{len(data)}")
-            if not data.startswith(old):
-                raise Mismatch("tapegaps_prefix_changed")
+            why, trimmed = tapegaps_replace_problem(old, data, mt)
+            if why:
+                raise Mismatch("tapegaps_" + why)
         self._write_tapegaps(data, mt)
         changed = data != old
         self.tg_data, self.tg_mt = data, mt
         self.tg_frames += 1
+        self.tg_trimmed += trimmed
         if changed:
             rows = data.count(b"\n")
-            print(f"decision_forwarder TAPEGAPS rows={rows} mt={mt}", file=sys.stderr, flush=True)
+            print(f"decision_forwarder TAPEGAPS rows={rows} mt={mt}" + (f" head_trimmed={trimmed}" if trimmed else ""), file=sys.stderr, flush=True)
 
     def _check(self, line: bytes) -> tuple[dict, str, int]:
         """Checks one row against the current head and returns (row, new prev, new seq). It does NOT move the head: the caller commits the
