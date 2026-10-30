@@ -133,6 +133,9 @@ class Register(unittest.TestCase):
             r = self.run_("--preclock-notebook-ref", "nb_Abc123", "--ws2", "wss://second.example/", "--sockets", "2", s1home="/some/s1home", py=self.stub_py(d))
             self.assertEqual(r.stdout.split()[-2:], ["--sockets", "2"])
             self.assertEqual(self.run_("--preclock-notebook-ref", "nb_Abc123", "--sockets", "4", s1home="/some/s1home", py=self.stub_py(d)).returncode, 2)
+            r = self.run_("--preclock-notebook-ref", "nb_Abc123", "--ws2", "wss://second.example/", "--ws2-first", s1home="/some/s1home", py=self.stub_py(d))
+            self.assertEqual(r.stdout.split()[-6:], ["--endpoint", "wss://second.example/", "--endpoint", "wss://api.mainnet-beta.solana.com", "--sockets", "3"])  # S*'s url order
+            self.assertEqual(self.run_("--preclock-notebook-ref", "nb_Abc123", "--ws2-first", s1home="/some/s1home", py=self.stub_py(d)).returncode, 2)
             for bad in ("wss://second.example/?api-key=k", "wss://x.solana-mainnet.quiknode.pro/abcdef0123456789abcdef/"):
                 r = self.run_("--preclock-notebook-ref", "nb_Abc123", "--ws2", bad, s1home="/some/s1home", py=self.stub_py(d))
                 self.assertEqual(r.returncode, 2, bad)
@@ -351,11 +354,15 @@ class ShadowFeed(ShadowCheck):
 
     def test_fewer_mainnet_beta_sockets(self):
         """--sockets 2 --ws2-first: url 0 (the pump.fun socket and PumpSwap socket 0) is the second provider; ONE socket on mainnet-beta. sockets is a registration value."""
-        self.write_line(endpoints=[self.WS1, self.WS2], sockets=2)
+        self.write_line(endpoints=[self.WS2, self.WS1], sockets=2)  # register --ws2-first records S*'s url order
         r = self.check("--ws2", self.WS2, "--sockets", "2", "--ws2-first")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn(f"--sockets 2 --syn-sockets 1 --ws-url {self.WS2} --ws-url {self.WS1} (systemd-run", r.stdout)
         self.assertEqual(self.check("--ws2", self.WS2).returncode, 8)  # line sockets 2, run sockets 3
+        self.assertEqual(self.check("--ws2", self.WS2, "--sockets", "2").returncode, 8)  # QP 6534828256: line order [WS1, WS2], run order [WS2, WS1] under --ws2-first is refused, and vice versa
+        self.write_line(endpoints=[self.WS2, self.WS1], sockets=2)
+        self.assertEqual(self.check("--ws2", self.WS2, "--sockets", "2", "--ws2-first").returncode, 0)
+        self.assertEqual(self.check("--ws2", self.WS2, "--sockets", "2").returncode, 8)
         self.assertEqual(self.check("--ws2-first").returncode, 11)  # --ws2-first needs --ws2
         self.assertEqual(self.check("--ws2", self.WS2, "--sockets", "4").returncode, 11)
 
