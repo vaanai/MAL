@@ -475,7 +475,7 @@ def c0_stake(row: Mapping[str, Any], cap_lamports: int = C0_LIMITS["stake_lampor
 
 
 LIVE_REFUSAL = "hv4_c0_incomplete"  # a live start of this profile is refused until a later PR (sell escalation, parity pricing) removes it
-LIVE_REFUSAL_ACTIVE = False  # FLIPPED (claude/hv4-c0-flip; merge only after an HV4 PASS is recorded and the owner's Helm install is done, with a fresh QP pass). THE switch (QP removal item 15): True = every start outside the synthetic dry path refuses LIVE_REFUSAL. False = the recorded-read start gate in start_refusal decides.
+LIVE_REFUSAL_ACTIVE = False  # FLIPPED (PR #1118; merged before the HV4 reads by manager decision 2026-10-30, after a fresh QP pass). A live send still needs a recorded PASS read record, the root-owned owner file, Helm's LIVE_OK/TIER and a key only Helm creates. THE switch (QP removal item 15): True = every start outside the synthetic dry path refuses LIVE_REFUSAL. False = the recorded-read start gate in start_refusal decides.
 START_NO_REAL_PASS = "start_no_real_pass_record"  # a start on a non-synthetic root needs a recorded PASS read for THIS bot, read from the canonical reads dir (QP removal item 3)
 START_SEALED_ROOT = "start_root_or_decisions_sealed"  # the root, decisions/<bot_id> or a day file lies under or aliases /data/mal/arena (only with LIVE_REFUSAL_ACTIVE False)
 START_LIVE_ON_SYNTHETIC_ROOT = "start_live_on_synthetic_root"  # a root carrying SYNTHETIC_MARKER never starts live (only with LIVE_REFUSAL_ACTIVE False)
