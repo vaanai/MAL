@@ -961,7 +961,7 @@ Quant-proof's pre-ruling N2 (`QP-PRERULING-1026-n2-n4.md`, verdict (a)) already 
 **Status (as written): DRAFT.** Written 2026-10-27T13:51Z (`date -u`), records only, before any Q50 C0 send. It becomes text in force only after merge plus a quant-proof OK and a reviewer verdict on the merged head. It does not rewrite Amendment 3 section 8 item 1 ("The pinned set changes in exactly one blob"); it supersedes that count for the Q50 X-time install once in force. The 43-path list itself (sha256 `244f9e85dd5870bfc47be1cf535eadecd0e2783cc17fee11440ab0ea7ae83720`) keeps the same paths.
 
 1. **Four changed blobs vs the reviewed install 0526d5cd, no others:**
-   - `tools/h5_arena_executor.py` (the 5b blob, unchanged by this amendment: blob 70d789ff, sha256 ef8ae931...) *(Executor line superseded for the X-time install by DEC-032 Amendment 5 item 7 (DRAFT until in force): blob `53337e087f672b685db3c4c43ec46ad70a1119ac`, sha256 `4f5f443a71fa14606f57a75c210e2b006659dcc3217c03f841d8682d17ee9359`, PR #1085. The words above are left as written.)*
+   - `tools/h5_arena_executor.py` (the 5b blob, unchanged by this amendment: blob 70d789ff, sha256 ef8ae931...) *(Executor line superseded for the X-time install by DEC-032 Amendment 5 item 7 (DRAFT until in force): blob `8369ab21349b568efd0eda4fd64fde2e90510bca`, sha256 `7e6d2f0e57388c0c3ea40eb85f6c208ad07aa2389067da70f0de6ca9679abfe0` (main 6117c35c with #1085, plus #1091 DEC-032 Am.7; moved by #1091 from #1085's `53337e08` / `4f5f443a` under Am.5 item 7). The words above are left as written.)*
    - `tools/pumpswap_tx.py`
    - `tools/pumpswap_simulate.py`
    - `tools/probe_executor.py`
