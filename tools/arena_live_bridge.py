@@ -15,6 +15,12 @@ Live needs ALL of: config mode "live", --live, LIVE_OK and TIER root-owned files
 tools.h5_executor.root_file_problem), an explicit end_ms, a pinned frozen_sha that the book's `start` row repeats, a valid chain. A missing or unsafe
 LIVE_OK makes a live-configured bridge DRY for that entry (it logs the order it would have sent). The TIER file is read before every buy; the only
 tier is T0 (the canary limits); an unknown or missing tier is T0.
+The hv4_c0 profile reads its LIVE_OK per bot, /etc/mal-arena-live/hv4-c0/<bot_id>/LIVE_OK (content exactly the bot_id), and its owner confirmation per bot,
+/etc/mal-hv4-c0/<bot_id>/CANARY_DEC.md (hv4_live_c0.owner_line_check); both files root:root, mode exactly 0644, in a root-owned per-bot directory that is not group/other
+writable (0755); TIER stays the one shared file. Two canaries also need their own wallet, state_dir, parity_dir, twins_file and tieout_dir in config.
+The owner file is pinned (DEC-031 Am.21 item 4): at the first good check the bridge stores its (path, st_dev, st_ino, sha256) in `owner_pin` of the state. A later rewrite,
+a replacement (even with identical bytes) or a removal latches `owner_line` (new buys only; exits continue); the manager clears it with the bridge stopped, by removing
+BOTH `latches.owner_line` and `owner_pin` from the state file (the next good check pins the file that is there then).
 
 This is a build, not a claim. It is not gate evidence and installs nothing. Trades it would make are execution measurements.
 
@@ -38,7 +44,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 
 from tools.arena_declog import GENESIS, DecisionLog, LogChainError, sha256_hex, utc_day
 from tools import hv4_c0_parity as c0p
@@ -71,7 +77,9 @@ SELL_RETRY_MS = 5_000
 UNIVERSE_V_RANGE = (17_500_000_000, 17_700_000_000)  # Am.2 item 6: V in [17.5e9, 17.7e9], WSOL quote
 
 LATCHES = ("sealed_path", "chain_break", "frozen_sha_mismatch", "total_loss_cap", "per_trade_loss_cap", "stuck_sell",
-           "parity_hard_halt", "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch", "read_record", "tieout_mismatch", c0.A3_LATCH, c0.FEED_BREAK_LATCH)  # twin_pin_mismatch and the two before: hv4_c0 parity wiring; read_record: no recorded PASS read for the bot (hv4_c0): hv4_c0 parity wiring (tools/hv4_c0_parity.py)
+           "parity_hard_halt", "parity_stop_unwritable", "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch", "read_record", "tieout_mismatch", c0.A3_LATCH, c0.FEED_BREAK_LATCH)  # twin_pin_mismatch and the two before: hv4_c0 parity wiring; read_record: no recorded PASS read for the bot (hv4_c0): hv4_c0 parity wiring (tools/hv4_c0_parity.py)
+
+LATCHES = (*LATCHES, c0.OWNER_LINE_LATCH)  # owner_line: the pinned owner file was rewritten, replaced or removed (hv4_c0, live; DEC-031 Am.21 item 4). A separate line so the tuple above merges cleanly with #1110
 
 
 # --- config -----------------------------------------------------------------------------------------------------------------------
@@ -304,7 +312,11 @@ class BridgeState:
     start_seen: bool = False
     first_start_ms: int | None = None  # unused since #965 N2: the 14-day window start is the write-once file c0.WINDOW_DIR/<bot_id>.json, outside this state
     gap_noted_ms: int = 0  # hv4_c0: the newest gap instant seen (persisted: a restart must not clear against an older review)
+    gap_hold_until_ms: int = 0  # hv4_c0, DEC-031 Am.21 3.1: no new buy before this (max over records of max(instant, receipt) + c0.FEED_GAP_HOLD_MS); persisted
+    gap_known_ms: list[int] = field(default_factory=list)  # hv4_c0, Am.21 3.1/3.3: coverage-losing instants seen (sorted); unreviewed ones are never pruned
+    gap_pruned_upto_ms: int = 0  # hv4_c0, Am.21: the largest instant ever pruned from gap_known_ms (reviewed and older than GAP_KNOWN_KEEP_MS); never registered again
     read_pin: dict[str, Any] | None = None  # hv4_c0: identity {path, dev, ino, sha256} of the recorded read, pinned at the first good check and compared on every run
+    owner_pin: dict[str, Any] | None = None  # hv4_c0 live: identity {path, dev, ino, sha256} of the owner file, pinned at the first good check and compared on every later one (DEC-031 Am.21 item 4)
 
     def save(self, path: Path) -> None:
         _atomic_write(path, self.__dict__)
@@ -354,9 +366,9 @@ def read_tier(path: Path, root_checks: bool, allowed: Mapping[str, Any] | tuple[
 
 class Bridge:
     def __init__(self, cfg: Config, port: OrderPort, *, now_ms: Callable[[], int] | None = None,
-                 live_ok_path: Path = LIVE_OK_PATH, tier_path: Path = TIER_PATH, root_checks: bool = True,
+                 live_ok_path: Path | None = None, tier_path: Path = TIER_PATH, root_checks: bool = True,
                  close_blocked: Callable[[str], bool | None] | None = None, parity_runner: Callable[[list[str]], int] | None = None,
-                 owner_dec_path: Path | str | None = None, owner_pin: str | None = None, gap_clear_dir: Path | str | None = None) -> None:
+                 owner_dec_path: Path | str | None = None, gap_clear_dir: Path | str | None = None) -> None:
         """close_blocked: optional S3 hook, mint -> True (blocked) | False (ok). Interface only here. When set, a True, a None or a raise all refuse."""
         if c0.bot_id_problem(cfg.bot_id):
             raise SystemExit(f"bridge refused: {c0.bot_id_problem(cfg.bot_id)}")
@@ -365,7 +377,7 @@ class Bridge:
         self.port = port
         self.dry_port = port if not port.live else DryPort(cfg.dry_balance_lamports)  # an entry that is not live-eligible (LIVE_OK missing) is routed here: logged, never sent
         self.now_ms = now_ms or (lambda: int(time.time() * 1000))
-        self.live_ok_path = live_ok_path
+        self.live_ok_path = Path(live_ok_path) if live_ok_path is not None else (Path(c0.live_ok_path(cfg.bot_id)) if cfg.profile == c0.PROFILE else LIVE_OK_PATH)  # hv4_c0: per bot, so two canaries can run side by side; every other profile keeps the shared file
         self.tier_path = tier_path
         self.root_checks = root_checks
         if cfg.mode == LIVE and not port.live:
@@ -377,9 +389,10 @@ class Bridge:
         self.log_path = self.sd / f"bridge-log-{cfg.mode}.jsonl"
         self.state = BridgeState.load(self.state_path, cfg.mode)
         self.dlog = DecisionLog(cfg.root)
-        self.owner_dec_path = Path(owner_dec_path) if owner_dec_path is not None else Path(c0.OWNER_DEC_PATH)
-        self.owner_pin = owner_pin
+        self.owner_dec_path = Path(owner_dec_path) if owner_dec_path is not None else Path(c0.owner_dec_path(cfg.bot_id))  # per bot; bot_id was checked above
         self.gap_clear_dir = str(gap_clear_dir) if gap_clear_dir is not None else c0.GAP_CLEAR_DIR
+        self._gks: set[int] | None = None  # the in-memory set of state.gap_known_ms (_gap_known)
+        self._gks_src: list[int] | None = None
         self._read_ident: dict[str, Any] = {}
         if cfg.profile == c0.PROFILE:
             first, why = c0.window_start_ms(cfg.bot_id, self.now_ms(), create=True)
@@ -394,7 +407,8 @@ class Bridge:
         self._chain_ok_ms: int | None = None  # hv4_c0: when the decision log was last read and verified without a break
         self.gates = None
         if cfg.profile == c0.PROFILE and cfg.parity_dir:  # parity, twin and tie-out gates (DEC-032 s5): hv4_c0 only, active when the paths are configured
-            self.gates = c0p.build_gates(cfg.parity_dir, cfg.twins_file, cfg.tieout_dir, cfg.stop_file, self._parity_state, runner=parity_runner)
+            # the tools write their STOP inside parity_dir (unit-writable), never the wallet-wide stop_file the hardened unit cannot write (c0p.PARITY_STOP_NAME)
+            self.gates = c0p.build_gates(cfg.parity_dir, cfg.twins_file, cfg.tieout_dir, c0p.parity_stop_path(cfg.parity_dir), self._parity_state, runner=parity_runner)
         self._last_sell_try: dict[str, int] = {}
         self._a3_polled_ms: int | None = None
         self._a3_refuse: str | None = None  # DEC-032 Am.3: a pending pooled guard refuses new buys (no latch)
@@ -405,6 +419,8 @@ class Bridge:
         self._verify_at_start()
         if not {"chain_break", "sealed_path", "read_record"} & set(self.state.latches):
             self._chain_ok_ms = self.now_ms()  # verified just now
+        if cfg.profile == c0.PROFILE and cfg.mode == LIVE:
+            self._owner_gate()  # a restart with a changed owner file latches before any entry is handled
         self.reconcile()
 
     # -- plumbing
@@ -445,6 +461,23 @@ class Bridge:
             self.state.read_pin = dict(ident)
             self._save()
         return True
+
+    def _owner_gate(self) -> str | None:
+        """hv4_c0, LIVE only (DEC-031 Am.21 item 4): the owner file problem, or None. At the FIRST good check its identity (path, st_dev, st_ino, sha256) is pinned in
+        the persisted state. On every later check a rewrite, a replacement (even with identical bytes) or a removal latches `owner_line` (a hard latch: new buys
+        stop, exits keep running) until the manager clears it with the bridge stopped. Before a pin exists a missing or bad file is only a problem label (entries DRY)."""
+        if self.cfg.profile != c0.PROFILE or self.cfg.mode != LIVE:
+            return None
+        if c0.OWNER_LINE_LATCH in self.state.latches:
+            return c0.OWNER_LINE_CHANGED
+        why, ident = c0.owner_line_check(self.owner_dec_path, self.cfg.bot_id, root_ok_problem if self.root_checks else None, self.state.owner_pin)
+        if why == c0.OWNER_LINE_CHANGED:
+            self._latch(c0.OWNER_LINE_LATCH, why)
+        elif why is None and self.state.owner_pin is None:
+            self.state.owner_pin = dict(ident)  # persisted: a restart or a new process compares with THIS identity
+            self._log("owner_line_pinned", path=ident["path"], dev=ident["dev"], ino=ident["ino"], sha256=ident["sha256"])
+            self._save()
+        return why
 
     def _verify_at_start(self) -> None:
         """Full chain check of what exists now. A break latches chain_break (the bridge then never buys). The cursor is set only on a clean pass; a
@@ -532,7 +565,17 @@ class Bridge:
 
     # -- gates
     def _files(self) -> tuple[bool, bool]:
-        return Path(self.cfg.halt_file).exists(), Path(self.cfg.stop_file).exists()
+        """(HALT, STOP). For hv4_c0 with gates, the parity/tie-out tools' STOP inside parity_dir counts as STOP too (any entry at that path, a link included;
+        an unstat-able parity_dir is a STOP: fail closed)."""
+        stop = Path(self.cfg.stop_file).exists()
+        if not stop and self.gates is not None:
+            try:
+                stop = os.path.lexists(c0p.parity_stop_path(self.cfg.parity_dir)) or not os.path.isdir(self.cfg.parity_dir)
+            except OSError:
+                stop = True
+            if stop:
+                self._count("parity_stop_file_refusal")
+        return Path(self.cfg.halt_file).exists(), stop
 
     # -- hv4_c0 parity / twin / tie-out (tools/hv4_c0_parity.py); every method below is a no-op unless self.gates is set
     def _parity_state(self, now: int) -> dict[str, Any]:
@@ -586,6 +629,8 @@ class Bridge:
         run = self.gates.parity_run if self.gates is not None else None
         if run is not None and run.get("rc") == c0p.RC_HARD:
             self._latch("parity_hard_halt", f"arena_live_parity rc {c0p.RC_HARD} at {run.get('at_ms')}")
+        elif run is not None and run.get("rc") == c0p.RC_STOP_UNWRITABLE:  # a halt the tool could not write down: its class is unknown, hold it as hard
+            self._latch(c0p.PARITY_STOP_UNWRITABLE_LATCH, f"arena_live_parity rc {c0p.RC_STOP_UNWRITABLE} (STOP not written) at {run.get('at_ms')}")
 
     def feed_ledger(self) -> None:
         """Move the executor's fill rows into the parity recorder. A landed buy that spent other than the order's S is a hard latch (live stake = S = twin stake)."""
@@ -623,8 +668,9 @@ class Bridge:
             except OSError:
                 why = "unreadable"
             why = why[len("live_ok_"):] if why and why.startswith("live_ok_") else why
-            if not why:  # the owner's line in a ROOT-OWNED file outside the installed tree, whose sha256 is the pinned blob
-                why = c0.owner_line_problem(self.owner_dec_path, self.cfg.bot_id, self.owner_pin, root_ok_problem if self.root_checks else None)
+        if self.cfg.profile == c0.PROFILE:  # the owner's line in this bot's ROOT-OWNED file outside the installed tree, pinned by identity (no sha in code); checked on every call so a change latches even while LIVE_OK is bad
+            owner_why = self._owner_gate()
+            why = why or owner_why
         return (False, f"live_ok_{why}") if why else (True, None)
 
     def tier_limits(self) -> tuple[str, dict[str, int], str | None]:
@@ -662,7 +708,7 @@ class Bridge:
             return "halt_file"
         if stop:
             return "stop_file"
-        why = self.feed_refusal(now)
+        why = self.feed_refusal(now) or self.gap_entry_refusal(row)
         if why:
             return why
         if now >= self.cfg.end_ms:
@@ -689,51 +735,159 @@ class Bridge:
         if self._a3_refuse:
             self._count("a3_guard_pending_refusal")
             return self._a3_refuse
+        if not c0.FEED_GAP_MANUAL_REVIEW:  # DEC-031 Am.21 3.1: the self-clearing short hold after a coverage-losing record, timed from its receipt (_note_gap)
+            why = c0.gap_hold_problem(self.state.gap_hold_until_ms, now)
+            if why:
+                self._count("feed_gap_hold_refusal")
+                return why
         why = c0.runner_silent_problem(self._last_row_ms, self._started_ms, now)
         if why:
             self._count("runner_silent_refusal")
             return why
         path = c0.feed_status_path(self.cfg.root, self.cfg.bot_id)
         if self.cfg.mode != LIVE and not os.path.lexists(path) and c0.synthetic_root(self.cfg.root):
-            return None  # only a synthetic fixture root may run without a forwarder status; any other root (dry included) refuses
-        why = c0.feed_gap_problem(path, self.cfg.bot_id, now)
+            why = None  # only a synthetic fixture root may run without a forwarder status; any other root (dry included) refuses
+        else:
+            why = c0.feed_gap_problem(path, self.cfg.bot_id, now)
         if why:
             self._count("transport_stall_refusal")
-        return f"transport_stall:{why}" if why else None
+            return f"transport_stall:{why}"
+        why = c0.tape_gap_refusal(self.cfg.root, self.cfg.bot_id, now, self.cfg.mode == LIVE)  # P7-c (QP #969): a missing or stale carried tape-gap stream refuses new buys
+        if why:
+            self._count("tape_gap_stream_refusal")
+        return why
 
     def _note_gap(self, gap_ms: int, why: str) -> None:
-        """One gap record (kind and instant only): open trades are marked `gap` (DEC-032 s5.2) and feed_break latches."""
-        if gap_ms > self.state.gap_noted_ms:
-            self.state.gap_noted_ms = gap_ms
+        """One COVERAGE-LOSING record (kind and instant only), e.g. a `gap` row of the decision stream. Open trades are marked `gap` (DEC-032 s5.2; Am.21 3.1).
+        With c0.FEED_GAP_MANUAL_REVIEW (s5 item 2 as built) feed_break latches. Otherwise (DEC-031 Am.21 item 3) it goes through the batched path _note_gaps."""
+        if c0.FEED_GAP_MANUAL_REVIEW:
+            if gap_ms > self.state.gap_noted_ms:
+                self.state.gap_noted_ms = gap_ms
+                if self.gates is not None:
+                    self.gates.recorder.note_gap(gap_ms)
+            self._latch(c0.FEED_BREAK_LATCH, why)
+            self._save()
+            return
+        if self._note_gaps([gap_ms], why):
+            self._save()
+
+    def _gap_known(self) -> set[int]:
+        """The coverage-losing instants already registered, as a set (QP/reviewer part A: a list scan cost 11.9 ms per tick at 2,000 gaps). Rebuilt from the
+        persisted list after a load or a prune."""
+        lst = self.state.gap_known_ms
+        if self._gks is None or self._gks_src is not lst or len(self._gks) != len(lst):
+            self._gks, self._gks_src = set(lst), lst
+        return self._gks
+
+    def _note_gaps(self, instants: Iterable[int], why: str) -> bool:
+        """DEC-031 Am.21 3.1, BATCHED (reviewer part A: one save and one log line per record cost 33 s for 2,000 records inside a tick, with exits waiting):
+        register every instant not seen before and later than state.gap_pruned_upto_ms (an instant that was pruned, i.e. reviewed AND older than
+        c0.GAP_KNOWN_KEEP_MS, is never registered again, so it never re-arms the hold). The review itself is NOT a filter here (QP on 99222ec7: a
+        future-dated review file must not switch off the hold, the per-entry refusal or the trip mark of a record the bridge has never seen). Among the new
+        instants, only those not older than c0.GAP_KNOWN_KEEP_MS restart the hold (an aged-out instant is tracked for the 24 h latch but never re-arms it).
+        One hold update, one trip mark, one summary log line. Returns True when the state changed; the CALLER saves once."""
+        now = self.now_ms()
+        ks = self._gap_known()
+        floor = self.state.gap_pruned_upto_ms
+        new = sorted({ms for ms in instants if ms not in ks and ms > floor})
+        if not new:
+            return False
+        ks.update(new)
+        self.state.gap_known_ms.extend(new)
+        self.state.gap_known_ms.sort()
+        if len(self.state.gap_known_ms) > c0.GAP_KNOWN_MAX:
+            self._latch(c0.FEED_BREAK_LATCH, f"{c0.FEED_GAP_LOG_LATCH}:gap_known_overflow")  # never a silent drop
+        newest = new[-1]
+        if newest > self.state.gap_noted_ms:
+            self.state.gap_noted_ms = newest
             if self.gates is not None:
-                self.gates.recorder.note_gap(gap_ms)
-        self._latch(c0.FEED_BREAK_LATCH, why)
-        self._save()
+                self.gates.recorder.note_gap(newest)
+        rearm = [ms for ms in new if now - ms <= c0.GAP_KNOWN_KEEP_MS]
+        if rearm:
+            self.state.gap_hold_until_ms = max(self.state.gap_hold_until_ms, max(rearm[-1], now) + c0.FEED_GAP_HOLD_MS)
+        late = sum(1 for ms in new if now - ms > c0.FEED_GAP_LATENCY_BOUND_MS)
+        if late:
+            self.state.counts["feed_gap_late"] = self.state.counts.get("feed_gap_late", 0) + late
+        self._log("feed_gap_hold", n=len(new), first_ms=new[0], newest_ms=newest, seen_ms=now, rearmed=len(rearm), late=late,
+                  hold_until_ms=self.state.gap_hold_until_ms, why=why[:200])
+        return True
+
+    def gap_entry_refusal(self, row: Mapping[str, Any]) -> str | None:
+        """DEC-031 Am.21 3.1 per-entry refusal (hv4_c0, not in the as-built mode): no buy on an entry decided at or before the newest coverage-losing
+        instant the bridge has seen. Logged as the skip `feed_gap`."""
+        if self.cfg.profile != c0.PROFILE or c0.FEED_GAP_MANUAL_REVIEW:
+            return None
+        why = c0.gap_entry_problem(row.get("ms"), self.state.gap_noted_ms)
+        if why:
+            self._count("feed_gap_refusal")
+        return why
 
     def gap_tick(self, now: int) -> None:
-        """hv4_c0 feed_break (DEC-032 s5.2 consumer). A gap record in the forwarder's gap log or a `gap` row in the decision stream latches feed_break; a forwarder
-        `stopped_mismatch` latches it too. NOTE: no producer of the book's own TAPE gap records exists yet (see the hv4_live_c0 doc). The latch is removed ONLY when
-        the feed has been gap-free for 10 minutes counted from the END of the gap AND the manager's root-owned review file names exactly the newest gap instant."""
+        """hv4_c0 feed-gap rule. Records: the forwarder's gap log, the tape-gap stream (tools/hv4_gap_relay.py), a `gap` row in the decision stream.
+        c0.FEED_GAP_MANUAL_REVIEW True = DEC-032 s5 item 2 as built: every gap record latches feed_break, removed ONLY when the feed has been gap-free for 10
+        minutes counted from the END of the gap AND the manager's root-owned review file names exactly the newest gap instant; a forwarder stopped_mismatch
+        latches too. False = DEC-031 Am.21 item 3 (see the hv4_live_c0 block): coverage-losing records hold and refuse per entry (_note_gap), transport events
+        and stopped_mismatch leave the latch, a coverage-losing record older than 24 h and later than the review latches feed_break until a review covers it,
+        and a bad gap log latches until it reads clean, the forwarder is connected and the review covers the newest coverage-losing instant."""
         if self.cfg.profile != c0.PROFILE:
             return
-        gaps, resumes, bad = c0.gap_log_ms(os.path.join(self.cfg.root, "transport", f"{self.cfg.bot_id}.gaps.jsonl"))
-        tgaps, _tres, tbad = c0.gap_log_ms(os.path.join(self.cfg.root, "transport", f"{self.cfg.bot_id}.tapegaps.jsonl"))  # tools/hv4_gap_relay.py: the book's own TAPE gaps
-        gaps, bad = [*gaps, *tgaps], bad or tbad
-        if bad:
-            self._latch(c0.FEED_BREAK_LATCH, bad)  # an unreadable, oversize or malformed gap log is not a clear
-        newest = max([*gaps, self.state.gap_noted_ms]) if (gaps or self.state.gap_noted_ms) else None
-        since = max([*gaps, *resumes, self.state.gap_noted_ms]) if newest is not None else None
-        if gaps and max(gaps) > self.state.gap_noted_ms:
-            self._note_gap(max(gaps), f"gap record at {max(gaps)}")
+        fentries, resumes, bad = c0.gap_log_entries(os.path.join(self.cfg.root, "transport", f"{self.cfg.bot_id}.gaps.jsonl"))
+        tentries, _tres, tbad = c0.gap_log_entries(os.path.join(self.cfg.root, "transport", f"{self.cfg.bot_id}.tapegaps.jsonl"))  # tools/hv4_gap_relay.py: the book's own TAPE gaps
+        bad = bad or tbad
         sp = c0.feed_status_path(self.cfg.root, self.cfg.bot_id)
         status_why = c0.feed_gap_problem(sp, self.cfg.bot_id, now) if os.path.lexists(sp) else "feed_status_missing"
-        if status_why == "feed_state_stopped_mismatch":
-            self._latch(c0.FEED_BREAK_LATCH, "forwarder_stopped_mismatch")
-        if c0.FEED_BREAK_LATCH in self.state.latches and newest is not None and not bad and status_why is None:
-            if self._gap_cleared(newest, now, since):
+        if c0.FEED_GAP_MANUAL_REVIEW:
+            gaps = [*(ms for _k, ms in fentries), *(ms for _k, ms in tentries)]
+            if bad:
+                self._latch(c0.FEED_BREAK_LATCH, bad)  # an unreadable, oversize or malformed gap log is not a clear
+            newest = max([*gaps, self.state.gap_noted_ms]) if (gaps or self.state.gap_noted_ms) else None
+            since = max([*gaps, *resumes, self.state.gap_noted_ms]) if newest is not None else None
+            if gaps and max(gaps) > self.state.gap_noted_ms:
+                self._note_gap(max(gaps), f"gap record at {max(gaps)}")
+            if status_why == "feed_state_stopped_mismatch":
+                self._latch(c0.FEED_BREAK_LATCH, "forwarder_stopped_mismatch")
+            if c0.FEED_BREAK_LATCH in self.state.latches and newest is not None and not bad and status_why is None:
+                if self._gap_cleared(newest, now, since):
+                    del self.state.latches[c0.FEED_BREAK_LATCH]
+                    self._log("latch_cleared", latch=c0.FEED_BREAK_LATCH, reviewed_gap_ms=newest)
+                    self._save()
+            return
+        # DEC-031 Am.21 item 3 (batched: at most one state save per tick from the bookkeeping below)
+        if bad:
+            self._latch(c0.FEED_BREAK_LATCH, f"{c0.FEED_GAP_LOG_LATCH}:{bad}")
+        reviewed = self._gap_reviewed_ms()
+        loss = [ms for k, ms in fentries if c0.gap_loses_data(k)]
+        loss.extend(ms for _k, ms in tentries)
+        dirty = self._note_gaps(loss, "coverage-losing records")
+        unrev = c0.gap_unreviewed(self.state.gap_known_ms, reviewed, now)
+        if unrev:
+            self._latch(c0.FEED_BREAK_LATCH, f"{c0.FEED_GAP_UNREVIEWED}:{unrev[0]}")
+        why = self.state.latches.get(c0.FEED_BREAK_LATCH)
+        if why is not None and not unrev:
+            clear = False
+            if why.startswith(c0.FEED_GAP_UNREVIEWED + ":"):
+                clear = not bad
+            elif why.startswith(c0.FEED_GAP_LOG_LATCH + ":"):
+                clear = not bad and status_why is None and reviewed >= self.state.gap_noted_ms and len(self.state.gap_known_ms) <= c0.GAP_KNOWN_MAX
+            if clear:
                 del self.state.latches[c0.FEED_BREAK_LATCH]
-                self._log("latch_cleared", latch=c0.FEED_BREAK_LATCH, reviewed_gap_ms=newest)
-                self._save()
+                self._log("latch_cleared", latch=c0.FEED_BREAK_LATCH, why=why[:200], reviewed_gap_ms=reviewed)
+                dirty = True
+        keep = [ms for ms in self.state.gap_known_ms if ms > reviewed or now - ms <= c0.GAP_KNOWN_KEEP_MS]  # unreviewed instants are never pruned
+        if len(keep) != len(self.state.gap_known_ms):
+            pruned = [ms for ms in self.state.gap_known_ms if not (ms > reviewed or now - ms <= c0.GAP_KNOWN_KEEP_MS)]
+            self.state.gap_pruned_upto_ms = max(self.state.gap_pruned_upto_ms, max(pruned))  # persisted: a pruned instant is never registered again
+            self.state.gap_known_ms = keep  # _gap_known rebuilds the set
+            dirty = True
+        if dirty:
+            self._save()
+
+    def _gap_reviewed_ms(self) -> int:
+        p = Path(self.gap_clear_dir) / f"{self.cfg.bot_id}.json"
+        try:
+            return c0.gap_review_ms(str(p), self.cfg.bot_id, root_ok_problem if self.root_checks else None, self.now_ms())
+        except Exception:  # noqa: BLE001 - nothing reviewed; never propagates into tick()
+            return 0
 
     def _gap_cleared(self, last: int, now: int, since: int | None = None) -> bool:
         p = Path(self.gap_clear_dir) / f"{self.cfg.bot_id}.json"
@@ -859,7 +1013,8 @@ class Bridge:
             self._count("port_refused_buy")
         self._log("buy_sent" if ok else "buy_port_refused", order_id=oid, mint=mint, stake_lamports=stake, paper_stake_sol=row.get("stake_sol"),
                   decision_ms=order["decision_ms"], send_ms=order["send_ms"], decision_to_send_ms=order["send_ms"] - order["decision_ms"],
-                  decision_slot=order["decision_slot"], would_send=not order["live"], dry_reason=why_dry, tier=tier, label=label)
+                  decision_slot=order["decision_slot"], would_send=not order["live"], dry_reason=why_dry, tier=tier, label=label,
+                  **({"decision_seq": row["seq"]} if self.cfg.profile == c0.PROFILE else {}))  # hv4_c0: the decision row's seq, so orders can be tied back to rows (tools/hv4_c0_orders_proof.py)
         self._save()
 
     def _presend_refusal(self, row: Mapping[str, Any]) -> str | None:
@@ -869,7 +1024,7 @@ class Bridge:
             return "halt_file"
         if stop:
             return "stop_file"
-        why = self.feed_refusal(now)  # the feed can stall during the RPCs above (hv4_c0 only; None for every other profile)
+        why = self.feed_refusal(now) or self.gap_entry_refusal(row)  # the feed can stall, or a gap record arrive, during the RPCs above (hv4_c0 only)
         if why:
             return why
         if now >= self.cfg.end_ms:
@@ -895,7 +1050,16 @@ class Bridge:
             return
         o["exit_decision_ms"] = o.get("exit_decision_ms") or int(row["ms"])
         o["exit_decision_slot"] = o.get("exit_decision_slot") or row.get("decision_slot")
+        if self.cfg.profile == c0.PROFILE and o.get("exit_decision_seq") is None:
+            o["exit_decision_seq"] = row.get("seq")  # hv4_c0 log field only; the first exit row that is acted on, as for exit_decision_ms
         self._try_exit(oid, str(row.get("reason") or "book_exit"))
+
+    def _runner_silent_ms(self, now: int) -> int:
+        """hv4_c0 log field: ms since the newest decision row this process consumed, or since its own start when it has seen none. The SAME base as
+        `c0.runner_silent_problem`, so `runner_silent_ms > c0.RUNNER_SILENT_MS` is exactly when that rule says `runner_silent`. Logged on every sell so the C0 read can
+        tell which backstop closes happened while the runner was silent (a test pins the two together)."""
+        base = self._started_ms if self._last_row_ms is None else max(self._last_row_ms, self._started_ms)
+        return max(0, int(now) - base)
 
     def _try_exit(self, oid: str, reason: str) -> None:
         o = self.state.orders[oid]
@@ -929,9 +1093,11 @@ class Bridge:
             o["status"] = "open"
             self._count("port_refused_sell")
         dms = o.get("exit_decision_ms")
+        c0_fields = ({"decision_seq": o.get("exit_decision_seq"), "runner_silent_ms": self._runner_silent_ms(o["sell_send_ms"])}
+                     if self.cfg.profile == c0.PROFILE else {})  # hv4_c0 log fields only: tools/hv4_c0_orders_proof.py and tools/hv4_c0_read_check.py read them
         self._log("sell_sent" if ok else "sell_port_refused", order_id=oid, mint=o["mint"], reason=reason, decision_ms=dms, send_ms=o["sell_send_ms"],
                   decision_to_send_ms=(o["sell_send_ms"] - dms) if dms else None, decision_slot=o.get("exit_decision_slot"), tries=o["sell_tries"],
-                  would_send=not o["live"], label=label)
+                  would_send=not o["live"], label=label, **c0_fields)
         self._save()
 
     # -- events from the port
@@ -1061,6 +1227,7 @@ class Bridge:
         """One pass: port events, rows, backstops, warm plan. Returns rows consumed."""
         self.a3_tick(self.now_ms())
         self.gap_tick(self.now_ms())
+        self._owner_gate()  # hv4_c0 live: a rewritten, replaced or removed owner file latches `owner_line` at once, not only at the next entry (a no-op in every other case)
         self._poll_ports()
         n = 0
         if not Path(self.cfg.halt_file).exists():
@@ -1099,6 +1266,37 @@ class Bridge:
 
 # --- the live port (wraps the existing probe executor; built only for --live) --------------------------------------------------------
 
+_COMPUTE_BUDGET_ID = "ComputeBudget111111111111111111111111111111"
+
+
+def signed_priority_lamports(tx_b64: Any) -> int | None:
+    """The total priority fee, in lamports, that a SIGNED transaction pays: SetComputeUnitPrice (micro-lamports per CU) x SetComputeUnitLimit / 1e6, rounded up (the
+    runtime rounds the prioritization fee up). It is read from the signed bytes themselves, so it is the priority of THAT signature and can never be a recomputation made
+    when the send resolves (QP #970 R2, #965 N7 / N-D). None for anything that is not exactly one limit and one price instruction (fail closed: the fill row then carries
+    null and the tie-out audit refuses it). Imports the solana stack lazily: a dry bridge never calls it."""
+    try:
+        import base64
+
+        from solders.transaction import VersionedTransaction
+
+        msg = VersionedTransaction.from_bytes(base64.b64decode(tx_b64, validate=True)).message
+        keys = list(msg.account_keys)
+        limits: list[int] = []
+        prices: list[int] = []
+        for ix in msg.instructions:
+            if str(keys[ix.program_id_index]) != _COMPUTE_BUDGET_ID:
+                continue
+            d = bytes(ix.data)
+            if d[:1] == b"\x02" and len(d) == 5:
+                limits.append(int.from_bytes(d[1:], "little"))
+            elif d[:1] == b"\x03" and len(d) == 9:
+                prices.append(int.from_bytes(d[1:], "little"))
+        if len(limits) != 1 or len(prices) != 1 or limits[0] <= 0:
+            return None
+        return -(-prices[0] * limits[0] // 1_000_000)
+    except Exception:  # noqa: BLE001 - anything unreadable is "not known", never a number
+        return None
+
 
 def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *, now_ms: Callable[[], int] | None = None) -> OrderPort:
     """LiveExecutorPort over a `probe_live.LiveExecutor` subclass. Imported here so a dry bridge never imports the solana stack or sees a key."""
@@ -1123,7 +1321,6 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
             # The profile's own end (dec019: 2026-10-12) is replaced by the bridge's end_ms: the executor's check_buy soft stop (end_instant) then
             # enforces it at send time too, and the Bridge re-checks it right before the send.
             object.__setattr__(self.limits, "end_ms", int(end_ms))
-            self.sent_priority: dict[str, int] = {}
             self.events: list[dict[str, Any]] = []
             self.ledger: list[tuple[str, str, dict[str, Any]]] = []
             self.last_skip: str | None = None
@@ -1184,15 +1381,31 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
                     d = bytes(ix.data)
                     if str(keys[ix.program_id_index]) == str(tx_mod.PUMPSWAP_PROGRAM) and d[:8] == bytes(tx_mod.DISC_SELL) and int.from_bytes(d[16:24], "little") <= 0:
                         raise RuntimeError("c0_min_out_zero")
-            if cfg.profile == c0.PROFILE:  # N7: remember the priority of the tx actually signed, so the fill row logs what was SENT (the base class recomputes
-                # `_priority` at landing, when the pending entry is gone); the pinned base `_sign` runs unchanged with that same value
-                priority = self._priority(mint) if priority is None else priority
-                self.sent_priority[mint] = priority
+            if cfg.profile == c0.PROFILE:  # the pinned base `_sign` runs unchanged with the intended priority; the fill row's priority is read back from the signed bytes
+                intended = self._priority(mint) if priority is None else priority
+                out = super()._sign(msg, ps, mint, intended)
+                signed = signed_priority_lamports(out[1])
+                if signed != intended:  # an alert only (what is sent is unchanged): the builder encoded another priority than the one asked for
+                    self._alert("c0_signed_priority_differs", mint, intended=intended, signed=signed)
+                return out
             return super()._sign(msg, ps, mint, priority)
 
+        def _timing(self, p: dict[str, Any]) -> dict[str, Any]:
+            """hv4_c0: the send facts of THIS row, taken from the pending entry whose signature the row carries (never from a recomputation or a per-mint memory):
+            `last_valid_block_height` (QP #970 ruling 2: the tie-out confirms a drop only with it) and `c0_signed_priority`, the priority in that signature's signed bytes
+            (`_log` writes it as `priority_lamports` and removes this key). Every buy and sell row is built from `**self._timing(p)`: landed, landed-failed and expired."""
+            out = super()._timing(p)
+            if cfg.profile == c0.PROFILE:
+                out["last_valid_block_height"] = p.get("lvbh")
+                out["c0_signed_priority"] = signed_priority_lamports(p.get("tx_b64"))
+            return out
+
         def _log(self, kind: str, mint: str, **kw: Any) -> None:
-            if cfg.profile == c0.PROFILE and kind in ("buy", "sell") and "priority_lamports" in kw and mint in getattr(self, "sent_priority", {}):
-                kw["priority_lamports"] = self.sent_priority[mint]  # the priority of the last tx signed for this mint, not a recomputation
+            if cfg.profile == c0.PROFILE and kind in ("buy", "sell"):
+                if "c0_signed_priority" in kw:
+                    kw["priority_lamports"] = kw.pop("c0_signed_priority")  # QP #970 R2: the priority of this row's own signature (null when unreadable: the audit refuses it)
+                elif "priority_lamports" in kw:
+                    kw["priority_lamports"] = None  # a row not built from `_timing` never logs the base class's recomputation
             super()._log(kind, mint, **kw)
             if cfg.profile == c0.PROFILE and kind in ("buy", "sell"):
                 self.ledger.append((kind, mint, dict(kw)))  # the parity recorder reads the executor's own fill rows (drained by the port)
@@ -1384,19 +1597,32 @@ def main(argv: list[str] | None = None) -> int:
             if not why and not cfg.a3_record_file:
                 why = "a3_record_file_missing"
             if not why:
-                why = c0.owner_line_problem(c0.OWNER_DEC_PATH, cfg.bot_id, None, root_ok_problem)
+                why = c0.bot_id_problem(cfg.bot_id)
+            st0 = None
+            if not why:
+                st0 = BridgeState.load(Path(cfg.state_dir) / f"bridge-state-{cfg.mode}.json", cfg.mode)
+                # Am.21 item 4: with a pin in the state (or the latch already set), a changed owner file does NOT refuse the start. The bridge must run so that it can
+                # latch `owner_line` (new buys stop) and keep running exits of positions that are open; a refused start would strand them. Every other owner label refuses as before.
+                why = None if c0.OWNER_LINE_LATCH in st0.latches else c0.owner_line_problem(c0.owner_dec_path(cfg.bot_id), cfg.bot_id, root_ok_problem, st0.owner_pin)
+                if why == c0.OWNER_LINE_CHANGED:
+                    why = None
         else:
             why = None
-        st0 = BridgeState.load(Path(cfg.state_dir) / f"bridge-state-{cfg.mode}.json", cfg.mode)
-        why = why or c0.read_record_problem(cfg.reads_dir, cfg.bot_id, st0.read_pin, (not want_live) and c0.synthetic_root(cfg.root))[0]
+            st0 = None
+        if st0 is None:
+            st0 = BridgeState.load(Path(cfg.state_dir) / f"bridge-state-{cfg.mode}.json", cfg.mode)
+        rec_why, rec_ident = (None, {}) if why else c0.read_record_problem(cfg.reads_dir, cfg.bot_id, st0.read_pin, (not want_live) and c0.synthetic_root(cfg.root))
+        why = why or rec_why
         if not why:
             first, why = c0.window_start_ms(cfg.bot_id, int(time.time() * 1000), create=False)
             why = why or c0.end_cap_problem(cfg.end_ms, first if first is not None else int(time.time() * 1000))
         if why:
             print(f"arena_live_bridge ALERT startup_refused {c0.refusal_text(why)}", flush=True)
             return 2
-        # Seal: R2.1 of QP-RULING-1025-hv4-read-rule. No hv4_c0 start, dry or live, until a read-record gate exists, except on a synthetic fixture root.
-        why = c0.start_refusal(cfg.root, want_live, cfg.bot_id)
+        live_gates_passed = bool(want_live)  # reached only when every gate above held: parity paths, a3 record file, owner line vs the pin, read record, 14-day cap
+        # Seal: R2.1 of QP-RULING-1025-hv4-read-rule. A start on a synthetic fixture root (dry) is as before; any other root starts only on a recorded PASS read
+        # for THIS bot from the canonical reads dir (real_pass_record), with the decisions paths checked, and for live with every gate above (QP removal item 3).
+        why = c0.start_refusal(cfg.root, want_live, cfg.bot_id, c0.real_pass_record(rec_why, rec_ident, cfg.bot_id), live_gates_passed)
         if why:
             print(f"arena_live_bridge ALERT startup_refused {why}", flush=True)
             return 2

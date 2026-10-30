@@ -458,6 +458,874 @@ class ReviewFixesTest(Case):
         pl.close()
 
 
+# --- tapegaps carry (QP #969 P7-c / P7-e carry): the hv4_gap_relay stream, research-0 -> fast-0 ----------------------------------------------------
+
+MT = 1_791_300_000_000  # a fixed synthetic "source pass instant", ms
+
+
+def tg_bytes(*rows: tuple[str, int]) -> bytes:
+    return b"".join((json.dumps({"kind": k, "ms": m}, sort_keys=True) + "\n").encode() for k, m in rows)
+
+
+def tg_frame(data: bytes, mt: int = MT, **over) -> dict:
+    return {**{"k": "tg", "mt": mt, "n": len(data), "sha": hashlib.sha256(data).hexdigest(), "b": data.decode("utf-8")}, **over}
+
+
+class TapegapsCase(Case):
+    def setUp(self) -> None:
+        super().setUp()
+        self.relay = os.path.join(self.tmp, "relay")  # the relay out-dir, OUTSIDE any arena path
+        os.makedirs(os.path.join(self.relay, "transport"))
+        self.tgf = os.path.join(self.relay, "transport", f"{BOT}.tapegaps.jsonl")
+
+    def put(self, data: bytes, mt: int | None = MT) -> None:
+        """What the relay does on every pass: tmp + fsync + rename (a NEW inode each time), the mtime being the pass instant."""
+        tmp = self.tgf + ".tmp"
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+            fh.flush()
+            os.fsync(fh.fileno())
+        if mt is not None:
+            os.utime(tmp, ns=(mt * 1_000_000, mt * 1_000_000))
+        os.replace(tmp, self.tgf)
+
+    def server(self) -> tuple[df.Server, list[bytes]]:
+        out: list[bytes] = []
+        return df.Server(self.src, BOT, write=out.append, tapegaps_file=self.tgf), out
+
+    def frames(self, out: list[bytes]) -> list[dict]:
+        return [json.loads(x) for x in b"".join(out).splitlines()]
+
+    def dst_tg(self) -> Path:
+        return Path(self.dst) / "transport" / f"{BOT}.tapegaps.jsonl"
+
+
+class TapegapsValidatorTest(unittest.TestCase):
+    def test_pinned_bounds(self) -> None:
+        self.assertEqual(df.TAPEGAPS_MAX_BYTES, c0.GAP_LOG_MAX_BYTES)  # the puller never carries more than the bridge will read
+        self.assertLess(df.TAPEGAPS_FRAME_MAX, df.MAX_FRAME_BYTES)
+        self.assertEqual(df.tapegaps_problem(b"x" * (df.TAPEGAPS_MAX_BYTES + 1)), "too_large")
+
+    def test_accepts_exactly_kind_str_and_ms_int(self) -> None:
+        self.assertIsNone(df.tapegaps_problem(b""))
+        self.assertIsNone(df.tapegaps_problem(tg_bytes(("data_loss", MT), ("gap_silence", MT + 5))))
+        self.assertIsNone(df.tapegaps_problem(b'{"ms": 1, "kind": "x"}\n'))  # key order is free
+
+    def test_rejects_everything_else(self) -> None:
+        bad = {
+            b'{"kind":"a","ms":1}': "torn_tail",  # no final newline: a write in progress is never carried
+            b'{"kind":"a","ms":1}\n{"kind":"a"': "torn_tail",
+            b'\xff\xfe\n': "not_utf8",
+            b'\n': "malformed",  # a blank line
+            b'{"kind":"a","ms":1}\n\n': "malformed",
+            b'not json\n': "malformed",
+            b'[1,2]\n': "malformed",
+            b'"x"\n': "malformed",
+            b'{"kind":"a"}\n': "malformed",
+            b'{"ms":1}\n': "malformed",
+            b'{"kind":"a","ms":1,"price":2}\n': "malformed",  # a third key: nothing but kind and instant is carried
+            b'{"kind":1,"ms":1}\n': "malformed",
+            b'{"kind":null,"ms":1}\n': "malformed",
+            b'{"kind":"a","ms":"1"}\n': "malformed",
+            b'{"kind":"a","ms":1.5}\n': "malformed",
+            b'{"kind":"a","ms":true}\n': "malformed",
+            b'{"kind":"a","ms":NaN}\n': "malformed",
+            b'{"kind":"a","ms":0}\n': "ms_out_of_range",
+            b'{"kind":"a","ms":-5}\n': "ms_out_of_range",
+            b'{"kind":"a","ms":%d}\n' % (df.TAPEGAPS_MS_MAX + 1): "ms_out_of_range",  # ns instead of ms
+            b'{"kind":"a","ms":1}\n' + b"[" * 100000 + b"\n": "malformed",  # a deeply nested line is a problem, not a crash
+        }
+        for data, why in bad.items():
+            with self.subTest(data=data[:40]):
+                self.assertEqual(df.tapegaps_problem(data), why)
+        self.assertIsNone(df.tapegaps_problem(b'{"kind":"a","ms":%d}\n' % df.TAPEGAPS_MS_MAX))
+
+
+class TapegapsServeTest(TapegapsCase):
+    def test_frame_fields_and_when_it_is_sent(self) -> None:
+        data = tg_bytes(("data_loss", MT - 5), ("gap_silence", MT - 1))
+        self.put(data)
+        srv, out = self.server()
+        self.assertEqual(srv.poll_tapegaps(), 1)
+        fr = self.frames(out)[0]
+        self.assertEqual(sorted(fr), ["b", "k", "mt", "n", "sha"])
+        self.assertEqual((fr["k"], fr["mt"], fr["n"], fr["b"]), ("tg", MT, len(data), data.decode()))
+        self.assertEqual(fr["sha"], hashlib.sha256(data).hexdigest())
+        self.assertEqual(srv.poll_tapegaps(), 0)  # unchanged: nothing
+        self.assertEqual(len(out), 1)
+        self.put(data, mt=MT + 60_000)  # the next relay pass: identical bytes, a new inode and mtime = the heartbeat
+        self.assertEqual(srv.poll_tapegaps(), 1)
+        fr2 = self.frames(out)[1]
+        self.assertEqual((fr2["b"], fr2["mt"]), (data.decode(), MT + 60_000))
+        data2 = data + tg_bytes(("process_restart", MT + 1))
+        self.put(data2, mt=MT + 120_000)  # a new gap row appended
+        self.assertEqual(srv.poll_tapegaps(), 1)
+        self.assertEqual(self.frames(out)[2]["b"], data2.decode())
+        self.assertEqual(srv.poll_tapegaps(), 0)
+
+    def test_a_fresh_serve_sends_the_current_file_at_connect(self) -> None:
+        self.put(tg_bytes(("start", MT)))
+        for _ in range(2):  # every (re)connect starts a new serve process with no memory of what the last one sent
+            srv, out = self.server()
+            self.assertEqual(srv.poll_tapegaps(), 1)
+
+    def test_empty_file_is_carried_it_is_the_heartbeat_of_a_quiet_relay(self) -> None:
+        self.put(b"")
+        srv, out = self.server()
+        self.assertEqual(srv.poll_tapegaps(), 1)
+        self.assertEqual((self.frames(out)[0]["b"], self.frames(out)[0]["n"]), ("", 0))
+
+    def test_missing_file_and_no_flag_send_nothing(self) -> None:
+        srv, out = self.server()
+        self.assertEqual(srv.poll_tapegaps(), 0)
+        self.assertEqual(out, [])
+        srv2 = df.Server(self.src, BOT, write=out.append)  # no --tapegaps-file: the decision-only serve of #967, no tg frame ever
+        self.put(tg_bytes(("start", MT)))
+        self.assertEqual(srv2.poll_tapegaps(), 0)
+        self.assertEqual(out, [])
+
+    def test_torn_tail_is_not_sent_and_is_not_reread_until_it_changes(self) -> None:
+        full = tg_bytes(("start", MT))
+        with open(self.tgf, "wb") as fh:
+            fh.write(full + b'{"kind":"gap_si')  # a NON-atomic writer caught mid-append
+        srv, out = self.server()
+        with mock.patch.object(df.sys, "stderr"):
+            self.assertEqual(srv.poll_tapegaps(), 0)
+        with mock.patch.object(df.os, "open", side_effect=AssertionError("re-read an unchanged torn file")):
+            self.assertEqual(srv.poll_tapegaps(), 0)
+        with open(self.tgf, "ab") as fh:
+            fh.write(b'lence","ms":%d}\n' % (MT + 1))
+        self.assertEqual(srv.poll_tapegaps(), 1)
+        self.assertEqual(self.frames(out)[0]["n"], len(full) + len(b'{"kind":"gap_silence","ms":%d}\n' % (MT + 1)))
+
+    def test_the_relays_atomic_replace_between_stat_and_open_is_not_an_error(self) -> None:
+        old, new = tg_bytes(("start", MT)), tg_bytes(("start", MT), ("data_loss", MT + 9))
+        self.put(old)
+        srv, out = self.server()
+        real_open, state = os.open, {"done": False}
+
+        def swapping_open(path, flags, *a, **kw):
+            if not state["done"] and str(path) == self.tgf:
+                state["done"] = True
+                self.put(new, mt=MT + 5)  # the relay's pass lands between our stat and our open
+            return real_open(path, flags, *a, **kw)
+
+        with mock.patch.object(df.os, "open", side_effect=swapping_open):
+            self.assertEqual(srv.poll_tapegaps(), 1)
+        fr = self.frames(out)[0]
+        self.assertEqual((fr["b"], fr["mt"]), (new.decode(), MT + 5))  # the frame is the file we opened: one consistent snapshot
+        self.assertEqual(srv.poll_tapegaps(), 0)  # and the key is that file's, so it is not sent twice
+
+    def test_a_file_that_changes_while_it_is_read_is_retried_not_sent(self) -> None:
+        self.put(tg_bytes(("start", MT)))
+        srv, out = self.server()
+        real_fstat, calls = os.fstat, {"n": 0}
+
+        def growing_fstat(fd):
+            st = real_fstat(fd)
+            calls["n"] += 1
+            if calls["n"] == 2:  # the second fstat is after the read: pretend a writer grew the file
+                return os.stat_result((*tuple(st)[:6], st.st_size + 7, *tuple(st)[7:]))
+            return st
+
+        with mock.patch.object(df.os, "fstat", side_effect=growing_fstat):
+            self.assertEqual(srv.poll_tapegaps(), 0)
+        self.assertEqual(srv.poll_tapegaps(), 1)  # next poll reads it cleanly
+
+    def test_a_source_that_is_not_a_clean_regular_stream_is_a_tf_fault_frame_once_and_serve_carries_on(self) -> None:
+        cases = {}
+        real = tg_bytes(("start", MT))
+        outside = os.path.join(self.tmp, "outside.jsonl")
+        Path(outside).write_bytes(real)
+
+        def symlink():
+            os.symlink(outside, self.tgf)
+
+        def hardlink():
+            self.put(real)
+            os.link(self.tgf, os.path.join(self.tmp, "second-name"))
+
+        def fifo():
+            os.mkfifo(self.tgf)
+
+        def directory():
+            os.mkdir(self.tgf)
+
+        cases["tapegaps_not_regular"] = [symlink, fifo, directory]
+        cases["tapegaps_hardlink"] = [hardlink]
+        for why, makers in cases.items():
+            for make in makers:
+                with self.subTest(make=make.__name__):
+                    if os.path.lexists(self.tgf):
+                        shutil.rmtree(self.tgf) if os.path.isdir(self.tgf) and not os.path.islink(self.tgf) else os.unlink(self.tgf)
+                    if os.path.lexists(os.path.join(self.tmp, "second-name")):
+                        os.unlink(os.path.join(self.tmp, "second-name"))
+                    make()
+                    srv, out = self.server()
+                    self.assertEqual(srv.poll_tapegaps(), 1)  # no SystemExit: serve does not stop
+                    self.assertEqual(self.frames(out), [{"k": "tf", "why": why}])  # a reason from the closed vocabulary, never file content
+                    self.assertEqual(srv.poll_tapegaps(), 0)  # once per file state, not on every poll
+                    self.assertEqual(len(out), 1)
+        for data, why in ((b'{"kind":"a","ms":1,"x":2}\n', "tapegaps_malformed"), (b'\xff\n', "tapegaps_not_utf8"), (b'{"kind":"a","ms":0}\n', "tapegaps_ms_out_of_range")):
+            with self.subTest(why=why):
+                if os.path.lexists(self.tgf):
+                    shutil.rmtree(self.tgf) if os.path.isdir(self.tgf) and not os.path.islink(self.tgf) else os.unlink(self.tgf)
+                self.put(data)
+                srv, out = self.server()
+                self.assertEqual(srv.poll_tapegaps(), 1)
+                self.assertEqual(self.frames(out), [{"k": "tf", "why": why}])
+                self.assertEqual(srv.poll_tapegaps(), 0)
+                self.put(real)  # the relay's next pass is clean: a tg frame follows the fault
+                self.assertEqual(srv.poll_tapegaps(), 1)
+                self.assertEqual(self.frames(out)[-1]["k"], "tg")
+
+    def test_oversize_and_too_big_a_frame_are_tf_faults_and_nothing_is_sent(self) -> None:
+        self.put(tg_bytes(("a", MT), ("b", MT)))
+        for name, val, why in (("TAPEGAPS_MAX_BYTES", 30, "tapegaps_too_large"), ("TAPEGAPS_FRAME_MAX", 60, "tapegaps_frame_too_large")):
+            with self.subTest(limit=name), mock.patch.object(df, name, val):
+                srv, out = self.server()
+                self.assertEqual(srv.poll_tapegaps(), 1)
+                self.assertEqual(self.frames(out), [{"k": "tf", "why": why}])
+
+    def test_a_bad_relay_file_does_not_stop_serve_the_decision_rows_keep_flowing(self) -> None:
+        self.append(3)
+        self.put(b'{"kind":"a","ms":1,"price":3}\n')  # malformed from the first poll on
+        cmd = [a if a not in ("{file}", "{offset}") else ("" if a == "{file}" else "0") for a in serve_cmd(self.src, "--tapegaps-file", self.tgf, "--max-s", "0.6")]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, df.EXIT_OK, r.stderr)
+        kinds = [json.loads(x)["k"] for x in r.stdout.splitlines()]
+        self.assertEqual((kinds.count("tf"), kinds.count("tg"), kinds.count("row"), kinds.count("bad")), (1, 0, 3, 0))
+
+    def test_the_serve_loop_sends_tg_after_hello_and_decision_rows_still_flow(self) -> None:
+        self.append(2)
+        self.put(tg_bytes(("start", MT)))
+        # serve_cmd carries the flag form {file}/{offset} tokens; run it as the empty-start form
+        cmd = [a if a not in ("{file}", "{offset}") else ("" if a == "{file}" else "0") for a in serve_cmd(self.src, "--tapegaps-file", self.tgf, "--max-s", "0.5")]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, df.EXIT_OK, r.stderr)
+        kinds = [json.loads(x)["k"] for x in r.stdout.splitlines()]
+        self.assertEqual(kinds[0], "hello")
+        self.assertEqual(kinds.count("tg"), 1)
+        self.assertEqual(kinds.count("row"), 2)
+
+
+class TapegapsServeRefusalTest(TapegapsCase):
+    def test_path_rules(self) -> None:
+        ok = self.tgf
+        self.assertIsNone(df.serve_refusal(self.src, BOT, tapegaps_file=ok))
+        for bad in ("relative/p46-test-bot.tapegaps.jsonl", "", os.path.join(self.relay, "transport", "other-bot.tapegaps.jsonl"),
+                    os.path.join(self.relay, "transport", f"{BOT}.gaps.jsonl"), os.path.join(self.relay, "..", "x", f"{BOT}.tapegaps.jsonl"), "/etc/passwd"):
+            with self.subTest(path=bad):
+                self.assertEqual(df.serve_refusal(self.src, BOT, tapegaps_file=bad), "bad_tapegaps_file")
+
+    def test_a_tapegaps_file_under_the_arena_needs_the_recorded_read_like_a_sealed_root(self) -> None:
+        sealed = f"/data/mal/arena/relay-test/transport/{BOT}.tapegaps.jsonl"  # a string only; nothing is opened
+        self.assertEqual(df.serve_refusal(self.src, BOT, tapegaps_file=sealed), "sealed_root_needs_read_record")
+        self.assertEqual(df.serve_refusal(self.src, BOT, "/r", gate=lambda d, b: "read_record_missing", tapegaps_file=sealed), "gate_read_record_missing")
+        self.assertIsNone(df.serve_refusal(self.src, BOT, "/r", gate=lambda d, b: None, tapegaps_file=sealed))
+        with mock.patch.object(df, "_read_gate", return_value=None):
+            self.assertEqual(df.serve_refusal(self.src, BOT, "/r", tapegaps_file=sealed), "read_record_gate_unavailable")
+        self.assertEqual(df.serve_refusal("/data/mal/arena/x", BOT, tapegaps_file=self.tgf), "sealed_root_needs_read_record")  # the root rule is unchanged
+
+    def test_an_alias_of_the_arena_by_inode_or_symlink_is_covered_too(self) -> None:
+        real = os.path.join(self.tmp, "fakearena")
+        os.makedirs(os.path.join(real, "transport"))
+        link = os.path.join(self.tmp, "arenalink")
+        os.symlink(real, link)
+        in_real = os.path.join(real, "transport", f"{BOT}.tapegaps.jsonl")
+        with mock.patch.object(df, "SEALED_ROOT_PREFIX", link):  # as a bind mount: only the inode check sees it
+            self.assertEqual(df.serve_refusal(self.src, BOT, tapegaps_file=in_real), "sealed_root_needs_read_record")
+        with mock.patch.object(df, "SEALED_ROOT_PREFIX", real):  # a symlink INTO the sealed prefix resolves under it
+            via = os.path.join(self.tmp, "via")
+            os.symlink(os.path.join(real, "transport"), via)
+            self.assertEqual(df.serve_refusal(self.src, BOT, tapegaps_file=os.path.join(via, f"{BOT}.tapegaps.jsonl")), "sealed_root_needs_read_record")
+
+    def test_cli_refuses_a_sealed_tapegaps_file_before_opening_and_a_bad_name(self) -> None:
+        for path, why in ((f"/data/mal/arena/relay-test/transport/{BOT}.tapegaps.jsonl", "sealed_root_needs_read_record"), ("rel.jsonl", "bad_tapegaps_file")):
+            r = subprocess.run([sys.executable, str(REPO / "tools" / "decision_forwarder.py"), "serve", "--root", self.src, "--bot-id", BOT, "--tapegaps-file", path,
+                                "--max-s", "1"], capture_output=True, text=True, timeout=30)
+            self.assertEqual(r.returncode, df.EXIT_REFUSED)
+            self.assertEqual(json.loads(r.stdout), {"k": "refused", "why": why})
+
+    def test_the_resume_command_can_never_name_a_tapegaps_path(self) -> None:
+        for bad in ("resume --tapegaps-file /etc/passwd", "resume 2026-10-30.jsonl 1 --tapegaps-file /etc/passwd", "--tapegaps-file /x", "resume /etc/passwd 1"):
+            with self.assertRaises(ValueError):
+                df.parse_resume(bad)
+
+
+def from_env_cmd_tg(root: str, tgf: str) -> list[str]:
+    """The forced-command form with the tapegaps flag in the PINNED command line (authorized_keys), the resume token in SSH_ORIGINAL_COMMAND."""
+    return ["sh", "-c", 'SSH_ORIGINAL_COMMAND="$1" exec "$2" -u "$3" serve --from-env --root "$4" --bot-id "$5" --tapegaps-file "$6" --hb-ms 100', "sh", "{resume}",
+            sys.executable, str(REPO / "tools" / "decision_forwarder.py"), root, BOT, tgf]
+
+
+class TapegapsPullTest(TapegapsCase):
+    def pull_tg(self, cmd: list[str] | None = None, frames: int = 1, max_s: float = 20, **kw) -> tuple[df.Puller, int]:
+        pl = df.Puller(self.dst, BOT, cmd or serve_cmd(self.src, "--tapegaps-file", self.tgf), **kw)
+        rc = pl.run(max_s=max_s, until=lambda p: p.tg_frames >= frames)
+        return pl, rc
+
+    def test_carried_file_is_byte_identical_atomic_regular_with_the_source_mtime(self) -> None:
+        data = tg_bytes(("data_loss", MT - 30_000), ("gap_silence", MT - 1))
+        self.put(data, mt=MT)
+        pl, rc = self.pull_tg()
+        self.assertEqual((rc, pl.tg_frames), (df.EXIT_OK, 1))
+        f = self.dst_tg()
+        self.assertEqual(f.read_bytes(), data)
+        self.assertEqual(hashlib.md5(f.read_bytes()).hexdigest(), hashlib.md5(Path(self.tgf).read_bytes()).hexdigest())
+        st = os.lstat(f)
+        self.assertTrue(stat.S_ISREG(st.st_mode) and st.st_nlink == 1)
+        self.assertEqual(st.st_mtime_ns // 1_000_000, MT)  # the SOURCE pass instant, not the time we wrote it
+        self.assertEqual(sorted(p.name for p in (Path(self.dst) / "transport").iterdir()),
+                         sorted([f"{BOT}.tapegaps.jsonl", f"{BOT}.status.json", f"{BOT}.lock"]))  # no tmp left; no gaps.jsonl: a normal pass is not a gap
+        self.assertEqual(list((Path(self.dst) / "decisions" / BOT).iterdir()), [])  # NOTHING is ever written under decisions/
+        st_keys = sorted(json.loads((Path(self.dst) / "transport" / f"{BOT}.status.json").read_text()))
+        self.assertEqual(st_keys, sorted(["schema", "bot", "state", "ms", "last_frame_ms", "last_remote_ms", "seq", "f", "o", "rows", "gaps", "stall_ms", "pid"]))
+
+    def test_a_quiet_relay_pass_moves_the_copys_mtime_a_dead_relay_does_not(self) -> None:
+        data = tg_bytes(("start", MT - 100))
+        pl = df.Puller(self.dst, BOT, ["true"])
+        pl.handle(tg_frame(data, MT), time.time_ns())
+        ino1 = os.lstat(self.dst_tg()).st_ino
+        self.assertEqual(os.lstat(self.dst_tg()).st_mtime_ns // 1_000_000, MT)
+        pl.handle(tg_frame(data, MT + 60_000), time.time_ns())  # the next pass: same bytes
+        st = os.lstat(self.dst_tg())
+        self.assertEqual(st.st_mtime_ns // 1_000_000, MT + 60_000)
+        self.assertEqual(self.dst_tg().read_bytes(), data)
+        self.assertNotEqual(st.st_ino, ino1)  # replaced atomically, not edited in place
+        # a dead relay sends no more frames: the mtime stays where it was, whatever the wall clock does
+        time.sleep(0.05)
+        self.assertEqual(os.lstat(self.dst_tg()).st_mtime_ns // 1_000_000, MT + 60_000)
+        pl.close()
+
+    def test_appended_rows_are_accepted(self) -> None:
+        pl = df.Puller(self.dst, BOT, ["true"])
+        a = tg_bytes(("start", MT))
+        b = a + tg_bytes(("data_loss", MT + 5))
+        pl.handle(tg_frame(a, MT), time.time_ns())
+        pl.handle(tg_frame(b, MT + 1), time.time_ns())
+        pl.handle(tg_frame(b, MT + 2), time.time_ns())
+        self.assertEqual(self.dst_tg().read_bytes(), b)
+        self.assertEqual((pl.tg_frames, pl.tg_mt), (3, MT + 2))
+        pl.close()
+
+    def test_a_damaged_local_copy_is_a_hard_stop_and_a_stale_tmp_is_cleaned(self) -> None:
+        tdir = Path(self.dst) / "transport"
+        tdir.mkdir(parents=True)
+        (tdir / f".{BOT}.tapegaps.jsonl.tmp").write_bytes(b"crashed mid-write")
+        pl = df.Puller(self.dst, BOT, ["true"])
+        self.assertFalse((tdir / f".{BOT}.tapegaps.jsonl.tmp").exists())
+        pl.close()
+        for name, make in (("malformed", lambda: self.dst_tg().write_bytes(b"{torn\n")), ("link", lambda: os.symlink(self.tgf, self.dst_tg())),
+                           ("hardlink", lambda: (self.dst_tg().write_bytes(tg_bytes(("start", MT))), os.link(self.dst_tg(), os.path.join(self.tmp, "second"))))):
+            with self.subTest(case=name):
+                if os.path.lexists(self.dst_tg()):
+                    os.unlink(self.dst_tg())
+                make()
+                with self.assertRaises(df.Mismatch):
+                    df.Puller(self.dst, BOT, ["true"])
+                os.unlink(self.dst_tg())
+                if os.path.exists(os.path.join(self.tmp, "second")):
+                    os.unlink(os.path.join(self.tmp, "second"))
+        df.Puller(self.dst, BOT, ["true"]).close()  # removing the file re-baselines: the manager's recovery after review
+
+    def test_a_failed_write_leaves_the_old_file_and_no_tmp(self) -> None:
+        a = tg_bytes(("start", MT))
+        pl = df.Puller(self.dst, BOT, ["true"])
+        pl.handle(tg_frame(a, MT), time.time_ns())
+        with mock.patch.object(df.os, "fsync", side_effect=OSError("disk full")), self.assertRaises(OSError):
+            pl.handle(tg_frame(a + tg_bytes(("gap", MT + 1)), MT + 1), time.time_ns())
+        self.assertEqual(self.dst_tg().read_bytes(), a)
+        self.assertEqual(pl.tg_data, a)  # memory never runs ahead of the file
+        self.assertFalse((Path(self.dst) / "transport" / f".{BOT}.tapegaps.jsonl.tmp").exists())
+        pl.close()
+
+    def test_forced_command_form_carries_decisions_and_tapegaps_together(self) -> None:
+        self.append(3)
+        data = tg_bytes(("data_loss", MT - 9))
+        self.put(data)
+        pl = df.Puller(self.dst, BOT, from_env_cmd_tg(self.src, self.tgf))
+        rc = pl.run(max_s=20, until=lambda p: p.seq + 1 >= 3 and p.tg_frames >= 1)
+        self.assertEqual((rc, pl.rows, pl.tg_frames), (df.EXIT_OK, 3, 1))
+        self.assertEqual(md5s(self.dst), md5s(self.src))  # the decision log is still byte-identical
+        self.assertEqual(self.dst_tg().read_bytes(), data)
+        self.assertEqual(gaps(self.dst), [])
+
+    def test_reconnect_resends_the_same_bytes_and_is_idempotent(self) -> None:
+        data = tg_bytes(("start", MT))
+        self.put(data)
+        marker = os.path.join(self.tmp, "first")
+        script = ("import os,sys,subprocess; first=not os.path.exists(%r); open(%r,'a').close(); "
+                  "sys.exit(subprocess.call(sys.argv[1:]+(['--max-s','0.5'] if first else [])))") % (marker, marker)
+        cmd = [sys.executable, "-c", script, *serve_cmd(self.src, "--tapegaps-file", self.tgf)]
+        pl, rc = self.pull_tg(cmd=cmd, frames=2)
+        self.assertEqual(rc, df.EXIT_OK)
+        kinds = [g["kind"] for g in gaps(self.dst)]
+        self.assertIn("disconnect", kinds)
+        self.assertNotIn("mismatch", kinds)
+        self.assertEqual(self.dst_tg().read_bytes(), data)
+
+
+HOUR_MS = 3_600_000
+RETAIN = 72 * HOUR_MS
+T0 = MT  # the synthetic start of a multi-day relay history
+
+
+def relay_model(rows: set[tuple[str, int]], pass_ms: int) -> bytes:
+    """What tools/hv4_gap_relay.py v2 publishes on a pass at `pass_ms` (a SYNTHETIC model of Relay._prune + write_stream, not the relay): rows sorted by (ms, kind), those
+    more than RETAIN_MS before the newest instant dropped. The newest instant is max(newest row, the tape's top instant); here the tape's top instant is the pass instant."""
+    newest = max([pass_ms] + [m for _k, m in rows])
+    keep = sorted((r for r in rows if r[1] >= newest - RETAIN), key=lambda r: (r[1], r[0]))
+    return tg_bytes(*keep)
+
+
+class BgPull:
+    """A real Puller thread over a real `serve --tapegaps-file` subprocess (the 'remote' side runs locally, no ssh), for the tests that need one process to live through
+    several relay passes (a restart resyncs, so the in-process checks need one long run)."""
+
+    def __init__(self, case: TapegapsCase) -> None:
+        self.case = case
+        self.cmd = serve_cmd(case.src, "--tapegaps-file", case.tgf, "--poll-ms", "10")
+        self.pl = df.Puller(case.dst, BOT, self.cmd)
+        self.stop = threading.Event()
+        self.rc: list[int] = []
+        self.thread = threading.Thread(target=lambda: self.rc.append(self.pl.run(max_s=60, stop=self.stop)), daemon=True)
+
+    def __enter__(self) -> "BgPull":
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.stop.set()
+        self.thread.join(timeout=30)
+        self.pl.close()
+
+    def wait(self, cond, timeout: float = 20.0) -> None:
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout:
+            if cond():
+                return
+            time.sleep(0.01)
+        raise AssertionError(f"timeout waiting for {cond}")
+
+    def status(self) -> dict:
+        return json.loads((Path(self.case.dst) / "transport" / f"{BOT}.status.json").read_text())
+
+
+class TapegapsRetentionTrimTest(TapegapsCase):
+    """QP CHANGES on #1105 (comment 6527468544) and the manager's follow-up decision: relay v2 trims the FRONT of its stream (RETAIN_MS 72 h, MAX_ROWS 20,000, a cold start
+    that re-reads only a short stretch of tape). The puller accepts ANY front trim (the new file is a contiguous suffix of the accepted lines plus appended lines), whatever the
+    age of the dropped rows (the age is a logged note). Everything else is a tapegaps FAULT (the puller keeps running; see TapegapsFaultTest)."""
+
+    def pull(self) -> df.Puller:
+        return df.Puller(self.dst, BOT, ["true"])
+
+    def fresh_dst(self) -> None:
+        shutil.rmtree(self.dst, ignore_errors=True)
+
+    def disk(self) -> tuple[bytes, int, int]:
+        st = os.lstat(self.dst_tg())
+        return self.dst_tg().read_bytes(), st.st_ino, st.st_mtime_ns
+
+    def transport_names(self) -> list[str]:
+        return sorted(p.name for p in (Path(self.dst) / "transport").iterdir())
+
+    def settled(self, pl: df.Puller, first: bytes, mt: int = MT) -> None:
+        """The puller has taken `first` as its baseline (the first frame of a process is a resync from the source)."""
+        pl.handle(tg_frame(first, mt), time.time_ns())
+
+    def test_the_constant_is_the_relays_72_hours_and_matches_the_relay_when_it_has_one(self) -> None:
+        self.assertEqual(df.TAPEGAPS_RETAIN_MS, 72 * 3600 * 1000)
+        self.assertEqual(df.TAPEGAPS_RETAIN_MS, 259_200_000)
+        from tools import hv4_gap_relay as R
+        if hasattr(R, "RETAIN_MS"):  # relay v2 (PR #1098); main still has the first relay, which keeps every row
+            self.assertEqual(df.TAPEGAPS_RETAIN_MS, R.RETAIN_MS)
+
+    def test_two_passes_across_the_72_hour_boundary_the_trimmed_file_plus_one_new_row_is_accepted(self) -> None:
+        r = [("start", T0), ("data_loss", T0 + 6 * HOUR_MS), ("feed_restart", T0 + 40 * HOUR_MS), ("gap_silence", T0 + 71 * HOUR_MS)]
+        wide = [("start", T0), ("data_loss", T0 + 30 * HOUR_MS), ("feed_restart", T0 + 80 * HOUR_MS)]  # a first pass that already spans more than 72 h
+        # (name, pass-1 rows, pass-1 instant, new gap row, how many head rows the relay's trim drops on pass 2)
+        cases = [
+            ("drop_one", r, r[3][1] + 1_000, ("data_loss", r[0][1] + RETAIN + 1), 1),
+            ("drop_two", r, r[3][1] + 1_000, ("data_loss", r[1][1] + RETAIN + 1), 2),
+            ("drop_three", r, r[3][1] + 1_000, ("data_loss", r[2][1] + RETAIN + 1), 3),
+            ("drop_all_carried_rows", r, r[3][1] + 1_000, ("data_loss", r[3][1] + RETAIN + 1), 4),
+            ("first_pass_spans_over_72h", wide, wide[2][1] + 1_000, ("gap_silence", wide[2][1] + HOUR_MS), 1),
+        ]
+        for name, rows1, mt1, new_row, dropped in cases:
+            with self.subTest(case=name):
+                self.fresh_dst()
+                pass1 = tg_bytes(*rows1)
+                self.put(pass1, mt=mt1)
+                pl = self.pull()
+                srv, out = self.server()
+                self.assertEqual(srv.poll_tapegaps(), 1)
+                pl.handle(self.frames(out)[0], time.time_ns())
+                self.assertEqual(self.dst_tg().read_bytes(), pass1)
+                # pass 2: what relay v2 publishes once its newest instant is the new row: rows more than 72 h before it are gone, the new row is last
+                newest = new_row[1]
+                kept = [x for x in rows1 + [new_row] if x[1] >= newest - RETAIN]
+                self.assertEqual(len(rows1) + 1 - len(kept), dropped)
+                pass2 = tg_bytes(*kept)
+                self.assertFalse(pass2.startswith(pass1))  # a true head trim: the old bytes are no prefix any more
+                mt2 = newest + 500
+                self.put(pass2, mt=mt2)
+                self.assertEqual(srv.poll_tapegaps(), 1)
+                pl.handle(self.frames(out)[-1], time.time_ns())
+                f = self.dst_tg()
+                self.assertEqual(f.read_bytes(), pass2)  # equals the source...
+                self.assertEqual(f.read_bytes(), Path(self.tgf).read_bytes())
+                st = os.lstat(f)
+                self.assertEqual(st.st_mtime_ns // 1_000_000, mt2)  # ...carries the source mtime...
+                self.assertTrue(stat.S_ISREG(st.st_mode) and st.st_nlink == 1)
+                self.assertEqual(pl.tg_data, pass2)  # ...and is the baseline now
+                self.assertEqual((pl.tg_frames, pl.tg_trimmed, pl.tg_trim_young, pl.tg_fault), (2, dropped, 0, None))  # every dropped row was older than 72 h: no 'young' note
+                self.assertEqual(self.transport_names(), sorted([f"{BOT}.tapegaps.jsonl", f"{BOT}.lock"]))  # no tmp left (handle() does not write status.json; run() does)
+                self.assertEqual(gaps(self.dst), [])  # and no fault row
+                pl.close()
+
+    def test_a_then_b_c_and_the_other_front_trims_are_accepted_whatever_the_age_of_the_dropped_rows(self) -> None:
+        """Contiguous suffix + appended rows: [A,B] then [B,C]; the relay's MAX_ROWS cap biting inside 72 h; a cold start that re-read only the last stretch of tape."""
+        A, B, C, D, E = (("data_loss", T0 + i * HOUR_MS) for i in range(5))
+        cases = {
+            "ab_then_bc": ([A, B], [B, C], 1, 1),
+            "max_rows_cap_inside_72h": ([A, B, C, D], [C, D, E], 2, 2),
+            "cold_start_suffix": ([A, B, C, D], [D, E], 3, 3),
+            "cold_start_suffix_nothing_new": ([A, B, C, D], [D], 3, 3),
+            "trim_one_with_two_appended": ([A, B], [B, C, D], 1, 1),
+        }
+        for name, (old, new, dropped, young) in cases.items():
+            with self.subTest(case=name):
+                self.fresh_dst()
+                pl = self.pull()
+                self.settled(pl, tg_bytes(*old), T0 + 5 * HOUR_MS)
+                pl.handle(tg_frame(tg_bytes(*new), T0 + 6 * HOUR_MS), time.time_ns())
+                self.assertEqual(self.dst_tg().read_bytes(), tg_bytes(*new))
+                self.assertEqual((pl.tg_trimmed, pl.tg_trim_young, pl.tg_fault), (dropped, young, None))  # all younger than 72 h: counted in the note, not refused
+                self.assertEqual(gaps(self.dst), [])
+                pl.close()
+
+    def test_no_overlap_replacement_of_rows_still_inside_the_window_is_a_fault_but_of_aged_out_rows_a_trim(self) -> None:
+        a, b = ("start", T0), ("data_loss", T0 + HOUR_MS)
+        c = ("gap_silence", T0 + 2 * HOUR_MS)
+        self.fresh_dst()
+        pl = self.pull()
+        self.settled(pl, tg_bytes(a, b), T0 + 3 * HOUR_MS)
+        pl.handle(tg_frame(tg_bytes(c), T0 + 4 * HOUR_MS), time.time_ns())  # nothing of the carried stream survives and a, b are 3-4 h old: not a trim
+        self.assertEqual(self.dst_tg().read_bytes(), tg_bytes(a, b))
+        self.assertTrue(pl.tg_fault and pl.tg_fault.startswith("tapegaps_"))
+        pl.handle(tg_frame(tg_bytes(c), T0 + RETAIN + 5 * HOUR_MS), time.time_ns())  # the same file 77 h later: a and b are old enough
+        self.assertEqual(self.dst_tg().read_bytes(), tg_bytes(c))
+        self.assertIsNone(pl.tg_fault)
+        pl.close()
+
+    def test_a_pass_that_only_ages_a_row_out_with_no_new_row_is_accepted_and_the_next_identical_pass_is_plain(self) -> None:
+        a = tg_bytes(("start", T0), ("data_loss", T0 + 10 * HOUR_MS))
+        b = tg_bytes(("data_loss", T0 + 10 * HOUR_MS))
+        pl = self.pull()
+        pl.handle(tg_frame(a, T0 + HOUR_MS), time.time_ns())
+        pl.handle(tg_frame(b, T0 + RETAIN + HOUR_MS), time.time_ns())  # the pass instant is 73 h after the first row
+        self.assertEqual(self.dst_tg().read_bytes(), b)
+        pl.handle(tg_frame(b, T0 + RETAIN + HOUR_MS + 30_000), time.time_ns())
+        self.assertEqual((pl.tg_frames, pl.tg_trimmed), (3, 1))
+        pl.close()
+
+    def test_the_age_note_counts_rows_not_older_than_the_bound_against_the_pass_instant_and_the_newest_row(self) -> None:
+        """tapegaps_replace_problem returns (None, k, young): `young` is the removed rows NOT older than max(newest row, mt) - 72 h. The relay's newest instant can be the tape's
+        top instant, later than its newest row, so mt (the pass instant) is in the bound. Equal to the bound is young; one older is not."""
+        pass_ms = T0 + 100 * HOUR_MS
+        tail = ("data_loss", pass_ms - HOUR_MS)
+        for delta, young in ((-1, 0), (0, 1), (1, 1)):  # the removed row's ms relative to (pass instant - 72 h)
+            with self.subTest(delta=delta):
+                head = ("start", pass_ms - RETAIN + delta)
+                self.assertEqual(df.tapegaps_replace_problem(tg_bytes(head, tail), tg_bytes(tail), pass_ms), (None, 1, young))
+        # a sparse stream: the newest kept row is 20 h old at the pass; against it alone the T0 row (73 h old) would count as young
+        kept_row = ("data_loss", T0 + 53 * HOUR_MS)
+        self.assertEqual(df.tapegaps_replace_problem(tg_bytes(("start", T0), kept_row), tg_bytes(kept_row), T0 + 73 * HOUR_MS), (None, 1, 0))
+        self.assertEqual(df.tapegaps_replace_problem(tg_bytes(("start", T0), kept_row), tg_bytes(kept_row), kept_row[1]), (None, 1, 1))
+        # unchanged and appended-only are k == 0; the labels of the refusals are the old ones
+        a = tg_bytes(("start", T0))
+        self.assertEqual(df.tapegaps_replace_problem(a, a, T0), (None, 0, 0))
+        self.assertEqual(df.tapegaps_replace_problem(a, a + tg_bytes(("gap", T0 + 1)), T0), (None, 0, 0))
+        self.assertEqual(df.tapegaps_replace_problem(tg_bytes(("start", T0), ("gap", T0 + 1)), tg_bytes(("start", T0)), T0), ("shrank_%d_to_%d" % (len(tg_bytes(("start", T0), ("gap", T0 + 1))), len(a)), 0, 0))
+        self.assertEqual(df.tapegaps_replace_problem(a, tg_bytes(("start", T0 + 1)), T0), ("prefix_changed", 0, 0))
+
+    def test_more_than_72_hours_of_relay_passes_with_periodic_trims_never_fault_and_the_copy_equals_the_source(self) -> None:
+        """A SYNTHETIC multi-day run: 7 days of relay passes every 10 minutes over a seeded, sparse and bursty gap history (one every ~7 h on average, some bursts of 3), the
+        relay's trim modelled by relay_model. Every pass goes through Puller.handle, the copy equals the source after each pass, no fault is ever raised, and the trims really
+        happened. The first frame of the process is the resync; every later pass is checked."""
+        import random
+        rng = random.Random(1)
+        kinds = ("data_loss", "gap_silence", "gap_slots", "feed_restart", "process_restart")
+        rows: set[tuple[str, int]] = set()
+        pl = self.pull()
+        trims = passes = 0
+        pass_ms, end = T0, T0 + 7 * 24 * HOUR_MS
+        next_gap = T0 + rng.randrange(0, 12 * HOUR_MS)
+        data = b""
+        with mock.patch.object(os, "fsync", lambda _fd: None):  # speed only: the write order is tested elsewhere; this test is about acceptance over time
+            while pass_ms <= end:
+                while next_gap <= pass_ms:
+                    for j in range(rng.choice((1, 1, 1, 3))):
+                        rows.add((rng.choice(kinds), next_gap + j * 1_000))
+                    next_gap += rng.randrange(HOUR_MS, 13 * HOUR_MS)
+                data = relay_model(rows, pass_ms)
+                before = pl.tg_data
+                pl.handle(tg_frame(data, pass_ms), time.time_ns())
+                self.assertIsNone(pl.tg_fault)
+                self.assertEqual(self.dst_tg().read_bytes(), data)
+                trims += int(before is not None and not data.startswith(before))
+                passes += 1
+                pass_ms += 600_000
+        pl.close()
+        self.assertEqual(passes, 7 * 24 * 6 + 1)
+        self.assertEqual(pl.tg_faults, 0)
+        self.assertGreater(trims, 5)  # the retention trim fired repeatedly after day 3
+        self.assertGreater(pl.tg_trimmed, 5)
+        self.assertEqual(pl.tg_trim_young, 0)  # the relay model only drops rows older than 72 h
+        last_pass = pass_ms - 600_000
+        newest = max([last_pass] + [m for _k, m in rows])
+        self.assertTrue(data and all(json.loads(x)["ms"] >= newest - RETAIN for x in data.decode().splitlines()))
+        self.assertGreater(len(rows), len(data.splitlines()))  # rows really aged out of the carried file
+        self.assertEqual(gaps(self.dst), [])
+
+    def test_a_restart_resyncs_from_the_source_and_the_checks_apply_again_after_it(self) -> None:
+        a = tg_bytes(("start", T0), ("data_loss", T0 + 10 * HOUR_MS))
+        b = tg_bytes(("data_loss", T0 + 10 * HOUR_MS), ("gap_silence", T0 + 75 * HOUR_MS))
+        pl = self.pull()
+        pl.handle(tg_frame(a, T0 + HOUR_MS), time.time_ns())
+        pl.handle(tg_frame(b, T0 + 75 * HOUR_MS + 5), time.time_ns())
+        pl.close()
+        pl2 = self.pull()
+        self.assertEqual(pl2.tg_data, b)  # the accepted file is read back at start...
+        pl2.handle(tg_frame(a, T0 + 75 * HOUR_MS + 10), time.time_ns())  # ...but the first frame of the new process is the source as it is now: a resync, accepted
+        self.assertEqual((self.dst_tg().read_bytes(), pl2.tg_fault, pl2.tg_trimmed), (a, None, 0))
+        pl2.handle(tg_frame(tg_bytes(("start", T0)), T0 + 75 * HOUR_MS + 20), time.time_ns())  # from then on a shrink is a fault again
+        self.assertTrue(pl2.tg_fault)
+        self.assertEqual(self.dst_tg().read_bytes(), a)
+        pl2.close()
+
+    def test_pull_over_serve_accepts_front_trims_in_one_long_run_and_keeps_running(self) -> None:
+        a = tg_bytes(("start", T0), ("data_loss", T0 + 10 * HOUR_MS))
+        self.put(a, mt=T0 + HOUR_MS)
+        with BgPull(self) as p:
+            p.wait(lambda: p.pl.tg_frames >= 1)
+            b = tg_bytes(("data_loss", T0 + 10 * HOUR_MS), ("feed_restart", T0 + 80 * HOUR_MS))  # the T0 row aged out: 80 h later
+            self.put(b, mt=T0 + 80 * HOUR_MS + 1)
+            p.wait(lambda: p.pl.tg_trimmed == 1)
+            self.assertEqual(self.dst_tg().read_bytes(), b)
+            self.assertEqual(os.lstat(self.dst_tg()).st_mtime_ns // 1_000_000, T0 + 80 * HOUR_MS + 1)
+            c = tg_bytes(("feed_restart", T0 + 80 * HOUR_MS))  # and a front trim of a row 70 h old (inside the relay's window): a note, accepted
+            self.put(c, mt=T0 + 80 * HOUR_MS + 2)
+            p.wait(lambda: p.pl.tg_trimmed == 2)
+            self.assertEqual((self.dst_tg().read_bytes(), p.pl.tg_trim_young, p.rc), (c, 1, []))
+            self.assertEqual(gaps(self.dst), [])
+
+
+class TapegapsFaultTest(TapegapsCase):
+    """The manager's decision (replacing QP decision 1(a) for the tapegaps stream only): any tapegaps fault leaves the puller RUNNING and the decision rows flowing. The copy
+    is not updated (old content, old mtime: it goes stale, so the bridge refuses new buys while exits continue), a gap row of kind `error` (the bridge's GAP_BREAK_KINDS counts it)
+    and a status note record it, and a later clean frame or a restart recovers. The decision-row chain mismatch still stops the puller (tested elsewhere)."""
+
+    def pull(self) -> df.Puller:
+        return df.Puller(self.dst, BOT, ["true"])
+
+    def fresh_dst(self) -> None:
+        shutil.rmtree(self.dst, ignore_errors=True)
+
+    def disk(self) -> tuple[bytes, int, int]:
+        st = os.lstat(self.dst_tg())
+        return self.dst_tg().read_bytes(), st.st_ino, st.st_mtime_ns
+
+    def status(self) -> dict:
+        return json.loads((Path(self.dst) / "transport" / f"{BOT}.status.json").read_text())
+
+    def test_every_other_change_is_a_fault_not_a_stop_and_writes_nothing(self) -> None:
+        pass_ms = T0 + 80 * HOUR_MS
+        r = [("start", T0), ("data_loss", T0 + 2 * HOUR_MS), ("feed_restart", T0 + 30 * HOUR_MS), ("gap_silence", T0 + 79 * HOUR_MS)]
+        base = tg_bytes(*r)
+        cases = {
+            "middle_row_edited": tg_bytes(r[0], ("data_loss", r[1][1] + 1), r[2], r[3]),
+            "kept_row_edited_during_a_valid_trim": tg_bytes(("feed_restart", r[2][1] + 1), r[3]),
+            "middle_row_removed": tg_bytes(r[0], r[1], r[3]),
+            "middle_row_removed_while_the_head_aged_out": tg_bytes(r[1], r[3]),
+            "middle_row_removed_with_an_append": tg_bytes(r[1], r[3], ("data_loss", r[3][1] + 1)),
+            "tail_row_removed": tg_bytes(*r[:3]),
+            "tail_row_edited": tg_bytes(*r[:3], ("gap_silence", r[3][1] + 1)),
+            "reordered": tg_bytes(r[1], r[0], r[2], r[3]),
+            "reordered_tail": tg_bytes(r[0], r[1], r[3], r[2]),
+            "row_inserted_before": tg_bytes(("process_restart", T0 - 1)) + base,
+            "row_inserted_in_the_middle": tg_bytes(r[0], ("start", T0 + 1), *r[1:]),
+            "emptied_though_young_rows_were_carried": b"",
+            "wholly_replaced_though_young_rows_were_carried": tg_bytes(("process_restart", pass_ms - 1)),
+        }
+        for name, data in cases.items():
+            with self.subTest(case=name):
+                self.fresh_dst()
+                pl = self.pull()
+                pl.handle(tg_frame(base, pass_ms - 30_000), time.time_ns())
+                before, trimmed_before = self.disk(), pl.tg_trimmed
+                pl.handle(tg_frame(data, pass_ms), time.time_ns())  # does NOT raise
+                self.assertRegex(pl.tg_fault or "", r"^tapegaps_(shrank_\d+_to_\d+|prefix_changed)$")
+                self.assertEqual(self.disk(), before)  # not the bytes, not the inode, not the mtime: the copy stays as it was and goes stale
+                self.assertEqual((pl.tg_data, pl.tg_trimmed, pl.tg_frames, pl.tg_faults), (base, trimmed_before, 1, 1))
+                rows = gaps(self.dst)
+                self.assertEqual([(g["kind"], g["why"]) for g in rows], [("tapegaps_fault", pl.tg_fault)])  # one row, kind `tapegaps_fault` (coverage-losing under DEC-031 Am.21 once #1090 is in)
+                self.assertEqual(self.status().get("tapegaps_fault"), pl.tg_fault)  # the status note
+                self.assertEqual(sorted(p.name for p in (Path(self.dst) / "transport").iterdir()),
+                                 sorted([f"{BOT}.tapegaps.jsonl", f"{BOT}.lock", f"{BOT}.gaps.jsonl", f"{BOT}.status.json"]))  # no tmp file
+                pl.close()
+
+    def test_the_fault_row_is_a_bridge_gap_and_the_note_does_not_move_the_feed_state(self) -> None:
+        a = tg_bytes(("start", T0), ("data_loss", T0 + 1))
+        pl = self.pull()
+        pl.handle(tg_frame(a, T0 + 2), time.time_ns())
+        pl.handle(tg_frame(tg_bytes(("start", T0)), T0 + 3), time.time_ns())
+        g, res, bad = c0.gap_log_ms(str(pl.gaps_path))
+        self.assertEqual((len(g), res, bad), (1 if hasattr(c0, "gap_loses_data") else 0, [], None))  # with #1090 every non-resume kind is a gap row (fail closed)
+        if hasattr(c0, "gap_loses_data"):  # #1090 (merges before this PR): not a transport kind, so it holds and refuses
+            self.assertTrue(c0.gap_loses_data("tapegaps_fault"))
+        st = self.status()
+        self.assertEqual((st["schema"], st["tapegaps_fault"]), (df.SCHEMA, pl.tg_fault))
+        pl.close()
+
+    def test_the_same_fault_is_one_row_a_different_one_is_another_and_a_clean_frame_clears_it_with_a_resume_row(self) -> None:
+        a = tg_bytes(("start", T0), ("data_loss", T0 + 1))
+        pl = self.pull()
+        pl.handle(tg_frame(a, T0 + 2), time.time_ns())
+        bad_shrink = tg_frame(tg_bytes(("start", T0)), T0 + 3)
+        for i in range(3):  # three relay passes in a row with the same fault: one row, not three
+            pl.handle({**bad_shrink, "mt": T0 + 3 + i}, time.time_ns())
+        self.assertEqual((pl.tg_faults, len(gaps(self.dst))), (3, 1))
+        pl.handle({**tg_frame(a), "sha": "0" * 64}, time.time_ns())  # another reason: another row
+        first_why = gaps(self.dst)[0]["why"]
+        self.assertRegex(first_why, r"^tapegaps_shrank_")
+        self.assertEqual([g["why"] for g in gaps(self.dst)], [first_why, "tapegaps_sha_mismatch"])
+        self.assertEqual(self.status()["tapegaps_fault"], "tapegaps_sha_mismatch")
+        # the relay is consistent with the accepted copy again: the old file plus an appended row
+        c = a + tg_bytes(("gap_silence", T0 + 9))
+        pl.handle(tg_frame(c, T0 + 10), time.time_ns())
+        self.assertEqual((self.dst_tg().read_bytes(), pl.tg_fault), (c, None))
+        self.assertEqual([g["kind"] for g in gaps(self.dst)], ["tapegaps_fault", "tapegaps_fault", "resume"])
+        self.assertEqual(gaps(self.dst)[-1]["why"], "tapegaps_recovered")
+        self.assertNotIn("tapegaps_fault", self.status())  # the note is gone
+        self.assertEqual(os.lstat(self.dst_tg()).st_mtime_ns // 1_000_000, T0 + 10)
+        pl.close()
+
+    def test_every_bad_frame_is_a_fault_and_writes_nothing(self) -> None:
+        good = tg_bytes(("start", MT))
+        frames = {
+            "wrong_sha": tg_frame(good, sha="0" * 64),
+            "wrong_n": tg_frame(good, n=len(good) + 1),
+            "n_bool": tg_frame(good, n=True),
+            "no_sha": {k: v for k, v in tg_frame(good).items() if k != "sha"},
+            "no_b": {k: v for k, v in tg_frame(good).items() if k != "b"},
+            "b_not_str": tg_frame(good, b=["x"]),
+            "mt_bool": tg_frame(good, mt=True),
+            "mt_zero": tg_frame(good, mt=0),
+            "mt_str": tg_frame(good, mt="1"),
+            "mt_float": tg_frame(good, mt=1.5),
+            "mt_huge": tg_frame(good, mt=df.TAPEGAPS_MS_MAX + 1),
+            "extra_key_row": tg_frame(b'{"kind":"a","ms":1,"price":2}\n'),
+            "torn_tail": tg_frame(good[:-1]),
+            "not_json": tg_frame(b"hello\n"),
+            "blank_line": tg_frame(good + b"\n"),
+            "ms_ns": tg_frame(b'{"kind":"a","ms":%d}\n' % (MT * 1_000_000)),
+            "lone_surrogate": {"k": "tg", "mt": MT, "n": 3, "sha": "0" * 64, "b": "\ud800"},
+            "too_large": tg_frame(b"x" * (df.TAPEGAPS_MAX_BYTES + 1)),
+        }
+        for name, fr in frames.items():
+            with self.subTest(case=name):
+                self.fresh_dst()
+                pl = self.pull()
+                pl.handle(fr, time.time_ns())  # no Mismatch
+                self.assertRegex(pl.tg_fault or "", df.TAPEGAPS_FAULT_RE.pattern)
+                self.assertFalse(self.dst_tg().exists())
+                self.assertEqual((pl.tg_frames, pl.tg_faults), (0, 1))
+                self.assertEqual([g["kind"] for g in gaps(self.dst)], ["tapegaps_fault"])
+                pl.close()
+
+    def test_a_tf_frame_from_serve_is_a_fault_with_a_closed_vocabulary_reason(self) -> None:
+        pl = self.pull()
+        pl.handle({"k": "tf", "why": "tapegaps_hardlink"}, time.time_ns())
+        self.assertEqual((pl.tg_fault, [g["why"] for g in gaps(self.dst)]), ("tapegaps_hardlink", ["tapegaps_hardlink"]))
+        for bad in ("hardlink", "tapegaps_" + "x" * 80, "tapegaps_X", {"a": 1}, None, 7, "tapegaps_ok\nnl"):
+            with self.subTest(why=bad):
+                pl.handle({"k": "tf", "why": bad}, time.time_ns())
+                self.assertEqual(pl.tg_fault, "tapegaps_bad_fault_frame")  # whatever else is sent is not logged
+        pl.close()
+
+    def test_a_damaged_local_copy_at_start_is_still_a_hard_stop(self) -> None:
+        tdir = Path(self.dst) / "transport"
+        tdir.mkdir(parents=True)
+        (tdir / f"{BOT}.tapegaps.jsonl").write_bytes(b"{torn\n")
+        with self.assertRaises(df.Mismatch):
+            df.Puller(self.dst, BOT, ["true"])
+
+    def test_a_middle_edit_keeps_the_decision_rows_flowing_the_copy_goes_stale_and_a_clean_pass_recovers(self) -> None:
+        """One real run: real serve subprocess, real Puller thread. The relay edits a carried row in place (a fault): the puller does not stop, three more decision rows arrive
+        byte for byte, the copy keeps its content AND its old mtime, a gap row and a status note say so; then the relay file is the accepted one plus a row again: recovered."""
+        self.append(2)
+        a = tg_bytes(("start", T0), ("data_loss", T0 + HOUR_MS))
+        self.put(a, mt=T0 + 2 * HOUR_MS)
+        with BgPull(self) as p:
+            p.wait(lambda: p.pl.tg_frames >= 1 and p.pl.seq + 1 >= 2)
+            copy_before = (self.dst_tg().read_bytes(), os.lstat(self.dst_tg()).st_ino, os.lstat(self.dst_tg()).st_mtime_ns)
+            self.put(tg_bytes(("start", T0), ("data_loss", T0 + HOUR_MS + 1)), mt=T0 + 3 * HOUR_MS)  # an already-carried row edited
+            p.wait(lambda: p.pl.tg_fault is not None)
+            for i in range(3):
+                self.log.append(BOT, DAY1 + 100 + i, {"kind": "entry", "synthetic": True, "mint": f"L{i}"})
+            p.wait(lambda: p.pl.seq + 1 >= 5)  # the decision rows keep flowing
+            self.assertEqual(p.rc, [])  # the puller never stopped
+            self.assertEqual(md5s(self.dst), md5s(self.src))  # and the decision log is still byte-identical
+            self.assertEqual((self.dst_tg().read_bytes(), os.lstat(self.dst_tg()).st_ino, os.lstat(self.dst_tg()).st_mtime_ns), copy_before)  # the copy stays: stale by the clock alone
+            p.wait(lambda: p.status().get("tapegaps_fault") == p.pl.tg_fault)
+            st = p.status()
+            self.assertEqual(st["state"], "connected")  # the feed itself is healthy; only the stream is
+            self.assertEqual([g["kind"] for g in gaps(self.dst)], ["tapegaps_fault"])
+            self.assertTrue(gaps(self.dst)[0]["why"].startswith("tapegaps_"))
+            c = a + tg_bytes(("gap_silence", T0 + 4 * HOUR_MS))  # the relay is again the accepted copy plus a row
+            self.put(c, mt=T0 + 4 * HOUR_MS)
+            p.wait(lambda: p.pl.tg_fault is None)
+            self.assertEqual((self.dst_tg().read_bytes(), p.rc), (c, []))
+            self.assertEqual([g["kind"] for g in gaps(self.dst)], ["tapegaps_fault", "resume"])
+            p.wait(lambda: "tapegaps_fault" not in p.status())
+
+    def test_a_bad_source_file_is_a_tf_fault_the_pull_keeps_running_and_decisions_flow(self) -> None:
+        self.append(2)
+        self.put(b'{"kind":"a","ms":1,"price":3}\n')
+        with BgPull(self) as p:
+            p.wait(lambda: p.pl.tg_fault is not None and p.pl.seq + 1 >= 2)
+            self.assertEqual((p.pl.tg_fault, p.rc), ("tapegaps_malformed", []))
+            self.assertFalse(self.dst_tg().exists())
+            self.assertEqual(md5s(self.dst), md5s(self.src))
+            self.put(tg_bytes(("start", T0)), mt=T0)  # the relay's next pass is clean: the first copy is taken, the fault is over
+            p.wait(lambda: p.pl.tg_fault is None and p.pl.tg_frames == 1)
+            self.assertEqual(self.dst_tg().read_bytes(), tg_bytes(("start", T0)))
+
+    def test_a_restart_resyncs_from_the_source_after_a_fault_that_a_clean_pass_cannot_clear(self) -> None:
+        """The relay's history changed in the middle for good (say a late-arriving earlier gap row): no later pass is the accepted copy plus appended rows, the fault stays open
+        (new buys refused on the stale copy). A puller restart takes the source as it is."""
+        self.append(1)
+        a = tg_bytes(("start", T0), ("data_loss", T0 + 2 * HOUR_MS))
+        self.put(a, mt=T0 + 3 * HOUR_MS)
+        with BgPull(self) as p:
+            p.wait(lambda: p.pl.tg_frames >= 1)
+            reshaped = tg_bytes(("start", T0), ("process_restart", T0 + HOUR_MS), ("data_loss", T0 + 2 * HOUR_MS))  # a row inserted in the middle
+            self.put(reshaped, mt=T0 + 4 * HOUR_MS)
+            p.wait(lambda: p.pl.tg_fault is not None)
+            self.put(reshaped + tg_bytes(("gap_silence", T0 + 5 * HOUR_MS)), mt=T0 + 5 * HOUR_MS)  # still not the accepted copy plus appends
+            time.sleep(0.3)
+            self.assertIsNotNone(p.pl.tg_fault)
+            self.assertEqual(self.dst_tg().read_bytes(), a)
+        # restart: a new process over the same dst
+        with BgPull(self) as p2:
+            p2.wait(lambda: p2.pl.tg_frames >= 1)
+            self.assertEqual((self.dst_tg().read_bytes(), p2.pl.tg_fault, p2.rc), (Path(self.tgf).read_bytes(), None, []))
+            self.assertEqual(os.lstat(self.dst_tg()).st_mtime_ns // 1_000_000, T0 + 5 * HOUR_MS)
+            self.assertEqual(md5s(self.dst), md5s(self.src))
+
+
 class StatsTest(unittest.TestCase):
     def test_pct_nearest_rank(self) -> None:
         xs = list(range(1, 101))

@@ -354,79 +354,143 @@ class StartRowTests(TmpCase):
 
 
 class OwnerLineTests(TmpCase):
+    """The owner's confirmation is a ROOT-OWNED per-bot file: presence and the one exact line. There is no content pin (no CANARY_DEC_SHA256)."""
+
     def _fx(self, text=None, bot=ARM):
-        p, sha = owner_fixture(self.tmp, bot)
+        p = owner_fixture(self.tmp, bot)
         if text is not None:
             p.write_text(text)
-            import hashlib
-            sha = hashlib.sha256(p.read_bytes()).hexdigest()
-        return p, sha
+        return p
 
-    def test_exact_line_with_pinned_blob(self):
-        p, sha = self._fx()
-        self.assertIsNone(c0.owner_line_problem(p, ARM, sha))
+    def _as_root(self):
+        """The real root check (alb.root_ok_problem -> h5.root_file_problem) with this test's uid standing in for root."""
+        from tools import h5_executor as h5
+        return mock.patch.multiple(h5, LIVE_OK_UID=os.getuid(), LIVE_OK_GID=os.getgid())
 
-    def test_not_a_match(self):
+    def test_correct_file_is_none(self):
+        self.assertIsNone(c0.owner_line_problem(self._fx(), ARM))
+        self.assertIsNone(c0.owner_line_problem(str(self._fx()), ARM, lambda _p: None))
+        self.assertIsNone(c0.owner_line_problem(self._fx("no trailing newline\n" + c0.OWNER_LINE_FMT.format(bot_id=ARM)), ARM))  # the last line need not end in \n
+
+    def test_exact_line_only(self):
         want = c0.OWNER_LINE_FMT.format(bot_id=ARM)
         for text in ("x\n", want + "2\n", f"  {want}\n", f"{want} \n", want.replace("CONFIRMED", "confirmed") + "\n", f"# {want}\n", f"{want}\n{want}\n",
-                     c0.OWNER_LINE_FMT.format(bot_id="hv4-CON-F") + "\n", f"OWNER_CANARY_CONFIRMED: bot_id={ARM}x\n"):
-            p, sha = self._fx(text)
-            self.assertEqual(c0.owner_line_problem(p, ARM, sha), "owner_line_missing", text)
+                     c0.OWNER_LINE_FMT.format(bot_id="hv4-CON-F") + "\n", f"OWNER_CANARY_CONFIRMED: bot_id={ARM}x\n", f"{want}\r\n", "", f"{want[:-1]}\n"):
+            self.assertEqual(c0.owner_line_problem(self._fx(text), ARM), "owner_line_missing", text)
+        self.assertEqual(c0.owner_line_problem(self._fx(c0.OWNER_LINE_FMT.format(bot_id="hv4-BIG-X") + "\n"), ARM), "owner_line_missing")  # another bot's line
+        both = f"{c0.OWNER_LINE_FMT.format(bot_id=ARM)}\n{c0.OWNER_LINE_FMT.format(bot_id='hv4-BIG-X')}\n"
+        self.assertIsNone(c0.owner_line_problem(self._fx(both), ARM))  # another bot's line beside the right one does not matter
 
-    def test_blob_must_equal_the_pin(self):
-        p, sha = self._fx()
-        self.assertEqual(c0.owner_line_problem(p, ARM, "0" * 64), "owner_dec_sha_mismatch")
-        p.write_text(p.read_text() + "edited after the pin\n")
-        self.assertEqual(c0.owner_line_problem(p, ARM, sha), "owner_dec_sha_mismatch")
+    def test_missing_file_and_missing_dir(self):
+        self.assertEqual(c0.owner_line_problem(Path(self.tmp) / "none.md", ARM), "owner_dec_missing")
+        self.assertEqual(c0.owner_line_problem(Path(self.tmp) / "no-dir" / "x" / "CANARY_DEC.md", ARM), "owner_dec_missing")
 
-    def test_unset_or_malformed_pin_means_no_live(self):
-        p, _ = self._fx()
-        for bad in ("", "abc", "G" * 64, "A" * 64):
-            self.assertEqual(c0.owner_line_problem(p, ARM, bad), "owner_dec_pin_unset", bad)
-        self.assertEqual(c0.CANARY_DEC_SHA256, "")  # no pin is committed in this PR: the line stays closed
-        self.assertEqual(c0.owner_line_problem(p, ARM), "owner_dec_pin_unset")
-
-    def test_missing_symlink_and_root_check(self):
-        p, sha = self._fx()
-        self.assertEqual(c0.owner_line_problem(Path(self.tmp) / "none.md", ARM, sha), "owner_dec_missing")
+    def test_symlink_hardlink_and_not_regular(self):
+        p = self._fx()
         link = Path(self.tmp) / "link.md"
         os.symlink(p, link)
-        self.assertEqual(c0.owner_line_problem(link, ARM, sha), "owner_dec_unreadable")
-        self.assertEqual(c0.owner_line_problem(p, ARM, sha, lambda _p: "not_root_owned"), "owner_dec_not_root_owned")
-        self.assertIsNone(c0.owner_line_problem(p, ARM, sha, lambda _p: None))
+        self.assertEqual(c0.owner_line_problem(link, ARM), "owner_dec_symlink")
+        hard = Path(self.tmp) / "hard.md"
+        os.link(p, hard)
+        self.assertEqual(c0.owner_line_problem(p, ARM), "owner_dec_hardlink")
+        self.assertEqual(c0.owner_line_problem(hard, ARM), "owner_dec_hardlink")
+        self.assertEqual(c0.owner_line_problem(Path(self.tmp), ARM), "owner_dec_not_regular")
+        os.unlink(hard)
+        big = self._fx("x" * (c0.OWNER_DEC_MAX_BYTES + 1))
+        self.assertEqual(c0.owner_line_problem(big, ARM), "owner_dec_too_large")
 
-    def test_the_path_is_outside_the_installed_tree(self):
+    def test_a_swap_between_the_check_and_the_open_is_refused(self):
+        p = self._fx()
+        other = Path(self.tmp) / "other.md"
+        other.write_text(c0.OWNER_LINE_FMT.format(bot_id=ARM) + "\n")
+        real_open = os.open
+
+        def swapping_open(path, flags, *a, **k):
+            if os.fspath(path) == os.fspath(p):  # a different inode appears at the path after the lstat
+                os.replace(other, p)
+            return real_open(path, flags, *a, **k)
+
+        with mock.patch("os.open", swapping_open):
+            self.assertEqual(c0.owner_line_problem(p, ARM), "owner_dec_swapped")
+
+    def test_root_check_is_applied_to_the_path_and_its_label_is_returned(self):
+        p = self._fx()
+        seen = []
+        self.assertEqual(c0.owner_line_problem(p, ARM, lambda x: seen.append(x) or "not_root_owned"), "owner_dec_not_root_owned")
+        self.assertEqual(seen, [p])
+
+    def test_the_real_root_check_refuses_a_non_root_owner_and_a_group_writable_file(self):
+        p = self._fx()
+        os.chmod(p, 0o644)
+        os.chmod(p.parent, 0o755)
+        self.assertEqual(c0.owner_line_problem(p, ARM, alb.root_ok_problem), "owner_dec_unsafe")  # owned by the test user, not root
+        with self._as_root():
+            self.assertIsNone(c0.owner_line_problem(p, ARM, alb.root_ok_problem))  # control: this uid standing in for root, 0644, dir not writable by group/other
+            for mode in (0o664, 0o646, 0o666, 0o640, 0o600):
+                os.chmod(p, mode)
+                self.assertEqual(c0.owner_line_problem(p, ARM, alb.root_ok_problem), "owner_dec_unsafe", oct(mode))
+            os.chmod(p, 0o644)
+            for mode in (0o775, 0o757):
+                os.chmod(p.parent, mode)
+                self.assertEqual(c0.owner_line_problem(p, ARM, alb.root_ok_problem), "owner_dec_unsafe", oct(mode))
+
+    def test_no_sha_of_the_owner_file_is_compiled_into_code(self):
+        """DEC-031 Am.21 item 4: no sha256 of the owner file or of a DEC copy in code. The identity pin lives in the bridge state (`pinned`), not in this module."""
+        self.assertFalse(hasattr(c0, "CANARY_DEC_SHA256"))
+        self.assertFalse(hasattr(c0, "OWNER_DEC_PATH"))
+        self.assertNotIn("pin", c0.owner_line_problem.__code__.co_varnames[:c0.owner_line_problem.__code__.co_argcount])  # no old-style `pin` argument
+        self.assertIn("pinned", c0.owner_line_problem.__code__.co_varnames[:c0.owner_line_problem.__code__.co_argcount])
+        for n in dir(c0):
+            if n.startswith(("OWNER", "CANARY")):
+                self.assertFalse(isinstance(getattr(c0, n), str) and len(getattr(c0, n)) == 64 and all(ch in "0123456789abcdef" for ch in getattr(c0, n)), n)
+
+    def test_bad_bot_ids_are_refused_before_any_path_is_built(self):
+        for bad in (None, "", "../x", "a/b", ".hidden", "x\x00y", 5):
+            self.assertEqual(c0.owner_line_problem(self._fx(), bad), "owner_dec_bot_id", bad)
+            with self.assertRaises(ValueError):
+                c0.owner_dec_path(bad)
+
+    def test_one_file_per_bot_under_an_etc_dir_outside_the_installed_tree(self):
         repo = Path(__file__).resolve().parent.parent
-        self.assertTrue(c0.OWNER_DEC_PATH.startswith("/etc/"))
-        self.assertNotIn(str(repo), c0.OWNER_DEC_PATH)
-        self.assertNotIn("/DEC/", c0.OWNER_DEC_PATH)
+        self.assertTrue(c0.OWNER_DEC_DIR.startswith("/etc/"))
+        self.assertNotIn(str(repo), c0.OWNER_DEC_DIR)
+        self.assertNotIn("/DEC/", c0.OWNER_DEC_DIR)
+        self.assertEqual(c0.owner_dec_path("hv4-CON-X"), "/etc/mal-hv4-c0/hv4-CON-X/CANARY_DEC.md")
+        self.assertEqual(c0.owner_dec_path("hv4-BIG-X"), "/etc/mal-hv4-c0/hv4-BIG-X/CANARY_DEC.md")
+        self.assertNotEqual(c0.owner_dec_path("hv4-CON-X"), c0.owner_dec_path("hv4-BIG-X"))
 
-    def test_bridge_routes_to_dry_without_the_line_and_live_with_it(self):
+    def test_bridge_routes_to_dry_without_the_file_and_live_with_it(self):
         e = Hv4Env(self.tmp, live=True)
         e.live_ok.write_text(ARM + "\n")
         e.tier.write_text("T1\n")
         b = e.bridge()
-        self.assertEqual(b.effective_live(), (False, "live_ok_owner_dec_pin_unset"))
-        p, sha = self._fx()
-        b.owner_dec_path, b.owner_pin = p, sha
-        self.assertEqual(b.effective_live(), (True, None))
-        other, sha2 = self._fx(c0.OWNER_LINE_FMT.format(bot_id="hv4-BIG-X") + "\n")
-        b.owner_dec_path, b.owner_pin = other, sha2
+        self.assertEqual(b.owner_dec_path, Path("/etc/mal-hv4-c0/hv4-CON-X/CANARY_DEC.md"))  # the default is per bot
+        self.assertEqual(b.effective_live(), (False, "live_ok_owner_dec_missing"))
+        b.owner_dec_path = self._fx(c0.OWNER_LINE_FMT.format(bot_id="hv4-BIG-X") + "\n")  # another bot's line: not good, so nothing is pinned
         self.assertEqual(b.effective_live(), (False, "live_ok_owner_line_missing"))
+        self.assertIsNone(b.state.owner_pin)
+        b.owner_dec_path = self._fx()
+        self.assertEqual(b.effective_live(), (True, None))
+        self.assertIsNotNone(b.state.owner_pin)  # pinned at the first good check (a later rewrite latches `owner_line`: OwnerPinBridgeTests)
 
     def test_main_live_refuses_without_the_owner_line_before_the_incomplete_refusal(self):
         e = Hv4Env(self.tmp)
         full = {k: v for k, v in e.raw.items() if k not in ("stop_file", "halt_file")}
         paths, _st = live_main_env(self.tmp, ARM)
-        with mock.patch.object(c0, "CANARY_DEC_SHA256", "0" * 64), mock.patch.object(c0, "OWNER_DEC_PATH", str(owner_fixture(self.tmp, ARM)[0])), \
-                mock.patch.object(alb, "root_ok_problem", lambda _p: None):
-            cp = Path(self.tmp) / "cfg.json"
-            cp.write_text(json.dumps({**full, **paths, "mode": "live"}))
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                rc = alb.main(["--config", str(cp), "--live"])
-        self.assertEqual(rc, 2)
-        self.assertIn("owner_dec_sha_mismatch", buf.getvalue())
+        for text, want in (("not the line\n", "owner_line_missing"), (None, "owner_dec_missing")):
+            if text is None:
+                os.unlink(owner_fixture(self.tmp, ARM))
+            else:
+                self._fx(text)
+            with mock.patch.object(c0, "OWNER_DEC_DIR", str(Path(self.tmp) / "etc-c0")), mock.patch.object(alb, "root_ok_problem", lambda _p: None):
+                cp = Path(self.tmp) / "cfg.json"
+                cp.write_text(json.dumps({**full, **paths, "mode": "live"}))
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf):
+                    rc = alb.main(["--config", str(cp), "--live"])
+            self.assertEqual(rc, 2)
+            self.assertIn(want, buf.getvalue())
+            self.assertNotIn(c0.LIVE_REFUSAL, buf.getvalue())
 
 
 class SOnTheLivePortTests(TmpCase):
@@ -610,6 +674,7 @@ class MainPathChecksTests(TmpCase):
         self.assertEqual(rc, 2)
         self.assertIn("parity_path_missing:twins_file", out)
 
+    @mock.patch.object(c0, "LIVE_REFUSAL_ACTIVE", True)  # the default state, pinned: flipping the constant to False must not change what this test asserts
     def test_with_the_paths_a_live_start_reaches_the_incomplete_refusal(self):
         rc, out = self._run({})
         self.assertEqual(rc, 2)

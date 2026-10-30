@@ -9,6 +9,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from tools import arena_live_parity as alp
@@ -130,9 +131,12 @@ class ExporterUnitTests(TmpCase):
         with self.assertRaises(tie.TieoutMismatch):  # exit_landed true with no landed sell in the rows
             tie.build(rows[:3], self._state(status="open"), T0 + DAY_MS, {"M1": good})
 
-    def test_module_doc_declares_the_priority_residual(self):
+    def test_module_doc_states_the_send_row_contract_and_what_stays_open(self):
+        """The two code residuals (signed priority per signature, last_valid_block_height on every send row) are closed in the bridge's executor subclass
+        (tools/test_hv4_live_c0_send_rows.py); the doc says so and still lists the rc-0-is-not-enough item as open."""
         self.assertNotIn("not recomputed", tie.__doc__)
-        for w in ("DECLARED RESIDUAL", "FALSE `tieout_mismatch`", "last_valid_block_height", "unresolved_hard_halts == []"):
+        self.assertNotIn("DECLARED RESIDUAL", tie.__doc__)
+        for w in ("SEND ROWS", "signed_priority_lamports", "last_valid_block_height", "CONFIRMED DROP", "STILL OPEN", "unresolved_hard_halts == []"):
             self.assertIn(w, tie.__doc__)
 
     def test_unusable_inputs_are_refused(self):
@@ -350,7 +354,8 @@ class TripEndToEndTests(TmpCase):
         e.clock.t = t["exit_bound_ms"] + 650_000
         self.assertEqual(self._twin(e, b, o, mint), 0)
         self.assertEqual(self._run(e, b), 11)
-        self.assertTrue(Path(e.raw["stop_file"]).exists())
+        self.assertTrue(Path(c0p.parity_stop_path(e.raw["parity_dir"])).exists())  # the tools' STOP lives in parity_dir (tools/test_hv4_c0_parity_stop.py)
+        self.assertTrue(b._files()[1])
         self.assertIn("stuck_position", self._parity_result()["hard_halts"])
         b._latch_parity_hard()
         self.assertIn("parity_hard_halt", b.state.latches)
@@ -394,6 +399,7 @@ class TripEndToEndTests(TmpCase):
         self.assertIn("stake_mismatch", b.state.latches)
         self.assertIn("landed_buy_without_order", b.state.latches["stake_mismatch"])
 
+    @mock.patch.object(c0, "LIVE_REFUSAL_ACTIVE", True)  # the default state, pinned: flipping the constant to False must not change what this test asserts
     def test_removal_precondition_still_refuses(self):
         self.assertEqual(c0.start_refusal("/nonexistent-root", True, ARM), "hv4_c0_incomplete")
 

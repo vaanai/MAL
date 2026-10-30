@@ -457,7 +457,14 @@ class WindowManualRecoveryTests(TmpCase):
 
 
 class Section52GapHaltTests(TmpCase):
-    """DEC-032 s5.2: the book's own gap records latch feed_break (hard); restart needs 10 gap-free minutes AND the manager's root-owned review file."""
+    """DEC-032 s5.2: the book's own gap records latch feed_break (hard); restart needs 10 gap-free minutes AND the manager's root-owned review file.
+    These tests pin the s5 item 2 behaviour as written (c0.FEED_GAP_MANUAL_REVIEW True); tools/test_hv4_c0_gap_hold.py covers the Am.5 (DRAFT) value."""
+
+    def setUp(self):
+        super().setUp()
+        p = mock.patch.object(c0, "FEED_GAP_MANUAL_REVIEW", True)
+        p.start()
+        self.addCleanup(p.stop)
 
     def env(self):
         e = Hv4Env(self.tmp)
@@ -690,10 +697,14 @@ class GapWindowTests(Section52GapHaltTests):
 
 
 class RootCheckPathTypeTests(TmpCase):
-    """Reviewer blocker on 2519c0f5: root_ok_problem got a str and h5.root_file_problem does p.parent. Every call site, with root_checks=True and a real tmp dir."""
+    """Reviewer blocker on 2519c0f5: root_ok_problem got a str and h5.root_file_problem does p.parent. Every call site, with root_checks=True and a real tmp dir.
+    The gap-clear call sites exist under s5 item 2 as written (c0.FEED_GAP_MANUAL_REVIEW True), so that value is set here."""
 
     def setUp(self):
         super().setUp()
+        p = mock.patch.object(c0, "FEED_GAP_MANUAL_REVIEW", True)
+        p.start()
+        self.addCleanup(p.stop)
         try:
             from tools import h5_executor  # noqa: F401
         except ModuleNotFoundError as e:
@@ -747,9 +758,9 @@ class RootCheckPathTypeTests(TmpCase):
     def test_owner_line_with_real_root_checks_takes_a_str_path(self):
         p = Path(self.tmp) / "dec.md"
         p.write_text(c0.OWNER_LINE_FMT.format(bot_id=ARM) + "\n")
-        why = c0.owner_line_problem(str(p), ARM, None, alb.root_ok_problem)
+        why = c0.owner_line_problem(str(p), ARM, alb.root_ok_problem)
         self.assertNotIn("AttributeError", str(why))
-        self.assertTrue(why)  # refused (not root-owned / pin unset), never an exception
+        self.assertTrue(why)  # refused (not root-owned), never an exception
 
     def test_live_ok_and_tier_call_sites_take_paths(self):
         e = Hv4Env(self.tmp, live=True)

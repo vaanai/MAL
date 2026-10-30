@@ -6,16 +6,19 @@ It writes the bridge's book (positions, fills with the fees actually signed, lat
 fill rows (`<state_dir>/probe/fills.jsonl`: `buy` / `sell` rows with a signature) into the rows that exporter reads, and adds a `bridge` block the tie-out ignores:
 
     bridge.positions   the bridge's orders that hold a position (order_id, mint, status, stake_lamports)
-    bridge.fills       one entry per fill row: kind, mint, signature, landed, fee_lamports, priority_lamports (AS LOGGED on the row; see the DECLARED RESIDUAL below: it is not guaranteed to be the value signed), spend / received
+    bridge.fills       one entry per fill row: kind, mint, signature, landed, fee_lamports, priority_lamports (the priority of the row's own signature, read from its signed bytes; see SEND ROWS below), spend / received
     bridge.trip_fees   per mint: buy_fee_lamports, sell_fee_lamports (every sell send, escalated resends included), sell_priorities
     bridge.latches     the bridge's latches at export time
 
-DECLARED RESIDUAL (QP #970, N7 / N-D, still open): tools/probe_live.py lines 669 and 831 log `priority_lamports=self._priority(mint)`, recomputed when the send RESOLVES, not
-the value signed. The C0 override remembers the priority of the LAST tx signed per mint, so when an earlier rung lands after the bridge escalated, the logged priority (and
-the fee audit) can differ from what that send paid: the consequence is a FALSE `tieout_mismatch` latch (fail closed, never a false pass). Owed before removal: log the priority
-actually signed per send (a pinned diff plus an md5 decision-equivalence replay). Also owed: every send row carries `last_valid_block_height` from probe_live `p["lvbh"]` (via
-`_timing()`), with a test where a confirmed drop lets the day sign off (pinned diff plus md5 replay); until then an expired send exports pending and the day does not sign off.
-The C0 read / install pack must check `unresolved_hard_halts == []` AND `match` in the parity result, not rc 0 alone (a hard latch does not change the parity exit code).
+SEND ROWS (QP #970 precondition 8: the signed priority per signature, and last_valid_block_height on every send row; N7 / N-D and ruling 2). Closed for the hv4_c0 profile
+inside the bridge's executor subclass (tools/arena_live_bridge.py `BridgeExecutor._timing` and `_log`, `signed_priority_lamports`); tools/probe_live.py is untouched. Every buy and
+sell fill row, landed, landed-failed or EXPIRED, is built from its own pending entry and carries `last_valid_block_height` = that entry's `p["lvbh"]` and `priority_lamports` = the
+priority read from the SIGNED BYTES of the signature the row carries. It is neither a recomputation when the send resolves nor a per-mint memory, so an earlier rung that lands
+after an escalation, or a landing seen after a restart, cannot produce a false `tieout_mismatch`. A row whose signed bytes cannot be read carries null and `audit_fees` refuses it
+(fail closed). With the height on the row, an expired send whose status is null with history search on (tools/arena_tieout_fetch.py `cut_ledger`) is a CONFIRMED DROP in
+tools/arena_tieout.py once the finalized height is past it, and the day can sign off; without it the send exports pending and the day never signs off.
+STILL OPEN (not in this change): the C0 read / install pack must check `unresolved_hard_halts == []` AND `match` in the parity result, not rc 0 alone (a hard latch does not
+change the parity exit code).
 
 FEE AUDIT (fail closed, `TieoutMismatch`). The twin is priced at the fees actually sent, so the exporter checks, per row, fee_lamports == priority_lamports + 5,000;
 that a buy was signed at the pinned buy priority; that each sell was signed at a pinned priority (55,000 or 150,000) and never below the schedule for its attempt
@@ -159,11 +162,44 @@ def audit_fees(fills: list[dict[str, Any]], stakes: Mapping[str, int], parity_tr
     return per
 
 
+def cut_parity_trips(rows: list[Mapping[str, Any]], parity_trips: Mapping[str, Mapping[str, Any]], end_ms: int) -> dict[str, Mapping[str, Any]]:
+    """The parity trips file is CUMULATIVE (the recorder's current view), the fill rows are cut at `end_ms`. Without this, a trip opened after the day's cut
+    raised a false hard tieout_mismatch ("no landed buy in the fill rows"), and a trip whose sell landed after the cut raised "exit_landed True but no landed
+    sell" (PR #1092 finding 1). The day's audit therefore sees each trip AS IT STOOD AT THE CUT, decided by the trip's own fill rows (all of them, uncut):
+      * a trip whose landed buy rows ALL have ts_ms >= end_ms belongs to a later day and is left out of this day's cross-check;
+      * a trip with exit_landed True whose landed sell rows ALL have ts_ms >= end_ms was still open at the cut: it is checked as exit_landed False.
+    Fail closed: a trip with NO landed buy row anywhere stays in (the audit raises), and a trip with any landed buy or sell inside the cut is checked as recorded.
+    A mint is never re-bought by the bridge (one trip per mint), so the mint keys the rows."""
+    buys_in: set[str] = set()
+    buys_after: set[str] = set()
+    sells_in: set[str] = set()
+    sells_after: set[str] = set()
+    for r in rows:
+        if not isinstance(r, Mapping) or r.get("kind") not in ("buy", "sell") or r.get("landed") is not True or not _isint(r.get("ts_ms")):
+            continue
+        before = r["ts_ms"] < end_ms
+        if r["kind"] == "buy":
+            (buys_in if before else buys_after).add(r.get("mint"))
+        else:
+            (sells_in if before else sells_after).add(r.get("mint"))
+    out: dict[str, Mapping[str, Any]] = {}
+    for mint, pt in parity_trips.items():
+        if mint in buys_after and mint not in buys_in:
+            continue
+        if isinstance(pt, Mapping) and pt.get("exit_landed") is True and mint in sells_after and mint not in sells_in:
+            pt = {**pt, "exit_landed": False}
+        out[mint] = pt
+    return out
+
+
 def build(rows: Iterable[Mapping[str, Any]], state: Mapping[str, Any], end_ms: int, parity_trips: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
     """The LEDGER_IN document with the bridge block. Raises atl.BadLedger (unusable input) or TieoutMismatch (fee / stake audit)."""
     if not isinstance(state, Mapping) or not isinstance(state.get("orders"), dict):
         raise atl.BadLedger("the bridge state has no 'orders' object")
+    rows = list(rows)
     fills = fill_rows(rows, end_ms)
+    if parity_trips is not None:
+        parity_trips = cut_parity_trips(rows, parity_trips, end_ms)
     orders = state["orders"]
     by_mint = {o["mint"]: o for o in orders.values() if isinstance(o, dict) and isinstance(o.get("mint"), str)}
     stakes = {m: o["stake_lamports"] for m, o in by_mint.items() if _isint(o.get("stake_lamports"))}

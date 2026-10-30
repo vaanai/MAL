@@ -7,6 +7,7 @@ import json
 import os
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tools import arena_live_bridge as alb
 from tools import hv4_arms
@@ -39,26 +40,25 @@ def write_read_record(reads_dir, bot, **over):
 
 
 def owner_fixture(tmp, bot):
-    """A synthetic stand-in for /etc/mal-hv4-c0/CANARY_DEC.md. Returns (path, sha256 of its bytes)."""
-    import hashlib
-    d = Path(tmp) / "etc-c0"
-    d.mkdir(exist_ok=True)
-    p = d / "CANARY_DEC.md"
+    """A synthetic stand-in for /etc/mal-hv4-c0/<bot_id>/CANARY_DEC.md, under <tmp>/etc-c0 (what live_main_env points OWNER_DEC_DIR at). Returns its path."""
+    d = Path(tmp) / "etc-c0" / bot
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / c0.OWNER_DEC_NAME
     p.write_text("synthetic owner decision\n" + c0.OWNER_LINE_FMT.format(bot_id=bot) + "\n")
-    return p, hashlib.sha256(p.read_bytes()).hexdigest()
+    return p
 
 
 def live_main_env(tmp, bot):
-    """(extra config keys, context manager) so a LIVE main() reaches the later gates: the three parity paths, the owner file and its pin (synthetic, patched).
+    """(extra config keys, context manager) so a LIVE main() reaches the later gates: the three parity paths and the owner file (synthetic, patched in).
     The patches start only when the context manager is entered."""
     import contextlib
     from unittest import mock
-    p, sha = owner_fixture(tmp, bot)
+    owner_fixture(tmp, bot)
     paths = {"parity_dir": str(Path(tmp) / "par"), "twins_file": str(Path(tmp) / "twins.jsonl"), "tieout_dir": str(Path(tmp) / "tie")}
 
     @contextlib.contextmanager
     def patches():
-        with mock.patch.object(c0, "OWNER_DEC_PATH", str(p)), mock.patch.object(c0, "CANARY_DEC_SHA256", sha), mock.patch.object(alb, "root_ok_problem", lambda _p: None):
+        with mock.patch.object(c0, "OWNER_DEC_DIR", str(Path(tmp) / "etc-c0")), mock.patch.object(alb, "root_ok_problem", lambda _p: None):
             yield
 
     return paths, patches()
@@ -104,8 +104,8 @@ class Hv4Env(Env):
         self.row({"kind": "start", "binding": "b", "frozen_sha": sha, "rules": [self.bot]})
 
 
-def write_feed(root, bot_id, now_ms, state="connected", **over):
-    """A synthetic forwarder status file (decision_forwarder_v1 format) at <root>/transport/<bot>.status.json."""
+def write_feed(root, bot_id, now_ms, state="connected", tapegaps=True, **over):
+    """A synthetic forwarder status file (decision_forwarder_v1 format) at <root>/transport/<bot>.status.json, plus a fresh carried tapegaps stream (see write_tapegaps)."""
     d = Path(root) / "transport"
     d.mkdir(parents=True, exist_ok=True)
     st = {"schema": c0.FEED_SCHEMA, "bot": bot_id, "state": state, "ms": now_ms, "last_frame_ms": now_ms, "last_remote_ms": now_ms, "seq": 1, "f": "x.jsonl", "o": 0,
@@ -113,6 +113,21 @@ def write_feed(root, bot_id, now_ms, state="connected", **over):
     st.update(over)
     f = d / f"{bot_id}.status.json"
     f.write_text(json.dumps(st, sort_keys=True) + "\n")
+    if tapegaps:
+        write_tapegaps(root, bot_id, now_ms)
+    return f
+
+
+def write_tapegaps(root, bot_id, now_ms, rows=None):
+    """A synthetic CARRIED relay stream (<root>/transport/<bot>.tapegaps.jsonl) whose mtime is the test clock, as the forwarder's puller sets it (the source pass instant).
+    rows=None keeps the rows already there (an empty file when new); a list rewrites them. Every `write_feed` calls this, so a test that expects buys has a fresh stream
+    (the hv4_c0 profile refuses new buys without one, QP #969 P7-c); pass tapegaps=False to write_feed for the missing/stale cases."""
+    d = Path(root) / "transport"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"{bot_id}.tapegaps.jsonl"
+    if rows is not None or not f.exists():
+        f.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in (rows or [])))
+    os.utime(f, ns=(now_ms * 1_000_000, now_ms * 1_000_000))
     return f
 
 
@@ -405,6 +420,7 @@ class BridgeC0Tests(TmpCase):
             rc = alb.main(["--config", str(cfgp), "--once"] + (["--live"] if live else []))
         return rc, buf.getvalue()
 
+    @mock.patch.object(c0, "LIVE_REFUSAL_ACTIVE", True)  # the default state, pinned: flipping the constant to False must not change what this test asserts
     def test_dry_start_without_marker_refused(self):
         rc, out = self._main(Hv4Env(self.tmp))
         self.assertEqual(rc, 2)
@@ -416,6 +432,7 @@ class BridgeC0Tests(TmpCase):
         rc, out = self._main(Hv4Env(self.tmp), live=True, marker=True)
         self.assertEqual(rc, 2)
 
+    @mock.patch.object(c0, "LIVE_REFUSAL_ACTIVE", True)  # the default state, pinned: flipping the constant to False must not change what this test asserts
     def test_arena_root_always_refused_without_touching_it(self):
         for root in ("/data/mal/arena", "/data/mal/arena/haiku-v4", "/data/mal/arena/../arena/x", "/data/mal/arena/nonexistent-synth"):
             for live in (False, True):
@@ -433,6 +450,7 @@ class BridgeC0Tests(TmpCase):
                 with self.assertRaises(ValueError):
                     alb.Config.from_dict({**base, "profile": ""})
 
+    @mock.patch.object(c0, "LIVE_REFUSAL_ACTIVE", True)  # the default state, pinned: flipping the constant to False must not change what this test asserts
     def test_live_start_refused_hv4_c0_incomplete(self):
         import contextlib, io, json
         cfgp = Path(self.tmp) / "cfg.json"
@@ -466,9 +484,8 @@ class BridgeC0Tests(TmpCase):
         e.live_ok.write_text("hv4-other-X\n")
         self.assertEqual(b.effective_live(), (False, "live_ok_other_book"))
         e.live_ok.write_text(ARM + "\n")
-        self.assertEqual(b.effective_live(), (False, "live_ok_owner_dec_pin_unset"))  # no pin, no live send
-        op, sha = owner_fixture(self.tmp, ARM)
-        b.owner_dec_path, b.owner_pin = op, sha
+        self.assertEqual(b.effective_live(), (False, "live_ok_owner_dec_missing"))  # no owner file, no live send
+        b.owner_dec_path = owner_fixture(self.tmp, ARM)
         self.assertEqual(b.effective_live(), (True, None))
 
     def test_live_entry_refused_without_t1(self):
