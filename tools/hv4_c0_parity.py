@@ -19,6 +19,13 @@ from typing import Any, Callable, Iterable, Mapping
 from tools import hv4_live_c0 as c0
 from tools.h5_arena_gates import HARD_ARENA_HALTS, LiveGates, ParityRecorder, Runner, twin_run_stamp
 
+# QP part-A C1 (#1096): with a writable STOP, a parity run in the tick of a landing (before any twin can cover the new trip, or before the twin writer has run
+# after a sell) raises P7 "twin missing/stale" and writes a soft STOP at the canary's first landed buy. Within TWIN_GRACE_MS of the last landed tx, while the
+# twin stamp does not yet cover every live trip at or after that tx, the HV4 gates refuse buys WITHOUT running the parity tool. After the grace the tool runs as
+# before (P7 and STOP if the twins never came). At most tools/arena_live_parity.STALE_MS (60 s): the twin carry budget is 20 + 25 + 15 s (hv4_c0_twin_relay).
+TWIN_GRACE_MS = 60_000
+TWIN_GRACE_REFUSAL = "parity_gate:twin_grace"
+
 PATH_KEYS = ("parity_dir", "twins_file", "tieout_dir")
 CHAIN_FRESH_MS = 5_000  # the decision_chain stamp needs a verified read this young; a stalled reader loses the stamp (P7) instead of being stamped `now`
 RC_HARD = 11  # tools.arena_live_parity: a hard halt (P4); cleared only by the manager's written review and the owner
@@ -53,11 +60,33 @@ def exit_bound_ms(decision_ms: int, max_hold_ms: int, backstop_extra_ms: int) ->
     return int(decision_ms) + int(max_hold_ms) + int(backstop_extra_ms)
 
 
+class Hv4LiveGates(LiveGates):
+    """LiveGates with the C1 twin grace (HV4 only; tools/h5_arena_gates.py and the H5 executor are not changed)."""
+
+    def twin_pending(self, now_ms: int) -> bool:
+        """True inside TWIN_GRACE_MS after the last landed tx while the twin writer's stamp is missing or older than that tx (the twin can still arrive)."""
+        last = self.recorder.last_landed_ms
+        if last is None or not 0 <= now_ms - last < TWIN_GRACE_MS:
+            return False
+        stamp = twin_run_stamp(self.twins_file, list(self.recorder.trips))
+        return stamp is None or stamp < last
+
+    def maybe_run_parity(self, now_ms: int) -> None:
+        if self.twin_pending(now_ms):
+            return  # no parity run (and so no P7 STOP) while the twin of the latest landing can still arrive
+        super().maybe_run_parity(now_ms)
+
+    def parity_refusal(self, now_ms: int) -> str | None:
+        if self.twin_pending(now_ms):
+            return TWIN_GRACE_REFUSAL  # no buy, and the tool is not run
+        return super().parity_refusal(now_ms)
+
+
 def build_gates(parity_dir: str, twins_file: str, tieout_dir: str, stop_file: str, state_builder: Callable[[int], dict[str, Any]],
                 runner: Runner | None = None, interval_s: float | None = None) -> LiveGates:
-    """LiveGates with the C0 twin pins. The recorder writes `trips.jsonl` / `attempts.jsonl` under `parity_dir`."""
+    """Hv4LiveGates with the C0 twin pins. The recorder writes `trips.jsonl` / `attempts.jsonl` under `parity_dir`."""
     d = Path(parity_dir)
-    return LiveGates(d, ParityRecorder(d), twins_file, tieout_dir, stop_file, state_builder, interval_s=interval_s, runner=runner, twin_pins=c0.twin_pins())
+    return Hv4LiveGates(d, ParityRecorder(d), twins_file, tieout_dir, stop_file, state_builder, interval_s=interval_s, runner=runner, twin_pins=c0.twin_pins())
 
 
 def parity_state(now_ms: int, *, loss_ok: bool, balance_ms: int | None, twins_file: str, trip_ids: Iterable[str], chain_ok: bool, control_ok: bool,
