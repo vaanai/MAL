@@ -130,9 +130,12 @@ class ExporterUnitTests(TmpCase):
         with self.assertRaises(tie.TieoutMismatch):  # exit_landed true with no landed sell in the rows
             tie.build(rows[:3], self._state(status="open"), T0 + DAY_MS, {"M1": good})
 
-    def test_module_doc_declares_the_priority_residual(self):
+    def test_module_doc_states_the_send_row_contract_and_what_stays_open(self):
+        """The two code residuals (signed priority per signature, last_valid_block_height on every send row) are closed in the bridge's executor subclass
+        (tools/test_hv4_live_c0_send_rows.py); the doc says so and still lists the rc-0-is-not-enough item as open."""
         self.assertNotIn("not recomputed", tie.__doc__)
-        for w in ("DECLARED RESIDUAL", "FALSE `tieout_mismatch`", "last_valid_block_height", "unresolved_hard_halts == []"):
+        self.assertNotIn("DECLARED RESIDUAL", tie.__doc__)
+        for w in ("SEND ROWS", "signed_priority_lamports", "last_valid_block_height", "CONFIRMED DROP", "STILL OPEN", "unresolved_hard_halts == []"):
             self.assertIn(w, tie.__doc__)
 
     def test_unusable_inputs_are_refused(self):

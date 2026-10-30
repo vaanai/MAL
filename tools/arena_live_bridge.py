@@ -1207,6 +1207,37 @@ class Bridge:
 
 # --- the live port (wraps the existing probe executor; built only for --live) --------------------------------------------------------
 
+_COMPUTE_BUDGET_ID = "ComputeBudget111111111111111111111111111111"
+
+
+def signed_priority_lamports(tx_b64: Any) -> int | None:
+    """The total priority fee, in lamports, that a SIGNED transaction pays: SetComputeUnitPrice (micro-lamports per CU) x SetComputeUnitLimit / 1e6, rounded up (the
+    runtime rounds the prioritization fee up). It is read from the signed bytes themselves, so it is the priority of THAT signature and can never be a recomputation made
+    when the send resolves (QP #970 R2, #965 N7 / N-D). None for anything that is not exactly one limit and one price instruction (fail closed: the fill row then carries
+    null and the tie-out audit refuses it). Imports the solana stack lazily: a dry bridge never calls it."""
+    try:
+        import base64
+
+        from solders.transaction import VersionedTransaction
+
+        msg = VersionedTransaction.from_bytes(base64.b64decode(tx_b64, validate=True)).message
+        keys = list(msg.account_keys)
+        limits: list[int] = []
+        prices: list[int] = []
+        for ix in msg.instructions:
+            if str(keys[ix.program_id_index]) != _COMPUTE_BUDGET_ID:
+                continue
+            d = bytes(ix.data)
+            if d[:1] == b"\x02" and len(d) == 5:
+                limits.append(int.from_bytes(d[1:], "little"))
+            elif d[:1] == b"\x03" and len(d) == 9:
+                prices.append(int.from_bytes(d[1:], "little"))
+        if len(limits) != 1 or len(prices) != 1 or limits[0] <= 0:
+            return None
+        return -(-prices[0] * limits[0] // 1_000_000)
+    except Exception:  # noqa: BLE001 - anything unreadable is "not known", never a number
+        return None
+
 
 def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *, now_ms: Callable[[], int] | None = None) -> OrderPort:
     """LiveExecutorPort over a `probe_live.LiveExecutor` subclass. Imported here so a dry bridge never imports the solana stack or sees a key."""
@@ -1231,7 +1262,6 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
             # The profile's own end (dec019: 2026-10-12) is replaced by the bridge's end_ms: the executor's check_buy soft stop (end_instant) then
             # enforces it at send time too, and the Bridge re-checks it right before the send.
             object.__setattr__(self.limits, "end_ms", int(end_ms))
-            self.sent_priority: dict[str, int] = {}
             self.events: list[dict[str, Any]] = []
             self.ledger: list[tuple[str, str, dict[str, Any]]] = []
             self.last_skip: str | None = None
@@ -1292,15 +1322,31 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
                     d = bytes(ix.data)
                     if str(keys[ix.program_id_index]) == str(tx_mod.PUMPSWAP_PROGRAM) and d[:8] == bytes(tx_mod.DISC_SELL) and int.from_bytes(d[16:24], "little") <= 0:
                         raise RuntimeError("c0_min_out_zero")
-            if cfg.profile == c0.PROFILE:  # N7: remember the priority of the tx actually signed, so the fill row logs what was SENT (the base class recomputes
-                # `_priority` at landing, when the pending entry is gone); the pinned base `_sign` runs unchanged with that same value
-                priority = self._priority(mint) if priority is None else priority
-                self.sent_priority[mint] = priority
+            if cfg.profile == c0.PROFILE:  # the pinned base `_sign` runs unchanged with the intended priority; the fill row's priority is read back from the signed bytes
+                intended = self._priority(mint) if priority is None else priority
+                out = super()._sign(msg, ps, mint, intended)
+                signed = signed_priority_lamports(out[1])
+                if signed != intended:  # an alert only (what is sent is unchanged): the builder encoded another priority than the one asked for
+                    self._alert("c0_signed_priority_differs", mint, intended=intended, signed=signed)
+                return out
             return super()._sign(msg, ps, mint, priority)
 
+        def _timing(self, p: dict[str, Any]) -> dict[str, Any]:
+            """hv4_c0: the send facts of THIS row, taken from the pending entry whose signature the row carries (never from a recomputation or a per-mint memory):
+            `last_valid_block_height` (QP #970 ruling 2: the tie-out confirms a drop only with it) and `c0_signed_priority`, the priority in that signature's signed bytes
+            (`_log` writes it as `priority_lamports` and removes this key). Every buy and sell row is built from `**self._timing(p)`: landed, landed-failed and expired."""
+            out = super()._timing(p)
+            if cfg.profile == c0.PROFILE:
+                out["last_valid_block_height"] = p.get("lvbh")
+                out["c0_signed_priority"] = signed_priority_lamports(p.get("tx_b64"))
+            return out
+
         def _log(self, kind: str, mint: str, **kw: Any) -> None:
-            if cfg.profile == c0.PROFILE and kind in ("buy", "sell") and "priority_lamports" in kw and mint in getattr(self, "sent_priority", {}):
-                kw["priority_lamports"] = self.sent_priority[mint]  # the priority of the last tx signed for this mint, not a recomputation
+            if cfg.profile == c0.PROFILE and kind in ("buy", "sell"):
+                if "c0_signed_priority" in kw:
+                    kw["priority_lamports"] = kw.pop("c0_signed_priority")  # QP #970 R2: the priority of this row's own signature (null when unreadable: the audit refuses it)
+                elif "priority_lamports" in kw:
+                    kw["priority_lamports"] = None  # a row not built from `_timing` never logs the base class's recomputation
             super()._log(kind, mint, **kw)
             if cfg.profile == c0.PROFILE and kind in ("buy", "sell"):
                 self.ledger.append((kind, mint, dict(kw)))  # the parity recorder reads the executor's own fill rows (drained by the port)
