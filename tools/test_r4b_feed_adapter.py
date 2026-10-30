@@ -125,10 +125,10 @@ def test_bonding_trade_needs_a_mint_and_complete_needs_its_fields():
 # ------------------------------------------------------------------------------------------------------------------------------- unresolved pools
 def test_unresolved_rows_are_buffered_then_emitted_in_arrival_order_after_the_pool_create():
     a = fa.FeedAdapter()
-    assert a.feed(ps(mint=None, ts=T0, signature="u1", slot=101)) == [] and a.feed(ps(mint=None, ts=T0 + 1, signature="u2", slot=100)) == []
-    assert a.feed(ps(mint=None, pool="OTHER", ts=T0 + 1, signature="o1")) == []
+    assert kinds(a.feed(ps(mint=None, ts=T0, signature="u1", slot=101))) == ["market"] and kinds(a.feed(ps(mint=None, ts=T0 + 1, signature="u2", slot=100))) == ["market"]
+    assert kinds(a.feed(ps(mint=None, pool="OTHER", ts=T0 + 1, signature="o1"))) == ["market"]  # counted in the market totals at arrival
     out = a.feed(pool_create(ts=T0 + 2))
-    assert kinds(out) == ["migration", "trade", "trade"]
+    assert kinds(out) == ["migration", "resolved", "resolved"]  # per-mint path only: never counted twice
     assert [m.row["signature"] for m in out[1:]] == ["u1", "u2"]  # arrival order, not slot order
     assert all(m.row["mint"] == "MINT" and m.row["quote_mint"] == WSOL and m.row["pool"] == "POOL" for m in out[1:])
     assert list(a.unresolved) == ["OTHER"] and a.stats["unresolved_resolved"] == 2
@@ -138,10 +138,10 @@ def test_unresolved_rows_are_buffered_then_emitted_in_arrival_order_after_the_po
 
 def test_pool_info_resolves_without_making_a_migration_row():
     a = fa.FeedAdapter()
-    assert a.feed(ps(mint=None, signature="u1")) == []
+    assert kinds(a.feed(ps(mint=None, signature="u1"))) == ["market"]
     out = a.feed({"type": "pool_info", "prog": "pumpswap", "slot": 0, "t_recv_ms": 1, "signature": None, "event_index": None, "pool": "POOL",
                   "mint": "MINT", "quote_mint": WSOL, "source": "getMultipleAccounts"})
-    assert kinds(out) == ["trade"] and out[0].row["mint"] == "MINT"
+    assert kinds(out) == ["resolved"] and out[0].row["mint"] == "MINT"
     assert a.feed({"type": "pool_info", "pool": "P2"})[0].row.reason == "bad_pool_info"
 
 
@@ -160,12 +160,12 @@ def test_an_unresolved_row_is_never_guessed_it_expires_and_is_reported():
 def test_unresolved_buffer_is_bounded_per_pool_and_in_pool_count():
     a = fa.FeedAdapter(max_rows_per_pool=2, max_pools=2)
     for i in range(2):
-        assert a.feed(ps(mint=None, signature=f"a{i}")) == []
+        assert kinds(a.feed(ps(mint=None, signature=f"a{i}"))) == ["market"]
     over = a.feed(ps(mint=None, signature="a2"))
-    assert kinds(over) == ["reject"] and over[0].row.reason == "unresolved_overflow" and not over[0].halts_buys
-    assert a.feed(ps(mint=None, pool="P2", signature="b0")) == []
+    assert kinds(over) == ["market", "reject"] and over[1].row.reason == "unresolved_overflow" and not over[1].halts_buys  # still in the market totals
+    assert kinds(a.feed(ps(mint=None, pool="P2", signature="b0"))) == ["market"]
     over = a.feed(ps(mint=None, pool="P3", signature="c0"))
-    assert over[0].row.reason == "unresolved_overflow" and sorted(a.unresolved) == ["P2", "POOL"]
+    assert over[1].row.reason == "unresolved_overflow" and sorted(a.unresolved) == ["P2", "POOL"]
 
 
 def test_a_pool_that_names_two_mints_is_a_conflict_and_the_first_stands():
@@ -234,3 +234,31 @@ def test_no_send_path_or_key_in_the_adapter():
     src = inspect.getsource(fa).split('"""', 2)[2]
     for word in ("probe_live", "LiveExecutor", "Keypair", "sendTransaction", "send_transaction", "private_key", "helius", "requests", "urllib", "socket"):
         assert word not in src, word
+
+
+def test_unresolved_rows_count_in_the_market_totals_once_and_reach_the_member_after_resolution():
+    """Reviewer on #1130: a row whose pool's mint is not yet known must still count in the clock and market minutes (the walker layout counts every
+    PumpSwap row), and must reach the per-mint path exactly once after resolution. Engine state = the state when the mint was known from the start."""
+    import duckdb
+
+    from tools import r4b_live as lv
+
+    con = duckdb.connect()
+    hf = lambda x: int(con.execute("select hash(?::varchar)", [x]).fetchone()[0])  # noqa: E731
+    mk = lambda: lv.Engine(universe_min_mbt=0, pda_fn=lambda m: "POOL" if m == "MINT" else "P_" + m, hash_fn=hf, score_fn=lambda b, X: X[:, 0])  # noqa: E731
+    known, late = mk(), mk()
+    comp = {"v": 1, "type": "complete", "prog": "pumpfun", "slot": 91, "t_recv_ms": 1, "signature": "sc", "event_index": 0, "mint": "MINT", "trader": "x",
+            "bonding_curve": "BC", "event_ts": T0 - 5, "quote_mint": WSOL}
+    rows = [ps(mint="MINT" if i % 2 == 0 else None, ts=T0 + i, slot=100 + i, signature=f"r{i}") for i in range(6)]
+    a1 = fa.FeedAdapter()
+    fa.apply(known, a1.feed(comp) + a1.feed(pool_create(ts=T0 - 4)))
+    for r in rows:
+        fa.apply(known, a1.feed({**r, "mint": "MINT"}))
+    a2 = fa.FeedAdapter()
+    fa.apply(late, a2.feed(comp))
+    for r in rows:  # mint None rows arrive before the pool is resolved
+        fa.apply(late, a2.feed(r))
+    assert sum(v[0] for v in late.mkt.values()) == 6  # all six counted at arrival
+    fa.apply(late, a2.feed(pool_create(ts=T0 + 7)))
+    assert late.clock == known.clock and late.mkt == known.mkt
+    assert sorted(late.mints["MINT"].prints["slot"].tolist()) == sorted(known.mints["MINT"].prints["slot"].tolist()) == [100 + i for i in range(6)]

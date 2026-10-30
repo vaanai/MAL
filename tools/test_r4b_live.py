@@ -502,7 +502,7 @@ def test_live_order_feed_equals_pinned_batch_path(tmp_path, boosters):
     bat, eng, res, got, trades = live_order_vs_batch(scenario(), tmp_path, boosters)
     assert sum(len(r.mints) for r in res) == bat["n_rows"] > 40
     assert got == bat["rows_md5"] and trades == bat["trades"]
-    assert eng.counters.get("clock_pruned", 0) > 0 and eng.counters.get("mkt_pruned", 0) > 0  # the default pruning was active
+    assert eng.counters.get("clock_pruned", 0) > 0 and "mkt_pruned" not in eng.counters  # clock seconds pruned; market minutes never
 
 
 # ------------------------------------------------------------------------------------------------------------------------------- clock guard, mark order
@@ -588,10 +588,10 @@ def test_pruned_engine_decides_like_an_unpruned_one(boosters):
     pr_eng, pruned = drive(ev, MARKS)
     assert [sig(r) for r in pruned] == [sig(r) for r in full]
     assert sum(len(r.mints) for r in full) > 40 and any(r.actions for r in full)
-    assert pr_eng.counters["clock_pruned"] > 0 and pr_eng.counters["mkt_pruned"] > 0
+    assert pr_eng.counters["clock_pruned"] > 0 and "mkt_pruned" not in pr_eng.counters
     assert "clock_pruned" not in full_eng.counters
-    assert len(pr_eng.clock) < len(full_eng.clock) and len(pr_eng.mkt) < len(full_eng.mkt) and len(pr_eng.ncr) <= len(full_eng.ncr)
-    assert min(pr_eng.clock) >= MARKS[-1] - lv.CLOCK_KEEP_S and min(pr_eng.mkt) >= MARKS[-1] - lv.CLOCK_KEEP_S
+    assert len(pr_eng.clock) < len(full_eng.clock) and min(pr_eng.clock) >= MARKS[-1] - lv.CLOCK_KEEP_S
+    assert pr_eng.mkt == full_eng.mkt and pr_eng.ncr == full_eng.ncr  # market and create minutes are never pruned (float cumsum prefix = the read's)
     with pytest.raises(lv.LiveRefused):
         mk_engine(exact_grid=True).prune_clock(W0)  # exact_grid reads old grid seconds
 
