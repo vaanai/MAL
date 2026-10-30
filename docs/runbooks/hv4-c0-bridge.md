@@ -71,7 +71,7 @@ sudo install -d -m 0755 -o root -g root /opt/mal-arena-bridge /etc/mal-arena-liv
 sudo install -d -m 0700 -o root -g root /etc/mal-hv4-c0-key                       # live only; stays empty for a dry install
 sudo install -d -m 0755 -o root -g root /var/lib/mal-hv4-c0 /var/lib/mal-hv4-c0/window /var/lib/mal-hv4-c0/a3 /var/lib/mal-hv4-c0/state /var/lib/mal-hv4-c0/parity /var/lib/mal-hv4-c0/twins /var/lib/mal-hv4-c0/tieout
 sudo install -d -m 0755 -o root -g root /var/lib/mal-arena-feed /var/lib/mal-arena-feed/hv4
-sudo install -d -m 0755 -o root -g root /data/mal/arena /data/mal/arena/reads          # fast-0 only; the directory must exist for the reads gate (F3)
+sudo install -d -m 0755 -o root -g root /data/mal/arena /data/mal/arena/reads          # fast-0 only; the directory must exist for the reads gate (F3); without it a start refuses read_record_dir_absent, whose message names this command (PR #1100); the keyless checklist checks both dirs
 # rehearsal first: BOT=hv4-SYN-X. Real arms after their read: BOT=hv4-BIG-X, then hv4-CON-X.
 for BOT in hv4-SYN-X; do
   sudo install -d -m 3770 -o mal-hv4-c0 -g claude /var/lib/mal-hv4-c0/state/$BOT /var/lib/mal-hv4-c0/parity/$BOT
