@@ -1,6 +1,6 @@
 """HV4 C0 tape-gap carry: QP removal precondition 7 items P7-c (fail closed on a missing or stale relay stream) and the carriage half of P7-e (#969 comment 6424766650),
 and the "#967 write_status cross-test" of precondition 14. SYNTHETIC only: temp dirs, synthetic tapegaps rows, synthetic decision rows. No HV4 or arena path, ledger, read
-record, tape or job output is opened; "/data/mal/arena" appears nowhere. The 'remote' side of every pull runs locally (a subprocess), no ssh, no network, no key.
+record, tape or job output is opened; no arena path is used in this file. The 'remote' side of every pull runs locally (a subprocess), no ssh, no network, no key.
 
 The delays this module measures are IN-PROCESS, SYNTHETIC figures (a local subprocess serve, a local puller thread, a bridge polled every few ms). They are not a host or
 network measurement and say nothing about the real research-0 -> mal-fast-0 path (P46 DESIGN s4 has that hop)."""
