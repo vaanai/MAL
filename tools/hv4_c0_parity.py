@@ -25,7 +25,7 @@ RC_HARD = 11  # tools.arena_live_parity: a hard halt (P4); cleared only by the m
 RC_SOFT = 10
 # Latches that the Bridge treats as unresolved hard halts for the parity state (the tool's `unresolved_hard_halts`).
 HARD_LATCHES = frozenset({"parity_hard_halt", "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch", "stuck_sell", "chain_break", "sealed_path", "read_record",
-                          "frozen_sha_mismatch", "tieout_mismatch"}) | HARD_ARENA_HALTS
+                          "frozen_sha_mismatch", "tieout_mismatch", c0.OWNER_LINE_LATCH}) | HARD_ARENA_HALTS
 
 
 def paths_refusal(cfg: Mapping[str, Any]) -> str | None:
