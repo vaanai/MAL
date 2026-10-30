@@ -499,8 +499,11 @@ class Loop2(Base):
         self.assertEqual(self.loop("deadman", soon, Q50S1_HOME=real_home).returncode, 2)  # Q50's root (the real home's data/arena)
         self.assertEqual(self.loop("deadman", soon, Q50S1_A3_OUT=self.home / "data" / "structure-monitor").returncode, 2)  # loop 1's A3_OUT
 
-    def test_segment_ends_itself_with_exit_0_before_the_next_slot(self):
-        r = self.loop("deadman", utc(time.time() + 5))
+    def test_segment_ends_itself_with_exit_0_at_its_end_not_after_its_last_slot(self):
+        """QP 6528733439 / review 6528754525: dead-man A must not exit after its 11-17T13:10Z run (B's 14-d guard would refuse); it sleeps to END."""
+        t0 = time.time()
+        r = self.loop("deadman", utc(t0 + 5))
+        self.assertGreaterEqual(time.time() - t0, 3.0)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("A3_SEGMENT_END", r.stdout)
         self.assertIn(f"pin a3-guard-pin-s1 = {'1' * 40}; root {self.s1root}", r.stdout)

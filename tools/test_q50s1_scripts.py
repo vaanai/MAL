@@ -369,6 +369,17 @@ class ShadowFeed(ShadowCheck):
         self.assertIn("q50s1-ws-launch.py", "\n".join(argv))
         self.assertIn(f"ws={self.WS1} {self.WS2} (key added in-process", r.stdout)
 
+    def test_check_before_the_s_star_worktree_exists(self):
+        """Review (4): on 11-05 the S* worktree may not exist yet; --check must still pass (it dry-runs the launcher against this checkout) and keep 11 for a bad key."""
+        import shutil
+        shutil.rmtree(self.src)
+        r = self.run_()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("would create the detached worktree", r.stdout)
+        self.assertFalse(self.src.exists())
+        (self.d / "keyfile").write_text("HELIUS_API_KEY=\n")
+        self.assertEqual(self.run_().returncode, 11)
+
     def test_a_bad_key_file_refuses_11(self):
         for text in ("HELIUS_API_KEY=\n", "OTHER=1\n", "HELIUS_API_KEY=ab$(id)xyz\n"):
             with self.subTest(text=text):
