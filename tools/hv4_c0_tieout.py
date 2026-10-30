@@ -162,11 +162,44 @@ def audit_fees(fills: list[dict[str, Any]], stakes: Mapping[str, int], parity_tr
     return per
 
 
+def cut_parity_trips(rows: list[Mapping[str, Any]], parity_trips: Mapping[str, Mapping[str, Any]], end_ms: int) -> dict[str, Mapping[str, Any]]:
+    """The parity trips file is CUMULATIVE (the recorder's current view), the fill rows are cut at `end_ms`. Without this, a trip opened after the day's cut
+    raised a false hard tieout_mismatch ("no landed buy in the fill rows"), and a trip whose sell landed after the cut raised "exit_landed True but no landed
+    sell" (PR #1092 finding 1). The day's audit therefore sees each trip AS IT STOOD AT THE CUT, decided by the trip's own fill rows (all of them, uncut):
+      * a trip whose landed buy rows ALL have ts_ms >= end_ms belongs to a later day and is left out of this day's cross-check;
+      * a trip with exit_landed True whose landed sell rows ALL have ts_ms >= end_ms was still open at the cut: it is checked as exit_landed False.
+    Fail closed: a trip with NO landed buy row anywhere stays in (the audit raises), and a trip with any landed buy or sell inside the cut is checked as recorded.
+    A mint is never re-bought by the bridge (one trip per mint), so the mint keys the rows."""
+    buys_in: set[str] = set()
+    buys_after: set[str] = set()
+    sells_in: set[str] = set()
+    sells_after: set[str] = set()
+    for r in rows:
+        if not isinstance(r, Mapping) or r.get("kind") not in ("buy", "sell") or r.get("landed") is not True or not _isint(r.get("ts_ms")):
+            continue
+        before = r["ts_ms"] < end_ms
+        if r["kind"] == "buy":
+            (buys_in if before else buys_after).add(r.get("mint"))
+        else:
+            (sells_in if before else sells_after).add(r.get("mint"))
+    out: dict[str, Mapping[str, Any]] = {}
+    for mint, pt in parity_trips.items():
+        if mint in buys_after and mint not in buys_in:
+            continue
+        if isinstance(pt, Mapping) and pt.get("exit_landed") is True and mint in sells_after and mint not in sells_in:
+            pt = {**pt, "exit_landed": False}
+        out[mint] = pt
+    return out
+
+
 def build(rows: Iterable[Mapping[str, Any]], state: Mapping[str, Any], end_ms: int, parity_trips: Mapping[str, Mapping[str, Any]] | None = None) -> dict[str, Any]:
     """The LEDGER_IN document with the bridge block. Raises atl.BadLedger (unusable input) or TieoutMismatch (fee / stake audit)."""
     if not isinstance(state, Mapping) or not isinstance(state.get("orders"), dict):
         raise atl.BadLedger("the bridge state has no 'orders' object")
+    rows = list(rows)
     fills = fill_rows(rows, end_ms)
+    if parity_trips is not None:
+        parity_trips = cut_parity_trips(rows, parity_trips, end_ms)
     orders = state["orders"]
     by_mint = {o["mint"]: o for o in orders.values() if isinstance(o, dict) and isinstance(o.get("mint"), str)}
     stakes = {m: o["stake_lamports"] for m, o in by_mint.items() if _isint(o.get("stake_lamports"))}
