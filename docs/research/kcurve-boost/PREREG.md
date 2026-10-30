@@ -14,7 +14,7 @@ Exploration only, on blocks the lab has already read many times. A pass is in-sa
 - **Before 10-08 the seat existed, but capped:** the buy that crossed the curve's limit bought at most the curve's remainder (a larger buy failed with `NotEnoughTokensToBuy` or stopped at the remainder with `partial_fill`). That buyer held tokens bought at curve prices up to the curve's end price, ahead of every pool print. The October change removes the size cap. It also removes the race with `migrate_v2` for any *extra* size.
 
 ### 1.2 Structure probe (exploration blocks, counts and s0 states only)
-Scripts and outputs: `/data2/mal/scratch/kcurve-boost-1030/{structure_probe.py,universe_probe.py}` (off-repo scratch). Nothing after a pool's first print slot was read.
+Scripts and their printed outputs: `docs/research/kcurve-boost/probe/` (structure_probe.py run on explore-0814/w1, 2026-10-30T21:25-21:32Z; universe_probe.py on 6 hours of three blocks, about 21:40Z; both under a MemoryMax=8G scope, no MiScusi job). Nothing after a pool's first print slot was read.
 
 | Measure | explore-0814 w1 (48 h, 08-26T12..08-28T12) | fast-pool 6 h (09-20T00..05) | oracle-live 6 h (09-26T00..05) |
 | --- | --- | --- | --- |
