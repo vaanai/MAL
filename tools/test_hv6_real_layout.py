@@ -162,3 +162,17 @@ def test_legacy_constants_switch_restores_and_the_concurrent_path_reproduces_the
     sh = (Path(RL.__file__).resolve().parent.parent / "scripts/ops/hv6-real-layout-replay.sh").read_text()
     assert '--legacy-constants "${HV6_LEGACY:-off}"' in sh and '--concurrent "${HV6_CONCURRENT:-off}"' in sh and "HV6_EXPECT_LOG_MD5" in sh
     assert RL.main(["--days", "2026-10-21", "--drill-id", "tx", "--sha", "a" * 40, "--expect-log-md5", "XYZ"]) == 2
+
+
+def test_item6_drill_has_the_same_legacy_switch_and_restores():
+    from tools import hv6_agents as A
+    assert RL.legacy_constants is D.legacy_constants and RL.LEGACY_MAX_TOKENS == {"entry": 400, "recheck": 120} and RL.LEGACY_BOARD_SIZE == 24
+    with D.legacy_constants(True):
+        assert A.MAX_TOKENS["entry"] == 400 and A.MAX_TOKENS["recheck"] == 120 and H.BOARD_SIZE == 24 and A.MAX_TOKENS["regime"] == 1200
+    assert A.MAX_TOKENS["entry"] == 1200 and A.MAX_TOKENS["recheck"] == 1200 and H.BOARD_SIZE == 4
+    with D.legacy_constants(False):
+        assert A.MAX_TOKENS["entry"] == 1200
+    src = Path(D.__file__).read_text()
+    assert '"--legacy-constants", choices=("on", "off"), default="off"' in src
+    sh = (Path(D.__file__).resolve().parent.parent / "scripts/ops/hv6-item6-replay.sh").read_text()
+    assert '--legacy-constants "${HV6_LEGACY:-off}"' in sh

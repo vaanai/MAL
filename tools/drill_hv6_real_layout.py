@@ -27,11 +27,9 @@ import os
 import resource
 import sys
 import time
-from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from tools import hv6_agents as A
 from tools import hv6_cards as H
 from tools import drill_hv6_item6 as D
 from tools.arena_zst import open_zst
@@ -95,24 +93,7 @@ PASS_RULE = ("PASS iff md5_equal (run1 == run2, and run3 [fast_scan=False] decis
 # (#1683, filter off: log ac767dbdd6ed48eb0871f6c3902fe5b5, cards 120dbe2aba1c4e66e44f5825b2df589a), which shows every other code change is decision-neutral on
 # the real layout. --concurrent on runs the entry calls through the live concurrent path (fix B) in the replay. Production never sets either (the runner job
 # and the smoke do not call this tool).
-LEGACY_MAX_TOKENS = {"entry": 400, "recheck": 120}
-LEGACY_BOARD_SIZE = 24
-
-
-@contextmanager
-def legacy_constants(on: bool):
-    if not on:
-        yield
-        return
-    saved_tokens, saved_board = dict(A.MAX_TOKENS), H.BOARD_SIZE
-    A.MAX_TOKENS.update(LEGACY_MAX_TOKENS)
-    H.BOARD_SIZE = LEGACY_BOARD_SIZE
-    try:
-        yield
-    finally:
-        A.MAX_TOKENS.clear()
-        A.MAX_TOKENS.update(saved_tokens)
-        H.BOARD_SIZE = saved_board
+LEGACY_MAX_TOKENS, LEGACY_BOARD_SIZE, legacy_constants = D.LEGACY_MAX_TOKENS, D.LEGACY_BOARD_SIZE, D.legacy_constants  # one definition (drill_hv6_item6)
 
 
 def count_programs(src: Path, days: list[str]) -> dict:
