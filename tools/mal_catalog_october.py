@@ -202,12 +202,16 @@ def mask_row(role: str, row: Mapping[str, Any], migrate_sigs: Mapping[str, str] 
 
 # Relative paths a role may open under a dataset dir: `<kind>/<kind>-<hour>.jsonl[.zst]`, hour inside the
 # validated window. Anything else is refused: stats-*.json, verify.jsonl, checkpoint.json, credit-probe.json,
-# pools/, events/ and unknown names.
-# D0: creates/ and migrations/ (event existence, counts, times) and trades/ (only through `mask_row`).
-# D1: creates/ and trades/ only. D1 never opens migrations/ or pools/ (bright line (2)); the per-mint migrate map
-# it needs comes from `migrate_positions`, the only D1 use of migrations/.
-ROLE_KINDS = {ROLE_OCT_D0: ("creates", "migrations", "trades"), ROLE_OCT_D1: ("creates", "trades")}
-_FILE_RE = re.compile(r"^(creates|migrations|trades)-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl(\.zst)?$")
+# pools/ and unknown names (events/ for D1).
+# D0: creates/ and migrations/ (event existence, counts, times), trades/ (only through `mask_row`) and events/
+# (forward-1002ev's fourth stream under --event-v: post_complete_buy, boost_buy_and_burn, sweep_pool_fee,
+# sweep_curve_fee, init_boost rows; only through `mask_row`, which keeps identities and event_ts, plus `_S0_FIELDS`
+# on an s0-type row signed by the mint's migrate tx). events/ is what makes "synthetic class and PostCompleteBuy from
+# the curve-completing tx" (ledger D0 list) readable: the walker never writes post_complete_buy rows elsewhere.
+# D1: creates/ and trades/ only. D1 never opens migrations/, events/ or pools/ (bright line (2)); the per-mint
+# migrate map it needs comes from `migrate_positions`, the only D1 use of migrations/.
+ROLE_KINDS = {ROLE_OCT_D0: ("creates", "migrations", "trades", "events"), ROLE_OCT_D1: ("creates", "trades")}
+_FILE_RE = re.compile(r"^(creates|migrations|trades|events)-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl(\.zst)?$")
 
 
 def check_paths(role: str, dataset: str, paths: Sequence[str | Path], start_hour: str, end_hour_exclusive: str,

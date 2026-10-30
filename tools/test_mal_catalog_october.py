@@ -548,3 +548,38 @@ def test_latch_one_october_role_per_process(blocks, tmp_path, monkeypatch):
 def test_fm_columns_refused(blocks, tmp_path, role, col):
     ok, reasons = _read(blocks, tmp_path, role, columns=("mint", col))
     assert ok is False and any(f"{col!r} is forbidden" in r for r in reasons), reasons
+
+
+# --- events/ (forward-1002ev's fourth stream, --event-v): D0 may open it through mask_row; D1 never ----------------
+
+
+def test_d0_may_open_events_stream_d1_never(blocks, tmp_path):
+    ev = _f(tmp_path, "forward-1002ev", "events", "2026-10-10T00")
+    assert _read(blocks, tmp_path, D0, dataset="forward-1002ev", paths=[ev]) == (True, [])
+    _reasons_have(_read(blocks, tmp_path, D1, dataset="forward-1002ev", columns=("mint",), paths=[ev]),
+                  "may not be opened by role=oct-pregrad-d1")
+    assert "events" not in oc.ROLE_KINDS[D1]
+
+
+@pytest.mark.parametrize("hour", ["2026-10-08T23", "2026-10-16T01", "2026-10-16T02"])
+def test_events_stream_keeps_the_released_window(blocks, tmp_path, hour):
+    ev = _f(tmp_path, "forward-1002ev", "events", hour)
+    _reasons_have(_read(blocks, tmp_path, D0, dataset="forward-1002ev", paths=[ev]), "outside the validated window")
+
+
+@pytest.mark.parametrize("rel", ["events/notes.txt", "events/trades-2026-10-10T00.jsonl.zst", "events/sub/events-2026-10-10T00.jsonl"])
+def test_events_dir_unknown_names_refused(blocks, tmp_path, rel):
+    p = tmp_path / "blocks" / "forward-1002ev" / rel
+    ok, reasons = _read(blocks, tmp_path, D0, dataset="forward-1002ev", paths=[p])
+    assert ok is False and any("unknown name" in r for r in reasons), reasons
+
+
+def test_post_complete_buy_row_keeps_identities_only_off_the_migrate_tx():
+    row = {"type": "post_complete_buy", "mint": "M", "signature": "C", "slot": 1, "event_index": 2, "event_ts": 1,
+           "trader": "T", "quote_in": 3, "base_out": 4, "pool_quote_reserves_before": 5, "pool_base_reserves_after": 6,
+           "virtual_quote_reserves": 7, "fee": 8}
+    _grant(D0)
+    m = oc.mask_row(D0, row, {"M": "MIG"})  # the curve-completing tx is not the migrate tx: identities only
+    assert set(m) == {"type", "mint", "signature", "slot", "event_index", "event_ts"}
+    assert "trader" not in m  # a non-trade row keeps no trader; the completer comes from the completing trade row
+    assert set(oc.mask_row(D0, row, None)) == set(m)
