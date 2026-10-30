@@ -850,19 +850,19 @@ Quant-proof's pre-ruling N2 (`QP-PRERULING-1026-n2-n4.md`, verdict (a)) already 
 - (b) the code, PR #1085 (branch `claude/q50-c0-gap-hold`, head `d7e8bf9d2945fcb1add77dfbbba75fe3a7010b06`), merges with its own QP OK and reviewer verdict, **together with or after this text** (the reviewer's condition on #1085, comment 6526887133);
 - (c) the canary's install sha contains that code, with the md5 decision-equivalence replay EQUAL at that sha (#1481 counts: A 137/137, B 101/101, B synthetic_unconfirmed 0/0) and a 1 h keyless dry run at that sha.
 
-The md5 replay already ran at #1085's head: EQUAL (job #1852, `sh scripts/ops/q50-xtime-md5-job.sh d7e8bf9d…`, with #1481's counts). Item 6b is **not** part of what takes effect here. It is pending quant-proof's ruling on #1085.
+The md5 replay already ran at #1085's head: EQUAL (job #1852, `sh scripts/ops/q50-xtime-md5-job.sh d7e8bf9d…`, with #1481's counts). Item 6b is **not** part of what takes effect here. It has its own conditions (item 6b); quant-proof found it acceptable in principle at C0 only (report on #1085, item 6).
 
 **Relation to PR #1101** (DEC-031 Amendment 21 item 3 and DEC-032 Amendment 6, HV4 C0 feed latch, written by another lane, open at writing).
 - Same rule shape: coverage-losing records hold new buys for 60,000 ms, with a 60,000 ms floor checked at start. A record that left some socket subscribed and delivering holds nothing and marks nothing. A live trip is marked `gap` by the paper read's own rule (§1.4). No human acknowledgement gates a buy.
 - Different gap records: this amendment covers the `tools/h5_shadow.py` gap records (Q50's executor). Amendment 21 item 3 covers the HV4 bridge's arena tape and forwarder records. Neither changes the other's path.
 - Two differences, stated:
   - (i) Amendment 21 item 3.3 adds a 24 h review latch: an unreviewed coverage-losing record more than 24 h old latches `feed_break`. This amendment does not add that latch for the H5 path (item 4). Whether it should is an open point for quant-proof; #1085 does not build it.
-  - (ii) Amendment 21 item 3.4 adopts "P7 `gap` share at C0 blocks step-ups, no `STOP`" for HV4. Here the same wording is item 6b, pending quant-proof's ruling on #1085.
+  - (ii) Amendment 21 item 3.4 adopts "P7 `gap` share at C0 blocks step-ups, no `STOP`" for HV4. Here the same rule is item 6b. It takes effect only with its own code PR and proofs, and at C0 only, with C1 unchanged.
 - Numbering: #1101 reserves Amendment 5 for this text and takes Amendment 6. PR #1091 (Q50 owner-line file) labels its rule "DEC-032 Am.6 (DRAFT)". That label collides with #1101 and must be renumbered by the PR that writes #1091's DEC text. This amendment does not cover #1091.
 
 A canary whose install sha does not contain the code runs under §5 item 2 as written for its whole run (no switch mid-run; the Am.3 item 6 pattern).
 
-**Starting point.** The proposed text of audit rank 1, `/data/mal/hunt-1008/ops/reports/2026-10-30/audit-rules.md` line 13. Items 1-3 follow its first two clauses, with one difference: the hold is 60 s, not the 20 s its figure assumed (the reason is in item 2). Its third clause (P7 at C0) is item 6b: pending quant-proof's ruling on #1085, and a separate code change.
+**Starting point.** The proposed text of audit rank 1, `/data/mal/hunt-1008/ops/reports/2026-10-30/audit-rules.md` line 13. Items 1-3 follow its first two clauses, with one difference: the hold is 60 s, not the 20 s its figure assumed (the reason is in item 2). Its third clause (P7 at C0) is item 6b, with its own conditions and code PR.
 
 **Scope.** Canaries whose feed is the `gap` record stream of `tools/h5_shadow.py` and whose executor is `tools/h5_arena_executor.py`: Q50 (`h5v1q50-boostfloor-a1`), and a later H5 book on the same executor when its copy declares this amendment. **Not** the FLOOR dry executor (`tools/floor_arena_executor.py`, host/engine-restart gaps keep 10 minutes) and **not** the HV4/HV6 bridge path. Their feeds write different gap records; §5 item 2 stays as written for them.
 
@@ -922,11 +922,30 @@ No sha of `tools/h5_arena_executor.py` has ever implemented this clause: there i
   - stop or move the ubuntu `mal-fast-trade-tape` trial, or cut it to one socket. It is about 1-2 MB/s of the IP's 1.5-4.3 MB/s from api.mainnet-beta. Before doing so, check what reads `/var/lib/mal/sealed/fast-trades-trial` (`tools/tape_coverage.py`'s default; possibly the fast forward-paper runner). docs/HOSTS.md lists the unit as "installed, disabled", yet it runs.
 - Other feed remedies: restore a second working provider. A new endpoint for Q50 is a records change (HANDOFF §3). Future books (s1, Q60) choose their endpoints at registration. The research-0 arena feed's svs sockets are also refused (429 from that host).
 
-### 6b. P7 `gap` share at C0 (audit rank 1): PENDING quant-proof's ruling on #1085; not in force with this amendment, and not in the code PR
-Starting text (audit-rules.md rank 1): "at C0 a `gap` share above 5% blocks step-ups but is not a soft halt." Proposed wording: "At C0, P7's `gap`-share part (share above 5%, or 2 `gap` trips before 20 trips, Amendment 1 item 1) makes parity NOT_DECIDABLE and blocks any step-up. It does not create `STOP`. P7's `no_twin` part and its missing, unreadable or stale state part stay soft halts."
-- Why money is safe: a `gap` trip is still inside every C0 money limit (stake, open cap, daily and total stop, wallet floor, committed loss). It is only excluded from the parity statistics.
-- It matches DEC-031 Amendment 21 item 3.4 (PR #1101) for HV4 C0.
-- Why it needs its own change: the gap share is computed inside `tools/arena_live_parity.py`, a pinned path. Today the executor treats the tool's non-zero rc as no buy. So this needs its own pinned-path change (a fifth changed path in the X-time manifest), its own tests and its own md5/parity-tool proof.
+### 6b. P7 `gap` share at C0 (audit rank 1): its own condition
+Quant-proof ruled this **ACCEPTABLE in principle, at C0 only**, in its report on #1085 (comment 6526931175; `/data/mal/hunt-1008/ops/reports/2026-10-30/qp-1085-gap-hold.md` item 6). This item does **not** take effect with items 1 to 5. It takes effect only when all of these hold:
+- (a) this text is in force;
+- (b) the code PR on branch `claude/p7-c0-gap` merges with its own QP OK and reviewer verdict, after or together with this text;
+- (c) the canary's install sha contains that code, with item 6's proofs (d) and (e) of the QP report: the old-vs-new golden on synthetic fixtures, and the X-time manifest with `tools/arena_live_parity.py` as a fifth allowed path pinned by exact blob and sha256, plus its tamper probe.
+
+**The rule.**
+1. For a DEC-032 C0 canary whose parity tool is `tools/arena_live_parity.py` (Q50), and **at rung C0 only**, P7's `gap`-share part makes parity NOT_DECIDABLE. That part is a `gap` share above 5% from 20 live trips on, or 2 `gap` trips before 20 (Amendment 1 item 1).
+2. That breach sets `match` false, and the verdict is "parity not shown". It is not a halt and creates no `STOP`. Every step-up stays blocked: the ladder steps up only on `match` true (`tools/h5_arena_ladder.py:315`).
+3. The share never resets. Every `gap` trip is reported separately, and it counts inside every money total: daily loss, total stop, committed loss and wallet floor.
+4. Unchanged, and still soft halts at C0:
+   - P7's `no_twin` share and its small-count rule;
+   - an `unreadable` trip;
+   - a zero-row twins file past an exit;
+   - missing, unreadable or stale state.
+5. **At C1, and whenever the rung is missing or unknown, P7 stays exactly as written: a soft halt** (fail closed).
+
+**Cost, said plainly.**
+- On `gap` trips P1, P3, P4 and P6 are blind, because they use eligible trips only. Only P2, P5, the other P7 parts and the C0 stops then guard execution quality.
+- On the feed measured on 10-28 and 10-29, the canary could spend up to its 0.20 SOL total stop (worst case 0.25 SOL to the wallet floor, §3) while producing almost no eligible trips. C1 would then be unreachable for the canary's life.
+- This is a liveness change, not a fix for the feed.
+- It is the same rule as DEC-031 Amendment 21 item 3.4 (PR #1101) for HV4 C0.
+
+**Manifest.** For an install that contains the code of (b), the X-time manifest allows five changed paths: Amendment 4's four (executor per item 7) plus `tools/arena_live_parity.py`, at the blob and sha256 pinned in that PR's `scripts/ops/q50-xtime-manifest.sh`. Amendment 4's "exactly FOUR" is superseded for such an install. HELM-SHEET is re-pinned at X.
 
 ### 7. Re-pins (made in this records PR unless said otherwise)
 - **Executor pin of Amendment 4 item 1.** For the executor line, this supersedes Amendment 4 item 1's "the 5b blob, unchanged by this amendment: blob 70d789ff, sha256 ef8ae931...". The X-time executor is #1085's blob `53337e087f672b685db3c4c43ec46ad70a1119ac`, sha256 `4f5f443a71fa14606f57a75c210e2b006659dcc3217c03f841d8682d17ee9359`. This is the `tools/h5_arena_executor.py` blob of #1085 at head `d7e8bf9d2945fcb1add77dfbbba75fe3a7010b06`. `scripts/ops/q50-xtime-manifest.sh` is re-pinned to it in #1085 itself (`EXEC_BLOB`, `EXEC_SHA256`), and its probe `sh scripts/ops/test_q50_xtime_manifest.sh` passes at that head. The four-path count and the 43-path list (sha256 `244f9e85…`) do not change. **If review changes #1085's executor, this pin and #1085's manifest pin move together, before either merges.** Annotation lines are added under Amendment 4 item 1 here and in DEC-033; Amendment 4's own words are left as written.
