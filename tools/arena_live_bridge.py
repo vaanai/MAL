@@ -356,7 +356,7 @@ class Bridge:
     def __init__(self, cfg: Config, port: OrderPort, *, now_ms: Callable[[], int] | None = None,
                  live_ok_path: Path = LIVE_OK_PATH, tier_path: Path = TIER_PATH, root_checks: bool = True,
                  close_blocked: Callable[[str], bool | None] | None = None, parity_runner: Callable[[list[str]], int] | None = None,
-                 owner_dec_path: Path | str | None = None, owner_pin: str | None = None, gap_clear_dir: Path | str | None = None) -> None:
+                 owner_dec_path: Path | str | None = None, gap_clear_dir: Path | str | None = None) -> None:
         """close_blocked: optional S3 hook, mint -> True (blocked) | False (ok). Interface only here. When set, a True, a None or a raise all refuse."""
         if c0.bot_id_problem(cfg.bot_id):
             raise SystemExit(f"bridge refused: {c0.bot_id_problem(cfg.bot_id)}")
@@ -377,8 +377,7 @@ class Bridge:
         self.log_path = self.sd / f"bridge-log-{cfg.mode}.jsonl"
         self.state = BridgeState.load(self.state_path, cfg.mode)
         self.dlog = DecisionLog(cfg.root)
-        self.owner_dec_path = Path(owner_dec_path) if owner_dec_path is not None else Path(c0.OWNER_DEC_PATH)
-        self.owner_pin = owner_pin
+        self.owner_dec_path = Path(owner_dec_path) if owner_dec_path is not None else Path(c0.owner_dec_path(cfg.bot_id))  # per bot; bot_id was checked above
         self.gap_clear_dir = str(gap_clear_dir) if gap_clear_dir is not None else c0.GAP_CLEAR_DIR
         self._read_ident: dict[str, Any] = {}
         if cfg.profile == c0.PROFILE:
@@ -624,7 +623,7 @@ class Bridge:
                 why = "unreadable"
             why = why[len("live_ok_"):] if why and why.startswith("live_ok_") else why
             if not why:  # the owner's line in a ROOT-OWNED file outside the installed tree, whose sha256 is the pinned blob
-                why = c0.owner_line_problem(self.owner_dec_path, self.cfg.bot_id, self.owner_pin, root_ok_problem if self.root_checks else None)
+                why = c0.owner_line_problem(self.owner_dec_path, self.cfg.bot_id, root_ok_problem if self.root_checks else None)
         return (False, f"live_ok_{why}") if why else (True, None)
 
     def tier_limits(self) -> tuple[str, dict[str, int], str | None]:
@@ -1384,7 +1383,7 @@ def main(argv: list[str] | None = None) -> int:
             if not why and not cfg.a3_record_file:
                 why = "a3_record_file_missing"
             if not why:
-                why = c0.owner_line_problem(c0.OWNER_DEC_PATH, cfg.bot_id, None, root_ok_problem)
+                why = c0.bot_id_problem(cfg.bot_id) or c0.owner_line_problem(c0.owner_dec_path(cfg.bot_id), cfg.bot_id, root_ok_problem)
         else:
             why = None
         st0 = BridgeState.load(Path(cfg.state_dir) / f"bridge-state-{cfg.mode}.json", cfg.mode)

@@ -40,26 +40,25 @@ def write_read_record(reads_dir, bot, **over):
 
 
 def owner_fixture(tmp, bot):
-    """A synthetic stand-in for /etc/mal-hv4-c0/CANARY_DEC.md. Returns (path, sha256 of its bytes)."""
-    import hashlib
-    d = Path(tmp) / "etc-c0"
-    d.mkdir(exist_ok=True)
-    p = d / "CANARY_DEC.md"
+    """A synthetic stand-in for /etc/mal-hv4-c0/<bot_id>/CANARY_DEC.md, under <tmp>/etc-c0 (what live_main_env points OWNER_DEC_DIR at). Returns its path."""
+    d = Path(tmp) / "etc-c0" / bot
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / c0.OWNER_DEC_NAME
     p.write_text("synthetic owner decision\n" + c0.OWNER_LINE_FMT.format(bot_id=bot) + "\n")
-    return p, hashlib.sha256(p.read_bytes()).hexdigest()
+    return p
 
 
 def live_main_env(tmp, bot):
-    """(extra config keys, context manager) so a LIVE main() reaches the later gates: the three parity paths, the owner file and its pin (synthetic, patched).
+    """(extra config keys, context manager) so a LIVE main() reaches the later gates: the three parity paths and the owner file (synthetic, patched in).
     The patches start only when the context manager is entered."""
     import contextlib
     from unittest import mock
-    p, sha = owner_fixture(tmp, bot)
+    owner_fixture(tmp, bot)
     paths = {"parity_dir": str(Path(tmp) / "par"), "twins_file": str(Path(tmp) / "twins.jsonl"), "tieout_dir": str(Path(tmp) / "tie")}
 
     @contextlib.contextmanager
     def patches():
-        with mock.patch.object(c0, "OWNER_DEC_PATH", str(p)), mock.patch.object(c0, "CANARY_DEC_SHA256", sha), mock.patch.object(alb, "root_ok_problem", lambda _p: None):
+        with mock.patch.object(c0, "OWNER_DEC_DIR", str(Path(tmp) / "etc-c0")), mock.patch.object(alb, "root_ok_problem", lambda _p: None):
             yield
 
     return paths, patches()
@@ -470,9 +469,8 @@ class BridgeC0Tests(TmpCase):
         e.live_ok.write_text("hv4-other-X\n")
         self.assertEqual(b.effective_live(), (False, "live_ok_other_book"))
         e.live_ok.write_text(ARM + "\n")
-        self.assertEqual(b.effective_live(), (False, "live_ok_owner_dec_pin_unset"))  # no pin, no live send
-        op, sha = owner_fixture(self.tmp, ARM)
-        b.owner_dec_path, b.owner_pin = op, sha
+        self.assertEqual(b.effective_live(), (False, "live_ok_owner_dec_missing"))  # no owner file, no live send
+        b.owner_dec_path = owner_fixture(self.tmp, ARM)
         self.assertEqual(b.effective_live(), (True, None))
 
     def test_live_entry_refused_without_t1(self):

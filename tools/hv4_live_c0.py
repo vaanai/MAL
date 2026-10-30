@@ -466,9 +466,12 @@ SEALED_ROOT_PREFIX = "/data/mal/arena"
 
 # --- PR4 gates: read record, owner line, model id, per-trade loss, 14-day window ---------------------------------------------------------------------------
 MODEL_ID = "claude-haiku-5-5"  # the one model id an F arm may have been read under (the read record's `model_ids`)
-OWNER_DEC_PATH = "/etc/mal-hv4-c0/CANARY_DEC.md"  # ROOT-OWNED, outside the installed tree (the Q50 re-install problem: a DEC/ file in the tree is overwritten by a deploy)
-CANARY_DEC_SHA256 = ""  # sha256 of the owner's CANARY_DEC.md blob; set by the reviewed PR that records the owner's confirmation (empty = unset = no live send, ever)
+OWNER_DEC_DIR = "/etc/mal-hv4-c0"  # <dir>/<bot_id>/CANARY_DEC.md: ROOT-OWNED, outside the installed tree (the Q50 re-install problem: a DEC/ file in the tree is overwritten by a deploy). One file per bot, so two canaries can run at once
+OWNER_DEC_NAME = "CANARY_DEC.md"
+OWNER_DEC_MAX_BYTES = 65_536
 OWNER_LINE_FMT = "OWNER_CANARY_CONFIRMED: bot_id={bot_id}"
+LIVE_OK_DIR = "/etc/mal-arena-live/hv4-c0"  # <dir>/<bot_id>/LIVE_OK (root-owned, content exactly the bot_id). TIER stays the one shared /etc/mal-arena-live/TIER (T1)
+LIVE_OK_NAME = "LIVE_OK"
 PER_TRADE_LOSS_PCT = 30  # per-trade loss latch: 30% of the order's own S (integer lamports, floor)
 MAX_WINDOW_MS = 14 * 86_400_000  # a C0 canary window is 14 days from the first start; end_ms may not reach past it
 READS_DIR_CANON = "/data/mal/arena/reads"  # where arena_score.record_read writes `<bot_id>.json`; the only place under the sealed prefix a record may be read from
@@ -719,14 +722,45 @@ def read_record_problem(reads_dir: Any, bot_id: Any, pinned: Mapping[str, Any] |
     return (why, ident)
 
 
-def owner_line_problem(path: Any, bot_id: str, pin: str | None = None, root_check: Any = None) -> str | None:
-    """The owner's confirmation: the exact line `OWNER_CANARY_CONFIRMED: bot_id=<id>` in a ROOT-OWNED file (OWNER_DEC_PATH) whose sha256 equals the pinned
-    blob. NOT a file of the installed tree. `root_check(path)` is the bridge's root:root check (None = not run, tests only). The file is opened O_NOFOLLOW and
-    hashed from the bytes that are then searched. Exactly one line may equal the wanted line; a prefix or another bot's line never matches."""
+def owner_dec_path(bot_id: Any) -> str:
+    """The owner confirmation file of one bot: OWNER_DEC_DIR/<bot_id>/CANARY_DEC.md. Raises ValueError for a bot_id that is not a plain path component."""
+    why = bot_id_problem(bot_id)
+    if why:
+        raise ValueError(why)
+    return os.path.join(OWNER_DEC_DIR, bot_id, OWNER_DEC_NAME)
+
+
+def live_ok_path(bot_id: Any) -> str:
+    """The LIVE_OK file of one bot: LIVE_OK_DIR/<bot_id>/LIVE_OK. Raises ValueError for a bot_id that is not a plain path component."""
+    why = bot_id_problem(bot_id)
+    if why:
+        raise ValueError(why)
+    return os.path.join(LIVE_OK_DIR, bot_id, LIVE_OK_NAME)
+
+
+def owner_line_problem(path: Any, bot_id: str, root_check: Any = None) -> str | None:
+    """The owner's confirmation: the file `owner_dec_path(bot_id)` exists, is a regular file (not a symlink, st_nlink 1), is ROOT-OWNED and not writable by group or
+    other, and holds EXACTLY ONE line equal to `OWNER_CANARY_CONFIRMED: bot_id=<id>`. There is no content pin: the control is that only root can create or change
+    the file (DEC-032 Am.1 item 3 standing OK; the DEC text that allows dropping the sha pin is a separate lane). `root_check(path)` is the bridge's root:root
+    check (None = not run, tests only). The file is opened O_NOFOLLOW and the bytes searched are the bytes of the inode that was checked. A prefix, a suffix,
+    CRLF, a second copy, or another bot's line never matches. Labels: owner_dec_missing, _symlink, _not_regular, _hardlink, _unreadable, _too_large, and
+    owner_dec_<root_check label>, owner_line_missing."""
     import os
-    pin = CANARY_DEC_SHA256 if pin is None else pin
-    if not (isinstance(pin, str) and len(pin) == 64 and all(c in "0123456789abcdef" for c in pin)):
-        return "owner_dec_pin_unset"
+    import stat as st_
+    if bot_id_problem(bot_id):
+        return "owner_dec_bot_id"
+    try:
+        ls = os.lstat(path)
+    except FileNotFoundError:
+        return "owner_dec_missing"
+    except OSError:
+        return "owner_dec_unreadable"
+    if st_.S_ISLNK(ls.st_mode):
+        return "owner_dec_symlink"
+    if not st_.S_ISREG(ls.st_mode):
+        return "owner_dec_not_regular"
+    if ls.st_nlink != 1:
+        return "owner_dec_hardlink"
     if root_check is not None:
         why = root_check(path)
         if why:
@@ -738,16 +772,21 @@ def owner_line_problem(path: Any, bot_id: str, pin: str | None = None, root_chec
     except OSError:
         return "owner_dec_unreadable"
     try:
+        fs = os.fstat(fd)
+        if (fs.st_dev, fs.st_ino) != (ls.st_dev, ls.st_ino) or not st_.S_ISREG(fs.st_mode) or fs.st_nlink != 1:
+            return "owner_dec_swapped"
+        if fs.st_size > OWNER_DEC_MAX_BYTES:
+            return "owner_dec_too_large"
         data = b""
         while True:
-            b = os.read(fd, 1 << 20)
+            b = os.read(fd, 1 << 16)
             if not b:
                 break
             data += b
+            if len(data) > OWNER_DEC_MAX_BYTES:
+                return "owner_dec_too_large"
     finally:
         os.close(fd)
-    if hashlib.sha256(data).hexdigest() != pin:
-        return "owner_dec_sha_mismatch"
     want = OWNER_LINE_FMT.format(bot_id=bot_id)
     return None if sum(1 for ln in data.decode("utf-8", "replace").split("\n") if ln == want) == 1 else "owner_line_missing"
 
