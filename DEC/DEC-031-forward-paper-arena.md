@@ -850,3 +850,180 @@ DEC-031 Amendment 20: **B'**, one declared departure from Amendment 3 item 1 and
    - **Disclosed.** On a PASS the counts are correlated with the read's outcome (more attempts, more fills). Because P0 can change nothing given a PASS, that correlation cannot select anything. The P0 dates lie inside the read window. P18's clock hours, from 2026-11-04T00:00Z on, are disjoint from it.
 10. **Unchanged:** the promotion gate and every threshold (n >= 100; >= 5 UTC dates with a majority positive; CI90 lower bound > 0, 1,000 draws, seed 1, 5th percentile; ex-top-3 > 0; flat 15% and pressure-fail at slope scale 1); §2's one read per `bot_id`, its deciding cell and its outcome-blind read instant; Amendment 3 item 1 and Amendment 4 item 2 for every other book, and for P18 in every part except the P0 source; Amendments 5 to 19; every registered book; ruling Q1 items 1 to 6 (no live DBC process, probe, decision log or credit meter before LOOK CONSUMED; no heavy P18 job on research-0 from 2026-10-31T22:00Z until the read ends) and ruling Q3, Q4 and Q6; every seal.
 11. **Disclosure.** In view: DEC-031 through Amendment 18 at origin/main `a31d9864`; QP-RULING-1026-p33-p18; `docs/research/dbc-p18/DESIGN.md`; PR #950 STAGING.md at `2ac6fca0`; `docs/research/dbc-m10-forward/REGISTRATION.md` and `AMENDMENT-1.md`; READ-HARDENING.md (searched only); `tools/dbc_fwd_read_am1.py` lines 1 to 175 and `tools/dbc_screen.day_of` (to name the field); `scripts/research/dbc-m10-read-job.sh` (searched only); the P18 readiness desk audit of 2026-10-27 (manager scratch, not in git). Amendment 19 (PR #1064) merged after this text was first written and was not in view; this amendment does not touch it. **Not opened:** `fwdv1/` and every DBC hour in [2026-10-25T00Z, 2026-11-01T00:10Z); the read's output directory (not listed); every DBC hour in [2026-10-17, 2026-10-24) (SPENT); `/data/mal/meta-capture/` (not listed); every Q50 and HV4 output; any P&L file. No #890 test file was run. No count, job, replay or RPC call was made. **Not measured by this amendment:** the read's verdict; any attempt count; the live P18 rate; the Helius feed (never probed); the gap between the proxy and the live count (dry-score items 2 and 4 measure it).
+
+### Amendment 21 (DRAFT; number = the next free DEC-031 amendment at merge: Amendment 16 is held by open PR #1019, Amendments 17 to 20 are on main; a renumber at merge is a fill; written 2026-10-30T15:39:03Z from `date -u` on mal-research-0; records only; before any HV4 read verdict exists, before the clock of any book it covers and before any HV4 C0 send; outcome-blind; status: DRAFT until merge, QP OK on the exact head and a reviewer verdict)
+DEC-031 Amendment 21: HV4 successors, L-arm C0 eligibility, the HV4 C0 feed latch and the HV4 owner line. Item 1 is a policy only, in the pattern of Amendment 17: each of the nine HV4 books gets a successor book at the same frozen sha with clock 2026-11-08T00:00:00Z, registered whatever HV4's verdicts are. Items 2 to 4 change only the live C0 path of an HV4 book that has a recorded PASS. No read, trade set, verdict or paper book changes. Scope: the nine HV4 `bot_id`s of Amendment 15 and their successors of item 1. Source: the rules audit `/data/mal/hunt-1008/ops/reports/2026-10-30/audit-rules.md` (lane audit-rules, manager18): section 0 rank 1, rank 4 and "Time-critical", and section 2.7 rows H5, H6 and H8. No book has cleared the promotion gate. Nothing here is a profit claim.
+- **Must merge before 2026-11-01T01:35:00Z (1793496900000).** At that instant the HV4 X-arm read jobs #1829 (`hv4-BIG-X`) and #1830 (`hv4-CON-X`) run (Amendment 15; HANDOFF HV4 row). Target: ready for review by 2026-10-31T06:00Z.
+  - Items 1 and 2 are verdict-blind only if they merge before any HV4 verdict exists. If this amendment merges later, item 1 still binds, and every successor read carries the manager's statement of which HV4 verdicts were in view at the merge (QP-RULING-1024-successor R0, as in Amendment 17). Item 2 then does not take effect: an L-arm route chosen after a sibling's verdict would be selected on it. The L arms then stay excluded, as Amendment 15 item 5 says.
+  - Items 3 and 4 touch no read. They take effect on merge, whenever the merge is.
+- **Takes effect on merge**, after quant-proof's OK on the exact final head and a reviewer verdict on the PR. The merge instant is the committer time of the merge commit on origin/main (Amendment 2 item 2).
+- **Disclosure carried by every successor read (item 1):** "The successor policy (DEC-031 Amendment 21 item 1) was written at 2026-10-30T15:39:03Z, about 5.7 days after HV4's clock (2026-10-25T00:00Z) and before any HV4 read verdict existed. It merged at <merge instant>. Its writer opened no HV4 outcome."
+
+1. **HV4 successor policy (Amendment 17 pattern; policy only).**
+   1. **The commitment.** Whenever and however the nine HV4 books end, **all nine** successors are to be registered, one per arm, never a subset. An end is a screen read of any verdict, a confirmation read, the NOT_DECIDABLE end at 1794096000000, or any other end. The successors are:
+      - `bot_id`s `hv4s1-CON-L`, `hv4s1-CON-F`, `hv4s1-CON-P`, `hv4s1-CON-X`, `hv4s1-CON-R`, `hv4s1-BIG-L`, `hv4s1-BIG-F`, `hv4s1-BIG-X`, `hv4s1-BIG-R`. Each is the successor of the `hv4-` book of the same arm.
+      - **Same book definition.** `frozen_sha` `9ed4c5ff63935696b2a89150e13565e123047754` (HV4's). Also HV4's arms, prompts, reviewer instructions, model ids (`["claude-haiku-5-5"]` on the L, F, P and R arms, `[]` on the X arms), sampling settings, lane G only (`lane_h` false), deciding stake 0.25 and deciding cell, stack config pin (sha256 `1e611a5a636dfe6bd563ab5258f6b498cdb8906500ee8bf2f0264a2621621986`) and `--feed-delay-slots 7`. Every tool and document pin of the HV4 registration record (`ARTIFACTS/lab/hv4-registration-1023.md` sections 0, 1 and 2) applies byte for byte, including the per-hour thresholds file `ARTIFACTS/lab/hv4-thresholds-FINAL-1025.json` (sha256 `da13ccc28457eaab2906548f318f76ce5c4598ecf7c007affcc3d8e7bd8b2eed`).
+      - **Clock.** `clock_start_ms` **1794096000000 (2026-11-08T00:00:00Z)**. No HV4 entry counts from that instant on (Amendment 15 item 1 cut-off). HV4's confirmation ends there too (Amendment 15 item 3). So the windows are disjoint (Amendment 3 item 5: no second frozen copy inside the screen or confirmation window) and there is no gap between them. This item is the "other rule of this DEC" of Amendment 3 item 1 that puts the clock later than the first 00:00Z after the registration record. If a pre-clock item (item 1.4) is late, the clock is the first 00:00Z after the last item (a slip), never an earlier one.
+      - **H and window.** H = 14 days. For the 11-08 clock, entries at or after **1795305600000 (2026-11-22T00:00:00Z)** are not counted; for a slipped clock, entries at or after clock + 14 d. The runner's END is the window end plus 13 h 05 min, HV4's run-out: **2026-11-22T13:05:00Z (1795352700000)** for the 11-08 clock.
+      - **P0 (Amendment 4 item 2.1).** HV4's own P0 is reused: the A2 count at the same sha `9ed4c5ff` on the 3 full closed UTC days 2026-10-21 to 10-23 (registration record section 3a; lowest arm 230.667 would-be attempts a day, an upper bound; no day at 0). It meets item 2.1 literally: 3 full closed days at the registration-candidate sha, before the clock. P0 decides only the floor and H, and H = 14 for any rate of at least 150/14 = 10.714285714285714 a day. No fresh P0 is run for an 11-08 clock: its days would be HV4-counted hours in [2026-10-25, 2026-11-08), and a structure count of the HV4 rule there is HV4 attempt-count information under HV4's seal. **Disclosed:** the reused days are 16 days before the clock. For a clock slipped past 2026-11-10T00:00Z, a new structure-only P0 is pre-committed here. It runs on 3 full closed UTC days in [2026-11-08, clock), with fixed-first text notebooked before the count, the pinned tool `tools/hv4_p0_count.py` (sha256 `3e2539d063af712e7b8db085f62c5543c91fa0e03233087a10ac71756a88c4c7`) and Amendment 4's floor. H is then recomputed from it.
+
+      **No HV4 screen read, confirmation read, verdict (PASS, FAIL, NOT_DECIDABLE or unread), outcome, P&L, fill, attempt count, trade count or read instant is ever a reason to register or not register a successor, to register some and not others, or to pick a successor's sha, clock, stake, H, window or read.**
+   2. **Identity at a fixed sha (Amendment 7 pattern).** The frozen code names its books `hv4-<arm>` (`bot_id`, tools/hv4_runner.py:103-104@9ed4c5f). Its `register_bot` refuses a second clock for a registered `bot_id` ("a new version is a new bot_id", tools/arena_paper.py:242@9ed4c5f). So, with no code change:
+      - The successor process runs with its own `--root`, `--ledger-root` and `--registry`. The paths are fixed in its registration record before the clock. They are never HV4's `/data/mal/arena/haiku-v4`, `/data/mal/arena/ledger` or `/data/mal/arena/bots.json`, so no row of either book can land in the other's ledger, decision log, manifests or registry.
+      - Inside that root, the frozen code registers and logs `hv4-<arm>` with clock 1794096000000 in the successor's own registry file.
+      - The arena registry `/data/mal/arena/bots.json` gets nine `hv4s1-<arm>` lines with the same `frozen_sha`, clock, stake and `model_ids`. They are written with `tools/arena_paper.register_bot` before the clock.
+      - The map `hv4s1-<arm>` = (successor registry, root, ledger root, internal id `hv4-<arm>`) is pinned in BOTH the notebook copy of the registration lines and the successor's records PR. A missing copy, or copies that differ in any field, means no clock (Amendment 7 item 1).
+
+      Every successor read, count and table runs only on the successor's own root, ledger root and registry, and prints the `hv4s1-` id.
+   3. **Read rule: Amendment 15, re-based.** Each successor is read under Amendment 15 items 1, 2, 3, 6 and 7, with HV4's clock 1792886400000 and cut-off 1794096000000 replaced by the successor's clock and window end (1794096000000 and 1795305600000 for the 11-08 clock).
+      - **B.** B is the first 00:00Z boundary with clock < B <= window end at which O - floor(0.05 x (O + R)) >= 100 and the O attempts cover at least 5 distinct UTC dates. The count uses decision timestamps and row kind only. With no such B, the book ENDS NOT_DECIDABLE at the window end, final, counts only.
+      - **Instants.** The earliest possible B is 2026-11-13T00:00:00Z (the five dates 11-08 to 11-12). The read runs at an as-of of at least B + 24 h. A successor confirmation is possible only if B <= 2026-11-17T00:00:00Z (five further dates before the window end).
+      - **Exclusions.** Amendment 6 governs them (the 10% and 5% caps), with HV4's pinned health tool and thresholds.
+      - **Tools.** Copies of `tools/hv4_read_instant.py` and `tools/hv4_am15_read.py` whose only differences are the id map, the clock, the window end and the roots. Their diff says so and QP checks it. They merge with QP OK on the exact head and a reviewer verdict before 2026-11-13T00:00:00Z. No successor count, preview or read runs before they merge.
+      - **Late tools.** Amendment 15 item 4's lapse clause does not carry over. If the tools are late, B is still the first qualifying boundary of this item. It is computed when they merge, and the delay is disclosed.
+   4. **Pre-clock and continuity items.** Each is recorded with its instant. A late item is a slip under item 1.1, never a stop.
+      - (a) This amendment merged (deadline above).
+      - (b) **Registration record.** The nine lines of item 1.2 in both registries and their notebook copy, with H, the map and every pin of item 1.1, after this amendment's merge and before the clock. The records PR follows within 24 h (§1.2, Amendment 3 item 1). The notebook entry carries a kill-review-week check line.
+      - (c) **Genesis.** The frozen code writes the CON-L, BIG-L and CON-P genesis manifests into the successor root. Their `written_ms` is the successor's clock (`genesis_manifest`, tools/hv4_review.py:838@9ed4c5f), so their sha256 differ from HV4's. They are notebooked before the clock.
+      - (d) **Runner job.** A host-side MiScusi job on mal-research-0, from a clean checkout with HEAD = `9ed4c5ff` (the job checks `head=`), with its own `MemoryMax`, `--clock-start-ms 1794096000000 --end-ms 1795352700000 --feed-delay-slots 7` and the paths of item 1.2. It starts at 2026-11-07T23:55:00Z (HV4's 5-minute pattern). It is after-chained across the MiScusi job limit in segments, with the handover instant pinned in the registration record. The handover is a planned restart under Amendment 6 item 4, excluded as a restart gap.
+      - **Continuity with HV4.** HV4's segment-2 job #1562 runs to 2026-11-08T13:05:00Z so that HV4 entries decided before 1794096000000 can close (registration record section 1, T0 job). It is never re-pointed, restarted, extended or cancelled for the successor (§4 "Any change to a running job's command"; QP-RULING-1025-hv4-read-rule R2.2 (e)). Amendment 3 item 1's "one process per `frozen_sha`" holds per process: each process hosts only books of its own sha, and the successor is a new process. The two processes overlap from 2026-11-07T23:55Z to 2026-11-08T13:05Z.
+      - (e) **Memory.** Before the start, `MemAvailable` on research-0 and the sum of the running jobs' `MemoryMax` must leave room for the successor's request. The `MemoryMax` values come from the job list, never from the status view of #1561 or #1562. A first refusal is a slip to the next 00:00Z, with both figures recorded. It is a stop only if the job is refused again for that later clock (Amendment 17 P3).
+      - (f) **Daily jobs for the successor root, as HV4's:**
+        - the three reviewer jobs at 00:05Z (CON-L, BIG-L, CON-P; none on the clock day, the first at 2026-11-09T00:05Z, through the window end);
+        - the digests;
+        - the 300 s window sampler, from clock - 15 min to END + 15 min, and its daily table (Amendment 6 items 2.1 and 2.6; a missing sample makes the hour FAIL);
+        - the daily read-instant job from 2026-11-13T01:30Z;
+        - the daily decision-log sha256 notebook entry (§1.2).
+      - (g) **Spend.** The owner's 2026-10-28 line approves API spend on the Haiku trader; Helius credits are reported under CLAUDE.md "Credits".
+        - API: the pinned caps of tools/hv4_arms.py apply to the successor's own root: 4.90 USD a day at cap, so at most 68.60 USD over 14 days, and the 160 USD month guard.
+        - Chain calls: the pinned caps of tools/hv4_chain.py.
+        - During the overlap of item (d) both processes spend. The owner's 200 USD console limit stays the backstop.
+        - The registration notebook entry states these figures.
+      - (h) **No new smoke.** HV4's L5 real-model smoke PASS at `9ed4c5f` (QP-RULING-1022-hv4-am6 ADDENDUM 4) is the Amendment 6 item 1.3 evidence: the sha, model ids and sampling settings are the same. HV4's L3 unit tests (#1389) and L4 (no port) carry over the same way. A re-smoke at `9ed4c5f` would price the HV4 rule on HV4-counted hours, so it is not run.
+   5. **The only stop reasons.** Each is notebooked with its instant before the stop. Nothing else stops the commitment.
+      - A kill-review week, recorded on main before this amendment merges, that overlaps [registration, read]. None is recorded at writing.
+      - A second memory refusal (item 1.4 (e)).
+      - A quant-proof ruling of external impossibility: an item cannot be met for a reason outside the lab, such as the pinned model id no longer being served, a seal, or a proven host limit. An item not yet built, reviewed or merged is never such a reason.
+      - The owner's word withdrawing the successors' API spend. This is the owner's authority. The stop record says which HV4 verdicts were in view.
+   6. **What carries over: nothing.**
+      - Each successor is a new `bot_id` with its own clock, P0 use, H, window and read. No HV4 attempt, trade, playbook version, manifest, ledger row or exclusion counts for it.
+      - Its L and CON-P reviewers start from their own genesis and read only the successor's own paper outcomes.
+      - A successor FAIL or NOT_DECIDABLE is final for that `bot_id`. A successor of an HV4 book that failed is a re-registration of the same rule as a new `bot_id`; it adds to N and discloses the earlier end (Amendment 4 item 2.3).
+      - **No live carry-over.** A successor C0 needs that successor's own recorded screen PASS (DEC-032 §1 item 1), with the arms of item 2. An HV4 PASS, screen or confirmation, carries nothing to a successor at any rung.
+      - A later text may add a live-rung carry-over only as a live rule. It may not add any condition that depends on an HV4 outcome or verdict to a successor's registration, sha, clock, H, window or read (the bar of Amendment 17 item 4).
+   7. **N and disclosure.**
+      - N + 9 at the successor clock (Amendment 4 item 2.5). A successor screen pass enters confirmation automatically and adds to c (Amendment 3 item 2).
+      - Every successor read prints:
+        - the nine HV4 verdicts beside it (Amendment 3 item 8 (e));
+        - item 1's disclosure sentence;
+        - the overlap of item 1.4 (d): the successor shares the host, the tape, the API key and the RPC pool with HV4's #1562 from its start to 2026-11-08T13:05Z;
+        - that the successor rule is the rule HV4 ran on HV4's window. An HV4 read and a successor read are two windows of one rule, and any later selection between them is in-sample.
+      - Every HV4 read whose trade set has exits after 2026-11-07T23:55Z discloses the overlap too (the intent of R2.2 (e)).
+
+2. **L-arm C0 eligibility.** This replaces the last two sentences of Amendment 15 item 5, and QP-RULING-1025-hv4-read-rule R2.2 (a) for the L arms.
+   - **Playbook versions are part of the book.** A playbook version written by the book's own registered reviewer under §1.3 is not a code or prompt change for DEC-032 §1 item 4. That is a version written by the reviewer at the frozen code, instructions and model ids, with its manifest hashed, chained and logged before the first decision that uses it. §1.3 makes the whole system, versions included, the book, so the screen read of an L arm already read that system.
+   - **Eligible arms.** After its own recorded PASS, an HV4 book may feed a C0 bridge if it is CON-F, CON-X, BIG-F, BIG-X, **CON-L or BIG-L**, under R2.2 (b) to (g), declared in the canary copy before the first send. CON-P and the R arms stay excluded: they are controls and not promotable (DESIGN §5). The same list applies to the successors of item 1, each on its own PASS. Amendment 15 item 5 then reads: "No process reads an HV4 decision row before that bot's read is recorded. After a recorded PASS, only CON-F, CON-X, BIG-F, BIG-X, CON-L or BIG-L may feed a C0 bridge, under QP-RULING-1025-hv4-read-rule R2.2 (b) to (g) as DEC-031 Amendment 21 items 2 and 3 read them, declared in the canary copy before the first send. CON-P and the R arms are not canaried."
+   - **Per-row version check (L arms; fail closed).** Before an L-arm entry row becomes an order, the bridge checks all of these:
+     - (i) the row's decision log chain (seq, prev, sha) is intact from the bot's first row;
+     - (ii) the version in force is the newest `version` row before the entry in that log (tools/hv4_runner.py:1631@9ed4c5f), or the genesis version if there is none. Its `effective_from_ms` is at or before the entry's decision instant, and no `version_refused` row follows it without a later `version_recovered`;
+     - (iii) its `manifest_sha256` is a line of the arm's own manifest chain `<root>/manifests/<arm>.jsonl`. Every line of that chain passes `check_manifest` (tools/hv4_review.py:850@9ed4c5f) against its predecessor, back to the genesis line (`prev_manifest_sha256` 64 zeros, `written_ms` the book's clock). Every line has `commit` = the frozen sha and `model` = `claude-haiku-5-5`, under the reviewer at sha256 `8f0dfaada9e77a7e2d6d76c574f70ee10d0c7af7433c96f15da8c2de32cc7325`;
+     - (iv) the `playbook_sha256` of the `version` row equals the manifest's.
+
+     On any failure, the row is skipped with its reason and the bridge latches `chain_break` (DEC-032 §5 item 3: hard, new buys only; exits continue).
+   - **R2.2 (c) for an L arm** reads: the bridge reads `decisions/<that bot_id>/` and that arm's own manifest chain file, read-only, and nothing else. Of the manifest it reads the lines only (hashes, instants, ids). It reads no bundle, request, response, audit file, card store, ledger, other arm or `bots.json`.
+   - **R2.2 (b) for an L arm:** the API-returned model id of the trader calls, and the `model` of every manifest line, must be `claude-haiku-5-5` (or the same single id) for the whole window. Otherwise the arm is ineligible.
+   - **No feedback from live.** The reviewer reads only the arm's paper ledger and cards (tools/hv4_review.py@9ed4c5f). No live fill, twin or parity figure reaches any reviewer bundle. Nothing in this item changes the paper book (R2.2 (f)).
+   - **Code owed (not in this records PR).** Today `tools/hv4_live_c0.py` refuses `-L` (`REFUSED_ARM_SUFFIXES`, :225; `arm_refusal`, :359-366), `tools/hv4_gap_relay.py` calls the same check, and no per-row version check exists. A separate code PR, with its own QP OK and reviewer verdict:
+     - allows exactly `hv4-CON-L` and `hv4-BIG-L` (and their `hv4s1-` successors), and keeps `-P` and `-R` refused;
+     - implements the check above, with tests;
+     - carries the manifest chain file to the bridge host with the decision rows.
+
+     Until that code is merged and installed, the L arms stay refused in code.
+
+3. **HV4 C0 feed latch.** For HV4 C0 copies and the successors' copies, this replaces DEC-032 §5 item 2 as built in tools/hv4_live_c0.py:819-821 and :876-901.
+   - **Today.** Every gap kind of either stream latches `feed_break`: the book's tape gaps and the forwarder's transport events (`GAP_BREAK_KINDS`). The clear needs 10 minutes gap-free AND a root-owned review file naming exactly the newest gap instant. At the audited gap rates no person can keep that file current (audit 2.1 and H6).
+   - **The rule it follows.** The replacement follows the rule that excludes a trade from HV4's paper read: §1.4, as implemented by `on_gap` (tools/arena_paper.py:920-931@9ed4c5f) and `_gap_hit` (:1221-1228).
+   - **Consistent with DEC-032 Amendment 5 (DRAFT).** That draft (lane q50-c0-feed, code branch `claude/q50-c0-gap-hold`) covers H5 executor canaries and leaves the HV4 bridge path out of its scope. This item applies its rule to the HV4 streams, with the one difference stated in item 3.3.
+
+   1. **Coverage-losing gap: short hold and per-entry refusal.** A coverage-losing record is any record that `tools/hv4_gap_relay.py` carries (`RELAY_KINDS`, :31):
+      - a tape `gap` row with `data_loss` true;
+      - a tape `gap` row of kind `process_restart`, `feed_restart` or `feed_start`;
+      - a feed `start` row;
+      - a silence above `gap_silence_ms` (60,000 ms) between consecutive trade rows;
+      - a `takeover`. The relay carries it whether or not it lost data; that is stricter than the paper rule and kept (fail closed).
+
+      On such a record:
+      - **Short hold.** No new buy for **60 s** after the record reaches the bridge. Each new record restarts the 60 s. Config may lengthen the hold up to 600,000 ms and never shorten it.
+      - **Per-entry (per-pool) refusal.** No buy is ever sent on an entry row whose decision instant is at or before the instant of a coverage-losing record of its program that the bridge has seen. The paper read excludes that trade (the gap lies in its decision-to-exit span), so the live trip could never be compared. The skip is logged `feed_gap`.
+      - **Open trips.** Every live trip whose exit has not landed is marked `gap`. It is excluded from parity statistics by the paper read's rule (§1.4) and counted, as DEC-032 §5 item 2 says.
+
+      A gap row of a program the book does not trade excludes none of its paper trades: `_gap_hit` matches only the trade's own program, `all` or none. The relay as built carries kind and instant only. Until it carries the program field, every relayed record holds (fail closed).
+   2. **Redundant reconnect: no hold.**
+      - **Tape.** An arena tape `socket_reconnect` row with `data_loss` literally false is not data loss: some socket of that program stayed subscribed at every instant (tools/arena_feed.py:600-606@9ed4c5f). The paper engine only counts it (`gap_soft`), and the relay does not carry it. It holds nothing and marks nothing.
+      - **Transport.** The forwarder's transport events are not feed gaps of the book: `stall`, `resume`, `disconnect`, `reconnect`, `error`, a `mismatch` and a trimmed local torn tail. They move decision rows and lose no print. The puller resumes at the exact byte offset and checks every row against the decision log's chain rule; a chain or offset mismatch stops it and appends nothing (tools/decision_forwarder.py, module docstring). These events leave §5 item 2's latch.
+      - **The guards that stay.** `transport_stall` refuses new buys while the forwarder is not live (tools/arena_live_bridge.py:701-702). A decision row older than 5,000 ms is refused (DEC-032:68; tools/arena_live_bridge.py:65). The bridge's `chain_break` latch on any decision-log chain fault is DEC-032 §5 item 3 (hard), not a gap rule.
+   3. **Review within 24 h; an unreviewed gap latches.**
+      - Every gap record of both streams is ledgered with its kind and instant and listed in the daily report.
+      - The manager reviews them at least once a day. The review is recorded in the root-owned file of `GAP_CLEAR_DIR` (`{"bot_id", "reviewed_gap_ms"}`), where `reviewed_gap_ms` is the newest coverage-losing instant reviewed.
+      - A coverage-losing record more than 24 h old, with an instant later than `reviewed_gap_ms`, latches `feed_break` (hard, new buys only; exits continue) until a review file covers it.
+      - No human acknowledgement is needed before buys resume after a gap.
+      - This is stricter than DEC-032 Amendment 5 (DRAFT) item 4, by the 24 h latch: an unattended canary on a degrading feed stops within a day.
+   4. **P7 at C0** (as DEC-032 Amendment 5 (DRAFT) item 6b).
+      - P7's `gap`-share part (above 5%, or 2 `gap` trips before 20 trips, DEC-032 Amendment 1 item 1) makes parity NOT_DECIDABLE and blocks any step-up. It does not create `STOP`.
+      - Its `no_twin` part, and its missing, unreadable or stale state part, stay soft halts.
+      - Money is unchanged: a `gap` trip stays inside every C0 money limit (stake, open cap, daily and total stop, wallet floor, committed loss). It is only excluded from parity.
+      - Why it matters for HV4: HV4 trips can stay open for hours. Under the current rule almost every trip on a gappy tape would be `gap`, and two `gap` trips would soft-halt the canary.
+   5. **Residual, declared.** The engine's slot-jump rule (`gap_slots` 150) is not relayed (tools/hv4_gap_relay.py docstring). The bridge does not mark `gap` a live trip whose span holds such a jump. Not changed here.
+   6. **Code owed (not in this records PR).** A separate code PR in tools/hv4_live_c0.py (and the parity tool for P7), with tests and its own QP OK and reviewer verdict:
+      - `GAP_FREE_MS` 600,000 becomes a 60,000 ms hold, with a 60,000 ms floor checked at start (`guard_problem`);
+      - the transport kinds leave `GAP_BREAK_KINDS`;
+      - the per-entry refusal;
+      - the 24 h review latch, in place of `gap_clear_problem`'s per-gap equality;
+      - the P7 change of item 3.4;
+      - an md5 decision-equivalence replay wherever the decision path is touched (CLAUDE.md runner rule).
+
+      Until it is installed, §5 item 2 as built applies.
+
+4. **HV4 owner line: a root-owned file, no sha pinned in code** (audit rank 4). For HV4 C0 copies and the successors' copies, this replaces the gate of tools/hv4_live_c0.py:464-465.
+   - **The file.** The owner's C0 confirmation for an HV4 `bot_id` is a root-owned file that Helm writes on the owner's own word: the owner's standing line of DEC-032 Amendment 1 item 3, or a fresh line.
+     - One regular file per `bot_id` under `/etc/mal-hv4-c0/` (the path is a code constant).
+     - root:root, not group- or other-writable, link count 1.
+     - It holds, on a line of its own, exactly `OWNER_CANARY_CONFIRMED: bot_id=<bot_id>` (DEC-032 Amendment 1 item 3 "Use").
+     - Helm reports its sha256 and the instant it was written; the manager notebooks them.
+   - **The gate.** The bridge refuses a live buy unless all of these hold:
+     - the file is present and exact;
+     - `LIVE_OK` names the `bot_id` (root-owned, re-read before every buy);
+     - `TIER` reads T1;
+     - the bot's recorded read is PASS (`read_record`).
+
+     At the first good check the bridge pins the file's (st_dev, st_ino, sha256) in its state, as QP N9 does for the read record. A later rewrite, replacement or removal latches `owner_line` (hard, new buys only; exits continue) until the manager clears it with the bridge stopped.
+   - **No sha256 of the owner file or of a DEC copy is compiled into code.** `CANARY_DEC_SHA256` (:465), and the reinstall it forces after the owner's yes, go away in the code lane's PR. The merged DEC copy still quotes the owner's line verbatim (DEC-032 §2). The copy's records after the first send cite Helm's sha256 and instant.
+   - **Why this is safe.** The owner's word still gates the send twice: this file and `LIVE_OK`, both written only by Helm, as root, on the owner's word. The DEC copy still merges with QP OK and a reviewer verdict before any send. Only the code PR and reinstall after the owner's yes are removed; Helm's last two turnarounds were about 21 h and 22 h (audit 2.3).
+   - **Code owed (not in this records PR).** The change in tools/hv4_live_c0.py, with tests, under its own QP OK and reviewer verdict. `LIVE_REFUSAL` (:455) stays until every precondition PR of the HV4 copy is installed.
+
+5. **Why this is outcome-blind.**
+   - **When written.** At 2026-10-30T15:39:03Z (`date -u` on mal-research-0), before any HV4 read verdict exists. The first HV4 reads, #1829 (`hv4-BIG-X`) and #1830 (`hv4-CON-X`), start at 2026-11-01T01:35Z.
+   - **Item 1** registers all nine successors whatever the verdicts, at a sha, clock, H, window and read rule fixed here. A successor's window starts where HV4's ends, and nothing carries over. It cannot select on an HV4 outcome, because none exists, and no later outcome can change what it commits to.
+   - **Item 2** fixes, before any verdict, which arms may be canaried after their own PASS. It changes no read, trade set or verdict. Written after an L verdict, it would be selected on that verdict. That is why it lapses if this amendment merges late.
+   - **Items 3 and 4** act only on the live C0 path of a book with a recorded PASS. They change no paper read, exclusion, trade set or verdict, and use no outcome.
+   - **In view when writing.** `hv4-BIG-X` and `hv4-CON-X` have a written read instant B = 2026-10-30T00:00Z, and the seven other HV4 books had none at that boundary. This comes from the manager's state log and the audit, from the pinned instant tool's decision-timestamp counts; no count itself was seen. It cannot move any item: item 1 covers all nine, item 2 is fixed before any L read, and items 3 and 4 touch no read.
+6. **Unchanged:**
+   - the promotion gate and every threshold (n >= 100; >= 5 UTC dates with a majority positive; CI90 lower bound > 0, 1,000 draws, seed 1, 5th percentile; ex-top-3 > 0; flat 15% and pressure-fail at slope scale 1);
+   - §2's one read per `bot_id`, its deciding cell and its outcome-blind instant;
+   - Amendment 15 for the nine HV4 books: their sha, clock, H, END, read instant, trade set, caps, confirmation and worst-in-slot step;
+   - R2.2 (b) to (g), except as items 2 and 3 say;
+   - DEC-032's limits, stops, wallet floor, P1 to P6, §5 items 1 and 3 to 7, §6 and §7;
+   - the ban on a live send under this DEC (§4), and every seal.
+
+   No HV4 job is touched.
+7. **Disclosure.**
+   - **In view:**
+     - DEC-031 through Amendment 20, and DEC-032 through Amendment 4 and Amendment 2 Erratum 1, at origin/main `c92f23e3`;
+     - the audit; QP-RULING-1025-hv4-read-rule (sha256 `c2343c9c6ef96256419c4e7f4eec1b83584163bfd3a1aff97ca726cecdc50955`); `docs/rules/hv4.md`; `ARTIFACTS/lab/hv4-registration-1023.md`;
+     - the DEC-032 Amendment 5 DRAFT text (`/data/mal/hunt-1008/ops/reports/2026-10-30/q50-c0-feed-DEC032-Am5-DRAFT.md`) and its code branch;
+     - code at `9ed4c5ff` and at main: `tools/hv4_live_c0.py`, `tools/hv4_gap_relay.py`, `tools/decision_forwarder.py`, `tools/arena_live_bridge.py`, `tools/arena_paper.py`, `tools/arena_feed.py`, `tools/hv4_runner.py`, `tools/hv4_review.py`, `tools/hv4_cards.py`.
+   - **Not opened:** any HV4 ledger, decision row, card, manifest, playbook, bundle, digest, `bots.json`, score, preview, count, read-instant record, or job status or log (#1561, #1562, #1591, #1829, #1830); the arena tape; any Q50 or DBC output. No job was run.
+   - **Not measured by this amendment:**
+     - the arena tape's coverage-losing gap rate, which sets what item 3's hold costs HV4 in buy time;
+     - the successors' memory, API and chain-call figures;
+     - any HV4 count or outcome.
