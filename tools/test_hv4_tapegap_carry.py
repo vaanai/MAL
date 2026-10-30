@@ -19,6 +19,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from tools import arena_live_bridge as alb
 from tools import decision_forwarder as df
@@ -29,6 +30,15 @@ from tools.test_hv4_live_c0 import ARM, Hv4Env, write_feed, write_tapegaps
 
 REPO = Path(__file__).resolve().parents[1]
 SERVE = str(REPO / "tools" / "decision_forwarder.py")
+
+
+def manual_review():
+    """DEC-032 s5 item 2 as written: a gap record latches `feed_break`. On a tree with PR #1090 (DEC-032 Am.5 DRAFT) that is c0.FEED_GAP_MANUAL_REVIEW True and the default
+    there is False (a 60 s hold instead of a latch); create=True lets these tests run on main (which has only the latch) and on main + #1090 alike."""
+    return mock.patch.object(c0, "FEED_GAP_MANUAL_REVIEW", True, create=True)
+
+
+needs_am5 = unittest.skipUnless(hasattr(c0, "gap_hold_problem"), "needs PR #1090 (DEC-032 Am.5 DRAFT gap hold)")
 
 
 def wall_ms() -> int:
@@ -199,14 +209,31 @@ class BridgeTapeGapRefusalTests(TmpCase):
         e = Hv4Env(self.tmp)
         b = e.bridge()
         write_tapegaps(e.raw["root"], e.bot, e.clock.t, rows=[{"kind": "gap_silence", "ms": e.clock.t - 5}])
-        b.tick()
+        with manual_review():
+            b.tick()
         self.assertIn(c0.FEED_BREAK_LATCH, b.state.latches)
         e2 = Hv4Env(tempfile.mkdtemp(dir=self.tmp))
         b2 = e2.bridge()
         tg_path(e2.raw["root"]).write_text("{torn\n")
         os.utime(tg_path(e2.raw["root"]), ns=(e2.clock.t * 1_000_000,) * 2)
         b2.tick()
-        self.assertIn(c0.FEED_BREAK_LATCH, b2.state.latches)
+        self.assertIn(c0.FEED_BREAK_LATCH, b2.state.latches)  # an unreadable / malformed gap log latches in both modes
+
+    @needs_am5
+    def test_under_am5_a_carried_gap_row_holds_buys_instead_of_latching_and_the_stream_guard_still_applies(self):
+        e = Hv4Env(self.tmp)
+        b = e.bridge()
+        write_tapegaps(e.raw["root"], e.bot, e.clock.t, rows=[{"kind": "gap_silence", "ms": e.clock.t - 5}])
+        with mock.patch.object(c0, "FEED_GAP_MANUAL_REVIEW", False):
+            b.tick()
+            self.assertEqual(b.state.latches, {})
+            self.assertEqual(b.state.gap_noted_ms, e.clock.t - 5)
+            self.assertEqual(b.feed_refusal(e.clock.t), c0.FEED_GAP_HOLD)  # the self-clearing hold
+            e.clock.t += c0.FEED_GAP_HOLD_MS + 1
+            e.refresh_halt_inputs()  # the relay is alive; its rows (the old gap) are still in the stream
+            self.assertIsNone(b.feed_refusal(e.clock.t))
+            os.unlink(tg_path(e.raw["root"]))  # a dead relay is not "no gaps" in this mode either
+            self.assertEqual(b.feed_refusal(e.clock.t), "tape_gap_stream_missing")
 
 
 # --- precondition 14: the #967 write_status cross-test ---------------------------------------------------------------------------------------------------
@@ -426,7 +453,7 @@ class EndToEndTests(TmpCase):
 
     def test_a_carried_gap_row_latches_feed_break_and_the_in_process_delay(self):
         delays_ms, vis_ms = [], []
-        with EndToEnd(self.tmp) as p:
+        with manual_review(), EndToEnd(self.tmp) as p:
             b = p.bridge
             p.wait(lambda: p.refusal() is None)  # an established, healthy pipeline with an empty relay stream
             b.gap_tick(wall_ms())
@@ -454,6 +481,21 @@ class EndToEndTests(TmpCase):
               f"median {statistics.median(delays_ms)} ms, max {max(delays_ms)} ms (n={len(delays_ms)}; wall-clock ms resolution, bridge polled every ~1 ms, serve --poll-ms 5); "
               f"file visible on the bridge side within {max(vis_ms):.1f} ms of the first poll", file=sys.stderr)
         self.assertLess(max(delays_ms), 5_000)  # a sanity bound for a loaded CI box, not a performance claim
+
+    @needs_am5
+    def test_under_am5_the_carried_gap_row_holds_new_buys_for_the_hold_window_no_latch(self):
+        with mock.patch.object(c0, "FEED_GAP_MANUAL_REVIEW", False), EndToEnd(self.tmp) as p:
+            b = p.bridge
+            p.wait(lambda: p.refusal() is None)
+            gap_at = wall_ms()
+            p.relay_pass([("data_loss", gap_at)], gap_at)
+
+            def noted() -> bool:
+                b.gap_tick(wall_ms())
+                return b.state.gap_noted_ms == gap_at
+            p.wait(noted, step=0.001)
+            self.assertEqual(b.state.latches, {})
+            self.assertEqual(p.refusal(), c0.FEED_GAP_HOLD)
 
     def test_a_stale_source_mtime_is_stale_on_the_bridge_side_and_a_new_pass_clears_it(self):
         old = wall_ms() - c0.TAPE_GAP_STREAM_MAX_AGE_MS - 5_000
