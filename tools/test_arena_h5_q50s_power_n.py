@@ -149,7 +149,11 @@ class Confirmation(unittest.TestCase):
             self.assertEqual(self.conf(c, now=b)["status"], si.NOT_YET, b)
         r = self.conf(c)
         self.assertEqual((r["status"], r["instant_ms"], r["branch"], r["counted_before"]), (si.READ, si.CONFIRM_END_MS, "ii", 250))
-        self.assertEqual(self.conf(c[:99] + [])["status"], si.ENDED)  # 99 on 5 dates by E_c: NOT_DECIDABLE, final
+        c100 = spread(20, self.T_S, 5)  # exactly 100 on 5 further dates: reads at E_c (branch (ii)), not before
+        r = self.conf(c100)
+        self.assertEqual((r["status"], r["instant_ms"], r["branch"], r["counted_before"], r["dates"]), (si.READ, si.CONFIRM_END_MS, "ii", 100, 5))
+        self.assertEqual(self.conf(c100, now=si.CONFIRM_END_MS - 1)["status"], si.NOT_YET)
+        self.assertEqual(self.conf(c100[:-1])["status"], si.ENDED)  # 99 on 5 dates by E_c: NOT_DECIDABLE, final
 
     def test_trades_before_the_screen_instant_never_count_and_t_s_at_e_ends(self):
         before = spread(100, self.T_S - 6 * DAY, 6)

@@ -105,7 +105,7 @@ def check_recorded_instant(bot_id: str, doc: Mapping[str, Any], counted_decision
     if bot_id == S1_ID:  # s1: the power-n screen rule (200 counted trades, or 100 at B >= S_cap, on 5 dates, by E), never Q50's single threshold
         r = s1i.instant_rule(counted_decisions, [], start_ms=int(doc["clock_start_ms"]), end_ms=int(doc["end_seal_ms"]), now_ms=ri)
         return None if r["status"] == s1i.READ and r["instant_ms"] == ri else f"s1 power-n rule recomputed from the ledger gives {r['status']} {r['instant_ms']}"
-    if bot_id in AM11_BOOKS:  # Q50 and s1 share Amendment 11's rule; the record carries each book's own clock and end
+    if bot_id in AM11_BOOKS:  # only Q50 reaches this line (s1 returned above): Amendment 11's rule with the record's own clock and end
         r = qi.instant_rule(counted_decisions, [], start_ms=int(doc["clock_start_ms"]), end_ms=int(doc["end_seal_ms"]), now_ms=ri)
         return None if r["status"] == qi.READ and r["instant_ms"] == ri else f"Am.11 rule recomputed from the ledger gives {r['status']} {r['instant_ms']}"
     return None if h5s.read_instant(all_decisions, ri) == ri else "differs"
