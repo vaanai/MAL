@@ -8,7 +8,8 @@
 # Each run is skipped (A3_SKIP, nothing run) while s1's books file does not exist yet: the registration command writes it with the s1 line, so no run judges an unregistered book.
 # Segments: a MiScusi job lives at most 14 d (extensions included) and an `after` job starts only after a SUCCESSFUL end. So each segment ENDS ITSELF with exit 0 at END_UTC, and the next
 # segment is submitted `after` it. Lifetime needed: the 07:10Z run of 2026-12-01 (Amendment 22 item 9). Plan (s1 runbook v2): loop A END 2026-11-17T20:00:00Z, loop B `after` A END
-# 2026-12-01T12:00:00Z; dead-man A END 2026-11-17T14:00:00Z, dead-man B `after` A END 2026-12-01T13:30:00Z. A segment that dies early blocks its successor: the alert
+# 2026-12-01T12:00:00Z; dead-man A END 2026-11-17T14:00:00Z, dead-man B `after` A END 2026-12-01T13:00:00Z (its last run is 2026-11-30T13:10Z;
+# the next would be after the 2026-12-01T07:10Z loop run). Each END is refused if it is more than 14 d - 15 min away. A segment that dies early blocks its successor: the alert
 # (scripts/ops/q50s1-a3-alert.sh) warns at 13 h stale, and the dead-man ends the book at 48 h (fail closed).
 # THE PIN: the job's git_ref is the guard tag a3-guard-pin-s1 (a commit that holds #894's bounded enumeration and fees-program check, this script, and the guard (h) choice QP rules:
 # S*'s own decoder blobs or Amendment 18 item 6.3's transitive cover; NOT YET CREATED). The script refuses unless HEAD is that tag's commit and the tree is clean. It prints the sha256 of
@@ -29,6 +30,7 @@ case "$MODE" in loop|deadman) ;; *) usage ;; esac
 case "$2" in 20[0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z) ;; *) echo "q50s1-a3-loop: END '$2' is not YYYY-MM-DDTHH:MM:SSZ" >&2; exit 2 ;; esac
 E="$(date -u -d "$2" +%s)" || exit 2
 [ "$E" -le "$LATEST" ] || { echo "q50s1-a3-loop: END after 2026-12-02T00:00Z" >&2; exit 2; }
+[ $((E - $(date -u +%s))) -le 1208700 ] || { echo "q50s1-a3-loop: END $2 is more than 14 d - 15 min after now: a MiScusi job lives at most 14 d: an END more than 14 d minus 15 min after this job's start is refused (exit 2)" >&2; exit 2; }
 [ "$(date -u +%s)" -lt "$E" ] || { echo "q50s1-a3-loop: END $2 has passed" >&2; exit 2; }
 [ -n "${HOME:-}" ] || { echo "q50s1-a3-loop: HOME is not set" >&2; exit 2; }
 S1HOME="${Q50S1_HOME:-/home/claude/s1home}"   # s1's own HOME: every s1 python that checks an arena root runs with HOME=$S1HOME (DEC-031 Am.22 item 9)

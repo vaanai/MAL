@@ -1,7 +1,8 @@
 #!/bin/sh
 # MiScusi job command: the A3 halt-alert of s1's OWN guard ("loop 2", scripts/ops/q50s1-a3-loop.sh) for `h5v1q50-boostfloor-s1` (DEC-031 Amendment 22 item 9 "Loop 2 has its own dead-man
 # and alert jobs"; Amendment 18 item 8 "the halt-alert job submitted"; audit M4). POSIX sh only. Paper only. NOT SUBMITTED by the PR that adds it.
-#   sh scripts/ops/q50s1-a3-alert.sh UNTIL_UTC      e.g. 2026-11-17T12:00:00Z (segment A), 2026-12-01T12:00:00Z (segment B, `after` A)
+#   sh scripts/ops/q50s1-a3-alert.sh UNTIL_UTC      e.g. 2026-11-17T12:00:00Z (segment A), 2026-12-01T09:00:00Z (segment B, `after` A; past the 07:10Z run and
+#                                                   within 14 d of its start about 2026-11-17T12:10Z). An UNTIL more than 14 d - 15 min away is refused.
 # It runs the SAME check as Q50's alert #1540 (tools/a3_applied_alert.py, sha256 pinned below; it reads only the three A3 flag files and writes its own state file), every 10 min, on
 # loop 2's A3 output ($HOME/data/structure-monitor-s1) with its own state file ($HOME/data/a3-alert-s1/state.json): never loop 1's files, never #1540's state.
 # It waits (up to 30 h, checking every 60 s) for loop 2's first applied line before its first pass, so it can be submitted with loop 2.
@@ -18,6 +19,7 @@ WAIT_MAX=108000     # 30 h for loop 2's first applied line
 case "$1" in 20[0-9][0-9]-[0-1][0-9]-[0-3][0-9]T[0-2][0-9]:[0-5][0-9]:[0-5][0-9]Z) ;; *) echo "q50s1-a3-alert: '$1' is not YYYY-MM-DDTHH:MM:SSZ" >&2; exit 2 ;; esac
 UNTIL="$(date -u -d "$1" +%s)" || exit 2
 [ "$UNTIL" -le "$LATEST" ] || { echo "q50s1-a3-alert: UNTIL after 2026-12-02T00:00Z" >&2; exit 2; }
+[ $((UNTIL - $(date -u +%s))) -le 1208700 ] || { echo "q50s1-a3-alert: UNTIL $1 is more than 14 d - 15 min after now: a MiScusi job lives at most 14 d: an END more than 14 d minus 15 min after this job's start is refused (exit 2)" >&2; exit 2; }
 [ "$(date -u +%s)" -lt "$UNTIL" ] || { echo "q50s1-a3-alert: UNTIL $1 has passed" >&2; exit 2; }
 [ -n "${HOME:-}" ] || { echo "q50s1-a3-alert: HOME is not set" >&2; exit 2; }
 EVERY="${Q50S1_ALERT_EVERY:-600}"
