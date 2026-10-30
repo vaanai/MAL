@@ -1,11 +1,12 @@
 #!/bin/sh
 # MiScusi job command: START the shadow of the Q50 successor `h5v1q50-boostfloor-s1` (DEC-031 Amendment 18 item 8; plan C12). POSIX sh only (MiScusi runs commands under sh).
 # NOT SUBMITTED by the PR that adds it. The manager submits it once, inside 2026-11-05T20:00:00Z to 22:30:00Z, after registration (scripts/ops/q50s1-register.sh --apply),
-# the Amendment 6 smoke, the green A3 run on books v3 and the EXP-024 successor note (part A) are all done. Paper only: no keys, no transactions, 0 Helius credits.
+# the Amendment 6 smoke, the green A3 run on books v3 and the EXP-024 successor note (part A) are all done. Paper only: no wallet keys, no transactions. Helius: the second websocket provider is keyed (DEC-031 Amendment 22 item 10;
+# the key is read at start, never printed; its credits are reported in the daily note).
 #
 # Submit (miscusi_job_submit): machine mal-fast-0, command `sh scripts/ops/q50s1-shadow-start.sh` from a checkout of main that contains this file, resumable false (a restart at the same
 # code_sha continues the same book as a gap record; a new process is a manager decision), 1 CPU, job memory 256 MB (the job holds only sh; its cap is summed in S; the shadow's cap is
-# its scope's MemoryMax=1500M), a time limit past 2026-11-20T00Z.
+# its scope's MemoryMax=1500M), a time limit past 2026-12-01T00Z (E, DEC-031 Amendment 22 item 8.1; a MiScusi job lives at most 14 d, extensions included: see the s1 runbook).
 #   `sh scripts/ops/q50s1-shadow-start.sh --check` runs every check below and prints the command it would run; it starts nothing and is allowed at any time of day.
 #   `sh scripts/ops/q50s1-shadow-start.sh --check-memory` runs only checks 1 (reported) and 6, so the memory fit can be evaluated before registration (QP C2 on #1065): it reads no
 #      bots.json, no tag and no worktree, creates nothing, starts nothing, prints every running user unit with its MemoryMax and MemoryCurrent (and MemoryPeak for an allowlisted
@@ -16,7 +17,8 @@
 #   2. the UTC time is inside [2026-11-05T20:00:00Z, 2026-11-05T22:30:00Z] (exit 4; --check only reports);
 #   3. S* is in the repo: tag q50-succ-base-1 resolves to 5c2ab7c64b21358619e37068c6a53e4d183512ea (exit 7); a clean detached worktree of exactly that commit is made at
 #      $HOME/data/arena-src/q50s1-5c2ab7c6 (never main, never F50 a5f41370) and must have no tracked-file change (exit 5);
-#   4. bots.json holds the s1 line with frozen_sha S*, clock 1793923200000, window_end_ms pinned 1795132800000, and registered_at_ms before now (exit 8);
+#   4. bots.json holds the s1 line with frozen_sha S*, clock 1793923200000, window_end_ms pinned 1796083200000 (E = 2026-12-01T00Z, Amendment 22 item 8.1), and registered_at_ms
+#      before now (exit 8);
 #   5. no process of this book runs (the unit q50s1-shadow.scope is not active; one process per frozen_sha) and the out dir $HOME/data/arena/h5-q50s1-<UTC date> does not exist (exit 9);
 #   6. MEMORY (an OOM would end Q50's open positions NOT_DECIDABLE and gap-halt its live feed), DEC-031 Amendment 18 item 8 as amended by Amendment 18 Erratum 1
 #      (ops/manager18/QP-RULING-1030-s1-memory.md): P + S + N + M <= L, where P = memory.current - inactive_file - active_file + file_mapped of
@@ -28,10 +30,13 @@
 #      `systemctl --user list-units` (never read as "no units") refuse. Read-only: no cgroup file is written. If not, it WAITS NOTHING and exits 10: the start moves
 #      (a slip under Amendment 17 item 2), it is never started uncapped;
 #   7. starts `python -m tools.h5_shadow` from the S* worktree under `systemd-run --user --scope -p MemoryMax=1500M -p MemorySwapMax=0 --unit=q50s1-shadow` and stops that scope on TERM,
-#      INT and EXIT (miscusi_job_cancel leaves --scope children alive: this job stops its own scope). The shadow's args: --fresh-forward ARENA --q-star-sol 50 --sockets 3 --syn-sockets 1
-#      and the two public ws URLs of scripts/research/arena-h5.sh. bx10 is off at Q* 50 in code.
+#      INT and EXIT (miscusi_job_cancel leaves --scope children alive: this job stops its own scope). The scope gets a fixed --description=q50s1-shadow, so systemd never logs the
+#      command line (which holds the key). The shadow's args: --fresh-forward ARENA --q-star-sol 50 --sockets 3 --syn-sockets 1 and the two providers of scripts/ops/q50s1-feed.sh
+#      (wss://api.mainnet-beta.solana.com and the keyed wss://mainnet.helius-rpc.com/, DEC-031 Amendment 22 item 10). The key is read from the Helius env file at this step (exit 11
+#      if it is missing, unreadable or malformed); the check mode verifies it and prints the URL without its query. bx10 is off at Q* 50 in code.
 # Output: $HOME/data/arena/h5-q50s1-<UTC date>/h5-shadow-<UTC hour>.jsonl (never opened by any worker; the Q50 seal and EXP-024 successor note part A apply).
-# Env (all optional): ARENA_H5_PYTHON (default /var/lib/mal/fast-listener/.venv/bin/python), Q50S1_REPO (default: the checkout this script is in), Q50S1_ARENA (default $HOME/data/arena).
+# Env (all optional): ARENA_H5_PYTHON (default /var/lib/mal/fast-listener/.venv/bin/python), Q50S1_REPO (default: the checkout this script is in), Q50S1_ARENA (default $HOME/data/arena;
+# s1's own arena root under Amendment 22 item 9), Q50S1_HELIUS_ENV (the key file, default /var/lib/mal/fast-listener/helius.env; named by path in the starting line).
 # --check only: Q50S1_NOW_EPOCH (seconds) replaces the clock, so the checks can be rehearsed. --check and --check-memory only (tests): Q50S1_CGROUP_SLICE_DIR replaces the slice's
 # cgroup directory; a real start (no argument) always reads /sys/fs/cgroup/user.slice/user-1002.slice.
 set -eu
@@ -39,7 +44,7 @@ set -f
 S_SHA=5c2ab7c64b21358619e37068c6a53e4d183512ea
 S_TAG=q50-succ-base-1
 CLOCK_MS=1793923200000
-END_MS=1795132800000
+END_MS=1796083200000   # E = 2026-12-01T00:00:00Z = S*'s SUCC_END_MS (DEC-031 Amendment 22 item 8.1)
 WIN_FROM=1793908800   # 2026-11-05T20:00:00Z
 WIN_TO=1793917800     # 2026-11-05T22:30:00Z
 NEW_MAX_MB=1500
@@ -171,18 +176,18 @@ if systemctl --user is-active --quiet "$UNIT.scope" 2>/dev/null; then echo "q50s
 [ ! -e "$OUT" ] || { echo "q50s1-shadow: $OUT exists; a restart on the same day needs a new dir (manager decision)" >&2; exit 9; }
 # 6. memory
 memory_fit
-# 7. start
-WS1=wss://api.mainnet-beta.solana.com
-WS2=wss://public.rpc.solanavibestation.com
+# 7. start (the feed: scripts/ops/q50s1-feed.sh, shared with the smoke)
+. "$HERE/q50s1-feed.sh"
+q50s1_ws2_build || { echo "q50s1-shadow: the Helius key is missing, unreadable or malformed in $Q50S1_HELIUS_ENV: NOT starting (DEC-031 Amendment 22 item 10)" >&2; exit 11; }
 [ -x "$PY" ] || { echo "q50s1-shadow: no python at $PY" >&2; exit 2; }
 "$PY" -I -c 'import websockets, certifi' 2>/dev/null || { echo "q50s1-shadow: websockets/certifi missing in $PY" >&2; exit 3; }
 if [ "$MODE" = "check" ]; then
-  echo "q50s1-shadow: (check) would run in $SRC: systemd-run --user --scope --unit=$UNIT -p MemoryMax=${NEW_MAX_MB}M -p MemorySwapMax=0 env PYTHONPATH=$SRC H5_CODE_SHA=$S_SHA $PY -m tools.h5_shadow --fresh-forward ARENA --q-star-sol 50 --out-dir $OUT --sockets 3 --syn-sockets 1 --ws-url $WS1 --ws-url $WS2"
+  echo "q50s1-shadow: (check) would run in $SRC: systemd-run --user --scope --unit=$UNIT -p MemoryMax=${NEW_MAX_MB}M -p MemorySwapMax=0 env PYTHONPATH=$SRC H5_CODE_SHA=$S_SHA $PY -m tools.h5_shadow --fresh-forward ARENA --q-star-sol 50 --out-dir $OUT --sockets 3 --syn-sockets 1 --ws-url $Q50S1_WS1 --ws-url ${Q50S1_WS2_BASE}<query: key from $Q50S1_HELIUS_ENV, not printed> (systemd-run --description=$UNIT)"
   exit 0
 fi
 cd "$SRC"
 trap 'systemctl --user stop "$UNIT.scope" >/dev/null 2>&1 || true' EXIT TERM INT
-echo "q50s1-shadow: starting rule H5-BOOSTFLOOR-Q50 v1, fresh-forward ARENA, q*=50, out=$OUT, head=$S_SHA, MemoryMax=${NEW_MAX_MB}M, python=$PY"
-systemd-run --user --scope --quiet --unit="$UNIT" -p "MemoryMax=${NEW_MAX_MB}M" -p MemorySwapMax=0 \
+echo "q50s1-shadow: starting rule H5-BOOSTFLOOR-Q50 v1, fresh-forward ARENA, q*=50, out=$OUT, head=$S_SHA, MemoryMax=${NEW_MAX_MB}M, python=$PY, ws=$Q50S1_WS1 ${Q50S1_WS2_BASE} (key from $Q50S1_HELIUS_ENV)"
+systemd-run --user --scope --quiet --unit="$UNIT" --description="$UNIT" -p "MemoryMax=${NEW_MAX_MB}M" -p MemorySwapMax=0 \
   env PYTHONPATH="$SRC" H5_CODE_SHA="$S_SHA" H5_DIRTY="" "$PY" -m tools.h5_shadow --fresh-forward ARENA --q-star-sol 50 --out-dir "$OUT" \
-  --sockets 3 --syn-sockets 1 --ws-url "$WS1" --ws-url "$WS2"
+  --sockets 3 --syn-sockets 1 --ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2"
