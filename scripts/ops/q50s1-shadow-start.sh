@@ -218,8 +218,8 @@ except (OSError, KeyError, ValueError):
 ok = e.get("frozen_sha") == sha and e.get("clock_start_ms") == clock and e.get("window_end_ms_pin") == end and isinstance(e.get("registered_at_ms"), int) and e["registered_at_ms"] < now
 if not ok:
     print("line does not match the table row or registered_at_ms is not before now"); sys.exit(1)
-if sorted(e.get("endpoints") or []) != sorted(eps):
-    print(f"the line's endpoints {e.get('endpoints')} are not this run's feed {eps} (register with the same --ws2)"); sys.exit(1)
+if e.get("endpoints") != eps:
+    print(f"the line's endpoints {e.get('endpoints')} are not this run's feed in this run's order {eps} (register with the same --ws2 and --ws2-first)"); sys.exit(1)
 if e.get("sockets") != sockets:
     print(f"the line's sockets {e.get('sockets')} are not this run's --sockets {sockets} (register with the same --sockets)"); sys.exit(1)
 print("ok")

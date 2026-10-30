@@ -50,5 +50,9 @@ q50s1_ws_args() {  # --sockets N, then the urls in S*'s order (url 0 also feeds 
   elif [ "$Q50S1_WS2_FIRST" = 1 ]; then printf '%s\n' "--sockets $Q50S1_SOCKETS --syn-sockets 1 --ws-url $Q50S1_WS2 --ws-url $Q50S1_WS1"
   else printf '%s\n' "--sockets $Q50S1_SOCKETS --syn-sockets 1 --ws-url $Q50S1_WS1 --ws-url $Q50S1_WS2"; fi
 }
-q50s1_endpoints() { printf '%s\n' "$Q50S1_WS1"; [ -z "$Q50S1_WS2" ] || printf '%s\n' "$Q50S1_WS2"; }
+q50s1_endpoints() {  # in S*'s url order (the registered line records this exact order; the start compares it ordered, QP 6534828256)
+  if [ -z "$Q50S1_WS2" ]; then printf '%s\n' "$Q50S1_WS1"
+  elif [ "$Q50S1_WS2_FIRST" = 1 ]; then printf '%s\n%s\n' "$Q50S1_WS2" "$Q50S1_WS1"
+  else printf '%s\n%s\n' "$Q50S1_WS1" "$Q50S1_WS2"; fi
+}
 q50s1_key_opts() { [ "$Q50S1_WS2_KEYED" = 1 ] || return 0; printf '%s\n' "--key-file $Q50S1_KEY_FILE --keyed-url $Q50S1_WS2"; }

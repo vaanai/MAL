@@ -24,22 +24,23 @@ if [ -n "${Q50S1_ARENA:-}" ] && [ "$Q50S1_ARENA" != "$ARENA" ]; then
 fi
 PY="${MAL_PY:-python3}"
 # usage: q50s1-register.sh --preclock-notebook-ref REF [--apply]   (REF: the notebook entry that lists the pre-clock items; --now-ms is never forwarded)
-APPLY=""; REF=""; WS2_ARG=""; SOCKETS_ARG=3
+APPLY=""; REF=""; WS2_ARG=""; SOCKETS_ARG=3; WS2_FIRST=0
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --apply) APPLY=--apply; shift ;;
     --ws2) [ "$#" -ge 2 ] || { echo "q50s1-register: --ws2 needs a URL" >&2; exit 2; }; WS2_ARG="$2"; shift 2 ;;
     --sockets) [ "$#" -ge 2 ] || { echo "q50s1-register: --sockets needs 1, 2 or 3" >&2; exit 2; }; SOCKETS_ARG="$2"; shift 2 ;;
+    --ws2-first) WS2_FIRST=1; shift ;;
     --preclock-notebook-ref) [ "$#" -ge 2 ] || { echo "q50s1-register: --preclock-notebook-ref needs a value" >&2; exit 2; }; REF="$2"; shift 2 ;;
-    *) echo "q50s1-register: usage: q50s1-register.sh --preclock-notebook-ref REF [--ws2 URL] [--sockets N] [--apply]" >&2; exit 2 ;;
+    *) echo "q50s1-register: usage: q50s1-register.sh --preclock-notebook-ref REF [--ws2 URL [--ws2-first]] [--sockets N] [--apply]" >&2; exit 2 ;;
   esac
 done
 [ -n "$REF" ] || { echo "q50s1-register: --preclock-notebook-ref is required" >&2; exit 2; }
 # the line's endpoints = the shadow's providers (scripts/ops/q50s1-feed.sh): mainnet-beta, plus --ws2 if given; always passed explicitly (the tool's default names Helius,
 # which is OFF for the full window, manager 2026-10-30); the shadow start refuses a line whose endpoints differ from its own --ws2 (exit 8)
-Q50S1_WS2="$WS2_ARG"; Q50S1_WS2_KEYED=0; Q50S1_SOCKETS="$SOCKETS_ARG"; Q50S1_WS2_FIRST=0
+Q50S1_WS2="$WS2_ARG"; Q50S1_WS2_KEYED=0; Q50S1_SOCKETS="$SOCKETS_ARG"; Q50S1_WS2_FIRST="$WS2_FIRST"   # the endpoints are recorded in S*'s url order
 . "$HERE/q50s1-feed.sh"
-q50s1_ws2_build || { echo "q50s1-register: --ws2 must be a host-only key-free wss:// URL distinct from mainnet-beta, and --sockets 1, 2 or 3" >&2; exit 2; }
+q50s1_ws2_build || { echo "q50s1-register: --ws2 must be a host-only key-free wss:// URL distinct from mainnet-beta, --sockets 1, 2 or 3, and --ws2-first needs --ws2" >&2; exit 2; }
 set -- --preclock-notebook-ref "$REF"
 for ep in $(q50s1_endpoints); do set -- "$@" --endpoint "$ep"; done
 set -- "$@" --sockets "$SOCKETS_ARG"
