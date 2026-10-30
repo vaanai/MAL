@@ -46,9 +46,10 @@ class Helpers:
 class TableTests(unittest.TestCase):
     def test_row_values_are_the_registered_ones(self):
         r = si.S1
-        self.assertEqual((r["frozen_sha"], r["clock_start_ms"], r["window_end_ms"], r["end_only_ms"]), ("5c2ab7c64b21358619e37068c6a53e4d183512ea", 1793923200000, 1795132800000, 1796083200000))
+        self.assertEqual((r["frozen_sha"], r["clock_start_ms"], r["window_end_ms"], r["end_only_ms"]), ("5c2ab7c64b21358619e37068c6a53e4d183512ea", 1793923200000, 1796083200000, 1796083200000))
         self.assertEqual((r["clock_start_ms"], si.CLOCK_MS), (qi.END_SEAL_MS, qi.END_SEAL_MS))  # exactly Q50's end-seal: no gap, no overlap
-        self.assertEqual(r["window_end_ms"] - r["clock_start_ms"], 14 * DAY)  # H = 14
+        self.assertEqual(r["window_end_ms"] - r["clock_start_ms"], 25 * DAY)  # H = 25 (power-n item 8.1): E = S*'s SUCC_END_MS
+        self.assertEqual(r["window_end_ms"], r["end_only_ms"])
         self.assertEqual((r["q_star_sol"], r["exit_rule"], r["s0_margin_ms"]), (50.0, "v1", 60_000))
         self.assertEqual(r["rule_sha256"], q50w.Q50_RULE_SHA256)
         self.assertEqual(r["rule"], q50w.Q50_RULE)
@@ -75,10 +76,12 @@ class InstantTests(unittest.TestCase):
 
     def test_earliest_boundary_is_11_11(self):
         self.assertEqual(si.EARLIEST_BOUNDARY_MS, 1794355200000)
-        c = self.trades(25, 5)
+        c = self.trades(40, 5)  # 200 counted trades on 5 dates: branch (i)
         r = si.instant_rule(c, [], now_ms=si.END_MS)
-        self.assertEqual((r["status"], r["instant_ms"]), (si.READ, 1794355200000))
-        r = si.instant_rule(self.trades(25, 4), [], now_ms=si.END_MS)  # 100 trades on 4 dates: not before the next boundary has a 5th date
+        self.assertEqual((r["status"], r["instant_ms"], r["branch"]), (si.READ, 1794355200000, "i"))
+        r = si.instant_rule(self.trades(25, 5), [], now_ms=si.END_MS)  # 125 on 5 dates: below N_s, so the read waits for S_cap (branch (ii))
+        self.assertEqual((r["status"], r["instant_ms"], r["branch"]), (si.READ, si.SCREEN_CAP_MS, "ii"))
+        r = si.instant_rule(self.trades(60, 4), [], now_ms=si.END_MS)  # 240 trades on 4 dates: no boundary has a 5th date
         self.assertEqual(r["status"], si.ENDED)
 
     def test_before_the_boundary_not_yet_and_open_attempt_pends(self):
@@ -92,24 +95,30 @@ class InstantTests(unittest.TestCase):
         self.assertEqual(si.instant_rule(self.trades(5, 10), [], now_ms=si.END_MS - 1)["status"], si.NOT_YET)
         self.assertEqual(si.instant_rule([], [], now_ms=si.END_MS + DAY)["status"], si.ENDED)
 
-    def test_same_function_as_q50_with_the_s1_parameters(self):
-        c = self.trades(30, 8)
-        self.assertEqual(si.instant_rule(c, [], now_ms=si.END_MS), qi.instant_rule(c, [], start_ms=si.CLOCK_MS, end_ms=si.END_MS, now_ms=si.END_MS))
+    def test_no_longer_q50s_single_threshold(self):
+        c = self.trades(30, 8)  # Q50's rule reads at 11-11 (150 counted on 5 dates); s1 needs 200: 210 at 11-13 (7 dates), branch (i)
+        q = qi.instant_rule(c, [], start_ms=si.CLOCK_MS, end_ms=si.END_MS, now_ms=si.END_MS)
+        s = si.instant_rule(c, [], now_ms=si.END_MS)
+        self.assertEqual((q["instant_ms"], s["instant_ms"], s["branch"]), (si.EARLIEST_BOUNDARY_MS, si.CLOCK_MS + 7 * DAY, "i"))
 
-    def test_confirmation_ends_at_e_s1(self):
+    def test_confirmation_ends_at_e(self):
         screen = si.EARLIEST_BOUNDARY_MS
-        c = [screen + d * DAY + i for d in range(5) for i in range(20)]
+        c = [screen + d * DAY + i for d in range(5) for i in range(20)]  # 100 on 5 further dates: below N_c = 300, so the read is at E_c = E (branch (ii))
         r = si.confirmation_instant(c, [], screen_instant_ms=screen, now_ms=si.END_MS)
-        self.assertEqual((r["status"], r["instant_ms"]), (si.READ, screen + 5 * DAY))
-        self.assertGreater(si.END_MS, screen + 5 * DAY)
+        self.assertEqual((r["status"], r["instant_ms"], r["branch"]), (si.READ, si.END_MS, "ii"))
+        self.assertEqual(si.CONFIRM_END_MS, si.END_MS)
+        c3 = [screen + d * DAY + i for d in range(5) for i in range(60)]  # 300 on 5 further dates: branch (i) at the 5th further boundary
+        r = si.confirmation_instant(c3, [], screen_instant_ms=screen, now_ms=si.END_MS)
+        self.assertEqual((r["status"], r["instant_ms"], r["branch"]), (si.READ, screen + 5 * DAY, "i"))
         r = si.confirmation_instant(c[:50], [], screen_instant_ms=screen, now_ms=si.END_MS)
         self.assertEqual(r["status"], si.ENDED)
 
     def test_record_is_write_once_and_carries_the_s1_rule(self):
         import tempfile
-        cls = {"counted": self_trades(25, 5), "excluded": [], "open": [], "refused": []}
+        cls = {"counted": self_trades(40, 5), "excluded": [], "open": [], "refused": []}
         doc = si.record_doc(S1, cls, clock_start_ms=si.CLOCK_MS, end_ms=si.END_MS, now_ms=si.END_MS)
         self.assertEqual((doc["status"], doc["read_instant_ms"], doc["end_seal_ms"], doc["rule"]), (si.READ, 1794355200000, si.END_MS, si.RULE))
+        self.assertEqual((doc["branch"], doc["screen_n"], doc["screen_cap_ms"], doc["floor"], doc["counted_before"]), ("i", 200, si.SCREEN_CAP_MS, 100, 200))
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(si.record(Path(d), doc), "written")
             self.assertEqual(si.record(Path(d), doc), "unchanged")
@@ -251,7 +260,7 @@ class RegisterTests(Helpers, Base):
         self.assertEqual(rc, 0, err.getvalue())
         e = json.loads((self.arena / "bots.json").read_text())["bots"]
         self.assertEqual(set(e), {S1})
-        self.assertEqual((e[S1]["frozen_sha"], e[S1]["clock_start_ms"], e[S1]["window_end_ms"]), (si.S1["frozen_sha"], 1793923200000, 1795132800000))
+        self.assertEqual((e[S1]["frozen_sha"], e[S1]["clock_start_ms"], e[S1]["window_end_ms"]), (si.S1["frozen_sha"], 1793923200000, 1796083200000))
         self.assertEqual(set(sc.BOTS), {V1, V2})
 
 
@@ -327,15 +336,15 @@ class StartRecordTests(Helpers, Base):
         ent = {"clock_start_ms": clock}
         d = self.root / "ledger"
         with mock.patch.object(sc, "attempt_disclosure", return_value="fixture"):
-            r = w.s1_instant(S1, res, ent, d, si.END_MS, dry_run=True)
-            self.assertEqual((r["status"], r["instant_ms"], r["record"]), (si.READ, 1794355200000, "dry run: not written"))
+            r = w.s1_instant(S1, res, ent, d, si.END_MS, dry_run=True)  # 100 counted on 5 dates: branch (ii) at S_cap
+            self.assertEqual((r["status"], r["instant_ms"], r["record"]), (si.READ, si.SCREEN_CAP_MS, "dry run: not written"))
             self.assertFalse((d / S1).exists())
             self.assertEqual(w.s1_instant(S1, res, ent, d, si.END_MS, dry_run=False)["record"], "written")
             self.assertEqual(w.s1_instant(S1, res, ent, d, si.END_MS, dry_run=False)["record"], "unchanged")
             res.rows = rows[:-20]  # a later run that computes a different outcome keeps the old file and counts the conflict
             self.assertEqual(w.s1_instant(S1, res, ent, d, si.END_MS, dry_run=False)["record"], "conflict")
         self.assertEqual(res.counts["q50s1_read_instant_conflict"], 1)
-        self.assertEqual(json.loads((d / S1 / si.INSTANT_FILE).read_text())["read_instant_ms"], 1794355200000)
+        self.assertEqual(json.loads((d / S1 / si.INSTANT_FILE).read_text())["read_instant_ms"], si.SCREEN_CAP_MS)
 
 
 if __name__ == "__main__":

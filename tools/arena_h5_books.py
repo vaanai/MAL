@@ -98,9 +98,13 @@ def instant_file(bot_id: str) -> str:
 def check_recorded_instant(bot_id: str, doc: Mapping[str, Any], counted_decisions: list[int], all_decisions: list[int], ri: int) -> str | None:
     """THE ONE place a read recomputes a book's instant from the ledger's decision timestamps (one per pool) and compares it with the record. Returns None if they agree, else why.
     Q50 (Am.11 item 1): the first boundary with 100 counted trades on 5 dates after the record's clock, with nothing open (the seal already refused an open attempt) and the
-    record's end-seal; every other book: the pinned scorer's read_instant over every attempt."""
+    record's end-seal; s1: tools.arena_h5_q50s_instant.instant_rule (DEC-031 power-n amendment item 8.1) with the record's clock and end, which must be the s1 table row's;
+    every other book: the pinned scorer's read_instant over every attempt."""
     if bot_id == S1_ID and (doc.get("clock_start_ms"), doc.get("end_seal_ms")) != (s1i.CLOCK_MS, s1i.END_MS):
         return f"the record's clock {doc.get('clock_start_ms')} / end {doc.get('end_seal_ms')} are not the s1 table row's"
+    if bot_id == S1_ID:  # s1: the power-n screen rule (200 counted trades, or 100 at B >= S_cap, on 5 dates, by E), never Q50's single threshold
+        r = s1i.instant_rule(counted_decisions, [], start_ms=int(doc["clock_start_ms"]), end_ms=int(doc["end_seal_ms"]), now_ms=ri)
+        return None if r["status"] == s1i.READ and r["instant_ms"] == ri else f"s1 power-n rule recomputed from the ledger gives {r['status']} {r['instant_ms']}"
     if bot_id in AM11_BOOKS:  # Q50 and s1 share Amendment 11's rule; the record carries each book's own clock and end
         r = qi.instant_rule(counted_decisions, [], start_ms=int(doc["clock_start_ms"]), end_ms=int(doc["end_seal_ms"]), now_ms=ri)
         return None if r["status"] == qi.READ and r["instant_ms"] == ri else f"Am.11 rule recomputed from the ledger gives {r['status']} {r['instant_ms']}"
