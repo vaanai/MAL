@@ -340,6 +340,14 @@ class ChecklistTests(unittest.TestCase):
         self.assertIn("FAIL install_bot_not_a_real_arm", out)
         self.assertIn("FAIL mode_unknown", self.run_sh(mode="live")[1])
 
+    def test_reads_dir_and_arena_prefix_are_checked_and_the_fail_names_the_command(self):
+        rc, out = self.run_sh()  # the scratch dirs are owned by the test user, not root: both lines FAIL and name the provisioning command
+        cmd = "install -d -m 0755 -o root -g root /data/mal/arena /data/mal/arena/reads"
+        self.assertIn(f"FAIL arena_prefix_not_root_0755 ({self.d}", out)
+        self.assertIn(f"FAIL reads_dir_not_root_0755 ({self.d / 'reads'}", out)
+        self.assertGreaterEqual(out.count(cmd), 2)
+        self.assertIn(f"sudo {cmd}", (REPO / "docs" / "runbooks" / "hv4-c0-bridge.md").read_text())  # the runbook's Provision step, exact
+
     def test_the_base_unit_text_passes_its_own_unit_checks(self):
         rc, out = self.run_sh()
         for ok in ("no_credential_directives_in_unit", "no_environment_file_in_unit", "no_key_like_environment_in_unit", "no_bind_to_key_locations",
