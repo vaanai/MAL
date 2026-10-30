@@ -138,7 +138,10 @@ class CardSink:
 
 # ------------------------------------------------------------------------------------------------------------------------------ chain client
 CHAIN_SPEND_FILE = "chain-prefetch-spend.json"
-RPC_CALLS_PER_H = 1_000  # DESIGN section 6: "its own chain cache and a 1,000 calls/h cap"
+# DESIGN section 6 said "its own chain cache and a 1,000 calls/h cap". Fix C (smoke #1806): demand was about 1,440 calls/h, so the free-running prefetcher hit
+# the cap and stopped for about 15 min an hour (69 chain_stale card refusals). HV6 now uses HV4 v2's 2,000 calls/h, paced (tools/hv6_prefetch.py); owner note
+# 2026-10-28 ("extra Helius credits for HV6", about +24,000 calls a day, about 0.29M credits over 12 days). Every credit is reported per job.
+RPC_CALLS_PER_H = 2_000
 RPC_CALLS_PER_DAY = 24 * RPC_CALLS_PER_H
 WATCH_MAX_PER_ARM = 10  # = hv4_arms.WATCH_MAX_PER_ARM (a test pins it)
 PROVIDERS = ("public", "helius")
@@ -184,6 +187,11 @@ class ChainSource:
         if self.prefetch is not None:
             self.prefetch.watch(items, hot, now_ms, vols=vols)
 
+    def admit(self, items: Any, now_ms: int) -> int:
+        """Fix C: hand the prefetcher pools seen passing the filters between scans (tools.hv6_prefetch.PacedPrefetcher.admit); 0 without such a prefetcher."""
+        fn = getattr(self.prefetch, "admit", None)
+        return int(fn(items, now_ms)) if fn is not None else 0
+
     @staticmethod
     def _ext_values(mf: Any) -> dict[str, Any]:
         out: dict[str, Any] = {}
@@ -220,16 +228,17 @@ class ChainSource:
 
 
 def live_chain_source(root: str | os.PathLike, env: Mapping[str, str] | None = None) -> ChainSource:
-    """HV6's own RpcClient (state under the HV6 root, 1,000 calls/h = 24,000/day, provider pinned) in an HV4Chain passed explicitly, and a policy-v2 prefetcher
-    (passed explicitly: MAL_HV4_PREFETCH_POLICY is never read) whose spend file is under the HV6 root and whose hourly budget is 1,000. The thread is not started here."""
+    """HV6's own RpcClient (state under the HV6 root, 2,000 calls/h = 48,000/day, provider pinned) in an HV4Chain passed explicitly, and HV6's PACED policy-v2
+    prefetcher (tools.hv6_prefetch.PacedPrefetcher, fix C; passed explicitly: MAL_HV4_PREFETCH_POLICY is never read) whose spend file is under the HV6 root and
+    whose hourly budget is 2,000. The thread is not started here."""
     refuse_hv4_chain_state(env)
     pinned_provider(env)
     from tools.hv4_chain import HV4Chain, RpcClient, RpcConfig
-    from tools.hv4_prefetch import ChainPrefetcher
+    from tools.hv6_prefetch import PacedPrefetcher
 
     chain = HV4Chain(RpcClient(RpcConfig.from_env(env), state_path=chain_state_path(root), daily_call_cap=RPC_CALLS_PER_DAY))
     spend = Path(H.check(Path(root) / CHAIN_SPEND_FILE, "w"))
-    return ChainSource(chain, ChainPrefetcher(chain, ChainSource.compose, spend_path=spend, policy="v2", hourly_budget=RPC_CALLS_PER_H))
+    return ChainSource(chain, PacedPrefetcher(chain, ChainSource.compose, spend_path=spend, policy="v2", hourly_budget=RPC_CALLS_PER_H))
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ per-tick policy
@@ -491,6 +500,11 @@ class Book:
 HOUSEKEEP_EVERY_MS = 5 * MIN_MS      # memory bounds run every 5 minutes of TAPE time (t_recv_ms of the rows), so warm-up, live and replay prune alike
 WATCH_MAX_POOLS = 2_000              # the prefetcher's watch set: tagged + board pools always, then the top pools by 60-min volume, never more than this many
 MAX_INFLIGHT_CALLS = 16             # fix B: model calls one scan may have in flight at once (<= 3 chunks x 4 arms with 8 tags + a 4-card board)
+# Fix C (live only, never in replay): between scans the runner looks for pools that newly pass the filters and admits them to the prefetch store, so a pool
+# tagged at the next :02 scan has a fact stamped before it (smoke #1806: about 7 steady-state chain_unavailable refusals were such first sightings). And before
+# the clock it warms the store for PREWARM_MS (smoke #1806: about 8 refusals in the first 10 minutes, with the prefetch started at the clock).
+LOOKAHEAD_SECONDS = (12, 22, 32, 42, 52)
+PREWARM_MS = 15 * MIN_MS
 
 
 @dataclass
@@ -572,6 +586,19 @@ def prints_15m_short(events: Any, now_ms: int, need: int) -> bool:
             if n >= need:
                 return False
     return True
+
+
+def watch_set(res: Any, held: set) -> tuple[list[str], set, int]:
+    """The prefetcher's watch set for one scan result (QP 930), as (pools in candidate order, hot pools, cold candidates the cap cut). The cap is WATCH_MAX_POOLS
+    but a pool the book still needs facts for is never cut: tagged, board and top-25-by-volume pools, and `held` (pools with an open, pending or retrying position
+    or an active arm watch). Only cold candidates can be cut. Hot = tagged, board and top 25 (the refresh priority is unchanged by held pools). Used by the scan
+    and by the pre-clock warm-up, so both hand the prefetcher the same sets."""
+    tagged_all = {t.pool_id for t in res.tags}
+    top = sorted(res.candidates, key=lambda q: (-(res.feats[q].get("vol_60m") or 0.0), q))[:25]
+    keep = tagged_all | set(res.board) | set(top) | held
+    ranked = sorted(res.candidates, key=lambda q: (q not in keep, -(res.feats[q].get("vol_60m") or 0.0), q))[:max(WATCH_MAX_POOLS, len(keep & set(res.candidates)))]
+    rset = set(ranked)
+    return [q for q in res.candidates if q in rset], tagged_all | set(res.board) | set(top), len(res.candidates) - len(ranked)
 
 
 class Runner:
@@ -1039,25 +1066,17 @@ class Runner:
         watch = getattr(self.chain, "watch", None)  # a chain source with a background prefetch learns the watchlist (no RPC in the scan)
         # The watch set is capped at WATCH_MAX_POOLS, but a pool the book still needs facts for is NEVER cut (QP 930): tagged, board and top-25-by-volume pools, every
         # candidate holding an open (so pending or retrying) position in any arm, and every candidate with an active arm watch. Only cold candidates can be cut.
-        tagged_all = {t.pool_id for t in res.tags}
-        top = sorted(res.candidates, key=lambda q: (-(res.feats[q].get("vol_60m") or 0.0), q))[:25]
-        held = {pos.pool for b in self.books.values() for pos in b.open.values()} | {w["pool"] for b in self.books.values() for w in b.watches}
-        keep = tagged_all | set(res.board) | set(top) | held
-        ranked = sorted(res.candidates, key=lambda q: (q not in keep, -(res.feats[q].get("vol_60m") or 0.0), q))[:max(WATCH_MAX_POOLS, len(keep & set(res.candidates)))]
+        ranked, hot, capped = watch_set(res, self._held_pools())
         if fast:
             for k in [k for k in self._norm if k not in used_norm]:
                 del self._norm[k]  # only pools read in this scan keep a cache entry (bounded by the candidate count)
         res.counts["pools"] += pre[0]
         res.counts["filter_fail"] += pre[0]
-        capped = len(res.candidates) - len(ranked)
         self.counters["max_candidates_per_scan"] = max(self.counters.get("max_candidates_per_scan", 0), len(res.candidates))
         if capped > 0:
             self._count("scans_cap_bound")
             self._count("watch_capped", capped)
         if watch is not None:
-            hot = tagged_all | set(res.board) | set(top)  # the prefetcher's refresh priority is unchanged by held pools
-            rset = set(ranked)
-            ranked = [q for q in res.candidates if q in rset]  # candidate order, as the uncapped call
             mint_of = (lambda q: self.state.pool(q).mint) if stream else (lambda q: snap_of[q].get("mint"))
             watch([(q, mint_of(q)) for q in ranked], hot, self._now(T), vols={q: res.feats[q].get("vol_60m") or 0.0 for q in ranked})
         cards: dict[str, dict] = {}
@@ -1080,6 +1099,83 @@ class Runner:
         self._x_round(res.x_tags, cards, T, tp)
         order = [cards[t.pool_id] for t in carded_tags] + [cards[p] for p in res.board if p in cards]
         self._llm_entry_round(order, T, tp)
+
+    def _held_pools(self) -> set:
+        return {pos.pool for b in self.books.values() for pos in b.open.values()} | {w["pool"] for b in self.books.values() for w in b.watches}
+
+    # -- fix C: the prefetch store learns new filter-pass pools between scans (live only) and is warmed before the clock
+    def lookahead_on(self) -> bool:
+        """Live mode with HV6's paced prefetcher only. A replay, a drill or a test chain without `admit` never runs any of this."""
+        return bool(self.cfg.live) and getattr(self.chain, "prefetch", None) is not None and hasattr(getattr(self.chain, "prefetch", None), "admit")
+
+    def _prefiltered(self, T: int):
+        """(pool, candle-less snapshot) of the pools the scan's fast path would read (prescreen and the prints-in-15-min count, as `scan`), no cache touched."""
+        state_now = self.state.now_ms
+        for p in self.state.pools_wsol(lambda q: q.prog == "pumpswap"):
+            verdict = C.prescreen(lite_snapshot(p, state_now), as_of_ms=T)
+            if verdict == C.PRESCREEN_GO and prints_15m_short(p.events, state_now, C.PRINTS_15M_MIN):
+                verdict = C.PRESCREEN_FAIL
+            if verdict == C.PRESCREEN_FAIL:
+                continue
+            snap = self.state.snapshot(p.id, candles=False)
+            if snap is not None:
+                yield p, snap
+
+    def lookahead(self, T: int) -> int:
+        """Admit to the prefetch store every pool that passes the filters and the 2 h guard at T (state polled to T-1) and is not in the store yet. No card, no
+        decision, no log row, no limiter or cooldown; only the lookahead_* counters. The scan at :02 still decides everything."""
+        known = self.chain.prefetch.pools
+        new = []
+        for p, snap in self._prefiltered(T):
+            if p.id in known:
+                continue
+            try:
+                if not C.filters(snap, as_of_ms=T).passed:
+                    continue
+                H.age_guard(snap)
+            except (C.LeakageError, C.CardRefused):
+                continue
+            new.append((p.id, p.mint))
+        n = self.chain.admit(new, self._now(T)) if new else 0
+        self._count("lookahead_passes")
+        self._count("lookahead_admitted", n)
+        return n
+
+    def _prewarm_watch(self, T: int) -> None:
+        """Before the clock, at :02: hand the prefetcher what the scan at T would hand it (watch_set over H.scan on a scratch cooldown copy, board on), and
+        nothing else: no card, no log row, no cooldown or X cap recorded."""
+        scratch = C.SetupLimiter()
+        scratch._last = dict(self.limiter._last)
+        state_now = self.state.now_ms
+        items = ((snap, C.norm_prints(list(p.events)), C.series_from_pool_candles(p.candles, state_now // MIN_MS, STATE_CANDLE_MIN, STATE_LAMPORTS))
+                 for p, snap in self._prefiltered(T))
+        res = H.scan(items, as_of_ms=T, limiter=scratch, x_cap=None, board_on=True)
+        ranked, hot, _ = watch_set(res, self._held_pools())
+        self.chain.watch([(q, self.state.pool(q).mint) for q in ranked], hot, self._now(T), vols={q: res.feats[q].get("vol_60m") or 0.0 for q in ranked})
+        self._count("prewarm_watches")
+
+    def prewarm(self, start_ms: int, sleep: Callable[[float], None] = time.sleep) -> int:
+        """Live only, before the first tick: from max(now, start - PREWARM_MS) to start, poll the state each second (the same rows the first tick would read,
+        in the same order), hand over the scan's watch set at :02 and admit new filter-pass pools at the lookahead seconds. Returns the seconds warmed."""
+        if not self.lookahead_on():
+            return 0
+        now = self.now_fn()
+        T = max(now - now % TICK_MS + TICK_MS, start_ms - PREWARM_MS)
+        n = 0
+        while T < start_ms and not self._stop:
+            wait = (T + 1000 - self.now_fn()) / 1000.0
+            if wait > 0:
+                sleep(wait)
+            self.poll_to(T)
+            sec = (T // 1000) % 60
+            if sec == H.SCAN_SECOND_MS // 1000:
+                self._prewarm_watch(T)
+            elif sec in LOOKAHEAD_SECONDS:
+                self.lookahead(T)
+            T += TICK_MS
+            n += 1
+        self._count("prewarm_seconds", n)
+        return n
 
     def _card(self, pool: str, T: int, snap: Mapping, prints: list, tag: Any, feats: Mapping) -> dict | None:
         part = self.chain.chain_part(pool, snap.get("mint"), T, self.slot)
@@ -1533,8 +1629,12 @@ class Runner:
             self.watches(T)
             self.rechecks(T)
             self.regime_round(T)
+        elif (T // 1000) % 60 in LOOKAHEAD_SECONDS and self.lookahead_on():  # fix C, live only: never in a replay
+            self.lookahead(T)
 
     def run(self, start_ms: int, end_ms: int, sleep: Callable[[float], None] = time.sleep) -> None:
+        if self.cfg.live:
+            self.prewarm(start_ms, sleep)  # fix C: a no-op unless the clock is still ahead (a resumed run starts at once) and the chain has the paced prefetcher
         T = start_ms
         while T < end_ms and not self._stop:
             if self.cfg.live:
