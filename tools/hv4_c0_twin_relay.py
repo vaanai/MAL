@@ -407,8 +407,11 @@ def serve_main(argv: Sequence[str], *, stdin: BinaryIO | None = None, stdout: Bi
         finally:
             if use_alarm:
                 signal.alarm(0)
-    stdout.write(json.dumps(reply, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("ascii") + b"\n")
-    stdout.flush()
+    try:
+        stdout.write(json.dumps(reply, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("ascii") + b"\n")
+        stdout.flush()
+    except BrokenPipeError:  # the client is gone (its timeout); nothing to tell it
+        return EXIT_REFUSED
     return EXIT_OK if reply.get("ok") else EXIT_REFUSED
 
 

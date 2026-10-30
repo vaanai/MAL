@@ -476,6 +476,36 @@ class ClientTests(Tmp):
         self.assertEqual(r.failures, 0)
         self.assertEqual(json.loads(Path(self.twins + ".run.json").read_text())["covered_trip_ids"], ["MINT1", "MINT2"])
 
+    def test_a_new_trip_is_uncovered_until_the_next_cycle_then_the_twin_stamp_is_good_again(self):
+        """With the bridge's own recorder and parity state: a landed buy makes the stamp None (P7, no buy) until a cycle that carries the new trip lands."""
+        rec = ParityRecorder(self.tmp / "parity")
+        buy = dict(landed=True, tokens_received=1000, spend_lamports=50_000_000, signature="sigA", decision_t_ms=NOW - 20_000, confirm_seen_ms=NOW - 18_000, fee_lamports=60_000,
+                   expected_tokens=1000, tokens_source="tx")
+        rec.on_buy("MintA", buy, NOW - 18_000, NOW + 300_000)
+        clock = {"now": NOW}
+        r = self.relay(trips_file=str(rec.trips_path), clock_ms=lambda: clock["now"])
+
+        def p7(now):
+            st = c0p.parity_state(now, loss_ok=True, balance_ms=now, twins_file=self.twins, trip_ids=rec.trips, chain_ok=True, control_ok=True, hard_halts=())
+            st["last_landed_ms"] = rec.last_landed_ms
+            return [x for x in alp.state_problems(st, now) if x.startswith("twin")], st
+        self.assertEqual(p7(NOW)[0], ["twin missing"], "no pair yet: no stamp")
+        with mock.patch.object(R, "run_bounded", self.fake_server()):
+            self.assertTrue(r.cycle())
+            self.assertEqual(p7(NOW + 1000)[0], [])
+            clock["now"] = NOW + 5000
+            rec.on_buy("MintB", dict(buy, signature="sigB", confirm_seen_ms=NOW + 4000), NOW + 4000, NOW + 300_000)  # a second buy lands
+            self.assertEqual(p7(NOW + 5001)[0], ["twin missing"], "the new trip is not covered: no stamp, so P7 and no buy")
+            clock["now"] = NOW + 6000
+            self.assertTrue(r.cycle())
+            self.assertEqual(p7(NOW + 6500)[0], [])
+            # an exit alone (no new trip): the stamp predates the landed tx until a cycle that started after it lands
+            rec.on_sell("MintA", dict(landed=True, pnl_lamports=5, tokens=1000, sol_received_lamports=50_000_005, confirm_seen_ms=NOW + 7000, exit_reason="timer", fee_lamports=60_000), NOW + 7000)
+            self.assertEqual(p7(NOW + 7001)[0], ["twin older than the last landed tx"])
+            clock["now"] = NOW + 7500
+            self.assertTrue(r.cycle())
+            self.assertEqual(p7(NOW + 8000)[0], [])
+
     def test_install_refuses_links_and_irregular_targets_and_touches_nothing(self):
         self.trips.write_bytes(jl([synth_trip()]))
         other = self.tmp / "other"
