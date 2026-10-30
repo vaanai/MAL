@@ -104,8 +104,8 @@ class Hv4Env(Env):
         self.row({"kind": "start", "binding": "b", "frozen_sha": sha, "rules": [self.bot]})
 
 
-def write_feed(root, bot_id, now_ms, state="connected", **over):
-    """A synthetic forwarder status file (decision_forwarder_v1 format) at <root>/transport/<bot>.status.json."""
+def write_feed(root, bot_id, now_ms, state="connected", tapegaps=True, **over):
+    """A synthetic forwarder status file (decision_forwarder_v1 format) at <root>/transport/<bot>.status.json, plus a fresh carried tapegaps stream (see write_tapegaps)."""
     d = Path(root) / "transport"
     d.mkdir(parents=True, exist_ok=True)
     st = {"schema": c0.FEED_SCHEMA, "bot": bot_id, "state": state, "ms": now_ms, "last_frame_ms": now_ms, "last_remote_ms": now_ms, "seq": 1, "f": "x.jsonl", "o": 0,
@@ -113,6 +113,21 @@ def write_feed(root, bot_id, now_ms, state="connected", **over):
     st.update(over)
     f = d / f"{bot_id}.status.json"
     f.write_text(json.dumps(st, sort_keys=True) + "\n")
+    if tapegaps:
+        write_tapegaps(root, bot_id, now_ms)
+    return f
+
+
+def write_tapegaps(root, bot_id, now_ms, rows=None):
+    """A synthetic CARRIED relay stream (<root>/transport/<bot>.tapegaps.jsonl) whose mtime is the test clock, as the forwarder's puller sets it (the source pass instant).
+    rows=None keeps the rows already there (an empty file when new); a list rewrites them. Every `write_feed` calls this, so a test that expects buys has a fresh stream
+    (the hv4_c0 profile refuses new buys without one, QP #969 P7-c); pass tapegaps=False to write_feed for the missing/stale cases."""
+    d = Path(root) / "transport"
+    d.mkdir(parents=True, exist_ok=True)
+    f = d / f"{bot_id}.tapegaps.jsonl"
+    if rows is not None or not f.exists():
+        f.write_text("".join(json.dumps(r, sort_keys=True) + "\n" for r in (rows or [])))
+    os.utime(f, ns=(now_ms * 1_000_000, now_ms * 1_000_000))
     return f
 
 
