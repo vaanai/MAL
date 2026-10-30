@@ -33,8 +33,10 @@ PR 5a notes (still `hv4_c0_incomplete`: nothing here removes the live refusal).
   * PRECONDITION 7 IS NOT MET FOR TAPE GAPS. What is built is the CONSUMER: the `feed_break` latch (hard), its clear (10 minutes counted from the END of the gap AND a
     root-owned review file naming EXACTLY the newest gap instant) and the recorder's `gap` marking. The PRODUCER of the book's own tape gap records (data_loss,
     process_restart, feed_restart, start, takeover, gap_silence_ms breaches): the frozen HV4 runner (9ed4c5ff) emits none and must not change, so a separate read-only
-    relay, tools/hv4_gap_relay.py (kind and instant only), is built in this PR but NOT installed or carried to the bridge host, and its slot-jump (gap_slots) rule is not
-    covered. Until it runs, `feed_break` is fed only by the forwarder's TRANSPORT gap log
+    relay, tools/hv4_gap_relay.py (kind and instant only), is built but NOT installed, and its slot-jump (gap_slots) rule is not covered. The CARRY to the bridge host is built
+    (tools/decision_forwarder.py serve --tapegaps-file, the `tg` frame; the puller writes <root>/transport/<bot_id>.tapegaps.jsonl with the source pass instant as its mtime)
+    but NOT installed. FAIL CLOSED (P7-c): in this profile a missing or stale carried stream refuses NEW buys (`tape_gap_stream_missing` / `tape_gap_stream_stale`, see
+    tape_gap_stream_problem; no latch, exits run). Until the relay runs and is carried, `feed_break` is fed only by the forwarder's TRANSPORT gap log
     (stall, disconnect, reconnect, mismatch, error, torn tail) and a forwarder `stopped_mismatch`; that is a stricter extra guard, not the §5.2 halt.
   * `transport_stall:<why>` refuses new buys while the forwarder status is not live (no latch; clears by itself; an extra guard). `a3_pins_changed` latches on any
     A3 halt flag other than synthetic_share_high (DEC-032 Am.3: that one is decided by the pooled guard's a3-applied.jsonl, see a3_problem), an unreadable/stale record, or a missing record file in live (cleared only by the manager). Exits keep running under all of them.
@@ -1008,6 +1010,51 @@ def gap_log_ms(path: str) -> tuple[list[int], list[int], str | None]:
 def gap_records_ms(path: str) -> tuple[list[int], str | None]:
     g, _r, bad = gap_log_ms(path)
     return g, bad
+
+
+# --- QP removal precondition 7, P7-c (#969 comment 6424766650): a missing or stale tape-gap stream is NOT "no gaps". gap_log_ms reads a missing file as no gaps, so a dead relay
+# (or a dead carry) would remove the DEC-032 s5.2 halt without any sign. In this profile the carried stream <root>/transport/<bot_id>.tapegaps.jsonl must exist and be fresh to buy.
+# The relay (tools/hv4_gap_relay.py) rewrites the whole file atomically on every pass and tools/decision_forwarder.py sets the carried copy's mtime to the SOURCE pass instant,
+# so the mtime IS the relay's heartbeat on this host. A refusal of NEW buys only: it is not a latch, it clears when a fresh pass arrives, and exits keep running.
+TAPE_GAP_STREAM_MAX_AGE_MS = 180_000
+# WHY 180,000 ms (a declared choice, not a measurement): the relay must run a pass well inside the 120,000 ms the arena compactor waits before it deletes a closed hour's
+# .jsonl (arena_feed COMPACT_GRACE_MS, QP P7-b), so its cadence is pinned under 120 s; 180 s is 1.5x that ceiling (a slow pass or one missed pass does not flap the guard) plus the
+# forwarder hop (p90 36.22 ms, P46 DESIGN s4). Too tight only costs buys (fail closed); too loose lets a dead relay hide a gap for that long. The relay's real pass duration on a full
+# day of tape is NOT measured here: it is an acceptance item of the install pack (P7-e), and this bound must be re-checked against it.
+
+
+def tape_gap_stream_path(root: str, bot_id: str) -> str:
+    return os.path.join(root, "transport", f"{bot_id}.tapegaps.jsonl")
+
+
+def tape_gap_stream_problem(path: str, now_ms: int) -> str | None:
+    """None when the carried tape-gap stream exists and its mtime (the source pass instant) is within TAPE_GAP_STREAM_MAX_AGE_MS of now; else the refusal reason for new buys.
+    `tape_gap_stream_missing`, `tape_gap_stream_stale`, and (fail closed) `tape_gap_stream_future` (an mtime more than FEED_SKEW_MS ahead of now is a wrong clock or a forged
+    stamp, never a fresh relay: it would otherwise never age out), `tape_gap_stream_not_regular` (a link, hard link or other non-file), `tape_gap_stream_unreadable`.
+    Stat only: the content is judged by gap_log_ms in the bridge's gap_tick (a malformed or oversize stream latches feed_break there)."""
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return "tape_gap_stream_missing"
+    except OSError:
+        return "tape_gap_stream_unreadable"
+    if not stat.S_ISREG(st.st_mode) or st.st_nlink != 1:
+        return "tape_gap_stream_not_regular"
+    mtime_ms = st.st_mtime_ns // 1_000_000
+    if mtime_ms - now_ms > FEED_SKEW_MS:
+        return "tape_gap_stream_future"
+    if now_ms - mtime_ms > TAPE_GAP_STREAM_MAX_AGE_MS:
+        return "tape_gap_stream_stale"
+    return None
+
+
+def tape_gap_refusal(root: str, bot_id: str, now_ms: int, live: bool) -> str | None:
+    """The bridge's feed_refusal step for the carried tape-gap stream (P7-c): tape_gap_stream_problem on <root>/transport/<bot_id>.tapegaps.jsonl. Same exemption as the
+    forwarder status file: only a DRY bridge on a SYNTHETIC_MARKER root may run without the file; LIVE never, and a file that is there and old always refuses."""
+    path = tape_gap_stream_path(root, bot_id)
+    if not live and not os.path.lexists(path) and synthetic_root(root):
+        return None
+    return tape_gap_stream_problem(path, now_ms)
 
 
 def gap_clear_problem(path: str, bot_id: str, last_gap_ms: int, now_ms: int, root_check: Any = None, free_since_ms: int | None = None) -> str | None:

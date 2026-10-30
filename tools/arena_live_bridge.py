@@ -705,11 +705,16 @@ class Bridge:
             return why
         path = c0.feed_status_path(self.cfg.root, self.cfg.bot_id)
         if self.cfg.mode != LIVE and not os.path.lexists(path) and c0.synthetic_root(self.cfg.root):
-            return None  # only a synthetic fixture root may run without a forwarder status; any other root (dry included) refuses
-        why = c0.feed_gap_problem(path, self.cfg.bot_id, now)
+            why = None  # only a synthetic fixture root may run without a forwarder status; any other root (dry included) refuses
+        else:
+            why = c0.feed_gap_problem(path, self.cfg.bot_id, now)
         if why:
             self._count("transport_stall_refusal")
-        return f"transport_stall:{why}" if why else None
+            return f"transport_stall:{why}"
+        why = c0.tape_gap_refusal(self.cfg.root, self.cfg.bot_id, now, self.cfg.mode == LIVE)  # P7-c (QP #969): a missing or stale carried tape-gap stream refuses new buys
+        if why:
+            self._count("tape_gap_stream_refusal")
+        return why
 
     def _note_gap(self, gap_ms: int, why: str) -> None:
         """One COVERAGE-LOSING record (kind and instant only), e.g. a `gap` row of the decision stream. Open trades are marked `gap` (DEC-032 s5.2; Am.21 3.1).
