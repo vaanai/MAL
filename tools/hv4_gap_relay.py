@@ -418,7 +418,7 @@ def interval_problem(v: float | None) -> str | None:
 
 def out_dir_problem(out_dir: str, tape_dir: str) -> str | None:
     """The relay never writes under the arena tree and never inside (or around) the tape dir. The string check comes first so a refused path is never statted."""
-    norm = os.path.normpath(os.path.abspath(out_dir))
+    norm = re.sub(r"/+", "/", os.path.normpath(os.path.abspath(out_dir)))  # normpath keeps a leading "//": collapse it so "//data/mal/arena/x" is caught too
     if norm == ARENA_ROOT or norm.startswith(ARENA_ROOT + "/"):
         return "out_dir_under_arena_root"
     o, t = os.path.realpath(out_dir), os.path.realpath(tape_dir)
