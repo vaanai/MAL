@@ -63,7 +63,7 @@ exec "$@"
     "journalctl": '#!/bin/sh\ncase "$*" in *"-n 0"*) exit "${FAKE_JOURNAL_RC:-0}" ;; esac\necho "Started q50s1-smoke.scope - q50s1-smoke."\n',
 }
 FAKE_SHADOW_PY = r'''#!/bin/sh
-case "$*" in *"import websockets"*) exit 0 ;; esac
+case "$*" in *"import websockets"*|*" --dry "*) exit 0 ;; esac
 echo "$$" > "$FAKE_PIDFILE"
 [ -n "${FAKE_PY_ARGS:-}" ] && printf '%s\n' "$@" > "$FAKE_PY_ARGS"
 OUT=""
@@ -85,10 +85,12 @@ NEW_MAX_MB=1500
 [ "${1:-}" = "--check-memory" ] && { echo "q50s1-shadow: (check-memory) fake"; exit "${FAKE_MEM_RC:-0}"; }
 exit 2
 . "$HERE/q50s1-feed.sh"
-systemd-run --user --scope --quiet --unit="$UNIT" --description="$UNIT" -p MemoryMax=1500M -p MemorySwapMax=0 env python -m tools.h5_shadow --fresh-forward ARENA --q-star-sol 50 \\
+systemd-run --user --scope --quiet --unit="$UNIT" --description="$UNIT" -p MemoryMax=1500M -p MemorySwapMax=0 env "$PY" -I "$HERE/q50s1-ws-launch.py" --src "$SRC" --key-file "$Q50S1_KEY_FILE" --keyed-url "$Q50S1_WS2" -- --fresh-forward ARENA --q-star-sol 50 \\
   --out-dir X --sockets 3 --syn-sockets 1 --ws-url "$Q50S1_WS1" --ws-url "$Q50S1_WS2"
 """
-KEY = "fake0key-5678"
+KEYLIKE = re.compile(r"(?i)api[-_]?key|[?&](key|token|auth|apikey)=|://[^/\s]*@")
+WS1, WS2 = "wss://api.mainnet-beta.solana.com", "wss://mainnet.helius-rpc.com/"
+KEY = "fixture0key-5678abcd"
 
 
 def write_exec(path: Path, text: str) -> Path:
@@ -163,14 +165,15 @@ class Smoke(Base):
         self.repo = self.d / "repo"
         write_exec(self.repo / "scripts" / "ops" / "q50s1-shadow-start.sh", FAKE_START_SH)
         shutil.copy(REPO / "scripts" / "ops" / "q50s1-feed.sh", self.repo / "scripts" / "ops" / "q50s1-feed.sh")
-        self.keyfile = self.d / "helius.env"
-        self.keyfile.write_text(f"HELIUS_API_KEY={KEY}\n")  # fixture key; the real key file is never read by a test
+        shutil.copy(REPO / "scripts" / "ops" / "q50s1-ws-launch.py", self.repo / "scripts" / "ops" / "q50s1-ws-launch.py")
+        self.keyfile = self.d / "keyfile"
+        self.keyfile.write_text(f"HELIUS_API_KEY={KEY}\n")  # a fixture key; the real key file is never read by a test
         (self.repo / "tools").mkdir(parents=True)
         shutil.copy(REPO / "tools" / "q50s1_health.py", self.repo / "tools" / "q50s1_health.py")
         self.py = write_exec(self.d / "fakepy", FAKE_SHADOW_PY)
 
     def run_smoke(self, *args, **env):
-        base = dict(Q50S1_REPO=self.repo, ARENA_H5_PYTHON=self.py, FAKE_START_ROW=START_ROW, Q50S1_HELIUS_ENV=self.keyfile)
+        base = dict(Q50S1_REPO=self.repo, ARENA_H5_PYTHON=self.py, FAKE_START_ROW=START_ROW, Q50S1_KEY_FILE=self.keyfile)
         base.update(env)
         return self.sh(SMOKE, *args, **base)
 
@@ -178,10 +181,11 @@ class Smoke(Base):
         r = self.run_smoke("--check")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("--fresh-forward ARENA --q-star-sol 50", r.stdout)
-        self.assertIn("--sockets 3 --syn-sockets 1 --ws-url wss://api.mainnet-beta.solana.com --ws-url wss://mainnet.helius-rpc.com/<query: key from", r.stdout)
-        self.assertIn("--description=q50s1-smoke -p MemoryMax=1500M -p MemorySwapMax=0", r.stdout)
+        self.assertIn(f"--sockets 3 --syn-sockets 1 --ws-url {WS1} --ws-url {WS2} (the key is added inside the process)", r.stdout)
+        self.assertIn(f"--keyed-url {WS2} -- --fresh-forward ARENA", r.stdout)
         self.assertNotIn(KEY, r.stdout + r.stderr)
-        self.assertNotIn("api-key", r.stdout + r.stderr)
+        self.assertIn("--description=q50s1-smoke -p MemoryMax=1500M -p MemorySwapMax=0", r.stdout)
+        self.assertIsNone(KEYLIKE.search(r.stdout + r.stderr))
         self.assertIn(f"H5_CODE_SHA={S_SHA}", r.stdout)
         self.assertRegex(r.stdout, r"--out-dir \S+/data/arena/h5-smoke-q50s1-\d{8}T\d{6}Z ")
         self.assertFalse(any(self.arena.iterdir()))
@@ -189,11 +193,12 @@ class Smoke(Base):
     def test_check_against_the_real_start_script(self):
         r = self.run_smoke("--check", Q50S1_REPO=REPO)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("--ws-url wss://api.mainnet-beta.solana.com --ws-url wss://mainnet.helius-rpc.com/<query", r.stdout)
-        self.assertNotIn(KEY, r.stdout + r.stderr)
+        self.assertIn(f"--ws-url {WS1} --ws-url {WS2}", r.stdout)
+        self.assertIsNone(KEYLIKE.search(r.stdout + r.stderr))
 
-    def test_missing_key_refuses_11(self):
-        self.keyfile.write_text("HELIUS_API_KEY=\n")
+    def test_a_keyed_url_in_the_helper_refuses_11(self):
+        feed = self.repo / "scripts" / "ops" / "q50s1-feed.sh"
+        feed.write_text(feed.read_text().replace("Q50S1_WS2=wss://mainnet.helius-rpc.com/", "Q50S1_WS2='wss://x.example/?api-key=k'"))
         self.assertEqual(self.run_smoke("--check").returncode, 11)
         self.assertEqual(self.run_smoke().returncode, 11)
         self.assertFalse(any(self.arena.iterdir()))
@@ -240,14 +245,14 @@ class Smoke(Base):
         self.assertIn("SMOKE_ITEM k PASS", r.stdout)
         self.assertIn("SMOKE_ITEM g FAIL e_gap=- ", r.stdout)  # no full UTC hour in a 2 s run
         self.assertRegex(r.stdout, r"SMOKE_VERDICT FAIL failed=\[test_overrides,duration,d,g\]")
-        out = r.stdout + r.stderr
-        self.assertNotIn(KEY, out)
-        self.assertNotIn("api-key", out)
         sd = sdargs.read_text().splitlines()
         self.assertIn("--description=q50s1-smoke", sd)
-        self.assertNotIn(KEY, "\n".join(sd))  # systemd-run's own options (the unit) never carry the key
         pa = pyargs.read_text().splitlines()
-        self.assertEqual(pa[-4:], ["--ws-url", "wss://api.mainnet-beta.solana.com", "--ws-url", f"wss://mainnet.helius-rpc.com/?api-key={KEY}"])  # the process argv only (disclosed residual)
+        self.assertEqual(pa[-4:], ["--ws-url", WS1, "--ws-url", WS2])
+        for a in sd + pa + (r.stdout + r.stderr).splitlines():  # QP on #1107: nothing key-like in the unit, the process argv or the output
+            self.assertIsNone(KEYLIKE.search(a), a)
+            self.assertNotIn(KEY, a)
+        self.assertIn("--keyed-url", pa)  # the shadow is started through the launcher
         self.assertNotIn("HIDDENPOOL", r.stdout + r.stderr)
         self.assertNotIn("triggers", r.stdout)
         self.assertFalse((self.home / "data" / "arena-src" / "q50s1-smoke-5c2ab7c6").exists())  # its own worktree is removed
