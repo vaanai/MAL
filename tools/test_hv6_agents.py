@@ -625,3 +625,101 @@ def test_fix_a_reviewer_and_regime_limits_unchanged_in_bundle_spec():
     assert a.MAX_TOKENS["review"] == 4000 and a.MAX_TOKENS["regime"] == 1200
     assert rel.bundle_spec_sha256() == "82848deb4a534ac501604f77c06deb7fdd9e2c85a2915627f91675955c07fd4c"   # the pack's pin: fix A does not move it
     assert rel.regime_spec_sha256() == "50be8a3f2e088c64511aeb1fb127277d9e0438e3b5ce44e46c5381338eb2c414"
+
+
+# ------------------------------------------------------------------------------------------------ fix B: in-flight holds (concurrent arm calls)
+def _charge(g, ledger, usd):
+    import os
+    led = Ledger(g.ledger_path(ledger, DAY))
+    led.path.parent.mkdir(parents=True, exist_ok=True)
+    with led.locked(exclusive=True):
+        fd = led.open_append()
+        try:
+            Ledger.append_row(fd, {"cost_usd": usd, "ts_ms": DAY_MS, "source": "stub"})
+        finally:
+            os.close(fd)
+
+
+def test_fix_b_inflight_hold_is_taken_off_other_calls_headroom(tmp_path):
+    import threading
+    g = a.BudgetGuard(tmp_path, global_cap_usd=0.30)
+    _charge(g, "L", 0.25)
+    base = g.preflight("F", "entry", DAY_MS + 1000)
+    assert base.allowed and base.budget_usd == pytest.approx(0.05) and g.others_inflight_usd() == 0.0   # no call in flight: the pre-fix-B arithmetic
+    entered, release = threading.Event(), threading.Event()
+
+    def other():
+        with g.inflight(0.02):
+            entered.set()
+            release.wait(5)
+
+    t = threading.Thread(target=other)
+    t.start()
+    assert entered.wait(5)
+    try:
+        assert g.others_inflight_usd() == pytest.approx(0.02)
+        pf = g.preflight("F", "entry", DAY_MS + 2000)
+        assert pf.allowed and pf.budget_usd == pytest.approx(0.03) and pf.global_limited      # the other call's hold is off the global headroom
+        with g.inflight(0.01):                                                                 # this thread's own hold is never taken off its own preflight
+            assert g.others_inflight_usd() == pytest.approx(0.02)
+            assert g.preflight("F", "entry", DAY_MS + 2000).budget_usd == pytest.approx(0.03)
+    finally:
+        release.set()
+        t.join()
+    assert g.others_inflight_usd() == 0.0 and g.preflight("F", "entry", DAY_MS + 3000).budget_usd == pytest.approx(0.05)
+
+
+def test_fix_b_two_holds_that_do_not_both_fit_deny_the_second(tmp_path):
+    import threading
+    g = a.BudgetGuard(tmp_path, global_cap_usd=0.30)
+    _charge(g, "L", 0.30 - 0.004)                      # 0.004 of global headroom left
+    entered, release = threading.Event(), threading.Event()
+
+    def other():
+        with g.inflight(0.0035):                       # a call in flight elsewhere holds most of it
+            entered.set()
+            release.wait(5)
+
+    t = threading.Thread(target=other)
+    t.start()
+    assert entered.wait(5)
+    try:
+        pf = g.preflight("L", "review", DAY_MS + 2000)  # a reviewer kind: a denial here halts no trading group
+        assert not pf.allowed and pf.reason == "global_day_cap" and pf.global_limited
+    finally:
+        release.set()
+        t.join()
+    assert g.preflight("L", "review", DAY_MS + 3000).allowed      # the same call fits once the other one has finished
+
+
+def test_fix_b_models_hold_the_worst_case_while_the_call_runs(tmp_path):
+    import threading
+    g = a.BudgetGuard(tmp_path)
+    req = a.build_entry_request("L", a.load_playbook(), make_cards(4, as_of_ms=DAY_MS), 0)
+    worst = a.call_worst_case_usd(req)
+    assert 0 < worst < 0.05
+    seen = []
+    in_call, go = threading.Event(), threading.Event()
+
+    def slow(r):
+        in_call.set()
+        go.wait(5)
+        return A_SKIPS(r)
+
+    m = a.StubModel(slow, guard=g)
+    th = threading.Thread(target=lambda: seen.append(m.complete(req, DAY_MS + 1000)))
+    th.start()
+    assert in_call.wait(5)
+    try:
+        assert g.others_inflight_usd() == pytest.approx(worst)        # visible to every other thread while the call is in flight
+    finally:
+        go.set()
+        th.join()
+    assert seen[0].error is None and g.others_inflight_usd() == 0.0
+    with pytest.raises(ValueError):
+        with g.inflight(float("nan")):
+            pass
+
+
+def A_SKIPS(req):
+    return json.dumps([{"id": i, "action": "SKIP", "why": "x"} for i in req.ids])
