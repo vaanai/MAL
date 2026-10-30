@@ -17,7 +17,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 OPS = REPO / "scripts" / "ops"
-SMOKE, SCORE, DIGEST, ALERT, CLEAN = (OPS / f"q50s1-{n}.sh" for n in ("smoke", "score", "digest", "a3-alert", "clean-log"))
+SMOKE, SCORE, DIGEST, ALERT, CLEAN, LOOP = (OPS / f"q50s1-{n}.sh" for n in ("smoke", "score", "digest", "a3-alert", "clean-log", "a3-loop"))
 S_SHA = "5c2ab7c64b21358619e37068c6a53e4d183512ea"
 TOOL_COMMIT = "37bafde4a604bde67723d832f1cd429798062e5b"
 START_ROW = json.dumps({"type": "start", "rule": "H5-BOOSTFLOOR-Q50 v1", "rule_sha256": "b3f8ecbf8731dc322a035a0b3996b7ed3f0b8c508cc6947014e3de1aa9524fd4", "code_sha": S_SHA,
@@ -122,7 +122,7 @@ class Base(unittest.TestCase):
 
 class Syntax(unittest.TestCase):
     def test_posix_sh_no_bashisms_no_forbidden_words(self):
-        for p in (SMOKE, SCORE, DIGEST, ALERT, CLEAN):
+        for p in (SMOKE, SCORE, DIGEST, ALERT, CLEAN, LOOP):
             subprocess.run(["sh", "-n", str(p)], check=True)
             text = p.read_text()
             self.assertTrue(text.startswith("#!/bin/sh"), p)
@@ -134,6 +134,9 @@ class Syntax(unittest.TestCase):
                 self.assertEqual(low.count("api-key"), 1)
                 self.assertIn("grep -c -f 'api-key'", low)
                 low = low.replace("'api-key'", "")
+            if p == LOOP:  # loop 2's bounded enumeration reads the one Helius file by path (Amendment 22 item 9); never printed
+                self.assertEqual(low.count("fast-listener/helius"), 1)
+                low = low.replace("/var/lib/mal/fast-listener/helius.e" + "nv", "")
             for bad in ("ufw", "sshd", "cloudflared", "private", ".env", "api-key", "a5f413704eb1"):
                 self.assertNotIn(bad, low, f"{p.name}: {bad}")
 
@@ -147,9 +150,11 @@ class Syntax(unittest.TestCase):
             self.assertEqual(got, want, f)
 
     def test_alert_pins_equal_this_checkout(self):
-        text = ALERT.read_text()
-        for f, var in (("tools/a3_applied_alert.py", "TOOL_SHA"), ("scripts/mal-fast/a3-applied-alert.sh", "LOOP_SHA")):
-            self.assertIn(f"{var}={hashlib.sha256((REPO / f).read_bytes()).hexdigest()}", text)
+        self.assertIn(f"TOOL_SHA={hashlib.sha256((REPO / 'tools/a3_applied_alert.py').read_bytes()).hexdigest()}", ALERT.read_text())
+
+    def test_loop_books_pin_is_the_am22_three_key_file(self):
+        doc = {"legacy_bot_ids": [], "new_rule_bot_ids": ["h5v1q50-boostfloor-s1"], "fees_check_bot_ids": ["h5v1q50-boostfloor-s1"]}
+        self.assertIn(f"BOOKS_SHA={hashlib.sha256((json.dumps(doc) + chr(10)).encode()).hexdigest()}", LOOP.read_text())
 
 
 class Smoke(Base):
@@ -394,19 +399,74 @@ class Digest(Base):
     def test_arguments_and_end(self):
         for a in ((), ("once",), ("once", "11-06"), ("loop", "x"), ("bogus",)):
             self.assertEqual(self.sh(DIGEST, *a).returncode, 2, a)
-        self.assertEqual(self.sh(DIGEST, "loop", Q50S1_DIGEST_END=1795134601).returncode, 2)
+        self.assertEqual(self.sh(DIGEST, "loop", Q50S1_DIGEST_END=1796085001).returncode, 2)
         r = self.sh(DIGEST, "loop", Q50S1_DIGEST_END=1)
         self.assertEqual(r.returncode, 0)
         self.assertIn("end reached", r.stdout)
 
 
+def utc(epoch: float) -> str:
+    return datetime.fromtimestamp(int(epoch), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 class Alert(Base):
     def test_arguments_and_host(self):
-        for a in ((), ("2026-11-06T18:10:00Z",), ("2026-11-06 18:10", "2026-11-13T12:00:00Z"), ("2026-11-06T17:00:00Z", "2026-11-13T12:00:00Z"),
-                  ("2026-11-13T12:00:00Z", "2026-11-06T18:10:00Z"), ("2026-11-06T18:10:00Z", "2026-12-02T00:00:00Z")):
+        for a in ((), ("2026-11-17 12:00",), ("2026-11-17T12:00:00Z", "x"), ("2026-01-01T00:00:00Z",), ("2026-12-02T00:00:01Z",)):
             with self.subTest(a=a):
                 self.assertEqual(self.sh(ALERT, *a).returncode, 2)
-        self.assertEqual(self.sh(ALERT, "2026-11-06T18:10:00Z", "2026-11-13T12:00:00Z", FAKE_HOST="mal-core-0").returncode, 6)
+        self.assertEqual(self.sh(ALERT, "2026-11-17T12:00:00Z", Q50S1_A3_OUT=self.home / "data" / "structure-monitor").returncode, 2)  # loop 1's dir
+        self.assertEqual(self.sh(ALERT, "2026-11-17T12:00:00Z", FAKE_HOST="mal-core-0").returncode, 6)
+
+    def test_runs_the_alert_tool_on_loop2_files_to_until(self):
+        out = self.d / "sm-s1"
+        out.mkdir()
+        run_utc = utc(time.time() - 60)
+        (out / "a3-applied.jsonl").write_text(json.dumps({"run_utc": run_utc, "verdict": "NONE", "applied_ms": 1, "ended": {}}) + "\n")
+        (out / "a3-verdicts.jsonl").write_text(json.dumps({"run_utc": run_utc, "verdict": "NONE"}) + "\n")
+        state = self.d / "alert-state" / "state.json"
+        r = self.sh(ALERT, utc(time.time() + 3), Q50S1_A3_OUT=out, Q50S1_A3_ALERT_STATE=state, Q50S1_ALERT_EVERY=1)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("A3_BASELINE applied=1 verdicts=1", r.stdout)
+        self.assertIn("A3_ALERT_JOB end reached", r.stdout)
+        self.assertTrue(state.exists())
+        (out / "a3-applied.jsonl").write_text((out / "a3-applied.jsonl").read_text() + json.dumps({"run_utc": run_utc, "verdict": "HALT", "applied_ms": 2, "ended": {"x": {"h5v1q50-boostfloor-s1": 1}}}) + "\n")
+        r = self.sh(ALERT, utc(time.time() + 30), Q50S1_A3_OUT=out, Q50S1_A3_ALERT_STATE=state, Q50S1_ALERT_EVERY=1)
+        self.assertEqual(r.returncode, 3, r.stdout + r.stderr)
+        self.assertIn("ALERT A3_APPLIED_NEW verdict=HALT", r.stdout)
+
+
+class Loop2(Base):
+    def setUp(self):
+        super().setUp()
+        self.s1root = self.d / "s1root"
+        self.s1root.mkdir()
+
+    def loop(self, *args, cwd=REPO, **env):
+        base = dict(Q50S1_ARENA=self.s1root, FAKE_GUARD="1" * 40)
+        base.update(env)
+        e = self.env(**{k: v for k, v in base.items()})
+        write_exec(self.bin / "git", '#!/bin/sh\ncase "$*" in "rev-parse HEAD") echo "${FAKE_HEAD:-$FAKE_GUARD}" ;; "rev-parse a3-guard-pin-s1^{commit}") echo "$FAKE_GUARD" ;; '
+                                     '"status --porcelain --untracked-files=no") printf "%s" "${FAKE_DIRTY:-}" ;; *) exit 1 ;; esac\n')
+        return subprocess.run(["sh", str(LOOP), *args], capture_output=True, text=True, env=e, cwd=cwd, timeout=60)
+
+    def test_arguments_and_refusals(self):
+        soon = utc(time.time() + 120)
+        for a in ((), ("loop",), ("bogus", soon), ("loop", "2026-11-17 20:00"), ("loop", "2026-01-01T00:00:00Z"), ("deadman", "2026-12-02T00:00:01Z")):
+            with self.subTest(a=a):
+                self.assertEqual(self.loop(*a).returncode, 2)
+        self.assertEqual(self.loop("deadman", soon, FAKE_HOST="x").returncode, 6)
+        self.assertEqual(self.loop("deadman", soon, FAKE_HEAD="2" * 40).returncode, 7)
+        self.assertEqual(self.loop("deadman", soon, FAKE_DIRTY=" M tools/a3_halt.py").returncode, 5)
+        self.assertEqual(self.loop("deadman", soon, Q50S1_ARENA=self.home / "data" / "arena").returncode, 2)  # Q50's root
+        self.assertEqual(self.loop("deadman", soon, Q50S1_A3_OUT=self.home / "data" / "structure-monitor").returncode, 2)  # loop 1's A3_OUT
+
+    def test_segment_ends_itself_with_exit_0_before_the_next_slot(self):
+        r = self.loop("deadman", utc(time.time() + 5))
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("A3_SEGMENT_END", r.stdout)
+        self.assertIn(f"pin a3-guard-pin-s1 = {'1' * 40}; root {self.s1root}", r.stdout)
+        self.assertRegex(r.stdout, r"[0-9a-f]{64}  scripts/ops/a3-daily.sh")
+        self.assertNotIn("A3_DEADMAN ", r.stdout)
 
 
 class CleanLogScript(Base):
