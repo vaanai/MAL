@@ -803,8 +803,7 @@ Quant-proof's pre-ruling N2 (`QP-PRERULING-1026-n2-n4.md`, verdict (a)) already 
 **Status: DRAFT.** Written 2026-10-27T13:51Z (`date -u`), records only, before any Q50 C0 send. It becomes text in force only after merge plus a quant-proof OK and a reviewer verdict on the merged head. It does not rewrite Amendment 3 section 8 item 1 ("The pinned set changes in exactly one blob"); it supersedes that count for the Q50 X-time install once in force. The 43-path list itself (sha256 `244f9e85dd5870bfc47be1cf535eadecd0e2783cc17fee11440ab0ea7ae83720`) keeps the same paths.
 
 1. **Four changed blobs vs the reviewed install 0526d5cd, no others:**
-   - `tools/h5_arena_executor.py` (the 5b blob, unchanged by this amendment: blob 70d789ff, sha256 ef8ae931...)
-     *(Executor line superseded for the X-time install by Amendment 5 item 7 (DRAFT until in force): blob `53337e087f672b685db3c4c43ec46ad70a1119ac`, sha256 `4f5f443a71fa14606f57a75c210e2b006659dcc3217c03f841d8682d17ee9359`, PR #1085. The words above are left as written.)*
+   - `tools/h5_arena_executor.py` (the 5b blob, unchanged by this amendment: blob 70d789ff, sha256 ef8ae931...) *(Executor line superseded for the X-time install by Amendment 5 item 7 (DRAFT until in force): blob `53337e087f672b685db3c4c43ec46ad70a1119ac`, sha256 `4f5f443a71fa14606f57a75c210e2b006659dcc3217c03f841d8682d17ee9359`, PR #1085. The words above are left as written.)*
    - `tools/pumpswap_tx.py`
    - `tools/pumpswap_simulate.py`
    - `tools/probe_executor.py`
@@ -842,13 +841,26 @@ Quant-proof's pre-ruling N2 (`QP-PRERULING-1026-n2-n4.md`, verdict (a)) already 
 4. **Item 12.3, changed (a substantive change, not an editorial one; QP-RULING-1027-s1 (a)).** It is binding before any successor registration. "Starting there rests on Q50's confirmation PASS for the same `frozen_sha`" reads "rests on Q50's confirmation PASS (DEC-031 §2 step 4 at p at most 0.05/c, QP OK on its exact files), with the successor at S, whose decision path quant-proof states in its OK on the successor's copy to be identical to F50's by the proofs of R7(b).3 (AST identity and md5 EQUAL)". The identity covers the shadow decision path (AST identity, seal grid, md5 #1548) and the executor's `decide_row` for the successor's row (its source-identity list and md5 replay EQUAL); it says nothing about a regime change between the two windows, and the copy states that. **Without a Q50 confirmation PASS there is no carry-over at any rung**: the successor's C0 then needs its own screen PASS (§1 item 1), as for any book. A Q50 screen PASS alone carries nothing.
 5. **Unchanged:** every other word of Amendment 2, including item 12.4 (C1 -> C2 needs the successor's own gate read PASS, the item 5 checks over the successor's own live trips, and its own owner line), the rungs, caps, worst cases and halts. No book has cleared the promotion gate. Nothing here is a profit claim.
 
+## Amendment 6: HV4 C0 copies read §1 item 4, §5 item 2, P7 at C0 and the owner line as DEC-031 Amendment 21 (DRAFT)
+
+**Status: DRAFT until merge**, with quant-proof's OK on the exact head and a reviewer verdict on the PR. It is in the same PR as DEC-031 Amendment 21. Number = the next free DEC-032 amendment at merge: Amendment 5 is held by the q50-c0-feed draft (`/data/mal/hunt-1008/ops/reports/2026-10-30/q50-c0-feed-DEC032-Am5-DRAFT.md`, code branch `claude/q50-c0-gap-hold`); a renumber is a fill. Written 2026-10-30T15:39:03Z, revised 2026-10-30T15:56:51Z on quant-proof's comment 6527127124 (C5) (`date -u` on mal-research-0), records only, before any HV4 read verdict and before any HV4 C0 send. Scope: a DEC-032 copy for an HV4 `bot_id` (`hv4-*`) or for its successor (`hv4s1-*`, DEC-031 Amendment 21 item 1).
+1. **§1 item 4.** For CON-L and BIG-L, a playbook version written by the book's own registered reviewer under DEC-031 §1.3 is not a code or prompt change (DEC-031 Amendment 21 item 2). This is the DEC-032 amendment that QP-RULING-1025-hv4-read-rule R2.2 (a) requires before an L arm is canaried. CON-P and the R arms stay excluded. It lapses with DEC-031 Amendment 21 item 2 (a merge at or after 2026-11-01T01:35:00Z).
+2. **§5 item 2, and P7's `gap` share at C0,** read as DEC-031 Amendment 21 item 3.
+3. **§2 owner answer, and Amendment 1 item 3 "Use":** the bridge reads the owner line from the root-owned file of DEC-031 Amendment 21 item 4. No sha256 of that file or of the copy is compiled into code. The copy still quotes the owner's line verbatim.
+4. **In each copy.** Each HV4 copy lists items 1 to 3 as changes from the template (the status line above says a copy lists every change). Every other word of DEC-032 is unchanged. No book has cleared the promotion gate. Nothing here is a profit claim.
+
 
 ## Amendment 5: §5 item 2 "Feed gap" for canaries fed by `tools/h5_shadow.py`: a redundant-socket reconnect is not a gap, and a data-loss gap holds buys for 60 s (DRAFT)
+
+*(Appended after Amendment 6, which merged first as PR #1101; #1101 reserved the number 5 for this text.)*
 
 **Status: DRAFT, NOT IN FORCE.** Written 2026-10-30 (`date -u` 15:24Z at start; moved into this file 15:46Z) by a worker for manager18 (lane q50-c0-feed), records only, before any Q50 C0 send. Outcome-blind: no shadow output, ledger row content, decision row, `bots.json`, job status of #1419/#1421/#1543, or P&L was opened. It takes effect only when all of these hold:
 - (a) this text merges with quant-proof's OK on the exact head and a reviewer verdict on the PR;
 - (b) the code, PR #1085 (branch `claude/q50-c0-gap-hold`, head `d7e8bf9d2945fcb1add77dfbbba75fe3a7010b06`), merges with its own QP OK and reviewer verdict, **together with or after this text** (the reviewer's condition on #1085, comment 6526887133);
-- (c) the canary's install sha contains that code, with the md5 decision-equivalence replay EQUAL at that sha (#1481 counts: A 137/137, B 101/101, B synthetic_unconfirmed 0/0) and a 1 h keyless dry run at that sha.
+- (c) the canary's install sha contains that code, with these proofs at that sha (quant-proof's condition 2 on #1085):
+  - the md5 decision-equivalence replay EQUAL (#1481 counts: A 137/137, B 101/101, B synthetic_unconfirmed 0/0);
+  - the N4 rerun at X (QP-PRERULING-1027-xorder Q2);
+  - a 1 h keyless dry run started inside 14:00-16:00Z (so that it is not confounded by time of day), reporting ledger counts by (kind, reason). Every `feed_reconnect_redundant` row must have `kind_` = `socket_reconnect` (any other kind is a held row ledgered under the wrong name; item 4). The startup limits must show `gap_hold=60000`, and `--status` must show `c0_guard=ok`.
 
 The md5 replay already ran at #1085's head: EQUAL (job #1852, `sh scripts/ops/q50-xtime-md5-job.sh d7e8bf9d…`, with #1481's counts). Item 6b is **not** part of what takes effect here. It has its own conditions (item 6b); quant-proof found it acceptable in principle at C0 only (report on #1085, item 6).
 
@@ -856,7 +868,7 @@ The md5 replay already ran at #1085's head: EQUAL (job #1852, `sh scripts/ops/q5
 - Same rule shape: coverage-losing records hold new buys for 60,000 ms, with a 60,000 ms floor checked at start. A record that left some socket subscribed and delivering holds nothing and marks nothing. A live trip is marked `gap` by the paper read's own rule (§1.4). No human acknowledgement gates a buy.
 - Different gap records: this amendment covers the `tools/h5_shadow.py` gap records (Q50's executor). Amendment 21 item 3 covers the HV4 bridge's arena tape and forwarder records. Neither changes the other's path.
 - Two differences, stated:
-  - (i) Amendment 21 item 3.3 adds a 24 h review latch: an unreviewed coverage-losing record more than 24 h old latches `feed_break`. This amendment does not add that latch for the H5 path (item 4). Whether it should is an open point for quant-proof; #1085 does not build it.
+  - (i) Amendment 21 item 3.3 adds a 24 h review latch: an unreviewed coverage-losing record more than 24 h old latches `feed_break`. It is not adopted for Q50; quant-proof ruling in its verdict on PR #1103 (issuecomment-6527330373: Q50's "manager has seen" clause was never built, so leaving the latch out loosens nothing that ran; Q50's SOL guards are per pool and need no human).
   - (ii) Amendment 21 item 3.4 adopts "P7 `gap` share at C0 blocks step-ups, no `STOP`" for HV4. Here the same rule is item 6b. It takes effect only with its own code PR and proofs, and at C0 only, with C1 unchanged.
 - Numbering: #1101 reserves Amendment 5 for this text and takes Amendment 6. PR #1091 (Q50 owner-line file) labels its rule "DEC-032 Am.6 (DRAFT)". That label collides with #1101 and must be renumbered by the PR that writes #1091's DEC text. This amendment does not cover #1091.
 
@@ -908,10 +920,10 @@ What could go wrong buying after a gap, and what already blocks it (paths at the
 What the 60 s does **not** protect, said plainly: the per-pool checks above are the money guard, and the time hold is defence in depth on top of them. Under the feed measured on 10-28 and 10-29 (42 to 47 data-loss records per hour), and assuming they arrive as a Poisson process (they are probably clustered, which lowers the figure), buys would be held about 1 - e^(-47/60) = 54% of the time. Under the old rule the share was about 100%. In the 10-24 hour (0 data-loss records) the share is 0.
 
 ### 3. The live `gap` mark follows the paper read's rule
-A live trip is marked `gap` only by a data-loss record (item 2). A buy decided before the last data-loss record and landing after it is marked at landing, as before (`tools/h5_arena_gates.py:240` `note_gap`, `on_buy`). P7 and Amendment 1 item 1 are unchanged.
+A live trip is marked `gap` only by a data-loss record (item 2). A buy decided before the last data-loss record and landing after it is marked at landing, as before (`tools/h5_arena_gates.py:240` `note_gap`, `on_buy`). P7 and Amendment 1 item 1 are unchanged by items 1 to 5; item 6b, under its own conditions, is the only change, at C0.
 
 ### 4. "and the manager has seen the gap record"
-No sha of `tools/h5_arena_executor.py` has ever implemented this clause: there is no acknowledgement path, and buys restarted on the clock alone. The clause is replaced by the following. Every gap record is ledgered with its kind (`feed_gap` / `feed_reconnect_redundant`, field `kind_`). The manager reviews the per-kind counts each day. No human acknowledgement gates a buy. Disclosed here, not newly loosened. DEC-031 Amendment 21 item 3.3 (PR #1101) adds a 24 h review latch on the HV4 path. It is not adopted here; that is an open point for quant-proof (see "Relation to PR #1101").
+No sha of `tools/h5_arena_executor.py` has ever implemented this clause: there is no acknowledgement path, and buys restarted on the clock alone. The clause is replaced by the following. Every gap record is ledgered with its kind (`feed_gap` / `feed_reconnect_redundant`, field `kind_`). The manager reviews the per-kind counts each day. No human acknowledgement gates a buy. Disclosed here, not newly loosened. DEC-031 Amendment 21 item 3.3 (PR #1101) adds a 24 h review latch on the HV4 path. It is not adopted for Q50; quant-proof ruling in its verdict on PR #1103. Optional, not a condition: the daily tie-out lab note (DEC-033 §6 item 6) carries the per-kind gap counts so the daily review can be checked; revisit before C1. **Ledger case.** The base class names a gap row from `flags_pools` alone (`tools/h5_executor.py:2266-2267`). So a row with `flags_pools` false and a kind other than `socket_reconnect` is recorded as `feed_reconnect_redundant`, although the executor holds buys on it and marks open trips (`gap_loses_data` fails closed; item 2). The frozen shadow a5f41370 never writes that shape (only `socket_reconnect` can carry false). The daily review counts `feed_reconnect_redundant` rows by `kind_`, and treats any kind other than `socket_reconnect` as a held data-loss record.
 
 ### 5. Tripwire
 `c0_guard_problem` refuses a live start if `GAP_HOLD_MS` or `GAP_HOLD_FLOOR_MS` is below 60,000. It also refuses if `gap_loses_data` stops treating every fail-closed shape of item 2 as data loss, or starts treating the item 1 shape as data loss (`gap_rule`).
@@ -925,7 +937,7 @@ No sha of `tools/h5_arena_executor.py` has ever implemented this clause: there i
 ### 6b. P7 `gap` share at C0 (audit rank 1): its own condition
 Quant-proof ruled this **ACCEPTABLE in principle, at C0 only**, in its report on #1085 (comment 6526931175; `/data/mal/hunt-1008/ops/reports/2026-10-30/qp-1085-gap-hold.md` item 6). This item does **not** take effect with items 1 to 5. It takes effect only when all of these hold:
 - (a) this text is in force;
-- (b) the code PR on branch `claude/p7-c0-gap` merges with its own QP OK and reviewer verdict, after or together with this text;
+- (b) the code PR #1106 (branch `claude/p7-c0-gap`) merges with its own QP OK and reviewer verdict, after or together with this text;
 - (c) the canary's install sha contains that code, with item 6's proofs (d) and (e) of the QP report: the old-vs-new golden on synthetic fixtures, and the X-time manifest with `tools/arena_live_parity.py` as a fifth allowed path pinned by exact blob and sha256, plus its tamper probe.
 
 **The rule.**
@@ -948,18 +960,16 @@ Quant-proof ruled this **ACCEPTABLE in principle, at C0 only**, in its report on
 **Manifest.** For an install that contains the code of (b), the X-time manifest allows five changed paths: Amendment 4's four (executor per item 7) plus `tools/arena_live_parity.py`, at the blob and sha256 pinned in that PR's `scripts/ops/q50-xtime-manifest.sh`. Amendment 4's "exactly FOUR" is superseded for such an install. HELM-SHEET is re-pinned at X.
 
 ### 7. Re-pins (made in this records PR unless said otherwise)
-- **Executor pin of Amendment 4 item 1.** For the executor line, this supersedes Amendment 4 item 1's "the 5b blob, unchanged by this amendment: blob 70d789ff, sha256 ef8ae931...". The X-time executor is #1085's blob `53337e087f672b685db3c4c43ec46ad70a1119ac`, sha256 `4f5f443a71fa14606f57a75c210e2b006659dcc3217c03f841d8682d17ee9359`. This is the `tools/h5_arena_executor.py` blob of #1085 at head `d7e8bf9d2945fcb1add77dfbbba75fe3a7010b06`. `scripts/ops/q50-xtime-manifest.sh` is re-pinned to it in #1085 itself (`EXEC_BLOB`, `EXEC_SHA256`), and its probe `sh scripts/ops/test_q50_xtime_manifest.sh` passes at that head. The four-path count and the 43-path list (sha256 `244f9e85…`) do not change. **If review changes #1085's executor, this pin and #1085's manifest pin move together, before either merges.** Annotation lines are added under Amendment 4 item 1 here and in DEC-033; Amendment 4's own words are left as written.
+- **Executor pin of Amendment 4 item 1.** For the executor line, this supersedes Amendment 4 item 1's "the 5b blob, unchanged by this amendment: blob 70d789ff, sha256 ef8ae931...". The X-time executor is #1085's blob `53337e087f672b685db3c4c43ec46ad70a1119ac`, sha256 `4f5f443a71fa14606f57a75c210e2b006659dcc3217c03f841d8682d17ee9359`. This is the `tools/h5_arena_executor.py` blob of #1085 at head `d7e8bf9d2945fcb1add77dfbbba75fe3a7010b06`. `scripts/ops/q50-xtime-manifest.sh` is re-pinned to it in #1085 itself (`EXEC_BLOB`, `EXEC_SHA256`), and its probe `sh scripts/ops/test_q50_xtime_manifest.sh` passes at that head. The four-path count and the 43-path list (sha256 `244f9e85…`) do not change. **If review changes #1085's executor, this pin and #1085's manifest pin move together, before either merges.** Any later PR that changes `tools/h5_arena_executor.py` (#1091, #1106) moves this pin, both Am.4 annotations, checklist row b' and the HELM-SHEET patch to the combined blob, in a records change merged with or before that PR, with an md5 replay EQUAL at the combined blob. At X the records name the same executor blob as `scripts/ops/q50-xtime-manifest.sh` at X, or no `mode=live` starts. Annotation lines are added under Amendment 4 item 1 here and in DEC-033; Amendment 4's own words are left as written.
 - **DEC-033.** Its verbatim copy of §5 item 2 gets a reading note. Its `FILL:feed_gap_source` row and its list of changes from the template are updated (this PR).
 - **Owed, not in this PR:**
-  - HELM-SHEET §A executor sha256, at X;
-  - the `docs/rules/q50-a1.md` index entry (non-binding);
-  - a renumber fill if #1101 merges first and takes a number other than 6.
+  - HELM-SHEET: the patch is re-pinned here; only applying it to the host sheet is owed (manager). The sheet's move to X is an X-time checklist item, not part of this amendment.
 
 ### 8. Does not amend
 - The promotion gate.
 - Any read rule.
 - The registered Q50 paper book, its frozen shadow a5f41370, its argv or endpoints, or its feed.
-- §3 limits, P1 to P7, §6, §7, and Amendments 1 to 4 (except the Am.4 executor pin, item 7).
+- §3 limits, P1 to P7, §6, §7, and Amendments 1 to 4, except the Am.4 executor pin (item 7) and, only under item 6b's own conditions, P7's `gap`-share part at C0 (Amendment 1 item 1) and Amendment 4's 'exactly FOUR'.
 - Any other canary's executor.
 
 No book has cleared the promotion gate. Nothing here is a profit claim.
