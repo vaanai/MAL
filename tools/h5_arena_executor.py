@@ -82,6 +82,7 @@ FEED_NOTE_MERGED = True  # scope item 17: EXP-024 "Note under Amendment 10" (#85
 FEED_NOTE_REF = "### Note under Amendment 10 (written 2026-10-24T01:27Z"  # the note's heading in EXP/EXP-024-h5-boostfloor-part1-prereg.md (a test checks it is in the tree)
 FEED_NOTE_BOOKS = frozenset({"h5v1q50-boostfloor-a1"})  # the bot_ids the note covers; every other book stays replay_only (QP-SCOPE item 17: "per bot_id")
 LIVE_BUILT = True  # the live entry point is main --live (QP-RULING-1023-wiring ruling 7 item 11); every live start passes live_entry_refusal first
+ARENA_OWNER_CANARY_PATH = Path("/etc/mal-h5-arena/OWNER_CANARY")  # DEC-032 Am.7 (DRAFT; audit rank 4): the owner's canary line in a root-owned file Helm writes on the owner's word
 ARENA_LIVE_OK_PATH = Path("/etc/mal-h5-arena/LIVE_OK")  # the arena canary's OWN gate: root:root 0644 (base root_file_problem), content exactly the bot_id. Helm creates it.
 DEC032_C0 = {  # DEC-032 s3 C0 column, verbatim. C0_TIER may only be at or below these; c0_guard_problem refuses a live start otherwise.
     "stake_lamports": 50_000_000, "max_open": 2, "max_trades_per_day": 30, "daily_loss_lamports": 100_000_000, "total_loss_lamports": 200_000_000,
@@ -104,7 +105,10 @@ A3_APPLIED_MAX_BYTES = 16 * 1024 * 1024
 A3_FUTURE_SKEW_MS = 300_000  # a run_utc more than 5 min ahead of the executor's clock is not a fresh record, it is a wrong one: latch
 ARENA_TIER_PATH = Path("/etc/mal-h5-arena/TIER")  # the arena canary's OWN tier file (root:root 0644 like the base TIER); the shared /etc/mal-h5/TIER is ignored for arena books
 ARENA_LIVE_TIER = "T1"  # a live start needs this file to read exactly T1 (the C0 stake 0.05 SOL needs T1's stake ceiling)
-GAP_HOLD_MS = 600_000  # DEC-032 s5 item 2: after a feed gap, buys restart only once the feed has been gap-free for 10 minutes
+GAP_HOLD_MS = 60_000  # DEC-032 Am.5 (DRAFT) item 2: after a DATA-LOSS gap record (gap_loses_data), buys restart once the feed has been free of them for 60 s.
+# Was 600_000 (s5 item 2 as written, on ANY gap record). Config may lengthen it up to the base's 600_000 (H5Limits gap_hold_ms), never shorten it.
+GAP_HOLD_FLOOR_MS = 60_000  # c0_guard_problem refuses a live start below this (Am.5 item 2); 60 s >= 2 x the shadow's slowest gap report (25 s, see gap_loses_data)
+GAP_REDUNDANT_KIND = "socket_reconnect"  # the ONLY gap kind tools/h5_shadow.py (frozen a5f41370) can write with flags_pools false (note_feed_stats)
 SELL_RESERVE_SENDS = 10  # the worst case of one exit: the ladder's sends (escalated resends included), each at the book's top priority
 SELL_RESERVE_FLOOR_LAMPORTS = 1_600_000  # 10 sends x (155,000 + 5,000): the p155 worst case (QP 10-23 gap d); never below it
 PAPER_FAIL_RATE = 0.15  # the flat fail model of the gate; landing-fail excess is measured against it
@@ -342,9 +346,34 @@ def arena_live_ok_refusal(bot_id: str, path: Path | None = None) -> str | None:
     return None if text.strip() == bot_id and len(text.strip().splitlines()) == 1 else "arena_live_ok_other_book"
 
 
+def gap_loses_data(row: dict[str, Any]) -> bool:
+    """DEC-032 Am.5 (DRAFT) item 1. True when a shadow `gap` record may mean lost prints: it holds buys for GAP_HOLD_MS and marks every open trip `gap`.
+    False ONLY for a redundant-socket reconnect: kind exactly GAP_REDUNDANT_KIND AND flags_pools the literal false. The shadow writes that only when its
+    per-socket link state found no instant at which every socket was down or silent (tools/h5_shadow.py note_feed_stats / common_down): some socket was
+    up and delivering throughout, so no print was lost, no pool was flagged, and the paper scorer does not exclude a trade across it
+    (tools/arena_h5_score.py gap_in_span reads the pools' flags only). Everything else is data loss and fails closed: slot_jump, silence, feed_restart,
+    a socket_reconnect with flags_pools true, a missing / null / non-bool flags_pools (0 and "false" included), an unknown kind, a non-dict.
+    Latency of the shadow's own report (why GAP_HOLD_FLOOR_MS is 60 s): slot_jump at the first event after the jump; silence after 20 s + one 5 s look;
+    a common socket outage at most silent_ms 10 s + 2 looks + 5 s margin = 25 s after it (h5_shadow.py RECENT_MARGIN_MS, LOOK_MS)."""
+    if not isinstance(row, dict):
+        return True
+    return not (row.get("kind") == GAP_REDUNDANT_KIND and row.get("flags_pools") is False)
+
+
+def _gap_rule_problem() -> str | None:
+    """Tripwire on gap_loses_data: every fail-closed shape must still count as data loss, and only the redundant reconnect may not."""
+    lossy = ({}, {"kind": GAP_REDUNDANT_KIND}, {"kind": GAP_REDUNDANT_KIND, "flags_pools": True}, {"kind": GAP_REDUNDANT_KIND, "flags_pools": None},
+             {"kind": GAP_REDUNDANT_KIND, "flags_pools": 0}, {"kind": GAP_REDUNDANT_KIND, "flags_pools": "false"}, {"kind": "silence", "flags_pools": False},
+             {"kind": "slot_jump", "flags_pools": False}, {"kind": "feed_restart", "flags_pools": False}, {"flags_pools": False})
+    if not all(gap_loses_data(r) for r in lossy) or gap_loses_data({"kind": GAP_REDUNDANT_KIND, "flags_pools": False}):
+        return "gap_rule"
+    return None
+
+
 def c0_guard_problem() -> str | None:
     """A tripwire run at every live start: the compiled C0 guards are still at least as strict as DEC-032 (s3 limits, s3 fail-closed 60 s, s3 signal age
-    5 s, s5 10-minute gap hold and P1/P2/exit thresholds, the T1 tier file, the p155 sell reserve) and every guard method is still the arena override.
+    5 s, the s5 item 2 gap hold as amended by Am.5 (DRAFT; 60 s on data-loss gap records, gap_loses_data) and P1/P2/exit thresholds, the T1 tier file,
+    the p155 sell reserve) and every guard method is still the arena override.
     None when all hold; else the first item that does not. It never loosens anything: it only refuses."""
     from tools import h5_arena_gates as g
     why = ld.ladder_guard_problem()  # DEC-032 Am.2 item 9.1: a live start refuses if any ladder constant is looser than item 3
@@ -355,7 +384,7 @@ def c0_guard_problem() -> str | None:
         if isinstance(v, bool) or not isinstance(v, int) or not 0 < v <= cap:
             return f"c0_guard:{k}"
     checks = (
-        ("gap_hold", GAP_HOLD_MS >= 600_000), ("signal_age", 0 < SIGNAL_AGE_MAX_MS <= 5_000), ("parity_interval", 0 < g.PARITY_INTERVAL_S_MAX <= 60),
+        ("gap_hold", GAP_HOLD_MS >= GAP_HOLD_FLOOR_MS >= 60_000), ("gap_rule", _gap_rule_problem() is None), ("signal_age", 0 < SIGNAL_AGE_MAX_MS <= 5_000), ("parity_interval", 0 < g.PARITY_INTERVAL_S_MAX <= 60),
         ("funded_range", 350_000_000 <= FUNDED_MIN_LAMPORTS <= FUNDED_MAX_LAMPORTS <= 1_000_000_000),
         ("floor_below_funded", 0 < FLOOR_BELOW_FUNDED_LAMPORTS <= 250_000_000), ("sell_reserve", SELL_RESERVE_FLOOR_LAMPORTS >= 1_600_000),
         ("tier", ARENA_LIVE_TIER == "T1"), ("a3_max_age", 0 < A3_MAX_AGE_MS <= 36 * 3_600_000),
@@ -422,9 +451,33 @@ def latest_start_record(intents: Path) -> dict[str, Any] | None:
     return last
 
 
-def canary_record_refusal(bot_id: str, root: Path) -> str | None:
+def owner_canary_file_refusal(bot_id: str, path: Path | None = None) -> str | None:
+    """DEC-032 Am.7 (DRAFT; audit rank 4). The owner's line in a root-owned file: the base file checks (regular root:root 0644 file, no symlink, root-owned
+    parent not group/other writable; the same checks as LIVE_OK) and the content is exactly ONE non-blank line, "OWNER_CANARY_CONFIRMED: bot_id=<bot_id>",
+    naming THIS bot_id. Helm writes it on the owner's own word; the executor never creates it and no sha of it is pinned in code."""
+    p = path or ARENA_OWNER_CANARY_PATH
+    problem = h.root_file_problem(p)
+    if problem:
+        return f"owner_canary_file_{problem}"
+    try:
+        text = p.read_text()
+    except (OSError, UnicodeDecodeError):
+        return "owner_canary_file_unreadable"
+    lines = [x for x in text.splitlines() if x.strip()]
+    return None if len(lines) == 1 and CANARY_OWNER_RE.findall(text) == [bot_id] else "owner_canary_file_other_book"
+
+
+def canary_record_refusal(bot_id: str, root: Path, owner_file: Path | None = None) -> str | None:
     """A live start needs a canary record in DEC/ whose owner line names THIS bot_id exactly (QP gap h). Regular files only (no symlink), the template
-    file never counts, and a line naming another book does not cover this one."""
+    file never counts, and a line naming another book does not cover this one. DEC-032 Am.7 (DRAFT): when the installed tree has no such record, the
+    owner's line in the root-owned ARENA_OWNER_CANARY_PATH (owner_canary_file_refusal) is accepted instead; the DEC record's refusal is returned otherwise."""
+    why = _dec_canary_record_refusal(bot_id, root)
+    if why is None or owner_canary_file_refusal(bot_id, owner_file) is None:
+        return None
+    return why
+
+
+def _dec_canary_record_refusal(bot_id: str, root: Path) -> str | None:
     d = root / "DEC"
     try:
         files = sorted(d.glob(CANARY_DEC_GLOB))
@@ -1224,8 +1277,11 @@ class ArenaExecutor(h.H5Executor):
             self.feed_verified = True
             return "drop", None
         if t == "gap":
-            # DEC-032 s5 item 2: ANY gap record holds buys for 10 minutes. The base class skips the hold when flags_pools is the literal false
-            # (a redundant-socket reconnect); a canary does not take that exemption.
+            # DEC-032 Am.5 (DRAFT) items 1-2 (was s5 item 2: ANY gap record held buys 10 minutes). A redundant-socket reconnect (gap_loses_data False)
+            # neither holds nor marks a trip: the base class ledgers it as feed_reconnect_redundant. Every other gap record holds buys for
+            # h5.gap_hold_ms (GAP_HOLD_MS, 60 s; config may lengthen) and marks open trips `gap`, as before. The verdict returned is unchanged.
+            if not gap_loses_data(row):
+                return "keep", None
             self._gap_until_ms = max(self._gap_until_ms, self.now_ms() + self.h5.gap_hold_ms)
             if self.gates is not None:
                 self.gates.recorder.note_gap(self.now_ms())

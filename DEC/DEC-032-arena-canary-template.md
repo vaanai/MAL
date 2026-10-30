@@ -81,7 +81,7 @@ Any halt creates `STOP` (no new buys); open positions exit on their rules unless
 
 **Structure halts (hard):**
 1. **A3 / redeploy (O).** Any A3 halt flag, `pins_changed` (any item) or `program_changed` of the pump or PumpSwap programs, fees program or any pinned account. A canary does not use DEC-031 Amendment 4's automatic upgrade check (its item 1.1 excludes canaries). Resume only after the manager's upgrade review (the DEC-024 13 October resume record is the pattern) and the owner's line.
-2. **Feed gap.** Any gap record in the book's feed (disconnect, resubscribe, `gap_silence_ms` 60,000 exceeded, a PumpSwap `data_loss`): new buys stop at once and restart only after the feed has been gap-free for 10 minutes and the manager has seen the gap record. A gap during an open position marks that live trade `gap`, reported separately; it is excluded from parity statistics by the same rule that excludes it from the paper read (DEC-031 §1.4), and counted.
+2. **Feed gap.** Any gap record in the book's feed (disconnect, resubscribe, `gap_silence_ms` 60,000 exceeded, a PumpSwap `data_loss`): new buys stop at once and restart only after the feed has been gap-free for 10 minutes and the manager has seen the gap record. A gap during an open position marks that live trade `gap`, reported separately; it is excluded from parity statistics by the same rule that excludes it from the paper read (DEC-031 §1.4), and counted. *(For a canary fed by `tools/h5_shadow.py` through `tools/h5_arena_executor.py`, read through Amendment 5 (DRAFT) once its conditions (a) to (c) hold: a `socket_reconnect` gap record with `flags_pools` the literal false holds nothing and marks no trip; every other gap record stops new buys and holds them 60 s; the "manager has seen" clause is replaced by the ledger and the daily review. For the HV4 bridge, see Amendment 6 (PR #1101). Otherwise the words above apply as written.)*
 3. **Decision-log integrity.** A hash-chain break, a `frozen_sha` mismatch (the executor's `start` row repeats the pin), or a config key differing from the registration pin: hard latch (bridge `chain_break`, `frozen_sha_mismatch`).
 4. **Stuck position.** A position not closed by its exit instant + 600 s: no new buys, alert, retries back off 30 s to 10 min, abandoned after 10 and Helm runs the root sell-and-close tool. Strand class = total loss in the report.
 5. **Seal / universe.** An entry outside the registered universe, a close-blocked mint reaching the sender, or a pool inside a closed seal: hard halt and a record. A seal breach ends the canary.
@@ -803,7 +803,7 @@ Quant-proof's pre-ruling N2 (`QP-PRERULING-1026-n2-n4.md`, verdict (a)) already 
 **Status: DRAFT.** Written 2026-10-27T13:51Z (`date -u`), records only, before any Q50 C0 send. It becomes text in force only after merge plus a quant-proof OK and a reviewer verdict on the merged head. It does not rewrite Amendment 3 section 8 item 1 ("The pinned set changes in exactly one blob"); it supersedes that count for the Q50 X-time install once in force. The 43-path list itself (sha256 `244f9e85dd5870bfc47be1cf535eadecd0e2783cc17fee11440ab0ea7ae83720`) keeps the same paths.
 
 1. **Four changed blobs vs the reviewed install 0526d5cd, no others:**
-   - `tools/h5_arena_executor.py` (the 5b blob, unchanged by this amendment: blob 70d789ff, sha256 ef8ae931...)
+   - `tools/h5_arena_executor.py` (the 5b blob, unchanged by this amendment: blob 70d789ff, sha256 ef8ae931...) *(Executor line superseded for the X-time install by Amendment 5 item 7 (DRAFT until in force): blob `8369ab21349b568efd0eda4fd64fde2e90510bca`, sha256 `7e6d2f0e57388c0c3ea40eb85f6c208ad07aa2389067da70f0de6ca9679abfe0` (main 6117c35c with #1085, plus #1091 DEC-032 Am.7; moved by #1091 from #1085's `53337e08` / `4f5f443a` under Am.5 item 7). The words above are left as written.)*
    - `tools/pumpswap_tx.py`
    - `tools/pumpswap_simulate.py`
    - `tools/probe_executor.py`
@@ -848,3 +848,182 @@ Quant-proof's pre-ruling N2 (`QP-PRERULING-1026-n2-n4.md`, verdict (a)) already 
 2. **§5 item 2, and P7's `gap` share at C0,** read as DEC-031 Amendment 21 item 3.
 3. **§2 owner answer, and Amendment 1 item 3 "Use":** the bridge reads the owner line from the root-owned file of DEC-031 Amendment 21 item 4. No sha256 of that file or of the copy is compiled into code. The copy still quotes the owner's line verbatim.
 4. **In each copy.** Each HV4 copy lists items 1 to 3 as changes from the template (the status line above says a copy lists every change). Every other word of DEC-032 is unchanged. No book has cleared the promotion gate. Nothing here is a profit claim.
+
+
+## Amendment 5: §5 item 2 "Feed gap" for canaries fed by `tools/h5_shadow.py`: a redundant-socket reconnect is not a gap, and a data-loss gap holds buys for 60 s (DRAFT)
+
+*(Appended after Amendment 6, which merged first as PR #1101; #1101 reserved the number 5 for this text.)*
+
+**Status: DRAFT, NOT IN FORCE.** Written 2026-10-30 (`date -u` 15:24Z at start; moved into this file 15:46Z) by a worker for manager18 (lane q50-c0-feed), records only, before any Q50 C0 send. Outcome-blind: no shadow output, ledger row content, decision row, `bots.json`, job status of #1419/#1421/#1543, or P&L was opened. It takes effect only when all of these hold:
+- (a) this text merges with quant-proof's OK on the exact head and a reviewer verdict on the PR;
+- (b) the code, PR #1085 (branch `claude/q50-c0-gap-hold`, head `d7e8bf9d2945fcb1add77dfbbba75fe3a7010b06`), merges with its own QP OK and reviewer verdict, **together with or after this text** (the reviewer's condition on #1085, comment 6526887133);
+- (c) the canary's install sha contains that code, with these proofs at that sha (quant-proof's condition 2 on #1085):
+  - the md5 decision-equivalence replay EQUAL (#1481 counts: A 137/137, B 101/101, B synthetic_unconfirmed 0/0);
+  - the N4 rerun at X (QP-PRERULING-1027-xorder Q2);
+  - a 1 h keyless dry run started inside 14:00-16:00Z (so that it is not confounded by time of day), reporting ledger counts by (kind, reason). Every `feed_reconnect_redundant` row must have `kind_` = `socket_reconnect` (any other kind is a held row ledgered under the wrong name; item 4). The startup limits must show `gap_hold=60000`, and `--status` must show `c0_guard=ok`.
+
+The md5 replay already ran at #1085's head: EQUAL (job #1852, `sh scripts/ops/q50-xtime-md5-job.sh d7e8bf9d…`, with #1481's counts). Item 6b is **not** part of what takes effect here. It has its own conditions (item 6b); quant-proof found it acceptable in principle at C0 only (report on #1085, item 6).
+
+**Relation to PR #1101** (DEC-031 Amendment 21 item 3 and DEC-032 Amendment 6, HV4 C0 feed latch, written by another lane, open at writing).
+- Same rule shape: coverage-losing records hold new buys for 60,000 ms, with a 60,000 ms floor checked at start. A record that left some socket subscribed and delivering holds nothing and marks nothing. A live trip is marked `gap` by the paper read's own rule (§1.4). No human acknowledgement gates a buy.
+- Different gap records: this amendment covers the `tools/h5_shadow.py` gap records (Q50's executor). Amendment 21 item 3 covers the HV4 bridge's arena tape and forwarder records. Neither changes the other's path.
+- Two differences, stated:
+  - (i) Amendment 21 item 3.3 adds a 24 h review latch: an unreviewed coverage-losing record more than 24 h old latches `feed_break`. It is not adopted for Q50; quant-proof ruling in its verdict on PR #1103 (issuecomment-6527330373: Q50's "manager has seen" clause was never built, so leaving the latch out loosens nothing that ran; Q50's SOL guards are per pool and need no human).
+  - (ii) Amendment 21 item 3.4 adopts "P7 `gap` share at C0 blocks step-ups, no `STOP`" for HV4. Here the same rule is item 6b. It takes effect only with its own code PR and proofs, and at C0 only, with C1 unchanged.
+- Numbering: #1101 reserves Amendment 5 for this text and takes Amendment 6. PR #1091 (Q50 owner-line file) labels its rule "DEC-032 Am.6 (DRAFT)". That label collides with #1101 and must be renumbered by the PR that writes #1091's DEC text. This amendment does not cover #1091.
+
+A canary whose install sha does not contain the code runs under §5 item 2 as written for its whole run (no switch mid-run; the Am.3 item 6 pattern).
+
+**Starting point.** The proposed text of audit rank 1, `/data/mal/hunt-1008/ops/reports/2026-10-30/audit-rules.md` line 13. Items 1-3 follow its first two clauses, with one difference: the hold is 60 s, not the 20 s its figure assumed (the reason is in item 2). Its third clause (P7 at C0) is item 6b, with its own conditions and code PR.
+
+**Scope.** Canaries whose feed is the `gap` record stream of `tools/h5_shadow.py` and whose executor is `tools/h5_arena_executor.py`: Q50 (`h5v1q50-boostfloor-a1`), and a later H5 book on the same executor when its copy declares this amendment. **Not** the FLOOR dry executor (`tools/floor_arena_executor.py`, host/engine-restart gaps keep 10 minutes) and **not** the HV4/HV6 bridge path. Their feeds write different gap records; §5 item 2 stays as written for them.
+
+**Basis (measured; no outcome data).**
+- Helm's keyless 1 h dry runs at Y = c8fcf761 (HELM-REPLY-1028-1 §4, HELM-REPLY-1029-1). Ledger counts per hour were 149 and 135 `feed_reconnect_redundant`, and 47 and 42 `feed_gap`, against 2 and 0 in the 10-24 hour. The executor holds buys for 600 s on every one of them (`tools/h5_arena_executor.py:1226-1229` at main c92f23e3). So C0 would almost never buy.
+- Census of mal-fast-0 at 2026-10-30T15:12:55Z (job #1839: `ps` and `ss`, no book file opened). The Q50 shadow (`--sockets 3 --syn-sockets 1 --ws-url wss://api.mainnet-beta.solana.com --ws-url wss://public.rpc.solanavibestation.com`) held 3 established connections, all to api.mainnet-beta (64.130.55.23), and **0** to public.rpc.solanavibestation.com (148.51.214.9).
+- A websocket handshake to wss://public.rpc.solanavibestation.com is rejected with **HTTP 429**: from mal-fast-0 at 15:14:57Z (job #1842) and from mal-research-0 at 15:14:11Z. An HTTP `getHealth` to the same host returns 200 from both.
+- Code at main c92f23e3 (the frozen shadow `tools/h5_shadow.py` is byte-identical to a5f41370). A refused handshake counts as a reconnect (`observe/trade_source.py:300`), with jittered backoff capped at 60 s (`:52-53`, `:497`). Each 5 s look with a reconnect writes a `socket_reconnect` gap (`tools/h5_shadow.py` `note_feed_stats`). `flags_pools` is true only when `common_down` finds an instant at which **every** socket was down or silent (`:536`). A socket that never comes up counts as down for the whole run (`observe/link_state.py`, class docstring).
+- Load on fast-0's IP from api.mainnet-beta. Read with `ss -tnpi` by job #1856 at 15:29Z: three 10 s windows, connections that survived each window only.
+  - Total received: 3.012, 1.486 and 4.282 MB/s, which is 90.4, 44.6 and 128.5 MB per 30 s.
+  - By process: the Q50 shadow 1.967, 0.398 and 2.205 MB/s; the ubuntu `mal-fast-trade-tape` trial (`observe.trade_tape --sockets 2 --venues bonding,pumpswap`, running since about 10-02) 1.034, 1.078 and 2.060 MB/s; `fast_chain_probe --public-only` 0.011-0.018 MB/s.
+  - Solana's public-RPC documentation gives a per-IP limit of 100 MB per 30 s. That limit is documented; we did not verify it.
+- Drop history of the other consumer on the same IP and provider (`/var/lib/mal/logs/fast-trade-tape.log`, counts only, jobs #1853/#1855/#1856):
+  - 1,400 to 3,500 reconnects per day since 10-11. Closes: 37,177 with code 1006. Handshake rejections: 13,283 with HTTP 413 and 3 with HTTP 429.
+  - A strong daily cycle: about 0-5 reconnects per hour at 06-10Z and 100-210 per hour at 14-23Z.
+  - In Helm's hours: 10-24 06Z 11 and 07Z 0 (the clean dry hour, 06:08-07:08Z); 10-28 16Z 157; 10-29 14Z 92 and 15Z 183 (the bad dry hours).
+- **Reading (inferred; not proven, since the shadow's own per-socket stats are sealed).** Two causes act together.
+  - (1) The svs endpoint now answers 429. One of the shadow's 3 sockets retries forever, at about one reconnect per 30 to 60 s at the backoff cap, which is about 60 to 120 `feed_reconnect_redundant` rows per hour. The 10-24 06Z hour had only 2, so svs was probably still working then.
+  - (2) In busy UTC hours this IP takes about the documented per-IP data limit from api.mainnet-beta, and the server drops connections from the IP (code 1006). Without svs, the shadow's 2 live sockets are on that one provider and IP. A drop that hits both at once is a common outage: a `feed_gap` with flagged pools.
+  - Helm's clean-versus-bad comparison (06Z against 14-17Z) is confounded by time of day.
+  - The trade-tape trial is the only other public-websocket consumer of api.mainnet-beta on fast-0. P66 #1718 and the tip follower use other hosts (Helius / Cloudflare peers, 0.000 MB/s in the windows). The fast create listener uses PumpPortal. The HV6 producer runs on research-0.
+
+### 1. A redundant-socket reconnect is not a gap for §5 item 2
+A shadow `gap` record whose `kind` is exactly `socket_reconnect` **and** whose `flags_pools` is the literal JSON `false` does two things only: it is ledgered (`feed_reconnect_redundant`, base class) and it is counted in the manager's daily review. It does **not** stop new buys, and it does **not** mark a live trip `gap`. Code: `gap_loses_data(row)` returns False for this one shape only (`tools/h5_arena_executor.py:348@d7e8bf9d`). Why:
+- (a) The shadow writes `flags_pools` false only when its per-socket link state finds no instant at which every socket was down or silent. Silent means no notice for 10 s (`SILENT_MS_DEFAULT`), or for 3 s while a peer delivered after it (`REL_SILENT_MS_DEFAULT`). So at every instant some socket was subscribed and delivering. The merged stream dedups by signature, so a print one socket missed came from another.
+- (b) Such a record flags no pool (`tools/h5_shadow.py:1330`, `if flag_pools:`). The paper read excludes a trade only on a pool flag (`tools/arena_h5_score.py:435` `gap_in_span`). §5 item 2 says a gap trip is excluded "by the same rule that excludes it from the paper read". Marking live trips on these records was stricter than the paper rule. It made almost every live trip non-eligible, so P7 would soft-halt at 2 gap trips (Amendment 1 item 1).
+- (c) Each trigger is still checked for completeness on its own pool (item 2 below).
+
+### 2. Every other gap record is data loss: no new buys for 60 s
+Every other `gap` record counts as data loss and fails closed. That covers `slot_jump`, `silence`, `feed_restart`, a `socket_reconnect` with `flags_pools` true, a missing, null or non-bool `flags_pools` (0 and "false" included), `false` on any kind other than `socket_reconnect`, an unknown kind, and a non-dict record. On such a record new buys stop at once. They restart once **60 s** pass with no further data-loss record (`GAP_HOLD_MS = 60_000`; each new record restarts the 60 s). Config may lengthen the hold up to 600,000 ms and never shorten it, so the old 10 minutes stays one config line away. Every trip whose exit has not landed is marked `gap`, as before.
+
+What could go wrong buying after a gap, and what already blocks it (paths at the code head):
+
+| Risk | Existing check (not changed) |
+| --- | --- |
+| The trigger was computed from an incomplete print set of its pool | The shadow flags every pool open at a data-loss record; such a trigger carries `gap: true` and is refused `feed_gap` with **no expiry** (`tools/h5_executor.py:1455`). It flags a pool announced before the gap (`announced_before_gap`, `tools/h5_shadow.py:1470`). It never tracks a pool whose CreatePool it missed (`require_announce`, `:1188`). The executor refuses an s0 more than 2 slots after the CreatePool (`S0_ANNOUNCE_LAG_MAX`, `tools/h5_executor.py:107`) and any `base_breaks_unresolved_settled` other than 0. That is the exact base-reserve chain: one missed print gives at least 1 (`:655`). |
+| Stale price, or a backlog burst after a reconnect | Signal age at most 3.5 s (min of `SIGNAL_AGE_MAX_MS` 5,000 and `PRESEND_MAX_TRIGGER_AGE_MS` 3,500), judged before the gates, after them and at the `sendTransaction` call. Chain age against the executor's own getSlot history (`stale_trigger_chain`, `:1467`), the block-time age and `s0_recv_late`. `price_moved` on a fresh pool read (cache miss only, `:1660`). The **on-chain `min_out`** at the trigger price / 1.15 (`entry_tolerance_bps` 1500) is always there: a worse fill reverts. |
+| Wrong pool state | The buy is built from the pool's own accounts read by RPC (`_static_for`), not from the feed. Pool or mint mismatch is refused. |
+| Missed BOOST slice | Q50's exit pin is v1: a 330 s timer from s0 on the executor's own slot clock. BOOST rows feed only the structure halts, and a gapped pool's row is ignored (`boost_row_ignored`, `:2287`). No buy decision reads them. |
+| Exit timing | The v1 exit plan uses s0_slot, sps and the executor's own getSlot history. No feed input. |
+| The shadow reports a gap late | The latest report: a silence after 20 s plus one 5 s look. A common outage after `silent_ms` 10 s + 2 looks + 5 s margin = **25 s** (`tools/h5_shadow.py:274-275`). 60 s is more than 2 x 25 s and 3 x the base class's own 20 s floor. |
+
+What the 60 s does **not** protect, said plainly: the per-pool checks above are the money guard, and the time hold is defence in depth on top of them. Under the feed measured on 10-28 and 10-29 (42 to 47 data-loss records per hour), and assuming they arrive as a Poisson process (they are probably clustered, which lowers the figure), buys would be held about 1 - e^(-47/60) = 54% of the time. Under the old rule the share was about 100%. In the 10-24 hour (0 data-loss records) the share is 0.
+
+### 3. The live `gap` mark follows the paper read's rule
+A live trip is marked `gap` only by a data-loss record (item 2). A buy decided before the last data-loss record and landing after it is marked at landing, as before (`tools/h5_arena_gates.py:240` `note_gap`, `on_buy`). P7 and Amendment 1 item 1 are unchanged by items 1 to 5; item 6b, under its own conditions, is the only change, at C0.
+
+### 4. "and the manager has seen the gap record"
+No sha of `tools/h5_arena_executor.py` has ever implemented this clause: there is no acknowledgement path, and buys restarted on the clock alone. The clause is replaced by the following. Every gap record is ledgered with its kind (`feed_gap` / `feed_reconnect_redundant`, field `kind_`). The manager reviews the per-kind counts each day. No human acknowledgement gates a buy. Disclosed here, not newly loosened. DEC-031 Amendment 21 item 3.3 (PR #1101) adds a 24 h review latch on the HV4 path. It is not adopted for Q50; quant-proof ruling in its verdict on PR #1103. Optional, not a condition: the daily tie-out lab note (DEC-033 §6 item 6) carries the per-kind gap counts so the daily review can be checked; revisit before C1. **Ledger case.** The base class names a gap row from `flags_pools` alone (`tools/h5_executor.py:2266-2267`). So a row with `flags_pools` false and a kind other than `socket_reconnect` is recorded as `feed_reconnect_redundant`, although the executor holds buys on it and marks open trips (`gap_loses_data` fails closed; item 2). The frozen shadow a5f41370 never writes that shape (only `socket_reconnect` can carry false). The daily review counts `feed_reconnect_redundant` rows by `kind_`, and treats any kind other than `socket_reconnect` as a held data-loss record.
+
+### 5. Tripwire
+`c0_guard_problem` refuses a live start if `GAP_HOLD_MS` or `GAP_HOLD_FLOOR_MS` is below 60,000. It also refuses if `gap_loses_data` stops treating every fail-closed shape of item 2 as data loss, or starts treating the item 1 shape as data loss (`gap_rule`).
+
+### 6. What this does not fix (disclosed; feed remedies are a separate decision)
+- With the feed as measured (svs at 429), a 330 s trip sees at least one data-loss record with probability about 1 - e^(-47 x 330 / 3600) = 0.987 (Poisson assumption). Almost every live trip would then be `gap`, and P7 soft-halts at 2 gap trips. The same flags exclude paper trades (`gap_flag`) and threaten Q50's 5% cap (NOT_DECIDABLE). This amendment does not make C0 measurable on that feed. It removes the redundant-churn block, and it removes the 10-minute block on a healthy feed.
+- Feed remedies on the host side, none in this amendment and none touching #1419:
+  - stop or move the ubuntu `mal-fast-trade-tape` trial, or cut it to one socket. It is about 1-2 MB/s of the IP's 1.5-4.3 MB/s from api.mainnet-beta. Before doing so, check what reads `/var/lib/mal/sealed/fast-trades-trial` (`tools/tape_coverage.py`'s default; possibly the fast forward-paper runner). docs/HOSTS.md lists the unit as "installed, disabled", yet it runs.
+- Other feed remedies: restore a second working provider. A new endpoint for Q50 is a records change (HANDOFF §3). Future books (s1, Q60) choose their endpoints at registration. The research-0 arena feed's svs sockets are also refused (429 from that host).
+
+### 6b. P7 `gap` share at C0 (audit rank 1): its own condition
+Quant-proof ruled this **ACCEPTABLE in principle, at C0 only**, in its report on #1085 (comment 6526931175; `/data/mal/hunt-1008/ops/reports/2026-10-30/qp-1085-gap-hold.md` item 6). This item does **not** take effect with items 1 to 5. It takes effect only when all of these hold:
+- (a) this text is in force;
+- (b) the code PR #1106 (branch `claude/p7-c0-gap`) merges with its own QP OK and reviewer verdict, after or together with this text;
+- (c) the canary's install sha contains that code, with item 6's proofs (d) and (e) of the QP report: the old-vs-new golden on synthetic fixtures, and the X-time manifest with `tools/arena_live_parity.py` as a fifth allowed path pinned by exact blob and sha256, plus its tamper probe.
+
+**The rule.**
+1. For a DEC-032 C0 canary whose parity tool is `tools/arena_live_parity.py` (Q50), and **at rung C0 only**, P7's `gap`-share part makes parity NOT_DECIDABLE. That part is a `gap` share above 5% from 20 live trips on, or 2 `gap` trips before 20 (Amendment 1 item 1).
+2. That breach sets `match` false, and the verdict is "parity not shown". It is not a halt and creates no `STOP`. Every step-up stays blocked: the ladder steps up only on `match` true (`tools/h5_arena_ladder.py:315`).
+3. The share never resets. Every `gap` trip is reported separately, and it counts inside every money total: daily loss, total stop, committed loss and wallet floor.
+4. Unchanged, and still soft halts at C0:
+   - P7's `no_twin` share and its small-count rule;
+   - an `unreadable` trip;
+   - a zero-row twins file past an exit;
+   - missing, unreadable or stale state.
+5. **At C1, and whenever the rung is missing or unknown, P7 stays exactly as written: a soft halt** (fail closed).
+
+**Cost, said plainly.**
+- On `gap` trips P1, P3, P4 and P6 are blind, because they use eligible trips only. Only P2, P5, the other P7 parts and the C0 stops then guard execution quality.
+- On the feed measured on 10-28 and 10-29, the canary could spend up to its 0.20 SOL total stop (worst case 0.25 SOL to the wallet floor, §3) while producing almost no eligible trips. C1 would then be unreachable for the canary's life.
+- This is a liveness change, not a fix for the feed.
+- It is the same rule as DEC-031 Amendment 21 item 3.4 (PR #1101) for HV4 C0.
+
+**Manifest.** For an install that contains the code of (b), the X-time manifest allows five changed paths: Amendment 4's four (executor per item 7) plus `tools/arena_live_parity.py`, at the blob and sha256 pinned in that PR's `scripts/ops/q50-xtime-manifest.sh`. Amendment 4's "exactly FOUR" is superseded for such an install. HELM-SHEET is re-pinned at X.
+
+### 7. Re-pins (made in this records PR unless said otherwise)
+- **Executor pin of Amendment 4 item 1.** For the executor line, this supersedes Amendment 4 item 1's "the 5b blob, unchanged by this amendment: blob 70d789ff, sha256 ef8ae931...". The X-time executor is #1085's blob `53337e087f672b685db3c4c43ec46ad70a1119ac`, sha256 `4f5f443a71fa14606f57a75c210e2b006659dcc3217c03f841d8682d17ee9359`. This is the `tools/h5_arena_executor.py` blob of #1085 at head `d7e8bf9d2945fcb1add77dfbbba75fe3a7010b06`. `scripts/ops/q50-xtime-manifest.sh` is re-pinned to it in #1085 itself (`EXEC_BLOB`, `EXEC_SHA256`), and its probe `sh scripts/ops/test_q50_xtime_manifest.sh` passes at that head. The four-path count and the 43-path list (sha256 `244f9e85…`) do not change. **If review changes #1085's executor, this pin and #1085's manifest pin move together, before either merges.** Any later PR that changes `tools/h5_arena_executor.py` (#1091, #1106) moves this pin, both Am.4 annotations, checklist row b' and the HELM-SHEET patch to the combined blob, in a records change merged with or before that PR, with an md5 replay EQUAL at the combined blob. At X the records name the same executor blob as `scripts/ops/q50-xtime-manifest.sh` at X, or no `mode=live` starts. **Re-pin record 1 (2026-10-30, PR #1091, DEC-032 Am.7 owner-line file):** the combined executor is blob `8369ab21349b568efd0eda4fd64fde2e90510bca`, sha256 `7e6d2f0e57388c0c3ea40eb85f6c208ad07aa2389067da70f0de6ca9679abfe0` (main 6117c35c, which holds #1085, plus #1091). The manifest, both Am.4 annotations, checklist row b' and the HELM-SHEET patch move to it in #1091. The md5 replay at #1091's head is recorded in that PR. Annotation lines are added under Amendment 4 item 1 here and in DEC-033; Amendment 4's own words are left as written.
+- **DEC-033.** Its verbatim copy of §5 item 2 gets a reading note. Its `FILL:feed_gap_source` row and its list of changes from the template are updated (this PR).
+- **Owed, not in this PR:**
+  - HELM-SHEET: the patch is re-pinned here; only applying it to the host sheet is owed (manager). The sheet's move to X is an X-time checklist item, not part of this amendment.
+
+### 8. Does not amend
+- The promotion gate.
+- Any read rule.
+- The registered Q50 paper book, its frozen shadow a5f41370, its argv or endpoints, or its feed.
+- §3 limits, P1 to P7, §6, §7, and Amendments 1 to 4, except the Am.4 executor pin (item 7) and, only under item 6b's own conditions, P7's `gap`-share part at C0 (Amendment 1 item 1) and Amendment 4's 'exactly FOUR'.
+- Any other canary's executor.
+
+No book has cleared the promotion gate. Nothing here is a profit claim.
+
+
+## Amendment 7: Q50's owner line may sit in a root-owned file Helm writes; the owner line no longer has to be in the installed tree (DRAFT)
+
+**Status: DRAFT, NOT IN FORCE.** Written 2026-10-30 (`date -u` 16:19Z at start) by a worker for manager18 (lane q50-c0-feed), records only, before any Q50 read verdict and before any Q50 C0 send. It is in the same PR as its code, PR #1091 (branch `claude/q50-c0-owner-file`), so the rule and the code merge together. It takes effect only when all of these hold:
+- (a) this text merges with quant-proof's OK on the exact head and a reviewer verdict on the PR;
+- (b) the canary's install sha contains #1091's code, with the md5 decision-equivalence replay EQUAL at that sha (#1481 counts) and a 1 h keyless dry run at that sha.
+
+Source: the rules audit, rank 4 (`/data/mal/hunt-1008/ops/reports/2026-10-30/audit-rules.md`). The HV4 counterpart is DEC-031 Amendment 21 item 4 (PR #1101, merged), carried into HV4 copies by Amendment 6 item 3. Outcome-blind: no Q50 output, ledger, decision row, `bots.json` or job status view was opened.
+
+**Scope.** Q50 (`h5v1q50-boostfloor-a1`) on `tools/h5_arena_executor.py`, and a later H5 book on that executor whose copy declares this amendment. Not HV4 or HV6: Amendment 6 item 3 and DEC-031 Amendment 21 item 4 cover HV4.
+
+### 1. The rule
+1. A live start of the Q50 executor needs the owner's line for its `bot_id`. Until now that meant a `DEC-*canary*.md` record in the **installed** tree (`canary_record_refusal`, the template excluded). It may now instead be the root-owned file **`/etc/mal-h5-arena/OWNER_CANARY`** (`ARENA_OWNER_CANARY_PATH`, a code constant). The file:
+   - is written by Helm, as root, on the owner's own word: the owner's standing line of Amendment 1 item 3, or a fresh line;
+   - passes `h.root_file_problem`, the same checks as the arena `LIVE_OK`: a regular file, not a symlink, root:root, mode exactly 0644, in a root-owned directory that is not group- or other-writable, with lstat and fstat on the same inode;
+   - holds exactly one non-blank line: `OWNER_CANARY_CONFIRMED: bot_id=<bot_id>`, naming this `bot_id` exactly (`owner_canary_file_refusal`).
+2. When neither the DEC record nor the file covers the book, the live start is refused with the DEC record's reason, as before. The DEC-record path itself is unchanged.
+3. **No sha256 of the file, or of a DEC copy, is compiled into code.**
+4. The DEC copy still quotes the owner's line verbatim (§2). It still merges with QP OK and a reviewer verdict before any send, and it records Helm's sha256 of the file and the instant it was written (records PR R).
+
+### 2. What it replaces in the stage order (QP-PRERULING-1027-xorder, Stage 2 item 4)
+- **Stage 2 item 4 reads** "Add the bare line `OWNER_CANARY_CONFIRMED: bot_id=h5v1q50-boostfloor-a1`. It must be in the X tree, because the installed executor reads DEC/ at X."
+- **Under this amendment:**
+  - The bare line goes into the DEC copy in git: the copy PR or records PR R, before Helm writes `LIVE_OK`.
+  - The executor reads it from `OWNER_CANARY`, so it **need not be in the installed tree**.
+  - A reinstall is needed only when the pinned-set blobs of the tree to run differ from the installed tree's (the X-time manifest decides). A tree installed before the read, with the same pinned blobs, keeps its md5 EQUAL and its dry run.
+- **Not replaced:**
+  - every other Stage 2 and Stage 3 item (read-dependent fields, `POSTX:` tokens, records PR R, N4, the 1 h dry run at the install sha);
+  - the owner's own word for the key, the wallet, funding, `LIVE_OK` and `TIER`.
+
+### 3. Rewrite latch: not adopted for Q50, and why
+DEC-031 Amendment 21 item 4 does three things for HV4's file: the bridge checks the file before **every** live buy; at the first good check it pins the file's (st_dev, st_ino, sha256); and a later rewrite, replacement or removal latches `owner_line`. Q50 does not take that latch. Its file is checked at live start (in `arena_start_refusal`, re-run by the constructor), the same as the DEC record has been at every sha. The reasons:
+- **The owner's word already gates every Q50 buy.** The arena's own `/etc/mal-h5-arena/LIVE_OK` must exist, pass the same root-file checks and name exactly this `bot_id`, and it is re-read before every live buy and every rebroadcast (`_live_gate`). Removing it stops new buys at once. The HV4 bridge pins the owner file because it uses that file as one of two per-buy gates; on Q50 that per-buy role is LIVE_OK's.
+- **A rewrite needs root, and root also writes LIVE_OK.** The latch would only alarm on a change that the same principal can make to the per-buy gate anyway. It protects no SOL beyond the C0 limits and LIVE_OK.
+- **It is not a loosening of anything that ran.** No Q50 executor sha ever re-checked the owner line after start. The DEC record was also start-only.
+- **Cost of adopting it:** a new executor path, a state field, a latch name, a new blob, re-pins, an md5 rerun and a Helm reinstall. Under the PUSH-BRIEF owner directive, a check that protects neither money nor gate validity is not added.
+
+**Two smaller differences from Amendment 21 item 4, disclosed:**
+- Q50's file must be mode 0644 exactly (the LIVE_OK pattern). HV4's must be "not group- or other-writable".
+- Q50's `root_file_problem` does not test link count 1, which HV4's text names. Only root can create a hard link to a root-owned file in a root-owned directory, so this adds no exposure that root could not create directly.
+
+### 4. Why money and gate validity are unchanged
+- The send is still gated by Helm's root-owned files written on the owner's word (`OWNER_CANARY` at start, `LIVE_OK` before every buy), by `TIER` T1, by the C0 limits of §3 and by every halt of §5.
+- No read, window, trade set or verdict changes.
+- The canary is not gate evidence.
+
+### 5. Code and proofs (PR #1091)
+- `owner_canary_file_refusal` and `canary_record_refusal(..., owner_file=None)` in `tools/h5_arena_executor.py`. Tests: a valid file covers the book without a DEC record; another book, a prefix, two lines, an extra line, a bare id, an empty file, modes 0664 and 0600, a symlink and a missing file do not; the DEC record path still covers.
+- The executor blob moves under Amendment 5 item 7 (Re-pin record 1).
+- md5 replay EQUAL at the PR head; the PR body records its provenance.
+- `scripts/ops/test_q50_canary_record_check.sh` passes.
+
+No book has cleared the promotion gate. Nothing here is a profit claim.
