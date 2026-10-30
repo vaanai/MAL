@@ -2,7 +2,7 @@
 # hv4-c0-orders-proof-job.sh - run the HV4 C0 "orders equal rows" md5 replay (tools/hv4_c0_orders_proof.py) at a given git sha. POSIX sh (MiScusi runs jobs under sh).
 #   usage: sh scripts/ops/hv4-c0-orders-proof-job.sh GIT_SHA          (40 hex; the install sha X)
 # Works as a MiScusi job on either host. Suggested limits: 1 GB, 1 cpu, 10 min, not resumable (it is a pure function of the code at GIT_SHA; run it again for a second proof).
-# What it does: checks that GIT_SHA exists in the repo and contains tools/hv4_c0_orders_proof.py (no fallback to another tree), exports ONLY tools/ at that sha with
+# What it does: checks that GIT_SHA exists in the repo and contains tools/hv4_c0_orders_proof.py (no fallback to another tree), exports ONLY tools/ and observe/ at that sha (tools.h5_shadow imports observe.trade_decode) with
 # `git archive` into a private temp dir (the repo, its index and its working tree are not touched), runs the tool there, prints the tool's output and then a JOB summary,
 # and removes the temp dir. Synthetic log only: no network, no key, no wallet, no HV4 row, no arena path is read or written.
 # Output lines to copy into the notebook / PR (all printed by the tool, repeated at the end under "JOB"):
@@ -43,7 +43,7 @@ fi
 "$PY" -c 'import numpy' >/dev/null 2>&1 || refuse "PY=$PY cannot import numpy"
 T=$(mktemp -d "${TMPDIR:-/tmp}/hv4c0proof.XXXXXX") || refuse "mktemp failed"
 trap 'rm -rf "$T"' EXIT INT TERM
-git -C "$REPO" archive "$X" tools | tar -x -C "$T" || refuse "git archive of tools/ at $X failed"
+git -C "$REPO" archive "$X" tools observe | tar -x -C "$T" || refuse "git archive of tools/ and observe/ at $X failed"
 OUT="$T/proof.out"
 ( cd "$T" && PROOF_GIT_SHA="$X" PYTHONDONTWRITEBYTECODE=1 "$PY" -m tools.hv4_c0_orders_proof ) > "$OUT" 2>&1
 RC=$?
