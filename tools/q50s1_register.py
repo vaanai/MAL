@@ -91,13 +91,17 @@ def check_root(arena_root: str | os.PathLike) -> Path:
     return Path(real)
 
 
+HOST_ONLY_ENDPOINT_RE = re.compile(r"^wss://[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*(:[0-9]{1,5})?/?$")  # QP A1 on #1121
+
+
 def check_endpoints(endpoints: Sequence[str]) -> list[str]:
     eps = list(endpoints)
     if not eps or not all(isinstance(e, str) and e for e in eps):
         raise Refused("endpoints must be a non-empty list of non-empty strings")
-    bad = [e for e in eps if BAD_ENDPOINT_RE.search(e)]
+    bad = [e for e in eps if BAD_ENDPOINT_RE.search(e) or not HOST_ONLY_ENDPOINT_RE.match(e)]
     if bad:
-        raise Refused("an endpoint has a query, fragment, userinfo, whitespace or an api-key: the registry line records key-free endpoints only (Amendment 22 item 10)")
+        raise Refused("an endpoint is not host-only wss://<host>[:<port>][/] (a path, query, fragment, userinfo, whitespace or api-key): the registry line records key-free endpoints only "
+                      "(Amendment 22 item 10 and Erratum 1; QP A1 on #1121: free tiers put the credential in the path)")
     return eps
 
 
