@@ -50,7 +50,7 @@ def synth(n_per_day: int = 45, days=DAYS, seed: int = 7):
     return trig, outc
 
 
-def write_inputs(tmp: Path, trig, outc):
+def write_inputs(tmp: Path, trig, outc, basis: str = "el2"):
     tp, op = tmp / "triggers.jsonl", tmp / "outcomes.jsonl"
     with open(tp, "w") as f:
         for t in trig:
@@ -58,7 +58,7 @@ def write_inputs(tmp: Path, trig, outc):
                                 "outcome_known_ms": t.outcome_known_ms, "card": dict(t.card)}) + "\n")
     with open(op, "w") as f:
         for tid, o in outc.items():
-            f.write(json.dumps({"type": "v5_outcome", "tid": tid, **o}) + "\n")
+            f.write(json.dumps({"type": "v5_outcome", "tid": tid, "basis": basis, **o}) + "\n")
     return tp, op
 
 
@@ -82,7 +82,8 @@ def test_load_triggers_and_refusals(tmp_path):
     tp, op = write_inputs(tmp_path, trig, outc)
     got = h.load_triggers(tp)
     assert [t.tid for t in got] == [t.tid for t in trig]
-    assert set(h.load_outcomes(op, {t.tid for t in got})) == {t.tid for t in trig}
+    o, basis = h.load_outcomes(op, {t.tid for t in got})
+    assert set(o) == {t.tid for t in trig} and basis == "el2"
 
     def bad(mut, msg):
         rows = [json.loads(x) for x in tp.read_text().splitlines()]
@@ -93,10 +94,12 @@ def test_load_triggers_and_refusals(tmp_path):
             h.load_triggers(p)
 
     bad(lambda r: r.update(blk="fresh-0828"), "not in the allowed")
-    bad(lambda r: r.update(decision_ms=h._ms(2026, 8, 28, 12)), "outside its block window")
+    bad(lambda r: r.update(decision_ms=h._ms(2026, 8, 28, 12), outcome_known_ms=h._ms(2026, 8, 28, 12) + h.OUTCOME_KNOWN_AFTER_MS),
+        "outside its block window")
     bad(lambda r: r.update(flat_sol=0.1), "outcome field")
     bad(lambda r: r["card"].pop("q_post_trig"), "card fields")
-    bad(lambda r: r.update(outcome_known_ms=r["decision_ms"]), "outcome-known")
+    bad(lambda r: r.update(outcome_known_ms=r["decision_ms"]), "exactly decision_ms")
+    bad(lambda r: r.update(outcome_known_ms=r["decision_ms"] + h.OUTCOME_KNOWN_AFTER_MS + 1), "exactly decision_ms")
     sealed = tmp_path / "x-shadow-y"
     sealed.mkdir()
     (sealed / "t.jsonl").write_text(tp.read_text())
@@ -119,6 +122,12 @@ def test_load_outcomes_refusals(tmp_path):
     p = tmp_path / "o2.jsonl"
     p.write_text(op.read_text().replace('"flat_sol": ', '"flat_sol": 1e9, "x": ', 1))
     with pytest.raises(h.Refused, match="finite SOL"):
+        h.load_outcomes(p, tids)
+    p.write_text(op.read_text().replace('"basis": "el2"', '"basis": "frozen"', 1))
+    with pytest.raises(h.Refused, match="mix pricing bases"):
+        h.load_outcomes(p, tids)
+    p.write_text(op.read_text().replace('"basis": "el2", ', '', 1))
+    with pytest.raises(h.Refused, match="without a basis"):
         h.load_outcomes(p, tids)
 
 
@@ -319,7 +328,17 @@ def test_haiku_mode_refusals_never_construct_a_caller(tmp_path, monkeypatch):
     assert h.main(full + ["--out-dir", str(tmp_path / "b")]) == 3  # no --expect-sha256
     assert h.main(full + ["--out-dir", str(tmp_path / "c"), "--expect-sha256", f"triggers={h.sha256_file(tp)},outcomes=0"]) == 3
     assert h.main(["run", "--triggers", str(tp), "--outcomes", str(op), "--model", "stub", "--live", "--out-dir", str(tmp_path / "d")]) == 3
-    assert not any((tmp_path / x).exists() for x in "abcd")
+    pins = ["--expect-sha256", f"triggers={h.sha256_file(tp)},outcomes={h.sha256_file(op)}"]
+    over = [x if x != "1" else "16.01" for x in full]
+    assert h.main(over + pins + ["--out-dir", str(tmp_path / "e")]) == 3  # above the coded ledger ceiling
+    pilot = [x if x != "1" else "1.01" for x in full]
+    assert h.main(pilot + pins + ["--max-days", "1", "--out-dir", str(tmp_path / "f")]) == 3  # above the coded pilot ceiling
+    tp2, op2 = write_inputs(tmp_path / "fz", trig, outc, basis="frozen") if (tmp_path / "fz").mkdir() is None else None
+    full2 = [x if x not in (str(tp), str(op)) else (str(tp2) if x == str(tp) else str(op2)) for x in full]
+    assert h.main(full2 + ["--expect-sha256", f"triggers={h.sha256_file(tp2)},outcomes={h.sha256_file(op2)}", "--out-dir",
+                           str(tmp_path / "g")]) == 3  # a Haiku run on basis frozen
+    assert not any((tmp_path / x).exists() for x in "abcdefg")
+    assert h.LEDGER_BUDGET_MAX_USD == 16.0 and h.PILOT_BUDGET_MAX_USD == 1.0 and h.DECIDING_BASIS == "el2"
 
 
 def test_haiku_model_request_shape():
@@ -370,7 +389,10 @@ def _export_rows():
 def test_export_build_exclusions_and_opaque_tids():
     feats, trades = _export_rows()
     outc = ex.outcomes_from(trades, "frozen", None)
-    res = ex.build(feats, trades, outc)
+    with pytest.raises(h.Refused, match="need a basis"):
+        ex.build(feats, trades, outc)
+    res = ex.build(feats, trades, outc, "frozen")
+    assert all(o["basis"] == "frozen" for o in res["outcomes"])
     assert res["excluded"] == {"qa_exit_truncated": 1, "outside_block_window": 1} and len(res["triggers"]) == 2
     t = res["triggers"][0]
     assert t["decision_ms"] == 1787227200 * 1000 + 2 * ex.SLOT_MS + 12_500 and t["outcome_known_ms"] - t["decision_ms"] == h.OUTCOME_KNOWN_AFTER_MS
@@ -389,6 +411,11 @@ def test_export_refusals():
         ex.build(feats, [dict(trades[0], blk="fresh-0828")] + trades[1:])
     with pytest.raises(h.Refused, match="el2"):
         ex.outcomes_from(trades, "el2", None)
+
+
+def test_export_with_outcomes_needs_a_basis(tmp_path):
+    assert ex.main(["--out-dir", str(tmp_path / "e"), "--with-outcomes"]) == 3  # refused before pandas is imported
+    assert not (tmp_path / "e").exists()
 
 
 def test_export_parity(monkeypatch):

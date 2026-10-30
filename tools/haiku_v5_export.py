@@ -1,19 +1,20 @@
 """haiku_v5_export: turn the frozen H5 BOOST-floor binding trades (exploration tape) into the v5 harness inputs. PAPER ONLY.
 
-    <venv with pandas+pyarrow>/bin/python -m tools.haiku_v5_export --out-dir DIR [--with-outcomes [--el2-rows P55_ROWS.parquet]]
+    <venv with pandas+pyarrow>/bin/python -m tools.haiku_v5_export --out-dir DIR [--with-outcomes --basis el2 --el2-rows P55_ROWS.parquet]
 
 Inputs (h5-lossfilter MAP.md, 2026-10-09; read-only):
   /data/mal/hunt-1008/h5-lossfilter/features_decision_time.parquet   2,826 rows, decision-time fields (no outcome column)
   /data/mal/hunt-1008/h5-lossfilter/frozen_binding_trades.parquet    2,826 rows, meta + outcomes (flat, press in lamports at 0.1 SOL)
 Outputs (write-once dir):
   triggers.jsonl   {"type": "v5_trigger", "tid", "blk", "decision_ms", "outcome_known_ms", "card"}   no outcome field
-  outcomes.jsonl   {"type": "v5_outcome", "tid", "flat_sol", "press_sol"}                           only with --with-outcomes
+  outcomes.jsonl   {"type": "v5_outcome", "tid", "basis", "flat_sol", "press_sol"}                  only with --with-outcomes
   export.json      counts, exclusions, input/output sha256, outcome basis, parity verdict (no outcome value)
 
 Without --with-outcomes the trades file is opened for the meta columns only (day, mint, blk, mbt, mbt_utc): no outcome column is read.
 With it, the totals of the full 2,826-row book are checked against published figures before anything is written (parity; prints OK or
-FAIL only). Basis "frozen" = the stored frozen-exit flat/press; basis "el2" = P55's pnl_base_el2 (exit lag 2, the realistic primary)
-from docs/research/p55/p55_price.py output, with flat = 0.85 pnl - 8,250 and press = (1 - p_fail) pnl - p_fail 55,000 (lamports).
+FAIL only). --basis has no default: "el2" = P55's pnl_base_el2 (exit lag 2, the realistic primary) from docs/research/p55/p55_price.py
+output, with flat = 0.85 pnl - 8,250 and press = (1 - p_fail) pnl - p_fail 55,000 (lamports), the only basis a Haiku run or a score
+accepts; "frozen" = the stored frozen-exit flat/press, for stub runs only. Every outcome row carries its basis.
 
 Exclusions (counted, never repaired): QA-truncated exits; a decision or estimated exit outside the trade's ledger block window (the tape
 ends at the block end; nothing past it is read). tids are opaque (sha256 of day|mint, 16 hex): no date, block or mint reaches the model.
@@ -67,7 +68,7 @@ def _num(v: Any) -> Any:
 
 
 def build(features: Sequence[Mapping[str, Any]], trades: Sequence[Mapping[str, Any]],
-          outcome_rows: Mapping[tuple[str, str], Mapping[str, float]] | None = None) -> dict[str, Any]:
+          outcome_rows: Mapping[tuple[str, str], Mapping[str, float]] | None = None, basis: str | None = None) -> dict[str, Any]:
     """Pure transform on dict rows (tests use it without pandas). features: f_* columns + day, mint, qa_exit_truncated, f_s0_lag_slots,
     f_t_trig_wall_s. trades: META_COLS with mbt_utc in ms. outcome_rows: {(day, mint): {"flat_sol", "press_sol"}} or None."""
     fkey = {}
@@ -76,6 +77,8 @@ def build(features: Sequence[Mapping[str, Any]], trades: Sequence[Mapping[str, A
         if k in fkey:
             raise Refused("features: duplicate (day, mint)")
         fkey[k] = r
+    if outcome_rows is not None and basis not in ("frozen", "el2"):
+        raise Refused("outcome rows need a basis (frozen or el2)")
     triggers, outcomes = [], []
     excl = {"qa_exit_truncated": 0, "outside_block_window": 0}
     seen = set()
@@ -106,7 +109,8 @@ def build(features: Sequence[Mapping[str, Any]], trades: Sequence[Mapping[str, A
                          "outcome_known_ms": decision_ms + OUTCOME_KNOWN_AFTER_MS, "card": card})
         if outcome_rows is not None:
             o = outcome_rows[k]
-            outcomes.append({"type": "v5_outcome", "tid": tid, "flat_sol": float(o["flat_sol"]), "press_sol": float(o["press_sol"])})
+            outcomes.append({"type": "v5_outcome", "tid": tid, "basis": basis, "flat_sol": float(o["flat_sol"]),
+                             "press_sol": float(o["press_sol"])})
     if seen != set(fkey):
         raise Refused("features rows without a trade row")
     triggers.sort(key=lambda r: (r["decision_ms"], r["tid"]))
@@ -153,10 +157,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--features", default=FEATURES)
     ap.add_argument("--trades", default=TRADES)
     ap.add_argument("--with-outcomes", action="store_true")
-    ap.add_argument("--basis", choices=("frozen", "el2"), default="frozen")
+    ap.add_argument("--basis", choices=("frozen", "el2"))  # no default (QP on #1087 item 2)
     ap.add_argument("--el2-rows")
     a = ap.parse_args(argv)
     try:
+        if a.with_outcomes and a.basis is None:
+            raise Refused("--with-outcomes needs --basis (el2 for any Haiku run or score)")
         import pandas as pd  # only here: the harness and tests run without pandas
 
         for p in (a.features, a.trades, a.el2_rows):
@@ -183,7 +189,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise Refused(f"parity FAIL against the published {a.basis} totals; nothing written")
             basis_note = a.basis
             print(f"parity OK ({a.basis})")
-        res = build(frows, trows, outc)
+        res = build(frows, trows, outc, a.basis if a.with_outcomes else None)
         out.mkdir(parents=True, mode=0o700)
         write_jsonl_once(out / "triggers.jsonl", res["triggers"])
         if res["outcomes"] is not None:

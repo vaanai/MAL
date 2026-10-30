@@ -25,7 +25,10 @@ SEALS (checked before any row is used; a refusal raises Refused, exit 3, nothing
   * every trigger's block is in ALLOWED_BLOCKS and its decision instant and outcome-known instant lie inside that block's ledger window;
   * no decision instant at or after 2026-10-01T00Z (no October hour at all: EXP-024 Look-2, D2/D3, DBC, HV4/Q50 are out of reach);
   * input paths must not contain a forbidden fragment (meta-capture, arena, forward-, fresh-08, shadow, canary, probe, kalshi, sealed ...);
-  * the dry mode never opens an outcomes file.
+  * the dry mode never opens an outcomes file;
+  * outcome_known_ms is never taken from the file: a row must carry exactly decision_ms + 15 min (QP on #1087 item 1).
+SPEND: a Haiku run refuses --budget-usd above 16 (above 1 with --max-days), refuses outcomes that are not basis el2, holds an exclusive
+run lock next to the ledger for its whole life, and writes run_start.json (harness and prompt sha256, args) before its first call.
 """
 
 from __future__ import annotations
@@ -117,6 +120,11 @@ BOOT_DRAWS, BOOT_SEED, PCT = 1000, 1, 5.0
 RANDOM_DRAWS, RANDOM_P_MAX = 1000, 0.10
 N_LAMBDA, N_ITER, N_TOL, N_MIN_FIT, N_LABEL_PCT = 1.0, 50, 1e-10, 100, 25.0
 LLM_ARMS = ("L", "P", "F")
+BASES = ("frozen", "el2")
+DECIDING_BASIS = "el2"  # P55 exit lag 2, the realistic primary: every Haiku run and every score must use it (QP on #1087 item 2)
+LEDGER_BUDGET_MAX_USD = 16.0  # hard ceiling on --budget-usd for any Haiku run (the ledger cap is cumulative: P1 $1 + O1 $15)
+PILOT_BUDGET_MAX_USD = 1.0  # hard ceiling when --max-days is set (the pilot)
+RUN_LOCK_SUFFIX = ".v5-run.lock"  # one Haiku run per ledger at a time (reviewer on #1087 item 1)
 LEARNING_ARMS = ("L", "P")
 TOKENS_PER_BYTE_EXPECTED = 0.56  # assumption: v3 ledger 19,801,144 input tokens over 4,812 calls vs its 3.0 chars/token estimate (11.75M)
 PRICES = {"input": 0.10, "cache_write": 0.125, "cache_read": 0.01, "output": 0.50}  # USD per MTok, Haiku 5.5 <= 100K prompt (tools/haiku_caller.PRICES)
@@ -217,10 +225,11 @@ def day_start_ms(day: str) -> int:
 
 
 def check_path(path: str | os.PathLike) -> None:
-    p = os.path.abspath(os.fspath(path))
-    for frag in FORBIDDEN_PATH_FRAGMENTS:
-        if frag in p:
-            raise Refused(f"input path contains the forbidden fragment {frag!r}")
+    """Both the absolute and the resolved path (a symlink with an innocent name pointing at a sealed path is refused)."""
+    for p in (os.path.abspath(os.fspath(path)), os.path.realpath(os.fspath(path))):
+        for frag in FORBIDDEN_PATH_FRAGMENTS:
+            if frag in p:
+                raise Refused(f"input path contains the forbidden fragment {frag!r}")
 
 
 def _int(x: Any) -> bool:
@@ -270,7 +279,9 @@ def load_triggers(path: str | os.PathLike) -> list[Trigger]:
             raise Refused(f"trigger {tid}: bad instants or card")
         if set(card) != set(CARD_NAMES):
             raise Refused(f"trigger {tid}: card fields differ from CARD_FIELDS")
-        t = Trigger(tid, str(row.get("blk")), row["decision_ms"], row["outcome_known_ms"], dict(card))
+        if row["outcome_known_ms"] != row["decision_ms"] + OUTCOME_KNOWN_AFTER_MS:  # never trust the file's field (QP #1087 item 1)
+            raise Refused(f"trigger {tid}: outcome_known_ms must be exactly decision_ms + {OUTCOME_KNOWN_AFTER_MS} ms")
+        t = Trigger(tid, str(row.get("blk")), row["decision_ms"], row["decision_ms"] + OUTCOME_KNOWN_AFTER_MS, dict(card))
         check_trigger_seal(t)
         seen.add(tid)
         out.append(t)
@@ -280,13 +291,20 @@ def load_triggers(path: str | os.PathLike) -> list[Trigger]:
     return out
 
 
-def load_outcomes(path: str | os.PathLike, tids: set[str]) -> dict[str, dict[str, float]]:
-    """outcomes.jsonl: {"type": "v5_outcome", "tid", "flat_sol", "press_sol"} at the 0.1 SOL stake. One row per trigger, no extras."""
+def load_outcomes(path: str | os.PathLike, tids: set[str]) -> tuple[dict[str, dict[str, float]], str]:
+    """outcomes.jsonl: {"type": "v5_outcome", "tid", "basis", "flat_sol", "press_sol"} at the 0.1 SOL stake. One row per trigger, no
+    extras, one basis across all rows. Returns (outcomes by tid, basis)."""
     check_path(path)
     out: dict[str, dict[str, float]] = {}
+    bases: set = set()
     for row in _jsonl(path):
         if row.get("type") != "v5_outcome":
             raise Refused("outcomes file holds a row that is not a v5_outcome")
+        if row.get("basis") not in BASES:
+            raise Refused(f"outcome row without a basis in {BASES}")
+        bases.add(row["basis"])
+        if len(bases) > 1:
+            raise Refused("outcome rows mix pricing bases")
         tid = row.get("tid")
         if tid in out or tid not in tids:
             raise Refused("outcome row duplicated or for an unknown trigger")
@@ -299,7 +317,7 @@ def load_outcomes(path: str | os.PathLike, tids: set[str]) -> dict[str, dict[str
         out[tid] = vals
     if set(out) != tids:
         raise Refused(f"outcomes cover {len(out)} of {len(tids)} triggers")
-    return out
+    return out, bases.pop()
 
 
 def by_day(triggers: Sequence[Trigger]) -> list[tuple[str, list[Trigger]]]:
@@ -525,14 +543,14 @@ def feedback_rows(st: ArmState, freeze_ms: int, outcomes: Mapping[str, Mapping[s
         if not (t.decision_ms < freeze_ms and t.outcome_known_ms < freeze_ms):
             raise Refused("leak guard: a feedback row was not closed before the freeze instant")
     n_all = len(ready)
-    seed = f"v5|{st.arm}|{st.rep}|{day}"
-    ready = sample_rows(ready, key=lambda r: r[0].tid, k=MAX_FEEDBACK_ROWS, seed_text=seed)
+    # the sample seed has no arm, so L and P reflect on the same rows on capped nights (QP #1087 item 5); the derangement seed has the arm
+    ready = sample_rows(ready, key=lambda r: r[0].tid, k=MAX_FEEDBACK_ROWS, seed_text=f"v5|{st.rep}|{day}")
     if outcomes is None:
         rets = [-100.0] * len(ready)  # dry mode: widest outcome text, so request bytes are an upper bound
     else:
         rets = [ret_pct(outcomes[t.tid]["flat_sol"]) for t, _ in ready]
     if st.arm == "P" and len(rets) >= 2:
-        pi = derangement(len(rets), seed + "|placebo")
+        pi = derangement(len(rets), f"v5|{st.arm}|{st.rep}|{day}|placebo")
         rets = [rets[pi[i]] for i in range(len(rets))]
     max_known = max((t.outcome_known_ms for t, _ in ready), default=-1)
     return [(t, a, r) for (t, a), r in zip(ready, rets)], n_all, max_known
@@ -551,7 +569,7 @@ def run_walk_forward(triggers: Sequence[Trigger], outcomes: Mapping[str, Mapping
     sys_d, sys_r = system_decide(), system_reflect()
     states = [ArmState(a, r) for a in arms for r in range(1, reps + 1)]
     counts = {f"{s.arm}{s.rep}": {"decisions": 0, "parse_fail": 0, "reflections": 0, "reflect_fail": 0, "feedback_rows": 0,
-                                  "feedback_sampled_out": 0, "cost_usd": 0.0} for s in states}
+                                  "feedback_sampled_out": 0, "single_row_nights": 0, "cost_usd": 0.0} for s in states}
     for di, (day, ts) in enumerate(days):
         start = day_start_ms(day)
         nxt = day_start_ms(days[di + 1][0]) if di + 1 < len(days) else None
@@ -580,6 +598,7 @@ def run_walk_forward(triggers: Sequence[Trigger], outcomes: Mapping[str, Mapping
                 rows, n_all, max_known = feedback_rows(st, nxt, outcomes, day)
                 counts[key]["feedback_rows"] += len(rows)
                 counts[key]["feedback_sampled_out"] += n_all - len(rows)
+                counts[key]["single_row_nights"] += 1 if len(rows) == 1 else 0  # for P: no derangement possible, one true outcome shown
                 if rows:
                     fb = render_feedback(rows, nonce("feedback", st.arm, st.rep, day), n_all)
                     if on_request:
@@ -761,6 +780,10 @@ def score(run_dir: str | os.PathLike, triggers: Sequence[Trigger], outcomes: Map
     test_days = [d for d, _ in days_all[BURN_IN_DAYS:]]
     test_set = set(test_days)
     n_test = sum(len(ts) for d, ts in days_all if d in test_set)
+    all_tids = {t.tid for t in triggers}
+    for (arm, r), rows in dec.items():  # every arm-rep must decide exactly the run's triggers (no silent default to BUY)
+        if arm not in LLM_ARMS or set(rows) != all_tids:
+            raise Refused(f"decisions of {arm}{r} do not cover exactly the run's {len(all_tids)} triggers")
     reps = {a: sorted(r for (x, r) in dec if x == a) for a in LLM_ARMS}
     if not reps["L"] or not reps["P"] or not reps["F"]:
         return {"verdict": "NOT_DECIDABLE", "why": "arms L, P and F must all be present"}
@@ -774,6 +797,19 @@ def score(run_dir: str | os.PathLike, triggers: Sequence[Trigger], outcomes: Map
             if t.day in test_set and acts.get(t.tid, True):
                 per[t.day] += outcomes[t.tid][model_key]
         return per
+
+    def skip_split(arm: str, model_key: str) -> dict[str, float]:
+        """REPORT-ONLY (QP #1087 recommendation): (X - A) = count part + selection part, mean over reps. count part = -sum_D k_X(D) *
+        day mean; selection part = sum_D (k_X(D) * day mean - sum of X's skipped outcomes); selection > 0 = skipped worse than the day."""
+        dmean = {d: float(np.mean([outcomes[t.tid][model_key] for t in ts])) for d, ts in days_all if d in test_set}
+        cnt = sel = 0.0
+        for r in reps[arm]:
+            for d, ts in days_all:
+                if d in test_set:
+                    sk = [outcomes[t.tid][model_key] for t in ts if not dec[(arm, r)][t.tid]["act"]]
+                    cnt += -len(sk) * dmean[d] / len(reps[arm])
+                    sel += (len(sk) * dmean[d] - sum(sk)) / len(reps[arm])
+        return {"count_part": cnt, "selection_part": sel}
 
     def mean_daily(arm: str, model_key: str) -> dict[str, float]:
         rs = reps[arm]
@@ -838,6 +874,7 @@ def score(run_dir: str | os.PathLike, triggers: Sequence[Trigger], outcomes: Map
         bars_by_model[mk] = {"B2_learning_beats_placebo": b2, "B3_learning_beats_frozen": b3, "B4_llm_beats_numeric_matched": b4,
                              "B5_filter_beats_base_and_random": b5, "B7_learning_gain_late_half": b7}
         res["models"][mk] = {"contrasts": c, "per_rep_L_minus_P_total": per_rep_lp, "random_matched_p": rand_p,
+                             "skip_split_vs_A_report_only": {a: skip_split(a, mk) for a in LLM_ARMS},
                              "totals": {"L_mean": sum(L.values()), "P_mean": sum(P.values()), "F_mean": sum(F.values()),
                                         "A": sum(A.values()), "N": sum(N.values())},
                              "L_rep1_kept_book_in_sample": gate_stats_in_sample(l_vals, l_days)}
@@ -874,6 +911,14 @@ def _jsonsafe(x: Any) -> Any:
     return x
 
 
+class _NullCtx:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
 def parse_expect(s: str | None) -> dict[str, str]:
     out = {}
     for part in (s or "").split(","):
@@ -881,6 +926,97 @@ def parse_expect(s: str | None) -> dict[str, str]:
             k, _, v = part.partition("=")
             out[k.strip()] = v.strip()
     return out
+
+
+def harness_sha256() -> str:
+    return sha256_file(__file__)
+
+
+class run_lock:
+    """Exclusive non-blocking flock on <ledger>.v5-run.lock, held for the whole Haiku run. A second process on the same ledger is refused
+    (exit 3) before it builds a caller: haiku_caller looks up its replay store before its own ledger lock, so two runs would both pay."""
+
+    def __init__(self, ledger: str):
+        self.path = os.fspath(ledger) + RUN_LOCK_SUFFIX
+        self.fd = -1
+
+    def __enter__(self):
+        import fcntl
+
+        try:
+            self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError:
+            raise Refused("cannot open the run lock next to --ledger (does its directory exist?)") from None
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(self.fd)
+            raise Refused(f"another v5 run holds {self.path}; one run per ledger at a time") from None
+        return self
+
+    def __exit__(self, *exc):
+        os.close(self.fd)  # closing the descriptor releases the lock
+        return False
+
+
+def check_budget(budget_usd: float | None, max_days: int) -> None:
+    if budget_usd is None or not math.isfinite(budget_usd) or budget_usd < 0:
+        raise Refused("--budget-usd must be a finite number >= 0")
+    if budget_usd > LEDGER_BUDGET_MAX_USD:
+        raise Refused(f"--budget-usd above the coded ledger ceiling {LEDGER_BUDGET_MAX_USD} USD (a reviewed commit changes it)")
+    if max_days and budget_usd > PILOT_BUDGET_MAX_USD:
+        raise Refused(f"--budget-usd above the coded pilot ceiling {PILOT_BUDGET_MAX_USD} USD for a --max-days run")
+
+
+def o1_eligible(man: Mapping[str, Any]) -> bool:
+    """Only this run shape is the O1 verdict (DESIGN section 8 step 4)."""
+    return (man.get("model") == "haiku" and man.get("reps") == 3 and not man.get("max_days") and man.get("outcome_basis") == DECIDING_BASIS
+            and list(man.get("arms", [])) == list(LLM_ARMS))
+
+
+def pilot_structure(run_dir: str | os.PathLike, ledger: str | os.PathLike, save_dir: str | os.PathLike | None = None) -> dict[str, Any]:
+    """Structure-only pilot read (no outcome): parse and reflection rates from the run's logs, and per call kind (decide / reflect, joined on
+    request_sha256) the ledger's tokens, cache-read share, latency against haiku_caller's 60 s timeout, stop reasons and cost. With
+    save_dir, input tokens per request byte (the dry run's 0.56 assumption)."""
+    run_dir = Path(run_dir)
+    decs = list(_jsonl(run_dir / "decisions.jsonl"))
+    fbs = list(_jsonl(run_dir / "feedback_log.jsonl")) if (run_dir / "feedback_log.jsonl").exists() else []
+    kind = {d["request_sha256"]: "decide" for d in decs if d.get("request_sha256")}
+    kind.update({f["request_sha256"]: "reflect" for f in fbs if f.get("request_sha256")})
+    agg: dict[str, dict[str, Any]] = {}
+    for row in _jsonl(ledger):
+        if row.get("kind") != "settle" or row.get("request_sha256") not in kind:
+            continue
+        k = kind[row["request_sha256"]]
+        a = agg.setdefault(k, {"n": 0, "http_200": 0, "input": 0, "output": 0, "cache_read": 0, "cache_write": 0, "cost_usd": 0.0,
+                               "latency_ms_max": 0, "latency_over_45s": 0, "stop_reasons": {}, "bytes": 0, "bytes_tokens": 0})
+        a["n"] += 1
+        a["cost_usd"] += float(row.get("cost_usd") or 0.0)
+        if row.get("http_status") == 200:
+            a["http_200"] += 1
+            for src, dst in (("input_tokens", "input"), ("output_tokens", "output"), ("cache_read_input_tokens", "cache_read"),
+                             ("cache_creation_input_tokens", "cache_write")):
+                a[dst] += int(row.get(src) or 0)
+            sr = str(row.get("stop_reason"))
+            a["stop_reasons"][sr] = a["stop_reasons"].get(sr, 0) + 1
+            if save_dir is not None:
+                f = Path(save_dir) / f"{row['request_sha256']}.json"
+                if f.exists():
+                    body = json.loads(f.read_text())["request"]
+                    a["bytes"] += len(json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+                    a["bytes_tokens"] += sum(int(row.get(x) or 0) for x in ("input_tokens", "cache_read_input_tokens",
+                                                                             "cache_creation_input_tokens"))
+        lat = int(row.get("latency_ms") or 0)
+        a["latency_ms_max"] = max(a["latency_ms_max"], lat)
+        a["latency_over_45s"] += 1 if lat > 45_000 else 0
+    for a in agg.values():
+        tot_in = a["input"] + a["cache_read"] + a["cache_write"]
+        a["cache_read_share"] = a["cache_read"] / tot_in if tot_in else None
+        a["max_tokens_stop_share"] = a["stop_reasons"].get("max_tokens", 0) / a["http_200"] if a["http_200"] else None
+        a["input_tokens_per_byte"] = a["bytes_tokens"] / a["bytes"] if a["bytes"] else None
+    return {"decisions": len(decs), "parse_ok_rate": sum(1 for d in decs if d["parse_ok"]) / len(decs) if decs else None,
+            "reflections": len(fbs), "reflect_ok_rate": sum(1 for f in fbs if f["reflect_ok"]) / len(fbs) if fbs else None,
+            "by_kind": agg, "note": "structure only: no outcome, no score"}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -902,6 +1038,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             p.add_argument("--ledger")
             p.add_argument("--save-dir")
             p.add_argument("--expect-sha256", default="")
+    p = sub.add_parser("pilot")
+    p.add_argument("--run-dir", required=True)
+    p.add_argument("--ledger", required=True)
+    p.add_argument("--save-dir")
     p = sub.add_parser("score")
     p.add_argument("--run-dir", required=True)
     p.add_argument("--triggers", required=True)
@@ -909,18 +1049,33 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--out", required=True)
     a = ap.parse_args(argv)
     try:
+        if a.cmd == "pilot":
+            doc = pilot_structure(a.run_dir, a.ledger, a.save_dir)
+            write_once_json(Path(a.run_dir) / "pilot.json", _jsonsafe(doc))
+            print(json.dumps(_jsonsafe(doc), sort_keys=True))
+            return 0
         if a.cmd == "score":
             trig = load_triggers(a.triggers)
             run_dir = Path(a.run_dir)
+            if not (run_dir / "manifest.json").exists():
+                raise Refused("no manifest.json: the run did not complete")
             man = json.loads((run_dir / "manifest.json").read_text())
+            if man.get("harness_sha256") != harness_sha256():
+                raise Refused("the scorer's harness sha256 differs from the run's (rerun into a new --out-dir at this sha; saved calls replay)")
             if man.get("triggers_sha256") != sha256_file(a.triggers) or man.get("outcomes_sha256") != sha256_file(a.outcomes):
                 raise Refused("triggers/outcomes sha256 differ from the run manifest")
             keep = set(man.get("tids", []))
             trig = [t for t in trig if t.tid in keep]
-            outc = load_outcomes(a.outcomes, {t.tid for t in load_triggers(a.triggers)})
+            outc, basis = load_outcomes(a.outcomes, {t.tid for t in load_triggers(a.triggers)})
+            if basis != DECIDING_BASIS or man.get("outcome_basis") != DECIDING_BASIS:
+                raise Refused(f"the score needs outcome basis {DECIDING_BASIS!r} (P55 exit lag 2); got {basis!r}")
             res = score(run_dir, trig, outc, man.get("counts"))
+            res["run"] = {k: man.get(k) for k in ("model", "approval", "arms", "reps", "max_days", "outcome_basis", "budget_usd")}
+            res["run"].update({"harness_sha256_run": man.get("harness_sha256"), "harness_sha256_score": harness_sha256()})
+            res["o1_verdict_eligible"] = o1_eligible(man)
             write_once_json(Path(a.out), _jsonsafe(res))
-            print(f"verdict {res['verdict']}; failed bars: {', '.join(res.get('failed_bars', [])) or 'none'}")
+            print(f"model {man.get('model')}; O1-eligible {res['o1_verdict_eligible']}; verdict {res['verdict']}; failed bars: "
+                  f"{', '.join(res.get('failed_bars', [])) or 'none'}")
             return 0
         arms = [x for x in a.arms.split(",") if x]
         trig = load_triggers(a.triggers)
@@ -948,22 +1103,35 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise Refused("a Haiku run needs --live and --approval (the manager's approval note id)")
             if a.budget_usd is None or not a.ledger or not a.save_dir:
                 raise Refused("a Haiku run needs --budget-usd, --ledger and --save-dir")
+            check_budget(a.budget_usd, a.max_days)
             if exp.get("triggers") != sha256_file(a.triggers) or exp.get("outcomes") != sha256_file(a.outcomes):
                 raise Refused("--expect-sha256 must pin triggers= and outcomes= to the exact input files")
-            model: Model = HaikuModel(a.ledger, a.budget_usd, a.save_dir)
+        elif a.live:
+            raise Refused("--live is only for --model haiku")
+        outc, basis = load_outcomes(a.outcomes, {t.tid for t in load_triggers(a.triggers)})
+        if a.model == "haiku" and basis != DECIDING_BASIS:
+            raise Refused(f"a Haiku run needs outcome basis {DECIDING_BASIS!r} (P55 exit lag 2); got {basis!r}")
+        lock = run_lock(a.ledger) if a.model == "haiku" else None
+        with (lock if lock is not None else _NullCtx()):
+            model: Model = HaikuModel(a.ledger, a.budget_usd, a.save_dir) if a.model == "haiku" else StubModel()
+            out = make_out_dir(a.out_dir)
+            start = {"utc_start": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "harness_sha256": harness_sha256(),
+                     "prompt_sha256": PROMPT_SHAS, "args": {k: v for k, v in vars(a).items()}, "outcome_basis": basis,
+                     "triggers_sha256": sha256_file(a.triggers), "outcomes_sha256": sha256_file(a.outcomes)}
+            write_once_json(out / "run_start.json", start)  # before the first call, so a stopped run still records its sha and args
+            counts = run_walk_forward(trig, outc, model, out, arms, a.reps)
+            man = {"model": model.name, "approval": a.approval if a.model == "haiku" else None, "budget_usd": a.budget_usd,
+                   "triggers_sha256": start["triggers_sha256"], "outcomes_sha256": start["outcomes_sha256"], "outcome_basis": basis,
+                   "prompt_sha256": PROMPT_SHAS, "arms": arms, "reps": a.reps, "max_days": a.max_days, "tids": [t.tid for t in trig],
+                   "counts": counts, "harness_sha256": harness_sha256()}
+            write_once_json(out / "manifest.json", man)
+        if a.model == "haiku":
+            from tools.haiku_caller import ledger_summary
+
+            total = ledger_summary(a.ledger)["total_cost_usd"]
+            print(f"run done: model haiku, {len(trig)} triggers; ledger total {total:.4f} USD (all runs on this ledger)")
         else:
-            if a.live:
-                raise Refused("--live is only for --model haiku")
-            model = StubModel()
-        outc = load_outcomes(a.outcomes, {t.tid for t in load_triggers(a.triggers)})
-        out = make_out_dir(a.out_dir)
-        counts = run_walk_forward(trig, outc, model, out, arms, a.reps)
-        man = {"model": model.name, "approval": a.approval if a.model == "haiku" else None, "budget_usd": a.budget_usd,
-               "triggers_sha256": sha256_file(a.triggers), "outcomes_sha256": sha256_file(a.outcomes), "prompt_sha256": PROMPT_SHAS,
-               "arms": arms, "reps": a.reps, "max_days": a.max_days, "tids": [t.tid for t in trig], "counts": counts,
-               "harness_sha256": sha256_file(__file__)}
-        write_once_json(out / "manifest.json", man)
-        print(f"run done: model {model.name}, {len(trig)} triggers, cost {sum(c['cost_usd'] for c in counts.values()):.4f} USD (ledger rows)")
+            print(f"run done: model {model.name}, {len(trig)} triggers, 0 USD (no API)")
         return 0
     except Refused as e:
         print(f"REFUSED: {e}", file=sys.stderr)
