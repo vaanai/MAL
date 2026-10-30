@@ -408,3 +408,55 @@ class Am21CostAndRearmTests(_Am21):
             b.gap_tick(e.clock.t)
         per = (time.perf_counter() - t0) / n
         self.assertLess(per, 0.01)  # the reviewer measured 11.9 ms for the list scan alone
+
+
+class Am21ReviewIsNotAFilterTests(_Am21):
+    """QP on 99222ec7: _note_gaps dropped instants <= reviewed_ms that the bridge had never seen, so a future-dated review switched off the hold, the
+    per-entry refusal and the trip mark (fail-open). Now the floor is the largest PRUNED instant, and a review more than FEED_SKEW_MS ahead counts as none."""
+
+    env = Am21BridgeTests.env
+    bridge = staticmethod(Am21BridgeTests.bridge)
+    write = Am21BridgeTests.write
+    review = Am21BridgeTests.review
+    advance = Am21BridgeTests.advance
+
+    def test_qp_probe_a_future_review_does_not_switch_off_the_hold_or_the_refusal(self):
+        e, b = self.env()
+        e.start()
+        self.review(e, e.clock.t + DAY)  # review dated one day ahead
+        g = e.clock.t
+        self.write(e, "tapegaps", {"kind": "data_loss", "ms": g})
+        b.tick()
+        self.assertEqual(b.state.gap_hold_until_ms, g + c0.FEED_GAP_HOLD_MS)
+        self.assertEqual(b.feed_refusal(e.clock.t), c0.FEED_GAP_HOLD)
+        b.state.gap_hold_until_ms = 0
+        self.assertEqual(b.gap_entry_refusal({"ms": g}), c0.FEED_GAP_ENTRY)
+        self.assertEqual(c0.gap_review_ms(str(e.clear_dir / f"{e.bot}.json"), e.bot, None, e.clock.t), 0)
+        self.assertEqual(c0.gap_review_ms(str(e.clear_dir / f"{e.bot}.json"), e.bot, None, e.clock.t + DAY), e.clock.t + DAY)
+
+    def test_a_review_then_a_later_arriving_older_unseen_row_holds_60s_from_receipt(self):
+        e, b = self.env()
+        e.start()
+        self.review(e, e.clock.t)
+        self.advance(e, 10_000)
+        seen = e.clock.t
+        self.write(e, "tapegaps", {"kind": "data_loss", "ms": seen - 20_000})  # older than the review, never seen before
+        b.tick()
+        self.assertEqual(b.state.gap_hold_until_ms, seen + c0.FEED_GAP_HOLD_MS)
+        self.assertEqual(b.feed_refusal(e.clock.t), c0.FEED_GAP_HOLD)
+        self.assertEqual(b.state.gap_known_ms, [seen - 20_000])
+
+    def test_the_pruned_floor_is_persisted(self):
+        e, b = self.env()
+        e.start()
+        g = e.clock.t
+        self.write(e, "tapegaps", {"kind": "data_loss", "ms": g})
+        b.tick()
+        self.review(e, g)
+        self.advance(e, c0.GAP_KNOWN_KEEP_MS + 1)
+        b.tick()
+        self.assertEqual(b.state.gap_pruned_upto_ms, g)
+        b2 = Am21BridgeTests.bridge(e)
+        self.assertEqual(b2.state.gap_pruned_upto_ms, g)
+        b2.tick()
+        self.assertEqual(b2.state.gap_known_ms, [])
