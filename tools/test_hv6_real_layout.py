@@ -137,3 +137,28 @@ def test_phantom_filter_cli_flag_parses():
     assert '"--phantom-filter", choices=("on", "off"), default="on"' in src and '"--compare-off"' in src
     sh = (Path(RL.__file__).resolve().parent.parent / "scripts/ops/hv6-real-layout-replay.sh").read_text()
     assert '--phantom-filter "$PF"' in sh and "--compare-off" in sh and argparse
+
+
+# ------------------------------------------------------------------------------------------------------------------------ HV6 fixes A/B/C: drill-only switches
+def test_legacy_constants_switch_restores_and_the_concurrent_path_reproduces_the_md5(tmp_path, _sandbox, capsys, monkeypatch):
+    from tools import hv6_agents as A
+    monkeypatch.setattr(H, "HV6_ROOT", str(tmp_path))
+    write_layout(_sandbox, shifted_rows("2026-10-21"))
+    t0 = RL.day_ms("2026-10-21") + 6 * HOUR
+    win = (t0 + 9 * MIN + 2000, t0 + 70 * MIN)
+    tokens, board = dict(A.MAX_TOKENS), H.BOARD_SIZE
+    new = RL.run_real(["2026-10-21"], "tnew", "a" * 40, base=_mk(tmp_path, "tnew"), _window=win, phantom=False)
+    leg = RL.run_real(["2026-10-21"], "tleg", "a" * 40, base=_mk(tmp_path, "tleg"), _window=win, phantom=False, legacy=True)
+    assert dict(A.MAX_TOKENS) == tokens and H.BOARD_SIZE == board == 4 and A.MAX_TOKENS["entry"] == 1200    # the switch never leaks out of its run
+    assert new["result"] == leg["result"] == "PASS" and leg["legacy_constants"] and leg["run1"]["legacy_constants"]
+    assert new["run1_log_md5"] != leg["run1_log_md5"]               # max_tokens is in every llm_call row's request sha: the logs differ by design
+    assert new["run1_cards_md5"] == leg["run1_cards_md5"]           # two pools: the board size cannot matter here, and max_tokens is not in a card
+    legc = RL.run_real(["2026-10-21"], "tlegc", "a" * 40, base=_mk(tmp_path, "tlegc"), _window=win, phantom=False, legacy=True, concurrent=True,
+                       expect_log_md5=leg["run1_log_md5"], expect_cards_md5=leg["run1_cards_md5"])
+    assert legc["result"] == "PASS" and legc["expect_md5"]["ok"] and legc["concurrent_calls"] and legc["run1"]["counters"].get("concurrent_calls", 0) > 0
+    bad = RL.run_real(["2026-10-21"], "tbad", "a" * 40, base=_mk(tmp_path, "tbad"), _window=win, phantom=False, expect_log_md5="0" * 32)
+    capsys.readouterr()
+    assert bad["result"] == "FAIL" and not bad["expect_md5"]["log_md5_equal"] and bad["md5_equal"]
+    sh = (Path(RL.__file__).resolve().parent.parent / "scripts/ops/hv6-real-layout-replay.sh").read_text()
+    assert '--legacy-constants "${HV6_LEGACY:-off}"' in sh and '--concurrent "${HV6_CONCURRENT:-off}"' in sh and "HV6_EXPECT_LOG_MD5" in sh
+    assert RL.main(["--days", "2026-10-21", "--drill-id", "tx", "--sha", "a" * 40, "--expect-log-md5", "XYZ"]) == 2

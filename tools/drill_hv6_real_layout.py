@@ -27,9 +27,11 @@ import os
 import resource
 import sys
 import time
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from tools import hv6_agents as A
 from tools import hv6_cards as H
 from tools import drill_hv6_item6 as D
 from tools.arena_zst import open_zst
@@ -86,7 +88,31 @@ TICK_P95_CAP_MS = 1000.0
 RUNS = ("real-a", "real-b", "real-c")  # real-c runs fast_scan=False (the stream path): its decision-log and cards md5 must equal real-a's; its timing is printed, never tested
 PASS_RULE = ("PASS iff md5_equal (run1 == run2, and run3 [fast_scan=False] decision-log md5 and cards md5 == run1's) AND peak_rss_mb (max of the three processes) < rss_cap_mb "
              "AND scan_ms_p95 (max of runs 1 and 2; run 3 excluded) < 1000 AND (if that scan p95 >= 500: the :02 whole-tick p95 (max of runs 1 and 2) < 1000; "
-             "otherwise the whole-tick figures are report-only)")
+             "otherwise the whole-tick figures are report-only) AND (only when --expect-log-md5 / --expect-cards-md5 are given) run1's log md5 and cards md5 equal them")
+
+# Drill-only equivalence switches for the HV6 fixes A/B/C sha (2026-10-30). --legacy-constants on puts back, in the replay process only, the two values fixes A
+# and B changed on purpose (entry/re-check max_tokens 400/120 and BOARD_SIZE 24, as at 8cd8fe54): the replay must then reproduce the 8cd8fe54 baseline md5s
+# (#1683, filter off: log ac767dbdd6ed48eb0871f6c3902fe5b5, cards 120dbe2aba1c4e66e44f5825b2df589a), which shows every other code change is decision-neutral on
+# the real layout. --concurrent on runs the entry calls through the live concurrent path (fix B) in the replay. Production never sets either (the runner job
+# and the smoke do not call this tool).
+LEGACY_MAX_TOKENS = {"entry": 400, "recheck": 120}
+LEGACY_BOARD_SIZE = 24
+
+
+@contextmanager
+def legacy_constants(on: bool):
+    if not on:
+        yield
+        return
+    saved_tokens, saved_board = dict(A.MAX_TOKENS), H.BOARD_SIZE
+    A.MAX_TOKENS.update(LEGACY_MAX_TOKENS)
+    H.BOARD_SIZE = LEGACY_BOARD_SIZE
+    try:
+        yield
+    finally:
+        A.MAX_TOKENS.clear()
+        A.MAX_TOKENS.update(saved_tokens)
+        H.BOARD_SIZE = saved_board
 
 
 def count_programs(src: Path, days: list[str]) -> dict:
@@ -158,9 +184,17 @@ def stats(xs: list[float]) -> dict:
     return {"p50": round(pct(xs, 0.5), 2), "p95": round(pct(xs, 0.95), 2), "max": round(max(xs), 2) if xs else 0.0, "n": len(xs)}
 
 
-def one_run(rd: RealDrill, tag: str, start: int, end: int, fast: bool = True, phantom: bool = True) -> dict:
+def one_run(rd: RealDrill, tag: str, start: int, end: int, fast: bool = True, phantom: bool = True, legacy: bool = False, concurrent: bool = False) -> dict:
+    with legacy_constants(legacy):
+        res = _one_run(rd, tag, start, end, fast, phantom, concurrent)
+    res["legacy_constants"], res["concurrent_calls"] = legacy, concurrent
+    return res
+
+
+def _one_run(rd: RealDrill, tag: str, start: int, end: int, fast: bool, phantom: bool, concurrent: bool) -> dict:
     run = rd.new_run(tag)
     run.cfg.fast_scan = fast
+    run.cfg.concurrent_calls = bool(concurrent)  # drill-only: False is the replay default (None resolves to the serial path when not live)
     if not phantom:  # drill-only switch (the runner's hook reads run.phantom on every row); production keeps RunnerConfig.phantom_filter = True
         run.phantom = None
     walls: list[float] = []
@@ -200,7 +234,7 @@ def one_run(rd: RealDrill, tag: str, start: int, end: int, fast: bool = True, ph
             "phantom_filter": phantom, "phantom_drops": dict(run.phantom.counts) if run.phantom is not None else None}
 
 
-def child_one_run(tag: str, days: list[str], drill_id: str, sha: str, phantom: bool = True) -> int:
+def child_one_run(tag: str, days: list[str], drill_id: str, sha: str, phantom: bool = True, legacy: bool = False, concurrent: bool = False) -> int:
     """One replay in ITS OWN process (run1 and run2 never share a heap: QP/OOM #1596). Writes <drill root>/<tag>.json (counts, md5s, this process's peak RSS)."""
     base = Path(H.HV6_ROOT) / "drill" / drill_id
     if not ID_RE.fullmatch(drill_id) or tag not in RUNS or not D.RR.is_drill_root(base):
@@ -209,7 +243,7 @@ def child_one_run(tag: str, days: list[str], drill_id: str, sha: str, phantom: b
     assert end <= day_ms(END_EXCLUSIVE)
     rd = RealDrill(base, Path(REAL_TAPE), sha, days)
     try:
-        res = one_run(rd, tag, start, end, fast=(tag != "real-c"), phantom=phantom)
+        res = one_run(rd, tag, start, end, fast=(tag != "real-c"), phantom=phantom, legacy=legacy, concurrent=concurrent)
         res["peak_rss_mb"] = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 1)
     except Exception as e:  # noqa: BLE001 - the class name only
         res = {"error_class": type(e).__name__}
@@ -217,12 +251,13 @@ def child_one_run(tag: str, days: list[str], drill_id: str, sha: str, phantom: b
     return 0 if "error_class" not in res else 3
 
 
-def _isolated_run(tag: str, days: list[str], drill_id: str, sha: str, base: Path, phantom: bool = True) -> dict:
+def _isolated_run(tag: str, days: list[str], drill_id: str, sha: str, base: Path, phantom: bool = True, legacy: bool = False, concurrent: bool = False) -> dict:
     import subprocess
 
     root = Path(__file__).resolve().parent.parent
     r = subprocess.run([sys.executable, "-m", "tools.drill_hv6_real_layout", "--one-run", tag, "--days", ",".join(days), "--drill-id", drill_id, "--sha", sha,
-                        "--phantom-filter", "on" if phantom else "off"],
+                        "--phantom-filter", "on" if phantom else "off", "--legacy-constants", "on" if legacy else "off",
+                        "--concurrent", "on" if concurrent else "off"],
                        cwd=str(root), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     f = base / f"{tag}.json"
     if r.returncode != 0 or not f.exists():
@@ -234,7 +269,8 @@ def _isolated_run(tag: str, days: list[str], drill_id: str, sha: str, base: Path
 
 
 def run_real(days: list[str], drill_id: str, sha: str, *, rss_cap_mb: float = RSS_CAP_MB, tape_dir: str | None = None, base: Path | None = None, _window: tuple[int, int] | None = None,
-             isolate: bool = False, phantom: bool = True, compare_off: str | None = None) -> dict:
+             isolate: bool = False, phantom: bool = True, compare_off: str | None = None, legacy: bool = False, concurrent: bool = False,
+             expect_log_md5: str | None = None, expect_cards_md5: str | None = None) -> dict:
     tape_dir = REAL_TAPE if tape_dir is None else tape_dir
     if tape_dir != REAL_TAPE:
         raise Refused("tape_dir_not_allowed")
@@ -252,17 +288,17 @@ def run_real(days: list[str], drill_id: str, sha: str, *, rss_cap_mb: float = RS
     assert end <= day_ms(END_EXCLUSIVE)
     rd = RealDrill(base, src, sha, days)
     D.out({"real_layout": "start", "sha": sha, "days": len(days), "first_day": days[0], "last_day": days[-1], **view_info, "model": "StubModel", "api_calls": 0,
-           "chain": "fake_stamped_before_scan",
+           "chain": "fake_stamped_before_scan", "legacy_constants": legacy, "concurrent_calls": concurrent,
            "rows_by_program": count_programs(src, days), "orders_only_on": "pumpswap", "pass_rule": PASS_RULE, "rss_cap_mb": rss_cap_mb})
     if isolate:  # production: each replay in its own subprocess; the peak is the largest of the three processes' peaks
-        a = _isolated_run("real-a", days, drill_id, sha, base, phantom)
-        b = _isolated_run("real-b", days, drill_id, sha, base, phantom)
-        c = _isolated_run("real-c", days, drill_id, sha, base, phantom)
+        a = _isolated_run("real-a", days, drill_id, sha, base, phantom, legacy, concurrent)
+        b = _isolated_run("real-b", days, drill_id, sha, base, phantom, legacy, concurrent)
+        c = _isolated_run("real-c", days, drill_id, sha, base, phantom, legacy, concurrent)
         rss_mb = max(a.pop("peak_rss_mb"), b.pop("peak_rss_mb"), c.pop("peak_rss_mb"))
     else:
-        a = one_run(rd, "real-a", start, end, phantom=phantom)
-        b = one_run(rd, "real-b", start, end, phantom=phantom)
-        c = one_run(rd, "real-c", start, end, fast=False, phantom=phantom)
+        a = one_run(rd, "real-a", start, end, phantom=phantom, legacy=legacy, concurrent=concurrent)
+        b = one_run(rd, "real-b", start, end, phantom=phantom, legacy=legacy, concurrent=concurrent)
+        c = one_run(rd, "real-c", start, end, fast=False, phantom=phantom, legacy=legacy, concurrent=concurrent)
         rss_mb = round(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0, 1)
     equal12 = a["log_md5"] == b["log_md5"] and a["cards_md5"] == b["cards_md5"] and a["entries"] == b["entries"]
     equal3 = c["log_md5"] == a["log_md5"] and c["cards_md5"] == a["cards_md5"]  # fast_scan on and off give the same decisions on the real layout
@@ -274,6 +310,13 @@ def run_real(days: list[str], drill_id: str, sha: str, *, rss_cap_mb: float = RS
     ok = equal and rss_mb < rss_cap_mb and p95 < SCAN_P95_CAP_MS and tick_ok
     drops = {k: max(a["phantom_drops"][k], b["phantom_drops"][k]) for k in a["phantom_drops"]} if a.get("phantom_drops") else None
     total_drops = sum(drops.values()) if drops else 0
+    expect = None
+    if expect_log_md5 is not None or expect_cards_md5 is not None:
+        expect = {"expect_log_md5": expect_log_md5, "expect_cards_md5": expect_cards_md5,
+                  "log_md5_equal": expect_log_md5 is None or a["log_md5"] == expect_log_md5,
+                  "cards_md5_equal": expect_cards_md5 is None or a["cards_md5"] == expect_cards_md5}
+        expect["ok"] = expect["log_md5_equal"] and expect["cards_md5_equal"]
+        ok = ok and expect["ok"]
     cmp_res = None
     if compare_off is not None:
         cmp_res = compare_with_off(compare_off, a, rss_mb, total_drops)
@@ -289,7 +332,7 @@ def run_real(days: list[str], drill_id: str, sha: str, *, rss_cap_mb: float = RS
            "max_candidates_per_scan": max(a["counters"].get("max_candidates_per_scan", 0), b["counters"].get("max_candidates_per_scan", 0)),
            "scans_cap_bound": max(a["counters"].get("scans_cap_bound", 0), b["counters"].get("scans_cap_bound", 0)),
            "phantom_filter": "on" if phantom else "off", "phantom_drops_by_kind": drops, "phantom_drops_total": total_drops,
-           "run1_cards_md5": a["cards_md5"], "compare_with_off": cmp_res}
+           "run1_cards_md5": a["cards_md5"], "compare_with_off": cmp_res, "legacy_constants": legacy, "concurrent_calls": concurrent, "expect_md5": expect}
     D.out(res)
     # Seal: the result file goes into the drill root, then the whole root is made read-only (priced pre-clock hours, never read) and the file's sha256 is printed.
     rf = base / "real-layout-result.json"
@@ -338,13 +381,21 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--rss-cap-mb", type=float, default=RSS_CAP_MB)
     ap.add_argument("--phantom-filter", choices=("on", "off"), default="on", help="drill-only: off turns the HV6 phantom-row filter off in the replay (equivalence proof against aa270efc)")
     ap.add_argument("--compare-off", default=None, metavar="DRILL_ID", help="with --phantom-filter on: the drill id of an earlier OFF run of the same days; prints on-vs-off counts, FAIL if md5 differs with 0 drops")
+    ap.add_argument("--legacy-constants", choices=("on", "off"), default="off", help="drill-only: entry/re-check max_tokens 400/120 and board 24 (the 8cd8fe54 values) in the replay")
+    ap.add_argument("--concurrent", choices=("on", "off"), default="off", help="drill-only: the entry calls take the live concurrent path (fix B) in the replay")
+    ap.add_argument("--expect-log-md5", default=None, help="PASS also needs run1's decision-log md5 to equal this (an equivalence proof)")
+    ap.add_argument("--expect-cards-md5", default=None, help="PASS also needs run1's cards md5 to equal this")
     ap.add_argument("--one-run", default=None, help="internal: run one replay (real-a or real-b) in this process and write its result file")
     a = ap.parse_args(argv)
     try:
         days = parse_days(a.days)
+        for v in (a.expect_log_md5, a.expect_cards_md5):
+            if v is not None and not re.fullmatch(r"[0-9a-f]{32}", v):
+                raise Refused("expect_md5_not_32_hex")
         if a.one_run:
-            return child_one_run(a.one_run, days, a.drill_id, a.sha, a.phantom_filter == "on")
-        res = run_real(days, a.drill_id, a.sha, rss_cap_mb=a.rss_cap_mb, isolate=True, phantom=a.phantom_filter == "on", compare_off=a.compare_off)
+            return child_one_run(a.one_run, days, a.drill_id, a.sha, a.phantom_filter == "on", a.legacy_constants == "on", a.concurrent == "on")
+        res = run_real(days, a.drill_id, a.sha, rss_cap_mb=a.rss_cap_mb, isolate=True, phantom=a.phantom_filter == "on", compare_off=a.compare_off,
+                       legacy=a.legacy_constants == "on", concurrent=a.concurrent == "on", expect_log_md5=a.expect_log_md5, expect_cards_md5=a.expect_cards_md5)
     except Refused as e:
         print(json.dumps({"real_layout": "refused", "why": str(e)}), file=sys.stderr)
         return 2
