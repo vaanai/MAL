@@ -119,7 +119,8 @@ not counted here (arena tape not opened).
    No score is run on P1.
 3. (API, cumulative cap $16 on the same ledger, so about $15 for this step) Full O1: the same command with `--reps 3`, no `--max-days`,
    `--out-dir .../run-o1`. Serial calls (haiku_caller holds its ledger lock across a call): about 5 to 11 h. A restart replays saved calls at
-   no cost. P1's rep-1 calls on days 1-3 are identical requests and replay (disclosed).
+   no cost: a run stopped by the caller (budget, retries, API error) exits 4 and is rerun into a NEW `--out-dir` with the same ledger and
+   store. P1's rep-1 calls on days 1-3 are identical requests and replay (disclosed).
 4. (no API) `python -m tools.haiku_v5_harness score --run-dir .../run-o1 --triggers ... --outcomes ... --out .../score-o1.json`; the verdict
    line goes to the manager; quant-proof reads score.json before any sentence about it.
 

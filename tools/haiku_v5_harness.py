@@ -968,6 +968,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Refused as e:
         print(f"REFUSED: {e}", file=sys.stderr)
         return 3
+    except Exception as e:  # noqa: BLE001 - a haiku_caller stop (budget, retries, API error, missing key): class name only, never the text
+        if type(e).__module__ == "tools.haiku_caller":
+            print(f"STOPPED by tools.haiku_caller: {type(e).__name__}. Partial output is kept; rerun into a NEW --out-dir with the same "
+                  "--ledger and --save-dir (saved calls replay at no cost).", file=sys.stderr)
+            return 4
+        raise
 
 
 if __name__ == "__main__":

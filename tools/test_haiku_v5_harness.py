@@ -402,3 +402,26 @@ def test_export_parity(monkeypatch):
     el2 = [{"day": r["day"], "mint": r["mint"], "pnl_base_el2": 1e8, "p_fail": 0.2} for r in trades]
     o = ex.outcomes_from(trades, "el2", el2)[("2026-08-20", "Mint0xyz")]
     assert abs(o["flat_sol"] - (0.85e8 - 8250) / 1e9) < 1e-15 and abs(o["press_sol"] - (0.8e8 - 0.2 * 55000) / 1e9) < 1e-15
+
+
+def test_caller_stop_exits_4_and_keeps_partial_output(tmp_path, monkeypatch):
+    from tools.haiku_caller import BudgetExceeded
+
+    trig, outc = synth(4, DAYS[:2])
+    tp, op = write_inputs(tmp_path, trig, outc)
+
+    class Stops(h.StubModel):
+        def __init__(self, *a, **k):
+            super().__init__()
+
+        def decide(self, system, playbook, card_text):
+            if self.calls >= 3:
+                raise BudgetExceeded("over")
+            return super().decide(system, playbook, card_text)
+
+    monkeypatch.setattr(h, "HaikuModel", Stops)
+    rc = h.main(["run", "--triggers", str(tp), "--outcomes", str(op), "--model", "haiku", "--live", "--approval", "n_test",
+                 "--budget-usd", "1", "--ledger", str(tmp_path / "l.jsonl"), "--save-dir", str(tmp_path / "s"), "--out-dir", str(tmp_path / "r"),
+                 "--expect-sha256", f"triggers={h.sha256_file(tp)},outcomes={h.sha256_file(op)}"])
+    assert rc == 4 and len((tmp_path / "r" / "decisions.jsonl").read_text().splitlines()) == 3
+    assert not (tmp_path / "r" / "manifest.json").exists()
