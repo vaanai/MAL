@@ -64,10 +64,12 @@ class Base(TmpCase):
 
 
 class SwitchTrueTests(Base):
-    """LIVE_REFUSAL_ACTIVE True: unchanged behaviour. The gate is not consulted, whatever it is told."""
+    """LIVE_REFUSAL_ACTIVE True (every test below patches it explicitly): unchanged behaviour. The gate is not consulted, whatever it is told."""
 
-    def test_default_is_true(self):
-        self.assertIs(c0.LIVE_REFUSAL_ACTIVE, True)
+    def test_the_switch_is_a_plain_bool(self):
+        # (This PR ships True; the later one-line flip to False must leave every test green, so no test pins the shipped value. The tests that assert
+        # hv4_c0_incomplete patch True themselves, and the gate tests patch False themselves.)
+        self.assertIsInstance(c0.LIVE_REFUSAL_ACTIVE, bool)
 
     def test_every_non_synthetic_start_refuses_even_with_a_pass_and_every_gate(self):
         with mock.patch.object(c0, "LIVE_REFUSAL_ACTIVE", True):
