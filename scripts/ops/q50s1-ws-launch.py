@@ -1,7 +1,8 @@
 """Launcher for the s1 shadow (and its smoke) that hands S*'s frozen tools/h5_shadow.py its keyed second websocket URL WITHOUT the key in any OS-visible argv.
 
-DEC-031 Amendment 22 item 10 (Helius websocket as s1's second provider) as bound by QP on #1107: the key never appears in any process's argv, a systemd-run unit description
-or property, a job log or the journal. S* (5c2ab7c6) takes ws URLs only as --ws-url arguments (h5_shadow.py:3518) and forces TLS (observe/trade_source.py:243-250), so neither
+DEC-031 Amendment 22 item 10 and its Erratum 1 (at most one second provider, given by --ws2; a key only with --ws2-keyed, only as ?api-key=), as bound by QP on #1107: a key
+never appears in any process's argv, a systemd-run unit description or property, a job log or the journal. The launcher ALWAYS runs the shadow; it reads and adds a key only
+when --key-file/--keyed-url are given (--ws2-keyed). S* (5c2ab7c6) takes ws URLs only as --ws-url arguments (h5_shadow.py:3518) and forces TLS (observe/trade_source.py:243-250), so neither
 an environment path nor a plain ws:// local relay exists. This launcher is OUTSIDE the frozen code and changes none of it:
 
   python -I scripts/ops/q50s1-ws-launch.py --src <S* worktree> [--key-file <KEY=VALUE file> --keyed-url <key-free wss URL> [--key-var NAME] [--key-param NAME]] -- <h5_shadow args>

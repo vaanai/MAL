@@ -38,11 +38,11 @@
 #      (a slip under Amendment 17 item 2), it is never started uncapped;
 #   7. starts `python -m tools.h5_shadow` from the S* worktree under `systemd-run --user --scope -p MemoryMax=1500M -p MemorySwapMax=0 --unit=q50s1-shadow` and stops that scope on TERM,
 #      INT and EXIT (miscusi_job_cancel leaves --scope children alive: this job stops its own scope). The scope gets a fixed --description=q50s1-shadow (systemd does not log the command
-#      line). The process is `python -I scripts/ops/q50s1-ws-launch.py ... -- <h5_shadow args>`: the launcher (outside S*) reads the key
-#      from the key file inside the process, adds it to the Helius --ws-url in sys.argv only, and runs tools.h5_shadow from the S* worktree as `python -m` does; no key is on
-#      any command line. The h5_shadow args: --fresh-forward ARENA --q-star-sol 50 --sockets 3 --syn-sockets 1 --ws-url wss://api.mainnet-beta.solana.com
-#      --ws-url wss://mainnet.helius-rpc.com/ (scripts/ops/q50s1-feed.sh; socket i uses url i mod 2, so one PumpSwap socket is Helius). Exit 11 if a URL is not key-free
-#      or the key file is unreadable or malformed; exit 12 if the launcher refuses its arguments (the check mode runs the launcher with --dry, against this checkout
+#      line). The process is ALWAYS `python -I scripts/ops/q50s1-ws-launch.py ... -- <h5_shadow args>` (the launcher, outside S*, runs tools.h5_shadow from the S*
+#      worktree as `python -m` does and redacts stdout/stderr). A KEY is involved ONLY with `--ws2 URL --ws2-keyed`: then the launcher reads it from the key file inside the
+#      process and adds it as the launcher's key query parameter to that one --ws-url in sys.argv only; no key is ever on a command line. The h5_shadow args: --fresh-forward ARENA --q-star-sol 50
+#      --sockets 3 --syn-sockets 1 --ws-url wss://api.mainnet-beta.solana.com [--ws-url <the --ws2 URL, host-only>] (scripts/ops/q50s1-feed.sh; socket i uses url i mod n;
+#      no second provider by default). Exit 11 if a URL is not host-only and key-free, or --ws2-keyed has no usable key; exit 12 if the launcher refuses its arguments (the check mode runs the launcher with --dry, against this checkout
 #      while the S* worktree does not exist yet). bx10 is off at Q* 50 in code.
 # Output: $ARENA/h5-q50s1-<UTC date>[-succ]/h5-shadow-<UTC hour>.jsonl (never opened by any worker; the Q50 seal and EXP-024 successor note part A apply).
 # Env (all optional): ARENA_H5_PYTHON (default /var/lib/mal/fast-listener/.venv/bin/python), Q50S1_REPO (default: the checkout this script is in), Q50S1_HOME (s1's own HOME,
