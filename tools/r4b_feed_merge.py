@@ -18,7 +18,8 @@ What is here (Addendum 3 proofs 1, 4, 5, 6 in code; 2 and 3 need the host, a DRY
                    pair; seam_report() says, for a slot range, which keys were seen by both sources or by one only (the measure of "did the window miss anything").
   DailyCreditCap   credits at 3 per 0.1 MB (the probe's CAP_RATE), a per-UTC-day cap (required argument), state in an atomic JSON file. At the cap no window opens and
                    buy_hold() returns a reason. Exits are not this module's business. A state file that cannot be read stops the day (fail closed).
-  ntp_status / require_synced   timedatectl NTPSynchronized and, if chronyc exists, its system-time offset; require_synced raises when not synced or over the bound.
+  ntp_status / require_synced   timedatectl NTPSynchronized and the offset from chronyc or, on a timesyncd host, `timedatectl timesync-status`; require_synced raises
+                   when not synced, when the offset is unknown (fail closed) or over the bound.
   mark_complete / window_failed / tip_silence   pure completeness and failure tests (below).
 
 Completeness (Addendum 3 item 1 and 4), exactly what mark_complete(T, sd, state) tests
@@ -85,6 +86,7 @@ SOURCES = (SOURCE_PUBLIC, SOURCE_HELIUS)
 CREDITS_PER_TENTH_MB = lp.CAP_RATE  # 3: the higher of the two published rates, as the probe's cap
 SILENCE_S = 2.0  # QP Addendum 3 item 4: silence over 2 s fails the window
 TICK_S = 0.2  # the receive loop wakes at least this often (silence, close request, deadline)
+FORKS_MAX = 10_000  # re-landed transactions kept for Bar 1 attribution (the count is never capped)
 DEDUP_HORIZON_SLOTS = 1_500  # keys older than this many slots behind the newest slot seen are dropped (about 10 minutes of chain time)
 DEDUP_MAX_KEYS = 200_000  # hard cap on remembered keys (the tape runs at roughly 100 rows/s, so this is far more than the overlap needs)
 PERSIST_EVERY_BYTES = 1_000_000
@@ -378,7 +380,7 @@ class DailyCreditCap:
 @dataclass(frozen=True)
 class NtpStatus:
     synced: bool | None  # None: could not be determined
-    offset_ms: float | None  # chrony system time, + = this host is ahead of NTP time; None when chronyc is not available
+    offset_ms: float | None  # + = this host is ahead of NTP time; from `chronyc tracking`, else `timedatectl timesync-status`; None when neither gives it
     detail: str = ""
 
     def as_record(self) -> dict:
@@ -421,8 +423,25 @@ def parse_chrony(text: str) -> tuple[float | None, str | None]:
     return off, (lp_.group(1) if lp_ else None)
 
 
+_TIMESYNC_OFFSET = re.compile(r"^\s*Offset\s*:\s*([+-]?[0-9.]+)\s*(ns|us|µs|ms|s)\s*$", re.M)
+_UNIT_MS = {"ns": 1e-6, "us": 1e-3, "µs": 1e-3, "ms": 1.0, "s": 1000.0}
+
+
+def parse_timesync(text: str) -> float | None:
+    """Offset in ms from `timedatectl timesync-status` (systemd-timesyncd: "Offset: -1.042ms"; its sign is the server's correction; the magnitude is what the
+    bound checks). None when absent."""
+    m = _TIMESYNC_OFFSET.search(text)
+    if not m:
+        return None
+    try:
+        return float(m.group(1)) * _UNIT_MS[m.group(2)]
+    except (ValueError, KeyError):
+        return None
+
+
 def ntp_status(runner: Runner | None = None, timeout_s: float = NTP_TIMEOUT_S) -> NtpStatus:
-    """`timedatectl show -p NTPSynchronized --value` and, if available, the `chronyc tracking` offset. The runner is injectable (tests)."""
+    """`timedatectl show -p NTPSynchronized --value`, and the offset from `chronyc tracking` or, on a systemd-timesyncd host (no chronyc),
+    `timedatectl timesync-status` (reviewer on #1142). The runner is injectable (tests)."""
     run = runner or default_runner
     rc, out = run(["timedatectl", "show", "-p", "NTPSynchronized", "--value"], timeout_s)
     word = out.strip().lower()
@@ -437,15 +456,25 @@ def ntp_status(runner: Runner | None = None, timeout_s: float = NTP_TIMEOUT_S) -
             synced = False
     else:
         notes.append(f"chronyc rc={crc}")
+    if off is None:
+        trc, tout = run(["timedatectl", "timesync-status"], timeout_s)
+        if trc == 0:
+            off = parse_timesync(tout)
+            notes.append(f"timesync-status offset={'-' if off is None else f'{off:.3f}ms'}")
+        else:
+            notes.append(f"timesync-status rc={trc}")
     return NtpStatus(synced, off, "; ".join(notes))
 
 
 def require_synced(max_offset_ms: float = NTP_MAX_OFFSET_MS, *, runner: Runner | None = None, timeout_s: float = NTP_TIMEOUT_S) -> NtpStatus:
-    """The host status, or ClockNotSynced when NTP is not synchronized (or cannot be read), or when the chrony offset, if available, exceeds max_offset_ms."""
+    """The host status, or ClockNotSynced when NTP is not synchronized (or cannot be read), when the offset cannot be read from chronyc or timesyncd (fail
+    closed: an unknown offset is not a small one), or when it exceeds max_offset_ms."""
     s = ntp_status(runner, timeout_s)
     if s.synced is not True:
         raise ClockNotSynced(f"host clock not confirmed NTP-synchronized ({s.detail})")
-    if s.offset_ms is not None and abs(s.offset_ms) > max_offset_ms:
+    if s.offset_ms is None:
+        raise ClockNotSynced(f"host clock offset unknown: neither chronyc nor timedatectl timesync-status gave one ({s.detail})")
+    if abs(s.offset_ms) > max_offset_ms:
         raise ClockNotSynced(f"host clock offset {s.offset_ms:.3f} ms exceeds {max_offset_ms:g} ms ({s.detail})")
     return s
 
@@ -486,6 +515,7 @@ class Merger:
         self._keys: OrderedDict = OrderedDict()  # key -> [first_source, first_seen_ms, slot, {source, ...}]
         self.max_slot = -1
         self.stats: Counter = Counter()
+        self.forks: list = []  # re-landed transactions (first slot, later slot), bounded by FORKS_MAX; each is a Bar 1 "fork" difference
 
     def __len__(self) -> int:
         return len(self._keys)
@@ -520,6 +550,14 @@ class Merger:
             return dict(row)
         e = self._keys.get(key)
         if e is not None:
+            if slot is not None and e[2] is not None and slot != e[2]:
+                # the same transaction seen in another slot: the first copy's slot forked away and the tx re-landed (reviewer on #1142). The engine already has
+                # the first copy; nothing is emitted again. Counted as a fork, a Bar 1 difference (DEC-032 Am.8 Erratum 2, Bar 2 condition 2).
+                self.stats["fork_reslot"] += 1
+                if len(self.forks) < FORKS_MAX:
+                    self.forks.append({"key": list(key), "first_slot": e[2], "first_source": e[0], "later_slot": slot, "later_source": source, "ms": now})
+                e[3].add(source)
+                return None
             self.stats["dup"] += 1
             self.stats[f"dup_{e[0]}_then_{source}"] += 1
             e[3].add(source)
@@ -550,7 +588,7 @@ class Merger:
         """Per-source and duplicate counts (a plain dict, for the per-day record)."""
         return {"offered": {s: self.stats[f"offered_{s}"] for s in SOURCES}, "emitted": {s: self.stats[f"emitted_{s}"] for s in SOURCES},
                 "dup": self.stats["dup"], "dup_pairs": {f"{a}_then_{b}": self.stats[f"dup_{a}_then_{b}"] for a in SOURCES for b in SOURCES},
-                "passthrough": self.stats["passthrough"], "below_horizon": self.stats["below_horizon"], "keys": len(self._keys),
+                "passthrough": self.stats["passthrough"], "below_horizon": self.stats["below_horizon"], "keys": len(self._keys), "fork_reslot": self.stats["fork_reslot"],
                 "evicted_horizon": self.stats["evicted_horizon"], "evicted_cap": self.stats["evicted_cap"]}
 
     def seam_report(self, lo_slot: int, hi_slot: int) -> dict:
