@@ -103,8 +103,8 @@ class Memory(unittest.TestCase):
     def test_the_first_hour_after_catchup_is_not_fitted(self):
         m = live_monitor(0, run_end=CU + 200 * H)
         alerts = []
-        for t in range(int(CU), int(CU + H), 60):  # steep warm-up inside the first hour: ignored by the fit
-            alerts += m.feed(smp(float(t), 1100.0 + 0.25 * (t - CU)))
+        for t in range(int(CU), int(CU + H), 60):  # a steep warm-up inside the first hour (200 to 1,364 MiB): ignored by the fit
+            alerts += m.feed(smp(float(t), 200.0 + (1364.5 - 200.0) * (t - CU) / H))
         last, a2 = feed_ramp(m, 12.0, 6.5, start_h=1.0)
         self.assertEqual(alerts + a2, [])
         self.assertAlmostEqual(last["anon_slope_mib_h"], 6.5, places=2)
