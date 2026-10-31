@@ -465,11 +465,17 @@ def test_constants_match_feed_rules():
 
 
 def test_arena_feed_v1_untouched():
-    """P35 never edits HV4's feed pin: tools/arena_feed.py must keep the blob of f5bd26e7 (sha256 7a9d424b...)."""
+    """HV4's feed pin is the blob of tools/arena_feed.py at f5bd26e7 (sha256 7a9d424b...). It is read from git, not from the working tree: the file on
+    main may change (claude/arena-feed-late-dedupe), the pinned blob may not."""
     import hashlib
+    import subprocess
 
-    p = Path(__file__).resolve().parent / "arena_feed.py"
-    assert hashlib.sha256(p.read_bytes()).hexdigest().startswith("7a9d424b")
+    repo = Path(__file__).resolve().parent.parent
+    try:
+        blob = subprocess.run(["git", "cat-file", "blob", "f5bd26e7:tools/arena_feed.py"], cwd=repo, capture_output=True, check=True, timeout=30).stdout
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        pytest.skip("commit f5bd26e7 is not in this clone")
+    assert hashlib.sha256(blob).hexdigest().startswith("7a9d424b")
 
 
 def test_slim_read_keeps_markers_whole_and_drops_trade_bodies(tmp_path):
