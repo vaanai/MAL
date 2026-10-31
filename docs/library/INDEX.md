@@ -33,12 +33,12 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `parked` | 9 | 3 | 0 |
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 44 | 27 | 1 |
-| `desk-read` | 1 | 49 | 0 |
-| `explored-no-survivor` | 43 | 16 | 1 |
+| `desk-read` | 1 | 50 | 0 |
+| `explored-no-survivor` | 43 | 17 | 1 |
 | `dead-as-frozen` | 76 | 5 | 0 |
-| **all** | 188 | 102 | 2 |
+| **all** | 188 | 104 | 2 |
 
-The file holds 542 rows: the 292 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 544 rows: the 294 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -433,6 +433,18 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `p91-knn-lowfee` | kNN on the low-fee, active universe (bands B5-B7): P86 numeric kNN, top pick each hour, dead pools … | `dead-as-frozen` | Frozen PREREG kill line (mean <= 0 and book - U < +1 pp, all four cells D1/D2 x flat/pressure). The ranker has within-hour rank information, but its top pick is no better than a random pick and worse than the mean of all candidates; fee band is not the binding cost (273 of 287 picks were B7). |
+
+### eh1030-kcurve-boost (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `eh1030-kcurve-boost-ride` | First-in BOOST ride k-curve: entry at the pool's opening reserves (k = -1, the synthetic … | `explored-no-survivor` | All 8 cells KILLED (QP-RULING-1031-kcurve-price; in-sample, explore-0814 + September pooled, both fail models, worst-in-slot measured; 5,539 organic trips per cell). K-1 'KILLED within the remainder margin': its pooled positive rests on August only (explore-0814 +44.458% flat / +11.28% pressure of stake); September … |
+
+### eh1030-paid-speed (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `eh1030-paid-speed-track` | Paid speed track for migration entries (gRPC feed + Sender/Jito + co-location) at a 0.25 SOL stake | `desk-read` | Desk verdict NO-GO. The first-print slot (k0) is held by launch bundles and same-slot snipers and needs leader-aware sends plus shreds. The 2-4 slots a $49-499/month path could reach fall in bands that lost in September (k1-2 -4.93%, k3-5 -30.33% identified cohorts). P6 and hunt23-speed found no other line that … |
 
 ## Dead as frozen, and explored with no survivor
 
