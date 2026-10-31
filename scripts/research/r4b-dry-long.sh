@@ -29,6 +29,7 @@ D="$HOME/mal-data/r4b-dry/$CHANGE_ID"
 UNIT="r4b-dry-$CHANGE_ID"
 SCOPE_MEM_MAX=3670016000   # MemoryMax=3500M in bytes (3500 * 1048576)
 M1_WAIT_S="${R4B_M1_WAIT_S:-120}"
+CGROOT="${R4B_CGROUP_ROOT:-/sys/fs/cgroup}"   # test hook only
 
 # 1. M5: one host at a time, one declog per change_id
 LEFT=$(ps -eo pid,args | grep '[r]4b_host_glue')
@@ -84,7 +85,7 @@ record_m1() {
     while [ "$i" -lt "$M1_WAIT_S" ]; do
         CG=$(systemctl --user show "$UNIT.scope" -p ControlGroup | sed -n 's/^ControlGroup=//p')
         LINE=$(ps -eo pid,ni,args | grep '[r]4b_host_glue.py run' | grep -e "--change-id $CHANGE_ID " | head -1)
-        if [ -n "$CG" ] && [ -r "/sys/fs/cgroup$CG/memory.max" ] && [ -n "$LINE" ]; then
+        if [ -n "$CG" ] && [ -r "$CGROOT$CG/memory.max" ] && [ -n "$LINE" ]; then
             set -- $LINE
             HPID=$1
             HNI=$2
@@ -98,9 +99,9 @@ record_m1() {
         if [ -z "$HPID" ]; then
             echo "M1_INCOMPLETE the scope or the host process was not seen within ${M1_WAIT_S}s (control_group='$CG')"
         else
-            MM=$(cat "/sys/fs/cgroup$CG/memory.max")
-            MS=$(cat "/sys/fs/cgroup$CG/memory.swap.max")
-            MH=$(cat "/sys/fs/cgroup$CG/memory.high")
+            MM=$(cat "$CGROOT$CG/memory.max")
+            MS=$(cat "$CGROOT$CG/memory.swap.max")
+            MH=$(cat "$CGROOT$CG/memory.high")
             echo "scope_control_group=$CG"
             echo "scope_memory_max=$MM"
             echo "scope_memory_swap_max=$MS"
