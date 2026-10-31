@@ -259,10 +259,11 @@ def test_a_clock_that_never_completes_decides_nothing_and_the_next_mark_closes_w
     host.run(max_marks=5)
     lat = {r["mark"]: r for r in latency(host)}
     assert lat[bad]["status"] == "incomplete" and lat[bad]["reason"] == "bound_clock" and lat[bad]["n_rows"] is None and lat[bad]["sd"] is None
-    assert not any(r.get("t_mark") == bad for r in host.log.rows(lv.BOT_ID) if r["kind"] in ("entry", "exit"))  # nothing decided at the bad mark
-    nxt = [r for r in host.log.rows(lv.BOT_ID) if r["kind"] == "exit" and r.get("t_mark") == bad]  # the engine's own gap rule closes at the skipped mark
-    assert lat[MKS[4]]["status"] == "decided" and host.engine.book.last == MKS[4]
-    assert all(r["reason"] == "gap" for r in host.log.rows(lv.BOT_ID) if r["kind"] == "exit" and r["t_mark"] == bad) and nxt
+    rows = host.log.rows(lv.BOT_ID)
+    assert not any(r["kind"] == "entry" and r["t_mark"] == bad for r in rows)  # nothing was decided at the bad mark
+    at_bad = [r for r in rows if r["kind"] == "exit" and r["t_mark"] == bad]  # the engine's own gap rule closes what was held, at the skipped mark
+    assert at_bad and all(r["reason"] == "gap" for r in at_bad) and lat[MKS[4]]["status"] == "decided" and host.engine.book.last == MKS[4]
+    assert min(r["seq"] for r in at_bad) > max(r["seq"] for r in rows if r["kind"] == "gap")  # written after the gap row, with the next mark's decision
 
 
 def test_a_buy_hold_suppresses_entries_keeps_exits_and_writes_no_gap_row(tmp_path):
