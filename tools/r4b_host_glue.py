@@ -1196,6 +1196,8 @@ class TipLiveSource(LiveSource):
                 self._pending.append({"type": "tip", "tip_kind": kind, "w": x, "t_recv_ms": x.get("t_recv_ms")})
                 if kind == "migration" and isinstance(x.get("pool"), str) and x.get("mint") and x.get("quote_mint"):
                     self.merger.pool_mints.setdefault(x["pool"], (x["mint"], x["quote_mint"]))
+        if self._tip_status is not None and self._tip_status[1] in tip_mod.RECOVERABLE_PROBLEMS and self.tip.problem is None:
+            self._tip_status = None  # recovered: do not wait out the status TTL
         if self.tip.released_D is not None:
             self.merger.tip_progress(self.tip.released_D)
         if self._catching_up and self.tip.caught_up:  # catch-up is over: back to the normal I/O class and no more fadvise for the live tail
@@ -1208,9 +1210,10 @@ class TipLiveSource(LiveSource):
             self._event("catch_up_done", released_D=self.tip.released_D, rows=dict(self.tip.stats))
 
     def _read_public(self, now: int) -> None:  # the base loop's history read
-        if self._tip_problem() is not None:
-            return  # fail closed: no row of an unhealthy tip side reaches the engine
-        self._ingest_tip_poll(now)
+        why = self._tip_problem()
+        if why is not None and why not in tip_mod.RECOVERABLE_PROBLEMS:
+            return  # fail closed: no row of an unhealthy tip side (status pins, stale status, a regressed checkpoint) reaches the engine
+        self._ingest_tip_poll(now)  # a recoverable checkpoint problem is retried here: a poll is the only thing that can clear it
 
     # -- the Helius window: buffered per mark, released by ownership
     def _clock_row(self, T: int, e: Mapping[str, Any]) -> None:

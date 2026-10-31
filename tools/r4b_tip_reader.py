@@ -59,6 +59,9 @@ PINNED_BLOBS = {
     "observe/trade_store.py": "ea4e11eddf9f034e3bc7318ce8743337d753f350",
     "tools/pump_history_backfill.py": "9a8bebb32adcf86de060b55f5a08110d11c0a550",
 }
+# Reader problems the host may retry on the next poll (the checkpoint file was momentarily unusable, or the follower has not stamped last_t_recv_ms yet). Everything else
+# stays latched for the run: a regressed checkpoint means the follower restarted from an older point and may re-emit slots this reader already returned (double ingest).
+RECOVERABLE_PROBLEMS = ("checkpoint_unreadable", "checkpoint_no_t")
 CHUNK_BYTES = 4 << 20
 CHUNK_ROWS = 4096
 
@@ -304,6 +307,7 @@ class TipReader:
         self._gaps = _Cursor(self.files, GAP_NAME, self.stats, False)
         self._cat = False
         self._ck_reason = "checkpoint_unreadable"
+        self.latched: str | None = None  # an unsafe problem that stays for the run (checkpoint_regressed)
 
     # -- the history start
     def start_problem(self) -> str | None:
@@ -367,12 +371,15 @@ class TipReader:
         out: list[tuple] = []
         self.caught_up = False
         ck = self._read_checkpoint()
+        if self.latched is not None:  # unsafe, not retried: see RECOVERABLE_PROBLEMS
+            self.problem = self.latched
+            return out
         if ck is None:
-            self.problem = self._ck_reason
+            self.problem = self._ck_reason  # recoverable: the next poll reads the checkpoint again and clears it
             return out
         D, last_t = ck
         if self.D is not None and D < self.D:
-            self.problem = "checkpoint_regressed"
+            self.problem = self.latched = "checkpoint_regressed"
             return out
         self.problem = None
         self.D, self.last_t_ms = D, last_t
