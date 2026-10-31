@@ -221,6 +221,8 @@ class _Cursor:
         if self.rows:
             self.offset, self.tail = self.rows[0][2], b""
             self.rows.clear()
+        elif self.tail:  # a torn last line is not kept either: if the follower cuts the file back and it regrows past our offset, old and new bytes must not be spliced
+            self.offset, self.tail = self.offset - len(self.tail), b""
 
     def refresh(self, keep_le: int) -> None:
         """Start of a poll: the file may have grown (at_eof reset) or been cut back (stat only; a name outside the tip dir is refused by TipFiles.path)."""
@@ -313,6 +315,12 @@ class TipReader:
             raise
         return None
 
+    def stop_fadvise(self) -> None:
+        """Catch-up is over: no more posix_fadvise(DONTNEED) (on the live tail it would start writeback of the follower's newest dirty pages)."""
+        self.fadvise = False
+        for c in (self._cur or {}).values():
+            c.fadvise = False
+
     # -- the two seams the mutation tests replace
     def _read_checkpoint(self) -> tuple[int, int | None] | None:
         """(D, last_t_recv_ms) from checkpoint.json: the follower writes it after every slot, once that slot's rows are flushed."""
@@ -320,7 +328,9 @@ class TipReader:
         if ck is None or not _is_int(ck.get("last_done")):
             return None
         t = ck.get("last_t_recv_ms")
-        return int(ck["last_done"]), (int(t) if _is_int(t) and t > 0 else None)
+        if not (_is_int(t) and t > 0):
+            return None  # without the hour of D the reader cannot tell which hour files hold D's rows: fail closed (checkpoint_unreadable)
+        return int(ck["last_done"]), int(t)
 
     def _last_hour(self, last_t_ms: int | None) -> int:
         """The latest hour whose files can hold a row of a slot <= D: the hour of the checkpoint's last_t_recv_ms."""

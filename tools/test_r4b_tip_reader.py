@@ -416,3 +416,46 @@ def test_gap_rows_older_than_the_first_hour_read_are_counted_and_dropped(tmp_pat
     r = reader(tmp_path)
     got = r.poll()
     assert [(g.lo, g.hi) for k, g in got if k == "gap"] == [(20, 29)] and r.stats["gaps_before_window"] == 1
+
+
+# ------------------------------------------------------------------------------------------------------------------------------------ reviewer fixes on #1155
+def test_a_checkpoint_without_last_t_recv_ms_fails_closed(tmp_path):
+    put(tmp_path / "out", f"trades-{H05}.jsonl", [trade(1)])
+    put(tmp_path / "out", f"trades-{H06}.jsonl", [trade(2)])  # D's row is in the NEXT hour file
+    write_state(tmp_path / "state", last_done=2, last_t_recv_ms=0)
+    r = reader(tmp_path)
+    assert r.poll() == [] and r.problem == "checkpoint_unreadable" and not r.caught_up and r.released_D is None
+    (tmp_path / "state" / "checkpoint.json").write_text(json.dumps({"last_done": 2}))
+    assert r.poll() == [] and r.problem == "checkpoint_unreadable"
+    write_state(tmp_path / "state", last_done=2, last_t_recv_ms=(B + 1) * 1000)
+    assert slots_of(r.poll()) == [1, 2] and r.caught_up and r.released_D == 2
+
+
+def test_a_torn_tail_is_not_kept_across_polls(tmp_path):
+    out = tmp_path / "out"
+    full = json.dumps(trade(2), separators=(",", ":"))
+    put(out, f"trades-{H05}.jsonl", [trade(1)])
+    with open(out / f"trades-{H05}.jsonl", "a") as fh:
+        fh.write(full[:40])  # torn
+    write_state(tmp_path / "state", last_done=2, last_t_recv_ms=(B - 100) * 1000)
+    r = reader(tmp_path)
+    assert slots_of(r.poll()) == [1]
+    # the follower cuts the file back to the end of slot 1 and writes slot 2 again, longer than the torn bytes we saw
+    put(out, f"trades-{H05}.jsonl", [trade(1), {**trade(2), "signature": "s2-rewritten-" + "x" * 80}])
+    got = r.poll()
+    assert [x["signature"] for k, x in got if k == "trade"] == ["s2-rewritten-" + "x" * 80] and r.stats["bad_lines"] == 0
+
+
+def test_fadvise_stops_when_catch_up_is_over(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(os, "posix_fadvise", lambda *a: calls.append(a))
+    put(tmp_path / "out", f"trades-{H05}.jsonl", [trade(s) for s in (1, 2)])
+    write_state(tmp_path / "state", last_done=2, last_t_recv_ms=(B - 100) * 1000)
+    r = reader(tmp_path)
+    r.poll()
+    assert calls
+    n = len(calls)
+    r.stop_fadvise()
+    put(tmp_path / "out", f"trades-{H05}.jsonl", [trade(3)], mode="a")
+    write_state(tmp_path / "state", last_done=3, last_t_recv_ms=(B - 50) * 1000)
+    assert slots_of(r.poll()) == [3] and len(calls) == n
