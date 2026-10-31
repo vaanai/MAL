@@ -224,7 +224,7 @@ def corrected_pressure_leg(dec_rows: Sequence[Mapping[str, Any]], strips: Mappin
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ modes and paths
-def test_mode(env: Mapping[str, str]) -> bool:
+def is_test_mode(env: Mapping[str, str]) -> bool:
     return env.get(TEST_ENV) == "1"
 
 
@@ -241,7 +241,7 @@ def check_mode(a: argparse.Namespace, env: Mapping[str, str], host: str) -> bool
     paths = [("ledger root", a.ledger_root), ("books file", a.books_file), ("read json", a.read_json), ("json output", a.json)] + [("shadow dir", d) for d in a.shadow_dir]
     for what, p in paths:
         L.check_path(p, what)
-    if test_mode(env):
+    if is_test_mode(env):
         for what, p in paths:
             for root in REAL_ROOTS:
                 if _under(p, root):
