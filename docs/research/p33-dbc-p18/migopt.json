@@ -1,0 +1,42 @@
+{
+ "ix_counts": {
+  "MigrationDammV2": 6458,
+  "unknown_ix": 2214
+ },
+ "completions_by_status_and_migopt": {
+  "ok|1": 2286,
+  "not_fetched|1": 4161,
+  "no_migration_in_index|1": 85,
+  "ok|ConfigWithTransferHook": 2,
+  "not_fetched|ConfigWithTransferHook": 7
+ },
+ "m10_decisions_swap2_by_migopt": {
+  "1": 374
+ },
+ "m10_open_or_cbe_swap2_by_migopt": {
+  "open_at_completion|1": 8
+ },
+ "m10_upper_bound_swap2_by_migopt": {
+  "1": 19
+ },
+ "m10_decisions_swap3_by_migopt": {
+  "1": 177
+ },
+ "m10_open_or_cbe_swap3_by_migopt": {
+  "open_at_completion|1": 7,
+  "completed_before_entry|1": 1
+ },
+ "m10_upper_bound_swap3_by_migopt": {
+  "1": 12
+ },
+ "m10_decisions_all_by_migopt": {
+  "1": 551
+ },
+ "m10_open_or_cbe_all_by_migopt": {
+  "open_at_completion|1": 15,
+  "completed_before_entry|1": 1
+ },
+ "m10_upper_bound_all_by_migopt": {
+  "1": 31
+ }
+}

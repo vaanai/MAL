@@ -1,0 +1,1833 @@
+{
+ "schema": "p33_measure_v1",
+ "script_sha256": "1db7f626bfe5ee514a212e6586467eb1e10578d83bdf8b3c2c9636626da70b97",
+ "code_sha256": {
+  "dbc_fwd.py": "b43e79558d997bb1852a0245d5a0d05220be57c6ea88b83548ad431f051b43f6",
+  "dbc_price.py": "7db0afdd7845c0d159f73ec438632dfb2ddc7ef45ab3ef971569625e1335a7eb",
+  "dbc_screen.py": "607e3173cae997b30972aef1f863c9355014bb01cee6f6622e352b42b4363b66",
+  "dbc_decode.py": "10a52a52ee382a56e13e03b3fa76c1a36cd690b414b83e2f91c8438f000f8535",
+  "arena_declog.py": "b4b67f8d203722a16b2d5238f4a0f2b38776995130cd4b5691ee649c043a0783"
+ },
+ "window": [
+  "2026-10-14T00",
+  "2026-10-17T00"
+ ],
+ "note": "Counts and decode only. Nothing priced. In-sample exploration hours. No book has cleared the gate.",
+ "tape": {
+  "hours": 72,
+  "incomplete": [],
+  "row_types": {
+   "backfill_hour": 72,
+   "trade": 2294591,
+   "event_undecoded": 24996,
+   "create": 9572,
+   "curve_complete": 6541,
+   "ix": 10326
+  },
+  "advance_slots": 677061,
+  "slot_s_by_hour": {
+   "2026-10-14T00": 0.2175755008170429,
+   "2026-10-14T01": 0.21835866261398176,
+   "2026-10-14T02": 0.21790990554613707,
+   "2026-10-14T03": 0.2182778081194247,
+   "2026-10-14T04": 0.217567404183291,
+   "2026-10-14T05": 0.21695099162095363,
+   "2026-10-14T06": 0.21695324283559578,
+   "2026-10-14T07": 0.2173359985462475,
+   "2026-10-14T08": 0.21702153326497375,
+   "2026-10-14T09": 0.21722597778850797,
+   "2026-10-14T10": 0.21614144815973058,
+   "2026-10-14T11": 0.21615773022361146,
+   "2026-10-14T12": 0.21701640135069947,
+   "2026-10-14T13": 0.21633806203414283,
+   "2026-10-14T14": 0.21784395617698687,
+   "2026-10-14T15": 0.21701640135069947,
+   "2026-10-14T16": 0.21759371221281743,
+   "2026-10-14T17": 0.2171394085697043,
+   "2026-10-14T18": 0.21589682063587282,
+   "2026-10-14T19": 0.21659845931632163,
+   "2026-10-14T20": 0.21684641802735435,
+   "2026-10-14T21": 0.2156510276229852,
+   "2026-10-14T22": 0.215534794586178,
+   "2026-10-14T23": 0.21543158146773614,
+   "2026-10-15T00": 0.21544447770128705,
+   "2026-10-15T01": 0.2162730605131903,
+   "2026-10-15T02": 0.21733091787439612,
+   "2026-10-15T03": 0.21798381699823569,
+   "2026-10-15T04": 0.21738602561767742,
+   "2026-10-15T05": 0.21747844042268918,
+   "2026-10-15T06": 0.21678237247207968,
+   "2026-10-15T07": 0.2160393781139324,
+   "2026-10-15T08": 0.2156040268456376,
+   "2026-10-15T09": 0.2151225343693963,
+   "2026-10-15T10": 0.21463501908396945,
+   "2026-10-15T11": 0.21543254253534627,
+   "2026-10-15T12": 0.216136595923766,
+   "2026-10-15T13": 0.21666867397326267,
+   "2026-10-15T14": 0.21570272700029966,
+   "2026-10-15T15": 0.21646818236497054,
+   "2026-10-15T16": 0.21642912983342355,
+   "2026-10-15T17": 0.21561918482501952,
+   "2026-10-15T18": 0.21656626506024096,
+   "2026-10-15T19": 0.21574151780362066,
+   "2026-10-15T20": 0.21700331624962316,
+   "2026-10-15T21": 0.21611721611721613,
+   "2026-10-15T22": 0.2153855371158109,
+   "2026-10-15T23": 0.21677520501688374,
+   "2026-10-16T00": 0.21596159615961597,
+   "2026-10-16T01": 0.2175542525539503,
+   "2026-10-16T02": 0.21661149563647306,
+   "2026-10-16T03": 0.2160264105642257,
+   "2026-10-16T04": 0.2159971176364619,
+   "2026-10-16T05": 0.21579326058280368,
+   "2026-10-16T06": 0.21496451341272704,
+   "2026-10-16T07": 0.2159946154316833,
+   "2026-10-16T08": 0.2157133425364624,
+   "2026-10-16T09": 0.21469879518072288,
+   "2026-10-16T10": 0.21539290202884673,
+   "2026-10-16T11": 0.21528982472931746,
+   "2026-10-16T12": 0.21629905643367991,
+   "2026-10-16T13": 0.21611721611721613,
+   "2026-10-16T14": 0.21539290202884673,
+   "2026-10-16T15": 0.2168776371308017,
+   "2026-10-16T16": 0.21668974652296946,
+   "2026-10-16T17": 0.21806060606060607,
+   "2026-10-16T18": 0.21597455592894862,
+   "2026-10-16T19": 0.21665762671005845,
+   "2026-10-16T20": 0.21662953820217953,
+   "2026-10-16T21": 0.2150242036693958,
+   "2026-10-16T22": 0.21696633281042596,
+   "2026-10-16T23": 0.21618204804045513
+  },
+  "completions": 6541,
+  "sw3_pools": 2531,
+  "completions_by_era": {
+   "swap2": 4966,
+   "swap3": 1575
+  }
+ },
+ "damm": {
+  "migration_index_status": {
+   "ok": 6458
+  },
+  "migrations_ok_with_dbc_pool": 6458,
+  "completions_in_window": 6541,
+  "decode_checks": {
+   "cfm_match": 2284,
+   "init_slot_eq_mig": 2288
+  },
+  "tables": {
+   "all": {
+    "completions": 6541,
+    "with_migration": 6456,
+    "damm_ok": 2288,
+    "status": {
+     "ok": 2288,
+     "not_fetched": 4168,
+     "no_migration_in_index": 85
+    },
+    "comp_to_mig_s": {
+     "n": 6456,
+     "mean": 1.337360594795539,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 0.0,
+     "p75": 1.0,
+     "p90": 5.0,
+     "p99": 8.0,
+     "min": 0.0,
+     "max": 190.0
+    },
+    "comp_to_mig_slots": {
+     "n": 6456,
+     "mean": 6.161245353159852,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 2.0,
+     "p75": 3.0,
+     "p90": 23.0,
+     "p99": 38.0,
+     "min": 0.0,
+     "max": 883.0
+    },
+    "mig_same_slot_as_comp": 2398,
+    "wsol_is_b": 6425,
+    "comp_to_first_trade_s": {
+     "n": 2284,
+     "mean": 4.232486865148862,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 2.0,
+     "p75": 3.0,
+     "p90": 7.0,
+     "p99": 18.0,
+     "min": 0.0,
+     "max": 1295.0
+    },
+    "comp_to_first_sell_s": {
+     "n": 2274,
+     "mean": 21.49208443271768,
+     "p10": 0.0,
+     "p25": 2.0,
+     "p50": 3.0,
+     "p75": 10.0,
+     "p90": 16.0,
+     "p99": 74.0,
+     "min": 0.0,
+     "max": 28052.0
+    },
+    "comp_to_first_sell_slots": {
+     "n": 2274,
+     "mean": 99.1759014951627,
+     "p10": 0.0,
+     "p25": 10.0,
+     "p50": 16.0,
+     "p75": 48.0,
+     "p90": 74.0,
+     "p99": 343.27,
+     "min": 0.0,
+     "max": 129520.0
+    },
+    "mig_to_first_sell_slots": {
+     "n": 2274,
+     "mean": 94.00263852242745,
+     "p10": 0.0,
+     "p25": 7.0,
+     "p50": 11.0,
+     "p75": 42.0,
+     "p90": 74.0,
+     "p99": 339.27,
+     "min": 0.0,
+     "max": 129518.0
+    },
+    "no_trade_before_cut": 4,
+    "no_sell_before_cut": 14,
+    "truncated": 42,
+    "activation_type": {
+     "1": 2288
+    },
+    "act_minus_mig_slots": {
+     "n": 0
+    },
+    "act_minus_mig_s": {
+     "n": 2288,
+     "mean": 0.0,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 0.0,
+     "p75": 0.0,
+     "p90": 0.0,
+     "p99": 0.0,
+     "min": 0.0,
+     "max": 0.0
+    },
+    "act_after_mig": 0,
+    "first_sell_fee": {
+     "n": 2274,
+     "mean": 0.001167771185511578,
+     "p10": 0.0010000005432243297,
+     "p25": 0.0010000041268595015,
+     "p50": 0.0010000365915039033,
+     "p75": 0.0010037931799974904,
+     "p90": 0.001200000060010179,
+     "p99": 0.002662631167369071,
+     "min": 0.001,
+     "max": 0.03000000040372192
+    },
+    "sell_fee_60s_median": {
+     "n": 2210,
+     "mean": 0.0012624444000599575,
+     "p10": 0.001000004655650621,
+     "p25": 0.0010000053727726888,
+     "p50": 0.001000009933974305,
+     "p75": 0.0010020165636159962,
+     "p90": 0.0012000028452018286,
+     "p99": 0.007467105263157811,
+     "min": 0.0010000002466002702,
+     "max": 0.0300000015461167
+    },
+    "by_N_seconds_after_completion": {
+     "0": {
+      "migration_landed": 1148,
+      "migration_landed_and_active": 1148,
+      "other_sell_landed": 256,
+      "denominator_damm_ok": 2288
+     },
+     "1": {
+      "migration_landed": 1924,
+      "migration_landed_and_active": 1924,
+      "other_sell_landed": 370,
+      "denominator_damm_ok": 2288
+     },
+     "2": {
+      "migration_landed": 2083,
+      "migration_landed_and_active": 2083,
+      "other_sell_landed": 726,
+      "denominator_damm_ok": 2288
+     },
+     "5": {
+      "migration_landed": 2166,
+      "migration_landed_and_active": 2166,
+      "other_sell_landed": 1410,
+      "denominator_damm_ok": 2288
+     },
+     "10": {
+      "migration_landed": 2276,
+      "migration_landed_and_active": 2276,
+      "other_sell_landed": 1708,
+      "denominator_damm_ok": 2288
+     },
+     "30": {
+      "migration_landed": 2284,
+      "migration_landed_and_active": 2284,
+      "other_sell_landed": 2176,
+      "denominator_damm_ok": 2288
+     },
+     "60": {
+      "migration_landed": 2287,
+      "migration_landed_and_active": 2287,
+      "other_sell_landed": 2208,
+      "denominator_damm_ok": 2288
+     },
+     "300": {
+      "migration_landed": 2288,
+      "migration_landed_and_active": 2288,
+      "other_sell_landed": 2272,
+      "denominator_damm_ok": 2288
+     },
+     "3600": {
+      "migration_landed": 2288,
+      "migration_landed_and_active": 2288,
+      "other_sell_landed": 2273,
+      "denominator_damm_ok": 2288
+     }
+    }
+   },
+   "uniform": {
+    "completions": 5797,
+    "with_migration": 5797,
+    "damm_ok": 1629,
+    "status": {
+     "ok": 1629,
+     "not_fetched": 4168
+    },
+    "comp_to_mig_s": {
+     "n": 5797,
+     "mean": 1.3962394341900983,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 0.0,
+     "p75": 1.0,
+     "p90": 5.0,
+     "p99": 9.0,
+     "min": 0.0,
+     "max": 190.0
+    },
+    "comp_to_mig_slots": {
+     "n": 5797,
+     "mean": 6.436777643608763,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 2.0,
+     "p75": 3.0,
+     "p90": 24.0,
+     "p99": 40.07999999999993,
+     "min": 0.0,
+     "max": 883.0
+    },
+    "mig_same_slot_as_comp": 2338,
+    "wsol_is_b": 5766,
+    "comp_to_first_trade_s": {
+     "n": 1625,
+     "mean": 5.033846153846154,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 2.0,
+     "p75": 4.0,
+     "p90": 9.0,
+     "p99": 19.75999999999999,
+     "min": 0.0,
+     "max": 1295.0
+    },
+    "comp_to_first_sell_s": {
+     "n": 1615,
+     "mean": 26.33808049535604,
+     "p10": 0.0,
+     "p25": 2.0,
+     "p50": 4.0,
+     "p75": 13.0,
+     "p90": 16.0,
+     "p99": 53.5799999999997,
+     "min": 0.0,
+     "max": 28052.0
+    },
+    "comp_to_first_sell_slots": {
+     "n": 1615,
+     "mean": 121.59442724458205,
+     "p10": 0.0,
+     "p25": 10.0,
+     "p50": 18.0,
+     "p75": 58.0,
+     "p90": 73.0,
+     "p99": 245.4599999999989,
+     "min": 0.0,
+     "max": 129520.0
+    },
+    "mig_to_first_sell_slots": {
+     "n": 1615,
+     "mean": 115.83529411764705,
+     "p10": 0.0,
+     "p25": 7.0,
+     "p50": 12.0,
+     "p75": 57.5,
+     "p90": 72.0,
+     "p99": 213.8599999999999,
+     "min": 0.0,
+     "max": 129518.0
+    },
+    "no_trade_before_cut": 4,
+    "no_sell_before_cut": 14,
+    "truncated": 32,
+    "activation_type": {
+     "1": 1629
+    },
+    "act_minus_mig_slots": {
+     "n": 0
+    },
+    "act_minus_mig_s": {
+     "n": 1629,
+     "mean": 0.0,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 0.0,
+     "p75": 0.0,
+     "p90": 0.0,
+     "p99": 0.0,
+     "min": 0.0,
+     "max": 0.0
+    },
+    "act_after_mig": 0,
+    "first_sell_fee": {
+     "n": 1615,
+     "mean": 0.0011430057165039424,
+     "p10": 0.0010000005432243297,
+     "p25": 0.0010000048490802715,
+     "p50": 0.001000053676498061,
+     "p75": 0.0010037447399915069,
+     "p90": 0.0010089419957268338,
+     "p99": 0.002999766801249095,
+     "min": 0.001,
+     "max": 0.03000000040372192
+    },
+    "sell_fee_60s_median": {
+     "n": 1602,
+     "mean": 0.001208483093990637,
+     "p10": 0.0010000045532030683,
+     "p25": 0.0010000055355912985,
+     "p50": 0.0010002896188609468,
+     "p75": 0.0010019036168720569,
+     "p90": 0.0010082281270930955,
+     "p99": 0.006846929964462817,
+     "min": 0.0010000002466002702,
+     "max": 0.0300000015461167
+    },
+    "by_N_seconds_after_completion": {
+     "0": {
+      "migration_landed": 920,
+      "migration_landed_and_active": 920,
+      "other_sell_landed": 194,
+      "denominator_damm_ok": 1629
+     },
+     "1": {
+      "migration_landed": 1358,
+      "migration_landed_and_active": 1358,
+      "other_sell_landed": 269,
+      "denominator_damm_ok": 1629
+     },
+     "2": {
+      "migration_landed": 1436,
+      "migration_landed_and_active": 1436,
+      "other_sell_landed": 484,
+      "denominator_damm_ok": 1629
+     },
+     "5": {
+      "migration_landed": 1507,
+      "migration_landed_and_active": 1507,
+      "other_sell_landed": 891,
+      "denominator_damm_ok": 1629
+     },
+     "10": {
+      "migration_landed": 1617,
+      "migration_landed_and_active": 1617,
+      "other_sell_landed": 1153,
+      "denominator_damm_ok": 1629
+     },
+     "30": {
+      "migration_landed": 1625,
+      "migration_landed_and_active": 1625,
+      "other_sell_landed": 1577,
+      "denominator_damm_ok": 1629
+     },
+     "60": {
+      "migration_landed": 1628,
+      "migration_landed_and_active": 1628,
+      "other_sell_landed": 1600,
+      "denominator_damm_ok": 1629
+     },
+     "300": {
+      "migration_landed": 1629,
+      "migration_landed_and_active": 1629,
+      "other_sell_landed": 1613,
+      "denominator_damm_ok": 1629
+     },
+     "3600": {
+      "migration_landed": 1629,
+      "migration_landed_and_active": 1629,
+      "other_sell_landed": 1614,
+      "denominator_damm_ok": 1629
+     }
+    }
+   },
+   "strand": {
+    "completions": 659,
+    "with_migration": 659,
+    "damm_ok": 659,
+    "status": {
+     "ok": 659
+    },
+    "comp_to_mig_s": {
+     "n": 659,
+     "mean": 0.8194233687405159,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 1.0,
+     "p75": 1.0,
+     "p90": 2.0,
+     "p99": 3.0,
+     "min": 0.0,
+     "max": 4.0
+    },
+    "comp_to_mig_slots": {
+     "n": 659,
+     "mean": 3.7374810318664644,
+     "p10": 2.0,
+     "p25": 2.0,
+     "p50": 3.0,
+     "p75": 4.0,
+     "p90": 8.0,
+     "p99": 13.0,
+     "min": 0.0,
+     "max": 19.0
+    },
+    "mig_same_slot_as_comp": 60,
+    "wsol_is_b": 659,
+    "comp_to_first_trade_s": {
+     "n": 659,
+     "mean": 2.2564491654021244,
+     "p10": 0.0,
+     "p25": 1.0,
+     "p50": 2.0,
+     "p75": 3.0,
+     "p90": 4.0,
+     "p99": 9.0,
+     "min": 0.0,
+     "max": 13.0
+    },
+    "comp_to_first_sell_s": {
+     "n": 659,
+     "mean": 9.61608497723824,
+     "p10": 1.0,
+     "p25": 2.0,
+     "p50": 3.0,
+     "p75": 4.0,
+     "p90": 24.0,
+     "p99": 76.41999999999996,
+     "min": 0.0,
+     "max": 124.0
+    },
+    "comp_to_first_sell_slots": {
+     "n": 659,
+     "mean": 44.235204855842184,
+     "p10": 4.799999999999997,
+     "p25": 10.0,
+     "p50": 13.0,
+     "p75": 20.0,
+     "p90": 110.20000000000005,
+     "p99": 355.41999999999996,
+     "min": 0.0,
+     "max": 581.0
+    },
+    "mig_to_first_sell_slots": {
+     "n": 659,
+     "mean": 40.49772382397572,
+     "p10": 1.7999999999999972,
+     "p25": 6.0,
+     "p50": 9.0,
+     "p75": 15.0,
+     "p90": 105.20000000000005,
+     "p99": 348.8399999999999,
+     "min": 0.0,
+     "max": 578.0
+    },
+    "no_trade_before_cut": 0,
+    "no_sell_before_cut": 0,
+    "truncated": 10,
+    "activation_type": {
+     "1": 659
+    },
+    "act_minus_mig_slots": {
+     "n": 0
+    },
+    "act_minus_mig_s": {
+     "n": 659,
+     "mean": 0.0,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 0.0,
+     "p75": 0.0,
+     "p90": 0.0,
+     "p99": 0.0,
+     "min": 0.0,
+     "max": 0.0
+    },
+    "act_after_mig": 0,
+    "first_sell_fee": {
+     "n": 659,
+     "mean": 0.0012284634957503216,
+     "p10": 0.0010000005329346847,
+     "p25": 0.0010000030994250604,
+     "p50": 0.0010000126590932238,
+     "p75": 0.0012000005833807503,
+     "p90": 0.0012000783731320765,
+     "p99": 0.0012294064459510026,
+     "min": 0.001,
+     "max": 0.027500000301524097
+    },
+    "sell_fee_60s_median": {
+     "n": 608,
+     "mean": 0.0014046253413807653,
+     "p10": 0.0010000047949054159,
+     "p25": 0.0010000052140149672,
+     "p50": 0.001000006932093013,
+     "p75": 0.001200001260642547,
+     "p90": 0.0012001353015701013,
+     "p99": 0.008679428111744866,
+     "min": 0.0010000016068034473,
+     "max": 0.027500001575965643
+    },
+    "by_N_seconds_after_completion": {
+     "0": {
+      "migration_landed": 228,
+      "migration_landed_and_active": 228,
+      "other_sell_landed": 62,
+      "denominator_damm_ok": 659
+     },
+     "1": {
+      "migration_landed": 566,
+      "migration_landed_and_active": 566,
+      "other_sell_landed": 101,
+      "denominator_damm_ok": 659
+     },
+     "2": {
+      "migration_landed": 647,
+      "migration_landed_and_active": 647,
+      "other_sell_landed": 242,
+      "denominator_damm_ok": 659
+     },
+     "5": {
+      "migration_landed": 659,
+      "migration_landed_and_active": 659,
+      "other_sell_landed": 519,
+      "denominator_damm_ok": 659
+     },
+     "10": {
+      "migration_landed": 659,
+      "migration_landed_and_active": 659,
+      "other_sell_landed": 555,
+      "denominator_damm_ok": 659
+     },
+     "30": {
+      "migration_landed": 659,
+      "migration_landed_and_active": 659,
+      "other_sell_landed": 599,
+      "denominator_damm_ok": 659
+     },
+     "60": {
+      "migration_landed": 659,
+      "migration_landed_and_active": 659,
+      "other_sell_landed": 608,
+      "denominator_damm_ok": 659
+     },
+     "300": {
+      "migration_landed": 659,
+      "migration_landed_and_active": 659,
+      "other_sell_landed": 659,
+      "denominator_damm_ok": 659
+     },
+     "3600": {
+      "migration_landed": 659,
+      "migration_landed_and_active": 659,
+      "other_sell_landed": 659,
+      "denominator_damm_ok": 659
+     }
+    }
+   },
+   "uniform_swap2": {
+    "completions": 4258,
+    "with_migration": 4258,
+    "damm_ok": 1179,
+    "status": {
+     "ok": 1179,
+     "not_fetched": 3079
+    },
+    "comp_to_mig_s": {
+     "n": 4258,
+     "mean": 1.4349459840300611,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 0.0,
+     "p75": 1.0,
+     "p90": 5.0,
+     "p99": 9.0,
+     "min": 0.0,
+     "max": 190.0
+    },
+    "comp_to_mig_slots": {
+     "n": 4258,
+     "mean": 6.613668388914983,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 2.0,
+     "p75": 3.0,
+     "p90": 24.0,
+     "p99": 40.86000000000058,
+     "min": 0.0,
+     "max": 883.0
+    },
+    "mig_same_slot_as_comp": 1783,
+    "wsol_is_b": 4237,
+    "comp_to_first_trade_s": {
+     "n": 1175,
+     "mean": 4.491063829787234,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 2.0,
+     "p75": 4.0,
+     "p90": 9.0,
+     "p99": 20.0,
+     "min": 0.0,
+     "max": 930.0
+    },
+    "comp_to_first_sell_s": {
+     "n": 1165,
+     "mean": 8.226609442060086,
+     "p10": 0.0,
+     "p25": 2.0,
+     "p50": 4.0,
+     "p75": 13.0,
+     "p90": 16.0,
+     "p99": 46.3599999999999,
+     "min": 0.0,
+     "max": 254.0
+    },
+    "comp_to_first_sell_slots": {
+     "n": 1165,
+     "mean": 37.91931330472103,
+     "p10": 0.0,
+     "p25": 11.0,
+     "p50": 19.0,
+     "p75": 59.0,
+     "p90": 73.0,
+     "p99": 214.0799999999997,
+     "min": 0.0,
+     "max": 1155.0
+    },
+    "mig_to_first_sell_slots": {
+     "n": 1165,
+     "mean": 31.904721030042918,
+     "p10": 0.0,
+     "p25": 8.0,
+     "p50": 12.0,
+     "p75": 59.0,
+     "p90": 72.0,
+     "p99": 163.8799999999992,
+     "min": 0.0,
+     "max": 1125.0
+    },
+    "no_trade_before_cut": 4,
+    "no_sell_before_cut": 14,
+    "truncated": 23,
+    "activation_type": {
+     "1": 1179
+    },
+    "act_minus_mig_slots": {
+     "n": 0
+    },
+    "act_minus_mig_s": {
+     "n": 1179,
+     "mean": 0.0,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 0.0,
+     "p75": 0.0,
+     "p90": 0.0,
+     "p99": 0.0,
+     "min": 0.0,
+     "max": 0.0
+    },
+    "act_after_mig": 0,
+    "first_sell_fee": {
+     "n": 1165,
+     "mean": 0.0011520101573127463,
+     "p10": 0.0010000005432243297,
+     "p25": 0.0010000043461344328,
+     "p50": 0.0010000529852634298,
+     "p75": 0.0010037738034340646,
+     "p90": 0.0010089419957268338,
+     "p99": 0.0029999857876224036,
+     "min": 0.001,
+     "max": 0.03000000040372192
+    },
+    "sell_fee_60s_median": {
+     "n": 1159,
+     "mean": 0.0012263703224369685,
+     "p10": 0.001000004464398224,
+     "p25": 0.0010000055328579123,
+     "p50": 0.0010003878054045691,
+     "p75": 0.0010019705420660633,
+     "p90": 0.001007557734361858,
+     "p99": 0.007130497476568181,
+     "min": 0.0010000008062335773,
+     "max": 0.0300000015461167
+    },
+    "by_N_seconds_after_completion": {
+     "0": {
+      "migration_landed": 658,
+      "migration_landed_and_active": 658,
+      "other_sell_landed": 137,
+      "denominator_damm_ok": 1179
+     },
+     "1": {
+      "migration_landed": 979,
+      "migration_landed_and_active": 979,
+      "other_sell_landed": 192,
+      "denominator_damm_ok": 1179
+     },
+     "2": {
+      "migration_landed": 1035,
+      "migration_landed_and_active": 1035,
+      "other_sell_landed": 316,
+      "denominator_damm_ok": 1179
+     },
+     "5": {
+      "migration_landed": 1097,
+      "migration_landed_and_active": 1097,
+      "other_sell_landed": 629,
+      "denominator_damm_ok": 1179
+     },
+     "10": {
+      "migration_landed": 1170,
+      "migration_landed_and_active": 1170,
+      "other_sell_landed": 817,
+      "denominator_damm_ok": 1179
+     },
+     "30": {
+      "migration_landed": 1175,
+      "migration_landed_and_active": 1175,
+      "other_sell_landed": 1142,
+      "denominator_damm_ok": 1179
+     },
+     "60": {
+      "migration_landed": 1178,
+      "migration_landed_and_active": 1178,
+      "other_sell_landed": 1157,
+      "denominator_damm_ok": 1179
+     },
+     "300": {
+      "migration_landed": 1179,
+      "migration_landed_and_active": 1179,
+      "other_sell_landed": 1165,
+      "denominator_damm_ok": 1179
+     },
+     "3600": {
+      "migration_landed": 1179,
+      "migration_landed_and_active": 1179,
+      "other_sell_landed": 1165,
+      "denominator_damm_ok": 1179
+     }
+    }
+   },
+   "uniform_swap3": {
+    "completions": 1539,
+    "with_migration": 1539,
+    "damm_ok": 450,
+    "status": {
+     "not_fetched": 1089,
+     "ok": 450
+    },
+    "comp_to_mig_s": {
+     "n": 1539,
+     "mean": 1.2891487979207277,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 0.0,
+     "p75": 1.0,
+     "p90": 5.0,
+     "p99": 9.0,
+     "min": 0.0,
+     "max": 119.0
+    },
+    "comp_to_mig_slots": {
+     "n": 1539,
+     "mean": 5.947368421052632,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 2.0,
+     "p75": 3.0,
+     "p90": 25.0,
+     "p99": 38.0,
+     "min": 0.0,
+     "max": 552.0
+    },
+    "mig_same_slot_as_comp": 555,
+    "wsol_is_b": 1529,
+    "comp_to_first_trade_s": {
+     "n": 450,
+     "mean": 6.4511111111111115,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 2.0,
+     "p75": 3.0,
+     "p90": 8.0,
+     "p99": 18.50999999999999,
+     "min": 0.0,
+     "max": 1295.0
+    },
+    "comp_to_first_sell_s": {
+     "n": 450,
+     "mean": 73.22666666666667,
+     "p10": 0.0,
+     "p25": 2.0,
+     "p50": 3.0,
+     "p75": 11.0,
+     "p90": 16.0,
+     "p99": 74.6099999999999,
+     "min": 0.0,
+     "max": 28052.0
+    },
+    "comp_to_first_sell_slots": {
+     "n": 450,
+     "mean": 338.22,
+     "p10": 0.0,
+     "p25": 10.0,
+     "p50": 15.0,
+     "p75": 48.0,
+     "p90": 74.0,
+     "p99": 341.5399999999995,
+     "min": 0.0,
+     "max": 129520.0
+    },
+    "mig_to_first_sell_slots": {
+     "n": 450,
+     "mean": 333.1222222222222,
+     "p10": 0.0,
+     "p25": 7.0,
+     "p50": 11.0,
+     "p75": 41.0,
+     "p90": 73.0,
+     "p99": 341.5399999999995,
+     "min": 0.0,
+     "max": 129518.0
+    },
+    "no_trade_before_cut": 0,
+    "no_sell_before_cut": 0,
+    "truncated": 9,
+    "activation_type": {
+     "1": 450
+    },
+    "act_minus_mig_slots": {
+     "n": 0
+    },
+    "act_minus_mig_s": {
+     "n": 450,
+     "mean": 0.0,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 0.0,
+     "p75": 0.0,
+     "p90": 0.0,
+     "p99": 0.0,
+     "min": 0.0,
+     "max": 0.0
+    },
+    "act_after_mig": 0,
+    "first_sell_fee": {
+     "n": 450,
+     "mean": 0.0011196942197433718,
+     "p10": 0.0010000005432243297,
+     "p25": 0.0010000059963126094,
+     "p50": 0.0010000557348068015,
+     "p75": 0.0010022260983530726,
+     "p90": 0.0010089719367315244,
+     "p99": 0.0012001617453367402,
+     "min": 0.001,
+     "max": 0.020000002215801567
+    },
+    "sell_fee_60s_median": {
+     "n": 443,
+     "mean": 0.0011616855820960597,
+     "p10": 0.0010000047104993897,
+     "p25": 0.001000005540924605,
+     "p50": 0.0010001713324244417,
+     "p75": 0.0010017401979801946,
+     "p90": 0.001009767729415021,
+     "p99": 0.0026789801489206237,
+     "min": 0.0010000002466002702,
+     "max": 0.02000000101720825
+    },
+    "by_N_seconds_after_completion": {
+     "0": {
+      "migration_landed": 262,
+      "migration_landed_and_active": 262,
+      "other_sell_landed": 57,
+      "denominator_damm_ok": 450
+     },
+     "1": {
+      "migration_landed": 379,
+      "migration_landed_and_active": 379,
+      "other_sell_landed": 77,
+      "denominator_damm_ok": 450
+     },
+     "2": {
+      "migration_landed": 401,
+      "migration_landed_and_active": 401,
+      "other_sell_landed": 168,
+      "denominator_damm_ok": 450
+     },
+     "5": {
+      "migration_landed": 410,
+      "migration_landed_and_active": 410,
+      "other_sell_landed": 262,
+      "denominator_damm_ok": 450
+     },
+     "10": {
+      "migration_landed": 447,
+      "migration_landed_and_active": 447,
+      "other_sell_landed": 336,
+      "denominator_damm_ok": 450
+     },
+     "30": {
+      "migration_landed": 450,
+      "migration_landed_and_active": 450,
+      "other_sell_landed": 435,
+      "denominator_damm_ok": 450
+     },
+     "60": {
+      "migration_landed": 450,
+      "migration_landed_and_active": 450,
+      "other_sell_landed": 443,
+      "denominator_damm_ok": 450
+     },
+     "300": {
+      "migration_landed": 450,
+      "migration_landed_and_active": 450,
+      "other_sell_landed": 448,
+      "denominator_damm_ok": 450
+     },
+     "3600": {
+      "migration_landed": 450,
+      "migration_landed_and_active": 450,
+      "other_sell_landed": 449,
+      "denominator_damm_ok": 450
+     }
+    }
+   },
+   "all_swap2": {
+    "completions": 4966,
+    "with_migration": 4912,
+    "damm_ok": 1833,
+    "status": {
+     "ok": 1833,
+     "not_fetched": 3079,
+     "no_migration_in_index": 54
+    },
+    "comp_to_mig_s": {
+     "n": 4912,
+     "mean": 1.3532166123778502,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 0.0,
+     "p75": 1.0,
+     "p90": 5.0,
+     "p99": 8.0,
+     "min": 0.0,
+     "max": 190.0
+    },
+    "comp_to_mig_slots": {
+     "n": 4912,
+     "mean": 6.232084690553746,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 2.0,
+     "p75": 3.0,
+     "p90": 23.0,
+     "p99": 37.89000000000033,
+     "min": 0.0,
+     "max": 883.0
+    },
+    "mig_same_slot_as_comp": 1843,
+    "wsol_is_b": 4891,
+    "comp_to_first_trade_s": {
+     "n": 1829,
+     "mean": 3.6943685073810824,
+     "p10": 0.0,
+     "p25": 1.0,
+     "p50": 2.0,
+     "p75": 3.0,
+     "p90": 7.0,
+     "p99": 17.0,
+     "min": 0.0,
+     "max": 930.0
+    },
+    "comp_to_first_sell_s": {
+     "n": 1819,
+     "mean": 8.747113798790544,
+     "p10": 0.0,
+     "p25": 2.0,
+     "p50": 3.0,
+     "p75": 10.0,
+     "p90": 16.0,
+     "p99": 74.0,
+     "min": 0.0,
+     "max": 254.0
+    },
+    "comp_to_first_sell_slots": {
+     "n": 1819,
+     "mean": 40.287520615722926,
+     "p10": 0.0,
+     "p25": 10.0,
+     "p50": 16.0,
+     "p75": 47.5,
+     "p90": 74.20000000000005,
+     "p99": 343.0,
+     "min": 0.0,
+     "max": 1155.0
+    },
+    "mig_to_first_sell_slots": {
+     "n": 1819,
+     "mean": 35.087960417811985,
+     "p10": 0.0,
+     "p25": 7.0,
+     "p50": 11.0,
+     "p75": 43.0,
+     "p90": 74.0,
+     "p99": 338.81999999999994,
+     "min": 0.0,
+     "max": 1125.0
+    },
+    "no_trade_before_cut": 4,
+    "no_sell_before_cut": 14,
+    "truncated": 33,
+    "activation_type": {
+     "1": 1833
+    },
+    "act_minus_mig_slots": {
+     "n": 0
+    },
+    "act_minus_mig_s": {
+     "n": 1833,
+     "mean": 0.0,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 0.0,
+     "p75": 0.0,
+     "p90": 0.0,
+     "p99": 0.0,
+     "min": 0.0,
+     "max": 0.0
+    },
+    "act_after_mig": 0,
+    "first_sell_fee": {
+     "n": 1819,
+     "mean": 0.0011799057617170397,
+     "p10": 0.0010000005432243297,
+     "p25": 0.0010000037602145239,
+     "p50": 0.0010000327508873932,
+     "p75": 0.0010038125573090101,
+     "p90": 0.001200000552797454,
+     "p99": 0.0029997660253919434,
+     "min": 0.001,
+     "max": 0.03000000040372192
+    },
+    "sell_fee_60s_median": {
+     "n": 1762,
+     "mean": 0.001288294541749791,
+     "p10": 0.0010000046327924709,
+     "p25": 0.0010000053486684893,
+     "p50": 0.001000009379828329,
+     "p75": 0.001002216440204298,
+     "p90": 0.001200003909440799,
+     "p99": 0.008140885457213233,
+     "min": 0.0010000008062335773,
+     "max": 0.0300000015461167
+    },
+    "by_N_seconds_after_completion": {
+     "0": {
+      "migration_landed": 884,
+      "migration_landed_and_active": 884,
+      "other_sell_landed": 199,
+      "denominator_damm_ok": 1833
+     },
+     "1": {
+      "migration_landed": 1540,
+      "migration_landed_and_active": 1540,
+      "other_sell_landed": 292,
+      "denominator_damm_ok": 1833
+     },
+     "2": {
+      "migration_landed": 1677,
+      "migration_landed_and_active": 1677,
+      "other_sell_landed": 554,
+      "denominator_damm_ok": 1833
+     },
+     "5": {
+      "migration_landed": 1751,
+      "migration_landed_and_active": 1751,
+      "other_sell_landed": 1143,
+      "denominator_damm_ok": 1833
+     },
+     "10": {
+      "migration_landed": 1824,
+      "migration_landed_and_active": 1824,
+      "other_sell_landed": 1367,
+      "denominator_damm_ok": 1833
+     },
+     "30": {
+      "migration_landed": 1829,
+      "migration_landed_and_active": 1829,
+      "other_sell_landed": 1736,
+      "denominator_damm_ok": 1833
+     },
+     "60": {
+      "migration_landed": 1832,
+      "migration_landed_and_active": 1832,
+      "other_sell_landed": 1760,
+      "denominator_damm_ok": 1833
+     },
+     "300": {
+      "migration_landed": 1833,
+      "migration_landed_and_active": 1833,
+      "other_sell_landed": 1819,
+      "denominator_damm_ok": 1833
+     },
+     "3600": {
+      "migration_landed": 1833,
+      "migration_landed_and_active": 1833,
+      "other_sell_landed": 1819,
+      "denominator_damm_ok": 1833
+     }
+    }
+   },
+   "all_swap3": {
+    "completions": 1575,
+    "with_migration": 1544,
+    "damm_ok": 455,
+    "status": {
+     "ok": 455,
+     "not_fetched": 1089,
+     "no_migration_in_index": 31
+    },
+    "comp_to_mig_s": {
+     "n": 1544,
+     "mean": 1.2869170984455958,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 0.0,
+     "p75": 1.0,
+     "p90": 5.0,
+     "p99": 9.0,
+     "min": 0.0,
+     "max": 119.0
+    },
+    "comp_to_mig_slots": {
+     "n": 1544,
+     "mean": 5.935880829015544,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 2.0,
+     "p75": 3.0,
+     "p90": 25.0,
+     "p99": 38.0,
+     "min": 0.0,
+     "max": 552.0
+    },
+    "mig_same_slot_as_comp": 555,
+    "wsol_is_b": 1534,
+    "comp_to_first_trade_s": {
+     "n": 455,
+     "mean": 6.395604395604396,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 2.0,
+     "p75": 3.0,
+     "p90": 8.0,
+     "p99": 18.45999999999998,
+     "min": 0.0,
+     "max": 1295.0
+    },
+    "comp_to_first_sell_s": {
+     "n": 455,
+     "mean": 72.44395604395605,
+     "p10": 0.0,
+     "p25": 2.0,
+     "p50": 3.0,
+     "p75": 10.5,
+     "p90": 16.0,
+     "p99": 74.05999999999977,
+     "min": 0.0,
+     "max": 28052.0
+    },
+    "comp_to_first_sell_slots": {
+     "n": 455,
+     "mean": 334.6,
+     "p10": 0.0,
+     "p25": 10.0,
+     "p50": 15.0,
+     "p75": 48.0,
+     "p90": 73.60000000000002,
+     "p99": 338.8399999999989,
+     "min": 0.0,
+     "max": 129520.0
+    },
+    "mig_to_first_sell_slots": {
+     "n": 455,
+     "mean": 329.5318681318681,
+     "p10": 0.0,
+     "p25": 7.0,
+     "p50": 11.0,
+     "p75": 40.5,
+     "p90": 72.60000000000002,
+     "p99": 338.8399999999989,
+     "min": 0.0,
+     "max": 129518.0
+    },
+    "no_trade_before_cut": 0,
+    "no_sell_before_cut": 0,
+    "truncated": 9,
+    "activation_type": {
+     "1": 455
+    },
+    "act_minus_mig_slots": {
+     "n": 0
+    },
+    "act_minus_mig_s": {
+     "n": 455,
+     "mean": 0.0,
+     "p10": 0.0,
+     "p25": 0.0,
+     "p50": 0.0,
+     "p75": 0.0,
+     "p90": 0.0,
+     "p99": 0.0,
+     "min": 0.0,
+     "max": 0.0
+    },
+    "act_after_mig": 0,
+    "first_sell_fee": {
+     "n": 455,
+     "mean": 0.001119259550087986,
+     "p10": 0.0010000005432243297,
+     "p25": 0.001000005846765102,
+     "p50": 0.0010000555734152735,
+     "p75": 0.0010026237221424498,
+     "p90": 0.0010089719367315244,
+     "p99": 0.001200384305964527,
+     "min": 0.001,
+     "max": 0.020000002215801567
+    },
+    "sell_fee_60s_median": {
+     "n": 448,
+     "mean": 0.001160774869574496,
+     "p10": 0.0010000047102022105,
+     "p25": 0.001000005543937919,
+     "p50": 0.0010001698783983226,
+     "p75": 0.0010017442223650814,
+     "p90": 0.0010113722741030855,
+     "p99": 0.002671985054390368,
+     "min": 0.0010000002466002702,
+     "max": 0.02000000101720825
+    },
+    "by_N_seconds_after_completion": {
+     "0": {
+      "migration_landed": 264,
+      "migration_landed_and_active": 264,
+      "other_sell_landed": 57,
+      "denominator_damm_ok": 455
+     },
+     "1": {
+      "migration_landed": 384,
+      "migration_landed_and_active": 384,
+      "other_sell_landed": 78,
+      "denominator_damm_ok": 455
+     },
+     "2": {
+      "migration_landed": 406,
+      "migration_landed_and_active": 406,
+      "other_sell_landed": 172,
+      "denominator_damm_ok": 455
+     },
+     "5": {
+      "migration_landed": 415,
+      "migration_landed_and_active": 415,
+      "other_sell_landed": 267,
+      "denominator_damm_ok": 455
+     },
+     "10": {
+      "migration_landed": 452,
+      "migration_landed_and_active": 452,
+      "other_sell_landed": 341,
+      "denominator_damm_ok": 455
+     },
+     "30": {
+      "migration_landed": 455,
+      "migration_landed_and_active": 455,
+      "other_sell_landed": 440,
+      "denominator_damm_ok": 455
+     },
+     "60": {
+      "migration_landed": 455,
+      "migration_landed_and_active": 455,
+      "other_sell_landed": 448,
+      "denominator_damm_ok": 455
+     },
+     "300": {
+      "migration_landed": 455,
+      "migration_landed_and_active": 455,
+      "other_sell_landed": 453,
+      "denominator_damm_ok": 455
+     },
+     "3600": {
+      "migration_landed": 455,
+      "migration_landed_and_active": 455,
+      "other_sell_landed": 454,
+      "denominator_damm_ok": 455
+     }
+    }
+   }
+  },
+  "feasibility_bar": {
+   "n_uniform_migrated": 5797,
+   "n_uniform_damm_ok": 1629,
+   "b1_comp_to_mig_le60s_share": 0.9984474728307745,
+   "b2_active_at_mig_plus_k_share": 1.0,
+   "b3_other_sell_le60s_share": 0.9821976672805403,
+   "adopted": true
+  }
+ },
+ "log": {
+  "decisions": 551,
+  "exit_rows": 551,
+  "all": {
+   "decisions": 551,
+   "per_day": {
+    "2026-10-14": 194,
+    "2026-10-15": 148,
+    "2026-10-16": 209
+   },
+   "cls": {
+    "not_open_at_completion": 535,
+    "open_at_completion": 15,
+    "completed_before_entry": 1
+   },
+   "open_at_completion": 15,
+   "open_share": 0.02722323049001815,
+   "upper_bound_open": 31,
+   "upper_bound_share": 0.056261343012704176,
+   "completed_before_entry": 1,
+   "pools": 527,
+   "pools_completing_in_window": 39,
+   "sw3_pool_decisions": 207,
+   "comp_after_decision_s_for_completing": {
+    "n": 44,
+    "mean": 1938.5681818181818,
+    "p10": 4.3,
+    "p25": 12.75,
+    "p50": 42.0,
+    "p75": 707.0,
+    "p90": 3301.2000000000025,
+    "p99": 29445.38000000001,
+    "min": 2.0,
+    "max": 41672.0
+   },
+   "k_in": {
+    "9": 551
+   },
+   "slot_s_live": {
+    "n": 551,
+    "mean": 0.21656305812238325,
+    "p10": 0.2156510276229852,
+    "p25": 0.21597455592894862,
+    "p50": 0.21659845931632163,
+    "p75": 0.217080470917339,
+    "p90": 0.21759371221281743,
+    "p99": 0.21806060606060607,
+    "min": 0.21463501908396945,
+    "max": 0.21835866261398176
+   },
+   "slot_s_hour": {
+    "n": 551,
+    "mean": 0.2164170345265635,
+    "p10": 0.21539290202884673,
+    "p25": 0.21579326058280368,
+    "p50": 0.21659845931632163,
+    "p75": 0.21684641802735435,
+    "p90": 0.21759371221281743,
+    "p99": 0.21835866261398176,
+    "min": 0.21463501908396945,
+    "max": 0.21835866261398176
+   },
+   "close_wait_slots": {
+    "n": 551,
+    "mean": 2.045372050816697,
+    "p10": 1.0,
+    "p25": 1.0,
+    "p50": 1.0,
+    "p75": 1.0,
+    "p90": 3.0,
+    "p99": 16.0,
+    "min": 1.0,
+    "max": 124.0
+   },
+   "close_wait_s": {
+    "n": 551,
+    "mean": 0.4424908414267908,
+    "p10": 0.215534794586178,
+    "p25": 0.2159971176364619,
+    "p50": 0.21662953820217953,
+    "p75": 0.21835866261398176,
+    "p90": 0.6479913529093857,
+    "p99": 3.4828958309088396,
+    "min": 0.21463501908396945,
+    "max": 26.73677891830242
+   },
+   "decide_s": {
+    "n": 551,
+    "mean": 0.006307623858632057,
+    "p10": 0.003674394974950701,
+    "p25": 0.00398915700498037,
+    "p50": 0.004741581040434539,
+    "p75": 0.007278001517988741,
+    "p90": 0.010323497001081705,
+    "p99": 0.018997325998498127,
+    "min": 0.0026850829599425197,
+    "max": 0.0745037259766832
+   },
+   "follower_dslot": {
+    "n": 537,
+    "mean": 69.9925512104283,
+    "p10": 1.0,
+    "p25": 1.0,
+    "p50": 2.0,
+    "p75": 7.0,
+    "p90": 21.0,
+    "p99": 1306.7599999999927,
+    "min": 1.0,
+    "max": 11909.0
+   },
+   "follower_none": 14,
+   "follower_le_k_share": 0.7731397459165155,
+   "buys_before_landing": {
+    "n": 551,
+    "mean": 6.330308529945554,
+    "p10": 0.0,
+    "p25": 1.0,
+    "p50": 4.0,
+    "p75": 9.0,
+    "p90": 16.0,
+    "p99": 30.0,
+    "min": 0.0,
+    "max": 37.0
+   }
+  },
+  "swap2": {
+   "decisions": 374,
+   "per_day": {
+    "2026-10-14": 194,
+    "2026-10-15": 148,
+    "2026-10-16": 32
+   },
+   "cls": {
+    "not_open_at_completion": 366,
+    "open_at_completion": 8
+   },
+   "open_at_completion": 8,
+   "open_share": 0.0213903743315508,
+   "upper_bound_open": 19,
+   "upper_bound_share": 0.05080213903743316,
+   "completed_before_entry": 0,
+   "pools": 360,
+   "pools_completing_in_window": 20,
+   "sw3_pool_decisions": 30,
+   "comp_after_decision_s_for_completing": {
+    "n": 21,
+    "mean": 2065.4761904761904,
+    "p10": 5.0,
+    "p25": 18.0,
+    "p50": 32.0,
+    "p75": 107.0,
+    "p90": 150.0,
+    "p99": 33495.200000000026,
+    "min": 4.0,
+    "max": 41672.0
+   },
+   "k_in": {
+    "9": 374
+   },
+   "slot_s_live": {
+    "n": 374,
+    "mean": 0.21666470316447395,
+    "p10": 0.2156287376644092,
+    "p25": 0.21611721611721613,
+    "p50": 0.21659845931632163,
+    "p75": 0.21737351884981992,
+    "p90": 0.21759371221281743,
+    "p99": 0.21808502531448712,
+    "min": 0.21463501908396945,
+    "max": 0.21835866261398176
+   },
+   "slot_s_hour": {
+    "n": 374,
+    "mean": 0.21653943210037388,
+    "p10": 0.21561918482501952,
+    "p25": 0.21589682063587282,
+    "p50": 0.21656626506024096,
+    "p75": 0.2171394085697043,
+    "p90": 0.21784395617698687,
+    "p99": 0.21835866261398176,
+    "min": 0.21463501908396945,
+    "max": 0.21835866261398176
+   },
+   "close_wait_slots": {
+    "n": 374,
+    "mean": 2.141711229946524,
+    "p10": 1.0,
+    "p25": 1.0,
+    "p50": 1.0,
+    "p75": 1.0,
+    "p90": 3.0,
+    "p99": 17.61999999999989,
+    "min": 1.0,
+    "max": 124.0
+   },
+   "close_wait_s": {
+    "n": 374,
+    "mean": 0.46348601544363477,
+    "p10": 0.21561918482501952,
+    "p25": 0.2160264105642257,
+    "p50": 0.216898704824154,
+    "p75": 0.21835866261398176,
+    "p90": 0.6480792316926771,
+    "p99": 3.8307058591731815,
+    "min": 0.21463501908396945,
+    "max": 26.73677891830242
+   },
+   "decide_s": {
+    "n": 374,
+    "mean": 0.006262314344481142,
+    "p10": 0.0036721703596413135,
+    "p25": 0.003976024774601683,
+    "p50": 0.004430257016792893,
+    "p75": 0.007171951234340668,
+    "p90": 0.010369782714406028,
+    "p99": 0.020431986993644354,
+    "min": 0.003193307959008962,
+    "max": 0.0745037259766832
+   },
+   "follower_dslot": {
+    "n": 365,
+    "mean": 90.9013698630137,
+    "p10": 1.0,
+    "p25": 1.0,
+    "p50": 2.0,
+    "p75": 7.0,
+    "p90": 18.600000000000023,
+    "p99": 1934.6000000000165,
+    "min": 1.0,
+    "max": 11909.0
+   },
+   "follower_none": 9,
+   "follower_le_k_share": 0.7887700534759359,
+   "buys_before_landing": {
+    "n": 374,
+    "mean": 6.529411764705882,
+    "p10": 0.0,
+    "p25": 1.0,
+    "p50": 4.0,
+    "p75": 10.0,
+    "p90": 16.0,
+    "p99": 29.0,
+    "min": 0.0,
+    "max": 35.0
+   }
+  },
+  "swap3": {
+   "decisions": 177,
+   "per_day": {
+    "2026-10-16": 177
+   },
+   "cls": {
+    "not_open_at_completion": 169,
+    "open_at_completion": 7,
+    "completed_before_entry": 1
+   },
+   "open_at_completion": 7,
+   "open_share": 0.03954802259887006,
+   "upper_bound_open": 12,
+   "upper_bound_share": 0.06779661016949153,
+   "completed_before_entry": 1,
+   "pools": 167,
+   "pools_completing_in_window": 19,
+   "sw3_pool_decisions": 177,
+   "comp_after_decision_s_for_completing": {
+    "n": 23,
+    "mean": 1822.695652173913,
+    "p10": 4.6000000000000005,
+    "p25": 12.0,
+    "p50": 77.0,
+    "p75": 2037.5,
+    "p90": 3845.0000000000005,
+    "p99": 12754.880000000003,
+    "min": 2.0,
+    "max": 13238.0
+   },
+   "k_in": {
+    "9": 177
+   },
+   "slot_s_live": {
+    "n": 177,
+    "mean": 0.21634828272271145,
+    "p10": 0.2157133425364624,
+    "p25": 0.21597455592894862,
+    "p50": 0.21662953820217953,
+    "p75": 0.21665762671005845,
+    "p90": 0.21668974652296946,
+    "p99": 0.21806060606060607,
+    "min": 0.21469879518072288,
+    "max": 0.21806060606060607
+   },
+   "slot_s_hour": {
+    "n": 177,
+    "mean": 0.216158409144614,
+    "p10": 0.2150242036693958,
+    "p25": 0.21539290202884673,
+    "p50": 0.21662953820217953,
+    "p75": 0.21662953820217953,
+    "p90": 0.21667047463522285,
+    "p99": 0.21806060606060607,
+    "min": 0.21469879518072288,
+    "max": 0.21806060606060607
+   },
+   "close_wait_slots": {
+    "n": 177,
+    "mean": 1.8418079096045197,
+    "p10": 1.0,
+    "p25": 1.0,
+    "p50": 1.0,
+    "p75": 1.0,
+    "p90": 3.0,
+    "p99": 16.0,
+    "min": 1.0,
+    "max": 21.0
+   },
+   "close_wait_s": {
+    "n": 177,
+    "mean": 0.39812815734600154,
+    "p10": 0.2150242036693958,
+    "p25": 0.21597455592894862,
+    "p50": 0.21662953820217953,
+    "p75": 0.2168776371308017,
+    "p90": 0.6468766907666624,
+    "p99": 3.470382785502584,
+    "min": 0.21469879518072288,
+    "max": 4.523250942605781
+   },
+   "decide_s": {
+    "n": 177,
+    "mean": 0.006403362606046984,
+    "p10": 0.0036861148080788554,
+    "p25": 0.004022650013212115,
+    "p50": 0.0062119600479491055,
+    "p75": 0.007574294053483754,
+    "p90": 0.010302838392090053,
+    "p99": 0.01594809741480276,
+    "min": 0.0026850829599425197,
+    "max": 0.019019772007595748
+   },
+   "follower_dslot": {
+    "n": 172,
+    "mean": 25.622093023255815,
+    "p10": 1.0,
+    "p25": 1.0,
+    "p50": 2.0,
+    "p75": 9.0,
+    "p90": 21.900000000000006,
+    "p99": 194.40999999999977,
+    "min": 1.0,
+    "max": 2476.0
+   },
+   "follower_none": 5,
+   "follower_le_k_share": 0.7401129943502824,
+   "buys_before_landing": {
+    "n": 177,
+    "mean": 5.909604519774011,
+    "p10": 0.0,
+    "p25": 0.0,
+    "p50": 4.0,
+    "p75": 9.0,
+    "p90": 14.400000000000006,
+    "p99": 37.0,
+    "min": 0.0,
+    "max": 37.0
+   }
+  },
+  "sanity_am5": {
+   "am5_decisions": 374,
+   "am5_md5": "c25f759683a51699e4582f0657af712b",
+   "mine_before_sw3": 374,
+   "mine_md5": "c25f759683a51699e4582f0657af712b",
+   "only_mine": 0,
+   "only_am5": 0
+  }
+ },
+ "engine": {
+  "hours_streamed": 72,
+  "decisions_live": 551,
+  "stats": {
+   "rows": 2294591,
+   "sol_rows": 2232011,
+   "completes": 6541,
+   "late_rows": 0,
+   "groups_closed": 1012445,
+   "prefilter_pass": 18572,
+   "tail_evals": 1031568,
+   "tail_rows": 71685838,
+   "full_evals": 174641,
+   "trigger_prints": 8023,
+   "live_cooldown": 7472,
+   "screen_cooldown": 0,
+   "screen_late_decisions": 0,
+   "live_exits": 551
+  },
+  "wall_s": 1151.4,
+  "peak_rss_mib": 1062.0,
+  "declog": {
+   "md5": "07b2ed2ac86bd4674a0b862db109548f",
+   "head": [
+    "0a6b25d5b9212662782bb7a96eb9eec3f62cf76da222e47f422b036753056210",
+    1174
+   ]
+  },
+  "taken_utc": "2026-10-26T17:27:26Z"
+ },
+ "taken_utc": "2026-10-26T17:28:14Z"
+}
