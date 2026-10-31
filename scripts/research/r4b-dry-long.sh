@@ -7,7 +7,8 @@
 #   1. refuses to start if ANY r4b_host_glue process is running (M5: two hosts must never write one declog) or if this change_id already has a declog/out/host.log;
 #   2. -I preflight (imports of the host's modules);
 #   3. records the M1 start facts to $D/m1-start.txt: the user slice's MemoryMax/MemoryHigh/MemoryCurrent (before the scope exists), then, once the scope is up, its
-#      memory.max (expect 3670016000 = 3500M) and memory.swap.max (expect 0), the host's niceness (expect 19) and its pid. A scope-limit, swap or nice mismatch is fail-closed: M1_ABORT, the scope is stopped, exit 8. The slice line (M1_SLICE) is recorded, not enforced;
+#      memory.max (expect 3670016000 = 3500M) and memory.swap.max (expect 0), the host's niceness (expect 19) and its pid. A scope-limit, swap or nice mismatch, or a cap that cannot be
+#      confirmed (M1_UNVERIFIED), is fail-closed: M1_ABORT, the scope is stopped, exit 8. The slice line (M1_SLICE) is recorded, not enforced;
 #   4. runs the host in its own scope: MemoryMax=3500M, MemorySwapMax=0, the whole process under `nice -n 19` (pc3 2.4), never --no-ionice (ionice -c3 is inert under
 #      the disk scheduler `none`; the records say so). The host's stdout/stderr go to $D/host.log; the rc is the host's rc.
 # The reservation of this MiScusi job is 1.9G (fast-0 MiScusi ceiling 2G); the scope is the hard cap, 3500M (M-a'). Say so in the job name, the LAB_STATE start row and the
@@ -29,13 +30,14 @@ D="$HOME/mal-data/r4b-dry/$CHANGE_ID"
 UNIT="r4b-dry-$CHANGE_ID"
 SCOPE_MEM_MAX=3670016000   # MemoryMax=3500M in bytes (3500 * 1048576)
 M1_WAIT_S="${R4B_M1_WAIT_S:-120}"
+M1_GRACE_S="${R4B_M1_GRACE_S:-10}"   # test hook only: how long a seen host may wait for its scope's memory.max to be readable
 CGROOT="${R4B_CGROUP_ROOT:-/sys/fs/cgroup}"   # test hook only
 
 # 0. the user systemd bus (systemd-run --user and systemctl --user need XDG_RUNTIME_DIR in this job's environment)
 systemctl --user show -p Version > /dev/null 2>&1 || { echo "r4b-dry-long: no user systemd manager reachable (XDG_RUNTIME_DIR?); nothing started" >&2; exit 5; }
 
 # 1. M5: one host at a time, one declog per change_id
-LEFT=$(ps -eo pid,args | grep '[r]4b_host_glue')
+LEFT=$(ps -ww -eo pid,args | grep '[r]4b_host_glue')   # -ww: a COLUMNS in the job's environment must not truncate the argv we match
 if [ -n "$LEFT" ]; then
     echo "r4b-dry-long: REFUSED (M5): an r4b_host_glue process is already running (two hosts must never write one declog):" >&2
     echo "$LEFT" | cut -c1-100 >&2
@@ -79,29 +81,37 @@ NEED=$((SCOPE_MEM_MAX + S_CUR_N))
     fi
 } > "$D/m1-start.txt"
 
-# the recorder: waits for the scope, appends the scope's own cgroup limits and the host's niceness, prints the file to the job log. Killed when the host ends.
+# the recorder: waits for the scope and for the host process, appends the scope's own cgroup limits and the host's niceness, prints the file to the job log. Killed when the host ends.
+# The host process is matched by an exact argv: field 3 is "$V/bin/python", then -I tools/r4b_host_glue.py run ... --change-id <id>. The systemd-run and nice processes of the same
+# argv (ni 0, for the milliseconds before the exec) therefore never match (QP on #1161, C5; reviewer S3). ps -ww: no COLUMNS truncation (reviewer S2).
+host_line() {
+    ps -ww -eo pid=,ni=,args= | awk -v p="$V/bin/python" -v cid="$CHANGE_ID" \
+        '$3 == p && $4 == "-I" && $5 == "tools/r4b_host_glue.py" && $6 == "run" { for (i = 7; i < NF; i++) if ($i == "--change-id" && $(i + 1) == cid) { print $1, $2; exit } }'
+}
 record_m1() {
     i=0
     CG=''
     HPID=''
     HNI=''
+    HSEEN=''
     while [ "$i" -lt "$M1_WAIT_S" ]; do
         CG=$(systemctl --user show "$UNIT.scope" -p ControlGroup | sed -n 's/^ControlGroup=//p')
-        LINE=$(ps -eo pid,ni,args | grep '[r]4b_host_glue.py run' | grep -e "--change-id $CHANGE_ID " | head -1)
-        if [ -n "$CG" ] && [ -r "$CGROOT$CG/memory.max" ] && [ -n "$LINE" ]; then
+        LINE=$(host_line)
+        if [ -n "$LINE" ]; then
             set -- $LINE
             HPID=$1
             HNI=$2
-            break
+            [ -n "$HSEEN" ] || HSEEN=$i
         fi
+        if [ -n "$HPID" ] && [ -n "$CG" ] && [ -r "$CGROOT$CG/memory.max" ]; then break; fi
+        if [ -n "$HPID" ] && [ $((i - HSEEN)) -ge "$M1_GRACE_S" ]; then break; fi   # the host runs but its scope's cap is not readable: do not wait out the whole timeout
         sleep 1
         i=$((i + 1))
     done
+    BAD=0
     {
         echo "recorded_scope_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-        if [ -z "$HPID" ]; then
-            echo "M1_INCOMPLETE the scope or the host process was not seen within ${M1_WAIT_S}s (control_group='$CG')"
-        else
+        if [ -n "$HPID" ] && [ -n "$CG" ] && [ -r "$CGROOT$CG/memory.max" ]; then
             MM=$(cat "$CGROOT$CG/memory.max")
             MS=$(cat "$CGROOT$CG/memory.swap.max")
             MH=$(cat "$CGROOT$CG/memory.high")
@@ -111,15 +121,23 @@ record_m1() {
             echo "scope_memory_high=$MH"
             echo "host_pid=$HPID"
             echo "host_nice=$HNI"
-            BAD=0
             if [ "$MM" = "$SCOPE_MEM_MAX" ]; then echo "M1_SCOPE_MEMORY_MAX PASS ($MM)"; else echo "M1_SCOPE_MEMORY_MAX FAIL (got $MM, expected $SCOPE_MEM_MAX)"; BAD=1; fi
             if [ "$MS" = "0" ]; then echo "M1_SCOPE_SWAP_MAX PASS (0)"; else echo "M1_SCOPE_SWAP_MAX FAIL (got $MS, expected 0)"; BAD=1; fi
             if [ "$HNI" = "19" ]; then echo "M1_NICE PASS (19)"; else echo "M1_NICE FAIL (got $HNI, expected 19)"; BAD=1; fi
-            if [ "$BAD" = 1 ]; then echo "M1_ABORT the scope's limits are not the registered ones: stopping the scope now (M5), exit 8"; fi
+        elif [ -n "$HPID" ] || { [ -n "$CG" ] && [ -d "$CGROOT$CG" ]; }; then
+            # a host process or a live scope exists, but the cap or the niceness cannot be confirmed: the 3500M cap may not be in force (memory controller not delegated?). Fail closed (S4).
+            echo "scope_control_group=$CG"
+            echo "host_pid=$HPID"
+            echo "host_nice=$HNI"
+            echo "M1_UNVERIFIED host_process_seen=$([ -n "$HPID" ] && echo yes || echo no) scope_memory_max_readable=$([ -n "$CG" ] && [ -r "$CGROOT$CG/memory.max" ] && echo yes || echo no): the cap or the niceness cannot be confirmed"
+            BAD=1
+        else
+            echo "M1_INCOMPLETE neither the scope nor the host process was seen within ${M1_WAIT_S}s (control_group='$CG'); the host probably ended at once, see its rc"
         fi
+        if [ "$BAD" = 1 ]; then echo "M1_ABORT the scope's limits or niceness are not the registered ones, or cannot be confirmed: stopping the scope now (M5), exit 8"; fi
     } >> "$D/m1-start.txt"
-    # fail closed: the scope facts are exact equalities, so a mismatch ends the run at once (no mark has been counted yet, the catch-up is still running). The slice line is
-    # judgement (page cache counts in MemoryCurrent) and stays a recorded line for the manager.
+    # fail closed: the scope facts are exact equalities, so a mismatch or an unverifiable cap ends the run at once (no mark has been counted yet, the catch-up is still running).
+    # The slice line is judgement (page cache counts in MemoryCurrent) and stays a recorded line for the manager; M1_INCOMPLETE (nothing seen at all) is recorded only.
     if grep -q '^M1_ABORT' "$D/m1-start.txt"; then systemctl --user stop "$UNIT.scope"; fi
     cat "$D/m1-start.txt"
 }

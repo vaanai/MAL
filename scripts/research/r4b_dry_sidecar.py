@@ -3,19 +3,22 @@
 
 It reads STATE files only: the host scope's cgroup files (memory.current, memory.stat, memory.events), the tip follower's
 /var/lib/mal/fast-tip-follower/status.json, /proc/loadavg, /proc/pressure/{cpu,io}, `systemctl show` of two units, and (to find the end of the catch-up) the host's own
-events.jsonl, of which it extracts the `ms` of the one `catch_up_done` event and nothing else. It never opens a tape file, a decision log, a checkpoint or a
+glue events file (out/glue/events.jsonl: TipLiveSource writes `catch_up_done` there, not in out/host/), of which it extracts the `ms` of the one `catch_up_done` event and nothing else. It never opens a tape file, a decision log, a checkpoint or a
 fills/P&L file, and it never lists /var/lib/mal/sealed. Stdlib only (the wrapper runs it with `python -I`).
 
 Output: one JSON line per sample appended to --out (the file is also read back on a restart, to rebuild the anon history and the pre-start lag range).
 stdout: a heartbeat every 30 min, and ALERT / WARN / END lines.
 
-Exit codes: 0 ran to the end of --hours, or the scope ended (END scope_gone); 3 ALERT (M6 / oom / new backlog_jump / follower restart);
-4 ALERT, the catch-up stop rule (P5); 5 usage; 6 the scope never appeared. An exit by ALERT is the end of this sidecar process: launch it again to continue; that
+Exit codes: 0 ran to the end of --hours, or the scope ended (END scope_gone); 3 ALERT (M6 / oom / new backlog_jump / follower restart / catch-up end unknown);
+4 ALERT, the catch-up stop rule exactly as pc3 P5 registered it (during catch-up only: a new backlog_jump, a `gaps` increase, or lag_slots >= 20 in two consecutive samples); 5 usage;
+6 the scope never appeared. An exit by ALERT is the end of this sidecar process: launch it again to continue; that
 acknowledges the alert (follower baselines are re-taken, the anon history is read back from --out).
 
 M6 (QP #1160): stop the run and restart with a larger envelope if the linear projection of anon, fitted over the last >= 6 h after the catch-up (window
 [catch-up end + 1 h, now], at most the trailing 11 h, so at catch-up end + 12 h it is exactly M6's [+1 h, +12 h]) to min(run end, catch-up end + 116 h), exceeds
-2,975 MiB (85 % of memory.max 3,500 MiB), or at once if anon itself reaches 2,975 MiB. The sidecar only alerts; the stop procedure is M5 (r4b-dry-stop.sh).
+2,975 MiB (85 % of memory.max 3,500 MiB), or at once if anon itself reaches 2,975 MiB. The projection is recorded in the sample from the first 6 h window on, but it can ALERT only
+from catch-up end + 12 h (M6's check); from then on the trailing 11 h fit continues and QP rules its alerts binding M6 stops (QP on #1161, C2). The sidecar only alerts; the stop
+procedure is M5 (r4b-dry-stop.sh). If `catch_up_done` has not appeared 90 min after the scope did, it ALERTs (exit 3: M6 would be blind); relaunch with R4B_CATCHUP_END_EPOCH.
 """
 from __future__ import annotations
 
@@ -34,13 +37,15 @@ HORIZON_AFTER_CATCHUP_S = 116 * 3600  # the 7-day bonding-idle plateau (catch-up
 FIT_SETTLE_S = 3600                   # the first hour after catch-up is not fitted (M6: [+1 h, +12 h])
 FIT_MIN_SPAN_S = 6 * 3600             # the fit needs >= 6 h of samples after catch-up
 FIT_MAX_SPAN_S = 11 * 3600            # trailing window; at catch-up end + 12 h this is [+1 h, +12 h]
+M6_DECISION_AFTER_S = 12 * 3600       # the projection ALERT is gated on now >= catch-up end + 12 h (M6); earlier fits are recorded as fields only
 FIT_MIN_POINTS = 20
 FAST_UNTIL_S = 2 * 3600               # P5: every <= 30 s until catch-up end + 2 h, then every <= 60 s
 FAST_INTERVAL_S = 30.0
 SLOW_INTERVAL_S = 60.0
 CATCHUP_BUDGET_S = 50 * 60            # pc3 section 2.5: submit at HH:05Z, catch-up ends before HH+1:00Z
-LAG_EDGE_FLOOR = 10                   # pc3 section 2.2: lag 3 to 10 is the follower's calm range with no host at all
-LAG_HARD = 20                         # pc3 P5: lag_slots >= 20 in two consecutive samples
+CATCHUP_GIVEUP_S = 90 * 60            # no catch_up_done this long after the scope appeared: ALERT (S1), M6 would otherwise be blind
+LAG_EDGE_FLOOR = 10                   # pc3 section 2.2: lag 3 to 10 was seen in the same run with the host on the live tail (1 to 3 with no host); a WARN band, not a stop
+LAG_HARD = 20                         # pc3 P5: lag_slots >= 20 in two consecutive samples (the registered stop line)
 LAG_CONSECUTIVE = 2
 GONE_MISSES = 3
 HEARTBEAT_S = 1800
@@ -109,7 +114,7 @@ def fit_projection(points: list[tuple[float, float]], t_target: float) -> tuple[
 # ---- the alert logic (pure; no I/O) ------------------------------------------------------------------------------------------------------------------------
 
 class Monitor:
-    """feed(sample) -> list of (exit_code, reason). The sample dict gets `phase`, `anon_slope_mib_h` and `anon_proj_mib` filled in.
+    """feed(sample) -> list of (exit_code, reason); WARN lines go to self.warns (reset at each feed). The sample dict gets `phase`, `anon_slope_mib_h` and `anon_proj_mib` filled in.
     phase: 'pre' (the scope has not been seen), 'catchup' (scope seen, catch_up_end unknown), 'live' (catch_up_end known)."""
 
     def __init__(self, *, alert_mib: float = ALERT_MIB, run_end: float | None = None, catchup_end: float | None = None,
@@ -119,8 +124,10 @@ class Monitor:
         self.pre_lag_max = pre_lag_max
         self.scope_seen = scope_seen
         self.base: dict[str, Any] = {}
-        self.lag_run = 0  # consecutive catch-up samples outside the lag range
-        self.hard_run = 0
+        self.lag_run = 0  # consecutive catch-up samples above the lag WARN band edge
+        self.hard_run = 0  # consecutive catch-up samples at lag_slots >= LAG_HARD
+        self.last_pre: dict[str, int] = {}  # the last pre-scope sample's gaps / backlog_jumps: the catch-up baselines (C4)
+        self.warns: list[str] = []
 
     def lag_edge(self) -> int:
         return max(self.pre_lag_max if self.pre_lag_max is not None else 0, LAG_EDGE_FLOOR)
@@ -150,6 +157,8 @@ class Monitor:
     def feed(self, s: dict[str, Any]) -> list[tuple[int, str]]:
         now = float(s["ts"])
         alerts: list[tuple[int, str]] = []
+        self.warns = []
+        first_scope = bool(s.get("scope_found")) and not self.scope_seen
         if s.get("scope_found"):
             self.scope_seen = True
         phase = "pre" if not self.scope_seen else ("catchup" if self.catchup_end is None or now < self.catchup_end else "live")
@@ -162,9 +171,18 @@ class Monitor:
         lag = s.get("lag_slots")
         if phase == "pre" and isinstance(lag, int):
             self.pre_lag_max = lag if self.pre_lag_max is None else max(self.pre_lag_max, lag)
-        for k in ("backlog_jumps", "gaps"):  # baselines: the first sample of this process that carries the field
+        for k in ("backlog_jumps", "gaps"):  # baselines: the first sample of this process that carries the field ...
             if k not in self.base and isinstance(s.get(k), int):
                 self.base[k] = s[k]
+        if phase == "pre":
+            for k in ("backlog_jumps", "gaps"):
+                v = s.get(k)
+                if isinstance(v, int):
+                    if k == "gaps" and isinstance(self.last_pre.get(k), int) and v > self.last_pre[k]:
+                        self.warns.append(f"WARN follower_gaps_increase_pre_start: gaps {self.last_pre[k]} -> {v} before the scope existed (not charged to the catch-up)")
+                    self.last_pre[k] = v
+        elif first_scope:  # ... re-taken from the last pre-start sample when the scope first appears (QP on #1161, C4)
+            self.base.update(self.last_pre)
         for k, src in (("nrestarts", "follower_nrestarts"), ("active_enter", "follower_active_enter")):
             if k not in self.base and s.get(src) not in (None, ""):
                 self.base[k] = s[src]
@@ -185,9 +203,13 @@ class Monitor:
             edge = self.lag_edge()
             self.lag_run = self.lag_run + 1 if lag > edge else 0
             self.hard_run = self.hard_run + 1 if lag >= LAG_HARD else 0
-            if self.hard_run >= LAG_CONSECUTIVE or self.lag_run >= LAG_CONSECUTIVE:
-                alerts.append((EXIT_CATCHUP, f"catchup_lag_out_of_range: lag_slots {lag} (pre-start max {self.pre_lag_max}, range edge {edge}, hard line {LAG_HARD}) in {max(self.lag_run, self.hard_run)}"
-                                             f" consecutive samples during catch-up (pc3 P5 stop rule: stop the job per M5)"))
+            s["lag_outside_pre_range_run"] = self.lag_run
+            if self.lag_run == LAG_CONSECUTIVE:  # once per excursion; a WARN and a sample field, not a stop (not registered in pc3 P5)
+                self.warns.append(f"WARN catchup_lag_above_pre_start_range: lag_slots {lag} above the range edge {edge} (pre-start max {self.pre_lag_max}, floor {LAG_EDGE_FLOOR}) in"
+                                  f" {self.lag_run} consecutive samples; recorded in sidecar.jsonl, P-C3 judges 'within its pre-start range' from it; the stop line is lag_slots >= {LAG_HARD}"
+                                  f" in {LAG_CONSECUTIVE} consecutive samples")
+            if self.hard_run >= LAG_CONSECUTIVE:
+                alerts.append((EXIT_CATCHUP, f"catchup_lag_stop: lag_slots {lag} >= {LAG_HARD} in {self.hard_run} consecutive samples during catch-up (pc3 P5 stop rule: stop the job per M5)"))
         else:
             self.lag_run = self.hard_run = 0
         nr, ae = s.get("follower_nrestarts"), s.get("follower_active_enter")
@@ -198,7 +220,7 @@ class Monitor:
         pr = self.project(now) if phase == "live" else None
         if pr is not None:
             s["anon_slope_mib_h"], s["anon_proj_mib"], s["anon_fit_span_h"] = round(pr[0], 3), round(pr[1], 1), round(pr[2], 2)
-            if pr[1] > self.alert_mib:
+            if pr[1] > self.alert_mib and now >= self.catchup_end + M6_DECISION_AFTER_S:  # M6 decides at catch-up end + 12 h; an earlier fit is a field only (C2)
                 t_h = self.horizon(now)
                 alerts.append((EXIT_ALERT, f"m6_projection: anon fit {pr[0]:.2f} MiB/h over {pr[2]:.1f} h projects {pr[1]:.0f} MiB at +{((t_h - now) / 3600.0):.1f} h"
                                            f" (> {self.alert_mib:.0f} MiB; M6: stop per M5 and restart with a larger envelope as a new change_id)"))
@@ -224,7 +246,7 @@ def read_text(path: str) -> str | None:
 
 
 class EventsScan:
-    """Finds the `catch_up_done` event in the host's events.jsonl and returns its `ms` / 1000. Lines are read as bytes; only a line that contains the event name is
+    """Finds the `catch_up_done` event in the host glue's out/glue/events.jsonl and returns its `ms` / 1000. Lines are read as bytes; only a line that contains the event name is
     parsed, and only its `ms` is kept. Nothing else of the file is parsed, stored or printed."""
 
     NEEDLE = b'"catch_up_done"'
@@ -338,7 +360,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--hours", type=float, default=125.0, help="stop after this many hours (also the run-end estimate when --run-end-epoch is not given)")
     ap.add_argument("--run-end-epoch", type=float, default=None, help="the run's end (EXP-027 E); default: this sidecar's start + --hours")
     ap.add_argument("--catchup-end-epoch", type=float, default=None, help="override the catch-up end; default: the ms of the host's catch_up_done event")
-    ap.add_argument("--events", default="", help="the host's events.jsonl ('' = do not read it: then the catch-up end is scope first seen + 50 min)")
+    ap.add_argument("--events", default="", help="the host glue's events.jsonl, <out>/glue/events.jsonl, where TipLiveSource writes catch_up_done ('' = do not read it: then the catch-up end is scope first seen + 50 min)")
     ap.add_argument("--status-dir", default="/var/lib/mal/fast-tip-follower")
     ap.add_argument("--follower-unit", default="mal-fast-tip-follower")
     ap.add_argument("--cgroup-root", default="/sys/fs/cgroup")
@@ -371,9 +393,9 @@ def run(argv: list[str] | None = None, *, clock: Callable[[], float] = time.time
         while True:
             now = clock()
             s = collect(cfg, now, systemctl, cg_cache)
-            if not warned_unit and (s["follower_nrestarts"] is None or s["lag_slots"] is None):
+            if not warned_unit and (s["follower_nrestarts"] is None or s["lag_slots"] is None or s["follower_active_enter"] is None):
                 warned_unit = True
-                print(f"WARN follower_state_unreadable: NRestarts={s['follower_nrestarts']} lag_slots={s['lag_slots']} (systemctl show {cfg.follower_unit} or {cfg.status_dir}/status.json"
+                print(f"WARN follower_state_unreadable: NRestarts={s['follower_nrestarts']} lag_slots={s['lag_slots']} (systemctl show {cfg.follower_unit} (an unknown unit gives no ActiveEnterTimestamp) or {cfg.status_dir}/status.json"
                       f" unreadable at the first sample: the restart / backlog / lag alerts are blind until it is)", file=out, flush=True)
             if s["scope_found"]:
                 misses = 0
@@ -393,6 +415,12 @@ def run(argv: list[str] | None = None, *, clock: Callable[[], float] = time.time
             if mon.catchup_end is not None:
                 s["catchup_end_ts"] = round(mon.catchup_end, 3)
             alerts = mon.feed(s)
+            for w in mon.warns:
+                print(w, file=out, flush=True)
+            if cfg.events and mon.catchup_end is None and scope_first is not None and now >= scope_first + CATCHUP_GIVEUP_S:
+                alerts.append((EXIT_ALERT, f"catchup_end_unknown: no catch_up_done event in {cfg.events} {int((now - scope_first) / 60)} min after the scope appeared (give-up {CATCHUP_GIVEUP_S // 60} min):"
+                                           f" M6 would be blind and the catch-up stop rules would stay armed. Read the catch-up end from the host's glue events, then relaunch with"
+                                           f" R4B_CATCHUP_END_EPOCH=<epoch seconds of catch_up_done>"))
             fh.write(json.dumps(s, sort_keys=True, separators=(",", ":")) + "\n")
             fh.flush()
             if alerts:

@@ -17,7 +17,7 @@ REPO = Path(__file__).resolve().parents[1]
 S = REPO / "scripts" / "research"
 LONG, SIDECAR, STOP = S / "r4b-dry-long.sh", S / "r4b-dry-sidecar.sh", S / "r4b-dry-stop.sh"
 
-PS = '#!/bin/sh\n[ -f "$SHIM_DIR/ps.out" ] && cat "$SHIM_DIR/ps.out"\nexit 0\n'
+PS = '#!/bin/sh\necho "$@" >> "$SHIM_DIR/ps.log"\n[ -f "$SHIM_DIR/ps.out" ] && cat "$SHIM_DIR/ps.out"\nexit 0\n'
 SYSTEMCTL = r'''#!/bin/sh
 echo "$@" >> "$SHIM_DIR/systemctl.log"
 case "$*" in
@@ -30,9 +30,15 @@ exit 0
 '''
 SYSTEMD_RUN = r'''#!/bin/sh
 for a in "$@"; do printf '%s\n' "$a"; done > "$SHIM_DIR/systemd-run.log"
-echo " 4242 ${SHIM_NICE:-19} /home/x/mal-venvs/r4b/bin/python -I tools/r4b_host_glue.py run --source tip --change-id $SHIM_CHANGE --catch-up-hours 52" > "$SHIM_DIR/ps.out"
+PY="${SHIM_ARGV0:-$HOME/mal-venvs/r4b/bin/python}"
+ARGS="-I tools/r4b_host_glue.py run --source tip --change-id $SHIM_CHANGE --catch-up-hours 52"
+if [ -n "$SHIM_PRE_EXEC" ]; then  # the milliseconds before the exec: systemd-run and nice carry the host's argv with ni 0
+    printf ' 4241 0 systemd-run --user --scope -q --unit=r4b-dry-x1 -p MemoryMax=3500M nice -n 19 %s %s\n 4241 0 nice -n 19 %s %s\n' "$PY" "$ARGS" "$PY" "$ARGS" > "$SHIM_DIR/ps.out"
+    sleep 2
+fi
+[ -n "$SHIM_NO_PS" ] || printf ' 4242 %s %s %s\n' "${SHIM_NICE:-19}" "$PY" "$ARGS" > "$SHIM_DIR/ps.out"
 echo "host-output-line"
-sleep 2
+sleep "${SHIM_SLEEP:-2}"
 exit "${SHIM_RC:-0}"
 '''
 PYTHON = r'''#!/bin/sh
@@ -67,9 +73,11 @@ class Base(unittest.TestCase):
         e.update({k: str(v) for k, v in env.items()})
         return subprocess.run(["sh", str(script), *args], cwd=REPO, env=e, capture_output=True, text=True, timeout=60)
 
-    def scope(self, memory_max="3670016000", swap="0"):
+    def scope(self, memory_max="3670016000", swap="0", files=True):
         cg = self.cgroot / "user.slice" / "r4b-dry-x1.scope"
         cg.mkdir(parents=True)
+        if not files:  # a cgroup without the memory controller: no memory.* files
+            return "/user.slice/r4b-dry-x1.scope"
         (cg / "memory.max").write_text(memory_max + "\n")
         (cg / "memory.swap.max").write_text(swap + "\n")
         (cg / "memory.high").write_text("max\n")
@@ -167,10 +175,63 @@ class Long(Base):
         self.sh(LONG, "x1", SHIM_SLICE_MAX=8000000000, SHIM_SLICE_HIGH=18446744073709551615, SHIM_SLICE_CUR="[not set]")
         self.assertIn("M1_SLICE PASS", (self.home / "mal-data" / "r4b-dry" / "x1" / "m1-start.txt").read_text())
 
-    def test_m1_incomplete_when_the_scope_never_shows(self):
+    def test_m1_incomplete_is_recorded_only_when_nothing_at_all_is_seen(self):
         self.env["SHIM_CG"] = ""
-        self.sh(LONG, "x1", R4B_M1_WAIT_S=1)
+        r = self.sh(LONG, "x1", R4B_M1_WAIT_S=1, SHIM_NO_PS=1)
         self.assertIn("M1_INCOMPLETE", (self.home / "mal-data" / "r4b-dry" / "x1" / "m1-start.txt").read_text())
+        self.assertEqual(r.returncode, 0)
+        self.assertNotIn("--user stop", self.shim_log("systemctl.log"))
+
+    def _unverified_case(self, **kw):
+        r = self.sh(LONG, "x1", R4B_M1_WAIT_S=4, R4B_M1_GRACE_S=1, SHIM_SLEEP=7, **kw)  # the host outlives the recorder's wait
+        m1 = (self.home / "mal-data" / "r4b-dry" / "x1" / "m1-start.txt").read_text()
+        self.assertIn("M1_UNVERIFIED", m1)
+        self.assertIn("M1_ABORT", m1)
+        self.assertNotIn("PASS (19)", m1)
+        self.assertIn("--user stop r4b-dry-x1.scope", self.shim_log("systemctl.log"))
+        self.assertEqual(r.returncode, 8, r.stderr)
+
+    def test_s4_scope_seen_but_its_cap_unreadable_is_fail_closed(self):
+        self.env["SHIM_CG"] = self.scope(files=False)  # the scope exists, the host runs, memory.max is not there
+        self._unverified_case()
+
+    def test_s4_host_running_but_its_scope_not_visible_is_fail_closed(self):
+        self.env["SHIM_CG"] = ""
+        self._unverified_case()
+
+    def test_s4_scope_alive_but_the_host_process_never_matches_is_fail_closed(self):
+        self.env["SHIM_CG"] = self.scope()
+        self._unverified_case(SHIM_ARGV0="/usr/bin/python3")  # not "$V/bin/python": never matched, so the niceness is unknown
+
+    def test_c5_s3_pre_exec_processes_never_match_the_recorder(self):
+        self.env["SHIM_CG"] = self.scope()
+        r = self.sh(LONG, "x1", SHIM_PRE_EXEC=1)  # for 2 s ps shows systemd-run and nice lines (ni 0) carrying the host's argv, then the python line (ni 19)
+        m1 = (self.home / "mal-data" / "r4b-dry" / "x1" / "m1-start.txt").read_text()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("M1_NICE PASS (19)", m1)
+        self.assertIn("host_pid=4242", m1)
+        self.assertNotIn("M1_ABORT", m1)
+        self.assertNotIn("--user stop", self.shim_log("systemctl.log"))
+
+    def test_c5_a_host_line_of_another_change_id_is_not_matched(self):
+        self.env["SHIM_CG"] = self.scope()
+        r = self.sh(LONG, "x1", SHIM_CHANGE="x10", R4B_M1_WAIT_S=4, R4B_M1_GRACE_S=1, SHIM_SLEEP=7)  # the process carries --change-id x10, ours is x1
+        self.assertEqual(r.returncode, 8)
+        self.assertIn("M1_UNVERIFIED", (self.home / "mal-data" / "r4b-dry" / "x1" / "m1-start.txt").read_text())
+
+    def test_s2_every_ps_call_of_the_wrapper_and_the_stop_script_is_ww(self):
+        self.env["SHIM_CG"] = self.scope()
+        self.sh(LONG, "x1")
+        calls = self.shim_log("ps.log").strip().splitlines()
+        self.assertGreaterEqual(len(calls), 2)  # the refusal check and the recorder
+        for c in calls:
+            self.assertTrue(c.startswith("-ww "), c)
+        (self.shims / "ps.log").unlink()
+        self.sh(STOP, "x1")
+        calls = self.shim_log("ps.log").strip().splitlines()
+        self.assertGreaterEqual(len(calls), 1)
+        for c in calls:
+            self.assertTrue(c.startswith("-ww "), c)
 
     def test_refuses_when_any_host_process_runs(self):
         (self.shims / "ps.out").write_text(" 99 /usr/bin/python3 -I tools/r4b_host_glue.py run --change-id older\n")
@@ -253,12 +314,37 @@ class Sidecar(Base):
         self.assertEqual(r.returncode, 3)
         d = self.home / "mal-data" / "r4b-dry" / "x1"
         line = self.shim_log("python.log").strip()
-        self.assertEqual(line, f"-I scripts/research/r4b_dry_sidecar.py --change-id x1 --out {d}/sidecar.jsonl --hours 130 --events {d}/out/host/events.jsonl")
+        self.assertEqual(line, f"-I scripts/research/r4b_dry_sidecar.py --change-id x1 --out {d}/sidecar.jsonl --hours 130 --events {d}/out/glue/events.jsonl")
 
-    def test_run_end_epoch_is_passed_through_and_the_default_is_125_h(self):
+    def test_run_end_and_catchup_end_epochs_are_passed_through_and_the_default_is_125_h(self):
         self.sh(SIDECAR, "x1", R4B_RUN_END_EPOCH=1794020400)
         line = self.shim_log("python.log").strip()
-        self.assertTrue(line.endswith("--hours 125 --events " + f"{self.home}/mal-data/r4b-dry/x1/out/host/events.jsonl --run-end-epoch 1794020400"), line)
+        self.assertTrue(line.endswith("--hours 125 --events " + f"{self.home}/mal-data/r4b-dry/x1/out/glue/events.jsonl --run-end-epoch 1794020400"), line)
+        (self.shims / "python.log").unlink()
+        self.sh(SIDECAR, "x1", R4B_RUN_END_EPOCH=1794020400, R4B_CATCHUP_END_EPOCH=1793460000)
+        self.assertTrue(self.shim_log("python.log").strip().endswith("--run-end-epoch 1794020400 --catchup-end-epoch 1793460000"))
+
+    def test_c1_the_events_path_is_the_one_the_real_glue_writes_catch_up_done_to(self):
+        """Drift guard (QP C1 / reviewer B1): take the launcher's --events path, build the REAL TipLiveSource with the wrapper's --out dir, let it emit catch_up_done through its own
+        _event(), and require that the sidecar's EventsScan finds the event at the launcher's path. Pointing at out/host/ (DryHost's file) fails here."""
+        import importlib.util
+        from tools import r4b_feed_merge as fm
+        from tools import r4b_host_glue as glue
+        self.sh(SIDECAR, "x1")
+        argv = self.shim_log("python.log").split()
+        events = argv[argv.index("--events") + 1]
+        d = self.home / "mal-data" / "r4b-dry" / "x1"
+        self.assertEqual(events, str(d / "out" / "glue" / "events.jsonl"))
+        cap = fm.DailyCreditCap(50000, self.root / "cap.json")
+        src = glue.TipLiveSource(tip=object(), tip_state_dir=str(self.root), cap=cap, key_file=str(self.root / "k.env"), commitment="processed", out_dir=d / "out",
+                                 now_ms=lambda: 1_793_451_234_567)
+        self.assertEqual(str(src.events_path), events)  # the wrapper passes --out "$D/out" to the host (see test_builds_the_m1_command)
+        src._event("catch_up_done", released_D=463690160, rows={})
+        spec = importlib.util.spec_from_file_location("r4b_dry_sidecar", S / "r4b_dry_sidecar.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        self.assertEqual(mod.EventsScan(events).poll(), 1793451234.567)
+        self.assertFalse((d / "out" / "host" / "events.jsonl").exists())
 
     def test_no_user_bus_exits_5(self):
         (self.shims / "systemctl").write_text('#!/bin/sh\nexit 1\n')

@@ -84,15 +84,34 @@ class Memory(unittest.TestCase):
             self.assertAlmostEqual(last["anon_slope_mib_h"], slope, places=2)
             self.assertAlmostEqual(last["anon_fit_span_h"], 11.0, places=1)  # exactly M6's [+1 h, +12 h] at +12 h
 
-    def test_steep_slope_alerts_once_the_span_reaches_6_h(self):
+    def test_c2_a_steep_slope_gives_no_exit_before_catchup_end_plus_12_h_and_exits_at_the_first_sample_at_or_after(self):
         m = live_monitor(0, run_end=CU + 200 * H)
-        last, alerts = feed_ramp(m, 12.0, 20.0)  # 1,371 + 20 * 114 = 3,651 MiB at the horizon
+        last, alerts = feed_ramp(m, 11.9, 20.0)  # 1,371 + 20 * 114 = 3,651 MiB at the horizon: over 2,975 from the first 6 h window on (+7 h) ...
+        self.assertEqual(alerts, [])
+        self.assertGreater(last["anon_proj_mib"], 2975)  # ... and recorded as a field, but not an alert before M6's check
+        m = live_monitor(0, run_end=CU + 200 * H)
+        last, alerts = feed_ramp(m, 12.0, 20.0)
         self.assertEqual(len(alerts), 1)
         self.assertEqual(alerts[0][0], sc.EXIT_ALERT)
         self.assertIn("m6_projection", alerts[0][1])
-        # the first sample whose fit window spans 6 h: CU + 1 h + 6 h
-        self.assertAlmostEqual((last["ts"] - CU) / H, 7.0, places=1)
+        self.assertAlmostEqual((last["ts"] - CU) / H, 12.0, places=6)  # the first sample at +12 h, window [+1 h, +12 h]
+        self.assertAlmostEqual(last["anon_fit_span_h"], 11.0, places=1)
         self.assertGreater(last["anon_proj_mib"], 2975)
+
+    def test_c2_the_alert_continues_after_12_h_on_the_trailing_11_h_window(self):
+        m = live_monitor(0, run_end=CU + 200 * H)
+        last, alerts = feed_ramp(m, 12.0, 6.5)  # fine at +12 h ...
+        self.assertEqual(alerts, [])
+        t = last["ts"]
+        a = last["mem_anon"] / MIB
+        alerts = []
+        while t < CU + 30 * H and not alerts:  # ... then the slope steepens: the trailing fit follows it
+            t += 60
+            a += 40.0 / 60
+            last = smp(t, a)
+            alerts = m.feed(last)
+        self.assertTrue(alerts and "m6_projection" in alerts[0][1])
+        self.assertGreater(t, CU + 12 * H)
 
     def test_no_projection_and_no_alert_before_6_h_of_samples(self):
         m = live_monitor(0, run_end=CU + 200 * H)
@@ -171,6 +190,24 @@ class Follower(unittest.TestCase):
         live.feed(smp(CU + 2 * H))
         self.assertEqual(live.feed(smp(CU + 2 * H + 60, gaps=76047)), [])
 
+    def test_c4_catchup_baselines_are_the_last_pre_start_sample(self):
+        m = sc.Monitor()
+        self.assertEqual(m.feed(smp(T0, scope_found=False, mem_anon=None, gaps=100)), [])
+        self.assertEqual(m.feed(smp(T0 + 30, scope_found=False, mem_anon=None, gaps=101)), [])  # +1 before the scope existed: a WARN, no exit
+        self.assertEqual(len(m.warns), 1)
+        self.assertIn("follower_gaps_increase_pre_start", m.warns[0])
+        self.assertEqual(m.feed(smp(T0 + 60, gaps=101)), [])  # the scope appears: the +1 is not charged to the catch-up (the first-sample baseline of 100 would have been)
+        self.assertEqual(m.feed(smp(T0 + 90, gaps=101)), [])
+        al = m.feed(smp(T0 + 120, gaps=102))  # a real increase during the catch-up
+        self.assertEqual(al[0][0], sc.EXIT_CATCHUP)
+        self.assertIn("follower_gaps_increase", al[0][1])
+
+    def test_c4_a_pre_start_gaps_increase_between_the_last_pre_sample_and_the_first_scope_sample_is_charged_to_the_catchup(self):
+        m = sc.Monitor()
+        m.feed(smp(T0, scope_found=False, mem_anon=None, gaps=100))
+        al = m.feed(smp(T0 + 30, gaps=101))  # first scope sample already shows +1 over the last pre-start sample
+        self.assertEqual(al[0][0], sc.EXIT_CATCHUP)
+
     def test_follower_restart_by_nrestarts_or_active_enter(self):
         m = live_monitor(0)
         m.feed(smp(CU + 2 * H))
@@ -181,20 +218,36 @@ class Follower(unittest.TestCase):
         al = m.feed(smp(CU + 2 * H + 60, follower_active_enter="Sat 2026-10-31 18:00:00 UTC"))  # a manual restart leaves NRestarts at 0
         self.assertEqual((al[0][0], "follower_restart" in al[0][1]), (sc.EXIT_ALERT, True))
 
-    def test_catchup_lag_rule_needs_two_consecutive_samples_outside_the_range(self):
+    def test_c3_the_lag_band_above_the_pre_start_range_is_a_warn_and_a_field_never_an_exit(self):
         m = sc.Monitor()
-        self.pre(m, [1, 2, 3, 2, 4, 3])  # pre-start max 4: the range edge is the 10-slot floor (pc3 section 2.2: lag 3 to 10 is calm)
+        self.pre(m, [1, 2, 3, 2, 4, 3])  # pre-start max 4: the band edge is the 10-slot floor
         self.assertEqual(m.pre_lag_max, 4)
         self.assertEqual(m.lag_edge(), 10)
         t = T0 + 600
-        self.assertEqual(m.feed(smp(t)), [])               # scope appears
-        self.assertEqual(m.feed(smp(t + 30, lag_slots=10)), [])  # on the edge: in range
-        self.assertEqual(m.feed(smp(t + 60, lag_slots=11)), [])  # one sample out: no stop
-        self.assertEqual(m.feed(smp(t + 90, lag_slots=3)), [])   # back in range: the run resets
-        self.assertEqual(m.feed(smp(t + 120, lag_slots=11)), [])
-        al = m.feed(smp(t + 150, lag_slots=12))                  # two in a row
+        self.assertEqual(m.feed(smp(t)), [])                      # scope appears
+        self.assertEqual(m.feed(smp(t + 30, lag_slots=10)), [])   # on the edge
+        s1 = smp(t + 60, lag_slots=11)
+        self.assertEqual(m.feed(s1), [])
+        self.assertEqual((s1["lag_outside_pre_range_run"], m.warns), (1, []))  # one sample out: a field only
+        s2 = smp(t + 90, lag_slots=12)
+        self.assertEqual(m.feed(s2), [])                          # two in a row: still no exit (not a registered pc3 P5 trigger) ...
+        self.assertEqual(s2["lag_outside_pre_range_run"], 2)
+        self.assertEqual(len(m.warns), 1)                         # ... a WARN, once
+        self.assertIn("catchup_lag_above_pre_start_range", m.warns[0])
+        self.assertEqual(m.feed(smp(t + 120, lag_slots=19)), [])  # lag 11 to 19 is ordinary (pc3 2.2): no exit, no second WARN
+        self.assertEqual(m.warns, [])
+        self.assertEqual(m.feed(smp(t + 150, lag_slots=3)), [])
+        # the registered line: lag_slots >= 20 in two consecutive samples
+        self.assertEqual(m.feed(smp(t + 180, lag_slots=20)), [])
+        al = m.feed(smp(t + 210, lag_slots=25))
         self.assertEqual(al[0][0], sc.EXIT_CATCHUP)
-        self.assertIn("catchup_lag_out_of_range", al[0][1])
+        self.assertIn("catchup_lag_stop", al[0][1])
+
+    def test_c3_exit_4_only_for_the_three_registered_triggers(self):
+        m = sc.Monitor(scope_seen=True)
+        m.feed(smp(T0))
+        for i in range(1, 40):  # lag 11..19 for many samples, any pre-start range: no exit 4
+            self.assertEqual([c for c, _ in m.feed(smp(T0 + 30 * i, lag_slots=11 + (i % 9)))], [])
 
     def test_pre_start_max_above_the_floor_moves_the_edge(self):
         m = sc.Monitor()
@@ -350,6 +403,34 @@ class Loop(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(out.count("WARN follower_state_unreadable"), 1)
         self.assertIsNone(rows[0]["lag_slots"])
+
+    def test_a_follower_unit_without_an_active_enter_timestamp_warns_once(self):
+        self.control_group = "/user.slice/r4b-dry-x1.scope"
+        self.systemctl_orig = self.systemctl
+        self.systemctl = lambda args: "ControlGroup=/user.slice/r4b-dry-x1.scope\n" if "--user" in args else "NRestarts=0\nActiveEnterTimestamp=\n"  # systemctl show of an unknown unit
+        rc, out, rows = self.go()
+        self.assertEqual(out.count("WARN follower_state_unreadable"), 1)
+
+    def test_s1_a_catch_up_end_that_never_arrives_is_an_alert_after_90_min(self):
+        self.control_group = "/user.slice/r4b-dry-x1.scope"
+        ev = self.root / "glue-events.jsonl"
+        ev.write_text(json.dumps({"event": "start", "ms": 1}) + "\n")  # events exist, but no catch_up_done
+        rc, out, rows = self.go(self.argv(events=ev, hours=3))
+        self.assertEqual(rc, sc.EXIT_ALERT)
+        self.assertIn("catchup_end_unknown", out)
+        self.assertIn("R4B_CATCHUP_END_EPOCH", out)
+        self.assertIn("WARN catchup_over_budget", out)  # the 50 min warning came first
+        self.assertTrue(5400 <= rows[-1]["ts"] - rows[0]["ts"] < 5400 + 60, rows[-1]["ts"] - rows[0]["ts"])
+        self.assertTrue(all(r["phase"] == "catchup" for r in rows))
+
+    def test_s1_a_relaunch_with_the_catch_up_end_given_keeps_m6_on(self):
+        self.control_group = "/user.slice/r4b-dry-x1.scope"
+        ev = self.root / "glue-events.jsonl"
+        ev.write_text("")
+        rc, out, rows = self.go(self.argv(events=ev, hours=2, catchup_end_epoch=self.now + 40))
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("catchup_end_unknown", out)
+        self.assertTrue(any(r["phase"] == "live" for r in rows))
 
     def test_oom_kill_is_an_alert_with_exit_3(self):
         self.control_group = "/user.slice/r4b-dry-x1.scope"

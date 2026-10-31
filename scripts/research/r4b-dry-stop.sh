@@ -15,7 +15,7 @@ src=$?
 echo "r4b-dry-stop: systemctl --user stop $UNIT rc=$src"
 i=0
 while [ "$i" -lt "$WAIT_S" ]; do
-    LEFT=$(ps -eo pid,args | grep '[r]4b_host_glue')
+    LEFT=$(ps -ww -eo pid,args | grep '[r]4b_host_glue')
     [ -z "$LEFT" ] && break
     sleep 1
     i=$((i + 1))
