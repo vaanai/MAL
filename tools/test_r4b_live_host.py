@@ -287,7 +287,7 @@ def test_a_precompute_failure_costs_speed_not_a_decision(tmp_path, monkeypatch):
     assert declog_by_mark(host) == {T: v for T, v in reference(MKS[:4]).items() if v}
     assert host.counts["precompute_error"] == 4 and all(r["precompute"]["ran"] is False for r in latency(host))
     assert [e["error"] for e in events(host) if e["event"] == "precompute_error"] == ["RuntimeError"] * 4
-    assert hh.summarize(latency(host), min_marks=1, require_host=None)["n_without_precompute"] == 2  # the two non-warm-up marks that could count
+    assert hh.summarize(latency(host), min_marks=1, require_host=None)["n_without_precompute"] == 4  # every decided mark counts as "no precompute", warm-up marks included
 
 
 # ------------------------------------------------------------------------------------------------------------------------------- slot time, k and the summary
@@ -346,18 +346,13 @@ def test_summary_go_no_go_over_at_least_48_marks():
     assert hh.summarize(synth_records(host="mal-research-0"))["verdict"] == "INSUFFICIENT"
     assert hh.summarize(synth_records(host="mal-research-0"), require_host=None)["verdict"] == "GO"
     s = hh.summarize(synth_records(pre=False))
-    assert s["verdict"] == "INSUFFICIENT" and s["n_counted"] == 0 and s["n_without_precompute"] == 48
+    assert s["verdict"] == "INSUFFICIENT" and s["n_counted"] == 0 and s["n_without_precompute"] == 49  # all 49 synthetic marks
     recs = synth_records(d_ws=5)
     for r in recs[10:14]:
         r["status"], r["processed"]["d_would_send"] = "incomplete", None  # incomplete marks never count and never help
     s = hh.summarize(recs)
     assert s["n_incomplete"] == 4 and s["n_counted"] == 44 and s["verdict"] == "INSUFFICIENT"
-    mixed = synth_records(n_days=3, d_ws=5)
-    for r in mixed[48:]:
-        r["sd"] += 0  # a third day with slower slots: its k is smaller, and the verdict uses the smallest k of the counted dates
-    for i, r in enumerate(mixed):
-        pass
-    sl = synth_records(n_days=3, d_ws=5)
+    sl = synth_records(n_days=3, d_ws=5)  # a third day with slower slots: its k is smaller, and the verdict uses the smallest k of the counted dates
     sd = sl[48]["sd"]
     for i, r in enumerate(sl[48:]):
         r["sd"] = sd + i * 15000  # 240 ms slots on day 3: k_1_9 = round(7.9) = 8
