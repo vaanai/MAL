@@ -1346,3 +1346,11 @@ def test_host_start_extra_fields_are_recorded_and_cannot_replace_a_pinned_field(
     for k in ("frozen_sha", "kind", "warmup_s", "seq", "sha"):
         with pytest.raises(lv.LiveRefused, match="may not set"):
             lv.host_start(DecisionLog(tmp_path / f"y{k}"), now_ms=MARKS[0] * 1000, frozen_sha="cd" * 20, extra={k: "x"})
+
+
+def test_certified_trigger_replay_equals_the_guard_replay(walk, boosters):
+    """QP-RULING-1030 Addendum 5 P-a1 (synthetic half): with complete inputs the certified decide path gives the guard path's md5s."""
+    g = lv.replay_walker(walk, H0, H1, W0, E, static_map=None, universe_min_mbt=BT0, boosters=boosters, pda_fn=pda_of, allow_dir=True, frozen_sha="ab" * 20)
+    c = lv.replay_walker(walk, H0, H1, W0, E, static_map=None, universe_min_mbt=BT0, boosters=boosters, pda_fn=pda_of, allow_dir=True, frozen_sha="ab" * 20,
+                         trigger="certified")
+    assert (c.rows_md5, c.trades_md5, c.n_rows) == (g.rows_md5, g.trades_md5, g.n_rows) and g.n_rows > 40

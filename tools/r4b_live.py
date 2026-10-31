@@ -1485,8 +1485,11 @@ class ReplayResult:
 def replay_walker(walk_dir: Path | Sequence[Path], h0: str, h1: str, w0: int, e: int, *, static_map: Mapping[str, int | None] | None, universe_min_mbt: int,
                   boosters: list | None = None, score_fn: Callable | None = None, pda_fn: Callable | None = None, log_root: Path | None = None,
                   extra_hours: int = 2, allow_dir: bool = False, memory_limit: str = "4GB", progress: Callable[[str], None] | None = None,
-                  frozen_sha: str | None = None) -> ReplayResult:
+                  frozen_sha: str | None = None, trigger: str = "guard") -> ReplayResult:
     """Feed a walker-layout dir hour by hour through the Engine and decide every mark in [w0, e - 1 h], as the read does (EXP-027 section 4.1).
+    trigger "guard" (default) calls decide(T) behind the one-chain-second guard; "certified" calls decide(T, certified_sd=sd) with sd from
+    clock_point(T, provisional=True), the certified trigger's code path (QP-RULING-1030 Addendum 5 proof P-a1: a replay has complete inputs, so the
+    md5s must equal the guard path's).
     Migrations and creates of [h0, h1) and trades of [h0, h1 + extra_hours) are fed, as r4b_layout.build loads them. Mark T is decided once the
     files of hour(T) + 1 are in (every row with block_time before T and the first second at or after T are then in; features read slot < sd(T) only).
     static_map given -> v_source static_map; None -> event. Refuses a non-exploration path or any hour at or after REPLAY_HOUR_MAX unless allow_dir
@@ -1549,7 +1552,13 @@ def replay_walker(walk_dir: Path | Sequence[Path], h0: str, h1: str, w0: int, e:
         loaded_end = hour_epoch(h) + MARK_S  # files of hours < loaded_end are in
         while pending and pending[0] + 2 * MARK_S <= loaded_end:
             T = pending.pop(0)
-            res = eng.decide(T, w0=w0, last_entry=last_entry)
+            if trigger == "certified":
+                cp = eng.clock_point(T, provisional=True)
+                if cp is None:
+                    raise LiveRefused(f"certified replay: no clock second at or after {T}")
+                res = eng.decide(T, w0=w0, last_entry=last_entry, certified_sd=int(cp[0]))
+            else:
+                res = eng.decide(T, w0=w0, last_entry=last_entry)
             results.append(res)
             actions.extend(res.actions)
             if log is not None and res.actions:
