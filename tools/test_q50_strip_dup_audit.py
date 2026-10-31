@@ -8,6 +8,7 @@ pressure window is round(2 / 0.4) = 5 slots. Injected kinds (each pool knows its
   late_window   the same at slot 1202 (in both legs' 2 s windows, in no landing slot)
   pre_from      a late exact repeat of a buy at 1199, before from_slot (no rows there): counted on its own (1p3 window only)
   post_last     the print of slot 1206 re-delivered after slot 1700 is the strip's last row, and the exit (1802) reads post_last: entry/exit-from-a-repeated-last-print on both legs
+  below_from    the last ARRIVING print has a slot below from_slot (not in `rows`), and the exit reads post_last: counted under QP erratum E2 on both legs
   twin          a late same-slot, same-size buy whose print has ANOTHER pre-state: a genuine twin, never counted
 
 Run: /data/mal/venv/bin/python -m pytest -q tools/test_q50_strip_dup_audit.py   (or the read's venv /home/claude/venvs/c1nf-ledger/bin/python3)
@@ -43,7 +44,7 @@ SHA = "a" * 40
 QX = {"win": 46e9, "win2": 47e9, "win3": 45e9, "loss": 41e9}
 LAND13, LAND19, W = 1204, 1205, 5
 TEST_ENV = {A.TEST_ENV: "1"}
-TOTAL_LOSS = 300_000_000 + 505_000
+TOTAL_LOSS = 300_000_000 + 505_000 + 2_039_280  # QP erratum E1: stake + send + the stranded rent
 
 
 def default_kind(d: int, i: int) -> str:
@@ -71,6 +72,9 @@ def pool(d: int, i: int, bt0: int, inject: str | None, qpost: float | None = Non
     elif inject == "pre_from":
         g.insert(1, [1199, 400_000_000])
         late_buys = [[1199, 400_000_000]]
+    elif inject == "below_from":
+        rows = [r(1200, 40e9, 2.0e14), r(1206, 40e9, 2.0e14), r(1700, 44e9, 2.0e14)]
+        post = [1150, QX[kind], QX[kind], 2.0e14]  # the state after a print of slot 1150 that arrived last: below from_slot, so `rows` cannot show it
     elif inject == "post_last":
         q = QX[kind] if qpost is None else qpost
         rows = [r(1200, 40e9, 2.0e14), r(1206, 40e9, 2.0e14), r(1700, 44e9, 2.0e14)]
@@ -193,7 +197,7 @@ class RepeatDefinition(unittest.TestCase):
 
 # ------------------------------------------------------------------------------------------------------------------------------ end to end
 def dirty_kind(d: int, i: int) -> str | None:
-    return {3: "late_buy", 5: "late_window", 7: "post_last", 9: "twin", 10: "pre_from"}.get(i)
+    return {1: "below_from", 3: "late_buy", 5: "late_window", 7: "post_last", 9: "twin", 10: "pre_from"}.get(i)
 
 
 class EndToEnd(unittest.TestCase):
@@ -225,7 +229,7 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(rc, A.EXIT_CLEAN)
         self.assertEqual(out["result"], "A-Q50 clean")
         self.assertTrue(out["qp_ok_condition"]["met"])
-        self.assertNotIn("corrected_pressure_leg", out)
+        self.assertNotIn("corrected_deciding_cells", out)
         self.assertEqual(out["counted_trades"], 120)
         for sfx in A.SFXS:
             t = out["counts_by_leg"][sfx]
@@ -237,19 +241,33 @@ class EndToEnd(unittest.TestCase):
         rc, out = run(self.dirty)
         self.assertEqual(rc, A.EXIT_REPEATS)
         t9, t3 = out["counts_by_leg"]["1p9"], out["counts_by_leg"]["1p3"]
-        self.assertEqual((t9["ssb_repeat_buys"], t9["window_repeat_buys"], t9["entry_post_last_repeat"], t9["exit_post_last_repeat"], t9["trades_flagged"]), (5, 10, 0, 5, 15))
-        self.assertEqual((t3["ssb_repeat_buys"], t3["window_repeat_buys"], t3["entry_post_last_repeat"], t3["exit_post_last_repeat"], t3["trades_flagged"]), (0, 10, 0, 5, 15))
+        keys = ("ssb_repeat_buys", "window_repeat_buys", "entry_post_last_repeat", "exit_post_last_repeat", "entry_post_last_below_from_slot", "exit_post_last_below_from_slot",
+                "trades_flagged", "trades_stale_state")
+        self.assertEqual(tuple(t9[k] for k in keys), (5, 10, 0, 5, 0, 5, 20, 10))
+        self.assertEqual(tuple(t3[k] for k in keys), (0, 10, 0, 5, 0, 5, 20, 10))
         self.assertEqual((out["strip_totals"]["repeat_prints"], out["strip_totals"]["repeat_buys"], out["strip_totals"]["strips"]), (15, 15, 120))
-        want9 = sorted(f"{Q50}:{p}:0.30" for p, v in self.dirty["pools"].items() if v["inject"] in ("late_buy", "late_window", "post_last"))
-        want3 = sorted(f"{Q50}:{p}:0.30" for p, v in self.dirty["pools"].items() if v["inject"] in ("late_window", "pre_from", "post_last"))
+        want9 = sorted(f"{Q50}:{p}:0.30" for p, v in self.dirty["pools"].items() if v["inject"] in ("late_buy", "late_window", "post_last", "below_from"))
+        want3 = sorted(f"{Q50}:{p}:0.30" for p, v in self.dirty["pools"].items() if v["inject"] in ("late_window", "pre_from", "post_last", "below_from"))
         self.assertEqual(out["trade_ids_flagged_by_leg"]["1p9"], want9)
         self.assertEqual(out["trade_ids_flagged_by_leg"]["1p3"], want3)
         self.assertFalse(any(v["inject"] == "twin" for p, v in self.dirty["pools"].items() if f"{Q50}:{p}:0.30" in out["per_trade_flagged"]))
 
-    def test_corrected_leg_matches_an_independent_restatement(self):
-        """Item 6 restated here from the fixture's GENUINE buys (not the tool's repeat detection), arena_h5_cost's functions and arena_score.cell_stats."""
+    def test_e2_a_last_arrival_below_from_slot_is_a_stale_state(self):
+        """QP erratum E2: the exit read post_last, whose print (slot 1150) arrived last and below from_slot: counted on its own sub-count and valued at total loss (item 6)."""
         rc, out = run(self.dirty)
-        cp = out["corrected_pressure_leg"]
+        ids = sorted(f"{Q50}:{p}:0.30" for p, v in self.dirty["pools"].items() if v["inject"] == "below_from")
+        self.assertEqual(len(ids), 5)
+        for tid in ids:
+            for sfx in ("1p3", "1p9"):
+                f = out["per_trade_flagged"][tid][sfx]
+                self.assertEqual((f["exit_post_last_below_from_slot"], f["exit_post_last_repeat"], f["ssb_repeat_buys"], f["window_repeat_buys"]), (True, False, 0, 0))
+        self.assertTrue(set(ids) <= set(out["corrected_deciding_cells"]["trades_valued_at_total_loss"]))
+        self.assertEqual(out["strip_totals"]["repeat_prints"], 15)  # no repeat row: rows cannot show the late print
+
+    def test_corrected_cells_match_an_independent_restatement(self):
+        """Item 6 with errata E1 and E3, restated here from the fixture's GENUINE buys (not the tool's repeat detection), arena_h5_cost's functions and arena_score.cell_stats."""
+        rc, out = run(self.dirty)
+        cp = out["corrected_deciding_cells"]
         rows = dec_rows(self.dirty)
         ss = [expected_ssb_nb(self.dirty["pools"][x["pool"]]["genuine"], LAND19) for x in rows]
         filled = [cost.is_filled(x["legs"]["flat_1p9"]["state"]) for x in rows]
@@ -258,23 +276,28 @@ class EndToEnd(unittest.TestCase):
         read = json.loads(self.dirty["read"].read_text())["books"][Q50]
         self.assertNotAlmostEqual(cp["intercept"], read["refit"]["intercept"], places=6)  # the repeats moved the refit
         days = [h5s.utc_day(x["decision_ms"]) for x in rows]
-        tl = {x["trade_id"] for x in rows if self.dirty["pools"][x["pool"]]["inject"] == "post_last"}
+        tl = {x["trade_id"] for x in rows if self.dirty["pools"][x["pool"]]["inject"] in ("post_last", "below_from")}
         self.assertEqual(set(cp["trades_valued_at_total_loss"]), tl)
-        self.assertEqual(len(tl), 5)
+        self.assertEqual(len(tl), 10)
+        self.assertEqual(cp["total_loss_lamports"], TOTAL_LOSS)
+        passes = {}
         for rule in ("total", "sc"):
-            vals = []
+            press, flat = [], []
             for x, (ssb, nb) in zip(rows, ss):
                 leg = x["legs"]["flat_1p9"] if rule == "total" else x["legs"]["flat_1p9"]["sc"]
-                v = cost.press_leg(leg["nofail_lamports"], leg["state"], cost.press_p(c, ssb, nb))
-                vals.append(-TOTAL_LOSS if x["trade_id"] in tl else v)
-            want = arena_score.cell_stats(vals, days)
-            got = cp["cells"][f"press_1p9_{rule}"]
-            for f in ("n", "days", "days_pos"):
-                self.assertEqual(got[f], want[f], (rule, f))
-            for f in ("mean_sol", "total_sol", "ci90_lo_sol", "ex_top3_sol", "ex_best_day_sol"):
-                self.assertAlmostEqual(got[f], want[f], places=12, msg=(rule, f))
-            self.assertEqual(got["passes"], arena_score.cell_verdict(want)["pass"])
-        self.assertEqual(out["qp_ok_condition"]["met"], cp["passes_both_strand_rules"])
+                press.append(-TOTAL_LOSS if x["trade_id"] in tl else cost.press_leg(leg["nofail_lamports"], leg["state"], cost.press_p(c, ssb, nb)))
+                flat.append(-TOTAL_LOSS if x["trade_id"] in tl else cost.flat_leg(leg["nofail_lamports"], leg["state"]))  # E3: the flat cells too
+            for model, vals in (("press", press), ("flat", flat)):
+                want = arena_score.cell_stats(vals, days)
+                got = cp["cells"][f"{model}_1p9_{rule}"]
+                for f in ("n", "days", "days_pos"):
+                    self.assertEqual(got[f], want[f], (model, rule, f))
+                for f in ("mean_sol", "total_sol", "ci90_lo_sol", "ex_top3_sol", "ex_best_day_sol"):
+                    self.assertAlmostEqual(got[f], want[f], places=12, msg=(model, rule, f))
+                passes[f"{model}_1p9_{rule}"] = arena_score.cell_verdict(want)["pass"]
+                self.assertEqual(got["passes"], passes[f"{model}_1p9_{rule}"])
+        self.assertEqual(sorted(cp["cells"]), sorted(R.SUBCELLS))
+        self.assertEqual(out["qp_ok_condition"]["met"], all(passes.values()))
         self.assertEqual(sorted(out["recorded_cells_pass"]), sorted(R.SUBCELLS))
 
     def test_a_defect_blocks_a_pass_it_never_creates_one(self):
@@ -282,9 +305,11 @@ class EndToEnd(unittest.TestCase):
         before = A.sha256_file(self.block["read"])
         rc, out = run(self.block)
         self.assertEqual(rc, A.EXIT_REPEATS)
-        cp = out["corrected_pressure_leg"]
+        cp = out["corrected_deciding_cells"]
         self.assertEqual(len(cp["trades_valued_at_total_loss"]), 60)
-        self.assertFalse(cp["passes_both_strand_rules"])
+        self.assertFalse(cp["pressure_passes_both_strand_rules"])
+        self.assertFalse(cp["flat_passes_both_strand_rules"])  # E3: the stale exits moved the flat cells as well
+        self.assertFalse(cp["passes_all_four"])
         self.assertFalse(out["qp_ok_condition"]["met"])
         self.assertTrue(all(out["recorded_cells_pass"].values()))
         self.assertEqual(A.sha256_file(self.block["read"]), before)
@@ -299,7 +324,8 @@ class EndToEnd(unittest.TestCase):
         self.assertEqual(rc, A.EXIT_REPEATS, se.getvalue())
         self.assertEqual(stat.S_IMODE(os.stat(outp).st_mode), 0o444)
         text = so.getvalue()
-        self.assertIn("A-Q50 COUNTS leg=1p9 ssb_repeat_buys=5 window_repeat_buys=10 entry_post_last_repeat=0 exit_post_last_repeat=5 trades_flagged=15", text)
+        self.assertIn("A-Q50 COUNTS leg=1p9 ssb_repeat_buys=5 window_repeat_buys=10 entry_post_last_repeat=0 exit_post_last_repeat=5 entry_post_last_below_from_slot=0 "
+                      "exit_post_last_below_from_slot=5 trades_flagged=20", text)
         self.assertIn("A-Q50 RESULT repeats found", text)
         self.assertIn(f"output {outp} sha256 {A.sha256_file(outp)}", text)
         self.assertNotIn("P0x", text)  # no pool or trade id on stdout
@@ -413,6 +439,9 @@ class Refusals(unittest.TestCase):
         with mock.patch.dict(A.PROD_ROOTS, {Q50: str(arena)}):
             a = args_for(fx)
             self.assertFalse(A.check_mode(a, {}, "mal-fast-0"))  # production, with the fixture standing in for the real root
+            succ = arena / "h5-q50-2026-11-03-succ"  # Q50's segment-2 dir, as scripts/ops/q50-read.sh accepts it (reviewer item)
+            succ.mkdir()
+            self.assertFalse(A.check_mode(args_for(fx, shadow=[fx["shadow"], succ]), {}, "mal-fast-0"))
             bad = arena / "h5-q50s1-2026-11-05"
             bad.mkdir()
             with self.assertRaises(A.Refused) as cm:
