@@ -199,6 +199,7 @@ def main() -> int:
         eng.members(T)
         eng.members()  # the host's `_decide_and_log` builds this map (T None) before prune
         eng.prune(T)
+        eng.prune_clock(T)  # decide(T) does this in fast mode (CLOCK_KEEP_S = 2 h); the harness decides nothing, so it calls it
         if h % a.sample_every == 0 or h == total:
             gc.collect()
             acc = account(eng, T, lv)
