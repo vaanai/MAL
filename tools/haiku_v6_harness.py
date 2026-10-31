@@ -606,13 +606,24 @@ def score(run_dir: str | os.PathLike, triggers: Sequence[Trigger], outcomes: Map
             for tid, f in zip(ids, sets.mean(axis=0)):
                 mP[tid] += extra * float(f) / len(reps["L"])
 
+    mL_rep = {r: {t.tid: (BOOST_MULT if dec[("L", r)][t.tid]["boost"] else 1.0) for t in triggers} for r in reps["L"]}
+    mP_rep = {r: {t.tid: 1.0 for t in triggers} for r in reps["L"]}  # replicate r's own placebo (QP C3)
+    for r in reps["L"]:
+        for d in test_days:
+            ids, sets = psets[(r, d)]
+            for tid, f in zip(ids, sets.mean(axis=0)):
+                mP_rep[r][tid] += extra * float(f)
+    hc = {t.tid: haircut_sol(t.card) for t in triggers}  # impact of the extra slice, charged in the deciding bars (QP C2)
+
     # B1 format: parse rate for every L and F replicate, reflection success for every L replicate
     parse = {f"{a}{r}": sum(1 for v in dec[(a, r)].values() if v["parse_ok"]) / max(1, len(dec[(a, r)])) for a in LLM_ARMS for r in reps[a]}
     refl_ok = {}
     for k_, c in (counts or {}).items():
         if k_.startswith("L") and c.get("reflections"):
             refl_ok[k_] = 1.0 - c["reflect_fail"] / c["reflections"]
-    b1 = (all(v >= PARSE_MIN for v in parse.values()) and bool(refl_ok) and all(v >= REFLECT_OK_MIN for v in refl_ok.values()))
+    # fail closed (QP C4): a reflection count must exist for EVERY decided L replicate; a missing or zero-reflection replicate fails B1
+    b1 = (all(v >= PARSE_MIN for v in parse.values()) and set(refl_ok) == {f"L{r}" for r in reps["L"]}
+          and all(v >= REFLECT_OK_MIN for v in refl_ok.values()))
     b2 = all(s <= MAX_BOOST_SHARE for s in share_by_rep.values())
 
     test_tids = [t.tid for d in test_days for t in ts_by_day[d]]
@@ -623,18 +634,29 @@ def score(run_dir: str | os.PathLike, triggers: Sequence[Trigger], outcomes: Map
     bars_by_model: dict[str, dict[str, bool]] = {}
     for mk in ("flat_sol", "press_sol"):
         out = {t.tid: outcomes[t.tid][mk] for t in triggers}
-        c = {"L-A": contrast6(mL, mA, out, ts_by_day, test_days), "L-P": contrast6(mL, mP, out, ts_by_day, test_days),
-             "L-F": contrast6(mL, mF, out, ts_by_day, test_days), "L-N": contrast6(mL, mN, out, ts_by_day, test_days),
-             "F-A": contrast6(mF, mA, out, ts_by_day, test_days), "N-A": contrast6(mN, mA, out, ts_by_day, test_days),
-             "P-A": contrast6(mP, mA, out, ts_by_day, test_days)}
-        b3 = c["L-A"]["total"] > 0 and c["L-A"]["boot_lo5"] > 0
-        b4 = c["L-P"]["total"] > 0 and c["L-P"]["boot_lo5"] > 0
-        b5 = c["L-F"]["total"] > 0
-        b6 = c["L-N"]["total"] >= 0
-        b7 = all(c[x]["ex_best_day"] > 0 and c[x]["ex_top3"] > 0 for x in ("L-A", "L-P"))
-        b8 = c["L-A"]["late_half"] > 0 and c["L-P"]["late_half"] > 0
+        out_h = {tid: o - hc[tid] for tid, o in out.items()}  # an extra slice pays o - h (h = 4 s^2 / Q), the base slice o: X-Y charges (mX-mY) h
+        dmean = {d: float(np.mean([out[t.tid] for t in ts_by_day[d]])) for d in test_days}
+        out_dm = {t.tid: out[t.tid] - dmean[d] for d in test_days for t in ts_by_day[d]}  # outcome minus the day's mean over ALL its triggers
+        arms_y = (("A", mA), ("P", mP), ("F", mF), ("N", mN))
+        c = {f"L-{n}": contrast6(mL, m, out, ts_by_day, test_days) for n, m in arms_y}
+        c.update({"F-A": contrast6(mF, mA, out, ts_by_day, test_days), "N-A": contrast6(mN, mA, out, ts_by_day, test_days),
+                  "P-A": contrast6(mP, mA, out, ts_by_day, test_days)})
+        ch = {f"L-{n}": contrast6(mL, m, out_h, ts_by_day, test_days) for n, m in arms_y}
+        cd = {f"L-{n}": contrast6(mL, m, out_dm, ts_by_day, test_days) for n, m in arms_y}
+        lp_rep = {"raw": {r: contrast6(mL_rep[r], mP_rep[r], out, ts_by_day, test_days)["total"] for r in reps["L"]},
+                  "haircut": {r: contrast6(mL_rep[r], mP_rep[r], out_h, ts_by_day, test_days)["total"] for r in reps["L"]}}
+        need = math.ceil(2 * len(reps["L"]) / 3)  # L beats its own placebo in at least 2 of 3 replicates
+        views = (c, ch)  # raw and haircut: both must hold
+        b3 = all(v["L-A"]["total"] > 0 and v["L-A"]["boot_lo5"] > 0 for v in views)
+        b4 = all(v["L-P"]["total"] > 0 and v["L-P"]["boot_lo5"] > 0 for v in views)
+        b5 = c["L-F"]["total"] > 0 and cd["L-F"]["total"] > 0  # raw AND day-demeaned: a larger boost count alone cannot pass (QP C1)
+        b6 = c["L-N"]["total"] >= 0 and cd["L-N"]["total"] >= 0
+        b7 = all(v[x]["ex_best_day"] > 0 and v[x]["ex_top3"] > 0 for v in views for x in ("L-A", "L-P"))
+        b8 = all(v[x]["late_half"] > 0 for v in views for x in ("L-A", "L-P"))
+        b9 = all(sum(1 for t_ in lp_rep[k].values() if t_ > 0) >= need for k in ("raw", "haircut"))
         bars_by_model[mk] = {"B3_L_beats_base": b3, "B4_L_beats_random_placebo": b4, "B5_L_beats_frozen_night1": b5,
-                             "B6_L_not_below_numeric_matched": b6, "B7_ex_best_day_and_ex_top3": b7, "B8_late_half_gain": b8}
+                             "B6_L_not_below_numeric_matched": b6, "B7_ex_best_day_and_ex_top3": b7, "B8_late_half_gain": b8,
+                             "B9_L_beats_random_in_2_of_3_reps": b9}
         # report-only diagnostics ---------------------------------------------------------------------------------------------------
         l_extra = c["L-A"]["total"]
         placebo_extra = np.zeros(placebo_draws)  # per-draw mean-over-replicates extra of P, for the placebo p-value (report-only)
@@ -655,11 +677,13 @@ def score(run_dir: str | os.PathLike, triggers: Sequence[Trigger], outcomes: Map
             recall = tail_mass / len(tail) if tail else float("nan")
             return {"boost_share": share, "top_decile_recall": recall, "lift": (recall / share) if share > 0 else float("nan")}
 
-        day_mean = {d: float(np.mean([out[t.tid] for t in ts_by_day[d]])) for d in test_days}
+        day_mean = dmean
         l_boost_n = mean_boosts
-        hc = {t.tid: haircut_sol(t.card) for d in test_days for t in ts_by_day[d]}
-        hc_l = math.fsum((mL[i] - 1.0) / extra * v for i, v in hc.items())  # expected haircut of L's boosts (mean over replicates)
-        hc_p = math.fsum((mP[i] - 1.0) / extra * v for i, v in hc.items())
+        hc_l = math.fsum((mL[i] - 1.0) / extra * hc[i] for i in test_tids)  # expected haircut of L's boosts (mean over replicates)
+        per_block: dict[str, float] = {}
+        for d in test_days:
+            for t in ts_by_day[d]:
+                per_block[t.blk] = per_block.get(t.blk, 0.0) + (mL[t.tid] - mP[t.tid]) * out[t.tid]
         l_vals, l_days = [], []
         a_vals, a_days = [], []
         r1 = reps["L"][0]
@@ -687,10 +711,15 @@ def score(run_dir: str | os.PathLike, triggers: Sequence[Trigger], outcomes: Map
             "top_decile_recall_report_only": {"threshold_flat_sol": p90, "L": tail_recall(mL), "F": tail_recall(mF), "N": tail_recall(mN),
                                              "P": tail_recall(mP)},
             "breakeven_extra_cost_pct_of_extra_stake_report_only": 100.0 * l_extra / (l_boost_n * STAKE_SOL),
-            "haircut_lane_a_formula_report_only": {
-                "mean_haircut_per_boost_sol": hc_l / l_boost_n, "L_minus_A_total_after_haircut": l_extra - hc_l,
-                "L_minus_P_total_after_haircut": c["L-P"]["total"] - (hc_l - hc_p),
-                "source": "4 s^2 / q_post_trig per boosted trigger, Lane A DECLARE section 5; sized impact is NOT repriced by this harness"},
+            "contrasts_haircut": ch, "contrasts_day_demeaned": cd, "L_minus_P_total_by_replicate": lp_rep,
+            "haircut_lane_a_formula": {
+                "mean_haircut_per_boost_sol": hc_l / l_boost_n, "L_minus_A_total_after_haircut": ch["L-A"]["total"],
+                "L_minus_P_total_after_haircut": ch["L-P"]["total"],
+                "source": "4 s^2 / q_post_trig per extra slice, Lane A DECLARE section 5; first order, it understates the exit leg on winners "
+                          "(about x^1.5, QP on #1163); it is in the deciding bars B3, B4, B7, B8, B9; sized impact is NOT otherwise repriced"},
+            "L_minus_P_total_by_block_report_only": per_block,
+            "capacity_report_only": {"extra_sol_per_test_day_after_haircut_at_0.1_sol_stake": ch["L-A"]["total"] / len(test_days),
+                                     "note": "the haircut grows with the square of the stake; no forward stake is assumed here"},
             "L_rep1_sized_book_in_sample": v5.gate_stats_in_sample(l_vals, l_days),
             "A_book_in_sample": v5.gate_stats_in_sample(a_vals, a_days)}
     bars = {"B1_parse_and_reflection": b1, "B2_boost_share_le_30pct": b2}
@@ -701,9 +730,11 @@ def score(run_dir: str | os.PathLike, triggers: Sequence[Trigger], outcomes: Map
                 "F_boosts_test_by_rep": {r: sum(1 for d in test_days for t in ts_by_day[d] if dec[("F", r)][t.tid]["boost"]) for r in reps["F"]},
                 "bars": bars, "verdict": "PASS_OFFLINE" if all(bars.values()) else "KILL_OFFLINE",
                 "failed_bars": sorted(k for k, v in bars.items() if not v),
-                "license": "PASS_OFFLINE licenses only drafting a forward paper registration under DEC-031 (own clock, N + 1, gate read). "
-                           "These days are in-sample for the lab (H5 chosen on explore-0814; 14+ families read them). Not gate evidence. "
-                           "Sized P&L is linear in size: impact at 0.2 SOL is not repriced."})
+                "license": "VERDICT CAP: at best a PASS_OFFLINE is a candidate for a fresh-data pre-registration under DEC-031 (own clock, N + 1, "
+                           "gate read). It is never a candidate book and never edge evidence, and B5 does not show that the bot learned from "
+                           "outcomes. These days are in-sample for the lab (H5 chosen on explore-0814; 14+ families read them). A PASS "
+                           "effect size is an upper estimate (winner's curse). The impact term 4 s^2 / Q is first order and understates "
+                           "exit impact on winners."})
     return res
 
 

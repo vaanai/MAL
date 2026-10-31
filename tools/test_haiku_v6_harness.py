@@ -507,11 +507,11 @@ def test_haircut_report_only_block(tmp_path):
     s = h.score(run, trig, outc, GOOD_COUNTS, placebo_draws=50)
     for mk in ("flat_sol", "press_sol"):
         m = s["models"][mk]
-        hb = m["haircut_lane_a_formula_report_only"]
+        hb = m["haircut_lane_a_formula"]
         k = s["boost_counts_mean_over_reps_test"]["L"]
         assert 0.01 / 40 <= hb["mean_haircut_per_boost_sol"] <= 0.04 / 17.6  # q is 18..40 in the synthetic cards
         assert hb["L_minus_A_total_after_haircut"] == pytest.approx(m["contrasts"]["L-A"]["total"] - k * hb["mean_haircut_per_boost_sol"])
-        assert "NOT repriced" in hb["source"]
+        assert "NOT otherwise repriced" in hb["source"]
         assert m["breakeven_extra_cost_pct_of_extra_stake_report_only"] == pytest.approx(100 * m["contrasts"]["L-A"]["total"] / (k * 0.1))
 
 
@@ -553,7 +553,7 @@ def test_end_to_end_stub_run_and_score_pass_on_a_planted_tail(tmp_path):
         c = s["models"][mk]["contrasts"]
         assert c["L-A"]["total"] > 0 and c["L-P"]["total"] > 0 and c["L-F"]["total"] > 0 and c["L-N"]["total"] >= 0
     assert s["verdict"] == "PASS_OFFLINE", s["failed_bars"]
-    assert all(s["bars"].values()) and len(s["bars"]) == 2 + 6 * 2
+    assert all(s["bars"].values()) and len(s["bars"]) == 2 + 7 * 2  # B1, B2 and B3..B9 under both fail models
     assert max(s["L_boost_share_test_by_rep"].values()) <= h.MAX_BOOST_SHARE
     with pytest.raises(FileExistsError):
         h.write_once_json(tmp_path / "score.json", {})
@@ -632,13 +632,236 @@ def test_b1_format_bar_parse_and_reflection(tmp_path):
     assert "B1_parse_and_reflection" not in just_ok["failed_bars"] and min(just_ok["parse_rate"].values()) >= h.PARSE_MIN
     under = _score(tmp_path, pol, outc, trig, name="p2", parse_ok=lambda a, r, t: not (a == "F" and r == 2 and ids[t.tid] < int(0.03 * n)))
     assert "B1_parse_and_reflection" in under["failed_bars"] and under["parse_rate"]["F2"] < h.PARSE_MIN
-    # reflection success 0.95 passes (1 of 20), 0.90 fails (2 of 20); missing counts fail closed
-    ok = _score(tmp_path, pol, outc, trig, name="r1", counts={"L1": {"reflections": 20, "reflect_fail": 1}})
+    # reflection success 0.95 passes (1 of 20), 0.90 fails (2 of 20); a replicate with no count fails closed (QP C4)
+    def cnt(l1_fail):
+        return {"L1": {"reflections": 20, "reflect_fail": l1_fail}, "L2": {"reflections": 25, "reflect_fail": 0},
+                "L3": {"reflections": 25, "reflect_fail": 0}}
+    ok = _score(tmp_path, pol, outc, trig, name="r1", counts=cnt(1))
     assert "B1_parse_and_reflection" not in ok["failed_bars"] and ok["reflect_ok_rate"]["L1"] == pytest.approx(0.95)
-    bad = _score(tmp_path, pol, outc, trig, name="r2", counts={"L1": {"reflections": 20, "reflect_fail": 2}})
+    bad = _score(tmp_path, pol, outc, trig, name="r2", counts=cnt(2))
     assert "B1_parse_and_reflection" in bad["failed_bars"]
     assert "B1_parse_and_reflection" in _score(tmp_path, pol, outc, trig, name="r3", counts=None)["failed_bars"]
     assert (h.PARSE_MIN, h.REFLECT_OK_MIN, h.MAX_BOOST_SHARE) == (0.98, 0.95, 0.30)
+
+
+# ------------------------------------------------------------------------------------------------------------------------ QP changes on #1163 (C1 to C4)
+def test_c4_b1_fails_closed_when_a_replicate_count_is_missing(tmp_path):
+    """QP probe: decisions for L1..L3, counts for L1 and L2 only used to give B1 = True."""
+    trig, outc = synth(45)
+    pol = lambda a, r, t: oracle(a, r, t, outc)  # noqa: E731
+    two = {k: GOOD_COUNTS[k] for k in ("L1", "L2")}
+    res = _score(tmp_path, pol, outc, trig, counts=two, name="c4a")
+    assert "B1_parse_and_reflection" in res["failed_bars"] and sorted(res["reflect_ok_rate"]) == ["L1", "L2"]
+    zero = dict(GOOD_COUNTS, L3={"reflections": 0, "reflect_fail": 0})  # no reflection at all is not a success
+    assert "B1_parse_and_reflection" in _score(tmp_path, pol, outc, trig, counts=zero, name="c4b")["failed_bars"]
+    extra = dict(GOOD_COUNTS, F1={"reflections": 0, "reflect_fail": 0}, L9={"reflections": 5, "reflect_fail": 0})
+    assert "B1_parse_and_reflection" in _score(tmp_path, pol, outc, trig, counts=extra, name="c4c")["failed_bars"]  # keys must be exactly L1..L3
+    assert "B1_parse_and_reflection" not in _score(tmp_path, pol, outc, trig, counts=GOOD_COUNTS, name="c4d")["failed_bars"]
+
+
+def test_c1_b5_is_exposure_neutral(tmp_path):
+    """QP probe: no information, a positive-mean base, L boosts a random 25% and F a random 5%. L - F is positive by leverage alone. With
+    outcomes constant within each day (so there is nothing to select) the day-demeaned L - F is exactly zero and B5 must fail."""
+    trig, _ = synth(45)
+    outc = {t.tid: {"flat_sol": 0.02 + 0.001 * (int(t.day[-2:]) % 5), "press_sol": 0.018} for t in trig}
+    frac = {"L": 0.25, "F": 0.05}
+
+    def pol(a, r, t):
+        return int(h.hashlib.sha256(f"{a}|{r}|{t.tid}".encode()).hexdigest()[:8], 16) / 2 ** 32 < frac[a]
+    res = _score(tmp_path, pol, outc, trig, name="c1")
+    for mk in ("flat_sol", "press_sol"):
+        m = res["models"][mk]
+        assert m["contrasts"]["L-F"]["total"] > 0.5  # the leverage: raw L - F is clearly positive
+        assert abs(m["contrasts_day_demeaned"]["L-F"]["total"]) < 1e-9  # and it is gone once the day's mean is removed
+        assert f"B5_L_beats_frozen_night1[{mk}]" in res["failed_bars"]
+    # and the planted-tail learner (end-to-end test) still passes B5 on both views, so the bar is not just closed
+    trig2, outc2 = synth(45)
+    ok = _score(tmp_path, lambda a, r, t: (a == "L" and oracle("L", r, t, outc2)) or (a == "F" and outc2[t.tid]["flat_sol"] >= TAIL and int(t.tid[-3:]) % 3 == 0),
+                outc2, trig2, name="c1ok")
+    assert ok["bars"]["B5_L_beats_frozen_night1[flat_sol]"] is True and ok["models"]["flat_sol"]["contrasts_day_demeaned"]["L-F"]["total"] > 0
+
+
+def test_c1_b6_demeaned_bites_where_the_raw_numeric_comparison_passes(tmp_path):
+    """On the first test days N has fewer than 300 fit rows and boosts nothing, so L - N there is leverage on a positive base. Raw L - N is
+    positive; the day-demeaned L - N (where L picks losers and N hits tails) is negative, and B6 must fail."""
+    trig, outc = synth(45)
+    ts_by_day = dict(h.by_day(trig))
+    outc = {k: dict(v) for k, v in outc.items()}
+    early = DAYS[h.BURN_IN_DAYS:7]  # 45 x 3..6 fit rows < 300: N is off
+    for d in early:
+        for t in ts_by_day[d]:
+            outc[t.tid] = {"flat_sol": 0.5, "press_sol": 0.5}  # a large positive base, constant within the day
+    pick = set()
+    for d in DAYS[h.BURN_IN_DAYS:]:
+        pool = [t.tid for t in ts_by_day[d] if outc[t.tid]["flat_sol"] < TAIL] if d not in early else [t.tid for t in ts_by_day[d]]
+        pick.update(pool[:8])
+    res = _score(tmp_path, lambda a, r, t: a == "L" and t.tid in pick, outc, trig, name="c1b6")
+    m = res["models"]["flat_sol"]
+    assert m["contrasts"]["L-N"]["total"] > 0 > m["contrasts_day_demeaned"]["L-N"]["total"]
+    assert "B6_L_not_below_numeric_matched[flat_sol]" in res["failed_bars"]
+
+
+def test_c1_demeaning_leaves_L_minus_P_unchanged(tmp_path):
+    trig, outc = synth(45)
+    res = _score(tmp_path, lambda a, r, t: oracle(a, r, t, outc), outc, trig, name="c1p")
+    m = res["models"]["flat_sol"]
+    assert m["contrasts_day_demeaned"]["L-P"]["total"] == pytest.approx(m["contrasts"]["L-P"]["total"], abs=1e-9)  # equal stake per rep-day
+
+
+def test_c2_impact_haircut_is_in_the_deciding_bars(tmp_path):
+    """A boost whose gain is below the extra slice's impact cost passes on raw outcomes and must fail on haircut outcomes."""
+    trig, _ = synth(45)
+    outc = {t.tid: {"flat_sol": 0.0004 + 0.00001 * (int(t.tid[-3:]) % 7), "press_sol": 0.0004} for t in trig}  # < 4 s^2 / Q (about 0.001 to 0.002)
+    ts_by_day = dict(h.by_day(trig))
+    # L boosts the highest-outcome fifth of each day, so L - A and L - P are clearly positive on raw outcomes
+    pick = {t.tid for d in ts_by_day for t in sorted(ts_by_day[d], key=lambda x: -outc[x.tid]["flat_sol"])[:9]}
+    res = _score(tmp_path, lambda a, r, t: a == "L" and t.tid in pick, outc, trig, name="c2")
+    m = res["models"]["flat_sol"]
+    assert m["contrasts"]["L-A"]["total"] > 0 and m["contrasts"]["L-A"]["boot_lo5"] > 0  # raw view passes B3
+    assert m["contrasts_haircut"]["L-A"]["total"] < 0  # the haircut view does not
+    assert "B3_L_beats_base[flat_sol]" in res["failed_bars"] and "B3_L_beats_base[press_sol]" in res["failed_bars"]
+    # contrast on (o - h) = raw contrast minus sum of (mX - mY) h, by hand
+    mean_h = m["haircut_lane_a_formula"]["mean_haircut_per_boost_sol"]
+    k = res["boost_counts_mean_over_reps_test"]["L"]
+    assert m["contrasts_haircut"]["L-A"]["total"] == pytest.approx(m["contrasts"]["L-A"]["total"] - k * mean_h)
+    # the planted tail (+0.25 SOL) survives the haircut: all four haircut-aware bars hold
+    trig2, outc2 = synth(45)
+    ok = _score(tmp_path, lambda a, r, t: oracle(a, r, t, outc2), outc2, trig2, name="c2ok")
+    assert all(ok["bars"][f"{b}[flat_sol]"] for b in ("B3_L_beats_base", "B4_L_beats_random_placebo", "B7_ex_best_day_and_ex_top3", "B8_late_half_gain"))
+
+
+def test_c2_haircut_bites_b4_b7_and_b8_on_their_own(tmp_path):
+    """L picks the shallowest pools (largest impact cost per extra slice) and their outcome edge over a random pick is smaller than the
+    extra impact. Raw L - P is positive on every day; on haircut outcomes it is negative on every day. B3 is not affected (the base is 0.01)."""
+    trig, _ = synth(45)
+    outc = {t.tid: {"flat_sol": 0.01 + 0.00005 * (40 - t.card["q_post_trig"]), "press_sol": 0.01 + 0.00005 * (40 - t.card["q_post_trig"])} for t in trig}
+    ts_by_day = dict(h.by_day(trig))
+    pick = {t.tid for d in ts_by_day for t in sorted(ts_by_day[d], key=lambda x: x.card["q_post_trig"])[:9]}
+    res = _score(tmp_path, lambda a, r, t: a == "L" and t.tid in pick, outc, trig, name="c2b")
+    m = res["models"]["flat_sol"]
+    raw, hcv = m["contrasts"]["L-P"], m["contrasts_haircut"]["L-P"]
+    assert raw["total"] > 0 and raw["boot_lo5"] > 0 and raw["ex_best_day"] > 0 and raw["ex_top3"] > 0 and raw["late_half"] > 0
+    assert hcv["total"] < 0 and hcv["ex_best_day"] < 0 and hcv["late_half"] < 0
+    failed = set(res["failed_bars"])
+    assert {"B4_L_beats_random_placebo[flat_sol]", "B7_ex_best_day_and_ex_top3[flat_sol]", "B8_late_half_gain[flat_sol]"} <= failed
+    assert "B3_L_beats_base[flat_sol]" not in failed
+
+
+def test_c2_haircut_applies_to_b4_b7_and_b8_too():
+    """4 s^2 / Q is charged on the difference in extra slices for every pair: contrast6 on o - h."""
+    trig, _ = synth(2, DAYS[:2])
+    ts_by_day = dict(h.by_day(trig))
+    days = DAYS[:2]
+    o = {t.tid: 0.01 for t in trig}
+    hh = {t.tid: h.haircut_sol(t.card) for t in trig}
+    mx = {t.tid: 2.0 for t in trig}
+    my = {t.tid: 1.0 for t in trig}
+    raw = h.contrast6(mx, my, o, ts_by_day, days)
+    hc = h.contrast6(mx, my, {k: v - hh[k] for k, v in o.items()}, ts_by_day, days)
+    assert raw["total"] - hc["total"] == pytest.approx(sum(hh.values()))
+    assert hc["ex_top3"] < raw["ex_top3"] and hc["late_half"] < raw["late_half"]
+
+
+def test_c3_b9_needs_l_to_beat_its_own_placebo_in_two_of_three_replicates(tmp_path):
+    trig, outc = synth(45)
+    # replicate 1 boosts the planted tail, replicates 2 and 3 boost nothing: the mean over replicates beats the mean placebo, one replicate does
+    one = _score(tmp_path, lambda a, r, t: a == "L" and r == 1 and outc[t.tid]["flat_sol"] >= TAIL, outc, trig, name="c3a")
+    assert one["boost_counts_mean_over_reps_test"]["L"] >= h.MIN_TEST_BOOSTS
+    m = one["models"]["flat_sol"]
+    assert m["contrasts"]["L-P"]["total"] > 0 and m["contrasts"]["L-P"]["boot_lo5"] > 0  # B4 alone would pass
+    assert sorted(v > 0 for v in m["L_minus_P_total_by_replicate"]["raw"].values()) == [False, False, True]
+    assert "B9_L_beats_random_in_2_of_3_reps[flat_sol]" in one["failed_bars"] and "B9_L_beats_random_in_2_of_3_reps[press_sol]" in one["failed_bars"]
+    assert one["bars"]["B4_L_beats_random_placebo[flat_sol]"] is True
+    two = _score(tmp_path, lambda a, r, t: a == "L" and r in (1, 2) and outc[t.tid]["flat_sol"] >= TAIL, outc, trig, name="c3b")
+    assert two["bars"]["B9_L_beats_random_in_2_of_3_reps[flat_sol]"] is True and two["bars"]["B9_L_beats_random_in_2_of_3_reps[press_sol]"] is True
+
+
+# ------------------------------------------------------------------------------------------------------------------------ reviewer R2: one input per deciding clause
+def _delta_world(tmp_path, delta_by_testday, name, base=0.05):
+    """A base of `base` SOL on every trigger; the 10 triggers L boosts each day (the first 10 of the day) pay `base + delta_D`. Outcomes
+    are exact (no noise), so every clause below is hit by construction. L boosts the 10 in every replicate; F and the rest boost nothing."""
+    trig, _ = synth(45)
+    test_days = DAYS[h.BURN_IN_DAYS:]
+    assert len(delta_by_testday) == len(test_days)
+    dmap = dict(zip(test_days, delta_by_testday))
+    outc = {t.tid: {"flat_sol": base + (dmap.get(t.day, 0.0) if int(t.tid[-3:]) < 10 else 0.0)} for t in trig}
+    for v in outc.values():
+        v["press_sol"] = v["flat_sol"]
+    res = _score(tmp_path, lambda a, r, t: a == "L" and int(t.tid[-3:]) < 10, outc, trig, name=name)
+    assert res["verdict"] in ("PASS_OFFLINE", "KILL_OFFLINE")  # decidable: 230 boosts a replicate, 22 percent of the triggers
+    return res
+
+
+def test_r2_b3_bootstrap_clause_pinned(tmp_path):
+    """L - A total > 0 from two huge days among 23; the date-cluster bootstrap lower bound is below zero, so B3 must fail."""
+    # two big days: outcome +0.2 for every trigger of the day (picked and not), all other days slightly negative
+    trig, _ = synth(45)
+    big = {DAYS[h.BURN_IN_DAYS + 2], DAYS[h.BURN_IN_DAYS + 12]}
+    outc = {t.tid: {"flat_sol": 0.2 if t.day in big else -0.003, "press_sol": 0.2 if t.day in big else -0.003} for t in trig}
+    res = _score(tmp_path, lambda a, r, t: a == "L" and int(t.tid[-3:]) < 10, outc, trig, name="r2b3b")
+    c = res["models"]["flat_sol"]["contrasts"]["L-A"]
+    assert c["total"] > 0 and c["boot_lo5"] < 0
+    assert "B3_L_beats_base[flat_sol]" in res["failed_bars"] and "B3_L_beats_base[press_sol]" in res["failed_bars"]
+
+
+def test_r2_b4_bootstrap_clause_pinned(tmp_path):
+    """L - P total > 0 from two big selection days; every L - A day is positive (B3 passes), but the L - P bootstrap bound is below zero."""
+    delta = [-0.005] * 23
+    delta[2] = delta[12] = 0.3
+    res = _delta_world(tmp_path, delta, "r2b4")
+    m = res["models"]["flat_sol"]
+    assert m["contrasts"]["L-P"]["total"] > 0 and m["contrasts"]["L-P"]["boot_lo5"] < 0
+    assert m["contrasts"]["L-A"]["total"] > 0 and m["contrasts"]["L-A"]["boot_lo5"] > 0
+    assert "B4_L_beats_random_placebo[flat_sol]" in res["failed_bars"] and "B3_L_beats_base[flat_sol]" not in res["failed_bars"]
+
+
+def test_r2_b7_l_minus_p_clause_pinned(tmp_path):
+    """L - A survives dropping its best day and its 3 best trades; L - P does not (all of its gain is one day)."""
+    delta = [-0.005] * 23
+    delta[10] = 0.3
+    res = _delta_world(tmp_path, delta, "r2b7")
+    m = res["models"]["flat_sol"]["contrasts"]
+    assert m["L-A"]["ex_best_day"] > 0 and m["L-A"]["ex_top3"] > 0
+    assert m["L-P"]["total"] > 0 and m["L-P"]["ex_best_day"] < 0
+    assert "B7_ex_best_day_and_ex_top3[flat_sol]" in res["failed_bars"] and "B7_ex_best_day_and_ex_top3[press_sol]" in res["failed_bars"]
+
+
+def test_r2_b8_l_minus_p_clause_pinned(tmp_path):
+    """L - A gains in the later half (a positive base); L - P gains only in the first half, so the late-half bar must fail on L - P."""
+    half = 23 // 2
+    delta = [0.04] * half + [-0.02] * (23 - half)
+    res = _delta_world(tmp_path, delta, "r2b8")
+    m = res["models"]["flat_sol"]["contrasts"]
+    assert m["L-A"]["late_half"] > 0 and m["L-P"]["late_half"] < 0 and m["L-P"]["total"] > 0
+    assert "B8_late_half_gain[flat_sol]" in res["failed_bars"] and "B8_late_half_gain[press_sol]" in res["failed_bars"]
+
+
+def test_r2_b2_is_the_worst_replicate_not_the_mean(tmp_path):
+    trig, outc = synth(45)
+    pol = lambda a, r, t: a == "L" and (int(t.tid[-3:]) % 20 < 7 if r == 1 else int(t.tid[-3:]) % 10 == 0)  # noqa: E731
+    res = _score(tmp_path, pol, outc, trig, name="r2b2")
+    shares = res["L_boost_share_test_by_rep"]
+    assert max(shares.values()) > h.MAX_BOOST_SHARE >= sum(shares.values()) / 3  # one replicate over the limit, the mean under it
+    assert "B2_boost_share_le_30pct" in res["failed_bars"]
+    ok = _score(tmp_path, lambda a, r, t: a == "L" and int(t.tid[-3:]) % 10 == 0, outc, trig, name="r2b2ok")
+    assert "B2_boost_share_le_30pct" not in ok["failed_bars"]
+
+
+def test_r2_b6_is_greater_or_equal_not_strict(tmp_path):
+    """L boosts exactly what N boosts (N's top 5 a day, none on days N has too few fit rows): L - N is exactly zero and B6 must hold."""
+    trig, outc = synth(45)
+    days = h.by_day(trig)
+    test_set = set(DAYS[h.BURN_IN_DAYS:])
+    tilt = h.numeric_tilt_scores(days, outc, test_set)
+    pick = set()
+    for d, ts in days:
+        s_ = tilt.get(d)
+        if s_ is not None:
+            order = sorted(range(len(ts)), key=lambda i: (-s_[i], ts[i].tid))
+            pick.update(ts[i].tid for i in order[:5])
+    res = _score(tmp_path, lambda a, r, t: a == "L" and t.tid in pick, outc, trig, name="r2b6")
+    assert res["models"]["flat_sol"]["contrasts"]["L-N"]["total"] == 0.0 and res["models"]["flat_sol"]["contrasts_day_demeaned"]["L-N"]["total"] == 0.0
+    assert "B6_L_not_below_numeric_matched[flat_sol]" not in res["failed_bars"] and "B6_L_not_below_numeric_matched[press_sol]" not in res["failed_bars"]
 
 
 def test_both_fail_models_must_hold(tmp_path):
