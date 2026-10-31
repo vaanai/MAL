@@ -864,6 +864,174 @@ def test_r2_b6_is_greater_or_equal_not_strict(tmp_path):
     assert "B6_L_not_below_numeric_matched[flat_sol]" not in res["failed_bars"] and "B6_L_not_below_numeric_matched[press_sol]" not in res["failed_bars"]
 
 
+# ------------------------------------------------------------------------------------------------------------------------ reviewer round 2: the C1-C3 clauses, one constructed input each (tests only)
+def _world(tmp_path, base_by_testday, delta_by_testday, name):
+    """Exact outcomes: `base_D` on every trigger of test day D, plus `delta_D` on the first 10 triggers of the day, which L boosts in every
+    replicate (F boosts nothing). Burn-in days pay 0."""
+    trig, _ = synth(45)
+    test_days = DAYS[h.BURN_IN_DAYS:]
+    assert len(base_by_testday) == len(delta_by_testday) == len(test_days)
+    bmap, dmap = dict(zip(test_days, base_by_testday)), dict(zip(test_days, delta_by_testday))
+    outc = {t.tid: {"flat_sol": bmap.get(t.day, 0.0) + (dmap.get(t.day, 0.0) if int(t.tid[-3:]) < 10 else 0.0)} for t in trig}
+    for v in outc.values():
+        v["press_sol"] = v["flat_sol"]
+    return _score(tmp_path, lambda a, r, t: a == "L" and int(t.tid[-3:]) < 10, outc, trig, name=name)
+
+
+def _qworld(coef=0.00003, bonus=0.0):
+    """Outcome 0.01 + coef x (40 - q_post_trig) (+ bonus on the last 5 triggers of each day). Shallow pools (small q) pay a little more raw
+    and cost more impact (h = 4 s^2 / q); deep pools pay a little less raw and cost less impact."""
+    trig, _ = synth(45)
+    outc = {t.tid: {"flat_sol": 0.01 + coef * (40 - t.card["q_post_trig"]) + (bonus if int(t.tid[-3:]) >= 40 else 0.0)} for t in trig}
+    for v in outc.values():
+        v["press_sol"] = v["flat_sol"]
+    return trig, outc, dict(h.by_day(trig))
+
+
+def _by_q(ts_by_day, n, deep):
+    return {t.tid for d in ts_by_day for t in sorted(ts_by_day[d], key=lambda x: -x.card["q_post_trig"] if deep else x.card["q_post_trig"])[:n]}
+
+
+def test_r3_l_minus_p_raw_view_is_pinned_in_b4_b7_b8(tmp_path):
+    """L picks the deepest pools (the smallest impact cost) whose raw outcome is a little below a random pick's: raw L - P < 0, haircut
+    L - P > 0 on every clause. B4, B7 and B8 must still fail, because the raw view is required too."""
+    trig, outc, ts_by_day = _qworld()
+    pick = _by_q(ts_by_day, 9, deep=True)
+    res = _score(tmp_path, lambda a, r, t: a == "L" and t.tid in pick, outc, trig, name="r3a")
+    m = res["models"]["flat_sol"]
+    raw, hcv = m["contrasts"]["L-P"], m["contrasts_haircut"]["L-P"]
+    assert raw["total"] < 0 and raw["ex_best_day"] < 0 and raw["late_half"] < 0
+    assert hcv["total"] > 0 and hcv["boot_lo5"] > 0 and hcv["ex_best_day"] > 0 and hcv["ex_top3"] > 0 and hcv["late_half"] > 0  # haircut view alone would pass
+    assert m["contrasts"]["L-A"]["total"] > 0 and m["contrasts_haircut"]["L-A"]["total"] > 0  # the L-A parts pass on both views
+    assert {"B4_L_beats_random_placebo[flat_sol]", "B7_ex_best_day_and_ex_top3[flat_sol]", "B8_late_half_gain[flat_sol]"} <= set(res["failed_bars"])
+
+
+def test_r3_b5_raw_clause_is_pinned(tmp_path):
+    """L boosts fewer triggers than F on a positive base but picks better: day-demeaned L - F > 0, raw L - F < 0, so B5 must fail."""
+    trig, _ = synth(45)
+    outc = {t.tid: {"flat_sol": 0.2 if int(t.tid[-3:]) >= 40 else 0.05, "press_sol": 0.2 if int(t.tid[-3:]) >= 40 else 0.05} for t in trig}
+    pol = lambda a, r, t: (int(t.tid[-3:]) >= 40) if a == "L" else (int(t.tid[-3:]) < 25)  # noqa: E731  L: the 5 winners; F: 25 ordinary triggers
+    res = _score(tmp_path, pol, outc, trig, name="r3b5")
+    m = res["models"]["flat_sol"]
+    assert m["contrasts"]["L-F"]["total"] < 0 < m["contrasts_day_demeaned"]["L-F"]["total"]
+    assert "B5_L_beats_frozen_night1[flat_sol]" in res["failed_bars"] and "B5_L_beats_frozen_night1[press_sol]" in res["failed_bars"]
+
+
+def test_r3_b6_raw_clause_is_pinned(tmp_path):
+    """N is off on the first four test days (fewer than 300 fit rows). If the base there is negative, L's boosts on those days lose raw L - N
+    (leverage) while the day-demeaned L - N is zero; later L beats N a little. Raw L - N < 0 <= demeaned L - N: B6 must fail."""
+    trig, outc = synth(45)
+    ts_by_day = dict(h.by_day(trig))
+    outc = {k: dict(v) for k, v in outc.items()}
+    early = DAYS[h.BURN_IN_DAYS:7]
+    for d in early:
+        for t in ts_by_day[d]:
+            outc[t.tid] = {"flat_sol": -0.1, "press_sol": -0.1}
+    days = h.by_day(trig)
+    tilt = h.numeric_tilt_scores(days, outc, set(DAYS[h.BURN_IN_DAYS:]))
+    pick = set()
+    for d, ts in days:
+        if d in early:
+            pick.update(t.tid for t in ts[:13])  # 13 boosts a day on a day-constant negative base
+        elif tilt.get(d) is not None:
+            order = sorted(range(len(ts)), key=lambda i: (-tilt[d][i], ts[i].tid))
+            chosen = [ts[i].tid for i in order[:5]]
+            best = max((t for t in ts if t.tid not in chosen), key=lambda t: (outc[t.tid]["flat_sol"], t.tid)).tid
+            pick.update(chosen[:4] + [best])  # N's top 4 plus the day's best other trigger: a small edge over N at the same count
+    res = _score(tmp_path, lambda a, r, t: a == "L" and t.tid in pick, outc, trig, name="r3b6")
+    m = res["models"]["flat_sol"]
+    assert m["contrasts"]["L-N"]["total"] < 0 <= m["contrasts_day_demeaned"]["L-N"]["total"]
+    assert "B6_L_not_below_numeric_matched[flat_sol]" in res["failed_bars"] and "B6_L_not_below_numeric_matched[press_sol]" in res["failed_bars"]
+
+
+def test_r3_b7_l_minus_a_clause_is_pinned(tmp_path):
+    """The base is negative (-0.02) and L's picks beat a random pick by 0.01: L - P is positive on every day and survives ex-best-day and
+    ex-top-3 on both views, but L - A loses every day. B7 must fail on the L - A part."""
+    res = _world(tmp_path, [-0.02] * 23, [0.01] * 23, "r3b7")
+    for view in ("contrasts", "contrasts_haircut"):
+        lp = res["models"]["flat_sol"][view]["L-P"]
+        assert lp["total"] > 0 and lp["ex_best_day"] > 0 and lp["ex_top3"] > 0
+    la = res["models"]["flat_sol"]["contrasts"]["L-A"]
+    assert la["total"] < 0 and la["ex_best_day"] < 0
+    assert "B7_ex_best_day_and_ex_top3[flat_sol]" in res["failed_bars"] and "B7_ex_best_day_and_ex_top3[press_sol]" in res["failed_bars"]
+
+
+def test_r3_b8_l_minus_a_clause_is_pinned(tmp_path):
+    """The base is positive early and negative late; L's picks beat random by 0.02 throughout. L - P gains in the late half on both views,
+    L - A loses there. B8 must fail on the L - A part."""
+    half = 23 // 2
+    res = _world(tmp_path, [0.05] * half + [-0.05] * (23 - half), [0.02] * 23, "r3b8")
+    for view in ("contrasts", "contrasts_haircut"):
+        assert res["models"]["flat_sol"][view]["L-P"]["late_half"] > 0
+    assert res["models"]["flat_sol"]["contrasts"]["L-A"]["late_half"] < 0
+    assert "B8_late_half_gain[flat_sol]" in res["failed_bars"] and "B8_late_half_gain[press_sol]" in res["failed_bars"]
+
+
+def _b9_world(tmp_path, picks_by_rep, name):
+    """q-world with a 0.05 bonus on the last 5 triggers of each day. 'good' boosts those 5. 'shallow' / 'deep' boost the 8 smallest / largest-q
+    triggers among the first 40 plus the day's first bonus trigger, so their expected bonus share equals a random pick's and only the q effect
+    is left (raw and impact pull in opposite directions)."""
+    trig, outc, ts_by_day = _qworld(coef=0.00002, bonus=0.05)
+    sets = {}
+    for r, kind in picks_by_rep.items():
+        if kind == "good":
+            sets[r] = {t.tid for t in trig if int(t.tid[-3:]) >= 40}
+        elif kind in ("shallow", "deep"):
+            sets[r] = set()
+            for d in ts_by_day:
+                core = sorted((t for t in ts_by_day[d] if int(t.tid[-3:]) < 40), key=lambda x: -x.card["q_post_trig"] if kind == "deep" else x.card["q_post_trig"])
+                sets[r].update(t.tid for t in core[:8])
+                sets[r].add(next(t.tid for t in ts_by_day[d] if int(t.tid[-3:]) == 40))
+        else:
+            sets[r] = set()
+    res = _score(tmp_path, lambda a, r, t: a == "L" and t.tid in sets[r], outc, trig, name=name)
+    return res["models"]["flat_sol"]["L_minus_P_total_by_replicate"], res
+
+
+def test_r3_b9_haircut_view_is_pinned(tmp_path):
+    """Replicate 1 picks the 5 bonus triggers (positive on both views), replicate 2 the shallowest pools (raw above its placebo, haircut below),
+    replicate 3 boosts nothing. Raw: 2 of 3 beat their placebo; haircut: 1 of 3. B9 must fail."""
+    by_rep, res = _b9_world(tmp_path, {1: "good", 2: "shallow", 3: None}, "r3b9a")
+    assert sorted(r for r, v in by_rep["raw"].items() if v > 0) == [1, 2] and sorted(r for r, v in by_rep["haircut"].items() if v > 0) == [1]
+    assert "B9_L_beats_random_in_2_of_3_reps[flat_sol]" in res["failed_bars"] and "B9_L_beats_random_in_2_of_3_reps[press_sol]" in res["failed_bars"]
+
+
+def test_r3_b9_raw_view_is_pinned(tmp_path):
+    """The other way round: replicate 2 picks the deepest pools (raw below its placebo, haircut above). Raw: 1 of 3; haircut: 2 of 3."""
+    by_rep, res = _b9_world(tmp_path, {1: "good", 2: "deep", 3: None}, "r3b9b")
+    assert sorted(r for r, v in by_rep["raw"].items() if v > 0) == [1] and sorted(r for r, v in by_rep["haircut"].items() if v > 0) == [1, 2]
+    assert "B9_L_beats_random_in_2_of_3_reps[flat_sol]" in res["failed_bars"] and "B9_L_beats_random_in_2_of_3_reps[press_sol]" in res["failed_bars"]
+
+
+def test_r3_b9_uses_each_replicates_own_placebo(tmp_path):
+    """Replicates boost 2, 12 and 12 triggers a day on a positive base (0.05), each pick a little worse than random. Against its OWN placebo
+    (same count) every replicate loses. Against the mean placebo, or replicate 1's, the two large replicates would 'win' on extra stake alone."""
+    trig, _ = synth(45)
+    outc = {t.tid: {"flat_sol": 0.048 if int(t.tid[-3:]) < 12 else 0.05, "press_sol": 0.048 if int(t.tid[-3:]) < 12 else 0.05} for t in trig}
+    k = {1: 2, 2: 12, 3: 12}
+    res = _score(tmp_path, lambda a, r, t: a == "L" and int(t.tid[-3:]) < k[r], outc, trig, name="r3b9c")
+    m = res["models"]["flat_sol"]
+    assert all(v < 0 for v in m["L_minus_P_total_by_replicate"]["raw"].values()) and all(v < 0 for v in m["L_minus_P_total_by_replicate"]["haircut"].values())
+    assert m["contrasts"]["L-P"]["total"] < 0  # the mean placebo has L's mean count, so the mean contrast is selection only
+    assert "B9_L_beats_random_in_2_of_3_reps[flat_sol]" in res["failed_bars"] and "B9_L_beats_random_in_2_of_3_reps[press_sol]" in res["failed_bars"]
+    # what a wrong reference would see: replicates 2 and 3 against replicate 1's placebo gain 10 extra boosts a day of a positive base
+    extra_vs_rep1 = (12 - 2) * 0.05 * 23
+    assert extra_vs_rep1 > 5 * abs(m["L_minus_P_total_by_replicate"]["raw"][2])
+
+
+def test_r3_day_mean_is_over_all_of_the_days_triggers(tmp_path):
+    """Hand value. Each day D: 10 boosted triggers pay base_D + 0.02, the other 35 pay base_D (the base differs by day). The day's mean over
+    all 45 is base_D + 10 x 0.02 / 45, so L - A demeaned = 10 x (0.02 - 10 x 0.02 / 45) = 350 x 0.02 / 45 a day, whatever the base."""
+    bases = [0.01 * (j % 5) - 0.02 for j in range(23)]
+    res = _world(tmp_path, bases, [0.02] * 23, "r3dm")
+    want = 23 * 350 * 0.02 / 45
+    for mk in ("flat_sol", "press_sol"):
+        cd = res["models"][mk]["contrasts_day_demeaned"]
+        assert cd["L-A"]["total"] == pytest.approx(want, abs=1e-9)
+        assert cd["L-F"]["total"] == pytest.approx(want, abs=1e-9)  # F boosts nothing
+        assert cd["L-P"]["total"] == pytest.approx(res["models"][mk]["contrasts"]["L-P"]["total"], abs=1e-9)
+
+
 def test_both_fail_models_must_hold(tmp_path):
     """Planted tails pay under flat but lose under press: only the [press_sol] bars fail."""
     trig, outc = synth(45)
