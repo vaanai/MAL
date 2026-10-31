@@ -1132,10 +1132,11 @@ def test_precompute_decisions_are_byte_identical_static_map_mode():
 def test_precompute_identical_with_the_real_bag_score_and_for_other_leads(boosters):
     ev = event_stream(scenario())
     ref_eng, ref = drive(ev, MARKS, boosters=boosters)
+    want = _rows_and_trades(ref_eng, ref)  # once: it closes the reference book
     for lead in (1, 5, 40):  # 40 s ahead: more members get a print between the precompute and the decision (misses), the result is the same
         eng, res, _ = drive_pre(ev, MARKS, lead=lead, boosters=boosters)
         assert [sig(r) for r in res] == [sig(r) for r in ref], lead
-        assert _rows_and_trades(eng, res) == _rows_and_trades(ref_eng, ref)
+        assert _rows_and_trades(eng, res) == want
 
 
 def test_precompute_leaves_no_trace_in_the_engine_state_a_decision_reads():
@@ -1222,20 +1223,21 @@ def test_precompute_entry_is_dropped_when_the_buffer_or_the_member_changes():
     assert eng._pre_valid(mem2, pre, np.zeros(0, np.int64), np.zeros(0), sd) is None
 
 
-def test_precompute_all_nan_block_times_cannot_be_reused_when_a_kept_print_follows():
-    """If every cached print has a null block_time, s0bt is the first finite block_time of ALL kept prints, so a later kept print could change it."""
-    eng = mk_engine(universe_min_mbt=0)
-    t = BT0 + 3600
-    eng.ingest_migration({"type": "complete", "mint": "MN", "slot": 100, "block_time": t - 500})
-    eng.ingest_migration({"type": "migration", "mint": "MN", "slot": 100, "block_time": t - 500, "pool": pda_of("MN"), "quote_mint": lv.WSOL})
-    for k in range(4):
-        eng.ingest_trade(_ps_row("MN", 110 + k, None))
-    eng.ingest_trade(_clock_row(t - 6, 400))
-    eng.precompute(t)
-    pre = eng._pre["MN"]
-    assert pre.fin_bt is False
-    st = eng.mints["MN"]
-    mem = next(m for m in eng.members(t, cache=False) if m.mint == "MN")
-    eng.ingest_trade(_ps_row("MN", 500, t - 1))  # kept, slot >= sd, finite block_time
-    sl, bt = np.frombuffer(st.prints["slot"], np.int64), np.frombuffer(st.prints["bt"], np.float64)
-    assert eng._pre_valid(mem, pre, sl, bt, 450) is None
+def test_precompute_entry_without_a_finite_block_time_is_not_reused_when_a_kept_print_follows():
+    """s0bt is the first finite block_time of ALL kept prints; an entry whose own prints have none (fin_bt False) must not be reused once a kept print
+    arrived, because that print could supply s0bt (a candidate always has a finite block_time, so this guards a case the engine does not reach today)."""
+    import dataclasses
+
+    ev = event_stream(scenario())
+    T = MARKS[1]
+    eng, i = mk_engine(), 0
+    i = feed(eng, ev, i, T - 5)
+    eng.precompute(T)
+    mint = next(iter(eng._pre))
+    pre = eng._pre[mint]
+    mem = next(m for m in eng.members(T, cache=False) if m.mint == mint)
+    eng.ingest_trade(_ps_row(mint, int(pre.max_slot) + 50, T - 1))  # kept, finite block_time, slot >= the sd below
+    sl, bt = np.frombuffer(eng.mints[mint].prints["slot"], np.int64), np.frombuffer(eng.mints[mint].prints["bt"], np.float64)
+    sd = int(pre.max_slot) + 10
+    assert eng._pre_valid(mem, pre, sl, bt, sd) == pre.s0bt and pre.fin_bt
+    assert eng._pre_valid(mem, dataclasses.replace(pre, fin_bt=False), sl, bt, sd) is None
