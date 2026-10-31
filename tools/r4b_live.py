@@ -63,6 +63,7 @@ import re
 import subprocess
 import sys
 import time
+import types
 from array import array
 from collections import OrderedDict
 from dataclasses import dataclass, field
@@ -92,6 +93,7 @@ WINDOW_SLOTS = rl.WINDOW_SLOTS  # 7300
 V_LO, V_HI = rl.V_LO, rl.V_HI
 WSOL = rl.WSOL_MINT
 FRN_HOUR = 10_000_000_000
+_MISSING_FINAL = object()  # _member_final.get default: a cached negative membership is None, so None cannot mean 'absent'
 S0_FINAL_SLOTS = 9_000  # membership is cached this many slots after the s0 window closes (late rows beyond it are a feed fault)  # r4b_layout frn = hour index * 1e10 + line ordinal
 CLOCK_KEEP_S = 2 * 3600  # fast mode: clock SECONDS older than T - 2 h are dropped after decide(T) (slot_at reads only seconds >= T); market minutes never
 HASH_CACHE_MAX = 200_000  # DuckHash LRU size
@@ -101,6 +103,8 @@ PENDING_MAX_TOTAL = 100_000  # ... and this many rows over all mints (the oldest
 PENDING_SWEEP_S = 60  # expiry sweep at most once per this many seconds of block_time
 RESTART_REASON = "restart"  # the exit reason restart_exits writes; the executor follows it like rank | gap | end
 DEFAULT_WARMUP_S = GRID_HI_S + 4 * MARK_S  # 52 h: the 48 h grid plus 4 h for the longest feature window; a shorter warm-up needs an md5 proof
+EVICT_AFTER_S = GRID_HI_S + 2 * MARK_S  # 50 h: members(T) keeps mbt >= T - 50 h (48 h grid + the 1 h m_grads window + 1 h slack); a mint graduated longer ago is dead for every later mark
+BOND_IDLE_S = 7 * 86400  # a never-completed mint's bonding state is dropped after this much idle block_time (QP-RULING-1031-r4b-history section 6: NOT to be shortened)
 
 # Exploration replay only: the outcome blocks of /data/mal/hunt-1008/push-1016/hunt23/RULES.md. fresh-08* (the unspent reserve) is NOT here.
 EXPLORATION_DIRS = (
@@ -201,13 +205,17 @@ def default_pda_fn() -> Callable[[str], str]:
 # ------------------------------------------------------------------------------------------------------------------------------- per-mint state
 _PRINT_FIELDS = (("slot", "q"), ("txi", "q"), ("evi", "q"), ("frn", "q"), ("bt", "d"), ("isbuy", "b"), ("sol", "d"), ("tok", "d"), ("q", "d"),
                  ("b", "d"), ("th", "Q"), ("vq", "d"))
+# A MintState with no print yet reads these shared, empty, read-only tables instead of owning 12 arrays (the allocation moves to the first PDA print;
+# QP-RULING-1031-r4b-pc3 section 2.6 path M-b: representation only). Nothing may append to them: _add_print allocates through MintState.print_arrays().
+_NO_PRINTS = types.MappingProxyType({k: array(t) for k, t in _PRINT_FIELDS})
+_NO_TABLE: Any = types.MappingProxyType({})  # the empty per-trader table of a mint with no bonding row; a writer replaces it with a dict first
 
 
 def _nan(x: Any) -> float:
     return float("nan") if x is None else float(x)
 
 
-@dataclass
+@dataclass(slots=True)
 class MintState:
     mint: str
     # complete rows: comp = min(slot), min(block_time)
@@ -226,8 +234,8 @@ class MintState:
     ch: int | None = None
     cbt: int | None = None
     cslot: int | None = None
-    # PDA-pool PumpSwap prints, arrival order
-    prints: dict = field(default_factory=lambda: {k: array(t) for k, t in _PRINT_FIELDS})
+    # PDA-pool PumpSwap prints, arrival order. Allocated at the first print (print_arrays); `prints` reads the shared empty table until then.
+    _prints: dict | None = None
     # bonding aggregates (the prep_work SQL over bond rows, slot <= mslot): count, buy / sell sums, per-trader sell sums (keys = distinct traders).
     # SQL SUM is NULL (NaN in the constants) when every term is NULL: b_buy_nn / b_sell_nn say some term of that sum is non-NULL (a row of the other side
     # contributes 0, a row of that side contributes its sol, NULL if sol is NULL); b_null_sell_by_th counts the sells with a NULL sol per trader hash
@@ -237,12 +245,28 @@ class MintState:
     b_sell: int = 0
     b_buy_nn: bool = False
     b_sell_nn: bool = False
-    b_by_th: dict = field(default_factory=dict)
-    b_null_sell_by_th: dict = field(default_factory=dict)
+    b_by_th: Any = _NO_TABLE
+    b_null_sell_by_th: Any = _NO_TABLE
     b_maxslot: int | None = None
     bond_alarm: bool = False  # a bonding row after mslot was counted for this mint (it arrived before the complete row was known)
     last_bond_bt: int | None = None
     max_bt: float = float("-inf")  # latest block_time among the PDA prints (a necessary condition for a row: traded in the last 10 min)
+    evicted: bool = False  # Engine.prune dropped this graduated mint's state past EVICT_AFTER_S: no later mark can read it (a tombstone: mslot / mbt stay)
+
+    @property
+    def prints(self) -> Any:
+        p = self._prints
+        return _NO_PRINTS if p is None else p
+
+    @prints.setter
+    def prints(self, v: dict | None) -> None:
+        self._prints = v
+
+    def print_arrays(self) -> dict:
+        p = self._prints
+        if p is None:
+            p = self._prints = {k: array(t) for k, t in _PRINT_FIELDS}
+        return p
 
 
 def _sorted4(a: np.ndarray, b: np.ndarray, c: np.ndarray, d: np.ndarray) -> bool:
@@ -622,7 +646,7 @@ class Engine:
     def __init__(self, *, universe_min_mbt: int, v_source: str = "event", static_map: Mapping[str, int | None] | None = None, mode: str = "dry",
                  pda_fn: Callable[[str], str] | None = None, hash_fn: Callable[[str | None], int] | None = None, boosters: list | None = None,
                  score_fn: Callable[[list, np.ndarray], np.ndarray] | None = None, bond_mints: set | None = None, k: int = FZ.K,
-                 exact_grid: bool = False, keep_clock_s: int | None = CLOCK_KEEP_S, warmup_s: int | None = None) -> None:
+                 exact_grid: bool = False, keep_clock_s: int | None = CLOCK_KEEP_S, warmup_s: int | None = None, evict: bool = True) -> None:
         if mode == "live" or LIVE_BUILT is not False:
             raise LiveRefused("r4b_live builds no live mode (LIVE_BUILT is False): no key, no wallet, no send")
         if mode not in ("dry", "replay"):
@@ -650,6 +674,7 @@ class Engine:
             raise LiveRefused("warmup_s must be None or a non-negative int (seconds of ingested block_time)")
         self.warmup_s = warmup_s
         self._warm_done = False
+        self.evict = bool(evict)  # lossless state eviction (see prune); False is the pre-eviction engine, kept for the A/B proofs
         self.exact_grid = bool(exact_grid)
         self.keep_clock_s = None if (exact_grid or keep_clock_s is None) else int(keep_clock_s)
         self.counters: dict[str, int] = {}
@@ -781,9 +806,16 @@ class Engine:
     def _add_print(self, st: MintState, mint: str, pool: Any, slot: Any, txi: Any, evi: Any, frn: int, bt: Any, isbuy: Any, sol: Any, tok: Any,
                    q: Any, b: Any, th: int | None, trader: Any, vq: Any) -> None:
         """Append one PumpSwap print of a completed mint if it is on the mint's PDA pool. The trader is hashed here, for kept rows only."""
+        if self.evict:
+            if st.evicted:  # graduated more than EVICT_AFTER_S ago: no mark reads it again (prune)
+                self._count("prints_after_evict")
+                return
+            if self._member_final.get(mint, _MISSING_FINAL) is None:  # membership is final and negative: members() never returns this mint
+                self._count("prints_nonmember_skipped")
+                return
         if pool is None or pool != self.pda(mint):
             return
-        p = st.prints
+        p = st.print_arrays()
         p["slot"].append(int(slot))
         p["txi"].append(-1 if txi is None else int(txi))
         p["evi"].append(-1 if evi is None else int(evi))
@@ -884,7 +916,11 @@ class Engine:
                 elif isbuy is False:
                     st.b_sell += s
             elif isbuy is False:
+                if st.b_null_sell_by_th is _NO_TABLE:
+                    st.b_null_sell_by_th = {}
                 st.b_null_sell_by_th[th] = st.b_null_sell_by_th.get(th, 0) + 1
+            if st.b_by_th is _NO_TABLE:
+                st.b_by_th = {}
             prev = st.b_by_th.get(th)
             add = s if (s is not None and isbuy is False) else 0
             st.b_by_th[th] = add if prev is None else prev + add
@@ -1003,12 +1039,17 @@ class Engine:
         for mint, st in self.mints.items():
             if st.mslot is None or st.mbt is None or st.mbt < self.umin or (T is not None and st.mbt < T - GRID_HI_S - 2 * MARK_S):
                 continue
+            if st.evicted:  # a tombstone: it cannot be a member of any later mark (and an evicted state has no prints to build one from)
+                continue
             if mint in self._member_final:
                 m = self._member_final[mint]
             else:
                 m = self.member(mint)
                 if cache and self.max_slot >= st.mslot + WINDOW_SLOTS + S0_FINAL_SLOTS:
                     self._member_final[mint] = m
+                    if m is None and self.evict and mint not in self.book.pos and st._prints is not None:
+                        st._prints = None  # M2: a final negative membership is never re-read, so its prints are dead (and _add_print stops adding them)
+                        self._count("evicted_nonmember_pools")
             if m is not None:
                 out.append(m)
         out.sort(key=lambda m: (m.mbt, m.mint))
@@ -1308,16 +1349,38 @@ class Engine:
         return len(old_s), 0
 
     def prune(self, now_bt: int) -> int:
-        """Drop per-mint print state that no decision can read again (graduated more than 48 h + 2 h ago) and bonding state of mints idle for 7 days
-        that never completed. Graduation times stay (m_grads windows). Returns the number of mints pruned."""
+        """Drop per-mint state that no decision can read again. Returns the number of mints pruned or evicted.
+        Always (the pre-eviction rules, unchanged): the print state of mints graduated more than EVICT_AFTER_S (50 h) ago, and the bonding state of a mint that
+        never completed and has been idle for BOND_IDLE_S (7 days). Graduation times stay (m_grads windows).
+        With evict (the default; lossless, md5-proven against evict=False, tools/test_r4b_evict.py):
+          * a graduated mint past EVICT_AFTER_S becomes a tombstone (mslot / mbt stay): its per-trader bonding tables, its migration / create fields, its
+            _member_final / _pda / precompute entries are dropped, and its later prints are not stored. members(T) skips mbt < T - 50 h at this and every
+            later mark (T only grows), and every other read of these fields is behind that skip. A mint the book holds is never evicted;
+          * the print arrays of a final negative member are dropped at the moment the negative is cached (members), M2 of QP-RULING-1031-r4b-history section 6.
+        NOT done, on purpose: the 7-day rule is not shortened and is not extended to a mint with no bonding row (a mint that completes later keeps its
+        create-derived constants); a member's prints and the market minutes are never cut."""
         n = 0
         for mint, st in list(self.mints.items()):
-            if st.mbt is not None and now_bt > st.mbt + GRID_HI_S + 2 * MARK_S and len(st.prints["slot"]):
-                st.prints = {k: array(t) for k, t in _PRINT_FIELDS}
+            past = st.mbt is not None and now_bt > st.mbt + EVICT_AFTER_S
+            counted = False
+            if past and len(st.prints["slot"]):
+                st._prints = None
                 n += 1
-            elif st.mslot is None and st.last_bond_bt is not None and now_bt > st.last_bond_bt + 7 * 86400:
+                counted = True
+            elif st.mslot is None and st.last_bond_bt is not None and now_bt > st.last_bond_bt + BOND_IDLE_S:
                 del self.mints[mint]
                 n += 1
+                continue
+            if past and self.evict and not st.evicted and mint not in self.book.pos:
+                st.evicted = True
+                st.b_by_th = st.b_null_sell_by_th = _NO_TABLE
+                st.mev_pool = st.mev_pool_key = st.mev_quote = st.mev_quote_key = None
+                st.b_n = st.b_buy = st.b_sell = 0
+                self._member_final.pop(mint, None)
+                self._pda.pop(mint, None)
+                self._pre.pop(mint, None)
+                self._count("evicted_graduated")
+                n += 0 if counted else 1
         return n
 
 

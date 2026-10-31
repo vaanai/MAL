@@ -55,6 +55,11 @@ class StubPort(alb.OrderPort):
     def universe_problem(self, pool, mint):
         return self.universe
 
+    screen: str | None = None  # the mint screen's answer (tools/test_arena_live_bridge_mint_screen.py sets it)
+
+    def mint_screen_problem(self, mint):
+        return self.screen
+
     def balance(self):
         return self._balance
 
