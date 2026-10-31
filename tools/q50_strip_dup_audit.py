@@ -25,26 +25,29 @@ WHAT IT DOES, item by item (ruling section 4.2):
      row of a higher slot, is a repeat print. In `buys` ([slot, lamports], arrival order), an entry equal to an earlier entry and arriving after an entry of a higher slot is a repeat buy
      if a repeat print exists at that slot; for buys before `from_slot` (no rows exist there) the late exact repeat alone suffices.
   4. COUNTS FIRST. Per counted trade and leg (1p3, 1p9): repeat buys in the landing slot; repeat buys in [landing - round(2 / sps), landing]; whether the entry or the exit state came from
-     `post_last` while the strip's last row is a repeat print. Totals. Output: counts and trade ids only (the JSON); stdout prints totals and the result word.
+     `post_last` while the strip's last row is a repeat print; and (QP erratum E2) whether the entry or the exit state came from a `post_last` whose slot is below the strip's
+     `from_slot` (the last ARRIVING print is then below the trigger print's slot: always late, and not in `rows`), kept as its own sub-count. Totals. Output: counts and trade ids only
+     (the JSON); stdout prints totals and the result word.
   5. All counts 0: "A-Q50 clean"; the read's pressure leg stands (exit 0).
-  6. Any count non-zero (exit 3): the deciding pressure leg (stake 0.30, 1.9 s leg, both strand rules) is recomputed, REPORT-ONLY: each counted trade's ssb / nb from its strip WITHOUT the
-     repeat buys (Strip.pressure_at, the registered function), the intercept refit with the registered rule (arena_h5_cost.press_intercept: mean p over the cell's filled sends = 0.289,
-     on every counted trade with its corrected inputs and its recorded state), the leg priced with arena_h5_cost.press_p / press_leg, and a trade whose 1.9 s entry or exit state came
-     from a repeated last print valued at its total loss, stake + one send (0.30 SOL + 505,000 lamports), under both strand rules. Each corrected sub-cell is scored with
-     tools.arena_score.cell_stats / cell_verdict (the gate's four items). QP's OK, and so every C0 step, then needs the four gate items on BOTH the read's recorded cells AND the
-     corrected pressure leg (`qp_ok_condition`). The recorded read verdict is not changed (one read, final).
+  6. Any count non-zero (exit 3): the deciding cells (stake 0.30, 1.9 s leg, both strand rules) are recomputed, REPORT-ONLY. Pressure: each counted trade's ssb / nb from its strip
+     WITHOUT the repeat buys (Strip.pressure_at, the registered function), the intercept refit with the registered rule (arena_h5_cost.press_intercept: mean p over the cell's filled
+     sends = 0.289, on every counted trade with its corrected inputs and its recorded state), the leg priced with arena_h5_cost.press_p / press_leg. A trade whose 1.9 s entry or exit
+     state came from a repeated last print (item 4, E2 included) is valued at its TOTAL LOSS, the registered strand-class value of a trip that ends with nothing (QP erratum E1:
+     stake + one send + the stranded rent, arena_h5_cost._trip / RENT_STRANDED = 302,544,280 lamports at 0.30 SOL), raw (no fail weighting), in the pressure cells AND (QP erratum E3)
+     in the deciding flat cells; no other flat input changes (ssb / nb do not enter the flat leg). Each corrected sub-cell is scored with tools.arena_score.cell_stats / cell_verdict
+     (the gate's four items). QP's OK, and so every C0 step, then needs the four gate items on BOTH the read's recorded cells AND all four corrected cells (`qp_ok_condition`). The
+     recorded read verdict is not changed (one read, final). Errata E1-E3: quant-proof, PR #1144 comment 6537179643 (2026-10-31T01:28:27Z).
   7. This tool. QP OK and a reviewer verdict at the exact head, merged, before it reads any strip.
 
-REPORT-ONLY, deciding nothing: `post_last_below_from_slot` (a trade's state came from `post_last` whose slot is below the strip's from_slot, so the last print is not in `rows` and item 4's
-last-row test cannot see it). The 1.3 s leg's counts are item-4 counts (a non-zero one makes the audit not clean); item 6 recomputes only the deciding 1.9 s leg, as the read decides on it.
+The 1.3 s leg's counts are item-4 counts (a non-zero one makes the audit not clean); item 6 recomputes only the deciding 1.9 s cells, as the read decides on them.
 
 MODES. Production (no test variable set): the host must be mal-fast-0; the ledger root must be <root>/ledger and every shadow dir a dir of the book under <root> (Q50:
-/home/claude/data/arena, h5-q50-YYYY-MM-DD; s1: /home/claude/s1home/data/arena, h5-q50s1-YYYY-MM-DD[-succ]); --now-ms and every environment variable whose name starts with MAL_AQ50_T,
+/home/claude/data/arena, h5-q50-YYYY-MM-DD[-succ], as scripts/ops/q50-read.sh accepts; s1: /home/claude/s1home/data/arena, h5-q50s1-YYYY-MM-DD[-succ]); --now-ms and every environment variable whose name starts with MAL_AQ50_T,
 and MAL_ARENA_TEST=1, are REFUSED. Test mode (MAL_AQ50_TEST=1 only): synthetic fixtures; every path must lie outside the real roots (/home/claude/data, /home/claude/s1home,
 /data/mal/arena, /var/lib/mal), and --now-ms may stand in for the wall clock. Every path, in both modes, passes arena_h5_legs.check_path (no probe, canary, sealed, walk... name).
 The --json output is written once (O_EXCL, mode 0444); an existing file is REFUSED before anything is opened.
 
-EXIT: 0 clean; 3 repeats found (the corrected leg is in the JSON, with qp_ok_condition); 2 REFUSED (stderr says why; nothing is written); 1 only on an uncaught error.
+EXIT: 0 clean; 3 repeats found (the corrected cells are in the JSON, with qp_ok_condition); 2 REFUSED (stderr says why; nothing is written); 1 only on an uncaught error.
 Run under a python with numpy (the read's venv on mal-fast-0: /home/claude/venvs/c1nf-ledger/bin/python3).
 """
 
@@ -86,7 +89,7 @@ Q50_ID, S1_ID = qi.Q50_ID, s1i.S1_ID
 BOOKS_AUDITED = (Q50_ID, S1_ID)
 DECIDING_STAKE, DECIDING_SFX = R.DECIDING_STAKE, R.DECIDING_SFX  # "0.30", "1p9"
 DECIDING_STAKE_LAMPORTS = int(round(float(DECIDING_STAKE) * 1e9))
-TOTAL_LOSS_LAMPORTS = DECIDING_STAKE_LAMPORTS + cost.SEND  # item 6: "valued at its total loss (stake + send)"
+TOTAL_LOSS_LAMPORTS = DECIDING_STAKE_LAMPORTS + cost.SEND + cost.RENT_STRANDED  # item 6 with QP erratum E1: the strand-class value of a trip that ends with nothing (302,544,280)
 SFXS = L.SFXS  # ("1p3", "1p9"); item 4 counts both, item 6 recomputes the deciding 1p9 leg only
 RULES = L.RULES  # ("total", "sc")
 STATS_KEYS = R.STATS_KEYS
@@ -94,7 +97,7 @@ PARITY_TOL = 1e-12
 EXIT_CLEAN, EXIT_REFUSED, EXIT_REPEATS = 0, 2, 3  # 1 is left to an uncaught error, so a crash is never read as a result
 PROD_HOST = "mal-fast-0"
 PROD_ROOTS = {Q50_ID: "/home/claude/data/arena", S1_ID: "/home/claude/s1home/data/arena"}
-DIR_RE = {Q50_ID: re.compile(r"h5-q50-\d{4}-\d{2}-\d{2}"), S1_ID: re.compile(r"h5-q50s1-\d{4}-\d{2}-\d{2}(-succ)?")}
+DIR_RE = {Q50_ID: re.compile(r"h5-q50-\d{4}-\d{2}-\d{2}(-succ)?"), S1_ID: re.compile(r"h5-q50s1-\d{4}-\d{2}-\d{2}(-succ)?")}
 REAL_ROOTS = ("/home/claude/data", "/home/claude/s1home", "/data/mal/arena", "/var/lib/mal")
 TEST_ENV = "MAL_AQ50_TEST"
 TEST_ENV_PREFIX = "MAL_AQ50_T"  # every name with this prefix (TEST_ENV included) is a test override
@@ -181,18 +184,28 @@ def leg_counts(row: Mapping[str, Any], sfx: str, rec: Mapping[str, Any]) -> dict
             "window_repeat_buys": sum(1 for j in rb if land - w <= int(buys[j][0]) <= land),
             "entry_post_last_repeat": esrc == "post" and last_is_repeat,
             "exit_post_last_repeat": xsrc == "post" and last_is_repeat,
-            "report_only_post_last_below_from_slot": (esrc == "post" or xsrc == "post") and post_below,
+            "entry_post_last_below_from_slot": esrc == "post" and post_below,  # QP erratum E2: counted, its own sub-count
+            "exit_post_last_below_from_slot": xsrc == "post" and post_below,
             "_rb": rb, "_land": land}
 
 
+COUNT_KEYS = ("ssb_repeat_buys", "window_repeat_buys", "entry_post_last_repeat", "exit_post_last_repeat", "entry_post_last_below_from_slot", "exit_post_last_below_from_slot")
+
+
+def stale_state(c: Mapping[str, Any]) -> bool:
+    """The leg's entry or exit state came from a repeated last print (item 4, with QP erratum E2): valued at total loss in item 6."""
+    return bool(c["entry_post_last_repeat"] or c["exit_post_last_repeat"] or c["entry_post_last_below_from_slot"] or c["exit_post_last_below_from_slot"])
+
+
 def nonzero(c: Mapping[str, Any]) -> bool:
-    return bool(c["ssb_repeat_buys"] or c["window_repeat_buys"] or c["entry_post_last_repeat"] or c["exit_post_last_repeat"])
+    return any(bool(c[k]) for k in COUNT_KEYS)
 
 
-# ------------------------------------------------------------------------------------------------------------------------------ item 6: the corrected pressure leg
-def corrected_pressure_leg(dec_rows: Sequence[Mapping[str, Any]], strips: Mapping[str, Mapping[str, Any]], per_trade: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
-    """Item 6, report-only: the deciding pressure leg (stake 0.30, 1p9) with every counted trade's ssb / nb recomputed from its strip without its repeat buys (Strip.pressure_at), the
-    intercept refit with the registered rule on those inputs, and a trade whose 1p9 entry or exit state came from a repeated last print valued at its total loss (stake + send)."""
+# ------------------------------------------------------------------------------------------------------------------------------ item 6: the corrected deciding cells (errata E1, E3)
+def corrected_cells(dec_rows: Sequence[Mapping[str, Any]], strips: Mapping[str, Mapping[str, Any]], per_trade: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """Item 6 with QP errata E1 and E3, report-only: the four deciding cells (stake 0.30, 1p9, flat and pressure, both strand rules). Pressure: every counted trade's ssb / nb recomputed
+    from its strip without its repeat buys (Strip.pressure_at), the intercept refit with the registered rule on those inputs. A trade whose 1p9 entry or exit state came from a repeated
+    last print (E2 included) is valued at its total loss (E1: stake + send + RENT_STRANDED) in the pressure AND the flat cells (E3); every other flat value is the recorded one."""
     items = L.items_from_rows(dec_rows, DECIDING_SFX)
     by_id = {r["trade_id"]: r for r in dec_rows}
     corr, total_loss_ids, changed_ids = [], [], []
@@ -206,21 +219,24 @@ def corrected_pressure_leg(dec_rows: Sequence[Mapping[str, Any]], strips: Mappin
         if (ssb, nb) != (it["ssb"], it["nb"]):
             changed_ids.append(it["trade_id"])
         corr.append(dict(it, ssb=ssb, nb=nb))
-        if c["entry_post_last_repeat"] or c["exit_post_last_repeat"]:
+        if stale_state(c):
             total_loss_ids.append(it["trade_id"])
     ic = L.own_intercept(corr)  # cost.press_intercept on the corrected inputs; the filled set (state != guarded) is the recorded one
     days = [it["day"] for it in corr]
     tl = {it["trade_id"] for it in corr} & set(total_loss_ids)
     cells: dict[str, Any] = {}
     for rule in RULES:
-        v = L.cell_values(corr, rule, ic)["press"]
-        v = [-float(TOTAL_LOSS_LAMPORTS) if it["trade_id"] in tl else float(x) for it, x in zip(corr, v)]
-        s = cell_stats(v, days)
-        gv = cell_verdict(s)
-        cells[f"press_{DECIDING_SFX}_{rule}"] = dict({k: s[k] for k in STATS_KEYS}, passes=gv["pass"], misses=gv["misses"])
+        vals = L.cell_values(corr, rule, ic)  # the flat leg does not read ssb / nb or the intercept: it is the recorded flat value
+        for model in R.MODELS:
+            v = [-float(TOTAL_LOSS_LAMPORTS) if it["trade_id"] in tl else float(x) for it, x in zip(corr, vals[model])]
+            s = cell_stats(v, days)
+            gv = cell_verdict(s)
+            cells[f"{model}_{DECIDING_SFX}_{rule}"] = dict({k: s[k] for k in STATS_KEYS}, passes=gv["pass"], misses=gv["misses"])
+    press_ok = all(c["passes"] for k, c in cells.items() if k.startswith("press_"))
+    flat_ok = all(c["passes"] for k, c in cells.items() if k.startswith("flat_"))
     return {"report_only": True, "intercept": ic, "target_mean_p": cost.PRESS_TARGET, "n": len(corr), "trades_with_changed_inputs": sorted(changed_ids),
             "trades_valued_at_total_loss": sorted(total_loss_ids), "total_loss_lamports": TOTAL_LOSS_LAMPORTS, "cells": cells,
-            "passes_both_strand_rules": all(c["passes"] for c in cells.values())}
+            "pressure_passes_both_strand_rules": press_ok, "flat_passes_both_strand_rules": flat_ok, "passes_all_four": press_ok and flat_ok and len(cells) == 4}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ modes and paths
@@ -363,10 +379,8 @@ def audit(a: argparse.Namespace, *, env: Mapping[str, str] | None = None, host: 
     flagged: dict[str, list[str]] = {}
     for sfx in SFXS:
         legs = [(tid, v[sfx]) for tid, v in per_trade.items() if v[sfx] is not None]
-        totals[sfx] = {"legs_priced": len(legs), "ssb_repeat_buys": sum(x["ssb_repeat_buys"] for _, x in legs), "window_repeat_buys": sum(x["window_repeat_buys"] for _, x in legs),
-                       "entry_post_last_repeat": sum(1 for _, x in legs if x["entry_post_last_repeat"]), "exit_post_last_repeat": sum(1 for _, x in legs if x["exit_post_last_repeat"]),
-                       "trades_flagged": sum(1 for _, x in legs if nonzero(x)),
-                       "report_only_post_last_below_from_slot": sum(1 for _, x in legs if x["report_only_post_last_below_from_slot"])}
+        totals[sfx] = {"legs_priced": len(legs), **{k: sum(int(x[k]) for _, x in legs) for k in COUNT_KEYS}, "trades_flagged": sum(1 for _, x in legs if nonzero(x)),
+                       "trades_stale_state": sum(1 for _, x in legs if stale_state(x))}
         flagged[sfx] = sorted(tid for tid, x in legs if nonzero(x))
     rp_n = [len(repeat_print_index(rec["rows"])) for rec in strips.values()]
     rb_n = [len(repeat_buy_index(rec["buys"], rec["rows"], int(rec["from_slot"]))) for rec in strips.values()]
@@ -379,23 +393,24 @@ def audit(a: argparse.Namespace, *, env: Mapping[str, str] | None = None, host: 
         "books_file_sha256": books.sha256, "provenance": dict(prov, **{"tools/q50_strip_dup_audit.py": sha256_file(__file__)}),
         "shadow_dirs": [os.fspath(d) for d in a.shadow_dir], "counted_trades": len(c["dec_rows"]), "strip_totals": strip_totals,
         "counts_by_leg": totals, "trade_ids_flagged_by_leg": flagged,
-        "per_trade_flagged": {tid: {sfx: {k: v[sfx][k] for k in ("ssb_repeat_buys", "window_repeat_buys", "entry_post_last_repeat", "exit_post_last_repeat")}
+        "per_trade_flagged": {tid: {sfx: {k: v[sfx][k] for k in COUNT_KEYS}
                                      for sfx in SFXS if v[sfx] is not None and nonzero(v[sfx])} for tid, v in per_trade.items() if any(v[s] is not None and nonzero(v[s]) for s in SFXS)},
-        "report_only_note": ("report_only_post_last_below_from_slot decides nothing. Items 4 and 5 apply to every other count above, on both legs: a non-zero 1p3 count makes the "
-                             "audit not clean, and item 6 then recomputes the deciding 1p9 pressure leg (the 1p3 leg never decides)"),
+        "errata": "QP errata E1-E3 to items 4 and 6 (quant-proof, PR #1144 comment 6537179643, 2026-10-31T01:28:27Z)",
+        "note": ("items 4 and 5 apply to every count above, on both legs: a non-zero 1p3 count makes the audit not clean, and item 6 then recomputes the deciding 1p9 cells "
+                 "(the 1p3 leg never decides)"),
     }
     if clean:
         out["result"] = "A-Q50 clean"
         out["read_pressure_leg"] = "stands (item 5)"
         out["qp_ok_condition"] = {"met": True, "why": "every item-4 count is 0: the read's recorded cells stand"}
         return EXIT_CLEAN, out
-    corr = corrected_pressure_leg(c["dec_rows"], strips, per_trade)
+    corr = corrected_cells(c["dec_rows"], strips, per_trade)
     out["result"] = "A-Q50 repeats found"
-    out["corrected_pressure_leg"] = corr
+    out["corrected_deciding_cells"] = corr
     out["recorded_cells_pass"] = {k: bool(v.get("passes")) for k, v in book["subcells"].items()}
-    met = all(out["recorded_cells_pass"].values()) and len(out["recorded_cells_pass"]) == 4 and corr["passes_both_strand_rules"]
-    out["qp_ok_condition"] = {"met": met, "why": "item 6: the four gate items must hold on the read's recorded cells AND on the corrected pressure leg (both strand rules); "
-                                                 "the recorded read verdict is not changed"}
+    met = all(out["recorded_cells_pass"].values()) and len(out["recorded_cells_pass"]) == 4 and corr["passes_all_four"]
+    out["qp_ok_condition"] = {"met": met, "why": "item 6 with QP erratum E3: the four gate items must hold on the read's recorded cells AND on all four corrected deciding cells "
+                                                 "(pressure and flat, both strand rules); the recorded read verdict is not changed"}
     return EXIT_REPEATS, out
 
 
@@ -418,12 +433,14 @@ def render(rc: int, out: Mapping[str, Any]) -> list[str]:
     for sfx in SFXS:
         t = out["counts_by_leg"][sfx]
         lines.append(f"A-Q50 COUNTS leg={sfx} ssb_repeat_buys={t['ssb_repeat_buys']} window_repeat_buys={t['window_repeat_buys']} entry_post_last_repeat={t['entry_post_last_repeat']} "
-                     f"exit_post_last_repeat={t['exit_post_last_repeat']} trades_flagged={t['trades_flagged']} report_only_post_last_below_from_slot={t['report_only_post_last_below_from_slot']}")
+                     f"exit_post_last_repeat={t['exit_post_last_repeat']} entry_post_last_below_from_slot={t['entry_post_last_below_from_slot']} "
+                     f"exit_post_last_below_from_slot={t['exit_post_last_below_from_slot']} trades_flagged={t['trades_flagged']}")
     if rc == EXIT_CLEAN:
         lines.append("A-Q50 RESULT clean: the read's pressure leg stands (item 5)")
     else:
-        cp = out["corrected_pressure_leg"]
-        lines.append(f"A-Q50 RESULT repeats found: corrected pressure leg (report-only) passes_both_strand_rules={cp['passes_both_strand_rules']} "
+        cp = out["corrected_deciding_cells"]
+        lines.append(f"A-Q50 RESULT repeats found: corrected deciding cells (report-only) pressure_pass={cp['pressure_passes_both_strand_rules']} "
+                     f"flat_pass={cp['flat_passes_both_strand_rules']} "
                      f"trades_valued_at_total_loss={len(cp['trades_valued_at_total_loss'])} qp_ok_condition_met={out['qp_ok_condition']['met']} (item 6; the read verdict is unchanged)")
     return lines
 
