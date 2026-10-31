@@ -71,6 +71,7 @@ if __package__ in (None, ""):  # `python tools/r4b_host_glue.py` from anywhere
 
 from tools import r4b_feed_lag_probe as lp  # noqa: E402
 from tools import r4b_feed_merge as fm  # noqa: E402
+from tools.r4b_feed_adapter import FeedAdapter, Mapped  # noqa: E402
 
 LIVE_BUILT = False
 SCHEMA = "r4b_host_glue_v1"
@@ -90,6 +91,7 @@ ZSTD_CMD = ("zstd", "-dc")
 MIRROR_TTL_S = 5.0  # the mirror's status file is re-read at most this often (and once at the first look at each mark)
 _AUTO = object()  # LiveSource(mirror_check=_AUTO): resolve tools.tape_mirror.mirror_problem lazily (PR #1147); None switches the check off
 CHANGE_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")  # the host's own CHANGE_RE (r4b_live_host, #1143 b2b0ac26)
+SOURCES = ("mirror", "tip")  # the history source of the run (QP-RULING-1031-r4b-history option C = tip; mirror = fallback E's base)
 TRIGGERS = ("certified", "guard")  # r4b_live_host.TRIGGERS: one per run, written in the host's start row
 CODE_RE = re.compile(r"[a-z0-9_]{1,32}")
 HOUR_FILE_RE = re.compile(r"^tape-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl(\.zst)?$")
@@ -946,6 +948,343 @@ class LiveSource:
                 "credit_days": self.cap.day_lines(), "mirror_problem_now": None if self._mirror is None else self._mirror[1], "stats": dict(self.stats)}
 
 
+# ------------------------------------------------------------------------------------------------------------------------------------ tip history (option C)
+# QP-RULING-1031-r4b-history section 2: the fast-0 tip follower's tape is the HISTORY source (tools/r4b_tip_reader); the Helius mark window owns only the slots
+# after the tip's checkpoint D. SLOT OWNERSHIP, not key dedup across the two decoders (their event_index agreement is unproven):
+#   tip owns every slot <= D (D = checkpoint last_done when the mark is released); those rows reach the engine through the walker-schema path;
+#   Helius owns (D, sd): at the release of mark T the window's buffered rows of exactly those slots go through the adapter; Helius rows <= D and >= sd are dropped;
+#   a tip row of a Helius-owned slot is dropped and counted (tip_dropped_owned); a tip skip of a Helius-owned slot is a fork.
+# sd(T) itself needs a clock second at or after T: the first Helius rows of the window feed the engine's CLOCK ONLY (Engine.ingest_clock), never a print or a minute.
+TIP_LATE_STATUS = "late_tip"
+GAP_HISTORY_MS = 1_800_000  # a tip gap seen with a t_recv_ms older than this (catch-up) is recorded but writes no declog gap row: its 10-minute buy hold is over
+TIP_BATCH = 5_000
+tip_mod = importlib.import_module("tools.r4b_tip_reader")
+
+
+class TipUnhealthy(RuntimeError):
+    """The tip side is not healthy at start (decoder pins, event V, stale status, no history, no idle I/O): the host does not start (ruling 2.1 item 5)."""
+
+
+class TipMerger(HostMerger):
+    """HostMerger with the TIP stream in the public side's place: G2 over the tip's gaps (public_hw_slot = the highest tip slot with no open gap) and slot ownership
+    instead of cross-decoder key dedup. offer() only de-duplicates the Helius feed against itself (and learns pool_mints); there is no public stream."""
+
+    def __init__(self, **kw: Any) -> None:
+        super().__init__(**kw)
+        self.owned: "OrderedDict[int, tuple]" = OrderedDict()  # mark -> (lo, hi, D, sd): the slots lo..hi the Helius window owns for that mark
+        self.tip_forks: dict[int, int] = {}  # slot -> mark: a tip skip of a Helius-owned slot (Bar 2 item 2)
+
+    def offer(self, source: str, row: Mapping[str, Any], now_ms: int | None = None) -> dict | None:
+        if source != SOURCE_HELIUS:
+            raise ValueError("TipMerger has no public stream: only Helius rows are offered")
+        return fm.Merger.offer(self, source, row, now_ms)
+
+    def tip_progress(self, D: int) -> None:
+        self.pub_top = max(self.pub_top, int(D))
+        self._update_gaps()
+
+    def tip_gap(self, g: Any) -> dict:
+        """One gaps.jsonl range as data loss in the existing G2 machinery: it holds the seam below its start until the tip has progressed gap_guard_slots (1,500)
+        past the range (Addendum 6); cover_releases False because the window's rows of tip-owned slots are discarded, so a window never repairs a tip gap."""
+        self.pub_top = max(self.pub_top, g.lo - 1)
+        r = self._new_range(min(self.pub_top, g.lo - 1), g.lo, g.hi, "closed", g.code, "tip", g.t_recv_ms, "tip_gap", cover_releases=False)
+        self.stats["tip_gaps"] += 1
+        if g.reason.startswith("skip_contradicted"):  # the slot was refetched: an earlier skip report of it was not a fork
+            for s in range(g.lo, min(g.hi, g.lo + 1000) + 1):
+                if self.tip_forks.pop(s, None) is not None:
+                    self.stats["fork_withdrawn"] += 1
+        self._update_gaps()
+        return r
+
+    def open_tip_gaps(self) -> list[dict]:
+        return [dict(g) for g in self._gaps if g["why"] == "tip_gap"]
+
+    def own(self, T: int, D: int, sd: int) -> tuple:
+        rng = (int(D) + 1, int(sd) - 1, int(D), int(sd))
+        self.owned[int(T)] = rng
+        while len(self.owned) > 64:
+            self.owned.popitem(last=False)
+        return rng
+
+    def is_owned(self, slot: int) -> int | None:
+        for T, (lo, hi, _, _) in self.owned.items():
+            if lo <= slot <= hi:
+                return T
+        return None
+
+    def tip_row(self, row: Mapping[str, Any]) -> bool:
+        """True to ingest a tip row; False (counted) if its slot belongs to the Helius window of some mark."""
+        if self.owned and _is_int(row.get("slot")) and self.is_owned(row["slot"]) is not None:
+            self.stats["tip_dropped_owned"] += 1
+            return False
+        return True
+
+    def tip_skip(self, slot: int) -> None:
+        T = self.is_owned(slot) if self.owned else None
+        if T is not None:
+            self.tip_forks[int(slot)] = T
+            self.stats["fork_tip_skip"] += 1
+
+    def split_helius(self, rows: Sequence[Mapping[str, Any]], D: int, sd: int) -> tuple[list, int, int]:
+        """(rows of slots in (D, sd), dropped as tip-owned (slot <= D), dropped as >= sd). A row without a slot is dropped as tip-owned (never guessed)."""
+        keep, a, b = [], 0, 0
+        for r in rows:
+            s = r.get("slot")
+            if not _is_int(s) or s <= D:
+                a += 1
+            elif s >= sd:
+                b += 1
+            else:
+                keep.append(r)
+        self.stats["helius_dropped_tip_owned"] += a
+        self.stats["helius_dropped_ge_sd"] += b
+        self.stats["helius_owned_ingested"] += len(keep)
+        return keep, a, b
+
+    def seam_report(self, lo_slot: int, hi_slot: int) -> dict:
+        r = super().seam_report(lo_slot, hi_slot)
+        r.update(tip_dropped_owned=self.stats["tip_dropped_owned"], owned_ranges=len(self.owned), fork_tip_skip=self.stats["fork_tip_skip"])
+        return r
+
+    def host_counts(self) -> dict:
+        c = super().host_counts()
+        c.update({k: self.stats[k] for k in ("tip_gaps", "tip_dropped_owned", "helius_dropped_tip_owned", "helius_dropped_ge_sd", "helius_owned_ingested", "fork_tip_skip",
+                                             "fork_withdrawn")}, forks_open=len(self.tip_forks))
+        return c
+
+
+class TipAdapter(FeedAdapter):
+    """FeedAdapter that also takes the tip source's items. A tip row is ALREADY a walker-schema row (the follower decodes with the walker's own code), so it goes to
+    the engine as it is: `{"type": "tip", "tip_kind": trade|create|migration, "w": row}` -> one Mapped of that kind (Engine.ingest_trade / _create / _migration, the md5-proven
+    replay path); a migration also teaches the Helius decoder's pool resolver. `{"type": "tip_clock"}` -> a clock-only Mapped. Everything else (the Helius window's
+    tape-format rows, gap rows) takes the ordinary adapter path."""
+
+    def feed(self, row: Mapping[str, Any]) -> list[Mapped]:
+        typ = row.get("type")
+        if typ == "tip":
+            k, w = row["tip_kind"], row["w"]
+            self.stats[f"tip_{k}"] += 1
+            if k == "migration" and w.get("type") == "migration" and isinstance(w.get("pool"), str) and w.get("mint") and w.get("quote_mint"):
+                self.pools.setdefault(w["pool"], (w["mint"], w["quote_mint"]))
+            return [Mapped(k, w)]
+        if typ == "tip_clock":
+            self.stats["tip_clock"] += 1
+            return [Mapped("clock", {"slot": row["slot"], "block_time": row["block_time"]})]
+        return super().feed(row)
+
+
+class _NoTape:
+    hour = 0
+    stats: Counter = Counter()
+
+    def poll(self, limit: int = 0) -> list:
+        return []
+
+
+def ionice_cmd(pid: int, idle: bool) -> list[str]:
+    return ["ionice", "-c3", "-p", str(pid)] if idle else ["ionice", "-c2", "-n4", "-p", str(pid)]
+
+
+def set_io_class(idle: bool, *, pid: int | None = None, runner: Callable[..., Any] | None = None) -> bool:
+    """ionice idle (-c3) for the catch-up reads, best-effort class (-c2 -n4) afterwards; True if the command succeeded. nice -n 19 of ruling 2.1 item 6 cannot be undone by an
+    unprivileged process after catch-up (RLIMIT_NICE), so the CPU part is the job's niceness at submit and I/O is switched here: disclosed in the PR."""
+    try:
+        r = (runner or subprocess.run)(ionice_cmd(pid or os.getpid(), idle), capture_output=True, timeout=10)
+        return getattr(r, "returncode", 1) == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+class TipLiveSource(LiveSource):
+    """LiveSource whose history is the tip tape. Same host interface; see the section header for ownership. The Helius window's rows are BUFFERED per mark and enter
+    the stream only when the mark is released (first evaluation where the window and the tip side both certify): then the rows of (D, sd) are queued behind every tip row
+    of slots <= D. Certification (ruling 2.3, replacing "seam closed"): mark_complete on the window (healthy, armed, covered, processed tip >= sd + 1, no silence)
+    AND the tip caught up to the checkpoint AND D >= first covered slot - 1 AND no tip gap open (G2: unreleased) AND the tip side healthy (decoder pins, event V, fresh status
+    at start and at every mark, checkpoint readable). Else the b3 path (host): public_hw_slot() is the tip's G2 high-water (None while unhealthy) -> status late_tip."""
+
+    def __init__(self, *, tip: Any, tip_state_dir: str | os.PathLike, merger: TipMerger | None = None, io_hooks: tuple | None = None, require_io_idle: bool = True,
+                 status_ttl_s: float = 5.0, **kw: Any) -> None:
+        kw.setdefault("mirror_check", None)
+        super().__init__(tape=_NoTape(), merger=merger if merger is not None else TipMerger(), **kw)
+        self.tip, self.tip_state_dir = tip, os.fspath(tip_state_dir)
+        self.io_hooks = io_hooks if io_hooks is not None else (lambda: set_io_class(True), lambda: set_io_class(False))
+        self.require_io_idle, self.status_ttl_ms = bool(require_io_idle), int(status_ttl_s * 1000)
+        self._tip_status: tuple[int, str | None] | None = None
+        self._io_idle = False
+        self._wbuf: dict[int, list] = {}
+        self._clock_fed: dict[int, dict[int, int]] = {}
+        self._rel: dict[int, dict] = {}
+        self.batch = max(self.batch, TIP_BATCH)
+
+    # -- the tip side's health (ruling 2.1 item 5): status.json pins / event V / freshness, plus the reader's checkpoint problem
+    def _tip_problem(self, *, force: bool = False) -> str | None:
+        now = self.now_ms()
+        if not force and self._tip_status is not None and now - self._tip_status[0] < self.status_ttl_ms:
+            return self._tip_status[1]
+        why = tip_mod.status_problem(tip_mod.read_state_json(self.tip_state_dir, "status.json"), now) or self.tip.problem
+        if why is not None:
+            self.stats["tip_problem_checks"] += 1
+            self.stats[f"tip_problem_{codeify(why)}"] += 1
+        if self._tip_status is None or self._tip_status[1] != why:
+            self._event("tip_health", problem=why)
+        self._tip_status = (now, why)
+        return why
+
+    def _mirror_problem(self, *, force: bool = False, need_hours: int | None = None) -> str | None:  # the base's mark hook: the tip side stands in for the mirror
+        return self._tip_problem(force=force)
+
+    def start(self) -> None:
+        if self._started:
+            return
+        if self.require_ntp:
+            self.ntp = fm.require_synced(runner=self.ntp_runner)
+        why = self._tip_problem(force=True) or self.tip.start_problem()
+        if why is not None:
+            self._event("tip_refused_start", problem=why)
+            raise TipUnhealthy(f"the tip side is not healthy at start: {why}")
+        if self.require_io_idle:
+            if not self.io_hooks[0]():
+                self._event("tip_refused_start", problem="ionice_failed")
+                raise TipUnhealthy("catch-up reads must run at I/O class idle and ionice failed")
+            self._io_idle = True
+        now = self.now_ms()
+        self.first_mark = (now // 1000 // MARK_S + 1) * MARK_S
+        self._started = True
+        self._event("start", first_mark=self.first_mark, commitment=self.commitment, cap_credits=self.cap.cap, ntp=self.ntp.as_record() if self.ntp else None,
+                    start_hour=tip_mod.hour_key(self.tip.h0), trigger="certified", source="tip", pins=dict(tip_mod.PINNED_BLOBS), io_idle=self._io_idle)
+
+    # -- the tip stream
+    def _ingest_tip_poll(self, now: int) -> None:
+        items = self.tip.poll(self.batch)
+        for kind, x in items:
+            if kind == "gap":
+                self.merger.tip_gap(x)
+                t = x.t_recv_ms
+                if (t is not None and t >= now - GAP_HISTORY_MS) or (t is None and self.tip.caught_up):
+                    tt = t if t is not None else now
+                    self._pending.append({"v": 1, "type": "gap", "prog": "all", "slot": 0, "t_recv_ms": tt, "signature": None, "event_index": None, "kind": x.code,
+                                          "data_loss": True, "from_ms": tt, "to_ms": tt, "closed": True, "from_slot": x.lo, "to_slot": x.hi, "reason": x.reason})
+                else:
+                    self.stats["tip_gap_history"] += 1
+            elif kind == "skip":
+                self.merger.tip_skip(x)
+            elif self.merger.tip_row(x):
+                self._pending.append({"type": "tip", "tip_kind": kind, "w": x, "t_recv_ms": x.get("t_recv_ms")})
+                if kind == "migration" and isinstance(x.get("pool"), str) and x.get("mint") and x.get("quote_mint"):
+                    self.merger.pool_mints.setdefault(x["pool"], (x["mint"], x["quote_mint"]))
+        if self.tip.released_D is not None:
+            self.merger.tip_progress(self.tip.released_D)
+        if self._io_idle and self.tip.caught_up:  # catch-up is over: back to the normal I/O class for the live tail
+            self.io_hooks[1]()
+            self._io_idle = False
+            self._event("catch_up_done", released_D=self.tip.released_D, rows=dict(self.tip.stats))
+
+    def _read_public(self, now: int) -> None:  # the base loop's history read
+        if self._tip_problem() is not None:
+            return  # fail closed: no row of an unhealthy tip side reaches the engine
+        self._ingest_tip_poll(now)
+
+    # -- the Helius window: buffered per mark, released by ownership
+    def _clock_row(self, T: int, e: Mapping[str, Any]) -> None:
+        sec, slot = e.get("event_ts"), e.get("slot")
+        if e.get("type") != "trade" or not _is_int(sec) or not _is_int(slot) or not (T <= sec <= T + lp.POST_S):
+            return
+        fed = self._clock_fed.setdefault(T, {})
+        if sec not in fed or slot < fed[sec]:
+            fed[sec] = slot
+            self._pending.append({"type": "tip_clock", "slot": slot, "block_time": sec, "t_recv_ms": e.get("t_recv_ms")})
+            self.stats["clock_only_rows"] += 1
+
+    def _drain_windows(self) -> int:
+        n, now = 0, self.now_ms()
+        while True:
+            try:
+                T, rows, _ = self._q.get_nowait()
+            except queue.Empty:
+                return n
+            n += 1
+            rel = self._rel.get(T)
+            for r in rows:
+                e = self.merger.offer(SOURCE_HELIUS, r, now)
+                if e is None:
+                    continue
+                self._clock_row(T, e)
+                if rel is None:
+                    self._wbuf.setdefault(T, []).append(e)
+                else:  # a row that arrives after the release: owned slots still go in, the rest is dropped
+                    keep, _, _ = self.merger.split_helius([e], rel["D"], rel["sd"])
+                    self._pending.extend(keep)
+
+    def _eval(self, T: int, sd: int | None, snap: fm.WindowState) -> fm.Completeness:
+        return fm.mark_complete(T, sd, snap, require_seam=False)  # the seam is the tip's: checked in mark_complete below
+
+    def _tip_ready(self, c: fm.Completeness) -> str | None:
+        D = self.tip.released_D
+        if not self.tip.caught_up or D is None:
+            return "tip_not_caught_up"
+        if c.covered_from_slot is None or D < c.covered_from_slot - 1:
+            return "tip_behind"
+        if self.merger.open_tip_gaps():
+            return "tip_gap_open"
+        return None
+
+    def _note(self, T: int, cert: Certified, sd: int | None) -> Certified:
+        self.certs[T] = cert
+        if self._last_reason.get(T) != cert.reason:
+            self._last_reason[T] = cert.reason
+            self._event("mark_complete", mark=T, complete=cert.complete, reason=cert.reason, sd=sd, ready_after_mark_ms=cert.ready_after_mark_ms,
+                        covered_from_slot=cert.covered_from_slot, tip_D=self.tip.released_D, public_hw_slot=self.merger.public_hw_slot())
+        return cert
+
+    def mark_complete(self, T: int, sd: int | None) -> Certified:
+        T = int(T)
+        bad = self._mirror_for_mark(T)
+        if bad is not None:
+            return self._note(T, certified(fm.Completeness(False, f"tip:{bad}")), self._sd_of(T, sd))
+        w = self._wins.get(T)
+        if w is None:
+            return certified(fm.Completeness(False, "no_window"))
+        sd = self._sd_of(T, sd)
+        snap = snapshot(w.window.state)  # BEFORE the drain
+        self._drain_windows()
+        self._ingest_tip_poll(self.now_ms())  # commit-then-read: the checkpoint is read again now
+        c = self._eval(T, sd, snap)
+        if not c.complete:
+            return self._note(T, certified(c), sd)
+        if T not in self._rel:
+            why = self._tip_ready(c)
+            if why is None and self._pending:
+                why = "rows_in_flight"  # tip rows of slots <= D (and clock rows) are still on their way to the host
+            if why is not None:
+                return self._note(T, certified(c, why), sd)
+            D = self.tip.released_D
+            lo, hi, _, _ = self.merger.own(T, D, sd)  # type: ignore[arg-type]
+            keep, a, b = self.merger.split_helius(self._wbuf.pop(T, []), D, sd)  # type: ignore[arg-type]
+            self._pending.extend(keep)
+            self._rel[T] = {"D": D, "sd": sd, "owned": [lo, hi], "n_owned_slots": max(0, hi - lo + 1), "kept": len(keep), "dropped_tip_owned": a, "dropped_ge_sd": b}
+            self._event("owned", mark=T, **self._rel[T])
+        cert = certified(c, "rows_in_flight" if self._pending else None)
+        if cert.complete and w.complete_at is None:
+            w.complete_at = self.now_ms()
+        return self._note(T, cert, sd)
+
+    def failed(self, T: int) -> str | None:
+        bad = self._mirror_for_mark(int(T))
+        if bad is not None:
+            return codeify(f"tip_{bad}")
+        return super().failed(T)
+
+    def public_hw_slot(self) -> int | None:
+        """The tip's G2 high-water slot (the b3 test: tip D >= sd + 1 with no open tip gap), None while the tip side is unhealthy."""
+        return None if self._tip_problem() is not None else self.merger.public_hw_slot()
+
+    def report(self) -> dict:
+        r = super().report()
+        r.update(source="tip", tip=dict(self.tip.stats), tip_released_D=self.tip.released_D, owned={str(k): list(v) for k, v in self.merger.owned.items()},
+                 releases={str(k): v for k, v in self._rel.items()}, tip_status_now=None if self._tip_status is None else self._tip_status[1])
+        return r
+
+
 # ------------------------------------------------------------------------------------------------------------------------------------ CLI
 class Refused(Exception):
     pass
@@ -961,8 +1300,14 @@ def check_args(a: argparse.Namespace) -> None:
         raise Refused(f"--daily-credit-cap {a.daily_credit_cap:g} is above {CAP_REFUSE_ABOVE} credits a day: refused")
     if not CHANGE_ID_RE.match(a.change_id or ""):
         raise Refused("--change-id must match [A-Za-z0-9_.-]{1,64}")
-    if not Path(a.tape_dir).is_dir():
+    if getattr(a, 'source', 'mirror') not in SOURCES:
+        raise Refused(f"--source must be one of {SOURCES}")
+    if getattr(a, 'source', 'mirror') == "mirror" and not (getattr(a, 'tape_dir', None) and Path(a.tape_dir).is_dir()):
         raise Refused("--tape-dir is not a directory")
+    if getattr(a, 'source', 'mirror') == "tip" and (not Path(getattr(a, 'tip_dir', tip_mod.DEFAULT_TIP_DIR)).is_dir() or not Path(getattr(a, 'tip_state_dir', tip_mod.DEFAULT_STATE_DIR)).is_dir()):
+        raise Refused("--tip-dir / --tip-state-dir is not a directory")
+    if getattr(a, 'source', 'mirror') == "tip" and a.catch_up_hours > tip_mod.MAX_LOOKBACK_H:
+        raise Refused(f"--catch-up-hours is at most {tip_mod.MAX_LOOKBACK_H} with --source tip")
     if lp.read_key(a.key_file) is None:
         raise Refused("--key-file is missing or holds no usable HELIUS_API_KEY")  # the key itself is never printed
     if a.catch_up_hours < 0 or a.catch_up_hours > 72:
@@ -999,15 +1344,24 @@ def cmd_run(a: argparse.Namespace, *, host_module: Any = None, ntp_runner: fm.Ru
     if a.mirror_check == "off":
         mirror_check = None
     need = a.mirror_need_hours if a.mirror_need_hours is not None else (a.catch_up_hours or None)  # the history the warm-up will read; else freshness only
-    source = LiveSource(tape_dir=a.tape_dir, cap=cap, key_file=a.key_file, commitment=a.commitment, out_dir=out, catch_up_hours=a.catch_up_hours,
-                        now_ms=now_ms, require_ntp=False, sd_fn=sd_fn, merger=HostMerger(), mirror_check=mirror_check, mirror_need_hours=need)
+    host_kw: dict = {}
+    if getattr(a, 'source', 'mirror') == "tip":
+        tip = tip_mod.TipReader(getattr(a, 'tip_dir', tip_mod.DEFAULT_TIP_DIR), getattr(a, 'tip_state_dir', tip_mod.DEFAULT_STATE_DIR), start_ms=(now_ms or _wall_ms)(), catch_up_hours=a.catch_up_hours)
+        source = TipLiveSource(tip=tip, tip_state_dir=getattr(a, 'tip_state_dir', tip_mod.DEFAULT_STATE_DIR), cap=cap, key_file=a.key_file, commitment=a.commitment, out_dir=out, now_ms=now_ms,
+                               require_ntp=False, sd_fn=sd_fn, require_io_idle=not getattr(a, 'no_ionice', False))
+        host_kw = {"adapter": TipAdapter(), "late_status": TIP_LATE_STATUS,
+                   "start_extra": {"feed_source": "tip", "history": "fast-0 tip tape", "window_owns": "(D, sd)", "tip_pins": dict(tip_mod.PINNED_BLOBS)}}
+    else:
+        source = LiveSource(tape_dir=a.tape_dir, cap=cap, key_file=a.key_file, commitment=a.commitment, out_dir=out, catch_up_hours=a.catch_up_hours,
+                            now_ms=now_ms, require_ntp=False, sd_fn=sd_fn, merger=HostMerger(), mirror_check=mirror_check, mirror_need_hours=need)
     source.ntp = ntp
     source.start()  # the mirror refusal comes BEFORE the host writes its `start` row
     (out / "glue" / "run.json").write_text(json.dumps({"schema": SCHEMA, "change_id": a.change_id, "frozen_sha": sha, "trigger": a.trigger, "commitment": a.commitment,
                                                         "daily_credit_cap": a.daily_credit_cap, "catch_up_hours": a.catch_up_hours, "ntp": ntp.as_record(),
                                                         "host_call": HOST_CALL, "live_built": LIVE_BUILT, "mirror_check": a.mirror_check,
-                                                        "mirror_need_hours": need}, sort_keys=True, indent=1) + "\n")
-    host = host_mod.DryHost(engine, log, source, out_dir=out, ntp_offset_ms=ntp.offset_ms, frozen_sha=sha, trigger=a.trigger, change_id=a.change_id)
+                                                        "mirror_need_hours": need, "source": getattr(a, 'source', 'mirror'),
+                                                        "tip_dir": getattr(a, 'tip_dir', tip_mod.DEFAULT_TIP_DIR) if getattr(a, 'source', 'mirror') == "tip" else None, "no_ionice": bool(getattr(a, 'no_ionice', False))}, sort_keys=True, indent=1) + "\n")
+    host = host_mod.DryHost(engine, log, source, out_dir=out, ntp_offset_ms=ntp.offset_ms, frozen_sha=sha, trigger=a.trigger, change_id=a.change_id, **host_kw)
     host.start()
     old = {}
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -1032,7 +1386,11 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="r4-b DRY host glue: public tape + Helius mark windows -> the DRY decision host. No wallet, no send.")
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run", help="start the DRY host on the merged live stream")
-    r.add_argument("--tape-dir", required=True, help="arena tape dir (on mal-fast-0: the mirror of the tape-mirror lane)")
+    r.add_argument("--source", default="mirror", choices=SOURCES, help="history source: tip = the fast-0 tip tape (option C, QP-RULING-1031-r4b-history); mirror = the arena tape mirror")
+    r.add_argument("--tape-dir", default=None, help="--source mirror: arena tape dir (on mal-fast-0: the mirror of the tape-mirror lane)")
+    r.add_argument("--tip-dir", default=tip_mod.DEFAULT_TIP_DIR, help="--source tip: the follower's output dir (only the pinned DRY host reads it)")
+    r.add_argument("--tip-state-dir", default=tip_mod.DEFAULT_STATE_DIR, help="--source tip: the follower's state dir (status.json, checkpoint.json)")
+    r.add_argument("--no-ionice", action="store_true", help="--source tip: do not require ionice idle for the catch-up (tests / development; recorded in run.json)")
     r.add_argument("--key-file", required=True, help="file holding HELIUS_API_KEY=...; read in-process, never printed")
     r.add_argument("--declog-root", required=True)
     r.add_argument("--out", required=True)
@@ -1057,7 +1415,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Refused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 2
-    except (fm.ClockNotSynced, MirrorUnhealthy) as exc:
+    except (fm.ClockNotSynced, MirrorUnhealthy, TipUnhealthy, tip_mod.TipRefused) as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:  # noqa: BLE001 - LiveRefused (dirty tree, warm-up) and the host's own refusals: text only, never a URL or a key
