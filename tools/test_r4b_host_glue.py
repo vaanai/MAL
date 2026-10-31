@@ -719,3 +719,24 @@ def test_script_form_with_isolated_mode_works_and_the_module_has_no_send_path(tm
     for word in ("sendTransaction", "Keypair", "solders", "private_key", "wallet.json", "api_key=", "print(url", "print(self._url"):
         assert word not in code_only, word
     assert hg.LIVE_BUILT is False
+
+
+def test_the_window_state_is_snapshotted_before_the_queue_is_drained(tmp_path: Path):
+    """A tip that arrives while the queue is being drained must not certify the mark: the rows that preceded it may still be in the queue."""
+    src, clk = make_source(tmp_path)
+    start_and_read(src, clk)
+    src._pending.clear()
+    st = src._wins[T].window.state
+    late = [t for t in st.tips if t[1] == 1041]
+    st.tips = [t for t in st.tips if t[1] <= 1040]
+    real_drain = src._drain_windows
+
+    def drain():
+        if late:
+            st.tips.append(late.pop())  # the window thread received tip 1041 while the host was draining
+        return real_drain()
+
+    src._drain_windows = drain  # type: ignore[method-assign]
+    c = src.mark_complete(T, 1040)
+    assert not c and c.reason == "tip_below_sd_plus_1"
+    assert src.mark_complete(T, 1040) and src.certs[T].ready_tip_slot == 1041
