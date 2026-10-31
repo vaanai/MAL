@@ -129,6 +129,7 @@ class HostMerger(fm.Merger):
         self._gaps: list[dict] = []  # lost ranges whose hold stands
         self.flagged: list[dict] = []  # every lost range ever recorded (bounded), with how it ended
         self._cov: list[list[int]] = []  # merged slot ranges a healthy window covered
+        self._stuck_sig: tuple | None = None
 
     # -- G2: the public high-water slot
     def public_hw_slot(self) -> int | None:
@@ -278,6 +279,9 @@ class HostMerger(fm.Merger):
         until the public high-water slot has passed it (G1). Held keys are skipped by moving them to the back; the cap still wins (counted, and it raises unsafe_below)."""
         self._release_held()
         lo = self.max_slot - self.horizon_slots
+        sig = (len(self._keys), len(self._held), lo // 256, self.max_keys)
+        if sig == self._stuck_sig:
+            return  # a full pass found only held keys and nothing has changed since
         stuck = 0
         while self._keys:
             k, e = next(iter(self._keys.items()))
@@ -287,6 +291,7 @@ class HostMerger(fm.Merger):
                     self._keys.move_to_end(k)
                     stuck += 1
                     if stuck >= len(self._held):
+                        self._stuck_sig = (len(self._keys), len(self._held), lo // 256, self.max_keys)
                         break
                     continue
                 break
@@ -574,6 +579,7 @@ class _Win:
     finished: bool = False
     seam_pending: tuple | None = None
     thread_error: str | None = None
+    done: bool = False  # closed, its coverage noted and its seam reported: nothing left to look at
 
 
 def snapshot(st: fm.WindowState) -> fm.WindowState:
@@ -656,6 +662,8 @@ class LiveSource:
         self.first_mark: int | None = None
         self._started = self._stop = False
         self._buy_hold_logged: str | None = None
+        self._last_tick_ms = -10**18
+        self.tick_ms = 25
         self.stats: Counter = Counter()
 
     # -- files and events (names and counts only)
@@ -735,10 +743,12 @@ class LiveSource:
                     self._pending.append(e)
 
     def _tick(self, now: int) -> None:
+        self._last_tick_ms = now
         self._maybe_start_windows(now)
-        snaps = {T: snapshot(w.window.state) for T, w in self._wins.items()}  # BEFORE the drain: a tip in the snapshot implies the rows before it were queued
+        live = {T: w for T, w in self._wins.items() if not w.done}
+        snaps = {T: snapshot(w.window.state) for T, w in live.items()}  # BEFORE the drain: a tip in the snapshot implies the rows before it were queued
         self._drain_windows()
-        for T, w in self._wins.items():
+        for T, w in live.items():
             s = snaps[T]
             cov = window_coverage(s)
             if cov is not None:
@@ -759,6 +769,8 @@ class LiveSource:
                 if hw is not None and hw >= w.seam_pending[1] + 16:
                     self._event("seam", mark=T, **self.merger.seam_report(*w.seam_pending))
                     w.seam_pending = None
+            if w.finished and w.seam_pending is None:
+                w.done = True
         hold = self.cap.buy_hold()
         if hold != self._buy_hold_logged:
             self._buy_hold_logged = hold
@@ -777,7 +789,8 @@ class LiveSource:
         try:
             while not self._stop and not (self.stop_when is not None and self.stop_when()):
                 now = self.now_ms()
-                self._tick(now)
+                if now - self._last_tick_ms >= self.tick_ms:
+                    self._tick(now)
                 if not self._pending:
                     self._read_public(now)
                 if self._pending:
@@ -974,14 +987,19 @@ def cmd_run(a: argparse.Namespace, *, host_module: Any = None, ntp_runner: fm.Ru
                                                         "mirror_need_hours": need}, sort_keys=True, indent=1) + "\n")
     host = host_mod.DryHost(engine, log, source, out_dir=out, ntp_offset_ms=ntp.offset_ms, frozen_sha=sha)
     host.start()
+    old = {}
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
-            signal.signal(sig, lambda *_: source.request_stop())
+            old[sig] = signal.signal(sig, lambda *_: source.request_stop())
         except ValueError:  # not the main thread (tests)
             pass
     if source_hook is not None:
         source_hook(source)
-    counts = host.run(max_marks=a.max_marks)
+    try:
+        counts = host.run(max_marks=a.max_marks)
+    finally:
+        for sig, h in old.items():
+            signal.signal(sig, h)
     summary = {"schema": SCHEMA, "change_id": a.change_id, "host_counts": counts, "source": source.report()}
     (out / "glue" / "run-summary.json").write_text(json.dumps(summary, sort_keys=True, indent=1, default=str) + "\n")
     print(json.dumps({"schema": SCHEMA, "change_id": a.change_id, "host_counts": counts}, sort_keys=True))
