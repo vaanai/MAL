@@ -1156,6 +1156,10 @@ class Engine:
                 return None  # a kept print the fresh pass would cut in, or one that could be the first finite block_time (s0bt)
         return pre.s0bt
 
+    def drop_precompute(self) -> None:
+        """Forget any cached precompute (decide recomputes everything). Safe at any time."""
+        self._pre, self._pre_T = {}, None
+
     def sd_at(self, T: int) -> int | None:
         """sd(T) as decide(T) will compute it (the min slot of the first clock second at or after T), or None while decide(T)'s clock guard would still refuse."""
         pt = self.clock_point(T)
