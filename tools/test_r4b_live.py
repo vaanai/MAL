@@ -1084,3 +1084,158 @@ def test_an_explicit_frozen_sha_never_reaches_the_dirty_check(tmp_path, monkeypa
     with pytest.raises(lv.LiveRefused, match="dirty"):
         lv.host_start(DecisionLog(tmp_path / "d2"), now_ms=MARKS[0] * 1000)  # the default sha path does consult it, and its refusal stops the start
     assert not (tmp_path / "d2" / "decisions").exists()  # nothing was written
+
+
+# ------------------------------------------------------------------------------------------------------------------------------- T - 5 s precompute: byte-identical decisions
+def drive_pre(ev: list, marks, lead: int = 5, lag: int = 30, check=None, **kw):
+    """drive() with a precompute(T) at T - lead (the engine has seen every row before T - lead only) and decide(T) at T + lag. check(eng, T) runs after
+    the precompute. Returns (engine, [MarkResult], [precompute stats])."""
+    eng, i, out, stats = mk_engine(**kw), 0, [], []
+    for T in marks:
+        i = feed(eng, ev, i, T - lead)
+        stats.append(eng.precompute(T))
+        if check:
+            check(eng, T)
+        i = feed(eng, ev, i, T + lag)
+        out.append(eng.decide(T, w0=W0, last_entry=E - 3600))
+    return eng, out, stats
+
+
+def _rows_and_trades(eng, res):
+    allm = [m for r in res for m in r.mints]
+    md5 = lv.rows_md5(allm, np.concatenate([r.T for r in res]), np.concatenate([r.sdv for r in res]), np.vstack([r.X for r in res]),
+                      np.concatenate([r.score for r in res]))
+    return md5, lv.trades_md5(lv.trades_from_actions([a for r in res for a in r.actions] + eng.book.close_all("end")))
+
+
+def test_precompute_decisions_are_byte_identical_event_mode():
+    ev = event_stream(scenario())
+    ref_eng, ref = drive(ev, MARKS)
+    eng, res, stats = drive_pre(ev, MARKS)
+    assert [sig(r) for r in res] == [sig(r) for r in ref]  # rows, scores, ranks, actions, d3, every float32 byte
+    assert _rows_and_trades(eng, res) == _rows_and_trades(ref_eng, ref)
+    assert sum(len(r.mints) for r in res) > 40 and any(r.actions for r in res)
+    assert all(s["cached"] > 0 for s in stats) and eng.counters["precompute_hits"] > 20 and eng.counters.get("precompute_misses", 0) > 0  # both paths ran
+    assert not eng._pre and eng._pre_T is None  # dropped once the mark is decided
+
+
+def test_precompute_decisions_are_byte_identical_static_map_mode():
+    ev = event_stream(scenario(seed=11, n_members=13))
+    smap = {pda_of(f"M{i:02d}"): V for i in range(13)} | {pda_of("XVHI"): 17_800_000_000}
+    kw = dict(v_source="static_map", static_map=smap)
+    ref_eng, ref = drive(ev, MARKS, **kw)
+    eng, res, _ = drive_pre(ev, MARKS, **kw)
+    assert [sig(r) for r in res] == [sig(r) for r in ref] and _rows_and_trades(eng, res) == _rows_and_trades(ref_eng, ref)
+    assert sum(len(r.mints) for r in res) > 40 and eng.counters["precompute_hits"] > 20
+
+
+def test_precompute_identical_with_the_real_bag_score_and_for_other_leads(boosters):
+    ev = event_stream(scenario())
+    ref_eng, ref = drive(ev, MARKS, boosters=boosters)
+    for lead in (1, 5, 40):  # 40 s ahead: more members get a print between the precompute and the decision (misses), the result is the same
+        eng, res, _ = drive_pre(ev, MARKS, lead=lead, boosters=boosters)
+        assert [sig(r) for r in res] == [sig(r) for r in ref], lead
+        assert _rows_and_trades(eng, res) == _rows_and_trades(ref_eng, ref)
+
+
+def test_precompute_leaves_no_trace_in_the_engine_state_a_decision_reads():
+    """After a precompute (and before the decide) the member cache, the clock, the market minutes, the book and the last mark are as they were."""
+    ev = event_stream(scenario())
+    eng, i = mk_engine(), 0
+    i = feed(eng, ev, i, MARKS[1] - 5)
+    before = (dict(eng._member_final), dict(eng.clock), {k: list(v) for k, v in eng.mkt.items()}, dict(eng.book.pos), eng._last_T, eng.book.last,
+              {k: dict(v) for k, v in [(k, {"n": len(s.prints["slot"])}) for k, s in eng.mints.items()]})
+    stats = eng.precompute(MARKS[1])
+    after = (dict(eng._member_final), dict(eng.clock), {k: list(v) for k, v in eng.mkt.items()}, dict(eng.book.pos), eng._last_T, eng.book.last,
+             {k: dict(v) for k, v in [(k, {"n": len(s.prints["slot"])}) for k, s in eng.mints.items()]})
+    assert before == after and stats["cached"] > 0
+    with pytest.raises(lv.LiveRefused, match="not an hour mark"):
+        eng.precompute(MARKS[1] + 5)
+    with pytest.raises(lv.LiveRefused, match="reference path"):
+        mk_engine(exact_grid=True).precompute(MARKS[1])
+    i = feed(eng, ev, i, MARKS[1] + 30)
+    eng.decide(MARKS[1], w0=W0, last_entry=E - 3600)
+    with pytest.raises(lv.LiveRefused, match="not after the last decided"):
+        eng.precompute(MARKS[1])
+
+
+def test_precompute_entry_is_reused_only_for_the_same_print_set():
+    """_pre_valid: a kept print that arrived since the precompute and is before sd forces a recompute; one at or after sd, or a print that is not kept, does
+    not. Every case is checked against a fresh engine's decide (byte-identical rows)."""
+    ev = event_stream(scenario())
+    T, mint = MARKS[1], "M03"
+    pre_feed = T - 5
+
+    def run(extra_rows, do_pre=True):
+        eng, i = mk_engine(), 0
+        i = feed(eng, ev, i, pre_feed)
+        if do_pre:
+            eng.precompute(T)
+        for r in extra_rows:  # rows that arrive after the precompute, before the decision
+            eng.ingest_trade(r)
+        i = feed(eng, ev, i, T + 30)
+        return eng, eng.decide(T, w0=W0, last_entry=E - 3600)
+
+    base_eng, base = run([], do_pre=False)
+    sd = base.sd
+    last = {m: max(r["slot"] for h in scenario().values() for r in h["trades"] if r["mint"] == m and r["venue"] == "pumpswap" and r["block_time"] < pre_feed)
+            for m in ("M03",)}
+    mk = lambda slot, bt, **k: {**_ps_row(mint, slot, bt), "signature": f"x{slot}", **k}  # noqa: E731
+    cases = {
+        "before_sd": [mk(sd - 3, T - 3)],  # a print the fresh pass uses: forces a miss
+        "at_sd": [mk(sd + 1, T + 1)],  # after the cut: ignored by both
+        "null_bt_before_sd": [mk(sd - 2, None)],  # no block_time, slot before sd: a miss
+        "unkept_old_slot": [mk(1, T - 3)],  # slot < s0: not a kept print
+    }
+    assert last["M03"] < sd
+    for name, extra in cases.items():
+        eng, res = run(extra)
+        _, want = run(extra, do_pre=False)
+        assert sig(res) == sig(want), name
+        used = eng.counters.get("precompute_hits", 0), eng.counters.get("precompute_misses", 0)
+        if name in ("at_sd", "unkept_old_slot"):
+            assert used[0] > 0 and eng.counters.get("precompute_misses", 0) < 3, (name, used)
+    eng, _ = run(cases["before_sd"])
+    assert eng.counters.get("precompute_misses", 0) >= 1
+
+
+def test_precompute_entry_is_dropped_when_the_buffer_or_the_member_changes():
+    ev = event_stream(scenario())
+    T = MARKS[1]
+    eng, i = mk_engine(), 0
+    i = feed(eng, ev, i, T - 5)
+    eng.precompute(T)
+    mint = next(iter(eng._pre))
+    pre = eng._pre[mint]
+    st = eng.mints[mint]
+    mem = next(m for m in eng.members(T) if m.mint == mint)
+    sl, bt = np.frombuffer(st.prints["slot"], np.int64), np.frombuffer(st.prints["bt"], np.float64)
+    sd = 10 ** 12
+    assert eng._pre_valid(mem, pre, sl, bt, sd) == pre.s0bt  # nothing changed: valid
+    assert eng._pre_valid(mem, pre, sl, bt, int(pre.max_slot)) is None  # a cached print at or after sd
+    import dataclasses
+    assert eng._pre_valid(dataclasses.replace(mem, s0=mem.s0 + 1), pre, sl, bt, sd) is None
+    assert eng._pre_valid(dataclasses.replace(mem, v0=mem.v0 + 1), pre, sl, bt, sd) is None
+    eng.prune(T + 10 ** 7)  # prints replaced by a new buffer (a pruned mint): never reused
+    assert eng.mints[mint].prints["slot"] is not pre.buf
+    mem2 = dataclasses.replace(mem, st=eng.mints[mint])
+    assert eng._pre_valid(mem2, pre, np.zeros(0, np.int64), np.zeros(0), sd) is None
+
+
+def test_precompute_all_nan_block_times_cannot_be_reused_when_a_kept_print_follows():
+    """If every cached print has a null block_time, s0bt is the first finite block_time of ALL kept prints, so a later kept print could change it."""
+    eng = mk_engine(universe_min_mbt=0)
+    t = BT0 + 3600
+    eng.ingest_migration({"type": "complete", "mint": "MN", "slot": 100, "block_time": t - 500})
+    eng.ingest_migration({"type": "migration", "mint": "MN", "slot": 100, "block_time": t - 500, "pool": pda_of("MN"), "quote_mint": lv.WSOL})
+    for k in range(4):
+        eng.ingest_trade(_ps_row("MN", 110 + k, None))
+    eng.ingest_trade(_clock_row(t - 6, 400))
+    eng.precompute(t)
+    pre = eng._pre["MN"]
+    assert pre.fin_bt is False
+    st = eng.mints["MN"]
+    mem = next(m for m in eng.members(t, cache=False) if m.mint == "MN")
+    eng.ingest_trade(_ps_row("MN", 500, t - 1))  # kept, slot >= sd, finite block_time
+    sl, bt = np.frombuffer(st.prints["slot"], np.int64), np.frombuffer(st.prints["bt"], np.float64)
+    assert eng._pre_valid(mem, pre, sl, bt, 450) is None
