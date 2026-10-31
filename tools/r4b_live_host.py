@@ -101,7 +101,8 @@ WATCH_BOUND_S = 900.0  # ruling (a) P-a3: stop counting late_inputs this long af
 TRIGGERS = ("guard", "certified")
 INPUT_KINDS = ("trade", "market", "resolved", "migration", "create")  # adapter.Mapped kinds that feed the engine (a decision reads them)
 STATUS_DECIDED = ("decided", "decided_held")
-STATUS_NOT_COUNTED = ("late_public", "abandoned", "incomplete")
+LATE_STATUSES = ("late_public", "late_tip")  # b3: late_public (mirror history), late_tip (tip-tape history, QP-RULING-1031-r4b-history 2.3)
+STATUS_NOT_COUNTED = ("late_public", "late_tip", "abandoned", "incomplete")
 FAST0_HOSTNAME = "mal-fast-0"
 HOUR_MIN_SPAN_S = 1800  # tools/cap_pick_score.HOUR_MIN_SPAN_S (a test asserts it)
 HOUR_SPH_RANGE = (6000.0, 20000.0)  # tools/cap_pick_score.HOUR_SPH_RANGE (a test asserts it)
@@ -181,7 +182,10 @@ class DryHost:
                  now_ms: Callable[[], int] | None = None, ready_bound_s: float = READY_BOUND_S, precompute_lead_s: float = PRECOMPUTE_LEAD_S,
                  hostname: str | None = None, ntp_offset_ms: float | None = None, frozen_sha: str | None = None,
                  shorter_warmup_proof: str | None = None, trigger: str = "guard", change_id: str | None = None,
-                 late_bound_s: float = LATE_BOUND_S, watch_bound_s: float = WATCH_BOUND_S) -> None:
+                 late_bound_s: float = LATE_BOUND_S, watch_bound_s: float = WATCH_BOUND_S, late_status: str = "late_public",
+                 start_extra: Mapping[str, Any] | None = None) -> None:
+        if late_status not in LATE_STATUSES:
+            raise lv.LiveRefused(f"late_status must be one of {LATE_STATUSES}")
         if trigger not in TRIGGERS:
             raise lv.LiveRefused(f"trigger must be one of {TRIGGERS}")
         if change_id is not None and not (isinstance(change_id, str) and CHANGE_RE.fullmatch(change_id)):
@@ -197,6 +201,7 @@ class DryHost:
         self.ntp_offset_ms = ntp_offset_ms
         self.frozen_sha, self.shorter_warmup_proof = frozen_sha, shorter_warmup_proof
         self._trigger, self._change_id = trigger, change_id
+        self._late_status, self._start_extra = late_status, dict(start_extra or {})  # the source config of the run, written in the start row (Erratum 4 item 2)
         self.out = Path(out_dir) / "host"
         self.latency_path, self.events_path = self.out / "latency.jsonl", self.out / "events.jsonl"
         self.counts: Counter = Counter()
@@ -265,7 +270,7 @@ class DryHost:
                     prior_points[int(r["mark"])] = (int(r["sd"]), int(r["bt_star"]))
         sha = self.frozen_sha if self.frozen_sha is not None else lv.repo_head_sha()  # refuses a dirty tree
         out = lv.host_start(self.log, now_ms=now, frozen_sha=sha, warmup_s=self.engine.warmup_s, shorter_warmup_proof=self.shorter_warmup_proof,
-                            extra={"trigger": self._trigger, "change_id": self._change_id})
+                            extra={**self._start_extra, "trigger": self._trigger, "change_id": self._change_id})
         self._seen([out["start"], *out["exits"]])
         self.points.update(prior_points)
         self.next_mark = (now // 1000 // MARK_S + 1) * MARK_S
@@ -431,8 +436,8 @@ class DryHost:
                 self._abandon(T, now, "decide_refused")
                 return True
             cur.update(ready_ms=now, ready_tip=ready_tip, pt=pt, public_hw=hw)
-            self._event("late_public", mark=T, public_hw_slot=hw, wait_ms=now - T * 1000, exits=sum(1 for r in rows if r["kind"] == "exit"), suppressed=res.suppressed)
-            self._record(T, status="late_public", t_decide=t_decide, t_send=t_send, tip_decide=tip_decide, tip_send=tip_send, pt=pt, res=res, rows=rows, hold=None,
+            self._event(self._late_status, mark=T, public_hw_slot=hw, wait_ms=now - T * 1000, exits=sum(1 for r in rows if r["kind"] == "exit"), suppressed=res.suppressed)
+            self._record(T, status=self._late_status, t_decide=t_decide, t_send=t_send, tip_decide=tip_decide, tip_send=tip_send, pt=pt, res=res, rows=rows, hold=None,
                          reason=cur.get("incomplete"))
             return True
         if now >= T * 1000 + self.late_bound_ms:
@@ -630,7 +635,8 @@ def summarize(records: Iterable[Mapping[str, Any]], *, min_marks: int = GO_NOGO_
     recs = [by_mark[m] for m in sorted(by_mark)]
     out: dict[str, Any] = {"schema": SCHEMA, "change_id": change_id, "n_records": len(recs), "n_records_other_change_id": len(recs_all) - len(recs),
                            "n_decided": sum(1 for r in recs if r["status"] in STATUS_DECIDED), "n_held": sum(1 for r in recs if r["status"] == "decided_held"),
-                           "n_late_public": sum(1 for r in recs if r["status"] == "late_public"), "n_abandoned": sum(1 for r in recs if r["status"] == "abandoned"),
+                           "n_late_public": sum(1 for r in recs if r["status"] == "late_public"),
+                           "n_late_tip": sum(1 for r in recs if r["status"] == "late_tip"), "n_abandoned": sum(1 for r in recs if r["status"] == "abandoned"),
                            "n_incomplete": sum(1 for r in recs if r["status"] in STATUS_NOT_COUNTED),
                            "slot_s": {d: dict(v) for d, v in sorted(table.items())}, "decide_commitment": decide_commitment, "stub_slots": stub_slots}
     excluded: Counter = Counter()
