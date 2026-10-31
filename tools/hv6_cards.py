@@ -8,7 +8,7 @@ book makes money.
 What this file is: HV4's lane G universe (filters, features, setup predicates, hard vetoes, card) is imported, never copied or edited; HV6 adds only
   * the GEN persona: CON and BIG merged, ONE setup per pool per 30 min (PULLBACK, else BREAKOUT, else SECOND_WAVE), cooldown keyed "GEN";
   * the 2 h age guard (section 8.5): a hard code check that refuses any card under 2 h, independent of the HV4 `age_min` filter;
-  * the board (24 pools every 15 min at :02 by 60-min volume) and X's 2/h cap;
+  * the board (BOARD_SIZE = 4 pools every 15 min at :02 by 60-min volume; 24 before fix B, see BOARD_SIZE) and X's 2/h cap;
   * the HV6 code limits as data (design table, section 2);
   * the path allowlist guard (section 8.2) and an import guard (section 8.2, "an import guard blocks modules that read outputs").
 
@@ -41,12 +41,18 @@ HV4_BLOB_SHAS = {
 # ---------------------------------------------------------------------------------------------------------------------------------------
 SCAN_SECOND_MS = 2_000  # scan each minute at :02
 BOARD_EVERY_MS = 15 * MIN_MS
-BOARD_SIZE = 24  # top 24 uncarded pools by 60-min volume
+# Fix B (smoke #1806, 2026-10-28): the DESIGN's 24 board cards every 15 min are 6 calls per board, 24 entry calls/h per arm, twice ENTRY_CALLS_PER_H (12): the cap
+# fired 43 times against 24 chunks called and most board cards got no verdict. The board is now ONE call per board scan (BOARD_SIZE = CARDS_PER_CALL = 4),
+# 4 board calls/h per arm, a third of the 12/h cap; setups (tags) keep the rest and come first in a scan's order. The DESIGN's own planning figure (board
+# <= 576 cards/day) assumed 24 board cards an hour; 4 every 15 min is 384/day. A changed board value: P0 and the cards md5 re-run at the new sha.
+BOARD_SIZE = 4  # top 4 uncarded pools by 60-min volume (was 24)
 TOP_K_PER_SCAN = 8  # as HV4 TOP_K_PER_PERSONA (design is silent; HV4 value kept)
 CARDS_PER_CALL = 4
 ENTRY_CALLS_PER_H = 12
 X_CAP_PER_H = 2
 MIN_AGE_S = C.AGE_MIN_S  # 2 h, the hard guard (section 8.5)
+BOARD_CALLS_PER_H = -(-BOARD_SIZE // CARDS_PER_CALL) * (60 * MIN_MS // BOARD_EVERY_MS)  # 4: one call per board, four boards an hour
+assert BOARD_CALLS_PER_H <= ENTRY_CALLS_PER_H // 3, "the board must leave at least two thirds of the entry-call cap to setups"
 
 GEN_CODE_LIMITS: Mapping[str, Any] = {  # section 2 table, HV6 v0 column
     "min_conviction": 3, "hard_stop_pct": -40.0, "max_hold_min": 720, "board": BOARD_SIZE, "entries_per_h": 3, "max_open": 6, "day_loss_stop_sol": 1.5,
@@ -120,7 +126,7 @@ def is_board_second(t_ms: int) -> bool:
 
 
 def select_board(vol60: Mapping[str, float | None], tagged: Iterable[str]) -> list[str]:
-    """Top BOARD_SIZE filter-pass pools NOT tagged by a setup this scan, by 60-min volume descending, ties by pool id (HV4's board rule, size 24)."""
+    """Top BOARD_SIZE filter-pass pools NOT tagged by a setup this scan, by 60-min volume descending, ties by pool id (HV4's board rule, size BOARD_SIZE = 4)."""
     t = set(tagged)
     rest = sorted((p for p in vol60 if p not in t), key=lambda p: (-(vol60[p] or 0.0), p))
     return rest[:BOARD_SIZE]

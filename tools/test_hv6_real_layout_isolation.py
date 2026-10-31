@@ -127,3 +127,22 @@ def test_phantom_filter_value_is_passed_to_each_isolated_run(tmp_path, _sandbox,
         RL.run_real(["2026-10-21"], name, "a" * 40, base=base, isolate=True, **kw)
         capsys.readouterr()
         assert seen == [("real-a", want), ("real-b", want), ("real-c", want)]
+
+
+def test_equivalence_switches_reach_each_isolated_run(tmp_path, _sandbox, monkeypatch, capsys):
+    """HV6 fixes A/B/C drill switches: legacy constants and the concurrent path are handed to every child run; off, the call is the pre-switch call."""
+    seen = []
+    monkeypatch.setattr(RL, "_isolated_run", lambda tag, days, did, sha, b, phantom=True, **kw: (seen.append((tag, kw)), _fake(tag, 1000.0))[1])
+    monkeypatch.setattr(RL, "seal_read_only", lambda base: None)
+    monkeypatch.setattr(RL, "hour_scan", lambda src, days: {"hours_present": 24, "hours_expected": 24, "hours_missing": 0})
+    monkeypatch.setattr(RL, "count_programs", lambda src, days: {})
+    base = tmp_path / "drill" / "sw"
+    base.mkdir(parents=True)
+    (base / "SYNTHETIC_FIXTURE_ROOT").write_text("")
+    RL.run_real(["2026-10-21"], "sw", "a" * 40, base=base, isolate=True, legacy=True, concurrent=True)
+    assert seen == [(t, {"legacy": True, "concurrent": True}) for t in ("real-a", "real-b", "real-c")]
+    seen.clear()
+    (base / "real-layout-result.json").unlink()
+    RL.run_real(["2026-10-21"], "sw", "a" * 40, base=base, isolate=True)
+    assert seen == [(t, {}) for t in ("real-a", "real-b", "real-c")]
+    capsys.readouterr()
