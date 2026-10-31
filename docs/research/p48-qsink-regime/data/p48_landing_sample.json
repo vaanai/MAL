@@ -1,0 +1,122 @@
+{
+ "BUp|PUMP|all": {
+  "distinct_sigs": 685,
+  "asked": 20,
+  "found": 0,
+  "found_ok": 0
+ },
+ "BUp|USDC|all": {
+  "distinct_sigs": 43,
+  "asked": 20,
+  "found": 0,
+  "found_ok": 0
+ },
+ "BUp|pumpcoin|all": {
+  "distinct_sigs": 2325,
+  "asked": 20,
+  "found": 0,
+  "found_ok": 0
+ },
+ "nonBUp|PUMP|10-19": {
+  "distinct_sigs": 2,
+  "asked": 2,
+  "found": 0,
+  "found_ok": 0
+ },
+ "nonBUp|PUMP|10-20": {
+  "distinct_sigs": 1,
+  "asked": 1,
+  "found": 0,
+  "found_ok": 0
+ },
+ "nonBUp|PUMP|10-21": {
+  "distinct_sigs": 2,
+  "asked": 2,
+  "found": 0,
+  "found_ok": 0
+ },
+ "nonBUp|PUMP|10-23": {
+  "distinct_sigs": 2,
+  "asked": 2,
+  "found": 0,
+  "found_ok": 0
+ },
+ "nonBUp|PUMP|10-24": {
+  "distinct_sigs": 1,
+  "asked": 1,
+  "found": 0,
+  "found_ok": 0
+ },
+ "nonBUp|USDC|10-19": {
+  "distinct_sigs": 3845,
+  "asked": 20,
+  "found": 20,
+  "found_ok": 20
+ },
+ "nonBUp|USDC|10-20": {
+  "distinct_sigs": 3985,
+  "asked": 20,
+  "found": 20,
+  "found_ok": 20
+ },
+ "nonBUp|USDC|10-21": {
+  "distinct_sigs": 2750,
+  "asked": 20,
+  "found": 20,
+  "found_ok": 20
+ },
+ "nonBUp|USDC|10-22": {
+  "distinct_sigs": 3081,
+  "asked": 20,
+  "found": 20,
+  "found_ok": 20
+ },
+ "nonBUp|USDC|10-23": {
+  "distinct_sigs": 3848,
+  "asked": 20,
+  "found": 20,
+  "found_ok": 20
+ },
+ "nonBUp|USDC|10-24": {
+  "distinct_sigs": 1868,
+  "asked": 20,
+  "found": 20,
+  "found_ok": 20
+ },
+ "nonBUp|pumpcoin|10-19": {
+  "distinct_sigs": 4308,
+  "asked": 20,
+  "found": 20,
+  "found_ok": 20
+ },
+ "nonBUp|pumpcoin|10-20": {
+  "distinct_sigs": 16074,
+  "asked": 20,
+  "found": 20,
+  "found_ok": 20
+ },
+ "nonBUp|pumpcoin|10-21": {
+  "distinct_sigs": 30929,
+  "asked": 20,
+  "found": 20,
+  "found_ok": 20
+ },
+ "nonBUp|pumpcoin|10-22": {
+  "distinct_sigs": 5121,
+  "asked": 20,
+  "found": 20,
+  "found_ok": 20
+ },
+ "nonBUp|pumpcoin|10-23": {
+  "distinct_sigs": 10394,
+  "asked": 20,
+  "found": 20,
+  "found_ok": 20
+ },
+ "nonBUp|pumpcoin|10-24": {
+  "distinct_sigs": 7952,
+  "asked": 20,
+  "found": 20,
+  "found_ok": 20
+ }
+}
