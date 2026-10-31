@@ -15,6 +15,9 @@ Live needs ALL of: config mode "live", --live, LIVE_OK and TIER root-owned files
 tools.h5_executor.root_file_problem), an explicit end_ms, a pinned frozen_sha that the book's `start` row repeats, a valid chain. A missing or unsafe
 LIVE_OK makes a live-configured bridge DRY for that entry (it logs the order it would have sent). The TIER file is read before every buy; the only
 tier is T0 (the canary limits); an unknown or missing tier is T0.
+Mint screen (DEC-032 s3 "Venue"): the last check before the write-ahead, the live port reads the mint account fresh (no cache) and refuses
+`close_blocked_mint:<reason>` on a freeze authority, a Token-2022 extension outside {metadataPointer, tokenMetadata}, an unknown owner program or any failed
+read, with the SAME functions as the Q50/H5 executor (h5_arena_executor.mint_screen_record + arena_close_blocked.classify_record). A dry port does not read it.
 The hv4_c0 profile reads its LIVE_OK per bot, /etc/mal-arena-live/hv4-c0/<bot_id>/LIVE_OK (content exactly the bot_id), and its owner confirmation per bot,
 /etc/mal-hv4-c0/<bot_id>/CANARY_DEC.md (hv4_live_c0.owner_line_check); both files root:root, mode exactly 0644, in a root-owned per-bot directory that is not group/other
 writable (0755); TIER stays the one shared file. Two canaries also need their own wallet, state_dir, parity_dir, twins_file and tieout_dir in config.
@@ -75,6 +78,9 @@ MAX_SL_BACKSTOP = 0.60
 WARM_MS_MIN, WARM_MS_MAX, WARM_MS_DEFAULT = 500, 2_000, 1_000
 SELL_RETRY_MS = 5_000
 UNIVERSE_V_RANGE = (17_500_000_000, 17_700_000_000)  # Am.2 item 6: V in [17.5e9, 17.7e9], WSOL quote
+MINT_SCREEN_LABEL = "close_blocked_mint"  # DEC-032 s3 "Venue" pre-send refusal; the same label as tools/h5_arena_executor.py's screen
+MINT_SCREEN_NOT_DECLARED = MINT_SCREEN_LABEL + ":screen_not_declared"
+MINT_SCREEN_ERROR = MINT_SCREEN_LABEL + ":screen_error"
 
 LATCHES = ("sealed_path", "chain_break", "frozen_sha_mismatch", "total_loss_cap", "per_trade_loss_cap", "stuck_sell",
            "parity_hard_halt", "parity_stop_unwritable", "landed_buy_unreadable", "stake_mismatch", "twin_pin_mismatch", "read_record", "tieout_mismatch", c0.A3_LATCH, c0.FEED_BREAK_LATCH)  # twin_pin_mismatch and the two before: hv4_c0 parity wiring; read_record: no recorded PASS read for the bot (hv4_c0): hv4_c0 parity wiring (tools/hv4_c0_parity.py)
@@ -211,6 +217,11 @@ class OrderPort:
         """None when the pool passes Am.2 item 6 (WSOL quote, V in [17.5e9, 17.7e9]); else a refusal label."""
         raise NotImplementedError
 
+    def mint_screen_problem(self, mint: str) -> str | None:
+        """DEC-032 s3 "Venue" pre-send screen: None when the mint may be bought; else a `close_blocked_mint:<reason>` label. Deny by default: a port that
+        does not declare its own screen refuses every buy."""
+        return MINT_SCREEN_NOT_DECLARED
+
     def balance(self) -> int | None:
         raise NotImplementedError
 
@@ -259,6 +270,9 @@ class DryPort(OrderPort):
 
     def universe_problem(self, pool: str, mint: str) -> str | None:
         return None  # not checked in dry (no RPC); the bridge log says so
+
+    def mint_screen_problem(self, mint: str) -> str | None:
+        return None  # not checked in dry (no RPC), as universe_problem; the live port reads the mint account before every buy
 
     def balance(self) -> int | None:
         return self._balance
@@ -977,6 +991,8 @@ class Bridge:
             why = self.gate_refusal(now)
         if not why:
             why = self.floor_problem(stake, self.port.balance(), scope)
+        if not why:
+            why = self.mint_screen_refusal(mint)  # type: ignore[arg-type]
         if why and self.cfg.profile == c0.PROFILE and why in c0.SKIP_UNIVERSE_LABELS:
             # A universe skip is not a cap and not a refusal: it is its own count and log kind, so the canary's narrower band can be told apart from limits.
             self._count("universe_skip")
@@ -1016,6 +1032,17 @@ class Bridge:
                   decision_slot=order["decision_slot"], would_send=not order["live"], dry_reason=why_dry, tier=tier, label=label,
                   **({"decision_seq": row["seq"]} if self.cfg.profile == c0.PROFILE else {}))  # hv4_c0: the decision row's seq, so orders can be tied back to rows (tools/hv4_c0_orders_proof.py)
         self._save()
+
+    def mint_screen_refusal(self, mint: str) -> str | None:
+        """DEC-032 s3 "Venue" pre-send refusal (strand class = total loss). Called last before the write-ahead, so the mint read costs a call only when every
+        other check passed; the decision age is judged again after it (_presend_refusal). A raise refuses (deny by default)."""
+        try:
+            why = self.port.mint_screen_problem(mint)
+        except Exception:  # noqa: BLE001 - deny on error
+            return MINT_SCREEN_ERROR
+        if why is None:
+            return None
+        return why if isinstance(why, str) and why.startswith(MINT_SCREEN_LABEL + ":") else MINT_SCREEN_ERROR
 
     def _presend_refusal(self, row: Mapping[str, Any]) -> str | None:
         now = self.now_ms()
@@ -1304,6 +1331,8 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
     from tools import probe_executor as pe
     from tools import probe_live as pl
     from tools import pumpswap_tx as tx_mod
+    from tools.arena_close_blocked import classify_record  # the Q50/H5 executor's screen (DEC-033), reused unchanged
+    from tools.h5_arena_executor import mint_screen_record
 
     if cfg.profile == c0.PROFILE:
         pin_why = c0.sell_pin_problem()
@@ -1515,6 +1544,11 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
             if snap.v is None or not UNIVERSE_V_RANGE[0] <= snap.v <= UNIVERSE_V_RANGE[1]:
                 return "universe_v_out_of_range"
             return None
+
+        def mint_screen_problem(self, mint: str) -> str | None:
+            """A fresh read of the mint account before every buy (one getAccountInfo, never a cache), screened by the Q50/H5 executor's own functions."""
+            why = classify_record(mint_screen_record(self.ex.rpc, mint))
+            return None if why is None else f"{MINT_SCREEN_LABEL}:{why}"
 
         def balance(self) -> int | None:
             return self.ex._balance()
