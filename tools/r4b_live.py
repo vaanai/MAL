@@ -606,7 +606,8 @@ class Engine:
 
     Clock guard: decide(T) refuses unless the clock holds a second strictly after s*, the first second at or after T (sd(T) is the min slot of s*, which
     is final only once a later second has been seen); a replay always satisfies this because it loads the files of hour(T) + 1 first. Marks must
-    advance: decide(T) refuses T <= the last decided mark.
+    advance: decide(T) refuses T <= the last decided mark. The certified trigger (decide(T, certified_sd=...), Addendum 5 ruling (a)) replaces only this
+    guard by the caller's own "every slot up to sd is delivered" signal; sd is re-derived and must equal the certified one.
     Bounded growth: in the default fast mode (exact_grid False) decide(T) drops clock SECONDS older than T - keep_clock_s (CLOCK_KEEP_S = 2 h; slot_at
     reads only seconds at or after the mark) once the mark is decided; keep_clock_s=None keeps everything and exact_grid always does (the pinned per-mint
     loop reads old grid seconds). Market and create minutes are NEVER dropped: the m_* columns are differences of float64 cumulative minute sums
@@ -1165,9 +1166,20 @@ class Engine:
         pt = self.clock_point(T)
         return None if pt is None else pt[0]
 
-    def clock_point(self, T: int) -> tuple[int, int] | None:
-        """(sd, s*): sd(T) and the first clock second s* >= T it comes from, or None until a later second is in (decide's guard). Same value as Prep.slot_at."""
+    def clock_point(self, T: int, provisional: bool = False) -> tuple[int, int] | None:
+        """(sd, s*): sd(T) and the first clock second s* >= T it comes from, or None until a later second is in (decide's guard). Same value as Prep.slot_at.
+        provisional True (the certified trigger, QP-RULING-1030 Addendum 5 ruling (a)): the same value as soon as ANY second at or after T is in, without the
+        later-second guard. That sd is only as final as the caller's own completeness signal makes it (every slot up to sd delivered); decide(T,
+        certified_sd=sd) re-derives it and refuses if it differs."""
         T = int(T)
+        if provisional:
+            if self._clock_hi < T:
+                return None
+            later = [s for s in self.clock if s >= T]
+            if not later:
+                return None
+            s_star = min(later)
+            return int(self.clock[s_star]), int(s_star)
         if self._clock_hi < T + 1:
             return None
         later = [s for s in self.clock if s >= T]
@@ -1185,24 +1197,40 @@ class Engine:
             self.boosters = rs.load_boosters()
         return rs.bag_score(self.boosters, X)
 
-    def decide(self, T: int, w0: int | None = None, last_entry: int | None = None, hold_entries: bool = False) -> MarkResult:
+    def decide(self, T: int, w0: int | None = None, last_entry: int | None = None, hold_entries: bool = False, certified_sd: int | None = None) -> MarkResult:
         """The decision at mark T (T % 3600 == 0). w0 / last_entry bound the counted marks like the read (rows outside give an empty mark).
         Refuses (LiveRefused, nothing changed) when T is not after the last decided mark, or when the clock has no second strictly after s*, the first
         second at or after T: sd(T) = the min slot of s* would not be final (an early call would silently use the last known second).
         hold_entries (a host that must not buy at this mark: incomplete inputs, a credit cap): the ranking, the scores and the exits are those of an ordinary
         decide, but the book makes no entry (MarkResult.suppressed counts them); the mints stay unheld and may enter at a later mark.
-        A precompute(T) made before is used here and dropped when this mark is decided (a refusal leaves it for a retry)."""
+        A precompute(T) made before is used here and dropped when this mark is decided (a refusal leaves it for a retry).
+        certified_sd (QP-RULING-1030 Addendum 5 ruling (a), the certified trigger): the caller holds a completeness signal that every slot up to sd(T) is
+        delivered (r4b_feed_merge.mark_complete(T, sd).complete in full, never a tip alone), so the one-chain-second clock guard is skipped. ONLY the trigger
+        changes: sd is still derived here by the same Prep.slot_at, the decision function and the slot < sd filter are the same lines, and the call REFUSES
+        (LiveRefused, nothing changed) when the engine's own sd(T) differs from certified_sd or when no clock second at or after T is in. The caller retries
+        or falls back. With complete inputs the result is byte-equal to the guard path's (tests)."""
         t_start = time.monotonic()
         T = int(T)
         if T % MARK_S:
             raise LiveRefused(f"{T} is not an hour mark")
         if self._last_T is not None and T <= self._last_T:
             raise LiveRefused(f"mark {T} is not after the last decided mark {self._last_T}")
-        if self._clock_hi < T + 1 or sum(1 for sec in self.clock if sec >= T) < 2:
-            raise LiveRefused(f"clock not complete at {T}: need a second after the first second >= {T} (latest ingested second {self._clock_hi})")
+        if certified_sd is None:
+            if self._clock_hi < T + 1 or sum(1 for sec in self.clock if sec >= T) < 2:
+                raise LiveRefused(f"clock not complete at {T}: need a second after the first second >= {T} (latest ingested second {self._clock_hi})")
+        else:
+            if isinstance(certified_sd, (bool, np.bool_)) or not isinstance(certified_sd, (int, np.integer)):
+                raise LiveRefused("certified_sd must be an int slot")
+            pt = self.clock_point(T, provisional=True)  # a cheap check first: nothing below (members, prep) has run
+            if pt is None:
+                raise LiveRefused(f"certified decide at {T}: no clock second at or after {T} yet (latest ingested second {self._clock_hi})")
+            if pt[0] != int(certified_sd):
+                raise LiveRefused(f"certified sd {int(certified_sd)} != the engine's sd({T}) {pt[0]}: not decided")
         mem = self.members(T)
         prep = self.prep(mem)
         sd = int(prep.slot_at(np.array([T], np.int64))[0])
+        if certified_sd is not None and sd != int(certified_sd):  # the authoritative derivation (the one the features use) must agree too
+            raise LiveRefused(f"certified sd {int(certified_sd)} != the engine's sd({T}) {sd}: not decided")
         in_window = (w0 is None or T >= w0) and (last_entry is None or T <= last_entry)
         mints, Xs, sds = [], [], []
         mid_key = {}
@@ -1360,10 +1388,12 @@ def new_host_engine(*, warmup_s: int = DEFAULT_WARMUP_S, shorter_warmup_proof: s
 
 
 def host_start(log: Any, *, now_ms: int, frozen_sha: str | None = None, bot_id: str = BOT_ID, warmup_s: int = DEFAULT_WARMUP_S,
-               shorter_warmup_proof: str | None = None) -> dict:
+               shorter_warmup_proof: str | None = None, extra: Mapping[str, Any] | None = None) -> dict:
     """What a decision host does when it starts, in this order: write the `start` row (frozen_sha = repo_head_sha() unless given; the executor latches
     frozen_sha_mismatch on another value and counts a second start row as a host restart), then restart_exits for every position the previous process left
-    open. The engine decides only after this returns, and it is built with the same warmup_s (new_host_engine). Returns {"start", "exits", "warmup_s"}."""
+    open. The engine decides only after this returns, and it is built with the same warmup_s (new_host_engine). Returns {"start", "exits", "warmup_s"}.
+    extra: run-configuration fields the host records in the start row (tools/r4b_live_host: the trigger and the change_id of the run, Addendum 5); they
+    can never replace a field this function writes."""
     _check_warmup(warmup_s, shorter_warmup_proof)
     sha = frozen_sha if frozen_sha is not None else repo_head_sha()
     if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
@@ -1372,6 +1402,10 @@ def host_start(log: Any, *, now_ms: int, frozen_sha: str | None = None, bot_id: 
     body = {"kind": "start", "book": BOOK, "exp": "EXP-027", "mode": "dry", "schema": SCHEMA, "frozen_sha": sha, "warmup_s": warmup_s}
     if warmup_s < DEFAULT_WARMUP_S:
         body["warmup_proof"] = shorter_warmup_proof
+    for k, v in (extra or {}).items():
+        if k in body or k in ("seq", "arm", "ms", "prev", "sha"):
+            raise LiveRefused(f"host_start extra may not set {k!r}")
+        body[k] = v
     start = log.append(bot_id, now_ms, body)
     return {"start": start, "exits": restart_exits(log, bot_id, now_ms), "warmup_s": warmup_s}
 
