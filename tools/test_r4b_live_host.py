@@ -592,7 +592,8 @@ def test_a_precompute_failure_costs_speed_not_a_decision(tmp_path, monkeypatch):
     assert host.counts["precompute_error"] == 4 and all(r["precompute"]["ran"] is False for r in latency(host))
     assert [e["error"] for e in events(host) if e["event"] == "precompute_error"] == ["RuntimeError"] * 4
     sm = hh.summarize(latency(host), min_marks=1, require_host=None)
-    assert (sm["n_warmup"], sm["n_without_precompute"], sm["n_counted"]) == (2, 2, 0)  # the warm-up marks are left out first; the other two have no precompute
+    assert sm["n_warmup"] == 2 and sm["n_counted"] + sm["n_provisional"] == 2  # warm-up marks left out first; the other two are never dropped for latency
+    assert sm["n_counted_failed"] == sm["n_counted"] == sm["n_without_precompute"]  # when their date is final they count, as fails
 
 
 # ------------------------------------------------------------------------------------------------------------------------------- slot time, k and the summary
@@ -663,7 +664,7 @@ def test_summary_go_no_go_over_at_least_48_marks():
     assert hh.summarize(synth_records(host="mal-research-0"))["verdict"] == "INSUFFICIENT"
     assert hh.summarize(synth_records(host="mal-research-0"), require_host=None)["verdict"] == "GO"
     s = hh.summarize(synth_records(pre=False))
-    assert s["verdict"] == "INSUFFICIENT" and s["n_counted"] == 0 and s["n_without_precompute"] == 49  # all 49 synthetic marks
+    assert s["verdict"] == "NO_GO" and s["n_counted"] == 48 and s["n_counted_failed"] == 48 and s["n_without_precompute"] == 48  # counted as fails, never dropped
     recs = synth_records(d_ws=5)
     for r in recs[10:14]:
         r["status"], r["reason"], r["processed"]["d_would_send"] = "abandoned", "bound_clock", None  # abandoned marks never count and never help
@@ -833,3 +834,24 @@ def test_logs_hold_counts_only_and_the_module_has_no_send_path_or_key(tmp_path):
     for word in ("probe_live", "LiveExecutor", "Keypair", "sendTransaction", "send_transaction", "private_key", "helius", "requests", "urllib", "websocket"):
         assert word not in src, word
     assert lv.LIVE_BUILT is False
+
+
+
+def test_every_decided_mark_counts_slow_or_unmeasured_marks_are_fails_not_dropped():
+    """Reviewer on #1143 at 9cdee9ca: dropping decided marks whose precompute ran after T (or that have no would-send slot) shrank the denominator and
+    still returned GO. They count, as fails in the median (FAIL_SLOTS)."""
+    base = hh.summarize(synth_records(d_ws=5))
+    assert base["verdict"] == "GO" and base["n_counted"] == 48
+    recs = synth_records(d_ws=5)
+    counted = [r for r in recs if r.get("warmup") is False and r["status"] == "decided"][:48]
+    for r in counted[:20]:
+        r["precompute"] = {**(r.get("precompute") or {}), "ran": True, "rel_ms": 250}  # ran after the mark
+    for r in counted[20:25]:
+        r["processed"]["d_would_send"] = None  # no would-send slot
+    s = hh.summarize(recs)
+    assert s["n_counted"] == 48 and s["n_counted_failed"] == 25 and s["counted_failed_by_reason"] == {"no_d_would_send": 5, "no_precompute_ahead": 20}
+    assert s["verdict"] == "NO_GO" and s["go_qty"] >= hh.FAIL_SLOTS  # 25 of 48 fail: the median is a fail
+    for r in counted[:20]:
+        r["precompute"]["rel_ms"] = -5000
+    s = hh.summarize(recs)
+    assert s["n_counted_failed"] == 5 and s["verdict"] == "GO"  # 5 fails of 48: the median is still 5 slots

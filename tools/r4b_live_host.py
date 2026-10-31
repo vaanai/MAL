@@ -93,6 +93,7 @@ MARK_S = lv.MARK_S
 PRECOMPUTE_LEAD_S = 5.0  # the T - 5 s precompute
 READY_BOUND_S = 20.0  # decide on complete inputs, or give up on the mark, at most this long after T
 SEND_LAND_STUB_SLOTS = 4  # Erratum 2 Bar 2.3: the upper send-and-land allowance added to p50(d_would_send)
+FAIL_SLOTS = 1_000_000  # a counted decided mark without the precompute ahead of T, or without a would-send slot, enters the median as this (a fail)
 LAT_LONG_S, LAT_SHORT_S = 1.9, 1.3  # EXP-027 section 3.3 lats
 GO_NOGO_MIN_MARKS = 48
 LATE_BOUND_S = 900.0  # ruling (b3): wait this long after T for the public stream to pass sd + 1, then abandon the mark
@@ -596,9 +597,10 @@ def summarize(records: Iterable[Mapping[str, Any]], *, min_marks: int = GO_NOGO_
          GO  iff  p50(d_would_send) + 4 <= k_1_9 = round(1.9 / slot_s), over at least `min_marks` counted marks, on mal-fast-0, with the T - 5 s precompute.
     Rules fixed here, outcome-blind (QP-RULING-1030 Addendum 5 ruling (b1), (b2); the Erratum states the quantity, these are the read rules):
       * A mark COUNTS if it was decided on complete inputs (status decided: NOT decided_held, late_public or abandoned), it is NOT a warm-up mark (warmup False;
-        a record without the flag is not vouched for and is left out), its precompute ran ahead of the mark, d_would_send exists for the deciding commitment,
-        and its date's slot_s is FINAL (24 measured hours, recomputed here from the recorded points of ALL records). A date is left out only for that last
-        reason, never for its marks' latency; EVERY date the host ran is reported (`dates`).
+        a record without the flag is not vouched for and is left out), and its date's slot_s is FINAL (24 measured hours, recomputed here from the recorded
+        points of ALL records). A date is left out only for that last reason, never for its marks' latency; EVERY date the host ran is reported (`dates`).
+        EVERY such decided mark counts (reviewer on #1143): one whose precompute did not run ahead of the mark, or that has no d_would_send for the deciding
+        commitment, counts as a FAIL (its d_would_send enters the median as FAIL_SLOTS), never dropped.
       * Read once: the verdict is taken at the first UTC-date boundary with at least `min_marks` counted marks, over all counted marks up to that boundary
         (`read_date` is the last date inside it). Later marks do not enter (n_after_read); the verdict never changes as the file grows. Before that boundary the
         verdict is INSUFFICIENT and the percentiles are `monitor_only`.
@@ -649,18 +651,19 @@ def summarize(records: Iterable[Mapping[str, Any]], *, min_marks: int = GO_NOGO_
         if r.get("warmup") is not False:
             n_warm += 1
             continue
-        pre = r.get("precompute") or {}
-        if not (pre.get("ran") and pre.get("rel_ms") is not None and pre["rel_ms"] < 0):  # the precompute ran, and ahead of the mark
-            n_nopre += 1
-            continue
-        if (r.get(decide_commitment) or {}).get("d_would_send") is None:
-            n_nodws += 1
-            continue
         t = table.get(r["date"])
         if t is None or not t["final"]:
             n_prov += 1
             continue
-        by_date.setdefault(r["date"], []).append(r)
+        pre = r.get("precompute") or {}
+        fail = None
+        if not (pre.get("ran") and pre.get("rel_ms") is not None and pre["rel_ms"] < 0):  # the precompute ran, and ahead of the mark
+            n_nopre += 1
+            fail = "no_precompute_ahead"
+        if (r.get(decide_commitment) or {}).get("d_would_send") is None:
+            n_nodws += 1
+            fail = fail or "no_d_would_send"
+        by_date.setdefault(r["date"], []).append(r if fail is None else {**r, "_fail": fail})
     out["excluded"] = dict(sorted(excluded.items()))
     out["dates"] = {}
     for d in sorted(set(marks_on) | set(table)):
@@ -682,12 +685,17 @@ def summarize(records: Iterable[Mapping[str, Any]], *, min_marks: int = GO_NOGO_
         vals = {f: [(r[c][f]) for r, _ in counted if r.get(c) and r[c].get(f) is not None] for f in ("d_ready", "d_decide", "d_would_send")}
         out[c] = {f: {"n": len(v), "p50": _pq(v, 50), "p90": _pq(v, 90)} for f, v in vals.items()}
     per_date: dict[str, dict] = {}
+    def dws_of(r: Mapping[str, Any]) -> float:
+        return FAIL_SLOTS if r.get("_fail") else r[decide_commitment]["d_would_send"]
+
     for r, s_s in counted:
         e = per_date.setdefault(r["date"], {"slot_s": s_s, "k_1_9": k_for(LAT_LONG_S, s_s), "k_1_3": k_for(LAT_SHORT_S, s_s), "d_would_send": []})
-        e["d_would_send"].append(r[decide_commitment]["d_would_send"])
+        e["d_would_send"].append(dws_of(r))
     out["per_date"] = {d: {"slot_s": e["slot_s"], "k_1_9": e["k_1_9"], "k_1_3": e["k_1_3"], "n": len(e["d_would_send"]), "p50_d_would_send": _pq(e["d_would_send"], 50),
                            "p90_d_would_send": _pq(e["d_would_send"], 90)} for d, e in sorted(per_date.items())}
-    dws = [r[decide_commitment]["d_would_send"] for r, _ in counted]
+    dws = [dws_of(r) for r, _ in counted]
+    out["n_counted_failed"] = sum(1 for r, _ in counted if r.get("_fail"))
+    out["counted_failed_by_reason"] = dict(sorted(Counter(r["_fail"] for r, _ in counted if r.get("_fail")).items()))
     p50 = _pq(dws, 50)
     k19 = min((e["k_1_9"] for e in per_date.values()), default=None)
     out["k_1_9_used"] = k19
@@ -706,8 +714,8 @@ def summarize(records: Iterable[Mapping[str, Any]], *, min_marks: int = GO_NOGO_
         why.append(f"counted marks are not all from {require_host}")
     if len(triggers) > 1:
         why.append(f"counted marks carry more than one trigger ({', '.join(triggers)}): one trigger per run")
-    if n_nopre:
-        why.append(f"{n_nopre} decided mark(s) left out: no precompute ahead of the mark")
+    if out["n_counted_failed"]:
+        why.append(f"{out['n_counted_failed']} counted mark(s) count as fails (no precompute ahead of the mark, or no would-send slot)")
     if out["late_inputs"]["n_fault_sd_changed_without_late"]:
         why.append("a certified mark's sd moved with late_inputs 0: a code fault (QP Addendum 5 P-a3), the run blocks")
     if len(counted) < min_marks or (require_host is not None and hosts != [require_host]) or len(triggers) > 1 or change_id is None:
