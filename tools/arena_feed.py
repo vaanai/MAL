@@ -8,7 +8,9 @@ paper engine and tools/arena_state.py read. Schema and reserve conventions: tool
 INGEST. Per program, N redundant sockets (observe.trade_source.MultiSocketLogsSource, merged by signature; --sockets-pumpswap /
 --sockets-pumpfun, default 2 each). Default endpoint wss://api.mainnet-beta.solana.com; more come via repeatable --ws-url (socket i uses url
 i mod n). Any Helius URL, a URL with a query string, userinfo or a path (where a key could sit) is refused at start. A transaction that both
-subscriptions deliver (a migrate tx mentions both programs) is decoded once (global signature dedup).
+subscriptions deliver (a migrate tx mentions both programs) is decoded once (global signature dedup). That global set (LateSeen) remembers a
+signature 900 s (the per-program socket merge keeps 120 s), so a lagging socket's re-delivery minutes after the first copy is not written again;
+the gap rules still see every notice, so gap and hb rows are the same as before.
 
 DECODERS (nothing new except one field extractor). Trades: observe.trade_decode.records_from_logs(event_v=True) for both programs.
 PumpSwap CreatePoolEvent: observe.trade_decode.decode_program_data (kind create_pool). Bonding CreateEvent / CompleteEvent:
@@ -26,7 +28,7 @@ SAFETY. flock(LOCK_EX|LOCK_NB) on <out-dir>/.arena-feed.lock: a second instance 
 duplicate writer alive). DISK RESERVE (DEC-031 rev 2 s3.8, default 25): free space is shutil.disk_usage(out-dir).free / total, checked before every
 hour file opens and at least every 60 s. Below --min-free-pct nothing is written (no row of any type, no .zst), only arena-feed-status.json
 carries a flag; when space allows again ONE gap record (kind and reason disk_reserve) says for how long and how many rows were dropped.
-Memory: bounded dedup sets, no per-pool state here; the hb carries VmRSS. Logs are counts only (no signature, mint or wallet is logged).
+Memory: bounded dedup sets (the sources' 120 s socket merge, and LateSeen: 900 s, 3.3M keys, about 200 bytes a key), no per-pool state here; the hb carries VmRSS. Logs are counts only (no signature, mint or wallet is logged).
 
 LOSS IS MARKED. A decode error, a write error (OSError) and an exception while handling a notice each become a data_loss gap row (kind decode_error /
 write_error / consume_error; a burst is one coalesced record, written when the writer works again). A new process writes a process_restart gap for the
@@ -48,6 +50,7 @@ import argparse
 import asyncio
 import collections
 import fcntl
+import hashlib
 import json
 import logging
 import os
@@ -73,7 +76,7 @@ from observe.trade_decode import (
     decode_program_data,
     records_from_logs,
 )
-from observe.trade_source import DEFAULT_PUBLIC_WS, MultiSocketLogsSource, RawNotice, SeenSet
+from observe.trade_source import DEFAULT_PUBLIC_WS, MultiSocketLogsSource, RawNotice
 from tools.h5_shadow import DEFAULT_RPC, GAP_SLOTS, SILENCE_S, clean, code_sha, common_down, feed_snapshot, redact_argv, write_status
 from tools.arena_zst import compact_file, zstd_path
 from tools.pump_history_backfill import fetch_pool_mints, lifecycle_from_logs
@@ -94,8 +97,14 @@ HOUSEKEEP_S = 5.0
 HB_S = 60.0
 LOOK_MS = 5_000
 RECENT_MARGIN_MS = 5_000
-DEDUP_WINDOW_S = 120.0  # socket merge + cross-program dedup windows (a socket far behind its peer is a gap anyway)
+DEDUP_WINDOW_S = 120.0  # per-program socket-merge window (a socket far behind its peer is a gap anyway); tools/arena_feed_v2 reads it too
 DEDUP_MAX = 200_000
+# Feed-level duplicate filter (cross-program AND late re-deliveries, class LateSeen). Window: the arena tape carried re-delivered, trade-identical rows
+# that arrived after the old 120 s window (QP-RULING-1031-tape-dupes-reads; ops/reports/2026-10-31/tape-dupes.md); 900 s is the QP floor (the engine
+# comment measured re-deliveries up to 898 slots, about 6 min). Cap: 2 x the measured peak combined notice rate (1,404.617/s PumpSwap + 396.858/s
+# pump.fun) x the window = 3,242,655 keys, rounded up: no key is pushed out by the cap before its window ends at twice the measured peak.
+LATE_DEDUP_WINDOW_S = 900.0
+LATE_DEDUP_MAX = 3_300_000
 QUEUE_MAX = 50_000
 ERRORS_MAX_BYTES = 2_000_000
 POOL_MINTS_MAX = 50_000
@@ -178,6 +187,76 @@ def acquire_lock(out_dir: Path) -> int:
     os.ftruncate(fd, 0)
     os.write(fd, f"{os.getpid()}\n".encode())
     return fd
+
+
+# ---- duplicate filter -------------------------------------------------------------------------------------------
+_FP_MASK = (1 << 64) - 1
+_KEY_BYTES = 16  # blake2b digest of the signature: a false drop needs a 128-bit collision; the 88-char str costs ~1.3x the memory
+
+
+class LateSeen:
+    """Feed-level duplicate filter by transaction signature, built for re-deliveries that arrive minutes late.
+
+    Same contract as observe.trade_source.SeenSet (add(key, fingerprint) is True when the key is new, False for a duplicate; last_mismatch says the
+    duplicate's fingerprint differs from the first sight's) with three differences:
+      * a key is remembered window_s after its FIRST sight (insertion order is time order, so expiry is a popleft loop; a duplicate does not refresh it) and
+        at most max_keys keys are kept, the oldest first sight going first. Memory is bounded at any rate: max_keys x about 200 bytes;
+      * the key is a 16-byte blake2b digest of the signature, and the value is ONE int (first-sight ms << 64 | 64-bit fingerprint);
+      * it counts what it did (snapshot): dropped, dropped_late (first seen at least short_window_s ago: rows the feed wrote twice before this class),
+        mismatched (same signature, other fingerprint: the first sight is kept), evicted_young (pushed out by the cap while younger than window_s: a
+        re-delivery of that key would be written again), high_water (most keys held at once).
+    Residual, by construction: a re-delivery later than window_s after the first sight, one of an evicted_young key, or one after a process restart
+    (the set is in memory) is still written. Single-threaded: the asyncio consumer is the only caller."""
+
+    def __init__(self, window_s: float = LATE_DEDUP_WINDOW_S, max_keys: int = LATE_DEDUP_MAX, clock: Callable[[], float] = time.monotonic, *,
+                 short_window_s: float = DEDUP_WINDOW_S) -> None:
+        if window_s <= 0 or max_keys < 1:
+            raise ValueError("window_s must be > 0 and max_keys >= 1")
+        self.window_s, self.max_keys, self.short_window_s = float(window_s), int(max_keys), float(short_window_s)
+        self._window_ms, self._short_ms, self._clock = round(window_s * 1000), round(short_window_s * 1000), clock
+        self._first: collections.OrderedDict[bytes, int] = collections.OrderedDict()
+        self.dropped = self.dropped_late = self.mismatched = self.evicted_young = self.high_water = 0
+        self.last_late = self.last_mismatch = False
+
+    def __len__(self) -> int:
+        return len(self._first)
+
+    def _expire(self, now_ms: int) -> None:
+        cutoff, first = now_ms - self._window_ms, self._first
+        while first:
+            key = next(iter(first))
+            if (first[key] >> 64) > cutoff:  # a key expires window_s after its first sight (the boundary instant is expired, as SeenSet does)
+                break
+            del first[key]
+
+    def add(self, key: str, fingerprint: Any = None) -> bool:
+        """True when key is new (and is now remembered), False for a duplicate. On a duplicate, last_late says its first sight is at least
+        short_window_s old and last_mismatch says its fingerprint differs from the first sight's."""
+        now = round(self._clock() * 1000)
+        self._expire(now)
+        digest = hashlib.blake2b(str(key).encode("utf-8", "replace"), digest_size=_KEY_BYTES).digest()
+        fp = hash(fingerprint) & _FP_MASK
+        first = self._first
+        packed = first.get(digest)
+        self.last_late = self.last_mismatch = False
+        if packed is not None:
+            self.dropped += 1
+            self.last_late = now - (packed >> 64) >= self._short_ms
+            self.last_mismatch = (packed & _FP_MASK) != fp
+            self.dropped_late += self.last_late
+            self.mismatched += self.last_mismatch
+            return False
+        first[digest] = (now << 64) | fp
+        while len(first) > self.max_keys:
+            _old, old_packed = first.popitem(last=False)
+            if now - (old_packed >> 64) < self._window_ms:
+                self.evicted_young += 1
+        self.high_water = max(self.high_water, len(first))
+        return True
+
+    def snapshot(self) -> dict[str, Any]:
+        return {"window_s": self.window_s, "max_keys": self.max_keys, "keys": len(self._first), "high_water": self.high_water, "dropped": self.dropped,
+                "dropped_late": self.dropped_late, "mismatched": self.mismatched, "evicted_young": self.evicted_young}
 
 
 # ---- decode ---------------------------------------------------------------------------------------------------
@@ -621,7 +700,8 @@ class Feed:
     def __init__(self, out_dir: Path, ws_urls: Sequence[str], sockets: dict[str, int], commitment: str = "confirmed", *, min_free_pct: float = MIN_FREE_PCT_DEFAULT,
                  stagger_s: float = 3.0, wall: Callable[[], int] = now_ms, disk_usage: Callable[[Path], Any] | None = None,
                  rpc_url: str | None = DEFAULT_RPC, fetch: Callable[[str, list[str]], dict] = fetch_pool_mints, compress: bool = True,
-                 compact: Callable[[Path], dict] = compact_file) -> None:
+                 compact: Callable[[Path], dict] = compact_file, dedup_window_s: float = LATE_DEDUP_WINDOW_S, dedup_max: int = LATE_DEDUP_MAX,
+                 dedup_clock: Callable[[], float] = time.monotonic) -> None:
         if compress and zstd_path() is None:
             raise ValueError("the zstd CLI is not on PATH: the closed hours cannot be compacted (pass --no-compress to run without)")
         self.compress = compress
@@ -640,7 +720,7 @@ class Feed:
         self.started_ms = wall()
         self.watch = {p: ProgWatch(p, self.started_ms) for p in PROG_PROGRAM}
         self.sources: dict[str, MultiSocketLogsSource] = {}
-        self.seen = SeenSet(DEDUP_WINDOW_S, DEDUP_MAX)
+        self.seen = LateSeen(dedup_window_s, dedup_max, dedup_clock)  # cross-program and late re-delivery filter (the sources keep their own 120 s socket merge)
         self.pool_mints: dict[str, tuple[str, str]] = {}
         self.counters: collections.Counter = collections.Counter()
         self.queue: asyncio.Queue = asyncio.Queue(maxsize=QUEUE_MAX)
@@ -724,8 +804,12 @@ class Feed:
                     self.emit_safe(g)
         for g in w.on_notice(note.slot, note.t_recv_ms):
             self.emit_safe(g)
-        if not self.seen.add(note.signature):
+        if not self.seen.add(note.signature, (note.failed, len(note.logs), note.slot)):
             self.counters["cross_dedup_dropped"] += 1
+            if self.seen.last_late:  # first seen >= DEDUP_WINDOW_S ago: the feed used to write these rows a second time
+                self.counters["late_dedup_dropped"] += 1
+            if self.seen.last_mismatch:  # same signature, other (failed, logs, slot): the first sight is kept
+                self.counters["dedup_content_mismatch"] += 1
             return 0
         try:
             rows = rows_from_notice(note, self.pool_mints, self.counters)
@@ -844,6 +928,7 @@ class Feed:
             "disk_reserve": {"min_free_pct": self.min_free_pct, "free_pct": self.disk_free_pct, "paused": w.paused, "paused_since_ms": self.paused_since_ms,
                              "pauses": self.pauses, "rows_dropped_total": w.dropped},
             "dedup_dropped": {p: s.stats.dedup_dropped for p, s in self.sources.items()}, "cross_dedup_dropped": self.counters["cross_dedup_dropped"],
+            "late_dedup": self.seen.snapshot(),
             "decode_errors": self.counters["decode_errors"], "counters": dict(self.counters), "errors_logged_bytes": self.errlog.bytes,
             "rss_mb": proc_rss_mb(), "queue": self.queue.qsize(), "rows_late_to_current_hour": w.late_to_current, "torn_lines_ended": w.torn_lines,
             "compaction": {**self.compactor.snapshot(), "enabled": self.compress},
