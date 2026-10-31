@@ -50,8 +50,9 @@ import numpy as np
 from tools import haiku_v5_harness as v5
 from tools.haiku_v5_harness import (  # noqa: F401  (re-exported: the tests and the CLI use these names from this module)
     ALLOWED_BLOCKS, BASES, BOOT_DRAWS, BOOT_SEED, BURN_IN_DAYS, CARD_FIELDS, CARD_NAMES, DAY_MS, DECIDING_BASIS, MAX_FEEDBACK_ROWS,
-    MIN_TEST_DAYS, MIN_TEST_TRIGGERS, N_LAMBDA, N_MIN_FIT, NO_DATA_FROM_MS, OUTCOME_KNOWN_AFTER_MS, STAKE_SOL, Refused, Trigger, by_day,
-    day_start_ms, load_outcomes, load_triggers, nonce, render_card, ret_pct, sha256_file, sha256_text, utc_day, write_once_json)
+    MIN_TEST_DAYS, MIN_TEST_TRIGGERS, NO_DATA_FROM_MS, OUTCOME_KNOWN_AFTER_MS, STAKE_SOL, Refused, Trigger, by_day,
+    check_path, day_start_ms, load_outcomes, load_triggers, make_out_dir, nonce, render_card, ret_pct, sha256_file, sha256_text, utc_day,
+    write_once_json)
 
 # ---------------------------------------------------------------------------------------------------------------------------- constants
 BOOST_MULT = 2.0  # a boosted trigger is traded at 2x the standard slice (the extra slice is the whole boost); 1x otherwise
@@ -66,7 +67,11 @@ LEDGER_BUDGET_MAX_USD = 8.0  # hard ceiling on --budget-usd for any Haiku run; t
 PILOT_BUDGET_MAX_USD = 1.0  # hard ceiling when --max-days is set (the pilot)
 RUN_LOCK_SUFFIX = ".v6-run.lock"
 PLACEBO_DRAWS = 1000  # arm P: random boost sets drawn per replicate and day, seeded by sha256(v6|P|rep|day)
-N_LABEL_PCT = 90.0  # arm N: label = flat return at or above the fit set's 90th percentile (top decile)
+N_LABEL_PCT = 90.0  # arm N: label = flat return at or above the fit set's 90th percentile (top decile; Lane A DECLARE section 4)
+N_LAMBDA = 1.0  # arm N: L2 penalty (sklearn LogisticRegression C=1.0 is the same objective); the intercept is not penalised
+N_MIN_FIT = 300  # arm N boosts nothing on a day with fewer fit rows (Lane A's walk-forward rule, DECLARE section 3)
+N_ITER, N_TOL = 50, 1e-10
+V_FLOOR_SOL = 17.6  # the pool's virtual reserve: the smallest quote depth a trigger can have (card q_post_trig is >= this)
 MIN_TEST_BOOSTS = 50  # NOT_DECIDABLE below this many test-day boosts for L (mean over replicates); a decidability floor, not a bar
 
 # Pre-registered bars (PREREG.md section 3). Code constants so a test can pin the document to the code.
@@ -435,11 +440,60 @@ def placebo_seed(rep: int, day: str) -> str:
     return f"v6|P|{rep}|{day}"
 
 
+def card_matrix_nan(ts: Sequence[Trigger]) -> np.ndarray:
+    """Card values as floats, in CARD_NAMES order; booleans 0/1; None, text and non-finite values stay NaN (imputed by rank_features)."""
+    def val(v: Any) -> float:
+        if isinstance(v, bool):
+            return 1.0 if v else 0.0
+        if isinstance(v, (int, float)) and math.isfinite(float(v)):
+            return float(v)
+        return float("nan")
+
+    return np.array([[val(t.card[n]) for n in CARD_NAMES] for t in ts], dtype=float)
+
+
+def rank_features(train: np.ndarray, x: np.ndarray) -> np.ndarray:
+    """Mid-rank percentile of each value in the TRAINING column's empirical CDF, minus 0.5 (Lane A DECLARE section 2). A missing value
+    maps to 0, the median rank. Ties get the mid-rank; a constant training column maps to 0. Heavy-tailed SOL amounts are tamed."""
+    out = np.zeros(x.shape, dtype=float)
+    for j in range(x.shape[1]):
+        col = np.sort(train[:, j][~np.isnan(train[:, j])])
+        if len(col) == 0:
+            continue
+        v = x[:, j]
+        ok = ~np.isnan(v)
+        lo, hi = np.searchsorted(col, v[ok], side="left"), np.searchsorted(col, v[ok], side="right")
+        out[ok, j] = (lo + hi) / (2.0 * len(col)) - 0.5
+    return out
+
+
+def fit_logistic_l2(Z: np.ndarray, y: np.ndarray, lam: float = N_LAMBDA) -> np.ndarray | None:
+    """L2 logistic regression by Newton/IRLS from zero: minimise sum of log loss + (lam/2) |w|^2, intercept unpenalised, no feature
+    scaling. This is sklearn LogisticRegression(C=1/lam) on the same matrix (a test compares them). None if one label class."""
+    if len(set(y.tolist())) < 2:
+        return None
+    A = np.column_stack([np.ones(len(Z)), Z])
+    w = np.zeros(A.shape[1])
+    pen = np.full(A.shape[1], lam)
+    pen[0] = 0.0
+    for _ in range(N_ITER):
+        p = 1.0 / (1.0 + np.exp(-np.clip(A @ w, -50, 50)))
+        g = A.T @ (p - y) + pen * w
+        H = (A * (p * (1 - p))[:, None]).T @ A + np.diag(pen)
+        step = np.linalg.solve(H, g)
+        w = w - step
+        if np.max(np.abs(step)) < N_TOL:
+            break
+    return w
+
+
 def numeric_tilt_scores(days: Sequence[tuple[str, list[Trigger]]], outcomes: Mapping[str, Mapping[str, float]],
                         score_days: set[str]) -> dict[str, np.ndarray | None]:
-    """Arm N: for each scored day D, an L2 logistic (as P96 / v5 arm N: lambda 1, IRLS) fitted on every trigger whose outcome was known
-    before D 00:00Z, label = flat return at or above the fit set's 90th percentile (top decile), scores D's triggers (higher = more like a
-    top-decile winner). None below N_MIN_FIT fit rows or with one label class: N boosts nothing that day. Only past outcomes are read."""
+    """Arm N, the numeric comparator. It is Lane A's declared size-tilt model (laneA-size-tilt.md DECLARE sections 2-4): for each scored day
+    D, an L2 logistic (C = 1) on the 35 card fields, each rank-transformed on the fit set, fitted on every trigger whose outcome was known
+    before D 00:00Z, label = flat return at or above the fit set's 90th percentile (top decile). It scores D's triggers (higher = more like
+    a top-decile winner). None below N_MIN_FIT fit rows or with one label class: N boosts nothing that day. Only past outcomes are read.
+    Difference from Lane A: score() boosts the top k triggers, k = L's count per replicate and day, not an 80th-percentile threshold."""
     allt = [t for _, ts in days for t in ts]
     out: dict[str, np.ndarray | None] = {}
     for day, ts in days:
@@ -450,16 +504,25 @@ def numeric_tilt_scores(days: Sequence[tuple[str, list[Trigger]]], outcomes: Map
         if len(fit) < N_MIN_FIT:
             out[day] = None
             continue
-        X, med = v5.card_matrix(fit)
+        Xf = card_matrix_nan(fit)
         r = np.array([outcomes[t.tid]["flat_sol"] for t in fit])
         y = (r >= np.percentile(r, N_LABEL_PCT)).astype(float)
-        m = v5.fit_logistic(X, y)
-        if m is None:
+        w = fit_logistic_l2(rank_features(Xf, Xf), y)
+        if w is None:
             out[day] = None
             continue
-        Xd, _ = v5.card_matrix(ts, med)
-        out[day] = np.column_stack([np.ones(len(Xd)), (Xd - m["mu"]) / m["sd"]]) @ m["w"]
+        Zd = rank_features(Xf, card_matrix_nan(ts))
+        out[day] = w[0] + Zd @ w[1:]
     return out
+
+
+def haircut_sol(card: Mapping[str, Any]) -> float:
+    """Report-only price impact of the extra slice: 4 s^2 / Q SOL (s = 0.1 SOL stake, Q = card q_post_trig). Lane A's derivation (DECLARE
+    section 5: the extra round-trip impact of doubling s in a constant-product pool is 2 s^2 (1/Q_entry + 1/Q_exit), with Q_entry used
+    for both); not independently verified here. A missing or non-positive Q is replaced by the virtual-reserve floor (the largest haircut)."""
+    q = card.get("q_post_trig")
+    q = float(q) if isinstance(q, (int, float)) and not isinstance(q, bool) and math.isfinite(float(q)) and q > 0 else V_FLOOR_SOL
+    return 4.0 * STAKE_SOL ** 2 / q
 
 
 def contrast6(mx: Mapping[str, float], my: Mapping[str, float], out: Mapping[str, float], ts_by_day: Mapping[str, Sequence[Trigger]],
@@ -552,8 +615,11 @@ def score(run_dir: str | os.PathLike, triggers: Sequence[Trigger], outcomes: Map
     b1 = (all(v >= PARSE_MIN for v in parse.values()) and bool(refl_ok) and all(v >= REFLECT_OK_MIN for v in refl_ok.values()))
     b2 = all(s <= MAX_BOOST_SHARE for s in share_by_rep.values())
 
+    test_tids = [t.tid for d in test_days for t in ts_by_day[d]]
     res: dict[str, Any] = {"test_days": len(test_days), "test_triggers": n_test, "burn_in_days": BURN_IN_DAYS, "reps": reps, "models": {},
-                           "boost_mult": BOOST_MULT}
+                           "boost_mult": BOOST_MULT,
+                           "boost_counts_mean_over_reps_test": {a: math.fsum(m[i] - 1.0 for i in test_tids) / extra
+                                                                for a, m in (("L", mL), ("F", mF), ("N", mN), ("P", mP))}}
     bars_by_model: dict[str, dict[str, bool]] = {}
     for mk in ("flat_sol", "press_sol"):
         out = {t.tid: outcomes[t.tid][mk] for t in triggers}
@@ -591,6 +657,9 @@ def score(run_dir: str | os.PathLike, triggers: Sequence[Trigger], outcomes: Map
 
         day_mean = {d: float(np.mean([out[t.tid] for t in ts_by_day[d]])) for d in test_days}
         l_boost_n = mean_boosts
+        hc = {t.tid: haircut_sol(t.card) for d in test_days for t in ts_by_day[d]}
+        hc_l = math.fsum((mL[i] - 1.0) / extra * v for i, v in hc.items())  # expected haircut of L's boosts (mean over replicates)
+        hc_p = math.fsum((mP[i] - 1.0) / extra * v for i, v in hc.items())
         l_vals, l_days = [], []
         a_vals, a_days = [], []
         r1 = reps["L"][0]
@@ -618,6 +687,10 @@ def score(run_dir: str | os.PathLike, triggers: Sequence[Trigger], outcomes: Map
             "top_decile_recall_report_only": {"threshold_flat_sol": p90, "L": tail_recall(mL), "F": tail_recall(mF), "N": tail_recall(mN),
                                              "P": tail_recall(mP)},
             "breakeven_extra_cost_pct_of_extra_stake_report_only": 100.0 * l_extra / (l_boost_n * STAKE_SOL),
+            "haircut_lane_a_formula_report_only": {
+                "mean_haircut_per_boost_sol": hc_l / l_boost_n, "L_minus_A_total_after_haircut": l_extra - hc_l,
+                "L_minus_P_total_after_haircut": c["L-P"]["total"] - (hc_l - hc_p),
+                "source": "4 s^2 / q_post_trig per boosted trigger, Lane A DECLARE section 5; sized impact is NOT repriced by this harness"},
             "L_rep1_sized_book_in_sample": v5.gate_stats_in_sample(l_vals, l_days),
             "A_book_in_sample": v5.gate_stats_in_sample(a_vals, a_days)}
     bars = {"B1_parse_and_reflection": b1, "B2_boost_share_le_30pct": b2}
@@ -635,12 +708,32 @@ def score(run_dir: str | os.PathLike, triggers: Sequence[Trigger], outcomes: Map
 
 
 # ---------------------------------------------------------------------------------------------------------------------------- CLI
-class run_lock(v5.run_lock):
-    """v5's exclusive non-blocking flock, on <ledger>.v6-run.lock."""
+class run_lock:
+    """Exclusive non-blocking flock on <ledger>.v6-run.lock, held for the whole Haiku run (as v5's, on its own suffix). A second process on
+    the same ledger is refused (exit 3) before it builds a caller: haiku_caller looks up its replay store before its own ledger lock, so
+    two runs would both pay."""
 
     def __init__(self, ledger: str):
-        super().__init__(ledger)
         self.path = os.fspath(ledger) + RUN_LOCK_SUFFIX
+        self.fd = -1
+
+    def __enter__(self):
+        import fcntl
+
+        try:
+            self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError:
+            raise Refused("cannot open the run lock next to --ledger (does its directory exist?)") from None
+        try:
+            fcntl.flock(self.fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            os.close(self.fd)
+            raise Refused(f"another v6 run holds {self.path}; one run per ledger at a time") from None
+        return self
+
+    def __exit__(self, *exc):
+        os.close(self.fd)  # closing the descriptor releases the lock
+        return False
 
 
 def harness_sha256() -> str:
@@ -753,7 +846,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             keep_days = {d for d, _ in by_day(trig)[: a.max_days]}
             trig = [t for t in trig if t.day in keep_days]
         if a.cmd == "dry":
-            out = v5.make_out_dir(a.out_dir)
+            out = make_out_dir(a.out_dir)
             bc = ByteCounter()
             counts = run_walk_forward(trig, None, bc, out, arms, a.reps, on_request=bc.record)
             days = by_day(trig)
@@ -785,7 +878,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         lock = run_lock(a.ledger) if a.model == "haiku" else None
         with (lock if lock is not None else v5._NullCtx()):
             model: Model = HaikuModel(a.ledger, a.budget_usd, a.save_dir) if a.model == "haiku" else StubModel()
-            out = v5.make_out_dir(a.out_dir)
+            out = make_out_dir(a.out_dir)
             start = {"utc_start": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "harness_sha256": harness_sha256(),
                      "v5_harness_sha256": v5_harness_sha256(), "prompt_sha256": PROMPT_SHAS, "args": {k: v for k, v in vars(a).items()},
                      "outcome_basis": basis, "triggers_sha256": sha256_file(a.triggers), "outcomes_sha256": sha256_file(a.outcomes)}
