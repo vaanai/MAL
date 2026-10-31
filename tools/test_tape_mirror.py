@@ -566,3 +566,73 @@ def test_e2e_serve_refusal_reaches_the_puller(tmp_path: Path) -> None:
     stop.set()
     t.join(30)
     assert tm.mirror_problem(dst) is not None
+
+
+# ---- the MiScusi job script (DRY and refusals only: no ssh, no mkdir) -------------------------------------------------------------
+JOB = REPO / "scripts" / "ops" / "tape-mirror-pull-job.sh"
+
+
+def job(env_extra: dict, home: Path) -> subprocess.CompletedProcess:
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": str(home)}
+    env.update(env_extra)
+    return subprocess.run(["sh", str(JOB)], env=env, capture_output=True, text=True, timeout=60)
+
+
+def test_job_script_is_posix_sh_and_executable() -> None:
+    assert os.access(JOB, os.X_OK) and JOB.read_text().splitlines()[0] == "#!/bin/sh"
+    assert subprocess.run(["sh", "-n", str(JOB)]).returncode == 0
+    if shutil.which("dash"):
+        assert subprocess.run(["dash", "-n", str(JOB)]).returncode == 0
+    text = "\n".join(ln for ln in JOB.read_text().splitlines() if not ln.lstrip().startswith("#"))
+    for bad in ("[[", "]]", "<<<", "$'", "PIPESTATUS", "function ", "local ", "echo -e", "source ", "declare ", "${!", "=~", "&>", "<("):
+        assert bad not in text, bad
+
+
+def test_job_script_dry_line(tmp_path: Path) -> None:
+    r = job({"DRY": "1", "REMOTE_REPO": "/data2/mal/wt/tape-mirror-serve"}, tmp_path)
+    assert r.returncode == 0, r.stdout
+    want = (f"python3 -u tools/tape_mirror.py pull --ssh-host mal-research-0 --remote-repo /data2/mal/wt/tape-mirror-serve --src /data/mal/arena/tape "
+            f"--dst {tmp_path}/mal-data/arena-mirror/tape --retain-hours 72 --backfill-hours 64 --min-free-pct 12")
+    assert r.stdout.strip().endswith("then run: " + want)
+    assert not (tmp_path / "mal-data").exists()
+
+
+@pytest.mark.parametrize("env, why", [
+    ({}, "REMOTE_REPO is required"),
+    ({"REMOTE_REPO": "rel/repo"}, "REMOTE_REPO must be"),
+    ({"REMOTE_REPO": "/a/../b"}, "REMOTE_REPO must be"),
+    ({"REMOTE_REPO": "/a;rm -rf x"}, "REMOTE_REPO must be"),
+    ({"SRC": "/data/mal/arena/tape x"}, "SRC must be"),
+    ({"DST": "/tmp/elsewhere"}, "DST must be under"),
+    ({"SSH_HOST": "host -oProxyCommand=x"}, "SSH_HOST must be"),
+    ({"BACKFILL_H": "80"}, "BACKFILL_H must be 1..RETAIN_H"),
+    ({"BACKFILL_H": "0"}, "BACKFILL_H must be 1..RETAIN_H"),
+    ({"RETAIN_H": "400", "BACKFILL_H": "10"}, "RETAIN_H must be at most 336"),
+    ({"MIN_FREE_PCT": "0"}, "MIN_FREE_PCT must be 1..50"),
+    ({"MIN_FREE_PCT": "12.5"}, "must be non-negative integers"),
+])
+def test_job_script_refusals(tmp_path: Path, env: dict, why: str) -> None:
+    base = {"DRY": "1", "REMOTE_REPO": "/data2/mal/wt/tape-mirror-serve"}
+    if "REMOTE_REPO" not in env and not env:
+        base.pop("REMOTE_REPO")
+    r = job({**base, **env}, tmp_path)
+    assert r.returncode == 2 and why in r.stdout, r.stdout
+
+
+@pytest.mark.skipif(os.uname().nodename == "mal-fast-0", reason="on mal-fast-0 a live-form run would go on to ssh")
+def test_job_script_runs_on_fast0_only(tmp_path: Path) -> None:
+    r = job({"REMOTE_REPO": "/data2/mal/wt/tape-mirror-serve"}, tmp_path)
+    assert r.returncode == 2 and "runs on mal-fast-0 only" in r.stdout and not (tmp_path / "mal-data").exists()
+
+
+def test_pull_cli_writes_the_miscusi_result_and_refuses_two_sources(tmp_path: Path, monkeypatch) -> None:
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    src.mkdir()
+    append_rows(src, hk(0), 0, 20)
+    res = tmp_path / "result.json"
+    monkeypatch.setenv("MISCUSI_RESULT", str(res))
+    monkeypatch.delenv("MISCUSI_PROGRESS", raising=False)
+    assert tm.main(["pull", "--dst", str(dst), "--cmd-json", json.dumps(serve_cmd(src)), "--max-s", "1.5"]) == 0
+    r = json.loads(res.read_text())
+    assert r["ok"] is True and r["metrics"]["state"] == "stopped" and r["metrics"]["live_bytes"] == (src / tm.open_name(hk(0))).stat().st_size
+    assert tm.main(["pull", "--dst", str(dst), "--cmd-json", "[]", "--ssh-host", "h"]) == tm.EXIT_REFUSED

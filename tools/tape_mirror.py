@@ -1190,7 +1190,26 @@ def run_pull(args: argparse.Namespace) -> int:
     stop = threading.Event()
     signal.signal(signal.SIGTERM, lambda *_: stop.set())
     signal.signal(signal.SIGINT, lambda *_: stop.set())
-    return pl.run(max_s=args.max_s, stop=stop)
+    rc = EXIT_MISMATCH
+    try:
+        rc = pl.run(max_s=args.max_s, stop=stop)
+    finally:
+        write_result(os.environ.get("MISCUSI_RESULT"), pl, rc)
+    return rc
+
+
+def write_result(path: str | None, pl: Puller, rc: int) -> None:
+    """The MiScusi result of a pull job (the job script execs python, so a cancel's SIGTERM reaches the puller and this still runs). Counts only."""
+    if not path:
+        return
+    try:
+        st = pl.status()
+        keys = ("state", "closed_verified", "history_hours", "live_bytes", "zst_bytes", "connects", "events", "src_vanished", "free_pct")
+        m = {k: st.get(k) for k in keys}
+        m.update({f"lag_{k}": v for k, v in (st.get("lag_60s") or {}).items()})
+        Path(path).write_text(json.dumps({"ok": rc == EXIT_OK, "metrics": m, "summary": f"tape mirror ended rc={rc} state={st.get('state')}"}))
+    except Exception:  # noqa: BLE001 - a result file must never turn a clean stop into a crash
+        pass
 
 
 # ---- the reader side (the host on mal-fast-0) ---------------------------------------------------------------------------------
