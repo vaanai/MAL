@@ -197,7 +197,7 @@ def test_a_public_row_below_the_horizon_inside_a_covered_range_is_data_loss_not_
     assert m.stats["below_horizon_covered"] == 1 and m.stats["emitted_public"] == 20
     g = [x for x in m.flagged if x["why"] == "below_horizon_covered"]
     assert len(g) == 1 and (g[0]["lo"], g[0]["hi"]) == (5001, 5001)
-    assert m.public_hw_slot() == 5000  # the seam is open there: the public stream is not "complete" up to its own top
+    assert m.public_hw_slot() == 4989  # held just below the covering window's range: that window's seam cannot close
     c = fm.mark_complete(T, 5050, _armed_state(T, cov=4990, tip_to=5100), public_hw_slot=m.public_hw_slot())
     assert c.reason == "seam_open" and not c.complete
     # the same shape OUTSIDE any window-covered range is an ordinary history row: emitted, counted below_horizon
@@ -223,7 +223,9 @@ def test_helius_first_key_is_released_only_when_the_public_stream_has_passed_it(
     m.offer(HEL, bd(5000, "w"), 1)
     m.offer(HEL, bd(9000, "w2"), 1)  # either-source horizon passed slot 5000 long ago ...
     assert ("w", "trade", 0) in m._keys  # ... but the public stream is at 109: the key stays
-    feed_public(m, range(110, 5011))
+    feed_public(m, range(110, 5000))
+    assert ("w", "trade", 0) in m._held  # the public stream is at 4999, not past slot 5000 + 10
+    assert m.offer(PUB, bd(5000, "w"), 2) is None  # its public copy: a duplicate, not a second emit
     assert m.stats["dup_helius_then_public"] == 1 and ("w", "trade", 0) not in m._held
     # a Helius-first key the public stream passes without ever delivering it is released and counted (a fork candidate or a public loss)
     m.offer(HEL, bd(5100, "orphan"), 1)
@@ -242,8 +244,8 @@ def test_slot_jump_gap_holds_the_high_water_and_the_range_is_flagged_when_it_age
     assert m.pub_top == 250 and m.public_hw_slot() == 100  # held at the gap's start
     g = m.open_gaps()[0]
     assert (g["lo"], g["hi"], g["state"]) == (101, 199, "closed")
-    feed_public(m, range(251, 1700), prefix="r")
-    assert m.public_hw_slot() == 100  # 1449 slots of progress since 250 < 1500
+    feed_public(m, range(251, 1699), prefix="r")
+    assert m.public_hw_slot() == 100  # the range ends at 199: 1698 < 199 + 1500 slots of progress
     feed_public(m, [1750, 1751], prefix="s")
     assert m.public_hw_slot() == 1751 and not m.open_gaps()
     f = [x for x in m.flagged if x["kind"] == "slot_jump"][0]
@@ -377,7 +379,7 @@ def test_tail_missing_hour_and_bad_lines_become_data_loss_gap_rows(tmp_path: Pat
     assert tail.poll() == [] and tail.hour == H  # hour H is not final yet
     now["ms"] = (H + 3600 + 130) * 1000
     assert tail.poll() == [] and tail.hour == H + 3600  # H is final; H+1 is absent but not yet "missing" (grace)
-    now["ms"] = (H + 3600 + 700) * 1000
+    now["ms"] = (H + 7200 + 700) * 1000  # hour H+1 is over and 600 s have passed
     out = tail.poll()
     g = [r for r in out if r["type"] == "gap"]
     assert len(g) == 1 and g[0]["kind"] == "tape_hour_missing" and g[0]["data_loss"] is True and g[0]["closed"] is True
@@ -408,7 +410,7 @@ def test_tail_leaves_an_hour_early_when_the_next_hour_exists_and_reads_late_line
 
 
 # ----------------------------------------------------------------------------------------------------------------------------------- LiveSource
-def make_source(tmp_path: Path, *, public_to: int = 1010, extra_public=(), mirror=None, cap_credits: float = 50_000, spawn=None, **kw):
+def make_source(tmp_path: Path, *, public_to: int = 1010, extra_public=(), mirror=None, cap_credits: float = 50_000, spawn=None, connect=None, **kw):
     """A LiveSource on a synthetic tape (hour T - 3600) and a fake window that plays the whole [T - 30 s, T + 10 s] script when it is started (inline)."""
     tape = tmp_path / "tape"
     tape.mkdir(exist_ok=True)
@@ -427,7 +429,7 @@ def make_source(tmp_path: Path, *, public_to: int = 1010, extra_public=(), mirro
         clock = Clock((mark - 60) * 1000)
         ws = FakeWS(script(mark, tip0=1000, extra=logs))
         w = fm.HeliusWindow(mark, "wss://helius.example.test/?api-key=" + FAKE_KEY, commitment=commitment, cap=cap, on_rows=on_rows, pool_mints=pool_mints,
-                            connect=kw.pop("connect", None) or FakeConnect(ws), recv=make_recv(clock), now_ms=clock.now, sleep=clock.sleep, to_rows=to_rows)
+                            connect=connect or FakeConnect(ws), recv=make_recv(clock), now_ms=clock.now, sleep=clock.sleep, to_rows=to_rows)
         return w
 
     src = hg.LiveSource(tape_dir=tape, cap=cap, url="wss://x/?api-key=" + FAKE_KEY, start_hour_s=T - 3600, now_ms=lambda: clk["ms"],

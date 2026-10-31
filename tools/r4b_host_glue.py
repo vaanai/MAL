@@ -161,7 +161,7 @@ class HostMerger(fm.Merger):
         return any(a <= lo and hi <= b for a, b in self._cov)
 
     def _new_range(self, hold: int, lo: int, hi: int | None, state: str, kind: str, prog: Any, from_ms: Any, why: str, cover_releases: bool = True) -> dict:
-        g = {"kind": kind, "prog": prog, "from_ms": from_ms, "hold": int(hold), "lo": int(lo), "hi": hi, "state": state, "closed_top": self.pub_top if state == "closed" else None,
+        g = {"kind": kind, "prog": prog, "from_ms": from_ms, "hold": int(hold), "lo": int(lo), "hi": hi, "state": state, "closed_top": max(self.pub_top, hi) if state == "closed" else None,
              "cover_releases": cover_releases, "why": why, "ended": None}
         self._gaps.append(g)
         self.flagged.append(g)
@@ -242,7 +242,9 @@ class HostMerger(fm.Merger):
                     # absent key, behind the horizon, inside a window-covered range: it was either evicted or never seen by the window. It is NOT emitted again.
                     self.stats["offered_public"] += 1
                     self.stats["below_horizon_covered"] += 1
-                    self._new_range(slot - 1, slot, slot, "closed", "below_horizon_covered", row.get("prog"), None, "below_horizon_covered", cover_releases=False)
+                    # the hold is the start of the covering window's range, minus 1: that window's seam (public_hw_slot >= covered_from_slot) cannot close
+                    start = next(a for a, b in self._cov if a <= slot <= b)
+                    self._new_range(start - 1, slot, slot, "closed", "below_horizon_covered", row.get("prog"), None, "below_horizon_covered", cover_releases=False)
                     self._update_gaps()
                     return None
         e = super().offer(source, row, now)
