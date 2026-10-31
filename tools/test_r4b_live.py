@@ -1034,3 +1034,53 @@ def test_log_gap_instant_fallbacks_and_a_late_log_keep_the_log_in_order(tmp_path
     assert log.verify(lv.BOT_ID)[1] == 2  # start, the now_ms gap, the late gap; the refused call wrote nothing
     with pytest.raises(lv.LiveRefused):
         lv.log_gap(log, GapRecord("data_loss", None, True, None, None, True, None))  # type: ignore[arg-type]
+
+
+# ------------------------------------------------------------------------------------------------------------------------------- frozen_sha must describe the running code
+def _git(repo, *a):
+    import subprocess
+
+    return subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@example.invalid", "-c", "user.name=t", "-c", "commit.gpgsign=false", *a], check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+def test_repo_head_sha_refuses_modified_tracked_files_and_ignores_untracked_ones(tmp_path):
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "a.py").write_text("x = 1\n")
+    _git(repo, "add", "a.py")
+    _git(repo, "commit", "-q", "-m", "c1")
+    head = _git(repo, "rev-parse", "HEAD")
+    assert lv.repo_head_sha(repo) == head  # clean: the sha
+    (repo / "scratch.txt").write_text("not tracked\n")
+    assert lv.repo_head_sha(repo) == head  # an untracked file does not change the running code
+    (repo / "a.py").write_text("x = 2\n")
+    with pytest.raises(lv.LiveRefused, match="modified tracked"):
+        lv.repo_head_sha(repo)  # a modified tracked file: refused, and not cached from the clean call
+    _git(repo, "add", "a.py")
+    with pytest.raises(lv.LiveRefused, match="modified tracked"):
+        lv.repo_head_sha(repo)  # staged is still not HEAD
+    _git(repo, "commit", "-q", "-m", "c2")
+    head2 = _git(repo, "rev-parse", "HEAD")
+    assert head2 != head and lv.repo_head_sha(repo) == head2
+    (repo / "a.py").unlink()
+    with pytest.raises(lv.LiveRefused, match="modified tracked"):
+        lv.repo_head_sha(repo)  # a deleted tracked file counts too
+    with pytest.raises(lv.LiveRefused):
+        lv.repo_head_sha(tmp_path / "not-a-repo")  # no guess when git cannot answer
+
+
+def test_an_explicit_frozen_sha_never_reaches_the_dirty_check(tmp_path, monkeypatch):
+    from tools.arena_declog import DecisionLog
+
+    def boom(*a, **k):
+        raise AssertionError("repo_head_sha must not be called when frozen_sha is explicit")
+
+    monkeypatch.setattr(lv, "repo_head_sha", boom)
+    out = lv.host_start(DecisionLog(tmp_path / "d"), now_ms=MARKS[0] * 1000, frozen_sha="ab" * 20)
+    assert out["start"]["frozen_sha"] == "ab" * 20
+    monkeypatch.setattr(lv, "repo_head_sha", lambda *a, **k: (_ for _ in ()).throw(lv.LiveRefused("dirty")))
+    with pytest.raises(lv.LiveRefused, match="dirty"):
+        lv.host_start(DecisionLog(tmp_path / "d2"), now_ms=MARKS[0] * 1000)  # the default sha path does consult it, and its refusal stops the start
+    assert not (tmp_path / "d2" / "decisions").exists()  # nothing was written
