@@ -35,10 +35,10 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `untested` | 44 | 28 | 1 |
 | `desk-read` | 1 | 52 | 0 |
 | `explored-no-survivor` | 43 | 17 | 1 |
-| `dead-as-frozen` | 76 | 5 | 0 |
-| **all** | 188 | 107 | 2 |
+| `dead-as-frozen` | 76 | 6 | 0 |
+| **all** | 188 | 108 | 2 |
 
-The file holds 547 rows: the 297 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 548 rows: the 298 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -135,7 +135,7 @@ Each of these was positive on data the lab had already seen and has no clean for
 
 | Id | Idea | Status | Where it stands | Next step |
 | --- | --- | --- | --- | --- |
-| `owner-1012-haiku-trader` | Self-improving Haiku 5.5 trading agent that can use LAYA | `untested` | Not stopped. The 2026-10-12 pilot showed no lift (3 BUY of 150 cards; 36 of 36 model picks vetoed). No self-improving version has been built. A design (v1, written by a planning agent on 2026-10-13, a proposal that is not reviewed) is in DESIGN.md: only the version frozen before each UTC day is scored, a frozen first version is the control, and every proposal is counted; it recommends Haiku as a nightly researcher … | Stage 0 (planned, no key needed): a judge pass on the floor simulator and two declared tests with Haiku subagents on August floor data, with kill bars fixed in advance. Stage 1 after the key is placed. Forward paper needs a new DEC and is not before about … |
+| `owner-1012-haiku-trader` | Self-improving Haiku 5.5 trading agent that can use LAYA | `untested` | Not stopped. The 2026-10-12 pilot showed no lift (3 BUY of 150 cards; 36 of 36 model picks vetoed). Two self-improving versions have since been built and run offline: v3 (2026-10-17) and v5 O1 (2026-10-31); neither cleared (see haiku-v3-2 and haiku-v5-o1). A design (v1, written by a planning agent on 2026-10-13, a proposal that is not reviewed) is in DESIGN.md: only the version frozen before each UTC day is scored … | Stage 0 (planned, no key needed): a judge pass on the floor simulator and two declared tests with Haiku subagents on August floor data, with kill bars fixed in advance. Stage 1 after the key is placed. Forward paper needs a new DEC and is not before about … |
 | `owner-1012-bigwin-shape` | Big wins and small losses: frequent trades of +300 % and more, positive without the top 3 | `explored-no-survivor` | Three hunt rounds on 2026-10-11 found no survivor. On 2026-10-13 a hindsight census counted 447 of 10,338 August entries printing +500 % within 24 h (spot touches, not fills); three entry-time splits missed the declared bar; one simulated cell with a 0.7x stop was DEAD, its stop exits realizing a median of -91.1 % of stake at a 2.0 s sell lag (a judge reproduced 80 of 80 sampled exits; on that sample the fall … | Open question: whether any entry has a loss bounded by construction. Only FLOOR-OPTION's universe (real quote at or below 0.5 SOL) has a bounded mark, and a judge pass on 2026-10-13 found that capping each simulated sell at the pool's real quote changes no … |
 
 ## Inbox of 2026-10-13: new leads and same-day results
@@ -463,6 +463,12 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `eh1030-boost-volume-regime` | BOOST-to-volume regime: PumpSwap volume halved on 2026-10-28/29, so BOOST's fixed budget is a … | `desk-read` | Not a trade. A 4-block check against H5's Sep confirmation block means (+26.7 / +11.7 / +5.4 / +6.8%) and DefiLlama PumpSwap volume medians for the same windows (715.2 / 377.2 / 485.6 / 348.1M USD) shows no usable relation, and the highest-volume block had the best edge, so low volume is not shown to help. October … |
+
+### haiku-v5 (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `haiku-v5-o1` | Haiku v5: self-improving BUY/SKIP filter on the frozen H5 BOOST-floor trigger (nightly playbook … | `dead-as-frozen` | O1 (job #1914, harness 8c50699b, 3.7286 USD ledger) KILL_OFFLINE, confirmed by QP: 11 of 12 pre-registered bars fail under both fail models. Totals over 33 in-sample test days are ordered A > F > L > N > P (flat 33.6398 / 32.0946 / 29.7167 / 28.9731 / 27.5922 SOL): every filter is below the unfiltered base, and … |
 
 ## Dead as frozen, and explored with no survivor
 
