@@ -36,7 +36,7 @@ WHAT IT DOES, item by item (ruling section 4.2):
   7. This tool. QP OK and a reviewer verdict at the exact head, merged, before it reads any strip.
 
 REPORT-ONLY, deciding nothing: `post_last_below_from_slot` (a trade's state came from `post_last` whose slot is below the strip's from_slot, so the last print is not in `rows` and item 4's
-last-row test cannot see it); per-leg counts of the 1.3 s leg (never deciding).
+last-row test cannot see it). The 1.3 s leg's counts are item-4 counts (a non-zero one makes the audit not clean); item 6 recomputes only the deciding 1.9 s leg, as the read decides on it.
 
 MODES. Production (no test variable set): the host must be mal-fast-0; the ledger root must be <root>/ledger and every shadow dir a dir of the book under <root> (Q50:
 /home/claude/data/arena, h5-q50-YYYY-MM-DD; s1: /home/claude/s1home/data/arena, h5-q50s1-YYYY-MM-DD[-succ]); --now-ms and every environment variable whose name starts with MAL_AQ50_T,
@@ -269,12 +269,15 @@ def check_mode(a: argparse.Namespace, env: Mapping[str, str], host: str) -> bool
 def recorded_pass(path: str, want_sha256: str, bot: str) -> tuple[dict[str, Any], dict[str, Any]]:
     """The read record: (the whole report, the book's entry). Refuses unless it is a regular non-writable file with the given sha256 and the book's status is PASS. Nothing else is opened."""
     p = Path(path)
-    st = os.lstat(p)
-    if not stat.S_ISREG(st.st_mode):
-        raise Refused(f"--read-json {path!r} is not a regular file")
-    if st.st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH):
-        raise Refused(f"--read-json {path!r} is writable: a recorded read output is made a-w by the read job")
-    data = p.read_bytes()
+    try:
+        st = os.lstat(p)
+        if not stat.S_ISREG(st.st_mode):
+            raise Refused(f"--read-json {path!r} is not a regular file")
+        if st.st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH):
+            raise Refused(f"--read-json {path!r} is writable: a recorded read output is made a-w by the read job")
+        data = p.read_bytes()
+    except OSError as exc:
+        raise Refused(f"--read-json {path!r}: no recorded read output ({type(exc).__name__}); nothing else is opened") from None
     got = sha256_bytes(data)
     if not re.fullmatch(r"[0-9a-f]{64}", want_sha256 or "") or got != want_sha256:
         raise Refused(f"--read-json sha256 {got} is not --read-json-sha256 {want_sha256!r} (the sha256 the read job logged)")
@@ -378,7 +381,8 @@ def audit(a: argparse.Namespace, *, env: Mapping[str, str] | None = None, host: 
         "counts_by_leg": totals, "trade_ids_flagged_by_leg": flagged,
         "per_trade_flagged": {tid: {sfx: {k: v[sfx][k] for k in ("ssb_repeat_buys", "window_repeat_buys", "entry_post_last_repeat", "exit_post_last_repeat")}
                                      for sfx in SFXS if v[sfx] is not None and nonzero(v[sfx])} for tid, v in per_trade.items() if any(v[s] is not None and nonzero(v[s]) for s in SFXS)},
-        "report_only_note": "report_only_post_last_below_from_slot and the 1p3 counts decide nothing (item 4 and 5 are applied as written over every count above)",
+        "report_only_note": ("report_only_post_last_below_from_slot decides nothing. Items 4 and 5 apply to every other count above, on both legs: a non-zero 1p3 count makes the "
+                             "audit not clean, and item 6 then recomputes the deciding 1p9 pressure leg (the 1p3 leg never decides)"),
     }
     if clean:
         out["result"] = "A-Q50 clean"
