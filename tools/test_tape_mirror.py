@@ -10,6 +10,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections import namedtuple
@@ -85,6 +86,22 @@ def zst_bytes(raw: bytes, tmp: Path) -> bytes:
     return out
 
 
+SCRATCH_OK = os.path.isdir(tm.SCRATCH_ROOT) and os.access(tm.SCRATCH_ROOT, os.W_OK)
+needs_scratch = pytest.mark.skipif(not SCRATCH_OK, reason="serve's allowlist needs a source dir under /data2/mal/scratch (research-0)")
+
+
+@pytest.fixture
+def scratch():
+    """A source dir under the scratch root (the only place besides /data/mal/arena/tape that serve accepts); removed afterwards."""
+    if not SCRATCH_OK:
+        pytest.skip("no writable /data2/mal/scratch")
+    base = Path(tm.SCRATCH_ROOT) / "tape-mirror-tests"
+    base.mkdir(exist_ok=True)
+    d = Path(tempfile.mkdtemp(prefix="t", dir=base))
+    yield d
+    shutil.rmtree(d, ignore_errors=True)
+
+
 @pytest.fixture
 def mk(tmp_path):
     made = []
@@ -100,9 +117,8 @@ def mk(tmp_path):
 
 
 # ---- serve -------------------------------------------------------------------------------------------------------------------
-def test_serve_sends_complete_lines_only_with_mtime_and_full_hb(tmp_path: Path) -> None:
-    src = tmp_path / "src"
-    src.mkdir()
+def test_serve_sends_complete_lines_only_with_mtime_and_full_hb(scratch: Path, tmp_path: Path) -> None:
+    src = scratch
     h = hk(-1)
     (src / tm.open_name(h)).write_bytes(b"a\nbb\npart")
     srv, sink = server(src)
@@ -128,9 +144,8 @@ def test_serve_sends_complete_lines_only_with_mtime_and_full_hb(tmp_path: Path) 
     assert d[0][1] == b"c\n" and d[0][0]["ps"] == t_clean
 
 
-def test_serve_budget_truncation_reports_not_full_then_catches_up(tmp_path: Path) -> None:
-    src = tmp_path / "src"
-    src.mkdir()
+def test_serve_budget_truncation_reports_not_full_then_catches_up(scratch: Path, tmp_path: Path) -> None:
+    src = scratch
     h = hk(-1)
     (src / tm.open_name(h)).write_bytes(b"abc\n" * 10)
     srv, sink = server(src, live_pass_bytes=9)
@@ -143,9 +158,8 @@ def test_serve_budget_truncation_reports_not_full_then_catches_up(tmp_path: Path
     assert fr[-1][0]["full"] is True and fr[-1][0]["open"][h][0] == 40
 
 
-def test_serve_refuses_long_line_shrink_and_replace(tmp_path: Path) -> None:
-    src = tmp_path / "src"
-    src.mkdir()
+def test_serve_refuses_long_line_shrink_and_replace(scratch: Path, tmp_path: Path) -> None:
+    src = scratch
     h = hk(-1)
     p = src / tm.open_name(h)
     p.write_bytes(b"x" * 20)
@@ -169,9 +183,8 @@ def test_serve_refuses_long_line_shrink_and_replace(tmp_path: Path) -> None:
         srv.poll()
 
 
-def test_serve_closed_hours_since_and_puller_holdings(tmp_path: Path) -> None:
-    src = tmp_path / "src"
-    src.mkdir()
+def test_serve_closed_hours_since_and_puller_holdings(scratch: Path, tmp_path: Path) -> None:
+    src = scratch
     old, a, b = hk(-20), hk(-3), hk(-2)
     for h in (old, a, b):
         (src / tm.closed_name(h)).write_bytes(zst_bytes(b"r\n" * 1000 + h.encode() + b"\n", tmp_path))
@@ -186,9 +199,8 @@ def test_serve_closed_hours_since_and_puller_holdings(tmp_path: Path) -> None:
     assert max(f[0]["n"] for f in fr if f[0]["k"] == "z") <= 100
 
 
-def test_serve_follows_compaction_and_reports_gone(tmp_path: Path) -> None:
-    src = tmp_path / "src"
-    src.mkdir()
+def test_serve_follows_compaction_and_reports_gone(scratch: Path, tmp_path: Path) -> None:
+    src = scratch
     h, g = hk(-2), hk(-3)
     p = src / tm.open_name(h)
     p.write_bytes(b"one\n")
@@ -217,11 +229,43 @@ def test_parse_hello_and_src_refusal(tmp_path: Path) -> None:
     for raw in bad:
         with pytest.raises(ValueError):
             tm.parse_hello(raw)
-    assert tm.src_refusal("/data/mal/meta-capture/creates") == "src_sealed"
-    assert tm.src_refusal("/data/mal/blocks/forward-1016/trades") == "src_sealed"
-    assert tm.src_refusal(str(tmp_path / "x_shadow")) == "src_sealed"
-    assert tm.src_refusal(str(tmp_path / "missing")) == "src_not_dir"
-    assert tm.src_refusal(str(tmp_path)) is None
+
+
+def test_src_allowlist_refuses_sealed_and_other_paths_without_touching_them(monkeypatch) -> None:
+    """QP on #1147: an ALLOWLIST. A path outside it is refused on the string alone: the filesystem is never asked about it."""
+    def no_fs(*_a, **_k):
+        raise AssertionError("the filesystem was touched for a path outside the allowlist")
+
+    monkeypatch.setattr(tm.os.path, "realpath", no_fs)
+    monkeypatch.setattr(tm.os.path, "isdir", no_fs)
+    for path in ("/data2/mal/venue-tape-backfill/launchlab", "/data2/mal/venue-tape-backfill/launchlab/", "/data2/mal/venue-tape-backfill/meteora_dbc_holdout",
+                 "/data2/mal/scratch/../venue-tape-backfill/launchlab", "/data2/mal/scratch", "/data2/mal/scratch/", "/data2/mal/scratchX/t",
+                 "/data/mal/arena", "/data/mal/arena/tape/../haiku-v4", "/data/mal/arena/tape2", "/data/mal/meta-capture/creates",
+                 "/data/mal/blocks/forward-1016/trades", "/tmp/src", "/", "relative/src", "", None, 3, "/data2/mal/scratch/a\0b"):
+        assert tm.src_refusal(path) == "src_not_allowed", path
+
+
+@needs_scratch
+def test_src_allowlist_accepts_the_tape_and_scratch_and_refuses_escapes(scratch: Path, tmp_path: Path) -> None:
+    assert tm.src_refusal("/data/mal/arena/tape") is None  # the production source (realpath and isdir only; nothing in it is opened)
+    assert tm.src_refusal(str(scratch)) is None
+    assert tm.src_refusal(str(scratch) + "/") is None
+    fake = tmp_path / "launchlab"  # a launchlab-like dir OUTSIDE the allowlist (not the real holdout)
+    fake.mkdir()
+    (scratch / "link").symlink_to(fake)
+    assert tm.src_refusal(str(scratch / "link")) == "src_symlink_escape"
+    (scratch / "x_shadow").mkdir()
+    assert tm.src_refusal(str(scratch / "x_shadow")) == "src_sealed"  # the deny list stays as a second check
+    assert tm.src_refusal(str(scratch / "missing")) == "src_not_dir"
+    with pytest.raises(tm.Bad, match="src_symlink_escape"):
+        tm.Server(scratch / "link", hk(-5), {}, set(), write=lambda b: None)
+    (scratch / "inner").mkdir()
+    (scratch / "ok").symlink_to(scratch / "inner")  # a link that stays inside the allowlist is followed once, at the check
+    srv = tm.Server(scratch / "ok", hk(-5), {}, set(), write=lambda b: None)
+    assert srv.src == scratch / "inner"
+    (scratch / "inner" / tm.open_name(hk(-1))).write_bytes(b"a\n")
+    srv.poll(force_hb=True)
+    srv.close()
 
 
 # ---- pull: frame checks --------------------------------------------------------------------------------------------------------
@@ -460,9 +504,8 @@ def same_open(src: Path, dst: Path, h: str) -> bool:
     return b.read_bytes() == s[: s.rfind(b"\n") + 1]
 
 
-def test_e2e_live_tail_compaction_and_arena_state_reads_the_mirror(tmp_path: Path) -> None:
-    src, dst = tmp_path / "src", tmp_path / "dst"
-    src.mkdir()
+def test_e2e_live_tail_compaction_and_arena_state_reads_the_mirror(scratch: Path, tmp_path: Path) -> None:
+    src, dst = scratch, tmp_path / "dst"
     a, b = hk(-1), hk(0)
     ia = append_rows(src, a, 0, 300)
     ib = append_rows(src, b, 1000, 50)
@@ -504,9 +547,8 @@ def test_e2e_live_tail_compaction_and_arena_state_reads_the_mirror(tmp_path: Pat
     assert json.loads((dst / tm.META_DIR / "status.json").read_text())["state"] == "stopped"
 
 
-def test_e2e_restart_resumes_without_duplicates_and_backfills(tmp_path: Path) -> None:
-    src, dst = tmp_path / "src", tmp_path / "dst"
-    src.mkdir()
+def test_e2e_restart_resumes_without_duplicates_and_backfills(scratch: Path, tmp_path: Path) -> None:
+    src, dst = scratch, tmp_path / "dst"
     old, a, b = hk(-5), hk(-1), hk(0)
     (src / tm.closed_name(old)).write_bytes(zst_bytes(b"".join(row(1, i) for i in range(400)), tmp_path))
     append_rows(src, a, 0, 100)
@@ -536,9 +578,8 @@ def test_e2e_restart_resumes_without_duplicates_and_backfills(tmp_path: Path) ->
     assert any(e["kind"] == "local_torn_trimmed" for e in ev)
 
 
-def test_e2e_killed_session_reconnects_and_stays_exact(tmp_path: Path) -> None:
-    src, dst = tmp_path / "src", tmp_path / "dst"
-    src.mkdir()
+def test_e2e_killed_session_reconnects_and_stays_exact(scratch: Path, tmp_path: Path) -> None:
+    src, dst = scratch, tmp_path / "dst"
     h = hk(0)
     i = append_rows(src, h, 0, 50)
     run = Run(dst, src)
@@ -558,11 +599,11 @@ def test_e2e_killed_session_reconnects_and_stays_exact(tmp_path: Path) -> None:
 
 def test_e2e_serve_refusal_reaches_the_puller(tmp_path: Path) -> None:
     dst = tmp_path / "dst"
-    pl = tm.Puller(dst, [sys.executable, "-u", str(TOOL), "serve", "--src", str(tmp_path / "missing")])
+    pl = tm.Puller(dst, [sys.executable, "-u", str(TOOL), "serve", "--src", str(tmp_path / "any")])  # outside the allowlist
     stop = threading.Event()
     t = threading.Thread(target=lambda: pl.run(stop=stop, max_s=20), daemon=True)
     t.start()
-    wait_for(lambda: (dst / tm.META_DIR / "events.jsonl").exists() and "remote_src_not_dir" in (dst / tm.META_DIR / "events.jsonl").read_text())
+    wait_for(lambda: (dst / tm.META_DIR / "events.jsonl").exists() and "remote_src_not_allowed" in (dst / tm.META_DIR / "events.jsonl").read_text())
     stop.set()
     t.join(30)
     assert tm.mirror_problem(dst) is not None
@@ -592,7 +633,7 @@ def test_job_script_dry_line(tmp_path: Path) -> None:
     r = job({"DRY": "1", "REMOTE_REPO": "/data2/mal/wt/tape-mirror-serve"}, tmp_path)
     assert r.returncode == 0, r.stdout
     want = (f"python3 -u tools/tape_mirror.py pull --ssh-host mal-research-0 --remote-repo /data2/mal/wt/tape-mirror-serve --src /data/mal/arena/tape "
-            f"--dst {tmp_path}/mal-data/arena-mirror/tape --retain-hours 72 --backfill-hours 64 --min-free-pct 12")
+            f"--dst {tmp_path}/mal-data/arena-mirror/tape --retain-hours 56 --backfill-hours 52 --min-free-pct 20")
     assert r.stdout.strip().endswith("then run: " + want)
     assert not (tmp_path / "mal-data").exists()
 
@@ -605,7 +646,7 @@ def test_job_script_dry_line(tmp_path: Path) -> None:
     ({"SRC": "/data/mal/arena/tape x"}, "SRC must be"),
     ({"DST": "/tmp/elsewhere"}, "DST must be under"),
     ({"SSH_HOST": "host -oProxyCommand=x"}, "SSH_HOST must be"),
-    ({"BACKFILL_H": "80"}, "BACKFILL_H must be 1..RETAIN_H"),
+    ({"BACKFILL_H": "57"}, "BACKFILL_H must be 1..RETAIN_H"),
     ({"BACKFILL_H": "0"}, "BACKFILL_H must be 1..RETAIN_H"),
     ({"RETAIN_H": "400", "BACKFILL_H": "10"}, "RETAIN_H must be at most 336"),
     ({"MIN_FREE_PCT": "0"}, "MIN_FREE_PCT must be 1..50"),
@@ -625,9 +666,8 @@ def test_job_script_runs_on_fast0_only(tmp_path: Path) -> None:
     assert r.returncode == 2 and "runs on mal-fast-0 only" in r.stdout and not (tmp_path / "mal-data").exists()
 
 
-def test_pull_cli_writes_the_miscusi_result_and_refuses_two_sources(tmp_path: Path, monkeypatch) -> None:
-    src, dst = tmp_path / "src", tmp_path / "dst"
-    src.mkdir()
+def test_pull_cli_writes_the_miscusi_result_and_refuses_two_sources(scratch: Path, tmp_path: Path, monkeypatch) -> None:
+    src, dst = scratch, tmp_path / "dst"
     append_rows(src, hk(0), 0, 20)
     res = tmp_path / "result.json"
     monkeypatch.setenv("MISCUSI_RESULT", str(res))
@@ -636,3 +676,47 @@ def test_pull_cli_writes_the_miscusi_result_and_refuses_two_sources(tmp_path: Pa
     r = json.loads(res.read_text())
     assert r["ok"] is True and r["metrics"]["state"] == "stopped" and r["metrics"]["live_bytes"] == (src / tm.open_name(hk(0))).stat().st_size
     assert tm.main(["pull", "--dst", str(dst), "--cmd-json", "[]", "--ssh-host", "h"]) == tm.EXIT_REFUSED
+
+
+def test_hello_leaves_a_verifying_hour_out_of_have(mk, tmp_path: Path) -> None:
+    """Reviewer on #1147: an hour in the verifier is final; listing it in both `have` and `closed` made serve refuse the reconnect (hello_overlap)."""
+    pl = mk()
+    h = hk(-2)
+    pl.handle(d_frame(h, 0, b"a\n"), b"a\n")
+    pl.verifying.add(h)
+    since, have, closed = tm.parse_hello(pl.hello_line().rstrip(b"\n"))
+    assert h in closed and h not in have
+    pl.verifying.discard(h)
+
+
+def test_e2e_reconnect_while_an_hour_is_verifying(scratch: Path, tmp_path: Path, monkeypatch) -> None:
+    src, dst = scratch, tmp_path / "dst"
+    a, b = hk(-1), hk(0)
+    append_rows(src, a, 0, 100)
+    ib = append_rows(src, b, 500, 10)
+    gate, real = threading.Event(), tm.verify_closed
+
+    def held(*args):
+        gate.wait(60)  # the verifier is busy (a backfill queue) while the link drops
+        return real(*args)
+
+    monkeypatch.setattr(tm, "verify_closed", held)
+    run = Run(dst, src)
+    try:
+        wait_for(lambda: same_open(src, dst, a) and same_open(src, dst, b))
+        compact_file(src / tm.open_name(a))
+        wait_for(lambda: a in run.pl.verifying)
+        first = run.pl.proc
+        os.killpg(first.pid, 9)
+        ib = append_rows(src, b, ib, 10)
+        wait_for(lambda: run.pl.proc is not first and run.pl.state == "connected" and same_open(src, dst, b))
+        assert a in run.pl.verifying and (dst / tm.open_name(a)).exists()  # still waiting, and the new session was accepted
+        gate.set()
+        wait_for(lambda: (dst / tm.closed_name(a)).exists() and not (dst / tm.open_name(a)).exists())
+        assert sha(dst / tm.closed_name(a)) == sha(src / tm.closed_name(a))
+    finally:
+        gate.set()
+        assert run.end() == 0
+    ev = [json.loads(x) for x in (dst / tm.META_DIR / "events.jsonl").read_text().splitlines()]
+    assert not [e for e in ev if str(e.get("why", "")).startswith("remote_")]
+    assert sum(e["kind"] == "closed" for e in ev) == 1 and any(e["kind"] == "reconnect" for e in ev)

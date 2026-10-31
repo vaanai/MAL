@@ -10,7 +10,7 @@ DUR="${2:-240}"
 RATE="${3:-200}"
 case "$RPP" in /*) ;; *) echo "REFUSED: the remote checkout must be an absolute path"; exit 2 ;; esac
 case "$RPP$DUR$RATE" in *[!A-Za-z0-9._/-]*) echo "REFUSED: plain paths and integers only"; exit 2 ;; esac
-RSRC=/home/claude/scratch/tape-mirror-hop/src
+RSRC=/data2/mal/scratch/tape-mirror-hop/src  # serve's allowlist: /data/mal/arena/tape or a dir under /data2/mal/scratch
 LDST="$HOME/scratch/tape-mirror-hop/dst"
 OUT="${MISCUSI_OUTPUT_DIR:-$HOME/scratch/tape-mirror-hop-out}"
 mkdir -p "$OUT"
@@ -93,6 +93,6 @@ if p:
     json.dump({"ok": same and kinds.get("closed", 0) == 2, "metrics": m, "summary": "tape-mirror hop research-0 -> fast-0, synthetic tape"}, open(p, "w"))
 PY
 rm -rf "$HOME/scratch/tape-mirror-hop"
-ssh -o BatchMode=yes mal-research-0 'rm -rf /home/claude/scratch/tape-mirror-hop; ls -d /home/claude/scratch/tape-mirror-hop 2>&1'
+ssh -o BatchMode=yes mal-research-0 'rm -rf /data2/mal/scratch/tape-mirror-hop; ls -d /data2/mal/scratch/tape-mirror-hop 2>&1'
 ssh -o BatchMode=yes mal-research-0 'pgrep -fa "[t]ape-mirror-hop" || echo no-remote-process'
 echo "end=$(date -u +%Y-%m-%dT%H:%M:%SZ)"

@@ -5,16 +5,16 @@
 # (the mirror dir IS the state: a restart trims its own torn tail and resumes from the local sizes), a time limit that covers the DRY run.
 # What it runs: python3 -u tools/tape_mirror.py pull, which dials `ssh mal-research-0` (Cloudflare Access, the path the P46 forwarder measured) and
 # execs tools/tape_mirror.py serve there FROM $REMOTE_REPO, a checkout pinned at THIS job's commit (checked below: same HEAD, same bytes of the two
-# serve-side files, both clean). Python is exec'd, so a MiScusi cancel's SIGTERM reaches the puller (state `stopped`, no orphaned writer).
+# serve-side files, no modified tracked file and nothing untracked under tools/ on either side). Python is exec'd, so a MiScusi cancel's SIGTERM reaches the puller (state `stopped`, no orphaned writer).
 #
 # Environment:
 #   REMOTE_REPO   absolute path of a MAL checkout on research-0 at this job's commit                       required
 #   SSH_HOST      default mal-research-0
 #   SRC           the tape dir on research-0                                                             default /data/mal/arena/tape
 #   DST           the mirror dir on fast-0; must be under $HOME/mal-data                                 default $HOME/mal-data/arena-mirror/tape
-#   RETAIN_H      hours kept (by hour name)                                                              default 72
-#   BACKFILL_H    closed hours fetched on the first connect (<= RETAIN_H; r4-b warm-up needs 52)          default 64
-#   MIN_FREE_PCT  integer: nothing is written below this free-space percentage (state disk_reserve)       default 12
+#   RETAIN_H      hours kept (by hour name): the r4-b 52 h warm-up plus 4 h                              default 56
+#   BACKFILL_H    closed hours fetched on the first connect (<= RETAIN_H; the r4-b warm-up needs 52)      default 52
+#   MIN_FREE_PCT  integer: nothing is written below this free-space percentage (state disk_reserve)       default 20
 #   PY            python3 with the repo importable (stdlib only)                                         default python3
 #   DRY=1         print the checks' inputs and the command; run nothing (no ssh, no mkdir).
 # Exit: 0 clean stop; 2 refused here (or a mismatch stop by the puller); 3 the puller refused (another instance holds the lock, bad arguments).
@@ -25,9 +25,9 @@ REMOTE_REPO=${REMOTE_REPO:-}
 SSH_HOST=${SSH_HOST:-mal-research-0}
 SRC=${SRC:-/data/mal/arena/tape}
 DST=${DST:-$HOME/mal-data/arena-mirror/tape}
-RETAIN_H=${RETAIN_H:-72}
-BACKFILL_H=${BACKFILL_H:-64}
-MIN_FREE_PCT=${MIN_FREE_PCT:-12}
+RETAIN_H=${RETAIN_H:-56}
+BACKFILL_H=${BACKFILL_H:-52}
+MIN_FREE_PCT=${MIN_FREE_PCT:-20}
 PY=${PY:-python3}
 REQUIRE_HOST=mal-fast-0
 
@@ -60,14 +60,16 @@ if [ "$DRY" = 1 ]; then echo "DRY=1: would check host=$REQUIRE_HOST, zstd, and t
 command -v zstd >/dev/null 2>&1 || refuse "the zstd CLI is required (closed hours are verified and read through it)"
 command -v "$PY" >/dev/null 2>&1 || refuse "python not found: $PY"
 FILES="tools/tape_mirror.py tools/decision_forwarder.py"
-LOCAL=$(git rev-parse HEAD && sha256sum $FILES && git status --porcelain -- $FILES) || refuse "cannot read the job checkout"
-REMOTE=$(ssh -o BatchMode=yes -o ConnectTimeout=30 "$SSH_HOST" "cd $REMOTE_REPO && git rev-parse HEAD && sha256sum $FILES && git status --porcelain -- $FILES") \
+# clean = no tracked file modified anywhere, and nothing untracked under tools/ (both tools/ and the repo root are on serve's import path)
+STATE="git rev-parse HEAD && sha256sum $FILES && git status --porcelain --untracked-files=no && git status --porcelain --untracked-files=all -- tools"
+LOCAL=$(sh -c "$STATE") || refuse "cannot read the job checkout"
+REMOTE=$(ssh -o BatchMode=yes -o ConnectTimeout=30 "$SSH_HOST" "cd $REMOTE_REPO && $STATE") \
   || refuse "cannot read the serve checkout $SSH_HOST:$REMOTE_REPO"
 [ "$LOCAL" = "$REMOTE" ] || refuse "the serve checkout is not this job's commit, or its serve files differ or are dirty (job, then serve, below)
 $LOCAL
 ---
 $REMOTE"
-[ "$(printf '%s\n' "$LOCAL" | wc -l)" -eq 3 ] || refuse "the serve files are dirty in the job checkout"
+[ "$(printf '%s\n' "$LOCAL" | wc -l)" -eq 3 ] || refuse "the job checkout is dirty (a modified tracked file, or an untracked file under tools/)"
 mkdir -p "$DST" || refuse "cannot create DST"
 echo "JOB start $(date -u +%FT%TZ) head=$(git rev-parse HEAD) dst=$DST retain_h=$RETAIN_H backfill_h=$BACKFILL_H min_free_pct=$MIN_FREE_PCT"
 df -B1 --output=size,avail,pcent "$DST" | tail -1 | sed 's/^/JOB disk size_avail_pcent /'

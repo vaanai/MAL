@@ -8,6 +8,12 @@ mark-window feed of tools/r4b_feed_merge.py, PR #1142, only covers [T - 30 s, T 
 host that consumes the data dials research-0 over the existing ssh path (`ssh mal-research-0`, Cloudflare Access) and runs `serve` there; research-0
 gets no credential to fast-0.
 
+SOURCE ALLOWLIST (QP on #1147). serve mirrors ONLY /data/mal/arena/tape, or a dir under /data2/mal/scratch/ (synthetic runs and tests). The given
+path is checked as a string first (normalised, before anything on disk is touched, so a sealed path such as a venue-tape holdout is refused unseen),
+then its realpath (a symlink that leaves the allowlist is refused), then a deny list of sealed trees as a second check. serve opens the dir ONCE
+(O_DIRECTORY | O_NOFOLLOW), re-checks the path the kernel reports for that descriptor, and opens every tape file relative to it (O_NOFOLLOW), so
+swapping a path component after the check cannot redirect it.
+
 WHAT IT NEVER DOES (seals). It moves bytes. Neither side parses a tape row: the only content operations are byte counts, newline positions (so only
 complete lines are sent) and sha256. Logs, events and the status hold hour names, sizes, offsets, hashes and timings only. A mirror is a COPY of the
 arena tape and inherits every seal of /data/mal/arena/tape (counts and creates only under QP rulings; walk-2-hour information, DEC-030 s2 R1).
@@ -51,7 +57,8 @@ LAG. Per d frame: lag_new = local write done - mt (the newest byte), lag_old = l
 the two hosts' NTP clocks (about +-10 ms, PR #967 s4). Rolling 60 s p50/p90/max in the status, one row per minute in lag.jsonl.
 
 DISK. Hours older than --retain-hours (by name) are deleted here, and nothing is written while free space is under --min-free-pct (state
-disk_reserve, the host sees it stale). The first connect backfills --backfill-hours of closed hours.
+disk_reserve, the host sees it stale). The first connect backfills --backfill-hours of closed hours. Defaults: keep 56 h, backfill 52 h (the
+r4-b warm-up; the first hour is the one holding now - 52 h, so 52 to 53 h of tape), stop writing below 20 % free (mal-fast-0 has one filesystem).
 """
 
 from __future__ import annotations
@@ -93,6 +100,8 @@ CLOSED_RE = re.compile(r"^tape-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl\.zst\Z")
 PART_SUFFIX = ".part"
 META_DIR = ".mirror"
 DEFAULT_SRC = "/data/mal/arena/tape"
+ALLOWED_SRC = DEFAULT_SRC  # the only production source
+SCRATCH_ROOT = "/data2/mal/scratch"  # synthetic runs and tests only: a dir strictly under it
 H_MS = 3_600_000
 
 POLL_MS_DEFAULT = 20
@@ -121,9 +130,9 @@ LAG_WINDOW_MS = 60_000
 ZST_RETRIES = 3
 REMOTE_BAD_MAX = 10  # sessions in a row that serve refused before any heartbeat: stop (a config error does not heal by reconnecting every 5 s)
 
-RETAIN_HOURS_DEFAULT = 72  # the r4-b warm-up needs 52 h of block time (DEC-032 Am.8 Erratum 1) plus room for a restart
-BACKFILL_HOURS_DEFAULT = 64
-MIN_FREE_PCT_DEFAULT = 12.0
+RETAIN_HOURS_DEFAULT = 56  # the r4-b warm-up needs 52 h of block time (DEC-032 Am.8 Erratum 1) plus 4 h of margin (manager, on #1147)
+BACKFILL_HOURS_DEFAULT = 52  # only what the host's warm-up needs
+MIN_FREE_PCT_DEFAULT = 20.0  # mal-fast-0's / is shared with the listeners and other jobs: the mirror stops writing first
 
 STATUS_MAX_AGE_MS = 2_000  # the puller rewrites its status every 250 ms
 SYNC_MAX_AGE_MS = 3_000  # serve heartbeats every 500 ms
@@ -187,9 +196,21 @@ def fsync_dir(d: Path) -> None:
         os.close(fd)
 
 
-def src_refusal(src: str) -> str | None:
-    """serve reads only an arena-tape-like dir: never a sealed tree (by real path), never a non-directory."""
+def src_allowed(path: str) -> bool:
+    """The allowlist, on a normalised absolute path string: the arena tape dir itself, or a dir strictly under the scratch root."""
+    return path == ALLOWED_SRC or path.startswith(SCRATCH_ROOT + "/")
+
+
+def src_refusal(src: Any) -> str | None:
+    """None only for an allowed source dir. The string is judged BEFORE the filesystem is touched (a sealed path is refused unseen); then the
+    realpath (no symlink may leave the allowlist); then the deny list as a second check; then it must be a directory."""
+    if not isinstance(src, str) or not src.startswith("/") or "\0" in src:
+        return "src_not_allowed"
+    if not src_allowed(os.path.normpath(src)):
+        return "src_not_allowed"
     real = os.path.realpath(src)
+    if not src_allowed(real):
+        return "src_symlink_escape"
     for p in DENY_PREFIXES:
         if real == p or real.startswith(p + "/"):
             return "src_sealed"
@@ -243,7 +264,18 @@ class Server:
     def __init__(self, src: str | Path, since: str, have: dict[str, int], closed: set[str], write: Callable[[bytes], None] | None = None,
                  clock_ns: Callable[[], int] = time.time_ns, zst_pass_bytes: int = ZST_PASS_BYTES_DEFAULT, live_pass_bytes: int = LIVE_PASS_BYTES,
                  hb_ms: int = HB_MS_DEFAULT) -> None:
-        self.src = Path(src)
+        why = src_refusal(str(src))
+        if why:
+            raise Bad(why)
+        self.dirfd = os.open(os.path.realpath(str(src)), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            opened = os.readlink(f"/proc/self/fd/{self.dirfd}")  # what the kernel actually opened (a component swapped after the check shows here)
+        except OSError:
+            opened = ""
+        if not src_allowed(opened):
+            os.close(self.dirfd)
+            raise Bad("src_symlink_escape")
+        self.src = Path(opened)
         self.since = since
         self.sent: dict[str, int] = dict(have)  # open hour -> bytes the puller holds of its .jsonl
         self.closed = set(closed)  # hours the puller holds (or is installing) as .zst: never sent again
@@ -303,7 +335,7 @@ class Server:
 
     def scan(self) -> None:
         opens, closeds = set(), set()
-        with os.scandir(self.src) as it:
+        with os.scandir(self.dirfd) as it:
             for e in it:
                 m = OPEN_RE.match(e.name)
                 if m and m.group(1) >= self.since:
@@ -336,14 +368,14 @@ class Server:
     def _current_hour(self, now: int) -> None:
         """A new hour file is picked up within one pass, not one listing."""
         h = hour_key(now)
-        if h >= self.since and h not in self.open and h not in self.closed and os.path.exists(self.src / open_name(h)):
+        if h >= self.since and h not in self.open and h not in self.closed and self._exists(open_name(h)):
             self.open[h] = {"ino": None, "size": None, "mt": None, "clean_ms": None}
             self.sent.setdefault(h, 0)
 
     # -- one open hour
     def _live(self, h: str, now: int) -> int:
         try:
-            fd = os.open(self.src / open_name(h), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            fd = os.open(open_name(h), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=self.dirfd)
         except FileNotFoundError:
             self._rescan = True  # compacted (or removed) since the listing
             return 0
@@ -398,7 +430,7 @@ class Server:
                     break
                 h = self.zq.pop(0)
                 try:
-                    fd = os.open(self.src / closed_name(h), os.O_RDONLY | os.O_NOFOLLOW)
+                    fd = os.open(closed_name(h), os.O_RDONLY | os.O_NOFOLLOW, dir_fd=self.dirfd)
                 except FileNotFoundError:
                     self._rescan = True
                     continue
@@ -434,10 +466,20 @@ class Server:
         self.stats["zst_bytes"] += sent
         return sent
 
+    def _exists(self, name: str) -> bool:
+        try:
+            os.stat(name, dir_fd=self.dirfd, follow_symlinks=False)
+            return True
+        except FileNotFoundError:
+            return False
+
     def close(self) -> None:
         if self.zcur is not None:
             os.close(self.zcur["fd"])
             self.zcur = None
+        if self.dirfd >= 0:
+            os.close(self.dirfd)
+            self.dirfd = -1
 
     def poll(self, force_hb: bool = False) -> int:
         """One pass: listing (if due), live data, .zst budget, heartbeat (if due). Returns the payload bytes framed."""
@@ -499,7 +541,10 @@ def run_serve(args: argparse.Namespace) -> int:
         since, have, closed = parse_hello(read_hello(sys.stdin.fileno()))
     except ValueError as exc:
         return say_bad(str(exc))
-    srv = Server(args.src, since, have, closed, zst_pass_bytes=args.zst_pass_bytes, hb_ms=args.hb_ms)
+    try:
+        srv = Server(args.src, since, have, closed, zst_pass_bytes=args.zst_pass_bytes, hb_ms=args.hb_ms)
+    except Bad as exc:
+        return say_bad(str(exc))
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     poll_s = max(1, args.poll_ms) / 1000.0
     try:
@@ -691,7 +736,9 @@ class Puller:
 
     def hello_line(self) -> bytes:
         self.since = self._since()
-        have = {open_name(h): s for h, s in sorted(self.sizes.items()) if h >= self.since}
+        # an hour waiting in the verifier is final (serve sends nothing more for a closed hour): it goes in `closed` only, never in both (serve
+        # refuses an overlap; reviewer on #1147)
+        have = {open_name(h): s for h, s in sorted(self.sizes.items()) if h >= self.since and h not in self.verifying}
         closed = sorted(h for h in self.local_closed | self.verifying if h >= self.since)
         return json.dumps({"v": PROTO, "since": self.since, "have": have, "closed": closed}, sort_keys=True).encode() + b"\n"
 
