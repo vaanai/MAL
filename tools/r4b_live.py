@@ -166,20 +166,29 @@ class DuckHash:
 _HEAD_SHA: str | None = None
 
 
-def repo_head_sha() -> str:
-    """`git rev-parse HEAD` of the repo that holds this module, read once per process. The decision log's `start` row carries it as `frozen_sha`
-    (the bridge latches frozen_sha_mismatch on a different value). Refuses (no guess) when git cannot answer or does not return 40 hex digits."""
+def repo_head_sha(repo: Path | str | None = None) -> str:
+    """`git rev-parse HEAD` of the repo that holds this module (or of `repo`, for tests), as the `frozen_sha` of the decision log's `start` row (the bridge
+    latches frozen_sha_mismatch on a different value). Refuses (LiveRefused, no guess) when git cannot answer, does not return 40 hex digits, or when tracked
+    files of the repo are modified (`git status --porcelain --untracked-files=no` is not empty, staged or not): the sha would then not describe the code
+    that runs. Untracked files do not count. The default repo is checked once per process (HEAD and the status together) and cached; another `repo` is
+    never cached. A caller that passes frozen_sha explicitly (replay_walker, host_start, the --frozen-sha flag) never reaches this function."""
     global _HEAD_SHA
-    if _HEAD_SHA is None:
-        repo = Path(__file__).resolve().parents[1]
-        try:
-            out = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=15, check=True).stdout.strip()
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise LiveRefused(f"cannot read the git HEAD of {repo} ({type(exc).__name__}); pass frozen_sha explicitly") from exc
-        if not re.fullmatch(r"[0-9a-f]{40}", out):
-            raise LiveRefused(f"git rev-parse HEAD did not return a 40-hex sha: {out[:60]!r}; pass frozen_sha explicitly")
+    if repo is None and _HEAD_SHA is not None:
+        return _HEAD_SHA
+    path = Path(__file__).resolve().parents[1] if repo is None else Path(repo)
+    try:
+        out = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=15, check=True).stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(path), "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True, timeout=60, check=True).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise LiveRefused(f"cannot read the git HEAD or status of {path} ({type(exc).__name__}); pass frozen_sha explicitly") from exc
+    if not re.fullmatch(r"[0-9a-f]{40}", out):
+        raise LiveRefused(f"git rev-parse HEAD did not return a 40-hex sha: {out[:60]!r}; pass frozen_sha explicitly")
+    if dirty.strip():
+        n = len(dirty.strip().splitlines())
+        raise LiveRefused(f"{path} has {n} modified tracked path(s): the HEAD sha would not describe the running code; commit or restore them, or pass frozen_sha explicitly")
+    if repo is None:
         _HEAD_SHA = out
-    return _HEAD_SHA
+    return out
 
 
 def default_pda_fn() -> Callable[[str], str]:
@@ -1257,7 +1266,7 @@ def replay_walker(walk_dir: Path | Sequence[Path], h0: str, h1: str, w0: int, e:
     static_map given -> v_source static_map; None -> event. Refuses a non-exploration path or any hour at or after REPLAY_HOUR_MAX unless allow_dir
     (synthetic test dirs only). walk_dir may be a list of window dirs (e.g. explore-0814 w7, w6, w5): each hour file is taken from the first dir
     that has it. frozen_sha: written on the declog `start` row (the bridge compares it with its pin); default = repo_head_sha(), read once per process
-    from `git rev-parse HEAD`, and only when log_root is given."""
+    from `git rev-parse HEAD` (refused when tracked files are modified), and only when log_root is given."""
     import duckdb
 
     dirs = [Path(walk_dir)] if isinstance(walk_dir, (str, os.PathLike)) else [Path(d) for d in walk_dir]
