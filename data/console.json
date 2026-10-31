@@ -1,8 +1,231 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-27T18:30:00Z",
+ "updated_utc": "2026-10-31T04:52:28Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "feed-late-dedupe-merged-1031",
+   "kind": "decision",
+   "title": "Arena feed late-duplicate fix merged (#1152, cfc04d1b); NOT deployed",
+   "detail": "Source: PR #1152 (QP OK + reviewer APPROVE at e55a0613), ops/reports/2026-10-31/feed-dedupe.md and qp-1152.md. The feed keeps a second memory of each signature for 900 s from first sight (cap 3,300,000 keys), so a late re-delivered row is not written again; the per-program socket merge keeps its 120 s / 200k window. Without late duplicates the old and new tapes are byte-identical (md5 fcefa942ddeb54f3da65708aa94b8569 and ca6156b9d27a4b33045f53d7acad4c4b, synthetic streams). Measured on synthetic data only: +710.9 MB resident memory at the key cap (QP budgets about 1 GB). Not measured: the real delay of repeats; repeats later than 900 s are still written. Deploy only at the next feed restart that is needed (QP conditions D1–D6: D1 no deploy while HV4's process window is open, which ends 11-08T13:05Z, and fold it into the P35 v2 takeover so there is one restart; D2 memory: the feed wrapper runs under MemoryMax=2G, so its running RSS + 1.0 GB must stay at or below 75% of the new limit, else a new wrapper; D3 a live acceptance check on the first 24 or more closed hours after deploy (pinned dupcount, delay diagnostic with a 900 s bin edge, late_dedup counters), pre-declared in a records line before deploy; D4 a LAB_STATE restart record; D5 a per-book disclosure; D6 fix arena_tape_schema.md line 28). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-31T04:41:02Z"
+  },
+  {
+   "id": "watchdog-v3-1031",
+   "kind": "job",
+   "title": "Watchdog v3 merged (#1151) and restarted from main as job #1952",
+   "detail": "Source: PR #1151 (QP + reviewer at 388278e7; 51 tests) and the manager log 04:17Z. The host watchdog now re-reads its config on every pass and keeps the last good config if the file breaks (one alert, config:reload_failed). Before this a config edit only took effect after a restart: on 10-30 job #1902 used a stale config and re-alerted three cancelled jobs. #1923 cancelled, #1952 running at 293cd971. Not measured: no end-to-end run against the real job list at merge time. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-31T04:16:55Z"
+  },
+  {
+   "id": "tape-dupe-counter-merged-1031",
+   "kind": "decision",
+   "title": "Arena-tape duplicate counter merged (#1140): count-only, per closed hour",
+   "detail": "Source: PR #1140 (QP 6538843516 + reviewer 6538843711 at a4b57393) and the manager log 04:12Z. tools/arena_tape_dupcount.py counts re-delivered rows per closed hour and prints no price, size or trader. Review caveats: it compares first rows only (undercount at most 0.0142%) and looks back one hour for cross-hour repeats. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-31T04:12:35Z"
+  },
+  {
+   "id": "kcurve-boost-killed-1031",
+   "kind": "result",
+   "title": "kcurve-boost (K-1, K0..K12): all 8 cells KILLED (in-sample; QP-RULING-1031-kcurve-price)",
+   "detail": "Source: QP-RULING-1031-kcurve-price (sha256 350c241c2a5cbcb54cec33b233631b3692ea8af9230e6fdb392df1db83b70e08), pricing job #1935 (results.json sha256 5319cab93ca9bf080494bc42d989e318cd8e95a37612251637c2d039481ee7e1), docs/research/kcurve-boost/REPORT.md (#1150). August and September exploration blocks the lab has read many times, both fail models, worst-in-slot measured on every cell, no October hour. K-1 (the seat-proxy cell) is 'KILLED within the remainder margin': its pooled positive rests on August (explore-0814 +44.458% flat / +11.28% pressure of stake); September pooled is +0.655% flat / −0.257% pressure and only 2 of 4 blocks are positive. K0..K12 fail the CI90 lower bounds and worst-in-slot; K5, the closest, has 3 of 4 blocks positive and still fails (trade lower bound −1.1654% flat / −0.8886% pressure, flat ex-top-3, negative worst-in-slot). Paid speed for migration entries stays NO-GO. No cell survived. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-31T02:32:00Z"
+  },
+  {
+   "id": "r4b-live-infra-merged-1031",
+   "kind": "decision",
+   "title": "r4-b live infrastructure merged (dry only): decision host, Helius mark-window feed merge, arena-tape mirror; install sha 2b378c1b",
+   "detail": "Source: manager log 02:26Z–02:38Z; PRs #1117 #1126 #1130 #1131 #1136 #1139 #1141 #1142 #1143 #1146 #1147 #1149 and ops/reports/2026-10-30/r4b-live.md, 2026-10-31/r4b-feed-swap*.md, r4b-host-glue.md, tape-mirror.md. EXP-027 r4-b now has a keyless DRY decision host (md5 replay on explore-0814 equal: rows f1317f7b2fc2f1d8cb1c603d475c9c4f, trades c079bae1c3abe86ae1b1551cb7b6e441), a library that merges a Helius mark window into the public stream (daily credit cap, NTP guard), and a byte-exact arena-tape mirror research-0 → mal-fast-0 (#1147; fail-closed status; pull job #1940 running, 52 closed hours verified, lag p90 about 104 ms). Nothing sends and no key exists. The 1-mark DRY smoke #1946 reported exit 0 but did not run for real (numpy was missing in the fast-0 venv); deps installed in #1948, rerun pending. mal-fast-0 root disk is at 23.0% free, 6.3 GB above the mirror's 20% floor; a cleanup plan is in progress. Owed: the DRY host on the live merged stream (target 2026-11-02T12Z, hard limit 23:00Z) for 48 post-warm-up marks, Bar 1 (entry-level agreement with the read's rows) and the go/no-go, which is read once on 2026-11-07T00Z if the DRY host is on the live stream by 2026-11-02T12Z; the EXP-027 read itself comes after 2026-11-07T04Z. Why a feed swap: the public feed is about 1.4 s late (r4b-live report). The lane report also notes a C0 canary at 0.05 SOL cannot earn its fee (2.02% per round trip against a central in-sample net of +0.5652%), so C0 would measure execution only. r4-b has zero out-of-sample trades. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-31T02:26:15Z"
+  },
+  {
+   "id": "a-q50-audit-merged-1031",
+   "kind": "decision",
+   "title": "A-Q50 post-read audit tool and pre-declarations merged (#1144, #1145, #1148)",
+   "detail": "Source: QP-RULING-1031-tape-dupes-reads §4.2 and the manager log 01:30Z–01:37Z (QP + reviewer at 9806c5fc, 2405817d, 2b4ec582; main 88efc3ee). A-Q50 was pre-declared before the Q50 read runs: only after a Q50 PASS is recorded, it checks the read's counted strips for re-delivered repeat buys, and a non-zero count adds a corrected pressure leg that must also hold before QP's OK and before any C0 step. A FAIL or NOT_DECIDABLE is final and is never reopened by it. #1145 pre-declares the same audit for s1 before its clock 2026-11-06T00Z; #1148 extends it to Q50's own confirmation read (merge before 11-04T00Z, met). QP errata: E1 the total loss is 302,544,280 lamports (stake + send + stranded rent), E2 post_last < from_slot, E3 flat cells. Owed: a tool change for confirmation trades before any confirmation audit. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-31T01:37:01Z"
+  },
+  {
+   "id": "tape-dupes-ruling-1031",
+   "kind": "decision",
+   "title": "QP ruling: the HV4, DBC m10 and Q50 reads run unchanged despite the arena-tape duplicates (QP-RULING-1031-tape-dupes-reads)",
+   "detail": "Source: ops/manager18/QP-RULING-1031-tape-dupes-reads.md (sha256 prefix c658e35f; written 00:54Z). HV4 X-arm reads: unchanged. The pinned engine drops every repeat (same slot, signature, event_index, tx_index) before pricing, so prices, ssb, nearby_lamports and both fail legs are computed on de-duplicated rows; the bots' cards (counts, flows, candles) were not de-duplicated and are what the bots saw. DBC m10: unchanged, because its forward data (fwdv1) is a pinned Helius backfill, not the websocket tape. Q50: unchanged with a disclosure, because the shadow keeps no per-pool filter and a repeat can enter a strip only when the 500,000-key cap evicts first (QP proxy count: up to 514,875 notices in a span of about 480 s at peak); the sign of the effect on the pressure leg is not determined, so on a PASS the pre-declared audit A-Q50 must run before QP's OK. The manager's outcome-blind pause of Q50 read #1887 (from 00:40Z) was lifted at 00:56Z and will be disclosed in the read report. FLOOR, the arena cohort, HV6 and HV7 run unchanged at their reads (same engine as HV4). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-31T00:56:00Z"
+  },
+  {
+   "id": "tape-dupes-finding-1031",
+   "kind": "finding",
+   "title": "Arena tape carries re-delivered duplicate rows: 0.335527% of trade rows in HV4's counted window (job #1924)",
+   "detail": "Source: ops/reports/2026-10-31/tape-dupes.md (count job #1924, notebook n_X3V3JvXXobRaVA, counter script sha256 58318765090d5582756f454b304995804ac3c9403653029ffefbf5c7b60411c4). Counts only, closed hours; no price or P&L was opened. HV4 X-arm window [2026-10-25T00Z, 2026-10-30T00Z): 245,840 of 73,269,844 trade rows are trade-identical repeats = 0.335527% within an hour, 0.391729% with cross-hour repeats; worst hour 4.017188% (2026-10-26T09); 46 of 120 hours above 0.1%. Whole tape 10-19T08..10-30T23: 0.286958%. The repeats come in bursts (84 of 280 hours have none). Likely cause (code reading, not diagnosed): the public-websocket feed forgets a signature after 120 s (QP corrected the lane's 600 s), so a later re-delivery is written again. The count crossed QP's 0.1% line, which sent HV4's pressure leg to QP before its read; the ruling is in the entry above. Q50's shadow and DBC fwdv1 were not counted (sealed). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-31T00:40:00Z"
+  },
+  {
+   "id": "kcurve-oracle-live-dupes-1031",
+   "kind": "finding",
+   "title": "oracle-live exports carry re-delivered duplicate rows; QP: de-duplicate every loaded row, no past rerun (QP-RULING-1031-kcurve-dupes)",
+   "detail": "Source: QP-RULING-1031-kcurve-dupes (written 00:23Z), kcurve precount #1922 (stopped by its own pre-declared line; nothing priced), library note #1138. The precount stopped at 194 of 2,535 non-unique opening prints = 7.65% against a 2% line on oracle-live. Cause: the same chain event delivered twice with a different receive time, which the 10-01 byte-identical de-duplication missed. Prices and P&L states are unaffected; the double count lands in the pressure-fail inputs (buys in the landing slot, buy lamports over 2 s) and in any rule input that counts prints. Ruling A: drop re-delivered rows in the adapter and stop if more than 1% of a block is dropped; no past result is rerun (hunt23's kills rest on the flat leg; FLOOR has 1 oracle-live trade). After de-duplication 93,202 of 27,290,350 oracle-live rows were dropped (0.3415%) and 0 opening prints failed. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-31T00:24:00Z"
+  },
+  {
+   "id": "r4b-feed-lag-probe-1031",
+   "kind": "result",
+   "title": "r4-b feed probe: Helius mark window is 0 slots behind the processed tip at sd(T); inputs ready 0.22 s p50",
+   "detail": "Source: manager log 00:21Z; probe job #1916 (PR #1133, credit cap added in 24f8aec0), notebook n_6yJUVakoq29ivg. Helius mark-window: sd(T) 0 slots behind processed tip, inputs ready 0.22 s p50 (p90 0.31) after mark; confirmed +1 slot (0.60 s) vs public ~7 slots; 26.3k credits used; ~28.7k credits/day (0.86M/30 d) for r4b mark windows. The manager approved this small Helius use under the owner's Helius OK. It makes a feed swap for r4-b a candidate; it is a feed-latency measurement only. Not measured: the full DRY run (at least 48 marks) or any effect on r4-b's edge. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-31T00:21:00Z"
+  },
+  {
+   "id": "s1-code-records-complete-1030",
+   "kind": "decision",
+   "title": "s1 (h5v1q50-boostfloor-s1): code and records on main; registration still waits for a second feed provider",
+   "detail": "Source: manager log 15:57Z–22:38Z; PRs #1099 #1086 (memory fit), #1107 #1109 (DEC-031 Am.22 power-n reads), #1111 #1112 (job scripts, own arena root), #1121 #1124 #1132 #1134 (second provider as a parameter, Am.22 Errata 1–2, key-file guard), #1122 (registration record item); tag a3-guard-pin-s1 (17:22Z, QP OK 6528947282). s1 is Q50's successor with the same frozen rule (S* 5c2ab7c6), its own arena root and A3 loop. Am.22 pins its read sizes: screen at the first boundary with at least 200 counted trades on at least 5 dates, or at clock + 10 days with at least 100; confirmation 300 trades by 2026-12-01T00:00Z. Remaining: a working second websocket provider (owner action, entry below), a 6 h smoke with flagged-gap exposure at most 2.5%, registration 2026-11-04, shadow start 2026-11-05 20:00–22:30Z, clock 2026-11-06T00Z. s1 has zero counted trades. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-30T22:38:44Z"
+  },
+  {
+   "id": "s1-feed2-blocked-1030",
+   "kind": "finding",
+   "title": "s1 second feed: no free keyless provider works; blocked on an owner action (OrbitFlare key)",
+   "detail": "Source: ops/reports/2026-10-30/s1-feed2.md (probe jobs #1909, #1910, PR #1127) and manager log 21:18Z–22:14Z. s1 needs a second websocket provider so one provider's gaps do not silently thin the feed. Of 11 keyless providers, 0 were usable (PublicNode: 0 messages in 60 s; Solana Tracker public: coverage 0.4554 of Helius's signatures, median 40.8 s late, so it would hide gaps instead of excluding them: never use). Helius for the whole window measured 4.85 GB/h, 2,328,165 credits a day, 58,689,161 credits to 12-01 (about 3× the owner's ~20M extra credits; about $293), so the Helius second feed is OFF pending the owner. Recommended: OrbitFlare Free (Frankfurt), untested; OrbitFlare Developer is $49 a month if Free throttles. Credits used by the probes: 23,415. Risk (manager's estimate): with mainnet-beta alone the 6 h smoke would see 42–47 flagged gaps an hour and fail the gap-exposure bar, which would leave s1 without a clock. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-30T22:14:00Z"
+  },
+  {
+   "id": "haiku-v5-pilot-1030",
+   "kind": "result",
+   "title": "Haiku v5 (offline self-improving BUY/SKIP filter on H5 triggers): pilot structure checks met; full offline run O1 in progress, no outcome yet",
+   "detail": "Source: PRs #1087 (harness, 7150f828), #1120, #1123 (8c50699b), docs/research/haiku-v5/DESIGN.md, manager log 15:51Z–22:02Z. Haiku sees one card of causal fields per H5 BOOST-floor trigger and decides BUY or SKIP; a nightly reflection rewrites its playbook; placebo, frozen, numeric-veto, always-buy and random controls are built to catch v3's failure (learning about equal to a placebo). Pilot P1 #1906 was refused before any API call (0 spent: an outcome field was missing at 0.1 SOL stake). Rerun #1908 at da25a118 cost $0.0856 and failed its structure check (reflect_ok 2/4, decide max_tokens stops 5.7%); limits were raised (#1123). P1b #1912 at 8c50699b met its structure checks (parse 97.6%, reflect 4/4, 0% max_tokens stops, 23.2 s max latency; ledger $0.1745). These are format and cost checks, not skill. O1 #1914 (3 reps, all days, $16 cumulative cap, approval n_UjMB4qfNBNWU6A) was still running in the 2026-10-31 job list and chains its own score; QP reads the score before any sentence about it. A forward v5 book cannot start before 2026-11-14 (EXP-024 Look-2 seal). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-30T22:02:00Z"
+  },
+  {
+   "id": "hv4-c0-flip-1030",
+   "kind": "decision",
+   "title": "HV4 C0 live path complete on main (flip #1118, 979a7dcb); every real start stays refused until a recorded PASS exists",
+   "detail": "Source: manager log 17:13Z and 21:19Z–21:38Z; PRs #1090 #1092 #1105 #1098 #1096 #1104 #1110 #1097 #1095 #1100 (stack merged in order, main 85be1fad), #1115 (checklist), #1118 (flip; QP OK 6533818857 + reviewer at ca5a1ac5). The flip sets LIVE_REFUSAL_ACTIVE and FEED_GAP_MANUAL_REVIEW to False; QP confirmed the bridge's start_refusal (hv4_live_c0.py:1432) keeps any real start refused until the bot's PASS is recorded. A live send needs all four: a recorded PASS read for that bot, the owner line in a root-owned owner file that Helm writes on the owner's word, LIVE_OK and TIER, and a wallet key only Helm creates; none exists. Decision: merge the flip before the reads (2026-11-01T01:35Z) rather than after a PASS. QP conditions: the install sha includes #1118; each bot's canary DEC copy merges before Helm writes the owner file and LIVE_OK. The keyless install on mal-fast-0 waits for the owner to relay HELM-ASK-1030-3. Funding note (hv4-c0-ready report, item 7): one HV4 canary at 0.35 SOL plus Q50 at 0.5 SOL fits the 1 SOL. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-30T21:38:04Z"
+  },
+  {
+   "id": "after-chain-fix-1030",
+   "kind": "job",
+   "title": "After-chain audit: three guard jobs would have been killed by their time limits before their successors fired; fixed",
+   "detail": "Source: manager log 16:4xZ–16:5xZ and ops/reports/2026-10-30/after-chain-audit.md. A MiScusi 'after' successor fires only when its predecessor exits 0, so a job killed at its time limit never hands over. #1319 (dead-man, limit end 11-04T21:13:55Z), #1349 (digest, limit 11-05T00:55:10Z) and #1446 (A3 guard, limit 11-07T00:57:39Z) would have been killed. Gates #1893/#1894/#1895 (sleep to limit + 3 min, exit 0) now start successors #1896/#1897/#1898 with the same commands and pins; #1896 and #1898 extended to 14 days, #1718 +168 h (now 334 h); E5/E6 jobs are already at 14 days. Seal note: a status call on #1036 returned a stale walk-2 progress tail; disclosed (notebook n_6ZefU-iwvELz_w) and #1036/#1290 added to the no-status list. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-30T16:45:00Z",
+   "approx": true
+  },
+  {
+   "id": "q50-c0-code-merged-1030",
+   "kind": "decision",
+   "title": "Q50 C0 code on main: 60 s gap hold (#1085), DEC-032 Am.5 (#1103), owner line in a root-owned file (#1091), P7 at C0 (#1106)",
+   "detail": "Source: manager log 15:46Z–16:41Z; PRs #1085 (6117c35c), #1103 (c5bf428b), #1091 (ebda595b), #1106 (13d2d5e4), each QP OK + reviewer APPROVE at its head, md5 decision-equivalence EQUAL (#1852, #1882, #1875). The 10-28 blocker was that every feed-gap row held buys for at least 600 s (about 196 gap rows an hour in pre-stage). Now only data-loss gap rows hold buys, for 60 s; redundant-socket reconnects hold nothing; P7's gap share at C0 makes parity 'not shown' instead of a soft halt. The feed itself still decides: the manager's note at merge reads 'feed itself still decides (54% held, 98.7% trips gap at measured rate)'. A Helm re-measure on the new code is HELM-ASK-1030-2 (10-31, start between 14:00Z and 16:00Z, keyless, 1 h; it supersedes HELM-ASK-1030-1); the owner has to relay it. Q50's read has not run, so this is infrastructure only. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-30T16:41:49Z"
+  },
+  {
+   "id": "hv6-hv7-parked-1030",
+   "kind": "decision",
+   "title": "HV6 and HV7 parked until after the 11-01 reads (fix PRs #1108 and #1102 open)",
+   "detail": "Source: manager log 16:25Z–16:28Z and 21:18Z; PRs #1108 (9d3f53a2) and #1102 (1df317bd, 386 tests #1880). HV6 fixes: A max_tokens 1200, B concurrent arm calls (board 24 → 4 cards), C paced prefetch 2,000 an hour; cost 1.21 USD a day (1.61 worst). HV7 diagnosis: of 31 fallback replies, 30 were not_json (all cut off at max_tokens 600) and 1 was duplicate_id; fix max_tokens 2000 plus a bare-fence strip; smoke risk: duplicate_id about 26% chance on the next smoke. Both need re-proofs and a new smoke before any new clock. The manager parked review and heavy proofs (research-0 memory) until after the 11-01 DBC and HV4 reads, with the API budget going to Haiku v5 and HV4; the strategy audit's pass estimate for them is about 2%. Earliest new clock 11-03 or later. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-30T16:28:00Z",
+   "approx": true
+  },
+  {
+   "id": "q50-read-chain-1030",
+   "kind": "job",
+   "title": "Q50 gate read chain submitted on mal-fast-0: waiter #1886 then one read #1887",
+   "detail": "Source: manager log 16:12Z (QP re-check OK; pack Q50-READ-PACK-1030.md 8d661e94, script q50-read.sh 214eef82, git e43d9d85). The waiter polls for the pre-registered read-instant record and for an A3 guard run at or after the boundary; the read job starts only after it, runs once with write-once outputs and a status-only log, and never inside [00:10Z, 01:00Z). The 10-30T00Z boundary did not qualify (LAB_STATE). The read was paused 2026-10-31T00:40Z as an outcome-blind safety hold on the tape-duplicate finding and resumed 00:56Z per QP. If it is a PASS, the A-Q50 audit and QP's OK come before any C0 step. As of the 2026-10-31 job list the waiter is running and the read is queued behind it. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-30T16:12:00Z"
+  },
+  {
+   "id": "q60-withdrawn-1030",
+   "kind": "decision",
+   "title": "Q60 (the Q50 sibling at Q* 60, clock 11-07) withdrawn before registration; s1 read sizes pinned (QP-RULING-1030-power-n)",
+   "detail": "Source: QP-RULING-1030-power-n (sha256 c86f0613…; written 15:40:56Z), notebook n_F60AKfUlWM41kw (15:43:47Z), DEC-031 Am.22 (#1107, merged 16:27:42Z). Q60 never registers: no bot id, no P0, no clock, and it does not enter N. QP leaned to withdraw because its triggers nest Q50's on the same pools with the same exit, it was the worst discovery cell, it adds no power to s1's read, and its proof chain had two open STOPs. At withdrawal proofs (iii)–(v) had passed, Run C had passed with a disclosure (QP-RULING-1030-q60-proofs), proof (i) was queued as job #1858 (cancelled), and no tag was made; PRs #1083 #1088 #1089 #1093 closed. The withdrawal says nothing about whether it would have made money. Read sizes were pinned before any Q50 read instant could exist, from exploration data only: s1 screens at the first boundary with at least 200 counted trades on at least 5 dates, or at clock + 10 days with at least 100; s1 confirmation 300 trades by 2026-12-01T00:00Z; book end 2026-12-01T00Z. The 100-trade minimum stays the floor. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-30T15:43:47Z"
+  },
+  {
+   "id": "fast0-trade-tape-trial-stopped-1030",
+   "kind": "job",
+   "title": "Stray mal-fast-0 trade-tape trial unit stopped (job #1863)",
+   "detail": "Source: manager log 15:36:20Z. The old ubuntu-user unit mal-fast-trade-tape (a trial from 2026-10-02, UnitFileState disabled but running) was pulling about 1–2 MB/s from api.mainnet-beta on mal-fast-0's IP (37,177 code-1006 closes and 13,283 HTTP 413 since 10-11), competing with the Q50 shadow, whose second provider (solanavibestation) also refuses websocket handshakes with HTTP 429 (#1842). Only that host-side unit was stopped; Q50's job command is untouched. Owed: a LAB_STATE mid-week record and a docs/HOSTS.md fix (it said 'installed, disabled'). The effect on the feed-gap rate is not yet measured (HELM-ASK-1030-2 measures it). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-30T15:36:20Z"
+  },
+  {
+   "id": "owner-go-audit-1030",
+   "kind": "decision",
+   "title": "Owner GO for an all-out push (10-30 ~15:00Z); strategy audit: low odds, the biggest gap is read power",
+   "detail": "Source: manager log 15:0xZ and 15:3xZ; audit ops/reports/2026-10-30/audit-strategy.md (sha256 c7166d18…). Owner GO: all-out push, unlimited subagents, a full audit, drop arbitrary killing rules; the promotion gate stays. The audit's own estimates (judgment, not measurements): P(first $20/day within 14 days) about 3–5%, P(any screen PASS) about 25–30%. It named Q50 → C0 and EXP-027 r4-b as its top bets, and the HV4 X-arm reads as a cheap read. Its biggest gap was read power (counts too small to decide), which led to QP-RULING-1030-power-n. Earlier that day (02:04:46Z) manager18 took over from manager17. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-30T15:00:00Z",
+   "approx": true
+  },
+  {
+   "id": "dbc-chain-1030",
+   "kind": "job",
+   "title": "DBC m10 forward chain: three gap-fix passes found no gaps; the single read #1804 runs at or after 2026-11-01T00:10Z",
+   "detail": "Source: manager logs (G pass 1 #1796 on 10-28 06:19Z, pass 2 #1798 on 10-29 06:25Z, pass 3 #1800 on 10-30 ~06:1xZ: exit 0, no gap labels, 0 Helius credits, total 0 of 300000), DBC C2 #1576 engine-equivalence PASS (10-29 16:11Z; in-sample [10-16T04, 10-17T00)), DEC-031 Am.20 (#1066). Chain: F #1546 (daily fetch) → G5 #1803 → READ #1804 (11 GB on research-0, one look, not before 2026-11-01T00:10Z); pass 4 #1802 and gate g4 #1801 were still queued or running at the 2026-10-31 job list. The tape-duplicate finding does not apply to DBC (QP: forward data is a pinned Helius backfill with per-hour signature de-duplication). If the read passes, P18 B' follows (clock 2026-11-04T00Z, expires 11-06T00Z); the forward window [2026-10-25T00Z, 2026-11-01T00:10Z) stays sealed until then. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-30T06:10:00Z",
+   "approx": true
+  },
+  {
+   "id": "hv4-reads-armed-1030",
+   "kind": "job",
+   "title": "HV4 gate reads armed: #1829 (hv4-BIG-X) and #1830 (hv4-CON-X), one read each at 2026-11-01T01:35Z",
+   "detail": "Source: manager log 02:1xZ–04:1xZ; QP-VERDICT-1030-hv4-read-pack (CHANGES 1–6 applied; re-check OK, verdict file d9927bf8). HV4's read instants were written for both X-arms (read_instant_utc 2026-10-30T00:00:00Z; notebook n_CSO75SP3v0BsAA). The read uses an as-of of exactly B + 24 h = 2026-10-31T00:00Z, because the 10-31 hour tables are FINAL only about 11-01T01:25Z, so the jobs sleep to 2026-11-01T01:35Z (research-0, git 79ab76a5, 3 GB, 76 h limit). Outputs are write-once with a status-only log. On a PASS the C0 path starts (DEC-032 preconditions; the owner's standing OK of 10-23); on any other result the read is final. QP reviews before any claim. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-30T04:10:00Z",
+   "approx": true
+  },
+  {
+   "id": "context-plan-1029",
+   "kind": "decision",
+   "title": "Owner approved the context and cost plan v2; DEC-013 Amendment 1 (review tiers) merged (#1073)",
+   "detail": "Source: manager17 log 10-29 ~15:3xZ and PR #1073 (746ed3b6). T0 reviews cover records, docs and KILL write-ups only; every code or script change is T1 (separate QP and reviewer agents); NOT_DECIDABLE records are T1. Also merged that day: the host watchdog #1822 (#1072), the rules library for Q50, DBC m10 and HV4 (#1076 #1079 #1080), LAB_STATE trim (#1075, nothing lost) and the HV4 read rule under Am.15 (#1081). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-29T15:30:00Z",
+   "approx": true
+  },
+  {
+   "id": "q50-dryrun-repeat-1029",
+   "kind": "result",
+   "title": "Q50 repeat keyless dry run (Helm, 10-29): PASS on 6 of 6 criteria, but feed gaps did not improve",
+   "detail": "Source: HELM-REPLY-1029-1 (run 2026-10-29T14:27:58Z–15:28:33Z at install c8fcf761; keyless; no key, no wallet, no LIVE_OK or TIER). The hour had 135 feed_reconnect_redundant and 42 feed_gap rows, against 149 and 47 on 10-28; the cancelled meme.fun recorder was not the cause. This is why the 60 s gap-hold code was built (10-30 entry). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-29T15:28:33Z"
+  },
+  {
+   "id": "hv7-smoke-fail-1029",
+   "kind": "result",
+   "title": "HV7 smoke #1779 FAIL on the pinned fallback line (31/31); HV7 slips past its 11-01 clock",
+   "detail": "Source: manager17 log 10-28 02:38Z and 10-29 05:09Z; LAB_STATE (c92f23e3). Before the smoke the replay proofs had passed (1-day equivalence #1772 with L/R/S/U md5 identical vs #1739; 3-day #1773 md5 equal ×3, RSS 3,049 MB; E1 drill #1771; unit tests 329 passed). The smoke #1779 failed on the fallback line, 31/31 (30 not_json, 1 duplicate_id), refusals 13%, spend $0.064 (notebook n_Q6eEwlUiOrx9nA). An earlier smoke #1776 had crashed at setup in 3 s with 0 API calls (a now_ms override bug). Cause found 10-30: max_tokens 600 truncation (fix PR #1102). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-29T05:09:00Z"
+  },
+  {
+   "id": "q50-c0-feed-blocker-1028",
+   "kind": "finding",
+   "title": "Q50 C0 blocker found: every feed-gap row holds buys for at least 600 s",
+   "detail": "Source: manager17 log 10-28 17:08Z–17:20Z (notebook n_-pbYbpY143vu4g) and HELM-REPLY-1028-1. Helm's pre-stage at c8fcf761 (re-install and a 1 h keyless dry run, 16:03:55Z–17:04:33Z) PASSED all 6 criteria, but the hour held 149 feed_reconnect_redundant and 47 feed_gap rows (2 and 0 on 10-24). With about 196 gap rows an hour and a 600 s hold on each, a live canary would almost never buy. The P45 meme.fun recorder on mal-fast-0 was cancelled (public websocket load) and a repeat dry run requested (HELM-ASK-1028-1). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-28T17:12:00Z"
+  },
+  {
+   "id": "ideas-closed-1028",
+   "kind": "finding",
+   "title": "Ideas closed 10-27..10-28: P91 kNN low-fee band KILL; P98 V1a FAIL; P97 callout-follow NOT_TESTABLE; P29 KILL",
+   "detail": "Source: LAB_STATE (c92f23e3) and manager17 log 10-28 03:01Z–03:04Z (#1069 QP OK 6459542650 + reviewer 6459508727; #1059 #1061 #1063; #1062). P91: book −3.7..−4.6 pp against the universe's −1.3..−1.5 pp, top pick about random (IC 0.165). P98 (synthetic-completer counter): closed, V1a FAIL. P97 step 0: callout-follow NOT_TESTABLE; holder-carry payouts are real but break-even turnover × days ≈ 2.26–2.31 against a drift of ≈ −24% per token-day, so weak. P29 keeper-absorb: priced 10-26, KILL (kills 1–6, flat and pressure). All exploration. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-28T03:04:00Z"
+  },
+  {
+   "id": "hv6-smoke-fail-1028",
+   "kind": "result",
+   "title": "HV6 smoke #1806 FAIL; HV6 slips past its 10-30 clock (supersedes the 'smoke armed' entry of 10-27)",
+   "detail": "Source: LAB_STATE (c92f23e3) and manager17 log 10-28 00:41Z–02:56Z (notebook n_mPDdP9ZmXIEM2Q; slip decision n_gRpxhSP-5yLKTg). Chunk p95 41,257 ms against the 8,000 ms bar; card refusals 96/285 = 0.336842 against 0.05; arm parse errors about 60% with 0 takes; spend $0.058. The first smoke #1769 had crashed at setup (0 API calls; the same now_ms override bug as HV7's smoke). The HV6 P0 count had passed (registration_ok). Fixes A/B/C followed (10-30 entry). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-28T02:50:00Z"
+  },
+  {
+   "id": "owner-q50-preapproval-1027",
+   "kind": "decision",
+   "title": "Owner pre-approved the Q50 C0 canary on a PASS plus QP (option A); nothing is live",
+   "detail": "Source: manager17 log 10-27 22:08Z (notebook n_VDvEvazDU9jzYw; ask q_hvOzdoQaWz0riA closed). The owner's standing OK means the first live canary step can start after a Q50 gate PASS, QP's OK and the DEC-032 preconditions, without a fresh ask; the owner line still has to reach Helm, and the key, wallet and funding are Helm's and the owner's own. No Q50 read has run, so nothing is live. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-27T22:08:00Z"
+  },
+  {
+   "id": "s1-q60-p18-merged-1027",
+   "kind": "decision",
+   "title": "s1 successor design, Q60 sibling and P18 B' merged (10-27)",
+   "detail": "Source: manager17 log 10-27 20:25Z–21:56Z. s1 (h5v1q50-boostfloor-s1, frozen S* 5c2ab7c6): DEC-031 Am.17 policy (#1058), Am.18 design with EXP-024-note-s1-successor.md and DEC-034 (#1057), paper code (#1065). Q60 sibling (#1064, Am.19: Q* 60, clock 2026-11-07T00Z, H 14); withdrawn on 10-30 (entry above). P18 B' (#1066, Am.20): P0 = the DBC m10 read's per-day attempt counts, clock 2026-11-04T00Z, expires 11-06T00Z, only on a DBC PASS; P18 prebuild (#1067) merged with a 72 h wiring equivalence PASS (#1805, md5 5053b05c). Each merged with QP OK + reviewer APPROVE at its head. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-27T21:38:00Z"
+  },
   {
    "id": "synthesis-1027",
    "kind": "result",
@@ -1212,12 +1435,23 @@
   {
    "id": "Q50",
    "title": "Q50 (h5v1q50-boostfloor-a1) H5 BOOST-floor",
-   "stage": "registered, clock 2026-10-25T00:00Z",
-   "note": "Keyless dry run of the live executor at 0526d5cd PASSED (07:09Z; 60 min, 0 halts, 0 restarts, no key, no wallet). Live steps need the owner's own OK and a Q50 gate pass (earliest about 10-30). No book has cleared the promotion gate.",
+   "stage": "registered, clock 2026-10-25T00:00Z; gate read queued",
+   "note": "Shadow running since the clock. One gate read (job #1887) waits behind its waiter #1886 for the pre-registered boundary; the 10-30T00Z boundary did not qualify. The arena-tape duplicate finding does not change the read (QP-RULING-1031-tape-dupes-reads): it runs unchanged, and on a PASS the pre-declared audit A-Q50 runs before QP's OK and before any C0 step. C0 code is on main (60 s gap hold, owner line in a root-owned file, P7 at C0). Helm's keyless dry runs passed (10-24 at 0526d5cd: 60 min, 0 halts, 0 restarts, no key, no wallet; 10-28 and 10-29 at c8fcf761: 6 of 6) but feed gaps stayed (135 redundant + 42 gap rows an hour on 10-29); a re-measure on the new code (HELM-ASK-1030-2, 10-31 14:00Z–16:00Z) waits for the owner to relay it. Standing owner OK for the C0 canary on a PASS plus QP; nothing is live. No book has cleared the promotion gate.",
    "tag": {
     "text": "registered",
     "tone": "accent"
    }
+  },
+  {
+   "id": "s1",
+   "title": "s1 (h5v1q50-boostfloor-s1) Q50 successor",
+   "stage": "code and records on main; needs a second feed provider before registration 2026-11-04 (clock 2026-11-06T00Z)",
+   "note": "Same frozen rule as Q50 (S* 5c2ab7c6), own arena root and A3 loop. Read sizes pinned by DEC-031 Am.22: screen at the first boundary with at least 200 counted trades on at least 5 dates, or at clock + 10 days with at least 100; confirmation 300 trades by 2026-12-01T00:00Z. Not registered: none of 11 keyless second providers qualified; OrbitFlare Free (untested) needs the owner's account and key on mal-fast-0 (see For you); Helius for the whole window would cost 58,689,161 credits (about $293). Then a 6 h smoke, registration 2026-11-04, shadow start 2026-11-05 20:00–22:30Z, clock 2026-11-06T00Z. Zero counted trades. No book has cleared the promotion gate.",
+   "tag": {
+    "text": "blocked on owner action",
+    "tone": "warn"
+   },
+   "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-024-note-s1-successor.md"
   },
   {
    "id": "h5v1-boostfloor-a2",
@@ -1242,10 +1476,10 @@
   {
    "id": "HV4",
    "title": "HV4 (9 Haiku bots)",
-   "stage": "registration tonight, clock 2026-10-25T00:00Z",
-   "note": "QP OK and reviewer APPROVE at 297fd27a (PR #779); registration tonight; clock 2026-10-25T00:00Z. No book has cleared the promotion gate.",
+   "stage": "counting since 2026-10-25T00:00Z; X-arm reads 2026-11-01T01:35Z",
+   "note": "9 Haiku bots on the arena. Two X-arm gate reads are armed (#1829 hv4-BIG-X, #1830 hv4-CON-X): one read each at 2026-11-01T01:35Z, as-of 2026-10-31T00:00Z. The tape-duplicate finding does not change them: the pinned engine drops repeats before pricing (QP-RULING-1031-tape-dupes-reads; disclosure D-HV4 goes in each write-up). The C0 live path is on main (flip #1118) but every real start stays refused until a recorded PASS, the owner file, LIVE_OK and a key from Helm exist; the keyless bridge install (HELM-ASK-1030-3) waits for the owner to relay it. No book has cleared the promotion gate.",
    "tag": {
-    "text": "registering",
+    "text": "reads armed",
     "tone": "accent"
    }
   },
@@ -1263,10 +1497,54 @@
    "id": "DBC-m10",
    "title": "Meteora DBC m10 (dbc-m10-forward-v1)",
    "stage": "forward confirmation registered, read ≥ 2026-11-01T00:10Z",
-   "note": "Window 2026-10-25T00:00Z to 2026-11-01T00:00Z. The earlier holdout look (#1494) was NOT_DECIDABLE (tool defect). Other DBC cells FAIL on the new-swap-event days. No book has cleared the promotion gate.",
+   "note": "Window 2026-10-25T00:00Z to 2026-11-01T00:00Z. The single read #1804 runs after the daily fetch #1546 and the final gap pass #1803, not before 2026-11-01T00:10Z. Gap-fix passes 1–3 found no gap labels (0 of 300000 Helius credits used); the engine-equivalence check C2 #1576 passed. The arena-tape duplicate finding does not apply (QP: fwdv1 is a pinned Helius backfill). If the read passes, P18 B' follows (clock 2026-11-04T00Z). The earlier holdout look (#1494) was NOT_DECIDABLE (tool defect). Other DBC cells FAIL on the new-swap-event days. No book has cleared the promotion gate.",
    "tag": {
     "text": "forward registered",
     "tone": "accent"
+   }
+  },
+  {
+   "id": "EXP-027",
+   "title": "EXP-027 r4-b on Forward walk 2 (hourly top-10 cross-sectional book)",
+   "stage": "pre-registered; live DRY infrastructure merged",
+   "note": "Walk-2 pre-registration (W0 2026-10-18T03, E 2026-11-07T03Z; the read comes after E + 1 h, deadline 2026-11-09T03Z). The pre-registration itself says a FAIL is the most likely outcome. Live-path work: keyless DRY decision host, Helius mark-window feed merge (probe: 0 slots behind the processed tip at sd(T), inputs ready 0.22 s p50 / 0.31 s p90, about 28.7k credits a day), byte-exact arena-tape mirror to mal-fast-0. Owed: the DRY host on the live merged stream by 2026-11-02T23:00Z (hard limit), then Bar 1 and the go/no-go (read once on 2026-11-07T00Z if the DRY host is on the live stream by 2026-11-02T12Z). A C0 canary at 0.05 SOL cannot earn its fee (2.02% per round trip); a registered-size book would need a wallet of about 2.8–3.0 SOL. Zero out-of-sample trades. No book has cleared the promotion gate.",
+   "tag": {
+    "text": "dry infrastructure",
+    "tone": "accent"
+   },
+   "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-027-r4b-walk2-prereg.md"
+  },
+  {
+   "id": "haiku-v5",
+   "title": "Haiku v5 (self-improving BUY/SKIP filter on H5 triggers)",
+   "stage": "offline run O1 in progress",
+   "note": "Offline test with a nightly playbook rewrite and placebo, frozen, numeric-veto, always-buy and random controls, built to catch v3's failure (learning about equal to a placebo). Pilot P1b met its format and cost checks only (parse 97.6%, reflect 4/4, 0% max_tokens stops; ledger $0.1745). The full offline run O1 #1914 (cap $16) is running; QP reads its score before any claim. A forward v5 book cannot start before 2026-11-14 (EXP-024 Look-2 seal). No outcome yet. No book has cleared the promotion gate.",
+   "tag": {
+    "text": "offline run",
+    "tone": "accent"
+   },
+   "link": "https://github.com/vaanai/MAL/blob/main/docs/research/haiku-v5/DESIGN.md"
+  },
+  {
+   "id": "HV6",
+   "title": "HV6 (general Haiku trader with a regime channel)",
+   "stage": "slipped past clock 2026-10-30 (smoke FAIL); parked until after the 11-01 reads",
+   "note": "P0 passed (registration_ok). Smoke #1769 crashed at setup (0 API calls); smoke #1806 failed: chunk p95 41,257 ms vs 8,000 ms, card refusals 96/285 = 0.336842 vs 0.05, with arm parse errors about 60% because max_tokens 400 truncates 4-card replies. Fixes A/B/C are in PR #1108; a new final sha, proofs, smoke and a rolling clock follow (earliest 11-03). No book has cleared the promotion gate.",
+   "paused": true,
+   "tag": {
+    "text": "slipped",
+    "tone": "warn"
+   }
+  },
+  {
+   "id": "HV7",
+   "title": "HV7 (Haiku ranker)",
+   "stage": "slipped past clock 2026-11-01 (smoke FAIL); parked until after the 11-01 reads",
+   "note": "P0, the Claude-plan rehearsal, the replay proofs and the unit tests passed. Smoke #1776 crashed at setup; smoke #1779 failed on the fallback line, 31/31 (30 not_json from max_tokens 600 truncation, 1 duplicate_id). Fix PR #1102 (max_tokens 2000, bare-fence strip); re-proofs and a new smoke are parked. No book has cleared the promotion gate.",
+   "paused": true,
+   "tag": {
+    "text": "slipped",
+    "tone": "warn"
    }
   },
   {
@@ -1312,6 +1590,28 @@
     "tone": "muted"
    },
    "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-022-cap-pick-part1-prereg.md"
+  },
+  {
+   "id": "Q60",
+   "title": "Q60 (Q50 sibling at Q* 60)",
+   "stage": "withdrawn before registration 2026-10-30",
+   "note": "Withdrawn before registration (DEC-031 Am.22 follow-up line; notebook n_F60AKfUlWM41kw): no bot id, no P0, no clock, not counted in N. Its triggers nest Q50's on the same pools with the same exit, and it was the worst discovery cell. The withdrawal says nothing about whether it would have made money. Proofs (iii)–(v) had passed; no tag was made. No book has cleared the promotion gate.",
+   "tag": {
+    "text": "withdrawn",
+    "tone": "muted"
+   },
+   "link": "https://github.com/vaanai/MAL/blob/main/EXP/EXP-024-RULE-Q60.md"
+  },
+  {
+   "id": "kcurve-boost",
+   "title": "kcurve-boost (BOOST ride, K-1 and K0..K12)",
+   "stage": "KILLED (all 8 cells, in-sample)",
+   "note": "August and September exploration blocks, both fail models, worst-in-slot measured; no October hour. K-1's positive rests on August (September pooled flat +0.655%, pressure −0.257%; 2 of 4 blocks positive) and is 'killed within the remainder margin'; K0..K12 fail CI90 lower bounds and worst-in-slot. Paid speed for migration entries stays NO-GO. In-sample, not evidence of an edge. No book has cleared the promotion gate.",
+   "tag": {
+    "text": "killed",
+    "tone": "muted"
+   },
+   "link": "https://github.com/vaanai/MAL/blob/main/docs/research/kcurve-boost/REPORT.md"
   },
   {
    "id": "EXP-012",
@@ -1466,6 +1766,24 @@
  ],
  "for_you": [
   {
+   "id": "fy-20261031-orbitflare",
+   "from": "claude",
+   "text": "Action for you: create a free OrbitFlare account (orbitflare.com) and have the API key placed on mal-fast-0 in /var/lib/mal/fast-listener/orbitflare.env as ORBITFLARE_API_KEY=<key>, readable by the claude user like helius.env. Placing the key is yours or Helm's; Claude has no key. It is the second websocket feed s1 needs: none of the 11 keyless providers worked, and Helius for the whole window would cost 58,689,161 credits (about $293, about 3× your ~20M extra credits). Needed before s1 registers on 2026-11-04. The free plan's websocket limits are undocumented, so the key goes through a test job first; OrbitFlare Developer is $49 a month if Free throttles (your call then). Do not paste the key into chat or the repo. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-31T04:52:28Z"
+  },
+  {
+   "id": "fy-20261031-helm-ask-1030-3",
+   "from": "claude",
+   "text": "Action for you: relay HELM-ASK-1030-3 (hunt29/p1/HELM-ASK-1030-3.md) to Helm: a keyless install of the HV4 C0 bridge on mal-fast-0 at 979a7dcb plus a dry start (the start gate should refuse with read_record_missing). If an HV4 X-arm read passes at 2026-11-01T01:35Z, the live canary could start within hours; installing now takes the install off that clock. Money stays closed: a live send needs a recorded PASS, the owner file (on your word), LIVE_OK and TIER, and a wallet key only Helm creates. None is asked for. Helm's reply: HELM-REPLY-1031-2. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-31T04:52:28Z"
+  },
+  {
+   "id": "fy-20261031-helm-ask-1030-2",
+   "from": "claude",
+   "text": "Action for you, today: relay HELM-ASK-1030-2 (hunt29/p1/HELM-ASK-1030-2.md) to Helm: a keyless re-install of the Q50 executor at 13d2d5e4 and a 1 h keyless dry run starting between 14:00Z and 16:00Z on 10-31. It measures the feed-gap rate on the new 60 s gap-hold code and after the stray trade-tape trial was stopped. No key, wallet, funding, LIVE_OK, TIER or owner file is asked for. It supersedes HELM-ASK-1030-1. Helm's reply: HELM-REPLY-1031-1. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-31T04:52:28Z"
+  },
+  {
    "id": "fy-20261024-helm-dec-move",
    "from": "claude",
    "text": "Please confirm (or reverse) Helm's 06:07Z move of the old /etc/mal-h5/LIVE_OK and TIER files to /root/disabled/ (it closed an old gate; nothing was deleted).",
@@ -1474,13 +1792,13 @@
   {
    "id": "fy-20261024-helm-sheet",
    "from": "claude",
-   "text": "Action for you: relay HELM-SHEET (hunt29/p1/HELM-SHEET.md) to Helm: a keyless dry install of the Q50 executor plus a 1 h dry run, before about 10-29. No book has cleared the promotion gate.",
+   "text": "Done (see the newer entries): Helm ran the pre-stage at c8fcf761 on 10-28 (PASS, HELM-REPLY-1028-1) and a repeat dry run on 10-29 (PASS 6/6, HELM-REPLY-1029-1). The next asks are HELM-ASK-1030-2 and HELM-ASK-1030-3. The original ask was to relay HELM-SHEET (hunt29/p1/HELM-SHEET.md) to Helm: a keyless dry install of the Q50 executor plus a 1 h dry run, before about 10-29. No book has cleared the promotion gate.",
    "atUtc": "2026-10-24T01:45:00Z"
   },
   {
    "id": "fy-20261024-wallet",
    "from": "claude",
-   "text": "Action for you: have a fresh ~0.5 SOL wallet ready around 10-29. Fund it only after a Q50 gate PASS (earliest about 10-30). No book has cleared the promotion gate.",
+   "text": "Update 2026-10-31: still open, dates moved. No Q50 read has run (the 10-30T00Z boundary did not qualify and the read waits behind its waiter), so 'earliest about 10-30' has passed. Funding still waits for a recorded gate PASS and QP's OK; the first HV4 X-arm reads are at 2026-11-01T01:35Z. Action for you: have a fresh ~0.5 SOL wallet ready around 10-29. Fund it only after a Q50 gate PASS (earliest about 10-30). No book has cleared the promotion gate.",
    "atUtc": "2026-10-24T01:45:00Z"
   },
   {
@@ -1845,6 +2163,111 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261031-catchup",
+   "from": "claude",
+   "kind": "status",
+   "text": "Console catch-up for 10-27 to 10-31: this file had not been updated since 10-27 (a missed owner-visibility step); the entries below are copied from the manager log, QP rulings and reports. Merged and running: watchdog v3 (job #1952). Merged, NOT deployed: the arena-feed late-duplicate fix (#1152). Not yet run: the HV4 X-arm reads (2026-11-01T01:35Z), the DBC m10 read (at or after 2026-11-01T00:10Z) and the Q50 read (queued behind its waiter). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-31T04:52:28Z"
+  },
+  {
+   "id": "s-20261031-kcurve",
+   "from": "claude",
+   "kind": "result",
+   "text": "kcurve-boost: all 8 cells KILLED on exploration data (job #1935, QP-RULING-1031-kcurve-price). The seat-proxy cell K-1's positive rests entirely on August (+44.458% flat / +11.28% pressure of stake); September pooled is +0.655% flat / −0.257% pressure and 2 of 4 blocks are positive. Paid speed for migration entries stays NO-GO. In-sample, not evidence of an edge. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-31T02:32:00Z"
+  },
+  {
+   "id": "s-20261031-r4b-infra",
+   "from": "claude",
+   "kind": "status",
+   "text": "r4-b live infrastructure is merged, dry only (install sha 2b378c1b): decision host, Helius mark-window merge, arena-tape mirror to mal-fast-0. The 1-mark DRY smoke did not really run (missing numpy; fixed, rerun pending). Needed next: the DRY host on the live merged stream (target 2026-11-02T12Z, hard limit 23:00Z); the go/no-go is read once on 2026-11-07T00Z if that target is met. No key, nothing sends. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-31T02:26:15Z"
+  },
+  {
+   "id": "s-20261031-dupes-ruling",
+   "from": "claude",
+   "kind": "decision",
+   "text": "QP ruled that the HV4, DBC m10 and Q50 reads run unchanged despite the arena-tape duplicates. HV4: the pinned engine drops repeats before pricing. DBC: its data is a Helius backfill. Q50: runs with a disclosure and a pre-declared audit (A-Q50) on any PASS before QP's OK and before any C0 step. My pause of the Q50 read ran 00:40Z–00:56Z and will be disclosed in the read report. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-31T00:56:00Z"
+  },
+  {
+   "id": "s-20261031-tape-dupes",
+   "from": "claude",
+   "kind": "finding",
+   "text": "Arena tape duplicates: 0.335527% of trade rows in HV4's counted window are re-delivered repeats (0.391729% with cross-hour repeats; worst hour 4.017188%; 46 of 120 hours above 0.1%). Counts only, job #1924. It crossed QP's 0.1% line, so HV4's pressure leg went to QP before its read. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-31T00:40:00Z"
+  },
+  {
+   "id": "s-20261031-r4b-probe",
+   "from": "claude",
+   "kind": "result",
+   "text": "r4-b feed probe (job #1916): a Helius mark window is 0 slots behind the processed tip at sd(T), inputs ready 0.22 s p50 (p90 0.31); confirmed +1 slot (0.60 s) vs public ~7 slots; 26.3k credits used; about 28.7k credits a day (0.86M per 30 days) planned. Feed-latency measurement only; the DRY run has not measured any edge. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-31T00:21:00Z"
+  },
+  {
+   "id": "s-20261030-s1-feed2",
+   "from": "claude",
+   "kind": "finding",
+   "text": "s1 is blocked on a second websocket provider: 0 of 11 keyless providers usable. Helius would need 58,689,161 credits to 12-01 (about 3× your ~20M extra credits). OrbitFlare Free is the recommended, untested option and needs your account and key (see For you) before registration on 2026-11-04. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-30T22:14:00Z"
+  },
+  {
+   "id": "s-20261030-haiku-v5",
+   "from": "claude",
+   "kind": "result",
+   "text": "Haiku v5 pilot P1b met its format and cost checks (parse 97.6%, reflect 4/4, 0% max_tokens stops; ledger $0.1745). This is not a skill result. The full offline run O1 (#1914, $16 cap) is running; QP reads its score before any claim. A forward v5 book cannot start before 2026-11-14. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-30T22:02:00Z"
+  },
+  {
+   "id": "s-20261030-hv4-flip",
+   "from": "claude",
+   "kind": "decision",
+   "text": "HV4 C0 live path is complete on main (flip #1118) but refuses every real start until a recorded PASS, the owner file, LIVE_OK and a key from Helm all exist. It was merged before the reads on purpose. Keyless install on mal-fast-0 waits for you to relay HELM-ASK-1030-3. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-30T21:38:04Z"
+  },
+  {
+   "id": "s-20261030-q50-c0-code",
+   "from": "claude",
+   "kind": "status",
+   "text": "Q50 C0 code is on main: a 60 s hold on data-loss gap rows only (the old rule held 600 s on every gap row), owner line in a root-owned file, P7 at C0. Whether the feed lets it buy is decided by the real gap rate; a Helm re-measure is HELM-ASK-1030-2 (10-31 14:00Z–16:00Z), which waits for you to relay it. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-30T16:41:49Z"
+  },
+  {
+   "id": "s-20261030-q60-withdrawn",
+   "from": "claude",
+   "kind": "decision",
+   "text": "Q60 was withdrawn before registration (QP-RULING-1030-power-n): it nests Q50's triggers and adds no power to s1's read. s1's read sizes are now pinned (screen at 200 trades or clock + 10 days with 100; confirmation 300 trades by 2026-12-01T00Z). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-30T15:43:47Z"
+  },
+  {
+   "id": "s-20261030-owner-go",
+   "from": "claude",
+   "kind": "status",
+   "text": "Owner GO (10-30 ~15:00Z): all-out push, promotion gate unchanged. The audit's own estimate is low odds (P(first $20/day within 14 days) about 3–5%, P(any screen PASS) about 25–30%; judgment, not measurement); the biggest gap is read power. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-30T15:00:00Z"
+  },
+  {
+   "id": "s-20261029-hv7-smoke",
+   "from": "claude",
+   "kind": "result",
+   "text": "HV7 smoke #1779 FAILED (31/31 on the fallback line: 30 not_json, 1 duplicate_id; spend $0.064). HV7 slips past 11-01. Cause: max_tokens 600 truncation; fix PR #1102, parked until after the 11-01 reads. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-29T05:09:00Z"
+  },
+  {
+   "id": "s-20261028-q50-blocker",
+   "from": "claude",
+   "kind": "finding",
+   "text": "Q50 C0 blocker: with 149 redundant-reconnect and 47 gap rows in the dry-run hour and a 600 s hold on each, a live canary would almost never buy. Repeat dry run on 10-29 showed 135 and 42. Led to the 60 s gap-hold code (10-30). No book has cleared the promotion gate.",
+   "atUtc": "2026-10-28T17:12:00Z"
+  },
+  {
+   "id": "s-20261028-hv6-smoke",
+   "from": "claude",
+   "kind": "result",
+   "text": "HV6 smoke #1806 FAILED (chunk p95 41,257 ms vs 8,000 ms; card refusals 96/285 = 0.336842 vs 0.05). HV6 slips past its 10-30 clock; the 'smoke armed' entry of 10-27 is superseded. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-28T02:50:00Z"
+  },
   {
    "id": "s-20261027-synthesis",
    "from": "claude",
