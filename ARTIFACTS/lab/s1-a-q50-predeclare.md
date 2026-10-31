@@ -59,12 +59,18 @@ The frozen s1 code is not changed (ruling section 4.5).
 > 6. **If any count is non-zero:** recompute the affected trades' ssb / nb without the repeat buys, re-run the refit pressure leg with the registered cost functions (same intercept rule, target 0.289), report-only. A trade whose state depends on a repeated last print is valued at its total loss (stake + send). QP's OK (and so every C0 step) then requires all four gate items to hold on BOTH the read's recorded cells AND this corrected pressure leg. The recorded read verdict is not changed (one read, final).
 >
 > **Which read.** "The read" is s1's screen read (DEC-031 Amendment 22 item 2), and also its confirmation read if s1 reaches one, each on its own counted trades. For a confirmation PASS, "every C0 step" reads "every step that PASS allows" (C1 included).
+>
+> **QP errata to items 4 and 6** (quant-proof, PR #1144 comment 6537179643, 2026-10-31T01:28:27Z; outcome-blind; each only adds a condition to a PASS):
+> - **E1.** In item 6, "its total loss (stake + send)" is the registered strand-class value of a trip that ends with nothing: stake + one send + the stranded rent 2,039,280 lamports (`tools/arena_h5_cost.py` `_trip`, `RENT_STRANDED`), i.e. 302,544,280 lamports at the 0.30 SOL deciding stake, under both strand rules.
+> - **E2.** In item 4, a state that came from `post_last` whose slot is below the strip's `from_slot` counts as a state from a repeated last print.
+> - **E3.** In item 6, the trades valued at total loss are valued so in the deciding flat cells too (both strand rules), and QP's OK also requires all four gate items to hold on those corrected flat cells.
 
 ## How the line differs from the ruling's items 1 to 6
 
 - `Q50` is replaced by `h5v1q50-boostfloor-s1`.
 - "within Q50's declared exception" is replaced by s1's own exception (part A of the s1 note).
-- **The "Which read" sentence is this line's addition.** The ruling says "for its read". Under Amendment 22, s1 has two gate reads, a screen and a confirmation. The sentence only adds a condition to a PASS and never creates one. QP may strike it.
+- **The "Which read" sentence is this line's addition.** The ruling says "for its read". Under Amendment 22, s1 has two gate reads, a screen and a confirmation. The sentence only adds a condition to a PASS and never creates one. QP ruled to KEEP it (PR #1145, QP comment 6537185786, ruling (b)).
+- **The QP errata E1 to E3 (comment 6537179643) are carried.** They are pasted verbatim from QP comment 6537185786. Items 3 to 6 above them stay word for word.
 
 Items 3 to 6 are the ruling's text word for word.
 
