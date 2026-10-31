@@ -399,15 +399,17 @@ def test_placebo_mean_matches_the_analytic_expectation(tmp_path):
 
 # ------------------------------------------------------------------------------------------------------------------------ arm N: numeric tilt
 def test_numeric_tilt_uses_only_past_outcomes():
-    trig, outc = synth(40, DAYS[:7])
+    trig, outc = synth(80, DAYS[:7])
     days = h.by_day(trig)
     target = days[5][0]
     s1 = h.numeric_tilt_scores(days, outc, {target})
+    assert s1[target] is not None  # 5 x 80 = 400 fit rows >= N_MIN_FIT: the test is not vacuous
     outc2 = {tid: (dict(o, flat_sol=-o["flat_sol"] * 50) if next(t for t in trig if t.tid == tid).day >= target else o) for tid, o in outc.items()}
     s2 = h.numeric_tilt_scores(days, outc2, {target})
     assert np.array_equal(s1[target], s2[target])  # flipping day D's (and later) outcomes cannot change D's scores
     early = h.numeric_tilt_scores(days, outc, {days[0][0], days[1][0], days[2][0]})
-    assert early[days[0][0]] is None  # no history: nothing boosted
+    assert early[days[0][0]] is None and early[days[2][0]] is None  # fewer than N_MIN_FIT fit rows: nothing boosted
+    assert h.N_MIN_FIT == 300 and h.N_LABEL_PCT == 90.0 and h.N_LAMBDA == 1.0
 
 
 def test_numeric_tilt_fit_boundary_bites():
@@ -422,9 +424,9 @@ def test_numeric_tilt_fit_boundary_bites():
         trig.append(h.Trigger(tid, blk_of(day), ms, known, card))
         outc[tid] = {"flat_sol": flat, "press_sol": flat}
 
-    for i in range(120):
+    for i in range(320):  # already >= N_MIN_FIT without the late rows, so "known after midnight" is a real fit, not a skipped day
         x = rng.uniform(0, 1)
-        ms = h.day_start_ms(d0) + 60_000 + i * 600_000
+        ms = h.day_start_ms(d0) + 60_000 + i * 250_000
         add(f"a{i:03d}", d0, ms, ms + h.OUTCOME_KNOWN_AFTER_MS, x, 0.3 if x > 0.8 else -0.01)
     late = []
     for i in range(150):
@@ -447,6 +449,7 @@ def test_numeric_tilt_fit_boundary_bites():
         return h.numeric_tilt_scores(h.by_day(t2), o2, {d2})[d2]
 
     assert all(ms + h.OUTCOME_KNOWN_AFTER_MS > h.day_start_ms(d2) for _, ms, _ in late)
+    assert scores(True, False) is not None and scores(False, False) is not None  
     assert np.array_equal(scores(True, False), scores(True, True))
     assert not np.array_equal(scores(False, False), scores(False, True))
 
@@ -458,13 +461,58 @@ def test_numeric_tilt_learns_a_planted_top_decile_field_and_matches_L_counts(tmp
     ts = days[4][1]
     top = np.argsort(-sc)[:30]  # the 30 highest-scored triggers of the day (a fifth)
     assert np.mean([ts[i].card["top3_seller_share"] > 0.7 for i in top]) >= 0.7  # 0.3 by chance
-    # in score(): N boosts exactly L's count (per replicate, mean over replicates) on every day it has a fit
+    # in score(): N boosts exactly L's count (per replicate, mean over replicates) on every test day that has >= N_MIN_FIT fit rows
     trig, outc = synth(45)
     run = tmp_path / "run"
-    write_decisions(run, trig, lambda arm, rep, t: arm == "L" and (int(t.tid[-3:]) * rep) % 6 == 0)
+    pol = lambda arm, rep, t: arm == "L" and (int(t.tid[-3:]) * rep) % 6 == 0  # noqa: E731
+    write_decisions(run, trig, pol)
     s = h.score(run, trig, outc, GOOD_COUNTS, placebo_draws=20)
     c = s["boost_counts_mean_over_reps_test"]
-    assert abs(c["N"] - c["L"]) < 1e-9 and abs(c["P"] - c["L"]) < 1e-9 and c["F"] == 0
+    ts_by_day = dict(h.by_day(trig))
+    want_n = 0.0
+    for j, d in enumerate(DAYS):
+        if j >= h.BURN_IN_DAYS and 45 * j >= h.N_MIN_FIT:  # 45 triggers a day, all closed before the next midnight
+            want_n += sum(sum(1 for t in ts_by_day[d] if pol("L", r, t)) for r in (1, 2, 3)) / 3
+    assert abs(c["N"] - want_n) < 1e-9 and 0 < c["N"] < c["L"] and abs(c["P"] - c["L"]) < 1e-9 and c["F"] == 0
+
+
+def test_numeric_tilt_equals_sklearn_logistic_on_the_rank_features():
+    """Lane A's model is sklearn LogisticRegression(C=1.0, lbfgs) on mid-rank features; the numpy IRLS here is the same objective."""
+    lm = pytest.importorskip("sklearn.linear_model")
+    rng = np.random.default_rng(5)
+    X = rng.lognormal(size=(400, 6))  # heavy tails, as SOL amounts are
+    X[rng.random(X.shape) < 0.05] = np.nan
+    y = (rng.random(400) < 0.1 + 0.3 * (np.nan_to_num(X[:, 0]) > 2)).astype(float)
+    Z = h.rank_features(X, X)
+    assert np.isfinite(Z).all() and Z.min() >= -0.5 and Z.max() <= 0.5
+    w = h.fit_logistic_l2(Z, y)
+    ref = lm.LogisticRegression(C=1.0, solver="lbfgs", max_iter=5000, tol=1e-12).fit(Z, y)
+    new = rng.lognormal(size=(50, 6))
+    s_mine = w[0] + h.rank_features(X, new) @ w[1:]
+    s_ref = ref.decision_function(h.rank_features(X, new))
+    assert np.max(np.abs(s_mine - s_ref)) < 1e-4
+    assert h.fit_logistic_l2(Z, np.zeros(400)) is None  # one label class
+    # mid-rank by hand: ties share the mid-rank, an unseen value sits at its insertion rank, a missing value maps to 0
+    tr = np.array([[1.0], [2.0], [2.0], [4.0]])
+    assert h.rank_features(tr, np.array([[2.0], [0.0], [9.0], [np.nan]])).ravel().tolist() == [0.0, -0.5, 0.5, 0.0]
+
+
+def test_haircut_report_only_block(tmp_path):
+    assert h.haircut_sol({"q_post_trig": 40.0}) == pytest.approx(4 * 0.01 / 40.0)
+    assert h.haircut_sol({"q_post_trig": None}) == pytest.approx(4 * 0.01 / h.V_FLOOR_SOL)  # missing: the largest haircut
+    assert h.haircut_sol({"q_post_trig": -3}) == h.haircut_sol({})
+    trig, outc = synth(45)
+    run = tmp_path / "run"
+    write_decisions(run, trig, lambda a, r, t: oracle(a, r, t, outc))
+    s = h.score(run, trig, outc, GOOD_COUNTS, placebo_draws=50)
+    for mk in ("flat_sol", "press_sol"):
+        m = s["models"][mk]
+        hb = m["haircut_lane_a_formula_report_only"]
+        k = s["boost_counts_mean_over_reps_test"]["L"]
+        assert 0.01 / 40 <= hb["mean_haircut_per_boost_sol"] <= 0.04 / 17.6  # q is 18..40 in the synthetic cards
+        assert hb["L_minus_A_total_after_haircut"] == pytest.approx(m["contrasts"]["L-A"]["total"] - k * hb["mean_haircut_per_boost_sol"])
+        assert "NOT repriced" in hb["source"]
+        assert m["breakeven_extra_cost_pct_of_extra_stake_report_only"] == pytest.approx(100 * m["contrasts"]["L-A"]["total"] / (k * 0.1))
 
 
 # ------------------------------------------------------------------------------------------------------------------------ scoring
