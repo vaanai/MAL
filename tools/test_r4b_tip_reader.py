@@ -356,10 +356,14 @@ def test_checkpoint_problems_stop_the_poll_closed(tmp_path):
     assert r.poll() == [] and r.problem == "checkpoint_unreadable" and not r.caught_up
     write_state(tmp_path / "state", last_done=5, last_t_recv_ms=(B - 100) * 1000)
     assert slots_of(r.poll()) == [1] and r.problem is None
+    (tmp_path / "state" / "checkpoint.json").write_text("{not json")
+    assert r.poll() == [] and r.problem == "checkpoint_unreadable"  # recoverable: retried on the next poll
+    write_state(tmp_path / "state", last_done=5, last_t_recv_ms=(B - 100) * 1000)
+    assert r.poll() == [] and r.problem is None and r.caught_up
     write_state(tmp_path / "state", last_done=3, last_t_recv_ms=(B - 100) * 1000)
     assert r.poll() == [] and r.problem == "checkpoint_regressed" and not r.caught_up
-    (tmp_path / "state" / "checkpoint.json").write_text("{not json")
-    assert r.poll() == [] and r.problem == "checkpoint_unreadable"
+    write_state(tmp_path / "state", last_done=9, last_t_recv_ms=(B - 50) * 1000)
+    assert r.poll() == [] and r.problem == "checkpoint_regressed" and r.latched  # unsafe: stays latched for the run
 
 
 def test_a_missing_middle_hour_is_a_gap_item(tmp_path):

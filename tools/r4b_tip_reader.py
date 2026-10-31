@@ -59,6 +59,12 @@ PINNED_BLOBS = {
     "observe/trade_store.py": "ea4e11eddf9f034e3bc7318ce8743337d753f350",
     "tools/pump_history_backfill.py": "9a8bebb32adcf86de060b55f5a08110d11c0a550",
 }
+# Reader problems the host may retry on the next poll: before the reader has seen a good checkpoint (the start-up wait: no file yet, last_t_recv_ms still 0), or a checkpoint
+# file that is present but does not parse. Everything else stays latched for the run: a regressed checkpoint (the follower restarted from an older point and may re-emit slots
+# this reader already returned) and a RESET (the checkpoint vanished, lost its last_done / last_t_recv_ms, or its gap counters dropped after the reader held a good one:
+# a follower restarted without its checkpoint begins at the current tip and writes no gap row, so the slots in between would be a silent hole).
+RECOVERABLE_PROBLEMS = ("checkpoint_unreadable", "checkpoint_no_t")  # only before the first good checkpoint, or a file that is present but unparseable
+LATCHED_PROBLEMS = ("checkpoint_regressed", "checkpoint_reset")
 CHUNK_BYTES = 4 << 20
 CHUNK_ROWS = 4096
 
@@ -304,6 +310,9 @@ class TipReader:
         self._gaps = _Cursor(self.files, GAP_NAME, self.stats, False)
         self._cat = False
         self._ck_reason = "checkpoint_unreadable"
+        self.latched: str | None = None  # an unsafe problem that stays for the run (checkpoint_regressed, checkpoint_reset)
+        self._counters: tuple[int, int] | None = None  # (gaps, skipped) of the last good checkpoint
+        self._ck_latch, self._ck_new = False, (None, None)
 
     # -- the history start
     def start_problem(self) -> str | None:
@@ -324,15 +333,33 @@ class TipReader:
 
     # -- the two seams the mutation tests replace
     def _read_checkpoint(self) -> tuple[int, int | None] | None:
-        """(D, last_t_recv_ms) from checkpoint.json: the follower writes it after every slot, once that slot's rows are flushed."""
-        ck = read_state_json(self.state_dir, "checkpoint.json")
-        self._ck_reason = "checkpoint_unreadable"
-        if ck is None or not _is_int(ck.get("last_done")):
+        """(D, last_t_recv_ms) from checkpoint.json: the follower writes it (os.replace) after every slot, once that slot's rows are flushed. None on any problem, with
+        self._ck_reason set and self._ck_latch True when the problem is a FOLLOWER RESET (a restart without its checkpoint writes none, begins at the current tip and
+        records no gap): once this reader holds a D, a missing file or a checkpoint without a positive last_t_recv_ms (last_t_recv_ms starts at 0 in a fresh follower)
+        or without last_done is a reset, not a wait. Before the first good checkpoint (the start-up wait) every such state is retried. A file that is present but does not
+        parse (any OSError, bad JSON) is retried either way: the checks on the next good checkpoint (D and the gap counters never drop) catch a reset behind it."""
+        self._ck_latch, self._ck_new = False, (None, None)
+        seen = self.D is not None
+        try:
+            with open(os.path.join(self.state_dir, "checkpoint.json"), "rb") as fh:
+                ck = json.loads(fh.read())
+        except FileNotFoundError:
+            self._ck_reason, self._ck_latch = ("checkpoint_reset" if seen else "checkpoint_unreadable"), seen
+            return None
+        except (OSError, ValueError):
+            ck = None
+        if not isinstance(ck, dict):
+            self._ck_reason = "checkpoint_unreadable"
+            return None
+        if not _is_int(ck.get("last_done")):
+            self._ck_reason, self._ck_latch = ("checkpoint_reset" if seen else "checkpoint_unreadable"), seen
             return None
         t = ck.get("last_t_recv_ms")
         if not (_is_int(t) and t > 0):
-            self._ck_reason = "checkpoint_no_t"
+            self._ck_reason, self._ck_latch = ("checkpoint_reset", True) if seen else ("checkpoint_no_t", False)
             return None  # without the hour of D the reader cannot tell which hour files hold D's rows: fail closed, never caught up
+        g, k = ck.get("gaps"), ck.get("skipped")
+        self._ck_new = (g, k) if _is_int(g) and _is_int(k) else (None, None)
         return int(ck["last_done"]), int(t)
 
     def _last_hour(self, last_t_ms: int | None) -> int:
@@ -367,13 +394,26 @@ class TipReader:
         out: list[tuple] = []
         self.caught_up = False
         ck = self._read_checkpoint()
+        if self.latched is not None:  # unsafe, not retried: see RECOVERABLE_PROBLEMS
+            self.problem = self.latched
+            return out
         if ck is None:
-            self.problem = self._ck_reason
+            self.problem = self._ck_reason  # recoverable unless it is a reset: then it latches
+            if self._ck_latch:
+                self.latched = self._ck_reason
             return out
         D, last_t = ck
         if self.D is not None and D < self.D:
-            self.problem = "checkpoint_regressed"
+            self.problem = self.latched = "checkpoint_regressed"
             return out
+        g, k = getattr(self, "_ck_new", (None, None))
+        if g is not None and self._counters is not None and (g < self._counters[0] or g + k < sum(self._counters)):
+            # the follower's gaps never drop and skipped + gaps never drop (`_verify_skips` moves 1 from skipped to gaps; `_recover` restores both): a drop is a fresh start,
+            # also when status.json was stale and the host did not poll while it happened
+            self.problem = self.latched = "checkpoint_reset"
+            return out
+        if g is not None:
+            self._counters = (g, k)
         self.problem = None
         self.D, self.last_t_ms = D, last_t
         for c in (*self._cursors().values(), self._gaps):
