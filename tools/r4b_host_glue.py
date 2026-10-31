@@ -989,8 +989,9 @@ class TipMerger(HostMerger):
     def tip_gap(self, g: Any) -> dict:
         """One gaps.jsonl range as data loss in the existing G2 machinery: it holds the seam below its start until the tip has progressed gap_guard_slots (1,500)
         past the range (Addendum 6); cover_releases False because the window's rows of tip-owned slots are discarded, so a window never repairs a tip gap."""
-        self.pub_top = max(self.pub_top, g.lo - 1)
-        r = self._new_range(min(self.pub_top, g.lo - 1), g.lo, g.hi, "closed", g.code, "tip", g.t_recv_ms, "tip_gap", cover_releases=False)
+        # a gap row never lifts the high-water: only tip PROGRESS (released D) does, so a catch-up gap read ahead of D cannot raise it (QP on #1155, R1)
+        hold = g.lo - 1 if self.pub_top < 0 else min(self.pub_top, g.lo - 1)
+        r = self._new_range(hold, g.lo, g.hi, "closed", g.code, "tip", g.t_recv_ms, "tip_gap", cover_releases=False)
         self.stats["tip_gaps"] += 1
         if g.reason.startswith("skip_contradicted"):  # the slot was refetched: an earlier skip report of it was not a fork
             for s in range(g.lo, min(g.hi, g.lo + 1000) + 1):
@@ -1278,7 +1279,8 @@ class TipLiveSource(LiveSource):
         sd = self._sd_of(T, sd)
         snap = snapshot(w.window.state)  # BEFORE the drain
         self._drain_windows()
-        self._ingest_tip_poll(self.now_ms())  # commit-then-read: the checkpoint is read again now
+        if not self._pending:  # commit-then-read: the checkpoint is read again now. Only on an empty queue, as the iterator does: during a catch-up every host step
+            self._ingest_tip_poll(self.now_ms())  # would otherwise queue another batch of ~5,000 rows (QP on #1155, R2)
         c = self._eval(T, sd, snap)
         if not c.complete:
             return self._note(T, certified(c), sd)
@@ -1311,7 +1313,8 @@ class TipLiveSource(LiveSource):
         reached the host: the poll that moved D also queued its rows, and D must not be claimed before the engine holds every row of slots <= D (reviewer on #1155)."""
         if self._pending or self._tip_problem() is not None:
             return None
-        return self.merger.public_hw_slot()
+        hw, D = self.merger.public_hw_slot(), self.tip.released_D
+        return None if hw is None or D is None else min(hw, D)  # never above what the reader has released
 
     # -- bounded memory: a mark that never releases (abandoned, late_tip, unhealthy tip) frees its window rows
     def _gc_buffers(self, now: int) -> None:
@@ -1354,6 +1357,8 @@ def check_args(a: argparse.Namespace) -> None:
         raise Refused(f"--source must be one of {SOURCES}")
     if getattr(a, 'source', 'mirror') == "mirror" and not (getattr(a, 'tape_dir', None) and Path(a.tape_dir).is_dir()):
         raise Refused("--tape-dir is not a directory")
+    if getattr(a, 'source', 'mirror') == "tip" and getattr(a, 'no_ionice', False) and tip_mod.under_sealed(os.path.realpath(getattr(a, 'tip_dir', tip_mod.DEFAULT_TIP_DIR))):
+        raise Refused("--no-ionice is not allowed on the sealed tip dir (catch-up reads must run at I/O class idle)")
     if getattr(a, 'source', 'mirror') == "tip" and (not Path(getattr(a, 'tip_dir', tip_mod.DEFAULT_TIP_DIR)).is_dir() or not Path(getattr(a, 'tip_state_dir', tip_mod.DEFAULT_STATE_DIR)).is_dir()):
         raise Refused("--tip-dir / --tip-state-dir is not a directory")
     if getattr(a, 'source', 'mirror') == "tip" and a.catch_up_hours > tip_mod.MAX_LOOKBACK_H:

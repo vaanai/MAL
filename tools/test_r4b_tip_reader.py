@@ -424,9 +424,9 @@ def test_a_checkpoint_without_last_t_recv_ms_fails_closed(tmp_path):
     put(tmp_path / "out", f"trades-{H06}.jsonl", [trade(2)])  # D's row is in the NEXT hour file
     write_state(tmp_path / "state", last_done=2, last_t_recv_ms=0)
     r = reader(tmp_path)
-    assert r.poll() == [] and r.problem == "checkpoint_unreadable" and not r.caught_up and r.released_D is None
+    assert r.poll() == [] and r.problem == "checkpoint_no_t" and not r.caught_up and r.released_D is None
     (tmp_path / "state" / "checkpoint.json").write_text(json.dumps({"last_done": 2}))
-    assert r.poll() == [] and r.problem == "checkpoint_unreadable"
+    assert r.poll() == [] and r.problem == "checkpoint_no_t"
     write_state(tmp_path / "state", last_done=2, last_t_recv_ms=(B + 1) * 1000)
     assert slots_of(r.poll()) == [1, 2] and r.caught_up and r.released_D == 2
 
@@ -459,3 +459,13 @@ def test_fadvise_stops_when_catch_up_is_over(tmp_path, monkeypatch):
     put(tmp_path / "out", f"trades-{H05}.jsonl", [trade(3)], mode="a")
     write_state(tmp_path / "state", last_done=3, last_t_recv_ms=(B - 50) * 1000)
     assert slots_of(r.poll()) == [3] and len(calls) == n
+
+
+def test_qp_r3_three_hours_of_files_and_no_last_t_never_report_caught_up(tmp_path):
+    out = tmp_path / "out"
+    for h, sl in (("2026-11-01T03", (1, 2, 3)), ("2026-11-01T04", (4, 5)), ("2026-11-01T05", (6, 7))):
+        put(out, f"trades-{h}.jsonl", [trade(x) for x in sl])
+    for t in (0, None):
+        write_state(tmp_path / "state", last_done=7, last_t_recv_ms=t)
+        r = reader(tmp_path, start_ms=(B - 3600 * 3 + 600) * 1000, catch_up_hours=0)
+        assert r.poll() == [] and r.problem == "checkpoint_no_t" and not r.caught_up and r.released_D is None and r.hw is None

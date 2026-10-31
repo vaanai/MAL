@@ -184,10 +184,11 @@ def test_tip_not_caught_up_behind_or_gap_open_blocks_certification(tmp_path):
         arm_window(src, now)
         tip.script = script
         src._q.put((T, helius_rows(), now.ms))
-        deliver(src)
-        c = src.mark_complete(T, 1004)
-        c = src.mark_complete(T, 1004) if c.reason == "rows_in_flight" else c
-        assert not c.complete and c.reason in (why, "rows_in_flight"), c
+        for _ in range(4):  # the host consumes the queued rows between calls; the tip is polled only on an empty queue
+            deliver(src)
+            c = src.mark_complete(T, 1004)
+            if c.reason == why:
+                break
         deliver(src)
         c = src.mark_complete(T, 1004)
         assert not c.complete and c.reason == why and T not in src._rel and not src.merger.owned
@@ -207,7 +208,7 @@ def test_a_tip_gap_of_each_reason_gives_a_gap_row_holds_the_seam_and_releases_at
     assert len(gap_rows) == 1 and gap_rows[0]["kind"] == g.code and gap_rows[0]["data_loss"] is True
     m = fa.FeedAdapter().feed(gap_rows[0])[0]
     assert m.kind == "gap" and m.halts_buys  # lv.log_gap writes the declog gap row from this
-    assert src.merger.open_tip_gaps() and src.merger.public_hw_slot() == 1099
+    assert src.merger.open_tip_gaps() and src.merger.public_hw_slot() == 1000  # the gap row never lifts the high-water above the tip's progress
     c = src.mark_complete(T, 1004)
     c = src.mark_complete(T, 1004) if c.reason == "rows_in_flight" else c
     assert not c.complete and c.reason == "tip_gap_open"
@@ -232,19 +233,26 @@ def test_an_unhealthy_tip_fails_closed_at_start_and_at_every_mark(tmp_path, kw, 
     write_status(tmp_path / "state", kw.pop("ts_ms", now.ms), **kw)
     with pytest.raises(hg.TipUnhealthy, match=code):
         src.start()
-    # healthy at start, unhealthy at the mark
+    # healthy at start and for a while: the tip delivers rows past sd + 1, so the high-water is real; THEN it turns unhealthy (QP on #1155, R4: no vacuous None)
     src, now, tip = make_source(tmp_path / "m")
     src.start()
     arm_window(src, now)
-    write_status(tmp_path / "m" / "state", now.ms, **({"decoder_blobs_pinned": False} if code == "decoder_blobs_not_pinned" else {"trade_event_v": False}) if code != "status_stale" else {})
+    tip.script = [(tip_items(990, 1010), 1010, True), (tip_items(1011, 1012), 1012, True)]
+    src._ingest_tip_poll(now.ms)
+    deliver(src)
+    assert src.public_hw_slot() == 1010 and src.public_hw_slot() >= 1004 + 1  # healthy: the b3 test would pass
+    now.ms += 6_000  # the status TTL (5 s) expires
     if code == "status_stale":
         now.ms += 60_000
-    tip.script = [(tip_items(990, 1000), 1000, True)]
+    else:
+        write_status(tmp_path / "m" / "state", now.ms, **({"decoder_blobs_pinned": False} if code == "decoder_blobs_not_pinned" else {"trade_event_v": False}
+                                                     if code == "event_v_off" else {"decoder_blobs": {"observe/trade_decode.py": "0" * 40}}))
     c = src.mark_complete(T, 1004)
     assert not c.complete and c.reason.startswith("tip:") and src.failed(T).startswith("tip_")
-    assert src.public_hw_slot() is None  # the b3 path cannot be satisfied by an unhealthy tip: the mark is abandoned
+    assert src.merger.public_hw_slot() == 1010  # the merger still holds the old value ...
+    assert src.public_hw_slot() is None  # ... and the source must not give it to the b3 test while the tip side is unhealthy (mutation M18 fails here)
     src._read_public(now.ms)
-    assert tip.script  # no row of an unhealthy tip side was even read
+    assert len(tip.script) == 1  # no row of an unhealthy tip side was read
 
 
 def test_start_refuses_without_idle_io_and_without_history(tmp_path):
@@ -459,3 +467,58 @@ def test_the_p_c3_smoke_script_is_plain_sh_keeps_the_rc_and_has_no_masking_pipe(
 import subprocess  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def step_like_the_host(src, n: int):
+    """src.__iter__ stepped as DryHost.run does: one item per step; the caller inspects the source after every item."""
+    it = iter(src)
+    for _ in range(n):
+        yield next(it)
+
+
+def test_qp_r1_b3_never_sees_a_high_water_with_rows_below_sd_still_queued(tmp_path):
+    src, now, tip = make_source(tmp_path)
+    src.start()
+    tip.script = [(tip_items(990, 1000), 1000, True), (tip_items(1001, 1010), 1010, True)]
+    sd = 1004
+    for item in step_like_the_host(src, 60):
+        hw = src.public_hw_slot()
+        queued_below_sd = [r for r in src._pending if r.get("type") == "tip" and r["w"]["slot"] < sd]
+        assert not (hw is not None and hw >= sd + 1 and queued_below_sd), f"hw {hw} with slots {[r['w']['slot'] for r in queued_below_sd]} still queued"
+        assert hw is None or hw <= (tip.released_D or -1)
+    assert src.public_hw_slot() == 1010
+
+
+def test_qp_r1_a_catch_up_gap_row_ahead_of_released_D_does_not_lift_the_high_water(tmp_path):
+    src, now, tip = make_source(tmp_path)
+    src.start()
+    tip.script = [([("gap", tr.TipGap(5000, 5010, "backlog_jump", now.ms - 1000, 11))] + tip_items(1, 3), 3, False)]
+    src._ingest_tip_poll(now.ms)
+    deliver(src)
+    assert src.merger.public_hw_slot() == 3 and src.public_hw_slot() == 3  # progress 3, not 4999
+
+
+def test_qp_r2_a_mark_during_catch_up_does_not_grow_the_queue(tmp_path):
+    src, now, tip = make_source(tmp_path)
+    src.start()
+    arm_window(src, now)
+    now.ms = T * 1000 + 300
+    tip.script = [([("trade", trade(s)) for s in range(i * 5000, (i + 1) * 5000)], (i + 1) * 5000 - 1, False) for i in range(60)]
+    src._q.put((T, helius_rows(), now.ms))
+    biggest = 0
+    for _ in range(40):  # the host calls mark_complete after every row from the moment the clock exists
+        src.mark_complete(T, 1004)
+        biggest = max(biggest, len(src._pending))
+        src._pending.popleft()
+    assert biggest <= hg.TIP_BATCH + 50, f"the queue grew to {biggest} rows"
+
+
+def test_no_ionice_is_refused_on_the_sealed_tip_dir(tmp_path, monkeypatch):
+    monkeypatch.setattr(os.path, "realpath", lambda p: os.fspath(p))
+    a = hg.build_parser().parse_args(["run", "--source", "tip", "--declog-root", "d", "--out", "o", "--change-id", "c", "--key-file", str(tmp_path / "k"), "--no-ionice"])
+    (tmp_path / "k").write_text("HELIUS_API_KEY=abcdefghijklmnop\n")
+    with pytest.raises(hg.Refused, match="no-ionice"):
+        hg.check_args(a)
+
+
+import os  # noqa: E402

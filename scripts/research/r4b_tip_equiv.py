@@ -67,12 +67,12 @@ def build_tip_dir(con, tip: Path, state: Path, h0: str, h1: str, extra_hours: in
 
     def put(sub: str, row: dict) -> None:
         bt = row.get("block_time")
-        t = (int(bt) * 1000 + LAG_MS) if bt is not None else last["t"]
+        t = (int(bt) * 1000 + LAG_MS) if bt is not None else last["t"]  # exactly block_time + 1.8 s (no clamp across kinds): all kinds of a slot share one t_recv_ms, as the follower writes them
         last["t"] = max(last["t"], t)
-        row = {**row, "t_recv_ms": last["t"], "source": "tip"}
+        row = {**row, "t_recv_ms": t, "source": "tip"}
         if sub == "trades":
             row["virtual_quote_reserve"] = None
-        name = f"{sub}-{hkey_ms(last['t'])}.jsonl"
+        name = f"{sub}-{hkey_ms(t)}.jsonl"
         f = fh.get(name)
         if f is None:
             f = fh[name] = open(tip / name, "ab")

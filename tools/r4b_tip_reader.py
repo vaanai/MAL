@@ -303,6 +303,7 @@ class TipReader:
         self._cur_h: int | None = None
         self._gaps = _Cursor(self.files, GAP_NAME, self.stats, False)
         self._cat = False
+        self._ck_reason = "checkpoint_unreadable"
 
     # -- the history start
     def start_problem(self) -> str | None:
@@ -325,11 +326,13 @@ class TipReader:
     def _read_checkpoint(self) -> tuple[int, int | None] | None:
         """(D, last_t_recv_ms) from checkpoint.json: the follower writes it after every slot, once that slot's rows are flushed."""
         ck = read_state_json(self.state_dir, "checkpoint.json")
+        self._ck_reason = "checkpoint_unreadable"
         if ck is None or not _is_int(ck.get("last_done")):
             return None
         t = ck.get("last_t_recv_ms")
         if not (_is_int(t) and t > 0):
-            return None  # without the hour of D the reader cannot tell which hour files hold D's rows: fail closed (checkpoint_unreadable)
+            self._ck_reason = "checkpoint_no_t"
+            return None  # without the hour of D the reader cannot tell which hour files hold D's rows: fail closed, never caught up
         return int(ck["last_done"]), int(t)
 
     def _last_hour(self, last_t_ms: int | None) -> int:
@@ -365,7 +368,7 @@ class TipReader:
         self.caught_up = False
         ck = self._read_checkpoint()
         if ck is None:
-            self.problem = "checkpoint_unreadable"
+            self.problem = self._ck_reason
             return out
         D, last_t = ck
         if self.D is not None and D < self.D:
