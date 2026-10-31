@@ -75,6 +75,14 @@ class Log:
     def exit(self, i, mint, t0_i, reason="rank", dt=1100):
         self.d.append(X.BOT_ID, mark(i) * 1000 + dt, {"kind": "exit", "order_id": f"{mint}:{mark(t0_i)}", "mint": mint, "reason": reason, "t_mark": mark(i)})
 
+    def restart_exit(self, at_ms, mint, t0_i, t_mark_i):
+        """The row tools.r4b_live.restart_exits writes: reason restart, decision_slot None, t_mark the mark at or before the restart."""
+        self.d.append(X.BOT_ID, at_ms, {"kind": "exit", "order_id": f"{mint}:{mark(t0_i)}", "mint": mint, "reason": "restart", "t_mark": mark(t_mark_i), "decision_slot": None})
+
+    def gap(self, at_ms, kind="data_loss", frm=None, to=None):
+        """The row tools.r4b_live.log_gap writes."""
+        self.d.append(X.BOT_ID, at_ms, {"kind": "gap", "gap_kind": kind, "from_ms": frm, "to_ms": to, "data_loss": True})
+
 
 def ms(i, dt=1200):
     return mark(i) * 1000 + dt
@@ -162,7 +170,7 @@ def test_constants_follow_the_book_and_the_dec():
     assert X.BOT_ID == "r4b-exp027" and X.LIVE_BUILT is False
     assert X.C0 == {"stake_lamports": 50_000_000, "max_open": 2, "max_trades_per_day": 30, "daily_loss_lamports": 100_000_000, "total_loss_lamports": 200_000_000}
     assert X.PAPER_STAKE_SOL == 0.25 and X.K == 10 and X.MARK_S == 3600
-    assert X.FOLLOWED_EXIT_REASONS == ("rank", "gap", "end")
+    assert X.FOLLOWED_EXIT_REASONS == ("rank", "gap", "end", "restart") and X.REASON_RESTART == "restart"
     assert X.MAX_HOLD_MS == 49 * 3_600_000 and X.TIME_STOP_MS == 49 * 3_600_000 + 60_000  # 48 h + 1 h + 60 s
     assert X.SEND_FEE_LAMPORTS == 505_000 == FZ.SEND_FEE_DECIDING and X.SELL_RESERVE_LAMPORTS == 10 * 505_000
     assert (X.P5_WINDOW, X.P5_SOFT_HALT_S, X.MATCH_P50_S, X.TWIN_LEG_S) == (20, 3.0, 1.9, 1.9)
@@ -172,7 +180,7 @@ def test_constants_follow_the_book_and_the_dec():
 def test_constants_equal_the_pinned_modules_where_they_overlap():
     lv = pytest.importorskip("tools.r4b_live")
     rl = pytest.importorskip("tools.r4b_layout")
-    assert X.BOT_ID == lv.BOT_ID and X.BOOK == lv.BOOK and X.MARK_S == lv.MARK_S
+    assert X.BOT_ID == lv.BOT_ID and X.BOOK == lv.BOOK and X.MARK_S == lv.MARK_S and X.REASON_RESTART == lv.RESTART_REASON
     assert (X.V_LO, X.V_HI) == (rl.V_LO, rl.V_HI) and (X.GRID_LO_S, X.GRID_HI_S) == (lv.GRID_LO_S, lv.GRID_HI_S)
 
 
@@ -259,7 +267,7 @@ def test_entry_and_rank_exit_are_bought_and_sold_with_the_c0_stake(tmp_path):
     assert br.state.orders[oid("MA", 0)]["decision_slot"] == SD0 and br.es["first_send_ms"] is not None
 
 
-@pytest.mark.parametrize("reason", ["rank", "gap", "end"])
+@pytest.mark.parametrize("reason", ["rank", "gap", "end", "restart"])
 def test_each_book_exit_reason_is_followed(tmp_path, reason):
     clk = Clock()
     lg = Log(tmp_path)
@@ -810,3 +818,209 @@ def test_latency_uses_the_twins_per_date_slot_s_and_k_rounding():
     assert (r["k19"], r["x19"], r["slot_s_source"]) == (5, 5, "provisional")
     s = X.latency_summary(o, 0.4, slot_s_by_date={"2026-10-30": 0.2})
     assert s["provisional_slot_s"] == 0 and s["all_slots_p50"] == 10
+
+
+# ------------------------------------------------------------------------------------------------ restart exits (the host's exit-on-start rows)
+def test_a_restart_exit_sells_the_held_position_marks_the_trip_gap_and_borrows_no_sd(tmp_path):
+    clk = Clock()
+    lg = Log(tmp_path)
+    lg.start(ms(0, 0))
+    lg.entry(0, "MA", 0)
+    lg.entry(0, "MB", 1, dt=1201)
+    lg.exit(1, "MA", 0, dt=1100)  # a rank exit of the first process: its sd(T) is the mark's
+    lg.entry(1, "MC", 0, dt=1200)  # carries mark(1)'s decision_slot, which a restart exit must NOT borrow
+    restart = ms(1, 20 * 60_000)
+    lg.start(restart)
+    lg.restart_exit(restart, "MB", 0, 1)
+    lg.restart_exit(restart, "MC", 1, 1)
+    lg.restart_exit(restart, "ZZ", 0, 1)  # an entry the canary never held
+    br, port = bridge(tmp_path, clk, port=SlotPort())
+    feed(br, clk)
+    assert sends(port) == [("buy", oid("MA", 0)), ("buy", oid("MB", 0)), ("sell", oid("MA", 0)), ("buy", oid("MC", 1)), ("sell", oid("MB", 0)), ("sell", oid("MC", 1))]
+    assert [w["reason"] for w in port.would_send if w["side"] == "sell"] == ["rank", "restart", "restart"]
+    for m, i in (("MB", 0), ("MC", 1)):
+        o = br.state.orders[oid(m, i)]
+        assert o["status"] == "closed" and o["gap"] is True and o["restart_exit"] is True and o["exit_decision_slot"] is None and o.get("sell_landed_slot") is None
+    assert br.state.orders[oid("MA", 0)].get("gap") is None and br.state.orders[oid("MA", 0)]["exit_decision_slot"] == SD0 + 9000  # the rank exit keeps the mark's sd
+    assert br.state.counts["exit_restart"] == 2 and br.es["exits_not_held"] == {"unknown_order": 1} and not br.es["exits_not_followed"] and not br.state.latches
+    s = X.latency_summary(br.state.orders, 0.4)
+    assert s["sells_measured"] == 1  # only the rank exit is a latency sample; the restart exits have no decision slot
+
+
+def test_the_time_stop_still_closes_a_position_whose_restart_row_never_came(tmp_path):
+    clk = Clock()
+    lg = Log(tmp_path)
+    lg.start(ms(0, 0))
+    lg.entry(0, "MA", 0)
+    lg.start(ms(0, 600_000))  # the host restarted but wrote no restart exit (e.g. it crashed before host_start finished)
+    br, port = bridge(tmp_path, clk)
+    feed(br, clk)
+    assert br.state.orders[oid("MA", 0)]["status"] == "open" and br.state.orders[oid("MA", 0)]["gap"] is True
+    clk.t = ms(0) + X.TIME_STOP_MS
+    br.tick()
+    br.tick()
+    assert sends(port) == [("buy", oid("MA", 0)), ("sell", oid("MA", 0))] and port.would_send[1]["reason"] == "time_stop_backstop"
+
+
+def test_an_engine_restart_mid_run_exits_the_open_positions_and_enters_nothing_during_the_warmup(tmp_path):
+    lvt = pytest.importorskip("tools.test_r4b_live")
+    lv = pytest.importorskip("tools.r4b_live")
+    ev = lvt.event_stream(lvt.scenario())
+    log = DecisionLog(str(tmp_path / "rules"))
+    log.append(X.BOT_ID, lvt.MARKS[0] * 1000, {"kind": "start", "book": "r4-b", "exp": "EXP-027", "mode": "dry", "schema": lv.SCHEMA, "frozen_sha": SHA40})
+    eng_a, res_a = lvt.drive(ev, lvt.MARKS[:2])  # the first process decides two marks and is then killed
+    lvt._log_marks(log, eng_a, res_a)
+    held = {f"{m}:{t0}" for m, t0 in eng_a.book.pos.items()}
+    assert len(held) >= 8
+    restart_ms = (lvt.MARKS[1] + 1200) * 1000
+    out = lv.host_start(log, now_ms=restart_ms, frozen_sha=SHA40)
+    assert {r["order_id"] for r in out["exits"]} == held
+    # the new process: built the host's way (52 h warm-up), fed only what arrives after the restart, decides the next two marks
+    eng_b = lv.new_host_engine(universe_min_mbt=lvt.BT0, pda_fn=lvt.pda_of, hash_fn=lv.DuckHash(), score_fn=lvt._score_ret)
+    i = next(k for k, e in enumerate(ev) if e[0] >= restart_ms // 1000)
+    res_b = []
+    for T in lvt.MARKS[2:]:
+        i = lvt.feed(eng_b, ev, i, T + 30)
+        res_b.append(eng_b.decide(T, w0=lvt.W0, last_entry=lvt.E - 3600))
+        lv.log_actions(log, res_b[-1], {m.mint: m for m in eng_b.members()}, T * 1000)
+    assert all(r.warmup and r.actions == [] for r in res_b)
+    after = [r["kind"] for r in log.rows(X.BOT_ID) if r["ms"] >= restart_ms]
+    assert after == ["start"] + ["exit"] * len(held)  # nothing else: no entry row during the warm-up
+    cfg = X.make_config(cfg_dict(tmp_path))
+    clk, port = Clock(), B.DryPort(cfg.dry_balance_lamports)
+    br = X.R4bBridge(cfg, port, now_ms=clk, dry_replay_caps=True)  # capacity gates off: every decision goes through, so every restart row finds its position
+    feed(br, clk)
+    sold = {w["order_id"] for w in port.would_send if w["side"] == "sell" and w["reason"] == "restart"}
+    assert sold == held and br.state.counts["exit_restart"] == len(held)
+    assert all(o["status"] == "closed" for o in br.state.orders.values()) and all(br.state.orders[o]["gap"] for o in held)  # nothing waits for the time stop
+    assert not br.state.latches and not br.es["exits_not_followed"] and not br.es["exits_not_held"]
+    again = lv.restart_exits(log, X.BOT_ID, restart_ms + 1000)
+    assert again == []  # a second call writes nothing
+
+
+# ------------------------------------------------------------------------------------------------ feed-gap buy hold
+def refusals(br):
+    return [(r["order_id"], r["why"]) for r in map(json.loads, Path(br.log_path).read_text().splitlines()) if r.get("kind") == "entry_refused"]
+
+
+def test_a_feed_gap_holds_buys_until_ten_gap_free_minutes_after_its_end_and_exits_keep_running(tmp_path):
+    clk = Clock()
+    lg = Log(tmp_path)
+    gap = ms(1, 0)
+    lg.start(ms(0, 0))
+    lg.entry(0, "MA", 0)
+    lg.gap(gap, frm=gap - 120_000, to=gap)
+    br, port = bridge(tmp_path, clk, port=SlotPort())
+    feed(br, clk)
+    assert br.state.orders[oid("MA", 0)]["gap"] is True and br.state.counts["feed_gap"] == 1 and br.es["feed_gap_end_ms"] == gap  # the trip open across the gap
+    br, port = bridge(tmp_path, clk, port=port)  # a restart of the executor keeps the hold (persisted)
+    lg.entry(1, "MB", 0, dt=5 * 60_000)  # inside the hold
+    lg.exit(1, "MA", 0, dt=6 * 60_000)  # exits keep running
+    lg.entry(1, "MC", 1, dt=10 * 60_000 - 1000)  # one second short of 10 gap-free minutes
+    lg.entry(1, "MD", 2, dt=10 * 60_000)  # exactly 10 minutes after the end of the gap
+    feed(br, clk)
+    assert sends(port) == [("buy", oid("MA", 0)), ("sell", oid("MA", 0)), ("buy", oid("MD", 1))]
+    assert refusals(br) == [(oid("MB", 1), "feed_gap_hold"), (oid("MC", 1), "feed_gap_hold")] and br.state.counts["refused_feed_gap_hold"] == 2
+    assert port.would_send[1]["reason"] == "rank" and br.state.orders[oid("MD", 1)].get("gap") is None  # a trip opened after the hold is clean
+    lat = X.landed_buy_latencies(br.state.orders, 0.4)
+    assert [(r["order_id"], r["gap"], r["slots"]) for r in lat] == [(oid("MA", 0), True, 8), (oid("MD", 1), False, 8)]  # MA is measured but excluded from parity: open across the gap
+
+
+def test_the_hold_counts_from_the_end_of_the_gap_not_from_its_row_or_its_start(tmp_path):
+    clk = Clock()
+    lg = Log(tmp_path)
+    row = ms(1, 0)
+    lg.start(ms(0, 0))
+    lg.gap(row, frm=row - 3_600_000, to=row + 5 * 60_000)  # the row is logged at the start of a gap that ends 5 minutes later
+    lg.entry(1, "MA", 0, dt=14 * 60_000)  # 9 minutes after the end
+    lg.entry(1, "MB", 1, dt=15 * 60_000)  # 10 minutes after the end
+    br, port = bridge(tmp_path, clk)
+    feed(br, clk)
+    assert [o for _, o in sends(port)] == [oid("MB", 1)] and refusals(br) == [(oid("MA", 1), "feed_gap_hold")] and br.es["feed_gap_end_ms"] == row + 5 * 60_000
+    lg2 = Log(tmp_path / "late")  # a row logged after the gap ended (its ms was raised by log_gap): the hold is counted from the later of the two
+    lg2.start(ms(0, 0))
+    lg2.gap(row + 60_000, frm=row - 60_000, to=row)
+    lg2.entry(1, "MC", 0, dt=60_000 + 599_000)
+    lg2.entry(1, "MD", 1, dt=60_000 + 600_000)
+    br2, port2 = bridge(tmp_path / "late", clk)
+    feed(br2, clk)
+    assert [o for _, o in sends(port2)] == [oid("MD", 1)]
+
+
+def test_a_gap_that_halts_nothing_is_never_logged_and_a_data_loss_gap_holds(tmp_path):
+    lv = pytest.importorskip("tools.r4b_live")
+    from tools.r4b_feed_adapter import GapRecord
+
+    outcomes = {}
+    for name, rec in (("reconnect", GapRecord("socket_reconnect", "pumpfun", ms(1, 0), ms(1, 0) - 40_000, ms(1, 0), False, True)),
+                      ("loss", GapRecord("data_loss", "pumpfun", ms(1, 0), ms(1, 0) - 40_000, ms(1, 0), True, True)),
+                      ("unknown", GapRecord("gap", None, ms(1, 0), None, None, None, None))):
+        clk = Clock()
+        lg = Log(tmp_path / name)
+        lg.start(ms(0, 0))
+        written = lv.log_gap(lg.d, rec)
+        lg.entry(1, "MA", 0, dt=1000)  # one second after the gap
+        br, port = bridge(tmp_path / name, clk)
+        feed(br, clk)
+        outcomes[name] = (written is not None, [o for _, o in sends(port)], br.es["feed_gap_end_ms"])
+    assert outcomes["reconnect"] == (False, [oid("MA", 1)], 0)  # halts_buys False: no row, no hold, the buy goes through
+    assert outcomes["loss"] == (True, [], ms(1, 0)) and outcomes["unknown"][:2] == (True, [])  # data_loss True or unknown (fail closed): held
+
+
+def test_a_live_style_bridge_needs_the_managers_review_naming_the_newest_gap_instant(tmp_path):
+    clk = Clock()
+    lg = Log(tmp_path)
+    gap = ms(1, 0)
+    review = tmp_path / "review"
+    review.mkdir()
+    lg.start(ms(0, 0))
+    lg.gap(gap, frm=gap - 60_000, to=gap)
+    lg.entry(1, "MA", 0, dt=11 * 60_000)  # 11 gap-free minutes, no review file yet
+    cfg = X.make_config(cfg_dict(tmp_path))
+    br = X.R4bBridge(cfg, B.DryPort(cfg.dry_balance_lamports), now_ms=clk, root_checks=False, gap_clear_dir=review, require_gap_review=True)
+    feed(br, clk)
+    assert br.state.counts["refused_feed_gap_hold"] == 1 and refusals(br) == [(oid("MA", 1), "feed_gap_hold:review")]
+    (review / f"{X.BOT_ID}.json").write_text(json.dumps({"bot_id": X.BOT_ID, "reviewed_gap_ms": gap - 1}))  # a review of another instant does not clear
+    lg.entry(1, "MB", 1, dt=12 * 60_000)
+    feed(br, clk)
+    assert br.state.counts["refused_feed_gap_hold"] == 2
+    (review / f"{X.BOT_ID}.json").write_text(json.dumps({"bot_id": X.BOT_ID, "reviewed_gap_ms": gap}))
+    lg.entry(1, "MC", 2, dt=13 * 60_000)
+    feed(br, clk)
+    assert [o for _, o in sends(br.port)] == [oid("MC", 1)]
+    lg.gap(ms(1, 14 * 60_000), frm=ms(1, 14 * 60_000) - 1000, to=ms(1, 14 * 60_000))  # a newer gap: the old review no longer names the newest instant
+    lg.entry(1, "MD", 3, dt=26 * 60_000)
+    feed(br, clk)
+    assert refusals(br)[-1] == (oid("MD", 1), "feed_gap_hold:review")
+    dry, port = bridge(tmp_path, clk, state_dir=str(tmp_path / "dry-state"))  # the same log on a plain dry bridge: no review is asked for, only the 10 minutes
+    feed(dry, clk)
+    assert [o for _, o in sends(port)] == [oid("MA", 1), oid("MB", 1)] and not any(w.endswith(":review") for _, w in refusals(dry))  # max_open 2 stops MC; no review was asked for
+
+
+def test_a_gap_row_without_an_instant_holds_from_now_and_an_unknown_kind_still_holds(tmp_path):
+    clk = Clock(ms(1, 0))
+    lg = Log(tmp_path)
+    lg.start(ms(0, 0))
+    br, port = bridge(tmp_path, clk)
+    feed(br, clk)
+    clk.t = ms(1, 0)
+    br.handle_row({"kind": "gap", "ms": "soon", "seq": 9})  # hand-fed: a log row always has an int ms; a mangled one fails closed
+    assert br.state.counts["feed_gap_row_malformed"] == 1 and br.es["feed_gap_end_ms"] == ms(1, 0) and br.es["feed_gaps"][0]["gap_kind"] == "unknown"
+    assert br.feed_gap_refusal({"ms": ms(1, 599_000)}, ms(1, 599_000)) == "feed_gap_hold" and br.feed_gap_refusal({"ms": ms(1, 600_000)}, ms(1, 600_000)) is None
+
+
+def test_replay_of_a_log_with_a_gap_row_and_restart_rows(tmp_path):
+    lg = Log(tmp_path)
+    gap = ms(1, 0)
+    lg.start(ms(0, 0))
+    lg.entry(0, "MA", 0)
+    lg.gap(gap, frm=gap - 1000, to=gap)
+    lg.entry(1, "MB", 0, dt=60_000)  # inside the hold
+    lg.exit(1, "MA", 0, dt=90_000)
+    restart = ms(1, 20 * 60_000)
+    lg.start(restart)
+    lg.restart_exit(restart, "MB", 1, 1)
+    off = X.replay_equivalence(cfg_dict(tmp_path, state_dir=str(tmp_path / "s-off")))
+    assert off["ok"] and off["orders"] == off["decisions"] == 4 and not off["refused"]  # caps off: one for one, the hold is not a capacity gate
+    on = X.replay_equivalence(cfg_dict(tmp_path, state_dir=str(tmp_path / "s-on")), caps=True)
+    assert on["ok"] and on["bought"] == 1 and on["skips"] == {"feed_gap_hold": 1} and on["exits_not_held_expected"] == 1  # MB was refused, so its restart row finds nothing

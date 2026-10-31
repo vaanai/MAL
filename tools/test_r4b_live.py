@@ -864,3 +864,223 @@ def test_pending_sweep_runs_with_the_clock_and_the_buffer_is_bounded(monkeypatch
     assert eng._pending_n <= 5 and "MA" not in eng._pending and list(eng._pending) == ["MB"] and eng.counters["pending_evicted"] == 3
     eng.ingest_migration({"type": "complete", "mint": "MA", "slot": 250, "block_time": t})  # evicted: nothing to replay, no error
     assert len(eng.mints["MA"].prints["slot"]) == 0
+
+
+# ------------------------------------------------------------------------------------------------------------------------------- restart: exit-on-start and the warm-up gate
+def _log_marks(log, eng, results):
+    for res in results:
+        if res.actions:
+            lv.log_actions(log, res, {m.mint: m for m in eng.members()}, res.t * 1000)
+
+
+def _engine_a_log(tmp_path, n_marks=2):
+    """The previous process: engine A decides the first n_marks marks of the scenario and logs them after a start row. Returns (log, engine, results, sha)."""
+    from tools.arena_declog import DecisionLog
+
+    sha = "ab" * 20
+    log = DecisionLog(tmp_path / "declog")
+    log.append(lv.BOT_ID, MARKS[0] * 1000, {"kind": "start", "book": lv.BOOK, "exp": "EXP-027", "mode": "dry", "schema": lv.SCHEMA, "frozen_sha": sha})
+    eng, res = drive(event_stream(scenario()), MARKS[:n_marks])
+    _log_marks(log, eng, res)
+    return log, eng, res, sha
+
+
+def test_restart_exits_are_written_for_exactly_the_open_entries_and_only_once(tmp_path):
+    log, eng, res, _ = _engine_a_log(tmp_path)
+    held = {f"{m}:{t0}": m for m, t0 in eng.book.pos.items()}  # the previous process's own book: what it still held at the restart
+    rows = log.rows(lv.BOT_ID)
+    entries = [r["order_id"] for r in rows if r["kind"] == "entry"]
+    exited = {r["order_id"] for r in rows if r["kind"] == "exit"}
+    assert len(held) >= 8 and set(entries) - exited == set(held) and exited, "the scenario must leave positions open and have closed some"
+    now_ms = (MARKS[1] + 1200) * 1000
+    ex = lv.restart_exits(log, lv.BOT_ID, now_ms)
+    assert [r["order_id"] for r in ex] == [o for o in entries if o in held]  # entry order, exactly the open ones
+    for r in ex:
+        assert (r["kind"], r["reason"], r["decision_slot"], r["t_mark"], r["ms"], r["mint"]) == ("exit", "restart", None, MARKS[1], now_ms, held[r["order_id"]])
+    assert log.verify(lv.BOT_ID)[1] == len(rows) + len(ex) - 1  # the chain is intact
+    n = len(log.rows(lv.BOT_ID))
+    assert lv.restart_exits(log, lv.BOT_ID, now_ms + 5000) == [] and len(log.rows(lv.BOT_ID)) == n  # idempotent: nothing left open
+    assert lv.open_entries(log) == []
+    # t_mark is the mark at or before now: an hour later it is the next mark
+    log2, _, _, _ = _engine_a_log(tmp_path / "b")
+    assert {r["t_mark"] for r in lv.restart_exits(log2, now_ms=(MARKS[1] + 3700) * 1000)} == {MARKS[1] + 3600}
+
+
+def test_restart_exits_refuses_a_missing_or_backwards_clock_and_a_broken_chain(tmp_path):
+    from tools.arena_declog import LogChainError
+
+    log, _, _, _ = _engine_a_log(tmp_path)
+    n = len(log.rows(lv.BOT_ID))
+    for bad in (None, 0, True, "123", (MARKS[1] - 1) * 1000):  # the last logged row is at MARKS[1] * 1000
+        with pytest.raises(lv.LiveRefused):
+            lv.restart_exits(log, lv.BOT_ID, bad)
+    with pytest.raises(lv.LiveRefused):
+        lv.restart_exits(log, lv.BOT_ID, MARKS[1] * 1000 + 1, reason="")
+    assert len(log.rows(lv.BOT_ID)) == n
+    f = sorted((tmp_path / "declog" / "decisions" / lv.BOT_ID).glob("*.jsonl"))[0]
+    f.write_text(f.read_text().replace('"stake_sol":0.25', '"stake_sol":0.26', 1))
+    from tools.arena_declog import DecisionLog
+
+    with pytest.raises(LogChainError):
+        lv.restart_exits(DecisionLog(tmp_path / "declog"), lv.BOT_ID, MARKS[1] * 1000 + 1)
+
+
+def test_host_start_writes_the_start_row_then_the_exits_and_a_first_start_has_none(tmp_path):
+    from tools.arena_declog import DecisionLog
+
+    first = DecisionLog(tmp_path / "first")
+    out = lv.host_start(first, now_ms=MARKS[0] * 1000, frozen_sha="cd" * 20)
+    assert out["exits"] == [] and out["start"]["kind"] == "start" and out["start"]["frozen_sha"] == "cd" * 20 and out["start"]["warmup_s"] == lv.DEFAULT_WARMUP_S
+    log, eng, res, sha = _engine_a_log(tmp_path / "prev")
+    held = {f"{m}:{t0}" for m, t0 in eng.book.pos.items()}
+    out = lv.host_start(log, now_ms=(MARKS[1] + 1200) * 1000, frozen_sha=sha)
+    rows = log.rows(lv.BOT_ID)
+    assert rows[-len(out["exits"]) - 1]["kind"] == "start" and rows[-len(out["exits"]) - 1]["seq"] == out["start"]["seq"]  # start first, then the exits
+    assert {r["order_id"] for r in out["exits"]} == held and all(r["kind"] == "exit" and r["reason"] == "restart" for r in rows[-len(held):])
+    again = lv.host_start(log, now_ms=(MARKS[1] + 1300) * 1000, frozen_sha=sha)  # a second restart: a new start row, no exits
+    assert again["exits"] == [] and log.rows(lv.BOT_ID)[-1]["seq"] == again["start"]["seq"]
+    for bad in ("zz", "ab" * 19, None):
+        if bad is not None:
+            with pytest.raises(lv.LiveRefused):
+                lv.host_start(log, now_ms=(MARKS[1] + 1400) * 1000, frozen_sha=bad)
+    with pytest.raises(lv.LiveRefused):
+        lv.host_start(log, now_ms=(MARKS[1] + 1400) * 1000, frozen_sha=sha, warmup_s=3600)  # shorter than 52 h without a proof
+
+
+def test_engine_emits_no_entry_during_the_warmup_and_then_resumes_with_an_empty_book():
+    ev = event_stream(scenario())
+    ref_eng, ref = drive(ev, MARKS)
+    first = min(ref_eng.mkt)
+    warm = MARKS[2] - first  # marks 0 and 1 are inside the warm-up; mark 2 is exactly warmup_s after the first market minute
+    eng, res = drive(ev, MARKS, warmup_s=warm)
+    assert [r.warmup for r in res] == [True, True, False, False] and eng.counters["warmup_marks"] == 2
+    assert all(len(r.ranked) >= 10 for r in res[:2]) and all(r.actions == [] for r in res[:2])  # the ranking exists; no entry, no exit
+    assert any(a[0] == "entry" for r in ref[:2] for a in r.actions)  # without the gate those marks do enter (the gate matters)
+    assert [r.ranked for r in res] == [r.ranked for r in ref] and all(r.X.tobytes() == q.X.tobytes() and r.score.tobytes() == q.score.tobytes() for r, q in zip(res, ref))
+    assert res[2].actions == [("entry", m, MARKS[2], k) for k, m in enumerate(res[2].ranked[:10])]  # the book was empty: the whole top 10, ranks 0..9
+    assert eng.book.pos and {t0 for t0 in eng.book.pos.values()} <= {MARKS[2], MARKS[3]} and not any(a[0] == "exit" for a in res[2].actions)
+
+
+def test_a_warmup_of_zero_or_none_is_the_unchanged_decision_path():
+    ev = event_stream(scenario())
+    _, ref = drive(ev, MARKS)
+    for w in (0, None):
+        _, res = drive(ev, MARKS, warmup_s=w)
+        assert [sig(r) for r in res] == [sig(r) for r in ref] and not any(r.warmup for r in res)
+    for bad in (-1, True, 1.5, "52h"):
+        with pytest.raises(lv.LiveRefused):
+            mk_engine(warmup_s=bad)
+
+
+def test_the_warmup_gate_stays_open_once_a_mark_has_passed_it():
+    ev = event_stream(scenario())
+    eng, i = mk_engine(warmup_s=0), 0
+    i = feed(eng, ev, i, MARKS[0] + 30)
+    assert eng.decide(MARKS[0], w0=W0, last_entry=E - 3600).warmup is False and eng._warm_done
+    eng.warmup_s = 10 ** 9  # even if a caller raised the bar, a mark that has passed does not re-close the gate (positions may be held)
+    i = feed(eng, ev, i, MARKS[1] + 30)
+    assert eng.decide(MARKS[1], w0=W0, last_entry=E - 3600).warmup is False
+
+
+def test_new_host_engine_defaults_to_52_hours_and_a_shorter_one_needs_a_proof_reference():
+    assert lv.DEFAULT_WARMUP_S == 48 * 3600 + 4 * 3600 == lv.GRID_HI_S + 4 * lv.MARK_S
+    eng = lv.new_host_engine(universe_min_mbt=BT0, pda_fn=pda_of, hash_fn=lv.DuckHash(), score_fn=_score_ret)
+    assert eng.warmup_s == lv.DEFAULT_WARMUP_S
+    with pytest.raises(lv.LiveRefused):
+        lv.new_host_engine(universe_min_mbt=BT0, warmup_s=3600)
+    with pytest.raises(lv.LiveRefused):
+        lv.new_host_engine(universe_min_mbt=BT0, warmup_s=3600, shorter_warmup_proof="  ")
+    assert lv.new_host_engine(universe_min_mbt=BT0, warmup_s=3600, shorter_warmup_proof="md5-proof-ref").warmup_s == 3600
+    assert lv.new_host_engine(universe_min_mbt=BT0, warmup_s=lv.DEFAULT_WARMUP_S + 1).warmup_s == lv.DEFAULT_WARMUP_S + 1  # longer needs nothing
+    with pytest.raises(lv.LiveRefused):
+        lv.new_host_engine(universe_min_mbt=BT0, mode="live")  # the live refusal is the engine's, unchanged
+
+
+# ------------------------------------------------------------------------------------------------------------------------------- feed gaps in the declog
+def test_log_gap_writes_a_gap_row_for_a_gap_that_halts_buys_and_nothing_otherwise(tmp_path):
+    from tools.arena_declog import DecisionLog
+    from tools.r4b_feed_adapter import GapRecord, Mapped, Reject
+
+    log = DecisionLog(tmp_path / "g")
+    log.append(lv.BOT_ID, 1_000_000, {"kind": "start", "book": lv.BOOK, "schema": lv.SCHEMA, "frozen_sha": "ab" * 20})
+    lossy = GapRecord("data_loss", "pumpswap", 2_000_000, 1_900_000, 2_000_000, True, True)
+    row = lv.log_gap(log, lossy)
+    assert (row["kind"], row["ms"], row["gap_kind"], row["from_ms"], row["to_ms"], row["data_loss"]) == ("gap", 2_000_000, "data_loss", 1_900_000, 2_000_000, True)
+    assert "instant_ms" not in row
+    n = len(log.rows(lv.BOT_ID))
+    reconnect = GapRecord("socket_reconnect", "pumpfun", 2_100_000, 2_050_000, 2_100_000, False, True)  # no data lost: halts_buys is False
+    assert reconnect.halts_buys is False and lv.log_gap(log, reconnect) is None and lv.log_gap(log, Mapped("gap", reconnect)) is None and len(log.rows(lv.BOT_ID)) == n
+    unknown = GapRecord("gap", None, 2_200_000, None, None, None, None)  # data_loss unknown: fail closed
+    assert unknown.halts_buys and lv.log_gap(log, Mapped("gap", unknown))["gap_kind"] == "gap"
+    rej = lv.log_gap(log, Mapped("reject", Reject("unknown_type", "x", None)), now_ms=2_300_000)
+    assert (rej["gap_kind"], rej["ms"], rej["from_ms"], rej["to_ms"]) == ("reject_unknown_type", 2_300_000, None, None)
+    assert lv.log_gap(log, Mapped("reject", Reject("unresolved_expired", "trade", None, 3, halts_buys=False)), now_ms=2_400_000) is None
+    assert log.verify(lv.BOT_ID)[1] == len(log.rows(lv.BOT_ID)) - 1
+
+
+def test_log_gap_instant_fallbacks_and_a_late_log_keep_the_log_in_order(tmp_path):
+    from tools.arena_declog import DecisionLog
+    from tools.r4b_feed_adapter import GapRecord
+
+    log = DecisionLog(tmp_path / "g")
+    log.append(lv.BOT_ID, 5_000_000, {"kind": "start", "book": lv.BOOK, "schema": lv.SCHEMA, "frozen_sha": "ab" * 20})
+    no_instant = GapRecord("data_loss", None, None, None, None, True, None)
+    with pytest.raises(lv.LiveRefused):
+        lv.log_gap(log, no_instant)
+    assert lv.log_gap(log, no_instant, now_ms=5_100_000)["ms"] == 5_100_000
+    old = lv.log_gap(log, GapRecord("data_loss", None, 4_000_000, 3_900_000, 4_000_000, True, None))  # its instant is behind the newest row
+    assert old["ms"] == 5_100_000 and old["instant_ms"] == 4_000_000 and old["to_ms"] == 4_000_000  # ms raised to keep the file order; the true instant is kept
+    assert [r["ms"] for r in log.rows(lv.BOT_ID)] == sorted(r["ms"] for r in log.rows(lv.BOT_ID))
+    assert log.verify(lv.BOT_ID)[1] == 2  # start, the now_ms gap, the late gap; the refused call wrote nothing
+    with pytest.raises(lv.LiveRefused):
+        lv.log_gap(log, GapRecord("data_loss", None, True, None, None, True, None))  # type: ignore[arg-type]
+
+
+# ------------------------------------------------------------------------------------------------------------------------------- frozen_sha must describe the running code
+def _git(repo, *a):
+    import subprocess
+
+    return subprocess.run(["git", "-C", str(repo), "-c", "user.email=t@example.invalid", "-c", "user.name=t", "-c", "commit.gpgsign=false", *a], check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+def test_repo_head_sha_refuses_modified_tracked_files_and_ignores_untracked_ones(tmp_path):
+    repo = tmp_path / "r"
+    repo.mkdir()
+    _git(repo, "init", "-q")
+    (repo / "a.py").write_text("x = 1\n")
+    _git(repo, "add", "a.py")
+    _git(repo, "commit", "-q", "-m", "c1")
+    head = _git(repo, "rev-parse", "HEAD")
+    assert lv.repo_head_sha(repo) == head  # clean: the sha
+    (repo / "scratch.txt").write_text("not tracked\n")
+    assert lv.repo_head_sha(repo) == head  # an untracked file does not change the running code
+    (repo / "a.py").write_text("x = 2\n")
+    with pytest.raises(lv.LiveRefused, match="modified tracked"):
+        lv.repo_head_sha(repo)  # a modified tracked file: refused, and not cached from the clean call
+    _git(repo, "add", "a.py")
+    with pytest.raises(lv.LiveRefused, match="modified tracked"):
+        lv.repo_head_sha(repo)  # staged is still not HEAD
+    _git(repo, "commit", "-q", "-m", "c2")
+    head2 = _git(repo, "rev-parse", "HEAD")
+    assert head2 != head and lv.repo_head_sha(repo) == head2
+    (repo / "a.py").unlink()
+    with pytest.raises(lv.LiveRefused, match="modified tracked"):
+        lv.repo_head_sha(repo)  # a deleted tracked file counts too
+    with pytest.raises(lv.LiveRefused):
+        lv.repo_head_sha(tmp_path / "not-a-repo")  # no guess when git cannot answer
+
+
+def test_an_explicit_frozen_sha_never_reaches_the_dirty_check(tmp_path, monkeypatch):
+    from tools.arena_declog import DecisionLog
+
+    def boom(*a, **k):
+        raise AssertionError("repo_head_sha must not be called when frozen_sha is explicit")
+
+    monkeypatch.setattr(lv, "repo_head_sha", boom)
+    out = lv.host_start(DecisionLog(tmp_path / "d"), now_ms=MARKS[0] * 1000, frozen_sha="ab" * 20)
+    assert out["start"]["frozen_sha"] == "ab" * 20
+    monkeypatch.setattr(lv, "repo_head_sha", lambda *a, **k: (_ for _ in ()).throw(lv.LiveRefused("dirty")))
+    with pytest.raises(lv.LiveRefused, match="dirty"):
+        lv.host_start(DecisionLog(tmp_path / "d2"), now_ms=MARKS[0] * 1000)  # the default sha path does consult it, and its refusal stops the start
+    assert not (tmp_path / "d2" / "decisions").exists()  # nothing was written

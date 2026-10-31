@@ -1,7 +1,7 @@
 """r4b_arena_executor: the DRY executor of the r4-b book (EXP-027, bot_id `r4b-exp027`). PAPER / DRY ONLY: LIVE_BUILT is False, no key, no wallet, no send.
 
 r4-b is an hourly cross-section (EXP-027 section 2.1): at each UTC hour mark the frozen K = 10 engine (tools/r4b_live.py) sells held tokens that left the top 10
-and buys the new ones, 0.25 SOL per position, no stop loss, exits only at hour marks (reason rank | gap | end). This module is a thin, pinned subclass of the
+and buys the new ones, 0.25 SOL per position, no stop loss, exits only at hour marks (reason rank | gap | end), plus the host's `restart` exit. This module is a thin, pinned subclass of the
 bridge's `Bridge` (the pattern of tools/floor_arena_executor.py). It edits no pinned file (arena_live_bridge.py, floor_arena_executor.py, probe_live.py, any
 r4b module). The sell is the bridge's sell-all + close-ATA path (probe_live.LiveExecutor = EXP027_SELL_BUILDER, untouched).
 
@@ -18,7 +18,7 @@ WHAT THIS CHANGES ON TOP OF THE BRIDGE (each item is a difference between r4-b a
                    expired or was refused (nothing was bought). The bridge's order_id idempotency (`<mint>:<T0>`) is untouched.
   4 CAPS IN RANK ORDER  X8. Entry rows of one mark are read in rank order (the engine writes them so). A row whose rank does not rise within its mark is
                    refused `rank_order`. Every skip is `entry_refused` in the bridge log with its reason. An exit row for an order the canary does not hold
-                   is ignored and counted (`exits_not_held`), never an error. A reason outside rank | gap | end is not followed (counted).
+                   is ignored and counted (`exits_not_held`), never an error. A reason outside rank | gap | end | restart is not followed (counted).
   5 LATENCY ORIGIN X9 / N5 (DEC-032 Amendment 8 A8 = QP-RULING-1030 Erratum 1). Every order records decision_slot = the paper twin's sd(T). The DECIDING
                    quantity is d_land = landed slot - decision_slot, in SLOTS: "at most 1.9 s" means d_land <= round(1.9 / slot_s) and "above 3.0 s" means
                    d_land > round(3.0 / slot_s), with slot_s the per-UTC-date value the twin uses (config slot_s_by_date; config slot_s is the provisional
@@ -32,6 +32,17 @@ WHAT THIS CHANGES ON TOP OF THE BRIDGE (each item is a difference between r4-b a
                    E1 excluded). Pure; no data loading.
   9 DRY REPLAY     `replay_equivalence` feeds a closed decision log through the bridge with the capacity gates off (orders equal the log's decisions one for one)
                    or on (a rank-ordered capped subset, every skip logged).
+
+  10 RESTART EXIT  A decision-host restart empties the engine's book, so the previous process's positions would get no exit row from it. The host writes one
+                   `exit` row, reason `restart` (tools/r4b_live.restart_exits, decision_slot None), per entry with no exit row, right after its second `start` row.
+                   It is followed like rank | gap | end: the held position is sold. The trip is marked `gap` (excluded from parity, counted as `exit_restart`).
+                   Its latency origin is unknown (no decision slot, and the mark's sd(T) is not borrowed), so it is not a P5 or match-clause sample. The 49 h time
+                   stop stays the backstop for a restart row that never comes.
+  11 FEED-GAP HOLD A `gap` row in the decision log (tools/r4b_live.log_gap: a feed gap that halts buys, data_loss not False) stops new buys at once and
+                   restarts them only after 10 gap-free minutes counted from the END of the gap (max of its instant and to_ms) and, LIVE only, after the manager's
+                   review file names the newest gap instant (the bridge's `_gap_cleared`, c0.gap_clear_problem, untouched). An entry decided inside the held period
+                   is refused `feed_gap_hold` and logged. Exits keep running. A trip open across the gap is marked `gap`. A gap without data loss is never logged,
+                   so it holds nothing. This is the hv4_c0 gap rule's shape for the r4-b profile; the hv4 path in arena_live_bridge.py is not changed.
 
 Parity, the twin writer and the tie-out are NOT wired here: this build records what they need (decision_slot, landed slots and times, `gap` flags).
 Nothing here says r4-b makes money. r4-b has zero out-of-sample trades and has not cleared the promotion gate.
@@ -65,7 +76,8 @@ MARK_S = FZ.REBALANCE_S
 V_LO = FZ.V_LO  # 17.5e9
 V_HI = 17_700_000_000  # = tools.r4b_layout.V_HI (a test asserts it)
 GRID_LO_S, GRID_HI_S = 600, 48 * 3600  # a member decides from mbt + 600 s to mbt + 48 h (tools/r4b_live.py)
-FOLLOWED_EXIT_REASONS = ("rank", "gap", "end")
+REASON_RESTART = "restart"  # tools.r4b_live.RESTART_REASON (a test asserts it)
+FOLLOWED_EXIT_REASONS = ("rank", "gap", "end", REASON_RESTART)
 
 # --- X6: no stop loss; the only backstop is a time stop after the entry decision
 MAX_HOLD_MS = (48 + 1) * 3_600_000  # 48 h of eligibility + the 1 h to the next mark
@@ -87,6 +99,7 @@ FLOOR_BELOW_FUNDED_LAMPORTS = 250_000_000
 MIN_WALLET_FLOOR_LAMPORTS = 50_000_000
 CANARY_MAX_MS = 14 * 86_400_000
 GAP_HOLD_MS = 600_000  # DEC-032 section 5 item 2: buys restart only after 10 gap-free minutes (a decision-host restart is a gap)
+FEED_GAP_HOLD = "feed_gap_hold"  # the refusal of an entry decided inside the hold that a feed `gap` row starts (counted from the END of the gap)
 SLOT_S_MIN, SLOT_S_MAX = 0.1, 1.0
 
 # --- X9: latency origin and the DEC-032 section 5 thresholds
@@ -294,7 +307,8 @@ class R4bBridge(B.Bridge):
 
     def __init__(self, cfg: B.Config, port: B.OrderPort, *, now_ms: Callable[[], int] | None = None, dry_replay_caps: bool = False,
                  live_ok_path: Path = B.LIVE_OK_PATH, tier_path: Path = B.TIER_PATH, root_checks: bool = True,
-                 close_blocked: Callable[[str], bool | None] | None = None, slot_s_by_date: Mapping[str, float] | None = None) -> None:
+                 close_blocked: Callable[[str], bool | None] | None = None, slot_s_by_date: Mapping[str, float] | None = None,
+                 gap_clear_dir: Path | str | None = None, require_gap_review: bool = False) -> None:
         self.slot_s_by_date = dict(slot_s_by_date or {})  # the twin's per-UTC-date slot_s (A8); config slot_s is the provisional value
         if any(not _num(v) or not SLOT_S_MIN <= v <= SLOT_S_MAX for v in self.slot_s_by_date.values()):
             raise SystemExit("r4b executor start refused: slot_s_by_date out of range")
@@ -304,10 +318,12 @@ class R4bBridge(B.Bridge):
         if cfg.mode != B.DRY or port.live or LIVE_BUILT:
             raise SystemExit("r4b executor start refused: live_not_built")
         self.dry_replay_caps = bool(dry_replay_caps)
+        self.require_gap_review = bool(require_gap_review) or cfg.mode == B.LIVE  # live always needs the manager's review; a dry bridge may ask for it too (tests), never be excused
         sd = Path(cfg.state_dir)
         self.es_path = sd / f"r4b-state-{cfg.mode}.json"
         self.es = self._load_es()
-        super().__init__(cfg, port, now_ms=now_ms, live_ok_path=live_ok_path, tier_path=tier_path, root_checks=root_checks, close_blocked=close_blocked)
+        super().__init__(cfg, port, now_ms=now_ms, live_ok_path=live_ok_path, tier_path=tier_path, root_checks=root_checks, close_blocked=close_blocked,
+                         gap_clear_dir=gap_clear_dir)
 
     # -- sidecar state (the bridge's BridgeState has a fixed field set; r4-b's own facts live beside it, atomic like it)
     def _load_es(self) -> dict[str, Any]:
@@ -315,9 +331,11 @@ class R4bBridge(B.Bridge):
             raw = json.loads(self.es_path.read_text())
             if raw.get("schema") != ES_SCHEMA:
                 raise SystemExit("r4b executor start refused: executor state schema")
+            for k, v in (("feed_gap_end_ms", 0), ("feed_gap_newest_ms", 0), ("feed_gaps", [])):  # keys added with the feed-gap hold: a state file from before has none
+                raw.setdefault(k, v)
             return raw
         return {"schema": ES_SCHEMA, "first_send_ms": None, "gap_hold_until_ms": 0, "starts_seen": 0, "gaps": [], "exits_not_followed": {}, "exits_not_held": {},
-                "sd_by_mark": {}, "last_entry": [None, None], "time_stops": 0}
+                "sd_by_mark": {}, "last_entry": [None, None], "time_stops": 0, "feed_gap_end_ms": 0, "feed_gap_newest_ms": 0, "feed_gaps": []}
 
     def _save(self) -> None:
         super()._save()
@@ -403,6 +421,9 @@ class R4bBridge(B.Bridge):
             return None
         if now < int(self.es["gap_hold_until_ms"]):
             return "gap_hold"
+        why = self.feed_gap_refusal(row, now)
+        if why:
+            return why
         first = self.es["first_send_ms"]
         if first is not None and now > int(first) + CANARY_MAX_MS:
             return "canary_expired"
@@ -433,12 +454,49 @@ class R4bBridge(B.Bridge):
     def _gap(self, ms: int, why: str) -> None:
         self.es["gap_hold_until_ms"] = max(int(self.es["gap_hold_until_ms"]), int(ms) + GAP_HOLD_MS)
         self.es["gaps"] = (self.es["gaps"] + [{"ms": int(ms), "why": why}])[-200:]
+        marked = self._mark_open_gap()  # a restarted engine starts flat: these positions get no exit row from it unless the host writes the restart exits; excluded from parity
+        self._log("gap", why=why, decision_ms=int(ms), hold_until_ms=self.es["gap_hold_until_ms"], open_marked=marked)
+
+    def _mark_open_gap(self) -> int:
         marked = 0
         for o in self.state.orders.values():
             if o["status"] not in ("closed", "refused"):
-                o["gap"] = True  # a restarted engine starts flat: these positions get no exit row from it (only the time stop closes them); excluded from parity
+                o["gap"] = True
                 marked += 1
-        self._log("gap", why=why, decision_ms=int(ms), hold_until_ms=self.es["gap_hold_until_ms"], open_marked=marked)
+        return marked
+
+    def _feed_gap(self, row: Mapping[str, Any]) -> None:
+        """A `gap` row of the decision log (tools.r4b_live.log_gap): the feed lost data. Buys stop at once; the hold ends 10 minutes after the END of the gap
+        (the larger of the row's instant and its to_ms); trips open now are marked `gap`. A row without an int instant is held from now (fail closed)."""
+        raw_ms, to_ms, frm = row.get("ms"), row.get("to_ms"), row.get("from_ms")
+        if not _int(raw_ms):
+            self._count("feed_gap_row_malformed")
+        ms = int(raw_ms) if _int(raw_ms) else self.now_ms()
+        end = max(ms, int(to_ms)) if _int(to_ms) else ms
+        kind = row.get("gap_kind") if isinstance(row.get("gap_kind"), str) else "unknown"
+        self.es["feed_gap_end_ms"] = max(int(self.es["feed_gap_end_ms"]), end)
+        self.es["feed_gap_newest_ms"] = max(int(self.es["feed_gap_newest_ms"]), ms)
+        self.es["feed_gaps"] = (self.es["feed_gaps"] + [{"ms": ms, "end_ms": end, "gap_kind": kind}])[-200:]
+        marked = self._mark_open_gap()
+        self._count("feed_gap")
+        self._log("feed_gap", gap_kind=kind, decision_ms=ms, from_ms=int(frm) if _int(frm) else None, to_ms=int(to_ms) if _int(to_ms) else None, end_ms=end,
+                  hold_until_ms=end + GAP_HOLD_MS, review_required=self.require_gap_review, open_marked=marked, seq=row.get("seq"))
+        self._save()
+
+    def feed_gap_refusal(self, row: Mapping[str, Any], now: int) -> str | None:
+        """`feed_gap_hold` for an entry decided before the hold ends (the hold is counted from the END of the newest gap) or read before it ends, and, when a review is
+        required (live; a dry bridge built with require_gap_review), until the manager's review file names exactly the newest gap instant (the bridge's
+        `_gap_cleared`: 10 gap-free minutes from the end AND the root-owned file). No gap row seen: no refusal."""
+        end = int(self.es["feed_gap_end_ms"])
+        if not end:
+            return None
+        hold_end = end + GAP_HOLD_MS
+        ms = row.get("ms")
+        if now < hold_end or not _int(ms) or ms < hold_end:
+            return FEED_GAP_HOLD
+        if self.require_gap_review and not self._gap_cleared(int(self.es["feed_gap_newest_ms"]), now, end):
+            return FEED_GAP_HOLD + ":review"
+        return None
 
     def read_new_rows(self) -> list[dict[str, Any]]:
         """The bridge's read, plus: each entry row's decision_slot is remembered by its t_mark, so an exit row of the same mark (the engine writes exits first and
@@ -459,6 +517,9 @@ class R4bBridge(B.Bridge):
             self.es["starts_seen"] += 1
             if self.es["starts_seen"] > 1:
                 self._gap(row["ms"], "host_restart")
+        elif k == "gap":
+            self._feed_gap(row)
+            return
         elif k == "exit":
             reason = row.get("reason")
             if reason not in FOLLOWED_EXIT_REASONS:
@@ -475,7 +536,11 @@ class R4bBridge(B.Bridge):
                 self._log("exit_not_held", order_id=row.get("order_id"), reason=reason, cause=cause, seq=row.get("seq"))
                 self._save()
                 return
-            if row.get("decision_slot") is None:
+            if reason == REASON_RESTART:  # the host's own exit, not a mark decision: no sd(T) to borrow, and the trip is not a parity sample
+                o["gap"] = True
+                o["restart_exit"] = True
+                self._count("exit_restart")
+            elif row.get("decision_slot") is None:
                 sd = self.es["sd_by_mark"].get(str(row.get("t_mark")))
                 row = {**row, "decision_slot": sd, "decision_slot_src": "mark_entry" if sd is not None else None}
         super().handle_row(row)

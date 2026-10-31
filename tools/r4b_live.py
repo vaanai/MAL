@@ -35,6 +35,21 @@ Live-feed differences (disclosed, not hidden; the replay proof covers the walker
     (the same train/serve skew EXP-027 section 3.4 discloses for history before H0).
   * Clock seconds older than 2 h are dropped after each decide (fast mode). Market and create minutes are never dropped: the m_* columns are
     differences of float64 cumulative sums from the first market minute, so the engine keeps the read's first minute (H0) to stay byte-equal (see Engine).
+
+Restart and feed gaps (the host-side pieces; PR r4b-live-2c, DEC-032 section 5 item 2 and Amendment 8)
+  * A decision-host restart empties LiveBook, so a position held before it would get no exit row from the new process and would wait for the executor's
+    48 h + 1 h + 60 s time stop. `host_start` writes the `start` row and then `restart_exits`: one `exit` row (reason "restart", decision_slot None, t_mark
+    the mark at or before now) for every entry order_id that has no exit row. It runs before the new engine decides anything. A second call writes nothing.
+  * The new engine's state is incomplete (prints, bonding constants, market minutes since H0). `Engine(warmup_s=...)` emits NO entry until the data it has
+    ingested spans warmup_s (block_time of the decided mark minus the first market minute it saw). A host builds its engine with `new_host_engine`, whose
+    default is DEFAULT_WARMUP_S = 48 h + 4 h = 52 h: every mint that graduated before the start has left the 48 h grid, and the print windows (up to 4 h)
+    and market minutes are rebuilt from ingested rows. It does NOT rebuild the create-derived and bonding constants (t_since_create, c_bond_*, c_nbond*,
+    cre_*) of mints created before the engine's start: those keep the EXP-027 §3.4 skew (persistent for long-bonding mints). And a 52 h engine is not
+    decision-equal to a full-history engine, because its book starts flat. The warm-up gives the frozen engine a clean start, not byte-equality (QP on #1136).
+    A shorter warm-up, or replay-on-start, needs an md5 decision-equivalence proof against the full-history engine (`shorter_warmup_proof`); the engine
+    itself defaults to warmup_s None (no gate: a replay ingests the history from H0, which is the frozen decision path, byte for byte).
+  * `log_gap` writes a `gap` row for a feed GapRecord that halts buys (tools/r4b_feed_adapter: data_loss not False). The engine never sees a gap. The
+    executor holds new buys from it (tools/r4b_arena_executor.py); exits keep running. A socket reconnect without data loss writes nothing.
 """
 
 from __future__ import annotations
@@ -84,6 +99,8 @@ PENDING_S = 900  # a PumpSwap print whose mint has no `complete` yet is kept thi
 PENDING_MAX_PER_MINT = 2_000  # ... at most this many rows per mint (the earliest are kept, later ones counted as overflow)
 PENDING_MAX_TOTAL = 100_000  # ... and this many rows over all mints (the oldest-inserted mint is evicted first)
 PENDING_SWEEP_S = 60  # expiry sweep at most once per this many seconds of block_time
+RESTART_REASON = "restart"  # the exit reason restart_exits writes; the executor follows it like rank | gap | end
+DEFAULT_WARMUP_S = GRID_HI_S + 4 * MARK_S  # 52 h: the 48 h grid plus 4 h for the longest feature window; a shorter warm-up needs an md5 proof
 
 # Exploration replay only: the outcome blocks of /data/mal/hunt-1008/push-1016/hunt23/RULES.md. fresh-08* (the unspent reserve) is NOT here.
 EXPLORATION_DIRS = (
@@ -152,20 +169,29 @@ class DuckHash:
 _HEAD_SHA: str | None = None
 
 
-def repo_head_sha() -> str:
-    """`git rev-parse HEAD` of the repo that holds this module, read once per process. The decision log's `start` row carries it as `frozen_sha`
-    (the bridge latches frozen_sha_mismatch on a different value). Refuses (no guess) when git cannot answer or does not return 40 hex digits."""
+def repo_head_sha(repo: Path | str | None = None) -> str:
+    """`git rev-parse HEAD` of the repo that holds this module (or of `repo`, for tests), as the `frozen_sha` of the decision log's `start` row (the bridge
+    latches frozen_sha_mismatch on a different value). Refuses (LiveRefused, no guess) when git cannot answer, does not return 40 hex digits, or when tracked
+    files of the repo are modified (`git status --porcelain --untracked-files=no` is not empty, staged or not): the sha would then not describe the code
+    that runs. Untracked files do not count. The default repo is checked once per process (HEAD and the status together) and cached; another `repo` is
+    never cached. A caller that passes frozen_sha explicitly (replay_walker, host_start, the --frozen-sha flag) never reaches this function."""
     global _HEAD_SHA
-    if _HEAD_SHA is None:
-        repo = Path(__file__).resolve().parents[1]
-        try:
-            out = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=15, check=True).stdout.strip()
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise LiveRefused(f"cannot read the git HEAD of {repo} ({type(exc).__name__}); pass frozen_sha explicitly") from exc
-        if not re.fullmatch(r"[0-9a-f]{40}", out):
-            raise LiveRefused(f"git rev-parse HEAD did not return a 40-hex sha: {out[:60]!r}; pass frozen_sha explicitly")
+    if repo is None and _HEAD_SHA is not None:
+        return _HEAD_SHA
+    path = Path(__file__).resolve().parents[1] if repo is None else Path(repo)
+    try:
+        out = subprocess.run(["git", "-C", str(path), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=15, check=True).stdout.strip()
+        dirty = subprocess.run(["git", "-C", str(path), "status", "--porcelain", "--untracked-files=no"], capture_output=True, text=True, timeout=60, check=True).stdout
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise LiveRefused(f"cannot read the git HEAD or status of {path} ({type(exc).__name__}); pass frozen_sha explicitly") from exc
+    if not re.fullmatch(r"[0-9a-f]{40}", out):
+        raise LiveRefused(f"git rev-parse HEAD did not return a 40-hex sha: {out[:60]!r}; pass frozen_sha explicitly")
+    if dirty.strip():
+        n = len(dirty.strip().splitlines())
+        raise LiveRefused(f"{path} has {n} modified tracked path(s): the HEAD sha would not describe the running code; commit or restore them, or pass frozen_sha explicitly")
+    if repo is None:
         _HEAD_SHA = out
-    return _HEAD_SHA
+    return out
 
 
 def default_pda_fn() -> Callable[[str], str]:
@@ -489,6 +515,7 @@ class MarkResult:
     actions: list
     d3_dropped: int = 0
     seconds: float = 0.0
+    warmup: bool = False  # True: the engine is still warming up, the book was not stepped and no entry was made
 
 
 class Engine:
@@ -508,12 +535,15 @@ class Engine:
     (rf.build_prep), whose low bits depend on the first minute once the sums pass 2^53, so the engine keeps the read's first minute (H0) to stay byte-equal.
     Late PumpSwap prints: a print whose mint has no `complete` row yet is buffered (<= PENDING_S of block_time, <= PENDING_MAX_PER_MINT rows per mint,
     <= PENDING_MAX_TOTAL overall) and replayed in arrival order when the complete arrives (ingest_trade only; the block path of a replay feeds migrations first).
+    Warm-up: warmup_s (default None = no gate, the replay / full-history path) makes decide(T) emit NO entry until T - (the first market minute this engine
+    ingested) >= warmup_s. During it the ranking is computed (MarkResult.ranked) but the book is not stepped (it is empty after a restart), so no entry row
+    exists; once a mark is decided past it the gate never closes again. A live host passes DEFAULT_WARMUP_S (see new_host_engine).
     Threads: ingest_* and decide run on ONE thread (np.frombuffer views over the array buffers of a mint make a concurrent append raise BufferError)."""
 
     def __init__(self, *, universe_min_mbt: int, v_source: str = "event", static_map: Mapping[str, int | None] | None = None, mode: str = "dry",
                  pda_fn: Callable[[str], str] | None = None, hash_fn: Callable[[str | None], int] | None = None, boosters: list | None = None,
                  score_fn: Callable[[list, np.ndarray], np.ndarray] | None = None, bond_mints: set | None = None, k: int = FZ.K,
-                 exact_grid: bool = False, keep_clock_s: int | None = CLOCK_KEEP_S) -> None:
+                 exact_grid: bool = False, keep_clock_s: int | None = CLOCK_KEEP_S, warmup_s: int | None = None) -> None:
         if mode == "live" or LIVE_BUILT is not False:
             raise LiveRefused("r4b_live builds no live mode (LIVE_BUILT is False): no key, no wallet, no send")
         if mode not in ("dry", "replay"):
@@ -537,6 +567,10 @@ class Engine:
         self.mkt: dict[int, list] = {}  # minute -> [n_ps, v_ps, n_bd, v_bd]
         self.ncr: dict[int, int] = {}  # minute -> creates
         self.book = LiveBook(k=k)
+        if warmup_s is not None and (isinstance(warmup_s, bool) or not isinstance(warmup_s, int) or warmup_s < 0):
+            raise LiveRefused("warmup_s must be None or a non-negative int (seconds of ingested block_time)")
+        self.warmup_s = warmup_s
+        self._warm_done = False
         self.exact_grid = bool(exact_grid)
         self.keep_clock_s = None if (exact_grid or keep_clock_s is None) else int(keep_clock_s)
         self.counters: dict[str, int] = {}
@@ -1007,12 +1041,25 @@ class Engine:
         sc = self.score(X) if len(X) else np.zeros(0)
         fin = [i for i in range(len(mints)) if np.isfinite(sc[i])]
         ranked = [mints[i] for i in sorted(fin, key=lambda i: (-sc[i], mid_key[mints[i]]))]
-        actions = self.book.step(T, ranked)
+        warming = self._warming(T)
+        if warming:
+            self._count("warmup_marks")
+        actions = self.book.step(T, [] if warming else ranked)  # warming: the book is empty and stays empty, no entry row can exist
         self._last_T = T
         if self.keep_clock_s is not None:
             self.prune_clock(T)
         return MarkResult(T, sd, mints, np.full(len(mints), T, np.int64), np.array(sds, np.int64), X, sc, ranked, actions, d3,
-                          time.monotonic() - t_start)
+                          time.monotonic() - t_start, warmup=warming)
+
+    def _warming(self, T: int) -> bool:
+        """True while the mark T is inside the warm-up: the engine has ingested less than warmup_s of block_time before T. The first market minute never
+        leaves the engine (see prune_clock), so it is the engine's own start of data. Once a mark has passed, the gate stays open."""
+        if self.warmup_s is None or self._warm_done:
+            return False
+        if self.mkt and T - min(self.mkt) >= self.warmup_s:
+            self._warm_done = True
+            return False
+        return True
 
     def prune_clock(self, T: int) -> tuple[int, int]:
         """Drop clock SECONDS older than T - keep_clock_s (CLOCK_KEEP_S): only slot_at(T') for later marks reads the clock, and it never reads a second
@@ -1060,6 +1107,113 @@ def log_actions(log: Any, res: MarkResult, members: Mapping[str, Member] | None,
                                                 "meta": {"mint": a[1], "v0": m.v0 if m else None, "mbt": m.mbt if m else None, "s0": m.s0 if m else None},
                                                 "stake_sol": stake_sol, "decision_slot": res.sd, "t_mark": int(a[2]), "rank": int(a[3]), "score": sc.get(a[1])}))
     return rows
+
+
+# ------------------------------------------------------------------------------------------------------------------------------- host restart and feed gaps
+def _check_log_clock(log: Any, bot_id: str, now_ms: Any) -> list[dict]:
+    """Verify the hash chain (a broken chain raises tools.arena_declog.LogChainError: nothing is written on a log we cannot trust) and refuse a clock that is
+    behind the newest row (the log is one file per UTC day; a row with an earlier ms would land in an older file ahead of newer rows and break the chain
+    order). Returns the rows."""
+    if isinstance(now_ms, bool) or not isinstance(now_ms, int) or now_ms <= 0:
+        raise LiveRefused("now_ms (int, epoch ms) is required")
+    log.verify(bot_id)
+    rows = log.rows(bot_id)
+    if rows and now_ms < max(int(r["ms"]) for r in rows):
+        raise LiveRefused(f"now_ms {now_ms} is before the newest logged row {max(int(r['ms']) for r in rows)}: the clock went backwards")
+    return rows
+
+
+def open_entries(log: Any, bot_id: str = BOT_ID) -> list[dict]:
+    """The entry rows (first row per order_id, in log order) whose order_id has no exit row of any reason."""
+    entries: dict[str, dict] = {}
+    exited: set[str] = set()
+    for r in log.rows(bot_id):
+        oid = r.get("order_id")
+        if not isinstance(oid, str):
+            continue
+        if r.get("kind") == "entry":
+            entries.setdefault(oid, r)
+        elif r.get("kind") == "exit":
+            exited.add(oid)
+    return [e for oid, e in entries.items() if oid not in exited]
+
+
+def restart_exits(log: Any, bot_id: str = BOT_ID, now_ms: int | None = None, reason: str = RESTART_REASON) -> list[dict]:
+    """Exit-on-start. A restarted engine starts with an empty LiveBook, so it never writes the exit of a position the previous process entered. This appends
+    one `exit` row (reason "restart", decision_slot None, order_id and mint copied from the entry, t_mark = the UTC hour mark at or before now_ms) for every
+    entry order_id that has no exit row, at ms = now_ms, in entry order, and returns them. Call it on every start BEFORE the engine decides anything
+    (`host_start` does). Idempotent: once every entry has an exit row it writes nothing, so a crash between two starts cannot double-exit. A position the
+    executor never took (capped out) gets a row too; the executor ignores and counts an exit for a position it does not hold. now_ms is required."""
+    if not isinstance(reason, str) or not reason:
+        raise LiveRefused("reason must be a non-empty string")
+    _check_log_clock(log, bot_id, now_ms)
+    t_mark = (int(now_ms) // 1000 // MARK_S) * MARK_S  # type: ignore[arg-type]
+    out = []
+    for e in open_entries(log, bot_id):
+        oid = e["order_id"]
+        mint = (e.get("meta") or {}).get("mint") or oid.rsplit(":", 1)[0]
+        out.append(log.append(bot_id, int(now_ms), {"kind": "exit", "order_id": oid, "mint": mint, "reason": reason, "t_mark": t_mark, "decision_slot": None}))  # type: ignore[arg-type]
+    return out
+
+
+def _check_warmup(warmup_s: Any, shorter_warmup_proof: Any) -> None:
+    if isinstance(warmup_s, bool) or not isinstance(warmup_s, int) or warmup_s < 0:
+        raise LiveRefused("warmup_s must be a non-negative int (seconds of ingested block_time)")
+    if warmup_s < DEFAULT_WARMUP_S and not (isinstance(shorter_warmup_proof, str) and shorter_warmup_proof.strip()):
+        raise LiveRefused(f"a warm-up shorter than {DEFAULT_WARMUP_S} s (48 h + 4 h) needs an md5 decision-equivalence proof: pass its reference as shorter_warmup_proof")
+
+
+def new_host_engine(*, warmup_s: int = DEFAULT_WARMUP_S, shorter_warmup_proof: str | None = None, **kw: Any) -> "Engine":
+    """The engine a live host builds after (re)start: Engine(**kw) with the warm-up gate on. warmup_s defaults to DEFAULT_WARMUP_S (52 h); a shorter value
+    is refused unless shorter_warmup_proof names the md5 equivalence proof that covers it."""
+    _check_warmup(warmup_s, shorter_warmup_proof)
+    return Engine(warmup_s=warmup_s, **kw)
+
+
+def host_start(log: Any, *, now_ms: int, frozen_sha: str | None = None, bot_id: str = BOT_ID, warmup_s: int = DEFAULT_WARMUP_S,
+               shorter_warmup_proof: str | None = None) -> dict:
+    """What a decision host does when it starts, in this order: write the `start` row (frozen_sha = repo_head_sha() unless given; the executor latches
+    frozen_sha_mismatch on another value and counts a second start row as a host restart), then restart_exits for every position the previous process left
+    open. The engine decides only after this returns, and it is built with the same warmup_s (new_host_engine). Returns {"start", "exits", "warmup_s"}."""
+    _check_warmup(warmup_s, shorter_warmup_proof)
+    sha = frozen_sha if frozen_sha is not None else repo_head_sha()
+    if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
+        raise LiveRefused("frozen_sha must be 40 hex digits")
+    _check_log_clock(log, bot_id, now_ms)
+    body = {"kind": "start", "book": BOOK, "exp": "EXP-027", "mode": "dry", "schema": SCHEMA, "frozen_sha": sha, "warmup_s": warmup_s}
+    if warmup_s < DEFAULT_WARMUP_S:
+        body["warmup_proof"] = shorter_warmup_proof
+    start = log.append(bot_id, now_ms, body)
+    return {"start": start, "exits": restart_exits(log, bot_id, now_ms), "warmup_s": warmup_s}
+
+
+def log_gap(log: Any, gap: Any, *, now_ms: int | None = None, bot_id: str = BOT_ID) -> dict | None:
+    """Append a `gap` row for a feed gap that halts buys, and return it; return None (nothing written) when it does not. `gap` is a
+    tools.r4b_feed_adapter GapRecord (or a Mapped of kind "gap"), or a Reject / Mapped "reject" that halts buys (a data fault: the feed lost or mangled a row).
+    The row is {"kind": "gap", "ms": <instant>, "gap_kind", "from_ms", "to_ms", "data_loss"}: ms = the record's instant (its to_ms, else its receipt time);
+    a record without an instant uses now_ms; neither is a refusal. If the instant is earlier than the newest logged row, ms is raised to that row's ms
+    (the log is one file per UTC day and must stay in order) and the true instant is kept as `instant_ms`; the executor holds from max(ms, to_ms), so a
+    late ms only lengthens the hold. A GapRecord whose data_loss is False (a socket reconnect without loss) halts nothing and writes nothing."""
+    rec = getattr(gap, "row", gap)
+    if not bool(getattr(rec, "halts_buys", True)):
+        return None
+    if hasattr(rec, "reason"):  # a Reject: no span, no instant of its own
+        kind, frm, to, inst, dl = f"reject_{rec.reason}", None, None, None, None
+    else:
+        kind, frm, to, inst, dl = rec.kind, rec.from_ms, rec.to_ms, rec.instant_ms, rec.data_loss
+    for v in (inst, now_ms):
+        if v is not None and (isinstance(v, bool) or not isinstance(v, int)):
+            raise LiveRefused("a gap instant must be an int (epoch ms)")
+    ms = inst if inst is not None else now_ms
+    if ms is None:
+        raise LiveRefused("gap record has no instant and no now_ms was given")
+    rows = log.rows(bot_id)
+    newest = max((int(r["ms"]) for r in rows), default=None)
+    body = {"kind": "gap", "gap_kind": kind, "from_ms": frm, "to_ms": to, "data_loss": dl}
+    if newest is not None and ms < newest:
+        body["instant_ms"] = ms
+        ms = newest
+    return log.append(bot_id, ms, body)
 
 
 # ------------------------------------------------------------------------------------------------------------------------------- exploration replay
@@ -1115,7 +1269,7 @@ def replay_walker(walk_dir: Path | Sequence[Path], h0: str, h1: str, w0: int, e:
     static_map given -> v_source static_map; None -> event. Refuses a non-exploration path or any hour at or after REPLAY_HOUR_MAX unless allow_dir
     (synthetic test dirs only). walk_dir may be a list of window dirs (e.g. explore-0814 w7, w6, w5): each hour file is taken from the first dir
     that has it. frozen_sha: written on the declog `start` row (the bridge compares it with its pin); default = repo_head_sha(), read once per process
-    from `git rev-parse HEAD`, and only when log_root is given."""
+    from `git rev-parse HEAD` (refused when tracked files are modified), and only when log_root is given."""
     import duckdb
 
     dirs = [Path(walk_dir)] if isinstance(walk_dir, (str, os.PathLike)) else [Path(d) for d in walk_dir]
