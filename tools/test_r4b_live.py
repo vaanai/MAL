@@ -1084,3 +1084,273 @@ def test_an_explicit_frozen_sha_never_reaches_the_dirty_check(tmp_path, monkeypa
     with pytest.raises(lv.LiveRefused, match="dirty"):
         lv.host_start(DecisionLog(tmp_path / "d2"), now_ms=MARKS[0] * 1000)  # the default sha path does consult it, and its refusal stops the start
     assert not (tmp_path / "d2" / "decisions").exists()  # nothing was written
+
+
+# ------------------------------------------------------------------------------------------------------------------------------- T - 5 s precompute: byte-identical decisions
+def drive_pre(ev: list, marks, lead: int = 5, lag: int = 30, check=None, **kw):
+    """drive() with a precompute(T) at T - lead (the engine has seen every row before T - lead only) and decide(T) at T + lag. check(eng, T) runs after
+    the precompute. Returns (engine, [MarkResult], [precompute stats])."""
+    eng, i, out, stats = mk_engine(**kw), 0, [], []
+    for T in marks:
+        i = feed(eng, ev, i, T - lead)
+        stats.append(eng.precompute(T))
+        if check:
+            check(eng, T)
+        i = feed(eng, ev, i, T + lag)
+        out.append(eng.decide(T, w0=W0, last_entry=E - 3600))
+    return eng, out, stats
+
+
+def _rows_and_trades(eng, res):
+    allm = [m for r in res for m in r.mints]
+    md5 = lv.rows_md5(allm, np.concatenate([r.T for r in res]), np.concatenate([r.sdv for r in res]), np.vstack([r.X for r in res]),
+                      np.concatenate([r.score for r in res]))
+    return md5, lv.trades_md5(lv.trades_from_actions([a for r in res for a in r.actions] + eng.book.close_all("end")))
+
+
+def test_precompute_decisions_are_byte_identical_event_mode():
+    ev = event_stream(scenario())
+    ref_eng, ref = drive(ev, MARKS)
+    eng, res, stats = drive_pre(ev, MARKS)
+    assert [sig(r) for r in res] == [sig(r) for r in ref]  # rows, scores, ranks, actions, d3, every float32 byte
+    assert _rows_and_trades(eng, res) == _rows_and_trades(ref_eng, ref)
+    assert sum(len(r.mints) for r in res) > 40 and any(r.actions for r in res)
+    assert all(s["cached"] > 0 for s in stats) and eng.counters["precompute_hits"] > 20 and eng.counters.get("precompute_misses", 0) > 0  # both paths ran
+    assert not eng._pre and eng._pre_T is None  # dropped once the mark is decided
+
+
+def test_precompute_decisions_are_byte_identical_static_map_mode():
+    ev = event_stream(scenario(seed=11, n_members=13))
+    smap = {pda_of(f"M{i:02d}"): V for i in range(13)} | {pda_of("XVHI"): 17_800_000_000}
+    kw = dict(v_source="static_map", static_map=smap)
+    ref_eng, ref = drive(ev, MARKS, **kw)
+    eng, res, _ = drive_pre(ev, MARKS, **kw)
+    assert [sig(r) for r in res] == [sig(r) for r in ref] and _rows_and_trades(eng, res) == _rows_and_trades(ref_eng, ref)
+    assert sum(len(r.mints) for r in res) > 40 and eng.counters["precompute_hits"] > 20
+
+
+def test_precompute_identical_with_the_real_bag_score_and_for_other_leads(boosters):
+    ev = event_stream(scenario())
+    ref_eng, ref = drive(ev, MARKS, boosters=boosters)
+    want = _rows_and_trades(ref_eng, ref)  # once: it closes the reference book
+    for lead in (1, 5, 40):  # 40 s ahead: more members get a print between the precompute and the decision (misses), the result is the same
+        eng, res, _ = drive_pre(ev, MARKS, lead=lead, boosters=boosters)
+        assert [sig(r) for r in res] == [sig(r) for r in ref], lead
+        assert _rows_and_trades(eng, res) == want
+
+
+def test_precompute_leaves_no_trace_in_the_engine_state_a_decision_reads():
+    """After a precompute (and before the decide) the member cache, the clock, the market minutes, the book and the last mark are as they were."""
+    ev = event_stream(scenario())
+    eng, i = mk_engine(), 0
+    i = feed(eng, ev, i, MARKS[1] - 5)
+    before = (dict(eng._member_final), dict(eng.clock), {k: list(v) for k, v in eng.mkt.items()}, dict(eng.book.pos), eng._last_T, eng.book.last,
+              {k: dict(v) for k, v in [(k, {"n": len(s.prints["slot"])}) for k, s in eng.mints.items()]})
+    stats = eng.precompute(MARKS[1])
+    after = (dict(eng._member_final), dict(eng.clock), {k: list(v) for k, v in eng.mkt.items()}, dict(eng.book.pos), eng._last_T, eng.book.last,
+             {k: dict(v) for k, v in [(k, {"n": len(s.prints["slot"])}) for k, s in eng.mints.items()]})
+    assert before == after and stats["cached"] > 0
+    with pytest.raises(lv.LiveRefused, match="not an hour mark"):
+        eng.precompute(MARKS[1] + 5)
+    with pytest.raises(lv.LiveRefused, match="reference path"):
+        mk_engine(exact_grid=True).precompute(MARKS[1])
+    i = feed(eng, ev, i, MARKS[1] + 30)
+    eng.decide(MARKS[1], w0=W0, last_entry=E - 3600)
+    with pytest.raises(lv.LiveRefused, match="not after the last decided"):
+        eng.precompute(MARKS[1])
+
+
+def test_precompute_entry_is_reused_only_for_the_same_print_set():
+    """_pre_valid: a kept print that arrived since the precompute and is before sd forces a recompute; one at or after sd, or a print that is not kept, does
+    not. Every case is checked against a fresh engine's decide (byte-identical rows)."""
+    ev = event_stream(scenario())
+    T, mint = MARKS[1], "M03"
+    pre_feed = T - 5
+
+    def run(extra_rows, do_pre=True):
+        eng, i = mk_engine(), 0
+        i = feed(eng, ev, i, pre_feed)
+        if do_pre:
+            eng.precompute(T)
+        for r in extra_rows:  # rows that arrive after the precompute, before the decision
+            eng.ingest_trade(r)
+        i = feed(eng, ev, i, T + 30)
+        return eng, eng.decide(T, w0=W0, last_entry=E - 3600)
+
+    base_eng, base = run([], do_pre=False)
+    sd = base.sd
+    last = {m: max(r["slot"] for h in scenario().values() for r in h["trades"] if r["mint"] == m and r["venue"] == "pumpswap" and r["block_time"] < pre_feed)
+            for m in ("M03",)}
+    mk = lambda slot, bt, **k: {**_ps_row(mint, slot, bt), "signature": f"x{slot}", **k}  # noqa: E731
+    cases = {
+        "before_sd": [mk(sd - 3, T - 3)],  # a print the fresh pass uses: forces a miss
+        "at_sd": [mk(sd + 1, T + 1)],  # after the cut: ignored by both
+        "null_bt_before_sd": [mk(sd - 2, None)],  # no block_time, slot before sd: a miss
+        "unkept_old_slot": [mk(1, T - 3)],  # slot < s0: not a kept print
+    }
+    assert last["M03"] < sd
+    for name, extra in cases.items():
+        eng, res = run(extra)
+        _, want = run(extra, do_pre=False)
+        assert sig(res) == sig(want), name
+        used = eng.counters.get("precompute_hits", 0), eng.counters.get("precompute_misses", 0)
+        if name in ("at_sd", "unkept_old_slot"):
+            assert used[0] > 0 and eng.counters.get("precompute_misses", 0) < 3, (name, used)
+    eng, _ = run(cases["before_sd"])
+    assert eng.counters.get("precompute_misses", 0) >= 1
+
+
+def test_precompute_entry_is_dropped_when_the_buffer_or_the_member_changes():
+    ev = event_stream(scenario())
+    T = MARKS[1]
+    eng, i = mk_engine(), 0
+    i = feed(eng, ev, i, T - 5)
+    eng.precompute(T)
+    mint = next(iter(eng._pre))
+    pre = eng._pre[mint]
+    st = eng.mints[mint]
+    mem = next(m for m in eng.members(T) if m.mint == mint)
+    sl, bt = np.frombuffer(st.prints["slot"], np.int64), np.frombuffer(st.prints["bt"], np.float64)
+    sd = 10 ** 12
+    assert eng._pre_valid(mem, pre, sl, bt, sd) == pre.s0bt  # nothing changed: valid
+    assert eng._pre_valid(mem, pre, sl, bt, int(pre.max_slot)) is None  # a cached print at or after sd
+    import dataclasses
+    assert eng._pre_valid(dataclasses.replace(mem, s0=mem.s0 + 1), pre, sl, bt, sd) is None
+    assert eng._pre_valid(dataclasses.replace(mem, v0=mem.v0 + 1), pre, sl, bt, sd) is None
+    eng.prune(T + 10 ** 7)  # prints replaced by a new buffer (a pruned mint): never reused
+    assert eng.mints[mint].prints["slot"] is not pre.buf
+    mem2 = dataclasses.replace(mem, st=eng.mints[mint])
+    assert eng._pre_valid(mem2, pre, np.zeros(0, np.int64), np.zeros(0), sd) is None
+
+
+def test_precompute_entry_without_a_finite_block_time_is_not_reused_when_a_kept_print_follows():
+    """s0bt is the first finite block_time of ALL kept prints; an entry whose own prints have none (fin_bt False) must not be reused once a kept print
+    arrived, because that print could supply s0bt (a candidate always has a finite block_time, so this guards a case the engine does not reach today)."""
+    import dataclasses
+
+    ev = event_stream(scenario())
+    T = MARKS[1]
+    eng, i = mk_engine(), 0
+    i = feed(eng, ev, i, T - 5)
+    eng.precompute(T)
+    mint = next(iter(eng._pre))
+    pre = eng._pre[mint]
+    mem = next(m for m in eng.members(T, cache=False) if m.mint == mint)
+    eng.ingest_trade(_ps_row(mint, int(pre.max_slot) + 50, T - 1))  # kept, finite block_time, slot >= the sd below
+    sl, bt = np.frombuffer(eng.mints[mint].prints["slot"], np.int64), np.frombuffer(eng.mints[mint].prints["bt"], np.float64)
+    sd = int(pre.max_slot) + 10
+    assert eng._pre_valid(mem, pre, sl, bt, sd) == pre.s0bt and pre.fin_bt
+    assert eng._pre_valid(mem, dataclasses.replace(pre, fin_bt=False), sl, bt, sd) is None
+
+
+# ------------------------------------------------------------------------------------------------------------------------------- certified trigger (QP-RULING-1030 Addendum 5 ruling (a), proof P-a2 i and iii)
+def _guard_points(ev: list, marks, lag: int = 30):
+    """The guard path as drive() runs it, plus the clock point (sd, s*) the guard saw at each mark: (engine, [MarkResult], {T: (sd, s_star)})."""
+    eng, i, out, pts = mk_engine(), 0, [], {}
+    for T in marks:
+        i = feed(eng, ev, i, T + lag)
+        pts[T] = eng.clock_point(T)
+        out.append(eng.decide(T, w0=W0, last_entry=E - 3600))
+    return eng, out, pts
+
+
+def test_certified_decide_is_byte_equal_to_the_guard_decide_on_complete_inputs():
+    """P-a2 (i). The certified engine is handed ONLY the rows up to the first clock second at or after T (the one-second guard would still refuse),
+    plus the certified sd = its provisional sd; the guard engine has everything up to T + 30 s. Rows, scores, ranks, actions and the md5s must be equal."""
+    ev = event_stream(scenario())
+    ref_eng, ref, pts = _guard_points(ev, MARKS)
+    eng, i, out = mk_engine(), 0, []
+    for T in MARKS:
+        sd, s_star = pts[T]
+        i = feed(eng, ev, i, s_star + 1)  # every row of second s* and earlier: all slots <= sd are in, no later second
+        assert eng.clock_point(T) is None and eng.clock_point(T, provisional=True) == (sd, s_star)  # the guard refuses, the provisional point is the guard's
+        with pytest.raises(lv.LiveRefused, match="clock not complete"):
+            eng.decide(T, w0=W0, last_entry=E - 3600)
+        out.append(eng.decide(T, w0=W0, last_entry=E - 3600, certified_sd=sd))
+        i = feed(eng, ev, i, T + 30)  # the rest of the stream arrives after the decision, as live
+    assert [sig(r) for r in out] == [sig(r) for r in ref]
+    assert sum(len(r.mints) for r in out) > 40 and any(r.actions for r in out)
+    assert _rows_and_trades(eng, out) == _rows_and_trades(ref_eng, ref)
+
+
+def test_certified_decide_with_the_precompute_equals_the_guard_decide():
+    ev = event_stream(scenario())
+    ref_eng, ref, pts = _guard_points(ev, MARKS)
+    eng, i, out = mk_engine(), 0, []
+    for T in MARKS:
+        sd, s_star = pts[T]
+        i = feed(eng, ev, i, T - 5)
+        eng.precompute(T)
+        i = feed(eng, ev, i, s_star + 1)
+        out.append(eng.decide(T, w0=W0, last_entry=E - 3600, certified_sd=sd))
+        i = feed(eng, ev, i, T + 30)
+    assert [sig(r) for r in out] == [sig(r) for r in ref] and eng.counters["precompute_hits"] > 20
+    assert _rows_and_trades(eng, out) == _rows_and_trades(ref_eng, ref)
+
+
+def test_certified_decide_refuses_when_its_sd_differs_and_changes_nothing():
+    """P-a2 (iii), and the engine-level shape of (ii): a lower-slot row of the first second arrives after the signal and the old certified sd is refused."""
+    T = BT0 + 3 * 3600
+    eng = _tiny_engine()
+    eng.ingest_trade(_tape_row(T - 10, 100))
+    with pytest.raises(lv.LiveRefused, match="no clock second at or after"):
+        eng.decide(T, certified_sd=100)  # the clock ends before T
+    eng.ingest_trade(_tape_row(T + 3, 120))  # the first second at or after T; a later second is NOT in, so the guard would refuse
+    assert eng.clock_point(T) is None and eng.clock_point(T, provisional=True) == (120, T + 3)
+    for wrong in (119, 121, 0, -1, 10 ** 12):
+        with pytest.raises(lv.LiveRefused, match="certified sd"):
+            eng.decide(T, certified_sd=wrong)
+    for not_int in (True, 120.0, "120", np.bool_(True)):
+        with pytest.raises(lv.LiveRefused, match="certified_sd must be an int"):
+            eng.decide(T, certified_sd=not_int)
+    assert eng._last_T is None and eng.book.last is None  # every refusal changed nothing
+    eng.ingest_trade(_tape_row(T + 3, 119))  # a late row of slot < the certified sd lowers it: the value certified before is now refused
+    with pytest.raises(lv.LiveRefused, match="certified sd 120 != the engine's sd"):
+        eng.decide(T, certified_sd=120)
+    res = eng.decide(T, certified_sd=119)
+    assert res.sd == 119 and res.t == T and eng._last_T == T
+    with pytest.raises(lv.LiveRefused, match="not after the last decided mark"):
+        eng.decide(T, certified_sd=119)  # a certified call does not bypass the mark order
+
+
+def test_certified_decide_numpy_int_is_accepted_and_the_default_path_is_unchanged():
+    T = BT0 + 3 * 3600
+    eng = _tiny_engine()
+    eng.ingest_trade(_tape_row(T + 1, 50))
+    assert eng.decide(T, certified_sd=np.int64(50)).sd == 50
+    eng2 = _tiny_engine()  # certified_sd=None is exactly the guard (the earlier guard tests pin its refusals)
+    eng2.ingest_trade(_tape_row(T + 1, 50))
+    with pytest.raises(lv.LiveRefused, match="clock not complete"):
+        eng2.decide(T)
+    assert "certified_sd" in inspect.signature(lv.Engine.decide).parameters and inspect.signature(lv.Engine.decide).parameters["certified_sd"].default is None
+
+
+def test_clock_point_provisional_needs_only_a_second_at_or_after_T():
+    T = BT0 + 3 * 3600
+    eng = _tiny_engine()
+    assert eng.clock_point(T, provisional=True) is None
+    eng.ingest_trade(_tape_row(T - 1, 90))
+    assert eng.clock_point(T, provisional=True) is None  # the clock ends before T
+    eng.ingest_trade(_tape_row(T, 100))
+    eng.ingest_trade(_tape_row(T, 99))
+    assert eng.clock_point(T, provisional=True) == (99, T) and eng.clock_point(T) is None
+    eng.ingest_trade(_tape_row(T + 2, 110))
+    assert eng.clock_point(T) == eng.clock_point(T, provisional=True) == (99, T)
+
+
+def test_host_start_extra_fields_are_recorded_and_cannot_replace_a_pinned_field(tmp_path):
+    from tools.arena_declog import DecisionLog
+
+    out = lv.host_start(DecisionLog(tmp_path / "x"), now_ms=MARKS[0] * 1000, frozen_sha="cd" * 20, extra={"trigger": "certified", "change_id": "c1"})
+    assert out["start"]["trigger"] == "certified" and out["start"]["change_id"] == "c1" and out["start"]["frozen_sha"] == "cd" * 20
+    for k in ("frozen_sha", "kind", "warmup_s", "seq", "sha"):
+        with pytest.raises(lv.LiveRefused, match="may not set"):
+            lv.host_start(DecisionLog(tmp_path / f"y{k}"), now_ms=MARKS[0] * 1000, frozen_sha="cd" * 20, extra={k: "x"})
+
+
+def test_certified_trigger_replay_equals_the_guard_replay(walk, boosters):
+    """QP-RULING-1030 Addendum 5 P-a1 (synthetic half): with complete inputs the certified decide path gives the guard path's md5s."""
+    g = lv.replay_walker(walk, H0, H1, W0, E, static_map=None, universe_min_mbt=BT0, boosters=boosters, pda_fn=pda_of, allow_dir=True, frozen_sha="ab" * 20)
+    c = lv.replay_walker(walk, H0, H1, W0, E, static_map=None, universe_min_mbt=BT0, boosters=boosters, pda_fn=pda_of, allow_dir=True, frozen_sha="ab" * 20,
+                         trigger="certified")
+    assert (c.rows_md5, c.trades_md5, c.n_rows) == (g.rows_md5, g.trades_md5, g.n_rows) and g.n_rows > 40

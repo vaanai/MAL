@@ -129,6 +129,7 @@ def main() -> int:
     ap.add_argument("--w0", default=W0)
     ap.add_argument("--e", default=E)
     ap.add_argument("--keep-scratch", action="store_true")
+    ap.add_argument("--trigger", choices=("guard", "certified"), default="guard", help="the live engine's decide trigger (P-a1: certified)")
     a = ap.parse_args()
     globals().update(H0=a.h0, H1=a.h1, W0=a.w0, E=a.e)
     if not (a.h0 <= a.w0 < a.e <= a.h1 and a.h1 <= "2026-08-20T10"):
@@ -158,7 +159,7 @@ def main() -> int:
     umin = lv.hour_epoch(H0)
     t0 = time.monotonic()
     live = lv.replay_walker([CLEAN / w for w in WINDOWS], H0, H1, lv.hour_epoch(W0), lv.hour_epoch(E), static_map=smap, universe_min_mbt=umin,
-                            boosters=boosters, log_root=out / "declog", progress=progress)
+                            boosters=boosters, log_root=out / "declog", progress=progress, trigger=a.trigger)
     live_s = time.monotonic() - t0
     progress(f"live replay done {live_s:.0f}s rows {live.n_rows}")
     bat = batch(out, boosters, smap, umin, progress)
@@ -173,7 +174,7 @@ def main() -> int:
     diag["marks_with_row_count_diff"] = sorted(t for t in set(lpm) | set(bat["rows_per_mark"]) if lpm.get(t, 0) != bat["rows_per_mark"].get(t, 0))[:10]
     sec = np.array(live.seconds)
     rep = {
-        "schema": "r4b_live_equiv_v1", "block": str(CLEAN), "windows": list(WINDOWS), "hours": [H0, H1], "w0": W0, "e": E, "marks": len(live.marks),
+        "schema": "r4b_live_equiv_v1", "trigger": a.trigger, "block": str(CLEAN), "windows": list(WINDOWS), "hours": [H0, H1], "w0": W0, "e": E, "marks": len(live.marks),
         "verdict": "PASS" if (rows_eq and trades_eq) else "FAIL", "rows_md5_equal": rows_eq, "trades_md5_equal": trades_eq,
         "live": {"rows_md5": live.rows_md5, "trades_md5": live.trades_md5, "n_rows": live.n_rows, "n_trades": len(live.trades), "counters": live.counters,
                  "declog_md5": live.log_md5, "seconds_total": round(live_s, 1),

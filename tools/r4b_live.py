@@ -261,21 +261,42 @@ def _sorted4(a: np.ndarray, b: np.ndarray, c: np.ndarray, d: np.ndarray) -> bool
     return True
 
 
-def features_at(prep: rf.Prep, r: rf.MintConst, ch: Any, slot, bt, isbuy, sol, tok, q, b, th, vq, T: int, sd: int) -> np.ndarray | None:
-    """The row at the single decision T of tools/r4b_features.mint_features(..., grads_rule="asof_pda_first_print", mint_filters="asof"), computed
-    for that T only (mint_features loops over the whole 2-min grid from mbt + 600 s, about 8 s a mark on a ramped universe; this is the live path).
-    The prints are the member's, ordered like ut and already restricted to slot < sd (= prep.slot_at(T)); the caller has checked
-    ceil120(mbt + 600) <= T <= mbt + 48 h. Every expression is mint_features' own, evaluated at j = n (all prints are before sd), so the float32 row
-    is byte-equal (tests/test_r4b_live.py: every grid T of random mints; scripts/research/r4b_live_equiv.py: md5 against the pinned batch calls).
-    Returns the (63,) float32 row, or None where mint_features has no row at T."""
+@dataclass
+class PrintState:
+    """The T-independent part of features_at: everything derived from a member's prints (ordered like ut, slot < sd) plus its V0 and creator hash.
+    Nothing here reads T, sd, the prep or the member's other constants, so one state serves every mark whose print set it was built from (the T - 5 s
+    precompute caches it). Arrays are the full-length ones the T-dependent part searches (window starts); the *_l fields are the values at the last print."""
+
+    n: int
+    seed_p: float
+    btm: np.ndarray
+    lpp: np.ndarray
+    cs2: np.ndarray
+    cbv: np.ndarray
+    csv_: np.ndarray
+    cln: np.ndarray
+    cnl: np.ndarray
+    bidx: np.ndarray
+    sidx: np.ndarray
+    pb: np.ndarray
+    pS: np.ndarray
+    cmax_l: np.ndarray
+    cmin_l: np.ndarray
+    iath_l: np.ndarray
+    first_n: np.ndarray
+    ccs_n: np.ndarray
+    ccb_n: np.ndarray
+    qp_l: np.ndarray
+    bp_l: np.ndarray
+    ck: float
+
+
+def print_state(V0: float, ch: Any, slot, bt, isbuy, sol, tok, q, b, th, vq) -> PrintState | None:
+    """The T-independent half of features_at (every expression is the one features_at had, moved here unchanged). None where features_at has no row for
+    ANY T on these prints (fewer than 3 prints, a pre-trade state <= 0, a derived post-state <= 0)."""
     n = len(slot)
     if n < 1:
         return None
-    V0 = float(r.v)
-    mbt = int(r.mbt)
-    sl = np.asarray(slot)
-    if int(sl[-1]) >= sd:
-        raise ValueError("features_at needs prints with slot < sd only")
     bt = np.asarray(bt).astype(float)
     ib = np.asarray(isbuy).astype(bool)
     so = np.asarray(sol).astype(float)
@@ -288,7 +309,7 @@ def features_at(prep: rf.Prep, r: rf.MintConst, ch: Any, slot, bt, isbuy, sol, t
     btm = np.maximum.accumulate(bt)
     j = n
     jl = n - 1
-    # asof mint filter at this T (mint_features: j >= 3, no pre-trade state <= 0 up to jl, derived post-state of jl > 0)
+    # asof mint filter (mint_features: j >= 3, no pre-trade state <= 0 up to jl, derived post-state of jl > 0)
     if j < 3:
         return None
     if (((q + vqa) <= 0) | (bb <= 0)).any():
@@ -296,8 +317,6 @@ def features_at(prep: rf.Prep, r: rf.MintConst, ch: Any, slot, bt, isbuy, sol, t
     qpost = (q[jl] + so[jl] * (1 - 0.0125) if ib[jl] else q[jl] - so[jl] / (1 - 0.0125)) + vqa[jl]
     bpost = bb[jl] - tk[jl] if ib[jl] else bb[jl] + tk[jl]
     if qpost <= 0 or bpost <= 0:
-        return None
-    if not (btm[jl] >= T - 600 and btm[jl] < T):
         return None
     qp = np.where(ib, q + so * 0.99, q - so * 1.01) + vqa
     bp = np.where(ib, bb - tk, bb + tk)
@@ -322,11 +341,30 @@ def features_at(prep: rf.Prep, r: rf.MintConst, ch: Any, slot, bt, isbuy, sol, t
     sidx = np.nonzero(~ib)[0]
     pb = rf._prev_same(th[bidx])
     pS = rf._prev_same(th[sidx])
-    cbt_nan = bool(np.isnan(r.cbt))
     ck = 1.0 if (ch is not None and not (isinstance(ch, float) and math.isnan(ch))) else 0.0
     isc = (th.astype(np.float64) == np.float64(ch)) if ck else np.zeros(n, bool)
     ccs = np.concatenate([[0], np.cumsum(np.where(isc & ~ib, so, 0))])
     ccb = np.concatenate([[0], np.cumsum(np.where(isc & ib, so, 0))])
+    ja = np.array([j])
+    jla = np.array([jl])
+    return PrintState(n, seed_p, btm, lpp, cs2, cbv, csv_, cln, cnl, bidx, sidx, pb, pS, cmax[jla], cmin[jla], iath[jla], first[ja], ccs[ja], ccb[ja],
+                      qp[jla], bp[jla], ck)
+
+
+def row_at(ps: PrintState, prep: rf.Prep, r: rf.MintConst, T: int, sd: int) -> np.ndarray | None:
+    """The T-dependent half of features_at: the (63,) float32 row at mark T from a PrintState, the member's constants and the prep (the six global
+    columns and the as-of graduation counts are read here, at T). None where mint_features has no row at T (the last print is not in [T - 600, T))."""
+    n = ps.n
+    V0 = float(r.v)
+    mbt = int(r.mbt)
+    btm = ps.btm
+    jl = n - 1
+    if not (btm[jl] >= T - 600 and btm[jl] < T):
+        return None
+    seed_p, lpp, cs2, cbv, csv_, cln, cnl = ps.seed_p, ps.lpp, ps.cs2, ps.cbv, ps.csv_, ps.cln, ps.cnl
+    bidx, sidx, pb, pS = ps.bidx, ps.sidx, ps.pb, ps.pS
+    j = n
+    cbt_nan = bool(np.isnan(r.cbt))
     Ta = np.array([T], np.int64)
     ja = np.array([j])
     jla = np.array([jl])
@@ -339,17 +377,17 @@ def features_at(prep: rf.Prep, r: rf.MintConst, ch: Any, slot, bt, isbuy, sol, t
     for w in (60, 300, 900, 3600, 14400):
         k = jw[w]
         F[f"ret_{w}"] = P - np.where(k > 0, lpp[np.maximum(k - 1, 0)], math.log(seed_p))
-    F["dd_ath"] = P - cmax[jla]
-    F["rebound_atl"] = P - cmin[jla]
-    F["t_since_ath"] = Ta - btm[iath[jla]]
-    F["ath_seed"] = cmax[jla] - math.log(seed_p)
+    F["dd_ath"] = P - ps.cmax_l
+    F["rebound_atl"] = P - ps.cmin_l
+    F["t_since_ath"] = Ta - btm[ps.iath_l]
+    F["ath_seed"] = ps.cmax_l - math.log(seed_p)
     for w in (300, 900, 3600):
         F[f"rv_{w}"] = cs2[ja] - cs2[jw[w]]
         F[f"np_{w}"] = ja - jw[w]
         F[f"bv_{w}"] = (cbv[ja] - cbv[jw[w]]) / 1e9
         F[f"sv_{w}"] = (csv_[ja] - csv_[jw[w]]) / 1e9
     F["np_all"] = ja.astype(float)
-    liq = qp[jla] / 1e9
+    liq = ps.qp_l / 1e9
     with np.errstate(divide="ignore", invalid="ignore"):
         F["nf_900_liq"] = (F["bv_900"] - F["sv_900"]) / liq
         F["nf_3600_liq"] = (F["bv_3600"] - F["sv_3600"]) / liq
@@ -370,16 +408,16 @@ def features_at(prep: rf.Prep, r: rf.MintConst, ch: Any, slot, bt, isbuy, sol, t
             us[0] = (pS[slo:shi] < slo).sum()
         F[f"ub_{w}"] = ub
         F[f"us_{w}"] = us
-    F["uniq_all"] = first[ja]
+    F["uniq_all"] = ps.first_n
     with np.errstate(divide="ignore", invalid="ignore"):
         F["buyfrac_900"] = np.where(F["np_900"] > 0, (np.searchsorted(bidx, ja) - np.searchsorted(bidx, jw[900])) / np.maximum(F["np_900"], 1), np.nan)
         F["avgsz_900"] = np.where(F["np_900"] > 0, (F["bv_900"] + F["sv_900"]) / np.maximum(F["np_900"], 1), np.nan)
     F["liq_sol"] = liq
-    F["fee_tier"] = rf.fee_ppm(qp[jla], bp[jla])
+    F["fee_tier"] = rf.fee_ppm(ps.qp_l, ps.bp_l)
     F["t_since_last"] = Ta - btm[jla]
-    F["cre_sell_post"] = ccs[ja] / 1e9
-    F["cre_buy_post"] = ccb[ja] / 1e9
-    F["cre_known"] = np.full(1, ck)
+    F["cre_sell_post"] = ps.ccs_n / 1e9
+    F["cre_buy_post"] = ps.ccb_n / 1e9
+    F["cre_known"] = np.full(1, ps.ck)
     hr = (Ta % 86400) / 3600.0
     F["hour_sin"] = np.sin(2 * np.pi * hr / 24)
     F["hour_cos"] = np.cos(2 * np.pi * hr / 24)
@@ -401,6 +439,22 @@ def features_at(prep: rf.Prep, r: rf.MintConst, ch: Any, slot, bt, isbuy, sol, t
     F["c_pool_delay"] = np.full(1, float(r.s0 - r.mslot))
     F["c_v"] = np.full(1, V0 / 1e9)
     return np.column_stack([np.asarray(F[k], float) for k in rf.FEATS]).astype(np.float32)[0]
+
+
+def features_at(prep: rf.Prep, r: rf.MintConst, ch: Any, slot, bt, isbuy, sol, tok, q, b, th, vq, T: int, sd: int) -> np.ndarray | None:
+    """The row at the single decision T of tools/r4b_features.mint_features(..., grads_rule="asof_pda_first_print", mint_filters="asof"), computed
+    for that T only (mint_features loops over the whole 2-min grid from mbt + 600 s, about 8 s a mark on a ramped universe; this is the live path).
+    The prints are the member's, ordered like ut and already restricted to slot < sd (= prep.slot_at(T)); the caller has checked
+    ceil120(mbt + 600) <= T <= mbt + 48 h. Every expression is mint_features' own, evaluated at j = n (all prints are before sd), so the float32 row
+    is byte-equal (tests/test_r4b_live.py: every grid T of random mints; scripts/research/r4b_live_equiv.py: md5 against the pinned batch calls).
+    Two halves: `print_state` (prints only, cacheable) and `row_at` (T, sd, prep, constants); this function is their composition, the only path to a row.
+    Returns the (63,) float32 row, or None where mint_features has no row at T."""
+    if len(slot) < 1:
+        return None
+    if int(np.asarray(slot)[-1]) >= sd:
+        raise ValueError("features_at needs prints with slot < sd only")
+    ps = print_state(float(r.v), ch, slot, bt, isbuy, sol, tok, q, b, th, vq)
+    return None if ps is None else row_at(ps, prep, r, T, sd)
 
 
 @dataclass
@@ -434,9 +488,13 @@ class LiveBook:
         self.pos: dict[str, int] = {}  # mint -> T0, insertion order
         self.prev: int | None = None  # last non-empty mark (xs_book's prev)
         self.last: int | None = None  # last stepped mark, empty or not
+        self.last_suppressed = 0  # entries a step(entries=False) did not make
 
-    def step(self, t: int, ranked: Sequence[str]) -> list[tuple]:
+    def step(self, t: int, ranked: Sequence[str], entries: bool = True) -> list[tuple]:
+        """entries False (a host that holds buys for a mark, tools/r4b_live_host): the exits are made as always, no entry is made, the mints that would
+        have entered are not held (last_suppressed counts them) and may enter at a later mark; `prev` and the gap rule are unchanged."""
         t = int(t)
+        self.last_suppressed = 0
         if self.last is not None and t <= self.last:
             raise LiveRefused(f"mark {t} is not after the last stepped mark {self.last}")
         self.last = t
@@ -461,6 +519,9 @@ class LiveBook:
                 sold.add(m)
         for r, m in enumerate(top):
             if m not in self.pos and m not in sold:
+                if not entries:
+                    self.last_suppressed += 1
+                    continue
                 self.pos[m] = t
                 out.append(("entry", m, t, r))
         return out
@@ -503,6 +564,22 @@ def rows_md5(mints: Sequence[str], T: np.ndarray, sd: np.ndarray, X: np.ndarray,
 
 # ------------------------------------------------------------------------------------------------------------------------------- the engine
 @dataclass
+class _PreEntry:
+    """One member's T - 5 s precompute (Engine.precompute): the print state of its kept prints, and what decides whether a later decide may reuse it."""
+
+    buf: Any  # the member's slot buffer (identity: a pruned or replaced buffer never matches)
+    n_total: int  # prints in the buffer when it was built
+    s0: int
+    v0: int
+    mbt: int
+    ch: Any
+    state: PrintState | None  # None: features_at has no row for any T on these prints
+    max_slot: int  # highest slot among the kept prints
+    s0bt: float
+    fin_bt: bool  # some kept print has a finite block_time (so later prints cannot change s0bt)
+
+
+@dataclass
 class MarkResult:
     t: int
     sd: int | None
@@ -516,6 +593,7 @@ class MarkResult:
     d3_dropped: int = 0
     seconds: float = 0.0
     warmup: bool = False  # True: the engine is still warming up, the book was not stepped and no entry was made
+    suppressed: int = 0  # entries the host held for this mark (decide(hold_entries=True)); 0 otherwise
 
 
 class Engine:
@@ -528,7 +606,8 @@ class Engine:
 
     Clock guard: decide(T) refuses unless the clock holds a second strictly after s*, the first second at or after T (sd(T) is the min slot of s*, which
     is final only once a later second has been seen); a replay always satisfies this because it loads the files of hour(T) + 1 first. Marks must
-    advance: decide(T) refuses T <= the last decided mark.
+    advance: decide(T) refuses T <= the last decided mark. The certified trigger (decide(T, certified_sd=...), Addendum 5 ruling (a)) replaces only this
+    guard by the caller's own "every slot up to sd is delivered" signal; sd is re-derived and must equal the certified one.
     Bounded growth: in the default fast mode (exact_grid False) decide(T) drops clock SECONDS older than T - keep_clock_s (CLOCK_KEEP_S = 2 h; slot_at
     reads only seconds at or after the mark) once the mark is decided; keep_clock_s=None keeps everything and exact_grid always does (the pinned per-mint
     loop reads old grid seconds). Market and create minutes are NEVER dropped: the m_* columns are differences of float64 cumulative minute sums
@@ -582,6 +661,8 @@ class Engine:
         self._pending: dict[str, list] = {}  # mint -> PumpSwap prints that arrived before the mint's complete row (arrival order)
         self._pending_n = 0
         self._pending_swept = -1
+        self._pre: dict[str, "_PreEntry"] = {}  # T - 5 s precompute (see precompute): mint -> cached print state, valid for mark _pre_T only
+        self._pre_T: int | None = None
 
     # -- helpers
     def _count(self, k: str, n: int = 1) -> None:
@@ -899,10 +980,11 @@ class Engine:
             return None
         return Member(mint, pda, int(st.mslot), int(st.mbt), s0, int(v0), st)
 
-    def members(self, T: int | None = None) -> list[Member]:
+    def members(self, T: int | None = None, cache: bool = True) -> list[Member]:
         """Members graduated at or after universe_min_mbt; with T, only those that can matter at mark T (mbt >= T - 48 h - 2 h: a decision row needs
         mbt + 48 h >= T, and m_grads counts graduations of the last hour). Membership is cached once no print can still enter the s0 window
-        (max ingested slot >= mslot + 7300 + S0_FINAL_SLOTS); before that it is recomputed at every call."""
+        (max ingested slot >= mslot + 7300 + S0_FINAL_SLOTS); before that it is recomputed at every call.
+        cache False reads that cache but never writes it (the precompute, which must leave no trace that a later decide could see)."""
         out = []
         for mint, st in self.mints.items():
             if st.mslot is None or st.mbt is None or st.mbt < self.umin or (T is not None and st.mbt < T - GRID_HI_S - 2 * MARK_S):
@@ -911,7 +993,7 @@ class Engine:
                 m = self._member_final[mint]
             else:
                 m = self.member(mint)
-                if self.max_slot >= st.mslot + WINDOW_SLOTS + S0_FINAL_SLOTS:
+                if cache and self.max_slot >= st.mslot + WINDOW_SLOTS + S0_FINAL_SLOTS:
                     self._member_final[mint] = m
             if m is not None:
                 out.append(m)
@@ -960,6 +1042,17 @@ class Engine:
         p = m.st.prints
         sl = np.frombuffer(p["slot"], np.int64)
         bt = np.frombuffer(p["bt"], np.float64)
+        pre = self._pre.get(m.mint) if (self._pre and self._pre_T == T) else None
+        if pre is not None:
+            s0bt = self._pre_valid(m, pre, sl, bt, sd)
+            if s0bt is not None:  # the cached state was built from exactly the prints a fresh pass would use (slot < sd): same arrays, same row
+                self._count("precompute_hits")
+                const, _ = self.mint_const(m, mid)
+                if pre.state is None:
+                    return None
+                x = row_at(pre.state, prep, const, T, sd)
+                return None if x is None else (x, sd, s0bt)
+            self._count("precompute_misses")
         keep = (sl >= m.s0) & (np.isnan(bt) | (bt <= m.mbt + HORIZON_S))
         idx = np.flatnonzero(keep)
         if not len(idx):
@@ -991,6 +1084,110 @@ class Engine:
         x = features_at(prep, const, ch, *args, vq, T, sd)
         return None if x is None else (x, sd, s0bt)
 
+    # -- T - 5 s precompute
+    def _kept_sorted(self, m: Member) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+        """(sl, bt, idx): the member's kept prints (slot >= s0, block_time null or <= mbt + HORIZON_S) ordered (slot, txi, evi, frn), NOT yet cut at sd."""
+        p = m.st.prints
+        sl = np.frombuffer(p["slot"], np.int64)
+        bt = np.frombuffer(p["bt"], np.float64)
+        idx = np.flatnonzero((sl >= m.s0) & (np.isnan(bt) | (bt <= m.mbt + HORIZON_S)))
+        if not len(idx):
+            return None
+        tx, ev, fr = (np.frombuffer(p[k], np.int64)[idx] for k in ("txi", "evi", "frn"))
+        if not _sorted4(sl[idx], tx, ev, fr):
+            idx = idx[np.lexsort((fr, ev, tx, sl[idx]))]
+        return sl, bt, idx
+
+    def precompute(self, T: int) -> dict:
+        """Run at about T - 5 s of wall time, before decide(T): cache every candidate member's print state (the T-independent half of features_at) so that
+        decide(T) recomputes only the members that got a print after this instant, plus the T-dependent half for everyone (windows at T, the six global
+        columns m_vps_10m, m_nps_10m, m_vbd_10m, m_ncr_10m, m_ncr_60m, m_vps_60m, the as-of graduation counts m_grads_1h and m_grads_10m, which are read
+        from the prep that decide builds at T). It changes no engine state a decision reads: no member cache is written (members(cache=False)), no counter
+        a decision depends on moves, and decide(T) is byte-identical with and without it (tests). The entries are used only by decide(T) of the same T
+        and dropped after it. A member is reused only if its V0, s0, mbt, creator hash and print buffer are unchanged, every cached print has slot < sd(T)
+        and every print that arrived since is either not kept or has slot >= sd(T) (so the print set a fresh pass would cut is the cached one); anything
+        else is recomputed in full. Returns {"candidates", "cached", "seconds"}. Refused in exact_grid mode and for a mark that is not after the last
+        decided one."""
+        t0 = time.monotonic()
+        T = int(T)
+        if self.exact_grid:
+            raise LiveRefused("exact_grid is the reference path: no precompute")
+        if T % MARK_S:
+            raise LiveRefused(f"{T} is not an hour mark")
+        if self._last_T is not None and T <= self._last_T:
+            raise LiveRefused(f"mark {T} is not after the last decided mark {self._last_T}")
+        self._pre, self._pre_T = {}, T
+        cand = 0
+        for m in self.members(T, cache=False):
+            t_lo = ((m.mbt + GRID_LO_S + 119) // 120) * 120
+            if T < t_lo or T > m.mbt + GRID_HI_S or m.st.max_bt < T - 600:
+                continue
+            cand += 1
+            k = self._kept_sorted(m)
+            if k is None:
+                continue
+            sl, bt, idx = k
+            p = m.st.prints
+            if self.v_source == "event":
+                vq = np.frombuffer(p["vq"], np.float64)[idx]
+                if np.isnan(vq).any():
+                    continue  # decide counts member_null_v_prints and skips the mint: leave it to that path
+            else:
+                vq = np.full(len(idx), float(m.v0))
+            bt_all = bt[idx]
+            fin = np.isfinite(bt_all)
+            s0bt = float(bt_all[0]) if fin[0] else (float(bt_all[fin][0]) if fin.any() else float(m.mbt))
+            state = print_state(float(m.v0), m.st.ch, sl[idx], bt_all, np.frombuffer(p["isbuy"], np.int8)[idx].astype(bool), np.frombuffer(p["sol"], np.float64)[idx],
+                                np.frombuffer(p["tok"], np.float64)[idx], np.frombuffer(p["q"], np.float64)[idx], np.frombuffer(p["b"], np.float64)[idx],
+                                np.frombuffer(p["th"], np.uint64)[idx], vq)
+            self._pre[m.mint] = _PreEntry(p["slot"], len(sl), m.s0, m.v0, m.mbt, m.st.ch, state, int(sl[idx][-1]), s0bt, bool(fin.any()))
+        self._count("precompute_runs")
+        return {"candidates": cand, "cached": len(self._pre), "seconds": time.monotonic() - t0}
+
+    def _pre_valid(self, m: Member, pre: "_PreEntry", sl: np.ndarray, bt: np.ndarray, sd: int) -> float | None:
+        """The entry's s0 block_time if the cached state is exactly what a fresh pass at sd would build for this member, else None (see precompute)."""
+        if m.st.prints["slot"] is not pre.buf or (pre.s0, pre.v0, pre.mbt, pre.ch) != (m.s0, m.v0, m.mbt, m.st.ch):
+            return None
+        if pre.max_slot >= sd or len(sl) < pre.n_total:
+            return None
+        if len(sl) > pre.n_total:
+            nsl, nbt = sl[pre.n_total:], bt[pre.n_total:]
+            kept = (nsl >= m.s0) & (np.isnan(nbt) | (nbt <= m.mbt + HORIZON_S))
+            if kept.any() and ((nsl[kept] < sd).any() or not pre.fin_bt):
+                return None  # a kept print the fresh pass would cut in, or one that could be the first finite block_time (s0bt)
+        return pre.s0bt
+
+    def drop_precompute(self) -> None:
+        """Forget any cached precompute (decide recomputes everything). Safe at any time."""
+        self._pre, self._pre_T = {}, None
+
+    def sd_at(self, T: int) -> int | None:
+        """sd(T) as decide(T) will compute it (the min slot of the first clock second at or after T), or None while decide(T)'s clock guard would still refuse."""
+        pt = self.clock_point(T)
+        return None if pt is None else pt[0]
+
+    def clock_point(self, T: int, provisional: bool = False) -> tuple[int, int] | None:
+        """(sd, s*): sd(T) and the first clock second s* >= T it comes from, or None until a later second is in (decide's guard). Same value as Prep.slot_at.
+        provisional True (the certified trigger, QP-RULING-1030 Addendum 5 ruling (a)): the same value as soon as ANY second at or after T is in, without the
+        later-second guard. That sd is only as final as the caller's own completeness signal makes it (every slot up to sd delivered); decide(T,
+        certified_sd=sd) re-derives it and refuses if it differs."""
+        T = int(T)
+        if provisional:
+            if self._clock_hi < T:
+                return None
+            later = [s for s in self.clock if s >= T]
+            if not later:
+                return None
+            s_star = min(later)
+            return int(self.clock[s_star]), int(s_star)
+        if self._clock_hi < T + 1:
+            return None
+        later = [s for s in self.clock if s >= T]
+        if len(later) < 2:
+            return None
+        s_star = min(later)
+        return int(self.clock[s_star]), int(s_star)
+
     def score(self, X: np.ndarray) -> np.ndarray:
         if self.score_fn is not None:
             return np.asarray(self.score_fn(self.boosters, X), np.float64)
@@ -1000,21 +1197,40 @@ class Engine:
             self.boosters = rs.load_boosters()
         return rs.bag_score(self.boosters, X)
 
-    def decide(self, T: int, w0: int | None = None, last_entry: int | None = None) -> MarkResult:
+    def decide(self, T: int, w0: int | None = None, last_entry: int | None = None, hold_entries: bool = False, certified_sd: int | None = None) -> MarkResult:
         """The decision at mark T (T % 3600 == 0). w0 / last_entry bound the counted marks like the read (rows outside give an empty mark).
         Refuses (LiveRefused, nothing changed) when T is not after the last decided mark, or when the clock has no second strictly after s*, the first
-        second at or after T: sd(T) = the min slot of s* would not be final (an early call would silently use the last known second)."""
+        second at or after T: sd(T) = the min slot of s* would not be final (an early call would silently use the last known second).
+        hold_entries (a host that must not buy at this mark: incomplete inputs, a credit cap): the ranking, the scores and the exits are those of an ordinary
+        decide, but the book makes no entry (MarkResult.suppressed counts them); the mints stay unheld and may enter at a later mark.
+        A precompute(T) made before is used here and dropped when this mark is decided (a refusal leaves it for a retry).
+        certified_sd (QP-RULING-1030 Addendum 5 ruling (a), the certified trigger): the caller holds a completeness signal that every slot up to sd(T) is
+        delivered (r4b_feed_merge.mark_complete(T, sd).complete in full, never a tip alone), so the one-chain-second clock guard is skipped. ONLY the trigger
+        changes: sd is still derived here by the same Prep.slot_at, the decision function and the slot < sd filter are the same lines, and the call REFUSES
+        (LiveRefused, nothing changed) when the engine's own sd(T) differs from certified_sd or when no clock second at or after T is in. The caller retries
+        or falls back. With complete inputs the result is byte-equal to the guard path's (tests)."""
         t_start = time.monotonic()
         T = int(T)
         if T % MARK_S:
             raise LiveRefused(f"{T} is not an hour mark")
         if self._last_T is not None and T <= self._last_T:
             raise LiveRefused(f"mark {T} is not after the last decided mark {self._last_T}")
-        if self._clock_hi < T + 1 or sum(1 for sec in self.clock if sec >= T) < 2:
-            raise LiveRefused(f"clock not complete at {T}: need a second after the first second >= {T} (latest ingested second {self._clock_hi})")
+        if certified_sd is None:
+            if self._clock_hi < T + 1 or sum(1 for sec in self.clock if sec >= T) < 2:
+                raise LiveRefused(f"clock not complete at {T}: need a second after the first second >= {T} (latest ingested second {self._clock_hi})")
+        else:
+            if isinstance(certified_sd, (bool, np.bool_)) or not isinstance(certified_sd, (int, np.integer)):
+                raise LiveRefused("certified_sd must be an int slot")
+            pt = self.clock_point(T, provisional=True)  # a cheap check first: nothing below (members, prep) has run
+            if pt is None:
+                raise LiveRefused(f"certified decide at {T}: no clock second at or after {T} yet (latest ingested second {self._clock_hi})")
+            if pt[0] != int(certified_sd):
+                raise LiveRefused(f"certified sd {int(certified_sd)} != the engine's sd({T}) {pt[0]}: not decided")
         mem = self.members(T)
         prep = self.prep(mem)
         sd = int(prep.slot_at(np.array([T], np.int64))[0])
+        if certified_sd is not None and sd != int(certified_sd):  # the authoritative derivation (the one the features use) must agree too
+            raise LiveRefused(f"certified sd {int(certified_sd)} != the engine's sd({T}) {sd}: not decided")
         in_window = (w0 is None or T >= w0) and (last_entry is None or T <= last_entry)
         mints, Xs, sds = [], [], []
         mid_key = {}
@@ -1044,12 +1260,13 @@ class Engine:
         warming = self._warming(T)
         if warming:
             self._count("warmup_marks")
-        actions = self.book.step(T, [] if warming else ranked)  # warming: the book is empty and stays empty, no entry row can exist
+        actions = self.book.step(T, [] if warming else ranked, entries=not hold_entries)  # warming: the book is empty and stays empty, no entry row can exist
         self._last_T = T
+        self._pre, self._pre_T = {}, None
         if self.keep_clock_s is not None:
             self.prune_clock(T)
         return MarkResult(T, sd, mints, np.full(len(mints), T, np.int64), np.array(sds, np.int64), X, sc, ranked, actions, d3,
-                          time.monotonic() - t_start, warmup=warming)
+                          time.monotonic() - t_start, warmup=warming, suppressed=0 if warming else self.book.last_suppressed)
 
     def _warming(self, T: int) -> bool:
         """True while the mark T is inside the warm-up: the engine has ingested less than warmup_s of block_time before T. The first market minute never
@@ -1171,10 +1388,12 @@ def new_host_engine(*, warmup_s: int = DEFAULT_WARMUP_S, shorter_warmup_proof: s
 
 
 def host_start(log: Any, *, now_ms: int, frozen_sha: str | None = None, bot_id: str = BOT_ID, warmup_s: int = DEFAULT_WARMUP_S,
-               shorter_warmup_proof: str | None = None) -> dict:
+               shorter_warmup_proof: str | None = None, extra: Mapping[str, Any] | None = None) -> dict:
     """What a decision host does when it starts, in this order: write the `start` row (frozen_sha = repo_head_sha() unless given; the executor latches
     frozen_sha_mismatch on another value and counts a second start row as a host restart), then restart_exits for every position the previous process left
-    open. The engine decides only after this returns, and it is built with the same warmup_s (new_host_engine). Returns {"start", "exits", "warmup_s"}."""
+    open. The engine decides only after this returns, and it is built with the same warmup_s (new_host_engine). Returns {"start", "exits", "warmup_s"}.
+    extra: run-configuration fields the host records in the start row (tools/r4b_live_host: the trigger and the change_id of the run, Addendum 5); they
+    can never replace a field this function writes."""
     _check_warmup(warmup_s, shorter_warmup_proof)
     sha = frozen_sha if frozen_sha is not None else repo_head_sha()
     if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{40}", sha):
@@ -1183,6 +1402,10 @@ def host_start(log: Any, *, now_ms: int, frozen_sha: str | None = None, bot_id: 
     body = {"kind": "start", "book": BOOK, "exp": "EXP-027", "mode": "dry", "schema": SCHEMA, "frozen_sha": sha, "warmup_s": warmup_s}
     if warmup_s < DEFAULT_WARMUP_S:
         body["warmup_proof"] = shorter_warmup_proof
+    for k, v in (extra or {}).items():
+        if k in body or k in ("seq", "arm", "ms", "prev", "sha"):
+            raise LiveRefused(f"host_start extra may not set {k!r}")
+        body[k] = v
     start = log.append(bot_id, now_ms, body)
     return {"start": start, "exits": restart_exits(log, bot_id, now_ms), "warmup_s": warmup_s}
 
@@ -1262,8 +1485,11 @@ class ReplayResult:
 def replay_walker(walk_dir: Path | Sequence[Path], h0: str, h1: str, w0: int, e: int, *, static_map: Mapping[str, int | None] | None, universe_min_mbt: int,
                   boosters: list | None = None, score_fn: Callable | None = None, pda_fn: Callable | None = None, log_root: Path | None = None,
                   extra_hours: int = 2, allow_dir: bool = False, memory_limit: str = "4GB", progress: Callable[[str], None] | None = None,
-                  frozen_sha: str | None = None) -> ReplayResult:
+                  frozen_sha: str | None = None, trigger: str = "guard") -> ReplayResult:
     """Feed a walker-layout dir hour by hour through the Engine and decide every mark in [w0, e - 1 h], as the read does (EXP-027 section 4.1).
+    trigger "guard" (default) calls decide(T) behind the one-chain-second guard; "certified" calls decide(T, certified_sd=sd) with sd from
+    clock_point(T, provisional=True), the certified trigger's code path (QP-RULING-1030 Addendum 5 proof P-a1: a replay has complete inputs, so the
+    md5s must equal the guard path's).
     Migrations and creates of [h0, h1) and trades of [h0, h1 + extra_hours) are fed, as r4b_layout.build loads them. Mark T is decided once the
     files of hour(T) + 1 are in (every row with block_time before T and the first second at or after T are then in; features read slot < sd(T) only).
     static_map given -> v_source static_map; None -> event. Refuses a non-exploration path or any hour at or after REPLAY_HOUR_MAX unless allow_dir
@@ -1326,7 +1552,13 @@ def replay_walker(walk_dir: Path | Sequence[Path], h0: str, h1: str, w0: int, e:
         loaded_end = hour_epoch(h) + MARK_S  # files of hours < loaded_end are in
         while pending and pending[0] + 2 * MARK_S <= loaded_end:
             T = pending.pop(0)
-            res = eng.decide(T, w0=w0, last_entry=last_entry)
+            if trigger == "certified":
+                cp = eng.clock_point(T, provisional=True)
+                if cp is None:
+                    raise LiveRefused(f"certified replay: no clock second at or after {T}")
+                res = eng.decide(T, w0=w0, last_entry=last_entry, certified_sd=int(cp[0]))
+            else:
+                res = eng.decide(T, w0=w0, last_entry=last_entry)
             results.append(res)
             actions.extend(res.actions)
             if log is not None and res.actions:
