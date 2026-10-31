@@ -32,13 +32,13 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `explored-survivor-unconfirmed` | 10 | 0 | 0 |
 | `parked` | 9 | 3 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 44 | 27 | 1 |
-| `desk-read` | 1 | 49 | 0 |
-| `explored-no-survivor` | 43 | 16 | 1 |
+| `untested` | 44 | 28 | 1 |
+| `desk-read` | 1 | 52 | 0 |
+| `explored-no-survivor` | 43 | 17 | 1 |
 | `dead-as-frozen` | 76 | 5 | 0 |
-| **all** | 188 | 102 | 2 |
+| **all** | 188 | 107 | 2 |
 
-The file holds 542 rows: the 292 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 547 rows: the 297 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -433,6 +433,36 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `p91-knn-lowfee` | kNN on the low-fee, active universe (bands B5-B7): P86 numeric kNN, top pick each hour, dead pools … | `dead-as-frozen` | Frozen PREREG kill line (mean <= 0 and book - U < +1 pp, all four cells D1/D2 x flat/pressure). The ranker has within-hour rank information, but its top pick is no better than a random pick and worse than the mean of all candidates; fee band is not the binding cost (273 of 287 picks were B7). |
+
+### eh1030-kcurve-boost (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `eh1030-kcurve-boost-ride` | First-in BOOST ride k-curve: entry at the pool's opening reserves (k = -1, the synthetic … | `explored-no-survivor` | All 8 cells KILLED (QP-RULING-1031-kcurve-price; in-sample, explore-0814 + September pooled, both fail models, worst-in-slot measured; 5,539 organic trips per cell). K-1 'KILLED within the remainder margin': its pooled positive rests on August only (explore-0814 +44.458% flat / +11.28% pressure of stake); September … |
+
+### eh1030-paid-speed (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `eh1030-paid-speed-track` | Paid speed track for migration entries (gRPC feed + Sender/Jito + co-location) at a 0.25 SOL stake | `desk-read` | Desk verdict NO-GO. The first-print slot (k0) is held by launch bundles and same-slot snipers and needs leader-aware sends plus shreds. The 2-4 slots a $49-499/month path could reach fall in bands that lost in September (k1-2 -4.93%, k3-5 -30.33% identified cohorts). P6 and hunt23-speed found no other line that … |
+
+### eh1030-h5-subsecond (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `eh1030-h5-subsecond-entry` | H5/Q50 BOOST-floor sub-second entry: latency sweep of the frozen rule below 1.3 s, and the free … | `untested` | Untested. Judgment: the gain is at most about +0.75 to +2 pp of stake; at about 16 triggers/day (10-09 shadow count, stale) x 0.25 SOL x 1.25 pp = 0.05 SOL/day, minus Sender Max tips if used (0.001 SOL a send). Only worth it because most of the path is free engineering. October H5-family outcomes are sealed to … |
+
+### eh1030-holder-reward (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `eh1030-holder-reward-drip` | Holder-rewards payout capture: buy holder-reward coins ahead of distribute_fee_to_holders payouts | `desk-read` | Probe 2026-10-30T15:16Z, public RPC, 17 calls: the authority's latest 1,000 signatures span 12 s (25 succeeded, 975 failed); each tx pays one mint's holders in batches of 6-8 recipients; event totals 0.000001 to 0.000993 units of the quote; 11 distinct events in 12 sampled txs. A continuous drip with no payout moment … |
+
+### eh1030-boost-volume (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `eh1030-boost-volume-regime` | BOOST-to-volume regime: PumpSwap volume halved on 2026-10-28/29, so BOOST's fixed budget is a … | `desk-read` | Not a trade. A 4-block check against H5's Sep confirmation block means (+26.7 / +11.7 / +5.4 / +6.8%) and DefiLlama PumpSwap volume medians for the same windows (715.2 / 377.2 / 485.6 / 348.1M USD) shows no usable relation, and the highest-volume block had the best edge, so low volume is not shown to help. October … |
 
 ## Dead as frozen, and explored with no survivor
 
