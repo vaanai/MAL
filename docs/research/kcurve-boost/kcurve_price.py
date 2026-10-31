@@ -26,6 +26,13 @@ SEAT STATES (PREREG sections 4-6):
 UNIVERSE U (section 4): WSOL pool, V in [17.5e9, 17.7e9] at the root; unique seed root; a create row of the mint in the block with is_mayhem_mode
 false; organic (s0 - create time >= 60 s). Report-only universe: U without the organic item.
 
+RE-DELIVERED DUPLICATES (QP ruling /data/mal/hunt-1008/ops/manager18/QP-RULING-1031-kcurve-dupes.md, sha256 39797d2a..., condition 1):
+  "Within one pool, a row identical to an earlier row of the same hour file on (slot, tx_index, event_index, side, sol_lamports, token_raw,
+  quote_reserve, base_reserve, trader, block time or event_ts) is a re-delivered duplicate and is dropped before any use: the root test, the
+  entry, exit and worst-in-slot states, and ssb/nearby." "Rows sharing (signature, event_index) whose trade fields differ are NOT collapsed."
+  One function, `dedupe_keep`, on the kit's HourRows arrays (which carry the trader crc32, not the signature), used by both `opening()` and
+  `_cols()`; the kit stays byte-identical. Counted per block and UTC day; dropped rows above 1% of a block's loaded rows = STOP_RETURN_TO_QP.
+
 3a EXEMPTION (hunt23 RULES Amendment 1 item 3a; C1): only the four OUTCOMES blocks, or fresh-0903 alone (arena_screen.check_block_path(path,
 count_only=False)); no arena tape; no hour at or after 2026-10-01T00:00Z (refused before any file is opened); every output carries STAMP.
 """
@@ -70,6 +77,10 @@ REPORT_ONLY_NOTES = {
                                   "0.5979. Report-only; decides nothing."),
     "R-d_oracle_live_order": ("oracle-live has no tx_index: the END state of slot m + k is the pre-trade state of the next slot's first print in tape "
                               "order (the kit's inherited convention); K-1's root is order-free."),
+    "dup_rows_qp_1031": ("QP-RULING-1031-kcurve-dupes: oracle-live carries re-delivered duplicate rows (about 0.4% of rows, about 5% of seed openings in "
+                         "QP's 3-hour count) that the 10-01 byte-identical dedupe missed (they differ only in t_recv_ms). They are dropped here before any use "
+                         "(counts rows_dup_dropped, u_all_dup_dropped_in_slot_m, root_not_unique_before_dedupe). Rows that share (signature, event_index) but "
+                         "differ (about 2% of repeated keys, about 0.007% of rows) are NOT collapsed. Prices are unaffected by duplicates; ssb/nearby were."),
     "R-e_mayhem_flag": "a block whose create rows lack is_mayhem_mode puts its pools in mayhem_or_unknown; the U < 100 refusal then stops the run: return to QP, never loosen the filter.",
 }
 STAMP = "EXPLORATION-ONLY, FIRST 360 S: no October hour; not registrable before EXP-024's end state."
@@ -117,6 +128,7 @@ MIN_U_POOLS = 100
 MAX_ROOT_NOT_UNIQUE = 0.02
 MAX_V_UNKNOWN = 0.05
 MAX_CREATE_MISSING = 0.30  # STOP and return to QP (C3)
+MAX_DUP_DROPPED = 0.01  # STOP and return to QP (QP-RULING-1031-kcurve-dupes, condition 3)
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ guards (3a items 1, 3; C5 vi)
@@ -205,25 +217,49 @@ def root_of(b: np.ndarray, tk: np.ndarray, ib: np.ndarray) -> list[int]:
     return [i for i, x in enumerate(b.tolist()) if x not in post]
 
 
-def opening(hr: Any, i: int) -> dict | None:
-    """Structure of pool i's first slot in this hour: None unless the pool has a unique root (the seed test is the caller's)."""
+def dedupe_keep(hr: Any) -> np.ndarray:
+    """Keep-mask over the hour's rows: False on a row identical to an EARLIER row (tape order within the pool) of the same pool on (slot, tx_index,
+    event_index, side, sol_lamports, token_raw, quote_reserve, base_reserve, trader, block time). Rows that share a key but differ in any of these
+    fields are kept. The single dedupe of this adapter (QP-RULING-1031-kcurve-dupes, condition 1)."""
+    if hr.n == 0:
+        return np.zeros(0, bool)
+    pid = np.repeat(np.arange(len(hr.ptr) - 1), np.diff(hr.ptr))
+    key = np.column_stack([pid, hr.sl, hr.tx, hr.ev, hr.isbuy.astype(np.int64), hr.sol, hr.tok, hr.q, hr.b, hr.trader, hr.bt]).astype(np.float64)
+    _, first = np.unique(key, axis=0, return_index=True)  # every field < 2**53, so float64 is exact
+    keep = np.zeros(hr.n, bool)
+    keep[first] = True
+    return keep
+
+
+def opening(hr: Any, i: int, keep: np.ndarray | None = None) -> dict | None:
+    """Structure of pool i's first slot in this hour, on the deduped rows (the seed test is the caller's). `raw_unique` is the root test on the rows
+    before the dedupe (counted only)."""
+    keep = dedupe_keep(hr) if keep is None else keep
     rs = hr.rows(i)
-    sl = hr.sl[rs]
-    m = int(sl[0])
+    k = keep[rs]
+    sl_all = hr.sl[rs]
+    m = int(sl_all[0])
+    j_raw = np.flatnonzero(sl_all == m)
+    raw_unique = len(root_of(hr.b[rs][j_raw], hr.tok[rs][j_raw], hr.isbuy[rs][j_raw])) == 1
+    sl = sl_all[k]
+    b, tok, ib = hr.b[rs][k], hr.tok[rs][k], hr.isbuy[rs][k]
     j = np.flatnonzero(sl == m)
-    roots = root_of(hr.b[rs][j], hr.tok[rs][j], hr.isbuy[rs][j])
-    seed_cand = bool((hr.b[rs][j] == SEED_B).any())
+    roots = root_of(b[j], tok[j], ib[j])
+    seed_cand = bool((b[j] == SEED_B).any())
+    dropped_m = int(len(j_raw) - len(j))
     if len(roots) != 1:
-        return {"unique": False, "seed_cand": seed_cand}
-    r = int(j[roots[0]])
-    return {"unique": True, "seed_cand": seed_cand, "m": m, "r": r, "b0": float(hr.b[rs][r]), "q0": float(hr.q[rs][r]), "v0": float(hr.v[rs][r]),
-            "s0": int(hr.bt[rs][r])}
+        return {"unique": False, "raw_unique": raw_unique, "seed_cand": seed_cand, "dropped_m": dropped_m}
+    r = int(j[roots[0]])  # index within the pool's DEDUPED rows, the same rows _cols() returns
+    return {"unique": True, "raw_unique": raw_unique, "seed_cand": seed_cand, "dropped_m": dropped_m, "m": m, "r": r, "b0": float(b[r]),
+            "q0": float(hr.q[rs][k][r]), "v0": float(hr.v[rs][k][r]), "s0": int(hr.bt[rs][k][r])}
 
 
-def _cols(hr: Any, i: int) -> dict:
+def _cols(hr: Any, i: int, keep: np.ndarray | None = None) -> dict:
+    keep = dedupe_keep(hr) if keep is None else keep
     rs = hr.rows(i)
-    return {"sl": hr.sl[rs].copy(), "ib": hr.isbuy[rs].copy(), "so": hr.sol[rs].copy(), "tk": hr.tok[rs].copy(), "q": hr.q[rs].copy(),
-            "b": hr.b[rs].copy(), "v": hr.v[rs].copy()}
+    k = keep[rs]
+    return {"sl": hr.sl[rs][k].copy(), "ib": hr.isbuy[rs][k].copy(), "so": hr.sol[rs][k].copy(), "tk": hr.tok[rs][k].copy(), "q": hr.q[rs][k].copy(),
+            "b": hr.b[rs][k].copy(), "v": hr.v[rs][k].copy()}
 
 
 def exit_states(a: dict, m: int, rate_m: float, xs: int, sps_x: float, seg_end: int) -> tuple[float, float, int, bool, bool]:
@@ -309,23 +345,28 @@ class BlockPass:
             if hr.n == 0:
                 return
         self.days.add(hr.T // 86400)
+        keep = dedupe_keep(hr)
+        Cd = self.counts[datetime.fromtimestamp(hr.T, tz=timezone.utc).strftime("%Y-%m-%d")]
+        Cd["rows_loaded"] += int(hr.n)
+        Cd["rows_dup_dropped"] += int(hr.n - keep.sum())
         self.clk_min.append(hr.min_slot)
         self.clk_rate.append(hr.slots_per_s)
         self.sps_hours.append(1.0 / hr.slots_per_s)
         self.seg_end = max(self.seg_end, hr.max_slot)
         for i, pool in enumerate(hr.pools.tolist()):
             if pool in self.store:
-                self.store[pool]["chunks"].append(_cols(hr, i))
+                self.store[pool]["chunks"].append(_cols(hr, i, keep))
                 continue
             if pool in self.seen:
                 continue
             self.seen.add(pool)
-            o = opening(hr, i)
+            o = opening(hr, i, keep)
             if o is None:
                 continue
             day = datetime.fromtimestamp(hr.T, tz=timezone.utc).strftime("%Y-%m-%d")
             C = self.counts[day]
             C["seed_candidates"] += o["seed_cand"]
+            C["root_not_unique_before_dedupe"] += bool(o["seed_cand"] and not o["raw_unique"])
             if not o["unique"]:
                 C["root_not_unique"] += o["seed_cand"]
                 continue
@@ -353,7 +394,8 @@ class BlockPass:
             C["u_organic"] += organic
             fee = float(F.fee_ppm(np.array([o["q0"] + v]), np.array([o["b0"]]))[0])
             C["opening_fee_not_12500"] += fee != 12_500
-            self.store[pool] = {"chunks": [_cols(hr, i)], "info": {"m": o["m"], "r": o["r"], "rate": hr.slots_per_s, "T": hr.T, "organic": organic,
+            C["u_all_dup_dropped_in_slot_m"] += o["dropped_m"]
+            self.store[pool] = {"chunks": [_cols(hr, i, keep)], "info": {"m": o["m"], "r": o["r"], "rate": hr.slots_per_s, "T": hr.T, "organic": organic,
                                                                     "crc": zlib.crc32(pool.encode()), "day": day}}
         self.flush(all_=False, now_min=hr.min_slot)
 
@@ -404,6 +446,8 @@ def refusals(counts_by_block: dict[str, dict]) -> list[str]:
             why.append(f"{name}: root not unique {t['root_not_unique']}/{t['seed_candidates']} > {MAX_ROOT_NOT_UNIQUE}")
         if t["seed_opening"] and t["v_unknown"] / t["seed_opening"] > MAX_V_UNKNOWN:
             why.append(f"{name}: V unknown {t['v_unknown']}/{t['seed_opening']} > {MAX_V_UNKNOWN}")
+        if t["rows_loaded"] and t["rows_dup_dropped"] / t["rows_loaded"] > MAX_DUP_DROPPED:
+            why.append(f"STOP_RETURN_TO_QP {name}: duplicate rows dropped {t['rows_dup_dropped']}/{t['rows_loaded']} > {MAX_DUP_DROPPED}")
         if t["rows_no_timestamp"]:
             why.append(f"STOP_RETURN_TO_QP {name}: {t['rows_no_timestamp']} rows refused for a missing timestamp in {t['hours_with_missing_timestamp']} hours")
         if t["seed_opening_vband"] and t["create_missing"] / t["seed_opening_vband"] > MAX_CREATE_MISSING:

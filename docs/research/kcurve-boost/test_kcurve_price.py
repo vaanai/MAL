@@ -329,3 +329,64 @@ def test_rows_without_a_timestamp_are_counted_and_stop_the_run():
 def test_not_measured_items_are_disclosed():
     md = K.counts_md({}, [], {})
     assert "not measured" in md.lower() and "completing_buy_sizes" in md and "first_bonding_print" in md
+
+
+# --- QP-RULING-1031-kcurve-dupes: re-delivered duplicates are dropped before any use -------------------------------------------------------------
+def _with_dup(rows, pred):
+    out = []
+    for r in rows:
+        out.append(r)
+        if pred(r):
+            out.append(dict(r))  # identical in every trade field (a re-delivery; on the real tape only t_recv_ms differs)
+    return out
+
+
+def test_duplicated_root_is_unique_after_the_dedupe():
+    rng = np.random.default_rng(21)
+    rows = pool_lines("PD", "MD", SLOT0 + 9, rng, shuffle_first=False)
+    m = rows[0]["slot"]
+    dup = _with_dup(rows, lambda r: r is rows[0])
+    hr = hours_of(dup, {"PD": V})[0]
+    keep = K.dedupe_keep(hr)
+    assert int((~keep).sum()) == 1
+    o = K.opening(hr, 0, keep)
+    assert o["raw_unique"] is False and o["unique"] is True and o["b0"] == K.SEED_B and o["dropped_m"] == 1 and o["m"] == m
+
+
+def test_duplicated_buy_counts_once_in_ssb_and_nearby():
+    rng = np.random.default_rng(22)
+    rows = pool_lines("PB", "MB", SLOT0 + 9, rng)
+    m = min(r["slot"] for r in rows)
+    target = next(r for r in rows if r["slot"] > m and r["side"] == "buy")
+    creates = {"MB": (T0 - 600, False, "C")}
+    clean = {t["cell"]: t for t in run_pass(rows, {"PB": V}, creates).trips}
+    duped = {t["cell"]: t for t in run_pass(_with_dup(rows, lambda r: r is target), {"PB": V}, creates).trips}
+    for c in K.CELLS:
+        for k in ("Qe", "Be", "ssb", "nearby", "Qx", "Bx", "wQe", "wBe", "wQx", "wBx"):
+            assert clean[c][k] == duped[c][k], (c, k)
+
+
+def test_same_key_with_different_fields_is_kept():
+    rng = np.random.default_rng(23)
+    rows = pool_lines("PK", "MK", SLOT0 + 9, rng)
+    x = dict(rows[5])
+    x["sol_lamports"] += 1  # same (slot, tx_index, event_index) key, a different trade field: a collision, not a re-delivery
+    hr = hours_of(rows[:6] + [x] + rows[6:], {"PK": V})[0]
+    assert K.dedupe_keep(hr).all()
+
+
+def test_dup_counts_and_the_one_percent_stop_line():
+    rng = np.random.default_rng(24)
+    rows = pool_lines("PC", "MC", SLOT0 + 9, rng, shuffle_first=False)  # rows[0] is the root
+    first = rows[0]
+    dup = _with_dup(rows, lambda r: r is first)
+    bp = run_pass(dup, {"PC": V}, {"MC": (T0 - 600, False, "C")}, price=False)
+    tot = collections.Counter()
+    for c in bp.counts.values():
+        tot.update(c)
+    assert tot["rows_dup_dropped"] == 1 and tot["rows_loaded"] == len(dup) and tot["u_all_dup_dropped_in_slot_m"] == 1
+    assert tot["root_not_unique_before_dedupe"] == 1 and tot["root_not_unique"] == 0 and tot["u_organic"] == 1
+    base = {"u_organic": 150, "seed_candidates": 200, "seed_opening": 200, "seed_opening_vband": 190}
+    assert K.refusals({"oracle-live-2026-09-25_27": {"d": dict(base, rows_loaded=10_000, rows_dup_dropped=100)}}) == []
+    why = K.refusals({"oracle-live-2026-09-25_27": {"d": dict(base, rows_loaded=10_000, rows_dup_dropped=101)}})
+    assert any(w.startswith("STOP_RETURN_TO_QP oracle-live") and "duplicate rows dropped" in w for w in why)
