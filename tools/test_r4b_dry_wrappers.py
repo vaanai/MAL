@@ -33,7 +33,7 @@ for a in "$@"; do printf '%s\n' "$a"; done > "$SHIM_DIR/systemd-run.log"
 PY="${SHIM_ARGV0:-$HOME/mal-venvs/r4b/bin/python}"
 ARGS="-I tools/r4b_host_glue.py run --source tip --change-id $SHIM_CHANGE --catch-up-hours 52"
 if [ -n "$SHIM_PRE_EXEC" ]; then  # the milliseconds before the exec: systemd-run and nice carry the host's argv with ni 0
-    printf ' 4241 0 systemd-run --user --scope -q --unit=r4b-dry-x1 -p MemoryMax=3500M nice -n 19 %s %s\n 4241 0 nice -n 19 %s %s\n' "$PY" "$ARGS" "$PY" "$ARGS" > "$SHIM_DIR/ps.out"
+    printf ' 4241 0 systemd-run --user --scope -q --unit=r4b-dry-x1 -p MemoryMax=5120M nice -n 19 %s %s\n 4241 0 nice -n 19 %s %s\n' "$PY" "$ARGS" "$PY" "$ARGS" > "$SHIM_DIR/ps.out"
     sleep 2
 fi
 [ -n "$SHIM_NO_PS" ] || printf ' 4242 %s %s %s\n' "${SHIM_NICE:-19}" "$PY" "$ARGS" > "$SHIM_DIR/ps.out"
@@ -73,7 +73,7 @@ class Base(unittest.TestCase):
         e.update({k: str(v) for k, v in env.items()})
         return subprocess.run(["sh", str(script), *args], cwd=REPO, env=e, capture_output=True, text=True, timeout=60)
 
-    def scope(self, memory_max="3670016000", swap="0", files=True):
+    def scope(self, memory_max="5368709120", swap="0", files=True):
         cg = self.cgroot / "user.slice" / "r4b-dry-x1.scope"
         cg.mkdir(parents=True)
         if not files:  # a cgroup without the memory controller: no memory.* files
@@ -110,7 +110,7 @@ class Long(Base):
         args = self.shim_log("systemd-run.log").split("\n")[:-1]
         py = str(self.home / "mal-venvs" / "r4b" / "bin" / "python")
         self.assertEqual(args, [
-            "--user", "--scope", "-q", "--unit=r4b-dry-x1", "-p", "MemoryMax=3500M", "-p", "MemorySwapMax=0", "nice", "-n", "19", py, "-I", "tools/r4b_host_glue.py", "run",
+            "--user", "--scope", "-q", "--unit=r4b-dry-x1", "-p", "MemoryMax=5120M", "-p", "MemorySwapMax=0", "nice", "-n", "19", py, "-I", "tools/r4b_host_glue.py", "run",
             "--source", "tip", "--tip-dir", "/var/lib/mal/sealed/fast-trades-tip", "--tip-state-dir", "/var/lib/mal/fast-tip-follower",
             "--key-file", "/var/lib/mal/fast-listener/helius.env", "--declog-root", f"{self.home}/mal-data/r4b-dry/x1/declog", "--out", f"{self.home}/mal-data/r4b-dry/x1/out",
             "--commitment", "processed", "--daily-credit-cap", "50000", "--trigger", "certified", "--change-id", "x1", "--catch-up-hours", "52"])
@@ -129,10 +129,12 @@ class Long(Base):
         r = self.sh(LONG, "x1")
         self.assertEqual(r.returncode, 0, r.stderr)
         m1 = (self.home / "mal-data" / "r4b-dry" / "x1" / "m1-start.txt").read_text()
-        for line in ("scope_memory_max=3670016000", "scope_memory_swap_max=0", "host_nice=19", "host_pid=4242", "slice_MemoryMax=infinity", "slice_MemoryHigh=infinity",
-                     "M1_SLICE PASS", "M1_SCOPE_MEMORY_MAX PASS (3670016000)", "M1_SCOPE_SWAP_MAX PASS (0)", "M1_NICE PASS (19)", "change_id=x1", "install_head="):
+        for line in ("scope_memory_max=5368709120", "scope_memory_swap_max=0", "host_nice=19", "host_pid=4242", "slice_MemoryMax=infinity", "slice_MemoryHigh=infinity",
+                     "M1_SLICE PASS", "M1_SCOPE_MEMORY_MAX PASS (5368709120)", "M1_SCOPE_SWAP_MAX PASS (0)", "M1_NICE PASS (19)", "change_id=x1", "install_head="):
             self.assertIn(line, m1)
-        self.assertIn("reservation=1.9G", m1)
+        self.assertIn("scope_MemoryMax=5120M", m1)
+        self.assertIn("reservation=accounting only, must be >= the scope cap", m1)
+        self.assertNotIn("1.9G", m1)
         self.assertIn("M1_NICE PASS", r.stdout)  # the recorder prints the file to the job log
         self.assertIn("show user-", self.shim_log("systemctl.log"))
         self.assertIn("-p MemoryMax -p MemoryHigh", self.shim_log("systemctl.log"))
@@ -165,10 +167,11 @@ class Long(Base):
 
     def test_m1_slice_limit_below_the_scope_plus_current_is_a_fail_line(self):
         self.env["SHIM_CG"] = self.scope()
-        self.sh(LONG, "x1", SHIM_SLICE_MAX=3700000000, SHIM_SLICE_CUR=500000000)  # 3.7 GB < 3.67 GB + 0.5 GB
+        self.sh(LONG, "x1", SHIM_SLICE_MAX=5500000000, SHIM_SLICE_CUR=500000000)  # 5.5 GB < 5 GiB (5,368,709,120 B) + 0.5 GB
         m1 = (self.home / "mal-data" / "r4b-dry" / "x1" / "m1-start.txt").read_text()
         self.assertIn("M1_SLICE FAIL", m1)
-        self.assertIn("slice_MemoryMax=3700000000", m1)
+        self.assertIn("slice_MemoryMax=5500000000", m1)
+        self.assertIn("scope cap 5120M plus current use = 5868709120 bytes", m1)
 
     def test_m1_slice_limit_that_leaves_room_passes_and_huge_values_are_unlimited(self):
         self.env["SHIM_CG"] = self.scope()
@@ -316,13 +319,57 @@ class Sidecar(Base):
         line = self.shim_log("python.log").strip()
         self.assertEqual(line, f"-I scripts/research/r4b_dry_sidecar.py --change-id x1 --out {d}/sidecar.jsonl --hours 130 --events {d}/out/glue/events.jsonl")
 
-    def test_run_end_and_catchup_end_epochs_are_passed_through_and_the_default_is_125_h(self):
-        self.sh(SIDECAR, "x1", R4B_RUN_END_EPOCH=1794020400)
+    def test_run_end_and_catchup_end_epochs_are_passed_through(self):
+        self.sh(SIDECAR, "x1", "149", R4B_RUN_END_EPOCH=1794020400)
         line = self.shim_log("python.log").strip()
-        self.assertTrue(line.endswith("--hours 125 --events " + f"{self.home}/mal-data/r4b-dry/x1/out/glue/events.jsonl --run-end-epoch 1794020400"), line)
+        self.assertTrue(line.endswith("--hours 149 --events " + f"{self.home}/mal-data/r4b-dry/x1/out/glue/events.jsonl --run-end-epoch 1794020400"), line)
         (self.shims / "python.log").unlink()
-        self.sh(SIDECAR, "x1", R4B_RUN_END_EPOCH=1794020400, R4B_CATCHUP_END_EPOCH=1793460000)
+        self.sh(SIDECAR, "x1", "149", R4B_RUN_END_EPOCH=1794020400, R4B_CATCHUP_END_EPOCH=1793460000)
         self.assertTrue(self.shim_log("python.log").strip().endswith("--run-end-epoch 1794020400 --catchup-end-epoch 1793460000"))
+
+    def test_k3_there_is_no_fixed_default_for_hours(self):
+        r = self.sh(SIDECAR, "x1")  # neither <hours> nor R4B_RUN_END_EPOCH
+        self.assertEqual(r.returncode, 5)
+        self.assertIn("hours", r.stderr)
+        self.assertIsNone(self.shim_log("python.log"))
+        r = self.sh(SIDECAR, "x1", R4B_RUN_END_EPOCH="not-a-number")
+        self.assertEqual(r.returncode, 5)
+        self.assertIsNone(self.shim_log("python.log"))
+
+    def test_k3_hours_default_to_the_remaining_time_to_e_plus_3_h(self):
+        import time
+        e = int(time.time()) + 10 * 3600  # E ten hours from now: (E - now) rounds up to 10 h (a second or two of test run time does not change it), plus 3
+        self.sh(SIDECAR, "x1", R4B_RUN_END_EPOCH=e)
+        line = self.shim_log("python.log").strip()
+        self.assertIn(" --hours 13 ", line)
+        self.assertTrue(line.endswith(f"--run-end-epoch {e}"), line)
+        (self.shims / "python.log").unlink()
+        e = int(time.time()) + 145 * 3600 + 25 * 60  # a start at 2026-11-01T01:35Z: E - start is 145.4 h, so the QP example is 149 h (floor of the margin: ceil(145.4) + 3 = 149)
+        self.sh(SIDECAR, "x1", R4B_RUN_END_EPOCH=e)
+        self.assertIn(" --hours 149 ", self.shim_log("python.log"))
+
+    def test_k3_an_end_in_the_past_exits_5(self):
+        import time
+        r = self.sh(SIDECAR, "x1", R4B_RUN_END_EPOCH=int(time.time()) - 60)
+        self.assertEqual(r.returncode, 5)
+        self.assertIn("not in the future", r.stderr)
+        self.assertIsNone(self.shim_log("python.log"))
+
+    def test_the_cap_is_one_number_in_both_scripts_and_the_alert_line_is_85_percent_of_it(self):
+        import importlib.util
+        import re
+        spec = importlib.util.spec_from_file_location("r4b_dry_sidecar", S / "r4b_dry_sidecar.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        cap = int(re.search(r"^SCOPE_MAX_MIB=(\d+)", LONG.read_text(), re.M).group(1))
+        self.assertEqual((cap, mod.SCOPE_CAP_MIB), (5120, 5120.0))
+        self.assertEqual(cap * 1048576, 5368709120)  # the wrapper's M1 expectation and the scope's memory.max
+        self.assertEqual(mod.ALERT_MIB, 4352.0)
+        self.assertEqual(int(mod.ALERT_MIB * mod.MIB), 4563402752)
+        for f in (LONG, SIDECAR, S / "r4b_dry_sidecar.py"):  # no second copy of the old cap as a live number
+            code = "\n".join(ln for ln in f.read_text().splitlines() if not ln.lstrip().startswith("#"))
+            for old in ("MemoryMax=3500M", "3670016000", "2975"):
+                self.assertNotIn(old, code, (f.name, old))
 
     def test_c1_the_events_path_is_the_one_the_real_glue_writes_catch_up_done_to(self):
         """Drift guard (QP C1 / reviewer B1): take the launcher's --events path, build the REAL TipLiveSource with the wrapper's --out dir, let it emit catch_up_done through its own
@@ -330,7 +377,7 @@ class Sidecar(Base):
         import importlib.util
         from tools import r4b_feed_merge as fm
         from tools import r4b_host_glue as glue
-        self.sh(SIDECAR, "x1")
+        self.sh(SIDECAR, "x1", "149")
         argv = self.shim_log("python.log").split()
         events = argv[argv.index("--events") + 1]
         d = self.home / "mal-data" / "r4b-dry" / "x1"
