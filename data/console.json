@@ -7,7 +7,7 @@
    "id": "feed-late-dedupe-merged-1031",
    "kind": "decision",
    "title": "Arena feed late-duplicate fix merged (#1152, cfc04d1b); NOT deployed",
-   "detail": "Source: PR #1152 (QP OK + reviewer APPROVE at e55a0613), ops/reports/2026-10-31/feed-dedupe.md and qp-1152.md. The feed keeps a second memory of each signature for 900 s from first sight (cap 3,300,000 keys), so a late re-delivered row is not written again; the per-program socket merge keeps its 120 s / 200k window. Without late duplicates the old and new tapes are byte-identical (md5 fcefa942ddeb54f3da65708aa94b8569 and ca6156b9d27a4b33045f53d7acad4c4b, synthetic streams). Measured on synthetic data only: +710.9 MB resident memory at the key cap (QP budgets about 1 GB). Not measured: the real delay of repeats; repeats later than 900 s are still written. Deploy only at the next feed restart that is needed (QP conditions D1–D6: not before HV4 ends 11-08T13:05Z; fold into the P35 v2 takeover so there is one restart; a pre-deploy check with a 900 s delay bin; a LAB_STATE restart record and a per-book disclosure). No book has cleared the promotion gate.",
+   "detail": "Source: PR #1152 (QP OK + reviewer APPROVE at e55a0613), ops/reports/2026-10-31/feed-dedupe.md and qp-1152.md. The feed keeps a second memory of each signature for 900 s from first sight (cap 3,300,000 keys), so a late re-delivered row is not written again; the per-program socket merge keeps its 120 s / 200k window. Without late duplicates the old and new tapes are byte-identical (md5 fcefa942ddeb54f3da65708aa94b8569 and ca6156b9d27a4b33045f53d7acad4c4b, synthetic streams). Measured on synthetic data only: +710.9 MB resident memory at the key cap (QP budgets about 1 GB). Not measured: the real delay of repeats; repeats later than 900 s are still written. Deploy only at the next feed restart that is needed (QP conditions D1–D6: D1 no deploy while HV4's process window is open, which ends 11-08T13:05Z, and fold it into the P35 v2 takeover so there is one restart; D2 memory: the feed wrapper runs under MemoryMax=2G, so its running RSS + 1.0 GB must stay at or below 75% of the new limit, else a new wrapper; D3 a live acceptance check on the first 24 or more closed hours after deploy (pinned dupcount, delay diagnostic with a 900 s bin edge, late_dedup counters), pre-declared in a records line before deploy; D4 a LAB_STATE restart record; D5 a per-book disclosure; D6 fix arena_tape_schema.md line 28). No book has cleared the promotion gate.",
    "atUtc": "2026-10-31T04:41:02Z"
   },
   {
@@ -35,21 +35,21 @@
    "id": "r4b-live-infra-merged-1031",
    "kind": "decision",
    "title": "r4-b live infrastructure merged (dry only): decision host, Helius mark-window feed merge, arena-tape mirror; install sha 2b378c1b",
-   "detail": "Source: manager log 02:26Z–02:38Z; PRs #1117 #1126 #1130 #1131 #1136 #1139 #1141 #1142 #1143 #1146 #1147 #1149 and ops/reports/2026-10-30/r4b-live.md, 2026-10-31/r4b-feed-swap*.md, r4b-host-glue.md, tape-mirror.md. EXP-027 r4-b now has a keyless DRY decision host (md5 replay on explore-0814 equal: rows f1317f7b2fc2f1d8cb1c603d475c9c4f, trades c079bae1c3abe86ae1b1551cb7b6e441), a library that merges a Helius mark window into the public stream (daily credit cap, NTP guard), and a byte-exact arena-tape mirror research-0 → mal-fast-0 (#1147; fail-closed status; pull job #1940 running, 52 closed hours verified, lag p90 about 104 ms). Nothing sends and no key exists. The 1-mark DRY smoke #1946 reported exit 0 but did not run for real (numpy was missing in the fast-0 venv); deps installed in #1948, rerun pending. mal-fast-0 root disk is at 23.0% free, 6.3 GB above the mirror's 20% floor; a cleanup plan is in progress. Owed: the DRY host on the live merged stream (target 2026-11-02T12Z, hard limit 23:00Z) for 48 post-warm-up marks, Bar 1 (entry-level agreement with the read's rows) and the go/no-go; the EXP-027 read itself comes after 2026-11-07T04Z. Why a feed swap: the public feed is about 1.4 s late (r4b-live report). The lane report also notes a C0 canary at 0.05 SOL cannot earn its fee (2.02% per round trip against a central in-sample net of +0.5652%), so C0 would measure execution only. r4-b has zero out-of-sample trades. No book has cleared the promotion gate.",
+   "detail": "Source: manager log 02:26Z–02:38Z; PRs #1117 #1126 #1130 #1131 #1136 #1139 #1141 #1142 #1143 #1146 #1147 #1149 and ops/reports/2026-10-30/r4b-live.md, 2026-10-31/r4b-feed-swap*.md, r4b-host-glue.md, tape-mirror.md. EXP-027 r4-b now has a keyless DRY decision host (md5 replay on explore-0814 equal: rows f1317f7b2fc2f1d8cb1c603d475c9c4f, trades c079bae1c3abe86ae1b1551cb7b6e441), a library that merges a Helius mark window into the public stream (daily credit cap, NTP guard), and a byte-exact arena-tape mirror research-0 → mal-fast-0 (#1147; fail-closed status; pull job #1940 running, 52 closed hours verified, lag p90 about 104 ms). Nothing sends and no key exists. The 1-mark DRY smoke #1946 reported exit 0 but did not run for real (numpy was missing in the fast-0 venv); deps installed in #1948, rerun pending. mal-fast-0 root disk is at 23.0% free, 6.3 GB above the mirror's 20% floor; a cleanup plan is in progress. Owed: the DRY host on the live merged stream (target 2026-11-02T12Z, hard limit 23:00Z) for 48 post-warm-up marks, Bar 1 (entry-level agreement with the read's rows) and the go/no-go, which is read once on 2026-11-07T00Z if the DRY host is on the live stream by 2026-11-02T12Z; the EXP-027 read itself comes after 2026-11-07T04Z. Why a feed swap: the public feed is about 1.4 s late (r4b-live report). The lane report also notes a C0 canary at 0.05 SOL cannot earn its fee (2.02% per round trip against a central in-sample net of +0.5652%), so C0 would measure execution only. r4-b has zero out-of-sample trades. No book has cleared the promotion gate.",
    "atUtc": "2026-10-31T02:26:15Z"
   },
   {
    "id": "a-q50-audit-merged-1031",
    "kind": "decision",
    "title": "A-Q50 post-read audit tool and pre-declarations merged (#1144, #1145, #1148)",
-   "detail": "Source: QP-RULING-1031-tape-dupes-reads §4.2 and the manager log 01:30Z–01:37Z (QP + reviewer at 9806c5fc, 2405817d, 2b4ec582; main 88efc3ee). A-Q50 was pre-declared before the Q50 read runs: only after a Q50 PASS is recorded, it checks the read's counted strips for re-delivered repeat buys, and a non-zero count adds a corrected pressure leg that must also hold before QP's OK and before any C0 step. A FAIL or NOT_DECIDABLE is final and is never reopened by it. #1145 pre-declares the same audit for s1 before its clock 2026-11-06T00Z; #1148 extends it to Q50's own confirmation read (merge before 11-04T00Z, met). QP errata: E1 rent 302,544,280 lamports, E2 post_last < from_slot, E3 flat cells. Owed: a tool change for confirmation trades before any confirmation audit. No book has cleared the promotion gate.",
+   "detail": "Source: QP-RULING-1031-tape-dupes-reads §4.2 and the manager log 01:30Z–01:37Z (QP + reviewer at 9806c5fc, 2405817d, 2b4ec582; main 88efc3ee). A-Q50 was pre-declared before the Q50 read runs: only after a Q50 PASS is recorded, it checks the read's counted strips for re-delivered repeat buys, and a non-zero count adds a corrected pressure leg that must also hold before QP's OK and before any C0 step. A FAIL or NOT_DECIDABLE is final and is never reopened by it. #1145 pre-declares the same audit for s1 before its clock 2026-11-06T00Z; #1148 extends it to Q50's own confirmation read (merge before 11-04T00Z, met). QP errata: E1 the total loss is 302,544,280 lamports (stake + send + stranded rent), E2 post_last < from_slot, E3 flat cells. Owed: a tool change for confirmation trades before any confirmation audit. No book has cleared the promotion gate.",
    "atUtc": "2026-10-31T01:37:01Z"
   },
   {
    "id": "tape-dupes-ruling-1031",
    "kind": "decision",
    "title": "QP ruling: the HV4, DBC m10 and Q50 reads run unchanged despite the arena-tape duplicates (QP-RULING-1031-tape-dupes-reads)",
-   "detail": "Source: ops/manager18/QP-RULING-1031-tape-dupes-reads.md (sha256 prefix c658e35f; written 00:54Z). HV4 X-arm reads: unchanged. The pinned engine drops every repeat (same slot, signature, event_index, tx_index) before pricing, so prices, ssb, nearby_lamports and both fail legs are computed on de-duplicated rows; the bots' cards (counts, flows, candles) were not de-duplicated and are what the bots saw. DBC m10: unchanged, because its forward data (fwdv1) is a pinned Helius backfill, not the websocket tape. Q50: unchanged with a disclosure, because the shadow keeps no per-pool filter and a repeat can enter a strip only when the 500,000-key cap evicts first (QP proxy count: up to 514,875 notices in a span of about 480 s at peak); the sign of the effect on the pressure leg is not determined, so on a PASS the pre-declared audit A-Q50 must run before QP's OK. The manager's outcome-blind pause of Q50 read #1887 (from 00:40Z) was lifted at 00:56Z and is disclosed in the read report. FLOOR, the arena cohort, HV6 and HV7 run unchanged at their reads (same engine as HV4). No book has cleared the promotion gate.",
+   "detail": "Source: ops/manager18/QP-RULING-1031-tape-dupes-reads.md (sha256 prefix c658e35f; written 00:54Z). HV4 X-arm reads: unchanged. The pinned engine drops every repeat (same slot, signature, event_index, tx_index) before pricing, so prices, ssb, nearby_lamports and both fail legs are computed on de-duplicated rows; the bots' cards (counts, flows, candles) were not de-duplicated and are what the bots saw. DBC m10: unchanged, because its forward data (fwdv1) is a pinned Helius backfill, not the websocket tape. Q50: unchanged with a disclosure, because the shadow keeps no per-pool filter and a repeat can enter a strip only when the 500,000-key cap evicts first (QP proxy count: up to 514,875 notices in a span of about 480 s at peak); the sign of the effect on the pressure leg is not determined, so on a PASS the pre-declared audit A-Q50 must run before QP's OK. The manager's outcome-blind pause of Q50 read #1887 (from 00:40Z) was lifted at 00:56Z and will be disclosed in the read report. FLOOR, the arena cohort, HV6 and HV7 run unchanged at their reads (same engine as HV4). No book has cleared the promotion gate.",
    "atUtc": "2026-10-31T00:56:00Z"
   },
   {
@@ -84,7 +84,7 @@
    "id": "s1-feed2-blocked-1030",
    "kind": "finding",
    "title": "s1 second feed: no free keyless provider works; blocked on an owner action (OrbitFlare key)",
-   "detail": "Source: ops/reports/2026-10-30/s1-feed2.md (probe jobs #1909, #1910, PR #1127) and manager log 21:18Z–22:14Z. s1 needs a second websocket provider so one provider's gaps do not silently thin the feed. Of 11 keyless providers, 0 were usable (PublicNode: 0 messages in 60 s; Solana Tracker public: coverage 0.4554 of Helius's signatures, median about 41 s late, so it would hide gaps instead of excluding them: never use). Helius for the whole window measured 4.85 GB/h, about 2.33M credits a day, about 58.7M credits to 12-01 (about 3× the owner's ~20M extra credits; about $293), so the Helius second feed is OFF pending the owner. Recommended: OrbitFlare Free (Frankfurt), untested; OrbitFlare Developer is $49 a month if Free throttles. Credits used by the probes: 23,415. Risk (manager's estimate): with mainnet-beta alone the 6 h smoke would see 42–47 flagged gaps an hour and fail the gap-exposure bar, which would leave s1 without a clock. No book has cleared the promotion gate.",
+   "detail": "Source: ops/reports/2026-10-30/s1-feed2.md (probe jobs #1909, #1910, PR #1127) and manager log 21:18Z–22:14Z. s1 needs a second websocket provider so one provider's gaps do not silently thin the feed. Of 11 keyless providers, 0 were usable (PublicNode: 0 messages in 60 s; Solana Tracker public: coverage 0.4554 of Helius's signatures, median 40.8 s late, so it would hide gaps instead of excluding them: never use). Helius for the whole window measured 4.85 GB/h, 2,328,165 credits a day, 58,689,161 credits to 12-01 (about 3× the owner's ~20M extra credits; about $293), so the Helius second feed is OFF pending the owner. Recommended: OrbitFlare Free (Frankfurt), untested; OrbitFlare Developer is $49 a month if Free throttles. Credits used by the probes: 23,415. Risk (manager's estimate): with mainnet-beta alone the 6 h smoke would see 42–47 flagged gaps an hour and fail the gap-exposure bar, which would leave s1 without a clock. No book has cleared the promotion gate.",
    "atUtc": "2026-10-30T22:14:00Z"
   },
   {
@@ -98,7 +98,7 @@
    "id": "hv4-c0-flip-1030",
    "kind": "decision",
    "title": "HV4 C0 live path complete on main (flip #1118, 979a7dcb); every real start stays refused until a recorded PASS exists",
-   "detail": "Source: manager log 17:13Z and 21:19Z–21:38Z; PRs #1090 #1092 #1105 #1098 #1096 #1104 #1110 #1097 #1095 #1100 (stack merged in order, main 85be1fad), #1115 (checklist), #1118 (flip; QP OK 6533818857 + reviewer at ca5a1ac5). The flip sets LIVE_REFUSAL_ACTIVE and FEED_GAP_MANUAL_REVIEW to False; QP confirmed the bridge's start_refusal (hv4_live_c0.py:1432) keeps any real start refused until the bot's PASS is recorded. A live send needs all four: a recorded PASS read for that bot, the owner line in a root-owned owner file that Helm writes on the owner's word, LIVE_OK and TIER, and a wallet key only Helm creates; none exists. Decision: merge the flip before the reads (2026-11-01T01:35Z) rather than after a PASS. QP conditions: the install sha includes #1118; each bot's canary DEC copy merges before Helm writes the owner file and LIVE_OK. The keyless install on mal-fast-0 waits for the owner to relay HELM-ASK-1030-3. Funding plan in the checklist: one HV4 canary at 0.35 SOL plus Q50 at 0.5 SOL fits the 1 SOL. No book has cleared the promotion gate.",
+   "detail": "Source: manager log 17:13Z and 21:19Z–21:38Z; PRs #1090 #1092 #1105 #1098 #1096 #1104 #1110 #1097 #1095 #1100 (stack merged in order, main 85be1fad), #1115 (checklist), #1118 (flip; QP OK 6533818857 + reviewer at ca5a1ac5). The flip sets LIVE_REFUSAL_ACTIVE and FEED_GAP_MANUAL_REVIEW to False; QP confirmed the bridge's start_refusal (hv4_live_c0.py:1432) keeps any real start refused until the bot's PASS is recorded. A live send needs all four: a recorded PASS read for that bot, the owner line in a root-owned owner file that Helm writes on the owner's word, LIVE_OK and TIER, and a wallet key only Helm creates; none exists. Decision: merge the flip before the reads (2026-11-01T01:35Z) rather than after a PASS. QP conditions: the install sha includes #1118; each bot's canary DEC copy merges before Helm writes the owner file and LIVE_OK. The keyless install on mal-fast-0 waits for the owner to relay HELM-ASK-1030-3. Funding note (hv4-c0-ready report, item 7): one HV4 canary at 0.35 SOL plus Q50 at 0.5 SOL fits the 1 SOL. No book has cleared the promotion gate.",
    "atUtc": "2026-10-30T21:38:04Z"
   },
   {
@@ -120,7 +120,7 @@
    "id": "hv6-hv7-parked-1030",
    "kind": "decision",
    "title": "HV6 and HV7 parked until after the 11-01 reads (fix PRs #1108 and #1102 open)",
-   "detail": "Source: manager log 16:25Z–16:28Z and 21:18Z; PRs #1108 (9d3f53a2) and #1102 (1df317bd, 386 tests #1880). HV6 fixes: A max_tokens 1200, B concurrent arm calls (board 24 → 4 cards), C paced prefetch 2,000 an hour; cost 1.21 USD a day (1.61 worst). HV7 diagnosis: 30 of 31 not_json replies came from max_tokens 600 truncation; fix max_tokens 2000 plus a bare-fence strip; smoke risk: duplicate_id about 26% chance on the next smoke. Both need re-proofs and a new smoke before any new clock. The manager parked review and heavy proofs (research-0 memory) until after the 11-01 DBC and HV4 reads, with the API budget going to Haiku v5 and HV4; the strategy audit's pass estimate for them is about 2%. Earliest new clock 11-03 or later. No book has cleared the promotion gate.",
+   "detail": "Source: manager log 16:25Z–16:28Z and 21:18Z; PRs #1108 (9d3f53a2) and #1102 (1df317bd, 386 tests #1880). HV6 fixes: A max_tokens 1200, B concurrent arm calls (board 24 → 4 cards), C paced prefetch 2,000 an hour; cost 1.21 USD a day (1.61 worst). HV7 diagnosis: of 31 fallback replies, 30 were not_json (all cut off at max_tokens 600) and 1 was duplicate_id; fix max_tokens 2000 plus a bare-fence strip; smoke risk: duplicate_id about 26% chance on the next smoke. Both need re-proofs and a new smoke before any new clock. The manager parked review and heavy proofs (research-0 memory) until after the 11-01 DBC and HV4 reads, with the API budget going to Haiku v5 and HV4; the strategy audit's pass estimate for them is about 2%. Earliest new clock 11-03 or later. No book has cleared the promotion gate.",
    "atUtc": "2026-10-30T16:28:00Z",
    "approx": true
   },
@@ -149,7 +149,7 @@
    "id": "owner-go-audit-1030",
    "kind": "decision",
    "title": "Owner GO for an all-out push (10-30 ~15:00Z); strategy audit: low odds, the biggest gap is read power",
-   "detail": "Source: manager log 15:0xZ and 15:3xZ; audit ops/reports/2026-10-30/audit-strategy.md (sha256 c7166d18…). Owner GO: all-out push, unlimited subagents, a full audit, drop arbitrary killing rules; the promotion gate stays. The audit's own estimates (judgment, not measurements): P(first $20/day within 14 days) about 3–5%, P(any screen PASS) about 25–30%. It named Q50 → C0 and EXP-027 r4-b as its top bets, and the HV4 X-arm reads as a cheap read. Its biggest gap was read power (counts too small to decide), which led to QP-RULING-1030-power-n. Earlier that day (02:05Z) manager18 took over from manager17. No book has cleared the promotion gate.",
+   "detail": "Source: manager log 15:0xZ and 15:3xZ; audit ops/reports/2026-10-30/audit-strategy.md (sha256 c7166d18…). Owner GO: all-out push, unlimited subagents, a full audit, drop arbitrary killing rules; the promotion gate stays. The audit's own estimates (judgment, not measurements): P(first $20/day within 14 days) about 3–5%, P(any screen PASS) about 25–30%. It named Q50 → C0 and EXP-027 r4-b as its top bets, and the HV4 X-arm reads as a cheap read. Its biggest gap was read power (counts too small to decide), which led to QP-RULING-1030-power-n. Earlier that day (02:04:46Z) manager18 took over from manager17. No book has cleared the promotion gate.",
    "atUtc": "2026-10-30T15:00:00Z",
    "approx": true
   },
@@ -1446,7 +1446,7 @@
    "id": "s1",
    "title": "s1 (h5v1q50-boostfloor-s1) Q50 successor",
    "stage": "code and records on main; needs a second feed provider before registration 2026-11-04 (clock 2026-11-06T00Z)",
-   "note": "Same frozen rule as Q50 (S* 5c2ab7c6), own arena root and A3 loop. Read sizes pinned by DEC-031 Am.22: screen at the first boundary with at least 200 counted trades on at least 5 dates, or at clock + 10 days with at least 100; confirmation 300 trades by 2026-12-01T00:00Z. Not registered: none of 11 keyless second providers qualified; OrbitFlare Free (untested) needs the owner's account and key on mal-fast-0 (see For you); Helius for the whole window would cost about 58.7M credits (about $293). Then a 6 h smoke, registration 2026-11-04, shadow start 2026-11-05 20:00–22:30Z, clock 2026-11-06T00Z. Zero counted trades. No book has cleared the promotion gate.",
+   "note": "Same frozen rule as Q50 (S* 5c2ab7c6), own arena root and A3 loop. Read sizes pinned by DEC-031 Am.22: screen at the first boundary with at least 200 counted trades on at least 5 dates, or at clock + 10 days with at least 100; confirmation 300 trades by 2026-12-01T00:00Z. Not registered: none of 11 keyless second providers qualified; OrbitFlare Free (untested) needs the owner's account and key on mal-fast-0 (see For you); Helius for the whole window would cost 58,689,161 credits (about $293). Then a 6 h smoke, registration 2026-11-04, shadow start 2026-11-05 20:00–22:30Z, clock 2026-11-06T00Z. Zero counted trades. No book has cleared the promotion gate.",
    "tag": {
     "text": "blocked on owner action",
     "tone": "warn"
@@ -1507,7 +1507,7 @@
    "id": "EXP-027",
    "title": "EXP-027 r4-b on Forward walk 2 (hourly top-10 cross-sectional book)",
    "stage": "pre-registered; live DRY infrastructure merged",
-   "note": "Walk-2 pre-registration (W0 2026-10-18T03, E 2026-11-07T03Z; the read comes after E + 1 h, deadline 2026-11-09T03Z). The pre-registration itself says a FAIL is the most likely outcome. Live-path work: keyless DRY decision host, Helius mark-window feed merge (probe: 0 slots behind the processed tip at sd(T), inputs ready 0.22 s p50 / 0.31 s p90, about 28.7k credits a day), byte-exact arena-tape mirror to mal-fast-0. Owed: the DRY host on the live merged stream by 2026-11-02T23:00Z (hard limit), then Bar 1 and the go/no-go. A C0 canary at 0.05 SOL cannot earn its fee (2.02% per round trip); a registered-size book would need a wallet of about 2.8–3.0 SOL. Zero out-of-sample trades. No book has cleared the promotion gate.",
+   "note": "Walk-2 pre-registration (W0 2026-10-18T03, E 2026-11-07T03Z; the read comes after E + 1 h, deadline 2026-11-09T03Z). The pre-registration itself says a FAIL is the most likely outcome. Live-path work: keyless DRY decision host, Helius mark-window feed merge (probe: 0 slots behind the processed tip at sd(T), inputs ready 0.22 s p50 / 0.31 s p90, about 28.7k credits a day), byte-exact arena-tape mirror to mal-fast-0. Owed: the DRY host on the live merged stream by 2026-11-02T23:00Z (hard limit), then Bar 1 and the go/no-go (read once on 2026-11-07T00Z if the DRY host is on the live stream by 2026-11-02T12Z). A C0 canary at 0.05 SOL cannot earn its fee (2.02% per round trip); a registered-size book would need a wallet of about 2.8–3.0 SOL. Zero out-of-sample trades. No book has cleared the promotion gate.",
    "tag": {
     "text": "dry infrastructure",
     "tone": "accent"
@@ -1768,7 +1768,7 @@
   {
    "id": "fy-20261031-orbitflare",
    "from": "claude",
-   "text": "Action for you: create a free OrbitFlare account (orbitflare.com) and have the API key placed on mal-fast-0 in /var/lib/mal/fast-listener/orbitflare.env as ORBITFLARE_API_KEY=<key>, readable by the claude user like helius.env. Placing the key is yours or Helm's; Claude has no key. It is the second websocket feed s1 needs: none of the 11 keyless providers worked, and Helius for the whole window would cost about 58.7M credits (about $293, about 3× your ~20M extra credits). Needed before s1 registers on 2026-11-04. The free plan's websocket limits are undocumented, so the key goes through a test job first; OrbitFlare Developer is $49 a month if Free throttles (your call then). Do not paste the key into chat or the repo. No book has cleared the promotion gate.",
+   "text": "Action for you: create a free OrbitFlare account (orbitflare.com) and have the API key placed on mal-fast-0 in /var/lib/mal/fast-listener/orbitflare.env as ORBITFLARE_API_KEY=<key>, readable by the claude user like helius.env. Placing the key is yours or Helm's; Claude has no key. It is the second websocket feed s1 needs: none of the 11 keyless providers worked, and Helius for the whole window would cost 58,689,161 credits (about $293, about 3× your ~20M extra credits). Needed before s1 registers on 2026-11-04. The free plan's websocket limits are undocumented, so the key goes through a test job first; OrbitFlare Developer is $49 a month if Free throttles (your call then). Do not paste the key into chat or the repo. No book has cleared the promotion gate.",
    "atUtc": "2026-10-31T04:52:28Z"
   },
   {
@@ -1792,7 +1792,7 @@
   {
    "id": "fy-20261024-helm-sheet",
    "from": "claude",
-   "text": "Done (see the newer entries): Helm ran the pre-stage at c8fcf761 on 10-28 (PASS, HELM-REPLY-1028-1) and a repeat dry run on 10-29 (PASS 6/6, HELM-REPLY-1029-1). The next asks are HELM-ASK-1030-2 and HELM-ASK-1030-3. Action for you: relay HELM-SHEET (hunt29/p1/HELM-SHEET.md) to Helm: a keyless dry install of the Q50 executor plus a 1 h dry run, before about 10-29. No book has cleared the promotion gate.",
+   "text": "Done (see the newer entries): Helm ran the pre-stage at c8fcf761 on 10-28 (PASS, HELM-REPLY-1028-1) and a repeat dry run on 10-29 (PASS 6/6, HELM-REPLY-1029-1). The next asks are HELM-ASK-1030-2 and HELM-ASK-1030-3. The original ask was to relay HELM-SHEET (hunt29/p1/HELM-SHEET.md) to Helm: a keyless dry install of the Q50 executor plus a 1 h dry run, before about 10-29. No book has cleared the promotion gate.",
    "atUtc": "2026-10-24T01:45:00Z"
   },
   {
@@ -2174,21 +2174,21 @@
    "id": "s-20261031-kcurve",
    "from": "claude",
    "kind": "result",
-   "text": "kcurve-boost: all 8 cells KILLED on exploration data (job #1935, QP-RULING-1031-kcurve-price). The seat-proxy cell K-1 was positive only on August (+44.458% flat / +11.28% pressure of stake); September pooled is +0.655% flat / −0.257% pressure and 2 of 4 blocks are positive. Paid speed for migration entries stays NO-GO. In-sample, not evidence of an edge. No book has cleared the promotion gate.",
+   "text": "kcurve-boost: all 8 cells KILLED on exploration data (job #1935, QP-RULING-1031-kcurve-price). The seat-proxy cell K-1's positive rests entirely on August (+44.458% flat / +11.28% pressure of stake); September pooled is +0.655% flat / −0.257% pressure and 2 of 4 blocks are positive. Paid speed for migration entries stays NO-GO. In-sample, not evidence of an edge. No book has cleared the promotion gate.",
    "atUtc": "2026-10-31T02:32:00Z"
   },
   {
    "id": "s-20261031-r4b-infra",
    "from": "claude",
    "kind": "status",
-   "text": "r-4b live infrastructure is merged, dry only (install sha 2b378c1b): decision host, Helius mark-window merge, arena-tape mirror to mal-fast-0. The 1-mark DRY smoke did not really run (missing numpy; fixed, rerun pending). Needed next: the DRY host on the live merged stream by 2026-11-02T23:00Z. No key, nothing sends. No book has cleared the promotion gate.",
+   "text": "r4-b live infrastructure is merged, dry only (install sha 2b378c1b): decision host, Helius mark-window merge, arena-tape mirror to mal-fast-0. The 1-mark DRY smoke did not really run (missing numpy; fixed, rerun pending). Needed next: the DRY host on the live merged stream (target 2026-11-02T12Z, hard limit 23:00Z); the go/no-go is read once on 2026-11-07T00Z if that target is met. No key, nothing sends. No book has cleared the promotion gate.",
    "atUtc": "2026-10-31T02:26:15Z"
   },
   {
    "id": "s-20261031-dupes-ruling",
    "from": "claude",
    "kind": "decision",
-   "text": "QP ruled that the HV4, DBC m10 and Q50 reads run unchanged despite the arena-tape duplicates. HV4: the pinned engine drops repeats before pricing. DBC: its data is a Helius backfill. Q50: runs with a disclosure and a pre-declared audit (A-Q50) on any PASS before QP's OK and before any C0 step. My pause of the Q50 read ran 00:40Z–00:56Z and is disclosed. No book has cleared the promotion gate.",
+   "text": "QP ruled that the HV4, DBC m10 and Q50 reads run unchanged despite the arena-tape duplicates. HV4: the pinned engine drops repeats before pricing. DBC: its data is a Helius backfill. Q50: runs with a disclosure and a pre-declared audit (A-Q50) on any PASS before QP's OK and before any C0 step. My pause of the Q50 read ran 00:40Z–00:56Z and will be disclosed in the read report. No book has cleared the promotion gate.",
    "atUtc": "2026-10-31T00:56:00Z"
   },
   {
@@ -2202,14 +2202,14 @@
    "id": "s-20261031-r4b-probe",
    "from": "claude",
    "kind": "result",
-   "text": "r-4b feed probe (job #1916): a Helius mark window is 0 slots behind the processed tip at sd(T), inputs ready 0.22 s p50 (p90 0.31); confirmed +1 slot (0.60 s) vs public ~7 slots; 26.3k credits used; about 28.7k credits a day (0.86M per 30 days) planned. Feed-latency measurement only; the DRY run has not measured any edge. No book has cleared the promotion gate.",
+   "text": "r4-b feed probe (job #1916): a Helius mark window is 0 slots behind the processed tip at sd(T), inputs ready 0.22 s p50 (p90 0.31); confirmed +1 slot (0.60 s) vs public ~7 slots; 26.3k credits used; about 28.7k credits a day (0.86M per 30 days) planned. Feed-latency measurement only; the DRY run has not measured any edge. No book has cleared the promotion gate.",
    "atUtc": "2026-10-31T00:21:00Z"
   },
   {
    "id": "s-20261030-s1-feed2",
    "from": "claude",
    "kind": "finding",
-   "text": "s1 is blocked on a second websocket provider: 0 of 11 keyless providers usable. Helius would need about 58.7M credits to 12-01 (about 3× your ~20M extra credits). OrbitFlare Free is the recommended, untested option and needs your account and key (see For you) before registration on 2026-11-04. No book has cleared the promotion gate.",
+   "text": "s1 is blocked on a second websocket provider: 0 of 11 keyless providers usable. Helius would need 58,689,161 credits to 12-01 (about 3× your ~20M extra credits). OrbitFlare Free is the recommended, untested option and needs your account and key (see For you) before registration on 2026-11-04. No book has cleared the promotion gate.",
    "atUtc": "2026-10-30T22:14:00Z"
   },
   {
