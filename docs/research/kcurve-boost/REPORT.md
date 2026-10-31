@@ -42,7 +42,7 @@ Kill reasons, as QP reproduced them:
 - **K8 and K12:** every line, both groups, and worst-in-slot.
 
 ## K-1: the positive rests on August only
-- **Where the positive comes from.** explore-0814 is +44.458% flat / +11.28% pressure. The September period is +0.655% flat / -0.257% pressure, with 2 of its 4 blocks positive under all four sub-cells.
+- **Where the positive comes from.** explore-0814 is +44.458% flat / +11.28% pressure. The September period (three blocks, pooled) is +0.655% flat / -0.257% pressure, and only fast-pool is positive under all four sub-cells (1 of 3). Across the four canonical blocks, 2 of 4 are positive: explore-0814 and fast-pool.
 - **The decay.** The drop from August to September repeats the BOOST-family block decay (H5). October is not on this tape. K-1 is a kill-only optimistic proxy (PREREG section 1).
 - **The remainder margin (PREREG C2).** M-bar is 0.002253096 SOL a trip (0.90% of stake). It bounds the advantage a real completer could gain from buying the curve's remainder.
   - Both pooled sub-cell means are above -M-bar, and every failing figure is smaller than M-bar per trade. Hence the registered label "K-1 KILLED within the remainder margin".
@@ -71,7 +71,7 @@ Kill reasons, as QP reproduced them:
   - oracle-live carries re-delivered duplicate trade rows. They differ only in `t_recv_ms`, so the 2026-10-01 byte-identical dedupe missed them.
   - Size: 93,202 of 27,290,350 rows (0.3415%), and about 5% of seed openings in QP's 3-hour count.
   - The adapter drops them before any use. Non-unique openings fell from 194 to 0. The other blocks had none.
-  - Rows that share (signature, event_index) but differ (about 0.007% of rows) are not collapsed. Prices are unaffected; `ssb`/`nearby` would have been double-counted.
+  - Rows that share (signature, event_index) but differ (about 2% of repeated keys, about 0.007% of rows) are not collapsed. Prices are unaffected; `ssb`/`nearby` would have been double-counted.
 - **NOT MEASURED** (registered in the PREREG, not produced by the adapter):
   - completing-buy sizes (section 12 item 4; the structure probe's explore-0814/w1 figures are in PREREG section 1.2);
   - the section 4 item 3 report-only count of missing-create pools whose first bonding print is at least 60 s before s0.
