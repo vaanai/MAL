@@ -147,10 +147,12 @@ def trade_counts(files: dict[str, bytes]) -> collections.Counter:
 
 def without_exact_repeats(old: dict[str, bytes], window_s: float) -> dict[str, list[bytes]]:
     """The referee: the old tape's lines minus every data row that is an exact repeat (all fields but t_recv_ms) of an EARLIER data row with the same
-    (prog, type, signature, event_index) first written less than window_s before it. This is tools/arena_tape_dupcount's rep_strict / xh_strict idea,
-    with the window of the fix added."""
+    (prog, type, signature, event_index) first written less than window_s before it (tools/arena_tape_dupcount's rep_strict / xh_strict idea, with the
+    window of the fix added). One more consequence is applied, because hb.rows_last_min counts the data rows WRITTEN in the last completed minute: an hb
+    row loses one for each removed row of its program with t_recv_ms in that minute. Every other byte of every other row is kept."""
     first: dict[tuple, tuple[int, dict]] = {}
-    out: dict[str, list[bytes]] = {}
+    kept: list[tuple[str, dict, bytes]] = []
+    removed: collections.Counter = collections.Counter()  # (prog, minute) -> removed data rows
     for name, b in sorted(old.items()):
         for raw in b.splitlines():
             r = json.loads(raw)
@@ -159,9 +161,16 @@ def without_exact_repeats(old: dict[str, bytes], window_s: float) -> dict[str, l
                 body = {k: v for k, v in r.items() if k != "t_recv_ms"}
                 f = first.get(key)
                 if f is not None and f[1] == body and r["t_recv_ms"] - f[0] < window_s * 1000:
+                    removed[(r["prog"], r["t_recv_ms"] // 60_000)] += 1
                     continue
                 first.setdefault(key, (r["t_recv_ms"], body))
-            out.setdefault(name, []).append(raw)
+            kept.append((name, r, raw))
+    out: dict[str, list[bytes]] = {}
+    for name, r, raw in kept:
+        if r["type"] == "hb":
+            r["rows_last_min"] -= removed[(r["prog"], r["t_recv_ms"] // 60_000 - 1)]
+            raw = json.dumps(r, separators=(",", ":"), allow_nan=False).encode()
+        out.setdefault(name, []).append(raw)
     return out
 
 
@@ -333,7 +342,10 @@ def test_a_late_duplicate_is_still_a_sign_of_life_so_gap_rows_do_not_change(tmp_
     def kind(files: dict[str, bytes], t: str) -> list[bytes]:
         return [ln for _n, b in sorted(files.items()) for ln in b.splitlines() if f'"type":"{t}"'.encode() in ln]
 
-    assert kind(old, "gap") == kind(new, "gap") and kind(old, "hb") == kind(new, "hb") and len(kind(new, "hb")) >= 4
+    def hb_without_rows_last_min(files: dict[str, bytes]) -> list[dict]:
+        return [{k: v for k, v in json.loads(ln).items() if k != "rows_last_min"} for ln in kind(files, "hb")]  # that field counts rows written: see the referee
+
+    assert kind(old, "gap") == kind(new, "gap") and hb_without_rows_last_min(old) == hb_without_rows_last_min(new) and len(kind(new, "hb")) >= 4
     ended_by_the_copy = [g for g in map(json.loads, kind(new, "gap")) if g["kind"] == "silence" and g.get("closed") and g["to_ms"] == H0 + 850_000]
     assert len(ended_by_the_copy) == 1 and ended_by_the_copy[0]["prog"] == "pumpswap"
     assert lines_of(new) == without_exact_repeats(old, af.LATE_DEDUP_WINDOW_S)
