@@ -85,6 +85,8 @@ LOSS_KINDS_WITH_SLOTS = ("decode_error", "write_error", "consume_error")  # gap 
 CAP_DEFAULT = 50_000
 CAP_REFUSE_ABOVE = 100_000  # the CLI refuses a per-day cap above this many credits
 ZSTD_CMD = ("zstd", "-dc")
+MIRROR_TTL_S = 5.0  # the mirror's status file is re-read at most this often (and once at the first look at each mark)
+_AUTO = object()  # LiveSource(mirror_check=_AUTO): resolve tools.tape_mirror.mirror_problem lazily (PR #1147); None switches the check off
 CHANGE_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
 CODE_RE = re.compile(r"[a-z0-9_]{1,32}")
 HOUR_FILE_RE = re.compile(r"^tape-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl(\.zst)?$")
@@ -542,6 +544,24 @@ class LockedCap:
         return locked
 
 
+class MirrorUnhealthy(RuntimeError):
+    """The tape mirror is not fresh at start (tools.tape_mirror.mirror_problem returned a code): the host does not start."""
+
+
+def default_mirror_check(tape_dir: str | os.PathLike) -> Callable[[int | None], str | None]:
+    """mirror_problem(dst, need_hours=...) of tools/tape_mirror.py (PR #1147), imported lazily at the first call so this module works before #1147 merges. If the
+    module cannot be imported the answer is a problem code (fail closed), never None."""
+    def check(need_hours: int | None = None) -> str | None:
+        try:
+            mod = importlib.import_module("tools.tape_mirror")
+            return mod.mirror_problem(tape_dir, need_hours=need_hours)
+        except ImportError:
+            return "mirror_module_missing"
+        except Exception:  # noqa: BLE001 - fail closed
+            return "mirror_check_error"
+    return check
+
+
 @dataclasses.dataclass
 class _Win:
     mark: int
@@ -597,7 +617,8 @@ class LiveSource:
                  window_factory: Callable[..., fm.HeliusWindow] | None = None, spawn: Callable[[fm.HeliusWindow], Any] | None = None, tape: Any = None,
                  ntp_runner: fm.Runner | None = None, require_ntp: bool = True, sd_fn: Callable[[int], int | None] | None = None,
                  complete_grace_s: float = 3.0, lead_s: float = 5.0, idle_s: float = 0.05, batch: int = 500, seam_margin_slots: int = 0,
-                 stop_when: Callable[[], bool] | None = None) -> None:
+                 stop_when: Callable[[], bool] | None = None, mirror_check: Any = _AUTO, mirror_need_hours: int | None = None,
+                 mirror_ttl_s: float = MIRROR_TTL_S) -> None:
         if commitment not in fm.COMMITMENTS:
             raise ValueError(f"commitment must be one of {fm.COMMITMENTS}")
         if tape is None and tape_dir is None:
@@ -616,6 +637,12 @@ class LiveSource:
         self.sd_fn, self.complete_grace_ms = sd_fn, int(complete_grace_s * 1000)
         self.lead_ms, self.idle_s, self.batch, self.seam_margin = int(lead_s * 1000), float(idle_s), int(batch), int(seam_margin_slots)
         self.stop_when = stop_when
+        if mirror_check is _AUTO:
+            mirror_check = default_mirror_check(tape_dir) if tape_dir is not None else None
+        self.mirror_check: Callable[[int | None], str | None] | None = mirror_check
+        self.mirror_need_hours, self.mirror_ttl_ms = mirror_need_hours, int(mirror_ttl_s * 1000)
+        self._mirror: tuple[int, str | None] | None = None  # (checked at ms, problem)
+        self._mirror_marks: set[int] = set()
         self.out = Path(out_dir) / "glue" if out_dir is not None else None
         self.events_path = self.out / "events.jsonl" if self.out else None
         self._q: queue.SimpleQueue = queue.SimpleQueue()
@@ -655,6 +682,11 @@ class LiveSource:
             return
         if self.require_ntp:
             self.ntp = fm.require_synced(runner=self.ntp_runner)  # raises ClockNotSynced: the wall-time fields assume a synced clock
+        if self.mirror_check is not None:
+            why = self._mirror_problem(force=True, need_hours=self.mirror_need_hours)
+            if why is not None:
+                self._event("mirror_refused_start", problem=why)
+                raise MirrorUnhealthy(f"the tape mirror is not fresh at start: {why}")
         now = self.now_ms()
         self.first_mark = (now // 1000 // MARK_S + 1) * MARK_S
         if self._tape is None:
@@ -760,6 +792,34 @@ class LiveSource:
             self._write_credit_days()
             self._event("stop", report=self.report())
 
+    # -- the tape mirror (PR #1147): a stale or broken mirror makes the PUBLIC side unhealthy, so the seam cannot close through it
+    def _mirror_problem(self, *, force: bool = False, need_hours: int | None = None) -> str | None:
+        """None when the mirror is fresh (or no check is configured); else its problem code. Cached mirror_ttl_s; forced at the first look at each mark and at start.
+        A check that raises is a problem (fail closed)."""
+        if self.mirror_check is None:
+            return None
+        now = self.now_ms()
+        if not force and self._mirror is not None and now - self._mirror[0] < self.mirror_ttl_ms:
+            return self._mirror[1]
+        try:
+            why = self.mirror_check(need_hours)
+        except Exception:  # noqa: BLE001
+            why = "mirror_check_error"
+        if why is not None and not isinstance(why, str):
+            why = "mirror_check_error"
+        if why is not None:
+            self.stats["mirror_problem_checks"] += 1
+            self.stats[f"mirror_problem_{codeify(why)}"] += 1
+        if self._mirror is None or self._mirror[1] != why:
+            self._event("mirror", problem=why)
+        self._mirror = (now, why)
+        return why
+
+    def _mirror_for_mark(self, T: int) -> str | None:
+        first = T not in self._mirror_marks
+        self._mirror_marks.add(T)
+        return self._mirror_problem(force=first)
+
     # -- the host interface
     def _sd_of(self, T: int, sd: int | None = None) -> int | None:
         if sd is not None:
@@ -780,7 +840,16 @@ class LiveSource:
     def mark_complete(self, T: int, sd: int | None) -> Certified:
         """The full tools.r4b_feed_merge.mark_complete result for mark T, truthy only when complete AND every row the window received has reached the host."""
         T = int(T)
+        bad = self._mirror_for_mark(T)
         w = self._wins.get(T)
+        if bad is not None:  # fail closed: the history below the window comes from the public stream
+            sd = self._sd_of(T, sd)
+            cert = certified(fm.Completeness(False, f"mirror:{bad}"))
+            self.certs[T] = cert
+            if self._last_reason.get(T) != cert.reason:
+                self._last_reason[T] = cert.reason
+                self._event("mark_complete", mark=T, complete=False, reason=cert.reason, sd=sd)
+            return cert
         if w is None:
             return certified(fm.Completeness(False, "no_window"))
         sd = self._sd_of(T, sd)
@@ -801,6 +870,10 @@ class LiveSource:
 
     def failed(self, T: int) -> str | None:
         T = int(T)
+        bad = self._mirror_for_mark(T)
+        if bad is not None:
+            # the reason is `mirror:<problem>` in mark_complete; the host logs only [a-z0-9_]{1,32}, so the code here is `mirror_<problem>`
+            return codeify(f"mirror_{bad}")
         w = self._wins.get(T)
         if w is None:
             return None
@@ -841,7 +914,7 @@ class LiveSource:
         """Names and counts only."""
         return {"schema": SCHEMA, "merger": self.merger.counts(), "host_merger": self.merger.host_counts(), "tape": dict(getattr(self._tape, "stats", {})),
                 "windows": len(self._wins), "marks_certified": sum(1 for c in self.certs.values() if c.complete), "marks_seen": len(self.certs),
-                "credit_days": self.cap.day_lines(), "stats": dict(self.stats)}
+                "credit_days": self.cap.day_lines(), "mirror_problem_now": None if self._mirror is None else self._mirror[1], "stats": dict(self.stats)}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------------ CLI
@@ -868,7 +941,7 @@ def check_args(a: argparse.Namespace) -> None:
 
 
 def cmd_run(a: argparse.Namespace, *, host_module: Any = None, ntp_runner: fm.Runner | None = None, now_ms: Callable[[], int] | None = None,
-            repo_sha: Callable[[], str] | None = None, source_hook: Callable[[LiveSource], None] | None = None) -> int:
+            repo_sha: Callable[[], str] | None = None, source_hook: Callable[[LiveSource], None] | None = None, mirror_check: Any = _AUTO) -> int:
     """Refusals first (args, a dirty tree, an unsynced clock), then build engine, log, merger, cap and LiveSource, and hand them to the host's run loop. DRY: the
     host holds no key and sends nothing."""
     check_args(a)
@@ -886,12 +959,17 @@ def cmd_run(a: argparse.Namespace, *, host_module: Any = None, ntp_runner: fm.Ru
     cap = fm.DailyCreditCap(a.daily_credit_cap, out / "glue" / "credit-cap.json")
     clock_point = getattr(engine, "clock_point", None)
     sd_fn = (lambda T: (clock_point(T) or (None,))[0]) if clock_point is not None else None
+    if a.mirror_check == "off":
+        mirror_check = None
+    need = a.mirror_need_hours if a.mirror_need_hours is not None else (a.catch_up_hours or None)  # the history the warm-up will read; else freshness only
     source = LiveSource(tape_dir=a.tape_dir, cap=cap, key_file=a.key_file, commitment=a.commitment, out_dir=out, catch_up_hours=a.catch_up_hours,
-                        now_ms=now_ms, require_ntp=False, sd_fn=sd_fn, merger=HostMerger())
+                        now_ms=now_ms, require_ntp=False, sd_fn=sd_fn, merger=HostMerger(), mirror_check=mirror_check, mirror_need_hours=need)
     source.ntp = ntp
+    source.start()  # the mirror refusal comes BEFORE the host writes its `start` row
     (out / "glue" / "run.json").write_text(json.dumps({"schema": SCHEMA, "change_id": a.change_id, "frozen_sha": sha, "trigger": a.trigger, "commitment": a.commitment,
                                                         "daily_credit_cap": a.daily_credit_cap, "catch_up_hours": a.catch_up_hours, "ntp": ntp.as_record(),
-                                                        "host_call": HOST_CALL, "live_built": LIVE_BUILT}, sort_keys=True, indent=1) + "\n")
+                                                        "host_call": HOST_CALL, "live_built": LIVE_BUILT, "mirror_check": a.mirror_check,
+                                                        "mirror_need_hours": need}, sort_keys=True, indent=1) + "\n")
     host = host_mod.DryHost(engine, log, source, out_dir=out, ntp_offset_ms=ntp.offset_ms, frozen_sha=sha)
     host.start()
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -923,6 +1001,10 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--catch-up-hours", type=int, default=0, help="read the tape from this many hours before the start (the engine's 52 h warm-up)")
     r.add_argument("--universe-min-mbt", type=int, default=None, help="members graduate at or after this epoch second (default: EXP-027's r4b_count.UNIVERSE_MIN_MBT)")
     r.add_argument("--max-marks", type=int, default=None)
+    r.add_argument("--mirror-check", default="auto", choices=("auto", "off"),
+                   help="auto: tools.tape_mirror.mirror_problem (PR #1147) must say fresh at start and before each mark (refused if the module is missing); "
+                        "off: the tape dir is not a mirror (recorded in run.json)")
+    r.add_argument("--mirror-need-hours", type=int, default=None, help="history hours the mirror must hold at start (default: --catch-up-hours, else freshness only)")
     return ap
 
 
@@ -933,7 +1015,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except Refused as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 2
-    except fm.ClockNotSynced as exc:
+    except (fm.ClockNotSynced, MirrorUnhealthy) as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 2
     except Exception as exc:  # noqa: BLE001 - LiveRefused (dirty tree, warm-up) and the host's own refusals: text only, never a URL or a key
