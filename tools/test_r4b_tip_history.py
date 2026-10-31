@@ -268,16 +268,6 @@ def test_io_goes_back_to_normal_when_catch_up_is_done(tmp_path):
     assert hg.ionice_cmd(7, True) == ["ionice", "-c3", "-p", "7"]
 
 
-def test_a_tip_skip_of_a_helius_owned_slot_is_a_fork_and_a_contradicted_skip_withdraws_it(tmp_path):
-    m = hg.TipMerger()
-    m.own(T, 1000, 1004)
-    m.tip_skip(1002)
-    m.tip_skip(1010)  # not owned
-    assert m.stats["fork_tip_skip"] == 1 and m.tip_forks == {1002: T}
-    m.tip_gap(tr.TipGap(1002, 1002, "skip_contradicted", None, 1))
-    assert m.stats["fork_withdrawn"] == 1 and not m.tip_forks
-
-
 # ------------------------------------------------------------------------------------------------------------------------------------ (f) twin rows
 def walker_stream() -> list:
     rows = [("create", {"type": "create", "mint": "M", "creator": "C", "slot": 10, "block_time": 1_000, "is_mayhem_mode": False})]
@@ -346,3 +336,126 @@ def test_cli_source_flag_and_tip_refusals(tmp_path):
     a.source = "mirror"
     with pytest.raises(hg.Refused, match="tape-dir"):
         hg.check_args(a)
+
+
+# ------------------------------------------------------------------------------------------------------------------------------------ reviewer fixes on #1155
+def test_a_fork_is_a_tip_skip_of_an_owned_slot_that_had_a_kept_helius_row():
+    m = hg.TipMerger()
+    m.own(T, 1000, 1004)
+    m.note_kept(T, [{"slot": 1002}])
+    m.tip_skip(1002)
+    m.tip_skip(1003)  # owned, but Helius delivered nothing: an ordinary skipped slot
+    m.tip_skip(1010)  # not owned
+    assert m.stats["fork_tip_skip"] == 1 and m.tip_forks == {1002: T} and m.stats["owned_skip_no_helius_row"] == 1
+    m.tip_gap(tr.TipGap(1002, 1002, "skip_contradicted", None, 1))
+    assert m.stats["fork_withdrawn"] == 1 and not m.tip_forks
+
+
+def test_released_helius_rows_go_in_slot_order_stably():
+    m = hg.TipMerger()
+    keep, a, b = m.split_helius([bd(1003, "c"), bd(1001, "a1"), bd(1002, "b"), bd(1001, "a2"), bd(1004, "x"), bd(1000, "y")], 1000, 1004)
+    assert [r["signature"] for r in keep] == ["a1", "a2", "b", "c"] and (a, b) == (1, 1)
+
+
+def test_b3_high_water_is_none_while_the_polls_rows_are_queued_and_the_host_cannot_decide_early(tmp_path):
+    """Reviewer probe: one poll of slots 990..1010 queues 21 rows and moves D to 1010; public_hw_slot() (the b3 test: hw >= sd + 1) must not say 1010 until the host
+    has consumed every one of those rows through the real queue."""
+    src, now, tip = make_source(tmp_path)
+    src.start()
+    tip.script = [(tip_items(990, 1010), 1010, True)]
+    src._ingest_tip_poll(now.ms)
+    assert len(src._pending) == 21 and src.merger.public_hw_slot() == 1010  # the merger's own value is already 1010 ...
+    sd = 1004
+    seen = []
+    while src._pending:
+        hw = src.public_hw_slot()
+        assert hw is None or hw < sd + 1, f"b3 would decide with {len(src._pending)} rows of the poll still queued"
+        seen.append(src._pending.popleft())
+    assert src.public_hw_slot() == 1010 and len(seen) == 21  # ... and the source says it only once the queue is empty
+
+
+def test_marks_that_never_release_free_their_window_rows(tmp_path):
+    src, now, tip = make_source(tmp_path)
+    src.start()
+    arm_window(src, now)
+    src._q.put((T, helius_rows(), now.ms))
+    src._drain_windows()
+    assert len(src._wbuf[T]) == 12 and T in src._clock_fed
+    deliver(src)
+    now.ms = (T + 30) * 1000
+    src._tick(now.ms)
+    assert T in src._wbuf  # inside the keep window (the host may still certify until T + 20 s)
+    now.ms = (T + hg.BUF_KEEP_S) * 1000
+    src._tick(now.ms)
+    assert T not in src._wbuf and T not in src._clock_fed and src.stats["marks_unreleased_freed"] == 1 and src.stats["helius_rows_unreleased_dropped"] == 12
+    src._q.put((T, helius_rows(), now.ms))  # rows that arrive for a finished, unreleased mark are not buffered again
+    src._drain_windows()
+    assert T not in src._wbuf and src.stats["helius_rows_unreleased_dropped"] == 12  # the second batch is all duplicates of the first (the Helius feed de-duplicates against itself) or dropped
+    for i in range(200):  # the release records are bounded too
+        src._rel[T + 3600 * (i + 1)] = {}
+    src._tick(now.ms)
+    assert len(src._rel) == hg.REL_KEEP
+
+
+def test_a_released_mark_keeps_nothing_in_the_buffer(tmp_path):
+    src, now, tip = make_source(tmp_path)
+    src.start()
+    arm_window(src, now)
+    now.ms = T * 1000 + 300
+    tip.script = [(tip_items(990, 1000), 1000, True)]
+    src._q.put((T, helius_rows(), now.ms))
+    for _ in range(5):
+        c = src.mark_complete(T, 1004)
+        deliver(src)
+        if c.complete:
+            break
+    assert c.complete and T not in src._wbuf and src.merger.owned_kept[T] == {1001, 1002, 1003}
+
+
+def live_host(records: list, watches: list | None = None):
+    return type("H", (), {"records": records, "_watches": watches or []})()
+
+
+def test_max_marks_counts_live_marks_only_and_waits_for_the_last_watch(tmp_path):
+    src, now, tip = make_source(tmp_path)
+    box = {"host": live_host([{"mark": T - 3600, "status": "abandoned"}])}
+    assert hg.tip_stop_when(box, src, 3) is False  # catch-up not over
+    src.catch_up_done_ms = T * 1000 - 1000
+    assert hg.tip_stop_when(box, src, None) is False  # no limit
+    assert hg.tip_stop_when(box, src, 1) is False  # the abandoned mark T - 1h fell during the catch-up: not live
+    box["host"].records += [{"mark": T, "status": "decided"}, {"mark": T + 3600, "status": "abandoned"}]
+    assert hg.tip_stop_when(box, src, 3) is False and hg.tip_stop_when(box, src, 2) is True
+    box["host"]._watches.append({"T": T + 3600})
+    assert hg.tip_stop_when(box, src, 2) is False  # the watch of the last counted mark is still open
+    assert hg.tip_stop_when({}, src, 1) is False
+
+
+def test_catch_up_done_is_recorded_without_ionice_and_stops_fadvise(tmp_path):
+    src, now, tip = make_source(tmp_path)
+    src.require_io_idle = False
+    stopped = []
+    tip.stop_fadvise = lambda: stopped.append(1)
+    src.start()
+    tip.script = [(tip_items(1, 3), 3, False), (tip_items(4, 5), 5, True)]
+    src._ingest_tip_poll(now.ms)
+    assert src.catch_up_done_ms is None
+    now.ms += 5
+    src._ingest_tip_poll(now.ms)
+    assert src.catch_up_done_ms == now.ms and stopped == [1] and src.stats["event_catch_up_done"] == 1
+
+
+def test_the_p_c3_smoke_script_is_plain_sh_keeps_the_rc_and_has_no_masking_pipe():
+    p = ROOT / "scripts" / "research" / "r4b-tip-smoke.sh"
+    txt = p.read_text()
+    assert subprocess.run(["sh", "-n", str(p)]).returncode == 0
+    assert txt.startswith("#!/bin/sh") and (p.stat().st_mode & 0o111) and "PIPESTATUS" not in txt and "[[" not in txt
+    cmd = [ln for ln in txt.splitlines() if "tools/r4b_host_glue.py run" in ln or ln.strip().startswith(("--key-file", "--change-id"))]
+    assert not any("|" in ln.replace("||", "") for ln in txt.splitlines() if not ln.lstrip().startswith("#")), "a pipe would hide the rc"
+    assert 'rc=$?' in txt and "exit $rc" in txt and '-I tools/r4b_host_glue.py run --source tip' in txt and "--max-marks" in txt and cmd
+    ok = subprocess.run(["sh", str(p)], capture_output=True, text=True, env={"HOME": "/nonexistent-home", "PATH": "/usr/bin:/bin"})
+    assert ok.returncode != 0  # no change_id: refused by ${1:?}
+
+
+import subprocess  # noqa: E402
+
+ROOT = Path(__file__).resolve().parents[1]

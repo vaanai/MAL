@@ -958,6 +958,8 @@ class LiveSource:
 TIP_LATE_STATUS = "late_tip"
 GAP_HISTORY_MS = 1_800_000  # a tip gap seen with a t_recv_ms older than this (catch-up) is recorded but writes no declog gap row: its 10-minute buy hold is over
 TIP_BATCH = 5_000
+BUF_KEEP_S = 60  # the host gives up the primary trigger at T + 20 s; a window closes at T + 10 s: after T + 60 s a mark's buffered Helius rows can never be released
+REL_KEEP = 48  # release records kept (the window table keeps 48 too)
 tip_mod = importlib.import_module("tools.r4b_tip_reader")
 
 
@@ -972,7 +974,8 @@ class TipMerger(HostMerger):
     def __init__(self, **kw: Any) -> None:
         super().__init__(**kw)
         self.owned: "OrderedDict[int, tuple]" = OrderedDict()  # mark -> (lo, hi, D, sd): the slots lo..hi the Helius window owns for that mark
-        self.tip_forks: dict[int, int] = {}  # slot -> mark: a tip skip of a Helius-owned slot (Bar 2 item 2)
+        self.tip_forks: dict[int, int] = {}  # slot -> mark: a tip skip of a Helius-owned slot that had a kept Helius row (Bar 2 item 2: a print the engine used)
+        self.owned_kept: dict[int, set] = {}  # mark -> slots of its owned range for which Helius rows were ingested
 
     def offer(self, source: str, row: Mapping[str, Any], now_ms: int | None = None) -> dict | None:
         if source != SOURCE_HELIUS:
@@ -1003,8 +1006,11 @@ class TipMerger(HostMerger):
         rng = (int(D) + 1, int(sd) - 1, int(D), int(sd))
         self.owned[int(T)] = rng
         while len(self.owned) > 64:
-            self.owned.popitem(last=False)
+            self.owned_kept.pop(self.owned.popitem(last=False)[0], None)
         return rng
+
+    def note_kept(self, T: int, rows: Sequence[Mapping[str, Any]]) -> None:
+        self.owned_kept.setdefault(int(T), set()).update(r["slot"] for r in rows if _is_int(r.get("slot")))
 
     def is_owned(self, slot: int) -> int | None:
         for T, (lo, hi, _, _) in self.owned.items():
@@ -1021,9 +1027,13 @@ class TipMerger(HostMerger):
 
     def tip_skip(self, slot: int) -> None:
         T = self.is_owned(slot) if self.owned else None
-        if T is not None:
+        if T is None:
+            return
+        if slot in self.owned_kept.get(T, ()):
             self.tip_forks[int(slot)] = T
             self.stats["fork_tip_skip"] += 1
+        else:
+            self.stats["owned_skip_no_helius_row"] += 1  # an ordinary skipped slot: Helius delivered nothing for it, the engine used no print
 
     def split_helius(self, rows: Sequence[Mapping[str, Any]], D: int, sd: int) -> tuple[list, int, int]:
         """(rows of slots in (D, sd), dropped as tip-owned (slot <= D), dropped as >= sd). A row without a slot is dropped as tip-owned (never guessed)."""
@@ -1036,6 +1046,7 @@ class TipMerger(HostMerger):
                 b += 1
             else:
                 keep.append(r)
+        keep.sort(key=lambda r: r["slot"])  # stable: arrival order inside a slot, slot order across slots
         self.stats["helius_dropped_tip_owned"] += a
         self.stats["helius_dropped_ge_sd"] += b
         self.stats["helius_owned_ingested"] += len(keep)
@@ -1049,7 +1060,7 @@ class TipMerger(HostMerger):
     def host_counts(self) -> dict:
         c = super().host_counts()
         c.update({k: self.stats[k] for k in ("tip_gaps", "tip_dropped_owned", "helius_dropped_tip_owned", "helius_dropped_ge_sd", "helius_owned_ingested", "fork_tip_skip",
-                                             "fork_withdrawn")}, forks_open=len(self.tip_forks))
+                                             "fork_withdrawn", "owned_skip_no_helius_row")}, forks_open=len(self.tip_forks))
         return c
 
 
@@ -1071,6 +1082,16 @@ class TipAdapter(FeedAdapter):
             self.stats["tip_clock"] += 1
             return [Mapped("clock", {"slot": row["slot"], "block_time": row["block_time"]})]
         return super().feed(row)
+
+
+def tip_stop_when(box: dict, source: Any, max_marks: int | None) -> bool:
+    """--source tip: stop once max_marks LIVE marks are recorded and no late_inputs watch is open. A live mark is one whose instant is at or after the moment the tip
+    reader caught up; a mark that fell during the catch-up (recorded abandoned) never counts. No limit when max_marks is None."""
+    host = box.get("host")
+    if max_marks is None or host is None or source.catch_up_done_ms is None:
+        return False
+    live = sum(1 for r in host.records if r["mark"] * 1000 >= source.catch_up_done_ms)
+    return live >= max_marks and not host._watches
 
 
 class _NoTape:
@@ -1114,6 +1135,8 @@ class TipLiveSource(LiveSource):
         self._wbuf: dict[int, list] = {}
         self._clock_fed: dict[int, dict[int, int]] = {}
         self._rel: dict[int, dict] = {}
+        self._catching_up = True
+        self.catch_up_done_ms: int | None = None  # set when the tip reader first caught up; a mark at or after it is a LIVE mark
         self.batch = max(self.batch, TIP_BATCH)
 
     # -- the tip side's health (ruling 2.1 item 5): status.json pins / event V / freshness, plus the reader's checkpoint problem
@@ -1174,9 +1197,13 @@ class TipLiveSource(LiveSource):
                     self.merger.pool_mints.setdefault(x["pool"], (x["mint"], x["quote_mint"]))
         if self.tip.released_D is not None:
             self.merger.tip_progress(self.tip.released_D)
-        if self._io_idle and self.tip.caught_up:  # catch-up is over: back to the normal I/O class for the live tail
-            self.io_hooks[1]()
-            self._io_idle = False
+        if self._catching_up and self.tip.caught_up:  # catch-up is over: back to the normal I/O class and no more fadvise for the live tail
+            self._catching_up, self.catch_up_done_ms = False, now
+            if self._io_idle:
+                self.io_hooks[1]()
+                self._io_idle = False
+            if hasattr(self.tip, "stop_fadvise"):
+                self.tip.stop_fadvise()
             self._event("catch_up_done", released_D=self.tip.released_D, rows=dict(self.tip.stats))
 
     def _read_public(self, now: int) -> None:  # the base loop's history read
@@ -1210,9 +1237,13 @@ class TipLiveSource(LiveSource):
                     continue
                 self._clock_row(T, e)
                 if rel is None:
-                    self._wbuf.setdefault(T, []).append(e)
-                else:  # a row that arrives after the release: owned slots still go in, the rest is dropped
+                    if now < (T + BUF_KEEP_S) * 1000:  # a mark that is over and never released does not buffer more
+                        self._wbuf.setdefault(T, []).append(e)
+                    else:
+                        self.stats["helius_rows_unreleased_dropped"] += 1
+                else:  # a row that arrives after the release: owned slots still go in (behind the rows already queued), the rest is dropped
                     keep, _, _ = self.merger.split_helius([e], rel["D"], rel["sd"])
+                    self.merger.note_kept(T, keep)
                     self._pending.extend(keep)
 
     def _eval(self, T: int, sd: int | None, snap: fm.WindowState) -> fm.Completeness:
@@ -1261,6 +1292,7 @@ class TipLiveSource(LiveSource):
             lo, hi, _, _ = self.merger.own(T, D, sd)  # type: ignore[arg-type]
             keep, a, b = self.merger.split_helius(self._wbuf.pop(T, []), D, sd)  # type: ignore[arg-type]
             self._pending.extend(keep)
+            self.merger.note_kept(T, keep)
             self._rel[T] = {"D": D, "sd": sd, "owned": [lo, hi], "n_owned_slots": max(0, hi - lo + 1), "kept": len(keep), "dropped_tip_owned": a, "dropped_ge_sd": b}
             self._event("owned", mark=T, **self._rel[T])
         cert = certified(c, "rows_in_flight" if self._pending else None)
@@ -1275,8 +1307,26 @@ class TipLiveSource(LiveSource):
         return super().failed(T)
 
     def public_hw_slot(self) -> int | None:
-        """The tip's G2 high-water slot (the b3 test: tip D >= sd + 1 with no open tip gap), None while the tip side is unhealthy."""
-        return None if self._tip_problem() is not None else self.merger.public_hw_slot()
+        """The tip's G2 high-water slot (the b3 test: tip D >= sd + 1 with no open tip gap), None while the tip side is unhealthy AND while any queued row has not
+        reached the host: the poll that moved D also queued its rows, and D must not be claimed before the engine holds every row of slots <= D (reviewer on #1155)."""
+        if self._pending or self._tip_problem() is not None:
+            return None
+        return self.merger.public_hw_slot()
+
+    # -- bounded memory: a mark that never releases (abandoned, late_tip, unhealthy tip) frees its window rows
+    def _gc_buffers(self, now: int) -> None:
+        for T in [t for t in self._wbuf if now >= (t + BUF_KEEP_S) * 1000]:
+            n = len(self._wbuf.pop(T))
+            self.stats["helius_rows_unreleased_dropped"] += n
+            self.stats["marks_unreleased_freed"] += 1
+        for T in [t for t in self._clock_fed if now >= (t + BUF_KEEP_S) * 1000]:
+            del self._clock_fed[T]
+        while len(self._rel) > REL_KEEP:
+            self._rel.pop(next(iter(self._rel)))
+
+    def _tick(self, now: int) -> None:
+        super()._tick(now)
+        self._gc_buffers(now)
 
     def report(self) -> dict:
         r = super().report()
@@ -1345,10 +1395,12 @@ def cmd_run(a: argparse.Namespace, *, host_module: Any = None, ntp_runner: fm.Ru
         mirror_check = None
     need = a.mirror_need_hours if a.mirror_need_hours is not None else (a.catch_up_hours or None)  # the history the warm-up will read; else freshness only
     host_kw: dict = {}
+    box: dict = {}
     if getattr(a, 'source', 'mirror') == "tip":
         tip = tip_mod.TipReader(getattr(a, 'tip_dir', tip_mod.DEFAULT_TIP_DIR), getattr(a, 'tip_state_dir', tip_mod.DEFAULT_STATE_DIR), start_ms=(now_ms or _wall_ms)(), catch_up_hours=a.catch_up_hours)
         source = TipLiveSource(tip=tip, tip_state_dir=getattr(a, 'tip_state_dir', tip_mod.DEFAULT_STATE_DIR), cap=cap, key_file=a.key_file, commitment=a.commitment, out_dir=out, now_ms=now_ms,
-                               require_ntp=False, sd_fn=sd_fn, require_io_idle=not getattr(a, 'no_ionice', False))
+                               require_ntp=False, sd_fn=sd_fn, require_io_idle=not getattr(a, 'no_ionice', False),
+                               stop_when=lambda: tip_stop_when(box, source, a.max_marks))
         host_kw = {"adapter": TipAdapter(), "late_status": TIP_LATE_STATUS,
                    "start_extra": {"feed_source": "tip", "history": "fast-0 tip tape", "window_owns": "(D, sd)", "tip_pins": dict(tip_mod.PINNED_BLOBS)}}
     else:
@@ -1363,6 +1415,7 @@ def cmd_run(a: argparse.Namespace, *, host_module: Any = None, ntp_runner: fm.Ru
                                                         "tip_dir": getattr(a, 'tip_dir', tip_mod.DEFAULT_TIP_DIR) if getattr(a, 'source', 'mirror') == "tip" else None, "no_ionice": bool(getattr(a, 'no_ionice', False))}, sort_keys=True, indent=1) + "\n")
     host = host_mod.DryHost(engine, log, source, out_dir=out, ntp_offset_ms=ntp.offset_ms, frozen_sha=sha, trigger=a.trigger, change_id=a.change_id, **host_kw)
     host.start()
+    box["host"] = host
     old = {}
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
@@ -1372,7 +1425,7 @@ def cmd_run(a: argparse.Namespace, *, host_module: Any = None, ntp_runner: fm.Ru
     if source_hook is not None:
         source_hook(source)
     try:
-        counts = host.run(max_marks=a.max_marks)
+        counts = host.run(max_marks=None if getattr(a, 'source', 'mirror') == "tip" else a.max_marks)  # tip: tip_stop_when counts live marks only
     finally:
         for sig, h in old.items():
             signal.signal(sig, h)
@@ -1400,7 +1453,9 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--change-id", required=True)
     r.add_argument("--catch-up-hours", type=int, default=0, help="read the tape from this many hours before the start (the engine's 52 h warm-up)")
     r.add_argument("--universe-min-mbt", type=int, default=None, help="members graduate at or after this epoch second (default: EXP-027's r4b_count.UNIVERSE_MIN_MBT)")
-    r.add_argument("--max-marks", type=int, default=None)
+    r.add_argument("--max-marks", type=int, default=None,
+                   help="stop after this many marks. --source mirror: marks recorded by the host, whatever their status. --source tip: LIVE marks only (a mark that falls during "
+                        "the catch-up is recorded as abandoned and does not count), and only once the last counted mark's late_inputs watch has closed")
     r.add_argument("--mirror-check", default="auto", choices=("auto", "off"),
                    help="auto: tools.tape_mirror.mirror_problem (PR #1147) must say fresh at start and before each mark (refused if the module is missing); "
                         "off: the tape dir is not a mirror (recorded in run.json)")
