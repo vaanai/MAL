@@ -4,6 +4,11 @@ Written 2026-10-31 (`date -u` 21:2xZ, mal-research-0), lane B, branch `claude/ha
 **No book has cleared the promotion gate. Nothing here says any bot or book makes money.** No API call was made for this lane (0 USD). The
 bars are in [PREREG.md](PREREG.md); this file is the idea, the build, the cost and the run plan.
 
+**Revision 1 (2026-10-31, after QP and reviewer on #1163 at feb88e37, before any paid call):** bars changed as listed at the top of PREREG.md
+(B5/B6 day-demeaned, impact haircut in B3/B4/B7/B8, new B9 per-replicate, B1 fails closed, disclosures and the verdict cap in PREREG section 8).
+Section 8 item 6 below is struck accordingly. The harness code, tests and PREREG move together; the cost table in section 5 is unchanged
+(no prompt changed: prompt sha256 as in the dry runs).
+
 ## 1. Idea, and what is new against the dead rows
 
 Rows read: `haiku-v3-2` (nightly playbook reflection with a shuffled-outcome placebo: learning about equal to placebo; the gain was a numeric
@@ -68,7 +73,7 @@ the v6 and v5 file hashes to equal the run's.
 `dry.json` sha256 `650b26dc8cf7a49d64d3846b6bf323dbb4f4d2c53b2d52372fc42a0345635603` (O1) and `18385819f97283e2d1f4d79428eb2fc1f3d96f0738483a4eda6e46c2e93cff97`
 (pilot), under `/data2/mal/scratch/haiku-v6/dry-full` and `dry-pilot` (regenerate with the `dry` command; prompt sha256 in the file).
 "v5 O1 measured rates" are 3.06505256 USD / 25,425 decisions and 0.57796121 USD / 210 reflections from the QP ruling's ledger split. v5 O1 cost
-3.7286 USD for three LLM arms; v6 has two and half the reflections. The reserve-rule bound is the caller's worst case (every byte a token, cache-write rate), not a forecast.
+3.7286 USD on its ledger for three LLM arms (that total includes the 0.0856299 USD pilot P1; the O1 calls alone were 3.64301377 USD); v6 has two and half the reflections. The reserve-rule bound is the caller's worst case (every byte a token, cache-write rate), not a forecast.
 
 **Caps (coded, tested):** pilot **1 USD** (`--max-days` set), O1 **8 USD** on the ledger (cumulative with the pilot; the v6 ledger is new and
 separate from v5's). `tools/haiku_caller` additionally stops any call whose worst case would cross the ledger budget. The 8 USD ceiling is about 2.7x
@@ -87,6 +92,7 @@ Working directory: a clean checkout at the merged sha (`git -C /home/claude/.mis
 3. (API, ceiling 8 USD cumulative) O1: the same `run` with `--reps 3`, no `--max-days`, `--budget-usd 8`, `--out-dir $S/run-o1`. A caller stop (exit 4) is rerun
    into a NEW `--out-dir` with the same ledger and store (saved calls replay at no cost). The pilot's requests are identical to O1's replicate 1 on days 1 to 3
    and replay (disclosed). One run per ledger (`ledger.jsonl.v6-run.lock`).
+   Spend conditions (QP): the approval note quotes the owner's 2026-10-28 API approval and both caps; record `ledger_summary` after the pilot and after O1.
 4. (no API) `/data/mal/venv/bin/python -m tools.haiku_v6_harness score --run-dir $S/run-o1 --triggers $E/triggers.jsonl --outcomes $E/outcomes.jsonl --out $S/score-o1.json`.
    Only a score with `o1_verdict_eligible` true (haiku, arms L and F, 3 replicates, no `--max-days`, el2) is the O1 verdict. Quant-proof reads it before any sentence about it.
 
@@ -104,7 +110,8 @@ here; the Lane A haircut formula is reported as a sensitivity only.
 3. The 50-boost decidability floor (PREREG section 3). Without it a learner that boosts 5 triggers could pass or fail on noise.
 4. P is code (random at L's rate), not an LLM arm. Dropping v5's shuffled-outcome LLM placebo saves about 1.2 USD (a third of v5's 3.7286 USD); L-F now carries the "does it learn" question.
 5. N = Lane A's model with the top-k match; it needs at least 300 fit rows, so N does nothing on the first few test days (L-N equals L-A on those days).
-6. Sized P&L is linear; no impact is applied in the bars. The haircut and break-even are report-only.
+6. ~~Sized P&L is linear; no impact is applied in the bars.~~ Struck by QP on #1163: the impact haircut (4 s^2 / q_post_trig on the extra slice) is now in B3, B4, B7, B8 and B9, and the raw and haircut views must both hold. Break-even stays report-only.
+7. (added after review) B5 and B6 are exposure-neutral (raw and day-demeaned), B9 asks for 2 of 3 replicates, B1 fails closed, and a PASS is capped at a candidate for a fresh-data pre-registration (PREREG sections 3, 4, 8).
 
 ## 9. Disclosures
 

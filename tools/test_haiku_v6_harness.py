@@ -1109,7 +1109,9 @@ def test_seals_are_inherited_from_v5(tmp_path):
 def test_prereg_document_pins_the_code_constants():
     doc = (Path(__file__).resolve().parents[1] / "docs" / "research" / "haiku-v6" / "PREREG.md").read_text()
     for needle in ("2,000 characters", "0.98", "0.95", "0.30", "1,000 draws", "seed 1", "8 USD", "1 USD", "flat 15%", "pressure-fail",
-                   "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "0154ee5b1898a091c6efd00085541a7df0d2d07f2377cd20b191039ab6641174",
+                   "B1", "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "16 booleans", "day-demeaned", "haircut", "4 s^2 / q_post_trig", "fresh-data",
+                   "winner's curse", "1,701 of the 2,825", "12 of the 33 test days", "982 triggers", "does **not** show that the bot learned",
+                   "fails closed", "at most half the O1 L-P per boost", "0154ee5b1898a091c6efd00085541a7df0d2d07f2377cd20b191039ab6641174",
                    "5f5b9b7bde0450d2e6aae6ff9829ec8c859688f316c1fe561b03f4f0cddd49a2", "33 test days", "ex_top3", "NOT_DECIDABLE",
                    str(h.MIN_TEST_BOOSTS)):
         assert needle in doc, needle

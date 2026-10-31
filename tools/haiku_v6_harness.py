@@ -543,7 +543,7 @@ def contrast6(mx: Mapping[str, float], my: Mapping[str, float], out: Mapping[str
 
 def score(run_dir: str | os.PathLike, triggers: Sequence[Trigger], outcomes: Mapping[str, Mapping[str, float]],
           counts: Mapping[str, Mapping[str, Any]] | None = None, placebo_draws: int = PLACEBO_DRAWS) -> dict[str, Any]:
-    """Kill-only offline verdict (PREREG.md). Bars B1-B8 under BOTH fail models; PASS_OFFLINE only if every bar holds."""
+    """Kill-only offline verdict (PREREG.md). Bars B1-B9 under BOTH fail models; PASS_OFFLINE only if every bar holds."""
     run_dir = Path(run_dir)
     dec = v5.load_decisions(run_dir)
     days_all = by_day(triggers)
