@@ -76,7 +76,7 @@ class Reject:
 
 @dataclass(frozen=True)
 class Mapped:
-    kind: str  # "trade" | "market" (unresolved PumpSwap row: market totals only) | "resolved" (that row once its mint is known: per-mint only) | "migration" | "create" | "gap" | "reject"
+    kind: str  # "clock" (clock only, tip-history host) | "trade" | "market" (unresolved PumpSwap row: market totals only) | "resolved" (that row once its mint is known: per-mint only) | "migration" | "create" | "gap" | "reject"
     row: Any  # dict (trade / migration / create), GapRecord, Reject
 
     @property
@@ -285,6 +285,8 @@ def apply(engine: Any, mapped: list, frn_fn: Any = None) -> list:
             engine.ingest_migration(mp.row)
         elif k == "create":
             engine.ingest_create(mp.row)
+        elif k == "clock":  # the tip-history host: sd(T) from a Helius row whose slot the tip tape owns (Engine.ingest_clock)
+            engine.ingest_clock(mp.row["slot"], mp.row["block_time"])
         else:
             held.append(mp)
     return held

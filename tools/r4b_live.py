@@ -740,6 +740,20 @@ class Engine:
             st.cslot = int(slot) if st.cslot is None else min(st.cslot, int(slot))
 
     # -- ingest: trades
+    def ingest_clock(self, slot: Any, bt: Any) -> None:
+        """CLOCK ONLY: one (slot, block_time second) pair for sd(T), with no market minute, no print, no max_slot. The tip-history host learns sd(T) from the Helius
+        window's first rows at or after T while the tip tape owns those slots (it will deliver the rows themselves later; ingesting them twice would double the market
+        minutes). Same update as _clock_mkt's clock part: the second keeps its smallest slot. Nothing else reads it back except clock_point / Prep.slot_at."""
+        if slot is None or bt is None:
+            return
+        bt = int(bt)
+        if bt > self._clock_hi:
+            self._clock_hi = bt
+        c = self.clock.get(bt)
+        if c is None or int(slot) < c:
+            self.clock[bt] = int(slot)
+        self._count("clock_only")
+
     def _clock_mkt(self, venue: Any, slot: Any, bt: Any, sol: Any) -> None:
         if slot is not None and int(slot) > self.max_slot:
             self.max_slot = int(slot)
