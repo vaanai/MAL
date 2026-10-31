@@ -31,6 +31,9 @@ SCOPE_MEM_MAX=3670016000   # MemoryMax=3500M in bytes (3500 * 1048576)
 M1_WAIT_S="${R4B_M1_WAIT_S:-120}"
 CGROOT="${R4B_CGROUP_ROOT:-/sys/fs/cgroup}"   # test hook only
 
+# 0. the user systemd bus (systemd-run --user and systemctl --user need XDG_RUNTIME_DIR in this job's environment)
+systemctl --user show -p Version > /dev/null 2>&1 || { echo "r4b-dry-long: no user systemd manager reachable (XDG_RUNTIME_DIR?); nothing started" >&2; exit 5; }
+
 # 1. M5: one host at a time, one declog per change_id
 LEFT=$(ps -eo pid,args | grep '[r]4b_host_glue')
 if [ -n "$LEFT" ]; then

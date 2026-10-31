@@ -362,7 +362,7 @@ def run(argv: list[str] | None = None, *, clock: Callable[[], float] = time.time
     scan = EventsScan(cfg.events or None)
     scope_first: float | None = hs["scope_first"]
     cg_cache: dict[str, str] = {}
-    misses, last_beat, warned_budget = 0, 0.0, False
+    misses, last_beat, warned_budget, warned_unit = 0, 0.0, False, False
     print(f"SIDECAR start change_id={cfg.change_id} utc={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(start))} hours={cfg.hours} out={cfg.out}"
           f" history_samples={len(hs['history'])} catchup_end_known={mon.catchup_end is not None}", file=out, flush=True)
     os.makedirs(os.path.dirname(os.path.abspath(cfg.out)), exist_ok=True)
@@ -371,6 +371,10 @@ def run(argv: list[str] | None = None, *, clock: Callable[[], float] = time.time
         while True:
             now = clock()
             s = collect(cfg, now, systemctl, cg_cache)
+            if not warned_unit and (s["follower_nrestarts"] is None or s["lag_slots"] is None):
+                warned_unit = True
+                print(f"WARN follower_state_unreadable: NRestarts={s['follower_nrestarts']} lag_slots={s['lag_slots']} (systemctl show {cfg.follower_unit} or {cfg.status_dir}/status.json"
+                      f" unreadable at the first sample: the restart / backlog / lag alerts are blind until it is)", file=out, flush=True)
             if s["scope_found"]:
                 misses = 0
                 scope_first = scope_first if scope_first is not None else now

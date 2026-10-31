@@ -19,6 +19,7 @@ esac
 D="$HOME/mal-data/r4b-dry/$CHANGE_ID"
 [ -f scripts/research/r4b_dry_sidecar.py ] || { echo "r4b-dry-sidecar: run from the install tree's root" >&2; exit 5; }
 mkdir -p "$D" || exit 5
+systemctl --user show -p Version > /dev/null 2>&1 || { echo "r4b-dry-sidecar: no user systemd manager reachable (XDG_RUNTIME_DIR?); the scope could not be followed" >&2; exit 5; }
 if [ -n "${R4B_RUN_END_EPOCH:-}" ]; then set -- --run-end-epoch "$R4B_RUN_END_EPOCH"; else set --; fi
 "$V/bin/python" -I scripts/research/r4b_dry_sidecar.py --change-id "$CHANGE_ID" --out "$D/sidecar.jsonl" --hours "$HOURS" --events "$D/out/host/events.jsonl" "$@"
 rc=$?

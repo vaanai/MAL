@@ -343,6 +343,14 @@ class Loop(unittest.TestCase):
             self.assertLessEqual(b["ts"] - a["ts"], 60.0)  # every <= 60 s
             self.assertGreater(b["ts"], a["ts"])
 
+    def test_a_first_sample_without_follower_state_warns_once(self):
+        self.control_group = "/user.slice/r4b-dry-x1.scope"
+        (self.state / "status.json").unlink()
+        rc, out, rows = self.go()
+        self.assertEqual(rc, 0)
+        self.assertEqual(out.count("WARN follower_state_unreadable"), 1)
+        self.assertIsNone(rows[0]["lag_slots"])
+
     def test_oom_kill_is_an_alert_with_exit_3(self):
         self.control_group = "/user.slice/r4b-dry-x1.scope"
         self.write_scope(anon=1_300_000_000, oom_kill=1)
