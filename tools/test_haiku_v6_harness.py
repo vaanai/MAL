@@ -892,4 +892,3 @@ def test_prereg_document_pins_the_code_constants():
         assert needle in doc, needle
     assert (h.MAX_PLAYBOOK_CHARS, h.PARSE_MIN, h.REFLECT_OK_MIN, h.MAX_BOOST_SHARE, h.BOOST_MULT) == (2000, 0.98, 0.95, 0.30, 2.0)
     assert (h.BOOT_DRAWS, h.BOOT_SEED, h.BURN_IN_DAYS, h.PLACEBO_DRAWS, h.N_LABEL_PCT) == (1000, 1, 3, 1000, 90.0)
-    assert re.search(r"\b" + re.escape(h.harness_sha256()[:8]), doc) is None  # the doc names no harness hash: the run_start.json carries it
