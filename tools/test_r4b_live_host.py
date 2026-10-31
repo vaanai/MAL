@@ -629,48 +629,196 @@ def datetime_hour(T):
     return datetime.fromtimestamp(T, tz=timezone.utc).strftime("%Y-%m-%dT%H")
 
 
-def synth_records(n_days=2, d_ws=5, sph=18000, host="mal-fast-0", pre=True, extra_marks=1):
-    """n_days of hourly marks (+ extra_marks of the next day so the last day is final), 200 ms slots, every mark decided with d_would_send = d_ws."""
-    recs, sd, base = [], 5000, 1_786_665_600  # 2026-08-14T00Z
+BASE = 1_786_665_600  # 2026-08-14T00Z
+
+
+def synth_records(n_days=2, d_ws=5, sph=18000, host="mal-fast-0", pre=True, extra_marks=1, start_h=0, warm=0, change_id="c1", trigger="certified"):
+    """n_days of hourly marks (+ extra_marks of the next day so the last day is final), 200 ms slots, every mark decided with d_would_send = d_ws. start_h: the host
+    started that many hours into the first date; warm: the first `warm` marks (counting from the start) are warm-up marks."""
+    recs, sd = [], 5000
     for h in range(24 * n_days + extra_marks):
-        T = base + 3600 * h
-        recs.append({"rec": "mark", "mark": T, "date": hh.utc_date(T), "status": "decided", "sd": sd, "bt_star": T, "hostname": host,
-                     "precompute": {"ran": pre, "rel_ms": -5000}, "processed": {"d_ready": 2, "d_decide": 4, "d_would_send": d_ws},
-                     "confirmed": {"d_ready": 3, "d_decide": 5, "d_would_send": d_ws + 1}})
-        sd += sph
+        T = BASE + 3600 * h
+        sd += sph if h else 0
+        if h < start_h:
+            continue
+        recs.append({"rec": "mark", "mark": T, "date": hh.utc_date(T), "status": "decided", "sd": sd, "bt_star": T, "hostname": host, "warmup": (h - start_h) < warm,
+                     "trigger": trigger, "change_id": change_id, "hold": None, "reason": None, "precompute": {"ran": pre, "rel_ms": -5000},
+                     "processed": {"d_ready": 2, "d_decide": 4, "d_would_send": d_ws}, "confirmed": {"d_ready": 3, "d_decide": 5, "d_would_send": d_ws + 1}})
     return recs
+
+
+def day(n):
+    return hh.utc_date(BASE + 86400 * n)
 
 
 def test_summary_go_no_go_over_at_least_48_marks():
     s = hh.summarize(synth_records(d_ws=5))
     assert (s["verdict"], s["n_counted"], s["n_provisional"], s["k_1_9_used"], s["go_qty"]) == ("GO", 48, 1, 9, 9.0)  # 5 + 4 <= round(1.9 / 0.2) = 9
+    assert s["read_date"] == day(1) and s["read_boundary_utc"] == "2026-08-16T00:00:00Z" and s["monitor_only"] is False and s["change_id"] == "c1"
     assert s["processed"]["d_would_send"] == {"n": 48, "p50": 5.0, "p90": 5.0} and s["confirmed"]["d_would_send"]["p50"] == 6.0
     assert hh.summarize(synth_records(d_ws=6))["verdict"] == "NO_GO"  # 6 + 4 = 10 > 9
     assert hh.summarize(synth_records(d_ws=6), decide_commitment="confirmed")["verdict"] == "NO_GO" and hh.summarize(synth_records(d_ws=4), decide_commitment="confirmed")["verdict"] == "GO"
-    assert hh.summarize(synth_records(n_days=2)[:-2])["verdict"] == "INSUFFICIENT"  # 47 marks counted: the last date is then not final, so none of its marks count
+    s47 = hh.summarize(synth_records(n_days=2)[:-2])  # 47 marks: the last date is then not final, so none of its marks count
+    assert s47["verdict"] == "INSUFFICIENT" and s47["n_counted"] == 24 and s47["monitor_only"] is True and s47["read_date"] is None
     assert hh.summarize(synth_records(host="mal-research-0"))["verdict"] == "INSUFFICIENT"
     assert hh.summarize(synth_records(host="mal-research-0"), require_host=None)["verdict"] == "GO"
     s = hh.summarize(synth_records(pre=False))
     assert s["verdict"] == "INSUFFICIENT" and s["n_counted"] == 0 and s["n_without_precompute"] == 49  # all 49 synthetic marks
     recs = synth_records(d_ws=5)
     for r in recs[10:14]:
-        r["status"], r["processed"]["d_would_send"] = "incomplete", None  # incomplete marks never count and never help
+        r["status"], r["reason"], r["processed"]["d_would_send"] = "abandoned", "bound_clock", None  # abandoned marks never count and never help
     s = hh.summarize(recs)
-    assert s["n_incomplete"] == 4 and s["n_counted"] == 44 and s["verdict"] == "INSUFFICIENT"
-    sl = synth_records(n_days=3, d_ws=5)  # a third day with slower slots: its k is smaller, and the verdict uses the smallest k of the counted dates
-    sd = sl[48]["sd"]
-    for i, r in enumerate(sl[48:]):
-        r["sd"] = sd + i * 15000  # 240 ms slots on day 3: k_1_9 = round(7.9) = 8
+    assert s["n_incomplete"] == 4 and s["n_abandoned"] == 4 and s["n_counted"] == 44 and s["verdict"] == "INSUFFICIENT"
+
+
+def test_summary_warmup_marks_never_count():
+    """Ruling (b2.1): during the warm-up the member universe is partial; its marks are left out (and a record that does not say it is past the warm-up too)."""
+    recs = synth_records(n_days=4, d_ws=6, warm=30)
+    for r in recs[:30]:
+        r["processed"]["d_would_send"] = 0  # a warm-up mark's latency looks better than it is
+    s = hh.summarize(recs)
+    assert s["n_warmup"] == 30 and s["n_counted"] == 66 and s["read_date"] == day(3)  # 18 (day 2) + 24 (day 3) = 42 < 48: the boundary after day 4
+    assert s["processed"]["d_would_send"] == {"n": 66, "p50": 6.0, "p90": 6.0} and s["verdict"] == "NO_GO"
+    s = hh.summarize(synth_records(n_days=3, d_ws=5, warm=30))
+    assert s["n_counted"] == 42 and s["verdict"] == "INSUFFICIENT" and s["monitor_only"] is True  # 42 counted marks by the end of day 3
+    unsure = synth_records(d_ws=5)
+    for r in unsure:
+        del r["warmup"]
+    s = hh.summarize(unsure)
+    assert s["n_warmup"] == 49 and s["n_counted"] == 0 and s["verdict"] == "INSUFFICIENT"  # no flag: not vouched for
+
+
+def test_summary_is_read_once_at_the_first_date_boundary_with_48_counted_marks():
+    """Ruling (b2.3): the verdict is taken over all counted marks up to the first boundary with >= 48; later marks never change it."""
+    base = hh.summarize(synth_records(n_days=2, d_ws=5))
+    assert base["verdict"] == "GO"
+    later = synth_records(n_days=4, d_ws=5)
+    for r in later[48:]:
+        r["processed"]["d_would_send"] = 40  # days 3 and 4 would be a NO_GO if they counted
+    s = hh.summarize(later)
+    assert s["verdict"] == "GO" and s["read_date"] == day(1) and s["n_counted"] == 48 and s["n_after_read"] == 48
+    assert {k: s[k] for k in ("verdict", "k_1_9_used", "go_qty", "processed", "per_date")} == {k: base[k] for k in ("verdict", "k_1_9_used", "go_qty", "processed", "per_date")}
+    # the smallest k_1_9 of the counted dates: day 2 with 250 ms slots (k = round(7.6) = 8), day 1 with 200 ms (k = 9)
+    sl = synth_records(n_days=3, d_ws=5)
+    sd0 = sl[24]["sd"]
+    for i, r in enumerate(sl[24:]):
+        r["sd"] = sd0 + i * 14400
     s = hh.summarize(sl)
-    assert s["per_date"][hh.utc_date(sl[60]["mark"])]["k_1_9"] == 8 and s["k_1_9_used"] == 8 and s["verdict"] == "NO_GO"  # 5 + 4 = 9 > 8
+    assert s["per_date"][day(0)]["k_1_9"] == 9 and s["per_date"][day(1)]["k_1_9"] == 8 and s["k_1_9_used"] == 8 and s["verdict"] == "NO_GO"  # 5 + 4 = 9 > 8
+    assert s["read_date"] == day(1) and day(2) not in s["per_date"]
+    # a boundary reached only on day 3 (day 1 has 24, day 2 loses 6 marks to held ones): read there
+    h = synth_records(n_days=3, d_ws=5)
+    for r in h[24:30]:
+        r["status"], r["hold"] = "decided_held", "credit_cap"
+    s = hh.summarize(h)
+    assert s["n_counted"] == 66 and s["read_date"] == day(2) and s["verdict"] == "GO"
 
 
-def test_summary_cli_prints_counts_only(tmp_path, capsys):
-    p = tmp_path / "lat.jsonl"
-    p.write_text("".join(json.dumps(r) + "\n" for r in synth_records()))
-    assert hh.main(["summarize", "--latency", str(p)]) == 0
+def test_summary_leaves_a_date_out_only_for_a_non_final_slot_s_and_reports_every_date():
+    """Ruling (b2.2): a date is left out because its slot_s is not final, never because of its marks' latency."""
+    s = hh.summarize(synth_records(n_days=3, start_h=5))  # started 05:00 on date 1: 19 hours measured there
+    d = s["dates"]
+    assert sorted(d) == [day(0), day(1), day(2), day(3)]
+    assert d[day(0)] == {"n_marks": 19, "n_counted_candidates": 0, "slot_s": d[day(0)]["slot_s"], "slot_s_hours": 19, "final": False, "left_out": "slot_s_not_final"}
+    assert d[day(3)]["left_out"] == "slot_s_not_final" and d[day(1)]["left_out"] is None and d[day(2)]["final"] is True
+    assert s["n_counted"] == 48 and s["read_date"] == day(2) and s["n_provisional"] == 20 and s["verdict"] == "GO"
+    slow = synth_records(n_days=3, d_ws=5)
+    for r in slow[24:48]:
+        r["processed"]["d_would_send"] = 50  # day 2 is terrible: it is still counted (final), and it decides the verdict
+    s = hh.summarize(slow)
+    assert s["dates"][day(1)]["left_out"] is None and s["per_date"][day(1)]["n"] == 24 and s["verdict"] == "NO_GO" and s["processed"]["d_would_send"]["p50"] == 27.5
+
+
+def test_summary_excludes_held_late_public_and_abandoned_marks_and_reports_them_by_reason():
+    """Ruling (b2.4): held and abandoned marks leave the p50 (C0 sends nothing on them); late_public ones too (exits only)."""
+    recs = synth_records(n_days=3, d_ws=5)
+    for r in recs[24:27]:
+        r.update(status="decided_held", hold="credit_cap")
+        r["processed"]["d_would_send"] = 99
+    for r in recs[27:29]:
+        r.update(status="late_public", reason="bound_incomplete")
+        r["processed"]["d_would_send"] = 99
+    recs[29].update(status="abandoned", reason="failed_unspecified")
+    recs[29]["processed"]["d_would_send"] = None
+    s = hh.summarize(recs)
+    assert s["excluded"] == {"abandoned:failed_unspecified": 1, "held:credit_cap": 3, "late_public:bound_incomplete": 2}
+    assert (s["n_held"], s["n_late_public"], s["n_abandoned"], s["n_incomplete"], s["n_decided"]) == (3, 2, 1, 3, 70)
+    assert s["n_counted"] == 66 and s["read_date"] == day(2) and s["verdict"] == "GO" and s["processed"]["d_would_send"]["p90"] == 5.0
+
+
+def test_summary_reads_one_change_id_and_one_trigger():
+    a, b = synth_records(change_id="c1"), synth_records(change_id="c2", d_ws=9)
+    s = hh.summarize(a + b)
+    assert s["verdict"] == "INSUFFICIENT" and any("several change_ids" in n for n in s["notes"]) and s["change_id"] is None
+    assert hh.summarize(a + b, change_id="c1")["verdict"] == "GO" and hh.summarize(a + b, change_id="c2")["verdict"] == "NO_GO"  # 9 + 4 > 9
+    assert hh.summarize(a + b, change_id="c1")["n_records_other_change_id"] == 49
+    none = synth_records()
+    for r in none:
+        del r["change_id"]
+    s = hh.summarize(none)
+    assert s["verdict"] == "INSUFFICIENT" and any("no change_id" in n for n in s["notes"])
+    mixed = synth_records()
+    for r in mixed[:24]:
+        r["trigger"] = "guard"
+    s = hh.summarize(mixed)
+    assert s["verdict"] == "INSUFFICIENT" and s["triggers"] == ["certified", "guard"] and any("one trigger per run" in n for n in s["notes"])
+
+
+def test_summary_reports_the_late_inputs_of_the_watched_marks():
+    recs = synth_records()
+    late = [{"rec": "mark_late", "mark": r["mark"], "late_inputs": 0, "late": False, "watch_complete": True, "fault_sd_changed_without_late": False} for r in recs[:40]]
+    late[3].update(late_inputs=3, late=True)
+    late[7].update(late_inputs=1, late=True, watch_complete=False)
+    s = hh.summarize(recs + late)
+    assert s["late_inputs"] == {"n_watched": 40, "n_late_marks": 2, "late_inputs_total": 4, "n_watch_incomplete": 1, "n_unwatched_decided": 9, "n_fault_sd_changed_without_late": 0}
+    assert s["verdict"] == "GO"  # late marks are decided marks: they count; Bar 1 attributes their differences
+    late[9]["fault_sd_changed_without_late"] = True
+    s = hh.summarize(recs + late)
+    assert s["late_inputs"]["n_fault_sd_changed_without_late"] == 1 and any("code fault" in n for n in s["notes"])
+
+
+def write_lat(path, recs):
+    path.write_text("".join(json.dumps(r) + "\n" for r in recs))
+    return path
+
+
+def test_the_go_no_go_is_read_once_per_change_id(tmp_path):
+    lat = write_lat(tmp_path / "latency.jsonl", synth_records(change_id="c1") + synth_records(change_id="c2", d_ws=9))
+    ins = write_lat(tmp_path / "short.jsonl", synth_records(n_days=1, change_id="c1"))
+    r = hh.read_go_no_go(ins, change_id="c1")
+    assert r["verdict"] == "INSUFFICIENT" and not (tmp_path / "reads.jsonl").exists()  # not a read: nothing recorded, may be asked again
+    assert hh.read_go_no_go(ins, change_id="c1")["verdict"] == "INSUFFICIENT"
+    r = hh.read_go_no_go(lat, change_id="c1")
+    assert r["verdict"] == "GO" and r["read_recorded"] is True
+    reads = [json.loads(x) for x in (tmp_path / "reads.jsonl").read_text().splitlines()]
+    assert len(reads) == 1 and reads[0]["change_id"] == "c1" and reads[0]["verdict"] == "GO" and reads[0]["n_counted"] == 48 and reads[0]["read_boundary_utc"] == "2026-08-16T00:00:00Z"
+    with pytest.raises(lv.LiveRefused, match="already read"):
+        hh.read_go_no_go(lat, change_id="c1")  # a second read with the same change_id
+    assert hh.read_go_no_go(lat, change_id="c2")["verdict"] == "NO_GO"  # a declared change (another change_id on its own records) has its own read
+    assert [json.loads(x)["change_id"] for x in (tmp_path / "reads.jsonl").read_text().splitlines()] == ["c1", "c2"]
+    with pytest.raises(lv.LiveRefused, match="change_id must match"):
+        hh.read_go_no_go(lat, change_id="a b")
+    # a NO_GO is not re-read until a change is declared: the same change_id again is refused, and so is a growing file
+    grown = write_lat(tmp_path / "grown.jsonl", synth_records(n_days=3, change_id="c2", d_ws=9))
+    with pytest.raises(lv.LiveRefused, match="already read"):
+        hh.read_go_no_go(grown, change_id="c2", reads_path=tmp_path / "reads.jsonl")
+
+
+def test_summary_cli_reads_once_and_a_rehearsal_records_nothing(tmp_path, capsys):
+    p = write_lat(tmp_path / "lat.jsonl", synth_records())
+    assert hh.main(["summarize", "--latency", str(p), "--change-id", "c1"]) == 0
     out = json.loads(capsys.readouterr().out)
-    assert out["verdict"] == "GO" and out["schema"] == hh.SCHEMA
+    assert out["verdict"] == "GO" and out["schema"] == hh.SCHEMA and out["read_recorded"] is True
+    assert hh.main(["summarize", "--latency", str(p), "--change-id", "c1"]) == 2  # the second read
+    assert "already read" in json.loads(capsys.readouterr().out)["refused"]
+    assert hh.main(["summarize", "--latency", str(p), "--change-id", "c1", "--min-marks", "5"]) == 2  # no lowered bar for a read
+    assert "--min-marks is 48" in json.loads(capsys.readouterr().out)["refused"]
+    (tmp_path / "rehearsal").mkdir()
+    p2 = write_lat(tmp_path / "rehearsal" / "lat.jsonl", synth_records(host="mal-research-0"))
+    assert hh.main(["summarize", "--latency", str(p2), "--change-id", "c1", "--any-host", "--min-marks", "5"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["rehearsal"] is True and out["verdict"] == "GO" and not (tmp_path / "rehearsal" / "reads.jsonl").exists()
+    assert hh.main(["summarize", "--latency", str(p2), "--change-id", "c1", "--any-host"]) == 0  # and may be repeated
 
 
 # ------------------------------------------------------------------------------------------------------------------------------- seals and no send path
