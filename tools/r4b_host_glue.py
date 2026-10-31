@@ -1179,7 +1179,10 @@ class TipLiveSource(LiveSource):
 
     # -- the tip stream
     def _ingest_tip_poll(self, now: int) -> None:
+        prev_problem = self.tip.problem
         items = self.tip.poll(self.batch)
+        if self.tip.problem != prev_problem:
+            self._tip_status = None  # the reader's problem changed (set, cleared or latched): do not serve the cached health for up to the TTL
         for kind, x in items:
             if kind == "gap":
                 self.merger.tip_gap(x)
@@ -1196,8 +1199,6 @@ class TipLiveSource(LiveSource):
                 self._pending.append({"type": "tip", "tip_kind": kind, "w": x, "t_recv_ms": x.get("t_recv_ms")})
                 if kind == "migration" and isinstance(x.get("pool"), str) and x.get("mint") and x.get("quote_mint"):
                     self.merger.pool_mints.setdefault(x["pool"], (x["mint"], x["quote_mint"]))
-        if self._tip_status is not None and self._tip_status[1] in tip_mod.RECOVERABLE_PROBLEMS and self.tip.problem is None:
-            self._tip_status = None  # recovered: do not wait out the status TTL
         if self.tip.released_D is not None:
             self.merger.tip_progress(self.tip.released_D)
         if self._catching_up and self.tip.caught_up:  # catch-up is over: back to the normal I/O class and no more fadvise for the live tail
@@ -1304,6 +1305,14 @@ class TipLiveSource(LiveSource):
         if cert.complete and w.complete_at is None:
             w.complete_at = self.now_ms()
         return self._note(T, cert, sd)
+
+    def _mirror_for_mark(self, T: int) -> str | None:
+        """The tip problem that makes mark T fail NOW: status and latched problems. A recoverable checkpoint problem does not (the mark is not certified either way: the
+        reader is not caught up while its poll fails, and public_hw_slot() is None; the next poll may recover it inside the mark's 20 s)."""
+        first = T not in self._mirror_marks
+        self._mirror_marks.add(T)
+        why = self._tip_problem(force=first)
+        return None if why in tip_mod.RECOVERABLE_PROBLEMS else why
 
     def failed(self, T: int) -> str | None:
         bad = self._mirror_for_mark(int(T))
