@@ -309,10 +309,10 @@ def test_a_walker_row_and_its_tip_twin_give_byte_equal_engine_state_and_rows_md5
         fa.apply(b, ad.feed({"type": "tip", "tip_kind": kind, "w": twin}))
     assert state_of(a) == state_of(b) and a.mints["M"].mslot == 20 and len(a.mints["M"].prints["slot"]) == 20
     assert ad.pools["POOL"] == ("M", WSOL)
-    ra, rb = a.decide(3600, certified_sd=None) if False else None, None  # no mark has members yet: the md5 of an empty decision is compared below
-    for e in (a, b):
-        e.ingest_trade({"venue": "pumpswap", "mint": "M", "trader": "z", "side": "buy", "sol_lamports": 1, "token_raw": 1, "quote_reserve": 1, "base_reserve": 1, "pool": "POOL",
-                        "slot": 5000, "signature": "z", "event_index": 0, "tx_index": 0, "block_time": 3_700, "virtual_quote_reserves": 17_600_000_000})
+    for e in (a, b):  # two clock seconds at or after the mark, so the guard path can decide (no member has 10 minutes of age: the decision rows are empty on both sides)
+        for i, bt in enumerate((3_700, 3_701)):
+            e.ingest_trade({"venue": "pumpswap", "mint": "M", "trader": "z", "side": "buy", "sol_lamports": 1, "token_raw": 1, "quote_reserve": 1, "base_reserve": 1,
+                            "pool": "POOL", "slot": 5000 + i, "signature": f"z{i}", "event_index": 0, "tx_index": 0, "block_time": bt, "virtual_quote_reserves": 17_600_000_000})
     x, y = a.decide(3600), b.decide(3600)
     assert lv.rows_md5(x.mints, x.T, x.sdv, x.X, x.score) == lv.rows_md5(y.mints, y.T, y.sdv, y.X, y.score) and x.sd == y.sd
 
