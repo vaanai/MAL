@@ -46,7 +46,11 @@ Disclosed, not measured
   * A duplicate that arrives after its key left the dedup window is emitted again; rows below the window's horizon at arrival are counted (below_horizon).
   * One thread (asyncio), like the engine. Frames of one window are handled in order.
   * Credit accounting counts every received payload byte (acks and slot notices included) at 3 credits per 0.1 MB; it is an estimate of the Helius meter, not the meter.
-  * The cap file is flushed every persist_every_bytes (1 MB, about 3 credits x 10) and at each window end, so a kill can lose at most that much of the count.
+  * The cap file is flushed every persist_every_bytes (1 MB, which is 30 credits at the 3-credit rate) and at each window end, so a kill can lose at most that much
+    of the count. Reaching the cap is written at once.
+  * The tips are the PROCESSED tip whatever commitment the logs use: slotSubscribe has no commitment parameter (the probe's "processed tip"). With commitment
+    "confirmed" the logs arrive later than the tip, so a window on it is complete later; the lane's pre-declaration of which commitment decides is Proof 3's.
+  * The dedup window is in SLOTS (the chain's time axis), not wall time, so the replay speed of the bulk history cannot evict a key early; a hard key cap bounds memory.
 """
 
 from __future__ import annotations
@@ -128,6 +132,7 @@ class WindowState:
     failure: str | None = None
     failure_ms: int | None = None
     opened_late_ms: int = 0
+    counters: dict = field(default_factory=dict)  # arena_feed.rows_from_notice's counters (e.g. bonding_extras_mismatch), copied at the end of run()
 
     def fail(self, kind: str, at_ms: int) -> None:
         if self.failure is None:  # the first failure stands
@@ -143,7 +148,7 @@ class WindowState:
                 "armed_ms": self.armed_ms, "first_note_ms": self.first_note_ms, "closed_ms": self.closed_ms, "close_reason": self.close_reason,
                 "tips": [[r, s] for r, s in self.tips], "notes": self.notes, "rows": self.rows, "bad_frames": self.bad_frames,
                 "decode_errors": self.decode_errors, "cross_dedup": self.cross_dedup, "failure": self.failure, "failure_ms": self.failure_ms,
-                "opened_late_ms": self.opened_late_ms}
+                "opened_late_ms": self.opened_late_ms, "counters": dict(self.counters)}
 
 
 @dataclass(frozen=True)
@@ -717,6 +722,7 @@ class HeliusWindow:
         except Exception as exc:  # noqa: BLE001 - the message may carry the URL: only the class is kept
             st.fail("connect_failed" if st.connected_ms is None else f"closed_early:{type(exc).__name__}", self._now())
         st.closed_ms = self._now()
+        st.counters = dict(self.counters)
         if st.close_reason is None:
             st.close_reason = "failed" if st.failure else "deadline"
         if self.cap is not None:

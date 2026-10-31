@@ -639,6 +639,7 @@ def test_a_real_conversion_window_feeds_the_merger_and_the_adapter_without_rejec
     w, _ = window(clock, script(extra=extra), to_rows=None, pool_mints=mg.pool_mints, on_rows=lambda rows, ms: mg.offer_many("helius", rows, ms))
     st = run(w)
     assert st.failure is None and st.rows == 2 and mg.stats["emitted_helius"] == 2
+    assert isinstance(st.as_record()["counters"], dict)
     pub_copy = af.rows_from_notice(RawNotice(slot=1001, signature=SIG, failed=False, logs=(fx("pumpswap_buy_event.b64"),), t_recv_ms=(T - 30) * 1000 + 1_400,
                                              commitment="confirmed", feed="public_rpc_logs"), {}, Counter())
     assert mg.offer_many("public", pub_copy) == [] and mg.stats["dup_helius_then_public"] == 1
