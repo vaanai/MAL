@@ -779,12 +779,21 @@ Leap status     : {leap}
 """
 
 
-def runner(td=(0, "yes\n"), chrony=(0, CHRONY.format(off="0.000012345", side="fast", leap="Normal"))):
+TIMESYNC = """       Server: 192.0.2.1 (ntp.example)
+         Leap: normal
+       Offset: {off}
+        Delay: 40.398ms
+"""
+
+
+def runner(td=(0, "yes\n"), chrony=(0, CHRONY.format(off="0.000012345", side="fast", leap="Normal")), ts=(127, "")):
     calls = []
 
     def run_(argv, timeout):
         calls.append((list(argv), timeout))
-        return td if argv[0] == "timedatectl" else chrony
+        if argv[0] == "timedatectl":
+            return ts if argv[1] == "timesync-status" else td
+        return chrony
     run_.calls = calls
     return run_
 
@@ -815,9 +824,24 @@ def test_require_synced_raises_when_unsynced_unreadable_or_over_the_bound(r, why
         fm.require_synced(runner=r)
 
 
-def test_chrony_is_optional_and_the_bound_is_a_parameter():
-    s = fm.require_synced(runner=runner(chrony=(127, "")))
-    assert s.synced is True and s.offset_ms is None and "chronyc rc=127" in s.detail
+def test_without_chrony_the_timesyncd_offset_is_read_and_an_unknown_offset_fails_closed():
+    """Reviewer on #1142: a systemd-timesyncd host has no chronyc; the offset comes from `timedatectl timesync-status`, and with no offset at all the check
+    refuses (an unknown offset is not a small one)."""
+    s = fm.require_synced(runner=runner(chrony=(127, ""), ts=(0, TIMESYNC.format(off="-1.042ms"))))
+    assert s.synced is True and s.offset_ms == pytest.approx(-1.042) and "timesync-status offset=-1.042ms" in s.detail
+    assert fm.parse_timesync(TIMESYNC.format(off="+250us")) == pytest.approx(0.25) and fm.parse_timesync(TIMESYNC.format(off="1.2s")) == pytest.approx(1200.0)
+    with pytest.raises(fm.ClockNotSynced, match="exceeds 50"):
+        fm.require_synced(runner=runner(chrony=(127, ""), ts=(0, TIMESYNC.format(off="+75.5ms"))))
+    with pytest.raises(fm.ClockNotSynced, match="offset unknown"):
+        fm.require_synced(runner=runner(chrony=(127, "")))  # neither source gives an offset
+    with pytest.raises(fm.ClockNotSynced, match="offset unknown"):
+        fm.require_synced(runner=runner(chrony=(127, ""), ts=(0, "Server: x\nLeap: normal\n")))
+    r = runner()
+    fm.ntp_status(r)
+    assert ["timedatectl", "timesync-status"] not in [c[0] for c in r.calls]  # chrony gave the offset: timesyncd is not asked
+
+
+def test_the_bound_is_a_parameter():
     with pytest.raises(fm.ClockNotSynced):
         fm.require_synced(max_offset_ms=0.001, runner=runner())
     assert fm.parse_chrony("nothing useful here") == (None, None)
@@ -840,3 +864,15 @@ def test_no_live_path_no_send_and_no_key_in_the_module():
     for word in ("probe_live", "LiveExecutor", "Keypair", "sendTransaction", "send_transaction", "private_key", "getBlock", "print("):
         assert word not in src, word
     assert src.count("api-key=") == 1  # only the URL builder (read_url) names the query parameter, and it reads the key from the file inside the call
+
+
+def test_a_transaction_that_relands_in_another_slot_is_a_fork_not_a_duplicate():
+    """Reviewer on #1142: a processed print seen in slot 100 (window) whose slot forked away and whose transaction re-landed in slot 103 (public) is not a
+    plain duplicate: it is counted as fork_reslot (a Bar 1 difference), recorded with both slots, and not emitted twice."""
+    mg = fm.Merger(clock_ms=lambda: 5)
+    row = {"type": "trade", "signature": "SIGF", "event_index": 0, "slot": 100, "prog": "pumpswap"}
+    assert mg.offer("helius", row) is not None
+    assert mg.offer("public", {**row, "slot": 103}) is None
+    assert mg.stats["fork_reslot"] == 1 and mg.stats["dup"] == 0 and mg.counts()["fork_reslot"] == 1
+    assert mg.forks == [{"key": ["SIGF", "trade", 0], "first_slot": 100, "first_source": "helius", "later_slot": 103, "later_source": "public", "ms": 5}]
+    assert mg.offer("public", {**row, "slot": 100}) is None and mg.stats["dup"] == 1  # same slot again: a plain duplicate
