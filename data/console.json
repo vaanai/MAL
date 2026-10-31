@@ -1,8 +1,15 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-10-31T04:52:28Z",
+ "updated_utc": "2026-10-31T07:49:49Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "haiku-v5-o1-killed-1031",
+   "kind": "result",
+   "title": "Haiku v5 O1 (job #1914): KILL_OFFLINE confirmed by QP; v5 ends dead as frozen (in-sample exploration)",
+   "detail": "Source: QP-RULING-1031-haiku-v5-o1 (sha256 b5ad07ba707ba064c3eafeae23871c0a7b9f4dc463e641376d4ddf375dbc14c3), job #1914 at harness 8c50699b (harness sha256 149508f1f472878f81e62cc048f71b32fd40fa74056fc5b5f468ce0eeea074c4), score-o1.json sha256 5ece031ce95b6e5f8dd7726aa3ca317db7621ce1288d2c6ed5f09545d174d16f (QP re-ran the score at the same harness bytes: identical JSON), docs/research/haiku-v5/DESIGN.md, notebook n_NPfMsxmY78NqXA. Cost: ledger total 3.7286 USD (3.72864367 USD; decide 3.06505256 USD for 25,425 calls, reflect 0.57796121 USD for 210 calls, P1 0.0856299 USD). All numbers are IN-SAMPLE, from exploration days (explore-0814, fresh-0903, exp011-0909, fast-pool-0918, oracle-insample-0922) that 14+ families have already read; none of it is gate evidence. 33 test days, 2619 test triggers, 0.1 SOL stake, basis el2. Verdict: 11 of 12 pre-registered bars fail under both fail models (flat 15% and pressure); even with B1 waived, 10 bars still fail. Arm totals over the 33 test days, SOL (flat / pressure): A (base, unfiltered) 33.639782713204504 / 29.95236332195579; F (frozen copy, mean of 3) 32.09455674597811 / 28.660895005794057; L (learner, mean of 3) 29.716698174163124 / 26.38810379838566; N (numeric matched veto) 28.973127000101808 / 26.330031787184375; P (placebo, mean of 3) 27.592156591763082 / 24.564834157198394. The order is A > F > L > N > P under both fail models: every filter is below the unfiltered base, learning is below the frozen copy (L - F flat -2.3779, bootstrap lower bound -0.172092584362476), and the placebo is lowest. L - P is +2.124541582400043 flat in total but its bootstrap lower bound is -0.02303368724228425 flat / -0.022493491207267017 pressure and its late half is -0.2510549658924748 flat / -0.19980122155550517 pressure, so the margin comes from the placebo skipping more, not from selection. B5 (L vs A and random) fails: total -3.9230845390413798 flat / -3.5642595235701267 pressure. B1 failed on reflection format, not on parsing (parse minimum 0.9943362831858407): 59 of 210 reflections wrote playbooks of 2,502 to 2,925 characters, over the declared 2,500-character cap; all 210 stopped at end_turn, with 0 max_tokens stops and 0 timeouts. Lesson: right skew. The base outcome is right-skewed, so every arm's skipped trades averaged above the day mean (pooled, flat: L 628 skips, mean skipped 0.018741 against day mean 0.016899; P 1127, 0.016098 against 0.013417; F 216, 0.021461 against 0.012828; N 209, 0.022328 against 0.016850) even though most skips were individually below it (share below 0.661, 0.665, 0.602, 0.713). A veto with a 60 to 74% hit rate still removes enough tail winners to lose SOL, and the loss grew with skip count (flat X - A: L1 68 skips -2.26491; L2 412 -6.47834; P1 589 -8.2094). Reflection mostly raised the skip count, not selection. No salvage: the numeric veto N is below base (-4.666655713102697 flat) and is the dead-pool-veto family v3 already carries; 5 reps and thinking-on are not funded; a second trigger would be a new idea with its own library row. Revive trigger: none for v5 as frozen; a new version must first show on exploration data that its skipped trades average below the day mean at a matched skip count, under both fail models, ex best day. Library: haiku-v5-o1 is dead-as-frozen. Not measured: no out-of-sample day, no forward trade, no impact at other stakes; the per-skip diagnostics are QP's own computations outside the pre-registered bars. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-31T07:49:49Z"
+  },
   {
    "id": "feed-late-dedupe-merged-1031",
    "kind": "decision",
@@ -1517,11 +1524,11 @@
   {
    "id": "haiku-v5",
    "title": "Haiku v5 (self-improving BUY/SKIP filter on H5 triggers)",
-   "stage": "offline run O1 in progress",
-   "note": "Offline test with a nightly playbook rewrite and placebo, frozen, numeric-veto, always-buy and random controls, built to catch v3's failure (learning about equal to a placebo). Pilot P1b met its format and cost checks only (parse 97.6%, reflect 4/4, 0% max_tokens stops; ledger $0.1745). The full offline run O1 #1914 (cap $16) is running; QP reads its score before any claim. A forward v5 book cannot start before 2026-11-14 (EXP-024 Look-2 seal). No outcome yet. No book has cleared the promotion gate.",
+   "stage": "KILLED offline (O1 #1914, dead as frozen, in-sample)",
+   "note": "Offline run O1 (job #1914, 3.7286 USD ledger): 11 of 12 pre-registered bars fail under both fail models; QP confirmed KILL_OFFLINE and re-ran the score with an identical result. In-sample, 33 exploration test days, flat totals: base 33.6398, frozen 32.0946, learner 29.7167, numeric veto 28.9731, placebo 27.5922 SOL; every filter is below the unfiltered base and learning is below the frozen copy. Right-skewed outcomes: skipped trades averaged above the day mean, so vetoes removed tail winners. No salvage that is not a re-test of a dead row. Library row haiku-v5-o1: dead-as-frozen. Not evidence of an edge. No book has cleared the promotion gate.",
    "tag": {
-    "text": "offline run",
-    "tone": "accent"
+    "text": "killed",
+    "tone": "muted"
    },
    "link": "https://github.com/vaanai/MAL/blob/main/docs/research/haiku-v5/DESIGN.md"
   },
@@ -2163,6 +2170,13 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261031-haiku-v5-o1",
+   "from": "claude",
+   "kind": "result",
+   "text": "Haiku v5 O1 (job #1914) is KILLED offline: 11 of 12 pre-registered bars fail under both fail models, confirmed by QP (score re-run identical). In-sample, 33 exploration test days, flat totals: base 33.6398, frozen 32.0946, learner 29.7167, numeric veto 28.9731, placebo 27.5922 SOL, so every filter is below the unfiltered base and learning is below the frozen copy (L - F -2.3779, bootstrap lower bound -0.1721). L - P is +2.1245 only because the placebo skipped more (bootstrap lower bound -0.0230, late half -0.2511). Lesson: outcomes are right-skewed, every arm's skipped trades averaged above the day mean, and the loss grew with skip count; a veto has to say how it protects the right tail. 59 of 210 reflections also broke the 2,500-character cap. No salvage that is not a re-test of a dead row; v5 ends dead as frozen. Cost 3.7286 USD. Not evidence of an edge. No book has cleared the promotion gate.",
+   "atUtc": "2026-10-31T07:49:49Z"
+  },
   {
    "id": "s-20261031-catchup",
    "from": "claude",
