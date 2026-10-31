@@ -42,9 +42,12 @@ Restart and feed gaps (the host-side pieces; PR r4b-live-2c, DEC-032 section 5 i
     the mark at or before now) for every entry order_id that has no exit row. It runs before the new engine decides anything. A second call writes nothing.
   * The new engine's state is incomplete (prints, bonding constants, market minutes since H0). `Engine(warmup_s=...)` emits NO entry until the data it has
     ingested spans warmup_s (block_time of the decided mark minus the first market minute it saw). A host builds its engine with `new_host_engine`, whose
-    default is DEFAULT_WARMUP_S = 48 h + 4 h = 52 h: every mint that graduated before the start has left the 48 h grid and every feature window is rebuilt.
-    A shorter warm-up needs an md5 decision-equivalence proof against the full-history engine (`shorter_warmup_proof`); the engine itself defaults to
-    warmup_s None (no gate: a replay ingests the history from H0, which is the frozen decision path, byte for byte).
+    default is DEFAULT_WARMUP_S = 48 h + 4 h = 52 h: every mint that graduated before the start has left the 48 h grid, and the print windows (up to 4 h)
+    and market minutes are rebuilt from ingested rows. It does NOT rebuild the create-derived and bonding constants (t_since_create, c_bond_*, c_nbond*,
+    cre_*) of mints created before the engine's start: those keep the EXP-027 §3.4 skew (persistent for long-bonding mints). And a 52 h engine is not
+    decision-equal to a full-history engine, because its book starts flat. The warm-up gives the frozen engine a clean start, not byte-equality (QP on #1136).
+    A shorter warm-up, or replay-on-start, needs an md5 decision-equivalence proof against the full-history engine (`shorter_warmup_proof`); the engine
+    itself defaults to warmup_s None (no gate: a replay ingests the history from H0, which is the frozen decision path, byte for byte).
   * `log_gap` writes a `gap` row for a feed GapRecord that halts buys (tools/r4b_feed_adapter: data_loss not False). The engine never sees a gap. The
     executor holds new buys from it (tools/r4b_arena_executor.py); exits keep running. A socket reconnect without data loss writes nothing.
 """
