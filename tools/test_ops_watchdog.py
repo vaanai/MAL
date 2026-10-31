@@ -1,4 +1,5 @@
 import datetime as dt
+import hashlib
 import importlib.util
 import json
 import os
@@ -11,6 +12,7 @@ _p = Path(__file__).resolve().parent.parent / "scripts" / "ops" / "mal_watchdog.
 _s = importlib.util.spec_from_file_location("mal_watchdog", _p)
 w = importlib.util.module_from_spec(_s)
 _s.loader.exec_module(w)
+REAL_DEFAULT_CTX = w.default_ctx  # mk() must not see tests that patch w.default_ctx
 
 NOW = dt.datetime(2026, 10, 29, 12, 23, tzinfo=dt.timezone.utc)
 HDR = "#seq   status         name                                     memory   time    metrics\n"
@@ -39,7 +41,7 @@ def mk(tmp, jobs, ps=PS, free=0.5, helm=(), cfg=None, now=NOW):
         calls.append(list(argv))
         return ps if argv[0] == "ps" else jobs
 
-    ctx = w.default_ctx(now)
+    ctx = REAL_DEFAULT_CTX(now)
     ctx["run"] = run
     ctx["disk_usage"] = lambda p: types.SimpleNamespace(total=100, used=int(100 - free * 100 / 1) if False else 50, free=int(free * 100))
     ctx["read_meminfo"] = lambda: "MemAvailable:  %d kB\n" % (64 * 1048576)
@@ -442,3 +444,205 @@ def test_daily_summary_once(tmp_path):
         passn(tmp_path, c, ctx)
     d = (tmp_path / "st" / "daily.jsonl").read_text().splitlines()
     assert len(d) == 1 and "passes" in json.loads(d[0])
+
+
+# ---- config reload on every pass (the loop used to read the config once) ----
+
+SHA = w.SHA_PREFIX
+
+
+def write_cfg(path, c, **over):
+    """Write a config file from the mk() config dict; return its full sha256."""
+    d = dict(c)
+    d.update(over)
+    path.write_text(json.dumps(d))
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def loop_pass(tmp, rl, monkeypatch, jobs, h, dry_run=False):
+    """One safe_pass at NOW+h hours with fake command output; returns the status line."""
+    _, ctx = mk(tmp, jobs, now=at(h))
+    monkeypatch.setattr(w, "default_ctx", lambda n=None: ctx)
+    w.safe_pass(rl.cfg, types.SimpleNamespace(state_dir=str(tmp / "st"), dry_run=dry_run), rl)
+    p = tmp / "st" / "status.jsonl"
+    return json.loads(p.read_text().splitlines()[-1]) if p.exists() else None
+
+
+def alert_rows(tmp, key):
+    p = tmp / "st" / "alerts.jsonl"
+    rows = [json.loads(x) for x in p.read_text().splitlines()] if p.exists() else []
+    return [r for r in rows if r["key"] == key]
+
+
+def test_reload_picks_up_new_watch_entry_and_drops_removed_one(tmp_path, monkeypatch):
+    j = jl((5, "Running", "a"), (6, "Cancelled", "b"))
+    c, _ = mk(tmp_path, j)
+    cp = tmp_path / "config.json"
+    sha0 = write_cfg(cp, c, watch=[5])
+    rl = w.ConfigReloader(str(cp))
+    s0 = loop_pass(tmp_path, rl, monkeypatch, j, 0)
+    assert s0["alert_keys"] == [] and s0["info"] == [] and s0["config_sha256"] == sha0[:SHA]
+    sha1 = write_cfg(cp, c, watch=[5, 6])  # edited after start: job 6 is now watched
+    s1 = loop_pass(tmp_path, rl, monkeypatch, j, 1)
+    assert s1["new_alerts"] == ["job:6:Cancelled"]  # watched Cancelled alerts: the new entry is live
+    assert s1["info"] == ["config changed: sha256 %s -> %s" % (sha0[:SHA], sha1[:SHA])]
+    assert s1["config_sha256"] == sha1[:SHA] and rl.cfg["watch"] == [5, 6]
+    sha2 = write_cfg(cp, c, watch=[5])  # removed again (the 10-30 23:23Z case)
+    s2 = loop_pass(tmp_path, rl, monkeypatch, j, 8)  # past the 6h window: a stale config would re-alert
+    assert "job:6:Cancelled" not in s2["alert_keys"] and s2["new_alerts"] == []
+    assert s2["info"] == ["config changed: sha256 %s -> %s" % (sha1[:SHA], sha2[:SHA])]
+    s3 = loop_pass(tmp_path, rl, monkeypatch, j, 9)  # unchanged file: no change line
+    assert s3["info"] == [] and s3["config_sha256"] == sha2[:SHA]
+
+
+def test_bad_json_keeps_old_config_and_alerts_once(tmp_path, monkeypatch, capsys):
+    ok, cancelled = jl((5, "Running", "a")), jl((5, "Cancelled", "a"))
+    c, _ = mk(tmp_path, ok)
+    cp = tmp_path / "config.json"
+    sha0 = write_cfg(cp, c, watch=[5])
+    rl = w.ConfigReloader(str(cp))
+    assert loop_pass(tmp_path, rl, monkeypatch, ok, 0)["alert_keys"] == []
+    cp.write_text('{"watch": [], BAD-MARKER')
+    s = loop_pass(tmp_path, rl, monkeypatch, cancelled, 1)
+    # job 5 Cancelled alerts only because the OLD config (watch=[5]) is still in use
+    assert sorted(s["new_alerts"]) == ["config:reload_failed", "job:5:Cancelled"]
+    assert rl.cfg["watch"] == [5] and rl.sha == sha0 and s["config_sha256"] == sha0[:SHA]
+    assert s["checks"]["jobs"] == {"n_jobs": 1}  # the pass itself still ran
+    row = alert_rows(tmp_path, "config:reload_failed")[0]
+    assert row["severity"] == "high" and sha0[:SHA] in row["msg"] and "JSONDecodeError" in row["msg"]
+    assert "BAD-MARKER" not in row["msg"]  # error text never echoes file contents
+    s = loop_pass(tmp_path, rl, monkeypatch, cancelled, 2)  # still broken: no second alert line
+    assert s["new_alerts"] == [] and "config:reload_failed" in s["alert_keys"]
+    assert len(alert_rows(tmp_path, "config:reload_failed")) == 1
+    sha1 = write_cfg(cp, c, watch=[5], disk_used_alert_pct=91)  # fixed with a different file
+    s = loop_pass(tmp_path, rl, monkeypatch, cancelled, 3)
+    assert "config:reload_failed" not in s["alert_keys"]
+    assert s["info"] == ["config reload recovered, sha256 %s" % sha1[:SHA],
+                         "config changed: sha256 %s -> %s" % (sha0[:SHA], sha1[:SHA])]
+    cp.write_text("not json")  # broken again inside the dedupe window: a new episode alerts again
+    assert "config:reload_failed" in loop_pass(tmp_path, rl, monkeypatch, cancelled, 4)["new_alerts"]
+    assert len(alert_rows(tmp_path, "config:reload_failed")) == 2
+    assert "WATCHDOG_PASS_FAILED" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("name,write,err", [
+    ("missing", lambda cp: cp.unlink(), "FileNotFoundError"),
+    ("garbage", lambda cp: cp.write_text("{nope"), "JSONDecodeError"),
+    ("not_object", lambda cp: cp.write_text("[]"), "ValueError"),
+    ("empty", lambda cp: cp.write_text(""), "JSONDecodeError"),
+    ("bad_type", lambda cp: cp.write_text('{"check_minute": "23"}'), "ValueError"),
+    ("sealed_path", lambda cp: cp.write_text('{"spill_globs": ["/data/mal/meta-capture/*"]}'), "ValueError"),
+])
+def test_failed_reload_keeps_last_good_config_never_defaults(tmp_path, monkeypatch, capsys, name, write, err):
+    j = jl((5, "Running", "a"))
+    c, _ = mk(tmp_path, j)
+    cp = tmp_path / "config.json"
+    sha0 = write_cfg(cp, c, watch=[5], check_minute=41)
+    rl = w.ConfigReloader(str(cp))
+    write(cp)
+    s = loop_pass(tmp_path, rl, monkeypatch, j, 1)
+    assert s["new_alerts"] == ["config:reload_failed"], name
+    msg = alert_rows(tmp_path, "config:reload_failed")[0]["msg"]
+    assert err in msg and sha0[:SHA] in msg, name
+    assert rl.cfg["watch"] == [5] and rl.cfg["check_minute"] == 41 and rl.sha == sha0, name
+    assert s["checks"]["jobs"] == {"n_jobs": 1}
+    assert "WATCHDOG_PASS_FAILED" not in capsys.readouterr().err
+
+
+def test_missing_or_bad_config_at_start_is_still_an_error(tmp_path, monkeypatch):
+    def no_pass(*a, **k):
+        raise AssertionError("a pass must not run without a valid config at start")
+
+    monkeypatch.setattr(w, "run_pass", no_pass)
+    monkeypatch.setattr(w, "safe_pass", no_pass)
+    nope, st = str(tmp_path / "nope.json"), tmp_path / "st"
+    with pytest.raises(FileNotFoundError):
+        w.ConfigReloader(nope)
+    for mode in ("--once", "--loop"):
+        for extra in ([], ["--dry-run"]):
+            with pytest.raises(FileNotFoundError):
+                w.main(["--config", nope, "--state-dir", str(st), mode] + extra)
+    bad = tmp_path / "bad.json"
+    for body, exc in (("{nope", ValueError), ("[]", ValueError), ('{"watch": "1814"}', ValueError)):
+        bad.write_text(body)
+        for mode in ("--once", "--loop"):
+            with pytest.raises(exc):
+                w.main(["--config", str(bad), "--state-dir", str(st), mode])
+    assert not st.exists()  # nothing written, no silent defaults
+
+
+def test_validate_config_rejects_wrong_types(tmp_path):
+    good = dict(w.DEFAULTS)
+    cp = tmp_path / "c.json"
+    for k, v in (("check_minute", "23"), ("check_minute", 60), ("check_minute", -1), ("check_minute", True),
+                 ("watch", "1814"), ("watch", [True]), ("watch", ["5"]), ("expected_done_ok", {"a": 1}),
+                 ("realert_hours", "6"), ("mem_avail_alert_gib", None), ("walker_job_seq", 1.5),
+                 ("walker_dir", 5), ("helm_dir", None), ("disk_paths", "/"), ("spill_globs", [3])):
+        cp.write_text(json.dumps(dict(good, **{k: v})))
+        with pytest.raises(ValueError, match=k):
+            w.read_config(str(cp))
+    cp.write_text(json.dumps(dict(good, check_minute=0, realert_hours=0.5, walker_free_alert_pct=21.5, _note="x")))
+    cfg, sha = w.read_config(str(cp))
+    assert cfg["check_minute"] == 0 and "_note" not in cfg and sha == hashlib.sha256(cp.read_bytes()).hexdigest()
+
+
+def test_example_config_still_loads():
+    ex = Path(__file__).resolve().parent.parent / "scripts" / "ops" / "mal-watchdog.config.example.json"
+    assert w.load_config(str(ex))["watch"]
+
+
+def test_dry_run_reloads_and_writes_nothing(tmp_path, monkeypatch, capsys):
+    j = jl((5, "Running", "a"))
+    c, _ = mk(tmp_path, j)
+    cp = tmp_path / "config.json"
+    sha0 = write_cfg(cp, c, watch=[5])
+    rl = w.ConfigReloader(str(cp))
+    assert loop_pass(tmp_path, rl, monkeypatch, j, 0, dry_run=True) is None  # no status.jsonl in dry-run
+    sha1 = write_cfg(cp, c, watch=[5, 6])
+    loop_pass(tmp_path, rl, monkeypatch, j, 1, dry_run=True)
+    printed = [json.loads(x) for x in capsys.readouterr().out.splitlines()]
+    assert printed[1]["info"] == ["config changed: sha256 %s -> %s" % (sha0[:SHA], sha1[:SHA])]
+    assert printed[1]["alert_keys"] == ["job:6:missing"]  # the new entry is live in dry-run too
+    cp.write_text("{nope")
+    loop_pass(tmp_path, rl, monkeypatch, j, 2, dry_run=True)
+    last = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert "config:reload_failed" in last["new_alerts"] and "job:6:missing" in last["alert_keys"]  # old cfg kept
+    assert not (tmp_path / "st").exists()
+
+
+def test_main_once_dry_run_unchanged(tmp_path, monkeypatch, capsys):
+    j = jl((5, "Running", "a"))
+    c, ctx = mk(tmp_path, j)
+    cp = tmp_path / "config.json"
+    sha0 = write_cfg(cp, c, watch=[5, 8])
+    monkeypatch.setattr(w, "default_ctx", lambda n=None: ctx)
+    assert w.main(["--once", "--dry-run", "--config", str(cp), "--state-dir", str(tmp_path / "st")]) == 0
+    line = json.loads(capsys.readouterr().out)
+    assert line["alert_keys"] == ["job:8:missing"] and line["info"] == [] and line["config_sha256"] == sha0[:SHA]
+    assert not (tmp_path / "st").exists()
+
+
+def test_main_loop_rereads_config_on_every_pass(tmp_path, monkeypatch):
+    j = jl((5, "Running", "a"), (6, "Cancelled", "b"))
+    c, _ = mk(tmp_path, j)
+    cp = tmp_path / "config.json"
+    sha0 = write_cfg(cp, c, watch=[5])
+    clock = types.SimpleNamespace(t=NOW.timestamp(), shas=[sha0])
+    edits = [dict(watch=[5, 6]), dict(watch=[5])]  # applied between pass 1-2 and pass 2-3
+
+    def sleep(sec):
+        clock.t += sec
+        if edits:
+            clock.shas.append(write_cfg(cp, c, **edits.pop(0)))
+
+    monkeypatch.setattr(w, "time", types.SimpleNamespace(time=lambda: clock.t, sleep=sleep))
+    monkeypatch.setattr(w, "next_check", lambda now, minute: dt.datetime.fromtimestamp(clock.t + 3600, dt.timezone.utc))
+    monkeypatch.setattr(w, "default_ctx", lambda n=None: mk(tmp_path, j, now=dt.datetime.fromtimestamp(clock.t, dt.timezone.utc))[1])
+    rc = w.main(["--loop", "--duration-s", "9000", "--config", str(cp), "--state-dir", str(tmp_path / "st")])
+    assert rc == 0 and not edits
+    lines = [json.loads(x) for x in (tmp_path / "st" / "status.jsonl").read_text().splitlines()]
+    assert [x["alert_keys"] for x in lines] == [[], ["job:6:Cancelled"], []]
+    s = [x[:SHA] for x in clock.shas]
+    assert [x["info"] for x in lines] == [[], ["config changed: sha256 %s -> %s" % (s[0], s[1])],
+                                          ["config changed: sha256 %s -> %s" % (s[1], s[2])]]
+    assert [x["config_sha256"] for x in lines] == s

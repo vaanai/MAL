@@ -9,6 +9,7 @@ import argparse
 import fnmatch
 import datetime as dt
 import glob
+import hashlib
 import json
 import os
 import re
@@ -60,6 +61,8 @@ TRADES = re.compile(r"^trades-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl(\.zst)?$")
 WALKER_TRADES = "/data/mal/blocks/forward-1016/trades"
 KNOWN = OK_STATES | DONE_STATES | VERDICT_FAIL | LOST_STATES | BAD_NEW | {"cancelled"}
 FWD = "/data/mal/blocks/forward-*"
+SHA_PREFIX = 12  # hex chars of the config sha256 shown in alerts and status lines
+CONFIG_ALERT = "config:reload_failed"
 
 
 def _wild(p):
@@ -143,18 +146,97 @@ def parse_job_list(text):
     return out
 
 
-def load_config(path):
-    cfg = dict(DEFAULTS)
+def _is_int(x):
+    return isinstance(x, int) and not isinstance(x, bool)
+
+
+def _is_num(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool)
+
+
+def validate_config(cfg):
+    """Type-check what the passes and the loop schedule depend on. The config is
+    re-read every pass, so a wrong type must be refused at load (last good config
+    kept), never found later as a crashed loop or a check_error on every pass."""
+    def bad(k, what):
+        raise ValueError("config %s must be %s" % (k, what))
+    for k in ("walker_job_seq", "meta_job_seq"):
+        if not _is_int(cfg[k]):
+            bad(k, "an int")
+    if not _is_int(cfg["check_minute"]) or not 0 <= cfg["check_minute"] <= 59:
+        bad("check_minute", "an int in 0..59")
+    for k in ("realert_hours", "disk_used_alert_pct", "walker_free_alert_pct", "walker_stale_hours",
+              "mem_avail_alert_gib", "meta_rss_alert_mb"):
+        if not _is_num(cfg[k]):
+            bad(k, "a number")
+    for k in ("watch", "expected_done_ok", "walker_successor_seqs"):
+        if not isinstance(cfg[k], list) or not all(_is_int(x) for x in cfg[k]):
+            bad(k, "a list of ints")
+    for k in ("disk_paths", "spill_globs"):
+        if not isinstance(cfg[k], list) or not all(isinstance(x, str) for x in cfg[k]):
+            bad(k, "a list of strings")
+    for k in ("walker_dir", "helm_dir"):
+        if not isinstance(cfg[k], str):
+            bad(k, "a string")
+
+
+def read_config(path):
+    """Return (cfg, sha256 hex). Parses the same bytes it hashes, so the sha
+    always names the config actually in use (same value as `sha256sum`)."""
     refuse_sealed(path)
-    with open(path) as f:  # missing config is an error, never silent defaults
-        cfg.update({k: v for k, v in json.load(f).items() if not k.startswith("_")})
+    with open(path, "rb") as f:  # missing config is an error, never silent defaults
+        raw = f.read()
+    obj = json.loads(raw)
+    if not isinstance(obj, dict):
+        raise ValueError("config is not a JSON object")
+    cfg = dict(DEFAULTS)
+    cfg.update({k: v for k, v in obj.items() if not k.startswith("_")})
+    validate_config(cfg)
     refuse_sealed(cfg["walker_dir"])
     refuse_sealed(cfg["helm_dir"], listing=True)
     for g in cfg["spill_globs"]:
         refuse_sealed(g, listing=True)
     for p in cfg["disk_paths"]:
         refuse_sealed(p)
-    return cfg
+    return cfg, hashlib.sha256(raw).hexdigest()
+
+
+def load_config(path):
+    return read_config(path)[0]
+
+
+class ConfigReloader:
+    """Holds the live config of the --loop. The first load raises on a missing
+    or bad file (a watchdog must not start without its config). reload() then
+    re-reads the file at the start of every pass: a changed sha swaps the config
+    in; a failed read keeps the last good config and returns one alert."""
+
+    def __init__(self, path):
+        self.path = path
+        self.cfg, self.sha = read_config(path)
+        self.failing = False
+
+    def events(self, alerts=(), info=()):
+        return {"alerts": list(alerts), "info": list(info), "sha": self.sha[:SHA_PREFIX]}
+
+    def reload(self):
+        """Return (cfg, events); events feed run_pass(cfg_events=...)."""
+        try:
+            cfg, sha = read_config(self.path)
+        except Exception as e:  # missing, bad JSON, bad type, sealed path: all keep the last good config
+            self.failing = True
+            return self.cfg, self.events(alerts=[A(
+                CONFIG_ALERT, "high",
+                "config reload failed, keeping last good config sha256 %s: %s: %s"
+                % (self.sha[:SHA_PREFIX], type(e).__name__, str(e)[:160]))])
+        info = []
+        if self.failing:
+            self.failing = False
+            info.append("config reload recovered, sha256 %s" % sha[:SHA_PREFIX])
+        if sha != self.sha:
+            info.append("config changed: sha256 %s -> %s" % (self.sha[:SHA_PREFIX], sha[:SHA_PREFIX]))
+            self.cfg, self.sha = cfg, sha
+        return self.cfg, self.events(info=info)
 
 
 def A(key, sev, msg):
@@ -386,14 +468,17 @@ def append(path, obj):
         f.write(json.dumps(obj, sort_keys=True) + "\n")
 
 
-def run_pass(cfg, state_dir, ctx, dry_run=False):
+def run_pass(cfg, state_dir, ctx, dry_run=False, cfg_events=None):
+    """cfg_events (from ConfigReloader): alerts and info lines about the config
+    itself, plus its sha prefix for the status line."""
     now = ctx["now"]
+    ev = cfg_events or {}
     state, serr = load_state(state_dir, now, dry_run)
     ctx["state"] = state
     ctx["new_state"] = {}
     ctx["jobs"] = {}
     ctx["job_rows"] = {}
-    alerts, infos, summ = [], [], {}
+    alerts, infos, summ = list(ev.get("alerts", [])), list(ev.get("info", [])), {}
     if serr:
         alerts.append(A("state:unreadable", "high", "state.json unreadable (backed up), baselines reset: " + serr))
     for name, fn in CHECKS:
@@ -412,6 +497,8 @@ def run_pass(cfg, state_dir, ctx, dry_run=False):
                         ctx["new_state"][k] = state[k]
     ts = iso(now)
     last = state.get("last_alert", {})
+    if cfg_events is not None and not ev.get("alerts"):
+        last.pop(CONFIG_ALERT, None)  # reload healthy again: a later failure is a new episode
     window = cfg["realert_hours"] * 3600
     fresh = []
     for a in alerts:
@@ -439,6 +526,8 @@ def run_pass(cfg, state_dir, ctx, dry_run=False):
     daily["max_meta_rss"] = max(daily["max_meta_rss"], round(ctx.get("meta_rss", 0)))
     line = {"ts": ts, "checks": summ, "alert_keys": [a["key"] for a in alerts],
             "new_alerts": [a["key"] for a in fresh], "info": infos}
+    if ev.get("sha"):
+        line["config_sha256"] = ev["sha"]
     if not dry_run:
         os.makedirs(state_dir, exist_ok=True)
         append(os.path.join(state_dir, "status.jsonl"), line)
@@ -472,27 +561,32 @@ def main(argv=None):
     ap.add_argument("--duration-s", type=int, default=14 * 86400)
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args(argv)
-    cfg = load_config(a.config)
+    rl = ConfigReloader(a.config)  # missing or bad config at start is an error
     refuse_sealed(a.state_dir)
     if not a.loop:
-        line, _ = run_pass(cfg, a.state_dir, default_ctx(), a.dry_run)
+        line, _ = run_pass(rl.cfg, a.state_dir, default_ctx(), a.dry_run, rl.events())
         print(json.dumps(line, sort_keys=True))
         return 0
     end = time.time() + a.duration_s
-    safe_pass(cfg, a)
+    safe_pass(rl.cfg, a, rl)
     while True:
-        nxt = next_check(dt.datetime.now(dt.timezone.utc), int(cfg["check_minute"]))
+        nxt = next_check(dt.datetime.now(dt.timezone.utc), int(rl.cfg["check_minute"]))
         if nxt.timestamp() >= end:
             time.sleep(max(0, end - time.time()))
             return 0
         time.sleep(max(0, nxt.timestamp() - time.time()))
-        safe_pass(cfg, a)
+        safe_pass(rl.cfg, a, rl)
 
 
-def safe_pass(cfg, a):
-    """One loop pass that can never kill the loop; failures go to stderr."""
+def safe_pass(cfg, a, reloader=None):
+    """One loop pass that can never kill the loop; failures go to stderr. With a
+    reloader the config is re-read first, so edits to the watch list apply on the
+    next pass without a restart; a failed reload keeps the last good config."""
     try:
-        line, _ = run_pass(cfg, a.state_dir, default_ctx(), a.dry_run)
+        events = None
+        if reloader is not None:
+            cfg, events = reloader.reload()
+        line, _ = run_pass(cfg, a.state_dir, default_ctx(), a.dry_run, events)
         print(json.dumps(line, sort_keys=True), flush=True)
     except Exception as e:
         print("WATCHDOG_PASS_FAILED %s: %s" % (type(e).__name__, str(e)[:200]), file=sys.stderr, flush=True)
