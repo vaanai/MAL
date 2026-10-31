@@ -7,12 +7,14 @@
 #   1. refuses to start if ANY r4b_host_glue process is running (M5: two hosts must never write one declog) or if this change_id already has a declog/out/host.log;
 #   2. -I preflight (imports of the host's modules);
 #   3. records the M1 start facts to $D/m1-start.txt: the user slice's MemoryMax/MemoryHigh/MemoryCurrent (before the scope exists), then, once the scope is up, its
-#      memory.max (expect 3670016000 = 3500M) and memory.swap.max (expect 0), the host's niceness (expect 19) and its pid. A scope-limit, swap or nice mismatch, or a cap that cannot be
+#      memory.max (expect 5368709120 = 5120M) and memory.swap.max (expect 0), the host's niceness (expect 19) and its pid. A scope-limit, swap or nice mismatch, or a cap that cannot be
 #      confirmed (M1_UNVERIFIED), is fail-closed: M1_ABORT, the scope is stopped, exit 8. The slice line (M1_SLICE) is recorded, not enforced;
-#   4. runs the host in its own scope: MemoryMax=3500M, MemorySwapMax=0, the whole process under `nice -n 19` (pc3 2.4), never --no-ionice (ionice -c3 is inert under
+#   4. runs the host in its own scope: MemoryMax=5120M, MemorySwapMax=0, the whole process under `nice -n 19` (pc3 2.4), never --no-ionice (ionice -c3 is inert under
 #      the disk scheduler `none`; the records say so). The host's stdout/stderr go to $D/host.log; the rc is the host's rc.
-# The reservation of this MiScusi job is 1.9G (fast-0 MiScusi ceiling 2G); the scope is the hard cap, 3500M (M-a'). Say so in the job name, the LAB_STATE start row and the
-# notebook entry (M2). Count 3.5 GB for it before admitting any other fast-0 job (M3).
+# The cap is 5120M (5,368,709,120 B): at 3500M the P-C3-under-scope projection failed M6 (post-catch-up anon slope 26.752 MiB/h, projection 3,661.6 MiB > 2,975 MiB; QP on #1159,
+# comment 6550440377, "Final"), so the cap must be >= 4,308 MiB; the manager chose 5120M. The reservation of this MiScusi job is accounting only and must be >= the scope's cap (QP on #1159,
+# Q1: the owner lifted the fast-0 2G job ceiling); the manager records the job unit's memory.max at start. Say so in the job name, the LAB_STATE start row and the notebook entry (M2).
+# Count 5 GB for it before admitting any other fast-0 job (M3).
 # Start timing (pc3 2.5, P6): submit at HH:05Z; the catch-up (about 37 min, budget 50) ends before HH+1:00Z; HH+1:00Z is the settle mark; rely on marks from HH+2:00Z.
 # Launch scripts/research/r4b-dry-sidecar.sh as its own job >= 30 min BEFORE this one. Stop procedure: r4b-dry-stop.sh (M5).
 # Output dir: $HOME/mal-data/r4b-dry/<change_id>. The decision log stays sealed: names and counts only.
@@ -28,7 +30,8 @@ case "$MAX" in
 esac
 D="$HOME/mal-data/r4b-dry/$CHANGE_ID"
 UNIT="r4b-dry-$CHANGE_ID"
-SCOPE_MEM_MAX=3670016000   # MemoryMax=3500M in bytes (3500 * 1048576)
+SCOPE_MAX_MIB=5120   # the scope's cap in MiB: the one constant here (the sidecar's SCOPE_CAP_MIB is the same number; a test compares them)
+SCOPE_MEM_MAX=$((SCOPE_MAX_MIB * 1048576))   # 5368709120 bytes
 M1_WAIT_S="${R4B_M1_WAIT_S:-120}"
 M1_GRACE_S="${R4B_M1_GRACE_S:-10}"   # test hook only: how long a seen host may wait for its scope's memory.max to be readable
 CGROOT="${R4B_CGROUP_ROOT:-/sys/fs/cgroup}"   # test hook only
@@ -69,15 +72,15 @@ NEED=$((SCOPE_MEM_MAX + S_CUR_N))
     echo "change_id=$CHANGE_ID"
     echo "recorded_pre_start_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "install_head=$(git rev-parse HEAD 2>/dev/null)"
-    echo "scope_unit=$UNIT.scope scope_MemoryMax=3500M scope_MemorySwapMax=0 nice=19 reservation=1.9G (fast-0 MiScusi ceiling 2G)"
+    echo "scope_unit=$UNIT.scope scope_MemoryMax=${SCOPE_MAX_MIB}M scope_MemorySwapMax=0 nice=19 reservation=accounting only, must be >= the scope cap (read the job unit memory.max at start)"
     echo "slice=$SLICE"
     echo "slice_MemoryMax=$S_MAX"
     echo "slice_MemoryHigh=$S_HIGH"
     echo "slice_MemoryCurrent=$S_CUR"
     if limit_ok "$S_MAX" "$NEED" && limit_ok "$S_HIGH" "$NEED"; then
-        echo "M1_SLICE PASS (no slice limit below 3.5 GB plus current use = $NEED bytes)"
+        echo "M1_SLICE PASS (no slice limit below the scope cap ${SCOPE_MAX_MIB}M plus current use = $NEED bytes)"
     else
-        echo "M1_SLICE FAIL (a slice limit is below 3.5 GB plus current use = $NEED bytes; the scope can be throttled or killed by the slice)"
+        echo "M1_SLICE FAIL (a slice limit is below the scope cap ${SCOPE_MAX_MIB}M plus current use = $NEED bytes; the scope can be throttled or killed by the slice)"
     fi
 } > "$D/m1-start.txt"
 
@@ -125,7 +128,7 @@ record_m1() {
             if [ "$MS" = "0" ]; then echo "M1_SCOPE_SWAP_MAX PASS (0)"; else echo "M1_SCOPE_SWAP_MAX FAIL (got $MS, expected 0)"; BAD=1; fi
             if [ "$HNI" = "19" ]; then echo "M1_NICE PASS (19)"; else echo "M1_NICE FAIL (got $HNI, expected 19)"; BAD=1; fi
         elif [ -n "$HPID" ] || { [ -n "$CG" ] && [ -d "$CGROOT$CG" ]; }; then
-            # a host process or a live scope exists, but the cap or the niceness cannot be confirmed: the 3500M cap may not be in force (memory controller not delegated?). Fail closed (S4).
+            # a host process or a live scope exists, but the cap or the niceness cannot be confirmed: the scope's cap may not be in force (memory controller not delegated?). Fail closed (S4).
             echo "scope_control_group=$CG"
             echo "host_pid=$HPID"
             echo "host_nice=$HNI"
@@ -146,7 +149,7 @@ record_m1() {
 if [ -n "$MAX" ]; then set -- --max-marks "$MAX"; else set --; fi
 record_m1 &
 REC=$!
-systemd-run --user --scope -q --unit="$UNIT" -p MemoryMax=3500M -p MemorySwapMax=0 nice -n 19 "$V/bin/python" -I tools/r4b_host_glue.py run \
+systemd-run --user --scope -q --unit="$UNIT" -p MemoryMax="${SCOPE_MAX_MIB}M" -p MemorySwapMax=0 nice -n 19 "$V/bin/python" -I tools/r4b_host_glue.py run \
     --source tip --tip-dir /var/lib/mal/sealed/fast-trades-tip --tip-state-dir /var/lib/mal/fast-tip-follower \
     --key-file /var/lib/mal/fast-listener/helius.env --declog-root "$D/declog" --out "$D/out" --commitment processed --daily-credit-cap 50000 --trigger certified \
     --change-id "$CHANGE_ID" --catch-up-hours 52 "$@" > "$D/host.log" 2>&1
