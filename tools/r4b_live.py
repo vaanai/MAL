@@ -33,8 +33,8 @@ Live-feed differences (disclosed, not hidden; the replay proof covers the walker
   * A mark with no rows closes held positions as 'gap' (LiveBook docstring); xs_book / r4b_read label and price the same exits 'end' at e.
   * Bonding constants (c_nbond, c_bond_*) need every bonding print of a mint since its create; a live start sees only prints after the start
     (the same train/serve skew EXP-027 section 3.4 discloses for history before H0).
-  * Clock / market minutes older than 2 h are dropped after each decide (fast mode), which moves the origin of the float64 cumulative sums; equal
-    results while the sums stay below 2^53 (see Engine).
+  * Clock seconds older than 2 h are dropped after each decide (fast mode). Market and create minutes are never dropped: the m_* columns are
+    differences of float64 cumulative sums from the first market minute, so the engine keeps the read's first minute (H0) to stay byte-equal (see Engine).
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ V_LO, V_HI = rl.V_LO, rl.V_HI
 WSOL = rl.WSOL_MINT
 FRN_HOUR = 10_000_000_000
 S0_FINAL_SLOTS = 9_000  # membership is cached this many slots after the s0 window closes (late rows beyond it are a feed fault)  # r4b_layout frn = hour index * 1e10 + line ordinal
-CLOCK_KEEP_S = 2 * 3600  # fast mode: clock seconds / market minutes older than T - 2 h are dropped after decide(T) (the widest window read is 1 h)
+CLOCK_KEEP_S = 2 * 3600  # fast mode: clock SECONDS older than T - 2 h are dropped after decide(T) (slot_at reads only seconds >= T); market minutes never
 HASH_CACHE_MAX = 200_000  # DuckHash LRU size
 PENDING_S = 900  # a PumpSwap print whose mint has no `complete` yet is kept this many seconds of block_time
 PENDING_MAX_PER_MINT = 2_000  # ... at most this many rows per mint (the earliest are kept, later ones counted as overflow)
@@ -502,10 +502,10 @@ class Engine:
     Clock guard: decide(T) refuses unless the clock holds a second strictly after s*, the first second at or after T (sd(T) is the min slot of s*, which
     is final only once a later second has been seen); a replay always satisfies this because it loads the files of hour(T) + 1 first. Marks must
     advance: decide(T) refuses T <= the last decided mark.
-    Bounded growth: in the default fast mode (exact_grid False) decide(T) drops clock seconds, market minutes and create minutes older than
-    T - keep_clock_s (CLOCK_KEEP_S = 2 h; the widest window any feature reads is 1 h) once the mark is decided; keep_clock_s=None keeps everything and exact_grid
-    always does (the pinned per-mint loop reads old grid seconds). Pruning moves the origin of the float64 cumulative minute sums (rf.build_prep): the
-    window sums are equal while the sums stay below 2^53 (synthetic and the 5-day explore replays), beyond that they can differ in the last float64 bits.
+    Bounded growth: in the default fast mode (exact_grid False) decide(T) drops clock SECONDS older than T - keep_clock_s (CLOCK_KEEP_S = 2 h; slot_at
+    reads only seconds at or after the mark) once the mark is decided; keep_clock_s=None keeps everything and exact_grid always does (the pinned per-mint
+    loop reads old grid seconds). Market and create minutes are NEVER dropped: the m_* columns are differences of float64 cumulative minute sums
+    (rf.build_prep), whose low bits depend on the first minute once the sums pass 2^53, so the engine keeps the read's first minute (H0) to stay byte-equal.
     Late PumpSwap prints: a print whose mint has no `complete` row yet is buffered (<= PENDING_S of block_time, <= PENDING_MAX_PER_MINT rows per mint,
     <= PENDING_MAX_TOTAL overall) and replayed in arrival order when the complete arrives (ingest_trade only; the block path of a replay feeds migrations first).
     Threads: ingest_* and decide run on ONE thread (np.frombuffer views over the array buffers of a mint make a concurrent append raise BufferError)."""
