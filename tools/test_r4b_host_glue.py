@@ -643,7 +643,7 @@ def test_cli_refusals(tmp_path: Path, capsys):
     a = lambda **kw: args(tmp_path, **kw)  # noqa: E731
     ok_sha = lambda: "a" * 40  # noqa: E731
     for bad, why in ((a(daily_credit_cap=100_001.0), "100000"), (a(daily_credit_cap=0.0), "positive"), (a(daily_credit_cap=float("nan")), "positive"),
-                     (a(tape_dir=str(tmp_path / "nope")), "tape-dir"), (a(trigger="guard"), "certified"), (a(change_id="bad id"), "change-id"),
+                     (a(tape_dir=str(tmp_path / "nope")), "tape-dir"), (a(trigger="bogus"), "must be one of"), (a(change_id="bad id"), "change-id"), (a(change_id="a:b"), "change-id"),
                      (a(key_file=str(tmp_path / "nokey")), "key-file"), (a(catch_up_hours=100), "catch-up")):
         with pytest.raises(hg.Refused, match=why):
             hg.cmd_run(bad, host_module=FakeHost, ntp_runner=ntp_ok, repo_sha=ok_sha)
@@ -704,6 +704,7 @@ def test_cli_runs_the_host_with_the_warm_up_engine_and_the_live_source(tmp_path:
     _, engine, log, source, kw = FakeHost.calls[0]
     assert engine.warmup_s == 52 * 3600 and isinstance(source, hg.LiveSource) and kw["frozen_sha"] == "c" * 40 and kw["ntp_offset_ms"] == pytest.approx(0.01)
     assert source.mirror_need_hours == 52 and source.cap.cap == 50_000.0 and source.first_mark is not None
+    assert kw["trigger"] == "certified" and kw["change_id"] == "chg-1"  # the host refuses to start without a change_id (#1143 b2b0ac26)
     run = json.loads((tmp_path / "out" / "glue" / "run.json").read_text())
     assert run["change_id"] == "chg-1" and run["trigger"] == "certified" and run["live_built"] is False and run["frozen_sha"] == "c" * 40
     text = (tmp_path / "out" / "glue" / "run.json").read_text() + (tmp_path / "out" / "glue" / "run-summary.json").read_text() + capsys.readouterr().out
@@ -740,3 +741,56 @@ def test_the_window_state_is_snapshotted_before_the_queue_is_drained(tmp_path: P
     c = src.mark_complete(T, 1040)
     assert not c and c.reason == "tip_below_sd_plus_1"
     assert src.mark_complete(T, 1040) and src.certs[T].ready_tip_slot == 1041
+
+
+def test_window_closed_is_true_only_when_the_window_is_over_and_its_rows_reached_the_host(tmp_path: Path):
+    src, clk = make_source(tmp_path)
+    assert src.window_closed(T) is True  # no window for this mark: nothing to wait for
+    start_and_read(src, clk)
+    assert src._wins[T].window.state.closed_ms is not None
+    assert src.window_closed(T) is False  # closed, but accepted rows are still on their way to the host
+    src._pending.clear()
+    assert src.window_closed(T) is True
+    st = src._wins[T].window.state
+    st.closed_ms = None  # an open window
+    assert src.window_closed(T) is False
+    fail, _ = make_source(tmp_path / "f", connect=FakeConnect(exc=OSError("x"))) if (tmp_path / "f").mkdir() is None else (None, None)
+    start_and_read(fail, _)
+    assert fail.window_closed(T) is True  # failed windows count as closed
+
+
+def test_cli_passes_the_guard_trigger_and_change_id_through(tmp_path: Path):
+    pytest.importorskip("duckdb")
+    FakeHost.calls = []
+    assert hg.cmd_run(args(tmp_path, trigger="guard", change_id="chg.2_x-1"), host_module=FakeHost, ntp_runner=ntp_ok, repo_sha=lambda: "d" * 40) == 0
+    kw = FakeHost.calls[0][4]
+    assert kw["trigger"] == "guard" and kw["change_id"] == "chg.2_x-1"
+    assert json.loads((tmp_path / "out" / "glue" / "run.json").read_text())["trigger"] == "guard"
+
+
+def test_real_dry_host_starts_and_decides_one_mark_on_the_glue_source(tmp_path: Path):
+    """The real tools.r4b_live_host.DryHost (PR #1143) on a LiveSource over a synthetic tape and a fake window, virtual clock. Skipped until #1143 is on main."""
+    pytest.importorskip("duckdb")
+    host_mod = pytest.importorskip("tools.r4b_live_host")
+    import duckdb
+
+    from tools import r4b_live as lv
+    from tools.arena_declog import DecisionLog
+
+    con = duckdb.connect()
+    hf = lambda x: int(con.execute("select hash(?::varchar)", [x]).fetchone()[0])  # noqa: E731
+    engine = lv.new_host_engine(universe_min_mbt=0, pda_fn=lambda m: "P_" + m, hash_fn=hf, score_fn=lambda b, X: X[:, 0])
+    clock_point = engine.clock_point
+    src, clk = make_source(tmp_path, public_to=1010, sd_fn=lambda T_: (clock_point(T_, provisional=True) or (None,))[0],
+                           stop_when=lambda: clk["ms"] > T * 1000 + 60_000)
+    host = host_mod.DryHost(engine, DecisionLog(tmp_path / "declog"), src, out_dir=tmp_path / "out", now_ms=lambda: clk["ms"], frozen_sha="e" * 40,
+                            trigger="certified", change_id="chg-int", hostname="mal-fast-0")
+    with pytest.raises(lv.LiveRefused, match="change_id"):
+        host_mod.DryHost(engine, DecisionLog(tmp_path / "declog2"), src, out_dir=tmp_path / "out2", frozen_sha="e" * 40).start()
+    host.start()
+    counts = host.run(max_marks=1)
+    assert counts["marks"] == 1
+    rec = [r for r in (json.loads(x) for x in (tmp_path / "out" / "host" / "latency.jsonl").read_text().splitlines()) if r.get("rec") == "mark"][-1]
+    assert rec["mark"] == T and rec["change_id"] == "chg-int" and rec["trigger"] == "certified"
+    assert rec["status"] in ("decided", "decided_held") and src.certs[T].complete is True  # certified through the glue's mark_complete, not abandoned
+    assert src.public_hw_slot() is not None and src.window_closed(T) in (True, False)

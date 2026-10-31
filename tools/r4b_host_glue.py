@@ -30,6 +30,7 @@ What LiveSource is (the duck-typed source of tools/r4b_live_host.DryHost)
   tip_slot(commitment)     the window's processed tip while it is open; None for "confirmed" (there is no confirmed tip source) and for a closed window. A stale tip would
                            understate d_decide / d_would_send, so none is given instead.
   public_hw_slot()         the G2 value (None before the first public row).
+  window_closed(T)         True once mark T's window is closed or failed and its rows have reached the host (the host's late_inputs watch).
 The window runs in its own thread with its own event loop and hands rows over through a queue; ALL merger / hw / engine work stays on the host thread.
 A window stays open complete_grace_s (3 s) after the host certified the mark, so the processed tip keeps moving while the host decides and would-sends (the d_*
 latency fields read it); the brief's "close on complete" is therefore delayed by that grace (0 closes at once). It still closes at T + 10 s at the latest.
@@ -73,7 +74,8 @@ from tools import r4b_feed_merge as fm  # noqa: E402
 
 LIVE_BUILT = False
 SCHEMA = "r4b_host_glue_v1"
-HOST_CALL = "tools.r4b_live_host.DryHost(engine, log, source, out_dir=..., ntp_offset_ms=..., frozen_sha=...).start() then .run(max_marks)"  # confirm after #1143
+HOST_CALL = ("tools.r4b_live_host.DryHost(engine, log, source, out_dir=..., ntp_offset_ms=..., frozen_sha=..., trigger=..., change_id=...).start() then "
+             ".run(max_marks=...)")  # as of #1143 b2b0ac26; confirm after it merges
 SOURCE_PUBLIC, SOURCE_HELIUS = fm.SOURCE_PUBLIC, fm.SOURCE_HELIUS
 MARK_S = 3600
 GAP_GUARD_SLOTS = 1_500  # public progress (slots) after a lost range closes before its hold is released (about 10 minutes, the executor's buy hold after a gap)
@@ -87,7 +89,8 @@ CAP_REFUSE_ABOVE = 100_000  # the CLI refuses a per-day cap above this many cred
 ZSTD_CMD = ("zstd", "-dc")
 MIRROR_TTL_S = 5.0  # the mirror's status file is re-read at most this often (and once at the first look at each mark)
 _AUTO = object()  # LiveSource(mirror_check=_AUTO): resolve tools.tape_mirror.mirror_problem lazily (PR #1147); None switches the check off
-CHANGE_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,64}$")
+CHANGE_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")  # the host's own CHANGE_RE (r4b_live_host, #1143 b2b0ac26)
+TRIGGERS = ("certified", "guard")  # r4b_live_host.TRIGGERS: one per run, written in the host's start row
 CODE_RE = re.compile(r"[a-z0-9_]{1,32}")
 HOUR_FILE_RE = re.compile(r"^tape-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl(\.zst)?$")
 
@@ -925,6 +928,17 @@ class LiveSource:
     def public_hw_slot(self) -> int | None:
         return self.merger.public_hw_slot()
 
+    def window_closed(self, T: int) -> bool:
+        """True once the Helius window of mark T is closed or failed AND every row it delivered has reached the host (the host's late_inputs watch waits for
+        this). No window for T (none was started, or it is long gone): nothing to wait for."""
+        w = self._wins.get(int(T))
+        if w is None:
+            return True
+        closed = snapshot(w.window.state).closed_ms is not None  # BEFORE the drain, like mark_complete
+        self._drain_windows()
+        helius_pending = any((fs := self.merger.first_seen(k)) is not None and fs[0] == SOURCE_HELIUS for r in self._pending if (k := fm.row_key(r)) is not None)
+        return bool(closed and not helius_pending)
+
     def report(self) -> dict:
         """Names and counts only."""
         return {"schema": SCHEMA, "merger": self.merger.counts(), "host_merger": self.merger.host_counts(), "tape": dict(getattr(self._tape, "stats", {})),
@@ -939,14 +953,14 @@ class Refused(Exception):
 
 def check_args(a: argparse.Namespace) -> None:
     """Argument refusals that need no host (before git, NTP or any file is touched)."""
-    if a.trigger != "certified":
-        raise Refused("only --trigger certified is built here (the engine's own guard trigger is the host's)")
+    if a.trigger not in TRIGGERS:
+        raise Refused(f"--trigger must be one of {TRIGGERS}")
     if not isinstance(a.daily_credit_cap, (int, float)) or not math.isfinite(a.daily_credit_cap) or a.daily_credit_cap <= 0:
         raise Refused("--daily-credit-cap must be a positive finite number")
     if a.daily_credit_cap > CAP_REFUSE_ABOVE:
         raise Refused(f"--daily-credit-cap {a.daily_credit_cap:g} is above {CAP_REFUSE_ABOVE} credits a day: refused")
     if not CHANGE_ID_RE.match(a.change_id or ""):
-        raise Refused("--change-id must match [A-Za-z0-9_.:-]{1,64}")
+        raise Refused("--change-id must match [A-Za-z0-9_.-]{1,64}")
     if not Path(a.tape_dir).is_dir():
         raise Refused("--tape-dir is not a directory")
     if lp.read_key(a.key_file) is None:
@@ -973,7 +987,15 @@ def cmd_run(a: argparse.Namespace, *, host_module: Any = None, ntp_runner: fm.Ru
     log = DecisionLog(a.declog_root)
     cap = fm.DailyCreditCap(a.daily_credit_cap, out / "glue" / "credit-cap.json")
     clock_point = getattr(engine, "clock_point", None)
-    sd_fn = (lambda T: (clock_point(T) or (None,))[0]) if clock_point is not None else None
+
+    def sd_fn(T: int) -> int | None:  # the provisional sd under the certified trigger (the host's own test), else the guarded one
+        if clock_point is None:
+            return None
+        try:
+            pt = clock_point(T, provisional=a.trigger == "certified")
+        except TypeError:
+            pt = clock_point(T)
+        return None if pt is None else pt[0]
     if a.mirror_check == "off":
         mirror_check = None
     need = a.mirror_need_hours if a.mirror_need_hours is not None else (a.catch_up_hours or None)  # the history the warm-up will read; else freshness only
@@ -985,7 +1007,7 @@ def cmd_run(a: argparse.Namespace, *, host_module: Any = None, ntp_runner: fm.Ru
                                                         "daily_credit_cap": a.daily_credit_cap, "catch_up_hours": a.catch_up_hours, "ntp": ntp.as_record(),
                                                         "host_call": HOST_CALL, "live_built": LIVE_BUILT, "mirror_check": a.mirror_check,
                                                         "mirror_need_hours": need}, sort_keys=True, indent=1) + "\n")
-    host = host_mod.DryHost(engine, log, source, out_dir=out, ntp_offset_ms=ntp.offset_ms, frozen_sha=sha)
+    host = host_mod.DryHost(engine, log, source, out_dir=out, ntp_offset_ms=ntp.offset_ms, frozen_sha=sha, trigger=a.trigger, change_id=a.change_id)
     host.start()
     old = {}
     for sig in (signal.SIGTERM, signal.SIGINT):
@@ -1016,7 +1038,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--out", required=True)
     r.add_argument("--commitment", default="processed", choices=list(fm.COMMITMENTS))
     r.add_argument("--daily-credit-cap", type=float, default=float(CAP_DEFAULT), help=f"Helius credits per UTC day for mark windows (refused above {CAP_REFUSE_ABOVE})")
-    r.add_argument("--trigger", default="certified")
+    r.add_argument("--trigger", default="certified", choices=TRIGGERS, help="one per run (the host writes it in its start row)")
     r.add_argument("--change-id", required=True)
     r.add_argument("--catch-up-hours", type=int, default=0, help="read the tape from this many hours before the start (the engine's 52 h warm-up)")
     r.add_argument("--universe-min-mbt", type=int, default=None, help="members graduate at or after this epoch second (default: EXP-027's r4b_count.UNIVERSE_MIN_MBT)")
