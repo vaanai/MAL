@@ -16,7 +16,7 @@ acknowledges the alert (follower baselines are re-taken, the anon history is rea
 
 M6 (QP #1160): stop the run and restart with a larger envelope if the linear projection of anon, fitted over the last >= 6 h after the catch-up (window
 [catch-up end + 1 h, now], at most the trailing 11 h, so at catch-up end + 12 h it is exactly M6's [+1 h, +12 h]) to min(run end, catch-up end + 116 h), exceeds
-2,975 MiB (85 % of memory.max 3,500 MiB), or at once if anon itself reaches 2,975 MiB. The projection is recorded in the sample from the first 6 h window on, but it can ALERT only
+4,352 MiB (85 % of the scope's memory.max, 5,120 MiB), or at once if anon itself reaches 4,352 MiB. The projection is recorded in the sample from the first 6 h window on, but it can ALERT only
 from catch-up end + 12 h (M6's check); from then on the trailing 11 h fit continues and QP rules its alerts binding M6 stops (QP on #1161, C2). The sidecar only alerts; the stop
 procedure is M5 (r4b-dry-stop.sh). If `catch_up_done` has not appeared 90 min after the scope did, it ALERTs (exit 3: M6 would be blind); relaunch with R4B_CATCHUP_END_EPOCH.
 """
@@ -32,7 +32,8 @@ import time
 from typing import Any, Callable
 
 MIB = 1 << 20
-ALERT_MIB = 2975.0                    # 85 % of MemoryMax=3500M
+SCOPE_CAP_MIB = 5120.0                # the scope's MemoryMax (r4b-dry-long.sh SCOPE_MAX_MIB, 5120M); QP on #1159: 3500M failed M6, the cap must be >= 4,308 MiB
+ALERT_MIB = SCOPE_CAP_MIB * 85 / 100  # 85 % of the cap = 4,352 MiB (4,563,402,752 B): the anon_at_threshold line and the M6 projection line
 HORIZON_AFTER_CATCHUP_S = 116 * 3600  # the 7-day bonding-idle plateau (catch-up end + about 116 h)
 FIT_SETTLE_S = 3600                   # the first hour after catch-up is not fitted (M6: [+1 h, +12 h])
 FIT_MIN_SPAN_S = 6 * 3600             # the fit needs >= 6 h of samples after catch-up
@@ -357,7 +358,7 @@ def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--change-id", required=True)
     ap.add_argument("--out", required=True, help="JSON lines, appended; read back on a restart")
-    ap.add_argument("--hours", type=float, default=125.0, help="stop after this many hours (also the run-end estimate when --run-end-epoch is not given)")
+    ap.add_argument("--hours", type=float, required=True, help="stop after this many hours (also the run-end estimate when --run-end-epoch is not given); QP K3: >= (E - sidecar start) in hours + 3")
     ap.add_argument("--run-end-epoch", type=float, default=None, help="the run's end (EXP-027 E); default: this sidecar's start + --hours")
     ap.add_argument("--catchup-end-epoch", type=float, default=None, help="override the catch-up end; default: the ms of the host's catch_up_done event")
     ap.add_argument("--events", default="", help="the host glue's events.jsonl, <out>/glue/events.jsonl, where TipLiveSource writes catch_up_done ('' = do not read it: then the catch-up end is scope first seen + 50 min)")

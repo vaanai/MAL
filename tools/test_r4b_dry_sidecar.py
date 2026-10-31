@@ -74,9 +74,24 @@ class Parsers(unittest.TestCase):
 
 
 class Memory(unittest.TestCase):
+    def test_the_alert_line_is_85_percent_of_the_5120m_cap(self):
+        # QP on #1159: 3500M failed M6 (slope 26.752 MiB/h, projection 3,661.6 MiB); the manager's cap is 5120M, the alert and M6 line at 85 % of it
+        self.assertEqual(sc.SCOPE_CAP_MIB, 5120.0)
+        self.assertEqual(sc.SCOPE_CAP_MIB * MIB, 5368709120)
+        self.assertEqual(sc.ALERT_MIB, 4352.0)
+        self.assertEqual(sc.ALERT_MIB * MIB, 4563402752)
+        self.assertEqual(sc.build_parser().parse_args(["--change-id", "x", "--out", "o", "--hours", "1"]).alert_mib, 4352.0)
+
+    def test_the_qp_measured_slope_alerts_at_3500m_but_not_at_the_5120m_line(self):
+        # the failed P-C3 figure: fitted end 558.3 MiB (after the first decide), slope 26.752 MiB/h, 116 h on: 3,661.6 MiB. Over the old 2,975 line, under the new 4,352 line.
+        proj = 558.3 + 26.752 * 116
+        self.assertGreater(proj, 2975.0)
+        self.assertLess(proj, sc.ALERT_MIB)
+        self.assertAlmostEqual(proj, 3661.6, places=0)
+
     def test_pc3_slopes_do_not_alert(self):
         # pc3 section 2.6: 6.5 and 11.9 MiB/h from 1,371 MiB; projection at +116 h is 2,112 and 2,728 MiB, both under 2,975
-        for slope, lo, hi in ((6.5, 2100, 2125), (11.9, 2715, 2740)):
+        for slope, lo, hi in ((6.5, 2100, 2125), (11.9, 2715, 2740)):  # both far under the alert line (4,352 MiB at the 5120M cap)
             m = live_monitor(slope, run_end=CU + 200 * H)
             last, alerts = feed_ramp(m, 12.0, slope)
             self.assertEqual(alerts, [], slope)
@@ -86,17 +101,17 @@ class Memory(unittest.TestCase):
 
     def test_c2_a_steep_slope_gives_no_exit_before_catchup_end_plus_12_h_and_exits_at_the_first_sample_at_or_after(self):
         m = live_monitor(0, run_end=CU + 200 * H)
-        last, alerts = feed_ramp(m, 11.9, 20.0)  # 1,371 + 20 * 114 = 3,651 MiB at the horizon: over 2,975 from the first 6 h window on (+7 h) ...
+        last, alerts = feed_ramp(m, 11.9, 30.0)  # 1,371 + 30 * 114 = 4,791 MiB at the horizon: over 4,352 from the first 6 h window on (+7 h) ...
         self.assertEqual(alerts, [])
-        self.assertGreater(last["anon_proj_mib"], 2975)  # ... and recorded as a field, but not an alert before M6's check
+        self.assertGreater(last["anon_proj_mib"], sc.ALERT_MIB)  # ... and recorded as a field, but not an alert before M6's check
         m = live_monitor(0, run_end=CU + 200 * H)
-        last, alerts = feed_ramp(m, 12.0, 20.0)
+        last, alerts = feed_ramp(m, 12.0, 30.0)
         self.assertEqual(len(alerts), 1)
         self.assertEqual(alerts[0][0], sc.EXIT_ALERT)
         self.assertIn("m6_projection", alerts[0][1])
         self.assertAlmostEqual((last["ts"] - CU) / H, 12.0, places=6)  # the first sample at +12 h, window [+1 h, +12 h]
         self.assertAlmostEqual(last["anon_fit_span_h"], 11.0, places=1)
-        self.assertGreater(last["anon_proj_mib"], 2975)
+        self.assertGreater(last["anon_proj_mib"], sc.ALERT_MIB)
 
     def test_c2_the_alert_continues_after_12_h_on_the_trailing_11_h_window(self):
         m = live_monitor(0, run_end=CU + 200 * H)
@@ -136,16 +151,16 @@ class Memory(unittest.TestCase):
         self.assertEqual(sc.Monitor(catchup_end=CU, run_end=CU + 20 * H).horizon(CU + 30 * H), CU + 30 * H)  # past the horizon: the fit at now
         # a steep ramp that would alert at +116 h does not alert when the run ends at +14 h
         m3 = live_monitor(0, run_end=CU + 14 * H)
-        last, alerts = feed_ramp(m3, 12.0, 20.0)
+        last, alerts = feed_ramp(m3, 12.0, 30.0)
         self.assertEqual(alerts, [])
-        self.assertLess(last["anon_proj_mib"], 2975)
+        self.assertLess(last["anon_proj_mib"], sc.ALERT_MIB)
 
     def test_anon_at_threshold_alerts_at_once_without_a_fit(self):
         m = live_monitor(0, run_end=CU + 200 * H)
-        al = m.feed(smp(CU + 2 * H, 2975.0))
+        al = m.feed(smp(CU + 2 * H, sc.ALERT_MIB))
         self.assertEqual([c for c, _ in al], [sc.EXIT_ALERT])
         self.assertIn("anon_at_threshold", al[0][1])
-        self.assertEqual(live_monitor(0).feed(smp(CU + 2 * H, 2974.9)), [])
+        self.assertEqual(live_monitor(0).feed(smp(CU + 2 * H, sc.ALERT_MIB - 0.1)), [])
 
     def test_oom_and_oom_kill(self):
         m = live_monitor(0)
@@ -431,6 +446,23 @@ class Loop(unittest.TestCase):
         self.assertEqual(rc, 0, out)
         self.assertNotIn("catchup_end_unknown", out)
         self.assertTrue(any(r["phase"] == "live" for r in rows))
+
+    def test_anon_at_the_alert_line_in_a_real_scope_file_exits_3_and_one_mib_under_it_does_not(self):
+        self.control_group = "/user.slice/r4b-dry-x1.scope"
+        self.write_scope(anon=4352 * MIB, oom_kill=0)
+        rc, out, rows = self.go()
+        self.assertEqual(rc, sc.EXIT_ALERT)
+        self.assertIn("anon_at_threshold", out)
+        self.assertIn("4352", out)
+        (self.root / "sc.jsonl").unlink()
+        self.write_scope(anon=4351 * MIB, oom_kill=0)
+        rc, out, rows = self.go()
+        self.assertEqual(rc, 0, out)
+
+    def test_hours_is_required(self):
+        buf = io.StringIO()
+        rc = sc.run(["--change-id", "x1", "--out", str(self.root / "sc.jsonl")], clock=lambda: self.now, sleep=self.sleep, systemctl=self.systemctl, out=buf)
+        self.assertEqual(rc, sc.EXIT_USAGE)
 
     def test_oom_kill_is_an_alert_with_exit_3(self):
         self.control_group = "/user.slice/r4b-dry-x1.scope"
