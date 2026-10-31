@@ -208,6 +208,30 @@ class _Cursor:
         n, self.bad = self.bad, 0
         return n
 
+    def _shrunk(self, size: int) -> None:
+        if size < self.offset:
+            # the follower restarted mid-write and cut the file back to its pre-write size (`_recover`): that is the end of slot D's rows. What we read beyond it
+            # (held-back rows of the in-flight slot) is gone; the slot is fetched again and appended anew.
+            self.stats["file_shrunk"] += 1
+            self.offset, self.tail = size, b""
+            self.rows = deque(r for r in self.rows if self.keep_le is not None and r[0] <= self.keep_le)
+
+    def rewind(self) -> None:
+        """Forget the held-back rows (all of slots above D) and go back to the byte where the first of them starts."""
+        if self.rows:
+            self.offset, self.tail = self.rows[0][2], b""
+            self.rows.clear()
+
+    def refresh(self, keep_le: int) -> None:
+        """Start of a poll: the file may have grown (at_eof reset) or been cut back (stat only; a name outside the tip dir is refused by TipFiles.path)."""
+        self.at_eof, self.keep_le = False, keep_le
+        if self.missing and not self.offset:
+            return
+        try:
+            self._shrunk(os.stat(self.files.path(self.name)).st_size)
+        except FileNotFoundError:
+            pass
+
     def fill(self, want: int = CHUNK_ROWS) -> None:
         while len(self.rows) < want:
             try:
@@ -217,13 +241,7 @@ class _Cursor:
                 return
             with fh:
                 self.missing = False
-                size = os.fstat(fh.fileno()).st_size
-                if size < self.offset:
-                    # the follower restarted mid-write and cut the file back to its pre-write size (`_recover`): that is the end of slot D's rows. What we read
-                    # beyond it is gone; the slot is fetched again and appended anew.
-                    self.stats["file_shrunk"] += 1
-                    self.offset, self.tail = size, b""
-                    self.rows = deque(r for r in self.rows if self.keep_le is not None and r[0] <= self.keep_le)
+                self._shrunk(os.fstat(fh.fileno()).st_size)
                 fh.seek(self.offset)
                 data = fh.read(CHUNK_BYTES)
                 if self.fadvise and data:
@@ -234,10 +252,13 @@ class _Cursor:
             self.at_eof = len(data) < CHUNK_BYTES
             if not data:
                 return
+            base = self.offset - len(self.tail)  # file offset of the first byte of tail + data
             self.offset += len(data)
             parts = (self.tail + data).split(b"\n")
             self.tail = parts.pop()  # a torn last line (the follower is mid-write) waits for its newline
+            pos = base
             for ln in parts:
+                start, pos = pos, pos + len(ln) + 1
                 if not ln.strip():
                     continue
                 try:
@@ -245,7 +266,7 @@ class _Cursor:
                 except (ValueError, UnicodeDecodeError):
                     row = None
                 if isinstance(row, dict) and (_is_int(row.get("slot")) or self.name == GAP_NAME):
-                    self.rows.append((row.get("slot") if _is_int(row.get("slot")) else -1, row))
+                    self.rows.append((row.get("slot") if _is_int(row.get("slot")) else -1, row, start))
                 else:
                     self.bad += 1
                     self.stats["bad_lines"] += 1
@@ -316,7 +337,7 @@ class TipReader:
     def _gap_items(self, out: list) -> None:
         self._gaps.fill(CHUNK_ROWS)
         while self._gaps.rows:
-            _, obj = self._gaps.rows.popleft()
+            _, obj, _ = self._gaps.rows.popleft()
             g = parse_gap_row(obj, self.hw if self.hw is not None else 0)
             if g.t_recv_ms is not None and g.t_recv_ms < self.read_from_ms:
                 self.stats["gaps_before_window"] += 1  # older than the first hour this run reads: counted, not parsed further
@@ -343,7 +364,7 @@ class TipReader:
         self.problem = None
         self.D, self.last_t_ms = D, last_t
         for c in (*self._cursors().values(), self._gaps):
-            c.at_eof, c.keep_le = False, D  # the live files may have grown since the last poll
+            c.refresh(D)
         self._gap_items(out)  # after the checkpoint read: a gap row of a slot <= D is written before the checkpoint passes it
         last_h = self._last_hour(last_t)
         budget = max(0, limit - len(out))
@@ -373,6 +394,8 @@ class TipReader:
         self.caught_up = self.h >= last_h and all(c.at_eof or (c.rows and c.rows[0][0] > D) for c in cur.values())
         if self.caught_up:
             self.released_D = D
+        for c in cur.values():
+            c.rewind()  # rows above D are not kept: they are read again next time, so a cut-back of an in-flight write (`_recover`) can never leave a stale row here
         return out
 
     def _merge(self, cur: dict[str, _Cursor], D: int, budget: int, out: list) -> bool:
@@ -391,7 +414,7 @@ class TipReader:
             if n >= budget:
                 return True
             k, item = KIND_ORDER[best[1]]
-            slot, row = cur[k].rows.popleft()
+            slot, row, _ = cur[k].rows.popleft()
             n += 1
             self.hw = slot if self.hw is None else max(self.hw, slot)
             if item == "skip":
