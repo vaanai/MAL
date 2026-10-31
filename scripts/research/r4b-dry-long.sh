@@ -7,7 +7,7 @@
 #   1. refuses to start if ANY r4b_host_glue process is running (M5: two hosts must never write one declog) or if this change_id already has a declog/out/host.log;
 #   2. -I preflight (imports of the host's modules);
 #   3. records the M1 start facts to $D/m1-start.txt: the user slice's MemoryMax/MemoryHigh/MemoryCurrent (before the scope exists), then, once the scope is up, its
-#      memory.max (expect 3670016000 = 3500M) and memory.swap.max (expect 0), the host's niceness (expect 19) and its pid;
+#      memory.max (expect 3670016000 = 3500M) and memory.swap.max (expect 0), the host's niceness (expect 19) and its pid. A scope-limit, swap or nice mismatch is fail-closed: M1_ABORT, the scope is stopped, exit 8. The slice line (M1_SLICE) is recorded, not enforced;
 #   4. runs the host in its own scope: MemoryMax=3500M, MemorySwapMax=0, the whole process under `nice -n 19` (pc3 2.4), never --no-ionice (ionice -c3 is inert under
 #      the disk scheduler `none`; the records say so). The host's stdout/stderr go to $D/host.log; the rc is the host's rc.
 # The reservation of this MiScusi job is 1.9G (fast-0 MiScusi ceiling 2G); the scope is the hard cap, 3500M (M-a'). Say so in the job name, the LAB_STATE start row and the
@@ -111,11 +111,16 @@ record_m1() {
             echo "scope_memory_high=$MH"
             echo "host_pid=$HPID"
             echo "host_nice=$HNI"
-            if [ "$MM" = "$SCOPE_MEM_MAX" ]; then echo "M1_SCOPE_MEMORY_MAX PASS ($MM)"; else echo "M1_SCOPE_MEMORY_MAX FAIL (got $MM, expected $SCOPE_MEM_MAX): stop per M5"; fi
-            if [ "$MS" = "0" ]; then echo "M1_SCOPE_SWAP_MAX PASS (0)"; else echo "M1_SCOPE_SWAP_MAX FAIL (got $MS, expected 0): stop per M5"; fi
-            if [ "$HNI" = "19" ]; then echo "M1_NICE PASS (19)"; else echo "M1_NICE FAIL (got $HNI, expected 19): stop per M5"; fi
+            BAD=0
+            if [ "$MM" = "$SCOPE_MEM_MAX" ]; then echo "M1_SCOPE_MEMORY_MAX PASS ($MM)"; else echo "M1_SCOPE_MEMORY_MAX FAIL (got $MM, expected $SCOPE_MEM_MAX)"; BAD=1; fi
+            if [ "$MS" = "0" ]; then echo "M1_SCOPE_SWAP_MAX PASS (0)"; else echo "M1_SCOPE_SWAP_MAX FAIL (got $MS, expected 0)"; BAD=1; fi
+            if [ "$HNI" = "19" ]; then echo "M1_NICE PASS (19)"; else echo "M1_NICE FAIL (got $HNI, expected 19)"; BAD=1; fi
+            if [ "$BAD" = 1 ]; then echo "M1_ABORT the scope's limits are not the registered ones: stopping the scope now (M5), exit 8"; fi
         fi
     } >> "$D/m1-start.txt"
+    # fail closed: the scope facts are exact equalities, so a mismatch ends the run at once (no mark has been counted yet, the catch-up is still running). The slice line is
+    # judgement (page cache counts in MemoryCurrent) and stays a recorded line for the manager.
+    if grep -q '^M1_ABORT' "$D/m1-start.txt"; then systemctl --user stop "$UNIT.scope"; fi
     cat "$D/m1-start.txt"
 }
 
@@ -132,4 +137,8 @@ kill "$REC" 2>/dev/null
 wait "$REC" 2>/dev/null
 tail -25 "$D/host.log"
 echo "r4b-dry-long: host rc=$rc"
+if grep -q '^M1_ABORT' "$D/m1-start.txt"; then
+    echo "r4b-dry-long: M1_ABORT: the scope was stopped because its limits or niceness were not the registered ones; this is a failed start (exit 8), see $D/m1-start.txt; confirm with r4b-dry-stop.sh" >&2
+    exit 8
+fi
 exit $rc

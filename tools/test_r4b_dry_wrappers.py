@@ -129,14 +129,31 @@ class Long(Base):
         self.assertIn("show user-", self.shim_log("systemctl.log"))
         self.assertIn("-p MemoryMax -p MemoryHigh", self.shim_log("systemctl.log"))
 
-    def test_m1_fails_loudly_on_a_wrong_scope_limit_swap_or_nice(self):
-        self.env["SHIM_CG"] = self.scope(memory_max="max", swap="max")
-        r = self.sh(LONG, "x1", SHIM_NICE=0)
+    def _abort_case(self, line, shim=None, **scope_kw):
+        self.env["SHIM_CG"] = self.scope(**scope_kw)
+        r = self.sh(LONG, "x1", **(shim or {}))
         m1 = (self.home / "mal-data" / "r4b-dry" / "x1" / "m1-start.txt").read_text()
-        self.assertIn("M1_SCOPE_MEMORY_MAX FAIL", m1)
-        self.assertIn("M1_SCOPE_SWAP_MAX FAIL", m1)
-        self.assertIn("M1_NICE FAIL (got 0", m1)
-        self.assertEqual(r.returncode, 0)  # the host's rc; the FAIL lines are for the manager (stop per M5)
+        self.assertIn(line, m1)
+        self.assertIn("M1_ABORT", m1)
+        self.assertIn("--user stop r4b-dry-x1.scope", self.shim_log("systemctl.log"))
+        self.assertEqual(r.returncode, 8, r.stderr)  # not the host's 0: a failed start never exits 0
+        self.assertIn("M1_ABORT", r.stderr)
+
+    def test_m1_wrong_memory_max_is_fail_closed(self):
+        self._abort_case("M1_SCOPE_MEMORY_MAX FAIL", memory_max="max")
+
+    def test_m1_wrong_swap_max_is_fail_closed(self):
+        self._abort_case("M1_SCOPE_SWAP_MAX FAIL", swap="max")
+
+    def test_m1_wrong_nice_is_fail_closed(self):
+        self._abort_case("M1_NICE FAIL (got 0", shim=dict(SHIM_NICE=0))
+
+    def test_m1_pass_does_not_stop_the_scope(self):
+        self.env["SHIM_CG"] = self.scope()
+        r = self.sh(LONG, "x1")
+        self.assertEqual(r.returncode, 0)
+        self.assertNotIn("--user stop", self.shim_log("systemctl.log"))
+        self.assertNotIn("M1_ABORT", (self.home / "mal-data" / "r4b-dry" / "x1" / "m1-start.txt").read_text())
 
     def test_m1_slice_limit_below_the_scope_plus_current_is_a_fail_line(self):
         self.env["SHIM_CG"] = self.scope()
