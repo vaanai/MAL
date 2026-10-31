@@ -631,7 +631,6 @@ class Puller:
         self._last_prune = float("-inf")
         self._last_status = float("-inf")
         self._last_progress = float("-inf")
-        self._coverage: tuple[float, str | None, int] = (float("-inf"), None, 0)
         self._vq: queue.Queue = queue.Queue()
         self._vres: queue.Queue = queue.Queue()
         self._vthread = threading.Thread(target=self._verifier, name="tape-mirror-verify", daemon=True)
@@ -896,12 +895,13 @@ class Puller:
             self._vres.put((h, part, sha, size, res))
 
     def drain_verified(self, block_s: float = 0.0) -> int:
+        """Install every verified hour that is ready. block_s > 0 waits that long for the FIRST result only (tests); the receive loop never blocks."""
         n = 0
         end = time.monotonic() + block_s
         while True:
             try:
                 left = end - time.monotonic()
-                item = self._vres.get(timeout=left) if left > 0 else self._vres.get_nowait()
+                item = self._vres.get(timeout=left) if (left > 0 and n == 0) else self._vres.get_nowait()
             except queue.Empty:
                 return n
             h, part, sha, size, res = item
@@ -952,15 +952,12 @@ class Puller:
             fh.write(json.dumps(row, sort_keys=True) + "\n")
 
     def coverage(self) -> tuple[str | None, int]:
-        """(oldest hour of the contiguous run of local hours that ends at the current UTC hour, its length in hours)."""
-        if time.monotonic() - self._coverage[0] < 1.0:
-            return self._coverage[1], self._coverage[2]
+        """(oldest hour of the contiguous run of local hours that ends at the current UTC hour, its length in hours). At most retain_hours + 2 set lookups."""
         have = set(self.sizes) | self.local_closed
         t = (self._ms() // H_MS) * H_MS
         start, n = None, 0
         while hour_key(t) in have and n <= self.retain_hours + 1:
             start, n, t = hour_key(t), n + 1, t - H_MS
-        self._coverage = (time.monotonic(), start, n)
         return start, n
 
     def status(self) -> dict:
