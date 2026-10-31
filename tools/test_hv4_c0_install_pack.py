@@ -247,6 +247,7 @@ class RequirementsTests(unittest.TestCase):
         code = ("import sys; sys.path.insert(0, sys.argv[1]); b = set(sys.modules)\n"
                 "import tools.arena_live_bridge, tools.hv4_c0_parity, tools.arena_live_parity, tools.arena_tieout, tools.hv4_c0_tieout\n"
                 "import tools.h5_executor, tools.probe_executor, tools.probe_live, tools.pumpswap_tx, tools.pumpswap_simulate\n"  # make_live_port's lazy imports
+                "import tools.arena_close_blocked, tools.h5_arena_executor\n"  # make_live_port's lazy imports for the DEC-032 s3 mint screen
                 "m = {x.split('.')[0] for x in set(sys.modules) - b}\n"
                 "print(' '.join(sorted(x for x in m if x not in sys.stdlib_module_names and not x.startswith('_'))))")
         r = subprocess.run([sys.executable, "-I", "-c", code, str(REPO)], capture_output=True, text=True, timeout=180, cwd="/")
