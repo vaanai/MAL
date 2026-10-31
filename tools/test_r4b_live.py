@@ -1241,3 +1241,108 @@ def test_precompute_entry_without_a_finite_block_time_is_not_reused_when_a_kept_
     sd = int(pre.max_slot) + 10
     assert eng._pre_valid(mem, pre, sl, bt, sd) == pre.s0bt and pre.fin_bt
     assert eng._pre_valid(mem, dataclasses.replace(pre, fin_bt=False), sl, bt, sd) is None
+
+
+# ------------------------------------------------------------------------------------------------------------------------------- certified trigger (QP-RULING-1030 Addendum 5 ruling (a), proof P-a2 i and iii)
+def _guard_points(ev: list, marks, lag: int = 30):
+    """The guard path as drive() runs it, plus the clock point (sd, s*) the guard saw at each mark: (engine, [MarkResult], {T: (sd, s_star)})."""
+    eng, i, out, pts = mk_engine(), 0, [], {}
+    for T in marks:
+        i = feed(eng, ev, i, T + lag)
+        pts[T] = eng.clock_point(T)
+        out.append(eng.decide(T, w0=W0, last_entry=E - 3600))
+    return eng, out, pts
+
+
+def test_certified_decide_is_byte_equal_to_the_guard_decide_on_complete_inputs():
+    """P-a2 (i). The certified engine is handed ONLY the rows up to the first clock second at or after T (the one-second guard would still refuse),
+    plus the certified sd = its provisional sd; the guard engine has everything up to T + 30 s. Rows, scores, ranks, actions and the md5s must be equal."""
+    ev = event_stream(scenario())
+    ref_eng, ref, pts = _guard_points(ev, MARKS)
+    eng, i, out = mk_engine(), 0, []
+    for T in MARKS:
+        sd, s_star = pts[T]
+        i = feed(eng, ev, i, s_star + 1)  # every row of second s* and earlier: all slots <= sd are in, no later second
+        assert eng.clock_point(T) is None and eng.clock_point(T, provisional=True) == (sd, s_star)  # the guard refuses, the provisional point is the guard's
+        with pytest.raises(lv.LiveRefused, match="clock not complete"):
+            eng.decide(T, w0=W0, last_entry=E - 3600)
+        out.append(eng.decide(T, w0=W0, last_entry=E - 3600, certified_sd=sd))
+        i = feed(eng, ev, i, T + 30)  # the rest of the stream arrives after the decision, as live
+    assert [sig(r) for r in out] == [sig(r) for r in ref]
+    assert sum(len(r.mints) for r in out) > 40 and any(r.actions for r in out)
+    assert _rows_and_trades(eng, out) == _rows_and_trades(ref_eng, ref)
+
+
+def test_certified_decide_with_the_precompute_equals_the_guard_decide():
+    ev = event_stream(scenario())
+    ref_eng, ref, pts = _guard_points(ev, MARKS)
+    eng, i, out = mk_engine(), 0, []
+    for T in MARKS:
+        sd, s_star = pts[T]
+        i = feed(eng, ev, i, T - 5)
+        eng.precompute(T)
+        i = feed(eng, ev, i, s_star + 1)
+        out.append(eng.decide(T, w0=W0, last_entry=E - 3600, certified_sd=sd))
+        i = feed(eng, ev, i, T + 30)
+    assert [sig(r) for r in out] == [sig(r) for r in ref] and eng.counters["precompute_hits"] > 20
+    assert _rows_and_trades(eng, out) == _rows_and_trades(ref_eng, ref)
+
+
+def test_certified_decide_refuses_when_its_sd_differs_and_changes_nothing():
+    """P-a2 (iii), and the engine-level shape of (ii): a lower-slot row of the first second arrives after the signal and the old certified sd is refused."""
+    T = BT0 + 3 * 3600
+    eng = _tiny_engine()
+    eng.ingest_trade(_tape_row(T - 10, 100))
+    with pytest.raises(lv.LiveRefused, match="no clock second at or after"):
+        eng.decide(T, certified_sd=100)  # the clock ends before T
+    eng.ingest_trade(_tape_row(T + 3, 120))  # the first second at or after T; a later second is NOT in, so the guard would refuse
+    assert eng.clock_point(T) is None and eng.clock_point(T, provisional=True) == (120, T + 3)
+    for wrong in (119, 121, 0, -1, 10 ** 12):
+        with pytest.raises(lv.LiveRefused, match="certified sd"):
+            eng.decide(T, certified_sd=wrong)
+    for not_int in (True, 120.0, "120", np.bool_(True)):
+        with pytest.raises(lv.LiveRefused, match="certified_sd must be an int"):
+            eng.decide(T, certified_sd=not_int)
+    assert eng._last_T is None and eng.book.last is None  # every refusal changed nothing
+    eng.ingest_trade(_tape_row(T + 3, 119))  # a late row of slot < the certified sd lowers it: the value certified before is now refused
+    with pytest.raises(lv.LiveRefused, match="certified sd 120 != the engine's sd"):
+        eng.decide(T, certified_sd=120)
+    res = eng.decide(T, certified_sd=119)
+    assert res.sd == 119 and res.t == T and eng._last_T == T
+    with pytest.raises(lv.LiveRefused, match="not after the last decided mark"):
+        eng.decide(T, certified_sd=119)  # a certified call does not bypass the mark order
+
+
+def test_certified_decide_numpy_int_is_accepted_and_the_default_path_is_unchanged():
+    T = BT0 + 3 * 3600
+    eng = _tiny_engine()
+    eng.ingest_trade(_tape_row(T + 1, 50))
+    assert eng.decide(T, certified_sd=np.int64(50)).sd == 50
+    eng2 = _tiny_engine()  # certified_sd=None is exactly the guard (the earlier guard tests pin its refusals)
+    eng2.ingest_trade(_tape_row(T + 1, 50))
+    with pytest.raises(lv.LiveRefused, match="clock not complete"):
+        eng2.decide(T)
+    assert "certified_sd" in inspect.signature(lv.Engine.decide).parameters and inspect.signature(lv.Engine.decide).parameters["certified_sd"].default is None
+
+
+def test_clock_point_provisional_needs_only_a_second_at_or_after_T():
+    T = BT0 + 3 * 3600
+    eng = _tiny_engine()
+    assert eng.clock_point(T, provisional=True) is None
+    eng.ingest_trade(_tape_row(T - 1, 90))
+    assert eng.clock_point(T, provisional=True) is None  # the clock ends before T
+    eng.ingest_trade(_tape_row(T, 100))
+    eng.ingest_trade(_tape_row(T, 99))
+    assert eng.clock_point(T, provisional=True) == (99, T) and eng.clock_point(T) is None
+    eng.ingest_trade(_tape_row(T + 2, 110))
+    assert eng.clock_point(T) == eng.clock_point(T, provisional=True) == (99, T)
+
+
+def test_host_start_extra_fields_are_recorded_and_cannot_replace_a_pinned_field(tmp_path):
+    from tools.arena_declog import DecisionLog
+
+    out = lv.host_start(DecisionLog(tmp_path / "x"), now_ms=MARKS[0] * 1000, frozen_sha="cd" * 20, extra={"trigger": "certified", "change_id": "c1"})
+    assert out["start"]["trigger"] == "certified" and out["start"]["change_id"] == "c1" and out["start"]["frozen_sha"] == "cd" * 20
+    for k in ("frozen_sha", "kind", "warmup_s", "seq", "sha"):
+        with pytest.raises(lv.LiveRefused, match="may not set"):
+            lv.host_start(DecisionLog(tmp_path / f"y{k}"), now_ms=MARKS[0] * 1000, frozen_sha="cd" * 20, extra={k: "x"})
