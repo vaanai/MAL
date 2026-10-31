@@ -24,7 +24,7 @@ from tools import r4b_feed_adapter as fa
 from tools import r4b_feed_lag_probe as lp
 from tools import r4b_feed_merge as fm
 
-T = 1_786_665_600  # an hour mark (seconds)
+T = 1_786_665_600  # an hour mark, 2026-08-14T00:00:00Z (date -u -d @1786665600), in seconds
 FIX = Path(__file__).resolve().parents[1] / "observe" / "fixtures"
 SIG = "S" * 88
 FAKE_KEY = "FAKE-KEY-not-a-secret-0001"
@@ -657,7 +657,7 @@ class Wall:
         return self.t
 
 
-DAY1 = 1_786_665_600 + 3600  # 2026-08-14 hour 1 UTC? (a fixed instant; only the date changes are asserted)
+DAY1 = 1_786_665_600 + 3600  # 2026-08-14T01:00:00Z (date -u -d @1786669200); only the UTC date matters to the cap
 
 
 def test_the_cap_is_required_and_must_be_a_positive_number(tmp_path):
