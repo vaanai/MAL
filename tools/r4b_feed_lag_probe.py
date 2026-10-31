@@ -17,7 +17,8 @@ Credits: uncompressed payload bytes per socket (compression off), priced at 2 an
 cost and the projection to 24 r4-b mark windows a day.
 
 Run as a MiScusi job on mal-fast-0 (the Helius key file is there; never printed, never in argv; added to the URL inside this process):
-    /var/lib/mal/fast-listener/.venv/bin/python -I tools/r4b_feed_lag_probe.py --key-file /var/lib/mal/fast-listener/helius.env --seconds 7200 --interval 600
+    /var/lib/mal/fast-listener/.venv/bin/python -I tools/r4b_feed_lag_probe.py --key-file /var/lib/mal/fast-listener/helius.env --seconds 7200 --interval 600 \
+        --max-credits 50000   (hard per-run cap at 3 credits per 0.1 MB, at most 50,000; QP on #1133)
 No public-RPC socket is opened (fast-0's public IP load is a known Q50 feed issue). Exit: 0 measured, 2 usage, 11 no usable key, 12 no window connected.
 """
 from __future__ import annotations
@@ -42,6 +43,34 @@ PRE_S, POST_S = 30, 10
 PRE_SD_WINDOW_S = 5
 CREDITS_PER_TENTH_MB = (2, 3)
 MARKS_PER_DAY = 24
+MAX_CREDITS_CAP = 50_000  # QP on #1133: a hard per-run cap, priced at the 3-credit rate, is required; the CLI refuses a larger cap
+CAP_RATE = 3  # credits per 0.1 MB used for the cap (the higher of the two published rates)
+
+
+class Budget:
+    """Hard credit cap for one run, at CAP_RATE credits per 0.1 MB of uncompressed payload over every socket. A socket stops reading the moment the
+    cap is reached, and no new window opens if its estimated cost (the largest window seen so far, or the first window's bytes when none is known) does
+    not fit."""
+
+    def __init__(self, max_credits: float) -> None:
+        self.max_credits = float(max_credits)
+        self.bytes = 0
+        self.max_window_bytes = 0
+        self.stopped = False
+
+    def credits(self) -> float:
+        return self.bytes / 1e5 * CAP_RATE
+
+    def add(self, n: int) -> bool:
+        """Count n bytes; False once the cap is reached (the caller closes the socket and the run ends)."""
+        self.bytes += n
+        if self.credits() >= self.max_credits:
+            self.stopped = True
+        return not self.stopped
+
+    def can_open(self, sockets: int) -> bool:
+        est = self.max_window_bytes * sockets / 1e5 * CAP_RATE
+        return not self.stopped and self.credits() + est < self.max_credits
 KEY_RE = re.compile(r"^[A-Za-z0-9-]{8,128}$")
 
 
@@ -182,7 +211,7 @@ def summarise(rows: list[dict], seconds: float) -> dict:
     return out
 
 
-async def run_window(url: str, mark: int, commitment: str) -> Window:
+async def run_window(url: str, mark: int, commitment: str, budget: Budget | None = None) -> Window:
     import ssl
 
     import certifi
@@ -205,20 +234,28 @@ async def run_window(url: str, mark: int, commitment: str) -> Window:
                 except asyncio.TimeoutError:
                     break
                 w.handle(raw, int(time.time() * 1000))
+                if budget is not None and not budget.add(len(raw.encode("utf-8")) if isinstance(raw, str) else len(raw)):
+                    print(f"r4b_feed_lag_probe: credit cap {budget.max_credits:.0f} reached in window {mark} {commitment}: closing", file=sys.stderr)
+                    break
     except Exception as exc:  # noqa: BLE001 - the message may carry the URL: only the class is printed
         w.errors += 1
         print(f"r4b_feed_lag_probe: window {mark} {commitment}: {type(exc).__name__}", file=sys.stderr)
     return w
 
 
-async def probe(url: str, seconds: float, interval: int, commitments: list[str], out_path: Path | None) -> list[dict]:
+async def probe(url: str, seconds: float, interval: int, commitments: list[str], out_path: Path | None, budget: Budget | None = None) -> list[dict]:
     t0 = time.time()
     first = int(-(-(t0 + PRE_S + 5) // interval) * interval)
     rows: list[dict] = []
     m = first
     while m + POST_S <= t0 + seconds:
+        if budget is not None and not budget.can_open(len(commitments)):
+            print(f"r4b_feed_lag_probe: credit cap {budget.max_credits:.0f}: no window at {m} (spent {budget.credits():.0f})", file=sys.stderr)
+            break
         await asyncio.sleep(max(0.0, (m - PRE_S) - time.time()))
-        ws = await asyncio.gather(*(run_window(url, m, c) for c in commitments))
+        ws = await asyncio.gather(*(run_window(url, m, c, budget) for c in commitments))
+        if budget is not None:
+            budget.max_window_bytes = max([budget.max_window_bytes] + [w.bytes for w in ws])
         for w in ws:
             r = analyse(w)
             rows.append(r)
@@ -239,7 +276,12 @@ def main(argv=None) -> int:
     ap.add_argument("--interval", type=int, default=600, help="pseudo-mark spacing in seconds (a divisor of 3600, so hour marks are included)")
     ap.add_argument("--commitments", default="processed,confirmed")
     ap.add_argument("--out", default=None, help="per-window JSON lines (default $MISCUSI_OUTPUT_DIR/windows.jsonl)")
+    ap.add_argument("--max-credits", type=float, default=MAX_CREDITS_CAP,
+                    help=f"hard cap for the whole run at {CAP_RATE} credits per 0.1 MB (at most {MAX_CREDITS_CAP}); a socket closes when it is reached")
     a = ap.parse_args(argv)
+    if not 0 < a.max_credits <= MAX_CREDITS_CAP:
+        print(f"r4b_feed_lag_probe: --max-credits must be in (0, {MAX_CREDITS_CAP}]", file=sys.stderr)
+        return 2
     cs = [c for c in a.commitments.split(",") if c]
     if not 600 <= a.seconds <= 4 * 3600 or a.interval < 60 or 3600 % a.interval or not cs or any(c not in ("processed", "confirmed") for c in cs):
         print("r4b_feed_lag_probe: need 600 <= --seconds <= 14400, --interval a divisor of 3600 >= 60, commitments from processed,confirmed", file=sys.stderr)
@@ -250,8 +292,10 @@ def main(argv=None) -> int:
         return 11
     out = Path(a.out) if a.out else (Path(os.environ["MISCUSI_OUTPUT_DIR"]) / "windows.jsonl" if os.environ.get("MISCUSI_OUTPUT_DIR") else None)
     t0 = time.monotonic()
-    rows = asyncio.run(probe(f"{BASE}?api-key={key}", a.seconds, a.interval, cs, out))
+    budget = Budget(a.max_credits)
+    rows = asyncio.run(probe(f"{BASE}?api-key={key}", a.seconds, a.interval, cs, out, budget))
     s = summarise(rows, time.monotonic() - t0)
+    s["credit_cap"] = {"max_credits": a.max_credits, "rate": CAP_RATE, "spent_at_cap_rate": round(budget.credits(), 1), "stopped_by_cap": budget.stopped}
     print(json.dumps(s, sort_keys=True))
     res = os.environ.get("MISCUSI_RESULT")
     if res:

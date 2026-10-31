@@ -103,3 +103,15 @@ def test_no_content_in_window_output():
     w.handle(logs_note(5, M), M * 1000 + 10)
     r = P.analyse(w)
     assert "signature" not in json.dumps(r) and set(r) >= {"bytes", "sd_lag_slots", "commitment"}
+
+
+def test_credit_cap_refuses_large_caps_and_stops_counting(tmp_path):
+    f = tmp_path / "k.env"
+    f.write_text("HELIUS_API_KEY=abcd-1234-efgh\n")
+    assert P.main(["--key-file", str(f), "--max-credits", "50001"]) == 2
+    assert P.main(["--key-file", str(f), "--max-credits", "0"]) == 2
+    b = P.Budget(30)  # 30 credits at 3 per 0.1 MB = 1 MB
+    assert b.add(600_000) and b.can_open(1) is True  # no window size known yet
+    b.max_window_bytes = 300_000
+    assert not b.can_open(2)  # 0.6 MB spent + 2 x 0.3 MB estimated >= 1 MB
+    assert not b.add(400_000) and b.stopped and not b.can_open(1)  # 1.0 MB: the cap is reached, the socket must close
