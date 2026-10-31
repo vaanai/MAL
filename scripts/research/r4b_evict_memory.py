@@ -88,7 +88,7 @@ def account(eng, now_bt: int, lv) -> dict:
         if st.mbt is None and st.mslot is None:
             k = "mint_never_completed_with_bonding" if st.b_n else "mint_create_only"
         else:
-            k = "mint_graduated_gt_50h" if (st.mbt is not None and now_bt > st.mbt + lv.EVICT_AFTER_S) else "mint_graduated_le_50h"
+            k = "mint_graduated_gt_50h" if (st.mbt is not None and now_bt > st.mbt + getattr(lv, "EVICT_AFTER_S", lv.GRID_HI_S + 2 * lv.MARK_S)) else "mint_graduated_le_50h"
         cat[k] += deep(st, seen) + sys.getsizeof(mint) * (id(mint) not in seen)
         seen.add(id(mint))
         cnt[k] += 1
