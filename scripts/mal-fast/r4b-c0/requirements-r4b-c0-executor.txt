@@ -1,0 +1,14 @@
+# Hashed pins for the PINNED r4-b C0 executor venv (Python 3.12, linux x86_64 = mal-fast-0), /opt/mal-r4b-c0/venv.
+# The executor closure (tools.r4b_arena_executor -> r4b_book (numpy), r4b_frozen, arena_live_bridge, arena_paper, arena_declog, hv4_live_c0, hv4_c0_parity, h5_arena_gates)
+# needs numpy; the bridge's live port, not built for r4-b at this sha (probe_live, probe_executor, h5_executor, pumpswap_tx, pumpswap_simulate), needs solders (+ jsonalias, typing_extensions).
+# These four pins are IDENTICAL to scripts/mal-fast/hv4-c0/requirements-hv4-c0-bridge.txt (tools/test_r4b_c0_install_pack.py checks it), which carries the
+# 2026-10-24 verification (numpy 2.5.3 sha256 read from pypi.org and checked against the downloaded wheel, QP #838 condition 4).
+# Install ONLY with: pip install --require-hashes --only-binary=:all: --no-deps --no-cache-dir -r this-file
+solders==0.29.0 \
+    --hash=sha256:00524baf575ae5edb2ba43cdb1d80491c59efdc16b48fec96a6f929c0401d0e4
+jsonalias==0.1.1 \
+    --hash=sha256:a56d2888e6397812c606156504e861e8ec00e188005af149f003c787db3d3f18
+typing_extensions==4.16.0 \
+    --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
+numpy==2.5.3 \
+    --hash=sha256:b7e18c623bb5c95acb3b3328861272816ba199fb531921c5d6d0b675f1fde9e3
