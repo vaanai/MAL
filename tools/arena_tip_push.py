@@ -18,7 +18,7 @@ LAG. Per d frame: lag_new = receiver write done - the newest source byte's mtime
 byte); rolling 60 s p50/p90/max in .mirror/status.json and one row a minute in .mirror/lag.jsonl (both cross the two hosts' NTP clocks, about +-10 ms). These feed the book's feed delay d.
 
 FAIL CLOSED (the consumer side, research-0): push_problem(dst) is None only when tape_mirror.mirror_problem(dst) is None (status fresh, state `connected`, synced within 3 s, a source write
-within 15 s) AND the writer's heartbeat, relayed in the hb frames and stored in .mirror/writer_status.json, is fresh and healthy (tools.arena_tip_writer.writer_problem: live, decoder pin ok,
+within 15 s) AND the writer's heartbeat, relayed in the hb frames and stored in .mirror/writer_status.json, is fresh and healthy (tools.arena_tip_tape_writer.writer_problem: live, decoder pin ok,
 no problem, caught up). A dead sender, a dead ssh, a stale or unpinned writer, a paused writer: all codes. `python3 tools/arena_tip_push.py status --dst D` prints it (exit 0 healthy).
 
 SEALS. The out dir is a DERIVED COPY of the sealed tip tape and so is the receiver's dst: both are sealed as such (SEALS entry owed by the QP item-1 ruling); the sender reads only the writer's
@@ -50,7 +50,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
-from tools import arena_tip_writer as aw
+from tools import arena_tip_tape_writer as aw
 from tools import tape_mirror as tm
 from tools.decision_forwarder import BACKOFF_MS, ssh_argv
 

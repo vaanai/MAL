@@ -1,8 +1,8 @@
-"""Tests for tools/arena_tip_writer.py (HV7 tip plan step 5, QP-RULING-1101-hv4-reads 4.1 (B)): hour close only after the checkpoint has passed the hour plus the grace, byte identity with an
+"""Tests for tools/arena_tip_tape_writer.py (HV7 tip plan step 5, QP-RULING-1101-hv4-reads 4.1 (B)): hour close only after the checkpoint has passed the hour plus the grace, byte identity with an
 offline adaptation of the same rows (tied to the #2023 harness: scripts/research/arena_tip_equiv.py), fail-closed paths, resume (kill after every poll), the heartbeat and the consumer check.
 SYNTHETIC rows in tmp dirs only: no real tip file, arena tape, mirror, ledger or network is touched.
 
-  /data/mal/venv/bin/python -m pytest tools/test_arena_tip_writer.py -q
+  /data/mal/venv/bin/python -m pytest tools/test_arena_tip_tape_writer.py -q
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ os.environ.setdefault("MAL_ARENA_TEST", "1")
 
 from tools import arena_tip_adapter as ta  # noqa: E402
 from tools import arena_tip_reader as tr  # noqa: E402
-from tools import arena_tip_writer as aw  # noqa: E402
+from tools import arena_tip_tape_writer as aw  # noqa: E402
 from tools import test_arena_tip_adapter as TA  # noqa: E402
 from tools import test_arena_tip_equiv as TE  # noqa: E402
 
@@ -329,10 +329,20 @@ def test_the_counts_row_and_the_heartbeat_carry_the_numbers_the_hour_health_chec
     w = scenario(sim, clock, lambda: make_writer(sim, out, clock), n_slots=600)
     rows = [json.loads(ln) for ln in (out / aw.META_DIR / "counts.jsonl").read_text().splitlines()]
     r06 = next(r for r in rows if r["hour"] == "2026-11-01T06") if any(r["hour"] == "2026-11-01T06" for r in rows) else rows[-1]
-    assert r06["schema"] == aw.SCHEMA_COUNTS and "pumpswap|trade" in r06["rows"] and r06["longest_data_silence_ms"]["pumpswap"] > 0
+    assert r06["schema"] == aw.SCHEMA_COUNTS and "pumpswap|trade" in r06["rows"] and r06["max_data_silence_s"]["pumpswap"] > 0
+    # the QP ruling's W8 fields: the writer's sha256s, run id and start instant, the four no-tx counts, dropped rows, skips, status failures, every gap row with slots and instants
+    for k in ("run_id", "runs", "started_ms", "pins", "no_tx_index", "dropped_rows", "skips", "status_failures", "status_bad_samples", "max_loss_span_s", "hb_gaps", "sha256", "bytes"):
+        assert k in r06, k
+    assert set(r06["pins"]) == {"writer_sha256", "adapter_sha256", "reader_sha256"} and r06["runs"] == [r06["run_id"]] and set(r06["no_tx_index"]) == {
+        "rows_no_tx_index", "pool_slots_no_tx_index", "pool_slots_multi_sig", "pool_slots_mixed"}
     gap_hour = next(r for r in rows if r["gap_rows"])
-    assert gap_hour["gap_rows"] == {"tip_gap_backlog_jump|all": 1} and gap_hour["gap_missed_slots"] == 9 and gap_hour["gap_spans"] == [[211, 219, "tip_gap_backlog_jump", "all"]]
-    assert sum(r["no_tx_index_rows"] for r in rows) > 0
+    assert gap_hour["gap_rows"] == {"tip_gap_backlog_jump|all": 1} and gap_hour["gap_missed_slots"] == 9
+    kind, prog, lo, hi, f_ms, t_ms = gap_hour["gap_spans"][0]
+    assert (kind, prog, lo, hi) == ("tip_gap_backlog_jump", "all", 211, 219) and f_ms <= t_ms and gap_hour["max_loss_span_s"] == round((t_ms - f_ms) / 1000, 3)
+    assert sum(r["no_tx_index_rows"] for r in rows) > 0 and sum(r["no_tx_index"]["rows_no_tx_index"] for r in rows) > 0 and sum(r["skips"] for r in rows) == 1
+    blob = json.dumps(rows)
+    for forbidden in ('"mint"', '"pool"', '"signature"', '"trader"', '"price"', '"quote_reserve"', '"sol_lamports"'):  # W8: the counts log holds no mint, pool, signature, trader, amount, reserve, price
+        assert forbidden not in blob
     w.heartbeat(force=True)
     st = json.loads((out / aw.META_DIR / "status.json").read_text())
     for k in ("lag_ms", "closed_hours", "last_closed_hour", "gaps", "decoder_pin", "no_tx_index", "released_t_ms", "caught_up", "rss_mb", "pins", "dropped_rows", "compaction"):
@@ -377,6 +387,9 @@ def test_an_unpinned_decoder_writes_nothing_and_the_heartbeat_says_so(tmp_path, 
     assert aw.writer_problem(out, clock.ms) == "writer_problem"
     sim.healthy(clock.ms)  # the pin is right again: the rows that waited are written, nothing is lost
     assert w.step() > 0 and w.state in ("live", "catching_up") and aw.writer_problem(out, clock.ms, need_caught_up=False) is None
+    assert w.totals["gap_rows_written"] == 1  # W9: the unhealthy spell becomes ONE data_loss gap row (prog all), after the rows it held back
+    g = [json.loads(ln) for b in hours_bytes(out).values() for ln in b.splitlines() if b'"type":"gap"' in ln][-1]
+    assert g["kind"] == "tip_gap_status_unhealthy" and g["prog"] == "all" and g["data_loss"] is True and g["from_ms"] <= g["to_ms"] == g["t_recv_ms"] and g["src"] == "writer"
     w.close()
 
 
@@ -459,11 +472,11 @@ def test_the_output_dir_must_be_a_clean_child_of_the_data_root(path):
 
 
 def test_the_catch_up_window_is_capped_at_the_followers_retention():
-    assert aw.LOOKBACK_MAX_H == 72
+    assert aw.LOOKBACK_MAX_H == 70 and aw.CATCH_UP_H_DEFAULT == 70
     with pytest.raises(tr.TipRefused):
-        tr.TipReader("/nonexistent-tip", "/nonexistent-state", start_ms=HM, catch_up_hours=73, lookback_h=aw.LOOKBACK_MAX_H)
-    r = tr.TipReader("/var/lib/mal/sealed/fast-trades-tip", "/nonexistent-state", start_ms=HM, catch_up_hours=72, lookback_h=aw.LOOKBACK_MAX_H)  # constructed, nothing opened
-    assert r.floor == "2026-10-29T06" and r.h0 == tr.hour_epoch("2026-10-29T06")
+        tr.TipReader("/nonexistent-tip", "/nonexistent-state", start_ms=HM, catch_up_hours=71, lookback_h=aw.LOOKBACK_MAX_H)
+    r = tr.TipReader("/var/lib/mal/sealed/fast-trades-tip", "/nonexistent-state", start_ms=HM, catch_up_hours=70, lookback_h=aw.LOOKBACK_MAX_H)  # constructed, nothing opened
+    assert r.floor == "2026-10-29T08" and r.h0 == tr.hour_epoch("2026-10-29T08")
 
 
 def test_the_consumer_check_fails_closed_on_every_anomaly(tmp_path):
@@ -591,4 +604,70 @@ def test_snapshot_and_restore_round_trip_the_reader_and_the_adapter(tmp_path):
     clone = make_source(sim, clock)
     aw.restore_source(clone, copy.deepcopy(json.loads(json.dumps(snap))))
     assert aw.snapshot_source(clone) == snap
+    w.close()
+
+
+# ------------------------------------------------------------------------------------------------------------------------------------ QP-RULING-1101-arena-tip-reader refusals and conditions
+@pytest.mark.parametrize("out", ["/var/lib/mal/sealed/x/tape", "/data/mal/arena-tip/tape", "/data/mal/arena/tape", "/home/claude/mal-data/tip-tape-archive/tape"])
+def test_the_output_dir_cannot_be_the_sealed_tree_the_walker_filesystem_or_the_archive(out):
+    with pytest.raises(aw.Refused):
+        aw.check_out_dir(out, roots=["/var/lib/mal", "/data/mal", "/home/claude/mal-data"])
+
+
+def test_the_tip_dir_is_the_production_path_or_a_synthetic_dir_and_never_overlaps_the_output(tmp_path):
+    aw.check_tip_dir(tr.DEFAULT_TIP_DIR, "/home/claude/mal-data/arena-tipfeed/tape")
+    aw.check_tip_dir(tmp_path / "tip", tmp_path / "out")
+    for bad in ("/data/mal/tip-tape-archive", "/var/lib/mal/sealed/other", "/home/claude/mal-data/x", "/data/mal/arena/tape"):
+        with pytest.raises(aw.Refused, match="tip_dir_not_allowed"):
+            aw.check_tip_dir(bad, tmp_path / "out")
+    with pytest.raises(aw.Refused, match="overlaps"):
+        aw.check_tip_dir(tmp_path / "tip", tmp_path / "tip" / "out")
+    rc = aw.main(["run", "--tip-dir", "/data/mal/tip-tape-archive", "--out-dir", str(Path(aw.OUT_ROOTS[0]) / "x" / "tape")])
+    assert rc == aw.EXIT_REFUSED
+
+
+def test_catch_up_must_reach_caught_up_within_the_deadline_and_fadvise_stops_once_live(tmp_path):
+    sim, clock, out = fresh(tmp_path)
+    for s in range(1, 200):
+        sim.add(s, checkpoint=False)
+    sim.checkpoint()
+    clock.ms = sim.t_done + 1000
+    sim.healthy(clock.ms)
+    w = make_writer(sim, out, clock, poll_limit=30, catch_up_deadline_min=1.0)
+    w.start()
+    w.step()
+    assert not w.src.caught_up and w.src.reader.fadvise is False  # make_source builds the reader with fadvise off; the production reader has it on (below)
+    clock.ms += 61_000
+    sim.healthy(clock.ms)
+    with pytest.raises(aw.Fatal) as ei:
+        w.step()
+    assert ei.value.rc == aw.EXIT_CATCHUP and ei.value.why == "catch_up_deadline"
+    w.close()
+    sim2, clock2, out2 = fresh(tmp_path, "fa")
+    sim2.add(1)
+    clock2.ms = sim2.t_done + 1000
+    sim2.healthy(clock2.ms)
+    reader = tr.TipReader(sim2.tip, sim2.state, start_ms=TipSim.T_BASE, catch_up_hours=0, min_hour="2026-10-01T00", lookback_h=None, fadvise=True)
+    w2 = aw.Writer(ta.ArenaTipSource(reader, sim2.state, now_ms=clock2, io_hook=lambda: True), out2, start_ms=TipSim.T_BASE, catch_up_hours=0, clock=clock2, out_roots=[str(out2.parent)],
+                   compress=False)
+    w2.start()
+    assert reader.fadvise is True
+    w2.step()
+    assert w2.src.caught_up and reader.fadvise is False  # the first caught-up poll turns DONTNEED off
+    w2.close()
+
+
+def test_a_reader_problem_spell_is_a_reader_problem_gap_and_a_closed_hour_is_deleted_only_after_the_receiver_verified_it_plus_24h(tmp_path):
+    sim, clock, out = fresh(tmp_path)
+    w = scenario(sim, clock, lambda: make_writer(sim, out, clock, compress=True), n_slots=600)
+    w.compactor.drain(60)
+    z = sorted(out.glob("tape-*.jsonl.zst"))
+    assert len(z) == 2
+    assert w.prune(force=True) == 0 and len(list(out.glob("tape-*.jsonl.zst"))) == 2  # nothing verified: nothing deleted
+    (out / ".push").mkdir()
+    h0, h1 = z[0].name[5:18], z[1].name[5:18]
+    aw.write_json_atomic(out / ".push" / "verified.json", {"hours": {h0: clock.ms - 25 * aw.H_MS, h1: clock.ms - 3 * aw.H_MS}})
+    assert w.prune(force=True) == 1 and not z[0].exists() and z[1].exists()  # verified 25 h ago: gone; verified 3 h ago: kept
+    (out / ".push" / "verified.json").write_text("not json")
+    assert w.prune(force=True) == 0 and z[1].exists()
     w.close()
