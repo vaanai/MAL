@@ -438,3 +438,50 @@ def test_acks_list_the_verified_hours_and_the_sender_keeps_their_first_seen_inst
     sd2 = ap.Sender(src, ["true"])  # a restarted sender keeps the instants
     assert sd2.verified == v
     sd2.close()
+
+
+# ------------------------------------------------------------------------------------------------------------------------------------ the job scripts
+def run_sh(script: str, **env) -> subprocess.CompletedProcess:
+    e = {k: v for k, v in os.environ.items() if k not in ("OUT", "SRC", "REMOTE_DST", "REMOTE_REPO", "CATCH_UP_H", "DRY")}
+    e.update(env)
+    return subprocess.run(["sh", str(REPO / "scripts" / "ops" / script)], capture_output=True, text=True, env=e, timeout=60)
+
+
+@pytest.mark.parametrize("script", ["arena-tip-writer-job.sh", "arena-tip-push-job.sh"])
+def test_the_job_scripts_are_posix_sh(script):
+    assert subprocess.run(["sh", "-n", str(REPO / "scripts" / "ops" / script)]).returncode == 0
+    assert subprocess.run(["bash", "-n", str(REPO / "scripts" / "ops" / script)]).returncode == 0
+    text = (REPO / "scripts" / "ops" / script).read_text()
+    assert text.startswith("#!/bin/sh") and "PIPESTATUS" not in text and "[[" not in text and "exec " not in text.split("set -u", 1)[1]  # rc is kept: no exec of the job
+
+
+def test_the_writer_job_dry_run_and_refusals():
+    r = run_sh("arena-tip-writer-job.sh", DRY="1")
+    assert r.returncode == 0 and "nice -n 19 ionice -c3" in r.stdout and "MemoryMax=1536M" in r.stdout and "--catch-up-hours 70" in r.stdout
+    for env in ({"OUT": "/data/mal/x"}, {"OUT": "/var/lib/mal/sealed/x"}, {"OUT": "/home/claude/mal-data/tip-tape-a"}, {"OUT": "/tmp/x"}, {"CATCH_UP_H": "71"}, {"CATCH_UP_H": "x"}):
+        r = run_sh("arena-tip-writer-job.sh", DRY="1", **env)
+        assert r.returncode == 2 and r.stdout.startswith("REFUSED"), (env, r.stdout)
+
+
+def test_the_push_job_dry_run_and_refusals():
+    r = run_sh("arena-tip-push-job.sh", DRY="1", REMOTE_REPO="/data2/mal/wt/x")
+    assert r.returncode == 0 and "/data2/mal/arena-tip-feed/hv7" in r.stdout and "nice -n 19 ionice -c3" in r.stdout
+    for env in ({}, {"REMOTE_REPO": "/x", "REMOTE_DST": "/data/mal/arena-tip-feed/hv7"}, {"REMOTE_REPO": "/x", "REMOTE_DST": "/data2/mal/other/x"}, {"REMOTE_REPO": "/x/../y"},
+                {"REMOTE_REPO": "/x", "SRC": "/data/mal/arena/tape"}):
+        r = run_sh("arena-tip-push-job.sh", DRY="1", **env)
+        assert r.returncode == 2 and r.stdout.startswith("REFUSED"), (env, r.stdout)
+
+
+def test_the_job_scripts_keep_the_exit_status_and_forward_a_cancel(tmp_path):
+    """The shared tail (background job, trap, wait, rc) run on a stand-in command: rc 7 comes back as 7, and a SIGTERM reaches the child."""
+    tail = (REPO / "scripts" / "ops" / "arena-tip-push-job.sh").read_text().split('"$@" &', 1)[1].split("exit \"$RC\"", 1)[0]
+    body = '#!/bin/sh\nset -- sh -c "$CHILD"\n"$@" &' + tail + 'exit "$RC"\n'
+    sc = tmp_path / "t.sh"
+    sc.write_text(body)
+    r = subprocess.run(["sh", str(sc)], env={**os.environ, "CHILD": "exit 7"}, capture_output=True, text=True, timeout=30)
+    assert r.returncode == 7 and "rc=7" in r.stdout
+    p = subprocess.Popen(["sh", str(sc)], env={**os.environ, "CHILD": "trap 'exit 3' TERM; sleep 30 & wait"}, stdout=subprocess.PIPE, text=True)
+    time.sleep(1.0)
+    p.terminate()
+    out, _ = p.communicate(timeout=30)
+    assert p.returncode == 3 and "rc=3" in out
