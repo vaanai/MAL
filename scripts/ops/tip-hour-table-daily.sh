@@ -41,6 +41,7 @@ run_day() {
   fi
   set -- --counts "$FASTIN/counts.jsonl" --events "$RX/events.jsonl" --arrival "$RX/arrival.jsonl" --thresholds "$THR" --pins "$PINS" --programs "$PROGRAMS"
   [ -n "${NOW:-}" ] && set -- "$@" --now "$NOW"
+  [ -f "$RX/writer_status.json" ] && set -- "$@" --writer-status "$RX/writer_status.json"
   [ -f "$RX/lag.jsonl" ] && set -- "$@" --lag "$RX/lag.jsonl"
   [ -f "$FASTIN/silence.jsonl" ] && set -- "$@" --silence "$FASTIN/silence.jsonl"
   [ -f "$FASTIN/tip-pool-cache-daily.jsonl" ] && set -- "$@" --pool-cache "$FASTIN/tip-pool-cache-daily.jsonl"

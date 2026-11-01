@@ -584,7 +584,8 @@ def evaluate(*, counts: bytes | None, silence: bytes | None, samples: list[bytes
             row.update(rows_total=None, rows_per_min=None, no_tx_index=None, dropped_rows=None, late_rows=None, skips=None, writer_status_failures=None, tripwire_mixed_group=None)
         row["transport_lag"] = lag_stats(lag, h)
         row.update(pool_cache_fields(recs, h))
-        row["tripwire_follower_restart"] = bool((row.get("follower_counter_resets") or 0) > 0 or (row.get("nrestarts_delta") or 0) > 0 or row.get("writer_restarts_in_hour"))
+        # QP-RULING-1102 R2 (c): a FOLLOWER start (a sampler counter going down, or NRestarts up between the daily records). A writer restart is not one (it has its own field above).
+        row["tripwire_follower_restart"] = bool((row.get("follower_counter_resets") or 0) > 0 or (row.get("nrestarts_delta") or 0) > 0)
 
         # --- the fixed checks
         def over(name: str, val: float | None) -> None:
@@ -621,6 +622,27 @@ def evaluate(*, counts: bytes | None, silence: bytes | None, samples: list[bytes
     summary = {"not_tabled_hours": not_tabled, "counts_rows": len(rows), "counts_bad_lines": bad_lines, "sample_rows": len(samp), "sample_bad_lines": bad_samp_lines, "verified_hours": len(verified),
                "arrival_rows": len(arr.arr), "pins_source": pins_source, "pins": expected, "writer_restart_instants": [iso(x) for x in restarts]}
     return out, summary
+
+
+def writer_status_header(data: bytes | None) -> dict | None:
+    """Liveness fields of the writer heartbeat (the receiver's writer_status.json relay {"w": {...}} or the writer's own status.json). Counts, states and timings only."""
+    if not data:
+        return None
+    try:
+        obj = json.loads(data)
+    except ValueError:
+        return None
+    w = obj.get("w") if isinstance(obj, dict) and isinstance(obj.get("w"), dict) else obj
+    if not isinstance(w, dict):
+        return None
+    keys = ("run_id", "state", "caught_up", "closed_hours", "last_closed_hour", "lag_ms", "peak_rss_mb", "rss_mb", "start_ms", "dropped_rows", "no_tx_index", "problem")
+    out = {k: w.get(k) for k in keys if k in w}
+    if isinstance(obj, dict) and _int(obj.get("hb_ms")) is not None:
+        out["hb_ms"] = obj["hb_ms"]
+    gp = w.get("gaps")
+    if isinstance(gp, dict):
+        out["gaps_by_reason"] = gp.get("by_reason")
+    return out
 
 
 def sha(b: bytes | None) -> dict | None:
@@ -707,6 +729,7 @@ def _add_inputs(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--arrival")
     ap.add_argument("--lag")
     ap.add_argument("--pool-cache")
+    ap.add_argument("--writer-status")
     ap.add_argument("--thresholds", required=True)
     ap.add_argument("--pins", default=None, help="path to the registered pins JSON, or `auto`")
     ap.add_argument("--programs", default=",".join(DEFAULT_PROGRAMS), help="comma list of programs the book trades (default pumpswap)")
@@ -732,6 +755,11 @@ def _run_table(a: argparse.Namespace, h0: int, h1: int) -> tuple[list[str], list
     samples = [read_input(p) for p in a.samples]
     rows, summary = evaluate(counts=blobs["counts"], silence=blobs["silence"], samples=samples, events=blobs["events"], arrival=blobs["arrival"], lag=blobs["lag"],
                              pool_cache=blobs["pool_cache"], thr=thr, h0=h0, h1=h1, now_ms=now_ms, programs=programs, pins_spec=a.pins)
+    ws = read_input(a.writer_status)
+    rows_ws = writer_status_header(ws)
+    if rows_ws is not None:
+        summary["writer_status"] = rows_ws  # liveness header only (changes every second, so it is outside the hour-line sha256)
+    blobs["writer_status"] = ws
     inputs = {k: sha(v) for k, v in blobs.items()}
     inputs["samples"] = [sha(b) for b in samples]
     return render(rows, hashlib.sha256(thr_b).hexdigest(), summary, programs, inputs), rows

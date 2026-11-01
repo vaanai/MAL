@@ -631,6 +631,24 @@ def test_job_script_is_posix_sh_and_writes_the_daily_table(tmp_path):
     assert p2.returncode == 0 and json.loads(p2.stdout.strip().splitlines()[-1])["status"] == "unchanged"
 
 
+def test_writer_restart_is_not_a_follower_restart_tripwire():
+    rs = [crow(H0 + i * HR, run="r1" if i < 3 else "r2", started=H0 - 10 * HR if i < 3 else MID + 100_000) for i in range(N_HOURS)]
+    r = mid(run(counts_blob(rs))[0])
+    assert r["writer_restarts_in_hour"] == 1 and r["tripwire_follower_restart"] is False and r["excluded"] is True
+
+
+def test_writer_status_header_reads_the_receiver_relay_shape(tmp_path, capsys):
+    relay = {"hb_ms": 1793576228144, "rx_ms": 1793576228140, "w": {"state": "live", "caught_up": True, "closed_hours": 86, "run_id": "704ecfa8ed91", "peak_rss_mb": 248.8, "rss_mb": 147.5,
+                                                                   "gaps": {"by_reason": {"backlog_jump": 1}, "rows": 1}, "no_tx_index": {"pool_slots_multi_sig": 1287}, "pid": 1, "pins": PINS}}
+    h = T.writer_status_header(json.dumps(relay).encode())
+    assert h["state"] == "live" and h["hb_ms"] == 1793576228144 and h["gaps_by_reason"] == {"backlog_jump": 1} and "pid" not in h and "pins" not in h
+    assert T.writer_status_header(b"not json") is None and T.writer_status_header(None) is None
+    d = write_inputs(tmp_path)
+    (d / "writer_status.json").write_text(json.dumps(relay))
+    assert T.main(cli_args(d, "table", "--from", "2026-11-03T01", "--to", "2026-11-03T02", "--writer-status", str(d / "writer_status.json"))) == 0
+    assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])["writer_status"]["run_id"] == "704ecfa8ed91"
+
+
 def test_job_script_refuses_to_write_a_table_without_the_counts_log(tmp_path):
     env, out = sh_env(tmp_path, with_counts=False)
     p = subprocess.run(["sh", str(SCRIPT)], env=env, capture_output=True, text=True)
