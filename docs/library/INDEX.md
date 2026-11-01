@@ -35,10 +35,10 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `untested` | 45 | 28 | 0 |
 | `desk-read` | 3 | 52 | 0 |
 | `explored-no-survivor` | 56 | 17 | 2 |
-| `dead-as-frozen` | 77 | 8 | 0 |
-| **all** | 209 | 110 | 2 |
+| `dead-as-frozen` | 77 | 9 | 0 |
+| **all** | 209 | 111 | 2 |
 
-The file holds 571 rows: the 321 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 572 rows: the 322 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -488,6 +488,12 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `laneC-h5-runner-1031` | Lane C let-winners-run: 4 exit variants on the frozen H5 trigger (V-A trail after +100%, V-B half … | `dead-as-frozen` | KILL: no variant passes its pre-declared bars under either fail model (in-sample exploration). Every variant fails bars 2 (bootstrap lower bound of the daily difference), 3 (ex best day), 4 (ex top 3), 5 (more than 50% of days non-negative) and 6 (August and September both positive) under both fail models; bar 1 … |
+
+### haiku-v6-tail (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `haiku-v6-tail-spotter` | Haiku v6 TAIL SPOTTER: add-size-only Haiku sizer on the frozen H5 BOOST-floor trigger (boost 2x / … | `dead-as-frozen` | O1 (job #2012, harness ad061679, 2.31265497 USD ledger, 17,055 calls, ledger /data2/mal/scratch/haiku-v6/ledger.jsonl) KILL_OFFLINE, confirmed by QP-RULING-1101-haiku-v6-o1: 8 of 16 pre-registered booleans fail (B4, B5, B7 and B8, each under both fail models). In-sample over 33 test days, flat: L minus P (random … |
 
 ## Dead as frozen, and explored with no survivor
 
