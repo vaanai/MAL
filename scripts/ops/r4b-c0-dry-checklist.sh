@@ -23,6 +23,9 @@ DECLOG_DIR=${R4BC0_DECLOG_DIR:-/var/lib/mal-r4b-c0/declog}
 LIVE_DIR=${R4BC0_LIVE_DIR:-/etc/mal-arena-live}
 PY3=${R4BC0_PY3:-python3}
 ROOT_UID=${R4BC0_STAT_OWNER:-0}
+# Key-like files the executor user must NOT be able to read. Tests on a non-fast host replace the list (set to empty) with R4BC0_SYSTEM_KEY_PATHS; on mal-fast-0 leave it unset.
+SYSTEM_KEY_PATHS=${R4BC0_SYSTEM_KEY_PATHS-/etc/mal-probe/probe-wallet.json /var/lib/mal-live/probe-wallet.json /var/lib/mal/fast-listener/helius.env /etc/mal-probe-rpc/helius.env}
+UNIT_STATE_PATH=/var/lib/mal-r4b-c0/state   # the unit's one ReadWritePaths entry (a constant of the unit file)
 BOT=r4b-exp027
 fails=0
 pass() { echo "PASS $1"; }
@@ -56,7 +59,7 @@ else
   if printf '%s\n' "$code" | grep -E '^[[:space:]]*ExecStart=' | grep -q -- '-m tools.r4b_arena_executor run --config '; then pass "execstart_is_the_r4b_executor_dry_run"; else fail "execstart_not_the_r4b_executor_dry_run"; fi
   if printf '%s\n' "$code" | grep -Eq '^[[:space:]]*PrivateNetwork[[:space:]]*=[[:space:]]*true[[:space:]]*$'; then pass "private_network_true"; else fail "private_network_not_true"; fi
   rw=$(printf '%s\n' "$code" | grep -E '^[[:space:]]*ReadWritePaths[[:space:]]*=' | sed 's/^[^=]*=[[:space:]]*//' | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ')
-  [ "$rw" = "$STATE_DIR " ] && pass "only_the_state_dir_is_writable" || fail "writable_paths_not_only_the_state_dir (${rw:-none})"
+  [ "$rw" = "$UNIT_STATE_PATH " ] && pass "only_the_state_dir_is_writable" || fail "writable_paths_not_only_the_state_dir (${rw:-none})"
   if printf '%s\n' "$utext" | grep -Eq '^#[[:space:]]*/.*\.service\.d/'; then fail "drop_in_present_in_unit_text"; else pass "no_drop_in_in_unit_text"; fi
 fi
 for dd in "/etc/systemd/system/$UNIT.d" "/run/systemd/system/$UNIT.d" "/usr/lib/systemd/system/$UNIT.d"; do
@@ -99,10 +102,15 @@ for f in "$LIVE_DIR/LIVE_OK" "$LIVE_DIR/TIER"; do
   if [ -e "$f" ]; then info "shared bridge gate file present ($f): not r4-b's; the r4-b executor is dry-only at this sha (LIVE_BUILT False)"; fi
 done
 k_bad=""
-for p in /etc/mal-probe/probe-wallet.json /var/lib/mal-live/probe-wallet.json /var/lib/mal/fast-listener/helius.env /etc/mal-probe-rpc/helius.env ${R4BC0_KEY_PATHS:-}; do
+for p in ${SYSTEM_KEY_PATHS} ${R4BC0_KEY_PATHS:-}; do
   if [ -f "$p" ] && [ -r "$p" ]; then k_bad="$k_bad $p"; fi
 done
-for p in /etc/mal-probe/*wallet* /etc/mal-*/*keypair* /etc/mal-*/*wallet* "$KEY_DIR"/* /etc/mal-hv4-c0-key/* /etc/mal-h5-arena-key/* /var/lib/mal-live/*wallet* /var/lib/mal-live/*keypair*; do
+if [ -z "${R4BC0_SYSTEM_KEY_PATHS+x}" ]; then
+  for p in /etc/mal-probe/*wallet* /etc/mal-*/*keypair* /etc/mal-*/*wallet* /etc/mal-hv4-c0-key/* /etc/mal-h5-arena-key/* /var/lib/mal-live/*wallet* /var/lib/mal-live/*keypair*; do
+    if [ -f "$p" ] && [ -r "$p" ]; then k_bad="$k_bad $p"; fi
+  done
+fi
+for p in "$KEY_DIR"/*; do
   if [ -f "$p" ] && [ -r "$p" ]; then k_bad="$k_bad $p"; fi
 done
 if [ -z "$k_bad" ]; then pass "no_key_file_readable (uid=$(id -u))"; else fail "key_file_readable:$k_bad"; fi
