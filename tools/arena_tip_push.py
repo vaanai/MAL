@@ -57,7 +57,7 @@ from tools.decision_forwarder import BACKOFF_MS, ssh_argv
 SCHEMA_PUSH = "arena_tip_push_status_v1"
 PUSH_DIR = ".push"
 WRITER_RELAY = "writer_status.json"
-DST_ROOTS = ("/data/mal/arena/haiku-v7", tm.SCRATCH_ROOT)  # where the receiver may write (HV7 first; another book is a reviewed addition here)
+DST_ROOTS = ("/data2/mal/arena-tip-feed", tm.SCRATCH_ROOT)  # B1: the derived copy lives on /data2, never under /data/mal (the walk-2 walker's filesystem); another book is a reviewed addition here
 PUBLIC_TAPE = tm.ALLOWED_SRC  # never written
 ACK_EVERY_S = 1.0
 ACK_SILENCE_MS_DEFAULT = 10_000
@@ -79,12 +79,48 @@ def check_dst(dst: str | os.PathLike, roots: Sequence[str] | None = None) -> Pat
     for cand in (os.path.normpath(p), os.path.realpath(p)):
         if cand == PUBLIC_TAPE or cand.startswith(PUBLIC_TAPE + "/"):
             raise ValueError("dst_is_public_tape")
+        if cand == "/data/mal" or cand.startswith("/data/mal/"):
+            raise ValueError("dst_on_walker_fs")
         root = next((r for r in roots if cand.startswith(os.path.normpath(r) + "/")), None)
         if root is None:
             raise ValueError("dst_not_allowlisted")
         if any(tok in cand[len(os.path.normpath(root)):].lower() for tok in aw.FORBIDDEN_PARTS):
             raise ValueError("dst_sealed_name")
     return Path(os.path.normpath(p))
+
+
+def newest_pumpswap_t(body: bytes) -> int | None:
+    """t_recv_ms of the last PumpSwap data row of a frame body (the sender parses the one line; the receiver never parses a row), or None."""
+    for ln in reversed(body.splitlines()):
+        if b'"prog":"pumpswap"' in ln and b'"type":"gap"' not in ln and b'"type":"hb"' not in ln:
+            try:
+                row = json.loads(ln)
+            except ValueError:
+                continue
+            t = row.get("t_recv_ms") if isinstance(row, dict) else None
+            if row.get("type") in aw.DATA_TYPES and isinstance(t, int) and not isinstance(t, bool):
+                return t
+    return None
+
+
+def _read_text_nofollow(dirfd: int, rel: tuple[str, ...], limit: int = 64 << 20) -> bytes | None:
+    fds = []
+    try:
+        cur = dirfd
+        for part in rel[:-1]:
+            cur = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=cur)
+            fds.append(cur)
+        fd = os.open(rel[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=cur)
+        try:
+            data = os.read(fd, limit)
+        finally:
+            os.close(fd)
+        return data
+    except OSError:
+        return None
+    finally:
+        for f in fds:
+            os.close(f)
 
 
 def _read_json_nofollow(dirfd: int, rel: tuple[str, ...]) -> dict | None:
@@ -156,9 +192,30 @@ class TipSender(tm.Server):
     def writer_status(self) -> dict | None:
         return _read_json_nofollow(self.dirfd, (aw.META_DIR, "status.json"))
 
+    def record(self, h: str) -> dict | None:
+        """The writer's closed-hour record (bytes and sha256 of the uncompressed hour) from .writer/counts.jsonl, or None."""
+        obj = _read_text_nofollow(self.dirfd, (aw.META_DIR, "counts.jsonl"))
+        for ln in (obj or b"").splitlines():
+            try:
+                row = json.loads(ln)
+            except ValueError:
+                continue
+            if isinstance(row, dict) and row.get("hour") == h and isinstance(row.get("bytes"), int) and isinstance(row.get("sha256"), str):
+                return {"bytes": row["bytes"], "sha256": row["sha256"]}
+        return None
+
+    def _queue(self, h: str) -> None:
+        if self.record(h) is not None:  # B2: a closed hour is sent only with the writer's record of it to check against; without one it waits (the next listing asks again)
+            super()._queue(h)
+
     def _emit(self, obj: dict, body: bytes = b"") -> None:
-        if obj.get("k") == "hb":
+        k = obj.get("k")
+        if k == "hb":
             obj = {**obj, "w": self.writer_status()}
+        elif k == "d":
+            obj = {**obj, "pt": newest_pumpswap_t(body)}  # B2: the newest PumpSwap t_recv_ms in the frame (the receiver logs it with its arrival instant)
+        elif k == "ze":
+            obj = {**obj, "rec": self.record(str(obj.get("f"))[5:18])}
         super()._emit(obj, body)
 
 
@@ -194,6 +251,11 @@ class Sender:
         self._buf = b""
         self._last_status = float("-inf")
         self.refusals = 0
+        self.verified: dict[str, int] = {}  # hour -> the instant the receiver's ack first listed it as verified and installed (B5: the writer deletes it 24 h later)
+        try:
+            self.verified = {h: int(v) for h, v in json.loads((self.meta / "verified.json").read_bytes()).get("hours", {}).items()}
+        except (OSError, ValueError, AttributeError, TypeError):
+            pass
 
     def _ms(self) -> int:
         return self.clock_ns() // 1_000_000
@@ -273,6 +335,10 @@ class Sender:
                 continue
             if obj.get("k") == "ack":
                 self.last_ack, self.last_ack_ms = {k: obj.get(k) for k in ("ms", "synced_ms", "lag_new_p90_ms", "behind_bytes", "closed_verified", "zst_pending", "state")}, self._ms()
+                new = [h for h in obj.get("closed_hours") or [] if isinstance(h, str) and tm.HOUR_RE.match(h) and h not in self.verified]
+                if new:
+                    self.verified.update({h: self._ms() for h in new})
+                    aw.write_json_atomic(self.meta / "verified.json", {"hours": dict(sorted(self.verified.items())[-400:])}, fsync=True)
             elif obj.get("k") == "end":
                 self.last_end = {"why": tm.code(obj.get("why")), "rc": obj.get("rc") if isinstance(obj.get("rc"), int) else None}
 
@@ -460,15 +526,76 @@ class TipReceiver(tm.Puller):
         self._last_progress = float("-inf")
         import queue
 
+        self.expect = {}
         self._vq = queue.Queue()
         self._vres = queue.Queue()
         self._vthread = threading.Thread(target=self._verifier, name="arena-tip-verify", daemon=True)
         self._vthread.start()
         self.proc = None
         self._out: Any = None
+        self.expect: dict[str, dict] = {}
+        self._arr: dict | None = None
+        self.arrival_path = self.meta / "arrival.jsonl"
         self._last_ack = float("-inf")
         self.writer_hb_ms: int | None = None
         self._startup()
+
+    # -- B2: arrival log (timing only) and the writer's closed-hour record
+    def _data(self, hdr: dict, body: bytes) -> None:
+        pt = hdr.get("pt")
+        if pt is not None and (isinstance(pt, bool) or not isinstance(pt, int)):
+            raise tm.Mismatch("bad_pt")
+        super()._data(hdr, body)
+        t, m = self._ms(), self._ms() // 60_000
+        a = self._arr
+        if a is not None and a["m"] != m:
+            self.flush_arrival()
+            a = None
+        if a is None:
+            a = self._arr = {"m": m, "frames": 0, "bytes": 0, "pt": None, "pt_arrival_ms": None, "mt": None}
+        a["frames"] += 1
+        a["bytes"] += len(body)
+        a["mt"] = hdr.get("mt")
+        if pt is not None and (a["pt"] is None or pt >= a["pt"]):
+            a["pt"], a["pt_arrival_ms"] = pt, t
+
+    def flush_arrival(self) -> None:
+        a, self._arr = self._arr, None
+        if a:
+            row = {"minute": time.strftime("%Y-%m-%dT%H:%MZ", time.gmtime(a["m"] * 60)), "frames": a["frames"], "bytes": a["bytes"], "newest_pumpswap_t_recv_ms": a["pt"],
+                   "newest_pumpswap_arrival_ms": a["pt_arrival_ms"], "newest_source_write_ms": a["mt"]}
+            with open(self.arrival_path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row, sort_keys=True) + "\n")
+
+    def close(self) -> None:
+        self.flush_arrival()
+        super().close()
+
+    def _zend(self, hdr: dict) -> None:
+        m = tm.CLOSED_RE.match(str(hdr.get("f")))
+        rec = hdr.get("rec")
+        if not m:
+            raise tm.Mismatch("bad_name")
+        if not (isinstance(rec, dict) and isinstance(rec.get("bytes"), int) and not isinstance(rec.get("bytes"), bool) and isinstance(rec.get("sha256"), str) and len(rec["sha256"]) == 64):
+            raise tm.Mismatch("closed_hour_no_record")
+        self.expect[m.group(1)] = rec
+        super()._zend(hdr)
+
+    def _verifier(self) -> None:
+        """tape_mirror's verifier plus B2: the decompressed hour must also equal the WRITER's record of it (size and sha256), not only the sender's file."""
+        while True:
+            item = self._vq.get()
+            if item is None:
+                return
+            h, part, sha, size = item
+            try:
+                res = tm.verify_closed(self.zstd, part, self.dir / tm.open_name(h))
+            except Exception as exc:  # noqa: BLE001 - reported to the main loop as a failed verify
+                res = {"rc": -1, "error": type(exc).__name__, "prefix_ok": False}
+            exp = self.expect.pop(h, None)
+            if res.get("rc") == 0 and (exp is None or res["dec_bytes"] != exp["bytes"] or res["dec_sha"] != exp["sha256"]):
+                res["prefix_ok"], res["record_mismatch"] = False, True
+            self._vres.put((h, part, sha, size, res))
 
     # -- the relayed writer heartbeat
     def _hb(self, hdr: dict) -> None:
@@ -496,7 +623,8 @@ class TipReceiver(tm.Puller):
             news = [x[1] for x in self.lag if x[1] is not None]
             try:
                 self._out.write(tm.frame({"k": "ack", "ms": self._ms(), "synced_ms": self.synced_ms, "lag_new_p90_ms": tm.pct(news, 90), "behind_bytes": self.behind_bytes,
-                                          "closed_verified": self.closed_verified, "zst_pending": self.zst_pending, "state": self.state}))
+                                          "closed_verified": self.closed_verified, "zst_pending": self.zst_pending, "state": self.state,
+                                          "closed_hours": sorted(self.local_closed)[-100:]}))
                 self._out.flush()
             except (OSError, ValueError):
                 pass

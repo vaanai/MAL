@@ -45,6 +45,15 @@ def put_rows(d: Path, h: str, i0: int, n: int) -> int:
     return i0 + n
 
 
+def close_hour(d: Path, h: str, *, sha: str | None = None) -> None:
+    """What the writer does at a close: its counts row (bytes and sha256 of the uncompressed hour), then the compaction."""
+    raw = (d / tm.open_name(h)).read_bytes()
+    (d / aw.META_DIR).mkdir(exist_ok=True)
+    with open(d / aw.META_DIR / "counts.jsonl", "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"hour": h, "bytes": len(raw), "sha256": sha or hashlib.sha256(raw).hexdigest()}) + "\n")
+    compact_file(d / tm.open_name(h))
+
+
 def writer_status(d: Path, now: int, **kw) -> None:
     (d / aw.META_DIR).mkdir(exist_ok=True)
     st = {"schema": aw.SCHEMA_STATUS, "ms": now, "state": "live", "problem": None, "caught_up": True, "decoder_pin": {"ok": True}, **kw}
@@ -84,7 +93,8 @@ def deliver(srv: ap.TipSender, rx: ap.TipReceiver, sink: list[bytes], passes: in
             n = hdr["n"] if hdr["k"] in ("d", "z") else 0
             rx.handle(hdr, data[i:i + n])
             i += n
-        rx.drain_verified(block_s=10)
+        rx.state = "connected"  # what Puller._pump sets on the first frame
+        rx.drain_verified(block_s=10 if rx.verifying else 0)
 
 
 def tree(d: Path) -> dict[str, str]:
@@ -96,7 +106,7 @@ def test_open_and_closed_hours_arrive_byte_exact_and_the_open_hour_follows_its_c
     src, dst = roots
     closed_h, open_h = hk(-3), hk(0)
     put_rows(src, closed_h, 0, 500)
-    compact_file(src / tm.open_name(closed_h))
+    close_hour(src, closed_h)
     n = put_rows(src, open_h, 0, 300)
     writer_status(src, tm.now_ms())
     srv, rx, sink = pair(src, dst)
@@ -105,7 +115,7 @@ def test_open_and_closed_hours_arrive_byte_exact_and_the_open_hour_follows_its_c
     put_rows(src, open_h, n, 200)  # the live tail grows
     deliver(srv, rx, sink)
     assert tree(dst) == tree(src)
-    compact_file(src / tm.open_name(open_h))  # the writer closes and compacts the hour the receiver is following
+    close_hour(src, open_h)  # the writer closes and compacts the hour the receiver is following
     deliver(srv, rx, sink, passes=4)
     assert tree(dst) == tree(src) and sorted(tree(dst)) == sorted([tm.closed_name(closed_h), tm.closed_name(open_h)]) and rx.closed_verified == 2
     rx.close()
@@ -116,7 +126,7 @@ def test_the_closed_hours_sha256_is_checked_and_a_corrupt_chunk_is_never_install
     src, dst = roots
     h = hk(-2)
     put_rows(src, h, 0, 400)
-    compact_file(src / tm.open_name(h))
+    close_hour(src, h)
     srv, rx, sink = pair(src, dst)
     srv.poll(force_hb=True)
     data = b"".join(sink)
@@ -148,7 +158,7 @@ def test_a_closed_hour_that_does_not_extend_the_live_copy_stops_the_receiver(roo
     (src / tm.open_name(h)).write_bytes(b"")  # the sender's file is replaced by different content, compacted: not an extension of what the receiver holds
     put_rows(src, h, 5000, 120)
     srv.close()
-    compact_file(src / tm.open_name(h))
+    close_hour(src, h)
     srv2 = ap.TipSender(src, hk(-6), {}, set(), write=sink.append)
     with pytest.raises(tm.Mismatch, match="closed_hour_diverged|offset|zst"):
         deliver(srv2, rx, sink, passes=4)
@@ -206,15 +216,17 @@ def test_the_writer_heartbeat_is_relayed_in_the_hb_and_the_consumer_check_fails_
 
 
 # ------------------------------------------------------------------------------------------------------------------------------------ allowlists and isolation
-def test_the_receivers_dst_is_confined_to_the_book_root_and_never_the_public_tape(tmp_path):
-    ok = "/data/mal/arena/haiku-v7/tip-feed"
+def test_the_receivers_dst_is_confined_to_data2_and_never_the_public_tape_or_the_walker_disk(tmp_path):
+    ok = "/data2/mal/arena-tip-feed/hv7"
     assert ap.check_dst(ok) == Path(ok)
-    for bad in ("/data/mal/arena/tape", "/data/mal/arena/tape/x", "/data/mal/arena/haiku-v7", "/data/mal/arena/haiku-v6/tip-feed", "/data/mal/arena/haiku-v7/probe-feed",
-                "/data/mal/arena/haiku-v7/sealed/x", "/tmp/x", "rel/path", "/data/mal/arena/haiku-v7/../tape/x"):
+    for bad in ("/data/mal/arena/tape", "/data/mal/arena/tape/x", "/data/mal/arena/haiku-v7/tip-feed", "/data/mal/arena-tip-feed", "/data2/mal/arena-tip-feed", "/data2/mal/other/x",
+                "/data2/mal/arena-tip-feed/probe-feed", "/data2/mal/arena-tip-feed/sealed/x", "/tmp/x", "rel/path", "/data2/mal/arena-tip-feed/../x"):
         with pytest.raises(ValueError):
             ap.check_dst(bad)
     with pytest.raises(ValueError, match="dst_is_public_tape"):
         ap.check_dst("/data/mal/arena/tape", roots=["/data/mal/arena"])
+    with pytest.raises(ValueError, match="dst_on_walker_fs"):
+        ap.check_dst("/data/mal/arena-tip/x", roots=["/data/mal"])
 
 
 def test_the_senders_src_is_the_writers_dir_only(tmp_path, monkeypatch):
@@ -243,15 +255,15 @@ def test_no_tape_mirror_internal_drifted_under_the_subclasses(roots):
             base_srv.close()
             base_pl = tm.Puller(scratch / "pl", ["true"])
             assert set(vars(base_pl)) - set(vars(rx)) == {"cmd"} or set(vars(base_pl)) <= set(vars(rx)), set(vars(base_pl)) ^ set(vars(rx))
-            assert set(vars(rx)) - set(vars(base_pl)) <= {"_out", "_last_ack", "writer_hb_ms"}
+            assert set(vars(rx)) - set(vars(base_pl)) <= {"_out", "_last_ack", "writer_hb_ms", "expect", "_arr", "arrival_path"}
             base_pl.close()
         finally:
             shutil.rmtree(scratch, ignore_errors=True)
     else:
         pytest.skip("no writable /data2/mal/scratch for the base classes' own allowlist")
-    for name in ("scan", "_live", "_zst", "poll", "_current_hour", "hello", "flush", "close"):
+    for name in ("scan", "_live", "_zst", "poll", "_current_hour", "hello", "flush", "close", "_gone"):
         assert getattr(ap.TipSender, name) is getattr(tm.Server, name)
-    for name in ("_data", "_zchunk", "_zend", "_verifier", "drain_verified", "hello_line", "prune", "_pump", "status", "write_status", "_startup"):
+    for name in ("_zchunk", "drain_verified", "hello_line", "prune", "_pump", "status", "write_status", "_startup", "handle", "_lag"):
         assert getattr(ap.TipReceiver, name) is getattr(tm.Puller, name)
     rx.close()
     srv.close()
@@ -295,7 +307,7 @@ def test_a_real_sender_and_receiver_converge_to_identical_bytes_and_survive_a_re
     src, dst = scratch / "src", scratch / "dst"
     closed_h, open_h = hk(-3), hk(0)
     put_rows(src, closed_h, 0, 800)
-    compact_file(src / tm.open_name(closed_h))
+    close_hour(src, closed_h)
     n = put_rows(src, open_h, 0, 400)
     stop_ws = threading.Event()
 
@@ -313,7 +325,7 @@ def test_a_real_sender_and_receiver_converge_to_identical_bytes_and_survive_a_re
         sd.proc.kill()  # the ssh session dies: the sender reconnects and the receiver resumes from its local sizes
         n = put_rows(src, open_h, n, 200)
         assert wait_for(lambda: sd.connects >= 2 and tree(dst) == tree(src) and ap.push_problem(dst) is None, 60), (sd.connects, ap.push_problem(dst))
-        compact_file(src / tm.open_name(open_h))
+        close_hour(src, open_h)
         assert wait_for(lambda: tree(dst) == tree(src) and sorted(tree(dst)) == sorted([tm.closed_name(closed_h), tm.closed_name(open_h)]), 60)
         lag = json.loads((dst / tm.META_DIR / "status.json").read_text())["lag_60s"]
         assert lag["frames"] > 0 and lag["new_p90_ms"] is not None
@@ -352,3 +364,77 @@ def test_a_silent_receiver_is_dropped_and_a_second_sender_on_the_dir_is_refused(
         ap.Sender(src, ["true"])
     sd.run(max_s=6)
     assert sd.connects >= 2 and sd.events >= 1  # ack silence -> disconnect -> reconnect
+
+
+# ------------------------------------------------------------------------------------------------------------------------------------ QP-RULING-1101-arena-tip-reader B2 / B5
+def test_the_closed_hour_must_equal_the_writers_record_not_only_the_senders_file(roots):
+    src, dst = roots
+    h = hk(-2)
+    put_rows(src, h, 0, 300)
+    close_hour(src, h, sha="0" * 64)  # the writer's record says a different content than the .zst holds
+    srv, rx, sink = pair(src, dst)
+    with pytest.raises(tm.Mismatch, match="closed_hour_diverged"):
+        deliver(srv, rx, sink, passes=4)
+    assert not (dst / tm.closed_name(h)).exists()  # a failed check stalls: nothing is installed, nothing is skipped
+    rx.close()
+    srv.close()
+
+
+def test_a_closed_hour_without_the_writers_record_is_not_sent_and_a_ze_without_one_is_refused(roots):
+    src, dst = roots
+    h = hk(-2)
+    put_rows(src, h, 0, 100)
+    compact_file(src / tm.open_name(h))  # no counts row
+    srv, rx, sink = pair(src, dst)
+    srv.poll(force_hb=True)
+    data = b"".join(sink)
+    assert b'"k":"z"' not in data and b'"k":"ze"' not in data
+    with pytest.raises(tm.Mismatch, match="closed_hour_no_record"):
+        rx.handle({"k": "ze", "f": tm.closed_name(h), "size": 1, "sha": "0" * 64}, b"")
+    rx.close()
+    srv.close()
+
+
+def test_d_frames_carry_the_newest_pumpswap_t_and_the_receiver_logs_it_with_its_arrival(roots):
+    src, dst = roots
+    h = hk(0)
+    t0 = tm.hour_ms(h) + 1000
+    rows = [json.loads(line(i, t0 + i)) for i in range(5)]
+    rows[4]["prog"] = "pumpfun"  # the newest row is a bonding row: the newest PumpSwap one is row 3
+    rows.append({"v": 1, "type": "gap", "prog": "pumpswap", "t_recv_ms": t0 + 99, "kind": "x"})  # a gap row is not a data row
+    (src / tm.open_name(h)).write_bytes(b"".join((json.dumps(r, separators=(",", ":")) + "\n").encode() for r in rows))
+    srv, rx, sink = pair(src, dst)
+    srv.poll(force_hb=True)
+    hdrs = [o for o in (json.loads(ln) for ln in b"".join(sink).split(b"\n") if ln.strip()) if o.get("k") == "d"]
+    assert hdrs and hdrs[0]["pt"] == t0 + 3 and hdrs[0]["mt"] is not None  # mt = the writer's write instant of the newest byte
+    deliver(srv, rx, sink)
+    rx.flush_arrival()
+    arr = [json.loads(ln) for ln in (dst / tm.META_DIR / "arrival.jsonl").read_text().splitlines()]
+    assert arr and arr[-1]["newest_pumpswap_t_recv_ms"] == t0 + 3 and arr[-1]["newest_pumpswap_arrival_ms"] >= arr[-1]["newest_source_write_ms"]
+    assert ap.newest_pumpswap_t(b"") is None and ap.newest_pumpswap_t(b'{"prog":"pumpfun","type":"trade","t_recv_ms":5}\n') is None
+    with pytest.raises(tm.Mismatch, match="bad_pt"):
+        rx.handle({"k": "d", "f": tm.open_name(h), "o": rx.sizes[h], "n": 2, "pt": "x"}, b"x\n")
+    rx.close()
+    srv.close()
+
+
+def test_acks_list_the_verified_hours_and_the_sender_keeps_their_first_seen_instant(scratch):
+    src, dst = scratch / "src", scratch / "dst"
+    closed_h, open_h = hk(-3), hk(0)
+    put_rows(src, closed_h, 0, 300)
+    close_hour(src, closed_h)
+    put_rows(src, open_h, 0, 100)
+    stop_ws = threading.Event()
+    threading.Thread(target=lambda: [writer_status(src, tm.now_ms()) or time.sleep(0.5) for _ in iter(stop_ws.is_set, True)], daemon=True).start()
+    sd, stop, th, res = start_sender(src, dst)
+    try:
+        assert wait_for(lambda: (src / ap.PUSH_DIR / "verified.json").exists() and closed_h in json.loads((src / ap.PUSH_DIR / "verified.json").read_text())["hours"])
+        v = json.loads((src / ap.PUSH_DIR / "verified.json").read_text())["hours"]
+        assert set(v) == {closed_h} and abs(v[closed_h] - tm.now_ms()) < 60_000
+    finally:
+        stop_ws.set()
+        stop.set()
+        th.join(30)
+    sd2 = ap.Sender(src, ["true"])  # a restarted sender keeps the instants
+    assert sd2.verified == v
+    sd2.close()
