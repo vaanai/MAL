@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 """h5_shadow_tip_equiv: md5 DECISION-EQUIVALENCE harness for the tip input mode (tools/h5_shadow_tip.py) against the public-feed mode of tools/h5_shadow.py. PAPER ONLY.
 
-THE CLAIM IT TESTS. The same PumpSwap rows give the same decisions whether the engine is fed by the existing replay path (public mode: `h5_shadow.replay`, the S* code path with
-the rows' own stamps) or through the tip chain: rows -> the REAL tools.arena_tip_adapter row functions (trade_row, pool_create_row: the tip tape's shape) -> an arena-layout
-`tape-<hour>.jsonl` -> h5_shadow_tip.TipRowSource (ArenaState's file reader) -> h5_shadow_tip.TipDriver -> the same Engine. After the STAMP keys are removed, every record
-(trigger, outcome, outcome_bx10, pool, strip, ... all types except the bookkeeping ones) must be equal, and so must one md5 per record type and one over all of them.
-STAMP keys (the only keys allowed to differ): t_recv_ms, t_recv (its ISO form), t_detect_ms, detect_lag_ms, t_ms. In the tip arm the host wall is a FIXED OFFSET after the
-row's t_recv_ms (`wall_offset_ms`, recorded in the output); the harness asserts every trigger's detect_lag_ms equals it (the stamp is the engine host's clock, not the row's).
+THE CLAIM IT TESTS. The same PumpSwap rows give the same decisions whether the engine is fed by the S* public path (h5_shadow.replay's logic plus the clock move decode_notice
+makes at an announcement, see run_public) or through the tip chain. TWO tip arms:
+  `writer` (the one that counts; QP K1 on #1185): the rows are written in the FOLLOWER's file format (migrations-/trades-<hour>.jsonl, checkpoint.json, status.json with the pinned
+    decoder blobs) into a fake tip dir, the PINNED tools/arena_tip_tape_writer.py runs on it (its reader, its adapter, zstd compaction of the closed hours) into a derived dir, and
+    h5_shadow_tip.TipRowSource + TipDriver feed the same Engine from that dir. s0's announcement comes from a MIGRATION row per pool (placed at s0 - 1: the replay rows lack the pool's
+    true creation slot and instant, so the replay's own announce point is used). The result records the code pins the writer ran with.
+  `adapter` (unit level): the real tools.arena_tip_adapter row functions straight into an arena-layout tape.
+After the STAMP keys are removed, every record (trigger, outcome, outcome_bx10, pool, strip, ... all types except the bookkeeping ones) must be equal, and so must one md5 per record
+type and one over all of them. STAMP keys (the only keys allowed to differ): t_recv_ms, t_recv (its ISO form), t_detect_ms, detect_lag_ms, t_ms. In the tip arms the host wall is a
+FIXED OFFSET after the row's t_recv_ms (`wall_offset_ms`, recorded in the output); the harness asserts every trigger's detect_lag_ms equals it (the stamp is the engine host's clock).
 
 WHAT IT DOES NOT TEST (stated, not hidden). The public socket's own artefacts (failed-tx notices, arrival order, reconnect gaps) do not exist in a replay; gap rows are compared
 by count only and the synthetic/exploration rows carry none. The tip tape lacks lp_fee / pool_quote_amount / protocol_fee / creator_fee; the exploration replay rows lack them too,
@@ -14,8 +18,10 @@ so both arms price with LP_FRAC (the live public feed carries them: that price-v
 
 USE. As a library (tests, synthetic rows) or as a MiScusi job on EXPLORATION hours only (pre-2026-10-02T10, the h5_shadow replay's own refusals apply; never the tip tape, the
 arena tape, a forward-* dir or a sealed hour):
-  python3 -m tools.h5_shadow_tip_equiv --tape-dir /data/mal/audit-1008/tape --hours 2026-08-14T12,2026-08-14T13 --scratch-root /data2/mal/scratch --out OUT.json --min-triggers N
-`--min-triggers` is the floor to notebook BEFORE the run (a pass with fewer triggers proves nothing: exit 4). Exit 0 equal and floor met; 1 not equal; 4 floor not met.
+  python3 -m tools.h5_shadow_tip_equiv --tape-dir /data/mal/audit-1008/tape --hours 2026-08-14T12,2026-08-14T13 --scratch-root /data2/mal/scratch --out OUT.json --min-triggers 30
+`--min-triggers` (default 30, QP on #1185 (b): a >= 10% mismatch shows in 30 triggers with probability 0.958) is the floor PER ARM, to notebook with the hour list BEFORE the run; if the
+span's expected triggers are below it QP rules on a longer span before the job. Exit 0 equal and floor met; 1 not equal; 4 floor not met (NOT a pass; no re-run on another span
+without a QP note). Outputs: md5s, field names and structural counts only.
 """
 
 from __future__ import annotations

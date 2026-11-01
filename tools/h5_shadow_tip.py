@@ -36,7 +36,9 @@ FAIL CLOSED. Before anything is created: the dir is checked (check_dst) and tool
 relayed writer heartbeat fresh, live, decoder blobs pinned, no problem, caught up) else the process refuses to start (exit 2). While running, every poll re-checks it
 (cached 1 s): a problem gives NO rows; its onset writes a `tip_input_problem` record and Engine.feed_restart (open pools flagged, like a socket outage); recovery writes
 `tip_input_resumed`. A PIN problem (decoder_pin, any `pin` code, a stopped receiver) HALTS the book for good (the process stops, exit 3): a human re-pins. A reader
-exception is a problem too (never a crash of the engine task).
+exception is a problem too (never a crash of the engine task), and so is a reader-level loss (a bad json line, a zst error: `reader_bad_lines`, `reader_zst_errors`): the poll
+that saw it reports the problem, the driver writes `tip_input_problem` + feed_restart (open pools flagged), the next clean poll writes `tip_input_resumed`.
+COUNTERS. `tip_input_stats` (every 60 s) and `tip_input_stop` carry the driver's row counters and the source's (polls, rows, reader loss, ArenaState counters).
 """
 
 from __future__ import annotations
