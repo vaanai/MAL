@@ -36,20 +36,26 @@ import re
 import shutil
 import stat
 import sys
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from tools import arena_tip_adapter as ata
+from tools import arena_tip_reader as tr
 from tools import fast_tip_follower as ftf
+from tools.pump_history_backfill import rows_from_block
 
 SCHEMA = "arena_tip_gapfill_v1"
 MAX_MISSED_SLOTS = 2_000  # about 13 minutes of chain; at ~1 to 2.6 credits a slot that is at most ~5k credits per range. A range above the bound stays a gap.
 MAX_TOTAL_SLOTS = 20_000  # per run: a runaway guard, not a rule (a range list above it is refused as a whole)
 # reasons whose loss is a slot range the chain still holds. Everything else (tip_bad_line, hour_file_missing, bad_row_*, mixed_tx_index, writer status/reader problems) stays a gap.
 FILLABLE_REASONS = frozenset({"backlog_jump", "unfetchable", "skip_contradicted", "skip_contradicted_refetch", "unresolved_dropped", "writer_hole"})
+BACKLOG_SLOTS = 50  # the follower's registered --backlog-slots (fast_tip_follower default): a backlog_jump's pre-gap rows arrive up to this many slots late
 ROWS_DIR, MANIFEST = "rows", "manifest.json"
+LOOKAHEAD_MAX = 100_000  # splice: rows read ahead of a fillable gap row, looking for the first row of slot > to_slot
+LOOKBEHIND_SLOTS = 256  # splice: how many slots of already-yielded follower rows it remembers
+REFUSED_PATH_PARTS = ("/var/lib/mal/sealed",)  # the CLI never reads or writes under the tip dir, the archive or the writer's derived copy (SEALS-BRIEF 2026-11-01)
 KIND_ORDER = {"migration": 0, "create": 1, "trade": 2}  # the reader's order inside one slot (arena_tip_adapter: migrations, creates, trades)
 FEED_KINDS = ("trades", "creates", "migrations")
 FILE_RE = re.compile(r"^(trades|creates|migrations|skipped-slots)-\d{4}-\d{2}-\d{2}T\d{2}\.jsonl$")
@@ -166,9 +172,23 @@ def _lock_down(root: Path) -> None:
     os.chmod(root, stat.S_IRUSR | stat.S_IXUSR | stat.S_IRGRP | stat.S_IXGRP)
 
 
+def warm_pool_cache(f: ftf.TipFollower, block: dict[str, Any], slot: int) -> int:
+    """Make the follower's pool cache what a warm, long-running follower would hold for this block: look up the pools the block's PumpSwap prints name that the cache does
+    not know (the same `lookup` resolve_unresolved would call), BEFORE the commit decodes the block. With the pool in the cache `rows_from_block` resolves the print inline
+    and numbers it (tx_index); cold, the print would come back through resolve_unresolved without tx_index (QP on #1182, C3). Returns the number of pools looked up."""
+    block["slot"] = slot
+    scratch = dict(f.pool_cache)  # the throwaway decode mutates its cache with CreatePool events; the real one happens in the commit
+    pending = rows_from_block(block, scratch, ftf.FEED).get("unresolved") or []
+    need = sorted({r["pool"] for r in pending if isinstance(r.get("pool"), str) and r["pool"] not in f.pool_cache})
+    for off in range(0, len(need), 100):
+        f.pool_cache.update(f._safe_lookup(need[off : off + 100]))
+    return len(need)
+
+
 def fill(gaps: Iterable[Mapping[str, Any]], fetch: ftf.Fetcher, segment_dir: str | os.PathLike, *, max_missed: int = MAX_MISSED_SLOTS, max_total: int = MAX_TOTAL_SLOTS,
          lookup: Callable[[list[str]], dict[str, tuple[str, str]]] | None = None, blobs_fn: Callable[[], Mapping[str, Any]] = ftf.decoder_blobs,
-         pinned: Mapping[str, str] = ftf.PINNED_DECODER_BLOBS, sleep: Callable[[float], None] = lambda s: None, credits: Callable[[], int] = lambda: 0) -> dict[str, Any]:
+         pinned: Mapping[str, str] = ftf.PINNED_DECODER_BLOBS, sleep: Callable[[float], None] = lambda s: None, credits: Callable[[], int] = lambda: 0,
+         backlog_slots: int = BACKLOG_SLOTS) -> dict[str, Any]:
     """Fetch and decode every fillable range into a NEW sealed segment; return the manifest (also written to <segment>/manifest.json). Raises PinMismatch before any fetch,
     SegmentRefused if the segment directory exists."""
     blobs = check_pins(blobs_fn, pinned)
@@ -187,7 +207,10 @@ def fill(gaps: Iterable[Mapping[str, Any]], fetch: ftf.Fetcher, segment_dir: str
             if s in outcome:
                 continue
             b0, k0 = f.blocks, f.skipped
-            f.process_slot(s)
+            block, out = f._fetch_with_retry(s)  # the follower's own fetch / retry / skip handling, then the same commit as process_slot
+            if out == "ok" and block is not None:
+                warm_pool_cache(f, block, s)
+            f._commit(s, block, out)
             outcome[s] = "ok" if f.blocks > b0 else "skipped" if f.skipped > k0 else "failed"
     # the follower's own gaps.jsonl in the segment: a slot it could not decode in full is NOT filled; a skip it contradicted and then refetched is ok
     bad: set[int] = set()
@@ -207,6 +230,7 @@ def fill(gaps: Iterable[Mapping[str, Any]], fetch: ftf.Fetcher, segment_dir: str
         sks = [s for s in range(g.lo, g.hi + 1) if outcome.get(s) == "skipped"]  # type: ignore[arg-type]
         bd = [s for s in range(g.lo, g.hi + 1) if outcome.get(s) not in ("ok", "skipped")]  # type: ignore[arg-type]
         ranges.append({"gid": g.gid, "reason": g.reason, "from_slot": g.lo, "to_slot": g.hi, "t_recv_ms": g.t_recv_ms, "slots": g.slots, "fetched": len(oks),
+                       "back_slots": backlog_slots if g.reason == "backlog_jump" else 0,
                        "skipped_slots": sks, "failed_slots": bd, "filled": not bd and len(oks) + len(sks) == g.slots})
     for g, code in plan.refused:
         ranges.append({"gid": g.gid, "reason": g.reason, "from_slot": g.lo, "to_slot": g.hi, "t_recv_ms": g.t_recv_ms, "slots": g.slots, "fetched": 0, "skipped_slots": [],
@@ -217,7 +241,8 @@ def fill(gaps: Iterable[Mapping[str, Any]], fetch: ftf.Fetcher, segment_dir: str
     for p in sorted(rows_dir.iterdir()):
         if p.is_file() and p.stat().st_size == 0:
             p.unlink()  # the follower pre-creates next-hour files; an empty file is not part of a segment
-    man = {"schema": SCHEMA, "decoder_blobs": blobs, "max_missed_slots": max_missed, "slots_fetched": len(outcome), "outcomes": dict(Counter(outcome.values())),
+    no_tx = sum(1 for p in sorted(rows_dir.glob("trades-*.jsonl")) for r in _read_jsonl(p) if r.get("tx_index") is None)
+    man = {"schema": SCHEMA, "decoder_blobs": blobs, "max_missed_slots": max_missed, "backlog_slots": backlog_slots, "rows_no_tx_index": no_tx, "slots_fetched": len(outcome), "outcomes": dict(Counter(outcome.values())),
            "ranges": ranges, "files": files, "complete": all(r["filled"] for r in ranges if not r.get("refused")), "credits": int(credits())}
     (seg / MANIFEST).write_text(json.dumps(man, sort_keys=True, indent=1) + "\n")
     _lock_down(seg)
@@ -312,39 +337,142 @@ def arena_rows(seg: Segment, lo: int, hi: int) -> list[dict[str, Any]]:
 
 
 def marker_row(rng: Mapping[str, Any], gap: Mapping[str, Any]) -> dict[str, Any]:
-    """The row that tells the engine the range is filled (not a DEC-031 1.4 gap): the source gap row's placement, data_loss false, filled true."""
+    """The row that tells the engine the range is filled (not a DEC-031 1.4 gap): the source gap row's placement, data_loss false, filled true. `back_slots` is the margin
+    before from_slot inside which an entry or exit leg still keeps the 1.4 exclusion (the follower's backlog slots for a backlog_jump, else 0)."""
     row = dict(gap)
     row.update({"kind": str(gap.get("kind")) + "_filled", "data_loss": False, "filled": True, "fill_slots": rng["slots"], "fill_skipped": len(rng["skipped_slots"]),
-                "fill_fetched": rng["fetched"]})
+                "fill_fetched": rng["fetched"], "back_slots": int(rng.get("back_slots", 0))})
     return row
 
 
-def splice(rows: Iterable[Mapping[str, Any]], seg: Segment, counts: Counter | None = None) -> Iterator[dict[str, Any]]:
-    """The adapter's arena rows with every FILLED gap replaced by its repair rows plus the filled marker, and later follower rows that repeat a repair row dropped.
-    Gaps that are not filled (or not in the segment) pass through unchanged; order is the adapter's."""
+_DATA_TYPES = ("trade", "create", "complete", "pool_create")
+
+
+def _form(row: Mapping[str, Any]) -> tuple | None:
+    """((pool, slot), has tx_index) of a PumpSwap trade row: the key of the mixed-form check (the adapter's: per pool and slot). None for any other row."""
+    if row.get("type") == "trade" and row.get("prog") == "pumpswap" and row.get("pool") and isinstance(row.get("slot"), int):
+        return (row["pool"], row["slot"]), row.get("tx_index") is not None
+    return None
+
+
+def mixed_groups(rows: Iterable[Mapping[str, Any]]) -> int:
+    """Number of (pool, slot) groups that hold both a numbered (tx_index) and an unnumbered PumpSwap print: their within-slot order is two forms in one pool."""
+    seen: dict[tuple, set] = {}
+    for r in rows:
+        f = _form(r)
+        if f is not None:
+            seen.setdefault(f[0], set()).add(f[1])
+    return sum(len(v) == 2 for v in seen.values())
+
+
+def _is_fillable_gap(row: Mapping[str, Any]) -> bool:
+    return row.get("type") == "gap" and bool(row.get("data_loss")) and row.get("src") == "tip"
+
+
+def splice(rows: Iterable[Mapping[str, Any]], seg: Segment, counts: Counter | None = None, *, lookahead_max: int = LOOKAHEAD_MAX) -> Iterator[dict[str, Any]]:
+    """The adapter's arena rows with every FILLED gap replaced by the filled MARKER and then the repair rows (marker first: an exit priced while the repair rows stream in
+    must already know the range).
+
+    Dedupe (QP C2): a repair row is dropped if the follower already carries a row with the same (type, slot, signature, event_index) in slots [from_slot, to_slot], on EITHER
+    side of the gap row (the rows already passed, remembered for LOOKBEHIND_SLOTS slots, and the rows after it up to the first row of slot > to_slot); the follower row stands
+    and tx_index plays no part in the key. If the follower rows and the kept repair rows would put a numbered and an unnumbered PumpSwap print in one (pool, slot), or a repair
+    row is a bad row, the range is NOT filled: the original data_loss gap row passes unchanged (fail closed). A gap that is not filled (or not in the segment) passes through
+    unchanged; order is the adapter's."""
     c = counts if counts is not None else Counter()
     filled = seg.filled()
-    spans: list[tuple[int, int, set]] = []
-    for row in rows:
-        if row.get("type") == "gap" and row.get("data_loss") and row.get("src") == "tip":
-            rng = filled.get((str(row.get("reason")), row.get("from_slot"), row.get("to_slot")))
-            if rng is not None:
-                fr = arena_rows(seg, rng["from_slot"], rng["to_slot"])
-                keys = {row_key(r) for r in fr if r["type"] != "gap"}
-                spans.append((rng["from_slot"], rng["to_slot"], keys))
-                for r in fr:
-                    r["t_recv_ms"] = max(int(r["t_recv_ms"]), int(rng["t_recv_ms"])) if r["type"] == "gap" else r["t_recv_ms"]
-                    c["fill_rows" if r["type"] != "gap" else "fill_bad_row_gaps"] += 1
-                    yield r
-                c["filled_ranges"] += 1
-                c["filled_slots"] += rng["slots"]
-                yield marker_row(rng, row)
-                continue
+    it, queue = iter(rows), deque()
+    recent: dict[int, list[dict[str, Any]]] = {}
+    end = object()
+
+    def nxt() -> Any:
+        return queue.popleft() if queue else next(it, end)
+
+    while True:
+        row = nxt()
+        if row is end:
+            return
+        rng = filled.get((str(row.get("reason")), row.get("from_slot"), row.get("to_slot"))) if _is_fillable_gap(row) else None
+        if _is_fillable_gap(row) and rng is None:
             c["gaps_not_filled"] += 1
-        elif row.get("type") != "gap" and isinstance(row.get("slot"), int) and any(a <= row["slot"] <= b and row_key(row) in ks for a, b, ks in spans):
-            c["follower_dup_dropped"] += 1
+        if rng is not None:
+            lo, hi = rng["from_slot"], rng["to_slot"]
+            ahead: list[Any] = []
+            while len(ahead) < lookahead_max:
+                r = nxt()
+                if r is end:
+                    break
+                ahead.append(r)
+                if isinstance(r.get("slot"), int) and r["slot"] > hi:
+                    break
+            queue.extendleft(reversed(ahead))  # read ahead, not consumed: the main loop still sees every one of them
+            follower = [r for sl in range(lo, hi + 1) for r in recent.get(sl, ())] + [r for r in ahead if r.get("type") in _DATA_TYPES and isinstance(r.get("slot"), int) and lo <= r["slot"] <= hi]
+            repair = arena_rows(seg, lo, hi)
+            bad = [r for r in repair if r["type"] == "gap"]
+            kept, dropped = dedupe([r for r in repair if r["type"] != "gap"], follower)
+            if bad or mixed_groups([*follower, *kept]):
+                c["fill_refused_bad_row" if bad else "fill_refused_mixed_form"] += 1
+                c["gaps_not_filled"] += 1
+                yield dict(row)
+                continue
+            c["filled_ranges"] += 1
+            c["filled_slots"] += rng["slots"]
+            c["fill_rows"] += len(kept)
+            c["fill_rows_dup_dropped"] += dropped
+            yield marker_row(rng, row)
+            yield from kept
             continue
+        if row.get("type") in _DATA_TYPES and isinstance(row.get("slot"), int):
+            recent.setdefault(row["slot"], []).append(row)
+            for old in [k for k in recent if k < row["slot"] - LOOKBEHIND_SLOTS]:
+                del recent[old]
         yield dict(row)
+
+
+# ------------------------------------------------------------------------------------------------------------------------------------ the post-fill gap record (hour-health, the cap)
+def post_fill_gap_record(gaps: Iterable[Mapping[str, Any]], man: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """One entry per distinct gap range in `gaps`, with whether the manifest filled it: what an hour-health tool reads for filled ranges. Counts and slot numbers only (no
+    row content). `hour` is the UTC hour of the gap's follower time. An entry the manifest does not know is unfilled."""
+    by_gid = {r["gid"]: r for r in man.get("ranges", [])}
+    out, seen = [], set()
+    for i, obj in enumerate(gaps):
+        g = parse_gap(obj, i)
+        if g.gid in seen:
+            continue
+        seen.add(g.gid)
+        r = by_gid.get(g.gid)
+        out.append({"gid": g.gid, "reason": g.reason, "from_slot": g.lo, "to_slot": g.hi, "slots": g.slots, "missed_slots": g.missed, "t_recv_ms": g.t_recv_ms,
+                    "hour": ftf.hour_of_ms(g.t_recv_ms) if g.t_recv_ms is not None else None, "filled": bool(r and r.get("filled")),
+                    "refused": (r or {}).get("refused"), "failed_slots": len((r or {}).get("failed_slots", []))})
+    return out
+
+
+def hour_fill_counts(record: Iterable[Mapping[str, Any]]) -> dict[str, dict[str, int]]:
+    """{UTC hour: {filled_ranges, unfilled_ranges, filled_slots, unfilled_slots}} from post_fill_gap_record. Both counts are always reported (Amendment item 5)."""
+    out: dict[str, dict[str, int]] = {}
+    for e in record:
+        h = out.setdefault(str(e["hour"]), {"filled_ranges": 0, "unfilled_ranges": 0, "filled_slots": 0, "unfilled_slots": 0})
+        k = "filled" if e["filled"] else "unfilled"
+        h[f"{k}_ranges"] += 1
+        h[f"{k}_slots"] += int(e.get("missed_slots") or e.get("slots") or 0)
+    return out
+
+
+def mark_through_ids(rows: Iterable[Mapping[str, Any]], stake: float) -> set[str]:
+    """Position ids of PRICED trade rows at `stake` that the engine marked through a filled range. They stay priced and kept, and they count in the section 1.4 5% numerator
+    (QP C4): numerator = the scorer's s14 exclusions plus these."""
+    return {r["position_id"] for r in rows if r.get("kind") == "trade" and r.get("stake_sol") == stake and r.get("mark_through")}
+
+
+def cap_counts(rows: Sequence[Mapping[str, Any]], stake: float) -> dict[str, Any]:
+    """The section 1.4 numerator for a tip-source book at `stake`: the cut tool's s14 reasons (feed_gap exclusions, missing V, late-print gap, data refusals) plus the
+    marked-through trades (priced). Names and counts only. The pinned scorer must apply the same rule (owed with the registration: it is a new scorer pin)."""
+    from tools import arena_am6_cut as cut
+
+    s14 = cut.s14_reasons(rows, stake)
+    mt = mark_through_ids(rows, stake) - set(s14)
+    pids = {r["position_id"] for r in rows if r.get("kind") in ("trade", "excluded") and r.get("stake_sol") == stake}
+    return {"n_positions": len(pids), "n_s14": len(s14), "n_mark_through": len(mt), "numerator": len(s14) + len(mt),
+            "share": (len(s14) + len(mt)) / len(pids) if pids else None, "s14_reasons": dict(Counter(s14.values()))}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------------ CLI (the only code that opens an RPC)
@@ -356,6 +484,20 @@ def read_env_file(path: str | os.PathLike) -> dict[str, str]:
             k, v = line.split("=", 1)
             out[k.strip().removeprefix("export ").strip()] = v.strip().strip("'\"")
     return out
+
+
+def refused_path(path: str | os.PathLike) -> str | None:
+    """Why the CLI will not read or write `path` (None = allowed): under the sealed tip tree, the archive, or the writer's derived copy (QP C7). The fill's gap input is the
+    writer's counts-log gap entries or the adapter's in-host stream, never the tip dir's gaps.jsonl."""
+    from tools import arena_tip_tape_writer as w
+
+    for cand in {os.path.abspath(os.fspath(path)), os.path.realpath(os.fspath(path))}:
+        if tr.ARCHIVE_MARK in cand:
+            return "is under the tip tape archive"
+        for pre in (*REFUSED_PATH_PARTS, os.path.realpath(w.DEFAULT_OUT), w.DEFAULT_OUT):
+            if cand == pre or cand.startswith(pre.rstrip("/") + "/"):
+                return "is under the sealed tip tree or the writer's derived copy"
+    return None
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -377,6 +519,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if a.check_pins:
         print(json.dumps({"decoder_blobs": blobs, "pinned": True}, sort_keys=True))
         return 0
+    for flag, path in ("--gaps", a.gaps), ("--segment-dir", a.segment_dir):
+        why = refused_path(path)
+        if why:
+            print(f"REFUSED: {flag} {why}", file=sys.stderr)
+            return 4
     gaps = [json.loads(line) for line in Path(a.gaps).read_text().splitlines() if line.strip()]
     environ = read_env_file(a.helius_env) if a.helius_env else {}
     url, kind = ftf.resolve_rpc_url(None, environ)
