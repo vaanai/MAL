@@ -1259,7 +1259,12 @@ Design and evidence: `docs/design/arena-tip-cohort.md` (same PR). No tape, tip f
    - **Tip-side floor, per arm (fixed here).**
      - **Measure.** Each arm's would-be attempts by the A2 definition, counted from the item 7 smoke's decision rows (counts only) and scaled to a day: count x 24 h / smoke hours.
      - **Floor.** At least 10.714285714285714 a day.
-     - **Below the floor.** An arm below it loses the reuse. It registers only with a tip P0 by `tools/hv4_p0_count.py` (sha256 `3e2539d063af712e7b8db085f62c5543c91fa0e03233087a10ac71756a88c4c7`) on 3 full closed UTC days on or after 2026-11-08, with its clock not before 2026-11-12T00:00:00Z, or it is not registered. The other arms keep their clock.
+     - **Below the floor.** An arm below the floor loses the reuse and is not registered.
+       - The frozen runner at `9ed4c5ff` runs all nine arms in one process with one clock and cannot pick arms. So the arm still runs inside the HV4-T process, but UNREGISTERED: no `hv4t-` line in the arena registry, no N, no count, no read.
+       - Its rows stay under item 10's seal and are never opened.
+       - Its API spend, if any, is inside item 9's caps.
+       - It can be read only under its own later amendment, as a new `bot_id` at a new clock.
+       - The other arms keep their clock.
 6. **Clock, window and the HV4 seal's end.**
    - **The seal's end (accepted by quant-proof).** The SEALS-BRIEF HV4 line reads "No pricing or retune of any HV4 rule on counted hours (>= 2026-10-25T00Z)", with no end. Here "counted hours" means HV4's counted window [2026-10-25T00:00:00Z, 2026-11-08T00:00:00Z). The reason: HV4 counts no entry from 1794096000000 (Amendment 15 item 1), and its confirmation ends there too (Amendment 15 item 3). The reading holds on three conditions:
      - HV4-T warm-up rows before 2026-11-08T00:00Z are state only, with no call and no pricing (Amendment 23 item 7);
@@ -1317,7 +1322,9 @@ Design and evidence: `docs/design/arena-tip-cohort.md` (same PR). No tape, tip f
     - So the BIG arms are likely NOT_DECIDABLE_5PCT unless a gap-fill covers them.
     - **If the gap-fill merges before the clock.** The tip gap-fill (#1182, lane F2) applies to these books only if it merges with quant-proof's OK and a reviewer verdict before the clock, and its pins are in the registration record as book-side source pins (Amendment 23 item 2).
     - **After the clock it cannot apply.** A book-side pin change after the clock is a new `bot_id` with a new clock (Amendment 23 item 2).
-    - **Arms.** This amendment registers all nine arms. A subset chosen for feed health (no P&L) is allowed for new books (QP on #1178). If one is chosen, this item names the arms and the reason before merge.
+    - **Arms.** This amendment registers all nine arms.
+      - A registered subset chosen for feed health (no P&L) is allowed for new books (QP on #1178). If one is chosen, this item names the arms and the reason before merge.
+      - The process does not change: the frozen runner at `9ed4c5ff` runs all nine arms with one clock. An arm left out runs UNREGISTERED, as item 5 says: no N, no read, rows sealed and never opened.
 13. **C0.** Out of scope. A C0 of an HV4-T book needs its own recorded PASS, DEC-032, and a later text for the bridge's ids and source.
 
 **Part C: FLOOR on the tip source is not registered.**
