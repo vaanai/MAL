@@ -35,10 +35,10 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `untested` | 45 | 28 | 0 |
 | `desk-read` | 3 | 52 | 0 |
 | `explored-no-survivor` | 56 | 17 | 2 |
-| `dead-as-frozen` | 77 | 6 | 0 |
-| **all** | 209 | 108 | 2 |
+| `dead-as-frozen` | 77 | 9 | 0 |
+| **all** | 209 | 111 | 2 |
 
-The file holds 569 rows: the 319 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 572 rows: the 322 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -476,6 +476,24 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `haiku-v5-o1` | Haiku v5: self-improving BUY/SKIP filter on the frozen H5 BOOST-floor trigger (nightly playbook … | `dead-as-frozen` | O1 (job #1914, harness 8c50699b, 3.7286 USD ledger) KILL_OFFLINE, confirmed by QP: 11 of 12 pre-registered bars fail under both fail models. Totals over 33 in-sample test days are ordered A > F > L > N > P (flat 33.6398 / 32.0946 / 29.7167 / 28.9731 / 27.5922 SOL): every filter is below the unfiltered base, and … |
+
+### laneA-size-tilt (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `laneA-size-tilt-1` | SIZE-TILT: 2x stake on H5 BOOST-floor triggers that a walk-forward right-tail (top-10%) logistic … | `dead-as-frozen` | KILL by the pre-declared bars (in-sample exploration; v5 export-o1 days; 32 test days, 2,513 test triggers, 507 at 2x). The declared cell fails 3 of 8 bars under both fail models (flat / pressure): B5 random placebo p 0.2517482517482518 / 0.2087912087912088 (bar <= 0.10); B7 matched-exposure selection ex best day … |
+
+### laneC-h5-runner (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `laneC-h5-runner-1031` | Lane C let-winners-run: 4 exit variants on the frozen H5 trigger (V-A trail after +100%, V-B half … | `dead-as-frozen` | KILL: no variant passes its pre-declared bars under either fail model (in-sample exploration). Every variant fails bars 2 (bootstrap lower bound of the daily difference), 3 (ex best day), 4 (ex top 3), 5 (more than 50% of days non-negative) and 6 (August and September both positive) under both fail models; bar 1 … |
+
+### haiku-v6-tail (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `haiku-v6-tail-spotter` | Haiku v6 TAIL SPOTTER: add-size-only Haiku sizer on the frozen H5 BOOST-floor trigger (boost 2x / … | `dead-as-frozen` | O1 (job #2012, harness ad061679, 2.31265497 USD ledger, 17,055 calls, ledger /data2/mal/scratch/haiku-v6/ledger.jsonl) KILL_OFFLINE, confirmed by QP-RULING-1101-haiku-v6-o1: 8 of 16 pre-registered booleans fail (B4, B5, B7 and B8, each under both fail models). In-sample over 33 test days, flat: L minus P (random … |
 
 ## Dead as frozen, and explored with no survivor
 
