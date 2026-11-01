@@ -158,7 +158,7 @@ def test_outcome_class_line_fails_seal_even_if_not_json(tmp_path, capsys, line):
 
 
 def test_outcome_lines_are_never_parsed(tmp_path, monkeypatch):
-    out, rep, _ = build(tmp_path, extra=['{"type":"outcome","secret_marker_o":1}', '{"type":"outcome_bx10","secret_marker_b":1}', '{"type":"strip","secret_marker_s":1}'])
+    out, rep, _ = build(tmp_path, extra=['{"type":"outcome","marker_zz_o":1}', '{"type":"outcome_bx10","marker_zz_b":1}', '{"type":"strip","marker_zz_s":1}'])
     seen = []
     real = json.loads
 
@@ -168,7 +168,7 @@ def test_outcome_lines_are_never_parsed(tmp_path, monkeypatch):
 
     monkeypatch.setattr(j.json, "loads", spy)
     j.judge(out, rep, 0)
-    assert seen and not any(b"secret_marker" in s for s in seen)
+    assert seen and not any(b"marker_zz" in s for s in seen)
     assert not any(b'"pool"' in s and b"min_q_pv_sol" in s for s in seen)  # pool records are not parsed either
 
 
