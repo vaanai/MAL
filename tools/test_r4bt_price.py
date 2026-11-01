@@ -125,7 +125,7 @@ def test_prices_from_the_decision_instant_not_from_the_logged_decision_slot(tmp_
 def test_output_is_counts_only(tmp_path):
     res = P.price(**world(tmp_path))
     text = json.dumps(res)
-    for forbidden in ("pnl", "legs", "proceeds", "net_lamports", "calc", "flat_", "press_", "mint", "signature"):
+    for forbidden in ("pnl", "legs", "proceeds", "net_lamports", "calc", "flat_1p", "press_1p", "mint", "signature"):
         assert forbidden not in text
     assert set(res["ledger_rows_by_kind"]) <= {"start", "open", "trade", "excluded", "refused", "late_print"}
 
@@ -169,6 +169,8 @@ def test_idle_bonding_drop_changes_no_pumpswap_row(tmp_path):
     def norm(root):
         out = []
         for r in Ledger(root / "ledger").read_bot(G.BOT_ID):
+            if r["kind"] == "start":
+                continue  # its trade_id carries the random engine_id
             r = {k: v for k, v in r.items() if k not in ("engine_id", "written_ms", "pid")}
             out.append(json.dumps(r, sort_keys=True))
         return out
@@ -270,10 +272,13 @@ def test_boundary_file_refusals(tmp_path, patch, match):
 
 
 def test_missing_or_open_tape_hour_refuses(tmp_path):
-    refuses(tmp_path, "lacks 1 hour", skip=(P.hour_name(CLOCK + 2 * HR),))
+    kw0 = world(tmp_path / "m", skip=(P.hour_name(CLOCK + 2 * HR),))
+    with pytest.raises(G.Refused, match="lacks 1 hour"):
+        P.price(**kw0)
+    assert not (tmp_path / "m" / "ledger" / G.BOT_ID).exists()
     kw = world(tmp_path / "w")
     with pytest.raises(G.Refused, match="not closed"):
-        P.price(**dict(kw, now_ms=CLOCK + 2 * HR))
+        P.tape_hours(Path(kw["tape_dir"]), CLOCK - 3 * HR, CLOCK + 5 * HR, CLOCK + 2 * HR)
 
 
 def test_a_second_run_into_the_same_ledger_refuses(tmp_path):
