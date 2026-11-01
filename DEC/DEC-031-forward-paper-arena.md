@@ -1205,7 +1205,9 @@ DEC-031 Amendment 23: arena books whose input is the fast-0 getBlock tip followe
 
 ### Amendment 24 (DRAFT; s1 on the tip source, `h5v1q50-boostfloor-s1t`)
 - **Number.** The next free DEC-031 amendment at merge. Amendment 16 is held by open PR #1019, Amendment 23 Erratum 1 by #1169, the HV4-T draft by #1178 and the tip gap-fill draft by #1182; a renumber at merge is a fill.
-- **Written.** First written 2026-11-01T23:17:51Z. Revised 2026-11-01T23:31:11Z, from `date -u` on mal-research-0, on quant-proof's s1t readings in `/data/mal/hunt-1008/ops/reports/2026-11-02/qp-1102-tip-cohort.md` §5: Amendment 17 amended, the 11-09 slip, S\*' by tag and identity, and the smoke hours.
+- **Written.** First written 2026-11-01T23:17:51Z. Revised 2026-11-01T23:31:11Z, from `date -u` on mal-research-0, on quant-proof's s1t readings in `/data/mal/hunt-1008/ops/reports/2026-11-02/qp-1102-tip-cohort.md` §5: Amendment 17 amended, the 11-09 slip, S\*' by tag and identity, and the smoke hours. Revised 2026-11-01T23:38:41Z on two comments:
+  - quant-proof's comment 6565588204 (C1 to C5, its replacement texts pasted);
+  - the reviewer's comment 6565593139: C2 moves the first slip to 2026-11-10T00:00Z, because a tip P0 on 11-06 to 11-08 must precede the registration (pending quant-proof's re-confirmation); C3 is the §3.5 end-seal line; N6.
 - **Records only.** Written before the registration, P0 use, smoke, `bots.json` line and clock of the book it covers, and before any read verdict of `h5v1q50-boostfloor-a1`. Outcome-blind.
 - **Status.** DRAFT until merge, with QP OK on the exact head and a reviewer verdict.
 
@@ -1243,12 +1245,13 @@ DEC-031 Amendment 24 **amends Amendment 17** for its successor. The successor is
    - **Id.** `s1t` departs from R8.1's `s<k>` successor scheme (Amendment 18 item 2.1). It keeps the three prefix properties of Amendment 5 item 2.1. An id test, in the pattern of `tools/test_q50_successor_id.py`, is owed before registration.
    - **Class side feed.** The synthetic-class RPC side feed may stay on the public websocket, disclosed and reported (QP report §5).
 3. **Code: S\*' by tag and identity.**
-   - `frozen_sha` S\*' is the commit of tag `q50-succ-tip-1` on origin. It is tag-only, as S\* (`q50-succ-base-1`) was. Its code PR (#1185) is closed unmerged by design, because merging would change main's pinned `tools/h5_shadow.py`.
+   - `frozen_sha` S\*' is the commit of tag `q50-succ-tip-1` on origin. It is tag-only, as S\* (`q50-succ-base-1`) was. Its code PR (#1185) is to be closed unmerged by design, because merging would change main's pinned `tools/h5_shadow.py`.
    - **Identity.** At S\*', `tools/h5_shadow.py` and its whole transitive first-party import set are byte-identical to S\*'s (`5c2ab7c64b21358619e37068c6a53e4d183512ea`; `tools/h5_shadow.py` blob `7f859b12deef87573a7314e49e125b5121eaa645`). This is pinned by a test.
    - **What S\*' adds:** the tip input wrapper `tools/h5_shadow_tip.py`, its md5 harness `tools/h5_shadow_tip_equiv.py`, and their tests.
      - The wrapper reads the derived copy's arena-layout rows: `pool_create` as the CreatePool announce, `complete`, trades with event V, and data_loss `gap` rows as engine gap records.
      - It stamps `t_detect_ms` from the engine host's wall clock at the decision, never from a row's `t_recv_ms` (a test). So the pinned scorer's landing correction (`tools/arena_h5_score.py`, age = `t_detect_ms` - block_time) charges the writer's and the transport's lag.
      - Through the wrapper, no trigger is written for a pool announced before the fresh start (a test).
+   - **§3.5 successor end-seal.** Amendment 18 item 5.2's §3.5 text applies to s1t with S\*' (tag `q50-succ-tip-1`, the identity above) read as its `frozen_sha` S and the note of item 4 as its declared observation; the arena end-seal of s1t is `SUCC_END_MS` = 2026-12-01T00:00:00Z.
    - **Age cap.** `MAX_TRIGGER_AGE_MS` 3,500 is unchanged, and its exclusions count in the 5% cap.
    - **Equivalence, before the smoke.** EQUAL on S\*''s wrapper over the pinned WRITER's output built from explore-0814 walker hours, with s0 from migration rows, against S\* on the same walker rows through its existing replay path.
      - The md5 of the trigger and outcome records must be equal after `t_recv_ms` and `t_detect_ms` are removed.
@@ -1262,23 +1265,27 @@ DEC-031 Amendment 24 **amends Amendment 17** for its successor. The successor is
    - Its Part B (the executor) is out of scope (item 8).
 5. **P0 and H.**
    - **P0 for the 2026-11-07 clock.** Q50's P0 is reused, as Amendment 18 item 3 reuses it for s1 (job #1413, 35.333333333333336 a day). This is valid for a clock at or before 2026-11-07T00:00Z. It replaces Amendment 23 item 8's tip P0. The reason: every tip day before 2026-11-06 lies in Q50's counted window [2026-10-25T00Z, 2026-11-06T00Z), and a structure count of Q50's rule there is Q50 attempt-count information while Q50's read is unread.
-   - **P0 for the 2026-11-09 slip.** Amendment 18 item 3's new structure-only P0 clause applies on the tip, on 2026-11-06, 11-07 and 11-08. All three days are after Q50's window. The count is S\*' in a counts-only run, with fixed-first text notebooked before it. There is no 2026-11-08 clock (item 9).
-   - **H.** Per Amendment 22 item 8.1 (a declared departure from Amendment 4 item 2.2), the book ends at E = `SUCC_END_MS` = 1796083200000 (2026-12-01T00:00:00Z). That is **H = 24 d** from the 11-07 clock and **22 d** from the 11-09 slip.
+   - **P0 for the 2026-11-10 slip.** Amendment 17 item 1's structure-only P0 ("For a later clock (P1), a new structure-only P0 on 3 full closed UTC days ... is pre-committed here"; Amendment 18 item 4's slip) applies on the tip, on 2026-11-06, 11-07 and 11-08, the latest 3 closed days before a registration on 2026-11-09 (Amendment 23 item 8; Amendment 3 item 1). All three days are after Q50's window. The count is S\*' with item 6's pricing-off switch, as the pinned tip-source P0 counter (Amendment 23 item 9), with fixed-first text notebooked before it. A later clock takes the same form on the 3 closed UTC days before it, with S_cap = clock + 10 d and E unchanged. There is no 2026-11-08 or 2026-11-09 clock (item 9).
+   - **H.** Per Amendment 22 item 8.1 (a declared departure from Amendment 4 item 2.2), the book ends at E = `SUCC_END_MS` = 1796083200000 (2026-12-01T00:00:00Z). That is **H = 24 d** from the 11-07 clock and **21 d** from the 11-10 slip.
 6. **Smoke: on hours no Q50-counted pool can enter.**
    - **Basic form.** At least 24 h at S\*' on the derived copy, in a scratch root on mal-research-0, never counted, scored or read.
    - **Judged on:** Amendment 6 item 1.3's blocking list (counts, timings and flags), Amendment 23 item 8's reports, and item 7's trigger-age bar.
    - **Quant-proof's form (report §5 (c)).** Fresh start at or after 1793923200000 (2026-11-06T00:00:00Z), counts and timings only.
      - S\*''s fresh-forward mode never tracks a pool whose s0 is before its start, so no Q50-counted pool is ever priced.
-     - A 24 h smoke so started ends at or after 2026-11-07T00:00Z, so it cannot pass before an 11-07 clock. **Under this form, the clock is the 11-09 slip.**
-   - **The writer's proposal, for the 11-07 clock (quant-proof decides).** A smoke started by 2026-11-05T12:00:00Z with S\*''s frozen `suppress_outcome` hook (an Engine parameter at S\*) withholding every pool's outcome and strip.
-     - It writes trigger, pool and gap records only, and computes no Q50-rule outcome on any pool.
+     - A 24 h smoke so started ends at or after 2026-11-07T00:00Z, so it cannot pass before an 11-07 clock. **Under this form, the clock is the 11-10 slip.**
+   - **The early pricing-off form, for the 11-07 clock (accepted by quant-proof on PR #1186).** This is Amendment 6 item 1.3's "pricing off (decision rows only)" form.
+     - **Start.** Fresh start no later than 2026-11-05T12:00:00Z (1793880000000), after item 3's EQUAL and item 4's note.
+     - **Switch.** The wrapper `tools/h5_shadow_tip.py` builds S\*'s frozen Engine with `h5_look2_start_ms` at or before the fresh start and `h5_look2_observed` false, so S\*'s H5 Look-2 seal (`_h5_sealed`, `tools/h5_shadow.py` at S\* lines 2212-2220) holds for every pool. At S\* such a pool gets its decision-time trigger record (flag `h5_look2_sealed`), its gap records and a pool record with `min_q_pv_sol` and `min_q_fv_sol` null, and no exit ladder, pending outcome, outcome or strip record (lines 2024-2025, 2058-2059, 2227-2228, 2303-2304). No Q50-rule outcome is computed on any pool.
+     - **Not the `suppress_outcome` hook.** At S\* that CAP-PICK hook acts only when `seal_start_ms` is set (line 2178), and a pool it seals gets no trigger record (line 1987), so item 7's trigger-age bar could not be computed.
+     - **Tests at S\*'.** On a synthetic triggered pool, the switch writes the trigger record with `t_detect_ms` and writes no outcome, ladder, strip or non-null min-Q field. The switch is refused outside a scratch root. The shadow's start record shows `h5_look2_start_ms` = `SUCC_END_MS`, as at S\*.
+     - **Printing.** The smoke's records are never opened. Before s1t's first read, no count of the smoke's trigger, pool or decision records is printed or notebooked as a number: the blocking list is printed as flags, and the trigger-age tool prints only PASS or FAIL against item 7's bar and the p50, p90 and max age in ms (item 5's reason: a structure count of Q50's rule on Q50's counted window is Q50 attempt-count information). s1t's reads print the counts (item 10).
      - Its outcome path is proved by item 3's equivalence, not by the smoke.
-   - **If quant-proof refuses it,** the clock is 2026-11-09T00:00Z.
+   - **If this smoke fails or misses its start,** the clock is 2026-11-10T00:00Z, with quant-proof's form above.
 7. **Before the clock.** These are in addition to Amendment 23 items 6 and 8, and to s1's pre-clock items carried by item 2.
    - **Shadow.** It runs on mal-research-0 from the derived copy `/data2/mal/arena-tip-feed/hv7`, from a clean checkout at S\*', in its own root, started at least 1 h before the clock.
    - **Memory.** Its own `MemoryMax`, with the research-0 memory check: `MemAvailable` and the sum of running jobs' `MemoryMax` (from the job list) leave room.
    - **A3.** The A3 books file entry and loop of Amendment 22 item 9, with the s1t id.
-   - **Readers.** The SEALS-BRIEF tip entry names the s1t shadow and its smoke as readers of the derived copy (quant-proof note, manager's edit).
+   - **Readers.** The SEALS-BRIEF tip entry names the s1t smoke, shadow and P0 count as readers of the derived copy (quant-proof note, manager's edit), before the smoke or the P0 count first reads it. The memory check above is also made before the smoke starts.
    - **Hour health.** Amendment 23 item 5's tool, for programs `pumpswap` and `pumpfun`.
    - **Feed bar.** Amendment 23 item 6's line with T_max = 333 s (330 s exit + 0.55 s + 1.9 s): at most 6 data_loss rows of those programs or `all` in the 24 h before the clock.
    - **Shared slots.** QP-RULING-1102-tip-shared-slot R1 to R3 replace Amendment 23 item 3's trigger. The count is report-only. The tripwires are: any mixed group, the follower `pool_cache` reaching 180,000, and a follower start (the 60-min with/without gate test). The read carries the ruling's disclosures. By the ruling's §4, no s1t read can touch a no-`tx_index` row while the follower is not restarted.
@@ -1287,18 +1294,19 @@ DEC-031 Amendment 24 **amends Amendment 17** for its successor. The successor is
    - **Slips.** A fail is a slip to the next honest clock, never a stop.
 8. **C0.** Out of scope. Amendment 18 item 5.3's executor `Book` row and DEC-034's routes are keyed to `h5v1q50-boostfloor-s1`. A C0 of s1t needs its own recorded PASS, DEC-032, and a later text for the executor's id and source.
 9. **Clock, reads and fallback.**
-   - **Clock.** `clock_start_ms` **1794009600000 (2026-11-07T00:00:00Z)** if quant-proof accepts item 6's suppressed-outcome smoke. Otherwise, and as the only slip, **1794182400000 (2026-11-09T00:00:00Z)**.
-   - **No 2026-11-08 clock is honest.** The P0 reuse is valid only at or before 2026-11-07T00Z. A tip P0 for 11-08 would count 2026-11-05, inside Q50's window.
+   - **Clock.** `clock_start_ms` **1794009600000 (2026-11-07T00:00:00Z)** with item 6's early pricing-off smoke. The first slip is **1794268800000 (2026-11-10T00:00:00Z)**; a later slip is the next 00:00Z (item 5).
+   - **No 2026-11-08 or 2026-11-09 clock is honest.** The P0 reuse is valid only at or before 2026-11-07T00Z. A tip P0 is counted before the registration, and the clock is the first 00:00Z after it (Amendment 3 item 1), so a tip P0 for an 11-08 clock counts 2026-11-04 to 11-06, and one for 11-09 counts 11-05 to 11-07. Both are inside Q50's window.
    - **Reads.** Amendment 22 item 8.1's numbers, with s1t's clock:
      - N_s 200;
-     - S_cap = clock + 10 d, with at least 100: 2026-11-17T00:00:00Z (1794873600000) for the 11-07 clock, or 2026-11-19T00:00:00Z (1795046400000) for the 11-09 clock;
+     - S_cap = clock + 10 d, with at least 100: 2026-11-17T00:00:00Z (1794873600000) for the 11-07 clock, or 2026-11-20T00:00:00Z (1795132800000) for the 11-10 clock;
      - N_c 300;
      - E = E_c = 1796083200000.
-   - **Fallback (the manager's decision of 2026-11-01).** This amendment lapses, and s1 proceeds as registered under Amendments 17, 18 and 22 with the owner's second provider, if either of these is missing by **2026-11-05T12:00:00Z**:
+   - **Fallback (the manager's decision of 2026-11-01).** This amendment lapses, and s1 proceeds under Amendments 17, 18 and 22 with Amendment 22 Errata 1 and 2, if either of these is missing by **2026-11-05T12:00:00Z**:
      - the tag `q50-succ-tip-1` with quant-proof's OK and a reviewer verdict on its code at the exact head, and EQUAL on item 3's equivalence;
      - the note of item 4, merged.
    - The lapse depends on a code-freeze instant only.
-10. **N and disclosures.** N + 1 at s1t's clock (s1 never had a clock). Every s1t read prints:
+   - On a lapse, s1's provider set is `wss://api.mainnet-beta.solana.com` first and at most one second provider from the launcher's allowlist (`fra.rpc.orbitflare.com` with the owner's key, if the owner gives one), or none, with Erratum 1's one-provider disclosure. No owner action is a pre-clock item of s1. s1's registration after 2026-11-05T12:00Z is a slip under Amendment 18 item 4: its clock is 2026-11-07T00:00Z with the P0 reuse if its items are done by 2026-11-06T23:00Z, otherwise 2026-11-10T00:00Z or later with a P0 on days at or after 2026-11-06T00Z (no 2026-11-08 or 2026-11-09 clock, for item 9's reason).
+10. **N and disclosures.** N + 1 at s1t's clock (s1 never had a clock). A slip on Amendment 23 item 6's feed bar spends no N and keeps the `bot_id` (Amendment 23 item 6), also after s1t's `bots.json` line is written. Amendment 18 item 4's carried clause (a written line with a missed clock ends that book NOT_DECIDABLE, N + 1) applies to s1t only when another pre-clock item is missed after the line is written; the commitment is then met by `h5v1q50-boostfloor-s1t2` at the same rule and S\*' (its own id test owed). Every s1t read prints:
     - Amendment 18's and Amendment 22's disclosures;
     - the Amendment 23 item 9 and QP-RULING-1102 R3 disclosures;
     - the trigger-age figures;
