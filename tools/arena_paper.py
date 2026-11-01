@@ -596,6 +596,10 @@ class Ledger:
 # ------------------------------------------------------------------------------------------------------------------------------ config
 STRAND_STATES = ("stranded", "entry_invalid", "exit_invalid")
 HARD_GAP_KINDS = ("process_restart", "feed_restart", "feed_start")
+# F2 (DEC-031 repair before exclude, tip-source books): a range the fill tool completed (tools/arena_tip_gapfill.py) arrives as a gap row with filled=true and data_loss=false.
+# It is NOT a section 1.4 gap. An exit whose pricing slot falls inside it executes at the first print at or after hi + 1 (mark-through-gap, QP-RULING-1030-power-n 5(d));
+# with no print within this many slots after that, the position takes the strand class. Pinned here; not in StackConfig.as_dict (existing ledger rows do not change).
+MARK_THROUGH_BOUND_SLOTS = 300
 
 
 @dataclass(frozen=True)
@@ -821,6 +825,7 @@ class Position:
     exit_stamp_ms: int | None = None
     exit_call_ms: int | None = None
     call_feed_slot: int | None = None  # the latest feed slot the engine had seen at the buy() call: the most the bot could have seen
+    mark: tuple[int, int, int] | None = None  # (xs before, lo, hi) when the exit was marked through a filled range (F2)
 
 
 @dataclass
@@ -862,6 +867,7 @@ class ArenaEngine:
         self.hw_ms: int | None = None  # latest t_recv_ms of a trade row
         self.hw_ms_slot = -1  # slot of the row that set hw_ms: the (slot, ms) anchor of the slot clock
         self.gaps: list[Gap] = []
+        self.fills: list[tuple[str | None, int, int]] = []  # (prog, lo, hi) of every filled range seen (F2): not gaps
         self.priced: dict[str, list[dict[str, Any]]] = {}  # pool -> positions already written (for late-print detection)
         self.counters: dict[str, int] = {}
         self.last_error: dict[str, str] = {}
@@ -920,6 +926,13 @@ class ArenaEngine:
     def on_gap(self, row: Mapping[str, Any]) -> None:
         """A feed gap row (type "gap"). A data_loss gap, or a process_restart / feed_restart / feed_start gap, excludes the trades whose span it overlaps; the others
         are counted. The lost interval runs from the engine's last row before the gap (and silent_ms / down_ms when the row gives them) to the gap row's time."""
+        if row.get("filled") is True and not row.get("data_loss"):
+            lo, hi = row.get("from_slot"), row.get("to_slot")
+            if all(isinstance(x, int) and not isinstance(x, bool) for x in (lo, hi)) and hi >= lo and row.get("t_recv_ms") is not None:
+                self._on_filled(row.get("prog"), lo, hi, int(row["t_recv_ms"]))
+                return
+            self._count("gap_fill_marker_bad")  # a marker the engine cannot read is a data_loss gap (fail closed)
+            row = dict(row, data_loss=True)
         at = int(row["t_recv_ms"])
         silent = int(row.get("silent_ms") or row.get("down_ms") or 0)
         kind = str(row.get("kind"))
@@ -930,6 +943,25 @@ class ArenaEngine:
         s_hi = max(int(row.get("to_slot") or row.get("slot") or 0), self.hw_slot)
         self._count("gap_data_loss")
         self.gaps.append(Gap(row.get("prog"), t_lo, at, max(self.hw_slot, 0), s_hi, kind))
+
+    def _on_filled(self, prog: str | None, lo: int, hi: int, at_ms: int) -> None:
+        """A filled range: counted, remembered for mark-through-gap, and the time anchor moves to the follower's own time of it (the follower noticed the gap then; a quiet
+        stretch that the fill rows do not cover must not turn into an engine_silence gap). It never enters `gaps`."""
+        self.fills.append((prog, lo, hi))
+        self._count("gap_filled")
+        self.counters["gap_filled_slots"] = self.counters.get("gap_filled_slots", 0) + (hi - lo + 1)
+        if self.hw_ms is not None and at_ms > self.hw_ms:
+            self.hw_ms, self.hw_ms_slot = at_ms, max(self.hw_ms_slot, hi)
+
+    def _through_fills(self, slot: int) -> int:
+        """`slot` moved up through every filled range that touches it (chained ranges too): a slot jump that a fill covers is not a jump."""
+        moved = True
+        while moved:
+            moved = False
+            for _p, lo, hi in self.fills:
+                if lo <= slot + 1 and hi > slot:
+                    slot, moved = hi, True
+        return slot
 
     def on_row(self, row: Mapping[str, Any]) -> None:
         typ = row.get("type", "trade")
@@ -961,12 +993,12 @@ class ArenaEngine:
             if h.floor is not None and slot < h.floor:
                 self._count("rows_below_trim_floor")  # also counted in rows_dup: below the floor a duplicate and a very late new print look the same
             return
-        if self.hw_ms is not None:  # process downtime / silence / a slot jump between consecutive rows is a gap from the last row seen
+        if self.hw_ms is not None and not row.get("fill"):  # process downtime / silence / a slot jump between consecutive rows is a gap from the last row seen (a repair row of a filled range is not)
             c = self.cfg
             if c.gap_silence_ms is not None and t_ms - self.hw_ms > c.gap_silence_ms:
                 self.gaps.append(Gap(None, self.hw_ms, t_ms, self.hw_slot, slot, "engine_silence"))
                 self._count("gap_engine_silence")
-            elif c.gap_slots is not None and slot - self.hw_slot > c.gap_slots:
+            elif c.gap_slots is not None and slot - self._through_fills(self.hw_slot) > c.gap_slots:
                 self.gaps.append(Gap(None, self.hw_ms, t_ms, self.hw_slot, slot, "engine_slot_jump"))
                 self._count("gap_engine_slot_jump")
         self._late_check(pool, slot, key, row)
@@ -1203,6 +1235,21 @@ class ArenaEngine:
         self._try_pending(pos.pool, final=False)
 
     # --- pricing
+    def _mark_through(self, pos: Position) -> None:
+        """F2 mark-through-gap: an exit whose pricing slot (xs + d + exit lag + 1) falls inside a FILLED range executes at the first print at or after hi + 1, the first slot
+        after the range: the paper exit never uses a print from inside a range the live bot could not have had. Applied once; it moves xs, so every later formula follows."""
+        if pos.mark is not None or not self.fills or pos.xs is None:
+            return
+        trig = pos.xs + self._check_delay_set() + F.exit_lag_slots(pos.sps_exit) + 1  # type: ignore[operator,arg-type]
+        for prog, lo, hi in sorted(self.fills, key=lambda f: (f[1], f[2])):
+            if prog not in (None, pos.prog, "all") and not (prog == "pumpfun" and pos.prog == "pump_bonding"):
+                continue
+            if lo <= trig <= hi:
+                pos.mark = (pos.xs, lo, hi)
+                pos.xs += hi + 1 - trig
+                self._count("mark_through")
+                return
+
     def _needed_slot(self, pos: Position) -> int:
         d = self._check_delay_set()
         x_max = pos.sd + d + max(self._k(lat, pos.sps_entry) for lat in LATS)
@@ -1270,8 +1317,10 @@ class ArenaEngine:
             if pos.bot_id in self.halted:  # not priced while its ledger is damaged; stays open (an orphan in the read)
                 keep.append(pid)
                 continue
+            self._mark_through(pos)
             need = self._needed_slot(pos)
-            ready = h.last_slot >= need or self.hw_slot >= need + self.cfg.grace_slots or final
+            mark_strand = pos.mark is not None and h.last_slot < need and self.hw_slot >= need + MARK_THROUGH_BOUND_SLOTS  # no print within the bound after a filled range
+            ready = h.last_slot >= need or self.hw_slot >= need + self.cfg.grace_slots or final or mark_strand
             if not ready:
                 keep.append(pid)
                 continue
@@ -1280,6 +1329,8 @@ class ArenaEngine:
                 why = self._exclusion(pos, h, src, need)
                 if why:
                     self._write_excluded(pos, why, src)
+                elif mark_strand:
+                    self._write_mark_strand(pos)
                 else:
                     self._price_and_write(pos, h, src)
                 trig = h.keys[int(np.searchsorted(h.arrays()["sl"], need, "left"))] if src == "tape" else None
@@ -1365,6 +1416,12 @@ class ArenaEngine:
         return bs
 
     def _base_row(self, pos: Position, kind: str, s_sol: float, src: str | None) -> dict[str, Any]:
+        row = self._base_row_core(pos, kind, s_sol, src)
+        if pos.mark is not None:  # only a marked-through exit carries the key: every other row is byte for byte what it was
+            row["mark_through"] = {"xs_before": pos.mark[0], "filled_from_slot": pos.mark[1], "filled_to_slot": pos.mark[2], "xs": pos.xs}
+        return row
+
+    def _base_row_core(self, pos: Position, kind: str, s_sol: float, src: str | None) -> dict[str, Any]:
         return {"schema": SCHEMA, "kind": kind, "trade_id": f"{pos.position_id}-s{int(round(s_sol * 1000))}", "position_id": pos.position_id,
                 "bot_id": pos.bot_id, "frozen_sha": pos.frozen_sha, "decision_ms": {"entry": pos.decision_ms, "exit": pos.exit_ms},
                 "stamp_ms": {"entry": pos.stamp_ms, "exit": pos.exit_stamp_ms}, "call_ms": {"entry": pos.call_ms, "exit": pos.exit_call_ms},
@@ -1403,6 +1460,25 @@ class ArenaEngine:
                                                   "e1_extra": r["e1_extra"], "p_press_provisional": r["p"]}
             rows.append(dict(self._base_row(pos, "trade", s_sol, src), legs=legs, calc=calc, v_src=vs))
         return rows
+
+    def _write_mark_strand(self, pos: Position) -> None:
+        """The strand class for a marked-through exit with no print within MARK_THROUGH_BOUND_SLOTS: a total loss on every leg, under every rule the stack prices (the
+        conservative reading: the legacy `sc` rule has no strand class, but a position that cannot be sold is not priced better under it)."""
+        rules = rules_of(self.cfg)
+        for s_sol in self.cfg.stakes_sol:
+            stake = float(round(s_sol * 1e9))
+            pnl = -stake - float(self.cfg.send) - float(F.RENT_STRANDED)
+            legs: dict[str, Any] = {r: {} for r in rules}
+            calc: dict[str, Any] = {}
+            for lat in LATS:
+                tag = LAT_TAG[lat]
+                calc[tag] = {"landing_slot": None, "by_rule": {}}
+                for rule in rules:
+                    legs[rule][f"flat_{tag}"] = {"state": "stranded", "net_lamports": pnl}
+                    legs[rule][f"press_{tag}"] = {"state": "stranded", "net_lamports": pnl}
+                    calc[tag]["by_rule"][rule] = {"pnl_nofail": pnl, "filled": True, "state": "stranded", "strand": True, "e1_extra": 0, "p_press_provisional": None}
+            self.ledger.append(dict(self._base_row(pos, "trade", s_sol, "mark_strand"), legs=legs, calc=calc, v_src={"entry": "na", "exit": "na", "span": {}}))
+        self._count("mark_strand")
 
     def _price_and_write(self, pos: Position, h: PoolHist, src: str) -> None:
         for row in self.build_rows(pos, h, src):
