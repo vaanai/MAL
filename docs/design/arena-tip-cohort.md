@@ -7,8 +7,8 @@ Written 2026-11-01T22:53Z (`date -u` on mal-research-0) by lane L1 of the 2026-1
 2. **The binding constraints are HV4's, not the tip history.** Am.23 item 7's history rule (L = 7 d, H0 + 7 d = 2026-11-05T09Z) is met before any clock considered here. What binds is HV4's run (#1562's start guard at 2026-11-07T12:05Z), HV4's seal on counted hours (no smoke pricing the HV4 rule before 2026-11-08T00Z, under the end reading of Am.25 item 6), and HV4's attempt-count seal (every tip day before 11-08 is an HV4-counted day).
 3. **s1t moved to its own PR, #1186** (reviewer N5: it must merge before Q50's read verdict exists). Clock 2026-11-07T00:00Z, H 24 d, a counts-only smoke and an s1t EXP-024 note owed; design in `docs/design/s1t-tip-source.md` on #1186. Section 3 below is now a pointer.
 4. **FLOOR-T: dropped, not registered, N not spent.** About 4.6 to 6.0 attempts a day gives no read within 14 days, and 24 h holds against the tip's backlog jumps (about 0.37 a day, L5) put about 31% of trades in the 5% class.
-5. **New blocker for every covered clock, HV7 included:** the writer reports `pool_slots_multi_sig` 1,283 over 85 closed hours (about 15 an hour). QP's Am.23 trigger is "above 1 an hour". QP must re-rule before any covered clock.
-6. **Exposure risk, not a blocker:** at about 0.37 tip gaps a day, the BIG arms (default 6 h holds, up to 12 h) expect about 8.8% of trades in the 5% class, so a NOT_DECIDABLE_5PCT is likely. The CON arms (45 min default, up to 2 h) expect about 1.2%. QP option C (a tip gap-fill) would cut this for every covered book.
+5. **Shared-slot trigger, ruled.** The writer reports `pool_slots_multi_sig` 1,283 over 85 closed hours. QP-RULING-1102-tip-shared-slot (sha256 92378049…) makes it report-only for every covered book. It adds tripwires: any mixed group, the follower `pool_cache` reaching 180,000, and a follower start (the 60-min with/without gate test). No clock moves.
+6. **Exposure risk, not a blocker:** at about 0.37 tip gaps a day, the BIG arms (default 6 h holds, up to 12 h) expect 8.84% to 16.89% of trades in the 5% class, so they are likely NOT_DECIDABLE_5PCT. The CON arms expect about 1.15%. The tip gap-fill (#1182, F2) applies only if it merges before the clock with its pins in the registration record (Am.25 item 12).
 7. **Not push-family:** all three are DEC-031 arena books. They count in DEC-031's N, take no DEC-030 slot, and leave EXP-027's k at 1 (DEC-031 §3 item 3).
 8. **Owed code:** the field listing (builder PR in flight), the HV4-T host job scripts, the HV4-T equivalence harness, read tools before HV4-T's first B, the S\*' tip mode with its md5 proof, and a SEALS reader line for each new reader (section 5).
 
@@ -81,9 +81,9 @@ H0 (2026-10-29T09:00Z) does **not** bind. Am.23 item 7's L is 7 d (the rule's ag
 
 | Option | Clock (ms) | Smoke | P0 | QP rulings needed |
 |---|---|---|---|---|
-| **B (recommended)** | **2026-11-10T00:00Z (1794268800000)** | [2026-11-08T00:00Z, 2026-11-09T00:00Z), starting after #1562 has started; beside #1562 until 13:05Z | HV4's own A2 P0 reused (10-21..10-23 at 9ed4c5ff, lowest arm 230.667 a day, no day at 0), as Am.21 item 1.1 did | R-P0: carve-out from Am.23 items 1 and 8's P0 for HV4-T; R-BESIDE (smoke beside #1562, 2 x 45,000 MB, with a memory check at the smoke's start); the K2 end reading; the S2/S3 rulings |
-| A | 2026-11-09T00:00Z | [11-07T12:30Z, 11-08T12:30Z]: 11.5 h of it on HV4-counted hours, in a scratch ledger never opened | reused | R-P0, plus R-SMOKE: a never-opened scratch-ledger smoke on counted hours is not "pricing" |
-| A' | 2026-11-08T00:00Z | [11-06T11:00Z, 11-07T11:00Z], ending before #1562's start | reused | R-P0, R-SMOKE, and R-BESIDE: the runner runs beside #1562 (2 × 45 GB) from 11-07T23:55Z |
+| **B (recommended; QP on #1178)** | **2026-11-10T00:00Z (1794268800000)** | ≥ 24 h, starting only after the job list shows #1562 ended and not before 2026-11-08T13:05Z (ends about 11-09T13:30Z); counts-only ledger, never opened | HV4's own A2 P0 reused (ALLOWED by QP), with a per-arm tip floor of ≥ 10.714285714285714 a day measured on the smoke (Am.25 item 5) | done: R-P0 allowed; the K2 end reading accepted; S2/S3 disclosure only |
+| A | 2026-11-09T00:00Z | REFUSED by QP (R-SMOKE: a smoke on hours before 11-08T00Z is HV4 attempt-count information) | - | - |
+| A' | 2026-11-08T00:00Z | REFUSED by QP (R-SMOKE, R-BESIDE: one process per sha; HV4's tail shares the Anthropic key) | - | - |
 | C (no P0 carve-out) | 2026-11-12T00:00Z (1794441600000) | as B | tip P0 with `tools/hv4_p0_count.py` (3e2539d0…) on 11-08, 11-09 and 11-10, after 11-10 closes | R-BESIDE, the K2 end reading and the S2/S3 rulings, as for B |
 
 - **The case for R-P0.** P0 decides two things: the floor (2.0 a day, no day at 0) and H, which is 14 for any rate ≥ 150/14 = 10.714285714285714. HV4's count is 230.667 a day at its lowest arm, about 21 times the H threshold. That count ran on the public tape, which lost data. On the tip, the print and signer filters see at least as many rows. A tip count is still the better evidence, but every tip day before 11-08 lies in HV4's counted hours. The smoke day (option B) is outside them, so its decision-row count can serve as a tip-side sanity floor. That floor is fixed in a notebook entry before the smoke: at least one counted-kind entry decision per persona group.
@@ -124,8 +124,8 @@ H0 (2026-10-29T09:00Z) does **not** bind. Am.23 item 7's L is 7 d (the rule's ag
 6. **Smoke.** At least 24 h, real model, at 9ed4c5ff, in a scratch root, on the receiver copy, with `--feed-delay-slots d`.
    - Blocking list: Am.6 1.3 (a) to (f), notebooked first.
    - Reports: the Am.23 item 8 list (dropped rows by code, anon RSS peak, rows per minute, catch-up time, follower `lag_slots` and `backlog_jumps` with every tip reader running).
-   - It starts only after #1562 has started (K1).
-   - Memory: 45,000 MB beside #1562's 45,000 MB until 13:05Z. Check `MemAvailable` and the sum of running reservations first.
+   - It starts only after the job list (state only) shows #1562 ended, and not before 2026-11-08T13:05Z (R-BESIDE refused by QP on #1178).
+   - Memory: check `MemAvailable` and the sum of running reservations at the smoke's start and again at the runner's start.
 7. **Hour health.** The Am.23 item 5 tool, thresholds file and 60 s sampler (lane H, shared with HV7), for program `pumpswap`. The daily table is notebooked.
 8. **The §4.4 / Am.23 item 6 records line:** zero rows in the 24 h before the clock.
 9. **Kill-review-week check** (LAB_STATE "Now": none). An N line: N + 9.
@@ -142,7 +142,7 @@ H0 (2026-10-29T09:00Z) does **not** bind. Am.23 item 7's L is 7 d (the rule's ag
 Split out on reviewer note N5, because it must merge before any Q50 read verdict exists. See `docs/design/s1t-tip-source.md` and DEC-031 Amendment 24 (DRAFT) on #1186: clock 2026-11-07T00:00Z (slip 11-08), H = 24 d to `SUCC_END_MS` (Am.22 item 8.1), counts-only smoke, an s1t EXP-024 note owed before the smoke, Q50 P0 reuse, and the 2026-11-05T12:00Z fallback.
 
 ## 4. Blockers for every covered clock (HV7 included)
-1. **`pool_slots_multi_sig` is about 15 an hour** (1,283 over 85 hours, cumulative writer status at 22:39Z). QP's trigger in Am.23 item 3 is "above 1 an hour outside the first hour after a follower start". The follower has not restarted since 10-05. So QP must re-rule before any covered clock. The per-hour counts log will show whether the count is spread out or bunched; it was not read for this design. The writer-status figure is a forecast of the figure Am.23 item 3 judges "in the item 8 smoke" (reviewer N6); flagging it to QP now saves a day.
+1. **`pool_slots_multi_sig` (about 15 an hour): ruled report-only** by QP-RULING-1102-tip-shared-slot. No read of HV7 or s1t can touch a no-tx row. HV4-T is also clear while the follower cache is below its cap and the follower is not restarted. The tripwires of R2 replace the trigger.
 2. **Am.23 item 6 zero-row bar** for any T_max above 0.6076 h (HV4-T, HV7). At about 0.37 jumps a day, each day passes with probability about 0.69. Option C would help.
 3. **The SEALS reader list** names HV7 only. Each new reader needs a QP note and the manager's edit before its first read.
 
