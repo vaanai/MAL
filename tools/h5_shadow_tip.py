@@ -24,6 +24,10 @@ ROW MAPPING (arena-tape row -> engine call; a pumpswap trade is the only row tha
                            is loss (fail closed). Skipped slots never reach the tape (the adapter writes no row for them).
   a pumpswap trade or pool_create that is not well formed is not applied: it becomes a flagging gap `tip_input_bad_row` (the adapter's own doctrine: loss is marked)
 
+START. The source starts at the process start and the driver drops every row whose t_recv_ms is before the engine's fresh-forward start (counted `rows_before_start`),
+so a pool announced before the start is never announced: it gets `rejected_unannounced` and no trigger, exactly as in the public mode (a process started at F never saw the
+CreatePool notice of F - 10 s). There is no look-back. A test through the wrapper pins it (and a control: the same pool announced after F triggers).
+
 STAMP. `t_detect_ms` is `Engine.wall()` at the decision: the HOST wall clock in live mode (Engine's default), never the row's `t_recv_ms` (the fast-0 stamp would
 under-charge the writer and transport lag). In replay/harness mode (`wall_offset_ms`) the harness gives a fixed offset, wall = t_recv_ms + offset, and the offset is
 recorded in the `tip_input_start` record. A test pins both.
@@ -62,7 +66,6 @@ SCHEMA = "h5_shadow_tip_v1"
 POLL_S = 0.25  # idle poll interval
 ROWS_PER_STEP = 2_000  # rows applied per step; a full step is followed at once by the next one (after yielding to the event loop)
 PROBLEM_CACHE_MS = 1_000  # push_problem reads three small json files; at most once a second
-LOOKBACK_S = h5.ANNOUNCE_TTL_S  # a pool announced before the start can first print after it: read back as far as an announcement can live
 EXIT_REFUSED, EXIT_HALTED = 2, 3
 GAP_FLAG_PROGS = ("all", "pumpswap")  # a gap on these feeds can have cost a PumpSwap pool prints (arena_tip_adapter.gap_prog)
 GAP_KEEP = ("from_slot", "to_slot", "missed_slots", "from_ms", "to_ms", "reason", "prog", "src")
@@ -241,7 +244,11 @@ class TipDriver:
         rows = self.source.poll(limit)
         self._transition()
         eng = self.engine
+        fs = eng.fresh_start_ms
         for row in rows:
+            if fs is not None and _is_int(row.get("t_recv_ms")) and row["t_recv_ms"] < fs:
+                self.counters["rows_before_start"] += 1  # S* parity: the public feed never saw a row from before the process start; an announcement from before it is unseen too
+                continue
             if self.wall_offset_ms is not None and _is_int(row.get("t_recv_ms")):
                 eng.wall = lambda ms=row["t_recv_ms"] + self.wall_offset_ms: ms
             try:
@@ -265,7 +272,7 @@ class TipDriver:
 # ------------------------------------------------------------------------------------------------------------------------------------ live
 def start_record(source: TipRowSource, wall_offset_ms: int | None) -> dict:
     return {"type": "tip_input_start", "schema": SCHEMA, "dir": str(source.dir), "poll_s": POLL_S, "rows_per_step": ROWS_PER_STEP, "problem_cache_ms": source.cache_ms,
-            "lookback_s": LOOKBACK_S, "stamp": "host_wall" if wall_offset_ms is None else "fixed_offset", "wall_offset_ms": wall_offset_ms, "gap_flag_progs": list(GAP_FLAG_PROGS),
+            "start_filter": "t_recv_ms >= engine.fresh_start_ms", "stamp": "host_wall" if wall_offset_ms is None else "fixed_offset", "wall_offset_ms": wall_offset_ms, "gap_flag_progs": list(GAP_FLAG_PROGS),
             "public_trade_feed": "off", "rpc_class_fallback": "as S*", "pump_class_side_feed": "as S*"}
 
 
@@ -319,7 +326,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ap.error("--h5-look2-observed does not apply with --fresh-forward (neither seal is applied)")
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO), format="%(asctime)s %(levelname)s %(name)s %(message)s")
     try:
-        source = TipRowSource(args.tip_input, start_ms=h5.now_ms() - int(LOOKBACK_S * 1000))
+        source = TipRowSource(args.tip_input, start_ms=h5.now_ms())  # no look-back: a pool announced before the start is never announced (S* parity)
         source.start()
     except (ValueError, TipInputUnhealthy) as exc:
         print(f"REFUSED: tip input: {exc}", file=sys.stderr)

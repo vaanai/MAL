@@ -347,7 +347,7 @@ class Cli(TmpCase):
             return 0
 
         with mock.patch.object(atp, "DST_ROOTS", self.roots), mock.patch.object(atp, "push_problem", push_problem), mock.patch.object(tip, "PROBLEM_CACHE_MS", 0), \
-                mock.patch.object(h5, "run_live", fake_run_live), mock.patch.object(tip, "LOOKBACK_S", 10**9):
+                mock.patch.object(h5, "run_live", fake_run_live):
             self.assertEqual(tip.main(["--tip-input", str(self.dir), "--fresh-forward", "ARENA"]), tip.EXIT_HALTED)
 
 
