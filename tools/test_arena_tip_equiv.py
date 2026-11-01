@@ -107,7 +107,7 @@ def test_load_walker_labels_every_kind_right_and_keeps_the_order(tmp_path):
     """H1 of QP on #1165: a generator expression inside the loop read `kind` lazily and labelled every create and migration a trade."""
     seq = stream(300)
     write_clean(tmp_path, seq)
-    h0, h1 = tr.hour_key(H - LEAD), tr.hour_key(H + 3600)
+    h0, h1 = tr.hour_key(H - LEAD), tr.hour_key(H)  # [h0, h1): the one hour before the mark (300 slots end before it)
     got = list(eq.load_walker(tmp_path, ("w7",), h0, h1))
     want_kinds = {k: sum(1 for kk, _ in seq if kk == k) for k in ("trade", "create", "migration")}
     assert {k: sum(1 for kk, _ in got if kk == k) for k in want_kinds} == want_kinds and want_kinds["create"] == 1 and want_kinds["migration"] == 3
@@ -120,11 +120,11 @@ def test_load_walker_labels_every_kind_right_and_keeps_the_order(tmp_path):
 
 
 def test_the_harness_runs_end_to_end_through_the_real_loader(tmp_path):
-    seq = stream(300)
+    seq = stream()  # crosses the hour mark: two hour files per kind that has rows in both
     write_clean(tmp_path / "clean", seq)
     h0 = tr.hour_key(H - LEAD)
     rep = eq.run_equiv(lambda: eq.load_walker(tmp_path / "clean", ("w7",), h0, tr.hour_key(H + 3600)), tmp_path / "run", VMAP, h0, cfg=CFG, min_decisions=5, skip_every=3, require_no_tx=True)
-    assert rep["verdict"] == "PASS" and rep["built"]["projection_n"] == 4 and rep["equal"]["projection"], rep["equal"]
+    assert rep["verdict"] == "PASS" and rep["built"]["projection_n"] == 4 and rep["equal"]["projection"] and rep["built"]["files"] >= 3, rep["equal"]
 
 
 def test_scratch_is_removed_unless_kept(tmp_path):
