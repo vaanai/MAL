@@ -39,12 +39,20 @@
 # (epoch 1053, ~2026-10-09T14:34Z) walk 2 costs about 410-430k credits a day at 1 credit per getBlock (13.4k a
 # an hour before the step, +26-34%, about 18k an hour). Run length: the counted window [10-16T01, 11-06T01) is 21
 # days; the 22nd day covers the exit hour and a late or resubmitted day. Upper rate, 25% margin:
-#   430,000 x 22 days = 9,460,000;  x 1.25 = 11,825,000  (CAP_TOTAL, below)
+#   430,000 x 22 days = 9,460,000;  x 1.25 = 11,825,000  (the original cap)
+# Raise, once (2026-11-02; DEC-032 Amendment 8 item B1 "Walk-2 coverage and credits": the manager raises the walker's
+# credit cap in a successor job before 2026-11-12): CAP_RAISE = 1,500,000, so CAP_TOTAL = 11,825,000 + 1,500,000 =
+# 13,325,000. Measured rate (MiScusi job list, #1036): 5,869,765 credits through 2026-10-30T13 and 6,779,483 through
+# 2026-11-01T19, so 909,718 over 54 h = about 16.8k an hour. Sealing through 2026-11-16T00 (the Forward walk 2 row
+# ends at 11-16T01) is 341 more hours: about 12.52M at that rate. With the raise, the cap lasts to the row end at up
+# to about 19.1k an hour, and to B + 2 h at the B1 cap (2026-11-14T02, 295 more hours) at up to about 22.1k an hour.
+# The raise changes no decoder, walker or verify code (the three forward_v_join PINNED_BLOBS are unchanged).
 # The walker's checkpoint.json credits_used is the cumulative spend. A refused call (exit 3) never writes the
 # checkpoint, so its spend lives only in D/refusals.jsonl (credits_spent_in_hour_before_refusal). Spend against the
 # cap is therefore checkpoint + sum(refusals). The wrapper passes the walker --credit-cap CAP_TOTAL - sum(refusals),
 # which makes the walker's own check (checkpoint vs cap) equal to the true total vs CAP_TOTAL.
-# This uses the plan's credits. No Helius autoscaling credits are assumed (A8: 0 extra credits).
+# The original cap used the plan's credits (A8: 0 extra credits). The raise may draw on Helius autoscaling credits
+# (the owner's ~20M extra credits); the credits actually used go in the ledger and the daily note (CLAUDE.md "Credits").
 #
 # Secrets: the Helius env is sourced and never printed. No set -x, no env dump, and no alert text carries it.
 #
@@ -80,7 +88,8 @@ else
 fi
 
 CAP_PER_DAY=430000; CAP_DAYS=22
-CAP_TOTAL=$(( CAP_PER_DAY * CAP_DAYS * 125 / 100 ))   # 11,825,000
+CAP_RAISE=1500000     # DEC-032 Amendment 8 item B1, once (header)
+CAP_TOTAL=$(( CAP_PER_DAY * CAP_DAYS * 125 / 100 + CAP_RAISE ))   # 11,825,000 + 1,500,000 = 13,325,000
 HOUR_RESERVE=20000    # about one hour at 18k credits; below this under the cap, stop instead of starting an hour
 MAX_FAILS=3
 
