@@ -19,7 +19,8 @@
 #   DRY=1           print the command and run nothing.
 # Exit: the writer's: 0 clean stop; 2 refused (config, pins, path, unhealthy tip at start, resume refused); 3 another writer holds the dir; 4 I/O; 5 tip unhealthy too long;
 #   6 LATCHED reader problem (the follower restarted without its checkpoint: a human); 7 resume diverged (a human); 8 catch-up did not reach caught_up within 120 min (W2: the manager
-#   DISCARDS the derived output; a later start defines a new H0).
+#   DISCARDS the derived output; a later start defines a new H0); 9 the follower's backlog_jumps rose during
+#   OUR catch-up (W7: QP re-rules before any restart).
 set -u
 cd "$(dirname "$0")/../.." || { echo "REFUSED: cannot cd to the repo root"; exit 2; }
 DRY=${DRY:-0}

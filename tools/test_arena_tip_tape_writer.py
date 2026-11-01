@@ -671,3 +671,34 @@ def test_a_reader_problem_spell_is_a_reader_problem_gap_and_a_closed_hour_is_del
     (out / ".push" / "verified.json").write_text("not json")
     assert w.prune(force=True) == 0 and z[1].exists()
     w.close()
+
+
+def test_a_follower_backlog_jump_during_our_catch_up_stops_the_writer_but_not_after_it_is_live(tmp_path):
+    sim, clock, out = fresh(tmp_path)
+    for s in range(1, 120):
+        sim.add(s, checkpoint=False)
+    sim.checkpoint()
+    clock.ms = sim.t_done + 1000
+    TA.healthy(sim.state, clock.ms, backlog_jumps=3)
+    w = make_writer(sim, out, clock, poll_limit=25)
+    w.start()
+    assert w.step() > 0 and w.bj_base == 3 and not w.src.caught_up
+    TA.healthy(sim.state, clock.ms, backlog_jumps=3)
+    assert w.step() > 0  # unchanged: fine
+    TA.healthy(sim.state, clock.ms, backlog_jumps=4)
+    with pytest.raises(aw.Fatal) as ei:
+        w.step()
+    assert ei.value.rc == aw.EXIT_BACKLOG and "follower_backlog_jump_during_catch_up_3_to_4" in ei.value.why
+    w.close()
+    sim2, clock2, out2 = fresh(tmp_path, "live")
+    sim2.add(1)
+    clock2.ms = sim2.t_done + 1000
+    TA.healthy(sim2.state, clock2.ms, backlog_jumps=0)
+    w2 = make_writer(sim2, out2, clock2)
+    w2.start()
+    w2.step()
+    assert w2.src.caught_up and w2.totals["caught_up_once"]
+    TA.healthy(sim2.state, clock2.ms, backlog_jumps=9)  # a jump once live is the follower's own business: the adapter marks it as a gap row, the writer goes on
+    sim2.add(2)
+    assert w2.step() > 0
+    w2.close()

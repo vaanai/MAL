@@ -95,7 +95,7 @@ STATUS_MAX_AGE_MS = 5_000  # the heartbeat is written every second
 CLOSED_KEEP = 400  # closed-hour summaries kept in the state
 TORN_SCAN_BYTES = 1 << 20  # a tape line is a few hundred bytes; the last newline is looked for in this much of the tail
 COMPACT_TRIES = 3
-EXIT_OK, EXIT_REFUSED, EXIT_LOCKED, EXIT_IO, EXIT_UNHEALTHY, EXIT_LATCHED, EXIT_DIVERGED, EXIT_CATCHUP = 0, 2, 3, 4, 5, 6, 7, 8
+EXIT_OK, EXIT_REFUSED, EXIT_LOCKED, EXIT_IO, EXIT_UNHEALTHY, EXIT_LATCHED, EXIT_DIVERGED, EXIT_CATCHUP, EXIT_BACKLOG = 0, 2, 3, 4, 5, 6, 7, 8, 9
 DATA_TYPES = ("trade", "create", "complete", "pool_create")
 KIND_STATUS_UNHEALTHY, KIND_READER_PROBLEM, KIND_WRITER_HOLE = "tip_gap_status_unhealthy", "tip_gap_reader_problem", "tip_gap_writer_hole"  # W9: the registration lists these
 VERIFIED_KEEP_H_DEFAULT = 24  # B5: a closed hour is deleted this long after the receiver verified it
@@ -399,6 +399,7 @@ class Writer:
         self.last_step_ms: int | None = None
         self.last_healthy_ms: int | None = None
         self.bad_kind: str | None = None  # the W9 gap kind of the unhealthy spell in progress
+        self.bj_base: int | None = None  # the follower's backlog_jumps when this writer's catch-up began (W7)
         self.counts_base: dict[str, int] = {}  # adapter counts at the last close (the counts row holds the delta)
 
     # -- start / resume
@@ -454,6 +455,7 @@ class Writer:
         self.status_failures, self.hb_gaps = dict(st.get("status_failures", {})), list(st.get("hb_gaps", []))
         self.last_step_ms, self.last_healthy_ms, self.bad_kind = st.get("last_step_ms"), st.get("last_healthy_ms"), st.get("bad_kind")
         self.counts_base = dict(st.get("counts_base", {}))
+        self.bj_base = st.get("bj_base")
         for h, o in st["open"].items():
             self.tally[h] = o["tally"]
             self.size[h] = int(o["bytes"])
@@ -671,7 +673,7 @@ class Writer:
         st = {"schema": SCHEMA_STATE, "ms": self.clock(), "config": self.cfg, "pins": self.pins, "source": snapshot_source(self.src),
               "open": {h: {"bytes": self.size[h], "tally": self.tally.get(h, self._new_tally())} for h in sorted(self.size)}, "closed": self.closed,
               "last_data_t": self.last_data_t, "max_t": self.max_t, "totals": dict(self.totals), "status_failures": self.status_failures,
-              "hb_gaps": self.hb_gaps[-100:], "last_step_ms": self.last_step_ms, "last_healthy_ms": self.last_healthy_ms, "bad_kind": self.bad_kind, "counts_base": self.counts_base}
+              "hb_gaps": self.hb_gaps[-100:], "last_step_ms": self.last_step_ms, "last_healthy_ms": self.last_healthy_ms, "bad_kind": self.bad_kind, "counts_base": self.counts_base, "bj_base": self.bj_base}
         write_json_atomic(self.meta / "state.json", st, fsync=True)
         self._last_snapshot, self._dirty = mono, False
 
@@ -697,7 +699,7 @@ class Writer:
                 "compaction": self.compactor.snapshot(), "paused_disk": self.paused, "run_id": self.run_id, "status_bad_samples_run": sum(len(v) for v in self.status_failures.values()),
                 "newest_data_t_ms": dict(self.last_data_t), "input_age_s": {k: round((now - v) / 1000, 1) for k, v in sorted(self.last_data_t.items())},
                 "max_input_age_s": round(max(((now - v) for v in self.last_data_t.values()), default=0) / 1000, 1), "catch_up_deadline_min": self.deadline_min,
-                "caught_up_once": bool(self.totals["caught_up_once"]), **rss_mb()}
+                "caught_up_once": bool(self.totals["caught_up_once"]), "follower_backlog_jumps_base": self.bj_base, **rss_mb()}
 
     def heartbeat(self, force: bool = False) -> None:
         mono = time.monotonic()
@@ -741,8 +743,20 @@ class Writer:
         return n
 
     # -- the loop
+    def _backlog_jumps(self) -> int | None:
+        v = (tr.read_state_json(self.src.state_dir, "status.json") or {}).get("backlog_jumps")
+        return v if isinstance(v, int) and not isinstance(v, bool) else None
+
     def step(self) -> int:
         """One cycle. Returns the rows written. Raises Fatal for the conditions that stop the writer."""
+        if not self.totals["caught_up_once"]:  # W7: any increase of the follower's backlog_jumps during OUR catch-up stops the writer (our reads may have caused it); QP re-rules before a restart
+            bj = self._backlog_jumps()
+            if self.bj_base is None:
+                self.bj_base = bj
+            elif bj is not None and bj > self.bj_base:
+                self.state, self.problem = "failed", "follower_backlog_jump_during_catch_up"
+                self.heartbeat(force=True)
+                raise Fatal(f"follower_backlog_jump_during_catch_up_{self.bj_base}_to_{bj}", EXIT_BACKLOG)
         if not self.disk_ok():
             self.state = "disk_reserve"
             self.heartbeat()
