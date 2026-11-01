@@ -35,10 +35,10 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `untested` | 45 | 28 | 0 |
 | `desk-read` | 3 | 52 | 0 |
 | `explored-no-survivor` | 56 | 17 | 2 |
-| `dead-as-frozen` | 77 | 7 | 0 |
-| **all** | 209 | 109 | 2 |
+| `dead-as-frozen` | 77 | 8 | 0 |
+| **all** | 209 | 110 | 2 |
 
-The file holds 570 rows: the 320 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 571 rows: the 321 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -482,6 +482,12 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `laneA-size-tilt-1` | SIZE-TILT: 2x stake on H5 BOOST-floor triggers that a walk-forward right-tail (top-10%) logistic … | `dead-as-frozen` | KILL by the pre-declared bars (in-sample exploration; v5 export-o1 days; 32 test days, 2,513 test triggers, 507 at 2x). The declared cell fails 3 of 8 bars under both fail models (flat / pressure): B5 random placebo p 0.2517482517482518 / 0.2087912087912088 (bar <= 0.10); B7 matched-exposure selection ex best day … |
+
+### laneC-h5-runner (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `laneC-h5-runner-1031` | Lane C let-winners-run: 4 exit variants on the frozen H5 trigger (V-A trail after +100%, V-B half … | `dead-as-frozen` | KILL: no variant passes its pre-declared bars under either fail model (in-sample exploration). Every variant fails bars 2 (bootstrap lower bound of the daily difference), 3 (ex best day), 4 (ex top 3), 5 (more than 50% of days non-negative) and 6 (August and September both positive) under both fail models; bar 1 … |
 
 ## Dead as frozen, and explored with no survivor
 
