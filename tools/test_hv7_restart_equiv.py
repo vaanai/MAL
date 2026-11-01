@@ -110,3 +110,28 @@ def test_b1_no_sell_is_decided_in_the_downtime_and_the_report_is_names_counts_an
     assert res["equal"] and res["sells_in_blind_interval"] == 0
     rep = {k: v for k, v in res.items() if k != "runner"}
     assert set(json.dumps(rep)) and "Pxx" not in json.dumps(rep)
+
+
+def cli_factory(d, cls, tape_dir):
+    return factory(d, cls)
+
+
+def test_p2_p3_the_job_entry_point_refuses_unlisted_hours_and_runs_a_pending_sell_case_with_the_control(tmp_path, monkeypatch):
+    from tools import arena_restart_equiv as E
+
+    factory(tmp_path / "w" / "ref", R.Hv7Runner)  # builds the synthetic tape dir under tmp_path/w/ref/tape
+    tape = tmp_path / "w" / "ref" / "tape"
+    kill = H.find_pending_sell_kill(lambda d, cls: factory(d, cls), tmp_path / "pk", START, END)
+    assert kill is not None
+    args = ["--factory", "tools.test_hv7_restart_equiv:cli_factory", "--tape-dir", str(tape), "--work-dir", str(tmp_path / "w"), "--out", str(tmp_path / "o.json"), "--start-ms", str(START),
+            "--end-ms", str(kill + 8 * MIN), "--kills-ms", "pending-sell", "--downtimes-s", "120", "--lags", "0", "--control"]
+    assert H.main(args + ["--exploration", "explore-0814"]) == 2  # the synthetic hours are not on the pinned list
+    assert not (tmp_path / "o.json").exists()
+    hours = sorted(C.tape_hours(tape))
+    monkeypatch.setitem(E.EXPLORATION, "synthetic-hours", (hours[0], C.hour_key(C.hour_start_ms(hours[-1]) + 3_600_000)))
+    rc = H.main(args + ["--exploration", "synthetic-hours"])  # --end-ms is where the P3 window ends: the kill is found inside [start, end)
+    rep = json.loads((tmp_path / "o.json").read_text())
+    assert rc == 0 and rep["all_equal"] is True and rep["schema"] == H.SCHEMA and rep["exploration"] == "synthetic-hours"
+    assert "runner" not in json.dumps(rep) and rep["control_differs"] is True
+    c = rep["cases"][0]
+    assert c["pending_sells_at_kill"] >= 1 and all(c["restarted"][a]["engine_restart_rows"] == 0 for a in R.ARM_ORDER)

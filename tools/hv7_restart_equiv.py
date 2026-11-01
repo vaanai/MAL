@@ -25,15 +25,20 @@ if __package__ in (None, ""):  # `python3 tools/hv7_restart_equiv.py` from the r
 
     _sys.path.insert(0, str(_Path(__file__).resolve().parent.parent))
 
+import argparse
 import hashlib
+import importlib
+import json
+import sys
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from tools import arena_tip_continuity as C
 from tools import hv7_runner as R
 from tools.arena_paper import canon
 
 TICK_MS = R.TICK_MS
+SCHEMA = "hv7_restart_equiv_v1"
 
 
 class Hv7ContinuityRunner(R.Hv7Runner):
@@ -122,3 +127,82 @@ def run_hv7_case(make_runner: Callable[[Path, type], Any], work: Path, start_ms:
     return {"kill_ms_offset_s": (kill_ms - start_ms) // 1000, "downtime_s": (restart_ms - kill_ms) // 1000, "ckpt_lag_events": ckpt_lag_events, "open_at_kill": open_at_kill,
             "pending_sells_at_kill": pending_at_kill, "reference": a, "restarted": b, "log_md5_equal": log_digest(ref) == log_digest(second), "sells_in_blind_interval": sells_in(second, kill_ms, restart_ms),
             "equal": bool(equal), "runner": ref}
+
+
+def find_pending_sell_kill(make_runner: Callable[[Path, type], Any], work: Path, start_ms: int, end_ms: int) -> int | None:
+    """P3: the first tick after which the runner holds a sell that the engine has decided and not yet priced (it lives in memory only): the kill instant between a logged sell and its pricing."""
+    probe = make_runner(work / "probe", Hv7ContinuityRunner).configure()
+    for T in range(start_ms, end_ms, TICK_MS):
+        probe.tick(T)
+        if sum(len(v) for v in probe.engine.pending.values()):
+            return T + TICK_MS
+    return None
+
+
+def report(res: Mapping[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in res.items() if k != "runner"}
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """The proof job's entry point (scripts/ops/hv7-restart-equiv-job.sh): P2 (kills, downtimes, checkpoint lags) and P3 (--kills-ms pending-sell). Names, counts and md5s only.
+    NOT run on real data when it was written; the factory for exploration hours is not built here."""
+    from tools import arena_restart_equiv as E
+
+    ap = argparse.ArgumentParser(description="HV7 real-runner restart equivalence (P2) and the kill between a logged sell and its pricing (P3)")
+    ap.add_argument("--factory", required=True, help="module:function; function(work_dir, runner_cls, tape_dir) -> an HV7 runner of that class (model = decision log / replay cache, no API)")
+    ap.add_argument("--tape-dir", required=True)
+    ap.add_argument("--exploration", required=True, help="a pinned exploration list (explore-0814)")
+    ap.add_argument("--allow-hours")
+    ap.add_argument("--work-dir", required=True)
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--start-ms", type=int, required=True)
+    ap.add_argument("--end-ms", type=int, required=True)
+    ap.add_argument("--kills-ms", required=True, help="comma list of kill instants (tick multiples), or 'pending-sell' (P3)")
+    ap.add_argument("--downtimes-s", default="0,120,3600")
+    ap.add_argument("--lags", default="0,1", help="checkpoint lags in events")
+    ap.add_argument("--margin-ms", type=int, default=C.REPLAY_MARGIN_MS_DEFAULT)
+    ap.add_argument("--control", action="store_true", help="also run the lost-journal control (must differ)")
+    a = ap.parse_args(argv)
+    try:
+        work, out, tape = E.check_path(a.work_dir, "work-dir"), E.check_path(a.out, "out"), E.check_path(a.tape_dir, "tape-dir")
+        E.check_hours(tape, E.parse_allow(a.allow_hours, a.exploration))
+        mod, _, fn = a.factory.partition(":")
+        factory = getattr(importlib.import_module(mod), fn)
+    except (E.Refused, ImportError, AttributeError) as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
+        return 2
+
+    def make(d: Path, cls: type) -> Any:
+        return factory(d, cls, tape)
+
+    if a.kills_ms == "pending-sell":
+        k = find_pending_sell_kill(make, work, a.start_ms, a.end_ms)
+        if k is None:
+            print("REFUSED: no pending sell occurs in the window (P3 has nothing to kill between)", file=sys.stderr)
+            return 2
+        kills = [k]
+    else:
+        kills = [int(x) for x in a.kills_ms.split(",") if x]
+    cases: list[dict[str, Any]] = []
+    for i, kill in enumerate(kills):
+        for dt in (int(x) for x in a.downtimes_s.split(",") if x != ""):
+            for lag in (int(x) for x in a.lags.split(",") if x != ""):
+                try:
+                    cases.append(report(run_hv7_case(make, work / f"c{i}-{dt}-{lag}", a.start_ms, kill, kill + dt * 1000, a.end_ms, ckpt_lag_events=lag, margin_ms=a.margin_ms)))
+                except C.ContinuityRefused as exc:  # failed closed: in production the legacy recover() path (engine_restart), not a pass
+                    cases.append({"kill_ms": kill, "downtime_s": dt, "ckpt_lag_events": lag, "refused": exc.reason, "equal": False})
+        if a.control:
+            c = report(run_hv7_case(make, work / f"ctl{i}", a.start_ms, kill, kill + 120_000, a.end_ms, journal_mode="lost", margin_ms=a.margin_ms))
+            cases.append(dict(c, control="lost_journal", differs=not c["equal"]))
+    real = [c for c in cases if not c.get("control")]
+    ctl = [c for c in cases if c.get("control")]
+    rep = {"schema": SCHEMA, "exploration": a.exploration, "cases": cases, "all_equal": bool(real) and all(c["equal"] for c in real),
+           "control_differs": all(c["differs"] for c in ctl) if ctl else None}
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(rep, indent=1, sort_keys=True) + "\n")
+    print(f"hv7 restart-equivalence: {sum(1 for c in real if c['equal'])}/{len(real)} cases equal; all_equal={rep['all_equal']}; control_differs={rep['control_differs']}; report {out}")
+    return 0 if rep["all_equal"] and rep["control_differs"] in (None, True) else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
