@@ -131,3 +131,22 @@ def test_cli_prints_the_window_value(tmp_path, capsys):
     assert ar.main(["--src", str(write(tmp_path, daily())), "--out", str(out)]) == 0
     assert f"EXP027_A3_RECORD value: {out.resolve()}@" in capsys.readouterr().out
     assert ar.main(["--src", str(write(tmp_path, daily())), "--out", str(out)]) == 2
+
+
+def _interim(tmp_path, halts):
+    p = tmp_path / "interim.json"
+    p.write_text(json.dumps({"schema": "r4b_a3_v1", "halts": halts}))
+    return p
+
+
+def test_interim_entries_must_be_present_unchanged(tmp_path):
+    lines = daily()
+    lines.insert(3, line("2026-10-20T07:11:27Z", pins_changed={"halt": True, "reason": PIN_REASON}))
+    src = write(tmp_path, lines)
+    good = _interim(tmp_path, [{"at": "2026-10-20T07:11:27Z", "reason": "pins_changed: " + PIN_REASON}])
+    _, rec = ar.run(src, tmp_path / "a.json", interim=good)
+    assert rec["interim"].endswith(__import__("hashlib").sha256(good.read_bytes()).hexdigest())
+    changed = _interim(tmp_path, [{"at": "2026-10-20T07:11:27Z", "reason": "pins_changed: something else"}])
+    with pytest.raises(ar.Refused, match="missing or changed"):
+        ar.run(src, tmp_path / "b.json", interim=changed)
+    assert not (tmp_path / "b.json").exists()
