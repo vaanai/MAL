@@ -324,3 +324,17 @@ def test_closure_walk_and_blob_identity_on_the_repo():
     assert "tools/r4b_live.py" in cl and "tools/r4b_tip_reader.py" in cl and not any("r4bt" in x for x in cl)
     r = G.blob_identity(repo, "HEAD", "HEAD", cl[:5])
     assert r["identical"] and r["files"] == 5
+
+
+def test_a_stop_before_the_boundary_refuses_and_a_stop_after_it_does_not(tmp_path):
+    from tools.arena_paper import stop_bot
+
+    kw = world(tmp_path / "a")
+    bd = json.loads(Path(kw["boundary_file"]).read_text())["boundary_ms"]
+    stop_bot(G.BOT_ID, bd - HR, kw["registry"])
+    with pytest.raises(G.Refused, match="stopped at"):
+        P.price(**kw)
+    assert not (tmp_path / "a" / "ledger" / G.BOT_ID).exists()
+    kw2 = world(tmp_path / "b")
+    stop_bot(G.BOT_ID, bd + HR, kw2["registry"])
+    assert P.price(**kw2)["entries_selected"] == 1

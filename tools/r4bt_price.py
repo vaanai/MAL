@@ -235,8 +235,8 @@ def price(*, declog_root: str | Path, tape_dir: str | Path, ledger_root: str | P
     e = reg.get(bot_id)
     if e is None:
         raise G.Refused(f"{bot_id} is not registered")
-    if e.get("deciding_stake") != DECIDING_STAKE or e.get("model_ids") != [] or e.get("stopped_at_ms") is not None:
-        raise G.Refused(f"{bot_id}: the registry line must carry deciding_stake 0.25, model_ids [] and no stop (Amendment 25 item 13)")
+    if e.get("deciding_stake") != DECIDING_STAKE or e.get("model_ids") != []:
+        raise G.Refused(f"{bot_id}: the registry line must carry deciding_stake 0.25 and model_ids [] (Amendment 25 item 13)")
     clock_ms = int(e["clock_start_ms"])
     csf = code_state_fn or (lambda: process_code_state(repo))
     head, dirty = csf()
@@ -246,6 +246,8 @@ def price(*, declog_root: str | Path, tape_dir: str | Path, ledger_root: str | P
         raise G.Refused(f"{lroot / bot_id} already holds a ledger for {bot_id}: one pricer run per ledger root (the ledger is write-once)")
     b = load_boundary(boundary_file, boundary_sha256, clock_ms, arm)
     boundary_ms = int(b["boundary_ms"])
+    if e.get("stopped_at_ms") is not None and int(e["stopped_at_ms"]) < boundary_ms:
+        raise G.Refused(f"{bot_id} was stopped at {e['stopped_at_ms']}, before the boundary {boundary_ms}: an A3 halt before the boundary makes the read NOT_DECIDABLE (Amendment 25 item 12)")
     rows = load_declog(droot, arm)
     entries, skipped = select_entries(rows, clock_ms, h_days, boundary_ms)
     expect = int(b.get("attempts_before_boundary", 0)) + int(b.get("excluded_hour_before_boundary", 0))
