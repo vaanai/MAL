@@ -298,7 +298,7 @@ class Cli(TmpCase):
     def test_parser_extends_the_public_parser_by_one_flag(self):
         pub, tipp = h5.build_parser(), tip.build_parser()
         names = lambda ap: {a.dest for a in ap._actions}  # noqa: E731
-        self.assertEqual(names(tipp) - names(pub), {"tip_input"})
+        self.assertEqual(names(tipp) - names(pub), {"tip_input", "smoke"})
         self.assertEqual(names(pub) - names(tipp), set())
 
     def test_refusals(self):
@@ -519,7 +519,7 @@ class TransitiveIdentity(unittest.TestCase):
 class WrapperStart(TmpCase):
     """K3: through tip.main -> S*'s run_live -> the tip loop, with a fresh-forward start F = now."""
 
-    def run_main(self, announce_offset_ms: int) -> list[dict]:
+    def run_main(self, announce_offset_ms: int, extra: tuple = (), expect_rc: int = 0) -> list[dict]:
         now = h5.now_ms()
         t = pool_tape("PK", 1000, now // 1000 + 120, filler=True)  # prints from F + 120 s on
         prep = eq.prepare_rows(t.rows)
@@ -539,8 +539,8 @@ class WrapperStart(TmpCase):
         with mock.patch.object(atp, "DST_ROOTS", self.roots), mock.patch.object(atp, "push_problem", return_value=None), mock.patch.object(h5, "ARENA_ROOT", str(arena)), \
                 mock.patch.dict(os.environ, {"H5_CODE_SHA": "0123456789abcdef0123456789abcdef01234567"}), mock.patch.object(h5, "SynClassifier", lambda: h5.StaticClassifier(False, "rpc")), \
                 mock.patch.object(h5, "run_pump_feed", noop), mock.patch.object(h5, "cap_pick_oracle_from_env", no_oracle):
-            rc = tip.main(["--tip-input", str(self.dir), "--fresh-forward", "ARENA", "--out-dir", str(out_dir), "--max-seconds", "1", "--sockets", "1"])
-        self.assertEqual(rc, 0)
+            rc = tip.main(["--tip-input", str(self.dir), "--fresh-forward", "ARENA", "--out-dir", str(out_dir), "--max-seconds", "1", "--sockets", "1", *extra])
+        self.assertEqual(rc, expect_rc)
         return [json.loads(ln) for fp in sorted(out_dir.glob("h5-shadow-*.jsonl")) for ln in fp.read_text().splitlines()]
 
     def test_k3_a_pool_announced_before_the_fresh_start_gets_no_trigger_record(self):
@@ -557,6 +557,59 @@ class WrapperStart(TmpCase):
         self.assertGreaterEqual(len([r for r in recs if r["type"] == "trigger" and r.get("pool") == "PK"]), 1)
         stop = [r for r in recs if r["type"] == "tip_input_stop"][0]
         self.assertEqual(stop["driver"].get("rows_before_start", 0) + stop["source"].get("tap_rows_before_start", 0), 0)
+
+
+class Smoke(TmpCase):
+    """The early s1t smoke: S*'s Look-2 seal on every pool; no Q50-rule outcome is ever priced."""
+
+    OUTCOMES = ("outcome", "outcome_bx10", "strip")
+    run_main = WrapperStart.run_main
+
+    def test_control_without_smoke_prices_outcomes(self):
+        recs = self.run_main(+30_000)
+        self.assertGreaterEqual(len([r for r in recs if r["type"] == "outcome"]), 1)  # fresh mode, a pool before SUCC_END_MS: outcomes are computed
+
+    def test_smoke_computes_no_outcome_and_flags_every_pool(self):
+        recs = self.run_main(+30_000, extra=("--smoke",))
+        self.assertEqual([r for r in recs if r["type"] in self.OUTCOMES], [])
+        trig = [r for r in recs if r["type"] == "trigger" and r.get("pool") == "PK"]
+        self.assertGreaterEqual(len(trig), 1)  # decision-time records are still written
+        for r in trig:
+            self.assertTrue(r["h5_look2_sealed"])
+            self.assertNotIn("exit_ladder_trigger_slots", r)
+        pools = [r for r in recs if r["type"] == "pool" and r.get("pool") == "PK"]
+        self.assertEqual(len(pools), 1)
+        self.assertTrue(pools[0]["h5_look2_sealed"])
+        self.assertEqual((pools[0]["min_q_pv_sol"], pools[0]["min_q_fv_sol"]), (None, None))  # min_q withheld on a sealed pool
+        start = [r for r in recs if r["type"] == "tip_input_start"][0]
+        self.assertEqual((start["smoke"], start["look2_seal"]), (True, "every pool, no outcome priced (smoke)"))
+        stop = [r for r in recs if r["type"] == "tip_input_stop"][0]
+        self.assertEqual(stop["smoke_outcome_blocked"], 0)  # the seal prevented them: the second wall never fired
+
+    def test_the_seal_is_per_pool_before_and_after_the_end_constant(self):
+        eng, out = make_engine(fresh_start_ms=1)
+        guard = tip.arm_smoke(eng)
+        for ts in (1_800_000_000, 1_790_000_000):  # a pool after SUCC_END_MS and one before it, both sealed
+            p = mock.Mock(s0_ts=ts, s0_recv_ms=ts * 1000, h5_sealed_cache=None)
+            self.assertTrue(eng._h5_sealed(p), ts)
+        self.assertEqual(guard["blocked"], 0)
+        eng2, _ = make_engine(fresh_start_ms=1, h5_look2_start_ms=h5.SUCC_END_MS)  # as run_live builds it, without smoke: a pool before SUCC_END_MS is not sealed
+        self.assertFalse(eng2._h5_sealed(mock.Mock(s0_ts=1_790_000_000, s0_recv_ms=1_790_000_000_000, h5_sealed_cache=None)))
+
+    def test_arm_smoke_refuses_after_the_first_row(self):
+        eng, _ = make_engine(fresh_start_ms=None)
+        eng.on_create_pool("PQ", "MintPQ", h5.WSOL_MINT, 1, 5)
+        eng.advance(5, 5)
+        with self.assertRaises(RuntimeError):
+            tip.arm_smoke(eng)
+
+    def test_the_second_wall_drops_an_outcome_and_halts_with_exit_3_if_the_seal_ever_fails(self):
+        with mock.patch.object(h5.Engine, "_h5_sealed_now", lambda self, p: False):  # a broken seal: the engine would price the outcome
+            recs = self.run_main(+30_000, extra=("--smoke",), expect_rc=tip.EXIT_HALTED)
+        self.assertEqual([r for r in recs if r["type"] in self.OUTCOMES], [])  # nothing priced reached the output
+        halted = [r for r in recs if r["type"] == "tip_input_halted"]
+        self.assertEqual([h["problem"] for h in halted], ["smoke_outcome_computed"])
+        self.assertGreaterEqual(halted[0]["blocked"], 1)
 
 
 def ta_pool_create(*, slot: int, t_recv_ms: int) -> dict:

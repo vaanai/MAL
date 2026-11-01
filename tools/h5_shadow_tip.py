@@ -28,6 +28,10 @@ START. The source starts at the process start and the driver drops every row who
 so a pool announced before the start is never announced: it gets `rejected_unannounced` and no trigger, exactly as in the public mode (a process started at F never saw the
 CreatePool notice of F - 10 s). There is no look-back. A test through the wrapper pins it (and a control: the same pool announced after F triggers).
 
+SMOKE. `--smoke` (default off) puts S*'s H5 Look-2 seal on every pool (arm_smoke): no outcome is ever computed, whatever the pool's s0. In fresh mode `suppress_outcome` does nothing
+and the seal window starts at SUCC_END_MS, so the wrapper moves the window start to 0 on the engine before the first row. Trigger and pool records are written flagged
+`h5_look2_sealed`; a second wall drops and counts any outcome-type record and halts the book (exit 3). Tests pin both, and a control without `--smoke` that does price outcomes.
+
 STAMP. `t_detect_ms` is `Engine.wall()` at the decision: the HOST wall clock in live mode (Engine's default), never the row's `t_recv_ms` (the fast-0 stamp would
 under-charge the writer and transport lag). In replay/harness mode (`wall_offset_ms`) the harness gives a fixed offset, wall = t_recv_ms + offset, and the offset is
 recorded in the `tip_input_start` record. A test pins both.
@@ -71,6 +75,7 @@ PROBLEM_CACHE_MS = 1_000  # push_problem reads three small json files; at most o
 EXIT_REFUSED, EXIT_HALTED = 2, 3
 GAP_FLAG_PROGS = ("all", "pumpswap")  # a gap on these feeds can have cost a PumpSwap pool prints (arena_tip_adapter.gap_prog)
 LOSS_COUNTERS = ("bad_lines", "zst_errors", "apply_errors")  # ArenaState drops a bad json line / skips the rest of an hour after a zst error / skips a row whose apply raised: loss
+SMOKE_BLOCKED_TYPES = ("outcome", "outcome_bx10", "strip")  # records that price a Q50-rule outcome: a smoke book writes none (the Look-2 seal prevents them; this guard is the second wall)
 STATS_EVERY_S = 60.0  # tip_input_stats record interval (hb's cadence)
 GAP_KEEP = ("from_slot", "to_slot", "missed_slots", "from_ms", "to_ms", "reason", "prog", "src")
 
@@ -281,24 +286,47 @@ class TipDriver:
 
 
 # ------------------------------------------------------------------------------------------------------------------------------------ live
-def start_record(source: TipRowSource, wall_offset_ms: int | None) -> dict:
-    return {"type": "tip_input_start", "schema": SCHEMA, "dir": str(source.dir), "poll_s": POLL_S, "rows_per_step": ROWS_PER_STEP, "problem_cache_ms": source.cache_ms,
+def start_record(source: TipRowSource, wall_offset_ms: int | None, smoke: bool = False) -> dict:
+    return {"type": "tip_input_start", "smoke": smoke, "look2_seal": "every pool, no outcome priced (smoke)" if smoke else "as S*", "schema": SCHEMA, "dir": str(source.dir), "poll_s": POLL_S, "rows_per_step": ROWS_PER_STEP, "problem_cache_ms": source.cache_ms,
             "start_filter": "t_recv_ms >= engine.fresh_start_ms", "stamp": "host_wall" if wall_offset_ms is None else "fixed_offset", "wall_offset_ms": wall_offset_ms, "gap_flag_progs": list(GAP_FLAG_PROGS),
             "public_trade_feed": "off", "rpc_class_fallback": "as S*", "pump_class_side_feed": "as S*"}
 
 
-def stats_record(kind: str, driver: TipDriver, source: TipRowSource) -> dict:
-    return {"type": kind, "schema": SCHEMA, "driver": dict(sorted(driver.counters.items())), "source": dict(sorted(source.counters().items())), "problem": source.problem,
+def stats_record(kind: str, driver: TipDriver, source: TipRowSource, guard: dict | None = None) -> dict:
+    return {"type": kind, "schema": SCHEMA, **({} if guard is None else {"smoke_outcome_blocked": guard["blocked"]}), "driver": dict(sorted(driver.counters.items())), "source": dict(sorted(source.counters().items())), "problem": source.problem,
             "halted": source.halted}
 
 
-def make_run_feed(source: TipRowSource, state: dict, *, poll_s: float = POLL_S) -> Callable[..., Any]:
+def arm_smoke(engine: h5.Engine) -> dict:
+    """SMOKE MODE: S*'s H5 Look-2 seal on EVERY pool, so no Q50-rule outcome is ever priced. In fresh mode the engine's seal window starts at SUCC_END_MS (2026-12-01), so pools
+    before it would be priced (`suppress_outcome` does nothing in fresh mode); here the window start is moved to 0 and the declared observation stays off: `_h5_sealed_now` is then
+    True for every pool, before or after the end constant. A sealed pool writes its trigger (decision-time) and pool records flagged `h5_look2_sealed`, and no ladder, outcome,
+    outcome_bx10, strip, legs or min_q: pool counts print as flags only. Second wall: an output filter that drops (and counts) any outcome-type record; the first one makes the
+    book halt (exit 3). Must be called before the first row (the seal is judged once per pool)."""
+    if engine.pools or engine.counters["events"]:
+        raise RuntimeError("arm_smoke must run before the first row")
+    engine.h5_look2_start_ms, engine.h5_look2_observed = 0, False
+    guard = {"blocked": 0}
+    inner = engine._emit
+
+    def filtered(rec: dict) -> None:
+        if rec.get("type") in SMOKE_BLOCKED_TYPES:
+            guard["blocked"] += 1
+            return
+        inner(rec)
+
+    engine._emit = filtered
+    return guard
+
+
+def make_run_feed(source: TipRowSource, state: dict, *, poll_s: float = POLL_S, smoke: bool = False) -> Callable[..., Any]:
     """The replacement for tools.h5_shadow.run_feed: same call signature (the factory is ignored: there are no sockets), same contract (return when `stop` is set)."""
 
     async def run_feed(source_factory: Any, engine: h5.Engine, stop: asyncio.Event, *, max_seconds: float | None = None,
                        on_decode_error: Callable[[BaseException, Any], None] | None = None, **_: Any) -> None:
         started = time.monotonic()
-        engine.emit(start_record(source, None))
+        guard = arm_smoke(engine) if smoke else None
+        engine.emit(start_record(source, None, smoke))
         driver = TipDriver(engine, source, on_error=(lambda e, ctx: on_decode_error(e, SimpleNamespace(**ctx))) if on_decode_error else None)
         state["driver"] = driver
         last_stats = time.monotonic()
@@ -310,9 +338,14 @@ def make_run_feed(source: TipRowSource, state: dict, *, poll_s: float = POLL_S) 
                     engine.emit({"type": "tip_input_halted", "problem": source.problem})
                     stop.set()
                     break
+                if guard is not None and guard["blocked"]:  # an outcome-type record was produced in smoke mode: the seal failed; nothing was written; stop for good
+                    state["halted"] = "smoke_outcome_computed"
+                    engine.emit({"type": "tip_input_halted", "problem": "smoke_outcome_computed", "blocked": guard["blocked"]})
+                    stop.set()
+                    break
                 if time.monotonic() - last_stats >= STATS_EVERY_S:  # S2 of the review: the input counters (rows by type, bad rows, gaps, reader loss) are in the output, not only in memory
                     last_stats = time.monotonic()
-                    engine.emit(stats_record("tip_input_stats", driver, source))
+                    engine.emit(stats_record("tip_input_stats", driver, source, guard))
                 if max_seconds is not None and time.monotonic() - started > max_seconds:
                     stop.set()
                     break
@@ -324,7 +357,7 @@ def make_run_feed(source: TipRowSource, state: dict, *, poll_s: float = POLL_S) 
                     except asyncio.TimeoutError:
                         pass
         finally:
-            engine.emit(stats_record("tip_input_stop", driver, source))
+            engine.emit(stats_record("tip_input_stop", driver, source, guard))
 
     return run_feed
 
@@ -333,6 +366,8 @@ def make_run_feed(source: TipRowSource, state: dict, *, poll_s: float = POLL_S) 
 def build_parser() -> argparse.ArgumentParser:
     ap = h5.build_parser()
     ap.description = "H5-BOOSTFLOOR shadow detector, TIP INPUT MODE (S*'): tools/h5_shadow.py fed from the research-0 receiver copy of the tip tape (paper only)"
+    ap.add_argument("--smoke", action="store_true", help="SMOKE MODE: the Look-2 seal on every pool (no outcome, ladder, strip or min_q is ever computed; trigger and pool records "
+                    "carry h5_look2_sealed). For the s1t early smoke. Default off.")
     ap.add_argument("--tip-input", required=True, metavar="DIR", help="the receiver copy (arena layout), e.g. /data2/mal/arena-tip-feed/<book>; a strict child of "
                     + " or ".join(atp.DST_ROOTS) + " only")
     return ap
@@ -356,7 +391,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_REFUSED
     state: dict = {}
     saved = h5.run_feed
-    h5.run_feed = make_run_feed(source, state)  # run_live looks run_feed up in the module globals at call time
+    h5.run_feed = make_run_feed(source, state, smoke=args.smoke)  # run_live looks run_feed up in the module globals at call time
     try:
         rc = asyncio.run(h5.run_live(args))
     finally:
