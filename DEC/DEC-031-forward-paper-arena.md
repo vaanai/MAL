@@ -1202,3 +1202,145 @@ DEC-031 Amendment 23: arena books whose input is the fast-0 getBlock tip followe
 - **Redirect, not carry-over.** The owner's recorded words withdraw the successors' spend and name no new use for it. The manager's plan (`/data/mal/hunt-1008/ops/manager18/PUSH-PLAN-1101.md`, lane L1) redirects the withdrawn budget (up to 4.90 USD a day at cap, item 1.4 (g)) to new books on the fast-0 tip source under Amendment 23. Any such book's API authority is the owner's 2026-10-28 API line (as cited by item 1.4 (g)) plus that book's own amendment, never this record. Those are new `bot_id`s with their own amendment, P0, H, clock and read. They are not successors: nothing of item 1 carries to them, and they are chosen with the two NOT_DECIDABLE verdicts above in view (no P&L), which every read of theirs discloses.
 - **Feed records note (QP-RULING-1101-hv4-reads §4.1 (A)).** That ruling required an Amendment 21 erratum re-pinning the feed for the successors before any deploy of #1152 earlier than 2026-11-23T13:05Z, because the successors pinned `tools/arena_feed.py` 7a9d424b byte for byte from 2026-11-09T00Z. With the successors stopped, that erratum is not needed; a deploy still waits for the HV4 runner's end (2026-11-08T13:05:00Z) and the check of every other cohort book's window on the public tape. Quant-proof confirms this on this PR.
 - **Disclosure for any later book that runs an HV4 rule:** "The HV4 successor commitment (DEC-031 Amendment 21 item 1) was stopped before registration by the owner's word withdrawing its API spend (item 1.5), recorded 2026-11-01, with `hv4-BIG-X` and `hv4-CON-X` NOT_DECIDABLE_5PCT (no P&L) in view and the seven sibling reads not yet run."
+
+### Amendment 25 (DRAFT; HV4-T, and FLOOR on the tip source not registered; number = the next free DEC-031 amendment at merge: Amendment 16 is held by open PR #1019, Amendment 23 Erratum 1 by #1169, the s1t draft by #1186 and the tip gap-fill draft by #1182; a renumber at merge is a fill)
+- **Written.** First written 2026-11-01T22:56:10Z, from `date -u` on mal-research-0.
+  - Revised 2026-11-01T23:20:43Z on reviewer comment 6565358726 (R1, R4, R5, R6, N3); Part B moved to #1186.
+  - Revised 2026-11-01T23:29:08Z on quant-proof's comment 6565478161 (C1 to C5) and the manager's note on the gap-fill.
+- **Records only.** Written before the registration, smoke, `bots.json` line and clock of every book it covers. Outcome-blind.
+- **Status.** DRAFT until merge, with QP OK on the exact head and a reviewer verdict.
+
+DEC-031 Amendment 25 has two parts:
+- **Part A** registers HV4's nine lane-G arms at HV4's frozen sha as new books on the fast-0 tip source (`hv4t-`). They are covered books of Amendment 23.
+- **Part C** records that FLOOR is not re-registered on the tip source.
+
+Design and evidence: `docs/design/arena-tip-cohort.md` (same PR). No tape, tip file, derived-copy `tape-*` file, counts log, ledger, `bots.json` line, decision row, outcome, fill, exit or P&L was opened to write it. **No book has cleared the promotion gate. Nothing here is a profit claim.**
+- **In view (no P&L).**
+  - `hv4-BIG-X` and `hv4-CON-X` NOT_DECIDABLE_5PCT (QP-RULING-1101-hv4-reads, sha256 `c6e94e747634079bc4b0cd4d79d2f30319edce7b4abc808d1bf9919a9e126073`).
+  - The owner's word of 2026-11-01 withdrawing the HV4 successors' API spend: the Amendment 21 item 1.5 stop record (#1175, on main).
+  - The manager's plan to redirect that budget to tip-source books (`/data/mal/hunt-1008/ops/manager18/PUSH-PLAN-1101.md`, lane L1).
+  - Lane L5's desk audit (`/data/mal/hunt-1008/ops/reports/2026-11-02/L5-fastest-read.md`).
+  - The state-field listing of #1180 (on main), and quant-proof's rulings on #1178 and #1180.
+  - QP-RULING-1102-tip-shared-slot (sha256 `9237804998b520ccafac5605b3564324f25bf0fa8f49955381d9675a38a60b20`).
+  - No HV4 sibling verdict was in view.
+- **Takes effect** on merge, after quant-proof's OK on the exact final head and a reviewer verdict, and before the clock of any book it covers.
+- **Not push-family.** Every book here is a DEC-031 arena book: "Arena books are not push-family books. They take no DEC-030 slot and do not change EXP-027's k" (§3 item 3). They count in this DEC's N from their clocks (Amendment 23 item 1). Nothing here registers into DEC-030's slot or DEC-014's push family.
+
+**Part A: HV4-T.**
+1. **The books.** `bot_id`s `hv4t-CON-L`, `hv4t-CON-F`, `hv4t-CON-P`, `hv4t-CON-X`, `hv4t-CON-R`, `hv4t-BIG-L`, `hv4t-BIG-F`, `hv4t-BIG-X`, `hv4t-BIG-R`.
+   - `frozen_sha` `9ed4c5ff63935696b2a89150e13565e123047754`.
+   - HV4's arms, prompts, reviewer instructions, sampling settings, lane G only, deciding stake 0.25 and deciding cell.
+   - Model ids: `["claude-haiku-5-5"]` on the L, F, P and R arms; `[]` on the X arms.
+   - Stack config pin: sha256 `1e611a5a636dfe6bd563ab5258f6b498cdb8906500ee8bf2f0264a2621621986`.
+   - They are new books, not successors: nothing of Amendment 21 item 1 carries to them. They are covered books of Amendment 23 (item 1).
+2. **Source and feed delay.** Amendment 23 item 2's pins apply.
+   - The derived copy is `/data2/mal/arena-tip-feed/hv7` on mal-research-0 (transport B), passed as `--tape-dir`. It is the one copy, shared by every covered book; no second copy is made.
+   - `--feed-delay-slots` d is measured and pinned per Amendment 23 item 2, with its date. HV4's 7 is not used.
+   - H0 is taken from the writer's counts log at registration.
+3. **Identity, roots and HV4's run** (Amendment 21 item 1.2 pattern).
+   - Each book has its own `--root`, `--ledger-root` and `--registry` on /data2, fixed in the registration record. None of them is ever `/data/mal/arena/haiku-v4`, `/data/mal/arena/ledger` or `/data/mal/arena/bots.json`.
+   - The frozen code registers `hv4-<arm>` in its own registry. The arena registry `/data/mal/arena/bots.json` gets the nine `hv4t-<arm>` lines through `register_bot`.
+   - The map is pinned in both the notebook copy and a pushed commit. If the two differ, there is no clock.
+   - Every job passes these paths explicitly and refuses HV4's.
+   - **One process per sha.** Every HV4-T job (smoke, register, genesis, runner) refuses to start while HV4's segment-2 job #1562 is running. It starts only after the job list (state only) shows #1562 ended, and never before 2026-11-08T13:05:00Z. A smoke beside #1562 is refused (QP on #1178).
+   - HV4's jobs are never changed for HV4-T (§4).
+4. **Age and history** (Amendment 23 items 3 and 7).
+   - **How the frozen code sees age.** It reads 365 min of tape before its start (`ArenaState` `WARM_MIN_DEFAULT`). It evicts a key that has been idle more than 6 h. It ages a pool whose creation it has not seen from the pool's first sight (`hv4_cards._age`). So the age band of 2 h to 7 d is judged on the runner's own view, which is the registered age semantics. It admits pools older than 7 d while they were first seen less than 7 d ago in that view.
+   - **Disclosed universe differences from HV4's run on the public tape** (#1180):
+     - (a) S3: `pool_create` exists only for migration pools (Amendment 23 item 3). So a pool created outside a migration fails `age_min` until it has been seen for 2 h, and is then aged from first sight.
+     - (b) S2: bonding rows carry no `creator`. So the creator is known only from a create row inside the runner's view. When it is unknown, `sell_route` counts every seller (`hv4_cards.py:867-868`, the registered rule's own branch).
+     - Quant-proof ruled both eligible, disclosure only, no guard (QP OK on #1180).
+   - **History rule.** Under Amendment 23 item 7, L = 7 d. H0 = 2026-10-29T09:00:00Z, so H0 + 7 d = 2026-11-05T09:00:00Z, before the clock of item 6. The rule is met (accepted by quant-proof).
+5. **P0 and H.**
+   - **Reuse.** HV4's own P0 is reused, as Amendment 21 item 1.1 did: the A2 count at `9ed4c5ff` on 2026-10-21 to 10-23 (registration record section 3a; lowest arm 230.667 would-be attempts a day, an upper bound; no day at 0). Quant-proof allowed this on #1178.
+   - **What it replaces.** For these books it replaces Amendment 23 item 1's "its own P0" and item 8's tip P0. The reason: every tip day before 2026-11-08 lies in HV4's counted hours, where a structure count of the HV4 rule is HV4 attempt-count information under HV4's seal.
+   - **H.** H = 14 days (Amendment 4 item 2.2). It is 14 for any rate of at least 10.714285714285714.
+   - **Disclosed:** the count is on the public tape, 18 or more days before the clock.
+   - **Tip-side floor, per arm (fixed here).**
+     - **Measure.** Each arm's would-be attempts by the A2 definition, counted from the item 7 smoke's decision rows (counts only) and scaled to a day: count x 24 h / smoke hours.
+     - **Floor.** At least 10.714285714285714 a day.
+     - **Below the floor.** An arm below the floor loses the reuse and is not registered.
+       - The frozen runner at `9ed4c5ff` runs all nine arms in one process with one clock and cannot pick arms. So the arm still runs inside the HV4-T process, but UNREGISTERED: no `hv4t-` line in the arena registry, no N, no count, no read.
+       - Its rows stay under item 10's seal and are never opened.
+       - Its API spend, if any, is inside item 9's caps.
+       - It can be read only under its own later amendment, as a new `bot_id` at a new clock.
+       - The other arms keep their clock.
+6. **Clock, window and the HV4 seal's end.**
+   - **The seal's end (accepted by quant-proof).** The SEALS-BRIEF HV4 line reads "No pricing or retune of any HV4 rule on counted hours (>= 2026-10-25T00Z)", with no end. Here "counted hours" means HV4's counted window [2026-10-25T00:00:00Z, 2026-11-08T00:00:00Z). The reason: HV4 counts no entry from 1794096000000 (Amendment 15 item 1), and its confirmation ends there too (Amendment 15 item 3). The reading holds on three conditions:
+     - HV4-T warm-up rows before 2026-11-08T00:00Z are state only, with no call and no pricing (Amendment 23 item 7);
+     - the smoke ledger is counts-only and never opened;
+     - item 10's no-join rule holds until HV4's last read.
+   - The manager writes this reading into the SEALS-BRIEF HV4 line before the smoke.
+   - **A smoke on hours before 2026-11-08T00:00Z is refused** (QP on #1178): its attempt and floor counts are themselves HV4 attempt-count information. So 2026-11-08T00Z and 2026-11-09T00Z are not clocks.
+   - **Clock.** `clock_start_ms` **1794268800000 (2026-11-10T00:00:00Z)**, or the first 00:00Z after the last item of item 7. A late item is a slip, never a stop, and spends no N.
+   - **Window.** H = 14 d. Entries at or after clock + 14 d do not count: 1795478400000 (2026-11-24T00:00:00Z) for the 11-10 clock.
+   - **END.** The runner's END is that window end plus 13 h 05 min, 1795525500000 (2026-11-24T13:05:00Z). The runner is after-chained in two segments, with the hand-off instant pinned in the registration record. The hand-off is a planned restart under Amendment 6 item 4.
+   - HV4's counted window and confirmation end at 1794096000000, so the windows do not overlap (Amendment 3 item 5).
+7. **Before the clock.** In addition to Amendment 3 item 1, Amendment 4 item 2, Amendment 6 item 1 and Amendment 23 items 6 and 8:
+   - **Seals.** The SEALS-BRIEF tip entry names the HV4-T runner and smoke at `9ed4c5ff` as readers of the derived copy, and the SEALS-BRIEF HV4 line carries item 6's end reading. Both need a quant-proof note and the manager's edit before the smoke.
+   - **State fields** (Amendment 23 item 8). #1180 lists them on synthetic rows. No field is None on the tip in every scenario. S2 and S3 (item 4) are eligible, disclosure only.
+   - **Equivalence** (Amendment 23 item 8). HV4's runner in sim at `9ed4c5ff`, StubModel on the LLM arms, over the WRITER's output built from explore-0814 walker hours, against the same runner on the adapter's in-memory stream. Decision-log md5 equal. A minimum-decisions floor is notebooked first. It includes QP-RULING-1102 R4's tests for G3.
+   - **Smoke.**
+     - At least 24 h at `9ed4c5ff`, real model, counts-only ledger never opened.
+     - It starts after the job list shows #1562 ended, and not before 2026-11-08T13:05:00Z. So a 24 h smoke ends about 2026-11-09T13:30Z.
+     - It carries Amendment 23 item 8's reports and item 5's per-arm floor.
+     - The memory check of Amendment 21 item 1.4 (e), on research-0, applies at its start and again at the runner's start.
+   - **Shared-slot trigger.** Amendment 23 item 3's `pool_slots_multi_sig` trigger is replaced for these books by QP-RULING-1102-tip-shared-slot R1 to R3 (`/data/mal/hunt-1008/ops/manager18/QP-RULING-1102-tip-shared-slot.md`, sha256 `9237804998b520ccafac5605b3564324f25bf0fa8f49955381d9675a38a60b20`). The count is report-only. The tripwires each need a quant-proof note before the next read of a book they touch:
+     - any hour with `pool_slots_mixed` > 0 from the clock on;
+     - the follower's `pool_cache` reaching 180,000 (recorded at registration and daily);
+     - any follower start inside the counted window, which brings the 60-minute "with and without" gate test of R2 (c).
+   - **Hour health.** Amendment 23 item 5's tool, thresholds and sampler, for program `pumpswap`.
+   - **Feed bar.** Amendment 23 item 6's line with T_max = 12 h (BIG `max_hold_min` 720). So there are ZERO `pumpswap` or `all` data_loss rows in the 24 h before the clock. Every arm's T_max is above 0.6076 h, so zero rows is the bar for each.
+   - **Calendar.** The kill-review-week check (LAB_STATE "Now" lists none).
+8. **Read.**
+   - **Rule.** Amendment 15 items 1, 2, 3, 6 and 7, re-based to the HV4-T clock and window end exactly as Amendment 21 item 1.3 re-bases them. Records are named `hv4t-`, the multiplicity source is arena-wide, and the Amendment 6 hour table comes from Amendment 23 item 5's tool.
+   - **Tools.** The read tools are copies of `tools/hv4_read_instant.py` and `tools/hv4_am15_read.py` whose diff shows only those changes. They merge with quant-proof's OK and a reviewer verdict before the earliest B (2026-11-15T00:00:00Z for the 11-10 clock). No count, preview or read runs before they merge.
+9. **Spend.**
+   - **Authority.** The API authority for these books is the owner's 2026-10-28 API line (notebook `n_8Yfl--RzLCx2Dw`, as quoted in `docs/rules/hv4.md`: "API spend past 11-11 is OK ... API spend goes to the Haiku TRADER only"; the line Amendment 21 item 1.4 (g) cites), plus this amendment.
+   - **Caps.** The pinned caps of `tools/hv4_arms.py` apply per HV4-T root. Lane G is 5 LLM-arm ledgers x 0.50 + RISK 1.00 + 3 reviewer ledgers x 0.10 = **3.80 USD a day at cap**: at most 57.00 USD over 14 days and the run-out day, plus at most 3.80 for the smoke.
+   - **Budget.** This fits inside the 4.90 USD a day the owner withdrew from the successors, which the manager's plan (PUSH-PLAN-1101 L1) redirects here. The owner's recorded words withdraw that spend and name no new use, so this amendment does not say the owner redirected it.
+   - **Guards.** The 160 USD month guard applies, with the owner's 200 USD console limit as backstop.
+   - **Chain calls.** The pinned caps of `tools/hv4_chain.py`. Helius credits are reported per job.
+10. **Seals.**
+    - HV4's seal applies to each `hv4t-` book, root, ledger root and registry from registration until its read is recorded (Amendment 21 item 1.3 seal text, with `hv4t-`).
+    - No HV4-T output is joined to any HV4 output before the last HV4 read is recorded.
+    - Amendment 23 item 9 applies in full.
+11. **N and disclosures.** N + 9 at the clock (Amendment 4 item 2.5). Every HV4-T read prints:
+    - the nine HV4 verdicts and the successor stop record;
+    - that HV4-T runs the rule HV4 ran, on another source, and that any later selection between the two is in-sample;
+    - item 4's age semantics and differences (a) and (b);
+    - the count and share of entries whose card has `creator` None, and the count of entries with `created_known` false (structural counts from the book's own decision rows, at the read);
+    - item 5's P0 reuse and per-arm floor results;
+    - item 6's seal reading;
+    - QP-RULING-1102-tip-shared-slot R3's disclosures (the four no-`tx_index` counts, the follower `pool_cache` at the clock and the read, every follower start, and its one sentence);
+    - the Amendment 23 item 9 disclosures;
+    - that these books were chosen with `hv4-BIG-X` and `hv4-CON-X` NOT_DECIDABLE_5PCT in view (no P&L).
+12. **Exposure and the tip gap-fill.**
+    - **The expectation (not a measurement).** At about 0.37 tip data-loss gaps a day (lane L5), the expected §1.4 share is 1 - e^(-0.37 x T/24), with T the hold in hours:
+      - BIG arms: 8.84% at 6 h and 16.89% at 12 h, against the 5% cap;
+      - CON arms: 1.15% at 45 min.
+    - So the BIG arms are likely NOT_DECIDABLE_5PCT unless a gap-fill covers them.
+    - **If the gap-fill merges before the clock.** The tip gap-fill (#1182, lane F2) applies to these books only if it merges with quant-proof's OK and a reviewer verdict before the clock, and its pins are in the registration record as book-side source pins (Amendment 23 item 2).
+    - **After the clock it cannot apply.** A book-side pin change after the clock is a new `bot_id` with a new clock (Amendment 23 item 2).
+    - **Arms.** This amendment registers all nine arms.
+      - A registered subset chosen for feed health (no P&L) is allowed for new books (QP on #1178). If one is chosen, this item names the arms and the reason before merge.
+      - The process does not change: the frozen runner at `9ed4c5ff` runs all nine arms with one clock. An arm left out runs UNREGISTERED, as item 5 says: no N, no read, rows sealed and never opened.
+13. **C0.** Out of scope. A C0 of an HV4-T book needs its own recorded PASS, DEC-032, and a later text for the bridge's ids and source.
+
+**Part C: FLOOR on the tip source is not registered.**
+- `l1-floor-v2` was never registered (Amendment 9 item 2: the A2 rate was 6.0 a day, below 12.5; N was not spent).
+- A tip-source FLOOR book is not registered now, and N is not spent:
+  - at the rates in view (6.0 and 4.6 a day, public tape), 100 attempts need about 17 to 22 days, beyond Amendment 9's 12-day H and beyond one MiScusi job;
+  - its 24 h holds against about 0.37 tip data-loss gaps a day (lane L5) put about 1 - e^(-0.37) = 0.31 of trades in the §1.4 class, against the 5% cap.
+- A revival needs its own amendment, a tip gap-fill, an in-clock hand-off and a tip P0.
+
+**Unchanged:**
+- The promotion gate and every threshold: n >= 100; >= 5 UTC dates with a majority positive; CI90 lower bound > 0 (1,000 draws, seed 1, 5th percentile); ex-top-3 > 0; flat 15% and pressure-fail at slope scale 1.
+- §2; §1.4's 5% cap; Amendment 3 items 2 and 3; Amendment 6.
+- Amendment 23, except three clauses for the `hv4t-` books only:
+  - item 1's "its own P0" and item 8's tip P0, which item 5 replaces;
+  - item 3's `pool_slots_multi_sig` trigger, which item 7 replaces with QP-RULING-1102 R1 to R3.
+  - Item 7's history rule applies with L = 7 d.
+- HV4's books, jobs and reads.
+- Q50, s1 and EXP-024: this amendment does not touch them (s1t is #1186).
+- The ban on a live send (§4).
