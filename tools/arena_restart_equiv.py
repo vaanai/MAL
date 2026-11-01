@@ -5,11 +5,14 @@ PAPER only. No key, no wallet, no network, no model call. It replays a persisted
 
   reference   one engine, fed the whole tape without a stop (the logged entries are executed at their instants; exits come from the book's exit rule; the sim clock is the tape's).
   restarted   engine #1 is fed up to a KILL cursor and dropped without a flush (what a SIGKILL leaves: the ledger on disk, nothing in memory), then a fresh engine #2 is rebuilt with
-              tools.arena_tip_continuity.restore_engine from a (possibly stale) checkpoint, the ledger and the logged entries, caught up to a RESTART cursor (downtime = the rows between the
-              two), and fed the rest of the tape. No entry exists in the downtime: the reference is run with the same blind interval, so the comparison is like for like.
+              tools.arena_tip_continuity.restore_engine from a (possibly stale) checkpoint, the ledger, the logged entries and the logged sells (+ the sell journal), caught up to a RESTART
+              cursor (downtime = the rows between the two) STATE ONLY, and fed the rest of the tape. No entry and NO EXIT is decided in the downtime (QP B1): the reference is run with the same
+              blind interval for both, so the comparison is like for like. A sell logged before the kill is used as logged (B2); the replayed state is checked against the checkpoint (B3).
 
 PASS for a case: the ledgers' canonical rows have the same md5, in order and as a set, per bot (the engine's own `start` record and `engine_id`, which differ by design, are not compared and
 are counted), no row of the restarted run is an `engine_restart` exclusion, and the pools of the positions open at the restart cursor have the same fingerprint (engine_fingerprint) in both runs.
+THE REFERENCE DRIVER (BookDriver + a reference exit rule) IS NOT ANY BOOK'S RUNNER. The proof with HV7's real runner is tools/hv7_restart_equiv.py (QP B4 / P2). The tape must lie inside a pinned
+exploration list (B4): `Spec.allow_hours`, `--exploration explore-0814`; anything else is refused.
 
 The report holds NAMES, COUNTS AND MD5s only: no price, mint, pool, signature, amount or exit reason (replay outputs are structural, DEC-030 s2).
 
@@ -48,6 +51,9 @@ H_MS = 3_600_000
 FORBIDDEN_PARTS = ("sealed", "forward", "shadow", "canary", "probe", "walk", "exp011", "exp012", "tip-tape", "meta-capture", "fresh-08", "truth-", "_shakedown", "_smoke", "kalshi", "fwdv1",
                    "hv4", "haiku-v4", "q50", "bots.json", "arena-tip", "arena-tipfeed", "/data/mal/arena", "/var/lib/mal/sealed")
 BOT = "restart.t1"
+# B4: the pinned exploration lists (hunt23 RULES.md: explore-0814 = /data/mal/clean-view/explore-0814, w1..w7, Aug 14-28). [lo, hi) in UTC hour keys. "Aug 14-28" is read as the 14 days
+# 2026-08-14T00 .. 2026-08-28T00 (w1..w7 are seven 2-day windows), the narrower of the two readings. A tape hour outside the list is a refusal.
+EXPLORATION = {"explore-0814": ("2026-08-14T00", "2026-08-28T00")}
 
 
 class Refused(Exception):
@@ -133,6 +139,7 @@ class Spec:
     feed_delay_slots: int = 2
     margin_ms: int = C.REPLAY_MARGIN_MS_DEFAULT
     min_free_pct: float = MIN_FREE_PCT_FLOOR
+    allow_hours: tuple[str, str] | None = None  # B4: the pinned exploration list [lo, hi) the tape's hour files must lie in
 
     @property
     def bots(self) -> list[str]:
@@ -190,9 +197,11 @@ def _after(cur: C.Cursor, c: C.Cursor) -> bool:
     return (c.hour, c.lines) > (cur.hour, cur.lines)
 
 
-def run_reference(spec: Spec, name: str = "ref", blind: tuple[int, int] | None = None, probe: C.Cursor | None = None) -> dict[str, Any]:
+def run_reference(spec: Spec, name: str = "ref", blind: tuple[int, int] | None = None, blind_rows: tuple[C.Cursor, C.Cursor] | None = None, probe: C.Cursor | None = None,
+                  fp_since_slot: int | None = None) -> dict[str, Any]:
+    """The engine that never stopped. `blind` (ms) removes the entry decisions of a downtime and `blind_rows` its exit decisions: nobody decides while no process runs."""
     eng = build_engine(spec, name)
-    drv = C.BookDriver(eng, spec.rule, spec.entries, mode="live", blind=blind)
+    drv = C.BookDriver(eng, spec.rule, spec.entries, mode="live", blind=blind, blind_rows=blind_rows)
     first = min(C.tape_hours(spec.tape_dir))
     fp = None
     open_at_probe: list[str] = []
@@ -200,57 +209,68 @@ def run_reference(spec: Spec, name: str = "ref", blind: tuple[int, int] | None =
         drv.feed(c, row)
         if probe is not None and c == probe:
             open_at_probe = sorted(eng.positions)
-            fp = C.engine_fingerprint(eng)
+            fp = C.engine_fingerprint(eng, None, fp_since_slot)
     eng.flush()
     return {"engine": eng, "driver": drv, "fingerprint_at_probe": fp, "open_at_probe": open_at_probe}
 
 
-def run_restart(spec: Spec, kill: C.Cursor, restart: C.Cursor, name: str = "rst", ckpt_lag_rows: int = 0) -> dict[str, Any]:
-    """Phase 1 to the kill cursor (no flush), drop, phase 2: a fresh engine on the same ledger, restore_engine up to the restart cursor, then the rest of the tape."""
+def run_restart(spec: Spec, kill: C.Cursor, restart: C.Cursor, name: str = "rst", ckpt_lag_events: int = 0, journal_mode: str = "journal") -> dict[str, Any]:
+    """Phase 1 to the kill cursor (no flush), drop, phase 2: a fresh engine on the same ledger, restore_engine up to the restart cursor (state only, B1), logged sells as logged (B2), the
+    state checked against a (possibly stale) checkpoint (B3), then the rest of the tape. journal_mode "lost" gives the restore no sell journal (the kill took it): the logged unpriced sells
+    must become `engine_restart`."""
     eng1 = build_engine(spec, name)
+    journal = C.SellJournal(spec.work / name / "sell-journal.jsonl")
+    C.attach_sell_journal(eng1, journal)
     d1 = C.BookDriver(eng1, spec.rule, spec.entries, mode="live")
+    rec1 = C.CheckpointRecorder(eng1, margin_ms=spec.margin_ms, every_rows=10**9, cursor_fn=lambda: d1.cursor)
     first = min(C.tape_hours(spec.tape_dir))
-    ckpt: dict[str, Any] | None = None
-    recent: list[dict[str, Any]] = []
-    kill_ms = 0
+    kill_ms = None
     for c, row in C.iter_tape(spec.tape_dir, first):
         d1.feed(c, row)
-        recent.append(d1.checkpoint(spec.margin_ms))
-        if len(recent) > ckpt_lag_rows + 1:
-            recent.pop(0)
         if c == kill:
             kill_ms = d1.sim_now
-            ckpt = recent[0]  # the checkpoint of `ckpt_lag_rows` rows ago: the last one a periodic writer would have saved
             break
-    if ckpt is None:
+    if kill_ms is None:
         raise Refused("the kill cursor was not reached")
+    if len(rec1.history) <= ckpt_lag_events:
+        raise Refused("no checkpoint that old exists")
+    ckpt = rec1.history[-1 - ckpt_lag_events]  # the checkpoint a recorder had saved `ckpt_lag_events` events before the kill
     issued = d1.entries[: d1.i]  # the decision log at the kill: every entry the live book decided before it died
-    # the process dies here: eng1 and d1 are dropped with whatever they held in memory (pending sells included)
+    sells = C.sells_from_log(d1.decision_log)
+    open_at_kill = sorted(eng1.positions)
+    pending_at_kill = sorted(p for ids in eng1.pending.values() for p in ids)
+    # the process dies here: eng1, d1 and the recorder are dropped with whatever they held in memory (pending sells included)
     restart_ms = kill_ms
     for c, row in C.iter_tape(spec.tape_dir, restart.hour, restart):
         if c == restart:
             restart_ms = max(kill_ms, int(row.get("t_recv_ms") or kill_ms))
     blind = (kill_ms, restart_ms)
     eng2 = build_engine(spec, name, fresh=False)
-    d2 = C.restore_engine(eng2, spec.tape_dir, issued, spec.rule, ckpt, until=restart, margin_ms=spec.margin_ms, blind=blind)
+    d2 = C.restore_engine(eng2, spec.tape_dir, issued, spec.rule, ckpt, logged_sells=sells, journal=None if journal_mode == "lost" else journal, until=restart, margin_ms=spec.margin_ms,
+                          blind=blind)
     restored = dict(d2.counters)
-    fp = C.engine_fingerprint(eng2)
+    fp = C.engine_fingerprint(eng2, None, ckpt["since_slot"])
     open_at_restart = sorted(eng2.positions)
+    C.attach_sell_journal(eng2, journal)
     d2.entries = sorted((e for e in spec.entries if e.ms > restart_ms), key=lambda e: (e.ms, e.bot_id, e.pool))
     d2.i = 0
     d2.counters = {}
+    C.CheckpointRecorder(eng2, margin_ms=spec.margin_ms, every_rows=10**9, cursor_fn=lambda: d2.cursor)
     for c, row in C.iter_tape(spec.tape_dir, restart.hour):
         if _after(restart, c):
             d2.feed(c, row)
     eng2.flush()
     return {"engine": eng2, "driver": d2, "restored": restored, "fingerprint_at_restart": fp, "open_at_restart": open_at_restart, "blind": blind, "kill_ms": kill_ms,
-            "restart_ms": restart_ms}
+            "restart_ms": restart_ms, "ckpt": ckpt, "open_at_kill": open_at_kill, "pending_at_kill": pending_at_kill, "n_logged_sells": len(sells)}
 
 
-def run_case(spec: Spec, plan: Sequence[tuple[str, int]], kill_row: int, downtime_rows: int, ckpt_lag_rows: int = 0, name: str = "case") -> dict[str, Any]:
+def run_case(spec: Spec, plan: Sequence[tuple[str, int]], kill_row: int, downtime_rows: int, ckpt_lag_events: int = 0, name: str = "case", journal_mode: str = "journal") -> dict[str, Any]:
     kill, restart = cursor_at(plan, kill_row), cursor_at(plan, kill_row + downtime_rows)
-    rst = run_restart(spec, kill, restart, f"{name}-rst", ckpt_lag_rows)
-    ref = run_reference(spec, f"{name}-ref", blind=rst["blind"], probe=restart)
+    try:
+        rst = run_restart(spec, kill, restart, f"{name}-rst", ckpt_lag_events, journal_mode)
+    except C.ContinuityRefused as exc:  # the restore failed closed: in production this is the legacy recover() path (engine_restart), not a pass
+        return {"name": name, "kill_row": kill_row, "downtime_rows": downtime_rows, "ckpt_lag_events": ckpt_lag_events, "refused": exc.reason, "equal": False}
+    ref = run_reference(spec, f"{name}-ref", blind=rst["blind"], blind_rows=(kill, restart), probe=restart, fp_since_slot=rst["ckpt"]["since_slot"])
     per_bot = {}
     ok = True
     for b in spec.bots:
@@ -262,29 +282,64 @@ def run_case(spec: Spec, plan: Sequence[tuple[str, int]], kill_row: int, downtim
                       "kinds_restarted": kinds(r), "start_records_restarted": sum(1 for x in rst["engine"].ledger.read_bot(b) if x.get("kind") == "start")}
         ok = ok and eq_o and eq_s and restart_excl == 0
     fp_eq = ref["fingerprint_at_probe"] == rst["fingerprint_at_restart"] and ref["open_at_probe"] == rst["open_at_restart"]
-    return {"name": name, "kill_row": kill_row, "downtime_rows": downtime_rows, "ckpt_lag_rows": ckpt_lag_rows, "kill": kill.as_dict(), "restart": restart.as_dict(),
-            "downtime_ms": rst["restart_ms"] - rst["kill_ms"], "open_at_restart": len(rst["open_at_restart"]), "fingerprint_equal": fp_eq, "per_bot": per_bot,
-            "restore_counters": dict(sorted(rst["restored"].items())), "equal": bool(ok and fp_eq)}
+    exits_blind = ref["driver"].counters.get("exits_blind_rows", 0)
+    return {"name": name, "kill_row": kill_row, "downtime_rows": downtime_rows, "ckpt_lag_events": ckpt_lag_events, "kill": kill.as_dict(), "restart": restart.as_dict(),
+            "downtime_ms": rst["restart_ms"] - rst["kill_ms"], "open_at_kill": len(rst["open_at_kill"]), "pending_sells_at_kill": len(rst["pending_at_kill"]),
+            "open_at_restart": len(rst["open_at_restart"]), "fingerprint_equal": fp_eq, "per_bot": per_bot, "restore_counters": dict(sorted(rst["restored"].items())),
+            "blind_rows_without_exit_decision": exits_blind, "equal": bool(ok and fp_eq)}
 
 
-def run_all(spec: Spec, kill_rows: Sequence[int], downtime_rows: Sequence[int], ckpt_lag_rows: int = 0) -> dict[str, Any]:
+def check_hours(tape_dir: Path, allow: tuple[str, str] | None) -> list[str]:
+    """B4: every hour file of the tape must lie inside the pinned exploration list [lo, hi). No list, or one hour outside it, is a refusal (not just a deny-list of names)."""
+    if allow is None:
+        raise Refused("no exploration allow-list given: the harness reads pinned exploration hours only")
+    lo, hi = allow
+    hours = sorted(C.tape_hours(tape_dir))
+    if not hours:
+        raise Refused("the tape dir holds no hour file")
+    bad = [h for h in hours if not (lo <= h < hi)]
+    if bad:
+        raise Refused(f"{len(bad)} tape hour(s) outside the allow-list [{lo}, {hi}): first {bad[0]}")
+    return hours
+
+
+def parse_allow(arg: str | None, exploration: str | None) -> tuple[str, str] | None:
+    """--exploration NAME picks a pinned list; --allow-hours LO:HI (hour keys, HI exclusive) may only NARROW it. Neither: None."""
+    if exploration is None:
+        if arg:
+            raise Refused("--allow-hours needs --exploration (it can only narrow a pinned list)")
+        return None
+    if exploration not in EXPLORATION:
+        raise Refused(f"unknown exploration list {exploration!r}; pinned: {sorted(EXPLORATION)}")
+    lo, hi = EXPLORATION[exploration]
+    if arg:
+        a, _, b = arg.partition(":")
+        if not (lo <= a < b <= hi):
+            raise Refused(f"--allow-hours {arg} is not inside the pinned list {exploration} [{lo}, {hi})")
+        lo, hi = a, b
+    return lo, hi
+
+
+def run_all(spec: Spec, kill_rows: Sequence[int], downtime_rows: Sequence[int], ckpt_lag_events: int = 0) -> dict[str, Any]:
+    check_hours(spec.tape_dir, spec.allow_hours)
     plan = tape_plan(spec.tape_dir)
     cases = []
     for k in kill_rows:
         for dt in downtime_rows:
-            cases.append(run_case(spec, plan, k, dt, ckpt_lag_rows, name=f"k{k}-d{dt}"))
+            cases.append(run_case(spec, plan, k, dt, ckpt_lag_events, name=f"k{k}-d{dt}"))
     return {"schema": SCHEMA, "tape_hours": [h for h, _ in plan], "tape_rows": sum(n for _, n in plan), "entries": len(spec.entries), "bots": spec.bots, "rule": spec.rule.name,
-            "margin_ms": spec.margin_ms, "cases": cases, "all_equal": all(c["equal"] for c in cases)}
+            "margin_ms": spec.margin_ms, "allow_hours": list(spec.allow_hours or []), "cases": cases, "all_equal": all(c["equal"] for c in cases)}
 
 
 def selftest(work: Path, kill_rows: Sequence[int] | None = None, downtime_rows: Sequence[int] = (0, 400), n_slots: int = 9000) -> dict[str, Any]:
     span = n_slots * SLOT_MS
     base = 1_790_316_000_000 - (1_790_316_000_000 % H_MS) + H_MS - int(span * 0.4)  # the tape starts 40% of its span before a UTC hour mark and crosses it
     tape = work / "tape"
-    write_tape(tape, synthetic_rows(base, n_slots), compress_closed=True)
-    spec = Spec(tape, synthetic_entries(base, n_slots), work / "runs", rule=C.StopTargetTimeRule(max_hold_ms=span // 6))
+    hours = write_tape(tape, synthetic_rows(base, n_slots), compress_closed=True)
+    spec = Spec(tape, synthetic_entries(base, n_slots), work / "runs", rule=C.StopTargetTimeRule(max_hold_ms=span // 6), allow_hours=(hours[0], C.hour_key(C.hour_start_ms(hours[-1]) + H_MS)),
+                margin_ms=60_000)
     n = sum(c for _, c in tape_plan(tape))
-    return run_all(spec, kill_rows or [n // 10, n // 4, n // 2, (3 * n) // 5, (9 * n) // 10], downtime_rows, ckpt_lag_rows=25)
+    return run_all(spec, kill_rows or [n // 10, n // 4, n // 2, (3 * n) // 5, (9 * n) // 10], downtime_rows, ckpt_lag_events=0)
 
 
 def load_entries(path: Path) -> list[C.LoggedEntry]:
@@ -302,7 +357,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--work-dir", required=True)
     ap.add_argument("--kill-rows", default="", help="comma list of absolute row indexes (rows consumed before the kill)")
     ap.add_argument("--downtime-rows", default="0", help="comma list: rows between the kill and the restart")
-    ap.add_argument("--ckpt-lag-rows", type=int, default=0)
+    ap.add_argument("--ckpt-lag-events", type=int, default=0, help="how many checkpoint events old the checkpoint is")
+    ap.add_argument("--exploration", help="a pinned exploration list (explore-0814); required with --tape-dir")
+    ap.add_argument("--allow-hours", help="LO:HI hour keys (HI exclusive) narrowing the pinned list")
     ap.add_argument("--margin-ms", type=int, default=C.REPLAY_MARGIN_MS_DEFAULT)
     ap.add_argument("--sps", type=float, default=0.4, help="constant seconds per slot; 0 = the engine's own slot clock")
     ap.add_argument("--selftest-slots", type=int, default=9000, help="slots (0.4 s each) of the synthetic tape")
@@ -321,8 +378,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             ents = load_entries(check_path(a.entries_jsonl, "entries-jsonl"))
             if not ents:
                 raise Refused("no entry decisions in --entries-jsonl")
-            spec = Spec(tape, ents, work / "runs", sps=a.sps or None, margin_ms=a.margin_ms)
-            rep = run_all(spec, [int(x) for x in a.kill_rows.split(",") if x], dts, a.ckpt_lag_rows)
+            spec = Spec(tape, ents, work / "runs", sps=a.sps or None, margin_ms=a.margin_ms, allow_hours=parse_allow(a.allow_hours, a.exploration))
+            rep = run_all(spec, [int(x) for x in a.kill_rows.split(",") if x], dts, a.ckpt_lag_events)
     except (Refused, C.ContinuityRefused) as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 2
