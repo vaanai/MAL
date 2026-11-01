@@ -6,5 +6,5 @@ set -eu
 OUT="${1:?usage: arena-tip-equiv.sh <out_dir> [args]}"
 shift
 HERE="$(cd "$(dirname "$0")" && pwd)"
-exec systemd-run --user --scope -q -p MemoryMax=8G -p MemorySwapMax=0 nice -n 10 timeout 14400 \
+exec systemd-run --user --scope -q -p MemoryMax=8G -p MemorySwapMax=0 nice -n 19 ionice -c3 timeout 14400 \
     /data/mal/venv/bin/python -s "$HERE/arena_tip_equiv.py" --out "$OUT" "$@"

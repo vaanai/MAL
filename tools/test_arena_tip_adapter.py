@@ -18,11 +18,30 @@ import pytest
 os.environ.setdefault("MAL_ARENA_TEST", "1")
 
 from tools import arena_tip_adapter as ta  # noqa: E402
-from tools import r4b_tip_reader as tr  # noqa: E402
+from tools import arena_tip_reader as tr  # noqa: E402
 from tools.arena_paper import MIN_FREE_PCT_FLOOR, ArenaEngine, StackConfig  # noqa: E402
 from tools.arena_state import ArenaState  # noqa: E402
 from tools.test_fast_tip_follower import Rpc, _follower, _seed  # noqa: E402,F401
-from tools.test_r4b_tip_reader import SetClock, put, write_state  # noqa: E402
+
+
+class SetClock:
+    def __init__(self, ms: int) -> None:
+        self.ms = ms
+
+    def __call__(self) -> int:
+        return self.ms
+
+
+def write_state(state: Path, **kw) -> None:
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "checkpoint.json").write_text(json.dumps({"last_done": None, "last_t_recv_ms": 0, "gaps": 0, "skipped": 0, "writing": None, **kw}))
+
+
+def put(d: Path, name: str, rows: list, mode: str = "w") -> None:
+    d.mkdir(parents=True, exist_ok=True)
+    with open(d / name, mode) as fh:
+        for r in rows:
+            fh.write((r if isinstance(r, str) else json.dumps(r, separators=(",", ":"))) + "\n")
 
 WSOL = "So11111111111111111111111111111111111111112"
 B = int(datetime(2026, 11, 1, 6, 0, tzinfo=timezone.utc).timestamp())
@@ -173,7 +192,7 @@ def order_key_scenario() -> list[str]:
 def test_every_reader_gap_reason_becomes_a_data_loss_row(reason):
     rows = ta.ArenaTipAdapter().feed([("trade", wt(10)), ("gap", tr.TipGap(11, 11, reason, T0 + 4400, 1)), ("trade", wt(12))])
     g = [r for r in rows if r["type"] == "gap"]
-    assert len(g) == 1 and g[0]["data_loss"] is True and g[0]["kind"] == tr.TipGap(11, 11, reason, None).code and g[0]["prog"] == "all" and g[0]["missed_slots"] == 1
+    assert len(g) == 1 and g[0]["data_loss"] is True and g[0]["kind"] == ta.gap_kind(reason) == f"tip_gap_{reason}" and g[0]["prog"] == ("pumpswap" if reason == "unresolved_dropped" else "all") and g[0]["missed_slots"] == 1
 
 
 def test_a_gap_beyond_the_released_slots_waits_and_then_goes_out():
@@ -198,23 +217,152 @@ def test_a_gap_with_no_instant_anywhere_waits_for_the_first_row():
     assert [r["type"] for r in out] == ["gap", "trade"] and out[0]["to_ms"] == T0 + 777
 
 
-def bad_row_scenario() -> list[str]:
+def resolved_row(slot: int, i: int = 1) -> dict:
+    """What a PumpSwap print that came back through resolve_unresolved looks like: no tx_index key at all."""
+    r = wt(slot, i, venue="pumpswap")
+    del r["tx_index"]
+    return r
+
+
+def no_tx_scenario() -> list[str]:
+    """QP on #1165: the rows without tx_index PASS THROUGH (no key, receive-order form), are counted, and are neither dropped nor marked as loss."""
     bad = []
-    resolved = wt(20, 1, venue="pumpswap")
-    del resolved["tx_index"]  # what resolve_unresolved gives: a row that came back through an account lookup has no tx_index
     ad = ta.ArenaTipAdapter()
-    rows = ad.feed([("trade", wt(19)), ("trade", resolved), ("trade", wt(20, 2)), ("trade", wt(21))])
-    if [r["type"] for r in rows] != ["trade", "gap", "trade", "trade"]:
-        return [f"order {[r['type'] for r in rows]}"]
-    g = rows[1]
-    if not (g["kind"] == "tip_gap_bad_row_tx_index" and g["data_loss"] and g["from_slot"] == g["to_slot"] == 20 and ad.stats["rows_dropped_tx_index"] == 1):
-        bad.append(f"gap {g}")
-    bad += [f"row without tx_index passed: {r['signature']}" for r in rows if r["type"] == "trade" and not isinstance(r.get("tx_index"), int)]
+    a, b = resolved_row(20, 1), resolved_row(20, 2)
+    b["pool"], b["signature"] = a["pool"], "s20x9"  # two transactions of ONE pool in one slot, both without tx_index
+    rows = ad.feed([("trade", wt(19)), ("trade", a), ("trade", b), ("trade", wt(21, 3, venue="pumpswap"))])
+    if [r["type"] for r in rows] != ["trade"] * 4:
+        return [f"row types {[r['type'] for r in rows]}"]
+    if any("tx_index" in r for r in rows[1:3]) or rows[3].get("tx_index") != 3:
+        bad.append("tx_index key present on a pass-through row, or lost on a numbered one")
+    keys = [ArenaEngine.order_key(r, r["slot"], r["t_recv_ms"]) for r in rows[1:3]]
+    if keys != [(20, 1, a["t_recv_ms"], a["signature"], 0), (20, 1, b["t_recv_ms"], "s20x9", 0)]:
+        bad.append(f"receive-order keys {keys}")
+    c = ad.counts()
+    if not (c["rows_no_tx_index"] == 2 and c["pool_slots_no_tx_index"] == 1 and c["pool_slots_multi_sig"] == 1 and c.get("pool_slots_mixed", 0) == 0 and not c.get("gap_rows")):
+        bad.append(f"counts {c}")
     return bad
 
 
-def test_a_row_without_tx_index_is_dropped_and_marked_never_passed_on():
-    assert bad_row_scenario() == []
+def test_a_pumpswap_row_without_tx_index_passes_through_with_the_receive_order_key_and_is_counted():
+    assert no_tx_scenario() == []
+
+
+def test_the_engine_keeps_a_consistent_order_when_the_two_key_forms_meet_in_one_pool(tmp_path):
+    ad = ta.ArenaTipAdapter()
+    items = []
+    for s in range(100, 112):
+        row = wt(s, 0, venue="pumpswap", pool="PX", signature=f"z{s}", base_reserve=206 * 10**12 + s)
+        row["pool"] = "PX"
+        if s % 3 == 0:
+            del row["tx_index"]  # whole (pool, slot) group without tx_index: no mixing inside a slot
+        items.append(("trade", row))
+        if s % 4 == 0:
+            r2 = wt(s, 1, venue="pumpswap", signature=f"y{s}")
+            r2["pool"] = "PX"
+            if s % 3 == 0:
+                del r2["tx_index"]
+            items.append(("trade", r2))
+    rows = ad.feed(items)
+    eng = mk_engine(tmp_path)
+    for r in rows:
+        eng.on_row(r)
+    h = eng.pools["PX"]
+    assert h.keys == sorted(h.keys) and len(h.keys) == len(rows) and eng.counters.get("rows_dup", 0) == 0
+    assert [k[0] for k in h.keys] == sorted(k[0] for k in h.keys)  # slot is the first element on both forms
+    assert {k[1] for k in h.keys} == {0, 1} and ad.counts().get("pool_slots_mixed", 0) == 0
+
+
+def test_a_mixed_pool_slot_group_is_a_pumpswap_data_loss_gap_before_the_row_that_revealed_it():
+    ad = ta.ArenaTipAdapter()
+    a, b = resolved_row(20, 1), wt(20, 2, venue="pumpswap")
+    a["pool"] = b["pool"] = "PM"
+    rows = ad.feed([("trade", a), ("trade", b)])
+    assert [r["type"] for r in rows] == ["trade", "gap", "trade"] and rows[1]["prog"] == "pumpswap" and rows[1]["kind"] == "tip_gap_mixed_tx_index" and rows[1]["data_loss"] is True
+    assert ad.counts()["pool_slots_mixed"] == 1 and ad.stats["gap_rows"] == 1
+
+
+def test_a_bonding_row_without_tx_index_is_still_dropped_and_marked_with_its_own_prog():
+    bonding = wt(21)
+    del bonding["tx_index"]
+    ad = ta.ArenaTipAdapter()
+    rows = ad.feed([("trade", wt(20)), ("trade", bonding), ("trade", wt(22))])
+    g = [r for r in rows if r["type"] == "gap"]
+    assert [r["type"] for r in rows] == ["trade", "gap", "trade"] and g[0]["prog"] == "pumpfun" and g[0]["kind"] == "tip_gap_bad_row_tx_index" and ad.stats["rows_dropped_tx_index"] == 1
+
+
+def test_gap_kinds_are_never_truncated_and_progs_follow_the_loss():
+    assert ta.gap_kind("skip_contradicted_refetch") == "tip_gap_skip_contradicted_refetch" and len(ta.gap_kind("skip_contradicted_refetch")) > 32
+    assert ta.gap_prog(tr.TipGap(1, 1, "unresolved_dropped", 1)) == "pumpswap" and ta.gap_prog(tr.TipGap(1, 9, "backlog_jump", 1)) == "all"
+    bad_ps = wt(21, venue="pumpswap", side="hold")
+    rows = ta.ArenaTipAdapter().feed([("trade", wt(20)), ("trade", bad_ps), ("trade", wt(22))])
+    assert [r["prog"] for r in rows if r["type"] == "gap"] == ["pumpswap"]
+
+
+def test_real_decoder_and_follower_rows_from_resolve_unresolved_pass_through(tmp_path):
+    """The REAL rows_from_block + resolve_unresolved path inside the REAL TipFollower: a PumpSwap sell whose pool is not in the cache comes back through the account lookup."""
+    from observe.trade_decode import WSOL_MINT
+    from tools.test_fast_tip_follower import _block, _line
+
+    blk = _block(5)
+    blk["transactions"][0]["meta"]["logMessages"] = [_line("pumpswap_sell_event.b64")]
+    blk["transactions"] += _block(5)["transactions"][:0]
+    rpc = Rpc(tip=5, script={5: [blk]})
+    f = _follower(tmp_path, rpc, clock=SetClock(T0), lookup=lambda pools: {pools[0]: ("Mint111", WSOL_MINT)})
+    f.precreate(T0)
+    _seed(f, 4)
+    f.step()
+    walker = [json.loads(x) for p in (tmp_path / "out").glob("trades-*.jsonl") for x in p.read_text().splitlines()]
+    assert len(walker) == 1 and walker[0]["mint"] == "Mint111" and "tx_index" not in walker[0]  # the fact the QP measured on exploration data, from the real code
+    healthy(tmp_path / "state", T0)
+    src = ta.ArenaTipSource(tr.TipReader(tmp_path / "out", tmp_path / "state", start_ms=T0, catch_up_hours=0), tmp_path / "state", now_ms=lambda: T0, io_hook=lambda: True)
+    src.start()
+    rows = src.poll()
+    assert [r["type"] for r in rows] == ["trade"] and "tx_index" not in rows[0] and rows[0]["prog"] == "pumpswap" and not src.adapter.stats["gap_rows"]
+    assert ArenaEngine.order_key(rows[0], rows[0]["slot"], rows[0]["t_recv_ms"])[:2] == (5, 1) and src.adapter.counts()["rows_no_tx_index"] == 1
+
+
+def test_the_vendored_reader_is_the_r4b_reader_byte_for_byte():
+    """A test, not an arena process (the class of tools/test_arena_stack.py): it opens the source file to prove identity."""
+    import hashlib
+
+    root = Path(ta.__file__).parent
+    vend = (root / "arena_tip_reader.py").read_text()
+    marker = "# ---- end of the vendoring header; the rest of this file is tools/r4b_tip_reader.py byte for byte ----\n"
+    head, body = vend.split(marker, 1)
+    src_bytes = (root / "r4b_tip_reader.py").read_bytes()
+    assert body.encode() == src_bytes
+    blob = hashlib.sha1(b"blob %d\0" % len(src_bytes) + src_bytes).hexdigest()
+    assert f"source blob   {blob}" in head, "re-vendor tools/arena_tip_reader.py from the new tools/r4b_tip_reader.py and re-review it"
+    assert tr.PINNED_BLOBS == __import__("tools.fast_tip_follower", fromlist=["x"]).PINNED_DECODER_BLOBS
+    for mod in ("arena_tip_adapter", "arena_tip_reader"):
+        assert "from tools import r4b" not in (root / f"{mod}.py").read_text() and "import tools.r4b" not in (root / f"{mod}.py").read_text()  # no arena module imports an r4b module
+
+
+def test_the_output_delta_against_the_feed_is_exactly_the_documented_one():
+    """Real decoder records: the keys the feed writes (unslimmed record minus TRADE_DROP) against the keys the adapter writes from the real walker (slim) row."""
+    from observe.trade_decode import records_from_logs
+    from tools.pump_history_backfill import rows_from_block
+    from tools.test_fast_tip_follower import _line
+
+    drop = arena_feed_consts()["TRADE_DROP"]
+    line = _line("pumpswap_sell_event.b64")
+    feed_rec = records_from_logs([line], slot=5, signature="sg", t_recv_ms=1, commitment="confirmed", feed="x", pool_mints={}, event_v=True)[0]
+    feed_keys = {k for k in feed_rec if k not in drop}
+    blk = {"slot": 5, "blockTime": 1790318932, "parentSlot": 4, "transactions": [{"meta": {"err": None, "logMessages": [line]}, "transaction": {"signatures": ["sg"]}}]}
+    pool_mints = {feed_rec["pool"]: ("Mint111", WSOL)}
+    walker = rows_from_block(blk, pool_mints, "x", event_v=True)["trades"][0]
+    out = ta.trade_row({**walker, "t_recv_ms": 1, "source": "tip", "tx_index": 0})
+    tip_keys = set(out) - {"v", "type", "prog", "slot", "t_recv_ms", "signature", "event_index", "tx_index", "block_time"}
+    assert feed_keys - tip_keys == ta.FEED_ONLY_KEYS["pumpswap"], sorted(feed_keys - tip_keys)  # exactly the documented loss ...
+    assert tip_keys - feed_keys == set()  # ... and nothing the feed does not write
+    # what the loss does to ArenaState: constant product on the base move instead of pool_quote_amount + lp_fee
+    from tools.arena_state import pumpswap_post
+
+    q, b = int(feed_rec["quote_reserve"]) + int(feed_rec["virtual_quote_reserves"]), int(feed_rec["base_reserve"])
+    full = pumpswap_post(q, b, feed_rec["side"] == "buy", int(feed_rec["sol_lamports"]), int(feed_rec["token_raw"]), feed_rec.get("lp_fee"), feed_rec.get("pool_quote_amount"))
+    fallback = pumpswap_post(q, b, feed_rec["side"] == "buy", int(feed_rec["sol_lamports"]), int(feed_rec["token_raw"]), None, None)
+    assert full != fallback and feed_rec.get("lp_fee") is not None  # the state's price falls back: a documented difference, not hidden
 
 
 @pytest.mark.parametrize("patch", [{"venue": "other"}, {"side": "hold"}, {"sol_lamports": "1"}, {"signature": ""}, {"slot": True}])
@@ -225,7 +373,7 @@ def test_other_unusable_rows_are_dropped_and_marked(patch):
 
 
 # ------------------------------------------------------------------------------------------------------------------------------------ mutations of the adapter
-@pytest.mark.parametrize("name", ["no_flush", "not_data_loss", "skip_is_gap", "gap_at_end", "tx_index_stripped", "bad_row_passes"])
+@pytest.mark.parametrize("name", ["no_flush", "not_data_loss", "skip_is_gap", "gap_at_end", "tx_index_stripped", "no_tx_dropped", "no_tx_marked_gap"])
 def test_mutations_are_caught(tmp_path, monkeypatch, name):
     if name == "no_flush":
         monkeypatch.setattr(ta.ArenaTipAdapter, "_flush", lambda self, out, upto_slot, next_t: None)
@@ -242,15 +390,21 @@ def test_mutations_are_caught(tmp_path, monkeypatch, name):
     elif name == "tx_index_stripped":
         orig_t = ta.trade_row
         monkeypatch.setattr(ta, "trade_row", lambda w: {k: v for k, v in orig_t(w).items() if k != "tx_index"})
-    elif name == "bad_row_passes":
+    elif name in ("no_tx_dropped", "no_tx_marked_gap"):
         orig_t = ta.trade_row
-        monkeypatch.setattr(ta, "trade_row", lambda w: orig_t({**w, "tx_index": w.get("tx_index", 0)}))
+
+        def strict(w):
+            if w.get("tx_index") is None and w.get("venue") == "pumpswap":
+                raise ta.BadRow("tx_index")  # the 451bac48 behaviour: drop the row and mark a data_loss gap
+            return orig_t(w)
+
+        monkeypatch.setattr(ta, "trade_row", strict)
     if name == "skip_is_gap":
         assert skip_scenario(tmp_path) != []
     elif name == "tx_index_stripped":
         assert order_key_scenario() != []
-    elif name == "bad_row_passes":
-        assert bad_row_scenario() != []
+    elif name in ("no_tx_dropped", "no_tx_marked_gap"):
+        assert no_tx_scenario() != []
     else:
         assert gap_scenario(tmp_path) != []
 
@@ -440,7 +594,9 @@ def test_mutation_releasing_rows_beyond_D_is_caught(tmp_path, monkeypatch):
 def test_the_followers_real_status_has_the_lag_fields_the_delay_helper_reads(tmp_path):
     f = _follower(tmp_path, Rpc(tip=0), clock=SetClock(T0))
     assert {"lag_ms", "block_lag_ms_p50", "block_lag_ms_p90", "lag_slots", "ts_ms"} <= set(f.status())
-    assert {"last_done", "last_t_recv_ms", "gaps"} <= set(json.loads(f.ckpt_path.read_text())) if f.ckpt_path.exists() else True
+    f.process_slot(1)  # a commit writes checkpoint.json (no lag fields in it: the block lag is read from status.json)
+    ck = json.loads(f.ckpt_path.read_text())
+    assert {"last_done", "last_t_recv_ms", "gaps", "skipped", "writing"} <= set(ck) and not {"lag_ms", "block_lag_ms_p90"} & set(ck)
 
 
 def test_feed_delay_from_samples_is_the_p90_in_whole_slots(tmp_path):
@@ -454,6 +610,7 @@ def test_feed_delay_from_samples_is_the_p90_in_whole_slots(tmp_path):
     r = ta.feed_delay_slots(samples, 0.4)
     assert r["n"] == 200 and r["p90_ms"] == 2790 and r["d"] == 7 and r["d_median"] == 5 and r["max_ms"] == 2990
     assert ta.feed_delay_slots([{"block_lag_ms_p90": 2000}] * 100, 0.4)["d"] == 5
+    assert ta.feed_delay_slots([{"block_lag_ms_p90": 2000}] * 100, 0.4, ingest_lag_ms=150)["d"] == 6  # (2000 + 150) / 400 = 5.375 -> 6
     with pytest.raises(ValueError):
         ta.feed_delay_slots(samples[:10], 0.4)
     with pytest.raises(ValueError):

@@ -7,6 +7,7 @@ tx_index, drops event V, or the reader's hour-rollover tail is off).
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import random
 from pathlib import Path
@@ -16,7 +17,7 @@ import pytest
 os.environ.setdefault("MAL_ARENA_TEST", "1")
 
 from tools import arena_tip_adapter as ta  # noqa: E402
-from tools import r4b_tip_reader as tr  # noqa: E402
+from tools import arena_tip_reader as tr  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("arena_tip_equiv", ROOT / "scripts" / "research" / "arena_tip_equiv.py")
@@ -26,13 +27,13 @@ spec.loader.exec_module(eq)
 WSOL = eq.WSOL
 H = (1_793_000_000 // 3600 + 1) * 3600  # an hour mark
 S0 = 1000
-LEAD = 600  # seconds before the hour mark at which the stream starts
+LEAD = 300  # seconds before the hour mark at which the stream starts
 VMAP = {"P0": 17_600_000_000.0, "P1": 17_600_000_000.0, "P2": 17_600_000_000.0}
 CFG = {**eq.FROZEN, "hot_every": 9, "hot_every_bonding": 6, "holds_ms": [20_000, 45_000, 90_000], "quiet_slots": 300}
 
 
-def stream(n_slots: int = 2000, seed: int = 1) -> list[tuple[str, dict]]:
-    """Walker-format rows in slot order, 0.4 s per slot, starting 600 s before an hour mark; PumpSwap pools P0..P2 (exploration style: no event V, except P2 whose rows carry a V
+def stream(n_slots: int = 1200, seed: int = 1) -> list[tuple[str, dict]]:
+    """Walker-format rows in slot order, 0.4 s per slot, starting 300 s before an hour mark; PumpSwap pools P0..P2 (exploration style: no event V, except P2 whose rows carry a V
     that differs from the map), bonding mints M3, M4. Within a slot the tx_index order differs from the signature order."""
     rnd = random.Random(seed)
     seq: list[tuple[str, dict]] = []
@@ -42,8 +43,11 @@ def stream(n_slots: int = 2000, seed: int = 1) -> list[tuple[str, dict]]:
     seq.append(("create", {"type": "create", "mint": "M3", "creator": "c", "slot": S0, "signature": "cr", "event_index": 0, "tx_index": 1, "block_time": H - LEAD, "is_mayhem_mode": False,
                            "name": "n", "symbol": "s"}))
     for s in range(S0 + 1, S0 + 1 + n_slots):
+        if s % 13 == 0:
+            continue  # a hole in the slot sequence: the harness records it as a skipped slot (H4)
         bt = H - LEAD + int((s - S0) * 0.4)
         txs = sorted(rnd.sample(range(12), rnd.randint(2, 5)))
+        notx = s % 7 if s % 7 < 3 else None  # every print of this pool in this slot came back through resolve_unresolved: no tx_index (no mixing inside a (pool, slot))
         for tx in txs:
             k = rnd.randrange(5)
             base = {"mint": f"M{k}", "trader": f"t{rnd.randrange(9)}", "side": rnd.choice(("buy", "sell")), "sol_lamports": rnd.randint(10**7, 3 * 10**9), "token_raw": rnd.randint(10**5, 10**8),
@@ -54,12 +58,15 @@ def stream(n_slots: int = 2000, seed: int = 1) -> list[tuple[str, dict]]:
                     base["virtual_quote_reserves"] = 17_650_000_000
             else:
                 base.update({"venue": "pump_bonding", "pool": None, "quote_reserve": 30 * 10**9 + s * 1000, "base_reserve": 10**15 - s * 10**6})
+            if k == notx:
+                del base["tx_index"]
             seq.append(("trade", base))
     return seq
 
 
 def run(tmp_path: Path, **kw) -> dict:
-    return eq.run_equiv(stream(), tmp_path / "run", VMAP, tr.hour_key(H - LEAD), cfg=CFG, min_decisions=10, **kw)
+    kw.setdefault("skip_every", 3)
+    return eq.run_equiv(kw.pop("seq", None) or stream(), tmp_path / "run", VMAP, tr.hour_key(H - LEAD), cfg=CFG, min_decisions=10, require_no_tx=True, **kw)
 
 
 def test_the_frozen_config_is_pinned():
@@ -74,8 +81,50 @@ def test_the_adapter_output_is_decision_equivalent_to_the_walker_rows_across_an_
     assert w["ledger_kinds"].get("open", 0) >= 10 and (w["ledger_kinds"].get("trade", 0) + w["ledger_kinds"].get("excluded", 0)) >= 5, w["ledger_kinds"]
     assert w["rows_in"] < t["rows_in"]  # the tip arm also gets pool_create / create rows (inert for the engine); the walker arm only the trades
     assert {p.name for p in (tmp_path / "run" / "tip").glob("trades-*.jsonl")} == {f"trades-{tr.hour_key(H - LEAD)}.jsonl", f"trades-{tr.hour_key(H)}.jsonl"}  # rows cross the hour files
-    assert rep["tip_stats"]["adapter"].get("gap_rows", 0) == 0 and rep["tip_stats"]["adapter"]["rows_trade"] == w["rows_in"]
+    ad = rep["tip_stats"]["adapter"]
+    assert ad.get("gap_rows", 0) == 0 and ad["rows_trade"] == w["rows_in"] and ad["rows_no_tx_index"] == rep["built"]["walker_rows_no_tx_index"] > 0  # the pass-through rows reach both arms
+    assert ad["skips"] == rep["built"]["skips_injected"] > 0 and rep["projection_n"] == rep["built"]["projection_n"] > 0 and ad.get("pool_slots_mixed", 0) == 0
+    assert rep["equal"]["projection"] and rep["equal"]["skips"] and rep["equal"]["no_tx_index_rows"] and rep["peak_rss_mb"] > 0 and rep["schema"] == "arena_tip_equiv_v2"
     assert rep["config_md5"] != eq.FROZEN_MD5 and rep["lag_ms"] == 1800
+
+
+def write_clean(root: Path, seq: list[tuple[str, dict]], window: str = "w7") -> None:
+    """The exploration layout: <clean>/<w>/{trades,creates,migrations}/<kind>-<hour of block_time>.jsonl.zst (zstd CLI), rows in file order shuffled by the writer's choice."""
+    import subprocess
+
+    plural = {"trade": "trades", "create": "creates", "migration": "migrations"}
+    buckets: dict[tuple[str, str], list[str]] = {}
+    for kind, w in reversed(seq):  # reversed: the loader must sort
+        buckets.setdefault((plural[kind], tr.hour_key(w["block_time"])), []).append(json.dumps(w, separators=(",", ":")))
+    for (sub, h), lines in buckets.items():
+        d = root / window / sub
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{sub}-{h}.jsonl").write_text("\n".join(lines) + "\n")
+        subprocess.run(["zstd", "-q", "-f", "--rm", str(d / f"{sub}-{h}.jsonl")], check=True)
+
+
+def test_load_walker_labels_every_kind_right_and_keeps_the_order(tmp_path):
+    """H1 of QP on #1165: a generator expression inside the loop read `kind` lazily and labelled every create and migration a trade."""
+    seq = stream(300)
+    write_clean(tmp_path, seq)
+    h0, h1 = tr.hour_key(H - LEAD), tr.hour_key(H + 3600)
+    got = list(eq.load_walker(tmp_path, ("w7",), h0, h1))
+    want_kinds = {k: sum(1 for kk, _ in seq if kk == k) for k in ("trade", "create", "migration")}
+    assert {k: sum(1 for kk, _ in got if kk == k) for k in want_kinds} == want_kinds and want_kinds["create"] == 1 and want_kinds["migration"] == 3
+    assert all((r["type"] == "create") == (k == "create") for k, r in got if k != "trade") and all("type" not in r or r["type"] != "create" for k, r in got if k == "trade")
+    key = lambda kr: (kr[1]["slot"], {"migration": 0, "create": 1, "trade": 2}[kr[0]], kr[1].get("tx_index", -1))  # noqa: E731
+    assert [key(x) for x in got] == sorted(key(x) for x in got) and len(got) == len(seq)
+    assert len(list(eq.load_walker(tmp_path, ("w7",), h0, h1, max_items=50))) == 50
+    with pytest.raises(eq.Refused, match="no trades file"):
+        list(eq.load_walker(tmp_path, ("w7",), tr.hour_key(H - LEAD - 7200), h1))
+
+
+def test_the_harness_runs_end_to_end_through_the_real_loader(tmp_path):
+    seq = stream(300)
+    write_clean(tmp_path / "clean", seq)
+    h0 = tr.hour_key(H - LEAD)
+    rep = eq.run_equiv(lambda: eq.load_walker(tmp_path / "clean", ("w7",), h0, tr.hour_key(H + 3600)), tmp_path / "run", VMAP, h0, cfg=CFG, min_decisions=5, skip_every=3, require_no_tx=True)
+    assert rep["verdict"] == "PASS" and rep["built"]["projection_n"] == 4 and rep["equal"]["projection"], rep["equal"]
 
 
 def test_scratch_is_removed_unless_kept(tmp_path):
@@ -83,13 +132,22 @@ def test_scratch_is_removed_unless_kept(tmp_path):
     assert not (tmp_path / "run" / "tip").exists() and not (tmp_path / "run" / "W").exists()
 
 
-@pytest.mark.parametrize("name", ["tx_index_dropped", "event_v_dropped", "rollover_tail_off"])
+@pytest.mark.parametrize("name", ["tx_index_dropped", "event_v_dropped", "rollover_tail_off", "no_tx_rows_dropped"])
 def test_the_harness_fails_when_the_adapter_or_reader_is_wrong(tmp_path, monkeypatch, name):
     if name == "tx_index_dropped":
         orig = ta.trade_row
         monkeypatch.setattr(ta, "trade_row", lambda w: {k: v for k, v in orig(w).items() if k != "tx_index"})
     elif name == "event_v_dropped":
         monkeypatch.setattr(ta, "TRADE_DROP", ta.TRADE_DROP | {"virtual_quote_reserves"})
+    elif name == "no_tx_rows_dropped":  # the 451bac48 behaviour
+        orig = ta.trade_row
+
+        def strict(w):
+            if w.get("tx_index") is None and w.get("venue") == "pumpswap":
+                raise ta.BadRow("tx_index")
+            return orig(w)
+
+        monkeypatch.setattr(ta, "trade_row", strict)
     else:
         monkeypatch.setattr(tr.TipReader, "_last_hour", lambda self, last_t_ms: self.h)
     rep = run(tmp_path)
@@ -123,5 +181,5 @@ def test_the_job_script_is_plain_sh_with_a_scope_cap_and_no_pipe():
     p = ROOT / "scripts" / "research" / "arena-tip-equiv.sh"
     txt = p.read_text()
     assert subprocess.run(["sh", "-n", str(p)]).returncode == 0 and txt.startswith("#!/bin/sh") and (p.stat().st_mode & 0o111)
-    assert "PIPESTATUS" not in txt and "[[" not in txt and "MemoryMax=8G" in txt and "systemd-run --user --scope" in txt and "arena_tip_equiv.py" in txt
+    assert "PIPESTATUS" not in txt and "[[" not in txt and "MemoryMax=8G" in txt and "nice -n 19 ionice -c3" in txt and "systemd-run --user --scope" in txt and "arena_tip_equiv.py" in txt
     assert not any("|" in ln.replace("||", "") for ln in txt.splitlines() if not ln.lstrip().startswith("#"))
