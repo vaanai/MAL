@@ -65,6 +65,7 @@ from tools.arena_zst import open_zst
 SCHEMA_CKPT = "arena_tip_engine_checkpoint_v1"
 CKPT_NAME = "engine-checkpoint.json"
 H_MS = 3_600_000
+FP_SLOT_MARGIN = 100  # slots (40 s) before the oldest open position's entry slot: the fingerprint's lower bound (its pricing reads a 2 s window)
 SPS_WINDOW_MS = 300_000  # tools/h5_shadow.SPS_WINDOW_S: the slot clock's rolling window
 REPLAY_MARGIN_MS_DEFAULT = 2 * SPS_WINDOW_MS  # before the oldest open position: the clock window twice over (the nearby window is 2 s, V is per print)
 _HOUR_RE = re.compile(r"^tape-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl(\.zst)?$")
@@ -405,18 +406,20 @@ def row_id(row: Mapping[str, Any]) -> list[Any] | None:
     return [int(row["slot"]), row.get("signature"), row.get("event_index"), int(row["t_recv_ms"])]
 
 
-def engine_fingerprint(engine: ArenaEngine, pools: Sequence[str] | None = None, since_slot: int | None = None) -> str:
-    """md5 of the state a restart must reproduce: for each pool (default: those with an open position) the prints from `since_slot` on (keys, slots, reserves, V and its source) and the pool's
-    V carry, the engine's high-water marks, its gaps (those starting at or after since_slot), and the slot clock's sps. Names, counts and md5s only leave this function."""
+def engine_fingerprint(engine: ArenaEngine, pools: Sequence[str] | None = None, from_slot: int | None = None) -> str:
+    """md5 of the state a restart must reproduce: for each pool (default: those with an open position) the prints from `from_slot` on (keys, slots, reserves, V and its source) and the pool's
+    V carry, the engine's high-water marks, its gaps (those ending at or after from_slot), and the slot clock's sps. `from_slot` is the oldest slot an open position can still read (its
+    entry slot minus a margin): older prints may differ between a live engine and a replay without changing any price (HV7's housekeeping trims idle pools before they get a position; the replay
+    holds them from the start). Names, counts and md5s only leave this function."""
     names = sorted(pools if pools is not None else {p.pool for p in engine.positions.values()})
     body: dict[str, Any] = {}
     for n in names:
         h = engine.pools.get(n)
         if h is None:
             continue
-        i0 = bisect.bisect_left(h.slot, since_slot) if since_slot is not None else 0
+        i0 = bisect.bisect_left(h.slot, from_slot) if from_slot is not None else 0
         body[n] = [[list(k) for k in h.keys[i0:]], h.slot[i0:], h.q[i0:], h.b[i0:], h.v[i0:], h.vsrc[i0:], h.last_v_row]
-    gaps = [[g.prog, g.t_lo, g.t_hi, g.s_lo, g.s_hi, g.kind] for g in engine.gaps if since_slot is None or g.s_lo >= since_slot]
+    gaps = [[g.prog, g.t_lo, g.t_hi, g.s_lo, g.s_hi, g.kind] for g in engine.gaps if from_slot is None or g.s_hi >= from_slot]
     sps = engine.sps()
     return hashlib.md5(canon({"pools": body, "hw_slot": engine.hw_slot, "hw_ms": engine.hw_ms, "gaps": gaps, "sps": None if sps is None else round(sps, 9)}).encode()).hexdigest()
 
@@ -469,9 +472,11 @@ class CheckpointRecorder:
         warm = min(opens + [eng.hw_ms if eng.hw_ms is not None else rid[3]]) - self.margin_ms
         since = self.hour_min_slot.get(hour_key(warm))
         pools = sorted({p.pool for p in eng.positions.values()})
+        sds = [p.sd for p in eng.positions.values() if not p.restarted]
+        fp_from = None if since is None else max(since, min(sds) - FP_SLOT_MARGIN) if sds else since
         cur = self.cursor_fn() if self.cursor_fn else None
         ck = {"schema": SCHEMA_CKPT, "last_row_id": rid, "cursor": cur.as_dict() if cur is not None else None, "now_ms": int(eng.now_fn()), "warm_from_ms": warm, "since_slot": since,
-              "pools": pools, "fp": None if since is None else engine_fingerprint(eng, pools, since), "priced": priced_to_json(eng.priced), "n_open": len(opens), "engine_id": eng.engine_id}
+              "fp_from_slot": fp_from, "pools": pools, "fp": None if fp_from is None else engine_fingerprint(eng, pools, fp_from), "priced": priced_to_json(eng.priced), "n_open": len(opens), "engine_id": eng.engine_id}
         self.history.append(ck)
         del self.history[: -self.history_max]
         if self.on_save is not None:
@@ -496,7 +501,7 @@ class StateCheck:
         self._orig(row)
         if self.done or self.failed or row_id(row) != self.ck["last_row_id"] or row.get("type", "trade") != "trade":
             return
-        got = engine_fingerprint(self.engine, self.ck["pools"], self.ck["since_slot"])
+        got = engine_fingerprint(self.engine, self.ck["pools"], self.ck["fp_from_slot"])
         if got != self.ck["fp"]:
             self.failed = ("state_mismatch", "the replayed state at the checkpoint row differs from the checkpoint's")
             return
@@ -689,7 +694,7 @@ def restore_engine(engine: ArenaEngine, tape_dir: str | os.PathLike, entries: Se
     ck = dict(checkpoint) if isinstance(checkpoint, Mapping) else load_checkpoint(checkpoint)
     if ck.get("schema") != SCHEMA_CKPT or not isinstance(ck.get("last_row_id"), list):
         raise ContinuityRefused("checkpoint_malformed")
-    if ck.get("fp") is None or ck.get("since_slot") is None:
+    if ck.get("fp") is None or ck.get("since_slot") is None or ck.get("fp_from_slot") is None:
         raise ContinuityRefused("checkpoint_without_state_fingerprint", "the recorder had not seen the warm-up hour")
     hours = tape_hours(tape_dir)
     cur = None

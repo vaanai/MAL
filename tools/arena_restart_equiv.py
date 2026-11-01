@@ -249,7 +249,7 @@ def run_restart(spec: Spec, kill: C.Cursor, restart: C.Cursor, name: str = "rst"
     d2 = C.restore_engine(eng2, spec.tape_dir, issued, spec.rule, ckpt, logged_sells=sells, journal=None if journal_mode == "lost" else journal, until=restart, margin_ms=spec.margin_ms,
                           blind=blind)
     restored = dict(d2.counters)
-    fp = C.engine_fingerprint(eng2, None, ckpt["since_slot"])
+    fp = C.engine_fingerprint(eng2, None, ckpt["fp_from_slot"])
     open_at_restart = sorted(eng2.positions)
     C.attach_sell_journal(eng2, journal)
     d2.entries = sorted((e for e in spec.entries if e.ms > restart_ms), key=lambda e: (e.ms, e.bot_id, e.pool))
@@ -270,7 +270,7 @@ def run_case(spec: Spec, plan: Sequence[tuple[str, int]], kill_row: int, downtim
         rst = run_restart(spec, kill, restart, f"{name}-rst", ckpt_lag_events, journal_mode)
     except C.ContinuityRefused as exc:  # the restore failed closed: in production this is the legacy recover() path (engine_restart), not a pass
         return {"name": name, "kill_row": kill_row, "downtime_rows": downtime_rows, "ckpt_lag_events": ckpt_lag_events, "refused": exc.reason, "equal": False}
-    ref = run_reference(spec, f"{name}-ref", blind=rst["blind"], blind_rows=(kill, restart), probe=restart, fp_since_slot=rst["ckpt"]["since_slot"])
+    ref = run_reference(spec, f"{name}-ref", blind=rst["blind"], blind_rows=(kill, restart), probe=restart, fp_since_slot=rst["ckpt"]["fp_from_slot"])
     per_bot = {}
     ok = True
     for b in spec.bots:
