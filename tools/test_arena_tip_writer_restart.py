@@ -155,3 +155,29 @@ def test_a_the_latch_still_refuses_a_restart_after_exit_8_or_9(tmp_path):
             w2.start()
         w2.close()
     assert aw.EXIT_CATCHUP == 8 and aw.EXIT_BACKLOG == 9 and aw.LATCH_RCS == (6, 7, 8, 9)
+
+
+def test_p1_the_drill_core_over_a_fixed_tip_dir_kills_the_writer_at_five_points_with_every_downtime_shape(tmp_path):
+    """tools/arena_tip_writer_drill.run_drill (the P1 proof's core) on a synthetic tip dir: per-hour sha256 equal to the uninterrupted writer's, no writer gap row, no hole, resumed; 61 h refused."""
+    from tools import arena_tip_writer_drill as D
+
+    root = tmp_path / "d"
+    root.mkdir()
+    sim = T.TipSim(root)
+    first_hour = tr.hour_key(T.TipSim.T_BASE // 1000)
+    (sim.tip / f"trades-{first_hour}.jsonl").touch()
+    for s in range(1, 301):
+        if 211 <= s <= 219:
+            if s == 211:
+                sim.gap(211, 219, sim.t(211) - 500)
+            continue
+        sim.add(s, checkpoint=False)
+    sim.checkpoint()
+    rep = D.run_drill(sim.tip, sim.state, tmp_path / "drill", first_hour=first_hour, start_ms=T.TipSim.T_BASE, end_ms=sim.t_done + 5_000, kills=[1, 3, 6, 9, 14],
+                      downtimes_s=[0, 300, 7200, 59 * 3600, 61 * 3600], poll_limit=40)
+    assert rep["schema"] == D.SCHEMA and rep["reference_hours"] >= 2 and len(rep["cases"]) == 25 and rep["all_equal"], [c for c in rep["cases"] if not c["equal"] and not c.get("refused")]
+    refused = [c for c in rep["cases"] if c.get("refused")]
+    assert {c["downtime_s"] for c in refused} == {61 * 3600} and len(refused) == 5 and all("state_older_than_60h" in c["refused"] for c in refused)
+    ok = [c for c in rep["cases"] if not c.get("refused")]
+    assert len(ok) == 20 and all(c["hours_equal"] and c["writer_gap_rows"] == 0 and c["hole_rows"] == 0 and c["resumed"] for c in ok)
+    assert {c["md5_hours"] for c in ok} == {rep["reference_md5_hours"]}
