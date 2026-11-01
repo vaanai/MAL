@@ -954,6 +954,30 @@ class ArenaEngine:
         self.counters["gap_filled_slots"] = self.counters.get("gap_filled_slots", 0) + (hi - lo + 1)
         if self.hw_ms is not None and at_ms > self.hw_ms:
             self.hw_ms, self.hw_ms_slot = at_ms, max(self.hw_ms_slot, hi)
+        self._flag_priced_by_fill(prog, lo, hi, back, at_ms)
+
+    def _flag_priced_by_fill(self, prog: str | None, lo: int, hi: int, back: int, at_ms: int) -> None:
+        """QP C4: a position priced BEFORE the marker reached the engine (its legs sit in the late-delivered stretch [lo - back, lo), the rows came in before the gap row) is
+        flagged the way a late print is: a late_print row with gap_overlap true, which the scorer excludes under the gap rule (priced rows are write-once). Once per position and range."""
+        for lst in self.priced.values():
+            for e in lst:
+                if "lands" not in e or self.hw_slot > e["need"] + LATE_KEEP_SLOTS or e["bot_id"] in self.halted:
+                    continue
+                if prog not in (None, e["prog"], "all") and not (prog == "pumpfun" and e["prog"] == "pump_bonding"):
+                    continue
+                if not self._legs_hit(e["lands"], e["x_trig"], lo, hi, back):
+                    continue
+                lid = hashlib.sha256(f"{e['pid']}|fill|{lo}|{hi}".encode()).hexdigest()[:16]
+                try:
+                    self.ledger.append({"schema": SCHEMA, "kind": "late_print", "trade_id": f"{e['pid']}-late-{lid}", "position_id": e["pid"], "bot_id": e["bot_id"],
+                                        "decision_ms": {"entry": e["entry_ms"], "exit": None}, "slot": lo, "signature": None, "t_recv_ms": at_ms, "gap_overlap": True,
+                                        "fill_margin": {"from_slot": lo, "to_slot": hi, "back_slots": back}, "written_ms": self.now_fn()})
+                except LedgerCorrupt as exc:
+                    self._count("ledger_torn_tail")
+                    self._count("late_prints_lost")
+                    self._halt(e["bot_id"], f"fill-margin flag write refused: {str(exc)[:120]}")
+                    continue
+                self._count("fill_margin_flagged")
 
     def _through_fills(self, slot: int) -> int:
         """`slot` moved up through every filled range that touches it (chained ranges too): a slot jump that a fill covers is not a jump."""
@@ -1276,18 +1300,26 @@ class ArenaEngine:
                 return g
         return None
 
-    def _fill_hit(self, pos: Position) -> bool:
-        """F2 / QP C4: True if an entry leg (either latency) of `pos` lands in [lo - back_slots, hi] of a filled range of its program, or its exit leg lands in
-        [lo - back_slots, lo). An exit leg inside [lo, hi] is not a hit: it is marked through. Uses the exit slot before any mark-through shift."""
-        if not self.fills or pos.xs is None:
-            return False
+    def _legs_of(self, pos: Position) -> tuple[list[int], int]:
+        """(entry landing slots for both latencies, the exit leg's pricing slot before any mark-through shift)."""
         d = self._check_delay_set()
         lands = [pos.sd + d + self._k(lat, pos.sps_entry) for lat in LATS]
-        x_trig = (pos.mark[0] if pos.mark is not None else pos.xs) + d + F.exit_lag_slots(pos.sps_exit) + 1  # type: ignore[operator,arg-type]
+        return lands, (pos.mark[0] if pos.mark is not None else pos.xs) + d + F.exit_lag_slots(pos.sps_exit) + 1  # type: ignore[operator,arg-type]
+
+    @staticmethod
+    def _legs_hit(lands: Sequence[int], x_trig: int, lo: int, hi: int, back: int) -> bool:
+        return any(lo - back <= x <= hi for x in lands) or lo - back <= x_trig < lo
+
+    def _fill_hit(self, pos: Position) -> bool:
+        """F2 / QP C4: True if an entry leg (either latency) of `pos` lands in [lo - back_slots, hi] of a filled range of its program, or its exit leg lands in
+        [lo - back_slots, lo). An exit leg inside [lo, hi] is not a hit: it is marked through."""
+        if not self.fills or pos.xs is None:
+            return False
+        lands, x_trig = self._legs_of(pos)
         for prog, lo, hi, back in self.fills:
             if prog not in (None, pos.prog, "all") and not (prog == "pumpfun" and pos.prog == "pump_bonding"):
                 continue
-            if any(lo - back <= x <= hi for x in lands) or lo - back <= x_trig < lo:
+            if self._legs_hit(lands, x_trig, lo, hi, back):
                 return True
         return False
 
@@ -1349,7 +1381,8 @@ class ArenaEngine:
                     self._price_and_write(pos, h, src)
                 trig = h.keys[int(np.searchsorted(h.arrays()["sl"], need, "left"))] if src == "tape" else None
                 self.priced.setdefault(pool, []).append({"pid": pid, "bot_id": pos.bot_id, "prog": pos.prog, "entry_ms": pos.decision_ms, "need": need,
-                                                         "trigger": trig, "span": self._span(pos, need, src)})
+                                                         "trigger": trig, "span": self._span(pos, need, src),
+                                                         "lands": self._legs_of(pos)[0], "x_trig": self._legs_of(pos)[1]})
             except Exception as exc:  # a pricing failure must not drop the position silently: it stays open (an orphan in the read)
                 self.last_error[pid] = f"{type(exc).__name__}: {exc}"
                 self._count("price_errors")
