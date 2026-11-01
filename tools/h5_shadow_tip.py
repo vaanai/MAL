@@ -68,6 +68,8 @@ ROWS_PER_STEP = 2_000  # rows applied per step; a full step is followed at once 
 PROBLEM_CACHE_MS = 1_000  # push_problem reads three small json files; at most once a second
 EXIT_REFUSED, EXIT_HALTED = 2, 3
 GAP_FLAG_PROGS = ("all", "pumpswap")  # a gap on these feeds can have cost a PumpSwap pool prints (arena_tip_adapter.gap_prog)
+LOSS_COUNTERS = ("bad_lines", "zst_errors", "apply_errors")  # ArenaState drops a bad json line / skips the rest of an hour after a zst error / skips a row whose apply raised: loss
+STATS_EVERY_S = 60.0  # tip_input_stats record interval (hb's cadence)
 GAP_KEEP = ("from_slot", "to_slot", "missed_slots", "from_ms", "to_ms", "reason", "prog", "src")
 
 
@@ -154,6 +156,7 @@ class TipRowSource:
             self.halted = is_permanent(why)
             return []
         self._tap.out = []
+        before = {k: self._tap.counters.get(k, 0) for k in LOSS_COUNTERS}
         try:
             self._tap.poll(max_rows=limit)
         except Exception as exc:  # noqa: BLE001 - a reader failure is a problem, not a crash
@@ -161,6 +164,12 @@ class TipRowSource:
             self.stats["reader_errors"] += 1
             return []
         rows, self._tap.out = self._tap.out, []
+        lost = [k for k in LOSS_COUNTERS if self._tap.counters.get(k, 0) > before[k]]
+        if lost:  # rows were dropped by the reader (S1 of the review): mark it like any outage, so the driver flags the open pools (feed_restart); the rows that did come are still applied
+            self.problem = "reader_" + lost[0]
+            self.stats["reader_loss_events"] += 1
+            for k in lost:
+                self.stats[f"reader_loss_{k}"] += self._tap.counters[k] - before[k]
         self.stats["polls"] += 1
         self.stats["rows"] += len(rows)
         return rows
@@ -276,6 +285,11 @@ def start_record(source: TipRowSource, wall_offset_ms: int | None) -> dict:
             "public_trade_feed": "off", "rpc_class_fallback": "as S*", "pump_class_side_feed": "as S*"}
 
 
+def stats_record(kind: str, driver: TipDriver, source: TipRowSource) -> dict:
+    return {"type": kind, "schema": SCHEMA, "driver": dict(sorted(driver.counters.items())), "source": dict(sorted(source.counters().items())), "problem": source.problem,
+            "halted": source.halted}
+
+
 def make_run_feed(source: TipRowSource, state: dict, *, poll_s: float = POLL_S) -> Callable[..., Any]:
     """The replacement for tools.h5_shadow.run_feed: same call signature (the factory is ignored: there are no sockets), same contract (return when `stop` is set)."""
 
@@ -285,23 +299,30 @@ def make_run_feed(source: TipRowSource, state: dict, *, poll_s: float = POLL_S) 
         engine.emit(start_record(source, None))
         driver = TipDriver(engine, source, on_error=(lambda e, ctx: on_decode_error(e, SimpleNamespace(**ctx))) if on_decode_error else None)
         state["driver"] = driver
-        while not stop.is_set():
-            n = driver.step()
-            if driver.halted:
-                state["halted"] = source.problem
-                engine.emit({"type": "tip_input_halted", "problem": source.problem})
-                stop.set()
-                break
-            if max_seconds is not None and time.monotonic() - started > max_seconds:
-                stop.set()
-                break
-            if n >= ROWS_PER_STEP:
-                await asyncio.sleep(0)
-            else:
-                try:
-                    await asyncio.wait_for(stop.wait(), timeout=poll_s)
-                except asyncio.TimeoutError:
-                    pass
+        last_stats = time.monotonic()
+        try:
+            while not stop.is_set():
+                n = driver.step()
+                if driver.halted:
+                    state["halted"] = source.problem
+                    engine.emit({"type": "tip_input_halted", "problem": source.problem})
+                    stop.set()
+                    break
+                if time.monotonic() - last_stats >= STATS_EVERY_S:  # S2 of the review: the input counters (rows by type, bad rows, gaps, reader loss) are in the output, not only in memory
+                    last_stats = time.monotonic()
+                    engine.emit(stats_record("tip_input_stats", driver, source))
+                if max_seconds is not None and time.monotonic() - started > max_seconds:
+                    stop.set()
+                    break
+                if n >= ROWS_PER_STEP:
+                    await asyncio.sleep(0)
+                else:
+                    try:
+                        await asyncio.wait_for(stop.wait(), timeout=poll_s)
+                    except asyncio.TimeoutError:
+                        pass
+        finally:
+            engine.emit(stats_record("tip_input_stop", driver, source))
 
     return run_feed
 
