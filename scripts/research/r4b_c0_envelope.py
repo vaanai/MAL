@@ -15,8 +15,9 @@ Model (fixed in code, before any of the data it judges exists past catch-up end 
   * h = t - (DRY catch-up end), in hours. The C0 horizon is H = RUN_END - ORIGIN.
   * Pre-plateau slope: OLS of anon on t over h in [1, min(h_last, 116)] (the sidecar's M6 settle hour and its 116 h horizon = the 7-day bonding-idle rule
     minus the 52 h of history; r4b_dry_sidecar.HORIZON_AFTER_CATCHUP_S).
-  * Tail slope (the plateau test): OLS over the trailing TAIL_H = 24 h, only if every one of those samples is at h >= 117 and they span >= 12 h. Otherwise the
-    plateau is "not measured".
+  * Tail slope (the plateau test): OLS over h in [max(117, h_last - TAIL_H), h_last] (TAIL_H = 24 h, at most the trailing day, never before the horizon + the
+    settle hour), only if that window spans >= 12 h with >= 20 samples. Otherwise the plateau is "not measured". For dry-long-1101a (catch-up end
+    2026-11-01T05:37:51Z) the plateau is measurable from catch-up end + 129 h = 2026-11-06T14:37:51Z.
   * Projection at H:
       H <= h_last              the observed maximum over h in [1, H] (no extrapolation; label "observed");
       H >  h_last, tail known  fitted tail at h_last + max(tail slope, 0) x (H - h_last) (label "tail");
@@ -120,8 +121,8 @@ def envelope(samples: list[tuple[float, float]], catchup_end: float, *, origin: 
     out["pre_n"] = len(pre)
     out["pre_span_h"] = round(pre[-1][0] - pre[0][0], 3) if pre else 0.0
     out["pre_slope_mib_h"] = None if pre_fit is None else round(pre_fit[0], 3)
-    tail = [(h, a) for h, a in pts if h >= h_last - TAIL_H]
-    tail_ok = bool(tail) and tail[0][0] >= PLATEAU_H + SETTLE_H and tail[-1][0] - tail[0][0] >= TAIL_MIN_SPAN_H and len(tail) >= FIT_MIN_POINTS
+    tail = [(h, a) for h, a in pts if h >= max(PLATEAU_H + SETTLE_H, h_last - TAIL_H)]
+    tail_ok = bool(tail) and tail[-1][0] - tail[0][0] >= TAIL_MIN_SPAN_H and len(tail) >= FIT_MIN_POINTS
     tail_fit = ols(tail) if tail_ok else None
     out["tail_n"] = len(tail) if tail_ok else 0
     out["tail_slope_mib_h"] = None if tail_fit is None else round(tail_fit[0], 3)
