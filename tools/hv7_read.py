@@ -27,7 +27,8 @@ A skill pass is not a promotion. Nothing here says a book makes money: no book h
 AMBIGUITIES resolved here (DESIGN is silent; QP rulings of PR #1021 applied):
   A1. Pressure intercept. The gate uses each arm's own refit (the scorer). The contrast uses ONE intercept per strand rule, refit on U's deciding-stake trades and
       applied to every arm (QP: ACCEPT, condition: deciding stake only).
-  A2. Horizon. H is the registered window: (hv7_halt - clock_start) / 1 day (10 for the 11-01 clock, 9 for 11-02). The A4 formula max(14, .) always exceeds it.
+  A2. Horizon. H is the registered window: (hv7_halt - clock_start) / 1 day. Since the 2026-10-30 pin revision (hv7_register: clocks 11-03..11-08, H = 14 days,
+      the Am.4 formula at P0's rate) it is 14; the earlier 11-01/11-02 pins gave 10/9.
   A3. B per arm, from that arm's own entry decision stamps.
   A4. Contrast periods are keyed by the bot's own entry stamp (`stamp_ms.entry` = t_e), not the engine write instant. A period enters a pair only if both arms
       have a priced trade in it; U's value is the mean over its priced trades in the period. Dropped periods are reported per pair.
@@ -154,13 +155,18 @@ def mde_ic(lift_pct: float, s_pct: float) -> float:
     return lift_pct / (s_pct * E_MAX_8)
 
 
+def _mde_vs_tab(d_days: int) -> str:
+    """Direction of the untabulated MDE against the D = 10 figure: fewer days, less power (larger MDE); more days, more power (smaller MDE)."""
+    return "larger than at D = 10" if d_days < MDE["D"] else "smaller than at D = 10"
+
+
 def mde_line(d_days: int) -> str:
     if d_days == MDE["D"]:
         base = ("MDE (80% power at D = 10, QP simulation): per-trade lift about 1.9% (s = 8%) or about 3.0% (s = 12%), rank IC about 0.17; "
                 f"this read has D = {d_days}, exact sign-flip minimum p = {sign_flip_min_p(d_days)}.")
         return base + " A non-pass is reported as 'no skill detected; MDE IC about 0.17', never as evidence of no skill below the MDE."
     base = (f"MDE: tabulated at D = 10 only (per-trade lift about 1.9% at s = 8%, about 3.0% at s = 12%, rank IC about 0.17). This read has D = {d_days}: the MDE is "
-            f"not tabulated at D = {d_days} and is larger than at D = 10; exact sign-flip minimum p = {sign_flip_min_p(d_days)}.")
+            f"not tabulated at D = {d_days} and is {_mde_vs_tab(d_days)}; exact sign-flip minimum p = {sign_flip_min_p(d_days)}.")
     return base + " A non-pass is 'no skill detected' and is never evidence of no skill below the MDE."
 
 
@@ -719,7 +725,7 @@ def contrast_read(*, now_ms: int, regn: Mapping[str, Any], rows_by_arm: Mapping[
     d = len(days)
     if primary["status"] == "NOT_PASS":
         res["verdict_text"] = ("no skill detected; MDE IC about 0.17" if d == MDE["D"]
-                               else f"no skill detected; the MDE at D = {d} is not tabulated and is larger than at D = 10")
+                               else f"no skill detected; the MDE at D = {d} is not tabulated and is {_mde_vs_tab(d)}")
     elif primary["status"] == "PASS":
         res["verdict_text"] = ("L - U passes: Haiku selects better than random from this screen (" + SCREEN_PASS + "). This is not a promotion and licenses no canary.")
     ru = out.get("R-U", {})

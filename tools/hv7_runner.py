@@ -78,6 +78,7 @@ from tools.arena_declog import GENESIS, DecisionLog, LogChainError, sha256_hex, 
 from tools.arena_paper import ArenaRefused
 from tools.arena_state import WSOL_MINT, ArenaState
 from tools.haiku_caller import Ledger, LedgerError
+from tools import hv7_tip_guard as U2  # noqa: E402  (rule U2: only created_known pools reach the age band)
 from tools.hv6_phantom import PhantomFilter
 from tools.hv6_runner import (CHAIN_CREDITS_FILE, CHAIN_SPEND_FILE, HOUSEKEEP_EVERY_MS, ChainSource, Pos, QuoteHistory, exit_reason, mark_ret,  # noqa: F401
                               pinned_provider, position_id, refuse_hv4_chain_state, stack_config)
@@ -107,7 +108,10 @@ CARD_RISK_KEYS = frozenset(C.RISK_NUMERIC_FIELDS) | frozenset({"as_of_ms", "as_o
                                                               "holders_as_of_ms", "mayhem", "mint_authority_null", "sell_route_ok", "token_program"})
 CARD_NESTED = {"f": CARD_F_KEYS, "risk": CARD_RISK_KEYS, "tops": frozenset({"buyer", "seller"}), "untrusted": frozenset({"name", "symbol"})}
 
-READ_ROOTS = (H.TAPE_ROOT, HV7_ROOT)
+TIP_FEED_ROOT = "/data2/mal/arena-tip-feed/hv7"      # the research-0 receiver copy of the arena tip writer's derived tape (QP-RULING-1101-arena-tip-reader B1; sealed: only the pinned
+#                                                      # tip-source runner, its smoke and the P0 tip counter read its tape files; agents read only its status and arrival log)
+TIP_WRITER_DIR = ".writer"                           # the writer's state dir (state.json holds pool addresses and signatures): never readable through this guard
+READ_ROOTS = (H.TAPE_ROOT, HV7_ROOT, TIP_FEED_ROOT)
 WRITE_ROOTS = (HV7_ROOT,)
 
 # Live chain client. HV7 has its own RPC budget so it does not compete with HV6's 1,000 calls/h; state and spend files sit under HV7_ROOT.
@@ -194,6 +198,8 @@ def check_path(path: str | os.PathLike, mode: str = "r") -> str:
             raise H.PathRefused("not_allowlisted")
         if any(tok in cand.lower() for tok in H.DENY_TOKENS):
             raise H.PathRefused("denied_token")
+        if H._under(cand, TIP_FEED_ROOT) and TIP_WRITER_DIR in cand.split(os.sep):
+            raise H.PathRefused("tip_writer_state")
     return p
 
 
@@ -414,6 +420,7 @@ class Hv7Runner:
         self.open: dict[str, Pos] = {}              # engine position id -> Pos
         self.arm_of: dict[str, str] = {}
         self.pending: dict[str, Any] | None = None
+        self.creation = U2.CreationIndex()
         self.counters: dict[str, int] = {}
         self._last_hot: list[str] = []
         self._lock = threading.Lock()              # the L thread and the loop both count
@@ -440,11 +447,16 @@ class Hv7Runner:
                     self._count("phantom_drop_" + kind)
                     return
             orig(row)
+            self.creation.note(row)            # U2: the creation index sees exactly the rows the state applied (a phantom-dropped row is in neither)
             self._on_row(row)
 
         state.apply = apply
 
     # -- plumbing
+    def _snap(self, key: str, **kw: Any) -> Mapping[str, Any] | None:
+        """ArenaState.snapshot with the creation the state's 6 h idle eviction forgot put back from the creation index (rule U2, reviewer B1 on PR #1170)."""
+        return self.creation.patch(self.state.snapshot(key, **kw))
+
     def _count(self, k: str, n: int = 1) -> None:
         with self._lock:
             self.counters[k] = self.counters.get(k, 0) + n
@@ -548,11 +560,11 @@ class Hv7Runner:
 
         def gen():
             for p in pools:
-                snap = self.state.snapshot(p.id)
+                snap = self._snap(p.id)
                 if snap is not None:
                     yield snap, list(p.events)
 
-        res = H.scan(gen(), as_of_ms=T, limiter=C.SetupLimiter(), board_on=False)
+        res = H.scan(U2.guard(gen()), as_of_ms=T, limiter=C.SetupLimiter(), board_on=False)     # U2: the watch set holds only pools the screen can admit
         vol = {q: res.feats[q].get("vol_60m") for q in res.candidates}
         items, hot, vols = watch_sets(vol, self._last_hot)
         self.chain.watch([(q, self.state.pool(q).mint) for q in items], hot, self._now(T), vols=vols)
@@ -564,12 +576,15 @@ class Hv7Runner:
 
         def gen():
             for p in pools:
-                snap = self.state.snapshot(p.id)
+                snap = self._snap(p.id)
                 if snap is not None:
                     yield snap, list(p.events)
 
         scratch = C.SetupLimiter()
-        res = H.scan(gen(), as_of_ms=T, limiter=scratch, board_on=False)
+        u2_refused = [0]
+        res = H.scan(U2.guard(gen(), u2_refused), as_of_ms=T, limiter=scratch, board_on=False)    # rule U2, before `filters` and the cards
+        if u2_refused[0]:
+            self._count("u2_" + U2.COUNTER, u2_refused[0])
         vol = {pid: res.feats[pid].get("vol_60m") for pid in res.candidates}
         order = sorted((pid for pid in res.candidates if R._vol_ok(vol[pid])), key=lambda q: (-float(vol[q]), q))
         cards: dict[str, dict] = {}
@@ -579,7 +594,7 @@ class Hv7Runner:
             if len(cards) >= self.cfg.n:
                 break
             tried.append(pid)
-            snap, prints = self.state.snapshot(pid), list(self.state.pool(pid).events)
+            snap, prints = self._snap(pid), list(self.state.pool(pid).events)
             card = self._card(pid, T, snap, prints, res.feats[pid])
             if card is None:
                 continue
@@ -591,7 +606,7 @@ class Hv7Runner:
         scr = R.screen_set(list(cards), vol, n=self.cfg.n, n_min=self.cfg.n_min)
         self._last_hot = list(dict.fromkeys([*scr.ids, *tried]))[:WATCH_HOT_MAX]      # the next minute ticks keep these hot
         shas = tuple(A.p4.card_sha256(cards[i]) for i in scr.ids)
-        base = {"kind": "period", "t_d": t_d, "t_e": R.iso_from_ms(T - T_D_OFFSET_MS + T_E_OFFSET_MS), "counts": dict(res.counts), "n_candidates": len(res.candidates),
+        base = {"kind": "period", "t_d": t_d, "t_e": R.iso_from_ms(T - T_D_OFFSET_MS + T_E_OFFSET_MS), "counts": {**res.counts, U2.COUNTER: u2_refused[0]}, "n_candidates": len(res.candidates),
                 "vetoed": sorted(vetoed), "screen": list(scr.ids), "card_shas": list(shas), "no_trade": scr.no_trade, "reason": scr.reason, "as_of_slot": self.slot}
         if rebuild is not None and (list(scr.ids) != list(rebuild.get("screen", ())) or list(shas) != list(rebuild.get("card_shas", ())) or scr.no_trade):
             self._count("resume_rebuild_mismatch")
