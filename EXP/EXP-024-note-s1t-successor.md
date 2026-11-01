@@ -17,7 +17,13 @@ It is text only, in the form of the s1 note's Part A, Amendment 10, the Note und
 **Pinned commit (filled 2026-11-01T23:50:36Z; QP-NOTE-1102-tip-readers C1).** S\*' is the commit `afa4971d9dd8b0bca2e73a758c22f4539f675d63`, the head that quant-proof and the reviewer passed on #1185.
 - At that commit, `tools/h5_shadow_tip.py` is blob `05c5489a786dac4eb0696a74279a0f789ddb1deb`, and `tools/h5_shadow.py` is blob `7f859b12deef87573a7314e49e125b5121eaa645` (S\*'s, DEC-031 Amendment 24 item 3), both from `git rev-parse` at writing.
 - Tag `q50-succ-tip-1` must name that commit. Before the smoke, the manager checks that `git rev-parse 'q50-succ-tip-1^{commit}'` equals `afa4971d9dd8b0bca2e73a758c22f4539f675d63`.
-- A process at any other commit is not covered. The tag was not on origin at writing.
+- A process at any other commit is not covered.
+- **Tag verified 2026-11-01T23:53:29Z** (`date -u`, mal-research-0), after the tag was pushed to origin:
+  - `git rev-parse 'q50-succ-tip-1^{commit}'` = `afa4971d9dd8b0bca2e73a758c22f4539f675d63`;
+  - the annotated tag object is `c8cb9a8e31419fcce03b9fe3947a474ebdd7f47a`;
+  - `git rev-parse 'q50-succ-tip-1:tools/h5_shadow_tip.py'` = `05c5489a786dac4eb0696a74279a0f789ddb1deb`;
+  - `git rev-parse 'q50-succ-tip-1:tools/h5_shadow.py'` = `7f859b12deef87573a7314e49e125b5121eaa645`.
+- #1185 is closed unmerged by design. The manager re-checks the tag before the smoke.
 
 **Gating.**
 - **Part A** merges, with quant-proof's OK and a reviewer verdict on its exact final head, under three conditions:
