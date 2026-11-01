@@ -1191,3 +1191,192 @@ DEC-031 Amendment 23: arena books whose input is the fast-0 getBlock tip followe
 10. **What does not change.** The promotion gate and every threshold; §2 (deciding cell, one read per `bot_id`, outcome-blind boundary, steps 1 to 4); §1.4's 5% cap, parity and pins; Amendment 3 item 2's c and item 3's multiplicity block; Amendment 6 items 2.2 to 2.7, 3 and 4; every seal except the one clause item 7 replaces for covered books; the ban on a live send (§4); and every registered book's feed, pins and clock. Amendment 16 (HV7 as a sibling family and its budget split) is unchanged and is not this amendment.
 
 *Provenance.* Sources: `/data/mal/hunt-1008/ops/manager18/QP-RULING-1101-hv4-reads.md` (sha256 `c6e94e747634079bc4b0cd4d79d2f30319edce7b4abc808d1bf9919a9e126073`); `/data/mal/hunt-1008/ops/manager18/QP-RULING-1101-arena-tip-reader.md` (sha256 `91dcb0d7feaaef42590ef3661913d3debff6b9597d0520d6a3d19b904c72e1ec`; the QP verdict is PR #1166 comment 6552888187 and the reviewer's is comment 6552790468); `/data/mal/hunt-1008/ops/reports/2026-11-01/qp-1165.md` (rounds 1 and 2; sha256 `a4c0a401512dcf67edac9da0728946126b45443e34502fff8acf5c36f15dcaae`; the round 2 text is also PR #1165 comment 6552601341); `docs/design/arena-tip-adapter.md` at `ca9c2822`; and QP-RULING-1031-r4b-history §2.1. **Not measured by this amendment:** the tip's data-loss rate, the share of rows without `tx_index` on the tip (the exploration proxy is a cold-cache hour: 861 PumpSwap rows in 2026-08-16T12), the writer's throughput or memory, transport lag, any smoke, P0 or outcome. **Owed:** see item 9 (order of the records). QP OK and reviewer verdict: on the PR at its merged head.
+
+### Amendment 25 (DRAFT; r4-b-T; number = the next free DEC-031 amendment at merge: Amendment 16 is held by open PR #1019, and open PRs #1178 and #1182 each draft an "Amendment 24"; a renumber at merge is a fill; written 2026-11-01T23:23:40Z from `date -u` on mal-research-0; records only; before the registration, P0 count, `bots.json` line and clock of the book it covers, before EXP-027's read is written, and before any r4-b outcome exists; outcome-blind; status: DRAFT until merge, QP OK on the exact head and a reviewer verdict)
+DEC-031 Amendment 25: **r4-b-T**, the frozen r4-b book of EXP-027 §2 registered as a NEW arena book on the complete fast-0 tip feed, in the r4-b DRY host's source configuration (DEC-032 Amendment 8 Erratum 4 item 1, "configuration C"), with counted entry marks from 2026-11-07T06:00:00Z. Records only. It writes the text that QP-RULING-1102-r4b-a3-record and its Addendum 1 require (`/data/mal/hunt-1008/ops/manager18/QP-RULING-1102-r4b-a3-record.md`, sha256 `55a035a650a81c61136eb9ba2fab70fcd2cbe0cbef289f7b008218deff1c8003`; "A1.1" and "A1.2" below are its Addendum 1 sections).
+- **Parts.** Part A is "Option Z" (A1.1): an exception to §3 item 1 for r4-b-T alone. Part B pins the source: r4-b-T is not a book covered by Amendment 23 as written (A1.2 item 7). Part C is the registration. Part D is pricing and the read. Part E lists the DEC-032 terms a later C0 needs; a DEC-032 amendment, not this text, enacts them. Part F lists what is owed before the clock and the questions quant-proof answers before it.
+- **Seal statement.** To write this text no r4-b outcome, decision log, declog, host `out/`, sidecar output, tip file, derived-copy `tape-*` file, arena tape or mirror, `/data/mal/r4b/`, `/data/mal/blocks`, ledger row, `bots.json` line or decision row was opened, and no job status view was called. Figures about running jobs are quoted from the dated sources named in place. No book has cleared the promotion gate. r4-b has zero out-of-sample trades. Nothing here says r4-b or r4-b-T makes money.
+- **In view (no P&L, no outcome):**
+  - EXP-027's read is NOT_DECIDABLE as registered, under §7.1 item 6: the A3 halts `pins_changed` at 2026-10-20T07:11:27Z and 2026-10-21T17:55:29Z, and `synthetic_share_high` at 2026-10-29T07:11:08Z. QP-RULING-1102-r4b-a3-record determined it; the ND determination record of open PR #1181 records it. It is not a FAIL, and r4-b is not retired.
+  - Lane L5's desk ranking, `/data/mal/hunt-1008/ops/reports/2026-11-02/L5-fastest-read.md` (counts and power arithmetic only).
+  - The r4-b DRY host dry-long-1101a's start, memory and latency records (names, counts and timings), as logged by the manager.
+- **Not in view:** any r4-b decision-row content; any r4-b fill, guard, exit state, proceeds or P&L at any hour; any outcome of any book on the tip feed.
+- **Takes effect** on merge, after quant-proof's OK on the exact final head and a reviewer verdict on the PR. It must merge before r4-b-T's registration record. If its merge commit's committer time is after 2026-11-07T06:00:00Z, item 14's slip rule applies.
+- **Not push-family, not a walk-2 filing.** r4-b-T is a DEC-031 arena book (§3 item 3). It takes no DEC-030 slot and does not change EXP-027's k, m or window. It is not a re-filing on walk 2 (EXP-027 §7.2: "A NOT_DECIDABLE also spends the window; r4-b is never re-filed on walk 2"): no counted mark of r4-b-T lies in EXP-027's spent window (item 14). It counts in this DEC's N from its clock (item 18).
+
+**Part A: Option Z, an exception to §3 item 1 for r4-b-T alone (A1.1).**
+1. **The exception.** §3 item 1 bars every arena book and process from the r4-b boosters, `tools/r4b_*.py` and the other items it lists "until EXP-027's read is written". For `r4bt-a1` (item 13) alone, from its registration record, these are allowed before EXP-027's read is written:
+   - its decision host (item 6) runs the r4-b host closure at its `frozen_sha`, with `models/r4b/` (the five boosters and `features.txt`), and makes and logs decisions from its clock;
+   - its pre-clock items (items 15 and 17) use the DRY host dry-long-1101a's decision log as counts only (item 15), and its start, M1, latency and memory records as names, counts and timings.
+
+   Still barred for r4-b-T until EXP-027's read is written: `/data/mal/r4b/` (EXP-027's count, read and READS outputs), `02_build.py`, and r4-b's development outputs under `/data/mal/hunt-1008/laya-opt/`. Every other arena book stays under §3 item 1 unchanged.
+2. **Condition (i), verbatim from A1.1:** "No r4-b paper outcome is computed, opened or printed until EXP-027's read is written. This covers fill, guard result, exit state, proceeds and P&L, from any process, twin or read. r4-b-T's decision log is sealed (names and counts only)."
+   - So r4-b-T's pricer (item 25) starts only after EXP-027's read is written, and refuses in code before that.
+   - r4-b-T's decision log, its host's `out/` and its sidecar output stay sealed (names and counts only) until r4-b-T's screen read and its confirmation are written (item 4).
+   - The attempt counter (item 26) reads row kinds and timestamps only.
+3. **Condition (ii), verbatim from A1.1:** "r4-b-T's own read executes only after EXP-027's read is written. If its boundary falls earlier, the attempt set stays fixed by the boundary and only the run waits."
+4. **"Written", and the seal that follows.**
+   - "EXP-027's read is written" means either that `tools/r4b_read.py` has written its `completed` line (route (a)), or that `EXP027_DEADLINE_ND` has been recorded at 2026-11-09T03:00:00Z (route (b)) (A1 notation). The ND determination record (#1181) is not the read (A1.1: "It is not the read").
+   - **Seal condition (QP Q3, verbatim):** "no r4-b outcome on any walk-2 hour is computed for any purpose before r4-b-T's screen read and confirmation are written."
+   - A deliberate, pre-announced EXP-027 §11 breach is not allowed (A1.1), for example pricing r4-b-T live before EXP-027's read.
+   - A breach of item 2 or of this condition is recorded in the ledger's EXP-027 sub-entry and labels r4-b-T's read compromised. It never turns a FAIL into NOT_DECIDABLE.
+5. **Prerequisites (A1.2 item 1).** The exception takes effect only once all of these are merged: this amendment; the EXP-027 ND determination record (open PR #1181); and the records amendment that cancels DEC-032 Amendment 8 B1 (it closes B1's counted-window sub-entry and ends the B1 seal; owed, not drafted here). If any is missing at 2026-11-07T06:00:00Z, the clock is the first 00:00Z after EXP-027's read is written (A1.2: 2026-11-08T00:00Z if the tool writes ND on 11-07; 2026-11-10T00:00Z if ND falls at the deadline). Nothing else here changes.
+
+**Part B: the source. r4-b-T is not a book covered by Amendment 23 as written (A1.2 item 7).**
+6. **The decision host.** A NEW run of the r4-b DRY host at the install sha with a new `change_id` (A1.2, "The decision host"), in configuration C (DEC-032 Amendment 8 Erratum 4 item 1):
+   - the fast-0 tip tape is the history, through the pinned reader `tools/r4b_tip_reader.py` (blob `78ad185744147173d4e1036f35268012fcdcb066`, sha256 `8d0bf2d11ec6ac61e702937b2c55c88ec646c72f4a99a08c39ef1ad161d9537f`);
+   - the Helius mark window owns the slots in (D, sd): armed at T − 35 s, `processed` commitment, `--daily-credit-cap 50000`, about 42k credits a day (Erratum 4 item 1(g));
+   - slot ownership (item 1(d)), certification (item 1(e)) and b3 as `late_tip` (item 1(f));
+   - trigger `certified` (Erratum 3 item 4) and `--catch-up-hours 52` (Erratum 4 item 4);
+   - all of it fixed in the run's start record (Erratum 4 item 2).
+
+   The command is the install tree's `scripts/research/r4b-dry-long.sh <change_id>` (blob `8a0c7628a0bab648e19d3e2b0fdfb9b115368ad1`, unchanged), as a host-side MiScusi job on mal-fast-0, with its sidecar `scripts/research/r4b-dry-sidecar.sh` as its own job. The `change_id` is `r4bt-a1-` plus a date and letter, fixed in the registration record.
+   - It starts after the registration record, and after dry-long-1101a is stopped at E = 2026-11-07T03:00:00Z, so that two hosts never run on fast-0 at once. The wrapper's M5 refusal enforces this.
+   - It is a named tip-tape reader (item 12).
+   - Its run end and successor follow item 20.
+   - **Not the writer path.** The host never reads the Amendment 23 writer's derived copy. Amendment 23 items 2, 3, 5, 6 and 7 do not apply to it as written; items 7 to 11 here replace them for r4-b-T. Amendment 23 item 9 applies in full to the derived copy, which r4-b-T's pricer reads (item 25).
+7. **Gap kinds and §1.4.**
+   - Every `gaps.jsonl` row the reader returns is data loss (reader docstring: "Always data loss (ruling 2.2)"). The reasons are `backlog_jump`, `unfetchable`, `skip_contradicted`, `skip_contradicted_refetch` and `unresolved_dropped`, plus `tip_bad_line` for a line the reader cannot parse. The host writes each as a declog `gap` row whose `gap_kind` is `tip_gap_` plus the reason (cut to 32 characters by `TipGap.code`), and holds the seam until the 1,500-slot release (Erratum 4 item 3). For r4-b-T each such row is prog `all`, because r4-b's features read both venues.
+   - The host's own data-loss rows (the one gap row of a `bound_incomplete` or abandoned mark, Erratum 3 item 3) are data loss too. Skipped slots are not data loss.
+   - **§1.4 gap source of r4-b-T** (its 5% cap): the union of (a) its declog `gap` rows whose `data_loss` is not false and (b) the data_loss gap rows of prog `pumpswap` or `all` in the derived copy its pricer reads (item 25). A counted trade whose decision-to-exit span overlaps either is excluded by that rule and counted.
+   - **No paper buy hold.** The executor's 10-minute buy hold after a gap row (DEC-032 §5 item 2) is an execution rule. In paper every entry row is an attempt, priced or excluded by §1.4 alone.
+   - **Risk, disclosed (arithmetic, not a measurement).** About 10 positions are open at most instants, so each prog-`all` data-loss gap excludes about 10 trades. Lane L5 counts about 0.37 tip `backlog_jump`s a day (10-27, 10-28, 11-01; LAB_STATE row 115 and the writer's status). At about 103 attempts a day (EXP-027 §4.1, inferred), a 5-date screen window holds about 515 attempts, so the cap is about 25.75 trades, and three gaps (expected 1.85; Poisson P(≥ 3) ≈ 0.28) put about 30 trades over it. The remedy in view is a gap-fill of the price path before exclusion (the mechanism of open PR #1182), adopted for r4-b-T only by a quant-proof ruling before the clock (Q1). Without it, the screen read carries this NOT_DECIDABLE risk.
+8. **Hour health (Amendment 6 item 2 for r4-b-T).** Before the clock r4-b-T pins, as path@sha256, an outcome-blind per-hour tool built on Amendment 23 item 5's tip tool and its thresholds file (canonical JSON, values unchanged). Its inputs:
+   - (a) the follower-state sample file of the pinned 60 s sampler, for the decision-input side: `status_bad_samples`, `min_samples_per_hour`, `max_sample_gap_s`, and `max_input_age_s` measured at minute :02 from the follower's checkpoint `last_t_recv_ms` (the follower is a feed process, Amendment 6 item 2.2);
+   - (b) the writer's hourly counts log and its status, for the price-path side: `writer_hour_complete`, `max_loss_span_s`, and `max_data_silence_s` for programs `pumpswap` and `pumpfun`;
+   - (c) under transport B, the receiver's arrival log.
+
+   It reads no declog row, tip row, ledger, fill, price, exit, position, P&L or count of decisions, and prints no mint, wallet or signature. The host's own mark statuses (`late_tip`, abandoned, `late_inputs`) come from the book's own process and are report-only (Amendment 6 item 2.2). Amendment 6 items 2.3 to 2.7, 3 and 4 apply.
+9. **Pre-clock feed bar (A1.2 item 7; Amendment 23 item 6's arithmetic).**
+   - T_max = 48 h + 1 h + 60 s = 176,460 s (DEC-032 Amendment 8 A7, X6). That is above 0.6076 h, so the bar needs ZERO data-loss rows in the 24 closed UTC hours before the clock.
+   - The count uses two sources and the larger decides: the follower's `gaps.jsonl`-derived gap rows in the registered writer's counts log (a prog `all` row counts), and the moves of the follower's counters (`gaps`, `backlog_jumps`, `unresolved_dropped`) in the sampler file.
+   - One row slips the clock to the next 00:00Z. A slip is not a stop and spends no N (A1.2: "A single backlog_jump slips the clock by a day; it is a slip, not a stop").
+   - A records line states the counts, the window and the sources before the clock.
+10. **History, warm-up and decisions.**
+    - The catch-up ingests 52 h of tip history (hours at or after max(2026-10-16T01, start − 53 h), the reader's floor). It is the warm-up (Erratum 4 item 4) and ends before the clock.
+    - History rule: the clock is at or after H0 + L, with L = 52 h and H0 the first hour the host reads. This holds by construction, because the catch-up comes before the first live mark.
+    - Decisions and counted attempts come only after the reader reports `caught_up` (a mark before it cannot certify: `tip_not_caught_up`, `tools/test_r4b_tip_history.py::test_tip_not_caught_up_behind_or_gap_open_blocks_certification`), only after the engine's 52 h warm-up gate (`tools/r4b_live.new_host_engine`), and only from the clock.
+    - No hour before 2026-10-16T01 is read. The host reads no copy of the tip tape other than the live dir.
+11. **Look-2 by construction.** Until 2026-11-14T00:00:00Z there is no decision within [s0, s0 + 360 s) of a pool with s0 before 2026-11-01T00:00Z (EXP-024 §3 Look-2). r4-b drops every decision row with T < block_time(s0) + 600 s before ranking: `tools/r4b_live.py:1304` at the install sha, with `D3_DROP_S` = 600 at :88, and `tools/test_r4b_live.py:347` asserts it equals `tools/r4b_read.D3_DROP_S`. So no r4-b-T decision can fall in [s0, s0 + 360 s) of any pool. r4-b-T reports nothing restricted to [s0, s0 + 360) (EXP-027 §3.6 (c)).
+12. **A3 regime, shared-slot ruling and readers.**
+    - **Hard halt (QP's recommendation in A1.2 item 7, adopted).** A `pins_changed` that includes any account pin (`bonding_fee_config`, `pumpswap_fee_config`, `pumpswap_global_config`) or the fees program's deploy slot (Amendment 4's hard-halt list), and a follower decoder-pin failure. The host already fails closed at every mark on `decoder_blobs`, `decoder_blobs_pinned` and `trade_event_v`. A hard halt inside the counted window ends the window at its instant. If the read boundary has not come by then, the read is NOT_DECIDABLE.
+    - **Record-only, disclosed:** a program-only pump or PumpSwap redeploy. A1.2 item 7: "a decode change found later in the window means NOT_DECIDABLE". Before the clock quant-proof names the check that would find one (Q2).
+    - **Not halting for r4-b-T:** `boost_disabled`, `boost_share_low`, `boost_last_slice_early`, `boost_budget_or_slices_changed` and `synthetic_share_high`. r4-b reads no BOOST flag and no synthetic class (EXP-027 §3.6 (b) and (d)). They are recorded and disclosed. If quant-proof keeps any of them as halting (Q2), this list changes before the clock.
+    - **Source of the flags:** research-0's daily A3 job (`tools/pump_structure_monitor.py`) continues after E as a host-side job, with an r4-b-T entry, through r4-b-T's last read. Its `run_utc` and `halt` fields are the record.
+    - This regime is r4-b-T's own. It does not reach EXP-027, whose A3 rule stays as registered (QP-RULING-1102-r4b-a3-record, R2).
+    - **Shared slots.** QP-RULING-1102-tip-shared-slot (`pool_slots_multi_sig`, in progress at writing) resolves before the clock. Its outcome as it applies to `tools/r4b_tip_reader.py` is copied into the registration record. r4-b's own order rule is EXP-027 §3.2 (null `tx_index` first, then `event_index`, then the file row). Rows without `tx_index` reach the engine through the walker-schema path, as walk 2's rows do.
+    - **Readers.** Before the host's first read, a records line adds r4-b-T's decision host (install sha, `change_id`) to the tip-tape readers of SEALS-BRIEF (the FAST-0 TIP TAPE entries) and of the ledger's Forward walk 2 Status-cell note, and adds r4-b-T's pricer (item 25) to Amendment 23 item 9's readers of the derived copy.
+
+**Part C: registration.**
+13. **The book.**
+    - `bot_id` **`r4bt-a1`**. The rule is EXP-027 §2.1, unchanged: K = 10, 0.25 SOL per position, hour marks, the universe and D3 drop of §3.4, the float64 bag of the five md5-pinned boosters, `mint_filters` "asof" and `grads_rule` "asof_pda_first_print".
+    - `frozen_sha` = the install sha **`bc65c088793753954c86b82d0e5eff74aa038e0b`** (A1.2 item 2: keeping it "is strongly preferred, so that existing proofs carry over"). Its host closure is the 88 files and `models/r4b/` recorded in DEC-032 Amendment 8 Erratum 4 item 5(v).
+    - Model ids `[]`. Deciding stake 0.25 SOL.
+    - **Declog map.** The frozen code writes its rows under the arm name `r4b-exp027` (`tools/r4b_live.BOT_ID`, unchanged), in `$HOME/mal-data/r4b-dry/<change_id>/declog/decisions/r4b-exp027/`. The registration record pins the map (`r4bt-a1` ↔ that root and arm) in the notebook copy and in a pushed commit. If the two differ, there is no clock. The `start` row's `exp` "EXP-027" and `mode` "dry" are the frozen code's constants; they are disclosed, not changed.
+    - **If the 14-day memory envelope fails at 5120M** (item 20), `frozen_sha` is instead a wrapper-only commit W whose host closure is blob-identical to the install sha's 88 files, with only `SCOPE_MAX_MIB` raised (the M′ precedent of Erratum 4 item 5(v)). Quant-proof then rules, before the registration, whether dry-long-1101a still serves as the smoke and the P0 source at W (Q8). If it does not, a 24 h smoke at W runs first and the clock slips.
+14. **Clock.**
+    - `clock_start_ms` **1794031200000 (2026-11-07T06:00:00Z)** = E + 3 h. This is A1.2's floor: "r4-b-T's counted entry marks start at or after E + 3 h = 2026-11-07T06:00Z".
+    - **This CHANGES Amendment 6 item 1.4's "first 00:00Z" for r4-b-T only.** The clock is the first hour mark at or after 2026-11-07T06:00:00Z at which every item 30 entry holds and the host has reported `caught_up` and decided one settle mark (Erratum 4 item 5(v), R-b: a first live mark is expected to be `late_tip`).
+    - A missing item slips the clock to the next 00:00Z (2026-11-08T00:00:00Z = 1794096000000, then daily). A slip is never a stop and spends no N.
+    - A counted attempt is an entry row whose `ms` is at or after `clock_start_ms` and whose `t_mark` is at or after the clock in seconds.
+15. **P0 (A1.2 item 8; Amendment 4 item 2.1).**
+    - Counts only, on the 3 full closed UTC days before the registration (2026-11-04, 11-05 and 11-06 for a registration on 2026-11-07), from dry-long-1101a's decision log at the install sha.
+    - The tool is the pinned counter `tools/r4bt_attempts.py p0` (item 26). It reads only the rows' `kind`, `ms` and `t_mark`, and it verifies the hash chain without printing a row.
+    - Fixed first: the rule text (window, tool and outputs) goes in a notebook entry before the count job starts.
+    - Floor: a mean of at least 2.0 a day and no day at 0. Otherwise r4-b-T is not registered.
+    - The hard-gap rule for P0 (a hard gap, or data_loss over 1 h in total, in the window makes P0 NOT_DECIDABLE; Amendment 3 item 1) is checked from the follower's state samples and counters, not from the declog (Q3).
+    - Disclosed: the P0 days lie inside EXP-027's window [W0, E] and are walk-2-hour information. The counts are decision counts, allowed under EXP-027 §11's names-and-counts rule. They are r4-b's would-be attempts at the same sha on the same source, not counted attempts of r4-b-T.
+16. **H.** H = min(90, max(14, ceil(150 / rate))) days, with rate the P0 mean (Amendment 4 item 2.2). It is pinned in the registration record and notebook copy before the clock, and never extended. At a rate of at least 10.714285714285714 a day, H = 14 d and counted entries end at 1795240800000 (2026-11-21T06:00:00Z). If the §2 boundary has not come by clock + H, the book ends NOT_DECIDABLE (Amendment 4 item 2.3).
+17. **Smoke, equivalence and state fields (the Amendment 23 item 8 analogues; A1.2 item 8).**
+    - **Smoke.** dry-long-1101a serves as the 24 h smoke at the final `frozen_sha` if and only if `frozen_sha` = bc65c088 and the run's configuration equals item 6's apart from the run-end time and the `change_id` (A1.2). Its Amendment 6 item 1.3 blocking list ((a) to (d)) is judged by the manager from its start record, M1 file, host-log tail and sidecar (names, counts and timings), and the judgement is notebooked before the registration.
+    - **Equivalence** (Amendment 6 item 1.3 (e)). The P-C2 proofs at `194768cb` (MiScusi #1994 and #1995, both PASS with the pinned md5 pairs) carry to the install sha (Erratum 4 item 5(v)).
+    - **State fields.** The host reads walker-schema rows. `tools/test_r4b_tip_history.py::test_a_walker_row_and_its_tip_twin_give_byte_equal_engine_state_and_rows_md5` (P-C1 (f)) is the "needs" proof: no field the engine reads is always absent on this source.
+    - The A5 event-V md5 of DEC-032 Amendment 8 is not a pre-clock item of r4-b-T. It compares against EXP-027's deciding rows, which an ND read does not produce.
+18. **N, c and multiplicity.** N + 1 at the clock (Amendment 4 item 2.5). The confirmation (§2 step 4) runs on the same `bot_id` at p ≤ 0.05/c, with c as Amendment 3 item 2 counts it. Every read prints Amendment 3 item 3's block and item 23's disclosures.
+19. **One frozen copy (Amendment 3 item 5).** r4-b-T is the only frozen copy of r4-b that decides from its clock. EXP-027's r4-b has no counted mark after E − 1 h and no confirmation (B1 cancelled), so r4-b-T neither sits inside the parent's window nor duplicates its confirmation. dry-long-1101a is not a book, and it ends before the clock.
+20. **Run end, successor and memory.**
+    - One MiScusi job lives at most 14 days. The host starts at about 2026-11-07T03:05Z with `--max-marks` set so that it exits 0 before its job's time limit (about 330 live marks; MiScusi `after`-chains fire only on exit 0).
+    - A successor run at the same `frozen_sha` (a new `change_id`, `after`-chained on that exit, with its own 52 h tip catch-up) is planned only if the last exit the confirmation needs falls after that exit.
+    - A successor start is an engine restart (Amendment 6 item 4). The frozen code writes `restart` exit rows for positions open at the stop (DEC-032 Amendment 8 Erratum 1 item 1); those trips are §1.4 exclusions (engine_restart) in the 5% cap, and the restart gap is excluded in whole hours. No restart is planned before the confirmation boundary.
+    - **Memory.** The manager runs the envelope tool of open PR #1173 on dry-long-1101a's sidecar at or after 2026-11-06T14:38Z. If its projection over the planned run FITs 5120M at the 85 % line, the install sha is used unchanged. Otherwise item 13's W route applies.
+21. **T_max and the kill-review week.** T_max = 176,460 s (item 9). The registration record checks LAB_STATE "Now" for a kill-review week that covers the clock.
+22. **Pins in the registration record:** item 6's command, flags and reader blob; item 8's tool and thresholds; items 24 to 27's files; H; T_max; the A3 entry of item 12; the declog map of item 13; and item 9's feed-bar line.
+23. **Disclosures in every r4-b-T read.**
+    - Walk-2-hour information (DEC-030 §2 R1). The tip tape is a near byte-copy of walk 2's content, and r4-b-T's outcomes over Forward walk 2 calendar hours are walk-2-hour OUTCOME information (Amendment 23 item 9).
+    - EXP-027's NOT_DECIDABLE and its cause. r4-b-T re-runs a rule whose registered read ended ND, and it was chosen with that verdict and lane L5's ranking in view.
+    - Option Z; the DRY host dry-long-1101a and its P0 use.
+    - The A3 regime of item 12 and every record-only event.
+    - Item 7's gap counts and the §1.4 exclusions; the Helius-tail causes (Erratum 4 item 3).
+    - The train/serve skew of the 52 h warm-up (Erratum 1 item 2; EXP-027 §3.4).
+    - That the rule is EXP-027's r4-b, selected before walk 2 on in-sample exploration evidence (EXP-027 §10.4).
+
+**Part D: pricing and the read.**
+24. **Deciding stack (§1.4 with Amendment 2).**
+    - The engine is `tools/arena_paper.py` at its §1.4-pinned sha256 (`9d2fdb04a3da9bb38de9e30c91154f5a9ab2de513e6f4d7936c1eb1a54863514` at main `2fa2e4bc`). A later change, for example PR #1182's engine change, is disclosed with quant-proof's OK before the clock.
+    - `StackConfig` pin (Amendment 2 item 8): `rent` 0, `e1_floor_per_005` 384022, `strand_rule` "both", `k_rounding` and `feed_delay_slots` as quant-proof pins them (Q5), `gap_slots` 150 and `gap_silence_ms` 60000. At 0.25 SOL the E1 floor is 1,920,110 lamports per filled trip, equal to EXP-027's Option B.
+    - Rent 0 decides (Amendment 2 item 2: r4-b-T's registration and clock are after its merge). The rent-charged leg is printed beside every deciding figure (Amendment 2 item 7). The sell-builder condition (Amendment 2 item 5) carries to any canary.
+    - Amendment 2 item 6's V-band check: `tools/r4b_live.py:1029` at the install sha (V0 of the PDA pool's s0 print in [17.5e9, 17.7e9]). PDA pools are WSOL-quoted by construction. Quant-proof rules whether this V0-at-s0 test meets "V in [17.5e9, 17.7e9] on the deciding row" (Q4).
+    - **Latency start (§1.4).** From the decision instant: the entry or exit row's `ms` (the host's write instant), mapped to the price tape's slot clock, plus d. Never sd(T). This is stricter than EXP-027's sd(T) + k by the host's decide time (the certified marks were ready at T + 1.011 s to T + 1.605 s in the P-C3 runs, Erratum 4 item 5(v)), and it is disclosed.
+    - **The other route (A1.2 item 3)** is `tools/r4b_book.round_trip` with a lamport parity proof against the §1.4 stack on the committed parity set. It is not chosen here, because it prices from sd(T) rather than from the decision instant. Quant-proof may choose it instead (Q5); then items 24 and 25 are replaced before the clock.
+25. **Pricer and price source.**
+    - A new pinned file, `tools/r4bt_price.py` (owed), replays r4-b-T's declog (`entry`, `exit` and `gap` rows) in `ms` order against the Amendment 23 writer's derived copy (`tape-*` rows: the arena tape's format plus `tx_index` and `block_time`), through `ArenaEngine` with its clock injected from the rows (`now_fn` returns the decision row's `ms`). It writes a ledger in r4-b-T's own root on /data2.
+    - It runs only after EXP-027's read is written (item 2) and refuses otherwise. It is the only process that joins r4-b-T's decisions to prices. It never reads the tip dir, the archive, walk 2, `/data/mal/r4b/`, or any other book's output.
+    - Price-source pins: Amendment 23 item 2's writer, pusher and receiver pins and H0, and a `feed_delay_slots` d measured as Amendment 23 item 2 measures it, for this pricer's mapping.
+    - The derived copy must be continuous from 2026-11-07T03:00Z (clock − 3 h, for the guard spot) to the confirmation's last exit + 2 h. The writer job #2033 and the push job #2039 end about 2026-11-15T07Z, so they need successors under PR #1183's hand-off before then.
+26. **Attempt counter.** `tools/r4bt_attempts.py` (this lane's code PR; pinned as path@sha256 at its merge).
+    - It reads only the `kind`, `ms` and `t_mark` of the declog rows. It verifies the hash chain with `tools.arena_declog` and prints no row.
+    - It counts entry rows per UTC date of `ms`, at or after the clock and before clock + H. It removes attempts decided in Amendment 6 excluded hours (from item 8's pinned table) and reports them toward the 10% cap.
+    - It prints the §2 boundary: the first 00:00Z at which at least 100 counted attempts lie on at least 5 UTC dates.
+    - It loads no fill, exit, rank, score, mint or P&L.
+27. **Read tool.** A pinned wrapper `tools/r4bt_read.py` (owed) over `tools/arena_score.py` (sha256 `c4859323622794f5f97a131eb32256c905ca2ab6c1adf8ab21568fc2a98f27f3` at main `2fa2e4bc`), on the pricer's ledger. It applies:
+    - §2's gate on the deciding cell: 1.9 s, 0.25 SOL, under the flat 15% and the pressure-fail model at slope scale 1;
+    - DEC-014 Amendments 1 and 2;
+    - §1.4's 5% cap on item 7's union and Amendment 6's 10% cap;
+    - Amendment 2 items 7 and 8;
+    - the multiplicity block and the screen-read p line (Amendment 3 item 3), and ex-best-day.
+
+    It merges with quant-proof's OK and a reviewer verdict **before the clock** (A1.2 item 4). No count beyond item 26's, no preview and no read runs before it merges. The confirmation (§2 step 4) uses the same tools and pins, from the screen read's boundary.
+28. **Read instants (arithmetic, not a promise; A1.2).** At about 103 attempts a day the 5-date bar binds. The screen boundary is no earlier than 2026-11-12T00:00:00Z (dates 11-07 to 11-11; 11-07 is a partial date and counts as a date with attempts). Its run comes after the last exit (at most boundary + T_max) and after EXP-027's read is written. The confirmation boundary is no earlier than about 2026-11-17T00:00:00Z.
+
+**Part E: DEC-032 terms for a later C0 (A1.2 item 9). A DEC-032 amendment enacts them; this text does not.**
+29. **What that amendment carries.**
+    - **Path.** A C0 of r4-b-T comes only through DEC-032 §1 item 1's arena-PASS path: a screen PASS of `r4bt-a1` with quant-proof's OK on the read's exact files. The owner's standing pre-approval of 2026-10-23 for a C0 on a gate PASS applies, with DEC-032's preconditions.
+    - **From Amendment 8, which covers push-family books only:**
+      - A3: a canary executes only the frozen book's own decision rows; S is an execution limit.
+      - A6: the twin is r4-b-T's registered pricing engine (item 24) at stake S and the actual fees, nofail, 1.9 s leg.
+      - A7: X6 (no stop; the 48 h + 1 h + 60 s time stop and Erratum 1's restart exit are the backstops, through a reviewed r4-b profile override of the bridge's clamp), X7 (re-entry after the sell lands) and X8 (rank order under the tier caps).
+      - A8: latency in slots. For r4-b-T the origin is the decision instant of item 24.
+      - Errata 1 to 3: the restart exit, the warm-up, Bar 2's C0 latency go/no-go and its read rules. Bar 1 does not apply: the C0 would execute the decision host's own rows, so there is no second engine to compare.
+      - The C0 limits of DEC-032 §3: S = 0.05 SOL, max open 2, 30 buy attempts a day, daily stop 0.10 SOL, total stop 0.20 SOL, at most 14 days.
+    - **Above C0,** DEC-031 §2 step 4 applies (confirmation at 0.05/c), not Amendment 8 B1 or B2. A rung like R and a tightening like B3 need their own text, with the confirmation's figures.
+    - **Reusable:** `tools/r4b_arena_executor.py`, the keyless install pack of PR #1176, the envelope tool of PR #1173, and the DRY host's latency records.
+
+**Part F: owed before the clock, and quant-proof's questions.**
+30. **Owed before the clock.** The dated plan, with owners and the host-side jobs, is in `/data/mal/hunt-1008/ops/reports/2026-11-02/L10-r4bT.md`.
+    - (a) QP-RULING-1102-tip-shared-slot resolved (QP).
+    - (b) #1181 merged; the B1 cancellation records merged (manager, QP, reviewer).
+    - (c) This amendment merged (QP, reviewer, manager).
+    - (d) `tools/r4bt_attempts.py` merged (QP, reviewer).
+    - (e) `tools/r4bt_price.py` and `tools/r4bt_read.py` merged with QP's OK (builder, QP, reviewer).
+    - (f) Item 8's hour-health tool merged, and its 60 s sampler chained host-side through the window (builder, QP; manager's jobs).
+    - (g) Item 12's records lines (manager).
+    - (h) Item 9's feed-bar line (manager).
+    - (i) The P0 count and its fixed-first text (manager's jobs).
+    - (j) The smoke judgement for dry-long-1101a, notebooked (manager).
+    - (k) The envelope result and the `frozen_sha` decision (manager; QP if W).
+    - (l) The registration record: the `bots.json` line through `register_bot`, the notebook copy, item 13's map and item 22's pins; a records PR within 24 h (manager).
+    - (m) The A3 daily job continued with the r4-b-T entry (manager).
+    - (n) Writer and push successors planned past 2026-11-15T07Z (manager).
+31. **Questions quant-proof answers in writing before the clock.**
+    - Q1: item 7's §1.4 gap source, and whether a price-path gap-fill (PR #1182's mechanism) may repair tip data-loss gaps for r4-b-T's pricing before exclusion.
+    - Q2: item 12's A3 lists, and the check that would find a decode change.
+    - Q3: P0's hard-gap check from follower state (item 15), and whether the counter may also report the declog's gap-row counts and spans (feed facts, not decision content).
+    - Q4: Amendment 2 item 6's V-band check against r4-b's V0-at-s0 membership (item 24).
+    - Q5: the pricing route (items 24 and 25 against `r4b_book.round_trip`), `k_rounding`, and d for the pricer.
+    - Q6: EXP-027 §7.2 also says "A re-filing of any variant is a new book under a new EXP". Is this amendment with the registration record the filing, or is a short EXP registration file needed too?
+    - Q7: item 14's change of Amendment 6 item 1.4 (a 06:00Z clock).
+    - Q8: item 13's W route, if the envelope fails.
+
+**What does not change.** The promotion gate and every threshold (n ≥ 100; ≥ 5 UTC dates with a majority positive; CI90 lower bound > 0, 1,000 draws, seed 1, 5th percentile; ex-top-3 > 0; flat 15% and pressure-fail at slope scale 1). §2. §1.4's costs, 5% cap, parity and pins. Amendments 2, 3 and 23. Amendment 6, except item 1.4 for r4-b-T (item 14). EXP-027: every byte, its window, k, its NOT_DECIDABLE, and its §11 seal until its read. DEC-030. DEC-032 and its Amendment 8 (B1's cancellation is a separate record). Every other seal. The ban on a live send (§4).
+
+*Provenance.* QP-RULING-1102-r4b-a3-record with Addendum 1 (path and sha256 above); QP-RULING-1031-r4b-history (`/data/mal/hunt-1008/ops/manager18/QP-RULING-1031-r4b-history.md`, option C); QP-RULING-1030-r4b-live (the same directory; §1 ruling (a), Addenda 3 to 6); DEC-032 Amendment 8 and Errata 1 to 4 as merged; lane reports `/data/mal/hunt-1008/ops/reports/2026-11-02/L3-r4b-c0.md` and `L5-fastest-read.md`; code at main `2fa2e4bc`, where every r4-b host file named here is blob-identical to the install sha (`git ls-tree`, checked at writing). **Not measured by this amendment:** the tip data-loss rate, the host's memory over 14 days, any P0 count, any smoke, any attempt count, any hour's health, any outcome. QP OK and reviewer verdict: on the PR at its merged head.
