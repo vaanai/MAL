@@ -29,6 +29,9 @@ pytestmark = pytest.mark.skipif(shutil.which("zstd") is None, reason="the zstd C
 SCRATCH_OK = os.path.isdir(tm.SCRATCH_ROOT) and os.access(tm.SCRATCH_ROOT, os.W_OK)
 
 
+PINS_LINE = json.dumps({"k": "pins", "sha256": ap.pins_sha()})
+
+
 def hk(off_h: int) -> str:
     return tm.hour_key(tm.now_ms() + off_h * tm.H_MS)
 
@@ -75,7 +78,7 @@ def roots(tmp_path, monkeypatch):
 def pair(src: Path, dst: Path, **kw):
     sink: list[bytes] = []
     since = hk(-6)
-    rx = ap.TipReceiver(dst, backfill_hours=6, retain_hours=12, **kw)
+    rx = ap.TipReceiver(dst, backfill_hours=6, retain_hours=12, min_retain_hours=1, **kw)
     srv = ap.TipSender(src, since, {}, set(), write=sink.append)
     return srv, rx, sink
 
@@ -203,7 +206,7 @@ def test_the_writer_heartbeat_is_relayed_in_the_hb_and_the_consumer_check_fails_
     (src / aw.META_DIR / "status.json").unlink()
     deliver(srv, rx, sink, passes=2)
     rx.write_status()
-    assert ap.push_problem(dst) == "status_missing"  # no heartbeat to relay: fail closed
+    assert ap.push_problem(dst) == "writer_relay_empty"  # no heartbeat to relay: fail closed
     # a dead transport: the receiver's own status goes stale
     writer_status(src, tm.now_ms())
     deliver(srv, rx, sink, passes=2)
@@ -294,7 +297,7 @@ def wait_for(pred, timeout: float = 40.0) -> bool:
 
 
 def start_sender(src: Path, dst: Path, **kw):
-    cmd = [sys.executable, "-u", str(TOOL), "receive", "--dst", str(dst), "--backfill-hours", "6", "--retain-hours", "12"]
+    cmd = [sys.executable, "-u", str(TOOL), "receive", "--dst", str(dst), "--backfill-hours", "6", "--retain-hours", "192"]
     sd = ap.Sender(src, cmd, **kw)
     stop = threading.Event()
     res: dict = {}
@@ -340,7 +343,7 @@ def test_a_receiver_mismatch_stops_the_sender_for_good(scratch):
     src = scratch / "src"
     put_rows(src, hk(0), 0, 10)
     hello = json.dumps({"v": 1, "since": hk(-2), "have": {}, "closed": []})
-    script = f"import sys,json; print({hello!r}, flush=True); sys.stdin.buffer.read(1); print(json.dumps({{'k':'end','why':'offset','rc':2}}), flush=True); sys.exit(2)"
+    script = f"import sys,json; print({PINS_LINE!r}, flush=True); print({hello!r}, flush=True); sys.stdin.buffer.read(1); print(json.dumps({{'k':'end','why':'offset','rc':2}}), flush=True); sys.exit(2)"
     sd = ap.Sender(src, [sys.executable, "-u", "-c", script])
     assert sd.run(max_s=30) == ap.EXIT_MISMATCH and sd.state == "stopped_mismatch" and sd.connects == 1
 
@@ -349,7 +352,7 @@ def test_a_local_source_problem_stops_the_sender_fail_closed(scratch):
     src = scratch / "src"
     h = hk(0)
     put_rows(src, h, 0, 50)
-    script = f"import sys,json,time; print(json.dumps({{'v':1,'since':{hk(-2)!r},'have':{{}},'closed':[]}}), flush=True); time.sleep(30)"
+    script = f"import sys,json,time; print({PINS_LINE!r}, flush=True); print(json.dumps({{'v':1,'since':{hk(-2)!r},'have':{{}},'closed':[]}}), flush=True); time.sleep(30)"
     sd = ap.Sender(src, [sys.executable, "-u", "-c", script], poll_ms=20)
     threading.Timer(1.0, lambda: (src / tm.open_name(h)).write_bytes(b"short\n")).start()  # the file SHRINKS under the sender
     assert sd.run(max_s=30) == ap.EXIT_MISMATCH and sd.state == "stopped_source_bad"
@@ -358,7 +361,7 @@ def test_a_local_source_problem_stops_the_sender_fail_closed(scratch):
 def test_a_silent_receiver_is_dropped_and_a_second_sender_on_the_dir_is_refused(scratch):
     src = scratch / "src"
     put_rows(src, hk(0), 0, 10)
-    script = f"import json,time; print(json.dumps({{'v':1,'since':{hk(-2)!r},'have':{{}},'closed':[]}}), flush=True); time.sleep(60)"
+    script = f"import json,time; print({PINS_LINE!r}, flush=True); print(json.dumps({{'v':1,'since':{hk(-2)!r},'have':{{}},'closed':[]}}), flush=True); time.sleep(60)"
     sd = ap.Sender(src, [sys.executable, "-u", "-c", script], ack_silence_ms=1500)
     with pytest.raises(tm.Locked):
         ap.Sender(src, ["true"])
@@ -474,8 +477,8 @@ def test_the_push_job_dry_run_and_refusals():
 
 def test_the_job_scripts_keep_the_exit_status_and_forward_a_cancel(tmp_path):
     """The shared tail (background job, trap, wait, rc) run on a stand-in command: rc 7 comes back as 7, and a SIGTERM reaches the child."""
-    tail = (REPO / "scripts" / "ops" / "arena-tip-push-job.sh").read_text().split('"$@" &', 1)[1].split("exit \"$RC\"", 1)[0]
-    body = '#!/bin/sh\nset -- sh -c "$CHILD"\n"$@" &' + tail + 'exit "$RC"\n'
+    tail = "PID=\nSTOP=0" + (REPO / "scripts" / "ops" / "arena-tip-push-job.sh").read_text().split("PID=\nSTOP=0", 1)[1].split("exit \"$RC\"", 1)[0]
+    body = '#!/bin/sh\nset -- sh -c "$CHILD"\n' + tail + 'exit "$RC"\n'
     sc = tmp_path / "t.sh"
     sc.write_text(body)
     r = subprocess.run(["sh", str(sc)], env={**os.environ, "CHILD": "exit 7"}, capture_output=True, text=True, timeout=30)
@@ -491,3 +494,100 @@ def test_the_test_only_flags_cannot_reach_production(monkeypatch):
     monkeypatch.delenv("MAL_ARENA_TEST", raising=False)
     assert ap.main(["send", "--src", "/x", "--cmd-json", "[\"true\"]"]) == ap.EXIT_REFUSED
     assert aw.main(["run", "--no-compress", "--out-dir", str(Path(aw.OUT_ROOTS[0]) / "x" / "tape")]) == aw.EXIT_REFUSED
+
+
+# ------------------------------------------------------------------------------------------------------------------------------------ QP on #1167: C3 (the book reads 7 days of history)
+def test_c3_the_receiver_keeps_at_least_seven_days_plus_a_day_and_refuses_less(roots, tmp_path):
+    src, dst = roots
+    assert ap.RETAIN_HOURS_DEFAULT == 240 and ap.BACKFILL_HOURS_DEFAULT == 240 and ap.RETAIN_MIN_H == 192
+    rx = ap.TipReceiver(dst)  # the defaults
+    assert rx.retain_hours == 240 and rx.backfill_hours == 240
+    rx.close()
+    for bad in (191, 72, 1):
+        with pytest.raises(ValueError, match="retain_hours_below_192"):
+            ap.TipReceiver(dst.parent / "d2", retain_hours=bad, backfill_hours=1)
+    ap.TipReceiver(dst.parent / "d3", retain_hours=192, backfill_hours=192).close()
+    assert ap.main(["send", "--src", str(src), "--cmd-json", "[\"true\"]", "--retain-hours", "100"]) == ap.EXIT_REFUSED  # refused before dialing (the test flag is set by the module env)
+    rx2 = ap.TipReceiver(dst.parent / "d4", retain_hours=240, backfill_hours=240)
+    h_old, h_new = hk(-200), hk(-1)
+    for h in (h_old, h_new):
+        (dst.parent / "d4" / tm.open_name(h)).write_bytes(line(0, tm.hour_ms(h) + 1))
+    rx2.prune(force=True)  # 200 h old is inside the 240 h retention: kept (it would have been deleted at 72 h)
+    assert (dst.parent / "d4" / tm.open_name(h_old)).exists() and (dst.parent / "d4" / tm.open_name(h_new)).exists()
+    rx2.close()
+
+
+def test_c3_the_push_job_defaults_and_refuses_the_same_way():
+    r = run_sh("arena-tip-push-job.sh", DRY="1", REMOTE_REPO="/x")
+    assert "--retain-hours 240 --backfill-hours 240" in r.stdout and "MemoryMax=256M" in r.stdout and "MemorySwapMax=0" in r.stdout
+    for env in ({"RETAIN_H": "191"}, {"RETAIN_H": "72"}, {"RETAIN_H": "240", "BACKFILL_H": "241"}):
+        r = run_sh("arena-tip-push-job.sh", DRY="1", REMOTE_REPO="/x", **env)
+        assert r.returncode == 2 and r.stdout.startswith("REFUSED"), (env, r.stdout)
+    assert run_sh("arena-tip-push-job.sh", DRY="1", REMOTE_REPO="/x", RETAIN_H="192").returncode == 0
+
+
+# ------------------------------------------------------------------------------------------------------------------------------------ reviewer on #1167: must-fix 1, 2; S5
+def test_a_late_started_push_still_delivers_the_writers_first_hours(roots):
+    src, dst = roots
+    old = [hk(-100), hk(-99), hk(-5)]  # the writer's H0 hours; the push starts 100 h later
+    for h in old:
+        put_rows(src, h, 0, 200)
+        close_hour(src, h)
+    put_rows(src, hk(0), 0, 50)
+    rx = ap.TipReceiver(dst)  # defaults: retain 240, backfill 240
+    since, have, closed = tm.parse_hello(rx.hello_line())
+    assert since <= old[0]
+    sink: list[bytes] = []
+    srv = ap.TipSender(src, since, have, closed, write=sink.append)
+    deliver(srv, rx, sink, passes=6)
+    assert {tm.closed_name(h) for h in old} <= set(tree(dst)) and rx.closed_verified == 3
+    rx.close()
+    srv.close()
+
+
+def test_the_counts_record_lookup_is_incremental_and_held_hours_cost_no_lookup(roots, monkeypatch):
+    src, dst = roots
+    hours = [hk(-k) for k in range(10, 4, -1)]
+    for h in hours:
+        put_rows(src, h, 0, 20)
+        close_hour(src, h)
+    srv = ap.TipSender(src, hk(-12), {}, set(), write=lambda b: None)
+    assert srv.record(hours[0])["bytes"] > 0 and srv._rec_off == (src / aw.META_DIR / "counts.jsonl").stat().st_size
+    reads = []
+    real_pread = os.pread
+    monkeypatch.setattr(os, "pread", lambda fd, n, off: reads.append((n, off)) or real_pread(fd, n, off))
+    assert srv.record(hours[-1]) is not None and reads == []  # nothing appended: no read at all
+    h_new = hk(-3)
+    put_rows(src, h_new, 0, 20)
+    close_hour(src, h_new)
+    assert srv.record(h_new) is not None and len(reads) == 1 and reads[0][1] > 0  # only the appended bytes
+    srv.closed = set(hours)
+    monkeypatch.setattr(srv, "record", lambda h: (_ for _ in ()).throw(AssertionError("looked up a held hour")))
+    for h in hours:
+        srv._queue(h)  # held by the receiver: Server.scan asks every second, and it must cost nothing
+    srv.close()
+
+
+def test_s5_the_receivers_code_is_compared_at_every_session_and_a_difference_stops_the_sender(scratch):
+    src = scratch / "src"
+    put_rows(src, hk(0), 0, 10)
+    bad = dict(ap.pins_sha())
+    bad["tools/arena_tip_tape_writer.py"] = "0" * 64
+    script = f"import json,time; print({json.dumps({'k': 'pins', 'sha256': bad})!r}, flush=True); time.sleep(30)"
+    sd = ap.Sender(src, [sys.executable, "-u", "-c", script])
+    assert sd.run(max_s=30) == ap.EXIT_MISMATCH and sd.state == "stopped_pin_mismatch" and sd.connects == 1
+    sd2 = ap.Sender(src, [sys.executable, "-u", "-c", "print('{}', flush=True)"])  # no pins line at all: not a hello either
+    assert sd2.run(max_s=4) == ap.EXIT_OK and sd2.connects >= 1 and sd2.state in ("stopped", "disconnected")
+
+
+def test_the_relay_without_a_writer_heartbeat_is_never_replaced_by_a_file_of_the_dst(roots):
+    src, dst = roots
+    put_rows(src, hk(0), 0, 20)  # no writer status in src: the hb carries w = null
+    srv, rx, sink = pair(src, dst)
+    deliver(srv, rx, sink)
+    rx.write_status()
+    (dst / aw.META_DIR).mkdir()
+    writer_status(dst, tm.now_ms())  # a lookalike file in the dst must not be believed
+    assert ap.push_problem(dst) == "writer_relay_empty"
+    rx.close()
+    srv.close()

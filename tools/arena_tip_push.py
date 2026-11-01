@@ -11,7 +11,7 @@ heartbeat inside every hb frame (`w`), and the receiver sends `ack` / `end` fram
 
 BYTE-EXACT, VERIFIED (tape_mirror's checks, inherited unchanged): `d` frames append only at the offset the receiver already holds and only whole lines; a closed hour is received as <name>.part,
 its sha256 must equal the sender's, `zstd -dc` of it must reproduce the receiver's live copy as an exact PREFIX, and only then is it renamed to .zst (the live .jsonl is removed after). A position
-mismatch, a diverged closed hour or an undecodable .zst stops the receiver (exit 2, sender exit 2, state stopped_mismatch): fail closed for a human. A failed sha retries (reconnect, at most 3).
+mismatch, a diverged closed hour or an undecodable .zst stops the receiver (exit 2, sender exit 2, state stopped_mismatch): fail closed for a human. A failed sha makes the receiver exit 75 and the sender reconnect; every session is a NEW receiver process, so tape_mirror's bound of 3 retries does not apply (safe: nothing is installed until the sha, the prefix check and the writer's record all pass).
 Neither side parses a row: byte counts, newline positions and sha256 only. Logs and status hold hour names, sizes, offsets, hashes and timings.
 
 LAG. Per d frame: lag_new = receiver write done - the newest source byte's mtime, lag_old = receiver write done - the instant the sender last held exactly that offset (an upper bound for the oldest
@@ -23,7 +23,7 @@ no problem, caught up). A dead sender, a dead ssh, a stale or unpinned writer, a
 
 SEALS. The out dir is a DERIVED COPY of the sealed tip tape and so is the receiver's dst: both are sealed as such (SEALS entry owed by the QP item-1 ruling); the sender reads only the writer's
 dir (an allowlist of the writer's roots, sealed tokens refused, the directory opened once with O_DIRECTORY | O_NOFOLLOW and every file relative to it); the receiver writes only under
-DST_ROOTS (the HV7 root below /data/mal/arena, or the scratch root) and never into the public arena tape. Walk-2-hour information (DEC-030 s2 R1).
+DST_ROOTS (/data2/mal/arena-tip-feed, QP-RULING-1101-arena-tip-reader B1, or the scratch root; never /data/mal, the walk-2 walker's disk) and never into the public arena tape. Walk-2-hour information (DEC-030 s2 R1).
 """
 
 from __future__ import annotations
@@ -65,9 +65,21 @@ STATUS_EVERY_S = 0.5
 RELAY_MAX = 64 << 10
 EXIT_OK, EXIT_MISMATCH, EXIT_REFUSED = tm.EXIT_OK, tm.EXIT_MISMATCH, tm.EXIT_REFUSED
 EXIT_RECONNECT, EXIT_DISK = 75, 76  # receiver exit codes the sender reads (also sent in the `end` frame)
-RETAIN_HOURS_DEFAULT = 72  # the writer keeps the same
-BACKFILL_HOURS_DEFAULT = 72
+RETAIN_HOURS_DEFAULT = 240  # C3 (QP on #1167): HV7 replays the dir (ArenaState start_ms=0) and its universe reads L = 7 d of history: keep 10 days on research-0 (the fast-0 copy is only
+BACKFILL_HOURS_DEFAULT = RETAIN_HOURS_DEFAULT  # verified + 24 h; this is the BOOK's history). A push that starts late still fetches from H0.
+RETAIN_MIN_H = 192  # refused below L + 24 h = 7 d + 24 h, here and in the job script
 MIN_FREE_PCT_DEFAULT = 20.0
+
+
+PIN_FILES = ("tools/arena_tip_push.py", "tools/arena_tip_tape_writer.py", "tools/arena_tip_adapter.py", "tools/arena_tip_reader.py", "tools/arena_zst.py", "tools/tape_mirror.py",
+             "tools/decision_forwarder.py")  # what the receiver imports (the push job pins the same list at job start; this checks it at EVERY session)
+
+
+def pins_sha(repo: str | os.PathLike | None = None) -> dict[str, str]:
+    import hashlib
+
+    root = Path(repo) if repo else Path(__file__).resolve().parent.parent
+    return {f: hashlib.sha256((root / f).read_bytes()).hexdigest() for f in PIN_FILES}
 
 
 def check_dst(dst: str | os.PathLike, roots: Sequence[str] | None = None) -> Path:
@@ -193,18 +205,40 @@ class TipSender(tm.Server):
         return _read_json_nofollow(self.dirfd, (aw.META_DIR, "status.json"))
 
     def record(self, h: str) -> dict | None:
-        """The writer's closed-hour record (bytes and sha256 of the uncompressed hour) from .writer/counts.jsonl, or None."""
-        obj = _read_text_nofollow(self.dirfd, (aw.META_DIR, "counts.jsonl"))
-        for ln in (obj or b"").splitlines():
+        """The writer's closed-hour record (bytes and sha256 of the uncompressed hour) from .writer/counts.jsonl, or None. INCREMENTAL: only the bytes appended since the last call are read and
+        parsed (the file is append-only, one row per hour; if it shrinks it is read again from the start), so a scan costs one fstat when nothing was appended."""
+        if not hasattr(self, "_recs"):
+            self._recs, self._rec_off, self._rec_tail = {}, 0, b""
+        try:
+            d = os.open(aw.META_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=self.dirfd)
             try:
-                row = json.loads(ln)
-            except ValueError:
-                continue
-            if isinstance(row, dict) and row.get("hour") == h and isinstance(row.get("bytes"), int) and isinstance(row.get("sha256"), str):
-                return {"bytes": row["bytes"], "sha256": row["sha256"]}
-        return None
+                fd = os.open("counts.jsonl", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=d)
+            finally:
+                os.close(d)
+            try:
+                size = os.fstat(fd).st_size
+                if size < self._rec_off:
+                    self._recs, self._rec_off, self._rec_tail = {}, 0, b""
+                if size > self._rec_off:
+                    data = os.pread(fd, size - self._rec_off, self._rec_off)
+                    self._rec_off += len(data)
+                    *lines, self._rec_tail = (self._rec_tail + data).split(b"\n")
+                    for ln in lines:
+                        try:
+                            row = json.loads(ln)
+                        except ValueError:
+                            continue
+                        if isinstance(row, dict) and isinstance(row.get("hour"), str) and isinstance(row.get("bytes"), int) and isinstance(row.get("sha256"), str):
+                            self._recs[row["hour"]] = {"bytes": row["bytes"], "sha256": row["sha256"]}
+            finally:
+                os.close(fd)
+        except OSError:
+            return self._recs.get(h)
+        return self._recs.get(h)
 
     def _queue(self, h: str) -> None:
+        if h in self.closed or h in self.zq or (self.zcur and self.zcur["h"] == h):
+            return  # held by the receiver / already queued: no lookup (Server.scan asks for every .zst hour each second)
         if self.record(h) is not None:  # B2: a closed hour is sent only with the writer's record of it to check against; without one it waits (the next listing asks again)
             super()._queue(h)
 
@@ -217,6 +251,10 @@ class TipSender(tm.Server):
         elif k == "ze":
             obj = {**obj, "rec": self.record(str(obj.get("f"))[5:18])}
         super()._emit(obj, body)
+
+
+class PinMismatch(Exception):
+    """The receiver runs other code than the sender's checkout: stop for good (fail closed), a human re-pins."""
 
 
 class Sender:
@@ -236,6 +274,7 @@ class Sender:
             os.close(self._lock_fd)
             self._lock_fd = None
             raise tm.Locked("src_locked") from None
+        self.pins = pins_sha()
         self.cmd, self.poll_s = list(cmd), max(1, int(poll_ms)) / 1000.0
         self.hb_ms, self.zst_pass_bytes, self.ack_silence_ms, self.connect_timeout_ms = int(hb_ms), int(zst_pass_bytes), int(ack_silence_ms), int(connect_timeout_ms)
         self.clock_ns = clock_ns
@@ -317,12 +356,25 @@ class Sender:
         return lines
 
     def _hello(self) -> tuple[str, dict[str, int], set[str]]:
+        """First the receiver's pins line (S5: its code must equal ours, every session), then its hello."""
         end = time.monotonic() + tm.HELLO_TIMEOUT_S
+        pinned = False
         while True:
             left = end - time.monotonic()
             if left <= 0:
                 raise ValueError("hello_timeout")
             for ln in self._read_lines(min(left, 0.5)):
+                if not pinned:
+                    try:
+                        obj = json.loads(ln)
+                    except ValueError:
+                        raise ValueError("pins_missing") from None
+                    if not (isinstance(obj, dict) and obj.get("k") == "pins"):
+                        raise ValueError("pins_missing")
+                    if obj.get("sha256") != self.pins:
+                        raise PinMismatch(sorted(f for f in set(self.pins) | set(obj.get("sha256") or {}) if (obj.get("sha256") or {}).get(f) != self.pins.get(f)))
+                    pinned = True
+                    continue
                 return tm.parse_hello(ln)
 
     def _note_receiver(self, lines: list[bytes]) -> None:
@@ -352,6 +404,10 @@ class Sender:
         assert self.proc.stdin is not None
         try:
             since, have, closed = self._hello()
+        except PinMismatch as exc:
+            self.state = "stopped_pin_mismatch"
+            self.event("receiver_pin_mismatch", files=list(exc.args[0]))
+            return "pin_mismatch"
         except (EOFError, ValueError) as exc:
             return "no_hello_" + tm.code(str(exc))
         srv = TipSender(self.src, since, have, closed, write=self._write, clock_ns=self.clock_ns, zst_pass_bytes=self.zst_pass_bytes, hb_ms=self.hb_ms, roots=self.roots)
@@ -402,6 +458,9 @@ class Sender:
                     self.write_status()
                     return EXIT_MISMATCH
                 self._kill()
+                if why == "pin_mismatch":
+                    self.write_status()
+                    return EXIT_MISMATCH
                 rc = self.proc.returncode if self.proc else None
                 end_rc = (self.last_end or {}).get("rc")
                 if why == "done":
@@ -463,12 +522,14 @@ class _Pipe:
 class TipReceiver(tm.Puller):
     """tape_mirror.Puller on the far end of the ssh pipe: it reads frames from its own stdin and sends the hello (and acks) on its stdout. Same verification, install, retention, disk reserve,
     status (.mirror/status.json, schema tape_mirror_v1, so tape_mirror.mirror_problem works on it) and lag. Differences: the dst allowlist (check_dst; Puller refuses everything under
-    /data/mal/arena, the HV7 root included), the stdio session, ack frames, and the relayed writer heartbeat."""
+    /data/mal/arena), the stdio session, ack frames, and the relayed writer heartbeat."""
 
     def __init__(self, dst: str | Path, *, backfill_hours: int = BACKFILL_HOURS_DEFAULT, retain_hours: int = RETAIN_HOURS_DEFAULT, min_free_pct: float = MIN_FREE_PCT_DEFAULT,
                  stall_ms: int = tm.STALL_MS_DEFAULT, reconnect_silence_ms: int = tm.RECONNECT_SILENCE_MS_DEFAULT, connect_timeout_ms: int = tm.CONNECT_TIMEOUT_MS,
                  clock_ns: Callable[[], int] = time.time_ns, zstd: str | None = None, disk_usage: Callable[[str], Any] = shutil.disk_usage, progress_path: str | None = None,
-                 disk_retry_s: float = tm.DISK_RETRY_S) -> None:
+                 disk_retry_s: float = tm.DISK_RETRY_S, min_retain_hours: int = RETAIN_MIN_H) -> None:
+        if int(retain_hours) < int(min_retain_hours):
+            raise ValueError(f"retain_hours_below_{int(min_retain_hours)}")  # C3: the book reads 7 d of history; tests lower the floor
         if not 1 <= int(backfill_hours) <= int(retain_hours):
             raise ValueError("backfill_hours must be 1..retain_hours")
         d = check_dst(dst)  # replaces Puller.__init__'s "dst_under_arena" refusal (a test compares the attribute sets, so a change of Puller.__init__ cannot go unseen)
@@ -635,6 +696,7 @@ class TipReceiver(tm.Puller):
         t0 = time.monotonic()
         try:
             self.drop_part()
+            out.write(tm.frame({"k": "pins", "sha256": pins_sha()}))  # S5: the receiver's code, announced at every session; the sender compares it with its own
             out.write(self.hello_line())
             out.flush()
             self.proc = _Pipe(stdin_fd)
@@ -679,7 +741,9 @@ def push_problem(dst: str | Path, now: int | None = None, *, need_hours: int | N
         rx, hb = relay["rx_ms"], relay["hb_ms"]
         if not (isinstance(rx, int) and isinstance(hb, int)) or now - rx > tm.SYNC_MAX_AGE_MS:
             return "writer_relay_stale"
-        return aw.writer_problem(dst, hb, status=relay.get("w"), need_caught_up=need_caught_up) or None
+        if not isinstance(relay.get("w"), dict):
+            return "writer_relay_empty"  # the sender had no writer heartbeat to relay: never fall back to reading a file of the dst
+        return aw.writer_problem(dst, hb, status=relay["w"], need_caught_up=need_caught_up) or None
     except FileNotFoundError:
         return "writer_relay_missing"
     except (OSError, ValueError, KeyError, TypeError):
@@ -706,6 +770,9 @@ def write_result(path: str | None, status: dict, rc: int) -> None:
 
 
 def run_send(args: argparse.Namespace) -> int:
+    if args.retain_hours < RETAIN_MIN_H or not 1 <= args.backfill_hours <= args.retain_hours:
+        print(f"send refused: --retain-hours must be >= {RETAIN_MIN_H} and --backfill-hours 1..retain", file=sys.stderr)
+        return EXIT_REFUSED
     if args.cmd_json and os.environ.get("MAL_ARENA_TEST") != "1":
         print("send: --cmd-json is for tests only", file=sys.stderr)
         return EXIT_REFUSED

@@ -2,7 +2,7 @@
 # arena-tip-push-job.sh - PUSH the arena tip writer's hour files from mal-fast-0 to mal-research-0, byte for byte (QP-RULING-1101-arena-tip-reader B1-B5; HV7 tip plan, Transport B).
 # POSIX sh only (MiScusi runs jobs under sh). PAPER ONLY: no key, no wallet, no RPC, 0 Helius credits. ISOLATED: the whole transport is tools/arena_tip_push.py; delete it and this script if QP
 # rules that the engine must run on fast-0 (plan option A).
-# Run on mal-fast-0 as ONE long MiScusi job, AFTER the writer job. Suggested: machine mal-fast-0, mem_mb 256, cpus 1, resumable true (both ends keep their state in their dirs: a restart
+# Run on mal-fast-0 as ONE long MiScusi job, AFTER the writer job. Suggested: machine mal-fast-0, mem_mb 300 (the scope below caps the sender at 256M; the receiver on research-0 is not capped: a scope there is untested over ssh), cpus 1, resumable true (both ends keep their state in their dirs: a restart
 # resumes from the receiver's local sizes and the sender's .push/verified.json), a time limit that covers the window.
 # It dials `ssh mal-research-0` (Cloudflare Access; the path tape_mirror's pull uses, in the same direction) and execs `tools/arena_tip_push.py receive` there FROM $REMOTE_REPO, a checkout pinned
 # at THIS job's commit (checked below: same HEAD, same bytes of every file the receiver imports, no modified tracked file and nothing untracked under tools/ on either side).
@@ -13,8 +13,8 @@
 #   REMOTE_DST    the derived dir on research-0; must be under /data2/mal/arena-tip-feed/                                default /data2/mal/arena-tip-feed/hv7
 #   SRC           the writer's out dir on fast-0; must be under $HOME/mal-data                                           default $HOME/mal-data/arena-tipfeed/tape
 #   SSH_HOST      default mal-research-0
-#   RETAIN_H      receiver retention by hour name                                                                         default 72
-#   BACKFILL_H    closed hours fetched on the first connect (<= RETAIN_H)                                                 default 72
+#   RETAIN_H      receiver retention by hour name; >= 192 (L = 7 d + 24 h: HV7 replays the dir)                           default 240
+#   BACKFILL_H    closed hours fetched on the first connect (<= RETAIN_H)                                                 default = RETAIN_H
 #   MIN_FREE_PCT  integer: the receiver writes nothing below this free-space percentage (state disk_reserve)                default 20
 #   PY            python3 (stdlib + zstd CLI)                                                                             default python3
 #   DRY=1         print the command and the checks' inputs; run nothing (no ssh, no mkdir).
@@ -26,8 +26,8 @@ REMOTE_REPO=${REMOTE_REPO:-}
 REMOTE_DST=${REMOTE_DST:-/data2/mal/arena-tip-feed/hv7}
 SRC=${SRC:-$HOME/mal-data/arena-tipfeed/tape}
 SSH_HOST=${SSH_HOST:-mal-research-0}
-RETAIN_H=${RETAIN_H:-72}
-BACKFILL_H=${BACKFILL_H:-72}
+RETAIN_H=${RETAIN_H:-240}
+BACKFILL_H=${BACKFILL_H:-$RETAIN_H}
 MIN_FREE_PCT=${MIN_FREE_PCT:-20}
 PY=${PY:-python3}
 REQUIRE_HOST=mal-fast-0
@@ -44,10 +44,11 @@ case "$SSH_HOST" in ''|*[!A-Za-z0-9.-]*) refuse "SSH_HOST must be a plain host a
 case "$REMOTE_DST" in /data2/mal/arena-tip-feed/?*) ;; *) refuse "REMOTE_DST must be under /data2/mal/arena-tip-feed/ (never /data/mal)" ;; esac
 case "$SRC" in "$HOME/mal-data"/?*) ;; *) refuse "SRC must be under $HOME/mal-data" ;; esac
 is_int "$RETAIN_H" && is_int "$BACKFILL_H" && is_int "$MIN_FREE_PCT" || refuse "RETAIN_H, BACKFILL_H and MIN_FREE_PCT must be non-negative integers"
+[ "$RETAIN_H" -ge 192 ] || refuse "RETAIN_H must be at least 192 (7 d + 24 h of history for the book)"
 { [ "$BACKFILL_H" -ge 1 ] && [ "$BACKFILL_H" -le "$RETAIN_H" ]; } || refuse "BACKFILL_H must be 1..RETAIN_H"
 { [ "$MIN_FREE_PCT" -ge 1 ] && [ "$MIN_FREE_PCT" -le 50 ]; } || refuse "MIN_FREE_PCT must be 1..50"
 
-set -- nice -n 19 ionice -c3 "$PY" -u tools/arena_tip_push.py send --src "$SRC" --ssh-host "$SSH_HOST" --remote-repo "$REMOTE_REPO" --remote-dst "$REMOTE_DST" \
+set -- systemd-run --user --scope -q -p MemoryMax=256M -p MemorySwapMax=0 nice -n 19 ionice -c3 "$PY" -u tools/arena_tip_push.py send --src "$SRC" --ssh-host "$SSH_HOST" --remote-repo "$REMOTE_REPO" --remote-dst "$REMOTE_DST" \
   --retain-hours "$RETAIN_H" --backfill-hours "$BACKFILL_H" --min-free-pct "$MIN_FREE_PCT"
 if [ "$DRY" = 1 ]; then echo "DRY=1: would check host=$REQUIRE_HOST, zstd, the pinned receive code at $SSH_HOST:$REMOTE_REPO, then run: $*"; exit 0; fi
 
@@ -66,9 +67,12 @@ $REMOTE"
 [ -d "$SRC" ] || refuse "SRC does not exist yet: start the writer job first"
 echo "JOB start $(date -u +%FT%TZ) head=$(git rev-parse HEAD) src=$SRC dst=$SSH_HOST:$REMOTE_DST retain_h=$RETAIN_H backfill_h=$BACKFILL_H"
 printf '%s\n' "$LOCAL" | sed -n '2,8p' | sed 's/^/JOB pin /'
+PID=
+STOP=0
+trap 'STOP=1; [ -z "$PID" ] || kill -TERM "$PID" 2>/dev/null' TERM INT
 "$@" &
 PID=$!
-trap 'kill -TERM "$PID" 2>/dev/null' TERM INT
+[ "$STOP" = 0 ] || kill -TERM "$PID" 2>/dev/null
 wait "$PID"
 RC=$?
 trap - TERM INT

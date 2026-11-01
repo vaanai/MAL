@@ -1,7 +1,7 @@
 #!/bin/sh
 # arena-tip-writer-job.sh - the arena tip tape WRITER on mal-fast-0 (QP-RULING-1101-arena-tip-reader W1-W9; HV7 tip plan step 5). POSIX sh only (MiScusi runs jobs under sh).
 # PAPER ONLY: no key, no wallet, no RPC, 0 Helius credits. ONE long MiScusi job (never a session cron, nohup or tmux).
-# Suggested job: machine mal-fast-0, mem_mb 1536 (the scope below enforces it; the pinned value is fixed before the smoke, W6), cpus 1, resumable true (the out dir's
+# Suggested job: machine mal-fast-0, mem_mb 1600 (the scope below enforces MemoryMax=1536M with swap 0: PINNED by QP on #1167; QP re-rules if peak RSS (status.json peak_rss_mb) > 1152 MiB or any OOM kill), cpus 1, resumable true (the out dir's
 #   .writer/state.json IS the checkpoint: a restart restores the reader and the adapter and continues, verifying any bytes written after the last snapshot), time limit >= the covered window.
 # It reads the sealed tip dir ONLY through tools/arena_tip_tape_writer.py (the vendored guarded reader), at nice 19 / ionice idle, and writes ONLY under $OUT (a DERIVED COPY of the tip tape,
 # sealed the same way: never open, copy, parse or list beyond names and sizes any tape-* file in it).
@@ -65,9 +65,12 @@ mkdir -p "$OUT" || refuse "cannot create OUT"
 echo "JOB start $(date -u +%FT%TZ) head=$(git rev-parse HEAD) out=$OUT catch_up_h=$CATCH_UP_H mem_max=$MEM_MAX slice_mem_current=$CUR"
 sha256sum tools/arena_tip_tape_writer.py tools/arena_tip_adapter.py tools/arena_tip_reader.py | sed 's/^/JOB pin /'
 df -B1 --output=size,avail,pcent "$OUT" | tail -1 | sed 's/^/JOB disk size_avail_pcent /'
+PID=
+STOP=0
+trap 'STOP=1; [ -z "$PID" ] || kill -TERM "$PID" 2>/dev/null' TERM INT
 "$@" &
 PID=$!
-trap 'kill -TERM "$PID" 2>/dev/null' TERM INT
+[ "$STOP" = 0 ] || kill -TERM "$PID" 2>/dev/null
 wait "$PID"
 RC=$?
 trap - TERM INT

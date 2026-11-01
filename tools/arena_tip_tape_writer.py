@@ -15,11 +15,17 @@ read-only); the decoder pin is checked from status.json before EVERY poll and fa
 DERIVED COPY of the sealed tip tape: sealed the same way (names and sizes of <out-dir>/.writer/{status,counts} may be read; nobody opens the tape-*.jsonl[.zst] files except the transport
 (tools/arena_tip_push.py) and the book host). Walk-2-hour information (DEC-030 s2 R1). It is NOT allowed under any directory whose name carries a sealed token (FORBIDDEN_PARTS).
 
-FILES (all in <out-dir>; the dot-dir is ignored by every tape glob)
+FILES (all in <out-dir>; the dot-dir is ignored by every tape glob). SEALED like the tape: tape-*.jsonl[.zst], *.part, *.zst.tmp and .writer/state.json (the state holds the adapter's open
+(pool, slot) groups, i.e. pool addresses and signatures; and the reader's offsets). READABLE by agents: .writer/status.json, .writer/counts.jsonl, .push/{status,verified,events}.json[l]
+(names, counts, kinds, progs, slot ranges, timings; no mint, pool, signature, amount, reserve, price or V).
   tape-<hour>.jsonl / .jsonl.zst     the tape. An open hour is append-only complete lines (flushed per poll, fsynced with the state); a closed hour is the verified .zst.
   .writer/status.json                heartbeat (atomic, every second): lag, hours closed, gap counts, the decoder-pin check, the no-tx_index counts, state, problem.
   .writer/counts.jsonl               one row per CLOSED hour: bytes, lines, sha256 of the hour, rows by prog|type, gap rows by kind|prog (+ slot spans), the longest data-row silence per
                                      prog, rows without tx_index, late rows. Names and counts only (the outcome-blind input of the hour-health check, plan step 6).
+  .writer/silence.jsonl              a data-row silence that STARTED in an hour that was already closed when it ended (the counts row of the start hour cannot hold it): hour, prog, from_ms, to_ms.
+                                     Lane H takes the maximum of the hour's row and these lines; duplicates are possible after a kill window.
+  .writer/stopped.json               written by exits 6, 7, 8, 9 (a latch): `run` refuses to start while it exists. 8: the manager discards the copy on both hosts and a later start is a new H0;
+                                     9: QP re-rules first; 6/7: a human. Removing the file is the deliberate act.
   .writer/state.json                 the resume state (below). .writer/lock  flock: a second writer on the dir exits 3.
 
 FAIL CLOSED. Consumers call writer_problem(out_dir): None only for a fresh, live, healthy heartbeat. The writer itself: an unhealthy tip (stale status, unpinned decoder) writes nothing and
@@ -34,8 +40,8 @@ after the last snapshot (a kill in the window) are VERIFIED, not trusted: the re
 under the transport); a torn last line is trimmed (the transport only ever ships complete lines). Any difference, a changed pin or config, or a missing/short file refuses the resume.
 Deterministic by construction, tested by killing the writer after every poll of a synthetic multi-hour tip tape and comparing the final bytes with an uninterrupted run.
 
-CATCH-UP. --catch-up-hours N reads the tip from hour(start) - N (N <= LOOKBACK_MAX_H = 72, the follower's retention; QP-RULING item 1 fixes the window W the writer may use: change the
-constant only with a new sha). Hours close as the reader finishes them, so a 52 h catch-up leaves closed .zst hours behind it. If the first history hour is gone the start is refused
+CATCH-UP. --catch-up-hours N reads the tip from hour(start) - N (N <= LOOKBACK_MAX_H = 70 = W of QP-RULING-1101-arena-tip-reader W2: the follower's retain() removes hours below now - 72 h, so 70 h leaves a 2 h
+margin; change the constant only with a new sha, which is a new H0). Hours close as the reader finishes them, so the 70 h catch-up leaves closed .zst hours behind it. If the first history hour is gone the start is refused
 (history_start_missing). Bots get NO call on catch-up rows: this module only writes the tape; `caught_up` and `released_t_ms` in the status say when it is live.
 """
 
@@ -87,7 +93,7 @@ CATCH_UP_DEADLINE_MIN = 120  # W2: caught_up within 120 min of the start, else t
 POLL_LIMIT = 20_000
 POLL_S = 0.25
 STATUS_EVERY_S = 1.0
-SNAPSHOT_EVERY_S = 1.0
+SNAPSHOT_EVERY_S = 5.0  # the state is rewritten (and the open files fsynced) at most this often; bytes past the last snapshot are verified at a resume, so a longer window is safe
 PRUNE_EVERY_S = 300.0
 MIN_FREE_PCT_DEFAULT = 20.0  # fast-0 has one filesystem shared with the follower and the listeners (the arena mirror stops at the same number)
 MAX_UNHEALTHY_S_DEFAULT = 900.0
@@ -98,6 +104,11 @@ COMPACT_TRIES = 3
 EXIT_OK, EXIT_REFUSED, EXIT_LOCKED, EXIT_IO, EXIT_UNHEALTHY, EXIT_LATCHED, EXIT_DIVERGED, EXIT_CATCHUP, EXIT_BACKLOG = 0, 2, 3, 4, 5, 6, 7, 8, 9
 DATA_TYPES = ("trade", "create", "complete", "pool_create")
 KIND_STATUS_UNHEALTHY, KIND_READER_PROBLEM, KIND_WRITER_HOLE = "tip_gap_status_unhealthy", "tip_gap_reader_problem", "tip_gap_writer_hole"  # W9: the registration lists these
+RESUME_MAX_AGE_H = 60
+STOP_MARKER = "stopped.json"  # written by exits 6, 7, 8, 9: a plain re-run refuses until a human removes it (8: the manager discards the copy first; 9: QP re-rules first)
+LATCH_RCS = (6, 7, 8, 9)
+CLOSURE_MIN_MS = 5_000  # a silence that starts in an already CLOSED hour is appended to .writer/silence.jsonl if at least this long (the 60 s limit is far above it)
+RSS_TRIGGER_MIB = 1152  # QP re-rules the 1536M cap if peak RSS exceeds this, or on any OOM kill (QP on #1167, W6)
 VERIFIED_KEEP_H_DEFAULT = 24  # B5: a closed hour is deleted this long after the receiver verified it
 HB_GAP_MS = 30_000
 SPANS_MAX = 5000
@@ -211,14 +222,22 @@ def check_out_dir(path: str | os.PathLike, roots: Sequence[str] = OUT_ROOTS) -> 
     return Path(os.path.normpath(p))
 
 
-def check_tip_dir(tip_dir: str | os.PathLike, out_dir: str | os.PathLike) -> None:
-    """W2: the production tip dir, or a synthetic dir under the tmp / scratch roots (tests); never the archive, never the output dir or a parent/child of it."""
+def check_tip_dir(tip_dir: str | os.PathLike, out_dir: str | os.PathLike, state_dir: str | os.PathLike | None = None) -> None:
+    """W2/W3. Production = the production tip dir WITH the production follower state dir (the pin and freshness check reads status.json there). Anything else is a synthetic run: it needs
+    MAL_ARENA_TEST=1 and tip dir AND state dir under the tmp / scratch roots. Never the archive; never an output dir that overlaps the tip dir."""
     import tempfile
 
     real = os.path.realpath(os.fspath(tip_dir))
-    ok = real == tr.DEFAULT_TIP_DIR or any(real.startswith(r.rstrip("/") + "/") for r in (tempfile.gettempdir(), "/data2/mal/scratch"))
-    if not ok or tr.ARCHIVE_MARK in real:
+    st_real = os.path.realpath(os.fspath(state_dir if state_dir is not None else tr.DEFAULT_STATE_DIR))
+    if tr.ARCHIVE_MARK in real or tr.ARCHIVE_MARK in st_real:
         raise Refused("tip_dir_not_allowed")
+    prod_tip, prod_state = real == os.path.realpath(tr.DEFAULT_TIP_DIR), st_real == os.path.realpath(tr.DEFAULT_STATE_DIR)
+    if prod_tip != prod_state:
+        raise Refused("tip_dir_state_dir_mismatch")  # a production tip dir with another state dir would bypass the pin check; a production state dir with a synthetic tip dir is nonsense
+    if not prod_tip:
+        roots = [tempfile.gettempdir().rstrip("/") + "/", "/data2/mal/scratch/"]
+        if os.environ.get("MAL_ARENA_TEST") != "1" or not all(any(x.startswith(r) for r in roots) for x in (real, st_real)):
+            raise Refused("tip_dir_not_allowed")
     o = os.path.realpath(os.fspath(out_dir))
     if o == real or o.startswith(real + "/") or real.startswith(o + "/"):
         raise Refused("out_dir_overlaps_tip_dir")
@@ -317,6 +336,9 @@ class Compactor:
                 with self.lock:
                     self.stats["failed"] += 1
                     self.stats["last_error"] = type(exc).__name__
+            if not ok and self.tries[name] >= COMPACT_TRIES:
+                with self.lock:
+                    self.stats.setdefault("gave_up", []).append(name)  # the .jsonl stays; status.compaction.gave_up says so
             if ok or self.tries[name] >= COMPACT_TRIES or self._stop.wait(self.retry_s):
                 self.queued.discard(name)
             else:
@@ -384,6 +406,9 @@ class Writer:
         self.state = "init"
         self.problem: str | None = None
         self.started_ms = self.clock()
+        self._snap_D = None
+        self.first_start_ms = self.started_ms  # the FIRST start's instant (saved in the state): the W2 catch-up deadline runs from it, across resumes
+        self.live_run = False  # this run has seen caught_up (W7 stops being armed)
         self.unhealthy_since: float | None = None
         self.paused = False
         self.resumed = False
@@ -406,6 +431,13 @@ class Writer:
     def start(self) -> None:
         """Fresh start: the source's own checks (io priority, healthy status, first history hour). Resume: the state is validated and restored first; the history-hour check is skipped
         (the first hour may be gone by now; the state says where the reader is)."""
+        mk = self.meta / STOP_MARKER
+        if mk.exists():
+            try:
+                m = json.loads(mk.read_bytes())
+            except (OSError, ValueError):
+                m = {}
+            raise Refused(f"stopped_marker_rc{m.get('rc')}_{str(m.get('why'))[:60]}")  # exits 6-9 latch: 8 = discard the copy and start a new H0; 9 = QP re-rules; 6/7 = a human
         sp = self.meta / "state.json"
         st = None
         if sp.exists():
@@ -426,6 +458,7 @@ class Writer:
             self.src.started = True
             self._restore_output(st)
             self.resumed = True
+        self.bj_base = self._backlog_jumps()  # W7: re-based at EVERY start; any increase before this run's first caught_up stops it
         if self.compress:
             self.compactor.start()
             for h in sorted(self.closed):
@@ -441,6 +474,8 @@ class Writer:
             raise Refused("state_schema")
         if st.get("config") != self.cfg:
             raise Refused("config_changed")
+        if self.clock() - int(st.get("ms", 0)) > RESUME_MAX_AGE_H * H_MS:
+            raise Refused("state_older_than_60h")  # the follower's retain() may have removed the file a restored cursor was reading: no hour_file_missing row would say so
         for k, v in st.get("pins", {}).items():
             if v != self.pins.get(k):
                 raise Refused(f"pins_changed_{k}")
@@ -455,7 +490,7 @@ class Writer:
         self.status_failures, self.hb_gaps = dict(st.get("status_failures", {})), list(st.get("hb_gaps", []))
         self.last_step_ms, self.last_healthy_ms, self.bad_kind = st.get("last_step_ms"), st.get("last_healthy_ms"), st.get("bad_kind")
         self.counts_base = dict(st.get("counts_base", {}))
-        self.bj_base = st.get("bj_base")
+        self.first_start_ms = int(st.get("first_start_ms", self.first_start_ms))
         for h, o in st["open"].items():
             self.tally[h] = o["tally"]
             self.size[h] = int(o["bytes"])
@@ -495,7 +530,7 @@ class Writer:
     # -- tallies and rows
     @staticmethod
     def _new_tally() -> dict[str, Any]:
-        return {"rows": {}, "gaps": {}, "missed_slots": 0, "spans": [], "spans_dropped": 0, "no_tx_rows": 0, "silence_ms": {}, "late_rows": 0, "max_loss_ms": 0, "runs": []}
+        return {"rows": {}, "gaps": {}, "missed_slots": 0, "spans": [], "spans_dropped": 0, "no_tx_rows": 0, "silence_start": {}, "silence_end": {}, "late_rows": 0, "max_loss_ms": 0, "runs": [], "data_first": {}, "data_last": {}}
 
     def _note(self, h: str, row: dict[str, Any], late: bool) -> None:
         t = self.tally.setdefault(h, self._new_tally())
@@ -520,9 +555,19 @@ class Writer:
             if typ == "trade" and prog == "pumpswap" and row.get("tx_index") is None:
                 t["no_tx_rows"] += 1
             last = self.last_data_t.get(prog)
-            if last is not None:
-                t["silence_ms"][prog] = max(t["silence_ms"].get(prog, 0), int(row["t_recv_ms"]) - last)
+            tt = int(row["t_recv_ms"])
+            if last is not None and tt > last:
+                gap = tt - last
+                t["silence_end"][prog] = max(t["silence_end"].get(prog, 0), gap)  # filed under the hour it ENDS in (report-only)
+                t0 = self.tally.get(hour_key(last))  # ... and under the hour it STARTED in (the §5 metric): that hour's row, or a closure line if the hour is already closed
+                if t0 is not None:
+                    t0["silence_start"][prog] = max(t0["silence_start"].get(prog, 0), gap)
+                elif gap >= CLOSURE_MIN_MS:
+                    with open(self.meta / "silence.jsonl", "a", encoding="utf-8") as fh:
+                        fh.write(json.dumps({"hour": hour_key(last), "prog": prog, "from_ms": last, "to_ms": tt, "silence_s": round(gap / 1000, 3), "run_id": self.run_id}, sort_keys=True) + "\n")
             self.last_data_t[prog] = max(int(row["t_recv_ms"]), last or 0)
+            t["data_first"][prog] = min(t["data_first"].get(prog, tt), tt)
+            t["data_last"][prog] = max(t["data_last"].get(prog, tt), tt)
 
     def _target_hour(self, t_ms: int) -> tuple[str, bool]:
         """(file hour, late). The hour of t_recv_ms, unless that hour is closed: then the hour of max(newest row, the follower's checkpoint), which is never a closed hour (an hour closes
@@ -628,7 +673,11 @@ class Writer:
                "started_ms": self.started_ms, "pins": {k: v for k, v in self.pins.items() if k != "decoder_blobs"},
                "rows": dict(sorted(t["rows"].items())), "gap_rows": dict(sorted(t["gaps"].items())), "gap_missed_slots": t["missed_slots"],
                "gap_spans": t["spans"], "gap_spans_dropped": t["spans_dropped"],  # [kind, prog, from_slot, to_slot, from_ms, to_ms]
-               "max_loss_span_s": round(t["max_loss_ms"] / 1000, 3), "max_data_silence_s": {k: round(v / 1000, 3) for k, v in sorted(t["silence_ms"].items())},
+               "max_loss_span_s": round(t["max_loss_ms"] / 1000, 3), "data_t_first_ms": dict(sorted(t["data_first"].items())), "data_t_last_ms": dict(sorted(t["data_last"].items())),
+               "newest_data_t_ms_at_close": dict(sorted(self.last_data_t.items())),  # a silence still open at the end of this hour = (first data t of a later hour) - (this)
+               "max_data_silence_s": {k: round(v / 1000, 3) for k, v in sorted(t["silence_start"].items())},  # silences that STARTED in this hour (ended in it, or before it closed); a longer one
+               # that ends after the close is a line in silence.jsonl (lane H takes the maximum); duplicates are possible after a kill window
+               "max_data_silence_ending_s": {k: round(v / 1000, 3) for k, v in sorted(t["silence_end"].items())},
                "no_tx_index": {k: delta.get(k, 0) for k in ("rows_no_tx_index", "pool_slots_no_tx_index", "pool_slots_multi_sig", "pool_slots_mixed")},
                "no_tx_index_rows": t["no_tx_rows"], "dropped_rows": {k[len("rows_dropped_"):]: v for k, v in sorted(delta.items()) if k.startswith("rows_dropped_") and v}, "skips": delta.get("skips", 0),
                "status_failures": self.status_failures.pop(h, []), "status_bad_samples": 0, "late_rows": t["late_rows"],
@@ -640,6 +689,7 @@ class Writer:
         self.totals["hours_closed"] += 1
         self.snapshot(force=True)  # the close is durable BEFORE the compaction can replace the .jsonl
         self._append_counts(row)
+        self.closed[h] = None  # confirmed in counts.jsonl: the state keeps the hour key only (a kill before this line is repaired by _ensure_counts from the state's copy of the row)
         if self.compress:
             self.compactor.submit(h)
 
@@ -659,8 +709,9 @@ class Writer:
         except FileNotFoundError:
             pass
         for h in sorted(self.closed):
-            if h not in have:
+            if h not in have and self.closed[h] is not None:
                 self._append_counts(self.closed[h])
+            self.closed[h] = None
 
     # -- state, status, housekeeping
     def snapshot(self, force: bool = False) -> None:
@@ -673,9 +724,9 @@ class Writer:
         st = {"schema": SCHEMA_STATE, "ms": self.clock(), "config": self.cfg, "pins": self.pins, "source": snapshot_source(self.src),
               "open": {h: {"bytes": self.size[h], "tally": self.tally.get(h, self._new_tally())} for h in sorted(self.size)}, "closed": self.closed,
               "last_data_t": self.last_data_t, "max_t": self.max_t, "totals": dict(self.totals), "status_failures": self.status_failures,
-              "hb_gaps": self.hb_gaps[-100:], "last_step_ms": self.last_step_ms, "last_healthy_ms": self.last_healthy_ms, "bad_kind": self.bad_kind, "counts_base": self.counts_base, "bj_base": self.bj_base}
+              "hb_gaps": self.hb_gaps[-100:], "last_step_ms": self.last_step_ms, "last_healthy_ms": self.last_healthy_ms, "bad_kind": self.bad_kind, "counts_base": self.counts_base, "first_start_ms": self.first_start_ms}
         write_json_atomic(self.meta / "state.json", st, fsync=True)
-        self._last_snapshot, self._dirty = mono, False
+        self._last_snapshot, self._dirty, self._snap_D = mono, False, getattr(self.src.reader, "D", None)
 
     def status(self) -> dict[str, Any]:
         r = self.src.reader
@@ -699,7 +750,7 @@ class Writer:
                 "compaction": self.compactor.snapshot(), "paused_disk": self.paused, "run_id": self.run_id, "status_bad_samples_run": sum(len(v) for v in self.status_failures.values()),
                 "newest_data_t_ms": dict(self.last_data_t), "input_age_s": {k: round((now - v) / 1000, 1) for k, v in sorted(self.last_data_t.items())},
                 "max_input_age_s": round(max(((now - v) for v in self.last_data_t.values()), default=0) / 1000, 1), "catch_up_deadline_min": self.deadline_min,
-                "caught_up_once": bool(self.totals["caught_up_once"]), "follower_backlog_jumps_base": self.bj_base, **rss_mb()}
+                "caught_up_once": bool(self.totals["caught_up_once"]), "live_run": self.live_run, "follower_backlog_jumps_base": self.bj_base, "rss_trigger_mib": RSS_TRIGGER_MIB, **rss_mb()}
 
     def heartbeat(self, force: bool = False) -> None:
         mono = time.monotonic()
@@ -749,7 +800,7 @@ class Writer:
 
     def step(self) -> int:
         """One cycle. Returns the rows written. Raises Fatal for the conditions that stop the writer."""
-        if not self.totals["caught_up_once"]:  # W7: any increase of the follower's backlog_jumps during OUR catch-up stops the writer (our reads may have caused it); QP re-rules before a restart
+        if not self.live_run:  # W7 (every start, resume included): any increase of the follower's backlog_jumps during OUR catch-up stops the writer (our reads may have caused it); QP re-rules before a restart
             bj = self._backlog_jumps()
             if self.bj_base is None:
                 self.bj_base = bj
@@ -782,6 +833,7 @@ class Writer:
             if self.unhealthy_since is None:
                 self.unhealthy_since = time.monotonic()
                 self.bad_kind = KIND_STATUS_UNHEALTHY if str(self.problem).startswith("tip:") else KIND_READER_PROBLEM
+                self.snapshot(force=True)  # the spell (and its kind) survives a kill: the resume still writes its row
             self.state = "unhealthy"
             if time.monotonic() - self.unhealthy_since > self.max_unhealthy_s:
                 self.heartbeat(force=True)
@@ -789,11 +841,13 @@ class Writer:
             self.heartbeat()
             return 0
         self.unhealthy_since = None
-        if self.src.caught_up and not self.totals["caught_up_once"]:
-            self.totals["caught_up_once"] = 1
-            self.totals["caught_up_ms"] = now
+        if self.src.caught_up and not self.live_run:
+            self.live_run = True
+            if not self.totals["caught_up_once"]:
+                self.totals["caught_up_once"] = 1
+                self.totals["caught_up_ms"] = now
             r.stop_fadvise()  # catch-up is over: on the live tail DONTNEED would start writeback of the follower's newest dirty pages
-        if not self.totals["caught_up_once"] and now - self.started_ms > self.deadline_min * 60_000:
+        if not self.totals["caught_up_once"] and now - self.first_start_ms > self.deadline_min * 60_000:
             self.heartbeat(force=True)
             raise Fatal("catch_up_deadline", EXIT_CATCHUP)  # W2: the output is for the manager to discard; a later start defines a new H0
         self.state = "live" if self.src.caught_up else "catching_up"
@@ -808,8 +862,9 @@ class Writer:
             t_ms = max(t_ms, f_ms, self.max_t)
             slot = int(getattr(r, "released_D", None) or getattr(r, "hw", None) or 0)
             self._write_rows([{"v": 1, "type": "gap", "prog": ta.GAP_PROG, "slot": slot, "t_recv_ms": t_ms, "signature": None, "event_index": None, "kind": kind, "data_loss": True,
-                               "from_ms": f_ms, "to_ms": t_ms, "reason": kind[len("tip_gap_"):], "from_slot": slot, "to_slot": slot, "missed_slots": 0, "src": "writer"}])
-        if rows or r.last_t_ms:
+                               "from_ms": f_ms, "to_ms": t_ms, "silent_ms": t_ms - f_ms, "reason": kind[len("tip_gap_"):], "from_slot": slot, "to_slot": slot, "missed_slots": 0,
+                               "src": "writer"}])  # ArenaEngine.on_gap ignores from_ms and starts the exclusion at min(newest row, at - silent_ms): silent_ms is what makes it start at from_ms (the feed's silence-row convention)
+        if rows or r.D != self._snap_D:
             self._dirty = True
         self._close_ready()
         self.snapshot()
@@ -826,6 +881,8 @@ class Writer:
                     (sleep or stop.wait)(POLL_S)
         except Fatal as exc:
             self.problem = exc.why
+            if exc.rc in LATCH_RCS:
+                write_json_atomic(self.meta / STOP_MARKER, {"rc": exc.rc, "why": exc.why, "ms": self.clock(), "run_id": self.run_id}, fsync=True)
             self._finish(f"failed_{exc.why[:40]}")
             print(f"arena_tip_tape_writer FATAL {exc.why}", file=sys.stderr, flush=True)
             return exc.rc
@@ -904,7 +961,7 @@ def writer_problem(out_dir: str | os.PathLike, now: int | None = None, *, max_ag
 
 # ------------------------------------------------------------------------------------------------------------------------------------ CLI
 def build_source(tip_dir: str, tip_state_dir: str, *, start_ms: int, catch_up_hours: int, require_io_idle: bool = True) -> ta.ArenaTipSource:
-    """Production source: the guarded reader (hour floor 2026-10-16T01, archive and path refusals, the production floor not lowerable on the sealed dir) with the 72 h look-back."""
+    """Production source: the guarded reader (hour floor 2026-10-16T01, archive and path refusals, the production floor not lowerable on the sealed dir) with the W = 70 h look-back (LOOKBACK_MAX_H)."""
     reader = tr.TipReader(tip_dir, tip_state_dir, start_ms=start_ms, catch_up_hours=catch_up_hours, lookback_h=LOOKBACK_MAX_H)
     return ta.ArenaTipSource(reader, tip_state_dir, require_io_idle=require_io_idle)
 
@@ -926,7 +983,7 @@ def run_cmd(args: argparse.Namespace) -> int:
         return EXIT_REFUSED
     try:
         out = check_out_dir(args.out_dir)
-        check_tip_dir(args.tip_dir, out)
+        check_tip_dir(args.tip_dir, out, args.tip_state_dir)
         state_path = out / META_DIR / "state.json"
         start_ms = args.start_ms
         if state_path.exists():  # a resume keeps the original window: the state's config is the source of truth

@@ -111,7 +111,7 @@ def make_writer(sim: TipSim, out: Path, clock: Clock, **kw) -> aw.Writer:
                      out_roots=[str(out.parent)], **kw)
 
 
-def scenario(sim: TipSim, clock: Clock, w_factory, n_slots: int = 600, every: int = 20, kill_after: int | None = None, w=None, start_slot: int = 1) -> aw.Writer | None:
+def scenario(sim: TipSim, clock: Clock, w_factory, n_slots: int = 600, every: int = 20, kill_after: int | None = None, w=None, start_slot: int = 1, rows_fn=None) -> aw.Writer | None:
     """Slots start_slot..n_slots in batches of `every`; one writer step per batch. Slot 211..219 is a backlog jump (the follower writes the gap, then goes on at slot 220); 300 is a skipped slot."""
     steps = 0
     if w is None:
@@ -125,7 +125,7 @@ def scenario(sim: TipSim, clock: Clock, w_factory, n_slots: int = 600, every: in
         if s == 300:
             sim.skip(300)
             continue
-        sim.add(s, checkpoint=False)
+        sim.add(s, rows_fn(s) if rows_fn else None, checkpoint=False)
         if s % every == 0 or s == n_slots:
             sim.checkpoint()
             clock.ms = sim.t_done + 1500
@@ -614,15 +614,30 @@ def test_the_output_dir_cannot_be_the_sealed_tree_the_walker_filesystem_or_the_a
         aw.check_out_dir(out, roots=["/var/lib/mal", "/data/mal", "/home/claude/mal-data"])
 
 
-def test_the_tip_dir_is_the_production_path_or_a_synthetic_dir_and_never_overlaps_the_output(tmp_path):
-    aw.check_tip_dir(tr.DEFAULT_TIP_DIR, "/home/claude/mal-data/arena-tipfeed/tape")
-    aw.check_tip_dir(tmp_path / "tip", tmp_path / "out")
+def test_the_tip_dir_is_the_production_pair_or_a_test_pair_and_never_overlaps_the_output(tmp_path, monkeypatch):
+    monkeypatch.delenv("MAL_ARENA_TEST", raising=False)
+    aw.check_tip_dir(tr.DEFAULT_TIP_DIR, "/home/claude/mal-data/arena-tipfeed/tape", tr.DEFAULT_STATE_DIR)  # production: both production paths, no test flag
+    aw.check_tip_dir(tr.DEFAULT_TIP_DIR, "/home/claude/mal-data/arena-tipfeed/tape")  # the state dir defaults to the production one
+    # C5: a production tip dir with another state dir would bypass the pin / freshness check; a synthetic tip dir needs the test flag
+    with pytest.raises(aw.Refused, match="tip_dir_state_dir_mismatch"):
+        aw.check_tip_dir(tr.DEFAULT_TIP_DIR, tmp_path / "out", tmp_path / "state")
+    with pytest.raises(aw.Refused, match="tip_dir_state_dir_mismatch"):
+        aw.check_tip_dir(tmp_path / "tip", tmp_path / "out", tr.DEFAULT_STATE_DIR)
+    with pytest.raises(aw.Refused, match="tip_dir_not_allowed"):
+        aw.check_tip_dir(tmp_path / "tip", tmp_path / "out", tmp_path / "state")  # no MAL_ARENA_TEST
+    monkeypatch.setenv("MAL_ARENA_TEST", "1")
+    aw.check_tip_dir(tmp_path / "tip", tmp_path / "out", tmp_path / "state")
     for bad in ("/data/mal/tip-tape-archive", "/var/lib/mal/sealed/other", "/home/claude/mal-data/x", "/data/mal/arena/tape"):
         with pytest.raises(aw.Refused, match="tip_dir_not_allowed"):
-            aw.check_tip_dir(bad, tmp_path / "out")
+            aw.check_tip_dir(bad, tmp_path / "out", tmp_path / "state")
+    with pytest.raises(aw.Refused, match="tip_dir_not_allowed"):
+        aw.check_tip_dir(tmp_path / "tip", tmp_path / "out", "/home/claude/mal-data/state")  # the test state dir must be under the tmp / scratch roots too
     with pytest.raises(aw.Refused, match="overlaps"):
-        aw.check_tip_dir(tmp_path / "tip", tmp_path / "tip" / "out")
+        aw.check_tip_dir(tmp_path / "tip", tmp_path / "tip" / "out", tmp_path / "state")
+    monkeypatch.delenv("MAL_ARENA_TEST")
     rc = aw.main(["run", "--tip-dir", "/data/mal/tip-tape-archive", "--out-dir", str(Path(aw.OUT_ROOTS[0]) / "x" / "tape")])
+    assert rc == aw.EXIT_REFUSED
+    rc = aw.main(["run", "--tip-dir", str(tmp_path / "tip"), "--tip-state-dir", str(tmp_path / "state"), "--out-dir", str(Path(aw.OUT_ROOTS[0]) / "x" / "tape")])
     assert rc == aw.EXIT_REFUSED
 
 
@@ -657,7 +672,7 @@ def test_catch_up_must_reach_caught_up_within_the_deadline_and_fadvise_stops_onc
     w2.close()
 
 
-def test_a_reader_problem_spell_is_a_reader_problem_gap_and_a_closed_hour_is_deleted_only_after_the_receiver_verified_it_plus_24h(tmp_path):
+def test_a_closed_hour_is_deleted_only_after_the_receiver_verified_it_plus_24h(tmp_path):
     sim, clock, out = fresh(tmp_path)
     w = scenario(sim, clock, lambda: make_writer(sim, out, clock, compress=True), n_slots=600)
     w.compactor.drain(60)
@@ -702,3 +717,233 @@ def test_a_follower_backlog_jump_during_our_catch_up_stops_the_writer_but_not_af
     sim2.add(2)
     assert w2.step() > 0
     w2.close()
+
+
+# ------------------------------------------------------------------------------------------------------------------------------------ QP on #1167: C1-C7
+def written_rows(out: Path) -> list[dict]:
+    return [json.loads(ln) for h, b in sorted(hours_bytes(out).items()) for ln in b.splitlines()]
+
+
+def test_c1_the_w9_row_makes_the_engine_exclude_from_the_last_healthy_instant(tmp_path):
+    sim, clock, out = fresh(tmp_path)
+    w = make_writer(sim, out, clock)
+    w.start()
+    sim.add(1)
+    clock.ms = sim.t_done + 1000
+    sim.healthy(clock.ms)
+    w.step()
+    last_healthy = clock.ms
+    sim.add(2)
+    TA.healthy(sim.state, clock.ms, decoder_blobs_pinned=False)
+    assert w.step() == 0
+    sim.add(3)
+    clock.ms = sim.t_done + 5000
+    sim.healthy(clock.ms)
+    assert w.step() > 0
+    w.close()
+    rows = written_rows(out)
+    gap = next(r for r in rows if r["type"] == "gap" and r["src"] == "writer")
+    assert gap["from_ms"] == last_healthy and gap["silent_ms"] == gap["to_ms"] - gap["from_ms"] > 0
+    newest_trade = max(r["t_recv_ms"] for r in rows if r["type"] == "trade")
+    assert newest_trade > gap["from_ms"]  # the held-back rows come first: without silent_ms the engine would start the exclusion at them
+    eng = TA.mk_engine(tmp_path / "e1", gap_slots=None, gap_silence_ms=None)
+    for r in rows:
+        eng.on_row(r)
+    assert eng.counters.get("gap_data_loss") == 1 and eng.gaps[-1].t_lo == gap["from_ms"] and eng.gaps[-1].t_hi == gap["to_ms"] and eng.gaps[-1].kind == "tip_gap_status_unhealthy"
+    mutant = TA.mk_engine(tmp_path / "e2", gap_slots=None, gap_silence_ms=None)  # the same rows with silent_ms stripped: the engine's exclusion starts too late (the bug QP found)
+    for r in rows:
+        mutant.on_row({k: v for k, v in r.items() if k != "silent_ms"} if r["type"] == "gap" else r)
+    assert mutant.gaps[-1].t_lo == newest_trade and mutant.gaps[-1].t_lo > gap["from_ms"]
+
+
+def test_c2_a_silence_that_crosses_an_hour_boundary_shows_in_both_hours(tmp_path):
+    sim, clock, out = fresh(tmp_path)
+
+    def rows_fn(s):
+        r = sim.rows(s)
+        if 125 <= s <= 190:  # no PumpSwap trade from 05:55:00 to 06:08:00 (the bonding program goes on; the migration at slot 186 is the first PumpSwap data row after)
+            r["trades"] = [x for x in r["trades"] if x["venue"] != "pumpswap"]
+            if s != 186:
+                r["migrations"] = []  # the migrations at 155 would be PumpSwap data rows too
+        return r
+
+    w = scenario(sim, clock, lambda: make_writer(sim, out, clock), n_slots=600, rows_fn=rows_fn)
+    w.close()
+    rows = {json.loads(ln)["hour"]: json.loads(ln) for ln in (out / aw.META_DIR / "counts.jsonl").read_text().splitlines()}
+    h5, h6 = rows["2026-11-01T05"], rows["2026-11-01T06"]
+    last5, first6 = h5["data_t_last_ms"]["pumpswap"], h6["data_t_first_ms"]["pumpswap"]
+    assert first6 - last5 == 62 * STEP_MS and last5 < HM <= first6  # the consumer sees the silence from the two rows (slot 124 -> the migration's pool_create at slot 186, a PumpSwap data row)
+    assert h6["max_data_silence_ending_s"]["pumpswap"] >= 62 * STEP_MS / 1000  # it ENDS in hour 06 ...
+    assert h5["max_data_silence_s"].get("pumpswap", 0) < 62 * STEP_MS / 1000  # ... hour 05 was already closed when it ended, so its row cannot hold it ...
+    clo = [json.loads(ln) for ln in (out / aw.META_DIR / "silence.jsonl").read_text().splitlines()]  # ... and it is filed under the hour it STARTED in, as a closure line
+    assert [(c["hour"], c["prog"], c["silence_s"], c["from_ms"], c["to_ms"]) for c in clo if c["silence_s"] > 60] == [("2026-11-01T05", "pumpswap", 744.0, last5, first6)]
+    assert "pumpfun" in h5["data_t_first_ms"] and set(h5["newest_data_t_ms_at_close"]) >= {"pumpswap", "pumpfun"}
+
+
+def test_a_silence_inside_one_hour_is_in_that_hours_row_and_a_silence_that_starts_in_an_open_hour_is_filed_there(tmp_path):
+    sim, clock, out = fresh(tmp_path)
+
+    def rows_fn(s):
+        r = sim.rows(s)
+        if 300 <= s <= 330:  # 06:30 -> 06:36 inside hour 06: no PumpSwap
+            r["trades"] = [x for x in r["trades"] if x["venue"] != "pumpswap"]
+        return r
+
+    w = scenario(sim, clock, lambda: make_writer(sim, out, clock), n_slots=600, rows_fn=rows_fn)
+    w.close()
+    h6 = next(json.loads(ln) for ln in (out / aw.META_DIR / "counts.jsonl").read_text().splitlines() if '"2026-11-01T06"' in ln)
+    assert h6["max_data_silence_s"]["pumpswap"] == h6["max_data_silence_ending_s"]["pumpswap"] == 21 * STEP_MS / 1000  # slot 299 -> the migration row at 310 -> slot 331: the longer leg
+
+
+def test_c4_w7_is_armed_and_re_based_at_every_start_resume_included(tmp_path):
+    sim, clock, out = fresh(tmp_path)
+    sim.add(1)
+    clock.ms = sim.t_done + 1000
+    TA.healthy(sim.state, clock.ms, backlog_jumps=3)
+    w = make_writer(sim, out, clock)
+    w.start()
+    w.step()
+    assert w.live_run and w.bj_base == 3
+    w.close()  # the writer exits (cancel, crash); meanwhile the follower jumped and a lot of rows piled up
+    for s in range(2, 200):
+        sim.add(s, checkpoint=False)
+    sim.checkpoint()
+    clock.ms = sim.t_done + 1000
+    TA.healthy(sim.state, clock.ms, backlog_jumps=5)
+    w2 = make_writer(sim, out, clock, poll_limit=25)
+    w2.start()
+    assert w2.resumed and w2.bj_base == 5 and not w2.live_run  # re-based: the jump that happened while we were down is not ours
+    assert w2.step() > 0 and not w2.src.caught_up
+    TA.healthy(sim.state, clock.ms, backlog_jumps=6)
+    with pytest.raises(aw.Fatal) as ei:
+        w2.step()
+    assert ei.value.rc == aw.EXIT_BACKLOG
+    w2.close()
+
+
+def test_c5_the_state_dir_is_validated_in_the_production_pair(tmp_path, monkeypatch):
+    monkeypatch.setenv("MAL_ARENA_TEST", "1")
+    with pytest.raises(aw.Refused, match="tip_dir_state_dir_mismatch"):
+        aw.check_tip_dir(tr.DEFAULT_TIP_DIR, "/home/claude/mal-data/arena-tipfeed/tape", "/tmp/fake-state")  # even with the test flag
+    rc = aw.main(["run", "--tip-dir", tr.DEFAULT_TIP_DIR, "--tip-state-dir", str(tmp_path / "state"), "--out-dir", str(Path(aw.OUT_ROOTS[0]) / "x" / "tape")])
+    assert rc == aw.EXIT_REFUSED
+
+
+def test_c6_the_catch_up_deadline_runs_from_the_first_start_across_resumes(tmp_path):
+    sim, clock, out = fresh(tmp_path)
+    for s in range(1, 200):
+        sim.add(s, checkpoint=False)
+    sim.checkpoint()
+    clock.ms = sim.t_done + 1000
+    sim.healthy(clock.ms)
+    first = clock.ms
+    w = make_writer(sim, out, clock, poll_limit=25, catch_up_deadline_min=60.0)
+    w.start()
+    assert w.step() > 0 and not w.src.caught_up
+    w.close()
+    clock.ms = first + 61 * 60_000  # 61 minutes after the FIRST start, 0 after the restart
+    sim.healthy(clock.ms)
+    w2 = make_writer(sim, out, clock, poll_limit=25, catch_up_deadline_min=60.0)
+    w2.start()
+    assert w2.first_start_ms == first
+    with pytest.raises(aw.Fatal) as ei:
+        w2.step()
+    assert ei.value.rc == aw.EXIT_CATCHUP
+    w2.close()
+
+
+def test_c7_a_recoverable_reader_problem_spell_writes_one_reader_problem_gap_row(tmp_path):
+    sim, clock, out = fresh(tmp_path)
+    w = make_writer(sim, out, clock)
+    w.start()
+    sim.add(1)
+    clock.ms = sim.t_done + 1000
+    sim.healthy(clock.ms)
+    w.step()
+    (sim.state / "checkpoint.json").write_text("{not json")  # present but unparsable: recoverable, not latched
+    sim.add(2, checkpoint=False)
+    assert w.step() == 0 and w.problem == "checkpoint_unreadable" and w.state == "unhealthy"
+    assert w.step() == 0
+    sim.checkpoint()
+    clock.ms = sim.t_done + 2000
+    sim.healthy(clock.ms)
+    assert w.step() > 0
+    w.close()
+    gaps = [r for r in written_rows(out) if r["type"] == "gap"]
+    assert [g["kind"] for g in gaps] == ["tip_gap_reader_problem"] and gaps[0]["prog"] == "all" and gaps[0]["data_loss"] is True and gaps[0]["silent_ms"] > 0
+    assert w.totals["gap_rows_written"] == 1
+
+
+def test_a_resume_from_a_state_older_than_60_hours_is_refused(tmp_path):
+    sim, clock, out = fresh(tmp_path)
+    scenario(sim, clock, lambda: make_writer(sim, out, clock), kill_after=3)
+    clock.ms += 61 * aw.H_MS
+    sim.healthy(clock.ms)
+    w = make_writer(sim, out, clock)
+    with pytest.raises(aw.Refused, match="state_older_than_60h"):
+        w.start()
+    w.close()
+
+
+def test_the_status_carries_the_rss_trigger_and_the_job_pins_the_cap():
+    assert aw.RSS_TRIGGER_MIB == 1152
+    text = (Path(aw.__file__).resolve().parent.parent / "scripts" / "ops" / "arena-tip-writer-job.sh").read_text()
+    assert "MEM_MAX=${MEM_MAX:-1536M}" in text and "MemorySwapMax=0" in text and "1152" in text and "mem_mb 1600" in text
+
+
+# ------------------------------------------------------------------------------------------------------------------------------------ reviewer on #1167: S1, S2
+def test_s1_the_state_keeps_only_the_hour_keys_of_confirmed_hours_and_a_kill_before_the_counts_row_is_repaired(tmp_path, monkeypatch):
+    assert aw.SNAPSHOT_EVERY_S >= 5.0
+    sim, clock, out = fresh(tmp_path)
+    w = scenario(sim, clock, lambda: make_writer(sim, out, clock), n_slots=600)
+    st = json.loads((out / aw.META_DIR / "state.json").read_text())
+    assert set(st["closed"]) == {"2026-11-01T05", "2026-11-01T06"} and all(v is None for v in st["closed"].values())
+    w.close()
+    # the kill window: the close is durable in the state but the counts row was not appended yet
+    sim2, clock2, out2 = fresh(tmp_path, "crash")
+    w2 = make_writer(sim2, out2, clock2)
+    w2.start()
+
+    def boom(self_row):
+        raise RuntimeError("killed here")
+
+    monkeypatch.setattr(w2, "_append_counts", boom)
+    with pytest.raises(RuntimeError):
+        scenario(sim2, clock2, None, w=w2, n_slots=400)
+    w2.close()
+    st2 = json.loads((out2 / aw.META_DIR / "state.json").read_text())
+    assert st2["closed"]["2026-11-01T05"]["hour"] == "2026-11-01T05" and not (out2 / aw.META_DIR / "counts.jsonl").exists()  # the row is in the state only
+    w3 = make_writer(sim2, out2, clock2)
+    w3.start()
+    rows = [json.loads(ln) for ln in (out2 / aw.META_DIR / "counts.jsonl").read_text().splitlines()]
+    assert [r["hour"] for r in rows] == ["2026-11-01T05"] and w3.closed["2026-11-01T05"] is None
+    w3.close()
+
+
+def test_s2_exits_6_to_9_latch_a_plain_rerun_refuses_until_the_marker_is_removed(tmp_path):
+    sim, clock, out = fresh(tmp_path)
+    for s in range(1, 200):
+        sim.add(s, checkpoint=False)
+    sim.checkpoint()
+    clock.ms = sim.t_done + 1000
+    sim.healthy(clock.ms)
+    w = make_writer(sim, out, clock, poll_limit=25, catch_up_deadline_min=1.0)
+    w.start()
+    w.step()
+    clock.ms += 61_000
+    sim.healthy(clock.ms)
+    rc = w.run(__import__("threading").Event(), max_s=5)
+    assert rc == aw.EXIT_CATCHUP
+    w.close()
+    marker = json.loads((out / aw.META_DIR / aw.STOP_MARKER).read_text())
+    assert marker["rc"] == 8 and marker["why"] == "catch_up_deadline"
+    w2 = make_writer(sim, out, clock)
+    with pytest.raises(aw.Refused, match="stopped_marker_rc8_catch_up_deadline"):
+        w2.start()
+    w2.close()
+    (out / aw.META_DIR / aw.STOP_MARKER).unlink()  # a human's act
+    w3 = make_writer(sim, out, clock, poll_limit=25, catch_up_deadline_min=1.0)
+    with pytest.raises(aw.Fatal):  # the deadline still runs from the first start
+        w3.start()
+        w3.step()
+    w3.close()
