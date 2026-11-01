@@ -108,11 +108,11 @@ class TipRowSource:
     """Rows of the receiver copy in file order, gated by the transport/writer status. One thread (the host's). poll() never writes."""
 
     def __init__(self, tip_dir: str | os.PathLike, *, start_ms: int, roots: Sequence[str] | None = None, problem_fn: Callable[[], str | None] | None = None,
-                 now_ms: Callable[[], int] = h5.now_ms, cache_ms: int = PROBLEM_CACHE_MS) -> None:
+                 now_ms: Callable[[], int] = h5.now_ms, cache_ms: int | None = None) -> None:
         self.dir = check_tip_input_dir(tip_dir, roots)
         self._tap = _RowTap(self.dir, int(start_ms))
         self._problem_fn = problem_fn or (lambda: atp.push_problem(self.dir))
-        self.now_ms, self.cache_ms = now_ms, cache_ms
+        self.now_ms, self.cache_ms = now_ms, PROBLEM_CACHE_MS if cache_ms is None else cache_ms
         self.problem: str | None = None
         self.halted = False
         self._checked_ms: int | None = None

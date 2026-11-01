@@ -57,6 +57,7 @@ def prepare_rows(rows: Iterable[dict]) -> list[dict]:
     out = []
     for r in rows:
         r = {k: v for k, v in r.items() if k not in FEE_KEYS}
+        r.setdefault("event_index", 0)  # replay_rows sets 0 on every row; the adapter needs an int
         if not r.get("signature"):
             r["signature"] = str(r.get("replay_sig") or f"sig-{r['slot']}-{len(out)}")
         out.append(r)
