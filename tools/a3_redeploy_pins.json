@@ -135,12 +135,12 @@
     },
     "redeploy": "pump 458921440 (2026-10-19T17:47:02Z), pumpswap 458921517 (2026-10-19T17:47:20Z)"
   },
-  "frozen_sha": "1f7a89cdf02ff46c3e33b9dcc88531c75d2b6cde",
+  "frozen_sha": "5c2ab7c64b21358619e37068c6a53e4d183512ea",
   "frozen_blobs": {
     "observe/link_state.py": "026a9cd9ff68317ac3f7ca2acc0393c1c8c81778",
     "observe/trade_decode.py": "238942a6b3c5425389eddfde4d11268c300acbec",
     "tools/cap_pick_oracle.py": "64d5e49767c70379bfa5041dfc03976ead37d208",
-    "tools/h5_shadow.py": "23b9ccc2562f4cb83113a8b9faa4cb8d9e86907f",
+    "tools/h5_shadow.py": "7f859b12deef87573a7314e49e125b5121eaa645",
     "tools/paper_curve_math.py": "42daf5adcdc1532cb29a6f5079997d25b10c86ea",
     "tools/pump_structure_monitor.py": "1ca0a88cecf0853d94336ea046ba1a910b79f198"
   },
