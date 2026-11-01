@@ -101,8 +101,10 @@ def test_live_chain_source_pins_policy_budget_provider_and_paths(tmp_path_factor
     base = tmp_path_factory.mktemp("r6live")
     env = {"MAL_HV4_RPC": "public", "MAL_HV4_PREFETCH_POLICY": "v1"}
     src = R.live_chain_source(base / "v6", env)
-    assert src.prefetch.policy == "v2" and src.prefetch.hourly_budget == R.RPC_CALLS_PER_H == 1000
-    assert src.chain.rpc.daily_call_cap == 24_000 and src.chain.rpc.provider == "public"
+    assert src.prefetch.policy == "v2" and src.prefetch.hourly_budget == R.RPC_CALLS_PER_H == 2000   # fix C: HV4 v2's 2,000/h, paced (was 1,000)
+    assert src.chain.rpc.daily_call_cap == 48_000 and src.chain.rpc.provider == "public"
+    from tools.hv6_prefetch import PacedPrefetcher
+    assert type(src.prefetch) is PacedPrefetcher and src.prefetch.pace_burst == 360 and src.prefetch.pace_per_min == 27.0
     assert Path(src.prefetch.spend_path) == base / "v6" / R.CHAIN_SPEND_FILE
     with pytest.raises(RuntimeError):
         R.live_chain_source(base / "v6", {})  # the provider must be set (pinned)
