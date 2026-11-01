@@ -5,20 +5,20 @@ Written 2026-11-01T23:2xZ (`date -u` on mal-research-0) by lane L1 of the 2026-1
 ## 1. Why an alternative, not an addition
 - **The decision.** The manager decided (PUSH-PLAN-1101 L1; L5 §5 item 2) that s1 is not run on the public websocket. That feed's data loss ended both HV4 X-arm reads as NOT_DECIDABLE_5PCT, and the Q50 executor saw a gap-held share of about 1.0 on 10-28/29.
 - **Why not both.** DEC-031 Am.3 item 5 forbids a second frozen copy beside the parent. So the tip book replaces s1; it does not run beside it.
-- **Why "met", not "stopped".** Am.17's stop list has no manager withdrawal. So the commitment is written as met by a new `bot_id` running the same rule. QP rules on that reading.
+- **Am.17 is AMENDED (QP report §5), not "met".** The amendment rests on feed health only, adds no condition that depends on Q50, and keeps the lapses. Quant-proof found it admissible.
 
 ## 2. What changes
 | Item | s1 (Am.17, 18, 22) | s1t |
 |---|---|---|
 | bot_id | `h5v1q50-boostfloor-s1` (never registered) | `h5v1q50-boostfloor-s1t` (new; keeps Am.5 item 2.1's prefix properties; id test owed) |
-| code | S\* `5c2ab7c6` | S\*' = S\* + a tip input mode of `tools/h5_shadow.py`; decision functions identical |
+| code | S\* `5c2ab7c6` | S\*' = tag `q50-succ-tip-1` (tag-only; #1185 closed unmerged by design). `tools/h5_shadow.py` and its whole transitive first-party import set are byte-identical to S\*'s; S\*' adds `tools/h5_shadow_tip.py`, `tools/h5_shadow_tip_equiv.py` and tests |
 | feed / host | public `logsSubscribe` + second provider, mal-fast-0 | derived copy `/data2/mal/arena-tip-feed/hv7`, mal-research-0 (transport B) |
 | EXP-024 coverage | `EXP/EXP-024-note-s1-successor.md` (blob 7015abc9…; S\* blob 7f859b12…, s1 only) | its own note in the Part A form, owed with S\*' (it pins S\*''s blob), merged before the smoke |
-| P0 | Q50's #1413 reused (35.333333333333336 a day) | the same, for the clock and the slip. Every tip day before 11-08 lies in Q50's counted window |
-| H / end | E = 2026-12-01T00Z (Am.22 8.1) | the same E, so H = 24 d from 11-07 and 23 d from 11-08 |
+| P0 | Q50's #1413 reused (35.333333333333336 a day) | the same for the 11-07 clock (valid at or before 11-07T00Z). For the 11-09 slip: a tip P0 on 11-06, 11-07 and 11-08, all after Q50's window |
+| H / end | E = 2026-12-01T00Z (Am.22 8.1) | the same E, so H = 24 d from 11-07 and 22 d from 11-09 |
 | reads | N_s 200, S_cap clock + 10 d, N_c 300, E_c = E | the same, with s1t's clock |
-| smoke | ≥ 6 h websocket smoke (Am.22 item 11) | ≥ 24 h counts-only smoke on the tip (S\*'s `suppress_outcome` hook withholds every outcome and strip) |
-| clock | 11-06T00Z (slip 11-07) | **11-07T00Z** (slip 11-08) |
+| smoke | ≥ 6 h websocket smoke (Am.22 item 11) | ≥ 24 h on the tip. QP's form: fresh start ≥ 11-06T00Z, counts and timings only, which gives the 11-09 clock. Writer's proposal: a start by 11-05T12Z with every outcome suppressed, which gives the 11-07 clock. QP decides |
+| clock | 11-06T00Z (slip 11-07) | **11-07T00Z** only with the suppressed-outcome smoke; otherwise **11-09T00Z** (1794182400000). No honest 11-08 (QP) |
 
 ## 3. Latency and the trigger-age cap
 - **Where the lag comes from.** The tip shows a print at block time plus about 2 s (p90 block lag 1,697-1,995 ms in the r4-b sidecar, 10-31/11-01). The writer adds its ingest lag (`lag_ms` 485 in the writer status at 2026-11-01T22:39Z), and transport adds 23 ms (receiver p90).
@@ -26,12 +26,12 @@ Written 2026-11-01T23:2xZ (`date -u` on mal-research-0) by lane L1 of the 2026-1
 - **The age cap.** `MAX_TRIGGER_AGE_MS` = 3,500 (`:97`, `:458`) excludes older triggers, and that exclusion counts in the 5% cap. Its share on the tip is unknown, so the smoke measures it. The proposed bar is at most 2.5% (half the cap). It is timing only.
 - **Prior (in-sample, not a measurement of s1t).** EXP-012's latency note says the edge under V was gone by k ≥ 12 slots. A tip book lands about d slots later than a websocket book.
 
-## 4. Why the smoke is counts-only
+## 4. The smoke's hours (QP decides between two forms)
 - **The problem.** A smoke from 2026-11-05T12Z covers Q50-counted hours (Q50's window ends 2026-11-06T00Z). At S\*, fresh-forward computes outcomes for every pool whose s0 is after the process start. So a normal smoke would price the Q50 rule on Q50-counted pools.
 - **The s1 precedent.** The s1 note covered that for s1's own process (never counted, never opened).
 - **The stricter choice for s1t.** S\*' passes S\*'s frozen `suppress_outcome` hook (Engine parameter) set to withhold everything. The smoke then writes trigger, pool and gap records only.
 - **What still judges it.** The blocking list (counts, timings and flags), Am.23 item 8's reports and the trigger-age bar need no outcome. The outcome path is proved by the md5 equivalence on explore-0814 hours.
-- **Alternative.** QP may prefer a full-pricing smoke on hours at or after 2026-11-06T00Z only. The clock is then the 11-08 slip.
+- **QP's stated form (report §5 (c)).** Fresh start ≥ 1793923200000 (11-06T00Z), counts and timings only. Fresh-forward then never tracks a Q50-counted pool. A 24 h smoke ends at or after 11-07T00Z, so the clock is 11-09T00Z (S_cap 11-19T00Z, 1795046400000).
 
 ## 5. Dated steps to the 11-07 clock (UTC)
 | By | Step | Owner |
@@ -46,7 +46,7 @@ Written 2026-11-01T23:2xZ (`date -u` on mal-research-0) by lane L1 of the 2026-1
 | 11-06 23:00Z | Shadow start at S\*', at least 1 h before the clock | manager |
 | 11-07 00Z | Clock, if Am.23 item 6's line holds over [11-06T00Z, 11-07T00Z) (≤ 6 data_loss rows at T_max 333 s) | — |
 
-## 6. Code owed (S\*' tip input mode; builder-sized only at exactly this scope)
+## 6. Code (now PR #1185, tag-only `q50-succ-tip-1`; QP K1 to K3 owed there)
 - **Input.** Tail the derived copy's `tape-<hour>.jsonl[.zst]` (the arena layout; reuse `tools/arena_state.py`'s file reader or the receiver's verified-offset rule). Refuse every other dir except test tmp dirs, and refuse `/var/lib/mal/sealed`, `tip-tape-archive` and `/data/mal/arena/tape`.
 - **Row mapping:**
   - `pool_create` → the CreatePool announce (pool, mint, quote_mint);
