@@ -18,7 +18,7 @@ Rules (Q4, in order):
     which must exist (else refuse: run it after the 2026-11-07 daily run).
   - Records `source` (path@sha256 of the monitor file as read) and the ruling path; writes OUT once (refuses if it exists) and makes it read-only (0444).
 
-  /data/mal/venv/bin/python -m tools.exp027_a3_record --out /data/mal/structure-monitor/exp027-a3-record.json
+  /data/mal/venv/bin/python -m tools.exp027_a3_record --out /data/mal/structure-monitor/exp027-a3-record.json --interim ARTIFACTS/lab/exp027-a3-interim-halts.json
   -> prints `EXP027_A3_RECORD value: <out>@<sha256>`.
 
 Exit: 0 written, 2 refused. It reads no tape, outcome or decision row; it makes no RPC call.
@@ -34,7 +34,7 @@ import re
 import sys
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 SCHEMA = "r4b_a3_v1"
 W0 = datetime(2026, 10, 18, 3, tzinfo=timezone.utc)
@@ -126,12 +126,29 @@ def build(runs: Sequence[tuple[datetime, dict[str, Any]]], w0: datetime = W0, e:
             "runs_in_window": [iso(t) for t, _ in sorted(inside, key=lambda r: r[0])], "w0": iso(w0), "e": iso(e), "ruling": RULING}
 
 
-def run(src: Path, out: Path, now: datetime | None = None) -> tuple[str, dict[str, Any]]:
+def check_interim(rec: Mapping[str, Any], interim: Path) -> None:
+    """QP-RULING-1102 Addendum 1 A1.1: the post-E record must contain every entry of the pinned interim halt list unchanged (same at, same reason)."""
+    try:
+        want = json.loads(Path(interim).read_text(encoding="utf-8")).get("halts")
+    except (OSError, ValueError, AttributeError) as exc:
+        raise Refused(f"interim halt list {interim} unreadable") from exc
+    if not isinstance(want, list) or not want:
+        raise Refused(f"interim halt list {interim} has no halts")
+    have = {(h["at"], h["reason"]) for h in rec["halts"]}
+    miss = [h for h in want if not isinstance(h, dict) or (h.get("at"), h.get("reason")) not in have]
+    if miss:
+        raise Refused(f"{len(miss)} interim halt(s) missing or changed in the built record (a final record without them is false): {miss[:2]}")
+
+
+def run(src: Path, out: Path, now: datetime | None = None, interim: Path | None = None) -> tuple[str, dict[str, Any]]:
     out = Path(out)
     if out.exists():
         raise Refused(f"{out} exists: write-once")
     raw = Path(src).read_bytes()
     rec = build(load_runs(raw.decode("utf-8")))
+    if interim is not None:
+        check_interim(rec, interim)
+        rec["interim"] = f"{Path(interim).resolve()}@{hashlib.sha256(Path(interim).read_bytes()).hexdigest()}"
     rec["source"] = f"{Path(src).resolve()}@{hashlib.sha256(raw).hexdigest()}"
     rec["built_utc"] = iso(now or datetime.now(timezone.utc))
     body = (json.dumps(rec, indent=1, sort_keys=True) + "\n").encode("utf-8")
@@ -147,9 +164,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--src", default=str(DEFAULT_SRC), help="the structure-monitor file (research-0)")
     ap.add_argument("--out", required=True, help="the record to create (must not exist); ruling: /data/mal/structure-monitor/exp027-a3-record.json")
+    ap.add_argument("--interim", default=None, help="the pinned interim halt list (ARTIFACTS/lab/exp027-a3-interim-halts.json); refuse unless every entry is in the record unchanged")
     a = ap.parse_args(argv)
     try:
-        sha, rec = run(Path(a.src), Path(a.out))
+        sha, rec = run(Path(a.src), Path(a.out), interim=Path(a.interim) if a.interim else None)
     except (Refused, OSError) as exc:
         print(f"REFUSED: {exc}", file=sys.stderr)
         return 2
