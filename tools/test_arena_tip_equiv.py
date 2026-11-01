@@ -62,7 +62,7 @@ def run(tmp_path: Path, **kw) -> dict:
 
 
 def test_the_frozen_config_is_pinned():
-    assert eq.FROZEN_MD5 == "PIN"  # replaced below by the literal once computed
+    assert eq.FROZEN_MD5 == "5579235fd66e7a69bf56a09c8ee5d7f7"  # a change of the frozen configuration is a new proof
 
 
 def test_the_adapter_output_is_decision_equivalent_to_the_walker_rows_across_an_hour_mark(tmp_path):
