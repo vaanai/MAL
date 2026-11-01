@@ -706,6 +706,9 @@ def write_result(path: str | None, status: dict, rc: int) -> None:
 
 
 def run_send(args: argparse.Namespace) -> int:
+    if args.cmd_json and os.environ.get("MAL_ARENA_TEST") != "1":
+        print("send: --cmd-json is for tests only", file=sys.stderr)
+        return EXIT_REFUSED
     if bool(args.cmd_json) == bool(args.ssh_host):
         print("send: give exactly one of --ssh-host (with --remote-repo and --remote-dst) or --cmd-json (tests)", file=sys.stderr)
         return EXIT_REFUSED

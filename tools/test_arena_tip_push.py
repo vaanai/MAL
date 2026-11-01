@@ -485,3 +485,9 @@ def test_the_job_scripts_keep_the_exit_status_and_forward_a_cancel(tmp_path):
     p.terminate()
     out, _ = p.communicate(timeout=30)
     assert p.returncode == 3 and "rc=3" in out
+
+
+def test_the_test_only_flags_cannot_reach_production(monkeypatch):
+    monkeypatch.delenv("MAL_ARENA_TEST", raising=False)
+    assert ap.main(["send", "--src", "/x", "--cmd-json", "[\"true\"]"]) == ap.EXIT_REFUSED
+    assert aw.main(["run", "--no-compress", "--out-dir", str(Path(aw.OUT_ROOTS[0]) / "x" / "tape")]) == aw.EXIT_REFUSED

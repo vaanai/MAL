@@ -907,6 +907,9 @@ def write_result(path: str | None, w: Writer, rc: int) -> None:
 
 
 def run_cmd(args: argparse.Namespace) -> int:
+    if args.no_compress and os.environ.get("MAL_ARENA_TEST") != "1":
+        print("arena_tip_writer refused: --no-compress is for tests only", file=sys.stderr)
+        return EXIT_REFUSED
     try:
         out = check_out_dir(args.out_dir)
         check_tip_dir(args.tip_dir, out)
