@@ -381,7 +381,8 @@ def test_stripping_the_feed_only_keys_from_the_feed_rows_gives_the_tip_state(tmp
                          + [("pumpfun", k, "unread") for k in ("real_quote_reserve", "real_base_reserve", "protocol_fee_bps", "protocol_fee", "creator_fee_bps", "creator_fee")])
 def test_ablating_one_feed_only_key_at_a_time_shows_which_ones_the_state_reads(tmp_path, prog, key, effect):
     """On the S2 market (so the bonding trade's creator is the only creator route), delete ONE key from the rows of ONE program of the public-feed-shaped rows and compare with the
-    full feed rows. 12 keys: 2 move the price family, 1 moves the creator family, 9 change nothing the state, the cards or the vetoes can see."""
+    full feed rows. 13 (program, key) cases over 11 key names (protocol_fee and creator_fee are on both programs): 2 move the price family, 1 moves the creator family, 10 change
+    nothing the state, the cards or the vetoes can see."""
     evs = build_market(**S2)
     full = feed_rows(evs)
     cut = [{k: v for k, v in r.items() if not (r["type"] == "trade" and r["prog"] == prog and k == key)} for r in full]
