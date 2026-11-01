@@ -2,6 +2,8 @@
 import hashlib
 import json
 import math
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -596,3 +598,40 @@ def test_daily_extends_a_partial_table_when_more_hours_close(tmp_path, capsys):
     assert T.main(cli_args(d, "daily", "--date", "2026-11-03", "--out-dir", str(out))) == 0
     info = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert info["status"] == "written" and info["hours_tabled"] > n1
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ the job script (POSIX sh)
+SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "ops" / "tip-hour-table-daily.sh"
+
+
+def sh_env(tmp_path, with_counts=True):
+    rx, fast, out = tmp_path / "rx", tmp_path / "fast", tmp_path / "out"
+    rx.mkdir()
+    fast.mkdir()
+    (rx / "events.jsonl").write_bytes(events_blob())
+    (rx / "arrival.jsonl").write_bytes(arrival_blob())
+    if with_counts:
+        (fast / "counts.jsonl").write_bytes(counts_blob(base_rows()))
+    (fast / "tip-health-1.jsonl").write_bytes(samples_blob())
+    env = {**os.environ, "RX": str(rx), "FASTIN": str(fast), "OUT": str(out), "PY": sys.executable, "DATE": "2026-11-03", "NOW": T.iso(NOW)}
+    env.pop("END", None)
+    return env, out
+
+
+def test_job_script_is_posix_sh_and_writes_the_daily_table(tmp_path):
+    assert subprocess.run(["sh", "-n", str(SCRIPT)]).returncode == 0
+    body = SCRIPT.read_bytes()
+    assert body.splitlines()[0] == b"#!/bin/sh" and b"PIPESTATUS" not in body and b"[[" not in body
+    env, out = sh_env(tmp_path)
+    p = subprocess.run(["sh", str(SCRIPT)], env=env, capture_output=True, text=True)
+    assert p.returncode == 0, p.stdout + p.stderr
+    info = json.loads(p.stdout.strip().splitlines()[-1])
+    assert info["status"] == "written" and (out / "tip-hour-table-2026-11-03.jsonl").is_file() and info["hours_tabled"] == 18
+    p2 = subprocess.run(["sh", str(SCRIPT)], env=env, capture_output=True, text=True)
+    assert p2.returncode == 0 and json.loads(p2.stdout.strip().splitlines()[-1])["status"] == "unchanged"
+
+
+def test_job_script_refuses_to_write_a_table_without_the_counts_log(tmp_path):
+    env, out = sh_env(tmp_path, with_counts=False)
+    p = subprocess.run(["sh", str(SCRIPT)], env=env, capture_output=True, text=True)
+    assert p.returncode == 5 and "MISSING_INPUT" in p.stdout and not out.exists()
