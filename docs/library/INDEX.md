@@ -35,10 +35,10 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `untested` | 45 | 28 | 0 |
 | `desk-read` | 3 | 52 | 0 |
 | `explored-no-survivor` | 56 | 17 | 2 |
-| `dead-as-frozen` | 77 | 6 | 0 |
-| **all** | 209 | 108 | 2 |
+| `dead-as-frozen` | 77 | 7 | 0 |
+| **all** | 209 | 109 | 2 |
 
-The file holds 569 rows: the 319 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 570 rows: the 320 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -476,6 +476,12 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `haiku-v5-o1` | Haiku v5: self-improving BUY/SKIP filter on the frozen H5 BOOST-floor trigger (nightly playbook … | `dead-as-frozen` | O1 (job #1914, harness 8c50699b, 3.7286 USD ledger) KILL_OFFLINE, confirmed by QP: 11 of 12 pre-registered bars fail under both fail models. Totals over 33 in-sample test days are ordered A > F > L > N > P (flat 33.6398 / 32.0946 / 29.7167 / 28.9731 / 27.5922 SOL): every filter is below the unfiltered base, and … |
+
+### laneA-size-tilt (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `laneA-size-tilt-1` | SIZE-TILT: 2x stake on H5 BOOST-floor triggers that a walk-forward right-tail (top-10%) logistic … | `dead-as-frozen` | KILL by the pre-declared bars (in-sample exploration; v5 export-o1 days; 32 test days, 2,513 test triggers, 507 at 2x). The declared cell fails 3 of 8 bars under both fail models (flat / pressure): B5 random placebo p 0.2517482517482518 / 0.2087912087912088 (bar <= 0.10); B7 matched-exposure selection ex best day … |
 
 ## Dead as frozen, and explored with no survivor
 
