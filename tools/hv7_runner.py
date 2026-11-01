@@ -420,6 +420,7 @@ class Hv7Runner:
         self.open: dict[str, Pos] = {}              # engine position id -> Pos
         self.arm_of: dict[str, str] = {}
         self.pending: dict[str, Any] | None = None
+        self.creation = U2.CreationIndex()
         self.counters: dict[str, int] = {}
         self._last_hot: list[str] = []
         self._lock = threading.Lock()              # the L thread and the loop both count
@@ -446,11 +447,16 @@ class Hv7Runner:
                     self._count("phantom_drop_" + kind)
                     return
             orig(row)
+            self.creation.note(row)            # U2: the creation index sees exactly the rows the state applied (a phantom-dropped row is in neither)
             self._on_row(row)
 
         state.apply = apply
 
     # -- plumbing
+    def _snap(self, key: str, **kw: Any) -> Mapping[str, Any] | None:
+        """ArenaState.snapshot with the creation the state's 6 h idle eviction forgot put back from the creation index (rule U2, reviewer B1 on PR #1170)."""
+        return self.creation.patch(self.state.snapshot(key, **kw))
+
     def _count(self, k: str, n: int = 1) -> None:
         with self._lock:
             self.counters[k] = self.counters.get(k, 0) + n
@@ -554,7 +560,7 @@ class Hv7Runner:
 
         def gen():
             for p in pools:
-                snap = self.state.snapshot(p.id)
+                snap = self._snap(p.id)
                 if snap is not None:
                     yield snap, list(p.events)
 
@@ -570,7 +576,7 @@ class Hv7Runner:
 
         def gen():
             for p in pools:
-                snap = self.state.snapshot(p.id)
+                snap = self._snap(p.id)
                 if snap is not None:
                     yield snap, list(p.events)
 
@@ -588,7 +594,7 @@ class Hv7Runner:
             if len(cards) >= self.cfg.n:
                 break
             tried.append(pid)
-            snap, prints = self.state.snapshot(pid), list(self.state.pool(pid).events)
+            snap, prints = self._snap(pid), list(self.state.pool(pid).events)
             card = self._card(pid, T, snap, prints, res.feats[pid])
             if card is None:
                 continue
