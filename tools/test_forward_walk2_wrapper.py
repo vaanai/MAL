@@ -23,7 +23,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[1]
 SCRIPT = REPO / "scripts" / "research" / "forward-walk2.sh"
 START = "2026-10-16T01"
-CAP_TOTAL = 430_000 * 22 * 125 // 100  # 11,825,000: the header arithmetic
+CAP_TOTAL = 430_000 * 22 * 125 // 100 + 1_500_000  # 11,825,000 + CAP_RAISE 1,500,000 = 13,325,000: the header arithmetic
 SENTINEL = "SENTINEL-helius-key-0123456789"
 H1, H2, H3 = "2026-10-16T01", "2026-10-16T02", "2026-10-16T03"
 
@@ -455,8 +455,10 @@ class CreditTests(WrapperCase):
         return {c["argv"][c["argv"].index("--credit-cap") + 1] for c in r.calls("walker")}
 
     def test_cap_arithmetic(self) -> None:
-        self.assertEqual(CAP_TOTAL, 11_825_000)
-        self.assertIn("11,825,000", SCRIPT.read_text())
+        self.assertEqual(CAP_TOTAL, 13_325_000)
+        text = SCRIPT.read_text()
+        self.assertIn("11,825,000 + 1,500,000 = 13,325,000", text)
+        self.assertIn("CAP_RAISE=1500000 ", text)
 
     def test_refusal_credits_are_taken_off_the_cap(self) -> None:
         self.seed(refusals=[
@@ -473,8 +475,8 @@ class CreditTests(WrapperCase):
         self.assertIn("unreadable", r.err)
 
     def test_stops_with_an_alert_when_less_than_an_hour_is_left(self) -> None:
-        # checkpoint 11,800,000 + refused 10,000 leaves 15,000 under 11,825,000: below the 20,000 reserve.
-        self.seed(checkpoint=11_800_000, refusals=[json.dumps({"credits_spent_in_hour_before_refusal": 10_000})])
+        # checkpoint 13,300,000 + refused 10,000 leaves 15,000 under 13,325,000: below the 20,000 reserve.
+        self.seed(checkpoint=13_300_000, refusals=[json.dumps({"credits_spent_in_hour_before_refusal": 10_000})])
         r = self.run_w()
         self.assertEqual(r.rc, 5, r.err)
         self.assertEqual(r.calls(), [])
@@ -482,6 +484,16 @@ class CreditTests(WrapperCase):
         self.assertEqual((a["kind"], a["hour"]), ("credit_cap", H1))
         self.assertIn("ALERT", r.out)
         self.assertTrue(r.progress()["note"].startswith("ALERT credit_cap"))
+
+    def test_the_raise_lets_the_walk_pass_the_original_cap(self) -> None:
+        # checkpoint 11,800,000 + refused 10,000: under the original 11,825,000 cap this stopped (15,000 < 20,000 reserve);
+        # under 13,325,000 it walks every hour and the walker gets CAP_TOTAL - refused.
+        self.seed(checkpoint=11_800_000, refusals=[json.dumps({"credits_spent_in_hour_before_refusal": 10_000})])
+        r = self.run_w()
+        self.assertEqual(r.rc, 0, r.err)
+        self.assertEqual(r.hours("walker"), [H1, H2, H3])
+        self.assertEqual(self.cap_args(r), {str(13_325_000 - 10_000)})
+        self.assertEqual(r.alerts(), [])
 
     def test_walks_while_the_reserve_is_left(self) -> None:
         self.seed(checkpoint=11_000_000, refusals=[json.dumps({"credits_spent_in_hour_before_refusal": 10_000})])
