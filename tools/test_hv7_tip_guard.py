@@ -158,3 +158,70 @@ def test_runner_screen_with_two_unknown_pools_is_a_counted_no_trade(tmp_path):
     assert not run.model.calls                                 # no model call, no entry
     for arm in R.ARM_ORDER:
         assert rows_of(run, arm, "entry") == []
+
+
+# ------------------------------------------------------------------------------------------------------------------------ eviction (reviewer B1 on PR #1170)
+def test_creation_index_notes_only_pool_create_rows_and_patches_only_a_forgotten_creation():
+    ix = U2.CreationIndex()
+    for row in ({"type": "trade", "pool": "p1", "t_recv_ms": 5}, {"type": "pool_create", "pool": "", "t_recv_ms": 5}, {"type": "pool_create", "pool": "p1", "t_recv_ms": True},
+                {"type": "pool_create", "pool": 7, "t_recv_ms": 5}, {"type": "pool_create", "t_recv_ms": 5}, None, "x"):
+        ix.note(row)                                         # type: ignore[arg-type]
+    assert len(ix) == 0
+    ix.note({"type": "pool_create", "pool": "p1", "t_recv_ms": 1_000})
+    ix.note({"type": "pool_create", "pool": "p1", "t_recv_ms": 2_000})      # the state overwrites the same way: the newest create row wins
+    assert ix.created_ms("p1") == 2_000 and ix.created_ms("nope") is None
+    forgot = {"id": "p1", "now_ms": 2_000 + 7_200_000, "created_known": False, "created_ms": None, "age_s": None, "age_since_first_seen_s": 60.0}
+    got = ix.patch(forgot)
+    assert got is not forgot and forgot["created_known"] is False and forgot["age_s"] is None        # a copy; the input is untouched
+    assert got["created_known"] is True and got["created_ms"] == 2_000 and got["age_s"] == 7200.0 and got["created_kind"] == "pool_create"
+    assert U2.admit(got) and C._age(got) == (7200.0, True)
+    known = {**forgot, "created_known": True, "created_ms": 1, "age_s": 9.0}
+    assert ix.patch(known) is known                          # the state still knows: returned as is
+    other = {**forgot, "id": "p2"}
+    assert ix.patch(other) is other and not U2.admit(other)  # no create row anywhere in the history: still refused
+    assert ix.patch(None) is None
+    nonow = {**forgot, "now_ms": None}
+    assert ix.patch(nonow) is nonow
+
+
+@pytest.mark.usefixtures("_env")
+@pytest.mark.parametrize("shift_min,state_forgets", [(240, False), (290, True)])
+def test_a_pool_created_before_the_6h_idle_eviction_is_still_admitted(tmp_path, shift_min, state_forgets):
+    """The reviewer's synthetic case: the create row lies 5h50m (state keeps it) or 6h40m (the state evicts the idle pool and a later trade makes a new one with created_ms None)
+    before the pool's first trade. In both the pool is migrated 2 h to 7 d before the screen, so U2 must admit it and the screen must equal the control's."""
+    # A heartbeat row at T0 - 90 min makes the state run its periodic sweep (any applied row can) while the four pools are idle past 6 h; on the bare synthetic tape nothing applies
+    # a row between the create rows and the first trades, so no sweep would run and the state would never forget anything.
+    hb = {"v": 1, "type": "hb", "prog": "pumpswap", "t_recv_ms": T0 - 90 * MIN, "signature": "hb0"}
+    control_run, control = _screen_row(tmp_path / "control", sorted([*tape_rows(), hb], key=lambda r: (r["t_recv_ms"], r["signature"])))
+    rows = sorted(({**r, "t_recv_ms": r["t_recv_ms"] - shift_min * 60_000} if r["type"] == "pool_create" else r for r in [*tape_rows(), hb]), key=lambda r: (r["t_recv_ms"], r["signature"]))
+    run, row = _screen_row(tmp_path / "shifted", rows)
+    for k in range(4):
+        raw = run.state.snapshot(POOLS[k])
+        assert raw["created_known"] is (not state_forgets)                       # the shifted case really reproduces the eviction in the state itself
+        patched = run._snap(POOLS[k])
+        assert patched["created_known"] is True and C._age(patched)[1] is True
+        assert patched["age_s"] == pytest.approx((raw["now_ms"] - run.creation.created_ms(POOLS[k])) / 1000.0)
+        assert AGE_MIN <= patched["age_s"] <= AGE_MAX
+    assert row["counts"]["age_unknown"] == 0 and "u2_age_unknown" not in run.counters
+    assert row["screen"] == control["screen"] and row["card_shas"] and not row["no_trade"]
+    assert row["n_candidates"] == control["n_candidates"]
+
+
+@pytest.mark.usefixtures("_env")
+def test_watch_tick_tells_the_prefetcher_only_pools_u2_admits(tmp_path):
+    seen = []
+
+    class WatchChain:
+        calls = 0
+
+        def watch(self, items, hot, now_ms, vols=None):
+            seen.append([q for q, _mint in items])
+
+    leader = POOLS[3]
+    no_create = [r for r in tape_rows() if not (r["type"] == "pool_create" and r["pool"] == leader)]
+    run = make(tmp_path, rows=no_create)
+    run.chain = WatchChain()
+    T = T0 + HOUR + 60_000                                   # a minute tick after an hour of tape
+    run.poll_to(T)
+    run.watch_tick(T)
+    assert seen and leader not in seen[-1] and set(seen[-1]) == {POOLS[0], POOLS[1], POOLS[2]}
