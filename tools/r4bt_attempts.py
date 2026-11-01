@@ -294,8 +294,8 @@ def main(argv: Sequence[str] | None = None, *, now_ms: int | None = None) -> int
             out["excluded_hours_sha256"] = sha
         else:
             out = day_sha(root, a.arm, as_of)
-        if getattr(a, "no_verify", False):
-            out["chain_verified"] = False
+        if a.cmd != "day-sha":
+            out["chain_verified"] = not a.no_verify
     except Refused as e:
         print(f"r4bt_attempts: REFUSED: {e}", file=sys.stderr)
         return 2
