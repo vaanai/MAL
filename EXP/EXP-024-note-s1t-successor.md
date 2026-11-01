@@ -14,11 +14,10 @@
 
 It is text only, in the form of the s1 note's Part A, Amendment 10, the Note under it, and QP-RULING-1024-successor R7(c) and R7(d). Nothing here says that any book makes money. No book has cleared the promotion gate.
 
-**Declared fill tokens (POSTX).** Two values depend on a tag that is made after #1185's final QP and reviewer verdicts. They are written into this file in a commit on this PR before it merges, and the note does not merge with either token unfilled:
-- `POSTX-S1T-TAG-SHA`: the commit of tag `q50-succ-tip-1` on origin, from `git rev-parse 'q50-succ-tip-1^{commit}'`.
-- `POSTX-S1T-WRAPPER-BLOB`: the blob of `tools/h5_shadow_tip.py` at that commit, from `git rev-parse 'q50-succ-tip-1:tools/h5_shadow_tip.py'`.
-
-The filling commit also re-checks the identity of DEC-031 Amendment 24 item 3: `git rev-parse 'q50-succ-tip-1:tools/h5_shadow.py'` equals `7f859b12deef87573a7314e49e125b5121eaa645`, S\*'s blob.
+**Pinned commit (filled 2026-11-01T23:50:36Z; QP-NOTE-1102-tip-readers C1).** S\*' is the commit `afa4971d9dd8b0bca2e73a758c22f4539f675d63`, the head that quant-proof and the reviewer passed on #1185.
+- At that commit, `tools/h5_shadow_tip.py` is blob `05c5489a786dac4eb0696a74279a0f789ddb1deb`, and `tools/h5_shadow.py` is blob `7f859b12deef87573a7314e49e125b5121eaa645` (S\*'s, DEC-031 Amendment 24 item 3), both from `git rev-parse` at writing.
+- Tag `q50-succ-tip-1` must name that commit. Before the smoke, the manager checks that `git rev-parse 'q50-succ-tip-1^{commit}'` equals `afa4971d9dd8b0bca2e73a758c22f4539f675d63`.
+- A process at any other commit is not covered. The tag was not on origin at writing.
 
 **Gating.**
 - **Part A** merges, with quant-proof's OK and a reviewer verdict on its exact final head, under three conditions:
@@ -49,8 +48,11 @@ No s1t trigger or outcome exists on any pool at writing. Q50's outcomes have bee
 - **(a) Part A, scope (the shadow, its pricing-off smoke and its P0 count).**
   - **What it covers.** A declared exception to section 3's seal for `rule_id` `H5-BOOSTFLOOR-Q50 v1`, block sha256 `b3f8ecbf8731dc322a035a0b3996b7ed3f0b8c508cc6947014e3de1aa9524fd4`, under all of these conditions:
     - computed only by `tools/h5_shadow.py` (blob `7f859b12deef87573a7314e49e125b5121eaa645`; it and its whole transitive first-party import set are byte-identical to S\* `5c2ab7c64b21358619e37068c6a53e4d183512ea`);
-    - run through `tools/h5_shadow_tip.py` (blob `POSTX-S1T-WRAPPER-BLOB`) at `frozen_sha` S\*' = `POSTX-S1T-TAG-SHA` (tag `q50-succ-tip-1`);
-    - started with `--tip-input /data2/mal/arena-tip-feed/hv7 --fresh-forward ARENA --q-star-sol 50`;
+    - run through `tools/h5_shadow_tip.py` (blob `05c5489a786dac4eb0696a74279a0f789ddb1deb`) at `frozen_sha` S\*' = `afa4971d9dd8b0bca2e73a758c22f4539f675d63` (tag `q50-succ-tip-1`);
+    - started with `--tip-input /data2/mal/arena-tip-feed/hv7 --fresh-forward ARENA --q-star-sol 50 --syn-sockets 1 --ws-url wss://rpc.solanatracker.io/public`.
+      - The last two arguments are the class side feed, pinned per QP-NOTE-1102-tip-readers §3 condition 1: one keyless public endpoint, which is neither `api.mainnet-beta.solana.com` nor the solanavibestation endpoint.
+      - A different host before the smoke is a commit on this note before it merges. A change inside s1t's window needs a quant-proof note first and is disclosed in the read.
+      - The side feed only speeds up S\*'s synthetic-class lookup. Its reconnects write no gap and flag no pool (S\*'s `run_pump_feed` counts `ws_restarts` only, `tools/h5_shadow.py:3120` at S\*). S\*'s RPC fallback and the tip's `complete` rows still classify;
     - for `bot_id` `h5v1q50-boostfloor-s1t` only.
   - **Pools covered.** Pools with s0 at or after that process's start record `start_ms` and before `SUCC_END_MS` = 2026-12-01T00:00:00Z (1796083200000), the end constant pinned in S\*'s code. So no outcome the process writes is uncovered (R7(c)).
   - **What the book counts.** Only attempts decided in [clock, E), E = `SUCC_END_MS` (DEC-031 Amendment 24 item 5: H = 24 d from the 2026-11-07T00:00:00Z clock, 21 d from the 2026-11-10T00:00:00Z slip). Outcomes of pools decided before the clock are covered but never counted, scored or read.
