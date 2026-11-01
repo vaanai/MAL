@@ -1,0 +1,487 @@
+# VENDORED COPY (the tools/arena_stack.py pattern). DEC-031 section 3 item 1 bars every arena process from opening tools/r4b_*.py by file name, so the arena side
+# carries its own copy of the tip reader under a non-r4b name. Everything AFTER the marker line below is tools/r4b_tip_reader.py byte for byte.
+#   source file   tools/r4b_tip_reader.py
+#   source blob   78ad185744147173d4e1036f35268012fcdcb066
+#   last commit   8e4d93aa3d1edc00216fa544d6bc4294bb1efded
+#   reviewed      against that blob for PR #1165 (the reader holds no model and no feature: json, os, re, collections, dataclasses, datetime, typing only)
+# DO NOT EDIT BY HAND. tools/test_arena_tip_adapter.py::test_the_vendored_reader_is_the_r4b_reader_byte_for_byte recomputes the blob and compares the text; it fails the day the
+# source changes, and the copy is then re-vendored and re-reviewed (a change of the r4-b reader never changes an arena book silently, and the r4-b lane stays free to change its file).
+# ---- end of the vendoring header; the rest of this file is tools/r4b_tip_reader.py byte for byte ----
+#!/usr/bin/env python3
+"""r4b_tip_reader: the fast-0 tip follower's tape as the r4-b DRY host's HISTORY source (QP-RULING-1031-r4b-history, option C; section 2).
+READ-ONLY and DRY: it opens files for reading, never writes, moves or truncates, holds no key, sends nothing. Tests use synthetic files in tmp dirs and the REAL
+tools.fast_tip_follower.TipFollower._commit / _emit with a fake RPC; no real tip file is opened by tests or by agents.
+
+What it reads (and nothing else): `trades-`, `creates-`, `migrations-`, `skipped-slots-<UTC hour of t_recv_ms>.jsonl` and `gaps.jsonl` of ONE configured tip dir, plus
+`checkpoint.json` and `status.json` of the follower's state dir. Code refusals (TipRefused, tested): a file whose hour is before the floor (default 2026-10-16T01,
+the D2/D3 seal; at most 53 h before the host's start); a name that is not one of those files; a path that resolves outside the tip dir (a symlink, `..`, a
+subdirectory); the tip-tape archive or any directory with `tip-tape-archive` in its real path. The production floor cannot be lowered on `/var/lib/mal/sealed`.
+
+The checkpoint protocol (ruling 2.2; why checkpoint.json and not status.json)
+  `_commit` writes checkpoint.json atomically after EVERY slot, after `_emit` appended and flush()ed that slot's rows. status.json is rewritten every HEARTBEAT_S
+  (15 s, up to ~75 slots stale). So: poll() reads checkpoint.json FIRST (D = last_done, last_t_recv_ms), THEN drains the files, and releases only rows of slots <= D.
+  Every row of every slot <= D is then in the output; a row of a slot > D (a slot being written, or committed after the checkpoint read) is held back until a
+  later checkpoint covers it. Files are bucketed by the hour of t_recv_ms, which is not block time, and the marks fall exactly on that boundary: after the
+  checkpoint read the reader drains hour h, and moves on to h + 1 only if the checkpoint's own last_t_recv_ms is in a later hour than h (t_recv_ms is non-decreasing,
+  so hour h can no longer grow); the live hour is drained to EOF and the next hour's file is read as soon as a checkpoint says it is in use.
+  Commit order is slot order, so D is contiguous: every slot <= D is a block, a recorded skip or a recorded gap. The one out-of-order write is a contradicted skip
+  (`_verify_skips` refetches an older slot before the current one): it writes a gaps.jsonl row (reason skip_contradicted), which this reader turns into a tip gap.
+
+What comes out of poll()
+  ("migration" | "create" | "trade", walker-schema row)   emitted in slot order; within a slot: migrations, creates, trades (the replay's order); then
+  ("skip", slot)                                           a recorded skipped slot (a Helius-owned slot reported skipped later is a fork);
+  ("gap", TipGap)                                          a gaps.jsonl row (backlog_jump, unfetchable, skip_contradicted[_refetch], unresolved_dropped, or a line
+                                                           this reader cannot parse: tip_bad_line). Always data loss (ruling 2.2).
+`released_D` is the slot up to which everything has been returned, or what is safe (last emitted slot - 1) while the poll stopped at `limit`; `caught_up` says the
+last poll drained everything to EOF. The host certifies on `caught_up and released_D`.
+
+Disk I/O. Reads are plain read-only reads. Catch-up files get posix_fadvise(DONTNEED) after each chunk (page cache is not memory the job should keep); the nice 19 /
+ionice idle part of ruling 2.1 item 6 is applied by the host before the first poll (tools.r4b_host_glue.lower_io_priority), not here.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+from collections import Counter, deque
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Mapping
+
+DEFAULT_TIP_DIR = "/var/lib/mal/sealed/fast-trades-tip"
+DEFAULT_STATE_DIR = "/var/lib/mal/fast-tip-follower"
+SEALED_ROOT = "/var/lib/mal/sealed"
+ARCHIVE_DIR = "/data/mal/tip-tape-archive"
+ARCHIVE_MARK = "tip-tape-archive"
+MIN_HOUR = "2026-10-16T01"  # no hour before this, ever (D2/D3 seal; QP-RULING-1031 2.1 item 1)
+MAX_LOOKBACK_H = 53  # hours before the host's start that may be read
+HOUR_S = 3600
+STATUS_MAX_AGE_MS = 30_000
+GAP_NAME = "gaps.jsonl"
+NAME_RE = re.compile(r"^(trades|creates|migrations|skipped-slots)-(\d{4}-\d{2}-\d{2}T\d{2})\.jsonl$")
+# read order inside one slot: migrations, creates, trades (the replay feeds migrations and creates before trades), then skips
+KIND_ORDER = (("migrations", "migration"), ("creates", "create"), ("trades", "trade"), ("skipped-slots", "skip"))
+# the three EXP027_DECODER_REF blobs (EXP-027 section 2.2; tools/fast_tip_follower.PINNED_DECODER_BLOBS equals them, a test asserts it)
+PINNED_BLOBS = {
+    "observe/trade_decode.py": "238942a6b3c5425389eddfde4d11268c300acbec",
+    "observe/trade_store.py": "ea4e11eddf9f034e3bc7318ce8743337d753f350",
+    "tools/pump_history_backfill.py": "9a8bebb32adcf86de060b55f5a08110d11c0a550",
+}
+# Reader problems the host may retry on the next poll: before the reader has seen a good checkpoint (the start-up wait: no file yet, last_t_recv_ms still 0), or a checkpoint
+# file that is present but does not parse. Everything else stays latched for the run: a regressed checkpoint (the follower restarted from an older point and may re-emit slots
+# this reader already returned) and a RESET (the checkpoint vanished, lost its last_done / last_t_recv_ms, or its gap counters dropped after the reader held a good one:
+# a follower restarted without its checkpoint begins at the current tip and writes no gap row, so the slots in between would be a silent hole).
+RECOVERABLE_PROBLEMS = ("checkpoint_unreadable", "checkpoint_no_t")  # only before the first good checkpoint, or a file that is present but unparseable
+LATCHED_PROBLEMS = ("checkpoint_regressed", "checkpoint_reset")
+CHUNK_BYTES = 4 << 20
+CHUNK_ROWS = 4096
+
+
+class TipRefused(Exception):
+    """The reader refuses: a path, hour or name it must never open, or a configuration that would allow one. Text only, never file content."""
+
+
+def hour_key(epoch_s: int | float) -> str:
+    return datetime.fromtimestamp(int(epoch_s), tz=timezone.utc).strftime("%Y-%m-%dT%H")
+
+
+def hour_epoch(key: str) -> int:
+    return int(datetime.strptime(key, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp())
+
+
+def _is_int(x: Any) -> bool:
+    return isinstance(x, int) and not isinstance(x, bool)
+
+
+def is_archive_path(p: str) -> bool:
+    p = os.path.normpath(p)
+    return p == ARCHIVE_DIR or p.startswith(ARCHIVE_DIR + "/") or ARCHIVE_MARK in p
+
+
+def under_sealed(p: str) -> bool:
+    p = os.path.normpath(p)
+    return p == SEALED_ROOT or p.startswith(SEALED_ROOT + "/")
+
+
+def floor_hour(start_ms: int, *, min_hour: str = MIN_HOUR, lookback_h: int | None = MAX_LOOKBACK_H) -> str:
+    """max(min_hour, hour of (start - lookback_h hours)): the first hour the host may read."""
+    if lookback_h is None:
+        return min_hour
+    return max(min_hour, hour_key(start_ms // 1000 - lookback_h * HOUR_S))
+
+
+# ------------------------------------------------------------------------------------------------------------------------------------ the guarded opener
+class TipFiles:
+    """The only object that opens tip files. name -> a path inside the one tip dir, or TipRefused."""
+
+    def __init__(self, tip_dir: str | os.PathLike, *, floor: str = MIN_HOUR) -> None:
+        raw = os.fspath(tip_dir)
+        real = os.path.realpath(raw)
+        if is_archive_path(raw) or is_archive_path(real):
+            raise TipRefused("the tip-tape archive (or a copy of it) is never read")
+        if floor < MIN_HOUR and under_sealed(real):
+            raise TipRefused(f"the floor {floor} is below {MIN_HOUR}: the production floor cannot be lowered on {SEALED_ROOT}")
+        self.raw, self.real, self.floor = raw, real, floor
+        self.opened = 0
+
+    def check_name(self, name: str) -> None:
+        if name == GAP_NAME:
+            return
+        m = NAME_RE.match(name)
+        if not m:
+            raise TipRefused("not a tip file name")
+        if m.group(2) < self.floor:
+            raise TipRefused(f"hour {m.group(2)} is before the floor {self.floor}")
+
+    def path(self, name: str) -> str:
+        self.check_name(name)
+        p = os.path.join(self.real, name)
+        rp = os.path.realpath(p)
+        if os.path.dirname(rp) != self.real or os.path.basename(rp) != name or is_archive_path(rp):
+            raise TipRefused("path resolves outside the tip dir")
+        return p
+
+    def open(self, name: str):
+        """Read-only binary handle; FileNotFoundError if absent (an hour with no rows of that kind has no file)."""
+        fd = os.open(self.path(name), os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0))
+        self.opened += 1
+        return os.fdopen(fd, "rb")
+
+
+def read_state_json(state_dir: str | os.PathLike, name: str) -> dict | None:
+    """checkpoint.json / status.json of the follower's state dir; None if absent or unreadable."""
+    if name not in ("checkpoint.json", "status.json"):
+        raise TipRefused("only checkpoint.json and status.json are read from the state dir")
+    try:
+        with open(os.path.join(os.fspath(state_dir), name), "rb") as fh:
+            obj = json.loads(fh.read())
+    except (OSError, ValueError):
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def status_problem(st: Mapping[str, Any] | None, now_ms: int, *, max_age_ms: int = STATUS_MAX_AGE_MS, pins: Mapping[str, str] = PINNED_BLOBS) -> str | None:
+    """Ruling 2.1 item 5. None when the follower's status is healthy; else a log-safe code. Fail closed: a missing or malformed field is a problem."""
+    if not isinstance(st, Mapping):
+        return "status_missing"
+    ts = st.get("ts_ms")
+    if not _is_int(ts):
+        return "status_ts_missing"
+    if now_ms - ts > max_age_ms or ts - now_ms > max_age_ms:
+        return "status_stale"
+    if st.get("decoder_blobs") != dict(pins):
+        return "decoder_blobs_mismatch"
+    if st.get("decoder_blobs_pinned") is not True:
+        return "decoder_blobs_not_pinned"
+    if st.get("trade_event_v") is not True:
+        return "event_v_off"
+    return None
+
+
+@dataclass(frozen=True)
+class TipGap:
+    """One gaps.jsonl row as a slot range [lo, hi] (inclusive) of data loss."""
+
+    lo: int
+    hi: int
+    reason: str
+    t_recv_ms: int | None
+    slots: int | None = None
+
+    @property
+    def code(self) -> str:
+        return re.sub(r"[^a-z0-9_]", "_", f"tip_gap_{self.reason}".lower())[:32]
+
+
+def parse_gap_row(obj: Mapping[str, Any], pos: int) -> TipGap:
+    """backlog_jump: from_slot..to_slot; unfetchable / skip_contradicted[_refetch] / unresolved_dropped: slot. A row with neither is a gap AT `pos` (fail closed)."""
+    reason = obj.get("reason") if isinstance(obj.get("reason"), str) else (obj.get("kind") if isinstance(obj.get("kind"), str) else "unknown")
+    fs, ts, s = obj.get("from_slot"), obj.get("to_slot"), obj.get("slot")
+    t = obj.get("t_recv_ms") if _is_int(obj.get("t_recv_ms")) else None
+    if _is_int(fs) and _is_int(ts) and ts >= fs:
+        return TipGap(fs, ts, reason, t, obj.get("slots") if _is_int(obj.get("slots")) else ts - fs + 1)
+    if _is_int(s):
+        return TipGap(s, s, reason, t, 1)
+    return TipGap(pos, pos, "unparsable", t, None)
+
+
+# ------------------------------------------------------------------------------------------------------------------------------------ cursors
+class _Cursor:
+    """A lazy complete-line reader over one append-only file, by byte offset. Rows are (slot, dict) in file order. at_eof: the last fill ended on a short read."""
+
+    def __init__(self, files: TipFiles, name: str, stats: Counter, fadvise: bool) -> None:
+        self.files, self.name, self.stats, self.fadvise = files, name, stats, fadvise
+        self.offset, self.tail = 0, b""
+        self.rows: deque = deque()
+        self.at_eof = False
+        self.missing = True
+        self.bad = 0  # complete lines this cursor could not use since the last take_bad()
+        self.keep_le: int | None = None  # D of the current poll: rows of slots above it are dropped if the file shrinks (the follower truncated an in-flight write)
+
+    def take_bad(self) -> int:
+        n, self.bad = self.bad, 0
+        return n
+
+    def _shrunk(self, size: int) -> None:
+        if size < self.offset:
+            # the follower restarted mid-write and cut the file back to its pre-write size (`_recover`): that is the end of slot D's rows. What we read beyond it
+            # (held-back rows of the in-flight slot) is gone; the slot is fetched again and appended anew.
+            self.stats["file_shrunk"] += 1
+            self.offset, self.tail = size, b""
+            self.rows = deque(r for r in self.rows if self.keep_le is not None and r[0] <= self.keep_le)
+
+    def rewind(self) -> None:
+        """Forget the held-back rows (all of slots above D) and go back to the byte where the first of them starts."""
+        if self.rows:
+            self.offset, self.tail = self.rows[0][2], b""
+            self.rows.clear()
+        elif self.tail:  # a torn last line is not kept either: if the follower cuts the file back and it regrows past our offset, old and new bytes must not be spliced
+            self.offset, self.tail = self.offset - len(self.tail), b""
+
+    def refresh(self, keep_le: int) -> None:
+        """Start of a poll: the file may have grown (at_eof reset) or been cut back (stat only; a name outside the tip dir is refused by TipFiles.path)."""
+        self.at_eof, self.keep_le = False, keep_le
+        if self.missing and not self.offset:
+            return
+        try:
+            self._shrunk(os.stat(self.files.path(self.name)).st_size)
+        except FileNotFoundError:
+            pass
+
+    def fill(self, want: int = CHUNK_ROWS) -> None:
+        while len(self.rows) < want:
+            try:
+                fh = self.files.open(self.name)
+            except FileNotFoundError:
+                self.at_eof = True
+                return
+            with fh:
+                self.missing = False
+                self._shrunk(os.fstat(fh.fileno()).st_size)
+                fh.seek(self.offset)
+                data = fh.read(CHUNK_BYTES)
+                if self.fadvise and data:
+                    try:
+                        os.posix_fadvise(fh.fileno(), self.offset, len(data), os.POSIX_FADV_DONTNEED)
+                    except (OSError, AttributeError):
+                        pass
+            self.at_eof = len(data) < CHUNK_BYTES
+            if not data:
+                return
+            base = self.offset - len(self.tail)  # file offset of the first byte of tail + data
+            self.offset += len(data)
+            parts = (self.tail + data).split(b"\n")
+            self.tail = parts.pop()  # a torn last line (the follower is mid-write) waits for its newline
+            pos = base
+            for ln in parts:
+                start, pos = pos, pos + len(ln) + 1
+                if not ln.strip():
+                    continue
+                try:
+                    row = json.loads(ln)
+                except (ValueError, UnicodeDecodeError):
+                    row = None
+                if isinstance(row, dict) and (_is_int(row.get("slot")) or self.name == GAP_NAME):
+                    self.rows.append((row.get("slot") if _is_int(row.get("slot")) else -1, row, start))
+                else:
+                    self.bad += 1
+                    self.stats["bad_lines"] += 1
+            if self.at_eof:
+                return
+
+
+class TipReader:
+    """See the module docstring. One thread (the host's). poll() never blocks and never writes."""
+
+    def __init__(self, tip_dir: str | os.PathLike, state_dir: str | os.PathLike, *, start_ms: int, catch_up_hours: int = 52, min_hour: str = MIN_HOUR,
+                 lookback_h: int | None = MAX_LOOKBACK_H, fadvise: bool = True) -> None:
+        if catch_up_hours < 0 or (lookback_h is not None and catch_up_hours > lookback_h):
+            raise TipRefused(f"catch_up_hours must be 0..{lookback_h}")
+        self.floor = floor_hour(start_ms, min_hour=min_hour, lookback_h=lookback_h)
+        self.files = TipFiles(tip_dir, floor=self.floor)  # refuses a floor below MIN_HOUR on the sealed dir (an unbounded look-back lowers it to min_hour)
+        self.state_dir = os.fspath(state_dir)
+        self.h0 = hour_epoch(hour_key(start_ms // 1000)) - catch_up_hours * HOUR_S
+        if hour_key(self.h0) < self.floor:
+            raise TipRefused(f"the first hour {hour_key(self.h0)} is before the floor {self.floor}")
+        self.read_from_ms = self.h0 * 1000
+        self.h = self.h0
+        self.fadvise = fadvise
+        self.stats: Counter = Counter()
+        self.D: int | None = None  # last checkpoint last_done seen
+        self.last_t_ms: int | None = None
+        self.problem: str | None = None  # a checkpoint problem of the last poll (the host treats the tip side as unhealthy)
+        self.caught_up = False
+        self.released_D: int | None = None
+        self.hw: int | None = None  # highest slot emitted
+        self._cur: dict[str, _Cursor] | None = None
+        self._cur_h: int | None = None
+        self._gaps = _Cursor(self.files, GAP_NAME, self.stats, False)
+        self._cat = False
+        self._ck_reason = "checkpoint_unreadable"
+        self.latched: str | None = None  # an unsafe problem that stays for the run (checkpoint_regressed, checkpoint_reset)
+        self._counters: tuple[int, int] | None = None  # (gaps, skipped) of the last good checkpoint
+        self._ck_latch, self._ck_new = False, (None, None)
+
+    # -- the history start
+    def start_problem(self) -> str | None:
+        """None if the first hour's trades file exists (the 52 h of warm-up can start); else a code. Opens the file only to see that it exists."""
+        try:
+            self.files.open(f"trades-{hour_key(self.h0)}.jsonl").close()
+        except FileNotFoundError:
+            return "history_start_missing"
+        except TipRefused:
+            raise
+        return None
+
+    def stop_fadvise(self) -> None:
+        """Catch-up is over: no more posix_fadvise(DONTNEED) (on the live tail it would start writeback of the follower's newest dirty pages)."""
+        self.fadvise = False
+        for c in (self._cur or {}).values():
+            c.fadvise = False
+
+    # -- the two seams the mutation tests replace
+    def _read_checkpoint(self) -> tuple[int, int | None] | None:
+        """(D, last_t_recv_ms) from checkpoint.json: the follower writes it (os.replace) after every slot, once that slot's rows are flushed. None on any problem, with
+        self._ck_reason set and self._ck_latch True when the problem is a FOLLOWER RESET (a restart without its checkpoint writes none, begins at the current tip and
+        records no gap): once this reader holds a D, a missing file or a checkpoint without a positive last_t_recv_ms (last_t_recv_ms starts at 0 in a fresh follower)
+        or without last_done is a reset, not a wait. Before the first good checkpoint (the start-up wait) every such state is retried. A file that is present but does not
+        parse (any OSError, bad JSON) is retried either way: the checks on the next good checkpoint (D and the gap counters never drop) catch a reset behind it."""
+        self._ck_latch, self._ck_new = False, (None, None)
+        seen = self.D is not None
+        try:
+            with open(os.path.join(self.state_dir, "checkpoint.json"), "rb") as fh:
+                ck = json.loads(fh.read())
+        except FileNotFoundError:
+            self._ck_reason, self._ck_latch = ("checkpoint_reset" if seen else "checkpoint_unreadable"), seen
+            return None
+        except (OSError, ValueError):
+            ck = None
+        if not isinstance(ck, dict):
+            self._ck_reason = "checkpoint_unreadable"
+            return None
+        if not _is_int(ck.get("last_done")):
+            self._ck_reason, self._ck_latch = ("checkpoint_reset" if seen else "checkpoint_unreadable"), seen
+            return None
+        t = ck.get("last_t_recv_ms")
+        if not (_is_int(t) and t > 0):
+            self._ck_reason, self._ck_latch = ("checkpoint_reset", True) if seen else ("checkpoint_no_t", False)
+            return None  # without the hour of D the reader cannot tell which hour files hold D's rows: fail closed, never caught up
+        g, k = ck.get("gaps"), ck.get("skipped")
+        self._ck_new = (g, k) if _is_int(g) and _is_int(k) else (None, None)
+        return int(ck["last_done"]), int(t)
+
+    def _last_hour(self, last_t_ms: int | None) -> int:
+        """The latest hour whose files can hold a row of a slot <= D: the hour of the checkpoint's last_t_recv_ms."""
+        return hour_epoch(hour_key(last_t_ms // 1000)) if last_t_ms else self.h
+
+    # -- polling
+    def _cursors(self) -> dict[str, _Cursor]:
+        if self._cur is None or self._cur_h != self.h:
+            hk = hour_key(self.h)
+            self._cur = {k: _Cursor(self.files, f"{k}-{hk}.jsonl", self.stats, self.fadvise) for k, _ in KIND_ORDER}
+            self._cur_h = self.h
+        return self._cur
+
+    def _gap_items(self, out: list) -> None:
+        self._gaps.fill(CHUNK_ROWS)
+        while self._gaps.rows:
+            _, obj, _ = self._gaps.rows.popleft()
+            g = parse_gap_row(obj, self.hw if self.hw is not None else 0)
+            if g.t_recv_ms is not None and g.t_recv_ms < self.read_from_ms:
+                self.stats["gaps_before_window"] += 1  # older than the first hour this run reads: counted, not parsed further
+                continue
+            self.stats["gaps"] += 1
+            out.append(("gap", g))
+            if not self._gaps.rows:
+                self._gaps.fill(CHUNK_ROWS)
+        for _ in range(self._gaps.take_bad()):
+            out.append(("gap", TipGap(self.hw if self.hw is not None else 0, self.hw if self.hw is not None else 0, "tip_bad_line", None, None)))
+
+    def poll(self, limit: int = 20_000) -> list[tuple]:
+        """Read checkpoint.json, then drain gaps.jsonl and the hour files, and return up to `limit` items (see the module docstring)."""
+        out: list[tuple] = []
+        self.caught_up = False
+        ck = self._read_checkpoint()
+        if self.latched is not None:  # unsafe, not retried: see RECOVERABLE_PROBLEMS
+            self.problem = self.latched
+            return out
+        if ck is None:
+            self.problem = self._ck_reason  # recoverable unless it is a reset: then it latches
+            if self._ck_latch:
+                self.latched = self._ck_reason
+            return out
+        D, last_t = ck
+        if self.D is not None and D < self.D:
+            self.problem = self.latched = "checkpoint_regressed"
+            return out
+        g, k = getattr(self, "_ck_new", (None, None))
+        if g is not None and self._counters is not None and (g < self._counters[0] or g + k < sum(self._counters)):
+            # the follower's gaps never drop and skipped + gaps never drop (`_verify_skips` moves 1 from skipped to gaps; `_recover` restores both): a drop is a fresh start,
+            # also when status.json was stale and the host did not poll while it happened
+            self.problem = self.latched = "checkpoint_reset"
+            return out
+        if g is not None:
+            self._counters = (g, k)
+        self.problem = None
+        self.D, self.last_t_ms = D, last_t
+        for c in (*self._cursors().values(), self._gaps):
+            c.refresh(D)
+        self._gap_items(out)  # after the checkpoint read: a gap row of a slot <= D is written before the checkpoint passes it
+        last_h = self._last_hour(last_t)
+        budget = max(0, limit - len(out))
+        stopped = False
+        while True:
+            cur = self._cursors()
+            stopped = self._merge(cur, D, budget, out)
+            for c in cur.values():
+                for _ in range(c.take_bad()):
+                    out.append(("gap", TipGap(self.hw if self.hw is not None else D, self.hw if self.hw is not None else D, "tip_bad_line", None, None)))
+            if stopped:
+                break
+            drained = all(not c.rows and c.at_eof for c in cur.values())
+            if drained and self.h < last_h:
+                if cur["trades"].missing:
+                    self.stats["hour_trades_missing"] += 1
+                    pos = self.hw if self.hw is not None else D
+                    out.append(("gap", TipGap(pos, pos, "hour_file_missing", None, None)))
+                self.h += HOUR_S
+                self.stats["hours_done"] += 1
+                continue
+            break
+        if stopped:
+            self.released_D = (self.hw - 1) if self.hw is not None else self.released_D
+            return out
+        cur = self._cursors()
+        self.caught_up = self.h >= last_h and all(c.at_eof or (c.rows and c.rows[0][0] > D) for c in cur.values())
+        if self.caught_up:
+            self.released_D = D
+        for c in cur.values():
+            c.rewind()  # rows above D are not kept: they are read again next time, so a cut-back of an in-flight write (`_recover`) can never leave a stale row here
+        return out
+
+    def _merge(self, cur: dict[str, _Cursor], D: int, budget: int, out: list) -> bool:
+        """Emit rows of slots <= D from the cursors of the current hour in (slot, kind order). True if the budget stopped it."""
+        n = 0
+        while True:
+            best = None
+            for rank, (k, _) in enumerate(KIND_ORDER):
+                c = cur[k]
+                if not c.rows and not c.at_eof:
+                    c.fill(CHUNK_ROWS)
+                if c.rows and c.rows[0][0] <= D and (best is None or c.rows[0][0] < best[0]):
+                    best = (c.rows[0][0], rank)
+            if best is None:
+                return False
+            if n >= budget:
+                return True
+            k, item = KIND_ORDER[best[1]]
+            slot, row, _ = cur[k].rows.popleft()
+            n += 1
+            self.hw = slot if self.hw is None else max(self.hw, slot)
+            if item == "skip":
+                self.stats["skips"] += 1
+                out.append(("skip", slot))
+            else:
+                self.stats[f"rows_{item}"] += 1
+                out.append((item, row))
