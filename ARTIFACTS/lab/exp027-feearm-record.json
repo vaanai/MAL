@@ -1,0 +1,17 @@
+{
+ "schema": "exp027-feearm-record.v1",
+ "purpose": "EXP-027 section 5.3 item 2: the DEC-019 Amendment 2 fee-arm final verdict, transcribed into the fields tools/r4b_read.py fee_arm_decision reads (verdict_at, test_a_pass, test_b_pass, test_b_upper95_slots). Cost input only; no probe P&L, no r4-b outcome.",
+ "verdict": "PASS",
+ "verdict_at": "2026-10-23T04:10:19Z",
+ "test_a_pass": true,
+ "test_a": "every send: 155,000 arm 150/152 landed vs 500,000 arm 146/148; difference +0.036 pp; Newcombe-Wilson one-sided 95% lower bound -2.700 pp; margin -5 pp",
+ "test_b_pass": true,
+ "test_b_upper95_slots": -0.0073,
+ "test_b": "landed buys, slots_between: 155,000 mean 2.200 (n 75) vs 500,000 mean 2.438 (n 73); difference -0.238; 1,000 bootstrap draws, numpy default_rng(1), 95th percentile upper bound -0.0073; margin +0.5 slot",
+ "lag_shift_note": "EXP-027 section 5.3 credits max(0, test_b_upper95_slots) = 0 slots; the QP ruling also credits 0",
+ "source_verdict": {"path": "ARTIFACTS/lab/feearm-landing-2026-10-23.md", "sha256": "b00997cf1a3f315ddf0c3df9b8b3cb1dec10aa455571d484cd509206c8cbb7d9", "merged": "71cf0ebf (#807)"},
+ "source_ruling": {"path": "ARTIFACTS/lab/qp-ruling-1023-feearm.md", "sha256": "34cecedcd908d33eaf78b628eefd1493600e7725eff6d161fe5ccc6ecedb2264"},
+ "source_data": {"path": "/data/mal/hunt-1008/push-1016/hunt26/landing/feearm-landing-1022.csv", "sha256": "9a5f93fe436c1bb1fc30a25be4917c25d786d961c0ebc0022b5717cb6d30ab88", "sends": "2026-10-16T19:51:57Z to 2026-10-19T21:57:58Z"},
+ "transcribed_at": "2026-11-01T22:57:08Z",
+ "transcriber": "lane L6 (claude/exp027-read-protect); has opened no r4-b outcome (EXP-027 section 5.3 item 3)"
+}
