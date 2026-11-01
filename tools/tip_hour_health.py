@@ -64,7 +64,7 @@ KIND_OK = re.compile(r"^[a-z0-9_]{1,60}$")
 HOUR_KEY = re.compile(r"^\d{4}-\d\d-\d\dT\d\d$")
 PIN_KEYS = ("adapter_sha256", "reader_sha256", "writer_sha256")
 FORBIDDEN_WORDS = ("ledger", "decisions", "bots.json", "runner-status", "meta-capture", "tip-tape-archive", "/var/lib/mal/sealed", "fast-trades-tip", "/forward-", "state.json")
-FORBIDDEN_NAME = re.compile(r"^(tape-.*\.jsonl(\.zst)?|(trades|creates|migrations|skipped-slots)-\d{4}-\d\d-\d\dT\d\d\.jsonl|gaps\.jsonl|state\.json)$")
+FORBIDDEN_NAME = re.compile(r"^(tape-.*\.jsonl(\.zst)?|(trades|creates|migrations|skipped-slots)-\d{4}-\d\d-\d\dT\d\d\.jsonl|gaps\.jsonl|state\.json)$", re.IGNORECASE)
 # thresholds whose failure is a tape-level (structural) failure carry BOTH labels, whatever is pinned (as tools/arena_hour_health.py R2)
 STRUCTURAL = frozenset({"counts_row_missing", "counts_duplicate_conflict", "counts_row_unreadable", "next_counts_row_missing"})
 
@@ -113,7 +113,7 @@ def guard(path: str | os.PathLike) -> Path:
     s = os.path.abspath(str(path))
     for cand in (s, os.path.realpath(s)):
         low = cand.lower()
-        if any(w in low for w in FORBIDDEN_WORDS) or FORBIDDEN_NAME.match(os.path.basename(low)):
+        if any(w in low for w in FORBIDDEN_WORDS) or FORBIDDEN_NAME.match(os.path.basename(cand)):
             raise Refused("path refused by policy (tip and derived-tape files, .writer/state.json, ledgers, decisions, bots.json and runner-status are never opened)")
     return Path(s)
 
@@ -412,10 +412,10 @@ def pool_cache_fields(recs: list[dict], h: int) -> dict:
     if not prior:
         return {"pool_cache": None, "pool_cache_record": None, "tripwire_pool_cache_180k": None, "nrestarts": None, "nrestarts_delta": None}
     last = prior[-1]
-    before = [r for r in recs if r["utc_ms"] <= h]
+    # the recorder runs once a day: the NRestarts change is attributed to the hour that holds the later record (day granularity, report-only)
     delta = None
-    if last["nrestarts"] is not None and before and before[-1]["nrestarts"] is not None:
-        delta = last["nrestarts"] - before[-1]["nrestarts"]
+    if h <= last["utc_ms"] < he and len(prior) > 1 and last["nrestarts"] is not None and prior[-2]["nrestarts"] is not None:
+        delta = last["nrestarts"] - prior[-2]["nrestarts"]
     pc = last["pool_cache"]
     return {"pool_cache": pc, "pool_cache_record": iso(last["utc_ms"]), "tripwire_pool_cache_180k": None if pc is None else pc >= POOL_CACHE_ALERT,
             "nrestarts": last["nrestarts"], "nrestarts_delta": delta}
