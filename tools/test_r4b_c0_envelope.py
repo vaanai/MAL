@@ -132,6 +132,19 @@ class Envelope(unittest.TestCase):
         self.assertFalse(r["plateau_measured"])
         self.assertEqual(r["projection_label"], "linear")
 
+    def test_tail_window_starts_at_117_then_trails_a_day(self):
+        """At h_last = 130 the window is [117, 130] (13 h, measured); at h_last = 160 it is the trailing day [136, 160]. Growth before 117 never enters it."""
+        early = ev.envelope(ramp(130, 26.75, base_mib=558.3, plateau_h=116), CE, origin=CE, run_end=CE + 336 * H)
+        self.assertTrue(early["plateau_measured"])
+        self.assertAlmostEqual(early["tail_slope_mib_h"], 0.0, places=3)
+        s = ramp(160, 26.75, base_mib=558.3, plateau_h=130)  # still growing until 130: the trailing day [136, 160] is flat
+        late = ev.envelope(s, CE, origin=CE, run_end=CE + 336 * H)
+        self.assertAlmostEqual(late["tail_slope_mib_h"], 0.0, places=3)
+        self.assertAlmostEqual(late["projection_mib"], 558.3 + 26.75 * 130, delta=1.0)
+        mid = ev.envelope(ramp(140, 26.75, base_mib=558.3, plateau_h=125), CE, origin=CE, run_end=CE + 336 * H)  # window [117, 140] holds growth to 125
+        self.assertGreater(mid["tail_slope_mib_h"], 0.0)
+        self.assertGreater(mid["projection_mib"], 558.3 + 26.75 * 125)
+
     def test_horizon_inside_the_record_uses_the_observed_max(self):
         s = ramp(100, 5.0, base_mib=500.0)
         r = ev.envelope(s, CE, origin=CE, run_end=CE + 40 * H)
