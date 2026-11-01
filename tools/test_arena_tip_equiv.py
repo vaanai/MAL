@@ -26,22 +26,23 @@ spec.loader.exec_module(eq)
 WSOL = eq.WSOL
 H = (1_793_000_000 // 3600 + 1) * 3600  # an hour mark
 S0 = 1000
+LEAD = 600  # seconds before the hour mark at which the stream starts
 VMAP = {"P0": 17_600_000_000.0, "P1": 17_600_000_000.0, "P2": 17_600_000_000.0}
 CFG = {**eq.FROZEN, "hot_every": 9, "hot_every_bonding": 6, "holds_ms": [20_000, 45_000, 90_000], "quiet_slots": 300}
 
 
-def stream(n_slots: int = 5000, seed: int = 1) -> list[tuple[str, dict]]:
-    """Walker-format rows in slot order, 0.4 s per slot, starting 1500 s before an hour mark; PumpSwap pools P0..P2 (exploration style: no event V, except P2 whose rows carry a V
+def stream(n_slots: int = 2000, seed: int = 1) -> list[tuple[str, dict]]:
+    """Walker-format rows in slot order, 0.4 s per slot, starting 600 s before an hour mark; PumpSwap pools P0..P2 (exploration style: no event V, except P2 whose rows carry a V
     that differs from the map), bonding mints M3, M4. Within a slot the tx_index order differs from the signature order."""
     rnd = random.Random(seed)
     seq: list[tuple[str, dict]] = []
     for k in range(3):
         seq.append(("migration", {"type": "migration", "mint": f"M{k}", "pool": f"P{k}", "quote_mint": WSOL, "slot": S0, "signature": f"mig{k}", "event_index": 0, "tx_index": 0,
-                                  "block_time": H - 1500, "trader": "u"}))
-    seq.append(("create", {"type": "create", "mint": "M3", "creator": "c", "slot": S0, "signature": "cr", "event_index": 0, "tx_index": 1, "block_time": H - 1500, "is_mayhem_mode": False,
+                                  "block_time": H - LEAD, "trader": "u"}))
+    seq.append(("create", {"type": "create", "mint": "M3", "creator": "c", "slot": S0, "signature": "cr", "event_index": 0, "tx_index": 1, "block_time": H - LEAD, "is_mayhem_mode": False,
                            "name": "n", "symbol": "s"}))
     for s in range(S0 + 1, S0 + 1 + n_slots):
-        bt = H - 1500 + int((s - S0) * 0.4)
+        bt = H - LEAD + int((s - S0) * 0.4)
         txs = sorted(rnd.sample(range(12), rnd.randint(2, 5)))
         for tx in txs:
             k = rnd.randrange(5)
@@ -58,7 +59,7 @@ def stream(n_slots: int = 5000, seed: int = 1) -> list[tuple[str, dict]]:
 
 
 def run(tmp_path: Path, **kw) -> dict:
-    return eq.run_equiv(stream(), tmp_path / "run", VMAP, tr.hour_key(H - 1500), cfg=CFG, min_decisions=10, **kw)
+    return eq.run_equiv(stream(), tmp_path / "run", VMAP, tr.hour_key(H - LEAD), cfg=CFG, min_decisions=10, **kw)
 
 
 def test_the_frozen_config_is_pinned():
@@ -72,9 +73,7 @@ def test_the_adapter_output_is_decision_equivalent_to_the_walker_rows_across_an_
     assert w["decisions_md5"] == t["decisions_md5"] and w["trades_md5"] == t["trades_md5"] and w["decisions_md5"] != w["trades_md5"]
     assert w["ledger_kinds"].get("open", 0) >= 10 and (w["ledger_kinds"].get("trade", 0) + w["ledger_kinds"].get("excluded", 0)) >= 5, w["ledger_kinds"]
     assert w["rows_in"] < t["rows_in"]  # the tip arm also gets pool_create / create rows (inert for the engine); the walker arm only the trades
-    assert {p.name for p in (tmp_path / "run" / "tip").glob("trades-*.jsonl")} == {f"trades-{tr.hour_key(H - 1500)}.jsonl", f"trades-{tr.hour_key(H)}.jsonl"} | {
-        p.name for p in (tmp_path / "run" / "tip").glob("trades-*.jsonl")}
-    assert len(list((tmp_path / "run" / "tip").glob("trades-*.jsonl"))) >= 2  # rows cross the hour files
+    assert {p.name for p in (tmp_path / "run" / "tip").glob("trades-*.jsonl")} == {f"trades-{tr.hour_key(H - LEAD)}.jsonl", f"trades-{tr.hour_key(H)}.jsonl"}  # rows cross the hour files
     assert rep["tip_stats"]["adapter"].get("gap_rows", 0) == 0 and rep["tip_stats"]["adapter"]["rows_trade"] == w["rows_in"]
     assert rep["config_md5"] != eq.FROZEN_MD5 and rep["lag_ms"] == 1800
 
@@ -98,7 +97,7 @@ def test_the_harness_fails_when_the_adapter_or_reader_is_wrong(tmp_path, monkeyp
 
 
 def test_an_empty_equivalence_is_not_a_pass(tmp_path):
-    rep = eq.run_equiv(stream(60), tmp_path / "run", VMAP, tr.hour_key(H - 1500), cfg=CFG, min_decisions=10_000)
+    rep = eq.run_equiv(stream(60), tmp_path / "run", VMAP, tr.hour_key(H - LEAD), cfg=CFG, min_decisions=10_000)
     assert rep["verdict"] == "FAIL" and all(rep["equal"].values())  # equal, but too few decisions to mean anything
 
 
