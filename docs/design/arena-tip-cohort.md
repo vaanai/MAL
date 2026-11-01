@@ -1,11 +1,11 @@
 # DESIGN: the tip-source cohort (lane L1): HV4-T, s1 on the tip (s1t), FLOOR-T
 
-Written 2026-11-01T22:53Z (`date -u` on mal-research-0) by lane L1 of the 2026-11-01 push (`/data/mal/hunt-1008/ops/manager18/PUSH-PLAN-1101.md`). Records and design only. Nothing was started, registered, priced or spent. **No book has cleared the promotion gate. Nothing here says any book makes money.** The DEC text is the DRAFT "Amendment 24" appended to `DEC/DEC-031-forward-paper-arena.md` in the same PR; on any conflict the DEC text controls.
+Written 2026-11-01T22:53Z (`date -u` on mal-research-0) by lane L1 of the 2026-11-01 push (`/data/mal/hunt-1008/ops/manager18/PUSH-PLAN-1101.md`). Records and design only. Nothing was started, registered, priced or spent. **No book has cleared the promotion gate. Nothing here says any book makes money.** The DEC text is the DRAFT Amendment 25 (HV4-T and the FLOOR-T non-registration) appended to `DEC/DEC-031-forward-paper-arena.md` in the same PR. It was Amendment 24 before s1t moved to #1186. On any conflict the DEC text controls. Revised 2026-11-01T23:2xZ on reviewer comment 6565358726.
 
 ## 0. Answer in eight lines
 1. **HV4-T:** all nine lane-G HV4 arms at HV4's frozen sha `9ed4c5ff`, with no code change, as new `hv4t-<arm>` books reading the research-0 receiver copy of the tip feed. API cap 3.80 USD a day (inside the withdrawn successor budget of 4.90). **Earliest honest clock 2026-11-10T00:00Z**, with one QP carve-out (reuse HV4's own P0, the Amendment 21 item 1.1 precedent). 11-08 or 11-09 needs a second QP ruling. With no carve-out, 11-12.
-2. **The binding constraints are HV4's, not the tip history.** H0 does not bind: the frozen runner reads only 365 min of tape before its start. What binds is HV4's run (#1562's start guard at 2026-11-07T12:05Z), HV4's seal on counted hours (no smoke pricing the HV4 rule before 2026-11-08T00Z), and HV4's attempt-count seal (every tip day before 11-08 is an HV4-counted day).
-3. **s1t (the manager's decision of 2026-11-01):** s1 is not registered on the public websocket. The same rule at S\* `5c2ab7c6` runs on the tip as `h5v1q50-boostfloor-s1t`, with s1's power-n reads. **Clock 2026-11-07T00:00Z** if the tip input mode of `tools/h5_shadow.py` (S\*') is frozen by 2026-11-05T12:00Z, else the OrbitFlare fallback (s1 as registered).
+2. **The binding constraints are HV4's, not the tip history.** Am.23 item 7's history rule (L = 7 d, H0 + 7 d = 2026-11-05T09Z) is met before any clock considered here. What binds is HV4's run (#1562's start guard at 2026-11-07T12:05Z), HV4's seal on counted hours (no smoke pricing the HV4 rule before 2026-11-08T00Z, under the end reading of Am.25 item 6), and HV4's attempt-count seal (every tip day before 11-08 is an HV4-counted day).
+3. **s1t moved to its own PR, #1186** (reviewer N5: it must merge before Q50's read verdict exists). Clock 2026-11-07T00:00Z, H 24 d, a counts-only smoke and an s1t EXP-024 note owed; design in `docs/design/s1t-tip-source.md` on #1186. Section 3 below is now a pointer.
 4. **FLOOR-T: dropped, not registered, N not spent.** About 4.6 to 6.0 attempts a day gives no read within 14 days, and 24 h holds against the tip's backlog jumps (about 0.37 a day, L5) put about 31% of trades in the 5% class.
 5. **New blocker for every covered clock, HV7 included:** the writer reports `pool_slots_multi_sig` 1,283 over 85 closed hours (about 15 an hour). QP's Am.23 trigger is "above 1 an hour". QP must re-rule before any covered clock.
 6. **Exposure risk, not a blocker:** at about 0.37 tip gaps a day, the BIG arms (default 6 h holds, up to 12 h) expect about 8.8% of trades in the 5% class, so a NOT_DECIDABLE_5PCT is likely. The CON arms (45 min default, up to 2 h) expect about 1.2%. QP option C (a tip gap-fill) would cut this for every covered book.
@@ -59,27 +59,32 @@ Written 2026-11-01T22:53Z (`date -u` on mal-research-0) by lane L1 of the 2026-1
 | shared `RISK` ledger | risk agent for the L, F and P arms; the R arms open risk-cleared pools; the X arms ignore it | yes | 1.00 | n/a |
 
 - **Total at cap: 3.80 USD a day.** Over 14 days plus one run-out day that is at most 57.00 USD, and the 24 h smoke adds at most 3.80.
-- This is inside the withdrawn successor budget of 4.90 a day, which the owner redirected to these books (notebook decision "Push 11-01").
+- This is inside the 4.90 a day withdrawn from the successors. The owner's recorded words withdraw that spend and name no new use. The redirect to these books is the manager's plan (PUSH-PLAN-1101 L1), and the spend authority is the owner's 2026-10-28 API line (notebook `n_8Yfl--RzLCx2Dw`) plus Am.25.
 - The month guard is 160 USD per root. The owner's 200 USD console limit is the backstop.
 - Chain calls go through `tools/hv4_chain.py` (caps 2,000 an hour, 48,000 a day; Helius standard calls). Credits are reported per job (CLAUDE.md "Credits").
 - **Why all nine.** The frozen code runs and registers all nine lane-G arms in one process (`--register` writes "the 9 lane-G bots.json lines"). Running a subset is a code change, which means a new sha and new proofs. The controls (P, R) make no promotion but cost N, as for HV4 and its successors.
 
 ### 2.2 Clock: what binds, and the options
-H0 (2026-10-29T09:00Z) does **not** bind. The frozen runner reads 365 min of tape before its start and nothing older. The age band of 2 h to 7 d is judged on the runner's own view (first seen since start − 365 min, reset by a 6 h idle eviction), exactly as HV4 ran on the public tape. L5 asked whether "the HV4 age band is ≤ 7 d" decides an 11-06 clock. It does not. These four constraints do:
+H0 (2026-10-29T09:00Z) does **not** bind. Am.23 item 7's L is 7 d (the rule's age bound; reviewer R5), and H0 + 7 d = 2026-11-05T09Z is before every clock below. The frozen runner reads only 365 min of tape before its start. So the age band of 2 h to 7 d is judged on the runner's own view (first seen since start − 365 min, reset by a 6 h idle eviction), as HV4 ran on the public tape.
+- **Two disclosed differences from HV4's run** (#1180):
+  - (a) pools created outside a migration have no `pool_create` on the tip, so they fail `age_min` until they have been seen for 2 h (S3);
+  - (b) bonding rows carry no `creator` (S2, `sell_route`).
+  Both need a QP ruling.
+- L5 asked whether "the HV4 age band is ≤ 7 d" decides an 11-06 clock. It does not. These four constraints do:
 
 | # | Constraint | Source | Effect |
 |---|---|---|---|
 | K1 | #1562's start guard refuses while any `hv4_runner.py` process is alive, at about 2026-11-07T12:05Z | E4-runner-seg2.sh (pinned; a running job's command never changes, §4) | No HV4-T process (smoke or runner) may be alive at #1562's start, so the runner starts at 2026-11-07T23:55Z or later |
-| K2 | "No pricing or retune of any HV4 rule on counted hours (>= 2026-10-25T00Z)" | SEALS-BRIEF HV4 line; Am.21 item 1.4 (h) applied it to a re-smoke | A 24 h smoke at 9ed4c5ff prices the HV4 rule, so it runs on hours ≥ 2026-11-08T00Z unless QP rules otherwise |
+| K2 | "No pricing or retune of any HV4 rule on counted hours (>= 2026-10-25T00Z)": the line has no end; Am.25 item 6 reads "counted hours" as HV4's counted window [10-25T00Z, 11-08T00Z), for QP to confirm and the manager to write into the SEALS-BRIEF HV4 line before the smoke | SEALS-BRIEF HV4 line; Am.21 item 1.4 (h) applied it to a re-smoke | A 24 h smoke at 9ed4c5ff prices the HV4 rule, so it runs on hours ≥ 2026-11-08T00Z unless QP rules otherwise |
 | K3 | A structure count of the HV4 rule on HV4-counted hours is HV4 attempt-count information | Am.21 item 1.1 (P0 paragraph); SEALS-BRIEF HV4 line | A tip P0 needs days ≥ 2026-11-08 until all nine HV4 reads are recorded (the last possible one is 2026-11-10T01:35Z) |
 | K4 | Am.3 item 5 (no second frozen copy beside the parent) | DEC-031 Am.3 item 5 | Satisfied by windows that do not overlap: HV4 counts entries only before 1794096000000, and its confirmation ends there too. QP §3.3 already treats a different feed as a different book definition |
 
 | Option | Clock (ms) | Smoke | P0 | QP rulings needed |
 |---|---|---|---|---|
-| **B (recommended)** | **2026-11-10T00:00Z (1794268800000)** | [2026-11-08T00:00Z, 2026-11-09T00:00Z), starting after #1562 has started; beside #1562 until 13:05Z | HV4's own A2 P0 reused (10-21..10-23 at 9ed4c5ff, lowest arm 230.667 a day, no day at 0), as Am.21 item 1.1 did | R-P0: carve-out from Am.23 item 8's tip P0 for HV4-T |
+| **B (recommended)** | **2026-11-10T00:00Z (1794268800000)** | [2026-11-08T00:00Z, 2026-11-09T00:00Z), starting after #1562 has started; beside #1562 until 13:05Z | HV4's own A2 P0 reused (10-21..10-23 at 9ed4c5ff, lowest arm 230.667 a day, no day at 0), as Am.21 item 1.1 did | R-P0: carve-out from Am.23 items 1 and 8's P0 for HV4-T; R-BESIDE (smoke beside #1562, 2 x 45,000 MB, with a memory check at the smoke's start); the K2 end reading; the S2/S3 rulings |
 | A | 2026-11-09T00:00Z | [11-07T12:30Z, 11-08T12:30Z]: 11.5 h of it on HV4-counted hours, in a scratch ledger never opened | reused | R-P0, plus R-SMOKE: a never-opened scratch-ledger smoke on counted hours is not "pricing" |
 | A' | 2026-11-08T00:00Z | [11-06T11:00Z, 11-07T11:00Z], ending before #1562's start | reused | R-P0, R-SMOKE, and R-BESIDE: the runner runs beside #1562 (2 × 45 GB) from 11-07T23:55Z |
-| C (no carve-out) | 2026-11-12T00:00Z (1794441600000) | as B | tip P0 with `tools/hv4_p0_count.py` (3e2539d0…) on 11-08, 11-09 and 11-10, after 11-10 closes | none beyond the Am.23 items |
+| C (no P0 carve-out) | 2026-11-12T00:00Z (1794441600000) | as B | tip P0 with `tools/hv4_p0_count.py` (3e2539d0…) on 11-08, 11-09 and 11-10, after 11-10 closes | R-BESIDE, the K2 end reading and the S2/S3 rulings, as for B |
 
 - **The case for R-P0.** P0 decides two things: the floor (2.0 a day, no day at 0) and H, which is 14 for any rate ≥ 150/14 = 10.714285714285714. HV4's count is 230.667 a day at its lowest arm, about 21 times the H threshold. That count ran on the public tape, which lost data. On the tip, the print and signer filters see at least as many rows. A tip count is still the better evidence, but every tip day before 11-08 lies in HV4's counted hours. The smoke day (option B) is outside them, so its decision-row count can serve as a tip-side sanity floor. That floor is fixed in a notebook entry before the smoke: at least one counted-kind entry decision per persona group.
 - **Window.** H = 14 d. Entries at or after clock + 14 d do not count. The runner's END is the window end + 13 h 05 min (HV4's run-out). For option B that is 2026-11-24T00:00Z (1795478400000), and END is 2026-11-24T13:05Z (1795525500000). That is longer than one 14-day MiScusi job, so the runner is after-chained in two segments, with the hand-off instant pinned before the clock (HV4's seg1/seg2 pattern; Am.6 item 4 restart gap).
@@ -133,84 +138,27 @@ H0 (2026-10-29T09:00Z) does **not** bind. The frozen runner reads 365 min of tap
   - the Am.6 hour table, taken from the tip hour-health tool, not from `arena_hour_health`.
   They merge with QP and a reviewer before 2026-11-15T00:00Z. They are not needed before the clock.
 
-## 3. s1 on the tip (s1t), the manager's decision of 2026-11-01
-
-### 3.1 Why it is an alternative, not an addition
-- Am.3 item 5 forbids a second frozen copy beside the parent. s1 and a tip book at the same S\* would be two copies of one rule in overlapping windows.
-- The manager chose the tip, so s1 is never registered on the public websocket.
-- Am.17 item 2's stop list has no manager-withdrawal reason. So this is written as the commitment being MET by a covered book at the same S\*, not as a stop. QP rules on that reading.
-- Every text after Am.17 is barred from conditions that depend on a Q50 outcome (P8). The re-source depends on feed health only: HV4's NOT_DECIDABLE_5PCT (no P&L) and the Q50 executor's gap-held share of about 1.0 on 10-28/29 (HELM-REPLY-1031-1).
-- It must merge before Q50's read verdict exists. Read job #1887 is still queued behind waiter #1886. If it merges after, the verdict in view is stated.
-
-### 3.2 What changes and what does not
-| Item | s1 (Am.17, Am.18, Am.22) | s1t |
-|---|---|---|
-| bot_id | `h5v1q50-boostfloor-s1` (never registered) | `h5v1q50-boostfloor-s1t` (new, Am.23 item 1) |
-| rule | EXP-024-RULE-Q50, Q\* 50 | same |
-| code | S\* `5c2ab7c6` (tag `q50-succ-base-1`) | S\*' = S\* plus a tip input mode only; decode and decision functions byte-identical to S\* (identity test); new tag |
-| feed | public `logsSubscribe`, plus a second provider (Am.22 items 10, 11) | the receiver copy of the tip (Am.23); Am.22 items 10 and 11 do not apply |
-| host | mal-fast-0 | mal-research-0 (transport B) |
-| P0 / H | Q50's P0 reused (#1413, 35.333333333333336 a day), H 14 | same reuse. Every tip day before the clock lies in Q50's counted window [10-25, 11-06) and Q50's read is unread, so a tip P0 would be Q50 attempt-count information. This is QP's R-P0 for s1t |
-| reads | Am.22 power-n: N_s 200, S_cap clock + 10 d with at least 100, N_c 300, E = E_c 1796083200000 (2026-12-01T00Z) | same numbers, s1t's clock |
-| clock | 2026-11-06T00Z (slip 11-07) | **2026-11-07T00:00Z (1794009600000)**; slip 2026-11-08T00:00Z |
-| A3 | Am.22 item 9 loop and books file | the same, with the s1t id |
-
-### 3.3 The latency question (a pre-clock bar, timing only)
-- The tip shows a print at block time + about 2.0 s (p90 block lag), plus the writer's ingest lag, plus transport. The scorer prices the landing from `t_detect_ms`, so the delay is charged, not given free.
-- **What S\*' must guarantee.** In tip mode, `t_detect_ms` is the engine host's wall clock when the trigger is decided, never the row's `t_recv_ms`. The fast-0 stamp would under-charge the writer and transport lag, a bias toward P&L. A test pins this.
-- **The 3,500 ms trigger-age exclusion** counts in the 5% cap. Its share on the tip is unknown.
-- **Pre-clock bar (proposed to QP, outcome-blind):** in the ≥ 24 h smoke, at most 2.5% (half the cap) of trigger records have age > 3,500 ms. Report the p50, p90 and max age.
-  - A fail is a slip, never a stop.
-  - If it fails twice, the manager takes the fallback.
-- **Am.23 item 6 for s1t.** T_max is about 330 s + 0.55 s + 1.9 s ≈ 333 s ≈ 0.0925 h, which is below 0.6076 h. Up to 6 pumpswap, pumpfun or `all` data_loss rows in the 24 h before the clock pass (n x 333 / 86,400 ≤ 0.0253).
-- **Prior (in-sample, disclosed, not a measurement of s1t).** The EXP-012 latency note says edge under V was gone by k ≥ 12 slots. A tip book lands about d slots later than a websocket book.
-
-### 3.4 Dated steps to the 11-07 clock (UTC)
-| By | Step | Owner |
-|---|---|---|
-| 11-02 12Z | QP rulings: R-P0 (s1t), the Am.17 "met, not stopped" reading, the trigger-age bar, the multi-sig trigger re-rule (section 4) | manager → QP |
-| 11-03 12Z | S\*' tip mode built: tests, identity test, md5 equivalence (S\*' on writer output from explore-0814 hours against S\* replay on the same walker rows; trigger and outcome records equal except the stamp fields) | builder, lane L1 or L2 |
-| 11-04 18Z | S\*' QP OK + reviewer APPROVE at the exact head; tag `q50-succ-tip-1` | QP, reviewer, manager |
-| 11-04 22Z | This amendment (Part B) merged, before Q50's read verdict exists | manager |
-| 11-05 12Z | **Freeze deadline (fallback trigger).** Smoke starts at S\*' on research-0, scratch root, ≥ 24 h; blocking list and trigger-age bar notebooked first | manager |
-| 11-06 12Z | Smoke judged; A3 books file and loop for s1t; SEALS reader line | manager, QP |
-| 11-06 20Z | Registration record (notebook + `bots.json` line), kill-review check, N + 1 line | manager |
-| 11-06 23:00Z | Shadow job start at S\*', at least 1 h before the clock (Am.18 item 8) | manager |
-| 11-07 00Z | Clock, if the Am.23 item 6 records line holds over [11-06T00Z, 11-07T00Z) | — |
-
-- **Fallback.** If S\*' is not frozen by 2026-11-05T12:00Z, Part B lapses and s1 runs as registered under Am.17, 18 and 22, with the owner's OrbitFlare key.
-- **11-06T00Z is not honest.** It needs S\*' frozen and a 24 h smoke passed before 11-05T23Z, so the code would have to be frozen by about 11-04T00Z.
+## 3. s1 on the tip (s1t): moved to PR #1186
+Split out on reviewer note N5, because it must merge before any Q50 read verdict exists. See `docs/design/s1t-tip-source.md` and DEC-031 Amendment 24 (DRAFT) on #1186: clock 2026-11-07T00:00Z (slip 11-08), H = 24 d to `SUCC_END_MS` (Am.22 item 8.1), counts-only smoke, an s1t EXP-024 note owed before the smoke, Q50 P0 reuse, and the 2026-11-05T12:00Z fallback.
 
 ## 4. Blockers for every covered clock (HV7 included)
-1. **`pool_slots_multi_sig` is about 15 an hour** (1,283 over 85 hours, cumulative writer status at 22:39Z). QP's trigger in Am.23 item 3 is "above 1 an hour outside the first hour after a follower start". The follower has not restarted since 10-05. So QP must re-rule before any covered clock. The per-hour counts log will show whether the count is spread out or bunched; it was not read for this design.
+1. **`pool_slots_multi_sig` is about 15 an hour** (1,283 over 85 hours, cumulative writer status at 22:39Z). QP's trigger in Am.23 item 3 is "above 1 an hour outside the first hour after a follower start". The follower has not restarted since 10-05. So QP must re-rule before any covered clock. The per-hour counts log will show whether the count is spread out or bunched; it was not read for this design. The writer-status figure is a forecast of the figure Am.23 item 3 judges "in the item 8 smoke" (reviewer N6); flagging it to QP now saves a day.
 2. **Am.23 item 6 zero-row bar** for any T_max above 0.6076 h (HV4-T, HV7). At about 0.37 jumps a day, each day passes with probability about 0.69. Option C would help.
 3. **The SEALS reader list** names HV7 only. Each new reader needs a QP note and the manager's edit before its first read.
 
 ## 5. Code gaps (what lets each book read the research-0 receiver copy)
 | # | Gap | Size | Status |
 |---|---|---|---|
-| G1 | HV4-T state-field listing and tests (Am.23 item 8) | builder | PR `claude/hv4t-tip-fields` in flight |
+| G1 | HV4-T state-field listing and tests (Am.23 item 8) | builder | PR #1180 (reviewer APPROVE at b98f07f0): S2 creator/`sell_route` and S3 `age_min` decision changes, owed QP rulings (Am.25 item 7) |
 | G2 | HV4-T host job scripts: register, genesis, runner (2 segments), smoke, 3 reviewers, digest, decision-log sha notebook. Wrappers of `scripts/research/hv4-runner-job.sh` at 9ed4c5ff with `HV4_TAPE=/data2/mal/arena-tip-feed/hv7`, the /data2 roots, `HV4_FEED_DELAY_SLOTS=d`, clock and END. Each refuses HV4's paths and takes a lock on its own root. Each also refuses to start before 2026-11-07T12:30:00Z, and until the job list shows #1562 running or finished (K1: never alive at #1562's start) | builder, after the clock option and d are chosen | listed |
 | G3 | HV4-T equivalence harness (2.5 item 5) | builder | listed |
 | G4 | HV4-T read tools (2.6), before the first B | builder | listed |
 | G5 | Tip hour-health tool, thresholds and 60 s sampler (Am.23 item 5) | lane H (L2) | shared; for HV4-T it needs `pumpswap`; for s1t, `pumpswap` and `pumpfun` |
-| G6 | S\*' tip input mode for `tools/h5_shadow.py` | builder (the 11-07 critical path) | listed |
+| G6 | S\*' tip input mode for `tools/h5_shadow.py` (s1t, #1186) | builder (the 11-07 critical path) | listed on #1186 |
 | G7 | s1t scripts: register, shadow job, A3 books entry and loop, score/instant wrapper (`arena_h5_score_q50s` with the s1t id) | builder | listed |
 | G8 | SEALS reader lines (2.5 item 2; s1t) | QP + manager | listed |
 
-**G6 spec (S\*' tip input mode; the 11-07 critical path).** Builder-sized only if the scope stays exactly this:
-- **Input.** In `tools/h5_shadow.py` at S\*, add an input that tails the derived copy's `tape-<hour>.jsonl[.zst]` in the arena layout.
-  - Reuse `tools/arena_state.py`'s file reader, or the receiver's verified-offset rule.
-  - Refuse every other dir except test tmp dirs, and refuse `/var/lib/mal/sealed`, `tip-tape-archive` and `/data/mal/arena/tape`.
-- **Row mapping:**
-  - `pool_create` → the CreatePool announce (pool, mint, quote_mint);
-  - `complete` → the bonding complete;
-  - `trade` → the print, with event V from `virtual_quote_reserves`;
-  - `gap` (data_loss) → the engine's gap record, so pools are flagged as on the websocket.
-- **Stamp.** `t_detect_ms` is the host wall clock at decision. In replay, it comes from a fixed offset given by the harness and is recorded.
-- **Classifier and seals.** The RPC classifier stays as at S\*. The Look-2 handling stays as at S\* (pools with s0 ≥ 2026-11-06T00Z are computed; October pools are never in a decision).
-- **Identity.** The decode and decision functions are byte-identical to S\* (an identity test like `test_h5_shadow_succ_identity.py`).
-- **Proof.** An md5 harness compares S\*' tip mode on writer output built from explore-0814 hours (the qp-1165 arm-T fake tip dir) with S\* on the same walker rows through its existing replay path. Trigger and outcome records are equal after removing `t_recv_ms` and `t_detect_ms`. A minimum-triggers floor is notebooked first.
+**G6 and G7 (s1t)** are specified in `docs/design/s1t-tip-source.md` section 6 on PR #1186, with the counts-only smoke switch.
 
 ## 6. FLOOR-T: dropped (not registered; N not spent)
 - **Rate.** The rate in view is 6.0 a day (A2, 2026-10-25) and 4.6 a day (P50 #1678; public tape, which lost data). At those rates, 100 attempts need about 17 to 22 days. A 12-day H (Am.9) cannot reach 100. Am.4 item 2 would give H = 25 to 33 days, which needs the P35 in-clock hand-off (#962, draft).
