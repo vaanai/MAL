@@ -292,3 +292,17 @@ def test_run_polls_n_times(env):
     slept = []
     m.run(iterations=3, sleep=lambda s: (slept.append(s), adv(c, s)))
     assert slept == [30, 30]
+
+
+def test_price_rows_carry_proceeds_and_fees(env):
+    m, c, q, tp = env
+    m.open(cand())
+    q.ratio = 1.4
+    adv(c)
+    m.tick()
+    q.fail = True
+    adv(c)
+    m.tick()
+    pr = [r for r in rows(tp) if r["kind"] in ("price", "price_miss")]
+    assert all("proceeds_lamports" in r and "fees_lamports" in r for r in pr)
+    assert pr[-1]["kind"] == "price_miss" and pr[-1]["proceeds_lamports"] > 0 and pr[-1]["fees_lamports"] == ENTRY_FEES + TX

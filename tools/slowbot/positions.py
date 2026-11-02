@@ -222,7 +222,8 @@ class PositionManager:
         if pos["miss_since_t"] is None:
             pos["miss_since_t"] = now
         self._log("price_miss", now, pos, misses=pos["misses"], error_class=err, where=where,
-                  miss_age_s=now - pos["miss_since_t"])
+                  miss_age_s=now - pos["miss_since_t"], proceeds_lamports=pos["proceeds_lamports"],
+                  fees_lamports=pos["fees_lamports"])
         if now - pos["miss_since_t"] >= NO_QUOTE_WRITEOFF_S:
             return self._exit(pos, now, 0, "no_quote_writeoff", trigger_out=0, fill_basis="writeoff")
         self._save()
@@ -248,7 +249,8 @@ class PositionManager:
         else:
             pos["liq_unknown_n"] = 0
         self._log("price", now, pos, ratio=ratio, sell_out_lamports=out, tokens_left=pos["tokens_left"], liq_usd=liq,
-                  age_s=age, high_ratio=pos["high_ratio"])
+                  age_s=age, high_ratio=pos["high_ratio"], proceeds_lamports=pos["proceeds_lamports"],
+                  fees_lamports=pos["fees_lamports"])
         reason = None
         e_liq = pos["entry_liq_usd"]
         if liq is not None and e_liq and liq <= (1 - LIQ_COLLAPSE) * e_liq:

@@ -31,7 +31,8 @@ def test_arm_table(tmp_path):
 def test_open_stuck_and_refused():
     rows = [
         {"kind": "open", "id": "T-1", "arm": "T", "mint": "a", "cost_lamports": 25_000_000},
-        {"kind": "price", "id": "T-1", "arm": "T", "sell_out_lamports": 30_000_000},
+        {"kind": "price", "id": "T-1", "arm": "T", "sell_out_lamports": 30_000_000, "proceeds_lamports": 0,
+         "fees_lamports": 2_339_280},
         {"kind": "open", "id": "T-2", "arm": "T", "mint": "b", "cost_lamports": 25_000_000},
         {"kind": "price_miss", "id": "T-2", "arm": "T"},
         {"kind": "refused", "arm": "H", "mint": "c", "reason": "arm_full"},
@@ -39,7 +40,9 @@ def test_open_stuck_and_refused():
     ]
     rep = R.build_report(rows)
     t, h = rep["arms"]["T"], rep["arms"]["H"]
-    assert t["open_now"] == 2 and t["stuck_now"] == 1 and abs(t["open_marked_sol"] - 0.005) < 1e-12
+    # T-1 untaken: 30M - 25M - 2.33928M - 0.3M ; T-2 stuck, never polled with fees: 0 - 25M - 0 - 0.3M
+    assert t["open_now"] == 2 and t["stuck_now"] == 1
+    assert abs(t["open_marked_sol"] - ((30_000_000 - 25_000_000 - 2_339_280 - 300_000) + (-25_000_000 - 300_000)) / 1e9) < 1e-12
     assert h["refused"] == {"arm_full": 2} and h["candidates_offered"] == 2 and h["opened"] == 0
 
 
@@ -72,3 +75,24 @@ def test_empty_and_cli(tmp_path):
     assert R.main(["--log", str(p), "--out", str(out)]) == 0
     j = json.loads(out.read_text())
     assert j["arms"]["T"]["trades"] == 0 and j["arms"]["T"]["win_rate"] is None and j["last_exit_utc"] is None
+
+
+def test_open_marking_taken_half_and_stuck_after_take():
+    cost, fees_open = 25_000_000, 300_000 + 2_039_280
+    rows = [
+        {"kind": "open", "id": "H-1", "arm": "H", "mint": "a", "cost_lamports": cost, "fee_lamports": 300_000,
+         "ata_rent_lamports": 2_039_280},
+        # take-half booked 18M proceeds and a second tx fee; remainder now quotes 17M
+        {"kind": "price", "id": "H-1", "arm": "H", "sell_out_lamports": 17_000_000, "proceeds_lamports": 18_000_000,
+         "fees_lamports": fees_open + 300_000},
+        {"kind": "open", "id": "H-2", "arm": "H", "mint": "b", "cost_lamports": cost, "fee_lamports": 300_000,
+         "ata_rent_lamports": 2_039_280},
+        {"kind": "price", "id": "H-2", "arm": "H", "sell_out_lamports": 17_000_000, "proceeds_lamports": 18_000_000,
+         "fees_lamports": fees_open + 300_000},
+        {"kind": "price_miss", "id": "H-2", "arm": "H", "proceeds_lamports": 18_000_000, "fees_lamports": fees_open + 300_000},
+    ]
+    h = R.build_report(rows)["arms"]["H"]
+    taken = (18_000_000 + 17_000_000 - cost - fees_open - 300_000 - 300_000) / 1e9
+    stuck = (18_000_000 - cost - fees_open - 300_000 - 300_000) / 1e9
+    assert h["stuck_now"] == 1 and abs(h["open_marked_sol"] - (taken + stuck)) < 1e-12
+    assert taken > 0 > stuck

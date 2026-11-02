@@ -17,6 +17,8 @@ import json
 import sys
 from pathlib import Path
 
+from tools.slowbot.positions import TX_COST_LAMPORTS
+
 ARMS = ("T", "H", "R")
 R_TOLERANCE_ABS = 2
 R_TOLERANCE_FRAC = 0.25  # declared: R skips may differ from H model-SKIPs by max(2, 25% of the day's H decisions)
@@ -96,10 +98,17 @@ def _open_and_refused(rows: list[dict]) -> dict:
         a = o["arm"]
         info[a]["open_now"] += 1
         lr = last.get(pid)
-        if lr is None or lr["kind"] == "price_miss":
-            info[a]["stuck_now"] += 1  # last poll was a miss (or never polled): marked at 0
+        if lr is None:  # never polled: nothing sold yet, entry fees and ATA rent already spent
+            proceeds = 0
+            fees = o.get("fee_lamports", 0) + o.get("ata_rent_lamports", 0)
         else:
-            info[a]["open_marked_sol"] += (lr["sell_out_lamports"] - o["cost_lamports"]) / 1e9
+            proceeds, fees = lr.get("proceeds_lamports", 0), lr.get("fees_lamports", 0)
+        if lr is None or lr["kind"] == "price_miss":
+            info[a]["stuck_now"] += 1  # no sell quote: marked like a write-off (zero value for the remainder), exit tx charged
+            value = 0
+        else:
+            value = lr["sell_out_lamports"]
+        info[a]["open_marked_sol"] += (proceeds + value - o["cost_lamports"] - fees - TX_COST_LAMPORTS) / 1e9
     for a in ARMS:
         info[a]["refused_total"] = sum(info[a]["refused"].values())
         info[a]["candidates_offered"] = info[a]["opened"] + info[a]["refused_total"]
