@@ -13,7 +13,8 @@ write of the same program the chain ran w_i's version, and rows decoded then rea
     in a small population is not evidence of a layout change; QP confirmed this reading, comment 6566519436); every event that IS there must still decode and map with EXACT parity
     (the decode terms (c) and (d) and the adapter parity are NOT waived). ANY FETCH GAP is an ERROR, never a pass: an RPC failure, an exhausted call budget or an unreachable node
     (only a slot the node reports as skipped counts as empty) ends that write's check as ERROR (hard halt at that write), because the population was not fully read. Mode "population".
-  * An interval with ZERO program transactions and ZERO settled migrate transactions decoded nothing under that version: PASS, mode "vacuous", recorded with its slot range. An empty
+  * An interval whose PRODUCED slots (getBlocks) were all read and hold ZERO program transactions and ZERO settled migrate transactions decoded nothing under that version: PASS,
+    mode "vacuous", recorded with its slot range. A produced block that cannot be fetched, or an unfetchable migrate transaction, is an ERROR (never vacuous). An empty
     interval (the next write within the offset) is vacuous without any sample RPC.
   * A longer interval is sampled from its start by the pinned rule (floors apply). Mode "sample". The newest write (open-ended) is also mode "sample".
   * The first SAMPLE_START_OFFSET_SLOTS after each write stay unchecked (disclosed at every read).
@@ -52,6 +53,8 @@ def migrate_decode_evidence(client: Any, idls: Mapping[str, Any], min_slot: int,
     txs with slot < end_slot, and no floor (the bounded interval's population: `ARC.migrate_sample` returns the oldest settled txs first, so every one below end_slot is in it)."""
     txs = ARC.migrate_sample(client, min_slot, now_s)
     skipped = dict(getattr(ARC.migrate_sample, "skipped", {}))
+    if skipped.get("unfetchable"):  # a candidate migrate transaction the node would not return after the retries: the sample is not the population (ERROR, never a skip)
+        raise ARC.CheckError(f"migrate sample: {skipped['unfetchable']} migrate transaction(s) could not be fetched (ERROR)")
     if end_slot is not None:
         txs = [(tx, g) for tx, g in txs if g["slot"] < end_slot]
     elif len(txs) < ARC.MIGRATE_K_MIN:
@@ -63,24 +66,30 @@ def migrate_decode_evidence(client: Any, idls: Mapping[str, Any], min_slot: int,
 
 
 def fetch_interval_sample(client: Any, start_slot: int, end_slot: int | None) -> tuple[list[list[str]], int, bool]:
-    """(log lists, slots scanned, whole_interval). Same call and qualifying rule as `ARC.fetch_sample`, but never past end_slot. whole_interval = the scan covered the whole
-    interval [start, end) (end - start <= SAMPLE_MAX_SLOTS), so the list is the population. An open-ended interval is `ARC.fetch_sample`."""
+    """(log lists, slots covered, whole_interval). Same qualifying rule as `ARC.fetch_sample`, but never past end_slot, and the interval's slots are DEFINED by `getBlocks` (the real set of
+    PRODUCED slots, finalized): a slot absent from it was genuinely skipped and is not fetched; a produced slot whose block cannot be fetched (`client.call` returns None for both a
+    skipped slot and some failures, so a None for a produced slot is a fetch failure) raises `ARC.CheckError` = ERROR for the write, never an empty block. So an unreadable interval can
+    never pass as vacuous (QP Addendum 1 A.2 condition 2; reviewer on #1197). whole_interval = every produced slot of [start, end) was read (end - start <= SAMPLE_MAX_SLOTS), so the
+    list is the population. An open-ended interval (the newest write) is `ARC.fetch_sample`: it cannot pass vacuously (its 500-tx floor applies, so a block it failed to read is a FAIL)."""
     if end_slot is None:
         sample, scanned = ARC.fetch_sample(client, start_slot)
         return sample, scanned, False
     last = min(end_slot, start_slot + ARC.SAMPLE_MAX_SLOTS)
+    produced = client.call("getBlocks", [start_slot, last - 1, {"commitment": "finalized"}])
+    if not isinstance(produced, list) or any(not (isinstance(x, int) and not isinstance(x, bool) and start_slot <= x < last) for x in produced):
+        raise ARC.CheckError("getBlocks did not return the produced slots of the interval: the interval is not defined, nothing is concluded (ERROR)")
     out: list[list[str]] = []
-    scanned = 0
-    for slot in range(start_slot, last):
-        scanned += 1
+    for slot in sorted(set(produced)):
         blk = client.call("getBlock", [slot, {"encoding": "json", "transactionDetails": "full", "rewards": False,
-                                              "maxSupportedTransactionVersion": mon.MAX_TX_VERSION, "commitment": "finalized"}])
-        for tx in (blk or {}).get("transactions") or []:
+                                             "maxSupportedTransactionVersion": mon.MAX_TX_VERSION, "commitment": "finalized"}])
+        if not blk:
+            raise ARC.CheckError("a produced block of the interval could not be fetched (getBlocks lists it, getBlock returned nothing): the interval was not fully read (ERROR)")
+        for tx in blk.get("transactions") or []:
             if ARC.tx_is_sample(tx):
                 out.append(list(tx["meta"]["logMessages"]))
                 if len(out) >= ARC.SAMPLE_MIN_TXS:
-                    return out, scanned, False
-    return out, scanned, end_slot - start_slot <= ARC.SAMPLE_MAX_SLOTS
+                    return out, slot - start_slot + 1, False
+    return out, last - start_slot, end_slot - start_slot <= ARC.SAMPLE_MAX_SLOTS
 
 
 def write_intervals(writes: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:

@@ -15,14 +15,20 @@ from tools.test_r4bt_decode_parity import BOND, BUY, td, tx
 class Blocks:
     """getBlock fake: {slot: [tx log lists]}; records the slots asked."""
 
-    def __init__(self, table):
-        self.table, self.asked = table, []
+    def __init__(self, table, unfetchable=()):
+        """table: the PRODUCED slots (getBlocks lists exactly these); a slot absent from it was skipped. unfetchable: produced slots whose getBlock comes back None (a fetch failure)."""
+        self.table, self.asked, self.unfetchable, self.ranges = table, [], set(unfetchable), []
 
     def call(self, method, params):
+        if method == "getBlocks":
+            self.ranges.append((params[0], params[1]))
+            return sorted(s for s in self.table if params[0] <= s <= params[1])
         assert method == "getBlock"
         self.asked.append(params[0])
         txs = self.table.get(params[0])
-        return None if txs is None else {"transactions": [{"meta": {"err": None, "logMessages": logs}} for logs in txs]}
+        if txs is None or params[0] in self.unfetchable:
+            return None  # what mon.RpcClient returns for a skipped slot AND for some failures
+        return {"transactions": [{"meta": {"err": None, "logMessages": logs}} for logs in txs]}
 
 
 def run(client, end, adapter, now=T0, deploy=T0):
@@ -136,3 +142,55 @@ def test_every_event_present_in_a_fully_scanned_interval_must_still_match_exactl
     monkeypatch.setattr(ARC, "sample_failures", lambda ev, label, pins, fails, client=None: fails.append(f"c: {label}: undecodable events of a decoded discriminator: 1"))
     r = run(Blocks({1150: [tx(td.PUMPSWAP_PROGRAM, BUY)]}), 1200, lambda s, population=False: [])
     assert r["mode"] == "population" and r["verdict"] == "FAIL" and "c: log sample: undecodable events of a decoded discriminator: 1" in r["reasons"]
+
+
+# ---- reviewer on #1197: the interval is DEFINED by getBlocks; an unreadable produced block is an ERROR, a genuinely skipped slot is not
+def test_a_produced_block_that_cannot_be_fetched_is_an_error_and_never_a_vacuous_pass(stubs, monkeypatch):
+    monkeypatch.setattr(DE, "migrate_decode_evidence", lambda *a, **k: {"n_migrate_txs": 0, "seen_events": []})
+    cl = Blocks({s: [] for s in range(1150, 1200)}, unfetchable={1170})  # getBlocks lists 1170, getBlock comes back None: a fetch failure, not a skipped slot
+    r = run(cl, 1200, lambda s, population=False: [])
+    assert r["verdict"] == "ERROR" and r["mode"] != "vacuous" and r["reasons"][0].startswith("a produced block of the interval could not be fetched")
+    allfail = Blocks({s: [] for s in range(1150, 1200)}, unfetchable=set(range(1150, 1200)))  # an entirely unreadable interval looks empty to a naive scan: still ERROR
+    assert run(allfail, 1200, lambda s, population=False: [])["verdict"] == "ERROR"
+
+
+def test_a_genuinely_skipped_slot_absent_from_getblocks_is_not_an_error_and_is_never_fetched(stubs, monkeypatch):
+    monkeypatch.setattr(DE, "migrate_decode_evidence", lambda *a, **k: {"n_migrate_txs": 0, "seen_events": []})
+    cl = Blocks({s: [] for s in range(1150, 1200) if s not in (1170, 1171)})  # 1170 and 1171 were skipped by the chain
+    r = run(cl, 1200, lambda s, population=False: [])
+    assert r["verdict"] == "PASS" and r["mode"] == "vacuous" and r["slot_range"] == [1150, 1200]
+    assert 1170 not in cl.asked and 1171 not in cl.asked and cl.ranges == [(1150, 1199)] and len(cl.asked) == 48
+
+
+def test_getblocks_returning_nothing_or_garbage_is_an_error(stubs, monkeypatch):
+    monkeypatch.setattr(DE, "migrate_decode_evidence", lambda *a, **k: {"n_migrate_txs": 0, "seen_events": []})
+
+    class NoBlocks(Blocks):
+        def __init__(self, ret):
+            super().__init__({}), setattr(self, "ret", ret)
+
+        def call(self, method, params):
+            return self.ret if method == "getBlocks" else super().call(method, params)
+
+    for bad in (None, "x", [1150, 99999], [True]):
+        r = run(NoBlocks(bad), 1200, lambda s, population=False: [])
+        assert r["verdict"] == "ERROR" and r["reasons"][0].startswith("getBlocks did not return the produced slots")
+
+
+def test_an_unfetchable_migrate_transaction_is_an_error_but_a_non_migrate_candidate_is_not(monkeypatch):
+    install(monkeypatch, 40, 0)
+    ARC.migrate_sample.skipped = {"unfetchable": 2, "not_a_migrate_tx": 5}
+    with pytest.raises(ARC.CheckError, match="2 migrate transaction.s. could not be fetched"):
+        DE.migrate_decode_evidence(None, {}, 1, 1e9, {}, {}, end_slot=1010)
+    with pytest.raises(ARC.CheckError, match="could not be fetched"):
+        DE.migrate_decode_evidence(None, {}, 1, 1e9, {}, {})
+    ARC.migrate_sample.skipped = {"unfetchable": 0, "not_a_migrate_tx": 5}  # a signature on the fee account that is not a migrate: counted, not an error
+    assert DE.migrate_decode_evidence(None, {}, 1, 1e9, {}, {})["migrate_skipped"] == {"unfetchable": 0, "not_a_migrate_tx": 5}
+
+
+def test_check_all_gives_the_unreadable_write_an_error_and_still_checks_the_next(stubs, monkeypatch):
+    monkeypatch.setattr(DE, "migrate_decode_evidence", lambda *a, **k: {"n_migrate_txs": 40, "seen_events": ["Complete"]})
+    cl = Blocks({s: [] for s in range(1150, 1250)}, unfetchable={1200})
+    ws = [{"name": "pump", "slot": 1000, "at_ms": T0 - 5_000}, {"name": "pump", "slot": 1250, "at_ms": T0 - 4_000}]
+    res = DE.check_all(ws, PINS, R4PINS, client=cl, http_get=None, now_ms=lambda: T0, adapter_check=lambda s, population=False: [])
+    assert [r["verdict"] for r in res] == ["ERROR", "PASS"] and res[0]["reasons"][0].startswith("a produced block of the interval could not be fetched")
