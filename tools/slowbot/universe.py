@@ -48,14 +48,15 @@ def normalize(pair, now_ms):
     return {
         "mint": base.get("address"), "pool": pair.get("pairAddress"), "venue": venue, "venue_class": vclass,
         "symbol": base.get("symbol"), "name": base.get("name"),
-        "age_min": None if created is None else (now_ms - float(created)) / 60000.0,
+        "age_min": None if created is None else (now_ms - _f(created, now_ms)) / 60000.0,
+        "price_usd": _f(pair.get("priceUsd")),
         "liq_usd": _f((pair.get("liquidity") or {}).get("usd")),
         "mcap_usd": _f(pair.get("marketCap") or pair.get("fdv")),
         "vol_5m": _f(vol.get("m5")), "vol_1h": _f(vol.get("h1")),
         "vol_6h": _f(vol.get("h6")), "vol_24h": _f(vol.get("h24")),
-        "txns_1h": int(h1.get("buys", 0) or 0) + int(h1.get("sells", 0) or 0),
-        "buys_1h": int(h1.get("buys", 0) or 0), "sells_1h": int(h1.get("sells", 0) or 0),
-        "txns_24h": int(h24.get("buys", 0) or 0) + int(h24.get("sells", 0) or 0),
+        "txns_1h": int(_f(h1.get("buys"))) + int(_f(h1.get("sells"))),
+        "buys_1h": int(_f(h1.get("buys"))), "sells_1h": int(_f(h1.get("sells"))),
+        "txns_24h": int(_f(h24.get("buys"))) + int(_f(h24.get("sells"))),
         "chg_5m": _f(chg.get("m5")), "chg_1h": _f(chg.get("h1")),
         "chg_6h": _f(chg.get("h6")), "chg_24h": _f(chg.get("h24")),
         "top10_share": None,
@@ -86,28 +87,60 @@ def check(rec, flag_top_holders=False):
     return None
 
 
-def top10_share(mint, rpc_url=None, post=None, exclude=()):
-    """Top-10 holder share of supply via Helius getTokenLargestAccounts.
+# Known AMM authority owners (owners of pool vault token accounts). Constants to refresh; the pool
+# address itself is always excluded too. Raydium AMM v4 / CPMM authorities, Meteora DAMM v2 authority.
+KNOWN_AMM_OWNERS = {
+    "5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1",
+    "GpMZbSM2GgvTKHJirzeGfMFoaZ8UR2X7F4v8vHTvxFbL",
+    "HLnpSz9h2S4hiLQ43rnSD9XkcUThA7B8hQMKmDaiTLcC",
+}
 
-    The URL comes from env HELIUS_RPC_URL, is never logged and never returned.
-    getTokenLargestAccounts returns at most 20 accounts; `exclude` are token-account
-    addresses (pool vaults) to drop first. Returns None on any failure.
-    """
-    url = rpc_url or os.environ.get("HELIUS_RPC_URL")
-    if not url:
-        return None
 
+def _rpc_post(url):
     def _post(body):
         req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=20) as r:
             return json.loads(r.read())
+    return _post
 
-    post = post or _post
+
+def holder_checks(mint, pool=None, rpc_url=None, post=None):
+    """Helius checks, behind the flag. URL from env HELIUS_RPC_URL; never logged or returned.
+
+    Returns {"holder_status": ok|holder_unknown, "top10_share": float|None,
+             "auth_status": revoked|authority_present|auth_unknown}.
+    Top 10 excludes token accounts owned by the pool or a known AMM authority. Unavailable checks
+    give *_unknown (caller passes and logs). No exception text is kept (it could embed the URL).
+    """
+    out = {"holder_status": "holder_unknown", "top10_share": None, "auth_status": "auth_unknown"}
+    url = rpc_url or os.environ.get("HELIUS_RPC_URL")
+    if not url and post is None:
+        return out
+    post = post or _rpc_post(url)
     try:
-        big = post({"jsonrpc": "2.0", "id": 1, "method": "getTokenLargestAccounts", "params": [mint]})["result"]["value"]
-        sup = post({"jsonrpc": "2.0", "id": 2, "method": "getTokenSupply", "params": [mint]})["result"]["value"]
-        total = float(sup["amount"])
-        amts = sorted((float(a["amount"]) for a in big if a.get("address") not in exclude), reverse=True)[:10]
-        return sum(amts) / total if total > 0 else None
+        info = post({"jsonrpc": "2.0", "id": 1, "method": "getAccountInfo", "params": [mint, {"encoding": "jsonParsed"}]})
+        pi = info["result"]["value"]["data"]["parsed"]["info"]
+        out["auth_status"] = "revoked" if (pi.get("mintAuthority") is None and pi.get("freezeAuthority") is None) else "authority_present"
     except Exception:
-        return None  # never include the exception (could embed the URL)
+        pass
+    try:
+        big = post({"jsonrpc": "2.0", "id": 2, "method": "getTokenLargestAccounts", "params": [mint]})["result"]["value"]
+        sup = post({"jsonrpc": "2.0", "id": 3, "method": "getTokenSupply", "params": [mint]})["result"]["value"]
+        accs = post({"jsonrpc": "2.0", "id": 4, "method": "getMultipleAccounts",
+                     "params": [[a["address"] for a in big], {"encoding": "jsonParsed"}]})["result"]["value"]
+        skip = KNOWN_AMM_OWNERS | ({pool} if pool else set())
+        amts = []
+        for a, acc in zip(big, accs):
+            owner = ((((acc or {}).get("data") or {}).get("parsed") or {}).get("info") or {}).get("owner")
+            if owner is None:
+                raise ValueError("owner unknown")  # cannot tell vault from holder
+            if owner not in skip:
+                amts.append(float(a["amount"]))
+        total = float(sup["amount"])
+        if total > 0:
+            out["top10_share"] = sum(sorted(amts, reverse=True)[:10]) / total
+            out["holder_status"] = "ok"
+    except Exception:
+        pass
+    return out
+

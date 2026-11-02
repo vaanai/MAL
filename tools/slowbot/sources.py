@@ -62,7 +62,10 @@ def get_json(url, bucket, transport=urllib_transport, sleep=time.sleep, retry=RE
         except Exception as e:  # network error: retry
             status, body, hdrs, last = 599, "", {}, type(e).__name__
         if status == 200:
-            return json.loads(body)
+            try:
+                return json.loads(body)
+            except ValueError:
+                raise HttpError("non-JSON 200 body for " + url.split("?")[0])
         last = f"status {status}"
         if status == 429 or status >= 500:
             wait = min(retry["cap_s"], retry["base_s"] * 2 ** i)
@@ -128,6 +131,17 @@ class Gecko:
             if tid.startswith("solana_"):
                 out.append(tid[len("solana_"):])
         return list(dict.fromkeys(out))
+
+    def high_6h(self, pool):
+        """True 6 h high (USD) from 5-minute candles (72 x 5m). None if unavailable."""
+        try:
+            doc = get_json(GT_BASE + f"/networks/solana/pools/{pool}/ohlcv/minute?aggregate=5&limit=72&currency=usd",
+                           self.bucket, self.transport, self.sleep)
+            rows = doc["data"]["attributes"]["ohlcv_list"]
+            hi = max(float(r[2]) for r in rows)
+            return hi if hi > 0 else None
+        except (HttpError, KeyError, TypeError, ValueError):
+            return None
 
     def new_pool_mints(self):
         return self._mints(get_json(GT_BASE + "/networks/solana/new_pools", self.bucket, self.transport, self.sleep))

@@ -6,12 +6,12 @@ import time
 
 NOW_MS = 1_800_000_000_000  # fixed fixture clock (ms)
 WSOL = "So11111111111111111111111111111111111111112"
-M = {k: f"{k}".ljust(44, "1")[:44] for k in ("GOOD", "YOUNG", "METEORA", "CHASE", "LOWLIQ", "KNIFE", "EVENT", "BADQ")}
+M = {k: f"{k}".ljust(44, "1")[:44] for k in ("GOOD", "YOUNG", "METEORA", "CHASE", "LOWLIQ", "KNIFE", "EVENT", "BADQ", "GHOST")}
 
 
 def pair(mint, dex="pumpswap", age_min=120, liq=60_000, v5=2000, v1=30_000, v6=60_000, v24=200_000,
-         buys=300, sells=200, tx24=900, c5=2.0, c1=5.0, c6=8.0, c24=10.0, labels=None):
-    p = {"chainId": "solana", "dexId": dex, "pairAddress": "P" + mint[:10],
+         buys=300, sells=200, tx24=900, c5=2.0, c1=5.0, c6=8.0, c24=10.0, labels=None, pool=None):
+    p = {"chainId": "solana", "dexId": dex, "pairAddress": pool or "P" + mint[:10], "priceUsd": "1.0",
          "baseToken": {"address": mint, "name": "N" + mint[:4], "symbol": mint[:4]},
          "liquidity": {"usd": liq}, "marketCap": 500_000,
          "pairCreatedAt": NOW_MS - int(age_min * 60000),
@@ -25,14 +25,15 @@ def pair(mint, dex="pumpswap", age_min=120, liq=60_000, v5=2000, v1=30_000, v6=6
 
 
 PAIRS = [
-    pair(M["GOOD"], v1=40_000, v6=60_000),                      # rule a: 40k >= 3*4k
+    pair(M["GOOD"], age_min=300, v1=40_000, v6=60_000),                      # rule a: 40k >= 3*4k
     pair(M["YOUNG"], age_min=10),
     pair(M["METEORA"], dex="meteora", labels=["DAMM v2"], v1=40_000, v6=60_000),
     pair(M["CHASE"], c5=75.0, v1=40_000, v6=60_000),
     pair(M["LOWLIQ"], liq=5_000),
     pair(M["KNIFE"], c1=-60.0, v1=40_000, v6=60_000),
     pair(M["EVENT"], v1=25_000, v6=150_000, buys=100, sells=200),  # only rule c (via boost)
-    pair(M["BADQ"], v1=40_000, v6=60_000),                      # fails the quote cost check
+    pair(M["GOOD"], age_min=300, liq=50_000, pool="PGOODALT"),  # same mint, lower-liquidity pool
+    pair(M["BADQ"], v1=40_000, v6=60_000),                   # fails the quote cost check
 ]
 
 
@@ -50,8 +51,10 @@ def jup_quote(url, bad=False):
 
 
 def transport(url):
+    if "geckoterminal" in url and "/ohlcv/" in url:
+        return 200, json.dumps({"data": {"attributes": {"ohlcv_list": [[0, 1.0, 1.1, 0.9, 1.0, 5.0], [300, 1.0, 1.05, 0.95, 1.0, 5.0]]}}}), {}
     if "geckoterminal" in url and "new_pools" in url:
-        return 200, json.dumps(gecko_doc([M["GOOD"], M["YOUNG"], M["METEORA"]])), {}
+        return 200, json.dumps(gecko_doc([M["GOOD"], M["YOUNG"], M["METEORA"], M["GHOST"]])), {}
     if "geckoterminal" in url and "trending_pools" in url:
         return 200, json.dumps(gecko_doc([M["GOOD"], M["CHASE"], M["LOWLIQ"], M["BADQ"]])), {}
     if "token-boosts" in url:
