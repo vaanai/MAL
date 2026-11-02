@@ -5,6 +5,7 @@ import math
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -17,6 +18,8 @@ H0 = T.parse_hour("2026-11-03T00")
 PINS = {"adapter_sha256": "a" * 64, "reader_sha256": "b" * 64, "writer_sha256": "c" * 64}
 THR_BYTES = (Path(__file__).resolve().parent / "data" / "tip_hour_health_thresholds.json").read_bytes()
 THR = T.load_thresholds(THR_BYTES)
+PINSF = str(Path(tempfile.mkdtemp(prefix="tiphh")) / "pins.json")
+Path(PINSF).write_text(json.dumps(PINS))
 N_HOURS = 8  # counts rows H0 .. H0+7
 NOW = H0 + 20 * HR  # everything closed unless a test says otherwise
 MID = H0 + 3 * HR  # a middle hour: its neighbours are known, so every chain is measurable
@@ -332,13 +335,28 @@ def test_input_age_uses_only_rows_that_had_arrived_by_the_instant():
     assert arr.newest_at(9_999) is None and arr.newest_at(10_000) == 9_900
 
 
-def test_input_age_unmeasurable_without_an_arrival_log_or_for_another_program():
+def test_input_age_unmeasurable_without_an_arrival_log():
     rows, _ = run(arrival=None)
     assert "max_input_age_s" in mid(rows)["unmeasurable"] and mid(rows)["excluded"]
-    rs = [crow(H0 + i * HR, progs=("pumpswap", "pumpfun")) for i in range(N_HOURS)]
-    rows, _ = run(counts_blob(rs), programs=("pumpswap", "pumpfun"))
+
+
+def two_prog_rows():
+    return counts_blob([crow(H0 + i * HR, progs=("pumpswap", "pumpfun")) for i in range(N_HOURS)])
+
+
+def test_two_program_book_uses_the_pumpswap_age_as_the_bound_for_both():
+    rows, _ = run(two_prog_rows(), programs=("pumpswap", "pumpfun"))
     r = mid(rows)
-    assert r["input_age_by_prog_s"]["pumpfun"] is None and "max_input_age_s" in r["unmeasurable"]
+    assert r["excluded"] is False and r["input_age_basis"] == "pumpswap_upper_bound" and r["max_input_age_s"] == r["input_age_by_prog_s"]["pumpswap"]
+    assert set(r["data_silence_by_prog_s"]) == {"pumpswap", "pumpfun"}  # silence and loss stay per program
+    rows, _ = run(two_prog_rows(), programs=("pumpswap", "pumpfun"), arrival=arrival_blob(stale_from=(MID + 600_000, MID + 3_000_000)))
+    assert mid(rows)["excluded"] and "max_input_age_s" in mid(rows)["failed_checks"]
+
+
+def test_pumpfun_alone_has_no_measurable_input_age():
+    rows, _ = run(two_prog_rows(), programs=("pumpfun",))
+    r = mid(rows)
+    assert r["max_input_age_s"] is None and "max_input_age_s" in r["unmeasurable"] and r["input_age_basis"] is None
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ report-only fields and tripwires
@@ -437,7 +455,7 @@ CLOCK = T.parse_instant("2026-11-07T00:00:00Z")
 ])
 def test_bar_formula_and_the_zero_row_rule(t_max_s, count, verdict, p):
     gr = {CLOCK - 5 * HR: {"tip_gap_backlog_jump|all": count}} if count else {}
-    res = T.bar(bar_rows(CLOCK, gr), CLOCK, t_max_s, ("pumpswap",), "auto")
+    res = T.bar(bar_rows(CLOCK, gr), CLOCK, t_max_s, ("pumpswap",), PINSF)
     assert res["verdict"] == verdict
     v = res["programs"]["pumpswap"]
     assert v["rows"] == count and math.isclose(v["p_loss"], 1 - math.exp(-count / 86400.0 * t_max_s))
@@ -449,7 +467,7 @@ def test_bar_formula_and_the_zero_row_rule(t_max_s, count, verdict, p):
 
 def test_bar_counts_prog_all_for_both_programs_and_a_program_row_for_its_own_only():
     gr = {CLOCK - 3 * HR: {"tip_gap_backlog_jump|all": 1, "tip_gap_unresolved_dropped|pumpswap": 2, "tip_gap_bad_row_fields|pumpfun": 4}}
-    res = T.bar(bar_rows(CLOCK, gr), CLOCK, 1800.0, ("pumpswap", "pumpfun"), "auto")
+    res = T.bar(bar_rows(CLOCK, gr), CLOCK, 1800.0, ("pumpswap", "pumpfun"), PINSF)
     assert res["programs"]["pumpswap"]["rows"] == 3 and res["programs"]["pumpfun"]["rows"] == 5
     assert res["programs"]["pumpswap"]["by_kind"] == {"tip_gap_backlog_jump|all": 1, "tip_gap_unresolved_dropped|pumpswap": 2}
 
@@ -457,24 +475,26 @@ def test_bar_counts_prog_all_for_both_programs_and_a_program_row_for_its_own_onl
 def test_bar_window_is_the_24_closed_hours_before_the_clock():
     inside = {CLOCK - 24 * HR: {"tip_gap_backlog_jump|all": 1}}
     outside = {CLOCK - 25 * HR: {"tip_gap_backlog_jump|all": 7}, CLOCK: {"tip_gap_backlog_jump|all": 7}}
-    res = T.bar(bar_rows(CLOCK, {**inside, **outside}), CLOCK, 600.0, ("pumpswap",), "auto")
+    res = T.bar(bar_rows(CLOCK, {**inside, **outside}), CLOCK, 600.0, ("pumpswap",), PINSF)
     assert res["programs"]["pumpswap"]["rows"] == 1 and res["window_from"] == "2026-11-06T00:00:00Z" and res["window_to"] == "2026-11-07T00:00:00Z"
 
 
 def test_bar_incomplete_when_an_hour_is_missing_or_pins_not_given_and_fail_on_pin_change():
-    res = T.bar(bar_rows(CLOCK, skip={CLOCK - 7 * HR}), CLOCK, 3600.0, ("pumpswap",), "auto")
+    res = T.bar(bar_rows(CLOCK, skip={CLOCK - 7 * HR}), CLOCK, 3600.0, ("pumpswap",), PINSF)
     assert res["verdict"] == "INCOMPLETE" and res["hours_missing"] == ["2026-11-06T17"]
-    assert T.bar(bar_rows(CLOCK), CLOCK, 3600.0, ("pumpswap",), None)["verdict"] == "INCOMPLETE"
+    for bad in (None, "auto"):  # a registration bar needs the registered pins file (reviewer C2, QP C3)
+        with pytest.raises(ValueError):
+            T.bar(bar_rows(CLOCK), CLOCK, 3600.0, ("pumpswap",), bad)
     rows = [crow(CLOCK - (30 - i) * HR, pins=PINS if i < 20 else {**PINS, "writer_sha256": "f" * 64}) for i in range(48)]
-    res = T.bar(counts_blob(rows), CLOCK, 3600.0, ("pumpswap",), "auto")
+    res = T.bar(counts_blob(rows), CLOCK, 3600.0, ("pumpswap",), PINSF)
     assert res["verdict"] == "FAIL" and res["hours_pins_differ_or_unchecked"]
 
 
 def test_bar_hv7_window_example_and_clock_must_be_a_whole_hour():
-    res = T.bar(bar_rows(CLOCK), CLOCK, 3600.0, ("pumpswap",), "auto")
+    res = T.bar(bar_rows(CLOCK), CLOCK, 3600.0, ("pumpswap",), PINSF)
     assert res["verdict"] == "PASS" and res["clock"] == "2026-11-07T00:00:00Z"
     with pytest.raises(ValueError):
-        T.bar(bar_rows(CLOCK), CLOCK + 60_000, 3600.0, ("pumpswap",), "auto")
+        T.bar(bar_rows(CLOCK), CLOCK + 60_000, 3600.0, ("pumpswap",), PINSF)
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the guard and the CLI
@@ -508,24 +528,41 @@ def test_read_inputs_allows_the_named_receiver_and_writer_files(tmp_path):
     for name in ("counts.jsonl", "silence.jsonl", "arrival.jsonl", "events.jsonl", "lag.jsonl", "writer_status.json", "status.json", "verified.json", "tip-health-1102.jsonl", "tip-pool-cache-daily.jsonl"):
         p = tmp_path / name
         p.write_text("{}\n")
-        assert T.read_input(p) == b"{}\n"
+        assert T.read_input(p).size == 3
     assert T.read_input(tmp_path / "absent.jsonl") is None
 
 
-def write_inputs(tmp_path, counts=None, **kw):
+NH = 26
+NOW_CLI = H0 + 10 * HR
+NOW_DAILY = H0 + 28 * HR  # past the fixed deadline D+1T03:15Z (= H0 + 27.25 h)
+
+
+def day_rows(n=NH, **kw):
+    return [crow(H0 + i * HR, **kw) for i in range(n)]
+
+
+def write_inputs(tmp_path, counts=None, sample_end=H0 + 30 * HR):
     d = tmp_path / "in"
     d.mkdir(exist_ok=True)
-    (d / "counts.jsonl").write_bytes(counts if counts is not None else counts_blob(base_rows()))
-    (d / "samples.jsonl").write_bytes(samples_blob())
-    (d / "events.jsonl").write_bytes(events_blob())
-    (d / "arrival.jsonl").write_bytes(arrival_blob())
+    (d / "counts.jsonl").write_bytes(counts if counts is not None else counts_blob(day_rows()))
+    (d / "samples.jsonl").write_bytes(samples_blob(t1=sample_end))
+    (d / "events.jsonl").write_bytes(events_blob([H0 + i * HR for i in range(NH)]))
+    (d / "arrival.jsonl").write_bytes(arrival_blob(t1=H0 + 30 * HR))
     (d / "thr.json").write_bytes(THR_BYTES)
     return d
 
 
-def cli_args(d, sub, *more):
+def cli_args(d, sub, *more, now=NOW_CLI, pins="auto"):
     return [sub, "--counts", str(d / "counts.jsonl"), "--samples", str(d / "samples.jsonl"), "--events", str(d / "events.jsonl"), "--arrival", str(d / "arrival.jsonl"),
-            "--thresholds", str(d / "thr.json"), "--pins", "auto", "--now", T.iso(NOW), *more]
+            "--thresholds", str(d / "thr.json"), "--pins", pins, "--now", T.iso(now), *more]
+
+
+def daily(d, out, now=NOW_DAILY, *more, pins=PINSF):
+    return cli_args(d, "daily", "--date", "2026-11-03", "--out-dir", str(out), *more, now=now, pins=pins)
+
+
+def last(capsys):
+    return json.loads(capsys.readouterr().out.strip().splitlines()[-1])
 
 
 def test_cli_table_prints_hour_lines_then_the_sha_line(tmp_path, capsys):
@@ -534,6 +571,7 @@ def test_cli_table_prints_hour_lines_then_the_sha_line(tmp_path, capsys):
     lines = capsys.readouterr().out.strip().splitlines()
     assert len(lines) == 4 and json.loads(lines[-1])["type"] == "sha256" and json.loads(lines[-1])["hours"] == 3
     assert json.loads(lines[-1])["inputs"]["counts"]["sha256"] == hashlib.sha256((d / "counts.jsonl").read_bytes()).hexdigest()
+    assert json.loads(lines[-1])["pins_source"] == "auto"  # a dry table may use auto, and says so
 
 
 def test_cli_refuses_a_tape_file_with_exit_2(tmp_path, capsys):
@@ -546,89 +584,213 @@ def test_cli_refuses_a_tape_file_with_exit_2(tmp_path, capsys):
     assert "refused" in capsys.readouterr().err
 
 
-def test_cli_bar_exit_codes(tmp_path, capsys):
+def test_cli_bar_exit_codes_and_auto_is_refused(tmp_path, capsys):
     f = tmp_path / "counts.jsonl"
     f.write_bytes(bar_rows(CLOCK))
-    assert T.main(["bar", "--counts", str(f), "--clock", "2026-11-07T00:00:00Z", "--t-max-s", "3600", "--pins", "auto"]) == 0
+    base = ["bar", "--counts", str(f), "--clock", "2026-11-07T00:00:00Z", "--t-max-s", "3600"]
+    assert T.main(base + ["--pins", PINSF]) == 0
+    assert T.main(base + ["--pins", "auto"]) == 2 and T.main(base) == 2
     f.write_bytes(bar_rows(CLOCK, {CLOCK - HR: {"tip_gap_backlog_jump|all": 1}}))
-    assert T.main(["bar", "--counts", str(f), "--clock", "2026-11-07T00:00:00Z", "--t-max-s", "3600", "--pins", "auto"]) == 1
+    assert T.main(base + ["--pins", PINSF]) == 1
     assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])["programs"]["pumpswap"]["p_loss"] > 0.04
     f.write_bytes(bar_rows(CLOCK, skip={CLOCK - HR}))
-    assert T.main(["bar", "--counts", str(f), "--clock", "2026-11-07T00:00:00Z", "--t-max-s", "3600", "--pins", "auto"]) == 3
+    assert T.main(base + ["--pins", PINSF]) == 3
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the daily table writer
 def test_daily_writes_atomically_with_sha_sidecar_and_is_idempotent(tmp_path, capsys):
     d = write_inputs(tmp_path)
     out = tmp_path / "out"
-    args = cli_args(d, "daily", "--date", "2026-11-03", "--out-dir", str(out))
-    assert T.main(args) == 0
-    info = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert T.main(daily(d, out)) == 0
+    info = last(capsys)
     f = out / "tip-hour-table-2026-11-03.jsonl"
-    assert info["status"] == "written" and f.is_file() and not list(out.glob(".*tmp*"))
+    assert info["status"] == "written" and info["hours_tabled"] == 24 and f.is_file() and not list(out.glob(".*tmp*"))
     assert (out / (f.name + ".sha256")).read_text() == f"{hashlib.sha256(f.read_bytes()).hexdigest()}  {f.name}\n" and info["sha256"] == hashlib.sha256(f.read_bytes()).hexdigest()
     first = f.read_bytes()
-    assert T.main(args) == 0 and json.loads(capsys.readouterr().out.strip().splitlines()[-1])["status"] == "unchanged" and f.read_bytes() == first
+    assert T.main(daily(d, out)) == 0 and last(capsys)["status"] == "unchanged" and f.read_bytes() == first
 
 
 def test_daily_never_redecides_a_tabled_hour(tmp_path, capsys):
     d = write_inputs(tmp_path)
     out = tmp_path / "out"
-    args = cli_args(d, "daily", "--date", "2026-11-03", "--out-dir", str(out))
-    assert T.main(args) == 0
+    assert T.main(daily(d, out)) == 0
     capsys.readouterr()
-    # the same hours later get a gap span filed in a later row: the new table would differ for a tabled hour -> refused, file untouched
-    rs = base_rows()
+    rs = day_rows()
     rs[3] = crow(MID, spans=[("tip_gap_backlog_jump", "all", 1, 2, MID + 1000, MID + 300_000)])
     (d / "counts.jsonl").write_bytes(counts_blob(rs))
     before = (out / "tip-hour-table-2026-11-03.jsonl").read_bytes()
-    assert T.main(args) == 4
-    info = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert T.main(daily(d, out)) == 4
+    info = last(capsys)
     assert info["status"].startswith("REFUSED") and T.iso(MID) in info["changed_hours"]
     assert (out / "tip-hour-table-2026-11-03.jsonl").read_bytes() == before
 
 
-def test_daily_extends_a_partial_table_when_more_hours_close(tmp_path, capsys):
+def test_daily_refuses_registered_pins_auto_or_none(tmp_path, capsys):
     d = write_inputs(tmp_path)
     out = tmp_path / "out"
-    early = cli_args(d, "daily", "--date", "2026-11-03", "--out-dir", str(out))
-    early[early.index("--now") + 1] = T.iso(H0 + 5 * HR + 400_000)  # hours 0..3 tabled
-    assert T.main(early) == 0
-    n1 = json.loads(capsys.readouterr().out.strip().splitlines()[-1])["hours_tabled"]
-    assert T.main(cli_args(d, "daily", "--date", "2026-11-03", "--out-dir", str(out))) == 0
-    info = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
-    assert info["status"] == "written" and info["hours_tabled"] > n1
+    assert T.main(daily(d, out, pins="auto")) == 2
+    assert "registered pins" in capsys.readouterr().err and not out.exists()
+
+
+def test_daily_waits_for_staged_inputs_then_tables_at_the_fixed_deadline(tmp_path, capsys):
+    """QP C4: the D+1T00 counts row and a sampler line t >= D+1T00 gate the table; the deadline D+1T03:15Z tables whatever is present."""
+    d = write_inputs(tmp_path, counts_blob(day_rows(24)))  # the hour-24 row (D+1T00) has not been staged yet
+    out = tmp_path / "out"
+    assert T.main(daily(d, out, H0 + 26 * HR)) == 6
+    info = last(capsys)
+    assert info["status"] == "NOT_READY" and T.hour_key(H0 + 23 * HR) in info["not_tabled_hours"] and info["deadline"] == "2026-11-04T03:15:00Z" and not out.exists()
+    (d / "counts.jsonl").write_bytes(counts_blob(day_rows(25)))  # the row arrives
+    assert T.main(daily(d, out, H0 + 26 * HR)) == 0
+    table = [json.loads(ln) for ln in (out / "tip-hour-table-2026-11-03.jsonl").read_text().splitlines()][:-1]
+    assert len(table) == 24 and table[-1]["hour"] == "2026-11-03T23:00:00Z" and table[-1]["excluded"] is False
+    out2 = tmp_path / "out2"  # the deadline passes with the row still missing: hour 23 is written EXCLUDED
+    (d / "counts.jsonl").write_bytes(counts_blob(day_rows(24)))
+    assert T.main(daily(d, out2, H0 + 27 * HR + 15 * 60_000 + 1000)) == 0
+    last23 = [json.loads(ln) for ln in (out2 / "tip-hour-table-2026-11-03.jsonl").read_text().splitlines()][:-1][-1]
+    assert last23["excluded"] is True and "next_counts_row_missing" in last23["unmeasurable"]
+    assert T.main(daily(d, tmp_path / "out3", H0 + 27 * HR + 15 * 60_000 - 1000)) == 6  # one second before the deadline: still waiting
+
+
+def test_daily_waits_for_a_sampler_line_at_or_after_the_next_hour(tmp_path, capsys):
+    d = write_inputs(tmp_path, counts_blob(day_rows(25)), sample_end=H0 + 24 * HR - 60_000)  # last sample line is before D+1T00
+    out = tmp_path / "out"
+    assert T.main(daily(d, out, H0 + 26 * HR)) == 6 and not out.exists()
+    (d / "samples.jsonl").write_bytes(samples_blob(t1=H0 + 24 * HR + 120_000))
+    assert T.main(daily(d, out, H0 + 26 * HR)) == 0
+
+
+def test_daily_writes_nothing_for_a_missing_empty_or_stale_counts_log(tmp_path, capsys):
+    out = tmp_path / "out"
+    d = write_inputs(tmp_path, b"")
+    assert T.main(daily(d, out)) == 5 and last(capsys)["status"] == "COUNTS_MISSING_EMPTY_OR_STALE"
+    (d / "counts.jsonl").write_bytes(counts_blob([crow(H0 - i * HR) for i in range(1, 6)]))  # rows exist but none at or after the date's first hour
+    assert T.main(daily(d, out)) == 5
+    assert not out.exists()
+    (d / "counts.jsonl").write_bytes(b'{"not":"a counts row"}\n')
+    assert T.main(daily(d, out)) == 5 and not out.exists()
+
+
+def test_daily_refuses_a_second_program_set_in_the_same_out_dir(tmp_path, capsys):
+    d = write_inputs(tmp_path)
+    out = tmp_path / "out"
+    assert T.main(daily(d, out)) == 0
+    capsys.readouterr()
+    assert T.main(daily(d, out, NOW_DAILY, "--programs", "pumpswap,pumpfun")) == 4
+    assert last(capsys)["status"] == "REFUSED_other_program_set_or_thresholds"
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ counts-log conflicts, long spans, memory
+def test_conflicting_duplicate_counts_rows_poison_the_hour_and_both_neighbours():
+    rs = base_rows() + [crow(MID + HR, first=5000)]  # a second, different row for hour MID+1
+    rows, _ = run(counts_blob(rs))
+    for k in (0, 1, 2):  # the conflicting hour is MID+1: it poisons MID, MID+1 and MID+2
+        r = rows[T.iso(MID + k * HR)]
+        assert r["excluded"] and "counts_duplicate_conflict" in r["unmeasurable"] and "counts_duplicate_conflict" in r["structural_failures"] and r["labels_failing"] == ["decision-input", "price-path"]
+    assert rows[T.iso(MID + 3 * HR)]["excluded"] is False and rows[T.iso(MID - HR)]["excluded"] is False
+    rows, _ = run(counts_blob(base_rows() + [crow(MID + HR)]))  # an IDENTICAL duplicate collapses
+    assert mid(rows)["excluded"] is False
+
+
+def test_long_span_filed_two_hours_later_still_excludes_the_hours_it_covers():
+    f = MID + 1000
+    rs = base_rows()
+    rs[5] = crow(MID + 2 * HR, spans=[("tip_gap_unresolved_dropped", "all", 1, 2, f, MID + 2 * HR + 1_800_000)])
+    rows, _ = run(counts_blob(rs))
+    assert mid(rows)["max_loss_span_s"] == (MID + 2 * HR + 1_800_000 - f) / 1000.0 and "max_loss_span_s" in mid(rows)["failed_checks"]
+    assert "max_loss_span_s" in rows[T.iso(MID + HR)]["failed_checks"] and "max_loss_span_s" in rows[T.iso(MID + 2 * HR)]["failed_checks"]
+    assert rows[T.iso(MID - HR)]["excluded"] is False and rows[T.iso(MID + 3 * HR)]["excluded"] is False
+
+
+def test_streaming_and_in_memory_inputs_give_the_same_table(tmp_path):
+    d = write_inputs(tmp_path)
+    kw = dict(thr=THR, h0=H0, h1=H0 + 22 * HR, now_ms=NOW_DAILY, programs=("pumpswap",), pins_spec="auto")
+    a, _ = T.evaluate(counts=T.read_input(d / "counts.jsonl"), silence=None, samples=[T.read_input(d / "samples.jsonl")], events=T.read_input(d / "events.jsonl"),
+                      arrival=T.read_input(d / "arrival.jsonl"), lag=None, pool_cache=None, **kw)
+    b, _ = T.evaluate(counts=(d / "counts.jsonl").read_bytes(), silence=None, samples=[(d / "samples.jsonl").read_bytes()], events=(d / "events.jsonl").read_bytes(),
+                      arrival=(d / "arrival.jsonl").read_bytes(), lag=None, pool_cache=None, **kw)
+    assert a == b and len(a) == 23
+
+
+def test_24_days_of_inputs_are_streamed_in_bounded_memory(tmp_path):
+    import tracemalloc
+    days = 24
+    n = days * 24
+    d = tmp_path / "big"
+    d.mkdir()
+    with open(d / "counts.jsonl", "w") as fh:
+        for i in range(n):
+            h = H0 + i * HR
+            spans = [("tip_gap_backlog_jump", "all", 1, 2, h + 1000 + 10 * k, h + 1000 + 10 * k + 5) for k in range(20)]
+            fh.write(json.dumps(crow(h, spans=spans, gap_rows={"tip_gap_backlog_jump|all": 20}, extra={"adapter_cumulative": {f"k{j}": j for j in range(200)}})) + "\n")
+    (d / "samples.jsonl").write_bytes(samples_blob(t0=H0 - HR, t1=H0 + (n + 2) * HR))
+    (d / "arrival.jsonl").write_bytes(arrival_blob(t0=H0 - HR, t1=H0 + (n + 2) * HR))
+    (d / "events.jsonl").write_bytes(events_blob([H0 + i * HR for i in range(n)]))
+    tracemalloc.start()
+    rows, _ = T.evaluate(counts=T.read_input(d / "counts.jsonl"), silence=None, samples=[T.read_input(d / "samples.jsonl")], events=T.read_input(d / "events.jsonl"),
+                         arrival=T.read_input(d / "arrival.jsonl"), lag=None, pool_cache=None, thr=THR, h0=H0, h1=H0 + (n - 3) * HR, now_ms=H0 + (n + 10) * HR, programs=("pumpswap",), pins_spec="auto")
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    assert len(rows) == n - 2 and peak < MEM_BOUND, peak
+
+
+MEM_BOUND = 48 * 1024 * 1024
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the job script (POSIX sh)
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "ops" / "tip-hour-table-daily.sh"
 
 
-def sh_env(tmp_path, with_counts=True):
-    rx, fast, out = tmp_path / "rx", tmp_path / "fast", tmp_path / "out"
+def sh_env(tmp_path, with_counts=True, **over):
+    rx, fast = tmp_path / "rx", tmp_path / "fast"
     rx.mkdir()
     fast.mkdir()
-    (rx / "events.jsonl").write_bytes(events_blob())
-    (rx / "arrival.jsonl").write_bytes(arrival_blob())
+    (rx / "events.jsonl").write_bytes(events_blob([H0 + i * HR for i in range(NH)]))
+    (rx / "arrival.jsonl").write_bytes(arrival_blob(t1=H0 + 30 * HR))
     if with_counts:
-        (fast / "counts.jsonl").write_bytes(counts_blob(base_rows()))
-    (fast / "tip-health-1.jsonl").write_bytes(samples_blob())
-    env = {**os.environ, "RX": str(rx), "FASTIN": str(fast), "OUT": str(out), "PY": sys.executable, "DATE": "2026-11-03", "NOW": T.iso(NOW)}
+        (fast / "counts.jsonl").write_bytes(counts_blob(day_rows()))
+    (fast / "tip-health-1.jsonl").write_bytes(samples_blob(t1=H0 + 30 * HR))
+    env = {**os.environ, "RX": str(rx), "FASTIN": str(fast), "TABLES_ROOT": str(tmp_path / "tables"), "PY": sys.executable, "DATE": "2026-11-03", "NOW": T.iso(NOW_DAILY), "PINS": PINSF}
     env.pop("END", None)
-    return env, out
+    env.pop("OUT", None)
+    env.update(over)
+    return env, tmp_path / "tables"
 
 
-def test_job_script_is_posix_sh_and_writes_the_daily_table(tmp_path):
+def sh(env):
+    return subprocess.run(["sh", str(SCRIPT)], env=env, capture_output=True, text=True)
+
+
+def test_job_script_is_posix_sh_and_writes_the_daily_table_into_a_program_set_dir(tmp_path):
     assert subprocess.run(["sh", "-n", str(SCRIPT)]).returncode == 0
     body = SCRIPT.read_bytes()
     assert body.splitlines()[0] == b"#!/bin/sh" and b"PIPESTATUS" not in body and b"[[" not in body
-    env, out = sh_env(tmp_path)
-    p = subprocess.run(["sh", str(SCRIPT)], env=env, capture_output=True, text=True)
+    env, root = sh_env(tmp_path)
+    p = sh(env)
     assert p.returncode == 0, p.stdout + p.stderr
     info = json.loads(p.stdout.strip().splitlines()[-1])
-    assert info["status"] == "written" and (out / "tip-hour-table-2026-11-03.jsonl").is_file() and info["hours_tabled"] == 18
-    p2 = subprocess.run(["sh", str(SCRIPT)], env=env, capture_output=True, text=True)
-    assert p2.returncode == 0 and json.loads(p2.stdout.strip().splitlines()[-1])["status"] == "unchanged"
+    assert info["status"] == "written" and (root / "pumpswap" / "tip-hour-table-2026-11-03.jsonl").is_file() and info["hours_tabled"] == 24
+    p2 = sh({**env, "PROGRAMS": "pumpswap,pumpfun"})  # another program set -> its own dir, no clash
+    assert (root / "pumpswap+pumpfun").is_dir() and p2.returncode == 0, p2.stdout + p2.stderr
+
+
+def test_job_script_has_no_default_pins_and_refuses_auto(tmp_path):
+    env, root = sh_env(tmp_path)
+    env.pop("PINS")
+    p = sh(env)
+    assert p.returncode == 5 and "MISSING_INPUT" in p.stdout and "PINS" in p.stdout and not root.exists()
+    assert sh({**env, "PINS": "auto"}).returncode == 5 and not root.exists()
+
+
+def test_job_script_checks_content_not_just_existence(tmp_path):
+    env, root = sh_env(tmp_path, with_counts=False)
+    assert sh(env).returncode == 5 and not root.exists()  # missing
+    (tmp_path / "fast" / "counts.jsonl").write_bytes(b"")
+    assert sh(env).returncode == 5 and not root.exists()  # empty
+    (tmp_path / "fast" / "counts.jsonl").write_bytes(b'{"x":1}\n')
+    assert sh(env).returncode == 5 and not root.exists()  # no counts row inside
+    (tmp_path / "fast" / "counts.jsonl").write_bytes(counts_blob(day_rows(24)))
+    p = sh({**env, "NOW": T.iso(H0 + 26 * HR)})  # the D+1T00 row is not staged yet: NOT_READY, nothing written
+    assert p.returncode == 6 and "NOT_READY" in p.stdout and not root.exists()
 
 
 def test_writer_restart_is_not_a_follower_restart_tripwire():
@@ -647,9 +809,3 @@ def test_writer_status_header_reads_the_receiver_relay_shape(tmp_path, capsys):
     (d / "writer_status.json").write_text(json.dumps(relay))
     assert T.main(cli_args(d, "table", "--from", "2026-11-03T01", "--to", "2026-11-03T02", "--writer-status", str(d / "writer_status.json"))) == 0
     assert json.loads(capsys.readouterr().out.strip().splitlines()[-1])["writer_status"]["run_id"] == "704ecfa8ed91"
-
-
-def test_job_script_refuses_to_write_a_table_without_the_counts_log(tmp_path):
-    env, out = sh_env(tmp_path, with_counts=False)
-    p = subprocess.run(["sh", str(SCRIPT)], env=env, capture_output=True, text=True)
-    assert p.returncode == 5 and "MISSING_INPUT" in p.stdout and not out.exists()

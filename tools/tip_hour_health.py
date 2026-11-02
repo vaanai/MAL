@@ -21,7 +21,13 @@ Inputs (each named; nothing else is opened). NEVER a tip file, a derived-tape fi
   --pool-cache FILE  optional daily recorder jsonl (utc, pool_cache, backlog_jumps; "NRestarts=N" lines)
   --writer-status    optional writer_status.json relay or .writer/status.json (liveness header only)
   --thresholds FILE  canonical JSON {check: {"value": n, "label": "price-path"|"decision-input"}}
-  --pins FILE|auto   the registered {adapter_sha256, reader_sha256, writer_sha256}; `auto` = the first counts row's pins (a change then fails the hour; labelled pins_source auto)
+  --pins FILE|auto   the registered {adapter_sha256, reader_sha256, writer_sha256}. `daily` and `bar` REQUIRE the registered file (auto and none are refused, exit 2);
+                     `auto` (= the first counts row's pins, labelled pins_source auto) is for a dry `table` only
+Daily exit codes: 0 written/unchanged; 2 usage or refused path; 4 a tabled hour, the program set or the thresholds would change; 5 counts log missing, empty or stale (no row at or after
+the date's first hour): nothing written; 6 NOT_READY: nothing written until the staged counts log holds the row of D+1T00 and the sampler a line with t >= D+1T00, or until the fixed
+deadline D+1T03:15Z, when whatever is present is tabled and missing evidence fails its hours. A table is all 24 hours of the date or nothing. One out-dir per program set.
+Gap-span overlap is computed from the span itself over every row of the log; a span filed after a table was written that changes a tabled hour makes the rerun exit 4.
+Memory: inputs are streamed line by line (counts rows pruned to the fields read, sampler lines to six keys); 24 days of synthetic inputs peak at about 33 MB of Python allocations.
 
 Measured vs. assumed (the counts log carries no data_loss flag on a gap span): every gap row of the tip source is data_loss true (Am.23 item 3), so every gap span counts as data
 loss. A metric that cannot be computed FAILS the hour (it is excluded, never passed): Am.6 item 2.2. Hour h is TABLED only when h and h+1 are both closed (end + 300 s <= now),
@@ -34,6 +40,7 @@ from __future__ import annotations
 import argparse
 import bisect
 import hashlib
+import io
 import json
 import math
 import os
@@ -54,6 +61,7 @@ STATUS_MAX_AGE_MS = 30_000  # status_bad_samples: ts_ms older than 30 s at the s
 INPUT_AGE_OFFSET_MS = 2_000  # max_input_age_s is judged at second :02 of each minute of h
 POOL_CACHE_CAP = 200_000  # QP-RULING-1102 F3: LRUPools cap
 POOL_CACHE_ALERT = 180_000  # QP-RULING-1102 R2 (b): 90 percent of the cap
+READY_DEADLINE_MS = 3 * HOUR_MS + 15 * 60_000  # QP on #1191 C4: hour h is tabled once the staged counts log reaches h+1 and the sampler reaches h+1, or at (h+1 start) + 3 h 15 min whatever is present
 BAR_MAX = 0.025  # Am.23 item 6
 BAR_WINDOW_H = 24
 T_ZERO_H = -24.0 * math.log(1.0 - BAR_MAX)  # 0.6076 h: above this a book passes the bar only with ZERO rows
@@ -118,58 +126,112 @@ def guard(path: str | os.PathLike) -> Path:
     return Path(s)
 
 
-def read_input(path: str | os.PathLike | None) -> bytes | None:
-    """The bytes of one named input file (so the table can state the sha256 it read), or None when absent/unreadable (the dependent checks then fail the hour)."""
+class Src:
+    """A named input file read in streaming passes: size and sha256 come from one chunked pass, and rows are iterated line by line (no whole-file copy is held)."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        h = hashlib.sha256()
+        n = 0
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+                n += len(chunk)
+        self.sha256, self.size = h.hexdigest(), n
+
+    def lines(self):
+        with open(self.path, "rb") as fh:
+            yield from fh
+
+
+def read_input(path: str | os.PathLike | None) -> Src | None:
+    """One named input file as a streaming source (its sha256 is stated in the table), or None when absent/unreadable (the dependent checks then fail the hour)."""
     if path is None:
         return None
     p = guard(path)
     try:
         if not p.is_file():
             return None
-        return p.read_bytes()
+        return Src(p)
     except OSError:
         return None
 
 
-def _jsonl(data: bytes | None) -> tuple[list[dict], int]:
-    """Valid object lines and the number of bad lines (torn tail, non-JSON, non-object)."""
-    out: list[dict] = []
-    bad = 0
-    for ln in (data or b"").split(b"\n"):
+def _bytes(x: Any) -> bytes:
+    """Whole content, for the small inputs only (events, verified.json, the daily pool-cache record)."""
+    if x is None:
+        return b""
+    return x.path.read_bytes() if isinstance(x, Src) else x
+
+
+def _lines(x: Any):
+    if x is None:
+        return iter(())
+    return x.lines() if isinstance(x, Src) else io.BytesIO(x)
+
+
+def _iter_jsonl(x: Any):
+    """One parsed object per valid line; None per bad line (torn tail, non-JSON, non-object)."""
+    for ln in _lines(x):
         if not ln.strip():
             continue
         try:
             r = json.loads(ln)
         except ValueError:
-            bad += 1
+            yield None
             continue
-        if isinstance(r, dict):
-            out.append(r)
-        else:
+        yield r if isinstance(r, dict) else None
+
+
+def _jsonl(x: Any) -> tuple[list[dict], int]:
+    """Valid object lines and the number of bad lines (small inputs only)."""
+    rows, bad = [], 0
+    for r in _iter_jsonl(x):
+        if r is None:
             bad += 1
-    return out, bad
+        else:
+            rows.append(r)
+    return rows, bad
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ counts log
-def load_counts(data: bytes | None) -> tuple[dict[int, dict], set[int], int]:
-    """hour_ms -> counts row; the set of hours with two DIFFERENT rows (a conflict is unmeasurable); the number of bad lines. Identical duplicates collapse."""
-    rows, bad = _jsonl(data)
+COUNT_KEYS = ("schema", "hour", "bytes", "lines", "sha256", "run_id", "runs", "started_ms", "pins", "gap_rows", "gap_spans", "gap_spans_dropped", "data_t_first_ms", "data_t_last_ms",
+              "max_data_silence_s", "max_data_silence_ending_s", "no_tx_index", "dropped_rows", "skips", "status_bad_samples", "late_rows", "hb_gaps")
+
+
+def load_counts(data: Any) -> tuple[dict[int, dict], set[int], int]:
+    """hour_ms -> counts row (pruned to the fields the table reads, streamed); the set of hours with two DIFFERENT rows (a conflict is unmeasurable, and poisons the hour before and the
+    hour after it); the number of bad lines. Identical duplicates collapse (compared by a digest of the whole row, so the first row is the one kept)."""
     by: dict[int, dict] = {}
+    digest: dict[int, str] = {}
     conflict: set[int] = set()
-    for r in rows:
-        if r.get("schema") != SCHEMA_COUNTS or not isinstance(r.get("hour"), str) or not HOUR_KEY.match(r["hour"]):
+    bad = 0
+    for r in _iter_jsonl(data):
+        if r is None or r.get("schema") != SCHEMA_COUNTS or not isinstance(r.get("hour"), str) or not HOUR_KEY.match(r["hour"]):
+            bad += 1
+            continue
+        try:
+            d = hashlib.sha1(canon(r).encode()).hexdigest()
+        except ValueError:
             bad += 1
             continue
         h = parse_hour(r["hour"])
-        if h in by and canon(by[h]) != canon(r):
-            conflict.add(h)
-        by.setdefault(h, r)
+        if h in by:
+            if digest[h] != d:
+                conflict.add(h)
+            continue
+        row = {k: r[k] for k in COUNT_KEYS if k in r}
+        rows = r.get("rows")
+        row["rows_total"] = sum(n for n in rows.values() if _int(n) is not None) if isinstance(rows, dict) else None
+        by[h], digest[h] = row, d
     return by, conflict, bad
 
 
-def load_silences(data: bytes | None) -> list[tuple[str, int, int]]:
+def load_silences(data: Any) -> list[tuple[str, int, int]]:
     out = []
-    for r in _jsonl(data)[0]:
+    for r in _iter_jsonl(data):
+        if r is None:
+            continue
         p, f, t = r.get("prog"), _int(r.get("from_ms")), _int(r.get("to_ms"))
         if isinstance(p, str) and f is not None and t is not None and t >= f:
             out.append((p, f, t))
@@ -259,19 +321,19 @@ def silence_max_s(rows: dict[int, dict], extra: list[tuple[str, int, int]], prog
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ samples (follower state)
-def load_samples(blobs: list[bytes | None]) -> tuple[list[dict], int]:
-    """Valid sampler lines (an integer `t` in epoch seconds), merged over files, de-duplicated by t, sorted. Also the number of bad lines."""
+def load_samples(blobs: list[Any]) -> tuple[list[dict], int]:
+    """Valid sampler lines (an integer `t` in epoch seconds), streamed, pruned to the fields the table reads, merged over files, de-duplicated by t, sorted. Also the bad-line count."""
+    keep = ("t", "s_ts_ms", "s_decoder_blobs_pinned", "s_trade_event_v", "s_unresolved_dropped", "s_block_lag_ms_p90") + COUNTER_KEYS
     by: dict[int, dict] = {}
     bad = 0
     for b in blobs:
-        rows, nb = _jsonl(b)
-        bad += nb
-        for r in rows:
-            t = _int(r.get("t"))
+        for r in _iter_jsonl(b):
+            t = _int(r.get("t")) if r is not None else None
             if t is None:
                 bad += 1
                 continue
-            by.setdefault(t, r)
+            if t not in by:
+                by[t] = {k: r[k] for k in keep if k in r}
     return [by[t] for t in sorted(by)], bad
 
 
@@ -281,20 +343,19 @@ def bad_sample(r: dict) -> bool:
     return r.get("s_decoder_blobs_pinned") is not True or r.get("s_trade_event_v") is not True or ts is None or r["t"] * 1000 - ts > STATUS_MAX_AGE_MS
 
 
-COUNTER_KEYS = ("s_gaps", "s_skipped", "s_backlog_jumps", "s_retries", "s_breaker_trips", "c_gaps", "c_skipped")
+COUNTER_KEYS = ("s_gaps", "s_skipped", "s_backlog_jumps", "s_unresolved_dropped", "s_retries", "s_breaker_trips", "c_gaps", "c_skipped")
 
 
-def sample_stats(samples: list[dict], h: int) -> dict:
-    ts = [r["t"] * 1000 for r in samples]
-    inside = [r for r in samples if h <= r["t"] * 1000 < h + HOUR_MS]
-    lo = max([t for t in ts if t < h], default=None)
-    hi = min([t for t in ts if t >= h + HOUR_MS], default=None)
-    pts = [max(lo, h) if lo is not None else h] + [r["t"] * 1000 for r in inside] + [min(hi, h + HOUR_MS) if hi is not None else h + HOUR_MS]
+def sample_stats(samples: list[dict], ts: list[int], h: int) -> dict:
+    """`ts` = [t * 1000 for each sample] (sorted, parallel to `samples`), so each hour is a bisect slice."""
+    i0, i1 = bisect.bisect_left(ts, h), bisect.bisect_left(ts, h + HOUR_MS)
+    inside = samples[i0:i1]
+    lo = ts[i0 - 1] if i0 else None
+    hi = ts[i1] if i1 < len(ts) else None
+    pts = [max(lo, h) if lo is not None else h] + ts[i0:i1] + [min(hi, h + HOUR_MS) if hi is not None else h + HOUR_MS]
     resets = 0
-    seq = [r for r in samples if (h - HOUR_MS) <= r["t"] * 1000 < h + HOUR_MS]
+    seq = samples[max(i0 - 1, 0):i1]
     for a, b in zip(seq, seq[1:]):
-        if not (h <= b["t"] * 1000 < h + HOUR_MS):
-            continue
         for k in COUNTER_KEYS:
             va, vb = _int(a.get(k)), _int(b.get(k))
             if va is not None and vb is not None and vb < va:
@@ -314,6 +375,7 @@ def sample_stats(samples: list[dict], h: int) -> dict:
 def load_verified(data: bytes | None) -> dict[int, int]:
     """hour_ms -> the instant the engine host verified the closed hour: receiver events.jsonl (first `closed` event per hour) or the pusher's verified.json {"hours": {...}}."""
     out: dict[int, int] = {}
+    data = _bytes(data)
     if not data:
         return out
     try:
@@ -338,7 +400,9 @@ class Arrival:
 
     def __init__(self, data: bytes | None):
         pts = []
-        for r in _jsonl(data)[0]:
+        for r in _iter_jsonl(data):
+            if r is None:
+                continue
             a, t = _int(r.get("newest_pumpswap_arrival_ms")), _int(r.get("newest_pumpswap_t_recv_ms"))
             if a is not None and t is not None:
                 pts.append((a, t))
@@ -365,20 +429,29 @@ class Arrival:
         return worst / 1000.0
 
 
-def lag_stats(data: bytes | None, h: int) -> dict | None:
-    rows = [r for r in _jsonl(data)[0] if isinstance(r.get("minute"), str)]
-    sel = []
-    for r in rows:
+def load_lag(data: Any) -> tuple[list[int], list[tuple]]:
+    """(sorted minute starts, [(minute_ms, p50, p90)]) from the receiver's lag.jsonl (report-only)."""
+    rows = []
+    for r in _iter_jsonl(data):
+        if r is None or not isinstance(r.get("minute"), str):
+            continue
         try:
             m = parse_instant(r["minute"].replace("Z", ":00Z"))
         except ValueError:
             continue
-        if h <= m < h + HOUR_MS:
-            sel.append(r)
+        rows.append((m, r.get("lag_new_p50_ms"), r.get("lag_new_p90_ms")))
+    rows.sort(key=lambda x: x[0])
+    return [x[0] for x in rows], rows
+
+
+def lag_stats(idx: tuple[list[int], list[tuple]], h: int) -> dict | None:
+    keys, rows = idx
+    sel = rows[bisect.bisect_left(keys, h):bisect.bisect_left(keys, h + HOUR_MS)]
     if not sel:
         return None
-    p90 = [r["lag_new_p90_ms"] for r in sel if isinstance(r.get("lag_new_p90_ms"), (int, float))]
-    p50 = sorted(r["lag_new_p50_ms"] for r in sel if isinstance(r.get("lag_new_p50_ms"), (int, float)))
+    num = lambda v: isinstance(v, (int, float)) and not isinstance(v, bool)  # noqa: E731
+    p90 = [x[2] for x in sel if num(x[2])]
+    p50 = sorted(x[1] for x in sel if num(x[1]))
     return {"minutes": len(sel), "lag_new_p50_ms_median": p50[len(p50) // 2] if p50 else None, "lag_new_p90_ms_max": max(p90) if p90 else None}
 
 
@@ -386,7 +459,7 @@ def lag_stats(data: bytes | None, h: int) -> dict | None:
 def load_pool_cache(data: bytes | None) -> list[dict]:
     """The daily recorder's records [{utc_ms, pool_cache, nrestarts}] in file order: a JSON line with `utc`, then an optional `NRestarts=N` line that belongs to it."""
     out: list[dict] = []
-    for ln in (data or b"").decode("utf-8", "replace").splitlines():
+    for ln in _bytes(data).decode("utf-8", "replace").splitlines():
         ln = ln.strip()
         if ln.startswith("{"):
             try:
@@ -476,7 +549,8 @@ def restart_instants(rows: dict[int, dict]) -> list[int]:
 
 # ------------------------------------------------------------------------------------------------------------------------------ the table
 def evaluate(*, counts: bytes | None, silence: bytes | None, samples: list[bytes | None], events: bytes | None, arrival: bytes | None, lag: bytes | None,
-             pool_cache: bytes | None, thr: dict, h0: int, h1: int, now_ms: int, programs: tuple[str, ...], pins_spec: str | None) -> tuple[list[dict], dict]:
+             pool_cache: bytes | None, thr: dict, h0: int, h1: int, now_ms: int, programs: tuple[str, ...], pins_spec: str | None,
+             deadline_ms: int = READY_DEADLINE_MS) -> tuple[list[dict], dict]:
     """Rows of the TABLED hours of [h0, h1] and a summary (hours not tabled, input stats)."""
     rows, conflict, bad_lines = load_counts(counts)
     extra_sil = load_silences(silence)
@@ -491,7 +565,17 @@ def evaluate(*, counts: bytes | None, silence: bytes | None, samples: list[bytes
     recs = load_pool_cache(pool_cache)
     chains = {p: silence_chain(rows, p) for p in programs}
     closed = lambda h: h + HOUR_MS + CLOSE_GRACE_MS <= now_ms  # noqa: E731
-    tabled = lambda h: closed(h) and closed(h + HOUR_MS)  # noqa: E731
+    L = max(rows) if rows else None  # newest hour of the staged counts log
+    s_last = samp[-1]["t"] * 1000 if samp else None
+    lag_idx = load_lag(lag)
+    samp_ts = [r["t"] * 1000 for r in samp]
+
+    def seen(h: int) -> bool:
+        """Evidence has reached the start of h+1: the counts log holds a row of h+1 and (when a sampler is given) a sample with t >= h+1 start."""
+        return L is not None and L >= h + HOUR_MS and (not have_samples or (s_last is not None and s_last >= h + HOUR_MS))
+
+    # tabled: h and h+1 closed AND the evidence reached h+1, or the fixed deadline passed (then missing evidence fails the hour: Am.6 item 2.2). A slow copy never tables an hour early.
+    tabled = lambda h: closed(h) and closed(h + HOUR_MS) and (seen(h) or now_ms >= h + HOUR_MS + deadline_ms)  # noqa: E731
     not_tabled = [hour_key(h) for h in range(h0, h1 + HOUR_MS, HOUR_MS) if not tabled(h)]
     out: list[dict] = []
     for h in range(h0, h1 + HOUR_MS, HOUR_MS):
@@ -504,10 +588,11 @@ def evaluate(*, counts: bytes | None, silence: bytes | None, samples: list[bytes
         why: list[str] = []  # writer_hour_complete sub-reasons
         row: dict[str, Any] = {"schema": SCHEMA, "hour": iso(h), "counts_row": r is not None}
         if h in conflict:
-            unm.append("counts_duplicate_conflict")
             r = None
         elif r is None:
             failed.append("counts_row_missing")
+        if conflict & {h - HOUR_MS, h, h + HOUR_MS}:
+            unm.append("counts_duplicate_conflict")  # two different rows for an hour poison that hour and both neighbours (the filing rule and the silence chain read them)
         if r is not None and nxt is None and (h + HOUR_MS) not in conflict:
             unm.append("next_counts_row_missing")  # a span that began in h can be filed in h+1
         if r is not None and (h in unreadable or (h + HOUR_MS) in unreadable):
@@ -541,7 +626,8 @@ def evaluate(*, counts: bytes | None, silence: bytes | None, samples: list[bytes
 
         # --- max_loss_span_s: gap rows of the book's programs or prog `all` that overlap h (filed in h or h+1; spans are data_loss by Am.23 item 3)
         ok_spans = r is not None and h not in truncated and (h + HOUR_MS) not in truncated and nxt is not None
-        ov = [(k, p, f, t) for (k, p, f, t, fh) in spans if fh in (h, h + HOUR_MS) and (p in programs or p == "all") and overlaps(f, t, h)] if ok_spans else []
+        # overlap is computed from the span itself over EVERY row of the log, not from the hour a row was filed in (a span over 1 h is filed in a later hour than it began)
+        ov = [(k, p, f, t) for (k, p, f, t, fh) in spans if (p in programs or p == "all") and overlaps(f, t, h)] if ok_spans else []
         row["data_loss_rows_overlapping"] = len(ov) if ok_spans else None
         row["max_loss_span_s"] = max([(t - f) / 1000.0 for _, _, f, t in ov] or [0.0]) if ok_spans else None
         if r is not None and (h in truncated or (h + HOUR_MS) in truncated):
@@ -560,29 +646,30 @@ def evaluate(*, counts: bytes | None, silence: bytes | None, samples: list[bytes
 
         # --- samples
         if have_samples:
-            ss = sample_stats(samp, h)
+            ss = sample_stats(samp, samp_ts, h)
             row.update(samples_n=ss["n"], sample_gap_max_s=ss["max_gap_s"], status_bad_samples=ss["bad"] if ss["n"] else None,
                        follower_counter_resets=ss["counter_resets"], follower_counter_range=ss["counter_range"], block_lag_ms_p90_max=ss["block_lag_ms_p90_max"])
         else:
             row.update(samples_n=None, sample_gap_max_s=None, status_bad_samples=None, follower_counter_resets=None, follower_counter_range=None, block_lag_ms_p90_max=None)
 
         # --- input age (transport B, pumpswap only)
-        age_by: dict[str, float | None] = {}
-        for p in programs:
-            age_by[p] = arr.max_age_s(h) if (p == "pumpswap" and have_arrival) else None
-        row["input_age_by_prog_s"] = age_by
-        row["max_input_age_s"] = None if any(v is None for v in age_by.values()) else max(age_by.values())  # type: ignore[type-var]
+        # The newest row across the book's programs is at least as new as the newest PumpSwap row, so the PumpSwap arrival age bounds the union age from above (QP on #1191 C1).
+        # Unmeasurable only when pumpswap is not among the book's programs (the arrival log holds no other program).
+        pw_age = arr.max_age_s(h) if (have_arrival and "pumpswap" in programs) else None
+        row["input_age_by_prog_s"] = {p: (pw_age if p == "pumpswap" else None) for p in programs}
+        row["input_age_basis"] = "pumpswap_upper_bound" if "pumpswap" in programs else None
+        row["max_input_age_s"] = pw_age
 
         # --- report-only
         if r is not None:
-            tot = sum(n for n in (r.get("rows") or {}).values() if _int(n) is not None) if isinstance(r.get("rows"), dict) else None
+            tot = r.get("rows_total")
             row.update(rows_total=tot, rows_per_min=None if tot is None else round(tot / 60.0, 3), no_tx_index=r.get("no_tx_index"), dropped_rows=r.get("dropped_rows"),
                        late_rows=r.get("late_rows"), skips=r.get("skips"), writer_status_failures=_int(r.get("status_bad_samples")))
             nt = r.get("no_tx_index")
             row["tripwire_mixed_group"] = (_int(nt.get("pool_slots_mixed")) or 0) > 0 if isinstance(nt, dict) and _int(nt.get("pool_slots_mixed")) is not None else None
         else:
             row.update(rows_total=None, rows_per_min=None, no_tx_index=None, dropped_rows=None, late_rows=None, skips=None, writer_status_failures=None, tripwire_mixed_group=None)
-        row["transport_lag"] = lag_stats(lag, h)
+        row["transport_lag"] = lag_stats(lag_idx, h)
         row.update(pool_cache_fields(recs, h))
         # QP-RULING-1102 R2 (c): a FOLLOWER start (a sampler counter going down, or NRestarts up between the daily records). A writer restart is not one (it has its own field above).
         row["tripwire_follower_restart"] = bool((row.get("follower_counter_resets") or 0) > 0 or (row.get("nrestarts_delta") or 0) > 0)
@@ -619,13 +706,14 @@ def evaluate(*, counts: bytes | None, silence: bytes | None, samples: list[bytes
         row["failed_labels"] = {n: thr[n]["label"] for n in sorted(set(failed + unm)) if n in thr}
         row["excluded"] = bool(failed or unm)
         out.append(row)
-    summary = {"not_tabled_hours": not_tabled, "counts_rows": len(rows), "counts_bad_lines": bad_lines, "sample_rows": len(samp), "sample_bad_lines": bad_samp_lines, "verified_hours": len(verified),
+    summary = {"not_tabled_hours": not_tabled, "counts_rows": len(rows), "counts_newest_hour_ms": L, "counts_bad_lines": bad_lines, "sample_rows": len(samp), "sample_bad_lines": bad_samp_lines, "verified_hours": len(verified),
                "arrival_rows": len(arr.arr), "pins_source": pins_source, "pins": expected, "writer_restart_instants": [iso(x) for x in restarts]}
     return out, summary
 
 
 def writer_status_header(data: bytes | None) -> dict | None:
     """Liveness fields of the writer heartbeat (the receiver's writer_status.json relay {"w": {...}} or the writer's own status.json). Counts, states and timings only."""
+    data = _bytes(data)
     if not data:
         return None
     try:
@@ -645,8 +733,12 @@ def writer_status_header(data: bytes | None) -> dict | None:
     return out
 
 
-def sha(b: bytes | None) -> dict | None:
-    return None if b is None else {"bytes": len(b), "sha256": hashlib.sha256(b).hexdigest()}
+def sha(b: Any) -> dict | None:
+    if b is None:
+        return None
+    if isinstance(b, Src):
+        return {"bytes": b.size, "sha256": b.sha256}
+    return {"bytes": len(b), "sha256": hashlib.sha256(b).hexdigest()}
 
 
 def render(rows: list[dict], thr_sha: str, summary: dict, programs: tuple[str, ...], inputs: dict) -> list[str]:
@@ -661,6 +753,8 @@ def render(rows: list[dict], thr_sha: str, summary: dict, programs: tuple[str, .
 def bar(counts: bytes | None, clock_ms: int, t_max_s: float, programs: tuple[str, ...], pins_spec: str | None) -> dict:
     """Over the 24 closed UTC hours before the clock, per program: count of gap rows of that program or prog `all` in the counts log (rows are filed by write hour, as the
     log holds them), lambda = count / 86400 s, p = 1 - exp(-lambda * T_max). PASS iff every program has p <= 0.025 and the writer was at the registered pins for all 24 hours."""
+    if pins_spec in (None, "auto"):
+        raise ValueError("a registration bar needs the registered pins file (--pins <file>); `auto` and no pins are refused (QP on #1191 C3, reviewer C2)")
     rows, conflict, bad = load_counts(counts)
     h1 = clock_ms // HOUR_MS * HOUR_MS
     if h1 != clock_ms:
@@ -700,6 +794,11 @@ def write_daily(out_dir: Path, date: str, lines: list[str]) -> tuple[int, dict]:
     info: dict[str, Any] = {"type": "daily", "date": date, "path": str(path), "hours_tabled": len(new_hours)}
     if path.exists():
         old = [ln for ln in path.read_text().splitlines() if ln.strip()]
+        new_final = json.loads(lines[-1])
+        old_final = json.loads(old[-1]) if old and '"type":"sha256"' in old[-1] else {}
+        if old_final.get("programs") != new_final["programs"] or old_final.get("thresholds_sha256") != new_final["thresholds_sha256"]:
+            info.update(status="REFUSED_other_program_set_or_thresholds", existing_programs=old_final.get("programs"), programs=new_final["programs"])
+            return 4, info  # one table per program set: a second job of another set uses its own out dir
         old_hours = {json.loads(ln)["hour"]: ln for ln in old if '"type":"sha256"' not in ln}
         diff = sorted(h for h in old_hours if h in new_hours and old_hours[h] != new_hours[h])
         lost = sorted(h for h in old_hours if h not in new_hours)
@@ -743,11 +842,11 @@ def _programs(s: str) -> tuple[str, ...]:
     return ps
 
 
-def _run_table(a: argparse.Namespace, h0: int, h1: int) -> tuple[list[str], list[dict]]:
+def _run_table(a: argparse.Namespace, h0: int, h1: int) -> tuple[list[str], list[dict], dict]:
     thr_b = read_input(a.thresholds)
     if thr_b is None:
         raise ValueError("thresholds file unreadable")
-    thr = load_thresholds(thr_b)
+    thr = load_thresholds(_bytes(thr_b))
     programs = _programs(a.programs)
     now_ms = int(time.time() * 1000) if not a.now else parse_instant(a.now)
     blobs = {"counts": read_input(a.counts), "silence": read_input(a.silence), "events": read_input(a.events), "arrival": read_input(a.arrival), "lag": read_input(a.lag),
@@ -762,7 +861,7 @@ def _run_table(a: argparse.Namespace, h0: int, h1: int) -> tuple[list[str], list
     blobs["writer_status"] = ws
     inputs = {k: sha(v) for k, v in blobs.items()}
     inputs["samples"] = [sha(b) for b in samples]
-    return render(rows, hashlib.sha256(thr_b).hexdigest(), summary, programs, inputs), rows
+    return render(rows, thr_b.sha256, summary, programs, inputs), rows, summary
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -784,6 +883,8 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--pins", default=None)
     a = ap.parse_args(argv)
     try:
+        if a.cmd in ("bar", "daily") and a.pins in (None, "auto"):
+            raise ValueError(f"{a.cmd} needs the registered pins file (--pins <file>); `auto` and no pins are refused (only a dry `table` may use auto)")
         if a.cmd == "bar":
             res = bar(read_input(a.counts), parse_instant(a.clock), a.t_max_s, _programs(a.programs), a.pins)
             print(canon(res))
@@ -792,11 +893,19 @@ def main(argv: list[str] | None = None) -> int:
             h0, h1 = parse_hour(a.frm), parse_hour(a.to)
             if h1 < h0:
                 raise ValueError("--to before --from")
-            lines, _ = _run_table(a, h0, h1)
+            lines, _, _ = _run_table(a, h0, h1)
             print("\n".join(lines))
             return 0
         day = parse_hour(a.date + "T00")
-        lines, _ = _run_table(a, day, day + 23 * HOUR_MS)
+        lines, rows, summ = _run_table(a, day, day + 23 * HOUR_MS)
+        # fail closed: a missing, empty or stale counts log (no row at or after the date's first hour) writes NOTHING (exit 5)
+        if not summ["counts_rows"] or summ["counts_newest_hour_ms"] is None or summ["counts_newest_hour_ms"] < day:
+            print(canon({"type": "daily", "date": a.date, "status": "COUNTS_MISSING_EMPTY_OR_STALE", "counts_rows": summ["counts_rows"], "counts_newest_hour": None if summ["counts_newest_hour_ms"] is None else iso(summ["counts_newest_hour_ms"])}))
+            return 5
+        # readiness (QP on #1191 C4): the table is all 24 hours or nothing; before the fixed deadline D+1T03:15Z a slow copy is waited for (NOT_READY, exit 6, nothing written)
+        if len(rows) < 24:
+            print(canon({"type": "daily", "date": a.date, "status": "NOT_READY", "hours_tabled": len(rows), "not_tabled_hours": summ["not_tabled_hours"], "deadline": iso(day + 24 * HOUR_MS + READY_DEADLINE_MS)}))
+            return 6
         rc, info = write_daily(Path(a.out_dir), a.date, lines)
         print(canon(info))
         return rc
