@@ -18,7 +18,7 @@ ALLOWED = [re.compile(p) for p in (
     r"S1T_SMOKE_AGE_MS p50=(\d+|NA) p90=(\d+|NA) max=(\d+|NA)",
     r"S1T_SMOKE_CLASS_UNKNOWN (yes|no)",
     r"S1T_SMOKE_SIDE_FEED (reconnects=\d+ feed_errors=\d+ decode_errors=\d+|unavailable)",
-    r"S1T_SMOKE_REPORT dropped_rows (unavailable|([a-z_]+=\d+ ?)+)",
+    r"S1T_SMOKE_REPORT input_rows (unavailable|([a-z_]+=\d+ ?)+)",
     r"S1T_SMOKE_REPORT rows_per_min=(\d+\.\d|unavailable)",
     r"S1T_SMOKE_REPORT rss_peak_mib=(\d+\.\d|unavailable)",
     r"S1T_SMOKE_VERDICT (PASS|FAIL)")]
@@ -56,12 +56,13 @@ def excluded(reason: str = "unclassified", i: int = 5) -> dict:
 
 def stats(k: int, step_s: int) -> dict:
     return {"type": "tip_input_stats", "schema": "s", "smoke_outcome_blocked": 0, "t_ms": T0 + k * step_s * 1000, "problem": None, "halted": False,
-            "driver": {"rows_trade_pumpswap": 777, "rows_pool_create": 59, "rows_bad": 2, "rows_bad_trade_fields": 2},
-            "source": {"polls": 5, "rows": k * 100, "reader_loss_bad_lines": 1, "tap_bad_lines": 1}}
+            "driver": {"rows_trade_pumpswap": 777, "rows_pool_create": 59, "rows_complete": 888, "rows_ignored_bonding": 666, "rows_bad": 2,
+                       "rows_bad_trade_fields": 2, "rows_before_start": 4, "problems": 1, "gap_rows": 3, "gap_rows_flagging": 2},
+            "source": {"polls": 5, "rows": k * 100, "reader_loss_bad_lines": 1, "tap_bad_lines": 1, "polls_unhealthy": 2, "reader_errors": 0}}
 
 
 def build(tmp_path, *, n_trig=37, n_pool=59, hours=25.0, ages=None, exit_code=0, log="INFO ok\n", rss=None, extra=(), start=None, tip_start=True,
-          smoke=True, with_stats=True, stats_step_s=600, side=None, trig_kw=None):
+          smoke=True, with_stats=True, stats_step_s=600, side=None, trig_kw=None, errors_log=None):
     out, rep = tmp_path / "out", tmp_path / "rep"
     out.mkdir()
     rep.mkdir()
@@ -81,7 +82,8 @@ def build(tmp_path, *, n_trig=37, n_pool=59, hours=25.0, ages=None, exit_code=0,
     lines += list(extra)
     (out / "h5-shadow-2027-01-15T08.jsonl").write_text("\n".join(lines) + "\n")
     (out / "h5-shadow-status.json").write_text("{not json")  # a decoy: never read
-    (out / "h5-shadow-errors.log").write_text("Traceback (decoy: never read)\n")
+    if errors_log is not None:  # S*'s ErrorLog creates the file on the first error only
+        (out / "h5-shadow-errors.log").write_text(errors_log)
     (rep / "process.log").write_text(log)
     rows = rss if rss is not None else [(1_000 + k * 600, 1_000_000_000 + k * 1000, 4242) for k in range(145)]
     (rep / "rss.tsv").write_text("".join(f"{t}\t{r}\t{p}\n" for t, r, p in rows))
@@ -125,7 +127,7 @@ def test_all_pass_and_exit_zero(tmp_path, capsys):
 def test_stdout_has_no_trigger_or_pool_count(tmp_path, capsys):
     rc, out, _ = run(tmp_path, capsys, n_trig=37, n_pool=59, side={"ws_restarts": 5, "ws_feed_errors": 1, "ws_decode_errors": 0})
     assert rc == 0
-    for banned in ("37", "59", "777"):  # trigger count, pool count (also the driver's rows_pool_create decoy), the driver's per-type trade rows
+    for banned in ("37", "59", "777", "888", "666"):  # trigger count, pool count (also the driver's rows_pool_create decoy), and the per-kind applied-row decoys
         assert banned not in out, banned
     for ln in out.splitlines():
         assert any(p.fullmatch(ln) for p in ALLOWED), ln
@@ -133,12 +135,14 @@ def test_stdout_has_no_trigger_or_pool_count(tmp_path, capsys):
 
 def test_report_lines(tmp_path, capsys):
     _, out, _ = run(tmp_path, capsys)
-    assert "S1T_SMOKE_REPORT dropped_rows apply_errors=0 bad_lines=1 pool_create_fields=0 trade_fields=2 trade_venue=0 zst_errors=0" in out
+    codes = {"apply_errors": 0, "bad_lines": 1, "pool_create_fields": 0, "trade_fields": 2, "trade_venue": 0, "zst_errors": 0,  # reader loss and rows_bad_*
+             "rows_before_start": 4, "problems": 1, "gap_rows": 3, "gap_rows_flagging": 2, "reader_errors": 0, "polls_unhealthy": 2}  # Q3
+    assert "S1T_SMOKE_REPORT input_rows " + " ".join(f"{k}={v}" for k, v in sorted(codes.items())) in out
     assert "S1T_SMOKE_REPORT rows_per_min=10.0" in out  # source.rows 15000 over 1500 min
     assert f"S1T_SMOKE_REPORT rss_peak_mib={(1_000_000_000 + 144 * 1000) / j.MIB:.1f}" in out
     d = sub(tmp_path, "n")
     _, out, _ = run(d, capsys, with_stats=False, rss=[])
-    assert "dropped_rows unavailable" in out and "rows_per_min=unavailable" in out and "rss_peak_mib=unavailable" in out
+    assert "input_rows unavailable" in out and "rows_per_min=unavailable" in out and "rss_peak_mib=unavailable" in out
 
 
 @pytest.mark.parametrize("mut,name", [
@@ -199,9 +203,33 @@ def test_missing_process_log_fails_c(tmp_path, capsys):
     assert flag(capsys.readouterr().out, "C_NO_CRASH") == "FAIL"
 
 
-def test_the_errors_log_and_status_file_are_not_read(tmp_path, capsys):
-    out, rep, _ = build(tmp_path)  # the decoys hold 'Traceback' and invalid JSON
+def test_the_status_file_is_not_read(tmp_path, capsys):
+    out, rep, _ = build(tmp_path)  # h5-shadow-status.json is a decoy of invalid JSON
     assert j.main(argv(out, rep, 0)) == 0
+
+
+def test_any_traceback_in_the_errors_log_fails_c_and_is_never_printed(tmp_path, capsys):
+    """Q2: S*'s h5-shadow-errors.log (ErrorLog) is read by a byte search for the literal; ANY traceback there or in process.log fails C."""
+    text = '{"t_ms":1,"exc":"ValueError","msg":"boom"}\nTraceback (most recent call last):\n  File "x_marker_zz.py", line 1, in f\nValueError: boom\n'
+    rc, out, err = run(tmp_path, capsys, errors_log=text)
+    assert flag(out, "C_NO_CRASH") == "FAIL" and rc == 1
+    assert "marker_zz" not in out + err and "Traceback" not in out + err and "boom" not in out + err  # the content is never printed
+    for n, other in enumerate(['{"t_ms":1,"exc":"ValueError","msg":"Traceback"}\n', "", "Traceback (decoy)\n"]):  # not the literal: no finding
+        d = sub(tmp_path, f"e{n}")
+        rc, out, _ = run(d, capsys, errors_log=other)
+        assert flag(out, "C_NO_CRASH") == "PASS" and rc == 0, other
+    _, out, _ = run(sub(tmp_path, "both"), capsys, log="Traceback (most recent call last):\n", errors_log="")  # and one in process.log alone fails too
+    assert flag(out, "C_NO_CRASH") == "FAIL"
+    _, out, _ = run(sub(tmp_path, "none"), capsys)  # no errors log at all: none
+    assert flag(out, "C_NO_CRASH") == "PASS"
+
+
+def test_input_health_codes_default_to_zero_and_per_kind_counters_stay_unread(tmp_path, capsys):
+    """Q3: a stats record with none of the new counters prints them as 0; the applied-row counters are in no output."""
+    rec = {"type": "tip_input_stats", "t_ms": T0 + 1, "driver": {"rows_pool_create": 59, "rows_trade_pumpswap": 777}, "source": {"rows": 10}}
+    out_dir, rep, _ = build(tmp_path, with_stats=False, extra=[L(rec)])
+    res = j.judge(out_dir, rep, 0, 3500, 578)
+    assert res["dropped"] == {k: 0 for k in (*j.LOSS_CODES, *j.BAD_CODES, *j.DRIVER_CODES, *j.SOURCE_CODES)}
 
 
 def test_b_triggers_or_stats_through_the_run(tmp_path, capsys):
