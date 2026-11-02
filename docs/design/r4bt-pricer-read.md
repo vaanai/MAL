@@ -8,7 +8,7 @@ Code and records for the arena book `r4bt-a1` under the r4-b-T DEC-031 amendment
 
 | File | Role |
 | --- | --- |
-| `tools/r4bt_attempts.py`, `tools/test_r4bt_attempts.py` | the outcome-blind counter, byte copy of the merged #1188 (head 1b9d2df1) |
+| `tools/r4bt_attempts.py`, `tools/test_r4bt_attempts.py` | the outcome-blind counter, byte copy of main's #1195 versions (blobs fd7fccca08377f8e53e7050baf5cf690fba620c2 and 4796a1453ff970f5f7463708e27c4b1ae6816644) |
 | `tools/r4bt_gate.py` | "EXP-027 read written" record (route a or b; route b also names the A2 C4 and C5 commits, both checked as ancestors of origin/main after a quiet fetch), closed roots, own-registry check, engine and scorer pins, closure walk and blob comparison |
 | `tools/r4bt_price.py` | the pricer |
 | `tools/r4bt_read.py` | the read wrapper |

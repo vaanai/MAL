@@ -6,15 +6,17 @@ flags and `synthetic_share_high` as always-hard). This tool reads the SAME daily
 `halt.flags`) and pins file, through `a3_redeploy_check.pins_diff` and `_norm_flags` (imported, not copied), and sorts the record into:
 
   HALT         the window ends at the HALT INSTANT (Q2 item 2, earliest possible, no judgement), for any of:
-                 - an account pin change (bonding_fee_config, pumpswap_fee_config, pumpswap_global_config): the account's `write_utc` if the record has it, else the last
-                   clean run's `run_utc` (`--last-clean-run-utc`), else the pins' `pinned_utc`;
-                 - the fees program's deploy slot: its `deploy_utc` (else as above);
+                 - an account pin change (bonding_fee_config, pumpswap_fee_config, pumpswap_global_config): the last clean run's `run_utc` (`--last-clean-run-utc`), else the
+                   pins' `pinned_utc` (the monitor records no account write instant);
+                 - the fees program's deploy slot: the EARLIEST write of the fees program since the last clean run (`--writes`), else the last clean run (else `pinned_utc`);
+                   NEVER the record's `deploy_utc`, which dates only the newest write (QP on #1196 C2: on 10-19 the first write was 15:46Z and deploy_utc said 17:47Z);
                  - a follower decoder-pin failure: the FIRST failing sample (`--follower-samples`, JSONL with ts_ms, decoder_blobs_pinned, trade_event_v and optionally
                    decoder_blobs against `--decoder-ref`);
                  - the DEAD-MAN: `pins_changed` unevaluated on two consecutive UTC dates (a date with no run counts as unevaluated; one unevaluated run alone does not halt):
                    the first unevaluated run's `run_utc`, or 00:00Z of the first date with no run;
-                 - a program-only pump / PumpSwap redeploy WITHOUT a PASS of the r4-b-T decode check within 24 h of its earliest write (FAIL, ERROR, a late PASS, or no result
-                   once 24 h have passed): the halt is at that WRITE's instant (the redeploy instant), not at the check's;
+                 - a program-only pump / PumpSwap redeploy WITHOUT a PASS of the r4-b-T decode check within 24 h of its EARLIEST write since the last clean run (FAIL, ERROR,
+                   a late PASS, or no result once 24 h have passed): the halt is at that earliest write's instant (the enumerated writes of `--writes`, else the last clean
+                   run, else `pinned_utc`), and the 24 h deadline runs from the same instant; never from `deploy_utc`;
                  - a record it cannot classify (pins_changed set with no typed difference, a difference with no flag, an unknown halt flag): the last clean run, else run_utc.
                A halt ends the window: attempts at or after it never count; if the boundary has not come before it the read is NOT_DECIDABLE (the pricer and the read refuse a
                registry stopped before the boundary); a counted trade whose span contains it is an `a3_halt` exclusion (the pricer).
@@ -24,7 +26,7 @@ flags and `synthetic_share_high` as always-hard). This tool reads the SAME daily
 The four BOOST flags and `synthetic_share_high` never halt r4-b-T; they are listed under `not_halting` (counted as monitor runs, disclosed). The decode-check input must carry
 `"profile": "r4bt_decode_check_v1"` (tools/r4bt_decode_check.py); `a3_redeploy_check`'s own H5 verdict is never an input.
 
-    python -m tools.r4bt_a3 classify --record REC --pins PINS [--follower-samples S] [--decoder-ref R] [--decode-checks D] [--applied-log L] [--last-clean-run-utc U] [--out V]
+    python -m tools.r4bt_a3 classify --record REC --pins PINS [--writes W.json] [--follower-samples S] [--decoder-ref R] [--decode-checks D] [--applied-log L] [--last-clean-run-utc U] [--out V]
     python -m tools.r4bt_a3 apply --verdict V --registry OWN_REGISTRY [--arena-registry /data/mal/arena/bots.json] --applied-log L
 
 `apply` appends ONE stop line to r4-b-T's own registry and, when given, to the shared arena registry (Q2 item 7; `stop_bot` already refuses a second stop, an earlier stop
@@ -116,8 +118,19 @@ def decoder_failure_ms(samples: Sequence[Mapping[str, Any]], decoder_ref: Sequen
     return min(bad) if bad else None
 
 
+def earliest_writes(writes: Sequence[Mapping[str, Any]] | None) -> dict[str, int]:
+    """{program name: the EARLIEST write instant (ms)} from the enumerated writes ([{"name", "slot", "at_ms"}], e.g. a3_redeploy_check's expand_writes); bad entries are ignored."""
+    out: dict[str, int] = {}
+    for w in (writes or []):
+        at = w.get("at_ms")
+        if isinstance(at, int) and not isinstance(at, bool) and at >= MIN_MS and w.get("name"):
+            out[w["name"]] = min(at, out.get(w["name"], at))
+    return out
+
+
 def classify(rec: Mapping[str, Any], pins: Mapping[str, Any], *, now_ms: int, last_clean_run_utc: str | None = None, follower_samples: Sequence[Mapping] | None = None,
-             decoder_ref: Sequence[str] | None = None, decode_checks: Mapping[str, Any] | None = None, history: Sequence[Mapping[str, Any]] = ()) -> dict:
+             decoder_ref: Sequence[str] | None = None, decode_checks: Mapping[str, Any] | None = None, history: Sequence[Mapping[str, Any]] = (),
+             writes: Sequence[Mapping[str, Any]] | None = None) -> dict:
     """Pure (now_ms is the job's clock)."""
     try:
         run_ms = G.utc_ms(rec.get("run_utc"))
@@ -127,18 +140,17 @@ def classify(rec: Mapping[str, Any], pins: Mapping[str, Any], *, now_ms: int, la
     clean_ms = _utc(last_clean_run_utc) if last_clean_run_utc else None
     floor_ms = clean_ms if clean_ms is not None else (_utc(pins.get("pinned_utc")) or run_ms)  # the earliest instant the change can be dated to
     fallback_ms = clean_ms if clean_ms is not None else run_ms
+    first_write = earliest_writes(writes)  # the earliest write per program since the last clean run; deploy_utc is never used (it dates the newest write)
     hard: list[tuple[int, str]] = []
     writes: list[dict] = []
     diffs = pins_diff(rec, pins)
     for d in diffs:
         if d["kind"] == "account" and d["name"] in HARD_ACCOUNTS:
-            at = _utc(((rec.get("accounts") or {}).get(d["name"]) or {}).get("write_utc")) or floor_ms
-            hard.append((at, f"account pin {d['name']} changed"))
+            hard.append((floor_ms, f"account pin {d['name']} changed"))
         elif d["kind"] == "program" and d["name"] in HARD_PROGRAMS:
-            at = _utc(d.get("deploy_utc")) or floor_ms
-            hard.append((at, f"fees program deploy slot {d['old']} -> {d['new']}"))
+            hard.append((first_write.get(d["name"], floor_ms), f"fees program deploy slot {d['old']} -> {d['new']}"))
         elif d["kind"] == "program" and d["name"] in RECORD_PROGRAMS:
-            writes.append({"name": d["name"], "slot": d["new"], "old_slot": d["old"], "deploy_utc": d.get("deploy_utc"), "write_ms": _utc(d.get("deploy_utc")) or fallback_ms})
+            writes.append({"name": d["name"], "slot": d["new"], "old_slot": d["old"], "deploy_utc": d.get("deploy_utc"), "write_ms": first_write.get(d["name"], floor_ms)})
         else:
             hard.append((fallback_ms, f"unknown pins difference {d['kind']} {d['name']}"))
     pc = flags["pins_changed"]
@@ -254,6 +266,7 @@ def main(argv: Sequence[str] | None = None, *, now_ms: int | None = None) -> int
     c.add_argument("--follower-samples", default=None)
     c.add_argument("--decoder-ref", default=None, help="JSON list of the three EXP027_DECODER_REF blobs")
     c.add_argument("--decode-checks", default=None)
+    c.add_argument("--writes", default=None, help="JSON list of the enumerated upgrade writes since the last clean run: [{name, slot, at_ms}]")
     c.add_argument("--applied-log", default=None)
     c.add_argument("--last-clean-run-utc", default=None)
     c.add_argument("--out", default=None)
@@ -271,7 +284,8 @@ def main(argv: Sequence[str] | None = None, *, now_ms: int | None = None) -> int
             ref = json.loads(Path(a.decoder_ref).read_text()) if a.decoder_ref else None
             checks = json.loads(Path(a.decode_checks).read_text()) if a.decode_checks else None
             v = classify(rec, json.loads(Path(a.pins).read_text()), now_ms=now, last_clean_run_utc=a.last_clean_run_utc, follower_samples=samples, decoder_ref=ref,
-                         decode_checks=checks, history=read_history(a.applied_log))
+                         decode_checks=checks, history=read_history(a.applied_log),
+                         writes=json.loads(Path(a.writes).read_text()) if a.writes else None)
             text = json.dumps(v, sort_keys=True)
             if a.out:
                 if Path(a.out).exists():

@@ -20,8 +20,10 @@ RUN = "2026-11-08T07:00:00Z"
 RUN_MS = G.utc_ms(RUN)
 CLEAN = "2026-11-07T07:00:00Z"
 CLEAN_MS = G.utc_ms(CLEAN)
-WRITE_UTC = "2026-11-08T05:00:00Z"
+WRITE_UTC = "2026-11-08T05:00:00Z"  # the record's deploy_utc: it dates only the NEWEST write and must never date a halt or a deadline
 WRITE_MS = G.utc_ms(WRITE_UTC)
+EARLY_MS = G.utc_ms("2026-11-08T03:46:00Z")  # the earliest write since the last clean run (10-19: first write 15:46Z, deploy_utc 17:47Z)
+W_PUMP = [{"name": "pump", "slot": 101, "at_ms": EARLY_MS}]
 
 
 def rec(accounts=None, programs=None, flags=None, run=RUN, unevaluated=False):
@@ -53,48 +55,65 @@ def test_clean_record_is_none():
 
 
 @pytest.mark.parametrize("name", A.HARD_ACCOUNTS)
-def test_account_pin_halts_at_the_write_instant_else_the_last_clean_run_else_the_pin_date(name):
-    r = rec(accounts={name: {"sha256": "b" * 64, "write_utc": WRITE_UTC}}, flags=["pins_changed"])
-    assert cl(r)["halt_at_ms"] == WRITE_MS
-    r = rec(accounts={name: "b" * 64}, flags=["pins_changed"])
+def test_account_pin_halts_at_the_last_clean_run_else_the_pin_date_never_a_record_write_time(name):
+    r = rec(accounts={name: {"sha256": "b" * 64, "write_utc": WRITE_UTC}}, flags=["pins_changed"])  # the monitor records no account write instant: a field of that name is ignored
     v = cl(r, last_clean_run_utc=CLEAN)
-    assert v["verdict"] == "HALT" and v["halt_at_ms"] == CLEAN_MS and v["halt_at_ms"] != RUN_MS
+    assert v["verdict"] == "HALT" and v["halt_at_ms"] == CLEAN_MS and v["halt_at_ms"] not in (RUN_MS, WRITE_MS)
     assert cl(r)["halt_at_ms"] == G.utc_ms(PINS["pinned_utc"])
 
 
-def test_fees_program_halts_at_its_deploy_instant_pump_and_pumpswap_do_not_halt_by_themselves():
-    v = cl(rec(programs={"fees": 301}, flags=["pins_changed"]))
-    assert v["verdict"] == "HALT" and v["halt_at_ms"] == WRITE_MS
-    v = cl(rec(programs={"pump": 101}, flags=["pins_changed"]), now=WRITE_MS + H)
-    assert v["verdict"] == "NEEDS_CHECK" and v["halt_at_ms"] is None and v["needs_check"][0]["deadline_ms"] == WRITE_MS + A.CHECK_WINDOW_MS
+def test_fees_program_halts_at_its_earliest_write_not_deploy_utc_and_pump_pumpswap_do_not_halt_by_themselves():
+    fr = rec(programs={"fees": 301}, flags=["pins_changed"])
+    v = cl(fr, writes=[{"name": "fees", "slot": 301, "at_ms": EARLY_MS}])
+    assert v["verdict"] == "HALT" and v["halt_at_ms"] == EARLY_MS != WRITE_MS
+    assert cl(fr, last_clean_run_utc=CLEAN)["halt_at_ms"] == CLEAN_MS  # no enumerated writes: the last clean run
+    v = cl(rec(programs={"pump": 101}, flags=["pins_changed"]), now=EARLY_MS + H, writes=W_PUMP)
+    assert v["verdict"] == "NEEDS_CHECK" and v["halt_at_ms"] is None and v["needs_check"][0]["deadline_ms"] == EARLY_MS + A.CHECK_WINDOW_MS
 
 
 def test_program_redeploy_24h_rule():
     r = rec(programs={"pump": 101}, flags=["pins_changed"])
-    ok = checks({"name": "pump", "slot": 101, "verdict": "PASS", "at_ms": WRITE_MS + 10 * H})
-    assert cl(r, now=WRITE_MS + 11 * H, decode_checks=ok)["verdict"] == "RECORD_ONLY"
-    # no result once 24 h passed: a hard halt AT THE WRITE, never open-ended
-    v = cl(r, now=WRITE_MS + 25 * H)
-    assert v["verdict"] == "HALT" and v["halt_at_ms"] == WRITE_MS
+    ok = checks({"name": "pump", "slot": 101, "verdict": "PASS", "at_ms": EARLY_MS + 10 * H})
+    assert cl(r, now=EARLY_MS + 11 * H, decode_checks=ok, writes=W_PUMP)["verdict"] == "RECORD_ONLY"
+    # no result once 24 h passed: a hard halt AT THE EARLIEST WRITE, never open-ended
+    v = cl(r, now=EARLY_MS + 25 * H, writes=W_PUMP)
+    assert v["verdict"] == "HALT" and v["halt_at_ms"] == EARLY_MS
     # FAIL / ERROR: the halt is the redeploy instant, not the check's
     for verdict in ("FAIL", "ERROR"):
-        bad = checks({"name": "pump", "slot": 101, "verdict": verdict, "at_ms": WRITE_MS + 3 * H})
-        v = cl(r, now=WRITE_MS + 4 * H, decode_checks=bad)
-        assert v["verdict"] == "HALT" and v["halt_at_ms"] == WRITE_MS
-    # a PASS later than 24 h, or one with no time, does not count
-    for at in (WRITE_MS + 30 * H, None):
+        bad = checks({"name": "pump", "slot": 101, "verdict": verdict, "at_ms": EARLY_MS + 3 * H})
+        v = cl(r, now=EARLY_MS + 4 * H, decode_checks=bad, writes=W_PUMP)
+        assert v["verdict"] == "HALT" and v["halt_at_ms"] == EARLY_MS
+    # a PASS later than 24 h of the EARLIEST write, or one with no time, does not count
+    for at in (EARLY_MS + 30 * H, None):
         late = checks({"name": "pump", "slot": 101, "verdict": "PASS", "at_ms": at})
-        assert cl(r, now=WRITE_MS + 31 * H, decode_checks=late)["halt_at_ms"] == WRITE_MS
-    # "a decode change found later": a later FAIL beside an earlier PASS for the same write halts at the write
-    both = checks({"name": "pump", "slot": 101, "verdict": "PASS", "at_ms": WRITE_MS + H}, {"name": "pump", "slot": 101, "verdict": "FAIL", "at_ms": WRITE_MS + 40 * H})
-    assert cl(r, now=WRITE_MS + 41 * H, decode_checks=both)["halt_at_ms"] == WRITE_MS
+        assert cl(r, now=EARLY_MS + 31 * H, decode_checks=late, writes=W_PUMP)["halt_at_ms"] == EARLY_MS
+    # "a decode change found later": a later FAIL beside an earlier PASS for the same write halts at the earliest write
+    both = checks({"name": "pump", "slot": 101, "verdict": "PASS", "at_ms": EARLY_MS + H}, {"name": "pump", "slot": 101, "verdict": "FAIL", "at_ms": EARLY_MS + 40 * H})
+    assert cl(r, now=EARLY_MS + 41 * H, decode_checks=both, writes=W_PUMP)["halt_at_ms"] == EARLY_MS
+    # no enumerated writes: dated from the last clean run
+    assert cl(r, now=CLEAN_MS + 25 * H, last_clean_run_utc=CLEAN)["halt_at_ms"] == CLEAN_MS
+
+
+def test_two_writes_between_runs_date_the_halt_and_the_deadline_from_the_earliest_not_from_deploy_utc():
+    two = [{"name": "pump", "slot": 101, "at_ms": EARLY_MS}, {"name": "pump", "slot": 102, "at_ms": WRITE_MS}]  # the record's deploy_utc (05:00Z) dates only the second
+    r = rec(programs={"pump": 102}, flags=["pins_changed"])
+    assert r["programs"]["pump"]["deploy_utc"] == WRITE_UTC
+    v = cl(r, now=EARLY_MS + 2 * H, writes=two)
+    assert v["verdict"] == "NEEDS_CHECK" and v["needs_check"][0]["deadline_ms"] == EARLY_MS + A.CHECK_WINDOW_MS  # not WRITE_MS + 24 h
+    now = EARLY_MS + 24 * H + 60_000  # past the first write's 24 h, inside the second write's
+    assert now < WRITE_MS + 24 * H
+    v = cl(r, now=now, writes=two)
+    assert v["verdict"] == "HALT" and v["halt_at_ms"] == EARLY_MS and v["halt_at_ms"] != WRITE_MS
+    one_late = checks({"name": "pump", "slot": 102, "verdict": "PASS", "at_ms": EARLY_MS + 25 * H})  # inside 24 h of the SECOND write, too late for the first
+    assert cl(r, now=EARLY_MS + 26 * H, decode_checks=one_late, writes=two)["halt_at_ms"] == EARLY_MS
+    assert A.earliest_writes(two + [{"name": "pump", "slot": 7, "at_ms": None}, {"at_ms": EARLY_MS}]) == {"pump": EARLY_MS}
 
 
 def test_the_decode_check_input_must_be_the_r4bt_profile():
     r = rec(programs={"pump": 101}, flags=["pins_changed"])
-    h5 = {"redeploys": [{"name": "pump", "slot": 101, "verdict": "PASS", "at_ms": WRITE_MS}]}  # no profile marker: an H5-style verdict
-    assert cl(r, decode_checks=h5)["verdict"] == "ERROR"
-    assert cl(r, decode_checks=dict(h5, profile="a3_redeploy_check"))["verdict"] == "ERROR"
+    h5 = {"redeploys": [{"name": "pump", "slot": 101, "verdict": "PASS", "at_ms": EARLY_MS}]}  # no profile marker: an H5-style verdict
+    assert cl(r, decode_checks=h5, writes=W_PUMP)["verdict"] == "ERROR"
+    assert cl(r, decode_checks=dict(h5, profile="a3_redeploy_check"), writes=W_PUMP)["verdict"] == "ERROR"
 
 
 def test_follower_decoder_pin_failure_halts_at_the_first_failing_sample():
@@ -155,13 +174,13 @@ def test_apply_stops_both_registries_once_and_never_moves_an_earlier_stop(tmp_pa
     own, arena, log = registry(tmp_path, "own.json"), registry(tmp_path, "arena.json"), tmp_path / "applied.jsonl"
     now = RUN_MS + 60_000
     assert A.apply(cl(rec()), own, log, arena_registry=arena, now_ms=now)["actions"] == {}
-    halt = cl(rec(accounts={"pumpswap_fee_config": {"sha256": "b" * 64, "write_utc": WRITE_UTC}}, flags=["pins_changed"]))
+    halt = cl(rec(accounts={"pumpswap_fee_config": "b" * 64}, flags=["pins_changed"]), last_clean_run_utc=CLEAN)
     out = A.apply(halt, own, log, arena_registry=arena, now_ms=now)
     assert set(out["actions"].values()) == {"stopped"} and len(out["actions"]) == 2
-    assert all(load_registry(r)[G.BOT_ID]["stopped_at_ms"] == WRITE_MS for r in (own, arena))
-    later = dict(halt, halt_at_ms=WRITE_MS + D)
+    assert all(load_registry(r)[G.BOT_ID]["stopped_at_ms"] == CLEAN_MS for r in (own, arena))
+    later = dict(halt, halt_at_ms=CLEAN_MS + D)
     assert set(A.apply(later, own, log, arena_registry=arena, now_ms=RUN_MS + 2 * D)["actions"].values()) == {"already_stopped"}
-    assert load_registry(own)[G.BOT_ID]["stopped_at_ms"] == WRITE_MS
+    assert load_registry(own)[G.BOT_ID]["stopped_at_ms"] == CLEAN_MS
     assert len(log.read_text().splitlines()) == 3
 
 
@@ -185,13 +204,13 @@ def test_apply_refuses_error_future_malformed_verdicts_and_the_shared_registry_a
 
 
 def test_cli_classify_and_apply(tmp_path):
-    (tmp_path / "rec.json").write_text(json.dumps(rec(accounts={"bonding_fee_config": {"sha256": "b" * 64, "write_utc": WRITE_UTC}}, flags=["pins_changed"])))
+    (tmp_path / "rec.json").write_text(json.dumps(rec(accounts={"bonding_fee_config": "b" * 64}, flags=["pins_changed"])))
     (tmp_path / "pins.json").write_text(json.dumps(PINS))
-    argv = ["classify", "--record", str(tmp_path / "rec.json"), "--pins", str(tmp_path / "pins.json")]
+    argv = ["classify", "--record", str(tmp_path / "rec.json"), "--pins", str(tmp_path / "pins.json"), "--last-clean-run-utc", CLEAN]
     assert A.main(argv + ["--out", str(tmp_path / "v.json")], now_ms=RUN_MS + 1) == 0
     reg = registry(tmp_path)
     assert A.main(["apply", "--verdict", str(tmp_path / "v.json"), "--registry", str(reg), "--applied-log", str(tmp_path / "l.jsonl")], now_ms=RUN_MS + 1) == 0
-    assert load_registry(reg)[G.BOT_ID]["stopped_at_ms"] == WRITE_MS
+    assert load_registry(reg)[G.BOT_ID]["stopped_at_ms"] == CLEAN_MS
     assert A.main(argv + ["--out", str(tmp_path / "v.json")], now_ms=RUN_MS + 1) == 2  # an existing --out is refused
     (tmp_path / "samples.jsonl").write_text(json.dumps({"ts_ms": RUN_MS - H, "decoder_blobs_pinned": False, "trade_event_v": True}) + "\n")
     (tmp_path / "rec.json").write_text(json.dumps(rec()))
@@ -199,3 +218,12 @@ def test_cli_classify_and_apply(tmp_path):
                    "--out", str(tmp_path / "v2.json")], now_ms=RUN_MS + 1) == 0
     v2 = json.loads((tmp_path / "v2.json").read_text())
     assert v2["verdict"] == "HALT" and v2["halt_at_ms"] == RUN_MS - H
+
+
+def test_cli_classify_reads_the_enumerated_writes(tmp_path):
+    (tmp_path / "rec.json").write_text(json.dumps(rec(programs={"fees": 301}, flags=["pins_changed"])))
+    (tmp_path / "pins.json").write_text(json.dumps(PINS))
+    (tmp_path / "w.json").write_text(json.dumps([{"name": "fees", "slot": 301, "at_ms": EARLY_MS}]))
+    assert A.main(["classify", "--record", str(tmp_path / "rec.json"), "--pins", str(tmp_path / "pins.json"), "--writes", str(tmp_path / "w.json"), "--out", str(tmp_path / "v.json")],
+                  now_ms=RUN_MS + 1) == 0
+    assert json.loads((tmp_path / "v.json").read_text())["halt_at_ms"] == EARLY_MS
