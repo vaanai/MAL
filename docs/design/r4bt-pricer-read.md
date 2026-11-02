@@ -1,39 +1,36 @@
-# r4-b-T pricer, read wrapper and A3 entry (design note)
+# r4-b-T pricer, read wrapper, A3 entry and decode check (design note)
 
-Records and code for the arena book `r4bt-a1` under DEC-031 Amendment 25 (DRAFT, PR #1187). Paper only. Synthetic tests only: no r4-b decision log, declog, host `out/`, tip file, derived-copy tape, arena tape or ledger of a real book was opened to write this. No book has cleared the promotion gate; nothing here says r4-b or r4-b-T makes money.
+Code and records for the arena book `r4bt-a1` under the r4-b-T DEC-031 amendment (PR #1187; the amendment number is filled at merge) and QP-RULING-1102-r4bt (`/data/mal/hunt-1008/ops/manager18/QP-RULING-1102-r4bt.md`, sha256 `2d329e4bb2484cca59bfb02cbd232d1cd3f6347fbc55b53563eca7372750c0d4`). Paper only. Synthetic tests only: no r4-b decision log, declog, host `out/`, tip file, derived-copy tape, arena tape or real ledger was opened to write this. No book has cleared the promotion gate; nothing here says r4-b or r4-b-T makes money.
 
-## Files
+## W: a branch from bc65c088 that adds files only (Q8)
 
-| File | Role | Amendment 25 item |
-| --- | --- | --- |
-| `tools/r4bt_gate.py` | EXP-027 "read written" gate (G8), closed roots, engine and scorer pins, closure walk and blob comparison | 2, 4, 13, 25 |
-| `tools/r4bt_price.py` | Pricer: `ArenaEngine` over the derived copy, rent 0, call clock = the decision row's `ms`, counts only | 24, 25 |
-| `tools/r4bt_read.py` | Read wrapper over `arena_am6_read.run`: boundary cross-check against `r4bt_attempts count`, config pin check, rent-charged leg, multiplicity, disclosures | 27 |
-| `tools/r4bt_a3.py` | A3 entry: classify the daily record, stop the book at a hard halt | 12 |
+`claude/r4bt-w` is created at `bc65c088793753954c86b82d0e5eff74aa038e0b` and adds only new files, so every file the r4-b host imports stays byte-identical and dry-long-1101a's smoke, P0 and P-C2 carry over:
 
-## Which files must be blob-identical to bc65c088
+| File | Role |
+| --- | --- |
+| `tools/r4bt_attempts.py`, `tools/test_r4bt_attempts.py` | the outcome-blind counter, byte copy of the merged #1188 (head 1b9d2df1) |
+| `tools/r4bt_gate.py` | "EXP-027 read written" record (route a or b; route b also names the A2 C4 and C5 commits, both checked as ancestors of origin/main after a quiet fetch), closed roots, own-registry check, engine and scorer pins, closure walk and blob comparison |
+| `tools/r4bt_price.py` | the pricer |
+| `tools/r4bt_read.py` | the read wrapper |
+| `tools/r4bt_a3.py` | the A3 entry (Q2) |
+| `tools/r4bt_decode_check.py` | the r4-b-T decode check (Q2 item 4), a profile of `tools/a3_redeploy_check.py` |
+| `tools/test_r4bt_*.py`, this note | tests (95 pass at the branch head) |
 
-`bc65c088793753954c86b82d0e5eff74aa038e0b` is the install sha (M'). The decision host's closure is the files a static `tools.*` import walk reaches from `tools/r4b_host_glue.py`, `r4b_live.py`, `r4b_live_host.py`, `r4b_tip_reader.py`, `r4b_feed_adapter.py`, `r4b_feed_lag_probe.py` and `r4b_feed_merge.py` (`r4bt_gate.static_closure`; 75 files at bc65c088, all blob-identical at origin/main 25e49f91), plus `models/r4b/` (7 files) and the three wrappers `scripts/research/r4b-dry-long.sh` (8a0c7628), `r4b-dry-sidecar.sh` (3659842e), `r4b-dry-stop.sh` (1cfe12c4). QP's recorded closure is 88 files; the walk is a subset check (it sees no non-Python file), so QP's list stays the authority and `blob_identity` takes any list.
+`git diff --name-status bc65c088 W` shows only `A` lines. The branch reaches main through a PR merged with **"Create a merge commit"** (`gh pr merge --merge`, never squash), so that W (the branch head) becomes an ancestor of origin/main: `register_bot` resolves `frozen_sha` with `merge-base --is-ancestor <W> origin/main` and the scorer refuses a registry line without `verified_sha`. Main's later changes (for example #1182's `arena_paper.py`) never enter W.
 
-The closure includes `tools/arena_paper.py`, `arena_declog.py`, `arena_stack.py`, `arena_zst.py`, `arena_feed.py` and `h5_shadow.py`. **Any merge to main that changes one of them before W breaks identity**, and with it the carry-over of dry-long-1101a's smoke, P0 and P-C2 (Q8). Open PR #1182 changes `tools/arena_paper.py` (the gap-fill engine, Q1): if it merges before W, W is not blob-identical and Q8's carry-over needs QP's separate ruling. This PR changes none of the closure files; the new files (`r4bt_*.py`, their tests, this note) are outside it.
+The registration record states: the `--name-status` list; QP's 88-file closure compared by `git rev-parse` at both shas; `models/r4b/` (7 files) and the wrappers `scripts/research/r4b-dry-long.sh` (8a0c7628), `r4b-dry-sidecar.sh` (3659842e), `r4b-dry-stop.sh` (1cfe12c4); and `r4bt_gate.static_closure` as a subset check (75 `tools/*.py` files at bc65c088; it sees no non-Python file, QP's list is the authority). The comparison is a registration-time record, not a test, because main may move closure files later. Also owed there: the test files green at a clean checkout of W; the decision host from a fresh clean install tree at W; the sha256 of the `$HOME/mal-venvs/r4b` `pip freeze` at the registration and at the host start; the configuration equal to dry-long-1101a's.
 
-## W plan
+## Stack and registry
 
-1. W = the merge commit of this PR (plus the PRs QP requires before the clock, none of which may touch the closure). Cut W as late as the other pre-clock merges allow, once.
-2. At W, record `blob_identity(repo, bc65c088, W, closure)` (identical, none missing) and the equal blobs of the three wrappers and `models/r4b/`. Command: `python -c "from tools import r4bt_gate as G; cl=G.static_closure(lambda r: G.git_show('.', W, r)); print(G.blob_identity('.', G.FROZEN_SHA_M_PRIME, W, cl))"`.
-3. `register_bot("r4bt-a1", W, 1794031200000, deciding_stake=0.25, model_ids=[])`; the host and the pricer both run from clean checkouts at W (the scorer refuses any open row or engine start whose `code_head` is not the registered frozen_sha, `tools/arena_score.py:328-340`).
-4. The pricer is given the engine and scorer sha256 from the registration record (`9d2fdb04...3514`, `c4859323...f27f3` at 25e49f91, unchanged by this PR).
+- `StackConfig(rent=0, e1_floor_per_005=384022, strand_rule="both", gap_slots=150, gap_silence_ms=60000, k_rounding="ceil", feed_delay_slots=d)`. `ceil` is the arena default (Q5); d is `ceil(p90 block_lag_ms_p90 / (slot_s x 1000))` from at least 24 h of the sampler, pinned once in the registration record. Neither has a default in the pricer or the read. No writer or transport lag is added: the pricer feeds every tape row received at or before the decision row's `ms` before applying it (a test pins the order).
+- r4-b-T has its OWN registry file, outside `/data/mal/arena` (the pricer, the read and the classifier refuse that root). The `r4bt-a1` line also goes into `/data/mal/arena/bots.json` through `register_bot`; N for the multiplicity block is counted over the arena registry by the manager (`--n-books`). The A3 stop line is written to both (`r4bt_a3 apply --registry OWN --arena-registry /data/mal/arena/bots.json`; the shared file is accepted only there, only that exact path).
 
-## Assumptions made while QP-RULING-1102-r4bt (Q1 to Q8) was not written
+## What changed from the first version (QP V1 to V10, reviewer items)
 
-- Q1: no price-path gap-fill. Declog `gap` rows with `data_loss` not false and the derived copy's gap rows are the item 7 union, both fed to the engine; each excludes the trades whose span it overlaps, under the scorer's 5% cap. If QP adopts #1182's mechanism, `r4bt_price` gets a small adapter and W must be re-cut (see above).
-- Q3/Q4: the V-band check is the frozen host's (`tools/r4b_live.py:1029`); the pricer adds none. The pricer feeds no follower state.
-- Q5: `k_rounding` and `feed_delay_slots` are required arguments with no default in the pricer and the read; the read compares them with every start and open row. The pricing route is the `ArenaEngine` one, not `r4b_book.round_trip`.
-- Q2: the decode-change check is supplied as input (`--decode-checks`, the per-write verdict of `tools/a3_redeploy_check.py`). Without a result for a program redeploy the verdict is `NEEDS_CHECK` and the window continues. No dead-man rule (a3_halt's 48 h) is included.
-- G8: the gate is a manager-written JSON record pinned as path@sha256 (schema `exp027_read_written_v1`, route a or b). It is not the ND determination record (#1181). Nothing opens `/data/mal/r4b`.
-- Attempt set: the pricer prices the entries before the boundary of `r4bt_attempts count` (#1188, a JSON the pricer and the read take by sha256, so there is no import of #1188 code) and refuses if its own count of those entries differs from the file's counted plus excluded-hour attempts. The read refuses if the ledger's boundary or attempt count differs from the file's.
-- A registry stop before the boundary refuses the pricer (an A3 halt before the boundary makes the read NOT_DECIDABLE); a stop after it does not.
+V1 declog gap rows are counted by `gap_kind` and never fed to the engine; the read prints them beside the derived copy's data_loss rows. V2 every closed declog day file is checked against a pinned day-sha list before pricing. V3 an entry without a string `pool` is untrusted (exit 3). V4 a confirmation boundary file with `from_ms` selects [from_ms, boundary) into a fresh root. V5 the read runs the boundary and attempt-count refusals before any scoring call and records a config-pin NOT_DECIDABLE. V6 route b checks the A2 C4/C5 commits. V7 the A3 regime (halt instants, 24 h rule at the write, dead-man, the r4-b-T decode-check profile only) and the `a3_halt` span exclusion. V8 the V audit (counts, ids in a sidecar, rent-charged leg decides). V9 disclosures per the ruling. The pricer also refuses while any counted entry has no exit, and requires every declog `start` row to carry the registered frozen_sha.
 
-## Left
+## Left (not in this branch yet)
 
-The confirmation read (DEC-031 section 2 step 4) is not built. Hour-health tool (G4), the "read written" record writer, the sampler chain, the Q1 adapter if QP wants it, and the envelope and registration steps are the manager's or later PRs'. The pricer's memory on a full 8 to 12 day derived copy is not measured; it drops idle bonding curves and calls `trim_history` each hour, and a real-layout count-only pass is owed before the first run (feedback: real-layout precount).
+- `tools/r4bt_attempts.py count --from-ms` (the confirmation mode, QP's #1188 follow-up, "also in W") and the read's confirmation mode (p <= 0.05/c, 10,000 draws, seed 1, the larger p of the two fail models); both must merge with QP OK before the screen read runs.
+- The decode check's second decode path (the `tools/r4b_feed_adapter.py` mapping parity, the `adapter_check` argument) and the host-side CLI that builds the RPC client. Until the adapter path exists the check cannot PASS, so every program-only redeploy is a hard halt at its write (the fail-closed fallback of Q2 item 4).
+- The Am.23 item 5 hour-health tool, d, the envelope run, the sampler chain, and a real-layout count-only pass of the pricer on the derived copy (its memory and runtime on 8 to 12 days of tape are not measured).

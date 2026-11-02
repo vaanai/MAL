@@ -1,4 +1,4 @@
-"""r4bt_gate: the shared gates of the r4-b-T pricer and read tool (DEC-031 Amendment 25 DRAFT, PR #1187; items 2, 4, 13, 24, 25, 27). PAPER ONLY. No key, no network.
+"""r4bt_gate: the shared gates of the r4-b-T pricer and read tool (the r4-b-T DEC-031 amendment, PR #1187, number filled at merge; items 2, 4, 13, 24, 25, 27). PAPER ONLY. No key, no network.
 
 It holds what `tools/r4bt_price.py` and `tools/r4bt_read.py` must both refuse on, so the two cannot drift:
 
@@ -12,7 +12,7 @@ It holds what `tools/r4bt_price.py` and `tools/r4bt_read.py` must both refuse on
     `/data/mal/blocks`, or the shared arena ledger root `/data/mal/arena` may be a declog, tape, ledger or record path of these tools (item 25: "It never reads the
     tip dir, the archive, walk 2, `/data/mal/r4b/`, or any other book's output").
   * Pins: the sha256 of `tools/arena_paper.py` (the engine) and `tools/arena_score.py` (the scorer) must equal the values the manager pastes from the registration
-    record (Amendment 25 items 24 and 27: `9d2fdb04...3514` and `c4859323...f27f3` at main 2fa2e4bc). No default: a changed engine (for example #1182) needs its
+    record (the r4-b-T amendment items 24 and 27: `9d2fdb04...3514` and `c4859323...f27f3` at main 2fa2e4bc). No default: a changed engine (for example #1182) needs its
     own QP OK and a new pin in the registration record.
   * `static_closure` / `blob_identity`: the W route's closure comparison (item 13). A static import walk from the host's entry files, and a `git rev-parse` blob
     comparison of the walk's files between two shas. The walk is a check of QP's 88-file list, not a replacement for it.
@@ -31,7 +31,7 @@ from typing import Callable, Iterable, Mapping, Sequence
 BOT_ID = "r4bt-a1"
 ARM = "r4b-exp027"  # tools/r4b_live.BOT_ID at bc65c088: the frozen code's arm name (not imported: no tools/r4b_* import in the pricer)
 FROZEN_SHA_M_PRIME = "bc65c088793753954c86b82d0e5eff74aa038e0b"
-CLOCK_MS = 1_794_031_200_000  # 2026-11-07T06:00:00Z (Amendment 25 item 14)
+CLOCK_MS = 1_794_031_200_000  # 2026-11-07T06:00:00Z (the r4-b-T amendment item 14)
 DEADLINE_ND_MS = 1_794_193_200_000  # 2026-11-09T03:00:00Z, EXP-027's deadline (route b)
 CLOSED_ROOTS = ("/data/mal/r4b", "/var/lib/mal/sealed", "/data/mal/meta-capture", "/data/mal/blocks", "/data/mal/arena")
 CLOSED_MARKS = ("tip-tape-archive",)
@@ -70,7 +70,7 @@ def check_path(path: str | Path, what: str, closed: Sequence[str] = CLOSED_ROOTS
     s = str(p)
     for bad in closed:
         if s == bad or s.startswith(bad + "/"):
-            raise Refused(f"{what} {s} is under {bad}: refused (DEC-031 Amendment 25 items 2 and 25; SEALS-BRIEF)")
+            raise Refused(f"{what} {s} is under {bad}: refused (the r4-b-T amendment items 2 and 25; SEALS-BRIEF)")
     for mark in CLOSED_MARKS:
         if mark in s:
             raise Refused(f"{what} {s} is inside a tip-tape archive: refused")
@@ -99,7 +99,7 @@ def exp027_read_written(record_path: str | Path | None, record_sha256: str | Non
     A2 C5 ledger-end-record merge commit (40 hex each; Addendum 2 C5 is what the pricer and the read wait for); `ancestor(sha)` (default: git_is_ancestor on this
     checkout against origin/main with a quiet fetch) must be true for both."""
     if not record_path or not record_sha256:
-        raise Refused("EXP-027's read is not shown written: --exp027-record and --exp027-record-sha256 are both required (Amendment 25 item 4)")
+        raise Refused("EXP-027's read is not shown written: --exp027-record and --exp027-record-sha256 are both required (the r4-b-T amendment item 4)")
     if not SHA_RE.match(record_sha256):
         raise Refused("--exp027-record-sha256 is not a lowercase sha256")
     p = check_path(record_path, "the EXP-027 record")
