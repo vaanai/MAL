@@ -15,6 +15,7 @@ from tools import arena_h5_books as B
 from tools import arena_h5_legs as L
 from tools import arena_h5_q50_instant as qi
 from tools import arena_h5_q50s_instant as si
+from tools import arena_h5_s1t_instant as s1ti
 from tools.arena_score import Refused
 
 Q50, S1 = qi.Q50_ID, si.S1_ID
@@ -95,7 +96,7 @@ class BooksV3(Tmp):
         self.assertEqual(B.instant_file(S1), "q50s1-read-instant.json")
         self.assertEqual(B.instant_file("h5v1-boostfloor-a2"), "read-instant.json")
         self.assertEqual(B.instant_file("h5v1-boostfloor-a1"), "read-instant.json")
-        self.assertEqual(B.AM11_FILES, {qi.INSTANT_FILE: qi.RULE, si.INSTANT_FILE: si.RULE})
+        self.assertEqual(B.AM11_FILES, {qi.INSTANT_FILE: qi.RULE, si.INSTANT_FILE: si.RULE, s1ti.INSTANT_FILE: s1ti.RULE})  # s1t added by the s1t reader wiring; Q50 and s1 entries unchanged
 
     def test_check_recorded_instant_uses_the_s1_power_n_rule_with_the_records_own_clock_and_end(self):
         counted = [si.CLOCK_MS + 3_600_000 + d * DAY + i for d in range(5) for i in range(40)]  # 200 counted trades on 5 dates: branch (i) at 11-11

@@ -1,7 +1,10 @@
 """HV7 registration wrapper, modelled on tools/hv6_register.py. Calls the UNMODIFIED tools.arena_paper.register_bot for exactly HV7's four bot ids.
 
-Pins: clock in {2026-11-01T00Z, 2026-11-02T00Z}, H == 2026-11-11T00Z, stake 0.25, a 40-hex sha. H is stored in the registry as one `hv7_halt` line per book
-(load_registry ignores the kind; hv7_runner.main reads it back and refuses a --entries-halt-ms or --clock-start-ms that differs). (All checked before anything is written): the four ids hv7.0-L, -R, -S, -U (hard-coded, every id starts with `hv7.`); the frozen sha; the clock
+Pins (revised 2026-10-30, after real-model smoke #1779 FAILED and HV7 slipped past the 11-01 clock): clock in {2026-11-03T00Z .. 2026-11-08T00Z} (one per
+UTC day, six rolling clocks), H == clock + 14 days (H_DAYS; DEC-031 Am.4 item 2.2: H = max(14, ceil(150 / rate)), which is 14 for every rate >= 150/14 = 10.714285714285714 periods a day: that is the tip-source P0 pass line, and the retired public-tape P0 #1711 (23.33 a day, which probably over-admitted pools older than 7 d, QP-RULING-1101-arena-tip-reader section 2) is NOT the basis; DESIGN section 6:
+H follows that formula once the owner extends the API horizon past 2026-11-11, which the owner did on 2026-10-28, and the registration must quote that line
+before the clock), stake 0.25, a 40-hex sha. The old pins (11-01/11-02, H = 2026-11-11T00Z) are gone: both clocks have passed or are unreachable. H is stored in the registry as one `hv7_halt` line per book
+(load_registry ignores the kind; hv7_runner.main reads it back and refuses a --entries-halt-ms or --clock-start-ms that differs). (All checked before anything is written): the four ids hv7.0t-L, -R, -S, -U (hard-coded, every id starts with `hv7.`); the frozen sha; the clock
 start; H (the entries-halt instant); the caps (HV7_DAY_CAP_USD and the K1 sum); deciding stake 0.25; models (L: claude-haiku-5-5 via hv6_agents.MODEL_ID,
 R/S/U: none).
 DRY RUN BY DEFAULT: without --execute it prints the plan and the exact --confirm phrase and writes nothing. With --execute the real registry
@@ -29,17 +32,30 @@ from tools import arena_paper
 from tools import hv6_agents as A
 from tools import hv7_runner as R
 
-HV7_BOTS = tuple(R.bot_id(a) for a in R.ARM_ORDER)           # hv7.0-L, hv7.0-R, hv7.0-S, hv7.0-U
+HV7_BOTS = tuple(R.bot_id(a) for a in R.ARM_ORDER)           # hv7.0t-L, hv7.0t-R, hv7.0t-S, hv7.0t-U
 HV7_MODELS = {b: ([A.MODEL_ID] if b.endswith("-L") else []) for b in HV7_BOTS}
 DECIDING_STAKE = R.STAKE_SOL
-CLOCKS_MS = (1793491200000, 1793577600000)      # 2026-11-01T00Z, 2026-11-02T00Z
-HALT_MS = 1794355200000                         # 2026-11-11T00Z
-CONFIRM_PREFIX = "REGISTER-HV7-FOUR-BOOKS"
-ARENA_ROOT = Path(arena_paper.ARENA_ROOT)
 
 
 class Refused(Exception):
     """Own argument refusal; carries no text from outside this module."""
+
+
+DAY_MS = 86_400_000
+CLOCKS_MS = (1793664000000, 1793750400000, 1793836800000, 1793923200000, 1794009600000, 1794096000000)   # 2026-11-03T00Z .. 2026-11-08T00Z
+H_DAYS = 14                                     # DEC-031 Am.4 item 2.2: 14 holds for any rate >= 150/14 a day (the tip-source P0 pass line; see the module docstring); never shorter, never set by a flag
+HALT_BY_CLOCK_MS = {c: c + H_DAYS * DAY_MS for c in CLOCKS_MS}   # 2026-11-17T00Z .. 2026-11-22T00Z
+
+
+def halt_for(clock_start_ms: int) -> int:
+    """The one entries-halt instant H allowed for a pinned clock (clock + 14 days). Refused for any other clock."""
+    if clock_start_ms not in HALT_BY_CLOCK_MS:
+        raise Refused()
+    return HALT_BY_CLOCK_MS[clock_start_ms]
+
+
+CONFIRM_PREFIX = "REGISTER-HV7-FOUR-BOOKS"
+ARENA_ROOT = Path(arena_paper.ARENA_ROOT)
 
 
 def confirm_phrase(sha: str, clock_start_ms: int, entries_halt_ms: int) -> str:
@@ -56,7 +72,7 @@ def check_pins(sha: str, clock_start_ms: int, entries_halt_ms: int, *, now_ms: i
     s = str(sha).lower()
     if len(s) != 40 or not all(c in "0123456789abcdef" for c in s):
         raise Refused()                                         # a full 40-hex sha, never an abbreviation
-    if clock_start_ms not in CLOCKS_MS or entries_halt_ms != HALT_MS or DECIDING_STAKE != 0.25:
+    if clock_start_ms not in CLOCKS_MS or entries_halt_ms != halt_for(clock_start_ms) or DECIDING_STAKE != 0.25:
         raise Refused()
     now = int(time.time() * 1000) if now_ms is None else now_ms
     if clock_start_ms < now:
