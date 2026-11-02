@@ -102,7 +102,7 @@ def test_count_empty_root_is_all_zero_and_no_share(tmp_path, mod_env):
 
 
 # ------------------------------------------------------------------------------------------------------------------------ register
-NOW, CLOCK, HALT, SHA = 1_000_000, 1793491200000, 1794355200000, "a" * 40
+NOW, CLOCK, HALT, SHA = 1_000_000, 1793664000000, 1794873600000, "a" * 40      # 2026-11-03T00Z and its H = clock + 14 d (pins revised 2026-10-30)
 
 
 def run_reg(argv, reg):
@@ -117,15 +117,15 @@ def _test_env(monkeypatch):
 
 
 def test_bot_ids_and_models_are_pinned():
-    assert G.HV7_BOTS == ("hv7.0-L", "hv7.0-R", "hv7.0-S", "hv7.0-U")
-    assert G.HV7_MODELS["hv7.0-L"] and all(G.HV7_MODELS[b] == [] for b in G.HV7_BOTS[1:])
+    assert G.HV7_BOTS == ("hv7.0t-L", "hv7.0t-R", "hv7.0t-S", "hv7.0t-U")
+    assert G.HV7_MODELS["hv7.0t-L"] and all(G.HV7_MODELS[b] == [] for b in G.HV7_BOTS[1:])
 
 
 def test_dry_run_is_the_default_and_writes_nothing(tmp_path):
     reg = tmp_path / "bots.json"
     rc, out, err = run_reg(["--registry", str(reg)], reg)
     assert rc == 0 and "DRY RUN" in out and not reg.exists()
-    for pin in (SHA, str(CLOCK), str(HALT), "hv7.0-U", "0.3", "3.0", G.confirm_phrase(SHA, CLOCK, HALT)):
+    for pin in (SHA, str(CLOCK), str(HALT), "hv7.0t-U", "0.3", "3.0", G.confirm_phrase(SHA, CLOCK, HALT)):
         assert pin in out
 
 
@@ -150,8 +150,13 @@ def test_live_registry_needs_the_exact_confirm_and_the_arena_path_is_refused_wit
     assert rc == 0 and sorted(arena_paper.load_registry(tmp_path / "live.json")) == list(G.HV7_BOTS)
 
 
-@pytest.mark.parametrize("bad", [["--sha", "xyz"], ["--sha", "a" * 7], ["--sha", "a" * 39], ["--sha", "a" * 41], ["--clock-start-ms", "500"], ["--clock-start-ms", "1793491200001"],
-                                 ["--clock-start-ms", "1793577600001"], ["--entries-halt-ms", "2000000"], ["--entries-halt-ms", "1794355200001"]])
+@pytest.mark.parametrize("bad", [["--sha", "xyz"], ["--sha", "a" * 7], ["--sha", "a" * 39], ["--sha", "a" * 41], ["--clock-start-ms", "500"], ["--clock-start-ms", "1793664000001"],
+                                 ["--clock-start-ms", "1794096000001"], ["--entries-halt-ms", "2000000"], ["--entries-halt-ms", "1794873600001"],
+                                 ["--clock-start-ms", "1793491200000"], ["--clock-start-ms", "1793577600000"],          # the old 11-01 / 11-02 clocks
+                                 ["--clock-start-ms", "1794182400000"],                                                  # 11-09: not pinned
+                                 ["--entries-halt-ms", "1794355200000"],                                                 # the old H 2026-11-11T00Z
+                                 ["--entries-halt-ms", "1794960000000"],                                                 # the H of the 11-04 clock
+                                 ["--clock-start-ms", "1793750400000"]])                                                 # 11-04 clock with 11-03's H
 def test_bad_pins_are_refused(tmp_path, bad):
     argv = ["--sha", SHA, "--clock-start-ms", str(CLOCK), "--entries-halt-ms", str(HALT), "--registry", str(tmp_path / "r.json"), "--execute"]
     for i in range(0, len(bad), 2):
@@ -164,8 +169,9 @@ def test_a_changed_value_for_a_registered_id_is_refused_and_masked(tmp_path):
     reg = tmp_path / "bots.json"
     assert run_reg(["--registry", str(reg), "--execute"], reg)[0] == 0
     out, err = io.StringIO(), io.StringIO()
-    rc = G.main(["--sha", SHA, "--clock-start-ms", str(1793577600000), "--entries-halt-ms", str(HALT), "--registry", str(reg), "--execute"], out=out, err=err, _now_ms=NOW, _verify_sha=False)
-    assert rc == 1 and err.getvalue().strip() == "ArenaRefused hv7.0-L"        # the other allowed clock is still a different value for a registered id
+    c2 = G.CLOCKS_MS[1]
+    rc = G.main(["--sha", SHA, "--clock-start-ms", str(c2), "--entries-halt-ms", str(G.halt_for(c2)), "--registry", str(reg), "--execute"], out=out, err=err, _now_ms=NOW, _verify_sha=False)
+    assert rc == 1 and err.getvalue().strip() == "ArenaRefused hv7.0t-L"        # the other allowed clock is still a different value for a registered id
 
 
 def test_register_all_refuses_a_foreign_id(tmp_path):
@@ -177,7 +183,28 @@ def test_clocks_and_halt_are_the_pinned_instants():
     from datetime import datetime, timezone
 
     ms = lambda y, m, d: int(datetime(y, m, d, tzinfo=timezone.utc).timestamp() * 1000)
-    assert G.CLOCKS_MS == (ms(2026, 11, 1), ms(2026, 11, 2)) and G.HALT_MS == ms(2026, 11, 11) and G.DECIDING_STAKE == 0.25
+    assert G.CLOCKS_MS == tuple(ms(2026, 11, d) for d in range(3, 9)) and G.H_DAYS == 14 and G.DECIDING_STAKE == 0.25
+    assert [G.halt_for(c) for c in G.CLOCKS_MS] == [ms(2026, 11, d) for d in range(17, 23)]
+    assert all(G.halt_for(c) - c == 14 * 86_400_000 for c in G.CLOCKS_MS) and not hasattr(G, "HALT_MS")
+    for c in (ms(2026, 11, 1), ms(2026, 11, 2), ms(2026, 11, 9), G.CLOCKS_MS[0] + 1):
+        with pytest.raises(G.Refused):
+            G.halt_for(c)
+
+
+def test_every_pinned_clock_registers_with_its_own_halt_and_no_other(tmp_path):
+    for c in G.CLOCKS_MS:
+        G.check_pins(SHA, c, G.halt_for(c), now_ms=NOW)
+        for other in G.CLOCKS_MS:
+            if other != c:
+                with pytest.raises(G.Refused):
+                    G.check_pins(SHA, c, G.halt_for(other), now_ms=NOW)
+    with pytest.raises(G.Refused):                       # a pinned clock that has already passed is still refused (no backdating)
+        G.check_pins(SHA, G.CLOCKS_MS[0], G.halt_for(G.CLOCKS_MS[0]), now_ms=G.CLOCKS_MS[0] + 1)
+    out, err = io.StringIO(), io.StringIO()
+    c = G.CLOCKS_MS[-1]
+    assert G.main(["--sha", SHA, "--clock-start-ms", str(c), "--entries-halt-ms", str(G.halt_for(c)), "--registry", str(tmp_path / "r.json")], out=out, err=err,
+                  _now_ms=NOW, _verify_sha=False) == 0
+    assert G.confirm_phrase(SHA, c, G.halt_for(c)) in out.getvalue() and "1795305600000" in out.getvalue()
 
 
 def test_halt_is_stored_in_the_registry_and_the_runner_main_checks_it(tmp_path, monkeypatch, capsys):

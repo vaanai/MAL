@@ -5,8 +5,8 @@ What it reads, and nothing else
   The r4-b DRY / decision host's hash-chained decision log (`tools.arena_declog` layout): `<declog_root>/decisions/<arm>/<UTC day>.jsonl`, one arm
   (the frozen code's `r4b-exp027`). Each day file is read whole under a shared flock (the writer appends under an exclusive one), then split into lines.
   * Counting fields. Every line is parsed with a JSON `object_pairs_hook` that KEEPS ONLY the keys `kind`, `ms`, `t_mark` (counting) and `seq`, `prev`,
-    `sha` (the chain check) of every object; every other key (mint, pool, meta, rank, score, reason, decision_slot, gap spans, ...) is dropped while
-    parsing and never becomes a Python value. Only `kind`, `ms` and `t_mark` leave the reader.
+    `sha` (the chain check) of every object; every other key (mint, pool, meta, rank, score, reason, decision_slot, gap spans, ...) is dropped by the
+    hook while parsing (json.loads parses a value before the hook drops it) and is never kept or printed. Only `kind`, `ms` and `t_mark` leave the reader.
   * Chain check (QP-RULING-1102-r4b-a3-record Addendum 1, A1.2 item 8: "a pinned counter that reads only entry-row timestamps"). The arena_declog rule is
     sha = sha256(prev + canon(row without sha)), canon = sorted keys, compact separators. A stored line IS canon(row with sha), so canon(row without sha)
     is the line's own text with its single top-level `"sha":"<hex>"` pair (and one adjacent comma) cut out. The check hashes that text; it does not parse
@@ -25,6 +25,10 @@ Subcommands
           boundary is withheld (an untabled hour may still be excluded, which can only move the boundary later). Without any table the boundary is never
           printed. `ended_not_decidable` (Amendment 4 item 2.3) is printed only when clock + H has passed and no boundary exists even with every untabled
           hour counted (more exclusions can never create one).
+          Confirmation mode, `count --from-ms <screen read instant>` (DEC-031 §2 step 4; QP-RULING-1102-r4bt, verdict on #1188): only attempts decided
+          at or after that instant count (and still at or after the clock and before clock + H); the boundary is the first 00:00Z b after it
+          (from < b <= min(clock + H, as_of)) with at least 100 of those attempts (ms < b) on at least 5 UTC dates of those attempts; the table must
+          cover every hour from the hour of the instant to the hour before b; the excluded share is over attempts decided in [from, b).
   day-sha The sha256 of each closed day file of the arm (for §1.2's daily decision-log sha256 notebook entry). Names and hashes only.
 
 Refusals (exit 2): a declog root, or any day file, under /data/mal/r4b (EXP-027's outputs stay closed to r4-b-T until its read), under
@@ -292,21 +296,29 @@ def load_hour_table(path: str | Path | None) -> HourTable | None:
     return HourTable(lo, hi, frozenset(hours), hashlib.sha256(data).hexdigest())
 
 
-def count(root: Path, arm: str, clock_ms: int, h: int, as_of_ms: int, table: HourTable | None = None, *, verify: bool = True) -> dict:
+def count(root: Path, arm: str, clock_ms: int, h: int, as_of_ms: int, table: HourTable | None = None, *, verify: bool = True,
+          from_ms: int | None = None) -> dict:
+    """The screen count (from_ms None) or the confirmation count (from_ms = the screen read's instant: only attempts decided at or after it)."""
     if not _is_int(clock_ms) or clock_ms <= 0 or clock_ms % HOUR_MS:
         raise Refused("clock_start_ms must be a positive epoch ms on an hour mark")
     if not _is_int(h) or not H_MIN_DAYS <= h <= H_MAX_DAYS:
         raise Refused(f"H must be an int number of days in [{H_MIN_DAYS}, {H_MAX_DAYS}]")
     end_ms = clock_ms + h * DAY_MS
+    if from_ms is not None and (not _is_int(from_ms) or not clock_ms <= from_ms < end_ms):
+        raise Refused("--from-ms must be an epoch ms at or after the clock and before clock + H (the screen read's instant)")
+    start_ms = clock_ms if from_ms is None else from_ms
     clock_s = clock_ms // 1000
     excluded = table.excluded if table is not None else frozenset()
     lg = read_log(root, arm, verify=verify)
     kept: list[int] = []
     excl: list[int] = []
-    before_clock = after_end = bad_mark = 0
+    before_clock = before_from = after_end = bad_mark = 0
     for ms, t_mark in entry_times(lg.rows):
         if ms < clock_ms:
             before_clock += 1
+            continue
+        if ms < start_ms:
+            before_from += 1  # confirmation mode: decided before the screen read's instant, never counted here
             continue
         if ms >= end_ms:
             after_end += 1
@@ -323,10 +335,11 @@ def count(root: Path, arm: str, clock_ms: int, h: int, as_of_ms: int, table: Hou
     per_date_excl: dict[str, int] = {}
     for ms in excl:
         per_date_excl[utc_day(ms)] = per_date_excl.get(utc_day(ms), 0) + 1
-    # the first 00:00Z candidate b with clock < b <= min(clock + H, as_of) holding >= 100 counted attempts on >= 5 dates (ms < b). Untabled hours count
-    # here, so the candidate is the earliest the boundary can be; it is printed only when the table covers [clock, b).
+    # the first 00:00Z candidate b with start < b <= min(clock + H, as_of) holding >= 100 counted attempts on >= 5 dates (ms < b); start = the clock, or
+    # the screen read's instant in confirmation mode. Untabled hours count here, so the candidate is the earliest the boundary can be; it is printed
+    # only when the table covers [start, b).
     candidate = None
-    b = (clock_ms // DAY_MS + 1) * DAY_MS
+    b = (start_ms // DAY_MS + 1) * DAY_MS
     while b <= min(end_ms, as_of_ms):
         before = [ms for ms in kept if ms < b]
         if len(before) >= GATE_ATTEMPTS and len({utc_day(ms) for ms in before}) >= GATE_DATES:
@@ -335,7 +348,7 @@ def count(root: Path, arm: str, clock_ms: int, h: int, as_of_ms: int, table: Hou
         b += DAY_MS
     boundary = None
     if candidate is not None:
-        if table is not None and table.covers(clock_ms, candidate):
+        if table is not None and table.covers(start_ms, candidate):
             boundary, status = candidate, "boundary"
         else:
             status = "pending_hour_table"
@@ -344,7 +357,8 @@ def count(root: Path, arm: str, clock_ms: int, h: int, as_of_ms: int, table: Hou
     else:
         status = "pending"
     out: dict[str, Any] = {
-        "tool": "r4bt_attempts count", "arm": arm, "clock_start_ms": clock_ms, "clock_start": iso(clock_ms), "h_days": h, "window_end_ms": end_ms,
+        "tool": "r4bt_attempts count", "mode": "screen" if from_ms is None else "confirmation", "from_ms": from_ms,
+        "from": iso(from_ms) if from_ms is not None else None, "not_counted_before_from": before_from, "arm": arm, "clock_start_ms": clock_ms, "clock_start": iso(clock_ms), "h_days": h, "window_end_ms": end_ms,
         "window_end": iso(end_ms), "as_of": iso(as_of_ms), "counted_per_date": per_date, "counted_total": len(kept),
         "excluded_hour_per_date": per_date_excl, "excluded_hour_total": len(excl), "not_counted_before_clock": before_clock,
         "not_counted_after_window": after_end, "not_counted_mark_before_clock": bad_mark, "status": status,
@@ -387,6 +401,8 @@ def build_parser() -> argparse.ArgumentParser:
     c = sub.choices["count"]
     c.add_argument("--clock-ms", type=int, required=True)
     c.add_argument("--h-days", type=int, required=True)
+    c.add_argument("--from-ms", type=int, default=None,
+                   help="confirmation mode: the screen read's instant (epoch ms); only attempts decided at or after it count (DEC-031 §2 step 4)")
     c.add_argument("--hour-table", default=None,
                    help="the pinned Amendment 6 hour table (JSON: tabled_from, tabled_through, excluded_hours); without it no boundary is printed")
     return ap
@@ -400,7 +416,7 @@ def main(argv: Sequence[str] | None = None, *, now_ms: int | None = None) -> int
         if a.cmd == "p0":
             out = p0(root, a.arm, [d.strip() for d in a.days.split(",") if d.strip()], as_of, verify=not a.no_verify)
         elif a.cmd == "count":
-            out = count(root, a.arm, a.clock_ms, a.h_days, as_of, load_hour_table(a.hour_table), verify=not a.no_verify)
+            out = count(root, a.arm, a.clock_ms, a.h_days, as_of, load_hour_table(a.hour_table), verify=not a.no_verify, from_ms=a.from_ms)
         else:
             out = day_sha(root, a.arm, as_of)
     except Refused as e:

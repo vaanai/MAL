@@ -26,7 +26,11 @@ TEMPLATE_DIR = PACKAGE_DIR / "hv7_templates"
 N_DEFAULT = 8
 N_MIN = 3
 N_MAX = 8             # card cap of one rank request; any N from N_MIN to N_MAX is valid (hv4_prompts' entry cap of 4 is for HV4/HV6)
-MAX_TOKENS = 600
+MAX_TOKENS = 2000    # was 600 until 2026-10-30: real-model smoke #1779 cut 30 of 31 replies at 600 (stop_reason max_tokens, 6-7 of 8 items written).
+                     # Measured structure (cached replies, no content): 78-206 chars per item, 1.412-1.620 chars per output token, so a full N_MAX reply
+                     # is about 8 x 206 / 1.412 = 1,167 tokens at worst; 2000 leaves a margin over 1.5x (test_max_tokens_covers_a_full_reply)
+MEASURED_MAX_ITEM_CHARS = 206          # smoke #1779, 175 complete items: the longest {"id":..,"why":..} object plus its comma
+MEASURED_MIN_CHARS_PER_TOKEN = 1.412   # smoke #1779, 31 replies: the lowest reply chars / output_tokens
 KIND = "rank"
 ARM_L = "L"
 ASSUMED_OUTPUT_TOKENS = 400   # DESIGN section 5, an assumption
@@ -39,6 +43,9 @@ FORBIDDEN_KEYS_EXACT = frozenset({"arm", "arms", "pick", "picks", "rank", "ranks
 
 FALLBACK_REASONS = ("empty", "refusal", "not_json", "not_list", "bad_item", "unknown_id", "duplicate_id", "missing_id")
 
+# One markdown code fence around the whole reply (smoke #1779: 2 of 31 replies opened one despite "no code fence"). Only whitespace may sit outside it;
+# the info string may be empty or "json" (any case). Prose before or after, a second fence, or an unclosed fence does not match and stays not_json.
+_FENCE = re.compile(r"\A\s*```[ \t]*(?:[Jj][Ss][Oo][Nn])?[ \t]*\r?\n(.*?)\r?\n?[ \t]*```\s*\Z", re.S)
 _ISO = re.compile(r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3})Z")
 _WORD_FIELD = re.compile(r"(?<![\w.])(?:f|risk|setup)\.[a-z][a-z0-9_]*")
 
@@ -260,8 +267,13 @@ def _fallback(reason: str) -> RankVerdict:
 
 def validate_rank(reply, shown_ids) -> RankVerdict:
     """reply: the model's text (or None for a refusal, timeout or budget stop). Valid only if it is a JSON array holding exactly one
-    {"id": ..., "why": ...} object per shown id (no other keys), each id once. Anything else (SKIP text, prose, a code fence, a
-    short, long or duplicated list) is a FALLBACK with a reason code.
+    {"id": ..., "why": ...} object per shown id (no other keys), each id once. Anything else (SKIP text, prose, a short, long or
+    duplicated list, a reply cut off by max_tokens) is a FALLBACK with a reason code.
+
+    FENCE RULE (2026-10-30, after real-model smoke #1779, before any HV7 clock): ONE markdown code fence around the whole reply (```
+    or ```json, only whitespace outside it) is removed before parsing; the array inside must still pass every check below. Prose
+    before or after the array, a second fence and an unclosed fence (a cut-off reply) stay not_json. The fence carries no ranking
+    information, so removing it cannot change an order, only turn a wrapped full permutation from FALLBACK into valid.
 
     WHY RULE (decided, QP ruling on #996 part d): a full permutation with a bad `why` (over 20 words, naming no card field, missing,
     or not a string) is ACCEPTED and logged in the verdict counts (report-only). It is never a fallback."""
@@ -278,8 +290,10 @@ def validate_rank(reply, shown_ids) -> RankVerdict:
         dup_key = dup_key or len(d) != len(pairs)
         return d
 
+    m = _FENCE.match(reply)
+    body = m.group(1) if m else reply
     try:
-        data = json.loads(reply, object_pairs_hook=_pairs)
+        data = json.loads(body, object_pairs_hook=_pairs)
     except (ValueError, RecursionError):
         return _fallback("not_json")
     if not isinstance(data, list):
