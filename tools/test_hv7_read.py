@@ -71,7 +71,7 @@ def default_orders(arm, ms_list, pools="abcd"):
     for m in ms_list:
         d, rem = divmod(m - T0, DAY)
         i = rem // 180_000 - 1
-        out.append((m, f"hv7.0-{arm}-{d}-{i}-{pools[seen[m]]}"))
+        out.append((m, f"hv7.0t-{arm}-{d}-{i}-{pools[seen[m]]}"))
         seen[m] += 1
     return out
 
@@ -207,7 +207,7 @@ class Helpers(unittest.TestCase):
         self.assertEqual(X.T_E_MINUS_T_D_MS, R.T_E_OFFSET_MS - R.T_D_OFFSET_MS)
 
     def test_priced_trades_filters_the_deciding_stake(self):
-        rows = arm_book("hv7.0-L", 6, 6, win)  # 36 positions x 3 stakes
+        rows = arm_book("hv7.0t-L", 6, 6, win)  # 36 positions x 3 stakes
         tr, info = X.priced_trades(rows, T0, None, 0.25)
         self.assertEqual(len(tr), 36)
         self.assertEqual(info["priced"], 36)
@@ -225,12 +225,12 @@ class Registration(unittest.TestCase):
 
     @with_world
     def test_missing_or_disagreeing_halt_refused(self, w):
-        AP._append_line(Path(w.reg), {"kind": "hv7_halt", "bot_id": "hv7.0-U", "entries_halt_ms": HALT + DAY})
+        AP._append_line(Path(w.reg), {"kind": "hv7_halt", "bot_id": "hv7.0t-U", "entries_halt_ms": HALT + DAY})
         with self.assertRaises(X.Refused):
             X.load_registration(w.reg)
         with tempfile.TemporaryDirectory() as t2:
             p = Path(t2) / "bots.json"
-            AP.register_bot("hv7.0-L", SHA, T0, p, deciding_stake=0.25, model_ids=[], now_ms=0, verify_sha=False)
+            AP.register_bot("hv7.0t-L", SHA, T0, p, deciding_stake=0.25, model_ids=[], now_ms=0, verify_sha=False)
             with self.assertRaises(X.Refused):
                 X.load_registration(p)
 
@@ -247,7 +247,7 @@ class Gate(unittest.TestCase):
         rows, ems = self.setup_book(w)
         b = X.AS.blind_read_instant(ems, T0)
         self.assertEqual(b, T0 + 5 * DAY)
-        r = gate(w, "L", w.led.scan_bot("hv7.0-L")[0], ems, b + DAY)
+        r = gate(w, "L", w.led.scan_bot("hv7.0t-L")[0], ems, b + DAY)
         self.assertEqual(r["status"], "PASS", r.get("cells"))
         c = r["cells"]["flat_1p9_sc"]
         self.assertEqual((c["n"], c["days"], c["days_pos"]), (100, 5, 5))  # 3 stake rows per position do not triple n
@@ -261,20 +261,20 @@ class Gate(unittest.TestCase):
     def test_multiplicity_block_in_the_gate(self, w):
         rows, ems = self.setup_book(w)
         b = T0 + 5 * DAY
-        r = gate(w, "L", w.led.scan_bot("hv7.0-L")[0], ems, b + DAY, n_books=30)
+        r = gate(w, "L", w.led.scan_bot("hv7.0t-L")[0], ems, b + DAY, n_books=30)
         m = r["multiplicity"]
         self.assertEqual(m["N"], 30)
         self.assertAlmostEqual(m["plain_line_1_minus_0.95_pow_N"], 1 - 0.95 ** 30)
         self.assertEqual(m["holm_text"], "Holm rank: not computed, no p list given")
-        r = gate(w, "L", w.led.scan_bot("hv7.0-L")[0], ems, b + DAY, other_ps={"other": 0.4})
-        self.assertEqual(r["multiplicity"]["holm"]["hv7.0-L"]["rank"], 1)
+        r = gate(w, "L", w.led.scan_bot("hv7.0t-L")[0], ems, b + DAY, other_ps={"other": 0.4})
+        self.assertEqual(r["multiplicity"]["holm"]["hv7.0t-L"]["rank"], 1)
         self.assertEqual(r["multiplicity"]["holm"]["other"]["rank"], 2)
 
     @with_world
     def test_refusals_before_b_and_before_b_plus_exit_window(self, w):
         rows, ems = self.setup_book(w)
         b = T0 + 5 * DAY
-        rows = w.led.scan_bot("hv7.0-L")[0]
+        rows = w.led.scan_bot("hv7.0t-L")[0]
         with self.assertRaises(X.Refused):
             gate(w, "L", rows, [m for m in ems if m < T0 + 4 * DAY], b + DAY)
         with self.assertRaises(X.Refused):
@@ -286,13 +286,13 @@ class Gate(unittest.TestCase):
     @with_world
     def test_losing_top3_and_minority_days_fail(self, w):
         rows, ems = self.setup_book(w, pnl=lambda d, i, p: -2_000_000)
-        r = gate(w, "L", w.led.scan_bot("hv7.0-L")[0], ems, T0 + 8 * DAY)
+        r = gate(w, "L", w.led.scan_bot("hv7.0t-L")[0], ems, T0 + 8 * DAY)
         self.assertEqual(r["status"], "FAIL")
         with tempfile.TemporaryDirectory() as t2:
             w2 = World(t2)
-            rows2, ems2 = arm_book("hv7.0-L", 6, 20, lambda d, i, p: 4e8 if d == 0 else -1_000_000), periods(6, 20)
+            rows2, ems2 = arm_book("hv7.0t-L", 6, 20, lambda d, i, p: 4e8 if d == 0 else -1_000_000), periods(6, 20)
             w2.add_rows(rows2)
-            r = gate(w2, "L", w2.led.scan_bot("hv7.0-L")[0], ems2, T0 + 8 * DAY)
+            r = gate(w2, "L", w2.led.scan_bot("hv7.0t-L")[0], ems2, T0 + 8 * DAY)
             self.assertEqual(r["status"], "FAIL")
             self.assertTrue(any("not a majority" in m for c in r["cells"].values() for m in c["misses"]))
 
@@ -300,8 +300,8 @@ class Gate(unittest.TestCase):
     def test_excluded_share_over_5pct_is_not_decidable(self, w):
         rows, ems = self.setup_book(w)
         # exclude 6 of the 100 positions before B (6% > 5%): positions 0-5 of day 0
-        ex = {f"hv7.0-L-0-{i}-a" for i in range(6)}
-        rows = [dict(r, v_src={"entry": "none", "exit": "row", "span": {}}) if (r["kind"] == "trade" and r["position_id"] in ex) else r for r in w.led.scan_bot("hv7.0-L")[0]]
+        ex = {f"hv7.0t-L-0-{i}-a" for i in range(6)}
+        rows = [dict(r, v_src={"entry": "none", "exit": "row", "span": {}}) if (r["kind"] == "trade" and r["position_id"] in ex) else r for r in w.led.scan_bot("hv7.0t-L")[0]]
         r = gate(w, "L", rows, ems, T0 + 8 * DAY)
         self.assertEqual(r["status"], "NOT_DECIDABLE")
         self.assertTrue(any("excluded" in m for m in r["reasons"]), r["reasons"])
@@ -309,8 +309,8 @@ class Gate(unittest.TestCase):
     @with_world
     def test_orphan_is_pending_then_not_decidable(self, w):
         rows, ems = self.setup_book(w)
-        last = f"hv7.0-L-4-19-a"
-        rows = [r for r in w.led.scan_bot("hv7.0-L")[0] if not (r["kind"] == "trade" and r["position_id"] == last)]
+        last = f"hv7.0t-L-4-19-a"
+        rows = [r for r in w.led.scan_bot("hv7.0t-L")[0] if not (r["kind"] == "trade" and r["position_id"] == last)]
         b = T0 + 5 * DAY
         with self.assertRaises(X.Refused):  # younger than 24 h: PENDING, not read
             gate(w, "L", rows, ems, b + 3_600_000)
@@ -322,20 +322,20 @@ class Gate(unittest.TestCase):
     def test_incident_before_b_is_not_decidable(self, w):
         rows, ems = self.setup_book(w)
         inc = [{"kind": "buy_refused", "at_ms": T0 + 2 * DAY, "day_file": "x"}]
-        r = gate(w, "L", w.led.scan_bot("hv7.0-L")[0], ems, T0 + 8 * DAY, incidents=inc)
+        r = gate(w, "L", w.led.scan_bot("hv7.0t-L")[0], ems, T0 + 8 * DAY, incidents=inc)
         self.assertEqual(r["status"], "NOT_DECIDABLE")
         self.assertTrue(any("incident" in m for m in r["reasons"]))
 
     @with_world
     def test_missing_strand_rule_is_report_only(self, w):
         rows, ems = self.setup_book(w, rules=("total",))
-        r = gate(w, "L", w.led.scan_bot("hv7.0-L")[0], ems, T0 + 8 * DAY)
+        r = gate(w, "L", w.led.scan_bot("hv7.0t-L")[0], ems, T0 + 8 * DAY)
         self.assertEqual(r["status"], "REPORT_ONLY")
 
     @with_world
     def test_stored_flat_leg_mismatch_refused(self, w):
         rows, ems = self.setup_book(w)
-        rows = w.led.scan_bot("hv7.0-L")[0]
+        rows = w.led.scan_bot("hv7.0t-L")[0]
         for r in rows:
             if r["kind"] == "trade":
                 r["legs"]["sc"]["flat_1p9"]["net_lamports"] += 1.0
@@ -347,7 +347,7 @@ class Gate(unittest.TestCase):
     def test_e1_entry_rate_makes_every_read_not_decidable(self, w):
         rows, ems = self.setup_book(w)
         e1 = dict(E1_OK, a_l=19, a_l_lt_20=True)
-        r = gate(w, "L", w.led.scan_bot("hv7.0-L")[0], ems, T0 + 8 * DAY, e1=e1)
+        r = gate(w, "L", w.led.scan_bot("hv7.0t-L")[0], ems, T0 + 8 * DAY, e1=e1)
         self.assertEqual(r["status"], "NOT_DECIDABLE")
         self.assertTrue(r["reasons"][0].startswith("E1_entry_rate"))
 
@@ -356,7 +356,7 @@ class Gate(unittest.TestCase):
         rows, ems = self.setup_book(w)
         e1 = dict(E1_OK, fallback_gt_10pct=True, fallback_share=0.2)
         fb = dict(FB_OK, fallback_share=0.05)  # the [T0, B) share is under 10%
-        r = gate(w, "L", w.led.scan_bot("hv7.0-L")[0], ems, T0 + 8 * DAY, e1=e1, fallback=fb)
+        r = gate(w, "L", w.led.scan_bot("hv7.0t-L")[0], ems, T0 + 8 * DAY, e1=e1, fallback=fb)
         self.assertEqual(r["status"], "NOT_EVALUABLE")
         self.assertTrue(r["reasons"][0].startswith("E1_fallback"))
 
@@ -364,12 +364,12 @@ class Gate(unittest.TestCase):
     def test_e1_missing_is_refused(self, w):
         rows, ems = self.setup_book(w)
         with self.assertRaises(X.Refused):
-            gate(w, "L", w.led.scan_bot("hv7.0-L")[0], ems, T0 + 8 * DAY, e1=None)
+            gate(w, "L", w.led.scan_bot("hv7.0t-L")[0], ems, T0 + 8 * DAY, e1=None)
 
     @with_world
     def test_excluded_period_cap_is_named_not_decidable(self, w):
         rows, ems = self.setup_book(w)
-        r = gate(w, "L", w.led.scan_bot("hv7.0-L")[0], ems, T0 + 8 * DAY, fallback=dict(FB_OK, excluded_cap_not_decidable=True))
+        r = gate(w, "L", w.led.scan_bot("hv7.0t-L")[0], ems, T0 + 8 * DAY, fallback=dict(FB_OK, excluded_cap_not_decidable=True))
         self.assertEqual(r["status"], "NOT_DECIDABLE")
         self.assertTrue(any("10% cap (NOT_DECIDABLE)" in m for m in r["reasons"]))
 
@@ -382,8 +382,8 @@ class Gate(unittest.TestCase):
             gate(w, "L", [], periods(3, 20), T0 + 9 * DAY)
 
     def book_ledger(self, w, per_day, days=6):
-        w.add_rows(arm_book("hv7.0-L", days, per_day, win))
-        return w.led.scan_bot("hv7.0-L")[0]
+        w.add_rows(arm_book("hv7.0t-L", days, per_day, win))
+        return w.led.scan_bot("hv7.0t-L")[0]
 
     @with_world
     def test_p9_ledger_has_extra_attempts_is_final_not_decidable(self, w):
@@ -410,8 +410,8 @@ class Gate(unittest.TestCase):
 
     @with_world
     def test_p10b_small_loss_waits_then_final_not_decidable(self, w):
-        w.add_rows(arm_book("hv7.0-L", 5, 20, win))  # the ledger holds days 0-4 only: 97 attempts once three are lost, so it has no natural instant
-        rows = [r for r in w.led.scan_bot("hv7.0-L")[0] if not r.get("position_id", "").startswith(("hv7.0-L-1-0-", "hv7.0-L-1-1-", "hv7.0-L-1-2-"))]
+        w.add_rows(arm_book("hv7.0t-L", 5, 20, win))  # the ledger holds days 0-4 only: 97 attempts once three are lost, so it has no natural instant
+        rows = [r for r in w.led.scan_bot("hv7.0t-L")[0] if not r.get("position_id", "").startswith(("hv7.0t-L-1-0-", "hv7.0t-L-1-1-", "hv7.0t-L-1-2-"))]
         ems = periods(6, 20)
         with self.assertRaises(X.Refused):
             gate(w, "L", rows, ems, T0 + 8 * DAY)
@@ -454,7 +454,7 @@ class Gate(unittest.TestCase):
     def test_gate_swapped_pools_same_count_is_final_not_decidable(self, w):
         # QP round 4: the right count, the wrong identity. The log ordered pool d at every instant, the ledger holds pool a at the same instants.
         rows = self.book_ledger(w, 20)
-        orders = [(m, f"hv7.0-L-{(m - T0) // DAY}-{((m - T0) % DAY) // 180_000 - 1}-d") for m in periods(6, 20)]
+        orders = [(m, f"hv7.0t-L-{(m - T0) // DAY}-{((m - T0) % DAY) // 180_000 - 1}-d") for m in periods(6, 20)]
         for now in (T0 + 8 * DAY, T0 + 40 * DAY):
             r = gate(w, "L", rows, [m for m, _ in orders], now, entry_orders=orders)
             self.assertEqual(r["status"], "NOT_DECIDABLE")
@@ -492,7 +492,7 @@ class Gate(unittest.TestCase):
     def test_gate_trade_rows_only_at_another_stake_count_as_lost(self, w):
         # QP #1044 (p3 shape): ids all match, but k positions keep trade rows at stakes 0.5/1.0 only; the scorer treats them as closed, the deciding book drops them
         rows = self.book_ledger(w, 20)
-        gone = {f"hv7.0-L-{d}-{i}-a" for d in range(3) for i in range(2)}
+        gone = {f"hv7.0t-L-{d}-{i}-a" for d in range(3) for i in range(2)}
 
         def drop(k):
             ids = set(sorted(gone)[:k])
@@ -540,15 +540,15 @@ class Gate(unittest.TestCase):
 
     @with_world
     def test_lost_check_runs_without_a_deciding_stake_book(self, w):
-        w.add_rows(arm_book("hv7.0-L", 6, 20, win, stakes=(0.5,)))  # no trade rows at the deciding stake
-        r = gate(w, "L", w.led.scan_bot("hv7.0-L")[0], periods(6, 24), T0 + 8 * DAY)  # 120 decided before B vs 100 in the ledger
+        w.add_rows(arm_book("hv7.0t-L", 6, 20, win, stakes=(0.5,)))  # no trade rows at the deciding stake
+        r = gate(w, "L", w.led.scan_bot("hv7.0t-L")[0], periods(6, 24), T0 + 8 * DAY)  # 120 decided before B vs 100 in the ledger
         self.assertEqual(r["status"], "NOT_DECIDABLE")
         self.assertTrue(any("lost" in m for m in r["reasons"]))
 
 
 def contrast_rows(days, per_day, l_pick, pnl, lag=0, extra_u_pools=("a", "b", "c", "d"), r_pool="c", s_pool="b"):
     mk = lambda bot, pools: arm_book(bot, days, per_day, lambda d, i, p: pnl[p], lambda d, i: pools, stakes=(0.25,), lag=lag)  # noqa: E731
-    return {"L": mk("hv7.0-L", (l_pick,)), "R": mk("hv7.0-R", (r_pool,)), "S": mk("hv7.0-S", (s_pool,)), "U": mk("hv7.0-U", tuple(extra_u_pools))}
+    return {"L": mk("hv7.0t-L", (l_pick,)), "R": mk("hv7.0t-R", (r_pool,)), "S": mk("hv7.0t-S", (s_pool,)), "U": mk("hv7.0t-U", tuple(extra_u_pools))}
 
 
 PNL = {"a": 3e7, "b": 1e7, "c": -1e7, "d": -3e7}
@@ -583,7 +583,7 @@ class Contrast(unittest.TestCase):
 
     def test_pending_refused_orphan_not_decidable(self):
         rows = self.build(10, "a")
-        rows["L"].append(open_row("hv7.0-L", "hv7.0-L-late", T0 + 10 * DAY - 3_600_000))  # decided 1 h before the window end, never closed
+        rows["L"].append(open_row("hv7.0t-L", "hv7.0t-L-late", T0 + 10 * DAY - 3_600_000))  # decided 1 h before the window end, never closed
         with self.assertRaises(X.Refused):
             self.read(rows)  # about 2 h old at the read: PENDING (< 24 h)
         res = self.read(rows, now=T0 + 10 * DAY + 40 * 3_600_000)
@@ -672,7 +672,7 @@ class Contrast(unittest.TestCase):
     def test_same_pool_zero_difference_no_fault(self):
         rows = self.build(10, "a")
         rows["R"] = contrast_rows(10, 4, "a", PNL, r_pool="c")["R"]
-        rows["R"] = arm_book("hv7.0-R", 10, 4, lambda d, i, p: PNL[p], lambda d, i: ("a", "b", "c", "d"), stakes=(0.25,))
+        rows["R"] = arm_book("hv7.0t-R", 10, 4, lambda d, i, p: PNL[p], lambda d, i: ("a", "b", "c", "d"), stakes=(0.25,))
         res = self.read(rows)
         for s in res["contrasts"]["R-U"]["subcells"].values():
             self.assertAlmostEqual(s["total_diff_sol"], 0.0, places=12)
@@ -713,7 +713,7 @@ class Contrast(unittest.TestCase):
         def pick(d, i):
             return ("d",) if i < 3 else ("a",)
 
-        full = {"L": arm_book("hv7.0-L", 10, 4, lambda d, i, p: PNL[p], pick, stakes=(0.25,))}
+        full = {"L": arm_book("hv7.0t-L", 10, 4, lambda d, i, p: PNL[p], pick, stakes=(0.25,))}
         rows = contrast_rows(10, 4, "a", PNL)
         rows["L"] = full["L"]
         ems = {a: [r["stamp_ms"]["entry"] for r in rs if r["kind"] == "open"] for a, rs in rows.items()}
@@ -727,7 +727,7 @@ class Contrast(unittest.TestCase):
         il = res["integrity"]["L"]
         self.assertEqual((il["decision_log_attempts"], il["ledger_attempts"], il["lost_attempts"]), (40, 10, 30))
         # a small loss (2 of 40 = 5.0% is not above the cap) still reads
-        few = dict(rows, L=[r for r in rows["L"] if r.get("position_id") not in ("hv7.0-L-0-0-d", "hv7.0-L-1-0-d")])
+        few = dict(rows, L=[r for r in rows["L"] if r.get("position_id") not in ("hv7.0t-L-0-0-d", "hv7.0t-L-1-0-d")])
         res = self.read(few, ems=ems)
         self.assertNotEqual(res["status"], "NOT_DECIDABLE")
         self.assertEqual(res["integrity"]["L"]["lost_attempts"], 2)
@@ -770,7 +770,7 @@ class Contrast(unittest.TestCase):
     def test_contrast_trade_rows_only_at_another_stake_count_as_lost(self):
         rows = self.build(10, "a")
         for r in rows["L"]:  # 3 of L's 40 positions: the deciding-stake trade row moved to stake 0.5
-            if r["kind"] == "trade" and r["position_id"] in ("hv7.0-L-0-0-a", "hv7.0-L-1-0-a", "hv7.0-L-2-0-a"):
+            if r["kind"] == "trade" and r["position_id"] in ("hv7.0t-L-0-0-a", "hv7.0t-L-1-0-a", "hv7.0t-L-2-0-a"):
                 r["stake_sol"] = 0.5
         res = self.read(rows)
         il = res["integrity"]["L"]
@@ -807,8 +807,8 @@ class Contrast(unittest.TestCase):
         keep = [r for r in rows["L"] if not r.get("position_id", "").endswith("-3-a")]
         for d in range(10):
             ms = T0 + d * DAY + 4 * 180_000 + 90_000
-            pid = f"hv7.0-L-{d}-x-a"
-            keep += [open_row("hv7.0-L", pid, ms), trade_row("hv7.0-L", pid, ms, "a", PNL["a"], 0.25)]
+            pid = f"hv7.0t-L-{d}-x-a"
+            keep += [open_row("hv7.0t-L", pid, ms), trade_row("hv7.0t-L", pid, ms, "a", PNL["a"], 0.25)]
         res = self.read(dict(rows, L=keep), entry_orders_by_arm=ords, ems={a: [m for m, _ in o] for a, o in ords.items()})
         self.assertEqual(res["status"], "NOT_DECIDABLE")
         self.assertTrue(any("never ordered" in m for m in res["reasons"]))
@@ -859,11 +859,11 @@ class Files(unittest.TestCase):
 
     def test_record_once_is_per_bot_and_kind(self):
         with tempfile.TemporaryDirectory() as tmp:
-            X.record_once(tmp, "hv7.0-L_gate", {"a": 1})
-            X.record_once(tmp, "hv7.0-S_gate", {"a": 1})
-            X.record_once(tmp, "hv7.0-L_contrast", {"a": 1})
+            X.record_once(tmp, "hv7.0t-L_gate", {"a": 1})
+            X.record_once(tmp, "hv7.0t-S_gate", {"a": 1})
+            X.record_once(tmp, "hv7.0t-L_contrast", {"a": 1})
             with self.assertRaises(X.Refused):
-                X.record_once(tmp, "hv7.0-L_gate", {"a": 2})
+                X.record_once(tmp, "hv7.0t-L_gate", {"a": 2})
 
 
 def run_cli(w, kind, extra=(), wall=LATE, arm="L", now=None, record=None):
@@ -906,11 +906,11 @@ class Cli(unittest.TestCase):
             self.assertEqual(res["cells"]["flat_1p9_sc"]["n"], 100)
             self.assertEqual(res["e1"]["a_l"], 40)  # E1 window = the first two days, 20 a day
             self.assertIn("holm_text", res["multiplicity"])
-            self.assertTrue((rec / "hv7_read_hv7.0-L_gate.json").exists())
+            self.assertTrue((rec / "hv7_read_hv7.0t-L_gate.json").exists())
             self.assertEqual(run_cli(w, "gate", now=now, record=rec)[0], 1)  # L again: refused
             rc, out = run_cli(w, "gate", arm="S", now=now, record=rec)  # S is its own bot: allowed
             self.assertEqual(rc, 0, out)
-            self.assertTrue((rec / "hv7_read_hv7.0-S_gate.json").exists())
+            self.assertTrue((rec / "hv7_read_hv7.0t-S_gate.json").exists())
 
     def test_contrast_happy_path_end_to_end(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch("tools.arena_paper.shutil.disk_usage", lambda p: collections.namedtuple("U", "total used free")(1000, 500, 500)):
@@ -927,7 +927,7 @@ class Cli(unittest.TestCase):
             self.assertEqual(rc, 0, out)
             res = json.loads(out)
             self.assertEqual((res["status"], res["D"]), ("PASS", 10))
-            self.assertTrue((rec / "hv7_read_hv7.0-L_contrast.json").exists())
+            self.assertTrue((rec / "hv7_read_hv7.0t-L_contrast.json").exists())
             self.assertIn("coverage", res)
             self.assertEqual(run_cli(w, "contrast", now=HALT + X.EXIT_WINDOW_MS, record=rec)[0], 1)
 
@@ -950,7 +950,7 @@ class Cli(unittest.TestCase):
             root.mkdir()
             self.assertEqual(X.resolve_ledger_root(root, None), str(root.resolve() / "engine-ledger"))
             self.assertEqual(X.resolve_ledger_root(root, str(root / "engine-ledger")), str(root.resolve() / "engine-ledger"))
-            for bad in (X.LEDGER_ROOT, X.LEDGER_ROOT + "/hv7.0-L", str(Path(tmp) / "elsewhere"), str(root / ".." / "x")):
+            for bad in (X.LEDGER_ROOT, X.LEDGER_ROOT + "/hv7.0t-L", str(Path(tmp) / "elsewhere"), str(root / ".." / "x")):
                 with self.assertRaises(X.Refused):
                     X.resolve_ledger_root(root, bad)
 
@@ -964,7 +964,7 @@ class Cli(unittest.TestCase):
 
     def test_beside_never_reads_production_reads_in_test_mode(self):
         with mock.patch.object(X.AS, "load_recorded_read", side_effect=AssertionError("production reads dir read")):
-            self.assertIsNone(X._beside("hv7.0-L", True))
+            self.assertIsNone(X._beside("hv7.0t-L", True))
 
     def test_old_timing_flags_do_not_exist(self):
         with self.assertRaises(SystemExit):

@@ -146,7 +146,7 @@ def test_cards_in_a_real_period_pass_the_allowlist(full):
 def test_pricing_independence_one_pool_one_instant_all_bots(tmp_path):
     """L, R, S, U and U1..U8 buy ONE pool at ONE t_e and sell at one instant: every priced row (all legs, both fail models, both latencies, all stakes) is
     byte-identical once the identity fields are removed. A failure here means the design is invalid."""
-    ids = [*R.ARM_ORDER, *[f"hv7.0-U{i}" for i in range(1, 9)]]
+    ids = [*R.ARM_ORDER, *[f"hv7.0t-U{i}" for i in range(1, 9)]]
     run = make(tmp_path, bots=ids)
     pool = POOLS[3]
     run.poll_to(T_E1)
@@ -190,7 +190,7 @@ def test_pricing_independence_inside_the_loop(full):
     def of_pool(rows):
         pids = {r["position_id"] for r in rows if r.get("pool") == pool and r["kind"] == "open"}
         return [r for r in rows if r.get("position_id") in pids]
-    sub = {b: of_pool(rows) for b, rows in by_bot.items() if b in ("hv7.0-L", "hv7.0-S", "hv7.0-U")}
+    sub = {b: of_pool(rows) for b, rows in by_bot.items() if b in ("hv7.0t-L", "hv7.0t-S", "hv7.0t-U")}
     assert all(sub.values())
     first = {b: [r for r in rows if r["kind"] in ("trade", "excluded") and r["decision_ms"]["entry"] == T_E1] for b, rows in sub.items()}
     assert R.assert_identical_pricing(first) == 3
@@ -350,7 +350,7 @@ def test_live_slow_model_does_not_delay_entries_or_exits(tmp_path):
     assert T_E1 <= inst <= T_E1 + 1_500, inst - T_E1                               # t_e (+ the loop's 1 s tick), nowhere near t_e + 120 s
     sells = [r for r in rows_of(run, "S", "sell")]
     assert sells and sells[0]["ms"] == T_E2 and sells[0]["reason"] == "time"      # exit on schedule while the next call is still pending
-    sell_open = [r for r in run.engine.ledger.read_bot("hv7.0-S") if r["kind"] == "sell"]
+    sell_open = [r for r in run.engine.ledger.read_bot("hv7.0t-S") if r["kind"] == "sell"]
     if sell_open:
         assert sell_open[0]["decision_ms"]["exit"] - T_E2 <= 1_500
 
