@@ -360,7 +360,10 @@ def day_of(ms: int) -> str:
     return h.day_key(ms)
 
 
-class H5LaneExecutor(h.H5Executor):
+_Base = h.H5Executor  # captured at import: h.main is run with h.H5Executor rebound to the lane class, and then `h.H5Executor` is not the parent
+
+
+class H5LaneExecutor(_Base):
     """H5Executor plus the lane. With no `lane` key in the config it adds nothing."""
 
     def __init__(self, rpc, cfg: dict[str, Any], keypair, **kw):
@@ -412,7 +415,7 @@ class H5LaneExecutor(h.H5Executor):
     # -- limits: the lane only lowers ------------------------------------------------------------------------------------------
     @property
     def h5(self) -> h.H5Limits:
-        lim = h.H5Executor.h5.fget(self)  # type: ignore[attr-defined]
+        lim = super().h5  # the parent's property (tier, config, tipauth stake cap)
         c = self._lane_cfg
         if c is None:
             return lim
@@ -646,7 +649,7 @@ def main(argv: list[str] | None = None) -> int:
             if not args.reason:
                 raise SystemExit("--lane-writeoff needs --reason")
             return lane_writeoff(cfg, args.lane_writeoff, args.reason)
-    orig = h.H5Executor
+    orig = _Base
     h.H5Executor = H5LaneExecutor  # type: ignore[misc]  # h.main builds the executor by this global name
     try:
         return h.main(argv)

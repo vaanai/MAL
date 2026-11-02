@@ -680,3 +680,43 @@ class RestartAndTwinTests(LaneCase):
             e.ex.lane._write_line(e.ex.lane.backlog_path, {"row_id": "x", "ev": "start"})
         e.ex._lane_reconcile(e.clock(), force=True)
         self.assertEqual(self.rows(e, "writeoff"), [])
+
+
+class StartupTests(LaneCase):
+    def test_the_entry_point_starts_in_dry_mode_and_ticks_with_the_lane_limits(self):
+        """tools.h5_lane_executor.main -> h.main -> H5LaneExecutor.__init__ (the path that recursed when the property read h.H5Executor) -> one tick."""
+        from tools.test_h5_executor import H5Rpc
+        from tools.test_probe_executor import Clock
+        state = self.tmp / "dry-state"
+        state.mkdir()
+        (state / "TIER").write_text("T1\n")
+        cfg = {"mode": "dryrun", "intents_file": str(self.tmp / "intents.jsonl"), "state_dir": str(state), "poll_s": 5.0,
+               "lane": self.lane_cfg()}
+        path = self.tmp / "dry.json"
+        path.write_text(json.dumps(cfg))
+        rpc = H5Rpc(Clock(), quote=20 * 10**9)
+        made = []
+        orig_init = L.H5LaneExecutor.__init__
+
+        def spy(me, *a, **kw):
+            orig_init(me, *a, **kw)
+            made.append(me)
+
+        class FakeProbeRpc:
+            def __init__(self, url):
+                pass
+
+            def __call__(self, method, params):
+                return rpc(method, params)
+
+        with mock.patch.dict(os.environ, {"FAKE_RPC": "http://stub.invalid"}), mock.patch.object(L.H5LaneExecutor, "__init__", spy), \
+                mock.patch.object(L.pe, "ProbeRpc", FakeProbeRpc), mock.patch.object(L.h.sim, "load_rpc_url", lambda url, *_a, **_k: url):
+            rc = L.main(["--config", str(path), "--dry-run", "--once", "--rpc-env", "FAKE_RPC"])
+        self.assertEqual(rc, 0)
+        self.assertIs(h.H5Executor.__module__ == h.__name__ and h.H5Executor is not L.H5LaneExecutor, True)  # the global was restored
+        ex = made[0]
+        self.assertTrue(ex.dry_run)
+        ex._refresh_tier(ex.now_ms())
+        lim = ex.h5
+        self.assertEqual((ex.tier, lim.stake_lamports, lim.max_open), ("T1", 25_000_000, 3))
+        self.assertIsInstance(ex.lane, L.LaneLedger)
