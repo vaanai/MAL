@@ -92,7 +92,7 @@ class Syntax(unittest.TestCase):
 
 
 class Digest(Base):
-    def test_once_hashes_only_book_dirs_and_prints_no_per_kind_counts(self):
+    def test_once_hashes_only_book_dirs_and_prints_no_counts(self):
         sd = self.arena / "h5-s1t-book-20261106T225500Z"
         sd.mkdir()
         pv = '{"type":"trigger","variant":"pv","pool":"P1","v":1}\n'
@@ -113,8 +113,8 @@ class Digest(Base):
         self.assertIn(f"entry_pv_sha256 {want_pv}", out[0])
         self.assertIn(f"boost_slice_sha256 {hashlib.sha256(lines[1].encode()).hexdigest()}", out[0])
         self.assertIn(f"whole_sha256 {hashlib.sha256(whole.encode()).hexdigest()}", out[0])
-        self.assertIn("whole_lines 5 ", out[0])  # one count of the concatenated hour files, every record type together
-        for banned in ("pv_lines", "trigger_lines", "boost_slice_lines"):
+        self.assertNotIn("lines", out[0])  # sha256 and file names only, as s1's digest: no line count of any kind
+        for banned in ("pv_lines", "trigger_lines", "boost_slice_lines", "whole_lines"):
             self.assertNotIn(banned, out[0])
         self.assertNotIn("pool", out[0].replace("whole_sha256", ""))  # no record content is printed
         self.assertIn("files 0", self.sh(DIGEST, "once", "2026-11-09").stdout)

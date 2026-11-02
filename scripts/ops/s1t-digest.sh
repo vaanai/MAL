@@ -7,9 +7,9 @@
 # Runs on mal-research-0 (the s1t shadow's host). Dirs: $ARENA/h5-s1t-book-<YYYYMMDDTHHMMSSZ> under s1t's own root (DEC-031 Amendment 24 item 7; $S1T_HOME/data/arena, default
 # /home/claude/s1thome): the book's out dirs only (segment 1 from 2026-11-06T22:55Z and segment 2 from the 2026-11-20T21:00Z hand-off), never the smoke's out dir (a different HOME, h5-smoke-s1t-*,
 # sealed). Per dir and date:
-#   DIGEST <D> dir <name> files <n> first <file> last <file> entry_pv_sha256 <sha> boost_slice_sha256 <sha> whole_sha256 <sha> whole_lines <n> at <utc>
-# Hashes, file names and ONE line count of the concatenated hour files (every record type together, so it carries no trigger, pool, excluded or decision count; Amendment 24 item 6 and the
-# SEALS-BRIEF S1T READERS line: no per-kind count is printed before s1t's first read, whose output prints them). Unlike #1349 there are no pv_lines, trigger_lines or boost_slice_lines.
+#   DIGEST <D> dir <name> files <n> first <file> last <file> entry_pv_sha256 <sha> boost_slice_sha256 <sha> whole_sha256 <sha> at <utc>
+# Hashes and file names only, as s1's approved digest (scripts/ops/q50s1-digest.sh): NO line count of any kind is printed, because a daily count of the sealed book files is a decision-activity
+# number before s1t's read (Amendment 24 item 6 and the SEALS-BRIEF S1T READERS line; reviewer CHANGES on #1202). Unlike #1349 there are no pv_lines, trigger_lines, boost_slice_lines or whole_lines.
 # Lines are selected by fixed prefix ('{"type":"trigger","variant":"pv",' and '{"type":"boost_slice",'), never parsed, and no line is printed. The manager copies `grep '^DIGEST <D> '` of this
 # job's log into the notebook (ops/DIGEST-COPY-COMMANDS.md pattern). No job status view of this job is called.
 # Platform: a job lives at most 14 d and an `after` job starts only after a successful end, so two segments, each ending itself with exit 0: A submitted 2026-11-07 after 00:10Z with
@@ -53,9 +53,7 @@ digest_day() {
     B="$(cd "$SD" && cat $FILES | grep -F "$P_BS" | sha256sum | cut -c1-64)"
     # shellcheck disable=SC2086
     W="$(cd "$SD" && cat $FILES | sha256sum | cut -c1-64)"
-    # shellcheck disable=SC2086
-    WL="$(cd "$SD" && cat $FILES | wc -l | tr -d ' ')"
-    echo "DIGEST $D dir $(basename "$SD") files $N first $FIRST last $LAST entry_pv_sha256 $E boost_slice_sha256 $B whole_sha256 $W whole_lines $WL at $(date -u +%FT%TZ)"
+    echo "DIGEST $D dir $(basename "$SD") files $N first $FIRST last $LAST entry_pv_sha256 $E boost_slice_sha256 $B whole_sha256 $W at $(date -u +%FT%TZ)"
   done
   [ "$n_dirs" -gt 0 ] || echo "DIGEST $D no s1t dir under $ARENA at $(date -u +%FT%TZ)"
 }
