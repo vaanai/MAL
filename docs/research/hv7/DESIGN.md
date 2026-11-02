@@ -10,6 +10,15 @@ T0 + H; cross-arm pricing independence is a hard C2 test; a report-only day-bloc
 for the rehearsal; the card field is `f.vol_60m`; the cost section needs HV7's own owner OK and a cap table; QP (d)1-4 are carried into C1;
 the manager's kill-review confirmation is recorded.
 
+**v2 (2026-10-30, after real-model smoke #1779 FAILED on the fallback line, 31/31; before any HV7 clock; no outcome seen).** Structure of the 31
+cached replies only (stop_reason, output_tokens, length, fence, JSON validity, item and id counts; no id, why text or order): 30 stopped at
+max_tokens 600 with 6 or 7 of 8 items written (2 of them inside a ```json fence that never closed), 1 ended after 4 items with one id twice.
+Changes: max_tokens 600 -> 2000 (section 3; measured 78-206 chars per item and 1.412-1.620 chars per output token, so a full 8-item reply is at
+most about 1,167 tokens); ONE markdown code fence around the whole reply is removed before the permutation check (section 3; prose, a second
+fence or an unclosed fence stay FALLBACK); the cost row at the new max_tokens (section 5); the clock moves to one of the rolling clocks
+2026-11-03..11-08T00Z with H = 14 days (sections 4 and 6; the owner extended the API horizon past 11-11 on 2026-10-28, so H follows the Am.4
+formula, and the registration must quote that line before the clock). The prompt bytes (RANK_v0, rank.txt) are unchanged.
+
 Sources read: `docs/research/hv6/DESIGN.md` (sections 1, 2, 4, 5, 6), `/data/mal/hunt-1008/push-1016/hunt30/hv6/QP-RULING-1026-entry-rate.md`,
 the manager17 state log (HV6 lines only), DEC-031 Amendments 3, 4 and 6 (grep), library rows `web-llm-traders-1/2/4/5/7/8` and `haiku-v3-4`,
 `tools/hv6_*.py`, `tools/hv4_prompts.py`, `tools/haiku_caller.py` (price table), and the P58 rehearsal's `NOTES.txt`, `build_prompts.py` and
@@ -101,16 +110,17 @@ check on U (R - U must be mean zero; a non-zero R - U is a pipeline fault, repor
 
 **Engine load for U.** Up to 8 concurrent 0.25 SOL paper positions per hour for one bot id. `arena_paper.ArenaEngine.buy` takes one order at a
 time; whether the engine and runner allow 8 open positions for one bot is **not verified** (C2 checks it). If not, U is computed by the read tool
-from 8 shadow bot ids `hv7.0-U1..U8` (slot by screen order), which is the same arithmetic.
+from 8 shadow bot ids `hv7.0t-U1..U8` (slot by screen order), which is the same arithmetic.
 
 **Cross-arm pricing independence (hard C2 test, QP (a)4).** L's pick is always one of U's N, and R's and S's picks often are too. `arena_paper`
 prices each fill on tape state with only the bot's own buy re-injected (header line 13), which suggests independence, but it is not verified.
 C2 must show **byte-identical entry and exit prices** (every leg, both fail models) for 2 bots, and for L + U1..U8 (+ R + S), buying one pool at
 one `t_e`. If that test fails, the design is invalid (not just noisier) and HV7 is not registered until it passes.
 
-**Model and no-abstain rule.** `claude-haiku-5-5`, thinking disabled, no temperature, max_tokens 600, one 5-min cache marker on the system block
+**Model and no-abstain rule.** `claude-haiku-5-5`, thinking disabled, no temperature, max_tokens 2000 (600 until v2: smoke #1779 cut 30 of 31 replies at 600), one 5-min cache marker on the system block
 (`hv4_prompts.CACHE_MARKER`). The reply must be a JSON list that is a full permutation of the shown candidate ids (exactly N, no duplicates, no
-others), each with `why` <= 20 words naming >= 1 card field. There is **no SKIP, WATCH or VETO token**. A reply that is not a full permutation, a
+others), each with `why` <= 20 words naming >= 1 card field; one markdown code fence around the whole list (``` or ```json, only whitespace
+outside it) is removed first (v2), anything else around the list is not a JSON list. There is **no SKIP, WATCH or VETO token**. A reply that is not a full permutation, a
 refusal, a timeout, a budget stop, or no reply by `t_e` is **FALLBACK**: L trades **R's pick** that period, the row is logged `fallback=true`, and
 the attempt counts in n. Fallback rows contribute 0 to L - R (given the C2 pricing-independence test) and R - U noise to L - U, so a failing model pulls the contrast
 toward the null, never toward a pass. **Fallback rule (QP (a)3):** F_L / A_L > 0.10, over all counted attempts of L, makes the L gate read and
@@ -171,6 +181,8 @@ trade) is reported. Report-only; it never changes the gate; it addresses the sti
 
 **Horizon.** H = min(90, max(14, ceil(150 / rate))) (DEC-031 Am.4 item 2.2), capped by the window end. The window end is the API horizon
 2026-11-11T00:00Z (owner's 200 USD cap runs to 11-11). For a 2026-11-01T00Z clock, H = 10. At about 20/day, B is about T0 + 5 d (2026-11-06T00Z).
+v2: the owner extended the API horizon past 11-11 on 2026-10-28, so at the rolling clocks 2026-11-03..11-08T00Z H = max(14, ceil(150 / 23.33)) = 14
+(`hv7_register.halt_for`), D = 14, window end 2026-11-17..22T00Z.
 
 **Selection-skill contrast (the paired test; read ONCE at the window end T0 + H, QP (a)1).**
 - Why not at B: an exact one-sided sign-flip on D daily differences has a minimum p of 2^-D. At B (about 5 dates) that is 2^-5 = 0.03125 > 0.025,
@@ -218,7 +230,7 @@ IC 0.10 gives 1.141% / 1.712%.
 **Kill lines (before the clock, structure only).** Not registered if: the offline rehearsal (section 7) fails its pre-declared bars; P0 gives fewer
 than 10.0 attempts/day at the chosen period or any P0 day under 5; the md5 decision-equivalence proof fails; any seal question is open.
 
-**Multiplicity (DEC-031 Am.3 item 3).** HV7 v7.0 registers 4 bot ids (`hv7.0-L`, `-R`, `-S`, `-U`), one deciding stake (0.25), no as-sized cell:
+**Multiplicity (DEC-031 Am.3 item 3).** HV7 v7.0 registers 4 bot ids (`hv7.0t-L`, `-R`, `-S`, `-U`), one deciding stake (0.25), no as-sized cell:
 4 cells, 2 promotable. Each read carries N = every book with a clock before the read (HV4's 9, Q50, the H5 books, hunt23/cohort books, HV6's 5,
 HV7's 4, stopped and NOT_DECIDABLE included, counted from notebook copies), the plain line 1 - 0.95^N, and the report-only p (10,000 draws, seed 1,
 larger of the two fail models) with its Holm rank.
@@ -244,7 +256,8 @@ with numbers; not measured): system about 2,874 tokens, about 1,082 tokens per c
 | Call | Input | Output | USD/call | Calls/day | USD/day |
 |---|---|---|---|---|---|
 | L rank, N = 8 | 2,874 cache-write + 9,056 new | 400 | 0.001465 | 24 | 0.0352 |
-| L rank, N = 8, worst (max_tokens 600) | same | 600 | 0.001565 | 24 | 0.0376 |
+| L rank, N = 8, worst (max_tokens 600, before v2) | same | 600 | 0.001565 | 24 | 0.0376 |
+| L rank, N = 8, worst (max_tokens 2000, v2) | same | 2,000 | 0.002265 | 24 | 0.0544 |
 | L rank, N = 12 | 2,874 cache-write + 13,384 new | 400 | 0.001898 | 24 | 0.0455 |
 | 30-min periods, N = 8 | as row 1 | 400 | 0.001465 | 48 | 0.0703 |
 | v7.1 L-mem (same instant as L, cache read, +2,000-token memory) | 2,874 read + 11,056 new | 400 | 0.001334 | 24 | 0.0320 |
@@ -290,6 +303,9 @@ toward the 10% NOT EVALUABLE line, so a budget fault cannot raise L.
 - **Earliest realistic clock: 2026-11-01T00:00:00Z** (freeze about 10-30, stub 10-30..10-31). Fallback 2026-11-02T00:00Z. Window end 2026-11-11T00Z
   (API horizon), so D = 10 (or 9). A slip to 11-02 leaves the L - U read at D = 9; >= 8 non-zero days is still reachable, with less power. Needed rate 10/day (11.1/day for 11-02). Not assumed: any API budget past 11-11. If the owner extends the horizon,
   H follows the Am.4 formula only if the extension is in the registration before the clock (never after).
+- **v2 (2026-10-30):** the 11-01 and 11-02 clocks are lost (smoke #1779 FAILED). `hv7_register` now pins six rolling clocks 2026-11-03..11-08T00Z,
+  each with H = 14 days (2026-11-17..22T00Z), after the owner's 2026-10-28 extension of the API horizon past 11-11. Window cost at cap:
+  14 d x 0.30 = 4.20 USD. The tape producer and every MANAGER-owed job must cover the new window end.
 - The clock also needs the owner's HV7 cost line (section 5).
 
 ## 7. Offline rehearsal before any registration (Claude-plan Haiku subagents, no API spend)
