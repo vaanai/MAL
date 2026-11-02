@@ -145,6 +145,31 @@ class Envelope(unittest.TestCase):
         self.assertGreater(mid["tail_slope_mib_h"], 0.0)
         self.assertGreater(mid["projection_mib"], 558.3 + 26.75 * 125)
 
+    def test_observed_peak_over_the_line_never_fits(self):
+        """Reviewer on #1173: a run that went to 4,400 MiB and then sat on a 3,800 MiB plateau must not FIT against the 4,352 MiB line (5120M x 0.85)."""
+        s = [(t, a) for t, a in ramp(141, 0.0, base_mib=3800.0)]
+        s = sorted(s + [(CE + 60.0 * H, 4400.0 * MIB)])  # one sample at the peak, inside the pre-plateau window
+        r = ev.envelope(s, CE, origin=CE, run_end=CE + 336 * H)
+        self.assertEqual(r["projection_label"], "tail")
+        self.assertLess(r["projection_mib"], 4352.0)  # the model alone would pass ...
+        self.assertEqual(r["anon_max_observed_mib"], 4400.0)
+        self.assertEqual(r["deciding_mib"], 4400.0)
+        self.assertEqual(r["deciding_basis"], "observed_max")
+        self.assertFalse(r["envelope_fits"])  # ... the observed peak does not
+        self.assertFalse(r["envelope_fits_no_plateau"])
+        self.assertEqual(r["needed_cap_mib"], 5376)  # ceil(4400 / 0.85 / 256) x 256
+        self.assertEqual(r["verdict"], "NO_FIT")
+        self.assertTrue(any("above the 4352.0 MiB line" in n for n in r["notes"]))
+
+    def test_catchup_peak_counts_as_observed(self):
+        """The catch-up phase (before catch-up end + 1 h, not fitted) still counts for the observed peak."""
+        s = sorted(ramp(141, 0.0, base_mib=1000.0) + [(CE - 600.0, 4500.0 * MIB)])
+        r = ev.envelope(s, CE, origin=CE, run_end=CE + 336 * H)
+        self.assertEqual(r["anon_max_observed_mib"], 4500.0)
+        self.assertEqual(r["verdict"], "NO_FIT")
+        ok = ev.envelope(s, CE, origin=CE, run_end=CE + 336 * H, cap_mib=5376)
+        self.assertTrue(ok["envelope_fits"])  # 4500 <= 4569.6
+
     def test_horizon_inside_the_record_uses_the_observed_max(self):
         s = ramp(100, 5.0, base_mib=500.0)
         r = ev.envelope(s, CE, origin=CE, run_end=CE + 40 * H)
